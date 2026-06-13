@@ -8,7 +8,7 @@
 > [Phase 0](./roadmap/phase-0.md) ・ [Phase 1](./roadmap/phase-1.md) ・ [Phase 2](./roadmap/phase-2.md) ・
 > [Phase 3](./roadmap/phase-3.md) ・ [Phase 4](./roadmap/phase-4.md) ・ [Phase 5](./roadmap/phase-5.md) ・
 > [Phase 6](./roadmap/phase-6.md) ・ [Phase 7](./roadmap/phase-7.md) ・ [Phase 8](./roadmap/phase-8.md) ・
-> [並行/将来トラック](./roadmap/parallel-tracks.md)
+> [Phase 9](./roadmap/phase-9.md) ・ [並行/将来トラック](./roadmap/parallel-tracks.md)
 >
 > 各タスクは1つのGitHub Issueに対応（area:* ラベル＋必要に応じ delegate:fable5 ラベル）。
 
@@ -22,6 +22,9 @@ flowchart LR
   P3 --> P4[Phase 4<br/>サンドボックス+CI]
   P4 --> P5[Phase 5<br/>自律エージェント]
   P3 --> P6[Phase 6<br/>generative UI/template]
+  P6 --> P9[Phase 9<br/>ミニアプリ/業務アプリ<br/>打倒kintone]
+  P4 -. B2実行 .-> P9
+  P5 -. agent.invoke .-> P9
   P3 --> P7[Phase 7<br/>資料作成 v1]
   P3 --> P8[Phase 8<br/>エンプラ硬化+クラウド]
   P0 -. 並行 .-> SK[skillex 認証統合]
@@ -92,6 +95,14 @@ flowchart LR
 - クラウド版トレイト差し替え（GCS/Cloud SQL/Vertex）、k8s化、受注用HWサイジング表。
 - **成果物**: クラウド版（顧客ごと隔離）と本番運用可能なオンプレ。
 
+## Phase 9 — ミニアプリ／業務アプリ基盤（打倒kintone）
+**依存**: Phase 6（A=宣言的）。 **[fable 5: app-gateway二重ゲート／行authz述語エンジン／B2サンドボックス実行]**
+- 二層モデル B（コードベース・ミニアプリ）＝out-of-trust 隔離実行（B1別オリジン+CSP／B2サンドボックス）。
+- **公開APIゲートウェイ(BFF)** が唯一の入口・能力面再公開、ユーザー委譲OAuth2(PKCE)＋Keycloak再利用、**二重ゲート（スコープ ∩ ユーザーReBAC）**。
+- **構造化データサービス**（kintone中核・record JSONB＋スキーマレジストリ＋行authz述語）＋**ワークフロー軽量FSM**。
+- ミニアプリ内AI（llm.invoke／agent.invoke）、マニフェスト/レジストリ/同意インストール、SDK＋CLI。
+- **成果物**: 構造化データ＋承認フロー＋AIを持つ業務アプリを、内部APIをセキュアに叩く形で実装・簡単デプロイできる。
+
 ---
 
 ## 並行 / 将来トラック
@@ -101,7 +112,7 @@ flowchart LR
 | **skillex 認証統合** | Phase 0 の認証が安定したら**並行**（skillexは並行進行中） | 共有プール、DLC/LLM利用トークン発行を Phase 0 設計に織り込む |
 | 資料作成 v2（ブラウザ内編集） | Phase 7 後 | OnlyOffice/Collabora 組込、自作は最終手段 |
 | 相乗りSaaS | 需要が出たら | cell型→マルチテナント、認可コンテキストの継ぎ目に tenant_id |
-| 任意コード生成UI（iframe隔離） | カタログが窮屈と判明したら | CSP＋postMessageブローカー |
+| ミニアプリ marketplace（第三者公開） | Phase 9 安定後 | 信頼ティアに審査付き第三者枠を追加 |
 | 会話ブランチUI | 任意 | データ構造は Phase 3 で用意済み |
 
 ## マイルストーン要約
@@ -110,3 +121,4 @@ flowchart LR
 - **M2（Phase 2–3）**: ★permission-aware RAG チャット = 最初の顧客価値・デモ可能。
 - **M3（Phase 4–5）**: サンドボックス＆自律エージェント = 差別化の核。
 - **M4（Phase 6–8）**: ミニアプリ増殖・資料作成・エンプラ硬化・クラウド対応 = 製品化。
+- **M5（Phase 9）**: ★コードベース業務アプリ基盤（構造化データ＋ワークフロー＋セキュア内部API＋AI）= 打倒kintone。
