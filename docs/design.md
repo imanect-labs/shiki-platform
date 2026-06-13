@@ -128,6 +128,19 @@ flowchart LR
   ファイル共有も permission-aware RAG も同じ問いを使う。
 - **認可コンテキスト**: 全データアクセスは `principal + org` を持つコンテキスト経由（将来 `tenant_id` 追加の継ぎ目）。
 
+##### authz 語彙の Single Source of Truth ＋ codegen
+- **認可語彙（OpenFGA relation／能力スコープ `<能力>.<操作>`／agent-core 許可ツール名／宣言的アクションID）を
+  単一定義から Rust enum ＋ TS 型へ生成**（手書き定数を持たない）。型契約の codegen 思想（utoipa→openapi-typescript・ts-rs）を認可語彙へ延長。
+  → タイポ・存在しないスコープ/ツール/relation 参照を**コンパイル時／検証時に閉じた集合へ照合して弾く**。
+- これは **集中PEP** と対になる: app-gateway / StorageService の単一チョークポイントが
+  「エンドポイント→必要スコープ」の**宣言的マップ**を一律強制（個別ハンドラでチェックさせない＝抜け漏れを構造的に不可能化）。
+- **AIハルシネーション境界**: LLM／エージェント／ミニアプリ（特に開発者・LLMが書くマニフェストやUIスペック）が
+  **実在しない権限名・ツール名・スコープを参照しても、この閉じた語彙集合で拒否**される。
+  Phase 6.3（UIスペック検証）・**Phase 9.1（ミニアプリ・マニフェスト検証）** はこの生成語彙に依存する。
+- 注: ここで codegen するのは**粗い語彙（スコープ/relation名/ツール名）**であり、
+  **インスタンス単位の実認可は依然 OpenFGA（ReBAC）＋行レベル ABAC 述語**で行う（語彙の型安全 ≠ 認可判定）。
+  RBAC のロール×権限表をコアにはしない（部署階層・個別共有でロール爆発するため／ReBAC維持）。
+
 #### 4.1.1 マルチサービス境界（shiki × skillex）— SaaS版のみ
 
 統一は **SaaS版限定**。オンプレは shiki・skillex とも認証基盤を切り離し単独運用（外部依存ゼロ）。
@@ -270,6 +283,50 @@ flowchart TB
 - OTel計装（axum/tonic/agent-core）→ Tempo/Loki/Prometheus（クラウドはエクスポータ差し替え）。
 - Langfuse で LLM 可視化。**監査ログ（権限・引用chunk）と Langfuse を trace_id で突合**（早期に種を蒔く）。
 
+### 4.10 ミニアプリ／業務アプリ基盤（打倒kintone）
+
+FR-11。FR-6(A:宣言的) の上に B(コードベース) を足した二層。両者は同一の artifact＋ReBAC＋監査枠に乗り、
+違いはランタイムと認可の入口だけ。汎用PaaS/DBaaSは作らず「管理データサービス＋サンドボックス再利用＋公開API」の3点で構成。
+
+```mermaid
+flowchart TB
+  subgraph UT["ミニアプリ（out-of-trust）"]
+    A["A 宣言的(FR-6)<br/>検証済UIスペック"]
+    B1["B1 薄型: フロントのみ<br/>別オリジン+CSP"]
+    B2["B2 厚型: +サーバ側関数<br/>サンドボックス上"]
+  end
+  KC[Keycloak<br/>認可サーバ OAuth2/PKCE]
+  GW["公開APIゲートウェイ(BFF)<br/>唯一の入口・能力面再公開<br/>二重ゲート: scope ∩ ReBAC"]
+  A -- 宣言的アクション束縛 --> GW
+  B1 -- PKCEトークン --> GW
+  B2 -- token-exchange --> GW
+  B1 -. authcode+PKCE .-> KC
+  B2 -. authcode+PKCE .-> KC
+  GW --> FGA[OpenFGA<br/>per-resource authz]
+  GW --> CAP
+  subgraph CAP["内部能力（直接は公開しない）"]
+    ST[storage]
+    DATA["data 構造化データ<br/>Postgres: record JSONB<br/>+スキーマレジストリ"]
+    RAGC[rag]
+    AIC["ai: llm-gateway / agent-core"]
+    IDN[identity]
+    EVT[events]
+  end
+```
+
+- **認可（FR-11最重要）**: ユーザー委譲OAuth2(PKCE)。実効権限 = アプリスコープ ∩ ユーザーReBAC。
+  内部APIは晒さずゲートウェイが能力面を再公開。B2はtoken-exchangeでユーザー代理を維持、自動化のみ所有データ限定サービスidentity。
+- **能力カタログ**: storage/data/rag/ai/identity/events。`能力.操作`＋リソース束縛、実認可OpenFGA、アプリ所有リソースあり。
+- **構造化データ**（`crates/data`）: `record(table_id,id,data JSONB,rev)` ＋ `table_schema`、宣言フィールドに式インデックス（ランタイムDDLなし）。
+  フィールド型に user/dept/file/record 参照。
+  **行認可 = テーブルReBAC（OpenFGA・有界）＋クエリ時述語（ABAC・WHERE強制付与・集計にも適用・バイパス不可）＋フィールドマスク＋個別共有のみスパースtuple**。
+  宣言的クエリ/保存ビュー（生SQL非公開）、リビジョン履歴、`rev`で楽観ロック。
+- **ワークフロー**: 軽量FSM（自作・artifact）。status=フィールド、遷移認可=行述語の再利用、statusが可視性駆動、
+  副作用=宣言的アクション(AI含む)、サーバ強制＋監査、条件分岐/並列承認まで（重いBPMNエンジンは入れない）。
+- **ランタイム**: B1=別オリジン+CSP（connect-srcゲートウェイ限定・ホスト無権限）／B2=既存サンドボックス（Firecracker/gVisor）+egress allowlist。
+- **配布**: マニフェストartifact→内部レジストリへ不変publish→同意インストール（所有テーブル自動プロビジョン＋ReBAC付与）。
+  信頼ティア（first-party署名/in-house同意/将来marketplace審査）、オンプレ署名バンドル（ネット不要）、SDK＋CLI（`shiki app init/dev/publish`）。
+
 ## 5. リポジトリ構成（モノレポ・Rustワークスペース）
 
 ```
@@ -284,13 +341,18 @@ crates/
   sandbox-client/  # orchestrator gRPC クライアント
   sandbox-orchestrator/ # 特権プロセス・Firecracker/gVisor [fable 5]
   fuse/            # StorageService の FUSE 表現           [fable 5]
+  data/            # 構造化データサービス・record/schema・行authz述語 [fable 5: 述語エンジン]
+  app-gateway/     # 公開APIゲートウェイ(BFF)・OAuth2/スコープ・能力面 [fable 5: token-exchange/二重ゲート]
+  app-platform/    # ミニアプリ artifact・マニフェスト・レジストリ・FSM
 ingestion-worker/  # Python: Docling パース・docx/pptx 生成
-web/               # Next.js / TypeScript
+web/               # Next.js / TypeScript（generative UIレンダラ・ミニアプリB1配信）
+sdk/               # ミニアプリ SDK ＋ CLI（shiki app init/dev/publish・公開API型配布）
 deploy/            # docker compose / k8s manifests
 docs/
 ```
 
 - 型契約: Rust→OpenAPI(utoipa)→openapi-typescript、SSEイベント型は ts-rs/typeshare（手書き型なし）。
+  公開APIゲートウェイの能力面も同じ生成物を SDK としてミニアプリへ配布（手書き型なし）。
 
 ## 6. fable 5 委譲境界
 
@@ -300,5 +362,9 @@ docs/
 | fuse（FUSE仮想FS） | systems-heavy、`StorageService`が相手で自己完結 |
 | agent-core ループ | 製品の核。fable 5実装＋**人が深く設計に関与（共同設計）** |
 | RAG 二段authz・融合の正しさ | 正しさクリティカル、入出力境界明確 |
+| app-gateway（OAuth2/token-exchange/二重ゲート） | 認可クリティカル、confused-deputy防御、入口境界明確 |
+| data 行レベル述語エンジン（authz強制注入・クエリコンパイラ） | 正しさクリティカル（authzバイパス・集計リーク禁止） |
+| B2 サンドボックス実行統合 | sandbox制御層の拡張（既にfable 5領域） |
 
 人が握る: API/CRUD/統合の糊、フロント、OpenFGA relation schema（ポリシ決定）、優先順位・トレイト境界。
+ミニアプリ基盤では加えて: 構造化データCRUD/スキーマ・ワークフローFSM・能力カタログ定義・SDK/CLI/マニフェスト・管理UI。
