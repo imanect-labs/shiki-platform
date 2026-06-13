@@ -109,7 +109,7 @@ flowchart LR
 
 - **AuthN = Keycloak**: 顧客IdP（AD/Entra/Okta）をOIDC/SAML/LDAPでフェデレート＋ローカルIdP。
   フロントは OIDC JWT を取得し `Authorization` ヘッダで送信。SSEは fetch-stream でヘッダ付与。
-  skillex も同一realmへフェデレート（共有プール）、DLC/LLM利用トークンもここで発行。
+  shiki-server の **AuthN 向き先は設定で差し替え**（SaaS=共有コントロールプレーンのissuer / オンプレ=ローカルKeycloak）。
 - **AuthZ = ReBAC（OpenFGA/SpiceDB）**: タプル `object#relation@subject` で表現。
 
 ```mermaid
@@ -127,6 +127,37 @@ flowchart LR
 - フォルダ→子・部署→上位への継承を relation で表現。**可読性判定は単一の authz クエリ**に帰着し、
   ファイル共有も permission-aware RAG も同じ問いを使う。
 - **認可コンテキスト**: 全データアクセスは `principal + org` を持つコンテキスト経由（将来 `tenant_id` 追加の継ぎ目）。
+
+#### 4.1.1 マルチサービス境界（shiki × skillex）— SaaS版のみ
+
+統一は **SaaS版限定**。オンプレは shiki・skillex とも認証基盤を切り離し単独運用（外部依存ゼロ）。
+
+```mermaid
+flowchart TB
+  subgraph CP["共有コントロールプレーン (SaaS専用 / shiki repo所有 / マルチテナント)"]
+    KC[Keycloak<br/>User=統一]
+    ORGB[Org・Member・サービスアクセス権<br/>＋請求＋管理ダッシュボード=統一]
+  end
+  subgraph SHIKI["shiki データプレーン (顧客ごと隔離セル)"]
+    SAUTHZ[ReBAC/部署/設定=分離]
+    SMETER[LLM利用量計測=分離]
+  end
+  subgraph SKILLEX["skillex データプレーン"]
+    KAUTHZ[訓練/DLC権限/設定=分離]
+    KMETER[DLC/LLM利用量計測=分離]
+  end
+  KC -->|OIDC| SHIKI
+  KC -->|OIDC| SKILLEX
+  ORGB -->|サービスアクセス権参照| SHIKI
+  ORGB -->|サービスアクセス権参照| SKILLEX
+  SMETER -->|集約使用量のみ| ORGB
+  KMETER -->|集約使用量のみ| ORGB
+```
+
+- **3層境界**: ①User=統一 ②サービスへの入場券＋管理者バッジ=統一 ③館内ルール（細かい認可/設定）=分離。
+- **サービスロール付与**は `利用可否＋サービス管理者か` の粗い粒度のみ。細かい権限は各サービス内。
+- **請求=統一（Org単位1請求・サービス別内訳）／利用量=分離（集約値のみ請求へ・クォータ強制は各サービス）**。
+- **オンプレ**: 共有プレーンを積まず、`shiki-server` の AuthN をローカルKeycloakへ向ける（設定差し替え）。
 
 ### 4.2 ストレージ（3層分離 ＋ FUSE）
 
