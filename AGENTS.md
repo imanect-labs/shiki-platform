@@ -1,16 +1,10 @@
 # AGENTS.md
 
-> 本ファイルが正本。`CLAUDE.md` は本ファイルへのシンボリックリンク。
-> **ルートは薄く保つ**。アーキ詳細は `docs/`、手順は `.claude/skills/` に分割している（肥大化させない）。
-
 あなたはシニアエンジニアとしての技術的判断基準を持つものとする。判断に迷ったら必ず human に相談すること。
 
 ## プロジェクト
 
 shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基盤を備えるエンタープライズAIプラットフォーム（Rust モジュラモノリス ＋ Next.js ＋ Python ワーカー）。
-
-> **現状: 設計先行リポジトリ。実装は Phase 0（歩く骨格）から。**
-> 実装コードはまだ無く、下記のコマンド・構成・不変条件は「実装後の正」として先に合意したもの。
 
 | 知りたいこと | 正本（必ずここを読む） |
 |---|---|
@@ -29,7 +23,7 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 
 リポジトリ構成（モノレポ）は `docs/design.md` §5 を参照。
 
-## コマンド（実装後に有効・CI の正）
+## コマンド（CI の正）
 
 - **Rust**: `cargo fmt --check` / `cargo clippy -- -D warnings` / `cargo test`（単体は `cargo test <name>`） / `cargo build`
 - **Web**: `pnpm install` / `pnpm dev` / `pnpm build` / `pnpm lint` / 型生成 `pnpm gen:api`（utoipa → openapi-typescript）
