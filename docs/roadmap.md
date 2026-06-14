@@ -16,20 +16,20 @@
 
 ```mermaid
 flowchart LR
-  P0[Phase 0<br/>歩く骨格] --> P1[Phase 1<br/>ストレージ]
-  P1 --> P2[Phase 2<br/>RAG]
-  P2 --> P3[Phase 3<br/>チャット+RAG<br/>★初デモ可能]
-  P3 --> P4[Phase 4<br/>サンドボックス+CI]
-  P4 --> P5[Phase 5<br/>自律エージェント]
-  P3 --> P6[Phase 6<br/>generative UI/template]
-  P6 --> P9[Phase 9<br/>ミニアプリ/業務アプリ<br/>打倒kintone]
-  P4 -. B2実行 .-> P9
-  P5 -. agent.invoke .-> P9
-  P3 --> P7[Phase 7<br/>資料作成 v1]
-  P3 --> P8[Phase 8<br/>エンプラ硬化+クラウド]
-  P0 -. 並行 .-> SK[skillex 認証統合]
-  P7 -. 将来 .-> V2[資料作成 v2 編集]
-  P8 -. 将来 .-> SAAS[相乗りSaaS]
+  P0["Phase 0<br/>歩く骨格"] --> P1["Phase 1<br/>ストレージ"]
+  P1 --> P2["Phase 2<br/>RAG"]
+  P2 --> P3["Phase 3<br/>チャット+RAG<br/>★初デモ可能"]
+  P3 --> P4["Phase 4<br/>サンドボックス+CI"]
+  P4 --> P5["Phase 5<br/>自律エージェント"]
+  P3 --> P6["Phase 6<br/>generative UI/template"]
+  P6 --> P9["Phase 9<br/>ミニアプリ/業務アプリ<br/>打倒kintone"]
+  P4 -.->|B2実行| P9
+  P5 -.->|agent.invoke| P9
+  P3 --> P7["Phase 7<br/>資料作成 v1"]
+  P3 --> P8["Phase 8<br/>エンプラ硬化+クラウド"]
+  P0 -.->|並行| SK["skillex 認証統合"]
+  P7 -.->|将来| V2["資料作成 v2 編集"]
+  P8 -.->|将来| SAAS["相乗りSaaS"]
 ```
 
 ---
