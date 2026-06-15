@@ -22,7 +22,7 @@ flowchart LR
   P3 --> P4["Phase 4<br/>サンドボックス+CI"]
   P4 --> P5["Phase 5<br/>自律エージェント"]
   P3 --> P6["Phase 6<br/>generative UI/template"]
-  P6 --> P9["Phase 9<br/>ミニアプリ/業務アプリ<br/>打倒kintone"]
+  P6 --> P9["Phase 9<br/>ミニアプリ/業務アプリ基盤"]
   P4 -.->|B2実行| P9
   P5 -.->|agent.invoke| P9
   P3 --> P7["Phase 7<br/>資料作成 v1"]
@@ -95,11 +95,11 @@ flowchart LR
 - クラウド版トレイト差し替え（GCS/Cloud SQL/Vertex）、k8s化、受注用HWサイジング表。
 - **成果物**: クラウド版（顧客ごと隔離）と本番運用可能なオンプレ。
 
-## Phase 9 — ミニアプリ／業務アプリ基盤（打倒kintone）
+## Phase 9 — ミニアプリ／業務アプリ基盤
 **依存**: Phase 6（A=宣言的）。
 - 二層モデル B（コードベース・ミニアプリ）＝out-of-trust 隔離実行（B1別オリジン+CSP／B2サンドボックス）。
 - **公開APIゲートウェイ(BFF)** が唯一の入口・能力面再公開、ユーザー委譲OAuth2(PKCE)＋Keycloak再利用、**二重ゲート（スコープ ∩ ユーザーReBAC）**。
-- **構造化データサービス**（kintone中核・record JSONB＋スキーマレジストリ＋行authz述語）＋**ワークフロー軽量FSM**。
+- **構造化データサービス**（record JSONB＋スキーマレジストリ＋行authz述語）＋**ワークフロー軽量FSM**。
 - ミニアプリ内AI（llm.invoke／agent.invoke）、マニフェスト/レジストリ/同意インストール、SDK＋CLI。
 - **成果物**: 構造化データ＋承認フロー＋AIを持つ業務アプリを、内部APIをセキュアに叩く形で実装・簡単デプロイできる。
 
@@ -121,4 +121,4 @@ flowchart LR
 - **M2（Phase 2–3）**: ★permission-aware RAG チャット = 最初の顧客価値・デモ可能。
 - **M3（Phase 4–5）**: サンドボックス＆自律エージェント = 差別化の核。
 - **M4（Phase 6–8）**: ミニアプリ増殖・資料作成・エンプラ硬化・クラウド対応 = 製品化。
-- **M5（Phase 9）**: ★コードベース業務アプリ基盤（構造化データ＋ワークフロー＋セキュア内部API＋AI）= 打倒kintone。
+- **M5（Phase 9）**: ★コードベース業務アプリ基盤（構造化データ＋ワークフロー＋セキュア内部API＋AI）。
