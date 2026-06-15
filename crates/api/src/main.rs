@@ -8,7 +8,7 @@ use api::{
 };
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
-    model, FgaObject, Relation, Subject,
+    model, AuthzClient, FgaObject, Relation, Subject,
 };
 use sqlx::postgres::PgPoolOptions;
 
@@ -72,13 +72,16 @@ async fn dev_seed(fga: &OpenFgaClient) -> anyhow::Result<()> {
     ) else {
         return Ok(());
     };
-    fga.write_tuple(
-        &Subject::user(&user),
-        Relation::Member,
-        &FgaObject::organization(&org),
-    )
-    .await
-    .context("dev seed tuple の書き込みに失敗")?;
+    let subject = Subject::user(&user);
+    let object = FgaObject::organization(&org);
+    // 冪等化: 既に member なら再投入しない（OpenFGA は重複 tuple を拒否するため）。
+    if fga.check(&subject, Relation::Member, &object).await? {
+        tracing::info!(%user, %org, "dev seed: 既に member のため skip");
+        return Ok(());
+    }
+    fga.write_tuple(&subject, Relation::Member, &object)
+        .await
+        .context("dev seed tuple の書き込みに失敗")?;
     tracing::info!(%user, %org, "dev seed: org member tuple を投入");
     Ok(())
 }
