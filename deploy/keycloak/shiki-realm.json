@@ -59,6 +59,30 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "skillex",
+      "name": "skillex service (DLC/LLM 利用)",
+      "description": "skillex が shiki 共有 ID プールへフェデレートし、DLC/LLM 利用トークンを得るための client。詳細は docs/auth/skillex-identity.md。",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "skillex-dev-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:3100/*"],
+      "protocolMappers": [
+        {
+          "name": "shiki-llm-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "shiki-llm",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "users": [
