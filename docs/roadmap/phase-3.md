@@ -45,6 +45,9 @@
 - **仕様**:
   - `LlmProvider` トレイト実装。**内部正規形 = OpenAI互換スキーマ**。薄いアダプタ: ①ローカルvLLM（ほぼ素通し）
     ②Anthropic ③Gemini（必要なら④Azure）。ストリーミング（SSE/トークン）対応。
+    - ⚠️ **この正規形は未決**: [PIT-9](../design-caveats.md) で中立 content-block への変更を検討中
+      （Claude の tool_use/thinking/citation/prompt-caching が OpenAI 互換だと綺麗に乗らない）。
+      着手前に正規形を確定すること。本記述（OpenAI互換）は確定するまでの暫定。
   - 機能は必要分のみ: フォールバック/リトライ/タイムアウト/**トークン会計**/権限・コスト計上フック。
     セマンティックキャッシュ・高度ルーティング・仮想キーは**後追い**。
 - **受け入れ条件**:
