@@ -132,19 +132,31 @@ pub async fn observe(req: Request, next: Next) -> Response {
     }
 
     let method = req.method().as_str().to_owned();
+    let path = req.uri().path().to_owned();
     let start = Instant::now();
     let resp = next.run(req).await;
     let status = resp.status().as_u16();
+    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
 
     let metrics = http_metrics();
     let attrs = [
-        KeyValue::new("method", method),
+        KeyValue::new("method", method.clone()),
         KeyValue::new("status", status as i64),
     ];
     metrics.requests.add(1, &attrs);
     metrics
         .duration
         .record(start.elapsed().as_secs_f64(), &attrs);
+
+    // ログにも trace_id を直接載せ、Tempo のトレースと突合できるようにする。
+    tracing::info!(
+        trace_id = %trace_id,
+        method = %method,
+        path = %path,
+        status,
+        latency_ms,
+        "request"
+    );
 
     resp
 }
