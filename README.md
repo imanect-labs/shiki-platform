@@ -36,9 +36,20 @@ docker compose up --build
 起動後の確認:
 
 - ヘルスチェック: `curl http://localhost:8080/healthz` → 200
-- 認証付きエンドポイント: ブラウザで `http://localhost:3000` を開き Keycloak でログイン →
-  `/me` に自分の情報が表示される。
 - 監視: Grafana `http://localhost:3001`（Tempo でトレース、Prometheus でメトリクス）。
+
+フロント（OIDC ログイン → `/me` 表示）は別途起動する:
+
+```sh
+cd web
+pnpm install
+cp .env.example .env.local
+pnpm gen:api            # Rust 定義から型を生成（初回・API 変更時）
+pnpm dev                # http://localhost:3000
+```
+
+ブラウザで `http://localhost:3000` を開き Keycloak（テストユーザー `alice` / `password`）で
+ログインすると `/me` に自分の情報（org=acme, dept=engineering）が表示される。
 
 Keycloak 管理コンソール `http://localhost:8081`、MinIO コンソール `http://localhost:9001`。
 

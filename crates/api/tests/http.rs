@@ -32,8 +32,14 @@ impl AuthzClient for AllowAll {
 
 fn test_state() -> AppState {
     let config = AppConfig {
-        server: ServerConfig { host: "0.0.0.0".into(), port: 0 },
-        database: DatabaseConfig { url: "postgres://localhost/none".into(), max_connections: 1 },
+        server: ServerConfig {
+            host: "0.0.0.0".into(),
+            port: 0,
+        },
+        database: DatabaseConfig {
+            url: "postgres://localhost/none".into(),
+            max_connections: 1,
+        },
         auth: AuthConfig {
             issuer: "http://localhost/realms/shiki".into(),
             jwks_uri: None,
@@ -49,25 +55,43 @@ fn test_state() -> AppState {
             service_name: "test".into(),
             log_format: LogFormat::Json,
         },
-        storage: StorageConfig { backend: ObjectStoreBackend::Minio },
-        vector: VectorConfig { backend: VectorStoreBackend::Qdrant },
-        llm: LlmConfig { backend: LlmBackend::Vllm },
+        storage: StorageConfig {
+            backend: ObjectStoreBackend::Minio,
+        },
+        vector: VectorConfig {
+            backend: VectorStoreBackend::Qdrant,
+        },
+        llm: LlmConfig {
+            backend: LlmBackend::Vllm,
+        },
     };
     // lazy 接続なので実際の Postgres は不要。
-    let db = PgPoolOptions::new().connect_lazy(&config.database.url).unwrap();
+    let db = PgPoolOptions::new()
+        .connect_lazy(&config.database.url)
+        .unwrap();
     let jwks = Arc::new(api::middleware::JwksCache::new(
         reqwest::Client::new(),
         config.auth.effective_jwks_uri(),
         std::time::Duration::from_secs(300),
     ));
-    AppState { config: Arc::new(config), db, authz: Arc::new(AllowAll), jwks }
+    AppState {
+        config: Arc::new(config),
+        db,
+        authz: Arc::new(AllowAll),
+        jwks,
+    }
 }
 
 #[tokio::test]
 async fn healthz_is_public_and_ok() {
     let app = build_router(test_state());
     let resp = app
-        .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -87,7 +111,12 @@ async fn me_without_token_is_unauthorized() {
 async fn openapi_json_is_served() {
     let app = build_router(test_state());
     let resp = app
-        .oneshot(Request::builder().uri("/api-docs/openapi.json").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api-docs/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
