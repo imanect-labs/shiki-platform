@@ -153,12 +153,16 @@ impl AppConfig {
         let config_path =
             std::env::var("SHIKI_CONFIG").unwrap_or_else(|_| "config/default.toml".to_string());
 
-        let config: AppConfig = Figment::new()
+        let mut config: AppConfig = Figment::new()
             .merge(Serialized::defaults(defaults()))
             .merge(Toml::file(config_path))
             .merge(Env::prefixed("SHIKI__").split("__"))
             .extract()
             .map_err(Box::new)?;
+
+        // issuer の末尾スラッシュを正規化。Keycloak のトークン iss は末尾スラッシュ無しのため、
+        // 設定に付いていると JWT の iss 検証が一致せず 401 になる（JWKS 側は別途 trim 済み）。
+        config.auth.issuer = config.auth.issuer.trim_end_matches('/').to_string();
 
         config.validate()?;
         Ok(config)

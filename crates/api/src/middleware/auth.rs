@@ -45,6 +45,9 @@ pub async fn require_auth(
     validation.set_audience(&[state.config.auth.audience.as_str()]);
     validation.set_issuer(&[state.config.auth.issuer.as_str()]);
     validation.validate_exp = true;
+    // aud/iss を必須化。これが無いと aud を含まない（別 client 向けの）トークンが
+    // 素通りして audience 境界を破れる。exp は既定で必須。
+    validation.set_required_spec_claims(&["exp", "aud", "iss"]);
 
     let claims = claims::verify_token(&token, &key, &validation)?;
     let principal = claims::principal_from_claims(claims);

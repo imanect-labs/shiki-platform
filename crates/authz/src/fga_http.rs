@@ -78,9 +78,12 @@ impl FgaHttp {
     }
 
     /// 指定名の store の id を返す（無ければ `None`）。
+    ///
+    /// ListStores の `name` クエリで完全一致絞り込みを行う（OpenFGA v1.4+）。
+    /// 全件ページングに頼らないため、store 数が 1 ページを超えても取りこぼさない。
     pub async fn find_store(&self, name: &str) -> Result<Option<String>, AuthzError> {
         let url = format!("{}/stores", self.base_url);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http.get(&url).query(&[("name", name)]).send().await?;
         let resp = ensure_ok(resp).await?;
         let parsed: ListStoresResponse = resp.json().await?;
         Ok(parsed

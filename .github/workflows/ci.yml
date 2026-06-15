@@ -60,6 +60,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
       - name: compose up (依存 + shiki-server)
         working-directory: deploy/compose
         run: |
@@ -99,6 +103,11 @@ jobs:
             -d grant_type=client_credentials -d client_id=skillex -d client_secret=skillex-dev-secret \
             | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
           echo "$SK" | cut -d. -f2 | python3 -c "import sys,base64,json; p=sys.stdin.read().strip(); p+='='*(-len(p)%4); c=json.loads(base64.urlsafe_b64decode(p)); a=c.get('aud'); a=a if isinstance(a,list) else [a]; assert 'shiki-llm' in a, a; print('skillex aud OK:', a, 'azp=', c.get('azp'))"
+      - name: authz 結合テスト（live OpenFGA で allow/deny 検証）
+        env:
+          # compose で OpenFGA HTTP API はホスト 8082 に公開している。
+          OPENFGA_TEST_URL: http://localhost:8082
+        run: cargo test -p shiki-authz --test check -- --nocapture
       - name: dump logs on failure
         if: failure()
         working-directory: deploy/compose
