@@ -1,0 +1,27 @@
+# Rust
+/target
+**/*.rs.bk
+
+# 環境変数 / シークレット
+.env
+*.env
+!*.env.example
+
+# Node / Next.js
+web/node_modules
+web/.next
+web/out
+web/.turbo
+node_modules
+
+# codegen 生成物 (commit しない・スクリプトで再生成)
+web/src/generated/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS / エディタ
+.DS_Store
+*.swp
