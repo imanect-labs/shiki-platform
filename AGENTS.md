@@ -28,7 +28,7 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 
 ## 必ず守る不変条件（要点のみ）
 
-違反しやすく代償が大きい核。詳細チェックリストは architecture-invariants スキル、根拠は docs/design.md §1,§4,§5,§6。
+違反しやすく代償が大きい核。詳細チェックリストは architecture-invariants スキル、根拠は docs/design.md §1,§4,§5。
 
 - 単一チョークポイント: ストレージ=StorageService / 認可=OpenFGA クライアント / LLM=llm-gateway を必ず経由。個別ハンドラに権限チェックを散らさない。
 - アンビエント権限の禁止: 全データアクセスは AuthContext { principal, org } 経由。将来の tenant_id の継ぎ目を壊さない。
