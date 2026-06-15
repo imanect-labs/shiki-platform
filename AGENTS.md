@@ -8,7 +8,7 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 
 正本ドキュメント（必ずここを読む。アーキの詳細はここに再記述しない）:
 
-- 設計原則・全体構成・サブシステム・リポジトリ構成・fable 5 委譲境界: docs/design.md
+- 設計原則・全体構成・サブシステム・リポジトリ構成: docs/design.md
 - 機能要件(FR-1〜11)・非機能要件: docs/requirements.md
 - 実装順・フェーズ・依存関係: docs/roadmap.md ＋ docs/roadmap/phase-*.md
 - 用語・セキュリティモデル入門: docs/guides/mini-app-onboarding.md
@@ -28,7 +28,7 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 
 ## 必ず守る不変条件（要点のみ）
 
-違反しやすく代償が大きい核。詳細チェックリストは architecture-invariants スキル、根拠は docs/design.md §1,§4,§5,§6。
+違反しやすく代償が大きい核。詳細チェックリストは architecture-invariants スキル、根拠は docs/design.md §1,§4,§5。
 
 - 単一チョークポイント: ストレージ=StorageService / 認可=OpenFGA クライアント / LLM=llm-gateway を必ず経由。個別ハンドラに権限チェックを散らさない。
 - アンビエント権限の禁止: 全データアクセスは AuthContext { principal, org } 経由。将来の tenant_id の継ぎ目を壊さない。

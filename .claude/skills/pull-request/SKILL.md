@@ -80,7 +80,7 @@ PR を緑にする過程で、**プロジェクトの使い方・要件の変更
 
 突き合わせる正本（CLAUDE.md より）:
 
-- `docs/design.md`（設計原則・構成・トレイト境界・fable5 委譲）
+- `docs/design.md`（設計原則・構成・トレイト境界）
 - `docs/requirements.md`（FR-1〜11・非機能要件）
 - `docs/roadmap.md` ＋ `docs/roadmap/phase-*.md`（実装順・依存・完了条件）
 - `CLAUDE.md`(AGENTS.md)（コマンド・不変条件）

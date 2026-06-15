@@ -25,15 +25,15 @@
 
 ### タスク一覧
 
-| ID | タイトル | area | fable5 | 依存 |
-|----|---------|------|--------|------|
-| SK.1 | 共有realm設計＋skillex client/scope/audience 定義 | auth | – | 0.2 |
-| SK.2 | skillex DLC/LLM 用トークン発行（client credentials / token exchange） | auth | – | SK.1 |
-| SK.3 | サービスアクセス権モデル（統一）×サービス内認可（分離）の境界実装 | auth | – | SK.1 |
-| SK.4 | skillex web app 向け認証認可エンドポイント連携 | auth | – | SK.2, SK.3 |
-| SK.5 | skillex トークンの監査・失効・ローテーション | auth | – | SK.2 |
-| SK.6 | 共有コントロールプレーン：Org・メンバー招待・サービスアクセス権＋管理ダッシュボード | auth | – | SK.3 |
-| SK.7 | 統一請求：Org単位1請求・サービス別内訳＋利用量集約イベント受信 | infra | – | SK.6 |
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| SK.1 | 共有realm設計＋skillex client/scope/audience 定義 | auth | 0.2 |
+| SK.2 | skillex DLC/LLM 用トークン発行（client credentials / token exchange） | auth | SK.1 |
+| SK.3 | サービスアクセス権モデル（統一）×サービス内認可（分離）の境界実装 | auth | SK.1 |
+| SK.4 | skillex web app 向け認証認可エンドポイント連携 | auth | SK.2, SK.3 |
+| SK.5 | skillex トークンの監査・失効・ローテーション | auth | SK.2 |
+| SK.6 | 共有コントロールプレーン：Org・メンバー招待・サービスアクセス権＋管理ダッシュボード | auth | SK.3 |
+| SK.7 | 統一請求：Org単位1請求・サービス別内訳＋利用量集約イベント受信 | infra | SK.6 |
 
 ---
 
@@ -144,13 +144,13 @@
 
 ### タスク一覧
 
-| ID | タイトル | area | fable5 | 依存 |
-|----|---------|------|--------|------|
-| V2.1 | エディタ選定（OnlyOffice Docs / Collabora 比較・PoC） | docgen | – | – |
-| V2.2 | エディタ iframe 組込＋文書ロード | docgen | – | V2.1 |
-| V2.3 | 保存コールバック（WOPI類似）→ StorageService 保存 | docgen | – | V2.2 |
-| V2.4 | 保存後の RAG 再索引トリガ | docgen | – | V2.3 |
-| V2.5 | AI生成→手直し→保存の一連フロー結線 | docgen | – | V2.3 |
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| V2.1 | エディタ選定（OnlyOffice Docs / Collabora 比較・PoC） | docgen | – |
+| V2.2 | エディタ iframe 組込＋文書ロード | docgen | V2.1 |
+| V2.3 | 保存コールバック（WOPI類似）→ StorageService 保存 | docgen | V2.2 |
+| V2.4 | 保存後の RAG 再索引トリガ | docgen | V2.3 |
+| V2.5 | AI生成→手直し→保存の一連フロー結線 | docgen | V2.3 |
 
 ---
 
@@ -224,13 +224,13 @@
 
 ### タスク一覧
 
-| ID | タイトル | area | fable5 | 依存 |
-|----|---------|------|--------|------|
-| SAAS.1 | 認可コンテキストへ `tenant_id` 追加（単一継ぎ目） | auth | – | – |
-| SAAS.2 | テナント分離の実施（データ/authz/ストレージ境界） | infra | – | SAAS.1 |
-| SAAS.3 | テナント・オンボーディング（プロビジョニング自動化） | infra | – | SAAS.2 |
-| SAAS.4 | 課金・使用量メータリング | infra | – | SAAS.2 |
-| SAAS.5 | プラン制限・クォータ enforcement | infra | – | SAAS.4 |
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| SAAS.1 | 認可コンテキストへ `tenant_id` 追加（単一継ぎ目） | auth | – |
+| SAAS.2 | テナント分離の実施（データ/authz/ストレージ境界） | infra | SAAS.1 |
+| SAAS.3 | テナント・オンボーディング（プロビジョニング自動化） | infra | SAAS.2 |
+| SAAS.4 | 課金・使用量メータリング | infra | SAAS.2 |
+| SAAS.5 | プラン制限・クォータ enforcement | infra | SAAS.4 |
 
 ---
 
@@ -303,13 +303,13 @@
 
 ### タスク一覧
 
-| ID | タイトル | area | fable5 | 依存 |
-|----|---------|------|--------|------|
-| GUI2.1 | サンドボックス iframe 実行環境＋厳格CSP | gui | – | – |
-| GUI2.2 | 親アクセス禁止＋ネット遮断の隔離強制 | gui | – | GUI2.1 |
-| GUI2.3 | postMessage ブローカー（認可済みバックエンド束縛） | gui | – | GUI2.2 |
-| GUI2.4 | 任意 React/TSX ビルド＆ロードパイプライン | gui | – | GUI2.1 |
-| GUI2.5 | 生成UIのアーティファクト化＆ReBAC共有 | gui | – | GUI2.3, GUI2.4 |
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| GUI2.1 | サンドボックス iframe 実行環境＋厳格CSP | gui | – |
+| GUI2.2 | 親アクセス禁止＋ネット遮断の隔離強制 | gui | GUI2.1 |
+| GUI2.3 | postMessage ブローカー（認可済みバックエンド束縛） | gui | GUI2.2 |
+| GUI2.4 | 任意 React/TSX ビルド＆ロードパイプライン | gui | GUI2.1 |
+| GUI2.5 | 生成UIのアーティファクト化＆ReBAC共有 | gui | GUI2.3, GUI2.4 |
 
 ---
 
@@ -381,12 +381,12 @@
 
 ### タスク一覧
 
-| ID | タイトル | area | fable5 | 依存 |
-|----|---------|------|--------|------|
-| BR.1 | ブランチ取得API（parent_id ツリー走査） | chat | – | 3.1 |
-| BR.2 | メッセージ編集→新ブランチ生成 | chat | – | BR.1, 3.5 |
-| BR.3 | 再生成→兄弟ブランチ生成 | chat | – | BR.1, 3.5 |
-| BR.4 | ブランチ切替・ツリー可視化UI | frontend | – | BR.2, BR.3 |
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| BR.1 | ブランチ取得API（parent_id ツリー走査） | chat | 3.1 |
+| BR.2 | メッセージ編集→新ブランチ生成 | chat | BR.1, 3.5 |
+| BR.3 | 再生成→兄弟ブランチ生成 | chat | BR.1, 3.5 |
+| BR.4 | ブランチ切替・ツリー可視化UI | frontend | BR.2, BR.3 |
 
 ---
 
