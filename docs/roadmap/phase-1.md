@@ -11,18 +11,18 @@
 
 ## タスク一覧
 
-| ID | タイトル | area | fable5 | 依存 |
-|----|---------|------|--------|------|
-| 1.1 | ストレージのデータモデル（メタ/ツリー） | storage | – | 0.5 |
-| 1.2 | `ObjectStore` トレイト＋MinIO実装＋コンテンツアドレッシング | storage | – | 0.2 |
-| 1.3 | StorageService 権限チェック層（OpenFGA） | storage | – | 1.1, 1.2, 0.5 |
-| 1.4 | ファイルCRUD API（アップロード/DL/移動/リネーム/削除） | storage | – | 1.3 |
-| 1.5 | フォルダ操作＋階層（closure table） | storage | – | 1.1, 1.4 |
-| 1.6 | 共有（ReBAC relation: viewer/commenter/editor） | storage | – | 1.3 |
-| 1.7 | バージョニング | storage | – | 1.2, 1.4 |
-| 1.8 | 書込イベント発行（後段RAGトリガ） | storage | – | 1.4 |
-| 1.9 | 監査ログ基盤 | storage | – | 1.3 |
-| 1.10 | Drive風UI（ブラウズ/アップロード/共有ダイアログ） | frontend | – | 1.4, 1.5, 1.6 |
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| 1.1 | ストレージのデータモデル（メタ/ツリー） | storage | 0.5 |
+| 1.2 | `ObjectStore` トレイト＋MinIO実装＋コンテンツアドレッシング | storage | 0.2 |
+| 1.3 | StorageService 権限チェック層（OpenFGA） | storage | 1.1, 1.2, 0.5 |
+| 1.4 | ファイルCRUD API（アップロード/DL/移動/リネーム/削除） | storage | 1.3 |
+| 1.5 | フォルダ操作＋階層（closure table） | storage | 1.1, 1.4 |
+| 1.6 | 共有（ReBAC relation: viewer/commenter/editor） | storage | 1.3 |
+| 1.7 | バージョニング | storage | 1.2, 1.4 |
+| 1.8 | 書込イベント発行（後段RAGトリガ） | storage | 1.4 |
+| 1.9 | 監査ログ基盤 | storage | 1.3 |
+| 1.10 | Drive風UI（ブラウズ/アップロード/共有ダイアログ） | frontend | 1.4, 1.5, 1.6 |
 
 ---
 

@@ -1,0 +1,2 @@
+# clippy 設定。CI は `cargo clippy --all-targets --all-features -- -D warnings`。
+cognitive-complexity-threshold = 30

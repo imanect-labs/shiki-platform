@@ -10,17 +10,17 @@
 
 ## タスク一覧
 
-| ID | タイトル | area | fable5 | 依存 |
-|----|---------|------|--------|------|
-| 7.1 | `DocumentGenerator` トレイト＋生成ジョブ基盤（スペック→生成→保存） | docgen | – | 3.5, 1.8 |
-| 7.2 | xlsx 生成（`rust_xlsxwriter`, Rust ネイティブ） | docgen | – | 7.1 |
-| 7.3 | docx/pptx 生成（ingestion-worker: python-docx / python-pptx） | docgen | – | 7.1, 2.8 |
-| 7.4 | ひな型プレースホルダ穴埋め方式（docx/pptx/xlsx 共通） | docgen | – | 7.2, 7.3 |
-| 7.5 | テンプレ管理（ひな型の登録/バージョン/ReBAC共有） | docgen | – | 7.4, 1.6 |
-| 7.6 | 生成物のストレージ保存＋RAG再索引フック | docgen | – | 7.1, 2.9 |
-| 7.7 | 生成ツール（チャット/エージェントからの呼出） | agent | – | 7.2, 7.3, 7.4, 3.9 |
-| 7.8 | PDF変換（LibreOffice/Euro-Office, 変換用途限定） | docgen | – | 7.6 |
-| 7.9 | 生成物プレビュー＋生成UI（テンプレ選択/スペック入力） | frontend | – | 7.7, 7.8 |
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| 7.1 | `DocumentGenerator` トレイト＋生成ジョブ基盤（スペック→生成→保存） | docgen | 3.5, 1.8 |
+| 7.2 | xlsx 生成（`rust_xlsxwriter`, Rust ネイティブ） | docgen | 7.1 |
+| 7.3 | docx/pptx 生成（ingestion-worker: python-docx / python-pptx） | docgen | 7.1, 2.8 |
+| 7.4 | ひな型プレースホルダ穴埋め方式（docx/pptx/xlsx 共通） | docgen | 7.2, 7.3 |
+| 7.5 | テンプレ管理（ひな型の登録/バージョン/ReBAC共有） | docgen | 7.4, 1.6 |
+| 7.6 | 生成物のストレージ保存＋RAG再索引フック | docgen | 7.1, 2.9 |
+| 7.7 | 生成ツール（チャット/エージェントからの呼出） | agent | 7.2, 7.3, 7.4, 3.9 |
+| 7.8 | PDF変換（LibreOffice/Euro-Office, 変換用途限定） | docgen | 7.6 |
+| 7.9 | 生成物プレビュー＋生成UI（テンプレ選択/スペック入力） | frontend | 7.7, 7.8 |
 
 ---
 

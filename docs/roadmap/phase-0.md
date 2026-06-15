@@ -7,18 +7,18 @@
 
 ## タスク一覧
 
-| ID | タイトル | area | fable5 | 依存 |
-|----|---------|------|--------|------|
-| 0.1 | モノレポ/Rustワークスペース初期化 | infra | – | – |
-| 0.2 | docker compose 基盤（依存ミドルウェア） | infra | – | 0.1 |
-| 0.3 | axum サーバ雛形＋設定ローダ＋ヘルスチェック | infra | – | 0.1 |
-| 0.4 | Keycloak realm 構成＋OIDC JWT 検証ミドルウェア | auth | – | 0.2, 0.3 |
-| 0.5 | OpenFGA 配線＋authzクライアント＋認可コンテキスト | auth | – | 0.2, 0.3 |
-| 0.6 | 認証＋認可付きサンプルエンドポイント `GET /me` をE2E | api | – | 0.4, 0.5 |
-| 0.7 | Next.js 雛形＋OIDCログイン＋型生成パイプライン | frontend | – | 0.3, 0.4 |
-| 0.8 | OTel 計装の土台（trace/log/metric エクスポート） | obs | – | 0.3 |
-| 0.9 | CI（cargo check/test/clippy・web build・compose smoke） | infra | – | 0.1 |
-| 0.10 | skillex 連携を見据えた realm/トークン設計＋発行確認 | auth | – | 0.4 |
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| 0.1 | モノレポ/Rustワークスペース初期化 | infra | – |
+| 0.2 | docker compose 基盤（依存ミドルウェア） | infra | 0.1 |
+| 0.3 | axum サーバ雛形＋設定ローダ＋ヘルスチェック | infra | 0.1 |
+| 0.4 | Keycloak realm 構成＋OIDC JWT 検証ミドルウェア | auth | 0.2, 0.3 |
+| 0.5 | OpenFGA 配線＋authzクライアント＋認可コンテキスト | auth | 0.2, 0.3 |
+| 0.6 | 認証＋認可付きサンプルエンドポイント `GET /me` をE2E | api | 0.4, 0.5 |
+| 0.7 | Next.js 雛形＋OIDCログイン＋型生成パイプライン | frontend | 0.3, 0.4 |
+| 0.8 | OTel 計装の土台（trace/log/metric エクスポート） | obs | 0.3 |
+| 0.9 | CI（cargo check/test/clippy・web build・compose smoke） | infra | 0.1 |
+| 0.10 | skillex 連携を見据えた realm/トークン設計＋発行確認 | auth | 0.4 |
 
 ---
 

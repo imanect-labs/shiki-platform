@@ -1,0 +1,23 @@
+# shiki ReBAC authorization model — Phase 0 最小骨格（人がレビューする正本）
+#
+# docs/design.md §4.1 の ReBAC 図に準拠。Phase 0 は organization / department /
+# user と member / parent のみ。後続フェーズで folder / file / thread / doc_chunk と
+# viewer / editor / owner 等を追加する。
+#
+# このファイルは可読性のためのレビュー用。実際に OpenFGA へ投入するのは
+# authorization-model.json（同期させること。CI で drift を検出してもよい）。
+
+model
+  schema 1.1
+
+type user
+
+type organization
+  relations
+    define member: [user]
+
+type department
+  relations
+    define parent: [organization]
+    # 部署メンバーは、直接付与された user か、上位組織のメンバー（下方向継承）。
+    define member: [user] or member from parent

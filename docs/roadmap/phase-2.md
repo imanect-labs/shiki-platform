@@ -4,26 +4,24 @@
 > **権限を厳密に守った（二段authz）引用付き検索**をAPIとして提供する。
 > 完了の定義(DoD): ファイルをストレージに置くと自動で索引され、ユーザーのクエリに対し「そのユーザーが読める文書だけ」
 > から引用チャンク付きの検索結果が返り、引用が監査ログに残る。
-> **fable 5 主担当: 二段authzフィルタ・融合の正しさ（Task 2.6, 2.7）。**
->
 > ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-1〜3・7・8・10 を解決すること。**
 > とくに PIT-1（`authz_tags` の方式が未定義）と PIT-10（二段DoD: file 粒度の Tier-1 で先に Phase 3 を通し、
 > 高速 pre-filter は後追い）は本 Phase の進め方そのものを左右する。
 
 ## タスク一覧
 
-| ID | タイトル | area | fable5 | 依存 |
-|----|---------|------|--------|------|
-| 2.1 | `DocumentParser` トレイト＋Docling worker（パース/OCR） | rag | – | 1.8 |
-| 2.2 | チャンク化（レイアウト/親子）＋メタデータ/authz_tags | rag | – | 2.1 |
-| 2.3 | `EmbeddingProvider` トレイト＋Ruri 埋め込み | rag | – | 2.2 |
-| 2.4 | `VectorStore`（Qdrant）索引＋pre-filterタグ | rag | – | 2.3 |
-| 2.5 | 全文検索（Tantivy＋Lindera）索引 | rag | – | 2.2 |
-| 2.6 | ハイブリッド検索＋RRF融合＋reranker | rag | ✅ | 2.4, 2.5 |
-| 2.7 | permission-aware 二段authzフィルタ＋引用監査 | rag | ✅ | 2.6, 1.9 |
-| 2.8 | インジェスト・パイプライン配線（イベント→キュー→worker） | rag | – | 1.8, 2.1 |
-| 2.9 | 増分再索引＋削除/移動の索引整合 | rag | – | 2.8 |
-| 2.10 | 検索API＋デバッグUI（引用ハイライト） | rag | – | 2.7 |
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| 2.1 | `DocumentParser` トレイト＋Docling worker（パース/OCR） | rag | 1.8 |
+| 2.2 | チャンク化（レイアウト/親子）＋メタデータ/authz_tags | rag | 2.1 |
+| 2.3 | `EmbeddingProvider` トレイト＋Ruri 埋め込み | rag | 2.2 |
+| 2.4 | `VectorStore`（Qdrant）索引＋pre-filterタグ | rag | 2.3 |
+| 2.5 | 全文検索（Tantivy＋Lindera）索引 | rag | 2.2 |
+| 2.6 | ハイブリッド検索＋RRF融合＋reranker | rag | 2.4, 2.5 |
+| 2.7 | permission-aware 二段authzフィルタ＋引用監査 | rag | 2.6, 1.9 |
+| 2.8 | インジェスト・パイプライン配線（イベント→キュー→worker） | rag | 1.8, 2.1 |
+| 2.9 | 増分再索引＋削除/移動の索引整合 | rag | 2.8 |
+| 2.10 | 検索API＋デバッグUI（引用ハイライト） | rag | 2.7 |
 
 ---
 
@@ -91,7 +89,7 @@
   - [ ] authz_tags フィルタが全文側にも効く
   - [ ] dense とID整合が取れRRFに渡せる
 
-### Task 2.6: ハイブリッド検索＋RRF＋reranker  🟣fable5
+### Task 2.6: ハイブリッド検索＋RRF＋reranker
 - **area**: rag / **path**: `crates/rag`
 - **依存**: 2.4, 2.5
 - **仕様**:
@@ -102,7 +100,7 @@
   - [ ] 重複チャンクが除去される
   - [ ] reranker を差し替えられる
 
-### Task 2.7: permission-aware 二段authzフィルタ＋引用監査  🟣fable5
+### Task 2.7: permission-aware 二段authzフィルタ＋引用監査
 - **area**: rag / **path**: `crates/rag`, `crates/authz`, `crates/storage`
 - **依存**: 2.6, 1.9
 - **仕様**:

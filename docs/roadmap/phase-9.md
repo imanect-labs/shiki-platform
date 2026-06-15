@@ -1,6 +1,6 @@
-# Phase 9 — ミニアプリ／業務アプリ基盤（打倒kintone）
+# Phase 9 — ミニアプリ／業務アプリ基盤
 
-> 目的: Phase 6（A=宣言的ミニアプリ）の上に **B=コードベース・ミニアプリ**と**kintone中核（構造化データ＋
+> 目的: Phase 6（A=宣言的ミニアプリ）の上に **B=コードベース・ミニアプリ**と**業務アプリ中核（構造化データ＋
 > ワークフロー）**を足し、「社内業務アプリが自然増殖する基盤」を立ち上げる。中核は **out-of-trust な
 > ミニアプリから内部APIをセキュアに叩く仕組み** ＝ ①公開APIゲートウェイ（唯一の入口・能力面再公開）
 > ②ユーザー委譲OAuth2(PKCE)＋Keycloak再利用 ③二重ゲート（スコープ ∩ ユーザーReBAC）。
@@ -15,25 +15,25 @@
 > ⚠️ **行レベル認可（9.3-9.4）着手前に [設計上の落とし穴](../design-caveats.md) の PIT-17〜21 を解決すること。**
 > 「行を見せない」を実装しても、集計の数値（PIT-17）・別システムにある述語の材料（PIT-18）・マスク列での
 > 並べ替え/絞り込み（PIT-19）・lookup のテーブル間参照（PIT-20）・`WHERE` 強制注入だけでは塞げない漏れ口（PIT-21）
-> という隙間から漏れる。fable5 委譲の最高リスク箇所。
+> という隙間から漏れる。基盤全体で最も正しさがクリティカルな領域。
 
-| ID | タイトル | area | fable5 | 依存 |
-|----|---------|------|--------|------|
-| 9.1 | ミニアプリ・アーティファクト拡張（マニフェスト＋kind=mini_app_code） | app | – | 6.1, 6.10 |
-| 9.2 | 構造化データサービス: record／スキーマレジストリ＋式インデックス | data | – | 6.1 |
-| 9.3 | 行レベル認可述語エンジン（WHERE強制注入・クエリコンパイラ・集計適用） | data | ✅ | 9.2, 6.1 |
-| 9.4 | 宣言的クエリ／保存ビュー／集計＋フィールドマスク | data | – | 9.3 |
-| 9.5 | レコード・リビジョン履歴＋楽観ロック（rev） | data | – | 9.2 |
-| 9.6 | 公開APIゲートウェイ(BFF): 能力面・スコープ検証・per-call OpenFGA（二重ゲート） | api | ✅ | 9.2, 3.9 |
-| 9.7 | OAuth2クライアント登録＆PKCE／token-exchange（Keycloak連携） | auth | ✅ | 9.6 |
-| 9.8 | 能力アダプタ: storage/data/rag/identity/events を能力面に薄く公開 | api | – | 9.6 |
-| 9.9 | ミニアプリ内AI: llm.invoke／agent.invoke＋コスト計上＋ガードレール | ai | – | 9.6, 6.9, 5.1 |
-| 9.10 | ワークフロー: 軽量FSMエンジン（状態／遷移認可／副作用／監査） | data | – | 9.3, 6.5 |
-| 9.11 | B1ランタイム: 別オリジン配信＋CSP＋ブラウザOAuth＋レンダラ統合 | frontend | – | 9.7, 9.8, 6.6 |
-| 9.12 | B2ランタイム: サンドボックス上アプリ関数実行＋egress allowlist＋confidential client | sandbox | ✅ | 9.7, 4.1 |
-| 9.13 | 配布: レジストリ／同意インストール／所有テーブルプロビジョン／信頼ティア／署名 | infra | – | 9.1, 9.7 |
-| 9.14 | ミニアプリ SDK＋CLI（shiki app init/dev/publish）＋公開API型配布 | frontend | – | 9.8, 9.13 |
-| 9.15 | ミニアプリ基盤の監査計装（ゲートウェイ認可／行authz／FSM遷移／AI） | obs | – | 9.6, 9.10, 6.12 |
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| 9.1 | ミニアプリ・アーティファクト拡張（マニフェスト＋kind=mini_app_code） | app | 6.1, 6.10 |
+| 9.2 | 構造化データサービス: record／スキーマレジストリ＋式インデックス | data | 6.1 |
+| 9.3 | 行レベル認可述語エンジン（WHERE強制注入・クエリコンパイラ・集計適用） | data | 9.2, 6.1 |
+| 9.4 | 宣言的クエリ／保存ビュー／集計＋フィールドマスク | data | 9.3 |
+| 9.5 | レコード・リビジョン履歴＋楽観ロック（rev） | data | 9.2 |
+| 9.6 | 公開APIゲートウェイ(BFF): 能力面・スコープ検証・per-call OpenFGA（二重ゲート） | api | 9.2, 3.9 |
+| 9.7 | OAuth2クライアント登録＆PKCE／token-exchange（Keycloak連携） | auth | 9.6 |
+| 9.8 | 能力アダプタ: storage/data/rag/identity/events を能力面に薄く公開 | api | 9.6 |
+| 9.9 | ミニアプリ内AI: llm.invoke／agent.invoke＋コスト計上＋ガードレール | ai | 9.6, 6.9, 5.1 |
+| 9.10 | ワークフロー: 軽量FSMエンジン（状態／遷移認可／副作用／監査） | data | 9.3, 6.5 |
+| 9.11 | B1ランタイム: 別オリジン配信＋CSP＋ブラウザOAuth＋レンダラ統合 | frontend | 9.7, 9.8, 6.6 |
+| 9.12 | B2ランタイム: サンドボックス上アプリ関数実行＋egress allowlist＋confidential client | sandbox | 9.7, 4.1 |
+| 9.13 | 配布: レジストリ／同意インストール／所有テーブルプロビジョン／信頼ティア／署名 | infra | 9.1, 9.7 |
+| 9.14 | ミニアプリ SDK＋CLI（shiki app init/dev/publish）＋公開API型配布 | frontend | 9.8, 9.13 |
+| 9.15 | ミニアプリ基盤の監査計装（ゲートウェイ認可／行authz／FSM遷移／AI） | obs | 9.6, 9.10, 6.12 |
 
 ---
 
@@ -70,7 +70,7 @@
   - [ ] user/dept/file/record 参照型が解決され整合性検証される
 
 ### Task 9.3: 行レベル認可述語エンジン（WHERE強制注入・クエリコンパイラ・集計適用）
-- **area**: data / **path**: `crates/data`, `crates/authz` / **fable5**: ✅（authzバイパス・集計リーク禁止の正しさクリティカル）
+- **area**: data / **path**: `crates/data`, `crates/authz`
 - **依存**: 9.2, 6.1
 - **仕様**:
   - テーブル定義の宣言的 `row_policy`（read/write、`$user.id/$user.dept(subtree)/$user.role/$user.groups` を参照可）を、
@@ -106,7 +106,7 @@
   - [ ] 履歴取得が 9.3 の認可（行/フィールド）に従う
 
 ### Task 9.6: 公開APIゲートウェイ(BFF) — 能力面・スコープ検証・per-call OpenFGA（二重ゲート）
-- **area**: api / **path**: `crates/app-gateway` / **fable5**: ✅（confused-deputy防御・認可クリティカル）
+- **area**: api / **path**: `crates/app-gateway`
 - **依存**: 9.2, 3.9
 - **仕様**:
   - 内部APIを直接公開せず、**唯一の入口**としてキュレーション済み・バージョン付き・スコープ付きの能力面を再公開。
@@ -119,7 +119,7 @@
   - [ ] スコープ外/未宣言リソースへのアクセスが拒否され監査に残る
 
 ### Task 9.7: OAuth2クライアント登録＆PKCE／token-exchange（Keycloak連携）
-- **area**: auth / **path**: `crates/app-gateway`, `crates/authz` / **fable5**: ✅
+- **area**: auth / **path**: `crates/app-gateway`, `crates/authz`
 - **依存**: 9.6
 - **仕様**:
   - 各ミニアプリ = Keycloak の OAuth2 クライアント（レジストリ登録と連動）。**新規認証基盤は作らない**。
@@ -182,7 +182,7 @@
   - [ ] A（宣言的）と B1（コード）を同一シェルから一覧・起動できる
 
 ### Task 9.12: B2ランタイム（サンドボックス上アプリ関数実行＋egress allowlist）
-- **area**: sandbox / **path**: `crates/sandbox-orchestrator`, `crates/app-platform` / **fable5**: ✅（sandbox制御層の拡張）
+- **area**: sandbox / **path**: `crates/sandbox-orchestrator`, `crates/app-platform`
 - **依存**: 9.7, 4.1
 - **仕様**:
   - アプリのサーバ側関数を既存サンドボックス（Firecracker/gVisor）で**関数型実行**（リクエスト/eventで起動・破棄）。

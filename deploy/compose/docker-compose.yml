@@ -1,0 +1,197 @@
+# shiki-platform Phase 0 — docker compose 一発起動。
+# 依存（Postgres/Keycloak/OpenFGA/MinIO）＋監視（OTel collector/Tempo/Loki/Prometheus/Grafana）
+# ＋ shiki-server。`cp .env.example .env && docker compose up --build`。
+
+name: shiki
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER:-postgres}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      KC_HOSTNAME: ${KC_PUBLIC_URL:-http://localhost:8081}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ../keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # KC 26 は management ポート 9000 で health を提供。bash の /dev/tcp で簡易確認。
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  openfga-migrate:
+    image: openfga/openfga:v1.8.0
+    command: migrate
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/openfga?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  openfga:
+    image: openfga/openfga:v1.8.0
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/openfga?sslmode=disable
+      OPENFGA_LOG_FORMAT: json
+    ports:
+      - "8082:8080" # HTTP API
+      - "8083:8081" # gRPC
+      - "3003:3000" # playground
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openfga-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=localhost:8081"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # --- 監視スタック ---
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ../otel/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+
+  loki:
+    image: grafana/loki:3.2.1
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "3100:3100"
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ../otel/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ../otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "8889:8889" # Prometheus exporter (collector metrics)
+    depends_on:
+      - tempo
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ../otel/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - tempo
+      - prometheus
+      - loki
+
+  shiki-server:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    environment:
+      SHIKI__SERVER__HOST: "0.0.0.0"
+      SHIKI__SERVER__PORT: "8080"
+      SHIKI__DATABASE__URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/shiki
+      SHIKI__AUTH__ISSUER: ${SHIKI__AUTH__ISSUER:-http://localhost:8081/realms/shiki}
+      SHIKI__AUTH__JWKS_URI: ${SHIKI__AUTH__JWKS_URI:-http://keycloak:8080/realms/shiki/protocol/openid-connect/certs}
+      SHIKI__AUTH__AUDIENCE: ${SHIKI__AUTH__AUDIENCE:-shiki-api}
+      SHIKI__AUTHZ__BASE_URL: http://openfga:8080
+      SHIKI__AUTHZ__STORE_NAME: shiki
+      SHIKI__TELEMETRY__OTLP_ENDPOINT: http://otel-collector:4317
+      SHIKI__TELEMETRY__SERVICE_NAME: shiki-server
+      SHIKI__TELEMETRY__LOG_FORMAT: json
+      SHIKI__STORAGE__BACKEND: minio
+      SHIKI__VECTOR__BACKEND: qdrant
+      SHIKI__LLM__BACKEND: vllm
+      SHIKI_DEV_SEED_USER: ${SHIKI_DEV_SEED_USER:-00000000-0000-0000-0000-000000000001}
+      SHIKI_DEV_SEED_ORG: ${SHIKI_DEV_SEED_ORG:-acme}
+      RUST_LOG: "info,shiki_api=debug,authz=debug"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      openfga:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  postgres-data:
+  minio-data:
+  tempo-data:

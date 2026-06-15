@@ -1,0 +1,12 @@
+[package]
+name = "shiki-rag"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+
+[lib]
+name = "rag"
+
+[dependencies]
