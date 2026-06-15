@@ -13,6 +13,10 @@
 > **注意**: 本フェーズの **sandbox制御層（Firecracker/gVisor 抽象・温機プール・egress・ツールRPC・リソース制限）**
 > と **FUSE 仮想FS** は systems-heavy。トレイト境界・ポリシ
 > （egress allowlist、リソース上限、code_interpreter の制約）・チャット統合は慎重に設計する。
+>
+> ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-4（FUSE の syscall 粒度 authz）・
+> PIT-22（高速起動 vs ユーザー束縛の時間衝突）・PIT-23（ゲスト→特権RPC の脱出）・PIT-24（gVisor の隔離低下）・
+> PIT-25（egress allowlist の機構）を確認すること。** とくに PIT-23 はホスト侵害に直結する。
 
 ## タスク一覧
 

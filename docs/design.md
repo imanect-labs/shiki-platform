@@ -1,6 +1,10 @@
 # shiki 設計書
 
 > 本書は[要件定義書](./requirements.md)を満たすアーキテクチャを定義する。実装順は[ROADMAP](./roadmap.md)。
+>
+> ⚠️ **実装着手前に必ず読む**: 本設計が暗黙にしている前提のうち「このまま実装すると壊れる／詰まる／主張が嘘になる」箇所を
+> [設計上の落とし穴・要注意点](./design-caveats.md) に固定した。とくに RAG/FUSE/認可（PIT-1〜5）は
+> 当該 Phase の成立条件であり、未解決のまま着手しないこと。
 
 ## 1. 設計原則
 
@@ -144,6 +148,9 @@ flowchart LR
 
 統一は **SaaS版限定**。オンプレは shiki・skillex とも認証基盤を切り離し単独運用（外部依存ゼロ）。
 
+> ⚠️ 共有プレーンが全顧客・両サービスの blast radius になる点、aud/scope の厳密束縛と失効伝播、
+> 利用量＝金額クリティカルの整合、「設定差し替えだけでオンプレ化」の過大主張は [PIT-26〜29](./design-caveats.md)。
+
 ```mermaid
 flowchart TB
   subgraph CP["共有コントロールプレーン (SaaS専用 / shiki repo所有 / マルチテナント)"]
@@ -200,6 +207,8 @@ flowchart TB
   論理ツリー/メタ=Postgres（closure table）。権限=OpenFGA。実体に直接権限を持たせない。
 - **FUSE仮想FS**: サンドボックス内で `/workspace` としてマウント。read/write は裏で StorageService を叩き、
   権限/監査/再索引を必ず通る。**API は FUSE 前提で設計**（初版実装は sync 妥協可、後で FUSE 差し替え）。
+  → ただし「必ず通る」を syscall 粒度でやると破綻する（capability 化が必要）／エージェントの read-after-write
+  一貫性が無い点は [PIT-4・PIT-5](./design-caveats.md)。
 
 ### 4.3 RAG パイプライン
 
@@ -226,7 +235,10 @@ flowchart LR
 ```
 
 - **二段authz**: pre-filter（両系統に必須）＋ post-filter 検証。片方が壊れても権限を守る。
+  ただし `authz_tags` の正体・post-filter の top-k 破壊・grant 方向の遅延は未設計。着手前に
+  [PIT-1〜3](./design-caveats.md) を解決すること（この製品の心臓部）。
 - `embedding_model_version` をベクタに刻み、モデル変更＝該当インデックス全再構築。
+  → 全停止を避ける shadow 移行は [PIT-8](./design-caveats.md)。
 - 親子チャンク（small-to-big）で日本語長文の文脈を保つ。
 
 ### 4.4 チャット & agent-core
@@ -261,6 +273,8 @@ flowchart TB
 - 隔離プリミティブは既製（Firecracker主/gVisor副、`Sandbox` トレイトで差し替え）。
 - 自作=制御層（プール/高速起動/FUSE/egress/RPC/リソース制限）。参考実装 E2B（OSS）。
 - code_interpreter は同基盤の制約インスタンス（Python限定・ネット遮断・短命）。
+- ⚠️ 落とし穴は制御層に集中: 高速起動とユーザー束縛の時間衝突・ゲスト→特権RPCの脱出・gVisorの隔離低下・
+  egress allowlistの機構は [PIT-22〜25](./design-caveats.md)。
 
 ### 4.7 generative UI / ミニアプリ / prompt template
 
