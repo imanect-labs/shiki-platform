@@ -10,25 +10,25 @@
 > 書込イベントを必ず通り、RAG 増分再索引がトリガされる。隔離バックエンドは `Sandbox` トレイトで Firecracker/gVisor を
 > 差し替え可能。
 >
-> **fable 5 主担当**: 本フェーズの **sandbox制御層（Firecracker/gVisor 抽象・温機プール・egress・ツールRPC・リソース制限）**
-> と **FUSE 仮想FS** は systems-heavy のため fable 5 に委譲する（設計書 6章の委譲境界に従う）。トレイト境界・ポリシ
-> （egress allowlist、リソース上限、code_interpreter の制約）・チャット統合は人が握る。
+> **注意**: 本フェーズの **sandbox制御層（Firecracker/gVisor 抽象・温機プール・egress・ツールRPC・リソース制限）**
+> と **FUSE 仮想FS** は systems-heavy。トレイト境界・ポリシ
+> （egress allowlist、リソース上限、code_interpreter の制約）・チャット統合は慎重に設計する。
 
 ## タスク一覧
 
-| ID | タイトル | area | fable5 | 依存 |
-|----|---------|------|--------|------|
-| 4.1 | `Sandbox` トレイト定義＋`sandbox-client` gRPC 契約 | sandbox | △境界は人 | 3.3 |
-| 4.2 | sandbox-orchestrator スケルトン（特権プロセス・gRPC API） | sandbox | ✅ | 4.1 |
-| 4.3 | Firecracker microVM バックエンド実装 | sandbox | ✅ | 4.2 |
-| 4.4 | gVisor バックエンド実装（KVM無し環境向けフォールバック） | sandbox | ✅ | 4.2 |
-| 4.5 | 温機プール＋スナップショット高速起動（<200ms） | sandbox | ✅ | 4.3 |
-| 4.6 | egress デフォルト遮断＋allowlist ネットワーク制御 | sandbox | ✅ | 4.2 |
-| 4.7 | ホスト↔VM ツールRPC（実行/ファイル転送/結果回収） | sandbox | ✅ | 4.2 |
-| 4.8 | リソース制限（CPU/メモリ/PID/時間）＋安全な強制終了 | sandbox | ✅ | 4.2 |
-| 4.9 | `fuse` 仮想FS：StorageService を `/workspace` にマウント | sandbox | ✅ | 4.7, 1.x |
-| 4.10 | `code_interpreter` ツール（制約インスタンス）＋agent-core 接続 | agent | – | 4.5, 4.6, 4.7, 3.3 |
-| 4.11 | チャットでのコード実行可視化＋成果物のストレージ保存 | frontend | – | 4.10, 3.10 |
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| 4.1 | `Sandbox` トレイト定義＋`sandbox-client` gRPC 契約 | sandbox | 3.3 |
+| 4.2 | sandbox-orchestrator スケルトン（特権プロセス・gRPC API） | sandbox | 4.1 |
+| 4.3 | Firecracker microVM バックエンド実装 | sandbox | 4.2 |
+| 4.4 | gVisor バックエンド実装（KVM無し環境向けフォールバック） | sandbox | 4.2 |
+| 4.5 | 温機プール＋スナップショット高速起動（<200ms） | sandbox | 4.3 |
+| 4.6 | egress デフォルト遮断＋allowlist ネットワーク制御 | sandbox | 4.2 |
+| 4.7 | ホスト↔VM ツールRPC（実行/ファイル転送/結果回収） | sandbox | 4.2 |
+| 4.8 | リソース制限（CPU/メモリ/PID/時間）＋安全な強制終了 | sandbox | 4.2 |
+| 4.9 | `fuse` 仮想FS：StorageService を `/workspace` にマウント | sandbox | 4.7, 1.x |
+| 4.10 | `code_interpreter` ツール（制約インスタンス）＋agent-core 接続 | agent | 4.5, 4.6, 4.7, 3.3 |
+| 4.11 | チャットでのコード実行可視化＋成果物のストレージ保存 | frontend | 4.10, 3.10 |
 
 ---
 
@@ -43,13 +43,13 @@
   - `SandboxSpec` に **隔離バックエンド種別・リソース上限・egress allowlist・FUSEマウント可否・寿命（短命/永続）** を持たせる。
   - shiki-server 側は `sandbox-client`（orchestrator への gRPC クライアント）だけに依存。orchestrator は**別特権プロセス**
     なので、契約は proto で固定（型契約は Rust→proto を真実とする）。
-  - **トレイト境界・spec のフィールド・ポリシは人が決める**（裏側実装が fable 5）。
+  - **トレイト境界・spec のフィールド・ポリシを慎重に決める。**
 - **受け入れ条件**:
   - [ ] `Sandbox` トレイトと `SandboxSpec` が定義され、proto/gRPC 契約が生成される
   - [ ] shiki-server が `sandbox-client` 経由でのみ orchestrator を呼ぶ構造になっている
   - [ ] バックエンド差し替え（Firecracker/gVisor）が spec で選択できる契約になっている
 
-### Task 4.2: sandbox-orchestrator スケルトン（特権プロセス・gRPC API）  ✅fable5
+### Task 4.2: sandbox-orchestrator スケルトン（特権プロセス・gRPC API）
 - **area**: sandbox / **path**: `crates/sandbox-orchestrator`
 - **依存**: 4.1
 - **仕様**:
@@ -57,13 +57,13 @@
   - 4.1 の gRPC 契約を実装する骨格：create/exec/put/get/destroy のディスパッチ、バックエンド抽象 `Sandbox` の
     実装スロット（4.3/4.4 が差す）、OTel 計装、構造化ログ。
   - 参考実装 **E2B（OSS）** の制御層構成を踏まえる（自作は制御層のみ、隔離プリミティブは既製）。
-  - **systems-heavy のため fable 5 に委譲**（境界・proto は 4.1 で人が確定済み）。
+  - **境界・proto は 4.1 で確定済み**（systems-heavy な制御層実装）。
 - **受け入れ条件**:
   - [ ] orchestrator が特権プロセスとして compose で起動し gRPC を待ち受ける
   - [ ] ダミーバックエンドで create→exec→destroy の往復が通る
   - [ ] orchestrator の操作が OTel trace に出る
 
-### Task 4.3: Firecracker microVM バックエンド実装  ✅fable5
+### Task 4.3: Firecracker microVM バックエンド実装
 - **area**: sandbox / **path**: `crates/sandbox-orchestrator`
 - **依存**: 4.2
 - **仕様**:
@@ -71,78 +71,73 @@
     実行環境を提供。exec/ファイル転送を VM 内に橋渡し（4.7 の RPC と接続）。
   - VM ライフサイクル（起動/停止/破棄/クリーンアップ）と jailer による権限降格を扱う。
   - **VM級隔離（NFR-1）** を満たす。スナップショット作成のフックを 4.5 に提供。
-  - **systems-heavy のため fable 5 に委譲。**
 - **受け入れ条件**:
   - [ ] KVM 環境で microVM が起動しコマンドを実行できる
   - [ ] VM 破棄でリソースが確実に解放される（リーク無し）
   - [ ] ホストとの隔離（FS/プロセス/ネットワーク名前空間）が確認できる
 
-### Task 4.4: gVisor バックエンド実装（KVM無し環境向けフォールバック）  ✅fable5
+### Task 4.4: gVisor バックエンド実装（KVM無し環境向けフォールバック）
 - **area**: sandbox / **path**: `crates/sandbox-orchestrator`
 - **依存**: 4.2
 - **仕様**:
   - **KVM が使えない環境（一部クラウド/オンプレ）向けの副バックエンド**として gVisor（runsc）で `Sandbox` 実装。
   - spec の隔離バックエンド種別で Firecracker と切替。インターフェース（exec/put/get）は 4.3 と同一に揃える。
   - 隔離強度・対応制約の差は spec/能力フラグで表明（呼び出し側は同一API）。
-  - **systems-heavy のため fable 5 に委譲。**
 - **受け入れ条件**:
   - [ ] gVisor バックエンドで create→exec→destroy が Firecracker と同一APIで通る
   - [ ] spec でバックエンドを Firecracker/gVisor 切替できる
   - [ ] KVM 非搭載環境で gVisor が選択される（自動 or 設定）
 
-### Task 4.5: 温機プール＋スナップショット高速起動（<200ms）  ✅fable5
+### Task 4.5: 温機プール＋スナップショット高速起動（<200ms）
 - **area**: sandbox / **path**: `crates/sandbox-orchestrator`
 - **依存**: 4.3
 - **仕様**:
   - **温機プール（warm pool）**: 事前起動済みインスタンスを保持し、要求時に払い出し→使用後に破棄/補充。
   - **スナップショット**: ベースイメージ（言語ランタイム込み）のメモリ/FSスナップショットから復元起動。
   - 目標 **コールドパス回避で起動 <200ms**（設計書 4.6）。プールサイズ・補充ポリシは設定可能。
-  - **systems-heavy のため fable 5 に委譲。**
 - **受け入れ条件**:
   - [ ] 温機プールからの払い出しで起動が <200ms に収まる（計測あり）
   - [ ] スナップショットからランタイム込みで復元起動できる
   - [ ] プール枯渇時に安全にコールドフォールバックする
 
-### Task 4.6: egress デフォルト遮断＋allowlist ネットワーク制御  ✅fable5
+### Task 4.6: egress デフォルト遮断＋allowlist ネットワーク制御
 - **area**: sandbox / **path**: `crates/sandbox-orchestrator`
 - **依存**: 4.2
 - **仕様**:
   - **egress はデフォルトで全遮断**（機密データ持ち出し防止・エアギャップ対応、NFR-1/NFR-2）。
   - spec の **allowlist（宛先ホスト/ポート/CIDR）にマッチする通信のみ許可**。code_interpreter は allowlist 空（完全遮断）。
   - VM/サンドボックスのネットワーク名前空間に対しフィルタを適用。ブロック/許可の判定を監査ログに残す。
-  - **systems-heavy のため fable 5 に委譲。既存判断「egress デフォルト遮断」を厳守。**
+  - **既存判断「egress デフォルト遮断」を厳守。**
 - **受け入れ条件**:
   - [ ] allowlist 未設定のサンドボックスは外部到達が全遮断される
   - [ ] allowlist に載せた宛先のみ到達できる
   - [ ] 遮断/許可イベントが監査に残る
 
-### Task 4.7: ホスト↔VM ツールRPC（実行/ファイル転送/結果回収）  ✅fable5
+### Task 4.7: ホスト↔VM ツールRPC（実行/ファイル転送/結果回収）
 - **area**: sandbox / **path**: `crates/sandbox-orchestrator`
 - **依存**: 4.2
 - **仕様**:
   - VM/サンドボックス内 **ゲストエージェント ↔ orchestrator のRPCチャネル**（vsock 等、egress を経由しない経路）。
   - コマンド実行（stdout/stderr/exit code をストリーム回収）、ファイルの put/get、生成された成果物の回収を担う。
   - agent-core のツール呼出を VM 内実行に橋渡しする土台（4.10 がこの上に code_interpreter を載せる）。
-  - **systems-heavy のため fable 5 に委譲。**
 - **受け入れ条件**:
   - [ ] VM 内コマンドの stdout/stderr/exit code がストリームで回収できる
   - [ ] ホスト↔VM 間でファイルを双方向転送できる
   - [ ] RPC は egress allowlist を経由しない隔離経路で動く
 
-### Task 4.8: リソース制限（CPU/メモリ/PID/時間）＋安全な強制終了  ✅fable5
+### Task 4.8: リソース制限（CPU/メモリ/PID/時間）＋安全な強制終了
 - **area**: sandbox / **path**: `crates/sandbox-orchestrator`
 - **依存**: 4.2
 - **仕様**:
   - spec のリソース上限（**CPU・メモリ・PID/プロセス数・実行時間（壁時計）**）を各バックエンドに適用。
   - 上限超過・タイムアウト時に**安全に強制終了**しリソースを解放。暴走・無限ループを封じ込める。
   - code_interpreter は厳しめの既定（短命・小メモリ・短タイムアウト）を持つ。
-  - **systems-heavy のため fable 5 に委譲。**
 - **受け入れ条件**:
   - [ ] CPU/メモリ/PID/時間上限が実際に効く（超過で停止）
   - [ ] タイムアウトしたサンドボックスが確実に破棄される（残留無し）
   - [ ] 制限超過の理由が呼び出し側に返る
 
-### Task 4.9: `fuse` 仮想FS：StorageService を `/workspace` にマウント  ✅fable5
+### Task 4.9: `fuse` 仮想FS：StorageService を `/workspace` にマウント
 - **area**: sandbox / **path**: `crates/fuse`, `crates/storage`
 - **依存**: 4.7, 1.x（StorageService／書込イベント）
 - **仕様**:
@@ -150,7 +145,6 @@
     **権限チェック・監査・書込イベントを必ず通す**（バケット/メタ直アクセス禁止のチョークポイント、設計書 4.2）。
   - **FUSE 書込はストレージ書込イベント経由で RAG 増分再索引をトリガ**する（既存判断、FR-2 と一致）。
   - **API は FUSE 前提**で設計。初版実装は sync 妥協可（後で FUSE に差し替え）。`StorageService` が相手で自己完結。
-  - **systems-heavy のため fable 5 に委譲（設計書 6章「fuse」）。**
 - **受け入れ条件**:
   - [ ] サンドボックス内 `/workspace` で読み書きすると StorageService 経由になる（権限/監査を通る）
   - [ ] FUSE 書込が書込イベントを発行し RAG 再索引がトリガされる

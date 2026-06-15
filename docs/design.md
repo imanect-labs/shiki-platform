@@ -8,7 +8,6 @@
 2. **差し替え点はトレイトに集約**: クラウド/オンプレ差は4〜5本のトレイト実装で吸収、アプリ本体は不変。
 3. **単一チョークポイント**: ストレージ・認可・LLM呼出は各々1経路に集約し、権限/監査/イベントをそこで担保。
 4. **枯れた基盤に乗る／コアを自作**: 隔離・認可・認証・パースは既製、サンドボックス制御/RAG/agent/gatewayは自作。
-5. **トレイト裏＝fable 5、トレイト表＝人**。
 
 ## 2. システム全体構成
 
@@ -94,14 +93,14 @@ flowchart LR
 
 ### 3.1 差し替えトレイト
 
-| トレイト | オンプレ実装 | クラウド実装 | 委譲 |
-|----------|-------------|-------------|------|
-| `ObjectStore` | MinIO (S3) | GCS | — |
-| `VectorStore` | Qdrant（小規模は pgvector） | Qdrant / マネージド | — |
-| `LlmProvider` | vLLM（ローカル） | Vertex / 外部API | — |
-| `Sandbox` | Firecracker（KVM有）/ gVisor | gVisor / Firecracker | **fable 5** |
-| `DocumentParser` | Docling（ローカル） | Docling / 商用OCR | — |
-| `EmbeddingProvider` | Ruri / BGE-m3 | 同左 / 外部 | — |
+| トレイト | オンプレ実装 | クラウド実装 |
+|----------|-------------|-------------|
+| `ObjectStore` | MinIO (S3) | GCS |
+| `VectorStore` | Qdrant（小規模は pgvector） | Qdrant / マネージド |
+| `LlmProvider` | vLLM（ローカル） | Vertex / 外部API |
+| `Sandbox` | Firecracker（KVM有）/ gVisor | gVisor / Firecracker |
+| `DocumentParser` | Docling（ローカル） | Docling / 商用OCR |
+| `EmbeddingProvider` | Ruri / BGE-m3 | 同左 / 外部 |
 
 ## 4. サブシステム設計
 
@@ -333,16 +332,16 @@ flowchart TB
 crates/
   api/             # axum, SSE, OpenAPI(utoipa)
   chat/            # スレッド/メッセージ/content blocks
-  agent-core/      # エージェントループ・Tool トレイト   [fable 5 共同設計]
+  agent-core/      # エージェントループ・Tool トレイト
   llm-gateway/     # プロバイダアダプタ・LlmProvider
   storage/         # StorageService・ObjectStore
-  rag/             # retrieval・VectorStore・二段authz     [fable 5]
+  rag/             # retrieval・VectorStore・二段authz
   authz/           # OpenFGA クライアント・relation 定義
   sandbox-client/  # orchestrator gRPC クライアント
-  sandbox-orchestrator/ # 特権プロセス・Firecracker/gVisor [fable 5]
-  fuse/            # StorageService の FUSE 表現           [fable 5]
-  data/            # 構造化データサービス・record/schema・行authz述語 [fable 5: 述語エンジン]
-  app-gateway/     # 公開APIゲートウェイ(BFF)・OAuth2/スコープ・能力面 [fable 5: token-exchange/二重ゲート]
+  sandbox-orchestrator/ # 特権プロセス・Firecracker/gVisor
+  fuse/            # StorageService の FUSE 表現
+  data/            # 構造化データサービス・record/schema・行authz述語
+  app-gateway/     # 公開APIゲートウェイ(BFF)・OAuth2/スコープ・能力面
   app-platform/    # ミニアプリ artifact・マニフェスト・レジストリ・FSM
 ingestion-worker/  # Python: Docling パース・docx/pptx 生成
 web/               # Next.js / TypeScript（generative UIレンダラ・ミニアプリB1配信）
@@ -353,18 +352,3 @@ docs/
 
 - 型契約: Rust→OpenAPI(utoipa)→openapi-typescript、SSEイベント型は ts-rs/typeshare（手書き型なし）。
   公開APIゲートウェイの能力面も同じ生成物を SDK としてミニアプリへ配布（手書き型なし）。
-
-## 6. fable 5 委譲境界
-
-| 委譲 | 理由 |
-|------|------|
-| sandbox-orchestrator（制御層） | systems-heavy、`Sandbox`トレイトで境界明確 |
-| fuse（FUSE仮想FS） | systems-heavy、`StorageService`が相手で自己完結 |
-| agent-core ループ | 製品の核。fable 5実装＋**人が深く設計に関与（共同設計）** |
-| RAG 二段authz・融合の正しさ | 正しさクリティカル、入出力境界明確 |
-| app-gateway（OAuth2/token-exchange/二重ゲート） | 認可クリティカル、confused-deputy防御、入口境界明確 |
-| data 行レベル述語エンジン（authz強制注入・クエリコンパイラ） | 正しさクリティカル（authzバイパス・集計リーク禁止） |
-| B2 サンドボックス実行統合 | sandbox制御層の拡張（既にfable 5領域） |
-
-人が握る: API/CRUD/統合の糊、フロント、OpenFGA relation schema（ポリシ決定）、優先順位・トレイト境界。
-ミニアプリ基盤では加えて: 構造化データCRUD/スキーマ・ワークフローFSM・能力カタログ定義・SDK/CLI/マニフェスト・管理UI。

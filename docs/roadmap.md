@@ -2,7 +2,7 @@
 
 > [要件定義書](./requirements.md) / [設計書](./design.md) に基づく実装順。
 > 依存関係（認証→ストレージ→RAG→チャット→サンドボックス→…）に沿って縦スライスで進める。
-> 期間見積は付さない（fable 5活用前提で従来より圧縮可能）。
+> 期間見積は付さない。
 >
 > **フェーズ別の超細粒度タスク（イシュー粒度）は `docs/roadmap/` 配下:**
 > [Phase 0](./roadmap/phase-0.md) ・ [Phase 1](./roadmap/phase-1.md) ・ [Phase 2](./roadmap/phase-2.md) ・
@@ -10,7 +10,7 @@
 > [Phase 6](./roadmap/phase-6.md) ・ [Phase 7](./roadmap/phase-7.md) ・ [Phase 8](./roadmap/phase-8.md) ・
 > [Phase 9](./roadmap/phase-9.md) ・ [並行/将来トラック](./roadmap/parallel-tracks.md)
 >
-> 各タスクは1つのGitHub Issueに対応（area:* ラベル＋必要に応じ delegate:fable5 ラベル）。
+> 各タスクは1つのGitHub Issueに対応（area:* ラベル）。
 
 ## フェーズ依存関係
 
@@ -50,7 +50,7 @@ flowchart LR
 - **成果物**: 権限付きでファイル/フォルダを操作・共有できる。
 
 ## Phase 2 — RAG（インジェスト＋検索）
-**依存**: Phase 1。 **[fable 5: 二段authz・融合の正しさ]**
+**依存**: Phase 1。
 - `ingestion-worker`（Docling／日本語OCR）、ジョブキュー（初版 pgmq）。
 - Qdrant＋Tantivy/Lindera、Ruri埋め込み、reranker。
 - permission-aware 二段フィルタ（pre+post）、引用チャンクの監査記録。
@@ -65,14 +65,14 @@ flowchart LR
 - **成果物**: 権限を守ったRAGチャットが動く（第一の縦スライス完成）。
 
 ## Phase 4 — サンドボックス＋コードインタプリタ
-**依存**: Phase 3。 **[fable 5: 制御層・FUSE]**
+**依存**: Phase 3。
 - sandbox-orchestrator（Firecracker/gVisor、温機プール、egress遮断+allowlist、ツールRPC）。
 - FUSEでStorageServiceをマウント。
 - チャットの code_interpreter ツール（制約インスタンス）。
 - **成果物**: チャットでコード実行できる／サンドボックス基盤が稼働。
 
 ## Phase 5 — 自律エージェント
-**依存**: Phase 4。 **[fable 5: agent-core 共同設計]**
+**依存**: Phase 4。
 - フルツールの agent-core をサンドボックス内でFUSEストレージ上に展開、長ホライズン。
 - ①コード実行 ②ファイルCRUD ③任意コマンド。書込はイベント経由で自動再索引。
 - **成果物**: Claude Code 級エージェントがストレージ上で自律動作。
@@ -96,7 +96,7 @@ flowchart LR
 - **成果物**: クラウド版（顧客ごと隔離）と本番運用可能なオンプレ。
 
 ## Phase 9 — ミニアプリ／業務アプリ基盤（打倒kintone）
-**依存**: Phase 6（A=宣言的）。 **[fable 5: app-gateway二重ゲート／行authz述語エンジン／B2サンドボックス実行]**
+**依存**: Phase 6（A=宣言的）。
 - 二層モデル B（コードベース・ミニアプリ）＝out-of-trust 隔離実行（B1別オリジン+CSP／B2サンドボックス）。
 - **公開APIゲートウェイ(BFF)** が唯一の入口・能力面再公開、ユーザー委譲OAuth2(PKCE)＋Keycloak再利用、**二重ゲート（スコープ ∩ ユーザーReBAC）**。
 - **構造化データサービス**（kintone中核・record JSONB＋スキーマレジストリ＋行authz述語）＋**ワークフロー軽量FSM**。

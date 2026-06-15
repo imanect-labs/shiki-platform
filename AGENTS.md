@@ -8,7 +8,7 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 
 正本ドキュメント（必ずここを読む。アーキの詳細はここに再記述しない）:
 
-- 設計原則・全体構成・サブシステム・リポジトリ構成・fable 5 委譲境界: docs/design.md
+- 設計原則・全体構成・サブシステム・リポジトリ構成: docs/design.md
 - 機能要件(FR-1〜11)・非機能要件: docs/requirements.md
 - 実装順・フェーズ・依存関係: docs/roadmap.md ＋ docs/roadmap/phase-*.md
 - 用語・セキュリティモデル入門: docs/guides/mini-app-onboarding.md
