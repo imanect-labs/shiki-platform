@@ -149,6 +149,9 @@ flowchart LR
 
 統一は **SaaS版限定**。オンプレは shiki・skillex とも認証基盤を切り離し単独運用（外部依存ゼロ）。
 
+> ⚠️ 共有プレーンが全顧客・両サービスの blast radius になる点、aud/scope の厳密束縛と失効伝播、
+> 利用量＝金額クリティカルの整合、「設定差し替えだけでオンプレ化」の過大主張は [PIT-26〜29](./design-caveats.md)。
+
 ```mermaid
 flowchart TB
   subgraph CP["共有コントロールプレーン (SaaS専用 / shiki repo所有 / マルチテナント)"]
@@ -271,6 +274,8 @@ flowchart TB
 - 隔離プリミティブは既製（Firecracker主/gVisor副、`Sandbox` トレイトで差し替え）。
 - 自作=制御層（プール/高速起動/FUSE/egress/RPC/リソース制限）。参考実装 E2B（OSS）。
 - code_interpreter は同基盤の制約インスタンス（Python限定・ネット遮断・短命）。
+- ⚠️ 落とし穴は制御層に集中: 高速起動とユーザー束縛の時間衝突・ゲスト→特権RPCの脱出・gVisorの隔離低下・
+  egress allowlistの機構は [PIT-22〜25](./design-caveats.md)。
 
 ### 4.7 generative UI / ミニアプリ / prompt template
 
