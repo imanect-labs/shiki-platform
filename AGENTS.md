@@ -12,6 +12,7 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 - 機能要件(FR-1〜11)・非機能要件: docs/requirements.md
 - 実装順・フェーズ・依存関係: docs/roadmap.md ＋ docs/roadmap/phase-*.md
 - 用語・セキュリティモデル入門: docs/guides/mini-app-onboarding.md
+- 設計上の落とし穴・注意点(該当部分がないか実装前に確認必須): docs/design-caveats.md
 
 ## 技術スタック
 
