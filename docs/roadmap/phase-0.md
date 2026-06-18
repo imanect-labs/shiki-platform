@@ -71,16 +71,17 @@
   - [ ] `/readyz` がPostgres断時に503、復帰で200
   - [ ] 設定の必須欠落時に起動エラーで明確に落ちる
 
-### Task 0.4: Keycloak realm 構成＋OIDC JWT 検証ミドルウェア
+### Task 0.4: Keycloak realm 構成＋OIDC 検証ミドルウェア（土台）
 - **area**: auth
 - **依存**: 0.2, 0.3
 - **path**: `crates/api`（middleware）, `deploy/keycloak/`
+> ⚠️ **認証方式は BFF + オパークセッション Cookie に確定**（ADR `docs/auth/browser-token-strategy.md` / Task 0.11 #55）。本タスクは Keycloak realm と**クレーム抽出→`principal`** までを土台として作り、`Authorization: Bearer` 検証は **Task 0.11 でセッション Cookie 検証へ置換**される（Bearer 版を最終形にしない・ブラウザにトークンを持たせる前提を残さない）。
 - **仕様**:
   - Keycloak に `shiki` realm を定義（realm export JSON を `deploy/keycloak/` に commit、起動時インポート）。
-    フロント用 public client、API用設定、テストユーザーを含む。
-  - **OIDC JWT 検証ミドルウェア**: `Authorization: Bearer` を検証（JWKS取得・キャッシュ・署名/exp/aud/iss検証）。
-    検証済みクレームから `principal`（user id, email, groups/dept）を抽出し request extension に載せる。
-  - SSE 用に fetch-stream のヘッダ認証も同経路で通す前提にする。
+    フロント用 client（BFF の Authorization Code + PKCE 用・confidential）、API用設定、テストユーザーを含む。
+  - **クレーム抽出（再利用される中核）**: 検証済み OIDC クレームから `principal`（user id, email, groups/dept）を抽出し request extension に載せる（`claims.rs`）。この層は 0.11 でも再利用する。
+  - **トークン検証ロジック**（JWKS取得・キャッシュ・署名/exp/aud/iss検証）は、0.11 では BFF の token 交換後の ID/Access token 検証として再利用する。`Authorization: Bearer` 入口は 0.11 で撤去。
+  - SSE は Cookie 自動添付を前提にする（ヘッダ認証は不要。POST ストリームは Task 3.5 の方式に従う）。
   - 顧客IdPフェデレーション（AD/Entra/Okta）は**設定で追加できる構造**にするが、Phase 0 では shiki realm のみ。
 - **受け入れ条件**:
   - [ ] 有効なトークンで保護エンドポイントにアクセスでき、無効/期限切れは401
@@ -121,12 +122,13 @@
 - **area**: frontend
 - **依存**: 0.3, 0.4
 - **path**: `web/`
+> ⚠️ **ブラウザにトークンを保持しない**（BFF + オパークセッション Cookie に確定・ADR / Task 0.11 #55）。OIDC の code 受け／token 交換／refresh は**サーバ側（BFF）**が担い、フロントは `localStorage` 保持・silent renew・`Authorization` ヘッダ自動付与を**実装しない**。
 - **仕様**:
-  - Next.js App Router 雛形、OIDCログイン（Keycloakへリダイレクト、トークン保持、リフレッシュ）。
+  - Next.js App Router 雛形、OIDCログイン（Keycloak へリダイレクト → **BFF が code/token 交換**。ブラウザはトークンを保持せず**セッション Cookie のみ**）。
   - ログイン後に `/me` を呼んで表示する最小画面。
   - **型生成パイプライン**: `utoipa` が出すOpenAPI仕様 → `openapi-typescript` でTSクライアント/型生成。
     SSEイベント型は ts-rs/typeshare でRustから生成。生成物は commit せず CI/スクリプトで再生成可能に。
-  - 認証付き fetch ラッパ（Authorizationヘッダ自動付与、SSE用 fetch-stream 対応の素地）。
+  - 認証付き fetch ラッパ（**`credentials:'include'` でセッション Cookie 送出**。SSE は Cookie 自動添付。POST ストリームは Task 3.5 方式）。
 - **受け入れ条件**:
   - [ ] ブラウザでログイン→`/me`の自分情報が表示される
   - [ ] `pnpm gen:api`（等）でRust定義から型/クライアントが再生成される
