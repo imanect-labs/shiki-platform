@@ -56,7 +56,7 @@ flowchart TB
     LF[Langfuse]
   end
 
-  UI -->|OIDC JWT / REST / SSE| API
+  UI -->|セッションCookie / REST / SSE| API
   GUI -. 宣言的バックエンド束縛 .-> API
   API --> CHAT --> AGENT --> GW
   GW --> VLLM & EXT
@@ -111,8 +111,13 @@ flowchart LR
 ### 4.1 認証・認可
 
 - **AuthN = Keycloak**: 顧客IdP（AD/Entra/Okta）をOIDC/SAML/LDAPでフェデレート＋ローカルIdP。
-  フロントは OIDC JWT を取得し `Authorization` ヘッダで送信。SSEは fetch-stream でヘッダ付与。
+  **認証は BFF 方式**: OIDC Authorization Code + PKCE の code 受け／token 交換は **shiki-server（`crates/api`）がサーバ側で実施**し、
+  ブラウザには `httpOnly`+`Secure`+`SameSite=Lax` の**不透明セッション Cookie のみ**を渡す（トークンはブラウザに置かない）。
+  セッションは **Redis** に保持し、リクエストごとに Cookie→セッション→`Principal` を復元。権限剥奪はセッション削除で**即時失効**。
+  CSRF は SameSite ＋ double-submit トークンで防御。Cookie を first-party にするため **web/api は同一オリジン配信**（リバースプロキシ / Next rewrites）を前提とする。
+  SSE は Cookie が自動添付されるため `EventSource` で素直に通る。downstream/サービス間（skillex 等）へは引き続き **JWT/token-exchange** で identity を運ぶ（内部はステートレス）。
   shiki-server の **AuthN 向き先は設定で差し替え**（SaaS=共有コントロールプレーンのissuer / オンプレ=ローカルKeycloak）。
+  > 経緯と比較・影響範囲は [design-caveats PIT-30](./design-caveats.md) / [docs/auth/browser-token-strategy.md](./auth/browser-token-strategy.md) を参照。
 - **AuthZ = ReBAC（OpenFGA/SpiceDB）**: タプル `object#relation@subject` で表現。
 
 ```mermaid
