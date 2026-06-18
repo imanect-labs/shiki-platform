@@ -1,9 +1,10 @@
 # Phase 0 — 歩く骨格（Walking Skeleton）
 
-> 目的: トレイト境界・認証/認可・配布形態（compose）・型契約・可観測性の土台を**最初に1本通す**。
+> 目的: トレイト境界・認証/認可・**SaaS トポロジ**・配布形態（compose）・型契約・可観測性の土台を**最初に1本通す**。
 > 機能価値はまだ無いが、以降の全フェーズがこの骨格に乗る。
-> 完了の定義(DoD): `docker compose up` 一発で全依存が起動し、Keycloakでログインしたユーザーが
-> OpenFGAで認可される `GET /me` をブラウザから叩けて、その1リクエストがOTelトレースに現れる。
+> **SaaS を優先ターゲット**とし、共有コントロールプレーン＋顧客ごと隔離 cell データプレーン（design §4.1.1）と `tenant_id` を day-1 から前提にする。認証は **BFF + オパークセッション Cookie**（Redis）。
+> 完了の定義(DoD): `docker compose up` 一発で全依存（Redis 含む）が起動し、Keycloak でログインしたユーザーが
+> **セッション Cookie** で OpenFGA 認可される `GET /me`（`tenant_id` スコープ込み）をブラウザから叩けて、その1リクエストが OTel トレースに現れる。
 
 ## タスク一覧
 
@@ -45,7 +46,7 @@
 - **依存**: 0.1
 - **path**: `deploy/compose/`
 - **仕様**:
-  - `docker-compose.yml` に Phase 0 で必要な依存を定義: **Postgres**, **Keycloak**, **OpenFGA**, **MinIO**。
+  - `docker-compose.yml` に Phase 0 で必要な依存を定義: **Postgres**, **Keycloak**, **OpenFGA**, **MinIO**, **Redis**（BFF セッションストア・Task 0.11/#55）。
     （Qdrant/Tantivy/ingestion等は後続フェーズで追記）
   - 各サービスにヘルスチェック、永続ボリューム、`.env.example`（接続情報）。
   - OpenFGA は Postgres をバックエンドに設定。Keycloak も Postgres を使用。
@@ -96,8 +97,8 @@
   - OpenFGA クライアントクレートを実装（store作成、authorization model のロード/バージョン管理）。
   - **最小 relation model** を定義（Phase 0 は骨格のみ）: `organization`, `department`, `user`,
     relations `member`, `parent`。後続フェーズで `folder`/`file`/`thread`/`doc_chunk` を追加する前提のスキーマ構成。
-  - **認可コンテキスト** `AuthContext { principal, org }` を定義し、全データアクセスがこれを受け取る規約を導入
-    （将来の `tenant_id` 追加の継ぎ目）。`check(user, relation, object)` ヘルパを提供。
+  - **認可コンテキスト** `AuthContext { principal, org, tenant_id }` を定義し、全データアクセスがこれを受け取る規約を導入
+    （**SaaS マルチテナント前提で `tenant_id` を day-1 から保持**・後付けで隔離境界を壊さない）。`check(user, relation, object)` ヘルパを提供。
   - relation model は `docs/design.md` の ReBAC 図に準拠。**model定義は人がレビュー**（ポリシ決定）。
 - **受け入れ条件**:
   - [ ] authorization model が OpenFGA にロードされバージョンが記録される
