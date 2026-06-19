@@ -42,6 +42,7 @@ flowchart TB
     FGA[(OpenFGA / SpiceDB)]
     KC[(Keycloak)]
     OBJ[(MinIO / GCS)]
+    RD[(Redis<br/>セッション)]
   end
 
   subgraph Infer["推論 (ローカル or 外部)"]
@@ -56,7 +57,7 @@ flowchart TB
     LF[Langfuse]
   end
 
-  UI -->|OIDC JWT / REST / SSE| API
+  UI -->|セッションCookie / REST / SSE| API
   GUI -. 宣言的バックエンド束縛 .-> API
   API --> CHAT --> AGENT --> GW
   GW --> VLLM & EXT
@@ -69,6 +70,7 @@ flowchart TB
   INGEST --> QD & TV & EMB
   AUTHZc --> FGA
   API -->|認証検証| KC
+  API -->|セッション復元/失効| RD
   Server --> OTEL & LF
 ```
 
@@ -80,7 +82,7 @@ flowchart LR
     S1[shiki-server]
     O1[sandbox-orchestrator]
     I1[ingestion-worker]
-    DEP1[(Postgres/Qdrant/OpenFGA<br/>Keycloak/MinIO)]
+    DEP1[(Postgres/Qdrant/OpenFGA<br/>Keycloak/MinIO/Redis)]
     INF1[vLLM/埋め込み/reranker/OCR<br/>ローカルGPU]
   end
 
@@ -88,7 +90,7 @@ flowchart LR
     S2[shiki-server]
     O2[sandbox-orchestrator]
     I2[ingestion-worker]
-    DEP2[(Cloud SQL/Qdrant<br/>GCS/Keycloak/OpenFGA)]
+    DEP2[(Cloud SQL/Qdrant<br/>GCS/Keycloak/OpenFGA<br/>Redis/Memorystore)]
     INF2[Vertex / 外部API]
   end
 ```
@@ -111,8 +113,16 @@ flowchart LR
 ### 4.1 認証・認可
 
 - **AuthN = Keycloak**: 顧客IdP（AD/Entra/Okta）をOIDC/SAML/LDAPでフェデレート＋ローカルIdP。
-  フロントは OIDC JWT を取得し `Authorization` ヘッダで送信。SSEは fetch-stream でヘッダ付与。
+  **認証は BFF 方式**: OIDC Authorization Code + PKCE の code 受け／token 交換は **shiki-server（`crates/api`）がサーバ側で実施**し、
+  ブラウザには `httpOnly`+`Secure`+`SameSite=Lax` の**不透明セッション Cookie のみ**を渡す（トークンはブラウザに置かない）。
+  セッションは **Redis（プール型・全テナント共用＋`tenant_id` キースコープ）** に保持し、リクエストごとに Cookie→セッション→`Principal` を復元。
+  セッション削除は**セッション/プリンシパル単位の即時失効**（漏洩セッションの無効化・アカウント無効化・強制ログアウト）に効く。
+  ⚠️ **個別リソースの共有解除（Task 1.6）はトークン/セッション形式に依らず OpenFGA のリクエスト毎チェック（＋PIT-11 の `HIGHER_CONSISTENCY`）で担保する**（セッション削除では代替できない・混同しないこと）。
+  access token の期限切れに備え、**BFF（`crates/api`）が refresh token をサーバ側で保持・更新・ローテーション**し、downstream への token-exchange を継続させる（ブラウザ上はログイン済みなのに内部呼び出しだけ 401 になるのを防ぐ）。
+  CSRF は SameSite ＋ double-submit トークンで防御。Cookie を first-party にするため **web/api は同一オリジン配信**（リバースプロキシ / Next rewrites）を前提とする。
+  SSE は Cookie が自動添付されヘッダ注入が不要になる。ただし **POST で発話を送るチャットストリーム（Task 3.5）は `EventSource` が GET 専用・body 不可のため**、fetch-stream を維持するか「POST で stream を作成 → GET `EventSource` で購読」に分離する。downstream/サービス間（skillex 等）へは引き続き **JWT/token-exchange** で identity を運ぶ（内部はステートレス）。
   shiki-server の **AuthN 向き先は設定で差し替え**（SaaS=共有コントロールプレーンのissuer / オンプレ=ローカルKeycloak）。
+  > 経緯と比較・影響範囲は [design-caveats PIT-30](./design-caveats.md) / [docs/auth/browser-token-strategy.md](./auth/browser-token-strategy.md) を参照。
 - **AuthZ = ReBAC（OpenFGA/SpiceDB）**: タプル `object#relation@subject` で表現。
 
 ```mermaid
@@ -129,7 +139,7 @@ flowchart LR
 
 - フォルダ→子・部署→上位への継承を relation で表現。**可読性判定は単一の authz クエリ**に帰着し、
   ファイル共有も permission-aware RAG も同じ問いを使う。
-- **認可コンテキスト**: 全データアクセスは `principal + org` を持つコンテキスト経由（将来 `tenant_id` 追加の継ぎ目）。
+- **認可コンテキスト**: 全データアクセスは `principal + org + tenant_id` を持つコンテキスト経由（SaaS マルチテナントを day-1 前提・後付けで隔離境界を壊さない）。
 
 ##### authz 語彙の Single Source of Truth ＋ codegen
 - **認可語彙（OpenFGA relation／能力スコープ `<能力>.<操作>`／agent-core 許可ツール名／宣言的アクションID）を
