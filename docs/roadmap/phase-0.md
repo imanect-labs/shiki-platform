@@ -99,6 +99,12 @@
     relations `member`, `parent`。後続フェーズで `folder`/`file`/`thread`/`doc_chunk` を追加する前提のスキーマ構成。
   - **認可コンテキスト** `AuthContext { principal, org, tenant_id }` を定義し、全データアクセスがこれを受け取る規約を導入
     （**SaaS マルチテナント前提で `tenant_id` を day-1 から保持**・後付けで隔離境界を壊さない）。`check(user, relation, object)` ヘルパを提供。
+  - **`tenant_id` の取得元（human 決定 / #57）= 案C 既定 ＋ 案A 継ぎ目**: 解決は `crates/api` の
+    `resolve_tenant_id` 一点に集約し、(1) 案A — Keycloak claim `tenant`（SaaS マルチテナント）を優先、
+    (2) 案C — 設定 `auth.tenant_id` の固定値（オンプレ/cell シングルテナント・既定 `"default"`）にフォールバック、
+    (3) いずれも欠落なら拒否。オンプレは defaults で固定値が効くため無設定でも後方互換で動作する。
+    取得元は state を持つ認証境界（`require_auth` / #55 のセッション middleware）で解決し extension 経由で
+    `AuthContext` 構築に渡す（extractor は state 非依存を維持）。
   - relation model は `docs/design.md` の ReBAC 図に準拠。**model定義は人がレビュー**（ポリシ決定）。
 - **受け入れ条件**:
   - [ ] authorization model が OpenFGA にロードされバージョンが記録される

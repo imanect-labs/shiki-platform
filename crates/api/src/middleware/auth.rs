@@ -11,7 +11,11 @@ use axum::{
 use jsonwebtoken::{Algorithm, Validation};
 
 use super::claims::{self, AuthError};
-use crate::{error::ApiError, state::AppState};
+use crate::{
+    error::ApiError,
+    extract::{resolve_tenant_id, TenantId},
+    state::AppState,
+};
 
 impl From<AuthError> for ApiError {
     fn from(err: AuthError) -> Self {
@@ -51,7 +55,11 @@ pub async fn require_auth(
 
     let claims = claims::verify_token(&token, &key, &validation)?;
     let principal = claims::principal_from_claims(claims);
+    // tenant_id をここで解決して extension に載せる（state を持つのは middleware 側のため）。
+    // AuthContext extractor はこれを取り出して principal + org と合わせて組み立てる。
+    let tenant_id = resolve_tenant_id(&principal, &state.config.auth)?;
     req.extensions_mut().insert(principal);
+    req.extensions_mut().insert(TenantId(tenant_id));
 
     Ok(next.run(req).await)
 }

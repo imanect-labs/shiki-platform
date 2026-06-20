@@ -16,6 +16,8 @@ pub struct MeResponse {
     pub email: Option<String>,
     pub dept: Option<String>,
     pub org: String,
+    /// テナント識別子（SaaS の隔離境界。オンプレは単一固定）。
+    pub tenant_id: String,
 }
 
 /// 認証済みユーザー自身の情報を返す。
@@ -51,5 +53,6 @@ pub async fn get_me(
         email: ctx.principal.email,
         dept: ctx.principal.dept,
         org: ctx.org,
+        tenant_id: ctx.tenant_id,
     }))
 }

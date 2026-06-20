@@ -50,6 +50,10 @@ pub struct AuthConfig {
     pub audience: String,
     /// JWKS キャッシュの TTL（秒）。
     pub jwks_ttl_secs: u64,
+    /// テナント固定値（案C）。オンプレ/cell のシングルテナントで使う既定 `tenant_id`。
+    /// SaaS では claim `tenant` を優先し、欠落時にこの値へフォールバックする
+    /// （解決順は `crates/api` の `resolve_tenant_id`）。既定 `"default"`。
+    pub tenant_id: Option<String>,
 }
 
 impl AuthConfig {
@@ -139,7 +143,7 @@ fn defaults() -> serde_json::Value {
     serde_json::json!({
         "server": { "host": "0.0.0.0", "port": 8080 },
         "database": { "max_connections": 10 },
-        "auth": { "jwks_ttl_secs": 300 },
+        "auth": { "jwks_ttl_secs": 300, "tenant_id": "default" },
         "telemetry": { "service_name": "shiki-server", "log_format": "json" },
         "storage": { "backend": "minio" },
         "vector": { "backend": "qdrant" },
