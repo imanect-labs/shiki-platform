@@ -100,11 +100,16 @@
   - **認可コンテキスト** `AuthContext { principal, org, tenant_id }` を定義し、全データアクセスがこれを受け取る規約を導入
     （**SaaS マルチテナント前提で `tenant_id` を day-1 から保持**・後付けで隔離境界を壊さない）。`check(user, relation, object)` ヘルパを提供。
   - **`tenant_id` の取得元（human 決定 / #57）= 案C 既定 ＋ 案A 継ぎ目**: 解決は `crates/api` の
-    `resolve_tenant_id` 一点に集約し、(1) 案A — Keycloak claim `tenant`（SaaS マルチテナント）を優先、
-    (2) 案C — 設定 `auth.tenant_id` の固定値（オンプレ/cell シングルテナント・既定 `"default"`）にフォールバック、
-    (3) いずれも欠落・空白なら拒否（`non_empty` で trim 後に空判定）。オンプレは defaults で固定値が効くため無設定でも後方互換で動作する。
+    `resolve_tenant_id` 一点に集約し、設定 `auth.tenancy`（`single`/`multi`）でモード分岐する:
+    - `single`（案C・オンプレ/cell・既定）: 設定 `auth.tenant_id` の固定値（既定 `"default"`）。
+      defaults で固定値が効くため無設定でも後方互換で動作する（固定値が空なら設定ミスとして拒否）。
+    - `multi`（案A・SaaS）: Keycloak claim `tenant` を**必須**にし、欠落・空白は **fail-closed で拒否**
+      （固定値へフォールバックして無関係なテナントへ黙って融合させない）。
     取得元は state を持つ認証境界（`require_auth` / #55 のセッション middleware）で解決し extension 経由で
     `AuthContext` 構築に渡す（extractor は state 非依存を維持）。
+  - **実分離の強制は SAAS.1**: OpenFGA の subject/object 識別子（`user:<id>` / `organization:<org>`）を
+    `tenant_id` でスコープ化する強制は roadmap トラック SAAS.1 の責務。本タスクは `AuthContext` に
+    `tenant_id` を保持する継ぎ目の用意までを範囲とする（`subject()` の doc にも明記）。
   - relation model は `docs/design.md` の ReBAC 図に準拠。**model定義は人がレビュー**（ポリシ決定）。
 - **受け入れ条件**:
   - [ ] authorization model が OpenFGA にロードされバージョンが記録される

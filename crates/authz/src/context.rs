@@ -49,6 +49,12 @@ impl AuthContext {
     }
 
     /// 認可問い合わせの主体（`user:<id>`）。
+    ///
+    /// 注意: 現状の subject/object 識別子（`user:<id>` / `organization:<org>`）は
+    /// `tenant_id` を含まない。共用 OpenFGA ストアでの**実分離の強制**（object/store
+    /// namespace の `tenant_id` スコープ化）は roadmap トラック SAAS.1 の責務であり、
+    /// 本フェーズ（#57）は `AuthContext` に `tenant_id` を保持する継ぎ目の用意までを範囲とする。
+    /// SaaS で共用ストアを使う前に SAAS.1 でテナント境界を識別子へ織り込むこと。
     pub fn subject(&self) -> crate::object::Subject {
         crate::object::Subject::user(&self.principal.id)
     }

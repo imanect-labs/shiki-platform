@@ -7,7 +7,10 @@
 use authz::{AuthContext, Principal};
 use axum::{extract::FromRequestParts, http::request::Parts};
 
-use crate::{config::AuthConfig, error::ApiError};
+use crate::{
+    config::{AuthConfig, Tenancy},
+    error::ApiError,
+};
 
 impl<S> FromRequestParts<S> for AuthContextExt
 where
@@ -60,25 +63,30 @@ fn resolve_org(principal: &Principal) -> String {
 
 /// 認証主体と設定から `tenant_id` を解決する（取得元の継ぎ目を一点に集約）。
 ///
-/// 解決順（human 決定: 案C 既定 ＋ 案A 継ぎ目, docs/roadmap/phase-0.md Task 0.5）:
-/// 1. 案A — claim `tenant` 由来の [`Principal::tenant_id`]（SaaS マルチテナント）。
-/// 2. 案C — 設定 `auth.tenant_id` の固定値（オンプレ/cell シングルテナント。既定 `"default"`）。
-/// 3. いずれも無ければ拒否（`tenant_id` 無しで `AuthContext` を構築させない）。
+/// テナンシーモードで戦略を分岐する（human 決定: 案C 既定 ＋ 案A 継ぎ目,
+/// docs/roadmap/phase-0.md Task 0.5）:
+/// - `single`（案C・オンプレ/cell）: 設定 `auth.tenant_id` の固定値を使う。defaults で
+///   `"default"` が効くため無設定でも後方互換（シングルテナント既定で無変更動作）。
+///   固定値が空なら設定ミスとして拒否。
+/// - `multi`（案A・SaaS）: claim `tenant` 由来の [`Principal::tenant_id`] を**必須**にする。
+///   欠落・空白なら **fail-closed で拒否**（固定値へフォールバックして無関係なテナントへ
+///   黙って融合させない）。
 ///
-/// オンプレは defaults で `auth.tenant_id = "default"` のため無設定でも 2 で解決し、
-/// 後方互換（シングルテナント既定で無変更動作）を保つ。
+/// いずれのモードでも解決不能なら `tenant_id` 無しの `AuthContext` を構築させず拒否する。
 pub(crate) fn resolve_tenant_id(
     principal: &Principal,
     auth: &AuthConfig,
 ) -> Result<String, ApiError> {
-    if let Some(tenant) = non_empty(principal.tenant_id.as_deref()) {
-        return Ok(tenant);
+    match auth.tenancy {
+        Tenancy::Multi => non_empty(principal.tenant_id.as_deref()).ok_or_else(|| {
+            tracing::warn!("multi-tenant モードで claim `tenant` が欠落（fail-closed で拒否）");
+            ApiError::Unauthorized
+        }),
+        Tenancy::Single => non_empty(auth.tenant_id.as_deref()).ok_or_else(|| {
+            tracing::error!("single-tenant モードで auth.tenant_id が空（設定ミス）");
+            ApiError::Unauthorized
+        }),
     }
-    if let Some(tenant) = non_empty(auth.tenant_id.as_deref()) {
-        return Ok(tenant);
-    }
-    tracing::debug!("tenant_id を解決できません（claim・設定とも欠落）");
-    Err(ApiError::Unauthorized)
 }
 
 /// trim して空でなければ所有 `String` を返す。
@@ -103,12 +111,13 @@ mod tests {
         }
     }
 
-    fn auth_config(tenant_id: Option<&str>) -> AuthConfig {
+    fn auth_config(tenancy: Tenancy, tenant_id: Option<&str>) -> AuthConfig {
         AuthConfig {
             issuer: "http://localhost/realms/shiki".into(),
             jwks_uri: None,
             audience: "shiki-api".into(),
             jwks_ttl_secs: 300,
+            tenancy,
             tenant_id: tenant_id.map(str::to_string),
         }
     }
@@ -121,27 +130,45 @@ mod tests {
     }
 
     #[test]
-    fn tenant_id_prefers_claim() {
-        // 案A: claim 由来の tenant_id があれば設定固定値より優先。
+    fn single_tenant_uses_fixed_config() {
+        // 案C: オンプレ/cell は設定の固定値を使う（claim は無視）。
         let mut principal = principal_with_groups(&[]);
-        principal.tenant_id = Some("acme-saas".into());
-        let tenant = resolve_tenant_id(&principal, &auth_config(Some("default"))).unwrap();
-        assert_eq!(tenant, "acme-saas");
-    }
-
-    #[test]
-    fn tenant_id_falls_back_to_config() {
-        // 案C: claim が無ければ設定の固定値（オンプレ/cell）。
-        let principal = principal_with_groups(&[]);
-        let tenant = resolve_tenant_id(&principal, &auth_config(Some("cell-onprem"))).unwrap();
+        principal.tenant_id = Some("ignored-claim".into());
+        let tenant = resolve_tenant_id(
+            &principal,
+            &auth_config(Tenancy::Single, Some("cell-onprem")),
+        )
+        .unwrap();
         assert_eq!(tenant, "cell-onprem");
     }
 
     #[test]
-    fn tenant_id_missing_is_rejected() {
-        // claim・設定とも欠落（または空）なら拒否＝tenant_id 無しの AuthContext を作らせない。
+    fn single_tenant_empty_config_is_rejected() {
+        // 固定値が空（設定ミス）なら拒否＝tenant_id 無しの AuthContext を作らせない。
         let principal = principal_with_groups(&[]);
-        assert!(resolve_tenant_id(&principal, &auth_config(None)).is_err());
-        assert!(resolve_tenant_id(&principal, &auth_config(Some("  "))).is_err());
+        assert!(resolve_tenant_id(&principal, &auth_config(Tenancy::Single, None)).is_err());
+        assert!(resolve_tenant_id(&principal, &auth_config(Tenancy::Single, Some("  "))).is_err());
+    }
+
+    #[test]
+    fn multi_tenant_requires_claim() {
+        // 案A: SaaS は claim 由来の tenant_id を使う（設定固定値は無視）。
+        let mut principal = principal_with_groups(&[]);
+        principal.tenant_id = Some("acme-saas".into());
+        let tenant =
+            resolve_tenant_id(&principal, &auth_config(Tenancy::Multi, Some("default"))).unwrap();
+        assert_eq!(tenant, "acme-saas");
+    }
+
+    #[test]
+    fn multi_tenant_missing_claim_fails_closed() {
+        // SaaS で claim 欠落・空白なら fail-closed で拒否（固定値へ融合させない）。
+        let principal = principal_with_groups(&[]);
+        assert!(
+            resolve_tenant_id(&principal, &auth_config(Tenancy::Multi, Some("default"))).is_err()
+        );
+        let mut blank = principal_with_groups(&[]);
+        blank.tenant_id = Some("   ".into());
+        assert!(resolve_tenant_id(&blank, &auth_config(Tenancy::Multi, Some("default"))).is_err());
     }
 }
