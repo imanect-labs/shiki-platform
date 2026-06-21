@@ -33,7 +33,8 @@ pub struct SessionRecord {
     pub access_token: String,
     /// OIDC refresh token（サーバ側のみ・access のローテーションに使う）。
     pub refresh_token: Option<String>,
-    /// OIDC id token（RP-initiated logout の id_token_hint に使う・サーバ側のみ）。
+    /// OIDC id token（サーバ側のみ。将来の backchannel logout 等に備えて保持する。
+    /// BFF 不変条件によりブラウザには出さない＝logout の id_token_hint には使わない）。
     pub id_token: Option<String>,
     /// access token の満了時刻（unix 秒）。
     pub access_expires_at: i64,

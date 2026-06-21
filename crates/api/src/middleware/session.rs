@@ -19,6 +19,7 @@ use axum_extra::extract::cookie::CookieJar;
 use crate::{
     error::ApiError,
     extract::TenantId,
+    middleware::{auth::verify_access_token, claims},
     oidc,
     routes::auth::{session_tenant_scope, CSRF_HEADER},
     state::AppState,
@@ -70,6 +71,15 @@ pub async fn require_session(
                             record.id_token = tokens.id_token;
                         }
                         record.access_expires_at = now + tokens.expires_in;
+                        // 新 access token のクレームから principal を再導出し、IdP 側の claim 変化
+                        // （group/dept 変更など）に追従する。backchannel から受領した信頼済み
+                        // トークンを検証できれば反映し、できなければ既存 principal を維持して
+                        // ユーザーを無用に弾かない。
+                        if let Ok(verified) =
+                            verify_access_token(&state, &record.access_token).await
+                        {
+                            record.principal = claims::principal_from_claims(verified);
+                        }
                         state
                             .sessions
                             .put(
@@ -81,10 +91,22 @@ pub async fn require_session(
                             .await?;
                     }
                     Err(err) => {
-                        // refresh も失効 → セッション破棄して再ログインへ。
-                        tracing::info!(error = %err, "refresh 失敗。セッションを破棄");
-                        let _ = state.sessions.delete(&tenant_id, &session_id).await;
-                        return Err(ApiError::Unauthorized);
+                        // refresh 競合対策: refresh token のローテーションにより、並行リクエストが
+                        // 先にローテーション済みだと後発は invalid_grant になる。即削除せず再読込し、
+                        // 別リクエストが有効な access を入れていればそれで継続する（誤ログアウト防止）。
+                        match state.sessions.get(&tenant_id, &session_id).await? {
+                            Some(fresh)
+                                if fresh.access_expires_at - now
+                                    > session_cfg.refresh_leeway_secs =>
+                            {
+                                record = fresh;
+                            }
+                            _ => {
+                                tracing::info!(error = %err, "refresh 失敗。セッションを破棄");
+                                let _ = state.sessions.delete(&tenant_id, &session_id).await;
+                                return Err(ApiError::Unauthorized);
+                            }
+                        }
                     }
                 }
             }

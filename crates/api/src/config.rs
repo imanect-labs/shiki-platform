@@ -290,6 +290,7 @@ impl AppConfig {
         if self.session.redis_url.trim().is_empty() {
             return Err(ConfigError::Invalid("session.redis_url が空です".into()));
         }
+        Self::check_session_bounds(&self.session)?;
         for (name, url) in [
             ("auth.issuer", self.auth.issuer.as_str()),
             ("authz.base_url", self.authz.base_url.as_str()),
@@ -319,6 +320,21 @@ impl AppConfig {
         }
         Ok(())
     }
+
+    /// セッション数値設定の境界を検証する（失効/更新判定を壊す不正値を弾く）。
+    fn check_session_bounds(session: &SessionConfig) -> Result<(), ConfigError> {
+        if session.ttl_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "session.ttl_secs は 1 以上が必要です".into(),
+            ));
+        }
+        if session.refresh_leeway_secs < 0 {
+            return Err(ConfigError::Invalid(
+                "session.refresh_leeway_secs は 0 以上が必要です".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -330,5 +346,25 @@ mod tests {
         // multi は SAAS.1（識別子の tenant スコープ化）未実装のため起動時に拒否される。
         assert!(AppConfig::check_tenancy_supported(Tenancy::Multi).is_err());
         assert!(AppConfig::check_tenancy_supported(Tenancy::Single).is_ok());
+    }
+
+    fn session(ttl_secs: u64, refresh_leeway_secs: i64) -> SessionConfig {
+        SessionConfig {
+            redis_url: "redis://localhost:6379".into(),
+            cookie_name: "shiki_session".into(),
+            csrf_cookie_name: "shiki_csrf".into(),
+            ttl_secs,
+            secure: true,
+            refresh_leeway_secs,
+        }
+    }
+
+    #[test]
+    fn session_bounds_reject_invalid_numbers() {
+        assert!(AppConfig::check_session_bounds(&session(86400, 60)).is_ok());
+        // ttl_secs=0 は失効しないセッションになり危険。
+        assert!(AppConfig::check_session_bounds(&session(0, 60)).is_err());
+        // 負の leeway は refresh 判定を壊す。
+        assert!(AppConfig::check_session_bounds(&session(86400, -1)).is_err());
     }
 }

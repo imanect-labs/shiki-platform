@@ -324,13 +324,11 @@ async fn logout_without_csrf_is_forbidden() {
 #[tokio::test]
 async fn logout_with_csrf_succeeds_and_leaks_no_token() {
     let store = Arc::new(MemorySessionStore::new());
+    // id_token を保持していてもレスポンス（end-session URL）に出さないことを検証する。
+    let mut record = session_record(now() + 3600, Some("refresh-token"), "csrf-tok");
+    record.id_token = Some("idtokhdr.idtokpayload.idtoksig".into());
     store
-        .put(
-            "default",
-            "sid-lo2",
-            &session_record(now() + 3600, Some("refresh-token"), "csrf-tok"),
-            Duration::from_secs(3600),
-        )
+        .put("default", "sid-lo2", &record, Duration::from_secs(3600))
         .await
         .unwrap();
     let app = build_router(state_with(store.clone(), None));
@@ -350,10 +348,11 @@ async fn logout_with_csrf_succeeds_and_leaks_no_token() {
 
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let text = String::from_utf8(body.to_vec()).unwrap();
-    // end-session URL は返るが、access/refresh token はレスポンスに出さない。
+    // end-session URL は返るが、access/refresh/id token はレスポンスに出さない。
     assert!(text.contains("end_session_url"));
     assert!(!text.contains("refresh-token"));
     assert!(!text.contains("\"access"));
+    assert!(!text.contains("idtok"));
     // セッションは削除されている。
     assert!(store.get("default", "sid-lo2").await.unwrap().is_none());
 }

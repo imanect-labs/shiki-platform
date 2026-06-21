@@ -42,29 +42,26 @@ pub async fn logout(
     }
 
     // セッションが存在すれば、CSRF を session 値とも突合してから削除する。
-    let mut id_token_hint: Option<String> = None;
     if let Some(sid) = &session_id {
         if let Some(record) = state.sessions.get(&tenant_id, sid).await? {
             if csrf_header.as_deref() != Some(record.csrf_token.as_str()) {
                 return Err(ApiError::Forbidden);
             }
-            id_token_hint = record.id_token.clone();
             state.sessions.delete(&tenant_id, sid).await?;
         }
     }
 
     // end-session URL を構築（ブラウザのフル遷移で Keycloak セッションも終了させる）。
+    // BFF 不変条件によりトークンはブラウザに出さないため、`id_token_hint`（OIDC トークン）は
+    // **使わない**。client_id + post_logout_redirect_uri で行う（Keycloak が確認画面を挟む場合がある）。
     let auth = &state.config.auth;
-    let mut params: Vec<(&str, &str)> = vec![
+    let params: [(&str, &str); 2] = [
         ("client_id", auth.client_id.as_str()),
         (
             "post_logout_redirect_uri",
             auth.post_logout_redirect_uri.as_str(),
         ),
     ];
-    if let Some(hint) = id_token_hint.as_deref() {
-        params.push(("id_token_hint", hint));
-    }
     let end_session_url = reqwest::Url::parse_with_params(&auth.end_session_endpoint(), &params)
         .map_err(|e| ApiError::Internal(format!("end-session URL 構築に失敗: {e}")))?
         .to_string();
