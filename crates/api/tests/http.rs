@@ -45,6 +45,8 @@ fn test_state() -> AppState {
             jwks_uri: None,
             audience: "shiki-api".into(),
             jwks_ttl_secs: 300,
+            tenancy: Tenancy::Single,
+            tenant_id: Some("default".into()),
         },
         authz: AuthzConfig {
             base_url: "http://localhost:8080".into(),

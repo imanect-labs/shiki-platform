@@ -50,6 +50,22 @@ pub struct AuthConfig {
     pub audience: String,
     /// JWKS キャッシュの TTL（秒）。
     pub jwks_ttl_secs: u64,
+    /// テナンシーモード（`single`=オンプレ/cell・`multi`=SaaS）。既定 `single`。
+    /// `resolve_tenant_id` の解決戦略を分岐し、SaaS では claim 欠落を fail-closed にする。
+    pub tenancy: Tenancy,
+    /// `single` モードのテナント固定値（案C）。オンプレ/cell のシングルテナントで使う。
+    /// 既定 `"default"`。`multi` モードでは使わず claim `tenant` を必須にする（案A）。
+    pub tenant_id: Option<String>,
+}
+
+/// テナンシーモード。`tenant_id` の取得元（案A/案C）を決める。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tenancy {
+    /// オンプレ/cell シングルテナント。固定値 `auth.tenant_id`（案C）を使う。
+    Single,
+    /// SaaS マルチテナント。Keycloak claim `tenant`（案A）を必須にし、欠落は fail-closed。
+    Multi,
 }
 
 impl AuthConfig {
@@ -139,7 +155,7 @@ fn defaults() -> serde_json::Value {
     serde_json::json!({
         "server": { "host": "0.0.0.0", "port": 8080 },
         "database": { "max_connections": 10 },
-        "auth": { "jwks_ttl_secs": 300 },
+        "auth": { "jwks_ttl_secs": 300, "tenancy": "single", "tenant_id": "default" },
         "telemetry": { "service_name": "shiki-server", "log_format": "json" },
         "storage": { "backend": "minio" },
         "vector": { "backend": "qdrant" },

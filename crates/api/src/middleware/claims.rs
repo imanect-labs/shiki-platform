@@ -21,6 +21,10 @@ pub struct Claims {
     /// 所属部署（カスタム属性 → claim `department`）。
     #[serde(default)]
     pub department: Option<String>,
+    /// テナント識別子（SaaS の Keycloak protocol mapper → claim `tenant`）。
+    /// オンプレ/cell のシングルテナントでは付与されず、設定の固定値にフォールバックする。
+    #[serde(default)]
+    pub tenant: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -53,5 +57,6 @@ pub fn principal_from_claims(claims: Claims) -> Principal {
         email: claims.email,
         groups: claims.groups,
         dept: claims.department,
+        tenant_id: claims.tenant,
     }
 }
