@@ -79,25 +79,14 @@ jobs:
             sleep 5
           done
           echo "shiki-server が healthy になりませんでした"; exit 1
-      - name: smoke test
+      - name: smoke test (BFF code フロー)
+        working-directory: deploy/compose
+        run: bash smoke-bff.sh
+
+      - name: smoke test (skillex)
         working-directory: deploy/compose
         run: |
           set -euo pipefail
-          echo "--- /healthz ---"
-          curl -fsS http://localhost:8080/healthz
-
-          echo "--- /me (有効トークン) ---"
-          TOKEN=$(curl -s -X POST http://localhost:8081/realms/shiki/protocol/openid-connect/token \
-            -d grant_type=password -d client_id=shiki-web -d username=alice -d password=password -d scope=openid \
-            | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
-          code=$(curl -s -o /tmp/me.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" http://localhost:8080/me)
-          echo "status=$code body=$(cat /tmp/me.json)"
-          test "$code" = "200"
-
-          echo "--- /me (無効トークン → 401) ---"
-          code401=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer invalid" http://localhost:8080/me)
-          test "$code401" = "401"
-
           echo "--- skillex client_credentials (aud=shiki-llm) ---"
           SK=$(curl -s -X POST http://localhost:8081/realms/shiki/protocol/openid-connect/token \
             -d grant_type=client_credentials -d client_id=skillex -d client_secret=skillex-dev-secret \
