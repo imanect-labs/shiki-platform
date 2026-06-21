@@ -26,8 +26,8 @@ pub struct TokenResponse {
     pub access_token: String,
     #[serde(default)]
     pub refresh_token: Option<String>,
-    /// access token の有効秒数。
-    #[serde(default)]
+    /// access token の有効秒数（必須）。欠落を 0 で受理すると保存時に即期限切れになり
+    /// refresh 連打や即 401 を招くため、必須項目として fail-fast にする。
     pub expires_in: i64,
     #[serde(default)]
     pub id_token: Option<String>,

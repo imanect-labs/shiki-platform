@@ -291,11 +291,24 @@ impl AppConfig {
             return Err(ConfigError::Invalid("session.redis_url が空です".into()));
         }
         Self::check_session_bounds(&self.session)?;
-        for (name, url) in [
+        // 必須 URL。
+        let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),
             ("authz.base_url", self.authz.base_url.as_str()),
             ("auth.redirect_uri", self.auth.redirect_uri.as_str()),
-        ] {
+            (
+                "auth.post_logout_redirect_uri",
+                self.auth.post_logout_redirect_uri.as_str(),
+            ),
+        ];
+        // 任意 URL（指定時のみ検証。不正値の起動後潜伏を防ぐ）。
+        if let Some(url) = self.auth.internal_base_url.as_deref() {
+            urls.push(("auth.internal_base_url", url));
+        }
+        if let Some(url) = self.auth.jwks_uri.as_deref() {
+            urls.push(("auth.jwks_uri", url));
+        }
+        for (name, url) in urls {
             if reqwest::Url::parse(url).is_err() {
                 return Err(ConfigError::Invalid(format!(
                     "{name} が URL として不正です: {url}"
