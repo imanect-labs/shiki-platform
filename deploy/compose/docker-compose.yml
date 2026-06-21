@@ -192,6 +192,8 @@ services:
       SHIKI__STORAGE__BACKEND: minio
       SHIKI__VECTOR__BACKEND: qdrant
       SHIKI__LLM__BACKEND: vllm
+      # dev seed は明示フラグでのみ有効化（本番では設定しない）。
+      SHIKI_DEV_SEED: ${SHIKI_DEV_SEED:-true}
       SHIKI_DEV_SEED_USER: ${SHIKI_DEV_SEED_USER:-00000000-0000-0000-0000-000000000001}
       SHIKI_DEV_SEED_ORG: ${SHIKI_DEV_SEED_ORG:-acme}
       RUST_LOG: "info,shiki_api=debug,authz=debug"

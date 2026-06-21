@@ -33,6 +33,10 @@ pub struct AppConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    /// CORS で credential 付きリクエストを許可するオリジン（完全一致）。
+    /// 既定は空＝CORS レイヤ無効（同一オリジン配信前提・最も安全）。別オリジン dev 時のみ列挙。
+    #[serde(default)]
+    pub cors_allowed_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,6 +274,16 @@ impl AppConfig {
 
     /// 値の整合性を検証する（必須 URL のパース可否など）。
     pub fn validate(&self) -> Result<(), ConfigError> {
+        // multi-tenant（SaaS）は OpenFGA の subject/object 識別子の tenant スコープ化
+        // （roadmap SAAS.1）と host ベースの session tenant 解決が未実装。これらが無いまま
+        // multi を許すと共用ストアでテナント越境が起こり得るため、起動時に fail-closed で拒否する。
+        if self.auth.tenancy == Tenancy::Multi {
+            return Err(ConfigError::Invalid(
+                "auth.tenancy=multi は未対応です（SAAS.1 のテナントスコープ化が未実装。\
+                 テナント越境を防ぐため fail-closed で拒否します）"
+                    .into(),
+            ));
+        }
         if self.auth.issuer.trim().is_empty() {
             return Err(ConfigError::Invalid("auth.issuer が空です".into()));
         }

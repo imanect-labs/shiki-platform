@@ -35,6 +35,7 @@ fn test_state() -> AppState {
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 0,
+            cors_allowed_origins: vec![],
         },
         database: DatabaseConfig {
             url: "postgres://localhost/none".into(),

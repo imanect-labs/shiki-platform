@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use axum::{
     extract::Request,
-    http::{header, StatusCode},
+    http::{header, HeaderName, HeaderValue, Method, StatusCode},
     middleware,
     response::IntoResponse,
     routing::{get, post},
@@ -32,7 +32,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/session", get(routes::auth::session))
         .route("/api-docs/openapi.json", get(openapi_handler));
 
-    public
+    let router = public
         .merge(protected)
         // observe は span 内で動く必要があるため TraceLayer より内側（先に追加）。
         .layer(middleware::from_fn(telemetry::observe))
@@ -40,9 +40,49 @@ pub fn build_router(state: AppState) -> Router {
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(30),
-        ))
-        .layer(CorsLayer::permissive())
-        .with_state(state)
+        ));
+
+    // CORS: 同一オリジン配信が既定（レイヤ無し）。別オリジン dev のみ、設定された
+    // オリジンに限定して credential 付きを許可する（permissive はセッション Cookie と
+    // 併用すると危険なので使わない）。
+    let router = match cors_layer(&state.config.server.cors_allowed_origins) {
+        Some(cors) => router.layer(cors),
+        None => router,
+    };
+
+    router.with_state(state)
+}
+
+/// 設定されたオリジンに限定した CORS レイヤを構築する（空なら `None` = レイヤ無効）。
+fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
+    if origins.is_empty() {
+        return None;
+    }
+    let parsed: Vec<HeaderValue> = origins
+        .iter()
+        .filter_map(|o| o.parse::<HeaderValue>().ok())
+        .collect();
+    if parsed.is_empty() {
+        tracing::warn!("cors_allowed_origins が全て不正なため CORS を無効化");
+        return None;
+    }
+    Some(
+        CorsLayer::new()
+            .allow_origin(parsed)
+            .allow_credentials(true)
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::PATCH,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers([
+                header::CONTENT_TYPE,
+                HeaderName::from_static("x-csrf-token"),
+            ]),
+    )
 }
 
 /// リクエスト span。`trace_id` は [`telemetry::observe`] が後から記録するため Empty 宣言する。
