@@ -4,7 +4,8 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
 use api::{
-    config::AppConfig, middleware::JwksCache, server::build_router, state::AppState, telemetry,
+    config::AppConfig, middleware::JwksCache, server::build_router, session::RedisSessionStore,
+    state::AppState, telemetry,
 };
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
@@ -44,12 +45,20 @@ async fn main() -> anyhow::Result<()> {
         Duration::from_secs(config.auth.jwks_ttl_secs),
     ));
 
+    // BFF セッションストア（Redis）。compose では depends_on で redis healthy を待つ。
+    let sessions = Arc::new(
+        RedisSessionStore::connect(&config.session.redis_url)
+            .await
+            .context("Redis セッションストアへの接続に失敗")?,
+    );
+
     let bind = format!("{}:{}", config.server.host, config.server.port);
     let state = AppState {
         config: Arc::new(config),
         db,
         authz: Arc::new(fga),
         jwks,
+        sessions,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)

@@ -95,6 +95,7 @@ fn test_state() -> AppState {
         db,
         authz: Arc::new(AllowAll),
         jwks,
+        sessions: Arc::new(api::session::MemorySessionStore::new()),
     }
 }
 

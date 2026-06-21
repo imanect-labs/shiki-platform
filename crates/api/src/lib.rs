@@ -11,6 +11,7 @@ pub mod middleware;
 pub mod openapi;
 pub mod routes;
 pub mod server;
+pub mod session;
 pub mod state;
 pub mod telemetry;
 
