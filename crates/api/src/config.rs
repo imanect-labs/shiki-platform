@@ -274,16 +274,7 @@ impl AppConfig {
 
     /// 値の整合性を検証する（必須 URL のパース可否など）。
     pub fn validate(&self) -> Result<(), ConfigError> {
-        // multi-tenant（SaaS）は OpenFGA の subject/object 識別子の tenant スコープ化
-        // （roadmap SAAS.1）と host ベースの session tenant 解決が未実装。これらが無いまま
-        // multi を許すと共用ストアでテナント越境が起こり得るため、起動時に fail-closed で拒否する。
-        if self.auth.tenancy == Tenancy::Multi {
-            return Err(ConfigError::Invalid(
-                "auth.tenancy=multi は未対応です（SAAS.1 のテナントスコープ化が未実装。\
-                 テナント越境を防ぐため fail-closed で拒否します）"
-                    .into(),
-            ));
-        }
+        Self::check_tenancy_supported(self.auth.tenancy)?;
         if self.auth.issuer.trim().is_empty() {
             return Err(ConfigError::Invalid("auth.issuer が空です".into()));
         }
@@ -311,5 +302,33 @@ impl AppConfig {
             }
         }
         Ok(())
+    }
+
+    /// テナンシーモードが現状サポートされているか（fail-closed）。
+    ///
+    /// multi-tenant（SaaS）は OpenFGA の subject/object 識別子の tenant スコープ化
+    /// （roadmap SAAS.1）と host ベースの session tenant 解決が未実装。これらが無いまま
+    /// multi を許すと共用ストアでテナント越境が起こり得るため、起動時に拒否する。
+    fn check_tenancy_supported(tenancy: Tenancy) -> Result<(), ConfigError> {
+        if tenancy == Tenancy::Multi {
+            return Err(ConfigError::Invalid(
+                "auth.tenancy=multi は未対応です（SAAS.1 のテナントスコープ化が未実装。\
+                 テナント越境を防ぐため fail-closed で拒否します）"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multi_tenancy_is_rejected_until_saas1() {
+        // multi は SAAS.1（識別子の tenant スコープ化）未実装のため起動時に拒否される。
+        assert!(AppConfig::check_tenancy_supported(Tenancy::Multi).is_err());
+        assert!(AppConfig::check_tenancy_supported(Tenancy::Single).is_ok());
     }
 }
