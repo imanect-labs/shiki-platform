@@ -1,59 +1,50 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { User } from "oidc-client-ts";
 
 import { fetchMe, type MeResponse } from "@/lib/api";
-import { getUserManager } from "@/lib/auth";
+import { login, logout } from "@/lib/auth";
 
 export default function Home() {
-  const [user, setUser] = useState<User | null>(null);
   const [me, setMe] = useState<MeResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const mgr = getUserManager();
-    mgr
-      .getUser()
-      .then(async (u) => {
-        setUser(u);
-        if (u?.access_token) {
-          try {
-            setMe(await fetchMe(u.access_token));
-          } catch (e) {
-            setError(e instanceof Error ? e.message : String(e));
-          }
-        }
+    // StrictMode の二重実行・アンマウント後の setState を防ぐためのガード。
+    let active = true;
+    fetchMe()
+      .then((m) => {
+        if (active) setMe(m);
       })
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (active) setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
-
-  const login = () => getUserManager().signinRedirect();
-  const logout = () => getUserManager().signoutRedirect();
 
   if (loading) return <p>読み込み中…</p>;
 
   return (
     <main>
       <h1>shiki</h1>
-      {!user ? (
-        <button onClick={login}>Keycloak でログイン</button>
-      ) : (
+      {me ? (
         <>
           <p>ログイン済み。</p>
-          {me ? (
-            <pre
-              style={{ background: "#f4f4f5", padding: "1rem", borderRadius: 8 }}
-            >
-              {JSON.stringify(me, null, 2)}
-            </pre>
-          ) : error ? (
-            <p style={{ color: "crimson" }}>エラー: {error}</p>
-          ) : (
-            <p>/me を取得中…</p>
-          )}
-          <button onClick={logout}>ログアウト</button>
+          <pre style={{ background: "#f4f4f5", padding: "1rem", borderRadius: 8 }}>
+            {JSON.stringify(me, null, 2)}
+          </pre>
+          <button onClick={() => void logout()}>ログアウト</button>
+        </>
+      ) : (
+        <>
+          {error ? <p>未ログインです。</p> : null}
+          <button onClick={login}>Keycloak でログイン</button>
         </>
       )}
     </main>
