@@ -81,7 +81,7 @@ fn parse_flow(value: &str) -> Option<FlowState> {
 /// `single`（オンプレ/cell・既定）は設定の固定値を使う（principal 非依存で解決可能）。
 /// `multi`（SaaS）は host/サブドメインからの解決（SAAS.1）が必要で、起動時ガード
 /// （config.validate）で multi 自体を拒否しているため、ここに到達しない設計。
-fn session_tenant_scope(auth: &AuthConfig) -> Result<String, ApiError> {
+pub(crate) fn session_tenant_scope(auth: &AuthConfig) -> Result<String, ApiError> {
     match auth.tenancy {
         crate::config::Tenancy::Single => auth
             .tenant_id

@@ -12,14 +12,14 @@ use axum::{
 };
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
-use crate::{health, middleware::require_auth, openapi, routes, state::AppState, telemetry};
+use crate::{health, middleware::require_session, openapi, routes, state::AppState, telemetry};
 
 /// アプリの axum ルータを構築する（テストからも利用）。
 pub fn build_router(state: AppState) -> Router {
-    // 保護ルート: require_auth を通過しないと到達できない。
-    let protected = Router::new()
-        .route("/me", get(routes::get_me))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+    // 保護ルート: require_session（セッション Cookie 検証 + CSRF + refresh）を通過しないと到達できない。
+    let protected = Router::new().route("/me", get(routes::get_me)).route_layer(
+        middleware::from_fn_with_state(state.clone(), require_session),
+    );
 
     // 公開ルート: 認証不要。BFF 認証エンドポイント（/auth/*）もここ
     // （セッション確立前に叩くため。logout は内部で CSRF を自己検証する）。
