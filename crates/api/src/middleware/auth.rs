@@ -10,7 +10,7 @@ use axum::{
 };
 use jsonwebtoken::{Algorithm, Validation};
 
-use super::claims::{self, AuthError};
+use super::claims::{self, AuthError, Claims};
 use crate::{
     error::ApiError,
     extract::{resolve_tenant_id, TenantId},
@@ -29,17 +29,13 @@ impl From<AuthError> for ApiError {
     }
 }
 
-/// 保護ルートに適用する axum middleware。検証成功で `Principal` を extension に載せる。
-pub async fn require_auth(
-    State(state): State<AppState>,
-    mut req: Request,
-    next: Next,
-) -> Result<Response, ApiError> {
-    let token = bearer_token(&req).ok_or(AuthError::MissingBearer)?;
-
+/// access token を JWKS で検証してクレームを取り出す（kid 解決 → 署名/aud/iss/exp 検証）。
+///
+/// Bearer ミドルウェアと BFF callback（token 交換後の検証）で共用する。
+pub async fn verify_access_token(state: &AppState, token: &str) -> Result<Claims, AuthError> {
     // kid を取り出して対応する鍵を解決。
     let header =
-        jsonwebtoken::decode_header(&token).map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+        jsonwebtoken::decode_header(token).map_err(|e| AuthError::InvalidToken(e.to_string()))?;
     let kid = header
         .kid
         .ok_or_else(|| AuthError::InvalidToken("kid がありません".into()))?;
@@ -53,7 +49,18 @@ pub async fn require_auth(
     // 素通りして audience 境界を破れる。exp は既定で必須。
     validation.set_required_spec_claims(&["exp", "aud", "iss"]);
 
-    let claims = claims::verify_token(&token, &key, &validation)?;
+    claims::verify_token(token, &key, &validation)
+}
+
+/// 保護ルートに適用する axum middleware。検証成功で `Principal` を extension に載せる。
+pub async fn require_auth(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let token = bearer_token(&req).ok_or(AuthError::MissingBearer)?;
+
+    let claims = verify_access_token(&state, &token).await?;
     let principal = claims::principal_from_claims(claims);
     // tenant_id をここで解決して extension に載せる（state を持つのは middleware 側のため）。
     // AuthContext extractor はこれを取り出して principal + org と合わせて組み立てる。

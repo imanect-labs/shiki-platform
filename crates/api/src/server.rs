@@ -7,7 +7,7 @@ use axum::{
     http::{header, StatusCode},
     middleware,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
@@ -21,10 +21,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/me", get(routes::get_me))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
-    // 公開ルート: 認証不要。
+    // 公開ルート: 認証不要。BFF 認証エンドポイント（/auth/*）もここ
+    // （セッション確立前に叩くため。logout は内部で CSRF を自己検証する）。
     let public = Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
+        .route("/auth/login", get(routes::auth::login))
+        .route("/auth/callback", get(routes::auth::callback))
+        .route("/auth/logout", post(routes::auth::logout))
+        .route("/auth/session", get(routes::auth::session))
         .route("/api-docs/openapi.json", get(openapi_handler));
 
     public

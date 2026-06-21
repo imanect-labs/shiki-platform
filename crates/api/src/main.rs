@@ -59,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
         authz: Arc::new(fga),
         jwks,
         sessions,
+        http,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)

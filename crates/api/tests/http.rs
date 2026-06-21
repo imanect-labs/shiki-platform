@@ -96,6 +96,7 @@ fn test_state() -> AppState {
         authz: Arc::new(AllowAll),
         jwks,
         sessions: Arc::new(api::session::MemorySessionStore::new()),
+        http: reqwest::Client::new(),
     }
 }
 

@@ -47,3 +47,22 @@ impl From<authz::AuthzError> for ApiError {
         ApiError::Internal(format!("authz: {err}"))
     }
 }
+
+impl From<crate::session::SessionError> for ApiError {
+    fn from(err: crate::session::SessionError) -> Self {
+        ApiError::Internal(format!("session: {err}"))
+    }
+}
+
+impl From<crate::oidc::OidcError> for ApiError {
+    fn from(err: crate::oidc::OidcError) -> Self {
+        match err {
+            // token エンドポイントの 4xx（invalid_grant / 失効 refresh 等）は認証失敗扱い。
+            crate::oidc::OidcError::Status { status, .. } if (400..500).contains(&status) => {
+                tracing::debug!(%status, "OIDC token エンドポイントが 4xx（認証失敗）");
+                ApiError::Unauthorized
+            }
+            other => ApiError::Internal(format!("oidc: {other}")),
+        }
+    }
+}

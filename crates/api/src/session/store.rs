@@ -33,6 +33,8 @@ pub struct SessionRecord {
     pub access_token: String,
     /// OIDC refresh token（サーバ側のみ・access のローテーションに使う）。
     pub refresh_token: Option<String>,
+    /// OIDC id token（RP-initiated logout の id_token_hint に使う・サーバ側のみ）。
+    pub id_token: Option<String>,
     /// access token の満了時刻（unix 秒）。
     pub access_expires_at: i64,
     /// double-submit CSRF トークン（CSRF Cookie と突合する）。
