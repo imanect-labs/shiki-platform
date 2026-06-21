@@ -114,9 +114,15 @@ mod tests {
     fn auth_config(tenancy: Tenancy, tenant_id: Option<&str>) -> AuthConfig {
         AuthConfig {
             issuer: "http://localhost/realms/shiki".into(),
+            internal_base_url: None,
             jwks_uri: None,
             audience: "shiki-api".into(),
             jwks_ttl_secs: 300,
+            client_id: "shiki-web".into(),
+            client_secret: None,
+            redirect_uri: "http://localhost:3000/auth/callback".into(),
+            post_logout_redirect_uri: "http://localhost:3000/".into(),
+            scopes: "openid profile".into(),
             tenancy,
             tenant_id: tenant_id.map(str::to_string),
         }

@@ -82,6 +82,18 @@ services:
       timeout: 5s
       retries: 20
 
+  redis:
+    image: redis:7-alpine
+    # BFF セッションストア（オパーク Cookie の実体。tenant_id スコープのキーで論理分離）。
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address ":9001"
@@ -160,8 +172,18 @@ services:
       SHIKI__SERVER__PORT: "8080"
       SHIKI__DATABASE__URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/shiki
       SHIKI__AUTH__ISSUER: ${SHIKI__AUTH__ISSUER:-http://localhost:8081/realms/shiki}
-      SHIKI__AUTH__JWKS_URI: ${SHIKI__AUTH__JWKS_URI:-http://keycloak:8080/realms/shiki/protocol/openid-connect/certs}
+      # サーバ側 OIDC 呼び出し（token 交換・JWKS）はコンテナ内部 URL を使う。
+      # authorize/end-session は公開 issuer（ブラウザ向け）を使う。
+      SHIKI__AUTH__INTERNAL_BASE_URL: ${SHIKI__AUTH__INTERNAL_BASE_URL:-http://keycloak:8080/realms/shiki}
       SHIKI__AUTH__AUDIENCE: ${SHIKI__AUTH__AUDIENCE:-shiki-api}
+      SHIKI__AUTH__CLIENT_ID: ${SHIKI__AUTH__CLIENT_ID:-shiki-web}
+      SHIKI__AUTH__CLIENT_SECRET: ${SHIKI__AUTH__CLIENT_SECRET:-shiki-web-dev-secret}
+      # smoke（web 無し）では api 自身の callback を使う。実運用は web 同一オリジン（:3000）。
+      SHIKI__AUTH__REDIRECT_URI: ${SHIKI__AUTH__REDIRECT_URI:-http://localhost:8080/auth/callback}
+      SHIKI__AUTH__POST_LOGOUT_REDIRECT_URI: ${SHIKI__AUTH__POST_LOGOUT_REDIRECT_URI:-http://localhost:8080/}
+      # ローカル HTTP 開発のため Cookie Secure を無効化（本番は true）。
+      SHIKI__SESSION__REDIS_URL: redis://redis:6379
+      SHIKI__SESSION__SECURE: "false"
       SHIKI__AUTHZ__BASE_URL: http://openfga:8080
       SHIKI__AUTHZ__STORE_NAME: shiki
       SHIKI__TELEMETRY__OTLP_ENDPOINT: http://otel-collector:4317
@@ -181,6 +203,8 @@ services:
       keycloak:
         condition: service_healthy
       openfga:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       otel-collector:
         condition: service_started

@@ -37,6 +37,13 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 
+# BFF セッション (Redis) / Cookie / トークン生成 (PKCE/CSRF/session id)
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+axum-extra = { version = "0.10", features = ["cookie"] }
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+
 # 型契約 / codegen
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
 ts-rs = "10"
