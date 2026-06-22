@@ -29,7 +29,7 @@ pub struct MeResponse {
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
     ),
-    security(("bearer" = [])),
+    security(("session" = [])),
 )]
 pub async fn get_me(
     State(state): State<AppState>,

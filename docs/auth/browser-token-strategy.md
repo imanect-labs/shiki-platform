@@ -1,6 +1,10 @@
 # 認証トークンのブラウザ保管方式（再検討メモ / ADR）
 
-- **ステータス**: 確定（2026-06-18 human 合意済み。§7 参照。実装は未着手）
+- **ステータス**: 確定・**実装済み**（2026-06-18 方針合意 / #55 で実装。§7 参照）。
+  実装の所在: BFF エンドポイント `crates/api/src/routes/auth/`、セッション層 `crates/api/src/session/`
+  （`SessionStore` トレイト＋Redis 実装・`tenant_id` キースコープ）、session ミドルウェア
+  `crates/api/src/middleware/session.rs`（Cookie→session→Principal＋CSRF＋refresh）、
+  OIDC backchannel `crates/api/src/oidc.rs`。web は同一オリジン（Next rewrites）＋セッション Cookie。
 - **日付**: 2026-06-18
 - **関連**: design.md §4.1 / design-caveats.md PIT-26〜30 / docs/auth/skillex-identity.md / roadmap phase-9 Task 9.6
 - **正本との関係**: design.md が確定したら本書は背景記録（ADR）として残す。設計を変えるのは design.md。

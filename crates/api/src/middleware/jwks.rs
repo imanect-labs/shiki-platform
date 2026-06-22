@@ -1,9 +1,11 @@
 //! JWKS（JSON Web Key Set）の取得とキャッシュ（docs/roadmap phase-0 Task 0.4）。
 //!
 //! - TTL でキャッシュし、失効したら再取得する。
-//! - 未知 kid を受けたら 1 回だけ強制再取得する（鍵ローテーション追従）。
-//! - ただし直近の取得から `negative_throttle` 以内は再取得しない（JWKS への
-//!   DoS 増幅を防ぐ）。
+//! - 未知 kid を受けたら再取得して鍵ローテーションに追従する。ただし**直近の取得から
+//!   `negative_throttle`（既定 10 秒）以内に限り、未知 kid でも再取得せず即エラー**にする
+//!   （未知 kid 連打による JWKS への DoS 増幅を防ぐ。安全側 = fail-closed）。
+//!   = 「鍵ローテーション直後 `negative_throttle` 秒間は新 kid のトークンが弾かれ得る」
+//!   という可用性とのトレードオフ。実害は短時間に限定。
 //! - 取得は single-flight 化し、起動直後の thundering herd を避ける。
 
 use std::{

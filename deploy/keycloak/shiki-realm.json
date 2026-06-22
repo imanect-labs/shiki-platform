@@ -10,12 +10,14 @@
   "clients": [
     {
       "clientId": "shiki-web",
-      "name": "shiki web frontend",
+      "name": "shiki web frontend (BFF confidential client)",
+      "description": "メイン Web の BFF（crates/api）が code↔token 交換をサーバ側で行う confidential client。ブラウザにトークンは置かない（docs/auth/browser-token-strategy.md / #55）。",
       "enabled": true,
-      "publicClient": true,
+      "publicClient": false,
+      "secret": "shiki-web-dev-secret",
       "standardFlowEnabled": true,
-      "directAccessGrantsEnabled": true,
-      "redirectUris": ["http://localhost:3000/*"],
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:3000/*", "http://localhost:8080/*"],
       "webOrigins": ["+"],
       "rootUrl": "http://localhost:3000",
       "baseUrl": "http://localhost:3000",

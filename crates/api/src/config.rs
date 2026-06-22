@@ -20,6 +20,8 @@ pub struct AppConfig {
     pub database: DatabaseConfig,
     pub auth: AuthConfig,
     pub authz: AuthzConfig,
+    /// BFF セッション（オパーク Cookie + Redis）。
+    pub session: SessionConfig,
     pub telemetry: TelemetryConfig,
     // 差し替え点（Phase 0 は値の検証のみ）。
     pub storage: StorageConfig,
@@ -31,6 +33,10 @@ pub struct AppConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    /// CORS で credential 付きリクエストを許可するオリジン（完全一致）。
+    /// 既定は空＝CORS レイヤ無効（同一オリジン配信前提・最も安全）。別オリジン dev 時のみ列挙。
+    #[serde(default)]
+    pub cors_allowed_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,20 +48,84 @@ pub struct DatabaseConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
-    /// OIDC issuer（Keycloak realm URL。必須）。
+    /// OIDC issuer（Keycloak realm URL。必須。トークンの `iss` 検証値であり、
+    /// ブラウザがログインで到達する**公開 URL**でもある）。
     pub issuer: String,
-    /// JWKS エンドポイント。未指定なら issuer から導出する。
+    /// サーバ側 OIDC 呼び出し（token 交換・end-session backchannel）に使う**内部 base URL**。
+    /// 未指定なら `issuer` を使う。compose では公開 URL（issuer）がコンテナ内から引けないため、
+    /// `http://keycloak:8080/realms/shiki` のような内部 URL を指定する（JWKS の内部 URL 指定と同様）。
+    pub internal_base_url: Option<String>,
+    /// JWKS エンドポイント。未指定なら `internal_base_url`（無ければ issuer）から導出する。
     pub jwks_uri: Option<String>,
     /// アクセストークンの `aud` 検証値（必須）。
     pub audience: String,
     /// JWKS キャッシュの TTL（秒）。
     pub jwks_ttl_secs: u64,
+    /// BFF（confidential client）の client_id。既定 `"shiki-web"`。
+    pub client_id: String,
+    /// BFF（confidential client）の client_secret。BFF はサーバ側でのみ保持する。
+    pub client_secret: Option<String>,
+    /// OIDC code フローのブラウザ向け redirect_uri（callback の登録 URL）。
+    /// 既定はローカル開発の `http://localhost:3000/auth/callback`（Next rewrites で同一オリジン）。
+    pub redirect_uri: String,
+    /// ログアウト後のブラウザ向けリダイレクト先。既定 `http://localhost:3000/`。
+    pub post_logout_redirect_uri: String,
+    /// 要求スコープ（スペース区切り）。既定 `"openid profile"`。
+    pub scopes: String,
     /// テナンシーモード（`single`=オンプレ/cell・`multi`=SaaS）。既定 `single`。
     /// `resolve_tenant_id` の解決戦略を分岐し、SaaS では claim 欠落を fail-closed にする。
     pub tenancy: Tenancy,
     /// `single` モードのテナント固定値（案C）。オンプレ/cell のシングルテナントで使う。
     /// 既定 `"default"`。`multi` モードでは使わず claim `tenant` を必須にする（案A）。
     pub tenant_id: Option<String>,
+}
+
+/// BFF セッション（オパーク Cookie + Redis）の設定。
+///
+/// ブラウザにはトークンを置かず、`session.cookie_name` の不透明セッション ID のみを渡す。
+/// セッション本体（principal/claims/OIDC token/expiry）は Redis に `tenant_id` スコープで保持する。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    /// Redis 接続 URL（例 `redis://redis:6379`）。
+    pub redis_url: String,
+    /// セッション TTL（秒）。既定 86400（24h）。
+    pub ttl_secs: u64,
+    /// Cookie の `Secure` 属性。本番(HTTPS)は true、ローカル HTTP 開発のみ false。既定 true。
+    pub secure: bool,
+    /// access token の期限が残りこの秒数を切ったらサーバ側で refresh する閾値。既定 60。
+    pub refresh_leeway_secs: i64,
+}
+
+impl AuthConfig {
+    /// サーバ側 OIDC 呼び出しの base URL（`internal_base_url` 優先・末尾スラッシュ除去）。
+    fn backchannel_base(&self) -> String {
+        self.internal_base_url
+            .as_deref()
+            .unwrap_or(&self.issuer)
+            .trim_end_matches('/')
+            .to_string()
+    }
+
+    /// ブラウザ向け authorize エンドポイント（公開 issuer 由来）。
+    pub fn authorize_endpoint(&self) -> String {
+        format!(
+            "{}/protocol/openid-connect/auth",
+            self.issuer.trim_end_matches('/')
+        )
+    }
+
+    /// サーバ側 token エンドポイント（内部 base 由来。code 交換・refresh で使う）。
+    pub fn token_endpoint(&self) -> String {
+        format!("{}/protocol/openid-connect/token", self.backchannel_base())
+    }
+
+    /// ブラウザ向け end-session エンドポイント（公開 issuer 由来）。
+    pub fn end_session_endpoint(&self) -> String {
+        format!(
+            "{}/protocol/openid-connect/logout",
+            self.issuer.trim_end_matches('/')
+        )
+    }
 }
 
 /// テナンシーモード。`tenant_id` の取得元（案A/案C）を決める。
@@ -69,14 +139,12 @@ pub enum Tenancy {
 }
 
 impl AuthConfig {
-    /// 実効 JWKS URI。`jwks_uri` 未指定なら issuer から OIDC 規約で導出する。
+    /// 実効 JWKS URI。`jwks_uri` 未指定なら内部 base（無ければ issuer）から OIDC 規約で導出する。
+    /// JWKS はサーバ側 backchannel で取得するため内部 base を優先する。
     pub fn effective_jwks_uri(&self) -> String {
-        self.jwks_uri.clone().unwrap_or_else(|| {
-            format!(
-                "{}/protocol/openid-connect/certs",
-                self.issuer.trim_end_matches('/')
-            )
-        })
+        self.jwks_uri
+            .clone()
+            .unwrap_or_else(|| format!("{}/protocol/openid-connect/certs", self.backchannel_base()))
     }
 }
 
@@ -155,7 +223,21 @@ fn defaults() -> serde_json::Value {
     serde_json::json!({
         "server": { "host": "0.0.0.0", "port": 8080 },
         "database": { "max_connections": 10 },
-        "auth": { "jwks_ttl_secs": 300, "tenancy": "single", "tenant_id": "default" },
+        "auth": {
+            "jwks_ttl_secs": 300,
+            "tenancy": "single",
+            "tenant_id": "default",
+            "client_id": "shiki-web",
+            "redirect_uri": "http://localhost:3000/auth/callback",
+            "post_logout_redirect_uri": "http://localhost:3000/",
+            "scopes": "openid profile",
+        },
+        "session": {
+            "redis_url": "redis://localhost:6379",
+            "ttl_secs": 86400,
+            "secure": true,
+            "refresh_leeway_secs": 60,
+        },
         "telemetry": { "service_name": "shiki-server", "log_format": "json" },
         "storage": { "backend": "minio" },
         "vector": { "backend": "qdrant" },
@@ -186,6 +268,7 @@ impl AppConfig {
 
     /// 値の整合性を検証する（必須 URL のパース可否など）。
     pub fn validate(&self) -> Result<(), ConfigError> {
+        Self::check_tenancy_supported(self.auth.tenancy)?;
         if self.auth.issuer.trim().is_empty() {
             return Err(ConfigError::Invalid("auth.issuer が空です".into()));
         }
@@ -195,10 +278,31 @@ impl AppConfig {
         if self.database.url.trim().is_empty() {
             return Err(ConfigError::Invalid("database.url が空です".into()));
         }
-        for (name, url) in [
+        if self.auth.redirect_uri.trim().is_empty() {
+            return Err(ConfigError::Invalid("auth.redirect_uri が空です".into()));
+        }
+        if self.session.redis_url.trim().is_empty() {
+            return Err(ConfigError::Invalid("session.redis_url が空です".into()));
+        }
+        Self::check_session_bounds(&self.session)?;
+        // 必須 URL。
+        let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),
             ("authz.base_url", self.authz.base_url.as_str()),
-        ] {
+            ("auth.redirect_uri", self.auth.redirect_uri.as_str()),
+            (
+                "auth.post_logout_redirect_uri",
+                self.auth.post_logout_redirect_uri.as_str(),
+            ),
+        ];
+        // 任意 URL（指定時のみ検証。不正値の起動後潜伏を防ぐ）。
+        if let Some(url) = self.auth.internal_base_url.as_deref() {
+            urls.push(("auth.internal_base_url", url));
+        }
+        if let Some(url) = self.auth.jwks_uri.as_deref() {
+            urls.push(("auth.jwks_uri", url));
+        }
+        for (name, url) in urls {
             if reqwest::Url::parse(url).is_err() {
                 return Err(ConfigError::Invalid(format!(
                     "{name} が URL として不正です: {url}"
@@ -206,5 +310,66 @@ impl AppConfig {
             }
         }
         Ok(())
+    }
+
+    /// テナンシーモードが現状サポートされているか（fail-closed）。
+    ///
+    /// multi-tenant（SaaS）は OpenFGA の subject/object 識別子の tenant スコープ化
+    /// （roadmap SAAS.1）と host ベースの session tenant 解決が未実装。これらが無いまま
+    /// multi を許すと共用ストアでテナント越境が起こり得るため、起動時に拒否する。
+    fn check_tenancy_supported(tenancy: Tenancy) -> Result<(), ConfigError> {
+        if tenancy == Tenancy::Multi {
+            return Err(ConfigError::Invalid(
+                "auth.tenancy=multi は未対応です（SAAS.1 のテナントスコープ化が未実装。\
+                 テナント越境を防ぐため fail-closed で拒否します）"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// セッション数値設定の境界を検証する（失効/更新判定を壊す不正値を弾く）。
+    fn check_session_bounds(session: &SessionConfig) -> Result<(), ConfigError> {
+        if session.ttl_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "session.ttl_secs は 1 以上が必要です".into(),
+            ));
+        }
+        if session.refresh_leeway_secs < 0 {
+            return Err(ConfigError::Invalid(
+                "session.refresh_leeway_secs は 0 以上が必要です".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multi_tenancy_is_rejected_until_saas1() {
+        // multi は SAAS.1（識別子の tenant スコープ化）未実装のため起動時に拒否される。
+        assert!(AppConfig::check_tenancy_supported(Tenancy::Multi).is_err());
+        assert!(AppConfig::check_tenancy_supported(Tenancy::Single).is_ok());
+    }
+
+    fn session(ttl_secs: u64, refresh_leeway_secs: i64) -> SessionConfig {
+        SessionConfig {
+            redis_url: "redis://localhost:6379".into(),
+            ttl_secs,
+            secure: true,
+            refresh_leeway_secs,
+        }
+    }
+
+    #[test]
+    fn session_bounds_reject_invalid_numbers() {
+        assert!(AppConfig::check_session_bounds(&session(86400, 60)).is_ok());
+        // ttl_secs=0 は失効しないセッションになり危険。
+        assert!(AppConfig::check_session_bounds(&session(0, 60)).is_err());
+        // 負の leeway は refresh 判定を壊す。
+        assert!(AppConfig::check_session_bounds(&session(86400, -1)).is_err());
     }
 }

@@ -4,7 +4,8 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
 use api::{
-    config::AppConfig, middleware::JwksCache, server::build_router, state::AppState, telemetry,
+    config::AppConfig, middleware::JwksCache, server::build_router, session::RedisSessionStore,
+    state::AppState, telemetry,
 };
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
@@ -44,12 +45,21 @@ async fn main() -> anyhow::Result<()> {
         Duration::from_secs(config.auth.jwks_ttl_secs),
     ));
 
+    // BFF セッションストア（Redis）。compose では depends_on で redis healthy を待つ。
+    let sessions = Arc::new(
+        RedisSessionStore::connect(&config.session.redis_url)
+            .await
+            .context("Redis セッションストアへの接続に失敗")?,
+    );
+
     let bind = format!("{}:{}", config.server.host, config.server.port);
     let state = AppState {
         config: Arc::new(config),
         db,
         authz: Arc::new(fga),
         jwks,
+        sessions,
+        http,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -63,15 +73,22 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 開発/E2E 用の最小シード。`SHIKI_DEV_SEED_USER` と `SHIKI_DEV_SEED_ORG` が
-/// 両方設定されている時のみ、その org への member tuple を投入する。
+/// 開発/E2E 用の最小シード。**明示的に `SHIKI_DEV_SEED=true` が指定された時のみ**
+/// `SHIKI_DEV_SEED_USER`/`SHIKI_DEV_SEED_ORG` の org への member tuple を投入する。
+///
+/// 任意ユーザーを任意 org の member に昇格できる権限付与経路のため、本番で env が
+/// 紛れ込んでも作動しないよう、専用の有効化フラグでガードする（fail-safe）。
 async fn dev_seed(fga: &OpenFgaClient) -> anyhow::Result<()> {
+    if !dev_seed_enabled() {
+        return Ok(());
+    }
     let (Ok(user), Ok(org)) = (
         std::env::var("SHIKI_DEV_SEED_USER"),
         std::env::var("SHIKI_DEV_SEED_ORG"),
     ) else {
         return Ok(());
     };
+    tracing::warn!("dev seed 有効（SHIKI_DEV_SEED=true）。本番では設定しないこと");
     let subject = Subject::user(&user);
     let object = FgaObject::organization(&org);
     // 冪等化: 既に member なら再投入しない（OpenFGA は重複 tuple を拒否するため）。
@@ -84,6 +101,14 @@ async fn dev_seed(fga: &OpenFgaClient) -> anyhow::Result<()> {
         .context("dev seed tuple の書き込みに失敗")?;
     tracing::info!(%user, %org, "dev seed: org member tuple を投入");
     Ok(())
+}
+
+/// dev seed の有効化フラグ（`SHIKI_DEV_SEED` が真値のときのみ true）。
+fn dev_seed_enabled() -> bool {
+    matches!(
+        std::env::var("SHIKI_DEV_SEED").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE")
+    )
 }
 
 async fn shutdown_signal() {

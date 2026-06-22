@@ -1,0 +1,80 @@
+//! インメモリ [`SessionStore`]（テスト用）。TTL は無視する。
+//!
+//! Redis を立てずに session ミドルウェア/BFF エンドポイントの挙動を検証するためのもの。
+
+use std::{collections::HashMap, sync::Mutex, time::Duration};
+
+use async_trait::async_trait;
+
+use super::store::{SessionError, SessionRecord, SessionStore};
+
+#[derive(Default)]
+pub struct MemorySessionStore {
+    inner: Mutex<HashMap<String, SessionRecord>>,
+}
+
+impl MemorySessionStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn key(tenant_id: &str, session_id: &str) -> String {
+        format!("{tenant_id}:{session_id}")
+    }
+}
+
+#[async_trait]
+impl SessionStore for MemorySessionStore {
+    async fn put(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+        record: &SessionRecord,
+        _ttl: Duration,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .lock()
+            .unwrap()
+            .insert(Self::key(tenant_id, session_id), record.clone());
+        Ok(())
+    }
+
+    async fn update_if_present(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+        record: &SessionRecord,
+        _ttl: Duration,
+    ) -> Result<bool, SessionError> {
+        use std::collections::hash_map::Entry;
+        let mut guard = self.inner.lock().unwrap();
+        match guard.entry(Self::key(tenant_id, session_id)) {
+            Entry::Occupied(mut e) => {
+                e.insert(record.clone());
+                Ok(true)
+            }
+            Entry::Vacant(_) => Ok(false),
+        }
+    }
+
+    async fn get(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+    ) -> Result<Option<SessionRecord>, SessionError> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .get(&Self::key(tenant_id, session_id))
+            .cloned())
+    }
+
+    async fn delete(&self, tenant_id: &str, session_id: &str) -> Result<(), SessionError> {
+        self.inner
+            .lock()
+            .unwrap()
+            .remove(&Self::key(tenant_id, session_id));
+        Ok(())
+    }
+}

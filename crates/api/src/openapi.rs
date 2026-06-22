@@ -1,7 +1,7 @@
 //! OpenAPI 仕様の集約（utoipa）。フロントの型生成（openapi-typescript）の入力。
 
 use utoipa::{
-    openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
+    openapi::security::{ApiKey, ApiKeyValue, SecurityScheme},
     Modify, OpenApi,
 };
 
@@ -14,20 +14,15 @@ use utoipa::{
 )]
 pub struct ApiDoc;
 
-/// Bearer 認証スキームを登録する。
+/// セッション Cookie 認証スキームを登録する（BFF + オパークセッション Cookie）。
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
         let components = openapi.components.get_or_insert_with(Default::default);
         components.add_security_scheme(
-            "bearer",
-            SecurityScheme::Http(
-                HttpBuilder::new()
-                    .scheme(HttpAuthScheme::Bearer)
-                    .bearer_format("JWT")
-                    .build(),
-            ),
+            "session",
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("shiki_session"))),
         );
     }
 }
