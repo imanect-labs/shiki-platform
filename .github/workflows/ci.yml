@@ -9,6 +9,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 既定の GITHUB_TOKEN を最小権限に絞る（各ジョブで必要に応じて昇格する）。
+permissions:
+  contents: read
+
 jobs:
   rust:
     name: Rust (fmt / clippy / test / build)
@@ -28,6 +32,10 @@ jobs:
   coverage:
     name: Coverage (cargo-llvm-cov, gate 80%)
     runs-on: ubuntu-latest
+    # カバレッジ表を PR にコメントするため pull-requests:write を昇格付与する。
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -67,16 +75,48 @@ jobs:
           OPENFGA_TEST_URL: http://localhost:8082
           REDIS_TEST_URL: redis://localhost:6379
         run: cargo llvm-cov --all --no-report
-      - name: coverage report (lcov + job summary)
+      - name: coverage report (lcov + summary + job summary)
         run: |
           cargo llvm-cov report --lcov --output-path lcov.info
+          # サマリ表を再利用するためファイルに保存（Job Summary と PR コメントの両方で使う）。
+          cargo llvm-cov report --summary-only | tee coverage-summary.txt
           {
             echo '### Rust test coverage'
             echo '```'
-            cargo llvm-cov report --summary-only
+            cat coverage-summary.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      # カバレッジ表を PR にコメントする（マーカーで既存コメントを更新＝スティッキー）。
+      # ゲート fail 時も結果が見えるよう always() で実行する。push(main) では PR が無いのでスキップ。
+      - name: comment coverage table on PR
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          [ -f coverage-summary.txt ] || { echo "サマリ未生成のためスキップ"; exit 0; }
+          marker='<!-- coverage-report -->'
+          {
+            echo "$marker"
+            echo '## 📊 Rust test coverage'
+            echo "閾値ゲート: 行 **80%** 以上（\`cargo llvm-cov --fail-under-lines 80\`）"
+            echo
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } > body.md
+          body="$(cat body.md)"
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            --jq "[.[] | select(.user.login==\"github-actions[bot]\" and (.body | startswith(\"${marker}\")))] | last | .id")
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -X PATCH -f body="$body" >/dev/null
+            echo "既存コメントを更新: $existing"
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -f body="$body" >/dev/null
+            echo "新規コメントを作成"
+          fi
       # 全体カバレッジ 80% の絶対床ゲート。下回ったら CI を fail させる（カバレッジを下げない）。
+      # コメント投稿後に判定する（fail 時もコメントは投稿済み）。
       - name: coverage gate (fail under 80% lines)
         run: cargo llvm-cov report --fail-under-lines 80
       - name: upload coverage (lcov)
