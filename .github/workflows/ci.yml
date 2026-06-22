@@ -11,18 +11,40 @@ concurrency:
 
 jobs:
   rust:
-    name: Rust (fmt / clippy / test / build)
+    name: Rust (fmt / clippy / test+coverage / build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all
+      # cargo test の代わりに llvm-cov 経由でテスト実行＋カバレッジ計測（OpenFGA 不要のユニットテストのみ。
+      # live OpenFGA を要する authz 結合テストは compose-smoke ジョブで別途実行する）。
+      - name: test + coverage (cargo-llvm-cov)
+        run: cargo llvm-cov --all --no-report
+      - name: coverage report (lcov + job summary)
+        run: |
+          cargo llvm-cov report --lcov --output-path lcov.info
+          {
+            echo '### Rust test coverage'
+            echo '```'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      # 閾値ゲート（段階的に引き上げる）。現状ベースライン 行 32.59% に対し、フレーク防止のため一旦 30% を床とする。
+      - name: coverage gate (fail under threshold)
+        run: cargo llvm-cov report --fail-under-lines 30
+      - name: upload coverage (lcov)
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error
       - run: cargo build --all
 
   web:
