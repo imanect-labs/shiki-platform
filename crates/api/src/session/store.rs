@@ -57,6 +57,18 @@ pub trait SessionStore: Send + Sync {
         ttl: Duration,
     ) -> Result<(), SessionError>;
 
+    /// **既存セッションがある時のみ**更新する（無ければ作らない）。更新したら `true`。
+    ///
+    /// refresh ローテーションの保存に使う。logout がセッションを削除した直後に refresh の
+    /// 書き戻しでセッションを**復活させない**ため（即時失効の保証を守る）。
+    async fn update_if_present(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+        record: &SessionRecord,
+        ttl: Duration,
+    ) -> Result<bool, SessionError>;
+
     /// セッションを取得する（無ければ `None`）。
     async fn get(
         &self,

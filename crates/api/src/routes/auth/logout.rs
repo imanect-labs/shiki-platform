@@ -7,7 +7,11 @@ use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
 
 use super::{removal_cookie, session_tenant_scope, CSRF_HEADER};
-use crate::{error::ApiError, state::AppState};
+use crate::{
+    error::ApiError,
+    session::{CSRF_COOKIE, SESSION_COOKIE},
+    state::AppState,
+};
 
 #[derive(Debug, Serialize)]
 pub struct LogoutResponse {
@@ -21,15 +25,10 @@ pub async fn logout(
     headers: HeaderMap,
     jar: CookieJar,
 ) -> Result<(CookieJar, Json<LogoutResponse>), ApiError> {
-    let session_cfg = &state.config.session;
     let tenant_id = session_tenant_scope(&state.config.auth)?;
 
-    let session_id = jar
-        .get(&session_cfg.cookie_name)
-        .map(|c| c.value().to_string());
-    let csrf_cookie = jar
-        .get(&session_cfg.csrf_cookie_name)
-        .map(|c| c.value().to_string());
+    let session_id = jar.get(SESSION_COOKIE).map(|c| c.value().to_string());
+    let csrf_cookie = jar.get(CSRF_COOKIE).map(|c| c.value().to_string());
     let csrf_header = headers
         .get(CSRF_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -67,10 +66,10 @@ pub async fn logout(
         .to_string();
 
     // Cookie を破棄。
-    let secure = session_cfg.secure;
+    let secure = state.config.session.secure;
     let jar = jar
-        .add(removal_cookie(&session_cfg.cookie_name, secure))
-        .add(removal_cookie(&session_cfg.csrf_cookie_name, secure));
+        .add(removal_cookie(SESSION_COOKIE, secure))
+        .add(removal_cookie(CSRF_COOKIE, secure));
 
     Ok((jar, Json(LogoutResponse { end_session_url })))
 }

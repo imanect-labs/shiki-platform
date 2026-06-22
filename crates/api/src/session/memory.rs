@@ -39,6 +39,24 @@ impl SessionStore for MemorySessionStore {
         Ok(())
     }
 
+    async fn update_if_present(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+        record: &SessionRecord,
+        _ttl: Duration,
+    ) -> Result<bool, SessionError> {
+        use std::collections::hash_map::Entry;
+        let mut guard = self.inner.lock().unwrap();
+        match guard.entry(Self::key(tenant_id, session_id)) {
+            Entry::Occupied(mut e) => {
+                e.insert(record.clone());
+                Ok(true)
+            }
+            Entry::Vacant(_) => Ok(false),
+        }
+    }
+
     async fn get(
         &self,
         tenant_id: &str,

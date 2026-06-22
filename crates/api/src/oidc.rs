@@ -20,6 +20,16 @@ pub enum OidcError {
     Status { status: u16, body: String },
 }
 
+impl OidcError {
+    /// 4xx（invalid_grant 等、refresh token が無効/失効）か。
+    ///
+    /// `true` ならセッションを破棄してよい。`false`（transport/5xx）は一過性障害として
+    /// セッションを破棄せず継続/リトライさせるための判定に使う。
+    pub fn is_client_error(&self) -> bool {
+        matches!(self, OidcError::Status { status, .. } if (400..500).contains(status))
+    }
+}
+
 /// OIDC token エンドポイントの応答（必要な項目のみ）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct TokenResponse {

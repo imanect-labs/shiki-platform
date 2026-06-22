@@ -53,6 +53,28 @@ impl SessionStore for RedisSessionStore {
         Ok(())
     }
 
+    async fn update_if_present(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+        record: &SessionRecord,
+        ttl: Duration,
+    ) -> Result<bool, SessionError> {
+        let json = serde_json::to_string(record).map_err(|e| SessionError::Serde(e.to_string()))?;
+        let mut conn = self.conn.clone();
+        // SET key val EX <ttl> XX: キーが既に存在する時のみ書き込む（無ければ nil を返す）。
+        let result: Option<String> = redis::cmd("SET")
+            .arg(Self::key(tenant_id, session_id))
+            .arg(json)
+            .arg("EX")
+            .arg(ttl.as_secs())
+            .arg("XX")
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| SessionError::Backend(e.to_string()))?;
+        Ok(result.is_some())
+    }
+
     async fn get(
         &self,
         tenant_id: &str,

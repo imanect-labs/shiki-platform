@@ -15,7 +15,7 @@ use crate::{
     extract::resolve_tenant_id,
     middleware::{auth::verify_access_token, claims},
     oidc,
-    session::{new_opaque_token, SessionRecord},
+    session::{new_opaque_token, SessionRecord, CSRF_COOKIE, SESSION_COOKIE},
     state::AppState,
 };
 
@@ -87,14 +87,14 @@ pub async fn callback(
     let max_age = ttl_secs as i64;
     let jar = jar
         .add(build_cookie(
-            &state.config.session.cookie_name,
+            SESSION_COOKIE,
             session_id,
             true,
             secure,
             max_age,
         ))
         .add(build_cookie(
-            &state.config.session.csrf_cookie_name,
+            CSRF_COOKIE,
             csrf_token,
             false,
             secure,

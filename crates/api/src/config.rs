@@ -88,10 +88,6 @@ pub struct AuthConfig {
 pub struct SessionConfig {
     /// Redis 接続 URL（例 `redis://redis:6379`）。
     pub redis_url: String,
-    /// セッション Cookie 名（不透明 session id を運ぶ）。既定 `"shiki_session"`。
-    pub cookie_name: String,
-    /// CSRF Cookie 名（double-submit 用・JS から読めるよう httpOnly にしない）。既定 `"shiki_csrf"`。
-    pub csrf_cookie_name: String,
     /// セッション TTL（秒）。既定 86400（24h）。
     pub ttl_secs: u64,
     /// Cookie の `Secure` 属性。本番(HTTPS)は true、ローカル HTTP 開発のみ false。既定 true。
@@ -238,8 +234,6 @@ fn defaults() -> serde_json::Value {
         },
         "session": {
             "redis_url": "redis://localhost:6379",
-            "cookie_name": "shiki_session",
-            "csrf_cookie_name": "shiki_csrf",
             "ttl_secs": 86400,
             "secure": true,
             "refresh_leeway_secs": 60,
@@ -364,8 +358,6 @@ mod tests {
     fn session(ttl_secs: u64, refresh_leeway_secs: i64) -> SessionConfig {
         SessionConfig {
             redis_url: "redis://localhost:6379".into(),
-            cookie_name: "shiki_session".into(),
-            csrf_cookie_name: "shiki_csrf".into(),
             ttl_secs,
             secure: true,
             refresh_leeway_secs,

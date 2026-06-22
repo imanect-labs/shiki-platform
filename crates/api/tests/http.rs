@@ -72,8 +72,6 @@ fn base_config() -> AppConfig {
         },
         session: SessionConfig {
             redis_url: "redis://localhost:6379".into(),
-            cookie_name: "shiki_session".into(),
-            csrf_cookie_name: "shiki_csrf".into(),
             ttl_secs: 86400,
             secure: false,
             refresh_leeway_secs: 60,
@@ -147,13 +145,23 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-/// refresh 用のモック OIDC token エンドポイントを立て、内部 base URL を返す。
-async fn spawn_token_server() -> String {
+/// 署名なしの JWT 形状トークン（refresh の backchannel 応答を模す。claims を載せる）。
+fn fake_jwt(claims: serde_json::Value) -> String {
+    use base64::Engine;
+    let enc = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let header = enc(br#"{"alg":"none","typ":"JWT"}"#);
+    let payload = enc(serde_json::to_vec(&claims).unwrap().as_slice());
+    format!("{header}.{payload}.sig")
+}
+
+/// 任意の status/body を返すモック OIDC token エンドポイントを立て、内部 base URL を返す。
+async fn spawn_token_server(status: StatusCode, body: serde_json::Value) -> String {
     use axum::{routing::post, Json, Router};
     let app = Router::new().route(
         "/realms/shiki/protocol/openid-connect/token",
-        post(|| async {
-            Json(serde_json::json!({ "access_token": "refreshed-access", "expires_in": 3600 }))
+        post(move || {
+            let body = body.clone();
+            async move { (status, Json(body)) }
         }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -234,8 +242,17 @@ async fn revoked_session_is_immediately_unauthorized() {
 
 #[tokio::test]
 async fn expired_access_token_is_refreshed_and_continues() {
-    // access token 期限切れでも refresh が成功すれば downstream は 401 にならない。
-    let token_base = spawn_token_server().await;
+    // access token 期限切れでも refresh が成功すれば downstream は 401 にならず、
+    // principal は新トークンのクレームへ追従する。
+    let new_access = fake_jwt(serde_json::json!({
+        "sub": "00000000-0000-0000-0000-000000000001",
+        "groups": ["/neworg"],
+    }));
+    let token_base = spawn_token_server(
+        StatusCode::OK,
+        serde_json::json!({ "access_token": new_access, "expires_in": 3600 }),
+    )
+    .await;
     let store = Arc::new(MemorySessionStore::new());
     store
         .put(
@@ -259,10 +276,95 @@ async fn expired_access_token_is_refreshed_and_continues() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // セッションがローテーション更新されている。
+    // セッションがローテーション更新され、principal が新クレームへ追従している。
     let updated = store.get("default", "sid-exp").await.unwrap().unwrap();
-    assert_eq!(updated.access_token, "refreshed-access");
     assert!(updated.access_expires_at > now());
+    assert_eq!(updated.principal.groups, vec!["/neworg".to_string()]);
+}
+
+#[tokio::test]
+async fn transient_refresh_failure_keeps_session_when_access_still_valid() {
+    // token endpoint が 5xx（一過性）でも、access がまだ有効ならセッションを破棄せず継続。
+    let token_base = spawn_token_server(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        serde_json::json!({ "error": "temporarily_unavailable" }),
+    )
+    .await;
+    let store = Arc::new(MemorySessionStore::new());
+    // leeway(60) 内だが未失効（残り 30 秒）。
+    store
+        .put(
+            "default",
+            "sid-tr",
+            &session_record(now() + 30, Some("refresh-token"), "csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with(store.clone(), Some(token_base)));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/me")
+                .header(COOKIE, "shiki_session=sid-tr")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // 一過性障害ではセッションを破棄しない。
+    assert!(store.get("default", "sid-tr").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn update_if_present_does_not_resurrect_deleted_session() {
+    // logout 等で削除済みのセッションを refresh の書き戻しで復活させない（即時失効の保証）。
+    let store = MemorySessionStore::new();
+    let rec = session_record(now() + 3600, Some("rt"), "c");
+    store
+        .put("default", "sid", &rec, Duration::from_secs(3600))
+        .await
+        .unwrap();
+    store.delete("default", "sid").await.unwrap();
+    // 削除後の update_if_present は false（作成しない）。
+    let updated = store
+        .update_if_present("default", "sid", &rec, Duration::from_secs(3600))
+        .await
+        .unwrap();
+    assert!(!updated);
+    assert!(store.get("default", "sid").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn auth_session_reports_dead_session_as_unauthenticated() {
+    use axum::http::header::COOKIE as COOKIE_H;
+    let store = Arc::new(MemorySessionStore::new());
+    // access 期限切れ＋refresh 無し＝死にセッション。
+    store
+        .put(
+            "default",
+            "sid-dead",
+            &session_record(now() - 10, None, "csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with(store, None));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/auth/session")
+                .header(COOKIE_H, "shiki_session=sid-dead")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("\"authenticated\":false"), "body={text}");
 }
 
 #[tokio::test]

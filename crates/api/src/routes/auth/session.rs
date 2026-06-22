@@ -5,7 +5,7 @@ use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
 
 use super::session_tenant_scope;
-use crate::{error::ApiError, state::AppState};
+use crate::{error::ApiError, session::SESSION_COOKIE, state::AppState};
 
 #[derive(Debug, Serialize)]
 pub struct SessionStatus {
@@ -17,15 +17,18 @@ pub async fn session(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> Result<Json<SessionStatus>, ApiError> {
-    let session_cfg = &state.config.session;
     let tenant_id = session_tenant_scope(&state.config.auth)?;
 
-    let authenticated = match jar.get(&session_cfg.cookie_name) {
-        Some(cookie) => state
-            .sessions
-            .get(&tenant_id, cookie.value())
-            .await?
-            .is_some(),
+    // require_session と同じ「使えるか」を返す: access がまだ有効、または refresh で
+    // 継続可能（refresh token 保持）なセッションのみ authenticated=true とする。
+    // これをしないと、access 期限切れ＋refresh 無しの死にセッションを true と誤報告し、
+    // 次の保護ルートで即 401 になる不整合を起こす。
+    let now = chrono::Utc::now().timestamp();
+    let authenticated = match jar.get(SESSION_COOKIE) {
+        Some(cookie) => match state.sessions.get(&tenant_id, cookie.value()).await? {
+            Some(record) => record.access_expires_at > now || record.refresh_token.is_some(),
+            None => false,
+        },
         None => false,
     };
 

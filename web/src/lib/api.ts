@@ -6,10 +6,14 @@ export type MeResponse = components["schemas"]["MeResponse"];
 /// 同一オリジンの BFF プロキシ経由で shiki-server を叩く（Next rewrites で /api/* → server）。
 const API_BASE = "/api";
 
+/// CSRF Cookie 名。サーバの定数 `crate::session::CSRF_COOKIE`（"shiki_csrf"）と一致させる契約。
+/// サーバ側も設定不可の固定値にしてあるため、ここをハードコードしてもドリフトしない。
+const CSRF_COOKIE = "shiki_csrf";
+
 /// double-submit CSRF 用に CSRF Cookie の値を読む（httpOnly ではないので JS から読める）。
 export function csrfToken(): string | undefined {
   if (typeof document === "undefined") return undefined;
-  const match = document.cookie.match(/(?:^|;\s*)shiki_csrf=([^;]+)/);
+  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${CSRF_COOKIE}=([^;]+)`));
   return match ? decodeURIComponent(match[1]) : undefined;
 }
 
