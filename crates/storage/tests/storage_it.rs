@@ -328,8 +328,11 @@ async fn storage_end_to_end() {
         "削除で refcount 減"
     );
     assert!(
-        service.get_metadata(&actx, file.id, None).await.is_err(),
-        "削除後は取得不可"
+        matches!(
+            service.get_metadata(&actx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "削除後は NotFound であること"
     );
     let restored = service
         .restore_file(&actx, file.id, None)
