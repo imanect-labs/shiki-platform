@@ -57,6 +57,10 @@ jobs:
             done
             [ -n "$ok" ] || { echo "$svc が healthy になりませんでした"; exit 1; }
           done
+      # --no-report は llvm-cov 標準のクリーンアップを抑止するため、rust-cache が復元した
+      # 過去の profraw/profdata が混入し得る。計測前に明示的に掃除して当該 run のみを反映させる。
+      - name: clean stale coverage artifacts
+        run: cargo llvm-cov clean --workspace
       # 単体＋結合テストをまとめて計測（OPENFGA_TEST_URL / REDIS_TEST_URL を見て結合テストが実走する）。
       - name: test + coverage (cargo-llvm-cov)
         env:
