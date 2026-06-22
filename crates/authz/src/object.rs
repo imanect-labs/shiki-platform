@@ -66,4 +66,117 @@ mod tests {
         );
         assert_eq!(Subject::user("alice").as_str(), "user:alice");
     }
+
+    // --- FgaObject ---
+
+    #[test]
+    fn fga_object_new_uses_object_type_prefix() {
+        // new は object type の文字列表現を prefix として `type:id` を組むこと。
+        assert_eq!(FgaObject::new(ObjectType::User, "u1").as_str(), "user:u1");
+        assert_eq!(
+            FgaObject::new(ObjectType::Department, "d1").as_str(),
+            "department:d1"
+        );
+        assert_eq!(
+            FgaObject::new(ObjectType::Organization, "o1").as_str(),
+            "organization:o1"
+        );
+    }
+
+    #[test]
+    fn fga_object_department_constructor() {
+        // department ショートカットコンストラクタ。
+        assert_eq!(FgaObject::department("sales").as_str(), "department:sales");
+    }
+
+    #[test]
+    fn fga_object_display_matches_as_str() {
+        // Display 実装は as_str と一致すること。
+        let obj = FgaObject::organization("acme");
+        assert_eq!(obj.to_string(), "organization:acme");
+        assert_eq!(obj.to_string(), obj.as_str());
+    }
+
+    #[test]
+    fn fga_object_empty_id() {
+        // id が空でも `type:` 形式になること（境界）。
+        assert_eq!(FgaObject::organization("").as_str(), "organization:");
+    }
+
+    #[test]
+    fn fga_object_id_with_colon() {
+        // id に colon を含んでいてもそのまま連結されること（境界）。
+        assert_eq!(
+            FgaObject::new(ObjectType::User, "ns:alice").as_str(),
+            "user:ns:alice"
+        );
+    }
+
+    #[test]
+    fn fga_object_eq_and_hash() {
+        // 同じ type/id は等価、異なれば非等価。Hash でも区別されること。
+        use std::collections::HashSet;
+        let a = FgaObject::organization("acme");
+        let b = FgaObject::organization("acme");
+        let c = FgaObject::organization("other");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        let mut set = HashSet::new();
+        set.insert(a.clone());
+        set.insert(b);
+        set.insert(c);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn fga_object_clone_is_equal() {
+        // Clone は等価なオブジェクトを生むこと。
+        let a = FgaObject::department("d1");
+        assert_eq!(a.clone(), a);
+    }
+
+    // --- Subject ---
+
+    #[test]
+    fn subject_user_prefix() {
+        // Subject::user は常に `user:` prefix を付けること。
+        assert_eq!(Subject::user("bob").as_str(), "user:bob");
+    }
+
+    #[test]
+    fn subject_display_matches_as_str() {
+        // Display 実装は as_str と一致すること。
+        let s = Subject::user("alice");
+        assert_eq!(s.to_string(), "user:alice");
+        assert_eq!(s.to_string(), s.as_str());
+    }
+
+    #[test]
+    fn subject_empty_id() {
+        // 空 id でも `user:` 形式（境界）。
+        assert_eq!(Subject::user("").as_str(), "user:");
+    }
+
+    #[test]
+    fn subject_eq_and_hash() {
+        // 等価性と Hash の区別を確認する。
+        use std::collections::HashSet;
+        let a = Subject::user("alice");
+        let b = Subject::user("alice");
+        let c = Subject::user("bob");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        let mut set = HashSet::new();
+        set.insert(a.clone());
+        set.insert(b);
+        set.insert(c);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn subject_clone_is_equal() {
+        // Clone は等価。
+        let s = Subject::user("x");
+        assert_eq!(s.clone(), s);
+    }
 }

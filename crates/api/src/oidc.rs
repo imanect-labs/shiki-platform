@@ -109,3 +109,141 @@ async fn post_token(
         .await
         .map_err(|e| OidcError::Transport(e.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pkce_challenge_known_vector() {
+        // RFC 7636 Appendix B の既知ベクタで S256 導出を固定する。
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let challenge = pkce_challenge(verifier);
+        assert_eq!(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+    }
+
+    #[test]
+    fn pkce_challenge_is_url_safe_no_pad() {
+        // 出力は base64url(no-pad)。S256 は 32 バイト → 43 文字。
+        let challenge = pkce_challenge("some-random-verifier-value");
+        assert_eq!(challenge.len(), 43);
+        assert!(!challenge.contains('='));
+        assert!(challenge
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn pkce_challenge_is_deterministic() {
+        // 同じ verifier からは常に同じ challenge が出る。
+        assert_eq!(pkce_challenge("v"), pkce_challenge("v"));
+        assert_ne!(pkce_challenge("a"), pkce_challenge("b"));
+    }
+
+    #[test]
+    fn is_client_error_true_for_4xx() {
+        // 4xx は refresh token 無効/失効＝セッション破棄してよい。
+        assert!(OidcError::Status {
+            status: 400,
+            body: String::new()
+        }
+        .is_client_error());
+        assert!(OidcError::Status {
+            status: 499,
+            body: String::new()
+        }
+        .is_client_error());
+    }
+
+    #[test]
+    fn is_client_error_false_for_5xx_and_transport() {
+        // 5xx / transport は一過性障害＝セッションを破棄しない。
+        assert!(!OidcError::Status {
+            status: 500,
+            body: String::new()
+        }
+        .is_client_error());
+        assert!(!OidcError::Status {
+            status: 503,
+            body: String::new()
+        }
+        .is_client_error());
+        assert!(!OidcError::Transport("net".into()).is_client_error());
+    }
+
+    #[test]
+    fn is_client_error_boundary_at_400_and_399() {
+        // 境界: 400 は 4xx、399 は範囲外（3xx 想定）。
+        assert!(OidcError::Status {
+            status: 400,
+            body: String::new()
+        }
+        .is_client_error());
+        assert!(!OidcError::Status {
+            status: 399,
+            body: String::new()
+        }
+        .is_client_error());
+    }
+
+    #[test]
+    fn token_response_full_deserialize() {
+        // 全フィールドありの応答を解釈する。
+        let resp: TokenResponse = serde_json::from_value(serde_json::json!({
+            "access_token": "at",
+            "refresh_token": "rt",
+            "expires_in": 300,
+            "id_token": "it",
+        }))
+        .unwrap();
+        assert_eq!(resp.access_token, "at");
+        assert_eq!(resp.refresh_token.as_deref(), Some("rt"));
+        assert_eq!(resp.expires_in, 300);
+        assert_eq!(resp.id_token.as_deref(), Some("it"));
+    }
+
+    #[test]
+    fn token_response_optional_fields_default_to_none() {
+        // refresh_token / id_token は任意（default None）。
+        let resp: TokenResponse = serde_json::from_value(serde_json::json!({
+            "access_token": "at",
+            "expires_in": 60,
+        }))
+        .unwrap();
+        assert_eq!(resp.refresh_token, None);
+        assert_eq!(resp.id_token, None);
+    }
+
+    #[test]
+    fn token_response_requires_expires_in() {
+        // expires_in は必須（欠落を 0 で受理すると即期限切れになるため fail-fast）。
+        let result: Result<TokenResponse, _> = serde_json::from_value(serde_json::json!({
+            "access_token": "at",
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn token_response_requires_access_token() {
+        // access_token も必須。
+        let result: Result<TokenResponse, _> = serde_json::from_value(serde_json::json!({
+            "expires_in": 60,
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn oidc_error_display() {
+        // 表示文言（ログ用）。Status はステータスとボディを含む。
+        let status = OidcError::Status {
+            status: 400,
+            body: "invalid_grant".into(),
+        };
+        let msg = status.to_string();
+        assert!(msg.contains("400"));
+        assert!(msg.contains("invalid_grant"));
+        assert!(OidcError::Transport("refused".into())
+            .to_string()
+            .contains("refused"));
+    }
+}

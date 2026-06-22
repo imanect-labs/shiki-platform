@@ -9,6 +9,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 既定の GITHUB_TOKEN を最小権限に絞る（各ジョブで必要に応じて昇格する）。
+permissions:
+  contents: read
+
 jobs:
   rust:
     name: Rust (fmt / clippy / test / build)
@@ -24,6 +28,107 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all
       - run: cargo build --all
+
+  coverage:
+    name: Coverage (cargo-llvm-cov, gate 80%)
+    runs-on: ubuntu-latest
+    # カバレッジ表を PR にコメントするため pull-requests:write を昇格付与する。
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # live 依存（OpenFGA / Redis）を起動し、結合テストのカバレッジも算入する。
+      # これにより fga_http / client（OpenFGA 経路）と redis_store（Redis 経路）も
+      # 単体テストでは届かない実経路をカバーした上で全体カバレッジを評価する。
+      - name: compose up (openfga + redis)
+        working-directory: deploy/compose
+        run: |
+          cp .env.example .env
+          docker compose up -d openfga redis
+      - name: wait for openfga & redis healthy
+        working-directory: deploy/compose
+        run: |
+          for svc in openfga redis; do
+            ok=""
+            for i in $(seq 1 60); do
+              s=$(docker compose ps "$svc" --format '{{.Health}}' || true)
+              echo "[$svc] attempt $i: health=$s"
+              [ "$s" = "healthy" ] && { ok=1; break; }
+              sleep 5
+            done
+            [ -n "$ok" ] || { echo "$svc が healthy になりませんでした"; exit 1; }
+          done
+      # --no-report は llvm-cov 標準のクリーンアップを抑止するため、rust-cache が復元した
+      # 過去の profraw/profdata が混入し得る。計測前に明示的に掃除して当該 run のみを反映させる。
+      - name: clean stale coverage artifacts
+        run: cargo llvm-cov clean --workspace
+      # 単体＋結合テストをまとめて計測（OPENFGA_TEST_URL / REDIS_TEST_URL を見て結合テストが実走する）。
+      - name: test + coverage (cargo-llvm-cov)
+        env:
+          OPENFGA_TEST_URL: http://localhost:8082
+          REDIS_TEST_URL: redis://localhost:6379
+        run: cargo llvm-cov --all --no-report
+      - name: coverage report (lcov + summary + job summary)
+        run: |
+          cargo llvm-cov report --lcov --output-path lcov.info
+          # サマリ表を再利用するためファイルに保存（Job Summary と PR コメントの両方で使う）。
+          cargo llvm-cov report --summary-only | tee coverage-summary.txt
+          {
+            echo '### Rust test coverage'
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      # カバレッジ表を PR にコメントする（マーカーで既存コメントを更新＝スティッキー）。
+      # ゲート fail 時も結果が見えるよう always() で実行する。push(main) では PR が無いのでスキップ。
+      - name: comment coverage table on PR
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          [ -f coverage-summary.txt ] || { echo "サマリ未生成のためスキップ"; exit 0; }
+          marker='<!-- coverage-report -->'
+          {
+            echo "$marker"
+            echo '## 📊 Rust test coverage'
+            echo "閾値ゲート: 行 **80%** 以上（\`cargo llvm-cov --fail-under-lines 80\`）"
+            echo
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } > body.md
+          body="$(cat body.md)"
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            --jq "[.[] | select(.user.login==\"github-actions[bot]\" and (.body | startswith(\"${marker}\")))] | last | .id")
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -X PATCH -f body="$body" >/dev/null
+            echo "既存コメントを更新: $existing"
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -f body="$body" >/dev/null
+            echo "新規コメントを作成"
+          fi
+      # 全体カバレッジ 80% の絶対床ゲート。下回ったら CI を fail させる（カバレッジを下げない）。
+      # コメント投稿後に判定する（fail 時もコメントは投稿済み）。
+      - name: coverage gate (fail under 80% lines)
+        run: cargo llvm-cov report --fail-under-lines 80
+      - name: upload coverage (lcov)
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error
+      - name: dump compose logs on failure
+        if: failure()
+        working-directory: deploy/compose
+        run: docker compose logs --no-color | tail -200
 
   web:
     name: Web (gen:api / lint / build)
