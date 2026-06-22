@@ -267,6 +267,98 @@ async fn storage_end_to_end() {
         "元 org の refcount は別 org の影響を受けない"
     );
 
+    // --- P2-4: presigned PUT は宣言サイズに束縛される（過少申告で巨大 PUT は弾かれる） ---
+    {
+        let ticket = service
+            .begin_upload(
+                &actx,
+                None,
+                "wrong-size.txt",
+                "text/plain",
+                &sha,
+                size + 100,
+                None,
+            )
+            .await
+            .expect("begin_upload wrong size");
+        // 署名は content-length=size+100 だが本文は size バイト → MinIO が拒否する。
+        let resp = http
+            .put(&ticket.upload_url)
+            .body(content.to_vec())
+            .send()
+            .await
+            .expect("PUT send");
+        assert!(
+            resp.status().is_client_error() || resp.status().is_server_error(),
+            "サイズ不一致の PUT は拒否される: {}",
+            resp.status()
+        );
+    }
+
+    // --- P2-3: finalize は宣言した本人のみ（upload_id を知る別ユーザーは横取り不可） ---
+    {
+        let uid_c = format!("ituser{}", Uuid::new_v4().simple());
+        let cctx = make_ctx(&org, &uid_c);
+        authz
+            .write_tuple(
+                &Subject::user(&uid_c),
+                Relation::Member,
+                &FgaObject::organization(&org),
+            )
+            .await
+            .unwrap();
+        let other = b"steal me bytes";
+        let other_sha = sha256_hex(other);
+        let ticket = service
+            .begin_upload(
+                &actx,
+                None,
+                "secret.txt",
+                "text/plain",
+                &other_sha,
+                other.len() as i64,
+                None,
+            )
+            .await
+            .expect("declare by actx");
+        http.put(&ticket.upload_url)
+            .body(other.to_vec())
+            .send()
+            .await
+            .expect("PUT")
+            .error_for_status()
+            .expect("PUT ok");
+        // 別ユーザー（uid_c）が finalize → created_by 不一致で NotFound。
+        let stolen = service.finalize_upload(&cctx, ticket.upload_id, None).await;
+        assert!(matches!(stolen, Err(StorageError::NotFound)), "{stolen:?}");
+        // 本人なら finalize できる。
+        service
+            .finalize_upload(&actx, ticket.upload_id, None)
+            .await
+            .expect("owner finalize");
+    }
+
+    // --- P2-6: viewer 権限の無い同 org ユーザーには存在を秘匿（403 でなく NotFound） ---
+    {
+        let uid_d = format!("ituser{}", Uuid::new_v4().simple());
+        let dctx = make_ctx(&org, &uid_d);
+        authz
+            .write_tuple(
+                &Subject::user(&uid_d),
+                Relation::Member,
+                &FgaObject::organization(&org),
+            )
+            .await
+            .unwrap();
+        let hidden = service.get_metadata(&dctx, file.id, None).await;
+        assert!(matches!(hidden, Err(StorageError::NotFound)), "{hidden:?}");
+        let hidden_dl = service.issue_download_url(&dctx, file.id, None).await;
+        assert!(
+            matches!(hidden_dl, Err(StorageError::NotFound)),
+            "{hidden_dl:?}"
+        );
+    }
+
     // --- move（フォルダを直接用意し、closure を検証） ---
     let folder_id: Uuid = sqlx::query_scalar(
         "INSERT INTO node (org, tenant_id, kind, name, created_by) \

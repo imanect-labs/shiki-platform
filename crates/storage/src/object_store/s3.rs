@@ -161,7 +161,12 @@ impl ObjectStore for S3ObjectStore {
         Ok(())
     }
 
-    async fn presign_put(&self, key: &str, ttl: Duration) -> Result<String, ObjectStoreError> {
+    async fn presign_put(
+        &self,
+        key: &str,
+        ttl: Duration,
+        content_length: i64,
+    ) -> Result<String, ObjectStoreError> {
         let pc = PresigningConfig::expires_in(ttl)
             .map_err(|e| ObjectStoreError::Presign(e.to_string()))?;
         let req = self
@@ -169,6 +174,8 @@ impl ObjectStore for S3ObjectStore {
             .put_object()
             .bucket(&self.bucket)
             .key(key)
+            // content-length を署名に含め、宣言サイズと異なる本文の PUT を弾く。
+            .content_length(content_length)
             .presigned(pc)
             .await
             .map_err(|e| ObjectStoreError::Presign(format!("put_object presign: {e}")))?;

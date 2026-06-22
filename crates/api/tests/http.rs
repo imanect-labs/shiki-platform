@@ -71,6 +71,7 @@ impl storage::object_store::ObjectStore for FakeStore {
         &self,
         _key: &str,
         _ttl: Duration,
+        _content_length: i64,
     ) -> Result<String, storage::ObjectStoreError> {
         Ok("http://test/put".into())
     }

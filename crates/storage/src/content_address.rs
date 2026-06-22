@@ -45,8 +45,16 @@ pub fn blob_object_key(org: &str, sha256: &str) -> String {
 }
 
 /// 昇格前 staging オブジェクトのキー（`{org}/staging/{upload_id}`）。
+/// クライアントが presigned PUT で書き込む唯一のキー（可変）。
 pub fn staging_object_key(org: &str, upload_id: &str) -> String {
     format!("{org}/staging/{upload_id}")
+}
+
+/// finalize 時の不変スナップショットキー（`{org}/incoming/{upload_id}`）。
+/// staging を server-side copy した直後はクライアントが触れないため、
+/// ハッシュ検証と content-addressed への昇格をこのキー基準で race-free に行う（TOCTOU 回避）。
+pub fn incoming_object_key(org: &str, upload_id: &str) -> String {
+    format!("{org}/incoming/{upload_id}")
 }
 
 /// sha256 hex として妥当か（64 桁の小文字 16 進）。

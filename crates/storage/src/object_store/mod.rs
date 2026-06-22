@@ -30,7 +30,14 @@ pub trait ObjectStore: Send + Sync {
     async fn ensure_bucket(&self) -> Result<(), ObjectStoreError>;
 
     /// アップロード用 presigned PUT URL を発行する（staging キー宛て）。
-    async fn presign_put(&self, key: &str, ttl: Duration) -> Result<String, ObjectStoreError>;
+    /// `content_length` を署名に含め、クライアントが宣言サイズと異なるバイト数を
+    /// アップロードできないように束縛する（巨大オブジェクトの押し込みを防ぐ）。
+    async fn presign_put(
+        &self,
+        key: &str,
+        ttl: Duration,
+        content_length: i64,
+    ) -> Result<String, ObjectStoreError>;
 
     /// ダウンロード用 presigned GET URL を発行する。
     /// `filename`/`content_type` は response ヘッダ上書き（ブラウザ DL の挙動制御）。

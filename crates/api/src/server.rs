@@ -16,10 +16,20 @@ use crate::{health, middleware::require_session, openapi, routes, state::AppStat
 
 /// アプリの axum ルータを構築する（テストからも利用）。
 pub fn build_router(state: AppState) -> Router {
-    // 保護ルート: require_session（セッション Cookie 検証 + CSRF + refresh）を通過しないと到達できない。
-    let protected = Router::new()
+    let session_layer = middleware::from_fn_with_state(state.clone(), require_session);
+    let standard_timeout =
+        || TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(30));
+
+    // 標準保護ルート（短い 30s タイムアウト）。
+    let protected_standard = Router::new()
         .route("/me", get(routes::get_me))
-        // ファイル CRUD（バイトは presigned URL でクライアント↔MinIO 直転送）。
+        .route_layer(session_layer.clone())
+        .layer(standard_timeout());
+
+    // ファイルルート: finalize は staging を server-side でハッシュ＋コピーするため 30s では
+    // 足りない（大容量で 408 になり、バイトは MinIO にあるのに file が作れない事故を防ぐ）。
+    // 長め(300s)のタイムアウトを当て、グローバル 30s からは除外する。
+    let protected_files = Router::new()
         .route("/files", post(routes::files::begin_upload))
         .route(
             "/files/{id}",
@@ -33,9 +43,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/files/{id}/download-url", get(routes::files::download_url))
         .route("/files/{id}/restore", post(routes::files::restore_file))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_session,
+        .route_layer(session_layer)
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(300),
         ));
 
     // 公開ルート: 認証不要。BFF 認証エンドポイント（/auth/*）もここ
@@ -47,17 +58,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/callback", get(routes::auth::callback))
         .route("/auth/logout", post(routes::auth::logout))
         .route("/auth/session", get(routes::auth::session))
-        .route("/api-docs/openapi.json", get(openapi_handler));
+        .route("/api-docs/openapi.json", get(openapi_handler))
+        .layer(standard_timeout());
 
     let router = public
-        .merge(protected)
+        .merge(protected_standard)
+        .merge(protected_files)
         // observe は span 内で動く必要があるため TraceLayer より内側（先に追加）。
         .layer(middleware::from_fn(telemetry::observe))
-        .layer(TraceLayer::new_for_http().make_span_with(make_request_span))
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(30),
-        ));
+        .layer(TraceLayer::new_for_http().make_span_with(make_request_span));
 
     // CORS: 同一オリジン配信が既定（レイヤ無し）。別オリジン dev のみ、設定された
     // オリジンに限定して credential 付きを許可する（permissive はセッション Cookie と

@@ -16,10 +16,12 @@ use uuid::Uuid;
 
 use crate::{
     audit::{self, AuditEntry, AuditRecorder, Decision},
-    content_address::{blob_object_key, is_valid_sha256_hex, staging_object_key},
+    content_address::{
+        blob_object_key, incoming_object_key, is_valid_sha256_hex, staging_object_key,
+    },
     error::StorageError,
     model::{DownloadTicket, Node, NodeKind, UploadTicket},
-    object_store::{ObjectStore, ObjectStoreError},
+    object_store::ObjectStore,
 };
 
 /// `node` テーブルの選択カラム（NodeRow と一致させる）。
@@ -166,7 +168,7 @@ impl StorageService {
 
         let upload_url = self
             .store
-            .presign_put(&staging_key, self.presign_put_ttl)
+            .presign_put(&staging_key, self.presign_put_ttl, declared_size)
             .await?;
         self.audit
             .record(
@@ -194,12 +196,14 @@ impl StorageService {
         upload_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
+        // 所有者束縛: アップロードを宣言した本人のみ finalize できる（upload_id 漏洩での横取り防止）。
         let pending: PendingRow = sqlx::query_as(
             "SELECT parent_id, name, content_type, declared_sha256, declared_size, staging_key \
-             FROM pending_upload WHERE upload_id = $1 AND org = $2",
+             FROM pending_upload WHERE upload_id = $1 AND org = $2 AND created_by = $3",
         )
         .bind(upload_id)
         .bind(&ctx.org)
+        .bind(&ctx.principal.id)
         .fetch_optional(&self.db)
         .await?
         .ok_or(StorageError::NotFound)?;
@@ -235,9 +239,20 @@ impl StorageService {
             }
         }
 
-        // staging を server-side で再ハッシュし、宣言値と照合（client バイトを信頼しない）。
-        let (actual_sha, actual_size) = self.hash_staging(&pending.staging_key).await?;
+        // TOCTOU 回避: staging はクライアントが presigned PUT で上書きでき得るため、
+        // 不変な incoming へ server-side copy し、以降の検証・昇格は incoming 基準で行う。
+        if !self.store.exists(&pending.staging_key).await? {
+            return Err(StorageError::Integrity(format!(
+                "staging オブジェクトが存在しません（アップロード未完了 label={label}）"
+            )));
+        }
+        let incoming_key = incoming_object_key(&ctx.org, &label);
+        self.store.copy(&pending.staging_key, &incoming_key).await?;
+
+        // 不変スナップショットを再ハッシュし、宣言値と照合（client バイトを信頼しない）。
+        let (actual_sha, actual_size) = self.store.read_and_hash(&incoming_key).await?;
         if actual_sha != pending.declared_sha256 || actual_size as i64 != pending.declared_size {
+            let _ = self.store.delete(&incoming_key).await;
             let _ = self.store.delete(&pending.staging_key).await;
             let _ = sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
                 .bind(upload_id)
@@ -248,53 +263,91 @@ impl StorageService {
             )));
         }
 
-        // content-addressed キーへ昇格（server-side copy・バイトはアプリを通らない）。
+        // 既存の有効 blob を上書きしない（content-addressed への昇格は新規 blob の時だけ）。
+        // 既存 blob があるなら finalize は実バイトを所持した上での正当な dedup。
         let final_key = blob_object_key(&ctx.org, &actual_sha);
-        self.store.copy(&pending.staging_key, &final_key).await?;
+        let blob_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM blob WHERE org = $1 AND sha256 = $2)")
+                .bind(&ctx.org)
+                .bind(&actual_sha)
+                .fetch_one(&self.db)
+                .await?;
+        let mut final_copied = false;
+        if !blob_exists {
+            // incoming は不変なので、final へのコピーは宣言ハッシュと必ず一致する。
+            if let Err(e) = self.store.copy(&incoming_key, &final_key).await {
+                let _ = self.store.delete(&incoming_key).await;
+                return Err(e.into());
+            }
+            final_copied = true;
+        }
 
-        let mut tx = self.db.begin().await?;
-        self.bump_blob(
-            &mut tx,
-            &ctx.org,
-            &actual_sha,
-            actual_size as i64,
-            &pending.content_type,
-            &final_key,
-        )
-        .await?;
-        let node = self
-            .create_file_node(
+        // メタ確定（blob upsert + node + pending 削除 + 監査）を 1 txn で。
+        let tx_result: Result<Node, StorageError> = async {
+            let mut tx = self.db.begin().await?;
+            self.bump_blob(
                 &mut tx,
-                ctx,
-                pending.parent_id,
-                &pending.name,
+                &ctx.org,
                 &actual_sha,
                 actual_size as i64,
                 &pending.content_type,
+                &final_key,
             )
             .await?;
-        sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
-            .bind(upload_id)
-            .execute(&mut *tx)
+            let node = self
+                .create_file_node(
+                    &mut tx,
+                    ctx,
+                    pending.parent_id,
+                    &pending.name,
+                    &actual_sha,
+                    actual_size as i64,
+                    &pending.content_type,
+                )
+                .await?;
+            sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
+                .bind(upload_id)
+                .execute(&mut *tx)
+                .await?;
+            audit::record_on(
+                &mut tx,
+                ctx,
+                AuditEntry {
+                    action: "file.upload.finalize",
+                    object_type: "file",
+                    object_id: &node.id.to_string(),
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: json!({ "sha256": actual_sha, "size": actual_size }),
+                },
+            )
             .await?;
-        audit::record_on(
-            &mut tx,
-            ctx,
-            AuditEntry {
-                action: "file.upload.finalize",
-                object_type: "file",
-                object_id: &node.id.to_string(),
-                decision: Decision::Allow,
-                trace_id,
-                metadata: json!({ "sha256": actual_sha, "size": actual_size }),
-            },
-        )
-        .await?;
-        tx.commit().await?;
+            tx.commit().await?;
+            Ok(node)
+        }
+        .await;
+
+        let node = match tx_result {
+            Ok(node) => node,
+            Err(e) => {
+                // DB 失敗（同名衝突等）: 今回コピーした final（孤児 blob）と incoming/staging を掃除。
+                if final_copied {
+                    let _ = self.store.delete(&final_key).await;
+                }
+                let _ = self.store.delete(&incoming_key).await;
+                let _ = self.store.delete(&pending.staging_key).await;
+                let _ = sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
+                    .bind(upload_id)
+                    .execute(&self.db)
+                    .await;
+                return Err(e);
+            }
+        };
 
         self.write_file_tuples_or_compensate(ctx, node.id, pending.parent_id, &actual_sha)
             .await?;
-        let _ = self.store.delete(&pending.staging_key).await; // best-effort 後始末
+        let _ = self.store.delete(&incoming_key).await; // best-effort 後始末
+        let _ = self.store.delete(&pending.staging_key).await;
         Ok(node)
     }
 
@@ -311,12 +364,10 @@ impl StorageService {
         if node.kind != NodeKind::File {
             return Err(StorageError::NotFound);
         }
-        self.require(
+        self.require_read(
             ctx,
-            Relation::Viewer,
             &FgaObject::file(&file_id.to_string()),
             "file.download_url.issue",
-            "file",
             &file_id.to_string(),
             trace_id,
         )
@@ -359,12 +410,10 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
         let node = self.load_node(&ctx.org, file_id, false).await?;
-        self.require(
+        self.require_read(
             ctx,
-            Relation::Viewer,
             &FgaObject::file(&file_id.to_string()),
             "file.metadata.read",
-            "file",
             &file_id.to_string(),
             trace_id,
         )
@@ -520,20 +569,10 @@ impl StorageService {
             },
         )
         .await?;
-        tx.commit().await?;
-
-        // OpenFGA の parent タプルを更新（親が変わった時のみ・失敗は握り潰さない）。
-        // 先に新親を書き、続けて旧親を剥奪する。剥奪失敗を黙殺すると旧親経由で読めてしまう。
+        // OpenFGA の parent タプルは **DB コミット前**に更新し、失敗時は txn をロールバックして
+        // DB とタプルの不整合（旧親経由の漏れ／新親で到達不能）を防ぐ。ロックは保持したまま。
         if parent_changed {
-            if let Some(np) = final_parent {
-                self.authz
-                    .write_tuple(
-                        &Subject::object(&FgaObject::folder(&np.to_string())),
-                        Relation::Parent,
-                        &file_obj,
-                    )
-                    .await?;
-            }
+            // 旧親を先に剥奪 → 新親を付与（途中失敗でも over-permissive にしない）。
             if let Some(op) = old_parent {
                 self.authz
                     .delete_tuple(
@@ -541,9 +580,34 @@ impl StorageService {
                         Relation::Parent,
                         &file_obj,
                     )
-                    .await?;
+                    .await?; // 失敗 → tx は drop でロールバック（移動なし＝整合）
+            }
+            if let Some(np) = final_parent {
+                if let Err(e) = self
+                    .authz
+                    .write_tuple(
+                        &Subject::object(&FgaObject::folder(&np.to_string())),
+                        Relation::Parent,
+                        &file_obj,
+                    )
+                    .await
+                {
+                    // 補償: 先に剥奪した旧親タプルを復元して FGA を移動前に戻し、ロールバックする。
+                    if let Some(op) = old_parent {
+                        let _ = self
+                            .authz
+                            .write_tuple(
+                                &Subject::object(&FgaObject::folder(&op.to_string())),
+                                Relation::Parent,
+                                &file_obj,
+                            )
+                            .await;
+                    }
+                    return Err(StorageError::Authz(e));
+                }
             }
         }
+        tx.commit().await?;
         row_to_node(row)
     }
 
@@ -715,6 +779,39 @@ impl StorageService {
         Ok(())
     }
 
+    /// 読取系の viewer 認可。deny は**存在を秘匿**するため `NotFound` を返す（403/404 で
+    /// 私有ファイルの存在が漏れないようにする・P2-6）。deny の監査は残す。
+    async fn require_read(
+        &self,
+        ctx: &AuthContext,
+        object: &FgaObject,
+        action: &str,
+        object_id: &str,
+        trace_id: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let allowed = self
+            .authz
+            .check(&ctx.subject(), Relation::Viewer, object)
+            .await?;
+        if !allowed {
+            self.audit
+                .record(
+                    ctx,
+                    AuditEntry {
+                        action,
+                        object_type: "file",
+                        object_id,
+                        decision: Decision::Deny,
+                        trace_id,
+                        metadata: json!({ "relation": Relation::Viewer.as_str() }),
+                    },
+                )
+                .await?;
+            return Err(StorageError::NotFound);
+        }
+        Ok(())
+    }
+
     /// 親が存在する生存フォルダであることを確認する。
     async fn ensure_folder(&self, ctx: &AuthContext, id: Uuid) -> Result<(), StorageError> {
         let kind: Option<String> = sqlx::query_scalar(
@@ -854,17 +951,6 @@ impl StorageService {
             return Err(StorageError::Authz(e));
         }
         Ok(())
-    }
-
-    /// staging オブジェクトを server-side で再ハッシュして `(sha256, size)` を返す。
-    async fn hash_staging(&self, staging_key: &str) -> Result<(String, u64), StorageError> {
-        match self.store.read_and_hash(staging_key).await {
-            Ok(digest) => Ok(digest),
-            Err(ObjectStoreError::NotFound(_)) => Err(StorageError::Integrity(
-                "staging オブジェクトが存在しません（アップロード未完了）".into(),
-            )),
-            Err(e) => Err(e.into()),
-        }
     }
 
     /// org スコープでノードを 1 件読む。
