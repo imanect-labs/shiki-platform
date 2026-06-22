@@ -21,6 +21,7 @@ sqlx = { version = "0.8", default-features = false, features = [
     "tls-rustls",
     "postgres",
     "macros",
+    "migrate",
     "chrono",
     "uuid",
 ] }
@@ -67,5 +68,23 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 
+# ストレージ（ObjectStore / content-addressing）
+# S3 互換オブジェクトストア（MinIO）。GCS 実装は Phase 8 で同 trait 裏に追加する。
+aws-config = { version = "1", default-features = false, features = [
+    "behavior-version-latest",
+    "rustls",
+] }
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "behavior-version-latest",
+    "rustls",
+    "rt-tokio",
+] }
+aws-credential-types = "1"
+aws-smithy-types = "1"
+bytes = "1"
+futures = "0.3"
+hex = "0.4"
+
 # 内部クレート
 shiki-authz = { path = "crates/authz" }
+shiki-storage = { path = "crates/storage" }

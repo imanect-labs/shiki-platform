@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use authz::AuthzClient;
 use sqlx::PgPool;
+use storage::StorageService;
 
 use crate::{config::AppConfig, middleware::JwksCache, session::SessionStore};
 
@@ -18,4 +19,6 @@ pub struct AppState {
     pub sessions: Arc<dyn SessionStore>,
     /// OIDC backchannel（token 交換・refresh）用の共有 HTTP クライアント。
     pub http: reqwest::Client,
+    /// ストレージの単一チョークポイント（権限・監査・content-addressing）。
+    pub storage: Arc<StorageService>,
 }

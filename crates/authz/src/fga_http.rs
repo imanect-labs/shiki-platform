@@ -166,7 +166,7 @@ impl FgaHttp {
         Ok(parsed.allowed)
     }
 
-    /// tuple を書き込む（主にテスト・初期データ投入用）。
+    /// tuple を書き込む（owner/parent 付与・初期データ投入等）。
     pub async fn write_tuple(
         &self,
         store_id: &str,
@@ -178,6 +178,25 @@ impl FgaHttp {
         let url = format!("{}/stores/{}/write", self.base_url, store_id);
         let body = serde_json::json!({
             "writes": { "tuple_keys": [{ "user": user, "relation": relation, "object": object }] },
+            "authorization_model_id": model_id,
+        });
+        let resp = self.http.post(&url).json(&body).send().await?;
+        ensure_ok(resp).await?;
+        Ok(())
+    }
+
+    /// tuple を剥奪する（共有解除・ノード削除等）。
+    pub async fn delete_tuple(
+        &self,
+        store_id: &str,
+        model_id: &str,
+        user: &str,
+        relation: &str,
+        object: &str,
+    ) -> Result<(), AuthzError> {
+        let url = format!("{}/stores/{}/write", self.base_url, store_id);
+        let body = serde_json::json!({
+            "deletes": { "tuple_keys": [{ "user": user, "relation": relation, "object": object }] },
             "authorization_model_id": model_id,
         });
         let resp = self.http.post(&url).json(&body).send().await?;

@@ -17,9 +17,26 @@ use crate::{health, middleware::require_session, openapi, routes, state::AppStat
 /// アプリの axum ルータを構築する（テストからも利用）。
 pub fn build_router(state: AppState) -> Router {
     // 保護ルート: require_session（セッション Cookie 検証 + CSRF + refresh）を通過しないと到達できない。
-    let protected = Router::new().route("/me", get(routes::get_me)).route_layer(
-        middleware::from_fn_with_state(state.clone(), require_session),
-    );
+    let protected = Router::new()
+        .route("/me", get(routes::get_me))
+        // ファイル CRUD（バイトは presigned URL でクライアント↔MinIO 直転送）。
+        .route("/files", post(routes::files::begin_upload))
+        .route(
+            "/files/{id}",
+            get(routes::files::get_file)
+                .patch(routes::files::update_file)
+                .delete(routes::files::delete_file),
+        )
+        .route(
+            "/files/{upload_id}/finalize",
+            post(routes::files::finalize_upload),
+        )
+        .route("/files/{id}/download-url", get(routes::files::download_url))
+        .route("/files/{id}/restore", post(routes::files::restore_file))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_session,
+        ));
 
     // 公開ルート: 認証不要。BFF 認証エンドポイント（/auth/*）もここ
     // （セッション確立前に叩くため。logout は内部で CSRF を自己検証する）。

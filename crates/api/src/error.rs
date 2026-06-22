@@ -13,6 +13,12 @@ pub enum ApiError {
     Unauthorized,
     #[error("権限がありません")]
     Forbidden,
+    #[error("対象が見つかりません")]
+    NotFound,
+    #[error("競合しています")]
+    Conflict,
+    #[error("不正なリクエスト: {0}")]
+    BadRequest(String),
     #[error("内部エラー: {0}")]
     Internal(String),
 }
@@ -22,6 +28,9 @@ impl ApiError {
         match self {
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::Forbidden => StatusCode::FORBIDDEN,
+            ApiError::NotFound => StatusCode::NOT_FOUND,
+            ApiError::Conflict => StatusCode::CONFLICT,
+            ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -45,6 +54,23 @@ impl IntoResponse for ApiError {
 impl From<authz::AuthzError> for ApiError {
     fn from(err: authz::AuthzError) -> Self {
         ApiError::Internal(format!("authz: {err}"))
+    }
+}
+
+impl From<storage::StorageError> for ApiError {
+    fn from(err: storage::StorageError) -> Self {
+        use storage::StorageError as SE;
+        match err {
+            SE::Forbidden => ApiError::Forbidden,
+            SE::NotFound => ApiError::NotFound,
+            SE::Conflict => ApiError::Conflict,
+            SE::Invalid(msg) => ApiError::BadRequest(msg),
+            // 整合性エラー（宣言ハッシュ不一致・staging 未完了等）はクライアント起因の 400。
+            SE::Integrity(msg) => ApiError::BadRequest(msg),
+            SE::ObjectStore(e) => ApiError::Internal(format!("object_store: {e}")),
+            SE::Db(e) => ApiError::Internal(format!("db: {e}")),
+            SE::Authz(e) => ApiError::Internal(format!("authz: {e}")),
+        }
     }
 }
 
@@ -76,10 +102,32 @@ mod tests {
     fn status_maps_each_variant() {
         assert_eq!(ApiError::Unauthorized.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(ApiError::Forbidden.status(), StatusCode::FORBIDDEN);
+        assert_eq!(ApiError::NotFound.status(), StatusCode::NOT_FOUND);
+        assert_eq!(ApiError::Conflict.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            ApiError::BadRequest("x".into()).status(),
+            StatusCode::BAD_REQUEST
+        );
         assert_eq!(
             ApiError::Internal("boom".into()).status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    #[test]
+    fn from_storage_error_maps_status() {
+        use storage::StorageError as SE;
+        assert!(matches!(ApiError::from(SE::Forbidden), ApiError::Forbidden));
+        assert!(matches!(ApiError::from(SE::NotFound), ApiError::NotFound));
+        assert!(matches!(ApiError::from(SE::Conflict), ApiError::Conflict));
+        assert!(matches!(
+            ApiError::from(SE::Invalid("bad".into())),
+            ApiError::BadRequest(_)
+        ));
+        assert!(matches!(
+            ApiError::from(SE::Integrity("mismatch".into())),
+            ApiError::BadRequest(_)
+        ));
     }
 
     /// レスポンスボディを ProblemDetails 風 JSON として読み出すヘルパ。

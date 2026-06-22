@@ -19,6 +19,7 @@ path = "src/bin/export-openapi.rs"
 
 [dependencies]
 shiki-authz.workspace = true
+shiki-storage.workspace = true
 
 tokio.workspace = true
 axum.workspace = true

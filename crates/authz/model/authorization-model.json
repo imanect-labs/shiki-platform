@@ -51,6 +51,116 @@
           }
         }
       }
+    },
+    {
+      "type": "folder",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "owner": {
+          "this": {}
+        },
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "owner" } },
+              {
+                "tupleToUserset": {
+                  "tupleset": { "relation": "parent" },
+                  "computedUserset": { "relation": "editor" }
+                }
+              }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } },
+              {
+                "tupleToUserset": {
+                  "tupleset": { "relation": "parent" },
+                  "computedUserset": { "relation": "viewer" }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": {
+            "directly_related_user_types": [{ "type": "folder" }]
+          },
+          "owner": {
+            "directly_related_user_types": [{ "type": "user" }]
+          },
+          "editor": {
+            "directly_related_user_types": [{ "type": "user" }]
+          },
+          "viewer": {
+            "directly_related_user_types": [{ "type": "user" }]
+          }
+        }
+      }
+    },
+    {
+      "type": "file",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "owner": {
+          "this": {}
+        },
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "owner" } },
+              {
+                "tupleToUserset": {
+                  "tupleset": { "relation": "parent" },
+                  "computedUserset": { "relation": "editor" }
+                }
+              }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } },
+              {
+                "tupleToUserset": {
+                  "tupleset": { "relation": "parent" },
+                  "computedUserset": { "relation": "viewer" }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": {
+            "directly_related_user_types": [{ "type": "folder" }]
+          },
+          "owner": {
+            "directly_related_user_types": [{ "type": "user" }]
+          },
+          "editor": {
+            "directly_related_user_types": [{ "type": "user" }]
+          },
+          "viewer": {
+            "directly_related_user_types": [{ "type": "user" }]
+          }
+        }
+      }
     }
   ]
 }

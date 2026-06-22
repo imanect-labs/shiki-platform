@@ -174,6 +174,9 @@ pub enum LogFormat {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
     pub backend: ObjectStoreBackend,
+    /// MinIO/S3 接続設定（`backend=minio` のとき必須。起動時に main で検証）。
+    #[serde(default)]
+    pub s3: Option<storage::S3Config>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
