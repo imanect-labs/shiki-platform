@@ -31,3 +31,41 @@ pub fn new_opaque_token() -> String {
     rand::thread_rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn cookie_names_are_stable_constants() {
+        // フロントがハードコードするため、名前ドリフトを防ぐ固定値であること。
+        assert_eq!(SESSION_COOKIE, "shiki_session");
+        assert_eq!(CSRF_COOKIE, "shiki_csrf");
+    }
+
+    #[test]
+    fn opaque_token_length_is_43_chars() {
+        // 32 バイトを base64url(no-pad) で表すと 43 文字（ceil(32*4/3)）。
+        let token = new_opaque_token();
+        assert_eq!(token.len(), 43);
+    }
+
+    #[test]
+    fn opaque_token_is_url_safe_no_pad() {
+        // URL-safe 文字種のみ・パディング無し（`+` `/` `=` を含まない）。
+        let token = new_opaque_token();
+        assert!(token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(!token.contains('='));
+    }
+
+    #[test]
+    fn opaque_tokens_are_unique() {
+        // 連続生成でも衝突しない（推測不能・乱数源）。
+        let count = 1000;
+        let tokens: HashSet<String> = (0..count).map(|_| new_opaque_token()).collect();
+        assert_eq!(tokens.len(), count);
+    }
+}

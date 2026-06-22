@@ -80,3 +80,138 @@ pub fn principal_from_claims(claims: Claims) -> Principal {
         tenant_id: claims.tenant,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use jsonwebtoken::{Algorithm, DecodingKey, Validation};
+
+    /// JSON ペイロードを JWT の base64url ペイロード部に符号化する。
+    fn encode_payload(json: &serde_json::Value) -> String {
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(json).unwrap())
+    }
+
+    #[test]
+    fn claims_minimal_deserialize() {
+        // 任意フィールド欠落時は default（None / 空 Vec）になること。
+        let claims: Claims =
+            serde_json::from_value(serde_json::json!({ "sub": "user-1" })).unwrap();
+        assert_eq!(claims.sub, "user-1");
+        assert_eq!(claims.email, None);
+        assert_eq!(claims.preferred_username, None);
+        assert!(claims.groups.is_empty());
+        assert_eq!(claims.department, None);
+        assert_eq!(claims.tenant, None);
+    }
+
+    #[test]
+    fn claims_full_deserialize_ignores_unknown() {
+        // 全フィールド＋未知フィールド（無視される）を含む。
+        let claims: Claims = serde_json::from_value(serde_json::json!({
+            "sub": "user-2",
+            "email": "u@example.com",
+            "preferred_username": "u",
+            "groups": ["/acme/eng", "/acme"],
+            "department": "eng",
+            "tenant": "acme",
+            "exp": 9999999999u64,
+            "unknown_field": "ignored",
+        }))
+        .unwrap();
+        assert_eq!(claims.sub, "user-2");
+        assert_eq!(claims.email.as_deref(), Some("u@example.com"));
+        assert_eq!(claims.preferred_username.as_deref(), Some("u"));
+        assert_eq!(claims.groups, vec!["/acme/eng", "/acme"]);
+        assert_eq!(claims.department.as_deref(), Some("eng"));
+        assert_eq!(claims.tenant.as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn claims_missing_sub_is_error() {
+        // sub は必須（default 無し）なので欠落はエラー。
+        let result: Result<Claims, _> = serde_json::from_value(serde_json::json!({ "email": "x" }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn principal_from_claims_maps_fields() {
+        // claim → Principal のフィールド対応が正しいこと。
+        let claims = Claims {
+            sub: "user-3".into(),
+            email: Some("p@example.com".into()),
+            preferred_username: Some("p".into()),
+            groups: vec!["/acme".into()],
+            department: Some("sales".into()),
+            tenant: Some("acme".into()),
+        };
+        let principal = principal_from_claims(claims);
+        assert_eq!(principal.id, "user-3");
+        assert_eq!(principal.email.as_deref(), Some("p@example.com"));
+        assert_eq!(principal.groups, vec!["/acme"]);
+        assert_eq!(principal.dept.as_deref(), Some("sales"));
+        assert_eq!(principal.tenant_id.as_deref(), Some("acme"));
+        // preferred_username は Principal には載らない（マッピング対象外）。
+    }
+
+    #[test]
+    fn auth_error_display_messages() {
+        // 各 AuthError の表示文言（ログ・401 経路で使う）。
+        assert_eq!(
+            AuthError::MissingBearer.to_string(),
+            "Authorization ヘッダがありません"
+        );
+        assert_eq!(
+            AuthError::UnknownKid.to_string(),
+            "トークンの kid が JWKS に存在しません"
+        );
+        assert!(AuthError::InvalidToken("x".into())
+            .to_string()
+            .contains("不正"));
+        assert!(AuthError::JwksFetch("net".into())
+            .to_string()
+            .contains("net"));
+    }
+
+    #[test]
+    fn decode_claims_insecure_extracts_payload() {
+        // header.payload.sig の中間部からクレームを取り出す（署名検証なし）。
+        let payload = encode_payload(&serde_json::json!({ "sub": "user-4", "tenant": "acme" }));
+        let token = format!("aGVhZGVy.{payload}.c2ln");
+        let claims = decode_claims_insecure(&token).unwrap();
+        assert_eq!(claims.sub, "user-4");
+        assert_eq!(claims.tenant.as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn decode_claims_insecure_missing_payload_part() {
+        // ドットが無くペイロード部が取れない場合はエラー。
+        let result = decode_claims_insecure("not-a-jwt");
+        assert!(matches!(result, Err(AuthError::InvalidToken(_))));
+    }
+
+    #[test]
+    fn decode_claims_insecure_bad_base64() {
+        // ペイロード部が base64url として不正ならエラー。
+        let result = decode_claims_insecure("h.@@@invalid@@@.s");
+        assert!(matches!(result, Err(AuthError::InvalidToken(_))));
+    }
+
+    #[test]
+    fn decode_claims_insecure_invalid_json() {
+        // base64 は通るが JSON として不正ならエラー。
+        let payload = URL_SAFE_NO_PAD.encode(b"{ not json");
+        let token = format!("h.{payload}.s");
+        let result = decode_claims_insecure(&token);
+        assert!(matches!(result, Err(AuthError::InvalidToken(_))));
+    }
+
+    #[test]
+    fn verify_token_rejects_malformed_token() {
+        // 署名検証経路: 形式不正なトークンは InvalidToken になる（外部 I/O なし）。
+        let key = DecodingKey::from_secret(b"secret");
+        let validation = Validation::new(Algorithm::HS256);
+        let result = verify_token("garbage.token.value", &key, &validation);
+        assert!(matches!(result, Err(AuthError::InvalidToken(_))));
+    }
+}

@@ -77,4 +77,145 @@ mod tests {
         assert_eq!(ObjectType::Organization.as_str(), "organization");
         assert_eq!(ObjectType::User.as_str(), "user");
     }
+
+    // --- Relation ---
+
+    #[test]
+    fn relation_display_matches_as_str() {
+        // Display 実装は as_str と一致すること。
+        assert_eq!(Relation::Member.to_string(), "member");
+        assert_eq!(Relation::Parent.to_string(), "parent");
+        assert_eq!(Relation::Member.to_string(), Relation::Member.as_str());
+        assert_eq!(Relation::Parent.to_string(), Relation::Parent.as_str());
+    }
+
+    #[test]
+    fn relation_serialize_snake_case() {
+        // serde は snake_case で（OpenFGA 送出語彙と一致）シリアライズすること。
+        assert_eq!(
+            serde_json::to_string(&Relation::Member).unwrap(),
+            "\"member\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Relation::Parent).unwrap(),
+            "\"parent\""
+        );
+    }
+
+    #[test]
+    fn relation_deserialize_snake_case() {
+        // snake_case 文字列から正しくデシリアライズできること。
+        let member: Relation = serde_json::from_str("\"member\"").unwrap();
+        let parent: Relation = serde_json::from_str("\"parent\"").unwrap();
+        assert_eq!(member, Relation::Member);
+        assert_eq!(parent, Relation::Parent);
+    }
+
+    #[test]
+    fn relation_roundtrip_via_serde() {
+        // serialize → deserialize のラウンドトリップで同値に戻ること。
+        for r in [Relation::Member, Relation::Parent] {
+            let json = serde_json::to_string(&r).unwrap();
+            let back: Relation = serde_json::from_str(&json).unwrap();
+            assert_eq!(r, back);
+        }
+    }
+
+    #[test]
+    fn relation_deserialize_unknown_fails() {
+        // 閉じた集合外の relation はデシリアライズに失敗すること（負例）。
+        let result: Result<Relation, _> = serde_json::from_str("\"owner\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relation_derives_eq_hash_clone() {
+        // Copy / PartialEq / Hash 由来の挙動を確認する。
+        use std::collections::HashSet;
+        let a = Relation::Member;
+        let b = a; // Copy
+        assert_eq!(a, b);
+        assert_ne!(Relation::Member, Relation::Parent);
+        let mut set = HashSet::new();
+        set.insert(Relation::Member);
+        set.insert(Relation::Member);
+        set.insert(Relation::Parent);
+        assert_eq!(set.len(), 2);
+    }
+
+    // --- ObjectType ---
+
+    #[test]
+    fn object_type_all_variants_as_str() {
+        // 全 variant の文字列表現を確認する。
+        assert_eq!(ObjectType::Organization.as_str(), "organization");
+        assert_eq!(ObjectType::Department.as_str(), "department");
+        assert_eq!(ObjectType::User.as_str(), "user");
+    }
+
+    #[test]
+    fn object_type_display_matches_as_str() {
+        // Display 実装は as_str と一致すること。
+        for ot in [
+            ObjectType::Organization,
+            ObjectType::Department,
+            ObjectType::User,
+        ] {
+            assert_eq!(ot.to_string(), ot.as_str());
+        }
+    }
+
+    #[test]
+    fn object_type_serialize_snake_case() {
+        // serde は snake_case でシリアライズすること。
+        assert_eq!(
+            serde_json::to_string(&ObjectType::Organization).unwrap(),
+            "\"organization\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ObjectType::Department).unwrap(),
+            "\"department\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ObjectType::User).unwrap(),
+            "\"user\""
+        );
+    }
+
+    #[test]
+    fn object_type_roundtrip_via_serde() {
+        // serialize → deserialize のラウンドトリップで同値に戻ること。
+        for ot in [
+            ObjectType::Organization,
+            ObjectType::Department,
+            ObjectType::User,
+        ] {
+            let json = serde_json::to_string(&ot).unwrap();
+            let back: ObjectType = serde_json::from_str(&json).unwrap();
+            assert_eq!(ot, back);
+        }
+    }
+
+    #[test]
+    fn object_type_deserialize_unknown_fails() {
+        // 閉じた集合外の object type はデシリアライズに失敗すること（負例）。
+        let result: Result<ObjectType, _> = serde_json::from_str("\"folder\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn object_type_derives_eq_hash_copy() {
+        // Copy / PartialEq / Hash 由来の挙動を確認する。
+        use std::collections::HashSet;
+        let a = ObjectType::User;
+        let b = a; // Copy
+        assert_eq!(a, b);
+        assert_ne!(ObjectType::User, ObjectType::Organization);
+        let mut set = HashSet::new();
+        set.insert(ObjectType::User);
+        set.insert(ObjectType::User);
+        set.insert(ObjectType::Organization);
+        set.insert(ObjectType::Department);
+        assert_eq!(set.len(), 3);
+    }
 }

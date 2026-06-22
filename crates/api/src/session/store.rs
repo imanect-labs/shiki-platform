@@ -79,3 +79,81 @@ pub trait SessionStore: Send + Sync {
     /// セッションを削除する（ログアウト・失効）。
     async fn delete(&self, tenant_id: &str, session_id: &str) -> Result<(), SessionError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_record() -> SessionRecord {
+        SessionRecord {
+            principal: Principal {
+                id: "user-1".into(),
+                email: Some("u@example.com".into()),
+                groups: vec!["/acme".into()],
+                dept: Some("eng".into()),
+                tenant_id: Some("acme".into()),
+            },
+            tenant_id: "acme".into(),
+            access_token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            id_token: Some("id".into()),
+            access_expires_at: 1_700_000_000,
+            csrf_token: "csrf".into(),
+        }
+    }
+
+    #[test]
+    fn session_record_round_trip() {
+        // ストアに JSON で保持されるため、シリアライズ→デシリアライズで等価であること。
+        let record = sample_record();
+        let json = serde_json::to_string(&record).unwrap();
+        let restored: SessionRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.principal, record.principal);
+        assert_eq!(restored.tenant_id, "acme");
+        assert_eq!(restored.access_token, "access");
+        assert_eq!(restored.refresh_token.as_deref(), Some("refresh"));
+        assert_eq!(restored.id_token.as_deref(), Some("id"));
+        assert_eq!(restored.access_expires_at, 1_700_000_000);
+        assert_eq!(restored.csrf_token, "csrf");
+    }
+
+    #[test]
+    fn session_record_optional_tokens_can_be_absent() {
+        // refresh_token / id_token は欠落（None）でも復元できること。
+        let mut record = sample_record();
+        record.refresh_token = None;
+        record.id_token = None;
+        let json = serde_json::to_string(&record).unwrap();
+        let restored: SessionRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.refresh_token, None);
+        assert_eq!(restored.id_token, None);
+    }
+
+    #[test]
+    fn session_record_serializes_expected_keys() {
+        // 永続化フォーマットのキー名を固定する（互換性のため）。
+        let value = serde_json::to_value(sample_record()).unwrap();
+        for key in [
+            "principal",
+            "tenant_id",
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "access_expires_at",
+            "csrf_token",
+        ] {
+            assert!(value.get(key).is_some(), "キー {key} が欠落");
+        }
+    }
+
+    #[test]
+    fn session_error_display() {
+        // backend / serde エラーの表示文言。
+        assert!(SessionError::Backend("redis timeout".into())
+            .to_string()
+            .contains("redis timeout"));
+        assert!(SessionError::Serde("bad json".into())
+            .to_string()
+            .contains("bad json"));
+    }
+}

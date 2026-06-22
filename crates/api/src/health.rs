@@ -22,3 +22,14 @@ pub async fn readyz(State(state): State<AppState>) -> StatusCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn healthz_always_ok() {
+        // liveness は依存に触れず常に 200。
+        assert_eq!(healthz().await, StatusCode::OK);
+    }
+}
