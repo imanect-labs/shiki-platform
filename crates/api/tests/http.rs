@@ -363,8 +363,13 @@ async fn auth_session_reports_dead_session_as_unauthenticated() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let text = String::from_utf8(body.to_vec()).unwrap();
-    assert!(text.contains("\"authenticated\":false"), "body={text}");
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json.get("authenticated"),
+        Some(&serde_json::Value::Bool(false)),
+        "body={}",
+        String::from_utf8_lossy(&body)
+    );
 }
 
 #[tokio::test]
@@ -449,12 +454,14 @@ async fn logout_with_csrf_succeeds_and_leaks_no_token() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let text = String::from_utf8(body.to_vec()).unwrap();
-    // end-session URL は返るが、access/refresh/id token はレスポンスに出さない。
-    assert!(text.contains("end_session_url"));
-    assert!(!text.contains("refresh-token"));
-    assert!(!text.contains("\"access"));
-    assert!(!text.contains("idtok"));
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    // 許可フィールド（end_session_url）のみ。トークン等の余計なフィールドを出さない。
+    let obj = json.as_object().expect("logout 応答は JSON オブジェクト");
+    assert_eq!(obj.len(), 1, "想定外のフィールド: {obj:?}");
+    assert!(obj
+        .get("end_session_url")
+        .and_then(|v| v.as_str())
+        .is_some());
     // セッションは削除されている。
     assert!(store.get("default", "sid-lo2").await.unwrap().is_none());
 }
