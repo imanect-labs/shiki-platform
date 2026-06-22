@@ -16,8 +16,8 @@ use authz::{
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::{
-    content_address::sha256_hex, model::UploadOutcome, object_store::S3Config, ObjectStore,
-    S3ObjectStore, StorageService,
+    content_address::sha256_hex, object_store::S3Config, Node, ObjectStore, S3ObjectStore,
+    StorageError, StorageService,
 };
 use uuid::Uuid;
 
@@ -110,6 +110,37 @@ fn make_ctx(org: &str, uid: &str) -> AuthContext {
     )
 }
 
+/// declare → presigned PUT → finalize の一連を実行してノードを返す（所持証明込み）。
+async fn upload(
+    service: &StorageService,
+    http: &reqwest::Client,
+    ctx: &AuthContext,
+    parent: Option<Uuid>,
+    name: &str,
+    content: &[u8],
+) -> Result<Node, StorageError> {
+    let sha = sha256_hex(content);
+    let ticket = service
+        .begin_upload(
+            ctx,
+            parent,
+            name,
+            "text/plain",
+            &sha,
+            content.len() as i64,
+            None,
+        )
+        .await?;
+    let resp = http
+        .put(&ticket.upload_url)
+        .body(content.to_vec())
+        .send()
+        .await
+        .expect("presigned PUT");
+    assert!(resp.status().is_success(), "PUT status: {}", resp.status());
+    service.finalize_upload(ctx, ticket.upload_id, None).await
+}
+
 async fn blob_refcount(pool: &PgPool, org: &str, sha: &str) -> i64 {
     sqlx::query_scalar("SELECT refcount FROM blob WHERE org = $1 AND sha256 = $2")
         .bind(org)
@@ -161,39 +192,9 @@ async fn storage_end_to_end() {
     let size = content.len() as i64;
 
     // --- 二相アップロード（declare → presigned PUT → finalize） ---
-    let outcome = service
-        .begin_upload(
-            &actx,
-            None,
-            "hello.txt",
-            "text/plain",
-            &sha,
-            size,
-            Some("trace-it"),
-        )
+    let file = upload(&service, &http, &actx, None, "hello.txt", content)
         .await
-        .expect("begin_upload");
-    let upload_id = match outcome {
-        UploadOutcome::NeedsUpload {
-            upload_id,
-            upload_url,
-        } => {
-            let resp = http
-                .put(&upload_url)
-                .body(content.to_vec())
-                .send()
-                .await
-                .expect("presigned PUT");
-            assert!(resp.status().is_success(), "PUT status: {}", resp.status());
-            upload_id
-        }
-        UploadOutcome::Deduplicated(_) => panic!("新規内容なので dedup されないはず"),
-    };
-
-    let file = service
-        .finalize_upload(&actx, upload_id, Some("trace-it"))
-        .await
-        .expect("finalize_upload");
+        .expect("upload");
     assert_eq!(file.name, "hello.txt");
     assert_eq!(file.blob_sha256.as_deref(), Some(sha.as_str()));
     assert_eq!(file.size_bytes, Some(size));
@@ -220,25 +221,24 @@ async fn storage_end_to_end() {
         .expect("body");
     assert_eq!(got.as_ref(), content, "DL バイトが一致すること");
 
-    // --- org スコープ dedup（同 org・同内容はアップロード不要・refcount 2） ---
-    let outcome2 = service
-        .begin_upload(&actx, None, "copy.txt", "text/plain", &sha, size, None)
+    // --- org スコープ dedup（同 org・同内容＝finalize 時に dedup・refcount 2） ---
+    let file2 = upload(&service, &http, &actx, None, "copy.txt", content)
         .await
-        .expect("begin_upload dedup");
-    let file2 = match outcome2 {
-        UploadOutcome::Deduplicated(node) => node,
-        UploadOutcome::NeedsUpload { .. } => panic!("同 org・同内容は dedup されるはず"),
-    };
+        .expect("dedup upload");
     assert_ne!(file2.id, file.id);
-    assert_eq!(blob_refcount(&pool, &org, &sha).await, 2);
+    assert_eq!(
+        blob_refcount(&pool, &org, &sha).await,
+        2,
+        "同一内容は finalize で dedup され refcount が増える"
+    );
 
-    // 同一フォルダ内の同名（生存）への作成は Conflict（部分ユニーク制約）。
-    let dup = service
-        .begin_upload(&actx, None, "copy.txt", "text/plain", &sha, size, None)
-        .await;
-    assert!(
-        matches!(dup, Err(storage::StorageError::Conflict)),
-        "{dup:?}"
+    // 同一フォルダ内の同名（生存）への作成は finalize で Conflict（部分ユニーク制約）。
+    let dup = upload(&service, &http, &actx, None, "copy.txt", content).await;
+    assert!(matches!(dup, Err(StorageError::Conflict)), "{dup:?}");
+    assert_eq!(
+        blob_refcount(&pool, &org, &sha).await,
+        2,
+        "Conflict 時は refcount を増やさない（txn ロールバック）"
     );
 
     // --- 別 org では blob 名前空間が分かれ dedup されない（PIT-14） ---
@@ -253,13 +253,18 @@ async fn storage_end_to_end() {
         )
         .await
         .unwrap();
-    let outcome_b = service
-        .begin_upload(&bctx, None, "hello.txt", "text/plain", &sha, size, None)
+    upload(&service, &http, &bctx, None, "hello.txt", content)
         .await
-        .expect("begin_upload other org");
-    assert!(
-        matches!(outcome_b, UploadOutcome::NeedsUpload { .. }),
-        "別 org は dedup されずアップロードが必要"
+        .expect("upload other org");
+    assert_eq!(
+        blob_refcount(&pool, &org_b, &sha).await,
+        1,
+        "別 org は独立した blob 行（refcount 1）"
+    );
+    assert_eq!(
+        blob_refcount(&pool, &org, &sha).await,
+        2,
+        "元 org の refcount は別 org の影響を受けない"
     );
 
     // --- move（フォルダを直接用意し、closure を検証） ---

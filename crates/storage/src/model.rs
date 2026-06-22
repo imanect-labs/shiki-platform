@@ -48,16 +48,15 @@ pub struct Node {
     pub updated_at: DateTime<Utc>,
 }
 
-/// `begin_upload`（declare）の結果。
+/// `begin_upload`（declare）の結果＝アップロード用 presigned チケット。
 ///
-/// 同一内容の blob が既存なら即座にノードが作られ（アップロード不要）、
-/// 未存在なら presigned PUT URL が返り、クライアントが直接アップロードする。
+/// クライアントは `upload_url` へバイトを直接 PUT し、`upload_id` で finalize する。
+/// 重複排除は finalize 時（＝実バイトのアップロード＝所持証明の後）に行うため、
+/// declare 段階では宣言ハッシュだけで他人の内容を取得できない（所持証明前の dedup を避ける）。
 #[derive(Debug)]
-pub enum UploadOutcome {
-    /// 重複排除によりアップロード不要。ノードは作成済み。
-    Deduplicated(Node),
-    /// アップロードが必要。クライアントは `upload_url` へ PUT 後 finalize する。
-    NeedsUpload { upload_id: Uuid, upload_url: String },
+pub struct UploadTicket {
+    pub upload_id: Uuid,
+    pub upload_url: String,
 }
 
 /// ダウンロード presigned URL（発行結果）。

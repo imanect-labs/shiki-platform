@@ -48,24 +48,36 @@ impl AuditRecorder {
         AuditRecorder { db }
     }
 
-    /// 専用接続を取得して 1 件記録する（txn を張らない読取/deny 経路用）。
+    /// 専用トランザクションで 1 件記録する（読取/deny 経路用）。
+    /// txn にすることで [`record_on`] の per-org advisory ロックが効く。
     pub async fn record(
         &self,
         ctx: &AuthContext,
         entry: AuditEntry<'_>,
     ) -> Result<(), StorageError> {
-        let mut conn = self.db.acquire().await?;
-        record_on(&mut conn, ctx, entry).await
+        let mut tx = self.db.begin().await?;
+        record_on(&mut tx, ctx, entry).await?;
+        tx.commit().await?;
+        Ok(())
     }
 }
 
-/// 既存の接続/トランザクション上で 1 件記録する（書込系は同一 txn で原子的に残す）。
+/// 既存のトランザクション上で 1 件記録する（書込系は同一 txn で原子的に残す）。
+///
+/// **必ずトランザクション上で呼ぶこと**。per-org の advisory xact ロックでハッシュチェーンの
+/// `prev_hash` 読み→挿入を直列化し、並行書込で同じ prev を読む競合を防ぐ（txn 終了で自動解放）。
 pub async fn record_on(
     conn: &mut PgConnection,
     ctx: &AuthContext,
     entry: AuditEntry<'_>,
 ) -> Result<(), StorageError> {
-    // 直近エントリの entry_hash を prev とし、ハッシュチェーンを伸ばす（best-effort）。
+    // org 単位で直列化（同一 org の監査チェーン更新が並行しないようにする）。
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(&ctx.org)
+        .execute(&mut *conn)
+        .await?;
+
+    // 直近エントリの entry_hash を prev とし、ハッシュチェーンを伸ばす。
     let prev_hash: Option<String> = sqlx::query_scalar(
         "SELECT entry_hash FROM audit_log WHERE org = $1 ORDER BY id DESC LIMIT 1",
     )

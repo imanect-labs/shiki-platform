@@ -22,7 +22,7 @@ use utoipa::{
         crate::routes::me::MeResponse,
         crate::routes::files::FileResponse,
         crate::routes::files::UploadRequest,
-        crate::routes::files::UploadTicket,
+        crate::routes::files::UploadTicketResponse,
         crate::routes::files::UpdateFileRequest,
         crate::routes::files::DownloadUrlResponse,
     )),

@@ -11,7 +11,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use storage::{model::UploadOutcome, Node};
+use storage::Node;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -67,16 +67,14 @@ pub struct UploadRequest {
 }
 
 /// アップロード宣言レスポンス（declare）。
+///
+/// クライアントは `upload_url` へバイトを直接 PUT し、`upload_id` で finalize する。
+/// 重複排除は finalize 時（＝所持証明の後）に行う。
 #[derive(Debug, Serialize, ToSchema)]
-pub struct UploadTicket {
-    /// `true` なら既存 blob と重複しアップロード不要（`file` にノードが入る）。
-    pub upload_required: bool,
-    /// dedup 済みの場合のノード（`upload_required=false`）。
-    pub file: Option<FileResponse>,
-    /// アップロードが必要な場合の finalize 用 ID（`upload_required=true`）。
-    pub upload_id: Option<Uuid>,
+pub struct UploadTicketResponse {
+    pub upload_id: Uuid,
     /// presigned PUT URL。クライアントはここへ直接バイトを PUT する。
-    pub upload_url: Option<String>,
+    pub upload_url: String,
 }
 
 /// リネーム/移動リクエスト。
@@ -104,16 +102,17 @@ where
     serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
-/// declare: メタを申告し、dedup 短絡 or presigned PUT URL を得る。
+/// declare: メタを申告し、staging への presigned PUT URL を得る。
 #[utoipa::path(
     post,
     path = "/files",
     request_body = UploadRequest,
     responses(
-        (status = 200, description = "アップロードチケット", body = UploadTicket),
+        (status = 200, description = "アップロードチケット", body = UploadTicketResponse),
         (status = 400, description = "不正なリクエスト"),
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
+        (status = 404, description = "親フォルダが無い"),
     ),
     security(("session" = [])),
 )]
@@ -122,8 +121,8 @@ pub async fn begin_upload(
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
     Json(req): Json<UploadRequest>,
-) -> Result<Json<UploadTicket>, ApiError> {
-    let outcome = state
+) -> Result<Json<UploadTicketResponse>, ApiError> {
+    let ticket = state
         .storage
         .begin_upload(
             &ctx,
@@ -135,24 +134,10 @@ pub async fn begin_upload(
             trace.as_deref(),
         )
         .await?;
-    let ticket = match outcome {
-        UploadOutcome::Deduplicated(node) => UploadTicket {
-            upload_required: false,
-            file: Some(node.into()),
-            upload_id: None,
-            upload_url: None,
-        },
-        UploadOutcome::NeedsUpload {
-            upload_id,
-            upload_url,
-        } => UploadTicket {
-            upload_required: true,
-            file: None,
-            upload_id: Some(upload_id),
-            upload_url: Some(upload_url),
-        },
-    };
-    Ok(Json(ticket))
+    Ok(Json(UploadTicketResponse {
+        upload_id: ticket.upload_id,
+        upload_url: ticket.upload_url,
+    }))
 }
 
 /// finalize: 直 PUT 後に内容を検証し、ノード化する。
@@ -261,32 +246,18 @@ pub async fn update_file(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateFileRequest>,
 ) -> Result<Json<FileResponse>, ApiError> {
-    if req.name.is_none() && req.parent_id.is_none() {
-        return Err(ApiError::BadRequest(
-            "name か parent_id のいずれかを指定してください".into(),
-        ));
-    }
-    // 移動を先に行い（closure 整合）、続けてリネームする。
-    let mut node = None;
-    if let Some(new_parent) = req.parent_id {
-        node = Some(
-            state
-                .storage
-                .move_file(&ctx, id, new_parent, trace.as_deref())
-                .await?,
-        );
-    }
-    if let Some(new_name) = req.name {
-        node = Some(
-            state
-                .storage
-                .rename_file(&ctx, id, &new_name, trace.as_deref())
-                .await?,
-        );
-    }
-    Ok(Json(
-        node.expect("move か rename のいずれかは実行済み").into(),
-    ))
+    // move と rename を 1 トランザクションで原子的に適用する（部分適用を防ぐ）。
+    let node = state
+        .storage
+        .update_file(
+            &ctx,
+            id,
+            req.name.as_deref(),
+            req.parent_id,
+            trace.as_deref(),
+        )
+        .await?;
+    Ok(Json(node.into()))
 }
 
 /// 論理削除（ゴミ箱へ）。

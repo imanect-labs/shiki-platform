@@ -18,7 +18,7 @@ use crate::{
     audit::{self, AuditEntry, AuditRecorder, Decision},
     content_address::{blob_object_key, is_valid_sha256_hex, staging_object_key},
     error::StorageError,
-    model::{DownloadTicket, Node, NodeKind, UploadOutcome},
+    model::{DownloadTicket, Node, NodeKind, UploadTicket},
     object_store::{ObjectStore, ObjectStoreError},
 };
 
@@ -64,11 +64,6 @@ struct PendingRow {
     staging_key: String,
 }
 
-#[derive(sqlx::FromRow)]
-struct BlobMeta {
-    size_bytes: i64,
-}
-
 impl StorageService {
     pub fn new(
         db: PgPool,
@@ -90,7 +85,11 @@ impl StorageService {
 
     // --- アップロード（二相: declare → presigned PUT → finalize） ---
 
-    /// declare: メタを申告し、dedup 短絡 or presigned PUT URL を得る。
+    /// declare: メタを申告し、staging への presigned PUT URL を得る。
+    ///
+    /// 重複排除は **finalize 時**に行う（実バイトのアップロード＝所持証明の後）。declare で
+    /// 宣言ハッシュだけを根拠に既存 blob へ短絡すると、内容を持たない同 org ユーザーが
+    /// ハッシュを知るだけで他人のファイル内容を取得できてしまうため（所持証明前 dedup の禁止）。
     #[allow(clippy::too_many_arguments)] // 宣言メタ一式は凝集した 1 操作の引数。
     pub async fn begin_upload(
         &self,
@@ -101,7 +100,7 @@ impl StorageService {
         declared_sha256: &str,
         declared_size: i64,
         trace_id: Option<&str>,
-    ) -> Result<UploadOutcome, StorageError> {
+    ) -> Result<UploadTicket, StorageError> {
         validate_name(name)?;
         if !is_valid_sha256_hex(declared_sha256) {
             return Err(StorageError::Invalid(
@@ -143,57 +142,8 @@ impl StorageService {
             }
         }
 
-        // dedup: 同一 org・同一内容の blob があればアップロード不要。
-        let existing: Option<BlobMeta> =
-            sqlx::query_as("SELECT size_bytes FROM blob WHERE org = $1 AND sha256 = $2")
-                .bind(&ctx.org)
-                .bind(declared_sha256)
-                .fetch_optional(&self.db)
-                .await?;
-
-        if let Some(blob) = existing {
-            let final_key = blob_object_key(&ctx.org, declared_sha256);
-            let mut tx = self.db.begin().await?;
-            self.bump_blob(
-                &mut tx,
-                &ctx.org,
-                declared_sha256,
-                blob.size_bytes,
-                content_type,
-                &final_key,
-            )
-            .await?;
-            let node = self
-                .create_file_node(
-                    &mut tx,
-                    ctx,
-                    parent_id,
-                    name,
-                    declared_sha256,
-                    blob.size_bytes,
-                    content_type,
-                )
-                .await?;
-            audit::record_on(
-                &mut tx,
-                ctx,
-                AuditEntry {
-                    action: "file.upload.dedup",
-                    object_type: "file",
-                    object_id: &node.id.to_string(),
-                    decision: Decision::Allow,
-                    trace_id,
-                    metadata: json!({ "sha256": declared_sha256, "deduplicated": true }),
-                },
-            )
-            .await?;
-            tx.commit().await?;
-            self.write_file_tuples_or_compensate(ctx, node.id, parent_id)
-                .await?;
-            return Ok(UploadOutcome::Deduplicated(node));
-        }
-
-        // 未存在 → staging への presigned PUT を発行し、pending_upload に控える。
+        // staging への presigned PUT を発行し、pending_upload に控える。
+        // 実体は finalize で content-addressed に昇格し、そこで dedup する。
         let upload_id = Uuid::new_v4();
         let staging_key = staging_object_key(&ctx.org, &upload_id.to_string());
         sqlx::query(
@@ -231,7 +181,7 @@ impl StorageService {
                 },
             )
             .await?;
-        Ok(UploadOutcome::NeedsUpload {
+        Ok(UploadTicket {
             upload_id,
             upload_url,
         })
@@ -268,6 +218,8 @@ impl StorageService {
                     trace_id,
                 )
                 .await?;
+                // declare 後に親が削除/変更され得るため、生存フォルダであることを再確認する。
+                self.ensure_folder(ctx, p).await?;
             }
             None => {
                 self.require(
@@ -340,7 +292,7 @@ impl StorageService {
         .await?;
         tx.commit().await?;
 
-        self.write_file_tuples_or_compensate(ctx, node.id, pending.parent_id)
+        self.write_file_tuples_or_compensate(ctx, node.id, pending.parent_id, &actual_sha)
             .await?;
         let _ = self.store.delete(&pending.staging_key).await; // best-effort 後始末
         Ok(node)
@@ -435,115 +387,84 @@ impl StorageService {
 
     // --- 変更系 ---
 
-    /// リネーム（editor 権限・同名衝突は Conflict）。
-    pub async fn rename_file(
+    /// リネーム・移動を **1 トランザクションで原子的に**適用する。
+    ///
+    /// `new_name`: 指定でリネーム。`new_parent`: `Some(Some(p))` で `p` 配下へ、
+    /// `Some(None)` でルートへ移動、`None` で移動しない。move と rename を一度に指定しても
+    /// 部分適用にならない（PIT-16: 関係ノードを祖先ロック下の単一 txn で更新）。
+    pub async fn update_file(
         &self,
         ctx: &AuthContext,
         file_id: Uuid,
-        new_name: &str,
+        new_name: Option<&str>,
+        new_parent: Option<Option<Uuid>>,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        validate_name(new_name)?;
-        let _ = self.load_node(&ctx.org, file_id, false).await?;
-        self.require(
-            ctx,
-            Relation::Editor,
-            &FgaObject::file(&file_id.to_string()),
-            "file.rename",
-            "file",
-            &file_id.to_string(),
-            trace_id,
-        )
-        .await?;
-
-        let mut tx = self.db.begin().await?;
-        let sql = format!(
-            "UPDATE node SET name = $1, updated_at = now() \
-             WHERE id = $2 AND org = $3 AND deleted_at IS NULL RETURNING {NODE_COLS}"
-        );
-        let row: NodeRow = sqlx::query_as(&sql)
-            .bind(new_name)
-            .bind(file_id)
-            .bind(&ctx.org)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or(StorageError::NotFound)?;
-        audit::record_on(
-            &mut tx,
-            ctx,
-            AuditEntry {
-                action: "file.rename",
-                object_type: "file",
-                object_id: &file_id.to_string(),
-                decision: Decision::Allow,
-                trace_id,
-                metadata: json!({ "new_name": new_name }),
-            },
-        )
-        .await?;
-        tx.commit().await?;
-        row_to_node(row)
-    }
-
-    /// 移動（editor@file かつ 移動先 editor/member・PIT-16: 単一 txn ＋ 祖先ロック）。
-    pub async fn move_file(
-        &self,
-        ctx: &AuthContext,
-        file_id: Uuid,
-        new_parent: Option<Uuid>,
-        trace_id: Option<&str>,
-    ) -> Result<Node, StorageError> {
+        if new_name.is_none() && new_parent.is_none() {
+            return Err(StorageError::Invalid("変更内容がありません".into()));
+        }
+        if let Some(name) = new_name {
+            validate_name(name)?;
+        }
         let node = self.load_node(&ctx.org, file_id, false).await?;
         let file_obj = FgaObject::file(&file_id.to_string());
+        // 対象ファイルの editor 権限。
         self.require(
             ctx,
             Relation::Editor,
             &file_obj,
-            "file.move",
+            "file.update",
             "file",
             &file_id.to_string(),
             trace_id,
         )
         .await?;
-        // 移動先の権限。
-        match new_parent {
-            Some(p) => {
-                self.require(
-                    ctx,
-                    Relation::Editor,
-                    &FgaObject::folder(&p.to_string()),
-                    "file.move",
-                    "folder",
-                    &p.to_string(),
-                    trace_id,
-                )
-                .await?;
+        // 移動する場合は移動先の権限＋実在を確認。
+        if let Some(target) = new_parent {
+            match target {
+                Some(p) => {
+                    if p == file_id {
+                        return Err(StorageError::Invalid("自分自身へは移動できません".into()));
+                    }
+                    self.require(
+                        ctx,
+                        Relation::Editor,
+                        &FgaObject::folder(&p.to_string()),
+                        "file.update",
+                        "folder",
+                        &p.to_string(),
+                        trace_id,
+                    )
+                    .await?;
+                    self.ensure_folder(ctx, p).await?;
+                }
+                None => {
+                    self.require(
+                        ctx,
+                        Relation::Member,
+                        &FgaObject::organization(&ctx.org),
+                        "file.update",
+                        "organization",
+                        &ctx.org,
+                        trace_id,
+                    )
+                    .await?;
+                }
             }
-            None => {
-                self.require(
-                    ctx,
-                    Relation::Member,
-                    &FgaObject::organization(&ctx.org),
-                    "file.move",
-                    "organization",
-                    &ctx.org,
-                    trace_id,
-                )
-                .await?;
-            }
-        }
-        if let Some(p) = new_parent {
-            if p == file_id {
-                return Err(StorageError::Invalid("自分自身へは移動できません".into()));
-            }
-            self.ensure_folder(ctx, p).await?;
         }
 
         let old_parent = node.parent_id;
+        let final_parent = match new_parent {
+            Some(target) => target,
+            None => node.parent_id,
+        };
+        let final_name = new_name.unwrap_or(node.name.as_str());
+        let parent_changed = new_parent.is_some() && final_parent != old_parent;
+
         let mut tx = self.db.begin().await?;
         // PIT-16: 関係ノードを id 昇順でロック（デッドロック回避）。
         let mut lock_ids = vec![file_id];
-        if let Some(p) = new_parent {
+        if let Some(Some(p)) = new_parent {
             lock_ids.push(p);
         }
         sqlx::query("SELECT id FROM node WHERE id = ANY($1) ORDER BY id FOR UPDATE")
@@ -552,71 +473,102 @@ impl StorageService {
             .await?;
 
         let sql = format!(
-            "UPDATE node SET parent_id = $1, updated_at = now() \
-             WHERE id = $2 AND org = $3 AND deleted_at IS NULL RETURNING {NODE_COLS}"
+            "UPDATE node SET name = $1, parent_id = $2, updated_at = now() \
+             WHERE id = $3 AND org = $4 AND deleted_at IS NULL RETURNING {NODE_COLS}"
         );
         let row: NodeRow = sqlx::query_as(&sql)
-            .bind(new_parent)
+            .bind(final_name)
+            .bind(final_parent)
             .bind(file_id)
             .bind(&ctx.org)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;
 
-        // closure 書換: 祖先リンクを消し（自分自身は残す）、新親から張り直す。
-        sqlx::query("DELETE FROM node_closure WHERE descendant = $1 AND ancestor <> $1")
-            .bind(file_id)
-            .execute(&mut *tx)
-            .await?;
-        if let Some(p) = new_parent {
-            sqlx::query(
-                "INSERT INTO node_closure (org, ancestor, descendant, depth) \
-                 SELECT org, ancestor, $1, depth + 1 FROM node_closure WHERE descendant = $2",
-            )
-            .bind(file_id)
-            .bind(p)
-            .execute(&mut *tx)
-            .await?;
+        // closure 書換（親が変わった時のみ）: 祖先リンクを消し（自分自身は残す）、新親から張り直す。
+        if parent_changed {
+            sqlx::query("DELETE FROM node_closure WHERE descendant = $1 AND ancestor <> $1")
+                .bind(file_id)
+                .execute(&mut *tx)
+                .await?;
+            if let Some(p) = final_parent {
+                sqlx::query(
+                    "INSERT INTO node_closure (org, ancestor, descendant, depth) \
+                     SELECT org, ancestor, $1, depth + 1 FROM node_closure WHERE descendant = $2",
+                )
+                .bind(file_id)
+                .bind(p)
+                .execute(&mut *tx)
+                .await?;
+            }
         }
         audit::record_on(
             &mut tx,
             ctx,
             AuditEntry {
-                action: "file.move",
+                action: "file.update",
                 object_type: "file",
                 object_id: &file_id.to_string(),
                 decision: Decision::Allow,
                 trace_id,
                 metadata: json!({
+                    "renamed": new_name.is_some(),
+                    "moved": parent_changed,
                     "old_parent": old_parent.map(|p| p.to_string()),
-                    "new_parent": new_parent.map(|p| p.to_string()),
+                    "new_parent": final_parent.map(|p| p.to_string()),
                 }),
             },
         )
         .await?;
         tx.commit().await?;
 
-        // OpenFGA の parent タプルを更新（commit 後）。
-        if let Some(op) = old_parent {
-            let _ = self
-                .authz
-                .delete_tuple(
-                    &Subject::object(&FgaObject::folder(&op.to_string())),
-                    Relation::Parent,
-                    &file_obj,
-                )
-                .await;
-        }
-        if let Some(np) = new_parent {
-            self.authz
-                .write_tuple(
-                    &Subject::object(&FgaObject::folder(&np.to_string())),
-                    Relation::Parent,
-                    &file_obj,
-                )
-                .await?;
+        // OpenFGA の parent タプルを更新（親が変わった時のみ・失敗は握り潰さない）。
+        // 先に新親を書き、続けて旧親を剥奪する。剥奪失敗を黙殺すると旧親経由で読めてしまう。
+        if parent_changed {
+            if let Some(np) = final_parent {
+                self.authz
+                    .write_tuple(
+                        &Subject::object(&FgaObject::folder(&np.to_string())),
+                        Relation::Parent,
+                        &file_obj,
+                    )
+                    .await?;
+            }
+            if let Some(op) = old_parent {
+                self.authz
+                    .delete_tuple(
+                        &Subject::object(&FgaObject::folder(&op.to_string())),
+                        Relation::Parent,
+                        &file_obj,
+                    )
+                    .await?;
+            }
         }
         row_to_node(row)
+    }
+
+    /// リネーム（[`update_file`](Self::update_file) の薄いラッパ）。
+    pub async fn rename_file(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        new_name: &str,
+        trace_id: Option<&str>,
+    ) -> Result<Node, StorageError> {
+        self.update_file(ctx, file_id, Some(new_name), None, trace_id)
+            .await
+    }
+
+    /// 移動（[`update_file`](Self::update_file) の薄いラッパ）。
+    pub async fn move_file(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        new_parent: Option<Uuid>,
+        trace_id: Option<&str>,
+    ) -> Result<Node, StorageError> {
+        self.update_file(ctx, file_id, None, Some(new_parent), trace_id)
+            .await
     }
 
     /// 論理削除（ゴミ箱）。blob refcount を減らす。
@@ -854,12 +806,14 @@ impl StorageService {
         row_to_node(row)
     }
 
-    /// owner/parent タプルを書き込む。失敗時は補償的にノードを論理削除する（R2）。
+    /// owner/parent タプルを書き込む。失敗時は補償的にノードを論理削除し、
+    /// 当該ノードが握っていた blob refcount も戻す（R2・refcount リーク防止）。
     async fn write_file_tuples_or_compensate(
         &self,
         ctx: &AuthContext,
         file_id: Uuid,
         parent_id: Option<Uuid>,
+        blob_sha256: &str,
     ) -> Result<(), StorageError> {
         let file_obj = FgaObject::file(&file_id.to_string());
         let result: Result<(), authz::AuthzError> = async {
@@ -881,10 +835,22 @@ impl StorageService {
 
         if let Err(e) = result {
             tracing::error!(error = %e, %file_id, "owner/parent タプル書込に失敗。ノードを補償削除");
-            let _ = sqlx::query("UPDATE node SET deleted_at = now() WHERE id = $1")
-                .bind(file_id)
-                .execute(&self.db)
+            // ノードの論理削除と blob refcount の巻き戻しを 1 txn で原子的に行う。
+            if let Ok(mut tx) = self.db.begin().await {
+                let _ = sqlx::query("UPDATE node SET deleted_at = now() WHERE id = $1")
+                    .bind(file_id)
+                    .execute(&mut *tx)
+                    .await;
+                let _ = sqlx::query(
+                    "UPDATE blob SET refcount = refcount - 1 \
+                     WHERE org = $1 AND sha256 = $2 AND refcount > 0",
+                )
+                .bind(&ctx.org)
+                .bind(blob_sha256)
+                .execute(&mut *tx)
                 .await;
+                let _ = tx.commit().await;
+            }
             return Err(StorageError::Authz(e));
         }
         Ok(())
