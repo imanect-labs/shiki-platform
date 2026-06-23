@@ -415,10 +415,11 @@ async fn storage_end_to_end() {
         .soft_delete_file(&actx, file.id, None)
         .await
         .expect("delete");
+    // 論理削除では refcount を変えない（復元可能な間は本体を参照し続ける＝GC で消されない・LbvQZ）。
     assert_eq!(
         blob_refcount(&pool, &org, &sha).await,
-        1,
-        "削除で refcount 減"
+        2,
+        "論理削除では refcount を減らさない"
     );
     assert!(
         matches!(
@@ -435,7 +436,7 @@ async fn storage_end_to_end() {
     assert_eq!(
         blob_refcount(&pool, &org, &sha).await,
         2,
-        "復元で refcount 戻る"
+        "復元でも refcount は不変（削除で減らしていないため）"
     );
 
     // --- deny: 非メンバーのアップロードは Forbidden かつ deny 監査が残る ---

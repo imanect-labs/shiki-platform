@@ -58,12 +58,14 @@ create table node (
     )
 );
 
--- 同一フォルダ内の名前一意（生存ノードのみ・org スコープ）。
+-- 同一フォルダ内の名前一意（生存ノードのみ・org＋tenant スコープ）。
 -- 論理削除済みは衝突対象外（復元時にアプリが再衝突チェックする）。
+-- tenant_id を含める: 同一 org 識別子を複数 tenant が共有しても、tenant をまたいで
+-- 同名作成をブロックしない（全サービスクエリは org＋tenant でスコープするため整合）。
 -- NULLS NOT DISTINCT: ルート直下（parent_id IS NULL）でも NULL を同値扱いして
 -- 同名を弾く（Postgres は既定で NULL を相異なる値として扱い一意が効かないため。要 PG15+）。
 create unique index node_sibling_name_uidx
-    on node (org, parent_id, name) nulls not distinct
+    on node (org, tenant_id, parent_id, name) nulls not distinct
     where deleted_at is null;
 
 create index node_parent_idx on node (org, parent_id) where deleted_at is null;

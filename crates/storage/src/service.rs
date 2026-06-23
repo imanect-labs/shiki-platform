@@ -375,9 +375,22 @@ impl StorageService {
         let node = match tx_result {
             Ok(node) => node,
             Err(e) => {
-                // upload 固有のオブジェクトのみ掃除する。共有の content-addressed `final_key` は
-                // **消さない**（並行 finalize が commit 済みの blob で参照し得るため）。参照ゼロの
-                // 孤児本体は refcount ベース GC（後続）に委ねる。
+                // 今回新規にコピーした final（blob_exists==false）が孤児（参照する blob 行が無い）
+                // なら掃除する。並行 finalize が同 hash の blob を commit していれば**消さない**
+                // （共有 content-addressed 本体の破壊防止）。判定は最新の committed 状態を読む。
+                if !blob_exists {
+                    let now_referenced: bool = sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM blob WHERE org = $1 AND sha256 = $2)",
+                    )
+                    .bind(&ctx.org)
+                    .bind(&actual_sha)
+                    .fetch_one(&self.db)
+                    .await
+                    .unwrap_or(true); // 判定不能時は安全側＝消さない
+                    if !now_referenced {
+                        let _ = self.store.delete(&final_key).await;
+                    }
+                }
                 let _ = self.store.delete(&incoming_key).await;
                 let _ = self.store.delete(&pending.staging_key).await;
                 let _ = sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
@@ -618,12 +631,12 @@ impl StorageService {
             },
         )
         .await?;
-        // 既存ノードは移動前から可視のため、parent タプルは **DB コミット後**に更新する。
-        // コミット前に新親を付与すると、移動が未確定/失敗のままで宛先フォルダのユーザーに
-        // 先行アクセスを許してしまう（fail-safe を優先）。旧親を先に剥奪 → 新親を付与し、
-        // どちらも過剰権限を生まない順序にする。失敗は伝播し、完全失敗時の残留不整合は
-        // 書込イベント/outbox（Task 1.8）での収束に委ねる（DB と FGA は 2PC できないため）。
-        tx.commit().await?;
+        // FGA parent タプルは過剰権限を生まない順序で更新する（DB と FGA は 2PC できないため、
+        // どの失敗点でも fail-safe＝過剰アクセスを残さない側へ倒す）:
+        //   1. 旧親の剥奪は **コミット前**（剥奪失敗ならロールバックし、旧親経由の継続アクセスを残さない）。
+        //   2. 新親の付与は **コミット後**（コミット前付与だと移動未確定/失敗時に宛先フォルダの
+        //      ユーザーへ先行アクセスを許すため）。
+        // 完全失敗時の残留不整合（新親未付与＝過小権限）は書込イベント/outbox（Task 1.8）で収束させる。
         if parent_changed {
             if let Some(op) = old_parent {
                 self.authz
@@ -632,8 +645,26 @@ impl StorageService {
                         Relation::Parent,
                         &file_obj,
                     )
-                    .await?;
+                    .await?; // 失敗 → tx は drop でロールバック（移動なし＝整合）
             }
+        }
+        if let Err(e) = tx.commit().await {
+            // 移動が確定しなかったので、剥奪済みの旧親タプルを復元（best-effort）。
+            if parent_changed {
+                if let Some(op) = old_parent {
+                    let _ = self
+                        .authz
+                        .write_tuple(
+                            &Subject::object(&FgaObject::folder(&op.to_string())),
+                            Relation::Parent,
+                            &file_obj,
+                        )
+                        .await;
+                }
+            }
+            return Err(StorageError::from(e));
+        }
+        if parent_changed {
             if let Some(np) = final_parent {
                 self.authz
                     .write_tuple(
@@ -678,7 +709,7 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
-        let node = self.load_node(ctx, file_id, false).await?;
+        let _ = self.load_node(ctx, file_id, false).await?;
         self.require(
             ctx,
             Relation::Editor,
@@ -703,13 +734,9 @@ impl StorageService {
         if res.rows_affected() == 0 {
             return Err(StorageError::NotFound);
         }
-        if let Some(sha) = &node.blob_sha256 {
-            sqlx::query("UPDATE blob SET refcount = refcount - 1 WHERE org = $1 AND sha256 = $2 AND refcount > 0")
-                .bind(&ctx.org)
-                .bind(sha)
-                .execute(&mut *tx)
-                .await?;
-        }
+        // 論理削除（ゴミ箱）では blob refcount を**減らさない**。復元可能な間は実体を参照し続ける
+        // ため、ここで減らすと将来の refcount GC が復元可能ファイルの本体を消し得る（LbvQZ）。
+        // 減算は永続削除（ゴミ箱の完全削除・将来実装）でのみ行う。
         audit::record_on(
             &mut tx,
             ctx,
@@ -734,7 +761,7 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        let node = self.load_node(ctx, file_id, true).await?;
+        let _ = self.load_node(ctx, file_id, true).await?;
         self.require(
             ctx,
             Relation::Editor,
@@ -760,13 +787,7 @@ impl StorageService {
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;
-        if let Some(sha) = &node.blob_sha256 {
-            sqlx::query("UPDATE blob SET refcount = refcount + 1 WHERE org = $1 AND sha256 = $2")
-                .bind(&ctx.org)
-                .bind(sha)
-                .execute(&mut *tx)
-                .await?;
-        }
+        // soft_delete で refcount を減らさないので、復元でも増やさない（対称・LbvQZ）。
         audit::record_on(
             &mut tx,
             ctx,
