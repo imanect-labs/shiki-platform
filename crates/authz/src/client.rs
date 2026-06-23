@@ -29,7 +29,10 @@ pub trait AuthzClient: Send + Sync {
         object: &FgaObject,
     ) -> Result<bool, AuthzError>;
 
-    /// `object#relation@subject` のタプルを付与する（冪等ではない＝既存だと OpenFGA が拒否）。
+    /// `object#relation@subject` のタプルを付与する。
+    ///
+    /// **冪等**: 既に存在するタプルの再付与は成功扱いとする（失敗した書込を同一操作の
+    /// 再試行で安全に修復できるようにするため）。
     async fn write_tuple(
         &self,
         subject: &Subject,
@@ -38,6 +41,8 @@ pub trait AuthzClient: Send + Sync {
     ) -> Result<(), AuthzError>;
 
     /// `object#relation@subject` のタプルを剥奪する（共有解除・ノード削除等で使う）。
+    ///
+    /// **冪等**: 存在しないタプルの剥奪は成功扱いとする。
     async fn delete_tuple(
         &self,
         subject: &Subject,
