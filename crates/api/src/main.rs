@@ -85,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
         authz.clone(),
         presign_get_ttl,
         presign_put_ttl,
+        config.storage.max_upload_size_bytes,
     ));
 
     let jwks = Arc::new(JwksCache::new(

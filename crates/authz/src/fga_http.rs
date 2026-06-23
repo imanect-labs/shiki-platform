@@ -219,8 +219,15 @@ async fn ensure_ok(resp: reqwest::Response) -> Result<reqwest::Response, AuthzEr
     Err(AuthzError::Unexpected { status, body })
 }
 
-/// write/delete の冪等化: 400 かつ本文に `idempotent_marker`（既存/不在を示す語）を含むなら
-/// 成功扱いにする。これにより tuple 書込/剥奪を再試行で安全に収束させられる。
+/// OpenFGA が重複書込/不在削除に使う検証エラーコード。
+const FGA_INVALID_INPUT_CODE: &str = "write_failed_due_to_invalid_input";
+
+/// write/delete の冪等化: 400 の **構造化 `code`** が検証エラーで、かつ `message` に
+/// `idempotent_marker`（"already exists" / "does not exist"）を含むなら成功扱いにする。
+///
+/// OpenFGA は重複書込と不在削除を同一 `code` で返すため、両者の区別には `message` を併用する。
+/// 生の本文部分一致でなく `code` でゲートすることで、無関係な 400 を握り潰す事故を減らす
+/// （`code` 自体が将来変わればフェイルクローズ＝エラーになる側に倒れる）。
 async fn ensure_ok_idempotent(
     resp: reqwest::Response,
     idempotent_marker: &str,
@@ -230,9 +237,20 @@ async fn ensure_ok_idempotent(
     }
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
-    // OpenFGA は重複書込/不在削除を 400 + 説明文で返す（例: "... already exists in store ..."）。
-    if status == 400 && body.contains(idempotent_marker) {
-        return Ok(());
+    if status == 400 {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&body) {
+            let code = parsed
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let message = parsed
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if code == FGA_INVALID_INPUT_CODE && message.contains(idempotent_marker) {
+                return Ok(());
+            }
+        }
     }
     Err(AuthzError::Unexpected { status, body })
 }

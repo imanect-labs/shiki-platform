@@ -87,6 +87,7 @@ async fn setup() -> Option<Ctx> {
         authz.clone(),
         Duration::from_secs(300),
         Duration::from_secs(900),
+        5 * 1024 * 1024 * 1024,
     );
     Some(Ctx {
         service,
@@ -359,6 +360,25 @@ async fn storage_end_to_end() {
         );
     }
 
+    // --- Major-2: 宣言サイズが上限（既定 5 GiB）超なら declare を拒否（容量ガード） ---
+    {
+        let too_big = service
+            .begin_upload(
+                &actx,
+                None,
+                "huge.bin",
+                "application/octet-stream",
+                &sha256_hex(b"x"),
+                6 * 1024 * 1024 * 1024,
+                None,
+            )
+            .await;
+        assert!(
+            matches!(too_big, Err(StorageError::Invalid(_))),
+            "{too_big:?}"
+        );
+    }
+
     // --- move（フォルダを直接用意し、closure を検証） ---
     let folder_id: Uuid = sqlx::query_scalar(
         "INSERT INTO node (org, tenant_id, kind, name, created_by) \
@@ -464,11 +484,11 @@ async fn storage_end_to_end() {
         "finalize の allow が監査される"
     );
 
-    // --- 監査ハッシュチェーン: prev_hash が直前の entry_hash と連結する ---
+    // --- 監査ハッシュチェーン: chained 行のみで prev_hash が直前の chained entry_hash に連結する ---
     let chain_ok: Option<bool> = sqlx::query_scalar(
         "SELECT bool_and(prev_hash IS NOT DISTINCT FROM lag_hash) FROM ( \
             SELECT prev_hash, lag(entry_hash) OVER (ORDER BY id) AS lag_hash \
-            FROM audit_log WHERE org = $1 \
+            FROM audit_log WHERE org = $1 AND chained \
          ) t WHERE lag_hash IS NOT NULL",
     )
     .bind(&org)
@@ -478,6 +498,16 @@ async fn storage_end_to_end() {
     assert_eq!(
         chain_ok,
         Some(true),
-        "監査ログの prev_hash が直前 entry_hash と一致"
+        "chained 監査ログの prev_hash が直前 chained entry_hash と一致"
     );
+    // 読取/deny は未チェーン（prev_hash=NULL）であることを確認（Major-3: 読取を直列化しない）。
+    let unchained_reads: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log \
+         WHERE org = $1 AND action = 'file.metadata.read' AND chained = false",
+    )
+    .bind(&org)
+    .fetch_one(&pool)
+    .await
+    .expect("unchained reads");
+    assert!(unchained_reads >= 1, "読取監査は未チェーンで記録される");
 }

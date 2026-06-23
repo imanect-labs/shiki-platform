@@ -15,7 +15,7 @@ use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::{
-    audit::{self, AuditEntry, AuditRecorder, Decision},
+    audit::{self, AuditEntry, AuditRecorder, Chain, Decision},
     content_address::{
         blob_object_key, incoming_object_key, is_valid_sha256_hex, staging_object_key,
     },
@@ -36,6 +36,9 @@ pub struct StorageService {
     audit: AuditRecorder,
     presign_get_ttl: Duration,
     presign_put_ttl: Duration,
+    /// 1 ファイルの最大アップロードサイズ（バイト）。declare の宣言サイズがこれを超えたら拒否し、
+    /// 認証ユーザーによる無制限アップロードでのストレージ枯渇を防ぐ（容量ガード）。
+    max_upload_size: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -73,6 +76,7 @@ impl StorageService {
         authz: Arc<dyn AuthzClient>,
         presign_get_ttl: Duration,
         presign_put_ttl: Duration,
+        max_upload_size: i64,
     ) -> Self {
         let audit = AuditRecorder::new(db.clone());
         StorageService {
@@ -82,6 +86,7 @@ impl StorageService {
             audit,
             presign_get_ttl,
             presign_put_ttl,
+            max_upload_size,
         }
     }
 
@@ -111,6 +116,12 @@ impl StorageService {
         }
         if declared_size < 0 {
             return Err(StorageError::Invalid("size が負です".into()));
+        }
+        if declared_size > self.max_upload_size {
+            return Err(StorageError::Invalid(format!(
+                "size が上限を超えています（最大 {} バイト）",
+                self.max_upload_size
+            )));
         }
 
         // 発行時認可。ルート（parent なし）は org メンバー、フォルダ配下は editor@folder。
@@ -348,6 +359,7 @@ impl StorageService {
                     trace_id,
                     metadata: json!({ "sha256": actual_sha, "size": actual_size }),
                 },
+                Chain::Yes,
             )
             .await?;
             // commit 失敗時は書いた owner/parent tuple を revoke して FGA を作成前へ戻す。
@@ -634,6 +646,7 @@ impl StorageService {
                     "new_parent": final_parent.map(|p| p.to_string()),
                 }),
             },
+            Chain::Yes,
         )
         .await?;
         // FGA parent タプルは過剰権限を生まない順序で更新する（DB と FGA は 2PC できないため、
@@ -754,6 +767,7 @@ impl StorageService {
                 trace_id,
                 metadata: json!({}),
             },
+            Chain::Yes,
         )
         .await?;
         tx.commit().await?;
@@ -805,6 +819,7 @@ impl StorageService {
                 trace_id,
                 metadata: json!({}),
             },
+            Chain::Yes,
         )
         .await?;
         tx.commit().await?;
@@ -1019,10 +1034,13 @@ fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {
     })
 }
 
-/// ノード名の検証（空・長すぎ・パス区切り/NUL を拒否）。
+/// ノード名の検証。空/長すぎ/前後空白/`.`・`..`/パス区切り/制御文字を拒否する。
+///
+/// 名前は download の `Content-Disposition` ヘッダにも流れるため、`\r`/`\n` 等の制御文字を
+/// 弾いてヘッダインジェクションの素地を断つ。前後空白は黙って trim せず拒否する（往復で
+/// 名前が変わる混乱を避ける）。`.`/`..` は UI/同期での予約名衝突を避けるため拒否する。
 fn validate_name(name: &str) -> Result<(), StorageError> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
+    if name.is_empty() {
         return Err(StorageError::Invalid("名前が空です".into()));
     }
     if name.chars().count() > 255 {
@@ -1030,8 +1048,17 @@ fn validate_name(name: &str) -> Result<(), StorageError> {
             "名前が長すぎます（255 文字以内）".into(),
         ));
     }
-    if name.contains('/') || name.contains('\0') {
-        return Err(StorageError::Invalid("名前に / や NUL は使えません".into()));
+    if name != name.trim() {
+        return Err(StorageError::Invalid("名前の前後に空白は使えません".into()));
+    }
+    if name == "." || name == ".." {
+        return Err(StorageError::Invalid("名前に . / .. は使えません".into()));
+    }
+    if name.contains('/') {
+        return Err(StorageError::Invalid("名前に / は使えません".into()));
+    }
+    if name.chars().any(|c| c.is_control()) {
+        return Err(StorageError::Invalid("名前に制御文字は使えません".into()));
     }
     Ok(())
 }
@@ -1043,10 +1070,18 @@ mod tests {
     #[test]
     fn validate_name_rejects_bad_inputs() {
         assert!(validate_name("").is_err());
-        assert!(validate_name("   ").is_err());
+        assert!(validate_name("   ").is_err()); // 前後空白（trim で空）
+        assert!(validate_name(" leading").is_err());
+        assert!(validate_name("trailing ").is_err());
+        assert!(validate_name(".").is_err());
+        assert!(validate_name("..").is_err());
         assert!(validate_name("a/b").is_err());
+        assert!(validate_name("bad\nname").is_err()); // 制御文字（改行）
+        assert!(validate_name("bad\rname").is_err());
+        assert!(validate_name("bad\u{0}name").is_err()); // NUL
         assert!(validate_name(&"x".repeat(256)).is_err());
         assert!(validate_name("report.pdf").is_ok());
         assert!(validate_name("日本語.txt").is_ok());
+        assert!(validate_name("a.b.c").is_ok()); // ドットを含む通常名は可
     }
 }

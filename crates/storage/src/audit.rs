@@ -48,51 +48,67 @@ impl AuditRecorder {
         AuditRecorder { db }
     }
 
-    /// 専用トランザクションで 1 件記録する（読取/deny 経路用）。
-    /// txn にすることで [`record_on`] の per-org advisory ロックが効く。
+    /// 専用トランザクションで 1 件記録する（読取/deny 経路用）。**チェーンしない**:
+    /// 読取（URL 発行・メタ取得）や deny まで per-org の単一ロックに乗せると、読取主体の org の
+    /// スループットが監査 insert の直列実行で頭打ちになるため、これらは prev_hash 連結も
+    /// advisory ロックも行わず並行記録する（改竄チェーンは実データ変更操作のみ・PIT-12 は honest）。
     pub async fn record(
         &self,
         ctx: &AuthContext,
         entry: AuditEntry<'_>,
     ) -> Result<(), StorageError> {
         let mut tx = self.db.begin().await?;
-        record_on(&mut tx, ctx, entry).await?;
+        record_on(&mut tx, ctx, entry, Chain::No).await?;
         tx.commit().await?;
         Ok(())
     }
 }
 
+/// 監査エントリをハッシュチェーンに連結するか。実データ変更操作のみ `Yes`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chain {
+    Yes,
+    No,
+}
+
 /// 既存のトランザクション上で 1 件記録する（書込系は同一 txn で原子的に残す）。
 ///
-/// **必ずトランザクション上で呼ぶこと**。per-org の advisory xact ロックでハッシュチェーンの
-/// `prev_hash` 読み→挿入を直列化し、並行書込で同じ prev を読む競合を防ぐ（txn 終了で自動解放）。
+/// `chain == Yes` のときのみ per-org の advisory xact ロックを取り、`prev_hash` で直前エントリに
+/// 連結する（ハッシュチェーン）。これは finalize/update/delete/restore など**実データ変更操作**に
+/// 限定し、読取/URL 発行/deny は `Chain::No` で並行記録してロック競合を避ける。
 pub async fn record_on(
     conn: &mut PgConnection,
     ctx: &AuthContext,
     entry: AuditEntry<'_>,
+    chain: Chain,
 ) -> Result<(), StorageError> {
-    // org 単位で直列化（同一 org の監査チェーン更新が並行しないようにする）。
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+    let chained = chain == Chain::Yes;
+    // チェーン対象のみ org 単位で直列化し、直前の **chained 行** に連結する
+    // （未チェーンの読取/deny 行は跨いで無視する）。
+    let prev_hash: Option<String> = if chained {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(&ctx.org)
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query_scalar(
+            "SELECT entry_hash FROM audit_log \
+             WHERE org = $1 AND chained ORDER BY id DESC LIMIT 1",
+        )
         .bind(&ctx.org)
-        .execute(&mut *conn)
-        .await?;
-
-    // 直近エントリの entry_hash を prev とし、ハッシュチェーンを伸ばす。
-    let prev_hash: Option<String> = sqlx::query_scalar(
-        "SELECT entry_hash FROM audit_log WHERE org = $1 ORDER BY id DESC LIMIT 1",
-    )
-    .bind(&ctx.org)
-    .fetch_optional(&mut *conn)
-    .await?
-    .flatten();
+        .fetch_optional(&mut *conn)
+        .await?
+        .flatten()
+    } else {
+        None
+    };
 
     let metadata_str = entry.metadata.to_string();
     let entry_hash = compute_entry_hash(prev_hash.as_deref(), ctx, &entry, &metadata_str);
 
     sqlx::query(
         "INSERT INTO audit_log \
-         (tenant_id, org, actor, action, object_type, object_id, decision, trace_id, metadata, prev_hash, entry_hash) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)",
+         (tenant_id, org, actor, action, object_type, object_id, decision, trace_id, metadata, chained, prev_hash, entry_hash) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)",
     )
     .bind(&ctx.tenant_id)
     .bind(&ctx.org)
@@ -103,6 +119,7 @@ pub async fn record_on(
     .bind(entry.decision.as_str())
     .bind(entry.trace_id)
     .bind(&metadata_str)
+    .bind(chained)
     .bind(prev_hash.as_deref())
     .bind(&entry_hash)
     .execute(&mut *conn)

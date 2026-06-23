@@ -122,10 +122,17 @@ create table audit_log (
     decision    text        not null check (decision in ('allow', 'deny')),
     trace_id    text,
     metadata    jsonb       not null default '{}'::jsonb,
+    -- ハッシュチェーン参加フラグ。実データ変更操作のみ true（読取/URL発行/deny は false）。
+    -- 読取主体 org の throughput が per-org ロックで直列化するのを避けるため、チェーンは
+    -- 変更操作に限定する（PIT-12 は「変更操作の追記チェーン」を honest に主張）。
+    chained     boolean     not null default false,
     prev_hash   text,
     entry_hash  text,
     created_at  timestamptz not null default now()
 );
+
+-- チェーン連結（prev_hash 探索）を高速化: org の最新 chained 行を引く。
+create index audit_log_chain_idx on audit_log (org, id) where chained;
 
 create index audit_log_object_idx on audit_log (org, object_type, object_id, created_at);
 create index audit_log_actor_idx on audit_log (org, actor, created_at);

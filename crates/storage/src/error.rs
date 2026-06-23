@@ -27,11 +27,16 @@ pub enum StorageError {
     Authz(#[from] authz::AuthzError),
 }
 
+/// 同一フォルダ内の名前一意制約のインデックス名（migration 0001）。
+const SIBLING_NAME_CONSTRAINT: &str = "node_sibling_name_uidx";
+
 impl From<sqlx::Error> for StorageError {
     fn from(err: sqlx::Error) -> Self {
-        // 一意制約違反は名前衝突（同一フォルダ内の重複名）として 409 に倒す。
+        // **名前衝突の一意制約だけ**を 409 Conflict に倒す。closure PK 等の想定外の一意違反まで
+        // 409 にするとクライアントを誤誘導するため、それらは内部エラー（Db→500）のままにする。
         if let sqlx::Error::Database(ref db_err) = err {
-            if db_err.is_unique_violation() {
+            if db_err.is_unique_violation() && db_err.constraint() == Some(SIBLING_NAME_CONSTRAINT)
+            {
                 return StorageError::Conflict;
             }
         }

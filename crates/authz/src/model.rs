@@ -117,6 +117,33 @@ mod tests {
     }
 
     #[test]
+    fn fga_and_json_declare_same_types() {
+        // `.fga`（人がレビュー）と `.json`（実際に投入）の type 名集合が一致することを CI で保証する
+        // （どちらか片方にだけ type を足す drift を検出する。認可はチョークポイントゆえの安価な保険）。
+        use std::collections::BTreeSet;
+        let fga = include_str!("../model/authorization-model.fga");
+        let fga_types: BTreeSet<String> = fga
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("type "))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .map(str::to_string)
+            .collect();
+        let model = default_model();
+        let json_types: BTreeSet<String> = model
+            .get("type_definitions")
+            .and_then(|v| v.as_array())
+            .expect("type_definitions は配列")
+            .iter()
+            .filter_map(|t| t.get("type").and_then(|v| v.as_str()))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            fga_types, json_types,
+            ".fga と .json の type 名集合が一致すること（model drift 検出）"
+        );
+    }
+
+    #[test]
     fn storage_types_have_expected_relations() {
         // folder / file は owner / editor / viewer / parent を持つこと（厳格モデル）。
         let model = default_model();

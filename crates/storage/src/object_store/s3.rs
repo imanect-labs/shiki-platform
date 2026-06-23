@@ -208,6 +208,13 @@ impl ObjectStore for S3ObjectStore {
         Ok(req.uri().to_string())
     }
 
+    // NOTE (PIT-6 tension・後続 Issue): これは finalize で blob 全体を MinIO→API へ読み戻して
+    // sha256 を再計算する＝サーバ経由のバイトプロキシであり、「バイトはクライアント↔MinIO 直」
+    // という PIT-6 の主張と緊張する（大容量で顕著）。移行先: presigned PUT に
+    // `x-amz-checksum-sha256` を要求して MinIO 側に検証させ（CORS で当該ヘッダは expose 済み）、
+    // finalize は `head_object` で checksum を読むだけにすれば**再ダウンロード無し**で
+    // content-addressing の整合検証が成立する。本 PR では現状の再ハッシュで安全側に倒し、
+    // checksum 検証への切替を後続 Issue（ストレージ最適化）で行う。
     async fn read_and_hash(&self, key: &str) -> Result<(String, u64), ObjectStoreError> {
         let resp = self
             .internal

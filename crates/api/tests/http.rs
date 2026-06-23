@@ -141,6 +141,7 @@ fn base_config() -> AppConfig {
         storage: StorageConfig {
             backend: ObjectStoreBackend::Minio,
             s3: None,
+            max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -169,6 +170,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         Arc::new(AllowAll),
         Duration::from_secs(120),
         Duration::from_secs(900),
+        5 * 1024 * 1024 * 1024,
     ));
     AppState {
         config: Arc::new(config),

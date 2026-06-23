@@ -252,6 +252,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         storage: StorageConfig {
             backend: ObjectStoreBackend::Minio,
             s3: None,
+            max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -278,6 +279,7 @@ fn state_with(config: AppConfig) -> AppState {
         Arc::new(AllowAll),
         Duration::from_secs(120),
         Duration::from_secs(900),
+        5 * 1024 * 1024 * 1024,
     ));
     AppState {
         config: Arc::new(config),

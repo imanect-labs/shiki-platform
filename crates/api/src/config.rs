@@ -177,6 +177,14 @@ pub struct StorageConfig {
     /// MinIO/S3 接続設定（`backend=minio` のとき必須。起動時に main で検証）。
     #[serde(default)]
     pub s3: Option<storage::S3Config>,
+    /// 1 ファイルの最大アップロードサイズ（バイト）。既定 5 GiB。declare の宣言サイズが
+    /// これを超えたら拒否し、容量枯渇（認証ユーザーによる無制限アップロード）を防ぐ。
+    #[serde(default = "default_max_upload_size_bytes")]
+    pub max_upload_size_bytes: i64,
+}
+
+fn default_max_upload_size_bytes() -> i64 {
+    5 * 1024 * 1024 * 1024 // 5 GiB
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
