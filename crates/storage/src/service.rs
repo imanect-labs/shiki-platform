@@ -568,8 +568,9 @@ impl StorageService {
         .fetch_all(&mut *tx)
         .await?;
 
+        // version をインクリメント（メタ変更を後段の write-event/索引が検知できるように）。
         let sql = format!(
-            "UPDATE node SET name = $1, parent_id = $2, updated_at = now() \
+            "UPDATE node SET name = $1, parent_id = $2, version = version + 1, updated_at = now() \
              WHERE id = $3 AND org = $4 AND tenant_id = $5 AND deleted_at IS NULL RETURNING {NODE_COLS}"
         );
         let row: NodeRow = sqlx::query_as(&sql)
@@ -617,10 +618,13 @@ impl StorageService {
             },
         )
         .await?;
-        // OpenFGA の parent タプルは **DB コミット前**に更新し、失敗時は txn をロールバックして
-        // DB とタプルの不整合（旧親経由の漏れ／新親で到達不能）を防ぐ。ロックは保持したまま。
+        // 既存ノードは移動前から可視のため、parent タプルは **DB コミット後**に更新する。
+        // コミット前に新親を付与すると、移動が未確定/失敗のままで宛先フォルダのユーザーに
+        // 先行アクセスを許してしまう（fail-safe を優先）。旧親を先に剥奪 → 新親を付与し、
+        // どちらも過剰権限を生まない順序にする。失敗は伝播し、完全失敗時の残留不整合は
+        // 書込イベント/outbox（Task 1.8）での収束に委ねる（DB と FGA は 2PC できないため）。
+        tx.commit().await?;
         if parent_changed {
-            // 旧親を先に剥奪 → 新親を付与（途中失敗でも over-permissive にしない）。
             if let Some(op) = old_parent {
                 self.authz
                     .delete_tuple(
@@ -628,58 +632,17 @@ impl StorageService {
                         Relation::Parent,
                         &file_obj,
                     )
-                    .await?; // 失敗 → tx は drop でロールバック（移動なし＝整合）
+                    .await?;
             }
             if let Some(np) = final_parent {
-                if let Err(e) = self
-                    .authz
+                self.authz
                     .write_tuple(
                         &Subject::object(&FgaObject::folder(&np.to_string())),
                         Relation::Parent,
                         &file_obj,
                     )
-                    .await
-                {
-                    // 補償: 先に剥奪した旧親タプルを復元して FGA を移動前に戻し、ロールバックする。
-                    if let Some(op) = old_parent {
-                        let _ = self
-                            .authz
-                            .write_tuple(
-                                &Subject::object(&FgaObject::folder(&op.to_string())),
-                                Relation::Parent,
-                                &file_obj,
-                            )
-                            .await;
-                    }
-                    return Err(StorageError::Authz(e));
-                }
+                    .await?;
             }
-        }
-        // commit 失敗時は FGA を移動前へ戻す（DB は旧親のまま・FGA だけ新親＝漏れを防ぐ）。
-        if let Err(e) = tx.commit().await {
-            if parent_changed {
-                if let Some(np) = final_parent {
-                    let _ = self
-                        .authz
-                        .delete_tuple(
-                            &Subject::object(&FgaObject::folder(&np.to_string())),
-                            Relation::Parent,
-                            &file_obj,
-                        )
-                        .await;
-                }
-                if let Some(op) = old_parent {
-                    let _ = self
-                        .authz
-                        .write_tuple(
-                            &Subject::object(&FgaObject::folder(&op.to_string())),
-                            Relation::Parent,
-                            &file_obj,
-                        )
-                        .await;
-                }
-            }
-            return Err(StorageError::from(e));
         }
         row_to_node(row)
     }

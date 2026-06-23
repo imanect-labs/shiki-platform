@@ -392,6 +392,7 @@ async fn storage_end_to_end() {
         .await
         .expect("move_file");
     assert_eq!(moved.parent_id, Some(folder_id));
+    assert!(moved.version > file.version, "move で version が上がること");
     let depth: i32 = sqlx::query_scalar(
         "SELECT depth FROM node_closure WHERE ancestor = $1 AND descendant = $2",
     )
