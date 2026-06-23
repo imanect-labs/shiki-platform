@@ -5,7 +5,8 @@
 //! フロント/ミニアプリ側も同じ閉じた集合を共有する（docs/design.md §4.1）。
 //!
 //! Phase 0 は骨格のみ（organization/department/user, member/parent）。
-//! 後続フェーズで folder/file/thread/doc_chunk と viewer/editor/owner 等を追加する。
+//! Phase 1（ストレージ）で folder/file と owner/editor/viewer を追加した。
+//! 後続フェーズで thread/doc_chunk 等を追加する。
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -16,8 +17,14 @@ use ts_rs::TS;
 pub enum Relation {
     /// あるオブジェクトのメンバー（例: 部署/組織のメンバー）。
     Member,
-    /// 親オブジェクトへの継承関係（例: department → organization）。
+    /// 親オブジェクトへの継承関係（例: department → organization, file → folder）。
     Parent,
+    /// オブジェクトの所有者（例: ファイル/フォルダの作成者）。editor/viewer を含意する。
+    Owner,
+    /// 編集権限（読み＋書き）。owner と親からの継承を含意する。
+    Editor,
+    /// 閲覧権限（読み取り）。editor と親からの継承を含意する。
+    Viewer,
 }
 
 impl Relation {
@@ -26,6 +33,9 @@ impl Relation {
         match self {
             Relation::Member => "member",
             Relation::Parent => "parent",
+            Relation::Owner => "owner",
+            Relation::Editor => "editor",
+            Relation::Viewer => "viewer",
         }
     }
 }
@@ -43,6 +53,10 @@ pub enum ObjectType {
     Organization,
     Department,
     User,
+    /// ストレージのフォルダ（ツリーの内部ノード・継承の親）。
+    Folder,
+    /// ストレージのファイル（ツリーの葉・認可の最小オブジェクト）。
+    File,
 }
 
 impl ObjectType {
@@ -52,6 +66,8 @@ impl ObjectType {
             ObjectType::Organization => "organization",
             ObjectType::Department => "department",
             ObjectType::User => "user",
+            ObjectType::Folder => "folder",
+            ObjectType::File => "file",
         }
     }
 }
@@ -70,6 +86,9 @@ mod tests {
     fn relation_str_roundtrip() {
         assert_eq!(Relation::Member.as_str(), "member");
         assert_eq!(Relation::Parent.as_str(), "parent");
+        assert_eq!(Relation::Owner.as_str(), "owner");
+        assert_eq!(Relation::Editor.as_str(), "editor");
+        assert_eq!(Relation::Viewer.as_str(), "viewer");
     }
 
     #[test]
@@ -124,7 +143,8 @@ mod tests {
     #[test]
     fn relation_deserialize_unknown_fails() {
         // 閉じた集合外の relation はデシリアライズに失敗すること（負例）。
-        let result: Result<Relation, _> = serde_json::from_str("\"owner\"");
+        // owner/editor/viewer は Phase 1 で有効化したため、未定義の語で検証する。
+        let result: Result<Relation, _> = serde_json::from_str("\"commenter\"");
         assert!(result.is_err());
     }
 
@@ -151,6 +171,8 @@ mod tests {
         assert_eq!(ObjectType::Organization.as_str(), "organization");
         assert_eq!(ObjectType::Department.as_str(), "department");
         assert_eq!(ObjectType::User.as_str(), "user");
+        assert_eq!(ObjectType::Folder.as_str(), "folder");
+        assert_eq!(ObjectType::File.as_str(), "file");
     }
 
     #[test]
@@ -199,7 +221,8 @@ mod tests {
     #[test]
     fn object_type_deserialize_unknown_fails() {
         // 閉じた集合外の object type はデシリアライズに失敗すること（負例）。
-        let result: Result<ObjectType, _> = serde_json::from_str("\"folder\"");
+        // folder/file は Phase 1 で有効化したため、未定義の型名で検証する。
+        let result: Result<ObjectType, _> = serde_json::from_str("\"thread\"");
         assert!(result.is_err());
     }
 

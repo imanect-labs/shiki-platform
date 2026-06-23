@@ -23,6 +23,16 @@ impl FgaObject {
         Self::new(ObjectType::Department, id)
     }
 
+    /// ストレージのフォルダオブジェクト `folder:<id>`。
+    pub fn folder(id: &str) -> Self {
+        Self::new(ObjectType::Folder, id)
+    }
+
+    /// ストレージのファイルオブジェクト `file:<id>`（認可の最小オブジェクト）。
+    pub fn file(id: &str) -> Self {
+        Self::new(ObjectType::File, id)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -41,6 +51,15 @@ pub struct Subject(String);
 impl Subject {
     pub fn user(id: &str) -> Self {
         Subject(format!("{}:{}", ObjectType::User.as_str(), id))
+    }
+
+    /// オブジェクトを subject として参照する（userset 親子の結線に使う）。
+    ///
+    /// 例: `file:<id>#parent@folder:<parent>` の右辺 `folder:<parent>`。
+    /// ReBAC では subject が `user:` 以外（オブジェクト参照）になり得るため、
+    /// [`FgaObject`] からそのまま subject 文字列を作る経路を用意する。
+    pub fn object(object: &FgaObject) -> Self {
+        Subject(object.as_str().to_string())
     }
 
     pub fn as_str(&self) -> &str {
@@ -87,6 +106,13 @@ mod tests {
     fn fga_object_department_constructor() {
         // department ショートカットコンストラクタ。
         assert_eq!(FgaObject::department("sales").as_str(), "department:sales");
+    }
+
+    #[test]
+    fn fga_object_storage_constructors() {
+        // folder/file ショートカットコンストラクタ（Phase 1 ストレージ）。
+        assert_eq!(FgaObject::folder("f1").as_str(), "folder:f1");
+        assert_eq!(FgaObject::file("doc1").as_str(), "file:doc1");
     }
 
     #[test]
@@ -141,6 +167,15 @@ mod tests {
     fn subject_user_prefix() {
         // Subject::user は常に `user:` prefix を付けること。
         assert_eq!(Subject::user("bob").as_str(), "user:bob");
+    }
+
+    #[test]
+    fn subject_from_object_keeps_type_prefix() {
+        // Subject::object はオブジェクトの `type:id` をそのまま subject にすること。
+        assert_eq!(
+            Subject::object(&FgaObject::folder("f1")).as_str(),
+            "folder:f1"
+        );
     }
 
     #[test]

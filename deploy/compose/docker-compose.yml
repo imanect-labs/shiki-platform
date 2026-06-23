@@ -190,6 +190,14 @@ services:
       SHIKI__TELEMETRY__SERVICE_NAME: shiki-server
       SHIKI__TELEMETRY__LOG_FORMAT: json
       SHIKI__STORAGE__BACKEND: minio
+      # server→MinIO は内部ホスト、presigned URL はブラウザ到達可能ホストで署名する。
+      SHIKI__STORAGE__S3__INTERNAL_ENDPOINT: http://minio:9000
+      SHIKI__STORAGE__S3__PUBLIC_ENDPOINT: ${SHIKI__STORAGE__S3__PUBLIC_ENDPOINT:-http://localhost:9000}
+      SHIKI__STORAGE__S3__BUCKET: ${SHIKI__STORAGE__S3__BUCKET:-shiki-blobs}
+      SHIKI__STORAGE__S3__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      SHIKI__STORAGE__S3__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # ブラウザ直 PUT/GET（別オリジン）には MinIO バケット CORS が要る。Drive UI（1.10）導入時に
+      # config/TOML で storage.s3.cors_allowed_origins を配列指定する（env スカラは Vec に展開できない）。
       SHIKI__VECTOR__BACKEND: qdrant
       SHIKI__LLM__BACKEND: vllm
       # dev seed は明示フラグでのみ有効化（本番では設定しない）。
@@ -207,6 +215,8 @@ services:
       openfga:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
       otel-collector:
         condition: service_started

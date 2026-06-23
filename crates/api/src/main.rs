@@ -4,14 +4,19 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
 use api::{
-    config::AppConfig, middleware::JwksCache, server::build_router, session::RedisSessionStore,
-    state::AppState, telemetry,
+    config::{AppConfig, ObjectStoreBackend},
+    middleware::JwksCache,
+    server::build_router,
+    session::RedisSessionStore,
+    state::AppState,
+    telemetry,
 };
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
     model, AuthzClient, FgaObject, Relation, Subject,
 };
 use sqlx::postgres::PgPoolOptions;
+use storage::{ObjectStore, S3ObjectStore, StorageService};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -26,6 +31,14 @@ async fn main() -> anyhow::Result<()> {
         .connect_lazy(&config.database.url)
         .context("Postgres プールの初期化に失敗")?;
 
+    // スキーマ・マイグレーションを適用（起動時 fail-fast）。
+    // ここで初めて実接続が張られる。compose は depends_on で postgres healthy を待つ。
+    sqlx::migrate!("../../migrations")
+        .run(&db)
+        .await
+        .context("DB マイグレーションの適用に失敗")?;
+    tracing::info!("DB マイグレーション適用完了");
+
     // JWKS 取得・OpenFGA で共用する HTTP クライアント。
     let http = reqwest::Client::new();
 
@@ -38,6 +51,42 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("OpenFGA への接続に失敗")?;
     dev_seed(&fga).await?;
+    // authz は AppState と StorageService で同一インスタンスを共有する（単一チョークポイント）。
+    let authz: Arc<dyn AuthzClient> = Arc::new(fga);
+
+    // ストレージ: backend に応じて ObjectStore を選び StorageService を構築する。
+    // GCS は Phase 8 で同 trait 裏に追加する。s3 設定の必須チェックは minio の分岐内で行う
+    // （gcs 選択時に s3 未設定エラーで誤って落ちないようにする）。
+    let (object_store, presign_get_ttl, presign_put_ttl): (Arc<dyn ObjectStore>, _, _) =
+        match config.storage.backend {
+            ObjectStoreBackend::Minio => {
+                let s3 = config
+                    .storage
+                    .s3
+                    .as_ref()
+                    .context("storage.s3 が未設定です（backend=minio）")?;
+                (
+                    Arc::new(S3ObjectStore::new(s3)) as Arc<dyn ObjectStore>,
+                    s3.presign_get_ttl(),
+                    s3.presign_put_ttl(),
+                )
+            }
+            ObjectStoreBackend::Gcs => {
+                anyhow::bail!("storage.backend=gcs は Phase 8 で実装予定です")
+            }
+        };
+    object_store
+        .ensure_bucket()
+        .await
+        .context("オブジェクトストアのバケット準備に失敗")?;
+    let storage = Arc::new(StorageService::new(
+        db.clone(),
+        object_store,
+        authz.clone(),
+        presign_get_ttl,
+        presign_put_ttl,
+        config.storage.max_upload_size_bytes,
+    ));
 
     let jwks = Arc::new(JwksCache::new(
         http.clone(),
@@ -56,10 +105,11 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         config: Arc::new(config),
         db,
-        authz: Arc::new(fga),
+        authz,
         jwks,
         sessions,
         http,
+        storage,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)

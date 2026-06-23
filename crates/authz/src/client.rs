@@ -15,6 +15,10 @@ use crate::{
 };
 
 /// 認可判定の単一エントリポイント（単一チョークポイント）。
+///
+/// 判定（`check`）に加え、ReBAC タプルの付与/剥奪（`write_tuple`/`delete_tuple`）も
+/// このトレイト裏に閉じ込める。StorageService 等はファイル作成時の `owner`/`parent`
+/// タプル書き込みをここ経由で行い、OpenFGA 直叩きを排する。
 #[async_trait]
 pub trait AuthzClient: Send + Sync {
     /// `subject` が `object` に対して `relation` を持つか判定する。
@@ -24,6 +28,27 @@ pub trait AuthzClient: Send + Sync {
         relation: Relation,
         object: &FgaObject,
     ) -> Result<bool, AuthzError>;
+
+    /// `object#relation@subject` のタプルを付与する。
+    ///
+    /// **冪等**: 既に存在するタプルの再付与は成功扱いとする（失敗した書込を同一操作の
+    /// 再試行で安全に修復できるようにするため）。
+    async fn write_tuple(
+        &self,
+        subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+    ) -> Result<(), AuthzError>;
+
+    /// `object#relation@subject` のタプルを剥奪する（共有解除・ノード削除等で使う）。
+    ///
+    /// **冪等**: 存在しないタプルの剥奪は成功扱いとする。
+    async fn delete_tuple(
+        &self,
+        subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+    ) -> Result<(), AuthzError>;
 }
 
 /// OpenFGA への接続設定。
@@ -62,24 +87,6 @@ impl OpenFgaClient {
         })
     }
 
-    /// テスト等で tuple を投入する。
-    pub async fn write_tuple(
-        &self,
-        subject: &Subject,
-        relation: Relation,
-        object: &FgaObject,
-    ) -> Result<(), AuthzError> {
-        self.fga
-            .write_tuple(
-                &self.store_id,
-                &self.model_id,
-                subject.as_str(),
-                relation.as_str(),
-                object.as_str(),
-            )
-            .await
-    }
-
     pub fn store_id(&self) -> &str {
         &self.store_id
     }
@@ -99,6 +106,40 @@ impl AuthzClient for OpenFgaClient {
     ) -> Result<bool, AuthzError> {
         self.fga
             .check(
+                &self.store_id,
+                &self.model_id,
+                subject.as_str(),
+                relation.as_str(),
+                object.as_str(),
+            )
+            .await
+    }
+
+    async fn write_tuple(
+        &self,
+        subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+    ) -> Result<(), AuthzError> {
+        self.fga
+            .write_tuple(
+                &self.store_id,
+                &self.model_id,
+                subject.as_str(),
+                relation.as_str(),
+                object.as_str(),
+            )
+            .await
+    }
+
+    async fn delete_tuple(
+        &self,
+        subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+    ) -> Result<(), AuthzError> {
+        self.fga
+            .delete_tuple(
                 &self.store_id,
                 &self.model_id,
                 subject.as_str(),

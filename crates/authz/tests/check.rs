@@ -54,3 +54,45 @@ async fn check_allows_member_and_denies_other_org() {
         .await
         .unwrap());
 }
+
+#[tokio::test]
+async fn write_and_delete_tuple_are_idempotent() {
+    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+        eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
+        return;
+    };
+    let store_name = format!("shiki-test-{}", uuid::Uuid::new_v4());
+    let http = reqwest::Client::new();
+    let config = OpenFgaConfig {
+        base_url,
+        store_name,
+    };
+    let client = OpenFgaClient::connect(http, &config, &model_json())
+        .await
+        .expect("OpenFGA へ接続できること");
+
+    let bob = Subject::user("bob");
+    let acme = FgaObject::organization("acme");
+
+    // 冪等な write: 同じ tuple を 2 回書いても成功扱い（dual-write の再試行で収束）。
+    client
+        .write_tuple(&bob, Relation::Member, &acme)
+        .await
+        .expect("1 回目の write 成功");
+    client
+        .write_tuple(&bob, Relation::Member, &acme)
+        .await
+        .expect("既存 tuple の再 write も成功扱い（冪等）");
+    assert!(client.check(&bob, Relation::Member, &acme).await.unwrap());
+
+    // 冪等な delete: 2 回削除しても成功扱い（不在 delete を許容）。
+    client
+        .delete_tuple(&bob, Relation::Member, &acme)
+        .await
+        .expect("1 回目の delete 成功");
+    client
+        .delete_tuple(&bob, Relation::Member, &acme)
+        .await
+        .expect("不在 tuple の再 delete も成功扱い（冪等）");
+    assert!(!client.check(&bob, Relation::Member, &acme).await.unwrap());
+}

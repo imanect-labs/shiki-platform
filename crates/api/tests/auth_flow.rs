@@ -73,6 +73,63 @@ impl AuthzClient for AllowAll {
     ) -> Result<bool, AuthzError> {
         Ok(true)
     }
+
+    async fn write_tuple(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object: &FgaObject,
+    ) -> Result<(), AuthzError> {
+        Ok(())
+    }
+
+    async fn delete_tuple(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object: &FgaObject,
+    ) -> Result<(), AuthzError> {
+        Ok(())
+    }
+}
+
+/// ストレージのバイト層スタブ（認証フローのテストでは呼ばれない）。
+struct FakeStore;
+
+#[async_trait]
+impl storage::object_store::ObjectStore for FakeStore {
+    async fn ensure_bucket(&self) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
+    async fn presign_put(
+        &self,
+        _key: &str,
+        _ttl: Duration,
+        _content_length: i64,
+    ) -> Result<String, storage::ObjectStoreError> {
+        Ok("http://test/put".into())
+    }
+    async fn presign_get(
+        &self,
+        _key: &str,
+        _ttl: Duration,
+        _filename: Option<&str>,
+        _content_type: Option<&str>,
+    ) -> Result<String, storage::ObjectStoreError> {
+        Ok("http://test/get".into())
+    }
+    async fn read_and_hash(&self, _key: &str) -> Result<(String, u64), storage::ObjectStoreError> {
+        Err(storage::ObjectStoreError::NotFound("test".into()))
+    }
+    async fn exists(&self, _key: &str) -> Result<bool, storage::ObjectStoreError> {
+        Ok(false)
+    }
+    async fn copy(&self, _src: &str, _dst: &str) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
+    async fn delete(&self, _key: &str) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
 }
 
 fn now() -> i64 {
@@ -194,6 +251,8 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         },
         storage: StorageConfig {
             backend: ObjectStoreBackend::Minio,
+            s3: None,
+            max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -214,6 +273,14 @@ fn state_with(config: AppConfig) -> AppState {
         config.auth.effective_jwks_uri(),
         Duration::from_secs(config.auth.jwks_ttl_secs),
     ));
+    let storage = Arc::new(storage::StorageService::new(
+        db.clone(),
+        Arc::new(FakeStore),
+        Arc::new(AllowAll),
+        Duration::from_secs(120),
+        Duration::from_secs(900),
+        5 * 1024 * 1024 * 1024,
+    ));
     AppState {
         config: Arc::new(config),
         db,
@@ -221,6 +288,7 @@ fn state_with(config: AppConfig) -> AppState {
         jwks,
         sessions: store,
         http: reqwest::Client::new(),
+        storage,
     }
 }
 

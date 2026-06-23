@@ -47,15 +47,15 @@ jobs:
       # live 依存（OpenFGA / Redis）を起動し、結合テストのカバレッジも算入する。
       # これにより fga_http / client（OpenFGA 経路）と redis_store（Redis 経路）も
       # 単体テストでは届かない実経路をカバーした上で全体カバレッジを評価する。
-      - name: compose up (openfga + redis)
+      - name: compose up (postgres + minio + openfga + redis)
         working-directory: deploy/compose
         run: |
           cp .env.example .env
-          docker compose up -d openfga redis
-      - name: wait for openfga & redis healthy
+          docker compose up -d postgres minio openfga redis
+      - name: wait for services healthy
         working-directory: deploy/compose
         run: |
-          for svc in openfga redis; do
+          for svc in postgres minio openfga redis; do
             ok=""
             for i in $(seq 1 60); do
               s=$(docker compose ps "$svc" --format '{{.Health}}' || true)
@@ -69,11 +69,14 @@ jobs:
       # 過去の profraw/profdata が混入し得る。計測前に明示的に掃除して当該 run のみを反映させる。
       - name: clean stale coverage artifacts
         run: cargo llvm-cov clean --workspace
-      # 単体＋結合テストをまとめて計測（OPENFGA_TEST_URL / REDIS_TEST_URL を見て結合テストが実走する）。
+      # 単体＋結合テストをまとめて計測（各 *_TEST_* env を見て結合テストが実走する）。
+      # storage の結合テストは postgres + minio + openfga 実体を使う（presigned/closure/監査を実経路で検証）。
       - name: test + coverage (cargo-llvm-cov)
         env:
           OPENFGA_TEST_URL: http://localhost:8082
           REDIS_TEST_URL: redis://localhost:6379
+          STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
+          STORAGE_TEST_S3_ENDPOINT: http://localhost:9000
         run: cargo llvm-cov --all --no-report
       - name: coverage report (lcov + summary + job summary)
         run: |

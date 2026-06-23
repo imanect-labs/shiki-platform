@@ -124,11 +124,14 @@ fn http_metrics() -> &'static HttpMetrics {
 
 /// リクエスト span に trace_id を記録し、基本メトリクス（件数/レイテンシ）を計上する。
 /// span は `make_request_span` で `trace_id` フィールドを Empty 宣言済みである前提。
-pub async fn observe(req: Request, next: Next) -> Response {
+pub async fn observe(mut req: Request, next: Next) -> Response {
     let span = tracing::Span::current();
     let trace_id = span.context().span().span_context().trace_id();
     if trace_id != opentelemetry::trace::TraceId::INVALID {
         span.record("trace_id", tracing::field::display(trace_id));
+        // ハンドラ（監査ログ）が trace_id を参照できるよう extension に載せる。
+        req.extensions_mut()
+            .insert(crate::extract::TraceId(trace_id.to_string()));
     }
 
     let method = req.method().as_str().to_owned();

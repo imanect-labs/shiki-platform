@@ -7,9 +7,25 @@ use utoipa::{
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "shiki API", version = "0.0.0", description = "shiki-platform Phase 0 API"),
-    paths(crate::routes::me::get_me),
-    components(schemas(crate::routes::me::MeResponse)),
+    info(title = "shiki API", version = "0.0.0", description = "shiki-platform API"),
+    paths(
+        crate::routes::me::get_me,
+        crate::routes::files::begin_upload,
+        crate::routes::files::finalize_upload,
+        crate::routes::files::download_url,
+        crate::routes::files::get_file,
+        crate::routes::files::update_file,
+        crate::routes::files::delete_file,
+        crate::routes::files::restore_file,
+    ),
+    components(schemas(
+        crate::routes::me::MeResponse,
+        crate::routes::files::FileResponse,
+        crate::routes::files::UploadRequest,
+        crate::routes::files::UploadTicketResponse,
+        crate::routes::files::UpdateFileRequest,
+        crate::routes::files::DownloadUrlResponse,
+    )),
     modifiers(&SecurityAddon),
 )]
 pub struct ApiDoc;

@@ -166,7 +166,10 @@ impl FgaHttp {
         Ok(parsed.allowed)
     }
 
-    /// tuple を書き込む（主にテスト・初期データ投入用）。
+    /// tuple を書き込む（owner/parent 付与・初期データ投入等）。
+    ///
+    /// **冪等**: 既に存在する tuple の再書込（OpenFGA は重複を 400 で拒否）は成功扱いにする。
+    /// これにより失敗した tuple 書込を同一操作の再試行で安全に修復できる（dual-write の収束性）。
     pub async fn write_tuple(
         &self,
         store_id: &str,
@@ -181,7 +184,28 @@ impl FgaHttp {
             "authorization_model_id": model_id,
         });
         let resp = self.http.post(&url).json(&body).send().await?;
-        ensure_ok(resp).await?;
+        ensure_ok_idempotent(resp, "already exists").await?;
+        Ok(())
+    }
+
+    /// tuple を剥奪する（共有解除・ノード削除等）。
+    ///
+    /// **冪等**: 存在しない tuple の削除（OpenFGA は 400 で拒否）は成功扱いにする。
+    pub async fn delete_tuple(
+        &self,
+        store_id: &str,
+        model_id: &str,
+        user: &str,
+        relation: &str,
+        object: &str,
+    ) -> Result<(), AuthzError> {
+        let url = format!("{}/stores/{}/write", self.base_url, store_id);
+        let body = serde_json::json!({
+            "deletes": { "tuple_keys": [{ "user": user, "relation": relation, "object": object }] },
+            "authorization_model_id": model_id,
+        });
+        let resp = self.http.post(&url).json(&body).send().await?;
+        ensure_ok_idempotent(resp, "does not exist").await?;
         Ok(())
     }
 }
@@ -192,5 +216,41 @@ async fn ensure_ok(resp: reqwest::Response) -> Result<reqwest::Response, AuthzEr
     }
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
+    Err(AuthzError::Unexpected { status, body })
+}
+
+/// OpenFGA が重複書込/不在削除に使う検証エラーコード。
+const FGA_INVALID_INPUT_CODE: &str = "write_failed_due_to_invalid_input";
+
+/// write/delete の冪等化: 400 の **構造化 `code`** が検証エラーで、かつ `message` に
+/// `idempotent_marker`（"already exists" / "does not exist"）を含むなら成功扱いにする。
+///
+/// OpenFGA は重複書込と不在削除を同一 `code` で返すため、両者の区別には `message` を併用する。
+/// 生の本文部分一致でなく `code` でゲートすることで、無関係な 400 を握り潰す事故を減らす
+/// （`code` 自体が将来変わればフェイルクローズ＝エラーになる側に倒れる）。
+async fn ensure_ok_idempotent(
+    resp: reqwest::Response,
+    idempotent_marker: &str,
+) -> Result<(), AuthzError> {
+    if resp.status().is_success() {
+        return Ok(());
+    }
+    let status = resp.status().as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    if status == 400 {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&body) {
+            let code = parsed
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let message = parsed
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if code == FGA_INVALID_INPUT_CODE && message.contains(idempotent_marker) {
+                return Ok(());
+            }
+        }
+    }
     Err(AuthzError::Unexpected { status, body })
 }
