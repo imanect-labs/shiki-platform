@@ -197,12 +197,15 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
         // 所有者束縛: アップロードを宣言した本人のみ finalize できる（upload_id 漏洩での横取り防止）。
+        // tenant_id も条件に含め、同一 org 内でも tenant 跨ぎを遮断する。
         let pending: PendingRow = sqlx::query_as(
             "SELECT parent_id, name, content_type, declared_sha256, declared_size, staging_key \
-             FROM pending_upload WHERE upload_id = $1 AND org = $2 AND created_by = $3",
+             FROM pending_upload \
+             WHERE upload_id = $1 AND org = $2 AND tenant_id = $3 AND created_by = $4",
         )
         .bind(upload_id)
         .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
         .bind(&ctx.principal.id)
         .fetch_optional(&self.db)
         .await?
@@ -272,17 +275,18 @@ impl StorageService {
                 .bind(&actual_sha)
                 .fetch_one(&self.db)
                 .await?;
-        let mut final_copied = false;
         if !blob_exists {
             // incoming は不変なので、final へのコピーは宣言ハッシュと必ず一致する。
+            // 既存 blob があるなら上書きしない（並行 finalize が参照する共有本体を壊さない）。
             if let Err(e) = self.store.copy(&incoming_key, &final_key).await {
                 let _ = self.store.delete(&incoming_key).await;
                 return Err(e.into());
             }
-            final_copied = true;
         }
 
-        // メタ確定（blob upsert + node + pending 削除 + 監査）を 1 txn で。
+        // メタ確定（blob upsert + node + FGA tuple + pending 削除 + 監査）を 1 txn 境界で行う。
+        // FGA tuple は **commit 前**に書き、parent 失敗・commit 失敗のどちらでも書けた tuple を
+        // revoke して DB/FGA の不整合（auth tuple 欠落・owner 残留）を残さない。
         let tx_result: Result<Node, StorageError> = async {
             let mut tx = self.db.begin().await?;
             self.bump_blob(
@@ -305,6 +309,30 @@ impl StorageService {
                     &pending.content_type,
                 )
                 .await?;
+            let file_obj = FgaObject::file(&node.id.to_string());
+            // owner tuple（失敗時は tx を drop でロールバック＝何も残らない）。
+            self.authz
+                .write_tuple(&ctx.subject(), Relation::Owner, &file_obj)
+                .await
+                .map_err(StorageError::Authz)?;
+            // parent tuple（folder 配下のみ）。失敗時は owner を revoke してロールバック。
+            if let Some(p) = pending.parent_id {
+                if let Err(e) = self
+                    .authz
+                    .write_tuple(
+                        &Subject::object(&FgaObject::folder(&p.to_string())),
+                        Relation::Parent,
+                        &file_obj,
+                    )
+                    .await
+                {
+                    let _ = self
+                        .authz
+                        .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
+                        .await;
+                    return Err(StorageError::Authz(e));
+                }
+            }
             sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
                 .bind(upload_id)
                 .execute(&mut *tx)
@@ -322,7 +350,24 @@ impl StorageService {
                 },
             )
             .await?;
-            tx.commit().await?;
+            // commit 失敗時は書いた owner/parent tuple を revoke して FGA を作成前へ戻す。
+            if let Err(e) = tx.commit().await {
+                let _ = self
+                    .authz
+                    .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
+                    .await;
+                if let Some(p) = pending.parent_id {
+                    let _ = self
+                        .authz
+                        .delete_tuple(
+                            &Subject::object(&FgaObject::folder(&p.to_string())),
+                            Relation::Parent,
+                            &file_obj,
+                        )
+                        .await;
+                }
+                return Err(StorageError::from(e));
+            }
             Ok(node)
         }
         .await;
@@ -330,10 +375,9 @@ impl StorageService {
         let node = match tx_result {
             Ok(node) => node,
             Err(e) => {
-                // DB 失敗（同名衝突等）: 今回コピーした final（孤児 blob）と incoming/staging を掃除。
-                if final_copied {
-                    let _ = self.store.delete(&final_key).await;
-                }
+                // upload 固有のオブジェクトのみ掃除する。共有の content-addressed `final_key` は
+                // **消さない**（並行 finalize が commit 済みの blob で参照し得るため）。参照ゼロの
+                // 孤児本体は refcount ベース GC（後続）に委ねる。
                 let _ = self.store.delete(&incoming_key).await;
                 let _ = self.store.delete(&pending.staging_key).await;
                 let _ = sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
@@ -344,9 +388,7 @@ impl StorageService {
             }
         };
 
-        self.write_file_tuples_or_compensate(ctx, node.id, pending.parent_id, &actual_sha)
-            .await?;
-        let _ = self.store.delete(&incoming_key).await; // best-effort 後始末
+        let _ = self.store.delete(&incoming_key).await; // best-effort 後始末（final は残す）
         let _ = self.store.delete(&pending.staging_key).await;
         Ok(node)
     }
@@ -360,7 +402,7 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<DownloadTicket, StorageError> {
-        let node = self.load_node(&ctx.org, file_id, false).await?;
+        let node = self.load_node(ctx, file_id, false).await?;
         if node.kind != NodeKind::File {
             return Err(StorageError::NotFound);
         }
@@ -409,7 +451,7 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        let node = self.load_node(&ctx.org, file_id, false).await?;
+        let node = self.load_node(ctx, file_id, false).await?;
         self.require_read(
             ctx,
             &FgaObject::file(&file_id.to_string()),
@@ -455,7 +497,7 @@ impl StorageService {
         if let Some(name) = new_name {
             validate_name(name)?;
         }
-        let node = self.load_node(&ctx.org, file_id, false).await?;
+        let node = self.load_node(ctx, file_id, false).await?;
         let file_obj = FgaObject::file(&file_id.to_string());
         // 対象ファイルの editor 権限。
         self.require(
@@ -516,20 +558,26 @@ impl StorageService {
         if let Some(Some(p)) = new_parent {
             lock_ids.push(p);
         }
-        sqlx::query("SELECT id FROM node WHERE id = ANY($1) ORDER BY id FOR UPDATE")
-            .bind(&lock_ids)
-            .fetch_all(&mut *tx)
-            .await?;
+        sqlx::query(
+            "SELECT id FROM node \
+             WHERE id = ANY($1) AND org = $2 AND tenant_id = $3 ORDER BY id FOR UPDATE",
+        )
+        .bind(&lock_ids)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .fetch_all(&mut *tx)
+        .await?;
 
         let sql = format!(
             "UPDATE node SET name = $1, parent_id = $2, updated_at = now() \
-             WHERE id = $3 AND org = $4 AND deleted_at IS NULL RETURNING {NODE_COLS}"
+             WHERE id = $3 AND org = $4 AND tenant_id = $5 AND deleted_at IS NULL RETURNING {NODE_COLS}"
         );
         let row: NodeRow = sqlx::query_as(&sql)
             .bind(final_name)
             .bind(final_parent)
             .bind(file_id)
             .bind(&ctx.org)
+            .bind(&ctx.tenant_id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;
@@ -607,7 +655,32 @@ impl StorageService {
                 }
             }
         }
-        tx.commit().await?;
+        // commit 失敗時は FGA を移動前へ戻す（DB は旧親のまま・FGA だけ新親＝漏れを防ぐ）。
+        if let Err(e) = tx.commit().await {
+            if parent_changed {
+                if let Some(np) = final_parent {
+                    let _ = self
+                        .authz
+                        .delete_tuple(
+                            &Subject::object(&FgaObject::folder(&np.to_string())),
+                            Relation::Parent,
+                            &file_obj,
+                        )
+                        .await;
+                }
+                if let Some(op) = old_parent {
+                    let _ = self
+                        .authz
+                        .write_tuple(
+                            &Subject::object(&FgaObject::folder(&op.to_string())),
+                            Relation::Parent,
+                            &file_obj,
+                        )
+                        .await;
+                }
+            }
+            return Err(StorageError::from(e));
+        }
         row_to_node(row)
     }
 
@@ -642,7 +715,7 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
-        let node = self.load_node(&ctx.org, file_id, false).await?;
+        let node = self.load_node(ctx, file_id, false).await?;
         self.require(
             ctx,
             Relation::Editor,
@@ -657,10 +730,11 @@ impl StorageService {
         let mut tx = self.db.begin().await?;
         let res = sqlx::query(
             "UPDATE node SET deleted_at = now(), updated_at = now() \
-             WHERE id = $1 AND org = $2 AND deleted_at IS NULL",
+             WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL",
         )
         .bind(file_id)
         .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
         .execute(&mut *tx)
         .await?;
         if res.rows_affected() == 0 {
@@ -697,7 +771,7 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        let node = self.load_node(&ctx.org, file_id, true).await?;
+        let node = self.load_node(ctx, file_id, true).await?;
         self.require(
             ctx,
             Relation::Editor,
@@ -713,11 +787,13 @@ impl StorageService {
         // deleted_at=NULL に戻す。生存兄弟と同名なら部分ユニークが効き Conflict になる。
         let sql = format!(
             "UPDATE node SET deleted_at = NULL, updated_at = now() \
-             WHERE id = $1 AND org = $2 AND deleted_at IS NOT NULL RETURNING {NODE_COLS}"
+             WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NOT NULL \
+             RETURNING {NODE_COLS}"
         );
         let row: NodeRow = sqlx::query_as(&sql)
             .bind(file_id)
             .bind(&ctx.org)
+            .bind(&ctx.tenant_id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;
@@ -812,13 +888,15 @@ impl StorageService {
         Ok(())
     }
 
-    /// 親が存在する生存フォルダであることを確認する。
+    /// 親が存在する生存フォルダであることを確認する（org + tenant スコープ）。
     async fn ensure_folder(&self, ctx: &AuthContext, id: Uuid) -> Result<(), StorageError> {
         let kind: Option<String> = sqlx::query_scalar(
-            "SELECT kind FROM node WHERE id = $1 AND org = $2 AND deleted_at IS NULL",
+            "SELECT kind FROM node \
+             WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL",
         )
         .bind(id)
         .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
         .fetch_optional(&self.db)
         .await?;
         match kind.as_deref() {
@@ -903,73 +981,25 @@ impl StorageService {
         row_to_node(row)
     }
 
-    /// owner/parent タプルを書き込む。失敗時は補償的にノードを論理削除し、
-    /// 当該ノードが握っていた blob refcount も戻す（R2・refcount リーク防止）。
-    async fn write_file_tuples_or_compensate(
-        &self,
-        ctx: &AuthContext,
-        file_id: Uuid,
-        parent_id: Option<Uuid>,
-        blob_sha256: &str,
-    ) -> Result<(), StorageError> {
-        let file_obj = FgaObject::file(&file_id.to_string());
-        let result: Result<(), authz::AuthzError> = async {
-            self.authz
-                .write_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                .await?;
-            if let Some(p) = parent_id {
-                self.authz
-                    .write_tuple(
-                        &Subject::object(&FgaObject::folder(&p.to_string())),
-                        Relation::Parent,
-                        &file_obj,
-                    )
-                    .await?;
-            }
-            Ok(())
-        }
-        .await;
-
-        if let Err(e) = result {
-            tracing::error!(error = %e, %file_id, "owner/parent タプル書込に失敗。ノードを補償削除");
-            // ノードの論理削除と blob refcount の巻き戻しを 1 txn で原子的に行う。
-            if let Ok(mut tx) = self.db.begin().await {
-                let _ = sqlx::query("UPDATE node SET deleted_at = now() WHERE id = $1")
-                    .bind(file_id)
-                    .execute(&mut *tx)
-                    .await;
-                let _ = sqlx::query(
-                    "UPDATE blob SET refcount = refcount - 1 \
-                     WHERE org = $1 AND sha256 = $2 AND refcount > 0",
-                )
-                .bind(&ctx.org)
-                .bind(blob_sha256)
-                .execute(&mut *tx)
-                .await;
-                let _ = tx.commit().await;
-            }
-            return Err(StorageError::Authz(e));
-        }
-        Ok(())
-    }
-
-    /// org スコープでノードを 1 件読む。
+    /// org + tenant スコープでノードを 1 件読む。
     async fn load_node(
         &self,
-        org: &str,
+        ctx: &AuthContext,
         id: Uuid,
         include_deleted: bool,
     ) -> Result<Node, StorageError> {
         let sql = if include_deleted {
-            format!("SELECT {NODE_COLS} FROM node WHERE id = $1 AND org = $2")
+            format!("SELECT {NODE_COLS} FROM node WHERE id = $1 AND org = $2 AND tenant_id = $3")
         } else {
             format!(
-                "SELECT {NODE_COLS} FROM node WHERE id = $1 AND org = $2 AND deleted_at IS NULL"
+                "SELECT {NODE_COLS} FROM node \
+                 WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL"
             )
         };
         let row: Option<NodeRow> = sqlx::query_as(&sql)
             .bind(id)
-            .bind(org)
+            .bind(&ctx.org)
+            .bind(&ctx.tenant_id)
             .fetch_optional(&self.db)
             .await?;
         row.map(row_to_node)
