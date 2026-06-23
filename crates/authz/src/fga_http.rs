@@ -167,6 +167,9 @@ impl FgaHttp {
     }
 
     /// tuple を書き込む（owner/parent 付与・初期データ投入等）。
+    ///
+    /// **冪等**: 既に存在する tuple の再書込（OpenFGA は重複を 400 で拒否）は成功扱いにする。
+    /// これにより失敗した tuple 書込を同一操作の再試行で安全に修復できる（dual-write の収束性）。
     pub async fn write_tuple(
         &self,
         store_id: &str,
@@ -181,11 +184,13 @@ impl FgaHttp {
             "authorization_model_id": model_id,
         });
         let resp = self.http.post(&url).json(&body).send().await?;
-        ensure_ok(resp).await?;
+        ensure_ok_idempotent(resp, "already exists").await?;
         Ok(())
     }
 
     /// tuple を剥奪する（共有解除・ノード削除等）。
+    ///
+    /// **冪等**: 存在しない tuple の削除（OpenFGA は 400 で拒否）は成功扱いにする。
     pub async fn delete_tuple(
         &self,
         store_id: &str,
@@ -200,7 +205,7 @@ impl FgaHttp {
             "authorization_model_id": model_id,
         });
         let resp = self.http.post(&url).json(&body).send().await?;
-        ensure_ok(resp).await?;
+        ensure_ok_idempotent(resp, "does not exist").await?;
         Ok(())
     }
 }
@@ -211,5 +216,23 @@ async fn ensure_ok(resp: reqwest::Response) -> Result<reqwest::Response, AuthzEr
     }
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
+    Err(AuthzError::Unexpected { status, body })
+}
+
+/// write/delete の冪等化: 400 かつ本文に `idempotent_marker`（既存/不在を示す語）を含むなら
+/// 成功扱いにする。これにより tuple 書込/剥奪を再試行で安全に収束させられる。
+async fn ensure_ok_idempotent(
+    resp: reqwest::Response,
+    idempotent_marker: &str,
+) -> Result<(), AuthzError> {
+    if resp.status().is_success() {
+        return Ok(());
+    }
+    let status = resp.status().as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    // OpenFGA は重複書込/不在削除を 400 + 説明文で返す（例: "... already exists in store ..."）。
+    if status == 400 && body.contains(idempotent_marker) {
+        return Ok(());
+    }
     Err(AuthzError::Unexpected { status, body })
 }

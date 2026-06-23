@@ -375,22 +375,12 @@ impl StorageService {
         let node = match tx_result {
             Ok(node) => node,
             Err(e) => {
-                // 今回新規にコピーした final（blob_exists==false）が孤児（参照する blob 行が無い）
-                // なら掃除する。並行 finalize が同 hash の blob を commit していれば**消さない**
-                // （共有 content-addressed 本体の破壊防止）。判定は最新の committed 状態を読む。
-                if !blob_exists {
-                    let now_referenced: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM blob WHERE org = $1 AND sha256 = $2)",
-                    )
-                    .bind(&ctx.org)
-                    .bind(&actual_sha)
-                    .fetch_one(&self.db)
-                    .await
-                    .unwrap_or(true); // 判定不能時は安全側＝消さない
-                    if !now_referenced {
-                        let _ = self.store.delete(&final_key).await;
-                    }
-                }
+                // 共有 content-addressed の `final_key` は失敗時に**削除しない**。並行 finalize が
+                // 同 hash を commit 済みなら参照中の本体を壊し得るため（Lb76C のレース）。判定も
+                // commit 直前のレース窓が残るので、削除はせず GC に委ねる。参照ゼロの孤児本体
+                // （新規 hash の finalize が DB 失敗した稀ケースのみ）は **オブジェクトストアの
+                // 孤児スイープ GC**（blob 行を持たないキーを掃除・後続）で回収する（refcount GC は
+                // blob 行が無いと検知できないため）。upload 固有の incoming/staging だけ掃除する。
                 let _ = self.store.delete(&incoming_key).await;
                 let _ = self.store.delete(&pending.staging_key).await;
                 let _ = sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
@@ -510,7 +500,8 @@ impl StorageService {
         if let Some(name) = new_name {
             validate_name(name)?;
         }
-        let node = self.load_node(ctx, file_id, false).await?;
+        // 早期の存在＋tenant ゲート（最新状態はロック後に再読込する・Lb76B）。
+        let _ = self.load_node(ctx, file_id, false).await?;
         let file_obj = FgaObject::file(&file_id.to_string());
         // 対象ファイルの editor 権限。
         self.require(
@@ -557,14 +548,6 @@ impl StorageService {
             }
         }
 
-        let old_parent = node.parent_id;
-        let final_parent = match new_parent {
-            Some(target) => target,
-            None => node.parent_id,
-        };
-        let final_name = new_name.unwrap_or(node.name.as_str());
-        let parent_changed = new_parent.is_some() && final_parent != old_parent;
-
         let mut tx = self.db.begin().await?;
         // PIT-16: 関係ノードを id 昇順でロック（デッドロック回避）。
         let mut lock_ids = vec![file_id];
@@ -580,6 +563,28 @@ impl StorageService {
         .bind(&ctx.tenant_id)
         .fetch_all(&mut *tx)
         .await?;
+
+        // Lb76B: ロック取得後に**最新状態を再読込**する。並行 move とオーバーラップした際、
+        // ロック前に読んだ stale な親/名前を使うと、FGA の parent タプルが DB とずれる
+        // （旧フォルダの継承アクセスが残る）ため、ロック下の最新行から計算する。
+        let fresh_sql = format!(
+            "SELECT {NODE_COLS} FROM node \
+             WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL"
+        );
+        let fresh: NodeRow = sqlx::query_as(&fresh_sql)
+            .bind(file_id)
+            .bind(&ctx.org)
+            .bind(&ctx.tenant_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(StorageError::NotFound)?;
+        let old_parent = fresh.parent_id;
+        let final_parent = match new_parent {
+            Some(target) => target,
+            None => fresh.parent_id,
+        };
+        let final_name = new_name.unwrap_or(fresh.name.as_str());
+        let parent_changed = new_parent.is_some() && final_parent != old_parent;
 
         // version をインクリメント（メタ変更を後段の write-event/索引が検知できるように）。
         let sql = format!(
@@ -632,11 +637,13 @@ impl StorageService {
         )
         .await?;
         // FGA parent タプルは過剰権限を生まない順序で更新する（DB と FGA は 2PC できないため、
-        // どの失敗点でも fail-safe＝過剰アクセスを残さない側へ倒す）:
-        //   1. 旧親の剥奪は **コミット前**（剥奪失敗ならロールバックし、旧親経由の継続アクセスを残さない）。
-        //   2. 新親の付与は **コミット後**（コミット前付与だと移動未確定/失敗時に宛先フォルダの
-        //      ユーザーへ先行アクセスを許すため）。
-        // 完全失敗時の残留不整合（新親未付与＝過小権限）は書込イベント/outbox（Task 1.8）で収束させる。
+        // どの失敗点でも fail-safe へ倒し、かつ**冪等な再試行で収束**できるようにする）:
+        //   1. 旧親の剥奪は **コミット前**（剥奪失敗ならロールバック＝旧親経由の継続アクセスを残さない）。
+        //   2. 新親の付与は **コミット後**かつ **final_parent がある限り常に**実行する。
+        //      `write_tuple` は冪等（既存は成功扱い）なので、付与失敗時に同じ move を再試行すれば
+        //      `parent_changed=false` でも新親タプルを張り直して修復できる（Lb76A）。
+        //      コミット前付与は移動未確定時の先行アクセスを生むため避ける（Lb76C/LbiSj）。
+        // 完全失敗時の残留（新親未付与＝過小権限）は再試行 or 書込イベント/outbox（Task 1.8）で収束。
         if parent_changed {
             if let Some(op) = old_parent {
                 self.authz
@@ -649,7 +656,7 @@ impl StorageService {
             }
         }
         if let Err(e) = tx.commit().await {
-            // 移動が確定しなかったので、剥奪済みの旧親タプルを復元（best-effort）。
+            // 移動が確定しなかったので、剥奪済みの旧親タプルを復元（冪等・best-effort）。
             if parent_changed {
                 if let Some(op) = old_parent {
                     let _ = self
@@ -664,16 +671,15 @@ impl StorageService {
             }
             return Err(StorageError::from(e));
         }
-        if parent_changed {
-            if let Some(np) = final_parent {
-                self.authz
-                    .write_tuple(
-                        &Subject::object(&FgaObject::folder(&np.to_string())),
-                        Relation::Parent,
-                        &file_obj,
-                    )
-                    .await?;
-            }
+        // 現在の親（folder）への parent タプルを冪等に保証する（再試行で修復可能）。
+        if let Some(np) = final_parent {
+            self.authz
+                .write_tuple(
+                    &Subject::object(&FgaObject::folder(&np.to_string())),
+                    Relation::Parent,
+                    &file_obj,
+                )
+                .await?;
         }
         row_to_node(row)
     }
