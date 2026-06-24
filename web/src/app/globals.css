@@ -1,0 +1,201 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* ダークは .dark クラスで駆動（next-themes が <html> に付与）。
+   :where() で詳細度を上げずに「.dark 自身と配下」を対象にする。 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ───────────────────────────────────────────────────────────
+   セマンティックトークン（正本）。値は oklch で記述し、ライト= :root /
+   ダーク= .dark で同名変数を上書きする。コンポーネントは生の色を持たず、
+   必ずこのセマンティック名（bg-background 等）経由で参照する。
+   ─────────────────────────────────────────────────────────── */
+:root {
+  --radius: 0.625rem;
+
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0.21 0.006 285.9);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.006 285.9);
+
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.006 285.9);
+
+  /* プライマリ＝藍寄りの violet（参照デザインのアクセントに合わせる） */
+  --primary: oklch(0.55 0.222 285.5);
+  --primary-foreground: oklch(0.98 0.01 285);
+
+  --secondary: oklch(0.967 0.001 286.4);
+  --secondary-foreground: oklch(0.27 0.006 286);
+
+  --muted: oklch(0.967 0.001 286.4);
+  --muted-foreground: oklch(0.552 0.014 285.9);
+
+  --accent: oklch(0.967 0.001 286.4);
+  --accent-foreground: oklch(0.27 0.006 286);
+
+  --destructive: oklch(0.577 0.245 27.3);
+  --destructive-foreground: oklch(0.98 0.01 17);
+
+  --border: oklch(0.92 0.004 286.3);
+  --input: oklch(0.92 0.004 286.3);
+  --ring: oklch(0.55 0.222 285.5);
+
+  /* サイドバー専用面（本文より一段沈ませて ChatGPT 風の階層を作る） */
+  --sidebar: oklch(0.975 0.002 286.4);
+  --sidebar-foreground: oklch(0.21 0.006 285.9);
+  --sidebar-accent: oklch(0.93 0.006 286);
+  --sidebar-accent-foreground: oklch(0.21 0.006 285.9);
+  --sidebar-border: oklch(0.91 0.005 286.3);
+  --sidebar-ring: oklch(0.55 0.222 285.5);
+
+  /* シャドウ（ライトは薄く） */
+  --shadow-xs: 0 1px 2px 0 oklch(0 0 0 / 0.05);
+  --shadow-sm: 0 1px 3px 0 oklch(0 0 0 / 0.08), 0 1px 2px -1px oklch(0 0 0 / 0.08);
+  --shadow-md: 0 4px 12px -2px oklch(0 0 0 / 0.1), 0 2px 6px -3px oklch(0 0 0 / 0.08);
+  --shadow-lg: 0 12px 32px -8px oklch(0 0 0 / 0.16), 0 4px 12px -6px oklch(0 0 0 / 0.1);
+
+  /* モーション */
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.dark {
+  --background: oklch(0.16 0.004 285.8);
+  --foreground: oklch(0.96 0.001 286.4);
+
+  --card: oklch(0.2 0.006 285.9);
+  --card-foreground: oklch(0.96 0.001 286.4);
+
+  --popover: oklch(0.21 0.006 285.9);
+  --popover-foreground: oklch(0.96 0.001 286.4);
+
+  --primary: oklch(0.7 0.17 287);
+  --primary-foreground: oklch(0.18 0.02 286);
+
+  --secondary: oklch(0.27 0.006 286);
+  --secondary-foreground: oklch(0.96 0.001 286.4);
+
+  --muted: oklch(0.27 0.006 286);
+  --muted-foreground: oklch(0.71 0.01 286);
+
+  --accent: oklch(0.28 0.007 286);
+  --accent-foreground: oklch(0.96 0.001 286.4);
+
+  --destructive: oklch(0.7 0.19 22);
+  --destructive-foreground: oklch(0.97 0.01 17);
+
+  --border: oklch(1 0 0 / 0.1);
+  --input: oklch(1 0 0 / 0.14);
+  --ring: oklch(0.7 0.17 287);
+
+  --sidebar: oklch(0.19 0.005 285.9);
+  --sidebar-foreground: oklch(0.96 0.001 286.4);
+  --sidebar-accent: oklch(0.27 0.007 286);
+  --sidebar-accent-foreground: oklch(0.96 0.001 286.4);
+  --sidebar-border: oklch(1 0 0 / 0.08);
+  --sidebar-ring: oklch(0.7 0.17 287);
+
+  /* ダークはシャドウを濃く・広く */
+  --shadow-xs: 0 1px 2px 0 oklch(0 0 0 / 0.3);
+  --shadow-sm: 0 1px 3px 0 oklch(0 0 0 / 0.4), 0 1px 2px -1px oklch(0 0 0 / 0.4);
+  --shadow-md: 0 4px 14px -2px oklch(0 0 0 / 0.5), 0 2px 8px -3px oklch(0 0 0 / 0.4);
+  --shadow-lg: 0 16px 40px -8px oklch(0 0 0 / 0.6), 0 6px 16px -6px oklch(0 0 0 / 0.45);
+}
+
+/* ───────────────────────────────────────────────────────────
+   @theme inline: 上のセマンティック変数を Tailwind のユーティリティへ束ねる。
+   これで bg-background / text-foreground / border-border / ring-ring /
+   rounded-lg / shadow-md などがライブ変数に解決し、ダークで自動反転する。
+   ─────────────────────────────────────────────────────────── */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+
+  /* 日本語 first-class（NFR-5）。OS 標準の日本語フォントを優先し、ビルド時に
+     外部フォント取得へ依存しない（重い JP webfont の配信も避ける）。 */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Hiragino Sans",
+    "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", "YuGothic",
+    "Meiryo", sans-serif;
+
+  --ease-standard: var(--ease-standard);
+
+  /* Radix Accordion の開閉アニメ（高さは Radix が CSS 変数で供給） */
+  --animate-accordion-down: accordion-down var(--duration-normal) var(--ease-standard);
+  --animate-accordion-up: accordion-up var(--duration-normal) var(--ease-standard);
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
+    }
+  }
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    /* iOS のフォントサイズ自動拡大を抑止し、レイアウトの破綻を防ぐ */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "palt" 1; /* 日本語の約物詰め */
+  }
+
+  /* キーボードフォーカスは常に明示（マウスクリックでは出さない） */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}
