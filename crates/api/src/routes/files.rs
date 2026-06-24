@@ -95,7 +95,7 @@ pub struct DownloadUrlResponse {
 }
 
 /// `null`（ルートへ移動）と省略（移動しない）を区別するための二重 Option デシリアライザ。
-fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
+pub fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

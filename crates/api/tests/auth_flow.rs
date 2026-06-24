@@ -15,7 +15,7 @@ use std::{
 
 use api::{build_router, config::*, session::MemorySessionStore, state::AppState};
 use async_trait::async_trait;
-use authz::{AuthzClient, AuthzError, FgaObject, Relation, Subject};
+use authz::{AuthzClient, AuthzError, FgaObject, ObjectType, ReadTupleKey, Relation, Subject};
 use axum::{
     body::Body,
     http::{header::COOKIE, Method, Request, StatusCode},
@@ -90,6 +90,23 @@ impl AuthzClient for AllowAll {
         _object: &FgaObject,
     ) -> Result<(), AuthzError> {
         Ok(())
+    }
+
+    async fn read_tuples(
+        &self,
+        _object: &FgaObject,
+        _relation: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        Ok(vec![])
+    }
+
+    async fn list_objects(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
     }
 }
 
