@@ -63,6 +63,17 @@ impl Subject {
         Subject(object.as_str().to_string())
     }
 
+    /// userset（`object#relation`）を subject として参照する。
+    ///
+    /// 例: ロール階層の結線 `role:営業部#member@role:営業1課#member` の右辺
+    /// `role:営業1課#member`（配下ロールのメンバー集合を親ロールに含める）。
+    /// `role` 型の `member: [user, role#member]` のように直接型へ userset を許す
+    /// relation のタプルを、チョークポイント（[`AuthzClient`](crate::AuthzClient)）
+    /// 経由で構築するための経路。
+    pub fn userset(object: &FgaObject, relation: crate::vocab::Relation) -> Self {
+        Subject(format!("{}#{}", object.as_str(), relation.as_str()))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -173,6 +184,16 @@ mod tests {
         assert_eq!(
             Subject::object(&FgaObject::folder("f1")).as_str(),
             "folder:f1"
+        );
+    }
+
+    #[test]
+    fn subject_userset_appends_relation() {
+        // Subject::userset は `object#relation` を生成すること（ロール階層の結線に使う）。
+        use crate::vocab::Relation;
+        assert_eq!(
+            Subject::userset(&FgaObject::role("sales-sec1"), Relation::Member).as_str(),
+            "role:sales-sec1#member"
         );
     }
 
