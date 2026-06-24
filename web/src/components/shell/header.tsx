@@ -13,7 +13,7 @@ export function Header({ children }: { children?: React.ReactNode }) {
   const pathname = usePathname();
 
   return (
-    <header className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border bg-background/80 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:px-6">
+    <header className="flex h-14 shrink-0 items-center gap-2.5 bg-background/80 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:px-6">
       <button
         type="button"
         onClick={() => setMobileOpen(true)}

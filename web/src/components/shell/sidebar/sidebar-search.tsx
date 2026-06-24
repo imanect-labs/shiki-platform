@@ -91,7 +91,7 @@ export function SidebarSearch({
             onChange={(e) => setQuery(e.target.value)}
             placeholder="チャットを検索..."
             aria-label="チャットを検索"
-            className="h-14 w-full bg-transparent text-[15px] outline-none placeholder:text-muted-foreground"
+            className="h-14 w-full bg-transparent text-[15px] outline-none placeholder:text-muted-foreground focus-visible:ring-0"
           />
           <DialogClose
             aria-label="閉じる"

@@ -8,6 +8,8 @@ import {
   type ChatMessage,
 } from "@/lib/chat-store";
 import { mockReplyText, streamMockReply } from "@/lib/mock-assistant";
+import { Message, MessageContent } from "@/components/prompt-kit/message";
+import { Loader } from "@/components/prompt-kit/loader";
 import { Composer } from "./composer";
 
 /// 1 セッションの会話画面。store のメッセージを描画し、末尾が未応答のユーザー
@@ -72,22 +74,24 @@ export function Conversation({ sessionId }: { sessionId: string }) {
             <MessageRow key={m.id} message={m} />
           ))}
           {streamingText !== null ? (
-            <AssistantRow>
+            <Message className="justify-start">
               {streamingText === "" ? (
-                <TypingIndicator />
+                <MessageContent className="py-1">
+                  <Loader variant="typing" />
+                </MessageContent>
               ) : (
-                <span className="whitespace-pre-wrap">
+                <MessageContent className="text-[15px] leading-relaxed">
                   {streamingText}
                   <span className="ml-0.5 inline-block h-4 w-px translate-y-0.5 animate-pulse bg-foreground/60 align-middle" />
-                </span>
+                </MessageContent>
               )}
-            </AssistantRow>
+            </Message>
           ) : null}
           <div ref={bottomRef} />
         </div>
       </div>
 
-      <div className="border-t border-border/60 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      <div className="bg-background">
         <div className="mx-auto w-full max-w-3xl px-4 py-4">
           <Composer onSubmit={handleSend} autoFocus />
           <p className="mt-2 text-center text-xs text-muted-foreground">
@@ -102,38 +106,18 @@ export function Conversation({ sessionId }: { sessionId: string }) {
 function MessageRow({ message }: { message: ChatMessage }) {
   if (message.role === "user") {
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-secondary px-4 py-2.5 text-[15px] leading-relaxed text-secondary-foreground">
+      <Message className="justify-end">
+        <MessageContent className="max-w-[85%] rounded-2xl bg-secondary px-4 py-2.5 text-[15px] leading-relaxed text-secondary-foreground">
           {message.content}
-        </div>
-      </div>
+        </MessageContent>
+      </Message>
     );
   }
   return (
-    <AssistantRow>
-      <span className="whitespace-pre-wrap">{message.content}</span>
-    </AssistantRow>
-  );
-}
-
-/// アシスタント発話の共通レイアウト。装飾アイコンは置かず、左寄せのプレーン文で
-/// ユーザー発話（右寄せバブル）と対比させる。
-function AssistantRow({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="min-w-0 text-[15px] leading-relaxed text-foreground">{children}</div>
-  );
-}
-
-function TypingIndicator() {
-  return (
-    <span className="inline-flex items-center gap-1" aria-label="応答を生成中">
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          className="size-1.5 animate-bounce rounded-full bg-foreground/40"
-          style={{ animationDelay: `${i * 0.15}s` }}
-        />
-      ))}
-    </span>
+    <Message className="justify-start">
+      <MessageContent className="text-[15px] leading-relaxed">
+        {message.content}
+      </MessageContent>
+    </Message>
   );
 }
