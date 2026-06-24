@@ -1,6 +1,6 @@
 //! 共有 API（Task 1.6 / ReBAC）。
 //!
-//! ファイル/フォルダを user / role へ viewer/editor で共有/解除する。OpenFGA tuple の
+//! ファイル/フォルダを user へ viewer/editor で共有/解除する（role 共有は #76 で defer）。OpenFGA tuple の
 //! 付与/削除として StorageService 経由で実装し（単一チョークポイント・owner 認可・監査）、
 //! 共有相手一覧・自分が共有された一覧も提供する。共有解除は PIT-11（HIGHER_CONSISTENCY）で即時。
 
@@ -29,7 +29,7 @@ pub struct ShareRequest {
     pub role: ShareRole,
 }
 
-/// ノードを user/role へ共有する（owner 権限・冪等）。
+/// ノードを user へ共有する（owner 権限・冪等）。
 #[utoipa::path(
     put,
     path = "/nodes/{id}/shares",

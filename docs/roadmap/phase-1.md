@@ -112,17 +112,17 @@
   - ファイル/フォルダを user / role / group に対して viewer/commenter/editor で共有/解除するAPI。
   - OpenFGA tuple の付与/削除として実装。共有相手一覧・自分が共有された一覧の取得。
 - **決定（実装済み・human 合意）**: design.md §4.1 のストレージ ReBAC 図に合わせ、共有 relation は **viewer/editor のみ**
-  （commenter は thread 専用＝Phase 3。files のコメント機能実装時に再検討）。共有先は **user / role**
-  （`role:<id>#member` で付与。`#72` で department→role 化済み・`role#member` は org 継承を含まない）。
-  **group 型**は OpenFGA 未定義のため後続フェーズへ defer。
+  （commenter は thread 専用＝Phase 3。files のコメント機能実装時に再検討）。共有先は **user のみ**。
   共有の付与/解除/一覧管理は **owner 権限**（editor の再共有による権限横展開＝confused-deputy を防ぐ）。
-  剥奪の即時反映は **check の HIGHER_CONSISTENCY**（PIT-11）。
-- **defer（別 issue）**: 個別例外（フォルダ共有でも特定ファイル除外）は OpenFGA の `but not blocked` 除外 relation が
-  必要でモデル拡張を伴うため、本タスクから切り出して別 issue とする（group 共有も同）。
+  剥奪の即時反映は **read 認可の HIGHER_CONSISTENCY**（PIT-11）。書込/管理系の check は MINIMIZE_LATENCY。
+- **defer（#76 へ）**: **role 共有**は OpenFGA の `role` 型が tenant 無スコープ（識別子の tenant スコープ化＝SAAS.1
+  未実装）かつ role provisioning（SAAS.2）未実装のため defer。現状は user 共有のみ ship し、越境は DB の
+  `org+tenant` フィルタが backstop。**group** 共有・**個別例外**（`but not blocked`）も同 issue で扱う。
 - **受け入れ条件**:
-  - [x] ロール共有でロールメンバ全員が継承アクセスできる
+  - [x] user 共有で対象ユーザーがアクセスでき、非対象には漏れない
   - [x] 共有解除で即時にアクセス不可
-  - [ ] 個別例外（フォルダ共有でも特定ファイル除外）が表現できる → **別 issue へ defer**
+  - [ ] role 共有でメンバ全員が継承アクセス → **#76 へ defer（SAAS.1/SAAS.2 前提）**
+  - [ ] 個別例外（フォルダ共有でも特定ファイル除外）→ **#76 へ defer**
 
 ### Task 1.7: バージョニング
 - **area**: storage

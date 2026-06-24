@@ -18,7 +18,8 @@ use api::{
 };
 use async_trait::async_trait;
 use authz::{
-    AuthzClient, AuthzError, FgaObject, ObjectType, Principal, ReadTupleKey, Relation, Subject,
+    AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal, ReadTupleKey, Relation,
+    Subject,
 };
 use axum::{
     body::Body,
@@ -38,6 +39,7 @@ impl AuthzClient for AllowAll {
         _subject: &Subject,
         _relation: Relation,
         _object: &FgaObject,
+        _consistency: Consistency,
     ) -> Result<bool, AuthzError> {
         Ok(true)
     }
@@ -47,8 +49,8 @@ impl AuthzClient for AllowAll {
         _subject: &Subject,
         _relation: Relation,
         _object: &FgaObject,
-    ) -> Result<(), AuthzError> {
-        Ok(())
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
     }
 
     async fn delete_tuple(
@@ -56,8 +58,8 @@ impl AuthzClient for AllowAll {
         _subject: &Subject,
         _relation: Relation,
         _object: &FgaObject,
-    ) -> Result<(), AuthzError> {
-        Ok(())
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
     }
 
     async fn read_tuples(

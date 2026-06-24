@@ -15,7 +15,9 @@ use std::{
 
 use api::{build_router, config::*, session::MemorySessionStore, state::AppState};
 use async_trait::async_trait;
-use authz::{AuthzClient, AuthzError, FgaObject, ObjectType, ReadTupleKey, Relation, Subject};
+use authz::{
+    AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, ReadTupleKey, Relation, Subject,
+};
 use axum::{
     body::Body,
     http::{header::COOKIE, Method, Request, StatusCode},
@@ -70,6 +72,7 @@ impl AuthzClient for AllowAll {
         _subject: &Subject,
         _relation: Relation,
         _object: &FgaObject,
+        _consistency: Consistency,
     ) -> Result<bool, AuthzError> {
         Ok(true)
     }
@@ -79,8 +82,8 @@ impl AuthzClient for AllowAll {
         _subject: &Subject,
         _relation: Relation,
         _object: &FgaObject,
-    ) -> Result<(), AuthzError> {
-        Ok(())
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
     }
 
     async fn delete_tuple(
@@ -88,8 +91,8 @@ impl AuthzClient for AllowAll {
         _subject: &Subject,
         _relation: Relation,
         _object: &FgaObject,
-    ) -> Result<(), AuthzError> {
-        Ok(())
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
     }
 
     async fn read_tuples(
