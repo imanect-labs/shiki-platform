@@ -6,8 +6,9 @@ import { defineConfig, devices } from "@playwright/test";
 ///   - shiki-server の SHIKI__AUTH__REDIRECT_URI = http://localhost:3000/auth/callback。
 ///   - web は :3000 で起動し、BACKEND_ORIGIN=http://localhost:8080 でプロキシする。
 /// realm の shiki-web クライアントは http://localhost:3000/* を許可済み（deploy/keycloak）。
-const PORT = 3000;
-const BASE_URL = `http://localhost:${PORT}`;
+// 既定は CI と同じ localhost:3000（webServer を自前起動）。E2E_BASE_URL を渡すと
+// 既存の起動済みサーバ（例: shuya-dev:10067 の dev）に対して実行する。
+const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:3000";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -24,14 +25,17 @@ export default defineConfig({
     ignoreHTTPSErrors: true,
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
-  // 本番ビルド済みの web を起動する。ローカルで既に :3000 が動いていれば再利用。
-  webServer: {
-    command: "pnpm start",
-    url: BASE_URL,
-    timeout: 120_000,
-    reuseExistingServer: !process.env.CI,
-    env: {
-      BACKEND_ORIGIN: process.env.BACKEND_ORIGIN ?? "http://localhost:8080",
-    },
-  },
+  // E2E_BASE_URL 指定時は起動済みサーバを使う（webServer は立てない）。
+  // 既定（CI）は本番ビルド済みの web を :3000 で起動する。
+  webServer: process.env.E2E_BASE_URL
+    ? undefined
+    : {
+        command: "pnpm start",
+        url: BASE_URL,
+        timeout: 120_000,
+        reuseExistingServer: !process.env.CI,
+        env: {
+          BACKEND_ORIGIN: process.env.BACKEND_ORIGIN ?? "http://localhost:8080",
+        },
+      },
 });

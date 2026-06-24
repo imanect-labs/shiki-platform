@@ -17,6 +17,7 @@ export async function loginViaKeycloak(page: Page) {
   await page.goto("/login");
   await page.getByRole("button", { name: "Keycloak でログイン" }).click();
   await submitKeycloakLogin(page);
-  await page.waitForURL(/localhost:3000\/(?!login)/, { timeout: 20_000 });
+  // ログイン完了＝/login 以外のアプリ画面に着地（オリジン非依存）。
+  await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 20_000 });
   await expect(page.getByRole("button", { name: "アカウントメニューを開く" })).toBeVisible();
 }

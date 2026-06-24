@@ -33,6 +33,10 @@ type SidebarContextValue = {
   /// モバイルのドロワ開閉。
   mobileOpen: boolean;
   setMobileOpen: (v: boolean) => void;
+  /// 検索パレットの開閉。シェルで単一インスタンスを持ち、デスクトップ/モバイル
+  /// 双方のナビから同じダイアログを開く（多重マウントによる二重ショートカットを防ぐ）。
+  searchOpen: boolean;
+  setSearchOpen: (v: boolean) => void;
   /// 現在の実効カラム幅（CSS 用の px 文字列）。
   effectiveWidthPx: number;
 };
@@ -53,6 +57,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     SIDEBAR_DEFAULT_WIDTH,
   );
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const [searchOpen, setSearchOpen] = React.useState(false);
 
   // デスクトップ幅へ移行したらモバイルドロワを閉じる。開いたままだと Radix Dialog の
   // focus trap / scroll lock が不可視のコンテンツに残り、デスクトップ操作を妨げる。
@@ -91,6 +96,8 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       resetWidth,
       mobileOpen,
       setMobileOpen,
+      searchOpen,
+      setSearchOpen,
       effectiveWidthPx,
     }),
     [
@@ -102,6 +109,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       setWidth,
       resetWidth,
       mobileOpen,
+      searchOpen,
       effectiveWidthPx,
     ],
   );

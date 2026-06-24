@@ -62,6 +62,15 @@ export function toast(input: ToastInput) {
 
 /// open=false への遷移（Radix の onOpenChange）を受けて除去予約する。
 export function setToastOpen(id: string, open: boolean) {
+  // 再オープン時は既存の除去タイマーを解除する（生き残ったタイマーで再表示直後に
+  // 消えてしまうのを防ぐ）。
+  if (open) {
+    const timer = removeTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      removeTimers.delete(id);
+    }
+  }
   memoryState = memoryState.map((t) => (t.id === id ? { ...t, open } : t));
   emit();
   if (!open) scheduleRemove(id);

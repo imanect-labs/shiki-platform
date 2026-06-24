@@ -45,11 +45,15 @@ type ButtonProps = React.ComponentProps<"button"> &
 
 function Button({ className, variant, size, asChild = false, ...props }: ButtonProps) {
   const Comp = asChild ? Slot : "button";
+  // 通常の <button> はフォーム内で暗黙 type="submit" になり意図しない送信を起こす。
+  // 明示指定が無ければ type="button" を既定にする（asChild では子要素に委ねる）。
+  const type = asChild ? props.type : (props.type ?? "button");
   return (
     <Comp
       data-slot="button"
       className={cn(buttonVariants({ variant, size }), className)}
       {...props}
+      type={type}
     />
   );
 }

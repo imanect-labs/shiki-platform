@@ -1,14 +1,14 @@
 "use client";
 
-import * as React from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { PenSquare, Search } from "lucide-react";
 
 import { NavItem } from "./nav-item";
 import { SidebarDriveAccordion } from "./sidebar-drive-accordion";
-import { SidebarSearch } from "./sidebar-search";
+import { useSidebar } from "./sidebar-context";
 
-/// サイドバー上部: 検索ボックス（/ ヒント）＋ 新しいチャット ＋ ドライブ（アコーディオン）。
+/// サイドバー上部: 検索（/ ヒント）＋ 新しいチャット ＋ ドライブ（アコーディオン）。
+/// 検索ダイアログ本体はシェルで単一管理し、ここは開くトリガーのみ（多重マウント回避）。
 export function SidebarNav({
   collapsed,
   onNavigate,
@@ -18,7 +18,7 @@ export function SidebarNav({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [searchOpen, setSearchOpen] = React.useState(false);
+  const { setSearchOpen } = useSidebar();
 
   const startNewChat = () => {
     router.push("/");
@@ -49,8 +49,6 @@ export function SidebarNav({
         />
         <SidebarDriveAccordion collapsed={collapsed} onNavigate={onNavigate} />
       </nav>
-
-      <SidebarSearch open={searchOpen} onOpenChange={setSearchOpen} />
     </div>
   );
 }
