@@ -90,7 +90,7 @@ mod tests {
                 id: "user-1".into(),
                 email: Some("u@example.com".into()),
                 groups: vec!["/acme".into()],
-                dept: Some("eng".into()),
+                roles: vec!["eng".into()],
                 tenant_id: Some("acme".into()),
             },
             tenant_id: "acme".into(),

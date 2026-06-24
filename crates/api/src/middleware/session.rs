@@ -96,7 +96,7 @@ async fn refresh_session(
     let session_cfg = &state.config.session;
     match oidc::refresh_tokens(&state.http, &state.config.auth, refresh_token).await {
         Ok(tokens) => {
-            // 新 access token のクレームから principal を再導出（IdP の group/dept 変更等に追従）。
+            // 新 access token のクレームから principal を再導出（IdP の group/roles 変更等に追従）。
             // backchannel TLS で得た信頼済みトークンのため署名再検証はしない（claims.rs 参照）。
             // 万一クレームを取り出せなければ fail-closed（古い principal で継続させない）。
             let claims = claims::decode_claims_insecure(&tokens.access_token)?;

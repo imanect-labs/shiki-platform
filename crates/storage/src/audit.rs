@@ -165,7 +165,7 @@ mod tests {
                 id: "alice".into(),
                 email: None,
                 groups: vec![],
-                dept: None,
+                roles: vec![],
                 tenant_id: None,
             },
             "acme".into(),

@@ -1,6 +1,6 @@
 # shiki ReBAC authorization model（人がレビューする正本）
 #
-# docs/design.md §4.1 の ReBAC 図に準拠。Phase 0 は organization / department /
+# docs/design.md §4.1 の ReBAC 図に準拠。Phase 0 は organization / role /
 # user と member / parent。Phase 1（ストレージ）で folder / file と owner / editor /
 # viewer を追加した。後続フェーズで thread / doc_chunk 等を追加する。
 #
@@ -16,11 +16,13 @@ type organization
   relations
     define member: [user]
 
-type department
+# ロール: テナント内のメンバーシップ集合。階層は親ロールが子ロールを含む（上方向ロールアップ）。
+# 例: role:営業部#member@role:営業1課#member を書くと、営業1課 のメンバーが営業部のメンバーになる。
+# 旧 department の「上位組織メンバーが自動で全部署メンバーになる」下方向継承は撤去した。
+type role
   relations
-    define parent: [organization]
-    # 部署メンバーは、直接付与された user か、上位組織のメンバー（下方向継承）。
-    define member: [user] or member from parent
+    # ロールメンバー = 直接付与された user、または配下ロールのメンバー（[user, role#member] のネストグループ）。
+    define member: [user, role#member]
 
 # ストレージ: フォルダ（ツリーの内部ノード）。
 # 厳格モデル: 明示付与（owner/editor/viewer）と「親フォルダからの継承」のみ。

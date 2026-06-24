@@ -103,14 +103,14 @@ mod tests {
             .get("type_definitions")
             .and_then(|v| v.as_array())
             .expect("type_definitions は配列");
-        // user / organization / department が定義されていること。
+        // user / organization / role が定義されていること。
         let type_names: Vec<&str> = types
             .iter()
             .filter_map(|t| t.get("type").and_then(|v| v.as_str()))
             .collect();
         assert!(type_names.contains(&"user"));
         assert!(type_names.contains(&"organization"));
-        assert!(type_names.contains(&"department"));
+        assert!(type_names.contains(&"role"));
         // Phase 1（ストレージ）で folder / file を追加した。
         assert!(type_names.contains(&"folder"));
         assert!(type_names.contains(&"file"));

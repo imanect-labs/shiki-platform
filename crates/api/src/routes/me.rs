@@ -14,7 +14,8 @@ use crate::{error::ApiError, extract::AuthContextExt, state::AppState};
 pub struct MeResponse {
     pub id: String,
     pub email: Option<String>,
-    pub dept: Option<String>,
+    /// IdP が宣言した所属ロール（多値）。階層込みの実効メンバーシップは OpenFGA が正本。
+    pub roles: Vec<String>,
     pub org: String,
     /// テナント識別子（SaaS の隔離境界。オンプレは単一固定）。
     pub tenant_id: String,
@@ -51,7 +52,7 @@ pub async fn get_me(
     Ok(Json(MeResponse {
         id: ctx.principal.id,
         email: ctx.principal.email,
-        dept: ctx.principal.dept,
+        roles: ctx.principal.roles,
         org: ctx.org,
         tenant_id: ctx.tenant_id,
     }))

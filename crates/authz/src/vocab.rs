@@ -4,7 +4,7 @@
 //! Rust enum が正本であり、`#[derive(TS)]` で TypeScript 型を生成して
 //! フロント/ミニアプリ側も同じ閉じた集合を共有する（docs/design.md §4.1）。
 //!
-//! Phase 0 は骨格のみ（organization/department/user, member/parent）。
+//! Phase 0 は骨格のみ（organization/role/user, member/parent）。
 //! Phase 1（ストレージ）で folder/file と owner/editor/viewer を追加した。
 //! 後続フェーズで thread/doc_chunk 等を追加する。
 
@@ -15,9 +15,9 @@ use ts_rs::TS;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Relation {
-    /// あるオブジェクトのメンバー（例: 部署/組織のメンバー）。
+    /// あるオブジェクトのメンバー（例: ロール/組織のメンバー）。
     Member,
-    /// 親オブジェクトへの継承関係（例: department → organization, file → folder）。
+    /// 親オブジェクトへの継承関係（例: file → folder）。
     Parent,
     /// オブジェクトの所有者（例: ファイル/フォルダの作成者）。editor/viewer を含意する。
     Owner,
@@ -51,7 +51,8 @@ impl std::fmt::Display for Relation {
 #[serde(rename_all = "snake_case")]
 pub enum ObjectType {
     Organization,
-    Department,
+    /// テナント内のメンバーシップ集合。階層は親ロールが子ロールを含む（上方向ロールアップ）。
+    Role,
     User,
     /// ストレージのフォルダ（ツリーの内部ノード・継承の親）。
     Folder,
@@ -64,7 +65,7 @@ impl ObjectType {
     pub const fn as_str(self) -> &'static str {
         match self {
             ObjectType::Organization => "organization",
-            ObjectType::Department => "department",
+            ObjectType::Role => "role",
             ObjectType::User => "user",
             ObjectType::Folder => "folder",
             ObjectType::File => "file",
@@ -169,7 +170,7 @@ mod tests {
     fn object_type_all_variants_as_str() {
         // 全 variant の文字列表現を確認する。
         assert_eq!(ObjectType::Organization.as_str(), "organization");
-        assert_eq!(ObjectType::Department.as_str(), "department");
+        assert_eq!(ObjectType::Role.as_str(), "role");
         assert_eq!(ObjectType::User.as_str(), "user");
         assert_eq!(ObjectType::Folder.as_str(), "folder");
         assert_eq!(ObjectType::File.as_str(), "file");
@@ -178,11 +179,7 @@ mod tests {
     #[test]
     fn object_type_display_matches_as_str() {
         // Display 実装は as_str と一致すること。
-        for ot in [
-            ObjectType::Organization,
-            ObjectType::Department,
-            ObjectType::User,
-        ] {
+        for ot in [ObjectType::Organization, ObjectType::Role, ObjectType::User] {
             assert_eq!(ot.to_string(), ot.as_str());
         }
     }
@@ -195,8 +192,8 @@ mod tests {
             "\"organization\""
         );
         assert_eq!(
-            serde_json::to_string(&ObjectType::Department).unwrap(),
-            "\"department\""
+            serde_json::to_string(&ObjectType::Role).unwrap(),
+            "\"role\""
         );
         assert_eq!(
             serde_json::to_string(&ObjectType::User).unwrap(),
@@ -207,11 +204,7 @@ mod tests {
     #[test]
     fn object_type_roundtrip_via_serde() {
         // serialize → deserialize のラウンドトリップで同値に戻ること。
-        for ot in [
-            ObjectType::Organization,
-            ObjectType::Department,
-            ObjectType::User,
-        ] {
+        for ot in [ObjectType::Organization, ObjectType::Role, ObjectType::User] {
             let json = serde_json::to_string(&ot).unwrap();
             let back: ObjectType = serde_json::from_str(&json).unwrap();
             assert_eq!(ot, back);
@@ -238,7 +231,7 @@ mod tests {
         set.insert(ObjectType::User);
         set.insert(ObjectType::User);
         set.insert(ObjectType::Organization);
-        set.insert(ObjectType::Department);
+        set.insert(ObjectType::Role);
         assert_eq!(set.len(), 3);
     }
 }
