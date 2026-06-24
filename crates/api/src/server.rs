@@ -7,7 +7,7 @@ use axum::{
     http::{header, HeaderName, HeaderValue, Method, StatusCode},
     middleware,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, patch, post, put},
     Router,
 };
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
@@ -23,6 +23,28 @@ pub fn build_router(state: AppState) -> Router {
     // 標準保護ルート（短い 30s タイムアウト）。
     let protected_standard = Router::new()
         .route("/me", get(routes::get_me))
+        .route_layer(session_layer.clone())
+        .layer(standard_timeout());
+
+    // フォルダ階層＋共有ルート（メタ操作のみ＝標準 30s タイムアウト）。
+    let protected_nodes = Router::new()
+        .route("/folders", post(routes::folders::create_folder))
+        .route(
+            "/folders/{id}",
+            patch(routes::folders::update_folder).delete(routes::folders::delete_folder),
+        )
+        .route("/nodes", get(routes::folders::list_children))
+        .route("/nodes/{id}/breadcrumb", get(routes::folders::breadcrumb))
+        .route(
+            "/nodes/{id}/shares",
+            put(routes::shares::share_node)
+                .delete(routes::shares::unshare_node)
+                .get(routes::shares::list_shares),
+        )
+        .route(
+            "/shares/shared-with-me",
+            get(routes::shares::shared_with_me),
+        )
         .route_layer(session_layer.clone())
         .layer(standard_timeout());
 
@@ -63,6 +85,7 @@ pub fn build_router(state: AppState) -> Router {
 
     let router = public
         .merge(protected_standard)
+        .merge(protected_nodes)
         .merge(protected_files)
         // observe は span 内で動く必要があるため TraceLayer より内側（先に追加）。
         .layer(middleware::from_fn(telemetry::observe))

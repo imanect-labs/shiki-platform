@@ -17,6 +17,9 @@ pub mod object_store;
 pub mod service;
 
 pub use error::StorageError;
-pub use model::{DownloadTicket, Node, NodeKind, UploadTicket};
+pub use model::{
+    ChildPage, Crumb, DownloadTicket, Node, NodeKind, ShareEntry, ShareRole, ShareTarget,
+    UploadTicket,
+};
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
 pub use service::StorageService;

@@ -17,6 +17,9 @@ sqlx.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# 共有語彙（ShareTarget/ShareRole/ShareEntry）の OpenAPI スキーマを storage 側で単一定義し、
+# API 層に手書きミラーを作らない（codegen が正・docs/design.md §4.1）。
+utoipa.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 chrono.workspace = true

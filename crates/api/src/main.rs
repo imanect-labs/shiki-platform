@@ -13,7 +13,7 @@ use api::{
 };
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
-    model, AuthzClient, FgaObject, Relation, Subject,
+    model, AuthzClient, Consistency, FgaObject, Relation, Subject,
 };
 use sqlx::postgres::PgPoolOptions;
 use storage::{ObjectStore, S3ObjectStore, StorageService};
@@ -142,7 +142,15 @@ async fn dev_seed(fga: &OpenFgaClient) -> anyhow::Result<()> {
     let subject = Subject::user(&user);
     let object = FgaObject::organization(&org);
     // 冪等化: 既に member なら再投入しない（OpenFGA は重複 tuple を拒否するため）。
-    if fga.check(&subject, Relation::Member, &object).await? {
+    if fga
+        .check(
+            &subject,
+            Relation::Member,
+            &object,
+            Consistency::HigherConsistency,
+        )
+        .await?
+    {
         tracing::info!(%user, %org, "dev seed: 既に member のため skip");
         return Ok(());
     }

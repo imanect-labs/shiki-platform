@@ -17,7 +17,10 @@ use api::{
     state::AppState,
 };
 use async_trait::async_trait;
-use authz::{AuthzClient, AuthzError, FgaObject, Principal, Relation, Subject};
+use authz::{
+    AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal, ReadTupleKey, Relation,
+    Subject,
+};
 use axum::{
     body::Body,
     http::{header::COOKIE, Request, StatusCode},
@@ -36,6 +39,7 @@ impl AuthzClient for AllowAll {
         _subject: &Subject,
         _relation: Relation,
         _object: &FgaObject,
+        _consistency: Consistency,
     ) -> Result<bool, AuthzError> {
         Ok(true)
     }
@@ -45,8 +49,8 @@ impl AuthzClient for AllowAll {
         _subject: &Subject,
         _relation: Relation,
         _object: &FgaObject,
-    ) -> Result<(), AuthzError> {
-        Ok(())
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
     }
 
     async fn delete_tuple(
@@ -54,8 +58,25 @@ impl AuthzClient for AllowAll {
         _subject: &Subject,
         _relation: Relation,
         _object: &FgaObject,
-    ) -> Result<(), AuthzError> {
-        Ok(())
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
+    }
+
+    async fn read_tuples(
+        &self,
+        _object: &FgaObject,
+        _relation: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        Ok(vec![])
+    }
+
+    async fn list_objects(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
     }
 }
 

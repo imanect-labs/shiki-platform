@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn subject_userset_appends_relation() {
-        // Subject::userset は `object#relation` を生成すること（ロール階層の結線に使う）。
+        // Subject::userset は `object#relation` を生成すること（ロール階層・共有の結線に使う）。
         use crate::vocab::Relation;
         assert_eq!(
             Subject::userset(&FgaObject::role("sales-sec1"), Relation::Member).as_str(),

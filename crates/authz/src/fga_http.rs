@@ -53,6 +53,8 @@ struct WriteModelResponse {
 struct CheckRequest<'a> {
     tuple_key: TupleKey<'a>,
     authorization_model_id: &'a str,
+    /// PIT-11: 共有/共有解除を即時に反映させるため強整合で問い合わせる。
+    consistency: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +69,39 @@ struct CheckResponse {
     #[serde(default)]
     allowed: bool,
 }
+
+/// OpenFGA Read API の応答 1 件（`object#relation@user` の実タプル）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReadTupleKey {
+    pub user: String,
+    pub relation: String,
+    pub object: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadTuple {
+    key: ReadTupleKey,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadResponse {
+    #[serde(default)]
+    tuples: Vec<ReadTuple>,
+    #[serde(default)]
+    continuation_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListObjectsResponse {
+    #[serde(default)]
+    objects: Vec<String>,
+}
+
+/// 強整合（書込直後の剥奪/付与を即座に反映）。PIT-11 の `HIGHER_CONSISTENCY`。
+const HIGHER_CONSISTENCY: &str = "HIGHER_CONSISTENCY";
+
+/// Read API の 1 ページの最大件数（共有相手は通常少数だが上限ループの歩幅）。
+const READ_PAGE_SIZE: u32 = 100;
 
 impl FgaHttp {
     pub fn new(http: reqwest::Client, base_url: impl Into<String>) -> Self {
@@ -143,6 +178,7 @@ impl FgaHttp {
         Ok(parsed.authorization_model_id)
     }
 
+    #[allow(clippy::too_many_arguments)] // check に必要な識別子＋整合性一式。
     pub async fn check(
         &self,
         store_id: &str,
@@ -150,6 +186,7 @@ impl FgaHttp {
         user: &str,
         relation: &str,
         object: &str,
+        consistency: &str,
     ) -> Result<bool, AuthzError> {
         let url = format!("{}/stores/{}/check", self.base_url, store_id);
         let body = CheckRequest {
@@ -159,6 +196,7 @@ impl FgaHttp {
                 object,
             },
             authorization_model_id: model_id,
+            consistency,
         };
         let resp = self.http.post(&url).json(&body).send().await?;
         let resp = ensure_ok(resp).await?;
@@ -166,10 +204,76 @@ impl FgaHttp {
         Ok(parsed.allowed)
     }
 
-    /// tuple を書き込む（owner/parent 付与・初期データ投入等）。
+    /// オブジェクトに張られた tuple を列挙する（共有相手一覧）。
+    ///
+    /// `relation` 指定時はその relation のみ、`None` なら object の全 relation を返す。
+    /// continuation_token を辿って全ページを集める（共有相手は通常少数）。
+    pub async fn read_tuples(
+        &self,
+        store_id: &str,
+        object: &str,
+        relation: Option<&str>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        let url = format!("{}/stores/{}/read", self.base_url, store_id);
+        let mut out = Vec::new();
+        let mut token = String::new();
+        loop {
+            // tuple_key は object 必須。relation は任意（None で object の全 relation）。
+            let mut tuple_key = serde_json::Map::new();
+            tuple_key.insert("object".into(), Value::from(object));
+            if let Some(r) = relation {
+                tuple_key.insert("relation".into(), Value::from(r));
+            }
+            let mut body = serde_json::json!({
+                "tuple_key": tuple_key,
+                "page_size": READ_PAGE_SIZE,
+            });
+            if !token.is_empty() {
+                body["continuation_token"] = Value::from(token.clone());
+            }
+            let resp = self.http.post(&url).json(&body).send().await?;
+            let resp = ensure_ok(resp).await?;
+            let parsed: ReadResponse = resp.json().await?;
+            out.extend(parsed.tuples.into_iter().map(|t| t.key));
+            if parsed.continuation_token.is_empty() {
+                break;
+            }
+            token = parsed.continuation_token;
+        }
+        Ok(out)
+    }
+
+    /// `user` が `relation` を持つ `type` のオブジェクト id 一覧（共有された一覧）。
+    ///
+    /// ReBAC の継承（部署メンバー・親フォルダ）も解決した実効集合を返す。
+    pub async fn list_objects(
+        &self,
+        store_id: &str,
+        model_id: &str,
+        object_type: &str,
+        relation: &str,
+        user: &str,
+    ) -> Result<Vec<String>, AuthzError> {
+        let url = format!("{}/stores/{}/list-objects", self.base_url, store_id);
+        let body = serde_json::json!({
+            "authorization_model_id": model_id,
+            "type": object_type,
+            "relation": relation,
+            "user": user,
+            "consistency": HIGHER_CONSISTENCY,
+        });
+        let resp = self.http.post(&url).json(&body).send().await?;
+        let resp = ensure_ok(resp).await?;
+        let parsed: ListObjectsResponse = resp.json().await?;
+        Ok(parsed.objects)
+    }
+
+    /// tuple を書き込む（owner/parent 付与・初期データ投入等）。**実際に書き込んだら `true`**、
+    /// 既存で no-op なら `false` を返す。
     ///
     /// **冪等**: 既に存在する tuple の再書込（OpenFGA は重複を 400 で拒否）は成功扱いにする。
     /// これにより失敗した tuple 書込を同一操作の再試行で安全に修復できる（dual-write の収束性）。
+    /// 返す bool は補償ロールバックを「実変更時のみ」に限定するために使う（冪等 no-op を巻き戻さない）。
     pub async fn write_tuple(
         &self,
         store_id: &str,
@@ -177,18 +281,18 @@ impl FgaHttp {
         user: &str,
         relation: &str,
         object: &str,
-    ) -> Result<(), AuthzError> {
+    ) -> Result<bool, AuthzError> {
         let url = format!("{}/stores/{}/write", self.base_url, store_id);
         let body = serde_json::json!({
             "writes": { "tuple_keys": [{ "user": user, "relation": relation, "object": object }] },
             "authorization_model_id": model_id,
         });
         let resp = self.http.post(&url).json(&body).send().await?;
-        ensure_ok_idempotent(resp, "already exists").await?;
-        Ok(())
+        ensure_ok_idempotent(resp, "already exists").await
     }
 
-    /// tuple を剥奪する（共有解除・ノード削除等）。
+    /// tuple を剥奪する（共有解除・ノード削除等）。**実際に削除したら `true`**、
+    /// 不在で no-op なら `false` を返す。
     ///
     /// **冪等**: 存在しない tuple の削除（OpenFGA は 400 で拒否）は成功扱いにする。
     pub async fn delete_tuple(
@@ -198,15 +302,14 @@ impl FgaHttp {
         user: &str,
         relation: &str,
         object: &str,
-    ) -> Result<(), AuthzError> {
+    ) -> Result<bool, AuthzError> {
         let url = format!("{}/stores/{}/write", self.base_url, store_id);
         let body = serde_json::json!({
             "deletes": { "tuple_keys": [{ "user": user, "relation": relation, "object": object }] },
             "authorization_model_id": model_id,
         });
         let resp = self.http.post(&url).json(&body).send().await?;
-        ensure_ok_idempotent(resp, "does not exist").await?;
-        Ok(())
+        ensure_ok_idempotent(resp, "does not exist").await
     }
 }
 
@@ -222,18 +325,20 @@ async fn ensure_ok(resp: reqwest::Response) -> Result<reqwest::Response, AuthzEr
 /// OpenFGA が重複書込/不在削除に使う検証エラーコード。
 const FGA_INVALID_INPUT_CODE: &str = "write_failed_due_to_invalid_input";
 
-/// write/delete の冪等化: 400 の **構造化 `code`** が検証エラーで、かつ `message` に
-/// `idempotent_marker`（"already exists" / "does not exist"）を含むなら成功扱いにする。
+/// write/delete の冪等化: 2xx なら **実変更ありで `true`**。400 の **構造化 `code`** が
+/// 検証エラーで、かつ `message` に `idempotent_marker`（"already exists" / "does not exist"）を
+/// 含むなら **no-op 成功で `false`**。それ以外は `Err`。
 ///
 /// OpenFGA は重複書込と不在削除を同一 `code` で返すため、両者の区別には `message` を併用する。
 /// 生の本文部分一致でなく `code` でゲートすることで、無関係な 400 を握り潰す事故を減らす
-/// （`code` 自体が将来変わればフェイルクローズ＝エラーになる側に倒れる）。
+/// （`code` 自体が将来変わればフェイルクローズ＝エラーになる側に倒れる）。返す bool は
+/// 「実際に ACL を変えたか」を表し、補償ロールバックを実変更時のみに限定するのに使う。
 async fn ensure_ok_idempotent(
     resp: reqwest::Response,
     idempotent_marker: &str,
-) -> Result<(), AuthzError> {
+) -> Result<bool, AuthzError> {
     if resp.status().is_success() {
-        return Ok(());
+        return Ok(true);
     }
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
@@ -248,7 +353,7 @@ async fn ensure_ok_idempotent(
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             if code == FGA_INVALID_INPUT_CODE && message.contains(idempotent_marker) {
-                return Ok(());
+                return Ok(false);
             }
         }
     }
