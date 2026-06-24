@@ -29,7 +29,7 @@ use utoipa::{
     ),
     components(schemas(
         crate::routes::me::MeResponse,
-        crate::routes::files::FileResponse,
+        crate::routes::files::NodeResponse,
         crate::routes::files::UploadRequest,
         crate::routes::files::UploadTicketResponse,
         crate::routes::files::UpdateFileRequest,

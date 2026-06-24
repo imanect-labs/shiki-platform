@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::{
     error::ApiError,
     extract::{AuthContextExt, TraceIdExt},
-    routes::files::FileResponse,
+    routes::files::NodeResponse,
     state::AppState,
 };
 
@@ -118,7 +118,7 @@ pub async fn list_shares(
     get,
     path = "/shares/shared-with-me",
     responses(
-        (status = 200, description = "共有されたノード一覧", body = [FileResponse]),
+        (status = 200, description = "共有されたノード一覧", body = [NodeResponse]),
         (status = 401, description = "未認証"),
     ),
     security(("session" = [])),
@@ -127,7 +127,7 @@ pub async fn shared_with_me(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
-) -> Result<Json<Vec<FileResponse>>, ApiError> {
+) -> Result<Json<Vec<NodeResponse>>, ApiError> {
     let nodes = state
         .storage
         .list_shared_with_me(&ctx, trace.as_deref())

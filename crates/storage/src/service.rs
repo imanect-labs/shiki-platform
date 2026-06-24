@@ -1436,6 +1436,7 @@ impl StorageService {
         role: ShareRole,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
+        validate_share_target(target)?;
         let obj = self
             .authorize_share_admin(ctx, node_id, "node.share", trace_id)
             .await?;
@@ -1473,6 +1474,7 @@ impl StorageService {
         role: ShareRole,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
+        validate_share_target(target)?;
         let obj = self
             .authorize_share_admin(ctx, node_id, "node.unshare", trace_id)
             .await?;
@@ -1868,6 +1870,33 @@ fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {
     })
 }
 
+/// 共有先 subject の検証。subject 識別子 `user:<id>` を壊す/曖昧化する id を弾く
+/// （空・前後空白・制御文字・`:`/`#`＝型/userset 区切りの注入を拒否）。
+fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
+    let id = match target {
+        ShareTarget::User { id } => id,
+    };
+    if id.is_empty() {
+        return Err(StorageError::Invalid("共有先 id が空です".into()));
+    }
+    if id != id.trim() {
+        return Err(StorageError::Invalid(
+            "共有先 id の前後に空白は使えません".into(),
+        ));
+    }
+    if id.contains(':') || id.contains('#') {
+        return Err(StorageError::Invalid(
+            "共有先 id に ':' / '#' は使えません".into(),
+        ));
+    }
+    if id.chars().any(|c| c.is_control()) {
+        return Err(StorageError::Invalid(
+            "共有先 id に制御文字は使えません".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// ノード種別に対応する OpenFGA オブジェクト識別子（`file:<id>` / `folder:<id>`）。
 fn node_fga_object(kind: NodeKind, id: Uuid) -> FgaObject {
     match kind {
@@ -1976,6 +2005,17 @@ mod tests {
         let mut raw = vec![b'a'; 35];
         raw.extend_from_slice("あ".as_bytes()); // 3 バイト → 36 バイト目が文字途中
         assert!(decode_child_cursor(&hex::encode(raw)).is_err());
+    }
+
+    #[test]
+    fn validate_share_target_rejects_bad_ids() {
+        use crate::model::ShareTarget;
+        let ok = ShareTarget::User { id: "alice".into() };
+        assert!(validate_share_target(&ok).is_ok());
+        for bad in ["", " alice", "alice ", "a:b", "a#member", "bad\nid"] {
+            let t = ShareTarget::User { id: bad.into() };
+            assert!(validate_share_target(&t).is_err(), "should reject {bad:?}");
+        }
     }
 
     #[test]

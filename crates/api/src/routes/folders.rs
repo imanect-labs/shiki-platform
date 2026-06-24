@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::{
     error::ApiError,
     extract::{AuthContextExt, TraceIdExt},
-    routes::files::FileResponse,
+    routes::files::NodeResponse,
     state::AppState,
 };
 
@@ -52,7 +52,7 @@ pub struct ChildrenQuery {
 /// 子一覧の 1 ページ（権限フィルタ済み）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChildrenResponse {
-    pub items: Vec<FileResponse>,
+    pub items: Vec<NodeResponse>,
     /// 続きがあれば次回 `cursor` に渡す値（末尾なら `null`）。
     pub next_cursor: Option<String>,
 }
@@ -71,7 +71,7 @@ pub struct CrumbResponse {
     path = "/folders",
     request_body = CreateFolderRequest,
     responses(
-        (status = 200, description = "作成したフォルダ", body = FileResponse),
+        (status = 200, description = "作成したフォルダ", body = NodeResponse),
         (status = 400, description = "不正なリクエスト"),
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
@@ -85,7 +85,7 @@ pub async fn create_folder(
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
     Json(req): Json<CreateFolderRequest>,
-) -> Result<Json<FileResponse>, ApiError> {
+) -> Result<Json<NodeResponse>, ApiError> {
     let node = state
         .storage
         .create_folder(&ctx, req.parent_id, &req.name, trace.as_deref())
@@ -167,7 +167,7 @@ pub async fn breadcrumb(
     params(("id" = Uuid, Path, description = "フォルダ ID")),
     request_body = UpdateFolderRequest,
     responses(
-        (status = 200, description = "更新後のフォルダ", body = FileResponse),
+        (status = 200, description = "更新後のフォルダ", body = NodeResponse),
         (status = 400, description = "不正なリクエスト（循環移動など）"),
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
@@ -182,7 +182,7 @@ pub async fn update_folder(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateFolderRequest>,
-) -> Result<Json<FileResponse>, ApiError> {
+) -> Result<Json<NodeResponse>, ApiError> {
     let node = state
         .storage
         .update_folder(

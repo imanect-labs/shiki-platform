@@ -21,9 +21,12 @@ use crate::{
     state::AppState,
 };
 
-/// ファイル/フォルダのメタ表現（API レスポンス）。
+/// ストレージノード（ファイル**または**フォルダ）のメタ表現（API レスポンス）。
+///
+/// `kind` で種別を判別し、フォルダでは `size_bytes`/`content_type` が `null` になる。
+/// ファイル CRUD・フォルダ操作・共有された一覧（file/folder 混在）で共通に使う。
 #[derive(Debug, Serialize, ToSchema)]
-pub struct FileResponse {
+pub struct NodeResponse {
     pub id: Uuid,
     pub name: String,
     pub kind: String,
@@ -36,9 +39,9 @@ pub struct FileResponse {
     pub updated_at: DateTime<Utc>,
 }
 
-impl From<Node> for FileResponse {
+impl From<Node> for NodeResponse {
     fn from(n: Node) -> Self {
-        FileResponse {
+        NodeResponse {
             id: n.id,
             name: n.name,
             kind: n.kind.as_str().to_string(),
@@ -146,7 +149,7 @@ pub async fn begin_upload(
     path = "/files/{upload_id}/finalize",
     params(("upload_id" = Uuid, Path, description = "declare で得た upload_id")),
     responses(
-        (status = 200, description = "確定したファイル", body = FileResponse),
+        (status = 200, description = "確定したファイル", body = NodeResponse),
         (status = 400, description = "整合性エラー（ハッシュ不一致・未アップロード）"),
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
@@ -160,7 +163,7 @@ pub async fn finalize_upload(
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
     Path(upload_id): Path<Uuid>,
-) -> Result<Json<FileResponse>, ApiError> {
+) -> Result<Json<NodeResponse>, ApiError> {
     let node = state
         .storage
         .finalize_upload(&ctx, upload_id, trace.as_deref())
@@ -203,7 +206,7 @@ pub async fn download_url(
     path = "/files/{id}",
     params(("id" = Uuid, Path, description = "ファイル ID")),
     responses(
-        (status = 200, description = "ファイルメタ", body = FileResponse),
+        (status = 200, description = "ファイルメタ", body = NodeResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
         (status = 404, description = "ファイルが無い"),
@@ -215,7 +218,7 @@ pub async fn get_file(
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
-) -> Result<Json<FileResponse>, ApiError> {
+) -> Result<Json<NodeResponse>, ApiError> {
     let node = state
         .storage
         .get_metadata(&ctx, id, trace.as_deref())
@@ -230,7 +233,7 @@ pub async fn get_file(
     params(("id" = Uuid, Path, description = "ファイル ID")),
     request_body = UpdateFileRequest,
     responses(
-        (status = 200, description = "更新後のファイル", body = FileResponse),
+        (status = 200, description = "更新後のファイル", body = NodeResponse),
         (status = 400, description = "不正なリクエスト"),
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
@@ -245,7 +248,7 @@ pub async fn update_file(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateFileRequest>,
-) -> Result<Json<FileResponse>, ApiError> {
+) -> Result<Json<NodeResponse>, ApiError> {
     // move と rename を 1 トランザクションで原子的に適用する（部分適用を防ぐ）。
     let node = state
         .storage
@@ -292,7 +295,7 @@ pub async fn delete_file(
     path = "/files/{id}/restore",
     params(("id" = Uuid, Path, description = "ファイル ID")),
     responses(
-        (status = 200, description = "復元したファイル", body = FileResponse),
+        (status = 200, description = "復元したファイル", body = NodeResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
         (status = 404, description = "ファイルが無い"),
@@ -305,7 +308,7 @@ pub async fn restore_file(
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
-) -> Result<Json<FileResponse>, ApiError> {
+) -> Result<Json<NodeResponse>, ApiError> {
     let node = state
         .storage
         .restore_file(&ctx, id, trace.as_deref())
