@@ -1,54 +1,45 @@
 "use client";
 
-import { ArrowUp } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 import { useMe } from "@/hooks/use-me";
+import { createSession } from "@/lib/chat-store";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Composer } from "@/components/chat/composer";
+import { ShortcutGrid } from "@/components/home/shortcut-grid";
 
-/// ホーム＝チャットのプレースホルダ枠（中身は #70 / Phase 3）。
-/// ここではシェル統合とローディング/空状態の正本だけを示す。
+/// ホーム＝新規チャットの起点（画像1 のワークスペース風）。
+/// 中央のコンポーザに入力して送信するとセッションを作成し会話画面へ遷移する。
+/// 下部にはロードマップ準拠の機能ショートカット枠を並べる。
 export default function HomePage() {
+  const router = useRouter();
   const { data, loading } = useMe();
   const name = data?.email?.split("@")[0] ?? null;
 
-  return (
-    <div className="mx-auto flex h-full w-full max-w-3xl flex-col px-4">
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
-        {loading ? (
-          <Skeleton className="h-8 w-64" />
-        ) : (
-          <h2 className="text-2xl font-semibold tracking-tight">
-            {name ? `${name} さん、こんにちは` : "ようこそ"}
-          </h2>
-        )}
-        <p className="max-w-md text-sm text-muted-foreground">
-          ナレッジを横断して質問したり、ドライブの資料をもとに対話できます。
-          チャット機能は現在準備中です。
-        </p>
-      </div>
+  const startChat = (text: string) => {
+    const session = createSession(text);
+    router.push(`/c/${session.id}`);
+  };
 
-      {/* 入力欄（チャット UI が乗る土台。現時点では無効） */}
-      <div className="pb-6">
-        <div className="flex items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-sm">
-          <textarea
-            rows={1}
-            disabled
-            aria-label="メッセージ入力（準備中）"
-            placeholder="メッセージを送信…（準備中）"
-            className="max-h-40 flex-1 resize-none bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
-          />
-          <button
-            type="button"
-            disabled
-            aria-label="送信"
-            className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground opacity-50"
-          >
-            <ArrowUp className="size-4" aria-hidden />
-          </button>
+  return (
+    <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-4 py-10">
+      <div className="flex flex-col items-center gap-9">
+        <div className="text-center">
+          {loading ? (
+            <Skeleton className="mx-auto h-9 w-72" />
+          ) : (
+            <h1 className="text-[28px] font-semibold tracking-tight text-foreground sm:text-[32px]">
+              {name ? `${name} さん、こんにちは` : "Shiki へようこそ"}
+            </h1>
+          )}
+          <p className="mt-2 text-sm text-muted-foreground">
+            何でも尋ねて、何でも作成しましょう。
+          </p>
         </div>
-        <p className="mt-2 text-center text-xs text-muted-foreground">
-          Shiki は誤った情報を生成することがあります。
-        </p>
+
+        <Composer onSubmit={startChat} autoFocus className="w-full max-w-2xl" />
+
+        <ShortcutGrid />
       </div>
     </div>
   );

@@ -8,7 +8,9 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "gen:api": "bash ../scripts/gen-api.sh"
+    "gen:api": "bash ../scripts/gen-api.sh",
+    "e2e": "playwright test",
+    "e2e:install": "playwright install --with-deps chromium"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "1.2.14",
@@ -30,6 +32,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "3.2.0",
+    "@playwright/test": "1.49.1",
     "@tailwindcss/postcss": "4.3.1",
     "@types/node": "22.10.2",
     "@types/react": "19.0.2",

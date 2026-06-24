@@ -47,11 +47,12 @@ export function isActivePath(href: string, pathname: string): boolean {
 /// パスからヘッダのページタイトルを解決する（現在地表示）。
 export function resolvePageTitle(pathname: string): string {
   if (pathname === "/") return "ホーム";
+  if (pathname.startsWith("/c/")) return "チャット";
   if (pathname === "/settings") return "設定";
   const child = DRIVE_CHILDREN.find((c) => c.href === pathname);
   if (child) return `ドライブ · ${child.label}`;
   if (pathname.startsWith(DRIVE_ROOT)) return "ドライブ";
-  return "shiki";
+  return "Shiki";
 }
 
 /// パスからヘッダのアイコンを解決する。

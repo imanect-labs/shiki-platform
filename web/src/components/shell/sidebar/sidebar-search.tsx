@@ -1,19 +1,26 @@
 "use client";
 
 import * as React from "react";
-import { Search } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { MessageSquare, PenSquare, Search, X } from "lucide-react";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 
+import { cn } from "@/lib/utils";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState } from "@/components/ui/empty-state";
+import {
+  groupSessionsByDate,
+  useChatSessions,
+  type ChatSession,
+} from "@/lib/chat-store";
 
-/// 検索パレット。backend の全文検索は未実装のため、入力 UI ＋ 空状態のみ。
-/// ⌘K / Ctrl+K でも開ける。
+/// 検索パレット（画像2 風）。先頭に「新しいチャット」アクション、続けてチャット履歴を
+/// 日付グループで一覧する。クエリで前方/部分一致フィルタ。⌘K / Ctrl+K でも開く。
 export function SidebarSearch({
   open,
   onOpenChange,
@@ -21,7 +28,9 @@ export function SidebarSearch({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
+  const router = useRouter();
   const [query, setQuery] = React.useState("");
+  const sessions = useChatSessions();
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -34,36 +43,117 @@ export function SidebarSearch({
     return () => window.removeEventListener("keydown", onKey);
   }, [onOpenChange]);
 
+  // 開くたびにクエリをリセット（前回の入力を持ち越さない）。
+  React.useEffect(() => {
+    if (open) setQuery("");
+  }, [open]);
+
+  const filtered = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return sessions;
+    return sessions.filter(
+      (s) =>
+        s.title.toLowerCase().includes(q) ||
+        s.messages.some((m) => m.content.toLowerCase().includes(q)),
+    );
+  }, [sessions, query]);
+
+  const groups = groupSessionsByDate(filtered);
+
+  const go = (href: string) => {
+    onOpenChange(false);
+    router.push(href);
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showClose={false} className="top-[20%] translate-y-0 gap-0 p-0">
+      <DialogContent showClose={false} className="top-[12%] max-w-xl translate-y-0 gap-0 p-0">
         <VisuallyHidden>
-          <DialogTitle>検索</DialogTitle>
-          <DialogDescription>チャットやドライブを横断検索します。</DialogDescription>
+          <DialogTitle>チャットを検索</DialogTitle>
+          <DialogDescription>履歴の検索と新規チャットの開始ができます。</DialogDescription>
         </VisuallyHidden>
+
+        {/* 検索入力＋閉じる */}
         <div className="flex items-center gap-3 border-b border-border px-4">
-          <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <Search className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
           <input
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="チャット・ドライブを検索…"
-            aria-label="検索キーワード"
-            className="h-12 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            placeholder="チャットを検索..."
+            aria-label="チャットを検索"
+            className="h-14 w-full bg-transparent text-[15px] outline-none placeholder:text-muted-foreground"
           />
-          <kbd className="hidden rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline-block">
-            ESC
-          </kbd>
+          <DialogClose
+            aria-label="閉じる"
+            className="rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <X className="size-[18px]" aria-hidden />
+          </DialogClose>
         </div>
-        <div className="p-2">
-          <EmptyState
-            icon={Search}
-            title={query ? "該当する結果はありません" : "キーワードを入力してください"}
-            description="横断検索は今後のアップデートで利用できるようになります。"
-            className="border-0 py-10"
-          />
+
+        {/* 結果リスト */}
+        <div className="max-h-[60vh] overflow-y-auto p-2">
+          {/* 新しいチャット（常時先頭） */}
+          <button
+            type="button"
+            onClick={() => go("/")}
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+          >
+            <PenSquare className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
+            新しいチャット
+          </button>
+
+          {groups.length > 0 ? (
+            groups.map((group) => (
+              <div key={group.label} className="mt-1">
+                <div className="px-3 pb-1 pt-2 text-[11px] font-medium text-muted-foreground/70">
+                  {group.label}
+                </div>
+                <ul>
+                  {group.sessions.map((session) => (
+                    <SearchResultRow
+                      key={session.id}
+                      session={session}
+                      onSelect={() => go(`/c/${session.id}`)}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ))
+          ) : (
+            <p className="px-3 py-8 text-center text-sm text-muted-foreground">
+              {query.trim()
+                ? "該当するチャットはありません"
+                : "まだチャットはありません"}
+            </p>
+          )}
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function SearchResultRow({
+  session,
+  onSelect,
+}: {
+  session: ChatSession;
+  onSelect: () => void;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onSelect}
+        className={cn(
+          "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm outline-none transition-colors",
+          "text-foreground hover:bg-accent focus-visible:bg-accent",
+        )}
+      >
+        <MessageSquare className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
+        <span className="truncate">{session.title}</span>
+      </button>
+    </li>
   );
 }
