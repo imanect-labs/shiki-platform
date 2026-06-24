@@ -19,10 +19,8 @@ export default function LoginPage() {
     <div className="flex min-h-dvh items-center justify-center bg-background px-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center text-center">
-          <span className="mb-2 flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-[oklch(0.62_0.21_310)] text-lg font-bold text-primary-foreground shadow-md">
-            式
-          </span>
-          <CardTitle className="text-xl">shiki にログイン</CardTitle>
+          <span className="mb-1 text-[22px] font-bold tracking-[-0.02em] text-foreground">Shiki</span>
+          <CardTitle className="text-xl">Shiki にログイン</CardTitle>
           <CardDescription>組織アカウント（Keycloak）で続行します。</CardDescription>
         </CardHeader>
         <CardContent>

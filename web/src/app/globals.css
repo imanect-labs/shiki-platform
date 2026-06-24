@@ -22,9 +22,9 @@
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.21 0.006 285.9);
 
-  /* プライマリ＝藍寄りの violet（参照デザインのアクセントに合わせる） */
-  --primary: oklch(0.55 0.222 285.5);
-  --primary-foreground: oklch(0.98 0.01 285);
+  /* プライマリ＝Deep Navy（青・紫は不使用） */
+  --primary: oklch(0.28 0.055 264);
+  --primary-foreground: oklch(0.98 0.005 264);
 
   --secondary: oklch(0.967 0.001 286.4);
   --secondary-foreground: oklch(0.27 0.006 286);
@@ -40,7 +40,7 @@
 
   --border: oklch(0.92 0.004 286.3);
   --input: oklch(0.92 0.004 286.3);
-  --ring: oklch(0.55 0.222 285.5);
+  --ring: oklch(0.4 0.07 264);
 
   /* サイドバー専用面（本文より一段沈ませて ChatGPT 風の階層を作る） */
   --sidebar: oklch(0.975 0.002 286.4);
@@ -48,7 +48,7 @@
   --sidebar-accent: oklch(0.93 0.006 286);
   --sidebar-accent-foreground: oklch(0.21 0.006 285.9);
   --sidebar-border: oklch(0.91 0.005 286.3);
-  --sidebar-ring: oklch(0.55 0.222 285.5);
+  --sidebar-ring: oklch(0.4 0.07 264);
 
   /* シャドウ（ライトは薄く） */
   --shadow-xs: 0 1px 2px 0 oklch(0 0 0 / 0.05);
@@ -72,8 +72,8 @@
   --popover: oklch(0.21 0.006 285.9);
   --popover-foreground: oklch(0.96 0.001 286.4);
 
-  --primary: oklch(0.7 0.17 287);
-  --primary-foreground: oklch(0.18 0.02 286);
+  --primary: oklch(0.72 0.08 262);
+  --primary-foreground: oklch(0.22 0.03 264);
 
   --secondary: oklch(0.27 0.006 286);
   --secondary-foreground: oklch(0.96 0.001 286.4);
@@ -89,14 +89,14 @@
 
   --border: oklch(1 0 0 / 0.1);
   --input: oklch(1 0 0 / 0.14);
-  --ring: oklch(0.7 0.17 287);
+  --ring: oklch(0.62 0.08 262);
 
   --sidebar: oklch(0.19 0.005 285.9);
   --sidebar-foreground: oklch(0.96 0.001 286.4);
   --sidebar-accent: oklch(0.27 0.007 286);
   --sidebar-accent-foreground: oklch(0.96 0.001 286.4);
   --sidebar-border: oklch(1 0 0 / 0.08);
-  --sidebar-ring: oklch(0.7 0.17 287);
+  --sidebar-ring: oklch(0.62 0.08 262);
 
   /* ダークはシャドウを濃く・広く */
   --shadow-xs: 0 1px 2px 0 oklch(0 0 0 / 0.3);

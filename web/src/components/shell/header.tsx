@@ -13,7 +13,7 @@ export function Header({ children }: { children?: React.ReactNode }) {
   const pathname = usePathname();
 
   return (
-    <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-background/80 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:px-6">
+    <header className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border bg-background/80 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:px-6">
       <button
         type="button"
         onClick={() => setMobileOpen(true)}
@@ -24,7 +24,7 @@ export function Header({ children }: { children?: React.ReactNode }) {
       </button>
       <div className="flex min-w-0 flex-1 items-center">
         {children ?? (
-          <h1 className="truncate text-sm font-semibold text-foreground">
+          <h1 className="truncate text-[15px] font-semibold tracking-[-0.01em] text-foreground">
             {resolvePageTitle(pathname)}
           </h1>
         )}

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUp, Sparkles } from "lucide-react";
+import { ArrowUp } from "lucide-react";
 
 import { useMe } from "@/hooks/use-me";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -14,9 +14,6 @@ export default function HomePage() {
   return (
     <div className="mx-auto flex h-full w-full max-w-3xl flex-col px-4">
       <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
-        <span className="flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-[oklch(0.62_0.21_310)] text-primary-foreground shadow-md">
-          <Sparkles className="size-6" aria-hidden />
-        </span>
         {loading ? (
           <Skeleton className="h-8 w-64" />
         ) : (
@@ -50,7 +47,7 @@ export default function HomePage() {
           </button>
         </div>
         <p className="mt-2 text-center text-xs text-muted-foreground">
-          shiki は誤った情報を生成することがあります。
+          Shiki は誤った情報を生成することがあります。
         </p>
       </div>
     </div>

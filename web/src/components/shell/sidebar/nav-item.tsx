@@ -27,45 +27,38 @@ type ButtonProps = BaseProps & {
   "aria-controls"?: string;
 };
 
+// アクティブ＝ホバーと同系のグレー（白カードは廃止）。アクティブはやや濃いグレーで区別。
 function itemClasses(active: boolean, collapsed: boolean, depth: number) {
   return cn(
-    "group/navitem relative flex h-9 items-center gap-3 rounded-md text-sm font-medium outline-none transition-colors",
+    "group/navitem relative flex h-9 items-center gap-2.5 rounded-[9px] text-[13.5px] outline-none transition-colors",
     "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
-    collapsed ? "w-9 justify-center px-0" : "w-full px-3",
+    collapsed ? "w-9 justify-center px-0" : "w-full px-2.5",
     active
-      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-      : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
+      ? "bg-sidebar-accent font-medium text-sidebar-foreground"
+      : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
     !collapsed && depth > 0 && "pl-9",
-  );
-}
-
-/// アクティブ時の左アクセントバー。
-function ActiveBar({ active }: { active: boolean }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-primary transition-opacity",
-        active ? "opacity-100" : "opacity-0",
-      )}
-    />
   );
 }
 
 function Inner({
   icon: Icon,
   label,
+  active,
   collapsed,
   trailing,
 }: {
   icon: LucideIcon;
   label: string;
+  active: boolean;
   collapsed: boolean;
   trailing?: React.ReactNode;
 }) {
   return (
     <>
-      <Icon className="size-4 shrink-0" aria-hidden />
+      <Icon
+        className={cn("size-[18px] shrink-0", active ? "text-sidebar-foreground" : "text-sidebar-foreground/55")}
+        strokeWidth={2}
+      />
       {!collapsed ? (
         <>
           <span className="flex-1 truncate text-left">{label}</span>
@@ -98,8 +91,7 @@ export function NavItem(props: LinkProps | ButtonProps) {
         aria-label={collapsed ? label : undefined}
         className={cn(itemClasses(active, collapsed, depth), className)}
       >
-        <ActiveBar active={active} />
-        <Inner icon={icon} label={label} collapsed={collapsed} trailing={trailing} />
+        <Inner icon={icon} label={label} active={active} collapsed={collapsed} trailing={trailing} />
       </Link>
     ) : (
       <button
@@ -111,14 +103,12 @@ export function NavItem(props: LinkProps | ButtonProps) {
         aria-controls={props["aria-controls"]}
         className={cn(itemClasses(active, collapsed, depth), className)}
       >
-        <ActiveBar active={active} />
-        <Inner icon={icon} label={label} collapsed={collapsed} trailing={trailing} />
+        <Inner icon={icon} label={label} active={active} collapsed={collapsed} trailing={trailing} />
       </button>
     );
 
   if (!collapsed) return node;
 
-  // レール時はラベルを tooltip で補完。
   return (
     <Tooltip>
       <TooltipTrigger asChild>{node}</TooltipTrigger>

@@ -5,7 +5,7 @@ import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: { default: "shiki", template: "%s · shiki" },
+  title: { default: "Shiki", template: "%s · Shiki" },
   description: "権限考慮 RAG・自律エージェント・ミニアプリ基盤を備えるAIプラットフォーム",
 };
 

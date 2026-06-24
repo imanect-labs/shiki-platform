@@ -3,6 +3,8 @@ import {
   FolderOpen,
   Home,
   type LucideIcon,
+  MessageSquareText,
+  Settings,
   Share2,
   Star,
   Trash2,
@@ -50,4 +52,13 @@ export function resolvePageTitle(pathname: string): string {
   if (child) return `ドライブ · ${child.label}`;
   if (pathname.startsWith(DRIVE_ROOT)) return "ドライブ";
   return "shiki";
+}
+
+/// パスからヘッダのアイコンを解決する。
+export function resolvePageIcon(pathname: string): LucideIcon {
+  if (pathname === "/") return MessageSquareText;
+  if (pathname === "/settings") return Settings;
+  const child = DRIVE_CHILDREN.find((c) => c.href === pathname);
+  if (child) return child.icon;
+  return DRIVE_ICON;
 }

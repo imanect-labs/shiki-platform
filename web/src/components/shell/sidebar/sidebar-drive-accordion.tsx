@@ -60,20 +60,16 @@ export function SidebarDriveAccordion({
           }}
           aria-current={pathname === DRIVE_ROOT ? "page" : undefined}
           className={cn(
-            "group relative flex h-9 flex-1 items-center gap-3 rounded-md pl-3 pr-9 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+            "group relative flex h-9 flex-1 items-center gap-2.5 rounded-[9px] pl-2.5 pr-9 text-[13.5px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring",
             driveActive
-              ? "bg-sidebar-accent text-sidebar-accent-foreground"
-              : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
+              ? "bg-sidebar-accent font-medium text-sidebar-foreground"
+              : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
           )}
         >
-          <span
+          <DRIVE_ICON
+            className={cn("size-[18px] shrink-0", driveActive ? "text-sidebar-foreground" : "text-sidebar-foreground/55")}
             aria-hidden
-            className={cn(
-              "absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-primary transition-opacity",
-              driveActive ? "opacity-100" : "opacity-0",
-            )}
           />
-          <DRIVE_ICON className="size-4 shrink-0" aria-hidden />
           <span className="flex-1 truncate text-left">ドライブ</span>
         </Link>
         {/* シェブロン＝開閉のみ */}
