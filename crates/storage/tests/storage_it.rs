@@ -16,8 +16,8 @@ use authz::{
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::{
-    content_address::sha256_hex, object_store::S3Config, Node, ObjectStore, S3ObjectStore,
-    StorageError, StorageService,
+    content_address::sha256_hex, object_store::S3Config, Node, NodeKind, ObjectStore,
+    S3ObjectStore, ShareRole, ShareTarget, StorageError, StorageService,
 };
 use uuid::Uuid;
 
@@ -140,6 +140,28 @@ async fn upload(
         .expect("presigned PUT");
     assert!(resp.status().is_success(), "PUT status: {}", resp.status());
     service.finalize_upload(ctx, ticket.upload_id, None).await
+}
+
+/// org メンバーとして seed する（ルート作成の認可に必要）。
+async fn seed_org_member(authz: &Arc<dyn AuthzClient>, org: &str, uid: &str) {
+    authz
+        .write_tuple(
+            &Subject::user(uid),
+            Relation::Member,
+            &FgaObject::organization(org),
+        )
+        .await
+        .expect("member tuple seed");
+}
+
+/// closure の depth を引く（無ければ None）。
+async fn closure_depth(pool: &PgPool, ancestor: Uuid, descendant: Uuid) -> Option<i32> {
+    sqlx::query_scalar("SELECT depth FROM node_closure WHERE ancestor = $1 AND descendant = $2")
+        .bind(ancestor)
+        .bind(descendant)
+        .fetch_optional(pool)
+        .await
+        .expect("closure query")
 }
 
 async fn blob_refcount(pool: &PgPool, org: &str, sha: &str) -> i64 {
@@ -510,4 +532,303 @@ async fn storage_end_to_end() {
     .await
     .expect("unchained reads");
     assert!(unchained_reads >= 1, "読取監査は未チェーンで記録される");
+}
+
+/// Task 1.5: フォルダ作成/深い move（closure 整合）/循環拒否/権限フィルタ子一覧/パンくず。
+#[tokio::test]
+async fn folder_hierarchy_end_to_end() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let uid = format!("ituser{}", Uuid::new_v4().simple());
+    let actx = make_ctx(&org, &uid);
+    seed_org_member(&authz, &org, &uid).await;
+
+    // root/folderA/sub1/sub2 を作る（作成者は各フォルダの owner ＝ editor も含意）。
+    let folder_a = service
+        .create_folder(&actx, None, "folderA", None)
+        .await
+        .expect("create folderA");
+    assert_eq!(folder_a.kind, NodeKind::Folder);
+    let sub1 = service
+        .create_folder(&actx, Some(folder_a.id), "sub1", None)
+        .await
+        .expect("create sub1");
+    let sub2 = service
+        .create_folder(&actx, Some(sub1.id), "sub2", None)
+        .await
+        .expect("create sub2");
+    // sub2 配下にファイル（深い階層）。
+    let deep_file = upload(&service, &http, &actx, Some(sub2.id), "deep.txt", b"deep")
+        .await
+        .expect("deep upload");
+
+    // 深い階層の closure: folderA -> deep_file は depth 3。
+    assert_eq!(
+        closure_depth(&pool, folder_a.id, deep_file.id).await,
+        Some(3),
+        "folderA から深いファイルまで depth 3"
+    );
+
+    // 循環拒否: folderA を自身の子孫（sub2）配下へは移動できない。
+    let cyclic = service
+        .move_folder(&actx, folder_a.id, Some(sub2.id), None)
+        .await;
+    assert!(
+        matches!(cyclic, Err(StorageError::Invalid(_))),
+        "{cyclic:?}"
+    );
+
+    // 深い move: folderB を作り、sub1 をサブツリーごと folderB 配下へ移す。
+    let folder_b = service
+        .create_folder(&actx, None, "folderB", None)
+        .await
+        .expect("create folderB");
+    service
+        .move_folder(&actx, sub1.id, Some(folder_b.id), None)
+        .await
+        .expect("move sub1 under folderB");
+
+    // closure 整合: folderB -> sub1(1) / sub2(2) / deep_file(3)。旧祖先 folderA は切れている。
+    assert_eq!(closure_depth(&pool, folder_b.id, sub1.id).await, Some(1));
+    assert_eq!(closure_depth(&pool, folder_b.id, sub2.id).await, Some(2));
+    assert_eq!(
+        closure_depth(&pool, folder_b.id, deep_file.id).await,
+        Some(3)
+    );
+    assert_eq!(
+        closure_depth(&pool, folder_a.id, deep_file.id).await,
+        None,
+        "旧祖先 folderA からのリンクはサブツリーごと消えている"
+    );
+
+    // パンくず（root→自身）: folderB / sub1 / sub2 / deep.txt。
+    let crumbs = service
+        .breadcrumb(&actx, deep_file.id, None)
+        .await
+        .expect("breadcrumb");
+    let names: Vec<&str> = crumbs.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["folderB", "sub1", "sub2", "deep.txt"]);
+
+    // --- 権限フィルタ子一覧（root 直下） ---
+    // uid の root 直下には folderA / folderB がある。別 org メンバー C は読めない。
+    let uid_c = format!("ituser{}", Uuid::new_v4().simple());
+    let cctx = make_ctx(&org, &uid_c);
+    seed_org_member(&authz, &org, &uid_c).await;
+
+    // C は root の何も読めない（owner でも共有先でもない）→ 空ページ。
+    let page_c = service
+        .list_children(&cctx, None, None, 50, None)
+        .await
+        .expect("C list root");
+    assert!(page_c.items.is_empty(), "C は読めるルート子が無い");
+
+    // folderA を C に viewer 共有 → C のルート一覧に folderA だけ現れる（folderB は出ない）。
+    service
+        .share_node(
+            &actx,
+            folder_a.id,
+            &ShareTarget::User { id: uid_c.clone() },
+            ShareRole::Viewer,
+            None,
+        )
+        .await
+        .expect("share folderA to C");
+    let page_c2 = service
+        .list_children(&cctx, None, None, 50, None)
+        .await
+        .expect("C list root after share");
+    let ids: Vec<Uuid> = page_c2.items.iter().map(|n| n.id).collect();
+    assert_eq!(ids, vec![folder_a.id], "共有された folderA のみ見える");
+
+    // --- ページング（uid のルート子＝folderA/folderB を limit 1 で 2 ページ） ---
+    let p1 = service
+        .list_children(&actx, None, None, 1, None)
+        .await
+        .expect("page1");
+    assert_eq!(p1.items.len(), 1, "1 ページ目は 1 件");
+    assert!(p1.next_cursor.is_some(), "続きがある");
+    let p2 = service
+        .list_children(&actx, None, p1.next_cursor.as_deref(), 1, None)
+        .await
+        .expect("page2");
+    assert_eq!(p2.items.len(), 1, "2 ページ目も 1 件");
+    // 2 ページで folderA/folderB を重複なく網羅する（name 昇順なので folderA→folderB）。
+    let mut seen: Vec<Uuid> = vec![p1.items[0].id, p2.items[0].id];
+    seen.sort();
+    let mut want = vec![folder_a.id, folder_b.id];
+    want.sort();
+    assert_eq!(seen, want, "ページ跨ぎで重複なく全件");
+
+    // --- breadcrumb の権限境界: leaf だけ直接共有された場合、祖先名は漏れない ---
+    // deep_file だけを uid_e に viewer 共有（祖先 folderB/sub1/sub2 は未共有）。
+    let uid_e = format!("ituser{}", Uuid::new_v4().simple());
+    let ectx = make_ctx(&org, &uid_e);
+    service
+        .share_node(
+            &actx,
+            deep_file.id,
+            &ShareTarget::User { id: uid_e.clone() },
+            ShareRole::Viewer,
+            None,
+        )
+        .await
+        .expect("share deep_file to E");
+    let e_crumbs = service
+        .breadcrumb(&ectx, deep_file.id, None)
+        .await
+        .expect("E breadcrumb");
+    // 読める接尾のみ＝自身だけ。祖先フォルダ名（folderB/sub1/sub2）は出ない。
+    let e_names: Vec<&str> = e_crumbs.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(e_names, vec!["deep.txt"], "未読の祖先名は漏れない");
+
+    // --- フォルダ削除（サブツリーごと論理削除）→ 配下が読めなくなる ---
+    service
+        .soft_delete_folder(&actx, folder_b.id, None)
+        .await
+        .expect("delete folderB");
+    assert!(
+        matches!(
+            service.get_metadata(&actx, deep_file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "サブツリー配下のファイルも論理削除される"
+    );
+}
+
+/// Task 1.6: ロール共有でメンバが継承アクセス / 共有解除で即時不可 / 共有相手・共有された一覧。
+#[tokio::test]
+async fn sharing_end_to_end() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+
+    // ロール sales にメンバー bob を付与する（role#member は org 継承を含まない＝#72）。
+    let role = format!("sales{}", Uuid::new_v4().simple());
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+    authz
+        .write_tuple(
+            &Subject::user(&bob),
+            Relation::Member,
+            &FgaObject::role(&role),
+        )
+        .await
+        .expect("role member seed");
+
+    // org メンバーだがロール未所属のユーザー（ロール共有が org 全体へ漏れないことの確認用）。
+    let org_only = format!("ituser{}", Uuid::new_v4().simple());
+    let octx_only = make_ctx(&org, &org_only);
+    seed_org_member(&authz, &org, &org_only).await;
+
+    // owner が root にファイルを作る。
+    let file = upload(&service, &http, &octx, None, "shared.txt", b"share me")
+        .await
+        .expect("upload");
+
+    // 共有前: bob は読めない（存在秘匿の NotFound）。
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "共有前は読めない"
+    );
+
+    // ロール sales へ viewer 共有 → bob はロールメンバーとして継承アクセスできる。
+    service
+        .share_node(
+            &octx,
+            file.id,
+            &ShareTarget::Role { id: role.clone() },
+            ShareRole::Viewer,
+            None,
+        )
+        .await
+        .expect("share to role");
+    let seen = service
+        .get_metadata(&bctx, file.id, None)
+        .await
+        .expect("bob reads via role");
+    assert_eq!(seen.name, "shared.txt");
+
+    // ロール共有が org 全体へ広がらないこと: ロール未所属の org メンバーは読めない（#72）。
+    assert!(
+        matches!(
+            service.get_metadata(&octx_only, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "ロール共有は org 全体共有にならない（role#member は org 継承を含まない）"
+    );
+
+    // 共有相手一覧に role(sales)/viewer が出る。
+    let shares = service
+        .list_shares(&octx, file.id, None)
+        .await
+        .expect("list shares");
+    assert!(
+        shares.iter().any(|e| {
+            matches!(&e.target, ShareTarget::Role { id } if id == &role)
+                && matches!(e.role, ShareRole::Viewer)
+        }),
+        "共有相手にロール viewer が現れる: {shares:?}"
+    );
+
+    // bob の「共有された一覧」に file が出る（自分が作成したものではない）。
+    let inbox = service
+        .list_shared_with_me(&bctx, None)
+        .await
+        .expect("shared with me");
+    assert!(
+        inbox.iter().any(|n| n.id == file.id),
+        "共有された一覧に現れる"
+    );
+    // owner の「共有された一覧」には自作 file は出ない（作成者除外）。
+    let owner_inbox = service
+        .list_shared_with_me(&octx, None)
+        .await
+        .expect("owner inbox");
+    assert!(
+        !owner_inbox.iter().any(|n| n.id == file.id),
+        "作成者本人のファイルは共有された一覧に出ない"
+    );
+
+    // 共有解除 → PIT-11（HIGHER_CONSISTENCY）で即時にアクセス不可。
+    service
+        .unshare_node(
+            &octx,
+            file.id,
+            &ShareTarget::Role { id: role.clone() },
+            ShareRole::Viewer,
+            None,
+        )
+        .await
+        .expect("unshare");
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "共有解除で即時にアクセス不可"
+    );
+
+    // owner でない bob は共有管理（list_shares）できない（存在秘匿でなく Forbidden）。
+    let denied = service.list_shares(&bctx, file.id, None).await;
+    assert!(matches!(denied, Err(StorageError::Forbidden)), "{denied:?}");
 }
