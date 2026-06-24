@@ -38,10 +38,10 @@ use utoipa::{
         crate::routes::folders::UpdateFolderRequest,
         crate::routes::folders::ChildrenResponse,
         crate::routes::folders::CrumbResponse,
-        crate::routes::shares::ShareTargetDto,
-        crate::routes::shares::ShareRoleDto,
         crate::routes::shares::ShareRequest,
-        crate::routes::shares::ShareEntryResponse,
+        storage::ShareTarget,
+        storage::ShareRole,
+        storage::ShareEntry,
     )),
     modifiers(&SecurityAddon),
 )]

@@ -3,6 +3,7 @@
 use authz::{FgaObject, Relation, Subject};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// ノード種別（フォルダ or ファイル）。
@@ -89,7 +90,7 @@ pub struct Crumb {
 
 /// 共有先（subject）。Task 1.6 では user / role を対象とする
 /// （group は OpenFGA 型未定義のため後続フェーズ）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ShareTarget {
     /// 個人ユーザー（`user:<id>`）。
@@ -126,7 +127,7 @@ impl ShareTarget {
 
 /// 共有で付与できる役割。owner/parent/member ではなく viewer/editor のみを許す
 /// （閉じた共有語彙。design.md のストレージ ReBAC は viewer/editor）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ShareRole {
     Viewer,
@@ -153,7 +154,7 @@ impl ShareRole {
 }
 
 /// 共有相手 1 件（誰に・どの役割で共有したか）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct ShareEntry {
     pub target: ShareTarget,
     pub role: ShareRole,
