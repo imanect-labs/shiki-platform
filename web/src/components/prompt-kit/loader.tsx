@@ -6,20 +6,10 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
+// 本リポジトリで使用するバリアントのみを公開する（上流の prompt-kit は多数の
+// バリアントを持つが、ここでは下の switch で実装済みのものに型を一致させる）。
 export interface LoaderProps {
-  variant?:
-    | "circular"
-    | "classic"
-    | "pulse"
-    | "pulse-dot"
-    | "dots"
-    | "typing"
-    | "wave"
-    | "bars"
-    | "terminal"
-    | "text-blink"
-    | "text-shimmer"
-    | "loading-dots";
+  variant?: "circular" | "dots" | "typing" | "text-shimmer";
   size?: "sm" | "md" | "lg";
   text?: string;
   className?: string;
