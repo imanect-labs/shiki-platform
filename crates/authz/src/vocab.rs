@@ -38,6 +38,21 @@ impl Relation {
             Relation::Viewer => "viewer",
         }
     }
+
+    /// OpenFGA から読み戻した relation 文字列を閉じた集合へ写す（未知は `None`）。
+    ///
+    /// 共有相手一覧（Read API）で受け取る生の relation 名を型へ戻すのに使う。
+    /// 閉じた語彙の外（タイポ・将来語彙）はフェイルクローズで `None`。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "member" => Some(Relation::Member),
+            "parent" => Some(Relation::Parent),
+            "owner" => Some(Relation::Owner),
+            "editor" => Some(Relation::Editor),
+            "viewer" => Some(Relation::Viewer),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for Relation {

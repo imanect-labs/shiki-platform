@@ -11,8 +11,10 @@ use crate::{
     fga_http::FgaHttp,
     model,
     object::{FgaObject, Subject},
-    vocab::Relation,
+    vocab::{ObjectType, Relation},
 };
+
+pub use crate::fga_http::ReadTupleKey;
 
 /// 認可判定の単一エントリポイント（単一チョークポイント）。
 ///
@@ -49,6 +51,26 @@ pub trait AuthzClient: Send + Sync {
         relation: Relation,
         object: &FgaObject,
     ) -> Result<(), AuthzError>;
+
+    /// オブジェクトに張られた **直接タプル**を列挙する（共有相手一覧）。
+    ///
+    /// `relation` 指定でその relation のみ。継承（親フォルダ/部署メンバー）は展開せず、
+    /// そのオブジェクトに直接書かれた tuple のみ返す（誰に共有したかの管理ビュー）。
+    async fn read_tuples(
+        &self,
+        object: &FgaObject,
+        relation: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError>;
+
+    /// `subject` が `relation` を持つ `object_type` のオブジェクト id 一覧（共有された一覧）。
+    ///
+    /// 継承（部署メンバー・親フォルダ）も解決した**実効集合**を返す。
+    async fn list_objects(
+        &self,
+        subject: &Subject,
+        relation: Relation,
+        object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError>;
 }
 
 /// OpenFGA への接続設定。
@@ -145,6 +167,37 @@ impl AuthzClient for OpenFgaClient {
                 subject.as_str(),
                 relation.as_str(),
                 object.as_str(),
+            )
+            .await
+    }
+
+    async fn read_tuples(
+        &self,
+        object: &FgaObject,
+        relation: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        self.fga
+            .read_tuples(
+                &self.store_id,
+                object.as_str(),
+                relation.map(Relation::as_str),
+            )
+            .await
+    }
+
+    async fn list_objects(
+        &self,
+        subject: &Subject,
+        relation: Relation,
+        object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        self.fga
+            .list_objects(
+                &self.store_id,
+                &self.model_id,
+                object_type.as_str(),
+                relation.as_str(),
+                subject.as_str(),
             )
             .await
     }

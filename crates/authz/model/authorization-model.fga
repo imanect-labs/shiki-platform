@@ -2,7 +2,8 @@
 #
 # docs/design.md §4.1 の ReBAC 図に準拠。Phase 0 は organization / role /
 # user と member / parent。Phase 1（ストレージ）で folder / file と owner / editor /
-# viewer を追加した。後続フェーズで thread / doc_chunk 等を追加する。
+# viewer を追加した。Task 1.6（共有）で editor/viewer を role メンバー userset
+# （role#member）へも付与可能にした。後続フェーズで thread / doc_chunk 等を追加する。
 #
 # このファイルは可読性のためのレビュー用。実際に OpenFGA へ投入するのは
 # authorization-model.json（同期させること。CI で drift を検出してもよい）。
@@ -27,12 +28,14 @@ type role
 # ストレージ: フォルダ（ツリーの内部ノード）。
 # 厳格モデル: 明示付与（owner/editor/viewer）と「親フォルダからの継承」のみ。
 # org メンバーであることだけでは配下を読めない（自動継承を入れない）。
+# editor/viewer は user 直接付与に加え、ロールメンバー（role#member）への共有を許す。
+# role#member は org 継承を含まない（旧 department の org 全体共有バグを回避）。
 type folder
   relations
     define parent: [folder]
     define owner: [user]
-    define editor: [user] or owner or editor from parent
-    define viewer: [user] or editor or viewer from parent
+    define editor: [user, role#member] or owner or editor from parent
+    define viewer: [user, role#member] or editor or viewer from parent
 
 # ストレージ: ファイル（ツリーの葉・認可の最小オブジェクト）。
 # ルート直下のファイルは parent を持たず、作成者の owner タプルのみで到達する。
@@ -40,5 +43,5 @@ type file
   relations
     define parent: [folder]
     define owner: [user]
-    define editor: [user] or owner or editor from parent
-    define viewer: [user] or editor or viewer from parent
+    define editor: [user, role#member] or owner or editor from parent
+    define viewer: [user, role#member] or editor or viewer from parent

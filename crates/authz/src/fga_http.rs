@@ -53,6 +53,8 @@ struct WriteModelResponse {
 struct CheckRequest<'a> {
     tuple_key: TupleKey<'a>,
     authorization_model_id: &'a str,
+    /// PIT-11: 共有/共有解除を即時に反映させるため強整合で問い合わせる。
+    consistency: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +69,39 @@ struct CheckResponse {
     #[serde(default)]
     allowed: bool,
 }
+
+/// OpenFGA Read API の応答 1 件（`object#relation@user` の実タプル）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReadTupleKey {
+    pub user: String,
+    pub relation: String,
+    pub object: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadTuple {
+    key: ReadTupleKey,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadResponse {
+    #[serde(default)]
+    tuples: Vec<ReadTuple>,
+    #[serde(default)]
+    continuation_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListObjectsResponse {
+    #[serde(default)]
+    objects: Vec<String>,
+}
+
+/// 強整合（書込直後の剥奪/付与を即座に反映）。PIT-11 の `HIGHER_CONSISTENCY`。
+const HIGHER_CONSISTENCY: &str = "HIGHER_CONSISTENCY";
+
+/// Read API の 1 ページの最大件数（共有相手は通常少数だが上限ループの歩幅）。
+const READ_PAGE_SIZE: u32 = 100;
 
 impl FgaHttp {
     pub fn new(http: reqwest::Client, base_url: impl Into<String>) -> Self {
@@ -159,11 +194,76 @@ impl FgaHttp {
                 object,
             },
             authorization_model_id: model_id,
+            consistency: HIGHER_CONSISTENCY,
         };
         let resp = self.http.post(&url).json(&body).send().await?;
         let resp = ensure_ok(resp).await?;
         let parsed: CheckResponse = resp.json().await?;
         Ok(parsed.allowed)
+    }
+
+    /// オブジェクトに張られた tuple を列挙する（共有相手一覧）。
+    ///
+    /// `relation` 指定時はその relation のみ、`None` なら object の全 relation を返す。
+    /// continuation_token を辿って全ページを集める（共有相手は通常少数）。
+    pub async fn read_tuples(
+        &self,
+        store_id: &str,
+        object: &str,
+        relation: Option<&str>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        let url = format!("{}/stores/{}/read", self.base_url, store_id);
+        let mut out = Vec::new();
+        let mut token = String::new();
+        loop {
+            // tuple_key は object 必須。relation は任意（None で object の全 relation）。
+            let mut tuple_key = serde_json::Map::new();
+            tuple_key.insert("object".into(), Value::from(object));
+            if let Some(r) = relation {
+                tuple_key.insert("relation".into(), Value::from(r));
+            }
+            let mut body = serde_json::json!({
+                "tuple_key": tuple_key,
+                "page_size": READ_PAGE_SIZE,
+            });
+            if !token.is_empty() {
+                body["continuation_token"] = Value::from(token.clone());
+            }
+            let resp = self.http.post(&url).json(&body).send().await?;
+            let resp = ensure_ok(resp).await?;
+            let parsed: ReadResponse = resp.json().await?;
+            out.extend(parsed.tuples.into_iter().map(|t| t.key));
+            if parsed.continuation_token.is_empty() {
+                break;
+            }
+            token = parsed.continuation_token;
+        }
+        Ok(out)
+    }
+
+    /// `user` が `relation` を持つ `type` のオブジェクト id 一覧（共有された一覧）。
+    ///
+    /// ReBAC の継承（部署メンバー・親フォルダ）も解決した実効集合を返す。
+    pub async fn list_objects(
+        &self,
+        store_id: &str,
+        model_id: &str,
+        object_type: &str,
+        relation: &str,
+        user: &str,
+    ) -> Result<Vec<String>, AuthzError> {
+        let url = format!("{}/stores/{}/list-objects", self.base_url, store_id);
+        let body = serde_json::json!({
+            "authorization_model_id": model_id,
+            "type": object_type,
+            "relation": relation,
+            "user": user,
+            "consistency": HIGHER_CONSISTENCY,
+        });
+        let resp = self.http.post(&url).json(&body).send().await?;
+        let resp = ensure_ok(resp).await?;
+        let parsed: ListObjectsResponse = resp.json().await?;
+        Ok(parsed.objects)
     }
 
     /// tuple を書き込む（owner/parent 付与・初期データ投入等）。
