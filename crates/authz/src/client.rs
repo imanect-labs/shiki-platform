@@ -16,6 +16,29 @@ use crate::{
 
 pub use crate::fga_http::ReadTupleKey;
 
+/// OpenFGA `check` の整合性モード（PIT-11）。
+///
+/// ホットパス（通常の read 認可）は `MinimizeLatency`（既定・結果整合で高速）。共有解除を
+/// **即時**に反映させたい read だけ `HigherConsistency` を使う（強整合・レイテンシ代償）。
+/// 全 check を一律強整合にすると性能が劣化するため、必要な経路のみで明示的に選ぶ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Consistency {
+    /// 結果整合・低レイテンシ（既定）。
+    MinimizeLatency,
+    /// 強整合（書込直後の付与/剥奪を即座に反映）。
+    HigherConsistency,
+}
+
+impl Consistency {
+    /// OpenFGA に送出する文字列。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Consistency::MinimizeLatency => "MINIMIZE_LATENCY",
+            Consistency::HigherConsistency => "HIGHER_CONSISTENCY",
+        }
+    }
+}
+
 /// 認可判定の単一エントリポイント（単一チョークポイント）。
 ///
 /// 判定（`check`）に加え、ReBAC タプルの付与/剥奪（`write_tuple`/`delete_tuple`）も
@@ -24,25 +47,32 @@ pub use crate::fga_http::ReadTupleKey;
 #[async_trait]
 pub trait AuthzClient: Send + Sync {
     /// `subject` が `object` に対して `relation` を持つか判定する。
+    ///
+    /// `consistency` で整合性モードを選ぶ（共有解除の即時反映が要る read は
+    /// [`Consistency::HigherConsistency`]、それ以外は [`Consistency::MinimizeLatency`]）。
     async fn check(
+        &self,
+        subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+        consistency: Consistency,
+    ) -> Result<bool, AuthzError>;
+
+    /// `object#relation@subject` のタプルを付与する。**実際に付与したら `true`**、既存で
+    /// no-op なら `false`。
+    ///
+    /// **冪等**: 既に存在するタプルの再付与は成功扱いとする（失敗した書込を同一操作の
+    /// 再試行で安全に修復できるようにするため）。返す bool は補償ロールバックを実変更時のみに
+    /// 限定するのに使う（冪等 no-op を巻き戻して既存共有を壊さない）。
+    async fn write_tuple(
         &self,
         subject: &Subject,
         relation: Relation,
         object: &FgaObject,
     ) -> Result<bool, AuthzError>;
 
-    /// `object#relation@subject` のタプルを付与する。
-    ///
-    /// **冪等**: 既に存在するタプルの再付与は成功扱いとする（失敗した書込を同一操作の
-    /// 再試行で安全に修復できるようにするため）。
-    async fn write_tuple(
-        &self,
-        subject: &Subject,
-        relation: Relation,
-        object: &FgaObject,
-    ) -> Result<(), AuthzError>;
-
     /// `object#relation@subject` のタプルを剥奪する（共有解除・ノード削除等で使う）。
+    /// **実際に剥奪したら `true`**、不在で no-op なら `false`。
     ///
     /// **冪等**: 存在しないタプルの剥奪は成功扱いとする。
     async fn delete_tuple(
@@ -50,7 +80,7 @@ pub trait AuthzClient: Send + Sync {
         subject: &Subject,
         relation: Relation,
         object: &FgaObject,
-    ) -> Result<(), AuthzError>;
+    ) -> Result<bool, AuthzError>;
 
     /// オブジェクトに張られた **直接タプル**を列挙する（共有相手一覧）。
     ///
@@ -125,6 +155,7 @@ impl AuthzClient for OpenFgaClient {
         subject: &Subject,
         relation: Relation,
         object: &FgaObject,
+        consistency: Consistency,
     ) -> Result<bool, AuthzError> {
         self.fga
             .check(
@@ -133,6 +164,7 @@ impl AuthzClient for OpenFgaClient {
                 subject.as_str(),
                 relation.as_str(),
                 object.as_str(),
+                consistency.as_str(),
             )
             .await
     }
@@ -142,7 +174,7 @@ impl AuthzClient for OpenFgaClient {
         subject: &Subject,
         relation: Relation,
         object: &FgaObject,
-    ) -> Result<(), AuthzError> {
+    ) -> Result<bool, AuthzError> {
         self.fga
             .write_tuple(
                 &self.store_id,
@@ -159,7 +191,7 @@ impl AuthzClient for OpenFgaClient {
         subject: &Subject,
         relation: Relation,
         object: &FgaObject,
-    ) -> Result<(), AuthzError> {
+    ) -> Result<bool, AuthzError> {
         self.fga
             .delete_tuple(
                 &self.store_id,

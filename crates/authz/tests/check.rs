@@ -8,7 +8,7 @@ use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
     object::{FgaObject, Subject},
     vocab::Relation,
-    AuthzClient,
+    AuthzClient, Consistency,
 };
 
 fn model_json() -> serde_json::Value {
@@ -39,18 +39,31 @@ async fn check_allows_member_and_denies_other_org() {
     let acme = FgaObject::organization("acme");
     let other = FgaObject::organization("other");
 
-    // alice を acme の member として付与。
-    client
+    // alice を acme の member として付与（新規付与なので changed=true）。
+    assert!(client
         .write_tuple(&alice, Relation::Member, &acme)
         .await
-        .expect("tuple 書き込み成功");
+        .expect("tuple 書き込み成功"));
 
-    // 正例: alice は acme の member。
-    assert!(client.check(&alice, Relation::Member, &acme).await.unwrap());
+    // 正例: alice は acme の member（強整合で書込直後を確実に観測）。
+    assert!(client
+        .check(
+            &alice,
+            Relation::Member,
+            &acme,
+            Consistency::HigherConsistency
+        )
+        .await
+        .unwrap());
 
     // 負例: alice は other org の member ではない。
     assert!(!client
-        .check(&alice, Relation::Member, &other)
+        .check(
+            &alice,
+            Relation::Member,
+            &other,
+            Consistency::HigherConsistency
+        )
         .await
         .unwrap());
 }
@@ -74,25 +87,41 @@ async fn write_and_delete_tuple_are_idempotent() {
     let bob = Subject::user("bob");
     let acme = FgaObject::organization("acme");
 
-    // 冪等な write: 同じ tuple を 2 回書いても成功扱い（dual-write の再試行で収束）。
-    client
+    // 冪等な write: 1 回目は実書込（true）、2 回目は既存 no-op（false）。
+    assert!(client
         .write_tuple(&bob, Relation::Member, &acme)
         .await
-        .expect("1 回目の write 成功");
-    client
+        .expect("1 回目の write 成功"));
+    assert!(!client
         .write_tuple(&bob, Relation::Member, &acme)
         .await
-        .expect("既存 tuple の再 write も成功扱い（冪等）");
-    assert!(client.check(&bob, Relation::Member, &acme).await.unwrap());
+        .expect("既存 tuple の再 write も成功扱い（冪等）"));
+    assert!(client
+        .check(
+            &bob,
+            Relation::Member,
+            &acme,
+            Consistency::HigherConsistency
+        )
+        .await
+        .unwrap());
 
-    // 冪等な delete: 2 回削除しても成功扱い（不在 delete を許容）。
-    client
+    // 冪等な delete: 1 回目は実削除（true）、2 回目は不在 no-op（false）。
+    assert!(client
         .delete_tuple(&bob, Relation::Member, &acme)
         .await
-        .expect("1 回目の delete 成功");
-    client
+        .expect("1 回目の delete 成功"));
+    assert!(!client
         .delete_tuple(&bob, Relation::Member, &acme)
         .await
-        .expect("不在 tuple の再 delete も成功扱い（冪等）");
-    assert!(!client.check(&bob, Relation::Member, &acme).await.unwrap());
+        .expect("不在 tuple の再 delete も成功扱い（冪等）"));
+    assert!(!client
+        .check(
+            &bob,
+            Relation::Member,
+            &acme,
+            Consistency::HigherConsistency
+        )
+        .await
+        .unwrap());
 }

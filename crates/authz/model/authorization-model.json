@@ -86,16 +86,10 @@
             "directly_related_user_types": [{ "type": "user" }]
           },
           "editor": {
-            "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
-            ]
+            "directly_related_user_types": [{ "type": "user" }]
           },
           "viewer": {
-            "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
-            ]
+            "directly_related_user_types": [{ "type": "user" }]
           }
         }
       }
@@ -147,16 +141,10 @@
             "directly_related_user_types": [{ "type": "user" }]
           },
           "editor": {
-            "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
-            ]
+            "directly_related_user_types": [{ "type": "user" }]
           },
           "viewer": {
-            "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
-            ]
+            "directly_related_user_types": [{ "type": "user" }]
           }
         }
       }
