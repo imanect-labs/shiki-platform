@@ -19,8 +19,9 @@ impl FgaObject {
         Self::new(ObjectType::Organization, id)
     }
 
-    pub fn department(id: &str) -> Self {
-        Self::new(ObjectType::Department, id)
+    /// ロールオブジェクト `role:<id>`（テナント内メンバーシップ集合・階層対応）。
+    pub fn role(id: &str) -> Self {
+        Self::new(ObjectType::Role, id)
     }
 
     /// ストレージのフォルダオブジェクト `folder:<id>`。
@@ -92,10 +93,7 @@ mod tests {
     fn fga_object_new_uses_object_type_prefix() {
         // new は object type の文字列表現を prefix として `type:id` を組むこと。
         assert_eq!(FgaObject::new(ObjectType::User, "u1").as_str(), "user:u1");
-        assert_eq!(
-            FgaObject::new(ObjectType::Department, "d1").as_str(),
-            "department:d1"
-        );
+        assert_eq!(FgaObject::new(ObjectType::Role, "r1").as_str(), "role:r1");
         assert_eq!(
             FgaObject::new(ObjectType::Organization, "o1").as_str(),
             "organization:o1"
@@ -103,9 +101,9 @@ mod tests {
     }
 
     #[test]
-    fn fga_object_department_constructor() {
-        // department ショートカットコンストラクタ。
-        assert_eq!(FgaObject::department("sales").as_str(), "department:sales");
+    fn fga_object_role_constructor() {
+        // role ショートカットコンストラクタ。
+        assert_eq!(FgaObject::role("sales").as_str(), "role:sales");
     }
 
     #[test]
@@ -157,7 +155,7 @@ mod tests {
     #[test]
     fn fga_object_clone_is_equal() {
         // Clone は等価なオブジェクトを生むこと。
-        let a = FgaObject::department("d1");
+        let a = FgaObject::role("r1");
         assert_eq!(a.clone(), a);
     }
 

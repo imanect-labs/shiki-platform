@@ -15,7 +15,7 @@ fn record(csrf: &str) -> SessionRecord {
             id: "00000000-0000-0000-0000-000000000001".into(),
             email: Some("alice@acme.example".into()),
             groups: vec!["/acme".into()],
-            dept: Some("eng".into()),
+            roles: vec!["eng".into()],
             tenant_id: Some("default".into()),
         },
         tenant_id: "default".into(),

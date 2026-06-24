@@ -106,7 +106,7 @@ mod tests {
             id: "u1".into(),
             email: None,
             groups: groups.iter().map(|s| s.to_string()).collect(),
-            dept: None,
+            roles: vec![],
             tenant_id: None,
         }
     }

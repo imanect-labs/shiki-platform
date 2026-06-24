@@ -49,13 +49,14 @@
           }
         },
         {
-          "name": "department",
+          "name": "roles",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-usermodel-attribute-mapper",
           "config": {
-            "user.attribute": "department",
-            "claim.name": "department",
+            "user.attribute": "roles",
+            "claim.name": "roles",
             "jsonType.label": "String",
+            "multivalued": "true",
             "access.token.claim": "true",
             "id.token.claim": "true"
           }
@@ -97,7 +98,7 @@
       "firstName": "Alice",
       "lastName": "Example",
       "attributes": {
-        "department": ["engineering"]
+        "roles": ["engineering", "sales-div"]
       },
       "groups": ["/acme"],
       "credentials": [

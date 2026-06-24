@@ -19,9 +19,9 @@ pub struct Claims {
     /// Keycloak group マッパー由来。
     #[serde(default)]
     pub groups: Vec<String>,
-    /// 所属部署（カスタム属性 → claim `department`）。
+    /// 所属ロール（多値カスタム属性 → claim `roles`）。
     #[serde(default)]
-    pub department: Option<String>,
+    pub roles: Vec<String>,
     /// テナント識別子（SaaS の Keycloak protocol mapper → claim `tenant`）。
     /// オンプレ/cell のシングルテナントでは付与されず、設定の固定値にフォールバックする。
     #[serde(default)]
@@ -76,7 +76,7 @@ pub fn principal_from_claims(claims: Claims) -> Principal {
         id: claims.sub,
         email: claims.email,
         groups: claims.groups,
-        dept: claims.department,
+        roles: claims.roles,
         tenant_id: claims.tenant,
     }
 }
@@ -101,7 +101,7 @@ mod tests {
         assert_eq!(claims.email, None);
         assert_eq!(claims.preferred_username, None);
         assert!(claims.groups.is_empty());
-        assert_eq!(claims.department, None);
+        assert!(claims.roles.is_empty());
         assert_eq!(claims.tenant, None);
     }
 
@@ -113,7 +113,7 @@ mod tests {
             "email": "u@example.com",
             "preferred_username": "u",
             "groups": ["/acme/eng", "/acme"],
-            "department": "eng",
+            "roles": ["eng", "sales"],
             "tenant": "acme",
             "exp": 9999999999u64,
             "unknown_field": "ignored",
@@ -123,7 +123,7 @@ mod tests {
         assert_eq!(claims.email.as_deref(), Some("u@example.com"));
         assert_eq!(claims.preferred_username.as_deref(), Some("u"));
         assert_eq!(claims.groups, vec!["/acme/eng", "/acme"]);
-        assert_eq!(claims.department.as_deref(), Some("eng"));
+        assert_eq!(claims.roles, vec!["eng", "sales"]);
         assert_eq!(claims.tenant.as_deref(), Some("acme"));
     }
 
@@ -142,14 +142,14 @@ mod tests {
             email: Some("p@example.com".into()),
             preferred_username: Some("p".into()),
             groups: vec!["/acme".into()],
-            department: Some("sales".into()),
+            roles: vec!["sales".into(), "eng".into()],
             tenant: Some("acme".into()),
         };
         let principal = principal_from_claims(claims);
         assert_eq!(principal.id, "user-3");
         assert_eq!(principal.email.as_deref(), Some("p@example.com"));
         assert_eq!(principal.groups, vec!["/acme"]);
-        assert_eq!(principal.dept.as_deref(), Some("sales"));
+        assert_eq!(principal.roles, vec!["sales", "eng"]);
         assert_eq!(principal.tenant_id.as_deref(), Some("acme"));
         // preferred_username は Principal には載らない（マッピング対象外）。
     }

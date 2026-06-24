@@ -17,8 +17,11 @@ pub struct Principal {
     /// Keycloak group マッパー由来の所属グループ。
     #[serde(default)]
     pub groups: Vec<String>,
-    /// 所属部署（claim `department`）。
-    pub dept: Option<String>,
+    /// IdP が宣言した所属ロール（claim `roles`・多値）。`groups` と同列のフラットな
+    /// 識別メタデータ。authz 判定で使う階層込みの実効メンバーシップは OpenFGA の
+    /// `role` タプルが正本（docs/design.md §4.1）。
+    #[serde(default)]
+    pub roles: Vec<String>,
     /// テナント識別子の素（claim `tenant` 由来・SaaS）。取得元はここではなく
     /// `crates/api` 側の継ぎ目（`resolve_tenant_id`）で解決する。オンプレ/cell の
     /// シングルテナントでは claim が無く設定の固定値にフォールバックする。

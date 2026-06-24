@@ -37,7 +37,7 @@ mod tests {
             id: "user-1".into(),
             email: Some("u@example.com".into()),
             groups: vec!["/acme".into()],
-            dept: None,
+            roles: vec![],
             tenant_id: Some("acme".into()),
         }
     }

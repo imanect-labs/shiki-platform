@@ -188,7 +188,7 @@ fn test_principal() -> Principal {
         id: "00000000-0000-0000-0000-000000000001".into(),
         email: Some("alice@acme.example".into()),
         groups: vec!["/acme".into()],
-        dept: Some("engineering".into()),
+        roles: vec!["engineering".into()],
         tenant_id: None,
     }
 }

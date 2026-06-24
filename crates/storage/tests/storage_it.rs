@@ -103,7 +103,7 @@ fn make_ctx(org: &str, uid: &str) -> AuthContext {
             id: uid.into(),
             email: None,
             groups: vec![],
-            dept: None,
+            roles: vec![],
             tenant_id: None,
         },
         org.into(),

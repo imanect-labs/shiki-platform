@@ -22,32 +22,19 @@
       }
     },
     {
-      "type": "department",
+      "type": "role",
       "relations": {
-        "parent": {
-          "this": {}
-        },
         "member": {
-          "union": {
-            "child": [
-              { "this": {} },
-              {
-                "tupleToUserset": {
-                  "tupleset": { "relation": "parent" },
-                  "computedUserset": { "relation": "member" }
-                }
-              }
-            ]
-          }
+          "this": {}
         }
       },
       "metadata": {
         "relations": {
-          "parent": {
-            "directly_related_user_types": [{ "type": "organization" }]
-          },
           "member": {
-            "directly_related_user_types": [{ "type": "user" }]
+            "directly_related_user_types": [
+              { "type": "user" },
+              { "type": "role", "relation": "member" }
+            ]
           }
         }
       }

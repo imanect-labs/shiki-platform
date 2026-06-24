@@ -95,8 +95,10 @@
 - **path**: `crates/authz`
 - **仕様**:
   - OpenFGA クライアントクレートを実装（store作成、authorization model のロード/バージョン管理）。
-  - **最小 relation model** を定義（Phase 0 は骨格のみ）: `organization`, `department`, `user`,
-    relations `member`, `parent`。後続フェーズで `folder`/`file`/`thread`/`doc_chunk` を追加する前提のスキーマ構成。
+  - **最小 relation model** を定義（Phase 0 は骨格のみ）: `organization`, `role`, `user`,
+    relation `member`。ロール階層は `role#member` のネスト（`[user, role#member]`）で**配下ロール→親ロールへ
+    上方向ロールアップ**する（親ロールは配下ロールのメンバーを含む）。`parent` relation は Phase 1 で
+    `folder`/`file` 追加時に導入する。後続フェーズで `thread`/`doc_chunk` を追加する前提のスキーマ構成。
   - **認可コンテキスト** `AuthContext { principal, org, tenant_id }` を定義し、全データアクセスがこれを受け取る規約を導入
     （**SaaS マルチテナント前提で `tenant_id` を day-1 から保持**・後付けで隔離境界を壊さない）。`check(user, relation, object)` ヘルパを提供。
   - **`tenant_id` の取得元（human 決定 / #57）= 案C 既定 ＋ 案A 継ぎ目**: 解決は `crates/api` の
