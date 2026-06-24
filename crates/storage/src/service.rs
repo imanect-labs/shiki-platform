@@ -8,7 +8,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use authz::{AuthContext, AuthzClient, FgaObject, ObjectType, Relation, Subject};
+use authz::{AuthContext, AuthzClient, Consistency, FgaObject, ObjectType, Relation, Subject};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
@@ -632,6 +632,31 @@ impl StorageService {
         let final_name = new_name.unwrap_or(fresh.name.as_str());
         let parent_changed = new_parent.is_some() && final_parent != old_parent;
 
+        // 移動先の生存を**ロック下で再確認**する（pre-txn の ensure_folder 後に移動先が
+        // soft-delete される race を防ぐ。削除済みフォルダ配下へ生存ノードを移さない）。
+        if parent_changed {
+            if let Some(p) = final_parent {
+                let target_live: Option<String> = sqlx::query_scalar(
+                    "SELECT kind FROM node \
+                     WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL",
+                )
+                .bind(p)
+                .bind(&ctx.org)
+                .bind(&ctx.tenant_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                match target_live.as_deref() {
+                    Some("folder") => {}
+                    Some(_) => {
+                        return Err(StorageError::Invalid(
+                            "移動先がフォルダではありません".into(),
+                        ))
+                    }
+                    None => return Err(StorageError::NotFound),
+                }
+            }
+        }
+
         // 循環拒否: 移動先が自身の配下（closure で ancestor=self に含まれる）なら拒否する。
         // ロック下で判定し、並行移動でサブツリーが入れ替わっても閉路を作らせない。
         if parent_changed {
@@ -885,6 +910,27 @@ impl StorageService {
 
         let tx_result: Result<Node, StorageError> = async {
             let mut tx = self.db.begin().await?;
+            // 親の生存を **txn 内で行ロックして再確認**する（pre-txn の ensure_folder 後に親が
+            // soft-delete される race を防ぐ。削除済み親の下に生存子を作らない）。
+            if let Some(p) = parent_id {
+                let parent_live: Option<String> = sqlx::query_scalar(
+                    "SELECT kind FROM node \
+                     WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL \
+                     FOR UPDATE",
+                )
+                .bind(p)
+                .bind(&ctx.org)
+                .bind(&ctx.tenant_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                match parent_live.as_deref() {
+                    Some("folder") => {}
+                    Some(_) => {
+                        return Err(StorageError::Invalid("親がフォルダではありません".into()))
+                    }
+                    None => return Err(StorageError::NotFound),
+                }
+            }
             let sql = format!(
                 "INSERT INTO node (org, tenant_id, kind, name, parent_id, created_by) \
                  VALUES ($1, $2, 'folder', $3, $4, $5) RETURNING {NODE_COLS}"
@@ -983,11 +1029,10 @@ impl StorageService {
     /// `(name, id)` 昇順の keyset カーソルでページングする。`next_cursor` が `Some` なら続きがある
     /// （末尾ちょうどで空ページが 1 回返ることはあるが、欠落や重複は起きない）。
     ///
-    /// 権限フィルタは親の種別で 2 段構えにする（pre-filter＋post-filter）:
-    /// - **フォルダ配下**: 親の viewer を確認できれば、union-only の継承モデル上**全子が viewer**
-    ///   （`viewer from parent`）。親チェックを pre-filter とし、子ごとの check は不要。
-    /// - **ルート直下**: 共通の親が無いため、子ごとに viewer を post-filter する
-    ///   （読めない子はオーバーフェッチで読み飛ばす）。
+    /// 権限フィルタは **子ごとに OpenFGA viewer を post-filter**する（読めない子はオーバーフェッチで
+    /// 読み飛ばす）。継承を pre-filter にした「親が読めれば全子可視」の最適化は採らない:
+    /// move 直後は DB の `parent_id` が先に見え、新親の FGA `parent` タプルが遅延し得るため、
+    /// DB 親子関係を認可の近道にすると未認可の子を露出し得る（FGA を真実とする）。
     pub async fn list_children(
         &self,
         ctx: &AuthContext,
@@ -1025,15 +1070,8 @@ impl StorageService {
         }
 
         let limit = limit.clamp(1, 100);
-        // フォルダ配下は親 viewer が全子に継承するため子ごとの post-filter は不要。
-        // ルート直下のみ子ごとに viewer を確認する。
-        let post_filter = parent_id.is_none();
-        // 1 ラウンドのフェッチ歩幅。post-filter 時はフィルタ落ちを見越して多めに引く。
-        let batch: i64 = if post_filter {
-            (limit as i64 * 2).clamp(16, 200)
-        } else {
-            limit as i64
-        };
+        // 1 ラウンドのフェッチ歩幅（フィルタ落ちを見越して多めに引く）。
+        let batch: i64 = (limit as i64 * 2).clamp(16, 200);
         let (mut after_name, mut after_id) = match cursor {
             Some(c) => {
                 let (name, id) = decode_child_cursor(c)?;
@@ -1072,20 +1110,19 @@ impl StorageService {
             for row in rows {
                 after_name = Some(row.name.clone());
                 after_id = Some(row.id);
-                // フォルダ配下は親 viewer の継承で全子可視。ルート直下のみ子ごとに確認。
-                if post_filter {
-                    let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
-                    let allowed = self
-                        .authz
-                        .check(
-                            &ctx.subject(),
-                            Relation::Viewer,
-                            &node_fga_object(kind, row.id),
-                        )
-                        .await?;
-                    if !allowed {
-                        continue;
-                    }
+                // 子ごとに viewer を確認（FGA を真実とする post-filter）。即時剥奪反映のため強整合。
+                let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
+                let allowed = self
+                    .authz
+                    .check(
+                        &ctx.subject(),
+                        Relation::Viewer,
+                        &node_fga_object(kind, row.id),
+                        Consistency::HigherConsistency,
+                    )
+                    .await?;
+                if !allowed {
+                    continue;
                 }
                 items.push(row_to_node(row)?);
                 if items.len() == limit {
@@ -1102,6 +1139,22 @@ impl StorageService {
         } else {
             None
         };
+        // 成功した一覧（ディレクトリ列挙）も監査に残す（NFR-6・読取系なので未チェーン）。
+        self.audit
+            .record(
+                ctx,
+                AuditEntry {
+                    action: "folder.children.list",
+                    object_type: "folder",
+                    object_id: &parent_id
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "root".into()),
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: json!({ "returned": items.len() }),
+                },
+            )
+            .await?;
         Ok(ChildPage { items, next_cursor })
     }
 
@@ -1148,7 +1201,12 @@ impl StorageService {
             if id != node_id {
                 let allowed = self
                     .authz
-                    .check(&ctx.subject(), Relation::Viewer, &node_fga_object(kind, id))
+                    .check(
+                        &ctx.subject(),
+                        Relation::Viewer,
+                        &node_fga_object(kind, id),
+                        Consistency::HigherConsistency,
+                    )
                     .await?;
                 if !allowed {
                     break;
@@ -1158,6 +1216,20 @@ impl StorageService {
         }
         // 自身→root で積んだので、表示順（root→自身）へ反転する。
         crumbs.reverse();
+        // 成功読取を監査に残す（NFR-6・読取系なので未チェーン）。
+        self.audit
+            .record(
+                ctx,
+                AuditEntry {
+                    action: "node.breadcrumb.read",
+                    object_type: node.kind.as_str(),
+                    object_id: &node_id.to_string(),
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: json!({ "depth": crumbs.len() }),
+                },
+            )
+            .await?;
         Ok(crumbs)
     }
 
@@ -1298,6 +1370,21 @@ impl StorageService {
         .await?;
 
         let mut tx = self.db.begin().await?;
+        // 祖先に削除済みフォルダがあると、単体復元してもツリーから到達不能なまま直リンクだけで
+        // 露出する（subtree 削除の隠蔽が破れる）。祖先が全て生存している時のみ復元を許す。
+        let ancestor_deleted: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM node_closure c JOIN node n ON n.id = c.ancestor \
+             WHERE c.descendant = $1 AND c.ancestor <> $1 AND n.deleted_at IS NOT NULL)",
+        )
+        .bind(file_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if ancestor_deleted {
+            return Err(StorageError::Invalid(
+                "祖先フォルダが削除済みのため復元できません（先に親フォルダを復元してください）"
+                    .into(),
+            ));
+        }
         // deleted_at=NULL に戻す。生存兄弟と同名なら部分ユニークが効き Conflict になる。
         let sql = format!(
             "UPDATE node SET deleted_at = NULL, updated_at = now() \
@@ -1332,15 +1419,15 @@ impl StorageService {
 
     // --- 共有（ReBAC: Task 1.6） ---
 
-    /// ファイル/フォルダを user / role へ viewer/editor で共有する。
+    /// ファイル/フォルダを **user** へ viewer/editor で共有する（role 共有は #76 で defer）。
     ///
     /// 共有の管理（ACL 付与）は **owner 権限**を要求する（editor が再共有して権限を
-    /// 横展開する confused-deputy を防ぐ）。OpenFGA の tuple 付与として実装し、
-    /// ロール共有は `role:<id>#member` 1 タプルでロールメンバー（配下ロール含む）へ継承する
-    /// （`role#member` は org 継承を含まないため org 全体共有にならない・#72）。
+    /// 横展開する confused-deputy を防ぐ）。OpenFGA の tuple 付与として実装する。
     ///
     /// FGA と監査 DB は別 durability 境界のため、**監査失敗時は付与した tuple を補償剥奪**して
-    /// 「ACL は変わったが監査が無い」状態を残さない（呼び出し側の再試行で収束する）。
+    /// 「ACL は変わったが監査が無い」状態を残さない。ただし補償は **実際に付与したとき
+    /// （`write_tuple` が `true`）のみ**行う。冪等 no-op（既共有の再共有）を巻き戻すと
+    /// 既存共有を誤って剥奪してしまうため（idempotent 補償の逆破壊を防ぐ）。
     pub async fn share_node(
         &self,
         ctx: &AuthContext,
@@ -1352,19 +1439,22 @@ impl StorageService {
         let obj = self
             .authorize_share_admin(ctx, node_id, "node.share", trace_id)
             .await?;
-        // 付与は冪等（既存タプルは成功扱い）。
-        self.authz
+        // 付与は冪等。granted=true なら実際に新規付与した。
+        let granted = self
+            .authz
             .write_tuple(&target.subject(), role.relation(), &obj)
             .await?;
         if let Err(e) = self
             .record_share_audit(ctx, node_id, &obj, "node.share", target, role, trace_id)
             .await
         {
-            // 監査が残らないので付与を巻き戻す（冪等剥奪・best-effort）。
-            let _ = self
-                .authz
-                .delete_tuple(&target.subject(), role.relation(), &obj)
-                .await;
+            // 実際に付与した時だけ巻き戻す（no-op を剥奪して既存共有を壊さない）。
+            if granted {
+                let _ = self
+                    .authz
+                    .delete_tuple(&target.subject(), role.relation(), &obj)
+                    .await;
+            }
             return Err(e);
         }
         Ok(())
@@ -1372,8 +1462,9 @@ impl StorageService {
 
     /// 共有を解除する（owner 権限・冪等）。
     ///
-    /// PIT-11: check は HIGHER_CONSISTENCY で問い合わせるため、剥奪は次リクエストから即時に効く。
-    /// 監査失敗時は剥奪を補償付与して「ACL は剥奪されたが監査が無い」状態を残さない。
+    /// PIT-11: read 認可は HIGHER_CONSISTENCY で問い合わせるため、剥奪は次リクエストから即時に効く。
+    /// 監査失敗時は剥奪を補償付与するが、**実際に剥奪したとき（`delete_tuple` が `true`）のみ**。
+    /// 冪等 no-op（未共有の unshare）を巻き戻すと存在しなかった権限を新規付与してしまうため。
     pub async fn unshare_node(
         &self,
         ctx: &AuthContext,
@@ -1385,19 +1476,22 @@ impl StorageService {
         let obj = self
             .authorize_share_admin(ctx, node_id, "node.unshare", trace_id)
             .await?;
-        // 剥奪も冪等（存在しないタプルの削除は成功扱い）。
-        self.authz
+        // 剥奪は冪等。revoked=true なら実際に剥奪した。
+        let revoked = self
+            .authz
             .delete_tuple(&target.subject(), role.relation(), &obj)
             .await?;
         if let Err(e) = self
             .record_share_audit(ctx, node_id, &obj, "node.unshare", target, role, trace_id)
             .await
         {
-            // 監査が残らないので剥奪を巻き戻す（冪等付与・best-effort）。
-            let _ = self
-                .authz
-                .write_tuple(&target.subject(), role.relation(), &obj)
-                .await;
+            // 実際に剥奪した時だけ巻き戻す（no-op を付与して権限昇格を起こさない）。
+            if revoked {
+                let _ = self
+                    .authz
+                    .write_tuple(&target.subject(), role.relation(), &obj)
+                    .await;
+            }
             return Err(e);
         }
         Ok(())
@@ -1564,7 +1658,16 @@ impl StorageService {
         object_id: &str,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
-        let allowed = self.authz.check(&ctx.subject(), relation, object).await?;
+        // 書込/管理系の権限判定。即時剥奪反映は不要なので低レイテンシ既定で問い合わせる。
+        let allowed = self
+            .authz
+            .check(
+                &ctx.subject(),
+                relation,
+                object,
+                Consistency::MinimizeLatency,
+            )
+            .await?;
         if !allowed {
             self.audit
                 .record(
@@ -1595,9 +1698,15 @@ impl StorageService {
         object_id: &str,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
+        // 読取認可。共有解除の即時反映（PIT-11）が要るため強整合で問い合わせる。
         let allowed = self
             .authz
-            .check(&ctx.subject(), Relation::Viewer, object)
+            .check(
+                &ctx.subject(),
+                Relation::Viewer,
+                object,
+                Consistency::HigherConsistency,
+            )
             .await?;
         if !allowed {
             self.audit
@@ -1781,20 +1890,20 @@ fn encode_child_cursor(name: &str, id: Uuid) -> String {
     hex::encode(format!("{id}{name}").as_bytes())
 }
 
-/// [`encode_child_cursor`] の逆。壊れたカーソルは `Invalid`。
+/// [`encode_child_cursor`] の逆。壊れたカーソルは `Invalid`（panic しない）。
 fn decode_child_cursor(cursor: &str) -> Result<(String, Uuid), StorageError> {
-    let bytes =
-        hex::decode(cursor).map_err(|_| StorageError::Invalid("カーソルが不正です".into()))?;
-    let s =
-        String::from_utf8(bytes).map_err(|_| StorageError::Invalid("カーソルが不正です".into()))?;
-    // 先頭 36 文字が uuid、残りが name。
-    if s.len() < 36 {
-        return Err(StorageError::Invalid("カーソルが不正です".into()));
+    let invalid = || StorageError::Invalid("カーソルが不正です".into());
+    let bytes = hex::decode(cursor).map_err(|_| invalid())?;
+    // 先頭 36 **バイト**が uuid（ASCII 固定長）、残りが name。バイト境界で分割してから UTF-8
+    // 検証する（`String` 化後の `split_at(36)` は 36 がマルチバイト境界外だと panic するため）。
+    if bytes.len() < 36 {
+        return Err(invalid());
     }
-    let (id_part, name) = s.split_at(36);
-    let id =
-        Uuid::parse_str(id_part).map_err(|_| StorageError::Invalid("カーソルが不正です".into()))?;
-    Ok((name.to_string(), id))
+    let (id_bytes, name_bytes) = bytes.split_at(36);
+    let id_part = std::str::from_utf8(id_bytes).map_err(|_| invalid())?;
+    let id = Uuid::parse_str(id_part).map_err(|_| invalid())?;
+    let name = String::from_utf8(name_bytes.to_vec()).map_err(|_| invalid())?;
+    Ok((name, id))
 }
 
 /// ノード名の検証。空/長すぎ/前後空白/`.`・`..`/パス区切り/制御文字を拒否する。
@@ -1862,7 +1971,11 @@ mod tests {
     #[test]
     fn child_cursor_rejects_garbage() {
         assert!(decode_child_cursor("zzz").is_err()); // 非 hex
-        assert!(decode_child_cursor(&hex::encode("short")).is_err()); // 36 文字未満
+        assert!(decode_child_cursor(&hex::encode("short")).is_err()); // 36 バイト未満
+                                                                      // 36 バイト目がマルチバイト文字の途中でも **panic せず** Invalid を返す（split_at(36) 回帰）。
+        let mut raw = vec![b'a'; 35];
+        raw.extend_from_slice("あ".as_bytes()); // 3 バイト → 36 バイト目が文字途中
+        assert!(decode_child_cursor(&hex::encode(raw)).is_err());
     }
 
     #[test]

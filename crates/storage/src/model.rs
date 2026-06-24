@@ -1,6 +1,6 @@
 //! ストレージのドメインモデル（ノード・アップロード結果の DTO）。
 
-use authz::{FgaObject, Relation, Subject};
+use authz::{Relation, Subject};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -88,40 +88,30 @@ pub struct Crumb {
     pub kind: NodeKind,
 }
 
-/// 共有先（subject）。Task 1.6 では user / role を対象とする
-/// （group は OpenFGA 型未定義のため後続フェーズ）。
+/// 共有先（subject）。Task 1.6 では **user 共有のみ** を対象とする。
+///
+/// role / department / group 共有は OpenFGA のテナントスコープ（SAAS.1）と role provisioning
+/// （SAAS.2）が前提になるため defer する（#76）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ShareTarget {
     /// 個人ユーザー（`user:<id>`）。
     User { id: String },
-    /// ロールメンバー全体（`role:<id>#member`）。配下ロールのメンバーも含む（上方向ロールアップ）。
-    /// `role#member` は org 継承を含まないため、共有が org 全体へ広がらない（#72）。
-    Role { id: String },
 }
 
 impl ShareTarget {
-    /// OpenFGA タプル右辺の subject に変換する。ロールは `role:<id>#member` userset。
+    /// OpenFGA タプル右辺の subject に変換する。
     pub fn subject(&self) -> Subject {
         match self {
             ShareTarget::User { id } => Subject::user(id),
-            ShareTarget::Role { id } => Subject::userset(&FgaObject::role(id), Relation::Member),
         }
     }
 
-    /// OpenFGA Read で得た subject 文字列を共有先へ戻す
-    /// （`user:<id>` / `role:<id>#member`）。共有相手として解釈できない
-    /// subject（owner の user 以外・parent の folder 等）は `None`。
+    /// OpenFGA Read で得た subject 文字列を共有先へ戻す（`user:<id>`）。
+    /// 共有相手として解釈できない subject（owner の user 以外・parent の folder 等）は `None`。
     pub fn parse_subject(s: &str) -> Option<Self> {
-        if let Some(id) = s.strip_prefix("user:") {
-            return Some(ShareTarget::User { id: id.to_string() });
-        }
-        if let Some(rest) = s.strip_prefix("role:") {
-            if let Some(id) = rest.strip_suffix("#member") {
-                return Some(ShareTarget::Role { id: id.to_string() });
-            }
-        }
-        None
+        s.strip_prefix("user:")
+            .map(|id| ShareTarget::User { id: id.to_string() })
     }
 }
 

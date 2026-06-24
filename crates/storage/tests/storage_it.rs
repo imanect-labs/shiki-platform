@@ -702,7 +702,8 @@ async fn folder_hierarchy_end_to_end() {
     );
 }
 
-/// Task 1.6: ロール共有でメンバが継承アクセス / 共有解除で即時不可 / 共有相手・共有された一覧。
+/// Task 1.6: user 共有で継承アクセス / 共有解除で即時不可 / 共有相手・共有された一覧。
+/// （role/部署共有は #76 で defer。本テストは user 共有のみ）
 #[tokio::test]
 async fn sharing_end_to_end() {
     let Some(ctx) = setup().await else { return };
@@ -718,24 +719,13 @@ async fn sharing_end_to_end() {
     let octx = make_ctx(&org, &owner);
     seed_org_member(&authz, &org, &owner).await;
 
-    // ロール sales にメンバー bob を付与する（role#member は org 継承を含まない＝#72）。
-    let role = format!("sales{}", Uuid::new_v4().simple());
+    // bob（共有される個人）と、共有されない別ユーザー。
     let bob = format!("ituser{}", Uuid::new_v4().simple());
     let bctx = make_ctx(&org, &bob);
     seed_org_member(&authz, &org, &bob).await;
-    authz
-        .write_tuple(
-            &Subject::user(&bob),
-            Relation::Member,
-            &FgaObject::role(&role),
-        )
-        .await
-        .expect("role member seed");
-
-    // org メンバーだがロール未所属のユーザー（ロール共有が org 全体へ漏れないことの確認用）。
-    let org_only = format!("ituser{}", Uuid::new_v4().simple());
-    let octx_only = make_ctx(&org, &org_only);
-    seed_org_member(&authz, &org, &org_only).await;
+    let other = format!("ituser{}", Uuid::new_v4().simple());
+    let octx_other = make_ctx(&org, &other);
+    seed_org_member(&authz, &org, &other).await;
 
     // owner が root にファイルを作る。
     let file = upload(&service, &http, &octx, None, "shared.txt", b"share me")
@@ -751,43 +741,59 @@ async fn sharing_end_to_end() {
         "共有前は読めない"
     );
 
-    // ロール sales へ viewer 共有 → bob はロールメンバーとして継承アクセスできる。
+    // bob へ viewer 共有 → bob は読めるようになる。
     service
         .share_node(
             &octx,
             file.id,
-            &ShareTarget::Role { id: role.clone() },
+            &ShareTarget::User { id: bob.clone() },
             ShareRole::Viewer,
             None,
         )
         .await
-        .expect("share to role");
+        .expect("share to bob");
     let seen = service
         .get_metadata(&bctx, file.id, None)
         .await
-        .expect("bob reads via role");
+        .expect("bob reads via share");
     assert_eq!(seen.name, "shared.txt");
 
-    // ロール共有が org 全体へ広がらないこと: ロール未所属の org メンバーは読めない（#72）。
+    // 共有は対象ユーザーに限定: 共有されていない別ユーザーは読めない。
     assert!(
         matches!(
-            service.get_metadata(&octx_only, file.id, None).await,
+            service.get_metadata(&octx_other, file.id, None).await,
             Err(StorageError::NotFound)
         ),
-        "ロール共有は org 全体共有にならない（role#member は org 継承を含まない）"
+        "共有は対象ユーザーのみ（他ユーザーへは漏れない）"
     );
 
-    // 共有相手一覧に role(sales)/viewer が出る。
+    // 既共有の再共有は冪等（補償ロールバックの逆破壊が起きないこと＝再共有後も bob は読める）。
+    service
+        .share_node(
+            &octx,
+            file.id,
+            &ShareTarget::User { id: bob.clone() },
+            ShareRole::Viewer,
+            None,
+        )
+        .await
+        .expect("re-share is idempotent");
+    assert!(
+        service.get_metadata(&bctx, file.id, None).await.is_ok(),
+        "再共有後も bob は読める（冪等 no-op が既存共有を壊さない）"
+    );
+
+    // 共有相手一覧に user(bob)/viewer が出る。
     let shares = service
         .list_shares(&octx, file.id, None)
         .await
         .expect("list shares");
     assert!(
         shares.iter().any(|e| {
-            matches!(&e.target, ShareTarget::Role { id } if id == &role)
+            matches!(&e.target, ShareTarget::User { id } if id == &bob)
                 && matches!(e.role, ShareRole::Viewer)
         }),
-        "共有相手にロール viewer が現れる: {shares:?}"
+        "共有相手に user viewer が現れる: {shares:?}"
     );
 
     // bob の「共有された一覧」に file が出る（自分が作成したものではない）。
@@ -814,7 +820,7 @@ async fn sharing_end_to_end() {
         .unshare_node(
             &octx,
             file.id,
-            &ShareTarget::Role { id: role.clone() },
+            &ShareTarget::User { id: bob.clone() },
             ShareRole::Viewer,
             None,
         )
