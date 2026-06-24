@@ -54,6 +54,12 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   );
   const [mobileOpen, setMobileOpen] = React.useState(false);
 
+  // デスクトップ幅へ移行したらモバイルドロワを閉じる。開いたままだと Radix Dialog の
+  // focus trap / scroll lock が不可視のコンテンツに残り、デスクトップ操作を妨げる。
+  React.useEffect(() => {
+    if (!isMobile && mobileOpen) setMobileOpen(false);
+  }, [isMobile, mobileOpen]);
+
   const setWidth = React.useCallback(
     (px: number) => setStoredWidth(clampWidth(px)),
     [setStoredWidth],

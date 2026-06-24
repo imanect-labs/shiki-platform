@@ -95,16 +95,19 @@ export function SidebarAccount({
   return (
     <div className="p-2">
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          {collapsed ? (
-            <Tooltip>
-              <TooltipTrigger asChild>{trigger}</TooltipTrigger>
-              <TooltipContent side="right">{displayName}</TooltipContent>
-            </Tooltip>
-          ) : (
-            trigger
-          )}
-        </DropdownMenuTrigger>
+        {collapsed ? (
+          // 折りたたみ時は Tooltip と Dropdown の両トリガーを同じボタンへ重ねる。
+          // （DropdownMenuTrigger asChild の子を Tooltip 根にすると trigger が
+          //   ボタンに配線されず、メニューがレールから開けなくなるため）
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="right">{displayName}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+        )}
         <DropdownMenuContent
           align="start"
           side="top"

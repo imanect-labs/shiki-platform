@@ -85,15 +85,19 @@ export function Composer({
 
       <div className="flex items-center gap-1.5 px-3 pb-3 pt-1">
         <Tooltip>
+          {/* 無効ボタンは hover/focus を発火しないため、span をトリガーにして
+              ボタン自体は pointer-events-none にする（Radix 推奨パターン）。 */}
           <TooltipTrigger asChild>
-            <button
-              type="button"
-              disabled
-              aria-label="ファイルを添付（近日対応）"
-              className="flex size-9 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors disabled:opacity-60"
-            >
-              <Plus className="size-[18px]" aria-hidden />
-            </button>
+            <span className="inline-flex">
+              <button
+                type="button"
+                disabled
+                aria-label="ファイルを添付（近日対応）"
+                className="pointer-events-none flex size-9 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors disabled:opacity-60"
+              >
+                <Plus className="size-[18px]" aria-hidden />
+              </button>
+            </span>
           </TooltipTrigger>
           <TooltipContent>添付は近日対応</TooltipContent>
         </Tooltip>
@@ -106,14 +110,16 @@ export function Composer({
         <div className="ml-auto flex items-center gap-1.5">
           <Tooltip>
             <TooltipTrigger asChild>
-              <button
-                type="button"
-                disabled
-                aria-label="音声入力（近日対応）"
-                className="flex size-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent disabled:opacity-60 disabled:hover:bg-transparent"
-              >
-                <Mic className="size-[18px]" aria-hidden />
-              </button>
+              <span className="inline-flex">
+                <button
+                  type="button"
+                  disabled
+                  aria-label="音声入力（近日対応）"
+                  className="pointer-events-none flex size-9 items-center justify-center rounded-full text-muted-foreground transition-colors disabled:opacity-60"
+                >
+                  <Mic className="size-[18px]" aria-hidden />
+                </button>
+              </span>
             </TooltipTrigger>
             <TooltipContent>音声入力は近日対応</TooltipContent>
           </Tooltip>

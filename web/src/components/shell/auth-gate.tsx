@@ -17,9 +17,12 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
   // 失効セッション → ログイン画面へ（戻り先付き）。
+  // usePathname() はパスのみのため、クエリは window.location.search から補って保持する。
   React.useEffect(() => {
     if (loading || !unauthenticated) return;
-    const suffix = pathname && pathname !== "/" ? `?next=${encodeURIComponent(pathname)}` : "";
+    const search = typeof window !== "undefined" ? window.location.search : "";
+    const full = `${pathname}${search}`;
+    const suffix = full && full !== "/" ? `?next=${encodeURIComponent(full)}` : "";
     router.replace(`/login${suffix}`);
   }, [loading, unauthenticated, pathname, router]);
 

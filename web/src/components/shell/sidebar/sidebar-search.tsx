@@ -33,8 +33,17 @@ export function SidebarSearch({
   const sessions = useChatSessions();
 
   React.useEffect(() => {
+    const isEditable = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+    };
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      const cmdK = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k";
+      // "/" 単独でも開く（サイドバーのキーヒントと一致させる）。入力中は無効。
+      const slash =
+        e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && !isEditable(e.target);
+      if (cmdK || slash) {
         e.preventDefault();
         onOpenChange(true);
       }

@@ -84,15 +84,19 @@ function ShortcutItem({ item }: { item: HomeShortcut }) {
 
   return (
     <Tooltip>
+      {/* 無効ボタンは hover/focus を発火しないため span をトリガーにし、
+          ボタンは pointer-events-none にして「準備中」を表示できるようにする。 */}
       <TooltipTrigger asChild>
-        <button
-          type="button"
-          disabled
-          aria-label={`${label}（準備中）`}
-          className="cursor-not-allowed rounded-xl outline-none"
-        >
-          {inner}
-        </button>
+        <span className="inline-flex cursor-not-allowed">
+          <button
+            type="button"
+            disabled
+            aria-label={`${label}（準備中）`}
+            className="pointer-events-none rounded-xl outline-none"
+          >
+            {inner}
+          </button>
+        </span>
       </TooltipTrigger>
       <TooltipContent>準備中</TooltipContent>
     </Tooltip>
