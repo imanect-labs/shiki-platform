@@ -1145,32 +1145,36 @@ async fn directory_search_is_tenant_scoped() {
     let dir = DirectoryStore::new(cx.pool.clone());
     let s = Uuid::new_v4().simple().to_string();
     let (ta, tb) = (format!("ta-{s}"), format!("tb-{s}"));
-    let (oa, ob) = (format!("oa-{s}"), format!("ob-{s}"));
+    // org は alice/bob/dave/charlie で**共通**にし、分離が tenant_id のみで成立することを示す
+    // （org 差分に依存しない＝真のテナント分離検証）。
+    let org = format!("o-{s}");
     let alice = format!("alice-{s}");
-    // 同テナントに 2 名（bob/dave）置き、別テナントに charlie を置く。
+    // 同テナントに 2 名（bob/dave）置き、charlie は同 org・別テナントに置く。
     let bob = format!("bob-{s}");
     let dave = format!("dave-{s}");
     let charlie = format!("charlie-{s}");
-    dir.upsert_user(&alice, &ta, &oa, &format!("{alice}@a.example"), "Alice")
+    dir.upsert_user(&alice, &ta, &org, &format!("{alice}@a.example"), "Alice")
         .await
         .expect("seed alice");
-    dir.upsert_user(&bob, &ta, &oa, &format!("{bob}@a.example"), "Bob")
+    dir.upsert_user(&bob, &ta, &org, &format!("{bob}@a.example"), "Bob")
         .await
         .expect("seed bob");
-    dir.upsert_user(&dave, &ta, &oa, &format!("{dave}@a.example"), "Dave")
+    dir.upsert_user(&dave, &ta, &org, &format!("{dave}@a.example"), "Dave")
         .await
         .expect("seed dave");
+    // charlie は **alice と同じ org** だが **別テナント**（tb）。tenant_id だけで除外されること
+    // を検証する（org は一致しているので org フィルタでは弾けない）。
     dir.upsert_user(
         &charlie,
         &tb,
-        &ob,
+        &org,
         &format!("{charlie}@b.example"),
         "Charlie",
     )
     .await
     .expect("seed charlie");
 
-    let ctx = make_ctx_tenant(&oa, &ta, &alice);
+    let ctx = make_ctx_tenant(&org, &ta, &alice);
     // 空クエリは同テナント（かつ自分以外）を返す: bob/dave は出る、charlie は出ない、自分は除外。
     let page = dir.search(&ctx, "", None, 50).await.expect("search all");
     let ids: Vec<&str> = page.items.iter().map(|u| u.id.as_str()).collect();
