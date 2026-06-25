@@ -185,14 +185,12 @@ async fn node_version_count(pool: &PgPool, node_id: Uuid) -> i64 {
 
 /// 指定ノード・op の outbox イベント件数。
 async fn outbox_count(pool: &PgPool, node_id: Uuid, op: &str) -> i64 {
-    sqlx::query_scalar(
-        "SELECT count(*) FROM storage_event_outbox WHERE node_id = $1 AND op = $2",
-    )
-    .bind(node_id)
-    .bind(op)
-    .fetch_one(pool)
-    .await
-    .expect("outbox count")
+    sqlx::query_scalar("SELECT count(*) FROM storage_event_outbox WHERE node_id = $1 AND op = $2")
+        .bind(node_id)
+        .bind(op)
+        .fetch_one(pool)
+        .await
+        .expect("outbox count")
 }
 
 /// org メンバーとして seed する（ルート作成の認可に必要）。
@@ -1048,15 +1046,14 @@ async fn outbox_end_to_end() {
     assert_eq!(outbox_count(&pool, file.id, "restore").await, 1);
 
     // フィールドの一例を検証（restore イベントは最新版を指す）。
-    let (ev_org, ev_tenant, ev_actor, ev_version): (String, String, String, i64) =
-        sqlx::query_as(
-            "SELECT org, tenant_id, actor, version FROM storage_event_outbox \
+    let (ev_org, ev_tenant, ev_actor, ev_version): (String, String, String, i64) = sqlx::query_as(
+        "SELECT org, tenant_id, actor, version FROM storage_event_outbox \
              WHERE node_id = $1 AND op = 'restore'",
-        )
-        .bind(file.id)
-        .fetch_one(&pool)
-        .await
-        .expect("restore event");
+    )
+    .bind(file.id)
+    .fetch_one(&pool)
+    .await
+    .expect("restore event");
     assert_eq!(ev_org, org);
     assert_eq!(ev_tenant, "default");
     assert_eq!(ev_actor, alice);
@@ -1075,11 +1072,8 @@ async fn outbox_end_to_end() {
     // at-least-once: claim 後に commit せず rollback すると未処理のまま再配信される。
     {
         let mut tx = pool.begin().await.expect("tx1");
-        let claimed = storage::event::claim(&mut tx, 10_000)
-            .await
-            .expect("claim");
-        let claimed_ids: std::collections::HashSet<i64> =
-            claimed.iter().map(|e| e.id).collect();
+        let claimed = storage::event::claim(&mut tx, 10_000).await.expect("claim");
+        let claimed_ids: std::collections::HashSet<i64> = claimed.iter().map(|e| e.id).collect();
         assert!(
             ids.iter().all(|id| claimed_ids.contains(id)),
             "claim が本ノードのイベントを返す"
@@ -1098,7 +1092,9 @@ async fn outbox_end_to_end() {
     // claim → mark_processed → commit で ack され、以後は未処理に出ない。
     {
         let mut tx = pool.begin().await.expect("tx2");
-        let _ = storage::event::claim(&mut tx, 10_000).await.expect("claim2");
+        let _ = storage::event::claim(&mut tx, 10_000)
+            .await
+            .expect("claim2");
         storage::event::mark_processed(&mut tx, &ids)
             .await
             .expect("ack");
