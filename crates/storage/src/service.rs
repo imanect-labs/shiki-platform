@@ -20,9 +20,10 @@ use crate::{
         blob_object_key, incoming_object_key, is_valid_sha256_hex, staging_object_key,
     },
     error::StorageError,
+    event::{self, WriteEvent, WriteOp},
     model::{
-        ChildPage, Crumb, DownloadTicket, Node, NodeKind, ShareEntry, ShareRole, ShareTarget,
-        UploadTicket,
+        ChildPage, Crumb, DownloadTicket, FileVersion, Node, NodeKind, ShareEntry, ShareRole,
+        ShareTarget, UploadTicket,
     },
     object_store::ObjectStore,
 };
@@ -70,6 +71,31 @@ struct PendingRow {
     declared_sha256: String,
     declared_size: i64,
     staging_key: String,
+    /// 内容更新（既存ファイルの新版）の対象。NULL は新規ファイル作成。
+    target_node_id: Option<Uuid>,
+}
+
+#[derive(sqlx::FromRow)]
+struct VersionRow {
+    version: i64,
+    blob_sha256: String,
+    size_bytes: i64,
+    content_type: String,
+    author: String,
+    created_at: DateTime<Utc>,
+}
+
+impl VersionRow {
+    fn into_model(self) -> FileVersion {
+        FileVersion {
+            version: self.version,
+            blob_sha256: self.blob_sha256,
+            size_bytes: self.size_bytes,
+            content_type: self.content_type,
+            author: self.author,
+            created_at: self.created_at,
+        }
+    }
 }
 
 impl StorageService {
@@ -97,6 +123,10 @@ impl StorageService {
 
     /// declare: メタを申告し、staging への presigned PUT URL を得る。
     ///
+    /// `target_node_id` が `Some` のときは**既存ファイルの内容更新（新版アップロード）**で、
+    /// 認可は配置先ではなく対象ファイルの `editor@file` を要求し、親/名前は既存ノードを引き継ぐ。
+    /// `None` のときは**新規ファイル作成**で、配置先（フォルダ or org ルート）の権限を確認する。
+    ///
     /// 重複排除は **finalize 時**に行う（実バイトのアップロード＝所持証明の後）。declare で
     /// 宣言ハッシュだけを根拠に既存 blob へ短絡すると、内容を持たない同 org ユーザーが
     /// ハッシュを知るだけで他人のファイル内容を取得できてしまうため（所持証明前 dedup の禁止）。
@@ -109,9 +139,9 @@ impl StorageService {
         content_type: &str,
         declared_sha256: &str,
         declared_size: i64,
+        target_node_id: Option<Uuid>,
         trace_id: Option<&str>,
     ) -> Result<UploadTicket, StorageError> {
-        validate_name(name)?;
         if !is_valid_sha256_hex(declared_sha256) {
             return Err(StorageError::Invalid(
                 "sha256 が 64 桁の hex ではありません".into(),
@@ -127,36 +157,59 @@ impl StorageService {
             )));
         }
 
-        // 発行時認可。ルート（parent なし）は org メンバー、フォルダ配下は editor@folder。
-        let object_label = parent_id.map(|p| p.to_string());
-        let label_ref = object_label.as_deref().unwrap_or("root");
-        match parent_id {
-            Some(p) => {
+        // 対象の解決と発行時認可。
+        // - 内容更新: 対象ファイルの editor@file を要求し、親/名前は既存ノードから引く。
+        // - 新規作成: 名前を検証し、ルート（parent なし）は member@org、フォルダ配下は editor@folder。
+        let (effective_parent_id, effective_name) = match target_node_id {
+            Some(target) => {
+                let existing = self.load_node(ctx, target, false).await?;
+                if existing.kind != NodeKind::File {
+                    return Err(StorageError::NotFound);
+                }
                 self.require(
                     ctx,
                     Relation::Editor,
-                    &FgaObject::folder(&p.to_string()),
+                    &FgaObject::file(&target.to_string()),
                     "file.upload_url.issue",
-                    "folder",
-                    label_ref,
+                    "file",
+                    &target.to_string(),
                     trace_id,
                 )
                 .await?;
-                self.ensure_folder(ctx, p).await?;
+                (existing.parent_id, existing.name)
             }
             None => {
-                self.require(
-                    ctx,
-                    Relation::Member,
-                    &FgaObject::organization(&ctx.org),
-                    "file.upload_url.issue",
-                    "organization",
-                    &ctx.org,
-                    trace_id,
-                )
-                .await?;
+                validate_name(name)?;
+                match parent_id {
+                    Some(p) => {
+                        self.require(
+                            ctx,
+                            Relation::Editor,
+                            &FgaObject::folder(&p.to_string()),
+                            "file.upload_url.issue",
+                            "folder",
+                            &p.to_string(),
+                            trace_id,
+                        )
+                        .await?;
+                        self.ensure_folder(ctx, p).await?;
+                    }
+                    None => {
+                        self.require(
+                            ctx,
+                            Relation::Member,
+                            &FgaObject::organization(&ctx.org),
+                            "file.upload_url.issue",
+                            "organization",
+                            &ctx.org,
+                            trace_id,
+                        )
+                        .await?;
+                    }
+                }
+                (parent_id, name.to_string())
             }
-        }
+        };
 
         // staging への presigned PUT を発行し、pending_upload に控える。
         // 実体は finalize で content-addressed に昇格し、そこで dedup する。
@@ -164,19 +217,20 @@ impl StorageService {
         let staging_key = staging_object_key(&ctx.org, &upload_id.to_string());
         sqlx::query(
             "INSERT INTO pending_upload \
-             (upload_id, org, tenant_id, parent_id, name, content_type, declared_sha256, declared_size, staging_key, created_by) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             (upload_id, org, tenant_id, parent_id, name, content_type, declared_sha256, declared_size, staging_key, created_by, target_node_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(upload_id)
         .bind(&ctx.org)
         .bind(&ctx.tenant_id)
-        .bind(parent_id)
-        .bind(name)
+        .bind(effective_parent_id)
+        .bind(&effective_name)
         .bind(content_type)
         .bind(declared_sha256)
         .bind(declared_size)
         .bind(&staging_key)
         .bind(&ctx.principal.id)
+        .bind(target_node_id)
         .execute(&self.db)
         .await?;
 
@@ -213,7 +267,7 @@ impl StorageService {
         // 所有者束縛: アップロードを宣言した本人のみ finalize できる（upload_id 漏洩での横取り防止）。
         // tenant_id も条件に含め、同一 org 内でも tenant 跨ぎを遮断する。
         let pending: PendingRow = sqlx::query_as(
-            "SELECT parent_id, name, content_type, declared_sha256, declared_size, staging_key \
+            "SELECT parent_id, name, content_type, declared_sha256, declared_size, staging_key, target_node_id \
              FROM pending_upload \
              WHERE upload_id = $1 AND org = $2 AND tenant_id = $3 AND created_by = $4",
         )
@@ -227,33 +281,53 @@ impl StorageService {
 
         // finalize も認可を再確認（capability を持つだけでなく実権限も要る）。
         let label = upload_id.to_string();
-        match pending.parent_id {
-            Some(p) => {
+        match pending.target_node_id {
+            // 内容更新: 対象ファイルの editor@file を再確認し、対象が生存していることを保証する。
+            Some(target) => {
+                let existing = self.load_node(ctx, target, false).await?;
+                if existing.kind != NodeKind::File {
+                    return Err(StorageError::NotFound);
+                }
                 self.require(
                     ctx,
                     Relation::Editor,
-                    &FgaObject::folder(&p.to_string()),
-                    "file.upload.finalize",
-                    "folder",
-                    &p.to_string(),
-                    trace_id,
-                )
-                .await?;
-                // declare 後に親が削除/変更され得るため、生存フォルダであることを再確認する。
-                self.ensure_folder(ctx, p).await?;
-            }
-            None => {
-                self.require(
-                    ctx,
-                    Relation::Member,
-                    &FgaObject::organization(&ctx.org),
-                    "file.upload.finalize",
-                    "organization",
-                    &ctx.org,
+                    &FgaObject::file(&target.to_string()),
+                    "file.content.update",
+                    "file",
+                    &target.to_string(),
                     trace_id,
                 )
                 .await?;
             }
+            // 新規作成: 配置先（フォルダ or org ルート）の権限を再確認する。
+            None => match pending.parent_id {
+                Some(p) => {
+                    self.require(
+                        ctx,
+                        Relation::Editor,
+                        &FgaObject::folder(&p.to_string()),
+                        "file.upload.finalize",
+                        "folder",
+                        &p.to_string(),
+                        trace_id,
+                    )
+                    .await?;
+                    // declare 後に親が削除/変更され得るため、生存フォルダであることを再確認する。
+                    self.ensure_folder(ctx, p).await?;
+                }
+                None => {
+                    self.require(
+                        ctx,
+                        Relation::Member,
+                        &FgaObject::organization(&ctx.org),
+                        "file.upload.finalize",
+                        "organization",
+                        &ctx.org,
+                        trace_id,
+                    )
+                    .await?;
+                }
+            },
         }
 
         // TOCTOU 回避: staging はクライアントが presigned PUT で上書きでき得るため、
@@ -298,94 +372,141 @@ impl StorageService {
             }
         }
 
-        // メタ確定（blob upsert + node + FGA tuple + pending 削除 + 監査）を 1 txn 境界で行う。
-        // FGA tuple は **commit 前**に書き、parent 失敗・commit 失敗のどちらでも書けた tuple を
-        // revoke して DB/FGA の不整合（auth tuple 欠落・owner 残留）を残さない。
-        let tx_result: Result<Node, StorageError> = async {
-            let mut tx = self.db.begin().await?;
-            self.bump_blob(
-                &mut tx,
-                &ctx.org,
-                &actual_sha,
-                actual_size as i64,
-                &pending.content_type,
-                &final_key,
-            )
-            .await?;
-            let node = self
-                .create_file_node(
-                    &mut tx,
+        // メタ確定を 1 txn 境界で行う。内容更新（target あり）と新規作成（target なし）で分岐する。
+        let tx_result: Result<Node, StorageError> = match pending.target_node_id {
+            Some(target) => {
+                self.finalize_content_update(
                     ctx,
-                    pending.parent_id,
-                    &pending.name,
+                    target,
+                    upload_id,
                     &actual_sha,
                     actual_size as i64,
                     &pending.content_type,
-                )
-                .await?;
-            let file_obj = FgaObject::file(&node.id.to_string());
-            // owner tuple（失敗時は tx を drop でロールバック＝何も残らない）。
-            self.authz
-                .write_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                .await
-                .map_err(StorageError::Authz)?;
-            // parent tuple（folder 配下のみ）。失敗時は owner を revoke してロールバック。
-            if let Some(p) = pending.parent_id {
-                if let Err(e) = self
-                    .authz
-                    .write_tuple(
-                        &Subject::object(&FgaObject::folder(&p.to_string())),
-                        Relation::Parent,
-                        &file_obj,
-                    )
-                    .await
-                {
-                    let _ = self
-                        .authz
-                        .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                        .await;
-                    return Err(StorageError::Authz(e));
-                }
-            }
-            sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
-                .bind(upload_id)
-                .execute(&mut *tx)
-                .await?;
-            audit::record_on(
-                &mut tx,
-                ctx,
-                AuditEntry {
-                    action: "file.upload.finalize",
-                    object_type: "file",
-                    object_id: &node.id.to_string(),
-                    decision: Decision::Allow,
+                    &final_key,
                     trace_id,
-                    metadata: json!({ "sha256": actual_sha, "size": actual_size }),
-                },
-                Chain::Yes,
-            )
-            .await?;
-            // commit 失敗時は書いた owner/parent tuple を revoke して FGA を作成前へ戻す。
-            if let Err(e) = tx.commit().await {
-                let _ = self
-                    .authz
-                    .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                    .await;
-                if let Some(p) = pending.parent_id {
-                    let _ = self
-                        .authz
-                        .delete_tuple(
-                            &Subject::object(&FgaObject::folder(&p.to_string())),
-                            Relation::Parent,
-                            &file_obj,
-                        )
-                        .await;
-                }
-                return Err(StorageError::from(e));
+                )
+                .await
             }
-            Ok(node)
-        }
-        .await;
+            // 新規作成: blob upsert + node + FGA tuple + 版記録 + イベント + pending 削除 + 監査。
+            // FGA tuple は **commit 前**に書き、parent 失敗・commit 失敗のどちらでも書けた tuple を
+            // revoke して DB/FGA の不整合（auth tuple 欠落・owner 残留）を残さない。
+            None => {
+                async {
+                    let mut tx = self.db.begin().await?;
+                    self.bump_blob(
+                        &mut tx,
+                        &ctx.org,
+                        &actual_sha,
+                        actual_size as i64,
+                        &pending.content_type,
+                        &final_key,
+                    )
+                    .await?;
+                    let node = self
+                        .create_file_node(
+                            &mut tx,
+                            ctx,
+                            pending.parent_id,
+                            &pending.name,
+                            &actual_sha,
+                            actual_size as i64,
+                            &pending.content_type,
+                        )
+                        .await?;
+                    // 初版（version 1）を履歴に記録する（content-addressing で同一内容は blob 共有）。
+                    self.record_version(
+                        &mut tx,
+                        ctx,
+                        node.id,
+                        node.version,
+                        &actual_sha,
+                        actual_size as i64,
+                        &pending.content_type,
+                    )
+                    .await?;
+                    let file_obj = FgaObject::file(&node.id.to_string());
+                    // owner tuple（失敗時は tx を drop でロールバック＝何も残らない）。
+                    self.authz
+                        .write_tuple(&ctx.subject(), Relation::Owner, &file_obj)
+                        .await
+                        .map_err(StorageError::Authz)?;
+                    // parent tuple（folder 配下のみ）。失敗時は owner を revoke してロールバック。
+                    if let Some(p) = pending.parent_id {
+                        if let Err(e) = self
+                            .authz
+                            .write_tuple(
+                                &Subject::object(&FgaObject::folder(&p.to_string())),
+                                Relation::Parent,
+                                &file_obj,
+                            )
+                            .await
+                        {
+                            let _ = self
+                                .authz
+                                .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
+                                .await;
+                            return Err(StorageError::Authz(e));
+                        }
+                    }
+                    sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
+                        .bind(upload_id)
+                        .execute(&mut *tx)
+                        .await?;
+                    audit::record_on(
+                        &mut tx,
+                        ctx,
+                        AuditEntry {
+                            action: "file.upload.finalize",
+                            object_type: "file",
+                            object_id: &node.id.to_string(),
+                            decision: Decision::Allow,
+                            trace_id,
+                            metadata: json!({ "sha256": actual_sha, "size": actual_size }),
+                        },
+                        Chain::Yes,
+                    )
+                    .await?;
+                    // 書込イベント（後段 RAG 増分索引のトリガ）を同一 txn で発行する（Task 1.8）。
+                    event::emit_on(
+                        &mut tx,
+                        ctx,
+                        WriteEvent {
+                            node_id: node.id,
+                            version: node.version,
+                            op: WriteOp::Create,
+                            payload: json!({
+                                "kind": "file",
+                                "blob_sha256": actual_sha,
+                                "size": actual_size,
+                                "parent_id": pending.parent_id.map(|p| p.to_string()),
+                            }),
+                        },
+                        trace_id,
+                    )
+                    .await?;
+                    // commit 失敗時は書いた owner/parent tuple を revoke して FGA を作成前へ戻す。
+                    if let Err(e) = tx.commit().await {
+                        let _ = self
+                            .authz
+                            .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
+                            .await;
+                        if let Some(p) = pending.parent_id {
+                            let _ = self
+                                .authz
+                                .delete_tuple(
+                                    &Subject::object(&FgaObject::folder(&p.to_string())),
+                                    Relation::Parent,
+                                    &file_obj,
+                                )
+                                .await;
+                        }
+                        return Err(StorageError::from(e));
+                    }
+                    Ok(node)
+                }
+                .await
+            }
+        };
 
         let node = match tx_result {
             Ok(node) => node,
@@ -736,6 +857,29 @@ impl StorageService {
             Chain::Yes,
         )
         .await?;
+        // 書込イベント（Task 1.8）。move は authz_tags 再評価、rename はメタ更新を後段に伝える。
+        event::emit_on(
+            &mut tx,
+            ctx,
+            WriteEvent {
+                node_id,
+                version: row.version,
+                op: if parent_changed {
+                    WriteOp::Move
+                } else {
+                    WriteOp::Rename
+                },
+                payload: json!({
+                    "kind": expect.as_str(),
+                    "renamed": new_name.is_some(),
+                    "moved": parent_changed,
+                    "old_parent": old_parent.map(|p| p.to_string()),
+                    "new_parent": final_parent.map(|p| p.to_string()),
+                }),
+            },
+            trace_id,
+        )
+        .await?;
         // FGA parent タプルは過剰権限を生まない順序で更新する（DB と FGA は 2PC できないため、
         // どの失敗点でも fail-safe へ倒し、かつ**冪等な再試行で収束**できるようにする）:
         //   1. 旧親の剥奪は **コミット前**（剥奪失敗ならロールバック＝旧親経由の継続アクセスを残さない）。
@@ -998,6 +1142,23 @@ impl StorageService {
                     metadata: json!({ "parent_id": parent_id.map(|p| p.to_string()) }),
                 },
                 Chain::Yes,
+            )
+            .await?;
+            // 書込イベント（Task 1.8）。フォルダ作成は索引対象外だが、move/authz 再評価の
+            // 将来配線のため経路を統一する（1 行で安価）。
+            event::emit_on(
+                &mut tx,
+                ctx,
+                WriteEvent {
+                    node_id: folder_id,
+                    version: row.version,
+                    op: WriteOp::Create,
+                    payload: json!({
+                        "kind": "folder",
+                        "parent_id": parent_id.map(|p| p.to_string()),
+                    }),
+                },
+                trace_id,
             )
             .await?;
             if let Err(e) = tx.commit().await {
@@ -1287,6 +1448,23 @@ impl StorageService {
             Chain::Yes,
         )
         .await?;
+        // 書込イベント（Task 1.8）。サブツリーは 1 操作 1 イベントに留め、購読側が node_closure
+        // （soft-delete でも残る）で配下ファイルを展開して索引を除去する。
+        event::emit_on(
+            &mut tx,
+            ctx,
+            WriteEvent {
+                node_id: folder_id,
+                version: node.version,
+                op: WriteOp::Delete,
+                payload: json!({
+                    "kind": "folder",
+                    "subtree_count": affected.rows_affected(),
+                }),
+            },
+            trace_id,
+        )
+        .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1341,6 +1519,19 @@ impl StorageService {
                 metadata: json!({}),
             },
             Chain::Yes,
+        )
+        .await?;
+        // 書込イベント（Task 1.8）。購読側はベクタ/全文/メタを除去する。
+        event::emit_on(
+            &mut tx,
+            ctx,
+            WriteEvent {
+                node_id: file_id,
+                version: node.version,
+                op: WriteOp::Delete,
+                payload: json!({ "kind": "file" }),
+            },
+            trace_id,
         )
         .await?;
         tx.commit().await?;
@@ -1413,8 +1604,252 @@ impl StorageService {
             Chain::Yes,
         )
         .await?;
+        // 書込イベント（Task 1.8）。削除で除去した索引を購読側が再構築する。
+        event::emit_on(
+            &mut tx,
+            ctx,
+            WriteEvent {
+                node_id: file_id,
+                version: row.version,
+                op: WriteOp::Restore,
+                payload: json!({ "kind": "file", "blob_sha256": row.blob_sha256 }),
+            },
+            trace_id,
+        )
+        .await?;
         tx.commit().await?;
         row_to_node(row)
+    }
+
+    // --- バージョニング（Task 1.7） ---
+
+    /// ファイルの版履歴を新しい順に返す（viewer 権限）。
+    ///
+    /// 内容を持つ版（初版アップロード / 内容更新 / 版復元）だけが並ぶ。同一内容の版は
+    /// `blob_sha256` を共有する（content-addressing）。
+    pub async fn list_versions(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<Vec<FileVersion>, StorageError> {
+        let node = self.load_node(ctx, file_id, false).await?;
+        if node.kind != NodeKind::File {
+            return Err(StorageError::NotFound);
+        }
+        self.require_read(
+            ctx,
+            &FgaObject::file(&file_id.to_string()),
+            "file.versions.list",
+            "file",
+            &file_id.to_string(),
+            trace_id,
+        )
+        .await?;
+        let rows: Vec<VersionRow> = sqlx::query_as(
+            "SELECT version, blob_sha256, size_bytes, content_type, author, created_at \
+             FROM node_version \
+             WHERE node_id = $1 AND org = $2 AND tenant_id = $3 \
+             ORDER BY version DESC",
+        )
+        .bind(file_id)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .fetch_all(&self.db)
+        .await?;
+        self.audit
+            .record(
+                ctx,
+                AuditEntry {
+                    action: "file.versions.list",
+                    object_type: "file",
+                    object_id: &file_id.to_string(),
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: json!({ "count": rows.len() }),
+                },
+            )
+            .await?;
+        Ok(rows.into_iter().map(VersionRow::into_model).collect())
+    }
+
+    /// 特定版の presigned ダウンロード URL を発行する（viewer 権限・短 TTL）。
+    pub async fn issue_version_download_url(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        version: i64,
+        trace_id: Option<&str>,
+    ) -> Result<DownloadTicket, StorageError> {
+        let node = self.load_node(ctx, file_id, false).await?;
+        if node.kind != NodeKind::File {
+            return Err(StorageError::NotFound);
+        }
+        self.require_read(
+            ctx,
+            &FgaObject::file(&file_id.to_string()),
+            "file.version.download_url.issue",
+            "file",
+            &file_id.to_string(),
+            trace_id,
+        )
+        .await?;
+        // 対象版の blob を解決する（無い版番号は存在秘匿の NotFound）。
+        let version_row: Option<(String, String)> = sqlx::query_as(
+            "SELECT blob_sha256, content_type FROM node_version \
+             WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version = $4",
+        )
+        .bind(file_id)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(version)
+        .fetch_optional(&self.db)
+        .await?;
+        let (sha, content_type) = version_row.ok_or(StorageError::NotFound)?;
+        let key = blob_object_key(&ctx.org, &sha);
+        let url = self
+            .store
+            .presign_get(
+                &key,
+                self.presign_get_ttl,
+                Some(&node.name),
+                Some(&content_type),
+            )
+            .await?;
+        self.audit
+            .record(
+                ctx,
+                AuditEntry {
+                    action: "file.version.download_url.issue",
+                    object_type: "file",
+                    object_id: &file_id.to_string(),
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: json!({ "version": version, "ttl_secs": self.presign_get_ttl.as_secs() }),
+                },
+            )
+            .await?;
+        Ok(DownloadTicket {
+            url,
+            expires_in_secs: self.presign_get_ttl.as_secs(),
+        })
+    }
+
+    /// 過去版を**新しい版として**復元する（editor 権限）。
+    ///
+    /// 復元は履歴を巻き戻さず、対象版の blob を指す新版（version+1）を追記する
+    /// （AC: 復元が新しい版として記録される・履歴を壊さない）。content-addressing により
+    /// 実体はコピーされず blob を共有する（refcount +1）。
+    pub async fn restore_version(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        version: i64,
+        trace_id: Option<&str>,
+    ) -> Result<Node, StorageError> {
+        let node = self.load_node(ctx, file_id, false).await?;
+        if node.kind != NodeKind::File {
+            return Err(StorageError::NotFound);
+        }
+        self.require(
+            ctx,
+            Relation::Editor,
+            &FgaObject::file(&file_id.to_string()),
+            "file.version.restore",
+            "file",
+            &file_id.to_string(),
+            trace_id,
+        )
+        .await?;
+
+        let mut tx = self.db.begin().await?;
+        // 対象ファイルを行ロックして並行更新と直列化する。
+        sqlx::query(
+            "SELECT id FROM node \
+             WHERE id = $1 AND org = $2 AND tenant_id = $3 AND kind = 'file' AND deleted_at IS NULL \
+             FOR UPDATE",
+        )
+        .bind(file_id)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(StorageError::NotFound)?;
+        // 復元元の版の内容（blob/size/content_type）を取得する。
+        let src: Option<(String, i64, String)> = sqlx::query_as(
+            "SELECT blob_sha256, size_bytes, content_type FROM node_version \
+             WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version = $4",
+        )
+        .bind(file_id)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(version)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (sha, size, content_type) = src.ok_or(StorageError::NotFound)?;
+        // 復元先の blob を refcount +1（新版が参照するため）。実体はオブジェクトストアに既存。
+        let final_key = blob_object_key(&ctx.org, &sha);
+        self.bump_blob(&mut tx, &ctx.org, &sha, size, &content_type, &final_key)
+            .await?;
+        let sql = format!(
+            "UPDATE node \
+             SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = version + 1, updated_at = now() \
+             WHERE id = $4 AND org = $5 AND tenant_id = $6 AND kind = 'file' AND deleted_at IS NULL \
+             RETURNING {NODE_COLS}"
+        );
+        let row: NodeRow = sqlx::query_as(&sql)
+            .bind(&sha)
+            .bind(size)
+            .bind(&content_type)
+            .bind(file_id)
+            .bind(&ctx.org)
+            .bind(&ctx.tenant_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(StorageError::NotFound)?;
+        let restored = row_to_node(row)?;
+        self.record_version(
+            &mut tx,
+            ctx,
+            restored.id,
+            restored.version,
+            &sha,
+            size,
+            &content_type,
+        )
+        .await?;
+        audit::record_on(
+            &mut tx,
+            ctx,
+            AuditEntry {
+                action: "file.version.restore",
+                object_type: "file",
+                object_id: &file_id.to_string(),
+                decision: Decision::Allow,
+                trace_id,
+                metadata: json!({ "restored_from_version": version, "new_version": restored.version }),
+            },
+            Chain::Yes,
+        )
+        .await?;
+        event::emit_on(
+            &mut tx,
+            ctx,
+            WriteEvent {
+                node_id: file_id,
+                version: restored.version,
+                op: WriteOp::Restore,
+                payload: json!({
+                    "kind": "file",
+                    "blob_sha256": sha,
+                    "restored_from_version": version,
+                }),
+            },
+            trace_id,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(restored)
     }
 
     // --- 共有（ReBAC: Task 1.6） ---
@@ -1820,6 +2255,124 @@ impl StorageService {
         .execute(&mut *conn)
         .await?;
         row_to_node(row)
+    }
+
+    /// 内容版を履歴（node_version）に 1 行記録する（同一 txn 内で呼ぶ・Task 1.7）。
+    ///
+    /// refcount = node_version 行数の規律のため、呼び出し側は版作成ごとに [`bump_blob`] を
+    /// **1 回だけ**実行し、ここでは追加 bump しない（node.blob_sha256 は現在版への非正規化ポインタ）。
+    ///
+    /// [`bump_blob`]: Self::bump_blob
+    #[allow(clippy::too_many_arguments)] // 版メタ一式は凝集した 1 操作の引数。
+    async fn record_version(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &AuthContext,
+        node_id: Uuid,
+        version: i64,
+        sha256: &str,
+        size: i64,
+        content_type: &str,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO node_version \
+             (node_id, version, org, tenant_id, blob_sha256, size_bytes, content_type, author) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(node_id)
+        .bind(version)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(sha256)
+        .bind(size)
+        .bind(content_type)
+        .bind(&ctx.principal.id)
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+
+    /// 既存ファイルの内容を新版へ差し替える（finalize の内容更新経路・Task 1.7）。
+    ///
+    /// blob を bump（refcount +1）→ 対象ファイルを行ロックしつつ blob/size/content_type と
+    /// version を更新 → 新版を履歴に記録 → 書込イベント（op=update）→ 監査 を 1 txn で原子的に
+    /// 確定する。owner/parent タプルは既存ファイルのものを流用するため触らない。古い版の blob は
+    /// 減算しない（履歴＝安全網のため download/restore 可能に保つ・LbvQZ と対称）。
+    #[allow(clippy::too_many_arguments)] // finalize から確定済みのメタ一式を受け取る。
+    async fn finalize_content_update(
+        &self,
+        ctx: &AuthContext,
+        target: Uuid,
+        upload_id: Uuid,
+        sha256: &str,
+        size: i64,
+        content_type: &str,
+        final_key: &str,
+        trace_id: Option<&str>,
+    ) -> Result<Node, StorageError> {
+        let mut tx = self.db.begin().await?;
+        self.bump_blob(&mut tx, &ctx.org, sha256, size, content_type, final_key)
+            .await?;
+        // UPDATE は対象行をロックするため、並行内容更新の lost-update を防げる。
+        let sql = format!(
+            "UPDATE node \
+             SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = version + 1, updated_at = now() \
+             WHERE id = $4 AND org = $5 AND tenant_id = $6 AND kind = 'file' AND deleted_at IS NULL \
+             RETURNING {NODE_COLS}"
+        );
+        let row: NodeRow = sqlx::query_as(&sql)
+            .bind(sha256)
+            .bind(size)
+            .bind(content_type)
+            .bind(target)
+            .bind(&ctx.org)
+            .bind(&ctx.tenant_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(StorageError::NotFound)?;
+        let node = row_to_node(row)?;
+        self.record_version(
+            &mut tx,
+            ctx,
+            node.id,
+            node.version,
+            sha256,
+            size,
+            content_type,
+        )
+        .await?;
+        sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
+            .bind(upload_id)
+            .execute(&mut *tx)
+            .await?;
+        audit::record_on(
+            &mut tx,
+            ctx,
+            AuditEntry {
+                action: "file.content.update",
+                object_type: "file",
+                object_id: &node.id.to_string(),
+                decision: Decision::Allow,
+                trace_id,
+                metadata: json!({ "sha256": sha256, "size": size, "version": node.version }),
+            },
+            Chain::Yes,
+        )
+        .await?;
+        event::emit_on(
+            &mut tx,
+            ctx,
+            WriteEvent {
+                node_id: node.id,
+                version: node.version,
+                op: WriteOp::Update,
+                payload: json!({ "kind": "file", "blob_sha256": sha256, "size": size }),
+            },
+            trace_id,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(node)
     }
 
     /// org + tenant スコープでノードを 1 件読む。

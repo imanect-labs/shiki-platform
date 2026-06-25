@@ -130,6 +130,7 @@ async fn upload(
             &sha,
             content.len() as i64,
             None,
+            None,
         )
         .await?;
     let resp = http
@@ -140,6 +141,58 @@ async fn upload(
         .expect("presigned PUT");
     assert!(resp.status().is_success(), "PUT status: {}", resp.status());
     service.finalize_upload(ctx, ticket.upload_id, None).await
+}
+
+/// 既存ファイルの内容を新版にアップロードする（target_node_id 経由）。
+async fn upload_new_version(
+    service: &StorageService,
+    http: &reqwest::Client,
+    ctx: &AuthContext,
+    target: Uuid,
+    content: &[u8],
+) -> Result<Node, StorageError> {
+    let sha = sha256_hex(content);
+    let ticket = service
+        .begin_upload(
+            ctx,
+            None,
+            "",
+            "text/plain",
+            &sha,
+            content.len() as i64,
+            Some(target),
+            None,
+        )
+        .await?;
+    let resp = http
+        .put(&ticket.upload_url)
+        .body(content.to_vec())
+        .send()
+        .await
+        .expect("presigned PUT");
+    assert!(resp.status().is_success(), "PUT status: {}", resp.status());
+    service.finalize_upload(ctx, ticket.upload_id, None).await
+}
+
+/// node_version の行数（版履歴の件数）。
+async fn node_version_count(pool: &PgPool, node_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM node_version WHERE node_id = $1")
+        .bind(node_id)
+        .fetch_one(pool)
+        .await
+        .expect("node_version count")
+}
+
+/// 指定ノード・op の outbox イベント件数。
+async fn outbox_count(pool: &PgPool, node_id: Uuid, op: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM storage_event_outbox WHERE node_id = $1 AND op = $2",
+    )
+    .bind(node_id)
+    .bind(op)
+    .fetch_one(pool)
+    .await
+    .expect("outbox count")
 }
 
 /// org メンバーとして seed する（ルート作成の認可に必要）。
@@ -301,6 +354,7 @@ async fn storage_end_to_end() {
                 &sha,
                 size + 100,
                 None,
+                None,
             )
             .await
             .expect("begin_upload wrong size");
@@ -340,6 +394,7 @@ async fn storage_end_to_end() {
                 "text/plain",
                 &other_sha,
                 other.len() as i64,
+                None,
                 None,
             )
             .await
@@ -392,6 +447,7 @@ async fn storage_end_to_end() {
                 "application/octet-stream",
                 &sha256_hex(b"x"),
                 6 * 1024 * 1024 * 1024,
+                None,
                 None,
             )
             .await;
@@ -491,6 +547,7 @@ async fn storage_end_to_end() {
             "text/plain",
             &sha,
             size,
+            None,
             Some("trace-deny"),
         )
         .await;
@@ -837,4 +894,222 @@ async fn sharing_end_to_end() {
     // owner でない bob は共有管理（list_shares）できない（存在秘匿でなく Forbidden）。
     let denied = service.list_shares(&bctx, file.id, None).await;
     assert!(matches!(denied, Err(StorageError::Forbidden)), "{denied:?}");
+}
+
+#[tokio::test]
+async fn versioning_end_to_end() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let alice = format!("ituser{}", Uuid::new_v4().simple());
+    seed_org_member(&authz, &org, &alice).await;
+    let actx = make_ctx(&org, &alice);
+
+    // 初版アップロード（version 1・履歴 1 件）。
+    let v1_bytes = b"version one contents";
+    let sha_v1 = sha256_hex(v1_bytes);
+    let file = upload(&service, &http, &actx, None, "doc.txt", v1_bytes)
+        .await
+        .expect("upload v1");
+    assert_eq!(file.version, 1);
+    assert_eq!(node_version_count(&pool, file.id).await, 1);
+    assert_eq!(blob_refcount(&pool, &org, &sha_v1).await, 1);
+
+    // 内容更新（version 2・履歴 2 件・新 blob）。
+    let v2_bytes = b"version two has different contents";
+    let sha_v2 = sha256_hex(v2_bytes);
+    let updated = upload_new_version(&service, &http, &actx, file.id, v2_bytes)
+        .await
+        .expect("upload v2");
+    assert_eq!(updated.version, 2);
+    assert_eq!(updated.blob_sha256.as_deref(), Some(sha_v2.as_str()));
+    assert_eq!(node_version_count(&pool, file.id).await, 2);
+    // 旧版の blob は減らさない（履歴＝安全網のため download/restore 可能）。
+    assert_eq!(blob_refcount(&pool, &org, &sha_v1).await, 1);
+    assert_eq!(blob_refcount(&pool, &org, &sha_v2).await, 1);
+
+    // 履歴一覧は新しい順（v2, v1）。
+    let history = service
+        .list_versions(&actx, file.id, None)
+        .await
+        .expect("list versions");
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].version, 2);
+    assert_eq!(history[1].version, 1);
+    assert_eq!(history[1].blob_sha256, sha_v1);
+
+    // 特定版の DL URL が各版の実体を返す。
+    let url_v1 = service
+        .issue_version_download_url(&actx, file.id, 1, None)
+        .await
+        .expect("v1 url");
+    let got_v1 = http
+        .get(&url_v1.url)
+        .send()
+        .await
+        .expect("GET v1")
+        .bytes()
+        .await
+        .expect("v1 bytes");
+    assert_eq!(got_v1.as_ref(), v1_bytes);
+    let url_v2 = service
+        .issue_version_download_url(&actx, file.id, 2, None)
+        .await
+        .expect("v2 url");
+    let got_v2 = http
+        .get(&url_v2.url)
+        .send()
+        .await
+        .expect("GET v2")
+        .bytes()
+        .await
+        .expect("v2 bytes");
+    assert_eq!(got_v2.as_ref(), v2_bytes);
+
+    // v1 を復元 → 新版 v3（履歴を壊さず追記・blob は v1 を共有）。
+    let restored = service
+        .restore_version(&actx, file.id, 1, None)
+        .await
+        .expect("restore v1");
+    assert_eq!(restored.version, 3);
+    assert_eq!(restored.blob_sha256.as_deref(), Some(sha_v1.as_str()));
+    assert_eq!(node_version_count(&pool, file.id).await, 3);
+    // v1 の blob は v1 行 + v3 行で参照され refcount=2。
+    assert_eq!(blob_refcount(&pool, &org, &sha_v1).await, 2);
+    // 履歴は v1/v2 とも残存（壊れない）。
+    let history2 = service
+        .list_versions(&actx, file.id, None)
+        .await
+        .expect("list versions 2");
+    let versions: Vec<i64> = history2.iter().map(|v| v.version).collect();
+    assert_eq!(versions, vec![3, 2, 1]);
+
+    // 書込イベントが各操作で発行されている。
+    assert_eq!(outbox_count(&pool, file.id, "create").await, 1);
+    assert_eq!(outbox_count(&pool, file.id, "update").await, 1);
+    assert_eq!(outbox_count(&pool, file.id, "restore").await, 1);
+}
+
+#[tokio::test]
+async fn outbox_end_to_end() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let alice = format!("ituser{}", Uuid::new_v4().simple());
+    seed_org_member(&authz, &org, &alice).await;
+    let actx = make_ctx(&org, &alice);
+
+    // create → update（内容）→ rename → move → delete → restore を順に実行する。
+    let file = upload(&service, &http, &actx, None, "evt.txt", b"first")
+        .await
+        .expect("create");
+    upload_new_version(&service, &http, &actx, file.id, b"second updated")
+        .await
+        .expect("content update");
+    service
+        .rename_file(&actx, file.id, "evt-renamed.txt", None)
+        .await
+        .expect("rename");
+    let folder = service
+        .create_folder(&actx, None, "evtfolder", None)
+        .await
+        .expect("folder");
+    service
+        .move_file(&actx, file.id, Some(folder.id), None)
+        .await
+        .expect("move");
+    service
+        .soft_delete_file(&actx, file.id, None)
+        .await
+        .expect("delete");
+    let restored = service
+        .restore_file(&actx, file.id, None)
+        .await
+        .expect("restore");
+
+    // 各操作が書込と同一 txn で outbox に入っている（op ごとに 1 件）。
+    assert_eq!(outbox_count(&pool, file.id, "create").await, 1);
+    assert_eq!(outbox_count(&pool, file.id, "update").await, 1);
+    assert_eq!(outbox_count(&pool, file.id, "rename").await, 1);
+    assert_eq!(outbox_count(&pool, file.id, "move").await, 1);
+    assert_eq!(outbox_count(&pool, file.id, "delete").await, 1);
+    assert_eq!(outbox_count(&pool, file.id, "restore").await, 1);
+
+    // フィールドの一例を検証（restore イベントは最新版を指す）。
+    let (ev_org, ev_tenant, ev_actor, ev_version): (String, String, String, i64) =
+        sqlx::query_as(
+            "SELECT org, tenant_id, actor, version FROM storage_event_outbox \
+             WHERE node_id = $1 AND op = 'restore'",
+        )
+        .bind(file.id)
+        .fetch_one(&pool)
+        .await
+        .expect("restore event");
+    assert_eq!(ev_org, org);
+    assert_eq!(ev_tenant, "default");
+    assert_eq!(ev_actor, alice);
+    assert_eq!(ev_version, restored.version);
+
+    // 本ノードの未処理イベント id を集める。
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM storage_event_outbox WHERE node_id = $1 AND processed_at IS NULL ORDER BY id",
+    )
+    .bind(file.id)
+    .fetch_all(&pool)
+    .await
+    .expect("ids");
+    assert_eq!(ids.len(), 6, "create/update/rename/move/delete/restore");
+
+    // at-least-once: claim 後に commit せず rollback すると未処理のまま再配信される。
+    {
+        let mut tx = pool.begin().await.expect("tx1");
+        let claimed = storage::event::claim(&mut tx, 10_000)
+            .await
+            .expect("claim");
+        let claimed_ids: std::collections::HashSet<i64> =
+            claimed.iter().map(|e| e.id).collect();
+        assert!(
+            ids.iter().all(|id| claimed_ids.contains(id)),
+            "claim が本ノードのイベントを返す"
+        );
+        // commit しない（drop でロールバック）。
+    }
+    let still_unprocessed: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM storage_event_outbox WHERE node_id = $1 AND processed_at IS NULL",
+    )
+    .bind(file.id)
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    assert_eq!(still_unprocessed, 6, "rollback で未処理のまま");
+
+    // claim → mark_processed → commit で ack され、以後は未処理に出ない。
+    {
+        let mut tx = pool.begin().await.expect("tx2");
+        let _ = storage::event::claim(&mut tx, 10_000).await.expect("claim2");
+        storage::event::mark_processed(&mut tx, &ids)
+            .await
+            .expect("ack");
+        tx.commit().await.expect("commit");
+    }
+    let after_ack: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM storage_event_outbox WHERE node_id = $1 AND processed_at IS NULL",
+    )
+    .bind(file.id)
+    .fetch_one(&pool)
+    .await
+    .expect("count2");
+    assert_eq!(after_ack, 0, "ack 後は未処理ゼロ");
 }
