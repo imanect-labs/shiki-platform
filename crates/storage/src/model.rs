@@ -56,6 +56,8 @@ pub struct Node {
 /// 履歴に並ぶ（rename/move 等のメタ版は欠番になる）。同一内容の版は `blob_sha256` を共有する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileVersion {
+    /// テナント境界を上流（集約/キャッシュ）まで運ぶため day-1 から保持する（API 層で落とす）。
+    pub tenant_id: String,
     pub version: i64,
     pub blob_sha256: String,
     pub size_bytes: i64,

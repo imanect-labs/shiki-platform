@@ -1069,17 +1069,25 @@ async fn outbox_end_to_end() {
     .expect("ids");
     assert_eq!(ids.len(), 6, "create/update/rename/move/delete/restore");
 
+    // outbox は共有テーブルのため、判定は**本ノードにスコープ**して並行/残留イベントから隔離する。
+    // claim はグローバルに未処理を引くので、未飽和（取り切れた）時のみ包含を検証する。
+    const LIMIT: i64 = 10_000;
+
     // at-least-once: claim 後に commit せず rollback すると未処理のまま再配信される。
     {
         let mut tx = pool.begin().await.expect("tx1");
-        let claimed = storage::event::claim(&mut tx, 10_000).await.expect("claim");
-        let claimed_ids: std::collections::HashSet<i64> = claimed.iter().map(|e| e.id).collect();
-        assert!(
-            ids.iter().all(|id| claimed_ids.contains(id)),
-            "claim が本ノードのイベントを返す"
-        );
+        let claimed = storage::event::claim(&mut tx, LIMIT).await.expect("claim");
+        if claimed.len() < LIMIT as usize {
+            let claimed_ids: std::collections::HashSet<i64> =
+                claimed.iter().map(|e| e.id).collect();
+            assert!(
+                ids.iter().all(|id| claimed_ids.contains(id)),
+                "未飽和の claim は本ノードの未処理イベントを全て含む"
+            );
+        }
         // commit しない（drop でロールバック）。
     }
+    // 本ノードスコープの未処理件数は rollback で不変（再配信される）。
     let still_unprocessed: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM storage_event_outbox WHERE node_id = $1 AND processed_at IS NULL",
     )
@@ -1089,12 +1097,9 @@ async fn outbox_end_to_end() {
     .expect("count");
     assert_eq!(still_unprocessed, 6, "rollback で未処理のまま");
 
-    // claim → mark_processed → commit で ack され、以後は未処理に出ない。
+    // 本ノードの id を明示して mark_processed → commit で ack（claim 結果に依存しない）。
     {
         let mut tx = pool.begin().await.expect("tx2");
-        let _ = storage::event::claim(&mut tx, 10_000)
-            .await
-            .expect("claim2");
         storage::event::mark_processed(&mut tx, &ids)
             .await
             .expect("ack");
