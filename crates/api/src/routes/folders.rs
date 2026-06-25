@@ -38,11 +38,46 @@ pub struct UpdateFolderRequest {
     pub parent_id: Option<Option<Uuid>>,
 }
 
-/// 子一覧のクエリ（親・カーソル・件数）。
+/// 子一覧の並び替えキー（クエリ値）。keyset カーソルへサーバ側で織り込む。
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SortField {
+    #[default]
+    Name,
+    Updated,
+    Size,
+}
+
+impl SortField {
+    fn to_key(&self) -> storage::ChildSortKey {
+        match self {
+            SortField::Name => storage::ChildSortKey::Name,
+            SortField::Updated => storage::ChildSortKey::Updated,
+            SortField::Size => storage::ChildSortKey::Size,
+        }
+    }
+}
+
+/// 子一覧のクエリ（親・並び順・カーソル・件数）。
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ChildrenQuery {
     /// 親フォルダ。未指定は org ルート直下。
     pub parent_id: Option<Uuid>,
+    /// 並び替えキー（name|updated|size。既定 name）。
+    #[serde(default)]
+    pub sort: SortField,
+    /// 降順にするか（既定 false=昇順）。
+    #[serde(default)]
+    pub desc: bool,
+    /// 前回応答の `next_cursor`。続きから取得する（省略で先頭）。
+    pub cursor: Option<String>,
+    /// 1 ページの最大件数（1..=100。既定 50）。
+    pub limit: Option<usize>,
+}
+
+/// ゴミ箱一覧のクエリ（カーソル・件数）。
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct PageQuery {
     /// 前回応答の `next_cursor`。続きから取得する（省略で先頭）。
     pub cursor: Option<String>,
     /// 1 ページの最大件数（1..=100。既定 50）。
@@ -112,11 +147,16 @@ pub async fn list_children(
     trace: TraceIdExt,
     Query(q): Query<ChildrenQuery>,
 ) -> Result<Json<ChildrenResponse>, ApiError> {
+    let sort = storage::ChildSort {
+        key: q.sort.to_key(),
+        desc: q.desc,
+    };
     let page = state
         .storage
         .list_children(
             &ctx,
             q.parent_id,
+            sort,
             q.cursor.as_deref(),
             q.limit.unwrap_or(50),
             trace.as_deref(),
@@ -220,4 +260,65 @@ pub async fn delete_folder(
         .soft_delete_folder(&ctx, id, trace.as_deref())
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// ゴミ箱からのフォルダ復元（サブツリーを同時復元）。
+#[utoipa::path(
+    post,
+    path = "/folders/{id}/restore",
+    params(("id" = Uuid, Path, description = "フォルダ ID")),
+    responses(
+        (status = 200, description = "復元したフォルダ", body = NodeResponse),
+        (status = 400, description = "祖先が削除済みで復元不可"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "認可されていない"),
+        (status = 404, description = "フォルダが無い"),
+        (status = 409, description = "同名衝突"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn restore_folder(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<NodeResponse>, ApiError> {
+    let node = state
+        .storage
+        .restore_folder(&ctx, id, trace.as_deref())
+        .await?;
+    Ok(Json(node.into()))
+}
+
+/// ゴミ箱の中身（削除の根ノード）を新しい順に 1 ページ返す。
+#[utoipa::path(
+    get,
+    path = "/trash",
+    params(PageQuery),
+    responses(
+        (status = 200, description = "ゴミ箱の根ノード（復元できるもののみ）", body = ChildrenResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "認可されていない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn list_trash(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Query(q): Query<PageQuery>,
+) -> Result<Json<ChildrenResponse>, ApiError> {
+    let page = state
+        .storage
+        .list_trash(
+            &ctx,
+            q.cursor.as_deref(),
+            q.limit.unwrap_or(50),
+            trace.as_deref(),
+        )
+        .await?;
+    Ok(Json(ChildrenResponse {
+        items: page.items.into_iter().map(Into::into).collect(),
+        next_cursor: page.next_cursor,
+    }))
 }

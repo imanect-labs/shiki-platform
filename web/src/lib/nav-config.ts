@@ -32,7 +32,7 @@ export const DRIVE_CHILDREN: DriveChild[] = [
   { key: "recent", label: "最近使った", href: "/drive/recent", icon: Clock, backend: false },
   { key: "favorites", label: "お気に入り", href: "/drive/favorites", icon: Star, backend: false },
   { key: "shared", label: "共有済み", href: "/drive/shared", icon: Share2, backend: true },
-  { key: "trash", label: "ゴミ箱", href: "/drive/trash", icon: Trash2, backend: false },
+  { key: "trash", label: "ゴミ箱", href: "/drive/trash", icon: Trash2, backend: true },
 ];
 
 export const DRIVE_ICON: LucideIcon = FolderOpen;

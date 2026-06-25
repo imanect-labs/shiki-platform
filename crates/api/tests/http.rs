@@ -193,6 +193,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         Duration::from_secs(900),
         5 * 1024 * 1024 * 1024,
     ));
+    let directory = Arc::new(storage::DirectoryStore::new(db.clone()));
     AppState {
         config: Arc::new(config),
         db,
@@ -201,6 +202,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         sessions,
         http: reqwest::Client::new(),
         storage,
+        directory,
     }
 }
 

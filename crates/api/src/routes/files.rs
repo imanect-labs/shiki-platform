@@ -129,6 +129,14 @@ impl From<FileVersion> for FileVersionResponse {
     }
 }
 
+/// 版履歴の 1 ページ（新しい順・keyset ページング）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileVersionsResponse {
+    pub items: Vec<FileVersionResponse>,
+    /// 続きがあれば次回 `cursor` に渡す値（末尾なら `null`）。
+    pub next_cursor: Option<String>,
+}
+
 /// `null`（ルートへ移動）と省略（移動しない）を区別するための二重 Option デシリアライザ。
 pub fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
 where
@@ -349,13 +357,16 @@ pub async fn restore_file(
     Ok(Json(node.into()))
 }
 
-/// 版履歴を新しい順に返す（Task 1.7）。
+/// 版履歴を新しい順に 1 ページ返す（Task 1.7・keyset ページング）。
 #[utoipa::path(
     get,
     path = "/files/{id}/versions",
-    params(("id" = Uuid, Path, description = "ファイル ID")),
+    params(
+        ("id" = Uuid, Path, description = "ファイル ID"),
+        crate::routes::folders::PageQuery,
+    ),
     responses(
-        (status = 200, description = "版履歴（新しい順）", body = [FileVersionResponse]),
+        (status = 200, description = "版履歴（新しい順・1 ページ）", body = FileVersionsResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
         (status = 404, description = "ファイルが無い"),
@@ -367,12 +378,22 @@ pub async fn list_versions(
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<FileVersionResponse>>, ApiError> {
-    let versions = state
+    axum::extract::Query(q): axum::extract::Query<crate::routes::folders::PageQuery>,
+) -> Result<Json<FileVersionsResponse>, ApiError> {
+    let (versions, next_cursor) = state
         .storage
-        .list_versions(&ctx, id, trace.as_deref())
+        .list_versions(
+            &ctx,
+            id,
+            q.cursor.as_deref(),
+            q.limit.unwrap_or(50),
+            trace.as_deref(),
+        )
         .await?;
-    Ok(Json(versions.into_iter().map(Into::into).collect()))
+    Ok(Json(FileVersionsResponse {
+        items: versions.into_iter().map(Into::into).collect(),
+        next_cursor,
+    }))
 }
 
 /// 特定版の presigned ダウンロード URL を発行する（Task 1.7）。

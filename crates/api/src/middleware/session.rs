@@ -21,8 +21,8 @@ use crate::{
     extract::TenantId,
     middleware::claims,
     oidc,
-    routes::auth::{session_tenant_scope, CSRF_HEADER},
-    session::{SessionRecord, CSRF_COOKIE, SESSION_COOKIE},
+    routes::auth::CSRF_HEADER,
+    session::{decode_session_cookie, SessionRecord, CSRF_COOKIE, SESSION_COOKIE},
     state::AppState,
 };
 
@@ -35,17 +35,25 @@ pub async fn require_session(
     let jar = CookieJar::from_headers(req.headers());
     let session_cfg = &state.config.session;
 
-    let session_id = jar
+    // Cookie からテナントスコープ＋ session id を復元する（multi テナントの session 引きに必須）。
+    let cookie_value = jar
         .get(SESSION_COOKIE)
         .map(|c| c.value().to_string())
         .ok_or(ApiError::Unauthorized)?;
-    let tenant_id = session_tenant_scope(&state.config.auth)?;
+    let (session_id, tenant_id) =
+        decode_session_cookie(&cookie_value).ok_or(ApiError::Unauthorized)?;
+    let (session_id, tenant_id) = (session_id.to_string(), tenant_id.to_string());
 
     let mut record = state
         .sessions
         .get(&tenant_id, &session_id)
         .await?
         .ok_or(ApiError::Unauthorized)?;
+    // Cookie のテナントとレコードのテナントが食い違えば改竄として拒否（防御的・越境遮断）。
+    if record.tenant_id != tenant_id {
+        tracing::warn!("session cookie のテナントとレコードが不一致（改竄の疑い）");
+        return Err(ApiError::Unauthorized);
+    }
 
     // 状態変更系は double-submit CSRF を検証（ヘッダ == CSRF Cookie == session.csrf_token）。
     if is_state_changing(req.method()) {

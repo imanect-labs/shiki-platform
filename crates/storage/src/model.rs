@@ -97,6 +97,35 @@ pub struct ChildPage {
     pub next_cursor: Option<String>,
 }
 
+/// 子一覧の並び替えキー。keyset カーソルをこのキーに織り込み、サーバ側でソートする
+/// （クライアント側の全件ソートは採らない＝全件取得の禁止・無限スクロール）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildSortKey {
+    /// 名前（既定）。
+    Name,
+    /// 更新日時。
+    Updated,
+    /// サイズ（フォルダは 0 とみなす）。
+    Size,
+}
+
+/// 子一覧の並び順（キー＋方向）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChildSort {
+    pub key: ChildSortKey,
+    /// `true` で降順。
+    pub desc: bool,
+}
+
+impl Default for ChildSort {
+    fn default() -> Self {
+        Self {
+            key: ChildSortKey::Name,
+            desc: false,
+        }
+    }
+}
+
 /// パンくず 1 要素（祖先ノードの最小情報）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Crumb {

@@ -11,17 +11,19 @@
 
 pub mod audit;
 pub mod content_address;
+pub mod directory;
 pub mod error;
 pub mod event;
 pub mod model;
 pub mod object_store;
 pub mod service;
 
+pub use directory::{DirectoryPage, DirectoryStore, DirectoryUser, DEFAULT_SEARCH_LIMIT};
 pub use error::StorageError;
 pub use event::{OutboxEvent, WriteOp};
 pub use model::{
-    ChildPage, Crumb, DownloadTicket, FileVersion, Node, NodeKind, ShareEntry, ShareRole,
-    ShareTarget, UploadTicket,
+    ChildPage, ChildSort, ChildSortKey, Crumb, DownloadTicket, FileVersion, Node, NodeKind,
+    ShareEntry, ShareRole, ShareTarget, UploadTicket,
 };
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
 pub use service::StorageService;

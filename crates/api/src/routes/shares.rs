@@ -17,7 +17,6 @@ use uuid::Uuid;
 use crate::{
     error::ApiError,
     extract::{AuthContextExt, TraceIdExt},
-    routes::files::NodeResponse,
     state::AppState,
 };
 
@@ -113,12 +112,13 @@ pub async fn list_shares(
     Ok(Json(entries))
 }
 
-/// 自分に共有されたノード一覧（自分が作成したものを除く）。
+/// 自分に共有されたノード一覧（自分が作成したものを除く）。keyset ページング。
 #[utoipa::path(
     get,
     path = "/shares/shared-with-me",
+    params(crate::routes::folders::PageQuery),
     responses(
-        (status = 200, description = "共有されたノード一覧", body = [NodeResponse]),
+        (status = 200, description = "共有されたノード一覧（1 ページ）", body = crate::routes::folders::ChildrenResponse),
         (status = 401, description = "未認証"),
     ),
     security(("session" = [])),
@@ -127,10 +127,19 @@ pub async fn shared_with_me(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
-) -> Result<Json<Vec<NodeResponse>>, ApiError> {
-    let nodes = state
+    axum::extract::Query(q): axum::extract::Query<crate::routes::folders::PageQuery>,
+) -> Result<Json<crate::routes::folders::ChildrenResponse>, ApiError> {
+    let page = state
         .storage
-        .list_shared_with_me(&ctx, trace.as_deref())
+        .list_shared_with_me(
+            &ctx,
+            q.cursor.as_deref(),
+            q.limit.unwrap_or(50),
+            trace.as_deref(),
+        )
         .await?;
-    Ok(Json(nodes.into_iter().map(Into::into).collect()))
+    Ok(Json(crate::routes::folders::ChildrenResponse {
+        items: page.items.into_iter().map(Into::into).collect(),
+        next_cursor: page.next_cursor,
+    }))
 }

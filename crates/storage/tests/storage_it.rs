@@ -679,7 +679,7 @@ async fn folder_hierarchy_end_to_end() {
 
     // C は root の何も読めない（owner でも共有先でもない）→ 空ページ。
     let page_c = service
-        .list_children(&cctx, None, None, 50, None)
+        .list_children(&cctx, None, Default::default(), None, 50, None)
         .await
         .expect("C list root");
     assert!(page_c.items.is_empty(), "C は読めるルート子が無い");
@@ -696,7 +696,7 @@ async fn folder_hierarchy_end_to_end() {
         .await
         .expect("share folderA to C");
     let page_c2 = service
-        .list_children(&cctx, None, None, 50, None)
+        .list_children(&cctx, None, Default::default(), None, 50, None)
         .await
         .expect("C list root after share");
     let ids: Vec<Uuid> = page_c2.items.iter().map(|n| n.id).collect();
@@ -704,13 +704,20 @@ async fn folder_hierarchy_end_to_end() {
 
     // --- ページング（uid のルート子＝folderA/folderB を limit 1 で 2 ページ） ---
     let p1 = service
-        .list_children(&actx, None, None, 1, None)
+        .list_children(&actx, None, Default::default(), None, 1, None)
         .await
         .expect("page1");
     assert_eq!(p1.items.len(), 1, "1 ページ目は 1 件");
     assert!(p1.next_cursor.is_some(), "続きがある");
     let p2 = service
-        .list_children(&actx, None, p1.next_cursor.as_deref(), 1, None)
+        .list_children(
+            &actx,
+            None,
+            Default::default(),
+            p1.next_cursor.as_deref(),
+            1,
+            None,
+        )
         .await
         .expect("page2");
     assert_eq!(p2.items.len(), 1, "2 ページ目も 1 件");
@@ -853,20 +860,20 @@ async fn sharing_end_to_end() {
 
     // bob の「共有された一覧」に file が出る（自分が作成したものではない）。
     let inbox = service
-        .list_shared_with_me(&bctx, None)
+        .list_shared_with_me(&bctx, None, 50, None)
         .await
         .expect("shared with me");
     assert!(
-        inbox.iter().any(|n| n.id == file.id),
+        inbox.items.iter().any(|n| n.id == file.id),
         "共有された一覧に現れる"
     );
     // owner の「共有された一覧」には自作 file は出ない（作成者除外）。
     let owner_inbox = service
-        .list_shared_with_me(&octx, None)
+        .list_shared_with_me(&octx, None, 50, None)
         .await
         .expect("owner inbox");
     assert!(
-        !owner_inbox.iter().any(|n| n.id == file.id),
+        !owner_inbox.items.iter().any(|n| n.id == file.id),
         "作成者本人のファイルは共有された一覧に出ない"
     );
 
@@ -933,8 +940,8 @@ async fn versioning_end_to_end() {
     assert_eq!(blob_refcount(&pool, &org, &sha_v2).await, 1);
 
     // 履歴一覧は新しい順（v2, v1）。
-    let history = service
-        .list_versions(&actx, file.id, None)
+    let (history, _) = service
+        .list_versions(&actx, file.id, None, 50, None)
         .await
         .expect("list versions");
     assert_eq!(history.len(), 2);
@@ -981,8 +988,8 @@ async fn versioning_end_to_end() {
     // v1 の blob は v1 行 + v3 行で参照され refcount=2。
     assert_eq!(blob_refcount(&pool, &org, &sha_v1).await, 2);
     // 履歴は v1/v2 とも残存（壊れない）。
-    let history2 = service
-        .list_versions(&actx, file.id, None)
+    let (history2, _) = service
+        .list_versions(&actx, file.id, None, 50, None)
         .await
         .expect("list versions 2");
     let versions: Vec<i64> = history2.iter().map(|v| v.version).collect();

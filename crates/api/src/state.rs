@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use authz::AuthzClient;
 use sqlx::PgPool;
-use storage::StorageService;
+use storage::{DirectoryStore, StorageService};
 
 use crate::{config::AppConfig, middleware::JwksCache, session::SessionStore};
 
@@ -21,4 +21,6 @@ pub struct AppState {
     pub http: reqwest::Client,
     /// ストレージの単一チョークポイント（権限・監査・content-addressing）。
     pub storage: Arc<StorageService>,
+    /// ユーザーディレクトリ（共有相手検索。tenant_id スコープ）。
+    pub directory: Arc<DirectoryStore>,
 }

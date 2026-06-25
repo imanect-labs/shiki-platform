@@ -323,18 +323,22 @@ impl AppConfig {
         Ok(())
     }
 
-    /// テナンシーモードが現状サポートされているか（fail-closed）。
+    /// テナンシーモードが現状サポートされているか。
     ///
-    /// multi-tenant（SaaS）は OpenFGA の subject/object 識別子の tenant スコープ化
-    /// （roadmap SAAS.1）と host ベースの session tenant 解決が未実装。これらが無いまま
-    /// multi を許すと共用ストアでテナント越境が起こり得るため、起動時に拒否する。
+    /// multi-tenant（SaaS）の session tenant 解決は session Cookie へのテナントスコープ束ね
+    /// （`session::encode_session_cookie`）で単一ホストでも成立する。claim `tenant` 由来の
+    /// `tenant_id` で Postgres（storage/directory/audit/outbox）を分離する。
+    ///
+    /// ただし OpenFGA の subject/object 識別子の tenant 名前空間化（roadmap SAAS.1）は未了で、
+    /// authz ストアは共用のまま（ノード ID は UUID で衝突しないが、防御的多層化は SAAS.1 の責務）。
+    /// 本番クラウドでは host ベースの tenant ルーティング＋FGA 名前空間化を SAAS.1 で仕上げること。
     fn check_tenancy_supported(tenancy: Tenancy) -> Result<(), ConfigError> {
         if tenancy == Tenancy::Multi {
-            return Err(ConfigError::Invalid(
-                "auth.tenancy=multi は未対応です（SAAS.1 のテナントスコープ化が未実装。\
-                 テナント越境を防ぐため fail-closed で拒否します）"
-                    .into(),
-            ));
+            tracing::warn!(
+                "auth.tenancy=multi: Postgres レイヤで tenant_id 分離を強制します。\
+                 OpenFGA の tenant 名前空間化（SAAS.1）は未了のため、本番では host ルーティングと\
+                 FGA 名前空間化を仕上げること"
+            );
         }
         Ok(())
     }
@@ -360,9 +364,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn multi_tenancy_is_rejected_until_saas1() {
-        // multi は SAAS.1（識別子の tenant スコープ化）未実装のため起動時に拒否される。
-        assert!(AppConfig::check_tenancy_supported(Tenancy::Multi).is_err());
+    fn both_tenancy_modes_are_supported() {
+        // multi は session Cookie へのテナントスコープ束ね＋Postgres tenant_id 分離で起動可能。
+        // FGA 名前空間化（SAAS.1）は残課題だが起動はブロックしない。
+        assert!(AppConfig::check_tenancy_supported(Tenancy::Multi).is_ok());
         assert!(AppConfig::check_tenancy_supported(Tenancy::Single).is_ok());
     }
 
@@ -613,11 +618,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_multi_tenancy() {
-        // tenancy=multi は validate でも fail-closed に拒否される。
+    fn validate_accepts_multi_tenancy() {
+        // tenancy=multi は session Cookie スコープ束ね＋Postgres tenant_id 分離で起動可能。
         let mut cfg = valid_config();
         cfg.auth.tenancy = Tenancy::Multi;
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

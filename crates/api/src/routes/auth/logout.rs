@@ -6,10 +6,10 @@ use axum::{extract::State, http::HeaderMap, Json};
 use axum_extra::extract::cookie::CookieJar;
 use serde::Serialize;
 
-use super::{removal_cookie, session_tenant_scope, CSRF_HEADER};
+use super::{removal_cookie, CSRF_HEADER};
 use crate::{
     error::ApiError,
-    session::{CSRF_COOKIE, SESSION_COOKIE},
+    session::{decode_session_cookie, CSRF_COOKIE, SESSION_COOKIE},
     state::AppState,
 };
 
@@ -25,9 +25,10 @@ pub async fn logout(
     headers: HeaderMap,
     jar: CookieJar,
 ) -> Result<(CookieJar, Json<LogoutResponse>), ApiError> {
-    let tenant_id = session_tenant_scope(&state.config.auth)?;
-
-    let session_id = jar.get(SESSION_COOKIE).map(|c| c.value().to_string());
+    // テナントスコープ＋ session id は Cookie から復元する（multi テナント対応）。
+    let resolved = jar.get(SESSION_COOKIE).and_then(|c| {
+        decode_session_cookie(c.value()).map(|(s, t)| (s.to_string(), t.to_string()))
+    });
     let csrf_cookie = jar.get(CSRF_COOKIE).map(|c| c.value().to_string());
     let csrf_header = headers
         .get(CSRF_HEADER)
@@ -41,12 +42,12 @@ pub async fn logout(
     }
 
     // セッションが存在すれば、CSRF を session 値とも突合してから削除する。
-    if let Some(sid) = &session_id {
-        if let Some(record) = state.sessions.get(&tenant_id, sid).await? {
+    if let Some((session_id, tenant_id)) = &resolved {
+        if let Some(record) = state.sessions.get(tenant_id, session_id).await? {
             if csrf_header.as_deref() != Some(record.csrf_token.as_str()) {
                 return Err(ApiError::Forbidden);
             }
-            state.sessions.delete(&tenant_id, sid).await?;
+            state.sessions.delete(tenant_id, session_id).await?;
         }
     }
 

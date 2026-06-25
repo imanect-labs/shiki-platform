@@ -5,7 +5,8 @@
   "registrationAllowed": false,
   "accessTokenLifespan": 1800,
   "groups": [
-    { "name": "acme", "path": "/acme" }
+    { "name": "a-corp", "path": "/a-corp" },
+    { "name": "b-corp", "path": "/b-corp" }
   ],
   "clients": [
     {
@@ -17,7 +18,12 @@
       "secret": "shiki-web-dev-secret",
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://localhost:3000/*", "http://localhost:8080/*"],
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:8080/*",
+        "http://localhost:10067/*",
+        "http://shuya-dev:10067/*"
+      ],
       "webOrigins": ["+"],
       "rootUrl": "http://localhost:3000",
       "baseUrl": "http://localhost:3000",
@@ -61,6 +67,20 @@
             "id.token.claim": "true",
             "userinfo.token.claim": "true"
           }
+        },
+        {
+          "name": "tenant",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "tenant",
+            "claim.name": "tenant",
+            "jsonType.label": "String",
+            "multivalued": "false",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
         }
       ]
     },
@@ -95,13 +115,56 @@
       "username": "alice",
       "enabled": true,
       "emailVerified": true,
-      "email": "alice@acme.example",
+      "email": "alice@a-corp.example.com",
       "firstName": "Alice",
-      "lastName": "Example",
+      "lastName": "Acorp",
       "attributes": {
-        "roles": ["engineering", "sales-div"]
+        "roles": ["engineering", "sales-div"],
+        "tenant": ["a-corp"]
       },
-      "groups": ["/acme"],
+      "groups": ["/a-corp"],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "bob@a-corp.example.com",
+      "firstName": "Bob",
+      "lastName": "Acorp",
+      "attributes": {
+        "roles": ["engineering"],
+        "tenant": ["a-corp"]
+      },
+      "groups": ["/a-corp"],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000003",
+      "username": "charlie",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "charlie@b-corp.example.com",
+      "firstName": "Charlie",
+      "lastName": "Bcorp",
+      "attributes": {
+        "roles": ["engineering"],
+        "tenant": ["b-corp"]
+      },
+      "groups": ["/b-corp"],
       "credentials": [
         {
           "type": "password",

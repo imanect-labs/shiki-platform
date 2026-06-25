@@ -1,21 +1,20 @@
 import type { Metadata } from "next";
-import { FolderOpen } from "lucide-react";
+import { Suspense } from "react";
 
+import { DriveBrowser } from "@/components/drive/drive-browser";
+import { LoadingRow } from "@/components/drive/primitives";
 import { PageContainer } from "@/components/shell/page-container";
-import { EmptyState } from "@/components/ui/empty-state";
 
 export const metadata: Metadata = { title: "ドライブ" };
 
-/// ドライブのホーム枠。ファイルブラウザ本体は別 issue（#20 / Task 1.10）。
-/// 本シェルでは現在地と土台のみを提供する。
+/// ドライブのホーム。フォルダブラウズ／アップロード／共有／版履歴（#20 / Task 1.10）。
+/// `useSearchParams`（現在フォルダ）を含むため Suspense 境界で包む。
 export default function DriveHomePage() {
   return (
     <PageContainer title="ドライブ" description="ファイルとフォルダを管理します。">
-      <EmptyState
-        icon={FolderOpen}
-        title="ファイルブラウザは準備中です"
-        description="アップロード・閲覧・共有に対応したドライブ画面を近日追加します。"
-      />
+      <Suspense fallback={<LoadingRow />}>
+        <DriveBrowser />
+      </Suspense>
     </PageContainer>
   );
 }
