@@ -323,19 +323,40 @@ impl AppConfig {
         Ok(())
     }
 
-    /// テナンシーモードが現状サポートされているか。
+    /// multi テナンシーの dev/test opt-in（`SHIKI_DEV_ALLOW_MULTI_TENANT` が真値のときのみ true）。
+    /// dev_seed と同じく専用フラグでガードし、本番 env に紛れても fail-closed を保つ。
+    fn dev_multi_tenant_allowed() -> bool {
+        matches!(
+            std::env::var("SHIKI_DEV_ALLOW_MULTI_TENANT")
+                .ok()
+                .as_deref(),
+            Some("1") | Some("true") | Some("TRUE")
+        )
+    }
+
+    /// テナンシーモードが現状サポートされているか（**multi は明示 opt-in が無ければ fail-closed**）。
     ///
     /// multi-tenant（SaaS）の session tenant 解決は session Cookie へのテナントスコープ束ね
-    /// （`session::encode_session_cookie`）で単一ホストでも成立する。claim `tenant` 由来の
+    /// （`session::encode_session_cookie`）で単一ホストでも成立し、claim `tenant` 由来の
     /// `tenant_id` で Postgres（storage/directory/audit/outbox）を分離する。
     ///
-    /// ただし OpenFGA の subject/object 識別子の tenant 名前空間化（roadmap SAAS.1）は未了で、
-    /// authz ストアは共用のまま（ノード ID は UUID で衝突しないが、防御的多層化は SAAS.1 の責務）。
-    /// 本番クラウドでは host ベースの tenant ルーティング＋FGA 名前空間化を SAAS.1 で仕上げること。
+    /// **ただし OpenFGA の subject/object 識別子の tenant 名前空間化（roadmap SAAS.1）は未了**で、
+    /// authz ストアは共用のまま。これを「警告だけ」で本番起動させると、設定ミスで認可境界が
+    /// 未完成なまま multi が立ち上がり得る。そこで **dev/test 専用フラグ
+    /// `SHIKI_DEV_ALLOW_MULTI_TENANT=true` が明示された時のみ許可**し、無指定では拒否する
+    /// （本番は fail-closed）。本番クラウドは host ルーティング＋FGA 名前空間化を SAAS.1 で仕上げ、
+    /// その完了をもってこのガードを解除する。
     fn check_tenancy_supported(tenancy: Tenancy) -> Result<(), ConfigError> {
+        if tenancy == Tenancy::Multi && !Self::dev_multi_tenant_allowed() {
+            return Err(ConfigError::Invalid(
+                "auth.tenancy=multi は本番では未対応です（SAAS.1 の FGA テナント名前空間化が未了）。\
+                 dev/test で使う場合のみ SHIKI_DEV_ALLOW_MULTI_TENANT=true を明示してください"
+                    .into(),
+            ));
+        }
         if tenancy == Tenancy::Multi {
             tracing::warn!(
-                "auth.tenancy=multi: Postgres レイヤで tenant_id 分離を強制します。\
+                "auth.tenancy=multi（dev opt-in 有効）: Postgres レイヤで tenant_id 分離を強制します。\
                  OpenFGA の tenant 名前空間化（SAAS.1）は未了のため、本番では host ルーティングと\
                  FGA 名前空間化を仕上げること"
             );
@@ -364,10 +385,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn both_tenancy_modes_are_supported() {
-        // multi は session Cookie へのテナントスコープ束ね＋Postgres tenant_id 分離で起動可能。
-        // FGA 名前空間化（SAAS.1）は残課題だが起動はブロックしない。
-        assert!(AppConfig::check_tenancy_supported(Tenancy::Multi).is_ok());
+    fn multi_tenancy_requires_dev_optin() {
+        // multi は dev opt-in（SHIKI_DEV_ALLOW_MULTI_TENANT）無しでは fail-closed で拒否。
+        // single は常に可。CI/本番は opt-in を設定しないため拒否側を検証する。
+        assert!(AppConfig::check_tenancy_supported(Tenancy::Multi).is_err());
         assert!(AppConfig::check_tenancy_supported(Tenancy::Single).is_ok());
     }
 
@@ -618,11 +639,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_accepts_multi_tenancy() {
-        // tenancy=multi は session Cookie スコープ束ね＋Postgres tenant_id 分離で起動可能。
+    fn validate_rejects_multi_without_dev_optin() {
+        // tenancy=multi は dev opt-in 無しでは validate で fail-closed に拒否される。
         let mut cfg = valid_config();
         cfg.auth.tenancy = Tenancy::Multi;
-        assert!(cfg.validate().is_ok());
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

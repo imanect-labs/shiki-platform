@@ -76,8 +76,9 @@ export function ShareDialog({
     return () => clearTimeout(handle);
   }, [open, query]);
 
-  const sharedUserIds = React.useMemo(
-    () => new Set(shares.map((s) => s.target.id)),
+  // (user, role) ペアで既存共有を判定する（同じ役割のみ「付与済み」。役割の昇格は許可）。
+  const sharedRoleKeys = React.useMemo(
+    () => new Set(shares.map((s) => `${s.target.id}:${s.role}`)),
     [shares],
   );
 
@@ -175,7 +176,8 @@ export function ShareDialog({
           ) : (
             <ul className="divide-y divide-border">
               {results.map((u) => {
-                const already = sharedUserIds.has(u.id);
+                // 選択中の役割で既に共有済みかどうか（別役割なら付与＝昇格を許可）。
+                const already = sharedRoleKeys.has(`${u.id}:${role}`);
                 return (
                   <li key={u.id} className="flex items-center gap-3 px-3 py-2">
                     <div className="min-w-0 flex-1">

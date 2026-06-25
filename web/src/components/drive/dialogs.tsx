@@ -191,7 +191,10 @@ export function MoveDialog({
   const [folderId, setFolderId] = React.useState<string | null>(null);
   const [folderName, setFolderName] = React.useState<string>("ドライブ");
   const [folders, setFolders] = React.useState<NodeResponse[]>([]);
+  const [cursor, setCursor] = React.useState<string | undefined>(undefined);
+  const [hasMore, setHasMore] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
+  const [loadingMore, setLoadingMore] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -205,15 +208,20 @@ export function MoveDialog({
     }
   }, [open]);
 
-  // 現在地のサブフォルダを読み込む（フォルダのみ表示）。
+  // 現在地のサブフォルダを先頭ページから読み込む（フォルダのみ表示）。
   React.useEffect(() => {
     if (!open) return;
     let active = true;
     setLoading(true);
+    setFolders([]);
+    setCursor(undefined);
+    setHasMore(false);
     listChildren({ parentId: folderId ?? undefined, sort: "name", limit: 100 })
       .then((page) => {
         if (!active) return;
         setFolders(page.items.filter((n) => n.kind === "folder"));
+        setCursor(page.next_cursor ?? undefined);
+        setHasMore(Boolean(page.next_cursor));
       })
       .catch((e: unknown) => {
         if (active) setError(e instanceof Error ? e.message : String(e));
@@ -225,6 +233,27 @@ export function MoveDialog({
       active = false;
     };
   }, [open, folderId]);
+
+  // 続きのページを読み込み、フォルダを追記する（>100 件でも移動先に辿り着ける）。
+  const loadMoreFolders = async () => {
+    if (!cursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await listChildren({
+        parentId: folderId ?? undefined,
+        sort: "name",
+        cursor,
+        limit: 100,
+      });
+      setFolders((prev) => [...prev, ...page.items.filter((n) => n.kind === "folder")]);
+      setCursor(page.next_cursor ?? undefined);
+      setHasMore(Boolean(page.next_cursor));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const move = async () => {
     setBusy(true);
@@ -261,7 +290,7 @@ export function MoveDialog({
               <Loader2 className="size-4 animate-spin" aria-hidden />
               読み込み中…
             </div>
-          ) : folders.length === 0 ? (
+          ) : folders.length === 0 && !hasMore ? (
             <p className="px-3 py-6 text-center text-sm text-muted-foreground">サブフォルダはありません</p>
           ) : (
             <ul className="divide-y divide-border">
@@ -288,6 +317,19 @@ export function MoveDialog({
                   </li>
                 );
               })}
+              {hasMore ? (
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => void loadMoreFolders()}
+                    disabled={loadingMore}
+                    className="flex w-full items-center justify-center gap-2 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    {loadingMore ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+                    もっと読み込む
+                  </button>
+                </li>
+              ) : null}
             </ul>
           )}
         </div>
