@@ -65,6 +65,15 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/files/{id}/download-url", get(routes::files::download_url))
         .route("/files/{id}/restore", post(routes::files::restore_file))
+        .route("/files/{id}/versions", get(routes::files::list_versions))
+        .route(
+            "/files/{id}/versions/{version}/download-url",
+            get(routes::files::version_download_url),
+        )
+        .route(
+            "/files/{id}/versions/{version}/restore",
+            post(routes::files::restore_version),
+        )
         .route_layer(session_layer)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

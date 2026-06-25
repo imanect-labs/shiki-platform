@@ -50,6 +50,23 @@ pub struct Node {
     pub updated_at: DateTime<Utc>,
 }
 
+/// ファイルの内容版 1 件（Task 1.7・履歴一覧/特定版取得で使う）。
+///
+/// `version` は `Node::version` と一致し、内容を持つ版（create / 内容更新 / 版復元）だけが
+/// 履歴に並ぶ（rename/move 等のメタ版は欠番になる）。同一内容の版は `blob_sha256` を共有する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileVersion {
+    /// テナント境界を上流（集約/キャッシュ）まで運ぶため day-1 から保持する（API 層で落とす）。
+    pub tenant_id: String,
+    pub version: i64,
+    pub blob_sha256: String,
+    pub size_bytes: i64,
+    pub content_type: String,
+    /// この版を作成した subject。
+    pub author: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// `begin_upload`（declare）の結果＝アップロード用 presigned チケット。
 ///
 /// クライアントは `upload_url` へバイトを直接 PUT し、`upload_id` で finalize する。

@@ -11,7 +11,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use storage::Node;
+use storage::{FileVersion, Node};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -57,16 +57,23 @@ impl From<Node> for NodeResponse {
 }
 
 /// アップロード宣言リクエスト（declare）。
+///
+/// `target_node_id` を指定すると**既存ファイルの内容更新（新版アップロード）**になり、
+/// `parent_id`/`name` は無視して既存ノードのものを引き継ぐ。未指定なら**新規ファイル作成**で
+/// `name` が必須。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UploadRequest {
-    /// 配置先フォルダ。未指定は org ルート直下。
+    /// 配置先フォルダ。未指定は org ルート直下（新規作成時のみ）。
     pub parent_id: Option<Uuid>,
-    pub name: String,
+    /// ファイル名（新規作成時は必須。内容更新時は無視される）。
+    pub name: Option<String>,
     pub content_type: String,
     /// 内容のバイト数（クライアント申告。finalize で実体と照合）。
     pub size: i64,
     /// 内容の sha256（hex 小文字 64 桁。finalize で server-side 再ハッシュと照合）。
     pub sha256: String,
+    /// 内容更新の対象ファイル ID。指定時は既存ファイルの新版アップロードになる。
+    pub target_node_id: Option<Uuid>,
 }
 
 /// アップロード宣言レスポンス（declare）。
@@ -95,6 +102,31 @@ pub struct UpdateFileRequest {
 pub struct DownloadUrlResponse {
     pub url: String,
     pub expires_in_secs: u64,
+}
+
+/// ファイルの内容版 1 件（履歴一覧の要素）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileVersionResponse {
+    pub version: i64,
+    pub blob_sha256: String,
+    pub size_bytes: i64,
+    pub content_type: String,
+    /// この版を作成したユーザー id。
+    pub author: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<FileVersion> for FileVersionResponse {
+    fn from(v: FileVersion) -> Self {
+        FileVersionResponse {
+            version: v.version,
+            blob_sha256: v.blob_sha256,
+            size_bytes: v.size_bytes,
+            content_type: v.content_type,
+            author: v.author,
+            created_at: v.created_at,
+        }
+    }
 }
 
 /// `null`（ルートへ移動）と省略（移動しない）を区別するための二重 Option デシリアライザ。
@@ -130,10 +162,11 @@ pub async fn begin_upload(
         .begin_upload(
             &ctx,
             req.parent_id,
-            &req.name,
+            req.name.as_deref().unwrap_or(""),
             &req.content_type,
             &req.sha256,
             req.size,
+            req.target_node_id,
             trace.as_deref(),
         )
         .await?;
@@ -312,6 +345,93 @@ pub async fn restore_file(
     let node = state
         .storage
         .restore_file(&ctx, id, trace.as_deref())
+        .await?;
+    Ok(Json(node.into()))
+}
+
+/// 版履歴を新しい順に返す（Task 1.7）。
+#[utoipa::path(
+    get,
+    path = "/files/{id}/versions",
+    params(("id" = Uuid, Path, description = "ファイル ID")),
+    responses(
+        (status = 200, description = "版履歴（新しい順）", body = [FileVersionResponse]),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "認可されていない"),
+        (status = 404, description = "ファイルが無い"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn list_versions(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<FileVersionResponse>>, ApiError> {
+    let versions = state
+        .storage
+        .list_versions(&ctx, id, trace.as_deref())
+        .await?;
+    Ok(Json(versions.into_iter().map(Into::into).collect()))
+}
+
+/// 特定版の presigned ダウンロード URL を発行する（Task 1.7）。
+#[utoipa::path(
+    get,
+    path = "/files/{id}/versions/{version}/download-url",
+    params(
+        ("id" = Uuid, Path, description = "ファイル ID"),
+        ("version" = i64, Path, description = "版番号"),
+    ),
+    responses(
+        (status = 200, description = "ダウンロード URL", body = DownloadUrlResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "認可されていない"),
+        (status = 404, description = "ファイル/版が無い"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn version_download_url(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path((id, version)): Path<(Uuid, i64)>,
+) -> Result<Json<DownloadUrlResponse>, ApiError> {
+    let ticket = state
+        .storage
+        .issue_version_download_url(&ctx, id, version, trace.as_deref())
+        .await?;
+    Ok(Json(DownloadUrlResponse {
+        url: ticket.url,
+        expires_in_secs: ticket.expires_in_secs,
+    }))
+}
+
+/// 過去版を新しい版として復元する（Task 1.7・履歴を壊さない）。
+#[utoipa::path(
+    post,
+    path = "/files/{id}/versions/{version}/restore",
+    params(
+        ("id" = Uuid, Path, description = "ファイル ID"),
+        ("version" = i64, Path, description = "復元元の版番号"),
+    ),
+    responses(
+        (status = 200, description = "復元後のファイル（新版）", body = NodeResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "認可されていない"),
+        (status = 404, description = "ファイル/版が無い"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn restore_version(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path((id, version)): Path<(Uuid, i64)>,
+) -> Result<Json<NodeResponse>, ApiError> {
+    let node = state
+        .storage
+        .restore_version(&ctx, id, version, trace.as_deref())
         .await?;
     Ok(Json(node.into()))
 }
