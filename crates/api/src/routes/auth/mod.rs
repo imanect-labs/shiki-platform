@@ -13,8 +13,6 @@ use axum_extra::extract::cookie::{Cookie, SameSite};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use crate::{config::AuthConfig, error::ApiError};
-
 pub use callback::callback;
 pub use login::login;
 pub use logout::logout;
@@ -76,25 +74,6 @@ fn parse_flow(value: &str) -> Option<FlowState> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// session 解決前のテナントスコープ。
-///
-/// `single`（オンプレ/cell・既定）は設定の固定値を使う（principal 非依存で解決可能）。
-/// `multi`（SaaS）は host/サブドメインからの解決（SAAS.1）が必要で、起動時ガード
-/// （config.validate）で multi 自体を拒否しているため、ここに到達しない設計。
-pub(crate) fn session_tenant_scope(auth: &AuthConfig) -> Result<String, ApiError> {
-    match auth.tenancy {
-        crate::config::Tenancy::Single => auth
-            .tenant_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| {
-                tracing::error!("single-tenant モードで auth.tenant_id が空（設定ミス）");
-                ApiError::Internal("tenant 設定不備".into())
-            }),
-        crate::config::Tenancy::Multi => Err(ApiError::Internal(
-            "multi-tenant の session スコープは host ベース解決（SAAS.1）未実装".into(),
-        )),
-    }
-}
+// テナントスコープは発行時にセッション Cookie へ束ねる（`session::encode_session_cookie`）。
+// 後続リクエストは Cookie から復元するため、設定/ホストからの事前解決は不要になった。
+// single/multi いずれも同一経路で扱える（host ベース解決＝SAAS.1 はクラウド本番の最適化）。

@@ -15,7 +15,9 @@ use crate::{
     extract::resolve_tenant_id,
     middleware::{auth::verify_access_token, claims},
     oidc,
-    session::{new_opaque_token, SessionRecord, CSRF_COOKIE, SESSION_COOKIE},
+    session::{
+        encode_session_cookie, new_opaque_token, SessionRecord, CSRF_COOKIE, SESSION_COOKIE,
+    },
     state::AppState,
 };
 
@@ -88,7 +90,9 @@ pub async fn callback(
     let jar = jar
         .add(build_cookie(
             SESSION_COOKIE,
-            session_id,
+            // 後続リクエストが Cookie だけからテナントスコープを解決できるよう束ねる
+            // （multi テナントの session 引きに必須。single でも一貫して付与する）。
+            encode_session_cookie(&session_id, &tenant_id),
             true,
             secure,
             max_age,

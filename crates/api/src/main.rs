@@ -16,7 +16,7 @@ use authz::{
     model, AuthzClient, Consistency, FgaObject, Relation, Subject,
 };
 use sqlx::postgres::PgPoolOptions;
-use storage::{ObjectStore, S3ObjectStore, StorageService};
+use storage::{DirectoryStore, ObjectStore, S3ObjectStore, StorageService};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -50,7 +50,9 @@ async fn main() -> anyhow::Result<()> {
     let fga = OpenFgaClient::connect(http.clone(), &fga_config, &model::default_model())
         .await
         .context("OpenFGA への接続に失敗")?;
-    dev_seed(&fga).await?;
+    // ユーザーディレクトリ（共有相手検索。storage と同じ db プールを共有）。dev_seed で使う。
+    let directory = Arc::new(DirectoryStore::new(db.clone()));
+    dev_seed(&fga, &directory).await?;
     // authz は AppState と StorageService で同一インスタンスを共有する（単一チョークポイント）。
     let authz: Arc<dyn AuthzClient> = Arc::new(fga);
 
@@ -110,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
         sessions,
         http,
         storage,
+        directory,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -123,41 +126,78 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 開発/E2E 用の最小シード。**明示的に `SHIKI_DEV_SEED=true` が指定された時のみ**
-/// `SHIKI_DEV_SEED_USER`/`SHIKI_DEV_SEED_ORG` の org への member tuple を投入する。
+/// dev fixture の 1 ユーザー（OIDC sub / tenant / org / email / 表示名）。
+/// realm（`deploy/keycloak/shiki-realm.json`）の sub・tenant 属性・group と一致させる。
+struct SeedUser {
+    id: &'static str,
+    tenant: &'static str,
+    org: &'static str,
+    email: &'static str,
+    display_name: &'static str,
+}
+
+/// dev/E2E の固定ユーザー群。**alice/bob は tenant `a-corp`、charlie は別 tenant `b-corp`**。
+/// これによりテナント分離（charlie が alice の検索/共有に出ない）を検証できる。
+const SEED_USERS: &[SeedUser] = &[
+    SeedUser {
+        id: "00000000-0000-0000-0000-000000000001",
+        tenant: "a-corp",
+        org: "a-corp",
+        email: "alice@a-corp.example.com",
+        display_name: "Alice",
+    },
+    SeedUser {
+        id: "00000000-0000-0000-0000-000000000002",
+        tenant: "a-corp",
+        org: "a-corp",
+        email: "bob@a-corp.example.com",
+        display_name: "Bob",
+    },
+    SeedUser {
+        id: "00000000-0000-0000-0000-000000000003",
+        tenant: "b-corp",
+        org: "b-corp",
+        email: "charlie@b-corp.example.com",
+        display_name: "Charlie",
+    },
+];
+
+/// 開発/E2E 用の最小シード。**明示的に `SHIKI_DEV_SEED=true` が指定された時のみ**、
+/// 固定ユーザー群（[`SEED_USERS`]）を ① OpenFGA の org member tuple ② ユーザーディレクトリ
+/// （共有相手検索の backing）へ冪等投入する。
 ///
 /// 任意ユーザーを任意 org の member に昇格できる権限付与経路のため、本番で env が
 /// 紛れ込んでも作動しないよう、専用の有効化フラグでガードする（fail-safe）。
-async fn dev_seed(fga: &OpenFgaClient) -> anyhow::Result<()> {
+async fn dev_seed(fga: &OpenFgaClient, directory: &DirectoryStore) -> anyhow::Result<()> {
     if !dev_seed_enabled() {
         return Ok(());
     }
-    let (Ok(user), Ok(org)) = (
-        std::env::var("SHIKI_DEV_SEED_USER"),
-        std::env::var("SHIKI_DEV_SEED_ORG"),
-    ) else {
-        return Ok(());
-    };
     tracing::warn!("dev seed 有効（SHIKI_DEV_SEED=true）。本番では設定しないこと");
-    let subject = Subject::user(&user);
-    let object = FgaObject::organization(&org);
-    // 冪等化: 既に member なら再投入しない（OpenFGA は重複 tuple を拒否するため）。
-    if fga
-        .check(
-            &subject,
-            Relation::Member,
-            &object,
-            Consistency::HigherConsistency,
-        )
-        .await?
-    {
-        tracing::info!(%user, %org, "dev seed: 既に member のため skip");
-        return Ok(());
+    for u in SEED_USERS {
+        let subject = Subject::user(u.id);
+        let object = FgaObject::organization(u.org);
+        // 冪等化: 既に member なら再投入しない（OpenFGA は重複 tuple を拒否するため）。
+        if !fga
+            .check(
+                &subject,
+                Relation::Member,
+                &object,
+                Consistency::HigherConsistency,
+            )
+            .await?
+        {
+            fga.write_tuple(&subject, Relation::Member, &object)
+                .await
+                .context("dev seed tuple の書き込みに失敗")?;
+            tracing::info!(user = %u.id, org = %u.org, "dev seed: org member tuple を投入");
+        }
+        // ディレクトリ（共有相手検索）へ投入。ON CONFLICT 更新で冪等。
+        directory
+            .upsert_user(u.id, u.tenant, u.org, u.email, u.display_name)
+            .await
+            .context("dev seed: directory_user の投入に失敗")?;
     }
-    fga.write_tuple(&subject, Relation::Member, &object)
-        .await
-        .context("dev seed tuple の書き込みに失敗")?;
-    tracing::info!(%user, %org, "dev seed: org member tuple を投入");
+    tracing::info!(count = SEED_USERS.len(), "dev seed: ユーザー群を投入");
     Ok(())
 }
 

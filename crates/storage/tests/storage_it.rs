@@ -16,8 +16,8 @@ use authz::{
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::{
-    content_address::sha256_hex, object_store::S3Config, Node, NodeKind, ObjectStore,
-    S3ObjectStore, ShareRole, ShareTarget, StorageError, StorageService,
+    content_address::sha256_hex, object_store::S3Config, DirectoryStore, Node, NodeKind,
+    ObjectStore, S3ObjectStore, ShareRole, ShareTarget, StorageError, StorageService,
 };
 use uuid::Uuid;
 
@@ -679,7 +679,7 @@ async fn folder_hierarchy_end_to_end() {
 
     // C は root の何も読めない（owner でも共有先でもない）→ 空ページ。
     let page_c = service
-        .list_children(&cctx, None, None, 50, None)
+        .list_children(&cctx, None, Default::default(), None, 50, None)
         .await
         .expect("C list root");
     assert!(page_c.items.is_empty(), "C は読めるルート子が無い");
@@ -696,7 +696,7 @@ async fn folder_hierarchy_end_to_end() {
         .await
         .expect("share folderA to C");
     let page_c2 = service
-        .list_children(&cctx, None, None, 50, None)
+        .list_children(&cctx, None, Default::default(), None, 50, None)
         .await
         .expect("C list root after share");
     let ids: Vec<Uuid> = page_c2.items.iter().map(|n| n.id).collect();
@@ -704,13 +704,20 @@ async fn folder_hierarchy_end_to_end() {
 
     // --- ページング（uid のルート子＝folderA/folderB を limit 1 で 2 ページ） ---
     let p1 = service
-        .list_children(&actx, None, None, 1, None)
+        .list_children(&actx, None, Default::default(), None, 1, None)
         .await
         .expect("page1");
     assert_eq!(p1.items.len(), 1, "1 ページ目は 1 件");
     assert!(p1.next_cursor.is_some(), "続きがある");
     let p2 = service
-        .list_children(&actx, None, p1.next_cursor.as_deref(), 1, None)
+        .list_children(
+            &actx,
+            None,
+            Default::default(),
+            p1.next_cursor.as_deref(),
+            1,
+            None,
+        )
         .await
         .expect("page2");
     assert_eq!(p2.items.len(), 1, "2 ページ目も 1 件");
@@ -853,20 +860,20 @@ async fn sharing_end_to_end() {
 
     // bob の「共有された一覧」に file が出る（自分が作成したものではない）。
     let inbox = service
-        .list_shared_with_me(&bctx, None)
+        .list_shared_with_me(&bctx, None, 50, None)
         .await
         .expect("shared with me");
     assert!(
-        inbox.iter().any(|n| n.id == file.id),
+        inbox.items.iter().any(|n| n.id == file.id),
         "共有された一覧に現れる"
     );
     // owner の「共有された一覧」には自作 file は出ない（作成者除外）。
     let owner_inbox = service
-        .list_shared_with_me(&octx, None)
+        .list_shared_with_me(&octx, None, 50, None)
         .await
         .expect("owner inbox");
     assert!(
-        !owner_inbox.iter().any(|n| n.id == file.id),
+        !owner_inbox.items.iter().any(|n| n.id == file.id),
         "作成者本人のファイルは共有された一覧に出ない"
     );
 
@@ -933,8 +940,8 @@ async fn versioning_end_to_end() {
     assert_eq!(blob_refcount(&pool, &org, &sha_v2).await, 1);
 
     // 履歴一覧は新しい順（v2, v1）。
-    let history = service
-        .list_versions(&actx, file.id, None)
+    let (history, _) = service
+        .list_versions(&actx, file.id, None, 50, None)
         .await
         .expect("list versions");
     assert_eq!(history.len(), 2);
@@ -981,8 +988,8 @@ async fn versioning_end_to_end() {
     // v1 の blob は v1 行 + v3 行で参照され refcount=2。
     assert_eq!(blob_refcount(&pool, &org, &sha_v1).await, 2);
     // 履歴は v1/v2 とも残存（壊れない）。
-    let history2 = service
-        .list_versions(&actx, file.id, None)
+    let (history2, _) = service
+        .list_versions(&actx, file.id, None, 50, None)
         .await
         .expect("list versions 2");
     let versions: Vec<i64> = history2.iter().map(|v| v.version).collect();
@@ -1113,4 +1120,168 @@ async fn outbox_end_to_end() {
     .await
     .expect("count2");
     assert_eq!(after_ack, 0, "ack 後は未処理ゼロ");
+}
+
+/// tenant_id ＋ org でスコープした AuthContext を作る（テナント分離検証用）。
+fn make_ctx_tenant(org: &str, tenant: &str, uid: &str) -> AuthContext {
+    AuthContext::new(
+        Principal {
+            id: uid.into(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: None,
+        },
+        org.into(),
+        tenant.into(),
+    )
+}
+
+#[tokio::test]
+async fn directory_search_is_tenant_scoped() {
+    let Some(cx) = setup().await else {
+        return;
+    };
+    let dir = DirectoryStore::new(cx.pool.clone());
+    let s = Uuid::new_v4().simple().to_string();
+    let (ta, tb) = (format!("ta-{s}"), format!("tb-{s}"));
+    // org は alice/bob/dave/charlie で**共通**にし、分離が tenant_id のみで成立することを示す
+    // （org 差分に依存しない＝真のテナント分離検証）。
+    let org = format!("o-{s}");
+    let alice = format!("alice-{s}");
+    // 同テナントに 2 名（bob/dave）置き、charlie は同 org・別テナントに置く。
+    let bob = format!("bob-{s}");
+    let dave = format!("dave-{s}");
+    let charlie = format!("charlie-{s}");
+    dir.upsert_user(&alice, &ta, &org, &format!("{alice}@a.example"), "Alice")
+        .await
+        .expect("seed alice");
+    dir.upsert_user(&bob, &ta, &org, &format!("{bob}@a.example"), "Bob")
+        .await
+        .expect("seed bob");
+    dir.upsert_user(&dave, &ta, &org, &format!("{dave}@a.example"), "Dave")
+        .await
+        .expect("seed dave");
+    // charlie は **alice と同じ org** だが **別テナント**（tb）。tenant_id だけで除外されること
+    // を検証する（org は一致しているので org フィルタでは弾けない）。
+    dir.upsert_user(
+        &charlie,
+        &tb,
+        &org,
+        &format!("{charlie}@b.example"),
+        "Charlie",
+    )
+    .await
+    .expect("seed charlie");
+
+    let ctx = make_ctx_tenant(&org, &ta, &alice);
+    // 空クエリは同テナント（かつ自分以外）を返す: bob/dave は出る、charlie は出ない、自分は除外。
+    let page = dir.search(&ctx, "", None, 50).await.expect("search all");
+    let ids: Vec<&str> = page.items.iter().map(|u| u.id.as_str()).collect();
+    assert!(
+        ids.contains(&bob.as_str()),
+        "同テナントの bob が出る: {ids:?}"
+    );
+    assert!(
+        ids.contains(&dave.as_str()),
+        "同テナントの dave が出る: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&charlie.as_str()),
+        "別テナントの charlie は出ない"
+    );
+    assert!(!ids.contains(&alice.as_str()), "自分自身は除外");
+
+    // 別テナントのユーザーを名前で検索しても出ない（pre-filter が tenant_id で効く）。
+    let page2 = dir
+        .search(&ctx, &charlie, None, 50)
+        .await
+        .expect("search charlie");
+    assert!(page2.items.is_empty(), "別テナント charlie は検索に出ない");
+
+    // keyset ページング（limit 1。同テナントに 2 名いるので 2 ページに分かれる）。
+    let p1 = dir.search(&ctx, "", None, 1).await.expect("page1");
+    assert_eq!(p1.items.len(), 1);
+    assert!(p1.next_cursor.is_some(), "続きがある");
+    let p2 = dir
+        .search(&ctx, "", p1.next_cursor.as_deref(), 1)
+        .await
+        .expect("page2");
+    assert_eq!(p2.items.len(), 1, "2 ページ目に残りの 1 名");
+    assert_ne!(p1.items[0].id, p2.items[0].id, "ページ跨ぎで重複しない");
+}
+
+#[tokio::test]
+async fn trash_lists_roots_and_folder_restore_roundtrips() {
+    let Some(cx) = setup().await else {
+        return;
+    };
+    let s = Uuid::new_v4().simple().to_string();
+    let org = format!("org-{s}");
+    let uid = format!("u-{s}");
+    seed_org_member(&cx.authz, &org, &uid).await;
+    let ctx = make_ctx(&org, &uid);
+
+    // 階層: 親フォルダ / 子フォルダ ＋ ファイル。
+    let parent = cx
+        .service
+        .create_folder(&ctx, None, "親フォルダ", None)
+        .await
+        .expect("親作成");
+    let child = cx
+        .service
+        .create_folder(&ctx, Some(parent.id), "子フォルダ", None)
+        .await
+        .expect("子作成");
+    let file = upload(&cx.service, &cx.http, &ctx, Some(parent.id), "f.txt", b"hi")
+        .await
+        .expect("ファイル");
+
+    // 親をサブツリーごと論理削除する。
+    cx.service
+        .soft_delete_folder(&ctx, parent.id, None)
+        .await
+        .expect("削除");
+
+    // ゴミ箱には「削除の根」＝親だけが出る（配下の子/ファイルは出ない）。
+    let trash = cx
+        .service
+        .list_trash(&ctx, None, 50, None)
+        .await
+        .expect("trash");
+    let trash_ids: Vec<Uuid> = trash.items.iter().map(|n| n.id).collect();
+    assert!(
+        trash_ids.contains(&parent.id),
+        "削除の根 親が出る: {trash_ids:?}"
+    );
+    assert!(
+        !trash_ids.contains(&child.id),
+        "配下の子は根でないので出ない"
+    );
+    assert!(!trash_ids.contains(&file.id), "配下のファイルは出ない");
+
+    // フォルダ復元（同一削除バッチを subtree 復元）。
+    cx.service
+        .restore_folder(&ctx, parent.id, None)
+        .await
+        .expect("復元");
+    let trash2 = cx
+        .service
+        .list_trash(&ctx, None, 50, None)
+        .await
+        .expect("trash2");
+    assert!(
+        trash2.items.iter().all(|n| n.id != parent.id),
+        "復元後はゴミ箱から消える"
+    );
+
+    // 配下（子フォルダ・ファイル）も生存し、一覧で見える。
+    let children = cx
+        .service
+        .list_children(&ctx, Some(parent.id), Default::default(), None, 50, None)
+        .await
+        .expect("子一覧");
+    let cids: Vec<Uuid> = children.items.iter().map(|n| n.id).collect();
+    assert!(cids.contains(&child.id), "子フォルダが復活");
+    assert!(cids.contains(&file.id), "ファイルが復活");
 }

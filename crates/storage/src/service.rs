@@ -22,8 +22,8 @@ use crate::{
     error::StorageError,
     event::{self, WriteEvent, WriteOp},
     model::{
-        ChildPage, Crumb, DownloadTicket, FileVersion, Node, NodeKind, ShareEntry, ShareRole,
-        ShareTarget, UploadTicket,
+        ChildPage, ChildSort, ChildSortKey, Crumb, DownloadTicket, FileVersion, Node, NodeKind,
+        ShareEntry, ShareRole, ShareTarget, UploadTicket,
     },
     object_store::ObjectStore,
 };
@@ -1202,8 +1202,9 @@ impl StorageService {
     /// フォルダの子を**権限フィルタ済み**で 1 ページ返す（PIT-13）。
     ///
     /// `parent_id` が `None` なら org ルート直下。`limit` は 1..=100 にクランプ。
-    /// `(name, id)` 昇順の keyset カーソルでページングする。`next_cursor` が `Some` なら続きがある
-    /// （末尾ちょうどで空ページが 1 回返ることはあるが、欠落や重複は起きない）。
+    /// `sort`（name/updated/size×方向）を **keyset カーソルに織り込んで**サーバ側で並べる。
+    /// `next_cursor` が `Some` なら続きがある（末尾ちょうどで空ページが 1 回返ることはあるが、
+    /// 欠落や重複は起きない）。クライアント側の全件ソートは採らない（全件取得の禁止）。
     ///
     /// 権限フィルタは **子ごとに OpenFGA viewer を post-filter**する（読めない子はオーバーフェッチで
     /// 読み飛ばす）。継承を pre-filter にした「親が読めれば全子可視」の最適化は採らない:
@@ -1213,6 +1214,7 @@ impl StorageService {
         &self,
         ctx: &AuthContext,
         parent_id: Option<Uuid>,
+        sort: ChildSort,
         cursor: Option<&str>,
         limit: usize,
         trace_id: Option<&str>,
@@ -1248,10 +1250,22 @@ impl StorageService {
         let limit = limit.clamp(1, 100);
         // 1 ラウンドのフェッチ歩幅（フィルタ落ちを見越して多めに引く）。
         let batch: i64 = (limit as i64 * 2).clamp(16, 200);
-        let (mut after_name, mut after_id) = match cursor {
+        // ソートキーごとの列式・型キャスト・方向。keyset 比較とカーソルをこれに合わせる。
+        let (sort_col, sort_cast) = match sort.key {
+            ChildSortKey::Name => ("name", "text"),
+            ChildSortKey::Updated => ("updated_at", "timestamptz"),
+            // フォルダは size_bytes が NULL のため 0 とみなす（NULL を keyset から排除）。
+            ChildSortKey::Size => ("coalesce(size_bytes, 0)", "bigint"),
+        };
+        let (order_dir, keyset_cmp) = if sort.desc {
+            ("DESC", "<")
+        } else {
+            ("ASC", ">")
+        };
+        let (mut after_val, mut after_id) = match cursor {
             Some(c) => {
-                let (name, id) = decode_child_cursor(c)?;
-                (Some(name), Some(id))
+                let (val, id) = decode_child_cursor(sort, c)?;
+                (Some(val), Some(id))
             }
             None => (None, None),
         };
@@ -1259,20 +1273,20 @@ impl StorageService {
         let mut items: Vec<Node> = Vec::with_capacity(limit);
         let mut exhausted = false;
         while items.len() < limit && !exhausted {
-            // keyset: (name, id) > (after_name, after_id)。parent_id は IS NOT DISTINCT FROM で
-            // NULL（ルート）も同値比較する。
+            // keyset: (sort_col, id) cmp (after_val, after_id)。parent_id は IS NOT DISTINCT FROM で
+            // NULL（ルート）も同値比較する。after_val は text で受けて列型へキャストして比較する。
             let sql = format!(
                 "SELECT {NODE_COLS} FROM node \
                  WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL \
                    AND parent_id IS NOT DISTINCT FROM $3 \
-                   AND ($4::text IS NULL OR (name, id) > ($4, $5)) \
-                 ORDER BY name, id LIMIT $6"
+                   AND ($4::text IS NULL OR ({sort_col}, id) {keyset_cmp} ($4::{sort_cast}, $5)) \
+                 ORDER BY {sort_col} {order_dir}, id {order_dir} LIMIT $6"
             );
             let rows: Vec<NodeRow> = sqlx::query_as(&sql)
                 .bind(&ctx.org)
                 .bind(&ctx.tenant_id)
                 .bind(parent_id)
-                .bind(after_name.as_deref())
+                .bind(after_val.as_deref())
                 .bind(after_id)
                 .bind(batch)
                 .fetch_all(&self.db)
@@ -1284,7 +1298,7 @@ impl StorageService {
                 break;
             }
             for row in rows {
-                after_name = Some(row.name.clone());
+                after_val = Some(child_sort_value(sort.key, &row));
                 after_id = Some(row.id);
                 // 子ごとに viewer を確認（FGA を真実とする post-filter）。即時剥奪反映のため強整合。
                 let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
@@ -1308,8 +1322,8 @@ impl StorageService {
         }
         // limit 充足で止めたなら続きがあり得る → カーソルを返す。尽きたなら None。
         let next_cursor = if items.len() == limit {
-            match (after_name, after_id) {
-                (Some(n), Some(i)) => Some(encode_child_cursor(&n, i)),
+            match (after_val, after_id) {
+                (Some(v), Some(i)) => Some(encode_child_cursor(sort, &v, i)),
                 _ => None,
             }
         } else {
@@ -1647,6 +1661,219 @@ impl StorageService {
         row_to_node(row)
     }
 
+    /// ゴミ箱からのフォルダ復元（editor 権限・同名衝突は Conflict）。
+    ///
+    /// `soft_delete_folder` はサブツリーを 1 txn で同一 `deleted_at` にする。復元は
+    /// **その削除と同時に消えた配下**（＝同一 `deleted_at`）だけを戻す。独立に先に削除された
+    /// 配下（別タイムスタンプ）は巻き込まない。祖先が削除済みなら（到達不能の露出を避けるため）拒否。
+    pub async fn restore_folder(
+        &self,
+        ctx: &AuthContext,
+        folder_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<Node, StorageError> {
+        let node = self.load_node(ctx, folder_id, true).await?;
+        if node.kind != NodeKind::Folder {
+            return Err(StorageError::NotFound);
+        }
+        self.require(
+            ctx,
+            Relation::Editor,
+            &FgaObject::folder(&folder_id.to_string()),
+            "folder.restore",
+            "folder",
+            &folder_id.to_string(),
+            trace_id,
+        )
+        .await?;
+
+        let mut tx = self.db.begin().await?;
+        // 祖先（自身を除く）に削除済みフォルダがあれば、単体復元してもツリーから到達不能になる。
+        let ancestor_deleted: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM node_closure c JOIN node n ON n.id = c.ancestor \
+             WHERE c.descendant = $1 AND c.ancestor <> $1 AND n.deleted_at IS NOT NULL)",
+        )
+        .bind(folder_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if ancestor_deleted {
+            return Err(StorageError::Invalid(
+                "祖先フォルダが削除済みのため復元できません（先に親フォルダを復元してください）"
+                    .into(),
+            ));
+        }
+        // 削除バッチの識別子＝フォルダ自身の deleted_at（同一 txn の now() で配下と一致）。
+        let batch: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT deleted_at FROM node \
+             WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NOT NULL",
+        )
+        .bind(folder_id)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
+        let Some(batch) = batch else {
+            return Err(StorageError::NotFound);
+        };
+        // 同一バッチ（同時削除）の配下を一括復元する。version も進めて書込イベントの冪等キーを保つ。
+        // 生存兄弟と同名なら部分ユニークが効き Conflict になる。
+        let affected: Vec<(Uuid, i64)> = sqlx::query_as(
+            "UPDATE node SET deleted_at = NULL, updated_at = now(), version = version + 1 \
+             WHERE org = $1 AND tenant_id = $2 AND deleted_at = $3 \
+               AND id IN (SELECT descendant FROM node_closure WHERE ancestor = $4) \
+             RETURNING id, version",
+        )
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(batch)
+        .bind(folder_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let folder_version = affected
+            .iter()
+            .find(|(id, _)| *id == folder_id)
+            .map(|(_, v)| *v)
+            .ok_or(StorageError::NotFound)?;
+        audit::record_on(
+            &mut tx,
+            ctx,
+            AuditEntry {
+                action: "folder.restore",
+                object_type: "folder",
+                object_id: &folder_id.to_string(),
+                decision: Decision::Allow,
+                trace_id,
+                metadata: json!({ "subtree_count": affected.len() }),
+            },
+            Chain::Yes,
+        )
+        .await?;
+        event::emit_on(
+            &mut tx,
+            ctx,
+            WriteEvent {
+                node_id: folder_id,
+                version: folder_version,
+                op: WriteOp::Restore,
+                payload: json!({ "kind": "folder", "subtree_count": affected.len() }),
+            },
+            trace_id,
+        )
+        .await?;
+        tx.commit().await?;
+        // 復元後のフォルダ自身を返す（最新メタ）。
+        self.load_node(ctx, folder_id, false).await
+    }
+
+    /// ゴミ箱一覧（削除の根ノードのみ）を新しい順に 1 ページ返す。
+    ///
+    /// 「削除の根」＝ `deleted_at` があり、かつ親が生存（または無い）ノード。フォルダ削除では
+    /// サブツリーが丸ごと消えるが、ゴミ箱にはその根（フォルダ）だけを 1 件として見せる。
+    /// 復元できる（editor）ものだけを post-filter で返す。keyset `(deleted_at, id)` 降順で
+    /// ページングし、全件取得はしない。
+    pub async fn list_trash(
+        &self,
+        ctx: &AuthContext,
+        cursor: Option<&str>,
+        limit: usize,
+        trace_id: Option<&str>,
+    ) -> Result<ChildPage, StorageError> {
+        // ゴミ箱閲覧は org メンバーであること（root 列挙と同格）。
+        self.require(
+            ctx,
+            Relation::Member,
+            &FgaObject::organization(&ctx.org),
+            "trash.list",
+            "organization",
+            &ctx.org,
+            trace_id,
+        )
+        .await?;
+
+        let limit = limit.clamp(1, 100);
+        let batch: i64 = (limit as i64 * 2).clamp(16, 200);
+        let (mut after_ts, mut after_id) = match cursor {
+            Some(c) => {
+                let (ts, id) = decode_ts_cursor(c)?;
+                (Some(ts), Some(id))
+            }
+            None => (None, None),
+        };
+
+        let mut items: Vec<Node> = Vec::with_capacity(limit);
+        let mut exhausted = false;
+        while items.len() < limit && !exhausted {
+            // 削除の根: deleted_at あり ＆ 親が生存/無し。keyset は (deleted_at, id) 降順。
+            let sql = format!(
+                "SELECT {NODE_COLS} FROM node n \
+                 WHERE n.org = $1 AND n.tenant_id = $2 AND n.deleted_at IS NOT NULL \
+                   AND NOT EXISTS ( \
+                     SELECT 1 FROM node p WHERE p.id = n.parent_id AND p.deleted_at IS NOT NULL) \
+                   AND ($3::text IS NULL OR (n.deleted_at, n.id) < ($3::timestamptz, $4)) \
+                 ORDER BY n.deleted_at DESC, n.id DESC LIMIT $5"
+            );
+            let rows: Vec<NodeRow> = sqlx::query_as(&sql)
+                .bind(&ctx.org)
+                .bind(&ctx.tenant_id)
+                .bind(after_ts.as_deref())
+                .bind(after_id)
+                .bind(batch)
+                .fetch_all(&self.db)
+                .await?;
+            if (rows.len() as i64) < batch {
+                exhausted = true;
+            }
+            if rows.is_empty() {
+                break;
+            }
+            for row in rows {
+                after_ts = Some(row.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default());
+                after_id = Some(row.id);
+                // 復元可能（editor）なものだけ見せる。即時剥奪反映のため強整合。
+                let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
+                let allowed = self
+                    .authz
+                    .check(
+                        &ctx.subject(),
+                        Relation::Editor,
+                        &node_fga_object(kind, row.id),
+                        Consistency::HigherConsistency,
+                    )
+                    .await?;
+                if !allowed {
+                    continue;
+                }
+                items.push(row_to_node(row)?);
+                if items.len() == limit {
+                    break;
+                }
+            }
+        }
+        let next_cursor = if items.len() == limit {
+            match (after_ts, after_id) {
+                (Some(ts), Some(i)) => Some(encode_ts_cursor(&ts, i)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        self.audit
+            .record(
+                ctx,
+                AuditEntry {
+                    action: "trash.list",
+                    object_type: "organization",
+                    object_id: &ctx.org,
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: json!({ "returned": items.len() }),
+                },
+            )
+            .await?;
+        Ok(ChildPage { items, next_cursor })
+    }
+
     // --- バージョニング（Task 1.7） ---
 
     /// ファイルの版履歴を新しい順に返す（viewer 権限）。
@@ -1657,8 +1884,10 @@ impl StorageService {
         &self,
         ctx: &AuthContext,
         file_id: Uuid,
+        cursor: Option<&str>,
+        limit: usize,
         trace_id: Option<&str>,
-    ) -> Result<Vec<FileVersion>, StorageError> {
+    ) -> Result<(Vec<FileVersion>, Option<String>), StorageError> {
         let node = self.load_node(ctx, file_id, false).await?;
         if node.kind != NodeKind::File {
             return Err(StorageError::NotFound);
@@ -1672,17 +1901,34 @@ impl StorageService {
             trace_id,
         )
         .await?;
+        let limit = limit.clamp(1, 100);
+        // 版番号は単調増加。カーソルは「この版より前（小さい）」を引く keyset（新しい順）。
+        let before: Option<i64> = match cursor {
+            Some(c) => Some(
+                c.parse::<i64>()
+                    .map_err(|_| StorageError::Invalid("カーソルが不正です".into()))?,
+            ),
+            None => None,
+        };
         let rows: Vec<VersionRow> = sqlx::query_as(
             "SELECT tenant_id, version, blob_sha256, size_bytes, content_type, author, created_at \
              FROM node_version \
              WHERE node_id = $1 AND org = $2 AND tenant_id = $3 \
-             ORDER BY version DESC",
+               AND ($4::bigint IS NULL OR version < $4) \
+             ORDER BY version DESC LIMIT $5",
         )
         .bind(file_id)
         .bind(&ctx.org)
         .bind(&ctx.tenant_id)
+        .bind(before)
+        .bind(limit as i64)
         .fetch_all(&self.db)
         .await?;
+        let next_cursor = if rows.len() == limit {
+            rows.last().map(|r| r.version.to_string())
+        } else {
+            None
+        };
         self.audit
             .record(
                 ctx,
@@ -1696,7 +1942,8 @@ impl StorageService {
                 },
             )
             .await?;
-        Ok(rows.into_iter().map(VersionRow::into_model).collect())
+        let items = rows.into_iter().map(VersionRow::into_model).collect();
+        Ok((items, next_cursor))
     }
 
     /// 特定版の presigned ダウンロード URL を発行する（viewer 権限・短 TTL）。
@@ -1991,12 +2238,16 @@ impl StorageService {
     /// 自分に共有されたノード一覧（自分が作成したものを除く・org+tenant スコープ）。
     ///
     /// OpenFGA の `list-objects`（viewer 実効集合・継承込み）で id を引き、DB で生存ノードの
-    /// メタへ解決する。作成者本人のノード（≒owner）は「共有された」一覧から除く。
+    /// メタへ keyset `(updated_at, id)` 降順で 1 ページ解決する。作成者本人のノード（≒owner）は
+    /// 「共有された」一覧から除く。全件取得はせず `next_cursor` で無限スクロールする。
     pub async fn list_shared_with_me(
         &self,
         ctx: &AuthContext,
+        cursor: Option<&str>,
+        limit: usize,
         trace_id: Option<&str>,
-    ) -> Result<Vec<Node>, StorageError> {
+    ) -> Result<ChildPage, StorageError> {
+        let limit = limit.clamp(1, 100);
         let subject = ctx.subject();
         let mut ids: Vec<Uuid> = Vec::new();
         for object_type in [ObjectType::File, ObjectType::Folder] {
@@ -2014,21 +2265,42 @@ impl StorageService {
             }
         }
         if ids.is_empty() {
-            return Ok(Vec::new());
+            return Ok(ChildPage {
+                items: Vec::new(),
+                next_cursor: None,
+            });
         }
+        let (after_ts, after_id) = match cursor {
+            Some(c) => {
+                let (ts, id) = decode_ts_cursor(c)?;
+                (Some(ts), Some(id))
+            }
+            None => (None, None),
+        };
+        // FGA の viewer 集合（id）を DB メタへ keyset ページングで解決する。
         let sql = format!(
             "SELECT {NODE_COLS} FROM node \
              WHERE id = ANY($1) AND org = $2 AND tenant_id = $3 \
                AND deleted_at IS NULL AND created_by <> $4 \
-             ORDER BY updated_at DESC"
+               AND ($5::text IS NULL OR (updated_at, id) < ($5::timestamptz, $6)) \
+             ORDER BY updated_at DESC, id DESC LIMIT $7"
         );
         let rows: Vec<NodeRow> = sqlx::query_as(&sql)
             .bind(&ids)
             .bind(&ctx.org)
             .bind(&ctx.tenant_id)
             .bind(&ctx.principal.id)
+            .bind(after_ts.as_deref())
+            .bind(after_id)
+            .bind(limit as i64)
             .fetch_all(&self.db)
             .await?;
+        let next_cursor = if rows.len() == limit {
+            rows.last()
+                .map(|r| encode_ts_cursor(&r.updated_at.to_rfc3339(), r.id))
+        } else {
+            None
+        };
         self.audit
             .record(
                 ctx,
@@ -2042,7 +2314,11 @@ impl StorageService {
                 },
             )
             .await?;
-        rows.into_iter().map(row_to_node).collect()
+        let items = rows
+            .into_iter()
+            .map(row_to_node)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ChildPage { items, next_cursor })
     }
 
     /// 共有管理（share/unshare/list）の前段: ノードの存在確認＋owner 認可。FGA object を返す。
@@ -2497,26 +2773,74 @@ fn update_action(kind: NodeKind) -> &'static str {
     }
 }
 
-/// 子一覧 keyset カーソルの不透明エンコード。`(name, id)` を `id`(36桁)＋`name` の順で
-/// 連結し hex 化する（区切り不要: uuid は固定長で衝突しない）。クライアントには不透明。
-fn encode_child_cursor(name: &str, id: Uuid) -> String {
-    hex::encode(format!("{id}{name}").as_bytes())
+/// ソートキー 1 文字タグ（カーソルの先頭に置き、別ソートでのカーソル誤用を弾く）。
+fn child_sort_tag(key: ChildSortKey) -> char {
+    match key {
+        ChildSortKey::Name => 'n',
+        ChildSortKey::Updated => 'u',
+        ChildSortKey::Size => 's',
+    }
 }
 
-/// [`encode_child_cursor`] の逆。壊れたカーソルは `Invalid`（panic しない）。
-fn decode_child_cursor(cursor: &str) -> Result<(String, Uuid), StorageError> {
+/// 行から「現在のソートキーの値」を text として取り出す（カーソルへ織り込む）。
+/// SQL 側の列式（name / updated_at / coalesce(size,0)）と一致させる。
+fn child_sort_value(key: ChildSortKey, row: &NodeRow) -> String {
+    match key {
+        ChildSortKey::Name => row.name.clone(),
+        // timestamptz は RFC3339 で表現し、SQL 側で `::timestamptz` にキャストして比較する。
+        ChildSortKey::Updated => row.updated_at.to_rfc3339(),
+        ChildSortKey::Size => row.size_bytes.unwrap_or(0).to_string(),
+    }
+}
+
+/// 子一覧 keyset カーソルの不透明エンコード。`tag(1)`＋`id`(36桁)＋`value` を連結し hex 化する
+/// （uuid は固定長・value は最後尾なので区切り不要）。クライアントには不透明。
+fn encode_child_cursor(sort: ChildSort, value: &str, id: Uuid) -> String {
+    let tag = child_sort_tag(sort.key);
+    hex::encode(format!("{tag}{id}{value}").as_bytes())
+}
+
+/// [`encode_child_cursor`] の逆。壊れた/別ソートのカーソルは `Invalid`（panic しない）。
+fn decode_child_cursor(sort: ChildSort, cursor: &str) -> Result<(String, Uuid), StorageError> {
     let invalid = || StorageError::Invalid("カーソルが不正です".into());
     let bytes = hex::decode(cursor).map_err(|_| invalid())?;
-    // 先頭 36 **バイト**が uuid（ASCII 固定長）、残りが name。バイト境界で分割してから UTF-8
-    // 検証する（`String` 化後の `split_at(36)` は 36 がマルチバイト境界外だと panic するため）。
+    // 先頭 1 バイトがソートタグ、続く 36 **バイト**が uuid（ASCII 固定長）、残りが value。
+    // バイト境界で分割してから UTF-8 検証する（マルチバイト境界外の split は panic するため）。
+    if bytes.len() < 1 + 36 {
+        return Err(invalid());
+    }
+    let (tag_bytes, rest) = bytes.split_at(1);
+    if tag_bytes[0] != child_sort_tag(sort.key) as u8 {
+        // ソート条件を変えたのに古いカーソルを使い回した等。誤った keyset 比較を避けて拒否する。
+        return Err(StorageError::Invalid(
+            "カーソルが現在のソート条件と一致しません".into(),
+        ));
+    }
+    let (id_bytes, value_bytes) = rest.split_at(36);
+    let id_part = std::str::from_utf8(id_bytes).map_err(|_| invalid())?;
+    let id = Uuid::parse_str(id_part).map_err(|_| invalid())?;
+    let value = String::from_utf8(value_bytes.to_vec()).map_err(|_| invalid())?;
+    Ok((value, id))
+}
+
+/// タイムスタンプ keyset カーソルの不透明エンコード。`(ts(rfc3339), id)` を連結し hex 化する
+/// （uuid は先頭固定長・タイムスタンプは末尾なので曖昧さなし）。ゴミ箱・共有一覧で共用。
+fn encode_ts_cursor(ts: &str, id: Uuid) -> String {
+    hex::encode(format!("{id}{ts}").as_bytes())
+}
+
+/// [`encode_ts_cursor`] の逆。壊れたカーソルは `Invalid`（panic しない）。
+fn decode_ts_cursor(cursor: &str) -> Result<(String, Uuid), StorageError> {
+    let invalid = || StorageError::Invalid("カーソルが不正です".into());
+    let bytes = hex::decode(cursor).map_err(|_| invalid())?;
     if bytes.len() < 36 {
         return Err(invalid());
     }
-    let (id_bytes, name_bytes) = bytes.split_at(36);
+    let (id_bytes, ts_bytes) = bytes.split_at(36);
     let id_part = std::str::from_utf8(id_bytes).map_err(|_| invalid())?;
     let id = Uuid::parse_str(id_part).map_err(|_| invalid())?;
-    let name = String::from_utf8(name_bytes.to_vec()).map_err(|_| invalid())?;
-    Ok((name, id))
+    let ts = String::from_utf8(ts_bytes.to_vec()).map_err(|_| invalid())?;
+    Ok((ts, id))
 }
 
 /// ノード名の検証。空/長すぎ/前後空白/`.`・`..`/パス区切り/制御文字を拒否する。
@@ -2573,22 +2897,64 @@ mod tests {
     #[test]
     fn child_cursor_roundtrips() {
         let id = Uuid::new_v4();
-        for name in ["report.pdf", "日本語フォルダ", "a", &"x".repeat(255)] {
-            let c = encode_child_cursor(name, id);
-            let (got_name, got_id) = decode_child_cursor(&c).expect("decode");
-            assert_eq!(got_name, name);
+        let sort = ChildSort::default();
+        for value in ["report.pdf", "日本語フォルダ", "a", &"x".repeat(255)] {
+            let c = encode_child_cursor(sort, value, id);
+            let (got_value, got_id) = decode_child_cursor(sort, &c).expect("decode");
+            assert_eq!(got_value, value);
             assert_eq!(got_id, id);
         }
     }
 
     #[test]
+    fn child_cursor_roundtrips_each_sort_key() {
+        // 各ソートキーで往復し、値（rfc3339 / 数値文字列 / 名前）を保てること。
+        let id = Uuid::new_v4();
+        for (key, value) in [
+            (ChildSortKey::Name, "report.pdf"),
+            (ChildSortKey::Updated, "2026-06-25T10:00:00+00:00"),
+            (ChildSortKey::Size, "4096"),
+        ] {
+            let sort = ChildSort { key, desc: true };
+            let c = encode_child_cursor(sort, value, id);
+            let (got, got_id) = decode_child_cursor(sort, &c).expect("decode");
+            assert_eq!(got, value);
+            assert_eq!(got_id, id);
+        }
+    }
+
+    #[test]
+    fn child_cursor_rejects_cursor_from_other_sort() {
+        // ソートを変えたのに古いカーソルを使い回すと拒否（誤った keyset 比較を防ぐ）。
+        let id = Uuid::new_v4();
+        let c = encode_child_cursor(
+            ChildSort {
+                key: ChildSortKey::Name,
+                desc: false,
+            },
+            "a",
+            id,
+        );
+        assert!(decode_child_cursor(
+            ChildSort {
+                key: ChildSortKey::Size,
+                desc: false,
+            },
+            &c
+        )
+        .is_err());
+    }
+
+    #[test]
     fn child_cursor_rejects_garbage() {
-        assert!(decode_child_cursor("zzz").is_err()); // 非 hex
-        assert!(decode_child_cursor(&hex::encode("short")).is_err()); // 36 バイト未満
-                                                                      // 36 バイト目がマルチバイト文字の途中でも **panic せず** Invalid を返す（split_at(36) 回帰）。
-        let mut raw = vec![b'a'; 35];
-        raw.extend_from_slice("あ".as_bytes()); // 3 バイト → 36 バイト目が文字途中
-        assert!(decode_child_cursor(&hex::encode(raw)).is_err());
+        let sort = ChildSort::default();
+        assert!(decode_child_cursor(sort, "zzz").is_err()); // 非 hex
+        assert!(decode_child_cursor(sort, &hex::encode("short")).is_err()); // 1+36 バイト未満
+                                                                            // 境界がマルチバイト文字の途中でも **panic せず** Invalid を返す（split_at 回帰）。
+        let mut raw = vec![b'n']; // 正しいタグ
+        raw.extend(std::iter::repeat_n(b'a', 35));
+        raw.extend_from_slice("あ".as_bytes()); // 3 バイト → uuid 境界が文字途中
+        assert!(decode_child_cursor(sort, &hex::encode(raw)).is_err());
     }
 
     #[test]

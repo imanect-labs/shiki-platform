@@ -100,6 +100,9 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # ブラウザからの presigned PUT/GET（別オリジン: web → MinIO）を許可する CORS。
+      # Drive UI（Task 1.10）はクライアント直転送のため必須。dev は全オリジン許可。
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-*}
     volumes:
       - minio-data:/data
     ports:
@@ -176,6 +179,12 @@ services:
       # authorize/end-session は公開 issuer（ブラウザ向け）を使う。
       SHIKI__AUTH__INTERNAL_BASE_URL: ${SHIKI__AUTH__INTERNAL_BASE_URL:-http://keycloak:8080/realms/shiki}
       SHIKI__AUTH__AUDIENCE: ${SHIKI__AUTH__AUDIENCE:-shiki-api}
+      # テナンシー: multi（claim `tenant` 由来で Postgres 分離）を dev 既定にし、dev_seed の
+      # a-corp/b-corp テナントと一致させる（bare `docker compose up` でも共有検索が成立）。
+      # multi は本番 fail-closed で、dev/test の明示 opt-in（SHIKI_DEV_ALLOW_MULTI_TENANT）が要る。
+      SHIKI__AUTH__TENANCY: ${SHIKI__AUTH__TENANCY:-multi}
+      SHIKI__AUTH__TENANT_ID: ${SHIKI__AUTH__TENANT_ID:-default}
+      SHIKI_DEV_ALLOW_MULTI_TENANT: ${SHIKI_DEV_ALLOW_MULTI_TENANT:-true}
       SHIKI__AUTH__CLIENT_ID: ${SHIKI__AUTH__CLIENT_ID:-shiki-web}
       SHIKI__AUTH__CLIENT_SECRET: ${SHIKI__AUTH__CLIENT_SECRET:-shiki-web-dev-secret}
       # smoke（web 無し）では api 自身の callback を使う。実運用は web 同一オリジン（:3000）。

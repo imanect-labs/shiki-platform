@@ -52,8 +52,10 @@ test "$code401" = "401" || { echo "Cookie 無し /me が 401 を返しません"
 echo "--- セッション Cookie が不透明（JWT でない＝トークン非露出） ---"
 SESS="$(grep -i 'shiki_session' "$CJ" | awk '{print $NF}')"
 test -n "$SESS" || { echo "セッション Cookie がありません"; exit 1; }
+# Cookie 値は `{session_id}.{tenant_id}`（不透明 id ＋テナントスコープ。multi テナント対応）。
+# JWT は header.payload.sig の 2 ドット構造。2 ドット以上ならトークン露出の疑いとして弾く。
 case "$SESS" in
-  *.*) echo "セッション Cookie が JWT 形状（トークン露出の疑い）"; exit 1 ;;
+  *.*.*) echo "セッション Cookie が JWT 形状（トークン露出の疑い）"; exit 1 ;;
 esac
 
 echo "BFF smoke OK"

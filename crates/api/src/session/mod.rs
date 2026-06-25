@@ -32,6 +32,27 @@ pub fn new_opaque_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// セッション Cookie の値（不透明 session id ＋ テナントスコープ）。形式 `{session_id}.{tenant_id}`。
+///
+/// セッションストアのキーは `tenant_id` でスコープされるため（[`SessionStore`]）、後続リクエストで
+/// session を引くには **Cookie だけからテナントを解決**できる必要がある。single テナントは設定の
+/// 固定値で解決できるが、multi テナント（SaaS）では従来 host/サブドメイン解決（SAAS.1）が必要で
+/// 単一ホストの dev では成立しなかった。そこで発行時にテナントスコープを Cookie へ束ねる。
+///
+/// `session_id` は [`new_opaque_token`]＝base64url(no-pad) で `.` を含まないため、**最初の `.`** で
+/// 分割すれば tenant slug が任意でも曖昧さなく復元できる。唯一の秘密は推測不能な `session_id` で、
+/// tenant slug は SAAS.1 の host ベース解決でも URL に現れる非機密のルーティング情報。
+pub fn encode_session_cookie(session_id: &str, tenant_id: &str) -> String {
+    format!("{session_id}.{tenant_id}")
+}
+
+/// セッション Cookie の値を `(session_id, tenant_id)` に分解する。形式不正なら `None`。
+pub fn decode_session_cookie(value: &str) -> Option<(&str, &str)> {
+    value
+        .split_once('.')
+        .filter(|(session_id, tenant_id)| !session_id.is_empty() && !tenant_id.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,6 +80,34 @@ mod tests {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
         assert!(!token.contains('='));
+    }
+
+    #[test]
+    fn session_cookie_round_trips_session_id_and_tenant() {
+        // 発行時のスコープ束ね（session_id.tenant）が往復で復元できること。
+        let sid = new_opaque_token();
+        let cookie = encode_session_cookie(&sid, "a-corp");
+        let (got_sid, got_tenant) = decode_session_cookie(&cookie).unwrap();
+        assert_eq!(got_sid, sid);
+        assert_eq!(got_tenant, "a-corp");
+    }
+
+    #[test]
+    fn session_cookie_splits_on_first_dot_only() {
+        // session_id は base64url で `.` を含まないため、最初の `.` 分割で tenant に `.` が
+        // あっても session_id を曖昧さなく復元できる。
+        let (sid, tenant) = decode_session_cookie("abc123.tenant.with.dots").unwrap();
+        assert_eq!(sid, "abc123");
+        assert_eq!(tenant, "tenant.with.dots");
+    }
+
+    #[test]
+    fn session_cookie_rejects_malformed() {
+        // テナント無し（`.` 欠落）や空セグメントは不正として拒否。
+        assert!(decode_session_cookie("nodot").is_none());
+        assert!(decode_session_cookie(".tenant").is_none());
+        assert!(decode_session_cookie("sid.").is_none());
+        assert!(decode_session_cookie("").is_none());
     }
 
     #[test]

@@ -33,8 +33,13 @@ pub fn build_router(state: AppState) -> Router {
             "/folders/{id}",
             patch(routes::folders::update_folder).delete(routes::folders::delete_folder),
         )
+        .route(
+            "/folders/{id}/restore",
+            post(routes::folders::restore_folder),
+        )
         .route("/nodes", get(routes::folders::list_children))
         .route("/nodes/{id}/breadcrumb", get(routes::folders::breadcrumb))
+        .route("/trash", get(routes::folders::list_trash))
         .route(
             "/nodes/{id}/shares",
             put(routes::shares::share_node)
@@ -45,6 +50,7 @@ pub fn build_router(state: AppState) -> Router {
             "/shares/shared-with-me",
             get(routes::shares::shared_with_me),
         )
+        .route("/directory/users", get(routes::directory::search_users))
         .route_layer(session_layer.clone())
         .layer(standard_timeout());
 
