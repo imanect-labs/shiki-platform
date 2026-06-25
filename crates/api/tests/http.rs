@@ -305,7 +305,7 @@ async fn me_with_valid_session_is_ok() {
         .oneshot(
             Request::builder()
                 .uri("/me")
-                .header(COOKIE, "shiki_session=sid-valid")
+                .header(COOKIE, "shiki_session=sid-valid.default")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -322,7 +322,7 @@ async fn revoked_session_is_immediately_unauthorized() {
         .oneshot(
             Request::builder()
                 .uri("/me")
-                .header(COOKIE, "shiki_session=already-deleted")
+                .header(COOKIE, "shiki_session=already-deleted.default")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -359,7 +359,7 @@ async fn expired_access_token_is_refreshed_and_continues() {
         .oneshot(
             Request::builder()
                 .uri("/me")
-                .header(COOKIE, "shiki_session=sid-exp")
+                .header(COOKIE, "shiki_session=sid-exp.default")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -397,7 +397,7 @@ async fn transient_refresh_failure_keeps_session_when_access_still_valid() {
         .oneshot(
             Request::builder()
                 .uri("/me")
-                .header(COOKIE, "shiki_session=sid-tr")
+                .header(COOKIE, "shiki_session=sid-tr.default")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -446,7 +446,7 @@ async fn auth_session_reports_dead_session_as_unauthenticated() {
         .oneshot(
             Request::builder()
                 .uri("/auth/session")
-                .header(COOKIE_H, "shiki_session=sid-dead")
+                .header(COOKIE_H, "shiki_session=sid-dead.default")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -480,7 +480,7 @@ async fn expired_access_without_refresh_is_unauthorized() {
         .oneshot(
             Request::builder()
                 .uri("/me")
-                .header(COOKIE, "shiki_session=sid-dead")
+                .header(COOKIE, "shiki_session=sid-dead.default")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -510,7 +510,7 @@ async fn logout_without_csrf_is_forbidden() {
             Request::builder()
                 .method("POST")
                 .uri("/auth/logout")
-                .header(COOKIE, "shiki_session=sid-lo; shiki_csrf=csrf-tok")
+                .header(COOKIE, "shiki_session=sid-lo.default; shiki_csrf=csrf-tok")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -535,7 +535,7 @@ async fn logout_with_csrf_succeeds_and_leaks_no_token() {
             Request::builder()
                 .method("POST")
                 .uri("/auth/logout")
-                .header(COOKIE, "shiki_session=sid-lo2; shiki_csrf=csrf-tok")
+                .header(COOKIE, "shiki_session=sid-lo2.default; shiki_csrf=csrf-tok")
                 .header("x-csrf-token", "csrf-tok")
                 .body(Body::empty())
                 .unwrap(),
