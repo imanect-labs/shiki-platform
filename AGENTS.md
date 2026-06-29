@@ -33,6 +33,7 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 違反しやすく代償が大きい核。詳細チェックリストは architecture-invariants スキル、根拠は docs/design.md §1,§4,§5。
 
 - 単一チョークポイント: ストレージ=StorageService / 認可=OpenFGA クライアント / LLM=llm-gateway を必ず経由。個別ハンドラに権限チェックを散らさない。
+  （llm-gateway は LiteLLM Proxy 上の薄いクライアント。プロバイダ差し替えは litellm 設定へ移譲し、権限注入・トークン会計・監査は gateway 層で担保。`LlmProvider` トレイトはゲートウェイ抽象として残す。）
 - アンビエント権限の禁止: 全データアクセスは AuthContext { principal, org, tenant_id } 経由。SaaS マルチテナント前提で tenant_id を day-1 から保持し、隔離境界を壊さない。
 - 二段 authz: RAG/構造化データは pre-filter ＋ post-filter の両方。実効権限 = スコープ ∩ ユーザー ReBAC。
 - 差し替えはトレイト裏で: cloud/onprem 差は ObjectStore/VectorStore/LlmProvider/Sandbox/DocumentParser/EmbeddingProvider のみで吸収。アプリ本体を分岐させない。

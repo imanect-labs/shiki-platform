@@ -11,7 +11,8 @@
 1. **モジュラモノリス＋特権分離**: コアは単一バイナリ。特権が要るサンドボックスだけ別プロセス。
 2. **差し替え点はトレイトに集約**: クラウド/オンプレ差は4〜5本のトレイト実装で吸収、アプリ本体は不変。
 3. **単一チョークポイント**: ストレージ・認可・LLM呼出は各々1経路に集約し、権限/監査/イベントをそこで担保。
-4. **枯れた基盤に乗る／コアを自作**: 隔離・認可・認証・パースは既製、サンドボックス制御/RAG/agent/gatewayは自作。
+4. **枯れた基盤に乗る／コアを自作**: 隔離・認可・認証・パース・**LLMルーティング（LiteLLM Proxy）**は既製、サンドボックス制御/RAG/agent は自作。
+   llm-gateway は LiteLLM Proxy 上の**薄い層**（権限注入・トークン会計・コスト計上・Langfuse 相関・監査を自作）に留める。
 
 ## 2. システム全体構成
 
@@ -25,8 +26,9 @@ flowchart TB
   subgraph Server["shiki-server (Rust モジュラモノリス)"]
     API[axum API / SSE]
     CHAT[chat ドメイン]
-    AGENT[agent-core]
-    GW[llm-gateway in-process]
+    WORKER[生成ワーカー<br/>role=worker・pgmq消費]
+    AGENT[agent-core<br/>エージェントモード時のみ]
+    GW[llm-gateway<br/>litellm proxy クライアント]
     STORE[StorageService]
     RAG[RAG retrieval]
     AUTHZc[authz クライアント]
@@ -42,10 +44,11 @@ flowchart TB
     FGA[(OpenFGA / SpiceDB)]
     KC[(Keycloak)]
     OBJ[(MinIO / GCS)]
-    RD[(Redis<br/>セッション)]
+    RD[(Redis<br/>セッション＋チャット Pub/Sub)]
   end
 
   subgraph Infer["推論 (ローカル or 外部)"]
+    LITELLM[LiteLLM Proxy<br/>プロバイダ差吸収/ルーティング/FB/リトライ]
     VLLM[vLLM 生成LLM]
     EMB[埋め込み Ruri]
     RR[reranker]
@@ -59,10 +62,18 @@ flowchart TB
 
   UI -->|セッションCookie / REST / SSE| API
   GUI -. 宣言的バックエンド束縛 .-> API
-  API --> CHAT --> AGENT --> GW
-  GW --> VLLM & EXT
+  API --> CHAT
+  CHAT -->|生成ジョブ enqueue<br/>pgmq・outbox TX| WORKER
+  WORKER -->|通常チャット: 直叩き| GW
+  WORKER -->|エージェントモード| AGENT
+  AGENT --> GW
+  WORKER -->|古典RAG 事前注入| RAG
+  AGENT -->|doc_search ツール| RAG
+  WORKER -->|途中結果 publish| RD
+  RD -->|ライブ配信| API
+  GW --> LITELLM
+  LITELLM --> VLLM & EXT
   RAG --> QD & TV & RR & EMB
-  CHAT --> RAG
   AGENT -->|gRPC| ORCH
   ORCH -->|FUSE 経由| STORE
   STORE --> OBJ & PG
@@ -255,18 +266,55 @@ flowchart LR
 ### 4.4 チャット & agent-core
 
 - **Message content = 構造化ブロック配列（JSONB）**。添付はストレージ参照のみ。
-- **agent-core（自作）**: LLM↔ツールのループ（計画→ツール→観測→継続）、ツールセット非依存、`Tool` トレイト。
-  - チャット = 制約ツールセット（doc_search / code_interpreter / file_ops）＋短ホライズン。
+- **2つの動作モード（`agent_mode` フラグ・既定 OFF）**。両モードとも AuthContext と二段 authz（pre/post-filter）は不変。
+  - **通常チャット（OFF）**: chat ドメインが **llm-gateway を直叩き**＋**古典 RAG**（事前検索→文脈注入、post-filter を必ず適用）。ツールループ無し。引用は古典 RAG の検索結果から付与。
+  - **エージェントモード（ON）**: **agent-core** ループ（計画→ツール→観測→継続）が doc_search 等のツールを自律呼出。下記「ツール選択」「全提示・自動選択・破壊系明示許可」はこのモード内の挙動。
+- **agent-core（自作）**: LLM↔ツールのループ、ツールセット非依存、`Tool` トレイト。**エージェントモード時のみ作動**。
+  - エージェントチャット = 制約ツールセット（doc_search / code_interpreter / file_ops）＋短ホライズン。
   - 自律 = フルツール（shell/任意コマンド/CRUD）＋長ホライズン＋FUSEストレージ。
 - 共通化: llm-gateway、Langfuseトレース、監査、トークン会計、権限境界。
-- **ツール選択**: デフォルト全提示・モデル自動選択。権限/破壊/コスト系のみ明示許可。
+- **ツール選択（エージェントモード）**: デフォルト全提示・モデル自動選択。権限/破壊/コスト系のみ明示許可。
 
-### 4.5 llm-gateway（自作・in-process）
+#### 4.4.1 生成ジョブ・サブシステム（接続非依存の継続生成）
 
-- 内部正規形=OpenAI互換スキーマ。薄いアダプタで vLLM / Anthropic / Gemini /（必要なら Azure）。
-- 機能は必要分のみ（フォールバック/リトライ/トークン会計/Langfuse計装/権限注入）。
-  セマンティックキャッシュ・高度ルーティング・仮想キーは後追い。
-- `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。
+チャット送信後にユーザーがページを離れても生成が続くよう、**生成をクライアント接続（SSE）から分離**し、ジョブ駆動で実行する。
+
+```mermaid
+flowchart LR
+  U[ユーザー] -->|POST messages| API[API サーバー]
+  API -->|単一TX: message保存<br/>+pgmq enqueue| Q[(pgmq<br/>生成ジョブ)]
+  API -.->|202→SSE GET 購読| SSE[SSE ハンドラ]
+  Q -->|read=リース| W[生成ワーカー<br/>role=worker]
+  W -->|OFF: 直叩き＋RAG注入<br/>ON: agent-core| GW[llm-gateway → litellm]
+  W -->|append seq| EV[(generation_event<br/>＝真実のソース)]
+  W -->|publish chat:run| PS[(Redis Pub/Sub<br/>ベストエフォート)]
+  W -->|完了: content確定| MSG[(message)]
+  EV -->|cursor から replay| SSE
+  PS -->|live 購読| SSE
+  SSE -->|seq 重複排除| U
+```
+
+整合性デザインパターン（**at-least-once ＋ 冪等**前提。exactly-once は狙わない）:
+
+1. **Transactional Outbox**: user message 保存・assistant message(status=pending) 作成・生成ジョブ enqueue を**単一 Postgres TX**で実行（pgmq は Postgres 内）。「保存したがジョブ消失／ジョブはあるがメッセージ無し」を排除（既存 outbox 方針＝Phase 1 Task 1.8）。
+2. **Idempotent Consumer ＋ Lease/Fencing**: 冪等キー＝`run_id`（1ターン1 run）。ワーカーは `generation_run` を claim（status＋`lease_until`＋`worker_id`＋単調増加 `fencing_token`）。再配信時は done→スキップ、running×リース有効→他ワーカー保持、running×リース失効→`fencing_token` を進めて takeover。書込は fencing token でガードし**ゾンビワーカーの古い書込を拒否**。
+3. **Append-only Event Log（部分状態の Event Sourcing）**: `generation_event(run_id, seq, type, payload)` を**run 毎単調 seq**で追記。これが部分出力の**単一の真実のソース**。`message.content` は done 時に確定する materialized projection。
+4. **Replay-then-Subscribe（無重複の再接続）**: SSE は `Last-Event-ID`/cursor を受け、まず DB の `generation_event(seq > cursor)` をリプレイ→Redis を購読し**seq で重複排除**。Redis 取りこぼしは DB 権威により次回リプレイで埋まる。
+5. **Cooperative Cancellation**: ユーザー明示停止のみキャンセル（**ページ離脱≠キャンセル**）。`cancel_requested` フラグ＋Redis 制御 publish、ワーカーはループ/ストリーム境界で協調チェック→status=cancelled で部分確定。
+6. **Retry / Dead-Letter**: pgmq visibility-timeout で再試行、N 回超で DLQ＋status=failed を UI 可視化。冪等性で再試行時の二重書込を防止。
+7. **Orphan reaping / Liveness**: sweeper が `lease_until` 失効の running を再 enqueue（or failed 化）。Phase 5 予算ガード（最大ステップ/タイムアウト/トークン上限）と連携し detached 生成の暴走を防ぐ。
+8. **AuthContext 伝播（confused-deputy 防御）**: ワーカーは**発話ユーザーの AuthContext（principal/org/tenant_id）下**で生成し**昇格しない**。ジョブ payload に AuthContext 再構築情報を安全に載せ、RAG post-filter は当該ユーザーの ReBAC でライブ再評価。セッション失効しても既認可ターンの生成は継続しうるが、新規ツール authz は都度ライブ評価。
+
+→ 整合性の要注意点は [PIT-31](./design-caveats.md)。
+
+### 4.5 llm-gateway（litellm proxy クライアント）
+
+- **LiteLLM Proxy をサイドカー**として配置し、`crates/llm-gateway` は **OpenAI 互換 HTTP の薄いクライアント**。別プロセスのホップは許容（自作部品を最小化）。
+- **プロバイダ差吸収・フォールバック・リトライ・タイムアウト・ルーティング**は LiteLLM Proxy 設定に委譲（vLLM / Anthropic / Gemini /（必要なら Azure））。
+- **内部正規形＝OpenAI 互換に確定**（旧 PIT-9 の中立 content-block 案は取り下げ。判断は [PIT-9](./design-caveats.md) 参照）。
+- **shiki 固有責務は gateway 層で担保**: AuthContext 権限注入・トークン会計・コスト計上・Langfuse 相関・監査。これらは litellm に委ねない。
+- セマンティックキャッシュ・高度ルーティング・仮想キーは後追い（litellm 機能を順次活用）。
+- `LlmProvider` トレイトはゲートウェイ抽象として残すが、プロバイダ差し替え自体は litellm 設定へ移譲する。
 
 ### 4.6 サンドボックス
 
@@ -358,7 +406,7 @@ crates/
   api/             # axum, SSE, OpenAPI(utoipa)
   chat/            # スレッド/メッセージ/content blocks
   agent-core/      # エージェントループ・Tool トレイト
-  llm-gateway/     # プロバイダアダプタ・LlmProvider
+  llm-gateway/     # LiteLLM Proxy クライアント・権限/会計/コスト/Langfuse相関/監査
   storage/         # StorageService・ObjectStore
   rag/             # retrieval・VectorStore・二段authz
   authz/           # OpenFGA クライアント・relation 定義
@@ -371,9 +419,12 @@ crates/
 ingestion-worker/  # Python: Docling パース・docx/pptx 生成
 web/               # Next.js / TypeScript（generative UIレンダラ・ミニアプリB1配信）
 sdk/               # ミニアプリ SDK ＋ CLI（shiki app init/dev/publish・公開API型配布）
-deploy/            # docker compose / k8s manifests
+deploy/            # docker compose / k8s manifests（LiteLLM Proxy サイドカー・shiki-server role=worker を含む）
 docs/
 ```
+
+- **shiki-server は単一バイナリ**だが、`role=api`（HTTP/SSE）と `role=worker`（生成ジョブ消費・pgmq）の2ロールで起動可能（モジュラモノリス維持・ロール別にスケール）。
+- **LiteLLM Proxy** はサイドカーサービスとして deploy に含める（llm-gateway はこの Proxy への薄いクライアント）。
 
 - 型契約: Rust→OpenAPI(utoipa)→openapi-typescript、SSEイベント型は ts-rs/typeshare（手書き型なし）。
   公開APIゲートウェイの能力面も同じ生成物を SDK としてミニアプリへ配布（手書き型なし）。

@@ -97,11 +97,12 @@
 - **依存**: 3.x（差し替え対象トレイトが出揃う Phase 3 以降）
 - **仕様**:
   - 既存トレイトの**クラウド実装を追加**（アプリ本体・トレイト定義は不変）:
-    `ObjectStore`→**GCS**、Postgres→**Cloud SQL**（接続/IAM認証）、`LlmProvider`→**Vertex AI / 外部API**、
+    `ObjectStore`→**GCS**、Postgres→**Cloud SQL**（接続/IAM認証）、
+    **クラウド LLM（Vertex AI / 外部API）は `LlmProvider` のトレイト差し替えではなく LiteLLM Proxy のモデル設定で吸収**（gateway は薄いクライアントのまま）、
     監視エクスポータ→**Cloud Operations（旧 Stackdriver）**。`VectorStore`/`DocumentParser`/`EmbeddingProvider` はマネージド/外部の選択肢を整備。
   - 実装は **feature/設定で選択**（コンパイル時 or 起動時）。シークレット/エンドポイントは環境注入（Task 8.10）。
 - **受け入れ条件**:
-  - [ ] GCS/Cloud SQL/Vertex/Cloud Operations の各実装が単体で動作する
+  - [ ] GCS/Cloud SQL/Cloud Operations の各実装が単体で動作し、Vertex/外部API は LiteLLM Proxy 設定で切替できる
   - [ ] 設定切替のみでオンプレ実装↔クラウド実装が選べる
   - [ ] トレイト定義とアプリ本体コードに差分がない
 

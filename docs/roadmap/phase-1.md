@@ -143,6 +143,7 @@
   - create/update/delete/move 時に**ドメインイベント**（node_id, version, op, org, actor）を発行。
   - **初版キュー = Postgres ベース（pgmq 等）**。購読側（Phase 2 ingestion）が増分再索引に使う。
     outbox パターンでトランザクション整合を担保。
+    - この**キュー/outbox 基盤はインジェスト専用ではなく汎用**で、Phase 3 のチャット生成ジョブ（Task 3.11・接続非依存生成）も同じ pgmq＋outbox に乗る。
 - **受け入れ条件**:
   - [ ] 書込と同一トランザクションでイベントが outbox に入る
   - [ ] 購読側がat-least-once で受信できる

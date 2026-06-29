@@ -91,15 +91,32 @@
   「混在拒否」ではなく「**インデックス単位で version 固定・検索はエイリアス先**」に変更。
 - **守る**: §4.3 に shadow→切替の移行手順を追記。Task 2.3 の「混在拒否」をインデックス単位の制約に緩める。
 
-## 🟠 PIT-9: llm-gateway の内部正規形＝OpenAI互換は核に対して逆効果
+## 🟢 PIT-9: llm-gateway の内部正規形（取り下げ・2026-06-29 human 判断）
 
-- **箇所**: design.md §4.5 / phase-3 Task 3.2「内部正規形＝OpenAI互換、薄いアダプタ」。
-- **リスク**: 本製品の核はエージェント（agent-core）で、agentic 用途は **Claude（Opus/Sonnet）主力が自然**。
-  OpenAI スキーマ正規形は Anthropic の **tool_use/tool_result ブロック・トップレベル system・extended thinking・
-  prompt caching ブレークポイント・citations** を綺麗に乗せられず、アダプタは「薄く」ならない。最良モデルの機能を最小公倍数で削る。
-- **実装前に決めること**: 内部正規形を**プロバイダ中立な content-block 表現**（tool_use/thinking/citation を一級市民に）にし、
-  OpenAI/Gemini をアダプト側にする。最低でも prompt caching と thinking を正規形に持つ。デフォルトモデルは Claude 前提で書く。
-- **守る**: §4.5 の「OpenAI互換正規形」を「中立 content-block 正規形」に改める。
+- **決定**: llm-gateway を**自作せず LiteLLM Proxy をサイドカー**で採用し、`crates/llm-gateway` は OpenAI 互換 HTTP の薄いクライアントとする。**内部正規形は OpenAI 互換に確定**。中立 content-block 正規形案（旧推奨）は**取り下げ**。
+- **背景**: litellm に乗ることでプロバイダ差吸収・フォールバック・リトライ・ルーティングを既製で得る方を優先した。design.md §4.5・phase-3 Task 3.2 は更新済み。
+- **残存リスク（正直に記録）**: OpenAI 互換正規形では Anthropic の **tool_use/tool_result・extended thinking・prompt caching ブレークポイント・citations** が **litellm のパススルー能力に依存**し、最良モデルの機能を取りこぼし得る。
+  - **守る**: agentic 用途のデフォルトは Claude 前提で書く。litellm が当該機能（thinking / prompt caching / citations）をどこまで透過するかを Task 3.2 着手時に検証し、不足分は gateway 層で OpenAI 互換スキーマ外の拡張フィールドとして補う（=「薄さ」とのトレードオフを明示）。
+
+## 🟠 PIT-31: ジョブ駆動チャット生成の整合性（接続非依存生成）
+
+- **箇所**: design.md §4.4.1 / phase-3 Task 3.5・新 Task 3.11「pgmq＋ワーカー＋Redis Pub/Sub の接続非依存生成」。
+- **リスク**: 生成を SSE 接続から分離しジョブ化すると、二重生成・部分結果の消失・再接続時の重複・孤児生成・**ワーカー文脈での権限昇格（confused-deputy）**といった分散整合の落とし穴が一気に入る。
+- **実装前に決めること（設計の核・§4.4.1 に固定済み）**:
+  - **at-least-once ＋ 冪等**前提（exactly-once は狙わない）。Transactional Outbox（message 保存＋pgmq enqueue を単一 TX）。
+  - `generation_run` の **Lease/Fencing token** でクラッシュ takeover とゾンビ書込拒否。冪等キー＝`run_id`。
+  - **`generation_event`（append-only・run 毎単調 seq）を真実のソース**、`message.content` は projection。**Redis Pub/Sub はベストエフォート**（取りこぼしは DB replay で埋める）。
+  - 再接続は **replay-then-subscribe ＋ seq 重複排除**。
+  - **AuthContext をワーカーへ伝播し昇格させない**。RAG post-filter は呼び出しユーザー ReBAC でライブ再評価。セッション失効と生成継続の関係を明記。
+  - キャンセルは**ユーザー明示停止のみ**（ページ離脱≠キャンセル）。孤児リープ＋Phase 5 予算ガード（最大ステップ/タイムアウト/トークン上限）連携。
+  - `generation_event` の肥大・1イベントのサイズ上限・保持期間（完了後の圧縮/projection 確定）を定める。
+- **守る**: 上記を Task 3.11 の受け入れ条件（離脱後継続→永続化、再接続で重複なし、クラッシュ復帰、明示キャンセルのみ、AuthContext 保持）でテスト保証する。
+
+## 🟡 PIT-32: LiteLLM Proxy が新たなプロセス／信頼境界になる
+
+- **箇所**: design.md §4.5 / §2 図（LiteLLM Proxy サイドカー）。
+- **リスク**: 外部 LLM への egress・APIキー等シークレットの集約・proxy 障害時の挙動が、**従来 in-process だった LLM 経路に新たな境界**を持ち込む。サンドボックス内からの LLM 呼出（design §4.6 egress allowlist）との関係も整理が要る。
+- **決めること**: (1) APIキー/プロバイダ資格情報は proxy 側で環境注入し shiki アプリに置かない、(2) proxy への egress は allowlist 経路に乗せる、(3) proxy 障害時のフォールバック責務の所在（litellm 設定 vs gateway 層）、(4) オンプレ/エアギャップ時は vLLM 専用ルートのみを litellm 設定で許可。
 
 ## 🟠 PIT-10: Phase 3「最初のデモ」が最大リスク（正しさクリティカルな二段authz）に直結
 
@@ -158,7 +175,7 @@ data 行authz（§4.10/Phase 9, PIT-17〜21）・サンドボックス（§4.6/P
 skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領域:
 
 - **§4.7 / Phase 6 generative UI・宣言的UIスペック検証**（信頼カタログの境界・スペック注入）。
-- **§4.4 chat / Phase 3 SSE 再接続・content blocks の改竄/サイズ**（未深掘り）。
+- **§4.4 chat / Phase 3**: 接続非依存生成（ジョブ駆動）と SSE 再接続は design.md §4.4.1／本書 PIT-31 で設計済み。残る未深掘りは **content blocks の改竄/サイズ**（生成 event のサイズ上限・projection 確定後の検証）。
 - **§4.8 / Phase 7 資料作成**（テンプレ穴埋めのインジェクション・生成物の権限）。
 
 ---

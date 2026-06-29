@@ -63,10 +63,11 @@ flowchart LR
 
 ## Phase 3 — チャット＋RAG ★最初のデモ可能な製品
 **依存**: Phase 2。
-- チャットドメイン（thread / content blocks / JSONB）。
-- llm-gateway（vLLM＋外部API）、agent-core 制約版（doc_search ツール）。
+- チャットドメイン（thread / content blocks / JSONB / agent_mode / generation_run・event）。
+- llm-gateway（**LiteLLM Proxy クライアント**・vLLM＋外部API）。**通常チャット=古典RAG注入**、**エージェントモード=agent-core 制約版（doc_search ツール）**。
 - SSEストリーミング、引用表示、Langfuse、スレッド共有（ReBAC）。
-- **成果物**: 権限を守ったRAGチャットが動く（第一の縦スライス完成）。
+- **接続非依存の継続生成**（pgmq＋ワーカー＋Redis Pub/Sub・ページ離脱でも生成継続／Task 3.11）。
+- **成果物**: 権限を守ったRAGチャットが動く（第一の縦スライス完成）。ページを離れても生成が続く。
 
 ## Phase 4 — サンドボックス＋コードインタプリタ
 **依存**: Phase 3。

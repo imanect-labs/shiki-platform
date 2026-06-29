@@ -150,7 +150,7 @@
   - **raw `llm.invoke`**（アプリがプロンプト供給）＋ **`agent.invoke`**（agent-core起動・ツール実行＋RAG＋構造化データ参照）。
   - `agent.invoke` のツール = **アプリ宣言ツール ∩ template ∩ ユーザーReBAC**。コンテキストにアプリデータ/RAGスコープを渡せるが
     **RAGは個人ReBACで再チェック**。モデル/トークン予算ガードレール（アプリ登録時宣言＋管理者キャップ）。
-  - コストは (ユーザー×アプリ) で計上、llm-gateway 経由で Langfuse に `app_id+user+trace_id`。SSEストリーミングを通す。
+  - コストは (ユーザー×アプリ) で計上、llm-gateway 経由（LiteLLM Proxy のトークン/コスト計数を一次ソースに）で Langfuse に `app_id+user+trace_id`。SSEストリーミングを通す。
 - **受け入れ条件**:
   - [ ] ミニアプリ内から llm.invoke / agent.invoke が呼べ、結果がストリーミングされる
   - [ ] agent.invoke のツール/RAGがユーザーReBACで絞られ、非可読データが混入しない
