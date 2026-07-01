@@ -1,0 +1,375 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* ダークは .dark クラスで駆動（next-themes が <html> に付与）。
+   :where() で詳細度を上げずに「.dark 自身と配下」を対象にする。 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ───────────────────────────────────────────────────────────
+   セマンティックトークン（正本）。値は oklch で記述し、ライト= :root /
+   ダーク= .dark で同名変数を上書きする。コンポーネントは生の色を持たず、
+   必ずこのセマンティック名（bg-background 等）経由で参照する。
+   ─────────────────────────────────────────────────────────── */
+:root {
+  --radius: 0.625rem;
+
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0.21 0.006 285.9);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.006 285.9);
+
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.006 285.9);
+
+  /* プライマリ＝Deep Navy（青・紫は不使用） */
+  --primary: oklch(0.28 0.055 264);
+  --primary-foreground: oklch(0.98 0.005 264);
+
+  --secondary: oklch(0.967 0.001 286.4);
+  --secondary-foreground: oklch(0.27 0.006 286);
+
+  --muted: oklch(0.967 0.001 286.4);
+  --muted-foreground: oklch(0.552 0.014 285.9);
+
+  --accent: oklch(0.967 0.001 286.4);
+  --accent-foreground: oklch(0.27 0.006 286);
+
+  --destructive: oklch(0.577 0.245 27.3);
+  --destructive-foreground: oklch(0.98 0.01 17);
+
+  --border: oklch(0.92 0.004 286.3);
+  --input: oklch(0.92 0.004 286.3);
+  --ring: oklch(0.4 0.07 264);
+
+  /* 区切り線（荒い破線）の色＝ほのかに青みのやわらかいグレー。divider-* で使用。 */
+  --rule-color: oklch(0.62 0.045 252 / 0.55);
+  /* 密な一覧（ドライブ等）向けの控えめな破線色。 */
+  --rule-color-soft: oklch(0.62 0.045 252 / 0.3);
+
+  /* サイドバー専用面（本文より一段沈ませて ChatGPT 風の階層を作る） */
+  --sidebar: oklch(0.975 0.002 286.4);
+  --sidebar-foreground: oklch(0.21 0.006 285.9);
+  --sidebar-accent: oklch(0.93 0.006 286);
+  --sidebar-accent-foreground: oklch(0.21 0.006 285.9);
+  --sidebar-border: oklch(0.91 0.005 286.3);
+  --sidebar-ring: oklch(0.4 0.07 264);
+
+  /* 四季(shiki)アクセント。ブランド名そのものを体現する控えめな差し色。
+     彩度は抑えめ(chroma ~0.10)＝「派手すぎない」。プライマリ Navy を侵さず、
+     紫/マゼンタも避ける（春は hue 10 のロゼで magenta に寄せない）。
+     春=桜 / 夏=新緑 / 秋=紅葉 / 冬=雪空。 */
+  --season-spring: oklch(0.70 0.10 10);
+  --season-summer: oklch(0.64 0.10 160);
+  --season-autumn: oklch(0.67 0.12 52);
+  --season-winter: oklch(0.62 0.07 235);
+
+  /* シャドウ（ライトは薄く） */
+  --elevation-xs: 0 1px 2px 0 oklch(0 0 0 / 0.05);
+  --elevation-sm: 0 1px 3px 0 oklch(0 0 0 / 0.08), 0 1px 2px -1px oklch(0 0 0 / 0.08);
+  --elevation-md: 0 4px 12px -2px oklch(0 0 0 / 0.1), 0 2px 6px -3px oklch(0 0 0 / 0.08);
+  --elevation-lg: 0 12px 32px -8px oklch(0 0 0 / 0.16), 0 4px 12px -6px oklch(0 0 0 / 0.1);
+
+  /* モーション */
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.dark {
+  --background: oklch(0.16 0.004 285.8);
+  --foreground: oklch(0.96 0.001 286.4);
+
+  --card: oklch(0.2 0.006 285.9);
+  --card-foreground: oklch(0.96 0.001 286.4);
+
+  --popover: oklch(0.21 0.006 285.9);
+  --popover-foreground: oklch(0.96 0.001 286.4);
+
+  --primary: oklch(0.72 0.08 262);
+  --primary-foreground: oklch(0.22 0.03 264);
+
+  --secondary: oklch(0.27 0.006 286);
+  --secondary-foreground: oklch(0.96 0.001 286.4);
+
+  --muted: oklch(0.27 0.006 286);
+  --muted-foreground: oklch(0.71 0.01 286);
+
+  --accent: oklch(0.28 0.007 286);
+  --accent-foreground: oklch(0.96 0.001 286.4);
+
+  --destructive: oklch(0.7 0.19 22);
+  --destructive-foreground: oklch(0.97 0.01 17);
+
+  --border: oklch(1 0 0 / 0.1);
+  --input: oklch(1 0 0 / 0.14);
+  --ring: oklch(0.62 0.08 262);
+
+  /* ダークでも青みグレーを保ちつつ少し明るめ・控えめに。 */
+  --rule-color: oklch(0.72 0.04 252 / 0.42);
+  --rule-color-soft: oklch(0.72 0.04 252 / 0.24);
+
+  --sidebar: oklch(0.19 0.005 285.9);
+  --sidebar-foreground: oklch(0.96 0.001 286.4);
+  --sidebar-accent: oklch(0.27 0.007 286);
+  --sidebar-accent-foreground: oklch(0.96 0.001 286.4);
+  --sidebar-border: oklch(1 0 0 / 0.08);
+  --sidebar-ring: oklch(0.62 0.08 262);
+
+  /* 四季アクセント（ダークは沈んだ地に乗るため一段明るく） */
+  --season-spring: oklch(0.78 0.09 12);
+  --season-summer: oklch(0.74 0.09 162);
+  --season-autumn: oklch(0.77 0.10 56);
+  --season-winter: oklch(0.74 0.07 238);
+
+  /* ダークはシャドウを濃く・広く */
+  --elevation-xs: 0 1px 2px 0 oklch(0 0 0 / 0.3);
+  --elevation-sm: 0 1px 3px 0 oklch(0 0 0 / 0.4), 0 1px 2px -1px oklch(0 0 0 / 0.4);
+  --elevation-md: 0 4px 14px -2px oklch(0 0 0 / 0.5), 0 2px 8px -3px oklch(0 0 0 / 0.4);
+  --elevation-lg: 0 16px 40px -8px oklch(0 0 0 / 0.6), 0 6px 16px -6px oklch(0 0 0 / 0.45);
+}
+
+/* ───────────────────────────────────────────────────────────
+   @theme inline: 上のセマンティック変数を Tailwind のユーティリティへ束ねる。
+   これで bg-background / text-foreground / border-border / ring-ring /
+   rounded-lg / shadow-md などがライブ変数に解決し、ダークで自動反転する。
+   ─────────────────────────────────────────────────────────── */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-season-spring: var(--season-spring);
+  --color-season-summer: var(--season-summer);
+  --color-season-autumn: var(--season-autumn);
+  --color-season-winter: var(--season-winter);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --shadow-xs: var(--elevation-xs);
+  --shadow-sm: var(--elevation-sm);
+  --shadow-md: var(--elevation-md);
+  --shadow-lg: var(--elevation-lg);
+
+  /* 日本語 first-class（NFR-5）。OS 標準の日本語フォントを優先し、ビルド時に
+     外部フォント取得へ依存しない（重い JP webfont の配信も避ける）。 */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Hiragino Sans",
+    "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", "YuGothic",
+    "Meiryo", sans-serif;
+
+  --ease-standard: var(--ease-standard);
+
+  /* Radix Accordion の開閉アニメ（高さは Radix が CSS 変数で供給） */
+  --animate-accordion-down: accordion-down var(--duration-normal) var(--ease-standard);
+  --animate-accordion-up: accordion-up var(--duration-normal) var(--ease-standard);
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
+    }
+  }
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
+  }
+
+  /* prompt-kit Loader 用キーフレーム（typing / dots / text-shimmer） */
+  @keyframes typing {
+    0%,
+    100% {
+      transform: translateY(0);
+      opacity: 0.4;
+    }
+    50% {
+      transform: translateY(-2px);
+      opacity: 1;
+    }
+  }
+
+  @keyframes bounce-dots {
+    0%,
+    100% {
+      transform: translateY(0);
+      opacity: 0.5;
+    }
+    50% {
+      transform: translateY(-25%);
+      opacity: 1;
+    }
+  }
+
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+}
+
+@layer components {
+  /* ───────────────────────────────────────────────────────────
+     荒い破線の区切り線（imanect 風）。dash 8px / gap 9px、太さ 1.5px。
+     色は --rule-color（ほのかに青みのやわらかいグレー）。border を直接 dashed に
+     すると dash が細かすぎるため、背景グラデで「荒さ」を制御する。
+     ※ 主張が強くなるため、密な一覧（ドライブ等）には使わず、ホームの区切りや
+       サイドバー上端・メニューの区切りなど「間（ま）」を作る箇所にのみ使う。
+     ─────────────────────────────────────────────────────────── */
+  .shiki-dash-x {
+    background-image: repeating-linear-gradient(
+      to right,
+      var(--rule-color) 0, var(--rule-color) 8px,
+      transparent 8px, transparent 17px
+    );
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 100% 1.5px;
+  }
+  .shiki-dash-top {
+    background-image: repeating-linear-gradient(
+      to right,
+      var(--rule-color) 0, var(--rule-color) 8px,
+      transparent 8px, transparent 17px
+    );
+    background-repeat: no-repeat;
+    background-position: top;
+    background-size: 100% 1.5px;
+  }
+  /* shortcut-grid のカテゴリ左の縦破線（sm 以上のみ）。 */
+  .shiki-divide-l {
+    background-image: repeating-linear-gradient(
+      to bottom,
+      var(--rule-color) 0, var(--rule-color) 8px,
+      transparent 8px, transparent 17px
+    );
+    background-repeat: no-repeat;
+    background-position: left center;
+    background-size: 1.5px 100%;
+  }
+  @media (max-width: 639px) {
+    .shiki-divide-l {
+      background-image: none;
+    }
+  }
+  /* 行区切り用の下端破線（密な一覧向け）。.rule-soft を祖先に置くと色が控えめになる。 */
+  .shiki-dash-bottom {
+    background-image: repeating-linear-gradient(
+      to right,
+      var(--rule-color) 0, var(--rule-color) 8px,
+      transparent 8px, transparent 17px
+    );
+    background-repeat: no-repeat;
+    background-position: bottom;
+    background-size: 100% 1.5px;
+  }
+  /* 配下の破線色を控えめに（密な一覧での主張を抑える）。 */
+  .rule-soft {
+    --rule-color: var(--rule-color-soft);
+  }
+
+  /* 生成中スケルトンの shimmer。muted を基調に淡い光沢を流す（上の shimmer keyframe を使用）。 */
+  .shiki-shimmer {
+    background: linear-gradient(
+      90deg,
+      var(--muted) 25%,
+      color-mix(in oklab, var(--muted), var(--foreground) 9%) 37%,
+      var(--muted) 63%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.6s infinite linear;
+  }
+
+  /* 控えめなスクロールバー。トラックは透明（白浮き解消）、つまみは現在の前景色を薄く。
+     ホバー時だけ少し濃く出して所在を示す。Firefox は scrollbar-color で同等表現。 */
+  .scrollbar-subtle {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, currentColor 22%, transparent) transparent;
+  }
+  .scrollbar-subtle::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-subtle::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-subtle::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, currentColor 20%, transparent);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  .scrollbar-subtle:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, currentColor 32%, transparent);
+  }
+  .scrollbar-subtle::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, currentColor 42%, transparent);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    /* iOS のフォントサイズ自動拡大を抑止し、レイアウトの破綻を防ぐ */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* type="search" のブラウザ既定クリアボタンは使わない（独自の × を置くため重複を避ける）。 */
+  input[type="search"]::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "palt" 1; /* 日本語の約物詰め */
+  }
+
+  /* キーボードフォーカスは常に明示（マウスクリックでは出さない）。
+     ただし tabindex="-1" の要素は「ユーザーが Tab で到達するコントロール」ではなく、
+     Radix の Popover/Dropdown/Dialog などが開いた瞬間に内部フォーカスを移すコンテナ。
+     これらにリングを描くと、メニューを開いただけで枠（navy=黒く見える）が出てしまうので除外する。 */
+  :focus-visible {
+    @apply outline-none;
+  }
+  :focus-visible:not([tabindex="-1"]) {
+    @apply ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}

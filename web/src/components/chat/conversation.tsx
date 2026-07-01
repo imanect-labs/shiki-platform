@@ -1,0 +1,281 @@
+"use client";
+
+import * as React from "react";
+
+import {
+  getThreadMessages,
+  notifyThreadsChanged,
+  streamMessage,
+  ThreadNotFound,
+  type Attachment,
+  type Citation,
+  type ContentBlock,
+  type Message as ChatMessageT,
+} from "@/lib/chat-api";
+import { popPending } from "@/lib/pending-message";
+import { linkifyCitations } from "@/lib/citation";
+import { newId } from "@/lib/chat-store";
+import { Message, MessageContent } from "@/components/prompt-kit/message";
+import { Loader } from "@/components/prompt-kit/loader";
+import { Markdown } from "@/components/prompt-kit/markdown";
+import { Sources } from "@/components/prompt-kit/source";
+import { MessageFooter } from "./message-footer";
+import { type ToolActivityItem } from "./tool-activity";
+import { ChainOfThought } from "./chain-of-thought";
+import { Composer } from "./composer";
+
+/// ストリーミング中のアシスタント応答の蓄積状態。
+type StreamState = {
+  text: string;
+  thinking: string;
+  tools: ToolActivityItem[];
+  citations: Citation[];
+};
+
+const EMPTY_STREAM: StreamState = { text: "", thinking: "", tools: [], citations: [] };
+
+export function Conversation({ threadId }: { threadId: string }) {
+  const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
+  const [stream, setStream] = React.useState<StreamState | null>(null);
+  const [notFound, setNotFound] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const bottomRef = React.useRef<HTMLDivElement | null>(null);
+  const cancelRef = React.useRef<(() => void) | null>(null);
+  const sentPending = React.useRef(false);
+
+  const send = React.useCallback(
+    (text: string, attachments: Attachment[]) => {
+      setError(null);
+      // 楽観的にユーザーメッセージを表示。
+      const userBlocks: ContentBlock[] = [
+        ...attachments.map((a) => ({ type: "file_ref" as const, node_id: a.node_id, name: a.name })),
+        { type: "text" as const, text },
+      ];
+      setMessages((prev) => [
+        ...prev,
+        { id: newId(), role: "user", content: userBlocks, createdAt: new Date().toISOString() },
+      ]);
+      setStream({ ...EMPTY_STREAM });
+
+      cancelRef.current = streamMessage(threadId, text, attachments, {
+        onThinking: (t) => setStream((s) => (s ? { ...s, thinking: s.thinking + t } : s)),
+        onToken: (t) => setStream((s) => (s ? { ...s, text: s.text + t } : s)),
+        onToolCall: (call) =>
+          setStream((s) =>
+            s
+              ? {
+                  ...s,
+                  tools: [...s.tools, { id: call.id, name: call.name, running: true, input: call.input }],
+                }
+              : s,
+          ),
+        onToolResult: (res) =>
+          setStream((s) =>
+            s
+              ? { ...s, tools: s.tools.map((t) => (t.id === res.id ? { ...t, running: false } : t)) }
+              : s,
+          ),
+        onCitation: (c) => setStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
+        onDone: () => {
+          setStream((s) => {
+            if (s) finalizeStream(s, setMessages);
+            return null;
+          });
+          cancelRef.current = null;
+          notifyThreadsChanged();
+        },
+        onError: (msg) => {
+          setError(msg);
+          setStream(null);
+          cancelRef.current = null;
+        },
+      });
+    },
+    [threadId],
+  );
+
+  // 生成を停止する。中断時点までの思考/ツール/引用/本文を確定メッセージとして残す。
+  const stop = React.useCallback(() => {
+    cancelRef.current?.();
+    cancelRef.current = null;
+    setStream((s) => {
+      if (s) finalizeStream(s, setMessages);
+      return null;
+    });
+    notifyThreadsChanged();
+  }, []);
+
+  // 初回ロード: 既存メッセージを取得し、ホームからの pending を送信する。
+  React.useEffect(() => {
+    let active = true;
+    getThreadMessages(threadId)
+      .then((msgs) => {
+        if (!active) return;
+        setMessages(msgs);
+        // 末尾が user で未応答なら（=新規スレッド直後）pending を送る。
+        if (!sentPending.current) {
+          sentPending.current = true;
+          const pending = popPending(threadId);
+          if (pending && msgs.length === 0) {
+            send(pending.text, pending.attachments);
+          }
+        }
+      })
+      .catch((e) => {
+        if (!active) return;
+        if (e instanceof ThreadNotFound) setNotFound(true);
+        else setError(e instanceof Error ? e.message : "読み込みに失敗しました");
+      });
+    return () => {
+      active = false;
+      cancelRef.current?.();
+    };
+    // send は threadId 固定で安定。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId]);
+
+  React.useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [messages.length, stream?.text, stream?.thinking, stream?.tools.length]);
+
+  if (notFound) {
+    return (
+      <div className="flex h-full items-center justify-center px-4">
+        <p className="text-sm text-muted-foreground">この会話は見つかりませんでした。</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8">
+          {messages.map((m) =>
+            m.role === "user" ? (
+              <UserRow key={m.id} blocks={m.content} />
+            ) : (
+              <AssistantRow key={m.id} blocks={m.content} />
+            ),
+          )}
+          {stream ? <StreamingRow stream={stream} /> : null}
+          {error ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          ) : null}
+          <div ref={bottomRef} />
+        </div>
+      </div>
+
+      <div className="bg-background">
+        <div className="mx-auto w-full max-w-3xl px-4 py-4">
+          <Composer onSubmit={send} onStop={stop} streaming={stream !== null} autoFocus />
+          <p className="mt-2 text-center text-xs text-muted-foreground">
+            Shiki は社内文書を参照して回答します。誤りが含まれる場合があります。
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/// ストリーミング完了時に蓄積を確定メッセージへ変換して追加する。
+function finalizeStream(
+  s: StreamState,
+  setMessages: React.Dispatch<React.SetStateAction<ChatMessageT[]>>,
+) {
+  const blocks: ContentBlock[] = [];
+  // 思考は先頭に置き、完了後も「思考プロセス」として残す。
+  if (s.thinking.trim()) blocks.push({ type: "thinking", text: s.thinking });
+  if (s.text.trim()) blocks.push({ type: "text", text: s.text });
+  for (const c of s.citations) blocks.push(c);
+  if (blocks.length === 0) return;
+  setMessages((prev) => [
+    ...prev,
+    { id: newId(), role: "assistant", content: blocks, createdAt: new Date().toISOString() },
+  ]);
+}
+
+// ── 行レンダリング ───────────────────────────────────────────────────
+
+function UserRow({ blocks }: { blocks: ContentBlock[] }) {
+  const text = blocks
+    .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+  const files = blocks.filter((b): b is Extract<ContentBlock, { type: "file_ref" }> => b.type === "file_ref");
+  return (
+    <Message className="justify-end">
+      <div className="flex max-w-[85%] flex-col items-end gap-1.5">
+        {files.length > 0 ? (
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {files.map((f) => (
+              <span
+                key={f.node_id}
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80"
+              >
+                📎 {f.name}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {text ? (
+          <MessageContent className="rounded-2xl bg-secondary px-4 py-2.5 text-[15px] leading-relaxed text-secondary-foreground">
+            {text}
+          </MessageContent>
+        ) : null}
+      </div>
+    </Message>
+  );
+}
+
+function AssistantRow({ blocks }: { blocks: ContentBlock[] }) {
+  const thinking = blocks
+    .filter((b): b is Extract<ContentBlock, { type: "thinking" }> => b.type === "thinking")
+    .map((b) => b.text)
+    .join("");
+  const text = blocks
+    .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+  const tools: ToolActivityItem[] = blocks
+    .filter((b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call")
+    .map((b) => ({ id: b.id, name: b.name, running: false, input: b.input }));
+  const citations = blocks.filter((b): b is Citation => b.type === "citation");
+
+  return (
+    <Message className="group justify-start">
+      <div className="w-full min-w-0">
+        <ChainOfThought thinking={thinking} tools={tools} citations={citations} />
+        {text ? <Markdown>{linkifyCitations(text, citations)}</Markdown> : null}
+        <Sources citations={citations} />
+        {text ? <MessageFooter text={text} /> : null}
+      </div>
+    </Message>
+  );
+}
+
+function StreamingRow({ stream }: { stream: StreamState }) {
+  const showLoader = !stream.text && !stream.thinking && stream.tools.length === 0;
+  return (
+    <Message className="justify-start">
+      <div className="w-full min-w-0">
+        <ChainOfThought
+          thinking={stream.thinking}
+          tools={stream.tools}
+          citations={stream.citations}
+          streaming={!stream.text}
+        />
+        {showLoader ? (
+          <MessageContent className="py-1">
+            <Loader variant="typing" />
+          </MessageContent>
+        ) : stream.text ? (
+          <div className="text-[15px] leading-relaxed">
+            <Markdown>{linkifyCitations(stream.text, stream.citations)}</Markdown>
+          </div>
+        ) : null}
+      </div>
+    </Message>
+  );
+}
