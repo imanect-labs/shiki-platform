@@ -14,8 +14,11 @@ export type FileVersionResponse = components["schemas"]["FileVersionResponse"];
 export type FileVersionsResponse = components["schemas"]["FileVersionsResponse"];
 export type ShareEntry = components["schemas"]["ShareEntry"];
 export type ShareRole = components["schemas"]["ShareRole"];
+export type ShareTarget = components["schemas"]["ShareTarget"];
 export type DirectoryUserResponse = components["schemas"]["DirectoryUserResponse"];
 export type DirectorySearchResponse = components["schemas"]["DirectorySearchResponse"];
+export type DirectoryRoleResponse = components["schemas"]["DirectoryRoleResponse"];
+export type DirectoryRoleSearchResponse = components["schemas"]["DirectoryRoleSearchResponse"];
 
 /// 並び替えキー（サーバ側 keyset ソート）。
 export type SortField = "name" | "updated" | "size";
@@ -250,19 +253,20 @@ export function listShares(nodeId: string): Promise<ShareEntry[]> {
   return apiFetch(`/nodes/${nodeId}/shares`).then((r) => okJson<ShareEntry[]>(r));
 }
 
-export function shareNode(nodeId: string, userId: string, role: ShareRole): Promise<void> {
+/// 共有相手（個人 user / ロール・部署 role）へ権限を付与する。
+export function shareNode(nodeId: string, target: ShareTarget, role: ShareRole): Promise<void> {
   return apiFetch(`/nodes/${nodeId}/shares`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target: { type: "user", id: userId }, role }),
+    body: JSON.stringify({ target, role }),
   }).then(okEmpty);
 }
 
-export function unshareNode(nodeId: string, userId: string, role: ShareRole): Promise<void> {
+export function unshareNode(nodeId: string, target: ShareTarget, role: ShareRole): Promise<void> {
   return apiFetch(`/nodes/${nodeId}/shares`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target: { type: "user", id: userId }, role }),
+    body: JSON.stringify({ target, role }),
   }).then(okEmpty);
 }
 
@@ -282,6 +286,17 @@ export function searchDirectory(opts: {
 }): Promise<DirectorySearchResponse> {
   return apiFetch(`/directory/users${qs({ q: opts.q, cursor: opts.cursor, limit: opts.limit })}`).then(
     (r) => okJson<DirectorySearchResponse>(r),
+  );
+}
+
+/// ロール/部署の相手検索（共有ダイアログのオートコンプリート・#76）。同テナントに絞られる。
+export function searchRoles(opts: {
+  q: string;
+  cursor?: string;
+  limit?: number;
+}): Promise<DirectoryRoleSearchResponse> {
+  return apiFetch(`/directory/roles${qs({ q: opts.q, cursor: opts.cursor, limit: opts.limit })}`).then(
+    (r) => okJson<DirectoryRoleSearchResponse>(r),
   );
 }
 

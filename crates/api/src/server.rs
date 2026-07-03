@@ -51,6 +51,7 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::shares::shared_with_me),
         )
         .route("/directory/users", get(routes::directory::search_users))
+        .route("/directory/roles", get(routes::directory::search_roles))
         .route_layer(session_layer.clone())
         .layer(standard_timeout());
 

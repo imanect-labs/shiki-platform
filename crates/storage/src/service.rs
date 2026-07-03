@@ -2737,11 +2737,17 @@ fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {
     })
 }
 
-/// 共有先 subject の検証。subject 識別子 `user:<id>` を壊す/曖昧化する id を弾く
-/// （空・前後空白・制御文字・`:`/`#`＝型/userset 区切りの注入を拒否）。
+/// 共有先 subject の検証。subject 識別子（`user:<tenant>|<id>` / `role:<tenant>|<id>#member`）を
+/// 壊す/曖昧化する id を弾く（空・前後空白・制御文字・`:`/`#`＝型/userset 区切り・`|`＝tenant 名前空間
+/// 区切り（`authz::TENANT_SEP`）の注入を拒否）。user / role いずれも同一ルール。
+///
+/// role の**存在**（当該テナントに実在するロールか）はここでは強制しない: 全メンバーのログイン前でも
+/// 部署（AD group 由来 role）へ共有できるようにするため（dangling grant 回避は共有ダイアログの
+/// `directory_role` オートコンプリートで担保し、厳格な存在ゲートは IdP フル同期後に足す）。
 fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
     let id = match target {
         ShareTarget::User { id } => id,
+        ShareTarget::Role { id } => id,
     };
     if id.is_empty() {
         return Err(StorageError::Invalid("共有先 id が空です".into()));
@@ -2751,9 +2757,9 @@ fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
             "共有先 id の前後に空白は使えません".into(),
         ));
     }
-    if id.contains(':') || id.contains('#') {
+    if id.contains(':') || id.contains('#') || id.contains(authz::TENANT_SEP) {
         return Err(StorageError::Invalid(
-            "共有先 id に ':' / '#' は使えません".into(),
+            "共有先 id に ':' / '#' / '|' は使えません".into(),
         ));
     }
     if id.chars().any(|c| c.is_control()) {
@@ -2983,11 +2989,23 @@ mod tests {
     #[test]
     fn validate_share_target_rejects_bad_ids() {
         use crate::model::ShareTarget;
-        let ok = ShareTarget::User { id: "alice".into() };
-        assert!(validate_share_target(&ok).is_ok());
-        for bad in ["", " alice", "alice ", "a:b", "a#member", "bad\nid"] {
-            let t = ShareTarget::User { id: bad.into() };
-            assert!(validate_share_target(&t).is_err(), "should reject {bad:?}");
+        // user / role とも同一ルール。正常系（role は AD group 由来の `/` を含んでも可）。
+        assert!(validate_share_target(&ShareTarget::User { id: "alice".into() }).is_ok());
+        assert!(validate_share_target(&ShareTarget::Role { id: "sales".into() }).is_ok());
+        assert!(validate_share_target(&ShareTarget::Role {
+            id: "sales/team-1".into()
+        })
+        .is_ok());
+        // 異常系（`|`＝tenant 区切りも拒否）。
+        for bad in ["", " alice", "alice ", "a:b", "a#member", "a|b", "bad\nid"] {
+            assert!(
+                validate_share_target(&ShareTarget::User { id: bad.into() }).is_err(),
+                "user should reject {bad:?}"
+            );
+            assert!(
+                validate_share_target(&ShareTarget::Role { id: bad.into() }).is_err(),
+                "role should reject {bad:?}"
+            );
         }
     }
 

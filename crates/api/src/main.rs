@@ -162,6 +162,28 @@ const SEED_USERS: &[SeedUser] = &[
     },
 ];
 
+/// dev fixture の 1 ロール/部署（#76 role 共有の検証用）。`members` は所属ユーザーの sub。
+struct SeedRole {
+    tenant: &'static str,
+    org: &'static str,
+    id: &'static str,
+    display_name: &'static str,
+    members: &'static [&'static str],
+}
+
+/// dev/E2E の固定ロール群。a-corp の「営業部」に alice/bob が所属する
+/// （部署へ共有すると両者に反映されることを検証できる）。
+const SEED_ROLES: &[SeedRole] = &[SeedRole {
+    tenant: "a-corp",
+    org: "a-corp",
+    id: "sales",
+    display_name: "営業部",
+    members: &[
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000002",
+    ],
+}];
+
 /// 開発/E2E 用の最小シード。**明示的に `SHIKI_DEV_SEED=true` が指定された時のみ**、
 /// 固定ユーザー群（[`SEED_USERS`]）を ① OpenFGA の org member tuple ② ユーザーディレクトリ
 /// （共有相手検索の backing）へ冪等投入する。
@@ -211,6 +233,43 @@ async fn dev_seed(fga: &OpenFgaClient, directory: &DirectoryStore) -> anyhow::Re
             .context("dev seed: directory_user の投入に失敗")?;
     }
     tracing::info!(count = SEED_USERS.len(), "dev seed: ユーザー群を投入");
+
+    // role/部署（#76 共有の検証用）: メンバーシップタプルと directory_role を冪等投入する。
+    for r in SEED_ROLES {
+        for member in r.members {
+            let ctx = AuthContext::new(
+                Principal {
+                    id: (*member).to_string(),
+                    email: None,
+                    groups: vec![],
+                    roles: vec![],
+                    tenant_id: Some(r.tenant.to_string()),
+                },
+                r.org.to_string(),
+                r.tenant.to_string(),
+            );
+            let subject = ctx.subject();
+            let role_obj = ctx.ns().role(r.id);
+            if !fga
+                .check(
+                    &subject,
+                    Relation::Member,
+                    &role_obj,
+                    Consistency::HigherConsistency,
+                )
+                .await?
+            {
+                fga.write_tuple(&subject, Relation::Member, &role_obj)
+                    .await
+                    .context("dev seed: role member tuple の書き込みに失敗")?;
+            }
+        }
+        directory
+            .upsert_role(r.id, r.tenant, r.org, r.display_name)
+            .await
+            .context("dev seed: directory_role の投入に失敗")?;
+    }
+    tracing::info!(count = SEED_ROLES.len(), "dev seed: ロール群を投入");
     Ok(())
 }
 

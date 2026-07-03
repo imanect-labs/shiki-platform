@@ -134,15 +134,19 @@ pub struct Crumb {
     pub kind: NodeKind,
 }
 
-/// 共有先（subject）。Task 1.6 では **user 共有のみ** を対象とする。
+/// 共有先（subject）。個人ユーザー（`user`）とロール/部署（`role`）を対象とする。
 ///
-/// role / department / group 共有は OpenFGA のテナントスコープ（SAAS.1）と role provisioning
-/// （SAAS.2）が前提になるため defer する（#76）。
+/// `role` 共有（#76）は、共有先の識別子が呼び出し元の tenant で名前空間化される
+/// （`role:<tenant>|<id>#member`・SAAS.1/#84）ためテナント境界を越えない。ロールメンバーシップは
+/// Keycloak claim（roles/groups＝部署）由来のタプルが正本（role provisioning・[`ShareTarget::subject`]）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ShareTarget {
-    /// 個人ユーザー（`user:<id>`）。
+    /// 個人ユーザー（`user:<tenant>|<id>`）。
     User { id: String },
+    /// ロール/部署（`role:<tenant>|<id>#member`）。そのロールのメンバー（配下ロール込みの
+    /// 階層展開）へ共有する。id は Keycloak の role/group 由来（AD の OU/部署を含む）。
+    Role { id: String },
 }
 
 impl ShareTarget {
@@ -152,14 +156,22 @@ impl ShareTarget {
     pub fn subject(&self, ns: &Namespace) -> Subject {
         match self {
             ShareTarget::User { id } => ns.user(id),
+            // role 共有は `role:<tenant>|<id>#member`（そのロールのメンバー集合）。
+            ShareTarget::Role { id } => ns.role_member(id),
         }
     }
 
-    /// OpenFGA Read で得た subject 文字列を共有先へ戻す（`user:<tenant>|<id>`）。
-    /// 共有相手として解釈できない subject（他テナント・owner の user 以外・parent の folder 等）は `None`。
+    /// OpenFGA Read で得た subject 文字列を共有先へ戻す。
+    /// `user:<tenant>|<id>` → User、`role:<tenant>|<id>#member` → Role。
+    /// 共有相手として解釈できない subject（他テナント・owner の user・parent の folder 等）は `None`。
     pub fn parse_subject(ns: &Namespace, s: &str) -> Option<Self> {
-        ns.parse_user_subject(s)
-            .map(|id| ShareTarget::User { id: id.to_string() })
+        if let Some(id) = ns.parse_user_subject(s) {
+            return Some(ShareTarget::User { id: id.to_string() });
+        }
+        if let Some(id) = ns.parse_role_member_subject(s) {
+            return Some(ShareTarget::Role { id: id.to_string() });
+        }
+        None
     }
 }
 

@@ -1027,6 +1027,120 @@ async fn authz_tuples_do_not_cross_tenant() {
     );
 }
 
+/// #76: role/部署共有。ロールのメンバー（provisioning されたタプル）が共有経由で読め、
+/// 非メンバーは読めず、list_shares に Role ターゲットが出て、unshare で即時不可になること。
+#[tokio::test]
+async fn role_sharing_end_to_end() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+
+    // 部署ロール dept と、そのメンバー bob（role provisioning を模した member タプル付与）。
+    let dept = format!("dept-{}", Uuid::new_v4().simple());
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+    authz
+        .write_tuple(&bctx.subject(), Relation::Member, &bctx.ns().role(&dept))
+        .await
+        .expect("provision bob into dept role");
+    // dept に属さない別ユーザー。
+    let outsider = format!("ituser{}", Uuid::new_v4().simple());
+    let octx_out = make_ctx(&org, &outsider);
+    seed_org_member(&authz, &org, &outsider).await;
+
+    // owner がファイル作成。共有前は dept メンバーの bob も読めない。
+    let file = upload(&service, &http, &octx, None, "dept.txt", b"dept only")
+        .await
+        .expect("upload");
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "共有前は dept メンバーでも読めない"
+    );
+
+    // dept ロールへ viewer 共有 → dept メンバーの bob は role 経由で読める。
+    service
+        .share_node(
+            &octx,
+            file.id,
+            &ShareTarget::Role { id: dept.clone() },
+            ShareRole::Viewer,
+            None,
+        )
+        .await
+        .expect("share to dept role");
+    assert_eq!(
+        service
+            .get_metadata(&bctx, file.id, None)
+            .await
+            .expect("dept member reads via role share")
+            .name,
+        "dept.txt"
+    );
+    // dept に属さないユーザーは読めない。
+    assert!(
+        matches!(
+            service.get_metadata(&octx_out, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "role 非メンバーは読めない"
+    );
+
+    // 共有相手一覧に Role(dept)/viewer が出る。
+    let shares = service
+        .list_shares(&octx, file.id, None)
+        .await
+        .expect("list shares");
+    assert!(
+        shares.iter().any(|e| {
+            matches!(&e.target, ShareTarget::Role { id } if id == &dept)
+                && matches!(e.role, ShareRole::Viewer)
+        }),
+        "共有相手に role viewer が現れる: {shares:?}"
+    );
+
+    // bob の shared-with-me に file が出る（role 経由の viewer 実効集合）。
+    let inbox = service
+        .list_shared_with_me(&bctx, None, 50, None)
+        .await
+        .expect("shared with me");
+    assert!(
+        inbox.items.iter().any(|n| n.id == file.id),
+        "role メンバーの共有一覧に現れる"
+    );
+
+    // 共有解除 → dept メンバーでも即時にアクセス不可。
+    service
+        .unshare_node(
+            &octx,
+            file.id,
+            &ShareTarget::Role { id: dept.clone() },
+            ShareRole::Viewer,
+            None,
+        )
+        .await
+        .expect("unshare role");
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "role 共有解除で即時にアクセス不可"
+    );
+}
+
 #[tokio::test]
 async fn versioning_end_to_end() {
     let Some(ctx) = setup().await else { return };

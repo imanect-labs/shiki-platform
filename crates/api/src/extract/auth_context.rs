@@ -51,7 +51,7 @@ pub(crate) struct TenantId(pub String);
 /// Phase 0 はシングルテナント想定で、Keycloak group（例: `/acme` や `/acme/eng`）の
 /// 先頭セグメントを org とみなす。group が無い場合は `default`。
 /// 後続フェーズで専用 claim や DB ルックアップに差し替える。
-fn resolve_org(principal: &Principal) -> String {
+pub(crate) fn resolve_org(principal: &Principal) -> String {
     principal
         .groups
         .iter()
