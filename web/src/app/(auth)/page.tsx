@@ -22,7 +22,8 @@ export default function HomePage() {
   const router = useRouter();
   const { data, loading } = useMe();
   const [starting, setStarting] = React.useState(false);
-  const name = data?.display_name ?? data?.email?.split("@")[0] ?? null;
+  // 表示名はメールのローカル部から導出する（表示名フィールドはサーバ側実装が入る後続 PR で対応）。
+  const name = data?.email?.split("@")[0] ?? null;
 
   const startChat = async (text: string, attachments: Attachment[]) => {
     if (starting || !text.trim()) return;

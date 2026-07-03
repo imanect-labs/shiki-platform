@@ -44,7 +44,8 @@ export function NodeCard({
         <div className="min-w-0">
           <p className="truncate text-[14px] font-medium">{node.name}</p>
           <div className="mt-1 flex items-center gap-1.5 text-[12px] text-muted-foreground">
-            {node.shared ? (
+            {/* shared フラグはバックエンド実装が入る後続 PR で提供。未提供時は Lock に degrade。 */}
+            {(node as { shared?: boolean }).shared ? (
               <Users className="size-3 shrink-0 text-foreground/60" aria-hidden />
             ) : (
               <Lock className="size-3 shrink-0 text-muted-foreground/50" aria-hidden />

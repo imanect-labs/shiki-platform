@@ -63,8 +63,9 @@ export function SidebarAccount({
     );
   }
 
-  const displayName = data.display_name ?? data.email ?? data.id;
-  const initials = initialsFrom(data.display_name ?? data.email ?? data.id);
+  // 表示名はメール（無ければ id）から導出する（表示名フィールドは後続の BFF/バックエンド PR で対応）。
+  const displayName = data.email ?? data.id;
+  const initials = initialsFrom(data.email ?? data.id);
 
   const trigger = (
     <button

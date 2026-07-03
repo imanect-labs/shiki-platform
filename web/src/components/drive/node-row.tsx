@@ -43,13 +43,16 @@ export function NodeRow({
         {formatDateTime(node.updated_at)}
       </span>
       <span className="hidden truncate text-[13px] text-muted-foreground lg:block">
-        {node.created_by_name ?? node.created_by}
+        {/* created_by_name（作成者の表示名）はバックエンド実装が入る後続 PR で提供。
+            未提供時は作成者 id にフォールバックする。 */}
+        {(node as { created_by_name?: string }).created_by_name ?? node.created_by}
       </span>
       <span className="hidden truncate text-[13px] text-muted-foreground sm:block">
         {isFolder ? "—" : formatBytes(node.size_bytes)}
       </span>
       <span className="hidden items-center gap-1.5 truncate text-[13px] lg:flex">
-        {node.shared ? (
+        {/* shared フラグも後続 PR で提供。未提供時は「プライベート」表示に degrade する。 */}
+        {(node as { shared?: boolean }).shared ? (
           <>
             <Users className="size-3.5 shrink-0 text-foreground/70" aria-hidden />
             <span className="truncate text-foreground/80">共有</span>
