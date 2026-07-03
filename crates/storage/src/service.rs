@@ -8,7 +8,9 @@
 
 use std::{sync::Arc, time::Duration};
 
-use authz::{AuthContext, AuthzClient, Consistency, FgaObject, ObjectType, Relation, Subject};
+use authz::{
+    AuthContext, AuthzClient, Consistency, FgaObject, Namespace, ObjectType, Relation, Subject,
+};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
@@ -171,7 +173,7 @@ impl StorageService {
                 self.require(
                     ctx,
                     Relation::Editor,
-                    &FgaObject::file(&target.to_string()),
+                    &ctx.ns().file(&target.to_string()),
                     "file.upload_url.issue",
                     "file",
                     &target.to_string(),
@@ -187,7 +189,7 @@ impl StorageService {
                         self.require(
                             ctx,
                             Relation::Editor,
-                            &FgaObject::folder(&p.to_string()),
+                            &ctx.ns().folder(&p.to_string()),
                             "file.upload_url.issue",
                             "folder",
                             &p.to_string(),
@@ -200,7 +202,7 @@ impl StorageService {
                         self.require(
                             ctx,
                             Relation::Member,
-                            &FgaObject::organization(&ctx.org),
+                            &ctx.ns().organization(&ctx.org),
                             "file.upload_url.issue",
                             "organization",
                             &ctx.org,
@@ -293,7 +295,7 @@ impl StorageService {
                 self.require(
                     ctx,
                     Relation::Editor,
-                    &FgaObject::file(&target.to_string()),
+                    &ctx.ns().file(&target.to_string()),
                     "file.content.update",
                     "file",
                     &target.to_string(),
@@ -307,7 +309,7 @@ impl StorageService {
                     self.require(
                         ctx,
                         Relation::Editor,
-                        &FgaObject::folder(&p.to_string()),
+                        &ctx.ns().folder(&p.to_string()),
                         "file.upload.finalize",
                         "folder",
                         &p.to_string(),
@@ -321,7 +323,7 @@ impl StorageService {
                     self.require(
                         ctx,
                         Relation::Member,
-                        &FgaObject::organization(&ctx.org),
+                        &ctx.ns().organization(&ctx.org),
                         "file.upload.finalize",
                         "organization",
                         &ctx.org,
@@ -472,7 +474,7 @@ impl StorageService {
                     )
                     .await?;
                     // DB 側が確定したので FGA tuple を書く（commit 前）。
-                    let file_obj = FgaObject::file(&node.id.to_string());
+                    let file_obj = ctx.ns().file(&node.id.to_string());
                     // owner tuple（失敗時は tx を drop でロールバック＝何も残らない）。
                     self.authz
                         .write_tuple(&ctx.subject(), Relation::Owner, &file_obj)
@@ -483,7 +485,7 @@ impl StorageService {
                         if let Err(e) = self
                             .authz
                             .write_tuple(
-                                &Subject::object(&FgaObject::folder(&p.to_string())),
+                                &Subject::object(&ctx.ns().folder(&p.to_string())),
                                 Relation::Parent,
                                 &file_obj,
                             )
@@ -506,7 +508,7 @@ impl StorageService {
                             let _ = self
                                 .authz
                                 .delete_tuple(
-                                    &Subject::object(&FgaObject::folder(&p.to_string())),
+                                    &Subject::object(&ctx.ns().folder(&p.to_string())),
                                     Relation::Parent,
                                     &file_obj,
                                 )
@@ -559,7 +561,7 @@ impl StorageService {
         }
         self.require_read(
             ctx,
-            &FgaObject::file(&file_id.to_string()),
+            &ctx.ns().file(&file_id.to_string()),
             "file.download_url.issue",
             "file",
             &file_id.to_string(),
@@ -606,7 +608,7 @@ impl StorageService {
         let node = self.load_node(ctx, file_id, false).await?;
         self.require_read(
             ctx,
-            &FgaObject::file(&file_id.to_string()),
+            &ctx.ns().file(&file_id.to_string()),
             "file.metadata.read",
             "file",
             &file_id.to_string(),
@@ -660,7 +662,7 @@ impl StorageService {
         if existing.kind != expect {
             return Err(StorageError::NotFound);
         }
-        let self_obj = node_fga_object(expect, node_id);
+        let self_obj = node_fga_object(&ctx.ns(), expect, node_id);
         let action = update_action(expect);
         let id_str = node_id.to_string();
         // 対象ノードの editor 権限。
@@ -684,7 +686,7 @@ impl StorageService {
                     self.require(
                         ctx,
                         Relation::Editor,
-                        &FgaObject::folder(&p.to_string()),
+                        &ctx.ns().folder(&p.to_string()),
                         action,
                         "folder",
                         &p.to_string(),
@@ -697,7 +699,7 @@ impl StorageService {
                     self.require(
                         ctx,
                         Relation::Member,
-                        &FgaObject::organization(&ctx.org),
+                        &ctx.ns().organization(&ctx.org),
                         action,
                         "organization",
                         &ctx.org,
@@ -905,7 +907,7 @@ impl StorageService {
             if let Some(op) = old_parent {
                 self.authz
                     .delete_tuple(
-                        &Subject::object(&FgaObject::folder(&op.to_string())),
+                        &Subject::object(&ctx.ns().folder(&op.to_string())),
                         Relation::Parent,
                         &self_obj,
                     )
@@ -919,7 +921,7 @@ impl StorageService {
                     let _ = self
                         .authz
                         .write_tuple(
-                            &Subject::object(&FgaObject::folder(&op.to_string())),
+                            &Subject::object(&ctx.ns().folder(&op.to_string())),
                             Relation::Parent,
                             &self_obj,
                         )
@@ -932,7 +934,7 @@ impl StorageService {
         if let Some(np) = final_parent {
             self.authz
                 .write_tuple(
-                    &Subject::object(&FgaObject::folder(&np.to_string())),
+                    &Subject::object(&ctx.ns().folder(&np.to_string())),
                     Relation::Parent,
                     &self_obj,
                 )
@@ -1041,7 +1043,7 @@ impl StorageService {
                 self.require(
                     ctx,
                     Relation::Editor,
-                    &FgaObject::folder(&p.to_string()),
+                    &ctx.ns().folder(&p.to_string()),
                     "folder.create",
                     "folder",
                     &p.to_string(),
@@ -1054,7 +1056,7 @@ impl StorageService {
                 self.require(
                     ctx,
                     Relation::Member,
-                    &FgaObject::organization(&ctx.org),
+                    &ctx.ns().organization(&ctx.org),
                     "folder.create",
                     "organization",
                     &ctx.org,
@@ -1154,7 +1156,7 @@ impl StorageService {
             )
             .await?;
             // DB 側が確定したので FGA tuple を書く（commit 前）。
-            let folder_obj = FgaObject::folder(&folder_id.to_string());
+            let folder_obj = ctx.ns().folder(&folder_id.to_string());
             self.authz
                 .write_tuple(&ctx.subject(), Relation::Owner, &folder_obj)
                 .await
@@ -1163,7 +1165,7 @@ impl StorageService {
                 if let Err(e) = self
                     .authz
                     .write_tuple(
-                        &Subject::object(&FgaObject::folder(&p.to_string())),
+                        &Subject::object(&ctx.ns().folder(&p.to_string())),
                         Relation::Parent,
                         &folder_obj,
                     )
@@ -1185,7 +1187,7 @@ impl StorageService {
                     let _ = self
                         .authz
                         .delete_tuple(
-                            &Subject::object(&FgaObject::folder(&p.to_string())),
+                            &Subject::object(&ctx.ns().folder(&p.to_string())),
                             Relation::Parent,
                             &folder_obj,
                         )
@@ -1225,7 +1227,7 @@ impl StorageService {
                 self.ensure_folder(ctx, p).await?;
                 self.require_read(
                     ctx,
-                    &FgaObject::folder(&p.to_string()),
+                    &ctx.ns().folder(&p.to_string()),
                     "folder.children.list",
                     "folder",
                     &p.to_string(),
@@ -1237,7 +1239,7 @@ impl StorageService {
                 self.require(
                     ctx,
                     Relation::Member,
-                    &FgaObject::organization(&ctx.org),
+                    &ctx.ns().organization(&ctx.org),
                     "folder.children.list",
                     "organization",
                     &ctx.org,
@@ -1307,7 +1309,7 @@ impl StorageService {
                     .check(
                         &ctx.subject(),
                         Relation::Viewer,
-                        &node_fga_object(kind, row.id),
+                        &node_fga_object(&ctx.ns(), kind, row.id),
                         Consistency::HigherConsistency,
                     )
                     .await?;
@@ -1363,7 +1365,7 @@ impl StorageService {
         let node = self.load_node(ctx, node_id, false).await?;
         self.require_read(
             ctx,
-            &node_fga_object(node.kind, node_id),
+            &node_fga_object(&ctx.ns(), node.kind, node_id),
             "node.breadcrumb.read",
             node.kind.as_str(),
             &node_id.to_string(),
@@ -1394,7 +1396,7 @@ impl StorageService {
                     .check(
                         &ctx.subject(),
                         Relation::Viewer,
-                        &node_fga_object(kind, id),
+                        &node_fga_object(&ctx.ns(), kind, id),
                         Consistency::HigherConsistency,
                     )
                     .await?;
@@ -1440,7 +1442,7 @@ impl StorageService {
         self.require(
             ctx,
             Relation::Editor,
-            &FgaObject::folder(&folder_id.to_string()),
+            &ctx.ns().folder(&folder_id.to_string()),
             "folder.delete",
             "folder",
             &folder_id.to_string(),
@@ -1520,7 +1522,7 @@ impl StorageService {
         self.require(
             ctx,
             Relation::Editor,
-            &FgaObject::file(&file_id.to_string()),
+            &ctx.ns().file(&file_id.to_string()),
             "file.delete",
             "file",
             &file_id.to_string(),
@@ -1591,7 +1593,7 @@ impl StorageService {
         self.require(
             ctx,
             Relation::Editor,
-            &FgaObject::file(&file_id.to_string()),
+            &ctx.ns().file(&file_id.to_string()),
             "file.restore",
             "file",
             &file_id.to_string(),
@@ -1679,7 +1681,7 @@ impl StorageService {
         self.require(
             ctx,
             Relation::Editor,
-            &FgaObject::folder(&folder_id.to_string()),
+            &ctx.ns().folder(&folder_id.to_string()),
             "folder.restore",
             "folder",
             &folder_id.to_string(),
@@ -1783,7 +1785,7 @@ impl StorageService {
         self.require(
             ctx,
             Relation::Member,
-            &FgaObject::organization(&ctx.org),
+            &ctx.ns().organization(&ctx.org),
             "trash.list",
             "organization",
             &ctx.org,
@@ -1837,7 +1839,7 @@ impl StorageService {
                     .check(
                         &ctx.subject(),
                         Relation::Editor,
-                        &node_fga_object(kind, row.id),
+                        &node_fga_object(&ctx.ns(), kind, row.id),
                         Consistency::HigherConsistency,
                     )
                     .await?;
@@ -1894,7 +1896,7 @@ impl StorageService {
         }
         self.require_read(
             ctx,
-            &FgaObject::file(&file_id.to_string()),
+            &ctx.ns().file(&file_id.to_string()),
             "file.versions.list",
             "file",
             &file_id.to_string(),
@@ -1960,7 +1962,7 @@ impl StorageService {
         }
         self.require_read(
             ctx,
-            &FgaObject::file(&file_id.to_string()),
+            &ctx.ns().file(&file_id.to_string()),
             "file.version.download_url.issue",
             "file",
             &file_id.to_string(),
@@ -2027,7 +2029,7 @@ impl StorageService {
         self.require(
             ctx,
             Relation::Editor,
-            &FgaObject::file(&file_id.to_string()),
+            &ctx.ns().file(&file_id.to_string()),
             "file.version.restore",
             "file",
             &file_id.to_string(),
@@ -2151,7 +2153,7 @@ impl StorageService {
         // 付与は冪等。granted=true なら実際に新規付与した。
         let granted = self
             .authz
-            .write_tuple(&target.subject(), role.relation(), &obj)
+            .write_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
             .await?;
         if let Err(e) = self
             .record_share_audit(ctx, node_id, &obj, "node.share", target, role, trace_id)
@@ -2161,7 +2163,7 @@ impl StorageService {
             if granted {
                 let _ = self
                     .authz
-                    .delete_tuple(&target.subject(), role.relation(), &obj)
+                    .delete_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
                     .await;
             }
             return Err(e);
@@ -2189,7 +2191,7 @@ impl StorageService {
         // 剥奪は冪等。revoked=true なら実際に剥奪した。
         let revoked = self
             .authz
-            .delete_tuple(&target.subject(), role.relation(), &obj)
+            .delete_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
             .await?;
         if let Err(e) = self
             .record_share_audit(ctx, node_id, &obj, "node.unshare", target, role, trace_id)
@@ -2199,7 +2201,7 @@ impl StorageService {
             if revoked {
                 let _ = self
                     .authz
-                    .write_tuple(&target.subject(), role.relation(), &obj)
+                    .write_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
                     .await;
             }
             return Err(e);
@@ -2227,7 +2229,7 @@ impl StorageService {
             let Some(role) = Relation::parse(&t.relation).and_then(ShareRole::from_relation) else {
                 continue;
             };
-            let Some(target) = ShareTarget::parse_subject(&t.user) else {
+            let Some(target) = ShareTarget::parse_subject(&ctx.ns(), &t.user) else {
                 continue;
             };
             entries.push(ShareEntry { target, role });
@@ -2256,9 +2258,14 @@ impl StorageService {
                 .list_objects(&subject, Relation::Viewer, object_type)
                 .await?;
             for o in objs {
-                // "file:<uuid>" / "folder:<uuid>" の id 部を取り出す。
-                if let Some((_, id)) = o.split_once(':') {
-                    if let Ok(uuid) = Uuid::parse_str(id) {
+                // "file:<tenant>|<uuid>" / "folder:<tenant>|<uuid>" から自テナントの id 部を取り出す。
+                // strip_object_id が tenant 不一致を弾くため、共用ストアでも越境オブジェクトは混入しない
+                // （FGA 側の名前空間化に加え、DB 側 org+tenant フィルタと二重防御）。
+                let Some((_, id_part)) = o.split_once(':') else {
+                    continue;
+                };
+                if let Some(local) = ctx.ns().strip_object_id(id_part) {
+                    if let Ok(uuid) = Uuid::parse_str(local) {
                         ids.push(uuid);
                     }
                 }
@@ -2330,7 +2337,7 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<FgaObject, StorageError> {
         let node = self.load_node(ctx, node_id, false).await?;
-        let obj = node_fga_object(node.kind, node_id);
+        let obj = node_fga_object(&ctx.ns(), node.kind, node_id);
         self.require(
             ctx,
             Relation::Owner,
@@ -2757,11 +2764,12 @@ fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
     Ok(())
 }
 
-/// ノード種別に対応する OpenFGA オブジェクト識別子（`file:<id>` / `folder:<id>`）。
-fn node_fga_object(kind: NodeKind, id: Uuid) -> FgaObject {
+/// ノード種別に対応する OpenFGA オブジェクト識別子（tenant 名前空間化済み・SAAS.1）。
+/// `file:<tenant>|<id>` / `folder:<tenant>|<id>`。
+fn node_fga_object(ns: &Namespace, kind: NodeKind, id: Uuid) -> FgaObject {
     match kind {
-        NodeKind::File => FgaObject::file(&id.to_string()),
-        NodeKind::Folder => FgaObject::folder(&id.to_string()),
+        NodeKind::File => ns.file(&id.to_string()),
+        NodeKind::Folder => ns.folder(&id.to_string()),
     }
 }
 
@@ -2876,6 +2884,21 @@ fn validate_name(name: &str) -> Result<(), StorageError> {
 mod tests {
     use super::*;
 
+    /// tenant 名前空間化された識別子を組むための最小 `AuthContext`（純関数テスト用）。
+    fn test_ctx(tenant_id: &str) -> AuthContext {
+        AuthContext::new(
+            authz::Principal {
+                id: "u1".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(tenant_id.into()),
+            },
+            "org1".into(),
+            tenant_id.into(),
+        )
+    }
+
     #[test]
     fn validate_name_rejects_bad_inputs() {
         assert!(validate_name("").is_err());
@@ -2970,14 +2993,17 @@ mod tests {
 
     #[test]
     fn node_fga_object_maps_kind() {
+        // tenant 名前空間化済み（`file:<tenant>|<id>` / `folder:<tenant>|<id>`）。
+        let ctx = test_ctx("acme");
+        let ns = ctx.ns();
         let id = Uuid::nil();
         assert_eq!(
-            node_fga_object(NodeKind::File, id).as_str(),
-            format!("file:{id}")
+            node_fga_object(&ns, NodeKind::File, id).as_str(),
+            format!("file:acme|{id}")
         );
         assert_eq!(
-            node_fga_object(NodeKind::Folder, id).as_str(),
-            format!("folder:{id}")
+            node_fga_object(&ns, NodeKind::Folder, id).as_str(),
+            format!("folder:acme|{id}")
         );
     }
 }

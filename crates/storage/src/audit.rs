@@ -83,17 +83,19 @@ pub async fn record_on(
     chain: Chain,
 ) -> Result<(), StorageError> {
     let chained = chain == Chain::Yes;
-    // チェーン対象のみ org 単位で直列化し、直前の **chained 行** に連結する
-    // （未チェーンの読取/deny 行は跨いで無視する）。
+    // チェーン対象のみ **tenant_id + org 単位**で直列化し、直前の **chained 行** に連結する
+    // （未チェーンの読取/deny 行は跨いで無視する）。SaaS の共用プール Postgres でも
+    // ハッシュチェーンをテナント内に閉じる（同一 org を複数テナントが共有しても越境連結しない・SAAS.1）。
     let prev_hash: Option<String> = if chained {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-            .bind(&ctx.org)
+            .bind(format!("{}|{}", ctx.tenant_id, ctx.org))
             .execute(&mut *conn)
             .await?;
         sqlx::query_scalar(
             "SELECT entry_hash FROM audit_log \
-             WHERE org = $1 AND chained ORDER BY id DESC LIMIT 1",
+             WHERE tenant_id = $1 AND org = $2 AND chained ORDER BY id DESC LIMIT 1",
         )
+        .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .fetch_optional(&mut *conn)
         .await?

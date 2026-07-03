@@ -13,7 +13,7 @@ use api::{
 };
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
-    model, AuthzClient, Consistency, FgaObject, Relation, Subject,
+    model, AuthContext, AuthzClient, Consistency, Principal, Relation,
 };
 use sqlx::postgres::PgPoolOptions;
 use storage::{DirectoryStore, ObjectStore, S3ObjectStore, StorageService};
@@ -174,8 +174,21 @@ async fn dev_seed(fga: &OpenFgaClient, directory: &DirectoryStore) -> anyhow::Re
     }
     tracing::warn!("dev seed 有効（SHIKI_DEV_SEED=true）。本番では設定しないこと");
     for u in SEED_USERS {
-        let subject = Subject::user(u.id);
-        let object = FgaObject::organization(u.org);
+        // tenant 名前空間化された識別子を組む（`user:<tenant>|<id>` / `organization:<tenant>|<org>`）。
+        // 実行時と同じ `AuthContext::ns()` 経路を通す（SAAS.1）。
+        let ctx = AuthContext::new(
+            Principal {
+                id: u.id.to_string(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(u.tenant.to_string()),
+            },
+            u.org.to_string(),
+            u.tenant.to_string(),
+        );
+        let subject = ctx.subject();
+        let object = ctx.ns().organization(u.org);
         // 冪等化: 既に member なら再投入しない（OpenFGA は重複 tuple を拒否するため）。
         if !fga
             .check(

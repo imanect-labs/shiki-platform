@@ -1,6 +1,6 @@
 //! ストレージのドメインモデル（ノード・アップロード結果の DTO）。
 
-use authz::{Relation, Subject};
+use authz::{Namespace, Relation, Subject};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -146,17 +146,19 @@ pub enum ShareTarget {
 }
 
 impl ShareTarget {
-    /// OpenFGA タプル右辺の subject に変換する。
-    pub fn subject(&self) -> Subject {
+    /// OpenFGA タプル右辺の subject に変換する（tenant 名前空間化・SAAS.1）。
+    /// 共有先も呼び出し元の tenant で名前空間化されるため、他テナントの user/role を
+    /// 指定しても自テナント名前空間の識別子になり越境しない。
+    pub fn subject(&self, ns: &Namespace) -> Subject {
         match self {
-            ShareTarget::User { id } => Subject::user(id),
+            ShareTarget::User { id } => ns.user(id),
         }
     }
 
-    /// OpenFGA Read で得た subject 文字列を共有先へ戻す（`user:<id>`）。
-    /// 共有相手として解釈できない subject（owner の user 以外・parent の folder 等）は `None`。
-    pub fn parse_subject(s: &str) -> Option<Self> {
-        s.strip_prefix("user:")
+    /// OpenFGA Read で得た subject 文字列を共有先へ戻す（`user:<tenant>|<id>`）。
+    /// 共有相手として解釈できない subject（他テナント・owner の user 以外・parent の folder 等）は `None`。
+    pub fn parse_subject(ns: &Namespace, s: &str) -> Option<Self> {
+        ns.parse_user_subject(s)
             .map(|id| ShareTarget::User { id: id.to_string() })
     }
 }

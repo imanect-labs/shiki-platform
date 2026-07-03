@@ -12,7 +12,7 @@ use std::{sync::Arc, time::Duration};
 
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
-    AuthContext, AuthzClient, FgaObject, Principal, Relation, Subject,
+    AuthContext, AuthzClient, Consistency, Principal, Relation,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::{
@@ -194,12 +194,14 @@ async fn outbox_count(pool: &PgPool, node_id: Uuid, op: &str) -> i64 {
 }
 
 /// org メンバーとして seed する（ルート作成の認可に必要）。
+/// 識別子は実行時と同じ `AuthContext::ns()` 経由で tenant 名前空間化する（SAAS.1）。
 async fn seed_org_member(authz: &Arc<dyn AuthzClient>, org: &str, uid: &str) {
+    let ctx = make_ctx(org, uid);
     authz
         .write_tuple(
-            &Subject::user(uid),
+            &ctx.subject(),
             Relation::Member,
-            &FgaObject::organization(org),
+            &ctx.ns().organization(org),
         )
         .await
         .expect("member tuple seed");
@@ -254,9 +256,9 @@ async fn storage_end_to_end() {
     // org メンバーとして seed（ルート直下アップロードの認可に必要）。
     authz
         .write_tuple(
-            &Subject::user(&uid),
+            &actx.subject(),
             Relation::Member,
-            &FgaObject::organization(&org),
+            &actx.ns().organization(&org),
         )
         .await
         .expect("member tuple seed");
@@ -321,9 +323,9 @@ async fn storage_end_to_end() {
     let bctx = make_ctx(&org_b, &uid_b);
     authz
         .write_tuple(
-            &Subject::user(&uid_b),
+            &bctx.subject(),
             Relation::Member,
-            &FgaObject::organization(&org_b),
+            &bctx.ns().organization(&org_b),
         )
         .await
         .unwrap();
@@ -376,9 +378,9 @@ async fn storage_end_to_end() {
         let cctx = make_ctx(&org, &uid_c);
         authz
             .write_tuple(
-                &Subject::user(&uid_c),
+                &cctx.subject(),
                 Relation::Member,
-                &FgaObject::organization(&org),
+                &cctx.ns().organization(&org),
             )
             .await
             .unwrap();
@@ -420,9 +422,9 @@ async fn storage_end_to_end() {
         let dctx = make_ctx(&org, &uid_d);
         authz
             .write_tuple(
-                &Subject::user(&uid_d),
+                &dctx.subject(),
                 Relation::Member,
-                &FgaObject::organization(&org),
+                &dctx.ns().organization(&org),
             )
             .await
             .unwrap();
@@ -476,9 +478,9 @@ async fn storage_end_to_end() {
     // フォルダ owner を付与（editor@folder を通すため）。
     authz
         .write_tuple(
-            &Subject::user(&uid),
+            &actx.subject(),
             Relation::Owner,
-            &FgaObject::folder(&folder_id.to_string()),
+            &actx.ns().folder(&folder_id.to_string()),
         )
         .await
         .unwrap();
@@ -899,6 +901,130 @@ async fn sharing_end_to_end() {
     // owner でない bob は共有管理（list_shares）できない（存在秘匿でなく Forbidden）。
     let denied = service.list_shares(&bctx, file.id, None).await;
     assert!(matches!(denied, Err(StorageError::Forbidden)), "{denied:?}");
+}
+
+/// SAAS.1: authz タプルが tenant 境界を越えないこと。
+///
+/// **同一 org 文字列・同一 uid** を 2 つの tenant で共有しても、authz の識別子名前空間化
+/// （`<type>:<tenant>|<local>`）により membership も共有も越境しないことを、authz レベル
+/// （raw check）と storage レベル（共有ファイルの不可視）の両面で実証する
+/// （受け入れ条件「あるテナントのデータが他テナントの取得に一切現れない・authz タプルも境界を越えない」）。
+#[tokio::test]
+async fn authz_tuples_do_not_cross_tenant() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    // org 文字列と uid を 2 tenant で意図的に一致させる（DB 行分離だけでなく authz 名前空間で
+    // 隔離されることを示すため）。
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let uid = format!("ituser{}", Uuid::new_v4().simple());
+    let ta = format!("ta{}", Uuid::new_v4().simple());
+    let tb = format!("tb{}", Uuid::new_v4().simple());
+    let ctx_a = make_ctx_tenant(&org, &ta, &uid);
+    let ctx_b = make_ctx_tenant(&org, &tb, &uid);
+
+    // tenant A でのみ org member タプルを付与する。
+    authz
+        .write_tuple(
+            &ctx_a.subject(),
+            Relation::Member,
+            &ctx_a.ns().organization(&org),
+        )
+        .await
+        .expect("seed member in tenant A");
+
+    // authz レベル: 同一 (org, uid) でも tenant B は member ではない（タプルが越境しない）。
+    assert!(
+        authz
+            .check(
+                &ctx_a.subject(),
+                Relation::Member,
+                &ctx_a.ns().organization(&org),
+                Consistency::HigherConsistency,
+            )
+            .await
+            .unwrap(),
+        "tenant A の member 判定は true"
+    );
+    assert!(
+        !authz
+            .check(
+                &ctx_b.subject(),
+                Relation::Member,
+                &ctx_b.ns().organization(&org),
+                Consistency::HigherConsistency,
+            )
+            .await
+            .unwrap(),
+        "同一 org・同一 uid でも別 tenant は member にならない（authz タプルが越境しない）"
+    );
+
+    // storage レベル: tenant A が作ったファイルを bob へ共有 → tenant B の同一 uid の bob には
+    // 一切見えない。対照として tenant A の bob には見える。
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let ctx_a_bob = make_ctx_tenant(&org, &ta, &bob);
+    authz
+        .write_tuple(
+            &ctx_a_bob.subject(),
+            Relation::Member,
+            &ctx_a_bob.ns().organization(&org),
+        )
+        .await
+        .expect("seed bob in tenant A");
+
+    let file = upload(
+        &service,
+        &http,
+        &ctx_a,
+        None,
+        "a-secret.txt",
+        b"tenant A only",
+    )
+    .await
+    .expect("upload in tenant A");
+    service
+        .share_node(
+            &ctx_a,
+            file.id,
+            &ShareTarget::User { id: bob.clone() },
+            ShareRole::Viewer,
+            None,
+        )
+        .await
+        .expect("share to bob in tenant A");
+
+    // 対照: tenant A の bob には共有ファイルが見える。
+    let inbox_a = service
+        .list_shared_with_me(&ctx_a_bob, None, 50, None)
+        .await
+        .expect("inbox A");
+    assert!(
+        inbox_a.items.iter().any(|n| n.id == file.id),
+        "同一 tenant の共有相手には見える"
+    );
+
+    // 本命: tenant B の同一 uid の bob には共有ファイルが漏れない（shared-with-me / 直接取得の両方）。
+    let ctx_b_bob = make_ctx_tenant(&org, &tb, &bob);
+    let inbox_b = service
+        .list_shared_with_me(&ctx_b_bob, None, 50, None)
+        .await
+        .expect("inbox B");
+    assert!(
+        !inbox_b.items.iter().any(|n| n.id == file.id),
+        "別 tenant には共有ファイルが一切現れない"
+    );
+    assert!(
+        matches!(
+            service.get_metadata(&ctx_b_bob, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "別 tenant からは直接取得もできない（存在秘匿）"
+    );
 }
 
 #[tokio::test]

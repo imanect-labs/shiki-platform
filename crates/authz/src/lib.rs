@@ -19,5 +19,5 @@ pub mod vocab;
 pub use client::{AuthzClient, Consistency, OpenFgaClient, OpenFgaConfig, ReadTupleKey};
 pub use context::{AuthContext, Principal};
 pub use error::AuthzError;
-pub use object::{FgaObject, Subject};
+pub use object::{FgaObject, Namespace, Subject, TENANT_SEP};
 pub use vocab::{ObjectType, Relation};

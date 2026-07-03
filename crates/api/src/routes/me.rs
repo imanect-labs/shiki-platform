@@ -3,7 +3,7 @@
 //! JWT 検証（middleware）→ principal → AuthContext extractor → OpenFGA check →
 //! ユーザー情報 JSON、を 1 リクエストで協調させる。
 
-use authz::{Consistency, FgaObject, Relation};
+use authz::{Consistency, Relation};
 use axum::{extract::State, Json};
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -42,7 +42,7 @@ pub async fn get_me(
         .check(
             &ctx.subject(),
             Relation::Member,
-            &FgaObject::organization(&ctx.org),
+            &ctx.ns().organization(&ctx.org),
             Consistency::MinimizeLatency,
         )
         .await?;
