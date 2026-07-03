@@ -9,7 +9,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use storage::{DirectoryUser, DEFAULT_SEARCH_LIMIT};
+use storage::{DirectoryRole, DirectoryUser, DEFAULT_SEARCH_LIMIT};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{error::ApiError, extract::AuthContextExt, state::AppState};
@@ -79,6 +79,61 @@ pub async fn search_users(
         )
         .await?;
     Ok(Json(DirectorySearchResponse {
+        items: page.items.into_iter().map(Into::into).collect(),
+        next_cursor: page.next_cursor,
+    }))
+}
+
+/// 検索結果の 1 ロール/部署（共有相手候補）。#76。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DirectoryRoleResponse {
+    /// 共有 tuple の `role:<id>#member` に使う識別子（Keycloak role/group 由来）。
+    pub id: String,
+    pub display_name: String,
+}
+
+impl From<DirectoryRole> for DirectoryRoleResponse {
+    fn from(r: DirectoryRole) -> Self {
+        Self {
+            id: r.id,
+            display_name: r.display_name,
+        }
+    }
+}
+
+/// ロール検索の 1 ページ。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DirectoryRoleSearchResponse {
+    pub items: Vec<DirectoryRoleResponse>,
+    pub next_cursor: Option<String>,
+}
+
+/// 同テナント（＋ org）のロール/部署を検索する（共有ダイアログのオートコンプリート・#76）。
+#[utoipa::path(
+    get,
+    path = "/directory/roles",
+    params(DirectorySearchQuery),
+    responses(
+        (status = 200, description = "検索結果（同テナントのみ）", body = DirectoryRoleSearchResponse),
+        (status = 401, description = "未認証"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn search_roles(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Query(q): Query<DirectorySearchQuery>,
+) -> Result<Json<DirectoryRoleSearchResponse>, ApiError> {
+    let page = state
+        .directory
+        .search_roles(
+            &ctx,
+            &q.q,
+            q.cursor.as_deref(),
+            q.limit.unwrap_or(DEFAULT_SEARCH_LIMIT),
+        )
+        .await?;
+    Ok(Json(DirectoryRoleSearchResponse {
         items: page.items.into_iter().map(Into::into).collect(),
         next_cursor: page.next_cursor,
     }))

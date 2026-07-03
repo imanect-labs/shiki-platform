@@ -32,6 +32,7 @@ use utoipa::{
         crate::routes::shares::list_shares,
         crate::routes::shares::shared_with_me,
         crate::routes::directory::search_users,
+        crate::routes::directory::search_roles,
     ),
     components(schemas(
         crate::routes::me::MeResponse,
@@ -50,6 +51,8 @@ use utoipa::{
         crate::routes::shares::ShareRequest,
         crate::routes::directory::DirectoryUserResponse,
         crate::routes::directory::DirectorySearchResponse,
+        crate::routes::directory::DirectoryRoleResponse,
+        crate::routes::directory::DirectoryRoleSearchResponse,
         storage::ShareTarget,
         storage::ShareRole,
         storage::ShareEntry,
