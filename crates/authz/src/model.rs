@@ -83,4 +83,158 @@ mod tests {
         });
         assert_eq!(model_fingerprint(&with_id), model_fingerprint(&without_id));
     }
+
+    #[test]
+    fn default_model_is_valid_json_object() {
+        // 同梱の正本 model はパース可能でオブジェクトであること。
+        let model = default_model();
+        assert!(model.is_object());
+    }
+
+    #[test]
+    fn default_model_has_expected_shape() {
+        // 正本 model は schema_version と type_definitions を持つこと。
+        let model = default_model();
+        assert_eq!(
+            model.get("schema_version").and_then(|v| v.as_str()),
+            Some("1.1")
+        );
+        let types = model
+            .get("type_definitions")
+            .and_then(|v| v.as_array())
+            .expect("type_definitions は配列");
+        // user / organization / role が定義されていること。
+        let type_names: Vec<&str> = types
+            .iter()
+            .filter_map(|t| t.get("type").and_then(|v| v.as_str()))
+            .collect();
+        assert!(type_names.contains(&"user"));
+        assert!(type_names.contains(&"organization"));
+        assert!(type_names.contains(&"role"));
+        // Phase 1（ストレージ）で folder / file を追加した。
+        assert!(type_names.contains(&"folder"));
+        assert!(type_names.contains(&"file"));
+    }
+
+    #[test]
+    fn fga_and_json_declare_same_types() {
+        // `.fga`（人がレビュー）と `.json`（実際に投入）の type 名集合が一致することを CI で保証する
+        // （どちらか片方にだけ type を足す drift を検出する。認可はチョークポイントゆえの安価な保険）。
+        use std::collections::BTreeSet;
+        let fga = include_str!("../model/authorization-model.fga");
+        let fga_types: BTreeSet<String> = fga
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("type "))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .map(str::to_string)
+            .collect();
+        let model = default_model();
+        let json_types: BTreeSet<String> = model
+            .get("type_definitions")
+            .and_then(|v| v.as_array())
+            .expect("type_definitions は配列")
+            .iter()
+            .filter_map(|t| t.get("type").and_then(|v| v.as_str()))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            fga_types, json_types,
+            ".fga と .json の type 名集合が一致すること（model drift 検出）"
+        );
+    }
+
+    #[test]
+    fn storage_types_have_expected_relations() {
+        // folder / file は owner / editor / viewer / parent を持つこと（厳格モデル）。
+        let model = default_model();
+        let types = model
+            .get("type_definitions")
+            .and_then(|v| v.as_array())
+            .expect("type_definitions は配列");
+        for type_name in ["folder", "file"] {
+            let def = types
+                .iter()
+                .find(|t| t.get("type").and_then(|v| v.as_str()) == Some(type_name))
+                .unwrap_or_else(|| panic!("{type_name} 型が定義されていること"));
+            let relations = def
+                .get("relations")
+                .and_then(|v| v.as_object())
+                .expect("relations はオブジェクト");
+            for rel in ["parent", "owner", "editor", "viewer"] {
+                assert!(
+                    relations.contains_key(rel),
+                    "{type_name} は relation {rel} を持つこと"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fingerprint_extracts_three_keys() {
+        // fingerprint は schema_version / type_definitions / conditions の 3 キーのみ持つこと。
+        let model = serde_json::json!({
+            "id": "01X",
+            "schema_version": "1.1",
+            "type_definitions": [{"type": "user"}],
+            "conditions": {"cond": {}},
+            "extra_field": "ignored",
+        });
+        let fp = model_fingerprint(&model);
+        let obj = fp.as_object().expect("fingerprint はオブジェクト");
+        assert_eq!(obj.len(), 3);
+        assert!(obj.contains_key("schema_version"));
+        assert!(obj.contains_key("type_definitions"));
+        assert!(obj.contains_key("conditions"));
+        // 抽出対象外のフィールドは含まれないこと。
+        assert!(!obj.contains_key("id"));
+        assert!(!obj.contains_key("extra_field"));
+    }
+
+    #[test]
+    fn fingerprint_missing_fields_become_null() {
+        // 欠落フィールドは Null として埋められること（境界）。
+        let model = serde_json::json!({});
+        let fp = model_fingerprint(&model);
+        assert_eq!(fp.get("schema_version"), Some(&serde_json::Value::Null));
+        assert_eq!(fp.get("type_definitions"), Some(&serde_json::Value::Null));
+        assert_eq!(fp.get("conditions"), Some(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn fingerprint_detects_type_definition_diff() {
+        // type_definitions が異なれば fingerprint も異なること（負例: 差分検出）。
+        let a = serde_json::json!({
+            "schema_version": "1.1",
+            "type_definitions": [{"type": "user"}],
+        });
+        let b = serde_json::json!({
+            "schema_version": "1.1",
+            "type_definitions": [{"type": "user"}, {"type": "folder"}],
+        });
+        assert_ne!(model_fingerprint(&a), model_fingerprint(&b));
+    }
+
+    #[test]
+    fn fingerprint_detects_schema_version_diff() {
+        // schema_version が異なれば fingerprint も異なること。
+        let a = serde_json::json!({ "schema_version": "1.1" });
+        let b = serde_json::json!({ "schema_version": "1.2" });
+        assert_ne!(model_fingerprint(&a), model_fingerprint(&b));
+    }
+
+    #[test]
+    fn fingerprint_detects_conditions_diff() {
+        // conditions の差分も検出すること。
+        let a = serde_json::json!({ "conditions": {} });
+        let b = serde_json::json!({ "conditions": {"c": 1} });
+        assert_ne!(model_fingerprint(&a), model_fingerprint(&b));
+    }
+
+    #[test]
+    fn default_model_fingerprint_is_stable() {
+        // 同じ正本 model からは同一 fingerprint が安定して得られること（冪等比較の基盤）。
+        let m1 = default_model();
+        let m2 = default_model();
+        assert_eq!(model_fingerprint(&m1), model_fingerprint(&m2));
+    }
 }

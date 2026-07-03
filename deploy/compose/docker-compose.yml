@@ -82,12 +82,27 @@ services:
       timeout: 5s
       retries: 20
 
+  redis:
+    image: redis:7-alpine
+    # BFF セッションストア（オパーク Cookie の実体。tenant_id スコープのキーで論理分離）。
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # ブラウザからの presigned PUT/GET（別オリジン: web → MinIO）を許可する CORS。
+      # Drive UI（Task 1.10）はクライアント直転送のため必須。dev は全オリジン許可。
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-*}
     volumes:
       - minio-data:/data
     ports:
@@ -160,16 +175,42 @@ services:
       SHIKI__SERVER__PORT: "8080"
       SHIKI__DATABASE__URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/shiki
       SHIKI__AUTH__ISSUER: ${SHIKI__AUTH__ISSUER:-http://localhost:8081/realms/shiki}
-      SHIKI__AUTH__JWKS_URI: ${SHIKI__AUTH__JWKS_URI:-http://keycloak:8080/realms/shiki/protocol/openid-connect/certs}
+      # サーバ側 OIDC 呼び出し（token 交換・JWKS）はコンテナ内部 URL を使う。
+      # authorize/end-session は公開 issuer（ブラウザ向け）を使う。
+      SHIKI__AUTH__INTERNAL_BASE_URL: ${SHIKI__AUTH__INTERNAL_BASE_URL:-http://keycloak:8080/realms/shiki}
       SHIKI__AUTH__AUDIENCE: ${SHIKI__AUTH__AUDIENCE:-shiki-api}
+      # テナンシー: multi（claim `tenant` 由来で Postgres 分離）を dev 既定にし、dev_seed の
+      # a-corp/b-corp テナントと一致させる（bare `docker compose up` でも共有検索が成立）。
+      # multi は本番 fail-closed で、dev/test の明示 opt-in（SHIKI_DEV_ALLOW_MULTI_TENANT）が要る。
+      SHIKI__AUTH__TENANCY: ${SHIKI__AUTH__TENANCY:-multi}
+      SHIKI__AUTH__TENANT_ID: ${SHIKI__AUTH__TENANT_ID:-default}
+      SHIKI_DEV_ALLOW_MULTI_TENANT: ${SHIKI_DEV_ALLOW_MULTI_TENANT:-true}
+      SHIKI__AUTH__CLIENT_ID: ${SHIKI__AUTH__CLIENT_ID:-shiki-web}
+      SHIKI__AUTH__CLIENT_SECRET: ${SHIKI__AUTH__CLIENT_SECRET:-shiki-web-dev-secret}
+      # smoke（web 無し）では api 自身の callback を使う。実運用は web 同一オリジン（:3000）。
+      SHIKI__AUTH__REDIRECT_URI: ${SHIKI__AUTH__REDIRECT_URI:-http://localhost:8080/auth/callback}
+      SHIKI__AUTH__POST_LOGOUT_REDIRECT_URI: ${SHIKI__AUTH__POST_LOGOUT_REDIRECT_URI:-http://localhost:8080/}
+      # ローカル HTTP 開発のため Cookie Secure を無効化（本番は true）。
+      SHIKI__SESSION__REDIS_URL: redis://redis:6379
+      SHIKI__SESSION__SECURE: "false"
       SHIKI__AUTHZ__BASE_URL: http://openfga:8080
       SHIKI__AUTHZ__STORE_NAME: shiki
       SHIKI__TELEMETRY__OTLP_ENDPOINT: http://otel-collector:4317
       SHIKI__TELEMETRY__SERVICE_NAME: shiki-server
       SHIKI__TELEMETRY__LOG_FORMAT: json
       SHIKI__STORAGE__BACKEND: minio
+      # server→MinIO は内部ホスト、presigned URL はブラウザ到達可能ホストで署名する。
+      SHIKI__STORAGE__S3__INTERNAL_ENDPOINT: http://minio:9000
+      SHIKI__STORAGE__S3__PUBLIC_ENDPOINT: ${SHIKI__STORAGE__S3__PUBLIC_ENDPOINT:-http://localhost:9000}
+      SHIKI__STORAGE__S3__BUCKET: ${SHIKI__STORAGE__S3__BUCKET:-shiki-blobs}
+      SHIKI__STORAGE__S3__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      SHIKI__STORAGE__S3__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # ブラウザ直 PUT/GET（別オリジン）には MinIO バケット CORS が要る。Drive UI（1.10）導入時に
+      # config/TOML で storage.s3.cors_allowed_origins を配列指定する（env スカラは Vec に展開できない）。
       SHIKI__VECTOR__BACKEND: qdrant
       SHIKI__LLM__BACKEND: vllm
+      # dev seed は明示フラグでのみ有効化（本番では設定しない）。
+      SHIKI_DEV_SEED: ${SHIKI_DEV_SEED:-true}
       SHIKI_DEV_SEED_USER: ${SHIKI_DEV_SEED_USER:-00000000-0000-0000-0000-000000000001}
       SHIKI_DEV_SEED_ORG: ${SHIKI_DEV_SEED_ORG:-acme}
       RUST_LOG: "info,shiki_api=debug,authz=debug"
@@ -181,6 +222,10 @@ services:
       keycloak:
         condition: service_healthy
       openfga:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
       otel-collector:
         condition: service_started

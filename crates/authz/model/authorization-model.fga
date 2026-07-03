@@ -1,8 +1,8 @@
-# shiki ReBAC authorization model — Phase 0 最小骨格（人がレビューする正本）
+# shiki ReBAC authorization model（人がレビューする正本）
 #
-# docs/design.md §4.1 の ReBAC 図に準拠。Phase 0 は organization / department /
-# user と member / parent のみ。後続フェーズで folder / file / thread / doc_chunk と
-# viewer / editor / owner 等を追加する。
+# docs/design.md §4.1 の ReBAC 図に準拠。Phase 0 は organization / role /
+# user と member / parent。Phase 1（ストレージ）で folder / file と owner / editor /
+# viewer を追加した。後続フェーズで thread / doc_chunk 等を追加する。
 #
 # このファイルは可読性のためのレビュー用。実際に OpenFGA へ投入するのは
 # authorization-model.json（同期させること。CI で drift を検出してもよい）。
@@ -16,8 +16,31 @@ type organization
   relations
     define member: [user]
 
-type department
+# ロール: テナント内のメンバーシップ集合。階層は親ロールが子ロールを含む（上方向ロールアップ）。
+# 例: role:営業部#member@role:営業1課#member を書くと、営業1課 のメンバーが営業部のメンバーになる。
+# 旧 department の「上位組織メンバーが自動で全部署メンバーになる」下方向継承は撤去した。
+type role
   relations
-    define parent: [organization]
-    # 部署メンバーは、直接付与された user か、上位組織のメンバー（下方向継承）。
-    define member: [user] or member from parent
+    # ロールメンバー = 直接付与された user、または配下ロールのメンバー（[user, role#member] のネストグループ）。
+    define member: [user, role#member]
+
+# ストレージ: フォルダ（ツリーの内部ノード）。
+# 厳格モデル: 明示付与（owner/editor/viewer）と「親フォルダからの継承」のみ。
+# org メンバーであることだけでは配下を読めない（自動継承を入れない）。
+# Task 1.6 の共有は **user 直接付与のみ**。role/部署共有は tenant スコープ（SAAS.1）が
+# 前提のため defer（#76）。role#member を直接型に足すのは SAAS.1 後。
+type folder
+  relations
+    define parent: [folder]
+    define owner: [user]
+    define editor: [user] or owner or editor from parent
+    define viewer: [user] or editor or viewer from parent
+
+# ストレージ: ファイル（ツリーの葉・認可の最小オブジェクト）。
+# ルート直下のファイルは parent を持たず、作成者の owner タプルのみで到達する。
+type file
+  relations
+    define parent: [folder]
+    define owner: [user]
+    define editor: [user] or owner or editor from parent
+    define viewer: [user] or editor or viewer from parent

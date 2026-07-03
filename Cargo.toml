@@ -21,6 +21,7 @@ sqlx = { version = "0.8", default-features = false, features = [
     "tls-rustls",
     "postgres",
     "macros",
+    "migrate",
     "chrono",
     "uuid",
 ] }
@@ -36,6 +37,15 @@ reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
 ] }
+
+# BFF セッション (Redis) / Cookie / トークン生成 (PKCE/CSRF/session id)
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+axum-extra = { version = "0.10", features = ["cookie"] }
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+# cookie crate(axum-extra 経由)と同じ time 0.3 を使い Max-Age を組み立てる。
+time = "0.3"
 
 # 型契約 / codegen
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
@@ -58,5 +68,23 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 
+# ストレージ（ObjectStore / content-addressing）
+# S3 互換オブジェクトストア（MinIO）。GCS 実装は Phase 8 で同 trait 裏に追加する。
+aws-config = { version = "1", default-features = false, features = [
+    "behavior-version-latest",
+    "rustls",
+] }
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "behavior-version-latest",
+    "rustls",
+    "rt-tokio",
+] }
+aws-credential-types = "1"
+aws-smithy-types = "1"
+bytes = "1"
+futures = "0.3"
+hex = "0.4"
+
 # 内部クレート
 shiki-authz = { path = "crates/authz" }
+shiki-storage = { path = "crates/storage" }

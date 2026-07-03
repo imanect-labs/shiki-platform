@@ -7,6 +7,7 @@
 shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基盤を備えるエンタープライズAIプラットフォーム（Rust モジュラモノリス ＋ Next.js ＋ Python ワーカー）。
 
 正本ドキュメント（必ずここを読む。アーキの詳細はここに再記述しない）:
+ドキュメントが陳腐化しないよう、設計の誤りや実装との乖離がある場合はhumanに修正を提案する。
 
 - 設計原則・全体構成・サブシステム・リポジトリ構成: docs/design.md
 - 機能要件(FR-1〜11)・非機能要件: docs/requirements.md
@@ -32,17 +33,18 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 違反しやすく代償が大きい核。詳細チェックリストは architecture-invariants スキル、根拠は docs/design.md §1,§4,§5。
 
 - 単一チョークポイント: ストレージ=StorageService / 認可=OpenFGA クライアント / LLM=llm-gateway を必ず経由。個別ハンドラに権限チェックを散らさない。
-- アンビエント権限の禁止: 全データアクセスは AuthContext { principal, org } 経由。将来の tenant_id の継ぎ目を壊さない。
+- アンビエント権限の禁止: 全データアクセスは AuthContext { principal, org, tenant_id } 経由。SaaS マルチテナント前提で tenant_id を day-1 から保持し、隔離境界を壊さない。
 - 二段 authz: RAG/構造化データは pre-filter ＋ post-filter の両方。実効権限 = スコープ ∩ ユーザー ReBAC。
 - 差し替えはトレイト裏で: cloud/onprem 差は ObjectStore/VectorStore/LlmProvider/Sandbox/DocumentParser/EmbeddingProvider のみで吸収。アプリ本体を分岐させない。
 - codegen が正（手書き型を作らない）: 型(Rust→OpenAPI→TS、SSE は ts-rs/typeshare)・認可語彙(relation/スコープ/ツール名)は単一定義から生成。
 
 ## コーディング規約
 
-- 全件取得→フィルタではなく、最初から必要なデータ・フィールドのみ取得する。
 - パフォーマンスを追求する。
+- 全件取得→フィルタではなく、最初から必要なデータ・フィールドのみ取得する。
 - 可読性を高める適切な変数名・関数名を使う。
 - セキュリティのベストプラクティスを遵守する。認可・監査・サンドボックス・公開API境界は特に慎重に（confused-deputy 防御・authz バイパス禁止）。
+- ただ実装するだけでなく、今後の拡張性を考えること。関連箇所だけでなくロードマップを認識して依存関係が生じる箇所のドキュメントは確認すること。
 
 ## 開発フロー
 

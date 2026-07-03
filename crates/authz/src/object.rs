@@ -19,8 +19,19 @@ impl FgaObject {
         Self::new(ObjectType::Organization, id)
     }
 
-    pub fn department(id: &str) -> Self {
-        Self::new(ObjectType::Department, id)
+    /// ロールオブジェクト `role:<id>`（テナント内メンバーシップ集合・階層対応）。
+    pub fn role(id: &str) -> Self {
+        Self::new(ObjectType::Role, id)
+    }
+
+    /// ストレージのフォルダオブジェクト `folder:<id>`。
+    pub fn folder(id: &str) -> Self {
+        Self::new(ObjectType::Folder, id)
+    }
+
+    /// ストレージのファイルオブジェクト `file:<id>`（認可の最小オブジェクト）。
+    pub fn file(id: &str) -> Self {
+        Self::new(ObjectType::File, id)
     }
 
     pub fn as_str(&self) -> &str {
@@ -41,6 +52,26 @@ pub struct Subject(String);
 impl Subject {
     pub fn user(id: &str) -> Self {
         Subject(format!("{}:{}", ObjectType::User.as_str(), id))
+    }
+
+    /// オブジェクトを subject として参照する（userset 親子の結線に使う）。
+    ///
+    /// 例: `file:<id>#parent@folder:<parent>` の右辺 `folder:<parent>`。
+    /// ReBAC では subject が `user:` 以外（オブジェクト参照）になり得るため、
+    /// [`FgaObject`] からそのまま subject 文字列を作る経路を用意する。
+    pub fn object(object: &FgaObject) -> Self {
+        Subject(object.as_str().to_string())
+    }
+
+    /// userset（`object#relation`）を subject として参照する。
+    ///
+    /// 例: ロール階層の結線 `role:営業部#member@role:営業1課#member` の右辺
+    /// `role:営業1課#member`（配下ロールのメンバー集合を親ロールに含める）。
+    /// `role` 型の `member: [user, role#member]` のように直接型へ userset を許す
+    /// relation のタプルを、チョークポイント（[`AuthzClient`](crate::AuthzClient)）
+    /// 経由で構築するための経路。
+    pub fn userset(object: &FgaObject, relation: crate::vocab::Relation) -> Self {
+        Subject(format!("{}#{}", object.as_str(), relation.as_str()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -65,5 +96,141 @@ mod tests {
             "organization:acme"
         );
         assert_eq!(Subject::user("alice").as_str(), "user:alice");
+    }
+
+    // --- FgaObject ---
+
+    #[test]
+    fn fga_object_new_uses_object_type_prefix() {
+        // new は object type の文字列表現を prefix として `type:id` を組むこと。
+        assert_eq!(FgaObject::new(ObjectType::User, "u1").as_str(), "user:u1");
+        assert_eq!(FgaObject::new(ObjectType::Role, "r1").as_str(), "role:r1");
+        assert_eq!(
+            FgaObject::new(ObjectType::Organization, "o1").as_str(),
+            "organization:o1"
+        );
+    }
+
+    #[test]
+    fn fga_object_role_constructor() {
+        // role ショートカットコンストラクタ。
+        assert_eq!(FgaObject::role("sales").as_str(), "role:sales");
+    }
+
+    #[test]
+    fn fga_object_storage_constructors() {
+        // folder/file ショートカットコンストラクタ（Phase 1 ストレージ）。
+        assert_eq!(FgaObject::folder("f1").as_str(), "folder:f1");
+        assert_eq!(FgaObject::file("doc1").as_str(), "file:doc1");
+    }
+
+    #[test]
+    fn fga_object_display_matches_as_str() {
+        // Display 実装は as_str と一致すること。
+        let obj = FgaObject::organization("acme");
+        assert_eq!(obj.to_string(), "organization:acme");
+        assert_eq!(obj.to_string(), obj.as_str());
+    }
+
+    #[test]
+    fn fga_object_empty_id() {
+        // id が空でも `type:` 形式になること（境界）。
+        assert_eq!(FgaObject::organization("").as_str(), "organization:");
+    }
+
+    #[test]
+    fn fga_object_id_with_colon() {
+        // id に colon を含んでいてもそのまま連結されること（境界）。
+        assert_eq!(
+            FgaObject::new(ObjectType::User, "ns:alice").as_str(),
+            "user:ns:alice"
+        );
+    }
+
+    #[test]
+    fn fga_object_eq_and_hash() {
+        // 同じ type/id は等価、異なれば非等価。Hash でも区別されること。
+        use std::collections::HashSet;
+        let a = FgaObject::organization("acme");
+        let b = FgaObject::organization("acme");
+        let c = FgaObject::organization("other");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        let mut set = HashSet::new();
+        set.insert(a.clone());
+        set.insert(b);
+        set.insert(c);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn fga_object_clone_is_equal() {
+        // Clone は等価なオブジェクトを生むこと。
+        let a = FgaObject::role("r1");
+        assert_eq!(a.clone(), a);
+    }
+
+    // --- Subject ---
+
+    #[test]
+    fn subject_user_prefix() {
+        // Subject::user は常に `user:` prefix を付けること。
+        assert_eq!(Subject::user("bob").as_str(), "user:bob");
+    }
+
+    #[test]
+    fn subject_from_object_keeps_type_prefix() {
+        // Subject::object はオブジェクトの `type:id` をそのまま subject にすること。
+        assert_eq!(
+            Subject::object(&FgaObject::folder("f1")).as_str(),
+            "folder:f1"
+        );
+    }
+
+    #[test]
+    fn subject_userset_appends_relation() {
+        // Subject::userset は `object#relation` を生成すること（ロール階層・共有の結線に使う）。
+        use crate::vocab::Relation;
+        assert_eq!(
+            Subject::userset(&FgaObject::role("sales-sec1"), Relation::Member).as_str(),
+            "role:sales-sec1#member"
+        );
+    }
+
+    #[test]
+    fn subject_display_matches_as_str() {
+        // Display 実装は as_str と一致すること。
+        let s = Subject::user("alice");
+        assert_eq!(s.to_string(), "user:alice");
+        assert_eq!(s.to_string(), s.as_str());
+    }
+
+    #[test]
+    fn subject_empty_id() {
+        // 空 id でも `user:` 形式（境界）。
+        assert_eq!(Subject::user("").as_str(), "user:");
+    }
+
+    #[test]
+    fn subject_eq_and_hash() {
+        // 等価性と Hash の区別を確認する。
+        use std::collections::HashSet;
+        let a = Subject::user("alice");
+        let b = Subject::user("alice");
+        let c = Subject::user("bob");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        let mut set = HashSet::new();
+        set.insert(a.clone());
+        set.insert(b);
+        set.insert(c);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn subject_clone_is_equal() {
+        // Clone は等価。
+        let s = Subject::user("x");
+        assert_eq!(s.clone(), s);
     }
 }

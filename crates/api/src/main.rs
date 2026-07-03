@@ -4,13 +4,19 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
 use api::{
-    config::AppConfig, middleware::JwksCache, server::build_router, state::AppState, telemetry,
+    config::{AppConfig, ObjectStoreBackend},
+    middleware::JwksCache,
+    server::build_router,
+    session::RedisSessionStore,
+    state::AppState,
+    telemetry,
 };
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
-    model, AuthzClient, FgaObject, Relation, Subject,
+    model, AuthzClient, Consistency, FgaObject, Relation, Subject,
 };
 use sqlx::postgres::PgPoolOptions;
+use storage::{DirectoryStore, ObjectStore, S3ObjectStore, StorageService};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,6 +31,14 @@ async fn main() -> anyhow::Result<()> {
         .connect_lazy(&config.database.url)
         .context("Postgres プールの初期化に失敗")?;
 
+    // スキーマ・マイグレーションを適用（起動時 fail-fast）。
+    // ここで初めて実接続が張られる。compose は depends_on で postgres healthy を待つ。
+    sqlx::migrate!("../../migrations")
+        .run(&db)
+        .await
+        .context("DB マイグレーションの適用に失敗")?;
+    tracing::info!("DB マイグレーション適用完了");
+
     // JWKS 取得・OpenFGA で共用する HTTP クライアント。
     let http = reqwest::Client::new();
 
@@ -36,7 +50,45 @@ async fn main() -> anyhow::Result<()> {
     let fga = OpenFgaClient::connect(http.clone(), &fga_config, &model::default_model())
         .await
         .context("OpenFGA への接続に失敗")?;
-    dev_seed(&fga).await?;
+    // ユーザーディレクトリ（共有相手検索。storage と同じ db プールを共有）。dev_seed で使う。
+    let directory = Arc::new(DirectoryStore::new(db.clone()));
+    dev_seed(&fga, &directory).await?;
+    // authz は AppState と StorageService で同一インスタンスを共有する（単一チョークポイント）。
+    let authz: Arc<dyn AuthzClient> = Arc::new(fga);
+
+    // ストレージ: backend に応じて ObjectStore を選び StorageService を構築する。
+    // GCS は Phase 8 で同 trait 裏に追加する。s3 設定の必須チェックは minio の分岐内で行う
+    // （gcs 選択時に s3 未設定エラーで誤って落ちないようにする）。
+    let (object_store, presign_get_ttl, presign_put_ttl): (Arc<dyn ObjectStore>, _, _) =
+        match config.storage.backend {
+            ObjectStoreBackend::Minio => {
+                let s3 = config
+                    .storage
+                    .s3
+                    .as_ref()
+                    .context("storage.s3 が未設定です（backend=minio）")?;
+                (
+                    Arc::new(S3ObjectStore::new(s3)) as Arc<dyn ObjectStore>,
+                    s3.presign_get_ttl(),
+                    s3.presign_put_ttl(),
+                )
+            }
+            ObjectStoreBackend::Gcs => {
+                anyhow::bail!("storage.backend=gcs は Phase 8 で実装予定です")
+            }
+        };
+    object_store
+        .ensure_bucket()
+        .await
+        .context("オブジェクトストアのバケット準備に失敗")?;
+    let storage = Arc::new(StorageService::new(
+        db.clone(),
+        object_store,
+        authz.clone(),
+        presign_get_ttl,
+        presign_put_ttl,
+        config.storage.max_upload_size_bytes,
+    ));
 
     let jwks = Arc::new(JwksCache::new(
         http.clone(),
@@ -44,12 +96,23 @@ async fn main() -> anyhow::Result<()> {
         Duration::from_secs(config.auth.jwks_ttl_secs),
     ));
 
+    // BFF セッションストア（Redis）。compose では depends_on で redis healthy を待つ。
+    let sessions = Arc::new(
+        RedisSessionStore::connect(&config.session.redis_url)
+            .await
+            .context("Redis セッションストアへの接続に失敗")?,
+    );
+
     let bind = format!("{}:{}", config.server.host, config.server.port);
     let state = AppState {
         config: Arc::new(config),
         db,
-        authz: Arc::new(fga),
+        authz,
         jwks,
+        sessions,
+        http,
+        storage,
+        directory,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -63,27 +126,87 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 開発/E2E 用の最小シード。`SHIKI_DEV_SEED_USER` と `SHIKI_DEV_SEED_ORG` が
-/// 両方設定されている時のみ、その org への member tuple を投入する。
-async fn dev_seed(fga: &OpenFgaClient) -> anyhow::Result<()> {
-    let (Ok(user), Ok(org)) = (
-        std::env::var("SHIKI_DEV_SEED_USER"),
-        std::env::var("SHIKI_DEV_SEED_ORG"),
-    ) else {
-        return Ok(());
-    };
-    let subject = Subject::user(&user);
-    let object = FgaObject::organization(&org);
-    // 冪等化: 既に member なら再投入しない（OpenFGA は重複 tuple を拒否するため）。
-    if fga.check(&subject, Relation::Member, &object).await? {
-        tracing::info!(%user, %org, "dev seed: 既に member のため skip");
+/// dev fixture の 1 ユーザー（OIDC sub / tenant / org / email / 表示名）。
+/// realm（`deploy/keycloak/shiki-realm.json`）の sub・tenant 属性・group と一致させる。
+struct SeedUser {
+    id: &'static str,
+    tenant: &'static str,
+    org: &'static str,
+    email: &'static str,
+    display_name: &'static str,
+}
+
+/// dev/E2E の固定ユーザー群。**alice/bob は tenant `a-corp`、charlie は別 tenant `b-corp`**。
+/// これによりテナント分離（charlie が alice の検索/共有に出ない）を検証できる。
+const SEED_USERS: &[SeedUser] = &[
+    SeedUser {
+        id: "00000000-0000-0000-0000-000000000001",
+        tenant: "a-corp",
+        org: "a-corp",
+        email: "alice@a-corp.example.com",
+        display_name: "Alice",
+    },
+    SeedUser {
+        id: "00000000-0000-0000-0000-000000000002",
+        tenant: "a-corp",
+        org: "a-corp",
+        email: "bob@a-corp.example.com",
+        display_name: "Bob",
+    },
+    SeedUser {
+        id: "00000000-0000-0000-0000-000000000003",
+        tenant: "b-corp",
+        org: "b-corp",
+        email: "charlie@b-corp.example.com",
+        display_name: "Charlie",
+    },
+];
+
+/// 開発/E2E 用の最小シード。**明示的に `SHIKI_DEV_SEED=true` が指定された時のみ**、
+/// 固定ユーザー群（[`SEED_USERS`]）を ① OpenFGA の org member tuple ② ユーザーディレクトリ
+/// （共有相手検索の backing）へ冪等投入する。
+///
+/// 任意ユーザーを任意 org の member に昇格できる権限付与経路のため、本番で env が
+/// 紛れ込んでも作動しないよう、専用の有効化フラグでガードする（fail-safe）。
+async fn dev_seed(fga: &OpenFgaClient, directory: &DirectoryStore) -> anyhow::Result<()> {
+    if !dev_seed_enabled() {
         return Ok(());
     }
-    fga.write_tuple(&subject, Relation::Member, &object)
-        .await
-        .context("dev seed tuple の書き込みに失敗")?;
-    tracing::info!(%user, %org, "dev seed: org member tuple を投入");
+    tracing::warn!("dev seed 有効（SHIKI_DEV_SEED=true）。本番では設定しないこと");
+    for u in SEED_USERS {
+        let subject = Subject::user(u.id);
+        let object = FgaObject::organization(u.org);
+        // 冪等化: 既に member なら再投入しない（OpenFGA は重複 tuple を拒否するため）。
+        if !fga
+            .check(
+                &subject,
+                Relation::Member,
+                &object,
+                Consistency::HigherConsistency,
+            )
+            .await?
+        {
+            fga.write_tuple(&subject, Relation::Member, &object)
+                .await
+                .context("dev seed tuple の書き込みに失敗")?;
+            tracing::info!(user = %u.id, org = %u.org, "dev seed: org member tuple を投入");
+        }
+        // ディレクトリ（共有相手検索）へ投入。ON CONFLICT 更新で冪等。
+        directory
+            .upsert_user(u.id, u.tenant, u.org, u.email, u.display_name)
+            .await
+            .context("dev seed: directory_user の投入に失敗")?;
+    }
+    tracing::info!(count = SEED_USERS.len(), "dev seed: ユーザー群を投入");
     Ok(())
+}
+
+/// dev seed の有効化フラグ（`SHIKI_DEV_SEED` が真値のときのみ true）。
+fn dev_seed_enabled() -> bool {
+    matches!(
+        std::env::var("SHIKI_DEV_SEED").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE")
+    )
 }
 
 async fn shutdown_signal() {

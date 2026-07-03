@@ -3,7 +3,7 @@
 //! JWT 検証（middleware）→ principal → AuthContext extractor → OpenFGA check →
 //! ユーザー情報 JSON、を 1 リクエストで協調させる。
 
-use authz::{FgaObject, Relation};
+use authz::{Consistency, FgaObject, Relation};
 use axum::{extract::State, Json};
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -14,8 +14,11 @@ use crate::{error::ApiError, extract::AuthContextExt, state::AppState};
 pub struct MeResponse {
     pub id: String,
     pub email: Option<String>,
-    pub dept: Option<String>,
+    /// IdP が宣言した所属ロール（多値）。階層込みの実効メンバーシップは OpenFGA が正本。
+    pub roles: Vec<String>,
     pub org: String,
+    /// テナント識別子（SaaS の隔離境界。オンプレは単一固定）。
+    pub tenant_id: String,
 }
 
 /// 認証済みユーザー自身の情報を返す。
@@ -27,7 +30,7 @@ pub struct MeResponse {
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
     ),
-    security(("bearer" = [])),
+    security(("session" = [])),
 )]
 pub async fn get_me(
     State(state): State<AppState>,
@@ -40,6 +43,7 @@ pub async fn get_me(
             &ctx.subject(),
             Relation::Member,
             &FgaObject::organization(&ctx.org),
+            Consistency::MinimizeLatency,
         )
         .await?;
     if !allowed {
@@ -49,7 +53,8 @@ pub async fn get_me(
     Ok(Json(MeResponse {
         id: ctx.principal.id,
         email: ctx.principal.email,
-        dept: ctx.principal.dept,
+        roles: ctx.principal.roles,
         org: ctx.org,
+        tenant_id: ctx.tenant_id,
     }))
 }

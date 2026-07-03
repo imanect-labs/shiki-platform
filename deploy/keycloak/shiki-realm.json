@@ -5,17 +5,25 @@
   "registrationAllowed": false,
   "accessTokenLifespan": 1800,
   "groups": [
-    { "name": "acme", "path": "/acme" }
+    { "name": "a-corp", "path": "/a-corp" },
+    { "name": "b-corp", "path": "/b-corp" }
   ],
   "clients": [
     {
       "clientId": "shiki-web",
-      "name": "shiki web frontend",
+      "name": "shiki web frontend (BFF confidential client)",
+      "description": "メイン Web の BFF（crates/api）が code↔token 交換をサーバ側で行う confidential client。ブラウザにトークンは置かない（docs/auth/browser-token-strategy.md / #55）。",
       "enabled": true,
-      "publicClient": true,
+      "publicClient": false,
+      "secret": "shiki-web-dev-secret",
       "standardFlowEnabled": true,
-      "directAccessGrantsEnabled": true,
-      "redirectUris": ["http://localhost:3000/*"],
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:8080/*",
+        "http://localhost:10067/*",
+        "http://shuya-dev:10067/*"
+      ],
       "webOrigins": ["+"],
       "rootUrl": "http://localhost:3000",
       "baseUrl": "http://localhost:3000",
@@ -47,15 +55,31 @@
           }
         },
         {
-          "name": "department",
+          "name": "roles",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-usermodel-attribute-mapper",
           "config": {
-            "user.attribute": "department",
-            "claim.name": "department",
+            "user.attribute": "roles",
+            "claim.name": "roles",
             "jsonType.label": "String",
+            "multivalued": "true",
             "access.token.claim": "true",
-            "id.token.claim": "true"
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "tenant",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "tenant",
+            "claim.name": "tenant",
+            "jsonType.label": "String",
+            "multivalued": "false",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
           }
         }
       ]
@@ -91,13 +115,56 @@
       "username": "alice",
       "enabled": true,
       "emailVerified": true,
-      "email": "alice@acme.example",
+      "email": "alice@a-corp.example.com",
       "firstName": "Alice",
-      "lastName": "Example",
+      "lastName": "Acorp",
       "attributes": {
-        "department": ["engineering"]
+        "roles": ["engineering", "sales-div"],
+        "tenant": ["a-corp"]
       },
-      "groups": ["/acme"],
+      "groups": ["/a-corp"],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "bob@a-corp.example.com",
+      "firstName": "Bob",
+      "lastName": "Acorp",
+      "attributes": {
+        "roles": ["engineering"],
+        "tenant": ["a-corp"]
+      },
+      "groups": ["/a-corp"],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000003",
+      "username": "charlie",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "charlie@b-corp.example.com",
+      "firstName": "Charlie",
+      "lastName": "Bcorp",
+      "attributes": {
+        "roles": ["engineering"],
+        "tenant": ["b-corp"]
+      },
+      "groups": ["/b-corp"],
       "credentials": [
         {
           "type": "password",

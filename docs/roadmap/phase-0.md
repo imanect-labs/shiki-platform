@@ -1,9 +1,10 @@
 # Phase 0 — 歩く骨格（Walking Skeleton）
 
-> 目的: トレイト境界・認証/認可・配布形態（compose）・型契約・可観測性の土台を**最初に1本通す**。
+> 目的: トレイト境界・認証/認可・**SaaS トポロジ**・配布形態（compose）・型契約・可観測性の土台を**最初に1本通す**。
 > 機能価値はまだ無いが、以降の全フェーズがこの骨格に乗る。
-> 完了の定義(DoD): `docker compose up` 一発で全依存が起動し、Keycloakでログインしたユーザーが
-> OpenFGAで認可される `GET /me` をブラウザから叩けて、その1リクエストがOTelトレースに現れる。
+> **SaaS を優先ターゲット**とし、共有コントロールプレーン＋顧客ごと隔離 cell データプレーン（design §4.1.1）と `tenant_id` を day-1 から前提にする。認証は **BFF + オパークセッション Cookie**（Redis）。
+> 完了の定義(DoD): `docker compose up` 一発で全依存（Redis 含む）が起動し、Keycloak でログインしたユーザーが
+> **セッション Cookie** で OpenFGA 認可される `GET /me`（`tenant_id` スコープ込み）をブラウザから叩けて、その1リクエストが OTel トレースに現れる。
 
 ## タスク一覧
 
@@ -45,7 +46,7 @@
 - **依存**: 0.1
 - **path**: `deploy/compose/`
 - **仕様**:
-  - `docker-compose.yml` に Phase 0 で必要な依存を定義: **Postgres**, **Keycloak**, **OpenFGA**, **MinIO**。
+  - `docker-compose.yml` に Phase 0 で必要な依存を定義: **Postgres**, **Keycloak**, **OpenFGA**, **MinIO**, **Redis**（BFF セッションストア・Task 0.11/#55）。
     （Qdrant/Tantivy/ingestion等は後続フェーズで追記）
   - 各サービスにヘルスチェック、永続ボリューム、`.env.example`（接続情報）。
   - OpenFGA は Postgres をバックエンドに設定。Keycloak も Postgres を使用。
@@ -71,16 +72,17 @@
   - [ ] `/readyz` がPostgres断時に503、復帰で200
   - [ ] 設定の必須欠落時に起動エラーで明確に落ちる
 
-### Task 0.4: Keycloak realm 構成＋OIDC JWT 検証ミドルウェア
+### Task 0.4: Keycloak realm 構成＋OIDC 検証ミドルウェア（土台）
 - **area**: auth
 - **依存**: 0.2, 0.3
 - **path**: `crates/api`（middleware）, `deploy/keycloak/`
+> ⚠️ **認証方式は BFF + オパークセッション Cookie に確定**（ADR `docs/auth/browser-token-strategy.md` / Task 0.11 #55）。本タスクは Keycloak realm と**クレーム抽出→`principal`** までを土台として作り、`Authorization: Bearer` 検証は **Task 0.11 でセッション Cookie 検証へ置換**される（Bearer 版を最終形にしない・ブラウザにトークンを持たせる前提を残さない）。
 - **仕様**:
   - Keycloak に `shiki` realm を定義（realm export JSON を `deploy/keycloak/` に commit、起動時インポート）。
-    フロント用 public client、API用設定、テストユーザーを含む。
-  - **OIDC JWT 検証ミドルウェア**: `Authorization: Bearer` を検証（JWKS取得・キャッシュ・署名/exp/aud/iss検証）。
-    検証済みクレームから `principal`（user id, email, groups/dept）を抽出し request extension に載せる。
-  - SSE 用に fetch-stream のヘッダ認証も同経路で通す前提にする。
+    フロント用 client（BFF の Authorization Code + PKCE 用・confidential）、API用設定、テストユーザーを含む。
+  - **クレーム抽出（再利用される中核）**: 検証済み OIDC クレームから `principal`（user id, email, groups/dept）を抽出し request extension に載せる（`claims.rs`）。この層は 0.11 でも再利用する。
+  - **トークン検証ロジック**（JWKS取得・キャッシュ・署名/exp/aud/iss検証）は、0.11 では BFF の token 交換後の ID/Access token 検証として再利用する。`Authorization: Bearer` 入口は 0.11 で撤去。
+  - SSE は Cookie 自動添付を前提にする（ヘッダ認証は不要。POST ストリームは Task 3.5 の方式に従う）。
   - 顧客IdPフェデレーション（AD/Entra/Okta）は**設定で追加できる構造**にするが、Phase 0 では shiki realm のみ。
 - **受け入れ条件**:
   - [ ] 有効なトークンで保護エンドポイントにアクセスでき、無効/期限切れは401
@@ -93,10 +95,23 @@
 - **path**: `crates/authz`
 - **仕様**:
   - OpenFGA クライアントクレートを実装（store作成、authorization model のロード/バージョン管理）。
-  - **最小 relation model** を定義（Phase 0 は骨格のみ）: `organization`, `department`, `user`,
-    relations `member`, `parent`。後続フェーズで `folder`/`file`/`thread`/`doc_chunk` を追加する前提のスキーマ構成。
-  - **認可コンテキスト** `AuthContext { principal, org }` を定義し、全データアクセスがこれを受け取る規約を導入
-    （将来の `tenant_id` 追加の継ぎ目）。`check(user, relation, object)` ヘルパを提供。
+  - **最小 relation model** を定義（Phase 0 は骨格のみ）: `organization`, `role`, `user`,
+    relation `member`。ロール階層は `role#member` のネスト（`[user, role#member]`）で**配下ロール→親ロールへ
+    上方向ロールアップ**する（親ロールは配下ロールのメンバーを含む）。`parent` relation は Phase 1 で
+    `folder`/`file` 追加時に導入する。後続フェーズで `thread`/`doc_chunk` を追加する前提のスキーマ構成。
+  - **認可コンテキスト** `AuthContext { principal, org, tenant_id }` を定義し、全データアクセスがこれを受け取る規約を導入
+    （**SaaS マルチテナント前提で `tenant_id` を day-1 から保持**・後付けで隔離境界を壊さない）。`check(user, relation, object)` ヘルパを提供。
+  - **`tenant_id` の取得元（human 決定 / #57）= 案C 既定 ＋ 案A 継ぎ目**: 解決は `crates/api` の
+    `resolve_tenant_id` 一点に集約し、設定 `auth.tenancy`（`single`/`multi`）でモード分岐する:
+    - `single`（案C・オンプレ/cell・既定）: 設定 `auth.tenant_id` の固定値（既定 `"default"`）。
+      defaults で固定値が効くため無設定でも後方互換で動作する（固定値が空なら設定ミスとして拒否）。
+    - `multi`（案A・SaaS）: Keycloak claim `tenant` を**必須**にし、欠落・空白は **fail-closed で拒否**
+      （固定値へフォールバックして無関係なテナントへ黙って融合させない）。
+    取得元は state を持つ認証境界（`require_auth` / #55 のセッション middleware）で解決し extension 経由で
+    `AuthContext` 構築に渡す（extractor は state 非依存を維持）。
+  - **実分離の強制は SAAS.1**: OpenFGA の subject/object 識別子（`user:<id>` / `organization:<org>`）を
+    `tenant_id` でスコープ化する強制は roadmap トラック SAAS.1 の責務。本タスクは `AuthContext` に
+    `tenant_id` を保持する継ぎ目の用意までを範囲とする（`subject()` の doc にも明記）。
   - relation model は `docs/design.md` の ReBAC 図に準拠。**model定義は人がレビュー**（ポリシ決定）。
 - **受け入れ条件**:
   - [ ] authorization model が OpenFGA にロードされバージョンが記録される
@@ -121,12 +136,13 @@
 - **area**: frontend
 - **依存**: 0.3, 0.4
 - **path**: `web/`
+> ⚠️ **ブラウザにトークンを保持しない**（BFF + オパークセッション Cookie に確定・ADR / Task 0.11 #55）。OIDC の code 受け／token 交換／refresh は**サーバ側（BFF）**が担い、フロントは `localStorage` 保持・silent renew・`Authorization` ヘッダ自動付与を**実装しない**。
 - **仕様**:
-  - Next.js App Router 雛形、OIDCログイン（Keycloakへリダイレクト、トークン保持、リフレッシュ）。
+  - Next.js App Router 雛形、OIDCログイン（Keycloak へリダイレクト → **BFF が code/token 交換**。ブラウザはトークンを保持せず**セッション Cookie のみ**）。
   - ログイン後に `/me` を呼んで表示する最小画面。
   - **型生成パイプライン**: `utoipa` が出すOpenAPI仕様 → `openapi-typescript` でTSクライアント/型生成。
     SSEイベント型は ts-rs/typeshare でRustから生成。生成物は commit せず CI/スクリプトで再生成可能に。
-  - 認証付き fetch ラッパ（Authorizationヘッダ自動付与、SSE用 fetch-stream 対応の素地）。
+  - 認証付き fetch ラッパ（**`credentials:'include'` でセッション Cookie 送出**。SSE は Cookie 自動添付。POST ストリームは Task 3.5 方式）。
 - **受け入れ条件**:
   - [ ] ブラウザでログイン→`/me`の自分情報が表示される
   - [ ] `pnpm gen:api`（等）でRust定義から型/クライアントが再生成される

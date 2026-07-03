@@ -10,7 +10,7 @@
 - **shiki Keycloak = 共有アイデンティティプール**。skillex はこの realm（`shiki`）へ
   フェデレートし、**User は統一**。サービスへの入場券と管理者バッジも統一。
 - **認可（館内ルール）は各サービスが保持・分離**。skillex の DLC/訓練権限・設定は skillex 側、
-  shiki の ReBAC・部署・設定は shiki 側。Keycloak が持つのは「利用可否＋サービス管理者か」の
+  shiki の ReBAC・ロール・設定は shiki 側。Keycloak が持つのは「利用可否＋サービス管理者か」の
   粗い粒度のみ。
 - **利用量計測は分離（集約値のみ請求へ）／請求は統一（Org 単位 1 請求・サービス別内訳）**。
 - shiki-server の AuthN 向き先は設定で差し替え（SaaS=共有 issuer ⇔ オンプレ=ローカル Keycloak）。

@@ -124,11 +124,14 @@ fn http_metrics() -> &'static HttpMetrics {
 
 /// リクエスト span に trace_id を記録し、基本メトリクス（件数/レイテンシ）を計上する。
 /// span は `make_request_span` で `trace_id` フィールドを Empty 宣言済みである前提。
-pub async fn observe(req: Request, next: Next) -> Response {
+pub async fn observe(mut req: Request, next: Next) -> Response {
     let span = tracing::Span::current();
     let trace_id = span.context().span().span_context().trace_id();
     if trace_id != opentelemetry::trace::TraceId::INVALID {
         span.record("trace_id", tracing::field::display(trace_id));
+        // ハンドラ（監査ログ）が trace_id を参照できるよう extension に載せる。
+        req.extensions_mut()
+            .insert(crate::extract::TraceId(trace_id.to_string()));
     }
 
     let method = req.method().as_str().to_owned();
@@ -159,4 +162,54 @@ pub async fn observe(req: Request, next: Next) -> Response {
     );
 
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `init` 内の fmt レイヤ選択ロジックを、グローバル初期化を伴わずに再現する。
+    /// `.init()` はプロセス共有のため呼ばず、レイヤ構築（=分岐到達）のみ検証する。
+    /// subscriber 型 `S` は実コード同様 registry に対するもので、ここでは明示する。
+    fn build_fmt_layer(
+        format: LogFormat,
+    ) -> Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync> {
+        match format {
+            LogFormat::Json => tracing_subscriber::fmt::layer().json().boxed(),
+            LogFormat::Pretty => tracing_subscriber::fmt::layer().pretty().boxed(),
+        }
+    }
+
+    #[test]
+    fn fmt_layer_builds_for_both_formats() {
+        // json / pretty いずれの選択でもレイヤ構築がパニックしないこと。
+        let _json = build_fmt_layer(LogFormat::Json);
+        let _pretty = build_fmt_layer(LogFormat::Pretty);
+    }
+
+    #[test]
+    fn telemetry_guard_drop_is_safe_when_empty() {
+        // OTLP 未設定相当（provider 無し）のガード drop が安全（no-op）であること。
+        let guard = TelemetryGuard {
+            tracer_provider: None,
+            meter_provider: None,
+        };
+        drop(guard);
+    }
+
+    fn telemetry_config(otlp_endpoint: Option<&str>, log_format: LogFormat) -> TelemetryConfig {
+        TelemetryConfig {
+            otlp_endpoint: otlp_endpoint.map(str::to_string),
+            service_name: "shiki-server-test".into(),
+            log_format,
+        }
+    }
+
+    #[test]
+    fn telemetry_config_otlp_absent_is_none() {
+        // otlp_endpoint 未設定（OTel 無効）の構成を表現できること。
+        let cfg = telemetry_config(None, LogFormat::Json);
+        assert!(cfg.otlp_endpoint.is_none());
+        assert_eq!(cfg.log_format, LogFormat::Json);
+    }
 }

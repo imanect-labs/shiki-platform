@@ -8,9 +8,11 @@ pub mod error;
 pub mod extract;
 pub mod health;
 pub mod middleware;
+pub mod oidc;
 pub mod openapi;
 pub mod routes;
 pub mod server;
+pub mod session;
 pub mod state;
 pub mod telemetry;
 

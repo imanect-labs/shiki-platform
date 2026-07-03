@@ -51,6 +51,11 @@
   - **コンテンツアドレッシング**: blob は内容ハッシュ（例 sha256）をキーに保存→自動重複排除。
     node メタは `blob_hash` を参照。大容量はストリーミング/マルチパート。
   - バケットは内部専用、**直アクセス禁止**（必ず StorageService 経由）。
+  - **PIT-6 の決定（presigned 採用）**: バイト転送は **presigned URL 方式**（クライアント↔MinIO 直）。
+    ただし単一チョークポイントを守るため**メタ・認可・監査・content-addressing は必ず StorageService 経由**。
+    アップロードは**二相**（declare→presigned PUT(staging)→finalize で server-side 再ハッシュ検証→content-addressed へ昇格）、
+    DL は**短 TTL の presigned GET**（発行時に viewer check＋監査）。発行後 TTL 満了までは失効しない残存ウィンドウと、
+    実バイト GET がアプリ監査経路外である点は正直に明記（capability 発行を監査の正とする）。署名は公開エンドポイントで行う。
 - **受け入れ条件**:
   - [ ] 同一内容の2ファイルが1 blob を共有する
   - [ ] 大容量ファイルがストリーミングで put/get できる
@@ -88,22 +93,36 @@
 - **仕様**:
   - フォルダ作成/移動/削除、子一覧（ページング）、パンくず（祖先列）取得。closure を用いた配下一括取得。
   - フォルダ移動時の権限継承の再評価（OpenFGAは relation 追従なので tuple 整合のみ確認）。
+- **決定（実装済み）**:
+  - move は「移動サブツリー ∪ 移動先の祖先列」を id 昇順ロックした単一 txn で closure を張り替える（PIT-16）。
+    FGA は移動ノードの parent タプルのみ差し替え、子は `from parent` 継承で追従。
+  - 子一覧は **オーバーフェッチ＋keyset カーソル**（`(name, id)` 昇順）で読めない子を読み飛ばす（PIT-13）。
+    末尾でちょうど埋まった場合に空ページが 1 回返り得るが、欠落・重複は起きない。
+  - 循環は「移動先が自身の closure 配下」をロック下で判定して 400 で拒否。
 - **受け入れ条件**:
-  - [ ] 深い階層の移動が closure 整合を保つ
-  - [ ] 子一覧が権限フィルタ済み（読めるものだけ）
-  - [ ] 循環移動を拒否
+  - [x] 深い階層の移動が closure 整合を保つ
+  - [x] 子一覧が権限フィルタ済み（読めるものだけ）
+  - [x] 循環移動を拒否
 
 ### Task 1.6: 共有（ReBAC relation）
 - **area**: storage
 - **依存**: 1.3
 - **path**: `crates/storage`, `crates/authz`, `crates/api`
 - **仕様**:
-  - ファイル/フォルダを user / department / group に対して viewer/commenter/editor で共有/解除するAPI。
+  - ファイル/フォルダを user / role / group に対して viewer/commenter/editor で共有/解除するAPI。
   - OpenFGA tuple の付与/削除として実装。共有相手一覧・自分が共有された一覧の取得。
+- **決定（実装済み・human 合意）**: design.md §4.1 のストレージ ReBAC 図に合わせ、共有 relation は **viewer/editor のみ**
+  （commenter は thread 専用＝Phase 3。files のコメント機能実装時に再検討）。共有先は **user のみ**。
+  共有の付与/解除/一覧管理は **owner 権限**（editor の再共有による権限横展開＝confused-deputy を防ぐ）。
+  剥奪の即時反映は **read 認可の HIGHER_CONSISTENCY**（PIT-11）。書込/管理系の check は MINIMIZE_LATENCY。
+- **defer（#76 へ）**: **role 共有**は OpenFGA の `role` 型が tenant 無スコープ（識別子の tenant スコープ化＝SAAS.1
+  未実装）かつ role provisioning（SAAS.2）未実装のため defer。現状は user 共有のみ ship し、越境は DB の
+  `org+tenant` フィルタが backstop。**group** 共有・**個別例外**（`but not blocked`）も同 issue で扱う。
 - **受け入れ条件**:
-  - [ ] 部署共有で部署メンバ全員が継承アクセスできる
-  - [ ] 共有解除で即時にアクセス不可
-  - [ ] 個別例外（フォルダ共有でも特定ファイル除外）が表現できる
+  - [x] user 共有で対象ユーザーがアクセスでき、非対象には漏れない
+  - [x] 共有解除で即時にアクセス不可
+  - [ ] role 共有でメンバ全員が継承アクセス → **#76 へ defer（SAAS.1/SAAS.2 前提）**
+  - [ ] 個別例外（フォルダ共有でも特定ファイル除外）→ **#76 へ defer**
 
 ### Task 1.7: バージョニング
 - **area**: storage
@@ -152,5 +171,5 @@
   - 生成済み型付きクライアントを使用。読めるものだけ表示（サーバ側フィルタ前提）。
 - **受け入れ条件**:
   - [ ] ファイル/フォルダのCRUDがUIから完結
-  - [ ] 共有ダイアログで部署/個人に権限付与できる
+  - [ ] 共有ダイアログでロール/個人に権限付与できる
   - [ ] 版履歴から復元できる

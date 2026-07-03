@@ -20,9 +20,9 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // 保護対象から除外: /login・/auth/*（BFF）・/api/*（プロキシ）・
+  // 保護対象から除外: /login・/auth/*（BFF）・/api/*（プロキシ）・/reference（デザイン確認）・
   // Next 内部アセット・拡張子付き静的ファイル。それ以外（/・/c/*・/drive*・/settings）を保護する。
   matcher: [
-    "/((?!login|auth|api|_next/static|_next/image|favicon.ico|.*\\..*).*)",
+    "/((?!login|auth|api|reference|_next/static|_next/image|favicon.ico|.*\\..*).*)",
   ],
 };
