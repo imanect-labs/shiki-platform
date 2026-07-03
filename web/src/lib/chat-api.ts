@@ -1,13 +1,20 @@
-/// チャット backend クライアント（Phase 3）。スレッド CRUD と SSE ストリーミング。
+/// チャットのクライアント側データ層（モック）。
 ///
-/// REST 型は生成型（`@/generated/api`）に従う。message の content だけは OpenAPI 上 `any`
-/// （content-block 配列の JSONB）なので、描画用の判別共用体をここで定義する。
+/// main にはチャット backend（threads / SSE）が無く、チャットはクライアント側モックで動く。
+/// 本ファイルは backend 実装が入るまでの差し替え点で、公開 API（型・関数シグネチャ）は
+/// 本番相当に保ち、実装だけ localStorage ＋ `mock-assistant` に閉じている。backend が入ったら
+/// この関数群の中身を fetch/SSE に置換すればよい（UI 側は無改修）。
+
+"use client";
 
 import * as React from "react";
 
-import { apiFetch } from "@/lib/api";
+import { newId } from "@/lib/chat-store";
+import { mockReplyText, streamMockReply } from "@/lib/mock-assistant";
 
-// ── content-block（バックエンドの chat::ContentBlock と一致）──────────────
+// ── content-block（将来の backend chat::ContentBlock と一致させる形）──────────
+// モックは text ブロックのみ生成するが、UI は thinking/tool_call/citation/file_ref も
+// 描画できるよう union を保つ（backend 実装時にそのまま拡張される）。
 
 export type ContentBlock =
   | { type: "text"; text: string }
@@ -43,23 +50,59 @@ export type Message = {
 
 export type Attachment = { node_id: string; name: string };
 
-// ── REST ────────────────────────────────────────────────────────────
+export type Citation = Extract<ContentBlock, { type: "citation" }>;
 
-export async function createThread(title?: string): Promise<Thread> {
-  const res = await apiFetch("/threads", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
-  });
-  if (!res.ok) throw new Error(`スレッド作成に失敗しました (${res.status})`);
-  const thread = toThread(await res.json());
+// ── localStorage 永続化（モックストア）────────────────────────────────
+
+type StoredThread = Thread & { messages: Message[] };
+
+const STORAGE_KEY = "shiki:mock-threads:v1";
+
+let cache: StoredThread[] | null = null;
+const threadListeners = new Set<() => void>();
+
+function isBrowser(): boolean {
+  return typeof window !== "undefined";
+}
+
+function readAll(): StoredThread[] {
+  if (cache) return cache;
+  if (!isBrowser()) return (cache = []);
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    cache = Array.isArray(parsed)
+      ? parsed.filter(
+          (t): t is StoredThread =>
+            !!t &&
+            typeof t === "object" &&
+            typeof (t as StoredThread).id === "string" &&
+            Array.isArray((t as StoredThread).messages),
+        )
+      : [];
+  } catch {
+    cache = [];
+  }
+  return cache;
+}
+
+function persist(next: StoredThread[]): void {
+  cache = next;
+  if (isBrowser()) {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      /* 容量超過等は無視（in-memory cache で継続） */
+    }
+  }
   notifyThreadsChanged();
-  return thread;
+}
+
+function toThread(t: StoredThread): Thread {
+  return { id: t.id, title: t.title, createdAt: t.createdAt, updatedAt: t.updatedAt };
 }
 
 // ── スレッド一覧の購読（サイドバー履歴）────────────────────────────────
-
-const threadListeners = new Set<() => void>();
 
 /// スレッド一覧が変わったことを購読者へ通知する（作成・更新時に呼ぶ）。
 export function notifyThreadsChanged(): void {
@@ -98,7 +141,7 @@ export function groupThreadsByDate(
   );
 }
 
-/// 自分のスレッド一覧を購読する React フック（最初の 1 ページ）。
+/// 自分のスレッド一覧を購読する React フック（更新日降順の先頭ページ）。
 export function useThreads(): Thread[] {
   const [threads, setThreads] = React.useState<Thread[]>([]);
   const reload = React.useCallback(() => {
@@ -116,25 +159,30 @@ export function useThreads(): Thread[] {
   return threads;
 }
 
-export async function listThreads(before?: string): Promise<{ threads: Thread[]; nextCursor: string | null }> {
-  const params = new URLSearchParams();
-  if (before) params.set("before", before);
-  const qs = params.toString();
-  const res = await apiFetch(`/threads${qs ? `?${qs}` : ""}`);
-  if (!res.ok) throw new Error(`スレッド一覧の取得に失敗しました (${res.status})`);
-  const data = await res.json();
-  return {
-    threads: (data.threads ?? []).map(toThread),
-    nextCursor: data.next_cursor ?? null,
-  };
+export async function listThreads(
+  before?: string,
+): Promise<{ threads: Thread[]; nextCursor: string | null }> {
+  const sorted = [...readAll()].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const from = before ? sorted.findIndex((t) => t.id === before) + 1 : 0;
+  const PAGE = 30;
+  const page = sorted.slice(from, from + PAGE);
+  const nextCursor = from + PAGE < sorted.length ? (page[page.length - 1]?.id ?? null) : null;
+  return { threads: page.map(toThread), nextCursor };
 }
 
-export async function getThreadMessages(id: string): Promise<Message[]> {
-  const res = await apiFetch(`/threads/${id}`);
-  if (res.status === 404) throw new ThreadNotFound();
-  if (!res.ok) throw new Error(`メッセージ取得に失敗しました (${res.status})`);
-  const data = await res.json();
-  return (data.messages ?? []).map(toMessage);
+// ── REST 相当（モック）────────────────────────────────────────────────
+
+export async function createThread(title?: string): Promise<Thread> {
+  const now = new Date().toISOString();
+  const thread: StoredThread = {
+    id: newId(),
+    title: title?.trim() || "新しいチャット",
+    createdAt: now,
+    updatedAt: now,
+    messages: [],
+  };
+  persist([thread, ...readAll()]);
+  return toThread(thread);
 }
 
 export class ThreadNotFound extends Error {
@@ -144,24 +192,24 @@ export class ThreadNotFound extends Error {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function toThread(t: any): Thread {
-  return { id: t.id, title: t.title, createdAt: t.created_at, updatedAt: t.updated_at };
+export async function getThreadMessages(id: string): Promise<Message[]> {
+  const thread = readAll().find((t) => t.id === id);
+  if (!thread) throw new ThreadNotFound();
+  return thread.messages;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function toMessage(m: any): Message {
-  return {
-    id: m.id,
-    role: m.role,
-    content: Array.isArray(m.content) ? (m.content as ContentBlock[]) : [],
-    createdAt: m.created_at,
-  };
+/// スレッドへメッセージを追記して永続化する（履歴・リロード表示のため）。
+function appendMessage(threadId: string, message: Message): void {
+  persist(
+    readAll().map((t) =>
+      t.id === threadId
+        ? { ...t, updatedAt: message.createdAt, messages: [...t.messages, message] }
+        : t,
+    ),
+  );
 }
 
-// ── SSE ストリーミング ────────────────────────────────────────────────
-
-export type Citation = Extract<ContentBlock, { type: "citation" }>;
+// ── ストリーミング（モック）────────────────────────────────────────────
 
 export type StreamHandlers = {
   onToken?: (text: string) => void;
@@ -173,112 +221,48 @@ export type StreamHandlers = {
   onError?: (message: string) => void;
 };
 
-/// メッセージを送り、SSE 応答を購読する。返り値の関数で中断できる。
+/// メッセージを送り、モック応答を擬似ストリーミングで返す。返り値の関数で中断できる。
+/// backend 実装後はここを fetch + SSE パースへ置換する（handlers 契約は不変）。
 export function streamMessage(
   threadId: string,
   text: string,
   attachments: Attachment[],
   handlers: StreamHandlers,
 ): () => void {
-  const controller = new AbortController();
+  // 送信メッセージを永続化（file_ref ＋ text）。UI 側は楽観表示済み。
+  const userBlocks: ContentBlock[] = [
+    ...attachments.map((a) => ({ type: "file_ref" as const, node_id: a.node_id, name: a.name })),
+    { type: "text" as const, text },
+  ];
+  if (threadId) {
+    appendMessage(threadId, {
+      id: newId(),
+      role: "user",
+      content: userBlocks,
+      createdAt: new Date().toISOString(),
+    });
+  }
 
-  (async () => {
-    let res: Response;
-    try {
-      res = await apiFetch(`/threads/${threadId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, attachments }),
-        signal: controller.signal,
-      });
-    } catch (e) {
-      if (!controller.signal.aborted) handlers.onError?.(asMessage(e));
-      return;
-    }
-
-    if (!res.ok || !res.body) {
-      handlers.onError?.(`応答の取得に失敗しました (${res.status})`);
-      return;
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    try {
-      // SSE はイベントを空行（\n\n）で区切る。逐次パースしてハンドラに振り分ける。
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let sep: number;
-        while ((sep = buffer.indexOf("\n\n")) !== -1) {
-          const raw = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
-          dispatch(raw, handlers);
-        }
+  const full = mockReplyText(text);
+  let last = "";
+  // streamMockReply は累積テキストを渡すので、差分へ変換して onToken に流す。
+  return streamMockReply(
+    full,
+    (partial) => {
+      const delta = partial.slice(last.length);
+      last = partial;
+      if (delta) handlers.onToken?.(delta);
+    },
+    () => {
+      if (threadId) {
+        appendMessage(threadId, {
+          id: newId(),
+          role: "assistant",
+          content: [{ type: "text", text: full }],
+          createdAt: new Date().toISOString(),
+        });
       }
       handlers.onDone?.();
-    } catch (e) {
-      if (!controller.signal.aborted) handlers.onError?.(asMessage(e));
-    }
-  })();
-
-  return () => controller.abort();
-}
-
-function dispatch(raw: string, handlers: StreamHandlers): void {
-  let event = "message";
-  const dataLines: string[] = [];
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("event:")) event = line.slice(6).trim();
-    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
-  }
-  const data = dataLines.join("\n");
-  let payload: Record<string, unknown> = {};
-  try {
-    payload = data ? JSON.parse(data) : {};
-  } catch {
-    return;
-  }
-
-  switch (event) {
-    case "token":
-      handlers.onToken?.(String(payload.text ?? ""));
-      break;
-    case "thinking":
-      handlers.onThinking?.(String(payload.text ?? ""));
-      break;
-    case "tool_call":
-      handlers.onToolCall?.({
-        id: String(payload.id ?? ""),
-        name: String(payload.name ?? ""),
-        input: payload.input,
-      });
-      break;
-    case "tool_result":
-      handlers.onToolResult?.({ id: String(payload.id ?? ""), ok: Boolean(payload.ok) });
-      break;
-    case "citation":
-      handlers.onCitation?.({
-        type: "citation",
-        node_id: String(payload.node_id ?? ""),
-        chunk_id: String(payload.chunk_id ?? ""),
-        snippet: String(payload.snippet ?? ""),
-        page: (payload.page as number | null) ?? null,
-        heading_path: (payload.heading_path as string[]) ?? [],
-        score: Number(payload.score ?? 0),
-      });
-      break;
-    case "done":
-      handlers.onDone?.();
-      break;
-    case "error":
-      handlers.onError?.(String(payload.message ?? "エラーが発生しました"));
-      break;
-  }
-}
-
-function asMessage(e: unknown): string {
-  return e instanceof Error ? e.message : "通信エラーが発生しました";
+    },
+  );
 }
