@@ -50,7 +50,8 @@ export function resolvePageTitle(pathname: string): string {
   if (pathname.startsWith("/c/")) return "チャット";
   if (pathname === "/settings") return "設定";
   const child = DRIVE_CHILDREN.find((c) => c.href === pathname);
-  if (child) return `ドライブ · ${child.label}`;
+  // ドライブのルート（home child）は単に「ドライブ」。下位ページのみ親付きで示す。
+  if (child) return child.key === "home" ? "ドライブ" : `ドライブ・${child.label}`;
   if (pathname.startsWith(DRIVE_ROOT)) return "ドライブ";
   return "Shiki";
 }
@@ -58,6 +59,7 @@ export function resolvePageTitle(pathname: string): string {
 /// パスからヘッダのアイコンを解決する。
 export function resolvePageIcon(pathname: string): LucideIcon {
   if (pathname === "/") return MessageSquareText;
+  if (pathname.startsWith("/c/")) return MessageSquareText;
   if (pathname === "/settings") return Settings;
   const child = DRIVE_CHILDREN.find((c) => c.href === pathname);
   if (child) return child.icon;

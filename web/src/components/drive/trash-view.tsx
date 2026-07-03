@@ -49,10 +49,13 @@ export function TrashView() {
   }
 
   return (
-    <div className="flex flex-col rounded-xl border border-border bg-card p-2">
+    <div className="flex flex-col">
       {list.items.map((node) => (
-        <div key={node.id} className="group flex items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-accent">
-          <NodeIcon kind={node.kind} />
+        <div
+          key={node.id}
+          className="group flex items-center gap-3 border-b border-border/50 px-3 py-2.5 transition-colors last:border-0 hover:bg-accent"
+        >
+          <NodeIcon kind={node.kind} name={node.name} contentType={node.content_type} className="size-6 shrink-0" />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">{node.name}</p>
             <p className="truncate text-xs text-muted-foreground">

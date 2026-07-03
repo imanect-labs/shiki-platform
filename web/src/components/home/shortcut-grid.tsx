@@ -7,44 +7,55 @@ import {
   HOME_SHORTCUT_CATEGORIES,
   type HomeShortcut,
 } from "@/lib/home-shortcuts";
+import { seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 /// ホーム下部の機能ショートカット群（カテゴリ＝縦区切りで横並び、画像1 風）。
 /// 実装済みは Link、未実装は「準備中」tooltip 付きの無効ボタン。
+/// 候補チップと揃えて、ホバー時にタイルを四季の差し色で点灯させる（全タイル通しの巡回）。
 export function ShortcutGrid() {
   return (
     <div className="flex flex-wrap justify-center gap-y-6">
-      {HOME_SHORTCUT_CATEGORIES.map((category, i) => (
-        <section
-          key={category.key}
-          className={cn(
-            "px-5 sm:px-7",
-            i > 0 && "sm:border-l sm:border-border",
-          )}
-        >
-          <h3 className="mb-3 text-center text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">
-            {category.label}
-          </h3>
-          <div className="flex justify-center gap-1">
-            {category.items.map((item) => (
-              <ShortcutItem key={item.key} item={item} />
-            ))}
-          </div>
-        </section>
-      ))}
+      {HOME_SHORTCUT_CATEGORIES.map((category, ci) => {
+        // 全カテゴリを通した連番で季節を割り当てる（春→夏→秋→冬の巡回を画面全体で揃える）。
+        const offset = HOME_SHORTCUT_CATEGORIES.slice(0, ci).reduce(
+          (n, c) => n + c.items.length,
+          0,
+        );
+        return (
+          <section
+            key={category.key}
+            className={cn(
+              "px-5 sm:px-7",
+              // 2 列目以降の左に縦破線。折り返して単独行になる「ミニアプリ」は付けない。
+              ci > 0 && category.key !== "apps" && "shiki-divide-l",
+            )}
+          >
+            <h3 className="mb-3 text-center text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">
+              {category.label}
+            </h3>
+            <div className="flex justify-center gap-1">
+              {category.items.map((item, ii) => (
+                <ShortcutItem key={item.key} item={item} seasonIndex={offset + ii} />
+              ))}
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
 }
 
-function ShortcutItem({ item }: { item: HomeShortcut }) {
+function ShortcutItem({ item, seasonIndex }: { item: HomeShortcut; seasonIndex: number }) {
   const { icon: Icon, label, ready, href } = item;
 
   const tile = (
     <span
+      style={ready ? { ["--season" as string]: seasonVar(seasonIndex) } : undefined}
       className={cn(
         "flex size-11 items-center justify-center rounded-2xl border transition-colors",
         ready
-          ? "border-border bg-card text-foreground/75 group-hover:border-ring/40 group-hover:bg-accent group-hover:text-foreground"
+          ? "border-border bg-card text-foreground/75 group-hover:border-[var(--season)]/45 group-hover:bg-[var(--season)]/[0.08] group-hover:text-[var(--season)]"
           : "border-dashed border-border bg-muted/40 text-muted-foreground/60",
       )}
     >

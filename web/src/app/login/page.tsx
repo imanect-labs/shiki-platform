@@ -7,6 +7,15 @@ import { Loader2, LogIn, ShieldCheck } from "lucide-react";
 import { checkSession, login } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 
+/// `?next=` はクエリ由来の未信頼値。オープンリダイレクト / XSS（`javascript:` や
+/// `//evil.example.com`・絶対 URL）を防ぐため、同一オリジンの相対パス
+/// （`/` 始まり・`//` や `/\` でない）だけを許可し、それ以外は "/" に丸める。
+function safeNext(value: string | null): string {
+  if (!value || !value.startsWith("/")) return "/";
+  if (value.startsWith("//") || value.startsWith("/\\")) return "/";
+  return value;
+}
+
 /// ログイン画面（シェル外）。
 /// - 既にログイン済みなら戻り先（無ければ "/"）へ即リダイレクト。
 /// - 未ログインなら Keycloak への導線を出す。`?next=` は OIDC ラウンドトリップを
@@ -15,7 +24,7 @@ import { Button } from "@/components/ui/button";
 function LoginInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = searchParams.get("next") ?? "/";
+  const next = safeNext(searchParams.get("next"));
   const hasError = searchParams.get("error") !== null;
 
   // checking: 初回のセッション確認中 / authed: 確認済みでリダイレクト中。
@@ -49,7 +58,15 @@ function LoginInner() {
     <div className="flex min-h-dvh items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
-          <span className="text-[26px] font-bold tracking-[-0.02em] text-foreground">Shiki</span>
+          <span
+            className="bg-clip-text text-[26px] font-bold tracking-[-0.02em] text-transparent"
+            style={{
+              backgroundImage:
+                "linear-gradient(100deg, var(--season-spring), var(--season-summer) 38%, var(--season-autumn) 66%, var(--season-winter))",
+            }}
+          >
+            Shiki
+          </span>
           <p className="mt-1.5 text-sm text-muted-foreground">
             権限考慮 AI ワークスペース
           </p>

@@ -11,7 +11,7 @@ export const metadata: Metadata = { title: "ドライブ" };
 /// `useSearchParams`（現在フォルダ）を含むため Suspense 境界で包む。
 export default function DriveHomePage() {
   return (
-    <PageContainer title="ドライブ" description="ファイルとフォルダを管理します。">
+    <PageContainer>
       <Suspense fallback={<LoadingRow />}>
         <DriveBrowser />
       </Suspense>

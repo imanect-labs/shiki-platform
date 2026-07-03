@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 type BaseProps = {
@@ -15,6 +16,9 @@ type BaseProps = {
   collapsed?: boolean;
   /// 階層の深さ（アコーディオン子のインデント用）。
   depth?: number;
+  /// 指定すると、アクティブ時にアイコンを四季の差し色（春→夏→秋→冬の巡回）で点灯させる。
+  /// Drive 配下のサブセクションにだけ渡し、汎用ナビは無地のまま据え置く。
+  seasonIndex?: number;
   trailing?: React.ReactNode;
   className?: string;
 };
@@ -45,18 +49,26 @@ function Inner({
   label,
   active,
   collapsed,
+  seasonIndex,
   trailing,
 }: {
   icon: LucideIcon;
   label: string;
   active: boolean;
   collapsed: boolean;
+  seasonIndex?: number;
   trailing?: React.ReactNode;
 }) {
+  // アクティブかつ季節指定がある場合だけアイコンを季節色に。それ以外は無地。
+  const seasonTint = active && seasonIndex != null;
   return (
     <>
       <Icon
-        className={cn("size-[18px] shrink-0", active ? "text-sidebar-foreground" : "text-sidebar-foreground/55")}
+        className={cn(
+          "size-[18px] shrink-0",
+          seasonTint ? "" : active ? "text-sidebar-foreground" : "text-sidebar-foreground/55",
+        )}
+        style={seasonTint ? { color: seasonVar(seasonIndex) } : undefined}
         strokeWidth={2}
       />
       {!collapsed ? (
@@ -78,6 +90,7 @@ export function NavItem(props: LinkProps | ButtonProps) {
     active = false,
     collapsed = false,
     depth = 0,
+    seasonIndex,
     trailing,
     className,
   } = props;
@@ -91,7 +104,7 @@ export function NavItem(props: LinkProps | ButtonProps) {
         aria-label={collapsed ? label : undefined}
         className={cn(itemClasses(active, collapsed, depth), className)}
       >
-        <Inner icon={icon} label={label} active={active} collapsed={collapsed} trailing={trailing} />
+        <Inner icon={icon} label={label} active={active} collapsed={collapsed} seasonIndex={seasonIndex} trailing={trailing} />
       </Link>
     ) : (
       <button
@@ -103,7 +116,7 @@ export function NavItem(props: LinkProps | ButtonProps) {
         aria-controls={props["aria-controls"]}
         className={cn(itemClasses(active, collapsed, depth), className)}
       >
-        <Inner icon={icon} label={label} active={active} collapsed={collapsed} trailing={trailing} />
+        <Inner icon={icon} label={label} active={active} collapsed={collapsed} seasonIndex={seasonIndex} trailing={trailing} />
       </button>
     );
 

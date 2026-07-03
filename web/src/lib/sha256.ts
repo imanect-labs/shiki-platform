@@ -50,7 +50,8 @@ function sha256Bytes(msg: Uint8Array): Uint8Array {
   const withPad = new Uint8Array((((msg.length + 8) >> 6) + 1) << 6);
   withPad.set(msg);
   withPad[msg.length] = 0x80;
-  // 長さは下位 32bit のみ実用上十分（4GB 未満）。上位は 0 のまま。
+  // 64bit のビット長を上位/下位 32bit に分けて書き込む（下位は `>>> 0`、上位は
+  // `Math.floor(bitLen / 2^32)`）。両方書くので 4GB 以上のファイルでも正しく処理する。
   const dv = new DataView(withPad.buffer);
   dv.setUint32(withPad.length - 4, bitLen >>> 0, false);
   dv.setUint32(withPad.length - 8, Math.floor(bitLen / 0x100000000), false);

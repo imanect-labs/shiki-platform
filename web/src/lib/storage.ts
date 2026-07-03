@@ -74,6 +74,8 @@ export function listChildren(opts: {
   desc?: boolean;
   cursor?: string;
   limit?: number;
+  /// 名前の部分一致検索。指定時はフォルダ階層を跨いで横断検索する。
+  q?: string;
 }): Promise<ChildrenResponse> {
   return apiFetch(
     `/nodes${qs({
@@ -82,6 +84,7 @@ export function listChildren(opts: {
       desc: opts.desc ? "true" : undefined,
       cursor: opts.cursor,
       limit: opts.limit,
+      q: opts.q,
     })}`,
   ).then((r) => okJson<ChildrenResponse>(r));
 }
@@ -150,6 +153,11 @@ export function downloadUrl(id: string): Promise<DownloadUrlResponse> {
   return apiFetch(`/files/${id}/download-url`).then((r) => okJson<DownloadUrlResponse>(r));
 }
 
+/// 1 ファイルのメタ情報（名前・content_type・サイズ等）を取得する。ビューアで使う。
+export function getNode(id: string): Promise<NodeResponse> {
+  return apiFetch(`/files/${id}`).then((r) => okJson<NodeResponse>(r));
+}
+
 // --- アップロード（2 段: declare → presigned PUT → finalize） --------------
 
 /// 1 ファイルをアップロードする。`targetNodeId` 指定で既存ファイルへの新バージョン。
@@ -206,6 +214,9 @@ function putWithProgress(
       else reject(new StorageApiError(xhr.status, `アップロードに失敗しました (${xhr.status})`));
     };
     xhr.onerror = () => reject(new StorageApiError(0, "アップロードの通信に失敗しました"));
+    // ネットワーク停止や極端な低速で onload/onerror のどちらも発火せずハングするのを防ぐ。
+    xhr.timeout = 120_000;
+    xhr.ontimeout = () => reject(new StorageApiError(0, "アップロードがタイムアウトしました"));
     xhr.send(body);
   });
 }

@@ -14,10 +14,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  groupSessionsByDate,
-  useChatSessions,
-  type ChatSession,
-} from "@/lib/chat-store";
+  groupThreadsByDate,
+  useThreads,
+  type Thread,
+} from "@/lib/chat-api";
 
 /// 検索パレット（画像2 風）。先頭に「新しいチャット」アクション、続けてチャット履歴を
 /// 日付グループで一覧する。クエリで前方/部分一致フィルタ。⌘K / Ctrl+K でも開く。
@@ -30,7 +30,7 @@ export function SidebarSearch({
 }) {
   const router = useRouter();
   const [query, setQuery] = React.useState("");
-  const sessions = useChatSessions();
+  const threads = useThreads();
 
   React.useEffect(() => {
     const isEditable = (el: EventTarget | null) => {
@@ -59,15 +59,11 @@ export function SidebarSearch({
 
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter(
-      (s) =>
-        s.title.toLowerCase().includes(q) ||
-        s.messages.some((m) => m.content.toLowerCase().includes(q)),
-    );
-  }, [sessions, query]);
+    if (!q) return threads;
+    return threads.filter((t) => t.title.toLowerCase().includes(q));
+  }, [threads, query]);
 
-  const groups = groupSessionsByDate(filtered);
+  const groups = groupThreadsByDate(filtered);
 
   const go = (href: string) => {
     onOpenChange(false);
@@ -102,7 +98,7 @@ export function SidebarSearch({
         </div>
 
         {/* 結果リスト */}
-        <div className="max-h-[60vh] overflow-y-auto p-2">
+        <div className="scrollbar-subtle max-h-[60vh] overflow-y-auto p-2">
           {/* 新しいチャット（常時先頭） */}
           <button
             type="button"
@@ -120,11 +116,11 @@ export function SidebarSearch({
                   {group.label}
                 </div>
                 <ul>
-                  {group.sessions.map((session) => (
+                  {group.threads.map((thread) => (
                     <SearchResultRow
-                      key={session.id}
-                      session={session}
-                      onSelect={() => go(`/c/${session.id}`)}
+                      key={thread.id}
+                      thread={thread}
+                      onSelect={() => go(`/c/${thread.id}`)}
                     />
                   ))}
                 </ul>
@@ -143,13 +139,7 @@ export function SidebarSearch({
   );
 }
 
-function SearchResultRow({
-  session,
-  onSelect,
-}: {
-  session: ChatSession;
-  onSelect: () => void;
-}) {
+function SearchResultRow({ thread, onSelect }: { thread: Thread; onSelect: () => void }) {
   return (
     <li>
       <button
@@ -161,7 +151,7 @@ function SearchResultRow({
         )}
       >
         <MessageSquare className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
-        <span className="truncate">{session.title}</span>
+        <span className="truncate">{thread.title}</span>
       </button>
     </li>
   );

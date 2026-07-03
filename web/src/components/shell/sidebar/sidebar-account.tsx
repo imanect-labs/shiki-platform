@@ -63,6 +63,7 @@ export function SidebarAccount({
     );
   }
 
+  // 表示名はメール（無ければ id）から導出する（表示名フィールドは後続の BFF/バックエンド PR で対応）。
   const displayName = data.email ?? data.id;
   const initials = initialsFrom(data.email ?? data.id);
 
@@ -84,7 +85,9 @@ export function SidebarAccount({
             <span className="truncate text-sm font-medium text-sidebar-foreground">
               {displayName}
             </span>
-            <span className="truncate text-xs text-sidebar-foreground/50">{data.org}</span>
+            <span className="truncate text-xs text-sidebar-foreground/50">
+              {data.email ?? data.org}
+            </span>
           </span>
           <ChevronsUpDown className="size-4 shrink-0 text-sidebar-foreground/50" aria-hidden />
         </>
@@ -116,7 +119,10 @@ export function SidebarAccount({
         >
           <DropdownMenuLabel className="flex flex-col gap-0.5 normal-case">
             <span className="truncate text-sm font-medium text-foreground">{displayName}</span>
-            <span className="truncate text-xs text-muted-foreground">
+            {data.email ? (
+              <span className="truncate text-xs text-muted-foreground">{data.email}</span>
+            ) : null}
+            <span className="truncate text-[11px] text-muted-foreground/70">
               {data.org} · {data.tenant_id}
             </span>
           </DropdownMenuLabel>

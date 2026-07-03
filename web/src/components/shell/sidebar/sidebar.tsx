@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ChevronDown, PanelLeft } from "lucide-react";
+import { PanelLeft } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -52,9 +52,16 @@ export function SidebarContent({
               className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
               aria-label="ホームへ"
             >
-              <span className="text-[17px] font-bold tracking-[-0.02em] text-foreground">Shiki</span>
+              <span
+                className="bg-clip-text text-[17px] font-bold tracking-[-0.02em] text-transparent"
+                style={{
+                  backgroundImage:
+                    "linear-gradient(100deg, var(--season-spring), var(--season-summer) 38%, var(--season-autumn) 66%, var(--season-winter))",
+                }}
+              >
+                Shiki
+              </span>
             </Link>
-            <ChevronDown className="size-4 text-sidebar-foreground/45" aria-hidden />
             {showCollapseToggle ? (
               <button
                 type="button"
@@ -94,8 +101,8 @@ export function SidebarContent({
       {!collapsed ? <SectionLabel>チャット履歴</SectionLabel> : <div className="h-2" />}
       <SidebarChatHistory collapsed={collapsed} />
 
-      {/* 最下部: アカウント */}
-      <div className="shrink-0 border-t border-sidebar-border">
+      {/* 最下部: アカウント（上端は荒い破線で区切る） */}
+      <div className="shrink-0 shiki-dash-top">
         <SidebarAccount collapsed={collapsed} onNavigate={onNavigate} />
       </div>
     </div>

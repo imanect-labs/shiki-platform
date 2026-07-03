@@ -27,7 +27,7 @@ test("主要画面のスクリーンショットを撮る", async ({ page }) => 
   await page.keyboard.press("Escape");
 
   // ダミーチャット送信 → 会話画面。
-  const composer = page.getByPlaceholder("何でも尋ねて、何でも作成");
+  const composer = page.getByPlaceholder("何でも尋ねて、社内文書も検索");
   await composer.fill("四半期の売上レポートを要約して");
   await composer.press("Enter");
   await page.waitForURL(/\/c\//);

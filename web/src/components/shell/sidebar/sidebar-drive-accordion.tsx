@@ -101,7 +101,7 @@ export function SidebarDriveAccordion({
         {/* 閉じている間は inert でタブ順序とポインタから除外する（a11y） */}
         <div className="overflow-hidden" inert={!open}>
           <ul className="mt-0.5 flex flex-col gap-0.5 py-0.5">
-            {DRIVE_CHILDREN.map((child) => (
+            {DRIVE_CHILDREN.map((child, i) => (
               <li key={child.key}>
                 <NavItem
                   icon={child.icon}
@@ -113,6 +113,7 @@ export function SidebarDriveAccordion({
                       : isActivePath(child.href, pathname)
                   }
                   depth={1}
+                  seasonIndex={i}
                   onClick={onNavigate}
                 />
               </li>
