@@ -7,6 +7,15 @@ import { Loader2, LogIn, ShieldCheck } from "lucide-react";
 import { checkSession, login } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 
+/// `?next=` はクエリ由来の未信頼値。オープンリダイレクト / XSS（`javascript:` や
+/// `//evil.example.com`・絶対 URL）を防ぐため、同一オリジンの相対パス
+/// （`/` 始まり・`//` や `/\` でない）だけを許可し、それ以外は "/" に丸める。
+function safeNext(value: string | null): string {
+  if (!value || !value.startsWith("/")) return "/";
+  if (value.startsWith("//") || value.startsWith("/\\")) return "/";
+  return value;
+}
+
 /// ログイン画面（シェル外）。
 /// - 既にログイン済みなら戻り先（無ければ "/"）へ即リダイレクト。
 /// - 未ログインなら Keycloak への導線を出す。`?next=` は OIDC ラウンドトリップを
@@ -15,7 +24,7 @@ import { Button } from "@/components/ui/button";
 function LoginInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = searchParams.get("next") ?? "/";
+  const next = safeNext(searchParams.get("next"));
   const hasError = searchParams.get("error") !== null;
 
   // checking: 初回のセッション確認中 / authed: 確認済みでリダイレクト中。

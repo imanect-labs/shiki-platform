@@ -189,8 +189,12 @@ export function MoveDialog({
   /// `null` でルートへ移動。
   onMove: (destinationId: string | null) => Promise<void>;
 }) {
-  const [folderId, setFolderId] = React.useState<string | null>(null);
-  const [folderName, setFolderName] = React.useState<string>("ドライブ");
+  // 移動先ピッカーのパンくず（ルートからの階層）。最後の要素が現在地。
+  // サブフォルダに入っても各階層をクリックして戻れる（履歴スタック）。
+  const [path, setPath] = React.useState<{ id: string | null; name: string }[]>([
+    { id: null, name: "ドライブ" },
+  ]);
+  const folderId = path[path.length - 1].id;
   const [folders, setFolders] = React.useState<NodeResponse[]>([]);
   const [cursor, setCursor] = React.useState<string | undefined>(undefined);
   const [hasMore, setHasMore] = React.useState(false);
@@ -202,8 +206,7 @@ export function MoveDialog({
   // 開いたらルートから。
   React.useEffect(() => {
     if (open) {
-      setFolderId(null);
-      setFolderName("ドライブ");
+      setPath([{ id: null, name: "ドライブ" }]);
       setError(null);
       setBusy(false);
     }
@@ -280,10 +283,29 @@ export function MoveDialog({
           <DialogDescription>移動先のフォルダを選んでください。</DialogDescription>
         </DialogHeader>
 
-        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-          <Home className="size-4" aria-hidden />
-          <span className="truncate">{folderName}</span>
-        </div>
+        {/* パンくず: 祖先はクリックで戻れる（現在地は非活性）。 */}
+        <nav aria-label="移動先の階層" className="flex flex-wrap items-center gap-0.5 text-sm text-muted-foreground">
+          <Home className="size-4 shrink-0" aria-hidden />
+          {path.map((seg, i) => {
+            const isCurrent = i === path.length - 1;
+            return (
+              <span key={`${seg.id ?? "root"}-${i}`} className="flex items-center gap-0.5">
+                {i > 0 ? <ChevronRight className="size-3.5 shrink-0" aria-hidden /> : null}
+                {isCurrent ? (
+                  <span className="max-w-[160px] truncate font-medium text-foreground">{seg.name}</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setPath((p) => p.slice(0, i + 1))}
+                    className="max-w-[160px] truncate rounded px-1 hover:bg-accent hover:text-foreground"
+                  >
+                    {seg.name}
+                  </button>
+                )}
+              </span>
+            );
+          })}
+        </nav>
 
         <div className="max-h-[55vh] min-h-[280px] overflow-y-auto rounded-lg border border-border">
           {loading ? (
@@ -302,10 +324,7 @@ export function MoveDialog({
                     <button
                       type="button"
                       disabled={disabled}
-                      onClick={() => {
-                        setFolderId(f.id);
-                        setFolderName(f.name);
-                      }}
+                      onClick={() => setPath((p) => [...p, { id: f.id, name: f.name }])}
                       className={cn(
                         "flex w-full items-center gap-3 px-4 py-3 text-left text-[15px] transition-colors hover:bg-accent",
                         disabled && "cursor-not-allowed opacity-40 hover:bg-transparent",

@@ -126,7 +126,8 @@ export function VersionsDialog({
                         type="button"
                         size="sm"
                         variant="outline"
-                        disabled={pending === v.version}
+                        // 復元中は全「復元」ボタンを無効化して同時実行（結果が不定になる）を防ぐ。
+                        disabled={pending !== null}
                         onClick={() => void restore(v.version)}
                       >
                         {pending === v.version ? (

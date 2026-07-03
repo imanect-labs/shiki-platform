@@ -214,6 +214,9 @@ function putWithProgress(
       else reject(new StorageApiError(xhr.status, `アップロードに失敗しました (${xhr.status})`));
     };
     xhr.onerror = () => reject(new StorageApiError(0, "アップロードの通信に失敗しました"));
+    // ネットワーク停止や極端な低速で onload/onerror のどちらも発火せずハングするのを防ぐ。
+    xhr.timeout = 120_000;
+    xhr.ontimeout = () => reject(new StorageApiError(0, "アップロードがタイムアウトしました"));
     xhr.send(body);
   });
 }

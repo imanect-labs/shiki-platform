@@ -24,6 +24,17 @@ export function SidebarResizer({
   const [dragging, setDragging] = React.useState(false);
   const dragState = React.useRef<{ startX: number; startWidth: number } | null>(null);
 
+  // ドラッグ中にこのコンポーネントが unmount されると pointerup が来ず、body に
+  // cursor/user-select が残り続ける。アンマウント時の保険として必ず戻す。
+  React.useEffect(() => {
+    return () => {
+      if (dragState.current) {
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }
+    };
+  }, []);
+
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     const el = targetRef.current;

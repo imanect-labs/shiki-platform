@@ -42,6 +42,20 @@ export function Conversation({ threadId }: { threadId: string }) {
   const bottomRef = React.useRef<HTMLDivElement | null>(null);
   const cancelRef = React.useRef<(() => void) | null>(null);
   const sentPending = React.useRef(false);
+  // 最新の stream を ref に写し、確定処理は setState updater の外で 1 度だけ行う
+  // （Strict Mode で updater が二重実行され finalize が重複するのを防ぐ）。
+  const streamRef = React.useRef<StreamState | null>(null);
+  React.useEffect(() => {
+    streamRef.current = stream;
+  }, [stream]);
+
+  // 蓄積中のストリームを確定メッセージへ移して閉じる（onDone / stop 共通）。
+  const flushStream = React.useCallback(() => {
+    const s = streamRef.current;
+    if (s) finalizeStream(s, setMessages);
+    streamRef.current = null;
+    setStream(null);
+  }, []);
 
   const send = React.useCallback(
     (text: string, attachments: Attachment[]) => {
@@ -77,10 +91,7 @@ export function Conversation({ threadId }: { threadId: string }) {
           ),
         onCitation: (c) => setStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
         onDone: () => {
-          setStream((s) => {
-            if (s) finalizeStream(s, setMessages);
-            return null;
-          });
+          flushStream();
           cancelRef.current = null;
           notifyThreadsChanged();
         },
@@ -91,19 +102,16 @@ export function Conversation({ threadId }: { threadId: string }) {
         },
       });
     },
-    [threadId],
+    [threadId, flushStream],
   );
 
   // 生成を停止する。中断時点までの思考/ツール/引用/本文を確定メッセージとして残す。
   const stop = React.useCallback(() => {
     cancelRef.current?.();
     cancelRef.current = null;
-    setStream((s) => {
-      if (s) finalizeStream(s, setMessages);
-      return null;
-    });
+    flushStream();
     notifyThreadsChanged();
-  }, []);
+  }, [flushStream]);
 
   // 初回ロード: 既存メッセージを取得し、ホームからの pending を送信する。
   React.useEffect(() => {
@@ -187,6 +195,9 @@ function finalizeStream(
   const blocks: ContentBlock[] = [];
   // 思考は先頭に置き、完了後も「思考プロセス」として残す。
   if (s.thinking.trim()) blocks.push({ type: "thinking", text: s.thinking });
+  // ツール実行履歴（検索など）も確定メッセージへ残す。AssistantRow / ChainOfThought は
+  // tool_call ブロックから履歴を描画するため、これが無いと done 後に履歴が消える。
+  for (const t of s.tools) blocks.push({ type: "tool_call", id: t.id, name: t.name, input: t.input });
   if (s.text.trim()) blocks.push({ type: "text", text: s.text });
   for (const c of s.citations) blocks.push(c);
   if (blocks.length === 0) return;

@@ -4,11 +4,9 @@
 "use client";
 
 import * as React from "react";
-import Link from "next/link";
 import { Brain, Check, ChevronDown, ChevronRight, FileText, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { citationHref } from "@/lib/citation";
 import { seasonVar } from "@/lib/season";
 import type { Citation } from "@/lib/chat-api";
 import type { ToolActivityItem } from "./tool-activity";
@@ -123,7 +121,8 @@ export function ChainOfThought({
             </div>
           ) : null}
 
-          {/* 参照したドキュメント（番号は本文の [n] と一致・クリックで該当箇所へ） */}
+          {/* 参照したドキュメント（番号は本文の [n] と一致）。ファイルプレビュー画面は
+              本 PR ではスコープ外のため非遷移で表示のみ（後続 PR でビューアを配線予定）。 */}
           {citations.length > 0 ? (
             <div className="text-[13px]">
               <div className="mb-1.5 flex items-center gap-1.5 text-muted-foreground">
@@ -132,27 +131,19 @@ export function ChainOfThought({
               </div>
               <ul className="space-y-1">
                 {citations.map((c, i) => (
-                  <li key={c.chunk_id}>
-                    <Link
-                      href={citationHref(c)}
-                      className="group flex items-start gap-2 rounded-md py-0.5 hover:text-foreground"
-                      title={`「${citationLabel(c)}」を開く`}
+                  <li key={c.chunk_id} className="flex items-start gap-2 py-0.5">
+                    <span
+                      style={{ ["--season" as string]: seasonVar(i) }}
+                      className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-[var(--season)]/15 text-[10px] font-semibold text-[var(--season)]"
                     >
-                      <span
-                        style={{ ["--season" as string]: seasonVar(i) }}
-                        className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-[var(--season)]/15 text-[10px] font-semibold text-[var(--season)]"
-                      >
-                        {i + 1}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="font-medium text-foreground/90">{citationLabel(c)}</span>
-                        {c.snippet ? (
-                          <span className="ml-1 text-muted-foreground/90 line-clamp-1 group-hover:text-muted-foreground">
-                            {c.snippet}
-                          </span>
-                        ) : null}
-                      </span>
-                    </Link>
+                      {i + 1}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="font-medium text-foreground/90">{citationLabel(c)}</span>
+                      {c.snippet ? (
+                        <span className="ml-1 text-muted-foreground/90 line-clamp-1">{c.snippet}</span>
+                      ) : null}
+                    </span>
                   </li>
                 ))}
               </ul>

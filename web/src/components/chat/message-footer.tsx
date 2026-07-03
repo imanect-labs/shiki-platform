@@ -30,8 +30,11 @@ export function MessageFooter({ text }: { text: string }) {
       }
       await nav.clipboard.writeText(text);
       toast({ description: "共有用にテキストをコピーしました" });
-    } catch {
-      /* ユーザーキャンセル等は無視 */
+    } catch (e) {
+      // ユーザーがネイティブ共有シートを閉じた場合（AbortError）は無視。
+      // それ以外（権限拒否・クリップボード失敗など）は copy() と揃えて通知する。
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      toast({ description: "共有に失敗しました" });
     }
   };
 

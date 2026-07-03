@@ -48,7 +48,9 @@ export function ShareDialog({
   const [role, setRole] = React.useState<ShareRole>("viewer");
   const [shares, setShares] = React.useState<ShareEntry[]>([]);
   const [loadingShares, setLoadingShares] = React.useState(false);
-  const [pendingId, setPendingId] = React.useState<string | null>(null);
+  // 進行中の付与/解除を (userId, role) 単位で識別する。同一ユーザーに viewer/editor が
+  // 併存し得るため、id だけだと片方の操作で両方の行がスピナー/無効化されてしまう。
+  const [pendingKey, setPendingKey] = React.useState<string | null>(null);
 
   // 開いたら状態リセット＋現在の共有相手を読む。
   React.useEffect(() => {
@@ -64,16 +66,22 @@ export function ShareDialog({
   }, [open, node]);
 
   // インクリメンタル検索（デバウンス。全件取得はせず先頭ページのみ）。
+  // active フラグで世代を守り、古いクエリの遅延レスポンスが新しい結果を上書きしない
+  // ようにする（そのまま「共有」を押すと別ユーザーへ誤付与する事故を防ぐ）。
   React.useEffect(() => {
     if (!open) return;
+    let active = true;
     const handle = setTimeout(() => {
       setSearching(true);
       searchDirectory({ q: query, limit: 8 })
-        .then((res) => setResults(res.items))
-        .catch(() => setResults([]))
-        .finally(() => setSearching(false));
+        .then((res) => active && setResults(res.items))
+        .catch(() => active && setResults([]))
+        .finally(() => active && setSearching(false));
     }, 200);
-    return () => clearTimeout(handle);
+    return () => {
+      active = false;
+      clearTimeout(handle);
+    };
   }, [open, query]);
 
   // (user, role) ペアで既存共有を判定する（同じ役割のみ「付与済み」。役割の昇格は許可）。
@@ -85,7 +93,7 @@ export function ShareDialog({
   if (!node) return null;
 
   const grant = async (user: DirectoryUserResponse) => {
-    setPendingId(user.id);
+    setPendingKey(`${user.id}:${role}`);
     try {
       await shareNode(node.id, user.id, role);
       const next = await listShares(node.id);
@@ -98,15 +106,19 @@ export function ShareDialog({
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
-      setPendingId(null);
+      setPendingKey(null);
     }
   };
 
   const revoke = async (entry: ShareEntry) => {
-    setPendingId(entry.target.id);
+    setPendingKey(`${entry.target.id}:${entry.role}`);
     try {
       await unshareNode(node.id, entry.target.id, entry.role);
-      setShares((prev) => prev.filter((s) => s.target.id !== entry.target.id));
+      // 解除したロールの行だけを消す。同ユーザーの別ロール共有はサーバ側に残るため、
+      // id だけで filter すると画面から消えて「完全に外せた」と誤認する（実際は残存）。
+      setShares((prev) =>
+        prev.filter((s) => !(s.target.id === entry.target.id && s.role === entry.role)),
+      );
     } catch (e) {
       toast({
         variant: "destructive",
@@ -114,7 +126,7 @@ export function ShareDialog({
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
-      setPendingId(null);
+      setPendingKey(null);
     }
   };
 
@@ -188,10 +200,10 @@ export function ShareDialog({
                       type="button"
                       size="sm"
                       variant={already ? "ghost" : "outline"}
-                      disabled={already || pendingId === u.id}
+                      disabled={already || pendingKey === `${u.id}:${role}`}
                       onClick={() => void grant(u)}
                     >
-                      {pendingId === u.id ? (
+                      {pendingKey === `${u.id}:${role}` ? (
                         <Loader2 className="size-4 animate-spin" aria-hidden />
                       ) : (
                         <UserPlus className="size-4" aria-hidden />
@@ -229,11 +241,11 @@ export function ShareDialog({
                   <button
                     type="button"
                     aria-label="共有を解除"
-                    disabled={pendingId === s.target.id}
+                    disabled={pendingKey === `${s.target.id}:${s.role}`}
                     onClick={() => void revoke(s)}
                     className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
                   >
-                    {pendingId === s.target.id ? (
+                    {pendingKey === `${s.target.id}:${s.role}` ? (
                       <Loader2 className="size-4 animate-spin" aria-hidden />
                     ) : (
                       <X className="size-4" aria-hidden />

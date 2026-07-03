@@ -42,16 +42,21 @@ export async function checkSession(): Promise<boolean> {
 /// ログアウト。CSRF 付きで BFF に通知し、返却された Keycloak end-session URL へ遷移する。
 export async function logout(): Promise<void> {
   const token = csrfToken();
-  const res = await fetch("/auth/logout", {
-    method: "POST",
-    credentials: "include",
-    headers: token ? { "X-CSRF-Token": token } : {},
-  });
-  if (res.ok) {
-    const body = (await res.json()) as { end_session_url: string };
-    window.location.href = body.end_session_url;
-  } else {
+  try {
+    const res = await fetch("/auth/logout", {
+      method: "POST",
+      credentials: "include",
+      headers: token ? { "X-CSRF-Token": token } : {},
+    });
+    if (res.ok) {
+      const body = (await res.json()) as { end_session_url: string };
+      window.location.href = body.end_session_url;
+      return;
+    }
     // ログアウト要求が弾かれてもトップへ戻す（セッションは Cookie 失効で実質無効）。
+    window.location.href = "/";
+  } catch {
+    // オフライン・DNS 失敗などネットワーク例外でも握り潰さずトップへ誘導する。
     window.location.href = "/";
   }
 }
