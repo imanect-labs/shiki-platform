@@ -14,6 +14,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 pub use callback::callback;
+pub(crate) use callback::provision_roles;
 pub use login::login;
 pub use logout::logout;
 pub use session::session;

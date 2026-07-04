@@ -72,10 +72,14 @@
   - `VectorStore` トレイト＋Qdrant実装。ペイロードに `authz_tags`/`doc_id`/メタを格納し**フィルタ付きANN**。
     小規模向けに pgvector 実装も差し替え可能に（Phase 8 でも可）。
   - upsert/delete/search（フィルタ付き）を提供。
+  - **テナント分離（SAAS.1 / #91・design §4.3）**: payload に `tenant_id` を持たせ、全 search に
+    `tenant_id = ctx.tenant_id` を**authz_tags と独立に無条件 AND**。トレイトは第一引数 `&AuthContext`。
+    authz_tags は名前空間化形式（`folder:<tenant>|<local>`）のまま格納する（local へ剥がさない）。
 - **受け入れ条件**:
   - [ ] authz_tags フィルタ付き検索が正しく絞り込む
   - [ ] doc 削除でベクタも消える
   - [ ] トレイトで pgvector へ差し替えできる構造
+  - [ ] **別テナントのクエリで対象 doc が絶対に返らない（authz_tags を空にしても tenant フィルタ単独で遮断）**
 
 ### Task 2.5: 全文検索（Tantivy＋Lindera）
 - **area**: rag / **path**: `crates/rag`
@@ -84,10 +88,13 @@
   - Tantivy インデックスに同チャンクを格納、**Lindera で日本語形態素**トークナイズ。BM25検索。
   - **authz_tags を Tantivy 側にも持たせ pre-filter を適用**（dense と同じ権限境界）。
   - dense と同一の doc/chunk ID 体系で突合可能に。
+  - **テナント分離（SAAS.1 / #91・design §4.3）**: index-per-tenant を既定とする（単一 index なら
+    `tenant_id` を term filter で必須 AND）。tenant 境界は authz_tags と独立に必ず適用。
 - **受け入れ条件**:
   - [ ] 日本語キーワードが形態素で正しくヒットする
   - [ ] authz_tags フィルタが全文側にも効く
   - [ ] dense とID整合が取れRRFに渡せる
+  - [ ] **別テナントのクエリで対象 doc が絶対に返らない（tenant index/フィルタ単独で遮断）**
 
 ### Task 2.6: ハイブリッド検索＋RRF＋reranker
 - **area**: rag / **path**: `crates/rag`
@@ -120,10 +127,15 @@
 - **仕様**:
   - StorageService の書込イベント（1.8）→ ジョブキュー（pgmq）→ worker（parse→chunk→embed→index）。
   - リトライ/デッドレター、進捗・失敗の可視化。冪等性（同一版の二重処理を防ぐ）。
+  - **tenant_id を経路全体で必須フィールドとして通す（SAAS.1 / #91）**: `storage_event_outbox` は
+    `tenant_id` を第一級カラムで持つ。pgmq メッセージ・worker 入力（gRPC/HTTP）の型にも `tenant_id` を
+    **必須フィールド**として載せる（free-form payload に落とさない）。これが worker の書込先
+    collection/index 選択の唯一の根拠になる。テナント削除時は outbox 残イベントも破棄する。
 - **受け入れ条件**:
   - [ ] アップロードから数秒〜分で検索可能になる
   - [ ] 失敗ジョブがDLQに入り再実行できる
   - [ ] 同一版の重複インジェストが起きない
+  - [ ] **worker が受けるジョブに tenant_id が必須で載り、書込先が tenant で分離される**
 
 ### Task 2.9: 増分再索引＋削除/移動整合
 - **area**: rag / **path**: `crates/rag`

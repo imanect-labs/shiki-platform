@@ -34,6 +34,9 @@ pub struct KcUser {
     /// ユーザー属性（`tenant` の照合に使う）。
     #[serde(default)]
     pub attributes: std::collections::HashMap<String, Vec<String>>,
+    /// 未消化の必須アクション（`UPDATE_PASSWORD` が残っていれば初回ログイン前）。
+    #[serde(default, rename = "requiredActions")]
+    pub required_actions: Vec<String>,
 }
 
 impl KcUser {
@@ -172,7 +175,10 @@ impl<'a> KeycloakAdmin<'a> {
     /// - `attributes.tenant` / `attributes.roles` を設定（claim マッパーの取得元）
     /// - group `/{org}` へ参加（`groups` claim ＝ org 解決の取得元）
     /// - 一時パスワード＋ `UPDATE_PASSWORD` 必須アクション（初回ログインで変更を強制）
-    /// - 既存ユーザーなら**作り直さず**現状を維持（パスワードは返さない）
+    /// - 既存ユーザーなら**作り直さず**現状を維持。ただし **初回ログイン前
+    ///   （`UPDATE_PASSWORD` 未消化）なら一時パスワードを再発行して返す**（#91 M-6:
+    ///   プロビジョニング後段の失敗で初回応答の temp_password が破棄されても、
+    ///   同一リクエストの再実行で回収できる）。ログイン済みならパスワードに触れない。
     #[allow(clippy::too_many_arguments)] // ユーザー作成に必要な属性一式。
     pub async fn ensure_tenant_admin(
         &self,
@@ -195,6 +201,17 @@ impl<'a> KeycloakAdmin<'a> {
                         existing.tenant()
                     ),
                 });
+            }
+            // 初回ログイン前なら一時パスワードを再発行（temporary のまま・#91 M-6）。
+            // ログイン済み（UPDATE_PASSWORD 消化済み）のユーザーのパスワードは上書きしない。
+            if existing
+                .required_actions
+                .iter()
+                .any(|a| a == "UPDATE_PASSWORD")
+            {
+                self.reset_temp_password(&existing.id, temp_password)
+                    .await?;
+                return Ok((existing.id, Some(temp_password.to_string())));
             }
             return Ok((existing.id, None));
         }
@@ -243,6 +260,29 @@ impl<'a> KeycloakAdmin<'a> {
             }
         })?;
         Ok((user.id, Some(temp_password.to_string())))
+    }
+
+    /// 一時パスワードを再設定する（`temporary: true`＝初回ログインで変更必須のまま）。
+    ///
+    /// `ensure_tenant_admin` の再実行時、初回ログイン前の admin にのみ使う（#91 M-6）。
+    async fn reset_temp_password(
+        &self,
+        user_id: &str,
+        temp_password: &str,
+    ) -> Result<(), KeycloakAdminError> {
+        let token = self.admin_token().await?;
+        let resp = self
+            .http
+            .put(format!("{}/users/{}/reset-password", self.base, user_id))
+            .bearer_auth(&token)
+            .json(&json!({ "type": "password", "value": temp_password, "temporary": true }))
+            .send()
+            .await
+            .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        Err(status_error(resp).await)
     }
 
     /// `attributes.tenant == tenant_id` のユーザーを全列挙する（テナント削除用）。

@@ -68,6 +68,16 @@ pub async fn require_session(
                 record =
                     refresh_session(&state, &tenant_id, &session_id, record, &refresh_token, now)
                         .await?;
+                // role reconciliation を refresh 周期でも実行する（#91 H-1）。ログイン時のみだと
+                // refresh で延命される長寿命セッションが IdP 側で剥奪済みの role を再ログインまで
+                // 保持し続ける。ここで claims↔FGA を diff 同期し、失効窓を access token 寿命
+                // （≒refresh 周期）まで縮める。login と同じく detached・best-effort で
+                // リクエストレイテンシに載せない。
+                tokio::spawn(crate::routes::auth::provision_roles(
+                    state.clone(),
+                    record.principal.clone(),
+                    tenant_id.clone(),
+                ));
             }
             None => {
                 // refresh token が無く access も期限切れなら失効扱い。
@@ -109,6 +119,21 @@ async fn refresh_session(
             // 万一クレームを取り出せなければ fail-closed（古い principal で継続させない）。
             let claims = claims::decode_claims_insecure(&tokens.access_token)?;
             record.principal = claims::principal_from_claims(claims);
+            // 新トークンの tenant とセッションの tenant を再照合する（#91 L-2）。retenant（#89）等で
+            // IdP の tenant 属性が変わった場合、旧 tenant のセッションを fail-closed で破棄し、
+            // 再ログイン（新 claim）へ誘導する（FGA は旧名前空間を deny するため越境はしないが、
+            // stale セッションを残さない）。
+            let fresh_tenant =
+                crate::extract::resolve_tenant_id(&record.principal, &state.config.auth)?;
+            if fresh_tenant != tenant_id {
+                tracing::warn!(
+                    session_tenant = %tenant_id,
+                    claim_tenant = %fresh_tenant,
+                    "refresh 後の tenant claim がセッションと不一致（セッションを破棄）"
+                );
+                let _ = state.sessions.delete(tenant_id, session_id).await;
+                return Err(ApiError::Unauthorized);
+            }
             record.access_token = tokens.access_token;
             if tokens.refresh_token.is_some() {
                 record.refresh_token = tokens.refresh_token;

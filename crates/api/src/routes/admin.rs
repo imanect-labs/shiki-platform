@@ -10,7 +10,7 @@
 //! 明示引数で受ける（アンビエントではなく明示スコープ）。
 
 use axum::{
-    extract::{Path, Request, State},
+    extract::{Extension, Path, Request, State},
     http::{header::AUTHORIZATION, StatusCode},
     middleware::Next,
     response::Response,
@@ -25,11 +25,17 @@ use crate::{
     middleware::auth::verify_access_token, state::AppState,
 };
 
+/// 認証済み provisioner の識別子（監査 actor 用・#91 M-7）。`azp`（トークン発行 client）を
+/// 運び、ハンドラが監査ログの actor 列に刻む。request extension で受け渡す。
+#[derive(Debug, Clone)]
+pub struct ProvisionerIdentity(pub String);
+
 /// `/admin/*` の認証 middleware。Bearer JWT を検証し、`azp` が provisioner client と
 /// 一致することを要求する。失敗はすべて 401（存在秘匿はしない: admin API は発見可能でよい）。
+/// 検証済みの `azp` を [`ProvisionerIdentity`] として extension に載せ、監査の actor に使う。
 pub async fn require_provisioner(
     State(state): State<AppState>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
     // config 未設定ならルートが組み込まれないため、ここに来る時点で Some のはずだが
@@ -44,13 +50,17 @@ pub async fn require_provisioner(
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(ApiError::Unauthorized)?;
     let claims = verify_access_token(&state, token).await?;
-    if claims.azp.as_deref() != Some(provisioner_id) {
+    let azp = claims.azp.as_deref();
+    if azp != Some(provisioner_id) {
         tracing::warn!(
-            azp = ?claims.azp,
+            ?azp,
             "admin API: azp が provisioner client と不一致（拒否）"
         );
         return Err(ApiError::Unauthorized);
     }
+    // 監査 actor 用に検証済み azp を運ぶ（`provisioner:<azp>` で通常ユーザー subject と区別）。
+    req.extensions_mut()
+        .insert(ProvisionerIdentity(format!("provisioner:{provisioner_id}")));
     Ok(next.run(req).await)
 }
 
@@ -98,6 +108,7 @@ pub struct CreateTenantResponse {
 )]
 pub async fn create_tenant(
     State(state): State<AppState>,
+    Extension(actor): Extension<ProvisionerIdentity>,
     Json(req): Json<CreateTenantRequest>,
 ) -> Result<(StatusCode, Json<CreateTenantResponse>), ApiError> {
     // tenant_id は FGA 識別子/オブジェクトキーの名前空間になるため、空と禁止文字を拒否
@@ -147,7 +158,7 @@ pub async fn create_tenant(
     // 3. FGA org member タプル（実行時と同じ ns 経路・冪等・監査つき）。
     state
         .storage
-        .provision_tenant_admin(&req.tenant_id, &org, &admin_user_id)
+        .provision_tenant_admin(&req.tenant_id, &org, &admin_user_id, &actor.0)
         .await?;
     // 4. ユーザーディレクトリ（共有相手検索）へ投入（冪等 upsert）。
     state
@@ -190,6 +201,7 @@ pub async fn create_tenant(
 )]
 pub async fn delete_tenant(
     State(state): State<AppState>,
+    Extension(actor): Extension<ProvisionerIdentity>,
     Path(tenant_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     validate_tenant_id(&tenant_id)
@@ -234,7 +246,10 @@ pub async fn delete_tenant(
     }
 
     // 4. データ面の purge（FGA タプル → オブジェクト → DB 行。audit は保持）。
-    state.storage.purge_tenant(&tenant_id, &org).await?;
+    state
+        .storage
+        .purge_tenant(&tenant_id, &org, &actor.0)
+        .await?;
 
     // 5. tombstone 化。
     state.tenants.mark_deleted(&tenant_id).await?;

@@ -1,4 +1,7 @@
-//! ルータ構築。公開ルート（認証不要）と保護ルート（要認証）を組み立てる。
+//! ルータ構築。**全エンドポイントは [`route_table`] の宣言的マップからのみ登録される**
+//! （「エンドポイント→必要スコープ」の一律強制・architecture-invariants / #91 M-1）。
+//! 表に載せずにルートを増やすことはできず、非 Public エントリは OpenAPI 仕様との
+//! 整合テスト（`route_table_matches_openapi`）で宣言漏れを検出する。
 
 use std::time::Duration;
 
@@ -7,127 +10,229 @@ use axum::{
     http::{header, HeaderName, HeaderValue, Method, StatusCode},
     middleware,
     response::IntoResponse,
-    routing::{delete, get, patch, post, put},
+    routing::{delete, get, patch, post, put, MethodRouter},
     Router,
 };
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
 use crate::{health, middleware::require_session, openapi, routes, state::AppState, telemetry};
 
+/// エンドポイントのアクセスポリシー（必要スコープの宣言）。
+///
+/// ハンドラ個別の認証チェックを禁じ、ポリシー種別ごとに単一の middleware を
+/// 一律適用するための閉じた語彙。データアクセスの認可（OpenFGA check）は
+/// この下の `AuthContext` ＋ `StorageService` チョークポイントが担う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessPolicy {
+    /// 認証不要（ヘルス・BFF 認証エンドポイント・OpenAPI 配布）。標準 30s タイムアウト。
+    Public,
+    /// BFF セッション必須（標準 30s タイムアウト）。
+    Session,
+    /// BFF セッション必須・長時間許容（300s。finalize のサーバ側ハッシュ/コピー等）。
+    SessionLongRunning,
+    /// provisioner service account の Bearer JWT 必須（admin プレーン・300s）。
+    /// config（provisioner 資格情報＋admin base）が無ければルートごと不在（fail-closed）。
+    Provisioner,
+}
+
+/// 1 エンドポイントの宣言（パス・メソッド・ポリシー・ハンドラ登録）。
+pub struct RouteDecl {
+    pub path: &'static str,
+    /// 宣言メソッド（OpenAPI 整合テストで実体と突合する）。
+    pub methods: &'static [&'static str],
+    pub policy: AccessPolicy,
+    handler: fn() -> MethodRouter<AppState>,
+}
+
+/// 全エンドポイントの単一定義（宣言的スコープマップ）。
+///
+/// ルータは本表からのみ構築されるため、「表に無いエンドポイント」は存在できない。
+/// 追加時はポリシーの宣言が必須になり、認可レイヤの適用漏れが構造的に起きない。
+pub fn route_table() -> Vec<RouteDecl> {
+    use AccessPolicy::*;
+    fn r(
+        path: &'static str,
+        methods: &'static [&'static str],
+        policy: AccessPolicy,
+        handler: fn() -> MethodRouter<AppState>,
+    ) -> RouteDecl {
+        RouteDecl {
+            path,
+            methods,
+            policy,
+            handler,
+        }
+    }
+    vec![
+        // --- Public（認証不要。/auth/* はセッション確立前に叩く。logout は内部で CSRF 自己検証） ---
+        r("/healthz", &["GET"], Public, || get(health::healthz)),
+        r("/readyz", &["GET"], Public, || get(health::readyz)),
+        r("/auth/login", &["GET"], Public, || get(routes::auth::login)),
+        r("/auth/callback", &["GET"], Public, || {
+            get(routes::auth::callback)
+        }),
+        r("/auth/logout", &["POST"], Public, || {
+            post(routes::auth::logout)
+        }),
+        r("/auth/session", &["GET"], Public, || {
+            get(routes::auth::session)
+        }),
+        r("/api-docs/openapi.json", &["GET"], Public, || {
+            get(openapi_handler)
+        }),
+        // --- Session（メタ操作・標準 30s） ---
+        r("/me", &["GET"], Session, || get(routes::get_me)),
+        r("/folders", &["POST"], Session, || {
+            post(routes::folders::create_folder)
+        }),
+        r("/folders/{id}", &["PATCH", "DELETE"], Session, || {
+            patch(routes::folders::update_folder).delete(routes::folders::delete_folder)
+        }),
+        r("/folders/{id}/restore", &["POST"], Session, || {
+            post(routes::folders::restore_folder)
+        }),
+        r("/nodes", &["GET"], Session, || {
+            get(routes::folders::list_children)
+        }),
+        r("/nodes/{id}/breadcrumb", &["GET"], Session, || {
+            get(routes::folders::breadcrumb)
+        }),
+        r("/trash", &["GET"], Session, || {
+            get(routes::folders::list_trash)
+        }),
+        r(
+            "/nodes/{id}/shares",
+            &["PUT", "DELETE", "GET"],
+            Session,
+            || {
+                put(routes::shares::share_node)
+                    .delete(routes::shares::unshare_node)
+                    .get(routes::shares::list_shares)
+            },
+        ),
+        r("/shares/shared-with-me", &["GET"], Session, || {
+            get(routes::shares::shared_with_me)
+        }),
+        r("/directory/users", &["GET"], Session, || {
+            get(routes::directory::search_users)
+        }),
+        r("/directory/roles", &["GET"], Session, || {
+            get(routes::directory::search_roles)
+        }),
+        // --- SessionLongRunning（300s。finalize は staging のサーバ側ハッシュ＋コピーが
+        //     大容量で 30s を超え、バイトは MinIO にあるのに file が作れない事故を防ぐ） ---
+        r("/files", &["POST"], SessionLongRunning, || {
+            post(routes::files::begin_upload)
+        }),
+        r(
+            "/files/{id}",
+            &["GET", "PATCH", "DELETE"],
+            SessionLongRunning,
+            || {
+                get(routes::files::get_file)
+                    .patch(routes::files::update_file)
+                    .delete(routes::files::delete_file)
+            },
+        ),
+        r(
+            "/files/{upload_id}/finalize",
+            &["POST"],
+            SessionLongRunning,
+            || post(routes::files::finalize_upload),
+        ),
+        r(
+            "/files/{id}/download-url",
+            &["GET"],
+            SessionLongRunning,
+            || get(routes::files::download_url),
+        ),
+        r("/files/{id}/restore", &["POST"], SessionLongRunning, || {
+            post(routes::files::restore_file)
+        }),
+        r("/files/{id}/versions", &["GET"], SessionLongRunning, || {
+            get(routes::files::list_versions)
+        }),
+        r(
+            "/files/{id}/versions/{version}/download-url",
+            &["GET"],
+            SessionLongRunning,
+            || get(routes::files::version_download_url),
+        ),
+        r(
+            "/files/{id}/versions/{version}/restore",
+            &["POST"],
+            SessionLongRunning,
+            || post(routes::files::restore_version),
+        ),
+        // --- Provisioner（admin プレーン・SAAS.2。削除は Keycloak/FGA/オブジェクト走査で 300s） ---
+        r("/admin/tenants", &["POST"], Provisioner, || {
+            post(routes::admin::create_tenant)
+        }),
+        r(
+            "/admin/tenants/{tenant_id}",
+            &["DELETE"],
+            Provisioner,
+            || delete(routes::admin::delete_tenant),
+        ),
+    ]
+}
+
 /// アプリの axum ルータを構築する（テストからも利用）。
+///
+/// [`route_table`] をポリシー種別ごとに束ね、認証 middleware とタイムアウトを
+/// **グループ単位で一律適用**する（ハンドラ個別のチェックを持たない）。
 pub fn build_router(state: AppState) -> Router {
     let session_layer = middleware::from_fn_with_state(state.clone(), require_session);
     let standard_timeout =
         || TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(30));
+    let long_timeout =
+        || TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(300));
 
-    // 標準保護ルート（短い 30s タイムアウト）。
-    let protected_standard = Router::new()
-        .route("/me", get(routes::get_me))
+    let mut public = Router::new();
+    let mut session_std = Router::new();
+    let mut session_long = Router::new();
+    let mut admin = Router::new();
+    // admin ルート（SAAS.2）: **config（provisioner 資格情報＋admin base）が揃っている時のみ
+    // 組み込む**（未設定なら 404 = fail-closed）。
+    let admin_enabled = state.config.auth.provisioner_credentials().is_some()
+        && state.config.auth.admin_base().is_some();
+    for decl in route_table() {
+        let method_router = (decl.handler)();
+        match decl.policy {
+            AccessPolicy::Public => public = public.route(decl.path, method_router),
+            AccessPolicy::Session => session_std = session_std.route(decl.path, method_router),
+            AccessPolicy::SessionLongRunning => {
+                session_long = session_long.route(decl.path, method_router)
+            }
+            AccessPolicy::Provisioner => {
+                if admin_enabled {
+                    admin = admin.route(decl.path, method_router);
+                }
+            }
+        }
+    }
+
+    let public = public.layer(standard_timeout());
+    let session_std = session_std
         .route_layer(session_layer.clone())
         .layer(standard_timeout());
-
-    // フォルダ階層＋共有ルート（メタ操作のみ＝標準 30s タイムアウト）。
-    let protected_nodes = Router::new()
-        .route("/folders", post(routes::folders::create_folder))
-        .route(
-            "/folders/{id}",
-            patch(routes::folders::update_folder).delete(routes::folders::delete_folder),
-        )
-        .route(
-            "/folders/{id}/restore",
-            post(routes::folders::restore_folder),
-        )
-        .route("/nodes", get(routes::folders::list_children))
-        .route("/nodes/{id}/breadcrumb", get(routes::folders::breadcrumb))
-        .route("/trash", get(routes::folders::list_trash))
-        .route(
-            "/nodes/{id}/shares",
-            put(routes::shares::share_node)
-                .delete(routes::shares::unshare_node)
-                .get(routes::shares::list_shares),
-        )
-        .route(
-            "/shares/shared-with-me",
-            get(routes::shares::shared_with_me),
-        )
-        .route("/directory/users", get(routes::directory::search_users))
-        .route("/directory/roles", get(routes::directory::search_roles))
-        .route_layer(session_layer.clone())
-        .layer(standard_timeout());
-
-    // ファイルルート: finalize は staging を server-side でハッシュ＋コピーするため 30s では
-    // 足りない（大容量で 408 になり、バイトは MinIO にあるのに file が作れない事故を防ぐ）。
-    // 長め(300s)のタイムアウトを当て、グローバル 30s からは除外する。
-    let protected_files = Router::new()
-        .route("/files", post(routes::files::begin_upload))
-        .route(
-            "/files/{id}",
-            get(routes::files::get_file)
-                .patch(routes::files::update_file)
-                .delete(routes::files::delete_file),
-        )
-        .route(
-            "/files/{upload_id}/finalize",
-            post(routes::files::finalize_upload),
-        )
-        .route("/files/{id}/download-url", get(routes::files::download_url))
-        .route("/files/{id}/restore", post(routes::files::restore_file))
-        .route("/files/{id}/versions", get(routes::files::list_versions))
-        .route(
-            "/files/{id}/versions/{version}/download-url",
-            get(routes::files::version_download_url),
-        )
-        .route(
-            "/files/{id}/versions/{version}/restore",
-            post(routes::files::restore_version),
-        )
+    let session_long = session_long
         .route_layer(session_layer)
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(300),
-        ));
-
-    // 公開ルート: 認証不要。BFF 認証エンドポイント（/auth/*）もここ
-    // （セッション確立前に叩くため。logout は内部で CSRF を自己検証する）。
-    let public = Router::new()
-        .route("/healthz", get(health::healthz))
-        .route("/readyz", get(health::readyz))
-        .route("/auth/login", get(routes::auth::login))
-        .route("/auth/callback", get(routes::auth::callback))
-        .route("/auth/logout", post(routes::auth::logout))
-        .route("/auth/session", get(routes::auth::session))
-        .route("/api-docs/openapi.json", get(openapi_handler))
-        .layer(standard_timeout());
-
-    // admin ルート（SAAS.2 テナント・プロビジョニング）: BFF セッションではなく
-    // provisioner Bearer JWT で認証する管理プレーン。**config（provisioner 資格情報＋
-    // admin base）が揃っている時のみ組み込む**（未設定なら 404 = fail-closed）。
-    // 削除は Keycloak/FGA/オブジェクト走査を伴うため長め（300s）のタイムアウト。
-    let admin = if state.config.auth.provisioner_credentials().is_some()
-        && state.config.auth.admin_base().is_some()
-    {
-        Router::new()
-            .route("/admin/tenants", post(routes::admin::create_tenant))
-            .route(
-                "/admin/tenants/{tenant_id}",
-                delete(routes::admin::delete_tenant),
-            )
+        .layer(long_timeout());
+    let admin = if admin_enabled {
+        admin
             .route_layer(middleware::from_fn_with_state(
                 state.clone(),
                 routes::admin::require_provisioner,
             ))
-            .layer(TimeoutLayer::with_status_code(
-                StatusCode::REQUEST_TIMEOUT,
-                Duration::from_secs(300),
-            ))
+            .layer(long_timeout())
     } else {
-        Router::new()
+        admin
     };
 
     let router = public
-        .merge(protected_standard)
-        .merge(protected_nodes)
-        .merge(protected_files)
+        .merge(session_std)
+        .merge(session_long)
         .merge(admin)
         // observe は span 内で動く必要があるため TraceLayer より内側（先に追加）。
         .layer(middleware::from_fn(telemetry::observe))
@@ -191,4 +296,98 @@ async fn openapi_handler() -> impl IntoResponse {
         [(header::CONTENT_TYPE, "application/json")],
         openapi::openapi_json(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// route_table の (path, METHOD) 集合。
+    fn declared(policy_filter: impl Fn(AccessPolicy) -> bool) -> BTreeSet<(String, String)> {
+        route_table()
+            .iter()
+            .filter(|d| policy_filter(d.policy))
+            .flat_map(|d| {
+                d.methods
+                    .iter()
+                    .map(|m| (d.path.to_string(), m.to_string()))
+            })
+            .collect()
+    }
+
+    /// OpenAPI 仕様の (path, METHOD) 集合。
+    fn openapi_ops() -> BTreeSet<(String, String)> {
+        let spec: serde_json::Value =
+            serde_json::from_str(&openapi::openapi_json()).expect("OpenAPI JSON");
+        let mut out = BTreeSet::new();
+        let paths = spec["paths"].as_object().expect("paths object");
+        for (path, ops) in paths {
+            for method in ops.as_object().expect("ops object").keys() {
+                out.insert((path.clone(), method.to_uppercase()));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn route_table_has_no_duplicate_ops() {
+        // 同一 (path, method) の二重宣言はマージ時に panic するため表の段階で検出する。
+        let mut seen = BTreeSet::new();
+        for decl in route_table() {
+            assert!(!decl.methods.is_empty(), "{}: methods が空", decl.path);
+            for m in decl.methods {
+                assert!(
+                    seen.insert((decl.path, *m)),
+                    "重複宣言: {} {}",
+                    m,
+                    decl.path
+                );
+            }
+        }
+    }
+
+    /// 宣言的スコープマップと OpenAPI（codegen の正）の相互網羅（#91 M-1）。
+    ///
+    /// - OpenAPI に載る全操作は route_table に**非 Public** で宣言されていること
+    ///   （API を増やすときポリシー宣言を強制する）。
+    /// - 逆に、非 Public の全宣言は OpenAPI に載っていること
+    ///   （utoipa 注釈＝TS 型生成の漏れを防ぐ）。
+    #[test]
+    fn route_table_matches_openapi() {
+        let declared = declared(|p| p != AccessPolicy::Public);
+        let spec = openapi_ops();
+        let missing_policy: Vec<_> = spec.difference(&declared).collect();
+        assert!(
+            missing_policy.is_empty(),
+            "OpenAPI にあるが route_table に非 Public 宣言が無い: {missing_policy:?}"
+        );
+        let missing_spec: Vec<_> = declared.difference(&spec).collect();
+        assert!(
+            missing_spec.is_empty(),
+            "route_table にあるが OpenAPI（utoipa 注釈）に無い: {missing_spec:?}"
+        );
+    }
+
+    #[test]
+    fn admin_routes_are_provisioner_scoped() {
+        // /admin/* は必ず Provisioner ポリシー（BFF セッションで到達できない）こと。
+        for decl in route_table() {
+            if decl.path.starts_with("/admin/") {
+                assert_eq!(
+                    decl.policy,
+                    AccessPolicy::Provisioner,
+                    "{} は Provisioner であること",
+                    decl.path
+                );
+            } else {
+                assert_ne!(
+                    decl.policy,
+                    AccessPolicy::Provisioner,
+                    "{} が Provisioner になっている",
+                    decl.path
+                );
+            }
+        }
+    }
 }

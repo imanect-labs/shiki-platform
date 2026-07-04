@@ -15,7 +15,7 @@ use api::{
 use axum::{
     extract::{Path, Query},
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -26,6 +26,9 @@ use serde_json::{json, Value};
 struct KcState {
     group_exists: AtomicBool,
     created_user: Mutex<Option<Value>>,
+    /// 初回ログインで UPDATE_PASSWORD を消化済みか（true なら username 検索で
+    /// requiredActions を空にして返す＝ログイン済みユーザーを模す）。
+    logged_in: AtomicBool,
 }
 
 /// token（client_credentials）＋ admin REST（groups/users）のモック Keycloak を立てる。
@@ -77,10 +80,18 @@ async fn spawn_mock_kc(state: Arc<KcState>) -> String {
                 if let Some(username) = q.get("username").and_then(Value::as_str) {
                     let created = st.created_user.lock().unwrap().clone();
                     if let Some(user) = created {
+                        // 初回ログイン前は POST payload の requiredActions（UPDATE_PASSWORD）を
+                        // そのまま返す。logged_in が立てば消化済みとして空で返す。
+                        let required_actions = if st.logged_in.load(Ordering::SeqCst) {
+                            json!([])
+                        } else {
+                            user.get("requiredActions").cloned().unwrap_or(json!([]))
+                        };
                         return Json(json!([{
                             "id": "user-1",
                             "username": username,
                             "attributes": user.get("attributes").cloned().unwrap_or(json!({})),
+                            "requiredActions": required_actions,
                         }]));
                     }
                     return Json(json!([]));
@@ -107,6 +118,8 @@ async fn spawn_mock_kc(state: Arc<KcState>) -> String {
         }
     });
     let group_delete = delete(|Path(_id): Path<String>| async move { StatusCode::NO_CONTENT });
+    // 一時パスワードの再設定（#91 M-6）。204 を返すだけの冪等スタブ。
+    let reset_password = put(|| async { StatusCode::NO_CONTENT });
 
     let app = Router::new()
         .route("/realms/shiki/protocol/openid-connect/token", token_route)
@@ -114,6 +127,10 @@ async fn spawn_mock_kc(state: Arc<KcState>) -> String {
         .route("/admin/realms/shiki/groups/{id}", group_delete)
         .route("/admin/realms/shiki/users", users_post.merge(users_get))
         .route("/admin/realms/shiki/users/{id}", user_delete)
+        .route(
+            "/admin/realms/shiki/users/{id}/reset-password",
+            reset_password,
+        )
         .with_state(());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -166,8 +183,12 @@ async fn ensure_group_is_idempotent() {
 }
 
 #[tokio::test]
-async fn ensure_tenant_admin_creates_then_reuses() {
-    let base = spawn_mock_kc(Arc::default()).await;
+async fn ensure_tenant_admin_reissues_before_first_login() {
+    // #91 M-6: 初回ログイン前（UPDATE_PASSWORD 未消化）の既存 admin は再実行で一時
+    // パスワードを再発行する（プロビジョニング後段の失敗で初回応答が破棄されても回収可）。
+    // ログイン済みになったらパスワードには触れない。
+    let state = Arc::new(KcState::default());
+    let base = spawn_mock_kc(state.clone()).await;
     let http = reqwest::Client::new();
     let auth = auth_config(&base);
     let kc = KeycloakAdmin::from_config(&http, &auth).unwrap();
@@ -186,19 +207,34 @@ async fn ensure_tenant_admin_creates_then_reuses() {
     assert_eq!(id, "user-1");
     assert_eq!(password.as_deref(), Some("tmp-pass"));
 
-    // 既存: 作り直さずパスワードは返さない（冪等）。
+    // 既存かつログイン前: 一時パスワードを再発行して返す（M-6）。
     let (id2, password2) = kc
         .ensure_tenant_admin(
             "acme",
             "acme",
             "admin@acme.example",
             "admin@acme.example",
-            "other",
+            "reissued",
         )
         .await
         .unwrap();
     assert_eq!(id2, "user-1");
-    assert_eq!(password2, None);
+    assert_eq!(password2.as_deref(), Some("reissued"));
+
+    // ログイン済み（UPDATE_PASSWORD 消化）になったらパスワードには触れない。
+    state.logged_in.store(true, Ordering::SeqCst);
+    let (id3, password3) = kc
+        .ensure_tenant_admin(
+            "acme",
+            "acme",
+            "admin@acme.example",
+            "admin@acme.example",
+            "ignored",
+        )
+        .await
+        .unwrap();
+    assert_eq!(id3, "user-1");
+    assert_eq!(password3, None);
 }
 
 #[tokio::test]

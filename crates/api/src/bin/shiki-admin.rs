@@ -29,6 +29,7 @@ use uuid::Uuid;
 /// tenant_id 列で移行対象になるテーブル（リネームモード）。FK 順は不要（同一 txn 内 UPDATE）。
 const TENANT_TABLES: &[&str] = &[
     "node",
+    "node_closure",
     "node_version",
     "pending_upload",
     "storage_event_outbox",
@@ -74,10 +75,15 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
     }
     let from = from.context("--legacy か --from <tenant> のいずれかが必要です")?;
     let to = to.context("--to <tenant> が必要です")?;
-    if to.contains(['|', ':', '#', '@']) || to.chars().any(char::is_whitespace) {
-        bail!("--to に禁止文字（| : # @ 空白）が含まれています");
+    // 文字ポリシーは authz::validate_tenant_id が単一定義（#91 M-3）。CLI だけ緩いと
+    // `/` 入り tenant がオブジェクトキーの prefix 境界を壊し、API から削除もできなくなる。
+    if let Err(violation) = authz::validate_tenant_id(&to) {
+        bail!("--to が tenant_id として不正です: {violation}");
     }
     if let FromNs::Tenant(f) = &from {
+        if let Err(violation) = authz::validate_tenant_id(f) {
+            bail!("--from が tenant_id として不正です: {violation}");
+        }
         if f == &to {
             bail!("--from と --to が同一です");
         }
@@ -169,7 +175,12 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
         orgs.len()
     );
 
-    // --- 2. オブジェクトの移行（blob.object_key を正として copy→delete） ---
+    // --- 2. オブジェクトの移行（blob.object_key を正として copy のみ・旧キーは残す） ---
+    // 旧キーの削除は **DB 書き換え（手順3）の commit 後**に行う（#91 M-5）: ここで削除すると
+    // 手順3 の txn が失敗した場合に DB の object_key は旧キーを指すのに実体が無い
+    // （FGA=新・オブジェクト=新のみ・DB=旧の三者不整合）dangling 状態になり、再実行まで
+    // テナントが完全に不可用になる。copy→commit→delete の順なら途中失敗しても実体は必ず
+    // DB が指すキーに存在する（余剰コピーが残るだけ・再実行/手順4 で収束）。
     // 大テナント（数百万 blob）でもメモリへ全載せしない keyset ページング。
     let mut objects_moved: u64 = 0;
     let mut objects_skipped: u64 = 0;
@@ -196,7 +207,7 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                 continue;
             };
             if execute {
-                // 冪等: コピー済みならスキップ、旧が無ければ何もしない。
+                // 冪等: コピー済み or 旧が無い（前回実行で移行済み）ならスキップ。
                 if !store.exists(&new_key).await? {
                     if !store.exists(old_key).await? {
                         objects_skipped += 1;
@@ -204,12 +215,11 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                     }
                     store.copy(old_key, &new_key).await?;
                 }
-                store.delete(old_key).await?;
             }
             objects_moved += 1;
         }
     }
-    println!("objects: moved={objects_moved} skipped={objects_skipped}（blob 行 {blob_rows}）");
+    println!("objects: copied={objects_moved} skipped={objects_skipped}（blob 行 {blob_rows}）");
 
     // --- 3. DB の書き換え（1 txn） ---
     if execute {
@@ -254,6 +264,38 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
         }
         tx.commit().await?;
         println!("DB: 書き換え完了");
+
+        // --- 4. 旧オブジェクトキーの削除（DB commit 後・#91 M-5） ---
+        // commit 済みの blob 行（新キー）から旧キーを導出して削除する。ここで失敗しても
+        // DB は新キーを指しており実体も存在する（旧キーが残るだけ）。再実行で収束する。
+        let mut objects_deleted: u64 = 0;
+        let mut last_key: Option<String> = None;
+        loop {
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT object_key FROM blob \
+                 WHERE tenant_id = $1 AND ($2::text IS NULL OR object_key > $2) \
+                 ORDER BY object_key LIMIT 1000",
+            )
+            .bind(&to)
+            .bind(last_key.as_deref())
+            .fetch_all(&db)
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            last_key = rows.last().map(|(k,)| k.clone());
+            for (new_key,) in &rows {
+                let Some(old_key) = pre_migration_object_key(new_key, &from, &to) else {
+                    continue; // 新形式でない行（想定外）は触らない。
+                };
+                if store.exists(&old_key).await? {
+                    store.delete(&old_key).await?;
+                    objects_deleted += 1;
+                }
+            }
+        }
+        println!("objects: 旧キー {objects_deleted} 件を削除");
+
         if let FromNs::Tenant(f) = &from {
             // リネームの監査エントリを**新テナントの chain へ連結**して記録する（forensics の
             // アンカー）。⚠️ リネーム以前の chained エントリの entry_hash は**旧 tenant_id で
@@ -359,6 +401,20 @@ fn renamespace_object_key(old_key: &str, org: &str, from: &FromNs, to: &str) -> 
     }
 }
 
+/// [`renamespace_object_key`] の逆: **commit 済みの新キー**から移行元の旧キーを導出する
+/// （手順4 の旧キー掃除用・#91 M-5）。
+/// legacy: `{to}/{org}/{sha}` → `{org}/{sha}`（`{to}/` を剥がす）。
+/// rename: `{to}/{rest}` → `{from}/{rest}`。
+/// 新形式（`{to}/` 始まり）でないキーは `None`（触らない）。移行を経ていない行から
+/// 導出された旧キーはオブジェクトストアに存在しないため、exists 確認後の削除は安全。
+fn pre_migration_object_key(new_key: &str, from: &FromNs, to: &str) -> Option<String> {
+    let rest = new_key.strip_prefix(&format!("{to}/"))?;
+    match from {
+        FromNs::Legacy => Some(rest.to_string()),
+        FromNs::Tenant(f) => Some(format!("{f}/{rest}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,6 +449,33 @@ mod tests {
         assert_eq!(
             renamespace_object_key("other/acme/x", "acme", &rename, "t1"),
             None
+        );
+    }
+
+    #[test]
+    fn pre_migration_key_inverts_renamespace() {
+        // 手順4（commit 後の旧キー掃除）: renamespace の往復が成立すること（#91 M-5）。
+        let legacy = FromNs::Legacy;
+        assert_eq!(
+            pre_migration_object_key("t1/acme/deadbeef", &legacy, "t1").as_deref(),
+            Some("acme/deadbeef")
+        );
+        let rename = FromNs::Tenant("default".into());
+        assert_eq!(
+            pre_migration_object_key("t1/acme/deadbeef", &rename, "t1").as_deref(),
+            Some("default/acme/deadbeef")
+        );
+        // 新形式（{to}/ 始まり）でないキーは触らない。
+        assert_eq!(
+            pre_migration_object_key("other/acme/x", &rename, "t1"),
+            None
+        );
+        // 往復: renamespace → pre_migration で元に戻る。
+        let new_key =
+            renamespace_object_key("default/acme/deadbeef", "acme", &rename, "t1").unwrap();
+        assert_eq!(
+            pre_migration_object_key(&new_key, &rename, "t1").as_deref(),
+            Some("default/acme/deadbeef")
         );
     }
 }

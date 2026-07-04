@@ -108,7 +108,9 @@ async fn main() -> anyhow::Result<()> {
     let bind = format!("{}:{}", config.server.host, config.server.port);
     let state = AppState {
         config: Arc::new(config),
-        db,
+        // 生 PgPool は StorageService 等のチョークポイントにのみ渡し、AppState には
+        // readiness 専用の newtype で載せる（#91 M-2・ハンドラの生 SQL を型で防ぐ）。
+        db: api::state::ReadinessProbe::new(db),
         authz,
         jwks,
         sessions,

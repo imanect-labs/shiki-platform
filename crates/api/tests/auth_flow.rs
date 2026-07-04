@@ -332,7 +332,7 @@ fn state_with(config: AppConfig) -> AppState {
     let tenants = Arc::new(storage::TenantStore::new(db.clone()));
     AppState {
         config: Arc::new(config),
-        db,
+        db: api::state::ReadinessProbe::new(db),
         authz: Arc::new(AllowAll),
         jwks,
         sessions: store,

@@ -74,7 +74,10 @@ pub async fn callback(
         }
         Ok(_) => {}
         Err(e) => {
-            tracing::warn!(%tenant_id, error = %e, "tenant レジストリ照会に失敗（fail-open で継続）");
+            // fail-open は意図的（purge 後はデータ面が全 deny する二次ベルト）。ただし
+            // 撤去中テナントのログインを一時的に許す窓になるため、この警告は監視対象にし
+            // アラートを張ること（#91 L-6・レジストリ DB 障害の早期検知）。
+            tracing::warn!(%tenant_id, error = %e, "tenant レジストリ照会に失敗（fail-open で継続・要監視）");
         }
     }
 
@@ -145,6 +148,9 @@ pub async fn callback(
 ///   `role:<tenant>|<id>#member@user:<tenant>|<sub>` タプルだが、その内容は claims が正。
 ///   ログイン毎に「あるべき集合（claims）」と「現在の直接タプル」を突合し、
 ///   **不足を付与・余剰を剥奪**する（部署異動/ロール剥奪が次ログインで反映される）。
+///   さらにセッション **refresh 周期でも同期**する（`middleware/session.rs`・#91 H-1）:
+///   ログイン時のみだと、refresh で延命される長寿命セッションが剥奪済み role を再ログイン
+///   まで保持し続けるため、失効窓を access token 寿命（≒refresh 周期）まで縮める。
 /// - **groups = 部署**: AD/Entra フェデレートで OU/部署が `groups` claim に載る（例 `/acme/eng`）。
 ///   先頭 `/` を除いたパスを role id にする。**org そのもののグループ（`/{org}`）は除外**
 ///   （org は organization タプルの責務で、role 化するとノイズになる）。
@@ -153,7 +159,7 @@ pub async fn callback(
 /// - **表示用**: 共有ダイアログ用に `directory_role` も upsert する。
 /// - **best-effort**: 失敗しても login を止めない。付与失敗は access が減る方向（fail-safe）、
 ///   剥奪失敗は次回ログインで再収束。
-async fn provision_roles(state: AppState, principal: Principal, tenant_id: String) {
+pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenant_id: String) {
     let org = resolve_org(&principal);
     let ctx = AuthContext::new(principal, org.clone(), tenant_id.clone());
     let subject = ctx.subject();
@@ -182,39 +188,54 @@ async fn provision_roles(state: AppState, principal: Principal, tenant_id: Strin
     };
 
     // 剥奪: 現在 − あるべき（自テナント分のみ）。
-    for stale in current.iter().filter(|c| !desired.contains(*c)) {
-        match state
-            .authz
-            .delete_tuple(&subject, Relation::Member, &ns.role(stale))
-            .await
-        {
-            Ok(true) => {
-                tracing::info!(role = %stale, "role メンバーシップを剥奪（claims から消失）")
-            }
-            Ok(false) => {}
-            Err(e) => {
-                tracing::warn!(role = %stale, error = %e, "role 剥奪に失敗（次回ログインで再収束）")
+    // roles/groups claim が**両方とも空**のトークンは IdP の protocol mapper 不調の疑いが濃い
+    // （正当に無ロールのユーザーでも groups には org グループが載る）ため、実ロールの全剥奪へ
+    // 走らず今回はスキップする（fail-safe・次回の正常なトークンで再収束・#91 L-3）。
+    let claims_suspect = ctx.principal.roles.is_empty() && ctx.principal.groups.is_empty();
+    if claims_suspect && !current.is_empty() {
+        tracing::warn!(
+            current = current.len(),
+            "roles/groups claim が空のため role 剥奪をスキップ（IdP mapper 不調の疑い）"
+        );
+    } else {
+        for stale in current.iter().filter(|c| !desired.contains(*c)) {
+            match state
+                .authz
+                .delete_tuple(&subject, Relation::Member, &ns.role(stale))
+                .await
+            {
+                Ok(true) => {
+                    tracing::info!(role = %stale, "role メンバーシップを剥奪（claims から消失）")
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(role = %stale, error = %e, "role 剥奪に失敗（次回同期で再収束）")
+                }
             }
         }
     }
 
     // 付与: あるべき − 現在（冪等 write なので差分に限らず流しても安全だが、無駄打ちを避ける）。
     for role_id in desired.iter().filter(|d| !current.contains(*d)) {
+        // 台帳（directory_role）を FGA タプルより**先に** upsert する（#91 M-4）。
+        // FGA 先行だと upsert 失敗時に「タプルはあるが台帳に無い role」が生まれ、
+        // `purge_tenant` の台帳ベース列挙（1b）から漏れてメンバータプルが共有ストアに
+        // 残留する。台帳先行なら失敗時は「台帳行のみ」で、タプルを持たない台帳行は
+        // purge が空剥奪するだけで無害（次回同期でタプルも付与される）。
+        if let Err(e) = state
+            .directory
+            .upsert_role(role_id, &tenant_id, &org, role_id)
+            .await
+        {
+            tracing::warn!(role = %role_id, error = %e, "directory_role の upsert に失敗（タプル付与を保留・次回同期で再試行）");
+            continue;
+        }
         if let Err(e) = state
             .authz
             .write_tuple(&subject, Relation::Member, &ns.role(role_id))
             .await
         {
             tracing::warn!(role = %role_id, error = %e, "role 付与に失敗（best-effort・login は継続）");
-            continue;
-        }
-        // 共有ダイアログ表示用の射影（display_name は当面 role id そのもの）。
-        if let Err(e) = state
-            .directory
-            .upsert_role(role_id, &tenant_id, &org, role_id)
-            .await
-        {
-            tracing::warn!(role = %role_id, error = %e, "directory_role の upsert に失敗（best-effort）");
         }
     }
 }
@@ -224,7 +245,8 @@ async fn provision_roles(state: AppState, principal: Principal, tenant_id: Strin
 /// - groups は先頭 `/` を除いた部署パス。**org そのもののグループ（`/{org}`）だけを除外**する
 ///   （org は organization タプルの責務）。roles claim に org と同名のロールがあっても
 ///   それは正当なロールなので除外しない（除外すると diff 同期が誤剥奪する）。
-/// - 空・空白・FGA 構造文字（`: # |`）を含む値は除外（識別子を壊さない）。
+/// - 識別子を壊す値（空・FGA 構造文字・制御文字）は [`authz::validate_local_id`]
+///   （文字ポリシーの単一定義・#91 M-3）で除外する。
 fn desired_role_ids(roles: &[String], groups: &[String], org: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let candidates = roles.iter().map(|r| (r.trim().to_string(), false)).chain(
@@ -234,12 +256,7 @@ fn desired_role_ids(roles: &[String], groups: &[String], org: &str) -> Vec<Strin
     );
     for (id, from_group) in candidates {
         let id = id.trim();
-        if id.is_empty()
-            || (from_group && id == org)
-            || id.contains(':')
-            || id.contains('#')
-            || id.contains(authz::TENANT_SEP)
-        {
+        if (from_group && id == org) || authz::validate_local_id(id).is_err() {
             continue;
         }
         if !out.iter().any(|existing| existing == id) {
