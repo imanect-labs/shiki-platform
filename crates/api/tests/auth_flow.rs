@@ -1147,6 +1147,7 @@ async fn backchannel_logout_by_sub_revokes_all_user_sessions() {
             "iss": ISSUER,
             "aud": "shiki-web",
             "iat": now(),
+            "jti": "jti-sub-1",
             "sub": "user-1",
             "events": { BCL_EVENT: {} },
         }),
@@ -1234,5 +1235,119 @@ async fn backchannel_logout_rejects_wrong_audience() {
     );
     let resp = post_backchannel_logout(app, &wrong_aud).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "aud 不一致は 400");
+    assert!(store.get("default", "sess-a").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn backchannel_logout_rejects_replayed_jti() {
+    // 同一 jti の再送は「処理済み」として 200 を返しつつ、再度の失効処理を行わない
+    // （リプレイ防止・OIDC BCL §2.6）。2 回目までに再作成したセッションが消えないことで確認する。
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let store = Arc::new(MemorySessionStore::new());
+    store
+        .put(
+            "default",
+            "sess-a",
+            &bcl_record("user-1", Some("sid-A")),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with_store(config_with(&idp, vec![]), store.clone()));
+
+    let token = sign_token(
+        KID,
+        serde_json::json!({
+            "iss": ISSUER,
+            "aud": "shiki-web",
+            "iat": now(),
+            "jti": "jti-replay",
+            "sid": "sid-A",
+            "events": { BCL_EVENT: {} },
+        }),
+    );
+    // 1 回目: 失効。
+    let resp = post_backchannel_logout(app.clone(), &token).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(store.get("default", "sess-a").await.unwrap().is_none());
+
+    // 同一 sid で別セッションを再作成し、同じ jti を再送する。
+    store
+        .put(
+            "default",
+            "sess-a2",
+            &bcl_record("user-1", Some("sid-A")),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let resp = post_backchannel_logout(app, &token).await;
+    assert_eq!(resp.status(), StatusCode::OK, "再送も 200（べき等）");
+    assert!(
+        store.get("default", "sess-a2").await.unwrap().is_some(),
+        "リプレイは再処理されず、後続セッションは残る"
+    );
+}
+
+#[tokio::test]
+async fn backchannel_logout_rejects_stale_iat() {
+    // 鮮度窓（120s + skew 60s）を超えた古い logout_token は拒否する。
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let store = Arc::new(MemorySessionStore::new());
+    store
+        .put(
+            "default",
+            "sess-a",
+            &bcl_record("user-1", Some("sid-A")),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with_store(config_with(&idp, vec![]), store.clone()));
+
+    let stale = sign_token(
+        KID,
+        serde_json::json!({
+            "iss": ISSUER,
+            "aud": "shiki-web",
+            "iat": now() - 3600,
+            "jti": "jti-stale",
+            "sid": "sid-A",
+            "events": { BCL_EVENT: {} },
+        }),
+    );
+    let resp = post_backchannel_logout(app, &stale).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "古い iat は 400");
+    assert!(store.get("default", "sess-a").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn backchannel_logout_rejects_missing_jti() {
+    // jti 欠落の logout_token は拒否する（OIDC BCL §2.4 必須）。
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let store = Arc::new(MemorySessionStore::new());
+    store
+        .put(
+            "default",
+            "sess-a",
+            &bcl_record("user-1", Some("sid-A")),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with_store(config_with(&idp, vec![]), store.clone()));
+
+    let no_jti = sign_token(
+        KID,
+        serde_json::json!({
+            "iss": ISSUER,
+            "aud": "shiki-web",
+            "iat": now(),
+            "sid": "sid-A",
+            "events": { BCL_EVENT: {} },
+        }),
+    );
+    let resp = post_backchannel_logout(app, &no_jti).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "jti 欠落は 400");
     assert!(store.get("default", "sess-a").await.unwrap().is_some());
 }

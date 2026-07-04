@@ -11,10 +11,16 @@
 //!
 //! [`verify_logout_token`]: crate::middleware::auth::verify_logout_token
 
+use std::time::Duration;
+
 use axum::{extract::State, http::StatusCode, Form};
 use serde::Deserialize;
 
-use crate::{error::ApiError, middleware::auth::verify_logout_token, state::AppState};
+use crate::{
+    error::ApiError,
+    middleware::auth::{verify_logout_token, LOGOUT_TOKEN_MAX_AGE_SECS},
+    state::AppState,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct BackchannelLogoutForm {
@@ -37,6 +43,22 @@ pub async fn backchannel_logout(
             tracing::warn!(error = %e, "backchannel logout: logout_token 検証に失敗");
             ApiError::BadRequest("logout_token が不正です".into())
         })?;
+
+    // リプレイ防止（OIDC BCL §2.6）: jti を鮮度窓＋スキュー分だけ記録し、既出なら再処理しない。
+    // verify_logout_token が jti の存在を保証する。Keycloak の正当な再送（タイムアウト等）と
+    // 攻撃的リプレイのどちらも「既に失効済み」で 200 を返す（べき等・失効漏れは起きない）。
+    let jti = claims.jti.as_deref().unwrap_or_default();
+    let replay_ttl = Duration::from_secs((LOGOUT_TOKEN_MAX_AGE_SECS * 2) as u64);
+    if !state.sessions.register_jti(jti, replay_ttl).await? {
+        tracing::info!(
+            jti,
+            "backchannel logout: リプレイ/再送を検知（処理済み・200 を返す）"
+        );
+        return Ok((
+            StatusCode::OK,
+            [(axum::http::header::CACHE_CONTROL, "no-store")],
+        ));
+    }
 
     // sid 優先（当該セッションのみ）。無ければ sub で全セッション失効。
     let revoked = match (&claims.sid, &claims.sub) {

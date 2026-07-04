@@ -80,3 +80,48 @@ async fn redis_put_get_update_delete_and_tenant_scope() {
     assert!(!resurrect, "削除済みセッションを復活させない");
     assert!(store.get("default", &sid).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn redis_backchannel_logout_indices_and_jti() {
+    let Ok(redis_url) = std::env::var("REDIS_TEST_URL") else {
+        eprintln!("REDIS_TEST_URL 未設定のためスキップ");
+        return;
+    };
+    let store = RedisSessionStore::connect(&redis_url)
+        .await
+        .expect("Redis へ接続できること");
+    let ttl = Duration::from_secs(60);
+    let uniq = uuid::Uuid::new_v4();
+    let sub = format!("user-{uniq}");
+    let sid_val = format!("sso-{uniq}");
+
+    // 同一 sub / 同一 sid の 2 セッションを作る。
+    let mut rec = record("csrf");
+    rec.principal.id = sub.clone();
+    rec.keycloak_sid = Some(sid_val.clone());
+    let s1 = format!("bcl1-{uniq}");
+    let s2 = format!("bcl2-{uniq}");
+    store.put("default", &s1, &rec, ttl).await.unwrap();
+    store.put("default", &s2, &rec, ttl).await.unwrap();
+
+    // delete_by_sid: sid 一致の全セッションを失効。
+    let n = store.delete_by_sid(&sid_val).await.unwrap();
+    assert_eq!(n, 2, "sid 一致の 2 セッションが失効する");
+    assert!(store.get("default", &s1).await.unwrap().is_none());
+    assert!(store.get("default", &s2).await.unwrap().is_none());
+
+    // delete_by_subject: 再作成後、sub で全セッション失効。
+    let s3 = format!("bcl3-{uniq}");
+    store.put("default", &s3, &rec, ttl).await.unwrap();
+    let n = store.delete_by_subject(&sub).await.unwrap();
+    assert!(n >= 1, "sub 一致セッションが失効する");
+    assert!(store.get("default", &s3).await.unwrap().is_none());
+
+    // register_jti: 初出は true、再送は false（リプレイ）。
+    let jti = format!("jti-{uniq}");
+    assert!(store.register_jti(&jti, ttl).await.unwrap(), "初出は受理");
+    assert!(
+        !store.register_jti(&jti, ttl).await.unwrap(),
+        "再送はリプレイとして拒否"
+    );
+}

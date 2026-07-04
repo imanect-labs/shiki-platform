@@ -15,6 +15,8 @@ const KEY_PREFIX: &str = "shiki:sess";
 /// backchannel logout 逆引きインデックスの接頭辞（`sub`/`sid` → セッション集合）。
 const SUB_IDX_PREFIX: &str = "shiki:sess:idx:sub";
 const SID_IDX_PREFIX: &str = "shiki:sess:idx:sid";
+/// backchannel logout の jti リプレイ検知キー接頭辞。
+const JTI_PREFIX: &str = "shiki:sess:bclogout:jti";
 
 /// Redis の glob メタ文字（`* ? [ ] \`）をエスケープする（MATCH パターンへの注入防止）。
 fn escape_glob(s: &str) -> String {
@@ -241,5 +243,20 @@ impl SessionStore for RedisSessionStore {
     async fn delete_by_sid(&self, sid: &str) -> Result<u64, SessionError> {
         self.delete_by_index(&format!("{SID_IDX_PREFIX}:{sid}"))
             .await
+    }
+
+    async fn register_jti(&self, jti: &str, ttl: Duration) -> Result<bool, SessionError> {
+        // SET key 1 NX EX <ttl>: 未登録なら OK（初出）、既登録なら nil（リプレイ）。
+        let mut conn = self.conn.clone();
+        let result: Option<String> = redis::cmd("SET")
+            .arg(format!("{JTI_PREFIX}:{jti}"))
+            .arg("1")
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl.as_secs())
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| SessionError::Backend(e.to_string()))?;
+        Ok(result.is_some())
     }
 }

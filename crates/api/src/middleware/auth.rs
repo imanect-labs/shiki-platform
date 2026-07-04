@@ -90,5 +90,26 @@ pub async fn verify_logout_token(state: &AppState, token: &str) -> Result<Logout
     if claims.sub.is_none() && claims.sid.is_none() {
         return Err(AuthError::InvalidToken("sub/sid のどちらも無い".into()));
     }
+    // jti は必須（OIDC BCL §2.4）。リプレイ防止のキャッシュ鍵にもなる。
+    if claims.jti.as_deref().unwrap_or("").is_empty() {
+        return Err(AuthError::InvalidToken("jti がありません".into()));
+    }
+    // iat は必須かつ鮮度を確認する（`set_required_spec_claims` は iat を検証しない）。
+    // 捕捉した古い logout_token の受理窓を絞る（OIDC BCL は exp≤2分を推奨）。
+    let iat = claims
+        .iat
+        .ok_or_else(|| AuthError::InvalidToken("iat がありません".into()))?;
+    let now = chrono::Utc::now().timestamp();
+    if iat > now + LOGOUT_TOKEN_CLOCK_SKEW_SECS {
+        return Err(AuthError::InvalidToken("iat が未来です".into()));
+    }
+    if now - iat > LOGOUT_TOKEN_MAX_AGE_SECS + LOGOUT_TOKEN_CLOCK_SKEW_SECS {
+        return Err(AuthError::InvalidToken("logout_token が古すぎます".into()));
+    }
     Ok(claims)
 }
+
+/// logout_token の許容発行経過（秒）。OIDC BCL 推奨の exp≤2分に合わせる。
+pub const LOGOUT_TOKEN_MAX_AGE_SECS: i64 = 120;
+/// logout_token の時刻検証で許容するクロックスキュー（秒）。
+pub const LOGOUT_TOKEN_CLOCK_SKEW_SECS: i64 = 60;

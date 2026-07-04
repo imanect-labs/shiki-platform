@@ -101,6 +101,10 @@ pub trait SessionStore: Send + Sync {
     /// logout_token が `sid` を持つ場合、当該 SSO セッションのみを対象にする（他デバイスの
     /// セッションは残す）。冪等・件数を返す。
     async fn delete_by_sid(&self, sid: &str) -> Result<u64, SessionError>;
+
+    /// logout_token の `jti` を短期記録し、**初出なら `true`**、既出（リプレイ）なら `false` を返す
+    /// （OIDC BCL §2.6 のリプレイ防止・#91）。`ttl` の間だけ重複を検知する。
+    async fn register_jti(&self, jti: &str, ttl: Duration) -> Result<bool, SessionError>;
 }
 
 #[cfg(test)]

@@ -52,6 +52,13 @@ pub struct LogoutClaims {
     /// logout イベント宣言（`http://schemas.openid.net/event/backchannel-logout` キー必須）。
     #[serde(default)]
     pub events: std::collections::HashMap<String, serde_json::Value>,
+    /// 発行時刻（OIDC BCL §2.4 で**必須**）。`set_required_spec_claims` は `iat` を検証しないため
+    /// [`verify_logout_token`](crate::middleware::auth::verify_logout_token) が鮮度を手動確認する。
+    #[serde(default)]
+    pub iat: Option<i64>,
+    /// トークン一意 id（OIDC BCL §2.4 で**必須**）。リプレイ防止のため短期キャッシュで重複を弾く。
+    #[serde(default)]
+    pub jti: Option<String>,
     /// logout_token は `nonce` を**含んではならない**（OIDC BCL §2.4）。含めば拒否。
     #[serde(default)]
     pub nonce: Option<String>,
