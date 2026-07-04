@@ -189,31 +189,9 @@ impl<'a> KeycloakAdmin<'a> {
         temp_password: &str,
     ) -> Result<(String, Option<String>), KeycloakAdminError> {
         if let Some(existing) = self.find_user_by_username(username).await? {
-            // **別テナントの既存ユーザーを乗っ取らない**: username 衝突時は tenant 属性を照合し、
-            // 不一致なら conflict として拒否する（黙って成功させると初期 admin が新テナントへ
-            // ログインできないのに FGA/directory 行だけ書かれる）。
-            if existing.tenant() != Some(tenant_id) {
-                return Err(KeycloakAdminError::Status {
-                    status: 409,
-                    body: format!(
-                        "username '{username}' は別テナント（tenant={:?}）の既存ユーザーです。\
-                         別の admin_username を指定してください",
-                        existing.tenant()
-                    ),
-                });
-            }
-            // 初回ログイン前なら一時パスワードを再発行（temporary のまま・#91 M-6）。
-            // ログイン済み（UPDATE_PASSWORD 消化済み）のユーザーのパスワードは上書きしない。
-            if existing
-                .required_actions
-                .iter()
-                .any(|a| a == "UPDATE_PASSWORD")
-            {
-                self.reset_temp_password(&existing.id, temp_password)
-                    .await?;
-                return Ok((existing.id, Some(temp_password.to_string())));
-            }
-            return Ok((existing.id, None));
+            return self
+                .resolve_existing_admin(existing, tenant_id, username, temp_password)
+                .await;
         }
         let token = self.admin_token().await?;
         let body = json!({
@@ -234,7 +212,9 @@ impl<'a> KeycloakAdmin<'a> {
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
-        // 並行作成の 409 は「既存」に倒す（冪等）。tenant 照合は上と同じ。
+        // 並行作成の 409 は「既存」に倒す（冪等）。tenant 照合と初回ログイン前の一時パスワード
+        // 再発行（#91 M-6）は pre-POST 検出パスと同一に扱う（レース敗者でも回収可能にする・
+        // #91 P2 レビュー対応: 敗者が None を返すと初期 admin が資格情報を失う）。
         if resp.status().as_u16() == 409 {
             let user = self.find_user_by_username(username).await?.ok_or_else(|| {
                 KeycloakAdminError::Status {
@@ -242,13 +222,9 @@ impl<'a> KeycloakAdmin<'a> {
                     body: "既存応答だがユーザーが見つかりません".into(),
                 }
             })?;
-            if user.tenant() != Some(tenant_id) {
-                return Err(KeycloakAdminError::Status {
-                    status: 409,
-                    body: format!("username '{username}' は別テナントの既存ユーザーです"),
-                });
-            }
-            return Ok((user.id, None));
+            return self
+                .resolve_existing_admin(user, tenant_id, username, temp_password)
+                .await;
         }
         if !resp.status().is_success() {
             return Err(status_error(resp).await);
@@ -260,6 +236,36 @@ impl<'a> KeycloakAdmin<'a> {
             }
         })?;
         Ok((user.id, Some(temp_password.to_string())))
+    }
+
+    /// 既存ユーザーを初期 admin として解決する（tenant 照合＋初回ログイン前の一時パスワード再発行）。
+    ///
+    /// `ensure_tenant_admin` の pre-POST 検出パスと 409（並行作成の敗者）パスで共用する（#91 M-6/P2）:
+    /// - 別テナントの既存ユーザーは乗っ取らず 409 で拒否。
+    /// - 初回ログイン前（`UPDATE_PASSWORD` 未消化）なら一時パスワードを再発行して返す。
+    /// - ログイン済みならパスワードに触れず `None` を返す。
+    async fn resolve_existing_admin(
+        &self,
+        user: KcUser,
+        tenant_id: &str,
+        username: &str,
+        temp_password: &str,
+    ) -> Result<(String, Option<String>), KeycloakAdminError> {
+        if user.tenant() != Some(tenant_id) {
+            return Err(KeycloakAdminError::Status {
+                status: 409,
+                body: format!(
+                    "username '{username}' は別テナント（tenant={:?}）の既存ユーザーです。\
+                     別の admin_username を指定してください",
+                    user.tenant()
+                ),
+            });
+        }
+        if user.required_actions.iter().any(|a| a == "UPDATE_PASSWORD") {
+            self.reset_temp_password(&user.id, temp_password).await?;
+            return Ok((user.id, Some(temp_password.to_string())));
+        }
+        Ok((user.id, None))
     }
 
     /// 一時パスワードを再設定する（`temporary: true`＝初回ログインで変更必須のまま）。

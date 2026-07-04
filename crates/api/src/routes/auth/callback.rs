@@ -192,29 +192,25 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
     };
 
     // 剥奪: 現在 − あるべき（自テナント分のみ）。
-    // roles/groups claim が**両方とも空**のトークンは IdP の protocol mapper 不調の疑いが濃い
-    // （正当に無ロールのユーザーでも groups には org グループが載る）ため、実ロールの全剥奪へ
-    // 走らず今回はスキップする（fail-safe・次回の正常なトークンで再収束・#91 L-3）。
-    let claims_suspect = ctx.principal.roles.is_empty() && ctx.principal.groups.is_empty();
-    if claims_suspect && !current.is_empty() {
-        tracing::warn!(
-            current = current.len(),
-            "roles/groups claim が空のため role 剥奪をスキップ（IdP mapper 不調の疑い）"
-        );
-    } else {
-        for stale in current.iter().filter(|c| !desired.contains(*c)) {
-            match state
-                .authz
-                .delete_tuple(&subject, Relation::Member, &ns.role(stale))
-                .await
-            {
-                Ok(true) => {
-                    tracing::info!(role = %stale, "role メンバーシップを剥奪（claims から消失）")
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!(role = %stale, error = %e, "role 剥奪に失敗（次回同期で再収束）")
-                }
+    // **claims を正本とする**（callback.rs 冒頭の設計）ため、claims が空＝ロール無しと解釈し
+    // stale タプルを剥奪する。IdP でユーザーの最後の role/group が外れたケース（desired 空）で
+    // 過剰権限を残さないため（剥奪漏れ＝fail-open を避ける・#91 P1 レビュー対応）。
+    // 過剰剥奪は fail-safe（アクセス減・次回の正しいログインで再付与）で自己回復する。
+    // 一過性の IdP 不調そのものは、**現在集合の READ が失敗した時のみ**剥奪をスキップする
+    // 上のガード（unknown state に対して破壊的操作をしない）で扱い、READ 成功時の空 claims は
+    // 正当な「ロール無し」として扱う。
+    for stale in current.iter().filter(|c| !desired.contains(*c)) {
+        match state
+            .authz
+            .delete_tuple(&subject, Relation::Member, &ns.role(stale))
+            .await
+        {
+            Ok(true) => {
+                tracing::info!(role = %stale, "role メンバーシップを剥奪（claims から消失）")
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(role = %stale, error = %e, "role 剥奪に失敗（次回同期で再収束）")
             }
         }
     }
