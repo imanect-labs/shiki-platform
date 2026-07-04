@@ -86,23 +86,33 @@ impl TenantStore {
         Self { db }
     }
 
-    /// テナントを active として登録/再活性する（冪等）。
+    /// テナントを active として登録する（冪等）。
     ///
-    /// tombstone（deleted）の再利用は**拒否**する: 旧テナントの FGA タプル/オブジェクトの
-    /// 残骸と新テナントが名前空間衝突するのを防ぐ（別 id を使ってもらう）。
+    /// - tombstone（deleted）の再利用は**拒否**: 旧テナントの FGA タプル/オブジェクトの
+    ///   残骸と新テナントが名前空間衝突するのを防ぐ（別 id を使ってもらう）。
+    /// - **deleting の再活性も拒否**: 撤去処理中/失敗後に create で active へ戻すと、
+    ///   進行中の purge と新規プロビジョニングが競合する（ライフサイクルは一方向）。
     pub async fn upsert_active(
         &self,
         tenant_id: &str,
         org: &str,
         display_name: &str,
     ) -> Result<Tenant, StorageError> {
-        // deleted の tombstone は上書きしない（fail-closed）。
+        // deleted の tombstone・撤去中（deleting）は上書きしない（fail-closed・一方向遷移）。
         let existing = self.get(tenant_id).await?;
         if let Some(t) = &existing {
-            if t.status == TenantStatus::Deleted {
-                return Err(StorageError::Invalid(format!(
-                    "tenant_id '{tenant_id}' は削除済み（tombstone）のため再利用できません"
-                )));
+            match t.status {
+                TenantStatus::Deleted => {
+                    return Err(StorageError::Invalid(format!(
+                        "tenant_id '{tenant_id}' は削除済み（tombstone）のため再利用できません"
+                    )));
+                }
+                TenantStatus::Deleting => {
+                    return Err(StorageError::Invalid(format!(
+                        "tenant_id '{tenant_id}' は撤去処理中のため再活性できません（purge 完了を待つこと）"
+                    )));
+                }
+                TenantStatus::Active => {}
             }
         }
         let row: TenantRow = sqlx::query_as(
@@ -111,7 +121,7 @@ impl TenantStore {
              ON CONFLICT (tenant_id) DO UPDATE \
                SET org = excluded.org, display_name = excluded.display_name, \
                    status = 'active', updated_at = now() \
-               WHERE tenant.status <> 'deleted' \
+               WHERE tenant.status = 'active' \
              RETURNING tenant_id, org, display_name, status, created_at, updated_at",
         )
         .bind(tenant_id)
@@ -145,6 +155,26 @@ impl TenantStore {
         .execute(&self.db)
         .await?;
         Ok(())
+    }
+
+    /// 同じ org slug を使う**他の未削除テナント**が存在するか（Keycloak group の共有判定）。
+    ///
+    /// テナント削除時、org group を消すと同 org slug を使う他テナントの `groups` claim が
+    /// 壊れるため、共有されている場合は group 削除をスキップする判断に使う。
+    pub async fn org_shared_by_others(
+        &self,
+        org: &str,
+        tenant_id: &str,
+    ) -> Result<bool, StorageError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM tenant \
+             WHERE org = $1 AND tenant_id <> $2 AND status <> 'deleted')",
+        )
+        .bind(org)
+        .bind(tenant_id)
+        .fetch_one(&self.db)
+        .await?;
+        Ok(exists)
     }
 
     /// テナントを取得する（tombstone 含む。無ければ `None`）。

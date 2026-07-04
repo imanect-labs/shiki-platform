@@ -100,14 +100,21 @@ pub async fn create_tenant(
     State(state): State<AppState>,
     Json(req): Json<CreateTenantRequest>,
 ) -> Result<(StatusCode, Json<CreateTenantResponse>), ApiError> {
-    // tenant_id は FGA 識別子/オブジェクトキーの名前空間になるため禁止文字を拒否
-    // （resolve_tenant_id と同一ルール）。
+    // tenant_id は FGA 識別子/オブジェクトキーの名前空間になるため、空と禁止文字を拒否
+    // （resolve_tenant_id と同一ルール。空はパスで DELETE できない幽霊テナントを生む）。
+    if req.tenant_id.trim().is_empty() {
+        return Err(ApiError::BadRequest("tenant_id が空です".into()));
+    }
     validate_tenant_id(&req.tenant_id)
         .map_err(|_| ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into()))?;
     let org = req.org.clone().unwrap_or_else(|| req.tenant_id.clone());
     if org.trim().is_empty() || req.display_name.trim().is_empty() {
         return Err(ApiError::BadRequest("org / display_name が空です".into()));
     }
+    // org は Keycloak group パス（`/{org}`）と FGA 識別子・runtime org 解決（先頭セグメント）に
+    // 使われるため、tenant_id と同じ禁止文字ルール（`/` 含む）を適用する。
+    validate_tenant_id(&org)
+        .map_err(|_| ApiError::BadRequest("org に使用できない文字が含まれています".into()))?;
     let username = req
         .admin_username
         .clone()
@@ -210,9 +217,21 @@ pub async fn delete_tenant(
             .await
             .map_err(|e| ApiError::Internal(format!("keycloak user 削除: {e}")))?;
     }
-    kc.delete_group_by_name(&org)
-        .await
-        .map_err(|e| ApiError::Internal(format!("keycloak group 削除: {e}")))?;
+    // org group は**他の未削除テナントが同じ org slug を使っていない時のみ**削除する
+    // （共有 org の group を消すと他テナントの groups claim / org 解決が壊れる）。
+    if state.tenants.org_shared_by_others(&org, &tenant_id).await? {
+        tracing::info!(%tenant_id, %org, "tenant purge: org group は他テナントと共有中のため保持");
+    } else {
+        kc.delete_group_by_name(&org)
+            .await
+            .map_err(|e| ApiError::Internal(format!("keycloak group 削除: {e}")))?;
+    }
+    // ステップ 2 と IdP ユーザー削除の間に完了したログインが新セッションを作る競合に備え、
+    // IdP 側を塞いだ後にもう一度セッションを失効させる（belt-and-braces）。
+    let late_sessions = state.sessions.delete_tenant(&tenant_id).await?;
+    if late_sessions > 0 {
+        tracing::info!(%tenant_id, late_sessions, "tenant purge: 競合セッションを追加失効");
+    }
 
     // 4. データ面の purge（FGA タプル → オブジェクト → DB 行。audit は保持）。
     state.storage.purge_tenant(&tenant_id, &org).await?;

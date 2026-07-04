@@ -13,6 +13,18 @@ use super::store::{SessionError, SessionRecord, SessionStore};
 /// セッションキーの接頭辞。
 const KEY_PREFIX: &str = "shiki:sess";
 
+/// Redis の glob メタ文字（`* ? [ ] \`）をエスケープする（MATCH パターンへの注入防止）。
+fn escape_glob(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '*' | '?' | '[' | ']' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 pub struct RedisSessionStore {
     conn: ConnectionManager,
 }
@@ -106,9 +118,9 @@ impl SessionStore for RedisSessionStore {
 
     async fn delete_tenant(&self, tenant_id: &str) -> Result<u64, SessionError> {
         // KEYS はブロッキングのため使わず、SCAN でカーソル走査して UNLINK（非同期解放）。
-        // tenant_id は禁止文字検証済み（`| : # @` 空白なし）だが、glob メタ文字を含まない
-        // 前提には依らずパターンへはそのまま埋め込む（tenant_id 由来の `*` 等は検証層で弾かれる）。
-        let pattern = format!("{KEY_PREFIX}:{tenant_id}:*");
+        // tenant_id に glob メタ文字（`*` `?` `[` `]`）が含まれても他テナントのキーへ
+        // 展開されないよう必ずエスケープする（`prod*` が `prod-a` に一致する越境を防ぐ）。
+        let pattern = format!("{KEY_PREFIX}:{}:*", escape_glob(tenant_id));
         let mut conn = self.conn.clone();
         let mut cursor: u64 = 0;
         let mut deleted: u64 = 0;

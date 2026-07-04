@@ -311,6 +311,8 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
 fn state_with(config: AppConfig) -> AppState {
     let store = Arc::new(MemorySessionStore::new());
     let db = sqlx::postgres::PgPoolOptions::new()
+        // 認証系テストは DB 不要（到達不能 URL）。lazy pool の取得待ちで 30s 掛からないよう短く。
+        .acquire_timeout(Duration::from_millis(300))
         .connect_lazy(&config.database.url)
         .unwrap();
     let jwks = Arc::new(api::middleware::JwksCache::new(
@@ -804,7 +806,11 @@ async fn spawn_idp_with_admin() -> String {
     use axum::routing::{delete, get, post};
     use axum::{extract::Path, extract::Query, Json, Router};
     use serde_json::{json, Value};
+    use std::sync::Mutex;
     let jwks = jwks_body(KID);
+    // 作成済みユーザーの payload（attributes 込み）。KeycloakAdmin の tenant 照合を通すため
+    // POST された内容をそのまま username 検索で返す。
+    let created: Arc<Mutex<Option<Value>>> = Arc::default();
     let app = Router::new()
         .route(
             "/realms/shiki/protocol/openid-connect/token",
@@ -830,25 +836,49 @@ async fn spawn_idp_with_admin() -> String {
             "/admin/realms/shiki/groups/{id}",
             delete(|Path(_id): Path<String>| async { StatusCode::NO_CONTENT }),
         )
-        .route(
-            "/admin/realms/shiki/users",
-            post(|| async { StatusCode::CREATED }).get(|Query(q): Query<Value>| async move {
-                if q.get("username").is_some() {
-                    // 「作成後の解決」を成立させるため常にヒットさせる（新規判定は POST 側）。
-                    return Json(json!([{ "id": "kc-admin-1", "username": "tenant-admin" }]));
+        .route("/admin/realms/shiki/users", {
+            let created_post = created.clone();
+            let created_get = created.clone();
+            post(move |Json(body): Json<Value>| {
+                let created = created_post.clone();
+                async move {
+                    let mut guard = created.lock().unwrap();
+                    if guard.is_some() {
+                        StatusCode::CONFLICT
+                    } else {
+                        *guard = Some(body);
+                        StatusCode::CREATED
+                    }
                 }
-                let first = q
-                    .get("first")
-                    .and_then(Value::as_str)
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .unwrap_or(0);
-                if first == 0 {
-                    Json(json!([{ "id": "kc-admin-1", "username": "tenant-admin" }]))
-                } else {
-                    Json(json!([]))
+            })
+            .get(move |Query(q): Query<Value>| {
+                let created = created_get.clone();
+                async move {
+                    let stored = created.lock().unwrap().clone();
+                    if q.get("username").is_some() {
+                        // 作成済みならその attributes を返す（tenant 照合が通る）。
+                        return match stored {
+                            Some(u) => Json(json!([{
+                                "id": "kc-admin-1",
+                                "username": "tenant-admin",
+                                "attributes": u.get("attributes").cloned().unwrap_or(json!({})),
+                            }])),
+                            None => Json(json!([])),
+                        };
+                    }
+                    let first = q
+                        .get("first")
+                        .and_then(Value::as_str)
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or(0);
+                    if first == 0 && stored.is_some() {
+                        Json(json!([{ "id": "kc-admin-1", "username": "tenant-admin" }]))
+                    } else {
+                        Json(json!([]))
+                    }
                 }
-            }),
-        )
+            })
+        })
         .route(
             "/admin/realms/shiki/users/{id}",
             delete(|Path(_id): Path<String>| async { StatusCode::NO_CONTENT }),
