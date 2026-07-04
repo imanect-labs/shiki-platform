@@ -239,16 +239,27 @@
 ### Task SAAS.1: テナント分離の強制（データ/authz/ストレージ境界）
 - **area**: infra / **path**: `crates/storage`, `crates/authz`, migrations
 - **依存**: Phase 0（day-1 の `tenant_id` 付き認可コンテキスト）
+- **決定（#84 / human）**: authz のテナント分離は **共有ストア＋識別子名前空間化**（フルプール）で実装する。
+  FGA 識別子を `<type>:<tenant_id>|<local_id>` へ名前空間化し（区切り `|` = `authz::TENANT_SEP`）、
+  生の識別子構築を `AuthContext::ns()`（[`authz::Namespace`]）のチョークポイントへ一本化して越境タプルを
+  **型レベルで不能化**する。cell（顧客ごと専用ストア）は将来オプションとして残す（SAAS.5 と対）。
+  → 旧 design.md「shiki データプレーン = 顧客ごと隔離セル」は authz については pool 採用へ更新（design.md §4.1）。
 - **仕様**:
-  - DB（行レベル/スキーマ）、authz store（タプルの tenant スコープ）、ストレージ（プレフィクス/バケット）、
-    セッション（Redis キーの tenant_id スコープ）の各層でテナント境界を強制する。
-  - cell 型では `tenant_id` 単一固定でも動く後方互換（オンプレ＝シングルテナント）を保つ。
+  - DB（行レベル/スキーマ）、authz store（識別子の tenant 名前空間化＝越境タプル不能化）、
+    ストレージ（プレフィクス/バケット）、セッション（Redis キーの tenant_id スコープ）の各層でテナント境界を強制する。
+  - cell 型では `tenant_id` 単一固定（`default`）でも動く後方互換（オンプレ＝シングルテナント）を保つ。
   - permission-aware RAG の検索/引用がテナント境界を越えないことを保証する。
+  - 監査ハッシュチェーンも `tenant_id`＋org でスコープ（共用プール Postgres で越境連結しない）。
+  - **オブジェクトストレージも tenant スコープ**: blob キー/PK を `{tenant_id}/{org}/{sha256}` へ（migration 0005・
+    `content_address`）。同一 org slug を複数テナントが共有しても dedup 共有・hash 存在オラクル・refcount 破壊を防ぐ。
+  - **`auth.tenancy=multi` の dev-only ゲート（`SHIKI_DEV_ALLOW_MULTI_TENANT`）を撤去**（全隔離層が tenant_id
+    スコープになったため設定だけで運用可）。オンボーディング/課金/クォータ（SAAS.2〜4）は隔離とは独立の運用トラック。
 - **受け入れ条件**:
-  - [ ] 全データアクセス・セッションが `tenant_id` 付きコンテキスト/キーを通る
-  - [ ] cell 型（単一テナント）・オンプレ構成が無変更で動作する
-  - [ ] あるテナントのデータが他テナントの検索/取得に一切現れない（authz タプルも境界を越えない）
-  - [ ] `tenant_id` 欠落／越境アクセスが監査に記録され拒否される
+  - [x] 全データアクセス・セッションが `tenant_id` 付きコンテキスト/キーを通る
+  - [x] cell 型（単一テナント）・オンプレ構成が無変更で動作する（`tenant_id="default"` 名前空間で一様動作）
+  - [x] あるテナントのデータが他テナントの検索/取得に一切現れない（authz タプルも境界を越えない）
+  - [x] `tenant_id` 欠落／禁止文字／越境アクセスが fail-closed で拒否される
+  - 注: SAAS.1 は #84（PR）で実装。role/部署共有（#76）はこの上に載る（PR-2）。
 
 ### Task SAAS.2: テナント・オンボーディング（プロビジョニング自動化）
 - **area**: infra / **path**: `deploy/`, `crates/api`

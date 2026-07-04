@@ -31,7 +31,7 @@ test("共有ダイアログ: テナント分離と共有付与", async ({ page, 
 
   // charlie（別テナント b-corp）は出ない。
   await search.fill("charlie");
-  await expect(share.getByText("該当するユーザーがいません")).toBeVisible({ timeout: 10_000 });
+  await expect(share.getByText("該当するメンバーがいません")).toBeVisible({ timeout: 10_000 });
   await expect(share.getByText("charlie@b-corp.example.com")).toHaveCount(0);
 
   // bob に閲覧権限を付与する。
@@ -48,4 +48,34 @@ test("共有ダイアログ: テナント分離と共有付与", async ({ page, 
   await bobPage.goto("/drive/shared");
   await expect(bobPage.getByText(folder, { exact: true })).toBeVisible({ timeout: 15_000 });
   await bobCtx.close();
+});
+
+/// 部署・ロール共有（#76）を検証する。alice が「営業部」ロール（dev_seed: alice/bob 所属）へ
+/// 共有すると、その id が共有一覧に「部署・ロール」バッジ付きで現れる。
+test("共有ダイアログ: 部署・ロールへ共有", async ({ page }) => {
+  await loginViaKeycloak(page); // alice
+  await page.goto("/drive");
+
+  const folder = uniqueName("部署共有");
+  await page.getByRole("button", { name: "新規フォルダ" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox").fill(folder);
+  await dialog.getByRole("button", { name: "作成" }).click();
+  await expect(page.getByText(folder, { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: `「${folder}」の操作` }).click();
+  await page.getByRole("menuitem", { name: "共有" }).click();
+  const share = page.getByRole("dialog");
+  await expect(share.getByText(`「${folder}」を共有`)).toBeVisible();
+
+  // 「部署・ロール」へ切り替えて検索する。
+  await share.getByRole("button", { name: "部署・ロール" }).click();
+  const search = share.getByPlaceholder("部署・ロール名で検索");
+  await search.fill("営業");
+  const salesRow = share.locator("li", { hasText: "営業部" });
+  await expect(salesRow).toBeVisible({ timeout: 10_000 });
+
+  // 営業部へ閲覧権限を付与 → 共有一覧に role id が現れる。
+  await salesRow.getByRole("button", { name: "共有", exact: true }).click();
+  await expect(share.getByText("sales", { exact: true })).toBeVisible({ timeout: 10_000 });
 });

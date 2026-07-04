@@ -6,14 +6,29 @@
 
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
-    object::{FgaObject, Subject},
     vocab::Relation,
-    AuthzClient, Consistency,
+    AuthContext, AuthzClient, Consistency, Principal,
 };
 
 fn model_json() -> serde_json::Value {
     let raw = include_str!("../model/authorization-model.json");
     serde_json::from_str(raw).expect("model JSON が不正")
+}
+
+/// テナント名前空間化（SAAS.1）された識別子を組むための最小 `AuthContext`。
+/// アプリ同様 `ctx.ns()` 経由でしか FGA 識別子を構築できないため、テストも同経路を使う。
+fn ctx_for(tenant_id: &str, user_id: &str) -> AuthContext {
+    AuthContext::new(
+        Principal {
+            id: user_id.to_string(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: Some(tenant_id.to_string()),
+        },
+        "acme".to_string(),
+        tenant_id.to_string(),
+    )
 }
 
 #[tokio::test]
@@ -35,9 +50,11 @@ async fn check_allows_member_and_denies_other_org() {
         .await
         .expect("OpenFGA へ接続できること");
 
-    let alice = Subject::user("alice");
-    let acme = FgaObject::organization("acme");
-    let other = FgaObject::organization("other");
+    // tenant `t1` の名前空間で識別子を組む（`user:t1|alice` / `organization:t1|acme`）。
+    let ctx = ctx_for("t1", "alice");
+    let alice = ctx.subject();
+    let acme = ctx.ns().organization("acme");
+    let other = ctx.ns().organization("other");
 
     // alice を acme の member として付与（新規付与なので changed=true）。
     assert!(client
@@ -84,8 +101,9 @@ async fn write_and_delete_tuple_are_idempotent() {
         .await
         .expect("OpenFGA へ接続できること");
 
-    let bob = Subject::user("bob");
-    let acme = FgaObject::organization("acme");
+    let ctx = ctx_for("t1", "bob");
+    let bob = ctx.subject();
+    let acme = ctx.ns().organization("acme");
 
     // 冪等な write: 1 回目は実書込（true）、2 回目は既存 no-op（false）。
     assert!(client

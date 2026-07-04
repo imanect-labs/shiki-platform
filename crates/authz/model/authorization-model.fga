@@ -27,20 +27,23 @@ type role
 # ストレージ: フォルダ（ツリーの内部ノード）。
 # 厳格モデル: 明示付与（owner/editor/viewer）と「親フォルダからの継承」のみ。
 # org メンバーであることだけでは配下を読めない（自動継承を入れない）。
-# Task 1.6 の共有は **user 直接付与のみ**。role/部署共有は tenant スコープ（SAAS.1）が
-# 前提のため defer（#76）。role#member を直接型に足すのは SAAS.1 後。
+# 共有先は user 直接付与 ＋ role#member（#76）。role のテナント越境は SAAS.1（#84）の
+# 識別子名前空間化（role:<tenant>|<id>）で担保済み。editor/viewer に role#member を許すと
+# 「そのロールのメンバー（配下ロール込みの階層展開）」が編集/閲覧できる。owner は付与しない
+# （共有語彙は viewer/editor のみ・owner の横展開を防ぐ）。
 type folder
   relations
     define parent: [folder]
     define owner: [user]
-    define editor: [user] or owner or editor from parent
-    define viewer: [user] or editor or viewer from parent
+    define editor: [user, role#member] or owner or editor from parent
+    define viewer: [user, role#member] or editor or viewer from parent
 
 # ストレージ: ファイル（ツリーの葉・認可の最小オブジェクト）。
 # ルート直下のファイルは parent を持たず、作成者の owner タプルのみで到達する。
+# 共有先は user 直接付与 ＋ role#member（#76・folder と同一ポリシ）。
 type file
   relations
     define parent: [folder]
     define owner: [user]
-    define editor: [user] or owner or editor from parent
-    define viewer: [user] or editor or viewer from parent
+    define editor: [user, role#member] or owner or editor from parent
+    define viewer: [user, role#member] or editor or viewer from parent

@@ -51,7 +51,7 @@ pub(crate) struct TenantId(pub String);
 /// Phase 0 はシングルテナント想定で、Keycloak group（例: `/acme` や `/acme/eng`）の
 /// 先頭セグメントを org とみなす。group が無い場合は `default`。
 /// 後続フェーズで専用 claim や DB ルックアップに差し替える。
-fn resolve_org(principal: &Principal) -> String {
+pub(crate) fn resolve_org(principal: &Principal) -> String {
     principal
         .groups
         .iter()
@@ -77,16 +77,38 @@ pub(crate) fn resolve_tenant_id(
     principal: &Principal,
     auth: &AuthConfig,
 ) -> Result<String, ApiError> {
-    match auth.tenancy {
+    let tenant_id = match auth.tenancy {
         Tenancy::Multi => non_empty(principal.tenant_id.as_deref()).ok_or_else(|| {
             tracing::warn!("multi-tenant モードで claim `tenant` が欠落（fail-closed で拒否）");
             ApiError::Unauthorized
-        }),
+        })?,
         Tenancy::Single => non_empty(auth.tenant_id.as_deref()).ok_or_else(|| {
             tracing::error!("single-tenant モードで auth.tenant_id が空（設定ミス）");
             ApiError::Unauthorized
-        }),
+        })?,
+    };
+    validate_tenant_id(&tenant_id)?;
+    Ok(tenant_id)
+}
+
+/// `tenant_id` に FGA 識別子の名前空間区切り・構造文字が混入していないことを検証する（SAAS.1）。
+///
+/// FGA 識別子は `<type>:<tenant_id>|<local_id>` で名前空間化される（[`authz::Namespace`]）。
+/// `tenant_id` が区切り `|` や FGA の構造文字（`:` `#` `@`）・空白を含むと、名前空間の
+/// パースが曖昧になり越境の余地を生むため fail-closed で拒否する。claim 由来の値は信頼せず
+/// 常にここで検証する。
+fn validate_tenant_id(tenant_id: &str) -> Result<(), ApiError> {
+    // 区切り `|` は `authz::TENANT_SEP` と一致させる（名前空間パースの前提）。
+    const FORBIDDEN: &[char] = &['|', ':', '#', '@'];
+    debug_assert_eq!(authz::TENANT_SEP, '|');
+    if tenant_id
+        .chars()
+        .any(|c| c.is_whitespace() || FORBIDDEN.contains(&c))
+    {
+        tracing::warn!("tenant_id に禁止文字（| : # @ 空白）が含まれる（fail-closed で拒否）");
+        return Err(ApiError::Unauthorized);
     }
+    Ok(())
 }
 
 /// trim して空でなければ所有 `String` を返す。
@@ -176,5 +198,35 @@ mod tests {
         let mut blank = principal_with_groups(&[]);
         blank.tenant_id = Some("   ".into());
         assert!(resolve_tenant_id(&blank, &auth_config(Tenancy::Multi, Some("default"))).is_err());
+    }
+
+    #[test]
+    fn multi_tenant_rejects_forbidden_chars() {
+        // FGA 名前空間の区切り/構造文字を含む tenant_id は fail-closed（SAAS.1・越境防御）。
+        for bad in ["ac|me", "ac:me", "ac#me", "ac@me", "ac me", "ac\tme"] {
+            let mut principal = principal_with_groups(&[]);
+            principal.tenant_id = Some(bad.into());
+            assert!(
+                resolve_tenant_id(&principal, &auth_config(Tenancy::Multi, None)).is_err(),
+                "tenant_id {bad:?} は拒否されること"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_tenant_id_with_hyphen_and_slash_ok() {
+        // 通常の tenant_id（ハイフン・スラッシュ等）は許可される。
+        let mut principal = principal_with_groups(&[]);
+        principal.tenant_id = Some("a-corp/eu".into());
+        let tenant = resolve_tenant_id(&principal, &auth_config(Tenancy::Multi, None)).unwrap();
+        assert_eq!(tenant, "a-corp/eu");
+    }
+
+    #[test]
+    fn validate_tenant_id_direct() {
+        assert!(validate_tenant_id("acme").is_ok());
+        assert!(validate_tenant_id("a-corp_1.eu").is_ok());
+        assert!(validate_tenant_id("ac|me").is_err());
+        assert!(validate_tenant_id("ac me").is_err());
     }
 }
