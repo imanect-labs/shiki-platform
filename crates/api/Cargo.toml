@@ -14,6 +14,10 @@ name = "shiki-server"
 path = "src/main.rs"
 
 [[bin]]
+name = "shiki-admin"
+path = "src/bin/shiki-admin.rs"
+
+[[bin]]
 name = "export-openapi"
 path = "src/bin/export-openapi.rs"
 

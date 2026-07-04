@@ -164,6 +164,11 @@ impl OpenFgaClient {
     pub fn model_id(&self) -> &str {
         &self.model_id
     }
+
+    /// 生 HTTP クライアント（crate 内の移行ツール専用。アプリはトレイト経由のみ）。
+    pub(crate) fn fga(&self) -> &FgaHttp {
+        &self.fga
+    }
 }
 
 #[async_trait]
