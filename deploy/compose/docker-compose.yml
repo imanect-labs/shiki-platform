@@ -187,6 +187,9 @@ services:
       SHIKI_DEV_ALLOW_MULTI_TENANT: ${SHIKI_DEV_ALLOW_MULTI_TENANT:-true}
       SHIKI__AUTH__CLIENT_ID: ${SHIKI__AUTH__CLIENT_ID:-shiki-web}
       SHIKI__AUTH__CLIENT_SECRET: ${SHIKI__AUTH__CLIENT_SECRET:-shiki-web-dev-secret}
+      # テナント・プロビジョニング（SAAS.2）。dev 既定で有効（realm の shiki-provisioner と一致）。
+      SHIKI__AUTH__PROVISIONER_CLIENT_ID: ${SHIKI__AUTH__PROVISIONER_CLIENT_ID:-shiki-provisioner}
+      SHIKI__AUTH__PROVISIONER_CLIENT_SECRET: ${SHIKI__AUTH__PROVISIONER_CLIENT_SECRET:-shiki-provisioner-dev-secret}
       # smoke（web 無し）では api 自身の callback を使う。実運用は web 同一オリジン（:3000）。
       SHIKI__AUTH__REDIRECT_URI: ${SHIKI__AUTH__REDIRECT_URI:-http://localhost:8080/auth/callback}
       SHIKI__AUTH__POST_LOGOUT_REDIRECT_URI: ${SHIKI__AUTH__POST_LOGOUT_REDIRECT_URI:-http://localhost:8080/}

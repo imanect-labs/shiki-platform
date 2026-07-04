@@ -16,7 +16,7 @@ use authz::{
     model, AuthContext, AuthzClient, Consistency, Principal, Relation,
 };
 use sqlx::postgres::PgPoolOptions;
-use storage::{DirectoryStore, ObjectStore, S3ObjectStore, StorageService};
+use storage::{DirectoryStore, ObjectStore, S3ObjectStore, StorageService, TenantStore};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -52,6 +52,8 @@ async fn main() -> anyhow::Result<()> {
         .context("OpenFGA への接続に失敗")?;
     // ユーザーディレクトリ（共有相手検索。storage と同じ db プールを共有）。dev_seed で使う。
     let directory = Arc::new(DirectoryStore::new(db.clone()));
+    // テナントレジストリ（プロビジョニング/削除・SAAS.2）。
+    let tenants = Arc::new(TenantStore::new(db.clone()));
     dev_seed(&fga, &directory, &config.auth).await?;
     // authz は AppState と StorageService で同一インスタンスを共有する（単一チョークポイント）。
     let authz: Arc<dyn AuthzClient> = Arc::new(fga);
@@ -113,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
         http,
         storage,
         directory,
+        tenants,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)

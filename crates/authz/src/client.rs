@@ -101,6 +101,24 @@ pub trait AuthzClient: Send + Sync {
         relation: Relation,
         object_type: ObjectType,
     ) -> Result<Vec<String>, AuthzError>;
+
+    /// オブジェクトに張られた**全直接タプルを一括剥奪**する（テナント撤去・SAAS.2）。
+    ///
+    /// Read で列挙し write API の `deletes` でバッチ削除する。剥奪した件数を返す。
+    /// **冪等**: タプルが無ければ 0 で成功。raw subject 文字列は authz crate 内に閉じ、
+    /// 呼び出し側に生文字列の組み立て/解釈をさせない。
+    async fn delete_object_tuples(&self, object: &FgaObject) -> Result<u32, AuthzError>;
+
+    /// `subject` が**直接タプル**を持つ `object_type` のオブジェクト識別子（`type:id` 文字列）
+    /// 一覧を返す（role reconciliation・SAAS.2）。
+    ///
+    /// [`list_objects`](Self::list_objects) と違い継承を**展開しない**（Read API の
+    /// user＋object type プレフィクス問い合わせ）。剥奪対象の特定は直接タプルが正。
+    async fn read_subject_objects(
+        &self,
+        subject: &Subject,
+        object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError>;
 }
 
 /// OpenFGA への接続設定。
@@ -231,6 +249,34 @@ impl AuthzClient for OpenFgaClient {
                 relation.as_str(),
                 subject.as_str(),
             )
+            .await
+    }
+
+    async fn delete_object_tuples(&self, object: &FgaObject) -> Result<u32, AuthzError> {
+        // Read で全直接タプルを列挙 → deletes 配列でバッチ削除（ページングしつつ収束まで）。
+        let mut deleted: u32 = 0;
+        loop {
+            let tuples = self
+                .fga
+                .read_tuples(&self.store_id, object.as_str(), None)
+                .await?;
+            if tuples.is_empty() {
+                return Ok(deleted);
+            }
+            deleted += self
+                .fga
+                .delete_tuples_batch(&self.store_id, &self.model_id, &tuples)
+                .await?;
+        }
+    }
+
+    async fn read_subject_objects(
+        &self,
+        subject: &Subject,
+        object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        self.fga
+            .read_subject_objects(&self.store_id, subject.as_str(), object_type.as_str())
             .await
     }
 }

@@ -9,7 +9,8 @@
 use std::{sync::Arc, time::Duration};
 
 use authz::{
-    AuthContext, AuthzClient, Consistency, FgaObject, Namespace, ObjectType, Relation, Subject,
+    AuthContext, AuthzClient, Consistency, FgaObject, Namespace, ObjectType, Principal, Relation,
+    Subject,
 };
 use chrono::{DateTime, Utc};
 use serde_json::json;
@@ -2401,6 +2402,163 @@ impl StorageService {
         Ok(())
     }
 
+    // --- テナント・プロビジョニング/撤去（SAAS.2 / #87・admin プレーン） ---
+
+    /// テナント初期 admin へ org member タプルを付与する（冪等・監査つき）。
+    ///
+    /// admin プレーン操作のため呼び出しユーザーの `AuthContext` は無い。実行時と同じ
+    /// `AuthContext::ns()` 名前空間経路を通すために **system principal** の合成コンテキストで
+    /// 識別子を組む（dev_seed と同型）。
+    pub async fn provision_tenant_admin(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        admin_user_id: &str,
+    ) -> Result<(), StorageError> {
+        let ctx = system_ctx(tenant_id, org);
+        let subject = ctx.ns().user(admin_user_id);
+        self.authz
+            .write_tuple(&subject, Relation::Member, &ctx.ns().organization(org))
+            .await?;
+        self.audit
+            .record(
+                &ctx,
+                AuditEntry {
+                    action: "tenant.provision",
+                    object_type: "organization",
+                    object_id: org,
+                    decision: Decision::Allow,
+                    trace_id: None,
+                    metadata: json!({ "admin_user_id": admin_user_id }),
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// テナントの全データを撤去する（SAAS.2 テナント削除・admin プレーン）。
+    ///
+    /// 撤去順（fail-safe・全段冪等＝途中失敗は再実行で収束）:
+    /// 1. **FGA タプル**: DB からオブジェクトを列挙（node / role / org）し、各オブジェクトの
+    ///    直接タプルを一括剥奪する。識別子は tenant 名前空間経由なので他テナントに触れない。
+    /// 2. **オブジェクトストア**: `{tenant_id}/` prefix 配下をページ列挙しバッチ削除する。
+    /// 3. **DB 行**: 1 txn で FK 依存順に物理削除する（closure → version → pending →
+    ///    outbox → directory → node → blob）。**audit_log は削除証跡として保持**する。
+    ///
+    /// 返り値は `(剥奪タプル数, 削除オブジェクト数)`（ログ/レスポンス用の概数）。
+    pub async fn purge_tenant(
+        &self,
+        tenant_id: &str,
+        org: &str,
+    ) -> Result<(u64, u64), StorageError> {
+        let ctx = system_ctx(tenant_id, org);
+        let ns = ctx.ns();
+        let mut tuples_deleted: u64 = 0;
+
+        // 1a. node（file/folder）のタプル。keyset ページングで全行（ゴミ箱含む）を走査。
+        let mut last_id: Option<Uuid> = None;
+        loop {
+            let rows: Vec<(Uuid, String)> = sqlx::query_as(
+                "SELECT id, kind FROM node WHERE tenant_id = $1 AND ($2::uuid IS NULL OR id > $2) \
+                 ORDER BY id LIMIT 500",
+            )
+            .bind(tenant_id)
+            .bind(last_id)
+            .fetch_all(&self.db)
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            last_id = rows.last().map(|(id, _)| *id);
+            for (id, kind) in &rows {
+                let obj = match kind.as_str() {
+                    "folder" => ns.folder(&id.to_string()),
+                    _ => ns.file(&id.to_string()),
+                };
+                tuples_deleted += u64::from(self.authz.delete_object_tuples(&obj).await?);
+            }
+        }
+        // 1b. role のタプル（directory_role が当該テナントの role 台帳）。
+        let role_ids: Vec<String> =
+            sqlx::query_scalar("SELECT role_id FROM directory_role WHERE tenant_id = $1")
+                .bind(tenant_id)
+                .fetch_all(&self.db)
+                .await?;
+        for role_id in &role_ids {
+            tuples_deleted += u64::from(self.authz.delete_object_tuples(&ns.role(role_id)).await?);
+        }
+        // 1c. org のタプル（member）。
+        tuples_deleted += u64::from(
+            self.authz
+                .delete_object_tuples(&ns.organization(org))
+                .await?,
+        );
+
+        // 2. オブジェクトストア: `{tenant_id}/` prefix 配下を全削除。
+        let mut objects_deleted: u64 = 0;
+        let prefix = format!("{tenant_id}/");
+        let mut continuation: Option<String> = None;
+        loop {
+            let (keys, next) = self
+                .store
+                .list_prefix(&prefix, continuation.as_deref())
+                .await?;
+            if !keys.is_empty() {
+                objects_deleted += keys.len() as u64;
+                self.store.delete_batch(&keys).await?;
+            }
+            match next {
+                Some(token) => continuation = Some(token),
+                None => break,
+            }
+        }
+
+        // 3. DB 行を 1 txn・FK 依存順で物理削除（audit_log は保持）。
+        let mut tx = self.db.begin().await?;
+        sqlx::query(
+            "DELETE FROM node_closure USING node \
+             WHERE node_closure.descendant = node.id AND node.tenant_id = $1",
+        )
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await?;
+        for table in [
+            "node_version",
+            "pending_upload",
+            "storage_event_outbox",
+            "directory_user",
+            "directory_role",
+            "node",
+            "blob",
+        ] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+                .bind(tenant_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        // 撤去の監査（ハッシュチェーン連結・削除証跡）。
+        audit::record_on(
+            &mut tx,
+            &ctx,
+            AuditEntry {
+                action: "tenant.purge",
+                object_type: "organization",
+                object_id: org,
+                decision: Decision::Allow,
+                trace_id: None,
+                metadata: json!({
+                    "tuples_deleted": tuples_deleted,
+                    "objects_deleted": objects_deleted,
+                    "roles": role_ids.len(),
+                }),
+            },
+            Chain::Yes,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok((tuples_deleted, objects_deleted))
+    }
+
     // --- 内部ヘルパ ---
 
     /// 認可 check（deny は監査して Forbidden）。
@@ -2790,6 +2948,24 @@ fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
         ));
     }
     Ok(())
+}
+
+/// admin プレーン操作（テナント・プロビジョニング/撤去）用の system 合成コンテキスト。
+///
+/// 呼び出しユーザーの `AuthContext` が存在しない管理操作でも、識別子構築（`ns()`）と
+/// 監査記録を実行時と同じ経路に通すための継ぎ目。actor は固定 `"system"`。
+fn system_ctx(tenant_id: &str, org: &str) -> AuthContext {
+    AuthContext::new(
+        Principal {
+            id: "system".into(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: Some(tenant_id.to_string()),
+        },
+        org.to_string(),
+        tenant_id.to_string(),
+    )
 }
 
 /// ノード種別に対応する OpenFGA オブジェクト識別子（tenant 名前空間化済み・SAAS.1）。

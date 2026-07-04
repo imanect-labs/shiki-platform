@@ -311,6 +311,75 @@ impl FgaHttp {
         let resp = self.http.post(&url).json(&body).send().await?;
         ensure_ok_idempotent(resp, "does not exist").await
     }
+
+    /// 複数 tuple を deletes 配列でまとめて剥奪する（テナント撤去・SAAS.2）。
+    ///
+    /// OpenFGA の write API は 1 リクエスト最大 100 tuple のため 100 件ずつチャンクする。
+    /// 剥奪を試行して成功した件数を返す。並行削除等で「既に不在」のチャンクは no-op 成功
+    /// （0 加算）とし、呼び出し側の再読取ループで収束させる。
+    pub async fn delete_tuples_batch(
+        &self,
+        store_id: &str,
+        model_id: &str,
+        tuples: &[ReadTupleKey],
+    ) -> Result<u32, AuthzError> {
+        let url = format!("{}/stores/{}/write", self.base_url, store_id);
+        let mut deleted: u32 = 0;
+        for chunk in tuples.chunks(100) {
+            let keys: Vec<Value> = chunk
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "user": t.user, "relation": t.relation, "object": t.object
+                    })
+                })
+                .collect();
+            let body = serde_json::json!({
+                "deletes": { "tuple_keys": keys },
+                "authorization_model_id": model_id,
+            });
+            let resp = self.http.post(&url).json(&body).send().await?;
+            if ensure_ok_idempotent(resp, "does not exist").await? {
+                deleted += chunk.len() as u32;
+            }
+        }
+        Ok(deleted)
+    }
+
+    /// `user` が**直接タプル**を持つ `object_type` のオブジェクト識別子一覧
+    /// （role reconciliation・SAAS.2）。
+    ///
+    /// Read API の tuple_key に user＋object type プレフィクス（例 `role:`）を渡す形。
+    /// list-objects と違い継承を展開しない（直接タプルのみ）。
+    pub async fn read_subject_objects(
+        &self,
+        store_id: &str,
+        user: &str,
+        object_type: &str,
+    ) -> Result<Vec<String>, AuthzError> {
+        let url = format!("{}/stores/{}/read", self.base_url, store_id);
+        let mut out = Vec::new();
+        let mut token = String::new();
+        loop {
+            let mut body = serde_json::json!({
+                // object は「type のみ（id 無し）」形式。user 指定と組で直接タプルを引く。
+                "tuple_key": { "user": user, "object": format!("{object_type}:") },
+                "page_size": READ_PAGE_SIZE,
+            });
+            if !token.is_empty() {
+                body["continuation_token"] = Value::from(token.clone());
+            }
+            let resp = self.http.post(&url).json(&body).send().await?;
+            let resp = ensure_ok(resp).await?;
+            let parsed: ReadResponse = resp.json().await?;
+            out.extend(parsed.tuples.into_iter().map(|t| t.key.object));
+            if parsed.continuation_token.is_empty() {
+                break;
+            }
+            token = parsed.continuation_token;
+        }
+        Ok(out)
+    }
 }
 
 async fn ensure_ok(resp: reqwest::Response) -> Result<reqwest::Response, AuthzError> {

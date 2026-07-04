@@ -7,7 +7,7 @@ use axum::{
     http::{header, HeaderName, HeaderValue, Method, StatusCode},
     middleware,
     response::IntoResponse,
-    routing::{get, patch, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
@@ -99,10 +99,36 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api-docs/openapi.json", get(openapi_handler))
         .layer(standard_timeout());
 
+    // admin ルート（SAAS.2 テナント・プロビジョニング）: BFF セッションではなく
+    // provisioner Bearer JWT で認証する管理プレーン。**config（provisioner 資格情報＋
+    // admin base）が揃っている時のみ組み込む**（未設定なら 404 = fail-closed）。
+    // 削除は Keycloak/FGA/オブジェクト走査を伴うため長め（300s）のタイムアウト。
+    let admin = if state.config.auth.provisioner_credentials().is_some()
+        && state.config.auth.admin_base().is_some()
+    {
+        Router::new()
+            .route("/admin/tenants", post(routes::admin::create_tenant))
+            .route(
+                "/admin/tenants/{tenant_id}",
+                delete(routes::admin::delete_tenant),
+            )
+            .route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                routes::admin::require_provisioner,
+            ))
+            .layer(TimeoutLayer::with_status_code(
+                StatusCode::REQUEST_TIMEOUT,
+                Duration::from_secs(300),
+            ))
+    } else {
+        Router::new()
+    };
+
     let router = public
         .merge(protected_standard)
         .merge(protected_nodes)
         .merge(protected_files)
+        .merge(admin)
         // observe は span 内で動く必要があるため TraceLayer より内側（先に追加）。
         .layer(middleware::from_fn(telemetry::observe))
         .layer(TraceLayer::new_for_http().make_span_with(make_request_span));

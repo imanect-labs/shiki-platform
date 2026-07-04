@@ -107,6 +107,29 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "shiki-provisioner",
+      "name": "shiki tenant provisioner (SAAS.2)",
+      "description": "テナント・プロビジョニング用 service account。shiki-server の /admin/* 呼び出し（azp 照合）と Keycloak admin REST（ユーザー/グループ管理）に使う。dev 専用 secret。",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "shiki-provisioner-dev-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "shiki-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "shiki-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "users": [
@@ -172,6 +195,14 @@
           "temporary": false
         }
       ]
+    },
+    {
+      "username": "service-account-shiki-provisioner",
+      "enabled": true,
+      "serviceAccountClientId": "shiki-provisioner",
+      "clientRoles": {
+        "realm-management": ["manage-users", "manage-realm", "query-groups", "query-users"]
+      }
     }
   ]
 }

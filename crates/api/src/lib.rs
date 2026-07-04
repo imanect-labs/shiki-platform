@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod extract;
 pub mod health;
+pub mod keycloak_admin;
 pub mod middleware;
 pub mod oidc;
 pub mod openapi;

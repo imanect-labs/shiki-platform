@@ -97,7 +97,7 @@ pub(crate) fn resolve_tenant_id(
 /// `tenant_id` が区切り `|` や FGA の構造文字（`:` `#` `@`）・空白を含むと、名前空間の
 /// パースが曖昧になり越境の余地を生むため fail-closed で拒否する。claim 由来の値は信頼せず
 /// 常にここで検証する。
-fn validate_tenant_id(tenant_id: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_tenant_id(tenant_id: &str) -> Result<(), ApiError> {
     // 区切り `|` は `authz::TENANT_SEP` と一致させる（名前空間パースの前提）。
     const FORBIDDEN: &[char] = &['|', ':', '#', '@'];
     debug_assert_eq!(authz::TENANT_SEP, '|');
@@ -147,6 +147,9 @@ mod tests {
             scopes: "openid profile".into(),
             tenancy,
             tenant_id: tenant_id.map(str::to_string),
+            provisioner_client_id: None,
+            provisioner_client_secret: None,
+            admin_base_url: None,
         }
     }
 

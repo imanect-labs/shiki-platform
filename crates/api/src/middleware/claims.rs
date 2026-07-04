@@ -26,6 +26,9 @@ pub struct Claims {
     /// オンプレ/cell のシングルテナントでは付与されず、設定の固定値にフォールバックする。
     #[serde(default)]
     pub tenant: Option<String>,
+    /// authorized party（トークンを取得した client_id）。`/admin/*` の provisioner 照合に使う。
+    #[serde(default)]
+    pub azp: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -144,6 +147,7 @@ mod tests {
             groups: vec!["/acme".into()],
             roles: vec!["sales".into(), "eng".into()],
             tenant: Some("acme".into()),
+            azp: None,
         };
         let principal = principal_from_claims(claims);
         assert_eq!(principal.id, "user-3");

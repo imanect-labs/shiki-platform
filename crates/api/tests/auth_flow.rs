@@ -111,6 +111,18 @@ impl AuthzClient for AllowAll {
     ) -> Result<Vec<String>, AuthzError> {
         Ok(vec![])
     }
+
+    async fn delete_object_tuples(&self, _object: &FgaObject) -> Result<u32, AuthzError> {
+        Ok(0)
+    }
+
+    async fn read_subject_objects(
+        &self,
+        _subject: &Subject,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
 }
 
 /// ストレージのバイト層スタブ（認証フローのテストでは呼ばれない）。
@@ -148,6 +160,16 @@ impl storage::object_store::ObjectStore for FakeStore {
         Ok(())
     }
     async fn delete(&self, _key: &str) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
+    async fn list_prefix(
+        &self,
+        _prefix: &str,
+        _continuation: Option<&str>,
+    ) -> Result<(Vec<String>, Option<String>), storage::ObjectStoreError> {
+        Ok((vec![], None))
+    }
+    async fn delete_batch(&self, _keys: &[String]) -> Result<(), storage::ObjectStoreError> {
         Ok(())
     }
 }
@@ -253,6 +275,9 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             scopes: "openid profile".into(),
             tenancy: Tenancy::Single,
             tenant_id: Some("default".into()),
+            provisioner_client_id: None,
+            provisioner_client_secret: None,
+            admin_base_url: None,
         },
         authz: AuthzConfig {
             base_url: "http://localhost:8080".into(),
@@ -302,6 +327,7 @@ fn state_with(config: AppConfig) -> AppState {
         5 * 1024 * 1024 * 1024,
     ));
     let directory = Arc::new(storage::DirectoryStore::new(db.clone()));
+    let tenants = Arc::new(storage::TenantStore::new(db.clone()));
     AppState {
         config: Arc::new(config),
         db,
@@ -311,6 +337,7 @@ fn state_with(config: AppConfig) -> AppState {
         http: reqwest::Client::new(),
         storage,
         directory,
+        tenants,
     }
 }
 
@@ -655,5 +682,117 @@ async fn cors_preflight_is_allowed_for_configured_origin() {
             .get(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
             .and_then(|v| v.to_str().ok()),
         Some("http://localhost:3000")
+    );
+}
+
+// --- admin プレーン（SAAS.2 テナント・プロビジョニング）の認可境界 ---
+
+/// provisioner service account 相当のトークン（azp 指定・aud/iss/exp 有効）。
+fn provisioner_token(azp: &str) -> String {
+    sign_token(
+        KID,
+        serde_json::json!({
+            "sub": "service-account-shiki-provisioner",
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+            "exp": now() + 3600,
+            "azp": azp,
+        }),
+    )
+}
+
+/// provisioner 設定が無ければ /admin/* はルート自体が存在しない（fail-closed で 404/405）。
+#[tokio::test]
+async fn admin_routes_absent_without_provisioner_config() {
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let app = build_router(state_with(config_with(&idp, vec![])));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "config 未設定なら admin ルートは組み込まれない"
+    );
+}
+
+/// /admin/* は Bearer JWT（iss/aud/exp 検証）＋ azp==provisioner を要求する。
+#[tokio::test]
+async fn admin_requires_provisioner_azp() {
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let mut config = config_with(&idp, vec![]);
+    config.auth.provisioner_client_id = Some("shiki-provisioner".into());
+    config.auth.provisioner_client_secret = Some("dev-secret".into());
+    let app = build_router(state_with(config));
+
+    // 1) トークン無し → 401。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"tenant_id":"t1","display_name":"T1","admin_email":"a@t1.example"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "無トークンは 401");
+
+    // 2) 有効 JWT だが azp が別 client → 401（confused-deputy 防御）。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", provisioner_token("shiki-web")),
+                )
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"tenant_id":"t1","display_name":"T1","admin_email":"a@t1.example"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "azp 不一致は 401");
+
+    // 3) 正しい azp → middleware 通過（tenant_id の禁止文字で 400 = ハンドラ到達の証跡。
+    //    DB/Keycloak には到達しない）。
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", provisioner_token("shiki-provisioner")),
+                )
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"tenant_id":"bad|id","display_name":"T","admin_email":"a@t.example"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "azp 一致で middleware を通過し、tenant_id 検証の 400 に到達する"
     );
 }

@@ -1,5 +1,6 @@
 //! HTTP ルートハンドラ群。
 
+pub mod admin;
 pub mod auth;
 pub mod directory;
 pub mod files;

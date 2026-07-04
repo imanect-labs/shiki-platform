@@ -17,6 +17,7 @@ pub mod event;
 pub mod model;
 pub mod object_store;
 pub mod service;
+pub mod tenant;
 
 pub use directory::{
     DirectoryPage, DirectoryRole, DirectoryRolePage, DirectoryStore, DirectoryUser,
@@ -30,3 +31,4 @@ pub use model::{
 };
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
 pub use service::StorageService;
+pub use tenant::{Tenant, TenantStatus, TenantStore};

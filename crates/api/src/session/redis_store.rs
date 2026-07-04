@@ -103,4 +103,38 @@ impl SessionStore for RedisSessionStore {
             .map_err(|e| SessionError::Backend(e.to_string()))?;
         Ok(())
     }
+
+    async fn delete_tenant(&self, tenant_id: &str) -> Result<u64, SessionError> {
+        // KEYS はブロッキングのため使わず、SCAN でカーソル走査して UNLINK（非同期解放）。
+        // tenant_id は禁止文字検証済み（`| : # @` 空白なし）だが、glob メタ文字を含まない
+        // 前提には依らずパターンへはそのまま埋め込む（tenant_id 由来の `*` 等は検証層で弾かれる）。
+        let pattern = format!("{KEY_PREFIX}:{tenant_id}:*");
+        let mut conn = self.conn.clone();
+        let mut cursor: u64 = 0;
+        let mut deleted: u64 = 0;
+        loop {
+            let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(500)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| SessionError::Backend(e.to_string()))?;
+            if !keys.is_empty() {
+                let n: u64 = redis::cmd("UNLINK")
+                    .arg(&keys)
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(|e| SessionError::Backend(e.to_string()))?;
+                deleted += n;
+            }
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+        }
+        Ok(deleted)
+    }
 }

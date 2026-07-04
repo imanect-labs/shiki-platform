@@ -62,4 +62,18 @@ pub trait ObjectStore: Send + Sync {
 
     /// オブジェクトを削除する（staging の後始末・blob GC）。
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
+
+    /// prefix 配下のオブジェクトキーを 1 ページ列挙する（テナント撤去/移行用・SAAS.2）。
+    ///
+    /// `continuation` は前回応答の続き（`None` で先頭から）。返り値は
+    /// `(キー列, 次の continuation)`。次が `None` なら末尾。実装は 1 ページ 1000 件程度を
+    /// 上限とし、全件を一度にメモリへ載せない。
+    async fn list_prefix(
+        &self,
+        prefix: &str,
+        continuation: Option<&str>,
+    ) -> Result<(Vec<String>, Option<String>), ObjectStoreError>;
+
+    /// 複数キーをまとめて削除する（テナント撤去用）。存在しないキーは無視（冪等）。
+    async fn delete_batch(&self, keys: &[String]) -> Result<(), ObjectStoreError>;
 }
