@@ -365,22 +365,34 @@ mod tests {
 
     #[test]
     fn object_key_renamespace() {
-        // legacy: org 直下キーへ tenant を前置。既に新形式ならスキップ。
+        // legacy: org 直下キーへ tenant を前置。「移行済み」は {to}/{org}/ 完全一致で判定。
         let legacy = FromNs::Legacy;
         assert_eq!(
-            renamespace_object_key("acme/deadbeef", &legacy, "t1").as_deref(),
+            renamespace_object_key("acme/deadbeef", "acme", &legacy, "t1").as_deref(),
             Some("t1/acme/deadbeef")
         );
         assert_eq!(
-            renamespace_object_key("t1/acme/deadbeef", &legacy, "t1"),
+            renamespace_object_key("t1/acme/deadbeef", "acme", &legacy, "t1"),
+            None
+        );
+        // org == to（legacy キー "acme/sha" を tenant acme へ移行）でも誤スキップしない。
+        assert_eq!(
+            renamespace_object_key("acme/deadbeef", "acme", &legacy, "acme").as_deref(),
+            Some("acme/acme/deadbeef")
+        );
+        assert_eq!(
+            renamespace_object_key("acme/acme/deadbeef", "acme", &legacy, "acme"),
             None
         );
         // rename: prefix 差し替え。他テナントは対象外。
         let rename = FromNs::Tenant("default".into());
         assert_eq!(
-            renamespace_object_key("default/acme/deadbeef", &rename, "t1").as_deref(),
+            renamespace_object_key("default/acme/deadbeef", "acme", &rename, "t1").as_deref(),
             Some("t1/acme/deadbeef")
         );
-        assert_eq!(renamespace_object_key("other/acme/x", &rename, "t1"), None);
+        assert_eq!(
+            renamespace_object_key("other/acme/x", "acme", &rename, "t1"),
+            None
+        );
     }
 }
