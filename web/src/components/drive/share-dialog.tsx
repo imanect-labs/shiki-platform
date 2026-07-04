@@ -188,6 +188,7 @@ export function ShareDialog({
             <button
               key={k.value}
               type="button"
+              aria-pressed={kind === k.value}
               onClick={() => setKind(k.value)}
               className={cn(
                 "inline-flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors",
@@ -214,6 +215,7 @@ export function ShareDialog({
               <button
                 key={r.value}
                 type="button"
+                aria-pressed={role === r.value}
                 onClick={() => setRole(r.value)}
                 className={cn(
                   "rounded px-3 py-1 text-sm transition-colors",

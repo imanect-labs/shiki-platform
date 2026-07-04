@@ -796,3 +796,178 @@ async fn admin_requires_provisioner_azp() {
         "azp 一致で middleware を通過し、tenant_id 検証の 400 に到達する"
     );
 }
+
+/// token/JWKS ＋ Keycloak admin REST（groups/users）を兼ねるモック IdP。
+/// admin_tenant_lifecycle_end_to_end 用（KeycloakAdmin は internal_base から
+/// token endpoint と admin base の両方を導出するため、1 サーバで両方を提供する）。
+async fn spawn_idp_with_admin() -> String {
+    use axum::routing::{delete, get, post};
+    use axum::{extract::Path, extract::Query, Json, Router};
+    use serde_json::{json, Value};
+    let jwks = jwks_body(KID);
+    let app = Router::new()
+        .route(
+            "/realms/shiki/protocol/openid-connect/token",
+            post(|| async {
+                Json(json!({ "access_token": "mock-admin-token", "expires_in": 60 }))
+            }),
+        )
+        .route(
+            "/realms/shiki/protocol/openid-connect/certs",
+            get(move || {
+                let jwks = jwks.clone();
+                async move { Json(jwks) }
+            }),
+        )
+        .route(
+            "/admin/realms/shiki/groups",
+            post(|| async { StatusCode::CREATED }).get(|Query(q): Query<Value>| async move {
+                let name = q.get("search").and_then(Value::as_str).unwrap_or("");
+                Json(json!([{ "id": "group-1", "name": name }]))
+            }),
+        )
+        .route(
+            "/admin/realms/shiki/groups/{id}",
+            delete(|Path(_id): Path<String>| async { StatusCode::NO_CONTENT }),
+        )
+        .route(
+            "/admin/realms/shiki/users",
+            post(|| async { StatusCode::CREATED }).get(|Query(q): Query<Value>| async move {
+                if q.get("username").is_some() {
+                    // 「作成後の解決」を成立させるため常にヒットさせる（新規判定は POST 側）。
+                    return Json(json!([{ "id": "kc-admin-1", "username": "tenant-admin" }]));
+                }
+                let first = q
+                    .get("first")
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0);
+                if first == 0 {
+                    Json(json!([{ "id": "kc-admin-1", "username": "tenant-admin" }]))
+                } else {
+                    Json(json!([]))
+                }
+            }),
+        )
+        .route(
+            "/admin/realms/shiki/users/{id}",
+            delete(|Path(_id): Path<String>| async { StatusCode::NO_CONTENT }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}/realms/shiki")
+}
+
+/// SAAS.2 テナント・ライフサイクル e2e（作成→冪等再作成→削除→tombstone 再利用拒否）。
+/// 実 Postgres が必要（`STORAGE_TEST_DATABASE_URL` 設定時のみ・CI の coverage ジョブで実走）。
+#[tokio::test]
+async fn admin_tenant_lifecycle_end_to_end() {
+    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    // migration を適用しておく（他テストと共存できる冪等適用）。
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url)
+        .await
+        .expect("Postgres 接続");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migration 適用");
+
+    let idp = spawn_idp_with_admin().await;
+    let mut config = config_with(&idp, vec![]);
+    config.database.url = db_url;
+    config.auth.provisioner_client_id = Some("shiki-provisioner".into());
+    config.auth.provisioner_client_secret = Some("dev-secret".into());
+    let app = build_router(state_with(config));
+    let token = provisioner_token("shiki-provisioner");
+    let tenant_id = format!("t{}", uuid::Uuid::new_v4().simple());
+
+    // --- 作成: 201・一時パスワードが返る。 ---
+    let body = serde_json::json!({
+        "tenant_id": tenant_id,
+        "display_name": "Test Corp",
+        "admin_email": "admin@test.example",
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(created["tenant_id"], tenant_id.as_str());
+    assert_eq!(created["status"], "active");
+    assert_eq!(created["admin_user_id"], "kc-admin-1");
+
+    // --- 冪等: 再作成も 201（tenant 行は active のまま）。 ---
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "再実行も成功（冪等）");
+
+    // --- 削除: 204・tombstone 化。 ---
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/admin/tenants/{tenant_id}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let status: String = sqlx::query_scalar("SELECT status FROM tenant WHERE tenant_id = $1")
+        .bind(&tenant_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "deleted", "tombstone が残る");
+
+    // --- tombstone の tenant_id 再利用は拒否（400）。 ---
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "tombstone 再利用は拒否"
+    );
+}
