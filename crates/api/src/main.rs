@@ -243,6 +243,9 @@ async fn dev_seed(
 
     // role/部署（#76 共有の検証用）: メンバーシップタプルと directory_role を冪等投入する。
     for r in SEED_ROLES {
+        // ユーザー seed と同じく **実行時の実効テナント**へ書く（single では auth.tenant_id）。
+        // fixture の r.tenant を直接使うとユーザーと別 tenant に書かれ role 共有が機能しない。
+        let seed_tenant = effective_seed_tenant(auth, r.tenant);
         for member in r.members {
             let ctx = AuthContext::new(
                 Principal {
@@ -250,10 +253,10 @@ async fn dev_seed(
                     email: None,
                     groups: vec![],
                     roles: vec![],
-                    tenant_id: Some(r.tenant.to_string()),
+                    tenant_id: Some(seed_tenant.to_string()),
                 },
                 r.org.to_string(),
-                r.tenant.to_string(),
+                seed_tenant.to_string(),
             );
             let subject = ctx.subject();
             let role_obj = ctx.ns().role(r.id);
@@ -272,7 +275,7 @@ async fn dev_seed(
             }
         }
         directory
-            .upsert_role(r.id, r.tenant, r.org, r.display_name)
+            .upsert_role(r.id, seed_tenant, r.org, r.display_name)
             .await
             .context("dev seed: directory_role の投入に失敗")?;
     }
