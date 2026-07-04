@@ -203,6 +203,8 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
     let mut config = base_config();
     config.auth.internal_base_url = internal_base_url;
     let db = PgPoolOptions::new()
+        // 認証系テストは DB 不要（到達不能 URL）。lazy pool の取得待ちで 30s 掛からないよう短く。
+        .acquire_timeout(Duration::from_millis(300))
         .connect_lazy(&config.database.url)
         .unwrap();
     let jwks = Arc::new(api::middleware::JwksCache::new(

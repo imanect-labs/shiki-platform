@@ -62,6 +62,22 @@ pub async fn callback(
     let principal = claims::principal_from_claims(verified);
     let tenant_id = resolve_tenant_id(&principal, &state.config.auth)?;
 
+    // 撤去中/撤去済みテナントは新規ログインを拒否する（SAAS.2。セッション失効と IdP ユーザー
+    // 削除の間に完了するログイン競合を塞ぐ）。レジストリ未登録（dev fixture 等）は許可。
+    // レジストリが読めない場合は**警告して継続**（fail-open）: これは purge 中の狭い競合を塞ぐ
+    // 二次ベルトであり、purge 後はデータ面（FGA/DB/オブジェクト）が全て deny するため、
+    // インフラ断でログイン全体を巻き添えにしない方を選ぶ。
+    match state.tenants.get(&tenant_id).await {
+        Ok(Some(t)) if t.status != storage::TenantStatus::Active => {
+            tracing::warn!(%tenant_id, status = t.status.as_str(), "撤去中/済みテナントのログインを拒否");
+            return Err(ApiError::Unauthorized);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(%tenant_id, error = %e, "tenant レジストリ照会に失敗（fail-open で継続）");
+        }
+    }
+
     // role provisioning（#76・claim 同期）: IdP の roles/groups（AD 部署を含む）を
     // OpenFGA の role メンバーシップタプルへ同期する。**login パスから切り離した detached タスク**で
     // 実行する: (1) login レイテンシに provisioning I/O を載せない (2) provisioning の失敗/遅延が

@@ -5,7 +5,7 @@
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 use api::{
@@ -21,10 +21,11 @@ use axum::{
 use serde_json::{json, Value};
 
 /// モック Keycloak の共有状態（作成済み group/user を記憶して冪等系を再現する）。
+/// user は POST された payload（attributes 込み）を保持し、検索で返す。
 #[derive(Default)]
 struct KcState {
     group_exists: AtomicBool,
-    user_exists: AtomicBool,
+    created_user: Mutex<Option<Value>>,
 }
 
 /// token（client_credentials）＋ admin REST（groups/users）のモック Keycloak を立てる。
@@ -53,12 +54,14 @@ async fn spawn_mock_kc(state: Arc<KcState>) -> String {
 
     let users_post = {
         let st = state.clone();
-        post(move || {
+        post(move |Json(body): Json<Value>| {
             let st = st.clone();
             async move {
-                if st.user_exists.swap(true, Ordering::SeqCst) {
+                let mut created = st.created_user.lock().unwrap();
+                if created.is_some() {
                     StatusCode::CONFLICT
                 } else {
+                    *created = Some(body);
                     StatusCode::CREATED
                 }
             }
@@ -69,11 +72,16 @@ async fn spawn_mock_kc(state: Arc<KcState>) -> String {
         get(move |Query(q): Query<Value>| {
             let st = st.clone();
             async move {
-                // username 検索: user_exists の時のみヒット。tenant 属性検索（q=tenant:X）:
-                // 1 ページ目に 1 件返し、2 ページ目は空（ページング終端）。
+                // username 検索: 作成済みならその payload（attributes 込み）を返す。
+                // tenant 属性検索（q=tenant:X）: 1 ページ目に 1 件・2 ページ目は空（終端）。
                 if let Some(username) = q.get("username").and_then(Value::as_str) {
-                    if st.user_exists.load(Ordering::SeqCst) {
-                        return Json(json!([{ "id": "user-1", "username": username }]));
+                    let created = st.created_user.lock().unwrap().clone();
+                    if let Some(user) = created {
+                        return Json(json!([{
+                            "id": "user-1",
+                            "username": username,
+                            "attributes": user.get("attributes").cloned().unwrap_or(json!({})),
+                        }]));
                     }
                     return Json(json!([]));
                 }
@@ -191,6 +199,33 @@ async fn ensure_tenant_admin_creates_then_reuses() {
         .unwrap();
     assert_eq!(id2, "user-1");
     assert_eq!(password2, None);
+}
+
+#[tokio::test]
+async fn ensure_tenant_admin_rejects_cross_tenant_username() {
+    // username が**別テナント**の既存ユーザーと衝突したら 409（乗っ取り防止）。
+    let base = spawn_mock_kc(Arc::default()).await;
+    let http = reqwest::Client::new();
+    let auth = auth_config(&base);
+    let kc = KeycloakAdmin::from_config(&http, &auth).unwrap();
+    kc.ensure_tenant_admin("acme", "acme", "admin@x.example", "admin@x.example", "p1")
+        .await
+        .unwrap();
+    let err = kc
+        .ensure_tenant_admin(
+            "other-corp",
+            "other-corp",
+            "admin@x.example",
+            "admin@x.example",
+            "p2",
+        )
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        matches!(err, KeycloakAdminError::Status { status: 409, .. }),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]

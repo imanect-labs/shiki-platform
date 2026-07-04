@@ -31,6 +31,19 @@ pub enum KeycloakAdminError {
 pub struct KcUser {
     pub id: String,
     pub username: String,
+    /// ユーザー属性（`tenant` の照合に使う）。
+    #[serde(default)]
+    pub attributes: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl KcUser {
+    /// `attributes.tenant` の先頭値。
+    fn tenant(&self) -> Option<&str> {
+        self.attributes
+            .get("tenant")
+            .and_then(|v| v.first())
+            .map(String::as_str)
+    }
 }
 
 /// admin REST の薄いクライアント。トークンは呼び出し毎に取得する
@@ -170,6 +183,19 @@ impl<'a> KeycloakAdmin<'a> {
         temp_password: &str,
     ) -> Result<(String, Option<String>), KeycloakAdminError> {
         if let Some(existing) = self.find_user_by_username(username).await? {
+            // **別テナントの既存ユーザーを乗っ取らない**: username 衝突時は tenant 属性を照合し、
+            // 不一致なら conflict として拒否する（黙って成功させると初期 admin が新テナントへ
+            // ログインできないのに FGA/directory 行だけ書かれる）。
+            if existing.tenant() != Some(tenant_id) {
+                return Err(KeycloakAdminError::Status {
+                    status: 409,
+                    body: format!(
+                        "username '{username}' は別テナント（tenant={:?}）の既存ユーザーです。\
+                         別の admin_username を指定してください",
+                        existing.tenant()
+                    ),
+                });
+            }
             return Ok((existing.id, None));
         }
         let token = self.admin_token().await?;
@@ -191,7 +217,7 @@ impl<'a> KeycloakAdmin<'a> {
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
-        // 並行作成の 409 は「既存」に倒す（冪等）。
+        // 並行作成の 409 は「既存」に倒す（冪等）。tenant 照合は上と同じ。
         if resp.status().as_u16() == 409 {
             let user = self.find_user_by_username(username).await?.ok_or_else(|| {
                 KeycloakAdminError::Status {
@@ -199,6 +225,12 @@ impl<'a> KeycloakAdmin<'a> {
                     body: "既存応答だがユーザーが見つかりません".into(),
                 }
             })?;
+            if user.tenant() != Some(tenant_id) {
+                return Err(KeycloakAdminError::Status {
+                    status: 409,
+                    body: format!("username '{username}' は別テナントの既存ユーザーです"),
+                });
+            }
             return Ok((user.id, None));
         }
         if !resp.status().is_success() {
