@@ -108,11 +108,23 @@ pub struct DirectoryRoleSearchResponse {
     pub next_cursor: Option<String>,
 }
 
+/// ロール検索クエリ（ユーザー検索と `q` の意味が異なるため DTO を分ける）。
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct DirectoryRoleSearchQuery {
+    /// role id / 表示名の部分一致語。空なら同テナントの先頭ページ。
+    #[serde(default)]
+    pub q: String,
+    /// 前回応答の `next_cursor`。続きから取得する（省略で先頭）。
+    pub cursor: Option<String>,
+    /// 1 ページの最大件数（1..=50。既定 20）。
+    pub limit: Option<usize>,
+}
+
 /// 同テナント（＋ org）のロール/部署を検索する（共有ダイアログのオートコンプリート・#76）。
 #[utoipa::path(
     get,
     path = "/directory/roles",
-    params(DirectorySearchQuery),
+    params(DirectoryRoleSearchQuery),
     responses(
         (status = 200, description = "検索結果（同テナントのみ）", body = DirectoryRoleSearchResponse),
         (status = 401, description = "未認証"),
@@ -122,7 +134,7 @@ pub struct DirectoryRoleSearchResponse {
 pub async fn search_roles(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
-    Query(q): Query<DirectorySearchQuery>,
+    Query(q): Query<DirectoryRoleSearchQuery>,
 ) -> Result<Json<DirectoryRoleSearchResponse>, ApiError> {
     let page = state
         .directory
