@@ -18,7 +18,10 @@ pub mod model;
 pub mod object_store;
 pub mod service;
 
-pub use directory::{DirectoryPage, DirectoryStore, DirectoryUser, DEFAULT_SEARCH_LIMIT};
+pub use directory::{
+    DirectoryPage, DirectoryRole, DirectoryRolePage, DirectoryStore, DirectoryUser,
+    DEFAULT_SEARCH_LIMIT,
+};
 pub use error::StorageError;
 pub use event::{OutboxEvent, WriteOp};
 pub use model::{

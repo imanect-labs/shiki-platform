@@ -170,6 +170,51 @@ mod tests {
     }
 
     #[test]
+    fn storage_editor_viewer_accept_role_member() {
+        // #76: folder / file の editor・viewer は user に加え role#member を共有先として受理すること。
+        // owner は role#member を受理しない（共有語彙は viewer/editor のみ・owner 横展開の禁止）。
+        let model = default_model();
+        let types = model
+            .get("type_definitions")
+            .and_then(|v| v.as_array())
+            .expect("type_definitions は配列");
+        let accepts = |type_name: &str, rel: &str, want_type: &str, want_rel: Option<&str>| {
+            let def = types
+                .iter()
+                .find(|t| t.get("type").and_then(|v| v.as_str()) == Some(type_name))
+                .unwrap();
+            def.get("metadata")
+                .and_then(|m| m.get("relations"))
+                .and_then(|r| r.get(rel))
+                .and_then(|r| r.get("directly_related_user_types"))
+                .and_then(|v| v.as_array())
+                .expect("directly_related_user_types は配列")
+                .iter()
+                .any(|t| {
+                    t.get("type").and_then(|v| v.as_str()) == Some(want_type)
+                        && t.get("relation").and_then(|v| v.as_str()) == want_rel
+                })
+        };
+        for type_name in ["folder", "file"] {
+            for rel in ["editor", "viewer"] {
+                assert!(
+                    accepts(type_name, rel, "user", None),
+                    "{type_name}.{rel} は user を受理すること"
+                );
+                assert!(
+                    accepts(type_name, rel, "role", Some("member")),
+                    "{type_name}.{rel} は role#member を受理すること（#76）"
+                );
+            }
+            // owner は role#member を受理しない。
+            assert!(
+                !accepts(type_name, "owner", "role", Some("member")),
+                "{type_name}.owner は role#member を受理しないこと"
+            );
+        }
+    }
+
+    #[test]
     fn fingerprint_extracts_three_keys() {
         // fingerprint は schema_version / type_definitions / conditions の 3 キーのみ持つこと。
         let model = serde_json::json!({

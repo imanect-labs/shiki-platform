@@ -41,6 +41,27 @@ struct DirectoryRow {
     display_name: String,
 }
 
+/// 検索結果の 1 ロール/部署（共有相手候補）。#76。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryRole {
+    /// role/group id（共有 tuple の `role:<tenant>|<id>#member` に使う）。
+    pub id: String,
+    pub display_name: String,
+}
+
+/// ロール検索の 1 ページ（テナント＋org スコープ済み）。
+#[derive(Debug)]
+pub struct DirectoryRolePage {
+    pub items: Vec<DirectoryRole>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct DirectoryRoleRow {
+    role_id: String,
+    display_name: String,
+}
+
 /// ユーザーディレクトリのリポジトリ（Postgres backing）。
 pub struct DirectoryStore {
     db: PgPool,
@@ -134,6 +155,85 @@ impl DirectoryStore {
             None
         };
         Ok(DirectoryPage { items, next_cursor })
+    }
+
+    /// role/部署の冪等 upsert（テナント＋role 単位）。ログイン時 claim 同期・dev_seed 用。
+    pub async fn upsert_role(
+        &self,
+        role_id: &str,
+        tenant_id: &str,
+        org: &str,
+        display_name: &str,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO directory_role (role_id, tenant_id, org, display_name) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (tenant_id, role_id) DO UPDATE \
+               SET org = excluded.org, display_name = excluded.display_name, updated_at = now()",
+        )
+        .bind(role_id)
+        .bind(tenant_id)
+        .bind(org)
+        .bind(display_name)
+        .execute(&self.db)
+        .await
+        .map_err(StorageError::Db)?;
+        Ok(())
+    }
+
+    /// テナント（＋ org）スコープのロール/部署検索（共有ダイアログのオートコンプリート）。
+    ///
+    /// `query` は role_id / 表示名の部分一致（ILIKE）。空文字は先頭ページを返す。
+    /// keyset `(display_name, role_id)` 昇順でページングする。
+    pub async fn search_roles(
+        &self,
+        ctx: &AuthContext,
+        query: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<DirectoryRolePage, StorageError> {
+        let limit = limit.clamp(1, MAX_SEARCH_LIMIT);
+        let pattern = format!("%{}%", escape_like(query.trim()));
+        let (after_name, after_id) = match cursor {
+            Some(c) => {
+                let (name, id) = decode_cursor(c)?;
+                (Some(name), Some(id))
+            }
+            None => (None, None),
+        };
+
+        let rows: Vec<DirectoryRoleRow> = sqlx::query_as(
+            "SELECT role_id, display_name FROM directory_role \
+             WHERE tenant_id = $1 AND org = $2 \
+               AND (role_id ILIKE $3 ESCAPE '\\' OR display_name ILIKE $3 ESCAPE '\\') \
+               AND ($4::text IS NULL OR (display_name, role_id) > ($4, $5)) \
+             ORDER BY display_name, role_id LIMIT $6",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(&pattern)
+        .bind(after_name.as_deref())
+        .bind(after_id.as_deref())
+        .bind(limit as i64 + 1)
+        .fetch_all(&self.db)
+        .await
+        .map_err(StorageError::Db)?;
+
+        let has_more = rows.len() > limit;
+        let items: Vec<DirectoryRole> = rows
+            .into_iter()
+            .take(limit)
+            .map(|r| DirectoryRole {
+                id: r.role_id,
+                display_name: r.display_name,
+            })
+            .collect();
+        let next_cursor = if has_more {
+            items.last().map(|r| encode_cursor(&r.display_name, &r.id))
+        } else {
+            None
+        };
+        Ok(DirectoryRolePage { items, next_cursor })
     }
 }
 
