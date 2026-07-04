@@ -1,7 +1,7 @@
 //! OpenAPI 仕様の集約（utoipa）。フロントの型生成（openapi-typescript）の入力。
 
 use utoipa::{
-    openapi::security::{ApiKey, ApiKeyValue, SecurityScheme},
+    openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme},
     Modify, OpenApi,
 };
 
@@ -33,6 +33,8 @@ use utoipa::{
         crate::routes::shares::shared_with_me,
         crate::routes::directory::search_users,
         crate::routes::directory::search_roles,
+        crate::routes::admin::create_tenant,
+        crate::routes::admin::delete_tenant,
     ),
     components(schemas(
         crate::routes::me::MeResponse,
@@ -53,6 +55,8 @@ use utoipa::{
         crate::routes::directory::DirectorySearchResponse,
         crate::routes::directory::DirectoryRoleResponse,
         crate::routes::directory::DirectoryRoleSearchResponse,
+        crate::routes::admin::CreateTenantRequest,
+        crate::routes::admin::CreateTenantResponse,
         storage::ShareTarget,
         storage::ShareRole,
         storage::ShareEntry,
@@ -70,6 +74,16 @@ impl Modify for SecurityAddon {
         components.add_security_scheme(
             "session",
             SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("shiki_session"))),
+        );
+        // admin プレーン（/admin/*）: provisioner service account の Bearer JWT。
+        components.add_security_scheme(
+            "provisioner_token",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("JWT")
+                    .build(),
+            ),
         );
     }
 }

@@ -77,4 +77,12 @@ impl SessionStore for MemorySessionStore {
             .remove(&Self::key(tenant_id, session_id));
         Ok(())
     }
+
+    async fn delete_tenant(&self, tenant_id: &str) -> Result<u64, SessionError> {
+        let prefix = format!("{tenant_id}:");
+        let mut guard = self.inner.lock().unwrap();
+        let before = guard.len();
+        guard.retain(|k, _| !k.starts_with(&prefix));
+        Ok((before - guard.len()) as u64)
+    }
 }

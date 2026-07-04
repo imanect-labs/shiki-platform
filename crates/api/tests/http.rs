@@ -78,6 +78,18 @@ impl AuthzClient for AllowAll {
     ) -> Result<Vec<String>, AuthzError> {
         Ok(vec![])
     }
+
+    async fn delete_object_tuples(&self, _object: &FgaObject) -> Result<u32, AuthzError> {
+        Ok(0)
+    }
+
+    async fn read_subject_objects(
+        &self,
+        _subject: &Subject,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
 }
 
 /// ストレージのバイト層スタブ（/me・認証フローのテストでは呼ばれない）。
@@ -117,6 +129,16 @@ impl storage::object_store::ObjectStore for FakeStore {
     async fn delete(&self, _key: &str) -> Result<(), storage::ObjectStoreError> {
         Ok(())
     }
+    async fn list_prefix(
+        &self,
+        _prefix: &str,
+        _continuation: Option<&str>,
+    ) -> Result<(Vec<String>, Option<String>), storage::ObjectStoreError> {
+        Ok((vec![], None))
+    }
+    async fn delete_batch(&self, _keys: &[String]) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
 }
 
 fn base_config() -> AppConfig {
@@ -143,6 +165,9 @@ fn base_config() -> AppConfig {
             scopes: "openid profile".into(),
             tenancy: Tenancy::Single,
             tenant_id: Some("default".into()),
+            provisioner_client_id: None,
+            provisioner_client_secret: None,
+            admin_base_url: None,
         },
         authz: AuthzConfig {
             base_url: "http://localhost:8080".into(),
@@ -178,6 +203,8 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
     let mut config = base_config();
     config.auth.internal_base_url = internal_base_url;
     let db = PgPoolOptions::new()
+        // 認証系テストは DB 不要（到達不能 URL）。lazy pool の取得待ちで 30s 掛からないよう短く。
+        .acquire_timeout(Duration::from_millis(300))
         .connect_lazy(&config.database.url)
         .unwrap();
     let jwks = Arc::new(api::middleware::JwksCache::new(
@@ -194,6 +221,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         5 * 1024 * 1024 * 1024,
     ));
     let directory = Arc::new(storage::DirectoryStore::new(db.clone()));
+    let tenants = Arc::new(storage::TenantStore::new(db.clone()));
     AppState {
         config: Arc::new(config),
         db,
@@ -203,6 +231,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         http: reqwest::Client::new(),
         storage,
         directory,
+        tenants,
     }
 }
 

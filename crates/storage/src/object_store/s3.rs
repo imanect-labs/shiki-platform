@@ -9,7 +9,7 @@ use std::time::Duration;
 use aws_sdk_s3::{
     config::{BehaviorVersion, Credentials, Region},
     presigning::PresigningConfig,
-    types::{CorsConfiguration, CorsRule},
+    types::{CorsConfiguration, CorsRule, Delete, ObjectIdentifier},
     Client,
 };
 use serde::{Deserialize, Serialize};
@@ -291,6 +291,75 @@ impl ObjectStore for S3ObjectStore {
             .send()
             .await
             .map_err(|e| ObjectStoreError::Backend(format!("delete_object: {e}")))?;
+        Ok(())
+    }
+
+    async fn list_prefix(
+        &self,
+        prefix: &str,
+        continuation: Option<&str>,
+    ) -> Result<(Vec<String>, Option<String>), ObjectStoreError> {
+        // 1 ページ最大 1000 件（S3 既定）。全件をメモリへ載せない。
+        let mut req = self
+            .internal
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(prefix)
+            .max_keys(1000);
+        if let Some(token) = continuation {
+            req = req.continuation_token(token);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ObjectStoreError::Backend(format!("list_objects_v2: {e}")))?;
+        let keys = resp
+            .contents()
+            .iter()
+            .filter_map(|o| o.key().map(str::to_string))
+            .collect();
+        Ok((keys, resp.next_continuation_token().map(str::to_string)))
+    }
+
+    async fn delete_batch(&self, keys: &[String]) -> Result<(), ObjectStoreError> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        // delete_objects は 1 リクエスト最大 1000 件。存在しないキーは S3 側で成功扱い（冪等）。
+        for chunk in keys.chunks(1000) {
+            let objects: Vec<ObjectIdentifier> = chunk
+                .iter()
+                .map(|k| {
+                    ObjectIdentifier::builder()
+                        .key(k)
+                        .build()
+                        .map_err(|e| ObjectStoreError::Backend(format!("object id 構築: {e}")))
+                })
+                .collect::<Result<_, _>>()?;
+            let delete = Delete::builder()
+                .set_objects(Some(objects))
+                .build()
+                .map_err(|e| ObjectStoreError::Backend(format!("delete 構築: {e}")))?;
+            let resp = self
+                .internal
+                .delete_objects()
+                .bucket(&self.bucket)
+                .delete(delete)
+                .send()
+                .await
+                .map_err(|e| ObjectStoreError::Backend(format!("delete_objects: {e}")))?;
+            // 部分失敗はエラーにする（撤去漏れを黙殺しない。再実行で収束）。
+            let errors = resp.errors();
+            if !errors.is_empty() {
+                let first = &errors[0];
+                return Err(ObjectStoreError::Backend(format!(
+                    "delete_objects 部分失敗 {} 件（先頭: key={:?} code={:?}）",
+                    errors.len(),
+                    first.key(),
+                    first.code(),
+                )));
+            }
+        }
         Ok(())
     }
 }

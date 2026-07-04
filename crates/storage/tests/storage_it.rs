@@ -26,6 +26,7 @@ struct Ctx {
     pool: PgPool,
     authz: Arc<dyn AuthzClient>,
     http: reqwest::Client,
+    store: Arc<dyn ObjectStore>,
 }
 
 async fn setup() -> Option<Ctx> {
@@ -78,12 +79,12 @@ async fn setup() -> Option<Ctx> {
         presign_put_ttl_secs: 900,
         cors_allowed_origins: vec![],
     };
-    let store = Arc::new(S3ObjectStore::new(&s3));
+    let store: Arc<dyn ObjectStore> = Arc::new(S3ObjectStore::new(&s3));
     store.ensure_bucket().await.expect("バケット準備");
 
     let service = StorageService::new(
         pool.clone(),
-        store,
+        store.clone(),
         authz.clone(),
         Duration::from_secs(300),
         Duration::from_secs(900),
@@ -94,6 +95,7 @@ async fn setup() -> Option<Ctx> {
         pool,
         authz,
         http,
+        store,
     })
 }
 
@@ -249,6 +251,7 @@ async fn storage_end_to_end() {
         pool,
         authz,
         http,
+        ..
     } = ctx;
 
     // org/ユーザーをテスト毎にユニーク化し、行を隔離する。
@@ -603,6 +606,7 @@ async fn folder_hierarchy_end_to_end() {
         pool,
         authz,
         http,
+        ..
     } = ctx;
 
     let org = format!("itorg{}", Uuid::new_v4().simple());
@@ -1152,6 +1156,7 @@ async fn versioning_end_to_end() {
         pool,
         authz,
         http,
+        ..
     } = ctx;
 
     let org = format!("itorg{}", Uuid::new_v4().simple());
@@ -1252,6 +1257,7 @@ async fn outbox_end_to_end() {
         pool,
         authz,
         http,
+        ..
     } = ctx;
 
     let org = format!("itorg{}", Uuid::new_v4().simple());
@@ -1527,4 +1533,177 @@ async fn trash_lists_roots_and_folder_restore_roundtrips() {
     let cids: Vec<Uuid> = children.items.iter().map(|n| n.id).collect();
     assert!(cids.contains(&child.id), "子フォルダが復活");
     assert!(cids.contains(&file.id), "ファイルが復活");
+}
+
+/// SAAS.2（#87）: purge_tenant がテナントの DB 行・FGA タプル・オブジェクトを整合的に
+/// 撤去し、同一 org slug を共有する別テナントには一切触れないこと。冪等（再実行成功）。
+#[tokio::test]
+async fn purge_tenant_end_to_end() {
+    let Some(cx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        store,
+    } = cx;
+
+    // 同一 org slug を 2 テナントで共有し、org 単位でなく tenant 単位の撤去であることを示す。
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let ta = format!("ta{}", Uuid::new_v4().simple());
+    let tb = format!("tb{}", Uuid::new_v4().simple());
+    let ua = format!("ituser{}", Uuid::new_v4().simple());
+    let ub = format!("ituser{}", Uuid::new_v4().simple());
+    let ctx_a = make_ctx_tenant(&org, &ta, &ua);
+    let ctx_b = make_ctx_tenant(&org, &tb, &ub);
+    for c in [&ctx_a, &ctx_b] {
+        authz
+            .write_tuple(&c.subject(), Relation::Member, &c.ns().organization(&org))
+            .await
+            .expect("org member seed");
+    }
+    // A/B 各テナントにファイルと role タプル・directory 行を用意する。
+    let file_a = upload(&service, &http, &ctx_a, None, "a.txt", b"tenant A data")
+        .await
+        .expect("upload A");
+    let file_b = upload(&service, &http, &ctx_b, None, "b.txt", b"tenant B data")
+        .await
+        .expect("upload B");
+    let dir = DirectoryStore::new(pool.clone());
+    dir.upsert_role("dept", &ta, &org, "部署A")
+        .await
+        .expect("role A");
+    dir.upsert_role("dept", &tb, &org, "部署B")
+        .await
+        .expect("role B");
+    authz
+        .write_tuple(&ctx_a.subject(), Relation::Member, &ctx_a.ns().role("dept"))
+        .await
+        .expect("role member A");
+    authz
+        .write_tuple(&ctx_b.subject(), Relation::Member, &ctx_b.ns().role("dept"))
+        .await
+        .expect("role member B");
+
+    // --- A を purge ---
+    let (tuples, objects) = service.purge_tenant(&ta, &org).await.expect("purge A");
+    assert!(tuples > 0, "A のタプルが剥奪されること（{tuples}）");
+    assert!(objects > 0, "A のオブジェクトが削除されること（{objects}）");
+
+    // DB: A の行が消え、B は残る。
+    let a_nodes: i64 = sqlx::query_scalar("SELECT count(*) FROM node WHERE tenant_id = $1")
+        .bind(&ta)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let b_nodes: i64 = sqlx::query_scalar("SELECT count(*) FROM node WHERE tenant_id = $1")
+        .bind(&tb)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(a_nodes, 0, "A の node が撤去される");
+    assert_eq!(b_nodes, 1, "B の node は残る");
+    let a_blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blob WHERE tenant_id = $1")
+        .bind(&ta)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(a_blobs, 0, "A の blob 行が撤去される");
+    let a_roles: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM directory_role WHERE tenant_id = $1")
+            .bind(&ta)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(a_roles, 0, "A の directory_role が撤去される");
+
+    // FGA: A の owner/member check が deny になり、B は生きている。
+    assert!(
+        !authz
+            .check(
+                &ctx_a.subject(),
+                Relation::Owner,
+                &ctx_a.ns().file(&file_a.id.to_string()),
+                Consistency::HigherConsistency,
+            )
+            .await
+            .unwrap(),
+        "A の file owner タプルが剥奪される"
+    );
+    assert!(
+        !authz
+            .check(
+                &ctx_a.subject(),
+                Relation::Member,
+                &ctx_a.ns().organization(&org),
+                Consistency::HigherConsistency,
+            )
+            .await
+            .unwrap(),
+        "A の org member タプルが剥奪される"
+    );
+    assert!(
+        authz
+            .check(
+                &ctx_b.subject(),
+                Relation::Owner,
+                &ctx_b.ns().file(&file_b.id.to_string()),
+                Consistency::HigherConsistency,
+            )
+            .await
+            .unwrap(),
+        "B の owner タプルは残る"
+    );
+    assert!(
+        authz
+            .check(
+                &ctx_b.subject(),
+                Relation::Member,
+                &ctx_b.ns().role("dept"),
+                Consistency::HigherConsistency,
+            )
+            .await
+            .unwrap(),
+        "B の role member タプルは残る（同名 role でも tenant 名前空間で分離）"
+    );
+
+    // オブジェクトストア: A のオブジェクトは消え、B は残る。
+    let sha_a = sha256_hex(b"tenant A data");
+    let sha_b = sha256_hex(b"tenant B data");
+    assert!(
+        !store
+            .exists(&storage::content_address::blob_object_key(
+                &ta, &org, &sha_a
+            ))
+            .await
+            .unwrap(),
+        "A の blob オブジェクトが削除される"
+    );
+    assert!(
+        store
+            .exists(&storage::content_address::blob_object_key(
+                &tb, &org, &sha_b
+            ))
+            .await
+            .unwrap(),
+        "B の blob オブジェクトは残る"
+    );
+
+    // B のサービス経路も無傷（メタ取得成功）。
+    assert!(service.get_metadata(&ctx_b, file_b.id, None).await.is_ok());
+
+    // audit は保持され、purge の証跡が残る。
+    let purge_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'tenant.purge'",
+    )
+    .bind(&ta)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(purge_audits, 1, "purge の監査エントリが残る");
+
+    // --- 冪等: 再実行しても成功し、追加削除は 0。 ---
+    let (tuples2, objects2) = service.purge_tenant(&ta, &org).await.expect("purge 再実行");
+    assert_eq!(tuples2, 0, "再実行で剥奪対象なし");
+    assert_eq!(objects2, 0, "再実行で削除対象なし");
 }

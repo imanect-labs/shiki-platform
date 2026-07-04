@@ -78,6 +78,19 @@ pub struct AuthConfig {
     /// `single` モードのテナント固定値（案C）。オンプレ/cell のシングルテナントで使う。
     /// 既定 `"default"`。`multi` モードでは使わず claim `tenant` を必須にする（案A）。
     pub tenant_id: Option<String>,
+    /// テナント・プロビジョニング用 client（SAAS.2 / #87）。service account
+    /// （client_credentials）で Keycloak admin REST を叩き、かつ `/admin/*` の呼び出し
+    /// トークンの `azp` 照合値になる。`provisioner_client_secret` と**両方**揃った時のみ
+    /// admin ルートが有効化される（未設定なら fail-closed でルート自体を組み込まない）。
+    #[serde(default)]
+    pub provisioner_client_id: Option<String>,
+    /// プロビジョニング client の secret（サーバ側でのみ保持）。
+    #[serde(default)]
+    pub provisioner_client_secret: Option<String>,
+    /// Keycloak admin REST の base URL 上書き（例 `http://keycloak:8080/admin/realms/shiki`）。
+    /// 未指定なら `internal_base_url`（無ければ issuer）の `/realms/{realm}` から導出する。
+    #[serde(default)]
+    pub admin_base_url: Option<String>,
 }
 
 /// BFF セッション（オパーク Cookie + Redis）の設定。
@@ -125,6 +138,31 @@ impl AuthConfig {
             "{}/protocol/openid-connect/logout",
             self.issuer.trim_end_matches('/')
         )
+    }
+
+    /// Keycloak admin REST の base URL（SAAS.2 プロビジョニング）。
+    ///
+    /// `admin_base_url` 上書きが無ければ、内部 base（例 `http://keycloak:8080/realms/shiki`）
+    /// を `{root}/admin/realms/{realm}` へ写して導出する。realm セグメントが見つからない
+    /// 形式（プロキシ等で realm パスを含まない URL）は `None`（admin ルート無効化に倒す）。
+    pub fn admin_base(&self) -> Option<String> {
+        if let Some(explicit) = &self.admin_base_url {
+            return Some(explicit.trim_end_matches('/').to_string());
+        }
+        let base = self.backchannel_base();
+        let (root, realm) = base.split_once("/realms/")?;
+        Some(format!("{root}/admin/realms/{realm}"))
+    }
+
+    /// プロビジョニング client の資格情報（id, secret）。両方揃った時のみ `Some`。
+    pub fn provisioner_credentials(&self) -> Option<(&str, &str)> {
+        match (
+            self.provisioner_client_id.as_deref(),
+            self.provisioner_client_secret.as_deref(),
+        ) {
+            (Some(id), Some(secret)) if !id.is_empty() && !secret.is_empty() => Some((id, secret)),
+            _ => None,
+        }
     }
 }
 
@@ -413,7 +451,50 @@ mod tests {
             scopes: "openid profile".into(),
             tenancy: Tenancy::Single,
             tenant_id: Some("default".into()),
+            provisioner_client_id: None,
+            provisioner_client_secret: None,
+            admin_base_url: None,
         }
+    }
+
+    #[test]
+    fn admin_base_derivation() {
+        // 内部 base（realm URL）から `{root}/admin/realms/{realm}` を導出する。
+        let cfg = auth_config(
+            "https://kc.example.com/realms/shiki",
+            Some("http://keycloak:8080/realms/shiki"),
+            None,
+        );
+        assert_eq!(
+            cfg.admin_base().as_deref(),
+            Some("http://keycloak:8080/admin/realms/shiki")
+        );
+        // 明示上書きが最優先（末尾スラッシュは除去）。
+        let mut cfg2 = auth_config("https://kc.example.com/realms/shiki", None, None);
+        cfg2.admin_base_url = Some("http://proxy:9999/admin/realms/shiki/".into());
+        assert_eq!(
+            cfg2.admin_base().as_deref(),
+            Some("http://proxy:9999/admin/realms/shiki")
+        );
+        // realm セグメントが無い URL からは導出できない（fail-closed で None）。
+        let cfg3 = auth_config("http://idp.example.com/oauth", None, None);
+        assert_eq!(cfg3.admin_base(), None);
+    }
+
+    #[test]
+    fn provisioner_credentials_require_both() {
+        let mut cfg = auth_config("https://kc.example.com/realms/shiki", None, None);
+        assert_eq!(cfg.provisioner_credentials(), None);
+        cfg.provisioner_client_id = Some("shiki-provisioner".into());
+        assert_eq!(cfg.provisioner_credentials(), None, "secret 無しでは無効");
+        cfg.provisioner_client_secret = Some("s3cret".into());
+        assert_eq!(
+            cfg.provisioner_credentials(),
+            Some(("shiki-provisioner", "s3cret"))
+        );
+        // 空文字は未設定扱い（fail-closed）。
+        cfg.provisioner_client_secret = Some("".into());
+        assert_eq!(cfg.provisioner_credentials(), None);
     }
 
     #[test]

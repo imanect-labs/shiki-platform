@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use authz::AuthzClient;
 use sqlx::PgPool;
-use storage::{DirectoryStore, StorageService};
+use storage::{DirectoryStore, StorageService, TenantStore};
 
 use crate::{config::AppConfig, middleware::JwksCache, session::SessionStore};
 
@@ -23,4 +23,6 @@ pub struct AppState {
     pub storage: Arc<StorageService>,
     /// ユーザーディレクトリ（共有相手検索。tenant_id スコープ）。
     pub directory: Arc<DirectoryStore>,
+    /// テナントレジストリ（プロビジョニング/削除のライフサイクル・SAAS.2）。
+    pub tenants: Arc<TenantStore>,
 }

@@ -97,9 +97,10 @@ pub(crate) fn resolve_tenant_id(
 /// `tenant_id` が区切り `|` や FGA の構造文字（`:` `#` `@`）・空白を含むと、名前空間の
 /// パースが曖昧になり越境の余地を生むため fail-closed で拒否する。claim 由来の値は信頼せず
 /// 常にここで検証する。
-fn validate_tenant_id(tenant_id: &str) -> Result<(), ApiError> {
-    // 区切り `|` は `authz::TENANT_SEP` と一致させる（名前空間パースの前提）。
-    const FORBIDDEN: &[char] = &['|', ':', '#', '@'];
+pub(crate) fn validate_tenant_id(tenant_id: &str) -> Result<(), ApiError> {
+    // 区切り `|` は `authz::TENANT_SEP` と一致。`/` はオブジェクトキーの prefix 境界
+    // （`{tenant}/{org}/...`）を壊し、purge/list の越境を生むため禁止（Codex #88 指摘）。
+    const FORBIDDEN: &[char] = &['|', ':', '#', '@', '/'];
     debug_assert_eq!(authz::TENANT_SEP, '|');
     if tenant_id
         .chars()
@@ -147,6 +148,9 @@ mod tests {
             scopes: "openid profile".into(),
             tenancy,
             tenant_id: tenant_id.map(str::to_string),
+            provisioner_client_id: None,
+            provisioner_client_secret: None,
+            admin_base_url: None,
         }
     }
 
@@ -214,18 +218,21 @@ mod tests {
     }
 
     #[test]
-    fn valid_tenant_id_with_hyphen_and_slash_ok() {
-        // 通常の tenant_id（ハイフン・スラッシュ等）は許可される。
+    fn valid_tenant_id_with_hyphen_ok_slash_rejected() {
+        // ハイフン等は許可。`/` はオブジェクトキー prefix 境界を壊すため拒否。
         let mut principal = principal_with_groups(&[]);
-        principal.tenant_id = Some("a-corp/eu".into());
+        principal.tenant_id = Some("a-corp-eu".into());
         let tenant = resolve_tenant_id(&principal, &auth_config(Tenancy::Multi, None)).unwrap();
-        assert_eq!(tenant, "a-corp/eu");
+        assert_eq!(tenant, "a-corp-eu");
+        principal.tenant_id = Some("a-corp/eu".into());
+        assert!(resolve_tenant_id(&principal, &auth_config(Tenancy::Multi, None)).is_err());
     }
 
     #[test]
     fn validate_tenant_id_direct() {
         assert!(validate_tenant_id("acme").is_ok());
         assert!(validate_tenant_id("a-corp_1.eu").is_ok());
+        assert!(validate_tenant_id("a/b").is_err());
         assert!(validate_tenant_id("ac|me").is_err());
         assert!(validate_tenant_id("ac me").is_err());
     }

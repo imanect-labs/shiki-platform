@@ -111,6 +111,18 @@ impl AuthzClient for AllowAll {
     ) -> Result<Vec<String>, AuthzError> {
         Ok(vec![])
     }
+
+    async fn delete_object_tuples(&self, _object: &FgaObject) -> Result<u32, AuthzError> {
+        Ok(0)
+    }
+
+    async fn read_subject_objects(
+        &self,
+        _subject: &Subject,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
 }
 
 /// ストレージのバイト層スタブ（認証フローのテストでは呼ばれない）。
@@ -148,6 +160,16 @@ impl storage::object_store::ObjectStore for FakeStore {
         Ok(())
     }
     async fn delete(&self, _key: &str) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
+    async fn list_prefix(
+        &self,
+        _prefix: &str,
+        _continuation: Option<&str>,
+    ) -> Result<(Vec<String>, Option<String>), storage::ObjectStoreError> {
+        Ok((vec![], None))
+    }
+    async fn delete_batch(&self, _keys: &[String]) -> Result<(), storage::ObjectStoreError> {
         Ok(())
     }
 }
@@ -253,6 +275,9 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             scopes: "openid profile".into(),
             tenancy: Tenancy::Single,
             tenant_id: Some("default".into()),
+            provisioner_client_id: None,
+            provisioner_client_secret: None,
+            admin_base_url: None,
         },
         authz: AuthzConfig {
             base_url: "http://localhost:8080".into(),
@@ -286,6 +311,8 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
 fn state_with(config: AppConfig) -> AppState {
     let store = Arc::new(MemorySessionStore::new());
     let db = sqlx::postgres::PgPoolOptions::new()
+        // 認証系テストは DB 不要（到達不能 URL）。lazy pool の取得待ちで 30s 掛からないよう短く。
+        .acquire_timeout(Duration::from_millis(300))
         .connect_lazy(&config.database.url)
         .unwrap();
     let jwks = Arc::new(api::middleware::JwksCache::new(
@@ -302,6 +329,7 @@ fn state_with(config: AppConfig) -> AppState {
         5 * 1024 * 1024 * 1024,
     ));
     let directory = Arc::new(storage::DirectoryStore::new(db.clone()));
+    let tenants = Arc::new(storage::TenantStore::new(db.clone()));
     AppState {
         config: Arc::new(config),
         db,
@@ -311,6 +339,7 @@ fn state_with(config: AppConfig) -> AppState {
         http: reqwest::Client::new(),
         storage,
         directory,
+        tenants,
     }
 }
 
@@ -655,5 +684,320 @@ async fn cors_preflight_is_allowed_for_configured_origin() {
             .get(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
             .and_then(|v| v.to_str().ok()),
         Some("http://localhost:3000")
+    );
+}
+
+// --- admin プレーン（SAAS.2 テナント・プロビジョニング）の認可境界 ---
+
+/// provisioner service account 相当のトークン（azp 指定・aud/iss/exp 有効）。
+fn provisioner_token(azp: &str) -> String {
+    sign_token(
+        KID,
+        serde_json::json!({
+            "sub": "service-account-shiki-provisioner",
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+            "exp": now() + 3600,
+            "azp": azp,
+        }),
+    )
+}
+
+/// provisioner 設定が無ければ /admin/* はルート自体が存在しない（fail-closed で 404/405）。
+#[tokio::test]
+async fn admin_routes_absent_without_provisioner_config() {
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let app = build_router(state_with(config_with(&idp, vec![])));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "config 未設定なら admin ルートは組み込まれない"
+    );
+}
+
+/// /admin/* は Bearer JWT（iss/aud/exp 検証）＋ azp==provisioner を要求する。
+#[tokio::test]
+async fn admin_requires_provisioner_azp() {
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let mut config = config_with(&idp, vec![]);
+    config.auth.provisioner_client_id = Some("shiki-provisioner".into());
+    config.auth.provisioner_client_secret = Some("dev-secret".into());
+    let app = build_router(state_with(config));
+
+    // 1) トークン無し → 401。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"tenant_id":"t1","display_name":"T1","admin_email":"a@t1.example"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "無トークンは 401");
+
+    // 2) 有効 JWT だが azp が別 client → 401（confused-deputy 防御）。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", provisioner_token("shiki-web")),
+                )
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"tenant_id":"t1","display_name":"T1","admin_email":"a@t1.example"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "azp 不一致は 401");
+
+    // 3) 正しい azp → middleware 通過（tenant_id の禁止文字で 400 = ハンドラ到達の証跡。
+    //    DB/Keycloak には到達しない）。
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", provisioner_token("shiki-provisioner")),
+                )
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"tenant_id":"bad|id","display_name":"T","admin_email":"a@t.example"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "azp 一致で middleware を通過し、tenant_id 検証の 400 に到達する"
+    );
+}
+
+/// token/JWKS ＋ Keycloak admin REST（groups/users）を兼ねるモック IdP。
+/// admin_tenant_lifecycle_end_to_end 用（KeycloakAdmin は internal_base から
+/// token endpoint と admin base の両方を導出するため、1 サーバで両方を提供する）。
+async fn spawn_idp_with_admin() -> String {
+    use axum::routing::{delete, get, post};
+    use axum::{extract::Path, extract::Query, Json, Router};
+    use serde_json::{json, Value};
+    use std::sync::Mutex;
+    let jwks = jwks_body(KID);
+    // 作成済みユーザーの payload（attributes 込み）。KeycloakAdmin の tenant 照合を通すため
+    // POST された内容をそのまま username 検索で返す。
+    let created: Arc<Mutex<Option<Value>>> = Arc::default();
+    let app = Router::new()
+        .route(
+            "/realms/shiki/protocol/openid-connect/token",
+            post(|| async {
+                Json(json!({ "access_token": "mock-admin-token", "expires_in": 60 }))
+            }),
+        )
+        .route(
+            "/realms/shiki/protocol/openid-connect/certs",
+            get(move || {
+                let jwks = jwks.clone();
+                async move { Json(jwks) }
+            }),
+        )
+        .route(
+            "/admin/realms/shiki/groups",
+            post(|| async { StatusCode::CREATED }).get(|Query(q): Query<Value>| async move {
+                let name = q.get("search").and_then(Value::as_str).unwrap_or("");
+                Json(json!([{ "id": "group-1", "name": name }]))
+            }),
+        )
+        .route(
+            "/admin/realms/shiki/groups/{id}",
+            delete(|Path(_id): Path<String>| async { StatusCode::NO_CONTENT }),
+        )
+        .route("/admin/realms/shiki/users", {
+            let created_post = created.clone();
+            let created_get = created.clone();
+            post(move |Json(body): Json<Value>| {
+                let created = created_post.clone();
+                async move {
+                    let mut guard = created.lock().unwrap();
+                    if guard.is_some() {
+                        StatusCode::CONFLICT
+                    } else {
+                        *guard = Some(body);
+                        StatusCode::CREATED
+                    }
+                }
+            })
+            .get(move |Query(q): Query<Value>| {
+                let created = created_get.clone();
+                async move {
+                    let stored = created.lock().unwrap().clone();
+                    if q.get("username").is_some() {
+                        // 作成済みならその attributes を返す（tenant 照合が通る）。
+                        return match stored {
+                            Some(u) => Json(json!([{
+                                "id": "kc-admin-1",
+                                "username": "tenant-admin",
+                                "attributes": u.get("attributes").cloned().unwrap_or(json!({})),
+                            }])),
+                            None => Json(json!([])),
+                        };
+                    }
+                    let first = q
+                        .get("first")
+                        .and_then(Value::as_str)
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or(0);
+                    if first == 0 && stored.is_some() {
+                        Json(json!([{ "id": "kc-admin-1", "username": "tenant-admin" }]))
+                    } else {
+                        Json(json!([]))
+                    }
+                }
+            })
+        })
+        .route(
+            "/admin/realms/shiki/users/{id}",
+            delete(|Path(_id): Path<String>| async { StatusCode::NO_CONTENT }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}/realms/shiki")
+}
+
+/// SAAS.2 テナント・ライフサイクル e2e（作成→冪等再作成→削除→tombstone 再利用拒否）。
+/// 実 Postgres が必要（`STORAGE_TEST_DATABASE_URL` 設定時のみ・CI の coverage ジョブで実走）。
+#[tokio::test]
+async fn admin_tenant_lifecycle_end_to_end() {
+    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    // migration を適用しておく（他テストと共存できる冪等適用）。
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url)
+        .await
+        .expect("Postgres 接続");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migration 適用");
+
+    let idp = spawn_idp_with_admin().await;
+    let mut config = config_with(&idp, vec![]);
+    config.database.url = db_url;
+    config.auth.provisioner_client_id = Some("shiki-provisioner".into());
+    config.auth.provisioner_client_secret = Some("dev-secret".into());
+    let app = build_router(state_with(config));
+    let token = provisioner_token("shiki-provisioner");
+    let tenant_id = format!("t{}", uuid::Uuid::new_v4().simple());
+
+    // --- 作成: 201・一時パスワードが返る。 ---
+    let body = serde_json::json!({
+        "tenant_id": tenant_id,
+        "display_name": "Test Corp",
+        "admin_email": "admin@test.example",
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(created["tenant_id"], tenant_id.as_str());
+    assert_eq!(created["status"], "active");
+    assert_eq!(created["admin_user_id"], "kc-admin-1");
+
+    // --- 冪等: 再作成も 201（tenant 行は active のまま）。 ---
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "再実行も成功（冪等）");
+
+    // --- 削除: 204・tombstone 化。 ---
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/admin/tenants/{tenant_id}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let status: String = sqlx::query_scalar("SELECT status FROM tenant WHERE tenant_id = $1")
+        .bind(&tenant_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "deleted", "tombstone が残る");
+
+    // --- tombstone の tenant_id 再利用は拒否（400）。 ---
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/tenants")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "tombstone 再利用は拒否"
     );
 }

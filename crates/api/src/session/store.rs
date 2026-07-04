@@ -78,6 +78,12 @@ pub trait SessionStore: Send + Sync {
 
     /// セッションを削除する（ログアウト・失効）。
     async fn delete(&self, tenant_id: &str, session_id: &str) -> Result<(), SessionError>;
+
+    /// テナント配下の**全セッション**を削除する（テナント削除・SAAS.2）。削除件数を返す。
+    ///
+    /// キーが tenant_id スコープであることを前提に prefix 一致で撤去する（他テナントには
+    /// 触れない）。冪等: セッションが無ければ 0 で成功。
+    async fn delete_tenant(&self, tenant_id: &str) -> Result<u64, SessionError>;
 }
 
 #[cfg(test)]
