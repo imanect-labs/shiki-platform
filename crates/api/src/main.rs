@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
 use api::{
-    config::{AppConfig, ObjectStoreBackend},
+    config::{AppConfig, AuthConfig, ObjectStoreBackend, Tenancy},
     middleware::JwksCache,
     server::build_router,
     session::RedisSessionStore,
@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
         .context("OpenFGA への接続に失敗")?;
     // ユーザーディレクトリ（共有相手検索。storage と同じ db プールを共有）。dev_seed で使う。
     let directory = Arc::new(DirectoryStore::new(db.clone()));
-    dev_seed(&fga, &directory).await?;
+    dev_seed(&fga, &directory, &config.auth).await?;
     // authz は AppState と StorageService で同一インスタンスを共有する（単一チョークポイント）。
     let authz: Arc<dyn AuthzClient> = Arc::new(fga);
 
@@ -168,24 +168,31 @@ const SEED_USERS: &[SeedUser] = &[
 ///
 /// 任意ユーザーを任意 org の member に昇格できる権限付与経路のため、本番で env が
 /// 紛れ込んでも作動しないよう、専用の有効化フラグでガードする（fail-safe）。
-async fn dev_seed(fga: &OpenFgaClient, directory: &DirectoryStore) -> anyhow::Result<()> {
+async fn dev_seed(
+    fga: &OpenFgaClient,
+    directory: &DirectoryStore,
+    auth: &AuthConfig,
+) -> anyhow::Result<()> {
     if !dev_seed_enabled() {
         return Ok(());
     }
     tracing::warn!("dev seed 有効（SHIKI_DEV_SEED=true）。本番では設定しないこと");
     for u in SEED_USERS {
-        // tenant 名前空間化された識別子を組む（`user:<tenant>|<id>` / `organization:<tenant>|<org>`）。
-        // 実行時と同じ `AuthContext::ns()` 経路を通す（SAAS.1）。
+        // **実行時と同じ tenant 名前空間へ seed する**（SAAS.1）。single モードでは runtime の
+        // `resolve_tenant_id` が固定 `auth.tenant_id` を使うため、fixture の `u.tenant`（a-corp 等）で
+        // 書くと `user:<u.tenant>|...` になり `user:<auth.tenant_id>|...` の check と一致せず未認可に
+        // なる。よって single では `auth.tenant_id` を、multi では claim 相当の `u.tenant` を使う。
+        let seed_tenant = effective_seed_tenant(auth, u.tenant);
         let ctx = AuthContext::new(
             Principal {
                 id: u.id.to_string(),
                 email: None,
                 groups: vec![],
                 roles: vec![],
-                tenant_id: Some(u.tenant.to_string()),
+                tenant_id: Some(seed_tenant.to_string()),
             },
             u.org.to_string(),
-            u.tenant.to_string(),
+            seed_tenant.to_string(),
         );
         let subject = ctx.subject();
         let object = ctx.ns().organization(u.org);
@@ -202,16 +209,30 @@ async fn dev_seed(fga: &OpenFgaClient, directory: &DirectoryStore) -> anyhow::Re
             fga.write_tuple(&subject, Relation::Member, &object)
                 .await
                 .context("dev seed tuple の書き込みに失敗")?;
-            tracing::info!(user = %u.id, org = %u.org, "dev seed: org member tuple を投入");
+            tracing::info!(user = %u.id, org = %u.org, tenant = %seed_tenant, "dev seed: org member tuple を投入");
         }
         // ディレクトリ（共有相手検索）へ投入。ON CONFLICT 更新で冪等。
         directory
-            .upsert_user(u.id, u.tenant, u.org, u.email, u.display_name)
+            .upsert_user(u.id, seed_tenant, u.org, u.email, u.display_name)
             .await
             .context("dev seed: directory_user の投入に失敗")?;
     }
     tracing::info!(count = SEED_USERS.len(), "dev seed: ユーザー群を投入");
     Ok(())
+}
+
+/// dev seed の実効テナント。single は runtime と一致させるため固定 `auth.tenant_id` を、
+/// multi は fixture の tenant（claim 相当）を使う。
+fn effective_seed_tenant<'a>(auth: &'a AuthConfig, fixture_tenant: &'a str) -> &'a str {
+    match auth.tenancy {
+        Tenancy::Single => auth
+            .tenant_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("default"),
+        Tenancy::Multi => fixture_tenant,
+    }
 }
 
 /// dev seed の有効化フラグ（`SHIKI_DEV_SEED` が真値のときのみ true）。

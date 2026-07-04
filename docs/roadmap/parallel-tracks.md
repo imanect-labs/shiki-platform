@@ -250,6 +250,10 @@
   - cell 型では `tenant_id` 単一固定（`default`）でも動く後方互換（オンプレ＝シングルテナント）を保つ。
   - permission-aware RAG の検索/引用がテナント境界を越えないことを保証する。
   - 監査ハッシュチェーンも `tenant_id`＋org でスコープ（共用プール Postgres で越境連結しない）。
+  - **オブジェクトストレージも tenant スコープ**: blob キー/PK を `{tenant_id}/{org}/{sha256}` へ（migration 0005・
+    `content_address`）。同一 org slug を複数テナントが共有しても dedup 共有・hash 存在オラクル・refcount 破壊を防ぐ。
+  - **`auth.tenancy=multi` の dev-only ゲート（`SHIKI_DEV_ALLOW_MULTI_TENANT`）を撤去**（全隔離層が tenant_id
+    スコープになったため設定だけで運用可）。オンボーディング/課金/クォータ（SAAS.2〜4）は隔離とは独立の運用トラック。
 - **受け入れ条件**:
   - [x] 全データアクセス・セッションが `tenant_id` 付きコンテキスト/キーを通る
   - [x] cell 型（単一テナント）・オンプレ構成が無変更で動作する（`tenant_id="default"` 名前空間で一様動作）

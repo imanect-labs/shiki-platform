@@ -218,12 +218,15 @@ async fn closure_depth(pool: &PgPool, ancestor: Uuid, descendant: Uuid) -> Optio
 }
 
 async fn blob_refcount(pool: &PgPool, org: &str, sha: &str) -> i64 {
-    sqlx::query_scalar("SELECT refcount FROM blob WHERE org = $1 AND sha256 = $2")
-        .bind(org)
-        .bind(sha)
-        .fetch_one(pool)
-        .await
-        .expect("blob 行")
+    // これらのテストは全て tenant "default"（make_ctx）。blob PK は (tenant_id, org, sha256)。
+    sqlx::query_scalar(
+        "SELECT refcount FROM blob WHERE tenant_id = 'default' AND org = $1 AND sha256 = $2",
+    )
+    .bind(org)
+    .bind(sha)
+    .fetch_one(pool)
+    .await
+    .expect("blob 行")
 }
 
 async fn audit_count(pool: &PgPool, org: &str, action: &str, decision: &str) -> i64 {

@@ -218,7 +218,7 @@ impl StorageService {
         // staging への presigned PUT を発行し、pending_upload に控える。
         // 実体は finalize で content-addressed に昇格し、そこで dedup する。
         let upload_id = Uuid::new_v4();
-        let staging_key = staging_object_key(&ctx.org, &upload_id.to_string());
+        let staging_key = staging_object_key(&ctx.tenant_id, &ctx.org, &upload_id.to_string());
         sqlx::query(
             "INSERT INTO pending_upload \
              (upload_id, org, tenant_id, parent_id, name, content_type, declared_sha256, declared_size, staging_key, created_by, target_node_id) \
@@ -341,7 +341,7 @@ impl StorageService {
                 "staging オブジェクトが存在しません（アップロード未完了 label={label}）"
             )));
         }
-        let incoming_key = incoming_object_key(&ctx.org, &label);
+        let incoming_key = incoming_object_key(&ctx.tenant_id, &ctx.org, &label);
         self.store.copy(&pending.staging_key, &incoming_key).await?;
 
         // 不変スナップショットを再ハッシュし、宣言値と照合（client バイトを信頼しない）。
@@ -360,13 +360,15 @@ impl StorageService {
 
         // 既存の有効 blob を上書きしない（content-addressed への昇格は新規 blob の時だけ）。
         // 既存 blob があるなら finalize は実バイトを所持した上での正当な dedup。
-        let final_key = blob_object_key(&ctx.org, &actual_sha);
-        let blob_exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM blob WHERE org = $1 AND sha256 = $2)")
-                .bind(&ctx.org)
-                .bind(&actual_sha)
-                .fetch_one(&self.db)
-                .await?;
+        let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &actual_sha);
+        let blob_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = $3)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(&actual_sha)
+        .fetch_one(&self.db)
+        .await?;
         if !blob_exists {
             // incoming は不変なので、final へのコピーは宣言ハッシュと必ず一致する。
             // 既存 blob があるなら上書きしない（並行 finalize が参照する共有本体を壊さない）。
@@ -399,6 +401,7 @@ impl StorageService {
                     let mut tx = self.db.begin().await?;
                     self.bump_blob(
                         &mut tx,
+                        &ctx.tenant_id,
                         &ctx.org,
                         &actual_sha,
                         actual_size as i64,
@@ -569,7 +572,7 @@ impl StorageService {
         )
         .await?;
         let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;
-        let key = blob_object_key(&ctx.org, sha);
+        let key = blob_object_key(&ctx.tenant_id, &ctx.org, sha);
         let url = self
             .store
             .presign_get(
@@ -1981,7 +1984,7 @@ impl StorageService {
         .fetch_optional(&self.db)
         .await?;
         let (sha, content_type) = version_row.ok_or(StorageError::NotFound)?;
-        let key = blob_object_key(&ctx.org, &sha);
+        let key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha);
         let url = self
             .store
             .presign_get(
@@ -2063,9 +2066,17 @@ impl StorageService {
         .await?;
         let (sha, size, content_type) = src.ok_or(StorageError::NotFound)?;
         // 復元先の blob を refcount +1（新版が参照するため）。実体はオブジェクトストアに既存。
-        let final_key = blob_object_key(&ctx.org, &sha);
-        self.bump_blob(&mut tx, &ctx.org, &sha, size, &content_type, &final_key)
-            .await?;
+        let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha);
+        self.bump_blob(
+            &mut tx,
+            &ctx.tenant_id,
+            &ctx.org,
+            &sha,
+            size,
+            &content_type,
+            &final_key,
+        )
+        .await?;
         let sql = format!(
             "UPDATE node \
              SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = version + 1, updated_at = now() \
@@ -2491,10 +2502,12 @@ impl StorageService {
         }
     }
 
-    /// blob の refcount を upsert で +1 する（新規は 1 で挿入）。
+    /// blob の refcount を upsert で +1 する（新規は 1 で挿入）。tenant_id + org スコープ。
+    #[allow(clippy::too_many_arguments)] // blob 行の identity + メタ一式。
     async fn bump_blob(
         &self,
         conn: &mut PgConnection,
+        tenant_id: &str,
         org: &str,
         sha256: &str,
         size: i64,
@@ -2502,10 +2515,11 @@ impl StorageService {
         object_key: &str,
     ) -> Result<(), StorageError> {
         sqlx::query(
-            "INSERT INTO blob (org, sha256, size_bytes, content_type, object_key, refcount) \
-             VALUES ($1, $2, $3, $4, $5, 1) \
-             ON CONFLICT (org, sha256) DO UPDATE SET refcount = blob.refcount + 1",
+            "INSERT INTO blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
+             VALUES ($1, $2, $3, $4, $5, $6, 1) \
+             ON CONFLICT (tenant_id, org, sha256) DO UPDATE SET refcount = blob.refcount + 1",
         )
+        .bind(tenant_id)
         .bind(org)
         .bind(sha256)
         .bind(size)
@@ -2629,8 +2643,16 @@ impl StorageService {
         if claimed.rows_affected() == 0 {
             return Err(StorageError::NotFound);
         }
-        self.bump_blob(&mut tx, &ctx.org, sha256, size, content_type, final_key)
-            .await?;
+        self.bump_blob(
+            &mut tx,
+            &ctx.tenant_id,
+            &ctx.org,
+            sha256,
+            size,
+            content_type,
+            final_key,
+        )
+        .await?;
         // UPDATE は対象行をロックするため、並行内容更新の lost-update を防げる。
         let sql = format!(
             "UPDATE node \

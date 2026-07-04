@@ -1,7 +1,9 @@
 //! コンテンツアドレッシングのハッシュ計算とオブジェクトキー組み立て。
 //!
 //! blob は内容の sha256（hex）をキーに保存し、自動重複排除する（Task 1.2）。
-//! PIT-14 に従い、キーは org スコープの名前空間（`{org}/{sha256}`）に閉じる。
+//! PIT-14 に従い、キーは **`{tenant_id}/{org}/{sha256}`** の名前空間に閉じる。
+//! SaaS では同一 org slug を複数テナントが共有し得るため、tenant_id を最上位に織り込んで
+//! 越境のハッシュ存在オラクル・dedup 共有・refcount 破壊を防ぐ（SAAS.1・#84）。
 
 use sha2::{Digest, Sha256};
 
@@ -39,22 +41,22 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// content-addressed blob の ObjectStore キー（PIT-14: org 名前空間）。
-pub fn blob_object_key(org: &str, sha256: &str) -> String {
-    format!("{org}/{sha256}")
+/// content-addressed blob の ObjectStore キー（PIT-14: `{tenant_id}/{org}` 名前空間）。
+pub fn blob_object_key(tenant_id: &str, org: &str, sha256: &str) -> String {
+    format!("{tenant_id}/{org}/{sha256}")
 }
 
-/// 昇格前 staging オブジェクトのキー（`{org}/staging/{upload_id}`）。
+/// 昇格前 staging オブジェクトのキー（`{tenant_id}/{org}/staging/{upload_id}`）。
 /// クライアントが presigned PUT で書き込む唯一のキー（可変）。
-pub fn staging_object_key(org: &str, upload_id: &str) -> String {
-    format!("{org}/staging/{upload_id}")
+pub fn staging_object_key(tenant_id: &str, org: &str, upload_id: &str) -> String {
+    format!("{tenant_id}/{org}/staging/{upload_id}")
 }
 
-/// finalize 時の不変スナップショットキー（`{org}/incoming/{upload_id}`）。
+/// finalize 時の不変スナップショットキー（`{tenant_id}/{org}/incoming/{upload_id}`）。
 /// staging を server-side copy した直後はクライアントが触れないため、
 /// ハッシュ検証と content-addressed への昇格をこのキー基準で race-free に行う（TOCTOU 回避）。
-pub fn incoming_object_key(org: &str, upload_id: &str) -> String {
-    format!("{org}/incoming/{upload_id}")
+pub fn incoming_object_key(tenant_id: &str, org: &str, upload_id: &str) -> String {
+    format!("{tenant_id}/{org}/incoming/{upload_id}")
 }
 
 /// sha256 hex として妥当か（64 桁の小文字 16 進）。
@@ -93,11 +95,23 @@ mod tests {
     }
 
     #[test]
-    fn object_keys_are_org_scoped() {
-        assert_eq!(blob_object_key("acme", "deadbeef"), "acme/deadbeef");
+    fn object_keys_are_tenant_and_org_scoped() {
         assert_eq!(
-            staging_object_key("acme", "abc-123"),
-            "acme/staging/abc-123"
+            blob_object_key("acme", "sales", "deadbeef"),
+            "acme/sales/deadbeef"
+        );
+        assert_eq!(
+            staging_object_key("acme", "sales", "abc-123"),
+            "acme/sales/staging/abc-123"
+        );
+        assert_eq!(
+            incoming_object_key("acme", "sales", "abc-123"),
+            "acme/sales/incoming/abc-123"
+        );
+        // 同一 org slug でも tenant が違えば別名前空間（越境 dedup を防ぐ）。
+        assert_ne!(
+            blob_object_key("t1", "sales", "h"),
+            blob_object_key("t2", "sales", "h")
         );
     }
 
