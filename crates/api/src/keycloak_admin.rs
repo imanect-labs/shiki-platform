@@ -282,6 +282,54 @@ impl<'a> KeycloakAdmin<'a> {
         }
     }
 
+    /// ユーザーの `tenant` 属性を更新する（retenant 移行時の IdP 追従・#89）。
+    ///
+    /// Keycloak の user PUT は部分更新でなく representation 置換のため、GET で全体を
+    /// 取得して attributes.tenant だけ差し替えて書き戻す。
+    pub async fn update_user_tenant(
+        &self,
+        user_id: &str,
+        tenant_id: &str,
+    ) -> Result<(), KeycloakAdminError> {
+        let token = self.admin_token().await?;
+        let resp = self
+            .http
+            .get(format!("{}/users/{}", self.base, user_id))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
+        let resp = ensure_ok(resp).await?;
+        let mut user: Value = resp
+            .json()
+            .await
+            .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
+        let attrs = user
+            .as_object_mut()
+            .and_then(|o| {
+                o.entry("attributes")
+                    .or_insert_with(|| Value::Object(Default::default()))
+                    .as_object_mut()
+            })
+            .ok_or_else(|| KeycloakAdminError::Status {
+                status: 500,
+                body: "user representation が想定外の形式です".into(),
+            })?;
+        attrs.insert("tenant".into(), serde_json::json!([tenant_id]));
+        let resp = self
+            .http
+            .put(format!("{}/users/{}", self.base, user_id))
+            .bearer_auth(&token)
+            .json(&user)
+            .send()
+            .await
+            .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        Err(status_error(resp).await)
+    }
+
     /// ユーザーを削除する（不在 404 は成功に倒す＝冪等）。
     pub async fn delete_user(&self, user_id: &str) -> Result<(), KeycloakAdminError> {
         let token = self.admin_token().await?;

@@ -14,13 +14,14 @@
 //! 実行を前提とする（オンライン移行の整合は保証しない）。
 
 use anyhow::{bail, Context};
-use api::config::AppConfig;
+use api::{config::AppConfig, keycloak_admin::KeycloakAdmin};
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
     migrate::{retenant_object_tuples, FromNs},
     model,
     vocab::ObjectType,
 };
+use authz::{AuthContext, Principal};
 use sqlx::postgres::PgPoolOptions;
 use storage::{ObjectStore, S3ObjectStore};
 use uuid::Uuid;
@@ -169,35 +170,46 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
     );
 
     // --- 2. オブジェクトの移行（blob.object_key を正として copy→delete） ---
-    let blob_keys: Vec<String> =
-        sqlx::query_scalar("SELECT object_key FROM blob WHERE tenant_id = $1")
-            .bind(&db_tenant)
-            .fetch_all(&db)
-            .await?;
+    // 大テナント（数百万 blob）でもメモリへ全載せしない keyset ページング。
     let mut objects_moved: u64 = 0;
     let mut objects_skipped: u64 = 0;
-    for old_key in &blob_keys {
-        let Some(new_key) = renamespace_object_key(old_key, &from, &to) else {
-            objects_skipped += 1; // 既に新形式（再実行時）。
-            continue;
-        };
-        if execute {
-            // 冪等: コピー済みならスキップ、旧が無ければ何もしない。
-            if !store.exists(&new_key).await? {
-                if !store.exists(old_key).await? {
-                    objects_skipped += 1;
-                    continue;
-                }
-                store.copy(old_key, &new_key).await?;
-            }
-            store.delete(old_key).await?;
+    let mut blob_rows: u64 = 0;
+    let mut last_key: Option<String> = None;
+    loop {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT object_key, org FROM blob \
+             WHERE tenant_id = $1 AND ($2::text IS NULL OR object_key > $2) \
+             ORDER BY object_key LIMIT 1000",
+        )
+        .bind(&db_tenant)
+        .bind(last_key.as_deref())
+        .fetch_all(&db)
+        .await?;
+        if rows.is_empty() {
+            break;
         }
-        objects_moved += 1;
+        last_key = rows.last().map(|(k, _)| k.clone());
+        blob_rows += rows.len() as u64;
+        for (old_key, org) in &rows {
+            let Some(new_key) = renamespace_object_key(old_key, org, &from, &to) else {
+                objects_skipped += 1; // 既に新形式（再実行時）。
+                continue;
+            };
+            if execute {
+                // 冪等: コピー済みならスキップ、旧が無ければ何もしない。
+                if !store.exists(&new_key).await? {
+                    if !store.exists(old_key).await? {
+                        objects_skipped += 1;
+                        continue;
+                    }
+                    store.copy(old_key, &new_key).await?;
+                }
+                store.delete(old_key).await?;
+            }
+            objects_moved += 1;
+        }
     }
-    println!(
-        "objects: moved={objects_moved} skipped={objects_skipped}（blob 行 {}）",
-        blob_keys.len()
-    );
+    println!("objects: moved={objects_moved} skipped={objects_skipped}（blob 行 {blob_rows}）");
 
     // --- 3. DB の書き換え（1 txn） ---
     if execute {
@@ -214,6 +226,12 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                 .await?;
             }
             FromNs::Tenant(f) => {
+                // node/node_version → blob の FK は同一 txn 内で tenant_id を順に書き換える
+                // 途中状態で違反するため、commit 時検査へ遅延させる（migration 0008 で
+                // DEFERRABLE 化済み）。
+                sqlx::query("SET CONSTRAINTS node_blob_fk, node_version_blob_fk DEFERRED")
+                    .execute(&mut *tx)
+                    .await?;
                 // object_key の prefix 差し替え → 各テーブルの tenant_id リネーム。
                 sqlx::query(
                     "UPDATE blob SET object_key = $2 || substring(object_key FROM length($1) + 1) \
@@ -236,8 +254,80 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
         }
         tx.commit().await?;
         println!("DB: 書き換え完了");
-        // リネームでは旧テナントのセッションを失効させる（再ログインで新 tenant claim を取得）。
         if let FromNs::Tenant(f) = &from {
+            // リネームの監査エントリを**新テナントの chain へ連結**して記録する（forensics の
+            // アンカー）。⚠️ リネーム以前の chained エントリの entry_hash は**旧 tenant_id で
+            // 計算**されているため、チェーン検証はリネーム境界より前を旧 tenant_id で検証する
+            // 必要がある（runbook 参照）。
+            let orgs_for_audit: Vec<String> =
+                sqlx::query_scalar("SELECT org FROM tenant WHERE tenant_id = $1")
+                    .bind(&to)
+                    .fetch_all(&db)
+                    .await?;
+            let audit_org = orgs_for_audit
+                .first()
+                .cloned()
+                .unwrap_or_else(|| to.clone());
+            let ctx = AuthContext::new(
+                Principal {
+                    id: "system".into(),
+                    email: None,
+                    groups: vec![],
+                    roles: vec![],
+                    tenant_id: Some(to.clone()),
+                },
+                audit_org.clone(),
+                to.clone(),
+            );
+            let mut tx = db.begin().await?;
+            storage::audit::record_on(
+                &mut tx,
+                &ctx,
+                storage::audit::AuditEntry {
+                    action: "tenant.retenant",
+                    object_type: "organization",
+                    object_id: &audit_org,
+                    decision: storage::audit::Decision::Allow,
+                    trace_id: None,
+                    metadata: serde_json::json!({
+                        "from": f, "to": to,
+                        "fga_tuples": fga_moved, "objects": objects_moved,
+                    }),
+                },
+                storage::audit::Chain::Yes,
+            )
+            .await?;
+            tx.commit().await?;
+            println!(
+                "audit: tenant.retenant を記録（⚠️ リネーム以前の chain 検証は旧 tenant_id '{f}' で行うこと）"
+            );
+
+            // IdP（Keycloak）の tenant 属性を追従更新する（残すと次ログインが旧 tenant claim で
+            // 旧名前空間の空セッションになる）。provisioner 設定が無ければ手動対応を促す。
+            match KeycloakAdmin::from_config(&reqwest::Client::new(), &config.auth) {
+                Ok(kc) => match kc.find_users_by_tenant(f).await {
+                    Ok(users) => {
+                        let mut updated = 0usize;
+                        for u in &users {
+                            match kc.update_user_tenant(&u.id, &to).await {
+                                Ok(()) => updated += 1,
+                                Err(e) => eprintln!(
+                                    "IdP tenant 属性の更新に失敗 user={}: {e}（手動で対応要）",
+                                    u.username
+                                ),
+                            }
+                        }
+                        println!("IdP: tenant 属性を {updated}/{} 件更新", users.len());
+                    }
+                    Err(e) => eprintln!("IdP ユーザー検索に失敗（tenant 属性は手動更新要）: {e}"),
+                },
+                Err(_) => eprintln!(
+                    "⚠️ provisioner 未設定のため IdP の tenant 属性は更新していません。\
+                     Keycloak 側で attributes.tenant を '{f}' → '{to}' へ手動更新してください"
+                ),
+            }
+
+            // 旧テナントのセッションを失効させる（再ログインで新 tenant claim を取得）。
             use api::session::{RedisSessionStore, SessionStore};
             match RedisSessionStore::connect(&config.session.redis_url).await {
                 Ok(sessions) => match sessions.delete_tenant(f).await {
@@ -254,13 +344,14 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
 }
 
 /// blob.object_key を移行先名前空間へ写す。
-/// legacy: `{org}/...`（先頭が to/ でない）→ `{to}/{org}/...`。
+/// legacy: `{org}/...` → `{to}/{org}/...`。「移行済み」判定は `{to}/{org}/` **完全一致**で行う
+/// （`{to}/` だけだと org == to の legacy キー `{to}/{sha}` を誤って移行済み扱いする）。
 /// rename: `{from}/...` → `{to}/...`。移行対象でなければ `None`。
-fn renamespace_object_key(old_key: &str, from: &FromNs, to: &str) -> Option<String> {
+fn renamespace_object_key(old_key: &str, org: &str, from: &FromNs, to: &str) -> Option<String> {
     match from {
         FromNs::Legacy => {
-            let prefix = format!("{to}/");
-            (!old_key.starts_with(&prefix)).then(|| format!("{to}/{old_key}"))
+            let migrated_prefix = format!("{to}/{org}/");
+            (!old_key.starts_with(&migrated_prefix)).then(|| format!("{to}/{old_key}"))
         }
         FromNs::Tenant(f) => old_key
             .strip_prefix(&format!("{f}/"))

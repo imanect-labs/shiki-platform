@@ -221,18 +221,21 @@ async fn provision_roles(state: AppState, principal: Principal, tenant_id: Strin
 
 /// claims（roles ＋ groups）から「あるべき role id 集合」を作る（純粋関数・テスト対象）。
 ///
-/// - groups は先頭 `/` を除いた部署パス。**org そのもの（`/{org}`）は除外**。
+/// - groups は先頭 `/` を除いた部署パス。**org そのもののグループ（`/{org}`）だけを除外**する
+///   （org は organization タプルの責務）。roles claim に org と同名のロールがあっても
+///   それは正当なロールなので除外しない（除外すると diff 同期が誤剥奪する）。
 /// - 空・空白・FGA 構造文字（`: # |`）を含む値は除外（識別子を壊さない）。
 fn desired_role_ids(roles: &[String], groups: &[String], org: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let candidates = roles
-        .iter()
-        .map(|r| r.trim().to_string())
-        .chain(groups.iter().map(|g| g.trim_start_matches('/').to_string()));
-    for id in candidates {
+    let candidates = roles.iter().map(|r| (r.trim().to_string(), false)).chain(
+        groups
+            .iter()
+            .map(|g| (g.trim_start_matches('/').to_string(), true)),
+    );
+    for (id, from_group) in candidates {
         let id = id.trim();
         if id.is_empty()
-            || id == org
+            || (from_group && id == org)
             || id.contains(':')
             || id.contains('#')
             || id.contains(authz::TENANT_SEP)
@@ -270,6 +273,14 @@ mod tests {
         // org そのもののグループは role 化しない。
         let got = desired_role_ids(&[], &v(&["/acme"]), "acme");
         assert!(got.is_empty());
+    }
+
+    #[test]
+    fn desired_roles_keep_role_named_like_org() {
+        // roles claim に org と同名のロールがあっても正当なロールとして残す
+        // （groups 由来の org のみ除外。誤剥奪防止・Codex #90 指摘）。
+        let got = desired_role_ids(&v(&["acme"]), &v(&["/acme"]), "acme");
+        assert_eq!(got, v(&["acme"]));
     }
 
     #[test]
