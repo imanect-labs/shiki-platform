@@ -5,8 +5,14 @@
   "registrationAllowed": false,
   "accessTokenLifespan": 1800,
   "groups": [
-    { "name": "a-corp", "path": "/a-corp" },
-    { "name": "b-corp", "path": "/b-corp" }
+    {
+      "name": "a-corp",
+      "path": "/a-corp"
+    },
+    {
+      "name": "b-corp",
+      "path": "/b-corp"
+    }
   ],
   "clients": [
     {
@@ -24,7 +30,9 @@
         "http://localhost:10067/*",
         "http://shuya-dev:10067/*"
       ],
-      "webOrigins": ["+"],
+      "webOrigins": [
+        "+"
+      ],
       "rootUrl": "http://localhost:3000",
       "baseUrl": "http://localhost:3000",
       "attributes": {
@@ -94,7 +102,9 @@
       "serviceAccountsEnabled": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://localhost:3100/*"],
+      "redirectUris": [
+        "http://localhost:3100/*"
+      ],
       "protocolMappers": [
         {
           "name": "shiki-llm-audience",
@@ -142,10 +152,18 @@
       "firstName": "Alice",
       "lastName": "Acorp",
       "attributes": {
-        "roles": ["engineering", "sales-div"],
-        "tenant": ["a-corp"]
+        "roles": [
+          "engineering",
+          "sales-div",
+          "sales"
+        ],
+        "tenant": [
+          "a-corp"
+        ]
       },
-      "groups": ["/a-corp"],
+      "groups": [
+        "/a-corp"
+      ],
       "credentials": [
         {
           "type": "password",
@@ -163,10 +181,17 @@
       "firstName": "Bob",
       "lastName": "Acorp",
       "attributes": {
-        "roles": ["engineering"],
-        "tenant": ["a-corp"]
+        "roles": [
+          "engineering",
+          "sales"
+        ],
+        "tenant": [
+          "a-corp"
+        ]
       },
-      "groups": ["/a-corp"],
+      "groups": [
+        "/a-corp"
+      ],
       "credentials": [
         {
           "type": "password",
@@ -184,10 +209,16 @@
       "firstName": "Charlie",
       "lastName": "Bcorp",
       "attributes": {
-        "roles": ["engineering"],
-        "tenant": ["b-corp"]
+        "roles": [
+          "engineering"
+        ],
+        "tenant": [
+          "b-corp"
+        ]
       },
-      "groups": ["/b-corp"],
+      "groups": [
+        "/b-corp"
+      ],
       "credentials": [
         {
           "type": "password",
@@ -201,7 +232,12 @@
       "enabled": true,
       "serviceAccountClientId": "shiki-provisioner",
       "clientRoles": {
-        "realm-management": ["manage-users", "manage-realm", "query-groups", "query-users"]
+        "realm-management": [
+          "manage-users",
+          "manage-realm",
+          "query-groups",
+          "query-users"
+        ]
       }
     }
   ]

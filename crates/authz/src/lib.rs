@@ -12,6 +12,7 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod fga_http;
+pub mod migrate;
 pub mod model;
 pub mod object;
 pub mod vocab;

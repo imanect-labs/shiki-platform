@@ -264,13 +264,16 @@
 ### Task SAAS.2: テナント・オンボーディング（プロビジョニング自動化）
 - **area**: infra / **path**: `deploy/`, `crates/api`
 - **依存**: SAAS.1
-- **仕様**:
-  - 新規テナント作成（realm/org・初期 admin・既定設定・ストレージ確保）を自動プロビジョニングする
-    オンボーディングフローを実装する。
+- **実装（#87 / #89）**: admin プレーン `POST/DELETE /admin/tenants`（provisioner service account の
+  Bearer JWT ＋ azp 照合・設定なしなら fail-closed でルート不在）。tenant レジストリ
+  （active→deleting→deleted・tombstone）・Keycloak admin REST（group/初期 admin・一時パスワード）・
+  `StorageService::purge_tenant`（FGA タプル/オブジェクト/DB の整合撤去・audit は削除証跡として保持）。
+  role メンバーシップはログイン時に IdP claims と **diff 同期**（reconciliation・離脱は次ログインで剥奪）。
+  運用手順は `docs/guides/tenant-ops.md`。
 - **受け入れ条件**:
-  - [ ] 新テナントを 1 操作で作成し初期 admin がログインできる
-  - [ ] テナント削除でデータ/authz/ストレージが整合的に撤去される
-  - [ ] プロビジョニングが冪等で再実行可能
+  - [x] 新テナントを 1 操作で作成し初期 admin がログインできる
+  - [x] テナント削除でデータ/authz/ストレージが整合的に撤去される
+  - [x] プロビジョニングが冪等で再実行可能
 
 ### Task SAAS.3: 課金・使用量メータリング
 - **area**: infra / **path**: `crates/api`, `crates/obs`
@@ -301,9 +304,11 @@
   - cell 隔離（顧客ごと隔離データプレーン）をやめ、**全テナント共有プール**へ寄せる。`tenant_id` 行分離を全層に全面適用しリソース効率を最大化する。
   - 強い隔離が要件の顧客向けには **cell（専用）を選べる二択**を残す（既定はプール）。
 - **受け入れ条件**:
-  - [ ] 共有プールでテナント間データ漏れがゼロ（行/タプル/オブジェクト/セッション全層）
-  - [ ] cell（専用）とプール（相乗り）を構成で選択できる
-  - [ ] 移行（cell→プール）がデータ整合を保って実行できる
+  - [x] 共有プールでテナント間データ漏れがゼロ（行/タプル/オブジェクト/セッション全層）— SAAS.1（#84）で達成
+  - [x] cell（専用）とプール（相乗り）を構成で選択できる — `auth.tenancy=single/multi`
+  - [x] 移行（cell→プール）がデータ整合を保って実行できる — `shiki-admin retenant`（#89・
+    LEGACY→名前空間形式 / cell→pool の tenant リネーム。DB/FGA/オブジェクト/セッション一括・
+    dry-run 既定・冪等。手順は `docs/guides/tenant-ops.md`）
 
 ---
 

@@ -118,7 +118,7 @@
 - **role/部署共有（#76・実装済み）**: SAAS.1（#84・識別子の tenant 名前空間化）で越境が構造的に不能化されたため
   有効化した。`ShareTarget::Role` を追加し、FGA モデルの folder/file editor/viewer へ `role#member` を再付与。
   role メンバーシップは Keycloak claim（roles ＋ groups＝AD 部署）由来のタプルをログイン時に冪等同期する
-  （最小の role provisioning。⚠️ 離脱時の失効=reconciliation は GA 前フォロー・本番フル同期は SK.6）。
+  （最小の role provisioning。離脱時の失効は **diff 同期 reconciliation（#89）で実装済み**＝次ログインで剥奪。本番フル同期は SK.6）。
 - **なお defer 継続**: **個別例外**（フォルダ共有でも特定ファイル除外＝`but not`）は別途扱う。
 - **受け入れ条件**:
   - [x] user 共有で対象ユーザーがアクセスでき、非対象には漏れない
