@@ -63,9 +63,15 @@ pub async fn callback(
     let tenant_id = resolve_tenant_id(&principal, &state.config.auth)?;
 
     // role provisioning（#76・claim 同期）: IdP の roles/groups（AD 部署を含む）を
-    // OpenFGA の role メンバーシップタプルへ同期する。best-effort（失敗は login を止めない・
-    // 欠落は access を減らす方向＝fail-safe）。
-    provision_roles(&state, &principal, &tenant_id).await;
+    // OpenFGA の role メンバーシップタプルへ同期する。**login パスから切り離した detached タスク**で
+    // 実行する: (1) login レイテンシに provisioning I/O を載せない (2) provisioning の失敗/遅延が
+    // login を壊さない（best-effort・fail-safe。欠落は access を減らす方向）。メンバーシップは
+    // 次リクエストまでに反映される想定（eventual。厳密な同期完了は要件ではない）。
+    tokio::spawn(provision_roles(
+        state.clone(),
+        principal.clone(),
+        tenant_id.clone(),
+    ));
 
     // セッション本体を作成（トークンはサーバ側のみに保持）。
     let session_id = new_opaque_token();
@@ -127,14 +133,14 @@ pub async fn callback(
 /// - ⚠️ **加算同期のみ**: 部署/ロールから外れた際のタプル失効（reconciliation）は未実装。
 ///   GA 前の必須フォロー（本番の SCIM/group フル同期は SK.6）。それまではセッション TTL と
 ///   再ログインで徐々に追従する前提。
-async fn provision_roles(state: &AppState, principal: &Principal, tenant_id: &str) {
-    let org = resolve_org(principal);
-    let ctx = AuthContext::new(principal.clone(), org.clone(), tenant_id.to_string());
+async fn provision_roles(state: AppState, principal: Principal, tenant_id: String) {
+    let org = resolve_org(&principal);
+    let ctx = AuthContext::new(principal, org.clone(), tenant_id.clone());
     let subject = ctx.subject();
 
     // roles claim（フラットなロール名）＋ groups claim（先頭 `/` を除いた部署パス）を role id として扱う。
-    let role_ids = principal.roles.iter().cloned().chain(
-        principal
+    let role_ids = ctx.principal.roles.iter().cloned().chain(
+        ctx.principal
             .groups
             .iter()
             .map(|g| g.trim_start_matches('/').to_string()),
@@ -161,7 +167,7 @@ async fn provision_roles(state: &AppState, principal: &Principal, tenant_id: &st
         // 共有ダイアログ表示用の射影（display_name は当面 role id そのもの）。
         if let Err(e) = state
             .directory
-            .upsert_role(role_id, tenant_id, &org, role_id)
+            .upsert_role(role_id, &tenant_id, &org, role_id)
             .await
         {
             tracing::warn!(role = %role_id, error = %e, "directory_role の upsert に失敗（best-effort）");
