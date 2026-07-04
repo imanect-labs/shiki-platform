@@ -13,7 +13,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use api::{build_router, config::*, session::MemorySessionStore, state::AppState};
+use api::{
+    build_router,
+    config::*,
+    session::{MemorySessionStore, SessionRecord, SessionStore},
+    state::AppState,
+};
 use async_trait::async_trait;
 use authz::{
     AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, ReadTupleKey, Relation, Subject,
@@ -309,7 +314,11 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
 }
 
 fn state_with(config: AppConfig) -> AppState {
-    let store = Arc::new(MemorySessionStore::new());
+    state_with_store(config, Arc::new(MemorySessionStore::new()))
+}
+
+/// テストが検査できる外部セッションストアを渡して AppState を組み立てる。
+fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore>) -> AppState {
     let db = sqlx::postgres::PgPoolOptions::new()
         // 認証系テストは DB 不要（到達不能 URL）。lazy pool の取得待ちで 30s 掛からないよう短く。
         .acquire_timeout(Duration::from_millis(300))
@@ -1000,4 +1009,230 @@ async fn admin_tenant_lifecycle_end_to_end() {
         StatusCode::BAD_REQUEST,
         "tombstone 再利用は拒否"
     );
+}
+
+// --- OIDC Back-Channel Logout（#91: 無効化/削除ユーザーの即時失効） ---
+
+const BCL_EVENT: &str = "http://schemas.openid.net/event/backchannel-logout";
+
+/// テスト用セッションレコード（sub/sid 指定）。
+fn bcl_record(sub: &str, sid: Option<&str>) -> SessionRecord {
+    SessionRecord {
+        principal: authz::Principal {
+            id: sub.into(),
+            email: None,
+            groups: vec!["/acme".into()],
+            roles: vec![],
+            tenant_id: Some("default".into()),
+        },
+        tenant_id: "default".into(),
+        access_token: "access".into(),
+        refresh_token: None,
+        id_token: None,
+        access_expires_at: now() + 3600,
+        csrf_token: "csrf".into(),
+        keycloak_sid: sid.map(str::to_string),
+    }
+}
+
+/// logout_token を form-encoded で /auth/backchannel-logout へ POST する。
+async fn post_backchannel_logout(
+    app: axum::Router,
+    logout_token: &str,
+) -> axum::http::Response<Body> {
+    let body = format!("logout_token={logout_token}");
+    app.oneshot(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/auth/backchannel-logout")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn backchannel_logout_by_sid_revokes_only_that_session() {
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let store = Arc::new(MemorySessionStore::new());
+    // 同一ユーザーの 2 セッション（別 SSO セッション）。sid=A のみ失効させる。
+    store
+        .put(
+            "default",
+            "sess-a",
+            &bcl_record("user-1", Some("sid-A")),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    store
+        .put(
+            "default",
+            "sess-b",
+            &bcl_record("user-1", Some("sid-B")),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with_store(config_with(&idp, vec![]), store.clone()));
+
+    let logout_token = sign_token(
+        KID,
+        serde_json::json!({
+            "iss": ISSUER,
+            "aud": "shiki-web",
+            "iat": now(),
+            "jti": "jti-1",
+            "sid": "sid-A",
+            "events": { BCL_EVENT: {} },
+        }),
+    );
+    let resp = post_backchannel_logout(app, &logout_token).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "検証済み logout_token は 200"
+    );
+
+    assert!(
+        store.get("default", "sess-a").await.unwrap().is_none(),
+        "sid-A のセッションは失効する"
+    );
+    assert!(
+        store.get("default", "sess-b").await.unwrap().is_some(),
+        "sid-B のセッションは残る（sid スコープ）"
+    );
+}
+
+#[tokio::test]
+async fn backchannel_logout_by_sub_revokes_all_user_sessions() {
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let store = Arc::new(MemorySessionStore::new());
+    store
+        .put(
+            "default",
+            "sess-a",
+            &bcl_record("user-1", Some("sid-A")),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    store
+        .put(
+            "default",
+            "sess-b",
+            &bcl_record("user-1", Some("sid-B")),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    // 別ユーザーのセッションは巻き込まない。
+    store
+        .put(
+            "default",
+            "sess-c",
+            &bcl_record("user-2", Some("sid-C")),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with_store(config_with(&idp, vec![]), store.clone()));
+
+    // sid 無し・sub のみ → 当該ユーザーの全セッションを失効（無効化/削除シナリオ）。
+    let logout_token = sign_token(
+        KID,
+        serde_json::json!({
+            "iss": ISSUER,
+            "aud": "shiki-web",
+            "iat": now(),
+            "sub": "user-1",
+            "events": { BCL_EVENT: {} },
+        }),
+    );
+    let resp = post_backchannel_logout(app, &logout_token).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert!(
+        store.get("default", "sess-a").await.unwrap().is_none(),
+        "user-1 sess-a 失効"
+    );
+    assert!(
+        store.get("default", "sess-b").await.unwrap().is_none(),
+        "user-1 sess-b 失効"
+    );
+    assert!(
+        store.get("default", "sess-c").await.unwrap().is_some(),
+        "別ユーザー user-2 のセッションは残る"
+    );
+}
+
+#[tokio::test]
+async fn backchannel_logout_rejects_token_without_logout_event() {
+    // logout イベント宣言の無いトークン（通常の access token 等）では失効させない。
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let store = Arc::new(MemorySessionStore::new());
+    store
+        .put(
+            "default",
+            "sess-a",
+            &bcl_record("user-1", Some("sid-A")),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with_store(config_with(&idp, vec![]), store.clone()));
+
+    let not_a_logout_token = sign_token(
+        KID,
+        serde_json::json!({
+            "iss": ISSUER,
+            "aud": "shiki-web",
+            "iat": now(),
+            "sid": "sid-A",
+            // events 無し
+        }),
+    );
+    let resp = post_backchannel_logout(app, &not_a_logout_token).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "events 宣言が無い token は 400"
+    );
+    assert!(
+        store.get("default", "sess-a").await.unwrap().is_some(),
+        "セッションは失効しない（誤用防御）"
+    );
+}
+
+#[tokio::test]
+async fn backchannel_logout_rejects_wrong_audience() {
+    // aud が RP（client_id=shiki-web）でない logout_token は拒否（confused-deputy 防御）。
+    let idp = spawn_idp(StatusCode::OK, serde_json::json!({}), KID).await;
+    let store = Arc::new(MemorySessionStore::new());
+    store
+        .put(
+            "default",
+            "sess-a",
+            &bcl_record("user-1", Some("sid-A")),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with_store(config_with(&idp, vec![]), store.clone()));
+
+    let wrong_aud = sign_token(
+        KID,
+        serde_json::json!({
+            "iss": ISSUER,
+            "aud": "some-other-client",
+            "iat": now(),
+            "sid": "sid-A",
+            "events": { BCL_EVENT: {} },
+        }),
+    );
+    let resp = post_backchannel_logout(app, &wrong_aud).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "aud 不一致は 400");
+    assert!(store.get("default", "sess-a").await.unwrap().is_some());
 }

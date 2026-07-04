@@ -4,6 +4,7 @@
 //! ブラウザには不透明セッション Cookie のみを渡す（トークンは置かない）。
 //! docs/auth/browser-token-strategy.md / roadmap phase-0 Task 0.11(#55)。
 
+pub mod backchannel_logout;
 pub mod callback;
 pub mod login;
 pub mod logout;
@@ -13,6 +14,7 @@ use axum_extra::extract::cookie::{Cookie, SameSite};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+pub use backchannel_logout::backchannel_logout;
 pub use callback::callback;
 pub(crate) use callback::provision_roles;
 pub use login::login;

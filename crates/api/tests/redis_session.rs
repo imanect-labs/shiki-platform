@@ -24,6 +24,7 @@ fn record(csrf: &str) -> SessionRecord {
         id_token: None,
         access_expires_at: 1_900_000_000,
         csrf_token: csrf.into(),
+        keycloak_sid: Some("sso-session-1".into()),
     }
 }
 

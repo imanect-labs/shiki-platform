@@ -85,4 +85,19 @@ impl SessionStore for MemorySessionStore {
         guard.retain(|k, _| !k.starts_with(&prefix));
         Ok((before - guard.len()) as u64)
     }
+
+    async fn delete_by_subject(&self, sub: &str) -> Result<u64, SessionError> {
+        // テスト実装はレコードを走査して sub 一致を削除する（Redis 実装は逆引きインデックス）。
+        let mut guard = self.inner.lock().unwrap();
+        let before = guard.len();
+        guard.retain(|_, r| r.principal.id != sub);
+        Ok((before - guard.len()) as u64)
+    }
+
+    async fn delete_by_sid(&self, sid: &str) -> Result<u64, SessionError> {
+        let mut guard = self.inner.lock().unwrap();
+        let before = guard.len();
+        guard.retain(|_, r| r.keycloak_sid.as_deref() != Some(sid));
+        Ok((before - guard.len()) as u64)
+    }
 }

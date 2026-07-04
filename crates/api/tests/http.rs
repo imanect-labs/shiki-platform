@@ -258,6 +258,7 @@ fn session_record(
         id_token: None,
         access_expires_at,
         csrf_token: csrf.into(),
+        keycloak_sid: None,
     }
 }
 

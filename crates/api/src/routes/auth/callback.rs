@@ -59,6 +59,9 @@ pub async fn callback(
 
     // 受領した access token を JWKS で検証してクレームを得る。
     let verified = verify_access_token(&state, &tokens.access_token).await?;
+    // Keycloak SSO セッション id（backchannel logout の逆引き鍵・#91）。principal 生成で
+    // クレームが move されるため先に取り出す。
+    let keycloak_sid = verified.sid.clone();
     let principal = claims::principal_from_claims(verified);
     let tenant_id = resolve_tenant_id(&principal, &state.config.auth)?;
 
@@ -104,6 +107,7 @@ pub async fn callback(
         id_token: tokens.id_token,
         access_expires_at: now + tokens.expires_in,
         csrf_token: csrf_token.clone(),
+        keycloak_sid,
     };
     let ttl_secs = state.config.session.ttl_secs;
     state

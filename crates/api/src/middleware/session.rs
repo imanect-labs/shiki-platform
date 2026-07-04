@@ -118,6 +118,10 @@ async fn refresh_session(
             // backchannel TLS で得た信頼済みトークンのため署名再検証はしない（claims.rs 参照）。
             // 万一クレームを取り出せなければ fail-closed（古い principal で継続させない）。
             let claims = claims::decode_claims_insecure(&tokens.access_token)?;
+            // Keycloak sid が変わる可能性は低いが、新トークンの値へ追従させる（#91）。
+            if claims.sid.is_some() {
+                record.keycloak_sid = claims.sid.clone();
+            }
             record.principal = claims::principal_from_claims(claims);
             // 新トークンの tenant とセッションの tenant を再照合する（#91 L-2）。retenant（#89）等で
             // IdP の tenant 属性が変わった場合、旧 tenant のセッションを fail-closed で破棄し、

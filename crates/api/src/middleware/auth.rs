@@ -7,7 +7,7 @@
 
 use jsonwebtoken::{Algorithm, Validation};
 
-use super::claims::{self, AuthError, Claims};
+use super::claims::{self, AuthError, Claims, LogoutClaims, BACKCHANNEL_LOGOUT_EVENT};
 use crate::{error::ApiError, state::AppState};
 
 impl From<AuthError> for ApiError {
@@ -43,4 +43,52 @@ pub async fn verify_access_token(state: &AppState, token: &str) -> Result<Claims
     validation.set_required_spec_claims(&["exp", "aud", "iss"]);
 
     claims::verify_token(token, &key, &validation)
+}
+
+/// OIDC Back-Channel Logout の logout_token を検証してクレームを取り出す（#91）。
+///
+/// Keycloak がユーザーのセッション終了（ログアウト・**管理者による無効化/削除**）時に
+/// RP へ POST する logout_token を検証する。access token 検証との差分:
+/// - **aud は client_id**（RP 宛。`shiki-api` ではない）。
+/// - **exp を要求しない**（logout_token は exp を持たないことがある。iss は必須）。
+/// - **`events` に backchannel-logout イベントが必須**、`nonce` は**禁止**、`sub`/`sid` の
+///   少なくとも一方が必要（OIDC BCL §2.4）。
+///
+/// これにより access token を提示しての誤用（イベント宣言の無い通常トークンでの session 失効）を弾く。
+pub async fn verify_logout_token(state: &AppState, token: &str) -> Result<LogoutClaims, AuthError> {
+    let header =
+        jsonwebtoken::decode_header(token).map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+    let kid = header
+        .kid
+        .ok_or_else(|| AuthError::InvalidToken("kid がありません".into()))?;
+    let key = state.jwks.key_for_kid(&kid).await?;
+
+    let mut validation = Validation::new(Algorithm::RS256);
+    // aud = RP（client_id）。iss は realm。exp は logout_token では任意なので検証しない。
+    validation.set_audience(&[state.config.auth.client_id.as_str()]);
+    validation.set_issuer(&[state.config.auth.issuer.as_str()]);
+    validation.validate_exp = false;
+    validation.set_required_spec_claims(&["aud", "iss"]);
+
+    let claims: LogoutClaims = jsonwebtoken::decode(token, &key, &validation)
+        .map(|data| data.claims)
+        .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+
+    // logout イベント宣言が無いトークン（通常の access/id token 等）を弾く。
+    if !claims.events.contains_key(BACKCHANNEL_LOGOUT_EVENT) {
+        return Err(AuthError::InvalidToken(
+            "logout イベント宣言がありません".into(),
+        ));
+    }
+    // nonce を含む logout_token は不正（OIDC BCL §2.4）。
+    if claims.nonce.is_some() {
+        return Err(AuthError::InvalidToken(
+            "logout_token に nonce は許可されません".into(),
+        ));
+    }
+    // 失効対象が特定できないトークンは拒否。
+    if claims.sub.is_none() && claims.sid.is_none() {
+        return Err(AuthError::InvalidToken("sub/sid のどちらも無い".into()));
+    }
+    Ok(claims)
 }

@@ -77,6 +77,11 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/auth/session", &["GET"], Public, || {
             get(routes::auth::session)
         }),
+        // OIDC Back-Channel Logout の受け口（Keycloak → RP・#91）。ブラウザ由来ではないため
+        // Public だが、ハンドラ内で logout_token（署名/iss/aud/events/nonce）を検証する。
+        r("/auth/backchannel-logout", &["POST"], Public, || {
+            post(routes::auth::backchannel_logout)
+        }),
         r("/api-docs/openapi.json", &["GET"], Public, || {
             get(openapi_handler)
         }),
