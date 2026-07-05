@@ -9,6 +9,7 @@
 //!   `VectorStore` / `FulltextIndex` はトレイト裏（クラウド/オンプレ差はここで吸収）。
 //! - 公開トレイトの第一引数は `&AuthContext`。
 
+pub mod admin;
 pub mod authz_filter;
 pub mod chunker;
 pub mod config;
@@ -28,6 +29,7 @@ pub mod types;
 pub mod vector_qdrant;
 pub mod vector_store;
 
+pub use admin::RagAdmin;
 pub use config::RagConfig;
 pub use embedding::{EmbedInput, EmbeddingProvider, HttpEmbeddingProvider};
 pub use error::RagError;

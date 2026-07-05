@@ -138,19 +138,12 @@ impl TantivyFulltext {
     }
 
     /// テナント index のディレクトリ。tenant_id は解決時に `| : # @`・空白を fail-closed
-    /// 検証済み（SAAS.1）だが、パス区切りも防御的に置換する。
+    /// 検証済み（SAAS.1）だが、パス安全化は**可逆エンコーディング**で行い、別テナントが
+    /// 同一ディレクトリへ衝突しないことを保証する（`a.b` と `a_b` 等）。
+    /// 英数と `-` はそのまま、`_` は `__`、それ以外は `_XX`（バイトの 16 進）に写す
+    /// （単射なので逆像が一意＝衝突不能）。
     fn tenant_dir(&self, tenant_id: &str) -> PathBuf {
-        let safe: String = tenant_id
-            .chars()
-            .map(|c| {
-                if c == '/' || c == '\\' || c == '.' {
-                    '_'
-                } else {
-                    c
-                }
-            })
-            .collect();
-        self.base_dir.join(safe)
+        self.base_dir.join(encode_tenant_dir(tenant_id))
     }
 }
 
@@ -305,5 +298,42 @@ impl TantivyFulltext {
         Path::new(&self.tenant_dir(tenant_id))
             .join("meta.json")
             .exists()
+    }
+}
+
+/// tenant_id → ディレクトリ名の単射エンコーディング。
+fn encode_tenant_dir(tenant_id: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(tenant_id.len());
+    for b in tenant_id.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' => out.push(b as char),
+            b'_' => out.push_str("__"),
+            other => {
+                let _ = write!(out, "_{other:02x}");
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tenant_dir_encoding_is_injective() {
+        // `a.b` / `a_b` / `a_2eb` のような紛らわしい組が衝突しないこと。
+        let cases = ["a.b", "a_b", "a-b", "a_2eb", "a__b", "A.B", "テナント"];
+        let encoded: Vec<String> = cases.iter().map(|t| encode_tenant_dir(t)).collect();
+        let unique: std::collections::HashSet<&String> = encoded.iter().collect();
+        assert_eq!(unique.len(), cases.len(), "エンコード衝突: {encoded:?}");
+        // パス区切り・親参照が残らないこと。
+        for e in &encoded {
+            assert!(!e.contains('/') && !e.contains('\\') && !e.contains(".."));
+        }
+        assert_eq!(encode_tenant_dir("a.b"), "a_2eb");
+        assert_eq!(encode_tenant_dir("a_b"), "a__b");
     }
 }

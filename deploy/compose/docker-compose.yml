@@ -137,10 +137,15 @@ services:
     environment:
       # モデル（Ruri 埋め込み・reranker）は volume にキャッシュし、イメージには焼かない。
       HF_HOME: /models
+      # server 側 SHIKI__RAG__EMBEDDING_MODEL_VERSION と必ず一致させる（不一致は
+      # インジェスト時の版突合ガードで拒否される）。
+      EMBED_MODEL: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}
     volumes:
       - hf-cache:/models
     ports:
-      - "8090:8000"
+      # /parse は任意 URL を fetch する内部サービスのため、ホスト公開はローカルに限定する
+      # （共有ホストでの SSRF/計算資源の踏み台化を防ぐ。コンテナ間は compose 網内で到達可能）。
+      - "127.0.0.1:8090:8000"
     deploy:
       resources:
         limits:

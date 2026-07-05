@@ -250,6 +250,13 @@ pub async fn delete_tenant(
         .purge_tenant(&tenant_id, &org, &actor.0)
         .await?;
 
+    // 4.5. RAG 状態の purge（rag_chunk / rag_ingest_job / jobq / Qdrant / Tantivy）。
+    state
+        .rag_admin
+        .purge_tenant(&tenant_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("rag purge: {e}")))?;
+
     // 5. tombstone 化。
     state.tenants.mark_deleted(&tenant_id).await?;
     tracing::info!(%tenant_id, kc_users = users.len(), "tenant purge: 完了");

@@ -7,6 +7,7 @@ use futures::StreamExt;
 use jobq::{ClaimedJob, FailOutcome};
 
 use super::indexer::{self, IndexOutcome};
+use super::job_state;
 use super::{IngestMessage, PipelineDeps, RAG_INGEST_QUEUE};
 use crate::error::RagError;
 
@@ -64,7 +65,7 @@ async fn kill_permanent(
     }
     tracing::error!(job_id = job.id, trace_id = ?job.trace_id, error = %error,
         "恒久エラー。DLQ へ移送");
-    indexer::mark_job_dead(&deps.pool, job, &error.to_string()).await;
+    job_state::mark_job_dead(&deps.pool, job, &error.to_string()).await;
 }
 
 /// 一時エラーのバックオフ再配信（試行上限で DLQ）。
@@ -79,7 +80,7 @@ async fn retry_or_dead(
         Ok(FailOutcome::Dead) => {
             tracing::error!(job_id = job.id, trace_id = ?job.trace_id, error = %error,
                 "試行上限に達し DLQ へ移送");
-            indexer::mark_job_dead(&deps.pool, job, &error.to_string()).await;
+            job_state::mark_job_dead(&deps.pool, job, &error.to_string()).await;
         }
         Ok(FailOutcome::Retry { .. }) => {
             tracing::warn!(job_id = job.id, trace_id = ?job.trace_id, error = %error,

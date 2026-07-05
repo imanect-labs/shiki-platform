@@ -90,6 +90,27 @@ impl IndexerStorage {
         Ok(ids)
     }
 
+    /// フォルダ配下の**子孫ファイル** (id, 現行 version) 一覧（自身は含まない・深さ不問）。
+    ///
+    /// フォルダの move/delete/restore イベントを子孫ファイルへ展開する材料
+    /// （storage はフォルダ 1 件のイベントしか発行しないため）。
+    pub async fn descendant_files(
+        &self,
+        tenant_id: &str,
+        folder_id: Uuid,
+    ) -> Result<Vec<(Uuid, i64)>, StorageError> {
+        let files: Vec<(Uuid, i64)> = sqlx::query_as(
+            "select c.descendant, n.version from node_closure c \
+             join node n on n.id = c.descendant \
+             where c.ancestor = $1 and c.depth > 0 and n.tenant_id = $2 and n.kind = 'file'",
+        )
+        .bind(folder_id)
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(files)
+    }
+
     /// worker が blob を読むための**内部向け**短 TTL presigned GET URL を発行する。
     pub async fn presign_internal_get(
         &self,

@@ -358,6 +358,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
     ));
     let directory = Arc::new(storage::DirectoryStore::new(db.clone()));
     let tenants = Arc::new(storage::TenantStore::new(db.clone()));
+    let rag_admin = std::sync::Arc::new(rag::RagAdmin::new(db.clone(), None, None));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -369,6 +370,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         directory,
         tenants,
         search: None,
+        rag_admin,
     }
 }
 

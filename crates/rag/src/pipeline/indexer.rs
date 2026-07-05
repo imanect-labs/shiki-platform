@@ -15,10 +15,9 @@
 use std::sync::Arc;
 
 use authz::{AuthContext, Principal};
-use jobq::ClaimedJob;
-use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::job_state::{begin_job, finish_job};
 use super::{IngestMessage, PipelineDeps};
 use crate::chunker::{chunk_document, ChunkParams};
 use crate::embedding::EmbedInput;
@@ -44,9 +43,15 @@ const SUPPORTED_TYPES: &[&str] = &[
 /// ジョブの結果（ログ・rag_ingest_job の status に対応）。
 #[derive(Debug)]
 pub enum IndexOutcome {
-    Indexed { chunks: usize },
+    Indexed {
+        chunks: usize,
+    },
     Retagged,
     Deleted,
+    /// フォルダイベントを子孫ファイルの個別ジョブへ展開した。
+    FannedOut {
+        files: usize,
+    },
     Skipped(&'static str),
 }
 
@@ -56,6 +61,7 @@ impl std::fmt::Display for IndexOutcome {
             IndexOutcome::Indexed { chunks } => write!(f, "indexed({chunks} chunks)"),
             IndexOutcome::Retagged => write!(f, "retagged"),
             IndexOutcome::Deleted => write!(f, "deleted"),
+            IndexOutcome::FannedOut { files } => write!(f, "fanned-out({files} files)"),
             IndexOutcome::Skipped(reason) => write!(f, "skipped({reason})"),
         }
     }
@@ -87,11 +93,19 @@ pub async fn handle(
     }
 
     let ctx = event_context(message);
-    let result = match message.op.as_str() {
-        "create" | "update" | "restore" => index_node(deps, &ctx, message).await,
-        "move" => retag_node(deps, &ctx, message).await,
-        "rename" => Ok(IndexOutcome::Skipped("rename-noop")),
-        "delete" => remove_node(deps, &ctx, message).await,
+    // storage はフォルダ操作でもフォルダ 1 件のイベントしか発行しないため、
+    // フォルダの move/delete/restore は子孫ファイルの個別ジョブへ展開する。
+    let is_folder = deps
+        .indexer_storage
+        .node_snapshot(&ctx.tenant_id, message.node_id)
+        .await?
+        .is_some_and(|s| s.kind == "folder");
+    let result = match (message.op.as_str(), is_folder) {
+        ("move" | "delete" | "restore", true) => fan_out_folder(deps, &ctx, message).await,
+        ("create" | "update" | "restore", _) => index_node(deps, &ctx, message).await,
+        ("move", _) => retag_node(deps, &ctx, message).await,
+        ("rename", _) => Ok(IndexOutcome::Skipped("rename-noop")),
+        ("delete", _) => remove_node(deps, &ctx, message).await,
         _ => Ok(IndexOutcome::Skipped("unknown-op")),
     };
 
@@ -218,11 +232,17 @@ async fn index_node(
             authz_tags: authz_tags.clone(),
         })
         .collect();
-    deps.vector.ensure_ready(embedded.dimension).await?;
-    deps.vector.upsert(ctx, &points).await?;
-    deps.vector
-        .delete_stale_versions(ctx, message.node_id, message.version)
-        .await?;
+    if points.is_empty() {
+        // 見出しのみ等で埋め込み対象ゼロ: dimension=0 の collection 初期化を避け、
+        // 旧版の残骸だけ掃除する（未インジェストなら 404 no-op）。
+        deps.vector.delete_node(ctx, message.node_id).await?;
+    } else {
+        deps.vector.ensure_ready(embedded.dimension).await?;
+        deps.vector.upsert(ctx, &points).await?;
+        deps.vector
+            .delete_stale_versions(ctx, message.node_id, message.version)
+            .await?;
+    }
 
     replace_fulltext(
         deps,
@@ -239,6 +259,50 @@ async fn index_node(
     Ok(IndexOutcome::Indexed {
         chunks: chunks.len(),
     })
+}
+
+/// フォルダの move/delete/restore を子孫ファイルの個別ジョブへ展開する。
+///
+/// 1 フォルダ＝1 ジョブで巨大サブツリーを処理せず、ファイル単位のジョブに分割して
+/// jobq の vt/リトライ/冪等（(tenant, node, version, op)）へ乗せる。展開先の version は
+/// 各ファイルの現行版（フォルダ操作で子の version は変わらないため、同一フォルダの
+/// 再操作は展開先ジョブの冪等キーで自然に重複排除される）。
+async fn fan_out_folder(
+    deps: &Arc<PipelineDeps>,
+    ctx: &AuthContext,
+    message: &IngestMessage,
+) -> Result<IndexOutcome, RagError> {
+    let files = deps
+        .indexer_storage
+        .descendant_files(&ctx.tenant_id, message.node_id)
+        .await?;
+    if files.is_empty() {
+        return Ok(IndexOutcome::Skipped("empty-folder"));
+    }
+    let mut tx = deps.pool.begin().await?;
+    for (file_id, version) in &files {
+        let child = IngestMessage {
+            tenant_id: message.tenant_id.clone(),
+            org: message.org.clone(),
+            node_id: *file_id,
+            version: *version,
+            op: message.op.clone(),
+            actor: message.actor.clone(),
+        };
+        jobq::enqueue_on(
+            &mut tx,
+            jobq::NewJob {
+                queue: super::RAG_INGEST_QUEUE,
+                tenant_id: &message.tenant_id,
+                payload: &serde_json::to_value(&child)?,
+                trace_id: None,
+                max_attempts: deps.config.job_max_attempts,
+            },
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(IndexOutcome::FannedOut { files: files.len() })
 }
 
 /// move: authz_tags の再評価のみ（Task 2.9）。
@@ -281,6 +345,17 @@ async fn remove_node(
     ctx: &AuthContext,
     message: &IngestMessage,
 ) -> Result<IndexOutcome, RagError> {
+    // 復元後に遅延到着した古い delete イベントを無視する（生きている索引を消さない）。
+    // 削除→復元で node.version は必ず進むため、「現行版が新しく・生存中」なら stale。
+    if let Some(snapshot) = deps
+        .indexer_storage
+        .node_snapshot(&ctx.tenant_id, message.node_id)
+        .await?
+    {
+        if !snapshot.deleted && snapshot.version > message.version {
+            return Ok(IndexOutcome::Skipped("superseded"));
+        }
+    }
     deps.vector.delete_node(ctx, message.node_id).await?;
     let deps2 = Arc::clone(deps);
     let ctx2 = ctx.clone();
@@ -335,75 +410,4 @@ async fn replace_fulltext(
     })
     .await
     .map_err(|e| RagError::Fulltext(format!("spawn_blocking: {e}")))?
-}
-
-/// 冪等判定つきジョブ開始。既に成功/スキップ済みなら `true`（再処理不要）。
-async fn begin_job(
-    pool: &PgPool,
-    message: &IngestMessage,
-    trace_id: Option<&str>,
-) -> Result<bool, RagError> {
-    let status: String = sqlx::query_scalar(
-        "insert into rag_ingest_job \
-             (tenant_id, org, node_id, version, op, status, attempts, trace_id) \
-         values ($1, $2, $3, $4, $5, 'running', 1, $6) \
-         on conflict (tenant_id, node_id, version, op) do update set \
-             attempts = rag_ingest_job.attempts + 1, \
-             updated_at = now(), \
-             status = case when rag_ingest_job.status in ('succeeded', 'skipped') \
-                           then rag_ingest_job.status else 'running' end \
-         returning status",
-    )
-    .bind(&message.tenant_id)
-    .bind(&message.org)
-    .bind(message.node_id)
-    .bind(message.version)
-    .bind(&message.op)
-    .bind(trace_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(status == "succeeded" || status == "skipped")
-}
-
-/// ジョブ結果の記録。
-async fn finish_job(
-    pool: &PgPool,
-    message: &IngestMessage,
-    status: &str,
-    last_error: Option<&str>,
-) -> Result<(), RagError> {
-    sqlx::query(
-        "update rag_ingest_job set status = $5, last_error = $6, updated_at = now() \
-         where tenant_id = $1 and node_id = $2 and version = $3 and op = $4",
-    )
-    .bind(&message.tenant_id)
-    .bind(message.node_id)
-    .bind(message.version)
-    .bind(&message.op)
-    .bind(status)
-    .bind(last_error)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// DLQ へ移送されたジョブのドメイン状態を dead にする（運用可視化）。
-pub async fn mark_job_dead(pool: &PgPool, job: &ClaimedJob, error: &str) {
-    let Ok(message) = serde_json::from_value::<IngestMessage>(job.payload.clone()) else {
-        return;
-    };
-    if let Err(e) = sqlx::query(
-        "update rag_ingest_job set status = 'dead', last_error = $5, updated_at = now() \
-         where tenant_id = $1 and node_id = $2 and version = $3 and op = $4",
-    )
-    .bind(&message.tenant_id)
-    .bind(message.node_id)
-    .bind(message.version)
-    .bind(&message.op)
-    .bind(error)
-    .execute(pool)
-    .await
-    {
-        tracing::error!(job_id = job.id, error = %e, "dead 記録に失敗");
-    }
 }

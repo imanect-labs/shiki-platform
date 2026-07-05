@@ -77,6 +77,18 @@ impl DocumentParser for FakeParser {
                 return Err(RagError::Worker("一時的に落ちています".into()));
             }
         }
+        // 見出しのみ（埋め込み対象ゼロ）の文書を名前で再現できるようにする。
+        if req.file_name.starts_with("headings-only") {
+            return Ok(ParsedDocument {
+                blocks: vec![ParsedBlock {
+                    block_type: BlockType::Heading,
+                    level: Some(1),
+                    text: "見出しだけの文書".into(),
+                    page: Some(1),
+                }],
+                used_ocr: false,
+            });
+        }
         Ok(ParsedDocument {
             blocks: vec![
                 ParsedBlock {
@@ -841,4 +853,132 @@ async fn rename_is_noop_for_indexes() {
         "rename は索引 no-op（名前は検索時 JOIN）"
     );
     assert_eq!(fulltext_hits(&env, "売上", &PreFilter::TenantOnly).len(), 1);
+}
+
+#[tokio::test]
+async fn folder_move_fans_out_to_descendant_files() {
+    let Some(env) = setup(FakeParser::ok()).await else {
+        return;
+    };
+    let folder_a = create_folder(&env, "移動元").await;
+    let folder_b = create_folder(&env, "移動先").await;
+    let node = create_file_with_event(&env, Some(folder_a), "nested.txt").await;
+    drain_pipeline(&env).await;
+
+    let tag_b = env
+        .ctx
+        .ns()
+        .folder(&folder_b.to_string())
+        .as_str()
+        .to_string();
+    assert!(
+        fulltext_hits(&env, "売上", &PreFilter::Tags(vec![tag_b.clone()])).is_empty(),
+        "移動前は移動先フォルダの viewer からは見えない"
+    );
+
+    // フォルダ A を B 配下へ移動（closure 差し替え）し、**フォルダの** move イベントを発行。
+    let mut tx = env.pool.begin().await.unwrap();
+    sqlx::query(
+        "insert into node_closure (org, tenant_id, ancestor, descendant, depth) \
+         values ($1, $2, $3, $4, 1), ($1, $2, $3, $5, 2)",
+    )
+    .bind(&env.ctx.org)
+    .bind(&env.ctx.tenant_id)
+    .bind(folder_b)
+    .bind(folder_a)
+    .bind(node)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("update node set parent_id = $2, version = version + 1 where id = $1")
+        .bind(folder_a)
+        .bind(folder_b)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    emit_on(
+        &mut tx,
+        &env.ctx,
+        WriteEvent {
+            node_id: folder_a,
+            version: 2,
+            op: WriteOp::Move,
+            payload: serde_json::json!({}),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    drain_pipeline(&env).await;
+
+    // フォルダイベントが子孫ファイルへ展開され、authz_tags に移動先の祖先が乗る。
+    assert_eq!(
+        fulltext_hits(&env, "売上", &PreFilter::Tags(vec![tag_b])).len(),
+        1,
+        "フォルダ move の子孫展開でタグ再評価される"
+    );
+    let (status, _) = job_status(&env, node, "move").await.unwrap();
+    assert_eq!(status, "succeeded");
+}
+
+#[tokio::test]
+async fn stale_delete_event_does_not_wipe_restored_node() {
+    let Some(env) = setup(FakeParser::ok()).await else {
+        return;
+    };
+    let node = create_file_with_event(&env, None, "resilient.txt").await;
+    drain_pipeline(&env).await;
+    assert_eq!(fulltext_hits(&env, "売上", &PreFilter::TenantOnly).len(), 1);
+
+    // 「削除 → 復元」後に古い delete イベントが遅延到着したケースを再現する:
+    // 現行版を進めて生存させたまま、旧版の delete を投げる。
+    sqlx::query("update node set version = 3 where id = $1")
+        .bind(node)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let mut tx = env.pool.begin().await.unwrap();
+    emit_on(
+        &mut tx,
+        &env.ctx,
+        WriteEvent {
+            node_id: node,
+            version: 1,
+            op: WriteOp::Delete,
+            payload: serde_json::json!({}),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    drain_pipeline(&env).await;
+
+    assert_eq!(
+        fulltext_hits(&env, "売上", &PreFilter::TenantOnly).len(),
+        1,
+        "生きている索引が古い delete で消えない"
+    );
+    let (status, _) = job_status(&env, node, "delete").await.unwrap();
+    assert_eq!(status, "skipped");
+}
+
+#[tokio::test]
+async fn headings_only_document_succeeds_without_vectors() {
+    let Some(env) = setup(FakeParser::ok()).await else {
+        return;
+    };
+    let node = create_file_with_event(&env, None, "headings-only.txt").await;
+    drain_pipeline(&env).await;
+
+    // 埋め込み対象ゼロでも失敗せず succeeded（dimension=0 の collection 初期化を避ける）。
+    let (status, err) = job_status(&env, node, "create").await.unwrap();
+    assert_eq!(status, "succeeded", "err={err:?}");
+    let queued: i64 = sqlx::query_scalar("select count(*) from job_queue where queue = $1")
+        .bind(RAG_INGEST_QUEUE)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+    assert_eq!(queued, 0, "リトライ/DLQ に落ちない");
 }

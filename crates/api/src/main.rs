@@ -109,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // RAG（Phase 2）: enabled のときのみインジェスト・パイプラインと検索を配線する。
-    let search = wire_rag(&config, &http, &db, &object_store, &authz)?;
+    let (search, rag_admin) = wire_rag(&config, &http, &db, &object_store, &authz)?;
 
     let bind = format!("{}:{}", config.server.host, config.server.port);
     let state = AppState {
@@ -125,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
         directory,
         tenants,
         search,
+        rag_admin,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -317,6 +318,9 @@ fn dev_seed_enabled() -> bool {
     )
 }
 
+/// RAG 配線の結果（検索サービスはオプション・テナント消去は常設）。
+type RagWiring = (Option<Arc<rag::SearchService>>, Arc<rag::RagAdmin>);
+
 /// RAG（Phase 2）の依存配線。`rag.enabled=false` なら何も起動せず `None` を返す。
 ///
 /// 依存は全てトレイト裏（DocumentParser/EmbeddingProvider/Reranker/VectorStore/
@@ -327,10 +331,11 @@ fn wire_rag(
     db: &sqlx::PgPool,
     object_store: &Arc<dyn ObjectStore>,
     authz: &Arc<dyn AuthzClient>,
-) -> anyhow::Result<Option<Arc<rag::SearchService>>> {
+) -> anyhow::Result<RagWiring> {
     if !config.rag.enabled {
         tracing::info!("rag.enabled=false: インジェスト・検索は無効（/search は 503）");
-        return Ok(None);
+        // テナント消去の DB 行掃除は RAG 無効でも行う（過去に有効だった残骸対策）。
+        return Ok((None, Arc::new(rag::RagAdmin::new(db.clone(), None, None))));
     }
     if config.vector.backend != VectorStoreBackend::Qdrant {
         anyhow::bail!("vector.backend=pgvector は未実装です（Phase 2 は qdrant のみ）");
@@ -371,16 +376,24 @@ fn wire_rag(
         worker = %rag_cfg.worker_base_url, qdrant = %rag_cfg.qdrant_url,
         "RAG パイプラインと検索を有効化しました"
     );
-    Ok(Some(Arc::new(rag::SearchService::new(
+    let rag_admin = Arc::new(rag::RagAdmin::new(
         db.clone(),
-        rag_cfg,
-        embedder,
-        reranker,
-        vector,
-        fulltext,
-        Arc::clone(authz),
-        storage::audit::AuditRecorder::new(db.clone()),
-    ))))
+        Some(Arc::clone(&vector)),
+        Some(Arc::clone(&fulltext)),
+    ));
+    Ok((
+        Some(Arc::new(rag::SearchService::new(
+            db.clone(),
+            rag_cfg,
+            embedder,
+            reranker,
+            vector,
+            fulltext,
+            Arc::clone(authz),
+            storage::audit::AuditRecorder::new(db.clone()),
+        ))),
+        rag_admin,
+    ))
 }
 
 // シグナルハンドラの登録失敗はプロセス起動直後の致命的な環境不整合であり、

@@ -12,6 +12,7 @@
 
 pub mod consumer;
 pub mod indexer;
+pub mod job_state;
 pub mod relay;
 
 use std::sync::Arc;

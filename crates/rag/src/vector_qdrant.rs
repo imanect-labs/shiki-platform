@@ -201,6 +201,10 @@ impl VectorStore for QdrantVectorStore {
             ]}}))
             .send()
             .await?;
+        // 未インジェスト（collection/alias 不在）の削除は no-op（消すものが無い）。
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
         Self::ensure_ok(resp).await?;
         Ok(())
     }
@@ -225,6 +229,9 @@ impl VectorStore for QdrantVectorStore {
             }}))
             .send()
             .await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
         Self::ensure_ok(resp).await?;
         Ok(())
     }
@@ -249,6 +256,9 @@ impl VectorStore for QdrantVectorStore {
             }))
             .send()
             .await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
         Self::ensure_ok(resp).await?;
         Ok(())
     }
