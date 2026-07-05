@@ -25,10 +25,17 @@ futures.workspace = true
 # チャンク ID は uuid5(node_id, version, ordinal) の決定的生成（冪等 upsert の鍵）。
 uuid = { workspace = true, features = ["v5"] }
 
+# 全文検索（Task 2.5）: BM25 + 日本語形態素。lindera-tantivy 4.x は tantivy 0.25 系と対。
+tantivy = "0.25"
+lindera = { version = "4.0", features = ["embed-ipadic"] }
+lindera-tantivy = { version = "4.0", features = ["embed-ipadic"] }
+
 [dev-dependencies]
 # HTTP クライアント実装（parser/embedding/rerank）のローカルスタブサーバ用。
 axum.workspace = true
 tokio.workspace = true
+# Tantivy index-per-tenant のテスト用一時ディレクトリ。
+tempfile = "3"
 
 # shiki-authz は lib 名 `authz` で参照するため cargo-machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
