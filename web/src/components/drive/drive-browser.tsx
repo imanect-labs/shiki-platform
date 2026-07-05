@@ -152,6 +152,10 @@ export function DriveBrowser() {
   );
   const list = useInfiniteList<NodeResponse>(fetchPage, [folderId, sort, desc, searching, query]);
   const sentinelRef = useInfiniteSentinel(list.loadMore, list.hasMore && !list.loading);
+  // 表示する内容一致行（名前一致にも出るファイルは名前行に譲る）。件数表示と共有する。
+  const contentRows = searching
+    ? content.hits.filter((h) => !list.items.some((n) => n.id === h.fileId))
+    : [];
 
   // パンくず（現在フォルダが変わるたび取得）。ルートは空。
   React.useEffect(() => {
@@ -466,7 +470,20 @@ export function DriveBrowser() {
               <Breadcrumbs crumbs={crumbs} onNavigate={navigateTo} />
             ) : null}
           </div>
-          {!list.loading && list.items.length > 0 ? (
+          {searching ? (
+            !list.loading && !content.loading && contentRows.length + list.items.length > 0 ? (
+              <span className="shrink-0 text-[13px] tabular-nums text-muted-foreground">
+                {[
+                  contentRows.length > 0 ? `内容一致 ${contentRows.length} 件` : null,
+                  list.items.length > 0
+                    ? `名前一致 ${list.items.length}${list.hasMore ? "+" : ""} 件`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join("・")}
+              </span>
+            ) : null
+          ) : !list.loading && list.items.length > 0 ? (
             <span className="shrink-0 text-[13px] tabular-nums text-muted-foreground">
               {list.items.length}
               {list.hasMore ? "+" : ""} 件
@@ -518,10 +535,7 @@ export function DriveBrowser() {
         {view === "list" ? <ListHeader sort={sort} desc={desc} onSort={onSort} /> : null}
 
         {searching ? (
-          <ContentHitRows
-            hits={content.hits.filter((h) => !list.items.some((n) => n.id === h.fileId))}
-            onOpen={(h) => navigateTo(h.folderId)}
-          />
+          <ContentHitRows hits={contentRows} onOpen={(h) => navigateTo(h.folderId)} />
         ) : null}
 
         {list.loading ? (
