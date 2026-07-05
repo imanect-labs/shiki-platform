@@ -125,7 +125,12 @@ export function SearchView() {
                 （閲覧可能な文書のみ）
               </p>
               {response.results.map((result) => (
-                <ResultCard key={result.chunk_id} result={result} query={executedQuery} />
+                <ResultCard
+                  key={result.chunk_id}
+                  result={result}
+                  query={executedQuery}
+                  showScore={debug}
+                />
               ))}
             </div>
           )}

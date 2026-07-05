@@ -34,7 +34,16 @@ function highlight(text: string, query: string): React.ReactNode {
 }
 
 /// 検索結果 1 件（引用チャンク）。
-export function ResultCard({ result, query }: { result: SearchResult; query: string }) {
+export function ResultCard({
+  result,
+  query,
+  showScore = false,
+}: {
+  result: SearchResult;
+  query: string;
+  /// 関連度スコアの可視化（デバッグ用）。プロダクション表示では出さない。
+  showScore?: boolean;
+}) {
   const [showParent, setShowParent] = useState(false);
   const highlighted = useMemo(() => highlight(result.content, query), [result.content, query]);
 
@@ -82,22 +91,26 @@ export function ResultCard({ result, query }: { result: SearchResult; query: str
         {highlighted}
       </p>
 
-      {/* フッタ: スコアバー ＋ 親文脈の展開 */}
+      {/* フッタ: スコアバー（デバッグ時のみ）＋ 親文脈の展開 */}
       <div className="mt-3 flex items-center justify-between gap-3">
-        <div
-          className="flex items-center gap-2"
-          title={`関連度スコア: ${result.score.toFixed(3)}`}
-        >
-          <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
-            <div
-              className="h-full rounded-full bg-primary"
-              style={{ width: `${Math.round(Math.min(1, Math.max(0, result.score)) * 100)}%` }}
-            />
+        {showScore ? (
+          <div
+            className="flex items-center gap-2"
+            title={`関連度スコア: ${result.score.toFixed(3)}`}
+          >
+            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-primary"
+                style={{ width: `${Math.round(Math.min(1, Math.max(0, result.score)) * 100)}%` }}
+              />
+            </div>
+            <span className="text-[11px] tabular-nums text-muted-foreground">
+              {result.score.toFixed(2)}
+            </span>
           </div>
-          <span className="text-[11px] tabular-nums text-muted-foreground">
-            {result.score.toFixed(2)}
-          </span>
-        </div>
+        ) : (
+          <span />
+        )}
         {result.parent_content ? (
           <button
             type="button"

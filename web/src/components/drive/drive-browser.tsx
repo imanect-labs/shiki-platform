@@ -638,8 +638,9 @@ export function DriveBrowser() {
   );
 }
 
-/// 内容一致（RAG）のヒット行。名前一致（NodeRow）の上にスコア順で並べ、
-/// スニペットで「なぜヒットしたか」を見せる。選択でファイルのあるフォルダへ移動。
+/// 内容一致（RAG）のヒット行。名前一致（NodeRow）の上に関連度順で並べ、
+/// スニペットで「なぜヒットしたか」を見せる。スコアは並び順にのみ使い表示しない
+/// （エンドユーザーに内部指標を見せない）。選択でファイルのあるフォルダへ移動。
 function ContentHitRows({
   hits,
   onOpen,
@@ -661,12 +662,6 @@ function ContentHitRows({
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium text-foreground">{h.fileName}</span>
             <span className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{h.snippet}</span>
-          </span>
-          <span
-            className="mt-1 shrink-0 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[11px] tabular-nums text-muted-foreground"
-            title={`関連度スコア: ${h.score.toFixed(3)}`}
-          >
-            {h.score.toFixed(2)}
           </span>
         </button>
       ))}
