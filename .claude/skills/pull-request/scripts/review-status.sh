@@ -22,7 +22,7 @@ gh auth status >/dev/null 2>&1 || { err "gh が未認証です。'gh auth login'
 
 PR="${1:-}"
 # PR 番号と owner/repo を解決する。
-if ! meta=$(gh pr view ${PR:+"$PR"} --json number,headRepositoryOwner,headRepository,baseRepository 2>/dev/null); then
+if ! meta=$(gh pr view ${PR:+"$PR"} --json number 2>/dev/null); then
   err "PR が見つかりません（番号指定か、PR のあるブランチで実行してください）。"
   exit 2
 fi

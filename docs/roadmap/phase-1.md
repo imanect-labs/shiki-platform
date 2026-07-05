@@ -143,7 +143,7 @@
 - **path**: `crates/storage`
 - **仕様**:
   - create/update/delete/move 時に**ドメインイベント**（node_id, version, op, org, actor）を発行。
-  - **初版キュー = Postgres ベース（pgmq 等）**。購読側（Phase 2 ingestion）が増分再索引に使う。
+  - **初版キュー = Postgres ベース（outbox＋自作 jobq・拡張依存ゼロ）**。購読側（Phase 2 ingestion）が増分再索引に使う。
     outbox パターンでトランザクション整合を担保。
 - **受け入れ条件**:
   - [ ] 書込と同一トランザクションでイベントが outbox に入る

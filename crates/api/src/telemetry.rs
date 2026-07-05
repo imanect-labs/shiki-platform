@@ -56,7 +56,13 @@ pub fn init(cfg: &TelemetryConfig) -> anyhow::Result<TelemetryGuard> {
         meter_provider: None,
     };
 
-    let otel_layer = if let Some(endpoint) = cfg.otlp_endpoint.as_deref() {
+    // 空文字列は「無効」扱い（compose の `${OTLP_ENDPOINT:-}` のような env 経由の
+    // 未設定表現を許す。監視スタックは observability profile でオプトイン起動）。
+    let otlp_endpoint = cfg
+        .otlp_endpoint
+        .as_deref()
+        .filter(|e| !e.trim().is_empty());
+    let otel_layer = if let Some(endpoint) = otlp_endpoint {
         let resource = Resource::builder()
             .with_service_name(cfg.service_name.clone())
             .build();

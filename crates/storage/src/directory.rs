@@ -239,7 +239,7 @@ impl DirectoryStore {
 
 /// ILIKE のワイルドカード（`%` `_`）とエスケープ文字（`\`）を無害化する。
 /// `ESCAPE '\'` と併用し、ユーザー入力がパターンメタ文字として効かないようにする。
-fn escape_like(input: &str) -> String {
+pub(crate) fn escape_like(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
         if matches!(ch, '\\' | '%' | '_') {

@@ -33,7 +33,7 @@
   - `DocumentGenerator` トレイト: `generate(spec) -> DocumentArtifact`。フォーマット（docx/pptx/xlsx）ごとに実装を差せる。
   - **スペック**は構造化（中間表現: ドキュメント種別＋セクション/スライド/シート＋データ）。
     生成系の選択（Rustネイティブ vs Python worker）はトレイト解決で隠蔽。
-  - 生成は**ジョブ**として実行（同期生成＋大物は pgmq 投入）。生成結果は **StorageService に保存**（Task 7.6）するのが終端。
+  - 生成は**ジョブ**として実行（同期生成＋大物は jobq 投入）。生成結果は **StorageService に保存**（Task 7.6）するのが終端。
 - **受け入れ条件**:
   - [ ] 同一スペックから種別に応じた生成実装にディスパッチできる
   - [ ] 生成成功でストレージnodeへの参照を含む `DocumentArtifact` が返る

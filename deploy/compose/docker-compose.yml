@@ -1,6 +1,10 @@
-# shiki-platform Phase 0 — docker compose 一発起動。
-# 依存（Postgres/Keycloak/OpenFGA/MinIO）＋監視（OTel collector/Tempo/Loki/Prometheus/Grafana）
-# ＋ shiki-server。`cp .env.example .env && docker compose up --build`。
+# shiki-platform — docker compose 一発起動。
+# 依存（Postgres/Keycloak/OpenFGA/MinIO/Qdrant/ingestion-worker）＋ shiki-server。
+# `cp .env.example .env && docker compose up --build`。
+#
+# 監視スタック（OTel collector/Tempo/Loki/Prometheus/Grafana）は `observability` profile に
+# 隔離してある（開発機の RAM 節約）。使う時:
+#   OTLP_ENDPOINT=http://otel-collector:4317 docker compose --profile observability up -d
 
 name: shiki
 
@@ -114,9 +118,55 @@ services:
       timeout: 5s
       retries: 20
 
-  # --- 監視スタック ---
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    volumes:
+      - qdrant-data:/qdrant/storage
+    ports:
+      - "6333:6333" # REST
+    healthcheck:
+      # イメージに curl が無いため TCP で確認する。
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  ingestion-worker:
+    build:
+      context: ../../ingestion-worker
+    environment:
+      # モデル（Ruri 埋め込み・reranker）は volume にキャッシュし、イメージには焼かない。
+      HF_HOME: /models
+      # server 側 SHIKI__RAG__EMBEDDING_MODEL_VERSION と必ず一致させる（不一致は
+      # インジェスト時の版突合ガードで拒否される）。
+      EMBED_MODEL: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}
+    volumes:
+      - hf-cache:/models
+    ports:
+      # /parse は任意 URL を fetch する内部サービスのため、ホスト公開はローカルに限定する
+      # （共有ホストでの SSRF/計算資源の踏み台化を防ぐ。コンテナ間は compose 網内で到達可能）。
+      - "127.0.0.1:8090:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # --- 監視スタック（observability profile・オプトイン起動） ---
   tempo:
     image: grafana/tempo:2.6.1
+    profiles: ["observability"]
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ../otel/tempo.yaml:/etc/tempo.yaml:ro
@@ -126,12 +176,14 @@ services:
 
   loki:
     image: grafana/loki:3.2.1
+    profiles: ["observability"]
     command: ["-config.file=/etc/loki/local-config.yaml"]
     ports:
       - "3100:3100"
 
   prometheus:
     image: prom/prometheus:v3.0.1
+    profiles: ["observability"]
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
     volumes:
       - ../otel/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -140,6 +192,7 @@ services:
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.115.1
+    profiles: ["observability"]
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ../otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
@@ -153,6 +206,7 @@ services:
 
   grafana:
     image: grafana/grafana:11.4.0
+    profiles: ["observability"]
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
@@ -198,7 +252,8 @@ services:
       SHIKI__SESSION__SECURE: "false"
       SHIKI__AUTHZ__BASE_URL: http://openfga:8080
       SHIKI__AUTHZ__STORE_NAME: shiki
-      SHIKI__TELEMETRY__OTLP_ENDPOINT: http://otel-collector:4317
+      # 監視は observability profile のオプトイン。空 = OTel エクスポート無効。
+      SHIKI__TELEMETRY__OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
       SHIKI__TELEMETRY__SERVICE_NAME: shiki-server
       SHIKI__TELEMETRY__LOG_FORMAT: json
       SHIKI__STORAGE__BACKEND: minio
@@ -212,6 +267,12 @@ services:
       # config/TOML で storage.s3.cors_allowed_origins を配列指定する（env スカラは Vec に展開できない）。
       SHIKI__VECTOR__BACKEND: qdrant
       SHIKI__LLM__BACKEND: vllm
+      # RAG（Phase 2）: インジェスト・パイプラインと検索。
+      SHIKI__RAG__ENABLED: ${SHIKI__RAG__ENABLED:-true}
+      SHIKI__RAG__WORKER_BASE_URL: http://ingestion-worker:8000
+      SHIKI__RAG__QDRANT_URL: http://qdrant:6333
+      SHIKI__RAG__EMBEDDING_MODEL_VERSION: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}
+      SHIKI__RAG__INDEX_DATA_DIR: /var/lib/shiki/index
       # dev seed は明示フラグでのみ有効化（本番では設定しない）。
       SHIKI_DEV_SEED: ${SHIKI_DEV_SEED:-true}
       SHIKI_DEV_SEED_USER: ${SHIKI_DEV_SEED_USER:-00000000-0000-0000-0000-000000000001}
@@ -219,6 +280,9 @@ services:
       RUST_LOG: "info,shiki_api=debug,authz=debug"
     ports:
       - "8080:8080"
+    volumes:
+      # Tantivy 全文インデックス（index-per-tenant）の永続化先。
+      - shiki-index-data:/var/lib/shiki/index
     depends_on:
       postgres:
         condition: service_healthy
@@ -230,8 +294,9 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      otel-collector:
-        condition: service_started
+      # qdrant / ingestion-worker には依存しない: 検索・インジェストは遅延接続＋
+      # リトライで吸収され、server 単体起動（CI smoke 等）で worker のビルドを
+      # 強制しない。フルスタックは `docker compose up`（全サービス）で立ち上がる。
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
       interval: 5s
@@ -243,3 +308,6 @@ volumes:
   postgres-data:
   minio-data:
   tempo-data:
+  qdrant-data:
+  hf-cache:
+  shiki-index-data:

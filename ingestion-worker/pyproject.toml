@@ -1,0 +1,57 @@
+[project]
+name = "ingestion-worker"
+version = "0.0.0"
+description = "shiki-platform ingestion worker: Docling パース（日本語 OCR）・Ruri 埋め込み・reranker"
+requires-python = ">=3.12,<3.13"
+license = "LicenseRef-Proprietary"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "httpx>=0.28",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "docling>=2.15",
+    # ruri-v3（ModernBERT-Ja）は transformers>=4.48 が必要。
+    "sentence-transformers>=3.3",
+    "transformers>=4.48",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
+# torch/torchvision は CPU ホイールに固定する（GPU CUDA 一式で数 GB 膨らむのを防ぐ。
+# GPU サービングへ移行する時はこの index 固定を外す）。
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ingestion_worker"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# 既定 (E,F) に加えて import 整列・バグ誘発パターン・アップグレード・命名を強制。
+select = ["E", "F", "I", "B", "UP", "N", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: 実モデル/Docling 実走を伴うテスト（CI 既定では除外。WORKER_MODEL_TESTS=1 で有効化）",
+]

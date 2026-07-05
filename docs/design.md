@@ -3,8 +3,9 @@
 > 本書は[要件定義書](./requirements.md)を満たすアーキテクチャを定義する。実装順は[ROADMAP](./roadmap.md)。
 >
 > ⚠️ **実装着手前に必ず読む**: 本設計が暗黙にしている前提のうち「このまま実装すると壊れる／詰まる／主張が嘘になる」箇所を
-> [設計上の落とし穴・要注意点](./design-caveats.md) に固定した。とくに RAG/FUSE/認可（PIT-1〜5）は
-> 当該 Phase の成立条件であり、未解決のまま着手しないこと。
+> [設計上の落とし穴・要注意点](./design-caveats.md) に固定した。RAG 二段 authz（PIT-1〜3）は
+> Phase 2 で解決済み（§4.3 が正）。FUSE/エージェント一貫性（PIT-4〜5）は当該 Phase の成立条件であり、
+> 未解決のまま着手しないこと。
 
 ## 1. 設計原則
 
@@ -240,7 +241,7 @@ flowchart TB
 ```mermaid
 flowchart LR
   subgraph Ingest[インジェスト 非同期]
-    f[書込イベント] --> q[ジョブキュー<br/>初版 pgmq]
+    f[書込イベント outbox] --> q[ジョブキュー<br/>jobq 自作・vanilla Postgres]
     q --> p[Docling パース<br/>レイアウト/表/OCR]
     p --> c[レイアウト/親子チャンク化<br/>+メタdata/authz_tags]
     c --> e[埋め込み Ruri]
@@ -253,18 +254,50 @@ flowchart LR
     pre --> kw[Tantivy BM25]
     dense --> rrf[RRF 融合]
     kw --> rrf
-    rrf --> rk[reranker]
-    rk --> post[OpenFGA post-filter 検証]
-    post --> cite[引用chunk → LLM + 監査記録]
+    rrf --> post[OpenFGA post-filter 検証<br/>file粒度・rerank前]
+    post --> rk[reranker]
+    rk --> cite[引用chunk → LLM + 監査記録]
   end
 ```
 
-- **二段authz**: pre-filter（両系統に必須）＋ post-filter 検証。片方が壊れても権限を守る。
-  ただし `authz_tags` の正体・post-filter の top-k 破壊・grant 方向の遅延は未設計。着手前に
-  [PIT-1〜3](./design-caveats.md) を解決すること（この製品の心臓部）。
-- `embedding_model_version` をベクタに刻み、モデル変更＝該当インデックス全再構築。
-  → 全停止を避ける shadow 移行は [PIT-8](./design-caveats.md)。
-- 親子チャンク（small-to-big）で日本語長文の文脈を保つ。
+- **ジョブキュー = 自作 `crates/jobq`（vanilla Postgres・Phase 2 で確定）**: pgmq は採用しない。
+  `FOR UPDATE SKIP LOCKED` ＋ visibility timeout ＋ attempts ＋ DLQ テーブルの汎用キューで、
+  **拡張依存ゼロ**（オンプレ持込 Postgres・マネージド PG の拡張 allowlist・エアギャップの全てで動く）。
+  Phase 10 workflow-engine（Postgres 上の自作 Durable Execution）と同一系譜の自前プリミティブ。
+  役割分離: `storage_event_outbox` ＝ドメイン書込と同一 Tx の**耐久イベントログ兼 fan-out 点**
+  （Phase 10 のイベントトリガ等、将来の複数購読者に対応）／ `job_queue` ＝ per-consumer の
+  **配送機構**（vt/リトライ/DLQ・消費後 DELETE）。relay が outbox→queue を同一 Postgres 内・
+  単一 Tx でコピーする（exactly-once）。チャット run（Phase 3）・資料生成ジョブ（Phase 7）も
+  同じ `jobq` のキューとして実装する。
+- **二段authz（Phase 2 で確定・実装済み）**: pre-filter（両系統に必須）＋ post-filter 検証。
+  片方が壊れても権限を守る（この製品の心臓部）。
+  - **pre-filter = PIT-1 (b) 権限定義オブジェクト方式**: chunk には**構造タグのみ**を焼く
+    （`file:<tenant>|<id>` 自身＋祖先 `folder:<tenant>|<id>` 群）。検索時に
+    `ListObjects(user, viewer, folder) ∪ ListObjects(user, viewer, file)` で**ユーザーの可読
+    オブジェクト集合をクエリごとに算出**し、`authz_tags ∩ 可読集合` で dense/keyword 両系統を絞る。
+    共有変更でタグ再書込は不要（**grant は次のクエリで即反映＝PIT-3 解消**）。タグが変わるのは
+    move のみ（祖先再評価・Task 2.9）。
+  - **カーディナリティ上限とフォールバック**: 可読集合が **上限 500**（OpenFGA ListObjects の
+    応答上限 1000 未満に設定し「切り詰められた不完全集合を正として使う」under-recall 事故を
+    構造的に防ぐ）を超えたら pre-filter を放棄して **tenant-only へ縮退**し、post-filter 全依存
+    ＋ over-fetch 引き上げ（3×→8×）で正しさを維持する。コストモデル: 通常時は
+    `fetch_k = max(top_k, rerank_pool) × 3`、縮退時は ×8・不足時バックフィル（fetch_k 倍増・
+    最大 3 ラウンド・上限 256）で**最終引用件数が top_k を下回らない**（PIT-2）。
+    `ListObjects` はキャッシュしない（grant 即時性優先。将来 QPS が問題になったら
+    `{tenant}/{user}` キー・TTL ≦ 5s の短命キャッシュを検討する）。
+  - **post-filter は reranker の前**（PIT-2）: RRF 融合後に **file 粒度**の OpenFGA check
+    （`HigherConsistency`・剥奪の即時反映＝PIT-11）で deny を落としてから rerank する
+    （読めない chunk に rerank 計算を浪費しない）。
+  - 検索デバッグ表示（`authz_denied_files` 等）は「読めない一致文書の存在」のオラクルになり得る
+    ため**社内基盤前提**。公開 API 化（Phase 9 gateway）時は管理者ロール限定にする。
+- `embedding_model_version` は**インデックス単位で固定**する（Qdrant collection 名にモデル版を
+  織り込み、検索・書込は alias `rag_chunks_active` 経由。worker の応答版と設定版の突合ガードで
+  混在を書込前に拒否）。モデル更新は **shadow collection を背面で再構築 → alias 切替**
+  （ゼロダウンタイム・[PIT-8](./design-caveats.md)）。
+- 親子チャンク（small-to-big）で日本語長文の文脈を保つ。チャンク ID は
+  `uuid5(node_id, version/ordinal)` の決定的生成（再インジェスト＝上書きで冪等）。
+- 引用監査は既存 `audit_log`（storage の監査チョークポイント）に `action="rag.search"` で記録
+  （引用 chunk_id 群・file 粒度の認可判定・クエリ sha256・trace_id）。
 
 - **テナント分離（SAAS.1 の RAG 適用・#91 で明文化）**: Qdrant/Tantivy は DB/blob/FGA/session と同じく
   `tenant_id` 境界を持つ。これは `authz_tags`（テナント**内** ReBAC 可読性・PIT-1）とは**別レイヤ**の
@@ -286,8 +319,9 @@ flowchart LR
   - **公開トレイトは第一引数に `&AuthContext`**（`VectorStore` / `EmbeddingProvider` / `DocumentParser` /
     検索 API）。`tenant_id` を bare `String` で引き回さず、識別子は必ず `AuthContext::ns()`
     チョークポイント経由で構築する。
-  - **インジェスト経路の tenant_id 必須化**: `storage_event_outbox` は `tenant_id` を第一級カラムで持つ。
-    pgmq リレー・Python worker 入力の型にも `tenant_id` を**必須フィールド**として通す（worker が
+  - **インジェスト経路の tenant_id 必須化**: `storage_event_outbox` / `job_queue` は `tenant_id` を
+    第一級カラムで持つ。jobq メッセージ・Python worker 入力の型にも `tenant_id` を**必須フィールド**
+    として通し、consumer はキュー行とメッセージの tenant 不一致を fail-closed で拒否する（worker が
     Qdrant/Tantivy のどの collection/index へ書くかの唯一の根拠になる）。
 
 ### 4.4 チャット & agent-core
@@ -316,7 +350,7 @@ flowchart LR
 （workflow-engine と同じ原理。[miniapp-platform §2](./miniapp-platform.md) と claim/リース/チェックポイントの
 実装パターン・テーブル規約を共有）。
 
-- **投入**: `POST /threads/:id/messages` が単一 Tx で「ユーザーメッセージ保存＋run 行(status=queued)＋pgmq enqueue」
+- **投入**: `POST /threads/:id/messages` が単一 Tx で「ユーザーメッセージ保存＋run 行(status=queued)＋jobq enqueue」
   （outbox と同型）→ 202 で `run_id` を即返す。
 - **実行**: shiki-server 内 tokio ワーカープール（**チャット専用の高優先レーン**。ワークフロー/ingestion と同居させない）が
   `FOR UPDATE SKIP LOCKED` で claim＋リース（heartbeat）。イベントを `(run_id, seq)` で DB 追記＋Redis pub/sub 配信。

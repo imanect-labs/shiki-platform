@@ -1382,6 +1382,125 @@ async fn outbox_end_to_end() {
     assert_eq!(after_ack, 0, "ack 後は未処理ゼロ");
 }
 
+#[tokio::test]
+async fn name_search_filters_by_permission_and_neutralizes_wildcards() {
+    let Some(cx) = setup().await else {
+        return;
+    };
+    let org = format!("org-{}", Uuid::new_v4().simple());
+    seed_org_member(&cx.authz, &org, "alice").await;
+    seed_org_member(&cx.authz, &org, "bob").await;
+    let alice = make_ctx(&org, "alice");
+    let bob = make_ctx(&org, "bob");
+    let sort = storage::ChildSort {
+        key: storage::ChildSortKey::Name,
+        desc: false,
+    };
+
+    // alice: フォルダ「営業企画」＋配下ファイル「月次_報告.txt」、ルートに「報告メモ.txt」
+    let dept = cx
+        .service
+        .create_folder(&alice, None, "営業企画", None)
+        .await
+        .unwrap();
+    let monthly = upload(
+        &cx.service,
+        &cx.http,
+        &alice,
+        Some(dept.id),
+        "月次_報告.txt",
+        b"m",
+    )
+    .await
+    .unwrap();
+    upload(&cx.service, &cx.http, &alice, None, "報告メモ.txt", b"n")
+        .await
+        .unwrap();
+
+    // 空白区切りの AND 部分一致（フォルダ横断）。
+    let page = cx
+        .service
+        .search_nodes_by_name(&alice, "月次 報告", sort, None, 50, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|n| n.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["月次_報告.txt"],
+        "全語一致のみヒットする（報告メモ は 月次 を含まないため除外）"
+    );
+
+    // ILIKE ワイルドカードは無害化される（"_" がワイルドカードとして解釈されない）。
+    let page = cx
+        .service
+        .search_nodes_by_name(&alice, "月次_報告", sort, None, 50, None)
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    let page = cx
+        .service
+        .search_nodes_by_name(&alice, "月次%", sort, None, 50, None)
+        .await
+        .unwrap();
+    assert!(page.items.is_empty(), "% は文字として扱われヒットしない");
+
+    // 権限フィルタ: bob には共有前は何も見えない。共有後はフォルダ配下だけ見える。
+    let page = cx
+        .service
+        .search_nodes_by_name(&bob, "報告", sort, None, 50, None)
+        .await
+        .unwrap();
+    assert!(page.items.is_empty(), "未共有ノードは名前検索でも見えない");
+    cx.service
+        .share_node(
+            &alice,
+            dept.id,
+            &ShareTarget::User { id: "bob".into() },
+            ShareRole::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    let page = cx
+        .service
+        .search_nodes_by_name(&bob, "報告", sort, None, 50, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        page.items.iter().map(|n| n.id).collect::<Vec<_>>(),
+        vec![monthly.id],
+        "共有フォルダ配下のみヒット（ルートの 報告メモ は見えない）"
+    );
+
+    // テナント遮断: 非メンバーは 403（fail-closed）。メンバーでもデータは tenant 列で遮断。
+    let outsider = make_ctx_tenant(&org, "other-tenant", "alice");
+    let err = cx
+        .service
+        .search_nodes_by_name(&outsider, "報告", sort, None, 50, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::Forbidden), "非メンバーは 403");
+    cx.authz
+        .write_tuple(
+            &outsider.subject(),
+            Relation::Member,
+            &outsider.ns().organization(&org),
+        )
+        .await
+        .unwrap();
+    let page = cx
+        .service
+        .search_nodes_by_name(&outsider, "報告", sort, None, 50, None)
+        .await
+        .unwrap();
+    assert!(
+        page.items.is_empty(),
+        "同名でも別テナントのデータはヒットしない"
+    );
+}
+
 /// tenant_id ＋ org でスコープした AuthContext を作る（テナント分離検証用）。
 fn make_ctx_tenant(org: &str, tenant: &str, uid: &str) -> AuthContext {
     AuthContext::new(

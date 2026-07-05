@@ -124,6 +124,10 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/directory/roles", &["GET"], Session, || {
             get(routes::directory::search_roles)
         }),
+        // permission-aware 検索（Phase 2・二段 authz は rag::SearchService 内で一律強制）。
+        r("/search", &["POST"], Session, || {
+            post(routes::search::search)
+        }),
         // --- SessionLongRunning（300s。finalize は staging のサーバ側ハッシュ＋コピーが
         //     大容量で 30s を超え、バイトは MinIO にあるのに file が作れない事故を防ぐ） ---
         r("/files", &["POST"], SessionLongRunning, || {

@@ -10,36 +10,36 @@
 
 ---
 
-## 🔴 PIT-1: `authz_tags` 前段フィルタの正体を確定する（permission-aware RAG の心臓）
+## ✅ PIT-1: `authz_tags` 前段フィルタの正体を確定する（**解決済み・Phase 2 実装**）
 
-- **箇所**: design.md §4.3 / phase-2 Task 2.2・2.4・2.7。
-- **リスク**: ReBAC の可読性は派生的（直接 viewer / 祖先フォルダ / ロールメンバ / 親ロール…の論理和）。
-  これをベクタ検索の集合積フィルタに落とす方式が**未定義**。看板機能の中核アルゴリズムが「authz_tags 対応」の4文字で省略されている。
-- **実装前に決めること（二択を明示せよ）**:
-  - **(a) ACL展開方式**: chunk に「読める subject 全列挙」を焼く → ロール共有でタグ爆発、再共有で大量再書込。
-  - **(b) 権限定義オブジェクト方式（推奨）**: chunk に `folder_id / role_id` 等の**権限定義オブジェクト**を持たせ、
-    検索時に**ユーザーの可読オブジェクト集合を OpenFGA `ListObjects` で算出** → `tag IN (集合)` で絞る。
-  - (b) を採るなら **`ListObjects` のカーディナリティ非有界問題**に必ず対処する:
-    可読集合を folder/dept 粒度に抑え、**集合が閾値超なら pre-filter を諦め post-filter 全依存に切替える**フォールバックを設計に書く。
-- **守る/受け入れ条件**: §4.3 に「採用方式・`ListObjects` 上限・タグ再評価のコストモデル」を明記するまで Task 2.4/2.7 を着手しない。
-  「最もベスト」を名乗る前提条件＝本項の解決。
+- **決定（2026-07・human 確認済み）**: **(b) 権限定義オブジェクト方式**を採用し、design.md §4.3 に明記した。
+  - chunk には**構造タグのみ**（`file:<tenant>|<id>` 自身＋祖先 `folder:<tenant>|<id>` 群・名前空間化のまま）。
+  - 検索時に `ListObjects(viewer, folder) ∪ ListObjects(viewer, file)` で可読集合をクエリごとに算出し
+    `authz_tags ∩ 可読集合` で pre-filter（`crates/rag/src/authz_filter.rs`）。
+  - **カーディナリティ対処**: 可読集合が上限 **500**（ListObjects 応答上限 1000 未満＝切り詰め集合を
+    正として使う事故を構造的に防ぐ）を超えたら pre-filter を放棄して tenant-only へ縮退し、
+    post-filter 全依存＋over-fetch 8× で正しさを維持する。
+  - **タグ再評価のコスト**: 共有変更ではタグ再書込ゼロ（構造タグのため）。再評価が要るのは move のみで、
+    Qdrant payload 再書込＋Tantivy 再投入（再パース/再埋め込み不要・Task 2.9）。
+- 旧論点（記録）: (a) ACL展開方式はロール共有でタグ爆発・再共有で大量再書込のため不採用。
 
-## 🔴 PIT-2: post-filter は top-k を壊す（recall が静かに溶ける）
+## ✅ PIT-2: post-filter は top-k を壊す（**解決済み・Phase 2 実装**）
 
-- **箇所**: phase-2 Task 2.6→2.7 の順序（retrieve top-k → RRF → reranker → OpenFGA post-filter）。
-- **リスク**: pre-filter が不完全だと rerank 後に大半が deny され、最終引用件数が非決定的に激減。
-  reranker が post-filter の**前**にあり、読めない chunk に計算を浪費。CLAUDE.md「全件取得→フィルタ禁止」とも衝突。
-- **実装前に決めること**: **over-fetch 係数＋不足時バックフィル**ループを 2.7 仕様に入れる。
-  可能なら認可フィルタを **reranker の前**へ寄せ（pre-filter を信頼できる file 粒度で確定）、post は例外検証のみにする。
-- **受け入れ条件**: 「最終引用件数が要求 top-k を下回らない（バックフィルが働く）」を 2.7 に追加。
+- **決定**: 検索順序を retrieve → RRF → **OpenFGA post-filter（file 粒度）→ reranker** に変更した
+  （読めない chunk に rerank 計算を浪費しない）。over-fetch 係数（通常 3×・縮退時 8×）＋
+  **不足時バックフィル**（fetch_k 倍増・最大 3 ラウンド・上限 256・取得済み chunk は exclude）で
+  「候補が尽きない限り最終引用件数が要求 top-k を下回らない」を実装・テストで担保
+  （`crates/rag/src/search.rs` / `tests/search_scripted_it.rs`）。
 
-## 🔴 PIT-3: grant 方向の遅延を検査する（「混入ゼロ」の裏面）
+## ✅ PIT-3: grant 方向の遅延を検査する（**解決済み・Phase 2 実装**）
 
-- **箇所**: phase-2 Task 2.7（テストが deny 方向＝権限剥奪のみ）。
-- **リスク**: pre-filter タグは非同期更新。**権限付与直後**はタグが追いつかず、対象文書が**エラーも出さず検索に出ない**（under-recall）。
-  deny は post-filter が救うが、grant は誰も救わない。「共有したのに出てこない」は典型クレーム。
-- **実装前に決めること**: grant 後の**可視化 SLA**（付与→N秒以内に検索に出る）を定義。
-- **受け入れ条件**: 2.7 に「共有付与→N秒以内に当該 chunk が検索に現れる」adversarial テストを追加（deny と対で）。
+- **決定**: PIT-1 (b) の構造タグ方式により**タグの非同期更新そのものが存在しない**
+  （可読集合はクエリごとに OpenFGA `ListObjects`（HIGHER_CONSISTENCY）で算出）。
+  grant の可視化 SLA は **5 秒以内**（実質は次のクエリで即時）と定義し、
+  「共有付与→5 秒以内に検索へ出る」「共有解除→直後の検索から消える」を実 OpenFGA の
+  adversarial テストで担保（`crates/rag/tests/search_authz_it.rs`）。move 直後のタグ陳腐化
+  ウィンドウは post-filter（file 粒度 check）が deny 方向を防ぎ、grant 方向は move ジョブの
+  タグ再評価（数秒）で追従する。
 
 ## 🔴 PIT-4: FUSE × StorageService の認可/監査は syscall 粒度では破綻する
 
@@ -83,6 +83,8 @@
   post-filter check は **file 粒度で十分**で、chunk タプルは純オーバーヘッド。
 - **実装前に決めること**: 認可の最小オブジェクトは **file**。chunk→file 対応は RAG 側メタで持ち、OpenFGA に chunk を入れない。
 - **守る**: §4.1 の図から `doc_chunk` 関係を削除（または「論理的継承であり tuple 化しない」と注記）。
+- 📝 Phase 2 実装で担保済み: post-filter は `file:<tenant>|<local>` 粒度の check、chunk→file 対応は
+  `rag_chunk.node_id`（Postgres）が持つ。OpenFGA に chunk タプルは存在しない。
 
 ## 🟠 PIT-8: 埋め込みモデル更新が「全停止イベント」になる
 
@@ -92,6 +94,8 @@
 - **実装前に決めること**: **shadow index への背面再構築＋エイリアス切替**を前提化。
   「混在拒否」ではなく「**インデックス単位で version 固定・検索はエイリアス先**」に変更。
 - **守る**: §4.3 に shadow→切替の移行手順を追記。Task 2.3 の「混在拒否」をインデックス単位の制約に緩める。
+- 📝 Phase 2 実装で下地済み: Qdrant collection 名にモデル版を織り込み（`rag_chunks__<version>`）、
+  検索・書込は alias `rag_chunks_active` 経由。worker 応答版との突合ガードが版混在を書込前に拒否する。
 
 ## 🟠 PIT-9: llm-gateway の内部正規形＝OpenAI互換は核に対して逆効果
 
@@ -103,14 +107,12 @@
   OpenAI/Gemini をアダプト側にする。最低でも prompt caching と thinking を正規形に持つ。デフォルトモデルは Claude 前提で書く。
 - **守る**: §4.5 の「OpenAI互換正規形」を「中立 content-block 正規形」に改める。
 
-## 🟠 PIT-10: Phase 3「最初のデモ」が最大リスク（正しさクリティカルな二段authz）に直結
+## ✅ PIT-10: Phase 3「最初のデモ」が最大リスク（**解消・Phase 2 で Tier-2 まで一括実装**）
 
-- **箇所**: roadmap phase-2.md（2.10 が 2.7 必須、phase-3 の 3.4 が 2.10 必須）。roadmap.md の「簡易パース先行」前倒し案が phase-2 DoD に反映されていない。
-- **リスク**: 最初の顧客価値が、研究的に一番危ない 2.6/2.7（正しさクリティカル）でゲートされる。
-- **実装前に決めること**: phase-2 に**二段DoD**を正式化する。
-  - **Tier-1**: file 粒度の単純権限フィルタ（OpenFGA file check のみ・chunk タグ無し）で 2.10/Phase 3 を通す。
-  - **Tier-2**: authz_tags による高速 pre-filter（PIT-1）は後追い最適化。
-- **守る**: 初デモを RAG 高速化研究から切り離す（Tier-1 で M2 到達可能にする）。
+- **経緯**: 二段 DoD（Tier-1 = file 粒度 check のみ → Tier-2 = authz_tags pre-filter 後追い）を
+  想定していたが、PIT-1 の方式が (b) に確定したことで pre-filter の実装リスクが下がり、
+  **Phase 2 で Tier-2（authz_tags pre-filter ＋ post-filter の二段）まで一括実装**した。
+  Phase 3 の doc_search は完成済みの `POST /search` を使う。
 
 ---
 

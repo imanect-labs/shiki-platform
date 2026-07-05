@@ -3,6 +3,7 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
+use api::config::VectorStoreBackend;
 use api::{
     config::{AppConfig, AuthConfig, ObjectStoreBackend, Tenancy},
     middleware::JwksCache,
@@ -16,7 +17,9 @@ use authz::{
     model, AuthContext, AuthzClient, Consistency, Principal, Relation,
 };
 use sqlx::postgres::PgPoolOptions;
-use storage::{DirectoryStore, ObjectStore, S3ObjectStore, StorageService, TenantStore};
+use storage::{
+    DirectoryStore, IndexerStorage, ObjectStore, S3ObjectStore, StorageService, TenantStore,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -85,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
         .context("オブジェクトストアのバケット準備に失敗")?;
     let storage = Arc::new(StorageService::new(
         db.clone(),
-        object_store,
+        object_store.clone(),
         authz.clone(),
         presign_get_ttl,
         presign_put_ttl,
@@ -105,6 +108,9 @@ async fn main() -> anyhow::Result<()> {
             .context("Redis セッションストアへの接続に失敗")?,
     );
 
+    // RAG（Phase 2）: enabled のときのみインジェスト・パイプラインと検索を配線する。
+    let (search, rag_admin) = wire_rag(&config, &http, &db, &object_store, &authz)?;
+
     let bind = format!("{}:{}", config.server.host, config.server.port);
     let state = AppState {
         config: Arc::new(config),
@@ -118,6 +124,8 @@ async fn main() -> anyhow::Result<()> {
         storage,
         directory,
         tenants,
+        search,
+        rag_admin,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -308,6 +316,95 @@ fn dev_seed_enabled() -> bool {
         std::env::var("SHIKI_DEV_SEED").ok().as_deref(),
         Some("1" | "true" | "TRUE")
     )
+}
+
+/// RAG 配線の結果（検索サービスはオプション・テナント消去は常設）。
+type RagWiring = (Option<Arc<rag::SearchService>>, Arc<rag::RagAdmin>);
+
+/// RAG（Phase 2）の依存配線。`rag.enabled=false` なら何も起動せず `None` を返す。
+///
+/// 依存は全てトレイト裏（DocumentParser/EmbeddingProvider/Reranker/VectorStore/
+/// FulltextIndex）。クラウド/オンプレ差はここでの実装選択に閉じる。
+fn wire_rag(
+    config: &AppConfig,
+    http: &reqwest::Client,
+    db: &sqlx::PgPool,
+    object_store: &Arc<dyn ObjectStore>,
+    authz: &Arc<dyn AuthzClient>,
+) -> anyhow::Result<RagWiring> {
+    if !config.rag.enabled {
+        tracing::info!("rag.enabled=false: インジェスト・検索は無効（/search は 503）");
+        // テナント消去の DB 行掃除は RAG 無効でも行う（過去に有効だった残骸対策）。
+        return Ok((None, Arc::new(rag::RagAdmin::new(db.clone(), None, None))));
+    }
+    if config.vector.backend != VectorStoreBackend::Qdrant {
+        anyhow::bail!("vector.backend=pgvector は未実装です（Phase 2 は qdrant のみ）");
+    }
+    let rag_cfg = config.rag.clone();
+    let _ = http; // RAG 依存は専用のタイムアウト付きクライアントを使う（下記）。
+                  // 共有クライアントは無期限のため、worker/Qdrant の遅延が /search・インジェストを
+                  // 永久ブロックし得る。parse は Docling+OCR で長い（大きな PDF）ため別枠で長めに取る。
+    let rag_http = reqwest::Client::builder()
+        .timeout(Duration::from_mins(1))
+        .build()
+        .context("RAG 用 HTTP クライアントの構築に失敗")?;
+    let parse_http = reqwest::Client::builder()
+        .timeout(Duration::from_mins(5))
+        .build()
+        .context("parse 用 HTTP クライアントの構築に失敗")?;
+    let parser: Arc<dyn rag::DocumentParser> = Arc::new(rag::HttpDocumentParser::new(
+        parse_http,
+        &rag_cfg.worker_base_url,
+    ));
+    let embedder: Arc<dyn rag::EmbeddingProvider> = Arc::new(rag::HttpEmbeddingProvider::new(
+        rag_http.clone(),
+        &rag_cfg.worker_base_url,
+        &rag_cfg.embedding_model_version,
+    ));
+    let reranker: Arc<dyn rag::Reranker> = Arc::new(rag::HttpReranker::new(
+        rag_http.clone(),
+        &rag_cfg.worker_base_url,
+    ));
+    let vector: Arc<dyn rag::VectorStore> = Arc::new(rag::QdrantVectorStore::new(
+        rag_http,
+        &rag_cfg.qdrant_url,
+        &rag_cfg.embedding_model_version,
+    ));
+    let fulltext: Arc<dyn rag::FulltextIndex> =
+        Arc::new(rag::TantivyFulltext::new(&rag_cfg.index_data_dir));
+    let indexer_storage = Arc::new(IndexerStorage::new(db.clone(), Arc::clone(object_store)));
+    // relay+consumer（advisory lock でリーダー選出。多重起動しても安全）。
+    rag::spawn_pipeline(rag::PipelineDeps {
+        pool: db.clone(),
+        config: rag_cfg.clone(),
+        parser,
+        embedder: Arc::clone(&embedder),
+        vector: Arc::clone(&vector),
+        fulltext: Arc::clone(&fulltext),
+        indexer_storage,
+    });
+    tracing::info!(
+        worker = %rag_cfg.worker_base_url, qdrant = %rag_cfg.qdrant_url,
+        "RAG パイプラインと検索を有効化しました"
+    );
+    let rag_admin = Arc::new(rag::RagAdmin::new(
+        db.clone(),
+        Some(Arc::clone(&vector)),
+        Some(Arc::clone(&fulltext)),
+    ));
+    Ok((
+        Some(Arc::new(rag::SearchService::new(
+            db.clone(),
+            rag_cfg,
+            embedder,
+            reranker,
+            vector,
+            fulltext,
+            Arc::clone(authz),
+            storage::audit::AuditRecorder::new(db.clone()),
+        ))),
+        rag_admin,
+    ))
 }
 
 // シグナルハンドラの登録失敗はプロセス起動直後の致命的な環境不整合であり、

@@ -88,6 +88,8 @@ hex = "0.4"
 # 内部クレート
 shiki-authz = { path = "crates/authz" }
 shiki-storage = { path = "crates/storage" }
+shiki-jobq = { path = "crates/jobq" }
+shiki-rag = { path = "crates/rag" }
 
 # ワークスペース共通 lint（各 crate は `[lints] workspace = true` で opt-in）。
 # CI は `cargo clippy --all-targets --all-features -- -D warnings` で warn も含めゲート化する。

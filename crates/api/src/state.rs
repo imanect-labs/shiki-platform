@@ -47,4 +47,9 @@ pub struct AppState {
     pub directory: Arc<DirectoryStore>,
     /// テナントレジストリ（プロビジョニング/削除のライフサイクル・SAAS.2）。
     pub tenants: Arc<TenantStore>,
+    /// permission-aware 検索（Phase 2）。`rag.enabled=false` では `None`（/search は 503）。
+    pub search: Option<Arc<rag::SearchService>>,
+    /// RAG のテナント消去（rag_chunk/jobq/Qdrant/Tantivy）。テナント削除フローから呼ぶ。
+    /// RAG 無効構成でも DB 行の消去は行う（過去に有効だった残骸を残さない）。
+    pub rag_admin: Arc<rag::RagAdmin>,
 }

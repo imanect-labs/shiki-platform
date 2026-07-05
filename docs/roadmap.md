@@ -62,7 +62,7 @@ flowchart LR
 
 ## Phase 2 — RAG（インジェスト＋検索）
 **依存**: Phase 1。
-- `ingestion-worker`（Docling／日本語OCR）、ジョブキュー（初版 pgmq）。
+- `ingestion-worker`（Docling／日本語OCR）、ジョブキュー（自作 `crates/jobq`・vanilla Postgres）。
 - Qdrant＋Tantivy/Lindera、Ruri埋め込み、reranker。
 - permission-aware 二段フィルタ（pre+post）、引用チャンクの監査記録。
 - **成果物**: API で「権限を守った引用付き検索」が返る。

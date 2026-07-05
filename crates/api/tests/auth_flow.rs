@@ -149,6 +149,13 @@ impl storage::object_store::ObjectStore for FakeStore {
     async fn ensure_bucket(&self) -> Result<(), storage::ObjectStoreError> {
         Ok(())
     }
+    async fn presign_get_internal(
+        &self,
+        _key: &str,
+        _ttl: Duration,
+    ) -> Result<String, storage::ObjectStoreError> {
+        Ok("http://fake/internal".into())
+    }
     async fn presign_put(
         &self,
         _key: &str,
@@ -318,6 +325,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
         },
+        rag: rag::RagConfig::default(),
         llm: LlmConfig {
             backend: LlmBackend::Vllm,
         },
@@ -350,6 +358,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
     ));
     let directory = Arc::new(storage::DirectoryStore::new(db.clone()));
     let tenants = Arc::new(storage::TenantStore::new(db.clone()));
+    let rag_admin = std::sync::Arc::new(rag::RagAdmin::new(db.clone(), None, None));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -360,6 +369,8 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         storage,
         directory,
         tenants,
+        search: None,
+        rag_admin,
     }
 }
 

@@ -60,6 +60,29 @@ jobs:
         with:
           command: check
 
+  python:
+    name: Python (ingestion-worker ruff / pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ingestion-worker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "ingestion-worker/uv.lock"
+      - name: uv sync
+        run: uv sync --frozen
+      - name: ruff
+        run: uv run ruff check .
+      # 高速テストのみ（フェイクモデル）。Docling 実走・実モデルは slow マークで除外し、
+      # compose 検証とローカルで担保する（CI 予算・モデル DL 回避）。
+      - name: pytest (fast)
+        run: uv run pytest -m "not slow" -q
+
   coverage:
     name: Coverage (cargo-llvm-cov, gate 80%)
     runs-on: ubuntu-latest
@@ -78,15 +101,15 @@ jobs:
       # live 依存（OpenFGA / Redis）を起動し、結合テストのカバレッジも算入する。
       # これにより fga_http / client（OpenFGA 経路）と redis_store（Redis 経路）も
       # 単体テストでは届かない実経路をカバーした上で全体カバレッジを評価する。
-      - name: compose up (postgres + minio + openfga + redis)
+      - name: compose up (postgres + minio + openfga + redis + qdrant)
         working-directory: deploy/compose
         run: |
           cp .env.example .env
-          docker compose up -d postgres minio openfga redis
+          docker compose up -d postgres minio openfga redis qdrant
       - name: wait for services healthy
         working-directory: deploy/compose
         run: |
-          for svc in postgres minio openfga redis; do
+          for svc in postgres minio openfga redis qdrant; do
             ok=""
             for i in $(seq 1 60); do
               s=$(docker compose ps "$svc" --format '{{.Health}}' || true)
@@ -108,6 +131,7 @@ jobs:
           REDIS_TEST_URL: redis://localhost:6379
           STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
           STORAGE_TEST_S3_ENDPOINT: http://localhost:9000
+          RAG_TEST_QDRANT_URL: http://localhost:6333
         run: cargo llvm-cov --all --no-report
       - name: coverage report (lcov + summary + job summary)
         run: |
@@ -206,6 +230,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: compose up (依存 + shiki-server)
         working-directory: deploy/compose
+        env:
+          # smoke は RAG（qdrant / ingestion-worker）を立てないため無効化する
+          #（worker イメージビルドと Qdrant への再接続ノイズを避ける）。
+          SHIKI__RAG__ENABLED: "false"
         run: |
           cp .env.example .env
           docker compose up -d --build shiki-server
@@ -266,6 +294,8 @@ jobs:
         env:
           SHIKI__AUTH__REDIRECT_URI: http://localhost:3000/auth/callback
           SHIKI__AUTH__POST_LOGOUT_REDIRECT_URI: http://localhost:3000/
+          # E2E は検索ページの表示スモークのみ（実インジェストは compose 検証で担保）。
+          SHIKI__RAG__ENABLED: "false"
         run: |
           cp .env.example .env
           docker compose up -d --build shiki-server

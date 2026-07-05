@@ -3,10 +3,11 @@
 > 目的: 「最もベストな permission-aware RAG」を成立させる。ストレージ(Phase 1)の文書を高品質に構造化して索引し、
 > **権限を厳密に守った（二段authz）引用付き検索**をAPIとして提供する。
 > 完了の定義(DoD): ファイルをストレージに置くと自動で索引され、ユーザーのクエリに対し「そのユーザーが読める文書だけ」
-> から引用チャンク付きの検索結果が返り、引用が監査ログに残る。
-> ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-1〜3・7・8・10 を解決すること。**
-> とくに PIT-1（`authz_tags` の方式が未定義）と PIT-10（二段DoD: file 粒度の Tier-1 で先に Phase 3 を通し、
-> 高速 pre-filter は後追い）は本 Phase の進め方そのものを左右する。
+> から引用チャンク付きの検索結果が返り、引用が監査ログに残る。加えて **共有付与→5 秒以内に検索へ出る**
+> （grant SLA・PIT-3）・**別テナントには authz_tags を改竄しても絶対に混入しない**（tenant フィルタ単独遮断）。
+> ✅ **設計ブロッカーは解決済み**: PIT-1（(b) 権限定義オブジェクト方式に確定）・PIT-2（post-filter を
+> rerank 前へ＋バックフィル）・PIT-3（構造タグ＝grant 即時反映・SLA 5 秒）・PIT-10（Tier-2 まで一括実装）。
+> 詳細は [design.md §4.3](../design.md) と [design-caveats.md](../design-caveats.md)。
 
 ## タスク一覧
 
@@ -36,9 +37,9 @@
   - shiki-server 側は `DocumentParser` トレイトで抽象化（gRPC/HTTPでworker呼出）。差し替え可能に。
   - 出力は構造化中間表現（見出し階層・段落・表をMarkdown化・図キャプション）。
 - **受け入れ条件**:
-  - [ ] 表を含むPDF/Excelが表構造を保って抽出される
-  - [ ] スキャンPDF（日本語）からテキストが得られる
-  - [ ] パース失敗が握りつぶされずエラーとして記録される
+  - [x] 表を含むPDF/Excelが表構造を保って抽出される
+  - [x] スキャンPDF（日本語）からテキストが得られる
+  - [x] パース失敗が握りつぶされずエラーとして記録される
 
 ### Task 2.2: チャンク化＋メタデータ
 - **area**: rag / **path**: `crates/rag` or worker
@@ -49,9 +50,9 @@
   - 各チャンクに `doc_id, page, 見出しパス, authz_tags, embedding_model_version` を付与。
     **authz_tags は元ファイルの可読性に対応**（pre-filterの鍵、Task 2.7と整合）。
 - **受け入れ条件**:
-  - [ ] 表が分割で壊れない
-  - [ ] 小チャンク↔親チャンクの対応が引ける
-  - [ ] 全チャンクに authz_tags と model version が付く
+  - [x] 表が分割で壊れない
+  - [x] 小チャンク↔親チャンクの対応が引ける
+  - [x] 全チャンクに authz_tags と model version が付く
 
 ### Task 2.3: `EmbeddingProvider`＋Ruri 埋め込み
 - **area**: rag / **path**: `crates/rag`, 推論サービス
@@ -61,9 +62,9 @@
   - 推論は llm-gateway とは別の埋め込み推論エンドポイント（ローカルGPU or 外部）。バッチ埋め込み対応。
   - `embedding_model_version` を固定し、**変更＝該当インデックス全再構築**を強制するガード。
 - **受け入れ条件**:
-  - [ ] チャンクがバッチで埋め込まれる
-  - [ ] モデル差し替えが設定で可能
-  - [ ] version 不一致のベクタ混在を検出・拒否
+  - [x] チャンクがバッチで埋め込まれる
+  - [x] モデル差し替えが設定で可能
+  - [x] version 不一致のベクタ混在を検出・拒否
 
 ### Task 2.4: `VectorStore`（Qdrant）索引＋pre-filterタグ
 - **area**: rag / **path**: `crates/rag`
@@ -76,10 +77,10 @@
     `tenant_id = ctx.tenant_id` を**authz_tags と独立に無条件 AND**。トレイトは第一引数 `&AuthContext`。
     authz_tags は名前空間化形式（`folder:<tenant>|<local>`）のまま格納する（local へ剥がさない）。
 - **受け入れ条件**:
-  - [ ] authz_tags フィルタ付き検索が正しく絞り込む
-  - [ ] doc 削除でベクタも消える
-  - [ ] トレイトで pgvector へ差し替えできる構造
-  - [ ] **別テナントのクエリで対象 doc が絶対に返らない（authz_tags を空にしても tenant フィルタ単独で遮断）**
+  - [x] authz_tags フィルタ付き検索が正しく絞り込む
+  - [x] doc 削除でベクタも消える
+  - [x] トレイトで pgvector へ差し替えできる構造
+  - [x] **別テナントのクエリで対象 doc が絶対に返らない（authz_tags を空にしても tenant フィルタ単独で遮断）**
 
 ### Task 2.5: 全文検索（Tantivy＋Lindera）
 - **area**: rag / **path**: `crates/rag`
@@ -91,10 +92,10 @@
   - **テナント分離（SAAS.1 / #91・design §4.3）**: index-per-tenant を既定とする（単一 index なら
     `tenant_id` を term filter で必須 AND）。tenant 境界は authz_tags と独立に必ず適用。
 - **受け入れ条件**:
-  - [ ] 日本語キーワードが形態素で正しくヒットする
-  - [ ] authz_tags フィルタが全文側にも効く
-  - [ ] dense とID整合が取れRRFに渡せる
-  - [ ] **別テナントのクエリで対象 doc が絶対に返らない（tenant index/フィルタ単独で遮断）**
+  - [x] 日本語キーワードが形態素で正しくヒットする
+  - [x] authz_tags フィルタが全文側にも効く
+  - [x] dense とID整合が取れRRFに渡せる
+  - [x] **別テナントのクエリで対象 doc が絶対に返らない（tenant index/フィルタ単独で遮断）**
 
 ### Task 2.6: ハイブリッド検索＋RRF＋reranker
 - **area**: rag / **path**: `crates/rag`
@@ -103,9 +104,9 @@
   - dense(Qdrant) と keyword(Tantivy) の結果を **RRF** で融合 → **reranker**（bge/japanese-reranker, 差し替え可）で並べ替え。
   - top-k/しきい値/親子展開のパラメータ化。融合の正しさ（順位・重複排除）を厳密に。
 - **受け入れ条件**:
-  - [ ] 融合結果が dense/keyword 単独より関連性が高い（評価セットで確認）
-  - [ ] 重複チャンクが除去される
-  - [ ] reranker を差し替えられる
+  - [x] 融合結果が dense/keyword 単独より関連性が高い（評価セットで確認）
+  - [x] 重複チャンクが除去される
+  - [x] reranker を差し替えられる
 
 ### Task 2.7: permission-aware 二段authzフィルタ＋引用監査
 - **area**: rag / **path**: `crates/rag`, `crates/authz`, `crates/storage`
@@ -117,25 +118,26 @@
   - **引用監査**: 最終的にLLMへ渡す/UIに出す **chunk_id 群＋その時の認可判定を監査ログに記録**（trace_id付き）。
   - 「閲覧不可は検索結果にも回答にも絶対混入しない」を満たすことをテストで保証。
 - **受け入れ条件**:
-  - [ ] 権限剥奪直後にそのユーザーの検索からchunkが消える（post-filterで）
-  - [ ] 混入ゼロのadversarialテスト（共有解除/ロール異動シナリオ）が通る
-  - [ ] 引用chunkと認可判定が監査ログに残る
+  - [x] 権限剥奪直後にそのユーザーの検索からchunkが消える（post-filterで）
+  - [x] 混入ゼロのadversarialテスト（共有解除/ロール異動シナリオ）が通る
+  - [x] 引用chunkと認可判定が監査ログに残る
 
 ### Task 2.8: インジェスト・パイプライン配線
 - **area**: rag / **path**: `crates/rag`, `ingestion-worker/`
 - **依存**: 1.8, 2.1
 - **仕様**:
-  - StorageService の書込イベント（1.8）→ ジョブキュー（pgmq）→ worker（parse→chunk→embed→index）。
+  - StorageService の書込イベント（1.8）→ ジョブキュー（自作 `crates/jobq`・vanilla Postgres。
+    pgmq は不採用＝拡張依存ゼロの可搬性・design §4.3）→ consumer（parse→chunk→embed→index）。
   - リトライ/デッドレター、進捗・失敗の可視化。冪等性（同一版の二重処理を防ぐ）。
   - **tenant_id を経路全体で必須フィールドとして通す（SAAS.1 / #91）**: `storage_event_outbox` は
-    `tenant_id` を第一級カラムで持つ。pgmq メッセージ・worker 入力（gRPC/HTTP）の型にも `tenant_id` を
+    `tenant_id` を第一級カラムで持つ。jobq メッセージ・worker 入力（gRPC/HTTP）の型にも `tenant_id` を
     **必須フィールド**として載せる（free-form payload に落とさない）。これが worker の書込先
     collection/index 選択の唯一の根拠になる。テナント削除時は outbox 残イベントも破棄する。
 - **受け入れ条件**:
-  - [ ] アップロードから数秒〜分で検索可能になる
-  - [ ] 失敗ジョブがDLQに入り再実行できる
-  - [ ] 同一版の重複インジェストが起きない
-  - [ ] **worker が受けるジョブに tenant_id が必須で載り、書込先が tenant で分離される**
+  - [x] アップロードから数秒〜分で検索可能になる
+  - [x] 失敗ジョブがDLQに入り再実行できる
+  - [x] 同一版の重複インジェストが起きない
+  - [x] **worker が受けるジョブに tenant_id が必須で載り、書込先が tenant で分離される**
 
 ### Task 2.9: 増分再索引＋削除/移動整合
 - **area**: rag / **path**: `crates/rag`
@@ -144,9 +146,9 @@
   - 更新は該当ファイルのチャンクのみ差し替え。削除でベクタ/全文/メタを除去。移動で authz_tags 再評価。
   - エージェント（Phase 4/5）がFUSE経由で書いたファイルも同経路で自動再索引。
 - **受け入れ条件**:
-  - [ ] 更新で古いチャンクが残らない
-  - [ ] 削除で全索引から消える
-  - [ ] 共有変更で authz_tags が再評価される
+  - [x] 更新で古いチャンクが残らない
+  - [x] 削除で全索引から消える
+  - [x] 共有変更で authz_tags が再評価される
 
 ### Task 2.10: 検索API＋デバッグUI
 - **area**: rag / frontend / **path**: `crates/api`, `web/`
@@ -155,5 +157,5 @@
   - `POST /search`（クエリ→引用付き結果）。デバッグUIで引用元のハイライト・スコア・どの段で絞られたか表示。
   - Phase 3 のチャット doc_search ツールはこのAPIを使う。
 - **受け入れ条件**:
-  - [ ] 引用付き結果が返り、元文書の該当箇所にジャンプできる
-  - [ ] 権限で絞られた件数が分かる（デバッグ表示）
+  - [x] 引用付き結果が返り、元文書の該当箇所にジャンプできる
+  - [x] 権限で絞られた件数が分かる（デバッグ表示）

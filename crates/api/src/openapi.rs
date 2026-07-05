@@ -33,6 +33,7 @@ use utoipa::{
         crate::routes::shares::shared_with_me,
         crate::routes::directory::search_users,
         crate::routes::directory::search_roles,
+        crate::routes::search::search,
         crate::routes::admin::create_tenant,
         crate::routes::admin::delete_tenant,
     ),
@@ -60,6 +61,13 @@ use utoipa::{
         storage::ShareTarget,
         storage::ShareRole,
         storage::ShareEntry,
+        // 検索 DTO は rag 側の単一定義（手書きミラー禁止）。
+        rag::SearchRequest,
+        rag::SearchResponse,
+        rag::SearchResult,
+        rag::SearchMode,
+        rag::SearchDebug,
+        rag::StageTimings,
     )),
     modifiers(&SecurityAddon),
 )]

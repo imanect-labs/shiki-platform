@@ -72,7 +72,7 @@ flowchart TB
 
 Temporal 等の外部エンジンは入れない（部品点数最小化・エアギャップ・認可/監査/テナント分離を心臓部に編み込むため）。
 2.1 で durability をノード境界に限定した結果、必要なのは「Postgres 上のチェックポイント付きステップキュー」であり、
-pgmq の延長＋状態機械として `crates/workflow-engine` に自作する。
+jobq（自作 Postgres キュー）の延長＋状態機械として `crates/workflow-engine` に自作する。
 
 | 要求 | 実装 |
 |------|------|
