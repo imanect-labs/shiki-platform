@@ -60,11 +60,14 @@ pub async fn replace_chunks(
             ChunkKind::Parent => None,
             ChunkKind::Leaf | ChunkKind::Table => Some(embedding_model_version),
         };
+        // 同一 (node, version) の重複ジョブが並行実行されても衝突しない（決定的 ID
+        // かつ内容も決定的なので do nothing で同値。at-least-once 配信の並行冪等性）。
         sqlx::query(
             "insert into rag_chunk \
                  (id, tenant_id, org, node_id, version, parent_id, kind, ordinal, page, \
                   heading_path, content, char_count, authz_tags, embedding_model_version) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+             on conflict (id) do nothing",
         )
         .bind(chunk.id)
         .bind(&ctx.tenant_id)

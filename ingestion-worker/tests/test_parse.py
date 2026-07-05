@@ -103,3 +103,55 @@ def test_parse_pdf_smoke(client: TestClient, monkeypatch: pytest.MonkeyPatch) ->
     assert resp.status_code == 200
     assert resp.json()["used_ocr"] is True
     assert resp.json()["blocks"]
+
+
+# --- ファイル形式マトリクス（Task 2.1: 多様な形式の構造保持を Docling 実走で検証） ---
+
+MATRIX = [
+    (
+        "sample.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "経費精算",  # 段落テキスト
+        "交通費",  # 表セル
+    ),
+    (
+        "sample.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        None,  # xlsx は表のみ
+        "営業部",
+    ),
+    ("sample.csv", "text/csv", None, "東京"),
+    ("sample.html", "text/html", "経費精算", "上限"),
+]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("name,content_type,para_text,table_text", MATRIX)
+def test_parse_matrix_preserves_structure(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    content_type: str,
+    para_text: str | None,
+    table_text: str,
+) -> None:
+    """docx/xlsx/csv/html が構造（段落・表）を保って抽出される。"""
+    _stub_download(monkeypatch, (FIXTURES / name).read_bytes())
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "source_url": "http://minio:9000/blob",
+            "content_type": content_type,
+            "file_name": name,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    blocks = resp.json()["blocks"]
+    assert blocks, "ブロックが抽出される"
+    if para_text is not None:
+        paragraphs = " ".join(b["text"] for b in blocks if b["type"] != "table")
+        assert para_text in paragraphs, f"{name}: 段落テキストが抽出される"
+    tables = [b for b in blocks if b["type"] == "table"]
+    assert tables, f"{name}: 表が表ブロックとして抽出される"
+    assert any(table_text in t["text"] for t in tables), f"{name}: 表セルが保持される"

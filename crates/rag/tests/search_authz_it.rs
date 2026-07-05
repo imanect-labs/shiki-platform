@@ -268,6 +268,11 @@ async fn index_file(env: &Env, folder: Uuid, name: &str) -> Uuid {
 
 async fn drain(env: &Env) {
     for _ in 0..20 {
+        // バックオフ待ちのリトライも即時消費し、drain を決定的にする（テスト専用）。
+        sqlx::query("update job_queue set visible_at = now() where queue = 'rag_ingest'")
+            .execute(&env.pool)
+            .await
+            .unwrap();
         relay::relay_once(&env.pool, &env.deps.config)
             .await
             .unwrap();

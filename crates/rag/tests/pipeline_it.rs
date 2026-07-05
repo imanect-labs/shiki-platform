@@ -478,6 +478,11 @@ async fn create_folder(env: &TestEnv, name: &str) -> Uuid {
 /// relay → consumer を、キューが空になるまで回す。
 async fn drain_pipeline(env: &TestEnv) {
     for _ in 0..20 {
+        // バックオフ待ちのリトライも即時消費し、drain を決定的にする（テスト専用）。
+        sqlx::query("update job_queue set visible_at = now() where queue = 'rag_ingest'")
+            .execute(&env.pool)
+            .await
+            .unwrap();
         relay::relay_once(&env.pool, &env.deps.config)
             .await
             .unwrap();
