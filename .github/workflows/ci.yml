@@ -60,6 +60,29 @@ jobs:
         with:
           command: check
 
+  python:
+    name: Python (ingestion-worker ruff / pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ingestion-worker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "ingestion-worker/uv.lock"
+      - name: uv sync
+        run: uv sync --frozen
+      - name: ruff
+        run: uv run ruff check .
+      # 高速テストのみ（フェイクモデル）。Docling 実走・実モデルは slow マークで除外し、
+      # compose 検証とローカルで担保する（CI 予算・モデル DL 回避）。
+      - name: pytest (fast)
+        run: uv run pytest -m "not slow" -q
+
   coverage:
     name: Coverage (cargo-llvm-cov, gate 80%)
     runs-on: ubuntu-latest
