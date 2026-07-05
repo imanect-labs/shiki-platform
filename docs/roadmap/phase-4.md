@@ -1,5 +1,14 @@
 # Phase 4 — サンドボックス＋コードインタプリタ
 
+> 📝 **方針転換（2026-07-05・#97・design §4.6）**: 既定バックエンドを **wasm ティア（agentos フォーク・
+> `crates/sandbox-wasm`・非特権別プロセス）** に変更。**アルファは wasm ティアのみ**で、本ファイルの
+> Firecracker（4.3）/gVisor（4.4）/温機プール（4.5）/FUSE マウント（4.9）は **gVisor/FC ティア＝ポストアルファ**に
+> 後ろ倒しする。wasm ティアでは仮想FSを StorageService に直結（カーネル FUSE 不要・PIT-4/PIT-22 は該当せず）、
+> egress は仮想 net スタックのホスト関数で強制、code_interpreter は **Pyodide**（numpy/pandas/matplotlib）。
+> `Sandbox` トレイト（4.1）・orchestrator 骨格（4.2）・ツールRPC（4.7）・リソース制限（4.8）・
+> code_interpreter 統合（4.10/4.11）は wasm ティアを対象に実装する。
+> wasm ティア固有の注意は [PIT-32〜33](../design-caveats.md)。
+
 > 目的: 差別化の核となる**隔離された汎用実行環境**（プリミティブ）を立ち上げる。Firecracker/gVisor を
 > `Sandbox` トレイトで抽象化した sandbox-orchestrator を別特権プロセスとして作り、温機プール＋スナップショットで
 > 高速起動、egress デフォルト遮断＋allowlist、ホスト↔VM ツールRPC、リソース制限を備える。FUSE で StorageService を
