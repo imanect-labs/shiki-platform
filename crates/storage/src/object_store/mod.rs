@@ -49,6 +49,18 @@ pub trait ObjectStore: Send + Sync {
         content_type: Option<&str>,
     ) -> Result<String, ObjectStoreError>;
 
+    /// **内部エンドポイント**で署名したダウンロード presigned GET URL を発行する。
+    ///
+    /// ingestion-worker 等、同一ネットワーク内のサービスが blob を読む用途。
+    /// ブラウザ向けの [`presign_get`](Self::presign_get) は公開エンドポイントで署名する
+    /// ため、コンテナ内からは到達できない。TTL は短く保ち、発行経路は
+    /// `IndexerStorage`（インデクサ専用ファサード）に閉じる。
+    async fn presign_get_internal(
+        &self,
+        key: &str,
+        ttl: Duration,
+    ) -> Result<String, ObjectStoreError>;
+
     /// オブジェクトを server-side で読み、`(sha256 hex, バイト数)` を返す（finalize の再ハッシュ用）。
     /// 内容を逐次読みしながらハッシュするため、巨大ファイルでもメモリに載せきらない。
     /// 対象が存在しない場合は [`ObjectStoreError::NotFound`]。

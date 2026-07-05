@@ -11,6 +11,8 @@ name = "rag"
 
 [dependencies]
 shiki-authz.workspace = true
+shiki-storage.workspace = true
+shiki-jobq.workspace = true
 
 tokio.workspace = true
 sqlx.workspace = true
@@ -37,9 +39,10 @@ tokio.workspace = true
 # Tantivy index-per-tenant のテスト用一時ディレクトリ。
 tempfile = "3"
 
-# shiki-authz は lib 名 `authz` で参照するため cargo-machete が誤検出する（実際は使用中）。
+# shiki-authz/storage/jobq は lib 名 `authz`/`storage`/`jobq` で参照するため
+# cargo-machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz"]
+ignored = ["shiki-authz", "shiki-storage", "shiki-jobq"]
 
 [lints]
 workspace = true

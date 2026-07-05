@@ -3693,6 +3693,8 @@ dependencies = [
  "serde",
  "serde_json",
  "shiki-authz",
+ "shiki-jobq",
+ "shiki-storage",
  "sqlx",
  "tantivy",
  "tempfile",

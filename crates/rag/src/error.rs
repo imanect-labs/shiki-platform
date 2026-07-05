@@ -33,6 +33,15 @@ pub enum RagError {
     #[error("DB エラー: {0}")]
     Db(#[from] sqlx::Error),
 
+    #[error("ジョブキューエラー: {0}")]
+    Jobq(#[from] jobq::JobqError),
+
+    #[error("ストレージエラー: {0}")]
+    Storage(#[from] storage::StorageError),
+
+    #[error("直列化エラー: {0}")]
+    Serde(#[from] serde_json::Error),
+
     #[error("設定エラー: {0}")]
     Config(String),
 }
@@ -48,9 +57,12 @@ impl RagError {
             | RagError::Vector(_)
             | RagError::Fulltext(_)
             | RagError::Db(_)
+            | RagError::Jobq(_)
+            | RagError::Storage(_)
             | RagError::Authz(_) => true,
             RagError::Parse { .. }
             | RagError::EmbeddingVersionMismatch { .. }
+            | RagError::Serde(_)
             | RagError::Config(_) => false,
         }
     }

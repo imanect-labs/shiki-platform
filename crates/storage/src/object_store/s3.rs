@@ -208,6 +208,24 @@ impl ObjectStore for S3ObjectStore {
         Ok(req.uri().to_string())
     }
 
+    async fn presign_get_internal(
+        &self,
+        key: &str,
+        ttl: Duration,
+    ) -> Result<String, ObjectStoreError> {
+        let pc = PresigningConfig::expires_in(ttl)
+            .map_err(|e| ObjectStoreError::Presign(e.to_string()))?;
+        let req = self
+            .internal
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .presigned(pc)
+            .await
+            .map_err(|e| ObjectStoreError::Presign(format!("internal get presign: {e}")))?;
+        Ok(req.uri().to_string())
+    }
+
     // NOTE (PIT-6 tension・後続 Issue): これは finalize で blob 全体を MinIO→API へ読み戻して
     // sha256 を再計算する＝サーバ経由のバイトプロキシであり、「バイトはクライアント↔MinIO 直」
     // という PIT-6 の主張と緊張する（大容量で顕著）。移行先: presigned PUT に

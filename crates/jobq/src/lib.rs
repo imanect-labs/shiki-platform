@@ -169,6 +169,23 @@ pub async fn fail(
     Ok(FailOutcome::Retry { attempts })
 }
 
+/// ジョブを試行回数に関わらず即 DLQ へ移送する（恒久エラー: リトライしても直らない
+/// パース失敗・設定不整合など）。移送したら `true`、既に無ければ `false`。
+pub async fn kill(conn: &mut PgConnection, id: i64, error: &str) -> Result<bool, JobqError> {
+    let moved = sqlx::query_scalar::<_, i64>(
+        "with dead as (delete from job_queue where id = $1 returning *) \
+         insert into job_queue_dead \
+             (id, queue, tenant_id, payload, attempts, max_attempts, trace_id, enqueued_at, last_error) \
+         select id, queue, tenant_id, payload, attempts, max_attempts, trace_id, enqueued_at, $2 \
+         from dead returning id",
+    )
+    .bind(id)
+    .bind(error)
+    .fetch_optional(conn)
+    .await?;
+    Ok(moved.is_some())
+}
+
 /// DLQ の 1 件を元キューへ再投入する（attempts はリセット）。無ければ `false`。
 pub async fn requeue_dead(conn: &mut PgConnection, id: i64) -> Result<bool, JobqError> {
     let requeued = sqlx::query_scalar::<_, i64>(

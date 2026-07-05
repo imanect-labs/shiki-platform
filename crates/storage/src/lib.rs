@@ -28,6 +28,7 @@ pub mod content_address;
 pub mod directory;
 pub mod error;
 pub mod event;
+pub mod indexing;
 pub mod model;
 pub mod object_store;
 pub mod service;
@@ -39,6 +40,7 @@ pub use directory::{
 };
 pub use error::StorageError;
 pub use event::{OutboxEvent, WriteOp};
+pub use indexing::{IndexerStorage, NodeSnapshot};
 pub use model::{
     ChildPage, ChildSort, ChildSortKey, Crumb, DownloadTicket, FileVersion, Node, NodeKind,
     ShareEntry, ShareRole, ShareTarget, UploadTicket,
