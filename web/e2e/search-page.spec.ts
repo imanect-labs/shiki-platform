@@ -15,8 +15,8 @@ test("文書検索ページが表示され、検索 UI が結線されている"
   // 検索入力とモード切替が存在する。
   await expect(page.getByRole("textbox", { name: "検索クエリ" })).toBeVisible();
   await expect(page.getByRole("radio", { name: "ハイブリッド" })).toBeVisible();
-  // クエリ未入力では検索ボタンは押せない。
-  await expect(page.getByRole("button", { name: "検索" })).toBeDisabled();
+  // クエリ未入力では検索ボタンは押せない（exact: サイドバーの「検索」「文書検索」と区別）。
+  await expect(page.getByRole("button", { name: "検索", exact: true })).toBeDisabled();
 });
 
 test("サイドバーとホームから文書検索へ遷移できる", async ({ page }) => {
