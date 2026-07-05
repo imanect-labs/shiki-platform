@@ -25,19 +25,17 @@ uuid.workspace = true
 chrono.workspace = true
 sha2.workspace = true
 hex.workspace = true
-tracing.workspace = true
-bytes.workspace = true
-futures.workspace = true
 
 # S3 互換オブジェクトストア（MinIO）。presigned URL 発行・server-side copy 等に使う。
-aws-config.workspace = true
 aws-sdk-s3.workspace = true
-aws-credential-types.workspace = true
-aws-smithy-types.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
 reqwest.workspace = true
+
+# shiki-authz は lib 名 `authz` で参照するため cargo-machete が誤検出する（実際は使用中）。
+[package.metadata.cargo-machete]
+ignored = ["shiki-authz"]
 
 [lints]
 workspace = true

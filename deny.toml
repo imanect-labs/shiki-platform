@@ -1,0 +1,64 @@
+# cargo-deny 設定（サプライチェーン検査）。CI は `cargo deny check`。
+# エンタープライズ前提: 脆弱性・ライセンス違反・出所不明 crate を機械的に止める。
+# 参照: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# ターゲット横断で健全性を見たいので全 feature を評価する。
+all-features = true
+
+[advisories]
+# RUSTSEC advisory DB を参照し、脆弱性・yanked を止める。
+version = 2
+yanked = "deny"
+# 誤検知・対応保留は理由付きでここに列挙する。
+# 下記 3 件は aws-sdk-s3 が推移的に抱える古い TLS スタック（hyper-rustls 0.24 →
+# tokio-rustls 0.24.1 → rustls-webpki 0.101.7）由来。現行の aws-sdk-s3 では上流が
+# hyper-rustls を更新するまで解消できない（cargo update で到達不可）。
+# 実害は「誤発行された証明書の name constraint 迂回 / CRL パース panic」であり、
+# 本system の S3 クライアントは内部 MinIO か正規発行の AWS 証明書にのみ接続するため
+# 悪用条件を満たしにくい。上流更新で解消次第この ignore を外す（要追跡）。
+ignore = [
+    { id = "RUSTSEC-2026-0098", reason = "aws-sdk-s3 推移依存の rustls-webpki 0.101.7。上流更新待ち・内部MinIO/正規AWS証明書のみで低リスク。" },
+    { id = "RUSTSEC-2026-0099", reason = "同上（wildcard name の name constraint 迂回）。" },
+    { id = "RUSTSEC-2026-0104", reason = "同上（CRL パースの reachable panic）。" },
+]
+
+[licenses]
+version = 2
+# 許可する SPDX ライセンス（permissive 中心 ＋ 弱コピーレフト MPL/Unicode）。
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "BSL-1.0",
+    "OpenSSL",
+    # webpki-roots（ルート証明書バンドル）のデータライセンス。permissive。
+    "CDLA-Permissive-2.0",
+]
+# 自社 crate は publish=false（UNLICENSED）。ライセンス検査の対象外にする。
+private = { ignore = true }
+confidence-threshold = 0.8
+
+[bans]
+# 同一 crate の複数バージョン混在は肥大化の兆候。まずは警告で可視化する。
+multiple-versions = "warn"
+# ワイルドカード依存（version = "*"）は再現性を損なうため禁止。
+# ただしワークスペース内の path 依存（shiki-* = { path = ... }）は version を持たず
+# 実質 "*" 扱いになるため、これらは例外として許可する。
+wildcards = "deny"
+allow-wildcard-paths = true
+# 明確に禁止したい crate があればここに追加する（例: openssl 系を rustls に寄せる等）。
+deny = []
+
+[sources]
+# crates.io 以外の未知レジストリ / 未知 git 出所を禁止する（供給元の固定）。
+unknown-registry = "deny"
+unknown-git = "deny"
