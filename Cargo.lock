@@ -2803,6 +2803,21 @@ version = "0.0.0"
 [[package]]
 name = "shiki-rag"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shiki-authz",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "shiki-sandbox-client"
@@ -3693,6 +3708,7 @@ dependencies = [
  "getrandom 0.4.2",
  "js-sys",
  "serde_core",
+ "sha1_smol",
  "wasm-bindgen",
 ]
 
