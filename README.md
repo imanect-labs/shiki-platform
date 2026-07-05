@@ -22,10 +22,10 @@ docs/          設計・要件・ロードマップ
 
 - Rust（`rust-toolchain.toml` 固定版）, Docker / docker compose, Node.js + pnpm（`corepack enable pnpm`）。
 
-## クイックスタート（Phase 0）
+## クイックスタート
 
-`docker compose up` 一発で全依存（Postgres / Keycloak / OpenFGA / MinIO ＋ OTel スタック）と
-shiki-server が起動する。
+`docker compose up` 一発で全依存（Postgres / Keycloak / OpenFGA / MinIO / Qdrant /
+ingestion-worker）と shiki-server が起動する。
 
 ```sh
 cd deploy/compose
@@ -33,10 +33,16 @@ cp .env.example .env        # 必要に応じて値を編集
 docker compose up --build
 ```
 
+- ingestion-worker（Docling パース・Ruri 埋め込み・reranker）は初回起動時にモデルを
+  `hf-cache` volume へダウンロードする（数百 MB・以後は再利用）。
+- 監視スタック（OTel / Tempo / Loki / Prometheus / Grafana）は既定で起動しない
+  （開発機の RAM 節約）。使う時: `OTLP_ENDPOINT=http://otel-collector:4317 docker compose --profile observability up -d`
+
 起動後の確認:
 
 - ヘルスチェック: `curl http://localhost:8080/healthz` → 200
-- 監視: Grafana `http://localhost:3001`（Tempo でトレース、Prometheus でメトリクス）。
+- 文書検索（RAG）: Drive にファイルをアップロード → 自動索引 → `http://localhost:3000/search`
+- 監視（observability profile 起動時）: Grafana `http://localhost:3001`。
 
 フロント（OIDC ログイン → `/me` 表示）は別途起動する:
 

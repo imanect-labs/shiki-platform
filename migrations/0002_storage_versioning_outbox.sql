@@ -49,7 +49,7 @@ alter table pending_upload
 -- ---------------------------------------------------------------------------
 -- storage_event_outbox: 書込ドメインイベントの outbox（Task 1.8）。
 -- 書込と同一 txn で INSERT し、購読側（Phase 2 ingestion）が at-least-once で消費する。
--- pgmq への relay / DLQ / リトライは消費者がいる Phase 2（Task 2.8）で配線する。
+-- jobq（自作 Postgres キュー）への relay / DLQ / リトライは Phase 2（Task 2.8）で配線済み。
 -- ---------------------------------------------------------------------------
 create table storage_event_outbox (
     id           bigserial   primary key,

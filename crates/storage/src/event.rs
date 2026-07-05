@@ -6,7 +6,7 @@
 //! される（outbox パターン＝書込とイベントの整合を担保）。
 //!
 //! 購読側（Phase 2 ingestion）は [`claim`] → 処理 → [`mark_processed`] の順で **at-least-once**
-//! に消費する（commit 前にクラッシュすればロールバックで再配信される）。pgmq への relay・
+//! に消費する（commit 前にクラッシュすればロールバックで再配信される）。jobq への relay・
 //! DLQ・リトライは消費者がいる Phase 2（Task 2.8）で配線する。FUSE 経由の書込（Phase 4）も
 //! StorageService を通るため、この経路に自動で乗る。
 //!
