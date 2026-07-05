@@ -25,6 +25,7 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 ## コマンド（CI の正）
 
 - Rust: cargo fmt --check / cargo clippy -- -D warnings / cargo test（単体は cargo test <name>） / cargo build
+- 品質ゲート: bash scripts/check-file-size.sh（1ファイル500行）/ cargo machete（未使用依存）/ cargo deny check（脆弱性・ライセンス・出所）
 - Web: pnpm install / pnpm dev / pnpm build / pnpm lint / 型生成 pnpm gen:api（utoipa → openapi-typescript）
 - 全体: docker compose up（smoke: /healthz・/me）
 

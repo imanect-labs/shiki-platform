@@ -29,6 +29,31 @@ jobs:
       - run: cargo test --all
       - run: cargo build --all
 
+  quality:
+    name: Quality gates (file-size / cargo-machete)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 巨大ファイル gate は toolchain 不要（bash+git のみ）。最速で fail-fast させる。
+      - name: file-size gate (1 ファイル 500 行以内)
+        run: bash scripts/check-file-size.sh
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-machete
+      - name: cargo machete (未使用依存の検出)
+        run: cargo machete
+
+  cargo-deny:
+    name: cargo-deny (advisories / licenses / bans / sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
   coverage:
     name: Coverage (cargo-llvm-cov, gate 80%)
     runs-on: ubuntu-latest
