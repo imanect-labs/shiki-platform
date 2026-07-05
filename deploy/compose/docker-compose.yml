@@ -289,12 +289,9 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      qdrant:
-        condition: service_healthy
-      # worker は healthy を待たない: 初回モデル DL 中でも server は起動でき、
-      # インジェストは jobq のリトライで吸収される。
-      ingestion-worker:
-        condition: service_started
+      # qdrant / ingestion-worker には依存しない: 検索・インジェストは遅延接続＋
+      # リトライで吸収され、server 単体起動（CI smoke 等）で worker のビルドを
+      # 強制しない。フルスタックは `docker compose up`（全サービス）で立ち上がる。
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
       interval: 5s

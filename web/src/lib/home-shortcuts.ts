@@ -38,8 +38,8 @@ export const HOME_SHORTCUT_CATEGORIES: HomeShortcutCategory[] = [
     items: [
       // FR-4 LLMチャット（本 issue でプレビュー動作）。
       { key: "chat", label: "AIチャット", icon: MessageSquareText, href: "/", ready: true },
-      // FR-3 permission-aware RAG。
-      { key: "rag", label: "文書検索", icon: FileSearch, ready: false },
+      // FR-3 permission-aware RAG（Phase 2 で実装済み）。
+      { key: "rag", label: "文書検索", icon: FileSearch, href: "/search", ready: true },
       // FR-5 サンドボックス＆AIエージェント。
       { key: "agent", label: "エージェント", icon: Bot, ready: false },
     ],
