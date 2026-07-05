@@ -21,7 +21,6 @@ serde_json.workspace = true
 reqwest.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-chrono.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 # 検索 API の DTO を rag 側で単一定義し、api 層に手書きミラーを作らない（codegen が正）。

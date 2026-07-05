@@ -16,7 +16,7 @@ use lindera::mode::Mode;
 use lindera::segmenter::Segmenter;
 use lindera_tantivy::tokenizer::LinderaTokenizer;
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, TermSetQuery};
+use tantivy::query::{BooleanQuery, Occur, Query, TermSetQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, INDEXED, STORED,
     STRING,
@@ -211,9 +211,29 @@ impl FulltextIndex for TantivyFulltext {
         }
         let tenant = self.tenant_index(&ctx.tenant_id)?;
 
-        // 本文クエリ（Lindera で形態素化される）。壊れた構文も許容する lenient parse。
-        let parser = QueryParser::for_index(&tenant.index, vec![tenant.fields.text]);
-        let (text_query, _errors) = parser.parse_query_lenient(query_text);
+        // 本文クエリはクエリ側も同じ Lindera で形態素化し、**形態素の OR（BM25）**にする。
+        // QueryParser は空白区切り 1 語が複数トークンに展開されると PhraseQuery（連続一致）
+        // を組むため、「上期の拠点別売上は？」のような自然文クエリが 0 件になる。
+        let Some(mut analyzer) = tenant.index.tokenizers().get(TOKENIZER_NAME) else {
+            return Err(RagError::Fulltext("lang_ja トークナイザ未登録".into()));
+        };
+        let mut term_queries: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        {
+            let mut stream = analyzer.token_stream(query_text);
+            while let Some(token) = stream.next() {
+                term_queries.push((
+                    Occur::Should,
+                    Box::new(tantivy::query::TermQuery::new(
+                        Term::from_field_text(tenant.fields.text, &token.text),
+                        tantivy::schema::IndexRecordOption::WithFreqs,
+                    )),
+                ));
+            }
+        }
+        if term_queries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let text_query: Box<dyn Query> = Box::new(BooleanQuery::new(term_queries));
 
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(Occur::Must, text_query)];
         // pre-filter: 可読タグのいずれかを持つ chunk のみ（dense 側と同じ権限境界）。
