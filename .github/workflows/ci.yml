@@ -34,6 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # GITHUB_TOKEN を .git/config に残さない（後続サードパーティ処理からの窃取防止）。
+          persist-credentials: false
       # 巨大ファイル gate は toolchain 不要（bash+git のみ）。最速で fail-fast させる。
       - name: file-size gate (1 ファイル 500 行以内)
         run: bash scripts/check-file-size.sh
@@ -50,6 +53,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # GITHUB_TOKEN を .git/config に残さない（後続サードパーティ処理からの窃取防止）。
+          persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
