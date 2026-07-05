@@ -32,15 +32,16 @@
 | ID | タイトル | area | 依存 |
 |----|---------|------|------|
 | 4.1 | `Sandbox` トレイト定義＋`sandbox-client` gRPC 契約 | sandbox | 3.3 |
-| 4.2 | sandbox-orchestrator スケルトン（特権プロセス・gRPC API） | sandbox | 4.1 |
-| 4.3 | Firecracker microVM バックエンド実装 | sandbox | 4.2 |
-| 4.4 | gVisor バックエンド実装（KVM無し環境向けフォールバック） | sandbox | 4.2 |
-| 4.5 | 温機プール＋スナップショット高速起動（<200ms） | sandbox | 4.3 |
-| 4.6 | egress デフォルト遮断＋allowlist ネットワーク制御 | sandbox | 4.2 |
-| 4.7 | ホスト↔VM ツールRPC（実行/ファイル転送/結果回収） | sandbox | 4.2 |
+| 4.2 | sandbox-orchestrator スケルトン（gRPC API） | sandbox | 4.1 |
+| 4.12 | **wasm バックエンド（agentos フォーク・`crates/sandbox-wasm`・仮想FS→StorageService 直結）**〔アルファ既定〕 | sandbox | 4.2, 1.x |
+| 4.3 | Firecracker microVM バックエンド実装 **〔ポストアルファ〕** | sandbox | 4.2 |
+| 4.4 | gVisor バックエンド実装 **〔ポストアルファ〕** | sandbox | 4.2 |
+| 4.5 | 温機プール＋スナップショット高速起動（<200ms）**〔ポストアルファ・FC/gVisor 用。wasm は不要〕** | sandbox | 4.3 |
+| 4.6 | egress デフォルト遮断＋allowlist ネットワーク制御（wasm=仮想 net ホスト関数） | sandbox | 4.2 |
+| 4.7 | ホスト↔サンドボックス ツールRPC（実行/ファイル転送/結果回収） | sandbox | 4.2 |
 | 4.8 | リソース制限（CPU/メモリ/PID/時間）＋安全な強制終了 | sandbox | 4.2 |
-| 4.9 | `fuse` 仮想FS：StorageService を `/workspace` にマウント | sandbox | 4.7, 1.x |
-| 4.10 | `code_interpreter` ツール（制約インスタンス）＋agent-core 接続 | agent | 4.5, 4.6, 4.7, 3.3 |
+| 4.9 | `fuse` 仮想FS：StorageService を `/workspace` にマウント **〔ポストアルファ・FC/gVisor 用。wasm は 4.12 の仮想FSで代替〕** | sandbox | 4.7, 1.x |
+| 4.10 | `code_interpreter` ツール（Pyodide 制約インスタンス）＋agent-core 接続 | agent | 4.12, 4.6, 4.7, 3.3 |
 | 4.11 | チャットでのコード実行可視化＋成果物のストレージ保存 | frontend | 4.10, 3.10 |
 
 ---

@@ -191,7 +191,8 @@
 - **area**: sandbox / **path**: `crates/sandbox-orchestrator`, `crates/app-platform`
 - **依存**: 9.7, 4.1
 - **仕様**:
-  - アプリのサーバ側関数を既存サンドボックス（Firecracker/gVisor）で**関数型実行**（リクエスト/eventで起動・破棄）。
+  - アプリのサーバ側関数を既存サンドボックス（**アルファ=wasm ティア（4.12）**。Firecracker/gVisor はポストアルファの
+    昇格先・design §4.6）で**関数型実行**（リクエスト/eventで起動・破棄）。
     confidential client secret はサンドボックス内に隔離。**egressデフォルト遮断＋allowlist**（ゲートウェイ＋宣言allowlistのみ）。
   - cron/webhook を events から駆動。新規ホスティング基盤は作らず orchestrator を再利用。
 - **受け入れ条件**:

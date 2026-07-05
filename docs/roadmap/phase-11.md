@@ -7,7 +7,6 @@
 > 完了の定義(DoD): 複数ユーザーが md 文書を同時編集でき、AI が同一セッションに参加して編集/サジェストできる。
 > Collabora で Office 文書を共同編集でき、保存が WOPI→StorageService→バージョニング→RAG 再索引に流れる。
 > スプレッドシートのカスタム関数/マクロが shiki script で動く。
->
 > ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-37（Yjs update log の肥大化と権限）・
 > PIT-11（WOPI トークンと共有解除の即時性）を確認すること。**
 

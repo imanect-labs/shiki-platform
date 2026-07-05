@@ -58,9 +58,12 @@
 ### Task 10.3: トリガ（スケジューラ＋イベント）
 - **area**: data / **path**: `crates/workflow-engine`
 - **仕様**: cron 式を Postgres 保持・**リーダーリース付き単一スケジューラループ**が due run を enqueue（多重発火防止）。
+  **発火の冪等化**: occurrence を `(workflow_id, scheduled_at)` unique でトランザクショナルに記録してから enqueue
+  （リーダーが enqueue 直後にクラッシュ→再起動しても同一 occurrence を二重投入しない・PIT-31 参照）。
   イベントトリガは既存 outbox（storage 書込・record 変更・status 遷移）とトリガテーブルのマッチング。
 - **受け入れ条件**:
   - [ ] 複数インスタンス起動時もスケジュールが1回だけ発火する
+  - [ ] スケジューラを enqueue 直後に kill →再起動しても同一 occurrence の run が1つしか作られない
   - [ ] storage 書込／record status 遷移でワークフローが起動する
   - [ ] 無効化済みワークフローのトリガが発火しない
 
