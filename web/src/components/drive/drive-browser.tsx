@@ -670,7 +670,7 @@ function ContentHitRows({
           key={h.fileId}
           type="button"
           onClick={() => onOpen(h)}
-          className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+          className="shiki-dash-bottom flex w-full items-start gap-3 px-3 py-2.5 text-left outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
         >
           <FileText className="mt-0.5 size-[18px] shrink-0 text-primary" aria-hidden />
           <span className="min-w-0 flex-1">
