@@ -24,6 +24,7 @@ path = "src/bin/export-openapi.rs"
 [dependencies]
 shiki-authz.workspace = true
 shiki-storage.workspace = true
+shiki-rag.workspace = true
 
 tokio.workspace = true
 axum.workspace = true
@@ -58,10 +59,10 @@ async-trait.workspace = true
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
 
-# shiki-authz / shiki-storage は lib 名 `authz` / `storage` で参照するため
-# cargo-machete が誤検出する（実際は使用中）。
+# shiki-authz / shiki-storage / shiki-rag は lib 名 `authz` / `storage` / `rag` で参照する
+# ため cargo-machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-storage"]
+ignored = ["shiki-authz", "shiki-storage", "shiki-rag"]
 
 [lints]
 workspace = true

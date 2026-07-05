@@ -19,6 +19,9 @@ pub enum ApiError {
     Conflict,
     #[error("不正なリクエスト: {0}")]
     BadRequest(String),
+    /// 機能が無効/未準備（RAG 無効設定など）。理由はログのみ（クライアントへ漏らさない）。
+    #[error("利用できません: {0}")]
+    ServiceUnavailable(String),
     #[error("内部エラー: {0}")]
     Internal(String),
 }
@@ -31,6 +34,7 @@ impl ApiError {
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::Conflict => StatusCode::CONFLICT,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -70,6 +74,19 @@ impl From<storage::StorageError> for ApiError {
             SE::ObjectStore(e) => ApiError::Internal(format!("object_store: {e}")),
             SE::Db(e) => ApiError::Internal(format!("db: {e}")),
             SE::Authz(e) => ApiError::Internal(format!("authz: {e}")),
+        }
+    }
+}
+
+impl From<rag::RagError> for ApiError {
+    fn from(err: rag::RagError) -> Self {
+        use rag::RagError as RE;
+        match err {
+            // worker/Qdrant への到達失敗など一時障害は 503（クライアントは再試行できる）。
+            RE::Http(_) | RE::Worker(_) | RE::Vector(_) => {
+                ApiError::ServiceUnavailable(format!("rag: {err}"))
+            }
+            other => ApiError::Internal(format!("rag: {other}")),
         }
     }
 }

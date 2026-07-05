@@ -27,6 +27,9 @@ pub struct AppConfig {
     pub storage: StorageConfig,
     pub vector: VectorConfig,
     pub llm: LlmConfig,
+    /// RAG（インジェスト・パイプライン＋検索・Phase 2）。既定は無効。
+    #[serde(default)]
+    pub rag: rag::RagConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

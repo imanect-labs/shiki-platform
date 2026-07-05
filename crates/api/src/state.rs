@@ -47,4 +47,6 @@ pub struct AppState {
     pub directory: Arc<DirectoryStore>,
     /// テナントレジストリ（プロビジョニング/削除のライフサイクル・SAAS.2）。
     pub tenants: Arc<TenantStore>,
+    /// permission-aware 検索（Phase 2）。`rag.enabled=false` では `None`（/search は 503）。
+    pub search: Option<Arc<rag::SearchService>>,
 }
