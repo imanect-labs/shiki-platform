@@ -16,7 +16,7 @@ yanked = "deny"
 # hyper-rustls を更新するまで解消できない（cargo update で到達不可）。
 # 実害は「誤発行された証明書の name constraint 迂回 / CRL パース panic」であり、
 # 本system の S3 クライアントは内部 MinIO か正規発行の AWS 証明書にのみ接続するため
-# 悪用条件を満たしにくい。上流更新で解消次第この ignore を外す（要追跡）。
+# 悪用条件を満たしにくい。上流更新で解消次第この ignore を外す（追跡: issue #95）。
 ignore = [
     { id = "RUSTSEC-2026-0098", reason = "aws-sdk-s3 推移依存の rustls-webpki 0.101.7。上流更新待ち・内部MinIO/正規AWS証明書のみで低リスク。" },
     { id = "RUSTSEC-2026-0099", reason = "同上（wildcard name の name constraint 迂回）。" },
