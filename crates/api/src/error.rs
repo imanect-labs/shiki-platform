@@ -64,9 +64,9 @@ impl From<storage::StorageError> for ApiError {
             SE::Forbidden => ApiError::Forbidden,
             SE::NotFound => ApiError::NotFound,
             SE::Conflict => ApiError::Conflict,
-            SE::Invalid(msg) => ApiError::BadRequest(msg),
-            // 整合性エラー（宣言ハッシュ不一致・staging 未完了等）はクライアント起因の 400。
-            SE::Integrity(msg) => ApiError::BadRequest(msg),
+            // Invalid と整合性エラー（宣言ハッシュ不一致・staging 未完了等）はどちらも
+            // クライアント起因の 400。
+            SE::Invalid(msg) | SE::Integrity(msg) => ApiError::BadRequest(msg),
             SE::ObjectStore(e) => ApiError::Internal(format!("object_store: {e}")),
             SE::Db(e) => ApiError::Internal(format!("db: {e}")),
             SE::Authz(e) => ApiError::Internal(format!("authz: {e}")),

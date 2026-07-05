@@ -10,3 +10,6 @@ version = "0.0.0"
 name = "fuse"
 
 [dependencies]
+
+[lints]
+workspace = true

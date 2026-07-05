@@ -48,8 +48,6 @@ tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
-opentelemetry-semantic-conventions.workspace = true
-axum-tracing-opentelemetry.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -59,3 +57,11 @@ async-trait.workspace = true
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
+
+# shiki-authz / shiki-storage は lib 名 `authz` / `storage` で参照するため
+# cargo-machete が誤検出する（実際は使用中）。
+[package.metadata.cargo-machete]
+ignored = ["shiki-authz", "shiki-storage"]
+
+[lints]
+workspace = true

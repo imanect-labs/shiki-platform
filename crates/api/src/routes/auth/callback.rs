@@ -163,6 +163,10 @@ pub async fn callback(
 /// - **表示用**: 共有ダイアログ用に `directory_role` も upsert する。
 /// - **best-effort**: 失敗しても login を止めない。付与失敗は access が減る方向（fail-safe）、
 ///   剥奪失敗は次回ログインで再収束。
+// groups claim からの role 収束は「抽出→現在集合との差分→付与/剥奪→表示用 upsert」の
+// 分岐が本質的に多い。best-effort の各失敗を握り潰す都合で cognitive complexity が高くなるが、
+// 収束ロジックを一望できる利点を優先してグランドファーザ許容する。
+#[allow(clippy::cognitive_complexity)]
 pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenant_id: String) {
     let org = resolve_org(&principal);
     let ctx = AuthContext::new(principal, org.clone(), tenant_id.clone());
@@ -206,11 +210,11 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
             .await
         {
             Ok(true) => {
-                tracing::info!(role = %stale, "role メンバーシップを剥奪（claims から消失）")
+                tracing::info!(role = %stale, "role メンバーシップを剥奪（claims から消失）");
             }
             Ok(false) => {}
             Err(e) => {
-                tracing::warn!(role = %stale, error = %e, "role 剥奪に失敗（次回同期で再収束）")
+                tracing::warn!(role = %stale, error = %e, "role 剥奪に失敗（次回同期で再収束）");
             }
         }
     }

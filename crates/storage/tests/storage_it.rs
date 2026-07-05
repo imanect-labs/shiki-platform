@@ -8,6 +8,17 @@
 //! dedup（PIT-14）・closure を保つ move（PIT-16）・rename/delete/restore・viewer 認可・
 //! deny の監査記録・ハッシュチェーン監査ログ。
 
+// テストコード: pedantic/安全系 lint は本番コードのみ厳格化する方針のため許容する。
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::pedantic,
+    clippy::cognitive_complexity
+)]
+
 use std::{sync::Arc, time::Duration};
 
 use authz::{

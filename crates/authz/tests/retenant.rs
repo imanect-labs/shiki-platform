@@ -4,6 +4,17 @@
 //! テナントリネームの両モードで、subject/object 双方が新名前空間へ移り旧タプルが
 //! 消えること・他名前空間に触れないことを検証する。
 
+// テストコード: pedantic/安全系 lint は本番コードのみ厳格化する方針のため許容する。
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::pedantic,
+    clippy::cognitive_complexity
+)]
+
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
     fga_http::FgaHttp,

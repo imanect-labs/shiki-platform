@@ -89,6 +89,8 @@ impl Modify for SecurityAddon {
 }
 
 /// OpenAPI 仕様を JSON 文字列で返す（export-openapi bin と /api-docs/openapi.json 共用）。
+// utoipa 派生の静的仕様の JSON 直列化であり失敗はビルド時に固定される不変条件。
+#[allow(clippy::expect_used)]
 pub fn openapi_json() -> String {
     ApiDoc::openapi()
         .to_pretty_json()

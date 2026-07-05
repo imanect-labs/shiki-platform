@@ -8,6 +8,20 @@
 //! - OpenFGA に送る relation / object type 名は [`vocab`] の enum を単一ソースとし、
 //!   手書き文字列を作らない（LLM ハルシネーション境界）。
 
+// #[cfg(test)] のユニットテストは本番コードのみ厳格化する pedantic/安全系 lint を許容する。
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::pedantic,
+        clippy::cognitive_complexity
+    )
+)]
+
 pub mod client;
 pub mod context;
 pub mod error;

@@ -10,3 +10,6 @@ version = "0.0.0"
 name = "agent_core"
 
 [dependencies]
+
+[lints]
+workspace = true

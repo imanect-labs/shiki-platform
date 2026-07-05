@@ -170,9 +170,17 @@
   - GitHub Actions: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `web` のlint/build。
   - **compose smoke test**: composeを起動し `/healthz`/`/me`（テストトークン）まで通す統合ジョブ。
   - キャッシュ（cargo, pnpm）でCIを高速化。
+  - **コード品質ゲート（AI生成の品質劣化対策）**:
+    - clippy 厳格化（`[workspace.lints]`）: 安全系（`unwrap_used`/`expect_used`/`panic`/
+      `dbg_macro`/`print_*` 等）は deny、`pedantic` は本番コードに適用（テスト/CLI bin は
+      方針に沿ってスコープ許容）。しきい値は `clippy.toml`。
+    - **ファイルサイズ gate**: `scripts/check-file-size.sh`（src の 1 ファイル 500 行以内）。
+    - **cargo-machete**: 未使用依存の検出。
+    - **cargo-deny**: 脆弱性(RUSTSEC)/ライセンス/出所/wildcard 依存を `deny.toml` で検査。
 - **受け入れ条件**:
   - [ ] PRでlint/test/buildが走り、失敗が赤になる
   - [ ] composeスモークがCIで成功する
+  - [x] clippy厳格化・ファイルサイズgate・cargo-machete・cargo-denyが緑（#品質ゲート）
 
 ### Task 0.10: skillex 連携を見据えた realm/トークン設計＋発行確認
 - **area**: auth

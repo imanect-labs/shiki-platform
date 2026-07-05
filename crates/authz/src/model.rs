@@ -14,6 +14,9 @@ use crate::{error::AuthzError, fga_http::FgaHttp};
 pub const AUTHORIZATION_MODEL_JSON: &str = include_str!("../model/authorization-model.json");
 
 /// 正本 model を [`Value`] として読み込む。
+// `include_str!` で同梱した JSON のパースであり、失敗はビルド時に固定される
+// プログラミング不変条件（実行時入力ではない）。`expect` で即時検知する。
+#[allow(clippy::expect_used)]
 pub fn default_model() -> Value {
     serde_json::from_str(AUTHORIZATION_MODEL_JSON)
         .expect("同梱の authorization-model.json は妥当な JSON であること")
@@ -28,16 +31,13 @@ pub async fn ensure_store_and_model(
     store_name: &str,
     desired_model: &Value,
 ) -> Result<(String, String), AuthzError> {
-    let store_id = match fga.find_store(store_name).await? {
-        Some(id) => {
-            tracing::info!(store = store_name, store_id = %id, "既存の OpenFGA store を利用");
-            id
-        }
-        None => {
-            let id = fga.create_store(store_name).await?;
-            tracing::info!(store = store_name, store_id = %id, "OpenFGA store を新規作成");
-            id
-        }
+    let store_id = if let Some(id) = fga.find_store(store_name).await? {
+        tracing::info!(store = store_name, store_id = %id, "既存の OpenFGA store を利用");
+        id
+    } else {
+        let id = fga.create_store(store_name).await?;
+        tracing::info!(store = store_name, store_id = %id, "OpenFGA store を新規作成");
+        id
     };
 
     let desired_fp = model_fingerprint(desired_model);

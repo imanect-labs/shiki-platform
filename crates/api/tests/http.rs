@@ -8,6 +8,17 @@
 //! - 状態変更（logout）は double-submit CSRF が無いと 403。レスポンスにトークンを出さない。
 //! - セッションキーが tenant_id でスコープされ、他テナントからは引けない。
 
+// テストコード: pedantic/安全系 lint は本番コードのみ厳格化する方針のため許容する。
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::pedantic,
+    clippy::cognitive_complexity
+)]
+
 use std::{sync::Arc, time::Duration};
 
 use api::{

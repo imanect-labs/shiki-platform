@@ -76,11 +76,10 @@ impl<'a> KeycloakAdmin<'a> {
 
     /// service account の access token を client_credentials で取得する。
     async fn admin_token(&self) -> Result<String, KeycloakAdminError> {
-        // from_config で存在検証済み。
-        let (id, secret) = self
-            .auth
-            .provisioner_credentials()
-            .expect("from_config で検証済み");
+        // from_config で存在検証済みだが、状態不変条件をエラーとして明示的に扱う。
+        let (id, secret) = self.auth.provisioner_credentials().ok_or_else(|| {
+            KeycloakAdminError::NotConfigured("auth.provisioner（client_id/secret）".into())
+        })?;
         let resp = self
             .http
             .post(self.auth.token_endpoint())
@@ -354,7 +353,7 @@ impl<'a> KeycloakAdmin<'a> {
             .as_object_mut()
             .and_then(|o| {
                 o.entry("attributes")
-                    .or_insert_with(|| Value::Object(Default::default()))
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()))
                     .as_object_mut()
             })
             .ok_or_else(|| KeycloakAdminError::Status {

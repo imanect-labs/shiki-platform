@@ -165,8 +165,7 @@ impl FgaHttp {
         // {"authorization_model": {...}} を取り出す。
         Ok(body
             .get_mut("authorization_model")
-            .map(Value::take)
-            .unwrap_or(Value::Null))
+            .map_or(Value::Null, Value::take))
     }
 
     /// authorization model を書き込み、新しい model id を返す。

@@ -4,6 +4,17 @@
 //! 設定されている時のみ実行し、未設定なら early-return でスキップする
 //! （ローカルの素の `cargo test` を壊さないため）。CI の compose smoke で実走する。
 
+// テストコード: pedantic/安全系 lint は本番コードのみ厳格化する方針のため許容する。
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::pedantic,
+    clippy::cognitive_complexity
+)]
+
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
     vocab::Relation,

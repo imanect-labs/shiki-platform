@@ -3,6 +3,17 @@
 //! auth_flow.rs と同じ手法で axum のモック Keycloak を立て、`KeycloakAdmin` の
 //! 全経路（group/user の冪等作成・検索・削除・409/404 の冪等化）を検証する。
 
+// テストコード: pedantic/安全系 lint は本番コードのみ厳格化する方針のため許容する。
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::pedantic,
+    clippy::cognitive_complexity
+)]
+
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
