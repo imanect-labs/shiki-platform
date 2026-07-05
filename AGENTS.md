@@ -10,7 +10,8 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 ドキュメントが陳腐化しないよう、設計の誤りや実装との乖離がある場合はhumanに修正を提案する。
 
 - 設計原則・全体構成・サブシステム・リポジトリ構成: docs/design.md
-- 機能要件(FR-1〜11)・非機能要件: docs/requirements.md
+- 機能要件(FR-1〜17)・非機能要件: docs/requirements.md
+- ミニアプリ/ワークフロー/shiki script/skill/シークレットの統合設計: docs/miniapp-platform.md
 - 実装順・フェーズ・依存関係: docs/roadmap.md ＋ docs/roadmap/phase-*.md
 - 用語・セキュリティモデル入門: docs/guides/mini-app-onboarding.md
 - 設計上の落とし穴・注意点(該当部分がないか実装前に確認必須): docs/design-caveats.md

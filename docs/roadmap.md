@@ -8,7 +8,8 @@
 > [Phase 0](./roadmap/phase-0.md) ・ [Phase 1](./roadmap/phase-1.md) ・ [Phase 2](./roadmap/phase-2.md) ・
 > [Phase 3](./roadmap/phase-3.md) ・ [Phase 4](./roadmap/phase-4.md) ・ [Phase 5](./roadmap/phase-5.md) ・
 > [Phase 6](./roadmap/phase-6.md) ・ [Phase 7](./roadmap/phase-7.md) ・ [Phase 8](./roadmap/phase-8.md) ・
-> [Phase 9](./roadmap/phase-9.md) ・ [並行/将来トラック](./roadmap/parallel-tracks.md)
+> [Phase 9](./roadmap/phase-9.md) ・ [Phase 10](./roadmap/phase-10.md) ・ [Phase 11](./roadmap/phase-11.md) ・
+> [Phase 12](./roadmap/phase-12.md) ・ [並行/将来トラック](./roadmap/parallel-tracks.md)
 >
 > 各タスクは1つのGitHub Issueに対応（area:* ラベル）。
 
@@ -27,8 +28,14 @@ flowchart LR
   P5 -.->|agent.invoke| P9
   P3 --> P7["Phase 7<br/>資料作成 v1"]
   P3 --> P8["Phase 8<br/>エンプラ硬化"]
+  P5 --> P10["Phase 10<br/>ワークフロー基盤<br/>engine/script/skill/secrets"]
+  P9 --> P10
+  P3 --> P11["Phase 11<br/>エディタ/Office<br/>Yjs・Collabora"]
+  P8 --> P12["Phase 12<br/>SaaSアルファ運用<br/>管理2枚/フィードバック/IaC"]
+  P10 --> ALPHA["★プライベートアルファ"]
+  P11 --> ALPHA
+  P12 --> ALPHA
   P0 -.->|並行| SK["skillex 認証統合"]
-  P7 -.->|将来| V2["資料作成 v2 編集"]
   P8 -.->|将来| FULLPOOL["データプレーン完全相乗り<br/>（フルプール最適化）"]
 ```
 
@@ -104,9 +111,38 @@ flowchart LR
 **依存**: Phase 6（A=宣言的）。
 - 二層モデル B（コードベース・ミニアプリ）＝out-of-trust 隔離実行（B1別オリジン+CSP／B2サンドボックス）。
 - **公開APIゲートウェイ(BFF)** が唯一の入口・能力面再公開、ユーザー委譲OAuth2(PKCE)＋Keycloak再利用、**二重ゲート（スコープ ∩ ユーザーReBAC）**。
-- **構造化データサービス**（record JSONB＋スキーマレジストリ＋行authz述語）＋**ワークフロー軽量FSM**。
+- **構造化データサービス**（record JSONB＋スキーマレジストリ＋行authz述語）＋**FSMガード**（Task 9.10 改訂:
+  旧「軽量FSMエンジン」→ data の宣言的ガードに縮退。副作用は Phase 10 の workflow-engine へ委譲）。
 - ミニアプリ内AI（llm.invoke／agent.invoke）、マニフェスト/レジストリ/同意インストール、SDK＋CLI。
 - **成果物**: 構造化データ＋承認フロー＋AIを持つ業務アプリを、内部APIをセキュアに叩く形で実装・簡単デプロイできる。
+
+## Phase 10 — ワークフロー基盤（engine・shiki script・skill・secrets）
+**依存**: Phase 9（data/ゲートウェイ/レジストリ）・Phase 5（agent.invoke）。詳細: [phase-10.md](./roadmap/phase-10.md)
+- **workflow-engine**（自作 Durable Execution・IR=JSON DAG・トリガ/リトライ/fan-out/concurrency/rate limit/実行履歴）。
+- 実行主体モデル（対話=本人∩スコープ／スケジュール・イベント=専用プリンシパル＋明示委譲・fail-closed 停止）。
+- **script-runtime**（swc＋wasmtime/QuickJS）・**skill＆スキルストア**・**シークレット管理**（宛先束縛・KeyProvider）。
+- dnd エディタ＋AI 編集（IR 生成）＋実行履歴 UI。
+- **成果物**: スケジュール/イベント/対話トリガの業務自動化が、権限委譲・監査・リトライ付きで動く（正本: [miniapp-platform.md](./miniapp-platform.md)）。
+
+## Phase 11 — エディタ／Office 統合
+**依存**: Phase 3（チャット・AI 編集ツール）・Phase 1（ストレージ）。詳細: [phase-11.md](./roadmap/phase-11.md)
+- **Yjs/yrs 共同編集基盤**＋ TipTap マークダウンエディタ（真実=Yjs・md=シリアライズ・AI は共同編集参加者）。
+- **Collabora Online 統合**（OfficeSuite トレイト・WOPI ホスト=StorageService クライアント・共同編集は内蔵委任・
+  AI は非セッション時ファイルレベル編集）。
+- スプレッドシート×shiki script（カスタム関数/マクロ・Phase 10 の script-runtime 再利用）。
+- **成果物**: md/Office 文書の共同編集＋AI 編集が動き、保存が StorageService→RAG に還流する。
+
+## Phase 12 — SaaS アルファ運用（管理・フィードバック・IaC・消去/DR）
+**依存**: Phase 8（エンプラ硬化）・SAAS.3/4（課金・クォータ）。詳細: [phase-12.md](./roadmap/phase-12.md)
+- 顧客管理者ダッシュボード完成（モデルカタログ/予算・同意/委譲棚卸し・監査エクスポート・Stripe ポータル）。
+- **ベンダーコンソール**（テナントライフサイクル・機能フラグ・集約使用量/SLO・break-glass）。
+- フィードバック（二段同意）・ヘルプ（`help/`→UI＋shiki-help RAG スコープ）。
+- IaC（OpenTofu・cell プロビジョニング自動化）・テナント消去機構・バックアップ/DR（整合スナップショット）・API レート制限。
+- **成果物**: プライベートアルファを顧客に配れる運用体制（契約→プロビジョニング→サポート→解約消去が回る）。
+
+---
+
+> **プライベートアルファ = Phase 0〜12 ＋ SAAS.1〜4 の完成形**（requirements §1.1 のリリース定義）。
 
 ---
 
@@ -115,7 +151,7 @@ flowchart LR
 | トラック | タイミング | 備考 |
 |----------|-----------|------|
 | **skillex 認証統合** | Phase 0 の認証が安定したら**並行**（skillexは並行進行中） | 共有プール、DLC/LLM利用トークン発行を Phase 0 設計に織り込む |
-| 資料作成 v2（ブラウザ内編集） | Phase 7 後 | OnlyOffice/Collabora 組込、自作は最終手段 |
+| ~~資料作成 v2（ブラウザ内編集）~~ | **Phase 11 に昇格**（2026-07） | V2 トラックは Phase 11（Collabora）へ統合 |
 | データプレーン完全相乗り（フルプール） | 需要が出たら | **SaaS（共有コントロールプレーン＋cell隔離データプレーン）は優先ターゲット**（design §4.1.1）。本項は cell 隔離をやめ全テナント共有プールへ寄せる更なる最適化＝tenant_id 行分離の全面適用 |
 | ミニアプリ marketplace（第三者公開） | Phase 9 安定後 | 信頼ティアに審査付き第三者枠を追加 |
 | 会話ブランチUI | 任意 | データ構造は Phase 3 で用意済み |
@@ -127,3 +163,5 @@ flowchart LR
 - **M3（Phase 4–5）**: サンドボックス＆自律エージェント = 差別化の核。
 - **M4（Phase 6–8）**: ミニアプリ増殖・資料作成・エンプラ硬化 = 製品化（クラウド/SaaS は Phase 0 から前提・各フェーズで実装）。
 - **M5（Phase 9）**: ★コードベース業務アプリ基盤（構造化データ＋ワークフロー＋セキュア内部API＋AI）。
+- **M6（Phase 10–11）**: ★ワークフロー基盤（n8n 相当）＋エディタ/Office 統合 = 業務自動化と文書作成の完成形。
+- **M7（Phase 12）**: ★★プライベートアルファ・リリース（運用体制込み）。

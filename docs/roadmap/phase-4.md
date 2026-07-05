@@ -1,5 +1,14 @@
 # Phase 4 — サンドボックス＋コードインタプリタ
 
+> 📝 **方針転換（2026-07-05・#97・design §4.6）**: 既定バックエンドを **wasm ティア（agentos フォーク・
+> `crates/sandbox-wasm`・非特権別プロセス）** に変更。**アルファは wasm ティアのみ**で、本ファイルの
+> Firecracker（4.3）/gVisor（4.4）/温機プール（4.5）/FUSE マウント（4.9）は **gVisor/FC ティア＝ポストアルファ**に
+> 後ろ倒しする。wasm ティアでは仮想FSを StorageService に直結（カーネル FUSE 不要・PIT-4/PIT-22 は該当せず）、
+> egress は仮想 net スタックのホスト関数で強制、code_interpreter は **Pyodide**（numpy/pandas/matplotlib）。
+> `Sandbox` トレイト（4.1）・orchestrator 骨格（4.2）・ツールRPC（4.7）・リソース制限（4.8）・
+> code_interpreter 統合（4.10/4.11）は wasm ティアを対象に実装する。
+> wasm ティア固有の注意は [PIT-32〜33](../design-caveats.md)。
+>
 > 目的: 差別化の核となる**隔離された汎用実行環境**（プリミティブ）を立ち上げる。Firecracker/gVisor を
 > `Sandbox` トレイトで抽象化した sandbox-orchestrator を別特権プロセスとして作り、温機プール＋スナップショットで
 > 高速起動、egress デフォルト遮断＋allowlist、ホスト↔VM ツールRPC、リソース制限を備える。FUSE で StorageService を
@@ -23,15 +32,16 @@
 | ID | タイトル | area | 依存 |
 |----|---------|------|------|
 | 4.1 | `Sandbox` トレイト定義＋`sandbox-client` gRPC 契約 | sandbox | 3.3 |
-| 4.2 | sandbox-orchestrator スケルトン（特権プロセス・gRPC API） | sandbox | 4.1 |
-| 4.3 | Firecracker microVM バックエンド実装 | sandbox | 4.2 |
-| 4.4 | gVisor バックエンド実装（KVM無し環境向けフォールバック） | sandbox | 4.2 |
-| 4.5 | 温機プール＋スナップショット高速起動（<200ms） | sandbox | 4.3 |
-| 4.6 | egress デフォルト遮断＋allowlist ネットワーク制御 | sandbox | 4.2 |
-| 4.7 | ホスト↔VM ツールRPC（実行/ファイル転送/結果回収） | sandbox | 4.2 |
+| 4.2 | sandbox-orchestrator スケルトン（gRPC API） | sandbox | 4.1 |
+| 4.12 | **wasm バックエンド（agentos フォーク・`crates/sandbox-wasm`・仮想FS→StorageService 直結）**〔アルファ既定〕 | sandbox | 4.2, 1.x |
+| 4.3 | Firecracker microVM バックエンド実装 **〔ポストアルファ〕** | sandbox | 4.2 |
+| 4.4 | gVisor バックエンド実装 **〔ポストアルファ〕** | sandbox | 4.2 |
+| 4.5 | 温機プール＋スナップショット高速起動（<200ms）**〔ポストアルファ・FC/gVisor 用。wasm は不要〕** | sandbox | 4.3 |
+| 4.6 | egress デフォルト遮断＋allowlist ネットワーク制御（wasm=仮想 net ホスト関数） | sandbox | 4.2 |
+| 4.7 | ホスト↔サンドボックス ツールRPC（実行/ファイル転送/結果回収） | sandbox | 4.2 |
 | 4.8 | リソース制限（CPU/メモリ/PID/時間）＋安全な強制終了 | sandbox | 4.2 |
-| 4.9 | `fuse` 仮想FS：StorageService を `/workspace` にマウント | sandbox | 4.7, 1.x |
-| 4.10 | `code_interpreter` ツール（制約インスタンス）＋agent-core 接続 | agent | 4.5, 4.6, 4.7, 3.3 |
+| 4.9 | `fuse` 仮想FS：StorageService を `/workspace` にマウント **〔ポストアルファ・FC/gVisor 用。wasm は 4.12 の仮想FSで代替〕** | sandbox | 4.7, 1.x |
+| 4.10 | `code_interpreter` ツール（Pyodide 制約インスタンス）＋agent-core 接続 | agent | 4.12, 4.6, 4.7, 3.3 |
 | 4.11 | チャットでのコード実行可視化＋成果物のストレージ保存 | frontend | 4.10, 3.10 |
 
 ---

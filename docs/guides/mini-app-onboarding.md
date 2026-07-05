@@ -4,11 +4,17 @@
 > 認証・認可まわりの周辺知識を、前提知識ゼロから理解するための入門資料。
 >
 > 正本（このドキュメントの元ネタ。迷ったらこちらが正）:
-> - 要件: [`docs/requirements.md`](../requirements.md) FR-6 / **FR-11**
-> - 設計: [`docs/design.md`](../design.md) §4.1（認証・認可）／**§4.10（ミニアプリ基盤）**
-> - 実装計画: [`docs/roadmap/phase-9.md`](../roadmap/phase-9.md)
+> - 要件: [`docs/requirements.md`](../requirements.md) FR-6 / **FR-11〜FR-15**
+> - 設計: [`docs/design.md`](../design.md) §4.1（認証・認可）／**§4.10（ミニアプリ基盤）**／
+>   **[`docs/miniapp-platform.md`](../miniapp-platform.md)（ワークフロー/shiki script/skill 統合設計・2026-07 新設）**
+> - 実装計画: [`docs/roadmap/phase-9.md`](../roadmap/phase-9.md) / [`docs/roadmap/phase-10.md`](../roadmap/phase-10.md)
 >
 > ⚠️ この資料は「理解のための地図」です。仕様の最終判断は必ず上の正本を見てください。
+>
+> 📝 **2026-07 改訂注意**: 本文中の「軽量ワークフロー（FSM）」は改訂されました。現在は
+> **workflow-engine（n8n 相当の Durable Execution・Phase 10）が唯一の実行エンジン**で、FSM は
+> 「record の status 遷移ガード（データの不変条件）」に縮退しています。詳細は
+> [`miniapp-platform.md`](../miniapp-platform.md) §1 を先に読んでください。
 
 ---
 
