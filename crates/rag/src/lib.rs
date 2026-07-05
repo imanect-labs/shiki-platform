@@ -9,16 +9,20 @@
 //!   `VectorStore` / `FulltextIndex` はトレイト裏（クラウド/オンプレ差はここで吸収）。
 //! - 公開トレイトの第一引数は `&AuthContext`。
 
+pub mod authz_filter;
 pub mod chunker;
 pub mod config;
 pub mod embedding;
 pub mod error;
 pub mod fulltext;
 pub mod fulltext_tantivy;
+pub mod fusion;
 pub mod parser;
 pub mod parser_http;
 pub mod pipeline;
 pub mod rerank;
+pub mod search;
+pub mod search_types;
 pub mod store;
 pub mod types;
 pub mod vector_qdrant;
@@ -33,5 +37,9 @@ pub use parser::{DocumentParser, ParseRequest};
 pub use parser_http::HttpDocumentParser;
 pub use pipeline::{spawn_pipeline, IngestMessage, PipelineDeps, RAG_INGEST_QUEUE};
 pub use rerank::{HttpReranker, Reranker};
+pub use search::{SearchOutput, SearchService};
+pub use search_types::{
+    SearchDebug, SearchMode, SearchRequest, SearchResponse, SearchResult, StageTimings,
+};
 pub use vector_qdrant::QdrantVectorStore;
 pub use vector_store::{ChunkPoint, PreFilter, ScoredChunk, VectorSearch, VectorStore};
