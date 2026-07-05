@@ -4,7 +4,8 @@
 //! 無限に増えるため、「現行最新 model が期待 model と意味的に一致するか」を
 //! 比較し、差分があるときだけ新バージョンを書き込む。
 //! model 定義は `model/authorization-model.json` を正本として人がレビューする
-//! （`.fga` DSL を併置し可読性を確保）。
+//! （`.fga` DSL を併置し可読性を確保）。両者の userset 構造が乖離しないことは
+//! `fga_dsl` の drift テストが CI で保証する（#66）。
 
 use serde_json::Value;
 

@@ -25,6 +25,9 @@
 pub mod client;
 pub mod context;
 pub mod error;
+// `.fga` ↔ `.json` の userset 構造 drift 検査（テスト専用・外部依存なし・#66）。
+#[cfg(test)]
+mod fga_dsl;
 pub mod fga_http;
 pub mod ident;
 pub mod migrate;
