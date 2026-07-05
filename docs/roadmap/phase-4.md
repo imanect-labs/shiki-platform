@@ -8,7 +8,7 @@
 > `Sandbox` トレイト（4.1）・orchestrator 骨格（4.2）・ツールRPC（4.7）・リソース制限（4.8）・
 > code_interpreter 統合（4.10/4.11）は wasm ティアを対象に実装する。
 > wasm ティア固有の注意は [PIT-32〜33](../design-caveats.md)。
-
+>
 > 目的: 差別化の核となる**隔離された汎用実行環境**（プリミティブ）を立ち上げる。Firecracker/gVisor を
 > `Sandbox` トレイトで抽象化した sandbox-orchestrator を別特権プロセスとして作り、温機プール＋スナップショットで
 > 高速起動、egress デフォルト遮断＋allowlist、ホスト↔VM ツールRPC、リソース制限を備える。FUSE で StorageService を
