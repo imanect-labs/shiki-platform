@@ -121,6 +121,7 @@ async fn run_as_leader(deps: &Arc<PipelineDeps>) -> Result<(), crate::error::Rag
     };
 
     // どちらも無限ループ。ロック接続の死活を監視し、切れたら返ってリーダー再選出へ。
+    // 接続が生きたまま抜ける経路（select の他アーム完了）ではロック解放のため接続を返す。
     let health_loop = async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -129,17 +130,26 @@ async fn run_as_leader(deps: &Arc<PipelineDeps>) -> Result<(), crate::error::Rag
                 .await
                 .is_err()
             {
-                return;
+                // 接続死亡＝サーバ側でロックは自動解放済み。
+                return None;
             }
         }
+        #[allow(unreachable_code)]
+        Some(lock_conn)
     };
 
-    tokio::select! {
-        () = relay_loop => {}
-        () = consume_loop => {}
-        () = health_loop => {
-            tracing::warn!("RAG パイプライン: ロック接続が失われました（リーダー再選出）");
-        }
+    let mut lock_conn = tokio::select! {
+        () = relay_loop => None,
+        () = consume_loop => None,
+        conn = health_loop => conn,
+    };
+    // 接続がまだ生きている経路では advisory lock を明示解放する（sqlx は pool 返却時に
+    // セッション状態をリセットしないため、返すだけではロックが残る）。
+    if let Some(conn) = lock_conn.as_deref_mut() {
+        let _ = sqlx::query("select pg_advisory_unlock($1)")
+            .bind(PIPELINE_LOCK_KEY)
+            .execute(conn)
+            .await;
     }
     Ok(())
 }

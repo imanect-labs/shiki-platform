@@ -13,7 +13,8 @@ function highlight(text: string, query: string): React.ReactNode {
   const tokens = query
     .split(/\s+/)
     .map((t) => t.trim())
-    .filter((t) => t.length >= 2)
+    // 英数は 2 文字以上、CJK は 1 文字でも有効な検索語（「税」「法」等）として扱う。
+    .filter((t) => t.length >= 2 || /[\u3040-\u30ff\u3400-\u9fff々]/.test(t))
     .sort((a, b) => b.length - a.length);
   if (tokens.length === 0) return text;
   const escaped = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));

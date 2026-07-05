@@ -47,6 +47,10 @@ impl IntoResponse for ApiError {
         if let ApiError::Internal(ref detail) = self {
             tracing::error!(error = %detail, "内部エラー");
         }
+        // 503 の原因（RAG worker/Qdrant 障害等）も追跡できるようログへ残す。
+        if let ApiError::ServiceUnavailable(ref detail) = self {
+            tracing::warn!(error = %detail, "サービス利用不可（503）");
+        }
         let body = Json(json!({
             "status": status.as_u16(),
             "title": status.canonical_reason().unwrap_or("Error"),

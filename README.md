@@ -41,7 +41,7 @@ docker compose up --build
 起動後の確認:
 
 - ヘルスチェック: `curl http://localhost:8080/healthz` → 200
-- 文書検索（RAG）: Drive にファイルをアップロード → 自動索引 → `http://localhost:3000/search`
+- 文書検索（RAG）: Drive にファイルをアップロード → 自動索引 → `http://localhost:3000/search`（要: 下記フロント起動）
 - 監視（observability profile 起動時）: Grafana `http://localhost:3001`。
 
 フロント（OIDC ログイン → `/me` 表示）は別途起動する:

@@ -93,6 +93,17 @@ pub async fn handle(
     }
 
     let ctx = event_context(message);
+    // 削除中/削除済みテナントへの書き戻しを fail-closed で止める（purge と並行して
+    // claim 済みジョブが rag_chunk/Qdrant/Tantivy を復活させない・SAAS.2）。
+    if !deps
+        .indexer_storage
+        .tenant_is_active(&ctx.tenant_id)
+        .await?
+    {
+        let outcome = IndexOutcome::Skipped("tenant-deleting");
+        finish_job(&deps.pool, message, "skipped", None).await?;
+        return Ok(outcome);
+    }
     // storage はフォルダ操作でもフォルダ 1 件のイベントしか発行しないため、
     // フォルダの move/delete/restore は子孫ファイルの個別ジョブへ展開する。
     let is_folder = deps

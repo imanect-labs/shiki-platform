@@ -37,6 +37,7 @@ const WRITER_HEAP_BYTES: usize = 20 * 1024 * 1024;
 struct Fields {
     chunk_id: Field,
     node_id: Field,
+    version: Field,
     text: Field,
     authz_tags: Field,
 }
@@ -70,7 +71,7 @@ impl TantivyFulltext {
         let text_options = TextOptions::default().set_indexing_options(text_indexing);
         let chunk_id = builder.add_text_field("chunk_id", STRING | STORED);
         let node_id = builder.add_text_field("node_id", STRING | STORED);
-        let _version = builder.add_i64_field("version", INDEXED | STORED);
+        let version = builder.add_i64_field("version", INDEXED | STORED);
         let text = builder.add_text_field("text", text_options);
         let authz_tags = builder.add_text_field("authz_tags", STRING);
         let schema = builder.build();
@@ -79,6 +80,7 @@ impl TantivyFulltext {
             Fields {
                 chunk_id,
                 node_id,
+                version,
                 text,
                 authz_tags,
             },
@@ -167,6 +169,7 @@ impl FulltextIndex for TantivyFulltext {
             let mut d = TantivyDocument::new();
             d.add_text(tenant.fields.chunk_id, doc.chunk_id.to_string());
             d.add_text(tenant.fields.node_id, doc.node_id.to_string());
+            d.add_i64(tenant.fields.version, doc.version);
             d.add_text(tenant.fields.text, doc.text);
             for tag in doc.authz_tags {
                 d.add_text(tenant.fields.authz_tags, tag);

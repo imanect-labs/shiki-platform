@@ -57,11 +57,18 @@ pub(super) async fn finish_job(
 }
 
 /// DLQ へ移送されたジョブのドメイン状態を dead にする（運用可視化）。
-pub async fn mark_job_dead(pool: &PgPool, job: &ClaimedJob, error: &str) {
+///
+/// jobq の kill/fail と**同一トランザクション**で呼び、キューと rag_ingest_job の
+/// 状態がずれないようにする（`conn` は呼び出し側の tx）。
+pub(super) async fn mark_job_dead_on(
+    conn: &mut sqlx::PgConnection,
+    job: &ClaimedJob,
+    error: &str,
+) -> Result<(), RagError> {
     let Ok(message) = serde_json::from_value::<IngestMessage>(job.payload.clone()) else {
-        return;
+        return Ok(());
     };
-    if let Err(e) = sqlx::query(
+    sqlx::query(
         "update rag_ingest_job set status = 'dead', last_error = $5, updated_at = now() \
          where tenant_id = $1 and node_id = $2 and version = $3 and op = $4",
     )
@@ -70,9 +77,7 @@ pub async fn mark_job_dead(pool: &PgPool, job: &ClaimedJob, error: &str) {
     .bind(message.version)
     .bind(&message.op)
     .bind(error)
-    .execute(pool)
-    .await
-    {
-        tracing::error!(job_id = job.id, error = %e, "dead 記録に失敗");
-    }
+    .execute(conn)
+    .await?;
+    Ok(())
 }

@@ -98,6 +98,15 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
                 return Err(map_worker_error(resp).await);
             }
             let body: EmbedResponse = resp.json().await?;
+            // バッチ単位で件数を突合する（総数チェックだけでは複数バッチ間の過不足が
+            // 相殺され、テキスト↔ベクトルの対応がずれたまま保存され得る）。
+            if body.vectors.len() != batch.len() {
+                return Err(RagError::Worker(format!(
+                    "埋め込み応答数の不一致: 期待 {} 実際 {}",
+                    batch.len(),
+                    body.vectors.len()
+                )));
+            }
             if body.model_version != self.expected_model_version {
                 return Err(RagError::EmbeddingVersionMismatch {
                     expected: self.expected_model_version.clone(),

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import threading
 from io import BytesIO
 from typing import Any
@@ -18,6 +20,7 @@ from .schemas import BlockType, ParsedBlock, ParseRequest, ParseResponse
 from .settings import get_settings
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Docling が扱う MIME（Rust 側 indexer の対応 MIME 一覧と対にする）。
 _DOCLING_TYPES = {
@@ -164,9 +167,13 @@ async def parse(req: ParseRequest) -> ParseResponse:
 
     from docling.datamodel.base_models import ConversionStatus, DocumentStream
 
+    logger.info("parse tenant=%s file=%s type=%s", req.tenant_id, req.file_name, content_type)
     converter = get_converter_holder().get()
     try:
-        result = converter.convert(
+        # Docling（OCR・表構造解析）は重い同期処理。イベントループをブロックすると
+        # /healthz 含む全リクエストが止まるため、スレッドプールへ逃がす。
+        result = await asyncio.to_thread(
+            converter.convert,
             DocumentStream(name=req.file_name, stream=BytesIO(data)),
             raises_on_error=False,
         )

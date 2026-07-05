@@ -366,7 +366,9 @@ impl SearchService {
         file_decisions: &HashMap<Uuid, bool>,
         trace_id: Option<&str>,
     ) -> Result<(), RagError> {
-        let query_sha256 = hex_sha256(query);
+        // tenant を混ぜ、tenant 横断でのレインボーテーブル再利用を防ぐ（真のペッパーは
+        // KeyProvider（Phase 10）導入時に移行。監査ログ閲覧自体は管理権限で保護される）。
+        let query_sha256 = hex_sha256(&format!("{}\x00{}", ctx.tenant_id, query));
         let (allowed_files, denied_files): (Vec<&Uuid>, Vec<&Uuid>) = {
             let mut allowed = Vec::new();
             let mut denied = Vec::new();

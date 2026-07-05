@@ -48,39 +48,54 @@ async fn process_job(deps: &Arc<PipelineDeps>, job: ClaimedJob) {
             tracing::info!(job_id = job.id, trace_id = ?job.trace_id, outcome = %outcome,
                 "インジェスト完了");
         }
-        Err(e) if e.is_transient() => retry_or_dead(deps, &mut conn, &job, &e).await,
-        Err(e) => kill_permanent(deps, &mut conn, &job, &e).await,
+        Err(e) if e.is_transient() => {
+            drop(conn);
+            retry_or_dead(deps, &job, &e).await;
+        }
+        Err(e) => {
+            drop(conn);
+            kill_permanent(deps, &job, &e).await;
+        }
     }
 }
 
 /// 恒久エラー（パース失敗・版不一致など）: リトライせず即 DLQ。
-async fn kill_permanent(
-    deps: &Arc<PipelineDeps>,
-    conn: &mut sqlx::PgConnection,
-    job: &ClaimedJob,
-    error: &RagError,
-) {
-    if let Err(qe) = jobq::kill(conn, job.id, &error.to_string()).await {
-        tracing::error!(job_id = job.id, error = %qe, "kill に失敗");
+/// kill と rag_ingest_job の dead 記録は同一 Tx（片方だけ反映される不整合を防ぐ）。
+async fn kill_permanent(deps: &Arc<PipelineDeps>, job: &ClaimedJob, error: &RagError) {
+    let result: Result<(), RagError> = async {
+        let mut tx = deps.pool.begin().await?;
+        jobq::kill(&mut tx, job.id, &error.to_string()).await?;
+        job_state::mark_job_dead_on(&mut tx, job, &error.to_string()).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    if let Err(qe) = result {
+        tracing::error!(job_id = job.id, error = %qe, "kill/dead 記録に失敗（vt 経過で再配信）");
+        return;
     }
     tracing::error!(job_id = job.id, trace_id = ?job.trace_id, error = %error,
         "恒久エラー。DLQ へ移送");
-    job_state::mark_job_dead(&deps.pool, job, &error.to_string()).await;
 }
 
 /// 一時エラーのバックオフ再配信（試行上限で DLQ）。
-async fn retry_or_dead(
-    deps: &Arc<PipelineDeps>,
-    conn: &mut sqlx::PgConnection,
-    job: &ClaimedJob,
-    error: &RagError,
-) {
+/// fail と rag_ingest_job の dead 記録は同一 Tx（片方だけ反映される不整合を防ぐ）。
+async fn retry_or_dead(deps: &Arc<PipelineDeps>, job: &ClaimedJob, error: &RagError) {
     let backoff = jobq::backoff_for(job.attempts);
-    match jobq::fail(conn, job.id, &error.to_string(), backoff).await {
+    let result: Result<FailOutcome, RagError> = async {
+        let mut tx = deps.pool.begin().await?;
+        let outcome = jobq::fail(&mut tx, job.id, &error.to_string(), backoff).await?;
+        if outcome == FailOutcome::Dead {
+            job_state::mark_job_dead_on(&mut tx, job, &error.to_string()).await?;
+        }
+        tx.commit().await?;
+        Ok(outcome)
+    }
+    .await;
+    match result {
         Ok(FailOutcome::Dead) => {
             tracing::error!(job_id = job.id, trace_id = ?job.trace_id, error = %error,
                 "試行上限に達し DLQ へ移送");
-            job_state::mark_job_dead(&deps.pool, job, &error.to_string()).await;
         }
         Ok(FailOutcome::Retry { .. }) => {
             tracing::warn!(job_id = job.id, trace_id = ?job.trace_id, error = %error,

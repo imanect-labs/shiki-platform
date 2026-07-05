@@ -5,6 +5,8 @@ Ruri v3 の非対称プレフィックス（`検索クエリ: ` / `検索文書:
 プレフィックス知識を持たない（モデル差し替えを worker 内に閉じる）。
 """
 
+import logging
+
 from fastapi import APIRouter
 
 from .model_registry import get_registry
@@ -18,8 +20,13 @@ _QUERY_PREFIX = "検索クエリ: "
 _DOCUMENT_PREFIX = "検索文書: "
 
 
+logger = logging.getLogger(__name__)
+
+
 @router.post("/embed")
 def embed(req: EmbedRequest) -> EmbedResponse:
+    # tenant_id は経路必須フィールド（design §4.3）。監査・per-tenant 追跡のためログへ通す。
+    logger.info("embed tenant=%s type=%s texts=%d", req.tenant_id, req.input_type, len(req.texts))
     prefix = _QUERY_PREFIX if req.input_type == EmbedInputType.QUERY else _DOCUMENT_PREFIX
     texts = [prefix + t for t in req.texts]
     vectors = get_registry().embedding().encode(texts)

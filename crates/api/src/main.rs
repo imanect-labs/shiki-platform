@@ -341,21 +341,32 @@ fn wire_rag(
         anyhow::bail!("vector.backend=pgvector は未実装です（Phase 2 は qdrant のみ）");
     }
     let rag_cfg = config.rag.clone();
+    let _ = http; // RAG 依存は専用のタイムアウト付きクライアントを使う（下記）。
+                  // 共有クライアントは無期限のため、worker/Qdrant の遅延が /search・インジェストを
+                  // 永久ブロックし得る。parse は Docling+OCR で長い（大きな PDF）ため別枠で長めに取る。
+    let rag_http = reqwest::Client::builder()
+        .timeout(Duration::from_mins(1))
+        .build()
+        .context("RAG 用 HTTP クライアントの構築に失敗")?;
+    let parse_http = reqwest::Client::builder()
+        .timeout(Duration::from_mins(5))
+        .build()
+        .context("parse 用 HTTP クライアントの構築に失敗")?;
     let parser: Arc<dyn rag::DocumentParser> = Arc::new(rag::HttpDocumentParser::new(
-        http.clone(),
+        parse_http,
         &rag_cfg.worker_base_url,
     ));
     let embedder: Arc<dyn rag::EmbeddingProvider> = Arc::new(rag::HttpEmbeddingProvider::new(
-        http.clone(),
+        rag_http.clone(),
         &rag_cfg.worker_base_url,
         &rag_cfg.embedding_model_version,
     ));
     let reranker: Arc<dyn rag::Reranker> = Arc::new(rag::HttpReranker::new(
-        http.clone(),
+        rag_http.clone(),
         &rag_cfg.worker_base_url,
     ));
     let vector: Arc<dyn rag::VectorStore> = Arc::new(rag::QdrantVectorStore::new(
-        http.clone(),
+        rag_http,
         &rag_cfg.qdrant_url,
         &rag_cfg.embedding_model_version,
     ));

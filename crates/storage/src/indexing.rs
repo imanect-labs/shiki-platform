@@ -90,6 +90,20 @@ impl IndexerStorage {
         Ok(ids)
     }
 
+    /// テナントが書き込み可能な状態か（fail-closed・SAAS.2）。
+    ///
+    /// テナント登録簿で `deleting`/`deleted` なら false（purge と並行して claim 済み
+    /// ジョブが索引へ書き戻すのを防ぐ）。登録簿に行が無い場合（オンプレ/dev の
+    /// 非プロビジョニング運用）は active とみなす。
+    pub async fn tenant_is_active(&self, tenant_id: &str) -> Result<bool, StorageError> {
+        let status: Option<String> =
+            sqlx::query_scalar("select status from tenant where tenant_id = $1")
+                .bind(tenant_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(!matches!(status.as_deref(), Some("deleting" | "deleted")))
+    }
+
     /// フォルダ配下の**子孫ファイル** (id, 現行 version) 一覧（自身は含まない・深さ不問）。
     ///
     /// フォルダの move/delete/restore イベントを子孫ファイルへ展開する材料
