@@ -372,6 +372,9 @@ impl AppConfig {
     /// - 解決時に `tenant_id` の禁止文字（`| : # @`・空白）を fail-closed 検証
     ///
     /// なおオンボーディング自動化・課金・クォータ（SAAS.2〜4）は**隔離の安全性とは独立の運用トラック**。
+    // 現状は info ログのみで Err を返さないが、他の `check_*` バリデータと同じ
+    // `-> Result<(), ConfigError>` 形を保ち `validate()` で一様に `?` 連結できるようにする。
+    #[allow(clippy::unnecessary_wraps)]
     fn check_tenancy_supported(tenancy: Tenancy) -> Result<(), ConfigError> {
         if tenancy == Tenancy::Multi {
             tracing::info!(

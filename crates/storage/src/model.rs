@@ -153,7 +153,7 @@ impl ShareTarget {
     /// OpenFGA タプル右辺の subject に変換する（tenant 名前空間化・SAAS.1）。
     /// 共有先も呼び出し元の tenant で名前空間化されるため、他テナントの user/role を
     /// 指定しても自テナント名前空間の識別子になり越境しない。
-    pub fn subject(&self, ns: &Namespace) -> Subject {
+    pub fn subject(&self, ns: &Namespace<'_>) -> Subject {
         match self {
             ShareTarget::User { id } => ns.user(id),
             // role 共有は `role:<tenant>|<id>#member`（そのロールのメンバー集合）。
@@ -164,7 +164,7 @@ impl ShareTarget {
     /// OpenFGA Read で得た subject 文字列を共有先へ戻す。
     /// `user:<tenant>|<id>` → User、`role:<tenant>|<id>#member` → Role。
     /// 共有相手として解釈できない subject（他テナント・owner の user・parent の folder 等）は `None`。
-    pub fn parse_subject(ns: &Namespace, s: &str) -> Option<Self> {
+    pub fn parse_subject(ns: &Namespace<'_>, s: &str) -> Option<Self> {
         if let Some(id) = ns.parse_user_subject(s) {
             return Some(ShareTarget::User { id: id.to_string() });
         }

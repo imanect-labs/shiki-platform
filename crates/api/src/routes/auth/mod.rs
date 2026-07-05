@@ -63,6 +63,9 @@ fn removal_cookie(name: &str, secure: bool) -> Cookie<'static> {
 }
 
 /// 相関 Cookie（FlowState を base64(JSON) で格納）。
+// `FlowState` は素の serde 派生構造体で serialize は無謬。失敗はプログラミング
+// 不変条件の破れなので `expect` で検知する（実行時入力に依存しない）。
+#[allow(clippy::expect_used)]
 fn flow_cookie(flow: &FlowState, secure: bool) -> Cookie<'static> {
     let json = serde_json::to_vec(flow).expect("FlowState の serialize は無謬");
     let value = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);

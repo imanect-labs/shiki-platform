@@ -165,55 +165,52 @@ impl StorageService {
         // 対象の解決と発行時認可。
         // - 内容更新: 対象ファイルの editor@file を要求し、親/名前は既存ノードから引く。
         // - 新規作成: 名前を検証し、ルート（parent なし）は member@org、フォルダ配下は editor@folder。
-        let (effective_parent_id, effective_name) = match target_node_id {
-            Some(target) => {
-                let existing = self.load_node(ctx, target, false).await?;
-                if existing.kind != NodeKind::File {
-                    return Err(StorageError::NotFound);
-                }
-                self.require(
-                    ctx,
-                    Relation::Editor,
-                    &ctx.ns().file(&target.to_string()),
-                    "file.upload_url.issue",
-                    "file",
-                    &target.to_string(),
-                    trace_id,
-                )
-                .await?;
-                (existing.parent_id, existing.name)
+        let (effective_parent_id, effective_name) = if let Some(target) = target_node_id {
+            let existing = self.load_node(ctx, target, false).await?;
+            if existing.kind != NodeKind::File {
+                return Err(StorageError::NotFound);
             }
-            None => {
-                validate_name(name)?;
-                match parent_id {
-                    Some(p) => {
-                        self.require(
-                            ctx,
-                            Relation::Editor,
-                            &ctx.ns().folder(&p.to_string()),
-                            "file.upload_url.issue",
-                            "folder",
-                            &p.to_string(),
-                            trace_id,
-                        )
-                        .await?;
-                        self.ensure_folder(ctx, p).await?;
-                    }
-                    None => {
-                        self.require(
-                            ctx,
-                            Relation::Member,
-                            &ctx.ns().organization(&ctx.org),
-                            "file.upload_url.issue",
-                            "organization",
-                            &ctx.org,
-                            trace_id,
-                        )
-                        .await?;
-                    }
+            self.require(
+                ctx,
+                Relation::Editor,
+                &ctx.ns().file(&target.to_string()),
+                "file.upload_url.issue",
+                "file",
+                &target.to_string(),
+                trace_id,
+            )
+            .await?;
+            (existing.parent_id, existing.name)
+        } else {
+            validate_name(name)?;
+            match parent_id {
+                Some(p) => {
+                    self.require(
+                        ctx,
+                        Relation::Editor,
+                        &ctx.ns().folder(&p.to_string()),
+                        "file.upload_url.issue",
+                        "folder",
+                        &p.to_string(),
+                        trace_id,
+                    )
+                    .await?;
+                    self.ensure_folder(ctx, p).await?;
                 }
-                (parent_id, name.to_string())
+                None => {
+                    self.require(
+                        ctx,
+                        Relation::Member,
+                        &ctx.ns().organization(&ctx.org),
+                        "file.upload_url.issue",
+                        "organization",
+                        &ctx.org,
+                        trace_id,
+                    )
+                    .await?;
+                }
             }
+            (parent_id, name.to_string())
         };
 
         // staging への presigned PUT を発行し、pending_upload に控える。
@@ -263,6 +260,9 @@ impl StorageService {
     }
 
     /// finalize: staging を読み戻して内容ハッシュを検証し、content-addressed に昇格してノード化する。
+    // staging 読み戻し → ハッシュ検証 → content-addressed 昇格 → ノード化 ＋ FGA タプルを
+    // 単一 txn で原子的に行うため長め。段階の不変条件を一望できるよう一体に保つ。
+    #[allow(clippy::too_many_lines)]
     pub async fn finalize_upload(
         &self,
         ctx: &AuthContext,
@@ -646,6 +646,10 @@ impl StorageService {
     ///
     /// 移動はサブツリー全体の closure を張り替え、**循環（自身の配下への移動）を拒否**する。
     /// PIT-16: 移動サブツリー ∪ 移動先の祖先列を id 昇順ロックした単一 txn で更新する。
+    // `new_parent` は「移動しない / ルートへ / 指定親へ」の三状態を表す意図的な
+    // Option<Option<_>>。単一 txn で closure 張り替え＋各種ゲートを行うため長くなるが、
+    // 分割すると txn 境界と循環検出の不変条件が読みづらくなるため一体に保つ。
+    #[allow(clippy::too_many_lines, clippy::option_option)]
     async fn update_node(
         &self,
         ctx: &AuthContext,
@@ -1042,6 +1046,9 @@ impl StorageService {
     /// closure（親継承 ＋ self depth0）を張り、FGA に owner（＋folder 配下なら parent）
     /// タプルを書く。DB と FGA は 2PC できないため、tuple は **commit 前**に書き、
     /// parent 失敗・commit 失敗のどちらでも書けた tuple を revoke して不整合を残さない。
+    // DB↔FGA の 2PC 不能を補償する commit 前 tuple 書き込み＋失敗時 revoke の一連を
+    // 一体で追えるようにするため長め。分割せずグランドファーザ許容する。
+    #[allow(clippy::too_many_lines)]
     pub async fn create_folder(
         &self,
         ctx: &AuthContext,
@@ -1353,9 +1360,7 @@ impl StorageService {
                 AuditEntry {
                     action: "folder.children.list",
                     object_type: "folder",
-                    object_id: &parent_id
-                        .map(|p| p.to_string())
-                        .unwrap_or_else(|| "root".into()),
+                    object_id: &parent_id.map_or_else(|| "root".into(), |p| p.to_string()),
                     decision: Decision::Allow,
                     trace_id,
                     metadata: json!({ "returned": items.len() }),
@@ -2944,8 +2949,7 @@ fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {
 /// `directory_role` オートコンプリートで担保し、厳格な存在ゲートは IdP フル同期後に足す）。
 fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
     let id = match target {
-        ShareTarget::User { id } => id,
-        ShareTarget::Role { id } => id,
+        ShareTarget::User { id } | ShareTarget::Role { id } => id,
     };
     if id != id.trim() {
         return Err(StorageError::Invalid(
@@ -2979,7 +2983,7 @@ fn system_ctx(tenant_id: &str, org: &str, actor: &str) -> AuthContext {
 
 /// ノード種別に対応する OpenFGA オブジェクト識別子（tenant 名前空間化済み・SAAS.1）。
 /// `file:<tenant>|<id>` / `folder:<tenant>|<id>`。
-fn node_fga_object(ns: &Namespace, kind: NodeKind, id: Uuid) -> FgaObject {
+fn node_fga_object(ns: &Namespace<'_>, kind: NodeKind, id: Uuid) -> FgaObject {
     match kind {
         NodeKind::File => ns.file(&id.to_string()),
         NodeKind::Folder => ns.folder(&id.to_string()),
@@ -3087,7 +3091,7 @@ fn validate_name(name: &str) -> Result<(), StorageError> {
     if name.contains('/') {
         return Err(StorageError::Invalid("名前に / は使えません".into()));
     }
-    if name.chars().any(|c| c.is_control()) {
+    if name.chars().any(char::is_control) {
         return Err(StorageError::Invalid("名前に制御文字は使えません".into()));
     }
     Ok(())

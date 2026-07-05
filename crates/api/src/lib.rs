@@ -3,6 +3,20 @@
 //! Phase 0 では設定ローダ・ヘルスチェック・OIDC 認証・OpenFGA 認可・`GET /me`・
 //! OTel 計装の縦の最小貫通を提供する。
 
+// #[cfg(test)] のユニットテストは本番コードのみ厳格化する pedantic/安全系 lint を許容する。
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::pedantic,
+        clippy::cognitive_complexity
+    )
+)]
+
 pub mod config;
 pub mod error;
 pub mod extract;

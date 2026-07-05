@@ -10,3 +10,6 @@ version = "0.0.0"
 name = "sandbox_orchestrator"
 
 [dependencies]
+
+[lints]
+workspace = true

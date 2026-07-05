@@ -9,6 +9,20 @@
 //! - **presigned URL 方式**: バイトはクライアント↔オブジェクトストア直転送し、アプリは
 //!   presigned URL の発行（認可・監査つき）と server-side メタ操作のみ（PIT-6）。
 
+// #[cfg(test)] のユニットテストは本番コードのみ厳格化する pedantic/安全系 lint を許容する。
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::pedantic,
+        clippy::cognitive_complexity
+    )
+)]
+
 pub mod audit;
 pub mod content_address;
 pub mod directory;

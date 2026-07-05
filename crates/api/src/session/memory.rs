@@ -2,6 +2,10 @@
 //!
 //! Redis を立てずに session ミドルウェア/BFF エンドポイントの挙動を検証するためのもの。
 
+// テスト専用のインメモリ実装。`Mutex` の poison は他スレッド panic を意味し、
+// テスト文脈では復帰不能なので `lock().unwrap()`（poison 時 panic）を許容する。
+#![allow(clippy::unwrap_used)]
+
 use std::{
     collections::{HashMap, HashSet},
     sync::Mutex,

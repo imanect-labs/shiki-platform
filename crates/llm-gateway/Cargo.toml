@@ -10,3 +10,6 @@ version = "0.0.0"
 name = "llm_gateway"
 
 [dependencies]
+
+[lints]
+workspace = true

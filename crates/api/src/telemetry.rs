@@ -144,7 +144,7 @@ pub async fn observe(mut req: Request, next: Next) -> Response {
     let metrics = http_metrics();
     let attrs = [
         KeyValue::new("method", method.clone()),
-        KeyValue::new("status", status as i64),
+        KeyValue::new("status", i64::from(status)),
     ];
     metrics.requests.add(1, &attrs);
     metrics

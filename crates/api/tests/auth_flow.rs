@@ -8,6 +8,17 @@
 //! 署名検証のため、テスト専用の RSA 鍵ペアを固定値で持つ（公開鍵を JWKS として配り、
 //! 秘密鍵でトークンを RS256 署名する）。本番鍵とは無関係。
 
+// テストコード: pedantic/安全系 lint は本番コードのみ厳格化する方針のため許容する。
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::pedantic,
+    clippy::cognitive_complexity
+)]
+
 use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},

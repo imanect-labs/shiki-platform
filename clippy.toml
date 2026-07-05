@@ -1,2 +1,11 @@
 # clippy 設定。CI は `cargo clippy --all-targets --all-features -- -D warnings`。
-cognitive-complexity-threshold = 30
+# しきい値は「新規コードを一定の複雑度で止める」ことを狙いつつ、レビュー済みの
+# 既存 DB トランザクション法（本質的に長い）を過度に割らないバランスで設定する。
+# 「巨大ファイル」自体は scripts/check-file-size.sh の 500 行 gate で別途担保する。
+cognitive-complexity-threshold = 45
+too-many-lines-threshold = 130
+too-many-arguments-threshold = 7
+type-complexity-threshold = 200
+# test 内の unwrap/expect は許容（本番経路のみ厳格化する）。
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

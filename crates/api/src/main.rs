@@ -306,10 +306,13 @@ fn effective_seed_tenant<'a>(auth: &'a AuthConfig, fixture_tenant: &'a str) -> &
 fn dev_seed_enabled() -> bool {
     matches!(
         std::env::var("SHIKI_DEV_SEED").ok().as_deref(),
-        Some("1") | Some("true") | Some("TRUE")
+        Some("1" | "true" | "TRUE")
     )
 }
 
+// シグナルハンドラの登録失敗はプロセス起動直後の致命的な環境不整合であり、
+// 継続不能なため `expect` で即時 abort する（本番運用でも復帰手段が無い）。
+#[allow(clippy::expect_used)]
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -328,8 +331,8 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        () = ctrl_c => {},
+        () = terminate => {},
     }
     tracing::info!("シャットダウンシグナル受信");
 }

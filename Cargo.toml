@@ -88,3 +88,39 @@ hex = "0.4"
 # 内部クレート
 shiki-authz = { path = "crates/authz" }
 shiki-storage = { path = "crates/storage" }
+
+# ワークスペース共通 lint（各 crate は `[lints] workspace = true` で opt-in）。
+# CI は `cargo clippy --all-targets --all-features -- -D warnings` で warn も含めゲート化する。
+# グループlint（pedantic 等）は priority = -1 とし、個別 allow/deny が勝つようにする。
+[workspace.lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+# missing_docs は今回見送り（全公開アイテムへの doc 付与は blast radius が過大）。
+
+[workspace.lints.clippy]
+# --- AI 生成コードの品質劣化に効く必須の床 ---
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+large_enum_variant = "deny"
+too_many_arguments = "deny"
+cognitive_complexity = "warn"   # nursery 単体を明示有効化（閾値は clippy.toml）
+print_stdout = "deny"
+print_stderr = "deny"
+# --- 上乗せ層：pedantic（ノイズ/日本語と相性の悪いものは個別 allow）---
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"          # 日本語コメント/固有名詞で誤検知するため
+# DB バインド用の数値キャスト（usize/u64 → i64/u32）が大半で、値域は実質的に有界。
+# try_from を全箇所に撒くと可読性を損なうわりに安全性の向上が乏しいため許容する。
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+# ローカルな補助 struct/const/derive を「使う直前」に置く配置は可読性を高めるため許容する。
+items_after_statements = "allow"

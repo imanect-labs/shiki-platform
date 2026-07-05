@@ -210,8 +210,7 @@ pub async fn delete_tenant(
     let tenant = state.tenants.mark_deleting(&tenant_id).await?;
     let org = tenant
         .as_ref()
-        .map(|t| t.org.clone())
-        .unwrap_or_else(|| tenant_id.clone());
+        .map_or_else(|| tenant_id.clone(), |t| t.org.clone());
 
     // 2. セッション即時失効（新規ログインは次段の IdP ユーザー削除で塞ぐ）。
     let sessions = state.sessions.delete_tenant(&tenant_id).await?;

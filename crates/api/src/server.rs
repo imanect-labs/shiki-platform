@@ -49,7 +49,7 @@ pub struct RouteDecl {
 /// ルータは本表からのみ構築されるため、「表に無いエンドポイント」は存在できない。
 /// 追加時はポリシーの宣言が必須になり、認可レイヤの適用漏れが構造的に起きない。
 pub fn route_table() -> Vec<RouteDecl> {
-    use AccessPolicy::*;
+    use AccessPolicy::{Provisioner, Public, Session, SessionLongRunning};
     fn r(
         path: &'static str,
         methods: &'static [&'static str],
@@ -191,7 +191,7 @@ pub fn build_router(state: AppState) -> Router {
     let standard_timeout =
         || TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(30));
     let long_timeout =
-        || TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(300));
+        || TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_mins(5));
 
     let mut public = Router::new();
     let mut session_std = Router::new();
@@ -207,7 +207,7 @@ pub fn build_router(state: AppState) -> Router {
             AccessPolicy::Public => public = public.route(decl.path, method_router),
             AccessPolicy::Session => session_std = session_std.route(decl.path, method_router),
             AccessPolicy::SessionLongRunning => {
-                session_long = session_long.route(decl.path, method_router)
+                session_long = session_long.route(decl.path, method_router);
             }
             AccessPolicy::Provisioner => {
                 if admin_enabled {

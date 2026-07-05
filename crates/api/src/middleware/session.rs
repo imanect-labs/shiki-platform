@@ -200,7 +200,9 @@ fn is_state_changing(method: &Method) -> bool {
 /// double-submit CSRF を検証する。ヘッダ == CSRF Cookie かつ session の値とも一致を要求。
 fn verify_csrf(jar: &CookieJar, req: &Request, session_csrf: &str) -> Result<(), ApiError> {
     let header = req.headers().get(CSRF_HEADER).and_then(|v| v.to_str().ok());
-    let cookie = jar.get(CSRF_COOKIE).map(|c| c.value());
+    let cookie = jar
+        .get(CSRF_COOKIE)
+        .map(axum_extra::extract::cookie::Cookie::value);
     match (header, cookie) {
         (Some(h), Some(c)) if !h.is_empty() && h == c && h == session_csrf => Ok(()),
         _ => Err(ApiError::Forbidden),

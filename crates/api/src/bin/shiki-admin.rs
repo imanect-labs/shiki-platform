@@ -13,6 +13,9 @@
 //! 設定は shiki-server と同じ（env / TOML）。データプレーンの静止（メンテナンスウィンドウ）中の
 //! 実行を前提とする（オンライン移行の整合は保証しない）。
 
+// CLI バイナリ: 標準出力/標準エラーへの出力は正当な用途のため print 系 lint を許容する。
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use anyhow::{bail, Context};
 use api::{config::AppConfig, keycloak_admin::KeycloakAdmin};
 use authz::{
@@ -44,17 +47,19 @@ const TENANT_TABLES: &[&str] = &[
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.first().map(String::as_str) {
-        Some("retenant") => retenant(&args[1..]).await,
-        _ => {
-            eprintln!(
-                "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--execute]"
-            );
-            bail!("不明なサブコマンド");
-        }
+    if let Some("retenant") = args.first().map(String::as_str) {
+        retenant(&args[1..]).await
+    } else {
+        eprintln!(
+            "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--execute]"
+        );
+        bail!("不明なサブコマンド");
     }
 }
 
+// CLI サブコマンド本体: 引数パース → 各種前提チェック → dry-run/実行の分岐を
+// 直列に記述するため長く分岐も多い。運用 CLI の一処理を一望できる利点を優先し許容する。
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 async fn retenant(args: &[String]) -> anyhow::Result<()> {
     // --- 引数パース ---
     let mut from: Option<FromNs> = None;
