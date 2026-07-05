@@ -8,10 +8,32 @@ use storage::{DirectoryStore, StorageService, TenantStore};
 
 use crate::{config::AppConfig, middleware::JwksCache, session::SessionStore};
 
+/// readiness 疎通確認**専用**の DB ハンドル（#91 M-2）。
+///
+/// `AppState` に生の `PgPool` を公開すると、ハンドラが `StorageService`
+/// （tenant/org スコープ・OpenFGA check・監査の単一チョークポイント）を迂回した
+/// 生 SQL を書けてしまう。ping 以外の操作を持たない newtype で包み、
+/// 「チョークポイント経由」を規約ではなく型で守る。
+#[derive(Clone)]
+pub struct ReadinessProbe(PgPool);
+
+impl ReadinessProbe {
+    pub fn new(pool: PgPool) -> Self {
+        ReadinessProbe(pool)
+    }
+
+    /// Postgres へ `SELECT 1` を投げて疎通確認する（readyz 専用）。
+    pub async fn ping(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT 1").execute(&self.0).await.map(|_| ())
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<AppConfig>,
-    pub db: PgPool,
+    /// readiness 疎通確認専用（生 `PgPool` は公開しない。データアクセスは
+    /// `storage` / `directory` / `tenants` のチョークポイント経由のみ）。
+    pub db: ReadinessProbe,
     /// 認可チョークポイント（具象でなくトレイト経由）。
     pub authz: Arc<dyn AuthzClient>,
     pub jwks: Arc<JwksCache>,

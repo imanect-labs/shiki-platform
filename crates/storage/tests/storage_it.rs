@@ -474,7 +474,7 @@ async fn storage_end_to_end() {
     .await
     .expect("folder insert");
     sqlx::query(
-        "INSERT INTO node_closure (org, ancestor, descendant, depth) VALUES ($1, $2, $2, 0)",
+        "INSERT INTO node_closure (tenant_id, org, ancestor, descendant, depth) VALUES ('default', $1, $2, $2, 0)",
     )
     .bind(&org)
     .bind(folder_id)
@@ -1586,7 +1586,10 @@ async fn purge_tenant_end_to_end() {
         .expect("role member B");
 
     // --- A を purge ---
-    let (tuples, objects) = service.purge_tenant(&ta, &org).await.expect("purge A");
+    let (tuples, objects) = service
+        .purge_tenant(&ta, &org, "provisioner:test")
+        .await
+        .expect("purge A");
     assert!(tuples > 0, "A のタプルが剥奪されること（{tuples}）");
     assert!(objects > 0, "A のオブジェクトが削除されること（{objects}）");
 
@@ -1703,7 +1706,10 @@ async fn purge_tenant_end_to_end() {
     assert_eq!(purge_audits, 1, "purge の監査エントリが残る");
 
     // --- 冪等: 再実行しても成功し、追加削除は 0。 ---
-    let (tuples2, objects2) = service.purge_tenant(&ta, &org).await.expect("purge 再実行");
+    let (tuples2, objects2) = service
+        .purge_tenant(&ta, &org, "provisioner:test")
+        .await
+        .expect("purge 再実行");
     assert_eq!(tuples2, 0, "再実行で剥奪対象なし");
     assert_eq!(objects2, 0, "再実行で削除対象なし");
 }

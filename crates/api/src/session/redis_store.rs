@@ -12,6 +12,11 @@ use super::store::{SessionError, SessionRecord, SessionStore};
 
 /// セッションキーの接頭辞。
 const KEY_PREFIX: &str = "shiki:sess";
+/// backchannel logout 逆引きインデックスの接頭辞（`sub`/`sid` → セッション集合）。
+const SUB_IDX_PREFIX: &str = "shiki:sess:idx:sub";
+const SID_IDX_PREFIX: &str = "shiki:sess:idx:sid";
+/// backchannel logout の jti リプレイ検知キー接頭辞。
+const JTI_PREFIX: &str = "shiki:sess:bclogout:jti";
 
 /// Redis の glob メタ文字（`* ? [ ] \`）をエスケープする（MATCH パターンへの注入防止）。
 fn escape_glob(s: &str) -> String {
@@ -45,6 +50,79 @@ impl RedisSessionStore {
     fn key(tenant_id: &str, session_id: &str) -> String {
         format!("{KEY_PREFIX}:{tenant_id}:{session_id}")
     }
+
+    /// backchannel logout 逆引きインデックスのメンバー値（`{tenant}:{session_id}`）。
+    /// logout_token はテナントを持たないため、メンバーにテナントを埋めてテナント横断で辿る。
+    fn index_member(tenant_id: &str, session_id: &str) -> String {
+        format!("{tenant_id}:{session_id}")
+    }
+
+    /// `sub`/`sid` 逆引きインデックスにセッションを登録し、TTL を張り直す。
+    ///
+    /// メンバーは個別 SREM せず、インデックスキー自体の TTL（セッションと同値・put 毎に更新）で
+    /// 束ごと期限切れさせる。失効済みセッションのメンバーが一時的に残っても、
+    /// [`delete_by_subject`]/[`delete_by_sid`] は存在しないセッション削除を no-op として扱うため無害。
+    ///
+    /// [`delete_by_subject`]: SessionStore::delete_by_subject
+    /// [`delete_by_sid`]: SessionStore::delete_by_sid
+    async fn index_session(
+        &self,
+        record: &SessionRecord,
+        session_id: &str,
+        ttl: Duration,
+    ) -> Result<(), SessionError> {
+        let member = Self::index_member(&record.tenant_id, session_id);
+        let mut conn = self.conn.clone();
+        let sub_key = format!("{SUB_IDX_PREFIX}:{}", record.principal.id);
+        let _: () = conn
+            .sadd(&sub_key, &member)
+            .await
+            .map_err(|e| SessionError::Backend(e.to_string()))?;
+        let _: () = conn
+            .expire(&sub_key, ttl.as_secs() as i64)
+            .await
+            .map_err(|e| SessionError::Backend(e.to_string()))?;
+        if let Some(sid) = &record.keycloak_sid {
+            let sid_key = format!("{SID_IDX_PREFIX}:{sid}");
+            let _: () = conn
+                .sadd(&sid_key, &member)
+                .await
+                .map_err(|e| SessionError::Backend(e.to_string()))?;
+            let _: () = conn
+                .expire(&sid_key, ttl.as_secs() as i64)
+                .await
+                .map_err(|e| SessionError::Backend(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// 逆引きインデックスのメンバー集合を辿り、各セッションを削除する（backchannel logout 共通処理）。
+    async fn delete_by_index(&self, index_key: &str) -> Result<u64, SessionError> {
+        let mut conn = self.conn.clone();
+        let members: Vec<String> = conn
+            .smembers(index_key)
+            .await
+            .map_err(|e| SessionError::Backend(e.to_string()))?;
+        let mut deleted: u64 = 0;
+        for member in &members {
+            // メンバーは `{tenant}:{session_id}`。tenant/session_id とも `:` を含まない
+            // （tenant は禁止文字検証済み、session_id は base64url 乱数）ため最初の `:` で分割する。
+            let Some((tenant_id, session_id)) = member.split_once(':') else {
+                continue;
+            };
+            let n: u64 = conn
+                .del(Self::key(tenant_id, session_id))
+                .await
+                .map_err(|e| SessionError::Backend(e.to_string()))?;
+            deleted += n;
+        }
+        // インデックスキーごと破棄（メンバーは処理済み・冪等）。
+        let _: () = conn
+            .del(index_key)
+            .await
+            .map_err(|e| SessionError::Backend(e.to_string()))?;
+        Ok(deleted)
+    }
 }
 
 #[async_trait]
@@ -62,6 +140,8 @@ impl SessionStore for RedisSessionStore {
             .set_ex(Self::key(tenant_id, session_id), json, ttl.as_secs())
             .await
             .map_err(|e| SessionError::Backend(e.to_string()))?;
+        // backchannel logout 用に sub/sid 逆引きインデックスへ登録する。
+        self.index_session(record, session_id, ttl).await?;
         Ok(())
     }
 
@@ -84,7 +164,12 @@ impl SessionStore for RedisSessionStore {
             .query_async(&mut conn)
             .await
             .map_err(|e| SessionError::Backend(e.to_string()))?;
-        Ok(result.is_some())
+        let updated = result.is_some();
+        // 既存セッションを更新できた時のみ逆引きインデックスを張り直す（refresh で sid/TTL 追従）。
+        if updated {
+            self.index_session(record, session_id, ttl).await?;
+        }
+        Ok(updated)
     }
 
     async fn get(
@@ -148,5 +233,30 @@ impl SessionStore for RedisSessionStore {
             cursor = next;
         }
         Ok(deleted)
+    }
+
+    async fn delete_by_subject(&self, sub: &str) -> Result<u64, SessionError> {
+        self.delete_by_index(&format!("{SUB_IDX_PREFIX}:{sub}"))
+            .await
+    }
+
+    async fn delete_by_sid(&self, sid: &str) -> Result<u64, SessionError> {
+        self.delete_by_index(&format!("{SID_IDX_PREFIX}:{sid}"))
+            .await
+    }
+
+    async fn register_jti(&self, jti: &str, ttl: Duration) -> Result<bool, SessionError> {
+        // SET key 1 NX EX <ttl>: 未登録なら OK（初出）、既登録なら nil（リプレイ）。
+        let mut conn = self.conn.clone();
+        let result: Option<String> = redis::cmd("SET")
+            .arg(format!("{JTI_PREFIX}:{jti}"))
+            .arg("1")
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl.as_secs())
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| SessionError::Backend(e.to_string()))?;
+        Ok(result.is_some())
     }
 }

@@ -29,7 +29,43 @@ pub struct Claims {
     /// authorized party（トークンを取得した client_id）。`/admin/*` の provisioner 照合に使う。
     #[serde(default)]
     pub azp: Option<String>,
+    /// Keycloak の SSO セッション id（claim `sid`）。backchannel logout で
+    /// 当該セッションのみを失効させるためにセッションレコードへ保持する。
+    #[serde(default)]
+    pub sid: Option<String>,
 }
+
+/// OIDC Back-Channel Logout 1.0 の logout_token クレーム。
+///
+/// Keycloak がユーザーのセッション終了（ログアウト・管理者による無効化/削除）時に
+/// RP の backchannel logout URL へ POST する JWT。署名/iss/aud の検証は
+/// [`verify_logout_token`](crate::middleware::auth::verify_logout_token) が行い、
+/// ここでは失効対象（`sid`/`sub`）と logout イベント要件の検証に必要な項目を持つ。
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogoutClaims {
+    /// 失効対象ユーザー（Keycloak user id）。`sid` が無い場合は当該ユーザーの全セッションを失効。
+    #[serde(default)]
+    pub sub: Option<String>,
+    /// 失効対象の SSO セッション id。存在すればそのセッションのみ失効。
+    #[serde(default)]
+    pub sid: Option<String>,
+    /// logout イベント宣言（`http://schemas.openid.net/event/backchannel-logout` キー必須）。
+    #[serde(default)]
+    pub events: std::collections::HashMap<String, serde_json::Value>,
+    /// 発行時刻（OIDC BCL §2.4 で**必須**）。`set_required_spec_claims` は `iat` を検証しないため
+    /// [`verify_logout_token`](crate::middleware::auth::verify_logout_token) が鮮度を手動確認する。
+    #[serde(default)]
+    pub iat: Option<i64>,
+    /// トークン一意 id（OIDC BCL §2.4 で**必須**）。リプレイ防止のため短期キャッシュで重複を弾く。
+    #[serde(default)]
+    pub jti: Option<String>,
+    /// logout_token は `nonce` を**含んではならない**（OIDC BCL §2.4）。含めば拒否。
+    #[serde(default)]
+    pub nonce: Option<String>,
+}
+
+/// OIDC Back-Channel Logout で必須の logout イベント種別。
+pub const BACKCHANNEL_LOGOUT_EVENT: &str = "http://schemas.openid.net/event/backchannel-logout";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -148,6 +184,7 @@ mod tests {
             roles: vec!["sales".into(), "eng".into()],
             tenant: Some("acme".into()),
             azp: None,
+            sid: None,
         };
         let principal = principal_from_claims(claims);
         assert_eq!(principal.id, "user-3");

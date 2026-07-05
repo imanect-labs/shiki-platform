@@ -719,16 +719,18 @@ impl StorageService {
         // rename だけなら対象 1 行で足りる。
         let lock_ids: Vec<Uuid> = if new_parent.is_some() {
             let mut ids: Vec<Uuid> = sqlx::query_scalar(
-                "SELECT descendant FROM node_closure WHERE org = $1 AND ancestor = $2",
+                "SELECT descendant FROM node_closure WHERE tenant_id = $1 AND org = $2 AND ancestor = $3",
             )
+            .bind(&ctx.tenant_id)
             .bind(&ctx.org)
             .bind(node_id)
             .fetch_all(&mut *tx)
             .await?;
             if let Some(Some(p)) = new_parent {
                 let anc: Vec<Uuid> = sqlx::query_scalar(
-                    "SELECT ancestor FROM node_closure WHERE org = $1 AND descendant = $2",
+                    "SELECT ancestor FROM node_closure WHERE tenant_id = $1 AND org = $2 AND descendant = $3",
                 )
+                .bind(&ctx.tenant_id)
                 .bind(&ctx.org)
                 .bind(p)
                 .fetch_all(&mut *tx)
@@ -801,8 +803,10 @@ impl StorageService {
         if parent_changed {
             if let Some(p) = final_parent {
                 let is_descendant: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM node_closure WHERE ancestor = $1 AND descendant = $2)",
+                    "SELECT EXISTS(SELECT 1 FROM node_closure \
+                     WHERE tenant_id = $1 AND ancestor = $2 AND descendant = $3)",
                 )
+                .bind(&ctx.tenant_id)
                 .bind(node_id)
                 .bind(p)
                 .fetch_one(&mut *tx)
@@ -837,21 +841,25 @@ impl StorageService {
         if parent_changed {
             sqlx::query(
                 "DELETE FROM node_closure \
-                 WHERE descendant IN (SELECT descendant FROM node_closure WHERE ancestor = $1) \
-                   AND ancestor IN (SELECT ancestor FROM node_closure WHERE descendant = $1 AND ancestor <> $1)",
+                 WHERE tenant_id = $2 \
+                   AND descendant IN (SELECT descendant FROM node_closure WHERE tenant_id = $2 AND ancestor = $1) \
+                   AND ancestor IN (SELECT ancestor FROM node_closure WHERE tenant_id = $2 AND descendant = $1 AND ancestor <> $1)",
             )
             .bind(node_id)
+            .bind(&ctx.tenant_id)
             .execute(&mut *tx)
             .await?;
             if let Some(p) = final_parent {
                 sqlx::query(
-                    "INSERT INTO node_closure (org, ancestor, descendant, depth) \
-                     SELECT sup.org, sup.ancestor, sub.descendant, sup.depth + sub.depth + 1 \
+                    "INSERT INTO node_closure (tenant_id, org, ancestor, descendant, depth) \
+                     SELECT sup.tenant_id, sup.org, sup.ancestor, sub.descendant, sup.depth + sub.depth + 1 \
                      FROM node_closure sup CROSS JOIN node_closure sub \
-                     WHERE sup.descendant = $1 AND sub.ancestor = $2",
+                     WHERE sup.tenant_id = $3 AND sub.tenant_id = $3 \
+                       AND sup.descendant = $1 AND sub.ancestor = $2",
                 )
                 .bind(p)
                 .bind(node_id)
+                .bind(&ctx.tenant_id)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -1109,18 +1117,21 @@ impl StorageService {
             // 祖先リンク（親の closure を +1 で引き継ぐ）。
             if let Some(p) = parent_id {
                 sqlx::query(
-                    "INSERT INTO node_closure (org, ancestor, descendant, depth) \
-                     SELECT org, ancestor, $1, depth + 1 FROM node_closure WHERE descendant = $2",
+                    "INSERT INTO node_closure (tenant_id, org, ancestor, descendant, depth) \
+                     SELECT tenant_id, org, ancestor, $1, depth + 1 FROM node_closure \
+                     WHERE tenant_id = $3 AND descendant = $2",
                 )
                 .bind(folder_id)
                 .bind(p)
+                .bind(&ctx.tenant_id)
                 .execute(&mut *tx)
                 .await?;
             }
             // 自分自身（depth 0）。
             sqlx::query(
-                "INSERT INTO node_closure (org, ancestor, descendant, depth) VALUES ($1, $2, $2, 0)",
+                "INSERT INTO node_closure (tenant_id, org, ancestor, descendant, depth) VALUES ($1, $2, $3, $3, 0)",
             )
+            .bind(&ctx.tenant_id)
             .bind(&ctx.org)
             .bind(folder_id)
             .execute(&mut *tx)
@@ -1379,8 +1390,8 @@ impl StorageService {
         // 祖先（自身含む）を 自身→root の順（depth 昇順）で取得する。
         let rows: Vec<(Uuid, String, String, i32)> = sqlx::query_as(
             "SELECT n.id, n.name, n.kind, c.depth \
-             FROM node_closure c JOIN node n ON n.id = c.ancestor \
-             WHERE c.descendant = $1 AND n.org = $2 AND n.tenant_id = $3 AND n.deleted_at IS NULL \
+             FROM node_closure c JOIN node n ON n.id = c.ancestor AND n.tenant_id = c.tenant_id \
+             WHERE c.tenant_id = $3 AND c.descendant = $1 AND n.org = $2 AND n.deleted_at IS NULL \
              ORDER BY c.depth ASC",
         )
         .bind(node_id)
@@ -1460,7 +1471,7 @@ impl StorageService {
         let affected: Vec<(Uuid, i64)> = sqlx::query_as(
             "UPDATE node SET deleted_at = now(), updated_at = now(), version = version + 1 \
              WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL \
-               AND id IN (SELECT descendant FROM node_closure WHERE ancestor = $3) \
+               AND id IN (SELECT descendant FROM node_closure WHERE tenant_id = $2 AND ancestor = $3) \
              RETURNING id, version",
         )
         .bind(&ctx.org)
@@ -1609,10 +1620,11 @@ impl StorageService {
         // 祖先に削除済みフォルダがあると、単体復元してもツリーから到達不能なまま直リンクだけで
         // 露出する（subtree 削除の隠蔽が破れる）。祖先が全て生存している時のみ復元を許す。
         let ancestor_deleted: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM node_closure c JOIN node n ON n.id = c.ancestor \
-             WHERE c.descendant = $1 AND c.ancestor <> $1 AND n.deleted_at IS NOT NULL)",
+            "SELECT EXISTS(SELECT 1 FROM node_closure c JOIN node n ON n.id = c.ancestor AND n.tenant_id = c.tenant_id \
+             WHERE c.tenant_id = $2 AND c.descendant = $1 AND c.ancestor <> $1 AND n.deleted_at IS NOT NULL)",
         )
         .bind(file_id)
+        .bind(&ctx.tenant_id)
         .fetch_one(&mut *tx)
         .await?;
         if ancestor_deleted {
@@ -1696,10 +1708,11 @@ impl StorageService {
         let mut tx = self.db.begin().await?;
         // 祖先（自身を除く）に削除済みフォルダがあれば、単体復元してもツリーから到達不能になる。
         let ancestor_deleted: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM node_closure c JOIN node n ON n.id = c.ancestor \
-             WHERE c.descendant = $1 AND c.ancestor <> $1 AND n.deleted_at IS NOT NULL)",
+            "SELECT EXISTS(SELECT 1 FROM node_closure c JOIN node n ON n.id = c.ancestor AND n.tenant_id = c.tenant_id \
+             WHERE c.tenant_id = $2 AND c.descendant = $1 AND c.ancestor <> $1 AND n.deleted_at IS NOT NULL)",
         )
         .bind(folder_id)
+        .bind(&ctx.tenant_id)
         .fetch_one(&mut *tx)
         .await?;
         if ancestor_deleted {
@@ -1727,7 +1740,7 @@ impl StorageService {
         let affected: Vec<(Uuid, i64)> = sqlx::query_as(
             "UPDATE node SET deleted_at = NULL, updated_at = now(), version = version + 1 \
              WHERE org = $1 AND tenant_id = $2 AND deleted_at = $3 \
-               AND id IN (SELECT descendant FROM node_closure WHERE ancestor = $4) \
+               AND id IN (SELECT descendant FROM node_closure WHERE tenant_id = $2 AND ancestor = $4) \
              RETURNING id, version",
         )
         .bind(&ctx.org)
@@ -2407,15 +2420,17 @@ impl StorageService {
     /// テナント初期 admin へ org member タプルを付与する（冪等・監査つき）。
     ///
     /// admin プレーン操作のため呼び出しユーザーの `AuthContext` は無い。実行時と同じ
-    /// `AuthContext::ns()` 名前空間経路を通すために **system principal** の合成コンテキストで
-    /// 識別子を組む（dev_seed と同型）。
+    /// `AuthContext::ns()` 名前空間経路を通すために合成コンテキストで識別子を組む
+    /// （dev_seed と同型）。`actor` には呼び出し主体（provisioner の `azp` 等）を渡し、
+    /// 監査ログからどのクライアントの操作か追えるようにする（#91 M-7）。
     pub async fn provision_tenant_admin(
         &self,
         tenant_id: &str,
         org: &str,
         admin_user_id: &str,
+        actor: &str,
     ) -> Result<(), StorageError> {
-        let ctx = system_ctx(tenant_id, org);
+        let ctx = system_ctx(tenant_id, org, actor);
         let subject = ctx.ns().user(admin_user_id);
         self.authz
             .write_tuple(&subject, Relation::Member, &ctx.ns().organization(org))
@@ -2450,8 +2465,9 @@ impl StorageService {
         &self,
         tenant_id: &str,
         org: &str,
+        actor: &str,
     ) -> Result<(u64, u64), StorageError> {
-        let ctx = system_ctx(tenant_id, org);
+        let ctx = system_ctx(tenant_id, org, actor);
         let ns = ctx.ns();
         let mut tuples_deleted: u64 = 0;
 
@@ -2515,13 +2531,11 @@ impl StorageService {
 
         // 3. DB 行を 1 txn・FK 依存順で物理削除（audit_log は保持）。
         let mut tx = self.db.begin().await?;
-        sqlx::query(
-            "DELETE FROM node_closure USING node \
-             WHERE node_closure.descendant = node.id AND node.tenant_id = $1",
-        )
-        .bind(tenant_id)
-        .execute(&mut *tx)
-        .await?;
+        // node_closure は tenant_id を直接持つ（#91 L-1）ため node JOIN 不要。
+        sqlx::query("DELETE FROM node_closure WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await?;
         for table in [
             "node_version",
             "pending_upload",
@@ -2719,18 +2733,21 @@ impl StorageService {
         // 祖先リンク（親の closure を +1 で引き継ぐ）。
         if let Some(p) = parent_id {
             sqlx::query(
-                "INSERT INTO node_closure (org, ancestor, descendant, depth) \
-                 SELECT org, ancestor, $1, depth + 1 FROM node_closure WHERE descendant = $2",
+                "INSERT INTO node_closure (tenant_id, org, ancestor, descendant, depth) \
+                 SELECT tenant_id, org, ancestor, $1, depth + 1 FROM node_closure \
+                 WHERE tenant_id = $3 AND descendant = $2",
             )
             .bind(id)
             .bind(p)
+            .bind(&ctx.tenant_id)
             .execute(&mut *conn)
             .await?;
         }
         // 自分自身（depth 0）。
         sqlx::query(
-            "INSERT INTO node_closure (org, ancestor, descendant, depth) VALUES ($1, $2, $2, 0)",
+            "INSERT INTO node_closure (tenant_id, org, ancestor, descendant, depth) VALUES ($1, $2, $3, $3, 0)",
         )
+        .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(id)
         .execute(&mut *conn)
@@ -2918,8 +2935,9 @@ fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {
 }
 
 /// 共有先 subject の検証。subject 識別子（`user:<tenant>|<id>` / `role:<tenant>|<id>#member`）を
-/// 壊す/曖昧化する id を弾く（空・前後空白・制御文字・`:`/`#`＝型/userset 区切り・`|`＝tenant 名前空間
-/// 区切り（`authz::TENANT_SEP`）の注入を拒否）。user / role いずれも同一ルール。
+/// 壊す/曖昧化する id を弾く。文字ポリシーの正本は [`authz::validate_local_id`]
+/// （`:`/`#`＝型/userset 区切り・`|`＝tenant 名前空間区切り・制御文字・空を拒否。単一定義・#91 M-3）。
+/// 前後空白の拒否（trim で往復が変わる混乱の防止）だけは共有 API 固有のルールとしてここで足す。
 ///
 /// role の**存在**（当該テナントに実在するロールか）はここでは強制しない: 全メンバーのログイン前でも
 /// 部署（AD group 由来 role）へ共有できるようにするため（dangling grant 回避は共有ダイアログの
@@ -2929,35 +2947,26 @@ fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
         ShareTarget::User { id } => id,
         ShareTarget::Role { id } => id,
     };
-    if id.is_empty() {
-        return Err(StorageError::Invalid("共有先 id が空です".into()));
-    }
     if id != id.trim() {
         return Err(StorageError::Invalid(
             "共有先 id の前後に空白は使えません".into(),
         ));
     }
-    if id.contains(':') || id.contains('#') || id.contains(authz::TENANT_SEP) {
-        return Err(StorageError::Invalid(
-            "共有先 id に ':' / '#' / '|' は使えません".into(),
-        ));
-    }
-    if id.chars().any(|c| c.is_control()) {
-        return Err(StorageError::Invalid(
-            "共有先 id に制御文字は使えません".into(),
-        ));
-    }
+    authz::validate_local_id(id)
+        .map_err(|violation| StorageError::Invalid(format!("共有先 id が不正です: {violation}")))?;
     Ok(())
 }
 
-/// admin プレーン操作（テナント・プロビジョニング/撤去）用の system 合成コンテキスト。
+/// admin プレーン操作（テナント・プロビジョニング/撤去）用の合成コンテキスト。
 ///
 /// 呼び出しユーザーの `AuthContext` が存在しない管理操作でも、識別子構築（`ns()`）と
-/// 監査記録を実行時と同じ経路に通すための継ぎ目。actor は固定 `"system"`。
-fn system_ctx(tenant_id: &str, org: &str) -> AuthContext {
+/// 監査記録を実行時と同じ経路に通すための継ぎ目。`actor` は呼び出し主体
+/// （provisioner の `azp` 等）を監査ログの actor 列に刻む（#91 M-7: 固定 `"system"` だと
+/// provisioner 資格情報の不正使用をどのクライアントか追えない）。
+fn system_ctx(tenant_id: &str, org: &str, actor: &str) -> AuthContext {
     AuthContext::new(
         Principal {
-            id: "system".into(),
+            id: actor.to_string(),
             email: None,
             groups: vec![],
             roles: vec![],

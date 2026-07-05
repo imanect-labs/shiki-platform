@@ -224,7 +224,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
     let tenants = Arc::new(storage::TenantStore::new(db.clone()));
     AppState {
         config: Arc::new(config),
-        db,
+        db: api::state::ReadinessProbe::new(db),
         authz: Arc::new(AllowAll),
         jwks,
         sessions,
@@ -258,6 +258,7 @@ fn session_record(
         id_token: None,
         access_expires_at,
         csrf_token: csrf.into(),
+        keycloak_sid: None,
     }
 }
 

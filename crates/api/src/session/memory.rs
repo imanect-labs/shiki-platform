@@ -2,7 +2,11 @@
 //!
 //! Redis を立てずに session ミドルウェア/BFF エンドポイントの挙動を検証するためのもの。
 
-use std::{collections::HashMap, sync::Mutex, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Mutex,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 
@@ -11,6 +15,8 @@ use super::store::{SessionError, SessionRecord, SessionStore};
 #[derive(Default)]
 pub struct MemorySessionStore {
     inner: Mutex<HashMap<String, SessionRecord>>,
+    /// 消費済み jti（TTL は無視・テスト用のリプレイ検知）。
+    seen_jti: Mutex<HashSet<String>>,
 }
 
 impl MemorySessionStore {
@@ -84,5 +90,25 @@ impl SessionStore for MemorySessionStore {
         let before = guard.len();
         guard.retain(|k, _| !k.starts_with(&prefix));
         Ok((before - guard.len()) as u64)
+    }
+
+    async fn delete_by_subject(&self, sub: &str) -> Result<u64, SessionError> {
+        // テスト実装はレコードを走査して sub 一致を削除する（Redis 実装は逆引きインデックス）。
+        let mut guard = self.inner.lock().unwrap();
+        let before = guard.len();
+        guard.retain(|_, r| r.principal.id != sub);
+        Ok((before - guard.len()) as u64)
+    }
+
+    async fn delete_by_sid(&self, sid: &str) -> Result<u64, SessionError> {
+        let mut guard = self.inner.lock().unwrap();
+        let before = guard.len();
+        guard.retain(|_, r| r.keycloak_sid.as_deref() != Some(sid));
+        Ok((before - guard.len()) as u64)
+    }
+
+    async fn register_jti(&self, jti: &str, _ttl: Duration) -> Result<bool, SessionError> {
+        // TTL は無視し、プロセス生存中の重複のみ検知する（テスト用）。
+        Ok(self.seen_jti.lock().unwrap().insert(jti.to_string()))
     }
 }

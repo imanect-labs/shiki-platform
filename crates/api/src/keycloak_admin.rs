@@ -34,6 +34,9 @@ pub struct KcUser {
     /// ユーザー属性（`tenant` の照合に使う）。
     #[serde(default)]
     pub attributes: std::collections::HashMap<String, Vec<String>>,
+    /// 未消化の必須アクション（`UPDATE_PASSWORD` が残っていれば初回ログイン前）。
+    #[serde(default, rename = "requiredActions")]
+    pub required_actions: Vec<String>,
 }
 
 impl KcUser {
@@ -172,7 +175,10 @@ impl<'a> KeycloakAdmin<'a> {
     /// - `attributes.tenant` / `attributes.roles` を設定（claim マッパーの取得元）
     /// - group `/{org}` へ参加（`groups` claim ＝ org 解決の取得元）
     /// - 一時パスワード＋ `UPDATE_PASSWORD` 必須アクション（初回ログインで変更を強制）
-    /// - 既存ユーザーなら**作り直さず**現状を維持（パスワードは返さない）
+    /// - 既存ユーザーなら**作り直さず**現状を維持。ただし **初回ログイン前
+    ///   （`UPDATE_PASSWORD` 未消化）なら一時パスワードを再発行して返す**（#91 M-6:
+    ///   プロビジョニング後段の失敗で初回応答の temp_password が破棄されても、
+    ///   同一リクエストの再実行で回収できる）。ログイン済みならパスワードに触れない。
     #[allow(clippy::too_many_arguments)] // ユーザー作成に必要な属性一式。
     pub async fn ensure_tenant_admin(
         &self,
@@ -183,20 +189,9 @@ impl<'a> KeycloakAdmin<'a> {
         temp_password: &str,
     ) -> Result<(String, Option<String>), KeycloakAdminError> {
         if let Some(existing) = self.find_user_by_username(username).await? {
-            // **別テナントの既存ユーザーを乗っ取らない**: username 衝突時は tenant 属性を照合し、
-            // 不一致なら conflict として拒否する（黙って成功させると初期 admin が新テナントへ
-            // ログインできないのに FGA/directory 行だけ書かれる）。
-            if existing.tenant() != Some(tenant_id) {
-                return Err(KeycloakAdminError::Status {
-                    status: 409,
-                    body: format!(
-                        "username '{username}' は別テナント（tenant={:?}）の既存ユーザーです。\
-                         別の admin_username を指定してください",
-                        existing.tenant()
-                    ),
-                });
-            }
-            return Ok((existing.id, None));
+            return self
+                .resolve_existing_admin(existing, tenant_id, username, temp_password)
+                .await;
         }
         let token = self.admin_token().await?;
         let body = json!({
@@ -217,7 +212,9 @@ impl<'a> KeycloakAdmin<'a> {
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
-        // 並行作成の 409 は「既存」に倒す（冪等）。tenant 照合は上と同じ。
+        // 並行作成の 409 は「既存」に倒す（冪等）。tenant 照合と初回ログイン前の一時パスワード
+        // 再発行（#91 M-6）は pre-POST 検出パスと同一に扱う（レース敗者でも回収可能にする・
+        // #91 P2 レビュー対応: 敗者が None を返すと初期 admin が資格情報を失う）。
         if resp.status().as_u16() == 409 {
             let user = self.find_user_by_username(username).await?.ok_or_else(|| {
                 KeycloakAdminError::Status {
@@ -225,13 +222,9 @@ impl<'a> KeycloakAdmin<'a> {
                     body: "既存応答だがユーザーが見つかりません".into(),
                 }
             })?;
-            if user.tenant() != Some(tenant_id) {
-                return Err(KeycloakAdminError::Status {
-                    status: 409,
-                    body: format!("username '{username}' は別テナントの既存ユーザーです"),
-                });
-            }
-            return Ok((user.id, None));
+            return self
+                .resolve_existing_admin(user, tenant_id, username, temp_password)
+                .await;
         }
         if !resp.status().is_success() {
             return Err(status_error(resp).await);
@@ -243,6 +236,59 @@ impl<'a> KeycloakAdmin<'a> {
             }
         })?;
         Ok((user.id, Some(temp_password.to_string())))
+    }
+
+    /// 既存ユーザーを初期 admin として解決する（tenant 照合＋初回ログイン前の一時パスワード再発行）。
+    ///
+    /// `ensure_tenant_admin` の pre-POST 検出パスと 409（並行作成の敗者）パスで共用する（#91 M-6/P2）:
+    /// - 別テナントの既存ユーザーは乗っ取らず 409 で拒否。
+    /// - 初回ログイン前（`UPDATE_PASSWORD` 未消化）なら一時パスワードを再発行して返す。
+    /// - ログイン済みならパスワードに触れず `None` を返す。
+    async fn resolve_existing_admin(
+        &self,
+        user: KcUser,
+        tenant_id: &str,
+        username: &str,
+        temp_password: &str,
+    ) -> Result<(String, Option<String>), KeycloakAdminError> {
+        if user.tenant() != Some(tenant_id) {
+            return Err(KeycloakAdminError::Status {
+                status: 409,
+                body: format!(
+                    "username '{username}' は別テナント（tenant={:?}）の既存ユーザーです。\
+                     別の admin_username を指定してください",
+                    user.tenant()
+                ),
+            });
+        }
+        if user.required_actions.iter().any(|a| a == "UPDATE_PASSWORD") {
+            self.reset_temp_password(&user.id, temp_password).await?;
+            return Ok((user.id, Some(temp_password.to_string())));
+        }
+        Ok((user.id, None))
+    }
+
+    /// 一時パスワードを再設定する（`temporary: true`＝初回ログインで変更必須のまま）。
+    ///
+    /// `ensure_tenant_admin` の再実行時、初回ログイン前の admin にのみ使う（#91 M-6）。
+    async fn reset_temp_password(
+        &self,
+        user_id: &str,
+        temp_password: &str,
+    ) -> Result<(), KeycloakAdminError> {
+        let token = self.admin_token().await?;
+        let resp = self
+            .http
+            .put(format!("{}/users/{}/reset-password", self.base, user_id))
+            .bearer_auth(&token)
+            .json(&json!({ "type": "password", "value": temp_password, "temporary": true }))
+            .send()
+            .await
+            .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        Err(status_error(resp).await)
     }
 
     /// `attributes.tenant == tenant_id` のユーザーを全列挙する（テナント削除用）。

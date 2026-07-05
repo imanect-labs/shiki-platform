@@ -14,8 +14,8 @@ pub async fn healthz() -> StatusCode {
 
 /// readiness プローブ。Postgres に `SELECT 1` を投げて疎通確認する。
 pub async fn readyz(State(state): State<AppState>) -> StatusCode {
-    match sqlx::query("SELECT 1").execute(&state.db).await {
-        Ok(_) => StatusCode::OK,
+    match state.db.ping().await {
+        Ok(()) => StatusCode::OK,
         Err(err) => {
             tracing::warn!(error = %err, "readyz: Postgres 疎通に失敗");
             StatusCode::SERVICE_UNAVAILABLE

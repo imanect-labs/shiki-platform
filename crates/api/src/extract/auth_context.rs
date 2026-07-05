@@ -93,20 +93,12 @@ pub(crate) fn resolve_tenant_id(
 
 /// `tenant_id` に FGA 識別子の名前空間区切り・構造文字が混入していないことを検証する（SAAS.1）。
 ///
-/// FGA 識別子は `<type>:<tenant_id>|<local_id>` で名前空間化される（[`authz::Namespace`]）。
-/// `tenant_id` が区切り `|` や FGA の構造文字（`:` `#` `@`）・空白を含むと、名前空間の
-/// パースが曖昧になり越境の余地を生むため fail-closed で拒否する。claim 由来の値は信頼せず
-/// 常にここで検証する。
+/// 文字ポリシーの正本は [`authz::validate_tenant_id`]（単一定義・#91 M-3）。ここでは
+/// api 層のエラー型（fail-closed の 401）へ写すだけで、文字集合は再定義しない。
+/// claim 由来の値は信頼せず常にここで検証する。
 pub(crate) fn validate_tenant_id(tenant_id: &str) -> Result<(), ApiError> {
-    // 区切り `|` は `authz::TENANT_SEP` と一致。`/` はオブジェクトキーの prefix 境界
-    // （`{tenant}/{org}/...`）を壊し、purge/list の越境を生むため禁止（Codex #88 指摘）。
-    const FORBIDDEN: &[char] = &['|', ':', '#', '@', '/'];
-    debug_assert_eq!(authz::TENANT_SEP, '|');
-    if tenant_id
-        .chars()
-        .any(|c| c.is_whitespace() || FORBIDDEN.contains(&c))
-    {
-        tracing::warn!("tenant_id に禁止文字（| : # @ 空白）が含まれる（fail-closed で拒否）");
+    if let Err(violation) = authz::validate_tenant_id(tenant_id) {
+        tracing::warn!(%violation, "tenant_id が識別子ポリシー違反（fail-closed で拒否）");
         return Err(ApiError::Unauthorized);
     }
     Ok(())

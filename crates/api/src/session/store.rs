@@ -40,6 +40,11 @@ pub struct SessionRecord {
     pub access_expires_at: i64,
     /// double-submit CSRF トークン（CSRF Cookie と突合する）。
     pub csrf_token: String,
+    /// Keycloak の SSO セッション id（access token の `sid` 由来・#91）。
+    /// backchannel logout で当該セッションのみを特定して失効させる逆引きキー。
+    /// 旧レコード互換のため `default`（None）。
+    #[serde(default)]
+    pub keycloak_sid: Option<String>,
 }
 
 /// BFF セッションストア（チョークポイント。Redis 実装の裏に隠す）。
@@ -84,6 +89,22 @@ pub trait SessionStore: Send + Sync {
     /// キーが tenant_id スコープであることを前提に prefix 一致で撤去する（他テナントには
     /// 触れない）。冪等: セッションが無ければ 0 で成功。
     async fn delete_tenant(&self, tenant_id: &str) -> Result<u64, SessionError>;
+
+    /// Keycloak ユーザー（`sub`）の**全セッション**を失効させる（backchannel logout・#91）。
+    ///
+    /// logout_token はテナントを持たないため、`sub`（realm 内で一意な user id）を鍵に
+    /// テナント横断で失効させる。管理者によるユーザー無効化/削除を即時反映する。冪等・件数を返す。
+    async fn delete_by_subject(&self, sub: &str) -> Result<u64, SessionError>;
+
+    /// Keycloak の SSO セッション（`sid`）に対応するセッションを失効させる（backchannel logout・#91）。
+    ///
+    /// logout_token が `sid` を持つ場合、当該 SSO セッションのみを対象にする（他デバイスの
+    /// セッションは残す）。冪等・件数を返す。
+    async fn delete_by_sid(&self, sid: &str) -> Result<u64, SessionError>;
+
+    /// logout_token の `jti` を短期記録し、**初出なら `true`**、既出（リプレイ）なら `false` を返す
+    /// （OIDC BCL §2.6 のリプレイ防止・#91）。`ttl` の間だけ重複を検知する。
+    async fn register_jti(&self, jti: &str, ttl: Duration) -> Result<bool, SessionError>;
 }
 
 #[cfg(test)]
@@ -105,6 +126,7 @@ mod tests {
             id_token: Some("id".into()),
             access_expires_at: 1_700_000_000,
             csrf_token: "csrf".into(),
+            keycloak_sid: Some("sso-1".into()),
         }
     }
 
@@ -147,6 +169,7 @@ mod tests {
             "id_token",
             "access_expires_at",
             "csrf_token",
+            "keycloak_sid",
         ] {
             assert!(value.get(key).is_some(), "キー {key} が欠落");
         }
