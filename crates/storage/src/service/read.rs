@@ -189,6 +189,137 @@ impl StorageService {
         Ok(ChildPage { items, next_cursor })
     }
 
+    /// フォルダ横断の**名前検索**（権限フィルタ済み・keyset ページング）。
+    ///
+    /// 空白区切りの各語を AND の部分一致（ILIKE・ワイルドカード無害化）で名前へ適用する。
+    /// `ILIKE ALL(array)` は ESCAPE 句を取れないため、既定のエスケープ文字 `\` を前提に
+    /// `escape_like` が `\` で無害化した語をそのまま使う。
+    /// 認可は `list_children` と同じ方針: org メンバー確認 → **子ごとに OpenFGA viewer を
+    /// post-filter**（強整合・読めないものはオーバーフェッチで読み飛ばす）。内容検索
+    /// （RAG `/search`）とフロントで統合される想定で、こちらは名前一致のみを担う。
+    pub async fn search_nodes_by_name(
+        &self,
+        ctx: &AuthContext,
+        query: &str,
+        sort: ChildSort,
+        cursor: Option<&str>,
+        limit: usize,
+        trace_id: Option<&str>,
+    ) -> Result<ChildPage, StorageError> {
+        self.require(
+            ctx,
+            Relation::Member,
+            &ctx.ns().organization(&ctx.org),
+            "node.search",
+            "organization",
+            &ctx.org,
+            trace_id,
+        )
+        .await?;
+
+        let terms: Vec<String> = query
+            .split_whitespace()
+            .map(|t| format!("%{}%", crate::directory::escape_like(t)))
+            .collect();
+        if terms.is_empty() {
+            return Ok(ChildPage {
+                items: vec![],
+                next_cursor: None,
+            });
+        }
+
+        let limit = limit.clamp(1, 100);
+        let batch: i64 = (limit as i64 * 2).clamp(16, 200);
+        let (sort_col, sort_cast) = match sort.key {
+            ChildSortKey::Name => ("name", "text"),
+            ChildSortKey::Updated => ("updated_at", "timestamptz"),
+            ChildSortKey::Size => ("coalesce(size_bytes, 0)", "bigint"),
+        };
+        let (order_dir, keyset_cmp) = if sort.desc {
+            ("DESC", "<")
+        } else {
+            ("ASC", ">")
+        };
+        let (mut after_val, mut after_id) = match cursor {
+            Some(c) => {
+                let (val, id) = decode_child_cursor(sort, c)?;
+                (Some(val), Some(id))
+            }
+            None => (None, None),
+        };
+
+        let mut items: Vec<Node> = Vec::with_capacity(limit);
+        let mut exhausted = false;
+        while items.len() < limit && !exhausted {
+            let sql = format!(
+                "SELECT {NODE_COLS} FROM node \
+                 WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL \
+                   AND name ILIKE ALL($3) \
+                   AND ($4::text IS NULL OR ({sort_col}, id) {keyset_cmp} ($4::{sort_cast}, $5)) \
+                 ORDER BY {sort_col} {order_dir}, id {order_dir} LIMIT $6"
+            );
+            let rows: Vec<NodeRow> = sqlx::query_as(&sql)
+                .bind(&ctx.org)
+                .bind(&ctx.tenant_id)
+                .bind(&terms)
+                .bind(after_val.as_deref())
+                .bind(after_id)
+                .bind(batch)
+                .fetch_all(&self.db)
+                .await?;
+            if (rows.len() as i64) < batch {
+                exhausted = true;
+            }
+            if rows.is_empty() {
+                break;
+            }
+            for row in rows {
+                after_val = Some(child_sort_value(sort.key, &row));
+                after_id = Some(row.id);
+                let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
+                let allowed = self
+                    .authz
+                    .check(
+                        &ctx.subject(),
+                        Relation::Viewer,
+                        &node_fga_object(&ctx.ns(), kind, row.id),
+                        Consistency::HigherConsistency,
+                    )
+                    .await?;
+                if !allowed {
+                    continue;
+                }
+                items.push(row_to_node(row)?);
+                if items.len() == limit {
+                    break;
+                }
+            }
+        }
+        let next_cursor = if items.len() == limit {
+            match (after_val, after_id) {
+                (Some(v), Some(i)) => Some(encode_child_cursor(sort, &v, i)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        // 検索も列挙操作として監査へ（クエリ本文は含めない: 低エントロピー語の露出回避）。
+        self.audit
+            .record(
+                ctx,
+                AuditEntry {
+                    action: "node.search",
+                    object_type: "organization",
+                    object_id: &ctx.org,
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: json!({ "returned": items.len() }),
+                },
+            )
+            .await?;
+        Ok(ChildPage { items, next_cursor })
+    }
+
     /// ノードのパンくず（祖先列）を root→自身の順で返す（**読める接尾のみ**）。
     ///
     /// 自身の viewer を確認後、closure の祖先を**自身→上**（depth 昇順）に辿り、読めない祖先に

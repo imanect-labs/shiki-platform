@@ -32,6 +32,7 @@ import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
+import { useContentSearch, type ContentHit } from "@/lib/drive-search";
 import {
   breadcrumb,
   createFolder,
@@ -111,13 +112,20 @@ export function DriveBrowser() {
     toast({ title: `${label}を作成`, description: "この機能は近日対応予定です。" });
 
   // 検索: 入力は即時、クエリは少し待ってから反映（打鍵ごとの再取得を抑える）。
-  const [searchInput, setSearchInput] = React.useState("");
-  const [query, setQuery] = React.useState("");
+  // ⌘K パレットの「"q"で検索」からは ?q= で遷移してくるため、URL からも初期化・追従する。
+  const urlQuery = searchParams.get("q") ?? "";
+  const [searchInput, setSearchInput] = React.useState(urlQuery);
+  const [query, setQuery] = React.useState(urlQuery.trim());
+  React.useEffect(() => {
+    if (urlQuery) setSearchInput(urlQuery);
+  }, [urlQuery]);
   React.useEffect(() => {
     const t = setTimeout(() => setQuery(searchInput.trim()), 300);
     return () => clearTimeout(t);
   }, [searchInput]);
   const searching = query.length > 0;
+  // 内容一致（permission-aware RAG）。名前一致と統合してスコア順で出す。
+  const content = useContentSearch(query, searching);
 
   const [crumbs, setCrumbs] = React.useState<CrumbResponse[]>([]);
   const [dialog, setDialog] = React.useState<DialogKind>(null);
@@ -445,7 +453,15 @@ export function DriveBrowser() {
         <div className="flex min-h-7 items-center justify-between gap-3 px-1">
           <div className="min-w-0">
             {searching ? (
-              <p className="truncate text-sm text-muted-foreground">「{query}」の検索結果</p>
+              <p className="truncate text-sm text-muted-foreground">
+                「{query}」の検索結果
+                <a
+                  href={`/search?q=${encodeURIComponent(query)}`}
+                  className="ml-2 text-xs text-primary underline-offset-2 hover:underline"
+                >
+                  詳細検索（引用・絞込の内訳）
+                </a>
+              </p>
             ) : crumbs.length > 0 ? (
               <Breadcrumbs crumbs={crumbs} onNavigate={navigateTo} />
             ) : null}
@@ -501,17 +517,28 @@ export function DriveBrowser() {
 
         {view === "list" ? <ListHeader sort={sort} desc={desc} onSort={onSort} /> : null}
 
+        {searching ? (
+          <ContentHitRows
+            hits={content.hits.filter((h) => !list.items.some((n) => n.id === h.fileId))}
+            onOpen={(h) => navigateTo(h.folderId)}
+          />
+        ) : null}
+
         {list.loading ? (
           <LoadingRow />
         ) : list.error ? (
           <p className="px-3 py-10 text-center text-sm text-destructive">{list.error}</p>
         ) : list.items.length === 0 ? (
           searching ? (
-            <EmptyState
-              icon={Search}
-              title="見つかりませんでした"
-              description={`「${query}」に一致するファイル・フォルダはありません。`}
-            />
+            content.loading ? (
+              <LoadingRow />
+            ) : content.hits.length === 0 ? (
+              <EmptyState
+                icon={Search}
+                title="見つかりませんでした"
+                description={`「${query}」に名前・内容が一致するファイル・フォルダはありません。`}
+              />
+            ) : null
           ) : (
             <EmptyState
               icon={UploadCloud}
@@ -607,6 +634,42 @@ export function DriveBrowser() {
           list.reload();
         }}
       />
+    </div>
+  );
+}
+
+/// 内容一致（RAG）のヒット行。名前一致（NodeRow）の上にスコア順で並べ、
+/// スニペットで「なぜヒットしたか」を見せる。選択でファイルのあるフォルダへ移動。
+function ContentHitRows({
+  hits,
+  onOpen,
+}: {
+  hits: ContentHit[];
+  onOpen: (hit: ContentHit) => void;
+}) {
+  if (hits.length === 0) return null;
+  return (
+    <div className="flex flex-col" aria-label="内容が一致した文書">
+      {hits.map((h) => (
+        <button
+          key={h.fileId}
+          type="button"
+          onClick={() => onOpen(h)}
+          className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+        >
+          <FileText className="mt-0.5 size-[18px] shrink-0 text-primary" aria-hidden />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium text-foreground">{h.fileName}</span>
+            <span className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{h.snippet}</span>
+          </span>
+          <span
+            className="mt-1 shrink-0 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[11px] tabular-nums text-muted-foreground"
+            title={`関連度スコア: ${h.score.toFixed(3)}`}
+          >
+            {h.score.toFixed(2)}
+          </span>
+        </button>
+      ))}
     </div>
   );
 }

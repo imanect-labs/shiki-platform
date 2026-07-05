@@ -73,6 +73,8 @@ pub struct ChildrenQuery {
     pub cursor: Option<String>,
     /// 1 ページの最大件数（1..=100。既定 50）。
     pub limit: Option<usize>,
+    /// 名前検索（フォルダ横断・空白区切り語の AND 部分一致）。指定時は `parent_id` を無視する。
+    pub q: Option<String>,
 }
 
 /// ゴミ箱一覧のクエリ（カーソル・件数）。
@@ -129,6 +131,7 @@ pub async fn create_folder(
 }
 
 /// フォルダ/ルートの子を権限フィルタ済みで 1 ページ返す。
+/// `q` 指定時はフォルダ横断の名前検索（同じく権限フィルタ済み）になる。
 #[utoipa::path(
     get,
     path = "/nodes",
@@ -151,17 +154,35 @@ pub async fn list_children(
         key: q.sort.to_key(),
         desc: q.desc,
     };
-    let page = state
-        .storage
-        .list_children(
-            &ctx,
-            q.parent_id,
-            sort,
-            q.cursor.as_deref(),
-            q.limit.unwrap_or(50),
-            trace.as_deref(),
-        )
-        .await?;
+    let limit = q.limit.unwrap_or(50);
+    let page = match q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(name_query) => {
+            state
+                .storage
+                .search_nodes_by_name(
+                    &ctx,
+                    name_query,
+                    sort,
+                    q.cursor.as_deref(),
+                    limit,
+                    trace.as_deref(),
+                )
+                .await?
+        }
+        None => {
+            state
+                .storage
+                .list_children(
+                    &ctx,
+                    q.parent_id,
+                    sort,
+                    q.cursor.as_deref(),
+                    limit,
+                    trace.as_deref(),
+                )
+                .await?
+        }
+    };
     Ok(Json(ChildrenResponse {
         items: page.items.into_iter().map(Into::into).collect(),
         next_cursor: page.next_cursor,

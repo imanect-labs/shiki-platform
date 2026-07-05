@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, usePathname } from "next/navigation";
-import { FileSearch, PenSquare, Search } from "lucide-react";
+import { PenSquare, Search } from "lucide-react";
 
 import { NavItem } from "./nav-item";
 import { SidebarDriveAccordion } from "./sidebar-drive-accordion";
@@ -46,16 +46,6 @@ export function SidebarNav({
           collapsed={collapsed}
           active={pathname === "/"}
           onClick={startNewChat}
-        />
-        <NavItem
-          icon={FileSearch}
-          label="文書検索"
-          collapsed={collapsed}
-          active={pathname === "/search"}
-          onClick={() => {
-            router.push("/search");
-            onNavigate?.();
-          }}
         />
         <SidebarDriveAccordion collapsed={collapsed} onNavigate={onNavigate} />
       </nav>

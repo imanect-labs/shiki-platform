@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { MessageSquare, PenSquare, Search, X } from "lucide-react";
+import { ArrowUpRight, MessageSquare, PenSquare, Search, X } from "lucide-react";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 
 import { cn } from "@/lib/utils";
@@ -18,9 +18,14 @@ import {
   useThreads,
   type Thread,
 } from "@/lib/chat-api";
+import type { DriveSearchItem } from "@/lib/drive-search";
 
-/// 検索パレット（画像2 風）。先頭に「新しいチャット」アクション、続けてチャット履歴を
-/// 日付グループで一覧する。クエリで前方/部分一致フィルタ。⌘K / Ctrl+K でも開く。
+import { DriveResults, useDriveSearch } from "./sidebar-doc-results";
+
+/// 検索パレット（画像2 風）。⌘K / Ctrl+K / "/" で開く。
+/// キーワード入力中は最上部に「"q"で検索 ↗︎」（ドライブの検索結果画面へ遷移）、
+/// 続けてドライブのフォルダ/ファイル（名前一致＋内容一致・スコア降順）、
+/// チャット履歴の順。未入力時は「新しいチャット」＋履歴一覧。
 export function SidebarSearch({
   open,
   onOpenChange,
@@ -31,6 +36,7 @@ export function SidebarSearch({
   const router = useRouter();
   const [query, setQuery] = React.useState("");
   const threads = useThreads();
+  const drive = useDriveSearch(query, open);
 
   React.useEffect(() => {
     const isEditable = (el: EventTarget | null) => {
@@ -69,13 +75,21 @@ export function SidebarSearch({
     onOpenChange(false);
     router.push(href);
   };
+  const openDriveItem = (item: DriveSearchItem) => {
+    go(item.targetFolderId ? `/drive?folder=${item.targetFolderId}` : "/drive");
+  };
+  const openDriveSearch = () => {
+    go(`/drive?q=${encodeURIComponent(query.trim())}`);
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent showClose={false} className="top-[12%] max-w-xl translate-y-0 gap-0 p-0">
         <VisuallyHidden>
-          <DialogTitle>チャットを検索</DialogTitle>
-          <DialogDescription>履歴の検索と新規チャットの開始ができます。</DialogDescription>
+          <DialogTitle>検索</DialogTitle>
+          <DialogDescription>
+            文書（ドライブ）とチャット履歴の検索、新規チャットの開始ができます。
+          </DialogDescription>
         </VisuallyHidden>
 
         {/* 検索入力＋閉じる */}
@@ -85,8 +99,8 @@ export function SidebarSearch({
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="チャットを検索..."
-            aria-label="チャットを検索"
+            placeholder="文書・チャットを検索..."
+            aria-label="文書・チャットを検索"
             className="h-14 w-full bg-transparent text-[15px] outline-none placeholder:text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0"
           />
           <DialogClose
@@ -99,15 +113,36 @@ export function SidebarSearch({
 
         {/* 結果リスト */}
         <div className="scrollbar-subtle max-h-[60vh] overflow-y-auto p-2">
-          {/* 新しいチャット（常時先頭） */}
-          <button
-            type="button"
-            onClick={() => go("/")}
-            className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
-          >
-            <PenSquare className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
-            新しいチャット
-          </button>
+          {query.trim() ? (
+            /* キーワード入力中の最上段: ドライブの検索結果画面へ */
+            <button
+              type="button"
+              onClick={openDriveSearch}
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+            >
+              <Search className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 truncate">「{query.trim()}」で検索</span>
+              <ArrowUpRight className="ml-auto size-4 shrink-0 text-muted-foreground" aria-hidden />
+            </button>
+          ) : (
+            /* 未入力時の先頭アクション */
+            <button
+              type="button"
+              onClick={() => go("/")}
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+            >
+              <PenSquare className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
+              新しいチャット
+            </button>
+          )}
+
+          {/* ドライブ（名前一致＋内容一致の統合・スコア降順。読める文書だけがヒット） */}
+          <DriveResults
+            query={query}
+            items={drive.items}
+            loading={drive.loading}
+            onOpen={openDriveItem}
+          />
 
           {groups.length > 0 ? (
             groups.map((group) => (
@@ -128,9 +163,7 @@ export function SidebarSearch({
             ))
           ) : (
             <p className="px-3 py-8 text-center text-sm text-muted-foreground">
-              {query.trim()
-                ? "該当するチャットはありません"
-                : "まだチャットはありません"}
+              {query.trim() ? "該当するチャットはありません" : "まだチャットはありません"}
             </p>
           )}
         </div>
