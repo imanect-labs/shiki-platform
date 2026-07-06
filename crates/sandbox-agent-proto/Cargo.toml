@@ -1,0 +1,16 @@
+# Firecracker ゲストエージェントとホスト（orchestrator）が vsock 上で話す最小プロトコル。
+# フレーム = u32-LE 長さ前置 ＋ JSON 本文。ホスト/ゲスト双方が依存する（ゲストは musl 静的）。
+[package]
+name = "shiki-sandbox-agent-proto"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

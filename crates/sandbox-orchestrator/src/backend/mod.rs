@@ -10,6 +10,7 @@ use sandbox_client::{DirEntry, ExecEvent, ExecRequest, SandboxError, SandboxSpec
 
 pub mod egress;
 pub mod fake;
+pub mod firecracker;
 pub mod gvisor;
 pub mod multi;
 pub mod native;

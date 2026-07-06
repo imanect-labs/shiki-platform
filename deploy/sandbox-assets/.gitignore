@@ -1,5 +1,6 @@
-# ビルド時取得/生成物（実行時 DL しない・PIT-33）。manifest のみ追跡する。
+# ビルド時取得/生成物（実行時 DL しない・PIT-33）。manifest とスクリプトのみ追跡する。
 bin/
 rootfs/
 rootfs.ext4
+vmlinux.bin
 *.tmp

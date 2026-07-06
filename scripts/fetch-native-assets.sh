@@ -24,7 +24,7 @@ verify() { # <path> <expected_sha>
 }
 
 fetched=0 skipped=0
-while read -r sha rel url; do
+while read -r sha rel url extra; do
   case "$sha" in ''|'#'*) continue ;; esac
   dest="$DEST_BASE/$rel"
   if verify "$dest" "$sha"; then
@@ -32,17 +32,35 @@ while read -r sha rel url; do
     continue
   fi
   src="$url"
-  [ -n "$BASE" ] && src="${BASE%/}/$(basename "$rel")"
+  [ -n "$BASE" ] && src="${BASE%/}/$(basename "$url")"
   echo "→ 取得: $rel ← $src"
   mkdir -p "$(dirname "$dest")"
-  curl -fsSL "$src" -o "$dest.tmp"
-  if ! verify "$dest.tmp" "$sha"; then
+  dl="$(mktemp)"
+  curl -fsSL "$src" -o "$dl"
+  # SHA はダウンロードしたファイル（tgz の場合はアーカイブ）に対して検証する。
+  if ! verify "$dl" "$sha"; then
     echo "❌ SHA-256 不一致: $rel（改竄/バージョン不一致）" >&2
-    rm -f "$dest.tmp"
+    rm -f "$dl"
     exit 1
   fi
-  chmod +x "$dest.tmp"
-  mv "$dest.tmp" "$dest"
+  case "$extra" in
+    tgz:*)
+      glob="${extra#tgz:}"
+      tmpd="$(mktemp -d)"
+      tar -xzf "$dl" -C "$tmpd"
+      found="$(find "$tmpd" -path "$tmpd/$glob" -type f | head -1)"
+      if [ -z "$found" ]; then
+        echo "❌ tgz 内に $glob が見つかりません: $rel" >&2
+        rm -rf "$dl" "$tmpd"; exit 1
+      fi
+      install -m 0755 "$found" "$dest"
+      rm -rf "$tmpd" "$dl"
+      ;;
+    *)
+      chmod +x "$dl"
+      mv "$dl" "$dest"
+      ;;
+  esac
   fetched=$((fetched + 1))
 done < "$MANIFEST"
 

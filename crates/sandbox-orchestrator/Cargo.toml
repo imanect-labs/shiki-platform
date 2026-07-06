@@ -16,6 +16,7 @@ path = "src/bin/main.rs"
 [dependencies]
 shiki-sandbox-client = { path = "../sandbox-client", features = ["server"] }
 shiki-sandbox-netns = { path = "../sandbox-netns" }
+shiki-sandbox-agent-proto = { path = "../sandbox-agent-proto" }
 secure-exec-client = { workspace = true }
 secure-exec-vm-config = { workspace = true }
 secure-exec-bridge = { workspace = true }
