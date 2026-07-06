@@ -4119,6 +4119,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "shiki-sandbox-bench"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "shiki-sandbox-client",
+ "shiki-sandbox-orchestrator",
+ "tokio",
+]
+
+[[package]]
 name = "shiki-sandbox-client"
 version = "0.0.0"
 dependencies = [
