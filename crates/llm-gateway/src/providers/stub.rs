@@ -4,7 +4,9 @@
 //! agent-core ループ）をエンドツーエンドで検証するための決定的アダプタ。挙動:
 //! - 直近 user メッセージ本文を語単位でストリーミングして返す。
 //! - リクエストにツールがあり、かつ最初のターン（tool_result がまだ無い）で本文が
-//!   `search:` で始まるとき、最初のツールを 1 回だけ呼び出す（agent ループの決定的検証）。
+//!   既知のプレフィックス（`search:` / `python:` / `websearch:` / `webfetch:`）で始まるとき、
+//!   対応するツールを 1 回だけ呼び出す（agent ループ・各ツールの決定的検証）。プレフィックス
+//!   に対応するツールが提示されていなければ最初のツールへフォールバックする（後方互換）。
 
 use futures::stream::{self, StreamExt};
 
@@ -49,6 +51,22 @@ fn has_tool_result(req: &GenerateRequest) -> bool {
     })
 }
 
+/// プレフィックス → (対応ツール名, 入力 JSON のキー)。入力値は本文の残り。
+/// 対応ツールが提示に無ければ `None` を返し、呼び出し側が tools[0] にフォールバックする。
+fn tool_trigger(user_text: &str) -> Option<(&'static str, &'static str, String)> {
+    const MAP: &[(&str, &str, &str)] = &[
+        ("search:", "doc_search", "query"),
+        ("websearch:", "web_search", "query"),
+        ("python:", "code_interpreter", "code"),
+        ("webfetch:", "web_fetch", "url"),
+    ];
+    MAP.iter().find_map(|(prefix, tool, key)| {
+        user_text
+            .strip_prefix(prefix)
+            .map(|rest| (*tool, *key, rest.trim().to_string()))
+    })
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for StubProvider {
     fn name(&self) -> &'static str {
@@ -67,28 +85,33 @@ impl LlmProvider for StubProvider {
             })
             .sum::<u64>();
 
-        // ツール呼び出し分岐（決定的）: 1 ターン目に `search:` で始まればツールを呼ぶ。
-        if !req.tools.is_empty() && !has_tool_result(req) && user_text.starts_with("search:") {
-            let tool = &req.tools[0];
-            let query = user_text.trim_start_matches("search:").trim().to_string();
-            let id = "stubtool_1".to_string();
-            let name = tool.name.clone();
-            let input = serde_json::json!({ "query": query });
-            let events = vec![
-                Ok(StreamDelta::ToolUseStart {
-                    id: id.clone(),
-                    name,
-                }),
-                Ok(StreamDelta::ToolUseStop { id, input }),
-                Ok(StreamDelta::Done {
-                    stop_reason: StopReason::ToolUse,
-                    usage: Usage {
-                        prompt_tokens,
-                        completion_tokens: 0,
-                    },
-                }),
-            ];
-            return Ok(stream::iter(events).boxed());
+        // ツール呼び出し分岐（決定的）: 1 ターン目に既知プレフィックスで始まれば対応ツールを呼ぶ。
+        if !req.tools.is_empty() && !has_tool_result(req) {
+            if let Some((tool_name, key, value)) = tool_trigger(&user_text) {
+                // 対応ツールが提示にあればそれを、無ければ tools[0] を呼ぶ（後方互換）。
+                let name = req
+                    .tools
+                    .iter()
+                    .find(|t| t.name == tool_name)
+                    .map_or_else(|| req.tools[0].name.clone(), |t| t.name.clone());
+                let id = "stubtool_1".to_string();
+                let input = serde_json::json!({ key: value });
+                let events = vec![
+                    Ok(StreamDelta::ToolUseStart {
+                        id: id.clone(),
+                        name,
+                    }),
+                    Ok(StreamDelta::ToolUseStop { id, input }),
+                    Ok(StreamDelta::Done {
+                        stop_reason: StopReason::ToolUse,
+                        usage: Usage {
+                            prompt_tokens,
+                            completion_tokens: 0,
+                        },
+                    }),
+                ];
+                return Ok(stream::iter(events).boxed());
+            }
         }
 
         // 通常応答: 本文を語単位でストリーミング。
@@ -161,5 +184,71 @@ mod tests {
         }
         assert_eq!(tool_name.as_deref(), Some("doc_search"));
         assert_eq!(stop, Some(StopReason::ToolUse));
+    }
+
+    #[tokio::test]
+    async fn stub_selects_tool_by_prefix() {
+        // websearch: プレフィックスは提示ツールの中から web_search を選ぶ（順序非依存）。
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "websearch: rust")]);
+        for name in ["code_interpreter", "web_search", "web_fetch"] {
+            req.tools.push(crate::model::ToolDef {
+                name: name.into(),
+                description: "d".into(),
+                input_schema: serde_json::json!({}),
+            });
+        }
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut tool_name = None;
+        let mut input = None;
+        while let Some(ev) = s.next().await {
+            match ev.unwrap() {
+                StreamDelta::ToolUseStart { name, .. } => tool_name = Some(name),
+                StreamDelta::ToolUseStop { input: i, .. } => input = Some(i),
+                _ => {}
+            }
+        }
+        assert_eq!(tool_name.as_deref(), Some("web_search"));
+        assert_eq!(input.unwrap()["query"], "rust");
+    }
+
+    #[tokio::test]
+    async fn stub_python_prefix_selects_code_interpreter() {
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "python: print(1)")]);
+        req.tools.push(crate::model::ToolDef {
+            name: "code_interpreter".into(),
+            description: "d".into(),
+            input_schema: serde_json::json!({}),
+        });
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut tool_name = None;
+        let mut input = None;
+        while let Some(ev) = s.next().await {
+            match ev.unwrap() {
+                StreamDelta::ToolUseStart { name, .. } => tool_name = Some(name),
+                StreamDelta::ToolUseStop { input: i, .. } => input = Some(i),
+                _ => {}
+            }
+        }
+        assert_eq!(tool_name.as_deref(), Some("code_interpreter"));
+        assert_eq!(input.unwrap()["code"], "print(1)");
+    }
+
+    #[tokio::test]
+    async fn stub_falls_back_to_first_tool_when_named_absent() {
+        // websearch: だが web_search が提示に無い → tools[0]（doc_search）にフォールバック。
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "websearch: x")]);
+        req.tools.push(crate::model::ToolDef {
+            name: "doc_search".into(),
+            description: "d".into(),
+            input_schema: serde_json::json!({}),
+        });
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut tool_name = None;
+        while let Some(ev) = s.next().await {
+            if let StreamDelta::ToolUseStart { name, .. } = ev.unwrap() {
+                tool_name = Some(name);
+            }
+        }
+        assert_eq!(tool_name.as_deref(), Some("doc_search"));
     }
 }
