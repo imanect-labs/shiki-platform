@@ -146,10 +146,13 @@ async fn worker_generates_streams_and_persists_projection() {
     let worker = ChatWorker::new(
         pool.clone(),
         store.clone(),
-        gateway,
-        None,
-        None,
-        None,
+        chat::WorkerDeps {
+            gateway,
+            search: None,
+            sandbox: None,
+            artifacts: None,
+            web_search: None,
+        },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
             model: Some("m".into()),

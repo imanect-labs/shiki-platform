@@ -51,6 +51,23 @@ impl Default for WorkerConfig {
     }
 }
 
+/// ワーカーの依存一式（トレイト裏の差し替え点を束ねる）。
+///
+/// `Option` の依存は未配線ならその機能（ツール）を提示しない。個別引数で渡すと
+/// 依存追加のたびに全呼び出し箇所が壊れるため struct で束ねる。
+pub struct WorkerDeps {
+    /// LLM ゲートウェイ（単一チョークポイント）。
+    pub gateway: LlmGateway,
+    /// 社内文書検索（doc_search / 古典 RAG 注入）。
+    pub search: Option<Arc<SearchService>>,
+    /// サンドボックス（code_interpreter / web_fetch 用）。
+    pub sandbox: Option<Arc<dyn agent_core::Sandbox>>,
+    /// 成果物の保存先（code_interpreter が /workspace のファイルを保存する・Task 4.11）。
+    pub artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
+    /// web 検索プロバイダ（web_search 用・Brave/SearXNG/Stub）。
+    pub web_search: Option<Arc<dyn websearch::SearchProvider>>,
+}
+
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
 #[derive(Clone)]
 pub struct ChatWorker {
@@ -62,19 +79,20 @@ pub struct ChatWorker {
     sandbox: Option<Arc<dyn agent_core::Sandbox>>,
     /// 成果物の保存先（code_interpreter が /workspace のファイルを保存する・Task 4.11）。
     artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
+    /// web 検索プロバイダ。未配線なら web_search / web_fetch ツールを提示しない。
+    web_search: Option<Arc<dyn websearch::SearchProvider>>,
     config: Arc<WorkerConfig>,
 }
 
 impl ChatWorker {
-    pub fn new(
-        db: PgPool,
-        store: ChatStore,
-        gateway: LlmGateway,
-        search: Option<Arc<SearchService>>,
-        sandbox: Option<Arc<dyn agent_core::Sandbox>>,
-        artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
-        config: WorkerConfig,
-    ) -> Self {
+    pub fn new(db: PgPool, store: ChatStore, deps: WorkerDeps, config: WorkerConfig) -> Self {
+        let WorkerDeps {
+            gateway,
+            search,
+            sandbox,
+            artifacts,
+            web_search,
+        } = deps;
         ChatWorker {
             db,
             store,
@@ -82,6 +100,7 @@ impl ChatWorker {
             search,
             sandbox,
             artifacts,
+            web_search,
             config: Arc::new(config),
         }
     }

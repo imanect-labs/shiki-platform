@@ -417,10 +417,13 @@ async fn agent_mode_worker_runs_to_done() {
     let worker = ChatWorker::new(
         pool.clone(),
         store.clone(),
-        gateway,
-        None,
-        None,
-        None,
+        chat::WorkerDeps {
+            gateway,
+            search: None,
+            sandbox: None,
+            artifacts: None,
+            web_search: None,
+        },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
             model: Some("m".into()),

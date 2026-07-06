@@ -36,4 +36,4 @@ pub use model::{
     Thread, ThreadRole,
 };
 pub use store::{ChatStore, ClaimedRun, PostResult, CHAT_GENERATION_QUEUE};
-pub use worker::{ChatWorker, WorkerConfig};
+pub use worker::{ChatWorker, WorkerConfig, WorkerDeps};

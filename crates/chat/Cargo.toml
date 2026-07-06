@@ -16,6 +16,7 @@ shiki-jobq.workspace = true
 shiki-rag.workspace = true
 shiki-llm-gateway.workspace = true
 shiki-agent-core.workspace = true
+shiki-websearch.workspace = true
 
 tokio.workspace = true
 sqlx.workspace = true
@@ -54,6 +55,7 @@ ignored = [
     "shiki-rag",
     "shiki-llm-gateway",
     "shiki-agent-core",
+    "shiki-websearch",
 ]
 
 [lints]

@@ -231,6 +231,7 @@ fn base_config() -> AppConfig {
             langfuse: None,
         },
         chat: api::config::ChatConfig::default(),
+        websearch: api::config::WebSearchConfig::default(),
     }
 }
 

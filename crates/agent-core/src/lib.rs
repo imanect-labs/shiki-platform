@@ -31,6 +31,9 @@ pub mod tools;
 pub use agent::{run_agent, AgentOptions, AgentStop, RunContext};
 pub use event::{AgentError, AgentEvent, EventSink};
 pub use tool::{ArtifactRef, ArtifactStore, Citation, Tool, ToolError, ToolOutcome};
-pub use tools::{run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool};
+pub use tools::{
+    run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, WebFetchTool,
+    WebSearchTool,
+};
 // サンドボックス契約を再輸出（chat は agent-core 経由で code_interpreter を配線する）。
 pub use sandbox_client::Sandbox;

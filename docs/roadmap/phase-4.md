@@ -38,8 +38,12 @@
 > - 成果物保存（4.11/4.12 Stage A）: `StorageService.write_file_internal`（内部バイト直書き・presigned 経路と
 >   同一不変条件）＋`ArtifactStore` トレイト。code_interpreter が `/workspace` の成果物を発話ユーザー権限で保存し、
 >   `AgentEvent::Artifact`→SSE `file_ref`→チャット UI のダウンロードチップとして表示。
+> - web ツール: `crates/websearch`（`SearchProvider` トレイト＝Brave/SearXNG/Stub・ホスト側）＋
+>   `web_search`/`web_fetch` ツール。web_fetch は **run 限定 dynamic_allow** に取得先ホストのみを載せた
+>   短命サンドボックスで取得（リダイレクト非追従 PIT-36・IP/内部ホスト拒否・シークレット非添付）。
+>   compose に SearXNG（websearch profile）を追加。
 > - **残（Docker/CI・ポストアルファ）**: ゲストコマンドスイート（curl/wget 等）の wasm ビルド同梱（4.12 software）、
->   web ツール（web.search/web.fetch）、Playwright e2e。
+>   Playwright e2e（code-interpreter / web-search）。
 
 ## タスク一覧
 

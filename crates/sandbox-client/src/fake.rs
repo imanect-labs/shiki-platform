@@ -34,6 +34,7 @@ impl FakeExecResult {
 #[derive(Default)]
 struct FakeState {
     created: usize,
+    created_specs: Vec<SandboxSpec>,
     destroyed: Vec<String>,
     files: HashMap<String, Vec<u8>>, // "<sandbox_id>:<path>" → bytes
 }
@@ -85,6 +86,15 @@ impl FakeSandbox {
             .destroyed
             .clone()
     }
+
+    /// create に渡された spec 一覧（egress/limits の検証用）。
+    pub fn created_specs(&self) -> Vec<SandboxSpec> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .created_specs
+            .clone()
+    }
 }
 
 fn key(id: &str, path: &str) -> String {
@@ -93,7 +103,7 @@ fn key(id: &str, path: &str) -> String {
 
 #[async_trait]
 impl Sandbox for FakeSandbox {
-    async fn create(&self, _spec: SandboxSpec) -> Result<SandboxHandle, SandboxError> {
+    async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle, SandboxError> {
         if self.fail_create {
             return Err(SandboxError::Unavailable("fake create failure".into()));
         }
@@ -102,6 +112,7 @@ impl Sandbox for FakeSandbox {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         st.created += 1;
+        st.created_specs.push(spec);
         let id = format!("fake-{}", st.created);
         Ok(SandboxHandle { id })
     }

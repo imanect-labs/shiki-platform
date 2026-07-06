@@ -186,6 +186,26 @@ services:
           memory: 2g
           pids: 512
 
+  # web 検索（オンプレ向け SearXNG・websearch profile でオプトイン起動）。
+  # SaaS は Brave（SHIKI__WEBSEARCH__BRAVE_API_KEY）、テストは stub を使う。
+  searxng:
+    image: searxng/searxng:2025.6.20-f45eb1eec
+    profiles: ["websearch"]
+    environment:
+      # JSON format を有効化した設定を読み込む（web_search プロバイダの応答形式）。
+      SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
+    volumes:
+      - ../searxng/settings.yml:/etc/searxng/settings.yml:ro
+    ports:
+      # ローカル確認用のみ公開（compose 網内は searxng:8080 で到達）。
+      - "127.0.0.1:8081:8080"
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
   # --- 監視スタック（observability profile・オプトイン起動） ---
   tempo:
     image: grafana/tempo:2.6.1
@@ -334,6 +354,10 @@ services:
       # RAG（Phase 2）: インジェスト・パイプラインと検索。
       SHIKI__RAG__ENABLED: ${SHIKI__RAG__ENABLED:-true}
       SHIKI__CHAT__SANDBOX_ENDPOINT: http://sandbox-orchestrator:50000
+      # web 検索（Phase 4 web ツール）。dev 既定は stub（決定的）。本番は brave / searxng。
+      SHIKI__WEBSEARCH__BACKEND: ${SHIKI__WEBSEARCH__BACKEND:-stub}
+      SHIKI__WEBSEARCH__BRAVE_API_KEY: ${SHIKI__WEBSEARCH__BRAVE_API_KEY:-}
+      SHIKI__WEBSEARCH__SEARXNG_BASE_URL: ${SHIKI__WEBSEARCH__SEARXNG_BASE_URL:-http://searxng:8080}
       SHIKI__RAG__WORKER_BASE_URL: http://ingestion-worker:8000
       SHIKI__RAG__QDRANT_URL: http://qdrant:6333
       SHIKI__RAG__EMBEDDING_MODEL_VERSION: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}

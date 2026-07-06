@@ -7,14 +7,11 @@
 use std::sync::Arc;
 
 use authz::AuthContext;
-use futures::StreamExt;
-use sandbox_client::{ExecEvent, ExecRequest, Sandbox, SandboxSpec};
+use sandbox_client::{ExecRequest, Sandbox, SandboxSpec};
 
 use super::artifacts::collect_artifacts;
+use super::sandbox_exec::{collect_output, truncate};
 use crate::tool::{ArtifactStore, Tool, ToolError, ToolOutcome};
-
-/// stdout/stderr の会話返却上限（サンドボックス側の 1MiB 上限とは別の、モデル向け整形上限）。
-const MODEL_OUTPUT_CAP: usize = 16 * 1024;
 
 /// `code_interpreter` ツール。サンドボックスに `Sandbox` トレイト裏でアクセスする。
 pub struct CodeInterpreterTool {
@@ -27,48 +24,6 @@ impl CodeInterpreterTool {
     pub fn new(sandbox: Arc<dyn Sandbox>, artifacts: Option<Arc<dyn ArtifactStore>>) -> Self {
         CodeInterpreterTool { sandbox, artifacts }
     }
-}
-
-/// exec ストリームを stdout/stderr/exit に畳み込む。
-async fn collect_output(
-    mut stream: futures::stream::BoxStream<
-        'static,
-        Result<ExecEvent, sandbox_client::SandboxError>,
-    >,
-) -> Result<(String, String, Option<i32>, Option<String>), ToolError> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let mut exit = None;
-    let mut limit = None;
-    while let Some(ev) = stream.next().await {
-        match ev.map_err(|e| ToolError::Unavailable(format!("sandbox exec: {e}")))? {
-            ExecEvent::Stdout(b) => stdout.extend_from_slice(&b),
-            ExecEvent::Stderr(b) => stderr.extend_from_slice(&b),
-            ExecEvent::Exited { code } => exit = Some(code),
-            ExecEvent::LimitExceeded { kind, detail } => {
-                limit = Some(format!("リソース超過（{kind:?}）: {detail}"));
-            }
-        }
-    }
-    Ok((
-        String::from_utf8_lossy(&stdout).into_owned(),
-        String::from_utf8_lossy(&stderr).into_owned(),
-        exit,
-        limit,
-    ))
-}
-
-fn truncate(s: &str) -> String {
-    if s.len() <= MODEL_OUTPUT_CAP {
-        return s.to_string();
-    }
-    // バイト境界がマルチバイト文字の途中に来るとスライスがパニックするため、
-    // 直近の char 境界まで戻す（Python 出力は日本語等を含みうる）。
-    let mut end = MODEL_OUTPUT_CAP;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}\n…（出力を{end}バイトで打ち切り）", &s[..end])
 }
 
 #[async_trait::async_trait]
@@ -379,16 +334,6 @@ mod tests {
         assert!(out.is_error);
         assert!(out.artifacts.is_empty());
         assert!(store.saved.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn truncate_respects_utf8_boundary() {
-        // マルチバイト（日本語）だけの長い文字列。バイト境界が文字途中でもパニックしない。
-        let s = "あ".repeat(MODEL_OUTPUT_CAP); // 3 bytes/char
-        let out = truncate(&s);
-        assert!(out.contains("バイトで打ち切り"));
-        // 打ち切り位置は char 境界（3 の倍数）まで戻っている。
-        assert!(out.starts_with('あ'));
     }
 
     #[tokio::test]

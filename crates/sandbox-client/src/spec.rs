@@ -107,6 +107,38 @@ impl SandboxSpec {
             lifetime: SandboxLifetime::Ephemeral { ttl_ms: 60_000 },
         }
     }
+
+    /// web_fetch 用（**当該 run 限定の dynamic_allow に取得先ホストのみ**を載せる・design §4.4）。
+    ///
+    /// 静的 allowlist は空＝取得先以外は全遮断。シークレット添付は不可（`secret_attach=false` 固定）。
+    /// 管理者 `deny_overlay` は orchestrator 側で重なる。
+    pub fn web_fetch(
+        tenant_id: String,
+        org: String,
+        principal: String,
+        host: String,
+        port: u16,
+    ) -> Self {
+        SandboxSpec {
+            backend: SandboxBackend::Wasm,
+            tenant_id,
+            org,
+            principal,
+            limits: SandboxLimits::constrained(),
+            egress: Egress {
+                static_allow: Vec::new(),
+                dynamic_allow: vec![EgressRule {
+                    host_pattern: host,
+                    port,
+                }],
+                deny_overlay: Vec::new(),
+                secret_attach: false,
+            },
+            software: Vec::new(),
+            mounts_allowed: false,
+            lifetime: SandboxLifetime::Ephemeral { ttl_ms: 60_000 },
+        }
+    }
 }
 
 /// 生成済みサンドボックスのハンドル。

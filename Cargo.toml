@@ -115,6 +115,10 @@ shiki-llm-gateway = { path = "crates/llm-gateway" }
 shiki-agent-core = { path = "crates/agent-core" }
 shiki-chat = { path = "crates/chat" }
 shiki-sandbox-client = { path = "crates/sandbox-client" }
+shiki-websearch = { path = "crates/websearch" }
+
+# URL 解析（web ツールの入力検証・SSRF 系ホスト拒否）
+url = "2"
 
 # ワークスペース共通 lint（各 crate は `[lints] workspace = true` で opt-in）。
 # CI は `cargo clippy --all-targets --all-features -- -D warnings` で warn も含めゲート化する。
