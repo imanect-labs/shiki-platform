@@ -60,6 +60,8 @@ pub struct ChatWorker {
     search: Option<Arc<SearchService>>,
     /// サンドボックス（code_interpreter 用）。未配線なら code_interpreter ツールを提示しない。
     sandbox: Option<Arc<dyn agent_core::Sandbox>>,
+    /// 成果物の保存先（code_interpreter が /workspace のファイルを保存する・Task 4.11）。
+    artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -70,6 +72,7 @@ impl ChatWorker {
         gateway: LlmGateway,
         search: Option<Arc<SearchService>>,
         sandbox: Option<Arc<dyn agent_core::Sandbox>>,
+        artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
         config: WorkerConfig,
     ) -> Self {
         ChatWorker {
@@ -78,6 +81,7 @@ impl ChatWorker {
             gateway,
             search,
             sandbox,
+            artifacts,
             config: Arc::new(config),
         }
     }

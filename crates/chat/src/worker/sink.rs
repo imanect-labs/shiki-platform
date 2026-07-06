@@ -85,6 +85,12 @@ impl WorkerSink {
             AgentEvent::Citation(c) => {
                 self.content.push(ContentBlock::Citation(to_citation(c)));
             }
+            AgentEvent::Artifact { artifact, .. } => {
+                self.content.push(ContentBlock::FileRef {
+                    node_id: artifact.node_id.clone(),
+                    name: artifact.name.clone(),
+                });
+            }
         }
     }
 }
@@ -109,6 +115,10 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
             content: content.clone(),
         },
         AgentEvent::Citation(c) => StreamEventKind::Citation(to_citation(c)),
+        AgentEvent::Artifact { artifact, .. } => StreamEventKind::FileRef {
+            node_id: artifact.node_id.clone(),
+            name: artifact.name.clone(),
+        },
     }
 }
 
@@ -147,5 +157,29 @@ impl EventSink for WorkerSink {
 
     fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artifact_event_maps_to_file_ref() {
+        // AgentEvent::Artifact → SSE file_ref（node_id/name を保持）。
+        let ev = AgentEvent::Artifact {
+            tool_call_id: "call-1".into(),
+            artifact: agent_core::ArtifactRef {
+                node_id: "n1".into(),
+                name: "result.csv".into(),
+            },
+        };
+        match to_stream_kind(&ev) {
+            StreamEventKind::FileRef { node_id, name } => {
+                assert_eq!(node_id, "n1");
+                assert_eq!(name, "result.csv");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }

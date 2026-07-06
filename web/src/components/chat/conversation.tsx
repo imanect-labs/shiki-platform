@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { Share2 } from "lucide-react";
+import { FileDown, Share2 } from "lucide-react";
 
 import {
   getThread,
@@ -20,6 +20,7 @@ import {
   type StreamHandlers,
 } from "@/lib/chat-api";
 import { popPending } from "@/lib/pending-message";
+import { triggerDownload } from "@/lib/storage";
 import { linkifyCitations } from "@/lib/citation";
 import { newId } from "@/lib/chat-store";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
@@ -38,9 +39,11 @@ type StreamState = {
   thinking: string;
   tools: ToolActivityItem[];
   citations: Citation[];
+  /// ツール成果物（code_interpreter が保存したファイル参照）。
+  files: Attachment[];
 };
 
-const EMPTY_STREAM: StreamState = { text: "", thinking: "", tools: [], citations: [] };
+const EMPTY_STREAM: StreamState = { text: "", thinking: "", tools: [], citations: [], files: [] };
 
 export function Conversation({ threadId }: { threadId: string }) {
   const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
@@ -87,6 +90,7 @@ export function Conversation({ threadId }: { threadId: string }) {
           s ? { ...s, tools: s.tools.map((t) => (t.id === res.id ? { ...t, running: false } : t)) } : s,
         ),
       onCitation: (c) => setStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
+      onFileRef: (f) => setStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
       onStatus: (status: RunStatus) => {
         if (status === "cancelled") setError("生成をキャンセルしました。");
         if (status === "failed") setError("生成に失敗しました。");
@@ -251,6 +255,8 @@ function finalizeStream(
   for (const t of s.tools) blocks.push({ type: "tool_call", id: t.id, name: t.name, input: t.input });
   if (s.text.trim()) blocks.push({ type: "text", text: s.text });
   for (const c of s.citations) blocks.push(c);
+  // ツール成果物（保存済みファイル）も確定メッセージへ残す。
+  for (const f of s.files) blocks.push({ type: "file_ref", node_id: f.node_id, name: f.name });
   if (blocks.length === 0) return;
   setMessages((prev) => [
     ...prev,
@@ -304,16 +310,41 @@ function AssistantRow({ blocks }: { blocks: ContentBlock[] }) {
     .filter((b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call")
     .map((b) => ({ id: b.id, name: b.name, running: false, input: b.input }));
   const citations = blocks.filter((b): b is Citation => b.type === "citation");
+  const files = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "file_ref" }> => b.type === "file_ref",
+  );
 
   return (
     <Message className="group justify-start">
       <div className="w-full min-w-0">
         <ChainOfThought thinking={thinking} tools={tools} citations={citations} />
         {text ? <Markdown>{linkifyCitations(text, citations)}</Markdown> : null}
+        <ArtifactFiles files={files} />
         <Sources citations={citations} />
         {text ? <MessageFooter text={text} /> : null}
       </div>
     </Message>
+  );
+}
+
+/// ツール成果物（保存済みファイル）のチップ列。クリックでダウンロードする。
+function ArtifactFiles({ files }: { files: { node_id: string; name: string }[] }) {
+  if (files.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {files.map((f) => (
+        <button
+          key={f.node_id}
+          type="button"
+          onClick={() => void triggerDownload(f.node_id)}
+          title={`${f.name} をダウンロード`}
+          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80 transition-colors hover:border-primary/40 hover:bg-secondary hover:text-foreground"
+        >
+          <FileDown className="size-3.5 text-primary" aria-hidden />
+          {f.name}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -337,6 +368,7 @@ function StreamingRow({ stream }: { stream: StreamState }) {
             <Markdown>{linkifyCitations(stream.text, stream.citations)}</Markdown>
           </div>
         ) : null}
+        <ArtifactFiles files={stream.files} />
       </div>
     </Message>
   );

@@ -23,11 +23,13 @@
     )
 )]
 
+pub mod artifacts;
 pub mod error;
 pub mod model;
 pub mod store;
 pub mod worker;
 
+pub use artifacts::StorageArtifactStore;
 pub use error::ChatError;
 pub use model::{
     Attachment, Citation, ContentBlock, Message, Role, RunStatus, StreamEvent, StreamEventKind,

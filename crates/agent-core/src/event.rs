@@ -4,7 +4,7 @@
 //! （真実のソース）＋ Redis pub/sub 配信する。ループはツール実行/トークンをこのイベントで
 //! 逐次外部化し、chat 側で SSE の [`StreamEventKind`](../../chat) へ写す。
 
-use crate::tool::Citation;
+use crate::tool::{ArtifactRef, Citation};
 
 /// エージェントループが外へ流すイベント（プロバイダ非依存・chat 非依存）。
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +27,11 @@ pub enum AgentEvent {
     },
     /// 引用（doc_search）。
     Citation(Citation),
+    /// ツールが保存した成果物（code_interpreter）。chat 側で FileRef へ写す。
+    Artifact {
+        tool_call_id: String,
+        artifact: ArtifactRef,
+    },
 }
 
 /// エージェントループのエラー。

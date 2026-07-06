@@ -275,6 +275,17 @@ impl ObjectStore for FakeObjectStore {
     async fn read_and_hash(&self, _key: &str) -> Result<(String, u64), ObjectStoreError> {
         unreachable!("テストでは使わない")
     }
+    async fn put_object(
+        &self,
+        _key: &str,
+        _bytes: Vec<u8>,
+        _content_type: &str,
+    ) -> Result<(), ObjectStoreError> {
+        unreachable!("テストでは使わない")
+    }
+    async fn get_object(&self, _key: &str) -> Result<Vec<u8>, ObjectStoreError> {
+        unreachable!("テストでは使わない")
+    }
     async fn exists(&self, _key: &str) -> Result<bool, ObjectStoreError> {
         Ok(true)
     }

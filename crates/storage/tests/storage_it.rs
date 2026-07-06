@@ -1843,3 +1843,131 @@ async fn purge_tenant_end_to_end() {
     assert_eq!(tuples2, 0, "再実行で剥奪対象なし");
     assert_eq!(objects2, 0, "再実行で削除対象なし");
 }
+
+/// 内部バイト直書き/読み戻し（Task 4.12 Stage A・サンドボックス成果物経路）。
+///
+/// presigned 経路と同一不変条件（content-addressing・dedup・監査・書込イベント・viewer 認可）を
+/// write_file_internal / read_file_internal が保つことを検証する。
+#[tokio::test]
+async fn internal_io_end_to_end() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let uid = format!("ituser{}", Uuid::new_v4().simple());
+    let actx = make_ctx(&org, &uid);
+    seed_org_member(&authz, &org, &uid).await;
+
+    // --- ルート直下への内部書き込み → メタ/内容の round-trip ---
+    let content = b"col_a,col_b\n1,2\n";
+    let sha = sha256_hex(content);
+    let node = service
+        .write_file_internal(&actx, None, "result.csv", content, "text/csv", None)
+        .await
+        .expect("write_file_internal");
+    assert_eq!(node.name, "result.csv");
+    assert_eq!(node.blob_sha256.as_deref(), Some(sha.as_str()));
+    assert_eq!(node.size_bytes, Some(content.len() as i64));
+    assert_eq!(blob_refcount(&pool, &org, &sha).await, 1);
+    assert_eq!(
+        node_version_count(&pool, node.id).await,
+        1,
+        "初版が記録される"
+    );
+    assert_eq!(
+        outbox_count(&pool, node.id, "create").await,
+        1,
+        "書込イベント（RAG 索引トリガ）が発行される"
+    );
+    assert_eq!(
+        audit_count(&pool, &org, "file.write.internal", "allow").await,
+        1
+    );
+
+    let (meta, bytes) = service
+        .read_file_internal(&actx, node.id, None)
+        .await
+        .expect("read_file_internal");
+    assert_eq!(meta.id, node.id);
+    assert_eq!(bytes, content, "書いたバイトと読み戻しが一致する");
+    assert_eq!(
+        audit_count(&pool, &org, "file.read.internal", "allow").await,
+        1
+    );
+
+    // presigned GET（既存ダウンロード経路）でも同一バイトが取れる（blob 共有の整合）。
+    let ticket = service
+        .issue_download_url(&actx, node.id, None)
+        .await
+        .expect("download url");
+    let got = http
+        .get(&ticket.url)
+        .send()
+        .await
+        .expect("GET")
+        .bytes()
+        .await
+        .expect("body");
+    assert_eq!(got.as_ref(), content);
+
+    // --- dedup: 同一内容の 2 個目は blob を共有し refcount +1 ---
+    let node2 = service
+        .write_file_internal(&actx, None, "copy.csv", content, "text/csv", None)
+        .await
+        .expect("2 個目");
+    assert_eq!(node2.blob_sha256.as_deref(), Some(sha.as_str()));
+    assert_eq!(blob_refcount(&pool, &org, &sha).await, 2);
+
+    // --- フォルダ配下への書き込み（editor@folder 経路・parent tuple）---
+    let folder = service
+        .create_folder(&actx, None, "成果物", None)
+        .await
+        .expect("folder");
+    let in_folder = service
+        .write_file_internal(&actx, Some(folder.id), "n.txt", b"x", "text/plain", None)
+        .await
+        .expect("folder 配下");
+    assert_eq!(in_folder.parent_id, Some(folder.id));
+    assert_eq!(
+        closure_depth(&pool, folder.id, in_folder.id).await,
+        Some(1),
+        "closure が親子を保持する"
+    );
+
+    // --- 不正名（ゲスト由来・PIT-23）は拒否 ---
+    for bad in ["../escape", "a/b", "bad\nname", ".", ""] {
+        let err = service
+            .write_file_internal(&actx, None, bad, b"x", "text/plain", None)
+            .await
+            .expect_err("不正名は拒否");
+        assert!(matches!(err, StorageError::Invalid(_)), "{bad:?}");
+    }
+
+    // --- 認可: 他人（org 非メンバー）は書けず、viewer が無ければ読めない ---
+    let outsider = make_ctx(&org, &format!("outsider{}", Uuid::new_v4().simple()));
+    let err = outsider_write(&service, &outsider).await;
+    assert!(
+        matches!(err, StorageError::Forbidden),
+        "非メンバーの書き込みは deny"
+    );
+    let err = service
+        .read_file_internal(&outsider, node.id, None)
+        .await
+        .expect_err("viewer 無しの読み取りは deny");
+    // 読取 deny は存在秘匿のため NotFound（require_read の規約・他の読取系と同一）。
+    assert!(matches!(err, StorageError::NotFound));
+}
+
+/// 非メンバーの内部書き込み（deny 経路）。
+async fn outsider_write(service: &StorageService, ctx: &AuthContext) -> StorageError {
+    service
+        .write_file_internal(ctx, None, "deny.txt", b"x", "text/plain", None)
+        .await
+        .expect_err("deny")
+}

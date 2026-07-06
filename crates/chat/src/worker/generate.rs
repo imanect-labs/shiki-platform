@@ -60,7 +60,10 @@ impl ChatWorker {
             tools.push(Arc::new(DocSearchTool::new(search.clone())));
         }
         if let Some(sandbox) = &self.sandbox {
-            tools.push(Arc::new(CodeInterpreterTool::new(sandbox.clone())));
+            tools.push(Arc::new(CodeInterpreterTool::new(
+                sandbox.clone(),
+                self.artifacts.clone(),
+            )));
         }
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {
