@@ -157,31 +157,36 @@ impl TryFrom<pb::Backend> for SandboxBackend {
     }
 }
 
-impl From<pb::EgressRule> for EgressRule {
-    fn from(r: pb::EgressRule) -> Self {
+impl TryFrom<pb::EgressRule> for EgressRule {
+    type Error = SandboxError;
+    fn try_from(r: pb::EgressRule) -> Result<Self, Self::Error> {
         let pb::EgressRule { host_pattern, port } = r;
-        EgressRule {
-            host_pattern,
-            // proto は u32。ポートは 0..=65535 に丸める（範囲外は 0=全ポート扱い）。
-            port: u16::try_from(port).unwrap_or(0),
-        }
+        // proto は u32。範囲外（>65535）を 0（=全ポート許可）へ丸めると fail-open するため、拒否する。
+        let port = u16::try_from(port)
+            .map_err(|_| invalid(format!("egress port out of range: {port}")))?;
+        Ok(EgressRule { host_pattern, port })
     }
 }
 
-impl From<pb::Egress> for Egress {
-    fn from(e: pb::Egress) -> Self {
+fn try_rules(rules: Vec<pb::EgressRule>) -> Result<Vec<EgressRule>, SandboxError> {
+    rules.into_iter().map(EgressRule::try_from).collect()
+}
+
+impl TryFrom<pb::Egress> for Egress {
+    type Error = SandboxError;
+    fn try_from(e: pb::Egress) -> Result<Self, Self::Error> {
         let pb::Egress {
             static_allow,
             dynamic_allow,
             deny_overlay,
             secret_attach,
         } = e;
-        Egress {
-            static_allow: static_allow.into_iter().map(Into::into).collect(),
-            dynamic_allow: dynamic_allow.into_iter().map(Into::into).collect(),
-            deny_overlay: deny_overlay.into_iter().map(Into::into).collect(),
+        Ok(Egress {
+            static_allow: try_rules(static_allow)?,
+            dynamic_allow: try_rules(dynamic_allow)?,
+            deny_overlay: try_rules(deny_overlay)?,
             secret_attach,
-        }
+        })
     }
 }
 
@@ -233,7 +238,10 @@ impl TryFrom<pb::Spec> for SandboxSpec {
             limits: limits
                 .map(Into::into)
                 .ok_or_else(|| invalid("limits missing"))?,
-            egress: egress.map(Into::into).unwrap_or_default(),
+            egress: egress
+                .map(TryInto::try_into)
+                .transpose()?
+                .unwrap_or_default(),
             software,
             mounts_allowed,
             lifetime: SandboxLifetime::Ephemeral { ttl_ms },

@@ -94,10 +94,13 @@ pub fn check_file_size(len: usize) -> Result<(), ValidateError> {
     Ok(())
 }
 
-/// Python コード長を検証する。
+/// Python コード長・NUL を検証する（ゲスト実行入力は敵対的として扱う）。
 pub fn check_code(code: &str) -> Result<(), ValidateError> {
     if code.len() > MAX_CODE_LEN {
         return Err(err("python code too long"));
+    }
+    if code.contains('\0') {
+        return Err(err("python code contains NUL"));
     }
     Ok(())
 }

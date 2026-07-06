@@ -57,14 +57,15 @@ async fn collect_output(
 
 fn truncate(s: &str) -> String {
     if s.len() <= MODEL_OUTPUT_CAP {
-        s.to_string()
-    } else {
-        format!(
-            "{}\n…（出力を{}文字で打ち切り）",
-            &s[..MODEL_OUTPUT_CAP],
-            MODEL_OUTPUT_CAP
-        )
+        return s.to_string();
     }
+    // バイト境界がマルチバイト文字の途中に来るとスライスがパニックするため、
+    // 直近の char 境界まで戻す（Python 出力は日本語等を含みうる）。
+    let mut end = MODEL_OUTPUT_CAP;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n…（出力を{end}バイトで打ち切り）", &s[..end])
 }
 
 #[async_trait::async_trait]
@@ -132,13 +133,16 @@ impl Tool for CodeInterpreterTool {
                 },
             )
             .await;
+        // `?` で早期 return すると下の destroy がスキップされるため、必ず destroy を通す形にする。
         let outcome = match exec_result {
-            Ok(stream) => {
-                let (stdout, stderr, exit, limit) = collect_output(stream).await?;
-                Ok(render_outcome(&stdout, &stderr, exit, limit.as_deref()))
-            }
+            Ok(stream) => collect_output(stream)
+                .await
+                .map(|(stdout, stderr, exit, limit)| {
+                    render_outcome(&stdout, &stderr, exit, limit.as_deref())
+                }),
             Err(e) => Err(ToolError::Unavailable(format!("sandbox exec: {e}"))),
         };
+        // 実行後は必ず破棄する（短命・まっさら）。collect のエラー時も破棄を保証する。
         let _ = self.sandbox.destroy(&handle).await;
         outcome
     }
@@ -244,6 +248,16 @@ mod tests {
             .expect("ok");
         assert!(out.is_error);
         assert!(out.content.contains("Traceback"));
+    }
+
+    #[test]
+    fn truncate_respects_utf8_boundary() {
+        // マルチバイト（日本語）だけの長い文字列。バイト境界が文字途中でもパニックしない。
+        let s = "あ".repeat(MODEL_OUTPUT_CAP); // 3 bytes/char
+        let out = truncate(&s);
+        assert!(out.contains("バイトで打ち切り"));
+        // 打ち切り位置は char 境界（3 の倍数）まで戻っている。
+        assert!(out.starts_with('あ'));
     }
 
     #[tokio::test]

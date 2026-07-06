@@ -17,9 +17,12 @@ pub struct GrpcSandboxClient {
 
 impl GrpcSandboxClient {
     /// 遅延接続でエンドポイントに接続する（compose 網内・非公開ポート）。
+    /// 各 RPC にリクエストタイムアウトを付与し、hang した orchestrator/sidecar でチャット生成を塞がない。
     pub fn connect_lazy(endpoint: impl Into<String>) -> Result<Self, SandboxError> {
         let channel = Channel::from_shared(endpoint.into())
             .map_err(|e| SandboxError::Invalid(format!("invalid sandbox endpoint: {e}")))?
+            .timeout(std::time::Duration::from_mins(2))
+            .connect_timeout(std::time::Duration::from_secs(10))
             .connect_lazy();
         Ok(GrpcSandboxClient {
             inner: SandboxServiceClient::new(channel),

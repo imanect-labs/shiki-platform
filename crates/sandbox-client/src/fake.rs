@@ -174,7 +174,8 @@ impl Sandbox for FakeSandbox {
         handle: &SandboxHandle,
         path: &str,
     ) -> Result<Vec<DirEntry>, SandboxError> {
-        let prefix = key(&handle.id, path);
+        // ディレクトリ境界で一致させる（"/workspace" が "/workspace2" に誤マッチしないよう "/" 終端で比較）。
+        let prefix = format!("{}/", key(&handle.id, path).trim_end_matches('/'));
         let st = self
             .state
             .lock()
@@ -184,7 +185,7 @@ impl Sandbox for FakeSandbox {
             .iter()
             .filter_map(|(k, v)| {
                 k.strip_prefix(&prefix).map(|rest| DirEntry {
-                    name: rest.trim_start_matches('/').to_string(),
+                    name: rest.to_string(),
                     is_dir: false,
                     size: v.len() as u64,
                 })

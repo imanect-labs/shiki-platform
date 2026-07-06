@@ -401,10 +401,10 @@ flowchart LR
 ```mermaid
 flowchart TB
   ORCH[sandbox-orchestrator] --> TIER{Sandbox トレイト<br/>3ティア}
-  TIER -->|既定・アルファはこれのみ| WASM["wasm: agentos フォーク<br/>crates/sandbox-wasm・非特権別プロセス<br/>~ms 起動・仮想FS/PTY/仮想net内蔵"]
+  TIER -->|既定・アルファはこれのみ| WASM["wasm: secure-exec フォーク<br/>vendor/secure-exec・per-sandbox 非特権 sidecar 子プロセス<br/>V8＋Pyodide・仮想FS/PTY/仮想net内蔵"]
   TIER -->|フルLinux が要る時| GV[gVisor]
   TIER -->|最強隔離/GPU 契約要件| FC[Firecracker microVM]
-  WASM --> VFS["仮想FS → StorageService 直結<br/>（カーネル FUSE 不要）"]
+  WASM --> VFS["仮想FS → StorageService 直結<br/>（Stage B・Phase 5。アルファは成果物をサーバ回収）"]
   WASM --> NET2[仮想 net スタック → egress allowlist をホスト関数で強制]
   GV & FC --> FUSE[FUSE: StorageService マウント]
   ORCH --> NET[egress デフォルト遮断 + allowlist]

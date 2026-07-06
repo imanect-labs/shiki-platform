@@ -29,16 +29,22 @@ impl WasmBackend {
     }
 }
 
-/// wire リクエストを 1 往復する（TransportError→SandboxError）。
+/// wire リクエスト 1 往復の上限（hang した sidecar でハンドラを塞がない）。
+const WIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
+
+/// wire リクエストを 1 往復する（TransportError→SandboxError・タイムアウト付き）。
 pub(crate) async fn request(
     transport: &SidecarTransport,
     ownership: wire::OwnershipScope,
     payload: wire::RequestPayload,
 ) -> Result<wire::ResponsePayload, SandboxError> {
-    transport
-        .request_wire(ownership, payload)
-        .await
-        .map_err(|e| SandboxError::Unavailable(format!("sidecar transport: {e}")))
+    match tokio::time::timeout(WIRE_TIMEOUT, transport.request_wire(ownership, payload)).await {
+        Ok(Ok(resp)) => Ok(resp),
+        Ok(Err(e)) => Err(SandboxError::Unavailable(format!("sidecar transport: {e}"))),
+        Err(_) => Err(SandboxError::Unavailable(
+            "sidecar request timed out".into(),
+        )),
+    }
 }
 
 fn conn_scope(connection_id: &str) -> wire::OwnershipScope {

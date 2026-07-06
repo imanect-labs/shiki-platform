@@ -27,7 +27,7 @@ impl Registry {
         Self::default()
     }
 
-    /// インスタンスを登録し ID を返す。
+    /// インスタンスを ID で登録する。
     pub async fn insert(
         &self,
         id: String,
@@ -97,10 +97,11 @@ pub async fn sweep_loop(registry: Arc<Registry>, interval: Duration) {
         ticker.tick().await;
         let expired = registry.drain_expired(Instant::now()).await;
         for (id, instance) in expired {
-            if let Err(e) = instance.destroy().await {
-                tracing::warn!(sandbox_id = %id, error = %e, "TTL destroy failed");
-            } else {
-                tracing::debug!(sandbox_id = %id, "TTL destroyed sandbox");
+            // 破棄が hang しても掃除ループを止めない（子プロセスは kill_on_drop で最終的に回収される）。
+            match tokio::time::timeout(Duration::from_secs(10), instance.destroy()).await {
+                Ok(Ok(())) => tracing::debug!(sandbox_id = %id, "TTL destroyed sandbox"),
+                Ok(Err(e)) => tracing::warn!(sandbox_id = %id, error = %e, "TTL destroy failed"),
+                Err(_) => tracing::warn!(sandbox_id = %id, "TTL destroy timed out"),
             }
         }
     }
