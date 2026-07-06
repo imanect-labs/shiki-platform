@@ -103,10 +103,10 @@ impl SandboxService for SandboxSvc {
         let exec = ExecRequest::try_from(req).map_err(to_status)?;
         match &exec {
             ExecRequest::Python { code, .. } => {
-                validate::check_code(code).map_err(|e| validate_err(&e))?
+                validate::check_code(code).map_err(|e| validate_err(&e))?;
             }
             ExecRequest::Shell { cmd, .. } => {
-                validate::check_shell(cmd).map_err(|e| validate_err(&e))?
+                validate::check_shell(cmd).map_err(|e| validate_err(&e))?;
             }
         }
 
