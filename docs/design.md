@@ -387,9 +387,16 @@ flowchart LR
 
 ### 4.6 サンドボックス（3ティア・wasm 既定）
 
-**2026-07 方針転換（#97）**: 既定バックエンドを **wasm（[agentos](https://github.com/rivet-dev/agentos) フォーク）** にする。
-`Sandbox` トレイトは維持し、バックエンドを用途別3ティアに再定義する。
-設計原則4「隔離プリミティブは自作しない」は本件で**一部撤回**（agentos フォーク＝Rust 製 in-process OS カーネルを自分たちが所有）。
+**2026-07 方針転換（#97）**: 既定バックエンドを **wasm** にする。`Sandbox` トレイトは維持し、
+バックエンドを用途別3ティアに再定義する。
+設計原則4「隔離プリミティブは自作しない」は本件で**一部撤回**（Rust 製 in-process OS カーネルを自分たちが所有）。
+
+> **実装ノート（2026-07・Phase 4）**: [agentos](https://github.com/rivet-dev/agentos) はカーネルを含まず
+> TS SDK/ACP 層であり、カーネル実体はその依存 **[secure-exec](https://github.com/rivet-dev/secure-exec)**（Rust・
+> Apache-2.0）にある。よって我々が **フォークして所有するのは secure-exec** で、`vendor/secure-exec/` に取り込む
+> （[fork-policy](./sandbox/fork-policy.md)）。隔離の実体は **V8 アイソレート＋WASI polyfill＋wasm32-wasip1 ゲスト**
+> であり wasmtime ではない（「ブラウザ級」隔離）。sidecar（V8/Pyodide を抱える）は per-sandbox の非特権子プロセスとして
+> orchestrator が spawn する。code_interpreter は **numpy/pandas**（matplotlib は非同梱・可視化は §4.7 の generative UI）。
 
 ```mermaid
 flowchart TB
@@ -405,7 +412,7 @@ flowchart TB
 
 | ティア | 用途 | 隔離保証（正直な主張） | アルファ |
 |--------|------|----------------------|---------|
-| **wasm（既定）** | エージェント実行・skill・code_interpreter（**Pyodide**: numpy/pandas/matplotlib） | プロセス分離＋wasm 二層（ブラウザ級・VM級ではない） | ✅ これのみ |
+| **wasm（既定）** | エージェント実行・skill・code_interpreter（**Pyodide**: numpy/pandas。matplotlib 非同梱） | プロセス分離＋wasm 二層（ブラウザ級・VM級ではない） | ✅ これのみ |
 | gVisor | フル CPython（任意 pip）・ネイティブツールチェーン | ユーザー空間カーネル | ポストアルファ |
 | Firecracker | 契約上 VM 級隔離が要件の顧客・GPU | VM 級（KVM 前提） | ポストアルファ |
 

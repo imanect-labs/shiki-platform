@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use agent_core::{run_agent, AgentOptions, DocSearchTool, RunContext, Tool};
+use agent_core::{run_agent, AgentOptions, CodeInterpreterTool, DocSearchTool, RunContext, Tool};
 use authz::AuthContext;
 use futures::stream::StreamExt;
 use llm_gateway::{
@@ -58,6 +58,9 @@ impl ChatWorker {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         if let Some(search) = &self.search {
             tools.push(Arc::new(DocSearchTool::new(search.clone())));
+        }
+        if let Some(sandbox) = &self.sandbox {
+            tools.push(Arc::new(CodeInterpreterTool::new(sandbox.clone())));
         }
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {

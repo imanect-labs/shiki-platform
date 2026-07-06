@@ -13,6 +13,7 @@ name = "agent_core"
 shiki-authz.workspace = true
 shiki-rag.workspace = true
 shiki-llm-gateway.workspace = true
+shiki-sandbox-client.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
@@ -34,7 +35,7 @@ futures.workspace = true
 
 # lib 名 authz/rag/llm_gateway で参照するため machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-rag", "shiki-llm-gateway"]
+ignored = ["shiki-authz", "shiki-rag", "shiki-llm-gateway", "shiki-sandbox-client"]
 
 [lints]
 workspace = true

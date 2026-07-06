@@ -27,6 +27,17 @@
 > PIT-22（高速起動 vs ユーザー束縛の時間衝突）・PIT-23（ゲスト→特権RPC の脱出）・PIT-24（gVisor の隔離低下）・
 > PIT-25（egress allowlist の機構）を確認すること。** とくに PIT-23 はホスト侵害に直結する。
 
+> ✅ **実装状況（2026-07・wasm ティア）**: secure-exec を `vendor/secure-exec/` に所有フォークとして取り込み
+> （agentos ではなくその依存 secure-exec が実体・[fork-policy](../sandbox/fork-policy.md)）。
+> - `crates/sandbox-client`（Task 4.1）: `Sandbox` トレイト＋proto/tonic＋FakeSandbox。
+> - `crates/sandbox-orchestrator`（4.2/4.6/4.7/4.8）: 非特権 gRPC・validate（PIT-23）・egress 静的＋動的 allowlist・
+>   limits 写像・per-sandbox sidecar 子プロセス（PIT-32）・TTL 掃除。
+> - `code_interpreter`（4.10）: agent-core ツール＋ChatWorker 配線。numpy/pandas 利用可・matplotlib 非同梱。
+> - gated 実 sidecar 結合テスト（`SANDBOX_IT=1`）: Python 実行・numpy・egress デフォルト遮断・プロセス分離・
+>   ファイル I/O を実 V8/Pyodide で確認済み。
+> - **残（Docker/CI・ポストアルファ）**: ゲストコマンドスイート（curl/wget 等）の wasm ビルド同梱（4.12 software）、
+>   成果物 FileRef 保存（4.11・StorageService.write_file_internal）、web ツール（web.search/web.fetch）、Playwright e2e。
+
 ## タスク一覧
 
 | ID | タイトル | area | 依存 |

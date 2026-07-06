@@ -58,6 +58,8 @@ pub struct ChatWorker {
     store: ChatStore,
     gateway: LlmGateway,
     search: Option<Arc<SearchService>>,
+    /// サンドボックス（code_interpreter 用）。未配線なら code_interpreter ツールを提示しない。
+    sandbox: Option<Arc<dyn agent_core::Sandbox>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -67,6 +69,7 @@ impl ChatWorker {
         store: ChatStore,
         gateway: LlmGateway,
         search: Option<Arc<SearchService>>,
+        sandbox: Option<Arc<dyn agent_core::Sandbox>>,
         config: WorkerConfig,
     ) -> Self {
         ChatWorker {
@@ -74,6 +77,7 @@ impl ChatWorker {
             store,
             gateway,
             search,
+            sandbox,
             config: Arc::new(config),
         }
     }

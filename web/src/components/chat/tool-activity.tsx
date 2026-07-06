@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, Search, Check } from "lucide-react";
+import { Loader2, Search, Check, Terminal } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -14,6 +14,7 @@ export type ToolActivityItem = {
 
 const TOOL_LABEL: Record<string, { label: string; icon: typeof Search }> = {
   doc_search: { label: "社内文書を検索", icon: Search },
+  code_interpreter: { label: "コードを実行", icon: Terminal },
 };
 
 /// エージェントのツール実行（Chain of Thought）を可視化する。検索中はスピナー、完了はチェック。

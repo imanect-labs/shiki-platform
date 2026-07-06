@@ -192,11 +192,22 @@ pub(crate) async fn wire_chat(
         lease_secs: config.chat.lease_secs,
         max_steps: config.chat.max_steps,
     };
+    // サンドボックス（code_interpreter）: エンドポイント設定時のみ配線する。
+    let sandbox: Option<Arc<dyn agent_core::Sandbox>> = match &config.chat.sandbox_endpoint {
+        Some(endpoint) => {
+            let client = sandbox_client::GrpcSandboxClient::connect_lazy(endpoint.clone())
+                .map_err(|e| anyhow::anyhow!("sandbox client 構築に失敗: {e}"))?;
+            tracing::info!(%endpoint, "code_interpreter サンドボックスを配線しました");
+            Some(Arc::new(client))
+        }
+        None => None,
+    };
     let worker = chat::ChatWorker::new(
         db.clone(),
         store.clone(),
         gateway,
         search.cloned(),
+        sandbox,
         worker_config,
     );
     // ワーカータスクは detach（プロセス生存中は走り続ける）。
