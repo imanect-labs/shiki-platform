@@ -1,0 +1,29 @@
+# サンドボックス 3 ティア横断ベンチ（gated バイナリ・`SANDBOX_BENCH=1`）。
+# Backend トレイトで in-process 構築し、フルライフサイクルのコストを実測する（gRPC は挟まない）。
+# criterion は使わない（実ランタイム横断のライフサイクル計測のため）。src/bin 配下＝coverage 除外。
+[package]
+name = "shiki-sandbox-bench"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "sandbox-bench"
+path = "src/bin/sandbox-bench/main.rs"
+
+[dependencies]
+shiki-sandbox-client = { path = "../sandbox-client" }
+shiki-sandbox-orchestrator = { path = "../sandbox-orchestrator" }
+tokio = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# lib 名（sandbox_client / sandbox_orchestrator）で参照するため machete が誤検出する（実際は使用中）。
+[package.metadata.cargo-machete]
+ignored = ["shiki-sandbox-client", "shiki-sandbox-orchestrator"]
+
+[lints]
+workspace = true

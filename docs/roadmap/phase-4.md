@@ -60,8 +60,8 @@
 | 4.1 | `Sandbox` トレイト定義＋`sandbox-client` gRPC 契約 | sandbox | 3.3 |
 | 4.2 | sandbox-orchestrator スケルトン（gRPC API） | sandbox | 4.1 |
 | 4.12 | **wasm バックエンド（agentos フォーク・`crates/sandbox-wasm`・仮想FS→StorageService 直結）**〔アルファ既定〕 | sandbox | 4.2, 1.x |
-| 4.3 | Firecracker microVM バックエンド実装 **〔ポストアルファ〕** | sandbox | 4.2 |
-| 4.4 | gVisor バックエンド実装 **〔ポストアルファ〕** | sandbox | 4.2 |
+| 4.3 | Firecracker microVM バックエンド実装 **〔実装済・boot は KVM ホストで gated〕** | sandbox | 4.2 |
+| 4.4 | gVisor バックエンド実装 **〔実装済・rootless systrap で実機検証〕** | sandbox | 4.2 |
 | 4.5 | 温機プール＋スナップショット高速起動（<200ms）**〔ポストアルファ・FC/gVisor 用。wasm は不要〕** | sandbox | 4.3 |
 | 4.6 | egress デフォルト遮断＋allowlist ネットワーク制御（wasm=仮想 net ホスト関数） | sandbox | 4.2 |
 | 4.7 | ホスト↔サンドボックス ツールRPC（実行/ファイル転送/結果回収） | sandbox | 4.2 |
