@@ -8,12 +8,37 @@ use futures::stream::BoxStream;
 
 use crate::error::SandboxError;
 
-/// 隔離バックエンド種別。アルファは `Wasm` のみ。gVisor/Firecracker はポストアルファの予約。
+/// 隔離バックエンド種別。既定は `Wasm`。gVisor はフル Linux（KVM 不要）、Firecracker は VM 級隔離。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxBackend {
     Wasm,
     Gvisor,
     Firecracker,
+}
+
+/// 隔離強度クラス（PIT-24: 「VM 級隔離（NFR-1）」は KVM 前提であることを正直に表明する）。
+///
+/// 呼び出し側は機微度の高いワークロードで `UserspaceKernel`（gVisor）を拒否/警告する判断に使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsolationClass {
+    /// KVM microVM（Firecracker）。最強・NFR-1 を満たす。
+    VmLevel,
+    /// ユーザ空間カーネル（gVisor）。脱出 CVE 実績があり VM 級より一段弱い。
+    UserspaceKernel,
+    /// wasm プロセス隔離（secure-exec）。V8＋wasm・仮想 FS/net。
+    WasmProcess,
+}
+
+impl SandboxBackend {
+    /// 隔離強度クラスを返す（監査記録・機微度ポリシ判定用・PIT-24）。
+    #[must_use]
+    pub fn isolation_class(self) -> IsolationClass {
+        match self {
+            SandboxBackend::Firecracker => IsolationClass::VmLevel,
+            SandboxBackend::Gvisor => IsolationClass::UserspaceKernel,
+            SandboxBackend::Wasm => IsolationClass::WasmProcess,
+        }
+    }
 }
 
 /// egress ルール（宛先ホスト/ポート）。ホスト照合は完全一致 or 明示ワイルドカードのみ（部分一致禁止）。
@@ -209,4 +234,25 @@ pub trait Sandbox: Send + Sync {
         path: &str,
     ) -> Result<Vec<DirEntry>, SandboxError>;
     async fn destroy(&self, handle: &SandboxHandle) -> Result<(), SandboxError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn isolation_class_per_backend() {
+        assert_eq!(
+            SandboxBackend::Firecracker.isolation_class(),
+            IsolationClass::VmLevel
+        );
+        assert_eq!(
+            SandboxBackend::Gvisor.isolation_class(),
+            IsolationClass::UserspaceKernel
+        );
+        assert_eq!(
+            SandboxBackend::Wasm.isolation_class(),
+            IsolationClass::WasmProcess
+        );
+    }
 }

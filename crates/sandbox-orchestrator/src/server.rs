@@ -67,6 +67,15 @@ impl SandboxService for SandboxSvc {
             .spec
             .ok_or_else(|| Status::invalid_argument("spec missing"))?;
         let spec = SandboxSpec::try_from(spec_pb).map_err(to_status)?;
+        // PIT-24: 隔離クラスを監査に残し、機微度ポリシ（現状 allow-all）を通す。
+        validate::check_isolation(&spec).map_err(|e| validate_err(&e))?;
+        tracing::info!(
+            target: "sandbox_audit",
+            tenant = %spec.tenant_id,
+            backend = ?spec.backend,
+            isolation = ?spec.backend.isolation_class(),
+            "sandbox create"
+        );
         let tenant_id = spec.tenant_id.clone();
         let ttl = match spec.lifetime {
             SandboxLifetime::Ephemeral { ttl_ms } if ttl_ms > 0 => Duration::from_millis(ttl_ms),

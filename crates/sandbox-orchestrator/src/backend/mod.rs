@@ -8,7 +8,10 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use sandbox_client::{DirEntry, ExecEvent, ExecRequest, SandboxError, SandboxSpec};
 
+pub mod egress;
 pub mod fake;
+pub mod multi;
+pub mod native;
 pub mod wasm;
 
 /// 生成済みサンドボックス 1 個の駆動面（handle に紐づく）。

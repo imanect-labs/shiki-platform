@@ -1,0 +1,33 @@
+# サンドボックス egress 用の非特権 user+net namespace 機構。
+#
+# このクレートだけは `unsafe_code` を許可する（`from_raw_fd`・SCM_RIGHTS 受信・setns といった
+# namespace/FD の syscall 境界を安全な API 裏に封じ込めるため）。clippy の品質床は維持する。
+# ロジック（SNI/DNS/allowlist 判定）は orchestrator 側（forbid-unsafe・全カバレッジ）に置く。
+[package]
+name = "shiki-sandbox-netns"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "shiki-netns-holder"
+path = "src/bin/holder.rs"
+
+[dependencies]
+nix = { version = "0.29", features = ["socket", "uio"] }
+
+[lints.rust]
+# namespace/FD 境界のみ unsafe を許す（他クレートは workspace の forbid を維持）。
+unsafe_code = "allow"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[lints.clippy]
+# 品質床は workspace と同等に保つ。
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
