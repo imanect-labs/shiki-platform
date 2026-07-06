@@ -10,6 +10,51 @@ version = "0.0.0"
 name = "chat"
 
 [dependencies]
+shiki-authz.workspace = true
+shiki-storage.workspace = true
+shiki-jobq.workspace = true
+shiki-rag.workspace = true
+shiki-llm-gateway.workspace = true
+shiki-agent-core.workspace = true
+
+tokio.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+chrono.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+# BFF セッションと同じ Redis を pub/sub に再利用（best-effort 配信）。
+redis.workspace = true
+# チャットの DTO / SSE イベント型を単一定義し api 層に手書きミラーを作らない（codegen が正）。
+utoipa.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+# 結合テスト（generation_it / worker_it）は authz モック＋DB 直操作＋stub gateway のため実依存を dev でも引く。
+shiki-authz.workspace = true
+shiki-jobq.workspace = true
+shiki-llm-gateway.workspace = true
+sqlx.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+async-trait.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+
+# lib 名 authz/storage/jobq/rag/llm_gateway/agent_core で参照するため machete が誤検出する。
+[package.metadata.cargo-machete]
+ignored = [
+    "shiki-authz",
+    "shiki-storage",
+    "shiki-jobq",
+    "shiki-rag",
+    "shiki-llm-gateway",
+    "shiki-agent-core",
+]
 
 [lints]
 workspace = true

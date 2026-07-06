@@ -3132,12 +3132,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls 0.26.4",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots 1.0.7",
 ]
@@ -3602,6 +3604,20 @@ dependencies = [
 [[package]]
 name = "shiki-agent-core"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "shiki-authz",
+ "shiki-llm-gateway",
+ "shiki-rag",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "shiki-api"
@@ -3614,6 +3630,7 @@ dependencies = [
  "base64",
  "chrono",
  "figment",
+ "futures",
  "http-body-util",
  "jsonwebtoken",
  "opentelemetry",
@@ -3626,6 +3643,8 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "shiki-authz",
+ "shiki-chat",
+ "shiki-llm-gateway",
  "shiki-rag",
  "shiki-storage",
  "sqlx",
@@ -3659,6 +3678,27 @@ dependencies = [
 [[package]]
 name = "shiki-chat"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "redis",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "shiki-agent-core",
+ "shiki-authz",
+ "shiki-jobq",
+ "shiki-llm-gateway",
+ "shiki-rag",
+ "shiki-storage",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
 
 [[package]]
 name = "shiki-fuse"
@@ -3679,6 +3719,20 @@ dependencies = [
 [[package]]
 name = "shiki-llm-gateway"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "shiki-authz",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "shiki-rag"
@@ -4999,6 +5053,19 @@ dependencies = [
  "indexmap",
  "wasm-encoder",
  "wasmparser",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

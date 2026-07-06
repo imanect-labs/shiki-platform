@@ -30,6 +30,9 @@ pub struct AppConfig {
     /// RAG（インジェスト・パイプライン＋検索・Phase 2）。既定は無効。
     #[serde(default)]
     pub rag: rag::RagConfig,
+    /// チャット（生成ワーカー・接続非依存生成・Phase 3）。既定は無効。
+    #[serde(default)]
+    pub chat: ChatConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,8 +59,8 @@ mod tests;
 
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
 pub use backends::{
-    AuthzConfig, LlmBackend, LlmConfig, LogFormat, ObjectStoreBackend, StorageConfig,
-    TelemetryConfig, VectorConfig, VectorStoreBackend,
+    AuthzConfig, ChatConfig, LangfuseConfig, LlmBackend, LlmConfig, LlmModelEntry, LogFormat,
+    ObjectStoreBackend, StorageConfig, TelemetryConfig, VectorConfig, VectorStoreBackend,
 };
 
 #[derive(Debug, thiserror::Error)]

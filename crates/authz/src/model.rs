@@ -216,6 +216,51 @@ mod tests {
     }
 
     #[test]
+    fn thread_type_has_share_relations() {
+        // #37: thread は owner / editor / commenter / viewer を持ち、
+        // editor / commenter / viewer は user と role#member を共有先として受理すること。
+        let model = default_model();
+        let types = model
+            .get("type_definitions")
+            .and_then(|v| v.as_array())
+            .expect("type_definitions は配列");
+        let thread = types
+            .iter()
+            .find(|t| t.get("type").and_then(|v| v.as_str()) == Some("thread"))
+            .expect("thread 型が定義されていること");
+        let relations = thread
+            .get("relations")
+            .and_then(|v| v.as_object())
+            .expect("relations はオブジェクト");
+        for rel in ["owner", "editor", "commenter", "viewer"] {
+            assert!(
+                relations.contains_key(rel),
+                "thread は relation {rel} を持つこと"
+            );
+        }
+        let accepts_role_member = |rel: &str| {
+            thread
+                .get("metadata")
+                .and_then(|m| m.get("relations"))
+                .and_then(|r| r.get(rel))
+                .and_then(|r| r.get("directly_related_user_types"))
+                .and_then(|v| v.as_array())
+                .expect("directly_related_user_types は配列")
+                .iter()
+                .any(|t| {
+                    t.get("type").and_then(|v| v.as_str()) == Some("role")
+                        && t.get("relation").and_then(|v| v.as_str()) == Some("member")
+                })
+        };
+        for rel in ["editor", "commenter", "viewer"] {
+            assert!(
+                accepts_role_member(rel),
+                "thread.{rel} は role#member を受理すること（#37）"
+            );
+        }
+    }
+
+    #[test]
     fn fingerprint_extracts_three_keys() {
         // fingerprint は schema_version / type_definitions / conditions の 3 キーのみ持つこと。
         let model = serde_json::json!({

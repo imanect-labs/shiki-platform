@@ -220,6 +220,35 @@ services:
       - prometheus
       - loki
 
+  # Langfuse（self-host・LLM 可観測性）。llm-gateway が生成ごとに 1 trace を送る（Task 3.8）。
+  # OTel trace_id を Langfuse trace id に使い、監査ログ↔Langfuse↔OTel を同一 trace_id で突合する。
+  # 初回起動時に LANGFUSE_INIT_* で org/project/API キーを headless 作成する（gateway が使う鍵）。
+  langfuse:
+    image: langfuse/langfuse:2
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langfuse
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3002}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-langfuse-dev-secret}
+      SALT: ${LANGFUSE_SALT:-langfuse-dev-salt}
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_INIT_ORG_ID: shiki
+      LANGFUSE_INIT_PROJECT_ID: shiki
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-pk-lf-shiki-dev}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:-sk-lf-shiki-dev}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@shiki.local}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-langfuse-dev-pass}
+    ports:
+      - "3002:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/public/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
   shiki-server:
     build:
       context: ../..
@@ -266,7 +295,19 @@ services:
       # ブラウザ直 PUT/GET（別オリジン）には MinIO バケット CORS が要る。Drive UI（1.10）導入時に
       # config/TOML で storage.s3.cors_allowed_origins を配列指定する（env スカラは Vec に展開できない）。
       SHIKI__VECTOR__BACKEND: qdrant
-      SHIKI__LLM__BACKEND: vllm
+      # LLM プロバイダ（Phase 3）。既定はオフラインで動く決定的スタブ（API キー不要でフルスタック
+      # デモ/CI が回る）。実運用は BACKEND=openai＋BASE_URL＋API_KEY で OpenAI 互換（vLLM 含む）へ。
+      SHIKI__LLM__BACKEND: ${SHIKI__LLM__BACKEND:-stub}
+      SHIKI__LLM__BASE_URL: ${SHIKI__LLM__BASE_URL:-}
+      SHIKI__LLM__API_KEY: ${SHIKI__LLM__API_KEY:-}
+      SHIKI__LLM__DEFAULT_MODEL: ${SHIKI__LLM__DEFAULT_MODEL:-shiki-default}
+      # Langfuse 計装（gateway 層が正・trace_id 起点で突合）。self-host の内部エンドポイント。
+      SHIKI__LLM__LANGFUSE__BASE_URL: ${SHIKI__LLM__LANGFUSE__BASE_URL:-http://langfuse:3000}
+      SHIKI__LLM__LANGFUSE__PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-pk-lf-shiki-dev}
+      SHIKI__LLM__LANGFUSE__SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:-sk-lf-shiki-dev}
+      # チャット（Phase 3）。生成ワーカーを有効化（接続非依存生成）。
+      SHIKI__CHAT__ENABLED: ${SHIKI__CHAT__ENABLED:-true}
+      SHIKI__CHAT__WORKER_CONCURRENCY: ${SHIKI__CHAT__WORKER_CONCURRENCY:-4}
       # RAG（Phase 2）: インジェスト・パイプラインと検索。
       SHIKI__RAG__ENABLED: ${SHIKI__RAG__ENABLED:-true}
       SHIKI__RAG__WORKER_BASE_URL: http://ingestion-worker:8000

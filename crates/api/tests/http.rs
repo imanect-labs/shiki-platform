@@ -213,7 +213,13 @@ fn base_config() -> AppConfig {
         rag: rag::RagConfig::default(),
         llm: LlmConfig {
             backend: LlmBackend::Vllm,
+            base_url: None,
+            api_key: None,
+            default_model: None,
+            models: vec![],
+            langfuse: None,
         },
+        chat: api::config::ChatConfig::default(),
     }
 }
 
@@ -253,6 +259,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         directory,
         tenants,
         search: None,
+        chat: None,
         rag_admin,
     }
 }

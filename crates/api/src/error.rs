@@ -95,6 +95,30 @@ impl From<rag::RagError> for ApiError {
     }
 }
 
+impl From<chat::ChatError> for ApiError {
+    fn from(err: chat::ChatError) -> Self {
+        use chat::ChatError as CE;
+        match err {
+            CE::NotFound => ApiError::NotFound,
+            CE::Forbidden => ApiError::Forbidden,
+            CE::Invalid(msg) => ApiError::BadRequest(msg),
+            CE::Unavailable(msg) => ApiError::ServiceUnavailable(format!("chat: {msg}")),
+            CE::Internal(msg) => ApiError::Internal(format!("chat: {msg}")),
+        }
+    }
+}
+
+impl From<llm_gateway::LlmError> for ApiError {
+    fn from(err: llm_gateway::LlmError) -> Self {
+        use llm_gateway::LlmError as LE;
+        match err {
+            LE::Unavailable(msg) => ApiError::ServiceUnavailable(format!("llm: {msg}")),
+            LE::BadRequest(msg) => ApiError::BadRequest(msg),
+            LE::Config(msg) | LE::Internal(msg) => ApiError::Internal(format!("llm: {msg}")),
+        }
+    }
+}
+
 impl From<crate::session::SessionError> for ApiError {
     fn from(err: crate::session::SessionError) -> Self {
         ApiError::Internal(format!("session: {err}"))

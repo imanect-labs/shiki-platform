@@ -30,6 +30,9 @@ pub enum AccessPolicy {
     Session,
     /// BFF セッション必須・長時間許容（300s。finalize のサーバ側ハッシュ/コピー等）。
     SessionLongRunning,
+    /// BFF セッション必須・**タイムアウト無し**（SSE ストリーミング。生成の逐次配信で
+    /// 接続が長時間開いたままになるため 30s/300s のタイムアウトと衝突させない）。
+    SessionStreaming,
     /// provisioner service account の Bearer JWT 必須（admin プレーン・300s）。
     /// config（provisioner 資格情報＋admin base）が無ければルートごと不在（fail-closed）。
     Provisioner,
@@ -48,8 +51,9 @@ pub struct RouteDecl {
 ///
 /// ルータは本表からのみ構築されるため、「表に無いエンドポイント」は存在できない。
 /// 追加時はポリシーの宣言が必須になり、認可レイヤの適用漏れが構造的に起きない。
+#[allow(clippy::too_many_lines)] // 全エンドポイントの宣言的マップ（分割すると一覧性を損なう）。
 pub fn route_table() -> Vec<RouteDecl> {
-    use AccessPolicy::{Provisioner, Public, Session, SessionLongRunning};
+    use AccessPolicy::{Provisioner, Public, Session, SessionLongRunning, SessionStreaming};
     fn r(
         path: &'static str,
         methods: &'static [&'static str],
@@ -128,6 +132,36 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/search", &["POST"], Session, || {
             post(routes::search::search)
         }),
+        // --- チャット（Phase 3）。生成は接続非依存ジョブ（Task 3.11）で SSE は別ポリシ。 ---
+        r("/threads", &["GET", "POST"], Session, || {
+            get(routes::chat::list_threads).post(routes::chat::create_thread)
+        }),
+        r("/threads/{id}", &["GET"], Session, || {
+            get(routes::chat::get_thread)
+        }),
+        r("/threads/{id}/messages", &["GET", "POST"], Session, || {
+            get(routes::chat::get_messages).post(routes::chat::post_message)
+        }),
+        // SSE ストリーム（replay-then-subscribe）。長時間開くためタイムアウト無しの専用ポリシ。
+        r("/threads/{id}/stream", &["GET"], SessionStreaming, || {
+            get(routes::chat::stream_thread)
+        }),
+        r(
+            "/threads/{id}/runs/{run_id}/cancel",
+            &["POST"],
+            Session,
+            || post(routes::chat::cancel_run),
+        ),
+        r(
+            "/threads/{id}/shares",
+            &["POST", "DELETE", "GET"],
+            Session,
+            || {
+                post(routes::chat::share_thread)
+                    .delete(routes::chat::unshare_thread)
+                    .get(routes::chat::list_thread_shares)
+            },
+        ),
         // --- SessionLongRunning（300s。finalize は staging のサーバ側ハッシュ＋コピーが
         //     大容量で 30s を超え、バイトは MinIO にあるのに file が作れない事故を防ぐ） ---
         r("/files", &["POST"], SessionLongRunning, || {
@@ -200,6 +234,7 @@ pub fn build_router(state: AppState) -> Router {
     let mut public = Router::new();
     let mut session_std = Router::new();
     let mut session_long = Router::new();
+    let mut session_stream = Router::new();
     let mut admin = Router::new();
     // admin ルート（SAAS.2）: **config（provisioner 資格情報＋admin base）が揃っている時のみ
     // 組み込む**（未設定なら 404 = fail-closed）。
@@ -212,6 +247,9 @@ pub fn build_router(state: AppState) -> Router {
             AccessPolicy::Session => session_std = session_std.route(decl.path, method_router),
             AccessPolicy::SessionLongRunning => {
                 session_long = session_long.route(decl.path, method_router);
+            }
+            AccessPolicy::SessionStreaming => {
+                session_stream = session_stream.route(decl.path, method_router);
             }
             AccessPolicy::Provisioner => {
                 if admin_enabled {
@@ -226,8 +264,10 @@ pub fn build_router(state: AppState) -> Router {
         .route_layer(session_layer.clone())
         .layer(standard_timeout());
     let session_long = session_long
-        .route_layer(session_layer)
+        .route_layer(session_layer.clone())
         .layer(long_timeout());
+    // SSE ストリーム: セッション必須だがタイムアウトレイヤは付けない（接続を長時間開く）。
+    let session_stream = session_stream.route_layer(session_layer);
     let admin = if admin_enabled {
         admin
             .route_layer(middleware::from_fn_with_state(
@@ -242,6 +282,7 @@ pub fn build_router(state: AppState) -> Router {
     let router = public
         .merge(session_std)
         .merge(session_long)
+        .merge(session_stream)
         .merge(admin)
         // observe は span 内で動く必要があるため TraceLayer より内側（先に追加）。
         .layer(middleware::from_fn(telemetry::observe))

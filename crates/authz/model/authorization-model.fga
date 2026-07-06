@@ -48,3 +48,14 @@ type file
     define owner: [user]
     define editor: [user, role#member] or owner or editor from parent
     define viewer: [user, role#member] or editor or viewer from parent
+
+# チャット: スレッド（会話・#37）。ツリー継承は持たず、作成者 owner ＋明示共有のみ。
+# 共有語彙は viewer / commenter / editor（owner の横展開は防ぐため付与しない）。
+# owner ⊇ editor ⊇ commenter ⊇ viewer の含意で、共有された閲覧者も自身の権限で
+# 引用が再評価される（他人の引用はそのまま見せない・chat 側で担保）。
+type thread
+  relations
+    define owner: [user]
+    define editor: [user, role#member] or owner
+    define commenter: [user, role#member] or editor
+    define viewer: [user, role#member] or commenter

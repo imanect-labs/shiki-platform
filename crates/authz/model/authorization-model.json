@@ -160,6 +160,63 @@
           }
         }
       }
+    },
+    {
+      "type": "thread",
+      "relations": {
+        "owner": {
+          "this": {}
+        },
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "owner" } }
+            ]
+          }
+        },
+        "commenter": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "commenter" } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "owner": {
+            "directly_related_user_types": [{ "type": "user" }]
+          },
+          "editor": {
+            "directly_related_user_types": [
+              { "type": "user" },
+              { "type": "role", "relation": "member" }
+            ]
+          },
+          "commenter": {
+            "directly_related_user_types": [
+              { "type": "user" },
+              { "type": "role", "relation": "member" }
+            ]
+          },
+          "viewer": {
+            "directly_related_user_types": [
+              { "type": "user" },
+              { "type": "role", "relation": "member" }
+            ]
+          }
+        }
+      }
     }
   ]
 }

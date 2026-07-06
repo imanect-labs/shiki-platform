@@ -328,7 +328,13 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         rag: rag::RagConfig::default(),
         llm: LlmConfig {
             backend: LlmBackend::Vllm,
+            base_url: None,
+            api_key: None,
+            default_model: None,
+            models: vec![],
+            langfuse: None,
         },
+        chat: api::config::ChatConfig::default(),
     }
 }
 
@@ -370,6 +376,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         directory,
         tenants,
         search: None,
+        chat: None,
         rag_admin,
     }
 }

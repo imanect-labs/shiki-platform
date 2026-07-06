@@ -10,6 +10,27 @@ version = "0.0.0"
 name = "llm_gateway"
 
 [dependencies]
+shiki-authz.workspace = true
+
+tokio.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# SSE ストリーミング（bytes_stream）に stream feature を足す（additive・他クレートへ無害）。
+reqwest = { workspace = true, features = ["stream"] }
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+axum.workspace = true
+
+# lib 名 authz で参照するため machete が誤検出する（実際は使用中）。
+[package.metadata.cargo-machete]
+ignored = ["shiki-authz"]
 
 [lints]
 workspace = true

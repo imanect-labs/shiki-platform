@@ -90,6 +90,9 @@ shiki-authz = { path = "crates/authz" }
 shiki-storage = { path = "crates/storage" }
 shiki-jobq = { path = "crates/jobq" }
 shiki-rag = { path = "crates/rag" }
+shiki-llm-gateway = { path = "crates/llm-gateway" }
+shiki-agent-core = { path = "crates/agent-core" }
+shiki-chat = { path = "crates/chat" }
 
 # ワークスペース共通 lint（各 crate は `[lints] workspace = true` で opt-in）。
 # CI は `cargo clippy --all-targets --all-features -- -D warnings` で warn も含めゲート化する。
