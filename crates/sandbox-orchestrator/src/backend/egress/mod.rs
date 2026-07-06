@@ -116,12 +116,19 @@ impl EgressStack {
         GATEWAY
     }
 
-    /// 全プロキシ/DNS タスクを停止し netns を破棄する。
+    /// 全プロキシ/DNS タスクを停止し netns を破棄する（明示破棄。Drop でも同等に畳まれる）。
     pub fn shutdown(self) {
+        drop(self);
+    }
+}
+
+impl Drop for EgressStack {
+    fn drop(&mut self) {
+        // プロキシ/DNS タスクを停止（JoinHandle の drop は detach なので明示 abort）。
         for t in &self.tasks {
             t.abort();
         }
-        self.ns.shutdown();
+        // netns holder は `Netns` の Drop が kill する（→ netns 破棄）。
     }
 }
 

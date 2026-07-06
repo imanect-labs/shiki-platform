@@ -176,14 +176,28 @@ services:
       SANDBOX__LISTEN: 0.0.0.0:50000
       SECURE_EXEC_SIDECAR_BIN: /usr/local/bin/secure-exec-sidecar
       SANDBOX__COMMANDS_DIR: /opt/shiki/commands
+      # gVisor ティアを有効化（runsc/rootfs は下記ボリューム。未配置なら warn して wasm のみで起動）。
+      SANDBOX__GVISOR__ENABLED: "1"
     ports:
       # gRPC はローカルのみ公開（compose 網内は sandbox-orchestrator:50000 で到達）。
       - "127.0.0.1:50000:50000"
+    volumes:
+      # ネイティブティアのアセット（runsc・rootfs）。host 側で
+      # scripts/fetch-native-assets.sh＋build-sandbox-rootfs.sh により用意する（実行時 DL 無し・PIT-33）。
+      - ../sandbox-assets:/opt/shiki/sandbox-assets:ro
     read_only: true
     tmpfs:
       - /tmp
+      # ネイティブティアの per-sandbox 状態（OCI バンドル・runsc root）。
+      - /run/sandbox
     security_opt:
       - no-new-privileges:true
+      # egress 隔離のため orchestrator は非特権 user+net namespace を自分で作る。Docker 既定 seccomp は
+      # 非特権 userns 生成（unshare/CLONE_NEWUSER）を弾くため、このサービスに限り seccomp を外す。
+      # 実際のサンドボックス境界は runsc(gVisor)/wasm 側であり、当コンテナは非特権・read_only・
+      # no-new-privileges・pids/mem 制限・クレデンシャル無し。将来 default+namespace 許可の
+      # 限定プロファイルに差し替える（docs/sandbox に注記）。
+      - seccomp=unconfined
     deploy:
       resources:
         limits:

@@ -1,0 +1,8 @@
+# ネイティブティア（gVisor/Firecracker）の pin 済みアセット。
+# 形式: <sha256>  <相対パス(bin/ 配下)>  <URL>
+# scripts/fetch-native-assets.sh が検証付きで取得する（実行時 DL 無し・PIT-33）。
+# エアギャップは SANDBOX_ASSET_BASE=file:///mirror で同一 SHA のミラーを差す。
+#
+# runsc: gVisor ランタイム（release-20260622.0）。
+f18a948bf9c8bbb54eb998549a3a8d719a1c7de2efbe8fdd2ff0ee5fecd06f19  bin/runsc  https://storage.googleapis.com/gvisor/releases/release/20260622.0/x86_64/runsc
+# Firecracker / vmlinux は PR3 で追記する。
