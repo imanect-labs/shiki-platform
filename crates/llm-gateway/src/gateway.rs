@@ -186,3 +186,65 @@ fn build_provider(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ModelCatalog, ModelEntry, ProviderConfig};
+
+    /// 指定 kind ＋ base_url ＋ api_key から最小構成の設定を組む。
+    fn config(kind: ProviderKind, base_url: Option<&str>, api_key: Option<&str>) -> GatewayConfig {
+        GatewayConfig {
+            provider: ProviderConfig {
+                kind,
+                base_url: base_url.map(str::to_string),
+                api_key: api_key.map(str::to_string),
+                timeout_secs: 120,
+            },
+            catalog: ModelCatalog {
+                default_model: "m".into(),
+                models: vec![ModelEntry {
+                    id: "m".into(),
+                    real_id: Some("real-m".into()),
+                    prompt_price_micros_per_mtok: 0,
+                    completion_price_micros_per_mtok: 0,
+                }],
+            },
+            langfuse: None,
+        }
+    }
+
+    #[test]
+    fn stub_provider_needs_no_endpoint() {
+        let cfg = config(ProviderKind::Stub, None, None);
+        let p = build_provider(reqwest::Client::new(), &cfg).unwrap();
+        assert_eq!(p.name(), "stub");
+    }
+
+    #[test]
+    fn openai_requires_base_url() {
+        let ok = config(ProviderKind::Openai, Some("http://vllm:8000/v1"), None);
+        assert_eq!(
+            build_provider(reqwest::Client::new(), &ok).unwrap().name(),
+            "openai"
+        );
+
+        let missing = config(ProviderKind::Openai, None, None);
+        let res = build_provider(reqwest::Client::new(), &missing);
+        assert!(matches!(res, Err(LlmError::Config(_))));
+    }
+
+    #[test]
+    fn anthropic_requires_api_key_and_defaults_base_url() {
+        // base_url 省略時は既定エンドポイントへフォールバックし、api_key があれば構築できる。
+        let ok = config(ProviderKind::Anthropic, None, Some("k"));
+        assert_eq!(
+            build_provider(reqwest::Client::new(), &ok).unwrap().name(),
+            "anthropic"
+        );
+
+        let missing = config(ProviderKind::Anthropic, None, None);
+        let res = build_provider(reqwest::Client::new(), &missing);
+        assert!(matches!(res, Err(LlmError::Config(_))));
+    }
+}

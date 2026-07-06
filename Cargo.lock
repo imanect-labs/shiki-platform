@@ -3607,12 +3607,16 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "futures",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "shiki-authz",
  "shiki-llm-gateway",
  "shiki-rag",
+ "sqlx",
  "thiserror",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

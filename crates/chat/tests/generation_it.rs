@@ -141,21 +141,26 @@ async fn post_message_is_transactional_outbox() {
             .unwrap();
     assert_eq!(msg_count, 2, "user+assistant の 2 メッセージ");
 
-    // jobq に run_id が enqueue されている（outbox）。
-    let mut conn = pool.acquire().await.unwrap();
-    let jobs = jobq::claim(
-        &mut conn,
-        CHAT_GENERATION_QUEUE,
-        std::time::Duration::from_secs(30),
-        10,
+    // outbox: 同一 TX で job_queue に enqueue されている。並行実行のワーカー（別テスト）が
+    // 先に claim すると行が不可視化/削除され得るため、claim せず直接 SELECT し、さらに
+    // 「既にワーカーが claim して run が queued を抜けた」ケースも enqueue の証左として許容する。
+    let in_queue: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM job_queue WHERE queue = $1 AND payload->>'run_id' = $2",
     )
+    .bind(CHAT_GENERATION_QUEUE)
+    .bind(res.run_id.to_string())
+    .fetch_one(&pool)
     .await
     .unwrap();
-    let enqueued = jobs
-        .iter()
-        .filter(|j| j.tenant_id == tenant)
-        .any(|j| j.payload.get("run_id").and_then(|v| v.as_str()) == Some(&res.run_id.to_string()));
-    assert!(enqueued, "run_id がジョブとして enqueue されていること");
+    let claimed_by_worker = store
+        .run_status(res.run_id)
+        .await
+        .unwrap()
+        .is_some_and(|s| s != chat::RunStatus::Queued);
+    assert!(
+        in_queue > 0 || claimed_by_worker,
+        "run_id が job_queue に enqueue されている（または既にワーカーが claim 済み）"
+    );
 }
 
 #[tokio::test]
