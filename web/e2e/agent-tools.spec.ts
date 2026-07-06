@@ -3,12 +3,20 @@ import { test, expect, type Page } from "@playwright/test";
 import { loginViaKeycloak } from "./helpers";
 
 /// エージェントモードのツール（web_search / code_interpreter）E2E（Phase 4）。
-/// 前提: compose で chat 有効・LLM=stub（決定的）・websearch=stub。
 /// stub LLM は本文プレフィックスで対応ツールを 1 回呼ぶ（`websearch:`→web_search /
-/// `python:`→code_interpreter）。web_search はホスト側 StubSearchProvider が決定的ヒットを返すため
-/// サンドボックス無しの CI でも成立する。code_interpreter は実サンドボックス（重い V8 ビルド）が
-/// 要るため `E2E_SANDBOX=1` のときのみ実行する。
+/// `python:`→code_interpreter）。
+///
+/// これらは agent ツールの backend（web 検索プロバイダ / サンドボックス）が配線された環境でのみ
+/// 意味を持つ。標準の Web E2E ジョブ（auth/chat/drive スモーク）はこれらを立てないため、
+/// **`E2E_AGENT_TOOLS=1` のときのみ実行**する（ツール本体は websearch/agent-core の単体・gated IT で担保）。
+/// staging/専用ジョブで backend を配線して回す用。code_interpreter はさらに実サンドボックスが要るため
+/// `E2E_SANDBOX=1` も要求する。
 test.describe("agent tools (web_search / code_interpreter)", () => {
+  test.skip(
+    process.env.E2E_AGENT_TOOLS !== "1",
+    "agent ツール backend（websearch/サンドボックス）配線環境が必要（E2E_AGENT_TOOLS=1）",
+  );
+
   /// 初回送信でスレッドを作り、会話画面でエージェントモードを ON にして返すヘルパ。
   async function openThreadInAgentMode(page: Page) {
     await loginViaKeycloak(page);
