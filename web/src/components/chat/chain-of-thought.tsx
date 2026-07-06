@@ -11,7 +11,18 @@ import { seasonVar } from "@/lib/season";
 import type { Citation } from "@/lib/chat-api";
 import type { ToolActivityItem } from "./tool-activity";
 
-const TOOL_VERB: Record<string, string> = { doc_search: "社内文書を検索" };
+/// ツール名 → 日本語の動作ラベル（Chain of Thought の可視化）。
+const TOOL_VERB: Record<string, string> = {
+  doc_search: "社内文書を検索",
+  web_search: "web を検索",
+  web_fetch: "ページを取得",
+  code_interpreter: "コードを実行",
+};
+
+/// ツールの動作ラベル（未知ツールは名前をそのまま）。
+function toolVerb(name: string): string {
+  return TOOL_VERB[name] ?? name;
+}
 
 /// 進行段階を季節に対応づける（準備=春→考え中=春→検索=夏→まとめ=秋→完了=冬）。
 /// 思考中だけ Brain アイコン/ステータスがゆっくり季節を移ろい、transient な彩りになる。
@@ -39,7 +50,9 @@ function citationLabel(c: Citation): string {
 /// 進行状況を「〜しています」の 1 文に大雑把化する。
 function coarseStatus(streaming: boolean, thinking: string, tools: ToolActivityItem[]): string {
   if (!streaming) return "思考プロセス";
-  if (tools.some((t) => t.running)) return "社内文書を検索しています…";
+  // 実行中のツールがあれば、そのツールの動作名で状況を出す（doc_search 以外も正しく表示）。
+  const running = tools.find((t) => t.running);
+  if (running) return `${toolVerb(running.name)}しています…`;
   if (tools.length > 0) return "回答をまとめています…";
   if (thinking.trim()) return "考えています…";
   return "準備しています…";
@@ -100,7 +113,7 @@ export function ChainOfThought({
             <div className="space-y-1.5">
               {tools.map((t) => {
                 const q = toolQuery(t.input);
-                const verb = TOOL_VERB[t.name] ?? t.name;
+                const verb = toolVerb(t.name);
                 return (
                   <div key={t.id} className="flex items-start gap-2 text-[13px]">
                     {t.running ? (
