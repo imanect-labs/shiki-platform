@@ -74,6 +74,7 @@ except Exception:
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_allows_listed_host_blocks_others() {
     let Some(holder) = gated() else { return };
+    std::env::set_var("SANDBOX_EGRESS_ALLOW_PRIVATE", "1");
 
     // 上流サーバ: 接続直後に固定バナーを送る（ホスト netns・ループバック）。
     let up = StdTcpListener::bind("127.0.0.1:0").unwrap();

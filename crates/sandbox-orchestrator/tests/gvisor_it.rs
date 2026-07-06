@@ -154,6 +154,7 @@ async fn gvisor_egress_allows_listed_blocks_others() {
         eprintln!("skip egress: set NETNS_HOLDER_BIN");
         return;
     };
+    std::env::set_var("SANDBOX_EGRESS_ALLOW_PRIVATE", "1");
     // 上流バナーサーバ（ホスト・ループバック）。
     let up = StdTcpListener::bind("127.0.0.1:0").unwrap();
     let up_port = up.local_addr().unwrap().port();

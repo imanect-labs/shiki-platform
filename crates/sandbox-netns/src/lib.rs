@@ -25,6 +25,9 @@ use std::process::{Child, Command};
 
 use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags, UnixAddr};
 
+/// holder から受領した制御ストリーム・TCP リスナ群・DNS ソケットの束。
+type Assembled = (UnixStream, Vec<(u16, TcpListener)>, UdpSocket);
+
 /// netns の構成パラメータ。
 #[derive(Debug, Clone)]
 pub struct NetnsSpec {
@@ -63,7 +66,7 @@ impl Netns {
             .map(u16::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let holder = Command::new("unshare")
+        let mut holder = Command::new("unshare")
             .args([
                 "--user",
                 "--map-root-user",
@@ -83,29 +86,43 @@ impl Netns {
             ])
             .spawn()?;
 
-        // holder からの接続を待つ（起動失敗時に無限待ちしないよう accept に緩いタイムアウトを敷く）。
-        listener.set_nonblocking(false)?;
-        let (stream, _addr) = accept_with_timeout(&listener, std::time::Duration::from_secs(10))?;
+        // 受領（accept→FD 受信→ソケット化）を 1 つの fallible ブロックにまとめ、失敗時は holder を
+        // 必ず kill/reap する（unshare/ip の不在などで holder が繋がらないケースのゾンビ化を防ぐ）。
+        let want = spec.tcp_ports.len();
+        let assembled = (|| -> io::Result<Assembled> {
+            listener.set_nonblocking(false)?;
+            let (stream, _addr) =
+                accept_with_timeout(&listener, std::time::Duration::from_secs(10))?;
+            let (ports, fds) = recv_fds(&stream, want + 1)?;
+            // 期待順: tcp_0..tcp_n, udp。ポート配列は holder が本文で送る（bind 実ポート＝要求ポート）。
+            let mut owned: Vec<OwnedFd> = fds;
+            let udp_fd = owned
+                .pop()
+                .ok_or_else(|| io::Error::other("holder sent no udp fd"))?;
+            if owned.len() != want || ports.len() != want {
+                return Err(io::Error::other("holder fd/port count mismatch"));
+            }
+            let tcp: Vec<(u16, TcpListener)> = ports
+                .into_iter()
+                .zip(owned)
+                .map(|(p, fd)| (p, TcpListener::from(fd)))
+                .collect();
+            for (_, l) in &tcp {
+                l.set_nonblocking(true)?;
+            }
+            let dns = UdpSocket::from(udp_fd);
+            dns.set_nonblocking(true)?;
+            Ok((stream, tcp, dns))
+        })();
 
-        let (ports, fds) = recv_fds(&stream, spec.tcp_ports.len() + 1)?;
-        // 期待順: tcp_0..tcp_n, udp。ポート配列は holder が本文で送る（bind 実ポート＝要求ポート）。
-        let mut owned: Vec<OwnedFd> = fds;
-        let udp_fd = owned
-            .pop()
-            .ok_or_else(|| io::Error::other("holder sent no udp fd"))?;
-        if owned.len() != spec.tcp_ports.len() || ports.len() != spec.tcp_ports.len() {
-            return Err(io::Error::other("holder fd/port count mismatch"));
-        }
-        let tcp: Vec<(u16, TcpListener)> = ports
-            .into_iter()
-            .zip(owned)
-            .map(|(p, fd)| (p, TcpListener::from(fd)))
-            .collect();
-        for (_, l) in &tcp {
-            l.set_nonblocking(true)?;
-        }
-        let dns = UdpSocket::from(udp_fd);
-        dns.set_nonblocking(true)?;
+        let (stream, tcp, dns) = match assembled {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = holder.kill();
+                let _ = holder.wait();
+                return Err(e);
+            }
+        };
 
         let pid = holder.id();
         Ok(Netns {
@@ -193,8 +210,16 @@ fn recv_fds(stream: &UnixStream, max_fds: usize) -> io::Result<(Vec<u16>, Vec<Ow
     // cmsg バッファ: 最大 max_fds 個の RawFd を収容できる領域。
     let mut cmsg_space = nix::cmsg_space!([RawFd; 64]);
     let fd = stream.as_raw_fd();
-    let msg = recvmsg::<UnixAddr>(fd, &mut iov, Some(&mut cmsg_space), MsgFlags::empty())
-        .map_err(io_from_errno)?;
+    // MSG_CMSG_CLOEXEC: 受領した proxy/DNS リスナ FD に close-on-exec を原子的に付ける。
+    // これが無いと、後で spawn する runsc/firecracker 子プロセスへリスナ FD が継承され、
+    // サンドボックスがホスト側 egress ソケットを掴めてしまう（PIT-23）。
+    let msg = recvmsg::<UnixAddr>(
+        fd,
+        &mut iov,
+        Some(&mut cmsg_space),
+        MsgFlags::MSG_CMSG_CLOEXEC,
+    )
+    .map_err(io_from_errno)?;
 
     let mut fds: Vec<OwnedFd> = Vec::new();
     for cmsg in msg.cmsgs().map_err(io_from_errno)? {

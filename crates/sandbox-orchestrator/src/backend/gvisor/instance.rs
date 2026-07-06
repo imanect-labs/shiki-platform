@@ -59,10 +59,11 @@ pub(super) struct GvisorInstance {
     workspace: Workspace,
     /// 注入スクリプト（`/__exec`・RO bind）のホスト側ディレクトリ。
     exec_dir: PathBuf,
-    /// egress 有効時のみ Some（holder の netns へ入る）。drop で netns/プロキシを畳む。
-    egress: Option<EgressStack>,
-    /// `runsc run` の常駐子プロセス（kill_on_drop）。
-    _run_child: Child,
+    /// egress 有効時のみ Some（holder の netns へ入る）。`destroy()` で明示的に take/drop して
+    /// netns/プロキシを即時解放する（Arc の drop 待ちにしない）。std Mutex は await を跨がず短時間だけ持つ。
+    egress: std::sync::Mutex<Option<EgressStack>>,
+    /// `runsc run` の常駐子プロセス（kill_on_drop）。`destroy()` で take/kill する。
+    run_child: std::sync::Mutex<Option<Child>>,
     state_dir: PathBuf,
     exec_timeout: Duration,
     wall_clock: Duration,
@@ -89,8 +90,8 @@ impl GvisorInstance {
             id,
             workspace,
             exec_dir,
-            egress,
-            _run_child: run_child,
+            egress: std::sync::Mutex::new(egress),
+            run_child: std::sync::Mutex::new(Some(run_child)),
             state_dir,
             exec_timeout: Duration::from_millis(limits.exec_timeout_ms.max(1)),
             wall_clock: Duration::from_millis(limits.wall_clock_ms.max(1)),
@@ -100,7 +101,10 @@ impl GvisorInstance {
     }
 
     fn netns_pid(&self) -> Option<u32> {
-        self.egress.as_ref().map(EgressStack::netns_pid)
+        self.egress
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(EgressStack::netns_pid))
     }
 
     /// runsc グローバルフラグを載せた `Command`（サブコマンドは呼び出し側が付ける）。
@@ -109,16 +113,23 @@ impl GvisorInstance {
     }
 
     fn network_mode(&self) -> &'static str {
-        if self.egress.is_some() {
+        let has = self.egress.lock().is_ok_and(|g| g.is_some());
+        if has {
             "host"
         } else {
             "none"
         }
     }
 
-    /// in-guest の壁時計上限（`timeout(1)` 用秒）。最低 1 秒。
-    fn timeout_secs(&self) -> u64 {
-        self.exec_timeout.as_secs().max(1)
+    /// この exec の in-guest 上限秒（`timeout(1)` 用）。
+    ///
+    /// リクエストの `timeout_ms` を尊重し（未指定は limits の exec_timeout）、壁時計上限で頭打ちにする。
+    /// ミリ秒は切り上げ、最低 1 秒（`as_secs()` の切り捨てで短い timeout が 0 秒扱いになるのを防ぐ）。
+    fn timeout_secs(&self, req_timeout_ms: Option<u64>) -> u64 {
+        let wall_ms = u64::try_from(self.wall_clock.as_millis()).unwrap_or(u64::MAX);
+        let exec_ms = u64::try_from(self.exec_timeout.as_millis()).unwrap_or(u64::MAX);
+        let ms = req_timeout_ms.unwrap_or(exec_ms).min(wall_ms).max(1);
+        ms.div_ceil(1000).max(1)
     }
 }
 
@@ -137,7 +148,7 @@ impl Instance for GvisorInstance {
         cmd.arg("exec").arg("--cwd").arg("/workspace");
 
         match &req {
-            ExecRequest::Python { code, .. } => {
+            ExecRequest::Python { code, timeout_ms } => {
                 let seq = self.seq.fetch_add(1, Ordering::SeqCst);
                 let script = self.exec_dir.join(format!("main-{seq}.py"));
                 tokio::fs::write(&script, code.as_bytes())
@@ -148,11 +159,14 @@ impl Instance for GvisorInstance {
                     .arg("timeout")
                     .arg("-k")
                     .arg("2")
-                    .arg(self.timeout_secs().to_string())
+                    .arg(self.timeout_secs(*timeout_ms).to_string())
                     .arg("python3")
                     .arg(guest_path);
             }
-            ExecRequest::Shell { cmd: shell, .. } => {
+            ExecRequest::Shell {
+                cmd: shell,
+                timeout_ms,
+            } => {
                 let parts = shlex::split(shell)
                     .ok_or_else(|| SandboxError::Invalid("unparseable shell command".into()))?;
                 if parts.is_empty() {
@@ -162,7 +176,7 @@ impl Instance for GvisorInstance {
                     .arg("timeout")
                     .arg("-k")
                     .arg("2")
-                    .arg(self.timeout_secs().to_string());
+                    .arg(self.timeout_secs(*timeout_ms).to_string());
                 for p in parts {
                     cmd.arg(p);
                 }
@@ -212,9 +226,16 @@ impl Instance for GvisorInstance {
             .stderr(Stdio::null())
             .status()
             .await;
-        // egress スタック（netns/プロキシ）と run_child は self の Drop で畳まれる
-        // （EgressStack::Drop→タスク abort＋Netns::Drop で holder kill・run_child は kill_on_drop）。
-        // destroy 中は netns を生かしておく必要があるため、ここでは触らない。
+        // runsc を落とし終えたので、egress（netns/プロキシ）と常駐 run_child を **即時**解放する
+        // （Arc の drop 待ちにしない）。egress は kill/delete が nsenter で参照するため、この順序で。
+        if let Ok(mut g) = self.egress.lock() {
+            drop(g.take()); // EgressStack::Drop → タスク abort ＋ Netns::Drop で holder kill。
+        }
+        if let Ok(mut c) = self.run_child.lock() {
+            if let Some(mut child) = c.take() {
+                let _ = child.start_kill(); // kill_on_drop でも落ちるが即時性のため明示 kill。
+            }
+        }
         // 状態ディレクトリを掃除（tmpfs 想定・残ってもリークにはならない）。
         let _ = tokio::fs::remove_dir_all(&self.state_dir).await;
         Ok(())

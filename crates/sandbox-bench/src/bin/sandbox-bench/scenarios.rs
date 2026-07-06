@@ -23,6 +23,9 @@ pub(crate) struct Metrics {
 }
 
 /// バックエンドを 1 回まわして計測する。
+///
+/// create 後にどの計測ステップが失敗しても、インスタンスを必ず destroy してから返す
+/// （失敗イテレーションで sandbox がリークしないように）。
 pub(crate) async fn run_once(
     backend: &Arc<dyn Backend>,
     spec: SandboxSpec,
@@ -32,14 +35,34 @@ pub(crate) async fn run_once(
     let t = Instant::now();
     let inst = backend.create(spec).await?;
     let create_ready_ms = ms(t);
-
-    // create 直後の子孫 RSS を採る（sidecar/runsc/fc のメモリ）。
     let peak_rss_kb = rss::descendant_rss_kb(self_pid);
 
+    match measure_steps(&inst).await {
+        Ok((exec_ms, python_ms, python_ok, io_ms, destroy_ms)) => Ok(Metrics {
+            create_ready_ms,
+            exec_ms,
+            python_ms,
+            python_ok,
+            io_ms,
+            destroy_ms,
+            peak_rss_kb,
+        }),
+        Err(e) => {
+            // 途中失敗時も破棄してリークを防ぐ。
+            let _ = inst.destroy().await;
+            Err(e)
+        }
+    }
+}
+
+/// exec/python/IO/destroy を計測し、(exec_ms, python_ms, python_ok, io_ms, destroy_ms) を返す。
+async fn measure_steps(
+    inst: &Arc<dyn Instance>,
+) -> Result<(f64, f64, bool, f64, f64), sandbox_client::SandboxError> {
     // 自明な exec 往復（Python・shell コマンド suite に依存せず全ティアで比較可能）。
     let t = Instant::now();
-    drain(
-        &inst,
+    let (_, exec_code) = collect(
+        inst,
         ExecRequest::Python {
             code: "print(1)".into(),
             timeout_ms: None,
@@ -49,17 +72,21 @@ pub(crate) async fn run_once(
     let exec_ms = ms(t);
 
     // 純 Python の CPU 計測（全ティア共通・numpy 依存を避ける）。
+    const N: u64 = 300_000;
     let t = Instant::now();
-    let (out, _) = collect(
-        &inst,
+    let (out, py_code) = collect(
+        inst,
         ExecRequest::Python {
-            code: "print(sum(i*i for i in range(300000)))".into(),
+            code: format!("print(sum(i*i for i in range({N})))"),
             timeout_ms: None,
         },
     )
     .await?;
     let python_ms = ms(t);
-    let python_ok = out.contains("8999955000") || out.trim().parse::<u64>().is_ok();
+    // 期待値は Rust 側で算出して照合（ハードコード定数の取り違えを避ける）。正常終了かつ一致のみ ok。
+    let expected: u64 = (0..N).map(|i| i * i).sum();
+    let python_ok =
+        exec_code == Some(0) && py_code == Some(0) && out.trim() == expected.to_string();
 
     // 1 MiB の put/get 往復。
     let blob = vec![0x5au8; 1024 * 1024];
@@ -67,36 +94,21 @@ pub(crate) async fn run_once(
     inst.put_file("/workspace/blob.bin", blob.clone()).await?;
     let got = inst.get_file("/workspace/blob.bin").await?;
     let io_ms = ms(t);
-    debug_assert_eq!(got.len(), blob.len());
+    if got.len() != blob.len() {
+        return Err(sandbox_client::SandboxError::Internal(
+            "put/get size mismatch".into(),
+        ));
+    }
 
     let t = Instant::now();
     inst.destroy().await?;
     let destroy_ms = ms(t);
 
-    Ok(Metrics {
-        create_ready_ms,
-        exec_ms,
-        python_ms,
-        python_ok,
-        io_ms,
-        destroy_ms,
-        peak_rss_kb,
-    })
+    Ok((exec_ms, python_ms, python_ok, io_ms, destroy_ms))
 }
 
 fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
-}
-
-async fn drain(
-    inst: &Arc<dyn Instance>,
-    req: ExecRequest,
-) -> Result<(), sandbox_client::SandboxError> {
-    let mut s = inst.exec(req).await?;
-    while let Some(item) = s.next().await {
-        item?;
-    }
-    Ok(())
 }
 
 async fn collect(
