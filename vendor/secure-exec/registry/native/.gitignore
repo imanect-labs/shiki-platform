@@ -1,5 +1,4 @@
 # ビルド生成物（scripts/build-sandbox-commands.sh / make wasm が作る）。コミットしない。
 /target/
-# `make vendor` / patch-vendor.sh が生成する cargo vendor ディレクトリ（813MB・build-std 用）。
 /vendor/
 /.cargo/
