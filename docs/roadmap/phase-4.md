@@ -43,9 +43,13 @@
 >   短命サンドボックスで取得（リダイレクト非追従 PIT-36・IP/内部ホスト拒否・シークレット非添付）。
 >   compose に SearXNG（websearch profile）を追加。
 > - ゲストコマンドスイート（4.12 software）: `scripts/build-sandbox-commands.sh` が registry/native を
->   nightly+wasm32-wasip1 でビルドし `<name>/package.tar` にステージング（Docker `commands-builder`
->   ステージ・`SANDBOX__SOFTWARE_DIR`）。orchestrator は `spec.software` を検証（PIT-23: 名前検証・
->   未同梱は fail-closed）して ConfigureVm の tar 投影でロードし、guest の $PATH でそのまま使える。
+>   nightly+wasm32-wasip1 でビルドしフラットなコマンドディレクトリにステージ（Docker `commands-builder`
+>   ステージ・`SANDBOX__COMMANDS_DIR`）。orchestrator は `spec.software` を検証（PIT-23: 名前検証・
+>   未同梱は fail-closed）し、ConfigureVm で **`/__secure_exec/commands/0` に host_dir マウント**して
+>   `$PATH` に載せる。ls/cat/grep/echo 等が実際に動き stdout が返る（gated IT で検証）。コマンドは
+>   `ReadWrite` tier・cwd=/workspace で直接実行（シェル行は shlex 分割・演算子/パイプは非対応＝
+>   brush の PTY 要求が出力経路と競合するため。パイプ対応はポストアルファ）。
+>   ※ package.tar 投影では native wasm の kernel 管理 stdio が surface しない（#109 調査で判明）。
 > - **残（Docker/CI・ポストアルファ）**: C ポートコマンド（curl/wget・wasi-sdk ビルド）の既定同梱、
 >   Playwright e2e（code-interpreter / web-search）。
 

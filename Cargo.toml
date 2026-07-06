@@ -119,6 +119,8 @@ shiki-websearch = { path = "crates/websearch" }
 
 # URL 解析（web ツールの入力検証・SSRF 系ホスト拒否）
 url = "2"
+# シェル語の分割（ゲストコマンドの引数パース・quote 対応）
+shlex = "1"
 
 # ワークスペース共通 lint（各 crate は `[lints] workspace = true` で opt-in）。
 # CI は `cargo clippy --all-targets --all-features -- -D warnings` で warn も含めゲート化する。

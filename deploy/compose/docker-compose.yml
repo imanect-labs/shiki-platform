@@ -175,7 +175,7 @@ services:
     environment:
       SANDBOX__LISTEN: 0.0.0.0:50000
       SECURE_EXEC_SIDECAR_BIN: /usr/local/bin/secure-exec-sidecar
-      SANDBOX__SOFTWARE_DIR: /opt/shiki/software
+      SANDBOX__COMMANDS_DIR: /opt/shiki/commands
     ports:
       # gRPC はローカルのみ公開（compose 網内は sandbox-orchestrator:50000 で到達）。
       - "127.0.0.1:50000:50000"

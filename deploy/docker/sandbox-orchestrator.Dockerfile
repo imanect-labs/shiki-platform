@@ -33,10 +33,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/vendor/secure-exec/registry/native/target \
-    mkdir -p /opt/shiki/software && \
+    mkdir -p /opt/shiki/commands && \
     if [ "$BUILD_COMMANDS" = "1" ]; then \
       # BUILD_C=1: curl/wget 等の C ポートも含める（wasi-sdk はビルド時取得・PIT-33 準拠）。
-      BUILD_C=1 SOFTWARE_OUT=/opt/shiki/software bash scripts/build-sandbox-commands.sh; \
+      BUILD_C=1 COMMANDS_OUT=/opt/shiki/commands bash scripts/build-sandbox-commands.sh; \
     else \
       echo "BUILD_COMMANDS=0: ゲストコマンド同梱をスキップ"; \
     fi
@@ -47,10 +47,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     useradd --system --create-home --uid 10001 sandbox
 COPY --from=builder /usr/local/bin/shiki-sandbox-orchestrator /usr/local/bin/
 COPY --from=builder /usr/local/bin/secure-exec-sidecar /usr/local/bin/
-COPY --from=commands-builder /opt/shiki/software /opt/shiki/software
+COPY --from=commands-builder /opt/shiki/commands /opt/shiki/commands
 USER sandbox
 ENV SECURE_EXEC_SIDECAR_BIN=/usr/local/bin/secure-exec-sidecar
 ENV SANDBOX__LISTEN=0.0.0.0:50000
-ENV SANDBOX__SOFTWARE_DIR=/opt/shiki/software
+ENV SANDBOX__COMMANDS_DIR=/opt/shiki/commands
 EXPOSE 50000
 ENTRYPOINT ["shiki-sandbox-orchestrator"]

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# ゲストコマンドスイート（ls/cat/grep 等）を wasm32-wasip1 でビルドし、software パッケージ
-# （`<name>/package.tar`）としてステージングする。sidecar は tar 投影のみサポートするため、
-# 各パッケージは `/agentos-package.json`（name/version を合成）＋ `/bin/<commands>` を含む
-# tar に固める。orchestrator は `SANDBOX__SOFTWARE_DIR` に出力ディレクトリを指す。
+# ゲストコマンドスイート（ls/cat/grep/curl 等）を wasm32-wasip1 でビルドし、**フラットな
+# コマンドディレクトリ**にステージングする。orchestrator はこのディレクトリを
+# `/__secure_exec/commands/0` に host_dir マウントし（$PATH に載る・kernel 管理 stdio で実行）、
+# `SANDBOX__COMMANDS_DIR` で場所を指す。
+#
+# なぜ tar 投影（packages）でなく host_dir か: package.tar 投影では native wasm コマンドの stdio が
+# ProcessOutputEvent に surface せず出力が返らない（#109 の調査）。upstream の実行テストと同じ
+# host_dir コマンドルート経路を使う。
 #
 # ⚠️ 重いビルド。専用 Docker ステージ / CI ジョブでのみ実行する（高速 unit-test パスには載せない）。
 # 必要ツール:
@@ -15,15 +19,13 @@
 # 使い方:
 #   scripts/build-sandbox-commands.sh                 # Rust コマンドのみ（make wasm）
 #   BUILD_C=1 scripts/build-sandbox-commands.sh       # C ポート（curl/wget 等）も含める（make commands）
-#   SOFTWARE_OUT=/opt/shiki/software scripts/build-sandbox-commands.sh
+#   COMMANDS_OUT=/opt/shiki/commands scripts/build-sandbox-commands.sh
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "$0")/.." && pwd; })"
 NATIVE="$ROOT/vendor/secure-exec/registry/native"
-SOFTWARE="$ROOT/vendor/secure-exec/registry/software"
 COMMANDS_DIR="${COMMANDS_DIR:-$NATIVE/target/wasm32-wasip1/release/commands}"
-SOFTWARE_OUT="${SOFTWARE_OUT:-$ROOT/target/sandbox-software}"
-PKG_VERSION="${PKG_VERSION:-0.0.0}"
+COMMANDS_OUT="${COMMANDS_OUT:-$ROOT/target/sandbox-commands}"
 
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
   if [ "${BUILD_C:-0}" = "1" ]; then
@@ -35,51 +37,16 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
   fi
 fi
 
-echo "→ software パッケージ（package.tar）を $SOFTWARE_OUT にステージング"
-mkdir -p "$SOFTWARE_OUT"
-packed=0
-for pkgdir in "$SOFTWARE"/*/; do
-  name="$(basename "$pkgdir")"
-  manifest="$pkgdir/agentos-package.json"
-  [ -f "$manifest" ] || continue
-
-  # commands / aliases / stubs を束ねてコマンド名一覧にする（registry manifest はパッカー向け形式）。
-  cmds="$(python3 - "$manifest" <<'PY'
-import json, sys
-m = json.load(open(sys.argv[1]))
-names = list(m.get("commands", [])) + list(m.get("aliases", [])) + list(m.get("stubs", []))
-print("\n".join(dict.fromkeys(names)))
-PY
-)"
-  [ -n "$cmds" ] || continue
-
-  stage="$(mktemp -d)"
-  mkdir -p "$stage/bin"
-  staged_pkg=0
-  while read -r cmd; do
-    [ -n "$cmd" ] || continue
-    if [ -e "$COMMANDS_DIR/$cmd" ]; then
-      # symlink（alias/stub）は実体化して tar に入れる（-L）。
-      cp -L "$COMMANDS_DIR/$cmd" "$stage/bin/$cmd"
-      staged_pkg=$((staged_pkg + 1))
-    fi
-  done <<< "$cmds"
-  if [ "$staged_pkg" -eq 0 ]; then
-    rm -rf "$stage"
-    continue
-  fi
-
-  # sidecar が要求する完全な manifest（name/version）を合成する。
-  python3 - "$stage/agentos-package.json" "$name" "$PKG_VERSION" <<'PY'
-import json, sys
-json.dump({"name": sys.argv[2], "version": sys.argv[3]}, open(sys.argv[1], "w"))
-PY
-
-  mkdir -p "$SOFTWARE_OUT/$name"
-  tar -cf "$SOFTWARE_OUT/$name/package.tar" -C "$stage" agentos-package.json bin
-  rm -rf "$stage"
-  packed=$((packed + 1))
-  echo "   ✓ $name（$staged_pkg commands）"
+echo "→ コマンドを $COMMANDS_OUT にステージング（フラット・symlink は実体化）"
+rm -rf "$COMMANDS_OUT"
+mkdir -p "$COMMANDS_OUT"
+count=0
+for f in "$COMMANDS_DIR"/*; do
+  [ -e "$f" ] || continue
+  name="$(basename "$f")"
+  # alias/stub は symlink のことがあるので -L で実体をコピーする。
+  cp -L "$f" "$COMMANDS_OUT/$name" 2>/dev/null || continue
+  count=$((count + 1))
 done
 
-echo "✅ $packed パッケージを $SOFTWARE_OUT にステージングしました（SANDBOX__SOFTWARE_DIR に指定）。"
+echo "✅ $count コマンドを $COMMANDS_OUT にステージングしました（SANDBOX__COMMANDS_DIR に指定）。"

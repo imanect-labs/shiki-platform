@@ -17,16 +17,17 @@ use secure_exec_vm_config::{
 pub struct OrchestratorEnv {
     /// egress 許可時に guest へ渡す DNS リゾルバ（allowlist 空なら DNS も渋る）。
     pub egress_resolvers: Vec<String>,
-    /// ステージ済みゲストコマンドパッケージのルート（`<name>/package.tar`）。
-    /// 未設定なら software 要求を Unimplemented で拒否する（実行時ダウンロード禁止・PIT-33）。
-    pub software_dir: Option<std::path::PathBuf>,
+    /// ゲストコマンド（wasm バイナリ）のフラットなディレクトリ。`/__secure_exec/commands/0` に
+    /// host_dir マウントされ `$PATH` に載る。未設定なら software 要求を Unimplemented で拒否する
+    /// （実行時ダウンロード禁止・PIT-33）。
+    pub commands_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for OrchestratorEnv {
     fn default() -> Self {
         OrchestratorEnv {
             egress_resolvers: vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()],
-            software_dir: None,
+            commands_dir: None,
         }
     }
 }

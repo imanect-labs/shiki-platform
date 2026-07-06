@@ -1,6 +1,7 @@
 //! wasm バックエンド: per-sandbox の secure-exec-sidecar 子プロセスを spawn し wire プロトコルで駆動する。
 //!
-//! 手順: spawn → Authenticate → OpenSession → CreateVm(json_config) →（software があれば LinkPackage）。
+//! 手順: spawn → Authenticate → OpenSession → CreateVm(json_config) →（software があれば
+//! ConfigureVm でコマンドルートを host_dir マウント）。
 //! 実行・ファイル・破棄は `instance` モジュール。ゲスト由来の応答は敵対的として扱う（PIT-23）。
 
 mod instance;
@@ -85,9 +86,12 @@ impl Backend for WasmBackend {
                 "storage mounts are post-alpha".into(),
             ));
         }
-        // 0. software（ゲストコマンドパッケージ）を先に解決する（不正名・未同梱は spawn 前に fail-fast）。
-        let packages =
-            crate::software::resolve_software(self.env.software_dir.as_deref(), &spec.software)?;
+        // 0. software（ゲストコマンド）を先に解決する（不正名・未同梱は spawn 前に fail-fast）。
+        //    コマンドルートの host_dir マウント記述子を得る（None なら要求なし）。
+        let command_mount = crate::software::resolve_command_mount(
+            self.env.commands_dir.as_deref(),
+            &spec.software,
+        )?;
 
         // 1. sidecar 子プロセスを spawn（kill_on_drop）。
         let transport = SidecarTransport::spawn(self.sidecar_bin.clone())
@@ -145,14 +149,16 @@ impl Backend for WasmBackend {
             other => return Err(unexpected("create vm", &other)),
         };
 
-        // 5. software（ゲストコマンドパッケージ）があれば ConfigureVm で tar 投影する。
-        //    permissions は None＝CreateVm の egress ポリシを維持（緩めない）。
-        if !packages.is_empty() {
+        // 5. ゲストコマンドがあれば ConfigureVm でコマンドルートを host_dir マウントする
+        //    （`/__secure_exec/commands/0` が `$PATH` に載る）。permissions は None＝CreateVm の
+        //    egress ポリシを維持（緩めない）。tar 投影（packages）では kernel 管理 stdio が働かず
+        //    出力が surface しないため、この host_dir 経路を使う（#109 の調査結果）。
+        if let Some(mount) = command_mount {
             let configured = request(
                 &transport,
                 vm_scope(&connection_id, &session_id, &vm_id),
                 wire::RequestPayload::ConfigureVmRequest(wire::ConfigureVmRequest {
-                    mounts: Vec::new(),
+                    mounts: vec![mount],
                     software: Vec::new(),
                     permissions: None,
                     module_access_cwd: None,
@@ -160,8 +166,7 @@ impl Backend for WasmBackend {
                     projected_modules: Vec::new(),
                     command_permissions: std::collections::HashMap::new(),
                     loopback_exempt_ports: Vec::new(),
-                    packages,
-                    // 空＝sidecar 既定の /opt/agentos（bin/ が $PATH にリンクされる）。
+                    packages: Vec::new(),
                     packages_mount_at: String::new(),
                     bootstrap_commands: Vec::new(),
                     tool_shim_commands: Vec::new(),
@@ -170,7 +175,7 @@ impl Backend for WasmBackend {
             .await?;
             match configured {
                 wire::ResponsePayload::VmConfiguredResponse(_) => {}
-                other => return Err(unexpected("configure vm (software)", &other)),
+                other => return Err(unexpected("configure vm (commands)", &other)),
             }
         }
 

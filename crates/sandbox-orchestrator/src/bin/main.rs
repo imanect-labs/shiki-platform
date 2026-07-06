@@ -17,9 +17,9 @@ struct Config {
     listen: String,
     /// secure-exec-sidecar バイナリのパス（未指定なら PATH/env）。
     sidecar_bin: Option<String>,
-    /// ステージ済みゲストコマンドパッケージのルート（`<name>/package.tar`）。
-    /// 未指定なら software 要求を拒否する（実行時ダウンロード禁止・PIT-33）。
-    software_dir: Option<String>,
+    /// ゲストコマンド（wasm）のフラットなディレクトリ。`/__secure_exec/commands/0` に
+    /// host_dir マウントされる。未指定なら software 要求を拒否する（実行時 DL 禁止・PIT-33）。
+    commands_dir: Option<String>,
 }
 
 impl Default for Config {
@@ -27,7 +27,7 @@ impl Default for Config {
         Config {
             listen: "127.0.0.1:50000".to_string(),
             sidecar_bin: None,
-            software_dir: None,
+            commands_dir: None,
         }
     }
 }
@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .extract()?;
 
     let env = OrchestratorEnv {
-        software_dir: config.software_dir.clone().map(std::path::PathBuf::from),
+        commands_dir: config.commands_dir.clone().map(std::path::PathBuf::from),
         ..OrchestratorEnv::default()
     };
     let registry = Arc::new(Registry::new());

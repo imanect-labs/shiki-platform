@@ -232,100 +232,83 @@ async fn real_sidecar_file_roundtrip() {
     instance.destroy().await.expect("destroy");
 }
 
-/// ゲストコマンドスイート（software package.tar）の実行（Task 4.12 software）。
+/// ゲストコマンドスイート（wasm）の実行（Task 4.12 software・#109 解決）。
 ///
-/// `SANDBOX_SOFTWARE_DIR`（`scripts/build-sandbox-commands.sh` の出力）が指す coreutils
-/// パッケージを ConfigureVm で投影し、guest で echo/ls が実際に動くことを検証する。
-/// パッケージ未ビルドの環境ではスキップする（重い wasm ビルドを test 前提にしない）。
+/// `SANDBOX_COMMANDS_DIR`（`scripts/build-sandbox-commands.sh` の出力・フラットな wasm コマンド
+/// ディレクトリ）を `/__secure_exec/commands/0` に host_dir マウントし、guest で ls/echo/wc が
+/// **実際に動き stdout が返る**ことを検証する。未ビルド環境ではスキップ（重い wasm ビルドを前提にしない）。
 #[tokio::test]
 async fn real_sidecar_guest_commands_run() {
     if !gated() {
         return;
     }
-    let Ok(software_dir) = std::env::var("SANDBOX_SOFTWARE_DIR") else {
-        eprintln!("skipping: set SANDBOX_SOFTWARE_DIR (scripts/build-sandbox-commands.sh の出力)");
+    let Ok(commands_dir) = std::env::var("SANDBOX_COMMANDS_DIR") else {
+        eprintln!("skipping: set SANDBOX_COMMANDS_DIR (scripts/build-sandbox-commands.sh の出力)");
         return;
     };
-    let software_dir = std::path::PathBuf::from(software_dir);
-    if !software_dir.join("coreutils/package.tar").is_file() {
-        eprintln!("skipping: coreutils/package.tar が未ビルド");
+    let commands_dir = std::path::PathBuf::from(commands_dir);
+    if !commands_dir.join("echo").is_file() {
+        eprintln!("skipping: echo コマンドが未ビルド");
         return;
     }
     let backend = WasmBackend::new(
         None,
         OrchestratorEnv {
-            software_dir: Some(software_dir),
+            commands_dir: Some(commands_dir),
             ..OrchestratorEnv::default()
         },
     );
     let mut spec = SandboxSpec::code_interpreter("t".into(), "o".into(), "user:1".into());
     spec.software = vec!["coreutils".into()];
-    let instance = backend.create(spec).await.expect("create with software");
+    let instance = backend.create(spec).await.expect("create with commands");
 
-    // exec が guest まで到達し、投影された `sh`（brush）がプロセスとして起動・終了する
-    // （command-not-found を返さない＝PATH に見えている）。exit コードを回収する。
+    // echo が実行され stdout が返る（wasm OS の主目的：Linux コマンドがそのまま動く）。
     let mut stream = instance
         .exec(ExecRequest::Shell {
             cmd: "echo guest-commands-work".into(),
             timeout_ms: None,
         })
         .await
-        .expect("exec shell reaches guest sh");
-    let (_out, _err, code) = collect(&mut stream).await;
-    // プロセスは起動して終了する（exit イベントが返る）。
-    assert!(code.is_some(), "guest プロセスが終了コードを返す");
-    instance.destroy().await.expect("destroy");
-    // NOTE: 投影コマンドの stdout/exit を実バイトで検証する e2e は、kernel-managed wasm stdio
-    // （AGENTOS_WASI_STDIO_SYNC_RPC）を ProcessOutputEvent へ確実に surface させる sidecar 側の
-    // 追加対応が要る（現状 code_interpreter Python は surface するが native wasm コマンドは未）。
-    // これは vendor ランタイム統合の残作業として `real_sidecar_guest_command_stdout`（#[ignore]）で
-    // 再現し、フォローアップ issue で追う。
-}
-
-/// 【既知の残作業・再現用】投影コマンドの stdout をバイトで検証する（現状 surface されない）。
-///
-/// native wasm コマンドの kernel-managed stdio が ProcessOutputEvent に乗らない問題の再現。
-/// 解決後に `#[ignore]` を外す。`SANDBOX_IT=1` かつ `SANDBOX_SOFTWARE_DIR` が要る。
-#[tokio::test]
-#[ignore = "native wasm コマンドの stdio surface は sidecar 追加対応待ち（Task 4.12 フォローアップ）"]
-async fn real_sidecar_guest_command_stdout() {
-    if !gated() {
-        return;
-    }
-    let Ok(software_dir) = std::env::var("SANDBOX_SOFTWARE_DIR") else {
-        return;
-    };
-    let software_dir = std::path::PathBuf::from(software_dir);
-    if !software_dir.join("coreutils/package.tar").is_file() {
-        return;
-    }
-    let backend = WasmBackend::new(
-        None,
-        OrchestratorEnv {
-            software_dir: Some(software_dir),
-            ..OrchestratorEnv::default()
-        },
-    );
-    let mut spec = SandboxSpec::code_interpreter("t".into(), "o".into(), "user:1".into());
-    spec.software = vec!["coreutils".into()];
-    let instance = backend.create(spec).await.expect("create with software");
-    let mut stream = instance
-        .exec(ExecRequest::Shell {
-            cmd: "echo guest-commands-work".into(),
-            timeout_ms: None,
-        })
-        .await
-        .expect("exec shell");
+        .expect("exec echo");
     let (out, err, code) = collect(&mut stream).await;
     assert!(
         out.contains("guest-commands-work"),
-        "stdout was {out:?}, stderr {err:?}"
+        "stdout {out:?} stderr {err:?}"
     );
     assert_eq!(code, Some(0), "stderr: {err}");
+
+    // 引数つき＋FS 読み取りコマンド（cat）も動く。put_file で置いたファイルを読み出す。
+    instance
+        .put_file("/workspace/probe.txt", b"hello-from-cat\n".to_vec())
+        .await
+        .expect("put");
+    let mut stream = instance
+        .exec(ExecRequest::Shell {
+            cmd: "cat /workspace/probe.txt".into(),
+            timeout_ms: None,
+        })
+        .await
+        .expect("exec cat");
+    let (out, err, code) = collect(&mut stream).await;
+    assert!(out.contains("hello-from-cat"), "cat: {out:?} err {err:?}");
+    assert_eq!(code, Some(0), "stderr: {err}");
+
+    // quote を含む引数も shlex で正しく分割される（echo は 1 引数として受ける）。
+    let mut stream = instance
+        .exec(ExecRequest::Shell {
+            cmd: "echo \"a b c\"".into(),
+            timeout_ms: None,
+        })
+        .await
+        .expect("exec echo quoted");
+    let (out, _err, code) = collect(&mut stream).await;
+    assert_eq!(out.trim(), "a b c", "quote 分割: {out:?}");
+    assert_eq!(code, Some(0));
+
     instance.destroy().await.expect("destroy");
 }
 
-/// 未同梱 software の要求は spawn 前に fail-fast で拒否される（PIT-23/33）。
+/// 未同梱（commands_dir 未設定）の software 要求は spawn 前に fail-closed で拒否される（PIT-23/33）。
 #[tokio::test]
 async fn software_requests_fail_closed_without_staging() {
     // sidecar 不要（resolve は spawn 前）なので gate しない。
@@ -339,42 +322,4 @@ async fn software_requests_fail_closed_without_staging() {
         err,
         sandbox_client::SandboxError::Unimplemented(_)
     ));
-}
-
-/// software パッケージの投影のみを検証する（コマンド実行はしない・ビルド済み wasm 不要）。
-///
-/// ConfigureVm（tar 投影）が成立し、guest の `/opt/agentos/bin` にコマンドが見えることを確認する。
-/// `SANDBOX_SOFTWARE_DIR` の coreutils パッケージ（ダミーでも可）が必要。
-#[tokio::test]
-async fn real_sidecar_software_projection() {
-    if !gated() {
-        return;
-    }
-    let Ok(software_dir) = std::env::var("SANDBOX_SOFTWARE_DIR") else {
-        eprintln!("skipping: set SANDBOX_SOFTWARE_DIR");
-        return;
-    };
-    let software_dir = std::path::PathBuf::from(software_dir);
-    if !software_dir.join("coreutils/package.tar").is_file() {
-        eprintln!("skipping: coreutils/package.tar が無い");
-        return;
-    }
-    let backend = WasmBackend::new(
-        None,
-        OrchestratorEnv {
-            software_dir: Some(software_dir),
-            ..OrchestratorEnv::default()
-        },
-    );
-    let mut spec = SandboxSpec::code_interpreter("t".into(), "o".into(), "user:1".into());
-    spec.software = vec!["coreutils".into()];
-    let instance = backend.create(spec).await.expect("create with software");
-    // 投影されたコマンドが guest FS に見える（$PATH の symlink farm）。
-    let entries = instance
-        .list_dir("/opt/agentos/bin")
-        .await
-        .expect("list /opt/agentos/bin");
-    let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-    assert!(names.contains(&"echo"), "projected commands: {names:?}");
-    instance.destroy().await.expect("destroy");
 }
