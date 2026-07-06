@@ -7,4 +7,5 @@ pub mod backend;
 pub mod config;
 pub mod registry;
 pub mod server;
+pub mod software;
 pub mod validate;

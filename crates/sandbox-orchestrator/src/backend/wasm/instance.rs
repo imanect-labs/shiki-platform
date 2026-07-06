@@ -108,16 +108,30 @@ fn build_execute(process_id: String, req: &ExecRequest) -> wire::ExecuteRequest 
                 wasm_permission_tier: None,
             }
         }
-        ExecRequest::Shell { cmd, .. } => wire::ExecuteRequest {
-            process_id,
-            command: Some(cmd.clone()),
-            runtime: None,
-            entrypoint: None,
-            args: Vec::new(),
-            env: std::collections::HashMap::new(),
-            cwd: None,
-            wasm_permission_tier: None,
-        },
+        // sidecar の command は「PATH 解決される単一コマンド＋引数」。シェル演算子（`|`/`&&`/
+        // リダイレクト）は解釈しない: 投影された `sh`（brush）は起動時に raw-mode(PTY) を要求して
+        // 失敗し、かつ PTY 経由だと出力が ProcessOutputEvent に surface しないため（#109）。
+        // コマンド行は shlex（POSIX 単語分割・quote 対応）で command＋args に分ける。
+        ExecRequest::Shell { cmd, .. } => {
+            let parts = shlex::split(cmd).unwrap_or_default();
+            let (command, args) = parts.split_first().map_or_else(
+                || (String::new(), Vec::new()),
+                |(c, a)| (c.clone(), a.to_vec()),
+            );
+            wire::ExecuteRequest {
+                process_id,
+                command: Some(command),
+                runtime: None,
+                entrypoint: None,
+                args,
+                env: std::collections::HashMap::new(),
+                // 作業ディレクトリを /workspace に固定する（成果物・put_file と同じ場所で相対パスが効く）。
+                cwd: Some("/workspace".to_string()),
+                // ゲストの ephemeral 仮想FS を読み書きできる tier（None だと FS 操作系が制限される）。
+                // 隔離境界は VM そのもの（プロセス分離＋wasm＋egress）であり、intra-guest の FS は full 可。
+                wasm_permission_tier: Some(wire::WasmPermissionTier::ReadWrite),
+            }
+        }
     }
 }
 

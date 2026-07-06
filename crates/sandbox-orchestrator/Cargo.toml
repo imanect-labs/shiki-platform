@@ -30,6 +30,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 figment = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+shlex = { workspace = true }
 
 # lib 名 sandbox_client で参照するため machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]

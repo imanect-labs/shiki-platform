@@ -231,3 +231,95 @@ async fn real_sidecar_file_roundtrip() {
     assert_eq!(got, b"roundtrip");
     instance.destroy().await.expect("destroy");
 }
+
+/// ゲストコマンドスイート（wasm）の実行（Task 4.12 software・#109 解決）。
+///
+/// `SANDBOX_COMMANDS_DIR`（`scripts/build-sandbox-commands.sh` の出力・フラットな wasm コマンド
+/// ディレクトリ）を `/__secure_exec/commands/0` に host_dir マウントし、guest で ls/echo/wc が
+/// **実際に動き stdout が返る**ことを検証する。未ビルド環境ではスキップ（重い wasm ビルドを前提にしない）。
+#[tokio::test]
+async fn real_sidecar_guest_commands_run() {
+    if !gated() {
+        return;
+    }
+    let Ok(commands_dir) = std::env::var("SANDBOX_COMMANDS_DIR") else {
+        eprintln!("skipping: set SANDBOX_COMMANDS_DIR (scripts/build-sandbox-commands.sh の出力)");
+        return;
+    };
+    let commands_dir = std::path::PathBuf::from(commands_dir);
+    if !commands_dir.join("echo").is_file() {
+        eprintln!("skipping: echo コマンドが未ビルド");
+        return;
+    }
+    let backend = WasmBackend::new(
+        None,
+        OrchestratorEnv {
+            commands_dir: Some(commands_dir),
+            ..OrchestratorEnv::default()
+        },
+    );
+    let mut spec = SandboxSpec::code_interpreter("t".into(), "o".into(), "user:1".into());
+    spec.software = vec!["coreutils".into()];
+    let instance = backend.create(spec).await.expect("create with commands");
+
+    // echo が実行され stdout が返る（wasm OS の主目的：Linux コマンドがそのまま動く）。
+    let mut stream = instance
+        .exec(ExecRequest::Shell {
+            cmd: "echo guest-commands-work".into(),
+            timeout_ms: None,
+        })
+        .await
+        .expect("exec echo");
+    let (out, err, code) = collect(&mut stream).await;
+    assert!(
+        out.contains("guest-commands-work"),
+        "stdout {out:?} stderr {err:?}"
+    );
+    assert_eq!(code, Some(0), "stderr: {err}");
+
+    // 引数つき＋FS 読み取りコマンド（cat）も動く。put_file で置いたファイルを読み出す。
+    instance
+        .put_file("/workspace/probe.txt", b"hello-from-cat\n".to_vec())
+        .await
+        .expect("put");
+    let mut stream = instance
+        .exec(ExecRequest::Shell {
+            cmd: "cat /workspace/probe.txt".into(),
+            timeout_ms: None,
+        })
+        .await
+        .expect("exec cat");
+    let (out, err, code) = collect(&mut stream).await;
+    assert!(out.contains("hello-from-cat"), "cat: {out:?} err {err:?}");
+    assert_eq!(code, Some(0), "stderr: {err}");
+
+    // quote を含む引数も shlex で正しく分割される（echo は 1 引数として受ける）。
+    let mut stream = instance
+        .exec(ExecRequest::Shell {
+            cmd: "echo \"a b c\"".into(),
+            timeout_ms: None,
+        })
+        .await
+        .expect("exec echo quoted");
+    let (out, _err, code) = collect(&mut stream).await;
+    assert_eq!(out.trim(), "a b c", "quote 分割: {out:?}");
+    assert_eq!(code, Some(0));
+
+    instance.destroy().await.expect("destroy");
+}
+
+/// 未同梱（commands_dir 未設定）の software 要求は spawn 前に fail-closed で拒否される（PIT-23/33）。
+#[tokio::test]
+async fn software_requests_fail_closed_without_staging() {
+    // sidecar 不要（resolve は spawn 前）なので gate しない。
+    let backend = WasmBackend::new(None, OrchestratorEnv::default());
+    let mut spec = SandboxSpec::code_interpreter("t".into(), "o".into(), "user:1".into());
+    spec.software = vec!["coreutils".into()];
+    let Err(err) = backend.create(spec).await else {
+        panic!("must fail");
+    };
+    assert!(matches!(
+        err,
+        sandbox_client::SandboxError::Unimplemented(_)
+    ));
+}
