@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# vendor/secure-exec は我々が所有するフォーク（独自 workspace）。shiki の workspace には入れず、
+# path 依存で参照する。clippy/test/llvm-cov/machete/file-size は自作コードのみに当たり、
+# cargo deny だけが依存グラフ全体（V8 等）を検査する。docs/sandbox/fork-policy.md 参照。
+exclude = ["vendor/secure-exec"]
 
 [workspace.package]
 edition = "2021"
@@ -85,6 +89,23 @@ bytes = "1"
 futures = "0.3"
 hex = "0.4"
 
+# サンドボックス（所有フォーク secure-exec の薄いクライアント transport のみ依存）。
+# 重い V8/execution/kernel は sidecar バイナリ側でのみコンパイルされる（別プロセス spawn）。
+secure-exec-client = { path = "vendor/secure-exec/crates/secure-exec-client" }
+secure-exec-sidecar-protocol = { path = "vendor/secure-exec/crates/sidecar-protocol" }
+secure-exec-vm-config = { path = "vendor/secure-exec/crates/vm-config" }
+secure-exec-bridge = { path = "vendor/secure-exec/crates/bridge" }
+
+# gRPC（sandbox-client 契約・lock 済みの 0.13 系に固定）
+tonic = "0.13"
+tonic-build = "0.13"
+prost = "0.13"
+prost-types = "0.13"
+tokio-stream = "0.1"
+
+# プロパティテスト（proto round-trip / validate.rs）
+proptest = "1"
+
 # 内部クレート
 shiki-authz = { path = "crates/authz" }
 shiki-storage = { path = "crates/storage" }
@@ -93,6 +114,7 @@ shiki-rag = { path = "crates/rag" }
 shiki-llm-gateway = { path = "crates/llm-gateway" }
 shiki-agent-core = { path = "crates/agent-core" }
 shiki-chat = { path = "crates/chat" }
+shiki-sandbox-client = { path = "crates/sandbox-client" }
 
 # ワークスペース共通 lint（各 crate は `[lints] workspace = true` で opt-in）。
 # CI は `cargo clippy --all-targets --all-features -- -D warnings` で warn も含めゲート化する。

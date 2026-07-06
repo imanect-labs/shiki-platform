@@ -1,0 +1,31 @@
+secure-exec vendored fork — upstream pin
+=========================================
+
+upstream:   https://github.com/rivet-dev/secure-exec
+commit:     b7d7be7545351275131debbc285cb17a65869be4
+vendored:   2026-07-06
+license:    Apache-2.0 (LICENSE を保持)
+
+これは shiki が所有するフォークです（docs/sandbox/fork-policy.md）。上流追従は義務ではなく、
+必要な修正のみ patches/ 経由で cherry-pick します。
+
+vendor したもの（crates/）:
+  bridge, kernel, vfs(secure-exec-vfs-core), secure-exec-vfs, build-support,
+  sidecar-protocol, sidecar-core, execution, secure-exec-client, sidecar,
+  vm-config, v8-runtime
+  registry/native（wasm コマンドスイート源）, registry/software（マニフェスト）
+
+vendor しなかったもの（上流にあるが不要）:
+  crates/sidecar-browser（ブラウザ/wasm32 ターゲット）
+  crates/native-baseline（ネイティブ挙動比較のテストハーネス）
+  packages/*, website, playground, registry/agent, registry/tool（TS モノレポ）
+
+ローカルパッチ:
+  patches/ 以下に番号付き .patch で管理（現状なし。最初のパッチは egress 判定イベント発火）。
+
+再 vendor 手順:
+  scripts/update-secure-exec.sh を参照。
+
+大容量アセット:
+  crates/execution/assets/pyodide/ の 5 ファイルは .gitignore。asset-manifest.sha256 に pin。
+  scripts/fetch-sandbox-assets.sh が検証付きで取得する（PIT-33・実行時取得禁止）。

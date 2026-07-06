@@ -140,6 +140,10 @@ pub struct ChatConfig {
     /// エージェントモードの最大ステップ。
     #[serde(default = "default_max_steps")]
     pub max_steps: usize,
+    /// sandbox-orchestrator の gRPC エンドポイント（未指定なら code_interpreter を提示しない）。
+    /// 例: `http://127.0.0.1:50000`。compose 網内・非公開ポート。
+    #[serde(default)]
+    pub sandbox_endpoint: Option<String>,
 }
 
 impl Default for ChatConfig {
@@ -151,6 +155,7 @@ impl Default for ChatConfig {
             system_prompt: None,
             lease_secs: default_lease_secs(),
             max_steps: default_max_steps(),
+            sandbox_endpoint: None,
         }
     }
 }

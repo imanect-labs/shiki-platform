@@ -5,6 +5,7 @@
 #   - tests/            … 結合テストは網羅性のため長くなりがちで、責務分割の指標が異なる
 #   - */generated/*     … 生成物（codegen が正・手を入れない）
 #   - target/           … ビルド成果物
+#   - vendor/           … 所有フォーク（secure-exec）。上流由来コードは同一基準で縛らない（docs/sandbox/fork-policy.md）
 #
 # しきい値は MAX_LINES（既定 500 行）。超過ファイルがあれば一覧を出して 1 で終了する。
 # 「関数が巨大」は clippy の too_many_lines / cognitive_complexity で別途担保する。
@@ -17,7 +18,7 @@ cd "$(git rev-parse --show-toplevel)"
 # 対象ファイルの収集（NUL 区切りで空白/日本語パスにも耐性を持たせる）。
 mapfile -d '' -t files < <(
   git ls-files -z -- '*.rs' \
-    | { grep -zvE '(^|/)tests/|/generated/|(^|/)target/' || true; }
+    | { grep -zvE '(^|/)tests/|/generated/|(^|/)target/|(^|/)vendor/' || true; }
 )
 
 violations=()

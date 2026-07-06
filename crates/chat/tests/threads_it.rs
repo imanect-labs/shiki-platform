@@ -419,6 +419,7 @@ async fn agent_mode_worker_runs_to_done() {
         store.clone(),
         gateway,
         None,
+        None,
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
             model: Some("m".into()),

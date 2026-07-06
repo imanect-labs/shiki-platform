@@ -148,6 +148,7 @@ async fn worker_generates_streams_and_persists_projection() {
         store.clone(),
         gateway,
         None,
+        None,
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
             model: Some("m".into()),

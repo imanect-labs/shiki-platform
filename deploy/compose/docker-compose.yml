@@ -163,6 +163,29 @@ services:
       retries: 30
       start_period: 30s
 
+  # サンドボックス orchestrator（非特権・code_interpreter 用）。gRPC を compose 網内で待ち受ける。
+  # per-sandbox の secure-exec-sidecar 子プロセスを spawn する。ストレージ/DB クレデンシャルは持たない。
+  sandbox-orchestrator:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/sandbox-orchestrator.Dockerfile
+    environment:
+      SANDBOX__LISTEN: 0.0.0.0:50000
+      SECURE_EXEC_SIDECAR_BIN: /usr/local/bin/secure-exec-sidecar
+    ports:
+      # gRPC はローカルのみ公開（compose 網内は sandbox-orchestrator:50000 で到達）。
+      - "127.0.0.1:50000:50000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          pids: 512
+
   # --- 監視スタック（observability profile・オプトイン起動） ---
   tempo:
     image: grafana/tempo:2.6.1
@@ -310,6 +333,7 @@ services:
       SHIKI__CHAT__WORKER_CONCURRENCY: ${SHIKI__CHAT__WORKER_CONCURRENCY:-4}
       # RAG（Phase 2）: インジェスト・パイプラインと検索。
       SHIKI__RAG__ENABLED: ${SHIKI__RAG__ENABLED:-true}
+      SHIKI__CHAT__SANDBOX_ENDPOINT: http://sandbox-orchestrator:50000
       SHIKI__RAG__WORKER_BASE_URL: http://ingestion-worker:8000
       SHIKI__RAG__QDRANT_URL: http://qdrant:6333
       SHIKI__RAG__EMBEDDING_MODEL_VERSION: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}

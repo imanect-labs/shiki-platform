@@ -1,0 +1,8 @@
+# CodeRabbit 設定。所有フォーク vendor/ は上流由来コードのためレビュー対象から除外する
+# （fork-policy.md 準拠・我々の diff のみをレビューさせ、300 ファイル上限も回避する）。
+language: ja-JP
+reviews:
+  path_filters:
+    - "!vendor/**"
+  auto_review:
+    enabled: true

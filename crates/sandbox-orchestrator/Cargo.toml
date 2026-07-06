@@ -9,7 +9,34 @@ version = "0.0.0"
 [lib]
 name = "sandbox_orchestrator"
 
+[[bin]]
+name = "shiki-sandbox-orchestrator"
+path = "src/bin/main.rs"
+
 [dependencies]
+shiki-sandbox-client = { path = "../sandbox-client", features = ["server"] }
+secure-exec-client = { workspace = true }
+secure-exec-vm-config = { workspace = true }
+secure-exec-bridge = { workspace = true }
+
+tonic = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+base64 = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+figment = { workspace = true }
+serde = { workspace = true }
+
+# lib 名 sandbox_client で参照するため machete が誤検出する（実際は使用中）。
+[package.metadata.cargo-machete]
+ignored = ["shiki-sandbox-client"]
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true

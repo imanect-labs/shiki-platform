@@ -20,7 +20,8 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 
 - 言語/基盤: Rust(axum / cargo workspace)・Next.js + TypeScript(pnpm)・Python(ingestion-worker / Docling)
 - ステートフル依存: Postgres・Qdrant・Tantivy(+Lindera)・OpenFGA(ReBAC)・Keycloak(OIDC)・MinIO/GCS
-- 隔離/推論/監視: Firecracker/gVisor・vLLM/外部API・OTel(Tempo/Loki/Prometheus)・Langfuse
+- 隔離/推論/監視: wasm（secure-exec フォーク・`vendor/secure-exec/`・既定／gVisor・Firecracker はポストアルファ）・vLLM/外部API・OTel(Tempo/Loki/Prometheus)・Langfuse
+  - `vendor/` は所有フォーク。品質ゲート（500行/カバレッジ/clippy）除外・[fork-policy](docs/sandbox/fork-policy.md) 準拠。サンドボックス由来入力は敵対的として扱う（PIT-23）。
 - リポジトリ構成（モノレポ）は docs/design.md §5 を参照。
 
 ## コマンド（CI の正）

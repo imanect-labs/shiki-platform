@@ -9,7 +9,31 @@ version = "0.0.0"
 [lib]
 name = "sandbox_client"
 
+[features]
+# orchestrator（server 側）だけが tonic の server スタブを使う。
+# shiki-server（api）は default（client のみ）で依存し、server コードを引き込まない。
+default = []
+server = []
+
 [dependencies]
+tonic = { workspace = true }
+prost = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+# protoc をシステムに要求しない（CI/開発の再現性）。プラットフォーム別の protoc バイナリを同梱する。
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true }
+
+# prost は tonic 生成コード（OUT_DIR）が `::prost::Message` で使うため machete が誤検出する。
+[package.metadata.cargo-machete]
+ignored = ["prost"]
 
 [lints]
 workspace = true

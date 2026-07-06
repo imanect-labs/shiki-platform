@@ -1,3 +1,10 @@
-//! shiki-sandbox-orchestrator — 特権プロセス・Firecracker/gVisor
+//! shiki-sandbox-orchestrator — 非特権の特権分離プロセス。
 //!
-//! Phase 0 placeholder。実装は後続フェーズ（docs/roadmap 参照）で行う。
+//! shiki-server から gRPC（sandbox-client 契約）を受け、per-sandbox の secure-exec-sidecar 子プロセスを
+//! spawn して Python/シェルを実行する。ゲスト由来入力は全て敵対的として `validate` で検証する（PIT-23）。
+
+pub mod backend;
+pub mod config;
+pub mod registry;
+pub mod server;
+pub mod validate;
