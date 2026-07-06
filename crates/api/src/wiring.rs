@@ -108,6 +108,7 @@ pub(crate) async fn wire_chat(
     db: &sqlx::PgPool,
     authz: &Arc<dyn AuthzClient>,
     search: Option<&Arc<rag::SearchService>>,
+    storage: &Arc<storage::StorageService>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     use llm_gateway::{
         GatewayConfig, LangfuseConfig, LlmGateway, ModelCatalog, ModelEntry, ProviderConfig,
@@ -193,21 +194,25 @@ pub(crate) async fn wire_chat(
         max_steps: config.chat.max_steps,
     };
     // サンドボックス（code_interpreter）: エンドポイント設定時のみ配線する。
-    let sandbox: Option<Arc<dyn agent_core::Sandbox>> = match &config.chat.sandbox_endpoint {
-        Some(endpoint) => {
-            let client = sandbox_client::GrpcSandboxClient::connect_lazy(endpoint.clone())
-                .map_err(|e| anyhow::anyhow!("sandbox client 構築に失敗: {e}"))?;
-            tracing::info!(%endpoint, "code_interpreter サンドボックスを配線しました");
-            Some(Arc::new(client))
-        }
-        None => None,
-    };
+    // 成果物保存（StorageService 裏・発話ユーザー権限）もサンドボックスとセットで配線する。
+    let mut sandbox: Option<Arc<dyn agent_core::Sandbox>> = None;
+    let mut artifacts: Option<Arc<dyn agent_core::ArtifactStore>> = None;
+    if let Some(endpoint) = &config.chat.sandbox_endpoint {
+        let client = sandbox_client::GrpcSandboxClient::connect_lazy(endpoint.clone())
+            .map_err(|e| anyhow::anyhow!("sandbox client 構築に失敗: {e}"))?;
+        tracing::info!(%endpoint, "code_interpreter サンドボックスを配線しました");
+        sandbox = Some(Arc::new(client));
+        artifacts = Some(Arc::new(chat::StorageArtifactStore::new(Arc::clone(
+            storage,
+        ))));
+    }
     let worker = chat::ChatWorker::new(
         db.clone(),
         store.clone(),
         gateway,
         search.cloned(),
         sandbox,
+        artifacts,
         worker_config,
     );
     // ワーカータスクは detach（プロセス生存中は走り続ける）。

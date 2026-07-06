@@ -208,6 +208,7 @@ export type StreamHandlers = {
   onToolCall?: (call: { id: string; name: string; input: unknown }) => void;
   onToolResult?: (res: { id: string; ok: boolean }) => void;
   onCitation?: (c: Citation) => void;
+  onFileRef?: (f: Attachment) => void;
   onStatus?: (status: RunStatus) => void;
   onDone?: () => void;
   onError?: (message: string) => void;
@@ -220,6 +221,7 @@ type StreamEventKind =
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; tool_call_id: string; ok: boolean; content: string }
   | ({ type: "citation" } & Omit<Citation, "type">)
+  | { type: "file_ref"; node_id: string; name: string }
   | { type: "generative_ui"; spec: unknown }
   | { type: "status"; status: RunStatus }
   | { type: "error"; message: string }
@@ -264,6 +266,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
           heading_path: kind.heading_path,
           score: kind.score,
         });
+        break;
+      case "file_ref":
+        handlers.onFileRef?.({ node_id: kind.node_id, name: kind.name });
         break;
       case "status":
         handlers.onStatus?.(kind.status);

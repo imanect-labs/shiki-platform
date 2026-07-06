@@ -191,6 +191,8 @@ pub enum StreamEventKind {
     },
     /// 引用。
     Citation(Citation),
+    /// ツール成果物のファイル参照（code_interpreter の保存済み成果物・Task 4.11）。
+    FileRef { node_id: String, name: String },
     /// 宣言的 UI（Phase 6）。
     GenerativeUi { spec: serde_json::Value },
     /// 状態遷移（running/done/failed/cancelled）。UI の生成状態表示に使う。
@@ -210,6 +212,7 @@ impl StreamEventKind {
             StreamEventKind::ToolCall { .. } => "tool_call",
             StreamEventKind::ToolResult { .. } => "tool_result",
             StreamEventKind::Citation(_) => "citation",
+            StreamEventKind::FileRef { .. } => "file_ref",
             StreamEventKind::GenerativeUi { .. } => "generative_ui",
             StreamEventKind::Status { .. } => "status",
             StreamEventKind::Error { .. } => "error",
@@ -305,6 +308,29 @@ mod tests {
             }
             _ => panic!("citation でない"),
         }
+    }
+
+    #[test]
+    fn file_ref_matches_frontend_shape() {
+        // content block と SSE イベントの両方でフロント `{ type: "file_ref", node_id, name }` と一致。
+        let block = ContentBlock::FileRef {
+            node_id: "n1".into(),
+            name: "result.csv".into(),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "file_ref", "node_id": "n1", "name": "result.csv"})
+        );
+        let ev = StreamEventKind::FileRef {
+            node_id: "n1".into(),
+            name: "result.csv".into(),
+        };
+        assert_eq!(ev.tag(), "file_ref");
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["type"], "file_ref");
+        assert_eq!(json["node_id"], "n1");
+        assert_eq!(json["name"], "result.csv");
     }
 
     #[test]

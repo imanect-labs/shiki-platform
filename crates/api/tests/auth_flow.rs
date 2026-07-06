@@ -176,6 +176,17 @@ impl storage::object_store::ObjectStore for FakeStore {
     async fn read_and_hash(&self, _key: &str) -> Result<(String, u64), storage::ObjectStoreError> {
         Err(storage::ObjectStoreError::NotFound("test".into()))
     }
+    async fn put_object(
+        &self,
+        _key: &str,
+        _bytes: Vec<u8>,
+        _content_type: &str,
+    ) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
+    async fn get_object(&self, _key: &str) -> Result<Vec<u8>, storage::ObjectStoreError> {
+        Err(storage::ObjectStoreError::NotFound("test".into()))
+    }
     async fn exists(&self, _key: &str) -> Result<bool, storage::ObjectStoreError> {
         Ok(false)
     }

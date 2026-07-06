@@ -35,8 +35,11 @@
 > - `code_interpreter`（4.10）: agent-core ツール＋ChatWorker 配線。numpy/pandas 利用可・matplotlib 非同梱。
 > - gated 実 sidecar 結合テスト（`SANDBOX_IT=1`）: Python 実行・numpy・egress デフォルト遮断・プロセス分離・
 >   ファイル I/O を実 V8/Pyodide で確認済み。
+> - 成果物保存（4.11/4.12 Stage A）: `StorageService.write_file_internal`（内部バイト直書き・presigned 経路と
+>   同一不変条件）＋`ArtifactStore` トレイト。code_interpreter が `/workspace` の成果物を発話ユーザー権限で保存し、
+>   `AgentEvent::Artifact`→SSE `file_ref`→チャット UI のダウンロードチップとして表示。
 > - **残（Docker/CI・ポストアルファ）**: ゲストコマンドスイート（curl/wget 等）の wasm ビルド同梱（4.12 software）、
->   成果物 FileRef 保存（4.11・StorageService.write_file_internal）、web ツール（web.search/web.fetch）、Playwright e2e。
+>   web ツール（web.search/web.fetch）、Playwright e2e。
 
 ## タスク一覧
 

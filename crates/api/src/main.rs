@@ -110,7 +110,8 @@ async fn main() -> anyhow::Result<()> {
     let (search, rag_admin) = wiring::wire_rag(&config, &http, &db, &object_store, &authz)?;
 
     // チャット（Phase 3）: enabled のとき llm-gateway＋生成ワーカーを配線し、API 用ストアを返す。
-    let chat = wiring::wire_chat(&config, &http, &db, &authz, search.as_ref()).await?;
+    // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
+    let chat = wiring::wire_chat(&config, &http, &db, &authz, search.as_ref(), &storage).await?;
 
     let bind = format!("{}:{}", config.server.host, config.server.port);
     let state = AppState {

@@ -142,6 +142,7 @@ impl Tool for DocSearchTool {
         Ok(ToolOutcome {
             content: result.context_text,
             citations: result.citations,
+            artifacts: Vec::new(),
             is_error: false,
         })
     }

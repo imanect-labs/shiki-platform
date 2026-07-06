@@ -128,6 +128,7 @@ impl StorageService {
 mod admin;
 mod finalize;
 mod folder;
+mod internal_io;
 mod move_rename;
 mod read;
 mod restore;

@@ -113,6 +113,11 @@ impl Tool for MockSearchTool {
                 heading_path: vec!["第1章".into()],
                 score: 0.9,
             }],
+            // 成果物 1 件（ループが Artifact イベントとして外部化することの検証用）。
+            artifacts: vec![agent_core::ArtifactRef {
+                node_id: "artifact-n1".into(),
+                name: "result.csv".into(),
+            }],
             is_error: false,
         })
     }
@@ -266,6 +271,12 @@ async fn run_agent_dispatches_tool_then_completes() {
         1,
         "引用が 1 件流れる"
     );
+    // 成果物はツール呼び出し ID に紐づいた Artifact イベントとして流れる（Task 4.11）。
+    let artifact_ok = sink.events.iter().any(|e| {
+        matches!(e, AgentEvent::Artifact { tool_call_id, artifact }
+            if !tool_call_id.is_empty() && artifact.name == "result.csv" && artifact.node_id == "artifact-n1")
+    });
+    assert!(artifact_ok, "成果物イベントが 1 件流れる");
 }
 
 /// 事前にキャンセル要求済みの sink → ループはステップ境界で即停止する。

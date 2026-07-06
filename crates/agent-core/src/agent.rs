@@ -229,6 +229,14 @@ pub async fn run_agent(
             for cite in outcome.citations {
                 sink.emit(AgentEvent::Citation(cite)).await?;
             }
+            // 成果物（保存済みファイル参照）を UI へ流す（chat 側で FileRef へ写す）。
+            for artifact in outcome.artifacts {
+                sink.emit(AgentEvent::Artifact {
+                    tool_call_id: c.id.clone(),
+                    artifact,
+                })
+                .await?;
+            }
             result_blocks.push(Block::ToolResult {
                 tool_use_id: c.id,
                 content: outcome.content,

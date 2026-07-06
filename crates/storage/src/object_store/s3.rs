@@ -266,6 +266,48 @@ impl ObjectStore for S3ObjectStore {
         Ok(hasher.finalize())
     }
 
+    async fn put_object(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), ObjectStoreError> {
+        self.internal
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .content_type(content_type)
+            .body(bytes.into())
+            .send()
+            .await
+            .map_err(|e| ObjectStoreError::Backend(format!("put_object: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_object(&self, key: &str) -> Result<Vec<u8>, ObjectStoreError> {
+        let resp = self
+            .internal
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|e| {
+                let se = e.into_service_error();
+                if se.is_no_such_key() {
+                    ObjectStoreError::NotFound(key.to_string())
+                } else {
+                    ObjectStoreError::Backend(format!("get_object: {se}"))
+                }
+            })?;
+        let data = resp
+            .body
+            .collect()
+            .await
+            .map_err(|e| ObjectStoreError::Backend(format!("read body: {e}")))?;
+        Ok(data.into_bytes().to_vec())
+    }
+
     async fn exists(&self, key: &str) -> Result<bool, ObjectStoreError> {
         match self
             .internal

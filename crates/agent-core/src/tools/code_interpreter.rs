@@ -10,7 +10,8 @@ use authz::AuthContext;
 use futures::StreamExt;
 use sandbox_client::{ExecEvent, ExecRequest, Sandbox, SandboxSpec};
 
-use crate::tool::{Tool, ToolError, ToolOutcome};
+use super::artifacts::collect_artifacts;
+use crate::tool::{ArtifactStore, Tool, ToolError, ToolOutcome};
 
 /// stdout/stderr の会話返却上限（サンドボックス側の 1MiB 上限とは別の、モデル向け整形上限）。
 const MODEL_OUTPUT_CAP: usize = 16 * 1024;
@@ -18,11 +19,13 @@ const MODEL_OUTPUT_CAP: usize = 16 * 1024;
 /// `code_interpreter` ツール。サンドボックスに `Sandbox` トレイト裏でアクセスする。
 pub struct CodeInterpreterTool {
     sandbox: Arc<dyn Sandbox>,
+    /// 成果物の保存先（発話ユーザー権限で保存）。未配線なら成果物は回収しない。
+    artifacts: Option<Arc<dyn ArtifactStore>>,
 }
 
 impl CodeInterpreterTool {
-    pub fn new(sandbox: Arc<dyn Sandbox>) -> Self {
-        CodeInterpreterTool { sandbox }
+    pub fn new(sandbox: Arc<dyn Sandbox>, artifacts: Option<Arc<dyn ArtifactStore>>) -> Self {
+        CodeInterpreterTool { sandbox, artifacts }
     }
 }
 
@@ -78,7 +81,8 @@ impl Tool for CodeInterpreterTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
         "隔離サンドボックスで Python コードを実行し、標準出力/エラーを返す。numpy・pandas が使える。\
-         計算・データ処理・整形に使う（ネットワークは遮断）。グラフ描画は行わず、結果の数値/表を返すこと。"
+         計算・データ処理・整形に使う（ネットワークは遮断）。/workspace に書いたファイルは実行後に\
+         自動保存され会話に添付される。グラフ描画は行わず、結果の数値/表を返すこと。"
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -101,7 +105,7 @@ impl Tool for CodeInterpreterTool {
         &self,
         ctx: &AuthContext,
         input: serde_json::Value,
-        _trace_id: Option<&str>,
+        trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
         let code = input
             .get("code")
@@ -135,11 +139,27 @@ impl Tool for CodeInterpreterTool {
             .await;
         // `?` で早期 return すると下の destroy がスキップされるため、必ず destroy を通す形にする。
         let outcome = match exec_result {
-            Ok(stream) => collect_output(stream)
-                .await
-                .map(|(stdout, stderr, exit, limit)| {
-                    render_outcome(&stdout, &stderr, exit, limit.as_deref())
-                }),
+            Ok(stream) => match collect_output(stream).await {
+                Ok((stdout, stderr, exit, limit)) => {
+                    let mut out = render_outcome(&stdout, &stderr, exit, limit.as_deref());
+                    // 成果物の回収は実行成功時のみ（失敗実行の中途ファイルは保存しない）。
+                    if !out.is_error {
+                        if let Some(store) = &self.artifacts {
+                            collect_artifacts(
+                                self.sandbox.as_ref(),
+                                ctx,
+                                &handle,
+                                store.as_ref(),
+                                &mut out,
+                                trace_id,
+                            )
+                            .await;
+                        }
+                    }
+                    Ok(out)
+                }
+                Err(e) => Err(e),
+            },
             Err(e) => Err(ToolError::Unavailable(format!("sandbox exec: {e}"))),
         };
         // 実行後は必ず破棄する（短命・まっさら）。collect のエラー時も破棄を保証する。
@@ -194,7 +214,9 @@ fn render_outcome(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::tool::ArtifactRef;
     use sandbox_client::{FakeExecResult, FakeSandbox};
+    use std::sync::Mutex;
 
     fn ctx() -> AuthContext {
         AuthContext::new(
@@ -210,6 +232,41 @@ mod tests {
         )
     }
 
+    /// 保存 1 件の記録（name, bytes, content_type）。
+    type SavedArtifact = (String, Vec<u8>, String);
+
+    /// 保存呼び出しを記録するフェイク ArtifactStore。
+    #[derive(Default)]
+    struct FakeArtifactStore {
+        saved: Mutex<Vec<SavedArtifact>>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl ArtifactStore for FakeArtifactStore {
+        async fn save(
+            &self,
+            _ctx: &AuthContext,
+            name: &str,
+            bytes: Vec<u8>,
+            content_type: &str,
+            _trace_id: Option<&str>,
+        ) -> Result<ArtifactRef, ToolError> {
+            if self.fail {
+                return Err(ToolError::Unavailable("fake save failure".into()));
+            }
+            let node_id = format!("node-{}", name);
+            self.saved
+                .lock()
+                .unwrap()
+                .push((name.to_string(), bytes, content_type.to_string()));
+            Ok(ArtifactRef {
+                node_id,
+                name: name.to_string(),
+            })
+        }
+    }
+
     #[tokio::test]
     async fn runs_and_returns_stdout() {
         let sandbox = Arc::new(FakeSandbox::new().with_exec(FakeExecResult {
@@ -218,7 +275,7 @@ mod tests {
             exit_code: 0,
             artifacts: Vec::new(),
         }));
-        let tool = CodeInterpreterTool::new(sandbox.clone());
+        let tool = CodeInterpreterTool::new(sandbox.clone(), None);
         let out = tool
             .call(&ctx(), serde_json::json!({"code": "print(42)"}), None)
             .await
@@ -237,7 +294,7 @@ mod tests {
             exit_code: 1,
             artifacts: Vec::new(),
         }));
-        let tool = CodeInterpreterTool::new(sandbox);
+        let tool = CodeInterpreterTool::new(sandbox, None);
         let out = tool
             .call(
                 &ctx(),
@@ -248,6 +305,80 @@ mod tests {
             .expect("ok");
         assert!(out.is_error);
         assert!(out.content.contains("Traceback"));
+    }
+
+    #[tokio::test]
+    async fn collects_artifacts_after_success() {
+        // 実行後 /workspace に現れたファイル（main.py 以外）を保存し、ArtifactRef を返す。
+        let sandbox = Arc::new(FakeSandbox::new().with_exec(FakeExecResult {
+            stdout: b"done\n".to_vec(),
+            stderr: Vec::new(),
+            exit_code: 0,
+            artifacts: vec![
+                ("/workspace/result.csv".into(), b"a,b\n1,2\n".to_vec()),
+                ("/workspace/main.py".into(), b"print()".to_vec()), // 実行コードは除外
+            ],
+        }));
+        let store = Arc::new(FakeArtifactStore::default());
+        let tool = CodeInterpreterTool::new(sandbox.clone(), Some(store.clone()));
+        let out = tool
+            .call(&ctx(), serde_json::json!({"code": "write csv"}), None)
+            .await
+            .expect("ok");
+        assert!(!out.is_error);
+        assert_eq!(out.artifacts.len(), 1);
+        assert_eq!(out.artifacts[0].name, "result.csv");
+        assert!(out.content.contains("result.csv"));
+        // content_type は拡張子から推定される。
+        let saved = store.saved.lock().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].2, "text/csv");
+        drop(saved);
+        // 成果物回収後も必ず破棄される。
+        assert_eq!(sandbox.destroyed().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn artifact_save_failure_does_not_fail_tool() {
+        // 保存失敗はツール全体を失敗させず、観測テキストに注記する。
+        let sandbox = Arc::new(FakeSandbox::new().with_exec(FakeExecResult {
+            stdout: b"done\n".to_vec(),
+            stderr: Vec::new(),
+            exit_code: 0,
+            artifacts: vec![("/workspace/out.txt".into(), b"x".to_vec())],
+        }));
+        let store = Arc::new(FakeArtifactStore {
+            fail: true,
+            ..Default::default()
+        });
+        let tool = CodeInterpreterTool::new(sandbox, Some(store));
+        let out = tool
+            .call(&ctx(), serde_json::json!({"code": "write"}), None)
+            .await
+            .expect("ok");
+        assert!(!out.is_error);
+        assert!(out.artifacts.is_empty());
+        assert!(out.content.contains("保存に失敗"));
+    }
+
+    #[tokio::test]
+    async fn failed_exec_skips_artifact_collection() {
+        // 失敗実行の中途ファイルは保存しない。
+        let sandbox = Arc::new(FakeSandbox::new().with_exec(FakeExecResult {
+            stdout: Vec::new(),
+            stderr: b"boom".to_vec(),
+            exit_code: 1,
+            artifacts: vec![("/workspace/partial.csv".into(), b"a".to_vec())],
+        }));
+        let store = Arc::new(FakeArtifactStore::default());
+        let tool = CodeInterpreterTool::new(sandbox, Some(store.clone()));
+        let out = tool
+            .call(&ctx(), serde_json::json!({"code": "boom"}), None)
+            .await
+            .expect("ok");
+        assert!(out.is_error);
+        assert!(out.artifacts.is_empty());
+        assert!(store.saved.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -263,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn missing_code_is_invalid() {
         let sandbox = Arc::new(FakeSandbox::new());
-        let tool = CodeInterpreterTool::new(sandbox);
+        let tool = CodeInterpreterTool::new(sandbox, None);
         let err = tool
             .call(&ctx(), serde_json::json!({}), None)
             .await

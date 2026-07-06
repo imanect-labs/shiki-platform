@@ -34,6 +34,16 @@ pub enum ToolError {
     Internal(String),
 }
 
+/// ツールが保存した成果物への参照（ストレージ node 参照のみ・実体二重持ち無し）。
+/// chat 側で `ContentBlock::FileRef` / SSE `file_ref` イベントへ写す（Task 4.11）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactRef {
+    /// 保存先の storage node id。
+    pub node_id: String,
+    /// 表示ファイル名。
+    pub name: String,
+}
+
 /// ツール実行結果。`content` はモデルへ返すテキスト、`citations` は UI 引用へ。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutcome {
@@ -41,6 +51,8 @@ pub struct ToolOutcome {
     pub content: String,
     /// UI へ流す引用（doc_search のみ・他ツールは空）。
     pub citations: Vec<Citation>,
+    /// ツールが保存した成果物（code_interpreter のみ・他ツールは空）。
+    pub artifacts: Vec<ArtifactRef>,
     /// 実行がエラーだったか（tool_result.is_error）。
     pub is_error: bool,
 }
@@ -51,6 +63,7 @@ impl ToolOutcome {
         ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
+            artifacts: Vec::new(),
             is_error: false,
         }
     }
@@ -60,9 +73,28 @@ impl ToolOutcome {
         ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
+            artifacts: Vec::new(),
             is_error: true,
         }
     }
+}
+
+/// ツール成果物の保存先（差し替え点）。
+///
+/// 実装は shiki-server 側で `StorageService::write_file_internal` に配線する（発話ユーザーの
+/// `AuthContext` で保存＝confused-deputy 回避）。agent-core はストレージ実装に依存せず、
+/// テストではフェイクを差す。
+#[async_trait::async_trait]
+pub trait ArtifactStore: Send + Sync {
+    /// バイト列を発話ユーザー権限で保存し、参照を返す。
+    async fn save(
+        &self,
+        ctx: &AuthContext,
+        name: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+        trace_id: Option<&str>,
+    ) -> Result<ArtifactRef, ToolError>;
 }
 
 /// ツール（LLM に提示し、モデルが自律的に呼ぶ）。

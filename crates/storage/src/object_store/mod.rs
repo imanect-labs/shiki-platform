@@ -66,6 +66,24 @@ pub trait ObjectStore: Send + Sync {
     /// 対象が存在しない場合は [`ObjectStoreError::NotFound`]。
     async fn read_and_hash(&self, key: &str) -> Result<(String, u64), ObjectStoreError>;
 
+    /// バイト列を server-side で直接書き込む（**内部書き込み専用**・Task 4.12 Stage A）。
+    ///
+    /// サンドボックス成果物など「サーバ内で既にバイトを所持している」経路のためのもので、
+    /// クライアントのアップロードは従来どおり presigned PUT（PIT-6）を使う。呼び出しは
+    /// `StorageService` の internal_io（認可・監査つき）に閉じ、サイズはそこで有界化する。
+    async fn put_object(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), ObjectStoreError>;
+
+    /// オブジェクトを server-side で読み戻す（**内部読み取り専用**・Task 4.12 Stage A）。
+    ///
+    /// 呼び出しは `StorageService` の internal_io（認可・監査・サイズ上限つき）に閉じる。
+    /// 対象が存在しない場合は [`ObjectStoreError::NotFound`]。
+    async fn get_object(&self, key: &str) -> Result<Vec<u8>, ObjectStoreError>;
+
     /// オブジェクトの存在確認。
     async fn exists(&self, key: &str) -> Result<bool, ObjectStoreError>;
 
