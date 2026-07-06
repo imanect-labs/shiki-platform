@@ -20,10 +20,7 @@ tonic = { workspace = true }
 prost = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
-tokio-stream = { workspace = true }
 thiserror = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }
@@ -33,6 +30,10 @@ protoc-bin-vendored = "3"
 [dev-dependencies]
 proptest = { workspace = true }
 tokio = { workspace = true }
+
+# prost は tonic 生成コード（OUT_DIR）が `::prost::Message` で使うため machete が誤検出する。
+[package.metadata.cargo-machete]
+ignored = ["prost"]
 
 [lints]
 workspace = true

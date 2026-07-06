@@ -46,7 +46,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-machete
       - name: cargo machete (未使用依存の検出)
-        run: cargo machete
+        # 所有フォーク vendor/ は独自ワークスペースで machete が解決できないため、自作の crates/ のみ対象にする。
+        run: cargo machete crates
 
   cargo-deny:
     name: cargo-deny (advisories / licenses / bans / sources)
