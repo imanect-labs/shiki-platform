@@ -7,6 +7,7 @@ use std::time::Duration;
 use std::path::PathBuf;
 
 use sandbox_client::server::SandboxServiceServer;
+use sandbox_orchestrator::backend::firecracker::FirecrackerBackend;
 use sandbox_orchestrator::backend::gvisor::GvisorBackend;
 use sandbox_orchestrator::backend::multi::MultiBackend;
 use sandbox_orchestrator::backend::wasm::WasmBackend;
@@ -45,9 +46,7 @@ struct GvisorConfig {
     state_dir: Option<String>,
 }
 
-/// Firecracker ティアの構成。PR3 で `enabled` 時に実バックエンドを組む。
-// bin/kernel/rootfs/state_dir は PR3 のバックエンド配線で参照する。
-#[allow(dead_code)]
+/// Firecracker ティアの構成。`enabled` かつ bin/kernel/rootfs が揃えば実バックエンドを組む。
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct FirecrackerConfig {
     #[serde(default)]
@@ -95,6 +94,36 @@ fn build_gvisor(cfg: &GvisorConfig, holder_bin: Option<PathBuf>) -> Option<Arc<d
     }
 }
 
+/// Firecracker バックエンドを構築する（enabled かつ bin/kernel/rootfs が揃うとき）。失敗は warn して None。
+fn build_firecracker(cfg: &FirecrackerConfig) -> Option<Arc<dyn Backend>> {
+    if !cfg.enabled {
+        return None;
+    }
+    let (Some(bin), Some(kernel), Some(rootfs)) = (&cfg.bin, &cfg.kernel, &cfg.rootfs) else {
+        tracing::warn!("SANDBOX__FIRECRACKER__ENABLED=1 だが BIN/KERNEL/ROOTFS 未設定。FC 無効");
+        return None;
+    };
+    let state = cfg
+        .state_dir
+        .clone()
+        .unwrap_or_else(|| "/run/sandbox/firecracker".to_string());
+    match FirecrackerBackend::new(
+        bin,
+        PathBuf::from(kernel),
+        PathBuf::from(rootfs),
+        PathBuf::from(state),
+    ) {
+        Ok(b) => {
+            tracing::info!("Firecracker バックエンドを構成しました（bin={bin}）");
+            Some(Arc::new(b) as Arc<dyn Backend>)
+        }
+        Err(e) => {
+            tracing::warn!("Firecracker バックエンド構成失敗（無効化）: {e}");
+            None
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -137,12 +166,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .or_else(default_holder_bin);
 
     let gvisor = build_gvisor(&config.gvisor, holder_bin.clone());
-    if config.firecracker.enabled {
-        tracing::warn!(
-            "SANDBOX__FIRECRACKER__ENABLED=1 だが Firecracker バックエンドは未配線（PR3）。wasm/gVisor のみで起動"
-        );
-    }
-    let backend = Arc::new(MultiBackend::new(wasm, gvisor, None));
+    let firecracker = build_firecracker(&config.firecracker);
+    let backend = Arc::new(MultiBackend::new(wasm, gvisor, firecracker));
     let svc = SandboxSvc::new(backend, Arc::clone(&registry), env);
 
     tokio::spawn(sweep_loop(Arc::clone(&registry), Duration::from_secs(5)));

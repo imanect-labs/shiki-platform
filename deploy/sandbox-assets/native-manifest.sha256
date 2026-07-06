@@ -1,8 +1,12 @@
 # ネイティブティア（gVisor/Firecracker）の pin 済みアセット。
-# 形式: <sha256>  <相対パス(bin/ 配下)>  <URL>
-# scripts/fetch-native-assets.sh が検証付きで取得する（実行時 DL 無し・PIT-33）。
+# 形式: <sha256>  <相対パス(sandbox-assets 配下)>  <URL>  [tgz:<glob>]
+# 4 列目に `tgz:<glob>` があれば、DL したアーカイブ（SHA はアーカイブに対して検証）を展開し
+# glob 一致ファイルを相対パスへ置く。scripts/fetch-native-assets.sh が処理する（実行時 DL 無し・PIT-33）。
 # エアギャップは SANDBOX_ASSET_BASE=file:///mirror で同一 SHA のミラーを差す。
 #
 # runsc: gVisor ランタイム（release-20260622.0）。
 f18a948bf9c8bbb54eb998549a3a8d719a1c7de2efbe8fdd2ff0ee5fecd06f19  bin/runsc  https://storage.googleapis.com/gvisor/releases/release/20260622.0/x86_64/runsc
-# Firecracker / vmlinux は PR3 で追記する。
+# firecracker: microVM モニタ（v1.16.1・tgz を展開）。
+382a02a869e4d6d5cb14c40577f9545e8458021ea8b0b2d3fc10ec14d9c242e6  bin/firecracker  https://github.com/firecracker-microvm/firecracker/releases/download/v1.16.1/firecracker-v1.16.1-x86_64.tgz  tgz:*/firecracker-v1.16.1-x86_64
+# vmlinux: FC CI カーネル 6.1.128（VIRTIO_VSOCKETS/VIRTIO_MMIO/EXT4_FS=y）。
+27a8310b9a727517e9eb02044524b6ceb77de5728e3491b6974d5c846227ecc8  vmlinux.bin  https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.12/x86_64/vmlinux-6.1.128

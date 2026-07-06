@@ -63,5 +63,11 @@ ENV SANDBOX__NETNS_HOLDER_BIN=/usr/local/bin/shiki-netns-holder
 ENV SANDBOX__GVISOR__RUNSC_BIN=/opt/shiki/sandbox-assets/bin/runsc
 ENV SANDBOX__GVISOR__ROOTFS_DIR=/opt/shiki/sandbox-assets/rootfs
 ENV SANDBOX__GVISOR__STATE_DIR=/run/sandbox/gvisor
+# Firecracker（VM 級隔離・KVM 前提）。有効化には SANDBOX__FIRECRACKER__ENABLED=1 と
+# /dev/kvm の device 付与が要る（compose 既定では無効・KVM 非搭載でも起動できるように）。
+ENV SANDBOX__FIRECRACKER__BIN=/opt/shiki/sandbox-assets/bin/firecracker
+ENV SANDBOX__FIRECRACKER__KERNEL=/opt/shiki/sandbox-assets/vmlinux.bin
+ENV SANDBOX__FIRECRACKER__ROOTFS=/opt/shiki/sandbox-assets/rootfs.ext4
+ENV SANDBOX__FIRECRACKER__STATE_DIR=/run/sandbox/firecracker
 EXPOSE 50000
 ENTRYPOINT ["shiki-sandbox-orchestrator"]

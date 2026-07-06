@@ -1,0 +1,34 @@
+# Firecracker ゲスト内で PID1 として動く静的エージェント（musl・near-zero deps）。
+# vsock でホストの firecracker バックエンドと [`shiki-sandbox-agent-proto`] を話す。
+#
+# nix の安全ラッパのみ使用（vsock/mount/reboot/signal）→ `unsafe` 不要・workspace lint を維持。
+# ビルドは `--target x86_64-unknown-linux-musl`（scripts/build-sandbox-rootfs.sh が /sbin/sandbox-init へ）。
+[package]
+name = "shiki-sandbox-guest-agent"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "sandbox-guest-agent"
+path = "src/main.rs"
+
+[dependencies]
+shiki-sandbox-agent-proto = { path = "../sandbox-agent-proto" }
+nix = { version = "0.29", features = ["socket", "mount", "reboot", "signal", "process"] }
+base64 = { workspace = true }
+
+# vsock の accept 済み FD を所有型へ包む箇所のみ unsafe を許可（他は workspace の forbid 相当を維持）。
+[lints.rust]
+unsafe_code = "allow"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
