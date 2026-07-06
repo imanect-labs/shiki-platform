@@ -4,7 +4,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::path::PathBuf;
+
 use sandbox_client::server::SandboxServiceServer;
+use sandbox_orchestrator::backend::gvisor::GvisorBackend;
 use sandbox_orchestrator::backend::multi::MultiBackend;
 use sandbox_orchestrator::backend::wasm::WasmBackend;
 use sandbox_orchestrator::backend::Backend;
@@ -29,14 +32,10 @@ struct Config {
     #[serde(default)]
     firecracker: FirecrackerConfig,
     /// egress netns holder バイナリのパス（未指定なら実行ファイル隣の `shiki-netns-holder`）。
-    // PR2/PR3 のネイティブバックエンドが egress スタック起動時に参照する。
-    #[allow(dead_code)]
     netns_holder_bin: Option<String>,
 }
 
-/// gVisor（runsc）ティアの構成。PR2 で `enabled` 時に実バックエンドを組む。
-// runsc_bin/rootfs_dir/state_dir は PR2 のバックエンド配線で参照する（先行して env スキーマを確定）。
-#[allow(dead_code)]
+/// gVisor（runsc）ティアの構成。`enabled` かつ runsc/rootfs が揃えば実バックエンドを組む。
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct GvisorConfig {
     #[serde(default)]
@@ -57,6 +56,43 @@ struct FirecrackerConfig {
     kernel: Option<String>,
     rootfs: Option<String>,
     state_dir: Option<String>,
+}
+
+/// 実行ファイル隣の `shiki-netns-holder` を既定の holder バイナリとして探す。
+fn default_holder_bin() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let cand = exe.with_file_name("shiki-netns-holder");
+    cand.is_file().then_some(cand)
+}
+
+/// gVisor バックエンドを構築する（enabled かつ runsc/rootfs が揃うとき）。失敗は warn して None。
+fn build_gvisor(cfg: &GvisorConfig, holder_bin: Option<PathBuf>) -> Option<Arc<dyn Backend>> {
+    if !cfg.enabled {
+        return None;
+    }
+    let (Some(runsc), Some(rootfs)) = (&cfg.runsc_bin, &cfg.rootfs_dir) else {
+        tracing::warn!("SANDBOX__GVISOR__ENABLED=1 だが RUNSC_BIN/ROOTFS_DIR 未設定。gVisor 無効");
+        return None;
+    };
+    let state = cfg
+        .state_dir
+        .clone()
+        .unwrap_or_else(|| "/run/sandbox/gvisor".to_string());
+    match GvisorBackend::new(
+        runsc,
+        PathBuf::from(rootfs),
+        PathBuf::from(state),
+        holder_bin,
+    ) {
+        Ok(b) => {
+            tracing::info!("gVisor バックエンドを構成しました（runsc={runsc}）");
+            Some(Arc::new(b) as Arc<dyn Backend>)
+        }
+        Err(e) => {
+            tracing::warn!("gVisor バックエンド構成失敗（無効化）: {e}");
+            None
+        }
+    }
 }
 
 impl Default for Config {
@@ -89,20 +125,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let registry = Arc::new(Registry::new());
 
-    // wasm は常に構成。gVisor/Firecracker は PR2/PR3 で enabled 時に実装バックエンドを組む。
+    // wasm は常に構成。gVisor は enabled かつ runsc/rootfs が揃えば構成。Firecracker は PR3。
     let wasm: Arc<dyn Backend> =
         Arc::new(WasmBackend::new(config.sidecar_bin.clone(), env.clone()));
-    if config.gvisor.enabled {
-        tracing::warn!(
-            "SANDBOX__GVISOR__ENABLED=1 だが gVisor バックエンドは未配線（PR2）。wasm のみで起動"
-        );
-    }
+
+    // egress holder バイナリ（未指定なら実行ファイル隣を探す）。
+    let holder_bin = config
+        .netns_holder_bin
+        .clone()
+        .map(PathBuf::from)
+        .or_else(default_holder_bin);
+
+    let gvisor = build_gvisor(&config.gvisor, holder_bin.clone());
     if config.firecracker.enabled {
         tracing::warn!(
-            "SANDBOX__FIRECRACKER__ENABLED=1 だが Firecracker バックエンドは未配線（PR3）。wasm のみで起動"
+            "SANDBOX__FIRECRACKER__ENABLED=1 だが Firecracker バックエンドは未配線（PR3）。wasm/gVisor のみで起動"
         );
     }
-    let backend = Arc::new(MultiBackend::new(wasm, None, None));
+    let backend = Arc::new(MultiBackend::new(wasm, gvisor, None));
     let svc = SandboxSvc::new(backend, Arc::clone(&registry), env);
 
     tokio::spawn(sweep_loop(Arc::clone(&registry), Duration::from_secs(5)));

@@ -136,9 +136,9 @@ jobs:
         run: cargo llvm-cov --all --no-report
       - name: coverage report (lcov + summary + job summary)
         run: |
-          cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
+          cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/gvisor/(instance|mod)\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
           # サマリ表を再利用するためファイルに保存（Job Summary と PR コメントの両方で使う）。
-          cargo llvm-cov report --summary-only --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs' | tee coverage-summary.txt
+          cargo llvm-cov report --summary-only --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/gvisor/(instance|mod)\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs' | tee coverage-summary.txt
           {
             echo '### Rust test coverage'
             echo '```'
@@ -179,7 +179,7 @@ jobs:
       - name: coverage gate (fail under 80% lines)
         # 除外: バイナリ entrypoint（配線のみ）・vendor（所有フォーク）・実 sidecar 駆動の I/O 境界
         # （sandbox の wasm backend / gRPC client は実 V8/Pyodide を要し gated IT `SANDBOX_IT=1` で検証・CI 分母外）
-        run: cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
+        run: cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/gvisor/(instance|mod)\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
       - name: upload coverage (lcov)
         uses: actions/upload-artifact@v4
         with:

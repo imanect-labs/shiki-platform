@@ -18,8 +18,9 @@ RUN bash scripts/fetch-sandbox-assets.sh
 # orchestrator（shiki workspace）と sidecar（vendor workspace）をそれぞれビルド。
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release --bin shiki-sandbox-orchestrator && \
+    cargo build --release --bin shiki-sandbox-orchestrator --bin shiki-netns-holder && \
     cp target/release/shiki-sandbox-orchestrator /usr/local/bin/ && \
+    cp target/release/shiki-netns-holder /usr/local/bin/ && \
     (cd vendor/secure-exec && cargo build --release --bin secure-exec-sidecar) && \
     cp vendor/secure-exec/target/release/secure-exec-sidecar /usr/local/bin/
 
@@ -42,15 +43,25 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     fi
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+# iproute2: egress netns holder が `ip` でゲートウェイ IF を構成する。
+# e2fsprogs: Firecracker ワークスペース ext4 の非特権生成（PR3）。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates iproute2 e2fsprogs && \
     rm -rf /var/lib/apt/lists/* && \
     useradd --system --create-home --uid 10001 sandbox
 COPY --from=builder /usr/local/bin/shiki-sandbox-orchestrator /usr/local/bin/
+COPY --from=builder /usr/local/bin/shiki-netns-holder /usr/local/bin/
 COPY --from=builder /usr/local/bin/secure-exec-sidecar /usr/local/bin/
 COPY --from=commands-builder /opt/shiki/commands /opt/shiki/commands
 USER sandbox
 ENV SECURE_EXEC_SIDECAR_BIN=/usr/local/bin/secure-exec-sidecar
 ENV SANDBOX__LISTEN=0.0.0.0:50000
 ENV SANDBOX__COMMANDS_DIR=/opt/shiki/commands
+ENV SANDBOX__NETNS_HOLDER_BIN=/usr/local/bin/shiki-netns-holder
+# gVisor（runsc）/rootfs は deploy/sandbox-assets をボリュームで渡す（実行時 DL 無し・PIT-33）。
+# アセットが無ければ GvisorBackend 構成は warn して無効化され、wasm のみで起動する。
+ENV SANDBOX__GVISOR__RUNSC_BIN=/opt/shiki/sandbox-assets/bin/runsc
+ENV SANDBOX__GVISOR__ROOTFS_DIR=/opt/shiki/sandbox-assets/rootfs
+ENV SANDBOX__GVISOR__STATE_DIR=/run/sandbox/gvisor
 EXPOSE 50000
 ENTRYPOINT ["shiki-sandbox-orchestrator"]
