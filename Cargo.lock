@@ -3935,9 +3935,11 @@ dependencies = [
  "shiki-llm-gateway",
  "shiki-rag",
  "shiki-sandbox-client",
+ "shiki-websearch",
  "sqlx",
  "thiserror",
  "tokio",
+ "url",
  "uuid",
 ]
 
@@ -3971,6 +3973,7 @@ dependencies = [
  "shiki-rag",
  "shiki-sandbox-client",
  "shiki-storage",
+ "shiki-websearch",
  "sqlx",
  "thiserror",
  "time",
@@ -4016,6 +4019,7 @@ dependencies = [
  "shiki-llm-gateway",
  "shiki-rag",
  "shiki-storage",
+ "shiki-websearch",
  "sqlx",
  "thiserror",
  "tokio",
@@ -4139,6 +4143,19 @@ dependencies = [
  "tokio",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "shiki-websearch"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "shiki-authz",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

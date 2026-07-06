@@ -1,0 +1,29 @@
+[package]
+name = "shiki-websearch"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+
+[lib]
+name = "websearch"
+
+[dependencies]
+shiki-authz.workspace = true
+
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+# lib 名 authz で参照するため machete が誤検出する（実際は使用中）。
+[package.metadata.cargo-machete]
+ignored = ["shiki-authz"]
+
+[lints]
+workspace = true

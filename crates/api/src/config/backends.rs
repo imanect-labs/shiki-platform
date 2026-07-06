@@ -146,6 +146,34 @@ pub struct ChatConfig {
     pub sandbox_endpoint: Option<String>,
 }
 
+/// web 検索プロバイダ（web_search / web_fetch ツール・Phase 4）。
+///
+/// クラウド/オンプレの差は backend の値で吸収する（SaaS=Brave / オンプレ=SearXNG /
+/// テスト・エアギャップ=Stub）。既定は `None`＝web ツールを提示しない。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebSearchConfig {
+    /// プロバイダ選択（未指定なら web ツール無効）。
+    #[serde(default)]
+    pub backend: Option<WebSearchBackend>,
+    /// Brave Search API キー（`backend=brave` のとき必須。将来 crates/secrets へ移行）。
+    #[serde(default)]
+    pub brave_api_key: Option<String>,
+    /// SearXNG ベース URL（`backend=searxng` のとき必須。例 `http://searxng:8080`）。
+    #[serde(default)]
+    pub searxng_base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchBackend {
+    /// Brave Search API（SaaS）。
+    Brave,
+    /// 自己ホスト SearXNG（オンプレ）。
+    Searxng,
+    /// 決定的スタブ（テスト/CI/エアギャップ）。
+    Stub,
+}
+
 impl Default for ChatConfig {
     fn default() -> Self {
         ChatConfig {

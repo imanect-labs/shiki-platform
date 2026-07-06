@@ -1,0 +1,10 @@
+# SearXNG 設定（shiki web_search プロバイダ用・オンプレ向け）。
+# JSON format を有効化する（SearxngSearchProvider は /search?format=json を叩く）。
+use_default_settings: true
+server:
+  # dev 用の固定キー。本番は環境変数 SEARXNG_SECRET で上書きすること。
+  secret_key: "shiki-dev-only-secret"
+search:
+  formats:
+    - html
+    - json

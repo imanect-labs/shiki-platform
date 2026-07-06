@@ -33,6 +33,9 @@ pub struct AppConfig {
     /// チャット（生成ワーカー・接続非依存生成・Phase 3）。既定は無効。
     #[serde(default)]
     pub chat: ChatConfig,
+    /// web 検索（web_search / web_fetch ツール・Phase 4）。既定は無効。
+    #[serde(default)]
+    pub websearch: WebSearchConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +64,7 @@ pub use auth::{AuthConfig, SessionConfig, Tenancy};
 pub use backends::{
     AuthzConfig, ChatConfig, LangfuseConfig, LlmBackend, LlmConfig, LlmModelEntry, LogFormat,
     ObjectStoreBackend, StorageConfig, TelemetryConfig, VectorConfig, VectorStoreBackend,
+    WebSearchBackend, WebSearchConfig,
 };
 
 #[derive(Debug, thiserror::Error)]

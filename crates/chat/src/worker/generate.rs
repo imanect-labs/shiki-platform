@@ -5,7 +5,10 @@
 
 use std::sync::Arc;
 
-use agent_core::{run_agent, AgentOptions, CodeInterpreterTool, DocSearchTool, RunContext, Tool};
+use agent_core::{
+    run_agent, AgentOptions, CodeInterpreterTool, DocSearchTool, RunContext, Tool, WebFetchTool,
+    WebSearchTool,
+};
 use authz::AuthContext;
 use futures::stream::StreamExt;
 use llm_gateway::{
@@ -64,6 +67,13 @@ impl ChatWorker {
                 sandbox.clone(),
                 self.artifacts.clone(),
             )));
+        }
+        if let Some(provider) = &self.web_search {
+            tools.push(Arc::new(WebSearchTool::new(provider.clone())));
+            // web_fetch は sandbox egress（run 限定 dynamic_allow）を使うため sandbox 必須。
+            if let Some(sandbox) = &self.sandbox {
+                tools.push(Arc::new(WebFetchTool::new(sandbox.clone())));
+            }
         }
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {
