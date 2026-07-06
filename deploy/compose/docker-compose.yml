@@ -169,9 +169,13 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/sandbox-orchestrator.Dockerfile
+      args:
+        # ゲストコマンドスイート（wasm）を同梱するか。重いビルドを避けたい dev は 0 に。
+        BUILD_COMMANDS: ${SANDBOX_BUILD_COMMANDS:-1}
     environment:
       SANDBOX__LISTEN: 0.0.0.0:50000
       SECURE_EXEC_SIDECAR_BIN: /usr/local/bin/secure-exec-sidecar
+      SANDBOX__SOFTWARE_DIR: /opt/shiki/software
     ports:
       # gRPC はローカルのみ公開（compose 網内は sandbox-orchestrator:50000 で到達）。
       - "127.0.0.1:50000:50000"

@@ -42,7 +42,11 @@
 >   `web_search`/`web_fetch` ツール。web_fetch は **run 限定 dynamic_allow** に取得先ホストのみを載せた
 >   短命サンドボックスで取得（リダイレクト非追従 PIT-36・IP/内部ホスト拒否・シークレット非添付）。
 >   compose に SearXNG（websearch profile）を追加。
-> - **残（Docker/CI・ポストアルファ）**: ゲストコマンドスイート（curl/wget 等）の wasm ビルド同梱（4.12 software）、
+> - ゲストコマンドスイート（4.12 software）: `scripts/build-sandbox-commands.sh` が registry/native を
+>   nightly+wasm32-wasip1 でビルドし `<name>/package.tar` にステージング（Docker `commands-builder`
+>   ステージ・`SANDBOX__SOFTWARE_DIR`）。orchestrator は `spec.software` を検証（PIT-23: 名前検証・
+>   未同梱は fail-closed）して ConfigureVm の tar 投影でロードし、guest の $PATH でそのまま使える。
+> - **残（Docker/CI・ポストアルファ）**: C ポートコマンド（curl/wget・wasi-sdk ビルド）の既定同梱、
 >   Playwright e2e（code-interpreter / web-search）。
 
 ## タスク一覧

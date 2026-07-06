@@ -85,6 +85,9 @@ impl Backend for WasmBackend {
                 "storage mounts are post-alpha".into(),
             ));
         }
+        // 0. software（ゲストコマンドパッケージ）を先に解決する（不正名・未同梱は spawn 前に fail-fast）。
+        let packages =
+            crate::software::resolve_software(self.env.software_dir.as_deref(), &spec.software)?;
 
         // 1. sidecar 子プロセスを spawn（kill_on_drop）。
         let transport = SidecarTransport::spawn(self.sidecar_bin.clone())
@@ -141,6 +144,35 @@ impl Backend for WasmBackend {
             wire::ResponsePayload::VmCreatedResponse(r) => r.vm_id,
             other => return Err(unexpected("create vm", &other)),
         };
+
+        // 5. software（ゲストコマンドパッケージ）があれば ConfigureVm で tar 投影する。
+        //    permissions は None＝CreateVm の egress ポリシを維持（緩めない）。
+        if !packages.is_empty() {
+            let configured = request(
+                &transport,
+                vm_scope(&connection_id, &session_id, &vm_id),
+                wire::RequestPayload::ConfigureVmRequest(wire::ConfigureVmRequest {
+                    mounts: Vec::new(),
+                    software: Vec::new(),
+                    permissions: None,
+                    module_access_cwd: None,
+                    instructions: Vec::new(),
+                    projected_modules: Vec::new(),
+                    command_permissions: std::collections::HashMap::new(),
+                    loopback_exempt_ports: Vec::new(),
+                    packages,
+                    // 空＝sidecar 既定の /opt/agentos（bin/ が $PATH にリンクされる）。
+                    packages_mount_at: String::new(),
+                    bootstrap_commands: Vec::new(),
+                    tool_shim_commands: Vec::new(),
+                }),
+            )
+            .await?;
+            match configured {
+                wire::ResponsePayload::VmConfiguredResponse(_) => {}
+                other => return Err(unexpected("configure vm (software)", &other)),
+            }
+        }
 
         Ok(Arc::new(WasmInstance::new(
             transport,

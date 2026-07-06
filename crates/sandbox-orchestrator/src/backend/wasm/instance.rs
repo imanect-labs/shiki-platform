@@ -108,12 +108,14 @@ fn build_execute(process_id: String, req: &ExecRequest) -> wire::ExecuteRequest 
                 wasm_permission_tier: None,
             }
         }
+        // sidecar の command はシェル行ではなく「PATH 解決される単一コマンド名」。
+        // シェル行は software（coreutils）が投影する `sh` に -c で渡す。
         ExecRequest::Shell { cmd, .. } => wire::ExecuteRequest {
             process_id,
-            command: Some(cmd.clone()),
+            command: Some("sh".to_string()),
             runtime: None,
             entrypoint: None,
-            args: Vec::new(),
+            args: vec!["-c".to_string(), cmd.clone()],
             env: std::collections::HashMap::new(),
             cwd: None,
             wasm_permission_tier: None,

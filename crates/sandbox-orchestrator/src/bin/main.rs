@@ -17,6 +17,9 @@ struct Config {
     listen: String,
     /// secure-exec-sidecar バイナリのパス（未指定なら PATH/env）。
     sidecar_bin: Option<String>,
+    /// ステージ済みゲストコマンドパッケージのルート（`<name>/package.tar`）。
+    /// 未指定なら software 要求を拒否する（実行時ダウンロード禁止・PIT-33）。
+    software_dir: Option<String>,
 }
 
 impl Default for Config {
@@ -24,6 +27,7 @@ impl Default for Config {
         Config {
             listen: "127.0.0.1:50000".to_string(),
             sidecar_bin: None,
+            software_dir: None,
         }
     }
 }
@@ -37,7 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .merge(figment::providers::Env::prefixed("SANDBOX__"))
             .extract()?;
 
-    let env = OrchestratorEnv::default();
+    let env = OrchestratorEnv {
+        software_dir: config.software_dir.clone().map(std::path::PathBuf::from),
+        ..OrchestratorEnv::default()
+    };
     let registry = Arc::new(Registry::new());
     let backend = Arc::new(WasmBackend::new(config.sidecar_bin.clone(), env.clone()));
     let svc = SandboxSvc::new(backend, Arc::clone(&registry), env);
