@@ -1,0 +1,134 @@
+syntax = "proto3";
+
+// shiki サンドボックス制御の gRPC 契約。
+// 正本は Rust ドメイン型（crates/sandbox-client/src/spec.rs）。この proto はワイヤ形式で、
+// convert.rs の From/Into が全フィールドを分解変換するため、Rust 型の変更が変換のコンパイル
+// エラーとして proto 更新を強制する（Rust→proto が真実）。
+package shiki.sandbox.v1;
+
+// shiki-server（sandbox-client）→ sandbox-orchestrator の唯一の RPC 面。
+service SandboxService {
+  rpc Create(CreateRequest) returns (CreateResponse);
+  // 実行は stdout/stderr/exit/limit をストリームで返す。
+  rpc Exec(ExecRequest) returns (stream ExecEvent);
+  rpc PutFile(PutFileRequest) returns (PutFileResponse);
+  rpc GetFile(GetFileRequest) returns (GetFileResponse);
+  rpc ListDir(ListDirRequest) returns (ListDirResponse);
+  rpc Destroy(DestroyRequest) returns (DestroyResponse);
+}
+
+enum Backend {
+  BACKEND_UNSPECIFIED = 0;
+  BACKEND_WASM = 1;      // 既定（アルファはこれのみ）
+  BACKEND_GVISOR = 2;    // 予約（ポストアルファ）
+  BACKEND_FIRECRACKER = 3; // 予約（ポストアルファ）
+}
+
+message EgressRule {
+  string host_pattern = 1; // 完全一致 or 明示ワイルドカード（部分文字列マッチ禁止）
+  uint32 port = 2;         // 0 = 全ポート
+}
+
+message Egress {
+  repeated EgressRule static_allow = 1;  // spec 固定の allowlist
+  repeated EgressRule dynamic_allow = 2; // run 限定の動的 allowlist（web.fetch）
+  repeated EgressRule deny_overlay = 3;  // 管理者拒否リスト（allow より優先）
+  bool secret_attach = 4;                // 常に false（宛先束縛の安全側）
+}
+
+message Limits {
+  uint64 wall_clock_ms = 1;
+  uint64 exec_timeout_ms = 2;
+  uint64 memory_mb = 3;
+  uint32 max_processes = 4;
+  uint64 max_fs_bytes = 5;
+  uint32 max_open_fds = 6;
+  uint64 max_output_bytes = 7;
+}
+
+message Spec {
+  Backend backend = 1;
+  string tenant_id = 2;
+  string org = 3;
+  string principal = 4;
+  Limits limits = 5;
+  Egress egress = 6;
+  repeated string software = 7; // 有効化するゲストコマンドパッケージ名
+  bool mounts_allowed = 8;      // アルファは false
+  uint64 ttl_ms = 9;            // Ephemeral 寿命
+}
+
+message CreateRequest { Spec spec = 1; }
+message CreateResponse { string sandbox_id = 1; }
+
+enum ExecKind {
+  EXEC_KIND_UNSPECIFIED = 0;
+  EXEC_KIND_PYTHON = 1; // entrypoint に Python コードを書き込んで実行
+  EXEC_KIND_SHELL = 2;  // sh -c で任意コマンド（ls/curl/wget 等）
+}
+
+message ExecRequest {
+  string sandbox_id = 1;
+  ExecKind kind = 2;
+  string payload = 3;          // Python コード or シェルコマンド
+  uint64 timeout_ms = 4;       // 0 = spec の exec_timeout_ms
+}
+
+enum ExecChannel {
+  EXEC_CHANNEL_UNSPECIFIED = 0;
+  EXEC_CHANNEL_STDOUT = 1;
+  EXEC_CHANNEL_STDERR = 2;
+}
+
+enum LimitKind {
+  LIMIT_KIND_UNSPECIFIED = 0;
+  LIMIT_KIND_WALL_CLOCK = 1;
+  LIMIT_KIND_MEMORY = 2;
+  LIMIT_KIND_OUTPUT = 3;
+  LIMIT_KIND_PROCESS = 4;
+  LIMIT_KIND_FILESYSTEM = 5;
+}
+
+message ExecEvent {
+  oneof event {
+    OutputChunk output = 1;
+    ProcessExited exited = 2;
+    LimitExceeded limit_exceeded = 3;
+  }
+}
+message OutputChunk {
+  ExecChannel channel = 1;
+  bytes chunk = 2;
+}
+message ProcessExited { int32 code = 1; }
+message LimitExceeded {
+  LimitKind kind = 1;
+  string detail = 2;
+}
+
+message PutFileRequest {
+  string sandbox_id = 1;
+  string path = 2;
+  bytes content = 3;
+}
+message PutFileResponse {}
+
+message GetFileRequest {
+  string sandbox_id = 1;
+  string path = 2;
+}
+message GetFileResponse { bytes content = 1; }
+
+message DirEntry {
+  string name = 1;
+  bool is_dir = 2;
+  uint64 size = 3;
+}
+message ListDirRequest {
+  string sandbox_id = 1;
+  string path = 2;
+}
+message ListDirResponse { repeated DirEntry entries = 1; }
+
+message DestroyRequest { string sandbox_id = 1; }
+message DestroyResponse {}

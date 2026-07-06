@@ -1,0 +1,8 @@
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]
+# wasm32-wasip1 is a first-class build target (native-baseline wasm lane, the
+# registry command builds); declaring it here makes rustup provision it for the
+# pinned toolchain everywhere, instead of each CI workflow's toolchain action
+# only adding it to a different (stable) toolchain.
+targets = ["wasm32-wasip1"]

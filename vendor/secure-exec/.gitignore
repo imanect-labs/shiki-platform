@@ -1,0 +1,12 @@
+# 大容量 Pyodide アセット（~19MB）はコミットしない。
+# scripts/fetch-sandbox-assets.sh が asset-manifest.sha256 に基づき検証付きで取得する（PIT-33）。
+crates/execution/assets/pyodide/pyodide.asm.wasm
+crates/execution/assets/pyodide/pyodide.asm.js
+crates/execution/assets/pyodide/python_stdlib.zip
+crates/execution/assets/pyodide/numpy-*.whl
+crates/execution/assets/pyodide/pandas-*.whl
+
+# ビルド生成物
+target/
+registry/native/target/
+**/package.tar
