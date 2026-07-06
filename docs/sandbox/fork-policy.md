@@ -39,6 +39,24 @@
 - 分離は結合テストで担保（別 PID・一方 kill で他方継続・SandboxId↔transport 1:1・kill 後残留ゼロ）。
 - 将来の defense-in-depth（wasm プロセスを gVisor で二重に包む）はポストアルファの検討事項。
 
+## 隔離クラスと NFR-1 の正直な条件（PIT-24）
+
+3 ティア（wasm / gVisor / Firecracker）は隔離強度が異なる。`SandboxBackend::isolation_class()` が
+これを型で表明する:
+
+- **Firecracker = `VmLevel`**: KVM microVM。**NFR-1「サンドボックスは VM 級隔離」を満たすのは KVM が
+  ある環境に限る**（`/dev/kvm` 必須）。KVM 非搭載環境では Firecracker ティアは利用不可。
+- **gVisor = `UserspaceKernel`**: ユーザ空間カーネル。KVM 無しで動くフォールバックだが VM 級より一段弱く、
+  脱出 CVE 実績がある。**NFR-1 を厳密には満たさない**。加えて cgroups が使えないデプロイでは
+  メモリ上限がソフト（`--total-memory`＋orchestrator watchdog による二重防御）。ハードなメモリ/VM 級隔離が
+  要件なら Firecracker ティアを使う。
+- **wasm = `WasmProcess`**: V8＋wasm の仮想 FS/net。既定ティア。
+
+`validate::check_isolation()` は将来の機微度モデル導入時に、機微ワークロードで `UserspaceKernel` 要求を
+拒否/警告するポリシフック（現状は allow-all・隔離クラスは create 監査へ記録）。**NFR-1 は「KVM 前提」と
+条件付きで読むこと**。egress のホスト名 allowlist は gVisor/FC ティアでは SNI プロキシ（非特権 user+net
+namespace＋偽 DNS）で実効化する（PIT-25）。
+
 ## エアギャップ配布（PIT-33）
 
 - Pyodide 一式・rusty_v8 アーカイブは実行時にレジストリ取得しない。`asset-manifest.sha256` に pin し、

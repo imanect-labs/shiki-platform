@@ -105,6 +105,15 @@ pub fn check_code(code: &str) -> Result<(), ValidateError> {
     Ok(())
 }
 
+/// PIT-24: 機微度の高いワークロードで弱い隔離（gVisor＝ユーザ空間カーネル）を拒否するためのポリシフック。
+///
+/// 現状 `SandboxSpec` に機微度フィールドが無いため常に許可する（隔離クラスは create 監査へ記録する）。
+/// 機微度モデル導入時に、`spec.backend.isolation_class()` が `UserspaceKernel` の要求を
+/// 機微ワークロードで拒否/警告する判定をここに実装する。
+pub fn check_isolation(_spec: &sandbox_client::SandboxSpec) -> Result<(), ValidateError> {
+    Ok(())
+}
+
 /// シェルコマンド長を検証する。
 pub fn check_shell(cmd: &str) -> Result<(), ValidateError> {
     if cmd.is_empty() {
