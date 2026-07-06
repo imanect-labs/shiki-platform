@@ -11,6 +11,11 @@
 >
 > ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-31（at-least-once 副作用）・PIT-34（委譲失効の検知）・
 > PIT-35（script ホスト関数ブリッジ）・PIT-36（シークレット宛先束縛の迂回）を確認すること。**
+>
+> 📘 **詳細設計は [docs/workflow/](../workflow/README.md) が正本**（2026-07 フェーズ先取りで確定・issue #119）:
+> [ir.md](../workflow/ir.md)（IR 仕様・Task 10.1）／[engine.md](../workflow/engine.md)（実行エンジン・Task 10.2〜10.6/10.14）／
+> [script.md](../workflow/script.md)（shiki script 処理系・Task 10.7/10.8）。Task ↔ 章の対応表は
+> [README §5](../workflow/README.md) を参照。
 
 | ID | タイトル | area | 依存 |
 |----|---------|------|------|
