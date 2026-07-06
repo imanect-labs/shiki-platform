@@ -49,6 +49,9 @@ pub struct AppState {
     pub tenants: Arc<TenantStore>,
     /// permission-aware 検索（Phase 2）。`rag.enabled=false` では `None`（/search は 503）。
     pub search: Option<Arc<rag::SearchService>>,
+    /// チャット（Phase 3）。`chat.enabled=false` では `None`（/threads 系は 503）。
+    /// 生成ワーカーは別途 spawn 済み。ここは API（CRUD/SSE/post/cancel/share）が使うストア。
+    pub chat: Option<Arc<chat::ChatStore>>,
     /// RAG のテナント消去（rag_chunk/jobq/Qdrant/Tantivy）。テナント削除フローから呼ぶ。
     /// RAG 無効構成でも DB 行の消去は行う（過去に有効だった残骸を残さない）。
     pub rag_admin: Arc<rag::RagAdmin>,

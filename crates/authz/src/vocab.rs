@@ -23,6 +23,8 @@ pub enum Relation {
     Owner,
     /// 編集権限（読み＋書き）。owner と親からの継承を含意する。
     Editor,
+    /// コメント権限（閲覧＋コメント）。editor を含意し viewer を含意する（thread 共有語彙・#37）。
+    Commenter,
     /// 閲覧権限（読み取り）。editor と親からの継承を含意する。
     Viewer,
 }
@@ -35,6 +37,7 @@ impl Relation {
             Relation::Parent => "parent",
             Relation::Owner => "owner",
             Relation::Editor => "editor",
+            Relation::Commenter => "commenter",
             Relation::Viewer => "viewer",
         }
     }
@@ -49,6 +52,7 @@ impl Relation {
             "parent" => Some(Relation::Parent),
             "owner" => Some(Relation::Owner),
             "editor" => Some(Relation::Editor),
+            "commenter" => Some(Relation::Commenter),
             "viewer" => Some(Relation::Viewer),
             _ => None,
         }
@@ -73,6 +77,8 @@ pub enum ObjectType {
     Folder,
     /// ストレージのファイル（ツリーの葉・認可の最小オブジェクト）。
     File,
+    /// チャットスレッド（会話。viewer/commenter/editor で ReBAC 共有・#37）。
+    Thread,
 }
 
 impl ObjectType {
@@ -84,6 +90,7 @@ impl ObjectType {
             ObjectType::User => "user",
             ObjectType::Folder => "folder",
             ObjectType::File => "file",
+            ObjectType::Thread => "thread",
         }
     }
 }
@@ -159,8 +166,8 @@ mod tests {
     #[test]
     fn relation_deserialize_unknown_fails() {
         // 閉じた集合外の relation はデシリアライズに失敗すること（負例）。
-        // owner/editor/viewer は Phase 1 で有効化したため、未定義の語で検証する。
-        let result: Result<Relation, _> = serde_json::from_str("\"commenter\"");
+        // owner/editor/commenter/viewer は有効化済みのため、未定義の語で検証する。
+        let result: Result<Relation, _> = serde_json::from_str("\"approver\"");
         assert!(result.is_err());
     }
 
@@ -229,8 +236,8 @@ mod tests {
     #[test]
     fn object_type_deserialize_unknown_fails() {
         // 閉じた集合外の object type はデシリアライズに失敗すること（負例）。
-        // folder/file は Phase 1 で有効化したため、未定義の型名で検証する。
-        let result: Result<ObjectType, _> = serde_json::from_str("\"thread\"");
+        // folder/file/thread は有効化済みのため、未定義の型名で検証する。
+        let result: Result<ObjectType, _> = serde_json::from_str("\"doc_chunk\"");
         assert!(result.is_err());
     }
 

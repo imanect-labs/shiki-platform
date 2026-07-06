@@ -1,20 +1,20 @@
-/// チャットのクライアント側データ層（モック）。
+/// チャットのクライアント側データ層（実 backend 配線）。
 ///
-/// main にはチャット backend（threads / SSE）が無く、チャットはクライアント側モックで動く。
-/// 本ファイルは backend 実装が入るまでの差し替え点で、公開 API（型・関数シグネチャ）は
-/// 本番相当に保ち、実装だけ localStorage ＋ `mock-assistant` に閉じている。backend が入ったら
-/// この関数群の中身を fetch/SSE に置換すればよい（UI 側は無改修）。
+/// backend（Phase 3 / #70）の `/threads` REST ＋ `/threads/:id/stream` SSE を叩く。生成は
+/// **接続非依存ジョブ**（Task 3.11）で、送信は 202 を受けて即返し、SSE は replay-then-subscribe
+/// で購読する（`Last-Event-ID`=seq で再接続時に途中から・重複しない）。ページ離脱しても生成は
+/// 継続し、再訪時に `generation_event` から途中経過/確定/失敗/キャンセルを復元表示する。
+///
+/// 公開 API（型・関数シグネチャ）はモック時代から不変に保つ（UI 側は無改修）。
 
 "use client";
 
 import * as React from "react";
 
+import { apiFetch } from "@/lib/api";
 import { newId } from "@/lib/chat-store";
-import { mockReplyText, streamMockReply } from "@/lib/mock-assistant";
 
-// ── content-block（将来の backend chat::ContentBlock と一致させる形）──────────
-// モックは text ブロックのみ生成するが、UI は thinking/tool_call/citation/file_ref も
-// 描画できるよう union を保つ（backend 実装時にそのまま拡張される）。
+// ── content-block（backend chat::ContentBlock と一致）───────────────────
 
 export type ContentBlock =
   | { type: "text"; text: string }
@@ -30,13 +30,16 @@ export type ContentBlock =
       heading_path?: string[];
       score: number;
     }
+  | { type: "generative_ui"; spec: unknown }
   | { type: "file_ref"; node_id: string; name: string };
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
+export type RunStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
 export type Thread = {
   id: string;
   title: string;
+  agentMode: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -45,64 +48,21 @@ export type Message = {
   id: string;
   role: ChatRole;
   content: ContentBlock[];
+  agentMode?: boolean;
   createdAt: string;
 };
 
 export type Attachment = { node_id: string; name: string };
-
 export type Citation = Extract<ContentBlock, { type: "citation" }>;
 
-// ── localStorage 永続化（モックストア）────────────────────────────────
-
-type StoredThread = Thread & { messages: Message[] };
-
-const STORAGE_KEY = "shiki:mock-threads:v1";
-
-let cache: StoredThread[] | null = null;
-const threadListeners = new Set<() => void>();
-
-function isBrowser(): boolean {
-  return typeof window !== "undefined";
-}
-
-function readAll(): StoredThread[] {
-  if (cache) return cache;
-  if (!isBrowser()) return (cache = []);
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    cache = Array.isArray(parsed)
-      ? parsed.filter(
-          (t): t is StoredThread =>
-            !!t &&
-            typeof t === "object" &&
-            typeof (t as StoredThread).id === "string" &&
-            Array.isArray((t as StoredThread).messages),
-        )
-      : [];
-  } catch {
-    cache = [];
-  }
-  return cache;
-}
-
-function persist(next: StoredThread[]): void {
-  cache = next;
-  if (isBrowser()) {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      /* 容量超過等は無視（in-memory cache で継続） */
-    }
-  }
-  notifyThreadsChanged();
-}
-
-function toThread(t: StoredThread): Thread {
-  return { id: t.id, title: t.title, createdAt: t.createdAt, updatedAt: t.updatedAt };
-}
+/// 共有語彙（backend chat::ThreadRole / storage::ShareTarget と一致）。
+export type ThreadRole = "viewer" | "commenter" | "editor";
+export type ShareTarget = { type: "user"; id: string } | { type: "role"; id: string };
+export type ThreadShareEntry = { target: ShareTarget; role: ThreadRole };
 
 // ── スレッド一覧の購読（サイドバー履歴）────────────────────────────────
+
+const threadListeners = new Set<() => void>();
 
 /// スレッド一覧が変わったことを購読者へ通知する（作成・更新時に呼ぶ）。
 export function notifyThreadsChanged(): void {
@@ -159,30 +119,51 @@ export function useThreads(): Thread[] {
   return threads;
 }
 
-export async function listThreads(
-  before?: string,
-): Promise<{ threads: Thread[]; nextCursor: string | null }> {
-  const sorted = [...readAll()].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  const from = before ? sorted.findIndex((t) => t.id === before) + 1 : 0;
-  const PAGE = 30;
-  const page = sorted.slice(from, from + PAGE);
-  const nextCursor = from + PAGE < sorted.length ? (page[page.length - 1]?.id ?? null) : null;
-  return { threads: page.map(toThread), nextCursor };
+// ── REST ──────────────────────────────────────────────────────────────
+
+type ApiThread = {
+  id: string;
+  title: string;
+  agent_mode: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+function toThread(t: ApiThread): Thread {
+  return {
+    id: t.id,
+    title: t.title,
+    agentMode: t.agent_mode,
+    createdAt: t.created_at,
+    updatedAt: t.updated_at,
+  };
 }
 
-// ── REST 相当（モック）────────────────────────────────────────────────
+async function ok<T>(res: Response): Promise<T> {
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  return (await res.json()) as T;
+}
 
-export async function createThread(title?: string): Promise<Thread> {
-  const now = new Date().toISOString();
-  const thread: StoredThread = {
-    id: newId(),
-    title: title?.trim() || "新しいチャット",
-    createdAt: now,
-    updatedAt: now,
-    messages: [],
-  };
-  persist([thread, ...readAll()]);
-  return toThread(thread);
+export async function listThreads(
+  cursor?: string,
+): Promise<{ threads: Thread[]; nextCursor: string | null }> {
+  const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  const data = await ok<{ threads: ApiThread[]; next_cursor: string | null }>(
+    await apiFetch(`/threads${qs}`),
+  );
+  return { threads: data.threads.map(toThread), nextCursor: data.next_cursor };
+}
+
+export async function createThread(title?: string, agentMode = false): Promise<Thread> {
+  const data = await ok<ApiThread>(
+    await apiFetch("/threads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: title?.trim() || undefined, agent_mode: agentMode }),
+    }),
+  );
+  notifyThreadsChanged();
+  return toThread(data);
 }
 
 export class ThreadNotFound extends Error {
@@ -192,24 +173,34 @@ export class ThreadNotFound extends Error {
   }
 }
 
+export async function getThread(id: string): Promise<Thread> {
+  const res = await apiFetch(`/threads/${id}`);
+  if (res.status === 404 || res.status === 403) throw new ThreadNotFound();
+  return toThread(await ok<ApiThread>(res));
+}
+
+type ApiMessage = {
+  id: string;
+  role: ChatRole;
+  content: ContentBlock[];
+  agent_mode?: boolean;
+  created_at: string;
+};
+
 export async function getThreadMessages(id: string): Promise<Message[]> {
-  const thread = readAll().find((t) => t.id === id);
-  if (!thread) throw new ThreadNotFound();
-  return thread.messages;
+  const res = await apiFetch(`/threads/${id}/messages`);
+  if (res.status === 404 || res.status === 403) throw new ThreadNotFound();
+  const data = await ok<{ messages: ApiMessage[] }>(res);
+  return data.messages.map((m) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    agentMode: m.agent_mode,
+    createdAt: m.created_at,
+  }));
 }
 
-/// スレッドへメッセージを追記して永続化する（履歴・リロード表示のため）。
-function appendMessage(threadId: string, message: Message): void {
-  persist(
-    readAll().map((t) =>
-      t.id === threadId
-        ? { ...t, updatedAt: message.createdAt, messages: [...t.messages, message] }
-        : t,
-    ),
-  );
-}
-
-// ── ストリーミング（モック）────────────────────────────────────────────
+// ── ストリーミング（SSE・replay-then-subscribe）─────────────────────────
 
 export type StreamHandlers = {
   onToken?: (text: string) => void;
@@ -217,52 +208,173 @@ export type StreamHandlers = {
   onToolCall?: (call: { id: string; name: string; input: unknown }) => void;
   onToolResult?: (res: { id: string; ok: boolean }) => void;
   onCitation?: (c: Citation) => void;
+  onStatus?: (status: RunStatus) => void;
   onDone?: () => void;
   onError?: (message: string) => void;
 };
 
-/// メッセージを送り、モック応答を擬似ストリーミングで返す。返り値の関数で中断できる。
-/// backend 実装後はここを fetch + SSE パースへ置換する（handlers 契約は不変）。
+/// 生成イベント種別（backend chat::StreamEventKind と一致・内部タグ `type`）。
+type StreamEventKind =
+  | { type: "token"; text: string }
+  | { type: "thinking"; text: string }
+  | { type: "tool_call"; id: string; name: string; input: unknown }
+  | { type: "tool_result"; tool_call_id: string; ok: boolean; content: string }
+  | ({ type: "citation" } & Omit<Citation, "type">)
+  | { type: "generative_ui"; spec: unknown }
+  | { type: "status"; status: RunStatus }
+  | { type: "error"; message: string }
+  | { type: "done"; message_id: string };
+
+/// SSE 購読を開始し、イベントを handlers へ振り分ける。返り値でストリームを閉じる。
+function subscribe(threadId: string, handlers: StreamHandlers): () => void {
+  const es = new EventSource(`/api/threads/${threadId}/stream`, { withCredentials: true });
+  let closed = false;
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    es.close();
+  };
+  es.onmessage = (ev) => {
+    let kind: StreamEventKind;
+    try {
+      kind = JSON.parse(ev.data) as StreamEventKind;
+    } catch {
+      return;
+    }
+    switch (kind.type) {
+      case "token":
+        handlers.onToken?.(kind.text);
+        break;
+      case "thinking":
+        handlers.onThinking?.(kind.text);
+        break;
+      case "tool_call":
+        handlers.onToolCall?.({ id: kind.id, name: kind.name, input: kind.input });
+        break;
+      case "tool_result":
+        handlers.onToolResult?.({ id: kind.tool_call_id, ok: kind.ok });
+        break;
+      case "citation":
+        handlers.onCitation?.({
+          type: "citation",
+          node_id: kind.node_id,
+          chunk_id: kind.chunk_id,
+          snippet: kind.snippet,
+          page: kind.page,
+          heading_path: kind.heading_path,
+          score: kind.score,
+        });
+        break;
+      case "status":
+        handlers.onStatus?.(kind.status);
+        // キャンセル/失敗は端末状態。途中までを確定させて閉じる。
+        if (kind.status === "cancelled" || kind.status === "failed") {
+          handlers.onDone?.();
+          finish();
+        }
+        break;
+      case "error":
+        handlers.onError?.(kind.message);
+        finish();
+        break;
+      case "done":
+        handlers.onDone?.();
+        finish();
+        break;
+      default:
+        break;
+    }
+  };
+  // ネットワーク断は EventSource が Last-Event-ID 付きで自動再接続する（接続非依存）。
+  // 端末イベントで既に閉じている場合のみ、無駄な再接続を止める。
+  es.onerror = () => {
+    if (closed) es.close();
+  };
+  return finish;
+}
+
+/// メッセージを送信し、生成イベントを SSE で受け取る（返り値で停止できる）。
+/// `cancelServer=true`（明示停止）ではサーバ側もキャンセルする。ページ離脱（既定）は継続する。
 export function streamMessage(
   threadId: string,
   text: string,
   attachments: Attachment[],
   handlers: StreamHandlers,
-): () => void {
-  // 送信メッセージを永続化（file_ref ＋ text）。UI 側は楽観表示済み。
-  const userBlocks: ContentBlock[] = [
-    ...attachments.map((a) => ({ type: "file_ref" as const, node_id: a.node_id, name: a.name })),
-    { type: "text" as const, text },
-  ];
-  if (threadId) {
-    appendMessage(threadId, {
-      id: newId(),
-      role: "user",
-      content: userBlocks,
-      createdAt: new Date().toISOString(),
-    });
-  }
+  agentMode?: boolean,
+): (opts?: { cancelServer?: boolean }) => void {
+  let unsub: (() => void) | null = null;
+  let runId: string | null = null;
+  let stopped = false;
 
-  const full = mockReplyText(text);
-  let last = "";
-  // streamMockReply は累積テキストを渡すので、差分へ変換して onToken に流す。
-  return streamMockReply(
-    full,
-    (partial) => {
-      const delta = partial.slice(last.length);
-      last = partial;
-      if (delta) handlers.onToken?.(delta);
-    },
-    () => {
-      if (threadId) {
-        appendMessage(threadId, {
-          id: newId(),
-          role: "assistant",
-          content: [{ type: "text", text: full }],
-          createdAt: new Date().toISOString(),
-        });
-      }
-      handlers.onDone?.();
-    },
-  );
+  apiFetch(`/threads/${threadId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, attachments, agent_mode: agentMode }),
+  })
+    .then(async (res) => {
+      if (!res.ok) throw new Error(`送信に失敗しました (${res.status})`);
+      const body = (await res.json()) as { run_id: string };
+      runId = body.run_id;
+      if (stopped) return;
+      unsub = subscribe(threadId, handlers);
+    })
+    .catch((e) => handlers.onError?.(e instanceof Error ? e.message : "送信に失敗しました"));
+
+  return (opts) => {
+    stopped = true;
+    unsub?.();
+    if (opts?.cancelServer && runId) void cancelRun(threadId, runId);
+  };
 }
+
+/// 既存 run の生成イベントを購読して復元表示する（ページ再訪・POST しない）。
+export function resumeMessage(threadId: string, handlers: StreamHandlers): () => void {
+  return subscribe(threadId, handlers);
+}
+
+/// 生成をユーザー明示停止する（サーバ側キャンセル）。
+export async function cancelRun(threadId: string, runId: string): Promise<void> {
+  await apiFetch(`/threads/${threadId}/runs/${runId}/cancel`, { method: "POST" });
+}
+
+// ── 共有（ReBAC）───────────────────────────────────────────────────────
+
+export async function shareThread(
+  threadId: string,
+  target: ShareTarget,
+  role: ThreadRole,
+): Promise<void> {
+  const res = await apiFetch(`/threads/${threadId}/shares`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target, role }),
+  });
+  if (!res.ok) throw new Error(`共有に失敗しました (${res.status})`);
+}
+
+export async function unshareThread(
+  threadId: string,
+  target: ShareTarget,
+  role: ThreadRole,
+): Promise<void> {
+  const res = await apiFetch(`/threads/${threadId}/shares`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target, role }),
+  });
+  if (!res.ok) throw new Error(`共有解除に失敗しました (${res.status})`);
+}
+
+export async function listThreadShares(threadId: string): Promise<ThreadShareEntry[]> {
+  const data = await ok<{ shares: ThreadShareEntry[] }>(
+    await apiFetch(`/threads/${threadId}/shares`),
+  );
+  return data.shares;
+}
+
+/// content-block が空（生成前のプレースホルダ）か。復元判定に使う。
+export function isEmptyContent(content: ContentBlock[]): boolean {
+  return content.length === 0;
+}
+
+export { newId };

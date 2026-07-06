@@ -2,6 +2,7 @@
 
 pub mod admin;
 pub mod auth;
+pub mod chat;
 pub mod directory;
 pub mod files;
 pub mod folders;

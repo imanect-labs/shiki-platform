@@ -10,6 +10,19 @@ version = "0.0.0"
 name = "agent_core"
 
 [dependencies]
+shiki-authz.workspace = true
+shiki-rag.workspace = true
+shiki-llm-gateway.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+
+# lib 名 authz/rag/llm_gateway で参照するため machete が誤検出する（実際は使用中）。
+[package.metadata.cargo-machete]
+ignored = ["shiki-authz", "shiki-rag", "shiki-llm-gateway"]
 
 [lints]
 workspace = true

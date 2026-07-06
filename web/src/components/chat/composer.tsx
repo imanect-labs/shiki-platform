@@ -8,6 +8,7 @@ import {
   HardDrive,
   Paperclip,
   Plus,
+  Sparkles,
   Square,
   Upload,
   X,
@@ -43,6 +44,8 @@ export function Composer({
   autoFocus = false,
   disabled = false,
   streaming = false,
+  agentMode = false,
+  onAgentModeChange,
   className,
 }: {
   onSubmit: (text: string, attachments: Attachment[]) => void;
@@ -54,6 +57,10 @@ export function Composer({
   disabled?: boolean;
   /// 生成中フラグ。入力は可能なまま、送信はできず停止ボタンを出す。
   streaming?: boolean;
+  /// エージェントモード（既定 OFF＝通常チャット。ON＝ツールを自律実行）。
+  agentMode?: boolean;
+  /// エージェントモードのトグル（未指定ならトグル UI を出さない）。
+  onAgentModeChange?: (v: boolean) => void;
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
@@ -158,6 +165,30 @@ export function Composer({
               onUploadLocal={() => fileInputRef.current?.click()}
               onOpenDrive={() => setPickerOpen(true)}
             />
+            {onAgentModeChange ? (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={agentMode}
+                aria-label="エージェントモード"
+                title={
+                  agentMode
+                    ? "エージェントモード: ON（ツールを自律実行）"
+                    : "エージェントモード: OFF（通常チャット）"
+                }
+                onClick={() => onAgentModeChange(!agentMode)}
+                className={cn(
+                  "inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-[13px] font-medium transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
+                  agentMode
+                    ? "border-primary/40 bg-primary/10 text-primary"
+                    : "border-border text-foreground/70 hover:bg-secondary hover:text-foreground",
+                )}
+              >
+                <Sparkles className="size-[15px]" aria-hidden />
+                エージェント
+              </button>
+            ) : null}
           </div>
 
           <div className="flex items-center gap-1.5">

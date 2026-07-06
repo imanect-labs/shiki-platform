@@ -10,6 +10,6 @@ create_db() {
 EOSQL
 }
 
-for db in keycloak openfga shiki; do
+for db in keycloak openfga shiki langfuse; do
   create_db "$db"
 done

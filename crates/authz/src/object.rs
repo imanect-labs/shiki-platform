@@ -53,6 +53,11 @@ impl FgaObject {
         Self::new(ObjectType::File, id)
     }
 
+    /// チャットスレッドオブジェクト `thread:<id>`（会話・ReBAC 共有の単位・#37）。
+    pub(crate) fn thread(id: &str) -> Self {
+        Self::new(ObjectType::Thread, id)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -101,6 +106,11 @@ impl<'a> Namespace<'a> {
     /// ファイルオブジェクト `file:<tenant>|<id>`。
     pub fn file(&self, id: &str) -> FgaObject {
         FgaObject::file(&self.qualify(id))
+    }
+
+    /// スレッドオブジェクト `thread:<tenant>|<id>`（会話・ReBAC 共有・#37）。
+    pub fn thread(&self, id: &str) -> FgaObject {
+        FgaObject::thread(&self.qualify(id))
     }
 
     /// ユーザー subject `user:<tenant>|<id>`。

@@ -2,15 +2,22 @@
 
 import * as React from "react";
 
+import { Share2 } from "lucide-react";
+
 import {
+  getThread,
   getThreadMessages,
+  isEmptyContent,
   notifyThreadsChanged,
+  resumeMessage,
   streamMessage,
   ThreadNotFound,
   type Attachment,
   type Citation,
   type ContentBlock,
   type Message as ChatMessageT,
+  type RunStatus,
+  type StreamHandlers,
 } from "@/lib/chat-api";
 import { popPending } from "@/lib/pending-message";
 import { linkifyCitations } from "@/lib/citation";
@@ -23,6 +30,7 @@ import { MessageFooter } from "./message-footer";
 import { type ToolActivityItem } from "./tool-activity";
 import { ChainOfThought } from "./chain-of-thought";
 import { Composer } from "./composer";
+import { ThreadShareDialog } from "./share-dialog";
 
 /// ストリーミング中のアシスタント応答の蓄積状態。
 type StreamState = {
@@ -39,8 +47,11 @@ export function Conversation({ threadId }: { threadId: string }) {
   const [stream, setStream] = React.useState<StreamState | null>(null);
   const [notFound, setNotFound] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [agentMode, setAgentMode] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
   const bottomRef = React.useRef<HTMLDivElement | null>(null);
-  const cancelRef = React.useRef<(() => void) | null>(null);
+  // 停止関数。`cancelServer` でサーバ側もキャンセル（明示停止）。離脱は継続（呼ばない）。
+  const cancelRef = React.useRef<((opts?: { cancelServer?: boolean }) => void) | null>(null);
   const sentPending = React.useRef(false);
   // 最新の stream を ref に写し、確定処理は setState updater の外で 1 度だけ行う
   // （Strict Mode で updater が二重実行され finalize が重複するのを防ぐ）。
@@ -57,6 +68,42 @@ export function Conversation({ threadId }: { threadId: string }) {
     setStream(null);
   }, []);
 
+  // 送信/復元で共通の SSE ハンドラ。蓄積を stream state に反映し、端末で確定する。
+  const makeHandlers = React.useCallback((): StreamHandlers => {
+    return {
+      onThinking: (t) => setStream((s) => (s ? { ...s, thinking: s.thinking + t } : s)),
+      onToken: (t) => setStream((s) => (s ? { ...s, text: s.text + t } : s)),
+      onToolCall: (call) =>
+        setStream((s) =>
+          s
+            ? {
+                ...s,
+                tools: [...s.tools, { id: call.id, name: call.name, running: true, input: call.input }],
+              }
+            : s,
+        ),
+      onToolResult: (res) =>
+        setStream((s) =>
+          s ? { ...s, tools: s.tools.map((t) => (t.id === res.id ? { ...t, running: false } : t)) } : s,
+        ),
+      onCitation: (c) => setStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
+      onStatus: (status: RunStatus) => {
+        if (status === "cancelled") setError("生成をキャンセルしました。");
+        if (status === "failed") setError("生成に失敗しました。");
+      },
+      onDone: () => {
+        flushStream();
+        cancelRef.current = null;
+        notifyThreadsChanged();
+      },
+      onError: (msg) => {
+        setError(msg);
+        setStream(null);
+        cancelRef.current = null;
+      },
+    };
+  }, [flushStream]);
+
   const send = React.useCallback(
     (text: string, attachments: Attachment[]) => {
       setError(null);
@@ -70,57 +117,40 @@ export function Conversation({ threadId }: { threadId: string }) {
         { id: newId(), role: "user", content: userBlocks, createdAt: new Date().toISOString() },
       ]);
       setStream({ ...EMPTY_STREAM });
-
-      cancelRef.current = streamMessage(threadId, text, attachments, {
-        onThinking: (t) => setStream((s) => (s ? { ...s, thinking: s.thinking + t } : s)),
-        onToken: (t) => setStream((s) => (s ? { ...s, text: s.text + t } : s)),
-        onToolCall: (call) =>
-          setStream((s) =>
-            s
-              ? {
-                  ...s,
-                  tools: [...s.tools, { id: call.id, name: call.name, running: true, input: call.input }],
-                }
-              : s,
-          ),
-        onToolResult: (res) =>
-          setStream((s) =>
-            s
-              ? { ...s, tools: s.tools.map((t) => (t.id === res.id ? { ...t, running: false } : t)) }
-              : s,
-          ),
-        onCitation: (c) => setStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
-        onDone: () => {
-          flushStream();
-          cancelRef.current = null;
-          notifyThreadsChanged();
-        },
-        onError: (msg) => {
-          setError(msg);
-          setStream(null);
-          cancelRef.current = null;
-        },
-      });
+      cancelRef.current = streamMessage(threadId, text, attachments, makeHandlers(), agentMode);
     },
-    [threadId, flushStream],
+    [threadId, makeHandlers, agentMode],
   );
 
-  // 生成を停止する。中断時点までの思考/ツール/引用/本文を確定メッセージとして残す。
+  // 生成を停止する（明示停止＝サーバ側もキャンセル）。中断時点までを確定メッセージに残す。
   const stop = React.useCallback(() => {
-    cancelRef.current?.();
+    cancelRef.current?.({ cancelServer: true });
     cancelRef.current = null;
     flushStream();
     notifyThreadsChanged();
   }, [flushStream]);
 
-  // 初回ロード: 既存メッセージを取得し、ホームからの pending を送信する。
+  // 初回ロード: スレッド既定モード＋既存メッセージを取得し、進行中生成があれば復元購読する。
   React.useEffect(() => {
     let active = true;
+    getThread(threadId)
+      .then((t) => {
+        if (active) setAgentMode(t.agentMode);
+      })
+      .catch(() => {});
     getThreadMessages(threadId)
       .then((msgs) => {
         if (!active) return;
-        setMessages(msgs);
-        // 末尾が user で未応答なら（=新規スレッド直後）pending を送る。
+        // 末尾が空の assistant プレースホルダなら生成進行中（or クラッシュ）→ 復元購読する。
+        const last = msgs[msgs.length - 1];
+        const resuming = last?.role === "assistant" && isEmptyContent(last.content);
+        setMessages(resuming ? msgs.slice(0, -1) : msgs);
+        if (resuming) {
+          setStream({ ...EMPTY_STREAM });
+          cancelRef.current = resumeMessage(threadId, makeHandlers());
+          return;
+        }
+        // 末尾が user で未応答なら（=新規スレッド直後）ホームからの pending を送る。
         if (!sentPending.current) {
           sentPending.current = true;
           const pending = popPending(threadId);
@@ -136,9 +166,10 @@ export function Conversation({ threadId }: { threadId: string }) {
       });
     return () => {
       active = false;
+      // ページ離脱では**サーバ側キャンセルしない**（生成は継続・再訪で復元）。SSE 購読だけ閉じる。
       cancelRef.current?.();
     };
-    // send は threadId 固定で安定。
+    // send/makeHandlers は threadId 固定で安定。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
 
@@ -156,6 +187,19 @@ export function Conversation({ threadId }: { threadId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {/* ヘッダ: 共有 */}
+      <div className="flex items-center justify-end border-b border-border/60 px-4 py-2">
+        <button
+          type="button"
+          onClick={() => setShareOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-foreground/70 transition-colors hover:bg-secondary hover:text-foreground"
+        >
+          <Share2 className="size-4" aria-hidden />
+          共有
+        </button>
+      </div>
+      <ThreadShareDialog open={shareOpen} onOpenChange={setShareOpen} threadId={threadId} />
+
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8">
           {messages.map((m) =>
@@ -177,7 +221,14 @@ export function Conversation({ threadId }: { threadId: string }) {
 
       <div className="bg-background">
         <div className="mx-auto w-full max-w-3xl px-4 py-4">
-          <Composer onSubmit={send} onStop={stop} streaming={stream !== null} autoFocus />
+          <Composer
+            onSubmit={send}
+            onStop={stop}
+            streaming={stream !== null}
+            agentMode={agentMode}
+            onAgentModeChange={setAgentMode}
+            autoFocus
+          />
           <p className="mt-2 text-center text-xs text-muted-foreground">
             Shiki は社内文書を参照して回答します。誤りが含まれる場合があります。
           </p>
