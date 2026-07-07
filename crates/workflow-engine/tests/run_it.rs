@@ -320,6 +320,66 @@ async fn fanout_join_waits_and_completes() {
 }
 
 #[tokio::test]
+async fn rate_limited_retry_does_not_consume_attempt() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let run_id = create_run(&store, &tenant, &linear_ir()).await;
+    let graph = RunGraph::build(&workflow_engine::WorkflowIr::from_json(&linear_ir()).unwrap());
+
+    // max_attempts=1。rate_limited は attempt を消費しないので何度でも再試行できる。
+    let rate_limited = NodeResult::fail("rate_limited", "throttled", true);
+    for _ in 0..3 {
+        let claimed = store
+            .claim_ready_step("w1", 60, Some(&tenant))
+            .await
+            .unwrap()
+            .expect("claim a");
+        assert_eq!(claimed.node_id, "a");
+        // attempt は 1 のまま（rate_limited が消費を相殺）。
+        assert_eq!(claimed.attempt, 1, "rate_limited は attempt を消費しない");
+        // next_retry_at が未来なので待たずに再 claim できるよう 0 に戻す。
+        let advanced = store
+            .checkpoint_and_advance(&claimed, &rate_limited, &graph, 1)
+            .await
+            .unwrap();
+        assert!(advanced, "rate_limited は ready へ戻す");
+        sqlx::query(
+            "UPDATE step_execution SET next_retry_at = now() \
+             WHERE tenant_id = $1 AND run_id = $2 AND step_path = 'a'",
+        )
+        .bind(&tenant)
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    // a はまだ ready（terminal 化していない）。
+    let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
+    let a = statuses.iter().find(|(p, _)| p == "a").unwrap();
+    assert_eq!(
+        a.1,
+        StepStatus::Ready,
+        "rate_limited では枯渇せず ready のまま"
+    );
+
+    // 一方 permanent エラーは即 failed（max_attempts=1・retryable=false）。
+    let claimed = store
+        .claim_ready_step("w1", 60, Some(&tenant))
+        .await
+        .unwrap()
+        .expect("claim a");
+    let permanent = NodeResult::fail("bad_request", "nope", false);
+    store
+        .checkpoint_and_advance(&claimed, &permanent, &graph, 1)
+        .await
+        .unwrap();
+    let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
+    let a = statuses.iter().find(|(p, _)| p == "a").unwrap();
+    assert_eq!(a.1, StepStatus::Failed, "permanent は即 failed");
+}
+
+#[tokio::test]
 async fn tenant_isolation_in_claim() {
     let Some(pool) = setup().await else { return };
     let store = RunStore::new(pool.clone());

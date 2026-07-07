@@ -30,6 +30,7 @@ ts-rs = { workspace = true }
 utoipa.workspace = true
 # 条件木の matches 演算子（保存時コンパイル検証・バックトラックなし）。
 regex = "1"
+redis = { workspace = true }
 sqlx.workspace = true
 shiki-durable.workspace = true
 async-trait.workspace = true

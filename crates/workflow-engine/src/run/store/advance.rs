@@ -17,17 +17,26 @@ use super::super::NodeResult;
 use super::{append_event, map_db, node_readiness, RunStoreError};
 use crate::vocab::RunEventKind;
 
-/// backoff（指数・full jitter は運用で・ここは決定的な下限）。
-fn next_retry_delay_secs(attempt: i32) -> i64 {
+/// backoff（指数＋full jitter・engine.md §7.4）。jitter の乱数は (step_path, attempt) の
+/// FNV ハッシュから決定的に導く（Math.random 不使用・リプレイ安全・thundering herd 回避）。
+fn next_retry_delay_secs(step_path: &str, attempt: i32) -> i64 {
     let base: i64 = 2;
-    let max: i64 = 300;
-    base.saturating_mul(
-        1_i64
-            .checked_shl(u32::try_from(attempt.max(0)).unwrap_or(0))
-            .unwrap_or(i64::MAX),
-    )
-    .min(max)
-    .max(base)
+    let cap: i64 = 300;
+    let rand01 = deterministic_rand01(step_path, attempt);
+    crate::retry::backoff_with_jitter(attempt, base, cap, rand01)
+}
+
+/// (step_path, attempt) から `[0, 1)` の決定的乱数を導く（FNV-1a → 正規化）。
+fn deterministic_rand01(step_path: &str, attempt: i32) -> f64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in step_path.bytes().chain(attempt.to_le_bytes()) {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    // 上位 53 bit を [0,1) へ。
+    #[allow(clippy::cast_precision_loss)]
+    let v = (h >> 11) as f64 / (1u64 << 53) as f64;
+    v
 }
 
 /// checkpoint＋前進の本体。
@@ -75,21 +84,39 @@ pub(super) async fn checkpoint_and_advance(
         return Ok(false); // ゾンビ（別ワーカーが再 claim 済み）。
     }
 
-    // リトライ判定: 失敗かつ retryable かつ attempt 未枯渇なら ready へ戻す（terminal にしない）。
+    // リトライ判定（engine.md §7.4）: エラーを分類し ready へ戻すか terminal 化するか決める。
+    // - RateLimited: attempt を消費せず再試行（次 claim の +1 を打ち消すため attempt-1）。
+    // - Retryable: attempt 未枯渇なら backoff 再試行。
+    // - Permanent / 枯渇: 下の checkpoint で terminal（失敗）化。
     if !result.ok {
-        let retryable = result.error.as_ref().is_some_and(|e| e.retryable);
-        if retryable && claimed.attempt < max_attempts {
-            let delay = next_retry_delay_secs(claimed.attempt);
+        use crate::retry::RetryClass;
+        let class = result.error.as_ref().map_or(RetryClass::Permanent, |e| {
+            crate::retry::classify(&e.code, e.retryable)
+        });
+        let retry = match class {
+            RetryClass::RateLimited => true,
+            RetryClass::Retryable => claimed.attempt < max_attempts,
+            RetryClass::Permanent => false,
+        };
+        if retry {
+            let delay = next_retry_delay_secs(&claimed.step_path, claimed.attempt);
+            // rate_limited は attempt を消費しない（次 claim で +1 されるぶんを相殺）。
+            let attempt_delta: i32 = if class == RetryClass::RateLimited {
+                -1
+            } else {
+                0
+            };
             sqlx::query(
                 "UPDATE step_execution SET status = 'ready', lease_owner = NULL, \
                  lease_expires_at = NULL, next_retry_at = now() + ($4 || ' seconds')::interval, \
-                 updated_at = now() \
+                 attempt = attempt + $5, updated_at = now() \
                  WHERE tenant_id = $1 AND run_id = $2 AND step_path = $3",
             )
             .bind(tenant_id)
             .bind(run_id)
             .bind(&claimed.step_path)
             .bind(delay)
+            .bind(attempt_delta)
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;
@@ -98,7 +125,11 @@ pub(super) async fn checkpoint_and_advance(
                 tenant_id,
                 run_id,
                 RunEventKind::StepRetrying,
-                &json!({ "step": claimed.step_path, "attempt": claimed.attempt }),
+                &json!({
+                    "step": claimed.step_path,
+                    "attempt": claimed.attempt,
+                    "class": format!("{class:?}"),
+                }),
             )
             .await?;
             tx.commit().await.map_err(map_db)?;
@@ -346,9 +377,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backoff_is_bounded_and_increasing() {
-        assert_eq!(next_retry_delay_secs(0), 2);
-        assert!(next_retry_delay_secs(1) >= 2);
-        assert!(next_retry_delay_secs(20) <= 300);
+    fn backoff_is_bounded_and_deterministic() {
+        // full jitter: [1, ceiling]。ceiling は base*2^attempt を cap=300 で頭打ち。
+        assert!((1..=2).contains(&next_retry_delay_secs("a", 0)));
+        assert!(next_retry_delay_secs("a", 20) <= 300);
+        // 同じ (step, attempt) は同じ遅延（リプレイ安全）。
+        assert_eq!(next_retry_delay_secs("a", 3), next_retry_delay_secs("a", 3));
     }
 }
