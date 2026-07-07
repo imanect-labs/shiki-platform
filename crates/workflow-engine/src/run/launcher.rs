@@ -52,6 +52,11 @@ impl WorkflowRunLauncher {
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
         let ir_json = serde_json::to_value(&ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
         let graph = RunGraph::build(&ir);
+        // principal_kind は呼び出し主体の種別に従う（ユーザー起動＝user・workflow.start＝workflow）。
+        let principal_kind = match ctx.principal.kind {
+            authz::PrincipalKind::Workflow => "workflow",
+            authz::PrincipalKind::User => "user",
+        };
         let run_id = self
             .runs
             .create_run(
@@ -62,6 +67,7 @@ impl WorkflowRunLauncher {
                 "interactive",
                 None,
                 &ctx.principal.id,
+                principal_kind,
                 input,
                 &ir_json,
                 &graph,
@@ -133,6 +139,7 @@ impl WorkflowRunLauncher {
                 trigger_kind,
                 Some(trigger_id),
                 &workflow_id.to_string(),
+                "workflow",
                 &Value::Null,
                 &ir_json,
                 &graph,

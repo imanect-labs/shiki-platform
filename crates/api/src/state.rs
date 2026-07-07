@@ -49,6 +49,10 @@ pub struct AppState {
     pub secrets: Option<Arc<secrets::SecretStore>>,
     /// ワークフロー IR の保存/取得（Task 10.1a・artifact kind=workflow の上に載る）。
     pub workflows: Arc<workflow_engine::WorkflowStore>,
+    /// ワークフロー run 起動（対話トリガ・Stage A W3）。`workflow.enabled=false` では `None`。
+    pub workflow_launcher: Option<Arc<workflow_engine::WorkflowRunLauncher>>,
+    /// ワークフロー run/step 状態取得（実行履歴・Stage A W3）。`workflow.enabled=false` では `None`。
+    pub workflow_runs: Option<Arc<workflow_engine::RunStore>>,
     /// ユーザーディレクトリ（共有相手検索。tenant_id スコープ）。
     pub directory: Arc<DirectoryStore>,
     /// テナントレジストリ（プロビジョニング/削除のライフサイクル・SAAS.2）。

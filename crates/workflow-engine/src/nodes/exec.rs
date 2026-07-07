@@ -96,6 +96,7 @@ impl CapabilityNodeExecutor {
             tenant_id: ctx.tenant_id.clone(),
             org: ctx.org.clone(),
             principal: ctx.principal.clone(),
+            principal_kind: ctx.principal_kind.clone(),
             trace_id: ctx.trace_id.clone(),
         }
     }

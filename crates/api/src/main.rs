@@ -133,6 +133,19 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
 
+    // ワークフロー実行時（Stage A W3）: enabled のとき launcher/runs を組み、worker/scheduler/relay を spawn。
+    let (workflow_launcher, workflow_runs) = wiring::wire_workflow(
+        &config,
+        &http,
+        &db,
+        &authz,
+        &workflows,
+        &storage,
+        search.as_ref(),
+        secrets.as_ref(),
+    )
+    .await?;
+
     let bind = format!("{}:{}", config.server.host, config.server.port);
     let state = AppState {
         config: Arc::new(config),
@@ -147,6 +160,8 @@ async fn main() -> anyhow::Result<()> {
         artifacts,
         secrets,
         workflows,
+        workflow_launcher,
+        workflow_runs,
         directory,
         tenants,
         search,

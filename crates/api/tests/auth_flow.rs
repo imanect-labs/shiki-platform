@@ -348,6 +348,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
         secrets: api::config::SecretsConfig::default(),
+        workflow: api::workflow_runtime::WorkflowConfig::default(),
     }
 }
 
@@ -391,6 +392,8 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         artifacts,
         secrets: None,
         workflows,
+        workflow_launcher: None,
+        workflow_runs: None,
         directory,
         tenants,
         search: None,

@@ -180,6 +180,7 @@ async fn create_run(store: &RunStore, tenant: &str, ir: &Value) -> uuid::Uuid {
             "interactive",
             None,
             "alice",
+            "user",
             &json!({}),
             ir,
             &graph,

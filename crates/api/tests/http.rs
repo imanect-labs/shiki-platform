@@ -233,6 +233,7 @@ fn base_config() -> AppConfig {
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
         secrets: api::config::SecretsConfig::default(),
+        workflow: api::workflow_runtime::WorkflowConfig::default(),
     }
 }
 
@@ -274,6 +275,8 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         artifacts,
         secrets: None,
         workflows,
+        workflow_launcher: None,
+        workflow_runs: None,
         directory,
         tenants,
         search: None,

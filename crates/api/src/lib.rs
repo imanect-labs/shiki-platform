@@ -30,6 +30,7 @@ pub mod server;
 pub mod session;
 pub mod state;
 pub mod telemetry;
+pub mod workflow_runtime;
 
 pub use server::build_router;
 pub use state::AppState;

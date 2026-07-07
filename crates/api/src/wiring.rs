@@ -102,24 +102,16 @@ pub(crate) fn wire_rag(
 ///
 /// llm-gateway（in-process チョークポイント）を config.llm から構築し、chat ストア＋生成ワーカー
 /// プールを起動する。プロバイダは OpenAI 互換ファースト（vLLM もこれで賄う）。
-pub(crate) async fn wire_chat(
+/// llm-gateway を構築する（chat・workflow の双方から使う共通経路）。
+pub(crate) fn build_gateway(
     config: &AppConfig,
     http: &reqwest::Client,
     db: &sqlx::PgPool,
-    authz: &Arc<dyn AuthzClient>,
-    search: Option<&Arc<rag::SearchService>>,
-    storage: &Arc<storage::StorageService>,
-) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
+) -> anyhow::Result<llm_gateway::LlmGateway> {
     use llm_gateway::{
         GatewayConfig, LangfuseConfig, LlmGateway, ModelCatalog, ModelEntry, ProviderConfig,
         ProviderKind,
     };
-
-    if !config.chat.enabled {
-        tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
-        return Ok(None);
-    }
-
     let llm = &config.llm;
     let kind = match llm.backend {
         LlmBackend::Vllm | LlmBackend::Openai => ProviderKind::Openai,
@@ -135,7 +127,6 @@ pub(crate) async fn wire_chat(
         .or_else(|| llm.models.first().map(|m| m.id.clone()))
         .unwrap_or_else(|| "default".to_string());
     let models: Vec<ModelEntry> = if llm.models.is_empty() {
-        // カタログ未設定なら default_model を素通しする単一エントリを合成（単価 0）。
         vec![ModelEntry {
             id: default_model.clone(),
             real_id: None,
@@ -170,8 +161,37 @@ pub(crate) async fn wire_chat(
             secret_key: l.secret_key.clone(),
         }),
     };
-    let gateway = LlmGateway::build(db.clone(), http.clone(), gateway_config)
-        .map_err(|e| anyhow::anyhow!("llm-gateway 構築に失敗: {e}"))?;
+    LlmGateway::build(db.clone(), http.clone(), gateway_config)
+        .map_err(|e| anyhow::anyhow!("llm-gateway 構築に失敗: {e}"))
+}
+
+/// サンドボックスクライアントを構築する（`chat.sandbox_endpoint` 設定時のみ・chat/workflow 共通）。
+pub(crate) fn build_sandbox(
+    config: &AppConfig,
+) -> anyhow::Result<Option<Arc<dyn agent_core::Sandbox>>> {
+    let Some(endpoint) = &config.chat.sandbox_endpoint else {
+        return Ok(None);
+    };
+    let client = sandbox_client::GrpcSandboxClient::connect_lazy(endpoint.clone())
+        .map_err(|e| anyhow::anyhow!("sandbox client 構築に失敗: {e}"))?;
+    tracing::info!(%endpoint, "code_interpreter サンドボックスを配線しました");
+    Ok(Some(Arc::new(client)))
+}
+
+pub(crate) async fn wire_chat(
+    config: &AppConfig,
+    http: &reqwest::Client,
+    db: &sqlx::PgPool,
+    authz: &Arc<dyn AuthzClient>,
+    search: Option<&Arc<rag::SearchService>>,
+    storage: &Arc<storage::StorageService>,
+) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
+    if !config.chat.enabled {
+        tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
+        return Ok(None);
+    }
+
+    let gateway = build_gateway(config, http, db)?;
 
     // pub/sub は専用 URL があればそれ、無ければ BFF セッションと同じ Redis を再利用。
     let redis_url = config
@@ -195,17 +215,10 @@ pub(crate) async fn wire_chat(
     };
     // サンドボックス（code_interpreter / web_fetch）: エンドポイント設定時のみ配線する。
     // 成果物保存（StorageService 裏・発話ユーザー権限）もサンドボックスとセットで配線する。
-    let mut sandbox: Option<Arc<dyn agent_core::Sandbox>> = None;
-    let mut artifacts: Option<Arc<dyn agent_core::ArtifactStore>> = None;
-    if let Some(endpoint) = &config.chat.sandbox_endpoint {
-        let client = sandbox_client::GrpcSandboxClient::connect_lazy(endpoint.clone())
-            .map_err(|e| anyhow::anyhow!("sandbox client 構築に失敗: {e}"))?;
-        tracing::info!(%endpoint, "code_interpreter サンドボックスを配線しました");
-        sandbox = Some(Arc::new(client));
-        artifacts = Some(Arc::new(chat::StorageArtifactStore::new(Arc::clone(
-            storage,
-        ))));
-    }
+    let sandbox: Option<Arc<dyn agent_core::Sandbox>> = build_sandbox(config)?;
+    let artifacts: Option<Arc<dyn agent_core::ArtifactStore>> = sandbox
+        .as_ref()
+        .map(|_| Arc::new(chat::StorageArtifactStore::new(Arc::clone(storage))) as _);
     let web_search = wire_websearch(config, http)?;
     let worker = chat::ChatWorker::new(
         db.clone(),
@@ -284,4 +297,49 @@ fn wire_websearch(
         "web 検索プロバイダを配線しました"
     );
     Ok(Some(provider))
+}
+
+/// ワークフロー実行時（run ワーカー/スケジューラ/イベント relay）を配線する（Stage A W3）。
+///
+/// `workflow.enabled=false` なら `(None, None)`。enabled なら launcher/runs を組んで
+/// worker/scheduler/relay を spawn し、API 用の launcher/runs を返す（AppState に載る）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn wire_workflow(
+    config: &AppConfig,
+    http: &reqwest::Client,
+    db: &sqlx::PgPool,
+    authz: &Arc<dyn AuthzClient>,
+    workflows: &Arc<workflow_engine::WorkflowStore>,
+    storage: &Arc<storage::StorageService>,
+    search: Option<&Arc<rag::SearchService>>,
+    secrets: Option<&Arc<secrets::SecretStore>>,
+) -> anyhow::Result<(
+    Option<Arc<workflow_engine::WorkflowRunLauncher>>,
+    Option<Arc<workflow_engine::RunStore>>,
+)> {
+    if !config.workflow.enabled {
+        tracing::info!("workflow.enabled=false: ワークフロー実行時は無効（/workflows は保存のみ）");
+        return Ok((None, None));
+    }
+    let runs = workflow_engine::RunStore::new(db.clone());
+    let delegation = workflow_engine::DelegationStore::new(db.clone(), Arc::clone(authz));
+    let launcher =
+        workflow_engine::WorkflowRunLauncher::new(delegation, (**workflows).clone(), runs.clone());
+    let gateway = Arc::new(build_gateway(config, http, db)?);
+    let sandbox = build_sandbox(config)?;
+    api::workflow_runtime::spawn_workflow_runtime(api::workflow_runtime::RuntimeDeps {
+        db: db.clone(),
+        launcher: launcher.clone(),
+        runs: runs.clone(),
+        storage: Arc::clone(storage),
+        search: search.cloned(),
+        gateway,
+        sandbox,
+        secrets: secrets.cloned(),
+        http: http.clone(),
+        redis_url: Some(config.session.redis_url.clone()),
+        config: config.workflow.clone(),
+    })
+    .await;
+    Ok((Some(Arc::new(launcher)), Some(Arc::new(runs))))
 }
