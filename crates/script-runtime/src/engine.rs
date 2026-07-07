@@ -11,7 +11,6 @@
 //! - export `alloc(len)->ptr` / `dealloc(ptr,len)` / `exec(js_ptr,js_len,in_ptr,in_len)->u64`
 //! - import `shiki.hostcall(req_ptr,req_len)->u64`（同期能力呼び出し・深さ 1）
 
-use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -93,10 +92,37 @@ pub struct ExecOutcome {
 /// wasmtime の `func_wrap` が `Send + 'static` を要求するため owned box を受ける。
 pub type HostFn = Box<dyn FnMut(&HostCall) -> HostResponse + Send>;
 
-/// プリウォーム済みの実行エンジン（`Module` を保持・複数実行を直列処理可）。
+/// epoch ティック間隔。共有エンジンの epoch を一定間隔で単調増加させ、各 Store は自分の
+/// deadline を「ティック数」で設定する。これにより 1 実行の deadline 到来が他実行を巻き込まない。
+const EPOCH_TICK: Duration = Duration::from_millis(1);
+
+/// deadline（実時間）を epoch ティック数へ換算する（最低 1 ティック）。
+fn deadline_ticks(deadline: Duration) -> u64 {
+    let ticks = deadline.as_millis() / EPOCH_TICK.as_millis().max(1);
+    u64::try_from(ticks).unwrap_or(u64::MAX).max(1)
+}
+
+/// エンジン寿命の epoch ティッカ（ドロップ時に停止）。
+struct EpochTicker {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for EpochTicker {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// プリウォーム済みの実行エンジン（`Module` を保持・複数実行を並行処理可）。
 pub struct ScriptEngine {
     engine: Engine,
     module: Module,
+    // エンジンと同じ寿命の単調 epoch ティッカ（並行実行の deadline を隔離する）。
+    _ticker: EpochTicker,
 }
 
 impl ScriptEngine {
@@ -107,15 +133,35 @@ impl ScriptEngine {
         config.epoch_interruption(true);
         let engine = Engine::new(&config).map_err(|e| format!("engine: {e}"))?;
         let module = Module::new(&engine, GUEST_WASM).map_err(|e| format!("module: {e}"))?;
-        Ok(ScriptEngine { engine, module })
+
+        // 単一の単調ティッカ: EPOCH_TICK ごとに epoch を +1 する。各 Store は自分の deadline を
+        // ティック数で設定するため、あるランの deadline 到来（=その Store のティック超過）が
+        // 他ランの Store を早期に interrupt しない（テナント間の巻き込み kill を防ぐ・PIT-35）。
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ticker_engine = engine.clone();
+        let ticker_stop = std::sync::Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            while !ticker_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(EPOCH_TICK);
+                ticker_engine.increment_epoch();
+            }
+        });
+        Ok(ScriptEngine {
+            engine,
+            module,
+            _ticker: EpochTicker {
+                stop,
+                handle: Some(handle),
+            },
+        })
     }
 
-    /// エンジンの epoch を +1 する（別スレッドの deadline タイマから呼ぶ）。
+    /// エンジンの epoch を +1 する（テスト補助）。
     pub fn increment_epoch(&self) {
         self.engine.increment_epoch();
     }
 
-    /// クローン可能な epoch ハンドル（タイマスレッド用）。
+    /// クローン可能な epoch ハンドル（テスト補助）。
     pub fn engine_handle(&self) -> Engine {
         self.engine.clone()
     }
@@ -146,25 +192,14 @@ impl ScriptEngine {
         };
         let mut store = Store::new(&self.engine, state);
         store.set_fuel(limits.fuel).ok();
-        // epoch: deadline を別スレッドのタイマで increment する。ここでは 1 tick で trap する
-        // 設定にし、タイマ側が deadline 到来で increment_epoch する。
-        store.set_epoch_deadline(1);
+        // epoch deadline を**この実行専用のティック数**で設定する。共有ティッカが EPOCH_TICK ごとに
+        // epoch を +1 するので、この Store は自分の deadline 相当のティックが経過して初めて trap する
+        // （他ランの deadline 到来に巻き込まれない）。
+        let ticks = deadline_ticks(limits.epoch_deadline);
+        store.set_epoch_deadline(ticks);
         store.limiter(|s: &mut HostState| &mut s.limiter);
 
-        // epoch タイマ（deadline 到来で 1 回だけ increment → trap）。
-        let (stop_tx, stop_rx) = mpsc::channel::<()>();
-        let engine = self.engine.clone();
-        let deadline = limits.epoch_deadline;
-        let timer = std::thread::spawn(move || {
-            if stop_rx.recv_timeout(deadline).is_err() {
-                engine.increment_epoch();
-            }
-        });
-
-        let outcome = self.run_inner(&mut store, compiled_js, input_json);
-        let _ = stop_tx.send(());
-        let _ = timer.join();
-        outcome
+        self.run_inner(&mut store, compiled_js, input_json)
     }
 
     fn run_inner(
@@ -225,6 +260,15 @@ impl ScriptEngine {
             (js_ptr, js_bytes.len() as u32, in_ptr, in_bytes.len() as u32),
         )?;
         let (ptr, len) = unpack(packed);
+        // 結果サイズ上限（256KB・step-output cap）。ゲストが報告した len をそのまま read すると
+        // wasm メモリ上限内でも数 MB を host へ確保させられる。上限超過は読まずに trap する。
+        const MAX_RESULT_BYTES: u32 = 256 * 1024;
+        if len > MAX_RESULT_BYTES {
+            let _ = guest_dealloc(store, instance, ptr, len);
+            return Err(wasmtime::Error::msg(format!(
+                "result too large: {len} bytes > {MAX_RESULT_BYTES}"
+            )));
+        }
         let bytes = read_mem(store, &memory, ptr, len)?;
         // 結果領域を解放（ゲスト側 alloc で確保されている）。
         let _ = guest_dealloc(store, instance, ptr, len);
@@ -335,14 +379,31 @@ fn process_frame(caller: &mut Caller<'_, HostState>, req_bytes: &[u8]) -> HostRe
         return frame_error_response(&e);
     }
     // log は host_fn を呼ばずここで消費する（Shiki.log.*）。
+    // 行数 100・1 行 16KB の上限を適用する（wasm メモリ制限の外＝ホスト側 RAM を食い潰させない・DoS 対策）。
     if call.api == "log" {
-        let line = call
+        const MAX_LOG_LINES: usize = 100;
+        const MAX_LOG_BYTES: usize = 16 * 1024;
+        let mut line = call
             .args
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        caller.data_mut().logs.push(line);
+        if line.len() > MAX_LOG_BYTES {
+            // UTF-8 境界へ丸めて truncate（char 境界外での panic を避ける）。
+            let cut = (0..=MAX_LOG_BYTES)
+                .rev()
+                .find(|&i| line.is_char_boundary(i))
+                .unwrap_or(0);
+            line.truncate(cut);
+            line.push_str("…[truncated]");
+        }
+        let logs = &mut caller.data_mut().logs;
+        if logs.len() < MAX_LOG_LINES {
+            logs.push(line);
+        } else if logs.len() == MAX_LOG_LINES {
+            logs.push("…[log truncated: 100 行上限]".to_string());
+        }
         return HostResponse::Ok(Value::Null);
     }
     // 委譲先（Store 内 host_fn）へ渡す。単一文で data_mut を借りて即呼ぶ。

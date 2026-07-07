@@ -25,14 +25,28 @@ use crate::proto::{
     RuntimeToServer, ServerToRuntime,
 };
 
+/// 同時実行の既定上限（プロセスプールの 1 ワーカーとしての想定・CPU 数で調整可）。
+const DEFAULT_MAX_CONCURRENT: usize = 8;
+
 /// gRPC サービス実装。プリウォーム済み [`ScriptEngine`] を共有する。
 pub struct ScriptRuntimeService {
     engine: Arc<ScriptEngine>,
+    /// 同時実行スレッド数の入場制御（UDS への連続接続/fan-out での資源枯渇を防ぐ）。
+    admission: Arc<tokio::sync::Semaphore>,
 }
 
 impl ScriptRuntimeService {
     pub fn new(engine: Arc<ScriptEngine>) -> Self {
-        ScriptRuntimeService { engine }
+        Self::with_concurrency(engine, DEFAULT_MAX_CONCURRENT)
+    }
+
+    /// 同時実行上限を指定して作る。
+    #[must_use]
+    pub fn with_concurrency(engine: Arc<ScriptEngine>, max_concurrent: usize) -> Self {
+        ScriptRuntimeService {
+            engine,
+            admission: Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1))),
+        }
     }
 }
 
@@ -64,6 +78,13 @@ impl ScriptRuntime for ScriptRuntimeService {
             ));
         };
 
+        // 入場制御: 上限に達していれば空きが出るまで待つ（拒否でなく順番待ち＝スレッド枯渇を防ぐ）。
+        // permit はストリーム処理タスクの寿命だけ保持する（実行完了で解放）。
+        let permit = Arc::clone(&self.admission)
+            .acquire_owned()
+            .await
+            .map_err(|_| Status::unavailable("runtime shutting down"))?;
+
         let (out_tx, out_rx) = mpsc::channel::<Result<RuntimeToServer, Status>>(16);
         // 実行スレッド ⇄ ストリームの橋渡しチャネル。
         let (bridge_tx, bridge_rx) = std_mpsc::channel::<ToStream>();
@@ -74,6 +95,10 @@ impl ScriptRuntime for ScriptRuntimeService {
 
         // wasmtime 実行は専用スレッド（ブロッキング）。
         let exec_id_run = exec_id.clone();
+        // ホスト呼び出しの待ちは wall-clock deadline で必ず打ち切る。ブロックは guest wasm の外
+        // （host_fn 内）で起きるため epoch/fuel では中断できない＝これが無いと server 側の stall で
+        // 実行スレッドを無限に pin できる（DoS）。
+        let host_call_timeout = limits.epoch_deadline;
         std::thread::spawn(move || {
             let bridge = bridge_tx.clone();
             let host_fn: crate::engine::HostFn = Box::new(move |call: &HostCall| {
@@ -84,9 +109,11 @@ impl ScriptRuntime for ScriptRuntimeService {
                 {
                     return host_err("bridge closed");
                 }
-                resp_rx
-                    .recv()
-                    .unwrap_or_else(|_| host_err("bridge dropped"))
+                match resp_rx.recv_timeout(host_call_timeout) {
+                    Ok(resp) => resp,
+                    Err(std_mpsc::RecvTimeoutError::Timeout) => host_err("host call timeout"),
+                    Err(std_mpsc::RecvTimeoutError::Disconnected) => host_err("bridge dropped"),
+                }
             });
             let outcome = engine.run(
                 &exec_id_run,
@@ -99,9 +126,11 @@ impl ScriptRuntime for ScriptRuntimeService {
         });
 
         // ストリームハンドラ: bridge の HostCall を server へ送り、HostCallResult を待つ。
+        // permit をこのタスクへ move し、実行完了（drive_stream 終了）で解放する。
         let exec_id_stream = exec_id.clone();
         tokio::spawn(async move {
             drive_stream(bridge_rx, inbound, out_tx, exec_id_stream).await;
+            drop(permit);
         });
 
         let stream = ReceiverStream::new(out_rx);
@@ -134,13 +163,19 @@ async fn drive_stream(
                     let _ = resp_tx.send(host_err("stream closed"));
                     break;
                 }
-                // server から HostCallResult を待つ。
+                // server から HostCallResult を待つ。exec_id と seq が一致するものだけ受理する
+                // （応答ストリームは信頼境界＝古い/順序違いの seq や壊れた JSON を弾く）。
+                let expected_seq = call.seq;
                 let resp = match inbound.next().await {
                     Some(Ok(ServerToRuntime {
                         msg: Some(server_to_runtime::Msg::HostCallResult(r)),
-                    })) if r.exec_id == exec_id => {
-                        let payload: serde_json::Value = serde_json::from_str(&r.payload_json)
-                            .unwrap_or(serde_json::Value::Null);
+                    })) if r.exec_id == exec_id && r.seq == expected_seq => {
+                        let Ok(payload) =
+                            serde_json::from_str::<serde_json::Value>(&r.payload_json)
+                        else {
+                            let _ = resp_tx.send(host_err("malformed HostCallResult payload"));
+                            continue;
+                        };
                         if r.ok {
                             HostResponse::Ok(payload)
                         } else {
@@ -181,28 +216,29 @@ async fn drive_stream(
     }
 }
 
+/// 要求上限を設定天井へ**縮小のみ**でクランプする（0＝未指定は天井を使う）。
+/// ノード/ユーザ由来の値をそのまま信じず、既定より緩い予算を要求しても拡大させない（script.md §4.3）。
+fn shrink_to(requested: u64, ceiling: u64) -> u64 {
+    if requested == 0 {
+        ceiling
+    } else {
+        requested.min(ceiling)
+    }
+}
+
 fn to_limits(limits: Option<&proto::Limits>) -> Limits {
     let d = Limits::default();
-    match limits {
-        Some(l) => Limits {
-            fuel: if l.fuel == 0 { d.fuel } else { l.fuel },
-            memory_bytes: if l.memory_bytes == 0 {
-                d.memory_bytes
-            } else {
-                l.memory_bytes as usize
-            },
-            epoch_deadline: if l.epoch_deadline_ms == 0 {
-                d.epoch_deadline
-            } else {
-                std::time::Duration::from_millis(u64::from(l.epoch_deadline_ms))
-            },
-            max_host_calls: if l.max_host_calls == 0 {
-                d.max_host_calls
-            } else {
-                u64::from(l.max_host_calls)
-            },
-        },
-        None => d,
+    let Some(l) = limits else { return d };
+    let mem_ceiling = d.memory_bytes as u64;
+    let epoch_ceiling = u64::try_from(d.epoch_deadline.as_millis()).unwrap_or(u64::MAX);
+    Limits {
+        fuel: shrink_to(l.fuel, d.fuel),
+        memory_bytes: shrink_to(u64::from(l.memory_bytes), mem_ceiling) as usize,
+        epoch_deadline: std::time::Duration::from_millis(shrink_to(
+            u64::from(l.epoch_deadline_ms),
+            epoch_ceiling,
+        )),
+        max_host_calls: shrink_to(u64::from(l.max_host_calls), d.max_host_calls),
     }
 }
 

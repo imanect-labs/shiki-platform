@@ -156,6 +156,21 @@ impl ExecOutcome {
 
     pub(crate) fn from_envelope(envelope: &str, store: &mut Store<HostState>) -> Self {
         let logs = std::mem::take(&mut store.data_mut().logs);
+        // フレーム違反（未知 API・最大呼出超過等）が記録されていたら、ゲストがエラーを握り潰して
+        // ok=true を返してきても**成功として受理しない**（侵害されたフレームを成功扱いにしない・PIT-35）。
+        if let Some(violation) = store.data().frame_violation.clone() {
+            return ExecOutcome {
+                ok: false,
+                value: None,
+                error: Some((
+                    format!("frame violation: {violation}"),
+                    "frame_violation".to_string(),
+                    false,
+                )),
+                termination: Termination::FrameViolation(violation),
+                logs,
+            };
+        }
         let parsed: Value = serde_json::from_str(envelope).unwrap_or(Value::Null);
         let ok = parsed.get("ok").and_then(Value::as_bool).unwrap_or(false);
         if ok {
