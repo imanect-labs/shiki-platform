@@ -1,0 +1,4 @@
+# Docker 再現ビルドの中間成果物（再生成可能・巨大な wasi-sdk を含むためコミットしない）。
+/target-docker/
+/shiki_qjs_guest.wasm
+/Cargo.lock

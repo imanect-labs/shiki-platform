@@ -4,7 +4,15 @@ members = ["crates/*"]
 # vendor/secure-exec は我々が所有するフォーク（独自 workspace）。shiki の workspace には入れず、
 # path 依存で参照する。clippy/test/llvm-cov/machete/file-size は自作コードのみに当たり、
 # cargo deny だけが依存グラフ全体（V8 等）を検査する。docs/sandbox/fork-policy.md 参照。
-exclude = ["vendor/secure-exec"]
+#
+# script-runtime/guest は wasm32-wasip1 専用のゲスト（wasi-sdk 要・別ターゲット）、
+# script-runtime/fuzz は cargo-fuzz 専用クレート。いずれもメイン workspace から除外し、
+# 前者は再現ビルドした wasm を assets/ に vendor する（docs/script-runtime-guest.md）。
+exclude = [
+    "vendor/secure-exec",
+    "crates/script-runtime/guest",
+    "crates/script-runtime/fuzz",
+]
 
 [workspace.package]
 edition = "2021"

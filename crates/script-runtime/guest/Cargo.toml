@@ -1,0 +1,26 @@
+# shiki script ゲスト（wasm32-wasip1・QuickJS/javy ベース）。
+#
+# **独立ワークスペース**（メイン shiki workspace から exclude）。wasi-sdk + libclang を要する
+# ため CI ではビルドせず、scripts/build-qjs-guest.sh（pinned Docker）で再現ビルドして成果物
+# crates/script-runtime/assets/shiki_qjs_guest.wasm をコミットする（vendor/secure-exec と
+# 同じ統治モデル・docs/script-runtime-guest.md）。
+[package]
+name = "shiki-qjs-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "UNLICENSED"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# QuickJS（QuickJS-ng・MIT）を wasm 上で駆動する javy（Apache-2.0・Bytecode Alliance）。
+javy = { version = "8", features = ["json"] }
+anyhow = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1

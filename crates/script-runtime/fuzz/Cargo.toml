@@ -1,0 +1,37 @@
+# cargo-fuzz ターゲット（フレームデコーダ・コンパイル入力）。**独立ワークスペース**。
+# PIT-35: script-runtime は敵対的入力前提のため、フレーム検証とコンパイラを fuzzing する。
+# CI ではビルド＋短時間 smoke（-runs 制限）、常時 fuzz は nightly ジョブ（提案）。
+[package]
+name = "shiki-script-runtime-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "UNLICENSED"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+shiki-script-runtime = { path = ".." }
+serde_json = "1"
+
+[[bin]]
+name = "fuzz_frames"
+path = "fuzz_targets/fuzz_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_compile"
+path = "fuzz_targets/fuzz_compile.rs"
+test = false
+doc = false
+bench = false
+
+[package.metadata.cargo-machete]
+# fuzz_targets の bin が参照する（machete が bin 参照を追えない）。
+ignored = ["libfuzzer-sys", "serde_json", "shiki-script-runtime"]
+
+[workspace]
