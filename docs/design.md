@@ -337,7 +337,7 @@ flowchart LR
   web ツール有効時は「検索結果由来のホストへの**時限的な動的 allowlist**（当該 run 限定・宛先を監査記録・
   シークレット添付は不可）」をサンドボックスの egress 制御に追加する。管理者ポリシーでドメイン拒否リストを重ねられる。
 - **deepresearch = agent-core のプリセット**（専用エンジンを作らない）: 「長ホライズン＋web.search/rag.search/
-  document.write＋サンドボックス」構成の first-party prompt template（FR-7 の枠）。成果物はストレージ保存→自動 RAG 対象化。
+  document.write＋サンドボックス」構成の first-party skill（FR-7 の枠）。成果物はストレージ保存→自動 RAG 対象化。
 - **会話履歴は tenant スコープのスキーマで新設（SAAS.1 / #91）**: thread/message テーブルは既存規約を踏襲し
   全行 `tenant_id text not null`＋複合 PK/unique に `tenant_id` を含める（例: `node` の
   `(org, tenant_id, parent_id, name)`）。thread の OpenFGA オブジェクトも `thread:<tenant>|<id>` になるよう
@@ -376,7 +376,7 @@ flowchart LR
   セマンティックキャッシュ・高度ルーティング・仮想キーは後追い。
 - **モデルカタログ**: テナント管理者が「許可モデルリスト＋既定モデル＋モデル別単価（課金単価表と同居）＋
   国外処理バッジ（データレジデンシ明示）」を管理。ユーザーのモデル選択 UI はカタログの範囲内。
-  prompt template のモデル既定（FR-7）もここに整合。
+  skill のモデル既定（FR-7）もここに整合。
 - **思考強度の正規化**: `effort: low/medium/high` を内部正規形に持ち、各アダプタが reasoning budget /
   thinking tokens に翻訳。UI は3段階セレクタのみ（プロバイダ固有ノブは晒さない）。
 - `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。
@@ -428,21 +428,23 @@ flowchart TB
 - ⚠️ 落とし穴: gVisor/FC 制御層は [PIT-22〜25](./design-caveats.md)、wasm ティア固有は [PIT-32〜33](./design-caveats.md)
   （フォーク保守・wasm 脱出時の blast radius・wasm コマンドパッケージのサプライチェーン）。
 
-### 4.7 generative UI / ミニアプリ / prompt template
+### 4.7 generative UI / ミニアプリ / skill
 
-> 📝 **ミニアプリの定義は 2026-07 改訂（#97・[miniapp-platform.md §6](./miniapp-platform.md)）で更新**:
-> 下記「ミニアプリ = prompt template＋UIスペック＋許可ツール」は Phase 6 が単体で届ける**宣言的レイヤー（A）の初期形**。
-> workflow-engine（Phase 10）・構造化データサービス（Phase 9）確定を受けた**完全な定義（正本）は
-> UIスペック＋テーブル＋ワークフロー＋skill＋（任意）script**。詳細は [miniapp-platform.md §6](./miniapp-platform.md)。
+> 📝 **2026-07-07 改訂（#97・[miniapp-platform.md §6](./miniapp-platform.md)）**: Phase 10 Stage A
+> （workflow-engine・script-runtime・secrets・artifact共通基盤）が前倒しで実装済みのため、本節は
+> **workflow-engine が既にある前提**で書く。また**旧 prompt template は skill に統合**する（呼称・定義をFR-7/FR-14へ一本化）。
+> ミニアプリの完全な定義（UIスペック＋**テーブル**＋ワークフロー＋skill＋script）のうち**テーブル（構造化データ）だけが
+> Phase 9 待ち**。詳細・出典は [miniapp-platform.md §6](./miniapp-platform.md)。
 
 - **生成UI**: LLM→検証済みJSONスペック→信頼コンポーネントカタログで描画（任意コード実行なし）。
-- **ミニアプリ（Phase 6 初期形）** = prompt template ＋ UIスペック ＋ 許可ツール、のバージョン付きアーティファクト。
+- **ミニアプリ** = skill ＋ UIスペック ＋ ワークフロー（＋Phase 9合流後はテーブル）、のバージョン付きアーティファクト。
   バックエンド束縛は宣言済み・認可済みアクション経由のみ（アンビエント権限なし）。ReBACで共有。
-  Phase 9/10 合流後の完全形は [miniapp-platform.md §6](./miniapp-platform.md) が正本。
-- **prompt template** = システムプロンプト＋知識スコープ（RAG範囲限定）＋許可ツール＋モデル既定＋few-shot。
-  知識スコープで絞っても最終可読性は個人ReBACで再チェック。**ミニアプリの構成要素ではなく独立した共有可能アーティファクト**
-  （ミニアプリのワークフローが `llm.invoke`/`agent.invoke` ノードで間接的に類似設定を参照することはあるが、
-  miniapp-platform.md §6 の束にはtemplateは含まれない）。
+  完全な定義・出典は [miniapp-platform.md §6](./miniapp-platform.md)。
+- **skill**（旧 prompt template を統合）= **SKILL.md 相当の指示文**（frontmatter: name/description ＋ 用途・
+  振る舞いを書く本文。Claude Code の skill と同型）＋知識スコープ（RAG範囲限定）＋許可ツール＋モデル既定＋few-shot
+  （旧 prompt template の構成要素）＋（任意）shiki script＋宣言ツール/スコープ＋（任意）参照資料。
+  知識スコープで絞っても最終可読性は個人ReBACで再チェック。呼び出し面は①チャット開始時の初期コンテキスト適用
+  ②エージェントへのツールマウント（agent.invoke）③ワークフローの skill ノード、の3つ。
 - すべて「共有可能アーティファクト＋ReBAC＋監査」の共通枠に収まる。
 - カタログにはチャート（vega-lite 的サブセットのチャートスペック）と地図（タイル表示＋ピン）を含む。
   地図タイルは外部依存（OSM タイルサーバ）＝「外部接続必須機能」区分（NFR-2 参照）。オンプレは自己ホストタイル or 無効。

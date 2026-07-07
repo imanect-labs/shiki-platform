@@ -73,7 +73,7 @@
 - **依存**: 3.3, 2.10
 - **仕様**:
   - `doc_search(query, scope?)` ツール。Phase 2 の permission-aware 検索を**呼び出し時のユーザー権限で**実行。
-  - 戻りは引用チャンク（content blockの citation に変換）。prompt template の知識スコープがあれば反映、
+  - 戻りは引用チャンク（content blockの citation に変換）。skill（Phase 6・旧 prompt template）の知識スコープがあれば反映、
     ただし**最終可読性は個人ReBACで再チェック**（Task 2.7）。
 - **受け入れ条件**:
   - [ ] LLMが doc_search を呼ぶと権限を守った引用が返る
