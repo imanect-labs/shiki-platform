@@ -10,6 +10,7 @@
 //! 制御ノード（branch/join 等）は [`store`] の前進ロジックが直接扱う（能力を呼ばない・pure）。
 
 pub mod graph;
+pub mod launcher;
 pub mod model;
 pub mod readiness;
 pub mod store;
@@ -19,6 +20,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 
+pub use launcher::{LauncherError, WorkflowRunLauncher};
 pub use model::{idempotency_key, RunStatus, StepStatus};
 pub use store::{RunStore, RunStoreError};
 pub use worker::{WorkerConfig, WorkflowWorker};

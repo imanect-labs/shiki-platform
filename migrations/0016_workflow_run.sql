@@ -113,7 +113,8 @@ create table effect_journal (
     -- 操作のダイジェスト `sha256(api名＋正規化パラメータ)`（キー衝突かつ digest 不一致は permanent）。
     op_digest       text        not null,
     -- 記録済み結果の要約（再実行時に no-op で返す）。
-    result_summary  jsonb       not null default '{}'::jsonb,
+    -- 予約時は NULL（副作用実行前・占有のみ）、record 時に確定結果を書く。NULL=実行中／未完。
+    result_summary  jsonb,
     created_at      timestamptz not null default now(),
     -- UNIQUE(tenant_id, idempotency_key) で内部能力の副作用を高々 1 回にする。
     primary key (tenant_id, idempotency_key)

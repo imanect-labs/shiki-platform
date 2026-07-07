@@ -31,6 +31,9 @@ utoipa.workspace = true
 # 条件木の matches 演算子（保存時コンパイル検証・バックトラックなし）。
 regex = "1"
 redis = { workspace = true }
+# effect_journal の op_digest（sha256）と http.request の URL ホスト部リテラル抽出。
+sha2 = { workspace = true }
+url = "2"
 sqlx.workspace = true
 shiki-durable.workspace = true
 async-trait.workspace = true
@@ -50,7 +53,7 @@ proptest.workspace = true
 
 # lib 名 authz/artifact で参照するため machete が誤検出する。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-artifact", "shiki-script-runtime", "shiki-secrets", "shiki-durable"]
+ignored = ["shiki-authz", "shiki-artifact", "shiki-script-runtime", "shiki-durable", "shiki-secrets"]
 
 [lints]
 workspace = true

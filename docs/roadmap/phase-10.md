@@ -19,6 +19,15 @@
 
 ## 部分前倒し（Stage A / Stage B・2026-07-07 決定・issue #121）
 
+> **実装状況（2026-07-07）**: Stage A のエンジン核心を **10 本の stacked PR 系列**（#126→#128→#130→#132→
+> #134→#136→#138→#140→#142→本 PR）で実装した。各 PR は独立に CI 全緑（coverage 80% 含む）。
+> クレート新設: `crates/{durable, artifact, secrets, script-runtime, workflow-engine}`。
+> マイグレーション 0014〜0019。全 Stage A タスク（10.0/6.1/10.7/10.9/10.1a/10.2/10.4a/10.3/10.5/10.6a/10.8/10.10）の
+> コア（永続化・実行エンジン・委譲・トリガ・制御/リトライ・能力ゲートウェイ/effect_journal/http.request）を
+> 実 Postgres＋live OpenFGA＋Redis の結合テストで検証。**残（本 PR 後の結線）**: server 起動時の
+> ワーカー/スケジューラループ spawn・storage/rag/llm/agent ノードの各チョークポイント実結線・compose e2e。
+> P10-A0（outbox per-consumer fan-out）は event トリガの前提として別途。
+
 > **human 決定（2026-07-07）**: Phase 10 のエンジン核心に**部分前倒しで着手**する。詳細設計（docs/workflow/・#119）が
 > 完了しており、依存分析の結果、本フェーズの本質的ブロッカーは Phase 9 全体ではなく **6.1（artifact 共通枠）と
 > 9.x の一部（data ノード・skill レジストリ・同意 UI パターン）のみ**。エンジン核心は既存実装

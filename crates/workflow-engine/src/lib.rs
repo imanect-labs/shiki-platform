@@ -6,10 +6,12 @@
 //! - [`ir::validate`]: 保存時検証 V1〜V7（全件エラー収集）。
 //! - [`store`]: IR を artifact（kind=workflow）として保存・バージョン管理・取得する薄い層。
 
+pub mod capability;
 pub mod concurrency;
 pub mod control;
 pub mod delegation;
 pub mod ir;
+pub mod nodes;
 pub mod ratelimit;
 pub mod retry;
 pub mod run;
@@ -17,6 +19,10 @@ pub mod scheduler;
 pub mod store;
 pub mod vocab;
 
+pub use capability::{
+    check_scope_ceiling, effective_scopes, CapabilityAudit, EffectJournal, JournalDecision,
+    ScopeCeiling,
+};
 pub use concurrency::{ConcurrencyStore, ScopeKind, Slot};
 pub use control::{branch_port, switch_port};
 pub use delegation::{DelegationError, DelegationStore, GrantRequest, RunAdmission};
@@ -26,7 +32,7 @@ pub use ratelimit::{BucketConfig, TokenBucket};
 pub use retry::{backoff_with_jitter, classify, RetryClass};
 pub use run::{
     NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus, WorkerConfig,
-    WorkflowWorker,
+    WorkflowRunLauncher, WorkflowWorker,
 };
 pub use scheduler::{LeaderLease, RunLauncher, SchedulerStore};
 pub use store::{WorkflowStore, WorkflowStoreError};
