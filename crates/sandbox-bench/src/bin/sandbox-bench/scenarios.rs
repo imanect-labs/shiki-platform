@@ -88,13 +88,14 @@ async fn measure_steps(
     let python_ok =
         exec_code == Some(0) && py_code == Some(0) && out.trim() == expected.to_string();
 
-    // 1 MiB の put/get 往復。
+    // 1 MiB の put/get 往復。blob 生成は計測区間の**外**で行う（memcpy を io_ms に混ぜない）。
     let blob = vec![0x5au8; 1024 * 1024];
+    let blob_len = blob.len();
     let t = Instant::now();
-    inst.put_file("/workspace/blob.bin", blob.clone()).await?;
+    inst.put_file("/workspace/blob.bin", blob).await?;
     let got = inst.get_file("/workspace/blob.bin").await?;
     let io_ms = ms(t);
-    if got.len() != blob.len() {
+    if got.len() != blob_len {
         return Err(sandbox_client::SandboxError::Internal(
             "put/get size mismatch".into(),
         ));

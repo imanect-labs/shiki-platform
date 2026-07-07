@@ -105,11 +105,13 @@ impl GvisorBackend {
     ) -> Result<(), SandboxError> {
         for _ in 0..50 {
             // 各 `runsc state` にもタイムアウトを敷く（hang した runsc で create 全体が詰まらないように）。
+            // kill_on_drop: タイムアウトで future を drop したら hang した子も確実に kill/reap する。
             let fut = runsc_base(runsc, root_dir, netns_pid, network)
                 .arg("state")
                 .arg(id)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
+                .kill_on_drop(true)
                 .output();
             if let Ok(Ok(o)) = tokio::time::timeout(Duration::from_secs(3), fut).await {
                 if let Ok(text) = String::from_utf8(o.stdout) {

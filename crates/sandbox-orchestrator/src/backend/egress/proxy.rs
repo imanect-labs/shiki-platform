@@ -22,11 +22,18 @@ pub struct EgressAudit {
 
 /// 覗いたバイト列からホスト名と判定を導く（純関数・テスト可）。
 ///
-/// TLS ClientHello の SNI を先に試し、無ければ HTTP Host を試す（ポートに依らず・カスタムポートの
-/// 平文 HTTP でもホスト名を取れる）。ポートは allowlist 判定にのみ使う。
+/// **先頭バイトでプロトコルを確定する**: TLS レコード（`0x16`）なら SNI のみ、そうでなければ HTTP Host。
+/// TLS 断片を HTTP としてスキャンする**フォールバックはしない**——さもないと、ゲストが TLS 断片に
+/// 偽の `Host: allowed` を紛れ込ませて allowlist を通し、実際は別ホストへ TLS する回避が可能になる（P1）。
+/// TLS 断片で SNI がまだ読めない場合は `None`（呼び出し側が追加バイトを待つ・HTTP に落とさない）。
+/// ポートは allowlist 判定にのみ使う。
 #[must_use]
 pub fn classify(port: u16, peeked: &[u8], egress: &Egress) -> (Option<String>, Decision) {
-    let host = sni::parse_tls_sni(peeked).or_else(|| sni::parse_http_host(peeked));
+    let host = if peeked.first() == Some(&0x16) {
+        sni::parse_tls_sni(peeked)
+    } else {
+        sni::parse_http_host(peeked)
+    };
     let decision = match &host {
         Some(h) => rules::evaluate(egress, h, port),
         None => Decision::DenyNoHostname,
@@ -70,7 +77,11 @@ fn is_forbidden_v4_mapped(v4: std::net::Ipv4Addr) -> bool {
     is_forbidden_upstream(IpAddr::V4(v4))
 }
 
-fn allow_private_upstream() -> bool {
+/// SSRF フィルタ緩和フラグを env から一度だけ読む（`EgressStack` 起動時に評価してタスクへ渡す）。
+/// これにより proxy 本体はプロセス全体の env に依存せず、`serve_port` の引数で制御される（テストの
+/// env 競合を避ける）。本番では未設定＝内部 IP を必ず遮断する。
+#[must_use]
+pub(super) fn allow_private_from_env() -> bool {
     std::env::var("SANDBOX_EGRESS_ALLOW_PRIVATE").as_deref() == Ok("1")
 }
 
@@ -80,6 +91,7 @@ pub(super) async fn serve_port(
     port: u16,
     egress: Arc<Egress>,
     audit: EgressAudit,
+    allow_private: bool,
 ) {
     loop {
         let (client, _peer) = match listener.accept().await {
@@ -92,7 +104,7 @@ pub(super) async fn serve_port(
         let egress = Arc::clone(&egress);
         let audit = audit.clone();
         tokio::spawn(async move {
-            handle_conn(client, port, &egress, &audit).await;
+            handle_conn(client, port, &egress, &audit, allow_private).await;
         });
     }
 }
@@ -128,7 +140,13 @@ async fn peek_and_classify(
     }
 }
 
-async fn handle_conn(mut client: TcpStream, port: u16, egress: &Egress, audit: &EgressAudit) {
+async fn handle_conn(
+    mut client: TcpStream,
+    port: u16,
+    egress: &Egress,
+    audit: &EgressAudit,
+    allow_private: bool,
+) {
     let (host, decision) = peek_and_classify(&client, port, egress).await;
     let host_str = host.as_deref().unwrap_or("<none>");
     tracing::info!(
@@ -147,7 +165,7 @@ async fn handle_conn(mut client: TcpStream, port: u16, egress: &Egress, audit: &
     let Some(host) = host else { return };
 
     // 実ホストへ接続する前に、解決先 IP を SSRF フィルタで検査する（内部/予約レンジを弾く）。
-    let Some(mut upstream) = connect_filtered(&host, port).await else {
+    let Some(mut upstream) = connect_filtered(&host, port, allow_private).await else {
         return;
     };
     // peek で消費していないため、client の先頭バイトはそのまま upstream へ流れる。
@@ -155,8 +173,7 @@ async fn handle_conn(mut client: TcpStream, port: u16, egress: &Egress, audit: &
 }
 
 /// ホスト名を解決し、許可された（非内部）IP にのみ接続する。
-async fn connect_filtered(host: &str, port: u16) -> Option<TcpStream> {
-    let allow_private = allow_private_upstream();
+async fn connect_filtered(host: &str, port: u16, allow_private: bool) -> Option<TcpStream> {
     let resolved = tokio::time::timeout(
         Duration::from_secs(5),
         tokio::net::lookup_host((host, port)),
@@ -249,6 +266,18 @@ mod tests {
     }
 
     #[test]
+    fn tls_fragment_not_scanned_as_http() {
+        // TLS レコード（0x16 開始）に偽 Host を紛れ込ませても HTTP として拾わない（allowlist バイパス防止・P1）。
+        let e = allow("evil-real-sni.test", 443);
+        let mut bytes = vec![0x16u8, 0x03, 0x01, 0x00, 0x50];
+        bytes.extend_from_slice(b"\r\nHost: evil-real-sni.test\r\n\r\n");
+        let (host, decision) = classify(443, &bytes, &e);
+        // SNI としては読めない断片 → HTTP フォールバックせず None（追加バイト待ち＝遮断）。
+        assert_eq!(host, None);
+        assert_eq!(decision, Decision::DenyNoHostname);
+    }
+
+    #[test]
     fn classify_handles_http_on_custom_port() {
         // カスタムポートの平文 HTTP も Host からホスト名を取れる（SNI→HTTP のフォールバック）。
         let e = allow("api.example.com", 8080);
@@ -301,8 +330,6 @@ mod tests {
     /// プロキシ全体のループバック結合（netns 不要）: 許可 SNI は上流へ中継、拒否 SNI は切断。
     #[tokio::test]
     async fn proxy_relays_allowed_and_blocks_denied() {
-        // ループバック upstream を使うため SSRF フィルタをテスト内だけ緩める（本番は未設定）。
-        std::env::set_var("SANDBOX_EGRESS_ALLOW_PRIVATE", "1");
         // 上流エコーサーバ。
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let up_addr = upstream.local_addr().unwrap();
@@ -327,7 +354,9 @@ mod tests {
             tenant_id: "t".into(),
             sandbox_id: "s".into(),
         };
-        tokio::spawn(serve_port(proxy, port, e, audit));
+        tokio::spawn(serve_port(
+            proxy, port, e, audit, /* allow_private */ true,
+        ));
 
         // 許可: SNI=127.0.0.1 → 上流エコー。
         let mut c = TcpStream::connect(proxy_addr).await.unwrap();

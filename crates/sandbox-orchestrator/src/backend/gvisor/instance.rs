@@ -123,12 +123,13 @@ impl GvisorInstance {
 
     /// この exec の in-guest 上限秒（`timeout(1)` 用）。
     ///
-    /// リクエストの `timeout_ms` を尊重し（未指定は limits の exec_timeout）、壁時計上限で頭打ちにする。
-    /// ミリ秒は切り上げ、最低 1 秒（`as_secs()` の切り捨てで短い timeout が 0 秒扱いになるのを防ぐ）。
+    /// リクエストの `timeout_ms` を尊重するが、**exec 上限と壁時計の両方**で頭打ちにする
+    /// （リクエストが exec 上限を超えて実行時間を引き延ばせないように）。ミリ秒は切り上げ・最低 1 秒。
     fn timeout_secs(&self, req_timeout_ms: Option<u64>) -> u64 {
         let wall_ms = u64::try_from(self.wall_clock.as_millis()).unwrap_or(u64::MAX);
         let exec_ms = u64::try_from(self.exec_timeout.as_millis()).unwrap_or(u64::MAX);
-        let ms = req_timeout_ms.unwrap_or(exec_ms).min(wall_ms).max(1);
+        let cap = exec_ms.min(wall_ms);
+        let ms = req_timeout_ms.unwrap_or(cap).min(cap).max(1);
         ms.div_ceil(1000).max(1)
     }
 }
