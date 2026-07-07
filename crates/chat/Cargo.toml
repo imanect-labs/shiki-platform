@@ -17,6 +17,8 @@ shiki-rag.workspace = true
 shiki-llm-gateway.workspace = true
 shiki-agent-core.workspace = true
 shiki-websearch.workspace = true
+# claim/リース/fencing/(id,seq) 追記/Redis pub/sub の共通プリミティブ（Task 10.0）。
+shiki-durable.workspace = true
 
 tokio.workspace = true
 sqlx.workspace = true
@@ -28,8 +30,6 @@ async-trait.workspace = true
 futures.workspace = true
 chrono.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-# BFF セッションと同じ Redis を pub/sub に再利用（best-effort 配信）。
-redis.workspace = true
 # チャットの DTO / SSE イベント型を単一定義し api 層に手書きミラーを作らない（codegen が正）。
 utoipa.workspace = true
 
@@ -56,6 +56,7 @@ ignored = [
     "shiki-llm-gateway",
     "shiki-agent-core",
     "shiki-websearch",
+    "shiki-durable",
 ]
 
 [lints]
