@@ -126,14 +126,37 @@ async fn reenable_with_narrower_grants_revokes_dropped_object() {
     // A と B を委譲。
     let folder_a = alice.ns().folder("A");
     let folder_b = alice.ns().folder("B");
-    fga.write_tuple(&alice.subject(), Relation::Viewer, &folder_a).await.unwrap();
-    fga.write_tuple(&alice.subject(), Relation::Viewer, &folder_b).await.unwrap();
+    fga.write_tuple(&alice.subject(), Relation::Viewer, &folder_a)
+        .await
+        .unwrap();
+    fga.write_tuple(&alice.subject(), Relation::Viewer, &folder_b)
+        .await
+        .unwrap();
     let both = vec![
-        GrantRequest { scope: "storage.read".into(), object: folder_a.clone(), relation: Relation::Viewer },
-        GrantRequest { scope: "storage.read".into(), object: folder_b.clone(), relation: Relation::Viewer },
+        GrantRequest {
+            scope: "storage.read".into(),
+            object: folder_a.clone(),
+            relation: Relation::Viewer,
+        },
+        GrantRequest {
+            scope: "storage.read".into(),
+            object: folder_b.clone(),
+            relation: Relation::Viewer,
+        },
     ];
-    store.enable(&alice, wf, 1, &["storage.read".into()], &both).await.expect("enable A+B");
-    assert!(fga.check(&wf_subject, Relation::Viewer, &folder_b, authz::Consistency::HigherConsistency).await.unwrap());
+    store
+        .enable(&alice, wf, 1, &["storage.read".into()], &both)
+        .await
+        .expect("enable A+B");
+    assert!(fga
+        .check(
+            &wf_subject,
+            Relation::Viewer,
+            &folder_b,
+            authz::Consistency::HigherConsistency
+        )
+        .await
+        .unwrap());
 
     // A のみで再有効化 → B の委譲タプル・行が撤去される。
     let only_a = vec![GrantRequest {
@@ -141,13 +164,30 @@ async fn reenable_with_narrower_grants_revokes_dropped_object() {
         object: folder_a.clone(),
         relation: Relation::Viewer,
     }];
-    store.enable(&alice, wf, 2, &["storage.read".into()], &only_a).await.expect("re-enable A");
+    store
+        .enable(&alice, wf, 2, &["storage.read".into()], &only_a)
+        .await
+        .expect("re-enable A");
     assert!(
-        fga.check(&wf_subject, Relation::Viewer, &folder_a, authz::Consistency::HigherConsistency).await.unwrap(),
+        fga.check(
+            &wf_subject,
+            Relation::Viewer,
+            &folder_a,
+            authz::Consistency::HigherConsistency
+        )
+        .await
+        .unwrap(),
         "A は残る"
     );
     assert!(
-        !fga.check(&wf_subject, Relation::Viewer, &folder_b, authz::Consistency::HigherConsistency).await.unwrap(),
+        !fga.check(
+            &wf_subject,
+            Relation::Viewer,
+            &folder_b,
+            authz::Consistency::HigherConsistency
+        )
+        .await
+        .unwrap(),
         "B の委譲は撤去される（同意から外したオブジェクトに到達させない）"
     );
     let active_b: i64 = sqlx::query_scalar(
