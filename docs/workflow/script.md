@@ -310,12 +310,13 @@ Shiki.data.transition(table: string, id: string, action: string, args?: Record<s
 ### 6.4 `Shiki.storage.read` / `list` / `write`（`storage.read` / `storage.write`）
 
 ```typescript
-Shiki.storage.read(fileRef: string): { bytes: Uint8Array; contentType: string }; // ≤10MB（初期値）
+Shiki.storage.read(fileRef: string): { bytes: Uint8Array; contentType: string }; // ≤4MB（初期値・ブリッジ応答上限 §4.3 と一致）
 Shiki.storage.list(folderRef: string): { entries: { id: string; name: string; kind: "file" | "folder" }[] };
 Shiki.storage.write(folderRef: string, name: string, bytes: Uint8Array, contentType?: string): { fileRef: string; version: number };
 ```
 
 - `write` は新バージョンを作る（engine-dedup）。読み書きとも StorageService（既存チョークポイント）を経由し、権限・監査・再索引が無改造で効く。
+- `read` の上限はブリッジの server→runtime 応答上限（§4.3・4MB）に一致させる。それ以上のファイルを扱う処理は script の守備範囲外であり、storage ノード（spill 対応・[engine.md](./engine.md) §12）または `agent.invoke`（サンドボックスの仮想 FS）へ昇格させる。
 - エラー: サイズ超過は `payload_too_large`、権限不足は `permission_denied`。
 
 ### 6.5 `Shiki.rag.search`（`rag.query`）
@@ -395,7 +396,7 @@ Shiki.fail(message: string, opts?: { permanent?: boolean }): never;
 - **出力**: `main` の戻り値（JSON 化可能・≤256KB＝初期値）が step output になる。JSON 化不能・上限超過は step 失敗。
 - **タイムアウト・リトライ**: ノードの `retry` / `timeout_sec` 設定に従う（[ir.md](./ir.md) §4・A7 で `script.run` は timeout 既定 30s／最大 360s＝初期値）。
 - **at-least-once**: script は**再実行され得る**（リース失効・クラッシュ再実行）。冪等にしたい副作用は次の 2 系統で守る:
-  - 内部能力（data / storage / notify / workflow.start）は **host 側 dedupe が既定で効く**（effect_journal・[engine.md](./engine.md) §7）。
+  - 内部能力（data / storage / notify / workflow.start）は **host 側 dedupe が既定で効く**（effect_journal・[engine.md](./engine.md) §7）。1 実行内で複数の内部副作用を呼ぶ場合、dedupe キーは「step 冪等キー＋実行内の効果的呼び出し連番」で呼び出しごとに独立し、リトライ間で同じ連番に**別の操作**が来た場合（操作 digest 不一致）は黙って記録済み結果を返さず permanent エラーになる。**副作用を呼ぶ順序・内容は `input` にのみ依存させること**（`Date.now()` / `Math.random()` で副作用の分岐を変えない）。
   - 外部 http は **exactly-once を約束しない**。`Shiki.context.idempotencyKey` を `Idempotency-Key` ヘッダに注入して外部側の冪等性に委ねる。
 - **冪等性区分**: `script.run` ノードは best-effort（script 次第・engine が冪等キーを供給・[ir.md](./ir.md) §7）。
 
