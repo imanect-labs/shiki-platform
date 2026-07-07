@@ -56,9 +56,8 @@
     ＋ `artifact_version(id, artifact_id, version, body JSONB, created_by, created_at)`。**不変バージョン**追記方式。
   - OpenFGA に `artifact` 型と relations（viewer/editor/owner）。個人/ロール共有・解除を Phase 3.7 と同じ ReBAC 枠で。
   - kind を持たせ Task 6.7/6.10 が同じテーブル・同じ共有API・同じ監査経路に乗る共通枠とする。
-  - ⚠️ **既存 `ArtifactKind` には `prompt_template` と `skill` が別 kind として残っている**（旧設計の名残）。
-    本改訂（skill への統合）を受け、Task 6.7 以降は `kind=skill` のみを新規発行し、`prompt_template` kind は
-    使用を停止する（enum/migration の削除は別途クリーンアップとして human と合意の上で行う）。
+  - ✅ `ArtifactKind::PromptTemplate`（旧設計の名残）は skill への統合を受けて削除済み（`crates/artifact`・
+    migration 0014）。`kind=skill` のみが正。
 - **受け入れ条件**:
   - [ ] アーティファクトを作成し新バージョンを追記でき、過去バージョンが不変で取得できる
   - [ ] アーティファクトを個人/ロールに共有・解除でき、権限のないユーザーが参照できない

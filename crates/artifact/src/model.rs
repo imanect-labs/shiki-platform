@@ -7,14 +7,13 @@ use uuid::Uuid;
 
 /// アーティファクト種別（閉じた集合）。
 ///
-/// Stage A で使用するのは `workflow`（IR）のみ。他 variant は Phase 6（prompt_template /
-/// ui_spec / mini_app）・Phase 10 Stage B（skill / script）の予約で、追加はこの enum と
+/// Stage A で使用するのは `workflow`（IR）のみ。他 variant は Phase 6（ui_spec / mini_app / skill。
+/// skill は旧 prompt template を統合した kind）・Phase 10 Stage B（script）の予約で、追加はこの enum と
 /// migration の CHECK 制約の両方を更新する（DB と語彙の二重定義はここで閉じる）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
     Workflow,
-    PromptTemplate,
     UiSpec,
     MiniApp,
     Skill,
@@ -26,7 +25,6 @@ impl ArtifactKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             ArtifactKind::Workflow => "workflow",
-            ArtifactKind::PromptTemplate => "prompt_template",
             ArtifactKind::UiSpec => "ui_spec",
             ArtifactKind::MiniApp => "mini_app",
             ArtifactKind::Skill => "skill",
@@ -38,7 +36,6 @@ impl ArtifactKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "workflow" => Some(ArtifactKind::Workflow),
-            "prompt_template" => Some(ArtifactKind::PromptTemplate),
             "ui_spec" => Some(ArtifactKind::UiSpec),
             "mini_app" => Some(ArtifactKind::MiniApp),
             "skill" => Some(ArtifactKind::Skill),
@@ -122,7 +119,6 @@ mod tests {
     fn kind_str_roundtrip_all_variants() {
         for k in [
             ArtifactKind::Workflow,
-            ArtifactKind::PromptTemplate,
             ArtifactKind::UiSpec,
             ArtifactKind::MiniApp,
             ArtifactKind::Skill,
@@ -142,8 +138,8 @@ mod tests {
     #[test]
     fn kind_serde_snake_case() {
         assert_eq!(
-            serde_json::to_string(&ArtifactKind::PromptTemplate).unwrap(),
-            "\"prompt_template\""
+            serde_json::to_string(&ArtifactKind::Skill).unwrap(),
+            "\"skill\""
         );
         let k: ArtifactKind = serde_json::from_str("\"workflow\"").unwrap();
         assert_eq!(k, ArtifactKind::Workflow);
