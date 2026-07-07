@@ -61,6 +61,22 @@ impl Scope {
         })
     }
 
+    /// 能力 API（ノード type / HostCall api 名）に必要なスコープを返す（scope 天井・engine.md §9.2）。
+    ///
+    /// 制御ノード（control.*）や副作用の無い読みは天井対象外（`None`）。storage.list は read で足りる。
+    pub fn for_api(api: &str) -> Option<Self> {
+        Some(match api {
+            "storage.read" | "storage.list" => Scope::StorageRead,
+            "storage.write" => Scope::StorageWrite,
+            "rag.search" => Scope::RagQuery,
+            "http.request" => Scope::HttpEgress,
+            "workflow.start" => Scope::WorkflowStart,
+            // llm.invoke / agent.invoke は Stage A では専用スコープを設けず、内部推論として
+            // 天井対象外（外部到達は http.egress・データ到達は storage/rag スコープで縛る）。
+            _ => return None,
+        })
+    }
+
     /// Stage A で有効なスコープ（V3 が照合する集合）。data.* / notify.send は Stage B。
     pub fn available_stage_a(self) -> bool {
         matches!(
