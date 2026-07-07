@@ -28,7 +28,10 @@ flowchart LR
   P5 -.->|agent.invoke| P9
   P3 --> P7["Phase 7<br/>資料作成 v1"]
   P3 --> P8["Phase 8<br/>エンプラ硬化"]
-  P5 --> P10["Phase 10<br/>ワークフロー基盤<br/>engine/script/skill/secrets"]
+  P4 -.->|前倒し 2026-07 #121| P10A["Phase 10 Stage A<br/>WFエンジン核心 前倒し<br/>durable/IR/run/トリガ/script/secrets"]
+  P6 -.->|6.1 のみ先行実施| P10A
+  P10A --> P10["Phase 10 Stage B<br/>ワークフロー基盤 完成<br/>skill/dnd/AI編集/dataノード"]
+  P5 --> P10
   P9 --> P10
   P3 --> P11["Phase 11<br/>エディタ/Office<br/>Yjs・Collabora"]
   P8 --> P12["Phase 12<br/>SaaSアルファ運用<br/>管理2枚/フィードバック/IaC"]
@@ -117,7 +120,13 @@ flowchart LR
 - **成果物**: 構造化データ＋承認フロー＋AIを持つ業務アプリを、内部APIをセキュアに叩く形で実装・簡単デプロイできる。
 
 ## Phase 10 — ワークフロー基盤（engine・shiki script・skill・secrets）
-**依存**: Phase 9（data/ゲートウェイ/レジストリ）・Phase 5（agent.invoke）。詳細: [phase-10.md](./roadmap/phase-10.md)
+**依存**: Stage B は Phase 9（data/ゲートウェイ/レジストリ）・Phase 5（agent.invoke フルツール）。詳細: [phase-10.md](./roadmap/phase-10.md)
+
+> 📌 **部分前倒し（2026-07-07 決定・#121）**: 詳細設計（[docs/workflow/](./workflow/README.md)・#119）完了を受け、
+> **Stage A（エンジン核心: 10.0 durable 切り出し・IR/検証・run/step・トリガ・委譲コア・制御/能力ノード・
+> script-runtime・secrets・http.request）を Phase 5〜9 と並走で前倒し着手**する。前提は **6.1（artifact 共通枠）
+> の先行実施のみ**。skill・dnd/AI 編集・実行履歴 UI・data 系ノードは Stage B（Phase 6/9 合流後）。
+> Stage 分割・実行順・DoD は [phase-10.md](./roadmap/phase-10.md) 冒頭の節が正。
 - **workflow-engine**（自作 Durable Execution・IR=JSON DAG・トリガ/リトライ/fan-out/concurrency/rate limit/実行履歴）。
 - 実行主体モデル（対話=本人∩スコープ／スケジュール・イベント=専用プリンシパル＋明示委譲・fail-closed 停止）。
 - **script-runtime**（swc＋wasmtime/QuickJS）・**skill＆スキルストア**・**シークレット管理**（宛先束縛・KeyProvider）。
@@ -150,6 +159,7 @@ flowchart LR
 
 | トラック | タイミング | 備考 |
 |----------|-----------|------|
+| **Phase 10 Stage A（WF エンジン核心 前倒し）** | **着手中（2026-07 決定・#121）** | 6.1 先行＋既存基盤のみで Phase 5〜9 と並走。Stage 分割は [phase-10.md](./roadmap/phase-10.md) |
 | **skillex 認証統合** | Phase 0 の認証が安定したら**並行**（skillexは並行進行中） | 共有プール、DLC/LLM利用トークン発行を Phase 0 設計に織り込む |
 | ~~資料作成 v2（ブラウザ内編集）~~ | **Phase 11 に昇格**（2026-07） | V2 トラックは Phase 11（Collabora）へ統合 |
 | データプレーン完全相乗り（フルプール） | 需要が出たら | **SaaS（共有コントロールプレーン＋cell隔離データプレーン）は優先ターゲット**（design §4.1.1）。本項は cell 隔離をやめ全テナント共有プールへ寄せる更なる最適化＝tenant_id 行分離の全面適用 |
@@ -163,5 +173,6 @@ flowchart LR
 - **M3（Phase 4–5）**: サンドボックス＆自律エージェント = 差別化の核。
 - **M4（Phase 6–8）**: ミニアプリ増殖・資料作成・エンプラ硬化 = 製品化（クラウド/SaaS は Phase 0 から前提・各フェーズで実装）。
 - **M5（Phase 9）**: ★コードベース業務アプリ基盤（構造化データ＋ワークフロー＋セキュア内部API＋AI）。
-- **M6（Phase 10–11）**: ★ワークフロー基盤（n8n 相当）＋エディタ/Office 統合 = 業務自動化と文書作成の完成形。
+- **M6（Phase 10–11）**: ★ワークフロー基盤（n8n 相当）＋エディタ/Office 統合 = 業務自動化と文書作成の完成形
+  （エンジン核心 Stage A は 2026-07 前倒しで M3 以降と並走・#121）。
 - **M7（Phase 12）**: ★★プライベートアルファ・リリース（運用体制込み）。

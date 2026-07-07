@@ -17,29 +17,63 @@
 > [script.md](../workflow/script.md)（shiki script 処理系・Task 10.7/10.8）。Task ↔ 章の対応表は
 > [README §5](../workflow/README.md) を参照。
 
-| ID | タイトル | area | 依存 |
-|----|---------|------|------|
-| 10.1 | ワークフロー IR スキーマ＋artifact 化＋語彙照合検証 | data | 9.1, 6.1 |
-| 10.2 | run/step 永続化＋ワーカー（claim/リース/チェックポイント） | data | 10.1 |
-| 10.3 | トリガ: スケジューラ（cron・リーダーリース）＋イベントマッチング（outbox） | data | 10.2 |
-| 10.4 | 実行主体・委譲モデル（workflow プリンシパル・同意フロー・fail-closed 停止） | auth | 10.2, 9.13 |
-| 10.5 | 制御ノード（分岐/並列/join/待機）＋ステップリトライ＋concurrency/rate limit | data | 10.2 |
-| 10.6 | 能力ノード（storage/data/rag/notify）＋AI ノード2種＋ノード設定パネル契約 | agent | 10.2, 9.8, 5.1 |
-| 10.7 | script-runtime（swc＋wasmtime/QuickJS・Shiki.* ブリッジ・非特権プロセス） | sandbox | – |
-| 10.8 | script ノード＋script→ワークフロー起動 API | data | 10.7, 10.2 |
-| 10.9 | シークレット管理（crates/secrets・KeyProvider・宛先束縛・監査） | auth | – |
-| 10.10 | http.request ノード（egress allowlist × シークレット宛先束縛） | data | 10.9, 10.5 |
-| 10.11 | skill artifact＋スキルストア（レジストリ再利用）＋skill ノード/エージェントマウント | app | 9.13, 10.7 |
-| 10.12 | dnd ワークフローエディタ（IR 直接編集・ノード設定右パネル） | frontend | 10.1 |
-| 10.13 | AI 編集（チャット→IR 生成/変更・検証済みスペック・dnd に引き継ぎ） | ai | 10.12, 6.3 |
-| 10.14 | 実行履歴 UI＋Observability（run/step・OTel span・Langfuse 突合） | obs | 10.2, 3.8 |
-| 10.15 | first-party skill 初期セット（Slack 通知等・http.request ラップ） | app | 10.10, 10.11 |
+## 部分前倒し（Stage A / Stage B・2026-07-07 決定・issue #121）
+
+> **human 決定（2026-07-07）**: Phase 10 のエンジン核心に**部分前倒しで着手**する。詳細設計（docs/workflow/・#119）が
+> 完了しており、依存分析の結果、本フェーズの本質的ブロッカーは Phase 9 全体ではなく **6.1（artifact 共通枠）と
+> 9.x の一部（data ノード・skill レジストリ・同意 UI パターン）のみ**。エンジン核心は既存実装
+> （authz/storage/rag/jobq/outbox/chat run(3.11)/sandbox(Phase 4)/llm-gateway）で依存が満たせる。
+>
+> - **Stage A（前倒し・着手可能）**: 10.0・10.1a・10.2・10.3・10.4a・10.5・10.6a・10.7・10.8・10.9・10.10。
+>   **前提として [Phase 6 Task 6.1（artifact 共通枠）を先行実施**する（依存 3.7 は充足済み。
+>   暫定テーブルで作って後で移行する二重実装を避ける）**。
+> - **Stage B（Phase 6/9 の該当タスク合流後）**: 10.1b・10.4b・10.6b・10.11・10.12・10.13・10.14・10.15。
+> - **Stage A の DoD**: API 経由で IR を保存（V1〜V7 検証付き・skill 照合を除く）でき、schedule／イベント
+>   （storage.write）／対話（API 起動）の 3 種トリガで run が実行され、script・制御・storage/rag・AI 2 種・
+>   http.request の各ノードがステップリトライ・冪等キー・委譲チェック（run 開始時＋棚卸し）付きで動き、
+>   run/step が監査・OTel に乗る。**UI（dnd・実行履歴）・skill・data 系ノードは含まない**（Stage B）。
+> - 実行順の目安: 10.0 ∥ 10.7 ∥ 10.9 ∥ 6.1 → 10.1a → 10.2 → {10.3, 10.4a, 10.5} → {10.6a, 10.8, 10.10}。
+
+| ID | タイトル | area | 依存 | Stage |
+|----|---------|------|------|-------|
+| 10.0 | durable 共有基盤の切り出し（chat 3.11 の claim/リース/fencing/seq を共通クレート化） | data | 3.11（済） | **A** |
+| 10.1 | ワークフロー IR スキーマ＋artifact 化＋語彙照合検証 | data | 6.1（前倒し）／9.1・9.13 は 10.1b | **A**（10.1a）＋B（10.1b） |
+| 10.2 | run/step 永続化＋ワーカー（claim/リース/チェックポイント） | data | 10.0, 10.1a | **A** |
+| 10.3 | トリガ: スケジューラ（cron・リーダーリース）＋イベントマッチング（outbox） | data | 10.2 | **A**（event source は storage.write のみ・data 系は 9.10 後） |
+| 10.4 | 実行主体・委譲モデル（workflow プリンシパル・同意フロー・fail-closed 停止） | auth | 10.2／9.13 は 10.4b | **A**（10.4a）＋B（10.4b） |
+| 10.5 | 制御ノード（分岐/並列/join/待機）＋ステップリトライ＋concurrency/rate limit | data | 10.2 | **A** |
+| 10.6 | 能力ノード（storage/data/rag/notify）＋AI ノード2種＋ノード設定パネル契約 | agent | 10.2, 5.1※／9.8・9.10 は 10.6b | **A**（10.6a）＋B（10.6b） |
+| 10.7 | script-runtime（swc＋wasmtime/QuickJS・Shiki.* ブリッジ・非特権プロセス） | sandbox | – | **A** |
+| 10.8 | script ノード＋script→ワークフロー起動 API | data | 10.7, 10.2 | **A** |
+| 10.9 | シークレット管理（crates/secrets・KeyProvider・宛先束縛・監査） | auth | – | **A** |
+| 10.10 | http.request ノード（egress allowlist × シークレット宛先束縛） | data | 10.9, 10.5 | **A** |
+| 10.11 | skill artifact＋スキルストア（レジストリ再利用）＋skill ノード/エージェントマウント | app | 9.13, 10.7 | B |
+| 10.12 | dnd ワークフローエディタ（IR 直接編集・ノード設定右パネル） | frontend | 10.1 | B |
+| 10.13 | AI 編集（チャット→IR 生成/変更・検証済みスペック・dnd に引き継ぎ） | ai | 10.12, 6.3 | B |
+| 10.14 | 実行履歴 UI＋Observability（run/step・OTel span・Langfuse 突合） | obs | 10.2, 3.8 | B（OTel/監査計装自体は Stage A 各タスクに含む） |
+| 10.15 | first-party skill 初期セット（Slack 通知等・http.request ラップ） | app | 10.10, 10.11 | B |
+
+※ 10.6a の `agent.invoke` は Phase 4 完成済みの wasm ティアで実行する。5.1（自律エージェント）が未完の間は
+チャット相当の制約ツールセットで先行し、5.1 合流時にフルツール構成を解禁する。
 
 ---
 
 ## 詳細
 
+### Task 10.0: durable 共有基盤の切り出し（Stage A・新設）
+- **area**: data / **path**: `crates/durable`（名称は着手時確定・[engine.md §1](../workflow/engine.md) の提案）, `crates/chat`
+- **仕様**: chat 3.11（#82）で実装済みの claim（`FOR UPDATE SKIP LOCKED`）・リース＋heartbeat・
+  **fencing token**・`(id, seq)` 追記 exactly-once・Redis pub/sub 配信を共通クレートへ切り出し、
+  chat を移行する。キュー・レーン・優先度・状態機械は共有しない（[engine.md §1.2](../workflow/engine.md) の分担表が正）。
+- **受け入れ条件**:
+  - [ ] chat の既存テスト（claim/リース/fencing/seq）が共通クレート経由で全緑のまま
+  - [ ] chat の挙動・レーン分離に変化がない（純リファクタ）
+  - [ ] workflow-engine が同一プリミティブを import できる
+
 ### Task 10.1: ワークフロー IR スキーマ＋artifact 化＋語彙照合検証
+> **Stage 分割**: **10.1a（Stage A）** = IR スキーマ・保存時検証 V1/V2/V5/V6/V7・ワークフロー語彙
+> （ノード type・スコープ・イベント source）の codegen 単一定義の先行整備・artifact 化（6.1 前倒し枠）・
+> V4 の secret 照合（10.9 後に有効化）。**10.1b（Stage B）** = V4 の skill 照合・9.1 マニフェスト/9.13 レジストリ統合。
 - **area**: data / **path**: `crates/workflow-engine`, `crates/app-platform`
 - **仕様**: IR（JSON DAG: ノード種・接続・パラメータ・トリガ・リトライポリシ）のスキーマ定義。
   バージョン付き artifact（6.1 枠・ReBAC 共有）。保存時にスキーマ検証＋**codegen 認可語彙・skill/secret レジストリの
@@ -61,6 +95,8 @@
   - [ ] 全テーブル・全クエリが tenant_id スコープ
 
 ### Task 10.3: トリガ（スケジューラ＋イベント）
+> **Stage A 注記**: イベント source は既存 outbox で発行済みの `storage.write` 系のみ先行。
+> `data.record.*`／`data.transition` source は 9.10（FSM ガード・outbox 発行）合流後に追加する。
 - **area**: data / **path**: `crates/workflow-engine`
 - **仕様**: cron 式を Postgres 保持・**リーダーリース付き単一スケジューラループ**が due run を enqueue（多重発火防止）。
   **発火の冪等化**: occurrence を `(workflow_id, scheduled_at)` unique でトランザクショナルに記録してから enqueue
@@ -73,6 +109,9 @@
   - [ ] 無効化済みワークフローのトリガが発火しない
 
 ### Task 10.4: 実行主体・委譲モデル（FR-12 最重要）
+> **Stage 分割**: **10.4a（Stage A）** = workflow プリンシパル（`Namespace::workflow()`）・run 開始時の
+> 委譲有効性チェック・棚卸しジョブ・委譲の付与/失効 API（管理者向け・最小 UI）。
+> **10.4b（Stage B）** = 9.13 の同意インストールパターンとの UI 統合・管理ダッシュボード棚卸し画面（12.3 接続）。
 - **area**: auth / **path**: `crates/workflow-engine`, `crates/authz`
 - **仕様**: `authz::Namespace` に `workflow()` ビルダ追加（`workflow:<tenant>|<id>`）。
   対話トリガ=本人 ReBAC ∩ 宣言スコープ ∩ ノード設定。スケジュール/イベント=専用プリンシパルへ
@@ -95,6 +134,9 @@
   - [ ] rate limit 超過が step を失敗させず遅延させる
 
 ### Task 10.6: 能力ノード＋AI ノード2種＋ノード設定パネル契約
+> **Stage 分割**: **10.6a（Stage A）** = storage.read/write/list・rag.search・`llm.invoke`・`agent.invoke`
+> （Phase 4 の wasm ティア・5.1 未完の間は制約ツールセット）。**10.6b（Stage B）** = data.query/data.record.*/
+> data.transition（9.2/9.3/9.10 後）・notify.send（通知基盤）・ノード設定パネルの TS codegen 契約（10.12 と対）。
 - **area**: agent / **path**: `crates/workflow-engine`, `crates/agent-core`
 - **仕様**: storage/data/rag/notify ノード（実行主体 AuthContext で既存チョークポイント経由）。
   `agent.invoke` ノード=サンドボックス起動（ノード設定: egress allowlist・マウントスコープ・許可ツール・モデル・上限。
