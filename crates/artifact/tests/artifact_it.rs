@@ -234,12 +234,18 @@ async fn soft_delete_frees_name_and_hides_artifact() {
 
     // 論理削除後はバージョン本文も読めない（FGA tuple 残存でも body を返さない・Codex P1）。
     assert!(
-        matches!(store.get_version(&c, a.id, 1, None).await, Err(ArtifactError::NotFound)),
+        matches!(
+            store.get_version(&c, a.id, 1, None).await,
+            Err(ArtifactError::NotFound)
+        ),
         "削除済みアーティファクトの過去バージョン本文は取得できない"
     );
     assert!(
         matches!(store.list_versions(&c, a.id, None).await, Ok(v) if v.is_empty())
-            || matches!(store.list_versions(&c, a.id, None).await, Err(ArtifactError::NotFound)),
+            || matches!(
+                store.list_versions(&c, a.id, None).await,
+                Err(ArtifactError::NotFound)
+            ),
         "削除済みアーティファクトのバージョン一覧は空"
     );
 
