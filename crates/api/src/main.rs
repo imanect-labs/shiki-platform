@@ -116,6 +116,21 @@ async fn main() -> anyhow::Result<()> {
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
 
+    // シークレット管理（Task 10.9）: マスターキーファイルが設定されていれば配線する。
+    let secrets = match &config.secrets.master_key_file {
+        Some(path) => {
+            let provider = secrets::LocalKeyFileProvider::from_file(std::path::Path::new(path))
+                .context("secrets マスターキーの読み込みに失敗")?;
+            tracing::info!("シークレット管理を配線しました（local-key-file）");
+            Some(Arc::new(secrets::SecretStore::new(
+                db.clone(),
+                authz.clone(),
+                Arc::new(provider),
+            )))
+        }
+        None => None,
+    };
+
     let bind = format!("{}:{}", config.server.host, config.server.port);
     let state = AppState {
         config: Arc::new(config),
@@ -128,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
         http,
         storage,
         artifacts,
+        secrets,
         directory,
         tenants,
         search,

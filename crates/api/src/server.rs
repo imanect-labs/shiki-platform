@@ -161,6 +161,18 @@ pub fn route_table() -> Vec<RouteDecl> {
                     .get(routes::artifacts::list_artifact_shares)
             },
         ),
+        // --- シークレット（Task 10.9・write-only / use-only・平文の読み返しルートは無い） ---
+        r("/secrets", &["GET", "POST"], Session, || {
+            get(routes::secrets::list_secrets).post(routes::secrets::create_secret)
+        }),
+        r("/secrets/{id}", &["GET", "PUT", "DELETE"], Session, || {
+            get(routes::secrets::get_secret)
+                .put(routes::secrets::rotate_secret)
+                .delete(routes::secrets::delete_secret)
+        }),
+        r("/secrets/{id}/binding", &["PATCH"], Session, || {
+            patch(routes::secrets::update_binding)
+        }),
         // --- チャット（Phase 3）。生成は接続非依存ジョブ（Task 3.11）で SSE は別ポリシ。 ---
         r("/threads", &["GET", "POST"], Session, || {
             get(routes::chat::list_threads).post(routes::chat::create_thread)

@@ -218,6 +218,7 @@ fn base_config(db_url: &str) -> AppConfig {
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
+        secrets: api::config::SecretsConfig::default(),
     }
 }
 
@@ -296,6 +297,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         http: reqwest::Client::new(),
         storage,
         artifacts,
+        secrets: None,
         directory,
         tenants,
         search: None,

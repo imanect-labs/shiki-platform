@@ -63,6 +63,11 @@ impl FgaObject {
         Self::new(ObjectType::Artifact, id)
     }
 
+    /// シークレットオブジェクト `secret:<id>`（write-only/use-only・Task 10.9）。
+    pub(crate) fn secret(id: &str) -> Self {
+        Self::new(ObjectType::Secret, id)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -121,6 +126,11 @@ impl<'a> Namespace<'a> {
     /// アーティファクトオブジェクト `artifact:<tenant>|<id>`（Task 6.1）。
     pub fn artifact(&self, id: &str) -> FgaObject {
         FgaObject::artifact(&self.qualify(id))
+    }
+
+    /// シークレットオブジェクト `secret:<tenant>|<id>`（Task 10.9）。
+    pub fn secret(&self, id: &str) -> FgaObject {
+        FgaObject::secret(&self.qualify(id))
     }
 
     /// ユーザー subject `user:<tenant>|<id>`。

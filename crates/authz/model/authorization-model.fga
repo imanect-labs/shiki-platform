@@ -70,3 +70,11 @@ type artifact
     define owner: [user]
     define editor: [user, role#member] or owner
     define viewer: [user, role#member] or editor
+
+# シークレット（Task 10.9）。write-only/use-only。
+# can_use は「解決して使える」であり平文の読み返しではない（owner が含意）。
+# 付与は同意フロー。Phase 10 Task 10.4a で can_use に workflow プリンシパルを追加予定。
+type secret
+  relations
+    define owner: [user]
+    define can_use: [user, role#member] or owner

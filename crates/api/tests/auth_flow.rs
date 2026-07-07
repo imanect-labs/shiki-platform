@@ -347,6 +347,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
+        secrets: api::config::SecretsConfig::default(),
     }
 }
 
@@ -387,6 +388,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         http: reqwest::Client::new(),
         storage,
         artifacts,
+        secrets: None,
         directory,
         tenants,
         search: None,

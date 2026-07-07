@@ -121,6 +121,21 @@ impl From<artifact::ArtifactError> for ApiError {
     }
 }
 
+impl From<secrets::SecretError> for ApiError {
+    fn from(err: secrets::SecretError) -> Self {
+        use secrets::SecretError as SE;
+        match err {
+            SE::NotFound => ApiError::NotFound,
+            SE::Forbidden => ApiError::Forbidden,
+            SE::Invalid(msg) => ApiError::BadRequest(msg),
+            SE::DestinationDenied(msg) => ApiError::BadRequest(format!("destination: {msg}")),
+            SE::Conflict(_) => ApiError::Conflict,
+            // 暗号エラーの詳細はクライアントへ漏らさない（内部扱い）。
+            SE::Crypto(_) | SE::Internal(_) => ApiError::Internal("secret: 内部エラー".into()),
+        }
+    }
+}
+
 impl From<llm_gateway::LlmError> for ApiError {
     fn from(err: llm_gateway::LlmError) -> Self {
         use llm_gateway::LlmError as LE;

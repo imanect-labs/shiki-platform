@@ -27,6 +27,8 @@ pub enum Relation {
     Commenter,
     /// 閲覧権限（読み取り）。editor と親からの継承を含意する。
     Viewer,
+    /// シークレットの利用権限（解決して使える・平文の読み返しではない・Task 10.9）。owner が含意する。
+    CanUse,
 }
 
 impl Relation {
@@ -39,6 +41,7 @@ impl Relation {
             Relation::Editor => "editor",
             Relation::Commenter => "commenter",
             Relation::Viewer => "viewer",
+            Relation::CanUse => "can_use",
         }
     }
 
@@ -54,6 +57,7 @@ impl Relation {
             "editor" => Some(Relation::Editor),
             "commenter" => Some(Relation::Commenter),
             "viewer" => Some(Relation::Viewer),
+            "can_use" => Some(Relation::CanUse),
             _ => None,
         }
     }
@@ -82,6 +86,8 @@ pub enum ObjectType {
     /// 共有可能アーティファクト（バージョン付き JSON 本文の共通枠・Task 6.1）。
     /// prompt template / UI スペック / ミニアプリ / ワークフロー IR / skill / script が乗る。
     Artifact,
+    /// シークレット（write-only/use-only・owner/can_use で ReBAC・Task 10.9）。
+    Secret,
 }
 
 impl ObjectType {
@@ -95,6 +101,7 @@ impl ObjectType {
             ObjectType::File => "file",
             ObjectType::Thread => "thread",
             ObjectType::Artifact => "artifact",
+            ObjectType::Secret => "secret",
         }
     }
 }
@@ -201,6 +208,8 @@ mod tests {
         assert_eq!(ObjectType::Folder.as_str(), "folder");
         assert_eq!(ObjectType::File.as_str(), "file");
         assert_eq!(ObjectType::Artifact.as_str(), "artifact");
+        assert_eq!(ObjectType::Secret.as_str(), "secret");
+        assert_eq!(Relation::CanUse.as_str(), "can_use");
     }
 
     #[test]

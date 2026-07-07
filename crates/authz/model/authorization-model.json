@@ -258,6 +258,33 @@
           }
         }
       }
+    },
+    {
+      "type": "secret",
+      "relations": {
+        "owner": { "this": {} },
+        "can_use": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "owner" } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "owner": {
+            "directly_related_user_types": [{ "type": "user" }]
+          },
+          "can_use": {
+            "directly_related_user_types": [
+              { "type": "user" },
+              { "type": "role", "relation": "member" }
+            ]
+          }
+        }
+      }
     }
   ]
 }

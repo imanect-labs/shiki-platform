@@ -56,6 +56,12 @@ use utoipa::{
         crate::routes::artifacts::share_artifact,
         crate::routes::artifacts::unshare_artifact,
         crate::routes::artifacts::list_artifact_shares,
+        crate::routes::secrets::create_secret,
+        crate::routes::secrets::list_secrets,
+        crate::routes::secrets::get_secret,
+        crate::routes::secrets::rotate_secret,
+        crate::routes::secrets::update_binding,
+        crate::routes::secrets::delete_secret,
     ),
     components(schemas(
         crate::routes::me::MeResponse,
@@ -112,6 +118,12 @@ use utoipa::{
         artifact::ArtifactRole,
         artifact::ArtifactVersion,
         artifact::VersionMeta,
+        // シークレット DTO は secrets 側の単一定義（Task 10.9・平文は含まない）。
+        crate::routes::secrets::CreateSecretRequest,
+        crate::routes::secrets::RotateSecretRequest,
+        crate::routes::secrets::UpdateBindingRequest,
+        crate::routes::secrets::SecretListResponse,
+        secrets::SecretMeta,
         // 検索 DTO は rag 側の単一定義（手書きミラー禁止）。
         rag::SearchRequest,
         rag::SearchResponse,
