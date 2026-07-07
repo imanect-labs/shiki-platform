@@ -253,8 +253,8 @@ fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError
     }
     // イベント source を閉集合＋Stage A available へ照合。
     for t in &ir.triggers {
-        if let crate::ir::Trigger::Event(ev) = t {
-            match EventSource::parse(&ev.source) {
+        match t {
+            crate::ir::Trigger::Event(ev) => match EventSource::parse(&ev.source) {
                 Some(s) if s.available_stage_a() => {}
                 Some(_) => errors.push(ValidationError::new(
                     "ir.unknown_event_source",
@@ -264,7 +264,17 @@ fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError
                     "ir.unknown_event_source",
                     format!("未知のイベント source: {}", ev.source),
                 )),
+            },
+            // schedule は cron（5 フィールド）＋IANA tz をパース検証する（実行時の発火不能を保存時に弾く）。
+            crate::ir::Trigger::Schedule(sc) => {
+                if let Err(e) = crate::scheduler::cron::validate(&sc.cron, &sc.tz) {
+                    errors.push(ValidationError::new(
+                        "ir.bad_schedule",
+                        format!("スケジュールが不正です: {e}"),
+                    ));
+                }
             }
+            crate::ir::Trigger::Interactive(_) => {}
         }
     }
 }
