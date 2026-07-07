@@ -80,12 +80,14 @@ pub enum Catchup {
 #[ts(export)]
 pub struct EventTrigger {
     /// イベント source（閉集合・V3 で照合。Stage A は storage.write のみ有効）。
+    #[ts(type = "EventSource")]
     pub source: String,
     /// scope（テーブル/フォルダ束縛必須・全購読禁止）。
     #[ts(type = "unknown")]
     pub scope: serde_json::Value,
     /// filter（条件木・省略可）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub filter: Option<Condition>,
 }
 
@@ -96,6 +98,7 @@ pub struct EventTrigger {
 pub struct InteractiveTrigger {
     /// 表示ラベル（省略可）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub label: Option<String>,
 }
 

@@ -5,4 +5,4 @@ import type { ValueExpr } from "./ValueExpr";
 /**
  * 単項比較。`left` を評価し `op` と `right`（省略可: exists/is_null）で判定する。
  */
-export type Comparison = { left: ValueExpr, op: CmpOp, right: ValueExpr | null, };
+export type Comparison = { left: ValueExpr, op: CmpOp, right?: ValueExpr, };

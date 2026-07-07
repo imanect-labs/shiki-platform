@@ -107,6 +107,7 @@ pub struct Comparison {
     pub left: ValueExpr,
     pub op: CmpOp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub right: Option<ValueExpr>,
 }
 

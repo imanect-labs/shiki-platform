@@ -8,7 +8,7 @@ export type EventTrigger = {
 /**
  * イベント source（閉集合・V3 で照合。Stage A は storage.write のみ有効）。
  */
-source: string, 
+source: EventSource, 
 /**
  * scope（テーブル/フォルダ束縛必須・全購読禁止）。
  */
@@ -16,4 +16,4 @@ scope: unknown,
 /**
  * filter（条件木・省略可）。
  */
-filter: Condition | null, };
+filter?: Condition, };

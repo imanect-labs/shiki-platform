@@ -49,13 +49,28 @@ fn check_value(value: &serde_json::Value, ctx: &NodeCtx<'_>, errors: &mut Vec<Va
                 }
                 return;
             }
-            // condition（branch/wait の params.condition）。
+            // `$template` オブジェクトも同様に型崩れを弾く（untagged で Literal に吸収され保存されるのを防ぐ）。
+            if map.contains_key("$template") {
+                if let Err(e) =
+                    serde_json::from_value::<crate::ir::expr::TemplateExpr>(value.clone())
+                {
+                    errors.push(
+                        ValidationError::new("ir.bad_ref", format!("不正な $template 式です: {e}"))
+                            .at_node(&ctx.node.id),
+                    );
+                }
+                return;
+            }
+            // condition（branch/wait の params.condition）。検証したら再帰対象から外す（二重検証防止）。
             if let Some(cond) = map.get("condition") {
                 if let Ok(c) = serde_json::from_value::<Condition>(cond.clone()) {
                     check_condition(&c, Some(ctx), errors);
                 }
             }
-            for v in map.values() {
+            for (k, v) in map {
+                if k == "condition" {
+                    continue; // 上で検証済み（$from の重複エラーを避ける）。
+                }
                 check_value(v, ctx, errors);
             }
         }

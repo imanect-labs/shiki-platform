@@ -7,4 +7,4 @@ export type InteractiveTrigger = {
 /**
  * 表示ラベル（省略可）。
  */
-label: string | null, };
+label?: string, };

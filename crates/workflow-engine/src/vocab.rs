@@ -204,21 +204,35 @@ impl EventSource {
 }
 
 /// run_event の種（engine.md §3.3 の 12 種）。
+///
+/// serde/TS の表現は `as_str()`（DB の run_event.kind に書く値）と一致させる（ドット表記）。
+/// snake_case 自動変換に任せると `run_started` になり DB 値 `run.started` と食い違うため明示 rename。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum RunEventKind {
+    #[serde(rename = "run.started")]
     RunStarted,
+    #[serde(rename = "step.ready")]
     StepReady,
+    #[serde(rename = "step.started")]
     StepStarted,
+    #[serde(rename = "step.succeeded")]
     StepSucceeded,
+    #[serde(rename = "step.failed")]
     StepFailed,
+    #[serde(rename = "step.retrying")]
     StepRetrying,
+    #[serde(rename = "step.skipped")]
     StepSkipped,
+    #[serde(rename = "step.waiting")]
     StepWaiting,
+    #[serde(rename = "step.woken")]
     StepWoken,
+    #[serde(rename = "run.succeeded")]
     RunSucceeded,
+    #[serde(rename = "run.failed")]
     RunFailed,
+    #[serde(rename = "run.cancelled")]
     RunCancelled,
 }
 

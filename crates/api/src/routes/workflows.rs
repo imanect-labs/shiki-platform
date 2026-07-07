@@ -222,6 +222,11 @@ pub async fn get_workflow_version(
     trace: TraceIdExt,
     Path((id, version)): Path<(Uuid, i64)>,
 ) -> Result<Json<WorkflowVersionResponse>, ApiError> {
+    // workflow 種の artifact のみ返す（このエンドポイントで他種 artifact を漏らさない）。
+    let meta = state.artifacts.get(&ctx, id, trace.as_deref()).await?;
+    if meta.kind != artifact::ArtifactKind::Workflow {
+        return Err(ApiError::NotFound);
+    }
     let body = state
         .artifacts
         .get_version(&ctx, id, version, trace.as_deref())

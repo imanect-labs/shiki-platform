@@ -2,5 +2,8 @@
 
 /**
  * run_event の種（engine.md §3.3 の 12 種）。
+ *
+ * serde/TS の表現は `as_str()`（DB の run_event.kind に書く値）と一致させる（ドット表記）。
+ * snake_case 自動変換に任せると `run_started` になり DB 値 `run.started` と食い違うため明示 rename。
  */
-export type RunEventKind = "run_started" | "step_ready" | "step_started" | "step_succeeded" | "step_failed" | "step_retrying" | "step_skipped" | "step_waiting" | "step_woken" | "run_succeeded" | "run_failed" | "run_cancelled";
+export type RunEventKind = "run.started" | "step.ready" | "step.started" | "step.succeeded" | "step.failed" | "step.retrying" | "step.skipped" | "step.waiting" | "step.woken" | "run.succeeded" | "run.failed" | "run.cancelled";
