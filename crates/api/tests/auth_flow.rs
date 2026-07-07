@@ -379,6 +379,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
     let tenants = Arc::new(storage::TenantStore::new(db.clone()));
     let rag_admin = std::sync::Arc::new(rag::RagAdmin::new(db.clone(), None, None));
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), Arc::new(AllowAll)));
+    let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -389,6 +390,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         storage,
         artifacts,
         secrets: None,
+        workflows,
         directory,
         tenants,
         search: None,

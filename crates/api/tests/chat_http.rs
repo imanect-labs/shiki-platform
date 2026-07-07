@@ -288,6 +288,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         pool.clone(),
         Arc::new(AllowAll),
     ));
+    let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool),
@@ -298,6 +299,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         storage,
         artifacts,
         secrets: None,
+        workflows,
         directory,
         tenants,
         search: None,

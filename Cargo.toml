@@ -119,6 +119,8 @@ shiki-authz = { path = "crates/authz" }
 shiki-durable = { path = "crates/durable" }
 shiki-artifact = { path = "crates/artifact" }
 shiki-secrets = { path = "crates/secrets" }
+shiki-script-runtime = { path = "crates/script-runtime" }
+shiki-workflow-engine = { path = "crates/workflow-engine" }
 shiki-storage = { path = "crates/storage" }
 shiki-jobq = { path = "crates/jobq" }
 shiki-rag = { path = "crates/rag" }

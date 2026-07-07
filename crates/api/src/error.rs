@@ -19,6 +19,10 @@ pub enum ApiError {
     Conflict,
     #[error("不正なリクエスト: {0}")]
     BadRequest(String),
+    /// 検証エラー等の**構造化 400 ボディ**をそのまま返す（per-node/per-edge エラー等）。
+    /// `BadRequest` は body が `{status,title}` に潰れるため、詳細ペイロードにはこちらを使う。
+    #[error("検証エラー")]
+    UnprocessableJson(serde_json::Value),
     /// 機能が無効/未準備（RAG 無効設定など）。理由はログのみ（クライアントへ漏らさない）。
     #[error("利用できません: {0}")]
     ServiceUnavailable(String),
@@ -33,7 +37,7 @@ impl ApiError {
             ApiError::Forbidden => StatusCode::FORBIDDEN,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::Conflict => StatusCode::CONFLICT,
-            ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::BadRequest(_) | ApiError::UnprocessableJson(_) => StatusCode::BAD_REQUEST,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -50,6 +54,10 @@ impl IntoResponse for ApiError {
         // 503 の原因（RAG worker/Qdrant 障害等）も追跡できるようログへ残す。
         if let ApiError::ServiceUnavailable(ref detail) = self {
             tracing::warn!(error = %detail, "サービス利用不可（503）");
+        }
+        // 構造化ボディはそのまま返す（検証エラーの per-node/per-edge 詳細を保つ）。
+        if let ApiError::UnprocessableJson(payload) = self {
+            return (status, Json(payload)).into_response();
         }
         let body = Json(json!({
             "status": status.as_u16(),

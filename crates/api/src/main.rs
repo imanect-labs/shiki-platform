@@ -115,6 +115,8 @@ async fn main() -> anyhow::Result<()> {
 
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
+    // ワークフロー IR ストア（Task 10.1a）: artifact の上に保存時検証を載せる。
+    let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
 
     // シークレット管理（Task 10.9）: マスターキーファイルが設定されていれば配線する。
     let secrets = match &config.secrets.master_key_file {
@@ -144,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
         storage,
         artifacts,
         secrets,
+        workflows,
         directory,
         tenants,
         search,

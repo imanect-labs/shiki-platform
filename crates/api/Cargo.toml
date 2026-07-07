@@ -32,6 +32,7 @@ shiki-agent-core.workspace = true
 shiki-sandbox-client.workspace = true
 shiki-artifact.workspace = true
 shiki-secrets.workspace = true
+shiki-workflow-engine.workspace = true
 
 tokio.workspace = true
 axum.workspace = true
@@ -70,7 +71,7 @@ http-body-util = "0.1"
 # shiki-authz / shiki-storage / shiki-rag は lib 名 `authz` / `storage` / `rag` で参照する
 # ため cargo-machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-storage", "shiki-rag", "shiki-chat", "shiki-llm-gateway", "shiki-agent-core", "shiki-sandbox-client", "shiki-websearch", "shiki-artifact", "shiki-secrets"]
+ignored = ["shiki-authz", "shiki-storage", "shiki-rag", "shiki-chat", "shiki-llm-gateway", "shiki-agent-core", "shiki-sandbox-client", "shiki-websearch", "shiki-artifact", "shiki-secrets", "shiki-workflow-engine"]
 
 [lints]
 workspace = true

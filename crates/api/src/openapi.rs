@@ -62,6 +62,10 @@ use utoipa::{
         crate::routes::secrets::rotate_secret,
         crate::routes::secrets::update_binding,
         crate::routes::secrets::delete_secret,
+        crate::routes::workflows::create_workflow,
+        crate::routes::workflows::update_workflow,
+        crate::routes::workflows::get_workflow,
+        crate::routes::workflows::get_workflow_version,
     ),
     components(schemas(
         crate::routes::me::MeResponse,
@@ -124,6 +128,12 @@ use utoipa::{
         crate::routes::secrets::UpdateBindingRequest,
         crate::routes::secrets::SecretListResponse,
         secrets::SecretMeta,
+        // ワークフロー DTO（Task 10.1a）。IR 本文は Object（正本 JSON）。
+        crate::routes::workflows::SaveWorkflowRequest,
+        crate::routes::workflows::SaveWorkflowResponse,
+        crate::routes::workflows::WorkflowVersionResponse,
+        crate::routes::workflows::ValidationErrorResponse,
+        workflow_engine::ValidationError,
         // 検索 DTO は rag 側の単一定義（手書きミラー禁止）。
         rag::SearchRequest,
         rag::SearchResponse,

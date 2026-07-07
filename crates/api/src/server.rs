@@ -161,6 +161,19 @@ pub fn route_table() -> Vec<RouteDecl> {
                     .get(routes::artifacts::list_artifact_shares)
             },
         ),
+        // --- ワークフロー IR（Task 10.1a・保存時検証 V1〜V7・artifact の上） ---
+        r("/workflows", &["POST"], Session, || {
+            post(routes::workflows::create_workflow)
+        }),
+        r("/workflows/{id}", &["GET", "PUT"], Session, || {
+            get(routes::workflows::get_workflow).put(routes::workflows::update_workflow)
+        }),
+        r(
+            "/workflows/{id}/versions/{version}",
+            &["GET"],
+            Session,
+            || get(routes::workflows::get_workflow_version),
+        ),
         // --- シークレット（Task 10.9・write-only / use-only・平文の読み返しルートは無い） ---
         r("/secrets", &["GET", "POST"], Session, || {
             get(routes::secrets::list_secrets).post(routes::secrets::create_secret)
