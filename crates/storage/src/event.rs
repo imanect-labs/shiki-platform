@@ -129,6 +129,109 @@ pub async fn mark_processed(conn: &mut PgConnection, ids: &[i64]) -> Result<(), 
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// per-consumer fan-out（P10-A0・配送台帳 `outbox_delivery`）。
+//
+// 既存 [`claim`]/[`mark_processed`]（RAG relay 専用・`processed_at` 経路）はそのまま温存し、
+// **追加コンシューマ**（workflow の event matcher 等）はこちらの配送台帳ベースの API を使う。
+// これにより「片方の消費が他方を消す」取りこぼしを避けつつ、生成側（[`emit_on`]）は不変＝
+// outbox が真の fan-out 点として機能する（roadmap/phase-10.md P10-A0）。
+// ---------------------------------------------------------------------------
+
+/// 指定コンシューマがまだ配送していない未処理イベントを FIFO で `limit` 件まで取り出す。
+///
+/// [`claim`] と同じく `FOR UPDATE SKIP LOCKED` で同時実行の二重取得を防ぐが、判定を
+/// `processed_at` 破壊的消費ではなく **`NOT EXISTS(outbox_delivery for consumer)`** で行う。
+/// 存在性ベースの anti-join なので id 順・コミット順に依存せず、**後からコミットした小さい id の
+/// 行も次スキャンで拾える**（単純 last_seq カーソルの「未コミット飛び越し」問題を回避）。
+/// 掴んだ行は同一 txn 内で処理 → [`mark_delivered`] → commit する（at-least-once）。
+pub async fn claim_undelivered(
+    conn: &mut PgConnection,
+    consumer: &str,
+    limit: i64,
+) -> Result<Vec<OutboxEvent>, StorageError> {
+    let rows: Vec<OutboxRow> = sqlx::query_as(
+        "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
+                o.payload, o.created_at \
+         FROM storage_event_outbox o \
+         WHERE NOT EXISTS ( \
+             SELECT 1 FROM outbox_delivery d \
+             WHERE d.consumer = $1 AND d.event_id = o.id \
+         ) \
+         ORDER BY o.id \
+         FOR UPDATE OF o SKIP LOCKED \
+         LIMIT $2",
+    )
+    .bind(consumer)
+    .bind(limit)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(OutboxRow::into_event).collect())
+}
+
+/// 指定コンシューマへの配送を台帳に記録する（[`claim_undelivered`] と同一 txn 内で呼ぶ）。
+///
+/// `(consumer, event_id)` 主キーで冪等（再配信で同じ行を掴んでも二重記録にならない）。
+pub async fn mark_delivered(
+    conn: &mut PgConnection,
+    consumer: &str,
+    ids: &[i64],
+) -> Result<(), StorageError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    // tenant_id は outbox 行から写す（台帳の絞り込み・監査用）。
+    sqlx::query(
+        "INSERT INTO outbox_delivery (consumer, event_id, tenant_id) \
+         SELECT $1, o.id, o.tenant_id \
+         FROM storage_event_outbox o \
+         WHERE o.id = ANY($2) \
+         ON CONFLICT (consumer, event_id) DO NOTHING",
+    )
+    .bind(consumer)
+    .bind(ids)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// 全コンシューマへ配送済みの outbox 行を GC する（配送台帳は ON DELETE CASCADE で同時に消える）。
+///
+/// 削除条件は次のいずれか:
+/// - 追加コンシューマ（`ledger_consumers`）**全員**が配送済み、**かつ** RAG（`processed_at`）も ack 済み。
+/// - `retention_secs` を超えて滞留（コンシューマが恒久停止した場合の backstop・table 肥大を防ぐ）。
+///
+/// `ledger_consumers` は「現在有効な台帳コンシューマ集合」を呼び出し側（起動時 wiring）が渡す。
+/// 生成側は関与しない。空配列を渡すと processed_at のみで判定する（追加コンシューマ無効時）。
+/// 返り値は削除件数。
+pub async fn gc_delivered(
+    conn: &mut PgConnection,
+    ledger_consumers: &[&str],
+    retention_secs: i64,
+) -> Result<u64, StorageError> {
+    let consumers: Vec<String> = ledger_consumers.iter().map(|s| (*s).to_string()).collect();
+    let expected = i64::try_from(consumers.len())
+        .map_err(|_| StorageError::Invalid("consumer 数が多すぎます".into()))?;
+    // interval は文字列連結で組む（i64→f64 の精度損失 cast を避ける・LeaderLease と同型）。
+    let deleted = sqlx::query(
+        "DELETE FROM storage_event_outbox o \
+         WHERE o.created_at < now() - ($2 || ' seconds')::interval \
+            OR ( \
+                o.processed_at IS NOT NULL \
+                AND ( \
+                    SELECT count(*) FROM outbox_delivery d \
+                    WHERE d.event_id = o.id AND d.consumer = ANY($1) \
+                ) >= $3 \
+            )",
+    )
+    .bind(&consumers)
+    .bind(retention_secs)
+    .bind(expected)
+    .execute(conn)
+    .await?;
+    Ok(deleted.rows_affected())
+}
+
 #[derive(sqlx::FromRow)]
 struct OutboxRow {
     id: i64,
