@@ -1,12 +1,15 @@
 -- Phase 6 Task 6.1（Phase 10 Stage A で前倒し・#121）: 共有可能アーティファクト共通基盤。
 --
--- skill（旧 prompt template を統合） / UI スペック / ミニアプリ / ワークフロー IR / script を
--- 統一的に扱う共通枠。**不変バージョン追記方式**: artifact_version は INSERT のみで、過去バージョンは
+-- prompt template / UI スペック / ミニアプリ / ワークフロー IR / skill / script を統一的に扱う
+-- 共通枠。**不変バージョン追記方式**: artifact_version は INSERT のみで、過去バージョンは
 -- 変更されない（version カウンタの正は artifact.current_version）。
 -- 権限の正本は OpenFGA の artifact 型（owner/editor/viewer・thread と同型の非階層共有）。
 --
 -- 規約: 全行 tenant_id not null・PK は tenant 先頭の複合キー（#91）。
 -- テナント消去（SAAS.2）は artifact を tenant_id で削除すれば version へ CASCADE する。
+--
+-- ⚠️ `prompt_template` kind は #152 で skill に統合され撤去された（migration 0024 参照）。
+-- 本ファイルは適用済み環境があるため直接編集しない（sqlx::migrate! のチェックサム検証対象）。
 
 create table artifact (
     tenant_id       text        not null,
@@ -14,7 +17,7 @@ create table artifact (
     org             text        not null,
     -- 種別（閉じた集合）。Stage A は workflow のみ使用、他は Phase 6/9/10 Stage B の予約。
     kind            text        not null check (kind in (
-        'workflow', 'ui_spec', 'mini_app', 'skill', 'script'
+        'workflow', 'prompt_template', 'ui_spec', 'mini_app', 'skill', 'script'
     )),
     -- tenant×kind 内で一意の参照名（ワークフロー name 等・ir.md §2 の一意性は artifact 層が担保）。
     name            text        not null,

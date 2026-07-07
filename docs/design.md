@@ -442,7 +442,10 @@ flowchart TB
   完全な定義・出典は [miniapp-platform.md §6](./miniapp-platform.md)。
 - **skill**（旧 prompt template を統合）= **SKILL.md 相当の指示文**（frontmatter: name/description ＋ 用途・
   振る舞いを書く本文。Claude Code の skill と同型）＋知識スコープ（RAG範囲限定）＋許可ツール＋モデル既定＋few-shot
-  （旧 prompt template の構成要素）＋（任意）shiki script＋宣言ツール/スコープ＋（任意）参照資料。
+  （旧 prompt template の構成要素）＋（任意）script＋宣言ツール/スコープ＋（任意）参照資料。
+  **script は shiki script（`.shiki`。script-runtime で実行する ms 級グルーコード）と shell script（`.sh`。
+  agent.invoke のサンドボックス内で実行する重量級の自動化。Claude Code の `scripts/` と同じ位置づけ）の
+  どちらも、また両方を同時に含められる**。
   知識スコープで絞っても最終可読性は個人ReBACで再チェック。呼び出し面は①チャット開始時の初期コンテキスト適用
   ②エージェントへのツールマウント（agent.invoke）③ワークフローの skill ノード、の3つ。
 - すべて「共有可能アーティファクト＋ReBAC＋監査」の共通枠に収まる。

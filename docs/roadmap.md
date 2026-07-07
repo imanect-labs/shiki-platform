@@ -32,6 +32,7 @@ flowchart LR
   P3 --> T61["Phase 6 Task 6.1<br/>artifact 共通枠（先行実施）"]
   T61 -.-> P10A
   T61 --> P6
+  P10A -.->|6.5/6.10が対話トリガ起動に依存| P6
   P10A --> P10["Phase 10 Stage B<br/>ワークフロー基盤 完成<br/>skill/dnd/AI編集/dataノード"]
   P5 --> P10
   P9 --> P10
@@ -94,9 +95,12 @@ flowchart LR
 - **成果物**: Claude Code 級エージェントがストレージ上で自律動作。
 
 ## Phase 6 — generative UI ＋ skill ＋ ミニアプリ
-**依存**: Phase 3。Stage A前倒し（workflow-engine・script-runtime・secrets・artifact共通基盤）を前提に設計。
+**依存**: Phase 3 ＋ **Phase 10 Stage A（前倒し・#121。workflow-engine・script-runtime・secrets・artifact共通基盤）**。
+6.5（宣言的バックエンド束縛）・6.10（ミニアプリ実行）が workflow-engine の対話トリガ起動へ直接依存するため、
+Stage A 完了前に本フェーズへ着手する場合はこの2タスクを後回しにする。
 - 宣言的コンポーネント・カタログ＋レンダラ。
-- skill（旧 prompt template を統合: SKILL.md相当の指示文＋知識スコープ／許可ツール／モデル既定／few-shot＋任意shiki script）。
+- skill（旧 prompt template を統合: SKILL.md相当の指示文＋知識スコープ／許可ツール／モデル既定／few-shot＋
+  任意script。shiki script(`.shiki`)/shell script(`.sh`)のどちらも可）。
 - ミニアプリ（skill＋UIスペック＋ワークフロー）をアーティファクト化、ReBAC共有。宣言的バックエンド束縛は
   workflow-engine 対話トリガ起動も含む。**テーブル（構造化データ）を含む完全な定義は Phase 9 合流後、
   [miniapp-platform.md §6](./miniapp-platform.md) が正本**。

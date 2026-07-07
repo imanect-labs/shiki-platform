@@ -3,14 +3,20 @@
 > 📝 **2026-07-07 改訂**: 2点の設計更新。
 > ①**workflow-engine が既にある前提で設計する**: Phase 10 Stage A（`crates/{durable,artifact,secrets,
 > script-runtime,workflow-engine}`）が前倒し実装済みのため、本フェーズは「ワークフロー不在の暫定バックエンド束縛」
-> ではなく、generative UI のアクションもミニアプリの実行主体も **workflow-engine を直接使う**前提で書く。
+> ではなく、generative UI のアクションもミニアプリの実行主体も **workflow-engine を直接使う**前提で書く
+> （Task 6.5/6.10 は Stage A の workflow-engine に直接依存し、Stage B を待たない。下記③との違いは末尾の※参照）。
 > なお **Task 6.1（共有可能アーティファクト共通基盤）は Stage A の前提タスクとして既に `crates/artifact` に実装済み**
-> （migration 0014、`ArtifactKind`: workflow/prompt_template/ui_spec/mini_app/skill/script）。
+> （migration 0014/0024、`ArtifactKind`: workflow/ui_spec/mini_app/skill/script。`prompt_template` kind は
+> #152 で撤去済み）。
 > ②**旧 prompt template は skill に統合し呼称も定義も一本化する**（FR-7/FR-14 と統一）。skill artifact の中身は
 > **SKILL.md 相当の指示文（用途・振る舞いを書く本文）＋知識スコープ／モデル既定／few-shot（旧 prompt template の
-> 構成要素）＋（任意）shiki script＋宣言ツール/スコープ＋（任意）参照資料**。呼び出し面は
-> ①チャット開始時の初期コンテキスト適用（本フェーズ）②エージェントへのツールマウント③ワークフローの skill ノード
-> （②③は Stage B・Task 10.11）の3つ。
+> 構成要素）＋（任意）script＋宣言ツール/スコープ＋（任意）参照資料**。script は **shiki script（`.shiki`。
+> script-runtime で実行する ms 級グルーコード）と shell script（`.sh`。agent.invoke のサンドボックス内で実行する
+> 重量級の自動化。Claude Code の skill と同じ `scripts/` 形式）のどちらも含められる**（1 skill に両方持たせてもよい）。
+> skill 自体の呼び出し面は①チャット開始時の初期コンテキスト適用（本フェーズ・Task 6.7〜6.9）②エージェントへの
+> ツールマウント③ワークフローの skill ノード、の3つ。**②③（skill store 経由の呼び出し）は Stage B・Task 10.11**。
+> ※ Task 6.5/6.10 の workflow-engine 利用は「ミニアプリが束ねるワークフロー自体の起動」であり、
+> 「skill を “他の” ワークフローの1ノードとして呼ぶ」（③）とは別物。前者のみ本フェーズで実装し、後者は Stage B。
 >
 > 目的: Phase 3 のチャット基盤の上に「共有可能アーティファクト」の系統を立ち上げる。LLM が出力した
 > **検証済みJSONスペック**を信頼コンポーネント・カタログで描画する generative UI（任意コード実行なし）、
@@ -134,8 +140,11 @@
 - **仕様**:
   - skill body = **① SKILL.md 相当の指示文**（name/description のフロントマター＋用途・振る舞いを書く本文。
     Claude Code の skill と同型）② 知識スコープ（許可フォルダ/タグ） ③ 許可ツール ④ モデル/パラメータ既定
-    ⑤（任意）few-shot ⑥（任意）shiki script（実行は Task 10.8 の script-runtime。本タスクでは参照の保存のみ）
-    ⑦（任意）参照資料。Task 6.1 の artifact(kind=skill) として保存・**バージョン管理**。
+    ⑤（任意）few-shot ⑥（任意）script ⑦（任意）参照資料。**script は shiki script（`.shiki`）と shell script
+    （`.sh`）のどちらも、また両方を同時に含められる**: `.shiki` は script-runtime（Task 10.8）で実行する
+    ms 級グルーコード、`.sh` は agent.invoke のサンドボックス内で実行する重量級の自動化（Claude Code の
+    `scripts/` と同じ位置づけ）。本タスクでは両形式ともファイル参照の保存のみ（実行は呼び出し面側）。
+    Task 6.1 の artifact(kind=skill) として保存・**バージョン管理**。
   - ロール単位の共有は Task 6.1 の ReBAC を流用。skill 適用でチャット/ミニアプリの初期コンテキストを構成。
 - **受け入れ条件**:
   - [ ] 上記要素を持つ skill を作成・更新（新バージョン）できる
