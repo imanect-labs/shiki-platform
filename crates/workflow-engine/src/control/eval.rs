@@ -296,22 +296,38 @@ mod tests {
         let r = resolver(&[("input", json!({ "who": "world" }))]);
         let t = ValueExpr::Template(TemplateExpr {
             template: "{{literal}} {who} {{{who}}}".into(),
-            vars: [("who".to_string(), from("input", Some("/who")))].into_iter().collect(),
+            vars: [("who".to_string(), from("input", Some("/who")))]
+                .into_iter()
+                .collect(),
         });
         // {{ }} はリテラル波括弧・{who} は置換。
-        assert_eq!(resolve_value(&t, &r), Some(json!("{literal} world {world}")));
+        assert_eq!(
+            resolve_value(&t, &r),
+            Some(json!("{literal} world {world}"))
+        );
     }
 
     #[test]
     fn integer_comparison_beyond_f64_precision() {
         // 2^53 超の整数を f64 に落とさず正しく比較する。
-        let r = resolver(&[("input", json!({ "a": 9007199254740993_i64, "b": 9007199254740992_i64 }))]);
+        let r = resolver(&[(
+            "input",
+            json!({ "a": 9007199254740993_i64, "b": 9007199254740992_i64 }),
+        )]);
         assert!(eval_condition(
-            &cmp(from("input", Some("/a")), CmpOp::Gt, Some(from("input", Some("/b")))),
+            &cmp(
+                from("input", Some("/a")),
+                CmpOp::Gt,
+                Some(from("input", Some("/b")))
+            ),
             &r
         ));
         assert!(!eval_condition(
-            &cmp(from("input", Some("/a")), CmpOp::Eq, Some(from("input", Some("/b")))),
+            &cmp(
+                from("input", Some("/a")),
+                CmpOp::Eq,
+                Some(from("input", Some("/b")))
+            ),
             &r
         ));
     }

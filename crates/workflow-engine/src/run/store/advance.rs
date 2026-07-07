@@ -391,6 +391,9 @@ mod tests {
         assert!((1..=2).contains(&next_retry_delay_secs(rid, "a", 0)));
         assert!(next_retry_delay_secs(rid, "a", 20) <= 300);
         // 同じ (step, attempt) は同じ遅延（リプレイ安全）。
-        assert_eq!(next_retry_delay_secs(rid, "a", 3), next_retry_delay_secs(rid, "a", 3));
+        assert_eq!(
+            next_retry_delay_secs(rid, "a", 3),
+            next_retry_delay_secs(rid, "a", 3)
+        );
     }
 }
