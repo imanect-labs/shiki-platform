@@ -59,3 +59,14 @@ type thread
     define editor: [user, role#member] or owner
     define commenter: [user, role#member] or editor
     define viewer: [user, role#member] or commenter
+
+# アーティファクト: バージョン付き共有本文の共通枠（Task 6.1・Phase 10 Stage A 前倒し）。
+# prompt template / UI スペック / ミニアプリ / ワークフロー IR / skill / script が同じ枠に乗る。
+# thread と同型の非階層共有（作成者 owner ＋明示共有・共有語彙は viewer/editor のみ）。
+# Phase 10 Task 10.4a で viewer/editor に workflow プリンシパル subject を追加予定
+# （schedule/event run が IR/script artifact を読む委譲経路・engine.md §6.6）。
+type artifact
+  relations
+    define owner: [user]
+    define editor: [user, role#member] or owner
+    define viewer: [user, role#member] or editor

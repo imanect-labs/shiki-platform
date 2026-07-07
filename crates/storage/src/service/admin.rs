@@ -99,6 +99,32 @@ impl StorageService {
                 .delete_object_tuples(&ns.organization(org))
                 .await?,
         );
+        // 1d. artifact のタプル（owner/editor/viewer・workflow プリンシパル委譲含む）。
+        //     artifact:<tenant>|<id> を台帳（artifact テーブル）から列挙して撤去する（SAAS.2 完全削除）。
+        {
+            let mut last: Option<Uuid> = None;
+            loop {
+                let ids: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM artifact WHERE tenant_id = $1 \
+                     AND ($2::uuid IS NULL OR id > $2) ORDER BY id LIMIT 500",
+                )
+                .bind(tenant_id)
+                .bind(last)
+                .fetch_all(&self.db)
+                .await?;
+                if ids.is_empty() {
+                    break;
+                }
+                last = ids.last().copied();
+                for id in &ids {
+                    tuples_deleted += u64::from(
+                        self.authz
+                            .delete_object_tuples(&ns.artifact(&id.to_string()))
+                            .await?,
+                    );
+                }
+            }
+        }
 
         // 2. オブジェクトストア: `{tenant_id}/` prefix 配下を全削除。
         let mut objects_deleted: u64 = 0;
@@ -134,6 +160,8 @@ impl StorageService {
             "directory_role",
             "node",
             "blob",
+            // artifact 本文（artifact_version は FK cascade で連鎖削除・SAAS.2 完全削除）。
+            "artifact",
         ] {
             sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
                 .bind(tenant_id)

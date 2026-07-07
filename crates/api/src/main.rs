@@ -113,6 +113,9 @@ async fn main() -> anyhow::Result<()> {
     // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
     let chat = wiring::wire_chat(&config, &http, &db, &authz, search.as_ref(), &storage).await?;
 
+    // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
+    let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
+
     let bind = format!("{}:{}", config.server.host, config.server.port);
     let state = AppState {
         config: Arc::new(config),
@@ -124,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
         sessions,
         http,
         storage,
+        artifacts,
         directory,
         tenants,
         search,

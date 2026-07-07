@@ -260,6 +260,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
     let directory = Arc::new(storage::DirectoryStore::new(db.clone()));
     let tenants = Arc::new(storage::TenantStore::new(db.clone()));
     let rag_admin = Arc::new(rag::RagAdmin::new(db.clone(), None, None));
+    let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), Arc::new(AllowAll)));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -268,6 +269,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         sessions,
         http: reqwest::Client::new(),
         storage,
+        artifacts,
         directory,
         tenants,
         search: None,

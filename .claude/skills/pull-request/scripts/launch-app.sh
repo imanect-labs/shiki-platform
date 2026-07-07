@@ -56,8 +56,10 @@ start_api() {
     return 0
   fi
   echo "axum を起動: http://0.0.0.0:$port  (/healthz で生存確認)"
-  # TODO: 実バイナリ名に追従。.env.example の AXUM_BIND_ADDR 規約に合わせる。
-  AXUM_BIND_ADDR="0.0.0.0:$port" cargo run -p api
+  # 接続先（DB/Keycloak/OpenFGA/Redis/MinIO）は SHIKI__* 環境変数で与える
+  # （compose ローカル既定は deploy/compose/docker-compose.yml の shiki-server 節を参照）。
+  SHIKI__SERVER__HOST="0.0.0.0" SHIKI__SERVER__PORT="$port" \
+    cargo run -p shiki-api --bin shiki-server
 }
 
 start_web() {

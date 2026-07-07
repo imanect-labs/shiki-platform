@@ -283,6 +283,10 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         None
     };
     let sessions: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+    ));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool),
@@ -291,6 +295,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         sessions: sessions.clone(),
         http: reqwest::Client::new(),
         storage,
+        artifacts,
         directory,
         tenants,
         search: None,
