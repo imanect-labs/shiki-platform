@@ -23,6 +23,11 @@ pub(crate) fn add_to_linker(linker: &mut Linker<HostState>) -> Result<(), wasmti
         m,
         "random_get",
         |mut caller: Caller<'_, HostState>, buf: u32, len: u32| -> i32 {
+            // guest が渡す len（最大 4GB）で host RAM を確保させない（DoS 対策）。1 回の要求上限を設ける。
+            const MAX_RANDOM_BYTES: u32 = 64 * 1024;
+            if len > MAX_RANDOM_BYTES {
+                return 28; // EINVAL 相当。
+            }
             let mut bytes = vec![0u8; len as usize];
             {
                 let st = caller.data_mut();

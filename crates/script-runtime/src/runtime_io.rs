@@ -136,19 +136,20 @@ impl ExecOutcome {
 
     pub(crate) fn terminated(termination: Termination, store: &mut Store<HostState>) -> Self {
         let logs = std::mem::take(&mut store.data_mut().logs);
-        let msg = match &termination {
-            Termination::Fuel => "fuel exhausted".to_string(),
-            Termination::Epoch => "time limit exceeded".to_string(),
-            Termination::Memory => "memory limit exceeded".to_string(),
-            Termination::FrameViolation(v) => format!("frame violation: {v}"),
-            Termination::Cancelled => "cancelled".to_string(),
-            Termination::Trap(m) => m.clone(),
-            Termination::Completed => "completed".to_string(),
+        // error code は中断種別に対応させる（フレーム違反は "frame_violation"・envelope 経路と一致させる）。
+        let (msg, code) = match &termination {
+            Termination::Fuel => ("fuel exhausted".to_string(), "resource"),
+            Termination::Epoch => ("time limit exceeded".to_string(), "resource"),
+            Termination::Memory => ("memory limit exceeded".to_string(), "resource"),
+            Termination::FrameViolation(v) => (format!("frame violation: {v}"), "frame_violation"),
+            Termination::Cancelled => ("cancelled".to_string(), "cancelled"),
+            Termination::Trap(m) => (m.clone(), "internal"),
+            Termination::Completed => ("completed".to_string(), "internal"),
         };
         ExecOutcome {
             ok: false,
             value: None,
-            error: Some((msg, "resource".into(), false)),
+            error: Some((msg, code.to_string(), false)),
             termination,
             logs,
         }

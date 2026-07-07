@@ -20,6 +20,8 @@ pub enum FrameError {
     UnknownApi(String),
     #[error("引数が大きすぎます（{0} bytes > {MAX_ARGS_BYTES} bytes）")]
     ArgsTooLarge(usize),
+    #[error("不正な引数 JSON: {0}")]
+    InvalidArgsJson(String),
     #[error("ホスト呼び出し回数の上限を超えました（{0}）")]
     TooManyCalls(u64),
 }
@@ -100,9 +102,9 @@ pub fn validate_host_call(
     if args_json.len() > MAX_ARGS_BYTES {
         return Err(FrameError::ArgsTooLarge(args_json.len()));
     }
-    // UTF-8 は &str の時点で保証。JSON 妥当性を検証（不正は空オブジェクト扱いにせず拒否）。
+    // UTF-8 は &str の時点で保証。JSON 妥当性を検証（不正は「未知 api」でなく「不正 JSON」として拒否）。
     let args: serde_json::Value = serde_json::from_str(args_json)
-        .map_err(|_| FrameError::UnknownApi(format!("{api} (invalid args json)")))?;
+        .map_err(|e| FrameError::InvalidArgsJson(format!("{api}: {e}")))?;
     let call = HostCall {
         exec_id: exec_id.to_string(),
         seq,
