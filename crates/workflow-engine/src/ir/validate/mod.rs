@@ -4,6 +4,7 @@
 //! （dnd がノード上に表示）。Stage A の対象は V1/V2/V3/V5/V6/V7 と V4 の secret 照合のみ
 //! （skill 照合は Stage B）。
 
+mod refs;
 mod v2_graph;
 mod v5_dataflow;
 
@@ -82,7 +83,7 @@ pub fn validate(
 
     let mut errors = Vec::new();
     // ワークフロー名は安定参照名の契約 `^[a-z][a-z0-9-]{0,63}$`（workflow.start の名前解決に使う）。
-    if !is_valid_workflow_name(&ir.name) {
+    if !refs::is_valid_workflow_name(&ir.name) {
         errors.push(ValidationError::new(
             "ir.bad_name",
             format!(
@@ -98,11 +99,11 @@ pub fn validate(
     // V3: 語彙照合（node type・scope・event source・model）。
     v3_vocab(&ir, catalog, &mut errors);
     // V4: 参照存在（Stage A は secret のみ・宛先束縛の事前チェック）。
-    v4_refs(&ir, catalog, &mut errors);
+    refs::v4_refs(&ir, catalog, &mut errors);
     // V5: データフロー（$from 祖先性・default 要否・条件木型整合・regex）。
     v5_dataflow::check(&ir, &mut errors);
     // V6: script コンパイル（inline の swc パース・禁止構文）。
-    v6_script(&ir, &mut errors);
+    refs::v6_script(&ir, &mut errors);
 
     if errors.is_empty() {
         Ok(ir)
@@ -205,7 +206,7 @@ fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError
             Some(nt) => {
                 // 能力ノードが必要とするスコープが declared_scopes に宣言されているか（宣言天井と
                 // ノードの整合・保存時に弾く。実行時の scope 天井ゲートで初めて落ちるのを防ぐ）。
-                if let Some(required) = required_scope_for(nt) {
+                if let Some(required) = refs::required_scope_for(nt) {
                     if !declared.contains(required) {
                         errors.push(
                             ValidationError::new(
@@ -264,128 +265,6 @@ fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError
                     format!("未知のイベント source: {}", ev.source),
                 )),
             }
-        }
-    }
-}
-
-/// ワークフロー名の形式検証 `^[a-z][a-z0-9-]{0,63}$`（安定参照名・regex 不使用の手書き）。
-fn is_valid_workflow_name(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    if bytes.is_empty() || bytes.len() > 64 {
-        return false;
-    }
-    if !bytes[0].is_ascii_lowercase() {
-        return false;
-    }
-    bytes[1..]
-        .iter()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
-}
-
-/// 能力ノードが必要とする宣言スコープ（scope 天井の保存時整合・engine.md §9.2）。
-/// 制御ノード（control.*）や副作用のない内部推論（llm/agent）は None。
-fn required_scope_for(nt: NodeType) -> Option<&'static str> {
-    match nt {
-        NodeType::StorageRead | NodeType::StorageList => Some("storage.read"),
-        NodeType::StorageWrite => Some("storage.write"),
-        NodeType::RagSearch => Some("rag.query"),
-        NodeType::HttpRequest => Some("http.egress"),
-        NodeType::WorkflowStart => Some("workflow.start"),
-        _ => None,
-    }
-}
-
-/// V4: 参照存在（Stage A は secret のみ・宛先束縛の事前チェック）。
-fn v4_refs(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError>) {
-    for node in &ir.nodes {
-        if node.node_type != NodeType::HttpRequest.as_str() {
-            continue;
-        }
-        // http.request の secret 参照名を照合し、宛先束縛が URL ホストを許容するか事前検査。
-        let Some(secret) = node.params.get("secret") else {
-            continue;
-        };
-        let Some(name) = secret.get("name").and_then(|v| v.as_str()) else {
-            errors.push(
-                ValidationError::new("ir.bad_ref", "secret.name が必要です").at_node(&node.id),
-            );
-            continue;
-        };
-        let Some(allowed_hosts) = catalog.secrets.get(name) else {
-            errors.push(
-                ValidationError::new("ir.unknown_secret", format!("未知の secret: {name}"))
-                    .at_node(&node.id),
-            );
-            continue;
-        };
-        // secret を添付する http.request は URL ホスト部が**リテラル必須**（ir.md §7.2）。
-        // url が文字列でない（$from 等）とホストが確定できず宛先束縛を検査できない＝
-        // 実行時任意ホストへ secret を添付され得るため、保存時に拒否する（fail-closed・P1）。
-        let Some(host) = node
-            .params
-            .get("url")
-            .and_then(|v| v.as_str())
-            .and_then(extract_host)
-        else {
-            errors.push(
-                ValidationError::new(
-                    "ir.non_literal_url",
-                    format!(
-                        "secret を添付する http.request は URL ホストがリテラル必須です（node {}）",
-                        node.id
-                    ),
-                )
-                .at_node(&node.id),
-            );
-            continue;
-        };
-        let allowed = allowed_hosts
-            .iter()
-            .any(|pat| secrets::host_allowed(pat, &host));
-        if !allowed {
-            errors.push(
-                ValidationError::new(
-                    "ir.binding_denied",
-                    format!("secret {name} は宛先 {host} への添付を許可していません"),
-                )
-                .at_node(&node.id),
-            );
-        }
-    }
-}
-
-/// URL 文字列からホスト部を取り出す（リテラル URL 前提・スキーム有無を許容）。
-fn extract_host(url: &str) -> Option<String> {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let host = rest.split(['/', '?', '#']).next()?;
-    let host = host.split('@').next_back()?; // userinfo を除去
-    let host = host.split(':').next()?; // ポートを除去
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_ascii_lowercase())
-    }
-}
-
-/// V6: inline script のコンパイル検証（禁止構文・swc パース）。
-fn v6_script(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
-    for node in &ir.nodes {
-        if node.node_type != NodeType::ScriptRun.as_str() {
-            continue;
-        }
-        let Some(source) = node
-            .params
-            .get("source")
-            .and_then(|s| s.get("inline"))
-            .and_then(|v| v.as_str())
-        else {
-            continue; // artifact 参照は存在検証のみ（Stage A は inline を検証）。
-        };
-        if let Err(e) = script_runtime::compile::compile(source) {
-            errors.push(
-                ValidationError::new("ir.script_syntax", format!("script コンパイルエラー: {e}"))
-                    .at_node(&node.id),
-            );
         }
     }
 }
@@ -484,15 +363,15 @@ mod tests {
     #[test]
     fn extract_host_variants() {
         assert_eq!(
-            extract_host("https://api.slack.com/x"),
+            refs::extract_host("https://api.slack.com/x"),
             Some("api.slack.com".into())
         );
         assert_eq!(
-            extract_host("api.slack.com:443/x"),
+            refs::extract_host("api.slack.com:443/x"),
             Some("api.slack.com".into())
         );
         assert_eq!(
-            extract_host("https://u@host.com/p"),
+            refs::extract_host("https://u@host.com/p"),
             Some("host.com".into())
         );
     }
