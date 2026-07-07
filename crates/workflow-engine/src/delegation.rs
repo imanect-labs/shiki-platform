@@ -180,16 +180,17 @@ impl DelegationStore {
             .await
             .map_err(map_db)?;
         }
-        tx.commit().await.map_err(map_db)?;
 
         // workflow プリンシパルが**自身の定義（artifact:workflow_id）**を読めるようにする
-        // （schedule/event run が IR を workflow 権限で取得する・engine.md §6.2）。grant タプルは
-        // 既に DB コミット前に書き済み（all-or-nothing）。
+        // （schedule/event run が IR を workflow 権限で取得する・engine.md §6.2）。**コミット前**に書き、
+        // 失敗時は enabled にしない（DB は enabled なのに IR を読めず launch が落ちる状態を防ぐ・all-or-nothing）。
         let wf_artifact = enabler.ns().artifact(&workflow_id.to_string());
         self.authz
             .write_tuple(&wf_subject, authz::Relation::Viewer, &wf_artifact)
             .await
             .map_err(|e| DelegationError::Authz(e.to_string()))?;
+
+        tx.commit().await.map_err(map_db)?;
         Ok(())
     }
 

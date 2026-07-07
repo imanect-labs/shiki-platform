@@ -109,7 +109,16 @@ impl WorkflowRunLauncher {
             .map_err(|e| LauncherError::Delegation(format!("{e:?}")))?
         {
             RunAdmission::Ok => {}
-            RunAdmission::DelegationInvalid(_) => return Ok(None),
+            RunAdmission::DelegationInvalid(reason) => {
+                // 委譲失効・未同意スコープ・未登録などの切り分けができるよう理由を残す。
+                tracing::warn!(
+                    tenant_id,
+                    %workflow_id,
+                    reason,
+                    "委譲チェック不成立のため run を開始しません"
+                );
+                return Ok(None);
+            }
         }
 
         let ir_json = serde_json::to_value(&ir).map_err(|e| LauncherError::Ir(e.to_string()))?;

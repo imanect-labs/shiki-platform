@@ -8,6 +8,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
+/// 孤児予約の回収までの猶予（秒）。予約後この時間 result_summary が NULL のままなら、予約した
+/// ワーカーはクラッシュしリースも失効したとみなし別ワーカーが再取得する。step リース TTL＋heartbeat
+/// 猶予より十分長く取る（生存ワーカーの副作用と競合しないため）。
+const RESERVATION_RECLAIM_SECS: i32 = 300;
+
 /// journal 参照の結果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JournalDecision {
@@ -114,8 +119,39 @@ impl EffectJournal {
         match row {
             Some((d, _)) if d != digest => Ok(JournalDecision::DigestMismatch),
             Some((_, Some(summary))) => Ok(JournalDecision::AlreadyDone(summary)),
-            Some((_, None)) => Ok(JournalDecision::InProgress),
+            // 結果未確定（実行中 or 孤児予約）。予約が古ければ回収を試みる。
+            Some((_, None)) => self.try_reclaim(tenant_id, idempotency_key).await,
             None => Ok(JournalDecision::Proceed), // 直前に削除された稀ケースは再挑戦。
+        }
+    }
+
+    /// 孤児予約（result_summary が NULL のまま `RESERVATION_RECLAIM_SECS` 経過）を再取得する。
+    ///
+    /// 予約したワーカーが record 前にクラッシュした場合、その step リースも既に失効しており生存ワーカー
+    /// は居ない。`reserved_at` を条件つき UPDATE で更新できたワーカーだけ `Proceed`（他は `InProgress`）。
+    /// これによりリース TTL 相当で step の詰まりが解ける（回収窓のみ at-least-once・Stage A の対象
+    /// storage.write / workflow.start は冪等キーで重複排除される）。
+    async fn try_reclaim(
+        &self,
+        tenant_id: &str,
+        idempotency_key: &str,
+    ) -> Result<JournalDecision, JournalError> {
+        let reclaimed: Option<bool> = sqlx::query_scalar(
+            "UPDATE effect_journal SET reserved_at = now() \
+             WHERE tenant_id = $1 AND idempotency_key = $2 AND result_summary IS NULL \
+               AND reserved_at < now() - make_interval(secs => $3::double precision) \
+             RETURNING true",
+        )
+        .bind(tenant_id)
+        .bind(idempotency_key)
+        .bind(RESERVATION_RECLAIM_SECS)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        if reclaimed.is_some() {
+            Ok(JournalDecision::Proceed)
+        } else {
+            Ok(JournalDecision::InProgress)
         }
     }
 
