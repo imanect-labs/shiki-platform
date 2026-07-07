@@ -138,8 +138,9 @@ async fn main() {
 
     let (tiers, skipped) = discover();
     if tiers.is_empty() {
-        eprintln!("no tiers available; skipped: {skipped:?}");
-        return;
+        // SANDBOX_BENCH=1 と明示されたのに 1 つも計測できない＝設定漏れ。成功終了で隠さず失敗にする。
+        eprintln!("error: no sandbox tiers available to benchmark; skipped: {skipped:?}");
+        std::process::exit(1);
     }
 
     let mut summaries: Vec<TierSummary> = Vec::new();

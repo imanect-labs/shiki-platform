@@ -72,10 +72,14 @@ impl Workspace {
         validate::check_file_size(bytes.len()).map_err(|e| SandboxError::Invalid(e.to_string()))?;
         let path = self.resolve(guest_path)?;
         if let Some(parent) = path.parent() {
+            // mkdir の**前**に既存祖先を検査する。ゲストが `/workspace/link`→ホスト外へのシンボリック
+            // リンクを作っていても、create_dir_all がそれを辿ってルート外にディレクトリを作るのを防ぐ。
+            self.guard_under_root(parent)?;
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|e| SandboxError::Internal(format!("mkdir: {e}")))?;
         }
+        // mkdir 後、最終パスの実体（親含む）がルート配下であることを再確認する。
         self.guard_under_root(&path)?;
         tokio::fs::write(&path, bytes)
             .await
@@ -167,6 +171,20 @@ mod tests {
         let ws = tmp_ws();
         assert!(ws.put("../escape.txt", b"x".to_vec()).await.is_err());
         assert!(ws.get("/etc/passwd").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_symlink_parent_escape() {
+        let ws = tmp_ws();
+        // ルート外を指すシンボリックリンクを /workspace/link に作る。
+        let outside = std::env::temp_dir().join(format!("ws-outside-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&outside);
+        let link = ws.host_root().join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        // link 経由の書込はルート脱出として拒否され、外側にファイルは作られない。
+        assert!(ws.put("link/evil.txt", b"x".to_vec()).await.is_err());
+        assert!(!outside.join("evil.txt").exists());
     }
 
     #[tokio::test]

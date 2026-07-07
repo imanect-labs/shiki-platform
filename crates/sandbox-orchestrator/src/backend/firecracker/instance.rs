@@ -25,7 +25,8 @@ const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STA
 pub(super) struct FirecrackerInstance {
     id: String,
     conn: Mutex<AgentConn>,
-    _fc_child: Child,
+    /// firecracker 子プロセス（kill_on_drop）。`destroy()` で take/kill して /dev/kvm・tap を即解放する。
+    fc_child: std::sync::Mutex<Option<Child>>,
     _egress: Option<EgressStack>,
     state_dir: PathBuf,
     exec_timeout: Duration,
@@ -44,7 +45,7 @@ impl FirecrackerInstance {
         FirecrackerInstance {
             id,
             conn: Mutex::new(conn),
-            _fc_child: fc_child,
+            fc_child: std::sync::Mutex::new(Some(fc_child)),
             _egress: egress,
             state_dir,
             exec_timeout: Duration::from_millis(limits.exec_timeout_ms.max(1)),
@@ -182,11 +183,17 @@ impl Instance for FirecrackerInstance {
     }
 
     async fn destroy(&self) -> Result<(), SandboxError> {
-        // 電源オフ要求→猶予。子プロセス kill は Drop（kill_on_drop）に委ねる。
+        // 電源オフ要求→猶予。
         {
             let mut conn = self.conn.lock().await;
             let _ = conn.send(&Request::Shutdown).await;
             let _ = tokio::time::timeout(Duration::from_millis(500), conn.recv()).await;
+        }
+        // firecracker 子を**即時** kill して /dev/kvm・tap を解放する（Drop 待ちにしない）。
+        if let Ok(mut c) = self.fc_child.lock() {
+            if let Some(mut child) = c.take() {
+                let _ = child.start_kill();
+            }
         }
         let _ = tokio::fs::remove_dir_all(&self.state_dir).await;
         Ok(())
