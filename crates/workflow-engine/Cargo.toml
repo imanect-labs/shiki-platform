@@ -34,6 +34,10 @@ sqlx.workspace = true
 shiki-durable.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
+# cron 評価（5 フィールド）＋IANA tz 解決（スケジューラ・engine.md §5）。
+cron = "0.15"
+chrono = { workspace = true }
+chrono-tz = "0.10"
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 
 [dev-dependencies]

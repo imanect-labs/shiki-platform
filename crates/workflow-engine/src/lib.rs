@@ -9,6 +9,7 @@
 pub mod delegation;
 pub mod ir;
 pub mod run;
+pub mod scheduler;
 pub mod store;
 pub mod vocab;
 
@@ -19,4 +20,5 @@ pub use run::{
     NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus, WorkerConfig,
     WorkflowWorker,
 };
+pub use scheduler::{LeaderLease, RunLauncher, SchedulerStore};
 pub use store::{WorkflowStore, WorkflowStoreError};
