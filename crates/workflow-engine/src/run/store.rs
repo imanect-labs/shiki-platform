@@ -54,6 +54,8 @@ pub struct ClaimedStep {
     pub tenant_id: String,
     pub org: String,
     pub principal: String,
+    /// 実行主体の種別（'user' or 'workflow'）。ワーカーが AuthContext を組む。
+    pub principal_kind: String,
     pub attempt: i32,
     pub fencing_token: i64,
     pub idempotency_key: String,
@@ -87,6 +89,7 @@ impl RunStore {
         trigger_kind: &str,
         trigger_id: Option<&str>,
         principal: &str,
+        principal_kind: &str,
         input: &Value,
         ir_snapshot: &Value,
         graph: &RunGraph,
@@ -94,9 +97,9 @@ impl RunStore {
         let mut tx = self.db.begin().await.map_err(map_db)?;
         let run_id: Uuid = sqlx::query_scalar(
             "INSERT INTO workflow_run \
-             (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, input, \
-              ir_snapshot, status, started_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'running', now()) RETURNING run_id",
+             (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, \
+              principal_kind, input, ir_snapshot, status, started_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'running', now()) RETURNING run_id",
         )
         .bind(tenant_id)
         .bind(org)
@@ -105,6 +108,7 @@ impl RunStore {
         .bind(trigger_kind)
         .bind(trigger_id)
         .bind(principal)
+        .bind(principal_kind)
         .bind(Json(input))
         .bind(Json(ir_snapshot))
         .fetch_one(&mut *tx)
@@ -177,7 +181,8 @@ impl RunStore {
              WHERE s.tenant_id = picked.tenant_id AND s.run_id = picked.run_id \
                AND s.step_path = picked.step_path \
              RETURNING s.run_id, s.step_path, s.node_id, s.tenant_id, r.org, r.principal, \
-                       s.attempt, s.fencing_token, s.idempotency_key, r.input, r.ir_snapshot",
+                       r.principal_kind, s.attempt, s.fencing_token, s.idempotency_key, \
+                       r.input, r.ir_snapshot",
         )
         .bind(worker_id)
         .bind(lease_secs)

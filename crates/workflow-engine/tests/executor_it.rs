@@ -141,6 +141,7 @@ fn ctx(input: Value, scopes: Vec<String>) -> NodeContext {
         idempotency_key: "wf:t1:0:n1".into(),
         attempt: 1,
         principal: "wf".into(),
+        principal_kind: "workflow".into(),
         input: input.clone(),
         trigger: input,
         node_outputs: Value::Null,

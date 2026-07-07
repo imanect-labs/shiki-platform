@@ -19,6 +19,8 @@ pub struct ExecCtx {
     pub org: String,
     /// 実行主体の subject local id（workflow プリンシパル or ユーザー）。
     pub principal: String,
+    /// 実行主体の種別（'user' or 'workflow'）。ポートが AuthContext を組み分ける。
+    pub principal_kind: String,
     /// OTel トレース id（監査 ↔ Langfuse ↔ OTel を同一トレースに束ねる）。
     pub trace_id: Option<String>,
 }

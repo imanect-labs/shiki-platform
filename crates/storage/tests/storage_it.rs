@@ -1973,3 +1973,96 @@ async fn outsider_write(service: &StorageService, ctx: &AuthContext) -> StorageE
         .await
         .expect_err("deny")
 }
+
+#[tokio::test]
+async fn write_file_internal_idempotent_dedups_by_key() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        ..
+    } = ctx;
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let uid = format!("ituser{}", Uuid::new_v4().simple());
+    let actx = make_ctx(&org, &uid);
+    seed_org_member(&authz, &org, &uid).await;
+
+    let key = format!("wf:{}:r:step", Uuid::new_v4().simple());
+    let digest = "deadbeef";
+
+    // 1 回目: 書き込み成功（version 1）。
+    let s1 = service
+        .write_file_internal_idempotent(
+            &actx,
+            None,
+            "idem.txt",
+            b"payload",
+            "text/plain",
+            &key,
+            digest,
+            None,
+        )
+        .await
+        .expect("first write");
+    let id1 = s1.get("id").and_then(|v| v.as_str()).unwrap().to_string();
+
+    // 2 回目: 同一冪等キー → dedup（新規ノードを作らず同じ要約を返す）。
+    let s2 = service
+        .write_file_internal_idempotent(
+            &actx,
+            None,
+            "idem.txt",
+            b"payload",
+            "text/plain",
+            &key,
+            digest,
+            None,
+        )
+        .await
+        .expect("second write (dedup)");
+    assert_eq!(s1, s2, "同一冪等キーは同じ結果要約を返す");
+
+    // org 直下に "idem.txt" のノードは 1 つだけ（高々 1 バージョン）。
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM node WHERE org = $1 AND name = 'idem.txt' AND deleted_at IS NULL",
+    )
+    .bind(&org)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 1, "冪等キー再送で 2 バージョン作らない");
+
+    // 別の冪等キー → 別ノードが作られる。
+    let key2 = format!("wf:{}:r:step2", Uuid::new_v4().simple());
+    let s3 = service
+        .write_file_internal_idempotent(
+            &actx,
+            None,
+            "idem2.txt",
+            b"payload",
+            "text/plain",
+            &key2,
+            digest,
+            None,
+        )
+        .await
+        .expect("third write (new key)");
+    assert_ne!(
+        s3.get("id").and_then(|v| v.as_str()).unwrap(),
+        id1,
+        "別キーは別ノード"
+    );
+
+    // effect_journal に結果要約が記録されている（本文は含まない）。
+    let summary: serde_json::Value = sqlx::query_scalar(
+        "SELECT result_summary FROM effect_journal WHERE tenant_id = $1 AND idempotency_key = $2",
+    )
+    .bind(&actx.tenant_id)
+    .bind(&key)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(summary.get("id").is_some());
+    assert!(summary.get("body").is_none(), "journal に本文を載せない");
+}

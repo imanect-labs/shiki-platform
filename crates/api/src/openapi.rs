@@ -66,6 +66,8 @@ use utoipa::{
         crate::routes::workflows::update_workflow,
         crate::routes::workflows::get_workflow,
         crate::routes::workflows::get_workflow_version,
+        crate::routes::workflows::start_workflow_run,
+        crate::routes::workflows::get_workflow_run,
     ),
     components(schemas(
         crate::routes::me::MeResponse,
@@ -133,6 +135,10 @@ use utoipa::{
         crate::routes::workflows::SaveWorkflowResponse,
         crate::routes::workflows::WorkflowVersionResponse,
         crate::routes::workflows::ValidationErrorResponse,
+        crate::routes::workflows::StartRunRequest,
+        crate::routes::workflows::StartRunResponse,
+        crate::routes::workflows::RunStatusResponse,
+        crate::routes::workflows::StepStatusItem,
         workflow_engine::ValidationError,
         // 検索 DTO は rag 側の単一定義（手書きミラー禁止）。
         rag::SearchRequest,

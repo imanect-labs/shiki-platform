@@ -132,6 +132,7 @@ impl WorkflowWorker {
             idempotency_key: claimed.idempotency_key.clone(),
             attempt: claimed.attempt,
             principal: claimed.principal.clone(),
+            principal_kind: claimed.principal_kind.clone(),
             input: claimed.input.0.clone(),
             // Stage A: interactive のトリガペイロードは run 入力と同一（schedule/event は Null）。
             trigger: claimed.input.0.clone(),

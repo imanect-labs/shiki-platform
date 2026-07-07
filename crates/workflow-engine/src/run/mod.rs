@@ -41,6 +41,8 @@ pub struct NodeContext {
     pub attempt: i32,
     /// 実行主体の subject local id。
     pub principal: String,
+    /// 実行主体の種別（'user' or 'workflow'）。interactive=user・schedule/event=workflow。
+    pub principal_kind: String,
     /// run 起動入力（`$from input` の源）。
     pub input: Value,
     /// トリガペイロード（`$from trigger` の源。Stage A の interactive は run 入力と同一）。

@@ -116,6 +116,7 @@ mod tests {
             idempotency_key: "wf:t1:0:n1".into(),
             attempt: 1,
             principal: "wf".into(),
+            principal_kind: "workflow".into(),
             input,
             trigger: json!({}),
             node_outputs,

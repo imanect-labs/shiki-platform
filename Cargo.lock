@@ -4744,6 +4744,7 @@ dependencies = [
  "shiki-llm-gateway",
  "shiki-rag",
  "shiki-sandbox-client",
+ "shiki-script-runtime",
  "shiki-secrets",
  "shiki-storage",
  "shiki-websearch",

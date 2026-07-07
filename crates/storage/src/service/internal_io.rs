@@ -15,16 +15,32 @@
 use super::*;
 
 use crate::content_address::sha256_hex;
+use serde_json::Value;
+
+/// 内部書込の結果（冪等版が dedup を区別するため）。
+enum WriteCoreOut {
+    // Node は大きいので Box 化してバリアント間サイズ差を抑える。
+    Written(Box<Node>),
+    Deduped(Value),
+}
+
+/// 書込結果の要約（effect_journal / 次ノードへ渡す・**本文は含めない**）。
+fn write_summary(node: &Node) -> Value {
+    json!({
+        "id": node.id.to_string(),
+        "name": node.name,
+        "version": node.version,
+        "sha256": node.blob_sha256,
+        "size": node.size_bytes,
+    })
+}
 
 impl StorageService {
     /// バイト列を新規ファイルとして保存する（内部書き込み・presigned 経路と同一不変条件）。
     ///
     /// finalize の新規作成経路（`finalize.rs`）を「バイトを既に所持している」前提で写した実装。
     /// staging/incoming を経ず、sha256 をメモリ上で計算して content-addressed に直接昇格する
-    /// （バイト所持＝所持証明そのものなので、宣言ハッシュ照合は不要）。
-    // blob 昇格→ノード化→FGA tuple を finalize と同じ順序・同じ補償で行うため長め。
-    // 段階の不変条件を一望できるよう一体に保つ（finalize.rs と対称）。
-    #[allow(clippy::too_many_lines)]
+    /// （バイト所持＝所持証明そのものなので、宣言ハッシュ照合は不要）。公開 API。
     pub async fn write_file_internal(
         &self,
         ctx: &AuthContext,
@@ -34,6 +50,67 @@ impl StorageService {
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
+        match self
+            .write_file_core(ctx, parent_id, name, bytes, content_type, trace_id, None)
+            .await?
+        {
+            WriteCoreOut::Written(node) => Ok(*node),
+            // idem=None は決して dedup しない。
+            WriteCoreOut::Deduped(_) => Err(StorageError::Integrity(
+                "idem 無し書込が dedup を返した".into(),
+            )),
+        }
+    }
+
+    /// バイト列を **冪等キー付きで** 保存する（チョークポイント側 in-TX effect_journal・PIT-31）。
+    ///
+    /// effect_journal の予約・結果記録を書込と **同一 TX** で行い、ワーカー kill を挟んだリトライでも
+    /// **高々 1 バージョン**にする（reserve→write→record→commit が原子的・crash は tx rollback で
+    /// 予約ごと消える）。並行ワーカーは `INSERT ON CONFLICT` が相手 tx の commit を待つため、
+    /// 後続は確定済みの結果要約を dedup で受け取る。返り値は書込結果の要約（本文は含まない）。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn write_file_internal_idempotent(
+        &self,
+        ctx: &AuthContext,
+        parent_id: Option<Uuid>,
+        name: &str,
+        bytes: &[u8],
+        content_type: &str,
+        idempotency_key: &str,
+        op_digest: &str,
+        trace_id: Option<&str>,
+    ) -> Result<Value, StorageError> {
+        match self
+            .write_file_core(
+                ctx,
+                parent_id,
+                name,
+                bytes,
+                content_type,
+                trace_id,
+                Some((idempotency_key, op_digest)),
+            )
+            .await?
+        {
+            WriteCoreOut::Written(node) => Ok(write_summary(&node)),
+            WriteCoreOut::Deduped(summary) => Ok(summary),
+        }
+    }
+
+    /// 内部書込の中核。`idem=Some((key,digest))` なら effect_journal を同一 TX で予約/記録する。
+    // blob 昇格→ノード化→FGA tuple を finalize と同じ順序・同じ補償で行うため長め。
+    // 段階の不変条件を一望できるよう一体に保つ（finalize.rs と対称）。
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    async fn write_file_core(
+        &self,
+        ctx: &AuthContext,
+        parent_id: Option<Uuid>,
+        name: &str,
+        bytes: &[u8],
+        content_type: &str,
+        trace_id: Option<&str>,
+        idem: Option<(&str, &str)>,
+    ) -> Result<WriteCoreOut, StorageError> {
         validate_name(name)?;
         let size = i64::try_from(bytes.len())
             .map_err(|_| StorageError::Invalid("size が大きすぎます".into()))?;
@@ -95,6 +172,42 @@ impl StorageService {
         // メタ確定（finalize の新規作成 txn と同一の順序・補償）。失敗時、新規 hash の孤児本体は
         // GC（blob 行を持たないキーの掃除）に委ねる（finalize と同じ方針・Lb76C 対称）。
         let mut tx = self.db.begin().await?;
+
+        // 冪等予約（同一 TX）: 先に占有し、既存なら dedup で早期返却する。
+        if let Some((key, digest)) = idem {
+            let inserted: Option<(String, Option<Value>)> = sqlx::query_as(
+                "INSERT INTO effect_journal (tenant_id, idempotency_key, op_digest) \
+                 VALUES ($1, $2, $3) \
+                 ON CONFLICT (tenant_id, idempotency_key) DO NOTHING \
+                 RETURNING op_digest, result_summary",
+            )
+            .bind(&ctx.tenant_id)
+            .bind(key)
+            .bind(digest)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if inserted.is_none() {
+                // 競合: 相手 tx の commit を待った後の確定行を読む（in-TX なので summary は確定済み）。
+                let (existing_digest, summary): (String, Option<Value>) = sqlx::query_as(
+                    "SELECT op_digest, result_summary FROM effect_journal \
+                     WHERE tenant_id = $1 AND idempotency_key = $2",
+                )
+                .bind(&ctx.tenant_id)
+                .bind(key)
+                .fetch_one(&mut *tx)
+                .await?;
+                if existing_digest != digest {
+                    // 同一冪等キーで別操作（permanent）。
+                    return Err(StorageError::Conflict);
+                }
+                return match summary {
+                    Some(v) => Ok(WriteCoreOut::Deduped(v)),
+                    // 孤児予約（cross-TX 経路の未完）: 上位で回収/リトライさせる。
+                    None => Err(StorageError::Conflict),
+                };
+            }
+        }
+
         self.bump_blob(
             &mut tx,
             &ctx.tenant_id,
@@ -153,6 +266,20 @@ impl StorageService {
             trace_id,
         )
         .await?;
+        // 冪等結果を同一 TX で記録する（write と record を分離不能にする＝高々 1 回）。
+        if let Some((key, _)) = idem {
+            let summary = write_summary(&node);
+            sqlx::query(
+                "UPDATE effect_journal SET result_summary = $3 \
+                 WHERE tenant_id = $1 AND idempotency_key = $2",
+            )
+            .bind(&ctx.tenant_id)
+            .bind(key)
+            .bind(sqlx::types::Json(&summary))
+            .execute(&mut *tx)
+            .await?;
+        }
+
         // DB 側が確定したので FGA tuple を書く（commit 前）。
         let file_obj = ctx.ns().file(&node.id.to_string());
         // owner tuple（失敗時は tx を drop でロールバック＝何も残らない）。
@@ -196,7 +323,7 @@ impl StorageService {
             }
             return Err(StorageError::from(e));
         }
-        Ok(node)
+        Ok(WriteCoreOut::Written(Box::new(node)))
     }
 
     /// ファイル内容をサーバ内で読み戻す（内部読み取り・viewer 認可＋監査つき）。

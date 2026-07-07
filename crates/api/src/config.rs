@@ -39,6 +39,10 @@ pub struct AppConfig {
     /// シークレット管理（Task 10.9）。既定は無効（マスターキー未設定なら /secrets は 503）。
     #[serde(default)]
     pub secrets: SecretsConfig,
+    /// ワークフロー実行時（run ワーカー/スケジューラ/イベント relay・Task 10・Stage A W3）。
+    /// 既定は無効（/workflows は保存のみ）。
+    #[serde(default)]
+    pub workflow: crate::workflow_runtime::WorkflowConfig,
 }
 
 /// シークレット管理の設定。
