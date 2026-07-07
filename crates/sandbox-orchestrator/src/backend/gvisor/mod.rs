@@ -54,7 +54,7 @@ impl GvisorBackend {
         std::fs::create_dir_all(&state_root)
             .map_err(|e| SandboxError::Unavailable(format!("gvisor state dir: {e}")))?;
         // 前回クラッシュの残骸を掃除（best-effort・kill_on_drop が主・PIT: 残留ゼロ）。
-        Self::sweep_orphans(&state_root);
+        Self::sweep_orphans(runsc_bin, &state_root);
         Ok(GvisorBackend {
             runsc: Arc::new(RunscConfig {
                 bin: runsc_bin.to_string(),
@@ -66,24 +66,30 @@ impl GvisorBackend {
         })
     }
 
-    /// 起動時の孤児掃除。残った per-sandbox ディレクトリを runsc delete して除去する。
-    fn sweep_orphans(state_root: &Path) {
+    /// 起動時の孤児掃除。**自分が作った `gv-*` ディレクトリのみ**を対象に、設定済み `runsc_bin` で
+    /// delete してから除去する（`state_root` が広いディレクトリを誤指定しても無関係データを消さない）。
+    fn sweep_orphans(runsc_bin: &str, state_root: &Path) {
         let Ok(entries) = std::fs::read_dir(state_root) else {
             return;
         };
         for ent in entries.flatten() {
             let dir = ent.path();
+            let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            // 自分の命名規則（create の `gv-<uuid>`）以外は触らない。
+            if !name.starts_with("gv-") {
+                continue;
+            }
             let root = dir.join("runsc");
             if root.is_dir() {
-                if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
-                    let _ = std::process::Command::new("runsc")
-                        .arg("--root")
-                        .arg(&root)
-                        .args(["--rootless", "delete", "--force", name])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
-                }
+                let _ = std::process::Command::new(runsc_bin)
+                    .arg("--root")
+                    .arg(&root)
+                    .args(["--rootless", "delete", "--force", name])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
@@ -98,14 +104,16 @@ impl GvisorBackend {
         id: &str,
     ) -> Result<(), SandboxError> {
         for _ in 0..50 {
-            let out = runsc_base(runsc, root_dir, netns_pid, network)
+            // 各 `runsc state` にもタイムアウトを敷く（hang した runsc で create 全体が詰まらないように）。
+            // kill_on_drop: タイムアウトで future を drop したら hang した子も確実に kill/reap する。
+            let fut = runsc_base(runsc, root_dir, netns_pid, network)
                 .arg("state")
                 .arg(id)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
-                .output()
-                .await;
-            if let Ok(o) = out {
+                .kill_on_drop(true)
+                .output();
+            if let Ok(Ok(o)) = tokio::time::timeout(Duration::from_secs(3), fut).await {
                 if let Ok(text) = String::from_utf8(o.stdout) {
                     if text.contains("\"status\": \"running\"")
                         || text.contains("\"status\":\"running\"")

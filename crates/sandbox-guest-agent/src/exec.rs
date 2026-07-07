@@ -65,6 +65,12 @@ pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd:
         .unwrap_or_else(Instant::now);
     let mut killed = false;
     loop {
+        // deadline は**毎周**判定する。子が 100ms 未満間隔で出力し続けると `recv_timeout` が常に
+        // `Ok` を返し Timeout ブランチに入らないため、ここで判定しないとタイムアウトが発火しない。
+        if !killed && Instant::now() >= deadline {
+            let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
+            killed = true;
+        }
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok((ch, bytes)) => {
                 let b64 = B64.encode(&bytes);
@@ -79,12 +85,7 @@ pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd:
                     return;
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if !killed && Instant::now() >= deadline {
-                    let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
-                    killed = true;
-                }
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -162,6 +163,27 @@ mod tests {
         let mut buf = Vec::new();
         run(&mut buf, &[], 1000, ".");
         assert!(matches!(decode(buf).first(), Some(Event::Err { .. })));
+    }
+
+    #[test]
+    fn continuous_output_still_times_out() {
+        // 出力が絶えず届く（recv_timeout が常に Ok を返す）状況でも、deadline を**毎周**判定するため
+        // kill されて終了する。修正前は Timeout ブランチでしか deadline を見ず永久にハングしていた。
+        // フラッドで backlog を作らないよう軽くペースを入れる。
+        let mut buf = Vec::new();
+        let start = std::time::Instant::now();
+        run(
+            &mut buf,
+            &argv(&["/bin/sh", "-c", "while true; do echo x; sleep 0.02; done"]),
+            400,
+            ".",
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "deadline を超えてハングしてはならない: {:?}",
+            start.elapsed()
+        );
+        assert!(matches!(decode(buf).last(), Some(Event::Exited { .. })));
     }
 
     #[test]

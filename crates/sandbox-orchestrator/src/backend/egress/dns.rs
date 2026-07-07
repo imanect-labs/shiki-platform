@@ -75,8 +75,9 @@ fn parse_question(buf: &[u8], start: usize) -> Option<(usize, u16)> {
         }
     }
     let qtype = u16::from_be_bytes([*buf.get(p)?, *buf.get(p + 1)?]);
-    // qname_end は null ラベルの直後（qtype/qclass の手前）。
-    Some((p - 1, qtype))
+    // p は qtype の開始位置（qname の null 直後）。質問セクションは start..(p+4)＝qname＋qtype(2)＋qclass(2)。
+    // 呼び出し側が `query[12..qend+4]` で丸ごとコピーするため qend=p を返す（以前の p-1 は qclass 末尾を欠落）。
+    Some((p, qtype))
 }
 
 #[cfg(test)]
@@ -103,9 +104,16 @@ mod tests {
     #[test]
     fn a_query_answered_with_gateway() {
         let gw: Ipv4Addr = "169.254.0.1".parse().unwrap();
-        let resp = build_response(&a_query("www.example.com", 1), gw).expect("resp");
+        let query = a_query("www.example.com", 1);
+        let resp = build_response(&query, gw).expect("resp");
         // header ancount = 1
         assert_eq!(u16::from_be_bytes([resp[6], resp[7]]), 1);
+        // 質問セクション（qname＋qtype＋qclass）が欠落なく echo される（P1: qclass 末尾）。
+        assert_eq!(
+            &resp[12..query.len()],
+            &query[12..],
+            "question section echoed verbatim"
+        );
         // 末尾 4 バイトが gateway。
         let n = resp.len();
         assert_eq!(&resp[n - 4..], &gw.octets());

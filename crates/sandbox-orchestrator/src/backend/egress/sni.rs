@@ -74,19 +74,22 @@ fn parse_sni_extension(body: &[u8]) -> Option<String> {
 }
 
 /// HTTP/1.x リクエストの Host ヘッダを抽出する（`Host: example.com[:port]`）。
+///
+/// **バイト列のまま**処理する: 敵対的入力（非 ASCII の Host・同一パケットにバイナリ本文）でも
+/// `str` スライスの char 境界 panic を起こさず、ヘッダ領域だけを対象にする。
 #[must_use]
 pub(super) fn parse_http_host(buf: &[u8]) -> Option<String> {
-    // ヘッダ領域のみを対象（本文は見ない）。ASCII 前提。
-    let text = std::str::from_utf8(buf).ok()?;
-    let head = text.split("\r\n\r\n").next().unwrap_or(text);
-    for line in head.split("\r\n") {
-        if let Some(rest) = line
-            .strip_prefix("Host:")
-            .or_else(|| line.strip_prefix("host:"))
-            .or_else(|| strip_prefix_ci(line, "host:"))
-        {
-            let v = rest.trim();
-            let host = v.split(':').next().unwrap_or(v).trim();
+    // ヘッダ領域のみ（最初の CRLFCRLF まで）。本文にバイナリが来ても壊れない。
+    let head_end = find_subsequence(buf, b"\r\n\r\n").unwrap_or(buf.len());
+    let head = &buf[..head_end];
+    for line in head.split(|&b| b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        // `Host:` を大文字小文字無視で（バイト比較）。
+        if line.len() >= 5 && line[..5].eq_ignore_ascii_case(b"host:") {
+            let v = trim_ascii(&line[5..]);
+            // ポートを落とす（`host:port`）。
+            let host_bytes = v.split(|&b| b == b':').next().unwrap_or(v);
+            let host = std::str::from_utf8(trim_ascii(host_bytes)).ok()?;
             if is_valid_hostname(host) {
                 return Some(host.to_ascii_lowercase());
             }
@@ -96,12 +99,31 @@ pub(super) fn parse_http_host(buf: &[u8]) -> Option<String> {
     None
 }
 
-fn strip_prefix_ci<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
-    if line.len() >= prefix.len() && line[..prefix.len()].eq_ignore_ascii_case(prefix) {
-        Some(&line[prefix.len()..])
-    } else {
-        None
+/// 部分列の開始オフセットを探す（ヘッダ終端 CRLFCRLF 検出用）。
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
     }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// 前後の ASCII 空白を除く（バイト列）。
+fn trim_ascii(mut b: &[u8]) -> &[u8] {
+    while let [first, rest @ ..] = b {
+        if first.is_ascii_whitespace() {
+            b = rest;
+        } else {
+            break;
+        }
+    }
+    while let [rest @ .., last] = b {
+        if last.is_ascii_whitespace() {
+            b = rest;
+        } else {
+            break;
+        }
+    }
+    b
 }
 
 fn read_u16(buf: &[u8], at: usize) -> Option<u16> {
@@ -210,5 +232,28 @@ mod tests {
     fn rejects_bad_hostname() {
         let req = b"GET / HTTP/1.1\r\nHost: bad_host!\r\n\r\n";
         assert_eq!(parse_http_host(req), None);
+    }
+
+    #[test]
+    fn multibyte_header_does_not_panic() {
+        // 非 ASCII（マルチバイト）を含む Host は panic せず None（無効ホスト名）。
+        let mut req = b"GET / HTTP/1.1\r\nHost: ".to_vec();
+        req.extend_from_slice("日本語.example".as_bytes());
+        req.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(parse_http_host(&req), None);
+        // 先頭に短いマルチバイト行が来ても境界 panic しない。
+        let weird = "Ho日: x\r\nHost: ok.example\r\n\r\n".as_bytes();
+        assert_eq!(parse_http_host(weird).as_deref(), Some("ok.example"));
+    }
+
+    #[test]
+    fn short_request_and_binary_body() {
+        // 64 バイト未満の正当な HTTP でも Host を取れる。
+        let short = b"GET / HTTP/1.1\r\nHost: a.co\r\n\r\n"; // ~30 bytes
+        assert_eq!(parse_http_host(short).as_deref(), Some("a.co"));
+        // 同一パケットにバイナリ本文が続いても UTF-8 変換で壊れない。
+        let mut req = b"POST / HTTP/1.1\r\nHost: b.example\r\n\r\n".to_vec();
+        req.extend_from_slice(&[0xff, 0xfe, 0x00, 0x80]);
+        assert_eq!(parse_http_host(&req).as_deref(), Some("b.example"));
     }
 }

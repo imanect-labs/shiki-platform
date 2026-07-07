@@ -67,6 +67,8 @@ impl EgressStack {
                 .map_err(|e| SandboxError::Unavailable(format!("netns spawn: {e}")))?;
 
         let egress = Arc::new(egress.clone());
+        // SSRF 緩和フラグは起動時に env から一度だけ読む（本番は未設定＝内部 IP を必ず遮断）。
+        let allow_private = proxy::allow_private_from_env();
         let mut tasks = Vec::new();
         for (port, std_listener) in ns.take_tcp() {
             let listener = tokio::net::TcpListener::from_std(std_listener)
@@ -76,6 +78,7 @@ impl EgressStack {
                 port,
                 Arc::clone(&egress),
                 audit.clone(),
+                allow_private,
             )));
         }
         let dns_std = ns
