@@ -189,6 +189,7 @@ fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
 fn system_ctx(tenant_id: &str, org: &str, actor: &str) -> AuthContext {
     AuthContext::new(
         Principal {
+            kind: authz::PrincipalKind::User,
             id: actor.to_string(),
             email: None,
             groups: vec![],
@@ -324,6 +325,7 @@ mod tests {
     fn test_ctx(tenant_id: &str) -> AuthContext {
         AuthContext::new(
             authz::Principal {
+                kind: authz::PrincipalKind::User,
                 id: "u1".into(),
                 email: None,
                 groups: vec![],

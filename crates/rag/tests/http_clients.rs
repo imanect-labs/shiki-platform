@@ -24,6 +24,7 @@ use rag::{EmbedInput, HttpDocumentParser, HttpEmbeddingProvider, HttpReranker, R
 fn ctx() -> AuthContext {
     AuthContext::new(
         Principal {
+            kind: authz::PrincipalKind::User,
             id: "alice".into(),
             email: None,
             groups: vec![],

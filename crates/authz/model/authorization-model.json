@@ -7,6 +7,11 @@
       "metadata": null
     },
     {
+      "type": "workflow",
+      "relations": {},
+      "metadata": null
+    },
+    {
       "type": "organization",
       "relations": {
         "member": {
@@ -16,7 +21,11 @@
       "metadata": {
         "relations": {
           "member": {
-            "directly_related_user_types": [{ "type": "user" }]
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              }
+            ]
           }
         }
       }
@@ -32,8 +41,13 @@
         "relations": {
           "member": {
             "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              }
             ]
           }
         }
@@ -51,12 +65,22 @@
         "editor": {
           "union": {
             "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "owner" } },
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "owner"
+                }
+              },
               {
                 "tupleToUserset": {
-                  "tupleset": { "relation": "parent" },
-                  "computedUserset": { "relation": "editor" }
+                  "tupleset": {
+                    "relation": "parent"
+                  },
+                  "computedUserset": {
+                    "relation": "editor"
+                  }
                 }
               }
             ]
@@ -65,12 +89,22 @@
         "viewer": {
           "union": {
             "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "editor" } },
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "editor"
+                }
+              },
               {
                 "tupleToUserset": {
-                  "tupleset": { "relation": "parent" },
-                  "computedUserset": { "relation": "viewer" }
+                  "tupleset": {
+                    "relation": "parent"
+                  },
+                  "computedUserset": {
+                    "relation": "viewer"
+                  }
                 }
               }
             ]
@@ -80,21 +114,48 @@
       "metadata": {
         "relations": {
           "parent": {
-            "directly_related_user_types": [{ "type": "folder" }]
+            "directly_related_user_types": [
+              {
+                "type": "folder"
+              }
+            ]
           },
           "owner": {
-            "directly_related_user_types": [{ "type": "user" }]
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "workflow"
+              }
+            ]
           },
           "editor": {
             "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "workflow"
+              }
             ]
           },
           "viewer": {
             "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "workflow"
+              }
             ]
           }
         }
@@ -112,12 +173,22 @@
         "editor": {
           "union": {
             "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "owner" } },
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "owner"
+                }
+              },
               {
                 "tupleToUserset": {
-                  "tupleset": { "relation": "parent" },
-                  "computedUserset": { "relation": "editor" }
+                  "tupleset": {
+                    "relation": "parent"
+                  },
+                  "computedUserset": {
+                    "relation": "editor"
+                  }
                 }
               }
             ]
@@ -126,12 +197,22 @@
         "viewer": {
           "union": {
             "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "editor" } },
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "editor"
+                }
+              },
               {
                 "tupleToUserset": {
-                  "tupleset": { "relation": "parent" },
-                  "computedUserset": { "relation": "viewer" }
+                  "tupleset": {
+                    "relation": "parent"
+                  },
+                  "computedUserset": {
+                    "relation": "viewer"
+                  }
                 }
               }
             ]
@@ -141,21 +222,48 @@
       "metadata": {
         "relations": {
           "parent": {
-            "directly_related_user_types": [{ "type": "folder" }]
+            "directly_related_user_types": [
+              {
+                "type": "folder"
+              }
+            ]
           },
           "owner": {
-            "directly_related_user_types": [{ "type": "user" }]
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "workflow"
+              }
+            ]
           },
           "editor": {
             "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "workflow"
+              }
             ]
           },
           "viewer": {
             "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "workflow"
+              }
             ]
           }
         }
@@ -170,24 +278,42 @@
         "editor": {
           "union": {
             "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "owner" } }
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "owner"
+                }
+              }
             ]
           }
         },
         "commenter": {
           "union": {
             "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "editor" } }
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "editor"
+                }
+              }
             ]
           }
         },
         "viewer": {
           "union": {
             "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "commenter" } }
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "commenter"
+                }
+              }
             ]
           }
         }
@@ -195,24 +321,43 @@
       "metadata": {
         "relations": {
           "owner": {
-            "directly_related_user_types": [{ "type": "user" }]
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              }
+            ]
           },
           "editor": {
             "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              }
             ]
           },
           "commenter": {
             "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              }
             ]
           },
           "viewer": {
             "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              }
             ]
           }
         }
@@ -221,20 +366,34 @@
     {
       "type": "artifact",
       "relations": {
-        "owner": { "this": {} },
+        "owner": {
+          "this": {}
+        },
         "editor": {
           "union": {
             "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "owner" } }
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "owner"
+                }
+              }
             ]
           }
         },
         "viewer": {
           "union": {
             "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "editor" } }
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "editor"
+                }
+              }
             ]
           }
         }
@@ -242,18 +401,38 @@
       "metadata": {
         "relations": {
           "owner": {
-            "directly_related_user_types": [{ "type": "user" }]
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              }
+            ]
           },
           "editor": {
             "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "workflow"
+              }
             ]
           },
           "viewer": {
             "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "workflow"
+              }
             ]
           }
         }
@@ -262,12 +441,20 @@
     {
       "type": "secret",
       "relations": {
-        "owner": { "this": {} },
+        "owner": {
+          "this": {}
+        },
         "can_use": {
           "union": {
             "child": [
-              { "this": {} },
-              { "computedUserset": { "relation": "owner" } }
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "owner"
+                }
+              }
             ]
           }
         }
@@ -275,12 +462,24 @@
       "metadata": {
         "relations": {
           "owner": {
-            "directly_related_user_types": [{ "type": "user" }]
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              }
+            ]
           },
           "can_use": {
             "directly_related_user_types": [
-              { "type": "user" },
-              { "type": "role", "relation": "member" }
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "workflow"
+              }
             ]
           }
         }

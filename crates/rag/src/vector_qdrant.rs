@@ -341,6 +341,7 @@ mod tests {
     fn filter_always_contains_tenant_and_optionally_tags() {
         let ctx = authz::AuthContext::new(
             authz::Principal {
+                kind: authz::PrincipalKind::User,
                 id: "alice".into(),
                 email: None,
                 groups: vec![],

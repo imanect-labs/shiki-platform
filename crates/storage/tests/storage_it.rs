@@ -113,6 +113,7 @@ async fn setup() -> Option<Ctx> {
 fn make_ctx(org: &str, uid: &str) -> AuthContext {
     AuthContext::new(
         Principal {
+            kind: authz::PrincipalKind::User,
             id: uid.into(),
             email: None,
             groups: vec![],
@@ -1505,6 +1506,7 @@ async fn name_search_filters_by_permission_and_neutralizes_wildcards() {
 fn make_ctx_tenant(org: &str, tenant: &str, uid: &str) -> AuthContext {
     AuthContext::new(
         Principal {
+            kind: authz::PrincipalKind::User,
             id: uid.into(),
             email: None,
             groups: vec![],

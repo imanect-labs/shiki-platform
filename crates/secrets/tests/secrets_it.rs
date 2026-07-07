@@ -97,6 +97,7 @@ async fn setup() -> Option<PgPool> {
 fn ctx(tenant: &str, user: &str) -> AuthContext {
     AuthContext::new(
         Principal {
+            kind: authz::PrincipalKind::User,
             id: user.into(),
             email: None,
             groups: vec![],

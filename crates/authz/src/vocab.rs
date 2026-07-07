@@ -88,6 +88,8 @@ pub enum ObjectType {
     Artifact,
     /// シークレット（write-only/use-only・owner/can_use で ReBAC・Task 10.9）。
     Secret,
+    /// ワークフロープリンシパル（schedule/event run の実行主体・subject 専用型・Task 10.4a）。
+    Workflow,
 }
 
 impl ObjectType {
@@ -102,6 +104,7 @@ impl ObjectType {
             ObjectType::Thread => "thread",
             ObjectType::Artifact => "artifact",
             ObjectType::Secret => "secret",
+            ObjectType::Workflow => "workflow",
         }
     }
 }

@@ -176,6 +176,7 @@ mod tests {
     fn ctx() -> AuthContext {
         AuthContext::new(
             authz::Principal {
+                kind: authz::PrincipalKind::User,
                 id: "u1".into(),
                 email: None,
                 groups: vec![],

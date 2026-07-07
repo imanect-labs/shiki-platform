@@ -118,6 +118,7 @@ mod tests {
 
     fn principal_with_groups(groups: &[&str]) -> Principal {
         Principal {
+            kind: authz::PrincipalKind::User,
             id: "u1".into(),
             email: None,
             groups: groups.iter().map(|s| s.to_string()).collect(),

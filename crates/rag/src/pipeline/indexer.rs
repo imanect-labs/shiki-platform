@@ -71,6 +71,7 @@ impl std::fmt::Display for IndexOutcome {
 fn event_context(message: &IngestMessage) -> AuthContext {
     AuthContext::new(
         Principal {
+            kind: authz::PrincipalKind::User,
             id: message.actor.clone(),
             email: None,
             groups: vec![],

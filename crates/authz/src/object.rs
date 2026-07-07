@@ -68,8 +68,28 @@ impl FgaObject {
         Self::new(ObjectType::Secret, id)
     }
 
+    /// ワークフローオブジェクト `workflow:<id>`（実行主体プリンシパル・Task 10.4a）。
+    pub(crate) fn workflow(id: &str) -> Self {
+        Self::new(ObjectType::Workflow, id)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// DB 等に保存済みの**完全修飾識別子**（`<type>:<tenant>|<local>`）から再構築する。
+    ///
+    /// 委譲台帳（`workflow_delegation.object_ref`）のように、一度 [`Namespace`] を通して
+    /// 生成・保存した信頼できる識別子を読み戻す用途に限る（新規の生 id 組み立てではない）。
+    ///
+    /// 形式（`<type>:<tenant>|<local>`）を最低限検証し、崩れていれば `None` を返す。テナント境界を
+    /// 跨いだ不正な object を無検証で構築させないため（台帳破損・改竄の混入を弾く）。
+    pub fn from_qualified(qualified: &str) -> Option<Self> {
+        let (ty, rest) = qualified.split_once(':')?;
+        if ty.is_empty() || !rest.contains(TENANT_SEP) {
+            return None;
+        }
+        Some(FgaObject(qualified.to_string()))
     }
 }
 
@@ -85,6 +105,14 @@ pub struct Namespace<'a> {
 
 impl<'a> Namespace<'a> {
     pub(crate) fn new(tenant_id: &'a str) -> Self {
+        Namespace { tenant_id }
+    }
+
+    /// tenant_id から直接ビルダを得る（`AuthContext` が無い文脈・委譲棚卸し等の背景ジョブ用）。
+    ///
+    /// 通常は [`AuthContext::ns`](crate::AuthContext::ns) を使う。tenant_id を明示する背景処理
+    /// （委譲チェック・棚卸し）でのみこの入口を使い、テナント境界の担保は呼び出し側が負う。
+    pub fn for_tenant(tenant_id: &'a str) -> Self {
         Namespace { tenant_id }
     }
 
@@ -131,6 +159,16 @@ impl<'a> Namespace<'a> {
     /// シークレットオブジェクト `secret:<tenant>|<id>`（Task 10.9）。
     pub fn secret(&self, id: &str) -> FgaObject {
         FgaObject::secret(&self.qualify(id))
+    }
+
+    /// ワークフローオブジェクト `workflow:<tenant>|<id>`（実行主体・Task 10.4a）。
+    pub fn workflow(&self, id: &str) -> FgaObject {
+        FgaObject::workflow(&self.qualify(id))
+    }
+
+    /// ワークフロープリンシパル subject `workflow:<tenant>|<id>`（schedule/event run の実行主体）。
+    pub fn workflow_principal(&self, id: &str) -> Subject {
+        Subject::object(&self.workflow(id))
     }
 
     /// ユーザー subject `user:<tenant>|<id>`。

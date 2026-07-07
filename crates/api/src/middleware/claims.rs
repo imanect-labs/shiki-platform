@@ -112,6 +112,7 @@ pub fn decode_claims_insecure(token: &str) -> Result<Claims, AuthError> {
 /// クレームから認証主体を組み立てる（純粋関数）。
 pub fn principal_from_claims(claims: Claims) -> Principal {
     Principal {
+        kind: authz::PrincipalKind::User,
         id: claims.sub,
         email: claims.email,
         groups: claims.groups,

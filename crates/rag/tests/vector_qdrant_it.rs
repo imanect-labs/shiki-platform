@@ -35,6 +35,7 @@ fn serial_lock() -> &'static tokio::sync::Mutex<()> {
 fn ctx(tenant: &str) -> AuthContext {
     AuthContext::new(
         Principal {
+            kind: authz::PrincipalKind::User,
             id: "alice".into(),
             email: None,
             groups: vec![],

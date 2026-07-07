@@ -20,6 +20,7 @@ use uuid::Uuid;
 fn ctx(tenant: &str) -> AuthContext {
     AuthContext::new(
         Principal {
+            kind: authz::PrincipalKind::User,
             id: "alice".into(),
             email: None,
             groups: vec![],

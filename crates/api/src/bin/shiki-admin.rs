@@ -317,6 +317,7 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                 .unwrap_or_else(|| to.clone());
             let ctx = AuthContext::new(
                 Principal {
+                    kind: authz::PrincipalKind::User,
                     id: "system".into(),
                     email: None,
                     groups: vec![],

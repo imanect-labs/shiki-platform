@@ -8,10 +8,26 @@
 
 use serde::{Deserialize, Serialize};
 
+/// プリンシパルの種別（Task 10.4a）。
+///
+/// `user` = 対話トリガの本人（OIDC subject）。`workflow` = schedule/event run の専用サービス
+/// プリンシパル（`workflow:<tenant>|<id>`）。委譲タプルはこの subject へ書かれる（engine.md §6.1）。
+/// `#[serde(default)]` で既存 Redis セッション（kind 無し）は User にフォールバックする（後方互換）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrincipalKind {
+    #[default]
+    User,
+    Workflow,
+}
+
 /// 検証済み JWT から抽出した認証主体。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Principal {
-    /// ユーザー ID（OIDC の `sub`）。
+    /// プリンシパル種別（既定 user・schedule/event run は workflow）。
+    #[serde(default)]
+    pub kind: PrincipalKind,
+    /// ユーザー ID（OIDC の `sub`）、または workflow プリンシパルのローカル id。
     pub id: String,
     pub email: Option<String>,
     /// Keycloak group マッパー由来の所属グループ。
@@ -61,8 +77,31 @@ impl AuthContext {
         crate::object::Namespace::new(&self.tenant_id)
     }
 
-    /// 認可問い合わせの主体（`user:<tenant_id>|<id>`）。tenant 名前空間化済み（SAAS.1）。
+    /// 認可問い合わせの主体。tenant 名前空間化済み（SAAS.1）。
+    ///
+    /// principal.kind により `user:<tenant>|<id>`（対話）または `workflow:<tenant>|<id>`
+    /// （schedule/event run）を返す。schedule/event run はこの workflow subject で全 check/
+    /// ListObjects を評価し、委譲タプルに照合する（engine.md §6.1・confused-deputy 防御）。
     pub fn subject(&self) -> crate::object::Subject {
-        self.ns().user(&self.principal.id)
+        match self.principal.kind {
+            PrincipalKind::User => self.ns().user(&self.principal.id),
+            PrincipalKind::Workflow => self.ns().workflow_principal(&self.principal.id),
+        }
+    }
+
+    /// workflow プリンシパルの AuthContext を組む（schedule/event run の実行主体・Task 10.4a）。
+    pub fn for_workflow(tenant_id: String, org: String, workflow_local_id: &str) -> Self {
+        AuthContext {
+            principal: Principal {
+                kind: PrincipalKind::Workflow,
+                id: workflow_local_id.to_string(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(tenant_id.clone()),
+            },
+            org,
+            tenant_id,
+        }
     }
 }

@@ -1066,6 +1066,7 @@ const BCL_EVENT: &str = "http://schemas.openid.net/event/backchannel-logout";
 fn bcl_record(sub: &str, sid: Option<&str>) -> SessionRecord {
     SessionRecord {
         principal: authz::Principal {
+            kind: authz::PrincipalKind::User,
             id: sub.into(),
             email: None,
             groups: vec!["/acme".into()],
