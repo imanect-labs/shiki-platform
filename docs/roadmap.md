@@ -126,8 +126,9 @@ flowchart LR
 
 > 📌 **部分前倒し（2026-07-07 決定・#121）**: 詳細設計（[docs/workflow/](./workflow/README.md)・#119）完了を受け、
 > **Stage A（エンジン核心: 10.0 durable 切り出し・IR/検証・run/step・トリガ・委譲コア・制御/能力ノード・
-> script-runtime・secrets・http.request）を Phase 5〜9 と並走で前倒し着手**する。前提は **6.1（artifact 共通枠）
-> の先行実施のみ**。skill・dnd/AI 編集・実行履歴 UI・data 系ノードは Stage B（Phase 6/9 合流後）。
+> script-runtime・script→workflow.start・secrets・http.request）を Phase 5〜9 と並走で前倒し着手**する。
+> 前提は **6.1（artifact 共通枠）の先行実施＋outbox の per-consumer fan-out 化（P10-A0）**。
+> skill・dnd/AI 編集・実行履歴 UI・data 系ノードは Stage B（Phase 6/9 合流後）。
 > Stage 分割・実行順・DoD は [phase-10.md](./roadmap/phase-10.md) 冒頭の節が正。
 - **workflow-engine**（自作 Durable Execution・IR=JSON DAG・トリガ/リトライ/fan-out/concurrency/rate limit/実行履歴）。
 - 実行主体モデル（対話=本人∩スコープ／スケジュール・イベント=専用プリンシパル＋明示委譲・fail-closed 停止）。
