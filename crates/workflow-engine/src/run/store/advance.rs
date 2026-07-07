@@ -48,6 +48,7 @@ fn deterministic_rand01(run_id: Uuid, step_path: &str, attempt: i32) -> f64 {
 }
 
 /// checkpoint＋前進の本体。
+#[allow(clippy::too_many_lines)]
 pub(super) async fn checkpoint_and_advance(
     db: &PgPool,
     claimed: &super::ClaimedStep,
