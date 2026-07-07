@@ -124,6 +124,9 @@
             "directly_related_user_types": [
               {
                 "type": "user"
+              },
+              {
+                "type": "workflow"
               }
             ]
           },
@@ -229,6 +232,9 @@
             "directly_related_user_types": [
               {
                 "type": "user"
+              },
+              {
+                "type": "workflow"
               }
             ]
           },

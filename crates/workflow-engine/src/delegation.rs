@@ -99,8 +99,34 @@ impl DelegationStore {
             }
         }
 
-        // ② 付与（単一 TX で registration・delegation 行、その後 FGA タプル）。
+        // ② 付与。FGA タプルを**先に**書き（失敗したら DB は未コミットのまま return＝all-or-nothing）、
+        //    その後 DB を単一 TX でコミットする。コミット済み registration は必ずタプルを伴う。
         let wf_subject = enabler.ns().workflow_principal(&workflow_id.to_string());
+        for g in grants {
+            self.authz
+                .write_tuple(&wf_subject, g.relation, &g.object)
+                .await
+                .map_err(|e| DelegationError::Authz(e.to_string()))?;
+        }
+
+        // 再有効化で外れた委譲（新 grant 集合に無い既存 active 行）を撤去する。旧タプルを残すと
+        // ユーザーが同意から外したオブジェクトへワークフローが到達し続ける（P1）。
+        let new_objs: std::collections::BTreeSet<&str> =
+            grants.iter().map(|g| g.object.as_str()).collect();
+        let stale = self.active_delegations(tenant, workflow_id).await?;
+        for d in &stale {
+            if new_objs.contains(d.object_ref.as_str()) {
+                continue;
+            }
+            if let Some(relation) = Relation::parse(&d.relation) {
+                let obj = FgaObject::from_qualified(&d.object_ref);
+                self.authz
+                    .delete_tuple(&wf_subject, relation, &obj)
+                    .await
+                    .map_err(|e| DelegationError::Authz(e.to_string()))?;
+            }
+        }
+
         let mut tx = self.db.begin().await.map_err(map_db)?;
         sqlx::query(
             "INSERT INTO workflow_registration \
@@ -116,6 +142,19 @@ impl DelegationStore {
         .bind(version)
         .bind(declared_scopes)
         .bind(&enabler.principal.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
+
+        // 外れた委譲行を revoke。
+        sqlx::query(
+            "UPDATE workflow_delegation SET revoked_at = now() \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NULL \
+               AND NOT (object_ref = ANY($3))",
+        )
+        .bind(tenant)
+        .bind(workflow_id)
+        .bind(new_objs.iter().copied().collect::<Vec<&str>>())
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -139,14 +178,6 @@ impl DelegationStore {
             .map_err(map_db)?;
         }
         tx.commit().await.map_err(map_db)?;
-
-        // FGA タプル書込（workflow プリンシパルへ）。DB コミット後（失敗時は棚卸しが整合を取る）。
-        for g in grants {
-            self.authz
-                .write_tuple(&wf_subject, g.relation, &g.object)
-                .await
-                .map_err(|e| DelegationError::Authz(e.to_string()))?;
-        }
         Ok(())
     }
 
@@ -230,7 +261,17 @@ impl DelegationStore {
                 // 失権: workflow プリンシパルの FGA タプルを撤去。
                 let wf_subject =
                     Namespace::for_tenant(tenant_id).workflow_principal(&d.workflow_id.to_string());
-                let _ = self.authz.delete_tuple(&wf_subject, relation, &obj).await;
+                // タプル撤去が失敗したら**行を revoke しない**（次回 inventory で再試行）。ここで
+                // 握り潰して revoke すると、live なままのタプルが以後の inventory から漏れ、
+                // fail-closed 撤去が破れる（P1）。撤去成功まで suspend だけは先に効かせる。
+                if let Err(e) = self.authz.delete_tuple(&wf_subject, relation, &obj).await {
+                    self.suspend(tenant_id, d.workflow_id).await?;
+                    tracing::warn!(error = %e, workflow = %d.workflow_id, "委譲タプル撤去に失敗（次回再試行）");
+                    if !revoked_workflows.contains(&d.workflow_id) {
+                        revoked_workflows.push(d.workflow_id);
+                    }
+                    continue;
+                }
                 // delegation 行を revoke・registration を suspend。
                 sqlx::query(
                     "UPDATE workflow_delegation SET revoked_at = now() \

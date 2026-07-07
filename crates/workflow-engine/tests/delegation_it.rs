@@ -113,6 +113,57 @@ async fn out_of_scope_delegation_rejected_wholesale() {
 }
 
 #[tokio::test]
+async fn reenable_with_narrower_grants_revokes_dropped_object() {
+    let Some((pool, fga)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let store = DelegationStore::new(pool.clone(), fga.clone());
+    let wf = Uuid::new_v4();
+    let wf_subject = alice.ns().workflow_principal(&wf.to_string());
+
+    // A と B を委譲。
+    let folder_a = alice.ns().folder("A");
+    let folder_b = alice.ns().folder("B");
+    fga.write_tuple(&alice.subject(), Relation::Viewer, &folder_a).await.unwrap();
+    fga.write_tuple(&alice.subject(), Relation::Viewer, &folder_b).await.unwrap();
+    let both = vec![
+        GrantRequest { scope: "storage.read".into(), object: folder_a.clone(), relation: Relation::Viewer },
+        GrantRequest { scope: "storage.read".into(), object: folder_b.clone(), relation: Relation::Viewer },
+    ];
+    store.enable(&alice, wf, 1, &["storage.read".into()], &both).await.expect("enable A+B");
+    assert!(fga.check(&wf_subject, Relation::Viewer, &folder_b, authz::Consistency::HigherConsistency).await.unwrap());
+
+    // A のみで再有効化 → B の委譲タプル・行が撤去される。
+    let only_a = vec![GrantRequest {
+        scope: "storage.read".into(),
+        object: folder_a.clone(),
+        relation: Relation::Viewer,
+    }];
+    store.enable(&alice, wf, 2, &["storage.read".into()], &only_a).await.expect("re-enable A");
+    assert!(
+        fga.check(&wf_subject, Relation::Viewer, &folder_a, authz::Consistency::HigherConsistency).await.unwrap(),
+        "A は残る"
+    );
+    assert!(
+        !fga.check(&wf_subject, Relation::Viewer, &folder_b, authz::Consistency::HigherConsistency).await.unwrap(),
+        "B の委譲は撤去される（同意から外したオブジェクトに到達させない）"
+    );
+    let active_b: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_delegation \
+         WHERE tenant_id = $1 AND workflow_id = $2 AND object_ref = $3 AND revoked_at IS NULL",
+    )
+    .bind(&tenant)
+    .bind(wf)
+    .bind(folder_b.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(active_b, 0, "B の委譲行は revoke 済み");
+}
+
+#[tokio::test]
 async fn revocation_suspends_and_run_start_denied() {
     let Some((pool, fga)) = setup().await else {
         return;
