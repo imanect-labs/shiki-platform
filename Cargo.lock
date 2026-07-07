@@ -5024,7 +5024,6 @@ name = "shiki-workflow-engine"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "chrono",
  "proptest",
  "regex",
  "serde",

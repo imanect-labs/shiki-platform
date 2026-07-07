@@ -33,7 +33,6 @@ regex = "1"
 sqlx.workspace = true
 shiki-durable.workspace = true
 async-trait.workspace = true
-chrono.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 
