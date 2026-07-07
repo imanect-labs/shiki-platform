@@ -244,18 +244,32 @@ impl SchedulerStore {
 
         let mut fired = 0usize;
         for t in &triggers {
-            // (trigger_id, event_id) UNIQUE で 1 イベント 1 run。
-            let inserted: Option<bool> = sqlx::query_scalar(
+            // (trigger_id, event_id) UNIQUE で 1 イベント 1 run。占有 INSERT ＋ FOR UPDATE 行ロックで
+            // 並行 tick/再配信を直列化しつつ、launch 前クラッシュで run_id が NULL のまま残った firing は
+            // 次配信で再起動できるようにする（occurrence と同じ回復方式）。
+            let mut tx = self.db.begin().await.map_err(map_db)?;
+            sqlx::query(
                 "INSERT INTO trigger_firing (tenant_id, trigger_id, event_id) \
-                 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING true",
+                 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
             )
             .bind(&t.tenant_id)
             .bind(&t.trigger_id)
             .bind(event_id)
-            .fetch_optional(&self.db)
+            .execute(&mut *tx)
             .await
             .map_err(map_db)?;
-            if inserted.is_none() {
+            let existing_run: Option<Uuid> = sqlx::query_scalar(
+                "SELECT run_id FROM trigger_firing \
+                 WHERE tenant_id = $1 AND trigger_id = $2 AND event_id = $3 FOR UPDATE",
+            )
+            .bind(&t.tenant_id)
+            .bind(&t.trigger_id)
+            .bind(event_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(map_db)?;
+            if existing_run.is_some() {
+                tx.commit().await.map_err(map_db)?; // 既に発火済み。
                 continue;
             }
             let run_id = launcher
@@ -269,10 +283,13 @@ impl SchedulerStore {
             .bind(&t.trigger_id)
             .bind(event_id)
             .bind(run_id)
-            .execute(&self.db)
+            .execute(&mut *tx)
             .await
             .map_err(map_db)?;
-            fired += 1;
+            tx.commit().await.map_err(map_db)?;
+            if run_id.is_some() {
+                fired += 1;
+            }
         }
         Ok(fired)
     }
