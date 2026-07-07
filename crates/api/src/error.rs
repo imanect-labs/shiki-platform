@@ -108,6 +108,19 @@ impl From<chat::ChatError> for ApiError {
     }
 }
 
+impl From<artifact::ArtifactError> for ApiError {
+    fn from(err: artifact::ArtifactError) -> Self {
+        use artifact::ArtifactError as AE;
+        match err {
+            AE::NotFound => ApiError::NotFound,
+            AE::Forbidden => ApiError::Forbidden,
+            AE::Invalid(msg) => ApiError::BadRequest(msg),
+            AE::Conflict(_) => ApiError::Conflict,
+            AE::Internal(msg) => ApiError::Internal(format!("artifact: {msg}")),
+        }
+    }
+}
+
 impl From<llm_gateway::LlmError> for ApiError {
     fn from(err: llm_gateway::LlmError) -> Self {
         use llm_gateway::LlmError as LE;

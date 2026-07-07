@@ -261,6 +261,62 @@ mod tests {
     }
 
     #[test]
+    fn artifact_type_has_share_relations() {
+        // Task 6.1: artifact は owner / editor / viewer を持ち（非階層・thread と同型）、
+        // editor / viewer は user と role#member を共有先として受理すること。
+        // owner は role#member を受理しない（共有語彙は viewer/editor のみ・横展開防止）。
+        let model = default_model();
+        let types = model
+            .get("type_definitions")
+            .and_then(|v| v.as_array())
+            .expect("type_definitions は配列");
+        let artifact = types
+            .iter()
+            .find(|t| t.get("type").and_then(|v| v.as_str()) == Some("artifact"))
+            .expect("artifact 型が定義されていること");
+        let relations = artifact
+            .get("relations")
+            .and_then(|v| v.as_object())
+            .expect("relations はオブジェクト");
+        for rel in ["owner", "editor", "viewer"] {
+            assert!(
+                relations.contains_key(rel),
+                "artifact は relation {rel} を持つこと"
+            );
+        }
+        // ツリー継承は持たない（parent が無い）。
+        assert!(
+            !relations.contains_key("parent"),
+            "artifact は parent 継承を持たないこと（非階層共有）"
+        );
+        let accepts = |rel: &str, want_type: &str, want_rel: Option<&str>| {
+            artifact
+                .get("metadata")
+                .and_then(|m| m.get("relations"))
+                .and_then(|r| r.get(rel))
+                .and_then(|r| r.get("directly_related_user_types"))
+                .and_then(|v| v.as_array())
+                .expect("directly_related_user_types は配列")
+                .iter()
+                .any(|t| {
+                    t.get("type").and_then(|v| v.as_str()) == Some(want_type)
+                        && t.get("relation").and_then(|v| v.as_str()) == want_rel
+                })
+        };
+        for rel in ["editor", "viewer"] {
+            assert!(accepts(rel, "user", None), "artifact.{rel} は user を受理");
+            assert!(
+                accepts(rel, "role", Some("member")),
+                "artifact.{rel} は role#member を受理"
+            );
+        }
+        assert!(
+            !accepts("owner", "role", Some("member")),
+            "artifact.owner は role#member を受理しないこと"
+        );
+    }
+
+    #[test]
     fn fingerprint_extracts_three_keys() {
         // fingerprint は schema_version / type_definitions / conditions の 3 キーのみ持つこと。
         let model = serde_json::json!({

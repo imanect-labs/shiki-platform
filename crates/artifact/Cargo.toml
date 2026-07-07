@@ -1,0 +1,36 @@
+[package]
+name = "shiki-artifact"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+
+[lib]
+name = "artifact"
+
+[dependencies]
+shiki-authz.workspace = true
+shiki-storage.workspace = true
+
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+# DTO を単一定義し api 層に手書きミラーを作らない（codegen が正）。
+utoipa.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+reqwest.workspace = true
+async-trait.workspace = true
+
+# lib 名 authz/storage で参照するため machete が誤検出する。
+[package.metadata.cargo-machete]
+ignored = ["shiki-authz", "shiki-storage"]
+
+[lints]
+workspace = true

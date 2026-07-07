@@ -58,6 +58,11 @@ impl FgaObject {
         Self::new(ObjectType::Thread, id)
     }
 
+    /// アーティファクトオブジェクト `artifact:<id>`（バージョン付き共有本文・Task 6.1）。
+    pub(crate) fn artifact(id: &str) -> Self {
+        Self::new(ObjectType::Artifact, id)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -111,6 +116,11 @@ impl<'a> Namespace<'a> {
     /// スレッドオブジェクト `thread:<tenant>|<id>`（会話・ReBAC 共有・#37）。
     pub fn thread(&self, id: &str) -> FgaObject {
         FgaObject::thread(&self.qualify(id))
+    }
+
+    /// アーティファクトオブジェクト `artifact:<tenant>|<id>`（Task 6.1）。
+    pub fn artifact(&self, id: &str) -> FgaObject {
+        FgaObject::artifact(&self.qualify(id))
     }
 
     /// ユーザー subject `user:<tenant>|<id>`。
@@ -354,6 +364,7 @@ mod tests {
         assert_eq!(ns.role("dept-1").as_str(), "role:acme|dept-1");
         assert_eq!(ns.folder("f1").as_str(), "folder:acme|f1");
         assert_eq!(ns.file("doc1").as_str(), "file:acme|doc1");
+        assert_eq!(ns.artifact("a1").as_str(), "artifact:acme|a1");
     }
 
     #[test]

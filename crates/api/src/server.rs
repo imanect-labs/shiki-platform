@@ -132,6 +132,35 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/search", &["POST"], Session, || {
             post(routes::search::search)
         }),
+        // --- アーティファクト共通枠（Task 6.1・バージョン付き共有本文） ---
+        r("/artifacts", &["GET", "POST"], Session, || {
+            get(routes::artifacts::list_artifacts).post(routes::artifacts::create_artifact)
+        }),
+        r("/artifacts/{id}", &["GET", "DELETE"], Session, || {
+            get(routes::artifacts::get_artifact).delete(routes::artifacts::delete_artifact)
+        }),
+        r(
+            "/artifacts/{id}/versions",
+            &["GET", "POST"],
+            Session,
+            || get(routes::artifacts::list_versions).post(routes::artifacts::append_version),
+        ),
+        r(
+            "/artifacts/{id}/versions/{version}",
+            &["GET"],
+            Session,
+            || get(routes::artifacts::get_version),
+        ),
+        r(
+            "/artifacts/{id}/shares",
+            &["PUT", "DELETE", "GET"],
+            Session,
+            || {
+                put(routes::artifacts::share_artifact)
+                    .delete(routes::artifacts::unshare_artifact)
+                    .get(routes::artifacts::list_artifact_shares)
+            },
+        ),
         // --- チャット（Phase 3）。生成は接続非依存ジョブ（Task 3.11）で SSE は別ポリシ。 ---
         r("/threads", &["GET", "POST"], Session, || {
             get(routes::chat::list_threads).post(routes::chat::create_thread)

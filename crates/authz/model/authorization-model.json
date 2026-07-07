@@ -217,6 +217,47 @@
           }
         }
       }
+    },
+    {
+      "type": "artifact",
+      "relations": {
+        "owner": { "this": {} },
+        "editor": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "owner" } }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              { "this": {} },
+              { "computedUserset": { "relation": "editor" } }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "owner": {
+            "directly_related_user_types": [{ "type": "user" }]
+          },
+          "editor": {
+            "directly_related_user_types": [
+              { "type": "user" },
+              { "type": "role", "relation": "member" }
+            ]
+          },
+          "viewer": {
+            "directly_related_user_types": [
+              { "type": "user" },
+              { "type": "role", "relation": "member" }
+            ]
+          }
+        }
+      }
     }
   ]
 }

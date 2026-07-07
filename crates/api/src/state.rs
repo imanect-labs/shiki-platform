@@ -43,6 +43,8 @@ pub struct AppState {
     pub http: reqwest::Client,
     /// ストレージの単一チョークポイント（権限・監査・content-addressing）。
     pub storage: Arc<StorageService>,
+    /// アーティファクト共通枠（Task 6.1・バージョン付き共有本文の単一チョークポイント）。
+    pub artifacts: Arc<artifact::ArtifactStore>,
     /// ユーザーディレクトリ（共有相手検索。tenant_id スコープ）。
     pub directory: Arc<DirectoryStore>,
     /// テナントレジストリ（プロビジョニング/削除のライフサイクル・SAAS.2）。

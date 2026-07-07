@@ -79,6 +79,9 @@ pub enum ObjectType {
     File,
     /// チャットスレッド（会話。viewer/commenter/editor で ReBAC 共有・#37）。
     Thread,
+    /// 共有可能アーティファクト（バージョン付き JSON 本文の共通枠・Task 6.1）。
+    /// prompt template / UI スペック / ミニアプリ / ワークフロー IR / skill / script が乗る。
+    Artifact,
 }
 
 impl ObjectType {
@@ -91,6 +94,7 @@ impl ObjectType {
             ObjectType::Folder => "folder",
             ObjectType::File => "file",
             ObjectType::Thread => "thread",
+            ObjectType::Artifact => "artifact",
         }
     }
 }
@@ -196,6 +200,7 @@ mod tests {
         assert_eq!(ObjectType::User.as_str(), "user");
         assert_eq!(ObjectType::Folder.as_str(), "folder");
         assert_eq!(ObjectType::File.as_str(), "file");
+        assert_eq!(ObjectType::Artifact.as_str(), "artifact");
     }
 
     #[test]
