@@ -17,6 +17,7 @@ mod crypto;
 mod key_provider;
 mod redact;
 mod store;
+mod store_helpers;
 
 pub use binding::{host_allowed, DestinationBinding};
 pub use crypto::{CryptoError, KeyGuard};

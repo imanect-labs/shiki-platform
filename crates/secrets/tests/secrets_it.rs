@@ -167,7 +167,10 @@ async fn create_resolve_and_plaintext_never_read_back() {
     );
 
     // resolve は平文を返す（能力ゲートウェイ経路）。
-    let resolved = s.resolve(&c, "slack-token", None, None).await.expect("resolve");
+    let resolved = s
+        .resolve(&c, "slack-token", None, None)
+        .await
+        .expect("resolve");
     assert_eq!(resolved.plaintext, b"xoxb-super-secret");
     assert!(resolved.binding.allows("api.slack.com"));
     assert!(!resolved.binding.allows("evil.com"));
@@ -202,7 +205,10 @@ async fn short_secret_rejected_at_write() {
             None,
         )
         .await;
-    assert!(matches!(res, Err(secrets::SecretError::Invalid(_))), "{res:?}");
+    assert!(
+        matches!(res, Err(secrets::SecretError::Invalid(_))),
+        "{res:?}"
+    );
 }
 
 #[tokio::test]

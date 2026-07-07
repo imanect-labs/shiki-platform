@@ -16,10 +16,11 @@ use uuid::Uuid;
 
 use crate::binding::DestinationBinding;
 use crate::key_provider::{KeyProvider, WrappedKey};
+use crate::store_helpers::{normalize_hosts, to_meta, validate_name};
 use crate::{crypto, map_db, SecretError};
 
 /// 参照名の上限長。
-const MAX_NAME_LEN: usize = 128;
+pub(crate) const MAX_NAME_LEN: usize = 128;
 /// 平文の上限（防御的・トークン/PEM 想定）。
 const MAX_PLAINTEXT_BYTES: usize = 64 * 1024;
 
@@ -74,14 +75,14 @@ struct SecretCipherRow {
 }
 
 #[derive(sqlx::FromRow)]
-struct SecretRow {
-    id: Uuid,
-    name: String,
-    owner: String,
-    allowed_hosts: Vec<String>,
-    version: i64,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+pub(crate) struct SecretRow {
+    pub(crate) id: Uuid,
+    pub(crate) name: String,
+    pub(crate) owner: String,
+    pub(crate) allowed_hosts: Vec<String>,
+    pub(crate) version: i64,
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) updated_at: DateTime<Utc>,
 }
 
 impl SecretStore {
@@ -459,46 +460,4 @@ impl SecretStore {
             .await
             .map_err(|e| SecretError::Internal(format!("audit: {e}")))
     }
-}
-
-fn to_meta(row: SecretRow) -> SecretMeta {
-    SecretMeta {
-        id: row.id,
-        name: row.name,
-        owner: row.owner,
-        allowed_hosts: row.allowed_hosts,
-        version: row.version,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-    }
-}
-
-fn validate_name(name: &str) -> Result<&str, SecretError> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(SecretError::Invalid("name が空です".into()));
-    }
-    if name.len() > MAX_NAME_LEN {
-        return Err(SecretError::Invalid("name が長すぎます".into()));
-    }
-    Ok(name)
-}
-
-/// 宛先ホストを正規化・検証する（小文字化・空要素除去・重複排除）。
-fn normalize_hosts(hosts: &[String]) -> Result<Vec<String>, SecretError> {
-    let mut out: Vec<String> = Vec::new();
-    for h in hosts {
-        let h = h.trim().to_ascii_lowercase();
-        if h.is_empty() {
-            continue;
-        }
-        // 明らかに不正なホスト（スキーム/パス/空白を含む）は拒否。
-        if h.contains('/') || h.contains(' ') || h.contains(':') {
-            return Err(SecretError::Invalid(format!("不正な宛先ホスト: {h}")));
-        }
-        if !out.contains(&h) {
-            out.push(h);
-        }
-    }
-    Ok(out)
 }

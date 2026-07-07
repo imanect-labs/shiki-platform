@@ -51,6 +51,8 @@ impl StorageService {
     ///    outbox → directory → node → blob）。**audit_log は削除証跡として保持**する。
     ///
     /// 返り値は `(剥奪タプル数, 削除オブジェクト数)`（ログ/レスポンス用の概数）。
+    // admin 削除の単一手続きのため行数が多い（段ごとにコメント区切り）。
+    #[allow(clippy::too_many_lines)]
     pub async fn purge_tenant(
         &self,
         tenant_id: &str,
