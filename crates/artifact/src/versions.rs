@@ -118,9 +118,12 @@ impl ArtifactStore {
     ) -> Result<ArtifactVersion, ArtifactError> {
         self.require(ctx, id, Relation::Viewer, "artifact.version.get", trace_id)
             .await?;
+        // 論理削除済みアーティファクトのバージョン本文は読めない（tuple 残存でも body を返さない）。
         let row: Option<(Json<serde_json::Value>, String, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT body, created_by, created_at FROM artifact_version \
-             WHERE tenant_id = $1 AND artifact_id = $2 AND version = $3",
+            "SELECT v.body, v.created_by, v.created_at FROM artifact_version v \
+             WHERE v.tenant_id = $1 AND v.artifact_id = $2 AND v.version = $3 \
+               AND EXISTS (SELECT 1 FROM artifact a \
+                           WHERE a.tenant_id = $1 AND a.id = $2 AND a.deleted_at IS NULL)",
         )
         .bind(&ctx.tenant_id)
         .bind(id)
@@ -154,8 +157,11 @@ impl ArtifactStore {
         )
         .await?;
         let rows: Vec<(i64, String, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT version, created_by, created_at FROM artifact_version \
-             WHERE tenant_id = $1 AND artifact_id = $2 ORDER BY version DESC",
+            "SELECT v.version, v.created_by, v.created_at FROM artifact_version v \
+             WHERE v.tenant_id = $1 AND v.artifact_id = $2 \
+               AND EXISTS (SELECT 1 FROM artifact a \
+                           WHERE a.tenant_id = $1 AND a.id = $2 AND a.deleted_at IS NULL) \
+             ORDER BY v.version DESC",
         )
         .bind(&ctx.tenant_id)
         .bind(id)

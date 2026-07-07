@@ -52,5 +52,5 @@ create table artifact_version (
     created_at  timestamptz not null default now(),
     primary key (tenant_id, artifact_id, version),
     foreign key (tenant_id, artifact_id)
-        references artifact (tenant_id, id) on delete cascade
+        references artifact (tenant_id, id) on delete cascade on update cascade
 );
