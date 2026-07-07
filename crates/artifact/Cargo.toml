@@ -10,6 +10,7 @@ version = "0.0.0"
 name = "artifact"
 
 [dependencies]
+tracing.workspace = true
 shiki-authz.workspace = true
 shiki-storage.workspace = true
 

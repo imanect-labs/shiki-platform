@@ -77,16 +77,25 @@ impl ArtifactStore {
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
+        // 監査を**同一 TX**で記録してからコミットする。コミット後に別 TX で監査すると、監査失敗時に
+        // バージョンだけ永続化され再試行で想定外の Conflict を招く（CodeRabbit 指摘）。
+        storage::audit::record_on(
+            &mut tx,
+            ctx,
+            storage::audit::AuditEntry {
+                action: "artifact.version.append",
+                object_type: "artifact",
+                object_id: &id.to_string(),
+                decision: storage::audit::Decision::Allow,
+                trace_id,
+                metadata: json!({ "version": new_version }),
+            },
+            storage::audit::Chain::No,
+        )
+        .await
+        .map_err(|e| ArtifactError::Internal(format!("audit: {e}")))?;
         tx.commit().await.map_err(map_db)?;
 
-        self.record_audit(
-            ctx,
-            "artifact.version.append",
-            &id.to_string(),
-            trace_id,
-            json!({ "version": new_version }),
-        )
-        .await?;
         Ok(ArtifactVersion {
             artifact_id: id,
             version: new_version,

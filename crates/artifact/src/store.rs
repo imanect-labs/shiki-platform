@@ -119,11 +119,17 @@ impl ArtifactStore {
             .write_tuple(&ctx.subject(), Relation::Owner, &obj)
             .await
         {
-            let _ = sqlx::query("DELETE FROM artifact WHERE tenant_id = $1 AND id = $2")
-                .bind(&ctx.tenant_id)
-                .bind(id)
-                .execute(&self.db)
-                .await;
+            // 補償削除が失敗すると owner タプルの無い孤立行が残る（誰も操作できず同名再作成も不能）。
+            // 運用検知のためエラーをログに残す（CodeRabbit 指摘）。
+            if let Err(cleanup) =
+                sqlx::query("DELETE FROM artifact WHERE tenant_id = $1 AND id = $2")
+                    .bind(&ctx.tenant_id)
+                    .bind(id)
+                    .execute(&self.db)
+                    .await
+            {
+                tracing::error!(error = %cleanup, artifact_id = %id, "owner タプル書込失敗後の補償削除にも失敗（孤立行が残存）");
+            }
             return Err(ArtifactError::Internal(format!("owner tuple: {e}")));
         }
         self.record_audit(
