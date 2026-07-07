@@ -119,7 +119,10 @@ impl DelegationStore {
                 continue;
             }
             if let Some(relation) = Relation::parse(&d.relation) {
-                let obj = FgaObject::from_qualified(&d.object_ref);
+                let Some(obj) = FgaObject::from_qualified(&d.object_ref) else {
+                    tracing::error!(object_ref = %d.object_ref, "委譲台帳の object_ref が不正形式（撤去スキップ）");
+                    continue;
+                };
                 self.authz
                     .delete_tuple(&wf_subject, relation, &obj)
                     .await
@@ -218,7 +221,14 @@ impl DelegationStore {
         let delegations = self.active_delegations(tenant_id, workflow_id).await?;
         for d in &delegations {
             let subject = Namespace::for_tenant(tenant_id).user(&d.delegator);
-            let obj = FgaObject::from_qualified(&d.object_ref);
+            let Some(obj) = FgaObject::from_qualified(&d.object_ref) else {
+                // 台帳が壊れている＝委譲を検証できない → fail-closed で不許可（再同意要求）。
+                self.suspend(tenant_id, workflow_id).await?;
+                return Ok(RunAdmission::DelegationInvalid(format!(
+                    "委譲台帳の object_ref が不正形式: {}",
+                    d.object_ref
+                )));
+            };
             let relation = Relation::parse(&d.relation)
                 .ok_or_else(|| DelegationError::Internal(format!("bad relation {}", d.relation)))?;
             let ok = self
@@ -248,7 +258,10 @@ impl DelegationStore {
         let mut revoked_workflows: Vec<Uuid> = Vec::new();
         for d in &delegations {
             let subject = Namespace::for_tenant(tenant_id).user(&d.delegator);
-            let obj = FgaObject::from_qualified(&d.object_ref);
+            let Some(obj) = FgaObject::from_qualified(&d.object_ref) else {
+                tracing::error!(object_ref = %d.object_ref, "委譲台帳の object_ref が不正形式（棚卸しスキップ）");
+                continue;
+            };
             let Some(relation) = Relation::parse(&d.relation) else {
                 continue;
             };

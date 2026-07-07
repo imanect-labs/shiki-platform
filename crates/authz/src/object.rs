@@ -81,8 +81,15 @@ impl FgaObject {
     ///
     /// 委譲台帳（`workflow_delegation.object_ref`）のように、一度 [`Namespace`] を通して
     /// 生成・保存した信頼できる識別子を読み戻す用途に限る（新規の生 id 組み立てではない）。
-    pub fn from_qualified(qualified: &str) -> Self {
-        FgaObject(qualified.to_string())
+    ///
+    /// 形式（`<type>:<tenant>|<local>`）を最低限検証し、崩れていれば `None` を返す。テナント境界を
+    /// 跨いだ不正な object を無検証で構築させないため（台帳破損・改竄の混入を弾く）。
+    pub fn from_qualified(qualified: &str) -> Option<Self> {
+        let (ty, rest) = qualified.split_once(':')?;
+        if ty.is_empty() || !rest.contains(TENANT_SEP) {
+            return None;
+        }
+        Some(FgaObject(qualified.to_string()))
     }
 }
 
