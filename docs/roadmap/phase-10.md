@@ -24,9 +24,15 @@
 > クレート新設: `crates/{durable, artifact, secrets, script-runtime, workflow-engine}`。
 > マイグレーション 0014〜0019。全 Stage A タスク（10.0/6.1/10.7/10.9/10.1a/10.2/10.4a/10.3/10.5/10.6a/10.8/10.10）の
 > コア（永続化・実行エンジン・委譲・トリガ・制御/リトライ・能力ゲートウェイ/effect_journal/http.request）を
-> 実 Postgres＋live OpenFGA＋Redis の結合テストで検証。**残（本 PR 後の結線）**: server 起動時の
-> ワーカー/スケジューラループ spawn・storage/rag/llm/agent ノードの各チョークポイント実結線・compose e2e。
-> P10-A0（outbox per-consumer fan-out）は event トリガの前提として別途。
+> 実 Postgres＋live OpenFGA＋Redis の結合テストで検証。
+>
+> **最終結線完了（2026-07-07・#147/#149/#151）**: P10-A0 outbox fan-out（#147）・本番 NodeExecutor
+> （能力ゲートウェイ→チョークポイントのポート注入・#149）・server 起動時の worker/scheduler/イベント relay
+> spawn＋storage in-TX 冪等（exactly-once）＋principal_kind＋対話 run API（#151）を実装。W4 DoD e2e
+> （本番 executor で対話 run 完走）緑。**Stage A の未実装（正直に明示・後続）**: map/wait の durable 実行
+> （wake_at/wait_subscription/動的 fan-out/スケジューラ起床経路）と on_error=continue（error ポート）。
+> executor は map/wait を `unsupported_stage_a` で明示失敗させ偽装しない。イベントトリガ scope は親フォルダ
+> 完全一致（祖先束縛・filter 評価・$from trigger 透過は後続）。
 
 > **human 決定（2026-07-07）**: Phase 10 のエンジン核心に**部分前倒しで着手**する。詳細設計（docs/workflow/・#119）が
 > 完了しており、依存分析の結果、本フェーズの本質的ブロッカーは Phase 9 全体ではなく **6.1（artifact 共通枠）と
