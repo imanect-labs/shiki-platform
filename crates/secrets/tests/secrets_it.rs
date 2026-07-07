@@ -167,10 +167,42 @@ async fn create_resolve_and_plaintext_never_read_back() {
     );
 
     // resolve は平文を返す（能力ゲートウェイ経路）。
-    let resolved = s.resolve(&c, "slack-token", None).await.expect("resolve");
+    let resolved = s.resolve(&c, "slack-token", None, None).await.expect("resolve");
     assert_eq!(resolved.plaintext, b"xoxb-super-secret");
     assert!(resolved.binding.allows("api.slack.com"));
     assert!(!resolved.binding.allows("evil.com"));
+
+    // destination_host を渡すと復号前に宛先束縛を検証し、許可外は DestinationDenied（平文を出さない）。
+    let allowed = s
+        .resolve(&c, "slack-token", Some("api.slack.com"), None)
+        .await
+        .expect("allowed host resolves");
+    assert_eq!(allowed.plaintext, b"xoxb-super-secret");
+    assert!(matches!(
+        s.resolve(&c, "slack-token", Some("evil.com"), None).await,
+        Err(secrets::SecretError::DestinationDenied(_))
+    ));
+}
+
+#[tokio::test]
+async fn short_secret_rejected_at_write() {
+    let Some(pool) = setup().await else { return };
+    let s = store(pool, Arc::new(AllowAll));
+    let t = tenant();
+    let c = ctx(&t, "alice");
+    // 自動レダクト不能な短い値（< MIN_LEN=4）は create で拒否される。
+    let res = s
+        .create(
+            &c,
+            NewSecret {
+                name: "pin".into(),
+                plaintext: b"12".to_vec(),
+                allowed_hosts: vec![],
+            },
+            None,
+        )
+        .await;
+    assert!(matches!(res, Err(secrets::SecretError::Invalid(_))), "{res:?}");
 }
 
 #[tokio::test]
@@ -196,7 +228,7 @@ async fn rotate_changes_ciphertext_keeps_resolvable() {
         .await
         .expect("rotate");
     assert_eq!(rotated.version, 2);
-    let resolved = s.resolve(&c, "api-key", None).await.expect("resolve");
+    let resolved = s.resolve(&c, "api-key", None, None).await.expect("resolve");
     assert_eq!(resolved.plaintext, b"v2-secret");
 }
 
@@ -258,12 +290,12 @@ async fn resolve_denied_without_can_use() {
         .expect("create");
 
     // owner(alice) は解決できる。
-    s.resolve(&alice, "shared-token", None)
+    s.resolve(&alice, "shared-token", None, None)
         .await
         .expect("alice resolves");
     // bob は can_use が無いので解決拒否（Forbidden）。
     assert!(matches!(
-        s.resolve(&bob, "shared-token", None).await,
+        s.resolve(&bob, "shared-token", None, None).await,
         Err(SecretError::Forbidden)
     ));
     assert!(matches!(
@@ -277,7 +309,7 @@ async fn resolve_denied_without_can_use() {
         .await
         .unwrap();
     let resolved = s
-        .resolve(&bob, "shared-token", None)
+        .resolve(&bob, "shared-token", None, None)
         .await
         .expect("bob resolves after grant");
     assert_eq!(resolved.plaintext, b"top-secret");
@@ -287,7 +319,7 @@ async fn resolve_denied_without_can_use() {
         .await
         .unwrap();
     assert!(matches!(
-        s.resolve(&bob, "shared-token", None).await,
+        s.resolve(&bob, "shared-token", None, None).await,
         Err(SecretError::Forbidden)
     ));
 }

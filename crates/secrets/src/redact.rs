@@ -8,7 +8,7 @@ use serde_json::Value;
 /// マスク後の置換文字列。
 const MASK: &str = "[REDACTED]";
 /// これ未満の長さの平文はマスク対象にしない（"a" 等が全文一致で誤爆するのを防ぐ）。
-const MIN_LEN: usize = 4;
+pub(crate) const MIN_LEN: usize = 4;
 
 /// 解決済み平文を保持し、任意の文字列/JSON からマスクする。
 #[derive(Debug, Default, Clone)]

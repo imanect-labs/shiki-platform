@@ -110,6 +110,13 @@ impl SecretStore {
         if input.plaintext.len() > MAX_PLAINTEXT_BYTES {
             return Err(SecretError::Invalid("plaintext が大きすぎます".into()));
         }
+        // 自動レダクト不能な短い値（< MIN_LEN）は書込時に拒否する。登録できても解決時に
+        // レダクタが取りこぼし、HTTP エラー/run 出力/ログへ平文が漏れ得るため（fail-closed）。
+        if input.plaintext.len() < crate::redact::MIN_LEN {
+            return Err(SecretError::Invalid(
+                "plaintext が短すぎます（自動レダクト不能）".into(),
+            ));
+        }
         let hosts = normalize_hosts(&input.allowed_hosts)?;
 
         // envelope: DEK を作り平文を暗号化 → DEK をマスターキーで包む。
@@ -178,6 +185,11 @@ impl SecretStore {
     ) -> Result<SecretMeta, SecretError> {
         if new_plaintext.len() > MAX_PLAINTEXT_BYTES {
             return Err(SecretError::Invalid("plaintext が大きすぎます".into()));
+        }
+        if new_plaintext.len() < crate::redact::MIN_LEN {
+            return Err(SecretError::Invalid(
+                "plaintext が短すぎます（自動レダクト不能）".into(),
+            ));
         }
         self.require(ctx, id, Relation::Owner, "secret.rotate", trace_id)
             .await?;
@@ -308,20 +320,25 @@ impl SecretStore {
 
     /// **実行時解決**（can_use 権限・平文を返す唯一の経路・毎回監査）。
     ///
-    /// 能力ゲートウェイ（http.request / script の http）内からのみ呼ぶ。返した平文は
-    /// レダクタへ登録し、宛先束縛でホストを検証してからコネクションに注入する（PIT-36）。
+    /// 能力ゲートウェイ（http.request / script の http）内からのみ呼ぶ。`destination_host` を渡すと
+    /// **平文を復号する前に宛先束縛（allowed_hosts）で検証**し、許可外ホストは平文を出さずに
+    /// `DestinationDenied` で失敗させる（fail-closed をこのチョークポイントに寄せる・PIT-36）。
+    /// 返した平文はレダクタへ登録して使う。
     pub async fn resolve(
         &self,
         ctx: &AuthContext,
         name: &str,
+        destination_host: Option<&str>,
         trace_id: Option<&str>,
     ) -> Result<ResolvedSecret, SecretError> {
-        // 参照名 → 暗号化された素材（tenant スコープ）。
+        // 参照名 → 暗号化された素材（tenant＋org スコープ）。同一 tenant 内でも別 org の
+        // シークレットを注入させない（org 境界・ctx.org でスコープ）。
         let row: Option<SecretCipherRow> = sqlx::query_as(
             "SELECT id, ciphertext, nonce, encrypted_dek, dek_nonce, key_provider, allowed_hosts \
-                 FROM secret WHERE tenant_id = $1 AND name = $2",
+                 FROM secret WHERE tenant_id = $1 AND org = $2 AND name = $3",
         )
         .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
         .bind(name)
         .fetch_optional(&self.db)
         .await
@@ -334,6 +351,23 @@ impl SecretStore {
         // can_use 権限を確認（無ければ解決拒否＋監査 deny）。
         self.require(ctx, id, Relation::CanUse, "secret.resolve", trace_id)
             .await?;
+
+        // 宛先束縛を**復号前に**検証する（許可外ホストへ平文を一切出さない・監査 deny）。
+        if let Some(host) = destination_host {
+            let binding = DestinationBinding::new(row.allowed_hosts.clone());
+            if !binding.allows(host) {
+                let _ = self
+                    .record_audit(
+                        ctx,
+                        "secret.destination_denied",
+                        &id.to_string(),
+                        trace_id,
+                        json!({ "name": name, "host": host }),
+                    )
+                    .await;
+                return Err(SecretError::DestinationDenied(host.to_string()));
+            }
+        }
 
         // DEK を解いて平文を復号。
         let wrapped = WrappedKey {
