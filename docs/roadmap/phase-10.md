@@ -39,11 +39,11 @@
 | 10.0 | durable 共有基盤の切り出し（chat 3.11 の claim/リース/fencing/seq を共通クレート化） | data | 3.11（済） | **A** |
 | 10.1 | ワークフロー IR スキーマ＋artifact 化＋語彙照合検証 | data | 6.1（前倒し）／9.1・9.13 は 10.1b | **A**（10.1a）＋B（10.1b） |
 | 10.2 | run/step 永続化＋ワーカー（claim/リース/チェックポイント） | data | 10.0, 10.1a | **A** |
-| 10.3 | トリガ: スケジューラ（cron・リーダーリース）＋イベントマッチング（outbox） | data | 10.2 | **A**（event source は storage.write のみ・data 系は 9.10 後） |
+| 10.3 | トリガ: スケジューラ（cron・リーダーリース）＋イベントマッチング（outbox） | data | 10.2 | **A**＋B（event source: A=storage.write / B=data 系・9.10 後） |
 | 10.4 | 実行主体・委譲モデル（workflow プリンシパル・同意フロー・fail-closed 停止） | auth | 10.2／9.13 は 10.4b | **A**（10.4a）＋B（10.4b） |
 | 10.5 | 制御ノード（分岐/並列/join/待機）＋ステップリトライ＋concurrency/rate limit | data | 10.2 | **A** |
 | 10.6 | 能力ノード（storage/data/rag/notify）＋AI ノード2種＋ノード設定パネル契約 | agent | 10.2, 5.1※／9.8・9.10 は 10.6b | **A**（10.6a）＋B（10.6b） |
-| 10.7 | script-runtime（swc＋wasmtime/QuickJS・Shiki.* ブリッジ・非特権プロセス） | sandbox | – | **A** |
+| 10.7 | script-runtime（swc＋wasmtime/QuickJS・Shiki.* ブリッジ・非特権プロセス） | sandbox | – | **A**＋B（`Shiki.data.*`/`notify` の能力面のみ 9.2/9.10 後） |
 | 10.8 | script ノード＋script→ワークフロー起動 API | data | 10.7, 10.2 | **A** |
 | 10.9 | シークレット管理（crates/secrets・KeyProvider・宛先束縛・監査） | auth | – | **A** |
 | 10.10 | http.request ノード（egress allowlist × シークレット宛先束縛） | data | 10.9, 10.5 | **A** |
@@ -105,7 +105,8 @@
 - **受け入れ条件**:
   - [ ] 複数インスタンス起動時もスケジュールが1回だけ発火する
   - [ ] スケジューラを enqueue 直後に kill →再起動しても同一 occurrence の run が1つしか作られない
-  - [ ] storage 書込／record status 遷移でワークフローが起動する
+  - [ ] storage 書込でワークフローが起動する（Stage A）
+  - [ ] record 変更／status 遷移でワークフローが起動する（**Stage B**・9.10 の outbox 発行後。Stage A の実装は source を閉じた集合で持ち、追加が既存経路の再設計にならない形にする）
   - [ ] 無効化済みワークフローのトリガが発火しない
 
 ### Task 10.4: 実行主体・委譲モデル（FR-12 最重要）
@@ -148,12 +149,16 @@
   - [ ] 全ノードの呼び出しが監査に run_id 付きで残る
 
 ### Task 10.7: script-runtime
+> **Stage A 注記**: ランタイム・ブリッジ・リソース制限は全部 Stage A。ただし `Shiki.*` の能力面は
+> 既存チョークポイントがある storage/rag（＋http/workflow.start）で先行し、**`Shiki.data.*`・`Shiki.notify.send` は
+> 9.2/9.10 合流後（Stage B）に追加**する。下記受け入れ条件の data.query は Stage A では storage.read 等で読み替える
+> （検証対象は「同期スタイル＋通常認可・監査」の経路であり API の種類ではない）。
 - **area**: sandbox / **path**: `crates/script-runtime`
 - **仕様**: swc で TS→JS、**wasmtime 上の QuickJS**（javy 方式）で実行。専用**非特権プロセス**・RPC・インスタンス使い捨て。
   fuel/メモリ上限/epoch interruption。`Shiki.*` ホスト関数ブリッジ（同期スタイル→ホスト側 async 橋渡し）は
   能力ゲートウェイへ合流し AuthContext 認可・監査を通る。npm import 不可。
 - **受け入れ条件**:
-  - [ ] `Shiki.data.query(...)` 同期スタイルの script が実行でき、認可・監査が通常経路で効く
+  - [ ] `Shiki.storage.read(...)`（Stage B では `Shiki.data.query(...)`）の同期スタイル script が実行でき、認可・監査が通常経路で効く
   - [ ] 無限ループ/メモリ爆発が fuel/上限で強制中断される
   - [ ] wasm 内からホスト関数以外の外界（fs/net）に到達できない
   - [ ] コールドスタートが ms 級（スプレッドシート関数要件）

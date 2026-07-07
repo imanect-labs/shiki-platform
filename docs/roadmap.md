@@ -29,7 +29,9 @@ flowchart LR
   P3 --> P7["Phase 7<br/>資料作成 v1"]
   P3 --> P8["Phase 8<br/>エンプラ硬化"]
   P4 -.->|前倒し 2026-07 #121| P10A["Phase 10 Stage A<br/>WFエンジン核心 前倒し<br/>durable/IR/run/トリガ/script/secrets"]
-  P6 -.->|6.1 のみ先行実施| P10A
+  P3 --> T61["Phase 6 Task 6.1<br/>artifact 共通枠（先行実施）"]
+  T61 -.-> P10A
+  T61 --> P6
   P10A --> P10["Phase 10 Stage B<br/>ワークフロー基盤 完成<br/>skill/dnd/AI編集/dataノード"]
   P5 --> P10
   P9 --> P10
