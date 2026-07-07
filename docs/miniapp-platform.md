@@ -219,6 +219,7 @@ crates/
 
 依存: workflow-engine → data（9.2/9.3）・authz・storage・llm-gateway・sandbox-client・secrets。
 実装順は [roadmap Phase 10](./roadmap/phase-10.md)。
+**詳細設計は [docs/workflow/](./workflow/README.md) が正本**（[IR 仕様](./workflow/ir.md)・[実行エンジン](./workflow/engine.md)・[shiki script 処理系](./workflow/script.md)。2026-07 フェーズ先取りで確定・issue #119）。
 
 ## 9. アルファスコープ
 
