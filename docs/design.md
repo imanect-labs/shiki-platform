@@ -430,11 +430,19 @@ flowchart TB
 
 ### 4.7 generative UI / ミニアプリ / prompt template
 
+> 📝 **ミニアプリの定義は 2026-07 改訂（#97・[miniapp-platform.md §6](./miniapp-platform.md)）で更新**:
+> 下記「ミニアプリ = prompt template＋UIスペック＋許可ツール」は Phase 6 が単体で届ける**宣言的レイヤー（A）の初期形**。
+> workflow-engine（Phase 10）・構造化データサービス（Phase 9）確定を受けた**完全な定義（正本）は
+> UIスペック＋テーブル＋ワークフロー＋skill＋（任意）script**。詳細は [miniapp-platform.md §6](./miniapp-platform.md)。
+
 - **生成UI**: LLM→検証済みJSONスペック→信頼コンポーネントカタログで描画（任意コード実行なし）。
-- **ミニアプリ** = prompt template ＋ UIスペック ＋ 許可ツール、のバージョン付きアーティファクト。
+- **ミニアプリ（Phase 6 初期形）** = prompt template ＋ UIスペック ＋ 許可ツール、のバージョン付きアーティファクト。
   バックエンド束縛は宣言済み・認可済みアクション経由のみ（アンビエント権限なし）。ReBACで共有。
+  Phase 9/10 合流後の完全形は [miniapp-platform.md §6](./miniapp-platform.md) が正本。
 - **prompt template** = システムプロンプト＋知識スコープ（RAG範囲限定）＋許可ツール＋モデル既定＋few-shot。
-  知識スコープで絞っても最終可読性は個人ReBACで再チェック。
+  知識スコープで絞っても最終可読性は個人ReBACで再チェック。**ミニアプリの構成要素ではなく独立した共有可能アーティファクト**
+  （ミニアプリのワークフローが `llm.invoke`/`agent.invoke` ノードで間接的に類似設定を参照することはあるが、
+  miniapp-platform.md §6 の束にはtemplateは含まれない）。
 - すべて「共有可能アーティファクト＋ReBAC＋監査」の共通枠に収まる。
 - カタログにはチャート（vega-lite 的サブセットのチャートスペック）と地図（タイル表示＋ピン）を含む。
   地図タイルは外部依存（OSM タイルサーバ）＝「外部接続必須機能」区分（NFR-2 参照）。オンプレは自己ホストタイル or 無効。
