@@ -17,7 +17,7 @@ pub async fn claim<'e, T>(
     key: &Key<'_>,
     worker_id: &str,
     lease_secs: i64,
-    returning: &str,
+    returning: &'static str,
 ) -> Result<Option<T>, sqlx::Error>
 where
     T: for<'r> FromRow<'r, PgRow> + Send + Unpin,
@@ -70,7 +70,7 @@ pub async fn heartbeat<'e, T>(
     key: &Key<'_>,
     fencing_token: i64,
     lease_secs: i64,
-    returning: &str,
+    returning: &'static str,
 ) -> Result<Option<T>, sqlx::Error>
 where
     T: for<'r> sqlx::Decode<'r, Postgres> + Type<Postgres> + Send + Unpin,
@@ -113,7 +113,7 @@ pub async fn fenced_finalize<'e, T>(
     fencing_token: i64,
     status: &str,
     extra_sets: &[(&'static str, KeyValue<'_>)],
-    returning: &str,
+    returning: &'static str,
 ) -> Result<Option<T>, sqlx::Error>
 where
     T: for<'r> sqlx::Decode<'r, Postgres> + Type<Postgres> + Send + Unpin,

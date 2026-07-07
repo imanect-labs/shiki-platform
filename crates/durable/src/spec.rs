@@ -96,7 +96,8 @@ pub struct Key<'a> {
 impl<'a> Key<'a> {
     /// キーを作る。`columns` と `values` の長さは一致していなければならない。
     pub fn new(columns: &'static [&'static str], values: &'a [KeyValue<'a>]) -> Self {
-        debug_assert_eq!(columns.len(), values.len(), "key columns/values mismatch");
+        // バインド不整合（列数≠値数）はプレースホルダずれ＝不正クエリのため常時検証する。
+        assert_eq!(columns.len(), values.len(), "key columns/values mismatch");
         for c in columns {
             assert_ident(c);
         }
@@ -137,8 +138,12 @@ impl<'a> Key<'a> {
 
 /// SQL 識別子（またはステータス定数）を英小文字・数字・アンダースコアに制限する。
 /// 値はすべてコード中の `'static` 定数であり、違反はプログラミングエラー。
+///
+/// SQL インジェクション境界のため **リリースビルドでも常時検証する**（`assert!`）。識別子は
+/// クエリ文字列へ直接連結されるため、万一不正な定数（タイポ・空白混入）が入っても本番で
+/// 黙って不正 SQL を組ませない（fail-fast）。
 pub(crate) fn assert_ident(s: &str) {
-    debug_assert!(
+    assert!(
         !s.is_empty()
             && s.bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),

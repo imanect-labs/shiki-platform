@@ -189,6 +189,20 @@ async fn heartbeat_extends_only_for_current_fencing() {
     .expect("heartbeat query");
     assert_eq!(cancel, Some(false));
 
+    // 延長そのものを検証: heartbeat 後の lease_until が未来にある（リースが実際に延びた）。
+    let lease_after: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+        "SELECT lease_until FROM durable_test_run WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&tenant)
+    .bind(run_id)
+    .fetch_one(&pool)
+    .await
+    .expect("lease_until row");
+    assert!(
+        lease_after > chrono::Utc::now(),
+        "heartbeat 後もリースが有効（延長された）であること"
+    );
+
     // 古い fencing（ゾンビ）→ None。
     let stale: Option<bool> = durable::heartbeat(
         &pool,
