@@ -166,7 +166,8 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
     // V5 は深さに関わらず再帰するため、ここで弾かないと深いノード条件が上限を素通りする。
     for node in &ir.nodes {
         if let Some(cond_json) = node.params.get("condition") {
-            if let Ok(cond) = serde_json::from_value::<crate::ir::expr::Condition>(cond_json.clone())
+            if let Ok(cond) =
+                serde_json::from_value::<crate::ir::expr::Condition>(cond_json.clone())
             {
                 if cond.depth() > MAX_CONDITION_DEPTH {
                     errors.push(

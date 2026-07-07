@@ -43,11 +43,8 @@ fn check_value(value: &serde_json::Value, ctx: &NodeCtx<'_>, errors: &mut Vec<Va
                     // params は生 JSON で V1 の deny-unknown が効かないため、型崩れ（path 型違い・
                     // 余分フィールド等）はここで弾く（実行時にリテラル誤解釈されるのを防ぐ）。
                     Err(e) => errors.push(
-                        ValidationError::new(
-                            "ir.bad_ref",
-                            format!("不正な $from 式です: {e}"),
-                        )
-                        .at_node(&ctx.node.id),
+                        ValidationError::new("ir.bad_ref", format!("不正な $from 式です: {e}"))
+                            .at_node(&ctx.node.id),
                     ),
                 }
                 return;
