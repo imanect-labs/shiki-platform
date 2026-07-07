@@ -66,8 +66,10 @@
   **実装（2026-07-07・#146）**: (a) 配送台帳を採用。ただし既存 RAG relay は **`processed_at` 経路のまま温存**し、
   台帳は**追加コンシューマ（workflow event matcher 等）専用**とした（`claim_undelivered`/`mark_delivered`）。
   RAG を台帳へ載せ替えるより「挙動・テスト不変」を最も強く満たすため（RAG コードは一切変更なし）。
-  GC（`gc_delivered`）が両経路を橋渡しする（processed_at ack ＋ 全台帳コンシューマ配送済み → 削除、＋retention backstop）。
-  生成側（`emit_on`）は不変＝真の fan-out 点。
+  GC（`gc_delivered`）は processed_at ack ＋ 全台帳コンシューマ配送済みの行のみ削除する（**未 ack は
+  time-based retention でも消さない**＝遅い/停止中コンシューマがイベントを失わない）。新規コンシューマは
+  `register_consumer` で有効化時に現バックログを「配送済み」に刻み、**過去の全 storage.write の一斉再配送を防ぐ**
+  （未コミット in-flight はスナップショット外なのでコミット後に正しく配送）。生成側（`emit_on`）は不変＝真の fan-out 点。
 - **受け入れ条件**:
   - [x] 同一 storage 書込イベントが rag と workflow の**両方**に届く（片方の消費が他方を消さない）
   - [x] **並行書込で遅れてコミットしたイベントも取りこぼさない**（未コミット飛び越しの adversarial テスト）

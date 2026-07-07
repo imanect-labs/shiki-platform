@@ -20,7 +20,9 @@
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
-use storage::event::{claim_undelivered, gc_delivered, mark_delivered, mark_processed};
+use storage::event::{
+    claim_undelivered, gc_delivered, mark_delivered, mark_processed, register_consumer,
+};
 use uuid::Uuid;
 
 async fn setup() -> Option<PgPool> {
@@ -148,6 +150,62 @@ async fn late_committed_lower_id_is_not_skipped() {
 }
 
 #[tokio::test]
+async fn register_consumer_skips_backlog_but_delivers_new_events() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let node = Uuid::new_v4();
+    let consumer = format!("wf-reg-{}", Uuid::new_v4().simple());
+
+    // 有効化前のバックログ。
+    let backlog = insert_event(&pool, &tenant, node).await;
+
+    // コンシューマ登録: 現バックログを配送済みに刻む（初回一斉発火を防ぐ）。
+    {
+        let mut tx = pool.begin().await.unwrap();
+        register_consumer(&mut tx, &consumer).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // 有効化後の新規イベント。
+    let fresh = insert_event(&pool, &tenant, node).await;
+
+    let claimed = claim_mine(&pool, &consumer, &tenant).await;
+    assert!(!claimed.contains(&backlog), "バックログは再配送しない");
+    assert!(claimed.contains(&fresh), "有効化以降のイベントは配送する");
+}
+
+#[tokio::test]
+async fn gc_never_deletes_unacked_events() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let node = Uuid::new_v4();
+    let consumer = format!("wf-noack-{}", Uuid::new_v4().simple());
+
+    // 古い created_at だが未 ack（processed_at NULL・台帳未配送）→ GC は消してはいけない。
+    let unacked = insert_event(&pool, &tenant, node).await;
+    sqlx::query(
+        "UPDATE storage_event_outbox SET created_at = now() - interval '400 days' WHERE id = $1",
+    )
+    .bind(unacked)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    {
+        let mut tx = pool.begin().await.unwrap();
+        gc_delivered(&mut tx, &[consumer.as_str()]).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM storage_event_outbox WHERE id = $1)")
+            .bind(unacked)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(exists, "未 ack の古いイベントを retention で消さない");
+}
+
+#[tokio::test]
 async fn gc_removes_only_fully_delivered_events() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4().simple());
@@ -178,12 +236,10 @@ async fn gc_removes_only_fully_delivered_events() {
         tx.commit().await.unwrap();
     }
 
-    // retention は十分大きく（backstop を発火させない）。
+    // GC は配送済み＋processed_at ack のみ削除（未 ack は決して消さない）。
     let deleted = {
         let mut tx = pool.begin().await.unwrap();
-        let n = gc_delivered(&mut tx, &[consumer.as_str()], 365 * 24 * 3600)
-            .await
-            .unwrap();
+        let n = gc_delivered(&mut tx, &[consumer.as_str()]).await.unwrap();
         tx.commit().await.unwrap();
         n
     };

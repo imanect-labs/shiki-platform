@@ -195,37 +195,54 @@ pub async fn mark_delivered(
     Ok(())
 }
 
-/// 全コンシューマへ配送済みの outbox 行を GC する（配送台帳は ON DELETE CASCADE で同時に消える）。
+/// 新規追加コンシューマを **現時点のバックログを飛ばして** 登録する（初回配送の暴発防止）。
 ///
-/// 削除条件は次のいずれか:
-/// - 追加コンシューマ（`ledger_consumers`）**全員**が配送済み、**かつ** RAG（`processed_at`）も ack 済み。
-/// - `retention_secs` を超えて滞留（コンシューマが恒久停止した場合の backstop・table 肥大を防ぐ）。
+/// 台帳ベースの [`claim_undelivered`] は「自分の delivery が無い行」を全て返すため、コンシューマを
+/// 初めて有効化すると **過去の全 storage.write を再配送**してしまう（新規 workflow matcher が
+/// 履歴イベントで一斉発火する）。これを避けるため、登録時に**現スナップショットで可視な**（＝コミット
+/// 済みの）outbox 行を全て「配送済み」として台帳に刻む。**未コミットの in-flight イベントはこの
+/// スナップショットに映らない**ため delivery が付かず、コミット後に正しく配送される（＝有効化以降の
+/// イベントのみ処理・未コミット飛び越しも起こさない）。冪等（`ON CONFLICT DO NOTHING`）。
 ///
-/// `ledger_consumers` は「現在有効な台帳コンシューマ集合」を呼び出し側（起動時 wiring）が渡す。
-/// 生成側は関与しない。空配列を渡すと processed_at のみで判定する（追加コンシューマ無効時）。
+/// 起動時 wiring から consumer 有効化のたびに呼ぶ（既登録なら no-op）。返り値は刻んだ件数。
+pub async fn register_consumer(
+    conn: &mut PgConnection,
+    consumer: &str,
+) -> Result<u64, StorageError> {
+    let done = sqlx::query(
+        "INSERT INTO outbox_delivery (consumer, event_id, tenant_id) \
+         SELECT $1, o.id, o.tenant_id FROM storage_event_outbox o \
+         ON CONFLICT (consumer, event_id) DO NOTHING",
+    )
+    .bind(consumer)
+    .execute(conn)
+    .await?;
+    Ok(done.rows_affected())
+}
+
+/// 全コンシューマへ配送済み **かつ** RAG（`processed_at`）ack 済みの outbox 行を GC する
+/// （配送台帳は ON DELETE CASCADE で同時に消える）。
+///
+/// **未 ack の行は決して削除しない**（retention による time-based バイパスは持たない・遅い/停止中の
+/// コンシューマがイベントを失わない）。`ledger_consumers` は「現在有効な台帳コンシューマ集合」を
+/// 呼び出し側（起動時 wiring）が渡す。生成側は関与しない。空配列なら processed_at のみで判定する。
 /// 返り値は削除件数。
 pub async fn gc_delivered(
     conn: &mut PgConnection,
     ledger_consumers: &[&str],
-    retention_secs: i64,
 ) -> Result<u64, StorageError> {
     let consumers: Vec<String> = ledger_consumers.iter().map(|s| (*s).to_string()).collect();
     let expected = i64::try_from(consumers.len())
         .map_err(|_| StorageError::Invalid("consumer 数が多すぎます".into()))?;
-    // interval は文字列連結で組む（i64→f64 の精度損失 cast を避ける・LeaderLease と同型）。
     let deleted = sqlx::query(
         "DELETE FROM storage_event_outbox o \
-         WHERE o.created_at < now() - ($2 || ' seconds')::interval \
-            OR ( \
-                o.processed_at IS NOT NULL \
-                AND ( \
-                    SELECT count(*) FROM outbox_delivery d \
-                    WHERE d.event_id = o.id AND d.consumer = ANY($1) \
-                ) >= $3 \
-            )",
+         WHERE o.processed_at IS NOT NULL \
+           AND ( \
+               SELECT count(*) FROM outbox_delivery d \
+               WHERE d.event_id = o.id AND d.consumer = ANY($1) \
+           ) >= $2",
     )
     .bind(&consumers)
-    .bind(retention_secs)
     .bind(expected)
     .execute(conn)
     .await?;

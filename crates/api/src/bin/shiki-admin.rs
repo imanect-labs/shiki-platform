@@ -36,6 +36,7 @@ const TENANT_TABLES: &[&str] = &[
     "node_version",
     "pending_upload",
     "storage_event_outbox",
+    "outbox_delivery",
     "directory_user",
     "directory_role",
     "audit_log",
