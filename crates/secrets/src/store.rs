@@ -158,11 +158,14 @@ impl SecretStore {
             .write_tuple(&ctx.subject(), Relation::Owner, &obj)
             .await
         {
-            let _ = sqlx::query("DELETE FROM secret WHERE tenant_id = $1 AND id = $2")
+            if let Err(cleanup) = sqlx::query("DELETE FROM secret WHERE tenant_id = $1 AND id = $2")
                 .bind(&ctx.tenant_id)
                 .bind(id)
                 .execute(&self.db)
-                .await;
+                .await
+            {
+                tracing::error!(error = %cleanup, secret_id = %id, "owner タプル書込失敗後の補償削除にも失敗（孤立行が残存）");
+            }
             return Err(SecretError::Internal(format!("owner tuple: {e}")));
         }
         self.record_audit(
@@ -357,13 +360,19 @@ impl SecretStore {
         if let Some(host) = destination_host {
             let binding = DestinationBinding::new(row.allowed_hosts.clone());
             if !binding.allows(host) {
+                // 拒否イベントは Decision::Deny で記録する（record_audit は Allow 固定のため inline）。
                 let _ = self
-                    .record_audit(
+                    .audit
+                    .record(
                         ctx,
-                        "secret.destination_denied",
-                        &id.to_string(),
-                        trace_id,
-                        json!({ "name": name, "host": host }),
+                        AuditEntry {
+                            action: "secret.destination_denied",
+                            object_type: "secret",
+                            object_id: &id.to_string(),
+                            decision: Decision::Deny,
+                            trace_id,
+                            metadata: json!({ "name": name, "host": host }),
+                        },
                     )
                     .await;
                 return Err(SecretError::DestinationDenied(host.to_string()));

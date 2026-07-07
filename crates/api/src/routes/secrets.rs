@@ -118,6 +118,7 @@ pub async fn list_secrets(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
+        (status = 503, description = "secrets 未設定"),
     ),
     security(("session" = [])),
 )]
@@ -143,6 +144,7 @@ pub async fn get_secret(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
+        (status = 503, description = "secrets 未設定"),
     ),
     security(("session" = [])),
 )]
@@ -172,6 +174,7 @@ pub async fn rotate_secret(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
+        (status = 503, description = "secrets 未設定"),
     ),
     security(("session" = [])),
 )]
@@ -199,6 +202,7 @@ pub async fn update_binding(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
+        (status = 503, description = "secrets 未設定"),
     ),
     security(("session" = [])),
 )]
