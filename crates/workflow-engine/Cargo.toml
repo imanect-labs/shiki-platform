@@ -38,6 +38,7 @@ tokio = { workspace = true, features = ["rt", "time", "macros"] }
 
 [dev-dependencies]
 tokio.workspace = true
+reqwest.workspace = true
 async-trait.workspace = true
 sqlx.workspace = true
 proptest.workspace = true

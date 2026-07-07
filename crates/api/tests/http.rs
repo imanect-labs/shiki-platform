@@ -284,6 +284,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
 
 fn test_principal() -> Principal {
     Principal {
+        kind: authz::PrincipalKind::User,
         id: "00000000-0000-0000-0000-000000000001".into(),
         email: Some("alice@acme.example".into()),
         groups: vec!["/acme".into()],

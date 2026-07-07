@@ -224,6 +224,7 @@ fn base_config(db_url: &str) -> AppConfig {
 
 fn test_principal() -> Principal {
     Principal {
+        kind: authz::PrincipalKind::User,
         id: "00000000-0000-0000-0000-000000000001".into(),
         email: Some("alice@acme.example".into()),
         groups: vec!["/acme".into()],

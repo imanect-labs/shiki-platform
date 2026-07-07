@@ -310,6 +310,7 @@ impl ChatWorker {
 fn build_ctx(run: &ClaimedRun) -> AuthContext {
     AuthContext::new(
         Principal {
+            kind: authz::PrincipalKind::User,
             id: run.actor.clone(),
             email: None,
             groups: Vec::new(),

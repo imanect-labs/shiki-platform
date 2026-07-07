@@ -246,6 +246,7 @@ async fn dev_seed(
         let seed_tenant = effective_seed_tenant(auth, u.tenant);
         let ctx = AuthContext::new(
             Principal {
+                kind: authz::PrincipalKind::User,
                 id: u.id.to_string(),
                 email: None,
                 groups: vec![],
@@ -288,6 +289,7 @@ async fn dev_seed(
         for member in r.members {
             let ctx = AuthContext::new(
                 Principal {
+                    kind: authz::PrincipalKind::User,
                     id: (*member).to_string(),
                     email: None,
                     groups: vec![],

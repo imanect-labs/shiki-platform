@@ -6,11 +6,13 @@
 //! - [`ir::validate`]: 保存時検証 V1〜V7（全件エラー収集）。
 //! - [`store`]: IR を artifact（kind=workflow）として保存・バージョン管理・取得する薄い層。
 
+pub mod delegation;
 pub mod ir;
 pub mod run;
 pub mod store;
 pub mod vocab;
 
+pub use delegation::{DelegationError, DelegationStore, GrantRequest, RunAdmission};
 pub use ir::validate::{validate, Catalog, ValidationError};
 pub use ir::WorkflowIr;
 pub use run::{

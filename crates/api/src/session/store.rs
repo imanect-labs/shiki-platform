@@ -114,6 +114,7 @@ mod tests {
     fn sample_record() -> SessionRecord {
         SessionRecord {
             principal: Principal {
+                kind: authz::PrincipalKind::User,
                 id: "user-1".into(),
                 email: Some("u@example.com".into()),
                 groups: vec!["/acme".into()],

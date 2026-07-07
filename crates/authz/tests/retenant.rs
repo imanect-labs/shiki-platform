@@ -30,6 +30,7 @@ fn model_json() -> serde_json::Value {
 fn ctx_for(tenant: &str, user: &str) -> AuthContext {
     AuthContext::new(
         Principal {
+            kind: authz::PrincipalKind::User,
             id: user.into(),
             email: None,
             groups: vec![],

@@ -13,6 +13,10 @@ model
 
 type user
 
+# ワークフロープリンシパル（schedule/event run の実行主体・subject 専用型・Task 10.4a）。
+# タプルは有効化時の明示委譲でのみ書かれ、workflow_delegation 行が台帳（engine.md §6）。
+type workflow
+
 type organization
   relations
     define member: [user]
@@ -36,8 +40,8 @@ type folder
   relations
     define parent: [folder]
     define owner: [user]
-    define editor: [user, role#member] or owner or editor from parent
-    define viewer: [user, role#member] or editor or viewer from parent
+    define editor: [user, role#member, workflow] or owner or editor from parent
+    define viewer: [user, role#member, workflow] or editor or viewer from parent
 
 # ストレージ: ファイル（ツリーの葉・認可の最小オブジェクト）。
 # ルート直下のファイルは parent を持たず、作成者の owner タプルのみで到達する。
@@ -46,8 +50,8 @@ type file
   relations
     define parent: [folder]
     define owner: [user]
-    define editor: [user, role#member] or owner or editor from parent
-    define viewer: [user, role#member] or editor or viewer from parent
+    define editor: [user, role#member, workflow] or owner or editor from parent
+    define viewer: [user, role#member, workflow] or editor or viewer from parent
 
 # チャット: スレッド（会話・#37）。ツリー継承は持たず、作成者 owner ＋明示共有のみ。
 # 共有語彙は viewer / commenter / editor（owner の横展開は防ぐため付与しない）。
@@ -68,8 +72,8 @@ type thread
 type artifact
   relations
     define owner: [user]
-    define editor: [user, role#member] or owner
-    define viewer: [user, role#member] or editor
+    define editor: [user, role#member, workflow] or owner
+    define viewer: [user, role#member, workflow] or editor
 
 # シークレット（Task 10.9）。write-only/use-only。
 # can_use は「解決して使える」であり平文の読み返しではない（owner が含意）。
@@ -77,4 +81,4 @@ type artifact
 type secret
   relations
     define owner: [user]
-    define can_use: [user, role#member] or owner
+    define can_use: [user, role#member, workflow] or owner

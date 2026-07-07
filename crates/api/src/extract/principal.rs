@@ -34,6 +34,7 @@ mod tests {
 
     fn sample_principal() -> Principal {
         Principal {
+            kind: authz::PrincipalKind::User,
             id: "user-1".into(),
             email: Some("u@example.com".into()),
             groups: vec!["/acme".into()],

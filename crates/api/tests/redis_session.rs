@@ -23,6 +23,7 @@ use authz::Principal;
 fn record(csrf: &str) -> SessionRecord {
     SessionRecord {
         principal: Principal {
+            kind: authz::PrincipalKind::User,
             id: "00000000-0000-0000-0000-000000000001".into(),
             email: Some("alice@acme.example".into()),
             groups: vec!["/acme".into()],
