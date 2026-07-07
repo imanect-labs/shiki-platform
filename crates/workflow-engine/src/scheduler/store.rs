@@ -138,44 +138,57 @@ impl SchedulerStore {
         scheduled_at: DateTime<Utc>,
         launcher: &dyn RunLauncher,
     ) -> Result<bool, SchedulerStoreError> {
-        // UNIQUE INSERT で占有。**既に行があり run_id が NULL** の場合は、予約後・run 起動前に
-        // クラッシュした occurrence なので launch を**再試行**する（トリガ取りこぼし防止）。
-        // 行が無ければ新規予約、行があり run_id 済みなら発火済みでスキップ。
-        let reserved: Option<(bool,)> = sqlx::query_as(
+        // occurrence 行を占有し、**FOR UPDATE で行ロックしてから** run_id を確認する。並行 tick が
+        // 同一 occurrence を同時発火せず（競走で二重投入しない）、かつ予約後・run 起動前にクラッシュして
+        // run_id が NULL のまま残った occurrence は次 tick で再試行できる（トリガ取りこぼし防止）。
+        let mut tx = self.db.begin().await.map_err(map_db)?;
+        sqlx::query(
             "INSERT INTO schedule_occurrence (tenant_id, workflow_id, trigger_id, scheduled_at) \
              VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (tenant_id, workflow_id, trigger_id, scheduled_at) \
-               DO UPDATE SET trigger_id = schedule_occurrence.trigger_id \
-             RETURNING (run_id IS NULL)",
+             ON CONFLICT (tenant_id, workflow_id, trigger_id, scheduled_at) DO NOTHING",
         )
         .bind(&t.tenant_id)
         .bind(t.workflow_id)
         .bind(&t.trigger_id)
         .bind(scheduled_at)
-        .fetch_optional(&self.db)
+        .execute(&mut *tx)
         .await
         .map_err(map_db)?;
-        // run_id が既に埋まっている（発火済み）ならスキップ。
-        if !matches!(reserved, Some((true,))) {
+        // 行をロックして run_id を読む（並行 tick はここで直列化される）。
+        let existing_run: Option<Uuid> = sqlx::query_scalar(
+            "SELECT run_id FROM schedule_occurrence \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND trigger_id = $3 AND scheduled_at = $4 \
+             FOR UPDATE",
+        )
+        .bind(&t.tenant_id)
+        .bind(t.workflow_id)
+        .bind(&t.trigger_id)
+        .bind(scheduled_at)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        if existing_run.is_some() {
+            tx.commit().await.map_err(map_db)?; // 既に発火済み。
             return Ok(false);
         }
-        // run 起動（委譲チェックは launcher 内）。run_id を occurrence に記録。
+        // run_id が NULL（新規占有 or クラッシュ残り）→ ロック保持中に launch して記録する。
         let run_id = launcher
             .launch(&t.tenant_id, t.workflow_id, "schedule", &t.trigger_id)
             .await;
         sqlx::query(
-            "UPDATE schedule_occurrence SET run_id = $4 \
-             WHERE tenant_id = $1 AND workflow_id = $2 AND trigger_id = $3 AND scheduled_at = $5",
+            "UPDATE schedule_occurrence SET run_id = $5 \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND trigger_id = $3 AND scheduled_at = $4",
         )
         .bind(&t.tenant_id)
         .bind(t.workflow_id)
         .bind(&t.trigger_id)
-        .bind(run_id)
         .bind(scheduled_at)
-        .execute(&self.db)
+        .bind(run_id)
+        .execute(&mut *tx)
         .await
         .map_err(map_db)?;
-        Ok(true)
+        tx.commit().await.map_err(map_db)?;
+        Ok(run_id.is_some())
     }
 
     async fn advance_watermark(
