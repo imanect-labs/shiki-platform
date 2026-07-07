@@ -7,6 +7,9 @@
 --
 -- 規約: 全行 tenant_id not null・PK は tenant 先頭の複合キー（#91）。
 -- テナント消去（SAAS.2）は artifact を tenant_id で削除すれば version へ CASCADE する。
+--
+-- ⚠️ `prompt_template` kind は #152 で skill に統合され撤去された（migration 0024 参照）。
+-- 本ファイルは適用済み環境があるため直接編集しない（sqlx::migrate! のチェックサム検証対象）。
 
 create table artifact (
     tenant_id       text        not null,

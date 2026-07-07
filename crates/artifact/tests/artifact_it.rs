@@ -273,14 +273,14 @@ async fn list_mine_filters_by_kind_and_owner() {
         .create(
             &alice,
             NewArtifact {
-                kind: ArtifactKind::PromptTemplate,
-                name: "tpl-a".into(),
+                kind: ArtifactKind::Skill,
+                name: "skill-a".into(),
                 body: json!({}),
             },
             None,
         )
         .await
-        .expect("alice tpl");
+        .expect("alice skill");
     store
         .create(&bob, new_wf("wf-b", json!({})), None)
         .await

@@ -161,13 +161,27 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
 
 ## 4. skill とスキルストア
 
-- **skill** = 指示文＋（任意）shiki script 関数＋宣言ツール・スコープ＋（任意）参照資料、のバージョン付きアーティファクト。
-- 呼び出し面は 2 つで中身は同一:
-  1. **エージェントから**: agent.invoke 時にツールとしてマウント（実効 = skill 宣言スコープ ∩ 実行主体 ReBAC）
-  2. **ワークフローから**: skill ノード（IR 上は `skill:<name>@<version>`。保存時に存在検証）
+> 📝 **2026-07-07 改訂**: 旧 Phase 6 の「prompt template」はここに統合する（FR-7/FR-14 で呼称・定義を一本化）。
+> skill 単体が持つ「チャット開始時の初期コンテキスト適用」という用途は変わらない。
+
+- **skill** = **SKILL.md 相当の指示文**（frontmatter: name/description ＋ 用途・振る舞いを書く本文。
+  Claude Code の skill と同型）＋**知識スコープ**（RAG範囲限定・旧prompt template由来）＋**許可ツール**＋
+  **モデル/パラメータ既定**（旧prompt template由来）＋（任意）**few-shot**（旧prompt template由来）＋
+  （任意）**script**＋宣言ツール・スコープ＋（任意）参照資料、のバージョン付きアーティファクト。
+  **script は shiki script（`.shiki`）と shell script（`.sh`）のどちらも、また両方を同時に含められる**
+  （1 skill が複数 script ファイルを持てる）。
+  知識スコープで絞っても最終可読性は常に実行主体個人の ReBAC で再チェックする。
+- 呼び出し面は 3 つで中身は同一:
+  1. **チャットから**: セッション開始時の初期コンテキストとして適用（システムプロンプト・知識スコープ・許可ツール・
+     モデル既定・few-shot を一括適用。Phase 6・FR-7）
+  2. **エージェントから**: agent.invoke 時にツールとしてマウント（実効 = skill 宣言スコープ ∩ 実行主体 ReBAC）
+  3. **ワークフローから**: skill ノード（IR 上は `skill:<name>@<version>`。保存時に存在検証）
 - **スキルストア = Phase 9 レジストリ設計（不変 publish・信頼ティア・同意インストール・署名バンドル）を
   skill という artifact 種に適用するだけ**。新しい配布機構は作らない。
-- script 付き skill の実行は script-runtime（§3.2）。サンドボックスが要る skill は agent.invoke 経由。
+- **script の実行は種別で分岐**: `.shiki`（shiki script）は script-runtime（§3.2・ms級起動・`Shiki.*`
+  ホスト関数ブリッジ経由の通常認可）。`.sh`（shell script）は script-runtime では実行できない
+  （fs/プロセス起動が無い§3.2の隔離モデルの守備範囲外）ため、**agent.invoke のサンドボックス内で
+  実行する**（Phase 4/5 のサンドボックス・任意コマンド実行の枠をそのまま使う）。
 
 ## 5. シークレット管理（`crates/secrets`）
 
