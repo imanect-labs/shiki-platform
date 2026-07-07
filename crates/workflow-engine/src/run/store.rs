@@ -266,6 +266,30 @@ impl RunStore {
             .filter_map(|(p, s)| StepStatus::parse(&s).map(|st| (p, st)))
             .collect())
     }
+
+    /// run 内で **成功済み** step の `node_id → output` を集める（`$from nodes.<id>.output` 解決用）。
+    ///
+    /// ワーカーが次ノード実行前に呼び、[`NodeContext`](super::NodeContext) の `node_outputs` を組む。
+    /// map 要素（`<map_id>[<index>].<node_id>`）は Stage A 未対応のため静的ノードのみ対象。
+    pub async fn step_outputs(
+        &self,
+        tenant_id: &str,
+        run_id: Uuid,
+    ) -> Result<Vec<(String, Value)>, RunStoreError> {
+        let rows: Vec<(String, Option<Json<Value>>)> = sqlx::query_as(
+            "SELECT node_id, output FROM step_execution \
+             WHERE tenant_id = $1 AND run_id = $2 AND status = 'succeeded' AND step_path = node_id",
+        )
+        .bind(tenant_id)
+        .bind(run_id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, out)| (id, out.map_or(Value::Null, |j| j.0)))
+            .collect())
+    }
 }
 
 /// 源 step の taken_ports から入エッジ状態を導出する（純関数・readiness の入力を組む）。

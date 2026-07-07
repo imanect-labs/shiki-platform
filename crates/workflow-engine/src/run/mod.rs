@@ -41,8 +41,18 @@ pub struct NodeContext {
     pub attempt: i32,
     /// 実行主体の subject local id。
     pub principal: String,
-    /// このノードへ解決済みで渡す入力（$from 解決後）。
+    /// run 起動入力（`$from input` の源）。
     pub input: Value,
+    /// トリガペイロード（`$from trigger` の源。Stage A の interactive は run 入力と同一）。
+    pub trigger: Value,
+    /// 先行して成功した step の `node_id → output` マップ（`$from nodes.<id>.output` の源）。
+    pub node_outputs: Value,
+    /// OTel トレース id（監査 ↔ Langfuse ↔ OTel を束ねる・run から伝播）。
+    pub trace_id: Option<String>,
+    /// scope ceiling（= IR の declared_scopes ∩ ノード設定）。能力ゲートウェイが
+    /// 「操作の要求スコープ ∈ scope_ceiling」を検証してから OpenFGA check を行う（二重ゲート）。
+    /// run 開始時に declared ⊆ 委譲 が保証されるため実効スコープ = declared_scopes。
+    pub scope_ceiling: Vec<String>,
 }
 
 /// ノード実行の結果（成功/失敗と出力ポート）。

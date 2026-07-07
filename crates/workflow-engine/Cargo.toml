@@ -34,6 +34,8 @@ redis = { workspace = true }
 # effect_journal の op_digest（sha256）と http.request の URL ホスト部リテラル抽出。
 sha2 = { workspace = true }
 url = "2"
+# ノード params の content バイト解決（base64 デコード）。
+base64 = { workspace = true }
 sqlx.workspace = true
 shiki-durable.workspace = true
 async-trait.workspace = true

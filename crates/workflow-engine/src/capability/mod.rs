@@ -54,6 +54,7 @@ pub fn effective_scopes(declared: &[String], delegated: &[String]) -> BTreeSet<S
 
 /// スコープ不要の内部制御 API（明示許可・これ以外の未マップ API は fail-closed で拒否）。
 /// llm.invoke / agent.invoke は内部推論（外部到達は http.egress・データ到達は storage/rag で縛る）。
+/// script.run 自体は無スコープ（内部の `Shiki.*` ホスト呼び出しが個別に scope ceiling で縛られる）。
 const SCOPE_FREE_APIS: &[&str] = &[
     "control.branch",
     "control.switch",
@@ -62,6 +63,7 @@ const SCOPE_FREE_APIS: &[&str] = &[
     "control.wait",
     "llm.invoke",
     "agent.invoke",
+    "script.run",
 ];
 
 /// 能力 API に必要なスコープが実効スコープに含まれるか判定する（scope 天井）。
