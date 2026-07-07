@@ -481,7 +481,9 @@ cron の評価区間は `workflow_trigger.last_planned_at`（watermark）→ 現
 > ⚠️ **前提: outbox の per-consumer fan-out 化**（roadmap Task P10-A0）。現状の outbox は単一 `processed_at` ack で、
 > RAG relay（`crates/rag/src/pipeline/relay.rs`）が `claim`→enqueue→`mark_processed` と**破壊的に消費**している。
 > workflow が 2 人目の購読者になると、先に処理した側が他方の分を消してイベントを取りこぼす。イベントトリガ着手前に
-> per-consumer カーソル（各コンシューマが自分の位置だけ進める）へ移行し、outbox を design §4.3 が謳う真の fan-out 点にする。
+> **per-event × per-consumer の ack 台帳**（各コンシューマが未配送 outbox 行を claim→配送→delivery 追記）へ移行し、
+> outbox を design §4.3 が謳う真の fan-out 点にする。**単純な単調 seq カーソルは並行書込で未コミットイベントを
+> 飛び越すため採らない**（設計・受け入れ条件は roadmap Task P10-A0）。
 
 1. `(tenant_id, source)` index（`workflow_trigger_match_idx`）で候補トリガを引く。
 2. トリガの `scope` 束縛（対象テーブル・フォルダ id）に合致するか判定する。

@@ -38,23 +38,32 @@
 >   → {10.6a, 10.8, 10.10}。
 
 ### Task P10-A0: outbox の per-consumer fan-out 化（Stage A 前提・新設）
-- **area**: data / **path**: `crates/storage`（event）, `crates/rag`（relay）, migrations
+- **area**: data / **path**: `crates/storage`（event・Task 1.8）, `crates/rag`（relay・Task 2.8）, migrations
 - **問題**: 現状の `storage_event_outbox` は単一 `processed_at` ack で、`crates/rag/src/pipeline/relay.rs` が
   `claim`（`processed_at IS NULL` を SKIP LOCKED）→ enqueue → `mark_processed` と**破壊的に消費**している。
   workflow-engine が storage.write の 2 人目のコンシューマになると、**RAG が先に処理済みにした瞬間に
   ワークフローがイベントを取りこぼす**（逆順なら RAG が取りこぼす）。design §4.3 は outbox を「fan-out 点」と
   謳うが、実装は単一コンシューマのまま。イベントトリガ（10.3）着手前にここを是正する。
-- **仕様**: per-consumer カーソル方式へ移行する。案: `outbox_consumer(tenant_id, consumer, last_seq)` を置き、
-  各リレー（rag / workflow）が自分のカーソルから未処理を読み、消費後に自分のカーソルだけを進める
-  （outbox 行はすべてのコンシューマが通過した後に GC）。既存 RAG relay を新方式へ載せ替え、挙動不変を担保する。
+- **仕様**: **per-event × per-consumer の ack 方式**へ移行する（単純な `last_seq` カーソルは採らない）。
+  単調 seq のカーソルだけで前進させると、**並行書込で未コミットイベントを飛び越す**危険がある——txn A が小さい
+  seq を採るが未コミットのまま txn B が後の seq でコミットし、relay がカーソルを B まで進めると、後から
+  コミットした A（カーソル以下の seq）が**二度と配送されない**。これを避けるため次のいずれかを採る:
+  - **(a) 配送台帳（推奨）**: `outbox_delivery(tenant_id, event_id, consumer, delivered_at)` を置き、各リレーが
+    「自分がまだ配送していない outbox 行」を `NOT EXISTS (delivery for me)` で SKIP LOCKED claim → 配送 →
+    delivery 行を追記。コミット順・id 順に依存せず、遅れてコミットした行も次回スキャンで拾える。
+    outbox 行は全 consumer の delivery が揃った後に GC。
+  - **(b) 連続コミット済み prefix カーソル**: カーソルは「それ未満の seq がすべてコミット済み」の連続境界までしか
+    前進させない（gap 検出時は待つ）。実装が (a) より繊細なため、採るなら明示テストで保証する。
+  既存 RAG relay を選んだ方式へ載せ替え、挙動不変を担保する。
 - **受け入れ条件**:
   - [ ] 同一 storage 書込イベントが rag と workflow の**両方**に届く（片方の消費が他方を消さない）
+  - [ ] **並行書込で遅れてコミットしたイベントも取りこぼさない**（未コミット飛び越しの adversarial テスト）
   - [ ] 既存 RAG インジェストの挙動・テストが不変（純移行）
   - [ ] コンシューマ追加が outbox 生成側の変更なしに行える（fan-out 点として機能）
 
 | ID | タイトル | area | 依存 | Stage |
 |----|---------|------|------|-------|
-| P10-A0 | outbox の per-consumer fan-out 化（storage.write を rag と workflow の 2 消費者へ） | data | 3.11（済） | **A**（10.3 の前提） |
+| P10-A0 | outbox の per-consumer fan-out 化（storage.write を rag と workflow の 2 消費者へ） | data | 1.8, 2.8（済） | **A**（10.3 の前提） |
 | 10.0 | durable 共有基盤の切り出し（chat 3.11 の claim/リース/fencing/seq を共通クレート化） | data | 3.11（済） | **A** |
 | 10.1 | ワークフロー IR スキーマ＋artifact 化＋語彙照合検証 | data | 6.1（前倒し）／9.1・9.13 は 10.1b | **A**（10.1a）＋B（10.1b） |
 | 10.2 | run/step 永続化＋ワーカー（claim/リース/チェックポイント） | data | 10.0, 10.1a | **A** |
