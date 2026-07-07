@@ -158,7 +158,14 @@ pub(super) async fn checkpoint_and_advance(
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
-        append_event(&mut tx, tenant_id, run_id, RunEventKind::RunFailed, &Value::Null).await?;
+        append_event(
+            &mut tx,
+            tenant_id,
+            run_id,
+            RunEventKind::RunFailed,
+            &Value::Null,
+        )
+        .await?;
         tx.commit().await.map_err(map_db)?;
         return Ok(true);
     }

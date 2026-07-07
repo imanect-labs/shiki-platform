@@ -11,9 +11,7 @@ use uuid::Uuid;
 
 use super::graph::RunGraph;
 use super::model::{idempotency_key, RunStatus, StepStatus};
-use super::readiness::{
-    readiness_join, readiness_non_join, EdgeState, InEdge, Readiness,
-};
+use super::readiness::{readiness_join, readiness_non_join, EdgeState, InEdge, Readiness};
 use crate::vocab::{NodeType, RunEventKind};
 
 mod advance;

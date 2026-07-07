@@ -134,7 +134,8 @@ impl WorkflowWorker {
         let hb_fencing = claimed.fencing_token;
         let hb_lease = self.config.lease_secs;
         // リース期間の 1/3 間隔で延長（最低 1 秒）。
-        let hb_interval = std::time::Duration::from_secs(u64::try_from(hb_lease.max(3) / 3).unwrap_or(1));
+        let hb_interval =
+            std::time::Duration::from_secs(u64::try_from(hb_lease.max(3) / 3).unwrap_or(1));
         let heartbeat = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(hb_interval);
             ticker.tick().await; // 初回即時分を消費。
