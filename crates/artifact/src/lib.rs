@@ -15,6 +15,7 @@
 mod model;
 mod share;
 mod store;
+mod versions;
 
 pub use model::{Artifact, ArtifactKind, ArtifactRole, ArtifactVersion, VersionMeta};
 pub use store::{ArtifactStore, NewArtifact};
