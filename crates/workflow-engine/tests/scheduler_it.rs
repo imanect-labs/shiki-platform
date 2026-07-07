@@ -122,15 +122,18 @@ async fn schedule_fires_once_even_with_concurrent_ticks() {
 
     // 2 つの tick を同時に走らせる（2 インスタンス競走の模擬）。
     let (a, b) = tokio::join!(
-        store.tick_schedules(now, launcher.as_ref()),
-        store.tick_schedules(now, launcher.as_ref()),
+        store.tick_schedules(now, Some(&tenant), launcher.as_ref()),
+        store.tick_schedules(now, Some(&tenant), launcher.as_ref()),
     );
     let fired = a.unwrap() + b.unwrap();
     assert_eq!(fired, 1, "競走しても発火は 1 回（occurrence UNIQUE）");
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
 
     // 再 tick（クラッシュ後再起動の模擬）でも二重投入しない。
-    let again = store.tick_schedules(now, launcher.as_ref()).await.unwrap();
+    let again = store
+        .tick_schedules(now, Some(&tenant), launcher.as_ref())
+        .await
+        .unwrap();
     assert_eq!(again, 0, "同一 occurrence は再発火しない（冪等）");
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
 }
@@ -164,6 +167,7 @@ async fn disabled_workflow_does_not_fire() {
     let fired = store
         .tick_schedules(
             Utc.with_ymd_and_hms(2026, 7, 7, 0, 3, 0).unwrap(),
+            Some(&tenant),
             launcher.as_ref(),
         )
         .await

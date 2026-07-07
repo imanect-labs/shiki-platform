@@ -54,9 +54,13 @@ impl SchedulerStore {
     /// リーダーのみが呼ぶ前提。各 occurrence を **占有 TX（UNIQUE INSERT → run 起動）** で
     /// 冪等発火し、watermark を前進させる（クラッシュ再起動でも二重投入しない・PIT-31）。
     /// 発火した occurrence 数を返す。
+    ///
+    /// `tenant_scope` を渡すとそのテナントのトリガのみ tick する（tenant シャーディング・テスト分離）。
+    /// `None` は全テナント横断（既定のリーダー動作）。
     pub async fn tick_schedules(
         &self,
         now: DateTime<Utc>,
+        tenant_scope: Option<&str>,
         launcher: &dyn RunLauncher,
     ) -> Result<usize, SchedulerStoreError> {
         // enabled な registration の enabled な schedule トリガを引く。
@@ -65,8 +69,10 @@ impl SchedulerStore {
              FROM workflow_trigger t \
              JOIN workflow_registration r \
                ON r.tenant_id = t.tenant_id AND r.workflow_id = t.workflow_id \
-             WHERE t.kind = 'schedule' AND t.enabled AND r.status = 'enabled'",
+             WHERE t.kind = 'schedule' AND t.enabled AND r.status = 'enabled' \
+               AND (($1::text IS NULL) OR (t.tenant_id = $1))",
         )
+        .bind(tenant_scope)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
