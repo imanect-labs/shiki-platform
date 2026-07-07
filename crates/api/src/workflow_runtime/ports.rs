@@ -246,23 +246,33 @@ impl NodePorts for ProdNodePorts {
                 },
             )
             .await;
+        // exec の失敗は空成功にせず伝播する（destroy してから返す）。
+        let mut stream = match exec {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = sandbox.destroy(&handle).await;
+                return Err(PortError::unavailable(format!("sandbox exec: {e}")));
+            }
+        };
         let mut stdout = String::new();
         let mut exit_code = None;
-        if let Ok(mut stream) = exec {
-            while let Some(ev) = stream.next().await {
-                match ev {
-                    Ok(ExecEvent::Stdout(b)) => stdout.push_str(&String::from_utf8_lossy(&b)),
-                    Ok(ExecEvent::Exited { code }) => exit_code = Some(code),
-                    Ok(ExecEvent::LimitExceeded { kind, .. }) => {
-                        let _ = sandbox.destroy(&handle).await;
-                        return Err(PortError::new(
-                            "sandbox_limit",
-                            format!("サンドボックス上限超過: {kind:?}"),
-                            false,
-                        ));
-                    }
-                    _ => {}
+        while let Some(ev) = stream.next().await {
+            match ev {
+                Ok(ExecEvent::Stdout(b)) => stdout.push_str(&String::from_utf8_lossy(&b)),
+                Ok(ExecEvent::Exited { code }) => exit_code = Some(code),
+                Ok(ExecEvent::LimitExceeded { kind, .. }) => {
+                    let _ = sandbox.destroy(&handle).await;
+                    return Err(PortError::new(
+                        "sandbox_limit",
+                        format!("サンドボックス上限超過: {kind:?}"),
+                        false,
+                    ));
                 }
+                Err(e) => {
+                    let _ = sandbox.destroy(&handle).await;
+                    return Err(PortError::unavailable(format!("sandbox stream: {e}")));
+                }
+                _ => {}
             }
         }
         let _ = sandbox.destroy(&handle).await;
@@ -270,15 +280,12 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn http_send(&self, _ec: &ExecCtx, req: HttpSendReq) -> Result<HttpSendResp, PortError> {
-        // 宛先束縛照合は executor 済み。ここではリダイレクト方針に従い送信する。
-        let client = if req.follow_redirects {
-            self.http.clone()
-        } else {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(|e| PortError::unavailable(format!("http client: {e}")))?
-        };
+        // Stage A は常に非追従（executor が redirect を拒否する）。SSRF/内部 rebind を防ぐため
+        // auto-follow は使わない（`follow_redirects` が来ても Policy::none）。
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| PortError::unavailable(format!("http client: {e}")))?;
         let method = reqwest::Method::from_bytes(req.method.as_bytes())
             .map_err(|_| PortError::invalid("不正な HTTP メソッド"))?;
         let mut builder = client.request(method, &req.url);
@@ -291,16 +298,25 @@ impl NodePorts for ProdNodePorts {
         if let Some(ms) = req.timeout_ms {
             builder = builder.timeout(std::time::Duration::from_millis(ms));
         }
-        let resp = builder
+        let mut resp = builder
             .send()
             .await
             .map_err(|e| PortError::unavailable(format!("http 送信: {e}")))?;
         let status = resp.status().as_u16();
-        let body = resp
-            .bytes()
+        // 本文は上限まで**ストリーミング読み**する（巨大レスポンスの全量バッファで OOM しない）。
+        const MAX_BODY: usize = 8 * 1024 * 1024;
+        let mut body = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
             .await
             .map_err(|e| PortError::unavailable(format!("http 本文: {e}")))?
-            .to_vec();
+        {
+            if body.len() + chunk.len() > MAX_BODY {
+                body.extend_from_slice(&chunk[..MAX_BODY - body.len()]);
+                break;
+            }
+            body.extend_from_slice(&chunk);
+        }
         Ok(HttpSendResp { status, body })
     }
 

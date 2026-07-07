@@ -162,10 +162,10 @@ impl CapabilityNodeExecutor {
         headers.push(("Idempotency-Key".to_string(), ctx.idempotency_key.clone()));
 
         let body = resolve_field(params, "body", r).map(|v| as_bytes(&v));
-        let follow = resolve_field(params, "redirect", r)
-            .and_then(|v| as_string(&v))
-            .is_some_and(|s| s == "follow_stripped");
 
+        // Stage A は **常にリダイレクト非追従**（3xx は拒否）。`follow_stripped` は追従先の宛先束縛
+        // 再照合（各ホップの host ∈ binding）が要るため後続で実装するまで fail-closed で扱う
+        // （auto-follow は SSRF/内部 IP rebind の窓になるため絶対に有効化しない）。
         let resp = self
             .ports
             .http_send(
@@ -175,14 +175,13 @@ impl CapabilityNodeExecutor {
                     url,
                     headers,
                     body,
-                    follow_redirects: follow,
+                    follow_redirects: false,
                     timeout_ms: Some(self.http_timeout_ms),
                 },
             )
             .await?;
 
-        // リダイレクトは既定拒否（follow_stripped 未指定時）。
-        if !follow && redirect_denied(resp.status) {
+        if redirect_denied(resp.status) {
             self.audit(
                 &ec.tenant_id,
                 "http.request",
@@ -191,7 +190,7 @@ impl CapabilityNodeExecutor {
             );
             return Err(PortError::new(
                 "redirect_denied",
-                "リダイレクトは既定で拒否されます",
+                "リダイレクトは拒否されます（Stage A は非追従）",
                 false,
             ));
         }

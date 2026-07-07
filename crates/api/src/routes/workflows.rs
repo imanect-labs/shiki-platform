@@ -294,11 +294,15 @@ pub async fn start_workflow_run(
         .workflow_launcher
         .as_ref()
         .ok_or_else(|| ApiError::ServiceUnavailable("workflow 実行時が無効です".into()))?;
-    // start_interactive 内で workflows.get_latest の OpenFGA 認可を通る（権限なしは 403/404）。
+    // start_interactive 内で workflows.get_latest の OpenFGA 認可を通る。IR 取得失敗（権限なし/不在）は
+    // 存在秘匿のため 404 に写す（500 にしない）。
     let run_id = launcher
         .start_interactive(&ctx, id, &req.input)
         .await
-        .map_err(|e| ApiError::Internal(format!("run 起動: {e}")))?;
+        .map_err(|e| match e {
+            workflow_engine::run::LauncherError::Ir(_) => ApiError::NotFound,
+            other => ApiError::Internal(format!("run 起動: {other}")),
+        })?;
     Ok((StatusCode::ACCEPTED, Json(StartRunResponse { run_id })))
 }
 
@@ -321,15 +325,21 @@ pub async fn start_workflow_run(
 pub async fn get_workflow_run(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
-    Path((_id, run_id)): Path<(Uuid, Uuid)>,
+    trace: TraceIdExt,
+    Path((id, run_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<RunStatusResponse>, ApiError> {
     let runs = state
         .workflow_runs
         .as_ref()
         .ok_or_else(|| ApiError::ServiceUnavailable("workflow 実行時が無効です".into()))?;
-    // テナントスコープで run を引く（クロステナント漏洩を防ぐ）。
+    // ① ワークフロー {id} への閲覧権限を OpenFGA で検証（他人の run 履歴を覗けない）。
+    let meta = state.artifacts.get(&ctx, id, trace.as_deref()).await?;
+    if meta.kind != artifact::ArtifactKind::Workflow {
+        return Err(ApiError::NotFound);
+    }
+    // ② run を {id} 配下 ＋ テナントスコープで引く（別ワークフローの run_id を渡しても存在秘匿）。
     let status: RunStatus = runs
-        .run_status(&ctx.tenant_id, run_id)
+        .run_status_for_workflow(&ctx.tenant_id, id, run_id)
         .await
         .map_err(|e| ApiError::Internal(format!("run 状態: {e}")))?
         .ok_or(ApiError::NotFound)?;

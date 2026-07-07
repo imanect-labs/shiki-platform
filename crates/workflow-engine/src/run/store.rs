@@ -251,6 +251,28 @@ impl RunStore {
         Ok(s.and_then(|s| RunStatus::parse(&s)))
     }
 
+    /// 指定ワークフロー配下の run 状態のみ取得する（run→workflow を束ねて認可バイパスを防ぐ）。
+    ///
+    /// `(tenant_id, workflow_id, run_id)` で引き、run が別ワークフローのものなら `None`（存在秘匿）。
+    pub async fn run_status_for_workflow(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+        run_id: Uuid,
+    ) -> Result<Option<RunStatus>, RunStoreError> {
+        let s: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM workflow_run \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND run_id = $3",
+        )
+        .bind(tenant_id)
+        .bind(workflow_id)
+        .bind(run_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(s.and_then(|s| RunStatus::parse(&s)))
+    }
+
     /// run の全 step 状態を取得する（実行履歴・テスト検証）。
     pub async fn step_statuses(
         &self,

@@ -270,3 +270,35 @@ async fn gc_removes_only_fully_delivered_events() {
             .unwrap();
     assert_eq!(ledger_rows, 0, "outbox 削除で配送台帳も CASCADE 削除");
 }
+
+#[tokio::test]
+async fn register_consumer_is_one_time_only() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let node = Uuid::new_v4();
+    let consumer = format!("wf-once-{}", Uuid::new_v4().simple());
+
+    // 初回登録（バックログ無し）。
+    {
+        let mut tx = pool.begin().await.unwrap();
+        register_consumer(&mut tx, &consumer).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    // 登録後に到着した未配送イベント（サーバ停止中の到着を模す）。
+    let pending = insert_event(&pool, &tenant, node).await;
+
+    // 再起動を模した 2 回目の登録は **no-op**（未配送を配送済みにしない）。
+    {
+        let mut tx = pool.begin().await.unwrap();
+        let n = register_consumer(&mut tx, &consumer).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(n, 0, "2 回目の登録は fast-forward しない");
+    }
+    // pending は依然として配送される（取りこぼさない）。
+    assert!(
+        claim_mine(&pool, &consumer, &tenant)
+            .await
+            .contains(&pending),
+        "再起動後も未配送イベントを取りこぼさない"
+    );
+}

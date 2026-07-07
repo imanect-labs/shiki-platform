@@ -204,11 +204,26 @@ pub async fn mark_delivered(
 /// スナップショットに映らない**ため delivery が付かず、コミット後に正しく配送される（＝有効化以降の
 /// イベントのみ処理・未コミット飛び越しも起こさない）。冪等（`ON CONFLICT DO NOTHING`）。
 ///
-/// 起動時 wiring から consumer 有効化のたびに呼ぶ（既登録なら no-op）。返り値は刻んだ件数。
+/// 起動時 wiring から consumer 有効化のたびに呼べる（**初回登録時のみ** fast-forward）。
+///
+/// `outbox_consumer` 台帳に consumer 名を一度だけ記録し、初回だけ現バックログを配送済みに刻む。
+/// 2 回目以降（再起動）は no-op ＝ **停止中に到着した未配送イベントを取りこぼさない**。返り値は刻んだ件数。
 pub async fn register_consumer(
     conn: &mut PgConnection,
     consumer: &str,
 ) -> Result<u64, StorageError> {
+    // 初回登録か判定（RETURNING で挿入できたら初回）。
+    let first: Option<String> = sqlx::query_scalar(
+        "INSERT INTO outbox_consumer (name) VALUES ($1) \
+         ON CONFLICT (name) DO NOTHING RETURNING name",
+    )
+    .bind(consumer)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if first.is_none() {
+        // 既登録: fast-forward しない（未配送を温存）。
+        return Ok(0);
+    }
     let done = sqlx::query(
         "INSERT INTO outbox_delivery (consumer, event_id, tenant_id) \
          SELECT $1, o.id, o.tenant_id FROM storage_event_outbox o \
