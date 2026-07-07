@@ -23,12 +23,15 @@ pub async fn append_event<'e>(
     run.validate();
     ev.validate();
     let n = key.len();
+    // fencing チェックの run 行を **FOR UPDATE** で確保し、同一キーの追記を直列化する。
+    // これにより並行 appender（fenced 追記と unfenced backstop）が同じ max(seq) を読んで
+    // (key, seq) PK 衝突を起こすのを防ぎ、単調 seq／exactly-once を保つ（DB=truth）。
     let sql = format!(
         "INSERT INTO {evt} ({key_cols}, {seq}, {kind_col}, {payload_col}) \
          SELECT {key_vals}, \
                 coalesce((SELECT max({seq}) FROM {evt} WHERE {pred}), 0) + 1, \
                 ${k}, ${p} \
-         WHERE (SELECT {fencing} FROM {run_table} WHERE {pred}) = ${f} \
+         WHERE (SELECT {fencing} FROM {run_table} WHERE {pred} FOR UPDATE) = ${f} \
          RETURNING {seq}",
         evt = ev.table,
         key_cols = key.column_list(),
@@ -81,7 +84,7 @@ pub async fn append_event_unfenced<'e>(
                 coalesce((SELECT max({seq}) FROM {evt} WHERE {pred}), 0) + 1, \
                 ${k}, ${p} \
          WHERE EXISTS (SELECT 1 FROM {run_table} \
-                       WHERE {pred} AND {status} IN ({statuses})) \
+                       WHERE {pred} AND {status} IN ({statuses}) FOR UPDATE) \
          RETURNING {seq}",
         evt = ev.table,
         key_cols = key.column_list(),
