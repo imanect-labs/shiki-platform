@@ -42,19 +42,7 @@ impl ChatStore {
     ) {
         // Redis 購読（best-effort）。失敗しても DB replay で動作する。
         let mut on_message = match &self.redis {
-            Some(r) => match r.client.get_async_pubsub().await {
-                Ok(mut ps) => {
-                    if ps.subscribe(run_channel(run_id)).await.is_ok() {
-                        Some(ps.into_on_message())
-                    } else {
-                        None
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "redis subscribe failed; DB polling only");
-                    None
-                }
-            },
+            Some(r) => r.subscribe(&run_channel(run_id)).await,
             None => None,
         };
 

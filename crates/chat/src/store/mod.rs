@@ -16,18 +16,11 @@ pub use runs::{ClaimedRun, PostResult, CHAT_GENERATION_QUEUE};
 use std::sync::Arc;
 
 use authz::AuthzClient;
-use redis::aio::ConnectionManager;
+use durable::RedisPubSub;
 use sqlx::PgPool;
 use storage::audit::AuditRecorder;
 
 use crate::ChatError;
-
-/// Redis pub/sub（publish 用の多重接続＋subscribe 用のクライアント）。
-#[derive(Clone)]
-struct RedisPubSub {
-    manager: ConnectionManager,
-    client: redis::Client,
-}
 
 /// チャットのデータチョークポイント。全公開メソッドは第一引数に `&AuthContext` を取り、
 /// 内部で OpenFGA authz と監査を行う（アンビエント権限の排除）。
@@ -51,15 +44,11 @@ impl ChatStore {
     ) -> Result<Self, ChatError> {
         let audit = AuditRecorder::new(db.clone());
         let redis = match redis_url {
-            Some(url) => {
-                let client = redis::Client::open(url)
-                    .map_err(|e| ChatError::Internal(format!("redis open: {e}")))?;
-                let manager = client
-                    .get_connection_manager()
+            Some(url) => Some(
+                RedisPubSub::connect(url)
                     .await
-                    .map_err(|e| ChatError::Internal(format!("redis connect: {e}")))?;
-                Some(RedisPubSub { manager, client })
-            }
+                    .map_err(|e| ChatError::Internal(format!("redis connect: {e}")))?,
+            ),
             None => None,
         };
         Ok(ChatStore {
@@ -75,13 +64,7 @@ impl ChatStore {
         let Some(r) = &self.redis else {
             return;
         };
-        let channel = run_channel(run_id);
-        let mut conn = r.manager.clone();
-        if let Err(e) =
-            redis::AsyncCommands::publish::<_, _, ()>(&mut conn, &channel, payload).await
-        {
-            tracing::warn!(error = %e, run_id = %run_id, "redis publish failed (best-effort)");
-        }
+        r.publish_best_effort(&run_channel(run_id), payload).await;
     }
 }
 

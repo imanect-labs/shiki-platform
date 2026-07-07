@@ -8,11 +8,16 @@
 //!   通す（クラッシュ takeover ＋ゾンビ書込拒否）。
 //! - **Append-only Event Log**: [`append_stream_event`](ChatStore::append_stream_event) は
 //!   `(run_id, seq)` 単調 seq を真実のソースへ追記（exactly-once）し、Redis へ best-effort publish。
+//!
+//! claim/リース/fencing/追記のプリミティブは `crates/durable`（Task 10.0 で共通化）に
+//! 委譲する。SQL 意味は #82 の先行実装と同値であり、キュー・レーン・状態機械（queued/
+//! running/done/…の語彙）はチャット所有のまま（engine.md §1.2 の分担表）。
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
 use authz::{AuthContext, Relation};
+use durable::{EventTableSpec, Key, KeyValue, RunTableSpec};
 use serde_json::json;
 use sqlx::types::Json;
 use uuid::Uuid;
@@ -21,6 +26,30 @@ use crate::model::{Attachment, ContentBlock, RunStatus, StreamEvent, StreamEvent
 
 /// チャット生成ジョブのキュー名（jobq・専用レーン）。
 pub const CHAT_GENERATION_QUEUE: &str = "chat_generation";
+
+/// `generation_run` の durable テーブル記述子（migrations/0012_chat.sql の列に対応）。
+const RUN_SPEC: RunTableSpec = RunTableSpec {
+    table: "generation_run",
+    status_column: "status",
+    fencing_column: "fencing_token",
+    lease_column: "lease_until",
+    worker_column: "worker_id",
+    attempt_column: Some("attempt"),
+    updated_at_column: Some("updated_at"),
+    queued_status: "queued",
+    running_status: "running",
+};
+
+/// `generation_event` の durable テーブル記述子。
+const EVENT_SPEC: EventTableSpec = EventTableSpec {
+    table: "generation_event",
+    seq_column: "seq",
+    kind_column: "type",
+    payload_column: "payload",
+};
+
+/// run 行のキーカラム（chat は run_id 単独キー。workflow は tenant 複合キーで同じ形に乗る）。
+const RUN_KEY_COLUMNS: &[&str] = &["run_id"];
 
 /// `post_message` の結果（202 で返す）。
 #[derive(Debug, Clone)]
@@ -171,23 +200,18 @@ impl ChatStore {
         worker_id: &str,
         lease_secs: i64,
     ) -> Result<Option<ClaimedRun>, ChatError> {
-        let row: Option<ClaimedRun> = sqlx::query_as(
-            "UPDATE generation_run \
-             SET status = 'running', worker_id = $2, \
-                 lease_until = now() + ($3 || ' seconds')::interval, \
-                 fencing_token = fencing_token + 1, attempt = attempt + 1, updated_at = now() \
-             WHERE run_id = $1 \
-               AND (status = 'queued' OR (status = 'running' AND lease_until < now())) \
-             RETURNING run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
-                       fencing_token, cancel_requested",
+        let kv = [KeyValue::Uuid(run_id)];
+        durable::claim(
+            &self.db,
+            &RUN_SPEC,
+            &Key::new(RUN_KEY_COLUMNS, &kv),
+            worker_id,
+            lease_secs,
+            "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
+             fencing_token, cancel_requested",
         )
-        .bind(run_id)
-        .bind(worker_id)
-        .bind(lease_secs)
-        .fetch_optional(&self.db)
         .await
-        .map_err(map_db)?;
-        Ok(row)
+        .map_err(map_db)
     }
 
     /// リースを延長し、最新の cancel_requested を返す（ハートビート・ゾンビは fencing で弾く）。
@@ -198,19 +222,17 @@ impl ChatStore {
         fencing_token: i64,
         lease_secs: i64,
     ) -> Result<Option<bool>, ChatError> {
-        let cancel: Option<bool> = sqlx::query_scalar(
-            "UPDATE generation_run \
-             SET lease_until = now() + ($3 || ' seconds')::interval, updated_at = now() \
-             WHERE run_id = $1 AND fencing_token = $2 AND status = 'running' \
-             RETURNING cancel_requested",
+        let kv = [KeyValue::Uuid(run_id)];
+        durable::heartbeat(
+            &self.db,
+            &RUN_SPEC,
+            &Key::new(RUN_KEY_COLUMNS, &kv),
+            fencing_token,
+            lease_secs,
+            "cancel_requested",
         )
-        .bind(run_id)
-        .bind(fencing_token)
-        .bind(lease_secs)
-        .fetch_optional(&self.db)
         .await
-        .map_err(map_db)?;
-        Ok(cancel)
+        .map_err(map_db)
     }
 
     /// 生成イベントを append-only で追記する（単調 seq・exactly-once）＋Redis publish。
@@ -225,19 +247,16 @@ impl ChatStore {
     ) -> Result<Option<i64>, ChatError> {
         let payload = serde_json::to_value(event)
             .map_err(|e| ChatError::Internal(format!("event serialize: {e}")))?;
-        let seq: Option<i64> = sqlx::query_scalar(
-            "INSERT INTO generation_event (run_id, seq, type, payload) \
-             SELECT $1, \
-                    coalesce((SELECT max(seq) FROM generation_event WHERE run_id = $1), 0) + 1, \
-                    $2, $3 \
-             WHERE (SELECT fencing_token FROM generation_run WHERE run_id = $1) = $4 \
-             RETURNING seq",
+        let kv = [KeyValue::Uuid(run_id)];
+        let seq = durable::append_event(
+            &self.db,
+            &RUN_SPEC,
+            &EVENT_SPEC,
+            &Key::new(RUN_KEY_COLUMNS, &kv),
+            event.tag(),
+            &payload,
+            fencing_token,
         )
-        .bind(run_id)
-        .bind(event.tag())
-        .bind(Json(&payload))
-        .bind(fencing_token)
-        .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
 
@@ -265,16 +284,16 @@ impl ChatStore {
         last_error: Option<&str>,
     ) -> Result<bool, ChatError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        let message_id: Option<Uuid> = sqlx::query_scalar(
-            "UPDATE generation_run \
-             SET status = $3, last_error = $4, lease_until = NULL, updated_at = now() \
-             WHERE run_id = $1 AND fencing_token = $2 RETURNING message_id",
+        let kv = [KeyValue::Uuid(run_id)];
+        let message_id: Option<Uuid> = durable::fenced_finalize(
+            &mut *tx,
+            &RUN_SPEC,
+            &Key::new(RUN_KEY_COLUMNS, &kv),
+            fencing_token,
+            status.as_str(),
+            &[("last_error", KeyValue::OptText(last_error))],
+            "message_id",
         )
-        .bind(run_id)
-        .bind(fencing_token)
-        .bind(status.as_str())
-        .bind(last_error)
-        .fetch_optional(&mut *tx)
         .await
         .map_err(map_db)?;
         let Some(message_id) = message_id else {
@@ -358,21 +377,18 @@ impl ChatStore {
         run_id: Uuid,
         from_seq: i64,
     ) -> Result<Vec<StreamEvent>, ChatError> {
-        let rows: Vec<(i64, Json<StreamEventKind>)> = sqlx::query_as(
-            "SELECT seq, payload FROM generation_event \
-             WHERE run_id = $1 AND seq > $2 ORDER BY seq",
+        let kv = [KeyValue::Uuid(run_id)];
+        let rows: Vec<(i64, StreamEventKind)> = durable::replay_events(
+            &self.db,
+            &EVENT_SPEC,
+            &Key::new(RUN_KEY_COLUMNS, &kv),
+            from_seq,
         )
-        .bind(run_id)
-        .bind(from_seq)
-        .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
         Ok(rows
             .into_iter()
-            .map(|(seq, payload)| StreamEvent {
-                seq,
-                event: payload.0,
-            })
+            .map(|(seq, event)| StreamEvent { seq, event })
             .collect())
     }
 
@@ -386,19 +402,17 @@ impl ChatStore {
         };
         let payload = serde_json::to_value(&event)
             .map_err(|e| ChatError::Internal(format!("event serialize: {e}")))?;
-        // 端末でない run にだけ Error を追記（次 seq）。
-        let seq: Option<i64> = sqlx::query_scalar(
-            "INSERT INTO generation_event (run_id, seq, type, payload) \
-             SELECT $1, \
-                    coalesce((SELECT max(seq) FROM generation_event WHERE run_id = $1), 0) + 1, \
-                    'error', $2 \
-             WHERE EXISTS (SELECT 1 FROM generation_run \
-                           WHERE run_id = $1 AND status IN ('queued', 'running')) \
-             RETURNING seq",
+        // 端末でない run にだけ Error を追記（次 seq・fencing 無視の backstop）。
+        let kv = [KeyValue::Uuid(run_id)];
+        let seq = durable::append_event_unfenced(
+            &self.db,
+            &RUN_SPEC,
+            &EVENT_SPEC,
+            &Key::new(RUN_KEY_COLUMNS, &kv),
+            event.tag(),
+            &payload,
+            &["queued", "running"],
         )
-        .bind(run_id)
-        .bind(Json(&payload))
-        .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
 
