@@ -193,6 +193,26 @@ impl DelegationStore {
         Ok(())
     }
 
+    /// enabled な registration の (org, enabled_version) を返す（enabled でなければ None）。
+    ///
+    /// schedule/event run は**有効化した版と org** で実行する（最新版や既定 org でなく）。
+    pub async fn registration_info(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+    ) -> Result<Option<(String, i64)>, DelegationError> {
+        let row: Option<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT org, enabled_version FROM workflow_registration \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND status = 'enabled'",
+        )
+        .bind(tenant_id)
+        .bind(workflow_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(row.and_then(|(org, ver)| ver.map(|v| (org, v))))
+    }
+
     /// run 開始時の委譲チェック（engine.md §6.2・fail-closed）。
     ///
     /// 3 条件（registration enabled・委譲有効・declared ⊆ consented）を満たさなければ

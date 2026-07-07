@@ -18,27 +18,21 @@ use crate::scheduler::RunLauncher;
 use crate::store::WorkflowStore;
 
 /// 委譲チェック付き run 起動。DelegationStore + WorkflowStore + RunStore を束ねる。
+///
+/// schedule/event では run の org は **registration.org** を使う（enable 時に固定した org）。
 #[derive(Clone)]
 pub struct WorkflowRunLauncher {
     delegation: DelegationStore,
     workflows: WorkflowStore,
     runs: RunStore,
-    /// tenant → org の解決（run のスコープ最上位）。schedule/event では registration.org を使う。
-    org_default: String,
 }
 
 impl WorkflowRunLauncher {
-    pub fn new(
-        delegation: DelegationStore,
-        workflows: WorkflowStore,
-        runs: RunStore,
-        org_default: impl Into<String>,
-    ) -> Self {
+    pub fn new(delegation: DelegationStore, workflows: WorkflowStore, runs: RunStore) -> Self {
         WorkflowRunLauncher {
             delegation,
             workflows,
             runs,
-            org_default: org_default.into(),
         }
     }
 
@@ -66,6 +60,7 @@ impl WorkflowRunLauncher {
                 workflow_id,
                 version,
                 "interactive",
+                None,
                 &ctx.principal.id,
                 input,
                 &ir_json,
@@ -82,16 +77,26 @@ impl WorkflowRunLauncher {
         tenant_id: &str,
         workflow_id: Uuid,
         trigger_kind: &str,
+        trigger_id: &str,
     ) -> Result<Option<Uuid>, LauncherError> {
-        // workflow プリンシパルの AuthContext で IR を読む（enable 時に self-viewer 付与済み）。
-        let wf_ctx = AuthContext::for_workflow(
-            tenant_id.to_string(),
-            self.org_default.clone(),
-            &workflow_id.to_string(),
-        );
+        // registration から **有効化バージョンと org** を取る（enable 時に固定した版・org で実行する）。
+        // 未登録/未有効化なら run を作らない。
+        let Some((org, enabled_version)) = self
+            .delegation
+            .registration_info(tenant_id, workflow_id)
+            .await
+            .map_err(|e| LauncherError::Delegation(format!("{e:?}")))?
+        else {
+            return Ok(None);
+        };
+
+        // workflow プリンシパルの AuthContext（registration の org）で **enabled_version の IR** を読む。
+        // 最新版でなく有効化した版を実行し、未同意の新版が schedule/event で走るのを防ぐ。
+        let wf_ctx =
+            AuthContext::for_workflow(tenant_id.to_string(), org.clone(), &workflow_id.to_string());
         let (version, ir) = self
             .workflows
-            .get_latest(&wf_ctx, workflow_id, None)
+            .get_version(&wf_ctx, workflow_id, enabled_version, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
 
@@ -113,10 +118,11 @@ impl WorkflowRunLauncher {
             .runs
             .create_run(
                 tenant_id,
-                &self.org_default,
+                &org,
                 workflow_id,
                 version,
                 trigger_kind,
+                Some(trigger_id),
                 &workflow_id.to_string(),
                 &Value::Null,
                 &ir_json,
@@ -135,15 +141,18 @@ impl RunLauncher for WorkflowRunLauncher {
         tenant_id: &str,
         workflow_id: Uuid,
         trigger_kind: &str,
-        _trigger_id: &str,
+        trigger_id: &str,
     ) -> Option<Uuid> {
         match self
-            .launch_delegated(tenant_id, workflow_id, trigger_kind)
+            .launch_delegated(tenant_id, workflow_id, trigger_kind, trigger_id)
             .await
         {
             Ok(run_id) => run_id,
+            // 一時障害（IR 取得/DB/OpenFGA）は None を返すが、occurrence の run_id は NULL のまま
+            // 残るため次 tick で再試行される（scheduler の run_id NULL 再試行・delegation-invalid は
+            // registration suspend で再発火しない＝両者は自然に区別される）。
             Err(e) => {
-                tracing::warn!(error = %e, tenant = tenant_id, "run 起動に失敗");
+                tracing::warn!(error = %e, tenant = tenant_id, "run 起動に失敗（次 tick で再試行）");
                 None
             }
         }

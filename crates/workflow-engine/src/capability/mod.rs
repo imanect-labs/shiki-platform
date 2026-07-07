@@ -52,16 +52,30 @@ pub fn effective_scopes(declared: &[String], delegated: &[String]) -> BTreeSet<S
         .collect()
 }
 
+/// スコープ不要の内部制御 API（明示許可・これ以外の未マップ API は fail-closed で拒否）。
+/// llm.invoke / agent.invoke は内部推論（外部到達は http.egress・データ到達は storage/rag で縛る）。
+const SCOPE_FREE_APIS: &[&str] = &[
+    "control.branch",
+    "control.switch",
+    "control.join",
+    "control.map",
+    "control.wait",
+    "llm.invoke",
+    "agent.invoke",
+];
+
 /// 能力 API に必要なスコープが実効スコープに含まれるか判定する（scope 天井）。
 ///
 /// `api` から必要スコープを引き（[`Scope::for_api`]）、実効集合に無ければ `OutOfScope`。
+/// **未マップ API は fail-closed で拒否**する（明示許可した制御 API のみスコープ不要）。
 #[must_use]
 pub fn check_scope_ceiling(api: &str, effective: &BTreeSet<String>) -> ScopeCeiling {
     match Scope::for_api(api) {
         Some(required) if effective.contains(required.as_str()) => ScopeCeiling::Allowed,
-        Some(_) => ScopeCeiling::Denied(DenyReason::OutOfScope),
-        // スコープ不要の内部制御 api（control.* 等）は天井対象外。
-        None => ScopeCeiling::Allowed,
+        // 明示許可した制御/内部 API のみスコープ不要。未知の API は天井をすり抜けさせず拒否する。
+        None if SCOPE_FREE_APIS.contains(&api) => ScopeCeiling::Allowed,
+        // 必要スコープ未充足、または未マップ API は fail-closed で拒否。
+        Some(_) | None => ScopeCeiling::Denied(DenyReason::OutOfScope),
     }
 }
 

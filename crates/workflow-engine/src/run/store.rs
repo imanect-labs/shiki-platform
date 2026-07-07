@@ -74,6 +74,9 @@ impl RunStore {
     }
 
     /// run を作成し本体ノードを一括実体化する（root=ready・他=pending・run.started 追記）。
+    ///
+    /// `trigger_id` は発火元トリガ（schedule/event の実体化トリガ id・interactive は None）。run 履歴の
+    /// リプレイ/監査/キャンセルがどのトリガ由来か辿れるようにする。
     #[allow(clippy::too_many_arguments)]
     pub async fn create_run(
         &self,
@@ -82,6 +85,7 @@ impl RunStore {
         workflow_id: Uuid,
         version: i64,
         trigger_kind: &str,
+        trigger_id: Option<&str>,
         principal: &str,
         input: &Value,
         ir_snapshot: &Value,
@@ -90,15 +94,16 @@ impl RunStore {
         let mut tx = self.db.begin().await.map_err(map_db)?;
         let run_id: Uuid = sqlx::query_scalar(
             "INSERT INTO workflow_run \
-             (tenant_id, org, workflow_id, version, trigger_kind, principal, input, ir_snapshot, \
-              status, started_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running', now()) RETURNING run_id",
+             (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, input, \
+              ir_snapshot, status, started_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'running', now()) RETURNING run_id",
         )
         .bind(tenant_id)
         .bind(org)
         .bind(workflow_id)
         .bind(version)
         .bind(trigger_kind)
+        .bind(trigger_id)
         .bind(principal)
         .bind(Json(input))
         .bind(Json(ir_snapshot))

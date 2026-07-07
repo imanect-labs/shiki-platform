@@ -11,10 +11,12 @@ use sqlx::PgPool;
 /// journal 参照の結果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JournalDecision {
-    /// 未記録。副作用を実行してよい（実行後 [`EffectJournal::record`]）。
+    /// **予約に成功**。副作用を実行してよい（実行後 [`EffectJournal::record`]）。
     Proceed,
     /// 記録済み。副作用は実行せず記録結果を返す（no-op）。
     AlreadyDone(Value),
+    /// 別ワーカーが予約済みでまだ結果未確定（実行中）。副作用を**実行しない**（二重送信を防ぐ）。
+    InProgress,
     /// 同一キーで別の操作（digest 不一致）。permanent エラーにする。
     DigestMismatch,
 }
@@ -72,14 +74,35 @@ impl EffectJournal {
         EffectJournal { db }
     }
 
-    /// 副作用実行の前に問い合わせる（未記録=Proceed / 記録済み=AlreadyDone / 別操作=DigestMismatch）。
+    /// 副作用実行の前に**アトミックに予約**する（外部副作用の at-most-once の要）。
+    ///
+    /// `INSERT ... ON CONFLICT DO NOTHING` で行を占有する。勝者だけ `Proceed`（副作用を実行）。
+    /// 競合時は既存行を見て、digest 不一致=`DigestMismatch`・結果あり=`AlreadyDone`・結果未確定=
+    /// `InProgress`（別ワーカー実行中＝二重送信しない）。リース takeover で 2 ワーカーが同 step に
+    /// 入っても、この予約が 1 つに絞るため副作用は高々 1 回（PIT-31）。
     pub async fn check(
         &self,
         tenant_id: &str,
         idempotency_key: &str,
         digest: &str,
     ) -> Result<JournalDecision, JournalError> {
-        let row: Option<(String, Value)> = sqlx::query_as(
+        // 予約 INSERT（result_summary=NULL）。勝てば 1 行返る。
+        let won: Option<bool> = sqlx::query_scalar(
+            "INSERT INTO effect_journal (tenant_id, idempotency_key, op_digest) \
+             VALUES ($1, $2, $3) ON CONFLICT (tenant_id, idempotency_key) DO NOTHING \
+             RETURNING true",
+        )
+        .bind(tenant_id)
+        .bind(idempotency_key)
+        .bind(digest)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        if won.is_some() {
+            return Ok(JournalDecision::Proceed);
+        }
+        // 競合: 既存行の digest と結果を見る。
+        let row: Option<(String, Option<Value>)> = sqlx::query_as(
             "SELECT op_digest, result_summary FROM effect_journal \
              WHERE tenant_id = $1 AND idempotency_key = $2",
         )
@@ -89,15 +112,16 @@ impl EffectJournal {
         .await
         .map_err(map_db)?;
         match row {
-            None => Ok(JournalDecision::Proceed),
             Some((d, _)) if d != digest => Ok(JournalDecision::DigestMismatch),
-            Some((_, summary)) => Ok(JournalDecision::AlreadyDone(summary)),
+            Some((_, Some(summary))) => Ok(JournalDecision::AlreadyDone(summary)),
+            Some((_, None)) => Ok(JournalDecision::InProgress),
+            None => Ok(JournalDecision::Proceed), // 直前に削除された稀ケースは再挑戦。
         }
     }
 
-    /// 副作用実行の**後**に記録する（同一 TX で書けない外部副作用向けの最終記録）。
+    /// 副作用実行の**後**に予約行へ結果を書く（レダクト済みを渡すこと）。
     ///
-    /// UNIQUE 競合（別ワーカーが先に記録）時は既存を尊重し何もしない。記録結果はレダクト済みを渡すこと。
+    /// 予約（check の Proceed）に対応する UPDATE。行が無ければ（予約無し呼び出し）INSERT で補う。
     pub async fn record(
         &self,
         tenant_id: &str,
@@ -107,7 +131,9 @@ impl EffectJournal {
     ) -> Result<(), JournalError> {
         sqlx::query(
             "INSERT INTO effect_journal (tenant_id, idempotency_key, op_digest, result_summary) \
-             VALUES ($1, $2, $3, $4) ON CONFLICT (tenant_id, idempotency_key) DO NOTHING",
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (tenant_id, idempotency_key) \
+               DO UPDATE SET result_summary = COALESCE(effect_journal.result_summary, $4)",
         )
         .bind(tenant_id)
         .bind(idempotency_key)
