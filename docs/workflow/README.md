@@ -90,8 +90,8 @@ flowchart LR
 | 10.14 | 実行履歴 UI＋Observability | engine.md §3, §11 |
 | 10.15 | first-party skill 初期セット | ir.md §7 ／ script.md §6 ／ [miniapp-platform.md](../miniapp-platform.md) §5 |
 
-> 📌 **部分前倒し（2026-07-07・#121）**: 10.0（durable 切り出し）＋10.1a〜10.10 のエンジン核心は
-> **Stage A として前倒し着手**（前提は 6.1 の先行実施のみ）。10.11〜10.15 と各タスクの b 側
+> 📌 **部分前倒し（2026-07-07・#121）**: P10-A0（outbox fan-out）＋10.0（durable 切り出し）＋10.1a〜10.10 のエンジン核心は
+> **Stage A として前倒し着手**（前提は 6.1 の先行実施＋P10-A0＝outbox の per-consumer fan-out 化）。10.11〜10.15 と各タスクの b 側
 > （skill 照合・同意 UI・data/notify ノード・UI 群）は Stage B。分割の正本は
 > [roadmap phase-10.md](../roadmap/phase-10.md) 冒頭の「部分前倒し」節。
 

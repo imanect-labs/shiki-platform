@@ -28,8 +28,8 @@
 >   **前提**として ①[Phase 6 Task 6.1（artifact 共通枠）を先行実施**する（依存 3.7 は充足済み。
 >   暫定テーブルで作って後で移行する二重実装を避ける）②**outbox の per-consumer fan-out 化**（下記 P10-A0）。
 > - **Stage B（Phase 6/9 の該当タスク合流後）**: 10.1b・10.4b・10.6b・10.11・10.12・10.13・10.14・10.15。
-> - **Stage A の DoD**: API 経由で IR を保存（**V1/V2/V3/V5/V6/V7 検証付き**・V4 の skill 照合と、V4 の secret 照合の
->   有効化は 10.9 完了後）でき、schedule／イベント（storage.write）／対話（API 起動）の 3 種トリガで run が実行され、
+> - **Stage A の DoD**: API 経由で IR を保存（**V1/V2/V3/V5/V6/V7 検証付き**。V4 のうち **secret 照合は 10.9 完了後に
+>   有効化**、**skill 照合は Stage B（10.1b）**）でき、schedule／イベント（storage.write）／対話（API 起動）の 3 種トリガで run が実行され、
 >   script・制御・storage/rag・AI 2 種・http.request・script→workflow.start の各ノードがステップリトライ・冪等キー・
 >   委譲チェック（run 開始時＋棚卸し）付きで動き、run/step が監査・OTel に乗る。**UI（dnd・実行履歴）・skill・
 >   data 系ノードは含まない**（Stage B）。V3（ワークフロー語彙の閉じた集合照合＝ハルシネーション境界）は
@@ -58,7 +58,7 @@
 | 10.0 | durable 共有基盤の切り出し（chat 3.11 の claim/リース/fencing/seq を共通クレート化） | data | 3.11（済） | **A** |
 | 10.1 | ワークフロー IR スキーマ＋artifact 化＋語彙照合検証 | data | 6.1（前倒し）／9.1・9.13 は 10.1b | **A**（10.1a）＋B（10.1b） |
 | 10.2 | run/step 永続化＋ワーカー（claim/リース/チェックポイント） | data | 10.0, 10.1a | **A** |
-| 10.3 | トリガ: スケジューラ（cron・リーダーリース）＋イベントマッチング（outbox） | data | 10.2 | **A**＋B（event source: A=storage.write / B=data 系・9.10 後） |
+| 10.3 | トリガ: スケジューラ（cron・リーダーリース）＋イベントマッチング（outbox） | data | 10.2, **P10-A0** | **A**＋B（event source: A=storage.write / B=data 系・9.10 後） |
 | 10.4 | 実行主体・委譲モデル（workflow プリンシパル・同意フロー・fail-closed 停止） | auth | 10.2／9.13 は 10.4b | **A**（10.4a）＋B（10.4b） |
 | 10.5 | 制御ノード（分岐/並列/join/待機）＋ステップリトライ＋concurrency/rate limit | data | 10.2 | **A** |
 | 10.6 | 能力ノード（storage/data/rag/notify）＋AI ノード2種＋ノード設定パネル契約 | agent | 10.2, 5.1※／9.8・9.10 は 10.6b | **A**（10.6a）＋B（10.6b） |
