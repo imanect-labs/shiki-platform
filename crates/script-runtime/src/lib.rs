@@ -14,6 +14,7 @@ pub mod compile;
 pub mod engine;
 pub mod frames;
 pub mod host;
+mod runtime_io;
 pub mod server;
 mod wasi_stub;
 

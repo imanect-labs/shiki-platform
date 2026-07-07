@@ -15,10 +15,14 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::Value;
-use wasmtime::{Caller, Config, Engine, Instance, Linker, Memory, Module, Store};
+use wasmtime::{Caller, Config, Engine, Instance, Linker, Module, Store};
 
 use crate::frames::{FrameError, FrameValidator};
 use crate::host::{HostCall, HostResponse};
+use crate::runtime_io::{
+    classify_trap, guest_alloc, guest_dealloc, read_mem, read_mem_caller, unpack, write_mem,
+    write_response,
+};
 
 /// 埋め込みゲスト wasm（scripts/build-qjs-guest.sh で再現ビルドし vendor したもの）。
 pub const GUEST_WASM: &[u8] = include_bytes!("../assets/shiki_qjs_guest.wasm");
@@ -231,8 +235,8 @@ impl ScriptEngine {
 /// Store が持つホスト側状態。
 pub(crate) struct HostState {
     validator: FrameValidator,
-    logs: Vec<String>,
-    frame_violation: Option<String>,
+    pub(crate) logs: Vec<String>,
+    pub(crate) frame_violation: Option<String>,
     limiter: MemLimiter,
     /// 能力呼び出しの委譲先（gRPC 往復 or テスト直呼び）。
     host_fn: HostFn,
@@ -366,188 +370,5 @@ impl HostState {
     }
     fn validator_next_seq(&self) -> u64 {
         self.validator.peek_next_seq()
-    }
-}
-
-// --- 線形メモリ ヘルパ（Store 版と Caller 版） ---
-
-fn guest_alloc(
-    store: &mut Store<HostState>,
-    instance: &Instance,
-    len: u32,
-) -> Result<u32, wasmtime::Error> {
-    let alloc = instance.get_typed_func::<u32, u32>(&mut *store, "alloc")?;
-    alloc.call(&mut *store, len)
-}
-
-fn guest_dealloc(
-    store: &mut Store<HostState>,
-    instance: &Instance,
-    ptr: u32,
-    len: u32,
-) -> Result<(), wasmtime::Error> {
-    let dealloc = instance.get_typed_func::<(u32, u32), ()>(&mut *store, "dealloc")?;
-    dealloc.call(&mut *store, (ptr, len))
-}
-
-fn write_mem(
-    store: &mut Store<HostState>,
-    memory: &Memory,
-    ptr: u32,
-    bytes: &[u8],
-) -> Result<(), wasmtime::Error> {
-    memory
-        .write(store, ptr as usize, bytes)
-        .map_err(|e| wasmtime::Error::msg(format!("mem write: {e}")))
-}
-
-fn read_mem(
-    store: &mut Store<HostState>,
-    memory: &Memory,
-    ptr: u32,
-    len: u32,
-) -> Result<Vec<u8>, wasmtime::Error> {
-    let mut buf = vec![0u8; len as usize];
-    memory
-        .read(store, ptr as usize, &mut buf)
-        .map_err(|e| wasmtime::Error::msg(format!("mem read: {e}")))?;
-    Ok(buf)
-}
-
-fn read_mem_caller(
-    caller: &mut Caller<'_, HostState>,
-    memory: &Memory,
-    ptr: u32,
-    len: u32,
-) -> Result<Vec<u8>, wasmtime::Error> {
-    if len as usize > crate::frames::MAX_ARGS_BYTES {
-        return Err(wasmtime::Error::msg("host call too large"));
-    }
-    let mut buf = vec![0u8; len as usize];
-    memory
-        .read(&mut *caller, ptr as usize, &mut buf)
-        .map_err(|e| wasmtime::Error::msg(format!("mem read: {e}")))?;
-    Ok(buf)
-}
-
-/// 応答をゲスト alloc で確保した領域へ書き、packed ptr/len を返す（0 は失敗）。
-fn write_response(caller: &mut Caller<'_, HostState>, memory: &Memory, bytes: &[u8]) -> u64 {
-    let Some(alloc) = caller
-        .get_export("alloc")
-        .and_then(wasmtime::Extern::into_func)
-    else {
-        return 0;
-    };
-    let Ok(alloc) = alloc.typed::<u32, u32>(&*caller) else {
-        return 0;
-    };
-    let Ok(ptr) = alloc.call(&mut *caller, bytes.len() as u32) else {
-        return 0;
-    };
-    if memory.write(&mut *caller, ptr as usize, bytes).is_err() {
-        return 0;
-    }
-    (u64::from(ptr) << 32) | (bytes.len() as u64)
-}
-
-fn unpack(packed: u64) -> (u32, u32) {
-    (
-        ((packed >> 32) & 0xffff_ffff) as u32,
-        (packed & 0xffff_ffff) as u32,
-    )
-}
-
-/// トラップを中断理由へ分類する（fuel/epoch/memory/frame/trap）。
-fn classify_trap(store: &mut Store<HostState>, e: &wasmtime::Error) -> ExecOutcome {
-    // フレーム違反が記録されていれば最優先（実行破棄・INV-4）。
-    if let Some(v) = store.data().frame_violation.clone() {
-        return ExecOutcome::terminated(Termination::FrameViolation(v), store);
-    }
-    let msg = format!("{e}");
-    let termination = if let Some(trap) = e.downcast_ref::<wasmtime::Trap>() {
-        match trap {
-            wasmtime::Trap::OutOfFuel => Termination::Fuel,
-            wasmtime::Trap::Interrupt => Termination::Epoch,
-            _ => Termination::Trap(msg.clone()),
-        }
-    } else if msg.contains("out of fuel") || msg.contains("fuel") {
-        Termination::Fuel
-    } else if msg.contains("epoch") || msg.contains("interrupt") {
-        Termination::Epoch
-    } else if msg.contains("memory") || msg.contains("grow") {
-        Termination::Memory
-    } else {
-        Termination::Trap(msg)
-    };
-    ExecOutcome::terminated(termination, store)
-}
-
-impl ExecOutcome {
-    fn trap(msg: String) -> Self {
-        ExecOutcome {
-            ok: false,
-            value: None,
-            error: Some((msg.clone(), "internal".into(), false)),
-            termination: Termination::Trap(msg),
-            logs: Vec::new(),
-        }
-    }
-
-    fn terminated(termination: Termination, store: &mut Store<HostState>) -> Self {
-        let logs = std::mem::take(&mut store.data_mut().logs);
-        let msg = match &termination {
-            Termination::Fuel => "fuel exhausted".to_string(),
-            Termination::Epoch => "time limit exceeded".to_string(),
-            Termination::Memory => "memory limit exceeded".to_string(),
-            Termination::FrameViolation(v) => format!("frame violation: {v}"),
-            Termination::Cancelled => "cancelled".to_string(),
-            Termination::Trap(m) => m.clone(),
-            Termination::Completed => "completed".to_string(),
-        };
-        ExecOutcome {
-            ok: false,
-            value: None,
-            error: Some((msg, "resource".into(), false)),
-            termination,
-            logs,
-        }
-    }
-
-    fn from_envelope(envelope: &str, store: &mut Store<HostState>) -> Self {
-        let logs = std::mem::take(&mut store.data_mut().logs);
-        let parsed: Value = serde_json::from_str(envelope).unwrap_or(Value::Null);
-        let ok = parsed.get("ok").and_then(Value::as_bool).unwrap_or(false);
-        if ok {
-            ExecOutcome {
-                ok: true,
-                value: Some(parsed.get("value").cloned().unwrap_or(Value::Null)),
-                error: None,
-                termination: Termination::Completed,
-                logs,
-            }
-        } else {
-            let err = parsed.get("error");
-            let message = err
-                .and_then(|e| e.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("script failed")
-                .to_string();
-            let code = err
-                .and_then(|e| e.get("code"))
-                .and_then(Value::as_str)
-                .unwrap_or("internal")
-                .to_string();
-            let retryable = err
-                .and_then(|e| e.get("retryable"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            ExecOutcome {
-                ok: false,
-                value: None,
-                error: Some((message, code, retryable)),
-                termination: Termination::Completed,
-                logs,
-            }
-        }
     }
 }
