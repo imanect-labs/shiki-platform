@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+// shiki script-runtime の gRPC 契約（shiki-server ⇄ 非特権 script-runtime プロセス）。
+// UDS 上の双方向ストリーム。script-runtime は資格情報・シークレット・AuthContext を
+// 一切持たず、HostCall フレームで「どの api をどのペイロードで呼びたいか」を伝えるだけ
+// （実際の認可・実行は server 側・script.md §5・PIT-35）。
+package shiki.script_runtime.v1;
+
+// 実行の双方向ストリーム。1 ストリーム = 1 script 実行。
+service ScriptRuntime {
+  rpc Execute(stream ServerToRuntime) returns (stream RuntimeToServer);
+}
+
+// server → runtime。
+message ServerToRuntime {
+  oneof msg {
+    ExecStart start = 1;
+    HostCallResult host_call_result = 2;
+    Cancel cancel = 3;
+  }
+}
+
+// runtime → server。
+message RuntimeToServer {
+  oneof msg {
+    HostCall host_call = 1;
+    Log log = 2;
+    ExecResult result = 3;
+  }
+}
+
+// 実行開始。**資格情報・シークレット・AuthContext は含まない**（script.md §5.2）。
+message ExecStart {
+  string exec_id = 1;
+  // swc で JS へ変換済みのソース（コンパイルは server 側）。
+  string compiled_js = 2;
+  // main(input) に渡す入力 JSON。
+  string input_json = 3;
+  Limits limits = 4;
+}
+
+// リソース上限（ノード設定は縮小のみ・script.md §4.3）。
+message Limits {
+  uint64 fuel = 1;
+  uint32 memory_bytes = 2;
+  uint32 epoch_deadline_ms = 3;
+  uint32 max_host_calls = 4;
+}
+
+// ゲストからの能力呼び出し（同期・深さ 1）。
+message HostCall {
+  string exec_id = 1;
+  // 実行内で単調増加する連番（冪等キー派生・フレーム検証）。
+  uint64 seq = 2;
+  // 能力 api 名（閉じた集合・server 側で照合）。
+  string api = 3;
+  // 引数 JSON。
+  string args_json = 4;
+}
+
+// 能力呼び出しの結果（server → runtime）。
+message HostCallResult {
+  string exec_id = 1;
+  uint64 seq = 2;
+  bool ok = 3;
+  // ok=true のとき値 JSON、ok=false のときエラー JSON。
+  string payload_json = 4;
+}
+
+// ゲストの log 出力（Shiki.log.*）。
+message Log {
+  string exec_id = 1;
+  string level = 2;
+  string message = 3;
+}
+
+// 実行結果。
+message ExecResult {
+  string exec_id = 1;
+  bool ok = 2;
+  // ok=true のとき main 戻り値 JSON。
+  string value_json = 3;
+  // ok=false のときエラー。
+  string error_message = 4;
+  string error_code = 5;
+  bool retryable = 6;
+  // 中断理由（fuel/memory/epoch/frame_violation/cancelled 等）。
+  string termination = 7;
+}
+
+// 実行キャンセル（epoch interruption で強制中断）。
+message Cancel {
+  string exec_id = 1;
+}
