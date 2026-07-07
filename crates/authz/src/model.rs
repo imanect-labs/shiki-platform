@@ -317,6 +317,41 @@ mod tests {
     }
 
     #[test]
+    fn secret_type_has_can_use() {
+        // Task 10.9: secret は owner / can_use を持ち、can_use は user と role#member を受理する。
+        let model = default_model();
+        let types = model
+            .get("type_definitions")
+            .and_then(|v| v.as_array())
+            .expect("type_definitions は配列");
+        let secret = types
+            .iter()
+            .find(|t| t.get("type").and_then(|v| v.as_str()) == Some("secret"))
+            .expect("secret 型が定義されていること");
+        let relations = secret
+            .get("relations")
+            .and_then(|v| v.as_object())
+            .expect("relations はオブジェクト");
+        assert!(relations.contains_key("owner"));
+        assert!(relations.contains_key("can_use"));
+        // 平文の読み返し語彙（viewer 等）は持たない（write-only/use-only）。
+        assert!(!relations.contains_key("viewer"));
+        let accepts_role = secret
+            .get("metadata")
+            .and_then(|m| m.get("relations"))
+            .and_then(|r| r.get("can_use"))
+            .and_then(|r| r.get("directly_related_user_types"))
+            .and_then(|v| v.as_array())
+            .expect("directly_related_user_types は配列")
+            .iter()
+            .any(|t| {
+                t.get("type").and_then(|v| v.as_str()) == Some("role")
+                    && t.get("relation").and_then(|v| v.as_str()) == Some("member")
+            });
+        assert!(accepts_role, "secret.can_use は role#member を受理すること");
+    }
+
+    #[test]
     fn fingerprint_extracts_three_keys() {
         // fingerprint は schema_version / type_definitions / conditions の 3 キーのみ持つこと。
         let model = serde_json::json!({

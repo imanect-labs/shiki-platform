@@ -232,6 +232,7 @@ fn base_config() -> AppConfig {
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
+        secrets: api::config::SecretsConfig::default(),
     }
 }
 
@@ -270,6 +271,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         http: reqwest::Client::new(),
         storage,
         artifacts,
+        secrets: None,
         directory,
         tenants,
         search: None,

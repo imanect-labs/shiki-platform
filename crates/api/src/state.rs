@@ -45,6 +45,8 @@ pub struct AppState {
     pub storage: Arc<StorageService>,
     /// アーティファクト共通枠（Task 6.1・バージョン付き共有本文の単一チョークポイント）。
     pub artifacts: Arc<artifact::ArtifactStore>,
+    /// シークレット管理（Task 10.9）。マスターキー未設定では `None`（/secrets は 503）。
+    pub secrets: Option<Arc<secrets::SecretStore>>,
     /// ユーザーディレクトリ（共有相手検索。tenant_id スコープ）。
     pub directory: Arc<DirectoryStore>,
     /// テナントレジストリ（プロビジョニング/削除のライフサイクル・SAAS.2）。

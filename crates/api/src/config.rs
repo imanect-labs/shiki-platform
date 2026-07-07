@@ -36,6 +36,18 @@ pub struct AppConfig {
     /// web 検索（web_search / web_fetch ツール・Phase 4）。既定は無効。
     #[serde(default)]
     pub websearch: WebSearchConfig,
+    /// シークレット管理（Task 10.9）。既定は無効（マスターキー未設定なら /secrets は 503）。
+    #[serde(default)]
+    pub secrets: SecretsConfig,
+}
+
+/// シークレット管理の設定。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SecretsConfig {
+    /// マスターキーファイルのパス（32 バイト生 or base64）。未設定なら secrets 無効。
+    /// クラウド KMS 実装（KeyProvider）は Stage B/Phase 8 で追加する。
+    #[serde(default)]
+    pub master_key_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
