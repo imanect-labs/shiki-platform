@@ -27,6 +27,8 @@ struct ScheduleTriggerRow {
     workflow_id: Uuid,
     spec: sqlx::types::Json<serde_json::Value>,
     last_planned_at: Option<DateTime<Utc>>,
+    /// 初回 watermark の起点（last_planned_at が NULL のとき使う）。
+    created_at: DateTime<Utc>,
 }
 
 /// イベントトリガ 1 件（DB から読む）。
@@ -63,13 +65,15 @@ impl SchedulerStore {
         tenant_scope: Option<&str>,
         launcher: &dyn RunLauncher,
     ) -> Result<usize, SchedulerStoreError> {
-        // enabled な registration の enabled な schedule トリガを引く。
+        // enabled な registration の**有効化バージョンと一致する** enabled な schedule トリガを引く。
+        // t.version = r.enabled_version で古い/未来バージョンの残存トリガが発火しないようにする。
         let triggers: Vec<ScheduleTriggerRow> = sqlx::query_as(
-            "SELECT t.tenant_id, t.trigger_id, t.workflow_id, t.spec, t.last_planned_at \
+            "SELECT t.tenant_id, t.trigger_id, t.workflow_id, t.spec, t.last_planned_at, t.created_at \
              FROM workflow_trigger t \
              JOIN workflow_registration r \
                ON r.tenant_id = t.tenant_id AND r.workflow_id = t.workflow_id \
              WHERE t.kind = 'schedule' AND t.enabled AND r.status = 'enabled' \
+               AND t.version = r.enabled_version \
                AND (($1::text IS NULL) OR (t.tenant_id = $1))",
         )
         .bind(tenant_scope)
@@ -88,22 +92,32 @@ impl SchedulerStore {
                 .get("catchup")
                 .and_then(|v| v.as_str())
                 .unwrap_or("skip");
-            let after = t.last_planned_at.unwrap_or(now);
-            let Ok(mut occ) = cron::occurrences_between(cron5, tz, after, now, 1000) else {
-                continue; // 不正な cron/tz は発火せずスキップ（保存時 V で弾く前提）。
+            // 初回（last_planned_at NULL）は**トリガ作成時刻**から数える。tick 時刻から数えると
+            // 作成〜初回 tick の間に到来した occurrence を取りこぼす。
+            let after = t.last_planned_at.unwrap_or(t.created_at);
+            let occ: Vec<DateTime<Utc>> = if catchup == "none" {
+                // 全捨て（watermark だけ前進）。
+                Vec::new()
+            } else if catchup == "skip" {
+                // **区間内の最新 occurrence のみ**。長時間ダウン（>1000 回分）でも最新を取りこぼさない
+                // よう、固定 cap の enumerate ではなく最新を直接求める。
+                match cron::latest_occurrence_between(cron5, tz, after, now) {
+                    Ok(Some(last)) => vec![last],
+                    Ok(None) => Vec::new(),
+                    Err(_) => continue,
+                }
+            } else {
+                // 全 occurrence（catchup=all は Stage A 外だが防御的に全件）。
+                match cron::occurrences_between(cron5, tz, after, now, 10_000) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                }
             };
             if occ.is_empty() {
                 // 発火無しでも watermark を前進させる（misfire 前進・再発見防止）。
                 self.advance_watermark(&t.tenant_id, &t.trigger_id, now)
                     .await?;
                 continue;
-            }
-            // catchup=skip は直近 1 occurrence のみ発火（残りは watermark で消化）。
-            if catchup == "skip" || catchup == "none" {
-                occ = match (catchup, occ.last()) {
-                    (_, Some(&last)) if catchup != "none" => vec![last],
-                    _ => vec![],
-                };
             }
             for scheduled_at in &occ {
                 if self.fire_occurrence(t, *scheduled_at, launcher).await? {
@@ -124,12 +138,15 @@ impl SchedulerStore {
         scheduled_at: DateTime<Utc>,
         launcher: &dyn RunLauncher,
     ) -> Result<bool, SchedulerStoreError> {
-        // UNIQUE INSERT で占有（衝突=既発火）。
-        let inserted: Option<bool> = sqlx::query_scalar(
+        // UNIQUE INSERT で占有。**既に行があり run_id が NULL** の場合は、予約後・run 起動前に
+        // クラッシュした occurrence なので launch を**再試行**する（トリガ取りこぼし防止）。
+        // 行が無ければ新規予約、行があり run_id 済みなら発火済みでスキップ。
+        let reserved: Option<(bool,)> = sqlx::query_as(
             "INSERT INTO schedule_occurrence (tenant_id, workflow_id, trigger_id, scheduled_at) \
              VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (tenant_id, workflow_id, trigger_id, scheduled_at) DO NOTHING \
-             RETURNING true",
+             ON CONFLICT (tenant_id, workflow_id, trigger_id, scheduled_at) \
+               DO UPDATE SET trigger_id = schedule_occurrence.trigger_id \
+             RETURNING (run_id IS NULL)",
         )
         .bind(&t.tenant_id)
         .bind(t.workflow_id)
@@ -138,8 +155,9 @@ impl SchedulerStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        if inserted.is_none() {
-            return Ok(false); // 既発火。
+        // run_id が既に埋まっている（発火済み）ならスキップ。
+        if !matches!(reserved, Some((true,))) {
+            return Ok(false);
         }
         // run 起動（委譲チェックは launcher 内）。run_id を occurrence に記録。
         let run_id = launcher
@@ -191,18 +209,22 @@ impl SchedulerStore {
         scope: &serde_json::Value,
         launcher: &dyn RunLauncher,
     ) -> Result<usize, SchedulerStoreError> {
-        // (tenant, kind=event, source) index で候補トリガを引く（enabled のみ）。
+        // (tenant, kind=event, source) index で候補トリガを引く（enabled かつ有効化バージョン一致のみ）。
+        // 包含は **event scope ⊇ trigger の spec.scope**（イベントは folder + 追加フィールドを持ち得るため、
+        // トリガの束縛スコープをイベントが含んでいればマッチ）。従来は逆（trigger が event 全体を含む）で、
+        // 追加フィールド付きイベントが一致しなかった。
         let triggers: Vec<EventTriggerRow> = sqlx::query_as(
             "SELECT t.tenant_id, t.trigger_id, t.workflow_id FROM workflow_trigger t \
              JOIN workflow_registration r \
                ON r.tenant_id = t.tenant_id AND r.workflow_id = t.workflow_id \
              WHERE t.tenant_id = $1 AND t.kind = 'event' AND t.source = $2 \
                AND t.enabled AND r.status = 'enabled' \
-               AND t.spec @> $3",
+               AND t.version = r.enabled_version \
+               AND $3 @> COALESCE(t.spec->'scope', '{}'::jsonb)",
         )
         .bind(tenant_id)
         .bind(source)
-        .bind(sqlx::types::Json(serde_json::json!({ "scope": scope })))
+        .bind(sqlx::types::Json(scope))
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;

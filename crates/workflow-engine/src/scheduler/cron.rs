@@ -60,6 +60,32 @@ pub fn occurrences_between(
     Ok(out)
 }
 
+/// `(after, now]` 区間の**最新** occurrence（UTC）を返す（catchup=skip 用・固定 cap 無し）。
+///
+/// 長時間ダウンで occurrence が多数あっても now 以下の最新を取りこぼさない。区間内反復は
+/// 安全弁（100 万）で頭打ちにする（極端な設定でも暴走しない）。
+pub fn latest_occurrence_between(
+    cron5: &str,
+    tz: &str,
+    after: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<Option<DateTime<Utc>>, CronError> {
+    let schedule = parse_schedule(cron5)?;
+    let zone = parse_tz(tz)?;
+    let after_tz = after.with_timezone(&zone);
+    let mut latest = None;
+    for dt in schedule.after(&after_tz).take(1_000_000) {
+        let utc = dt.with_timezone(&Utc);
+        if utc > now {
+            break;
+        }
+        if utc > after {
+            latest = Some(utc);
+        }
+    }
+    Ok(latest)
+}
+
 /// cron/tz が妥当か検証する（IR 保存時の軽い検証にも使える）。
 pub fn validate(cron5: &str, tz: &str) -> Result<(), CronError> {
     parse_schedule(cron5)?;
