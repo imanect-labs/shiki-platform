@@ -69,7 +69,7 @@ async fn multi_tier_is_all_or_nothing() {
     let store = ConcurrencyStore::new(pool.clone());
 
     // global 上限 5・node 上限 1。node を先に埋める。
-    let node_slot = Slot::node(wf, "n1", 1);
+    let node_slot = Slot::node_kind(wf, "storage.write", 1);
     let combo = vec![Slot::global(5), node_slot.clone()];
 
     assert!(

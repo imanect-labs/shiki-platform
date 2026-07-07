@@ -50,11 +50,13 @@ impl Slot {
             limit,
         }
     }
+    /// node 階層は**ノード種（capability kind）単位**で共有する（engine.md §8）。同一種の複数ノードが
+    /// 単一カウンタを共有し、per-kind 上限を正しく効かせる（従来は node_id 別で上限が破れていた）。
     #[must_use]
-    pub fn node(workflow_id: Uuid, node_id: &str, limit: i32) -> Self {
+    pub fn node_kind(workflow_id: Uuid, node_kind: &str, limit: i32) -> Self {
         Slot {
             kind: ScopeKind::Node,
-            key: format!("{workflow_id}|{node_id}"),
+            key: format!("{workflow_id}|{node_kind}"),
             limit,
         }
     }
@@ -89,8 +91,16 @@ impl ConcurrencyStore {
         tenant_id: &str,
         slots: &[Slot],
     ) -> Result<bool, ConcurrencyError> {
+        // 行ロック順を安定化して**デッドロックを回避**する（呼び出し側が異なる順で同一スコープを
+        // 予約しても Postgres で相互待ちにならない）。(kind, key) で整列＋重複排除。
+        let mut ordered: Vec<&Slot> = slots.iter().collect();
+        ordered.sort_by(|a, b| {
+            (a.kind.as_str(), a.key.as_str()).cmp(&(b.kind.as_str(), b.key.as_str()))
+        });
+        ordered.dedup_by(|a, b| a.kind == b.kind && a.key == b.key);
+
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        for s in slots {
+        for s in ordered {
             // 行を用意（初回）。limit は IR 由来の最新値で更新（current は保持）。
             sqlx::query(
                 "INSERT INTO concurrency_counter (tenant_id, scope_kind, scope_key, limit_n) \

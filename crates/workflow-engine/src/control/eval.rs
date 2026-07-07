@@ -23,27 +23,44 @@ pub fn resolve_value(expr: &ValueExpr, r: &dyn ValueResolver) -> Option<Value> {
 }
 
 /// `$template` を組み立てる（`{name}` を vars のキーで置換・欠損は空文字）。
+///
+/// エスケープ `{{`→`{`・`}}`→`}` はプレースホルダ解釈より先に処理する（JSON 断片やリテラル波括弧を保つ）。
 fn resolve_template(t: &TemplateExpr, r: &dyn ValueResolver) -> String {
     let mut out = String::with_capacity(t.template.len());
-    let mut rest = t.template.as_str();
-    while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        let Some(close) = after.find('}') else {
-            // 閉じ括弧が無ければリテラル `{` 扱い。
-            out.push('{');
-            rest = after;
-            continue;
-        };
-        let key = &after[..close];
-        if let Some(ve) = t.vars.get(key) {
-            if let Some(v) = resolve_value(ve, r) {
-                out.push_str(&value_to_string(&v));
+    let mut chars = t.template.char_indices().peekable();
+    let bytes = t.template.as_bytes();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '{' if bytes.get(i + 1) == Some(&b'{') => {
+                out.push('{');
+                chars.next(); // 2 つ目の { を消費。
             }
+            '}' if bytes.get(i + 1) == Some(&b'}') => {
+                out.push('}');
+                chars.next(); // 2 つ目の } を消費。
+            }
+            '{' => {
+                // プレースホルダ `{key}` を探す。閉じが無ければリテラル `{`。
+                let start = i + 1;
+                let rest = &t.template[start..];
+                if let Some(close) = rest.find('}') {
+                    let key = &rest[..close];
+                    if let Some(ve) = t.vars.get(key) {
+                        if let Some(v) = resolve_value(ve, r) {
+                            out.push_str(&value_to_string(&v));
+                        }
+                    }
+                    // key ＋ '}' 分を読み飛ばす。
+                    for _ in 0..=key.chars().count() {
+                        chars.next();
+                    }
+                } else {
+                    out.push('{');
+                }
+            }
+            other => out.push(other),
         }
-        rest = &after[close + 1..];
     }
-    out.push_str(rest);
     out
 }
 
@@ -102,12 +119,18 @@ fn compare_ordered(left: Option<&Value>, right: Option<&Value>, op: CmpOp) -> bo
     let (Some(l), Some(r)) = (left, right) else {
         return false;
     };
-    let ord = match (l.as_f64(), r.as_f64()) {
-        (Some(a), Some(b)) => a.partial_cmp(&b),
-        _ => match (l.as_str(), r.as_str()) {
+    let ord = if let (Some(a), Some(b)) = (l.as_i64(), r.as_i64()) {
+        // 整数同士は f64 変換で精度を落とさず i64 で比較する（2^53 超の ID/カウンタを正しく扱う）。
+        Some(a.cmp(&b))
+    } else if let (Some(a), Some(b)) = (l.as_u64(), r.as_u64()) {
+        Some(a.cmp(&b))
+    } else if let (Some(a), Some(b)) = (l.as_f64(), r.as_f64()) {
+        a.partial_cmp(&b)
+    } else {
+        match (l.as_str(), r.as_str()) {
             (Some(a), Some(b)) => Some(a.cmp(b)),
             _ => None,
-        },
+        }
     };
     match (ord, op) {
         (Some(o), CmpOp::Lt) => o.is_lt(),
@@ -266,6 +289,31 @@ mod tests {
                 .collect(),
         });
         assert_eq!(resolve_value(&t, &r), Some(json!("hi world!")));
+    }
+
+    #[test]
+    fn template_escaped_braces_survive() {
+        let r = resolver(&[("input", json!({ "who": "world" }))]);
+        let t = ValueExpr::Template(TemplateExpr {
+            template: "{{literal}} {who} {{{who}}}".into(),
+            vars: [("who".to_string(), from("input", Some("/who")))].into_iter().collect(),
+        });
+        // {{ }} はリテラル波括弧・{who} は置換。
+        assert_eq!(resolve_value(&t, &r), Some(json!("{literal} world {world}")));
+    }
+
+    #[test]
+    fn integer_comparison_beyond_f64_precision() {
+        // 2^53 超の整数を f64 に落とさず正しく比較する。
+        let r = resolver(&[("input", json!({ "a": 9007199254740993_i64, "b": 9007199254740992_i64 }))]);
+        assert!(eval_condition(
+            &cmp(from("input", Some("/a")), CmpOp::Gt, Some(from("input", Some("/b")))),
+            &r
+        ));
+        assert!(!eval_condition(
+            &cmp(from("input", Some("/a")), CmpOp::Eq, Some(from("input", Some("/b")))),
+            &r
+        ));
     }
 
     #[test]

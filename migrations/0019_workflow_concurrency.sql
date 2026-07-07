@@ -28,6 +28,9 @@ create table wait_subscription (
     kind       text        not null check (kind in ('timer', 'event')),
     -- timer: 発火時刻。event: null（source/filter は spec）。
     wake_at    timestamptz,
+    -- on_timeout 付き wait の満期時刻（timer/event 共通）。スケジューラが期限切れ subscription を
+    -- spec を解析せず直接走査できるようにする（NULL=無期限待ち）。
+    timeout_at timestamptz,
     -- event 待ちの source（storage.write 等）とフィルタ。
     source     text,
     spec       jsonb       not null default '{}'::jsonb,
@@ -46,3 +49,9 @@ create index wait_subscription_timer_idx
 create index wait_subscription_event_idx
     on wait_subscription (tenant_id, source)
     where kind = 'event' and not fired;
+
+-- 満期タイムアウト走査（timer/event 共通・未消込かつ timeout_at 設定済みのみ）。
+-- event 待ちも on_timeout で期限切れ回収できるよう spec を解析せず timeout_at で直接引く。
+create index wait_subscription_timeout_idx
+    on wait_subscription (timeout_at)
+    where timeout_at is not null and not fired;
