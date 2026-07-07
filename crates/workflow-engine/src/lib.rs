@@ -28,6 +28,10 @@ pub use control::{branch_port, switch_port};
 pub use delegation::{DelegationError, DelegationStore, GrantRequest, RunAdmission};
 pub use ir::validate::{validate, Catalog, ValidationError};
 pub use ir::WorkflowIr;
+pub use nodes::{
+    AgentInvokeReq, CapabilityNodeExecutor, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
+    NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+};
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use retry::{backoff_with_jitter, classify, RetryClass};
 pub use run::{

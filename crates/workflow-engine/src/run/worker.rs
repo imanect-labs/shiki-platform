@@ -113,7 +113,17 @@ impl WorkflowWorker {
             .ok_or_else(|| format!("node {} が IR に無い", claimed.node_id))?;
         let max_attempts = node.retry.max_attempts as i32;
 
-        // ノードを実行する（制御ノードも Stage A の本 PR では executor 経由で pass-through）。
+        // $from nodes.<id>.output の源として、先行成功 step の出力を読み込む。
+        let node_outputs = self
+            .store
+            .step_outputs(&claimed.tenant_id, claimed.run_id)
+            .await
+            .map_or(Value::Null, |pairs| {
+                Value::Object(pairs.into_iter().collect())
+            });
+
+        // ノードを実行する。制御ノード（branch/switch/join）も executor 経由で taken_ports を決める。
+        // trace_id は run_id（16 バイト UUID）を 32-hex 化して OTel/監査/Langfuse を束ねる。
         let ctx = NodeContext {
             tenant_id: claimed.tenant_id.clone(),
             org: claimed.org.clone(),
@@ -122,7 +132,13 @@ impl WorkflowWorker {
             idempotency_key: claimed.idempotency_key.clone(),
             attempt: claimed.attempt,
             principal: claimed.principal.clone(),
-            input: resolve_node_input(node, &claimed.input.0),
+            input: claimed.input.0.clone(),
+            // Stage A: interactive のトリガペイロードは run 入力と同一（schedule/event は Null）。
+            trigger: claimed.input.0.clone(),
+            node_outputs,
+            trace_id: Some(claimed.run_id.simple().to_string()),
+            // 実効スコープ = declared_scopes（run 開始時に declared ⊆ 委譲 が保証済み）。
+            scope_ceiling: ir.declared_scopes.clone(),
         };
         // 実行中はリース失効を防ぐため定期 heartbeat を並走させる。これが無いと lease_secs を
         // 超える長いノードで別ワーカーが同 step を再 claim して**二重に副作用**を起こし得る（P1）。
@@ -166,9 +182,4 @@ impl WorkflowWorker {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
-}
-
-/// ノードへ渡す入力を組む（Stage A は run 入力をそのまま渡す。$from 実行時解決は Task 10.5/10.6a）。
-fn resolve_node_input(_node: &crate::ir::Node, run_input: &Value) -> Value {
-    run_input.clone()
 }

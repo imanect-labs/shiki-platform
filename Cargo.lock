@@ -5063,6 +5063,7 @@ name = "shiki-workflow-engine"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "chrono-tz",
  "cron",
