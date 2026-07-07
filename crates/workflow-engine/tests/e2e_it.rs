@@ -184,8 +184,7 @@ async fn interactive_and_scheduled_run_complete_with_exactly_once_effects() {
     });
 
     // ③ interactive 起動（本人権限で）。
-    let launcher =
-        WorkflowRunLauncher::new(delegation.clone(), workflows.clone(), runs.clone());
+    let launcher = WorkflowRunLauncher::new(delegation.clone(), workflows.clone(), runs.clone());
     let run_id = launcher
         .start_interactive(&alice, wf_id, &json!({ "date": "2026-07-07" }))
         .await
@@ -280,8 +279,7 @@ async fn suspended_workflow_scheduled_launch_creates_no_run() {
         .await
         .unwrap();
 
-    let launcher =
-        WorkflowRunLauncher::new(delegation.clone(), workflows.clone(), runs.clone());
+    let launcher = WorkflowRunLauncher::new(delegation.clone(), workflows.clone(), runs.clone());
     // schedule 起動は委譲チェックで弾かれ run を作らない。
     let result = <WorkflowRunLauncher as workflow_engine::RunLauncher>::launch(
         &launcher, &tenant, wf_id, "schedule", "trg-1",
