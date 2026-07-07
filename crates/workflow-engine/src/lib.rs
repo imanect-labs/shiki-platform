@@ -7,9 +7,14 @@
 //! - [`store`]: IR を artifact（kind=workflow）として保存・バージョン管理・取得する薄い層。
 
 pub mod ir;
+pub mod run;
 pub mod store;
 pub mod vocab;
 
 pub use ir::validate::{validate, Catalog, ValidationError};
 pub use ir::WorkflowIr;
+pub use run::{
+    NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus, WorkerConfig,
+    WorkflowWorker,
+};
 pub use store::{WorkflowStore, WorkflowStoreError};

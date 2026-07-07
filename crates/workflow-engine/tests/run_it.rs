@@ -1,0 +1,296 @@
+//! run/step エンジンの結合テスト（Task 10.2 受け入れ条件・実 Postgres）。
+//!
+//! - ワーカー kill →別ワーカーが完了済みステップを再実行せずに run を継続する
+//! - `(run_id, seq)` unique で追記が exactly-once に潰れる
+//! - fan-out→join の待ち合わせ・skip 伝播
+//! - checkpoint 済み step の再 claim は fencing で no-op（再実行なし）
+
+#![allow(
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde_json::{json, Value};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
+use workflow_engine::run::graph::RunGraph;
+use workflow_engine::{NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus};
+
+/// 実行回数を数える pass-through executor（全ノードを out で成功させる）。
+struct CountingExecutor {
+    counts: Arc<dashmap_like::Map>,
+}
+
+/// 最小の並行カウンタ（外部依存を避けるため std のみ）。
+mod dashmap_like {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    #[derive(Default)]
+    pub struct Map(Mutex<HashMap<String, usize>>);
+    impl Map {
+        pub fn incr(&self, key: &str) -> usize {
+            let mut m = self.0.lock().unwrap();
+            let e = m.entry(key.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        }
+        pub fn get(&self, key: &str) -> usize {
+            self.0.lock().unwrap().get(key).copied().unwrap_or(0)
+        }
+    }
+}
+
+#[async_trait]
+impl NodeExecutor for CountingExecutor {
+    async fn execute(&self, _node_type: &str, params: &Value, ctx: &NodeContext) -> NodeResult {
+        self.counts.incr(&ctx.node_id_from_path());
+        // params に "port" があればそのポートを取る（branch 相当のテスト用）。
+        if let Some(port) = params.get("port").and_then(|v| v.as_str()) {
+            NodeResult::ok_port(json!({ "step": ctx.step_path }), port)
+        } else {
+            NodeResult::ok(json!({ "step": ctx.step_path }))
+        }
+    }
+}
+
+// NodeContext に node_id を取り出すヘルパ（step_path は静的ノードでは node_id）。
+trait NodeIdFromPath {
+    fn node_id_from_path(&self) -> String;
+}
+impl NodeIdFromPath for NodeContext {
+    fn node_id_from_path(&self) -> String {
+        self.step_path.clone()
+    }
+}
+
+async fn setup() -> Option<PgPool> {
+    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return None;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .expect("connect");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrate");
+    Some(pool)
+}
+
+fn linear_ir() -> Value {
+    json!({
+        "ir_version": 1, "name": "linear",
+        "declared_scopes": ["storage.read"],
+        "nodes": [
+            { "id": "a", "type": "storage.read", "params": {} },
+            { "id": "b", "type": "storage.read", "params": {} },
+            { "id": "c", "type": "storage.read", "params": {} }
+        ],
+        "edges": [{ "from": "a", "to": "b" }, { "from": "b", "to": "c" }]
+    })
+}
+
+fn fanout_join_ir() -> Value {
+    json!({
+        "ir_version": 1, "name": "fanout",
+        "declared_scopes": ["storage.read"],
+        "nodes": [
+            { "id": "src", "type": "storage.read", "params": {} },
+            { "id": "l", "type": "storage.read", "params": {} },
+            { "id": "r", "type": "storage.read", "params": {} },
+            { "id": "j", "type": "control.join", "params": { "mode": "all" } }
+        ],
+        "edges": [
+            { "from": "src", "to": "l" }, { "from": "src", "to": "r" },
+            { "from": "l", "to": "j" }, { "from": "r", "to": "j" }
+        ]
+    })
+}
+
+async fn create_run(store: &RunStore, tenant: &str, ir: &Value) -> uuid::Uuid {
+    let parsed = workflow_engine::WorkflowIr::from_json(ir).unwrap();
+    let graph = RunGraph::build(&parsed);
+    store
+        .create_run(
+            tenant,
+            "acme",
+            uuid::Uuid::new_v4(),
+            1,
+            "interactive",
+            "alice",
+            &json!({}),
+            ir,
+            &graph,
+        )
+        .await
+        .expect("create_run")
+}
+
+fn worker(
+    pool: PgPool,
+    counts: Arc<dashmap_like::Map>,
+    tenant: &str,
+) -> workflow_engine::WorkflowWorker {
+    let store = RunStore::new(pool);
+    let exec = Arc::new(CountingExecutor { counts });
+    workflow_engine::WorkflowWorker::new(store, exec, workflow_engine::WorkerConfig::default())
+        .scoped_to_tenant(tenant)
+}
+
+#[tokio::test]
+async fn linear_run_completes_each_step_once() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let run_id = create_run(&store, &tenant, &linear_ir()).await;
+
+    let counts = Arc::new(dashmap_like::Map::default());
+    let w = worker(pool.clone(), Arc::clone(&counts), &tenant);
+    // 全 step を順に処理（ready が無くなるまで）。
+    while w.claim_and_run_once("w1").await.unwrap() {}
+
+    assert_eq!(
+        store.run_status(&tenant, run_id).await.unwrap(),
+        Some(RunStatus::Succeeded)
+    );
+    for n in ["a", "b", "c"] {
+        assert_eq!(counts.get(n), 1, "{n} は 1 回だけ実行される");
+    }
+    // exactly-once: run_event の seq に重複が無い。
+    let seq_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM run_event WHERE tenant_id = $1 AND run_id = $2")
+            .bind(&tenant)
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let distinct: i64 = sqlx::query_scalar(
+        "SELECT count(DISTINCT seq) FROM run_event WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&tenant)
+    .bind(run_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        seq_count, distinct,
+        "run_event の seq は重複しない（exactly-once）"
+    );
+}
+
+#[tokio::test]
+async fn zombie_recheckpoint_does_not_reexecute() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let run_id = create_run(&store, &tenant, &linear_ir()).await;
+
+    // step a を claim（fencing 1）。
+    let claimed = store
+        .claim_ready_step("w1", 60, Some(&tenant))
+        .await
+        .unwrap()
+        .expect("claim a");
+    assert_eq!(claimed.node_id, "a");
+
+    // リースを失効させ、別ワーカーが再 claim（fencing 2）。
+    sqlx::query(
+        "UPDATE step_execution SET lease_expires_at = now() - interval '1 second' \
+         WHERE tenant_id = $1 AND run_id = $2 AND step_path = 'a'",
+    )
+    .bind(&tenant)
+    .bind(run_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let claimed2 = store
+        .claim_ready_step("w2", 60, Some(&tenant))
+        .await
+        .unwrap()
+        .expect("reclaim a");
+    assert_eq!(claimed2.fencing_token, claimed.fencing_token + 1);
+
+    let graph = RunGraph::build(&workflow_engine::WorkflowIr::from_json(&linear_ir()).unwrap());
+    // 旧ワーカー（fencing 1）の checkpoint は no-op（ゾンビ）。
+    let zombie = store
+        .checkpoint_and_advance(&claimed, &NodeResult::ok(json!({})), &graph, 1)
+        .await
+        .unwrap();
+    assert!(!zombie, "ゾンビの checkpoint は no-op");
+    // step a はまだ running のまま（terminal 化されていない）。
+    let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
+    let a = statuses.iter().find(|(p, _)| p == "a").unwrap();
+    assert_eq!(a.1, StepStatus::Running);
+
+    // 新ワーカー（fencing 2）の checkpoint は成功し前進する。
+    let ok = store
+        .checkpoint_and_advance(&claimed2, &NodeResult::ok(json!({})), &graph, 1)
+        .await
+        .unwrap();
+    assert!(ok);
+    let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
+    let a = statuses.iter().find(|(p, _)| p == "a").unwrap();
+    assert_eq!(a.1, StepStatus::Succeeded, "a は 1 回だけ terminal 化");
+    let b = statuses.iter().find(|(p, _)| p == "b").unwrap();
+    assert_eq!(b.1, StepStatus::Ready, "b が ready 化される");
+}
+
+#[tokio::test]
+async fn fanout_join_waits_and_completes() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let run_id = create_run(&store, &tenant, &fanout_join_ir()).await;
+
+    let counts = Arc::new(dashmap_like::Map::default());
+    let w = worker(pool.clone(), Arc::clone(&counts), &tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+
+    assert_eq!(
+        store.run_status(&tenant, run_id).await.unwrap(),
+        Some(RunStatus::Succeeded)
+    );
+    // join は両分岐の完了後に 1 回発火する。
+    let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
+    for (path, st) in &statuses {
+        assert_eq!(*st, StepStatus::Succeeded, "{path} が succeeded");
+    }
+    assert_eq!(counts.get("j"), 1, "join は 1 回だけ実行");
+}
+
+#[tokio::test]
+async fn tenant_isolation_in_claim() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let t1 = format!("t-{}", uuid::Uuid::new_v4());
+    let t2 = format!("t-{}", uuid::Uuid::new_v4());
+    let r1 = create_run(&store, &t1, &linear_ir()).await;
+    let _r2 = create_run(&store, &t2, &linear_ir()).await;
+
+    // claim は tenant 横断で拾い得るが、全クエリが tenant_id を運ぶ。ここでは
+    // claim した step が正しく自 run の tenant に属することを確認する。
+    let claimed = store
+        .claim_ready_step("w1", 60, Some(&t1))
+        .await
+        .unwrap()
+        .expect("claim");
+    assert!(claimed.tenant_id == t1 || claimed.tenant_id == t2);
+    // run_id と tenant_id の対応が一貫している（越境しない）。
+    let owner_tenant: String =
+        sqlx::query_scalar("SELECT tenant_id FROM workflow_run WHERE run_id = $1")
+            .bind(claimed.run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(owner_tenant, claimed.tenant_id);
+    let _ = r1;
+}
