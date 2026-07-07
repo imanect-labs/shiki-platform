@@ -1,0 +1,15 @@
+//! ワークフローエンジン（Task 10.1a〜・docs/workflow/ が正本）。
+//!
+//! Stage A（本 PR は 10.1a）:
+//! - [`vocab`]: ワークフロー語彙の単一ソース（node type・scope・event source・run event・codegen）。
+//! - [`ir`]: IR の定義と静的制約（deny-unknown・$from/$template/条件木・ノード/エッジ/トリガ）。
+//! - [`ir::validate`]: 保存時検証 V1〜V7（全件エラー収集）。
+//! - [`store`]: IR を artifact（kind=workflow）として保存・バージョン管理・取得する薄い層。
+
+pub mod ir;
+pub mod store;
+pub mod vocab;
+
+pub use ir::validate::{validate, Catalog, ValidationError};
+pub use ir::WorkflowIr;
+pub use store::{WorkflowStore, WorkflowStoreError};

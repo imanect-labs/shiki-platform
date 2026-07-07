@@ -47,6 +47,8 @@ pub struct AppState {
     pub artifacts: Arc<artifact::ArtifactStore>,
     /// シークレット管理（Task 10.9）。マスターキー未設定では `None`（/secrets は 503）。
     pub secrets: Option<Arc<secrets::SecretStore>>,
+    /// ワークフロー IR の保存/取得（Task 10.1a・artifact kind=workflow の上に載る）。
+    pub workflows: Arc<workflow_engine::WorkflowStore>,
     /// ユーザーディレクトリ（共有相手検索。tenant_id スコープ）。
     pub directory: Arc<DirectoryStore>,
     /// テナントレジストリ（プロビジョニング/削除のライフサイクル・SAAS.2）。

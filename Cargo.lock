@@ -4708,6 +4708,7 @@ dependencies = [
  "shiki-secrets",
  "shiki-storage",
  "shiki-websearch",
+ "shiki-workflow-engine",
  "sqlx",
  "thiserror 2.0.18",
  "time",
@@ -5014,6 +5015,26 @@ dependencies = [
  "shiki-authz",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "shiki-workflow-engine"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "regex",
+ "serde",
+ "serde_json",
+ "shiki-artifact",
+ "shiki-authz",
+ "shiki-script-runtime",
+ "shiki-secrets",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "ts-rs",
+ "utoipa",
+ "uuid",
 ]
 
 [[package]]

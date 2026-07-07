@@ -1,0 +1,44 @@
+[package]
+name = "shiki-workflow-engine"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+
+[lib]
+name = "workflow_engine"
+
+[[bin]]
+name = "export-workflow-ts"
+path = "src/bin/export-ts.rs"
+
+[dependencies]
+shiki-authz.workspace = true
+shiki-artifact.workspace = true
+# V6（inline script のコンパイル検証）で script-runtime のコンパイラを共用する。
+shiki-script-runtime.workspace = true
+# V4（宛先束縛の事前照合）で secrets の host_allowed を共用する。
+shiki-secrets.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+# ワークフロー語彙・IR params 型を単一定義し TS へ生成（codegen が正）。
+ts-rs = { workspace = true }
+utoipa.workspace = true
+# 条件木の matches 演算子（保存時コンパイル検証・バックトラックなし）。
+regex = "1"
+
+[dev-dependencies]
+tokio.workspace = true
+async-trait.workspace = true
+sqlx.workspace = true
+
+# lib 名 authz/artifact で参照するため machete が誤検出する。
+[package.metadata.cargo-machete]
+ignored = ["shiki-authz", "shiki-artifact", "shiki-script-runtime", "shiki-secrets"]
+
+[lints]
+workspace = true
