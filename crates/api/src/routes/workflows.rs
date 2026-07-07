@@ -77,10 +77,10 @@ async fn build_catalog(state: &AppState, ctx: &authz::AuthContext) -> Result<Cat
 fn map_store_err(err: WorkflowStoreError) -> ApiError {
     match err {
         WorkflowStoreError::Validation(errors) => {
-            // 全件を JSON に載せて 400。ApiError::BadRequest は文字列のみのため JSON をシリアライズ。
-            let body = serde_json::to_string(&ValidationErrorResponse { errors })
-                .unwrap_or_else(|_| "validation failed".into());
-            ApiError::BadRequest(body)
+            // 全件を構造化 JSON body で 400 に載せる（dnd クライアントが per-node/per-edge を描画できる）。
+            let payload = serde_json::to_value(ValidationErrorResponse { errors })
+                .unwrap_or_else(|_| serde_json::json!({ "errors": [] }));
+            ApiError::UnprocessableJson(payload)
         }
         WorkflowStoreError::Artifact(e) => ApiError::from(e),
     }

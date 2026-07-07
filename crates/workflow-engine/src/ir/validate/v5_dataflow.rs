@@ -38,8 +38,17 @@ fn check_value(value: &serde_json::Value, ctx: &NodeCtx<'_>, errors: &mut Vec<Va
         serde_json::Value::Object(map) => {
             // `$from` オブジェクト。
             if map.contains_key("$from") {
-                if let Ok(from) = serde_json::from_value::<FromRef>(value.clone()) {
-                    check_from(&from, ctx, errors);
+                match serde_json::from_value::<FromRef>(value.clone()) {
+                    Ok(from) => check_from(&from, ctx, errors),
+                    // params は生 JSON で V1 の deny-unknown が効かないため、型崩れ（path 型違い・
+                    // 余分フィールド等）はここで弾く（実行時にリテラル誤解釈されるのを防ぐ）。
+                    Err(e) => errors.push(
+                        ValidationError::new(
+                            "ir.bad_ref",
+                            format!("不正な $from 式です: {e}"),
+                        )
+                        .at_node(&ctx.node.id),
+                    ),
                 }
                 return;
             }
@@ -68,7 +77,22 @@ fn check_from(from: &FromRef, ctx: &NodeCtx<'_>, errors: &mut Vec<ValidationErro
     let source = from.from.as_str();
     let head = source.split('.').next().unwrap_or("");
     match head {
-        "input" | "trigger" | "run" | "each" => { /* 静的に許可（run/each は文脈依存だが V5 では通す） */
+        "input" | "trigger" | "run" => { /* 静的に許可 */ }
+        "each" => {
+            // each.* は map 領域内（node.parent が map ノード）でのみ有効。領域外は実行時に
+            // 現在要素が無く失敗するため保存時に弾く。
+            if ctx.node.parent.is_none() {
+                errors.push(
+                    ValidationError::new(
+                        "ir.bad_ref",
+                        format!(
+                            "$from each.* は map 領域内でのみ使えます（node {} は領域外）",
+                            ctx.node.id
+                        ),
+                    )
+                    .at_node(&ctx.node.id),
+                );
+            }
         }
         "nodes" => {
             // `nodes.<id>.output` の <id> は当該ノードの祖先必須。
@@ -91,9 +115,39 @@ fn check_from(from: &FromRef, ctx: &NodeCtx<'_>, errors: &mut Vec<ValidationErro
     }
 }
 
-/// 条件木を検証する（regex コンパイル・演算子と right の整合）。
+/// 条件式の値式（left/right）の `$from` source を検証する。
+///
+/// ノード context 有り（branch/wait）は祖先性まで検証する。context 無し（イベント filter）は
+/// 解決文脈が trigger しかないため、`nodes.*`/`each.*` を参照したら弾く（保存時に不解決を防ぐ）。
+fn check_condition_from(
+    expr: &ValueExpr,
+    ctx: Option<&NodeCtx<'_>>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let ValueExpr::From(from) = expr else { return };
+    if let Some(c) = ctx {
+        check_from(from, c, errors);
+    } else {
+        let head = from.from.split('.').next().unwrap_or("");
+        if matches!(head, "nodes" | "each") {
+            errors.push(ValidationError::new(
+                "ir.bad_ref",
+                format!(
+                    "イベント filter は {} を参照できません（trigger のみ解決可能）",
+                    from.from
+                ),
+            ));
+        }
+    }
+}
+
+/// 条件木を検証する（regex コンパイル・演算子と right の整合・$from source）。
 fn check_condition(cond: &Condition, ctx: Option<&NodeCtx<'_>>, errors: &mut Vec<ValidationError>) {
     cond.for_each_cmp(&mut |cmp: &Comparison| {
+        check_condition_from(&cmp.left, ctx, errors);
+        if let Some(right) = &cmp.right {
+            check_condition_from(right, ctx, errors);
+        }
         // exists/is_null は right 不要、それ以外は right 必須。
         let needs_right = !matches!(cmp.op, CmpOp::Exists | CmpOp::IsNull);
         if needs_right && cmp.right.is_none() {

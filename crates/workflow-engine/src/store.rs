@@ -78,6 +78,25 @@ impl WorkflowStore {
         trace_id: Option<&str>,
     ) -> Result<(i64, WorkflowIr), WorkflowStoreError> {
         let ir = validate(ir_json, catalog).map_err(WorkflowStoreError::Validation)?;
+        // 対象 artifact が workflow 種であり、名前が IR と一致することを確認する。
+        // 汎用 artifact API 経由で作られた別種（prompt/mini_app 等）を workflow エンドポイントで
+        // 上書きして種不変条件を壊すこと・参照名の齟齬（workflow.start の名前解決が狂う）を防ぐ。
+        let meta = self.artifacts.get(ctx, id, trace_id).await?;
+        if meta.kind != ArtifactKind::Workflow {
+            return Err(WorkflowStoreError::Validation(vec![ValidationError::new(
+                "ir.kind_mismatch",
+                "このアーティファクトは workflow ではありません".to_string(),
+            )]));
+        }
+        if meta.name != ir.name {
+            return Err(WorkflowStoreError::Validation(vec![ValidationError::new(
+                "ir.name_mismatch",
+                format!(
+                    "IR の name（{}）が既存アーティファクト名（{}）と一致しません",
+                    ir.name, meta.name
+                ),
+            )]));
+        }
         let version = self
             .artifacts
             .append_version(ctx, id, ir_json.clone(), expected_version, trace_id)

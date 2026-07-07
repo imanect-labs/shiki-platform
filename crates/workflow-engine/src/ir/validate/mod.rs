@@ -81,6 +81,16 @@ pub fn validate(
     };
 
     let mut errors = Vec::new();
+    // ワークフロー名は安定参照名の契約 `^[a-z][a-z0-9-]{0,63}$`（workflow.start の名前解決に使う）。
+    if !is_valid_workflow_name(&ir.name) {
+        errors.push(ValidationError::new(
+            "ir.bad_name",
+            format!(
+                "name は ^[a-z][a-z0-9-]{{0,63}}$ に一致する必要があります: {}",
+                ir.name
+            ),
+        ));
+    }
     // V7: 上限（他段より先に軽く弾く）。
     v7_limits(value, &ir, &mut errors);
     // V2: グラフ（id 一意・エッジ参照・DAG・入エッジ制約・領域閉包・到達性）。
@@ -152,6 +162,24 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
             }
         }
     }
+    // ノード params.condition（control.branch / control.wait）の条件木深さも上限内であること。
+    // V5 は深さに関わらず再帰するため、ここで弾かないと深いノード条件が上限を素通りする。
+    for node in &ir.nodes {
+        if let Some(cond_json) = node.params.get("condition") {
+            if let Ok(cond) = serde_json::from_value::<crate::ir::expr::Condition>(cond_json.clone())
+            {
+                if cond.depth() > MAX_CONDITION_DEPTH {
+                    errors.push(
+                        ValidationError::new(
+                            "ir.limit_exceeded",
+                            format!("ノード {} の条件木が深すぎます（最大 5）", node.id),
+                        )
+                        .at_node(&node.id),
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// V3: 語彙照合（Stage A available 集合へ）。
@@ -169,21 +197,46 @@ fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError
             )),
         }
     }
+    let declared: std::collections::BTreeSet<&str> =
+        ir.declared_scopes.iter().map(String::as_str).collect();
     for node in &ir.nodes {
         match NodeType::parse(&node.node_type) {
             Some(nt) => {
+                // 能力ノードが必要とするスコープが declared_scopes に宣言されているか（宣言天井と
+                // ノードの整合・保存時に弾く。実行時の scope 天井ゲートで初めて落ちるのを防ぐ）。
+                if let Some(required) = required_scope_for(nt) {
+                    if !declared.contains(required) {
+                        errors.push(
+                            ValidationError::new(
+                                "ir.missing_scope",
+                                format!(
+                                    "ノード {} は scope {required} を要しますが declared_scopes に未宣言です",
+                                    node.id
+                                ),
+                            )
+                            .at_node(&node.id),
+                        );
+                    }
+                }
                 // llm.invoke の model をモデルカタログへ照合（カタログが空なら省略）。
                 if nt == NodeType::LlmInvoke && !catalog.models.is_empty() {
-                    if let Some(model) = node.params.get("model").and_then(|v| v.as_str()) {
-                        if !catalog.models.iter().any(|m| m == model) {
-                            errors.push(
-                                ValidationError::new(
-                                    "ir.unknown_model",
-                                    format!("未知のモデル: {model}"),
-                                )
-                                .at_node(&node.id),
-                            );
-                        }
+                    match node.params.get("model").and_then(|v| v.as_str()) {
+                        Some(model) if catalog.models.iter().any(|m| m == model) => {}
+                        Some(model) => errors.push(
+                            ValidationError::new(
+                                "ir.unknown_model",
+                                format!("未知のモデル: {model}"),
+                            )
+                            .at_node(&node.id),
+                        ),
+                        // model 欠落/非文字列も保存時に弾く（LLM ゲートウェイ経路に必須）。
+                        None => errors.push(
+                            ValidationError::new(
+                                "ir.missing_model",
+                                format!("llm.invoke（node {}）は params.model が必要です", node.id),
+                            )
+                            .at_node(&node.id),
+                        ),
                     }
                 }
             }
@@ -214,6 +267,33 @@ fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError
     }
 }
 
+/// ワークフロー名の形式検証 `^[a-z][a-z0-9-]{0,63}$`（安定参照名・regex 不使用の手書き）。
+fn is_valid_workflow_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 64 {
+        return false;
+    }
+    if !bytes[0].is_ascii_lowercase() {
+        return false;
+    }
+    bytes[1..]
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
+/// 能力ノードが必要とする宣言スコープ（scope 天井の保存時整合・engine.md §9.2）。
+/// 制御ノード（control.*）や副作用のない内部推論（llm/agent）は None。
+fn required_scope_for(nt: NodeType) -> Option<&'static str> {
+    match nt {
+        NodeType::StorageRead | NodeType::StorageList => Some("storage.read"),
+        NodeType::StorageWrite => Some("storage.write"),
+        NodeType::RagSearch => Some("rag.query"),
+        NodeType::HttpRequest => Some("http.egress"),
+        NodeType::WorkflowStart => Some("workflow.start"),
+        _ => None,
+    }
+}
+
 /// V4: 参照存在（Stage A は secret のみ・宛先束縛の事前チェック）。
 fn v4_refs(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError>) {
     for node in &ir.nodes {
@@ -237,25 +317,38 @@ fn v4_refs(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError>
             );
             continue;
         };
-        // URL ホスト部（リテラル必須・ir.md §7.2）が宛先束縛に許容されるか。
-        if let Some(host) = node
+        // secret を添付する http.request は URL ホスト部が**リテラル必須**（ir.md §7.2）。
+        // url が文字列でない（$from 等）とホストが確定できず宛先束縛を検査できない＝
+        // 実行時任意ホストへ secret を添付され得るため、保存時に拒否する（fail-closed・P1）。
+        let Some(host) = node
             .params
             .get("url")
             .and_then(|v| v.as_str())
             .and_then(extract_host)
-        {
-            let allowed = allowed_hosts
-                .iter()
-                .any(|pat| secrets::host_allowed(pat, &host));
-            if !allowed {
-                errors.push(
-                    ValidationError::new(
-                        "ir.binding_denied",
-                        format!("secret {name} は宛先 {host} への添付を許可していません"),
-                    )
-                    .at_node(&node.id),
-                );
-            }
+        else {
+            errors.push(
+                ValidationError::new(
+                    "ir.non_literal_url",
+                    format!(
+                        "secret を添付する http.request は URL ホストがリテラル必須です（node {}）",
+                        node.id
+                    ),
+                )
+                .at_node(&node.id),
+            );
+            continue;
+        };
+        let allowed = allowed_hosts
+            .iter()
+            .any(|pat| secrets::host_allowed(pat, &host));
+        if !allowed {
+            errors.push(
+                ValidationError::new(
+                    "ir.binding_denied",
+                    format!("secret {name} は宛先 {host} への添付を許可していません"),
+                )
+                .at_node(&node.id),
+            );
         }
     }
 }
