@@ -52,7 +52,8 @@ create table step_execution (
     node_id         text        not null,
     status          text        not null default 'pending'
                     check (status in ('pending', 'ready', 'running', 'waiting_timer',
-                                      'waiting_event', 'succeeded', 'failed', 'skipped')),
+                                      'waiting_event', 'succeeded', 'failed', 'skipped',
+                                      'cancelled')),
     attempt         int         not null default 0,
     -- ready の再スケジュール時刻（リトライ backoff / concurrency 順番待ち）。
     next_retry_at   timestamptz not null default now(),

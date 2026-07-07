@@ -55,6 +55,7 @@ pub enum StepStatus {
     Succeeded,
     Failed,
     Skipped,
+    Cancelled,
 }
 
 impl StepStatus {
@@ -68,6 +69,7 @@ impl StepStatus {
             StepStatus::Succeeded => "succeeded",
             StepStatus::Failed => "failed",
             StepStatus::Skipped => "skipped",
+            StepStatus::Cancelled => "cancelled",
         }
     }
 
@@ -81,6 +83,7 @@ impl StepStatus {
             "succeeded" => StepStatus::Succeeded,
             "failed" => StepStatus::Failed,
             "skipped" => StepStatus::Skipped,
+            "cancelled" => StepStatus::Cancelled,
             _ => return None,
         })
     }
@@ -89,7 +92,10 @@ impl StepStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            StepStatus::Succeeded | StepStatus::Failed | StepStatus::Skipped
+            StepStatus::Succeeded
+                | StepStatus::Failed
+                | StepStatus::Skipped
+                | StepStatus::Cancelled
         )
     }
 }

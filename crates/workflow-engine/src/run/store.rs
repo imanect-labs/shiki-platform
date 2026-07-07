@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::graph::RunGraph;
 use super::model::{idempotency_key, RunStatus, StepStatus};
 use super::readiness::{
-    readiness_join, readiness_non_join, EdgeState, InEdge, JoinMode, Readiness,
+    readiness_join, readiness_non_join, EdgeState, InEdge, Readiness,
 };
 use crate::vocab::{NodeType, RunEventKind};
 
@@ -299,7 +299,8 @@ pub(crate) fn node_readiness(
         })
         .collect();
     match graph.node_type(node_id) {
-        Some(NodeType::ControlJoin) => readiness_join(JoinMode::All, &edges),
+        // join の待ち合わせモードは IR の params.mode（"any"=初回 live で発火・既定 "all"）。
+        Some(NodeType::ControlJoin) => readiness_join(graph.join_mode(node_id), &edges),
         _ => readiness_non_join(&edges),
     }
 }

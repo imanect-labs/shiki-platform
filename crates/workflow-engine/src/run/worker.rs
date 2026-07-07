@@ -124,10 +124,40 @@ impl WorkflowWorker {
             principal: claimed.principal.clone(),
             input: resolve_node_input(node, &claimed.input.0),
         };
+        // 実行中はリース失効を防ぐため定期 heartbeat を並走させる。これが無いと lease_secs を
+        // 超える長いノードで別ワーカーが同 step を再 claim して**二重に副作用**を起こし得る（P1）。
+        // 実行完了で heartbeat タスクを止める。
+        let hb_store = self.store.clone();
+        let hb_tenant = claimed.tenant_id.clone();
+        let hb_step = claimed.step_path.clone();
+        let hb_run = claimed.run_id;
+        let hb_fencing = claimed.fencing_token;
+        let hb_lease = self.config.lease_secs;
+        // リース期間の 1/3 間隔で延長（最低 1 秒）。
+        let hb_interval = std::time::Duration::from_secs(u64::try_from(hb_lease.max(3) / 3).unwrap_or(1));
+        let heartbeat = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(hb_interval);
+            ticker.tick().await; // 初回即時分を消費。
+            loop {
+                ticker.tick().await;
+                if hb_store
+                    .heartbeat(&hb_tenant, hb_run, &hb_step, hb_fencing, hb_lease)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
+                    // fencing 不一致（別ワーカーが奪取）等はこれ以上延長しない。
+                    break;
+                }
+            }
+        });
+
         let result: NodeResult = self
             .executor
             .execute(&node.node_type, &node.params, &ctx)
             .await;
+        heartbeat.abort();
 
         self.store
             .checkpoint_and_advance(claimed, &result, &graph, max_attempts)

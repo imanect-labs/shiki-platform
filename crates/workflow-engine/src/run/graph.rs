@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::ir::WorkflowIr;
+use crate::run::readiness::JoinMode;
 use crate::vocab::NodeType;
 
 /// 実行時に参照する軽量グラフ（node_id → メタ・エッジ隣接）。
@@ -15,6 +16,8 @@ pub struct RunGraph {
     in_edges: HashMap<String, Vec<(String, String)>>,
     /// node_id → 出エッジ（(from_port, to)）。
     out_edges: HashMap<String, Vec<(String, String)>>,
+    /// control.join の待ち合わせモード（params.mode・既定 All）。
+    join_modes: HashMap<String, JoinMode>,
     /// parent:null（本体）ノードの id 一覧（run 開始時に一括実体化する集合）。
     root_body_nodes: Vec<String>,
 }
@@ -27,11 +30,19 @@ impl RunGraph {
         let mut in_edges: HashMap<String, Vec<(String, String)>> = HashMap::new();
         let mut out_edges: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
+        let mut join_modes = HashMap::new();
         for n in &ir.nodes {
             node_types.insert(n.id.clone(), NodeType::parse(&n.node_type));
             parents.insert(n.id.clone(), n.parent.clone());
             in_edges.entry(n.id.clone()).or_default();
             out_edges.entry(n.id.clone()).or_default();
+            if NodeType::parse(&n.node_type) == Some(NodeType::ControlJoin) {
+                let mode = match n.params.get("mode").and_then(|v| v.as_str()) {
+                    Some("any") => JoinMode::Any,
+                    _ => JoinMode::All,
+                };
+                join_modes.insert(n.id.clone(), mode);
+            }
         }
         for e in &ir.edges {
             in_edges
@@ -56,8 +67,17 @@ impl RunGraph {
             parents,
             in_edges,
             out_edges,
+            join_modes,
             root_body_nodes,
         }
+    }
+
+    /// control.join の待ち合わせモード（未登録＝非 join は既定 All）。
+    pub fn join_mode(&self, node_id: &str) -> JoinMode {
+        self.join_modes
+            .get(node_id)
+            .copied()
+            .unwrap_or(JoinMode::All)
     }
 
     /// 本体（parent:null）ノード id。

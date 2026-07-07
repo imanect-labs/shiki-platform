@@ -116,6 +116,44 @@ fn fanout_join_ir() -> Value {
     })
 }
 
+/// 失敗する executor（指定ノードを permanent 失敗させる）。
+struct FailingExecutor {
+    fail_node: String,
+    counts: Arc<dashmap_like::Map>,
+}
+#[async_trait]
+impl NodeExecutor for FailingExecutor {
+    async fn execute(&self, _t: &str, _p: &Value, ctx: &NodeContext) -> NodeResult {
+        self.counts.incr(&ctx.step_path);
+        if ctx.step_path == self.fail_node {
+            NodeResult::fail("boom", "permanent", false)
+        } else {
+            NodeResult::ok(json!({}))
+        }
+    }
+}
+
+#[tokio::test]
+async fn failure_cancels_siblings_and_fails_run() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    // src → {l, r}。l を失敗させると run が failed になり r は cancelled（副作用を起こさない）。
+    let run_id = create_run(&store, &tenant, &fanout_join_ir()).await;
+    let counts = Arc::new(dashmap_like::Map::default());
+    let exec = Arc::new(FailingExecutor { fail_node: "l".into(), counts: Arc::clone(&counts) });
+    let w = workflow_engine::WorkflowWorker::new(store.clone(), exec, workflow_engine::WorkerConfig::default())
+        .scoped_to_tenant(&tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+
+    assert_eq!(store.run_status(&tenant, run_id).await.unwrap(), Some(RunStatus::Failed));
+    let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
+    // j は前段失敗のため決して ready にならず cancelled（実行されない・副作用防止）。
+    let j = statuses.iter().find(|(p, _)| p == "j").unwrap();
+    assert_eq!(j.1, StepStatus::Cancelled, "join は cancelled で実行されない");
+    assert_eq!(counts.get("j"), 0, "cancelled ノードは実行されない");
+}
+
 async fn create_run(store: &RunStore, tenant: &str, ir: &Value) -> uuid::Uuid {
     let parsed = workflow_engine::WorkflowIr::from_json(ir).unwrap();
     let graph = RunGraph::build(&parsed);

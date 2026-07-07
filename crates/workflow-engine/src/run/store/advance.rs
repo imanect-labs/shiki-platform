@@ -42,6 +42,23 @@ pub(super) async fn checkpoint_and_advance(
     let tenant_id = &claimed.tenant_id;
     let run_id = claimed.run_id;
 
+    // **run 行を FOR UPDATE で確保して checkpoint を run 単位で直列化する。** 並行 fan-out/fan-in の
+    // checkpoint が同時に走ると (a) run_event の seq 採番が衝突して PK エラーで丸ごと巻き戻り
+    // step 再実行を招く、(b) join の両前段が互いの terminal を見られず join を pending のまま
+    // 取り残す、という不整合が起きる。run 行ロックで前進 TX を直列化し双方を防ぐ（engine.md §4.1）。
+    let run_exists: Option<Uuid> = sqlx::query_scalar(
+        "SELECT run_id FROM workflow_run WHERE tenant_id = $1 AND run_id = $2 FOR UPDATE",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(map_db)?;
+    if run_exists.is_none() {
+        tx.rollback().await.map_err(map_db)?;
+        return Ok(false);
+    }
+
     // fencing 検証（ゾンビ書込拒否）。現在の fencing_token が claim 時と一致するか。
     let current_fencing: Option<i64> = sqlx::query_scalar(
         "SELECT fencing_token FROM step_execution \
@@ -128,6 +145,24 @@ pub(super) async fn checkpoint_and_advance(
     )
     .await?;
 
+    // fail_run（既定）で step が失敗したら run を即 failed 化し、残る非 terminal step を cancelled に
+    // する。こうしないと ready/running の兄弟が run 失敗後も claim され副作用を起こし得る（P1）。
+    if !result.ok {
+        cancel_remaining_steps(&mut tx, tenant_id, run_id).await?;
+        sqlx::query(
+            "UPDATE workflow_run SET status = 'failed', finished_at = now(), updated_at = now() \
+             WHERE tenant_id = $1 AND run_id = $2 AND status = 'running'",
+        )
+        .bind(tenant_id)
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        append_event(&mut tx, tenant_id, run_id, RunEventKind::RunFailed, &Value::Null).await?;
+        tx.commit().await.map_err(map_db)?;
+        return Ok(true);
+    }
+
     // 後続 readiness 化＋skip 伝播（fixpoint・全 step を読んでメモリで判定し書き戻す）。
     advance_downstream(&mut tx, tenant_id, run_id, graph).await?;
 
@@ -136,6 +171,26 @@ pub(super) async fn checkpoint_and_advance(
 
     tx.commit().await.map_err(map_db)?;
     Ok(true)
+}
+
+/// run 失敗時に残る非 terminal step を cancelled 化する（以後 claim されない）。
+async fn cancel_remaining_steps(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    run_id: Uuid,
+) -> Result<(), RunStoreError> {
+    sqlx::query(
+        "UPDATE step_execution SET status = 'cancelled', lease_owner = NULL, \
+         lease_expires_at = NULL, updated_at = now() \
+         WHERE tenant_id = $1 AND run_id = $2 \
+           AND status IN ('pending', 'ready', 'running')",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    Ok(())
 }
 
 /// pending の step を fixpoint で ready/skipped 化する（skip 伝播）。
@@ -176,6 +231,15 @@ async fn advance_downstream(
                 Readiness::Ready => {
                     set_step_status(tx, tenant_id, run_id, node_id, StepStatus::Ready, true)
                         .await?;
+                    // ready 遷移を run_event に記録する（SSE/replay が step 状態を正しく追える）。
+                    append_event(
+                        tx,
+                        tenant_id,
+                        run_id,
+                        RunEventKind::StepReady,
+                        &json!({ "step": node_id }),
+                    )
+                    .await?;
                     changed = true;
                 }
                 Readiness::Skip => {
