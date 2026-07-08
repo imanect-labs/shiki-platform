@@ -74,7 +74,7 @@ impl AgentOptions {
     pub fn autonomous(
         max_steps: usize,
         deadline: Option<Instant>,
-        max_tokens: u64,
+        max_total_tokens: u64,
         max_cost_usd_micros: i64,
     ) -> Self {
         AgentOptions {
@@ -82,9 +82,10 @@ impl AgentOptions {
             system: None,
             model: None,
             effort: None,
+            // 1 生成あたりの出力上限（`Budget.max_tokens`＝セッション累積上限とは別概念）。
             max_tokens: Some(4096),
             allow_confirmed_tools: false,
-            budget: Budget::autonomous(max_steps, deadline, max_tokens, max_cost_usd_micros),
+            budget: Budget::autonomous(max_steps, deadline, max_total_tokens, max_cost_usd_micros),
             // 既定: 約 24k トークンで古いツール出力を畳み、直近 6 メッセージは残す。
             context_soft_limit_tokens: 24_000,
             context_keep_recent: 6,

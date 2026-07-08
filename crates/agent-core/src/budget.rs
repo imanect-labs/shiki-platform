@@ -55,6 +55,8 @@ pub struct Budget {
     pub max_steps: usize,
     /// 全体デッドライン（超えたらステップ境界で停止）。
     pub deadline: Option<Instant>,
+    /// run 開始時刻（`deadline` があるとき経過割合で時間警告を出すために保持）。
+    pub started_at: Option<Instant>,
     /// 累積トークン（prompt+completion）上限。
     pub max_tokens: Option<u64>,
     /// 累積コスト（マイクロ USD）上限。
@@ -70,6 +72,7 @@ impl Budget {
         Budget {
             max_steps,
             deadline: None,
+            started_at: None,
             max_tokens: None,
             max_cost_usd_micros: None,
             warn_at_fraction: 0.8,
@@ -87,6 +90,8 @@ impl Budget {
         Budget {
             max_steps,
             deadline,
+            // deadline があるときのみ開始時刻を控える（経過割合で時間警告を出すため）。
+            started_at: deadline.map(|_| Instant::now()),
             max_tokens: Some(max_tokens),
             max_cost_usd_micros: Some(max_cost_usd_micros),
             warn_at_fraction: 0.8,
@@ -122,6 +127,14 @@ impl Budget {
         let frac = self.warn_at_fraction.clamp(0.0, 1.0);
         if fraction_reached(spent.steps as u64, self.max_steps as u64, frac) {
             return BudgetCheck::Warn(BudgetKind::Steps, spent.steps as u64, self.max_steps as u64);
+        }
+        // 時間: 開始からの経過が deadline までの割合で frac に達したら警告（秒単位・突然停止を避ける）。
+        if let (Some(start), Some(deadline)) = (self.started_at, self.deadline) {
+            let total = deadline.saturating_duration_since(start).as_secs();
+            let elapsed = now.saturating_duration_since(start).as_secs();
+            if fraction_reached(elapsed, total, frac) {
+                return BudgetCheck::Warn(BudgetKind::Time, elapsed, total);
+            }
         }
         if let Some(max) = self.max_tokens {
             if fraction_reached(spent.tokens, max, frac) {
@@ -221,6 +234,25 @@ mod tests {
         );
         // 79% は Ok（steps/cost も未達）。
         assert_eq!(b.check(&spent(1, 79, 0), Instant::now()), BudgetCheck::Ok);
+    }
+
+    #[test]
+    fn warns_before_time_deadline() {
+        let start = Instant::now();
+        // 100 秒 deadline。経過 80%（80 秒）で Time 警告、79 秒は Ok。
+        let b = Budget {
+            started_at: Some(start),
+            deadline: Some(start + Duration::from_secs(100)),
+            ..Budget::chat(1000)
+        };
+        assert_eq!(
+            b.check(&spent(1, 0, 0), start + Duration::from_secs(80)),
+            BudgetCheck::Warn(BudgetKind::Time, 80, 100)
+        );
+        assert_eq!(
+            b.check(&spent(1, 0, 0), start + Duration::from_secs(79)),
+            BudgetCheck::Ok
+        );
     }
 
     #[test]

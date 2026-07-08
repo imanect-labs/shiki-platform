@@ -76,9 +76,9 @@ pub async fn run_agent(
     let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
     let tool_defs = build_tool_defs(tools, opts.profile);
 
-    // 再開 or 新規開始の状態。
+    // 再開 or 新規開始の状態。ループ検出器はチェックポイントから復元する（resume で失敗履歴を失わない）。
     let mut state = resume.unwrap_or_else(|| Checkpoint::start(messages));
-    let mut detector = LoopDetector::default();
+    let mut detector = state.loop_detector.clone();
     let mut warned: std::collections::HashSet<crate::budget::BudgetKind> =
         std::collections::HashSet::new();
 
@@ -118,6 +118,8 @@ pub async fn run_agent(
             &mut detector,
         )
         .await?;
+        // ステップ境界でループ検出器の状態をチェックポイントへ畳み込む（中断/再開に耐える）。
+        state.loop_detector = detector.clone();
         match step_outcome {
             StepOutcome::Continue => {}
             StepOutcome::Stop(stop) => break stop,

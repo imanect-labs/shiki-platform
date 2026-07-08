@@ -11,7 +11,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 /// ツール呼び出しの署名（名前＋入力ダイジェスト＋エラー有無）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Signature {
     name_hash: u64,
     input_hash: u64,
@@ -19,7 +19,9 @@ struct Signature {
 }
 
 /// 失敗ループ検出器。直近 `window` 件の署名を保持する。
-#[derive(Debug, Clone)]
+///
+/// チェックポイントに載せて中断/再開でも失敗履歴を引き継ぐ（resume で検出がリセットされない・5.5）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoopDetector {
     window: usize,
     /// 同一署名エラーの連続回数の閾値（これに達したらループ）。
