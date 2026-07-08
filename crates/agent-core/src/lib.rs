@@ -51,4 +51,5 @@ pub use tools::{
 };
 pub use workspace::{WorkspaceEntry, WorkspaceStore, WorkspaceWrite};
 // サンドボックス契約を再輸出（chat は agent-core 経由で code_interpreter を配線する）。
-pub use sandbox_client::Sandbox;
+// `SandboxBackend` は admin ポリシーで隔離ティアを選ぶ導線で chat 側が渡す。
+pub use sandbox_client::{Sandbox, SandboxBackend};

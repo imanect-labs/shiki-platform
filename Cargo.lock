@@ -4927,6 +4927,7 @@ dependencies = [
  "proptest",
  "prost",
  "protoc-bin-vendored",
+ "serde",
  "thiserror 2.0.18",
  "tokio",
  "tonic",

@@ -212,6 +212,11 @@ pub(crate) async fn wire_chat(
         model: config.llm.default_model.clone(),
         lease_secs: config.chat.lease_secs,
         max_steps: config.chat.max_steps,
+        // コード実行系の隔離ティア（admin ポリシー）。未指定は既定（wasm）。
+        sandbox_backend: config
+            .chat
+            .sandbox_backend
+            .unwrap_or_else(|| chat::WorkerConfig::default().sandbox_backend),
         // 自律プロファイルの既定（予算/ステップ/software）は WorkerConfig::default を踏襲する。
         ..chat::WorkerConfig::default()
     };
@@ -339,6 +344,8 @@ pub(crate) async fn wire_workflow(
         search: search.cloned(),
         gateway,
         sandbox,
+        // code_interpreter の隔離ティアは chat と同一の admin ポリシー（単一ソース）。
+        sandbox_backend: config.chat.sandbox_backend.unwrap_or_default(),
         secrets: secrets.cloned(),
         http: http.clone(),
         redis_url: Some(config.session.redis_url.clone()),

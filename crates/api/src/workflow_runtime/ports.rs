@@ -31,6 +31,8 @@ pub struct ProdNodePorts {
     pub search: Option<Arc<rag::SearchService>>,
     pub gateway: Arc<LlmGateway>,
     pub sandbox: Option<Arc<dyn Sandbox>>,
+    /// コード実行系（agent_invoke）の隔離ティア（admin ポリシー・design §4.6）。
+    pub sandbox_backend: sandbox_client::SandboxBackend,
     pub secrets: Option<Arc<SecretStore>>,
     pub launcher: WorkflowRunLauncher,
     /// http.request の外部送信クライアント（リダイレクト非追従の別クライアントも内部で使う）。
@@ -227,8 +229,10 @@ impl NodePorts for ProdNodePorts {
             .sandbox
             .as_ref()
             .ok_or_else(|| PortError::forbidden("sandbox が未構成です"))?;
-        // capability 縮小のみ: egress 全遮断の wasm ティア既定 spec（ノード設定で拡大不能）。
+        // capability 縮小のみ: egress 全遮断の code_interpreter spec（ノード設定で egress/権限は拡大不能）。
+        // 隔離ティアだけは admin ポリシーに従う（wasm→gVisor は縮小方向＝より強い隔離なので不変条件を破らない）。
         let spec = SandboxSpec::code_interpreter(
+            self.sandbox_backend,
             ec.tenant_id.clone(),
             ec.org.clone(),
             ec.principal.clone(),

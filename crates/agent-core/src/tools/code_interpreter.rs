@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use authz::AuthContext;
-use sandbox_client::{ExecRequest, Sandbox, SandboxSpec};
+use sandbox_client::{ExecRequest, Sandbox, SandboxBackend, SandboxSpec};
 
 use super::artifacts::collect_artifacts;
 use super::sandbox_exec::{collect_output, truncate};
@@ -18,11 +18,21 @@ pub struct CodeInterpreterTool {
     sandbox: Arc<dyn Sandbox>,
     /// 成果物の保存先（発話ユーザー権限で保存）。未配線なら成果物は回収しない。
     artifacts: Option<Arc<dyn ArtifactStore>>,
+    /// 隔離ティア（admin ポリシー・design §4.6）。native Python が速い gVisor 等を選べる。既定は wasm。
+    backend: SandboxBackend,
 }
 
 impl CodeInterpreterTool {
-    pub fn new(sandbox: Arc<dyn Sandbox>, artifacts: Option<Arc<dyn ArtifactStore>>) -> Self {
-        CodeInterpreterTool { sandbox, artifacts }
+    pub fn new(
+        sandbox: Arc<dyn Sandbox>,
+        artifacts: Option<Arc<dyn ArtifactStore>>,
+        backend: SandboxBackend,
+    ) -> Self {
+        CodeInterpreterTool {
+            sandbox,
+            artifacts,
+            backend,
+        }
     }
 }
 
@@ -71,6 +81,7 @@ impl Tool for CodeInterpreterTool {
         }
 
         let spec = SandboxSpec::code_interpreter(
+            self.backend,
             ctx.tenant_id.clone(),
             ctx.org.clone(),
             ctx.principal.id.clone(),
@@ -231,7 +242,7 @@ mod tests {
             exit_code: 0,
             artifacts: Vec::new(),
         }));
-        let tool = CodeInterpreterTool::new(sandbox.clone(), None);
+        let tool = CodeInterpreterTool::new(sandbox.clone(), None, SandboxBackend::Wasm);
         let out = tool
             .call(&ctx(), serde_json::json!({"code": "print(42)"}), None)
             .await
@@ -243,6 +254,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn selected_backend_flows_into_spec() {
+        // admin ポリシーで選んだ隔離ティア（gVisor）が spec に反映される。
+        let sandbox = Arc::new(FakeSandbox::new().with_exec(FakeExecResult {
+            stdout: b"ok\n".to_vec(),
+            stderr: Vec::new(),
+            exit_code: 0,
+            artifacts: Vec::new(),
+        }));
+        let tool = CodeInterpreterTool::new(sandbox.clone(), None, SandboxBackend::Gvisor);
+        tool.call(&ctx(), serde_json::json!({"code": "print(1)"}), None)
+            .await
+            .expect("ok");
+        assert_eq!(sandbox.created_specs()[0].backend, SandboxBackend::Gvisor);
+    }
+
+    #[tokio::test]
     async fn nonzero_exit_is_error() {
         let sandbox = Arc::new(FakeSandbox::new().with_exec(FakeExecResult {
             stdout: Vec::new(),
@@ -250,7 +277,7 @@ mod tests {
             exit_code: 1,
             artifacts: Vec::new(),
         }));
-        let tool = CodeInterpreterTool::new(sandbox, None);
+        let tool = CodeInterpreterTool::new(sandbox, None, SandboxBackend::Wasm);
         let out = tool
             .call(
                 &ctx(),
@@ -276,7 +303,8 @@ mod tests {
             ],
         }));
         let store = Arc::new(FakeArtifactStore::default());
-        let tool = CodeInterpreterTool::new(sandbox.clone(), Some(store.clone()));
+        let tool =
+            CodeInterpreterTool::new(sandbox.clone(), Some(store.clone()), SandboxBackend::Wasm);
         let out = tool
             .call(&ctx(), serde_json::json!({"code": "write csv"}), None)
             .await
@@ -307,7 +335,7 @@ mod tests {
             fail: true,
             ..Default::default()
         });
-        let tool = CodeInterpreterTool::new(sandbox, Some(store));
+        let tool = CodeInterpreterTool::new(sandbox, Some(store), SandboxBackend::Wasm);
         let out = tool
             .call(&ctx(), serde_json::json!({"code": "write"}), None)
             .await
@@ -327,7 +355,7 @@ mod tests {
             artifacts: vec![("/workspace/partial.csv".into(), b"a".to_vec())],
         }));
         let store = Arc::new(FakeArtifactStore::default());
-        let tool = CodeInterpreterTool::new(sandbox, Some(store.clone()));
+        let tool = CodeInterpreterTool::new(sandbox, Some(store.clone()), SandboxBackend::Wasm);
         let out = tool
             .call(&ctx(), serde_json::json!({"code": "boom"}), None)
             .await
@@ -340,7 +368,7 @@ mod tests {
     #[tokio::test]
     async fn missing_code_is_invalid() {
         let sandbox = Arc::new(FakeSandbox::new());
-        let tool = CodeInterpreterTool::new(sandbox, None);
+        let tool = CodeInterpreterTool::new(sandbox, None, SandboxBackend::Wasm);
         let err = tool
             .call(&ctx(), serde_json::json!({}), None)
             .await

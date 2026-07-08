@@ -121,6 +121,7 @@ mod tests {
         });
         backend
             .create(SandboxSpec::code_interpreter(
+                sandbox_client::SandboxBackend::Wasm,
                 "t".into(),
                 "o".into(),
                 "u:1".into(),

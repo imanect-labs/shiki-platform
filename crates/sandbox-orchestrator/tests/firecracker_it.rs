@@ -47,9 +47,12 @@ fn gated() -> Option<Env> {
 }
 
 fn fc_spec() -> SandboxSpec {
-    let mut s = SandboxSpec::code_interpreter("t".into(), "o".into(), "u:1".into());
-    s.backend = SandboxBackend::Firecracker;
-    s
+    SandboxSpec::code_interpreter(
+        SandboxBackend::Firecracker,
+        "t".into(),
+        "o".into(),
+        "u:1".into(),
+    )
 }
 
 async fn collect_stdout(inst: &Arc<dyn Instance>, req: ExecRequest) -> (String, Option<i32>) {

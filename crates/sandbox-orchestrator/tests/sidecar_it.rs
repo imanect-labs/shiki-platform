@@ -11,7 +11,7 @@
 )]
 
 use futures::StreamExt;
-use sandbox_client::{ExecEvent, ExecRequest, SandboxSpec};
+use sandbox_client::{ExecEvent, ExecRequest, SandboxBackend, SandboxSpec};
 use sandbox_orchestrator::backend::wasm::WasmBackend;
 use sandbox_orchestrator::backend::Backend;
 use sandbox_orchestrator::config::OrchestratorEnv;
@@ -47,7 +47,12 @@ async fn real_sidecar_runs_python() {
         return;
     }
     let backend = WasmBackend::new(None, OrchestratorEnv::default());
-    let spec = SandboxSpec::code_interpreter("t".into(), "o".into(), "user:1".into());
+    let spec = SandboxSpec::code_interpreter(
+        SandboxBackend::Wasm,
+        "t".into(),
+        "o".into(),
+        "user:1".into(),
+    );
     let instance = backend.create(spec).await.expect("create sandbox");
 
     let mut stream = instance
@@ -75,6 +80,7 @@ async fn real_sidecar_numpy() {
     let backend = WasmBackend::new(None, OrchestratorEnv::default());
     let instance = backend
         .create(SandboxSpec::code_interpreter(
+            SandboxBackend::Wasm,
             "t".into(),
             "o".into(),
             "user:1".into(),
@@ -103,6 +109,7 @@ async fn real_sidecar_egress_blocked_by_default() {
     let backend = WasmBackend::new(None, OrchestratorEnv::default());
     let instance = backend
         .create(SandboxSpec::code_interpreter(
+            SandboxBackend::Wasm,
             "t".into(),
             "o".into(),
             "user:1".into(),
@@ -141,6 +148,7 @@ async fn real_sidecar_process_isolation() {
     let backend = WasmBackend::new(None, OrchestratorEnv::default());
     let a = backend
         .create(SandboxSpec::code_interpreter(
+            SandboxBackend::Wasm,
             "t".into(),
             "o".into(),
             "user:1".into(),
@@ -149,6 +157,7 @@ async fn real_sidecar_process_isolation() {
         .expect("create a");
     let b = backend
         .create(SandboxSpec::code_interpreter(
+            SandboxBackend::Wasm,
             "t".into(),
             "o".into(),
             "user:2".into(),
@@ -183,6 +192,7 @@ async fn real_sidecar_shell_reaches_guest() {
     let backend = WasmBackend::new(None, OrchestratorEnv::default());
     let instance = backend
         .create(SandboxSpec::code_interpreter(
+            SandboxBackend::Wasm,
             "t".into(),
             "o".into(),
             "user:1".into(),
@@ -217,6 +227,7 @@ async fn real_sidecar_file_roundtrip() {
     let backend = WasmBackend::new(None, OrchestratorEnv::default());
     let instance = backend
         .create(SandboxSpec::code_interpreter(
+            SandboxBackend::Wasm,
             "t".into(),
             "o".into(),
             "user:1".into(),
@@ -258,7 +269,12 @@ async fn real_sidecar_guest_commands_run() {
             ..OrchestratorEnv::default()
         },
     );
-    let mut spec = SandboxSpec::code_interpreter("t".into(), "o".into(), "user:1".into());
+    let mut spec = SandboxSpec::code_interpreter(
+        SandboxBackend::Wasm,
+        "t".into(),
+        "o".into(),
+        "user:1".into(),
+    );
     spec.software = vec!["coreutils".into()];
     let instance = backend.create(spec).await.expect("create with commands");
 
@@ -313,7 +329,12 @@ async fn real_sidecar_guest_commands_run() {
 async fn software_requests_fail_closed_without_staging() {
     // sidecar 不要（resolve は spawn 前）なので gate しない。
     let backend = WasmBackend::new(None, OrchestratorEnv::default());
-    let mut spec = SandboxSpec::code_interpreter("t".into(), "o".into(), "user:1".into());
+    let mut spec = SandboxSpec::code_interpreter(
+        SandboxBackend::Wasm,
+        "t".into(),
+        "o".into(),
+        "user:1".into(),
+    );
     spec.software = vec!["coreutils".into()];
     let Err(err) = backend.create(spec).await else {
         panic!("must fail");

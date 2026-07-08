@@ -185,6 +185,7 @@ impl Harness {
             search,
             gateway: Arc::clone(&self.gateway),
             sandbox,
+            sandbox_backend: sandbox_client::SandboxBackend::Wasm,
             secrets: None,
             launcher: self.launcher.clone(),
             http: reqwest::Client::new(),
@@ -411,6 +412,8 @@ async fn combined_pipeline_covers_many_node_types() {
         specs[0].egress.static_allow.is_empty() && specs[0].egress.dynamic_allow.is_empty(),
         "agent サンドボックスは egress 遮断（allowlist 空＝capability 縮小のみ）"
     );
+    // 隔離ティアは admin ポリシー（ここでは既定 wasm）が spec に反映される。
+    assert_eq!(specs[0].backend, sandbox_client::SandboxBackend::Wasm);
 }
 
 /// テスト用に url プレースホルダを差し替える（json! で動的 URL を host リテラルに埋めるため）。

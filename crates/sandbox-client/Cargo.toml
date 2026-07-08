@@ -21,6 +21,8 @@ prost = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 thiserror = { workspace = true }
+# SandboxBackend の serde 表現（admin ポリシー設定から backend ティアを選ぶ導線）。
+serde = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

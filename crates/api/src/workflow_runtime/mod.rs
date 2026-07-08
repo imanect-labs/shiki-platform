@@ -101,6 +101,8 @@ pub struct RuntimeDeps {
     pub search: Option<Arc<rag::SearchService>>,
     pub gateway: Arc<llm_gateway::LlmGateway>,
     pub sandbox: Option<Arc<dyn sandbox_client::Sandbox>>,
+    /// コード実行系（agent_invoke ノード）の隔離ティア（admin ポリシー・chat と同一の単一ソース）。
+    pub sandbox_backend: sandbox_client::SandboxBackend,
     pub secrets: Option<Arc<secrets::SecretStore>>,
     pub http: reqwest::Client,
     pub redis_url: Option<String>,
@@ -117,6 +119,7 @@ async fn build_prod_executor(
         search: deps.search.clone(),
         gateway: Arc::clone(&deps.gateway),
         sandbox: deps.sandbox.clone(),
+        sandbox_backend: deps.sandbox_backend,
         secrets: deps.secrets.clone(),
         launcher: launcher.clone(),
         http: deps.http.clone(),
