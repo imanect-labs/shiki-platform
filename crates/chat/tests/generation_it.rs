@@ -275,6 +275,7 @@ async fn cancel_is_cooperative_and_visible_to_claim() {
             chat::RunStatus::Cancelled,
             &[],
             None,
+            None,
         )
         .await
         .unwrap();

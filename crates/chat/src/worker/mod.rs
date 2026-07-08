@@ -211,20 +211,19 @@ impl ChatWorker {
         let ctx = build_ctx(&run);
         let fencing = run.fencing_token;
 
-        // 明示停止済みなら即キャンセル確定。
+        // 明示停止済みなら即キャンセル確定（終端イベントは finalize と同一 TX）。
         if run.cancel_requested {
-            let _ = self
-                .store
-                .append_stream_event(
+            self.store
+                .finalize_run(
                     run_id,
                     fencing,
-                    &StreamEventKind::Status {
+                    RunStatus::Cancelled,
+                    &[],
+                    None,
+                    Some(&StreamEventKind::Status {
                         status: RunStatus::Cancelled,
-                    },
+                    }),
                 )
-                .await;
-            self.store
-                .finalize_run(run_id, fencing, RunStatus::Cancelled, &[], None)
                 .await?;
             return Ok(());
         }
@@ -276,34 +275,32 @@ impl ChatWorker {
 
         match gen_result {
             Ok(()) if cancelled => {
-                let _ = self
-                    .store
-                    .append_stream_event(
+                self.store
+                    .finalize_run(
                         run_id,
                         fencing,
-                        &StreamEventKind::Status {
+                        RunStatus::Cancelled,
+                        &content,
+                        None,
+                        Some(&StreamEventKind::Status {
                             status: RunStatus::Cancelled,
-                        },
+                        }),
                     )
-                    .await;
-                self.store
-                    .finalize_run(run_id, fencing, RunStatus::Cancelled, &content, None)
                     .await?;
             }
             Ok(()) => {
                 self.store
-                    .finalize_run(run_id, fencing, RunStatus::Done, &content, None)
-                    .await?;
-                let _ = self
-                    .store
-                    .append_stream_event(
+                    .finalize_run(
                         run_id,
                         fencing,
-                        &StreamEventKind::Done {
+                        RunStatus::Done,
+                        &content,
+                        None,
+                        Some(&StreamEventKind::Done {
                             message_id: run.message_id,
-                        },
+                        }),
                     )
-                    .await;
+                    .await?;
             }
             Err(e) => {
                 // 生成失敗→retry のため確定しない（リース失効で takeover・最終試行で force_fail）。

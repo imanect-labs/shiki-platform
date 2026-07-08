@@ -28,7 +28,7 @@ use crate::model::{Attachment, ContentBlock, RunStatus, StreamEvent, StreamEvent
 pub const CHAT_GENERATION_QUEUE: &str = "chat_generation";
 
 /// `generation_run` の durable テーブル記述子（migrations/0012_chat.sql の列に対応）。
-const RUN_SPEC: RunTableSpec = RunTableSpec {
+pub(super) const RUN_SPEC: RunTableSpec = RunTableSpec {
     table: "generation_run",
     status_column: "status",
     fencing_column: "fencing_token",
@@ -41,7 +41,7 @@ const RUN_SPEC: RunTableSpec = RunTableSpec {
 };
 
 /// `generation_event` の durable テーブル記述子。
-const EVENT_SPEC: EventTableSpec = EventTableSpec {
+pub(super) const EVENT_SPEC: EventTableSpec = EventTableSpec {
     table: "generation_event",
     seq_column: "seq",
     kind_column: "type",
@@ -49,7 +49,7 @@ const EVENT_SPEC: EventTableSpec = EventTableSpec {
 };
 
 /// run 行のキーカラム（chat は run_id 単独キー。workflow は tenant 複合キーで同じ形に乗る）。
-const RUN_KEY_COLUMNS: &[&str] = &["run_id"];
+pub(super) const RUN_KEY_COLUMNS: &[&str] = &["run_id"];
 
 /// `post_message` の結果（202 で返す）。
 #[derive(Debug, Clone)]
@@ -288,8 +288,13 @@ impl ChatStore {
         Ok(seq)
     }
 
-    /// run を確定する（message.content を projection として書き＋status を端末状態へ）。
+    /// run を確定する（message.content projection＋端末 status＋終端イベントを**単一 TX**で）。
     /// fencing 一致時のみ。戻り `false` = fencing 不一致（ゾンビ）で no-op。
+    ///
+    /// `terminal_event`（Done / cancelled Status）は status 更新と**同一 TX**でコミットする。
+    /// 分割コミットだと (a) status が先: SSE 側が「端末 status＋残イベント無し」を観測して
+    /// 終端イベント未配信のままストリームを閉じる、(b) イベントが先: Done 配信時点で
+    /// projection 未確定、のどちらかの race が生じるため（worker_it の flake の根本原因）。
     pub async fn finalize_run(
         &self,
         run_id: Uuid,
@@ -297,6 +302,7 @@ impl ChatStore {
         status: RunStatus,
         content: &[ContentBlock],
         last_error: Option<&str>,
+        terminal_event: Option<&StreamEventKind>,
     ) -> Result<bool, ChatError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;
         let kv = [KeyValue::Uuid(run_id)];
@@ -321,7 +327,33 @@ impl ChatStore {
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;
+        // 終端イベントも同一 TX で追記し、publish は commit 後（DB=truth・Redis=起床通知）。
+        let mut appended: Option<StreamEvent> = None;
+        if let Some(event) = terminal_event {
+            let payload = serde_json::to_value(event)
+                .map_err(|e| ChatError::Internal(format!("event serialize: {e}")))?;
+            let seq = durable::append_event(
+                &mut *tx,
+                &RUN_SPEC,
+                &EVENT_SPEC,
+                &Key::new(RUN_KEY_COLUMNS, &kv),
+                event.tag(),
+                &payload,
+                fencing_token,
+            )
+            .await
+            .map_err(map_db)?;
+            appended = seq.map(|seq| StreamEvent {
+                seq,
+                event: event.clone(),
+            });
+        }
         tx.commit().await.map_err(map_db)?;
+        if let Some(se) = appended {
+            if let Ok(s) = serde_json::to_string(&se) {
+                self.publish_event(run_id, &s).await;
+            }
+        }
         Ok(true)
     }
 
@@ -406,81 +438,12 @@ impl ChatStore {
             .map(|(seq, event)| StreamEvent { seq, event })
             .collect())
     }
-
-    /// run を強制 failed 化し、Error イベントを追記する（fencing 無視）。
-    ///
-    /// 生成の最終試行失敗（jobq DLQ 行き）と孤児回収 sweeper が使う。既に端末状態なら no-op。
-    /// UI に失敗を明示するため Error イベントを 1 件足してから status を failed にする。
-    pub async fn force_fail_run(&self, run_id: Uuid, message: &str) -> Result<bool, ChatError> {
-        let event = StreamEventKind::Error {
-            message: message.to_string(),
-        };
-        let payload = serde_json::to_value(&event)
-            .map_err(|e| ChatError::Internal(format!("event serialize: {e}")))?;
-        // 端末でない run にだけ Error を追記（次 seq・fencing 無視の backstop）。
-        let kv = [KeyValue::Uuid(run_id)];
-        let seq = durable::append_event_unfenced(
-            &self.db,
-            &RUN_SPEC,
-            &EVENT_SPEC,
-            &Key::new(RUN_KEY_COLUMNS, &kv),
-            event.tag(),
-            &payload,
-            &["queued", "running"],
-        )
-        .await
-        .map_err(map_db)?;
-
-        let Some(seq) = seq else {
-            return Ok(false); // 既に端末状態
-        };
-        sqlx::query(
-            "UPDATE generation_run SET status = 'failed', last_error = $2, \
-             lease_until = NULL, updated_at = now() WHERE run_id = $1",
-        )
-        .bind(run_id)
-        .bind(message)
-        .execute(&self.db)
-        .await
-        .map_err(map_db)?;
-
-        let se = StreamEvent { seq, event };
-        if let Ok(s) = serde_json::to_string(&se) {
-            self.publish_event(run_id, &s).await;
-        }
-        Ok(true)
-    }
-
-    /// 孤児回収 sweeper（backstop）: リースが大きく失効した running run を failed 化する。
-    /// 主経路は jobq の再配信＋[`claim_run`] takeover。ここはジョブが失われた場合の保険。
-    /// 各孤児へ Error イベントを追記して UI にも失敗を反映する。
-    pub async fn reap_orphaned_runs(&self, grace_secs: i64) -> Result<u64, ChatError> {
-        let ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT run_id FROM generation_run \
-             WHERE status = 'running' AND lease_until IS NOT NULL \
-               AND lease_until < now() - ($1 || ' seconds')::interval \
-             LIMIT 100",
-        )
-        .bind(grace_secs)
-        .fetch_all(&self.db)
-        .await
-        .map_err(map_db)?;
-        let mut n = 0;
-        for id in ids {
-            if self
-                .force_fail_run(id, "orphaned (lease expired)")
-                .await
-                .unwrap_or(false)
-            {
-                n += 1;
-            }
-        }
-        Ok(n)
-    }
 }
 
+// 強制失敗・孤児回収（fencing 無視の backstop）は [`super::reaper`] に分離。
+
 #[allow(clippy::needless_pass_by_value)]
-fn map_db(e: sqlx::Error) -> ChatError {
+pub(super) fn map_db(e: sqlx::Error) -> ChatError {
     ChatError::Internal(format!("db: {e}"))
 }
 

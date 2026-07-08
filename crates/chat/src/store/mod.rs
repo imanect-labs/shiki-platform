@@ -8,6 +8,7 @@
 //! **best-effort の起床通知**で、正しさは常に DB replay が担保する（取りこぼしても DB で補填）。
 
 mod approval;
+mod reaper;
 mod runs;
 mod sharing;
 mod stream;
