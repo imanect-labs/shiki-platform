@@ -284,6 +284,10 @@ async fn run_step(
                         content: msg.clone(),
                     })
                     .await?;
+                    // 却下も失敗としてループ検出へ流す（同じ却下操作の反復を安全停止する）。
+                    if opts.profile.is_autonomous() && detector.observe(&c.name, &c.input, true) {
+                        looping = true;
+                    }
                     ToolResultParts {
                         content: msg,
                         is_error: true,
@@ -446,9 +450,13 @@ async fn authorize(
     sink: &mut dyn EventSink,
 ) -> Result<Authz, AgentError> {
     // 未知ツールは execute_tool 側で unknown エラーにするため素通し。
+    // egress（ネットワーク）ツールは requires_confirmation=false だが、**自律版では承認ゲート対象**
+    // にする（Task 5.6「egress は承認ゲート」）。Chat 版は従来どおり素通し（承認者が無いため）。
+    let is_egress = matches!(call.name.as_str(), "web_fetch" | "web_search");
     let needs_confirm = tool_map
         .get(call.name.as_str())
-        .is_some_and(|t| t.requires_confirmation());
+        .is_some_and(|t| t.requires_confirmation())
+        || (opts.profile.is_autonomous() && is_egress);
     if !needs_confirm || opts.approval.is_pre_authorized(&call.name) {
         return Ok(Authz::Proceed);
     }
