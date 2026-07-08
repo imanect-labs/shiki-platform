@@ -117,7 +117,7 @@ impl ChatWorker {
         let query = history.last().map(message_preview).unwrap_or_default();
         let mut system = self.config.system_prompt.clone();
         if let Some(search) = &self.search {
-            match run_doc_search(search, ctx, &query, None, None).await {
+            match run_doc_search(search, ctx, &query, None, run.trace_id.as_deref()).await {
                 Ok(result) => {
                     system.push_str("\n\n# 参考（社内文書検索の結果）\n");
                     system.push_str(&result.context_text);
