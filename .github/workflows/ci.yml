@@ -27,6 +27,10 @@ permissions:
 env:
   # crates.io / GitHub への一時的なネットワーク断で CI を落とさない（flake 実績あり）。
   CARGO_NET_RETRY: "10"
+  # GHA ランナー → crates.io の HTTP/2 は「Error in the HTTP2 framing layer」で落ちる実績
+  # （CARGO_NET_RETRY では救えない）。HTTP/1.1 に固定する定番回避策。ダウンロードは
+  # rust-cache が効くため直列化の影響は小さい。
+  CARGO_HTTP_MULTIPLEXING: "false"
 
 jobs:
   rust:
