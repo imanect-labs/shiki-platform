@@ -10,7 +10,7 @@ use std::sync::Arc;
 use agent_core::{AgentError, AgentEvent, Citation as AgentCitation, EventSink};
 use uuid::Uuid;
 
-use crate::model::{Citation, ContentBlock, StreamEventKind};
+use crate::model::{Citation, ContentBlock, PlanSubtask, StreamEventKind};
 use crate::store::ChatStore;
 
 /// 生成イベントの受け口（1 run 分）。
@@ -103,12 +103,10 @@ impl WorkerSink {
     }
 }
 
-/// AgentEvent → SSE イベント種別。content/ストリームに写らないイベントは `None`。
-///
-/// Phase 5 自律の計画/予算/承認/失敗回復イベントの SSE 種別は W4（可観測化）で `StreamEventKind` に
-/// 追加して結線する。Chat プロファイルはこれらを発火しないため、W1 時点では `None`（無視）で安全。
-fn to_stream_kind(event: &AgentEvent) -> Option<StreamEventKind> {
-    Some(match event {
+/// AgentEvent → SSE イベント種別。全 AgentEvent が SSE 種別へ写る（`generation_event` に append され
+/// replay 可能）。message.content への projection 有無は [`WorkerSink::accumulate`] が別に決める。
+fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
+    match event {
         AgentEvent::Text(t) => StreamEventKind::Token { text: t.clone() },
         AgentEvent::Thinking(t) => StreamEventKind::Thinking { text: t.clone() },
         AgentEvent::ToolCall { id, name, input } => StreamEventKind::ToolCall {
@@ -130,13 +128,66 @@ fn to_stream_kind(event: &AgentEvent) -> Option<StreamEventKind> {
             node_id: artifact.node_id.clone(),
             name: artifact.name.clone(),
         },
-        AgentEvent::PlanUpdated(_)
-        | AgentEvent::SubtaskUpdated { .. }
-        | AgentEvent::BudgetWarning { .. }
-        | AgentEvent::ApprovalRequested { .. }
-        | AgentEvent::ApprovalResolved { .. }
-        | AgentEvent::FailureRecovery { .. } => return None,
-    })
+        // 自律プロファイルの構造化イベント（Task 5.9 ライブ配信）。generation_event に append され
+        // replay 可能（監査・5.10）だが message.content へは projection しない。
+        AgentEvent::PlanUpdated(plan) => StreamEventKind::Plan {
+            subtasks: plan
+                .subtasks
+                .iter()
+                .map(|s| PlanSubtask {
+                    id: s.id.clone(),
+                    title: s.title.clone(),
+                    status: subtask_status_str(s.status).to_string(),
+                })
+                .collect(),
+        },
+        AgentEvent::SubtaskUpdated { id, status } => StreamEventKind::Plan {
+            // 単一サブタスク更新は最小の Plan イベントに畳む（UI は id で差し込む）。
+            subtasks: vec![PlanSubtask {
+                id: id.clone(),
+                title: String::new(),
+                status: subtask_status_str(*status).to_string(),
+            }],
+        },
+        AgentEvent::BudgetWarning { kind, used, limit } => StreamEventKind::BudgetWarning {
+            kind: kind.as_str().to_string(),
+            used: *used,
+            limit: *limit,
+        },
+        AgentEvent::ApprovalRequested {
+            tool_call_id,
+            name,
+            input,
+            reason,
+        } => StreamEventKind::ApprovalRequested {
+            tool_call_id: tool_call_id.clone(),
+            name: name.clone(),
+            input: input.clone(),
+            reason: reason.clone(),
+        },
+        AgentEvent::ApprovalResolved {
+            tool_call_id,
+            approved,
+        } => StreamEventKind::ApprovalResolved {
+            tool_call_id: tool_call_id.clone(),
+            approved: *approved,
+        },
+        AgentEvent::FailureRecovery { detail, action } => StreamEventKind::FailureRecovery {
+            detail: detail.clone(),
+            action: action.as_str().to_string(),
+        },
+    }
+}
+
+/// agent-core の `SubtaskStatus` を snake_case 文字列へ。
+fn subtask_status_str(s: agent_core::SubtaskStatus) -> &'static str {
+    use agent_core::SubtaskStatus;
+    match s {
+        SubtaskStatus::Todo => "todo",
+        SubtaskStatus::Doing => "doing",
+        SubtaskStatus::Done => "done",
+        SubtaskStatus::Blocked => "blocked",
+    }
 }
 
 /// agent-core の Citation → chat の Citation（同型フィールド）。
@@ -154,11 +205,7 @@ fn to_citation(c: &AgentCitation) -> Citation {
 #[async_trait::async_trait]
 impl EventSink for WorkerSink {
     async fn emit(&mut self, event: AgentEvent) -> Result<(), AgentError> {
-        // SSE/永続に写らないイベント（W1 時点の自律構造化イベント）は projection だけ更新して返す。
-        let Some(kind) = to_stream_kind(&event) else {
-            self.accumulate(&event);
-            return Ok(());
-        };
+        let kind = to_stream_kind(&event);
         match self
             .store
             .append_stream_event(self.run_id, self.fencing_token, &kind)
@@ -196,7 +243,7 @@ mod tests {
             },
         };
         match to_stream_kind(&ev) {
-            Some(StreamEventKind::FileRef { node_id, name }) => {
+            StreamEventKind::FileRef { node_id, name } => {
                 assert_eq!(node_id, "n1");
                 assert_eq!(name, "result.csv");
             }
@@ -205,13 +252,36 @@ mod tests {
     }
 
     #[test]
-    fn autonomous_events_do_not_stream() {
-        // 計画/予算/失敗回復イベントは SSE 種別へは写らない（W4 で結線）。
+    fn budget_warning_maps_to_sse() {
+        // 予算警告は SSE `budget_warning` へ写る（ライブ配信・Task 5.9）。
         let ev = AgentEvent::BudgetWarning {
             kind: agent_core::BudgetKind::Tokens,
             used: 8,
             limit: 10,
         };
-        assert!(to_stream_kind(&ev).is_none());
+        match to_stream_kind(&ev) {
+            StreamEventKind::BudgetWarning { kind, used, limit } => {
+                assert_eq!(kind, "tokens");
+                assert_eq!((used, limit), (8, 10));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_updated_maps_to_sse_subtasks() {
+        let mut plan = agent_core::Plan::default();
+        plan.revise(vec![agent_core::plan::SubtaskInput {
+            title: "調査".into(),
+            status: Some("doing".into()),
+        }]);
+        match to_stream_kind(&AgentEvent::PlanUpdated(plan)) {
+            StreamEventKind::Plan { subtasks } => {
+                assert_eq!(subtasks.len(), 1);
+                assert_eq!(subtasks[0].status, "doing");
+                assert_eq!(subtasks[0].title, "調査");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }
