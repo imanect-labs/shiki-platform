@@ -2,5 +2,8 @@
 
 /**
  * 宣言スコープ（declared_scopes）の閉集合。IR が宣言できる権限の天井。
+ *
+ * 将来ノード（issue #180）の要求スコープも先行予約する。Stage A で有効な部分集合は
+ * [`Scope::available_stage_a`] が返し、それ以外は V3 が保存時に拒否する。
  */
-export type Scope = "data.read" | "data.write" | "storage.read" | "storage.write" | "rag.query" | "notify.send" | "http.egress" | "workflow.start";
+export type Scope = "data.read" | "data.write" | "storage.read" | "storage.write" | "rag.query" | "notify.send" | "http.egress" | "workflow.start" | "sheet.read" | "sheet.write" | "doc.read" | "doc.write" | "memory.read" | "memory.write" | "event.publish" | "sandbox.exec";

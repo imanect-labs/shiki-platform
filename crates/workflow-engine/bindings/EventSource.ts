@@ -3,4 +3,4 @@
 /**
  * イベントトリガの source 閉集合（Stage A は storage.write のみ有効）。
  */
-export type EventSource = "storage.write" | "data.record.created" | "data.record.updated" | "data.transition";
+export type EventSource = "storage.write" | "data.record.created" | "data.record.updated" | "data.transition" | "event.custom" | "webhook.received";

@@ -19,16 +19,9 @@ pub(super) fn is_valid_workflow_name(name: &str) -> bool {
 }
 
 /// 能力ノードが必要とする宣言スコープ（scope 天井の保存時整合・engine.md §9.2）。
-/// 制御ノード（control.*）や副作用のない内部推論（llm/agent）は None。
+/// 対応の正は `vocab::required_scope`（単一定義）に委譲する。
 pub(super) fn required_scope_for(nt: NodeType) -> Option<&'static str> {
-    match nt {
-        NodeType::StorageRead | NodeType::StorageList => Some("storage.read"),
-        NodeType::StorageWrite => Some("storage.write"),
-        NodeType::RagSearch => Some("rag.query"),
-        NodeType::HttpRequest => Some("http.egress"),
-        NodeType::WorkflowStart => Some("workflow.start"),
-        _ => None,
-    }
+    crate::vocab::required_scope(nt).map(crate::vocab::Scope::as_str)
 }
 
 /// V4: 参照存在（Stage A は secret のみ・宛先束縛の事前チェック）。
