@@ -44,6 +44,23 @@ impl ChatStore {
             trace_id,
         )
         .await?;
+        // 破壊系ツールは run の **actor 権限**で実行される。承認者 ≠ actor だと、共有 thread の
+        // 別編集者が他人の権限での破壊操作を承認できてしまう（confused-deputy）。
+        // よって**承認は run の actor 本人に限定**する（起案者が自分の権限使用を確認する）。
+        let actor: Option<String> = sqlx::query_scalar(
+            "SELECT actor FROM generation_run WHERE run_id = $1 AND thread_id = $2 AND tenant_id = $3",
+        )
+        .bind(run_id)
+        .bind(thread_id)
+        .bind(&ctx.tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|e| map_db(&e))?;
+        match actor {
+            None => return Err(ChatError::NotFound),
+            Some(a) if a != ctx.principal.id => return Err(ChatError::Forbidden),
+            Some(_) => {}
+        }
         let decision = if approved { "approved" } else { "rejected" };
         let inserted = sqlx::query(
             "INSERT INTO run_approval \
