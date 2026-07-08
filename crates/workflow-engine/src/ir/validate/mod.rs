@@ -203,6 +203,17 @@ fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError
         ir.declared_scopes.iter().map(String::as_str).collect();
     for node in &ir.nodes {
         match NodeType::parse(&node.node_type) {
+            // 予約語彙（将来ノード・issue #180）: 閉集合には含まれるが現ステージでは保存不可。
+            Some(nt) if !nt.available_stage_a() => errors.push(
+                ValidationError::new(
+                    "ir.unknown_node_type",
+                    format!(
+                        "ノード種 {} は Stage A では未対応です（予約語彙）",
+                        node.node_type
+                    ),
+                )
+                .at_node(&node.id),
+            ),
             Some(nt) => {
                 // 能力ノードが必要とするスコープが declared_scopes に宣言されているか（宣言天井と
                 // ノードの整合・保存時に弾く。実行時の scope 天井ゲートで初めて落ちるのを防ぐ）。

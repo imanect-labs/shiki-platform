@@ -177,6 +177,16 @@ impl NodeExecutor for CapabilityNodeExecutor {
             _ => {}
         }
 
+        // 予約語彙（将来ノード）は保存時 V3 で弾かれるが、DB 直書き等で到達しても
+        // fail-closed で拒否する（防御の多層化）。
+        if !nt.available_stage_a() {
+            return NodeResult::fail(
+                "unsupported_stage_a",
+                format!("{node_type} は Stage A 未実装（予約語彙）"),
+                false,
+            );
+        }
+
         // scope ceiling ゲート（二重ゲートの一段目）。
         if let ScopeCeiling::Denied(_) = Self::check_ceiling(node_type, ctx) {
             self.audit.record(
@@ -205,12 +215,8 @@ impl NodeExecutor for CapabilityNodeExecutor {
             NodeType::HttpRequest => self.node_http_request(params, ctx, &ec, &r).await,
             NodeType::ScriptRun => self.node_script_run(params, ctx, &ec).await,
             NodeType::WorkflowStart => self.node_workflow_start(params, ctx, &ec, &r).await,
-            // 制御ノードは上で return 済み。
-            NodeType::ControlBranch
-            | NodeType::ControlSwitch
-            | NodeType::ControlJoin
-            | NodeType::ControlMap
-            | NodeType::ControlWait => unreachable!("制御ノードは上で処理済み"),
+            // 制御ノードは上で return 済み・予約語彙は available_stage_a ゲートで返却済み。
+            _ => unreachable!("制御ノード/予約語彙は上で処理済み"),
         };
 
         match out {
