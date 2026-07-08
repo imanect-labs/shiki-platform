@@ -12,8 +12,10 @@ use authz::AuthContext;
 use storage::{ChildSort, NodeKind, StorageError, StorageService};
 use uuid::Uuid;
 
-/// ワークスペース列挙の 1 回の取得上限（アルファ・フラット namespace のため単一ページ）。
-const LIST_LIMIT: usize = 500;
+/// 1 ページの取得件数（storage 側の 100 件クランプに合わせる）。
+const LIST_PAGE: usize = 100;
+/// ワークスペース列挙の全体上限（暴走防止・フラット namespace のアルファ既定）。
+const MAX_WORKSPACE_FILES: usize = 2000;
 
 /// `StorageService` 裏のワークスペース CRUD（shiki-server 本番配線）。
 pub struct StorageWorkspaceStore {
@@ -47,28 +49,38 @@ impl WorkspaceStore for StorageWorkspaceStore {
         ctx: &AuthContext,
         trace_id: Option<&str>,
     ) -> Result<Vec<WorkspaceEntry>, ToolError> {
-        let page = self
-            .storage
-            .list_children(
-                ctx,
-                Some(self.root_folder_id),
-                ChildSort::default(),
-                None,
-                LIST_LIMIT,
-                trace_id,
-            )
-            .await
-            .map_err(|e| map_err(e, "list"))?;
-        Ok(page
-            .items
-            .into_iter()
-            .filter(|n| n.kind == NodeKind::File)
-            .map(|n| WorkspaceEntry {
-                name: n.name,
-                // size は非負に丸めてから u64 化（負値・欠損は 0）。
-                size: u64::try_from(n.size_bytes.unwrap_or(0)).unwrap_or(0),
-            })
-            .collect())
+        // `list_children` は 1 ページ 100 件上限にクランプされるため、`next_cursor` で**全件ページング**する
+        // （100 超のワークスペースで file が切れないように）。全体上限 `MAX_WORKSPACE_FILES` で暴走を防ぐ。
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = self
+                .storage
+                .list_children(
+                    ctx,
+                    Some(self.root_folder_id),
+                    ChildSort::default(),
+                    cursor.as_deref(),
+                    LIST_PAGE,
+                    trace_id,
+                )
+                .await
+                .map_err(|e| map_err(e, "list"))?;
+            for n in page.items {
+                if n.kind == NodeKind::File {
+                    out.push(WorkspaceEntry {
+                        name: n.name,
+                        // size は非負に丸めてから u64 化（負値・欠損は 0）。
+                        size: u64::try_from(n.size_bytes.unwrap_or(0)).unwrap_or(0),
+                    });
+                }
+            }
+            match page.next_cursor {
+                Some(c) if out.len() < MAX_WORKSPACE_FILES => cursor = Some(c),
+                _ => break,
+            }
+        }
+        Ok(out)
     }
 
     async fn read(
