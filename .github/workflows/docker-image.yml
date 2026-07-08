@@ -1,0 +1,35 @@
+# 本番系イメージ（deploy/Dockerfile・マルチステージ）のビルド検証。
+#
+# CI の compose ジョブは高速化のため CI 専用 runtime-only イメージ（deploy/Dockerfile.ci）を
+# 使うので、本番 Dockerfile は通常の PR では exercise されない。壊れたことに気づけるよう、
+# Dockerfile 自体や deploy 配下が変わった PR でのみフルビルドを検証する（イメージ push はしない）。
+name: docker-image
+
+on:
+  pull_request:
+    paths:
+      - "deploy/Dockerfile"
+      - "deploy/Dockerfile.ci"
+      - "deploy/docker/**"
+      - "deploy/compose/docker-compose*.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-prod-image:
+    name: prod イメージビルド検証 (deploy/Dockerfile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: free disk space (不要プリインストール削除)
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - name: docker build (shiki-server 本番イメージ)
+        run: docker build -f deploy/Dockerfile .

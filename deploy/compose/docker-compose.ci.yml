@@ -1,0 +1,13 @@
+# CI 専用 override: shiki-server をビルド済みバイナリの runtime-only イメージに差し替える。
+#
+# 使い方（CI の compose ジョブ。COMPOSE_FILE で本ファイルを重ねる）:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.ci.yml
+#   （事前に build-server ジョブの artifact を deploy/compose/prebuilt/shiki-server へ配置）
+#
+# 理由は deploy/Dockerfile.ci のコメントを参照（Docker 内 cargo ビルドの排除）。
+# ローカル開発ではこのファイルを使わない（正は docker-compose.yml ＋ deploy/Dockerfile）。
+services:
+  shiki-server:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.ci

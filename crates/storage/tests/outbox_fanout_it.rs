@@ -77,6 +77,23 @@ async fn claim_mine(pool: &PgPool, consumer: &str, tenant: &str) -> Vec<i64> {
     ids
 }
 
+/// 配送を**期待する** claim の短時間リトライ版。
+///
+/// `claim_undelivered` は `FOR UPDATE SKIP LOCKED` で行をロックし、コンシューマ横断で
+/// 他テナントの行も掴む。並行実行中の他テストの claim txn に行を掴まれた瞬間は空振りする
+/// ため（CI flake の実績あり）、ロック解放を待って再試行する（at-least-once の意味論）。
+/// 空を期待する検証にはリトライしない [`claim_mine`] を使うこと。
+async fn claim_mine_eventually(pool: &PgPool, consumer: &str, tenant: &str) -> Vec<i64> {
+    for _ in 0..40 {
+        let ids = claim_mine(pool, consumer, tenant).await;
+        if !ids.is_empty() {
+            return ids;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    Vec::new()
+}
+
 #[tokio::test]
 async fn fanout_delivers_same_event_to_independent_consumers() {
     let Some(pool) = setup().await else { return };
@@ -86,7 +103,7 @@ async fn fanout_delivers_same_event_to_independent_consumers() {
 
     // コンシューマ A（追加台帳）が配送を記録しても…
     let a = format!("wf-a-{}", Uuid::new_v4().simple());
-    assert_eq!(claim_mine(&pool, &a, &tenant).await, vec![id]);
+    assert_eq!(claim_mine_eventually(&pool, &a, &tenant).await, vec![id]);
     // …同一イベントは RAG（processed_at 経路）から見て未処理のまま（片方の消費が他方を消さない）。
     let unprocessed: bool =
         sqlx::query_scalar("SELECT processed_at IS NULL FROM storage_event_outbox WHERE id = $1")
@@ -100,7 +117,7 @@ async fn fanout_delivers_same_event_to_independent_consumers() {
     );
     // …別の台帳コンシューマ B からも独立に届く。
     let b = format!("wf-b-{}", Uuid::new_v4().simple());
-    assert_eq!(claim_mine(&pool, &b, &tenant).await, vec![id]);
+    assert_eq!(claim_mine_eventually(&pool, &b, &tenant).await, vec![id]);
 
     // A が再スキャンしても二度は届かない（配送台帳で冪等）。
     assert!(claim_mine(&pool, &a, &tenant).await.is_empty());
@@ -113,7 +130,7 @@ async fn fanout_delivers_same_event_to_independent_consumers() {
     }
     let c = format!("wf-c-{}", Uuid::new_v4().simple());
     assert_eq!(
-        claim_mine(&pool, &c, &tenant).await,
+        claim_mine_eventually(&pool, &c, &tenant).await,
         vec![id],
         "processed_at は台帳コンシューマの claim に影響しない"
     );
@@ -137,7 +154,7 @@ async fn late_committed_lower_id_is_not_skipped() {
     assert!(id_b > id_a, "B の id が A より大きい前提");
 
     // 1 回目の claim: A は未コミットで不可視。B のみ見えるはず。
-    let first = claim_mine(&pool, &consumer, &tenant).await;
+    let first = claim_mine_eventually(&pool, &consumer, &tenant).await;
     assert_eq!(first, vec![id_b], "コミット済みの B のみ配送される");
 
     // ここで A を遅れてコミットする（B より小さい id が後からコミット確定）。
@@ -145,7 +162,7 @@ async fn late_committed_lower_id_is_not_skipped() {
 
     // 2 回目の claim: 単純 last_seq カーソルなら A（< 既配送 B）を飛ばすが、
     // NOT EXISTS(delivery) 方式なので **A を取りこぼさない**。
-    let second = claim_mine(&pool, &consumer, &tenant).await;
+    let second = claim_mine_eventually(&pool, &consumer, &tenant).await;
     assert_eq!(second, vec![id_a], "遅れてコミットした小さい id も拾う");
 }
 
@@ -169,7 +186,7 @@ async fn register_consumer_skips_backlog_but_delivers_new_events() {
     // 有効化後の新規イベント。
     let fresh = insert_event(&pool, &tenant, node).await;
 
-    let claimed = claim_mine(&pool, &consumer, &tenant).await;
+    let claimed = claim_mine_eventually(&pool, &consumer, &tenant).await;
     assert!(!claimed.contains(&backlog), "バックログは再配送しない");
     assert!(claimed.contains(&fresh), "有効化以降のイベントは配送する");
 }
@@ -296,7 +313,7 @@ async fn register_consumer_is_one_time_only() {
     }
     // pending は依然として配送される（取りこぼさない）。
     assert!(
-        claim_mine(&pool, &consumer, &tenant)
+        claim_mine_eventually(&pool, &consumer, &tenant)
             .await
             .contains(&pending),
         "再起動後も未配送イベントを取りこぼさない"
