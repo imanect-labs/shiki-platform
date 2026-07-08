@@ -234,6 +234,8 @@ async fn run_step(
     state
         .spent
         .add_step(usage.prompt_tokens + usage.completion_tokens, cost);
+    // チェックポイントの step を消費ステップ数に追従させる（再開時の起点・監査の整合）。
+    state.step = state.spent.steps;
 
     // assistant メッセージを履歴へ。
     let mut assistant_blocks: Vec<Block> = Vec::new();
@@ -343,13 +345,25 @@ async fn handle_plan_tool(
     sink: &mut dyn EventSink,
 ) -> Result<ToolResultParts, AgentError> {
     let inputs = plan::parse_plan_input(&call.input);
-    let changed = current.revise(inputs);
-    if changed {
-        sink.emit(AgentEvent::PlanUpdated(current.clone())).await?;
-    }
-    let (done, total) = current.progress();
+    // 空入力（不正 JSON・subtasks 欠落）で既存の計画を消さない（誤消去防止）。空なら現状維持。
+    let content = if inputs.is_empty() && !current.subtasks.is_empty() {
+        "計画の更新入力が空だったため、現在の計画を維持しました。".to_string()
+    } else {
+        if current.revise(inputs) {
+            sink.emit(AgentEvent::PlanUpdated(current.clone())).await?;
+        }
+        let (done, total) = current.progress();
+        format!("計画を更新しました（{done}/{total} 完了）。")
+    };
+    // plan メタツールの結果もツール結果イベントとして外部化する（UI のツール表示を閉じる）。
+    sink.emit(AgentEvent::ToolResult {
+        tool_call_id: call.id.clone(),
+        ok: true,
+        content: content.clone(),
+    })
+    .await?;
     Ok(ToolResultParts {
-        content: format!("計画を更新しました（{done}/{total} 完了）。"),
+        content,
         is_error: false,
     })
 }

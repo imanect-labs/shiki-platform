@@ -62,13 +62,25 @@ impl LoopDetector {
         self.is_looping(sig)
     }
 
-    /// 末尾から遡り、同一署名のエラーが連続で閾値回続いているか。
+    /// 窓内で同一の失敗が閾値回**以上出現**していればループとみなす。
+    ///
+    /// 連続だけでなく「失敗 A・別の失敗 B・失敗 A …」のように**別の呼び出しを挟む同一失敗の反復**も
+    /// 検出する（CodeRabbit 指摘）。ただし**同一 (ツール,入力) が一度でも成功したら、その成功以降の
+    /// 失敗のみ数える**（成功＝自己修正が効いた合図なので過去の失敗をリセットし、誤検出しない）。
     fn is_looping(&self, last: Signature) -> bool {
         if !last.error {
             return false;
         }
-        let run = self.recent.iter().rev().take_while(|s| **s == last).count();
-        run >= self.consecutive_threshold
+        let same_call =
+            |s: &Signature| s.name_hash == last.name_hash && s.input_hash == last.input_hash;
+        // 同一 (ツール,入力) の直近成功位置。それ以降の失敗だけを数える。
+        let start = self
+            .recent
+            .iter()
+            .rposition(|s| same_call(s) && !s.error)
+            .map_or(0, |i| i + 1);
+        let count = self.recent[start..].iter().filter(|s| **s == last).count();
+        count >= self.consecutive_threshold
     }
 }
 
@@ -99,6 +111,31 @@ mod tests {
         assert!(!d.observe("shell", &inp, true));
         assert!(!d.observe("shell", &inp, true));
         assert!(d.observe("shell", &inp, true)); // 3 連続でループ
+    }
+
+    #[test]
+    fn detects_interleaved_same_failure() {
+        // 失敗 A・失敗 B・失敗 A・失敗 B・失敗 A → A が窓内で 3 回失敗（連続でなくても）ループ。
+        let mut d = LoopDetector::new(12, 3);
+        let a = json!({"cmd": "a"});
+        let b = json!({"cmd": "b"});
+        assert!(!d.observe("shell", &a, true));
+        assert!(!d.observe("shell", &b, true));
+        assert!(!d.observe("shell", &a, true));
+        assert!(!d.observe("shell", &b, true));
+        assert!(d.observe("shell", &a, true)); // A の 3 回目
+    }
+
+    #[test]
+    fn success_resets_interleaved_count() {
+        // 途中で A が成功したら、それ以前の A の失敗はリセット（自己修正が効いた）。
+        let mut d = LoopDetector::new(12, 3);
+        let a = json!({"cmd": "a"});
+        d.observe("shell", &a, true);
+        d.observe("shell", &a, true);
+        d.observe("shell", &a, false); // 成功でリセット
+        d.observe("shell", &a, true);
+        assert!(!d.observe("shell", &a, true)); // 成功以降は 2 回のみ
     }
 
     #[test]
