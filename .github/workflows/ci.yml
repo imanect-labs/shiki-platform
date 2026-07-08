@@ -155,14 +155,24 @@ jobs:
         run: |
           [ -f coverage-summary.txt ] || { echo "サマリ未生成のためスキップ"; exit 0; }
           marker='<!-- coverage-report -->'
+          total_line=$(grep '^TOTAL' coverage-summary.txt || true)
           {
             echo "$marker"
             echo '## 📊 Rust test coverage'
             echo "閾値ゲート: 行 **80%** 以上（\`cargo llvm-cov --fail-under-lines 80\`）"
             echo
+            if [ -n "$total_line" ]; then
+              echo '```'
+              echo "$total_line"
+              echo '```'
+            fi
+            echo '<details>'
+            echo '<summary>ファイル別内訳を表示</summary>'
+            echo
             echo '```'
             cat coverage-summary.txt
             echo '```'
+            echo '</details>'
           } > body.md
           body="$(cat body.md)"
           existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
