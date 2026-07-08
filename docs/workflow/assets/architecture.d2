@@ -188,11 +188,11 @@ shiki_server.launcher -> postgres.workflow_run: "占有TX\n冪等発火" { class
 postgres.workflow_run -> shiki_server.worker: "SKIP LOCKED\nclaim" { class: flow }
 shiki_server.worker -> executor: "step 実行\n(fencing_token+1)" { class: flow }
 
-executor <-> script_runtime: "script ノード ⇄ gRPC 双方向ストリーム\n（能力呼び出しは shiki-server 側で実行）" { class: flow }
+executor <-> script_runtime: "script ノード\n（Stage A: in-process 呼出・gRPC分離は未接続）" { class: flow }
 
 executor -> shiki_server.ports: "storage/rag/llm/agent/http ノード" { class: flow }
-shiki_server.ports -> chokepoints: "各チョークポイントを\nAuthContext 付きで呼出" { class: flow }
-chokepoints -> openfga: "全チョークポイント共通で\n認可チェック" { class: authz_edge }
+shiki_server.ports -> chokepoints: "各チョークポイントへ dispatch" { class: flow }
+chokepoints -> openfga: "storage/rag/secret のみ\n認可チェック（llm/agent/http は対象外）" { class: authz_edge }
 
 executor -> postgres.effect_journal: "内部能力の冪等記録" { class: flow }
 executor -> postgres.step_execution: "checkpoint 保存\n(output / taken_ports・単一TX)" { class: flow }

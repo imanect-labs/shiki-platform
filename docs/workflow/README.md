@@ -160,4 +160,9 @@ Stage A 実装（2026-07-07・PR #126〜#153）により、以下 3 点はすべ
 - **各種数値初期値**: `WorkflowConfig`（`crates/api/src/workflow_runtime/mod.rs`）に
   `worker_concurrency`/`tick_secs`/`lease_secs`/`http_timeout_ms`/`rate_capacity`/
   `rate_refill_per_sec` の既定値を実装済み（`enabled: false` が既定で明示的な opt-in が必要）。
-  ベンチ・運用での調整は今後も継続。
+  ベンチ・運用での調整は今後も継続。**ただし委譲の棚卸し周期（engine.md §6.3 の非同期棚卸しジョブ）は
+  この対象外**: `DelegationStore::inventory`（`crates/workflow-engine/src/delegation.rs:286`）自体は
+  実装済みだが、これを周期実行する runtime 配線・設定値は Stage A に存在しない
+  （呼び出しはテスト `delegation_it.rs` のみで、cron・API いずれからも呼ばれていない）。
+  本 README §7 PIT-34 の「二段構え」の二段目（非同期棚卸しジョブ）は SLA を保証する形では
+  まだ動いていない（詳細は [implementation.md](./implementation.md) §7）。
