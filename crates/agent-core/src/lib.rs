@@ -24,6 +24,7 @@
 )]
 
 pub mod agent;
+pub(crate) mod agent_gate;
 pub mod approval;
 pub mod budget;
 pub mod checkpoint;
