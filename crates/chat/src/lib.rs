@@ -28,6 +28,7 @@ pub mod error;
 pub mod model;
 pub mod store;
 pub mod worker;
+pub mod workspace;
 
 pub use artifacts::StorageArtifactStore;
 pub use error::ChatError;
@@ -37,3 +38,4 @@ pub use model::{
 };
 pub use store::{ChatStore, ClaimedRun, PostResult, CHAT_GENERATION_QUEUE};
 pub use worker::{ChatWorker, WorkerConfig, WorkerDeps};
+pub use workspace::StorageWorkspaceStore;
