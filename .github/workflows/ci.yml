@@ -2,8 +2,19 @@ name: CI
 
 on:
   pull_request:
+    # docs のみの変更で重量 CI（Rust フルビルド×複数ジョブ・compose）を回さない。
+    # file-size ゲートは *.rs のみ対象（scripts/check-file-size.sh）のため取りこぼしは無い。
+    # ブランチ保護の required checks は未設定なので pending 固着も起きない。
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".claude/**"
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".claude/**"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -13,12 +24,23 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # crates.io / GitHub への一時的なネットワーク断で CI を落とさない（flake 実績あり）。
+  CARGO_NET_RETRY: "10"
+
 jobs:
   rust:
     name: Rust (fmt / clippy / test / build)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      # フルワークスペースの target + rust-cache 復元でランナー既定 14GB を使い切る実績
+      # （No space left on device で突然死）があるため、不要プリインストールを先に消す。
+      - name: free disk space (不要プリインストール削除)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
@@ -29,9 +51,41 @@ jobs:
       - run: cargo test --all
       - run: cargo build --all
 
+  # shiki-server の release バイナリを 1 回だけビルドして compose ジョブ（smoke / web-e2e）へ
+  # artifact 共有する。以前は各 compose ジョブが Docker 内で cargo フルビルドしており、
+  # エフェメラルランナーではキャッシュが効かず（`RUN --mount=type=cache` が毎回空）、
+  # 各 10 分超＋crates.io ダウンロード flake の源だった。
+  build-server:
+    name: Build shiki-server (release・compose ジョブ共有)
+    # deploy/Dockerfile.ci（ubuntu:24.04）と glibc を一致させるため 24.04 に固定する。
+    # ubuntu-latest が 26.04 へ進んだら Dockerfile.ci と同時に上げること。
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: free disk space (不要プリインストール削除)
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # release プロファイル専用キャッシュ（debug 系ジョブと混ぜて肥大化させない）。
+          shared-key: release-server
+      - run: cargo build --release --bin shiki-server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shiki-server-bin
+          path: target/release/shiki-server
+          if-no-files-found: error
+          retention-days: 1
+
   quality:
     name: Quality gates (file-size / cargo-machete)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,6 +106,7 @@ jobs:
   cargo-deny:
     name: cargo-deny (advisories / licenses / bans / sources)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,6 +119,7 @@ jobs:
   python:
     name: Python (ingestion-worker ruff / pytest)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ingestion-worker
@@ -87,12 +143,16 @@ jobs:
   coverage:
     name: Coverage (cargo-llvm-cov, gate 80%)
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     # カバレッジ表を PR にコメントするため pull-requests:write を昇格付与する。
     permissions:
       contents: read
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
+      # llvm-cov target ＋ compose ボリュームでディスクが逼迫するため先に解放する。
+      - name: free disk space (不要プリインストール削除)
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
@@ -204,6 +264,7 @@ jobs:
   web:
     name: Web (gen:api / lint / build)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -234,12 +295,22 @@ jobs:
   compose-smoke:
     name: compose smoke (/healthz, /me, skillex)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: build-server
+    env:
+      # shiki-server はビルド済みバイナリの runtime-only イメージ（CI override）を使う。
+      COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
+      - name: download shiki-server binary (build-server の成果物)
+        uses: actions/download-artifact@v4
+        with:
+          name: shiki-server-bin
+          path: deploy/compose/prebuilt
       - name: compose up (依存 + shiki-server)
         working-directory: deploy/compose
         env:
@@ -285,12 +356,22 @@ jobs:
   web-e2e:
     name: "Web E2E (Playwright: ログイン→保護ページ→ログアウト)"
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build-server
+    env:
+      # shiki-server はビルド済みバイナリの runtime-only イメージ（CI override）を使う。
+      COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
+      - name: download shiki-server binary (build-server の成果物)
+        uses: actions/download-artifact@v4
+        with:
+          name: shiki-server-bin
+          path: deploy/compose/prebuilt
       - uses: pnpm/action-setup@v4
         with:
           version: 9

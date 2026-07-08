@@ -1,0 +1,18 @@
+# CI 専用 runtime-only イメージ: ランナーでビルド済みの shiki-server バイナリを焼くだけ。
+#
+# 本番系イメージの正は deploy/Dockerfile（マルチステージ）。CI では Docker 内 cargo ビルドが
+# エフェメラルランナーでキャッシュ不能（`RUN --mount=type=cache` が毎回空）で、全クレートの
+# ダウンロード＋フルビルドが compose ジョブごとに走り、crates.io ダウンロードが flake 源にも
+# なっていた。そこで CI はランナー側（Swatinem/rust-cache 有効）で 1 回だけビルドした
+# バイナリを artifact 共有し、このイメージに焼く（deploy/compose/docker-compose.ci.yml）。
+#
+# ベースはビルドするランナー（ubuntu-24.04 固定）と glibc を一致させるため ubuntu:24.04。
+# curl は compose の healthcheck が使う（本番イメージと同じ）。
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+# build context はリポジトリルート。バイナリは CI が deploy/compose/prebuilt/ に配置する。
+COPY deploy/compose/prebuilt/shiki-server /usr/local/bin/shiki-server
+RUN chmod +x /usr/local/bin/shiki-server
+EXPOSE 8080
+ENTRYPOINT ["shiki-server"]
