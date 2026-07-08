@@ -2066,3 +2066,77 @@ async fn write_file_internal_idempotent_dedups_by_key() {
     assert!(summary.get("id").is_some());
     assert!(summary.get("body").is_none(), "journal に本文を載せない");
 }
+
+/// Task 5.4/5.8: `write_file_at` の create→update（新版）と outbox（Create/Update/Delete）を検証する。
+/// 自律エージェントのワークスペース書込が版管理され、書込イベント→再索引経路に乗ることの土台。
+#[tokio::test]
+async fn write_file_at_versions_and_emits_outbox() {
+    let Some(cx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        ..
+    } = cx;
+    let org = format!("org-{}", Uuid::new_v4());
+    let uid = "alice";
+    seed_org_member(&authz, &org, uid).await;
+    let actx = make_ctx(&org, uid);
+
+    // ワークスペースフォルダ（thread ごとの Drive フォルダ相当）。
+    let root = service
+        .create_folder(&actx, None, "agent-workspace", None)
+        .await
+        .expect("create workspace folder");
+
+    // 1) 新規作成 → created=true, version 1, outbox Create。
+    let w1 = service
+        .write_file_at(&actx, root.id, "notes.md", b"# v1", "text/markdown", None)
+        .await
+        .expect("write create");
+    assert!(w1.created, "初回は新規作成");
+    assert_eq!(w1.version, 1);
+    assert_eq!(outbox_count(&pool, w1.node_id, "create").await, 1);
+
+    // 2) 同名再書込 → created=false, version 2（新版）, outbox Update。
+    let w2 = service
+        .write_file_at(
+            &actx,
+            root.id,
+            "notes.md",
+            b"# v2 updated",
+            "text/markdown",
+            None,
+        )
+        .await
+        .expect("write update");
+    assert!(!w2.created, "既存は新版更新");
+    assert_eq!(w2.node_id, w1.node_id, "同一ノードの新版");
+    assert_eq!(w2.version, 2);
+    assert_eq!(outbox_count(&pool, w1.node_id, "update").await, 1);
+
+    // 3) 名前解決 → 最新内容が読める（read-after-write・PIT-5）。
+    let resolved = service
+        .resolve_child_file(&actx, root.id, "notes.md", None)
+        .await
+        .expect("resolve")
+        .expect("exists");
+    assert_eq!(resolved, w1.node_id);
+    let (_, bytes) = service
+        .read_file_internal(&actx, resolved, None)
+        .await
+        .expect("read");
+    assert_eq!(bytes, b"# v2 updated");
+
+    // 4) 削除 → outbox Delete、解決不能になる。
+    service
+        .soft_delete_file(&actx, resolved, None)
+        .await
+        .expect("delete");
+    assert_eq!(outbox_count(&pool, w1.node_id, "delete").await, 1);
+    let after = service
+        .resolve_child_file(&actx, root.id, "notes.md", None)
+        .await
+        .expect("resolve after delete");
+    assert!(after.is_none(), "削除後は解決不能");
+}

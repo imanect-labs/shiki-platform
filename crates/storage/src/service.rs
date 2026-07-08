@@ -136,6 +136,9 @@ mod sharing;
 mod trash;
 mod upload;
 mod versions;
+mod workspace_io;
+
+pub use workspace_io::WriteAtOutcome;
 
 fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {
     let kind = NodeKind::parse(&row.kind)

@@ -133,6 +133,29 @@ impl SandboxSpec {
         }
     }
 
+    /// 自律エージェントの shell 用（Task 5.4）。ネット遮断・短命・coreutils 等のゲストコマンド同梱。
+    ///
+    /// ワークスペースは seed→exec→sync（host 側が `put_file`/`get_file`）で round-trip する（永続 mount は
+    /// post-alpha のため `mounts_allowed=false`）。egress は既定遮断（ネットワークは承認ゲート対象・5.6）。
+    pub fn agent_shell(
+        tenant_id: String,
+        org: String,
+        principal: String,
+        software: Vec<String>,
+    ) -> Self {
+        SandboxSpec {
+            backend: SandboxBackend::Wasm,
+            tenant_id,
+            org,
+            principal,
+            limits: SandboxLimits::constrained(),
+            egress: Egress::blocked(),
+            software,
+            mounts_allowed: false,
+            lifetime: SandboxLifetime::Ephemeral { ttl_ms: 60_000 },
+        }
+    }
+
     /// web_fetch 用（**当該 run 限定の dynamic_allow に取得先ホストのみ**を載せる・design §4.4）。
     ///
     /// 静的 allowlist は空＝取得先以外は全遮断。シークレット添付は不可（`secret_attach=false` 固定）。
