@@ -174,13 +174,21 @@ impl ChatWorker {
             id
         } else {
             // 初回自律 run: Drive 直下にワークスペースフォルダを作り thread に紐づける。
-            let node = storage
-                .create_folder(ctx, None, "agent-workspace", None)
-                .await
-                .map_err(|e| ChatError::Internal(format!("workspace folder: {e}")))?;
-            self.store
-                .set_workspace_folder_if_absent(thread_id, &ctx.tenant_id, node.id)
-                .await?
+            // **thread ごとに一意な名前**にする（`node` の (parent,name) unique・別 thread と衝突しない）。
+            let name = format!("agent-workspace-{thread_id}");
+            match storage.create_folder(ctx, None, &name, None).await {
+                Ok(node) => {
+                    self.store
+                        .set_workspace_folder_if_absent(thread_id, &ctx.tenant_id, node.id)
+                        .await?
+                }
+                // 同一 thread の並行 run が先に作成した場合は unique 衝突する → 確定済み id を読み直す。
+                Err(_) => self
+                    .store
+                    .workspace_folder_id(thread_id, &ctx.tenant_id)
+                    .await?
+                    .ok_or_else(|| ChatError::Internal("workspace folder race".into()))?,
+            }
         };
         Ok(Arc::new(crate::workspace::StorageWorkspaceStore::new(
             storage.clone(),
