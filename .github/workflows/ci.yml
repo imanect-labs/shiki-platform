@@ -166,14 +166,14 @@ jobs:
       # live 依存（OpenFGA / Redis）を起動し、結合テストのカバレッジも算入する。
       # これにより fga_http / client（OpenFGA 経路）と redis_store（Redis 経路）も
       # 単体テストでは届かない実経路をカバーした上で全体カバレッジを評価する。
-      - name: compose up (postgres + minio + openfga + redis + qdrant)
+      # 起動（pull ＋ healthcheck 待ち）は llvm-cov clean と独立なので background で並列化。
+      - name: compose up (postgres + minio + openfga + redis + qdrant → healthy 待ち)
+        id: compose-up
+        background: true
         working-directory: deploy/compose
         run: |
           cp .env.example .env
           docker compose up -d postgres minio openfga redis qdrant
-      - name: wait for services healthy
-        working-directory: deploy/compose
-        run: |
           for svc in postgres minio openfga redis qdrant; do
             ok=""
             for i in $(seq 1 60); do
@@ -188,6 +188,8 @@ jobs:
       # 過去の profraw/profdata が混入し得る。計測前に明示的に掃除して当該 run のみを反映させる。
       - name: clean stale coverage artifacts
         run: cargo llvm-cov clean --workspace
+      - name: wait for services healthy
+        wait: compose-up
       # 単体＋結合テストをまとめて計測（各 *_TEST_* env を見て結合テストが実走する）。
       # storage の結合テストは postgres + minio + openfga 実体を使う（presigned/closure/監査を実経路で検証）。
       - name: test + coverage (cargo-llvm-cov)
@@ -315,7 +317,11 @@ jobs:
         with:
           name: shiki-server-bin
           path: deploy/compose/prebuilt
-      - name: compose up (依存 + shiki-server)
+      # compose 起動（イメージ pull ＋ healthcheck 待ち）は authz テストのコンパイルと独立
+      # なので background step で並列化する（2026-06 の parallel steps 機能）。
+      - name: compose up (依存 + shiki-server → healthy 待ち)
+        id: compose-up
+        background: true
         working-directory: deploy/compose
         env:
           # smoke は RAG（qdrant / ingestion-worker）を立てないため無効化する
@@ -324,9 +330,6 @@ jobs:
         run: |
           cp .env.example .env
           docker compose up -d --build shiki-server
-      - name: wait for shiki-server healthy
-        working-directory: deploy/compose
-        run: |
           for i in $(seq 1 60); do
             s=$(docker compose ps shiki-server --format '{{.Health}}' || true)
             echo "attempt $i: health=$s"
@@ -334,6 +337,10 @@ jobs:
             sleep 5
           done
           echo "shiki-server が healthy になりませんでした"; exit 1
+      - name: authz 結合テストを先にコンパイル（compose 起動と並列）
+        run: cargo test -p shiki-authz --test check --no-run
+      - name: wait for shiki-server healthy
+        wait: compose-up
       - name: smoke test (BFF code フロー)
         working-directory: deploy/compose
         run: bash smoke-bff.sh
@@ -386,7 +393,11 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       # BFF を web オリジン(:3000)経由で回すため、redirect_uri を web に向ける。
       # （compose-smoke は web 無しで :8080 を使うが、E2E はブラウザが :3000 を見る）
-      - name: compose up (keycloak + shiki-server)
+      # compose 起動チェーンは web ビルド（install / gen:api / build / Playwright）と独立
+      # なので background step で並列化する（2026-06 の parallel steps 機能）。
+      - name: compose up (keycloak + shiki-server → healthy 待ち)
+        id: compose-up
+        background: true
         working-directory: deploy/compose
         env:
           SHIKI__AUTH__REDIRECT_URI: http://localhost:3000/auth/callback
@@ -396,9 +407,6 @@ jobs:
         run: |
           cp .env.example .env
           docker compose up -d --build shiki-server
-      - name: wait for shiki-server healthy
-        working-directory: deploy/compose
-        run: |
           for i in $(seq 1 60); do
             s=$(docker compose ps shiki-server --format '{{.Health}}' || true)
             echo "attempt $i: health=$s"
@@ -418,6 +426,8 @@ jobs:
       - name: install Playwright browser
         working-directory: web
         run: pnpm exec playwright install --with-deps chromium
+      - name: wait for shiki-server healthy
+        wait: compose-up
       - name: run E2E (BFF + Keycloak 実フロー)
         working-directory: web
         env:
