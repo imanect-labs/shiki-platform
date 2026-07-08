@@ -67,7 +67,7 @@ ReBAC = Relationship-Based Access Control。「関係（タプル）」を積み
 
 タプルの形（OpenFGA 共通）:
 
-```
+```text
   <object>          #  <relation>  @  <subject>
   file:acme|123        viewer          user:acme|alice
   └ 誰に対する権限か     └ どんな権限    └ 誰が持つか
@@ -206,7 +206,7 @@ flowchart TB
 
 SaaS は**全テナント共有の単一 OpenFGA ストア**を使う。テナント分離は「識別子に tenant を織り込む」ことで担保する。
 
-```
+```text
   folder:acme|123          ← tenant "acme" の folder 123
          └──┬──┘
        tenant_id | local_id     区切りは '|' = authz::TENANT_SEP
@@ -394,7 +394,7 @@ pub enum Consistency { MinimizeLatency, HigherConsistency }   // client.rs:24
 folder/file は**明示付与（owner/editor/viewer）と親フォルダからの継承のみ**で権限を持つ「厳格モデル」。
 「org メンバーだから配下が全部読める」といった自動継承は**入れない**（`model.fga:32-38`）。
 
-```
+```fga
   define parent: [folder]
   define owner:  [user, workflow]
   define editor: [user, role#member, workflow] or owner or editor from parent
@@ -427,7 +427,7 @@ bob に対する個別タプルは 1 本も無い（営業部フォルダに `ro
 
 `role` の `member: [user, role#member]` が肝。**配下ロールのメンバーを親ロールに含める**（上方向）。
 
-```
+```text
   role:acme|営業部#member@role:acme|営業1課#member
   = 「営業1課のメンバーは営業部のメンバーでもある」
 ```
