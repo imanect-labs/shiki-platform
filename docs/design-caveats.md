@@ -63,6 +63,10 @@
   エージェントの `doc_search` 系は**ワークスペース直読み（grep/file_read ツール）を別経路**にし、
   ストレージRAG索引は**コミット相当の明示操作時のみ**更新する。
 - **守る**: phase-5 設計に「ワークスペース直読み経路」と「索引反映の明示境界」を明記。
+- 📝 2026-07-08 **解消（Phase 5 実装・Durable Workspace）**: エージェントのワークスペース = thread ごとの
+  StorageService フォルダ。file CRUD ツール（`fs_*`/`grep`）は**StorageService を直読み/直書き**（メタは強整合＝
+  read-after-write が成立）し、RAG `doc_search`（org 横断の非同期索引）とは**経路が分離**される。書込→再索引は
+  outbox 経由（数秒〜分）で、エージェントは索引を待たずワークスペースを直読みするため stale を読まない。
 
 ---
 

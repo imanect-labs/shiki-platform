@@ -117,6 +117,18 @@ impl LlmProvider for StubProvider {
                 prompt_tokens,
             ));
         }
+        // --- 自律駆動 `fswrite:`: 1 ターン目に fs_write を固定名で呼ぶ（ワークスペース書込の e2e）。 ---
+        if !has_tool_result(req) {
+            if let Some(rest) = user_text.strip_prefix("fswrite:") {
+                if let Some(t) = req.tools.iter().find(|t| t.name == "fs_write") {
+                    return Ok(tool_call_stream(
+                        t.name.clone(),
+                        serde_json::json!({ "name": "agent-note.txt", "content": rest.trim() }),
+                        prompt_tokens,
+                    ));
+                }
+            }
+        }
         // --- 自律駆動 `plan:`: 1 ターン目に plan メタツールをカンマ区切りサブタスクで呼ぶ。 ---
         if !has_tool_result(req) {
             if let Some(rest) = user_text.strip_prefix("plan:") {
