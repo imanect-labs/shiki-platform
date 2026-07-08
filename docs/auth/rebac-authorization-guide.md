@@ -143,8 +143,11 @@ flowchart TB
 
 設計上の約束（コードのコメントに根拠あり）:
 
-- **owner に role#member や workflow を付与しない**（folder/file/thread/artifact）。owner は「横展開の起点」なので
-  グループや実行主体に渡さない。共有語彙は viewer/editor（+commenter）に限る（`model.fga:37-38, 57`）。
+- **owner に `role#member` を付与しない**（全型）。owner は「横展開の起点」なので、グループに渡すと
+  そのメンバー全員が owner になってしまう。共有語彙（`ShareRole`）は viewer/editor（thread は +commenter）に限る（`model.fga:37-38, 57`）。
+- **owner に `workflow` を許すのは folder/file だけ**。workflow プリンシパルは `for_workflow` ＋ storage 作成経路で
+  ストレージオブジェクトを**自分で作成**でき、そのとき作成者として owner タプルを持つ（`ctx.subject()` が `workflow:...`）。
+  一方 **thread/artifact/secret の owner は `[user]` のみ**（実行主体を owner にしない）。表の「共有語彙」列が正確な受理型。
 - **secret に viewer 系は無い**。write-only / use-only。`can_use` は「解決して使える」であって**平文の読み返しではない**
   （`vocab.rs:30-31`, `secret` の doc）。
 - **workflow は subject 専用型**。オブジェクトとして relation を持たない。委譲タプルの右辺（誰が持つか）にだけ現れる（§11）。
@@ -228,6 +231,18 @@ flowchart LR
   → **tenant を渡さずに識別子を組むことが型レベルで不可能**。acme のコンテキストからは `folder:beta|...` を組めない。
 - FGA から読み戻す側も対称的に守る: `strip_object_id`（`object.rs:188`）は自 tenant プレフィクスに一致しなければ `None`。
   他テナントのオブジェクトが混ざっても防御的に除外される。
+
+> **例外（背景ジョブ用の入口）**: 「型レベルで越境不能」が成り立つのは **`AuthContext` を持つリクエスト経路**。
+> `AuthContext` が無い背景処理には 2 つの `pub` な入口があり、そこでは**呼び出し側が tenant 境界を負う**:
+>
+> - `Namespace::for_tenant(tenant_id)`（`object.rs:115`）: tenant_id を明示してビルダを得る。委譲チェック・棚卸し
+>   （`workflow-engine` の delegation/inventory）など `AuthContext` が無い経路専用。渡す tenant_id は信頼できる源
+>   （台帳・キュー行）由来にし、必要なら `validate_tenant_id` を通すこと。
+> - `FgaObject::from_qualified(qualified)`（`object.rs:87`）: 保存済みの**完全修飾識別子**（委譲台帳
+>   `workflow_delegation.object_ref` など、一度 `Namespace` を通して生成・保存したもの）を読み戻す専用。
+>   形式（`<type>:<tenant>|<local>`）を最低限検証し、崩れていれば `None`（台帳破損・改竄を弾く）。**新規の生 id 組み立てには使わない**。
+>
+> レビュー時の含意: 背景ジョブのコードでは「tenant 越境は型が防ぐ」と思い込まず、これらの入口に渡す文字列の**出所と検証**を確認する。
 
 さらに `tenant_id` と local id の**文字ポリシーを 1 か所に集約**する（`ident.rs`）。区切り文字 `|` や FGA 構造文字
 （`: # @`）、パス境界 `/` の混入を fail-closed で弾く。これが分散するとタイポ 1 個で名前空間が壊れる（`ident.rs:1-7`）。
@@ -703,10 +718,14 @@ sequenceDiagram
 
 ```rust
 // ① 範囲検証: 委譲者が各 grant の権限を今持っているか
-authz.check(&enabler.subject(), g.relation, &g.object, HigherConsistency).await?;
-// 1 つでも欠ければ OutOfScope で全体拒否（部分委譲しない）
+//    check は Err ではなく Ok(false) で「権限なし」を返す。? では止まらないので bool を必ず分岐する。
+let ok = authz.check(&enabler.subject(), g.relation, &g.object, HigherConsistency).await?;
+if !ok {
+    // 1 つでも欠ければ OutOfScope で全体拒否（部分委譲しない・fail-closed）
+    return Err(DelegationError::OutOfScope(g.scope.clone()));
+}
 
-// ② 委譲タプル書込: workflow プリンシパルへ
+// ② 委譲タプル書込: workflow プリンシパルへ（①を全 grant 通過した後）
 let wf_subject = enabler.ns().workflow_principal(&workflow_id.to_string());
 authz.write_tuple(&wf_subject, g.relation, &g.object).await?;
 
@@ -782,7 +801,8 @@ flowchart TB
 - OpenFGA を直叩きしない（`FgaHttp` はアプリから見えない）。
 - `tenant_id` を bare `String` で引き回さない。必ず `AuthContext` に載せる。
 - **chunk / 個々のデータ行を OpenFGA オブジェクトにしない**（タプル爆発。post-filter は file/テーブル粒度）。
-- owner を role#member や workflow に付与しない（横展開の禁止）。
+- owner を `role#member` に付与しない（全型・横展開の禁止）。thread/artifact/secret の owner は `[user]` のみ
+  （folder/file の owner のみ workflow を受理＝作成者としての実行主体。§3 の表が正確な受理型）。
 - RAG で `authz_tags` を local に剥がして保存しない（tenant 境界が消える）。
 - `list_objects` の結果を「読める一覧」として無条件に信じない（上限 500 縮退を考慮。post-filter が最終権威）。
 
