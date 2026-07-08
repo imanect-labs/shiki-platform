@@ -230,8 +230,10 @@ impl RunStore {
         result: &super::NodeResult,
         graph: &RunGraph,
         max_attempts: i32,
+        on_error: crate::ir::OnError,
     ) -> Result<bool, RunStoreError> {
-        advance::checkpoint_and_advance(&self.db, claimed, result, graph, max_attempts).await
+        advance::checkpoint_and_advance(&self.db, claimed, result, graph, max_attempts, on_error)
+            .await
     }
 
     /// run の状態を取得する。
@@ -303,9 +305,13 @@ impl RunStore {
         tenant_id: &str,
         run_id: Uuid,
     ) -> Result<Vec<(String, Value)>, RunStoreError> {
+        // 成功 step に加え、on_error=continue で error ポートを取った failed step も対象にする
+        // （error オブジェクトを `$from nodes.<id>.output.error.*` で後続が参照できるように）。
         let rows: Vec<(String, Option<Json<Value>>)> = sqlx::query_as(
             "SELECT node_id, output FROM step_execution \
-             WHERE tenant_id = $1 AND run_id = $2 AND status = 'succeeded' AND step_path = node_id",
+             WHERE tenant_id = $1 AND run_id = $2 AND step_path = node_id \
+               AND (status = 'succeeded' \
+                    OR (status = 'failed' AND 'error' = ANY(taken_ports)))",
         )
         .bind(tenant_id)
         .bind(run_id)

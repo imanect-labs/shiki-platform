@@ -276,7 +276,13 @@ async fn zombie_recheckpoint_does_not_reexecute() {
     let graph = RunGraph::build(&workflow_engine::WorkflowIr::from_json(&linear_ir()).unwrap());
     // 旧ワーカー（fencing 1）の checkpoint は no-op（ゾンビ）。
     let zombie = store
-        .checkpoint_and_advance(&claimed, &NodeResult::ok(json!({})), &graph, 1)
+        .checkpoint_and_advance(
+            &claimed,
+            &NodeResult::ok(json!({})),
+            &graph,
+            1,
+            workflow_engine::ir::OnError::FailRun,
+        )
         .await
         .unwrap();
     assert!(!zombie, "ゾンビの checkpoint は no-op");
@@ -287,7 +293,13 @@ async fn zombie_recheckpoint_does_not_reexecute() {
 
     // 新ワーカー（fencing 2）の checkpoint は成功し前進する。
     let ok = store
-        .checkpoint_and_advance(&claimed2, &NodeResult::ok(json!({})), &graph, 1)
+        .checkpoint_and_advance(
+            &claimed2,
+            &NodeResult::ok(json!({})),
+            &graph,
+            1,
+            workflow_engine::ir::OnError::FailRun,
+        )
         .await
         .unwrap();
     assert!(ok);
@@ -342,7 +354,13 @@ async fn rate_limited_retry_does_not_consume_attempt() {
         assert_eq!(claimed.attempt, 1, "rate_limited は attempt を消費しない");
         // next_retry_at が未来なので待たずに再 claim できるよう 0 に戻す。
         let advanced = store
-            .checkpoint_and_advance(&claimed, &rate_limited, &graph, 1)
+            .checkpoint_and_advance(
+                &claimed,
+                &rate_limited,
+                &graph,
+                1,
+                workflow_engine::ir::OnError::FailRun,
+            )
             .await
             .unwrap();
         assert!(advanced, "rate_limited は ready へ戻す");
@@ -373,7 +391,13 @@ async fn rate_limited_retry_does_not_consume_attempt() {
         .expect("claim a");
     let permanent = NodeResult::fail("bad_request", "nope", false);
     store
-        .checkpoint_and_advance(&claimed, &permanent, &graph, 1)
+        .checkpoint_and_advance(
+            &claimed,
+            &permanent,
+            &graph,
+            1,
+            workflow_engine::ir::OnError::FailRun,
+        )
         .await
         .unwrap();
     let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
@@ -407,4 +431,130 @@ async fn tenant_isolation_in_claim() {
             .unwrap();
     assert_eq!(owner_tenant, claimed.tenant_id);
     let _ = r1;
+}
+
+/// on_error=continue のノード `a` を失敗させ、`error`/`out` の分岐を検証する IR。
+/// `a` --error--> handler（error ポート接続時のみ）、`a` --out--> after。
+fn on_error_ir(connect_error_port: bool, on_error_continue: bool) -> Value {
+    let on_error = if on_error_continue {
+        "continue"
+    } else {
+        "fail_run"
+    };
+    let mut edges = vec![json!({ "from": "a", "to": "after" })];
+    let mut nodes = vec![
+        json!({ "id": "a", "type": "storage.read", "params": {}, "on_error": on_error }),
+        json!({ "id": "after", "type": "storage.read", "params": {} }),
+    ];
+    if connect_error_port {
+        // handler は error 入エッジのみ持つ（entry にならない＝勝手に走らない）。
+        nodes.push(json!({ "id": "handler", "type": "storage.read", "params": {} }));
+        edges.push(json!({ "from": "a", "from_port": "error", "to": "handler" }));
+    }
+    json!({
+        "ir_version": 1, "name": "onerr",
+        "declared_scopes": ["storage.read"],
+        "nodes": nodes,
+        "edges": edges,
+    })
+}
+
+#[tokio::test]
+async fn on_error_continue_routes_to_error_port_and_run_succeeds() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let run_id = create_run(&store, &tenant, &on_error_ir(true, true)).await;
+
+    let counts = Arc::new(dashmap_like::Map::default());
+    let exec = Arc::new(FailingExecutor {
+        fail_node: "a".into(),
+        counts: Arc::clone(&counts),
+    });
+    let w = workflow_engine::WorkflowWorker::new(
+        store.clone(),
+        exec,
+        workflow_engine::WorkerConfig::default(),
+    )
+    .scoped_to_tenant(&tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+
+    // 失敗はデータフローに変換され run は succeeded（処理済み失敗は成否に数えない）。
+    assert_eq!(
+        store.run_status(&tenant, run_id).await.unwrap(),
+        Some(RunStatus::Succeeded),
+        "error ポート接続時は run が succeeded"
+    );
+    let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
+    let find = |p: &str| statuses.iter().find(|(x, _)| x == p).unwrap().1;
+    assert_eq!(
+        find("a"),
+        StepStatus::Failed,
+        "a は failed（error 解決済み）"
+    );
+    assert_eq!(find("handler"), StepStatus::Succeeded, "error 後続が実行");
+    assert_eq!(find("after"), StepStatus::Skipped, "out 後続は skip");
+    assert_eq!(counts.get("handler"), 1, "handler は 1 回実行");
+    assert_eq!(counts.get("after"), 0, "after は実行されない");
+
+    // a の output に error オブジェクトが載り taken_ports=error（後続が $from で参照できる）。
+    let (output, ports): (Option<sqlx::types::Json<Value>>, Vec<String>) = sqlx::query_as(
+        "SELECT output, taken_ports FROM step_execution \
+         WHERE tenant_id = $1 AND run_id = $2 AND step_path = 'a'",
+    )
+    .bind(&tenant)
+    .bind(run_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(ports, vec!["error".to_string()]);
+    let err = output.unwrap().0;
+    assert_eq!(err["error"]["code"], json!("boom"));
+    assert_eq!(err["error"]["node_id"], json!("a"));
+    assert!(err["error"]["attempt"].is_number(), "attempt を含む");
+
+    // 監査: 失敗→error 経路遷移が run_event に残る。
+    let woven: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_event \
+         WHERE tenant_id = $1 AND run_id = $2 AND kind = 'step.failed' \
+           AND payload->>'on_error' = 'continue'",
+    )
+    .bind(&tenant)
+    .bind(run_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(woven, 1, "error 経路遷移が監査に記録される");
+}
+
+#[tokio::test]
+async fn fail_run_without_error_port_fails_run() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    // 同じ DAG だが on_error=fail_run（既定）・error ポート未接続。
+    let run_id = create_run(&store, &tenant, &on_error_ir(false, false)).await;
+
+    let counts = Arc::new(dashmap_like::Map::default());
+    let exec = Arc::new(FailingExecutor {
+        fail_node: "a".into(),
+        counts: Arc::clone(&counts),
+    });
+    let w = workflow_engine::WorkflowWorker::new(
+        store.clone(),
+        exec,
+        workflow_engine::WorkerConfig::default(),
+    )
+    .scoped_to_tenant(&tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+
+    assert_eq!(
+        store.run_status(&tenant, run_id).await.unwrap(),
+        Some(RunStatus::Failed),
+        "error ポート未接続の同 DAG は run が failed（回帰なし）"
+    );
+    let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
+    let after = statuses.iter().find(|(p, _)| p == "after").unwrap();
+    assert_eq!(after.1, StepStatus::Cancelled, "後続は cancelled");
+    assert_eq!(counts.get("after"), 0, "後続は実行されない");
 }

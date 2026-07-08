@@ -15,6 +15,7 @@ use super::super::model::{RunStatus, StepStatus};
 use super::super::readiness::Readiness;
 use super::super::NodeResult;
 use super::{append_event, map_db, node_readiness, RunStoreError};
+use crate::ir::OnError;
 use crate::vocab::RunEventKind;
 
 /// backoff（指数＋full jitter・engine.md §7.4）。jitter の乱数は (run_id, step_path, attempt) の
@@ -48,6 +49,9 @@ fn deterministic_rand01(run_id: Uuid, step_path: &str, attempt: i32) -> f64 {
 }
 
 /// checkpoint＋前進の本体。
+///
+/// `on_error` はノードの失敗時方針（既定 `fail_run`）。`continue` の失敗 step は run を落とさず
+/// `error` ポートのデータフローへ変換する（engine.md §4.1 手順 2・§4.5）。
 #[allow(clippy::too_many_lines)]
 pub(super) async fn checkpoint_and_advance(
     db: &PgPool,
@@ -55,6 +59,7 @@ pub(super) async fn checkpoint_and_advance(
     result: &NodeResult,
     graph: &RunGraph,
     max_attempts: i32,
+    on_error: OnError,
 ) -> Result<bool, RunStoreError> {
     let mut tx = db.begin().await.map_err(map_db)?;
     let tenant_id = &claimed.tenant_id;
@@ -146,21 +151,47 @@ pub(super) async fn checkpoint_and_advance(
         }
     }
 
+    // error 列は engine.md §2.2 どおり `{code,message,retryable,node_id,attempt}` に統一する
+    // （後続ノードが `$from nodes.<id>.output.error.*` で参照する形と一致させる）。
+    let error_obj = result.error.as_ref().map(|e| {
+        json!({
+            "code": e.code,
+            "message": e.message,
+            "retryable": e.retryable,
+            "node_id": claimed.node_id,
+            "attempt": claimed.attempt,
+        })
+    });
+
+    // on_error=continue かつ失敗（リトライ枯渇後）は「処理済み失敗」: run を落とさず error ポートへ流す。
+    let continue_on_error = !result.ok && on_error == OnError::Continue;
+
     // checkpoint: terminal 状態＋output/taken_ports/error を確定する。
-    let (status, ports, event_kind) = if result.ok {
+    let (status, ports, output_json, event_kind) = if result.ok {
         (
             StepStatus::Succeeded,
             result.taken_ports.clone(),
+            result.output.clone(),
             RunEventKind::StepSucceeded,
         )
+    } else if continue_on_error {
+        // 失敗をデータフローに変換する。output に error オブジェクトを載せ、taken_ports=error で
+        // error 出エッジのみ live（out 出エッジは dead）にして後続を前進させる（§4.1 手順 2）。
+        (
+            StepStatus::Failed,
+            vec!["error".to_string()],
+            json!({ "error": error_obj }),
+            RunEventKind::StepFailed,
+        )
     } else {
-        // Stage A は fail_run 既定（on_error=continue の error ポートは Task 10.5）。
-        (StepStatus::Failed, Vec::new(), RunEventKind::StepFailed)
+        // fail_run（既定）: 未処理失敗。taken_ports は空（全出エッジ dead）で run を failed へ。
+        (
+            StepStatus::Failed,
+            Vec::new(),
+            Value::Null,
+            RunEventKind::StepFailed,
+        )
     };
-    let error_json = result
-        .error
-        .as_ref()
-        .map(|e| json!({ "code": e.code, "message": e.message, "retryable": e.retryable }));
     sqlx::query(
         "UPDATE step_execution SET status = $4, output = $5, taken_ports = $6, error = $7, \
          lease_owner = NULL, lease_expires_at = NULL, updated_at = now() \
@@ -170,9 +201,9 @@ pub(super) async fn checkpoint_and_advance(
     .bind(run_id)
     .bind(&claimed.step_path)
     .bind(status.as_str())
-    .bind(Json(&result.output))
+    .bind(Json(&output_json))
     .bind(&ports)
-    .bind(error_json.as_ref().map(Json))
+    .bind(error_obj.as_ref().map(Json))
     .execute(&mut *tx)
     .await
     .map_err(map_db)?;
@@ -181,13 +212,19 @@ pub(super) async fn checkpoint_and_advance(
         tenant_id,
         run_id,
         event_kind,
-        &json!({ "step": claimed.step_path }),
+        // continue 経路は「失敗→error ポート遷移」を監査で辿れるよう明示する（#179 受け入れ）。
+        &json!({
+            "step": claimed.step_path,
+            "on_error": if continue_on_error { Some("continue") } else { None::<&str> },
+            "taken_ports": ports,
+        }),
     )
     .await?;
 
     // fail_run（既定）で step が失敗したら run を即 failed 化し、残る非 terminal step を cancelled に
     // する。こうしないと ready/running の兄弟が run 失敗後も claim され副作用を起こし得る（P1）。
-    if !result.ok {
+    // on_error=continue の失敗は run を落とさず下の前進へ落とす。
+    if !result.ok && !continue_on_error {
         cancel_remaining_steps(&mut tx, tenant_id, run_id).await?;
         sqlx::query(
             "UPDATE workflow_run SET status = 'failed', finished_at = now(), updated_at = now() \
@@ -347,22 +384,28 @@ async fn finalize_run_if_done(
     tenant_id: &str,
     run_id: Uuid,
 ) -> Result<(), RunStoreError> {
-    let rows: Vec<(String,)> =
-        sqlx::query_as("SELECT status FROM step_execution WHERE tenant_id = $1 AND run_id = $2")
-            .bind(tenant_id)
-            .bind(run_id)
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(map_db)?;
-    let statuses: Vec<StepStatus> = rows
+    let rows: Vec<(String, Vec<String>)> = sqlx::query_as(
+        "SELECT status, taken_ports FROM step_execution WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    let steps: Vec<(StepStatus, &Vec<String>)> = rows
         .iter()
-        .filter_map(|(s,)| StepStatus::parse(s))
+        .filter_map(|(s, ports)| StepStatus::parse(s).map(|st| (st, ports)))
         .collect();
-    if !statuses.iter().all(|s| s.is_terminal()) {
+    if !steps.iter().all(|(s, _)| s.is_terminal()) {
         return Ok(()); // まだ実行中 step がある。
     }
-    let any_failed = statuses.contains(&StepStatus::Failed);
-    let (run_status, kind) = if any_failed {
+    // 「処理済み失敗」（on_error=continue で error ポートを取った failed・taken_ports 非空）は
+    // run の成否に数えない（engine.md §4.5）。未処理失敗（taken_ports 空）のみ run を failed にする
+    // （通常は即 fail_run 経路で早期 return するため防御的）。
+    let any_unhandled_failed = steps
+        .iter()
+        .any(|(s, ports)| *s == StepStatus::Failed && ports.is_empty());
+    let (run_status, kind) = if any_unhandled_failed {
         (RunStatus::Failed, RunEventKind::RunFailed)
     } else {
         (RunStatus::Succeeded, RunEventKind::RunSucceeded)
