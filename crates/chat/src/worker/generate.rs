@@ -82,19 +82,13 @@ impl ChatWorker {
             trace_id: None,
             input_preview,
         };
-        let opts = AgentOptions {
-            max_steps: self.config.max_steps,
-            system: Some(self.config.system_prompt.clone()),
-            model: self.config.model.clone(),
-            effort: None,
-            max_tokens: Some(2048),
-            allow_confirmed_tools: false,
-            deadline: None,
-        };
-        let stop = run_agent(&self.gateway, &tools, history, &run_ctx, &opts, sink)
+        let mut opts = AgentOptions::chat(self.config.max_steps);
+        opts.system = Some(self.config.system_prompt.clone());
+        opts.model = self.config.model.clone();
+        let outcome = run_agent(&self.gateway, &tools, history, &run_ctx, &opts, None, sink)
             .await
             .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
-        let _ = stop; // Completed / MaxSteps / Cancelled は cancel フラグと content で処理
+        let _ = outcome; // Completed / Budget / Cancelled は cancel フラグと content で処理
         Ok(())
     }
 

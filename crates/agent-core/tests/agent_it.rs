@@ -17,8 +17,8 @@
 use std::sync::Arc;
 
 use agent_core::{
-    run_agent, AgentError, AgentEvent, AgentOptions, AgentStop, Citation, EventSink, RunContext,
-    Tool, ToolError, ToolOutcome,
+    budget::BudgetKind, run_agent, AgentError, AgentEvent, AgentOptions, AgentStop, Citation,
+    EventSink, RunContext, Tool, ToolError, ToolOutcome,
 };
 use async_trait::async_trait;
 use authz::{AuthContext, Principal};
@@ -123,6 +123,58 @@ impl Tool for MockSearchTool {
     }
 }
 
+/// 常に成功する決定的ツール（`loop:` 駆動でループ検出を trip させずに予算だけ効かせる用）。
+struct MockOkTool;
+
+#[async_trait]
+impl Tool for MockOkTool {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "noop"
+    }
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn description(&self) -> &str {
+        "常に成功するテストツール。"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {}, "additionalProperties": true })
+    }
+    async fn call(
+        &self,
+        _ctx: &AuthContext,
+        _input: serde_json::Value,
+        _trace_id: Option<&str>,
+    ) -> Result<ToolOutcome, ToolError> {
+        Ok(ToolOutcome::ok("ok"))
+    }
+}
+
+/// 常に失敗する決定的ツール（`loop:` 駆動で同一失敗の反復＝ループ検出の検証用）。
+struct MockFailTool;
+
+#[async_trait]
+impl Tool for MockFailTool {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "boom"
+    }
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn description(&self) -> &str {
+        "常に失敗するテストツール。"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {}, "additionalProperties": true })
+    }
+    async fn call(
+        &self,
+        _ctx: &AuthContext,
+        _input: serde_json::Value,
+        _trace_id: Option<&str>,
+    ) -> Result<ToolOutcome, ToolError> {
+        Ok(ToolOutcome::error("常に失敗"))
+    }
+}
+
 /// テスト DB へ接続しマイグレーションを適用する（未設定ならスキップ）。
 async fn setup() -> Option<PgPool> {
     let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
@@ -207,10 +259,12 @@ async fn run_agent_completes_without_tools() {
         user_msg("hello world"),
         &run_context(&c, "hello world"),
         &AgentOptions::default(),
+        None,
         &mut sink,
     )
     .await
-    .expect("run_agent 成功");
+    .expect("run_agent 成功")
+    .stop;
 
     assert_eq!(stop, AgentStop::Completed, "ツールを呼ばず自然終了する");
     let text: String = sink
@@ -247,14 +301,13 @@ async fn run_agent_dispatches_tool_then_completes() {
         &tools,
         user_msg("search: 経費規程"),
         &run_context(&c, "search: 経費規程"),
-        &AgentOptions {
-            max_steps: 4,
-            ..AgentOptions::default()
-        },
+        &AgentOptions::chat(4),
+        None,
         &mut sink,
     )
     .await
-    .expect("run_agent 成功");
+    .expect("run_agent 成功")
+    .stop;
 
     // 1 ターン目でツールを呼び、2 ターン目は tool_result 済みで自然終了する。
     assert_eq!(stop, AgentStop::Completed, "ツール実行後に完了する");
@@ -296,10 +349,12 @@ async fn run_agent_stops_on_cancellation() {
         user_msg("hello world"),
         &run_context(&c, "hello world"),
         &AgentOptions::default(),
+        None,
         &mut sink,
     )
     .await
-    .expect("run_agent 成功");
+    .expect("run_agent 成功")
+    .stop;
 
     assert_eq!(stop, AgentStop::Cancelled, "キャンセルで停止する");
     assert!(
@@ -323,20 +378,138 @@ async fn run_agent_stops_on_max_steps() {
         &tools,
         user_msg("search: 上限テスト"),
         &run_context(&c, "search: 上限テスト"),
-        &AgentOptions {
-            max_steps: 1,
-            ..AgentOptions::default()
-        },
+        &AgentOptions::chat(1),
+        None,
         &mut sink,
     )
     .await
-    .expect("run_agent 成功");
+    .expect("run_agent 成功")
+    .stop;
 
-    // step 0 でツールを呼び観測まで進むが、上限 1 のためループ終端で MaxSteps 停止。
-    assert_eq!(stop, AgentStop::MaxSteps, "最大ステップで停止する");
+    // step 0 でツールを呼び観測まで進むが、上限 1 のためステップ予算で停止。
+    assert_eq!(
+        stop,
+        AgentStop::Budget(BudgetKind::Steps),
+        "最大ステップで停止する"
+    );
     assert_eq!(
         sink.count(|e| matches!(e, AgentEvent::ToolCall { .. })),
         1,
         "上限内で 1 回はツールを呼ぶ"
+    );
+}
+
+/// 自律プロファイル: `plan:` 駆動で plan メタツールを呼び、計画分解イベントが流れて完了する（5.2）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn autonomous_plan_decomposition_emits_plan_event() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    // 自律版はループが plan メタツールを提示する。ユーザーツールも 1 つ足す。
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockSearchTool)];
+    let mut sink = TestSink::new();
+
+    let stop = run_agent(
+        &gateway,
+        &tools,
+        user_msg("plan: 調査, 実装, 検証"),
+        &run_context(&c, "plan"),
+        &AgentOptions::autonomous(20, None, 1_000_000, 1_000_000),
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功")
+    .stop;
+
+    assert_eq!(stop, AgentStop::Completed, "計画→次ターンで自然終了する");
+    // 計画分解イベントが 1 回流れ、3 サブタスクを持つ。
+    let plan = sink.events.iter().find_map(|e| match e {
+        AgentEvent::PlanUpdated(p) => Some(p.clone()),
+        _ => None,
+    });
+    let plan = plan.expect("PlanUpdated が流れる");
+    assert_eq!(plan.subtasks.len(), 3, "3 サブタスクに分解される");
+    assert_eq!(plan.subtasks[0].title, "調査");
+    assert_eq!(plan.revision, 1);
+    // plan ツールは横取りされ、ユーザーツール（doc_search）は呼ばれない。
+    assert_eq!(
+        sink.count(|e| matches!(e, AgentEvent::ToolCall { name, .. } if name == "doc_search")),
+        0
+    );
+}
+
+/// 自律プロファイル: `loop:` ＋常に失敗するツール → 同一失敗の反復をループ検出し安全停止する（5.5）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn autonomous_loop_detection_stops_safely() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockFailTool)];
+    let mut sink = TestSink::new();
+
+    let stop = run_agent(
+        &gateway,
+        &tools,
+        user_msg("loop: fail forever"),
+        &run_context(&c, "loop"),
+        // 予算は潤沢（ループ検出が先に効くことを見る）。
+        &AgentOptions::autonomous(100, None, 1_000_000_000, 1_000_000_000),
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功")
+    .stop;
+
+    assert_eq!(
+        stop,
+        AgentStop::LoopDetected,
+        "同一失敗の反復で安全停止する"
+    );
+    // 失敗回復イベント（StopLooping）が流れる。
+    let stopped = sink.events.iter().any(|e| {
+        matches!(e, AgentEvent::FailureRecovery { action, .. }
+            if *action == agent_core::RecoveryAction::StopLooping)
+    });
+    assert!(stopped, "ループ検出の FailureRecovery が流れる");
+}
+
+/// 自律プロファイル: `loop:` ＋常に成功するツール → トークン予算の超過で安全停止する（5.7）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn autonomous_token_budget_stops_safely() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockOkTool)];
+    let mut sink = TestSink::new();
+
+    // トークン上限を小さく、ステップ上限を大きく → トークンで先に停止する。
+    let stop = run_agent(
+        &gateway,
+        &tools,
+        user_msg("loop: keep going"),
+        &run_context(&c, "loop"),
+        // 発話は 3 トークン/ターンで累積。上限 10（80%=8 で警告→超過）。
+        &AgentOptions::autonomous(1000, None, 10, 1_000_000_000),
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功")
+    .stop;
+
+    assert_eq!(
+        stop,
+        AgentStop::Budget(BudgetKind::Tokens),
+        "トークン予算で安全停止する"
+    );
+    // 上限接近で予算警告が少なくとも 1 回流れる。
+    assert!(
+        sink.count(|e| matches!(e, AgentEvent::BudgetWarning { .. })) >= 1,
+        "予算警告イベントが流れる"
     );
 }

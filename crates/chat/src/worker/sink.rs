@@ -91,13 +91,24 @@ impl WorkerSink {
                     name: artifact.name.clone(),
                 });
             }
+            // 自律プロファイルの構造化イベント（計画/サブタスク/予算/承認/失敗回復）は
+            // content block へは projection しない（進捗の可視化はライブ SSE 側で扱う・W4 で結線）。
+            AgentEvent::PlanUpdated(_)
+            | AgentEvent::SubtaskUpdated { .. }
+            | AgentEvent::BudgetWarning { .. }
+            | AgentEvent::ApprovalRequested { .. }
+            | AgentEvent::ApprovalResolved { .. }
+            | AgentEvent::FailureRecovery { .. } => {}
         }
     }
 }
 
-/// AgentEvent → SSE イベント種別。
-fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
-    match event {
+/// AgentEvent → SSE イベント種別。content/ストリームに写らないイベントは `None`。
+///
+/// Phase 5 自律の計画/予算/承認/失敗回復イベントの SSE 種別は W4（可観測化）で `StreamEventKind` に
+/// 追加して結線する。Chat プロファイルはこれらを発火しないため、W1 時点では `None`（無視）で安全。
+fn to_stream_kind(event: &AgentEvent) -> Option<StreamEventKind> {
+    Some(match event {
         AgentEvent::Text(t) => StreamEventKind::Token { text: t.clone() },
         AgentEvent::Thinking(t) => StreamEventKind::Thinking { text: t.clone() },
         AgentEvent::ToolCall { id, name, input } => StreamEventKind::ToolCall {
@@ -119,7 +130,13 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
             node_id: artifact.node_id.clone(),
             name: artifact.name.clone(),
         },
-    }
+        AgentEvent::PlanUpdated(_)
+        | AgentEvent::SubtaskUpdated { .. }
+        | AgentEvent::BudgetWarning { .. }
+        | AgentEvent::ApprovalRequested { .. }
+        | AgentEvent::ApprovalResolved { .. }
+        | AgentEvent::FailureRecovery { .. } => return None,
+    })
 }
 
 /// agent-core の Citation → chat の Citation（同型フィールド）。
@@ -137,7 +154,11 @@ fn to_citation(c: &AgentCitation) -> Citation {
 #[async_trait::async_trait]
 impl EventSink for WorkerSink {
     async fn emit(&mut self, event: AgentEvent) -> Result<(), AgentError> {
-        let kind = to_stream_kind(&event);
+        // SSE/永続に写らないイベント（W1 時点の自律構造化イベント）は projection だけ更新して返す。
+        let Some(kind) = to_stream_kind(&event) else {
+            self.accumulate(&event);
+            return Ok(());
+        };
         match self
             .store
             .append_stream_event(self.run_id, self.fencing_token, &kind)
@@ -175,11 +196,22 @@ mod tests {
             },
         };
         match to_stream_kind(&ev) {
-            StreamEventKind::FileRef { node_id, name } => {
+            Some(StreamEventKind::FileRef { node_id, name }) => {
                 assert_eq!(node_id, "n1");
                 assert_eq!(name, "result.csv");
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn autonomous_events_do_not_stream() {
+        // 計画/予算/失敗回復イベントは SSE 種別へは写らない（W4 で結線）。
+        let ev = AgentEvent::BudgetWarning {
+            kind: agent_core::BudgetKind::Tokens,
+            used: 8,
+            limit: 10,
+        };
+        assert!(to_stream_kind(&ev).is_none());
     }
 }
