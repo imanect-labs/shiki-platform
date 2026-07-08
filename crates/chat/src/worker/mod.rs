@@ -36,6 +36,14 @@ pub struct WorkerConfig {
     pub lease_secs: i64,
     /// エージェントモードの最大ステップ。
     pub max_steps: usize,
+    /// 自律プロファイルの最大ステップ（長ホライズン）。
+    pub autonomous_max_steps: usize,
+    /// 自律プロファイルの累積トークン上限（予算ガード・Task 5.7）。
+    pub autonomous_max_tokens: u64,
+    /// 自律プロファイルの累積コスト上限（マイクロ USD・Task 5.7）。
+    pub autonomous_max_cost_usd_micros: i64,
+    /// 自律 shell に同梱するゲストコマンドパッケージ（coreutils 等・Task 5.4）。
+    pub sandbox_software: Vec<String>,
 }
 
 impl Default for WorkerConfig {
@@ -47,6 +55,11 @@ impl Default for WorkerConfig {
             model: None,
             lease_secs: 30,
             max_steps: 6,
+            autonomous_max_steps: 50,
+            // 既定: 約 20 万トークン・1 USD 上限（テナント/skill で上書き可・Task 5.7）。
+            autonomous_max_tokens: 200_000,
+            autonomous_max_cost_usd_micros: 1_000_000,
+            sandbox_software: vec!["coreutils".to_string()],
         }
     }
 }
@@ -66,6 +79,9 @@ pub struct WorkerDeps {
     pub artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
     /// web 検索プロバイダ（web_search 用・Brave/SearXNG/Stub）。
     pub web_search: Option<Arc<dyn websearch::SearchProvider>>,
+    /// StorageService（自律プロファイルの file CRUD/shell ワークスペース・Task 5.4）。
+    /// 未配線なら自律ツール（fs_*/grep/shell）を提示しない。
+    pub storage: Option<Arc<storage::StorageService>>,
 }
 
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
@@ -81,6 +97,8 @@ pub struct ChatWorker {
     artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
     /// web 検索プロバイダ。未配線なら web_search / web_fetch ツールを提示しない。
     web_search: Option<Arc<dyn websearch::SearchProvider>>,
+    /// StorageService（自律プロファイルのワークスペース）。
+    storage: Option<Arc<storage::StorageService>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -92,6 +110,7 @@ impl ChatWorker {
             sandbox,
             artifacts,
             web_search,
+            storage,
         } = deps;
         ChatWorker {
             db,
@@ -101,6 +120,7 @@ impl ChatWorker {
             sandbox,
             artifacts,
             web_search,
+            storage,
             config: Arc::new(config),
         }
     }
@@ -237,7 +257,7 @@ impl ChatWorker {
         let mut worker_sink = WorkerSink::new(self.store.clone(), run_id, fencing, cancel.clone());
 
         let gen_result = if run.agent_mode {
-            self.run_agent_mode(&ctx, &run, history, &mut worker_sink)
+            self.run_agent_mode(&ctx, &run, history, cancel.clone(), &mut worker_sink)
                 .await
         } else {
             self.run_classic_mode(&ctx, &run, history, &mut worker_sink)

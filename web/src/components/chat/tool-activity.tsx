@@ -1,6 +1,19 @@
 "use client";
 
-import { Loader2, Search, Check, Terminal, Globe, FileDown } from "lucide-react";
+import {
+  Loader2,
+  Search,
+  Check,
+  Terminal,
+  Globe,
+  FileDown,
+  FileText,
+  FilePlus,
+  FilePen,
+  Trash2,
+  Files,
+  ListChecks,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -17,6 +30,15 @@ const TOOL_LABEL: Record<string, { label: string; icon: typeof Search }> = {
   code_interpreter: { label: "コードを実行", icon: Terminal },
   web_search: { label: "web を検索", icon: Globe },
   web_fetch: { label: "ページを取得", icon: FileDown },
+  // 自律エージェントのフルツール（Task 5.4）。
+  fs_list: { label: "ファイル一覧", icon: Files },
+  fs_read: { label: "ファイルを読む", icon: FileText },
+  fs_write: { label: "ファイルを書く", icon: FilePlus },
+  fs_edit: { label: "ファイルを編集", icon: FilePen },
+  fs_delete: { label: "ファイルを削除", icon: Trash2 },
+  grep: { label: "ファイルを検索", icon: Search },
+  shell: { label: "コマンドを実行", icon: Terminal },
+  plan: { label: "計画を更新", icon: ListChecks },
 };
 
 /// エージェントのツール実行（Chain of Thought）を可視化する。検索中はスピナー、完了はチェック。

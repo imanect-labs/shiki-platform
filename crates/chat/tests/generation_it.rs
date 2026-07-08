@@ -128,7 +128,7 @@ async fn post_message_is_transactional_outbox() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "経費規程は？", &[], None, None)
+        .post_message(&c, thread.id, "経費規程は？", &[], None, false, None)
         .await
         .unwrap();
 
@@ -172,7 +172,7 @@ async fn claim_lease_fencing_and_exactly_once_append() {
     let c = ctx(&tenant);
     let thread = store.create_thread(&c, "t", false, None).await.unwrap();
     let res = store
-        .post_message(&c, thread.id, "hi", &[], None, None)
+        .post_message(&c, thread.id, "hi", &[], None, false, None)
         .await
         .unwrap();
     let run_id = res.run_id;
@@ -246,7 +246,7 @@ async fn cancel_is_cooperative_and_visible_to_claim() {
     let c = ctx(&tenant);
     let thread = store.create_thread(&c, "t", false, None).await.unwrap();
     let res = store
-        .post_message(&c, thread.id, "hi", &[], None, None)
+        .post_message(&c, thread.id, "hi", &[], None, false, None)
         .await
         .unwrap();
 
@@ -290,7 +290,7 @@ async fn replay_returns_events_after_cursor() {
     let c = ctx(&tenant);
     let thread = store.create_thread(&c, "t", false, None).await.unwrap();
     let res = store
-        .post_message(&c, thread.id, "hi", &[], None, None)
+        .post_message(&c, thread.id, "hi", &[], None, false, None)
         .await
         .unwrap();
     let run_id = res.run_id;

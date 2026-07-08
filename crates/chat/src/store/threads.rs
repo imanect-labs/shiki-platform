@@ -1,4 +1,4 @@
-//! `ChatStore`: thread / message CRUD・線形取得・ReBAC 共有（Task 3.1 / 3.7）。
+//! `ChatStore`: thread / message CRUD・線形取得（Task 3.1）。共有系は [`super::sharing`]。
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -8,10 +8,9 @@ use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::types::Json;
 use storage::audit::{AuditEntry, Decision};
-use storage::model::ShareTarget;
 use uuid::Uuid;
 
-use crate::model::{ContentBlock, Message, Role, Thread, ThreadRole};
+use crate::model::{ContentBlock, Message, Role, Thread};
 
 /// thread 行。
 #[derive(sqlx::FromRow)]
@@ -249,105 +248,6 @@ impl ChatStore {
             .unwrap_or(false)
     }
 
-    /// スレッドを共有する（owner 権限・viewer/commenter/editor）。監査失敗時は付与を補償剥奪。
-    pub async fn share_thread(
-        &self,
-        ctx: &AuthContext,
-        thread_id: Uuid,
-        target: &ShareTarget,
-        role: ThreadRole,
-        trace_id: Option<&str>,
-    ) -> Result<(), ChatError> {
-        let obj = self
-            .require_thread(ctx, thread_id, Relation::Owner, "thread.share", trace_id)
-            .await?;
-        let granted = self
-            .authz
-            .write_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-            .await
-            .map_err(|e| ChatError::Internal(e.to_string()))?;
-        if let Err(e) = self
-            .record_share_audit(ctx, thread_id, "thread.share", target, role, trace_id)
-            .await
-        {
-            if granted {
-                let _ = self
-                    .authz
-                    .delete_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-                    .await;
-            }
-            return Err(e);
-        }
-        Ok(())
-    }
-
-    /// 共有を解除する（owner 権限・冪等）。監査失敗時は剥奪を補償付与。
-    pub async fn unshare_thread(
-        &self,
-        ctx: &AuthContext,
-        thread_id: Uuid,
-        target: &ShareTarget,
-        role: ThreadRole,
-        trace_id: Option<&str>,
-    ) -> Result<(), ChatError> {
-        let obj = self
-            .require_thread(ctx, thread_id, Relation::Owner, "thread.unshare", trace_id)
-            .await?;
-        let revoked = self
-            .authz
-            .delete_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-            .await
-            .map_err(|e| ChatError::Internal(e.to_string()))?;
-        if let Err(e) = self
-            .record_share_audit(ctx, thread_id, "thread.unshare", target, role, trace_id)
-            .await
-        {
-            if revoked {
-                let _ = self
-                    .authz
-                    .write_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-                    .await;
-            }
-            return Err(e);
-        }
-        Ok(())
-    }
-
-    /// 共有相手一覧（owner 権限・直接タプルのみ）。
-    pub async fn list_thread_shares(
-        &self,
-        ctx: &AuthContext,
-        thread_id: Uuid,
-        trace_id: Option<&str>,
-    ) -> Result<Vec<(ShareTarget, ThreadRole)>, ChatError> {
-        let obj = self
-            .require_thread(
-                ctx,
-                thread_id,
-                Relation::Owner,
-                "thread.shares.list",
-                trace_id,
-            )
-            .await?;
-        let tuples = self
-            .authz
-            .read_tuples(&obj, None)
-            .await
-            .map_err(|e| ChatError::Internal(e.to_string()))?;
-        let mut out = Vec::new();
-        for t in tuples {
-            let Some(role) = Relation::parse(&t.relation).and_then(ThreadRole::from_relation)
-            else {
-                continue;
-            };
-            let Some(target) = ShareTarget::parse_subject(&ctx.ns(), &t.user) else {
-                continue;
-            };
-            out.push((target, role));
-        }
-        Ok(out)
-    }
-
     /// スレッドへの relation を要求し、FGA object を返す（不足は監査 deny＋Forbidden）。
     pub(super) async fn require_thread(
         &self,
@@ -387,31 +287,6 @@ impl ChatStore {
         }
         Ok(obj)
     }
-
-    async fn record_share_audit(
-        &self,
-        ctx: &AuthContext,
-        thread_id: Uuid,
-        action: &str,
-        target: &ShareTarget,
-        role: ThreadRole,
-        trace_id: Option<&str>,
-    ) -> Result<(), ChatError> {
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action,
-                    object_type: "thread",
-                    object_id: &thread_id.to_string(),
-                    decision: Decision::Allow,
-                    trace_id,
-                    metadata: json!({ "target": target, "role": role }),
-                },
-            )
-            .await
-            .map_err(map_storage)
-    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -420,6 +295,6 @@ fn map_db(e: sqlx::Error) -> ChatError {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn map_storage(e: storage::StorageError) -> ChatError {
+pub(super) fn map_storage(e: storage::StorageError) -> ChatError {
     ChatError::Internal(format!("audit: {e}"))
 }

@@ -47,7 +47,7 @@ pub use profile::{AgentOptions, AgentOutcome, AgentProfile};
 pub use tool::{ArtifactRef, ArtifactStore, Citation, Tool, ToolError, ToolOutcome};
 pub use tools::{
     run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsDeleteTool, FsEditTool,
-    FsListTool, FsReadTool, GrepTool, ShellTool, WebFetchTool, WebSearchTool,
+    FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool, WebFetchTool, WebSearchTool,
 };
 pub use workspace::{WorkspaceEntry, WorkspaceStore, WorkspaceWrite};
 // サンドボックス契約を再輸出（chat は agent-core 経由で code_interpreter を配線する）。
