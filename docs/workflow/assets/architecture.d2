@@ -1,0 +1,222 @@
+# shiki-platform ワークフローエンジン アーキテクチャ
+# デザイントークン: web/src/app/globals.css の oklch 値を sRGB 変換して使用
+#   background #FFFFFF / surface(muted) #F4F4F5 / border #E4E4E7
+#   foreground #18181B / muted-fg #71717A / primary(navy) #1B2844
+#   season-spring #D48490 / season-summer #4F9F77 / season-autumn #CF7E4B / season-winter #5B8DAB
+
+vars: {
+  d2-config: {
+    layout-engine: dagre
+  }
+}
+
+title: |md
+  # shiki-platform ワークフローエンジン アーキテクチャ
+  正本: docs/workflow/（README / ir / engine / script）・実装 crates/workflow-engine, crates/api
+| {
+  near: top-center
+  style: {
+    font-color: "#1B2844"
+    font-size: 22
+  }
+}
+
+classes: {
+  trigger: {
+    style: {
+      fill: "#4F9F77"
+      stroke: "#3C7D5C"
+      stroke-width: 2
+      font-color: "#F7F8FC"
+      border-radius: 8
+      shadow: true
+    }
+  }
+  core: {
+    style: {
+      fill: "#1B2844"
+      stroke: "#131D33"
+      stroke-width: 2
+      font-color: "#F7F8FC"
+      border-radius: 8
+      shadow: true
+    }
+  }
+  choke: {
+    style: {
+      fill: "#5B8DAB"
+      stroke: "#43708A"
+      stroke-width: 2
+      font-color: "#F7F8FC"
+      border-radius: 8
+    }
+  }
+  authz: {
+    style: {
+      fill: "#CF7E4B"
+      stroke: "#A9622F"
+      stroke-width: 2
+      font-color: "#F7F8FC"
+      border-radius: 8
+      shadow: true
+    }
+  }
+  runtime: {
+    style: {
+      fill: "#D48490"
+      stroke: "#B15F6C"
+      stroke-width: 2
+      font-color: "#F7F8FC"
+      border-radius: 8
+    }
+  }
+  store: {
+    style: {
+      fill: "#F4F4F5"
+      stroke: "#E4E4E7"
+      stroke-width: 2
+      font-color: "#18181B"
+      border-radius: 6
+    }
+  }
+  flow: {
+    style: {
+      stroke: "#71717A"
+      stroke-width: 2
+      font-color: "#3F3F46"
+      font-size: 13
+    }
+  }
+  loop: {
+    style: {
+      stroke: "#A6A6AC"
+      stroke-width: 2
+      stroke-dash: 4
+      font-color: "#71717A"
+      font-size: 12
+    }
+  }
+  authz_edge: {
+    style: {
+      stroke: "#CF7E4B"
+      stroke-width: 2
+      stroke-dash: 3
+      font-color: "#A9622F"
+      font-size: 12
+    }
+  }
+}
+
+direction: down
+
+client: "クライアント\n(Web / API 呼び出し)" {
+  class: trigger
+}
+
+shiki_server: {
+  label: "shiki-server (crates/api)\nworkflow_runtime = spawn_workflow_runtime"
+  style: {
+    fill: "#FFFFFF"
+    stroke: "#E1E1E4"
+    stroke-width: 2
+    border-radius: 14
+    font-color: "#1B2844"
+  }
+
+  launcher: "WorkflowRunLauncher\n冪等発火" { class: core }
+  scheduler: "Scheduler\nSchedulerStore + LeaderLease\ncron tick_schedules" { class: core }
+  event_relay: "EventRelay\nclaim_undelivered → match_event" { class: core }
+  worker: "WorkflowWorker\nSKIP LOCKED で step claim" { class: core }
+  ports: "ProdNodePorts (NodePorts)\nAuthContext 構築" { class: core }
+
+  scheduler -> launcher: "cron tick" { class: flow }
+  event_relay -> launcher: "match_event" { class: flow }
+}
+
+executor: "CapabilityNodeExecutor\n(NodeExecutor / crates/workflow-engine)\n能力ゲートウェイ:\nscope ceiling → effect_journal → rate limit → 監査" {
+  class: core
+}
+
+script_runtime: "script-runtime\nQuickJS on wasmtime\n資格情報ゼロ" {
+  class: runtime
+}
+
+chokepoints: {
+  label: "チョークポイント（既存クレート）"
+  style: {
+    fill: "#FFFFFF"
+    stroke: "#E1E1E4"
+    stroke-width: 2
+    border-radius: 14
+    font-color: "#1B2844"
+  }
+  grid-columns: 5
+
+  storage: "StorageService" { class: choke }
+  search: "SearchService\n(RAG)" { class: choke }
+  llm: "LlmGateway" { class: choke }
+  sandbox: "Sandbox\n(secure-exec)" { class: choke }
+  secret: "SecretStore" { class: choke }
+}
+
+openfga: "OpenFGA\nReBAC 認可チェック" {
+  class: authz
+}
+
+postgres: {
+  label: "Postgres"
+  style: {
+    fill: "#FFFFFF"
+    stroke: "#E1E1E4"
+    stroke-width: 2
+    border-radius: 14
+    font-color: "#1B2844"
+  }
+  grid-columns: 1
+
+  outbox: "outbox\nper-consumer fan-out" { class: store }
+  workflow_run: "workflow_run\n占有TX" { class: store }
+  step_execution: "step_execution\ncheckpoint" { class: store }
+  effect_journal: "effect_journal\n冪等キー（高々1回）" { class: store }
+}
+
+# ==== データフロー ====
+client -> shiki_server.launcher: "run 起動\n(POST /workflows/{id}/runs)" { class: flow }
+postgres.outbox -> shiki_server.event_relay: "claim_undelivered(\"workflow\")" { class: flow }
+
+shiki_server.launcher -> postgres.workflow_run: "占有TX\n冪等発火" { class: flow }
+postgres.workflow_run -> shiki_server.worker: "SKIP LOCKED\nclaim" { class: flow }
+shiki_server.worker -> executor: "step 実行\n(fencing_token+1)" { class: flow }
+
+executor <-> script_runtime: "script ノード ⇄ gRPC 双方向ストリーム\n（能力呼び出しは shiki-server 側で実行）" { class: flow }
+
+executor -> shiki_server.ports: "storage/rag/llm/agent/http ノード" { class: flow }
+shiki_server.ports -> chokepoints: "各チョークポイントを\nAuthContext 付きで呼出" { class: flow }
+chokepoints -> openfga: "全チョークポイント共通で\n認可チェック" { class: authz_edge }
+
+executor -> postgres.effect_journal: "内部能力の冪等記録" { class: flow }
+executor -> postgres.step_execution: "checkpoint 保存\n(output / taken_ports・単一TX)" { class: flow }
+postgres.step_execution -> shiki_server.worker: "後続 step の\nreadiness 判定" { class: loop }
+
+legend: {
+  label: "凡例"
+  near: bottom-right
+  style: {
+    fill: "#FFFFFF"
+    stroke: "#E1E1E4"
+    stroke-width: 1
+    border-radius: 8
+    font-color: "#1B2844"
+    font-size: 13
+  }
+  grid-columns: 1
+  vertical-gap: 3
+  horizontal-gap: 3
+
+  l1: "トリガー" { class: trigger; width: 120; height: 26; style.shadow: false; style.font-size: 12 }
+  l2: "コアエンジン" { class: core; width: 120; height: 26; style.shadow: false; style.font-size: 12 }
+  l3: "チョークポイント" { class: choke; width: 120; height: 26; style.font-size: 12 }
+  l4: "認可 (OpenFGA)" { class: authz; width: 120; height: 26; style.shadow: false; style.font-size: 12 }
+  l5: "script-runtime" { class: runtime; width: 120; height: 26; style.font-size: 12 }
+  l6: "永続化 (Postgres)" { class: store; width: 120; height: 26; style.font-size: 12 }
+}
