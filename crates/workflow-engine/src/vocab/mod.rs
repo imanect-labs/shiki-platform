@@ -93,31 +93,12 @@ vocab_enum! {
 
 /// ノード type が要求するスコープ（scope_ceiling 交差・能力ゲートウェイが検証）。
 ///
-/// 制御ノード・transform.*・debug.log は能力を呼ばないため `None`。
-/// llm.* / ai.* / agent.invoke / script.run / skill.invoke も固定スコープを要求しない
-/// （llm=予算・agent=サンドボックス縮小・script 内 Shiki.*・skill 宣言スコープが個別に要求）。
+/// 能力ノードの type 名は能力 API（HostCall api）名と同一文字列に揃えてあるため、
+/// 対応表は [`Scope::for_api`] に単一化し、ここは委譲のみ（対応表の重複を持たない）。
+/// 制御ノード・transform.*・debug.log・llm/ai/agent/script/skill 系が `None` になる
+/// 理由は [`Scope::for_api`] のドキュメントを参照。
 pub fn required_scope(node: NodeType) -> Option<Scope> {
-    use NodeType as N;
-    Some(match node {
-        N::StorageRead | N::StorageList => Scope::StorageRead,
-        N::StorageWrite => Scope::StorageWrite,
-        N::RagSearch => Scope::RagQuery,
-        N::HttpRequest | N::GraphqlQuery => Scope::HttpEgress,
-        N::WorkflowStart | N::WorkflowCall => Scope::WorkflowStart,
-        N::DataQuery => Scope::DataRead,
-        N::DataRecordCreate | N::DataRecordUpdate | N::DataTransition => Scope::DataWrite,
-        // human.approval は承認依頼の通知を伴うため notify.send を要求する。
-        N::NotifySend | N::HumanApproval => Scope::NotifySend,
-        N::SheetRead => Scope::SheetRead,
-        N::SheetWrite | N::SheetAppend => Scope::SheetWrite,
-        N::DocRead => Scope::DocRead,
-        N::DocEdit | N::DocComment => Scope::DocWrite,
-        N::MemoryGet => Scope::MemoryRead,
-        N::MemorySet => Scope::MemoryWrite,
-        N::EventPublish => Scope::EventPublish,
-        N::SandboxExec => Scope::SandboxExec,
-        _ => return None,
-    })
+    Scope::for_api(node.as_str())
 }
 
 #[cfg(test)]
@@ -180,24 +161,6 @@ mod tests {
         assert_eq!(required_scope(NodeType::ScriptRun), None);
         assert_eq!(required_scope(NodeType::TransformTemplate), None);
         assert_eq!(required_scope(NodeType::AiOcr), None);
-    }
-
-    #[test]
-    fn required_scope_consistent_with_for_api() {
-        // ノード type と同名の能力 API は同じスコープへ解決される（単一語彙の整合）。
-        for n in NodeType::ALL {
-            if let Some(scope) = required_scope(*n) {
-                // llm/agent 系を除き、同名 API のスコープはノードの要求スコープと一致する。
-                if let Some(api_scope) = Scope::for_api(n.as_str()) {
-                    assert_eq!(
-                        api_scope,
-                        scope,
-                        "ノード {} の API スコープ乖離",
-                        n.as_str()
-                    );
-                }
-            }
-        }
     }
 
     #[test]
