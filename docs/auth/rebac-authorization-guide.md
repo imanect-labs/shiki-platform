@@ -105,7 +105,7 @@ flowchart TB
     role -->|"member ⊇ 配下role#member<br/>（上方向ロールアップ）"| role
   end
 
-  subgraph TREE[ストレージ ツリー・継承あり]
+  subgraph TREE["ストレージ folder / file（owner/editor/viewer は同一・ツリー継承あり）"]
     folder["folder<br/>owner / editor / viewer / parent"]
     file["file<br/>owner / editor / viewer / parent"]
     folder -->|parent| folder
@@ -118,13 +118,34 @@ flowchart TB
     secret["secret<br/>owner⊇can_use（write-only/use-only）"]
   end
 
+  %% --- 誰が subject（権限の持ち主）になれるか。正確な受理型は下表が正 ---
   user -.->|member| role
-  user -.->|"owner / editor / viewer"| folder
-  role -.->|"editor / viewer （role#member）"| folder
-  workflow -.->|"owner / editor / viewer"| file
-  workflow -.->|"viewer / editor"| artifact
+
+  %% ストレージ: folder / file は同一 relation。user・role#member・workflow が subject
+  user -.->|"owner / editor / viewer"| TREE
+  role -.->|"editor / viewer"| TREE
+  workflow -.->|"owner / editor / viewer"| TREE
+
+  %% thread: workflow は subject にならない（owner は user のみ）
+  user -.->|"owner / editor / commenter / viewer"| thread
+  role -.->|"editor / commenter / viewer"| thread
+
+  %% artifact: owner は user のみ・editor/viewer に workflow も
+  user -.->|"owner / editor / viewer"| artifact
+  role -.->|"editor / viewer"| artifact
+  workflow -.->|"editor / viewer"| artifact
+
+  %% secret: owner は user のみ・can_use に role#member/workflow も
+  user -.->|"owner / can_use"| secret
+  role -.->|can_use| secret
   workflow -.->|can_use| secret
 ```
+
+> 図の `user` / `role` / `workflow` は **subject（権限を持つ側）**。`role` から出るエッジは正確には
+> **`role#member`**（そのロールのメンバー集合を共有先にする意味）。`folder` と `file` は relation 定義が
+> **完全に同一**なので TREE 内でまとめている（どちらも owner/editor/viewer を user・role#member・workflow が持てる）。
+> **owner に `role#member` は付かない**（owner の横展開防止）。`workflow` は thread の subject にならない。
+> 各オブジェクトが実際に受理する subject 型の正確な一覧は、直下の表を正とする。
 
 ### 型（ObjectType）と relation（Relation）の一覧
 
