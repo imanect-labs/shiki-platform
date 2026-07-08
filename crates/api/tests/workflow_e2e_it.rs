@@ -207,6 +207,7 @@ async fn interactive_run_completes_through_production_executor() {
         search: None,
         gateway: Arc::clone(&env.gateway),
         sandbox: None,
+        sandbox_backend: sandbox_client::SandboxBackend::Wasm,
         secrets: None,
         launcher: launcher.clone(),
         http: reqwest::Client::new(),

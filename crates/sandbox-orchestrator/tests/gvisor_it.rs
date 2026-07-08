@@ -45,9 +45,7 @@ fn gated() -> Option<Env> {
 }
 
 fn gvisor_spec() -> SandboxSpec {
-    let mut s = SandboxSpec::code_interpreter("t".into(), "o".into(), "u:1".into());
-    s.backend = SandboxBackend::Gvisor;
-    s
+    SandboxSpec::code_interpreter(SandboxBackend::Gvisor, "t".into(), "o".into(), "u:1".into())
 }
 
 async fn collect_stdout(inst: &Arc<dyn Instance>, req: ExecRequest) -> (String, Option<i32>) {

@@ -41,9 +41,7 @@ fn env(k: &str) -> Option<String> {
 }
 
 fn spec_for(backend: SandboxBackend) -> SandboxSpec {
-    let mut s = SandboxSpec::code_interpreter("bench".into(), "org".into(), "u:bench".into());
-    s.backend = backend;
-    s
+    SandboxSpec::code_interpreter(backend, "bench".into(), "org".into(), "u:bench".into())
 }
 
 fn wasm_spec() -> SandboxSpec {

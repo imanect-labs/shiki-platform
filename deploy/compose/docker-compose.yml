@@ -372,6 +372,10 @@ services:
       # RAG（Phase 2）: インジェスト・パイプラインと検索。
       SHIKI__RAG__ENABLED: ${SHIKI__RAG__ENABLED:-true}
       SHIKI__CHAT__SANDBOX_ENDPOINT: http://sandbox-orchestrator:50000
+      # コード実行系（code_interpreter / shell / workflow agent_invoke）の隔離ティア（admin ポリシー）。
+      # wasm（既定）/ gvisor / firecracker。gvisor 等は orchestrator 側で当該ティアが構成済みなことが前提
+      # （SANDBOX__GVISOR__ENABLED 等）。dev 既定は wasm。
+      SHIKI__CHAT__SANDBOX_BACKEND: ${SHIKI__CHAT__SANDBOX_BACKEND:-wasm}
       # web 検索（Phase 4 web ツール）。dev 既定は stub（決定的）。本番は brave / searxng。
       SHIKI__WEBSEARCH__BACKEND: ${SHIKI__WEBSEARCH__BACKEND:-stub}
       SHIKI__WEBSEARCH__BRAVE_API_KEY: ${SHIKI__WEBSEARCH__BRAVE_API_KEY:-}

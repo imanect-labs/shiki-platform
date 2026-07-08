@@ -14,7 +14,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use authz::AuthContext;
-use sandbox_client::{ExecRequest, Sandbox, SandboxError, SandboxHandle, SandboxSpec};
+use sandbox_client::{
+    ExecRequest, Sandbox, SandboxBackend, SandboxError, SandboxHandle, SandboxSpec,
+};
 
 use super::mime::content_type_for;
 use super::sandbox_exec::{collect_output, truncate};
@@ -34,6 +36,8 @@ pub struct ShellTool {
     workspace: Arc<dyn WorkspaceStore>,
     /// 有効化するゲストコマンドパッケージ（coreutils 等）。
     software: Vec<String>,
+    /// 隔離ティア（admin ポリシー・design §4.6）。フル Linux コマンドが動く gVisor 等を選べる。既定は wasm。
+    backend: SandboxBackend,
 }
 
 impl ShellTool {
@@ -41,11 +45,13 @@ impl ShellTool {
         sandbox: Arc<dyn Sandbox>,
         workspace: Arc<dyn WorkspaceStore>,
         software: Vec<String>,
+        backend: SandboxBackend,
     ) -> Self {
         ShellTool {
             sandbox,
             workspace,
             software,
+            backend,
         }
     }
 }
@@ -88,6 +94,7 @@ impl Tool for ShellTool {
             .ok_or_else(|| ToolError::Invalid("missing 'cmd'".into()))?;
 
         let spec = SandboxSpec::agent_shell(
+            self.backend,
             ctx.tenant_id.clone(),
             ctx.org.clone(),
             ctx.principal.id.clone(),
@@ -403,7 +410,12 @@ mod tests {
             exit_code: 0,
             artifacts: vec![("/workspace/out.txt".into(), b"generated".to_vec())],
         }));
-        let tool = ShellTool::new(sandbox.clone(), ws.clone(), vec!["coreutils".into()]);
+        let tool = ShellTool::new(
+            sandbox.clone(),
+            ws.clone(),
+            vec!["coreutils".into()],
+            SandboxBackend::Gvisor,
+        );
         assert!(tool.requires_confirmation());
         let out = tool
             .call(&ctx(), serde_json::json!({"cmd": "make out.txt"}), None)
@@ -417,10 +429,11 @@ mod tests {
         assert_eq!(synced, b"generated");
         // 変更のない seed 済み input.txt は再書込しない。
         assert!(!out.artifacts.iter().any(|a| a.name == "input.txt"));
-        // spec は agent_shell（egress 遮断・software 同梱）。
+        // spec は agent_shell（egress 遮断・software 同梱・admin 選択の backend）。
         let spec = &sandbox.created_specs()[0];
         assert!(spec.egress.static_allow.is_empty());
         assert_eq!(spec.software, vec!["coreutils".to_string()]);
+        assert_eq!(spec.backend, SandboxBackend::Gvisor);
         // 実行後に必ず破棄。
         assert_eq!(sandbox.destroyed().len(), 1);
     }
@@ -434,7 +447,7 @@ mod tests {
             exit_code: 2,
             artifacts: vec![("/workspace/partial.txt".into(), b"x".to_vec())],
         }));
-        let tool = ShellTool::new(sandbox, ws.clone(), vec![]);
+        let tool = ShellTool::new(sandbox, ws.clone(), vec![], SandboxBackend::Wasm);
         let out = tool
             .call(&ctx(), serde_json::json!({"cmd": "fail"}), None)
             .await
@@ -449,7 +462,7 @@ mod tests {
     async fn empty_cmd_is_invalid() {
         let ws = Arc::new(FakeWorkspace::default());
         let sandbox = Arc::new(FakeSandbox::new());
-        let tool = ShellTool::new(sandbox, ws, vec![]);
+        let tool = ShellTool::new(sandbox, ws, vec![], SandboxBackend::Wasm);
         let err = tool
             .call(&ctx(), serde_json::json!({"cmd": "  "}), None)
             .await

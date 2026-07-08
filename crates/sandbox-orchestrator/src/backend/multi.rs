@@ -60,9 +60,7 @@ mod tests {
     use sandbox_client::SandboxSpec;
 
     fn spec(backend: SandboxBackend) -> SandboxSpec {
-        let mut s = SandboxSpec::code_interpreter("t".into(), "o".into(), "u:1".into());
-        s.backend = backend;
-        s
+        SandboxSpec::code_interpreter(backend, "t".into(), "o".into(), "u:1".into())
     }
 
     #[tokio::test]

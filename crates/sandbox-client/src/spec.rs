@@ -9,8 +9,13 @@ use futures::stream::BoxStream;
 use crate::error::SandboxError;
 
 /// 隔離バックエンド種別。既定は `Wasm`。gVisor はフル Linux（KVM 不要）、Firecracker は VM 級隔離。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// serde 表現は snake_case（`wasm` / `gvisor` / `firecracker`）。admin ポリシー（server 設定）から
+/// backend ティアを選ぶ導線で用いる。proto へのワイヤ変換は `convert.rs`（`pb::Backend`）で別途行う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SandboxBackend {
+    #[default]
     Wasm,
     Gvisor,
     Firecracker,
@@ -119,9 +124,16 @@ pub struct SandboxSpec {
 
 impl SandboxSpec {
     /// code_interpreter 用（ネット遮断・まっさら・短命・Python 実行に必要な最小 software）。
-    pub fn code_interpreter(tenant_id: String, org: String, principal: String) -> Self {
+    ///
+    /// `backend` は admin ポリシーで選ぶ隔離ティア（wasm 既定／native Python が速い gVisor 等・design §4.6）。
+    pub fn code_interpreter(
+        backend: SandboxBackend,
+        tenant_id: String,
+        org: String,
+        principal: String,
+    ) -> Self {
         SandboxSpec {
-            backend: SandboxBackend::Wasm,
+            backend,
             tenant_id,
             org,
             principal,
@@ -138,13 +150,14 @@ impl SandboxSpec {
     /// ワークスペースは seed→exec→sync（host 側が `put_file`/`get_file`）で round-trip する（永続 mount は
     /// post-alpha のため `mounts_allowed=false`）。egress は既定遮断（ネットワークは承認ゲート対象・5.6）。
     pub fn agent_shell(
+        backend: SandboxBackend,
         tenant_id: String,
         org: String,
         principal: String,
         software: Vec<String>,
     ) -> Self {
         SandboxSpec {
-            backend: SandboxBackend::Wasm,
+            backend,
             tenant_id,
             org,
             principal,
@@ -160,6 +173,9 @@ impl SandboxSpec {
     ///
     /// 静的 allowlist は空＝取得先以外は全遮断。シークレット添付は不可（`secret_attach=false` 固定）。
     /// 管理者 `deny_overlay` は orchestrator 側で重なる。
+    ///
+    /// backend は wasm 固定: 1 fetch ごとの短命 sandbox で Pyodide を使わず egress allowlist の適用だけが仕事。
+    /// wasm の create 11ms/RSS 21MB がそのまま効くため gVisor へ上げる意味がない（コード実行系とは別扱い）。
     pub fn web_fetch(
         tenant_id: String,
         org: String,

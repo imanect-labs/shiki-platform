@@ -14,7 +14,7 @@ use sandbox_orchestrator::server::SandboxSvc;
 use tonic::Request;
 
 fn spec_pb() -> pb::Spec {
-    SandboxSpec::code_interpreter("t".into(), "o".into(), "u:1".into()).into()
+    SandboxSpec::code_interpreter(SandboxBackend::Wasm, "t".into(), "o".into(), "u:1".into()).into()
 }
 
 fn svc(backend: FakeBackend) -> SandboxSvc {
@@ -167,7 +167,8 @@ async fn backend_failure_maps_to_unavailable() {
 async fn zero_ttl_rejected() {
     // Persistent はワイヤで ttl_ms=0 に落ちる（アルファは Ephemeral のみ）。
     // 0 TTL は「即時期限切れ」で危険なため InvalidArgument で弾く。
-    let mut spec = SandboxSpec::code_interpreter("t".into(), "o".into(), "u:1".into());
+    let mut spec =
+        SandboxSpec::code_interpreter(SandboxBackend::Wasm, "t".into(), "o".into(), "u:1".into());
     spec.lifetime = SandboxLifetime::Persistent;
     let svc = svc(FakeBackend::new());
     let err = svc
@@ -184,8 +185,8 @@ async fn gvisor_backend_rejected_by_fake_is_wasm_only() {
     // FakeBackend は backend 種別を見ないが、spec の backend が gVisor でも
     // server は create を通す（backend 判定は wasm backend の責務）。ここでは
     // wasm limits がそのまま通ることだけ確認する。
-    let mut spec = SandboxSpec::code_interpreter("t".into(), "o".into(), "u:1".into());
-    spec.backend = SandboxBackend::Wasm;
+    let mut spec =
+        SandboxSpec::code_interpreter(SandboxBackend::Wasm, "t".into(), "o".into(), "u:1".into());
     spec.limits = SandboxLimits::constrained();
     let svc = svc(FakeBackend::new());
     let id = svc

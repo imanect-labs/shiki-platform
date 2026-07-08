@@ -70,6 +70,7 @@ impl ChatWorker {
             tools.push(Arc::new(CodeInterpreterTool::new(
                 sandbox.clone(),
                 self.artifacts.clone(),
+                self.config.sandbox_backend,
             )));
         }
         if let Some(provider) = &self.web_search {
@@ -155,6 +156,7 @@ impl ChatWorker {
                 sandbox.clone(),
                 workspace,
                 self.config.sandbox_software.clone(),
+                self.config.sandbox_backend,
             )));
         }
     }

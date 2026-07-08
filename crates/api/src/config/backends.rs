@@ -144,6 +144,12 @@ pub struct ChatConfig {
     /// 例: `http://127.0.0.1:50000`。compose 網内・非公開ポート。
     #[serde(default)]
     pub sandbox_endpoint: Option<String>,
+    /// コード実行系（code_interpreter / shell）の隔離ティア（admin ポリシー・design §4.6）。
+    /// `wasm`（既定）/ `gvisor` / `firecracker`。未指定は wasm。gVisor/FC は orchestrator 側で
+    /// 当該ティアが構成済みであることが前提（未構成なら create は Unimplemented で fail する）。
+    /// web_fetch は egress 限定の短命 sandbox なので常に wasm（この設定の対象外）。
+    #[serde(default)]
+    pub sandbox_backend: Option<sandbox_client::SandboxBackend>,
 }
 
 /// web 検索プロバイダ（web_search / web_fetch ツール・Phase 4）。
@@ -184,6 +190,7 @@ impl Default for ChatConfig {
             lease_secs: default_lease_secs(),
             max_steps: default_max_steps(),
             sandbox_endpoint: None,
+            sandbox_backend: None,
         }
     }
 }

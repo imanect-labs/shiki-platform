@@ -220,7 +220,12 @@ mod tests {
 
     #[test]
     fn blocked_spec_has_no_dns() {
-        let spec = SandboxSpec::code_interpreter("t".into(), "o".into(), "u:1".into());
+        let spec = SandboxSpec::code_interpreter(
+            sandbox_client::SandboxBackend::Wasm,
+            "t".into(),
+            "o".into(),
+            "u:1".into(),
+        );
         let cfg = spec_to_vm_config(&spec, &OrchestratorEnv::default());
         assert!(cfg.dns.is_none(), "code_interpreter must have no resolver");
     }
