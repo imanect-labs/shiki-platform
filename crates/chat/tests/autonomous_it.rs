@@ -5,7 +5,12 @@
 //! storage 未配線の worker が claim して自律 run が chat にフォールバックし得るため（バイナリ間は逐次実行）。
 //! 実 Postgres＋MinIO が必要（`STORAGE_TEST_DATABASE_URL`＋`STORAGE_TEST_S3_ENDPOINT`）。
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::print_stderr)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +22,9 @@ use authz::{
 };
 use chat::{ChatStore, ChatWorker, StreamEventKind, WorkerConfig};
 use futures::stream::StreamExt;
-use llm_gateway::{GatewayConfig, LlmGateway, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind};
+use llm_gateway::{
+    GatewayConfig, LlmGateway, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,
+};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::{object_store::S3Config, ObjectStore, S3ObjectStore, StorageService};
 
@@ -26,25 +33,54 @@ struct AllowAll;
 
 #[async_trait]
 impl AuthzClient for AllowAll {
-    async fn check(&self, _: &Subject, _: Relation, _: &FgaObject, _: Consistency) -> Result<bool, AuthzError> {
+    async fn check(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: &FgaObject,
+        _: Consistency,
+    ) -> Result<bool, AuthzError> {
         Ok(true)
     }
-    async fn write_tuple(&self, _: &Subject, _: Relation, _: &FgaObject) -> Result<bool, AuthzError> {
+    async fn write_tuple(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: &FgaObject,
+    ) -> Result<bool, AuthzError> {
         Ok(true)
     }
-    async fn delete_tuple(&self, _: &Subject, _: Relation, _: &FgaObject) -> Result<bool, AuthzError> {
+    async fn delete_tuple(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: &FgaObject,
+    ) -> Result<bool, AuthzError> {
         Ok(true)
     }
-    async fn read_tuples(&self, _: &FgaObject, _: Option<Relation>) -> Result<Vec<ReadTupleKey>, AuthzError> {
+    async fn read_tuples(
+        &self,
+        _: &FgaObject,
+        _: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
         Ok(vec![])
     }
-    async fn list_objects(&self, _: &Subject, _: Relation, _: ObjectType) -> Result<Vec<String>, AuthzError> {
+    async fn list_objects(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
         Ok(vec![])
     }
     async fn delete_object_tuples(&self, _: &FgaObject) -> Result<u32, AuthzError> {
         Ok(0)
     }
-    async fn read_subject_objects(&self, _: &Subject, _: ObjectType) -> Result<Vec<String>, AuthzError> {
+    async fn read_subject_objects(
+        &self,
+        _: &Subject,
+        _: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
         Ok(vec![])
     }
 }
@@ -59,7 +95,10 @@ async fn setup() -> Option<PgPool> {
         .connect(&db_url)
         .await
         .expect("Postgres へ接続できること");
-    sqlx::migrate!("../../migrations").run(&pool).await.expect("マイグレーション適用");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("マイグレーション適用");
     Some(pool)
 }
 
@@ -80,7 +119,12 @@ fn ctx(tenant: &str) -> AuthContext {
 
 fn stub_gateway(pool: PgPool) -> LlmGateway {
     let config = GatewayConfig {
-        provider: ProviderConfig { kind: ProviderKind::Stub, base_url: None, api_key: None, timeout_secs: 120 },
+        provider: ProviderConfig {
+            kind: ProviderKind::Stub,
+            base_url: None,
+            api_key: None,
+            timeout_secs: 120,
+        },
         catalog: ModelCatalog {
             default_model: "m".into(),
             models: vec![ModelEntry {
@@ -101,14 +145,16 @@ async fn autonomous_run_writes_workspace_file_e2e() {
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
 
     // StorageService（AllowAll authz＋MinIO）。DoD の「書込→再索引経路」の書込側チョークポイント。
-    let s3_endpoint =
-        std::env::var("STORAGE_TEST_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into());
+    let s3_endpoint = std::env::var("STORAGE_TEST_S3_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:9000".into());
     let s3 = S3Config {
         internal_endpoint: s3_endpoint.clone(),
         public_endpoint: s3_endpoint,
         bucket: "shiki-it-blobs".into(),
-        access_key: std::env::var("STORAGE_TEST_S3_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".into()),
-        secret_key: std::env::var("STORAGE_TEST_S3_SECRET_KEY").unwrap_or_else(|_| "minioadmin".into()),
+        access_key: std::env::var("STORAGE_TEST_S3_ACCESS_KEY")
+            .unwrap_or_else(|_| "minioadmin".into()),
+        secret_key: std::env::var("STORAGE_TEST_S3_SECRET_KEY")
+            .unwrap_or_else(|_| "minioadmin".into()),
         region: "us-east-1".into(),
         presign_get_ttl_secs: 300,
         presign_put_ttl_secs: 900,
@@ -125,7 +171,9 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         5 * 1024 * 1024 * 1024,
     ));
 
-    let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None).await.unwrap();
+    let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
+        .await
+        .unwrap();
     let gateway = stub_gateway(pool.clone());
     let worker = ChatWorker::new(
         pool.clone(),
@@ -176,7 +224,10 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         }
     }
     assert!(done, "autonomous run が完了する");
-    assert!(saw_fs_write, "fs_write ツール呼び出しが流れる（Autonomous プロファイル＋フルツール）");
+    assert!(
+        saw_fs_write,
+        "fs_write ツール呼び出しが流れる（Autonomous プロファイル＋フルツール）"
+    );
 
     // ワークスペースフォルダが lazy 作成され、fs_write がそこへ書き込んでいる（Durable Workspace）。
     let folder = store
