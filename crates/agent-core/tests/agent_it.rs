@@ -11,14 +11,18 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stderr
+    clippy::print_stderr,
+    clippy::similar_names
 )]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use agent_core::{
-    budget::BudgetKind, run_agent, AgentError, AgentEvent, AgentOptions, AgentStop, Citation,
-    EventSink, RunContext, Tool, ToolError, ToolOutcome,
+    approval::{ApprovalDecision, ApprovalPolicy, Approver},
+    budget::BudgetKind,
+    run_agent, AgentError, AgentEvent, AgentOptions, AgentStop, Citation, EventSink, RunContext,
+    Tool, ToolError, ToolOutcome,
 };
 use async_trait::async_trait;
 use authz::{AuthContext, Principal};
@@ -260,6 +264,7 @@ async fn run_agent_completes_without_tools() {
         &run_context(&c, "hello world"),
         &AgentOptions::default(),
         None,
+        None,
         &mut sink,
     )
     .await
@@ -302,6 +307,7 @@ async fn run_agent_dispatches_tool_then_completes() {
         user_msg("search: 経費規程"),
         &run_context(&c, "search: 経費規程"),
         &AgentOptions::chat(4),
+        None,
         None,
         &mut sink,
     )
@@ -350,6 +356,7 @@ async fn run_agent_stops_on_cancellation() {
         &run_context(&c, "hello world"),
         &AgentOptions::default(),
         None,
+        None,
         &mut sink,
     )
     .await
@@ -379,6 +386,7 @@ async fn run_agent_stops_on_max_steps() {
         user_msg("search: 上限テスト"),
         &run_context(&c, "search: 上限テスト"),
         &AgentOptions::chat(1),
+        None,
         None,
         &mut sink,
     )
@@ -416,6 +424,7 @@ async fn autonomous_plan_decomposition_emits_plan_event() {
         user_msg("plan: 調査, 実装, 検証"),
         &run_context(&c, "plan"),
         &AgentOptions::autonomous(20, None, 1_000_000, 1_000_000),
+        None,
         None,
         &mut sink,
     )
@@ -458,6 +467,7 @@ async fn autonomous_loop_detection_stops_safely() {
         // 予算は潤沢（ループ検出が先に効くことを見る）。
         &AgentOptions::autonomous(100, None, 1_000_000_000, 1_000_000_000),
         None,
+        None,
         &mut sink,
     )
     .await
@@ -496,6 +506,7 @@ async fn autonomous_token_budget_stops_safely() {
         // 発話は 3 トークン/ターンで累積。上限 10（80%=8 で警告→超過）。
         &AgentOptions::autonomous(1000, None, 10, 1_000_000_000),
         None,
+        None,
         &mut sink,
     )
     .await
@@ -511,5 +522,228 @@ async fn autonomous_token_budget_stops_safely() {
     assert!(
         sink.count(|e| matches!(e, AgentEvent::BudgetWarning { .. })) >= 1,
         "予算警告イベントが流れる"
+    );
+}
+
+/// 承認が必要な決定的ツール（`requires_confirmation=true`）。実行回数を数える。
+struct MockConfirmTool {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for MockConfirmTool {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "danger"
+    }
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn description(&self) -> &str {
+        "承認が必要なテストツール。"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {}, "additionalProperties": true })
+    }
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+    async fn call(
+        &self,
+        _ctx: &AuthContext,
+        _input: serde_json::Value,
+        _trace_id: Option<&str>,
+    ) -> Result<ToolOutcome, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolOutcome::ok("実行しました"))
+    }
+}
+
+/// 決定を固定で返すフェイク承認者。
+struct FakeApprover {
+    decision: ApprovalDecision,
+}
+
+#[async_trait]
+impl Approver for FakeApprover {
+    async fn decide(
+        &self,
+        _tool_call_id: &str,
+        _name: &str,
+        _input: &serde_json::Value,
+    ) -> ApprovalDecision {
+        self.decision
+    }
+}
+
+/// 承認された破壊系ツールは実行され、承認要求/結果イベントが流れる（5.6）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approval_granted_runs_tool() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockConfirmTool {
+        calls: calls.clone(),
+    })];
+    let approver = FakeApprover {
+        decision: ApprovalDecision::Approved,
+    };
+    let mut sink = TestSink::new();
+
+    // loop: で tools[0]（danger）を呼ぶ。max_steps=1 で 1 回だけ。
+    let stop = run_agent(
+        &gateway,
+        &tools,
+        user_msg("loop: do danger"),
+        &run_context(&c, "loop"),
+        &AgentOptions::autonomous(1, None, 1_000_000, 1_000_000),
+        None,
+        Some(&approver),
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功")
+    .stop;
+
+    assert_eq!(stop, AgentStop::Budget(BudgetKind::Steps));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "承認後にツールが実行される"
+    );
+    assert_eq!(
+        sink.count(|e| matches!(e, AgentEvent::ApprovalRequested { .. })),
+        1,
+        "承認要求が 1 回流れる"
+    );
+    let approved = sink
+        .events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ApprovalResolved { approved: true, .. }));
+    assert!(approved, "承認結果（true）が流れる");
+}
+
+/// 却下された破壊系ツールは実行されず、観測に却下が戻る（5.6）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approval_rejected_skips_tool() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockConfirmTool {
+        calls: calls.clone(),
+    })];
+    let approver = FakeApprover {
+        decision: ApprovalDecision::Rejected,
+    };
+    let mut sink = TestSink::new();
+
+    let stop = run_agent(
+        &gateway,
+        &tools,
+        user_msg("loop: do danger"),
+        &run_context(&c, "loop"),
+        &AgentOptions::autonomous(1, None, 1_000_000, 1_000_000),
+        None,
+        Some(&approver),
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功")
+    .stop;
+
+    assert_eq!(stop, AgentStop::Budget(BudgetKind::Steps));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "却下でツールは実行されない"
+    );
+    let rejected = sink.events.iter().any(|e| {
+        matches!(
+            e,
+            AgentEvent::ApprovalResolved {
+                approved: false,
+                ..
+            }
+        )
+    });
+    assert!(rejected, "承認結果（false）が流れる");
+    let observed = sink.events.iter().any(
+        |e| matches!(e, AgentEvent::ToolResult { ok, content, .. } if !*ok && content.contains("却下")),
+    );
+    assert!(observed, "却下が観測として戻る");
+}
+
+/// 承認待ち中のキャンセルは run を停止する（5.6）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approval_cancelled_stops_run() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockConfirmTool {
+        calls: calls.clone(),
+    })];
+    let approver = FakeApprover {
+        decision: ApprovalDecision::Cancelled,
+    };
+    let mut sink = TestSink::new();
+
+    let stop = run_agent(
+        &gateway,
+        &tools,
+        user_msg("loop: do danger"),
+        &run_context(&c, "loop"),
+        &AgentOptions::autonomous(10, None, 1_000_000, 1_000_000),
+        None,
+        Some(&approver),
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功")
+    .stop;
+
+    assert_eq!(stop, AgentStop::Cancelled, "承認待ちキャンセルで停止");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+/// 事前許可（auto-approve）済みツールは承認なしで実行される（5.6 スコープ限定事前許可）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_authorized_tool_skips_approval() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockConfirmTool {
+        calls: calls.clone(),
+    })];
+    let approver = FakeApprover {
+        decision: ApprovalDecision::Rejected, // 呼ばれたら却下だが、事前許可なので呼ばれない
+    };
+    let mut opts = AgentOptions::autonomous(1, None, 1_000_000, 1_000_000);
+    opts.approval = ApprovalPolicy::auto(["danger".to_string()]);
+    let mut sink = TestSink::new();
+
+    run_agent(
+        &gateway,
+        &tools,
+        user_msg("loop: do danger"),
+        &run_context(&c, "loop"),
+        &opts,
+        None,
+        Some(&approver),
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "事前許可で承認なしに実行");
+    assert_eq!(
+        sink.count(|e| matches!(e, AgentEvent::ApprovalRequested { .. })),
+        0,
+        "承認要求は出ない"
     );
 }

@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use llm_gateway::Effort;
 
+use crate::approval::ApprovalPolicy;
 use crate::budget::Budget;
 use crate::checkpoint::Checkpoint;
 use crate::plan::Plan;
@@ -42,8 +43,8 @@ pub struct AgentOptions {
     pub effort: Option<Effort>,
     /// 1 応答の max_tokens（**1 生成あたり**・累積上限は [`Budget`]）。
     pub max_tokens: Option<u32>,
-    /// requires_confirmation なツールを実行してよいか（事前許可・Task 3.9/5.6）。
-    pub allow_confirmed_tools: bool,
+    /// 承認ポリシ（どの破壊系ツールを事前許可するか・Task 3.9/5.6）。
+    pub approval: ApprovalPolicy,
     /// 予算ガード（安全停止の要）。
     pub budget: Budget,
     /// コンテキスト剪定のソフト上限トークン（自律版のみ・0 で無効）。
@@ -62,7 +63,7 @@ impl AgentOptions {
             model: None,
             effort: None,
             max_tokens: Some(2048),
-            allow_confirmed_tools: false,
+            approval: ApprovalPolicy::deny_all(),
             budget: Budget::chat(max_steps),
             context_soft_limit_tokens: 0,
             context_keep_recent: 0,
@@ -84,7 +85,7 @@ impl AgentOptions {
             effort: None,
             // 1 生成あたりの出力上限（`Budget.max_tokens`＝セッション累積上限とは別概念）。
             max_tokens: Some(4096),
-            allow_confirmed_tools: false,
+            approval: ApprovalPolicy::deny_all(),
             budget: Budget::autonomous(max_steps, deadline, max_total_tokens, max_cost_usd_micros),
             // 既定: 約 24k トークンで古いツール出力を畳み、直近 6 メッセージは残す。
             context_soft_limit_tokens: 24_000,

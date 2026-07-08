@@ -19,6 +19,8 @@ use llm_gateway::{
     StopReason, StreamDelta, ToolDef, Usage,
 };
 
+use crate::agent_gate::{authorize, emit_tool_events, execute_tool, Authz};
+use crate::approval::Approver;
 use crate::budget::BudgetCheck;
 use crate::checkpoint::Checkpoint;
 use crate::event::{AgentError, AgentEvent, EventSink, RecoveryAction};
@@ -54,16 +56,17 @@ pub struct RunContext<'a> {
 }
 
 /// 累積中のツール呼び出し（1 ステップ分）。
-struct PendingCall {
-    id: String,
-    name: String,
-    input: serde_json::Value,
+pub(crate) struct PendingCall {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) input: serde_json::Value,
 }
 
 /// エージェントループを回す。ツールは全提示し、モデルが自動選択する。
 ///
 /// `resume` を渡すと当該チェックポイント（計画・消費・履歴）から再開する（ステップ境界復元・5.5）。
 /// 新規開始なら `None`（`messages` を起点に開始）。戻り値は停止理由＋再開用チェックポイント。
+#[allow(clippy::too_many_arguments)] // gateway/tools/履歴/run/opts/resume/approver/sink の 8 点は本質的。
 pub async fn run_agent(
     gateway: &LlmGateway,
     tools: &[Arc<dyn Tool>],
@@ -71,6 +74,7 @@ pub async fn run_agent(
     run: &RunContext<'_>,
     opts: &AgentOptions,
     resume: Option<Checkpoint>,
+    approver: Option<&dyn Approver>,
     sink: &mut dyn EventSink,
 ) -> Result<AgentOutcome, AgentError> {
     let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
@@ -113,6 +117,7 @@ pub async fn run_agent(
             &tool_map,
             run,
             opts,
+            approver,
             &mut state,
             sink,
             &mut detector,
@@ -146,6 +151,7 @@ async fn run_step(
     tool_map: &HashMap<&str, &Arc<dyn Tool>>,
     run: &RunContext<'_>,
     opts: &AgentOptions,
+    approver: Option<&dyn Approver>,
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
     detector: &mut LoopDetector,
@@ -268,24 +274,51 @@ async fn run_step(
         let content = if opts.profile.is_autonomous() && c.name == PLAN_TOOL {
             handle_plan_tool(&c, &mut state.plan, sink).await?
         } else {
-            let outcome = execute_tool(tool_map, run.ctx, &c, opts, run.trace_id.as_deref()).await;
-            emit_tool_events(sink, &c, &outcome).await?;
-            // 失敗ループ検出（自律版のみ・5.5）。
-            if opts.profile.is_autonomous() {
-                if outcome.is_error {
-                    sink.emit(AgentEvent::FailureRecovery {
-                        detail: format!("tool '{}' failed; retrying with observation", c.name),
-                        action: RecoveryAction::Retry,
+            // 承認ゲート（Task 5.6）: 破壊系は事前許可 or ユーザー承認まで実行しない。
+            match authorize(tool_map, &c, opts, approver, sink).await? {
+                Authz::Cancel => return Ok(StepOutcome::Stop(AgentStop::Cancelled)),
+                Authz::Reject(msg) => {
+                    // 却下も観測イベントとして外部化する（UI が結果を表示できるように）。
+                    sink.emit(AgentEvent::ToolResult {
+                        tool_call_id: c.id.clone(),
+                        ok: false,
+                        content: msg.clone(),
                     })
                     .await?;
+                    // 却下も失敗としてループ検出へ流す（同じ却下操作の反復を安全停止する）。
+                    if opts.profile.is_autonomous() && detector.observe(&c.name, &c.input, true) {
+                        looping = true;
+                    }
+                    ToolResultParts {
+                        content: msg,
+                        is_error: true,
+                    }
                 }
-                if detector.observe(&c.name, &c.input, outcome.is_error) {
-                    looping = true;
+                Authz::Proceed => {
+                    let outcome =
+                        execute_tool(tool_map, run.ctx, &c, run.trace_id.as_deref()).await;
+                    emit_tool_events(sink, &c, &outcome).await?;
+                    // 失敗ループ検出（自律版のみ・5.5）。
+                    if opts.profile.is_autonomous() {
+                        if outcome.is_error {
+                            sink.emit(AgentEvent::FailureRecovery {
+                                detail: format!(
+                                    "tool '{}' failed; retrying with observation",
+                                    c.name
+                                ),
+                                action: RecoveryAction::Retry,
+                            })
+                            .await?;
+                        }
+                        if detector.observe(&c.name, &c.input, outcome.is_error) {
+                            looping = true;
+                        }
+                    }
+                    ToolResultParts {
+                        content: outcome.content,
+                        is_error: outcome.is_error,
+                    }
                 }
-            }
-            ToolResultParts {
-                content: outcome.content,
-                is_error: outcome.is_error,
             }
         };
         result_blocks.push(Block::ToolResult {
@@ -368,55 +401,6 @@ async fn handle_plan_tool(
         content,
         is_error: false,
     })
-}
-
-/// ツール結果イベント（結果・引用・成果物）を外部化する。
-async fn emit_tool_events(
-    sink: &mut dyn EventSink,
-    call: &PendingCall,
-    outcome: &crate::tool::ToolOutcome,
-) -> Result<(), AgentError> {
-    sink.emit(AgentEvent::ToolResult {
-        tool_call_id: call.id.clone(),
-        ok: !outcome.is_error,
-        content: outcome.content.clone(),
-    })
-    .await?;
-    for cite in &outcome.citations {
-        sink.emit(AgentEvent::Citation(cite.clone())).await?;
-    }
-    for artifact in &outcome.artifacts {
-        sink.emit(AgentEvent::Artifact {
-            tool_call_id: call.id.clone(),
-            artifact: artifact.clone(),
-        })
-        .await?;
-    }
-    Ok(())
-}
-
-/// 1 ツール呼び出しを実行する（未知/確認必須は観測エラーへ）。
-async fn execute_tool(
-    tool_map: &HashMap<&str, &Arc<dyn Tool>>,
-    ctx: &AuthContext,
-    call: &PendingCall,
-    opts: &AgentOptions,
-    trace_id: Option<&str>,
-) -> crate::tool::ToolOutcome {
-    use crate::tool::ToolOutcome;
-    let Some(tool) = tool_map.get(call.name.as_str()) else {
-        return ToolOutcome::error(format!("unknown tool: {}", call.name));
-    };
-    if tool.requires_confirmation() && !opts.allow_confirmed_tools {
-        return ToolOutcome::error(format!(
-            "tool '{}' requires explicit confirmation and was not executed",
-            call.name
-        ));
-    }
-    match tool.call(ctx, call.input.clone(), trace_id).await {
-        Ok(o) => o,
-        Err(e) => ToolOutcome::error(format!("tool '{}' failed: {e}", call.name)),
-    }
 }
 
 /// Langfuse 表示用に長文を切り詰める。

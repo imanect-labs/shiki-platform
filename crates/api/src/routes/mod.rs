@@ -4,6 +4,7 @@ pub mod admin;
 pub mod artifacts;
 pub mod auth;
 pub mod chat;
+pub mod chat_approval;
 pub mod directory;
 pub mod files;
 pub mod folders;
