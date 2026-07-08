@@ -79,7 +79,8 @@ impl ChatWorker {
         let run_ctx = RunContext {
             ctx,
             idempotency_prefix: format!("{}:{}", run.run_id, run.fencing_token),
-            trace_id: None,
+            // run に永続化した trace_id を伝播（Langfuse/OTel/監査を相関・Task 5.9）。
+            trace_id: run.trace_id.clone(),
             input_preview,
         };
         let mut opts = AgentOptions::chat(self.config.max_steps);
@@ -116,7 +117,7 @@ impl ChatWorker {
         let query = history.last().map(message_preview).unwrap_or_default();
         let mut system = self.config.system_prompt.clone();
         if let Some(search) = &self.search {
-            match run_doc_search(search, ctx, &query, None, None).await {
+            match run_doc_search(search, ctx, &query, None, run.trace_id.as_deref()).await {
                 Ok(result) => {
                     system.push_str("\n\n# 参考（社内文書検索の結果）\n");
                     system.push_str(&result.context_text);
@@ -189,7 +190,7 @@ impl ChatWorker {
                         .clone()
                         .unwrap_or_else(|| self.gateway.default_model().to_string()),
                     usage,
-                    trace_id: None,
+                    trace_id: run.trace_id.clone(),
                     input_preview: query,
                     output_preview: text_acc.chars().take(2000).collect(),
                 },

@@ -35,8 +35,8 @@ pub use approver::DbApprover;
 pub use artifacts::StorageArtifactStore;
 pub use error::ChatError;
 pub use model::{
-    Attachment, Citation, ContentBlock, Message, Role, RunStatus, StreamEvent, StreamEventKind,
-    Thread, ThreadRole,
+    Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunStatus, StreamEvent,
+    StreamEventKind, Thread, ThreadRole,
 };
 pub use store::{ChatStore, ClaimedRun, PostResult, CHAT_GENERATION_QUEUE};
 pub use worker::{ChatWorker, WorkerConfig, WorkerDeps};

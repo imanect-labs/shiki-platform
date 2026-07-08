@@ -202,6 +202,17 @@ export async function getThreadMessages(id: string): Promise<Message[]> {
 
 // ── ストリーミング（SSE・replay-then-subscribe）─────────────────────────
 
+/// 計画のサブタスク（自律エージェント・Task 5.2）。
+export type PlanSubtask = { id: string; title: string; status: string };
+
+/// 承認要求（破壊系/egress/高コスト・Task 5.6）。
+export type ApprovalRequest = {
+  tool_call_id: string;
+  name: string;
+  input: unknown;
+  reason: string;
+};
+
 export type StreamHandlers = {
   onToken?: (text: string) => void;
   onThinking?: (text: string) => void;
@@ -210,6 +221,12 @@ export type StreamHandlers = {
   onCitation?: (c: Citation) => void;
   onFileRef?: (f: Attachment) => void;
   onStatus?: (status: RunStatus) => void;
+  // 自律エージェント（Phase 5）。
+  onPlan?: (subtasks: PlanSubtask[]) => void;
+  onBudgetWarning?: (w: { kind: string; used: number; limit: number }) => void;
+  onApprovalRequested?: (req: ApprovalRequest) => void;
+  onApprovalResolved?: (res: { tool_call_id: string; approved: boolean }) => void;
+  onFailureRecovery?: (r: { detail: string; action: string }) => void;
   onDone?: () => void;
   onError?: (message: string) => void;
 };
@@ -223,6 +240,11 @@ type StreamEventKind =
   | ({ type: "citation" } & Omit<Citation, "type">)
   | { type: "file_ref"; node_id: string; name: string }
   | { type: "generative_ui"; spec: unknown }
+  | { type: "plan"; subtasks: PlanSubtask[] }
+  | { type: "budget_warning"; kind: string; used: number; limit: number }
+  | ({ type: "approval_requested" } & ApprovalRequest)
+  | { type: "approval_resolved"; tool_call_id: string; approved: boolean }
+  | { type: "failure_recovery"; detail: string; action: string }
   | { type: "status"; status: RunStatus }
   | { type: "error"; message: string }
   | { type: "done"; message_id: string };
@@ -269,6 +291,29 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "file_ref":
         handlers.onFileRef?.({ node_id: kind.node_id, name: kind.name });
+        break;
+      case "plan":
+        handlers.onPlan?.(kind.subtasks);
+        break;
+      case "budget_warning":
+        handlers.onBudgetWarning?.({ kind: kind.kind, used: kind.used, limit: kind.limit });
+        break;
+      case "approval_requested":
+        handlers.onApprovalRequested?.({
+          tool_call_id: kind.tool_call_id,
+          name: kind.name,
+          input: kind.input,
+          reason: kind.reason,
+        });
+        break;
+      case "approval_resolved":
+        handlers.onApprovalResolved?.({
+          tool_call_id: kind.tool_call_id,
+          approved: kind.approved,
+        });
+        break;
+      case "failure_recovery":
+        handlers.onFailureRecovery?.({ detail: kind.detail, action: kind.action });
         break;
       case "status":
         handlers.onStatus?.(kind.status);
@@ -340,6 +385,22 @@ export function resumeMessage(threadId: string, handlers: StreamHandlers): () =>
 /// 生成をユーザー明示停止する（サーバ側キャンセル）。
 export async function cancelRun(threadId: string, runId: string): Promise<void> {
   await apiFetch(`/threads/${threadId}/runs/${runId}/cancel`, { method: "POST" });
+}
+
+/// 自律エージェントの承認要求へ決定を下す（承認/却下・Task 5.6）。
+export async function submitApproval(
+  threadId: string,
+  runId: string,
+  decision: { toolCallId: string; toolName: string; approved: boolean },
+): Promise<void> {
+  await apiFetch(`/threads/${threadId}/runs/${runId}/approvals`, {
+    method: "POST",
+    body: JSON.stringify({
+      tool_call_id: decision.toolCallId,
+      tool_name: decision.toolName,
+      approved: decision.approved,
+    }),
+  });
 }
 
 // ── 共有（ReBAC）───────────────────────────────────────────────────────

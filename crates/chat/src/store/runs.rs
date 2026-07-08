@@ -73,6 +73,8 @@ pub struct ClaimedRun {
     pub agent_mode: bool,
     pub fencing_token: i64,
     pub cancel_requested: bool,
+    /// 生成の trace_id（Langfuse/OTel/監査の相関・Task 5.9）。
+    pub trace_id: Option<String>,
 }
 
 impl ChatStore {
@@ -148,8 +150,8 @@ impl ChatStore {
         .map_err(map_db)?;
 
         let run_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'queued') RETURNING run_id",
+            "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, status, trace_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7) RETURNING run_id",
         )
         .bind(asst_id)
         .bind(thread_id)
@@ -157,6 +159,7 @@ impl ChatStore {
         .bind(&ctx.tenant_id)
         .bind(&ctx.principal.id)
         .bind(agent_mode)
+        .bind(trace_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -208,7 +211,7 @@ impl ChatStore {
             worker_id,
             lease_secs,
             "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
-             fencing_token, cancel_requested",
+             fencing_token, cancel_requested, trace_id",
         )
         .await
         .map_err(map_db)

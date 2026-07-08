@@ -199,12 +199,39 @@ pub enum StreamEventKind {
     FileRef { node_id: String, name: String },
     /// 宣言的 UI（Phase 6）。
     GenerativeUi { spec: serde_json::Value },
-    /// 状態遷移（running/done/failed/cancelled）。UI の生成状態表示に使う。
+    /// 計画の改訂（自律エージェント・Task 5.2）。サブタスク列を丸ごと配信する。
+    Plan { subtasks: Vec<PlanSubtask> },
+    /// 予算上限への接近警告（Task 5.7）。
+    BudgetWarning { kind: String, used: u64, limit: u64 },
+    /// 承認要求（破壊系/egress/高コスト・Task 5.6）。UI が承認ダイアログを出す。
+    ApprovalRequested {
+        tool_call_id: String,
+        name: String,
+        input: serde_json::Value,
+        reason: String,
+    },
+    /// 承認結果（許可/却下・Task 5.6）。
+    ApprovalResolved {
+        tool_call_id: String,
+        approved: bool,
+    },
+    /// 失敗回復の判断（自己修正リトライ／ループ検出停止・Task 5.5）。
+    FailureRecovery { detail: String, action: String },
+    /// 状態遷移（running/waiting_approval/done/failed/cancelled）。UI の生成状態表示に使う。
     Status { status: RunStatus },
     /// エラー（生成失敗）。
     Error { message: String },
     /// 完了（確定した assistant message id）。
     Done { message_id: Uuid },
+}
+
+/// 計画のサブタスク 1 件（SSE `plan` イベント用・agent-core `Subtask` のミラー）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PlanSubtask {
+    pub id: String,
+    pub title: String,
+    /// todo / doing / done / blocked。
+    pub status: String,
 }
 
 impl StreamEventKind {
@@ -218,6 +245,11 @@ impl StreamEventKind {
             StreamEventKind::Citation(_) => "citation",
             StreamEventKind::FileRef { .. } => "file_ref",
             StreamEventKind::GenerativeUi { .. } => "generative_ui",
+            StreamEventKind::Plan { .. } => "plan",
+            StreamEventKind::BudgetWarning { .. } => "budget_warning",
+            StreamEventKind::ApprovalRequested { .. } => "approval_requested",
+            StreamEventKind::ApprovalResolved { .. } => "approval_resolved",
+            StreamEventKind::FailureRecovery { .. } => "failure_recovery",
             StreamEventKind::Status { .. } => "status",
             StreamEventKind::Error { .. } => "error",
             StreamEventKind::Done { .. } => "done",
