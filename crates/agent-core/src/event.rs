@@ -4,9 +4,34 @@
 //! （真実のソース）＋ Redis pub/sub 配信する。ループはツール実行/トークンをこのイベントで
 //! 逐次外部化し、chat 側で SSE の [`StreamEventKind`](../../chat) へ写す。
 
+use crate::budget::BudgetKind;
+use crate::plan::{Plan, SubtaskStatus};
 use crate::tool::{ArtifactRef, Citation};
 
+/// 失敗回復（Task 5.5）でループが取った行動。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryAction {
+    /// エラー観測をモデルへ戻して自己修正を促した（継続）。
+    Retry,
+    /// 同一失敗のループを検出して安全停止した。
+    StopLooping,
+}
+
+impl RecoveryAction {
+    /// 監査・UI 表示用の安定文字列。
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RecoveryAction::Retry => "retry",
+            RecoveryAction::StopLooping => "stop_looping",
+        }
+    }
+}
+
 /// エージェントループが外へ流すイベント（プロバイダ非依存・chat 非依存）。
+///
+/// Phase 3 の 6 種（Text/Thinking/ToolCall/ToolResult/Citation/Artifact）に、Phase 5 の
+/// 自律セッション可視化（5.9）・監査（5.10）・承認（5.6）・予算（5.7）用の構造化イベントを足す。
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentEvent {
     /// 本文テキストの差分。
@@ -31,6 +56,34 @@ pub enum AgentEvent {
     Artifact {
         tool_call_id: String,
         artifact: ArtifactRef,
+    },
+    /// 計画が改訂された（全サブタスク列・revision 付き・Task 5.2）。
+    PlanUpdated(Plan),
+    /// 単一サブタスクの状態遷移（軽量更新・Task 5.2）。
+    SubtaskUpdated { id: String, status: SubtaskStatus },
+    /// 予算上限への接近警告（種別・現在値・上限・Task 5.7）。
+    BudgetWarning {
+        kind: BudgetKind,
+        used: u64,
+        limit: u64,
+    },
+    /// 破壊系/egress/高コスト操作の承認要求（実行前にブロック・Task 5.6）。
+    /// API 結線は W3。ここでは種別を定義し、ループが承認境界で発火できるようにする。
+    ApprovalRequested {
+        tool_call_id: String,
+        name: String,
+        input: serde_json::Value,
+        reason: String,
+    },
+    /// 承認/却下の結果（Task 5.6）。
+    ApprovalResolved {
+        tool_call_id: String,
+        approved: bool,
+    },
+    /// 失敗回復の判断（自己修正リトライ／ループ検出停止・Task 5.5）。
+    FailureRecovery {
+        detail: String,
+        action: RecoveryAction,
     },
 }
 

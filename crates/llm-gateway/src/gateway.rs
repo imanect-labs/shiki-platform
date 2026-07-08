@@ -69,6 +69,22 @@ impl LlmGateway {
         &self.inner.config.catalog.default_model
     }
 
+    /// トークン消費からコスト（マイクロ USD）を見積もる（予算ガード連動・agent-core が使う）。
+    ///
+    /// カタログ単価で算出する純粋計算（会計は [`Self::record_generation`] が別途永続化する）。
+    /// モデル未知なら既定モデル単価にフォールバックし、それも無ければ 0。
+    #[must_use]
+    pub fn estimate_cost_usd_micros(&self, model: &str, usage: Usage) -> i64 {
+        self.inner
+            .config
+            .catalog
+            .get(model)
+            .or_else(|| self.inner.config.catalog.default_entry())
+            .map_or(0, |e| {
+                e.cost_usd_micros(usage.prompt_tokens, usage.completion_tokens)
+            })
+    }
+
     /// リクエストを**ストリーミング**生成する。論理モデル→実 ID をカタログで解決してから
     /// プロバイダへ委譲する。接続確立前の一時障害は 1 回だけ再試行する（フォールバックの床）。
     pub async fn stream(&self, mut req: GenerateRequest) -> Result<DeltaStream, LlmError> {

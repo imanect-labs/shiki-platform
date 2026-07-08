@@ -34,6 +34,7 @@ uuid = { workspace = true, features = ["v4"] }
 async-trait.workspace = true
 serde_json.workspace = true
 futures.workspace = true
+proptest.workspace = true
 
 # lib 名 authz/rag/llm_gateway で参照するため machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]

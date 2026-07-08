@@ -24,12 +24,22 @@
 )]
 
 pub mod agent;
+pub mod budget;
+pub mod checkpoint;
+pub mod context;
 pub mod event;
+pub mod loop_detect;
+pub mod plan;
+pub mod profile;
 pub mod tool;
 pub mod tools;
 
-pub use agent::{run_agent, AgentOptions, AgentStop, RunContext};
-pub use event::{AgentError, AgentEvent, EventSink};
+pub use agent::{run_agent, AgentStop, RunContext};
+pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
+pub use checkpoint::Checkpoint;
+pub use event::{AgentError, AgentEvent, EventSink, RecoveryAction};
+pub use plan::{Plan, Subtask, SubtaskStatus};
+pub use profile::{AgentOptions, AgentOutcome, AgentProfile};
 pub use tool::{ArtifactRef, ArtifactStore, Citation, Tool, ToolError, ToolOutcome};
 pub use tools::{
     run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, WebFetchTool,

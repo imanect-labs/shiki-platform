@@ -1,12 +1,12 @@
-//! agent-core の制約版ループ（Task 3.3 / 3.9）。
+//! agent-core のエージェントループ（Task 3.3/3.9 制約版 → Task 5.1〜5.7 自律拡張）。
 //!
 //! LLM↔ツールのループ（計画→ツール呼出→観測→継続→終了）。ツールセット非依存で [`Tool`] を差す。
-//! Phase 3 は短ホライズン・安全ツールのみ。ツール呼出/結果/引用/トークンは [`EventSink`] で逐次
-//! 外部化し、chat 側で SSE イベント＋content block へ写す。最大ステップ/デッドラインで安全停止する。
+//! [`AgentProfile`] で挙動を切り替える: **Chat**＝短ホライズン・安全ツール（Phase 3/4 と同一）、
+//! **Autonomous**＝長ホライズン・フルツール＋予算ガード（5.7）・計画分解（5.2）・コンテキスト剪定（5.3）・
+//! 失敗ループ検出（5.5）。ツール呼出/結果/引用/計画/予算は [`EventSink`] で逐次外部化する。
 //!
-//! ツール自動選択ポリシ（Task 3.9）: **利用可能ツールを全提示し、モデルが自動選択**する。
-//! `requires_confirmation()` なツール（破壊/権限/高コスト系）は事前許可（`allow_confirmed_tools`）が
-//! 無ければ実行せず、モデルに「確認が必要」と観測させる（破壊系を確認なしに実行しない）。
+//! ツール自動選択ポリシ（Task 3.9）: 利用可能ツールを全提示し、モデルが自動選択する。
+//! `requires_confirmation()` なツール（破壊/権限/高コスト系）は事前許可が無ければ実行しない。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,54 +15,32 @@ use std::time::Instant;
 use authz::AuthContext;
 use futures::stream::StreamExt;
 use llm_gateway::{
-    Block, Effort, GenerateRequest, GenerationRecord, LlmGateway, Message as LlmMessage,
-    Role as LlmRole, StopReason, StreamDelta, ToolDef, Usage,
+    Block, GenerateRequest, GenerationRecord, LlmGateway, Message as LlmMessage, Role as LlmRole,
+    StopReason, StreamDelta, ToolDef, Usage,
 };
 
-use crate::event::{AgentError, AgentEvent, EventSink};
+use crate::budget::BudgetCheck;
+use crate::checkpoint::Checkpoint;
+use crate::event::{AgentError, AgentEvent, EventSink, RecoveryAction};
+use crate::loop_detect::LoopDetector;
+use crate::plan::{self, Plan};
+use crate::profile::{AgentOptions, AgentOutcome, AgentProfile};
 use crate::tool::Tool;
+
+/// 計画メタツールの名前（自律版のみ提示・ループが横取りしてツールへは dispatch しない）。
+const PLAN_TOOL: &str = "plan";
 
 /// ループの停止理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentStop {
     /// モデルが自然終了した。
     Completed,
-    /// 最大ステップに達した。
-    MaxSteps,
+    /// 最大ステップ/時間/トークン/コストの予算に達した（安全停止・Task 5.7）。
+    Budget(crate::budget::BudgetKind),
+    /// 同一失敗のループを検出して安全停止した（Task 5.5）。
+    LoopDetected,
     /// キャンセル要求で停止した。
     Cancelled,
-}
-
-/// ループのオプション。
-pub struct AgentOptions {
-    /// 最大ステップ（LLM 呼び出し回数の上限・安全停止）。
-    pub max_steps: usize,
-    /// トップレベル system プロンプト。
-    pub system: Option<String>,
-    /// 論理モデル名（未指定は gateway 既定）。
-    pub model: Option<String>,
-    /// 思考強度。
-    pub effort: Option<Effort>,
-    /// 1 応答の max_tokens。
-    pub max_tokens: Option<u32>,
-    /// requires_confirmation なツールを実行してよいか（事前許可）。
-    pub allow_confirmed_tools: bool,
-    /// 全体デッドライン（超えたらステップ境界で停止）。
-    pub deadline: Option<Instant>,
-}
-
-impl Default for AgentOptions {
-    fn default() -> Self {
-        AgentOptions {
-            max_steps: 8,
-            system: None,
-            model: None,
-            effort: None,
-            max_tokens: Some(2048),
-            allow_confirmed_tools: false,
-            deadline: None,
-        }
-    }
 }
 
 /// 1 run の会計/計装コンテキスト。
@@ -83,16 +61,260 @@ struct PendingCall {
 }
 
 /// エージェントループを回す。ツールは全提示し、モデルが自動選択する。
-#[allow(clippy::too_many_lines)] // ストリーム分岐＋ツール実行で行数が伸びる（分割は流れを損なう）。
+///
+/// `resume` を渡すと当該チェックポイント（計画・消費・履歴）から再開する（ステップ境界復元・5.5）。
+/// 新規開始なら `None`（`messages` を起点に開始）。戻り値は停止理由＋再開用チェックポイント。
 pub async fn run_agent(
     gateway: &LlmGateway,
     tools: &[Arc<dyn Tool>],
-    mut messages: Vec<LlmMessage>,
+    messages: Vec<LlmMessage>,
     run: &RunContext<'_>,
     opts: &AgentOptions,
+    resume: Option<Checkpoint>,
     sink: &mut dyn EventSink,
-) -> Result<AgentStop, AgentError> {
-    let tool_defs: Vec<ToolDef> = tools
+) -> Result<AgentOutcome, AgentError> {
+    let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
+    let tool_defs = build_tool_defs(tools, opts.profile);
+
+    // 再開 or 新規開始の状態。
+    let mut state = resume.unwrap_or_else(|| Checkpoint::start(messages));
+    let mut detector = LoopDetector::default();
+    let mut warned: std::collections::HashSet<crate::budget::BudgetKind> =
+        std::collections::HashSet::new();
+
+    let stop = loop {
+        if sink.is_cancelled() {
+            break AgentStop::Cancelled;
+        }
+        // --- 予算ガード（ステップに入る前に判定・Task 5.7）。 ---
+        match opts.budget.check(&state.spent, Instant::now()) {
+            BudgetCheck::Exceeded(kind) => break AgentStop::Budget(kind),
+            BudgetCheck::Warn(kind, used, limit) => {
+                if warned.insert(kind) {
+                    sink.emit(AgentEvent::BudgetWarning { kind, used, limit })
+                        .await?;
+                }
+            }
+            BudgetCheck::Ok => {}
+        }
+
+        // --- コンテキスト剪定（自律版のみ・古い大きなツール出力を畳む・Task 5.3）。 ---
+        if opts.profile.is_autonomous() && opts.context_soft_limit_tokens > 0 {
+            crate::context::prune_history(
+                &mut state.messages,
+                opts.context_soft_limit_tokens,
+                opts.context_keep_recent,
+            );
+        }
+
+        let step_outcome = run_step(
+            gateway,
+            &tool_defs,
+            &tool_map,
+            run,
+            opts,
+            &mut state,
+            sink,
+            &mut detector,
+        )
+        .await?;
+        match step_outcome {
+            StepOutcome::Continue => {}
+            StepOutcome::Stop(stop) => break stop,
+        }
+    };
+
+    Ok(AgentOutcome {
+        stop,
+        checkpoint: state,
+    })
+}
+
+/// 1 ステップの結果（継続 or 停止）。
+enum StepOutcome {
+    Continue,
+    Stop(AgentStop),
+}
+
+/// 1 ステップ（1 LLM 生成＋そのツール実行）を回し、状態を進める。
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // ストリーム分岐＋ツール実行で伸びる。
+async fn run_step(
+    gateway: &LlmGateway,
+    tool_defs: &[ToolDef],
+    tool_map: &HashMap<&str, &Arc<dyn Tool>>,
+    run: &RunContext<'_>,
+    opts: &AgentOptions,
+    state: &mut Checkpoint,
+    sink: &mut dyn EventSink,
+    detector: &mut LoopDetector,
+) -> Result<StepOutcome, AgentError> {
+    let step = state.spent.steps;
+    let req = GenerateRequest {
+        model: opts.model.clone(),
+        system: opts.system.clone(),
+        messages: state.messages.clone(),
+        tools: tool_defs.to_vec(),
+        effort: opts.effort,
+        max_tokens: opts.max_tokens,
+        temperature: None,
+    };
+    let mut stream = gateway
+        .stream(req)
+        .await
+        .map_err(|e| AgentError::Llm(e.to_string()))?;
+
+    let mut text_acc = String::new();
+    let mut pending_names: HashMap<String, String> = HashMap::new();
+    let mut calls: Vec<PendingCall> = Vec::new();
+    let mut usage = Usage::default();
+    let mut final_stop = StopReason::EndTurn;
+
+    while let Some(delta) = stream.next().await {
+        if sink.is_cancelled() {
+            return Ok(StepOutcome::Stop(AgentStop::Cancelled));
+        }
+        match delta.map_err(|e| AgentError::Llm(e.to_string()))? {
+            StreamDelta::TextDelta { text } => {
+                text_acc.push_str(&text);
+                sink.emit(AgentEvent::Text(text)).await?;
+            }
+            StreamDelta::ThinkingDelta { text } => {
+                sink.emit(AgentEvent::Thinking(text)).await?;
+            }
+            StreamDelta::ToolUseStart { id, name } => {
+                pending_names.insert(id, name);
+            }
+            StreamDelta::ToolUseInputDelta { .. } => {}
+            StreamDelta::ToolUseStop { id, input } => {
+                let name = pending_names
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
+                sink.emit(AgentEvent::ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                })
+                .await?;
+                calls.push(PendingCall { id, name, input });
+            }
+            StreamDelta::Done {
+                stop_reason,
+                usage: u,
+            } => {
+                final_stop = stop_reason;
+                usage = u;
+            }
+        }
+    }
+
+    // 会計＋Langfuse 計装（attempt/ステップ単位）＋予算の累積更新（Task 5.7）。
+    let cost = gateway.estimate_cost_usd_micros(
+        opts.model
+            .as_deref()
+            .unwrap_or_else(|| gateway.default_model()),
+        usage,
+    );
+    gateway
+        .record_generation(
+            run.ctx,
+            &GenerationRecord {
+                idempotency_key: format!("{}:{}", run.idempotency_prefix, step),
+                model: opts
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| gateway.default_model().to_string()),
+                usage,
+                trace_id: run.trace_id.clone(),
+                input_preview: run.input_preview.clone(),
+                output_preview: preview(&text_acc),
+            },
+        )
+        .await;
+    state
+        .spent
+        .add_step(usage.prompt_tokens + usage.completion_tokens, cost);
+
+    // assistant メッセージを履歴へ。
+    let mut assistant_blocks: Vec<Block> = Vec::new();
+    if !text_acc.is_empty() {
+        assistant_blocks.push(Block::Text { text: text_acc });
+    }
+    for c in &calls {
+        assistant_blocks.push(Block::ToolUse {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            input: c.input.clone(),
+        });
+    }
+    state.messages.push(LlmMessage {
+        role: LlmRole::Assistant,
+        content: assistant_blocks,
+    });
+
+    // 終了判定: ツール呼び出しが無ければ完了。
+    if final_stop != StopReason::ToolUse || calls.is_empty() {
+        return Ok(StepOutcome::Stop(AgentStop::Completed));
+    }
+
+    // ツール実行 → 観測を履歴へ。plan メタツールはループが横取りする（5.2）。
+    let mut result_blocks: Vec<Block> = Vec::new();
+    let mut looping = false;
+    for c in calls {
+        let content = if opts.profile.is_autonomous() && c.name == PLAN_TOOL {
+            handle_plan_tool(&c, &mut state.plan, sink).await?
+        } else {
+            let outcome = execute_tool(tool_map, run.ctx, &c, opts, run.trace_id.as_deref()).await;
+            emit_tool_events(sink, &c, &outcome).await?;
+            // 失敗ループ検出（自律版のみ・5.5）。
+            if opts.profile.is_autonomous() {
+                if outcome.is_error {
+                    sink.emit(AgentEvent::FailureRecovery {
+                        detail: format!("tool '{}' failed; retrying with observation", c.name),
+                        action: RecoveryAction::Retry,
+                    })
+                    .await?;
+                }
+                if detector.observe(&c.name, &c.input, outcome.is_error) {
+                    looping = true;
+                }
+            }
+            ToolResultParts {
+                content: outcome.content,
+                is_error: outcome.is_error,
+            }
+        };
+        result_blocks.push(Block::ToolResult {
+            tool_use_id: c.id,
+            content: content.content,
+            is_error: content.is_error,
+        });
+    }
+    state.messages.push(LlmMessage {
+        role: LlmRole::Tool,
+        content: result_blocks,
+    });
+
+    if looping {
+        sink.emit(AgentEvent::FailureRecovery {
+            detail: "同一ツール呼び出しの失敗が反復したため安全停止しました".to_string(),
+            action: RecoveryAction::StopLooping,
+        })
+        .await?;
+        return Ok(StepOutcome::Stop(AgentStop::LoopDetected));
+    }
+    Ok(StepOutcome::Continue)
+}
+
+/// ツール結果の本文＋エラー有無（plan/通常ツールの合流点）。
+struct ToolResultParts {
+    content: String,
+    is_error: bool,
+}
+
+/// 提示するツール定義を組み立てる（自律版は `plan` メタツールを足す）。
+fn build_tool_defs(tools: &[Arc<dyn Tool>], profile: AgentProfile) -> Vec<ToolDef> {
+    let mut defs: Vec<ToolDef> = tools
         .iter()
         .map(|t| ToolDef {
             name: t.name().to_string(),
@@ -100,156 +322,61 @@ pub async fn run_agent(
             input_schema: t.input_schema(),
         })
         .collect();
-    let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
-
-    for step in 0..opts.max_steps {
-        if sink.is_cancelled() {
-            return Ok(AgentStop::Cancelled);
-        }
-        if opts.deadline.is_some_and(|d| Instant::now() >= d) {
-            return Ok(AgentStop::MaxSteps);
-        }
-
-        let req = GenerateRequest {
-            model: opts.model.clone(),
-            system: opts.system.clone(),
-            messages: messages.clone(),
-            tools: tool_defs.clone(),
-            effort: opts.effort,
-            max_tokens: opts.max_tokens,
-            temperature: None,
-        };
-        let mut stream = gateway
-            .stream(req)
-            .await
-            .map_err(|e| AgentError::Llm(e.to_string()))?;
-
-        let mut text_acc = String::new();
-        let mut pending_names: HashMap<String, String> = HashMap::new();
-        let mut calls: Vec<PendingCall> = Vec::new();
-        let mut usage = Usage::default();
-        let mut stop = StopReason::EndTurn;
-        let mut cancelled_mid = false;
-
-        while let Some(delta) = stream.next().await {
-            if sink.is_cancelled() {
-                cancelled_mid = true;
-                break;
-            }
-            match delta.map_err(|e| AgentError::Llm(e.to_string()))? {
-                StreamDelta::TextDelta { text } => {
-                    text_acc.push_str(&text);
-                    sink.emit(AgentEvent::Text(text)).await?;
-                }
-                StreamDelta::ThinkingDelta { text } => {
-                    sink.emit(AgentEvent::Thinking(text)).await?;
-                }
-                StreamDelta::ToolUseStart { id, name } => {
-                    pending_names.insert(id, name);
-                }
-                // 入力 JSON の逐次差分は使わない（ToolUseStop で完全な入力を受け取る）。
-                StreamDelta::ToolUseInputDelta { .. } => {}
-                StreamDelta::ToolUseStop { id, input } => {
-                    let name = pending_names
-                        .get(&id)
-                        .cloned()
-                        .unwrap_or_else(|| "unknown".to_string());
-                    sink.emit(AgentEvent::ToolCall {
-                        id: id.clone(),
-                        name: name.clone(),
-                        input: input.clone(),
-                    })
-                    .await?;
-                    calls.push(PendingCall { id, name, input });
-                }
-                StreamDelta::Done {
-                    stop_reason,
-                    usage: u,
-                } => {
-                    stop = stop_reason;
-                    usage = u;
-                }
-            }
-        }
-
-        // このターンの会計＋Langfuse 計装（attempt/ステップ単位で刻む）。
-        gateway
-            .record_generation(
-                run.ctx,
-                &GenerationRecord {
-                    idempotency_key: format!("{}:{}", run.idempotency_prefix, step),
-                    model: opts
-                        .model
-                        .clone()
-                        .unwrap_or_else(|| gateway.default_model().to_string()),
-                    usage,
-                    trace_id: run.trace_id.clone(),
-                    input_preview: run.input_preview.clone(),
-                    output_preview: preview(&text_acc),
-                },
-            )
-            .await;
-
-        if cancelled_mid {
-            return Ok(AgentStop::Cancelled);
-        }
-
-        // assistant メッセージを履歴へ（次ターンの入力に）。
-        let mut assistant_blocks: Vec<Block> = Vec::new();
-        if !text_acc.is_empty() {
-            assistant_blocks.push(Block::Text { text: text_acc });
-        }
-        for c in &calls {
-            assistant_blocks.push(Block::ToolUse {
-                id: c.id.clone(),
-                name: c.name.clone(),
-                input: c.input.clone(),
-            });
-        }
-        messages.push(LlmMessage {
-            role: LlmRole::Assistant,
-            content: assistant_blocks,
-        });
-
-        // 終了判定: ツール呼び出しが無ければ完了。
-        if stop != StopReason::ToolUse || calls.is_empty() {
-            return Ok(AgentStop::Completed);
-        }
-
-        // ツール実行 → 観測を履歴へ。
-        let mut result_blocks: Vec<Block> = Vec::new();
-        for c in calls {
-            let outcome = execute_tool(&tool_map, run.ctx, &c, opts, run.trace_id.as_deref()).await;
-            sink.emit(AgentEvent::ToolResult {
-                tool_call_id: c.id.clone(),
-                ok: !outcome.is_error,
-                content: outcome.content.clone(),
-            })
-            .await?;
-            for cite in outcome.citations {
-                sink.emit(AgentEvent::Citation(cite)).await?;
-            }
-            // 成果物（保存済みファイル参照）を UI へ流す（chat 側で FileRef へ写す）。
-            for artifact in outcome.artifacts {
-                sink.emit(AgentEvent::Artifact {
-                    tool_call_id: c.id.clone(),
-                    artifact,
-                })
-                .await?;
-            }
-            result_blocks.push(Block::ToolResult {
-                tool_use_id: c.id,
-                content: outcome.content,
-                is_error: outcome.is_error,
-            });
-        }
-        messages.push(LlmMessage {
-            role: LlmRole::Tool,
-            content: result_blocks,
+    if profile.is_autonomous() {
+        defs.push(ToolDef {
+            name: PLAN_TOOL.to_string(),
+            description:
+                "現在の計画（サブタスク列）を提示/改訂する。目標を数個のサブタスクに分解し、\
+                進捗に応じて全置換で更新する（各要素に status: todo/doing/done/blocked）。\
+                計画は UI に表示され進捗が追跡される。"
+                    .to_string(),
+            input_schema: plan::plan_tool_schema(),
         });
     }
+    defs
+}
 
-    Ok(AgentStop::MaxSteps)
+/// `plan` メタツールを処理する（計画を改訂し、変化を [`AgentEvent::PlanUpdated`] で外部化）。
+async fn handle_plan_tool(
+    call: &PendingCall,
+    current: &mut Plan,
+    sink: &mut dyn EventSink,
+) -> Result<ToolResultParts, AgentError> {
+    let inputs = plan::parse_plan_input(&call.input);
+    let changed = current.revise(inputs);
+    if changed {
+        sink.emit(AgentEvent::PlanUpdated(current.clone())).await?;
+    }
+    let (done, total) = current.progress();
+    Ok(ToolResultParts {
+        content: format!("計画を更新しました（{done}/{total} 完了）。"),
+        is_error: false,
+    })
+}
+
+/// ツール結果イベント（結果・引用・成果物）を外部化する。
+async fn emit_tool_events(
+    sink: &mut dyn EventSink,
+    call: &PendingCall,
+    outcome: &crate::tool::ToolOutcome,
+) -> Result<(), AgentError> {
+    sink.emit(AgentEvent::ToolResult {
+        tool_call_id: call.id.clone(),
+        ok: !outcome.is_error,
+        content: outcome.content.clone(),
+    })
+    .await?;
+    for cite in &outcome.citations {
+        sink.emit(AgentEvent::Citation(cite.clone())).await?;
+    }
+    for artifact in &outcome.artifacts {
+        sink.emit(AgentEvent::Artifact {
+            tool_call_id: call.id.clone(),
+            artifact: artifact.clone(),
+        })
+        .await?;
+    }
+    Ok(())
 }
 
 /// 1 ツール呼び出しを実行する（未知/確認必須は観測エラーへ）。
@@ -264,7 +391,6 @@ async fn execute_tool(
     let Some(tool) = tool_map.get(call.name.as_str()) else {
         return ToolOutcome::error(format!("unknown tool: {}", call.name));
     };
-    // 破壊/権限/高コスト系は事前許可が無ければ実行しない（Task 3.9）。
     if tool.requires_confirmation() && !opts.allow_confirmed_tools {
         return ToolOutcome::error(format!(
             "tool '{}' requires explicit confirmation and was not executed",

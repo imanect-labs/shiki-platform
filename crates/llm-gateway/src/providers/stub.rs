@@ -7,6 +7,10 @@
 //!   既知のプレフィックス（`search:` / `python:` / `websearch:` / `webfetch:`）で始まるとき、
 //!   対応するツールを 1 回だけ呼び出す（agent ループ・各ツールの決定的検証）。プレフィックス
 //!   に対応するツールが提示されていなければ最初のツールへフォールバックする（後方互換）。
+//! - 自律プロファイル（Phase 5）検証用の駆動プレフィックス:
+//!   - `plan: A, B, C` … 1 ターン目に `plan` メタツールをカンマ区切りのサブタスクで呼ぶ（計画分解の検証）。
+//!   - `loop:` … tool_result の有無に関わらず**毎ターン** tools[0] を空入力で呼び続ける
+//!     （ループ検出・ステップ/予算上限・長ホライズンの決定的駆動）。
 
 use futures::stream::{self, StreamExt};
 
@@ -67,6 +71,26 @@ fn tool_trigger(user_text: &str) -> Option<(&'static str, &'static str, String)>
     })
 }
 
+/// 単一ツール呼び出し（ToolUse で停止）のストリームを組む決定的ヘルパ。
+fn tool_call_stream(name: String, input: serde_json::Value, prompt_tokens: u64) -> DeltaStream {
+    let id = "stubtool_1".to_string();
+    let events = vec![
+        Ok(StreamDelta::ToolUseStart {
+            id: id.clone(),
+            name,
+        }),
+        Ok(StreamDelta::ToolUseStop { id, input }),
+        Ok(StreamDelta::Done {
+            stop_reason: StopReason::ToolUse,
+            usage: Usage {
+                prompt_tokens,
+                completion_tokens: 0,
+            },
+        }),
+    ];
+    stream::iter(events).boxed()
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for StubProvider {
     fn name(&self) -> &'static str {
@@ -84,6 +108,33 @@ impl LlmProvider for StubProvider {
                 _ => None,
             })
             .sum::<u64>();
+
+        // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
+        if !req.tools.is_empty() && user_text.starts_with("loop:") {
+            return Ok(tool_call_stream(
+                req.tools[0].name.clone(),
+                serde_json::json!({}),
+                prompt_tokens,
+            ));
+        }
+        // --- 自律駆動 `plan:`: 1 ターン目に plan メタツールをカンマ区切りサブタスクで呼ぶ。 ---
+        if !has_tool_result(req) {
+            if let Some(rest) = user_text.strip_prefix("plan:") {
+                if let Some(plan_tool) = req.tools.iter().find(|t| t.name == "plan") {
+                    let subtasks: Vec<serde_json::Value> = rest
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|title| serde_json::json!({ "title": title }))
+                        .collect();
+                    return Ok(tool_call_stream(
+                        plan_tool.name.clone(),
+                        serde_json::json!({ "subtasks": subtasks }),
+                        prompt_tokens,
+                    ));
+                }
+            }
+        }
 
         // ツール呼び出し分岐（決定的）: 1 ターン目に既知プレフィックスで始まれば対応ツールを呼ぶ。
         if !req.tools.is_empty() && !has_tool_result(req) {
