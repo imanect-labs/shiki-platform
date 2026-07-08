@@ -14,7 +14,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use authz::AuthContext;
-use sandbox_client::{ExecRequest, Sandbox, SandboxHandle, SandboxSpec};
+use sandbox_client::{ExecRequest, Sandbox, SandboxError, SandboxHandle, SandboxSpec};
 
 use super::mime::content_type_for;
 use super::sandbox_exec::{collect_output, truncate};
@@ -131,9 +131,16 @@ impl ShellTool {
         let (stdout, stderr, exit, limit) = collect_output(stream).await?;
 
         // 変更/新規ファイルをワークスペースへ書き戻す（コマンド失敗時も書かれたものは拾う）。
-        let synced = self.sync_back(ctx, handle, &seeded, trace_id).await;
+        let (synced, notes) = self.sync_back(ctx, handle, &seeded, trace_id).await;
 
-        Ok(render(&stdout, &stderr, exit, limit.as_deref(), synced))
+        Ok(render(
+            &stdout,
+            &stderr,
+            exit,
+            limit.as_deref(),
+            synced,
+            &notes,
+        ))
     }
 
     /// ワークスペースを guest `/workspace` へ seed し、seed した (name → 内容ハッシュ) を返す。
@@ -166,17 +173,18 @@ impl ShellTool {
         Ok(seeded)
     }
 
-    /// guest `/workspace` の**新規/変更**ファイルをワークスペースへ書き戻し、保存名を返す。
+    /// guest `/workspace` の**新規/変更/削除**をワークスペースへ反映し、(保存した参照, 注記) を返す。
     async fn sync_back(
         &self,
         ctx: &AuthContext,
         handle: &SandboxHandle,
         seeded: &HashMap<String, u64>,
         trace_id: Option<&str>,
-    ) -> Vec<ArtifactRef> {
+    ) -> (Vec<ArtifactRef>, Vec<String>) {
         let mut saved = Vec::new();
+        let mut notes = Vec::new();
         let Ok(entries) = self.sandbox.list_dir(handle, WORKSPACE_DIR).await else {
-            return saved;
+            return (saved, notes);
         };
         // 実 sidecar は seed 済みを readdir に出さないため、seed 名も明示的に取り直して変更検出する。
         let mut candidates: Vec<String> = entries
@@ -191,26 +199,36 @@ impl ShellTool {
         }
 
         for name in candidates.into_iter().take(MAX_FILES) {
-            let Ok(bytes) = self.sandbox.get_file(handle, &guest_path(&name)).await else {
-                continue;
-            };
-            // seed 済みで内容が不変ならスキップ（無駄な新版・再索引を避ける）。
-            if seeded.get(&name) == Some(&hash_bytes(&bytes)) {
-                continue;
-            }
-            // 名前不正等はスキップ（storage が最終検証・PIT-23）。
-            if let Ok(w) = self
-                .workspace
-                .write(ctx, &name, bytes, content_type_for(&name), trace_id)
-                .await
-            {
-                saved.push(ArtifactRef {
-                    node_id: w.node_id,
-                    name: w.name,
-                });
+            match self.sandbox.get_file(handle, &guest_path(&name)).await {
+                Ok(bytes) => {
+                    // seed 済みで内容が不変ならスキップ（無駄な新版・再索引を避ける）。
+                    if seeded.get(&name) == Some(&hash_bytes(&bytes)) {
+                        continue;
+                    }
+                    match self
+                        .workspace
+                        .write(ctx, &name, bytes, content_type_for(&name), trace_id)
+                        .await
+                    {
+                        Ok(w) => saved.push(ArtifactRef {
+                            node_id: w.node_id,
+                            name: w.name,
+                        }),
+                        // 保存失敗は握り潰さずモデルへ観測させる（名前不正は storage が最終検証・PIT-23）。
+                        Err(e) => notes.push(format!("{name} の保存に失敗: {e}")),
+                    }
+                }
+                // seed 済みが消えた（`rm` 等）→ ワークスペースからも削除して反映する（削除の同期）。
+                Err(SandboxError::NotFound(_)) if seeded.contains_key(&name) => {
+                    if self.workspace.delete(ctx, &name, trace_id).await.is_ok() {
+                        notes.push(format!("{name} を削除しました。"));
+                    }
+                }
+                // 一時的な取得失敗はスキップ（次回に拾う）。
+                Err(_) => {}
             }
         }
-        saved
+        (saved, notes)
     }
 }
 
@@ -232,6 +250,7 @@ fn render(
     exit: Option<i32>,
     limit: Option<&str>,
     synced: Vec<ArtifactRef>,
+    notes: &[String],
 ) -> ToolOutcome {
     use std::fmt::Write as _;
     let mut body = String::new();
@@ -250,6 +269,10 @@ fn render(
         for a in &synced {
             let _ = writeln!(body, "- {}", a.name);
         }
+    }
+    // sync-back の削除反映・保存失敗などの注記をモデルへ観測させる。
+    for note in notes {
+        let _ = writeln!(body, "（{note}）");
     }
 
     let mut out = if let Some(l) = limit {

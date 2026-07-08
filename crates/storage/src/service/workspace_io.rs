@@ -79,6 +79,13 @@ impl StorageService {
         }
 
         let mut tx = self.db.begin().await?;
+        // **(parent, name) に TX advisory lock** を掛け、resolve→create/update を直列化する。
+        // これが無いと、同名**新規**ファイルの並行書込で双方が existing=None を観測し、片方が
+        // node の (parent,name) unique 制約に衝突する（新規行は FOR UPDATE で待てないため）。
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("{}|{}|{parent_id}|{name}", ctx.tenant_id, ctx.org))
+            .execute(&mut *tx)
+            .await?;
         // 既存の同名生存ファイルを **行ロックして** 解決する（並行書込の lost-update を防ぐ）。
         let existing: Option<Uuid> = sqlx::query_scalar(
             "SELECT id FROM node \

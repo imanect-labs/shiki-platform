@@ -132,7 +132,12 @@ impl Tool for FsEditTool {
         let new = str_field(&input, "new_string")?;
 
         let bytes = self.workspace.read(ctx, &name, trace_id).await?;
-        let text = String::from_utf8_lossy(&bytes);
+        // バイナリ（非 UTF-8）ファイルは lossy 変換で内容が壊れるため編集を拒否する（安全側）。
+        let Ok(text) = String::from_utf8(bytes) else {
+            return Ok(ToolOutcome::error(format!(
+                "'{name}' はテキストファイルではないため fs_edit で編集できません。"
+            )));
+        };
         let count = text.matches(&old).count();
         if count == 0 {
             return Ok(ToolOutcome::error(format!(
