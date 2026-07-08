@@ -75,12 +75,15 @@ pub struct ClaimedRun {
     pub cancel_requested: bool,
     /// 生成の trace_id（Langfuse/OTel/監査の相関・Task 5.9）。
     pub trace_id: Option<String>,
+    /// 自律プロファイル（長ホライズン・フルツール・予算・計画・承認・Task 5.1）。
+    pub autonomous: bool,
 }
 
 impl ChatStore {
     /// ユーザー発話を投入する（**単一 TX**で user/assistant message 保存＋run 行＋jobq enqueue）。
     ///
     /// editor 権限を要求する（viewer は投稿不可）。同期実行はせず run_id を返す（202・Task 3.5）。
+    #[allow(clippy::too_many_arguments)] // ctx＋thread/text/attachments/agent_mode/autonomous/trace は本質的。
     pub async fn post_message(
         &self,
         ctx: &AuthContext,
@@ -88,6 +91,7 @@ impl ChatStore {
         text: &str,
         attachments: &[Attachment],
         agent_mode_override: Option<bool>,
+        autonomous: bool,
         trace_id: Option<&str>,
     ) -> Result<PostResult, ChatError> {
         self.require_thread(ctx, thread_id, Relation::Editor, "thread.post", trace_id)
@@ -106,7 +110,8 @@ impl ChatStore {
                 .await
                 .map_err(map_db)?
                 .ok_or(ChatError::NotFound)?;
-        let agent_mode = agent_mode_override.unwrap_or(thread_default);
+        // 自律プロファイルはエージェントモードを含意する（ツールループが前提）。
+        let agent_mode = agent_mode_override.unwrap_or(thread_default) || autonomous;
 
         // user メッセージ content: 添付（file_ref）＋text。
         let mut user_content: Vec<ContentBlock> = attachments
@@ -150,8 +155,8 @@ impl ChatStore {
         .map_err(map_db)?;
 
         let run_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, status, trace_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7) RETURNING run_id",
+            "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, status, trace_id, autonomous) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8) RETURNING run_id",
         )
         .bind(asst_id)
         .bind(thread_id)
@@ -160,6 +165,7 @@ impl ChatStore {
         .bind(&ctx.principal.id)
         .bind(agent_mode)
         .bind(trace_id)
+        .bind(autonomous)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -211,7 +217,7 @@ impl ChatStore {
             worker_id,
             lease_secs,
             "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
-             fencing_token, cancel_requested, trace_id",
+             fencing_token, cancel_requested, trace_id, autonomous",
         )
         .await
         .map_err(map_db)

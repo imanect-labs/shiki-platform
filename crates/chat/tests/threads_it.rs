@@ -230,11 +230,11 @@ async fn get_messages_returns_ordered_roles_and_content() {
 
     let thread = store.create_thread(&c, "会話", false, None).await.unwrap();
     store
-        .post_message(&c, thread.id, "1つ目の質問", &[], Some(false), None)
+        .post_message(&c, thread.id, "1つ目の質問", &[], Some(false), false, None)
         .await
         .unwrap();
     store
-        .post_message(&c, thread.id, "2つ目の質問", &[], Some(false), None)
+        .post_message(&c, thread.id, "2つ目の質問", &[], Some(false), false, None)
         .await
         .unwrap();
 
@@ -360,7 +360,7 @@ async fn event_stream_replays_appended_events() {
 
     let thread = store.create_thread(&c, "配信", false, None).await.unwrap();
     let res = store
-        .post_message(&c, thread.id, "hi", &[], Some(false), None)
+        .post_message(&c, thread.id, "hi", &[], Some(false), false, None)
         .await
         .unwrap();
     let run_id = res.run_id;
@@ -425,12 +425,14 @@ async fn agent_mode_worker_runs_to_done() {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            storage: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
             model: Some("m".into()),
             lease_secs: 30,
             max_steps: 4,
+            ..Default::default()
         },
     );
     worker.spawn(1);
@@ -439,7 +441,7 @@ async fn agent_mode_worker_runs_to_done() {
     // agent_mode=true のスレッド → post_message は既定でエージェントモード。
     let thread = store.create_thread(&c, "agent", true, None).await.unwrap();
     let res = store
-        .post_message(&c, thread.id, "hello agent", &[], None, None)
+        .post_message(&c, thread.id, "hello agent", &[], None, false, None)
         .await
         .unwrap();
 
@@ -477,7 +479,7 @@ async fn db_approver_blocks_until_decision() {
 
     let thread = store.create_thread(&c, "承認", true, None).await.unwrap();
     let res = store
-        .post_message(&c, thread.id, "do danger", &[], None, None)
+        .post_message(&c, thread.id, "do danger", &[], None, false, None)
         .await
         .unwrap();
     let run_id = res.run_id;
@@ -560,7 +562,7 @@ async fn db_approver_cancelled_by_flag() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "do danger", &[], None, None)
+        .post_message(&c, thread.id, "do danger", &[], None, false, None)
         .await
         .unwrap();
     let run_id = res.run_id;

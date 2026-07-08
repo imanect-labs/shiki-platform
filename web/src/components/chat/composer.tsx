@@ -4,6 +4,7 @@ import * as React from "react";
 import {
   ArrowUp,
   Globe,
+  Bot,
   Loader2,
   HardDrive,
   Paperclip,
@@ -46,6 +47,8 @@ export function Composer({
   streaming = false,
   agentMode = false,
   onAgentModeChange,
+  autonomous = false,
+  onAutonomousChange,
   className,
 }: {
   onSubmit: (text: string, attachments: Attachment[]) => void;
@@ -61,6 +64,10 @@ export function Composer({
   agentMode?: boolean;
   /// エージェントモードのトグル（未指定ならトグル UI を出さない）。
   onAgentModeChange?: (v: boolean) => void;
+  /// 自律モード（既定 OFF。ON＝長ホライズン・フルツール・計画・承認・Task 5.1）。
+  autonomous?: boolean;
+  /// 自律モードのトグル（未指定ならトグル UI を出さない）。
+  onAutonomousChange?: (v: boolean) => void;
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
@@ -187,6 +194,30 @@ export function Composer({
               >
                 <Sparkles className="size-[15px]" aria-hidden />
                 エージェント
+              </button>
+            ) : null}
+            {onAutonomousChange ? (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={autonomous}
+                aria-label="自律モード"
+                title={
+                  autonomous
+                    ? "自律モード: ON（計画・フルツール・承認つきで目標を達成）"
+                    : "自律モード: OFF"
+                }
+                onClick={() => onAutonomousChange(!autonomous)}
+                className={cn(
+                  "inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-[13px] font-medium transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
+                  autonomous
+                    ? "border-primary/40 bg-primary/10 text-primary"
+                    : "border-border text-foreground/70 hover:bg-secondary hover:text-foreground",
+                )}
+              >
+                <Bot className="size-[15px]" aria-hidden />
+                自律
               </button>
             ) : null}
           </div>

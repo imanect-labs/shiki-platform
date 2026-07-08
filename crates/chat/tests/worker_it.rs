@@ -153,12 +153,14 @@ async fn worker_generates_streams_and_persists_projection() {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            storage: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
             model: Some("m".into()),
             lease_secs: 30,
             max_steps: 4,
+            ..Default::default()
         },
     );
     // 生成ワーカーを起動（jobq を消費）。
@@ -167,7 +169,7 @@ async fn worker_generates_streams_and_persists_projection() {
     let c = ctx(&tenant);
     let thread = store.create_thread(&c, "t", false, None).await.unwrap();
     let res = store
-        .post_message(&c, thread.id, "hello world", &[], Some(false), None)
+        .post_message(&c, thread.id, "hello world", &[], Some(false), false, None)
         .await
         .unwrap();
 

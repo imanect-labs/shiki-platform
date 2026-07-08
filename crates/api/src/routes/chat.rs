@@ -78,6 +78,9 @@ pub struct PostMessageRequest {
     /// このメッセージのエージェントモード上書き（未指定はスレッド既定）。
     #[serde(default)]
     pub agent_mode: Option<bool>,
+    /// 自律プロファイルで実行するか（長ホライズン・フルツール・予算・承認・Task 5.1）。
+    #[serde(default)]
+    pub autonomous: Option<bool>,
 }
 
 /// 発話送信レスポンス（202・生成は接続非依存ジョブで継続）。
@@ -270,6 +273,7 @@ pub async fn post_message(
             &req.text,
             &attachments,
             req.agent_mode,
+            req.autonomous.unwrap_or(false),
             trace.as_deref(),
         )
         .await?;

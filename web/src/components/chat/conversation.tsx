@@ -11,11 +11,14 @@ import {
   notifyThreadsChanged,
   resumeMessage,
   streamMessage,
+  submitApproval,
   ThreadNotFound,
+  type ApprovalRequest,
   type Attachment,
   type Citation,
   type ContentBlock,
   type Message as ChatMessageT,
+  type PlanSubtask,
   type RunStatus,
   type StreamHandlers,
 } from "@/lib/chat-api";
@@ -32,6 +35,7 @@ import { type ToolActivityItem } from "./tool-activity";
 import { ChainOfThought } from "./chain-of-thought";
 import { Composer } from "./composer";
 import { ThreadShareDialog } from "./share-dialog";
+import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
 
 /// ストリーミング中のアシスタント応答の蓄積状態。
 type StreamState = {
@@ -41,9 +45,26 @@ type StreamState = {
   citations: Citation[];
   /// ツール成果物（code_interpreter が保存したファイル参照）。
   files: Attachment[];
+  /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
+  plan: PlanSubtask[];
+  approval: ApprovalRequest | null;
+  budget: { kind: string; used: number; limit: number } | null;
+  runId: string | null;
+  approvalPending: boolean;
 };
 
-const EMPTY_STREAM: StreamState = { text: "", thinking: "", tools: [], citations: [], files: [] };
+const EMPTY_STREAM: StreamState = {
+  text: "",
+  thinking: "",
+  tools: [],
+  citations: [],
+  files: [],
+  plan: [],
+  approval: null,
+  budget: null,
+  runId: null,
+  approvalPending: false,
+};
 
 export function Conversation({ threadId }: { threadId: string }) {
   const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
@@ -51,6 +72,7 @@ export function Conversation({ threadId }: { threadId: string }) {
   const [notFound, setNotFound] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [agentMode, setAgentMode] = React.useState(false);
+  const [autonomous, setAutonomous] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
   const bottomRef = React.useRef<HTMLDivElement | null>(null);
   // 停止関数。`cancelServer` でサーバ側もキャンセル（明示停止）。離脱は継続（呼ばない）。
@@ -91,6 +113,18 @@ export function Conversation({ threadId }: { threadId: string }) {
         ),
       onCitation: (c) => setStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
       onFileRef: (f) => setStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
+      // --- 自律エージェント（Phase 5・Task 5.11） ---
+      onRunId: (runId) => setStream((s) => (s ? { ...s, runId } : s)),
+      onPlan: (subtasks) => setStream((s) => (s ? { ...s, plan: mergePlan(s.plan, subtasks) } : s)),
+      onBudgetWarning: (b) => setStream((s) => (s ? { ...s, budget: b } : s)),
+      onApprovalRequested: (req) =>
+        setStream((s) => (s ? { ...s, approval: req, approvalPending: false } : s)),
+      onApprovalResolved: (res) =>
+        setStream((s) =>
+          s && s.approval?.tool_call_id === res.tool_call_id
+            ? { ...s, approval: null, approvalPending: false }
+            : s,
+        ),
       onStatus: (status: RunStatus) => {
         if (status === "cancelled") setError("生成をキャンセルしました。");
         if (status === "failed") setError("生成に失敗しました。");
@@ -121,9 +155,32 @@ export function Conversation({ threadId }: { threadId: string }) {
         { id: newId(), role: "user", content: userBlocks, createdAt: new Date().toISOString() },
       ]);
       setStream({ ...EMPTY_STREAM });
-      cancelRef.current = streamMessage(threadId, text, attachments, makeHandlers(), agentMode);
+      cancelRef.current = streamMessage(
+        threadId,
+        text,
+        attachments,
+        makeHandlers(),
+        agentMode || autonomous,
+        autonomous,
+      );
     },
-    [threadId, makeHandlers, agentMode],
+    [threadId, makeHandlers, agentMode, autonomous],
+  );
+
+  // 承認/却下を送る（自律エージェントのブロックを解く・Task 5.6）。
+  const decideApproval = React.useCallback(
+    (approved: boolean) => {
+      const s = streamRef.current;
+      if (!s?.approval || !s.runId) return;
+      const { tool_call_id, name } = s.approval;
+      setStream((prev) => (prev ? { ...prev, approvalPending: true } : prev));
+      void submitApproval(threadId, s.runId, {
+        toolCallId: tool_call_id,
+        toolName: name,
+        approved,
+      }).catch((e) => setError(e instanceof Error ? e.message : "承認の送信に失敗しました"));
+    },
+    [threadId],
   );
 
   // 生成を停止する（明示停止＝サーバ側もキャンセル）。中断時点までを確定メッセージに残す。
@@ -213,7 +270,7 @@ export function Conversation({ threadId }: { threadId: string }) {
               <AssistantRow key={m.id} blocks={m.content} />
             ),
           )}
-          {stream ? <StreamingRow stream={stream} /> : null}
+          {stream ? <StreamingRow stream={stream} onApproval={decideApproval} /> : null}
           {error ? (
             <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
               {error}
@@ -231,6 +288,8 @@ export function Conversation({ threadId }: { threadId: string }) {
             streaming={stream !== null}
             agentMode={agentMode}
             onAgentModeChange={setAgentMode}
+            autonomous={autonomous}
+            onAutonomousChange={setAutonomous}
             autoFocus
           />
           <p className="mt-2 text-center text-xs text-muted-foreground">
@@ -348,17 +407,37 @@ function ArtifactFiles({ files }: { files: { node_id: string; name: string }[] }
   );
 }
 
-function StreamingRow({ stream }: { stream: StreamState }) {
-  const showLoader = !stream.text && !stream.thinking && stream.tools.length === 0;
+function StreamingRow({
+  stream,
+  onApproval,
+}: {
+  stream: StreamState;
+  onApproval: (approved: boolean) => void;
+}) {
+  const showLoader =
+    !stream.text &&
+    !stream.thinking &&
+    stream.tools.length === 0 &&
+    stream.plan.length === 0 &&
+    !stream.approval;
   return (
     <Message className="justify-start">
-      <div className="w-full min-w-0">
+      <div className="w-full min-w-0 space-y-2">
+        {stream.plan.length > 0 ? <PlanPanel subtasks={stream.plan} /> : null}
         <ChainOfThought
           thinking={stream.thinking}
           tools={stream.tools}
           citations={stream.citations}
           streaming={!stream.text}
         />
+        {stream.budget ? <BudgetBanner {...stream.budget} /> : null}
+        {stream.approval ? (
+          <ApprovalCard
+            request={stream.approval}
+            pending={stream.approvalPending}
+            onDecision={onApproval}
+          />
+        ) : null}
         {showLoader ? (
           <MessageContent className="py-1">
             <Loader variant="typing" />
@@ -372,4 +451,12 @@ function StreamingRow({ stream }: { stream: StreamState }) {
       </div>
     </Message>
   );
+}
+
+/// 計画イベントを蓄積する。フル計画（全 title 非空）は置換、単一の空 title は id で status 更新。
+function mergePlan(prev: PlanSubtask[], incoming: PlanSubtask[]): PlanSubtask[] {
+  const isStatusOnly = incoming.length === 1 && incoming[0].title === "";
+  if (!isStatusOnly) return incoming;
+  const upd = incoming[0];
+  return prev.map((s) => (s.id === upd.id ? { ...s, status: upd.status } : s));
 }

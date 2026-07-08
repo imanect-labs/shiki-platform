@@ -140,6 +140,54 @@ impl ChatStore {
         Ok(updated.rows_affected() == 1)
     }
 
+    /// thread のワークスペースフォルダ id を引く（未設定なら `None`）。
+    pub async fn workspace_folder_id(
+        &self,
+        thread_id: Uuid,
+        tenant_id: &str,
+    ) -> Result<Option<Uuid>, ChatError> {
+        let id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT workspace_folder_id FROM thread WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|e| map_db(&e))?
+        .flatten();
+        Ok(id)
+    }
+
+    /// thread のワークスペースフォルダ id を **未設定時のみ** 設定する（並行 run の二重設定を防ぐ）。
+    /// 戻り値は確定した id（自分の設定 or 既に他が設定した値）。
+    pub async fn set_workspace_folder_if_absent(
+        &self,
+        thread_id: Uuid,
+        tenant_id: &str,
+        folder_id: Uuid,
+    ) -> Result<Uuid, ChatError> {
+        let current: Option<Uuid> = sqlx::query_scalar(
+            "UPDATE thread SET workspace_folder_id = $3 \
+             WHERE id = $1 AND tenant_id = $2 AND workspace_folder_id IS NULL \
+             RETURNING workspace_folder_id",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .bind(folder_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|e| map_db(&e))?
+        .flatten();
+        match current {
+            Some(id) => Ok(id),
+            // 競合で既に設定済み → 既存値を読み直す。
+            None => Ok(self
+                .workspace_folder_id(thread_id, tenant_id)
+                .await?
+                .unwrap_or(folder_id)),
+        }
+    }
+
     /// キャンセル要求が立っているか（承認待ちワーカーが待機を打ち切る判定）。
     pub async fn is_cancel_requested(&self, run_id: Uuid) -> Result<bool, ChatError> {
         let c: Option<bool> =

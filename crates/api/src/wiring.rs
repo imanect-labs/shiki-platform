@@ -212,6 +212,8 @@ pub(crate) async fn wire_chat(
         model: config.llm.default_model.clone(),
         lease_secs: config.chat.lease_secs,
         max_steps: config.chat.max_steps,
+        // 自律プロファイルの既定（予算/ステップ/software）は WorkerConfig::default を踏襲する。
+        ..chat::WorkerConfig::default()
     };
     // サンドボックス（code_interpreter / web_fetch）: エンドポイント設定時のみ配線する。
     // 成果物保存（StorageService 裏・発話ユーザー権限）もサンドボックスとセットで配線する。
@@ -229,6 +231,8 @@ pub(crate) async fn wire_chat(
             sandbox,
             artifacts,
             web_search,
+            // 自律プロファイルのワークスペース（file CRUD/shell・Task 5.4）。
+            storage: Some(Arc::clone(storage)),
         },
         worker_config,
     );

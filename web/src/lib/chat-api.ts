@@ -227,6 +227,8 @@ export type StreamHandlers = {
   onApprovalRequested?: (req: ApprovalRequest) => void;
   onApprovalResolved?: (res: { tool_call_id: string; approved: boolean }) => void;
   onFailureRecovery?: (r: { detail: string; action: string }) => void;
+  /// 生成 run_id（承認 API 呼び出しに使う）。
+  onRunId?: (runId: string) => void;
   onDone?: () => void;
   onError?: (message: string) => void;
 };
@@ -351,6 +353,7 @@ export function streamMessage(
   attachments: Attachment[],
   handlers: StreamHandlers,
   agentMode?: boolean,
+  autonomous?: boolean,
 ): (opts?: { cancelServer?: boolean }) => void {
   let unsub: (() => void) | null = null;
   let runId: string | null = null;
@@ -359,12 +362,14 @@ export function streamMessage(
   apiFetch(`/threads/${threadId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, attachments, agent_mode: agentMode }),
+    body: JSON.stringify({ text, attachments, agent_mode: agentMode, autonomous }),
   })
     .then(async (res) => {
       if (!res.ok) throw new Error(`送信に失敗しました (${res.status})`);
       const body = (await res.json()) as { run_id: string };
       runId = body.run_id;
+      // 承認 API 呼び出しのため run_id を UI へ渡す（自律プロファイル・Task 5.6）。
+      handlers.onRunId?.(runId);
       if (stopped) return;
       unsub = subscribe(threadId, handlers);
     })
@@ -395,6 +400,7 @@ export async function submitApproval(
 ): Promise<void> {
   await apiFetch(`/threads/${threadId}/runs/${runId}/approvals`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       tool_call_id: decision.toolCallId,
       tool_name: decision.toolName,
