@@ -505,6 +505,13 @@ async fn db_approver_blocks_until_decision() {
     }
     assert!(waited, "承認待ち（waiting_approval）へ遷移する");
 
+    // **承認待ち中もハートビートがリースを延長できる**（誤キャンセル防止・Task 5.6 の要）。
+    // status='running' 限定だとここで None を返し、ワーカーが誤って停止扱いにしてしまう。
+    assert!(
+        store.heartbeat(run_id, fencing, 30).await.unwrap().is_some(),
+        "waiting_approval 中もハートビートが成功する（リース失効による誤キャンセルを防ぐ）"
+    );
+
     // API 相当: 承認を投入する。
     let accepted = store
         .submit_approval(&c, thread.id, run_id, "tc-1", "shell", true, None)

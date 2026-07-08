@@ -222,17 +222,23 @@ impl ChatStore {
         fencing_token: i64,
         lease_secs: i64,
     ) -> Result<Option<bool>, ChatError> {
-        let kv = [KeyValue::Uuid(run_id)];
-        durable::heartbeat(
-            &self.db,
-            &RUN_SPEC,
-            &Key::new(RUN_KEY_COLUMNS, &kv),
-            fencing_token,
-            lease_secs,
-            "cancel_requested",
+        // durable::heartbeat は status='running' 限定だが、**承認待ち（waiting_approval）中も
+        // リースを延長し続ける**必要がある（承認ブロック中にリース失効→誤キャンセルを防ぐ・Task 5.6）。
+        // よって chat 専用 SQL で running / waiting_approval の両方を受ける。fencing でゾンビは弾く。
+        let cancel: Option<bool> = sqlx::query_scalar(
+            "UPDATE generation_run \
+                SET lease_until = now() + ($3 || ' seconds')::interval, updated_at = now() \
+             WHERE run_id = $1 AND fencing_token = $2 \
+                AND status IN ('running', 'waiting_approval') \
+             RETURNING cancel_requested",
         )
+        .bind(run_id)
+        .bind(fencing_token)
+        .bind(lease_secs)
+        .fetch_optional(&self.db)
         .await
-        .map_err(map_db)
+        .map_err(map_db)?;
+        Ok(cancel)
     }
 
     /// 生成イベントを append-only で追記する（単調 seq・exactly-once）＋Redis publish。
