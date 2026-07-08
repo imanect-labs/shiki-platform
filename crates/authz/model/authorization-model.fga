@@ -67,7 +67,7 @@ type thread
 # アーティファクト: バージョン付き共有本文の共通枠（Task 6.1・Phase 10 Stage A 前倒し）。
 # prompt template / UI スペック / ミニアプリ / ワークフロー IR / skill / script が同じ枠に乗る。
 # thread と同型の非階層共有（作成者 owner ＋明示共有・共有語彙は viewer/editor のみ）。
-# Phase 10 Task 10.4a で viewer/editor に workflow プリンシパル subject を追加予定
+# viewer/editor は workflow プリンシパル subject を受理する（Task 10.4a・実装済み）
 # （schedule/event run が IR/script artifact を読む委譲経路・engine.md §6.6）。
 type artifact
   relations
@@ -77,7 +77,7 @@ type artifact
 
 # シークレット（Task 10.9）。write-only/use-only。
 # can_use は「解決して使える」であり平文の読み返しではない（owner が含意）。
-# 付与は同意フロー。Phase 10 Task 10.4a で can_use に workflow プリンシパルを追加予定。
+# 付与は同意フロー。can_use は workflow プリンシパル subject を受理する（Task 10.4a・実装済み）。
 type secret
   relations
     define owner: [user]
