@@ -24,6 +24,7 @@
 )]
 
 pub mod agent;
+pub mod approval;
 pub mod budget;
 pub mod checkpoint;
 pub mod context;
@@ -36,6 +37,7 @@ pub mod tools;
 pub mod workspace;
 
 pub use agent::{run_agent, AgentStop, RunContext};
+pub use approval::{ApprovalDecision, ApprovalPolicy, Approver};
 pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
 pub use checkpoint::Checkpoint;
 pub use event::{AgentError, AgentEvent, EventSink, RecoveryAction};

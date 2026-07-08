@@ -214,6 +214,12 @@ pub fn route_table() -> Vec<RouteDecl> {
             || post(routes::chat::cancel_run),
         ),
         r(
+            "/threads/{id}/runs/{run_id}/approvals",
+            &["POST"],
+            Session,
+            || post(routes::chat_approval::submit_approval),
+        ),
+        r(
             "/threads/{id}/shares",
             &["POST", "DELETE", "GET"],
             Session,

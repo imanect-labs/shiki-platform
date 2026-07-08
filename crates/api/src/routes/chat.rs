@@ -37,7 +37,7 @@ type SseEventStream = BoxStream<'static, Result<Event, Infallible>>;
 type Cursor = (Option<DateTime<Utc>>, Option<Uuid>);
 
 /// AppState からチャットストアを取り出す（無効なら 503）。
-fn chat_store(state: &AppState) -> Result<&ChatStore, ApiError> {
+pub(super) fn chat_store(state: &AppState) -> Result<&ChatStore, ApiError> {
     state
         .chat
         .as_deref()

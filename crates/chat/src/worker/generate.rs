@@ -85,9 +85,19 @@ impl ChatWorker {
         let mut opts = AgentOptions::chat(self.config.max_steps);
         opts.system = Some(self.config.system_prompt.clone());
         opts.model = self.config.model.clone();
-        let outcome = run_agent(&self.gateway, &tools, history, &run_ctx, &opts, None, sink)
-            .await
-            .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
+        // Chat プロファイルは承認要求を出さない（破壊系ツールを提示しない）。
+        let outcome = run_agent(
+            &self.gateway,
+            &tools,
+            history,
+            &run_ctx,
+            &opts,
+            None,
+            None,
+            sink,
+        )
+        .await
+        .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
         let _ = outcome; // Completed / Budget / Cancelled は cancel フラグと content で処理
         Ok(())
     }

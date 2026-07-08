@@ -23,6 +23,7 @@
     )
 )]
 
+pub mod approver;
 pub mod artifacts;
 pub mod error;
 pub mod model;
@@ -30,6 +31,7 @@ pub mod store;
 pub mod worker;
 pub mod workspace;
 
+pub use approver::DbApprover;
 pub use artifacts::StorageArtifactStore;
 pub use error::ChatError;
 pub use model::{

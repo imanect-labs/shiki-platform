@@ -19,6 +19,7 @@ use llm_gateway::{
     StopReason, StreamDelta, ToolDef, Usage,
 };
 
+use crate::approval::{ApprovalDecision, Approver};
 use crate::budget::BudgetCheck;
 use crate::checkpoint::Checkpoint;
 use crate::event::{AgentError, AgentEvent, EventSink, RecoveryAction};
@@ -64,6 +65,7 @@ struct PendingCall {
 ///
 /// `resume` を渡すと当該チェックポイント（計画・消費・履歴）から再開する（ステップ境界復元・5.5）。
 /// 新規開始なら `None`（`messages` を起点に開始）。戻り値は停止理由＋再開用チェックポイント。
+#[allow(clippy::too_many_arguments)] // gateway/tools/履歴/run/opts/resume/approver/sink の 8 点は本質的。
 pub async fn run_agent(
     gateway: &LlmGateway,
     tools: &[Arc<dyn Tool>],
@@ -71,6 +73,7 @@ pub async fn run_agent(
     run: &RunContext<'_>,
     opts: &AgentOptions,
     resume: Option<Checkpoint>,
+    approver: Option<&dyn Approver>,
     sink: &mut dyn EventSink,
 ) -> Result<AgentOutcome, AgentError> {
     let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
@@ -113,6 +116,7 @@ pub async fn run_agent(
             &tool_map,
             run,
             opts,
+            approver,
             &mut state,
             sink,
             &mut detector,
@@ -146,6 +150,7 @@ async fn run_step(
     tool_map: &HashMap<&str, &Arc<dyn Tool>>,
     run: &RunContext<'_>,
     opts: &AgentOptions,
+    approver: Option<&dyn Approver>,
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
     detector: &mut LoopDetector,
@@ -268,24 +273,47 @@ async fn run_step(
         let content = if opts.profile.is_autonomous() && c.name == PLAN_TOOL {
             handle_plan_tool(&c, &mut state.plan, sink).await?
         } else {
-            let outcome = execute_tool(tool_map, run.ctx, &c, opts, run.trace_id.as_deref()).await;
-            emit_tool_events(sink, &c, &outcome).await?;
-            // 失敗ループ検出（自律版のみ・5.5）。
-            if opts.profile.is_autonomous() {
-                if outcome.is_error {
-                    sink.emit(AgentEvent::FailureRecovery {
-                        detail: format!("tool '{}' failed; retrying with observation", c.name),
-                        action: RecoveryAction::Retry,
+            // 承認ゲート（Task 5.6）: 破壊系は事前許可 or ユーザー承認まで実行しない。
+            match authorize(tool_map, &c, opts, approver, sink).await? {
+                Authz::Cancel => return Ok(StepOutcome::Stop(AgentStop::Cancelled)),
+                Authz::Reject(msg) => {
+                    // 却下も観測イベントとして外部化する（UI が結果を表示できるように）。
+                    sink.emit(AgentEvent::ToolResult {
+                        tool_call_id: c.id.clone(),
+                        ok: false,
+                        content: msg.clone(),
                     })
                     .await?;
+                    ToolResultParts {
+                        content: msg,
+                        is_error: true,
+                    }
                 }
-                if detector.observe(&c.name, &c.input, outcome.is_error) {
-                    looping = true;
+                Authz::Proceed => {
+                    let outcome =
+                        execute_tool(tool_map, run.ctx, &c, run.trace_id.as_deref()).await;
+                    emit_tool_events(sink, &c, &outcome).await?;
+                    // 失敗ループ検出（自律版のみ・5.5）。
+                    if opts.profile.is_autonomous() {
+                        if outcome.is_error {
+                            sink.emit(AgentEvent::FailureRecovery {
+                                detail: format!(
+                                    "tool '{}' failed; retrying with observation",
+                                    c.name
+                                ),
+                                action: RecoveryAction::Retry,
+                            })
+                            .await?;
+                        }
+                        if detector.observe(&c.name, &c.input, outcome.is_error) {
+                            looping = true;
+                        }
+                    }
+                    ToolResultParts {
+                        content: outcome.content,
+                        is_error: outcome.is_error,
+                    }
                 }
-            }
-            ToolResultParts {
-                content: outcome.content,
-                is_error: outcome.is_error,
             }
         };
         result_blocks.push(Block::ToolResult {
@@ -395,24 +423,76 @@ async fn emit_tool_events(
     Ok(())
 }
 
-/// 1 ツール呼び出しを実行する（未知/確認必須は観測エラーへ）。
+/// 承認ゲートの判定結果。
+enum Authz {
+    /// 実行してよい（安全ツール・事前許可・承認済み）。
+    Proceed,
+    /// 実行しない。観測テキストをモデルへ戻す（未許可・却下）。
+    Reject(String),
+    /// 承認待ち中にキャンセルされた（run を停止する）。
+    Cancel,
+}
+
+/// ツール実行前の承認ゲート（Task 5.6）。
+///
+/// 安全ツール（`requires_confirmation()==false`）と事前許可済みは即 `Proceed`。破壊系は `approver`
+/// があれば承認要求を発火して決定を待ち（承認→Proceed／却下→Reject／キャンセル→Cancel）、
+/// approver が無ければ現行どおり「確認が必要」を観測へ戻す（Chat プロファイル互換）。
+async fn authorize(
+    tool_map: &HashMap<&str, &Arc<dyn Tool>>,
+    call: &PendingCall,
+    opts: &AgentOptions,
+    approver: Option<&dyn Approver>,
+    sink: &mut dyn EventSink,
+) -> Result<Authz, AgentError> {
+    // 未知ツールは execute_tool 側で unknown エラーにするため素通し。
+    let needs_confirm = tool_map
+        .get(call.name.as_str())
+        .is_some_and(|t| t.requires_confirmation());
+    if !needs_confirm || opts.approval.is_pre_authorized(&call.name) {
+        return Ok(Authz::Proceed);
+    }
+    let Some(approver) = approver else {
+        return Ok(Authz::Reject(format!(
+            "tool '{}' requires explicit confirmation and was not executed",
+            call.name
+        )));
+    };
+
+    sink.emit(AgentEvent::ApprovalRequested {
+        tool_call_id: call.id.clone(),
+        name: call.name.clone(),
+        input: call.input.clone(),
+        reason: "破壊的/権限/高コストな操作のため承認が必要です".to_string(),
+    })
+    .await?;
+    let decision = approver.decide(&call.id, &call.name, &call.input).await;
+    sink.emit(AgentEvent::ApprovalResolved {
+        tool_call_id: call.id.clone(),
+        approved: decision == ApprovalDecision::Approved,
+    })
+    .await?;
+    Ok(match decision {
+        ApprovalDecision::Approved => Authz::Proceed,
+        ApprovalDecision::Rejected => Authz::Reject(format!(
+            "操作 '{}' はユーザーに却下されました（実行していません）。",
+            call.name
+        )),
+        ApprovalDecision::Cancelled => Authz::Cancel,
+    })
+}
+
+/// 1 ツール呼び出しを実行する（未知は観測エラーへ・確認は [`authorize`] 済み前提）。
 async fn execute_tool(
     tool_map: &HashMap<&str, &Arc<dyn Tool>>,
     ctx: &AuthContext,
     call: &PendingCall,
-    opts: &AgentOptions,
     trace_id: Option<&str>,
 ) -> crate::tool::ToolOutcome {
     use crate::tool::ToolOutcome;
     let Some(tool) = tool_map.get(call.name.as_str()) else {
         return ToolOutcome::error(format!("unknown tool: {}", call.name));
     };
-    if tool.requires_confirmation() && !opts.allow_confirmed_tools {
-        return ToolOutcome::error(format!(
-            "tool '{}' requires explicit confirmation and was not executed",
-            call.name
-        ));
-    }
     match tool.call(ctx, call.input.clone(), trace_id).await {
         Ok(o) => o,
         Err(e) => ToolOutcome::error(format!("tool '{}' failed: {e}", call.name)),

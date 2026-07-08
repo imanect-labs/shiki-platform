@@ -7,6 +7,7 @@
 //! 生成の真実のソースは append-only な `generation_event(run_id, seq)`。Redis pub/sub は
 //! **best-effort の起床通知**で、正しさは常に DB replay が担保する（取りこぼしても DB で補填）。
 
+mod approval;
 mod runs;
 mod stream;
 mod threads;

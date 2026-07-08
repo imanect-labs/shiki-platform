@@ -129,6 +129,8 @@ pub struct Message {
 pub enum RunStatus {
     Queued,
     Running,
+    /// 承認待ちで中断中（破壊系操作の human-in-the-loop・Task 5.6）。
+    WaitingApproval,
     Done,
     Failed,
     Cancelled,
@@ -139,6 +141,7 @@ impl RunStatus {
         match self {
             RunStatus::Queued => "queued",
             RunStatus::Running => "running",
+            RunStatus::WaitingApproval => "waiting_approval",
             RunStatus::Done => "done",
             RunStatus::Failed => "failed",
             RunStatus::Cancelled => "cancelled",
@@ -149,6 +152,7 @@ impl RunStatus {
         match s {
             "queued" => Some(RunStatus::Queued),
             "running" => Some(RunStatus::Running),
+            "waiting_approval" => Some(RunStatus::WaitingApproval),
             "done" => Some(RunStatus::Done),
             "failed" => Some(RunStatus::Failed),
             "cancelled" => Some(RunStatus::Cancelled),

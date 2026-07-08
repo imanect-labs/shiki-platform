@@ -20,7 +20,8 @@ use authz::{
     ReadTupleKey, Relation, Subject,
 };
 use chat::{
-    ChatError, ChatStore, ChatWorker, ContentBlock, Role, StreamEventKind, ThreadRole, WorkerConfig,
+    ChatError, ChatStore, ChatWorker, ContentBlock, DbApprover, Role, RunStatus, StreamEventKind,
+    ThreadRole, WorkerConfig,
 };
 use futures::stream::StreamExt;
 use llm_gateway::{
@@ -459,4 +460,116 @@ async fn agent_mode_worker_runs_to_done() {
         }
     }
     assert!(done, "エージェントモード生成が Done まで完了すること");
+}
+
+/// Task 5.6: DbApprover が承認待ちでブロックし、API 決定（submit_approval）で解けることを検証する。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn db_approver_blocks_until_decision() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration as StdDuration;
+
+    use agent_core::Approver;
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let c = ctx(&tenant);
+
+    let thread = store.create_thread(&c, "承認", true, None).await.unwrap();
+    let res = store
+        .post_message(&c, thread.id, "do danger", &[], None, None)
+        .await
+        .unwrap();
+    let run_id = res.run_id;
+    let claimed = store.claim_run(run_id, "w1", 30).await.unwrap().unwrap();
+    let fencing = claimed.fencing_token;
+
+    // 承認者を別タスクで走らせる（短いポーリング間隔・上限）。
+    let cancel = Arc::new(AtomicBool::new(false));
+    let approver = DbApprover::new(store.clone(), run_id, fencing, cancel.clone())
+        .with_timing(StdDuration::from_millis(50), StdDuration::from_secs(10));
+    let handle = tokio::spawn(async move {
+        approver
+            .decide("tc-1", "shell", &serde_json::json!({"cmd": "rm x"}))
+            .await
+    });
+
+    // 承認待ちへ遷移するのを待つ。
+    let mut waited = false;
+    for _ in 0..40 {
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        if store.run_status(run_id).await.unwrap() == Some(RunStatus::WaitingApproval) {
+            waited = true;
+            break;
+        }
+    }
+    assert!(waited, "承認待ち（waiting_approval）へ遷移する");
+
+    // API 相当: 承認を投入する。
+    let accepted = store
+        .submit_approval(&c, thread.id, run_id, "tc-1", "shell", true, None)
+        .await
+        .unwrap();
+    assert!(accepted, "初回決定が採用される");
+
+    // 承認者が Approved を返し、走行状態へ戻る。
+    let decision = tokio::time::timeout(StdDuration::from_secs(5), handle)
+        .await
+        .expect("承認がタイムアウトしない")
+        .unwrap();
+    assert_eq!(decision, agent_core::ApprovalDecision::Approved);
+    assert_eq!(
+        store.run_status(run_id).await.unwrap(),
+        Some(RunStatus::Running)
+    );
+
+    // 二重決定は no-op（先勝ち）。
+    let again = store
+        .submit_approval(&c, thread.id, run_id, "tc-1", "shell", false, None)
+        .await
+        .unwrap();
+    assert!(!again, "既決の再決定は採用されない");
+}
+
+/// Task 5.6: 承認待ち中のキャンセルで DbApprover が Cancelled を返す。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn db_approver_cancelled_by_flag() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration as StdDuration;
+
+    use agent_core::Approver;
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let c = ctx(&tenant);
+
+    let thread = store
+        .create_thread(&c, "承認cancel", true, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(&c, thread.id, "do danger", &[], None, None)
+        .await
+        .unwrap();
+    let run_id = res.run_id;
+    let claimed = store.claim_run(run_id, "w1", 30).await.unwrap().unwrap();
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let approver = DbApprover::new(store.clone(), run_id, claimed.fencing_token, cancel.clone())
+        .with_timing(StdDuration::from_millis(50), StdDuration::from_secs(10));
+    let handle = tokio::spawn(async move {
+        approver
+            .decide("tc-1", "shell", &serde_json::json!({}))
+            .await
+    });
+
+    tokio::time::sleep(StdDuration::from_millis(150)).await;
+    cancel.store(true, Ordering::Relaxed); // ユーザーが停止
+
+    let decision = tokio::time::timeout(StdDuration::from_secs(5), handle)
+        .await
+        .expect("キャンセルがタイムアウトしない")
+        .unwrap();
+    assert_eq!(decision, agent_core::ApprovalDecision::Cancelled);
 }
