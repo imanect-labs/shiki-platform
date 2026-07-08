@@ -431,6 +431,10 @@ flowchart TB
   `Unimplemented` で fail する（静かに wasm へ降格しない・監査に残す）。GKE 前提では native Python が ~75x 速い gVisor を
   既定にできる（[bench](./sandbox/bench.md)）。**web_fetch は egress 限定の短命 sandbox のため常に wasm**（この設定の対象外・
   1 fetch の create 11ms/RSS 21MB がそのまま効き Pyodide を使わない）。
+  ⚠️ **前提条件**: code_interpreter は numpy/pandas を宣伝する。wasm は Pyodide 同梱でこれを満たすが、**native ティア
+  （gVisor/FC）へ切り替える場合、rootfs が numpy/pandas を同梱していること**が前提（既定 rootfs は `python:3.12-slim`＝numpy
+  非同梱・[bench](./sandbox/bench.md) 注記）。未同梱のまま opt-in すると宣伝と実体が食い違い `import numpy` が失敗する。
+  native rootfs への numpy/pandas 同梱は別途対応（rootfs アセットのスコープ）。
 - ⚠️ 落とし穴: gVisor/FC 制御層は [PIT-22〜25](./design-caveats.md)、wasm ティア固有は [PIT-32〜33](./design-caveats.md)
   （フォーク保守・wasm 脱出時の blast radius・wasm コマンドパッケージのサプライチェーン）。
 

@@ -148,6 +148,10 @@ pub struct ChatConfig {
     /// `wasm`（既定）/ `gvisor` / `firecracker`。未指定は wasm。gVisor/FC は orchestrator 側で
     /// 当該ティアが構成済みであることが前提（未構成なら create は Unimplemented で fail する）。
     /// web_fetch は egress 限定の短命 sandbox なので常に wasm（この設定の対象外）。
+    ///
+    /// ⚠️ native ティアへ切り替える場合、rootfs が numpy/pandas を同梱していること（code_interpreter が
+    /// 宣伝する依存）。既定 rootfs（python:3.12-slim）は numpy 非同梱で、未対応のまま opt-in すると
+    /// `import numpy` が失敗する（design §4.6 前提条件）。
     #[serde(default)]
     pub sandbox_backend: Option<sandbox_client::SandboxBackend>,
 }

@@ -47,6 +47,8 @@ pub struct WorkerConfig {
     /// コード実行系（code_interpreter / shell）の隔離ティア（admin ポリシー・design §4.6）。
     /// 既定は wasm（deploy アセット不要）。native Python/フル Linux コマンドが要るなら gVisor 等を選ぶ。
     /// web_fetch は egress 限定の短命 sandbox なので常に wasm（この設定の対象外）。
+    /// ⚠️ native ティアは rootfs が numpy/pandas を同梱していることが前提（code_interpreter の宣伝依存・
+    /// 既定 rootfs は numpy 非同梱）。design §4.6 前提条件を参照。
     pub sandbox_backend: agent_core::SandboxBackend,
 }
 
