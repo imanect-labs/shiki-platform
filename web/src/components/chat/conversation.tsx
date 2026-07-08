@@ -200,14 +200,15 @@ export function Conversation({ threadId }: { threadId: string }) {
       })
       .catch(() => {});
     getThreadMessages(threadId)
-      .then((msgs) => {
+      .then(({ messages: msgs, activeRunId }) => {
         if (!active) return;
         // 末尾が空の assistant プレースホルダなら生成進行中（or クラッシュ）→ 復元購読する。
         const last = msgs[msgs.length - 1];
         const resuming = last?.role === "assistant" && isEmptyContent(last.content);
         setMessages(resuming ? msgs.slice(0, -1) : msgs);
         if (resuming) {
-          setStream({ ...EMPTY_STREAM });
+          // 進行中 run の id を復元し、承認待ちなら承認/却下を送れるようにする（Task 5.6）。
+          setStream({ ...EMPTY_STREAM, runId: activeRunId });
           cancelRef.current = resumeMessage(threadId, makeHandlers());
           return;
         }

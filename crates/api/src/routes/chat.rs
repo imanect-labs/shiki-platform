@@ -67,6 +67,9 @@ pub struct ThreadListResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MessagesResponse {
     pub messages: Vec<Message>,
+    /// 進行中（非端末）の run id。再訪時に承認 API を叩けるよう UI へ渡す（Task 5.6）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run_id: Option<Uuid>,
 }
 
 /// 発話送信リクエスト。
@@ -238,10 +241,18 @@ pub async fn get_messages(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
 ) -> Result<Json<MessagesResponse>, ApiError> {
-    let messages = chat_store(&state)?
-        .get_messages(&ctx, id, trace.as_deref())
-        .await?;
-    Ok(Json(MessagesResponse { messages }))
+    let store = chat_store(&state)?;
+    let messages = store.get_messages(&ctx, id, trace.as_deref()).await?;
+    // 進行中（非端末）の run があれば id を返す（再訪時の承認送信・進捗復元に使う）。
+    let active_run_id = store
+        .latest_run(id, &ctx.tenant_id)
+        .await?
+        .filter(|(_, status)| !status.is_terminal())
+        .map(|(run_id, _)| run_id);
+    Ok(Json(MessagesResponse {
+        messages,
+        active_run_id,
+    }))
 }
 
 /// 発話を送信する（**単一 TX で保存＋生成ジョブ投入**して 202・同期実行しない）。

@@ -187,17 +187,22 @@ type ApiMessage = {
   created_at: string;
 };
 
-export async function getThreadMessages(id: string): Promise<Message[]> {
+export async function getThreadMessages(
+  id: string,
+): Promise<{ messages: Message[]; activeRunId: string | null }> {
   const res = await apiFetch(`/threads/${id}/messages`);
   if (res.status === 404 || res.status === 403) throw new ThreadNotFound();
-  const data = await ok<{ messages: ApiMessage[] }>(res);
-  return data.messages.map((m) => ({
-    id: m.id,
-    role: m.role,
-    content: m.content,
-    agentMode: m.agent_mode,
-    createdAt: m.created_at,
-  }));
+  const data = await ok<{ messages: ApiMessage[]; active_run_id?: string | null }>(res);
+  return {
+    messages: data.messages.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      agentMode: m.agent_mode,
+      createdAt: m.created_at,
+    })),
+    activeRunId: data.active_run_id ?? null,
+  };
 }
 
 // ── ストリーミング（SSE・replay-then-subscribe）─────────────────────────
