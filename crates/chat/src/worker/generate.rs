@@ -190,6 +190,11 @@ impl ChatWorker {
                     .ok_or_else(|| ChatError::Internal("workspace folder race".into()))?,
             }
         };
+        // 共有中の thread editor/owner にワークスペースフォルダの editor を行き渡らせる（Task 5.6(a)・冪等）。
+        // 失敗は run を止めない（本人の書込には影響せず、次 run で再同期される）。
+        if let Err(e) = self.store.grant_workspace_to_members(ctx, thread_id).await {
+            tracing::warn!(thread_id = %thread_id, error = %e, "workspace メンバー同期に失敗（次 run で再試行）");
+        }
         Ok(Arc::new(crate::workspace::StorageWorkspaceStore::new(
             storage.clone(),
             folder_id,

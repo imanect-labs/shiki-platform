@@ -311,6 +311,120 @@ async fn share_list_and_unshare_thread() {
     );
 }
 
+/// editor 共有は自律ワークスペースフォルダにも editor を伝播し、viewer は伝播しない。unshare で剥奪（(a)）。
+#[tokio::test]
+async fn share_thread_propagates_workspace_editor() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::new());
+    let store = store(&pool, authz.clone()).await;
+    let c = ctx(&tenant);
+
+    let thread = store
+        .create_thread(&c, "ws共有", false, None)
+        .await
+        .unwrap();
+    // ワークスペースフォルダを紐づける（通常は初回自律 run が作る）。
+    let folder_id = uuid::Uuid::new_v4();
+    store
+        .set_workspace_folder_if_absent(thread.id, &c.tenant_id, folder_id)
+        .await
+        .unwrap();
+    let folder_obj = c.ns().folder(&folder_id.to_string()).as_str().to_string();
+    let has_folder_editor = |subject: String| {
+        authz
+            .tuples
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|t| t.user == subject && t.relation == "editor" && t.object == folder_obj)
+    };
+
+    let bob = ShareTarget::User { id: "bob".into() };
+    let bob_subject = bob.subject(&c.ns()).to_string();
+    store
+        .share_thread(&c, thread.id, &bob, ThreadRole::Editor, None)
+        .await
+        .unwrap();
+    assert!(
+        has_folder_editor(bob_subject.clone()),
+        "editor 共有でワークスペースフォルダに editor が付与される"
+    );
+
+    // viewer 共有はフォルダへ伝播しない（自律 run を起こせないため）。
+    let carol = ShareTarget::User { id: "carol".into() };
+    let carol_subject = carol.subject(&c.ns()).to_string();
+    store
+        .share_thread(&c, thread.id, &carol, ThreadRole::Viewer, None)
+        .await
+        .unwrap();
+    assert!(
+        !has_folder_editor(carol_subject),
+        "viewer 共有はワークスペースへ伝播しない"
+    );
+
+    // unshare でフォルダ editor も剥奪される。
+    store
+        .unshare_thread(&c, thread.id, &bob, ThreadRole::Editor, None)
+        .await
+        .unwrap();
+    assert!(
+        !has_folder_editor(bob_subject),
+        "unshare でワークスペースフォルダの editor が剥奪される"
+    );
+}
+
+/// grant_workspace_to_members は owner と（作成前に共有された）editor へフォルダ editor をバックフィルする（(a)）。
+#[tokio::test]
+async fn backfill_grants_workspace_to_thread_members() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::new());
+    let store = store(&pool, authz.clone()).await;
+    let c = ctx(&tenant);
+
+    let thread = store
+        .create_thread(&c, "backfill", false, None)
+        .await
+        .unwrap();
+    // ワークスペース作成**前**に editor 共有（この時点ではフォルダが無く伝播されない）。
+    let bob = ShareTarget::User { id: "bob".into() };
+    let bob_subject = bob.subject(&c.ns()).to_string();
+    store
+        .share_thread(&c, thread.id, &bob, ThreadRole::Editor, None)
+        .await
+        .unwrap();
+
+    // 初回自律 run 相当: フォルダを紐づけてからバックフィルする。
+    let folder_id = uuid::Uuid::new_v4();
+    store
+        .set_workspace_folder_if_absent(thread.id, &c.tenant_id, folder_id)
+        .await
+        .unwrap();
+    store
+        .grant_workspace_to_members(&c, thread.id)
+        .await
+        .unwrap();
+
+    let folder_obj = c.ns().folder(&folder_id.to_string()).as_str().to_string();
+    let has_folder_editor = |subject: String| {
+        authz
+            .tuples
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|t| t.user == subject && t.relation == "editor" && t.object == folder_obj)
+    };
+    assert!(
+        has_folder_editor(c.subject().to_string()),
+        "owner にフォルダ editor がバックフィルされる"
+    );
+    assert!(
+        has_folder_editor(bob_subject),
+        "作成前に共有された editor にもバックフィルされる"
+    );
+}
+
 /// list_threads の keyset ページングが更新日降順で重複なく進む。
 #[tokio::test]
 async fn list_threads_keyset_pagination() {
