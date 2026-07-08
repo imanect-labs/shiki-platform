@@ -9,6 +9,7 @@
 
 mod approval;
 mod runs;
+mod sharing;
 mod stream;
 mod threads;
 
