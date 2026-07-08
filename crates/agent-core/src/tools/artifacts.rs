@@ -69,7 +69,7 @@ pub(super) async fn collect_artifacts(
                 ctx,
                 &entry.name,
                 bytes,
-                content_type_for(&entry.name),
+                super::mime::content_type_for(&entry.name),
                 trace_id,
             )
             .await
@@ -88,34 +88,4 @@ pub(super) async fn collect_artifacts(
         let _ = writeln!(out.content, "（{note}）");
     }
     out.artifacts = saved;
-}
-
-/// 拡張子から content_type を推定する（成果物保存用の最小マップ）。
-fn content_type_for(name: &str) -> &'static str {
-    match name.rsplit('.').next().unwrap_or_default() {
-        "csv" => "text/csv",
-        "json" => "application/json",
-        "txt" => "text/plain",
-        "md" => "text/markdown",
-        "html" => "text/html",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "svg" => "image/svg+xml",
-        "pdf" => "application/pdf",
-        _ => "application/octet-stream",
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn content_type_covers_common_extensions() {
-        assert_eq!(content_type_for("a.csv"), "text/csv");
-        assert_eq!(content_type_for("a.json"), "application/json");
-        assert_eq!(content_type_for("report.pdf"), "application/pdf");
-        assert_eq!(content_type_for("noext"), "application/octet-stream");
-    }
 }
