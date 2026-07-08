@@ -219,3 +219,4 @@ async fn worker_generates_streams_and_persists_projection() {
             .unwrap();
     assert!(usage_count >= 1, "llm_usage に会計行が刻まれること");
 }
+

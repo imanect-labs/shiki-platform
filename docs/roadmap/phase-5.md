@@ -1,5 +1,20 @@
 # Phase 5 — 自律エージェント
 
+> ✅ **実装済み（2026-07-08・#156〜#165 / 6 本 stacked PR）**。以下の確定事項で 5.1〜5.11 を実装:
+> - **Durable Workspace モデル**（human 承認済み・ライブ FUSE/永続サンドボックスは post-alpha のため不採用）:
+>   ワークスペース = thread ごとの StorageService フォルダ（`thread.workspace_folder_id`・durable・版管理・監査・
+>   書込→outbox→自動再索引）。**FUSE マウントの読み替え先**はこれ。file CRUD（`fs_list`/`fs_read`/`grep`/`fs_write`/
+>   `fs_edit`/`fs_delete`）は StorageService 直読み/直書き（read-after-write 成立＝**PIT-5 の「ワークスペース直読み経路」**を
+>   具現化・RAG 非同期索引とは経路分離）。`shell` のみ ephemeral sandbox に seed→exec→sync-back。
+> - 同一 `agent-core` を `AgentProfile{Chat,Autonomous}` で切替（5.1）。計画（`plan` メタツール・5.2）・コンテキスト剪定（5.3）・
+>   失敗ループ検出＋チェックポイント（5.5）・**ブロッキング承認ゲート**（`waiting_approval`＋`run_approval`＋監査・5.6）・
+>   予算ガード（step/time/token/cost・5.7）・trace_id 相関＋自律イベントのライブ SSE（5.9）・UI（計画/承認/予算・5.11）。
+> - **既知の未実装（後続）**: ①プロセス再起動を跨ぐチェックポイント run 再開（承認ベースの suspend は動作）
+>   ②ページ再訪後の承認（run_id 再取得が要る・ライブセッション中は動作）③Playwright 自律 e2e（CI に MinIO＋
+>   autonomous 対応の web-e2e 環境が要る・Rust e2e `autonomous_run_writes_workspace_file_e2e` で DoD を担保済み）
+>   ④shell のパイプ/`&&`（brush 制約・ポストアルファ）。
+
+
 > 📝 **方針転換（2026-07-05・#97・design §4.6）**: アルファのサンドボックスは **wasm ティア（Task 4.12）**。
 > 本ファイルの「FUSE マウント」は wasm ティアでは「agentos 仮想FS→StorageService 直結」に読み替える
 > （権限・監査・書込イベントの不変条件は同一。5.1/5.4 の依存 4.3/4.4 は 4.12 に読み替え）。
