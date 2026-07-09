@@ -180,6 +180,29 @@ pub fn route_table() -> Vec<RouteDecl> {
             Session,
             || post(routes::ui_actions::invoke_chat_ui_action),
         ),
+        // --- skill（Task 6.7・保存時検証つき。共有は /artifacts/{id}/shares を流用） ---
+        r("/skills", &["POST"], Session, || {
+            post(routes::skills::create_skill)
+        }),
+        r("/skills/{id}", &["GET", "PUT"], Session, || {
+            get(routes::skills::get_skill).put(routes::skills::update_skill)
+        }),
+        r("/skills/{id}/versions/{version}", &["GET"], Session, || {
+            get(routes::skills::get_skill_version)
+        }),
+        // --- ミニアプリ（Task 6.10・部品はバンドル権限で解決） ---
+        r("/mini-apps", &["POST"], Session, || {
+            post(routes::mini_apps::create_mini_app)
+        }),
+        r("/mini-apps/{id}", &["PUT"], Session, || {
+            put(routes::mini_apps::update_mini_app)
+        }),
+        r("/mini-apps/{id}/resolved", &["GET"], Session, || {
+            get(routes::mini_apps::resolve_mini_app)
+        }),
+        r("/mini-apps/{id}/ui-actions", &["POST"], Session, || {
+            post(routes::mini_apps::invoke_mini_app_action)
+        }),
         // --- ワークフロー IR（Task 10.1a・保存時検証 V1〜V7・artifact の上） ---
         r("/workflows", &["POST"], Session, || {
             post(routes::workflows::create_workflow)

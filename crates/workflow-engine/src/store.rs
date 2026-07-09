@@ -133,6 +133,26 @@ impl WorkflowStore {
             .await?;
         parse_version(v)
     }
+
+    /// バンドル（ミニアプリ）権限で指定バージョンの IR を取得する（Task 6.10）。
+    ///
+    /// 部品 workflow を個別共有されていなくても、**バンドル viewer** なら定義を読める
+    /// （実体は `ArtifactStore::get_version_via_bundle`・`artifact.read_via_bundle` 監査つき）。
+    /// version がバンドル本文のピンと一致することの照合は呼び出し側の責務。
+    pub async fn get_version_via_bundle(
+        &self,
+        ctx: &AuthContext,
+        bundle_id: Uuid,
+        id: Uuid,
+        version: i64,
+        trace_id: Option<&str>,
+    ) -> Result<(i64, WorkflowIr), WorkflowStoreError> {
+        let v = self
+            .artifacts
+            .get_version_via_bundle(ctx, bundle_id, id, version, trace_id)
+            .await?;
+        parse_version(v)
+    }
 }
 
 /// artifact バージョン本文を IR へパースする（保存済みなので構造は妥当だが防御的に扱う）。

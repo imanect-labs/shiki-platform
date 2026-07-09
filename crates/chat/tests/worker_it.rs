@@ -155,6 +155,7 @@ async fn worker_generates_streams_and_persists_projection() {
             web_search: None,
             storage: None,
             ui_validator: None,
+            skill_artifacts: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),

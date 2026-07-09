@@ -92,6 +92,19 @@ pub trait WorkflowStarter: Send + Sync {
         version: i64,
         input: &serde_json::Value,
     ) -> Result<Option<Uuid>, ActionError>;
+
+    /// ミニアプリの**バンドル権限**で IR を読んで起動する（Task 6.10）。
+    ///
+    /// バンドル本体だけを共有された利用者が、部品 workflow の個別共有なしにピン版を
+    /// 起動できる（実行主体は本人のまま・読取は `artifact.read_via_bundle` 監査）。
+    async fn start_pinned_via_bundle(
+        &self,
+        ctx: &AuthContext,
+        bundle_id: Uuid,
+        workflow_id: Uuid,
+        version: i64,
+        input: &serde_json::Value,
+    ) -> Result<Option<Uuid>, ActionError>;
 }
 
 /// アクション実行の合流点（照合・認可・監査の単一チョークポイント）。
@@ -273,7 +286,19 @@ impl ActionDispatcher {
                         "workflow 束縛が未解決です（検証済みスペックではありません）".into(),
                     ));
                 };
-                let run_id = starter.start_pinned(ctx, id, version, &params).await?;
+                // ミニアプリ由来はバンドル権限で IR を読む（保存時に束縛 ⊆ バンドルのピン集合を
+                // 照合済み・resolve で再検証済みのスペックのみここへ来る）。チャット由来は本人の
+                // viewer 権限のまま（発話者がピンした版＝本人が読める版）。
+                let run_id = match source {
+                    ActionSource::MiniApp { artifact_id, .. } => {
+                        starter
+                            .start_pinned_via_bundle(ctx, *artifact_id, id, version, &params)
+                            .await?
+                    }
+                    ActionSource::ChatMessage { .. } => {
+                        starter.start_pinned(ctx, id, version, &params).await?
+                    }
+                };
                 Ok(json!({ "kind": "workflow", "run_id": run_id }))
             }
         }

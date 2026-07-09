@@ -41,7 +41,7 @@ pub use pipeline::{spawn_pipeline, IngestMessage, PipelineDeps, RAG_INGEST_QUEUE
 pub use rerank::{HttpReranker, Reranker};
 pub use search::{SearchOutput, SearchService};
 pub use search_types::{
-    SearchDebug, SearchMode, SearchRequest, SearchResponse, SearchResult, StageTimings,
+    SearchDebug, SearchMode, SearchRequest, SearchResponse, SearchResult, SearchScope, StageTimings,
 };
 pub use vector_qdrant::QdrantVectorStore;
 pub use vector_store::{ChunkPoint, PreFilter, ScoredChunk, VectorSearch, VectorStore};

@@ -150,6 +150,63 @@ impl ArtifactStore {
         })
     }
 
+    /// **バンドル経由**の版取得チョークポイント（Phase 6 Task 6.10・ミニアプリ）。
+    ///
+    /// 認可は **bundle（例: mini_app）への viewer** で行い、部品（component）の直接権限は
+    /// 要求しない — ミニアプリの共有 = バンドル本体の ReBAC が正で、部品を個別共有せずに
+    /// 共有相手が実行できる（miniapp-platform §7「アプリスコープ ∩ ユーザー ReBAC」。
+    /// データアクセス自体はノード実行時に本人 ReBAC で二重ゲートされる）。
+    ///
+    /// ⚠️ 「component が bundle に**ピンされていること**」の照合は呼び出し側
+    /// （`gui::MiniAppStore` 等・body の意味を知る層）の責務。本メソッドを直接公開 API に
+    /// 繋がないこと（照合なしでは任意 artifact の読み出し口になる）。
+    pub async fn get_version_via_bundle(
+        &self,
+        ctx: &AuthContext,
+        bundle_id: Uuid,
+        component_id: Uuid,
+        version: i64,
+        trace_id: Option<&str>,
+    ) -> Result<ArtifactVersion, ArtifactError> {
+        self.require(
+            ctx,
+            bundle_id,
+            Relation::Viewer,
+            "artifact.read_via_bundle",
+            trace_id,
+        )
+        .await?;
+        let row: Option<(Json<serde_json::Value>, String, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT v.body, v.created_by, v.created_at FROM artifact_version v \
+             WHERE v.tenant_id = $1 AND v.artifact_id = $2 AND v.version = $3 \
+               AND EXISTS (SELECT 1 FROM artifact a \
+                           WHERE a.tenant_id = $1 AND a.id = $2 AND a.deleted_at IS NULL)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(component_id)
+        .bind(version)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        let (body, created_by, created_at) = row.ok_or(ArtifactError::NotFound)?;
+        // バンドル越しの部品読み出しを監査に残す（誰が・どのバンドル経由で・どの部品版を）。
+        self.record_audit(
+            ctx,
+            "artifact.read_via_bundle",
+            &component_id.to_string(),
+            trace_id,
+            json!({ "bundle_id": bundle_id, "version": version }),
+        )
+        .await?;
+        Ok(ArtifactVersion {
+            artifact_id: component_id,
+            version,
+            body: body.0,
+            created_by,
+            created_at,
+        })
+    }
+
     /// バージョン履歴（メタのみ・新しい順）。viewer 権限。
     pub async fn list_versions(
         &self,

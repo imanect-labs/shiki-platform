@@ -164,7 +164,8 @@ async fn run_step(
         tools: tool_defs.to_vec(),
         effort: opts.effort,
         max_tokens: opts.max_tokens,
-        temperature: None,
+        // skill のモデル既定（Task 6.9）。None は provider 既定。
+        temperature: opts.temperature,
     };
     let mut stream = gateway
         .stream(req)

@@ -27,7 +27,7 @@ use crate::error::RagError;
 use crate::fulltext::FulltextIndex;
 use crate::fusion::{rrf_fuse, RRF_K};
 use crate::rerank::{RerankPassage, Reranker};
-use crate::search_types::{SearchDebug, SearchMode, SearchResult, StageTimings};
+use crate::search_types::{SearchDebug, SearchMode, SearchResult, SearchScope, StageTimings};
 use crate::vector_store::{PreFilter, ScoredChunk, VectorSearch, VectorStore};
 
 /// バックフィルの上限（PIT-2: 候補が尽きるまで最終件数が top_k を下回らない）。
@@ -76,18 +76,37 @@ impl SearchService {
         }
     }
 
+    /// permission-aware 検索。`scope` は知識スコープ（skill・Task 6.8）による**絞り込み**で、
+    /// `None` は従来どおり全可読範囲。スコープを広く設定しても最終可読性は post-filter
+    /// （OpenFGA file check）が常に再検証する（広げる方向には一切働かない）。
     pub async fn search(
         &self,
         ctx: &AuthContext,
         query: &str,
         top_k: Option<u32>,
         mode: SearchMode,
+        scope: Option<&SearchScope>,
         trace_id: Option<&str>,
     ) -> Result<SearchOutput, RagError> {
         let top_k = (top_k.unwrap_or(self.config.default_top_k as u32) as usize)
             .clamp(1, self.config.max_top_k);
         let mut debug = SearchDebug::default();
         let mut timings = StageTimings::default();
+
+        // 知識スコープ → 構造タグ（`folder:<t>|<id>` は配下全体をカバー）。
+        // 空スコープは「絞らない」として扱う（skill 側の保存時検証が空を拒否する前提の防御）。
+        let scope_tags: Vec<String> = scope.map_or_else(Vec::new, |s| {
+            let ns = ctx.ns();
+            s.folders
+                .iter()
+                .map(|id| ns.folder(&id.to_string()).as_str().to_string())
+                .chain(
+                    s.files
+                        .iter()
+                        .map(|id| ns.file(&id.to_string()).as_str().to_string()),
+                )
+                .collect()
+        });
 
         // 1. 可読集合（pre-filter）。クエリごとに算出＝grant 即時反映（PIT-3）。
         let t = Instant::now();
@@ -135,6 +154,7 @@ impl SearchService {
                     mode,
                     fetch_k,
                     &prefilter,
+                    &scope_tags,
                     &exclude,
                 )
                 .await?;
@@ -197,7 +217,7 @@ impl SearchService {
         let results = self.build_results(ctx, &final_ids, &rows).await?;
 
         // 8. 引用監査（Task 2.7 受入条件: 引用 chunk と認可判定が監査ログに残る）。
-        self.audit_citations(ctx, query, &results, &file_decisions, trace_id)
+        self.audit_citations(ctx, query, &results, &file_decisions, scope, trace_id)
             .await?;
 
         debug.stage_ms = timings;
@@ -214,6 +234,7 @@ impl SearchService {
         mode: SearchMode,
         fetch_k: usize,
         prefilter: &PreFilter,
+        scope_tags: &[String],
         exclude: &[Uuid],
     ) -> Result<(Vec<ScoredChunk>, Vec<ScoredChunk>), RagError> {
         let dense_fut = async {
@@ -227,6 +248,7 @@ impl SearchService {
                                 vector,
                                 limit: fetch_k,
                                 prefilter,
+                                scope_tags,
                                 exclude,
                             },
                         )
@@ -243,9 +265,10 @@ impl SearchService {
             let ctx = ctx.clone();
             let query = query.to_string();
             let prefilter = prefilter.clone();
+            let scope_tags = scope_tags.to_vec();
             let exclude = exclude.to_vec();
             tokio::task::spawn_blocking(move || {
-                fulltext.search(&ctx, &query, fetch_k, &prefilter, &exclude)
+                fulltext.search(&ctx, &query, fetch_k, &prefilter, &scope_tags, &exclude)
             })
             .await
             .map_err(|e| RagError::Fulltext(format!("spawn_blocking: {e}")))?
@@ -358,12 +381,14 @@ impl SearchService {
     }
 
     /// 引用監査: LLM/UI に出す chunk_id 群とその時の file 粒度認可判定を記録する。
+    #[allow(clippy::too_many_arguments)] // 監査に載せる文脈の束（呼び出しは search 内の 1 箇所）。
     async fn audit_citations(
         &self,
         ctx: &AuthContext,
         query: &str,
         results: &[SearchResult],
         file_decisions: &HashMap<Uuid, bool>,
+        scope: Option<&SearchScope>,
         trace_id: Option<&str>,
     ) -> Result<(), RagError> {
         // tenant を混ぜ、tenant 横断でのレインボーテーブル再利用を防ぐ（真のペッパーは
@@ -381,12 +406,19 @@ impl SearchService {
             }
             (allowed, denied)
         };
-        let metadata = serde_json::json!({
+        let mut metadata = serde_json::json!({
             "query_sha256": query_sha256,
             "cited_chunk_ids": results.iter().map(|r| r.chunk_id).collect::<Vec<_>>(),
             "cited_file_ids": results.iter().map(|r| r.file_id).collect::<Vec<_>>(),
             "file_decisions": { "allowed": allowed_files, "denied": denied_files },
         });
+        // 知識スコープ（skill・Task 6.8/6.12）を適用した検索であることを監査に残す。
+        if let Some(scope) = scope {
+            metadata["scope"] = serde_json::json!({
+                "folders": scope.folders,
+                "files": scope.files,
+            });
+        }
         self.audit
             .record(
                 ctx,

@@ -47,6 +47,12 @@ pub struct VectorSearch<'a> {
     pub vector: &'a [f32],
     pub limit: usize,
     pub prefilter: &'a PreFilter,
+    /// 知識スコープの絞り込みタグ（skill・Task 6.8）。空 = 絞らない。
+    ///
+    /// **権限境界（prefilter/post-filter）とは独立の AND 句**であり、常に狭める方向にのみ働く
+    /// （TenantOnly 縮退時もスコープ句は維持される）。チャンクは祖先フォルダ全ての構造タグを
+    /// 持つため、`folder:<t>|<id>` 1 つで配下全ファイルをカバーする。
+    pub scope_tags: &'a [String],
     /// バックフィル時の再取得除外（既に取得済みの chunk_id）。
     pub exclude: &'a [Uuid],
 }

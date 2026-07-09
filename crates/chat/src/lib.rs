@@ -28,6 +28,7 @@ pub mod artifacts;
 pub mod error;
 pub mod gui_actions;
 pub mod model;
+pub(crate) mod skill;
 pub mod store;
 pub mod worker;
 pub mod workspace;

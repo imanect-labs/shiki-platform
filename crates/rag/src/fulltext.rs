@@ -41,12 +41,16 @@ pub trait FulltextIndex: Send + Sync {
     fn delete_node(&self, ctx: &AuthContext, node_id: Uuid) -> Result<(), RagError>;
 
     /// BM25 検索。tenant 境界は index 選択で強制（authz_tags と独立）。
+    ///
+    /// `scope_tags` は知識スコープ（skill・Task 6.8）の絞り込み（空 = 絞らない）。
+    /// 権限境界（prefilter）と独立の AND 句で、常に狭める方向にのみ働く。
     fn search(
         &self,
         ctx: &AuthContext,
         query_text: &str,
         limit: usize,
         prefilter: &PreFilter,
+        scope_tags: &[String],
         exclude: &[Uuid],
     ) -> Result<Vec<ScoredChunk>, RagError>;
 

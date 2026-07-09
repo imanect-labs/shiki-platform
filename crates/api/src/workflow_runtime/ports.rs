@@ -157,6 +157,7 @@ impl NodePorts for ProdNodePorts {
                 query,
                 top_k,
                 rag::SearchMode::Hybrid,
+                None,
                 ec.trace_id.as_deref(),
             )
             .await

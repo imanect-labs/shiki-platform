@@ -297,6 +297,7 @@ async fn hit_files(env: &Env, ctx: &AuthContext, query: &str) -> Vec<Uuid> {
             query,
             Some(10),
             SearchMode::Hybrid,
+            None,
             Some("trace-search-it"),
         )
         .await
@@ -408,7 +409,7 @@ async fn post_filter_blocks_poisoned_pre_filter_tags() {
     // 【受入条件】pre-filter が汚染されても post-filter（OpenFGA file check）が混入を止める。
     let output = env
         .search
-        .search(&env.bob, "売上", Some(10), SearchMode::Hybrid, None)
+        .search(&env.bob, "売上", Some(10), SearchMode::Hybrid, None, None)
         .await
         .unwrap();
     assert!(
@@ -470,6 +471,7 @@ async fn citations_and_decisions_are_audited_with_trace_id() {
             "売上",
             Some(5),
             SearchMode::Hybrid,
+            None,
             Some("trace-audit-test"),
         )
         .await

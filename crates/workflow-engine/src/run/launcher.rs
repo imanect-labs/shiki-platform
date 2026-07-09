@@ -16,6 +16,7 @@ use super::store::RunStore;
 use crate::delegation::{DelegationStore, RunAdmission};
 use crate::scheduler::RunLauncher;
 use crate::store::WorkflowStore;
+use crate::WorkflowIr;
 
 /// 委譲チェック付き run 起動。DelegationStore + WorkflowStore + RunStore を束ねる。
 ///
@@ -50,8 +51,21 @@ impl WorkflowRunLauncher {
             .get_latest(ctx, workflow_id, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        let ir_json = serde_json::to_value(&ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
-        let graph = RunGraph::build(&ir);
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input)
+            .await
+    }
+
+    /// interactive 系共通の run 作成（IR 取得＝認可は呼び出し側で済んでいる前提）。
+    async fn create_interactive_run(
+        &self,
+        ctx: &AuthContext,
+        workflow_id: Uuid,
+        version: i64,
+        ir: &WorkflowIr,
+        input: &Value,
+    ) -> Result<Option<Uuid>, LauncherError> {
+        let ir_json = serde_json::to_value(ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
+        let graph = RunGraph::build(ir);
         // principal_kind は呼び出し主体の種別に従う（ユーザー起動＝user・workflow.start＝workflow）。
         let principal_kind = match ctx.principal.kind {
             authz::PrincipalKind::Workflow => "workflow",
@@ -93,30 +107,31 @@ impl WorkflowRunLauncher {
             .get_version(ctx, workflow_id, version, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        let ir_json = serde_json::to_value(&ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
-        let graph = RunGraph::build(&ir);
-        let principal_kind = match ctx.principal.kind {
-            authz::PrincipalKind::Workflow => "workflow",
-            authz::PrincipalKind::User => "user",
-        };
-        let run_id = self
-            .runs
-            .create_run(
-                &ctx.tenant_id,
-                &ctx.org,
-                workflow_id,
-                version,
-                "interactive",
-                None,
-                &ctx.principal.id,
-                principal_kind,
-                input,
-                &ir_json,
-                &graph,
-            )
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input)
             .await
-            .map_err(|e| LauncherError::Run(e.to_string()))?;
-        Ok(Some(run_id))
+    }
+
+    /// interactive 起動の**バンドル権限版**（ミニアプリのワークフロー束縛・Task 6.10）。
+    ///
+    /// ミニアプリ本体（バンドル）だけを共有された利用者でも、部品 workflow を個別共有される
+    /// ことなくピン版を起動できる。IR の読取のみバンドル viewer で認可し
+    /// （`artifact.read_via_bundle` 監査）、**実行主体は押した本人のまま** — run 内の
+    /// データアクセスは本人 ReBAC ∩ 宣言スコープ ∩ ノード設定の二重ゲート（engine.md §6.1）。
+    pub async fn start_interactive_via_bundle(
+        &self,
+        ctx: &AuthContext,
+        bundle_id: Uuid,
+        workflow_id: Uuid,
+        version: i64,
+        input: &Value,
+    ) -> Result<Option<Uuid>, LauncherError> {
+        let (version, ir) = self
+            .workflows
+            .get_version_via_bundle(ctx, bundle_id, workflow_id, version, None)
+            .await
+            .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input)
+            .await
     }
 
     /// schedule/event の run を起動する（委譲チェック→workflow プリンシパルで create_run）。

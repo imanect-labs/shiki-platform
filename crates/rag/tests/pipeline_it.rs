@@ -223,6 +223,11 @@ impl VectorStore for FakeVectorStore {
                 PreFilter::TenantOnly => true,
                 PreFilter::Tags(tags) => p.authz_tags.iter().any(|t| tags.contains(t)),
             })
+            // 知識スコープ（Task 6.8）: 本物と同じ「独立 AND 句」の意味論。
+            .filter(|(_, p)| {
+                query.scope_tags.is_empty()
+                    || p.authz_tags.iter().any(|t| query.scope_tags.contains(t))
+            })
             .filter(|(_, p)| !query.exclude.contains(&p.chunk_id))
             .map(|(_, p)| ScoredChunk {
                 chunk_id: p.chunk_id,
@@ -528,7 +533,7 @@ async fn job_status(env: &TestEnv, node: Uuid, op: &str) -> Option<(String, Opti
 fn fulltext_hits(env: &TestEnv, query: &str, prefilter: &PreFilter) -> Vec<ScoredChunk> {
     env.deps
         .fulltext
-        .search(&env.ctx, query, 10, prefilter, &[])
+        .search(&env.ctx, query, 10, prefilter, &[], &[])
         .unwrap()
 }
 
@@ -579,6 +584,7 @@ async fn upload_event_flows_to_all_indexes() {
                 vector: &fake_vector("dummy"),
                 limit: 10,
                 prefilter: &PreFilter::Tags(expected_tags),
+                scope_tags: &[],
                 exclude: &[],
             },
         )
@@ -831,6 +837,7 @@ async fn move_reevaluates_tags_and_delete_removes_everywhere() {
                 vector: &fake_vector("dummy"),
                 limit: 10,
                 prefilter: &PreFilter::TenantOnly,
+                scope_tags: &[],
                 exclude: &[],
             },
         )

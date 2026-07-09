@@ -61,10 +61,23 @@ impl ChatWorker {
         cancel: Arc<AtomicBool>,
         sink: &mut WorkerSink,
     ) -> Result<(), ChatError> {
+        // skill のピン解決（Task 6.9・fail-closed: 読めないピンは run を失敗させる）。
+        let skill = crate::skill::AppliedSkill::load(
+            ctx,
+            self.skill_artifacts.as_ref(),
+            run,
+            run.trace_id.as_deref(),
+        )
+        .await?;
+
         // 共通ツール（doc_search / code_interpreter / web）。
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         if let Some(search) = &self.search {
-            tools.push(Arc::new(DocSearchTool::new(search.clone())));
+            // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ）。
+            let scope = skill
+                .as_ref()
+                .and_then(crate::skill::AppliedSkill::search_scope);
+            tools.push(Arc::new(DocSearchTool::with_scope(search.clone(), scope)));
         }
         if let Some(sandbox) = &self.sandbox {
             tools.push(Arc::new(CodeInterpreterTool::new(
@@ -124,6 +137,20 @@ impl ChatWorker {
         } else {
             (chat_opts(self), None)
         };
+
+        // skill を最後に適用する（system 追記・few-shot・モデル既定・提示ツールの縮小）。
+        // ⚠️ opts.approval には触れない（破壊系の明示許可は skill で無効化できない・Task 6.9）。
+        let (mut opts, mut history) = (opts, history);
+        if let Some(skill) = &skill {
+            let base = opts.system.take().unwrap_or_default();
+            let mut system = base;
+            skill.apply_system(&mut system);
+            opts.system = Some(system);
+            skill.apply_model_defaults(&mut opts);
+            skill.apply_few_shot(&mut history);
+            skill.filter_tools(&mut tools);
+            skill.audit_apply(&self.db, ctx, run).await;
+        }
 
         let approver_ref = approver.as_ref().map(|a| a as &dyn agent_core::Approver);
         let outcome = run_agent(
@@ -217,11 +244,43 @@ impl ChatWorker {
     ) -> Result<(), ChatError> {
         use agent_core::{run_doc_search, AgentEvent, EventSink};
 
+        // skill のピン解決（通常チャットにも適用する・fail-closed・Task 6.9）。
+        let skill = crate::skill::AppliedSkill::load(
+            ctx,
+            self.skill_artifacts.as_ref(),
+            run,
+            run.trace_id.as_deref(),
+        )
+        .await?;
+        let scope = skill
+            .as_ref()
+            .and_then(crate::skill::AppliedSkill::search_scope);
+        let mut history = history;
+
         // 直近ユーザー発話で事前検索し、文脈注入＋引用イベント。
         let query = history.last().map(message_preview).unwrap_or_default();
         let mut system = self.config.system_prompt.clone();
-        if let Some(search) = &self.search {
-            match run_doc_search(search, ctx, &query, None, run.trace_id.as_deref()).await {
+        if let Some(skill) = &skill {
+            skill.apply_system(&mut system);
+            skill.apply_few_shot(&mut history);
+            skill.audit_apply(&self.db, ctx, run).await;
+        }
+        // skill が doc_search を許可していなければ古典事前検索も行わない（Task 6.9 の
+        // セッション級ツール制限は agent/classic 両モードで一貫させる）。
+        let search_allowed = skill
+            .as_ref()
+            .is_none_or(|s| s.allows(agent_core::ToolName::DocSearch.as_str()));
+        if let (Some(search), true) = (&self.search, search_allowed) {
+            match run_doc_search(
+                search,
+                ctx,
+                &query,
+                None,
+                scope.as_ref(),
+                run.trace_id.as_deref(),
+            )
+            .await
+            {
                 Ok(result) => {
                     system.push_str("\n\n# 参考（社内文書検索の結果）\n");
                     system.push_str(&result.context_text);
@@ -245,14 +304,27 @@ impl ChatWorker {
             }
         }
 
+        // skill のモデル既定（Task 6.9・指定があるものだけ上書き）。
+        let (model, max_tokens, temperature) =
+            match skill.as_ref().and_then(|s| s.body.model.as_ref()) {
+                Some(defaults) => (
+                    defaults.model.clone().or_else(|| self.config.model.clone()),
+                    defaults.max_tokens.or(Some(2048)),
+                    defaults.temperature,
+                ),
+                None => (self.config.model.clone(), Some(2048), None),
+            };
+        let effective_model = model
+            .clone()
+            .unwrap_or_else(|| self.gateway.default_model().to_string());
         let req = GenerateRequest {
-            model: self.config.model.clone(),
+            model,
             system: Some(system),
             messages: history,
             tools: Vec::new(),
             effort: None,
-            max_tokens: Some(2048),
-            temperature: None,
+            max_tokens,
+            temperature,
         };
         let mut stream = self
             .gateway
@@ -288,11 +360,8 @@ impl ChatWorker {
                 ctx,
                 &GenerationRecord {
                     idempotency_key: format!("{}:{}:0", run.run_id, run.fencing_token),
-                    model: self
-                        .config
-                        .model
-                        .clone()
-                        .unwrap_or_else(|| self.gateway.default_model().to_string()),
+                    // 会計は実効モデル（skill 既定の上書き込み）で刻む。
+                    model: effective_model,
                     usage,
                     trace_id: run.trace_id.clone(),
                     input_preview: query,

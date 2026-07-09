@@ -18,6 +18,10 @@ struct ThreadRow {
     id: Uuid,
     title: String,
     agent_mode: bool,
+    skill_id: Option<Uuid>,
+    skill_version: Option<i64>,
+    mini_app_id: Option<Uuid>,
+    mini_app_version: Option<i64>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -28,6 +32,10 @@ impl ThreadRow {
             id: self.id,
             title: self.title,
             agent_mode: self.agent_mode,
+            skill_id: self.skill_id,
+            skill_version: self.skill_version,
+            mini_app_id: self.mini_app_id,
+            mini_app_version: self.mini_app_version,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -66,7 +74,7 @@ impl ChatStore {
         let row: ThreadRow = sqlx::query_as(
             "INSERT INTO thread (id, org, tenant_id, owner, title, agent_mode) \
              VALUES ($1, $2, $3, $4, $5, $6) \
-             RETURNING id, title, agent_mode, created_at, updated_at",
+             RETURNING id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, created_at, updated_at",
         )
         .bind(id)
         .bind(&ctx.org)
@@ -109,6 +117,57 @@ impl ChatStore {
         Ok(row.into_thread())
     }
 
+    /// スレッドに skill / ミニアプリのバージョンピンを設定する（作成直後・owner のみ・Task 6.7/6.10）。
+    ///
+    /// 参照の存在・kind・viewer 検証は API 層（SkillStore/MiniAppStore）が**設定者の権限**で
+    /// 済ませてから呼ぶこと。ピンは再現性のため version 込みで固定される。
+    pub async fn set_thread_pins(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        skill: Option<(Uuid, i64)>,
+        mini_app: Option<(Uuid, i64)>,
+        trace_id: Option<&str>,
+    ) -> Result<(), ChatError> {
+        self.require_thread(ctx, thread_id, Relation::Owner, "thread.set_pins", trace_id)
+            .await?;
+        let updated = sqlx::query(
+            "UPDATE thread SET skill_id = $3, skill_version = $4, \
+                    mini_app_id = $5, mini_app_version = $6, updated_at = now() \
+             WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(thread_id)
+        .bind(&ctx.tenant_id)
+        .bind(skill.map(|(id, _)| id))
+        .bind(skill.map(|(_, v)| v))
+        .bind(mini_app.map(|(id, _)| id))
+        .bind(mini_app.map(|(_, v)| v))
+        .execute(&self.db)
+        .await
+        .map_err(map_db)?;
+        if updated.rows_affected() == 0 {
+            return Err(ChatError::NotFound);
+        }
+        self.audit
+            .record(
+                ctx,
+                AuditEntry {
+                    action: "thread.set_pins",
+                    object_type: "thread",
+                    object_id: &thread_id.to_string(),
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: json!({
+                        "skill": skill.map(|(id, v)| json!({ "artifact_id": id, "version": v })),
+                        "mini_app": mini_app.map(|(id, v)| json!({ "artifact_id": id, "version": v })),
+                    }),
+                },
+            )
+            .await
+            .map_err(map_storage)?;
+        Ok(())
+    }
+
     /// 自分が owner のスレッド一覧（更新日降順・keyset ページング）。
     pub async fn list_threads(
         &self,
@@ -119,7 +178,7 @@ impl ChatStore {
     ) -> Result<Vec<Thread>, ChatError> {
         let limit = limit.clamp(1, 100);
         let rows: Vec<ThreadRow> = sqlx::query_as(
-            "SELECT id, title, agent_mode, created_at, updated_at FROM thread \
+            "SELECT id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, created_at, updated_at FROM thread \
              WHERE tenant_id = $1 AND org = $2 AND owner = $3 AND deleted_at IS NULL \
                AND ($4::timestamptz IS NULL OR (updated_at, id) < ($4::timestamptz, $5)) \
              ORDER BY updated_at DESC, id DESC LIMIT $6",
@@ -146,7 +205,7 @@ impl ChatStore {
         self.require_thread(ctx, thread_id, Relation::Viewer, "thread.get", trace_id)
             .await?;
         let row: Option<ThreadRow> = sqlx::query_as(
-            "SELECT id, title, agent_mode, created_at, updated_at FROM thread \
+            "SELECT id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, created_at, updated_at FROM thread \
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
         )
         .bind(thread_id)

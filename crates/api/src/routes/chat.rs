@@ -16,12 +16,9 @@ use axum::{
     Json,
 };
 use base64::Engine as _;
-use chat::{Attachment, ChatStore, Message, Thread, ThreadRole};
+use chat::{ChatStore, Thread};
 use chrono::{DateTime, Utc};
 use futures::stream::{BoxStream, StreamExt};
-use serde::{Deserialize, Serialize};
-use storage::ShareTarget;
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
@@ -30,11 +27,15 @@ use crate::{
     state::AppState,
 };
 
+use super::chat_dto::Cursor;
+pub use super::chat_dto::{
+    ArtifactPinRequest, CreateThreadRequest, ListThreadsQuery, MessagesResponse,
+    PostMessageRequest, PostMessageResponse, ShareThreadRequest, StreamQuery, ThreadListResponse,
+    ThreadShareEntry, ThreadSharesResponse,
+};
+
 /// SSE イベントストリーム（run のイベントを Event へ写した無限/有限ストリーム）。
 type SseEventStream = BoxStream<'static, Result<Event, Infallible>>;
-
-/// keyset カーソル（更新日時＋id）。
-type Cursor = (Option<DateTime<Utc>>, Option<Uuid>);
 
 /// AppState からチャットストアを取り出す（無効なら 503）。
 pub(super) fn chat_store(state: &AppState) -> Result<&ChatStore, ApiError> {
@@ -42,93 +43,6 @@ pub(super) fn chat_store(state: &AppState) -> Result<&ChatStore, ApiError> {
         .chat
         .as_deref()
         .ok_or_else(|| ApiError::ServiceUnavailable("chat.enabled=false".into()))
-}
-
-// ── DTO ─────────────────────────────────────────────────────────────
-
-/// スレッド作成リクエスト。
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct CreateThreadRequest {
-    #[serde(default)]
-    pub title: Option<String>,
-    /// エージェントモード既定（既定 false＝通常チャット）。
-    #[serde(default)]
-    pub agent_mode: Option<bool>,
-}
-
-/// スレッド一覧レスポンス（keyset ページング）。
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ThreadListResponse {
-    pub threads: Vec<Thread>,
-    pub next_cursor: Option<String>,
-}
-
-/// メッセージ一覧レスポンス。
-#[derive(Debug, Serialize, ToSchema)]
-pub struct MessagesResponse {
-    pub messages: Vec<Message>,
-    /// 進行中（非端末）の run id。再訪時に承認 API を叩けるよう UI へ渡す（Task 5.6）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_run_id: Option<Uuid>,
-}
-
-/// 発話送信リクエスト。
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct PostMessageRequest {
-    pub text: String,
-    #[serde(default)]
-    pub attachments: Option<Vec<Attachment>>,
-    /// このメッセージのエージェントモード上書き（未指定はスレッド既定）。
-    #[serde(default)]
-    pub agent_mode: Option<bool>,
-    /// 自律プロファイルで実行するか（長ホライズン・フルツール・予算・承認・Task 5.1）。
-    #[serde(default)]
-    pub autonomous: Option<bool>,
-}
-
-/// 発話送信レスポンス（202・生成は接続非依存ジョブで継続）。
-#[derive(Debug, Serialize, ToSchema)]
-pub struct PostMessageResponse {
-    pub run_id: Uuid,
-    pub user_message_id: Uuid,
-    pub assistant_message_id: Uuid,
-    pub agent_mode: bool,
-}
-
-/// 共有/解除リクエスト（viewer/commenter/editor）。
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ShareThreadRequest {
-    pub target: ShareTarget,
-    pub role: ThreadRole,
-}
-
-/// 共有相手 1 件。
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ThreadShareEntry {
-    pub target: ShareTarget,
-    pub role: ThreadRole,
-}
-
-/// 共有相手一覧レスポンス。
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ThreadSharesResponse {
-    pub shares: Vec<ThreadShareEntry>,
-}
-
-/// 一覧クエリ。
-#[derive(Debug, Deserialize)]
-pub struct ListThreadsQuery {
-    #[serde(default)]
-    pub cursor: Option<String>,
-    #[serde(default)]
-    pub limit: Option<i64>,
-}
-
-/// SSE クエリ（Last-Event-ID の代替）。
-#[derive(Debug, Deserialize)]
-pub struct StreamQuery {
-    #[serde(default)]
-    pub last_event_id: Option<i64>,
 }
 
 // ── ハンドラ ─────────────────────────────────────────────────────────
@@ -149,7 +63,39 @@ pub async fn create_thread(
     trace: TraceIdExt,
     Json(req): Json<CreateThreadRequest>,
 ) -> Result<Json<Thread>, ApiError> {
-    let thread = chat_store(&state)?
+    // skill / ミニアプリの選択を**作成者の権限**で解決し、version 込みでピンする（Task 6.7/6.10）。
+    // ミニアプリ指定時は skill ピンをバンドル定義から引く（skill 指定より優先）。
+    let mut skill_pin: Option<(Uuid, i64)> = None;
+    let mut mini_app_pin: Option<(Uuid, i64)> = None;
+    if let Some(pin) = req.mini_app {
+        let resolved = state
+            .mini_apps
+            .resolve(&ctx, pin.artifact_id, pin.version, trace.as_deref())
+            .await
+            .map_err(super::ui_specs::map_gui_err)?;
+        mini_app_pin = Some((resolved.id, resolved.version));
+        skill_pin = resolved.body.skill.map(|p| (p.artifact_id, p.version));
+    } else if let Some(pin) = req.skill {
+        let (version, _body, _raw) = match pin.version {
+            Some(v) => {
+                state
+                    .skills
+                    .get_version(&ctx, pin.artifact_id, v, trace.as_deref())
+                    .await
+            }
+            None => {
+                state
+                    .skills
+                    .get_latest(&ctx, pin.artifact_id, trace.as_deref())
+                    .await
+            }
+        }
+        .map_err(super::ui_specs::map_gui_err)?;
+        skill_pin = Some((pin.artifact_id, version));
+    }
+
+    let store = chat_store(&state)?;
+    let mut thread = store
         .create_thread(
             &ctx,
             req.title.as_deref().unwrap_or(""),
@@ -157,6 +103,15 @@ pub async fn create_thread(
             trace.as_deref(),
         )
         .await?;
+    if skill_pin.is_some() || mini_app_pin.is_some() {
+        store
+            .set_thread_pins(&ctx, thread.id, skill_pin, mini_app_pin, trace.as_deref())
+            .await?;
+        thread.skill_id = skill_pin.map(|(id, _)| id);
+        thread.skill_version = skill_pin.map(|(_, v)| v);
+        thread.mini_app_id = mini_app_pin.map(|(id, _)| id);
+        thread.mini_app_version = mini_app_pin.map(|(_, v)| v);
+    }
     Ok(Json(thread))
 }
 

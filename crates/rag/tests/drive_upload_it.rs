@@ -292,7 +292,7 @@ async fn hit_files(env: &Env, ctx: &AuthContext, query: &str) -> Vec<Uuid> {
     // 認可の正しさはモード非依存（pre/post-filter は共通経路）。
     let mut files: Vec<Uuid> = env
         .search
-        .search(ctx, query, Some(20), SearchMode::Keyword, None)
+        .search(ctx, query, Some(20), SearchMode::Keyword, None, None)
         .await
         .unwrap()
         .results

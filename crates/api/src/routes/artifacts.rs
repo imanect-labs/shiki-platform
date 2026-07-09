@@ -129,7 +129,11 @@ pub async fn create_artifact(
     Ok((StatusCode::CREATED, Json(created)))
 }
 
-/// 自分のアーティファクト一覧（kind 絞り込み・更新日降順）。
+/// 自分が使えるアーティファクト一覧（所有＋共有された・kind 絞り込み・更新日降順）。
+///
+/// 共有された分（ReBAC viewer の実効集合）が無いと、共有相手が skill/ミニアプリを
+/// UI から見つけて実行できない（Task 6.11「共有相手の実行」）。keyset カーソルは
+/// 所有分にのみ適用し、共有分は初回ページに合流する（共有集合は小さい前提）。
 #[utoipa::path(
     get,
     path = "/artifacts",
@@ -149,10 +153,20 @@ pub async fn list_artifacts(
         (Some(at), Some(id)) => Some((at, id)),
         _ => None,
     };
-    let items = state
+    let limit = q.limit.unwrap_or(50);
+    let mut items = state
         .artifacts
-        .list_mine(&ctx, q.kind, before, q.limit.unwrap_or(50))
+        .list_mine(&ctx, q.kind, before, limit)
         .await?;
+    // 2 ページ目以降（カーソルあり）は所有分の続きだけを返す（共有分は初回に合流済み）。
+    if before.is_none() {
+        let shared = state
+            .artifacts
+            .list_shared_with_me(&ctx, q.kind, limit)
+            .await?;
+        items.extend(shared);
+        items.sort_by_key(|a| std::cmp::Reverse((a.updated_at, a.id)));
+    }
     Ok(Json(ArtifactListResponse { items }))
 }
 
