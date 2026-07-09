@@ -60,7 +60,9 @@ export default function SkillsPage() {
   const startChat = async (meta: ArtifactMeta) => {
     setPending(meta.id);
     try {
-      const thread = await createThread(meta.name, false, { skill: { artifactId: meta.id } });
+      const thread = await createThread(meta.name, false, {
+        skill: { artifactId: meta.id, version: meta.currentVersion },
+      });
       router.push(`/c/${thread.id}`);
     } catch (e) {
       toast({

@@ -45,6 +45,8 @@ type Draft = {
   description: string;
   instructions: string;
   scopeFolders: ScopeFolder[];
+  /// ファイル単位スコープ（エディタ UI では編集しないが、既存値を保存で失わない）。
+  scopeFiles: string[];
   allowedTools: ToolName[] | null; // null = 全ツール
   model: string;
   temperature: string;
@@ -58,6 +60,7 @@ const EMPTY_DRAFT: Draft = {
   description: "",
   instructions: "",
   scopeFolders: [],
+  scopeFiles: [],
   allowedTools: null,
   model: "",
   temperature: "",
@@ -75,6 +78,7 @@ function draftFrom(skill: SkillVersion | null, name: string): Draft {
     instructions: b.instructions ?? "",
     // 既存フォルダの表示名は保存していないため id を示す（選び直しで名前が付く）。
     scopeFolders: (b.knowledge_scope?.folders ?? []).map((id) => ({ id, name: id.slice(0, 8) })),
+    scopeFiles: b.knowledge_scope?.files ?? [],
     allowedTools: (b.allowed_tools as ToolName[] | null) ?? null,
     model: b.model?.model ?? "",
     temperature: b.model?.temperature != null ? String(b.model.temperature) : "",
@@ -97,8 +101,8 @@ function toBody(d: Draft): SkillBody {
     description: d.description.trim(),
     instructions: d.instructions,
     knowledge_scope:
-      d.scopeFolders.length > 0
-        ? { folders: d.scopeFolders.map((f) => f.id), files: [] }
+      d.scopeFolders.length > 0 || d.scopeFiles.length > 0
+        ? { folders: d.scopeFolders.map((f) => f.id), files: d.scopeFiles }
         : null,
     allowed_tools: d.allowedTools,
     model,

@@ -36,7 +36,8 @@ export default function HomePage() {
       const thread = await createThread(
         titleFrom(text),
         false,
-        skill ? { skill: { artifactId: skill.id } } : undefined,
+        // 選択時点の現行版をピンする（開始までに新版が保存されても選んだ版で適用）。
+        skill ? { skill: { artifactId: skill.id, version: skill.currentVersion } } : undefined,
       );
       stashPending(thread.id, { text, attachments });
       router.push(`/c/${thread.id}`);

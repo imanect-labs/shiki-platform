@@ -78,7 +78,7 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
               }
             }}
           >
-            <SpecRenderer spec={app.ui_spec} className="my-0" />
+            <SpecRenderer key={`${app.id}-v${app.version}`} spec={app.ui_spec} className="my-0" />
           </MiniAppGenUiProvider>
 
           <ArtifactShareDialog

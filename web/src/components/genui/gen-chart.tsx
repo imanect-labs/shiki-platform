@@ -158,10 +158,13 @@ function renderChart(
         </AreaChart>
       );
     case "pie": {
-      // pie は x=ラベル・y=値の単一系列として描く。
+      // pie は x=ラベルごとに全系列を合算した値で描く（一部の点だけ series 付きでも欠落させない）。
       const data = (rows as { x: string }[]).map((row, i) => ({
         name: row.x,
-        value: Number((row as Record<string, unknown>)[series[0]] ?? 0),
+        value: series.reduce(
+          (sum, name) => sum + Number((row as Record<string, unknown>)[name] ?? 0),
+          0,
+        ),
         fill: PALETTE[i % PALETTE.length],
       }));
       return (

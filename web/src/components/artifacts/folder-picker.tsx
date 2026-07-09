@@ -89,7 +89,7 @@ export function FolderPicker({
         <div className="max-h-[55vh] min-h-[280px] overflow-y-auto rounded-lg border border-border">
           {list.loading ? (
             <LoadingRow />
-          ) : folders.length === 0 ? (
+          ) : folders.length === 0 && !list.hasMore ? (
             <p className="px-3 py-10 text-center text-sm text-muted-foreground">
               ここにはフォルダがありません。
             </p>
