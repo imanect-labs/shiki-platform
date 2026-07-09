@@ -31,7 +31,7 @@ use super::chat_dto::Cursor;
 pub use super::chat_dto::{
     ArtifactPinRequest, CreateThreadRequest, ListThreadsQuery, MessagesResponse,
     PostMessageRequest, PostMessageResponse, ShareThreadRequest, StreamQuery, ThreadListResponse,
-    ThreadShareEntry, ThreadSharesResponse,
+    ThreadShareEntry, ThreadSharesResponse, WorkspaceChoiceRequest,
 };
 
 /// SSE イベントストリーム（run のイベントを Event へ写した無限/有限ストリーム）。
@@ -94,6 +94,27 @@ pub async fn create_thread(
         skill_pin = Some((pin.artifact_id, version));
     }
 
+    // ワークスペース場所は **thread 作成前に**認可検証する（不正なら孤児 thread を残さない）。
+    // existing（既存フォルダをそのままワークスペースに）はそのフォルダの内容がスレッド共有相手へ
+    // 波及するため **Owner** を要求し、new_under（配下に隔離フォルダを新規作成）は **Editor** で足りる。
+    let workspace = if let Some(choice) = req.workspace {
+        let (folder, parent, target, relation) = match choice {
+            WorkspaceChoiceRequest::Existing { folder_id } => {
+                (Some(folder_id), None, folder_id, authz::Relation::Owner)
+            }
+            WorkspaceChoiceRequest::NewUnder { folder_id } => {
+                (None, Some(folder_id), folder_id, authz::Relation::Editor)
+            }
+        };
+        state
+            .storage
+            .require_folder_access(&ctx, target, relation, trace.as_deref())
+            .await?;
+        Some((folder, parent))
+    } else {
+        None
+    };
+
     let store = chat_store(&state)?;
     let mut thread = store
         .create_thread(
@@ -111,6 +132,11 @@ pub async fn create_thread(
         thread.skill_version = skill_pin.map(|(_, v)| v);
         thread.mini_app_id = mini_app_pin.map(|(id, _)| id);
         thread.mini_app_version = mini_app_pin.map(|(_, v)| v);
+    }
+    if let Some((folder, parent)) = workspace {
+        store
+            .set_thread_workspace(thread.id, &ctx.tenant_id, folder, parent)
+            .await?;
     }
     Ok(Json(thread))
 }

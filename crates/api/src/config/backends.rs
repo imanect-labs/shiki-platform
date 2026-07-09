@@ -140,6 +140,10 @@ pub struct ChatConfig {
     /// エージェントモードの最大ステップ。
     #[serde(default = "default_max_steps")]
     pub max_steps: usize,
+    /// 通常チャットで旧・無条件 RAG 注入経路を使う後方互換フォールバック（既定 false）。
+    /// false ならモデル裁量ループ（issue #102）。明示的なエージェントモード run/自律 run には影響しない。
+    #[serde(default)]
+    pub classic_rag: bool,
     /// sandbox-orchestrator の gRPC エンドポイント（未指定なら code_interpreter を提示しない）。
     /// 例: `http://127.0.0.1:50000`。compose 網内・非公開ポート。
     #[serde(default)]
@@ -193,6 +197,7 @@ impl Default for ChatConfig {
             system_prompt: None,
             lease_secs: default_lease_secs(),
             max_steps: default_max_steps(),
+            classic_rag: false,
             sandbox_endpoint: None,
             sandbox_backend: None,
         }

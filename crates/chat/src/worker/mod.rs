@@ -36,6 +36,9 @@ pub struct WorkerConfig {
     pub lease_secs: i64,
     /// エージェントモードの最大ステップ。
     pub max_steps: usize,
+    /// 通常チャットで旧・無条件 RAG 注入経路（`run_classic_mode`）を使うか（既定 false）。
+    /// false ならモデル裁量ループ（issue #102）。運用で確実に毎ターン検索したい場合のみ true。
+    pub classic_rag: bool,
     /// 自律プロファイルの最大ステップ（長ホライズン）。
     pub autonomous_max_steps: usize,
     /// 自律プロファイルの累積トークン上限（予算ガード・Task 5.7）。
@@ -61,6 +64,7 @@ impl Default for WorkerConfig {
             model: None,
             lease_secs: 30,
             max_steps: 6,
+            classic_rag: false,
             autonomous_max_steps: 50,
             // 既定: 約 20 万トークン・1 USD 上限（テナント/skill で上書き可・Task 5.7）。
             autonomous_max_tokens: 200_000,
@@ -276,11 +280,17 @@ impl ChatWorker {
             .await?;
         let mut worker_sink = WorkerSink::new(self.store.clone(), run_id, fencing, cancel.clone());
 
-        let gen_result = if run.agent_mode {
-            self.run_agent_mode(&ctx, &run, history, cancel.clone(), &mut worker_sink)
+        // 既定では非自律チャットも agent-core ループ（Chat プロファイル）を通す＝モデルが
+        // ツール発火を裁量する（挨拶等は検索しない・generative UI も通常チャットで出る。issue #102）。
+        // `classic_rag=true` の運用でのみ旧・無条件 RAG 注入経路を使う（後方互換フォールバック）。
+        // ただし明示的なエージェントモード run（agent_mode）と自律 run はループを維持する
+        // （classic_rag はあくまで「未指定の通常チャット」の既定を旧挙動に戻すだけ）。
+        let use_classic = self.config.classic_rag && !run.autonomous && !run.agent_mode;
+        let gen_result = if use_classic {
+            self.run_classic_mode(&ctx, &run, history, &mut worker_sink)
                 .await
         } else {
-            self.run_classic_mode(&ctx, &run, history, &mut worker_sink)
+            self.run_agent_mode(&ctx, &run, history, cancel.clone(), &mut worker_sink)
                 .await
         };
 

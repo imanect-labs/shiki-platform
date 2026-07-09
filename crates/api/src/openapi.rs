@@ -171,6 +171,7 @@ use utoipa::{
         crate::routes::mini_apps::ResolvedMiniAppResponse,
         crate::routes::mini_apps::MiniAppActionRequest,
         crate::routes::chat_dto::ArtifactPinRequest,
+        crate::routes::chat_dto::WorkspaceChoiceRequest,
         gui::GuiValidationError,
         // 検索 DTO は rag 側の単一定義（手書きミラー禁止）。
         rag::SearchRequest,

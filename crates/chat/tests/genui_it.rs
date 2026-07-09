@@ -215,6 +215,34 @@ async fn validated_generative_ui_is_streamed_and_persisted() {
 
     let (asst_id, events) = run_to_done(&store, &c, thread.id, "genui:form").await;
 
+    // 通常チャット（agent_mode=false）でも generative UI が出る＝モデル裁量ループが既定
+    // （issue #102 の核・旧・無条件 RAG の classic 経路ではツールが提示されなかった）。同じ
+    // worker を使い回して jobq 相乗りのフレークを避ける。
+    {
+        let res = store
+            .post_message(&c, thread.id, "genui:chart", &[], Some(false), false, None)
+            .await
+            .unwrap();
+        let mut rx = store.event_stream(res.run_id, 0);
+        let mut saw_ui = false;
+        for _ in 0..500 {
+            let next = tokio::time::timeout(Duration::from_secs(60), rx.next())
+                .await
+                .expect("イベント待ちタイムアウト");
+            let Some(ev) = next else { break };
+            match ev.event {
+                StreamEventKind::GenerativeUi { .. } => saw_ui = true,
+                StreamEventKind::Done { .. } => break,
+                StreamEventKind::Error { message } => panic!("生成失敗: {message}"),
+                _ => {}
+            }
+        }
+        assert!(
+            saw_ui,
+            "通常チャットでもモデルが emit_ui を呼べる（Chat プロファイルループが既定）"
+        );
+    }
+
     // SSE に generative_ui イベントが流れる（6.4 受け入れ条件①）。
     let sse_spec = events.iter().find_map(|e| match e {
         StreamEventKind::GenerativeUi { spec } => Some(spec.clone()),

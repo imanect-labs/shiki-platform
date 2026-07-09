@@ -206,21 +206,39 @@ impl ChatWorker {
         {
             id
         } else {
-            // 初回自律 run: Drive 直下にワークスペースフォルダを作り thread に紐づける。
+            // 初回自律 run: ワークスペースフォルダを作り thread に紐づける。作成先の親は
+            // 利用者が選んだ workspace_parent_folder_id（無ければ Drive 直下＝None）。親フォルダの
+            // editor は create_folder 内で本人 ctx により検証される（confused-deputy 防止）。
             // **thread ごとに一意な名前**にする（`node` の (parent,name) unique・別 thread と衝突しない）。
+            let parent = self
+                .store
+                .workspace_parent_folder_id(thread_id, &ctx.tenant_id)
+                .await?;
             let name = format!("agent-workspace-{thread_id}");
-            match storage.create_folder(ctx, None, &name, None).await {
+            match storage.create_folder(ctx, parent, &name, None).await {
                 Ok(node) => {
                     self.store
                         .set_workspace_folder_if_absent(thread_id, &ctx.tenant_id, node.id)
                         .await?
                 }
-                // 同一 thread の並行 run が先に作成した場合は unique 衝突する → 確定済み id を読み直す。
-                Err(_) => self
+                // 作成失敗は 2 種を区別する: ①同一 thread の並行 run が先に作った（unique 衝突）
+                // なら workspace_folder_id が既に埋まっている → それを使う。②親フォルダが選択後に
+                // 削除された/editor が剥奪された等の**実失敗**なら未設定のまま → 元エラーを伝播して
+                // run を失敗させる（黙って別の場所に作らない・fail-closed）。
+                Err(e) => match self
                     .store
                     .workspace_folder_id(thread_id, &ctx.tenant_id)
                     .await?
-                    .ok_or_else(|| ChatError::Internal("workspace folder race".into()))?,
+                {
+                    Some(id) => id,
+                    None => {
+                        return Err(match e {
+                            storage::StorageError::Forbidden => ChatError::Forbidden,
+                            storage::StorageError::NotFound => ChatError::NotFound,
+                            other => ChatError::Internal(format!("workspace 作成に失敗: {other}")),
+                        });
+                    }
+                },
             }
         };
         // 共有中の thread editor/owner にワークスペースフォルダの editor を行き渡らせる（Task 5.6(a)・冪等）。

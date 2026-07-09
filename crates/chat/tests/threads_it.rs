@@ -220,6 +220,55 @@ async fn create_thread_defaults_blank_title() {
     assert_eq!(created.title, "新しいチャット");
 }
 
+/// ワークスペース場所の保存が両列を往復する（Phase 6 UX・0030）。
+#[tokio::test]
+async fn set_thread_workspace_roundtrips_folder_and_parent() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let c = ctx(&tenant);
+
+    // new_under: parent 列に入り、folder 列は空のまま（初回 run で lazy 作成）。
+    let t1 = store
+        .create_thread(&c, "親配下", false, None)
+        .await
+        .unwrap();
+    let parent = uuid::Uuid::new_v4();
+    store
+        .set_thread_workspace(t1.id, &c.tenant_id, None, Some(parent))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .workspace_parent_folder_id(t1.id, &c.tenant_id)
+            .await
+            .unwrap(),
+        Some(parent)
+    );
+    assert_eq!(
+        store
+            .workspace_folder_id(t1.id, &c.tenant_id)
+            .await
+            .unwrap(),
+        None
+    );
+
+    // existing: folder 列に直接入る（新規作成しない）。
+    let t2 = store.create_thread(&c, "既存", false, None).await.unwrap();
+    let folder = uuid::Uuid::new_v4();
+    store
+        .set_thread_workspace(t2.id, &c.tenant_id, Some(folder), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .workspace_folder_id(t2.id, &c.tenant_id)
+            .await
+            .unwrap(),
+        Some(folder)
+    );
+}
+
 /// post_message 後に get_messages が作成順・正しい role/content で返す。
 #[tokio::test]
 async fn get_messages_returns_ordered_roles_and_content() {
