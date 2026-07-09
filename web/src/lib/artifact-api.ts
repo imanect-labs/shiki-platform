@@ -159,6 +159,16 @@ export async function getSkill(id: string, version?: number): Promise<SkillVersi
   return ok<SkillVersion>(await apiFetch(path));
 }
 
+// ── UI スペック（Task 6.2〜6.4）─────────────────────────────────────────
+
+export type UiSpecVersion = { id: string; version: number; spec: UiSpecDoc };
+
+/// 検証済み UI スペックを保存する（`POST /ui-specs`・サーバが再検証）。
+/// チャットで生成した UI を「アプリとして保存」する導線から呼ぶ。
+export async function createUiSpec(name: string, spec: unknown): Promise<UiSpecVersion> {
+  return ok<UiSpecVersion>(await apiFetch("/ui-specs", json({ name, spec })));
+}
+
 // ── ミニアプリ（Task 6.10）──────────────────────────────────────────────
 
 export type MiniAppVersion = { id: string; version: number; body: MiniAppBody };

@@ -4,19 +4,14 @@ import type { Page } from "@playwright/test";
 
 import { loginViaKeycloak, uniqueName } from "./helpers";
 
-/// ホームから会話を開始し、エージェントモードに切り替えて `text` を送信する
-/// （エージェントモードのトグルは会話画面のコンポーザにある）。
+/// ホームから会話を開始して `text` を送信する。通常チャットがモデル裁量ループ
+/// （issue #102）になったため、generative UI はトグルなしでモデルが emit_ui を呼んで出す。
 async function sendInAgentMode(page: Page, text: string) {
   await page.goto("/");
   const input = page.getByLabel("メッセージを入力");
-  await input.fill("こんにちは");
-  await page.getByRole("button", { name: "送信" }).click();
-  await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
-  // 初回応答を待ってからエージェントモードへ切り替えて送信する。
-  await page.getByText(/回答/).first().waitFor({ timeout: 30_000 });
-  await page.getByRole("switch", { name: "エージェントモード" }).click();
   await input.fill(text);
   await page.getByRole("button", { name: "送信" }).click();
+  await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
 }
 
 /// generative UI（Phase 6 Task 6.4/6.5/6.6）の E2E。

@@ -52,6 +52,15 @@ export type Thread = {
 /// スレッド作成時の skill / ミニアプリ選択（version 省略は current をピン）。
 export type ArtifactPin = { artifactId: string; version?: number | null };
 
+/// エージェントモードのワークスペース作成場所（Phase 6 UX）。
+/// `existing`＝選んだフォルダをそのままワークスペースにする、`new_under`＝選んだ親の配下に新規作成。
+export type WorkspaceChoice = {
+  mode: "existing" | "new_under";
+  folderId: string;
+  /// 表示用のフォルダ名（送信はしない）。
+  folderName: string;
+};
+
 export type Message = {
   id: string;
   role: ChatRole;
@@ -173,10 +182,13 @@ export async function listThreads(
 export async function createThread(
   title?: string,
   agentMode = false,
-  pins?: { skill?: ArtifactPin; miniApp?: ArtifactPin },
+  pins?: { skill?: ArtifactPin; miniApp?: ArtifactPin; workspace?: WorkspaceChoice },
 ): Promise<Thread> {
   const toPin = (p?: ArtifactPin) =>
     p ? { artifact_id: p.artifactId, version: p.version ?? undefined } : undefined;
+  const workspace = pins?.workspace
+    ? { mode: pins.workspace.mode, folder_id: pins.workspace.folderId }
+    : undefined;
   const data = await ok<ApiThread>(
     await apiFetch("/threads", {
       method: "POST",
@@ -186,6 +198,7 @@ export async function createThread(
         agent_mode: agentMode,
         skill: toPin(pins?.skill),
         mini_app: toPin(pins?.miniApp),
+        workspace,
       }),
     }),
   );

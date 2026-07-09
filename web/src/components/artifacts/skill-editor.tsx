@@ -454,7 +454,7 @@ export function SkillEditorDialog({
           onOpenChange={setPickerOpen}
           onSelect={(f) => {
             if (!draft.scopeFolders.some((x) => x.id === f.id)) {
-              set("scopeFolders", [...draft.scopeFolders, f]);
+              set("scopeFolders", [...draft.scopeFolders, { id: f.id, name: f.name }]);
             }
           }}
         />

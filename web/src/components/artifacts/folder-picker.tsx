@@ -1,7 +1,11 @@
 "use client";
 
-/// ドライブのフォルダを選ぶダイアログ（skill の知識スコープ用・Task 6.11）。
-/// DrivePicker（ファイル添付用）のフォルダ選択版: フォルダは辿れ、「このフォルダを選択」で確定する。
+/// ドライブのフォルダを選ぶダイアログ（Task 6.11・Phase 6 UX）。
+///
+/// 2 用途:
+/// - `purpose="scope"`（既定・skill の知識スコープ）: フォルダを 1 つ選ぶ（mode は "existing" 固定）。
+/// - `purpose="workspace"`（エージェントの作業場所）: 各フォルダを「このフォルダを使う」（existing）で
+///   選ぶか、現在地に「ここに新規作成」（new_under）できる。
 
 import * as React from "react";
 import { ChevronLeft, FolderPlus } from "lucide-react";
@@ -18,20 +22,25 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 
+export type FolderChoice = { id: string; name: string; mode: "existing" | "new_under" };
+
 export function FolderPicker({
   open,
   onOpenChange,
   onSelect,
+  purpose = "scope",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSelect: (folder: { id: string; name: string }) => void;
+  onSelect: (folder: FolderChoice) => void;
+  purpose?: "scope" | "workspace";
 }) {
   // (id, name) のスタック。先頭はルート（マイドライブ）。
   const [stack, setStack] = React.useState<{ id?: string; name: string }[]>([
     { name: "マイドライブ" },
   ]);
   const current = stack[stack.length - 1];
+  const isWorkspace = purpose === "workspace";
 
   const fetchPage = React.useCallback(
     (cursor?: string) => {
@@ -47,6 +56,11 @@ export function FolderPicker({
     if (open) setStack([{ name: "マイドライブ" }]);
   }, [open]);
 
+  const pick = (folder: { id: string; name: string }, mode: "existing" | "new_under") => {
+    onSelect({ ...folder, mode });
+    onOpenChange(false);
+  };
+
   const folders = list.items.filter((n) => n.kind === "folder");
 
   return (
@@ -55,7 +69,9 @@ export function FolderPicker({
         <DialogHeader>
           <DialogTitle>フォルダを選択</DialogTitle>
           <DialogDescription>
-            知識スコープに含めるフォルダを選んでください（配下のファイルすべてが対象になります）。
+            {isWorkspace
+              ? "エージェントが作業するワークスペースの場所を選んでください（このフォルダを使うか、配下に新しく作れます）。"
+              : "知識スコープに含めるフォルダを選んでください（配下のファイルすべてが対象になります）。"}
           </DialogDescription>
         </DialogHeader>
 
@@ -75,13 +91,15 @@ export function FolderPicker({
             <Button
               type="button"
               size="sm"
-              onClick={() => {
-                onSelect({ id: current.id!, name: current.name });
-                onOpenChange(false);
-              }}
+              onClick={() =>
+                pick(
+                  { id: current.id!, name: current.name },
+                  isWorkspace ? "new_under" : "existing",
+                )
+              }
             >
               <FolderPlus className="size-4" aria-hidden />
-              「{current.name}」を選択
+              {isWorkspace ? `「${current.name}」の配下に作成` : `「${current.name}」を選択`}
             </Button>
           ) : null}
         </div>
@@ -109,12 +127,9 @@ export function FolderPicker({
                     type="button"
                     size="sm"
                     variant="outline"
-                    onClick={() => {
-                      onSelect({ id: n.id, name: n.name });
-                      onOpenChange(false);
-                    }}
+                    onClick={() => pick({ id: n.id, name: n.name }, "existing")}
                   >
-                    選択
+                    {isWorkspace ? "このフォルダを使う" : "選択"}
                   </Button>
                 </li>
               ))}
