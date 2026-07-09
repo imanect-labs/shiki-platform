@@ -104,7 +104,7 @@ impl Tool for DocSearchTool {
     // トレイト定義が `-> &str` のため literal 返しでも &'static 化できない（allow）。
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "doc_search"
+        crate::vocab::ToolName::DocSearch.as_str()
     }
 
     #[allow(clippy::unnecessary_literal_bound)]
@@ -139,11 +139,8 @@ impl Tool for DocSearchTool {
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| ToolError::Invalid("missing 'query'".into()))?;
         let result = run_doc_search(&self.search, ctx, query, self.top_k, trace_id).await?;
-        Ok(ToolOutcome {
-            content: result.context_text,
-            citations: result.citations,
-            artifacts: Vec::new(),
-            is_error: false,
-        })
+        let mut outcome = ToolOutcome::ok(result.context_text);
+        outcome.citations = result.citations;
+        Ok(outcome)
     }
 }

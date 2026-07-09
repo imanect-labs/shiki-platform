@@ -57,6 +57,9 @@ pub enum AgentEvent {
         tool_call_id: String,
         artifact: ArtifactRef,
     },
+    /// 検証済み generative UI スペック（emit_ui・Phase 6 Task 6.4）。
+    /// **検証層（gui::SpecValidator）を通過した JSON のみ**がここへ乗る（生スペックは流さない）。
+    GenerativeUi { spec: serde_json::Value },
     /// 計画が改訂された（全サブタスク列・revision 付き・Task 5.2）。
     PlanUpdated(Plan),
     /// 単一サブタスクの状態遷移（軽量更新・Task 5.2）。

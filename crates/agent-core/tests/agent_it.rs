@@ -122,6 +122,7 @@ impl Tool for MockSearchTool {
                 node_id: "artifact-n1".into(),
                 name: "result.csv".into(),
             }],
+            ui_specs: vec![],
             is_error: false,
         })
     }

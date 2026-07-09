@@ -21,6 +21,9 @@ cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p shiki-authz --bin export
 echo "[gen:api] ワークフロー語彙・IR 型(TS)を出力"
 cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p shiki-workflow-engine --bin export-workflow-ts -- "$OUT"
 
+echo "[gen:api] generative UI カタログ・スペック型(TS)を出力"
+cargo run --quiet --manifest-path "$ROOT/Cargo.toml" -p shiki-gui --bin export-gui-ts -- "$OUT"
+
 echo "[gen:api] OpenAPI → TypeScript 型"
 # web/ にインストール済みの openapi-typescript を使う（cwd 非依存）。
 pnpm --dir "$ROOT/web" exec openapi-typescript "$OUT/openapi.json" -o "$OUT/api.d.ts"

@@ -79,6 +79,10 @@ impl ChatWorker {
                 tools.push(Arc::new(WebFetchTool::new(sandbox.clone())));
             }
         }
+        // generative UI（emit_ui・Task 6.4）: 検証層が配線されている時のみ提示する。
+        if let Some(validator) = &self.ui_validator {
+            tools.push(Arc::new(gui::EmitUiTool::new(validator.clone())));
+        }
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {

@@ -69,6 +69,11 @@ use utoipa::{
         crate::routes::workflows::get_workflow_version,
         crate::routes::workflows::start_workflow_run,
         crate::routes::workflows::get_workflow_run,
+        crate::routes::ui_specs::create_ui_spec,
+        crate::routes::ui_specs::update_ui_spec,
+        crate::routes::ui_specs::get_ui_spec,
+        crate::routes::ui_specs::get_ui_spec_version,
+        crate::routes::ui_actions::invoke_chat_ui_action,
     ),
     components(schemas(
         crate::routes::me::MeResponse,
@@ -142,6 +147,14 @@ use utoipa::{
         crate::routes::workflows::RunStatusResponse,
         crate::routes::workflows::StepStatusItem,
         workflow_engine::ValidationError,
+        // generative UI DTO（Phase 6）。スペック本文は Object（正本 JSON・型は ts-rs 生成）。
+        crate::routes::ui_specs::CreateUiSpecRequest,
+        crate::routes::ui_specs::UpdateUiSpecRequest,
+        crate::routes::ui_specs::UiSpecResponse,
+        crate::routes::ui_specs::GuiValidationErrorResponse,
+        crate::routes::ui_actions::UiActionRequest,
+        crate::routes::ui_actions::UiActionResponse,
+        gui::GuiValidationError,
         // 検索 DTO は rag 側の単一定義（手書きミラー禁止）。
         rag::SearchRequest,
         rag::SearchResponse,

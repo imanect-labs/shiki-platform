@@ -1,0 +1,277 @@
+//! UI スペック検証層の検証マトリクス（Task 6.2/6.3 受け入れ条件・純粋・依存なし）。
+
+#![allow(
+    clippy::pedantic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+
+use gui::validate::{limits, validate_spec};
+use serde_json::json;
+
+/// 検証エラーのコード一覧を取り出すヘルパ。
+fn error_codes(raw: serde_json::Value) -> Vec<String> {
+    match validate_spec(&raw) {
+        Ok(_) => Vec::new(),
+        Err(errors) => errors.into_iter().map(|e| e.code).collect(),
+    }
+}
+
+fn assert_rejected_with(raw: serde_json::Value, code: &str) {
+    let codes = error_codes(raw);
+    assert!(
+        codes.iter().any(|c| c == code),
+        "expected code {code}, got {codes:?}"
+    );
+}
+
+/// 最小の妥当なスペック。
+fn minimal(root: serde_json::Value) -> serde_json::Value {
+    json!({ "version": 1, "root": root })
+}
+
+#[test]
+fn accepts_catalog_components_with_typed_props() {
+    // 6.2 受け入れ条件: カタログの各コンポーネントが型付き props で表現できる。
+    let spec = json!({
+        "version": 1,
+        "actions": [
+            { "type": "handler", "id": "submit", "handler": "chat.submit" },
+            { "type": "tool", "id": "search", "tool": "doc_search" }
+        ],
+        "root": {
+            "component": "container",
+            "title": "デモ",
+            "layout": "vertical",
+            "children": [
+                { "component": "text", "text": "説明\n2行目", "variant": "heading" },
+                { "component": "link", "text": "docs", "href": "https://example.com/docs" },
+                { "component": "button", "label": "検索", "on_click": { "action": "search" } },
+                {
+                    "component": "form",
+                    "id": "f1",
+                    "submit": { "action": "submit" },
+                    "fields": [
+                        { "component": "text_input", "id": "comment", "label": "コメント", "multiline": true },
+                        { "component": "select", "id": "rate", "label": "評価",
+                          "options": [ {"value": "1", "label": "低"}, {"value": "5", "label": "高"} ],
+                          "default": "5" }
+                    ]
+                },
+                {
+                    "component": "table",
+                    "columns": [ {"label": "項目"}, {"label": "値", "align": "right"} ],
+                    "rows": [ ["A", 1.0], ["B", true] ]
+                },
+                {
+                    "component": "chart", "kind": "line",
+                    "data": [ {"x": "1月", "y": 1.0}, {"x": "2月", "y": 2.5, "series": "s1"} ]
+                }
+            ]
+        }
+    });
+    let doc = validate_spec(&spec).expect("valid spec");
+    assert_eq!(doc.version, 1);
+    assert_eq!(doc.actions.len(), 2);
+}
+
+#[test]
+fn rejects_unknown_component_and_raw_html() {
+    // 6.2/6.3: カタログ外コンポーネント・生 HTML はスキーマ上表現不可能＝拒否。
+    assert_rejected_with(
+        minimal(json!({ "component": "iframe", "src": "https://evil.example" })),
+        "gui.unknown_component",
+    );
+    assert_rejected_with(
+        minimal(json!({ "component": "html", "html": "<script>alert(1)</script>" })),
+        "gui.unknown_component",
+    );
+}
+
+#[test]
+fn rejects_unknown_props_and_inline_code() {
+    // 未知 props（イベントハンドラ等のインラインコード持ち込み口）は拒否。
+    assert_rejected_with(
+        minimal(json!({ "component": "text", "text": "x", "onclick": "alert(1)" })),
+        "gui.unknown_prop",
+    );
+    assert_rejected_with(
+        minimal(json!({
+            "component": "button", "label": "x",
+            "on_click": { "action": "a", "handler_inline": "fetch('https://x')" }
+        })),
+        "gui.unknown_prop",
+    );
+}
+
+#[test]
+fn rejects_unknown_action_ref() {
+    // 6.3 受け入れ条件: 存在しないアクション ID を参照するスペックは拒否。
+    assert_rejected_with(
+        minimal(json!({
+            "component": "button", "label": "x", "on_click": { "action": "missing" }
+        })),
+        "gui.unknown_action_ref",
+    );
+}
+
+#[test]
+fn rejects_reserved_components() {
+    assert_rejected_with(
+        minimal(json!({ "component": "map" })),
+        "gui.component_unavailable",
+    );
+    assert_rejected_with(
+        minimal(json!({ "component": "image" })),
+        "gui.component_unavailable",
+    );
+}
+
+#[test]
+fn rejects_forbidden_url_schemes() {
+    for href in [
+        "javascript:alert(1)",
+        "data:text/html;base64,PGI+",
+        "http://insecure.example",
+        "/relative/path",
+    ] {
+        assert_rejected_with(
+            minimal(json!({ "component": "link", "text": "x", "href": href })),
+            "gui.forbidden_url_scheme",
+        );
+    }
+}
+
+#[test]
+fn rejects_destructive_tool_bindings() {
+    // 破壊系ツール（shell 等）は UI アクションに束縛できない（保存時 fail-closed）。
+    for tool in [
+        "shell",
+        "fs_delete",
+        "fs_write",
+        "emit_ui",
+        "code_interpreter",
+    ] {
+        let spec = json!({
+            "version": 1,
+            "actions": [ { "type": "tool", "id": "a", "tool": tool } ],
+            "root": { "component": "button", "label": "x", "on_click": { "action": "a" } }
+        });
+        assert_rejected_with(spec, "gui.action_tool_forbidden");
+    }
+}
+
+#[test]
+fn rejects_unknown_tool_name_structurally() {
+    // 閉語彙外のツール名はスキーマ違反（ToolName enum に存在しない）。
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "tool", "id": "a", "tool": "rm_rf" } ],
+        "root": { "component": "button", "label": "x", "on_click": { "action": "a" } }
+    });
+    assert_rejected_with(spec, "gui.unknown_component");
+}
+
+#[test]
+fn rejects_depth_and_node_overflow() {
+    // 深さ超過。
+    let mut node = json!({ "component": "text", "text": "leaf" });
+    for _ in 0..limits::MAX_DEPTH {
+        node = json!({ "component": "container", "children": [node] });
+    }
+    assert_rejected_with(minimal(node), "gui.too_deep");
+
+    // ノード数超過（1 階層に大量の子）。
+    let children: Vec<serde_json::Value> = (0..=limits::MAX_NODES)
+        .map(|i| json!({ "component": "text", "text": format!("t{i}") }))
+        .collect();
+    let spec = minimal(json!({ "component": "container", "children": children }));
+    let codes = error_codes(spec);
+    assert!(codes
+        .iter()
+        .any(|c| c == "gui.too_many_nodes" || c == "gui.too_many_children"));
+}
+
+#[test]
+fn rejects_table_row_mismatch_and_string_limits() {
+    assert_rejected_with(
+        minimal(json!({
+            "component": "table",
+            "columns": [ {"label": "a"}, {"label": "b"} ],
+            "rows": [ ["only-one"] ]
+        })),
+        "gui.table_row_mismatch",
+    );
+    assert_rejected_with(
+        minimal(json!({
+            "component": "text",
+            "text": "x".repeat(limits::MAX_TEXT_CHARS + 1)
+        })),
+        "gui.string_too_long",
+    );
+    // 制御文字（エスケープシーケンス注入）は補正でなく拒否。
+    assert_rejected_with(
+        minimal(json!({ "component": "text", "text": "bad\u{1b}[31mred" })),
+        "gui.control_char",
+    );
+}
+
+#[test]
+fn rejects_duplicate_and_invalid_ids() {
+    let spec = json!({
+        "version": 1,
+        "actions": [
+            { "type": "handler", "id": "a", "handler": "chat.submit" },
+            { "type": "tool", "id": "a", "tool": "doc_search" }
+        ],
+        "root": { "component": "button", "label": "x", "on_click": { "action": "a" } }
+    });
+    assert_rejected_with(spec, "gui.duplicate_action_id");
+
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "変な id!", "handler": "chat.submit" } ],
+        "root": { "component": "text", "text": "x" }
+    });
+    assert_rejected_with(spec, "gui.invalid_id");
+}
+
+#[test]
+fn rejects_unsupported_version_and_collects_all_errors() {
+    // 複数違反は全件収集される（最初の 1 件で止めない）。
+    let spec = json!({
+        "version": 2,
+        "actions": [ { "type": "tool", "id": "a", "tool": "shell" } ],
+        "root": { "component": "link", "text": "x", "href": "javascript:x" }
+    });
+    let codes = error_codes(spec);
+    assert!(codes.contains(&"gui.unsupported_version".to_string()));
+    assert!(codes.contains(&"gui.action_tool_forbidden".to_string()));
+    assert!(codes.contains(&"gui.forbidden_url_scheme".to_string()));
+}
+
+#[test]
+fn rejects_select_default_not_in_options() {
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "s", "handler": "chat.submit" } ],
+        "root": {
+            "component": "form", "id": "f", "submit": { "action": "s" },
+            "fields": [
+                { "component": "select", "id": "x", "label": "x",
+                  "options": [ {"value": "1", "label": "a"} ], "default": "9" }
+            ]
+        }
+    });
+    assert_rejected_with(spec, "gui.invalid_default");
+}
+
+#[test]
+fn oversized_spec_is_rejected() {
+    let spec = minimal(json!({
+        "component": "text",
+        "text": "y".repeat(limits::MAX_SPEC_BYTES + 1)
+    }));
+    assert_rejected_with(spec, "gui.spec_too_large");
+}

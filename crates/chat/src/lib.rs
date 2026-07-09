@@ -26,6 +26,7 @@
 pub mod approver;
 pub mod artifacts;
 pub mod error;
+pub mod gui_actions;
 pub mod model;
 pub mod store;
 pub mod worker;
@@ -34,6 +35,7 @@ pub mod workspace;
 pub use approver::DbApprover;
 pub use artifacts::StorageArtifactStore;
 pub use error::ChatError;
+pub use gui_actions::ChatSubmitHandler;
 pub use model::{
     Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunStatus, StreamEvent,
     StreamEventKind, Thread, ThreadRole,

@@ -12,6 +12,8 @@ pub mod me;
 pub mod search;
 pub mod secrets;
 pub mod shares;
+pub mod ui_actions;
+pub mod ui_specs;
 pub mod workflows;
 
 pub use me::get_me;

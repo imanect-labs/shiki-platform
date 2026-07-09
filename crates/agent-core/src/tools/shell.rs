@@ -60,7 +60,7 @@ impl ShellTool {
 impl Tool for ShellTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "shell"
+        crate::vocab::ToolName::Shell.as_str()
     }
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {

@@ -7,6 +7,9 @@
 //!   既知のプレフィックス（`search:` / `python:` / `websearch:` / `webfetch:`）で始まるとき、
 //!   対応するツールを 1 回だけ呼び出す（agent ループ・各ツールの決定的検証）。プレフィックス
 //!   に対応するツールが提示されていなければ最初のツールへフォールバックする（後方互換）。
+//! - generative UI（Phase 6）検証用の駆動プレフィックス `genui:`:
+//!   `genui:form|table|chart` は検証を通る固定スペック、`genui:bad` は不正スペック、
+//!   `genui:workflow <name>` は名前参照のワークフロー起動ボタンで `emit_ui` を呼ぶ。
 //! - 自律プロファイル（Phase 5）検証用の駆動プレフィックス:
 //!   - `plan: A, B, C` … 1 ターン目に `plan` メタツールをカンマ区切りのサブタスクで呼ぶ（計画分解の検証）。
 //!   - `loop:` … tool_result の有無に関わらず**毎ターン** tools[0] を空入力で呼び続ける
@@ -69,6 +72,70 @@ fn tool_trigger(user_text: &str) -> Option<(&'static str, &'static str, String)>
             .strip_prefix(prefix)
             .map(|rest| (*tool, *key, rest.trim().to_string()))
     })
+}
+
+/// `genui:` 駆動の固定 UI スペック（gui クレートの検証を通る形・`bad` のみ意図的に不正）。
+fn genui_spec(kind: &str) -> serde_json::Value {
+    use serde_json::json;
+    if let Some(name) = kind.strip_prefix("workflow") {
+        // `genui:workflow <name>`: 名前参照のワークフロー起動ボタン（検証時に version がピンされる）。
+        let name = name.trim();
+        return json!({
+            "version": 1,
+            "actions": [
+                { "type": "workflow", "id": "run", "workflow": { "name": name } }
+            ],
+            "root": {
+                "component": "container",
+                "title": "ワークフロー実行",
+                "children": [
+                    { "component": "button", "label": "実行", "on_click": { "action": "run" } }
+                ]
+            }
+        });
+    }
+    match kind {
+        "table" => json!({
+            "version": 1,
+            "root": {
+                "component": "table",
+                "title": "サンプル表",
+                "columns": [ { "label": "項目" }, { "label": "値", "align": "right" } ],
+                "rows": [ ["A", 1.0], ["B", 2.0] ]
+            }
+        }),
+        "chart" => json!({
+            "version": 1,
+            "root": {
+                "component": "chart",
+                "kind": "bar",
+                "title": "月次売上",
+                "data": [ { "x": "1月", "y": 10.0 }, { "x": "2月", "y": 20.0 } ]
+            }
+        }),
+        // カタログ外コンポーネント（検証拒否→テキストフォールバックの決定的検証用）。
+        "bad" => json!({
+            "version": 1,
+            "root": { "component": "iframe", "src": "https://evil.example" }
+        }),
+        // 既定はフォーム（chat.submit 束縛）。
+        _ => json!({
+            "version": 1,
+            "actions": [
+                { "type": "handler", "id": "submit", "handler": "chat.submit" }
+            ],
+            "root": {
+                "component": "form",
+                "id": "feedback",
+                "title": "フィードバック",
+                "submit": { "action": "submit" },
+                "submit_label": "送信",
+                "fields": [
+                    { "component": "text_input", "id": "comment", "label": "コメント", "required": true }
+                ]
+            }
+        }),
+    }
 }
 
 /// 単一ツール呼び出し（ToolUse で停止）のストリームを組む決定的ヘルパ。
@@ -142,6 +209,23 @@ impl LlmProvider for StubProvider {
                     return Ok(tool_call_stream(
                         plan_tool.name.clone(),
                         serde_json::json!({ "subtasks": subtasks }),
+                        prompt_tokens,
+                    ));
+                }
+            }
+        }
+
+        // --- generative UI 駆動 `genui:`（Phase 6 Task 6.4 の決定的検証）。 ---
+        // `genui:form|table|chart` は検証を通る固定スペックで emit_ui を呼び、
+        // `genui:bad` はカタログ外コンポーネントを含む不正スペック（フォールバック検証用）、
+        // `genui:workflow <name>` は名前参照のワークフロー起動ボタンを出す。
+        if !has_tool_result(req) {
+            if let Some(rest) = user_text.strip_prefix("genui:") {
+                if let Some(t) = req.tools.iter().find(|t| t.name == "emit_ui") {
+                    let spec = genui_spec(rest.trim());
+                    return Ok(tool_call_stream(
+                        t.name.clone(),
+                        serde_json::json!({ "spec": spec }),
                         prompt_tokens,
                     ));
                 }

@@ -33,7 +33,7 @@ impl WebSearchTool {
 impl Tool for WebSearchTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "web_search"
+        crate::vocab::ToolName::WebSearch.as_str()
     }
 
     #[allow(clippy::unnecessary_literal_bound)]

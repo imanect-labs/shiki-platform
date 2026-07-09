@@ -31,7 +31,7 @@ impl FsListTool {
 impl Tool for FsListTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "fs_list"
+        crate::vocab::ToolName::FsList.as_str()
     }
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
@@ -74,7 +74,7 @@ impl FsReadTool {
 impl Tool for FsReadTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "fs_read"
+        crate::vocab::ToolName::FsRead.as_str()
     }
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
@@ -116,7 +116,7 @@ impl GrepTool {
 impl Tool for GrepTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "grep"
+        crate::vocab::ToolName::Grep.as_str()
     }
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {

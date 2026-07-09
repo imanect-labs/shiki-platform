@@ -90,6 +90,8 @@ pub struct WorkerDeps {
     /// StorageService（自律プロファイルの file CRUD/shell ワークスペース・Task 5.4）。
     /// 未配線なら自律ツール（fs_*/grep/shell）を提示しない。
     pub storage: Option<Arc<storage::StorageService>>,
+    /// UI スペック検証（emit_ui ツール・Task 6.4）。未配線なら emit_ui を提示しない。
+    pub ui_validator: Option<Arc<gui::SpecValidator>>,
 }
 
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
@@ -107,6 +109,8 @@ pub struct ChatWorker {
     web_search: Option<Arc<dyn websearch::SearchProvider>>,
     /// StorageService（自律プロファイルのワークスペース）。
     storage: Option<Arc<storage::StorageService>>,
+    /// UI スペック検証（emit_ui ツール・Task 6.4）。
+    ui_validator: Option<Arc<gui::SpecValidator>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -119,6 +123,7 @@ impl ChatWorker {
             artifacts,
             web_search,
             storage,
+            ui_validator,
         } = deps;
         ChatWorker {
             db,
@@ -129,6 +134,7 @@ impl ChatWorker {
             artifacts,
             web_search,
             storage,
+            ui_validator,
             config: Arc::new(config),
         }
     }

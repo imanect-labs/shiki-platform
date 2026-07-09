@@ -91,6 +91,11 @@ impl WorkerSink {
                     name: artifact.name.clone(),
                 });
             }
+            // 検証済みスペックのみが emit_ui から届く（Task 6.4・検証は gui 側の信頼境界）。
+            AgentEvent::GenerativeUi { spec } => {
+                self.content
+                    .push(ContentBlock::GenerativeUi { spec: spec.clone() });
+            }
             // 自律プロファイルの構造化イベント（計画/サブタスク/予算/承認/失敗回復）は
             // content block へは projection しない（進捗の可視化はライブ SSE 側で扱う・W4 で結線）。
             AgentEvent::PlanUpdated(_)
@@ -128,6 +133,7 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
             node_id: artifact.node_id.clone(),
             name: artifact.name.clone(),
         },
+        AgentEvent::GenerativeUi { spec } => StreamEventKind::GenerativeUi { spec: spec.clone() },
         // 自律プロファイルの構造化イベント（Task 5.9 ライブ配信）。generation_event に append され
         // replay 可能（監査・5.10）だが message.content へは projection しない。
         AgentEvent::PlanUpdated(plan) => StreamEventKind::Plan {

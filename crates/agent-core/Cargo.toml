@@ -22,6 +22,8 @@ thiserror.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 url.workspace = true
+# ツール名語彙（vocab.rs）を TS へ生成する（codegen が正・workflow-engine と同型）。
+ts-rs = { workspace = true }
 
 [dev-dependencies]
 # 結合テスト（agent_it）は authz モック＋DB 直操作＋stub gateway で run_agent ループを走らせる。

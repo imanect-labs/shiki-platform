@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Context;
 use api::{
-    config::{AppConfig, AuthConfig, ObjectStoreBackend, Tenancy},
+    config::{AppConfig, AuthConfig, Tenancy},
     middleware::JwksCache,
     server::build_router,
     session::RedisSessionStore,
@@ -16,7 +16,7 @@ use authz::{
     model, AuthContext, AuthzClient, Consistency, Principal, Relation,
 };
 use sqlx::postgres::PgPoolOptions;
-use storage::{DirectoryStore, ObjectStore, S3ObjectStore, StorageService, TenantStore};
+use storage::{DirectoryStore, TenantStore};
 
 mod wiring;
 #[tokio::main]
@@ -59,39 +59,8 @@ async fn main() -> anyhow::Result<()> {
     // authz は AppState と StorageService で同一インスタンスを共有する（単一チョークポイント）。
     let authz: Arc<dyn AuthzClient> = Arc::new(fga);
 
-    // ストレージ: backend に応じて ObjectStore を選び StorageService を構築する。
-    // GCS は Phase 8 で同 trait 裏に追加する。s3 設定の必須チェックは minio の分岐内で行う
-    // （gcs 選択時に s3 未設定エラーで誤って落ちないようにする）。
-    let (object_store, presign_get_ttl, presign_put_ttl): (Arc<dyn ObjectStore>, _, _) =
-        match config.storage.backend {
-            ObjectStoreBackend::Minio => {
-                let s3 = config
-                    .storage
-                    .s3
-                    .as_ref()
-                    .context("storage.s3 が未設定です（backend=minio）")?;
-                (
-                    Arc::new(S3ObjectStore::new(s3)) as Arc<dyn ObjectStore>,
-                    s3.presign_get_ttl(),
-                    s3.presign_put_ttl(),
-                )
-            }
-            ObjectStoreBackend::Gcs => {
-                anyhow::bail!("storage.backend=gcs は Phase 8 で実装予定です")
-            }
-        };
-    object_store
-        .ensure_bucket()
-        .await
-        .context("オブジェクトストアのバケット準備に失敗")?;
-    let storage = Arc::new(StorageService::new(
-        db.clone(),
-        object_store.clone(),
-        authz.clone(),
-        presign_get_ttl,
-        presign_put_ttl,
-        config.storage.max_upload_size_bytes,
-    ));
+    // ストレージ: backend に応じて ObjectStore を選び StorageService を構築する（wiring）。
+    let (object_store, storage) = wiring::wire_storage(&config, &db, &authz).await?;
 
     let jwks = Arc::new(JwksCache::new(
         http.clone(),
@@ -109,12 +78,24 @@ async fn main() -> anyhow::Result<()> {
     // RAG（Phase 2）: enabled のときのみインジェスト・パイプラインと検索を配線する。
     let (search, rag_admin) = wiring::wire_rag(&config, &http, &db, &object_store, &authz)?;
 
-    // チャット（Phase 3）: enabled のとき llm-gateway＋生成ワーカーを配線し、API 用ストアを返す。
-    // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
-    let chat = wiring::wire_chat(&config, &http, &db, &authz, search.as_ref(), &storage).await?;
-
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
+    // UI スペック検証・解決（Task 6.3）: 保存・発話（emit_ui）・解決の全経路が共有する信頼境界。
+    let (ui_validator, ui_specs) = wiring::wire_gui(&db, &artifacts);
+
+    // チャット（Phase 3）: enabled のとき llm-gateway＋生成ワーカーを配線し、API 用ストアを返す。
+    // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
+    let chat = wiring::wire_chat(
+        &config,
+        &http,
+        &db,
+        &authz,
+        search.as_ref(),
+        &storage,
+        &ui_validator,
+    )
+    .await?;
+
     // ワークフロー IR ストア（Task 10.1a）: artifact の上に保存時検証を載せる。
     let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
 
@@ -146,6 +127,16 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
+    // 宣言的 UI アクションの実行系（Task 6.5）: chat.submit・安全ツール・workflow 起動を束ねる。
+    let ui_actions = wiring::wire_ui_actions(
+        &config,
+        &http,
+        &db,
+        chat.as_ref(),
+        search.as_ref(),
+        workflow_launcher.as_ref(),
+    )?;
+
     let bind = format!("{}:{}", config.server.host, config.server.port);
     let state = AppState {
         config: Arc::new(config),
@@ -158,6 +149,8 @@ async fn main() -> anyhow::Result<()> {
         http,
         storage,
         artifacts,
+        ui_specs,
+        ui_actions,
         secrets,
         workflows,
         workflow_launcher,

@@ -40,7 +40,7 @@ impl CodeInterpreterTool {
 impl Tool for CodeInterpreterTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "code_interpreter"
+        crate::vocab::ToolName::CodeInterpreter.as_str()
     }
 
     #[allow(clippy::unnecessary_literal_bound)]

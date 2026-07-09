@@ -4711,6 +4711,7 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
+ "ts-rs",
  "url",
  "uuid",
 ]
@@ -4742,6 +4743,7 @@ dependencies = [
  "shiki-artifact",
  "shiki-authz",
  "shiki-chat",
+ "shiki-gui",
  "shiki-llm-gateway",
  "shiki-rag",
  "shiki-sandbox-client",
@@ -4808,8 +4810,10 @@ dependencies = [
  "serde",
  "serde_json",
  "shiki-agent-core",
+ "shiki-artifact",
  "shiki-authz",
  "shiki-durable",
+ "shiki-gui",
  "shiki-jobq",
  "shiki-llm-gateway",
  "shiki-rag",
@@ -4841,6 +4845,29 @@ dependencies = [
 [[package]]
 name = "shiki-fuse"
 version = "0.0.0"
+
+[[package]]
+name = "shiki-gui"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "sha2 0.10.9",
+ "shiki-agent-core",
+ "shiki-artifact",
+ "shiki-authz",
+ "shiki-storage",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "ts-rs",
+ "utoipa",
+ "uuid",
+]
 
 [[package]]
 name = "shiki-jobq"
@@ -6503,6 +6530,7 @@ dependencies = [
  "lazy_static",
  "thiserror 2.0.18",
  "ts-rs-macros",
+ "uuid",
 ]
 
 [[package]]

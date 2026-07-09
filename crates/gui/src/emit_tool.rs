@@ -1,0 +1,87 @@
+//! `emit_ui` ツール（Task 6.4）— LLM が UI スペックを発話する唯一の手段。
+//!
+//! 検証（[`SpecValidator`]）を通過したスペックだけを `ToolOutcome::ui_specs` に載せ、
+//! chat 側が generative_ui ブロックとして SSE 配信・永続化する。検証失敗は
+//! `is_error` の観測としてモデルへ返し、モデルが自己修正するか通常テキストで回答する
+//! （＝安全なテキストフォールバック。**未検証スペックがブロック化される経路は存在しない**）。
+
+use std::sync::Arc;
+
+use agent_core::{Tool, ToolError, ToolName, ToolOutcome};
+use authz::AuthContext;
+
+use crate::validator::SpecValidator;
+
+/// UI スペック発話ツール。
+pub struct EmitUiTool {
+    validator: Arc<SpecValidator>,
+}
+
+impl EmitUiTool {
+    pub fn new(validator: Arc<SpecValidator>) -> Self {
+        EmitUiTool { validator }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for EmitUiTool {
+    fn name(&self) -> &str {
+        ToolName::EmitUi.as_str()
+    }
+
+    fn description(&self) -> &'static str {
+        "フォーム・テーブル・チャート等の UI をチャット内に描画する。spec には信頼カタログの \
+         コンポーネントツリー（JSON）を渡す。使えるコンポーネント: container / text / link / \
+         form（fields に text_input・select）/ button / table / chart（bar・line・area・pie）。\
+         フォーム送信やボタンは spec.actions に宣言した束縛（type: handler の chat.submit、\
+         type: tool の doc_search / web_search、type: workflow の name 参照）だけを action id で \
+         参照できる。検証に失敗した場合はエラーを直して再試行するか、通常のテキストで回答する。"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "spec": {
+                    "type": "object",
+                    "description": "UI スペック。{ version: 1, actions: [...], root: { component: ... } }"
+                }
+            },
+            "required": ["spec"]
+        })
+    }
+
+    async fn call(
+        &self,
+        ctx: &AuthContext,
+        input: serde_json::Value,
+        trace_id: Option<&str>,
+    ) -> Result<ToolOutcome, ToolError> {
+        let Some(spec) = input.get("spec") else {
+            return Ok(ToolOutcome::error(
+                "spec がありません。{ \"spec\": { \"version\": 1, \"root\": ... } } を渡してください。",
+            ));
+        };
+        match self.validator.validate(ctx, spec, "emit", trace_id).await {
+            Ok(resolved) => {
+                let mut outcome = ToolOutcome::ok("UI を表示しました。");
+                outcome.ui_specs.push(resolved.json);
+                Ok(outcome)
+            }
+            Err(errors) => {
+                // 全件をモデルへ観測として返す（自己修正 or テキスト回答へのフォールバック）。
+                let detail: Vec<String> = errors
+                    .iter()
+                    .map(|e| match &e.path {
+                        Some(p) => format!("- [{}] {} (at {})", e.code, e.message, p),
+                        None => format!("- [{}] {}", e.code, e.message),
+                    })
+                    .collect();
+                Ok(ToolOutcome::error(format!(
+                    "UI スペック検証に失敗しました（UI は表示されません）:\n{}",
+                    detail.join("\n")
+                )))
+            }
+        }
+    }
+}
