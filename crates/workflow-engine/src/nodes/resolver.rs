@@ -3,7 +3,7 @@
 //! [`ParamResolver`] は [`ValueResolver`](crate::control::eval::ValueResolver) を実装し、
 //! `$from` の源（`input` / `trigger` / `run` / `nodes.<id>.output`）を [`NodeContext`] から供給する。
 //! executor は本モジュールのヘルパ（[`resolve_field`] ＋型変換）で params の各フィールドを解決する。
-//! `each`（map 領域）は Stage A 未対応のため `None` を返す。
+//! `each`（map 領域の要素コンテキスト）は [`NodeContext::each`] から解決する（領域外は `None`）。
 
 use serde_json::Value;
 
@@ -36,7 +36,8 @@ impl<'a> ParamResolver<'a> {
                 let id = &name["nodes.".len()..name.len() - ".output".len()];
                 self.ctx.node_outputs.get(id).cloned()
             }
-            // `each` / `each.item` / `each.index` は map 領域（Stage A 未対応）。
+            // `each` → map 領域の要素コンテキスト（`{item,index}`・path で `/item`・`/index`）。ir.md §3.1。
+            "each" => self.ctx.each.clone(),
             _ => None,
         }
     }
@@ -120,8 +121,16 @@ mod tests {
             input,
             trigger: json!({}),
             node_outputs,
+            each: None,
             trace_id: None,
             scope_ceiling: vec![],
+        }
+    }
+
+    fn ctx_with_each(each: Value) -> NodeContext {
+        NodeContext {
+            each: Some(each),
+            ..ctx_with(json!({}), Value::Null)
         }
     }
 
@@ -161,7 +170,17 @@ mod tests {
     }
 
     #[test]
-    fn each_source_unsupported_in_stage_a() {
+    fn each_source_resolves_item_and_index() {
+        let ctx = ctx_with_each(json!({ "item": { "name": "a.txt" }, "index": 3 }));
+        let r = ParamResolver::new(&ctx);
+        let item = json!({ "x": { "$from": "each", "path": "/item/name" } });
+        assert_eq!(resolve_field(&item, "x", &r), Some(json!("a.txt")));
+        let idx = json!({ "x": { "$from": "each", "path": "/index" } });
+        assert_eq!(resolve_field(&idx, "x", &r), Some(json!(3)));
+    }
+
+    #[test]
+    fn each_source_none_outside_region() {
         let ctx = ctx_with(json!({}), Value::Null);
         let r = ParamResolver::new(&ctx);
         let params = json!({ "x": { "$from": "each", "path": "/item" } });

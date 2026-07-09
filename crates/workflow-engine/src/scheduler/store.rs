@@ -38,6 +38,8 @@ struct EventTriggerRow {
     tenant_id: String,
     trigger_id: String,
     workflow_id: Uuid,
+    /// トリガ spec（filter 条件木を含む）。
+    spec: sqlx::types::Json<serde_json::Value>,
 }
 
 /// スケジューラ/マッチャの永続化。
@@ -173,7 +175,13 @@ impl SchedulerStore {
         }
         // run_id が NULL（新規占有 or クラッシュ残り）→ ロック保持中に launch して記録する。
         let run_id = launcher
-            .launch(&t.tenant_id, t.workflow_id, "schedule", &t.trigger_id)
+            .launch(
+                &t.tenant_id,
+                t.workflow_id,
+                "schedule",
+                &t.trigger_id,
+                &serde_json::Value::Null,
+            )
             .await;
         sqlx::query(
             "UPDATE schedule_occurrence SET run_id = $5 \
@@ -213,37 +221,53 @@ impl SchedulerStore {
     /// イベント（storage.write）を該当する enabled トリガへマッチさせ run を起動する（engine.md §5.4）。
     ///
     /// `event_id`（outbox id）で `trigger_firing` を UNIQUE 記録し、outbox 1 件につき最大 1 run。
-    /// 戻り値 = 起動した run 数。
+    /// `event_folder` はイベント発生フォルダ id（**祖先束縛**の照合対象）・`payload` はイベントペイロード
+    /// （filter 評価と `$from trigger` 透過に使う）。戻り値 = 起動した run 数。
     pub async fn match_event(
         &self,
         tenant_id: &str,
         source: &str,
         event_id: i64,
-        scope: &serde_json::Value,
+        event_folder: Option<Uuid>,
+        payload: &serde_json::Value,
         launcher: &dyn RunLauncher,
     ) -> Result<usize, SchedulerStoreError> {
         // (tenant, kind=event, source) index で候補トリガを引く（enabled かつ有効化バージョン一致のみ）。
-        // 包含は **event scope ⊇ trigger の spec.scope**（イベントは folder + 追加フィールドを持ち得るため、
-        // トリガの束縛スコープをイベントが含んでいればマッチ）。従来は逆（trigger が event 全体を含む）で、
-        // 追加フィールド付きイベントが一致しなかった。
+        // **祖先束縛**: トリガの folder scope が、イベント発生フォルダの祖先（node_closure・自分自身 depth 0
+        // を含むので完全一致も包含）なら一致する。folder scope 無しのトリガは source 一致で通す。
         let triggers: Vec<EventTriggerRow> = sqlx::query_as(
-            "SELECT t.tenant_id, t.trigger_id, t.workflow_id FROM workflow_trigger t \
+            "SELECT t.tenant_id, t.trigger_id, t.workflow_id, t.spec FROM workflow_trigger t \
              JOIN workflow_registration r \
                ON r.tenant_id = t.tenant_id AND r.workflow_id = t.workflow_id \
              WHERE t.tenant_id = $1 AND t.kind = 'event' AND t.source = $2 \
                AND t.enabled AND r.status = 'enabled' \
                AND t.version = r.enabled_version \
-               AND $3 @> COALESCE(t.spec->'scope', '{}'::jsonb)",
+               AND ( (t.spec->'scope'->>'folder') IS NULL \
+                     OR EXISTS ( SELECT 1 FROM node_closure c \
+                                 WHERE c.tenant_id = $1 \
+                                   AND c.ancestor = (t.spec->'scope'->>'folder')::uuid \
+                                   AND c.descendant = $3 ) )",
         )
         .bind(tenant_id)
         .bind(source)
-        .bind(sqlx::types::Json(scope))
+        .bind(event_folder)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
 
         let mut fired = 0usize;
         for t in &triggers {
+            // filter 評価（イベントペイロードに対して・fail-closed: 不正 filter/不一致は発火しない・§5.6）。
+            if let Some(filter_json) = t.spec.0.get("filter").filter(|v| !v.is_null()) {
+                match serde_json::from_value::<crate::ir::expr::Condition>(filter_json.clone()) {
+                    Ok(cond) if crate::control::event_filter_matches(&cond, payload) => {}
+                    Ok(_) => continue,
+                    Err(e) => {
+                        tracing::warn!(error = %e, tenant = tenant_id, trigger = %t.trigger_id, "トリガ filter が不正（fail-closed）");
+                        continue;
+                    }
+                }
+            }
             // (trigger_id, event_id) UNIQUE で 1 イベント 1 run。占有 INSERT ＋ FOR UPDATE 行ロックで
             // 並行 tick/再配信を直列化しつつ、launch 前クラッシュで run_id が NULL のまま残った firing は
             // 次配信で再起動できるようにする（occurrence と同じ回復方式）。
@@ -273,7 +297,7 @@ impl SchedulerStore {
                 continue;
             }
             let run_id = launcher
-                .launch(&t.tenant_id, t.workflow_id, "event", &t.trigger_id)
+                .launch(&t.tenant_id, t.workflow_id, "event", &t.trigger_id, payload)
                 .await;
             sqlx::query(
                 "UPDATE trigger_firing SET run_id = $4 \

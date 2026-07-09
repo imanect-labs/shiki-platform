@@ -3,14 +3,40 @@
 //! - `eval`: 条件・値式の**純関数**評価（`$from`/`$template`/条件木）。
 //! - branch/switch の出力ポート決定も純関数（[`branch_port`]/[`switch_port`]）。
 //! - join の待ち合わせ・skip 伝播は [`run::readiness`](crate::run::readiness)（前進 TX が使う）。
-//! - map（動的 fan-out）・wait（タイマ/イベント）は実行時の永続化を伴う（最終 PR で結線）。
+//! - map（動的 fan-out）・wait（タイマ/イベント）の永続化は [`run::store`](crate::run::store)（checkpoint/
+//!   scheduler 起床）で結線する。[`event_filter_matches`] はトリガ/wait のイベント filter 評価。
 
 pub mod eval;
 
 use serde_json::Value;
 
-use crate::ir::expr::{Condition, ValueExpr};
+use crate::ir::expr::{Condition, FromRef, ValueExpr};
 use eval::{eval_condition, resolve_value, ValueResolver};
+
+/// イベントペイロードに対する `$from` リゾルバ（トリガ/wait の filter 評価用）。
+///
+/// filter はイベントペイロードに対して評価する（engine.md §5.4）。`$from` の source は
+/// `trigger` / `event` / `payload` がペイロード全体を指す（`path` で JSON Pointer 適用）。
+pub struct PayloadResolver<'a> {
+    pub payload: &'a Value,
+}
+
+impl ValueResolver for PayloadResolver<'_> {
+    fn resolve_from(&self, from: &FromRef) -> Option<Value> {
+        match from.from.as_str() {
+            "trigger" | "event" | "payload" => match &from.path {
+                Some(p) => self.payload.pointer(p).cloned(),
+                None => Some(self.payload.clone()),
+            },
+            _ => None,
+        }
+    }
+}
+
+/// イベント filter がペイロードに一致するか（fail-closed: 型不一致・未解決は false）。
+pub fn event_filter_matches(filter: &Condition, payload: &Value) -> bool {
+    eval_condition(filter, &PayloadResolver { payload })
+}
 
 /// branch の出力ポートを決める（条件成立で `"true"`、不成立で `"false"`）。
 pub fn branch_port(condition: &Condition, r: &dyn ValueResolver) -> &'static str {

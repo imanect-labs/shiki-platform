@@ -106,9 +106,31 @@ impl RunGraph {
     }
 
     /// map 領域の親（領域外は None）。
-    #[allow(dead_code)]
     pub fn parent(&self, node_id: &str) -> Option<&str> {
         self.parents.get(node_id).and_then(|p| p.as_deref())
+    }
+
+    /// map 領域（parent==map_id）のノード id 一覧。
+    pub fn region_nodes(&self, map_id: &str) -> Vec<&str> {
+        self.parents
+            .iter()
+            .filter_map(|(id, p)| (p.as_deref() == Some(map_id)).then_some(id.as_str()))
+            .collect()
+    }
+
+    /// 領域の入口（領域内 in-edge 0・複数可）。領域閉包（V2）で in-edge は領域内に閉じる。
+    pub fn region_entry_nodes(&self, map_id: &str) -> Vec<&str> {
+        self.region_nodes(map_id)
+            .into_iter()
+            .filter(|n| self.in_edges(n).is_empty())
+            .collect()
+    }
+
+    /// 領域の出口（領域内 out-edge 0・V2 でちょうど 1 つ）。
+    pub fn region_exit_node(&self, map_id: &str) -> Option<&str> {
+        self.region_nodes(map_id)
+            .into_iter()
+            .find(|n| self.out_edges(n).is_empty())
     }
 }
 

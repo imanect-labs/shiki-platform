@@ -84,6 +84,7 @@ impl WorkflowRunLauncher {
         workflow_id: Uuid,
         trigger_kind: &str,
         trigger_id: &str,
+        payload: &Value,
     ) -> Result<Option<Uuid>, LauncherError> {
         // registration から **有効化バージョンと org** を取る（enable 時に固定した版・org で実行する）。
         // 未登録/未有効化なら run を作らない。
@@ -129,6 +130,7 @@ impl WorkflowRunLauncher {
 
         let ir_json = serde_json::to_value(&ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
         let graph = RunGraph::build(&ir);
+        // event ペイロードを run 入力に載せる（$from trigger/$from input で参照可能・schedule は Null）。
         let run_id = self
             .runs
             .create_run(
@@ -140,7 +142,7 @@ impl WorkflowRunLauncher {
                 Some(trigger_id),
                 &workflow_id.to_string(),
                 "workflow",
-                &Value::Null,
+                payload,
                 &ir_json,
                 &graph,
             )
@@ -158,9 +160,10 @@ impl RunLauncher for WorkflowRunLauncher {
         workflow_id: Uuid,
         trigger_kind: &str,
         trigger_id: &str,
+        payload: &Value,
     ) -> Option<Uuid> {
         match self
-            .launch_delegated(tenant_id, workflow_id, trigger_kind, trigger_id)
+            .launch_delegated(tenant_id, workflow_id, trigger_kind, trigger_id, payload)
             .await
         {
             Ok(run_id) => run_id,

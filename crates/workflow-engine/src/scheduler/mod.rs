@@ -11,6 +11,7 @@ pub mod leader;
 pub mod store;
 
 use async_trait::async_trait;
+use serde_json::Value;
 use uuid::Uuid;
 
 pub use leader::LeaderLease;
@@ -23,11 +24,15 @@ pub use store::{SchedulerStore, SchedulerStoreError};
 #[async_trait]
 pub trait RunLauncher: Send + Sync {
     /// 指定ワークフローの run を起動し run_id を返す（起動しなければ `None`）。
+    ///
+    /// `payload` はトリガペイロード（event はイベントペイロード・schedule は `Null`）。run の入力に載せ、
+    /// `$from trigger`/`$from input` で参照できるようにする（engine.md §6.1）。
     async fn launch(
         &self,
         tenant_id: &str,
         workflow_id: Uuid,
         trigger_kind: &str,
         trigger_id: &str,
+        payload: &Value,
     ) -> Option<Uuid>;
 }
