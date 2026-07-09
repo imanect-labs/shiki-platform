@@ -567,3 +567,142 @@ async fn rag_search_dispatch_denied_when_unconfigured() {
         "rag.search が forbidden で失敗"
     );
 }
+
+// ------- Test 5: map 動的 fan-out（本番 executor・要素ごと storage.write）--------
+
+/// map が items 各要素を storage.write で書き、集約後に後続が実行される（#178）。
+#[tokio::test]
+async fn map_fans_out_storage_writes_per_item() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let ir = json!({
+        "ir_version": 1, "name": "e2e-map",
+        "declared_scopes": ["storage.write"],
+        "nodes": [
+            { "id": "m", "type": "control.map", "params": {
+                "items": { "$from": "input", "path": "/files" } } },
+            { "id": "w", "type": "storage.write", "parent": "m", "params": {
+                "name": { "$from": "each", "path": "/item" },
+                "content": { "$from": "each", "path": "/item" } } },
+            { "id": "done", "type": "storage.write", "params": { "name": "done.txt", "content": "ok" } }
+        ],
+        "edges": [{ "from": "m", "to": "done" }],
+        "triggers": [{ "kind": "interactive" }]
+    });
+    let (run_id, status) = h
+        .run_to_completion(
+            &ir,
+            &json!({ "files": ["alpha", "beta", "gamma"] }),
+            executor,
+        )
+        .await;
+    assert_eq!(status, RunStatus::Succeeded, "map fan-out が完走する");
+
+    // 各要素が each.item で別ファイルを書く（能力ゲートウェイ→StorageService を要素ごと通る）。
+    for name in ["alpha", "beta", "gamma"] {
+        assert_eq!(
+            h.read_file_by_name(name).await.as_deref(),
+            Some(name),
+            "{name} が書かれる"
+        );
+    }
+    let steps = h.step_map(run_id).await;
+    for i in 0..3 {
+        assert_eq!(
+            steps.get(&format!("m[{i}].w")),
+            Some(&StepStatus::Succeeded),
+            "要素 {i} が succeeded"
+        );
+    }
+    assert_eq!(
+        steps.get("done"),
+        Some(&StepStatus::Succeeded),
+        "map 集約後の後続が実行"
+    );
+}
+
+// ------- Test 6: wait durable ＋ error ポート（本番 executor）------------------
+
+/// wait(duration) で中断→スケジューラ起床→storage.read 失敗を error ポートで握って継続する（#178/#179）。
+#[tokio::test]
+async fn wait_then_error_port_through_production_executor() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let bad_id = Uuid::new_v4().to_string();
+    let ir = json!({
+        "ir_version": 1, "name": "e2e-wait-err",
+        "declared_scopes": ["storage.read", "storage.write"],
+        "nodes": [
+            { "id": "wait", "type": "control.wait", "params": { "kind": "duration", "duration_sec": 0 } },
+            { "id": "rd", "type": "storage.read", "on_error": "continue",
+              "params": { "id": bad_id } },
+            { "id": "recover", "type": "storage.write", "params": { "name": "recovered.txt", "content": "recovered" } },
+            { "id": "normal", "type": "storage.write", "params": { "name": "normal.txt", "content": "normal" } }
+        ],
+        "edges": [
+            { "from": "wait", "to": "rd" },
+            { "from": "rd", "from_port": "error", "to": "recover" },
+            { "from": "rd", "to": "normal" }
+        ],
+        "triggers": [{ "kind": "interactive" }]
+    });
+    let wf_id = h.save(&ir).await;
+    let run_id = h
+        .launcher
+        .start_interactive(&h.alice, wf_id, &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let worker = workflow_engine::WorkflowWorker::new(
+        h.runs.clone(),
+        Arc::clone(&executor),
+        WorkerConfig::default(),
+    )
+    .scoped_to_tenant(&h.tenant);
+
+    // ワーカーは wait で中断し解放される（done は未実行）。
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    assert_eq!(
+        h.step_map(run_id).await.get("wait"),
+        Some(&StepStatus::WaitingTimer),
+        "wait は waiting_timer で待機"
+    );
+
+    // スケジューラ相当の起床（ワーカー解放を跨ぐ durable 継続）。
+    let woke = h
+        .runs
+        .wake_due_timers(
+            chrono::Utc::now() + chrono::Duration::seconds(10),
+            Some(&h.tenant),
+        )
+        .await
+        .unwrap();
+    assert_eq!(woke, 1);
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+
+    assert_eq!(
+        h.runs.run_status(&h.tenant, run_id).await.unwrap(),
+        Some(RunStatus::Succeeded),
+        "error ポートで握って run は succeeded"
+    );
+    let steps = h.step_map(run_id).await;
+    assert_eq!(
+        steps.get("rd"),
+        Some(&StepStatus::Failed),
+        "storage.read が失敗"
+    );
+    assert_eq!(
+        steps.get("recover"),
+        Some(&StepStatus::Succeeded),
+        "error 後続が実行される"
+    );
+    assert_eq!(
+        steps.get("normal"),
+        Some(&StepStatus::Skipped),
+        "out 後続は skip される"
+    );
+    assert_eq!(
+        h.read_file_by_name("recovered.txt").await.as_deref(),
+        Some("recovered")
+    );
+}

@@ -11,10 +11,13 @@ use uuid::Uuid;
 
 use super::graph::RunGraph;
 use super::model::{idempotency_key, RunStatus, StepStatus};
-use super::readiness::{readiness_join, readiness_non_join, EdgeState, InEdge, Readiness};
-use crate::vocab::{NodeType, RunEventKind};
+use super::readiness::EdgeState;
+use crate::vocab::RunEventKind;
 
 mod advance;
+mod backoff;
+mod map_region;
+mod wait;
 
 /// step の durable テーブル記述子（複合キー・attempt は claim で増やさない・engine.md §9.5）。
 const STEP_SPEC: RunTableSpec = RunTableSpec {
@@ -60,6 +63,8 @@ pub struct ClaimedStep {
     pub fencing_token: i64,
     pub idempotency_key: String,
     pub input: Json<Value>,
+    /// step 固有の入力（map 要素の `each` コンテキスト等）。静的ノードは NULL。
+    pub step_input: Option<Json<Value>>,
     /// 開始時にピンした IR（ワーカーがノード params/retry を引く）。
     pub ir_snapshot: Json<Value>,
 }
@@ -182,7 +187,7 @@ impl RunStore {
                AND s.step_path = picked.step_path \
              RETURNING s.run_id, s.step_path, s.node_id, s.tenant_id, r.org, r.principal, \
                        r.principal_kind, s.attempt, s.fencing_token, s.idempotency_key, \
-                       r.input, r.ir_snapshot",
+                       r.input, s.input AS step_input, r.ir_snapshot",
         )
         .bind(worker_id)
         .bind(lease_secs)
@@ -296,20 +301,23 @@ impl RunStore {
             .collect())
     }
 
-    /// run 内で **成功済み** step の `node_id → output` を集める（`$from nodes.<id>.output` 解決用）。
+    /// 実行対象 step から見える `node_id → output` を集める（`$from nodes.<id>.output` 解決用）。
     ///
     /// ワーカーが次ノード実行前に呼び、[`NodeContext`](super::NodeContext) の `node_outputs` を組む。
-    /// map 要素（`<map_id>[<index>].<node_id>`）は Stage A 未対応のため静的ノードのみ対象。
+    /// `step_path` が map 要素（`<map>[i].<node>`）なら **同一要素スコープの兄弟出力**＋静的 body 出力を、
+    /// 静的ノードなら静的 body 出力のみを返す（要素どうしを混同しない）。ノード id は IR 内で一意なので
+    /// スコープ横断でキー衝突しない。on_error=continue で error ポートを取った failed step も含める
+    /// （`$from nodes.<id>.output.error.*` で参照できるように）。
     pub async fn step_outputs(
         &self,
         tenant_id: &str,
         run_id: Uuid,
+        step_path: &str,
     ) -> Result<Vec<(String, Value)>, RunStoreError> {
-        // 成功 step に加え、on_error=continue で error ポートを取った failed step も対象にする
-        // （error オブジェクトを `$from nodes.<id>.output.error.*` で後続が参照できるように）。
+        let (scope_prefix, _) = map_region::split_step_path(step_path);
         let rows: Vec<(String, Option<Json<Value>>)> = sqlx::query_as(
-            "SELECT node_id, output FROM step_execution \
-             WHERE tenant_id = $1 AND run_id = $2 AND step_path = node_id \
+            "SELECT step_path, output FROM step_execution \
+             WHERE tenant_id = $1 AND run_id = $2 \
                AND (status = 'succeeded' \
                     OR (status = 'failed' AND 'error' = ANY(taken_ports)))",
         )
@@ -320,7 +328,12 @@ impl RunStore {
         .map_err(map_db)?;
         Ok(rows
             .into_iter()
-            .map(|(id, out)| (id, out.map_or(Value::Null, |j| j.0)))
+            .filter_map(|(sp, out)| {
+                let (sp_scope, sp_node) = map_region::split_step_path(&sp);
+                // 静的 body 出力（scope 空）＋自要素スコープの兄弟出力のみを見せる。
+                (sp_scope.is_empty() || sp_scope == scope_prefix)
+                    .then(|| (sp_node.to_string(), out.map_or(Value::Null, |j| j.0)))
+            })
             .collect())
     }
 }
@@ -337,31 +350,6 @@ pub(crate) fn edge_state(
         EdgeState::Live
     } else {
         EdgeState::Dead
-    }
-}
-
-/// ノードの readiness をグラフ＋源 step 状態から判定する。
-pub(crate) fn node_readiness(
-    node_id: &str,
-    graph: &RunGraph,
-    terminal_ports: &std::collections::HashMap<String, Vec<String>>,
-) -> Readiness {
-    let edges: Vec<InEdge> = graph
-        .in_edges(node_id)
-        .iter()
-        .map(|(from, from_port)| {
-            let terminal = terminal_ports.contains_key(from);
-            let taken = terminal_ports.get(from).cloned().unwrap_or_default();
-            InEdge {
-                from: from.clone(),
-                state: edge_state(from_port, terminal, &taken),
-            }
-        })
-        .collect();
-    match graph.node_type(node_id) {
-        // join の待ち合わせモードは IR の params.mode（"any"=初回 live で発火・既定 "all"）。
-        Some(NodeType::ControlJoin) => readiness_join(graph.join_mode(node_id), &edges),
-        _ => readiness_non_join(&edges),
     }
 }
 
@@ -393,6 +381,7 @@ pub(crate) async fn append_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run::readiness::Readiness;
     use std::collections::HashMap;
 
     #[test]
@@ -403,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn node_readiness_linear() {
+    fn scoped_readiness_static_linear() {
         use crate::ir::WorkflowIr;
         use serde_json::json;
         let ir = WorkflowIr::from_json(&json!({
@@ -416,14 +405,17 @@ mod tests {
         }))
         .unwrap();
         let graph = RunGraph::build(&ir);
-        // a 未 terminal → b は NotYet。
+        // 静的スコープ（scope 空）は step_path==node_id。a 未 terminal → b は NotYet。
         let mut ports: HashMap<String, Vec<String>> = HashMap::new();
-        assert_eq!(node_readiness("b", &graph, &ports), Readiness::NotYet);
+        let r = |ports: &HashMap<String, Vec<String>>| {
+            map_region::scoped_readiness("", "b", &graph, ports)
+        };
+        assert_eq!(r(&ports), Readiness::NotYet);
         // a が out を出した → b は Ready。
         ports.insert("a".into(), vec!["out".into()]);
-        assert_eq!(node_readiness("b", &graph, &ports), Readiness::Ready);
+        assert_eq!(r(&ports), Readiness::Ready);
         // a が別ポート（out 以外）→ b は Skip。
         ports.insert("a".into(), vec!["error".into()]);
-        assert_eq!(node_readiness("b", &graph, &ports), Readiness::Skip);
+        assert_eq!(r(&ports), Readiness::Skip);
     }
 }

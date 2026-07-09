@@ -32,7 +32,14 @@ struct CountingLauncher {
 
 #[async_trait]
 impl RunLauncher for CountingLauncher {
-    async fn launch(&self, _t: &str, _w: Uuid, _k: &str, _tid: &str) -> Option<Uuid> {
+    async fn launch(
+        &self,
+        _t: &str,
+        _w: Uuid,
+        _k: &str,
+        _tid: &str,
+        _payload: &serde_json::Value,
+    ) -> Option<Uuid> {
         self.launches.fetch_add(1, Ordering::SeqCst);
         Some(Uuid::new_v4())
     }
@@ -176,12 +183,57 @@ async fn disabled_workflow_does_not_fire() {
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 0);
 }
 
+/// フォルダノード＋自己 closure（depth 0）を作る。`parent` を渡すと祖先 closure も張る。
+async fn mk_folder(pool: &PgPool, tenant: &str, id: Uuid, parent: Option<Uuid>) {
+    sqlx::query(
+        "INSERT INTO node (id, org, tenant_id, kind, name, parent_id, created_by) \
+         VALUES ($1, 'acme', $2, 'folder', $3, $4, 'alice')",
+    )
+    .bind(id)
+    .bind(tenant)
+    .bind(id.to_string())
+    .bind(parent)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO node_closure (org, tenant_id, ancestor, descendant, depth) \
+         VALUES ('acme', $1, $2, $2, 0)",
+    )
+    .bind(tenant)
+    .bind(id)
+    .execute(pool)
+    .await
+    .unwrap();
+    if let Some(p) = parent {
+        // p の全祖先 → id への closure を depth+1 で張る（自己含む）。
+        sqlx::query(
+            "INSERT INTO node_closure (org, tenant_id, ancestor, descendant, depth) \
+             SELECT 'acme', $1, c.ancestor, $2, c.depth + 1 FROM node_closure c \
+             WHERE c.tenant_id = $1 AND c.descendant = $3",
+        )
+        .bind(tenant)
+        .bind(id)
+        .bind(p)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
 #[tokio::test]
 async fn storage_write_event_triggers_run_once() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let wf = Uuid::new_v4();
-    // folder スコープにマッチする event トリガ。
+    // フォルダ階層: parent > child。トリガは parent に束縛（祖先束縛で child のイベントも拾う）。
+    let parent = Uuid::new_v4();
+    let child = Uuid::new_v4();
+    let unrelated = Uuid::new_v4();
+    mk_folder(&pool, &tenant, parent, None).await;
+    mk_folder(&pool, &tenant, child, Some(parent)).await;
+    mk_folder(&pool, &tenant, unrelated, None).await;
+
     register(
         &pool,
         &tenant,
@@ -190,36 +242,52 @@ async fn storage_write_event_triggers_run_once() {
         "trg-e",
         "event",
         Some("storage.write"),
-        json!({ "scope": { "folder": "reports" } }),
+        json!({ "scope": { "folder": parent.to_string() } }),
     )
     .await;
     let store = SchedulerStore::new(pool.clone());
     let launcher = Arc::new(CountingLauncher {
         launches: AtomicUsize::new(0),
     });
+    let payload = json!({ "parent_id": child.to_string() });
 
-    let scope = json!({ "folder": "reports" });
+    // 祖先束縛: サブフォルダ（child）配下のイベントが parent 束縛トリガで発火する。
     let fired = store
-        .match_event(&tenant, "storage.write", 42, &scope, launcher.as_ref())
+        .match_event(
+            &tenant,
+            "storage.write",
+            42,
+            Some(child),
+            &payload,
+            launcher.as_ref(),
+        )
         .await
         .unwrap();
-    assert_eq!(fired, 1, "storage 書込でワークフローが起動する");
+    assert_eq!(fired, 1, "サブフォルダ配下の書込が祖先束縛トリガで起動する");
 
     // 同一 event_id は再発火しない（outbox 1 件 1 run）。
     let again = store
-        .match_event(&tenant, "storage.write", 42, &scope, launcher.as_ref())
+        .match_event(
+            &tenant,
+            "storage.write",
+            42,
+            Some(child),
+            &payload,
+            launcher.as_ref(),
+        )
         .await
         .unwrap();
     assert_eq!(again, 0);
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
 
-    // スコープが合わないイベントはマッチしない。
+    // 祖先関係にないフォルダのイベントはマッチしない。
     let other = store
         .match_event(
             &tenant,
             "storage.write",
             43,
-            &json!({ "folder": "other" }),
+            Some(unrelated),
+            &json!({ "parent_id": unrelated.to_string() }),
             launcher.as_ref(),
         )
         .await

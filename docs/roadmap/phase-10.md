@@ -30,10 +30,11 @@
 > （能力ゲートウェイ→チョークポイントのポート注入・#149）・server 起動時の worker/scheduler/イベント relay
 > spawn＋storage in-TX 冪等（exactly-once）＋principal_kind＋対話 run API（#151）を実装。W4 DoD e2e
 > （本番 executor で対話 run 完走）緑。**on_error=continue（error ポート）は #179 で実装**（失敗を
-> error ポートのデータフローへ変換し「処理済み失敗」として run 成否から除外）。**Stage A の未実装
-> （正直に明示・後続）**: map/wait の durable 実行（wake_at/wait_subscription/動的 fan-out/スケジューラ
-> 起床経路・#178 で実装予定）。executor は map/wait を `unsupported_stage_a` で明示失敗させ偽装しない。
-> イベントトリガ scope は親フォルダ完全一致（祖先束縛・filter 評価・$from trigger 透過は #178 で実装予定）。
+> error ポートのデータフローへ変換し「処理済み失敗」として run 成否から除外）。**map/wait の durable
+> 実行・イベントトリガ祖先束縛は #178 で実装**: wait(timer=`step_execution.wake_at`／event=`wait_subscription`)
+> をスケジューラ tick が「ready に戻さず直接 terminal 化」で起床、map は `waiting_map`＋要素スコープ前進で
+> 動的 fan-out→集約（fail_map/collect）、イベント scope は `node_closure` 祖先束縛＋filter 評価、event
+> ペイロードは run 入力に載せて `$from trigger` 透過。`unsupported_stage_a`（map/wait 分）は撤去済み。
 
 > **human 決定（2026-07-07）**: Phase 10 のエンジン核心に**部分前倒しで着手**する。詳細設計（docs/workflow/・#119）が
 > 完了しており、依存分析の結果、本フェーズの本質的ブロッカーは Phase 9 全体ではなく **6.1（artifact 共通枠）と

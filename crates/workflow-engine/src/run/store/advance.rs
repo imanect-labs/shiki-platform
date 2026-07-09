@@ -14,39 +14,12 @@ use super::super::graph::RunGraph;
 use super::super::model::{RunStatus, StepStatus};
 use super::super::readiness::Readiness;
 use super::super::NodeResult;
-use super::{append_event, map_db, node_readiness, RunStoreError};
+use super::map_region::{self, MapOutcome};
+use super::{append_event, map_db, RunStoreError};
 use crate::ir::OnError;
 use crate::vocab::RunEventKind;
 
-/// backoff（指数＋full jitter・engine.md §7.4）。jitter の乱数は (run_id, step_path, attempt) の
-/// FNV ハッシュから決定的に導く（Math.random 不使用・リプレイ安全・thundering herd 回避）。
-/// **run_id を種に含める**ことで、共有障害・429 storm でも run ごとに遅延が分散する（同一ノードの
-/// 全 run が同時に起きない）。
-fn next_retry_delay_secs(run_id: Uuid, step_path: &str, attempt: i32) -> i64 {
-    let base: i64 = 2;
-    let cap: i64 = 300;
-    let rand01 = deterministic_rand01(run_id, step_path, attempt);
-    crate::retry::backoff_with_jitter(attempt, base, cap, rand01)
-}
-
-/// (run_id, step_path, attempt) から `[0, 1)` の決定的乱数を導く（FNV-1a → 正規化）。
-fn deterministic_rand01(run_id: Uuid, step_path: &str, attempt: i32) -> f64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in run_id
-        .as_bytes()
-        .iter()
-        .copied()
-        .chain(step_path.bytes())
-        .chain(attempt.to_le_bytes())
-    {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    // 上位 53 bit を [0,1) へ。
-    #[allow(clippy::cast_precision_loss)]
-    let v = (h >> 11) as f64 / (1u64 << 53) as f64;
-    v
-}
+use super::backoff::next_retry_delay_secs;
 
 /// checkpoint＋前進の本体。
 ///
@@ -96,6 +69,36 @@ pub(super) async fn checkpoint_and_advance(
     if current_fencing != Some(claimed.fencing_token) {
         tx.rollback().await.map_err(map_db)?;
         return Ok(false); // ゾンビ（別ワーカーが再 claim 済み）。
+    }
+
+    // wait の中断（timer/event）: terminal 化せず待機状態にしてワーカーを解放する（engine.md §9）。
+    if let Some(suspend) = &result.suspend {
+        super::wait::handle_suspend(&mut tx, claimed, suspend).await?;
+        tx.commit().await.map_err(map_db)?;
+        return Ok(true);
+    }
+
+    // map の動的 fan-out: 要素を挿入し map step を waiting_map にする（engine.md §4.5）。
+    if let Some(fanout) = &result.fanout {
+        let count = map_region::insert_fanout(
+            &mut tx,
+            tenant_id,
+            run_id,
+            graph,
+            &claimed.step_path,
+            on_error,
+            fanout,
+        )
+        .await?;
+        if count == 0 {
+            // 空 map は即集約して後続を前進させる（要素が無いので必ず成功・run 失敗しない）。
+            let _ =
+                map_region::aggregate_map(&mut tx, tenant_id, run_id, &claimed.step_path).await?;
+            advance_downstream(&mut tx, tenant_id, run_id, graph).await?;
+            finalize_run_if_done(&mut tx, tenant_id, run_id).await?;
+        }
+        tx.commit().await.map_err(map_db)?;
+        return Ok(true);
     }
 
     // リトライ判定（engine.md §7.4）: エラーを分類し ready へ戻すか terminal 化するか決める。
@@ -229,8 +232,10 @@ pub(super) async fn checkpoint_and_advance(
 
     // fail_run（既定）で step が失敗したら run を即 failed 化し、残る非 terminal step を cancelled に
     // する。こうしないと ready/running の兄弟が run 失敗後も claim され副作用を起こし得る（P1）。
-    // on_error=continue の失敗は run を落とさず下の前進へ落とす。
-    if !result.ok && !continue_on_error {
+    // 例外: ①on_error=continue は run を落とさず下の前進へ ②map 領域要素（step_path に `[`）の失敗は
+    // 要素内 skip に留め、他要素を完走させてから map 集約で扱う（engine.md §4.5・ir.md §5.3）。
+    let is_region_element = claimed.step_path.contains('[');
+    if !result.ok && !continue_on_error && !is_region_element {
         cancel_remaining_steps(&mut tx, tenant_id, run_id).await?;
         sqlx::query(
             "UPDATE workflow_run SET status = 'failed', finished_at = now(), updated_at = now() \
@@ -253,27 +258,42 @@ pub(super) async fn checkpoint_and_advance(
         return Ok(true);
     }
 
-    // 後続 readiness 化＋skip 伝播（fixpoint・全 step を読んでメモリで判定し書き戻す）。
-    advance_downstream(&mut tx, tenant_id, run_id, graph).await?;
-
-    // run 終了判定（全 step terminal で run terminal）。
-    finalize_run_if_done(&mut tx, tenant_id, run_id).await?;
+    // 後続 readiness 化＋skip 伝播＋map 集約（fixpoint）。map が fail_run で失敗したら run は失敗確定済み。
+    let run_failed = advance_downstream(&mut tx, tenant_id, run_id, graph).await?;
+    if !run_failed {
+        // run 終了判定（全 step terminal で run terminal）。
+        finalize_run_if_done(&mut tx, tenant_id, run_id).await?;
+    }
 
     tx.commit().await.map_err(map_db)?;
     Ok(true)
 }
 
-/// run 失敗時に残る非 terminal step を cancelled 化する（以後 claim されない）。
-async fn cancel_remaining_steps(
+/// run 失敗時に残る非 terminal step を cancelled 化する（以後 claim/起床されない）。
+///
+/// 待機中（waiting_timer/event/map）の step も cancelled にし、対応する `wait_subscription` を
+/// 消し込む（fired）。こうしないと run 失敗後もスケジューラ tick が待機 step を起床させ得る。
+pub(super) async fn cancel_remaining_steps(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: &str,
     run_id: Uuid,
 ) -> Result<(), RunStoreError> {
     sqlx::query(
         "UPDATE step_execution SET status = 'cancelled', lease_owner = NULL, \
-         lease_expires_at = NULL, updated_at = now() \
+         lease_expires_at = NULL, wake_at = NULL, updated_at = now() \
          WHERE tenant_id = $1 AND run_id = $2 \
-           AND status IN ('pending', 'ready', 'running')",
+           AND status IN ('pending', 'ready', 'running', \
+                          'waiting_timer', 'waiting_event', 'waiting_map')",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    // 残る wait 購読を消し込む（イベント/timeout 起床の再発火防止）。
+    sqlx::query(
+        "UPDATE wait_subscription SET fired = true \
+         WHERE tenant_id = $1 AND run_id = $2 AND NOT fired",
     )
     .bind(tenant_id)
     .bind(run_id)
@@ -283,17 +303,18 @@ async fn cancel_remaining_steps(
     Ok(())
 }
 
-/// pending の step を fixpoint で ready/skipped 化する（skip 伝播）。
-async fn advance_downstream(
+/// pending の step を fixpoint で ready/skipped 化し（要素スコープ考慮の skip 伝播）、待機中の map を
+/// 集約する。map が fail_run で失敗したら run を failed 化し `true` を返す（呼び出し側は finalize を飛ばす）。
+pub(super) async fn advance_downstream(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: &str,
     run_id: Uuid,
     graph: &RunGraph,
-) -> Result<(), RunStoreError> {
+) -> Result<bool, RunStoreError> {
     loop {
-        // 現在の全 step 状態と terminal ports を読む。
+        // 現在の全 step 状態と terminal ports を読む（要素を混同しないよう step_path でキーする）。
         let rows: Vec<(String, String, Vec<String>)> = sqlx::query_as(
-            "SELECT node_id, status, taken_ports FROM step_execution \
+            "SELECT step_path, status, taken_ports FROM step_execution \
              WHERE tenant_id = $1 AND run_id = $2",
         )
         .bind(tenant_id)
@@ -302,45 +323,47 @@ async fn advance_downstream(
         .await
         .map_err(map_db)?;
 
-        // node_id → terminal 時の taken_ports（terminal でない node は不在）。
-        let mut terminal_ports: HashMap<String, Vec<String>> = HashMap::new();
+        // step_path → terminal 時の taken_ports。pending / waiting_map を分けて集める。
+        let mut terminal_by_path: HashMap<String, Vec<String>> = HashMap::new();
         let mut pending: Vec<String> = Vec::new();
-        for (node_id, status, ports) in &rows {
+        let mut waiting_maps: Vec<String> = Vec::new();
+        for (path, status, ports) in &rows {
             match StepStatus::parse(status) {
                 Some(s) if s.is_terminal() => {
-                    terminal_ports.insert(node_id.clone(), ports.clone());
+                    terminal_by_path.insert(path.clone(), ports.clone());
                 }
-                Some(StepStatus::Pending) => pending.push(node_id.clone()),
+                Some(StepStatus::Pending) => pending.push(path.clone()),
+                Some(StepStatus::WaitingMap) => waiting_maps.push(path.clone()),
                 _ => {}
             }
         }
 
         let mut changed = false;
-        for node_id in &pending {
-            match node_readiness(node_id, graph, &terminal_ports) {
+        for path in &pending {
+            let (scope, node) = map_region::split_step_path(path);
+            match map_region::scoped_readiness(scope, node, graph, &terminal_by_path) {
                 Readiness::Ready => {
-                    set_step_status(tx, tenant_id, run_id, node_id, StepStatus::Ready, true)
-                        .await?;
+                    set_step_status(tx, tenant_id, run_id, path, StepStatus::Ready, true).await?;
                     // ready 遷移を run_event に記録する（SSE/replay が step 状態を正しく追える）。
                     append_event(
                         tx,
                         tenant_id,
                         run_id,
                         RunEventKind::StepReady,
-                        &json!({ "step": node_id }),
+                        &json!({ "step": path }),
                     )
                     .await?;
                     changed = true;
                 }
                 Readiness::Skip => {
-                    set_step_status(tx, tenant_id, run_id, node_id, StepStatus::Skipped, false)
+                    set_step_status(tx, tenant_id, run_id, path, StepStatus::Skipped, false)
                         .await?;
                     append_event(
                         tx,
                         tenant_id,
                         run_id,
                         RunEventKind::StepSkipped,
-                        &json!({ "step": node_id }),
+                        &json!({ "step": path }),
                     )
                     .await?;
                     changed = true;
@@ -348,11 +371,35 @@ async fn advance_downstream(
                 Readiness::NotYet => {}
             }
         }
+
+        // 待機中の map を集約する（全要素の出口が terminal なら terminal 化して後続を前進）。
+        for map_path in &waiting_maps {
+            match map_region::aggregate_map(tx, tenant_id, run_id, map_path).await? {
+                MapOutcome::Pending => {}
+                MapOutcome::Completed => changed = true,
+                MapOutcome::RunFailed => {
+                    // map が fail_run で失敗 → run を failed 化し残りを cancel（即 fail 経路と同じ）。
+                    cancel_remaining_steps(tx, tenant_id, run_id).await?;
+                    sqlx::query(
+                        "UPDATE workflow_run SET status = 'failed', finished_at = now(), \
+                         updated_at = now() WHERE tenant_id = $1 AND run_id = $2 AND status = 'running'",
+                    )
+                    .bind(tenant_id)
+                    .bind(run_id)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(map_db)?;
+                    append_event(tx, tenant_id, run_id, RunEventKind::RunFailed, &Value::Null)
+                        .await?;
+                    return Ok(true);
+                }
+            }
+        }
         if !changed {
             break;
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// step の status を更新する（ready 化時は next_retry_at を now に）。
@@ -385,32 +432,34 @@ async fn set_step_status(
 }
 
 /// 全 step が terminal なら run を terminal 化する（失敗があれば failed）。
-async fn finalize_run_if_done(
+pub(super) async fn finalize_run_if_done(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: &str,
     run_id: Uuid,
 ) -> Result<(), RunStoreError> {
-    let rows: Vec<(String, Vec<String>)> = sqlx::query_as(
-        "SELECT status, taken_ports FROM step_execution WHERE tenant_id = $1 AND run_id = $2",
+    let rows: Vec<(String, String, Vec<String>)> = sqlx::query_as(
+        "SELECT step_path, status, taken_ports FROM step_execution \
+         WHERE tenant_id = $1 AND run_id = $2",
     )
     .bind(tenant_id)
     .bind(run_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(map_db)?;
-    let steps: Vec<(StepStatus, &Vec<String>)> = rows
+    let steps: Vec<(&String, StepStatus, &Vec<String>)> = rows
         .iter()
-        .filter_map(|(s, ports)| StepStatus::parse(s).map(|st| (st, ports)))
+        .filter_map(|(path, s, ports)| StepStatus::parse(s).map(|st| (path, st, ports)))
         .collect();
-    if !steps.iter().all(|(s, _)| s.is_terminal()) {
+    if !steps.iter().all(|(_, s, _)| s.is_terminal()) {
         return Ok(()); // まだ実行中 step がある。
     }
-    // 「処理済み失敗」（on_error=continue で error ポートを取った failed・taken_ports 非空）は
-    // run の成否に数えない（engine.md §4.5）。未処理失敗（taken_ports 空）のみ run を failed にする
-    // （通常は即 fail_run 経路で早期 return するため防御的）。
-    let any_unhandled_failed = steps
-        .iter()
-        .any(|(s, ports)| *s == StepStatus::Failed && ports.is_empty());
+    // 未処理失敗（Failed かつ taken_ports 空）だけが run を failed にする。ただし:
+    // ①on_error=continue で error ポートを取った failed（taken_ports 非空）は「処理済み失敗」
+    // ②map 領域要素（step_path に `[`）の失敗は map ノードが集約するため run 成否に直接数えない
+    //   （fail_map なら map step 自身が未処理失敗として run を落とす・engine.md §4.5）。
+    let any_unhandled_failed = steps.iter().any(|(path, s, ports)| {
+        *s == StepStatus::Failed && ports.is_empty() && !path.contains('[')
+    });
     let (run_status, kind) = if any_unhandled_failed {
         (RunStatus::Failed, RunEventKind::RunFailed)
     } else {
@@ -428,22 +477,4 @@ async fn finalize_run_if_done(
     .map_err(map_db)?;
     append_event(tx, tenant_id, run_id, kind, &Value::Null).await?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn backoff_is_bounded_and_deterministic() {
-        // full jitter: [1, ceiling]。ceiling は base*2^attempt を cap=300 で頭打ち。
-        let rid = Uuid::nil();
-        assert!((1..=2).contains(&next_retry_delay_secs(rid, "a", 0)));
-        assert!(next_retry_delay_secs(rid, "a", 20) <= 300);
-        // 同じ (step, attempt) は同じ遅延（リプレイ安全）。
-        assert_eq!(
-            next_retry_delay_secs(rid, "a", 3),
-            next_retry_delay_secs(rid, "a", 3)
-        );
-    }
 }

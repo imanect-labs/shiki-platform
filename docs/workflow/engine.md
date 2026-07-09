@@ -153,11 +153,12 @@ create table step_execution (
     node_id           text        not null,
     status            text        not null default 'pending'
                      check (status in ('pending', 'ready', 'running',
-                                        'waiting_timer', 'waiting_event',
-                                        'succeeded', 'failed', 'skipped')),
+                                        'waiting_timer', 'waiting_event', 'waiting_map',
+                                        'succeeded', 'failed', 'skipped', 'cancelled')),
     attempt           int         not null default 0,
     next_retry_at     timestamptz,               -- backoff / concurrency 順番待ちの再スケジュール
-    wake_at           timestamptz,               -- waiting_timer の起床時刻
+    wake_at           timestamptz,               -- waiting_timer の起床時刻（timer は本列を正とする）
+    input             jsonb,                      -- step 固有入力: map 要素の each / map メタ（§4.5）
     -- リース: 保持ワーカーのみ単一ライタ。失効で別ワーカーが takeover。
     lease_owner       text,
     lease_expires_at  timestamptz,
@@ -301,10 +302,13 @@ stateDiagram-v2
     running --> ready: retryable 失敗（next_retry_at）
     running --> waiting_timer: wait(duration/until)
     running --> waiting_event: wait(event) 購読登録
+    running --> waiting_map: control.map fan-out（要素を動的挿入・§4.5）
     waiting_timer --> succeeded: wake_at 到来（out で checkpoint→前進 TX）
     waiting_event --> succeeded: マッチャがイベント消し込み（payload を output へ・out）
     waiting_event --> succeeded: timeout（on_timeout=continue・timeout ポート）
     waiting_event --> failed: timeout（on_timeout=fail）
+    waiting_map --> succeeded: 全要素の出口 terminal→集約（out・collect は失敗も success 扱い）
+    waiting_map --> failed: fail_map で要素失敗（map の on_error に準拠）
     succeeded --> [*]
     failed --> [*]
     skipped --> [*]
@@ -422,6 +426,9 @@ join の再発火防止と「初回 live」の判定は §4.1 手順 3 の readi
 
 - **開始時**: **`parent: null` の本体ノードのみ**を `pending` で一括実体化する（1 run 1 バルク INSERT）。UI が実行前に計画（本体 step とその関係）を表示できる。エントリ判定（入エッジ 0 → 全件 `ready`・静的並列・ir.md §5.1）も本体ノードのみを対象にする。
 - **map 領域ノード（`parent` 付き）は開始時に実体化しない**。`each` コンテキストと `step_path` の `[index]` は要素が確定して初めて存在するため、`control.map` 実行時に要素ごと `<map_id>[<index>].<node_id>` で動的挿入する（領域の入口ノードがその時点で `ready` になる）。動的挿入も §4.1 の TX 内で行う。
+  - **map ノードの保持状態 = `waiting_map`**（非 terminal・claim 対象外）。fan-out 時に map step を `waiting_map` にし、要素数・`on_item_error`・出口ノード id を `step_execution.input` の meta に格納する。各要素ノードの `input` に `{ "each": { "item", "index" } }` を載せる（冪等キーは step_path 依存で要素分離＝PIT-31）。要素数 0 は即集約する。
+  - **要素スコープの前進**: 前進 TX（§4.1・§4.3）は step_path のスコープ接頭辞（`<map>[i]` / ネスト `<m1>[i].<m2>[j]`）で要素を分離して readiness/skip を評価する（要素どうしを混同しない）。領域内ノードの失敗（`fail_run`）は**要素内 skip に留め**、グローバル cancel を発火しない（他要素を完走させる）。
+  - **集約**: 全要素の**出口ノード**（領域内 out-edge 0・ちょうど 1 つ）が terminal になった時点で、最後の要素の前進 TX が `{ "items": […（入力順）], "errors": [{index, error}…] }` に束ね、map step を terminal 化して後続を前進させる。`on_item_error: collect` は失敗を errors に集約し map は `succeeded`（out）。`fail_map`（既定）は失敗要素があれば map を失敗（map の `on_error` に準拠: continue→error ポート／fail_run→run 失敗）。
 - **終了判定**: 全 step が terminal になった時点で run を terminal 化する（§3.1）。run の最終 status は次の規則で決める:
   - `cancelled`: `cancel_requested` によるドレイン完了。
   - `failed`: ①`on_error=fail_run` の step 失敗（即 run fail 経路）②`run_timeout_sec` 超過 ③`delegation_invalid`、のいずれか。
@@ -486,8 +493,11 @@ cron の評価区間は `workflow_trigger.last_planned_at`（watermark）→ 現
 > 飛び越すため採らない**（設計・受け入れ条件は roadmap Task P10-A0）。
 
 1. `(tenant_id, source)` index（`workflow_trigger_match_idx`）で候補トリガを引く。
-2. トリガの `scope` 束縛（対象テーブル・フォルダ id）に合致するか判定する。
-3. `filter` の条件木（ir.md §3）を **イベントペイロードに対して**評価する。
+2. トリガの `scope` 束縛（対象テーブル・フォルダ id）に合致するか判定する。**フォルダ scope は祖先束縛**:
+   トリガの folder が、イベント発生フォルダの**祖先**（`node_closure`・自分自身 depth 0 を含むので完全一致も包含）
+   なら一致する。サブフォルダ配下の書込も親フォルダ束縛トリガで発火する。
+3. `filter` の条件木（ir.md §3）を **イベントペイロードに対して**評価する（`$from trigger`＝ペイロード・
+   fail-closed: 型不一致/不正 filter は発火しない）。同一マッチャが `wait_subscription`（wait(event)）も消し込む（§5.5）。
 4. 合致したら `trigger_firing` に UNIQUE(tenant_id, trigger_id, event_id) で INSERT し、run 作成＋enqueue を **単一 TX**（outbox イベント 1 件につき最大 1 run）。
 
 ### 5.5 wait_subscription の消し込み（同一マッチャ）
