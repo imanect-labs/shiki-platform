@@ -221,12 +221,24 @@ impl ChatWorker {
                         .set_workspace_folder_if_absent(thread_id, &ctx.tenant_id, node.id)
                         .await?
                 }
-                // 同一 thread の並行 run が先に作成した場合は unique 衝突する → 確定済み id を読み直す。
-                Err(_) => self
+                // 作成失敗は 2 種を区別する: ①同一 thread の並行 run が先に作った（unique 衝突）
+                // なら workspace_folder_id が既に埋まっている → それを使う。②親フォルダが選択後に
+                // 削除された/editor が剥奪された等の**実失敗**なら未設定のまま → 元エラーを伝播して
+                // run を失敗させる（黙って別の場所に作らない・fail-closed）。
+                Err(e) => match self
                     .store
                     .workspace_folder_id(thread_id, &ctx.tenant_id)
                     .await?
-                    .ok_or_else(|| ChatError::Internal("workspace folder race".into()))?,
+                {
+                    Some(id) => id,
+                    None => {
+                        return Err(match e {
+                            storage::StorageError::Forbidden => ChatError::Forbidden,
+                            storage::StorageError::NotFound => ChatError::NotFound,
+                            other => ChatError::Internal(format!("workspace 作成に失敗: {other}")),
+                        });
+                    }
+                },
             }
         };
         // 共有中の thread editor/owner にワークスペースフォルダの editor を行き渡らせる（Task 5.6(a)・冪等）。

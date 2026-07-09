@@ -341,4 +341,22 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         .await
         .unwrap()
         .expect("選んだフォルダ直下に書き込まれる");
+
+    // ── ④ ソフト削除済みフォルダの選択は拒否される（FGA タプルは残るため DB 存在も確かめる）──
+    let doomed = storage
+        .create_folder(&c, None, "消したフォルダ", None)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE node SET deleted_at = now() WHERE id = $1")
+        .bind(doomed.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let rejected = storage
+        .require_folder_access(&c, doomed.id, authz::Relation::Editor, None)
+        .await;
+    assert!(
+        matches!(rejected, Err(storage::StorageError::NotFound)),
+        "削除済みフォルダの選択は NotFound: {rejected:?}"
+    );
 }

@@ -283,7 +283,9 @@ impl ChatWorker {
         // 既定では非自律チャットも agent-core ループ（Chat プロファイル）を通す＝モデルが
         // ツール発火を裁量する（挨拶等は検索しない・generative UI も通常チャットで出る。issue #102）。
         // `classic_rag=true` の運用でのみ旧・無条件 RAG 注入経路を使う（後方互換フォールバック）。
-        let use_classic = self.config.classic_rag && !run.autonomous;
+        // ただし明示的なエージェントモード run（agent_mode）と自律 run はループを維持する
+        // （classic_rag はあくまで「未指定の通常チャット」の既定を旧挙動に戻すだけ）。
+        let use_classic = self.config.classic_rag && !run.autonomous && !run.agent_mode;
         let gen_result = if use_classic {
             self.run_classic_mode(&ctx, &run, history, &mut worker_sink)
                 .await

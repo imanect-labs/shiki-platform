@@ -7,19 +7,36 @@
 use super::*;
 
 impl StorageService {
-    /// フォルダに対する **editor 権限を本人 ctx で検証**する（deny は監査つき Forbidden）。
+    /// フォルダに対する指定 relation を本人 ctx で検証する（deny は監査つき Forbidden）。
     ///
-    /// エージェントのワークスペース候補（既存フォルダをワークスペースにする／配下に作成する親）を
-    /// 選択時点で fail-fast 検証するために公開する（実際の書込時も各チョークポイントが再検証する）。
-    pub async fn require_folder_editor(
+    /// エージェントのワークスペース候補の**選択時点 fail-fast 検証**に公開する:
+    /// 既存フォルダをそのままワークスペースにする場合は `Owner`（そのフォルダの既存内容が
+    /// スレッド共有相手へ波及するため、所有者だけが「共有ワークスペース化」を決められる）、
+    /// 親の配下に新規作成する場合は `Editor`（隔離された新フォルダを作るだけ）を要求する。
+    /// **ソフト削除済みフォルダは拒否**する（FGA タプルは削除後も残るため DB 側で存在も確かめる）。
+    pub async fn require_folder_access(
         &self,
         ctx: &AuthContext,
         folder_id: Uuid,
+        relation: Relation,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
+        // 存在＆非削除を先に確かめる（picker 表示後に削除された等）。存在秘匿で NotFound。
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM node \
+             WHERE id = $1 AND org = $2 AND tenant_id = $3 AND kind = 'folder' AND deleted_at IS NULL)",
+        )
+        .bind(folder_id)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .fetch_one(&self.db)
+        .await?;
+        if !exists {
+            return Err(StorageError::NotFound);
+        }
         self.require(
             ctx,
-            Relation::Editor,
+            relation,
             &ctx.ns().folder(&folder_id.to_string()),
             "workspace.select",
             "folder",

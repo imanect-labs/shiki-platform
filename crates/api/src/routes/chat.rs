@@ -94,6 +94,27 @@ pub async fn create_thread(
         skill_pin = Some((pin.artifact_id, version));
     }
 
+    // ワークスペース場所は **thread 作成前に**認可検証する（不正なら孤児 thread を残さない）。
+    // existing（既存フォルダをそのままワークスペースに）はそのフォルダの内容がスレッド共有相手へ
+    // 波及するため **Owner** を要求し、new_under（配下に隔離フォルダを新規作成）は **Editor** で足りる。
+    let workspace = if let Some(choice) = req.workspace {
+        let (folder, parent, target, relation) = match choice {
+            WorkspaceChoiceRequest::Existing { folder_id } => {
+                (Some(folder_id), None, folder_id, authz::Relation::Owner)
+            }
+            WorkspaceChoiceRequest::NewUnder { folder_id } => {
+                (None, Some(folder_id), folder_id, authz::Relation::Editor)
+            }
+        };
+        state
+            .storage
+            .require_folder_access(&ctx, target, relation, trace.as_deref())
+            .await?;
+        Some((folder, parent))
+    } else {
+        None
+    };
+
     let store = chat_store(&state)?;
     let mut thread = store
         .create_thread(
@@ -112,19 +133,7 @@ pub async fn create_thread(
         thread.mini_app_id = mini_app_pin.map(|(id, _)| id);
         thread.mini_app_version = mini_app_pin.map(|(_, v)| v);
     }
-    // エージェントモードのワークスペース場所を確定する。選んだフォルダ（既存 or 親）の editor を
-    // 本人 ctx で検証してから保存する（confused-deputy 防止・fail-fast）。実際の作成/書込時も
-    // StorageService の各チョークポイントが再検証する。
-    if let Some(choice) = req.workspace {
-        // どちらの選択でも `folder_id` の editor を本人 ctx で検証してから保存する。
-        let (folder, parent, target) = match choice {
-            WorkspaceChoiceRequest::Existing { folder_id } => (Some(folder_id), None, folder_id),
-            WorkspaceChoiceRequest::NewUnder { folder_id } => (None, Some(folder_id), folder_id),
-        };
-        state
-            .storage
-            .require_folder_editor(&ctx, target, trace.as_deref())
-            .await?;
+    if let Some((folder, parent)) = workspace {
         store
             .set_thread_workspace(thread.id, &ctx.tenant_id, folder, parent)
             .await?;
