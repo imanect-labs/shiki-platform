@@ -21,6 +21,17 @@ pub struct ArtifactPinRequest {
     pub version: Option<i64>,
 }
 
+/// エージェントモードのワークスペース作成場所（Phase 6 UX）。
+///
+/// `existing`＝選んだフォルダをそのままワークスペースにする、`new_under`＝選んだ親フォルダの
+/// 配下に `agent-workspace-<thread>` を新規作成する。いずれも `folder_id` に editor が要る。
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum WorkspaceChoiceRequest {
+    Existing { folder_id: Uuid },
+    NewUnder { folder_id: Uuid },
+}
+
 /// スレッド作成リクエスト。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateThreadRequest {
@@ -36,6 +47,9 @@ pub struct CreateThreadRequest {
     /// skill と併用した場合はミニアプリ側が優先。
     #[serde(default)]
     pub mini_app: Option<ArtifactPinRequest>,
+    /// エージェントモードのワークスペース作成場所（未指定は Drive 直下＝現行挙動）。
+    #[serde(default)]
+    pub workspace: Option<WorkspaceChoiceRequest>,
 }
 
 /// スレッド一覧レスポンス（keyset ページング）。

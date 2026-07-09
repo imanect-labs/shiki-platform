@@ -7,6 +7,28 @@
 use super::*;
 
 impl StorageService {
+    /// フォルダに対する **editor 権限を本人 ctx で検証**する（deny は監査つき Forbidden）。
+    ///
+    /// エージェントのワークスペース候補（既存フォルダをワークスペースにする／配下に作成する親）を
+    /// 選択時点で fail-fast 検証するために公開する（実際の書込時も各チョークポイントが再検証する）。
+    pub async fn require_folder_editor(
+        &self,
+        ctx: &AuthContext,
+        folder_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<(), StorageError> {
+        self.require(
+            ctx,
+            Relation::Editor,
+            &ctx.ns().folder(&folder_id.to_string()),
+            "workspace.select",
+            "folder",
+            &folder_id.to_string(),
+            trace_id,
+        )
+        .await
+    }
+
     /// フォルダを作成する（親フォルダ配下 or org ルート直下）。
     ///
     /// 認可は upload と対称: フォルダ配下は `editor@parent`、ルートは `member@org`。

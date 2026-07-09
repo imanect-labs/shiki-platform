@@ -206,10 +206,16 @@ impl ChatWorker {
         {
             id
         } else {
-            // 初回自律 run: Drive 直下にワークスペースフォルダを作り thread に紐づける。
+            // 初回自律 run: ワークスペースフォルダを作り thread に紐づける。作成先の親は
+            // 利用者が選んだ workspace_parent_folder_id（無ければ Drive 直下＝None）。親フォルダの
+            // editor は create_folder 内で本人 ctx により検証される（confused-deputy 防止）。
             // **thread ごとに一意な名前**にする（`node` の (parent,name) unique・別 thread と衝突しない）。
+            let parent = self
+                .store
+                .workspace_parent_folder_id(thread_id, &ctx.tenant_id)
+                .await?;
             let name = format!("agent-workspace-{thread_id}");
-            match storage.create_folder(ctx, None, &name, None).await {
+            match storage.create_folder(ctx, parent, &name, None).await {
                 Ok(node) => {
                     self.store
                         .set_workspace_folder_if_absent(thread_id, &ctx.tenant_id, node.id)

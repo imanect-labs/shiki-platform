@@ -139,12 +139,8 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn autonomous_run_writes_workspace_file_e2e() {
-    let Some(pool) = setup().await else { return };
-    let tenant = format!("t-{}", uuid::Uuid::new_v4());
-
-    // StorageService（AllowAll authz＋MinIO）。DoD の「書込→再索引経路」の書込側チョークポイント。
+/// StorageService（AllowAll authz＋MinIO）＋自律 worker を組む共通ハーネス。
+async fn workspace_harness(pool: PgPool) -> (ChatStore, Arc<StorageService>) {
     let s3_endpoint = std::env::var("STORAGE_TEST_S3_ENDPOINT")
         .unwrap_or_else(|_| "http://localhost:9000".into());
     let s3 = S3Config {
@@ -170,7 +166,6 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         Duration::from_mins(15),
         5 * 1024 * 1024 * 1024,
     ));
-
     let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
         .await
         .unwrap();
@@ -181,7 +176,7 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         chat::WorkerDeps {
             gateway,
             search: None,
-            sandbox: None, // fs_write は純ストレージ（shell 不要）。
+            sandbox: None,
             artifacts: None,
             web_search: None,
             storage: Some(storage.clone()),
@@ -197,16 +192,49 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         },
     );
     worker.spawn(1);
+    (store, storage)
+}
 
+/// 自律 run を投入し、fs_write の tool_call と Done を待つ（stub `fswrite:` プレフィックス）。
+async fn run_autonomous_fswrite(store: &ChatStore, c: &AuthContext, thread_id: uuid::Uuid) {
+    let res = store
+        .post_message(c, thread_id, "fswrite: hello-e2e", &[], None, true, None)
+        .await
+        .unwrap();
+    let mut rx = store.event_stream(res.run_id, 0);
+    for _ in 0..500 {
+        let next = tokio::time::timeout(Duration::from_secs(20), rx.next())
+            .await
+            .expect("イベント待ちタイムアウト");
+        let Some(ev) = next else { break };
+        match ev.event {
+            StreamEventKind::Done { .. } => return,
+            StreamEventKind::Error { message } => panic!("生成失敗: {message}"),
+            _ => {}
+        }
+    }
+    panic!("autonomous run が完了しない");
+}
+
+/// 自律 run の Durable Workspace e2e（Task 5.1/5.4/5.8/5.11）＋ワークスペース場所選択（Phase 6 UX）。
+///
+/// ⚠️ このテストバイナリの worker spawn は **1 テストに集約**する（共有 jobq を別テストの
+/// worker が奪って run が宙に浮くフレークを避ける・memory: local-test-infra）。既定作成／
+/// new_under／existing の 3 経路を単一 worker で順に検証する。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn autonomous_run_writes_workspace_file_e2e() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let (store, storage) = workspace_harness(pool.clone()).await;
     let c = ctx(&tenant);
+
+    // ── ① 既定（場所未指定）: Drive 直下に lazy 作成され、fs_write がそこへ書く ──
     let thread = store.create_thread(&c, "自律", false, None).await.unwrap();
     // autonomous=true で投入 → stub が fs_write を呼ぶ（fswrite: プレフィックス・ApprovalPolicy=auto で承認不要）。
     let res = store
         .post_message(&c, thread.id, "fswrite: hello-e2e", &[], None, true, None)
         .await
         .unwrap();
-
-    // 完了まで drain（fs_write の tool_call が流れる）。
     let mut rx = store.event_stream(res.run_id, 0);
     let mut done = false;
     let mut saw_fs_write = false;
@@ -231,12 +259,18 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         "fs_write ツール呼び出しが流れる（Autonomous プロファイル＋フルツール）"
     );
 
-    // ワークスペースフォルダが lazy 作成され、fs_write がそこへ書き込んでいる（Durable Workspace）。
     let folder = store
         .workspace_folder_id(thread.id, &c.tenant_id)
         .await
         .unwrap()
         .expect("ワークスペースフォルダが作成される");
+    let default_parent: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT parent_id FROM node WHERE id = $1")
+            .bind(folder)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(default_parent, None, "未指定は Drive 直下（親なし）");
     let node = storage
         .resolve_child_file(&c, folder, "agent-note.txt", None)
         .await
@@ -253,4 +287,58 @@ async fn autonomous_run_writes_workspace_file_e2e() {
     .await
     .unwrap();
     assert_eq!(outbox, 1, "書込イベントが再索引経路へ発行される");
+
+    // ── ② new_under: 選んだ親フォルダの配下にワークスペースを作る ──
+    let parent = storage
+        .create_folder(&c, None, "選んだ親", None)
+        .await
+        .unwrap();
+    let t1 = store
+        .create_thread(&c, "新規作成", false, None)
+        .await
+        .unwrap();
+    store
+        .set_thread_workspace(t1.id, &c.tenant_id, None, Some(parent.id))
+        .await
+        .unwrap();
+    run_autonomous_fswrite(&store, &c, t1.id).await;
+    let ws1 = store
+        .workspace_folder_id(t1.id, &c.tenant_id)
+        .await
+        .unwrap()
+        .expect("ワークスペースが作られる");
+    let ws1_parent: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT parent_id FROM node WHERE id = $1")
+            .bind(ws1)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        ws1_parent,
+        Some(parent.id),
+        "new_under は選んだ親フォルダの配下にワークスペースを作る"
+    );
+
+    // ── ③ existing: 既存フォルダをそのままワークスペースにする（新規作成しない） ──
+    let existing = storage
+        .create_folder(&c, None, "既存を使う", None)
+        .await
+        .unwrap();
+    let t2 = store.create_thread(&c, "既存", false, None).await.unwrap();
+    store
+        .set_thread_workspace(t2.id, &c.tenant_id, Some(existing.id), None)
+        .await
+        .unwrap();
+    run_autonomous_fswrite(&store, &c, t2.id).await;
+    let ws2 = store
+        .workspace_folder_id(t2.id, &c.tenant_id)
+        .await
+        .unwrap()
+        .expect("ワークスペースが確定する");
+    assert_eq!(ws2, existing.id, "existing は選んだフォルダをそのまま使う");
+    storage
+        .resolve_child_file(&c, existing.id, "agent-note.txt", None)
+        .await
+        .unwrap()
+        .expect("選んだフォルダ直下に書き込まれる");
 }

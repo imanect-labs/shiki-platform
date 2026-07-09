@@ -158,6 +158,51 @@ impl ChatStore {
         Ok(id)
     }
 
+    /// thread のワークスペース作成先の親フォルダ id を引く（未設定なら `None`＝Drive 直下）。
+    /// 「親を選んで配下に新規作成」を選んだときだけ設定される（Phase 6 UX・0030）。
+    pub async fn workspace_parent_folder_id(
+        &self,
+        thread_id: Uuid,
+        tenant_id: &str,
+    ) -> Result<Option<Uuid>, ChatError> {
+        let id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT workspace_parent_folder_id FROM thread WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|e| map_db(&e))?
+        .flatten();
+        Ok(id)
+    }
+
+    /// スレッド作成時にワークスペースの場所を設定する（Phase 6 UX・0030）。
+    ///
+    /// `folder_id`（既存フォルダをワークスペースにする）と `parent_folder_id`（配下に新規作成する
+    /// 親）はどちらか一方のみ渡す想定（両 None は Drive 直下＝現行挙動）。認可はルート層が本人 ctx で
+    /// 検証済み（`require_folder_editor`）。owner 本人のスレッドにのみ設定する。
+    pub async fn set_thread_workspace(
+        &self,
+        thread_id: Uuid,
+        tenant_id: &str,
+        folder_id: Option<Uuid>,
+        parent_folder_id: Option<Uuid>,
+    ) -> Result<(), ChatError> {
+        sqlx::query(
+            "UPDATE thread SET workspace_folder_id = $3, workspace_parent_folder_id = $4 \
+             WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .bind(folder_id)
+        .bind(parent_folder_id)
+        .execute(&self.db)
+        .await
+        .map_err(|e| map_db(&e))?;
+        Ok(())
+    }
+
     /// thread のワークスペースフォルダ id を **未設定時のみ** 設定する（並行 run の二重設定を防ぐ）。
     /// 戻り値は確定した id（自分の設定 or 既に他が設定した値）。
     pub async fn set_workspace_folder_if_absent(

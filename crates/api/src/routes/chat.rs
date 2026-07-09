@@ -31,7 +31,7 @@ use super::chat_dto::Cursor;
 pub use super::chat_dto::{
     ArtifactPinRequest, CreateThreadRequest, ListThreadsQuery, MessagesResponse,
     PostMessageRequest, PostMessageResponse, ShareThreadRequest, StreamQuery, ThreadListResponse,
-    ThreadShareEntry, ThreadSharesResponse,
+    ThreadShareEntry, ThreadSharesResponse, WorkspaceChoiceRequest,
 };
 
 /// SSE イベントストリーム（run のイベントを Event へ写した無限/有限ストリーム）。
@@ -111,6 +111,23 @@ pub async fn create_thread(
         thread.skill_version = skill_pin.map(|(_, v)| v);
         thread.mini_app_id = mini_app_pin.map(|(id, _)| id);
         thread.mini_app_version = mini_app_pin.map(|(_, v)| v);
+    }
+    // エージェントモードのワークスペース場所を確定する。選んだフォルダ（既存 or 親）の editor を
+    // 本人 ctx で検証してから保存する（confused-deputy 防止・fail-fast）。実際の作成/書込時も
+    // StorageService の各チョークポイントが再検証する。
+    if let Some(choice) = req.workspace {
+        // どちらの選択でも `folder_id` の editor を本人 ctx で検証してから保存する。
+        let (folder, parent, target) = match choice {
+            WorkspaceChoiceRequest::Existing { folder_id } => (Some(folder_id), None, folder_id),
+            WorkspaceChoiceRequest::NewUnder { folder_id } => (None, Some(folder_id), folder_id),
+        };
+        state
+            .storage
+            .require_folder_editor(&ctx, target, trace.as_deref())
+            .await?;
+        store
+            .set_thread_workspace(thread.id, &ctx.tenant_id, folder, parent)
+            .await?;
     }
     Ok(Json(thread))
 }
