@@ -558,3 +558,37 @@ async fn fail_run_without_error_port_fails_run() {
     assert_eq!(after.1, StepStatus::Cancelled, "後続は cancelled");
     assert_eq!(counts.get("after"), 0, "後続は実行されない");
 }
+
+#[tokio::test]
+async fn on_error_continue_without_error_edge_still_fails_run() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    // on_error=continue だが error ポートに何も繋がっていない（error の行き先が無い）。
+    let run_id = create_run(&store, &tenant, &on_error_ir(false, true)).await;
+
+    let counts = Arc::new(dashmap_like::Map::default());
+    let exec = Arc::new(FailingExecutor {
+        fail_node: "a".into(),
+        counts: Arc::clone(&counts),
+    });
+    let w = workflow_engine::WorkflowWorker::new(
+        store.clone(),
+        exec,
+        workflow_engine::WorkerConfig::default(),
+    )
+    .scoped_to_tenant(&tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+
+    // error の行き先が無ければ握り潰さず run を失敗させる（黙って成功にしない）。
+    assert_eq!(
+        store.run_status(&tenant, run_id).await.unwrap(),
+        Some(RunStatus::Failed),
+        "error ポート未接続の continue は run が failed"
+    );
+    let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
+    assert_eq!(
+        statuses.iter().find(|(p, _)| p == "a").unwrap().1,
+        StepStatus::Failed
+    );
+}

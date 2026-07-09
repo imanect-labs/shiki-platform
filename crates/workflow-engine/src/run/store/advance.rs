@@ -164,7 +164,13 @@ pub(super) async fn checkpoint_and_advance(
     });
 
     // on_error=continue かつ失敗（リトライ枯渇後）は「処理済み失敗」: run を落とさず error ポートへ流す。
-    let continue_on_error = !result.ok && on_error == OnError::Continue;
+    // ただし **error 出エッジが実際に繋がっている場合のみ** continue 扱いにする。エラーの行き先が無い
+    // （error ポート未接続）なら握り潰さず fail_run と同じく run を失敗させる（#179 受け入れ条件）。
+    let has_error_edge = graph
+        .out_edges(&claimed.node_id)
+        .iter()
+        .any(|(from_port, _)| from_port == "error");
+    let continue_on_error = !result.ok && on_error == OnError::Continue && has_error_edge;
 
     // checkpoint: terminal 状態＋output/taken_ports/error を確定する。
     let (status, ports, output_json, event_kind) = if result.ok {
