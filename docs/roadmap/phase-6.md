@@ -1,5 +1,24 @@
 # Phase 6 — generative UI ＋ skill ＋ ミニアプリ
 
+> ✅ **実装済み（2026-07-09・#187/#190/PR-3 の 3 本 stacked PR）**。以下の確定事項で 6.1〜6.12 を実装:
+> - **新設 `crates/gui` が単一の信頼境界**: `UiSpecDoc` はタグ付き enum＋`deny_unknown_fields` でカタログ外
+>   コンポーネント・生 HTML・未知 props を**構造的に表現不可**にし、その上の意味検証（深さ≤8・ノード≤200・
+>   actions≤20・`https://` のみ・拒否のみ＝暗黙補正なし）を全経路（保存・emit・resolve）で共通適用（6.2/6.3）。
+> - 生成は専用ツール **`emit_ui`**（検証失敗→`is_error`→モデル自己修正→テキストフォールバック。検証済みスペック
+>   のみ `generative_ui` ブロックとして永続・SSE 配信）（6.4）。
+> - アクションは**宣言的束縛の閉集合**（①安全ツール閉語彙 ②登録ハンドラ `chat.submit` ③workflow 対話トリガの
+>   ピン版起動）。クライアントは `action_id+params` のみ送信・破壊系ツール束縛は保存 422＋実行時再チェックの
+>   二重防御・全経路 `ui_action.invoke` 監査（6.5）。
+> - skill = `SkillBody`（指示文＋知識スコープ＋許可ツール（縮小のみ）＋モデル既定＋few-shot＋script インライン）。
+>   知識スコープは rag の pre-filter と**独立の AND 句**（TenantOnly 縮退でも維持・post-filter 個人 ReBAC 不変）。
+>   適用は fail-closed（読めないピンは run 失敗）・**承認ポリシには不介入**（6.7/6.8/6.9）。
+> - ミニアプリ = **常に明示ピン**の束（ui_spec/skill/workflows）＋**バンドル権限**
+>   （`ArtifactStore::get_version_via_bundle`＝bundle viewer で部品を読む・部品の個別共有カスケード不採用）（6.10）。
+> - web: 信頼カタログ→React の静的マッピング（`dangerouslySetInnerHTML`/eval 不使用・未知は縮退表示）・
+>   チャート recharts・skill/アプリ管理 UI・ホームの skill ピッカー・Playwright e2e 3 本（6.6/6.11）。
+> - 監査: `ui_spec.validate`(Deny)/`ui_action.invoke`/`skill.apply`/`miniapp.resolve`/`artifact.read_via_bundle`/
+>   `rag.search` metadata scope（全て trace_id 付き）（6.12）。
+
 > 📝 **2026-07-07 改訂**: 2点の設計更新。
 > ①**workflow-engine が既にある前提で設計する**: Phase 10 Stage A（`crates/{durable,artifact,secrets,
 > script-runtime,workflow-engine}`）が前倒し実装済みのため、本フェーズは「ワークフロー不在の暫定バックエンド束縛」

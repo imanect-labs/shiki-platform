@@ -27,6 +27,8 @@ import { triggerDownload } from "@/lib/storage";
 import { linkifyCitations } from "@/lib/citation";
 import { newId } from "@/lib/chat-store";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
+import { ChatGenUiProvider } from "@/components/genui/action-context";
+import { SpecRenderer } from "@/components/genui/spec-renderer";
 import { Loader } from "@/components/prompt-kit/loader";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { Sources } from "@/components/prompt-kit/source";
@@ -45,6 +47,8 @@ type StreamState = {
   citations: Citation[];
   /// ツール成果物（code_interpreter が保存したファイル参照）。
   files: Attachment[];
+  /// 検証済み generative UI スペック（Phase 6・emit_ui）。
+  uiSpecs: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
   plan: PlanSubtask[];
   approval: ApprovalRequest | null;
@@ -59,6 +63,7 @@ const EMPTY_STREAM: StreamState = {
   tools: [],
   citations: [],
   files: [],
+  uiSpecs: [],
   plan: [],
   approval: null,
   budget: null,
@@ -74,16 +79,24 @@ export function Conversation({ threadId }: { threadId: string }) {
   const [agentMode, setAgentMode] = React.useState(false);
   const [autonomous, setAutonomous] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
+  // UI アクション（chat.submit 等）成功後に会話を再読込するためのキー。
+  const [reloadKey, setReloadKey] = React.useState(0);
   const bottomRef = React.useRef<HTMLDivElement | null>(null);
   // 停止関数。`cancelServer` でサーバ側もキャンセル（明示停止）。離脱は継続（呼ばない）。
   const cancelRef = React.useRef<((opts?: { cancelServer?: boolean }) => void) | null>(null);
   const sentPending = React.useRef(false);
-  // 最新の stream を ref に写し、確定処理は setState updater の外で 1 度だけ行う
-  // （Strict Mode で updater が二重実行され finalize が重複するのを防ぐ）。
+  // stream の正は ref に置き、state は描画用の写しとする。setState updater 経由の
+  // 遅延同期（useEffect）だと、SSE が同一マイクロタスクで連続到達したとき ref が
+  // 1 レンダー分古いまま onDone に入り、最後のバッチ（generative_ui 等）が確定から
+  // 欠落する（stub LLM の高速バーストで顕在化）。ref を同期更新して確実に拾う。
   const streamRef = React.useRef<StreamState | null>(null);
-  React.useEffect(() => {
-    streamRef.current = stream;
-  }, [stream]);
+  const updateStream = React.useCallback(
+    (fn: (s: StreamState | null) => StreamState | null) => {
+      streamRef.current = fn(streamRef.current);
+      setStream(streamRef.current);
+    },
+    [],
+  );
 
   // 蓄積中のストリームを確定メッセージへ移して閉じる（onDone / stop 共通）。
   const flushStream = React.useCallback(() => {
@@ -96,10 +109,10 @@ export function Conversation({ threadId }: { threadId: string }) {
   // 送信/復元で共通の SSE ハンドラ。蓄積を stream state に反映し、端末で確定する。
   const makeHandlers = React.useCallback((): StreamHandlers => {
     return {
-      onThinking: (t) => setStream((s) => (s ? { ...s, thinking: s.thinking + t } : s)),
-      onToken: (t) => setStream((s) => (s ? { ...s, text: s.text + t } : s)),
+      onThinking: (t) => updateStream((s) => (s ? { ...s, thinking: s.thinking + t } : s)),
+      onToken: (t) => updateStream((s) => (s ? { ...s, text: s.text + t } : s)),
       onToolCall: (call) =>
-        setStream((s) =>
+        updateStream((s) =>
           s
             ? {
                 ...s,
@@ -108,19 +121,22 @@ export function Conversation({ threadId }: { threadId: string }) {
             : s,
         ),
       onToolResult: (res) =>
-        setStream((s) =>
+        updateStream((s) =>
           s ? { ...s, tools: s.tools.map((t) => (t.id === res.id ? { ...t, running: false } : t)) } : s,
         ),
-      onCitation: (c) => setStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
-      onFileRef: (f) => setStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
+      onCitation: (c) => updateStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
+      onFileRef: (f) => updateStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
+      onGenerativeUi: (spec) =>
+        updateStream((s) => (s ? { ...s, uiSpecs: [...s.uiSpecs, spec] } : s)),
       // --- 自律エージェント（Phase 5・Task 5.11） ---
-      onRunId: (runId) => setStream((s) => (s ? { ...s, runId } : s)),
-      onPlan: (subtasks) => setStream((s) => (s ? { ...s, plan: mergePlan(s.plan, subtasks) } : s)),
-      onBudgetWarning: (b) => setStream((s) => (s ? { ...s, budget: b } : s)),
+      onRunId: (runId) => updateStream((s) => (s ? { ...s, runId } : s)),
+      onPlan: (subtasks) =>
+        updateStream((s) => (s ? { ...s, plan: mergePlan(s.plan, subtasks) } : s)),
+      onBudgetWarning: (b) => updateStream((s) => (s ? { ...s, budget: b } : s)),
       onApprovalRequested: (req) =>
-        setStream((s) => (s ? { ...s, approval: req, approvalPending: false } : s)),
+        updateStream((s) => (s ? { ...s, approval: req, approvalPending: false } : s)),
       onApprovalResolved: (res) =>
-        setStream((s) =>
+        updateStream((s) =>
           s && s.approval?.tool_call_id === res.tool_call_id
             ? { ...s, approval: null, approvalPending: false }
             : s,
@@ -130,17 +146,22 @@ export function Conversation({ threadId }: { threadId: string }) {
         if (status === "failed") setError("生成に失敗しました。");
       },
       onDone: () => {
+        // generative UI を含む応答はサーバ確定の message id が要る（UI アクションの照合先）
+        // ため、ローカル確定ではなく再読込で置き換える。
+        const hadUi = (streamRef.current?.uiSpecs.length ?? 0) > 0;
         flushStream();
         cancelRef.current = null;
         notifyThreadsChanged();
+        if (hadUi) setReloadKey((k) => k + 1);
       },
       onError: (msg) => {
         setError(msg);
+        streamRef.current = null;
         setStream(null);
         cancelRef.current = null;
       },
     };
-  }, [flushStream]);
+  }, [flushStream, updateStream]);
 
   const send = React.useCallback(
     (text: string, attachments: Attachment[]) => {
@@ -154,7 +175,8 @@ export function Conversation({ threadId }: { threadId: string }) {
         ...prev,
         { id: newId(), role: "user", content: userBlocks, createdAt: new Date().toISOString() },
       ]);
-      setStream({ ...EMPTY_STREAM });
+      streamRef.current = { ...EMPTY_STREAM };
+      setStream(streamRef.current);
       cancelRef.current = streamMessage(
         threadId,
         text,
@@ -173,14 +195,14 @@ export function Conversation({ threadId }: { threadId: string }) {
       const s = streamRef.current;
       if (!s?.approval || !s.runId) return;
       const { tool_call_id, name } = s.approval;
-      setStream((prev) => (prev ? { ...prev, approvalPending: true } : prev));
+      updateStream((prev) => (prev ? { ...prev, approvalPending: true } : prev));
       void submitApproval(threadId, s.runId, {
         toolCallId: tool_call_id,
         toolName: name,
         approved,
       }).catch((e) => setError(e instanceof Error ? e.message : "承認の送信に失敗しました"));
     },
-    [threadId],
+    [threadId, updateStream],
   );
 
   // 生成を停止する（明示停止＝サーバ側もキャンセル）。中断時点までを確定メッセージに残す。
@@ -208,7 +230,8 @@ export function Conversation({ threadId }: { threadId: string }) {
         setMessages(resuming ? msgs.slice(0, -1) : msgs);
         if (resuming) {
           // 進行中 run の id を復元し、承認待ちなら承認/却下を送れるようにする（Task 5.6）。
-          setStream({ ...EMPTY_STREAM, runId: activeRunId });
+          streamRef.current = { ...EMPTY_STREAM, runId: activeRunId };
+          setStream(streamRef.current);
           cancelRef.current = resumeMessage(threadId, makeHandlers());
           return;
         }
@@ -233,7 +256,7 @@ export function Conversation({ threadId }: { threadId: string }) {
     };
     // send/makeHandlers は threadId 固定で安定。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId]);
+  }, [threadId, reloadKey]);
 
   React.useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
@@ -268,7 +291,13 @@ export function Conversation({ threadId }: { threadId: string }) {
             m.role === "user" ? (
               <UserRow key={m.id} blocks={m.content} />
             ) : (
-              <AssistantRow key={m.id} blocks={m.content} />
+              <AssistantRow
+                key={m.id}
+                threadId={threadId}
+                messageId={m.id}
+                blocks={m.content}
+                onUiAction={() => setReloadKey((k) => k + 1)}
+              />
             ),
           )}
           {stream ? <StreamingRow stream={stream} onApproval={decideApproval} /> : null}
@@ -317,6 +346,8 @@ function finalizeStream(
   for (const c of s.citations) blocks.push(c);
   // ツール成果物（保存済みファイル）も確定メッセージへ残す。
   for (const f of s.files) blocks.push({ type: "file_ref", node_id: f.node_id, name: f.name });
+  // 検証済み generative UI ブロック（アクションは確定 id で再読込後に有効化される）。
+  for (const spec of s.uiSpecs) blocks.push({ type: "generative_ui", spec });
   if (blocks.length === 0) return;
   setMessages((prev) => [
     ...prev,
@@ -357,7 +388,17 @@ function UserRow({ blocks }: { blocks: ContentBlock[] }) {
   );
 }
 
-function AssistantRow({ blocks }: { blocks: ContentBlock[] }) {
+function AssistantRow({
+  threadId,
+  messageId,
+  blocks,
+  onUiAction,
+}: {
+  threadId: string;
+  messageId: string;
+  blocks: ContentBlock[];
+  onUiAction: () => void;
+}) {
   const thinking = blocks
     .filter((b): b is Extract<ContentBlock, { type: "thinking" }> => b.type === "thinking")
     .map((b) => b.text)
@@ -373,12 +414,29 @@ function AssistantRow({ blocks }: { blocks: ContentBlock[] }) {
   const files = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "file_ref" }> => b.type === "file_ref",
   );
+  const uiSpecs = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "generative_ui" }> => b.type === "generative_ui",
+  );
 
   return (
     <Message className="group justify-start">
       <div className="w-full min-w-0">
         <ChainOfThought thinking={thinking} tools={tools} citations={citations} />
         {text ? <Markdown>{linkifyCitations(text, citations)}</Markdown> : null}
+        {uiSpecs.length > 0 ? (
+          <ChatGenUiProvider
+            threadId={threadId}
+            messageId={messageId}
+            onActionCompleted={(result) => {
+              // chat.submit は新しい発話と生成を作るため会話を再読込する。
+              if (result.result.kind === "handler") onUiAction();
+            }}
+          >
+            {uiSpecs.map((b, i) => (
+              <SpecRenderer key={i} spec={b.spec} />
+            ))}
+          </ChatGenUiProvider>
+        ) : null}
         <ArtifactFiles files={files} />
         <Sources citations={citations} />
         {text ? <MessageFooter text={text} /> : null}
@@ -447,6 +505,13 @@ function StreamingRow({
           <div className="text-[15px] leading-relaxed">
             <Markdown>{linkifyCitations(stream.text, stream.citations)}</Markdown>
           </div>
+        ) : null}
+        {stream.uiSpecs.length > 0 ? (
+          <ChatGenUiProvider threadId="" messageId={null}>
+            {stream.uiSpecs.map((spec, i) => (
+              <SpecRenderer key={i} spec={spec} />
+            ))}
+          </ChatGenUiProvider>
         ) : null}
         <ArtifactFiles files={stream.files} />
       </div>

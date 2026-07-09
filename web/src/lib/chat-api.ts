@@ -40,9 +40,17 @@ export type Thread = {
   id: string;
   title: string;
   agentMode: boolean;
+  /// 適用中の skill / ミニアプリ（作成時に version 込みでピン・Phase 6）。
+  skillId?: string | null;
+  skillVersion?: number | null;
+  miniAppId?: string | null;
+  miniAppVersion?: number | null;
   createdAt: string;
   updatedAt: string;
 };
+
+/// スレッド作成時の skill / ミニアプリ選択（version 省略は current をピン）。
+export type ArtifactPin = { artifactId: string; version?: number | null };
 
 export type Message = {
   id: string;
@@ -125,6 +133,10 @@ type ApiThread = {
   id: string;
   title: string;
   agent_mode: boolean;
+  skill_id?: string | null;
+  skill_version?: number | null;
+  mini_app_id?: string | null;
+  mini_app_version?: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -134,6 +146,10 @@ function toThread(t: ApiThread): Thread {
     id: t.id,
     title: t.title,
     agentMode: t.agent_mode,
+    skillId: t.skill_id ?? null,
+    skillVersion: t.skill_version ?? null,
+    miniAppId: t.mini_app_id ?? null,
+    miniAppVersion: t.mini_app_version ?? null,
     createdAt: t.created_at,
     updatedAt: t.updated_at,
   };
@@ -154,12 +170,23 @@ export async function listThreads(
   return { threads: data.threads.map(toThread), nextCursor: data.next_cursor };
 }
 
-export async function createThread(title?: string, agentMode = false): Promise<Thread> {
+export async function createThread(
+  title?: string,
+  agentMode = false,
+  pins?: { skill?: ArtifactPin; miniApp?: ArtifactPin },
+): Promise<Thread> {
+  const toPin = (p?: ArtifactPin) =>
+    p ? { artifact_id: p.artifactId, version: p.version ?? undefined } : undefined;
   const data = await ok<ApiThread>(
     await apiFetch("/threads", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: title?.trim() || undefined, agent_mode: agentMode }),
+      body: JSON.stringify({
+        title: title?.trim() || undefined,
+        agent_mode: agentMode,
+        skill: toPin(pins?.skill),
+        mini_app: toPin(pins?.miniApp),
+      }),
     }),
   );
   notifyThreadsChanged();
@@ -225,6 +252,8 @@ export type StreamHandlers = {
   onToolResult?: (res: { id: string; ok: boolean }) => void;
   onCitation?: (c: Citation) => void;
   onFileRef?: (f: Attachment) => void;
+  /// 検証済み generative UI スペック（Phase 6・emit_ui）。
+  onGenerativeUi?: (spec: unknown) => void;
   onStatus?: (status: RunStatus) => void;
   // 自律エージェント（Phase 5）。
   onPlan?: (subtasks: PlanSubtask[]) => void;
@@ -298,6 +327,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "file_ref":
         handlers.onFileRef?.({ node_id: kind.node_id, name: kind.name });
+        break;
+      case "generative_ui":
+        handlers.onGenerativeUi?.(kind.spec);
         break;
       case "plan":
         handlers.onPlan?.(kind.subtasks);

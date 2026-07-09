@@ -3,6 +3,7 @@
 import { useRouter, usePathname } from "next/navigation";
 import { PenSquare, Search } from "lucide-react";
 
+import { APPS_NAV, SKILLS_NAV, isActivePath } from "@/lib/nav-config";
 import { NavItem } from "./nav-item";
 import { SidebarDriveAccordion } from "./sidebar-drive-accordion";
 import { useSidebar } from "./sidebar-context";
@@ -48,6 +49,27 @@ export function SidebarNav({
           onClick={startNewChat}
         />
         <SidebarDriveAccordion collapsed={collapsed} onNavigate={onNavigate} />
+        {/* スキル / ミニアプリ（Phase 6） */}
+        <NavItem
+          icon={SKILLS_NAV.icon}
+          label={SKILLS_NAV.label}
+          collapsed={collapsed}
+          active={isActivePath(SKILLS_NAV.href, pathname)}
+          onClick={() => {
+            router.push(SKILLS_NAV.href);
+            onNavigate?.();
+          }}
+        />
+        <NavItem
+          icon={APPS_NAV.icon}
+          label={APPS_NAV.label}
+          collapsed={collapsed}
+          active={isActivePath(APPS_NAV.href, pathname)}
+          onClick={() => {
+            router.push(APPS_NAV.href);
+            onNavigate?.();
+          }}
+        />
       </nav>
     </div>
   );
