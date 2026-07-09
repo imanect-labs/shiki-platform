@@ -55,12 +55,21 @@ impl QdrantVectorStore {
         Err(RagError::Vector(format!("qdrant HTTP {status}: {body}")))
     }
 
-    /// tenant 無条件 AND ＋ prefilter ＋ 除外を Qdrant filter JSON に組む。
-    fn build_filter(ctx: &AuthContext, prefilter: &PreFilter, exclude: &[Uuid]) -> Value {
+    /// tenant 無条件 AND ＋ prefilter ＋ スコープ ＋ 除外を Qdrant filter JSON に組む。
+    fn build_filter(
+        ctx: &AuthContext,
+        prefilter: &PreFilter,
+        scope_tags: &[String],
+        exclude: &[Uuid],
+    ) -> Value {
         // tenant フィルタは常に must（authz_tags と独立の防壁・design §4.3）。
         let mut must = vec![json!({"key": "tenant_id", "match": {"value": ctx.tenant_id}})];
         if let PreFilter::Tags(tags) = prefilter {
             must.push(json!({"key": "authz_tags", "match": {"any": tags}}));
+        }
+        // 知識スコープ（Task 6.8）: 権限境界と独立の AND 句（TenantOnly 縮退時も維持）。
+        if !scope_tags.is_empty() {
+            must.push(json!({"key": "authz_tags", "match": {"any": scope_tags}}));
         }
         let mut filter = json!({"must": must});
         if !exclude.is_empty() {
@@ -274,7 +283,7 @@ impl VectorStore for QdrantVectorStore {
             .json(&json!({
                 "vector": query.vector,
                 "limit": query.limit,
-                "filter": Self::build_filter(ctx, query.prefilter, query.exclude),
+                "filter": Self::build_filter(ctx, query.prefilter, query.scope_tags, query.exclude),
                 "with_payload": ["node_id"],
             }))
             .send()
@@ -352,7 +361,7 @@ mod tests {
             "a-corp".into(),
         );
         // TenantOnly 縮退でも tenant must は残る（第二の防壁）。
-        let f = QdrantVectorStore::build_filter(&ctx, &PreFilter::TenantOnly, &[]);
+        let f = QdrantVectorStore::build_filter(&ctx, &PreFilter::TenantOnly, &[], &[]);
         assert_eq!(f["must"][0]["key"], "tenant_id");
         assert_eq!(f["must"][0]["match"]["value"], "a-corp");
         assert_eq!(f["must"].as_array().map(Vec::len), Some(1));
@@ -360,11 +369,26 @@ mod tests {
         let f = QdrantVectorStore::build_filter(
             &ctx,
             &PreFilter::Tags(vec!["file:a-corp|f1".into()]),
+            &[],
             &[Uuid::nil()],
         );
         assert_eq!(f["must"][0]["key"], "tenant_id");
         assert_eq!(f["must"][1]["key"], "authz_tags");
         assert_eq!(f["must"][1]["match"]["any"][0], "file:a-corp|f1");
         assert!(f["must_not"][0]["has_id"].is_array());
+
+        // 知識スコープ（Task 6.8）は権限境界と独立の AND 句。TenantOnly 縮退でも維持される。
+        let scope = vec!["folder:a-corp|d1".to_string()];
+        let f = QdrantVectorStore::build_filter(&ctx, &PreFilter::TenantOnly, &scope, &[]);
+        assert_eq!(f["must"][1]["key"], "authz_tags");
+        assert_eq!(f["must"][1]["match"]["any"][0], "folder:a-corp|d1");
+        let f = QdrantVectorStore::build_filter(
+            &ctx,
+            &PreFilter::Tags(vec!["file:a-corp|f1".into()]),
+            &scope,
+            &[],
+        );
+        // 可読タグ句とスコープ句は別 must（∩ セマンティクス）。
+        assert_eq!(f["must"].as_array().map(Vec::len), Some(3));
     }
 }

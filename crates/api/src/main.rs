@@ -80,8 +80,8 @@ async fn main() -> anyhow::Result<()> {
 
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
-    // UI スペック検証・解決（Task 6.3）: 保存・発話（emit_ui）・解決の全経路が共有する信頼境界。
-    let (ui_validator, ui_specs) = wiring::wire_gui(&db, &artifacts);
+    // generative UI / skill / ミニアプリ（Phase 6）: 検証は全経路が同一実装を共有する信頼境界。
+    let gui_stores = wiring::wire_gui(&db, &artifacts);
 
     // チャット（Phase 3）: enabled のとき llm-gateway＋生成ワーカーを配線し、API 用ストアを返す。
     // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
@@ -92,7 +92,8 @@ async fn main() -> anyhow::Result<()> {
         &authz,
         search.as_ref(),
         &storage,
-        &ui_validator,
+        &gui_stores.validator,
+        &artifacts,
     )
     .await?;
 
@@ -149,8 +150,10 @@ async fn main() -> anyhow::Result<()> {
         http,
         storage,
         artifacts,
-        ui_specs,
+        ui_specs: gui_stores.ui_specs,
         ui_actions,
+        skills: gui_stores.skills,
+        mini_apps: gui_stores.mini_apps,
         secrets,
         workflows,
         workflow_launcher,

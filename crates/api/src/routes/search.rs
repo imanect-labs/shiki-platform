@@ -49,6 +49,7 @@ pub async fn search(
             query,
             req.top_k,
             req.mode.unwrap_or(SearchMode::Hybrid),
+            None,
             trace_id.as_deref(),
         )
         .await?;

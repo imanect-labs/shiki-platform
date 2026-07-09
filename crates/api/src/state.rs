@@ -49,6 +49,10 @@ pub struct AppState {
     pub ui_specs: Arc<gui::UiSpecStore>,
     /// 宣言的 UI アクションの実行系（Task 6.5・照合/本人認可/監査の合流点）。
     pub ui_actions: Arc<gui::ActionDispatcher>,
+    /// skill の保存/取得（Task 6.7・artifact kind=skill の上に保存時検証を載せる）。
+    pub skills: Arc<gui::SkillStore>,
+    /// ミニアプリの保存/解決（Task 6.10・部品はバンドル権限で読む）。
+    pub mini_apps: Arc<gui::MiniAppStore>,
     /// シークレット管理（Task 10.9）。マスターキー未設定では `None`（/secrets は 503）。
     pub secrets: Option<Arc<secrets::SecretStore>>,
     /// ワークフロー IR の保存/取得（Task 10.1a・artifact kind=workflow の上に載る）。

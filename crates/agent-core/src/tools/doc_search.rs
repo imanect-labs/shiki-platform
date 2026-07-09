@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use authz::AuthContext;
-use rag::{SearchMode, SearchResult, SearchService};
+use rag::{SearchMode, SearchResult, SearchScope, SearchService};
 
 use crate::tool::{Citation, Tool, ToolError, ToolOutcome};
 
@@ -43,6 +43,7 @@ pub async fn run_doc_search(
     ctx: &AuthContext,
     query: &str,
     top_k: Option<u32>,
+    scope: Option<&SearchScope>,
     trace_id: Option<&str>,
 ) -> Result<DocSearchResult, ToolError> {
     let query = query.trim();
@@ -50,7 +51,7 @@ pub async fn run_doc_search(
         return Err(ToolError::Invalid("query is empty".into()));
     }
     let out = search
-        .search(ctx, query, top_k, SearchMode::Hybrid, trace_id)
+        .search(ctx, query, top_k, SearchMode::Hybrid, scope, trace_id)
         .await
         .map_err(|e| ToolError::Unavailable(format!("doc_search failed: {e}")))?;
 
@@ -88,6 +89,8 @@ pub struct DocSearchTool {
     search: Arc<SearchService>,
     /// 1 回の検索で返す上限（既定 8）。
     top_k: Option<u32>,
+    /// 知識スコープ（skill・Task 6.8）。None は全可読範囲。
+    scope: Option<SearchScope>,
 }
 
 impl DocSearchTool {
@@ -95,6 +98,17 @@ impl DocSearchTool {
         DocSearchTool {
             search,
             top_k: None,
+            scope: None,
+        }
+    }
+
+    /// 知識スコープ付きで構成する（skill 適用時）。スコープは絞り込みのみで、
+    /// 最終可読性は SearchService の post-filter が常に再検証する。
+    pub fn with_scope(search: Arc<SearchService>, scope: Option<SearchScope>) -> Self {
+        DocSearchTool {
+            search,
+            top_k: None,
+            scope: scope.filter(|s| !s.is_empty()),
         }
     }
 }
@@ -138,7 +152,15 @@ impl Tool for DocSearchTool {
             .get("query")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| ToolError::Invalid("missing 'query'".into()))?;
-        let result = run_doc_search(&self.search, ctx, query, self.top_k, trace_id).await?;
+        let result = run_doc_search(
+            &self.search,
+            ctx,
+            query,
+            self.top_k,
+            self.scope.as_ref(),
+            trace_id,
+        )
+        .await?;
         let mut outcome = ToolOutcome::ok(result.context_text);
         outcome.citations = result.citations;
         Ok(outcome)

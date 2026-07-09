@@ -92,6 +92,9 @@ pub struct WorkerDeps {
     pub storage: Option<Arc<storage::StorageService>>,
     /// UI スペック検証（emit_ui ツール・Task 6.4）。未配線なら emit_ui を提示しない。
     pub ui_validator: Option<Arc<gui::SpecValidator>>,
+    /// skill / ミニアプリのピン解決（Task 6.7/6.9/6.10）。未配線でピンがある run は失敗する
+    /// （fail-closed・skill 無しで黙って生成しない）。
+    pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
 }
 
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
@@ -111,6 +114,8 @@ pub struct ChatWorker {
     storage: Option<Arc<storage::StorageService>>,
     /// UI スペック検証（emit_ui ツール・Task 6.4）。
     ui_validator: Option<Arc<gui::SpecValidator>>,
+    /// skill / ミニアプリのピン解決（Task 6.9）。
+    skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -124,6 +129,7 @@ impl ChatWorker {
             web_search,
             storage,
             ui_validator,
+            skill_artifacts,
         } = deps;
         ChatWorker {
             db,
@@ -135,6 +141,7 @@ impl ChatWorker {
             web_search,
             storage,
             ui_validator,
+            skill_artifacts,
             config: Arc::new(config),
         }
     }

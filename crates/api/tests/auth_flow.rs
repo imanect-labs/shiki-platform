@@ -386,6 +386,8 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
     let ui_actions = Arc::new(gui::ActionDispatcher::new(
         storage::audit::AuditRecorder::new(db.clone()),
     ));
+    let skills = Arc::new(gui::SkillStore::new(Arc::clone(&artifacts)));
+    let mini_apps = Arc::new(gui::MiniAppStore::new(Arc::clone(&artifacts), db.clone()));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -397,6 +399,8 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         artifacts,
         ui_specs,
         ui_actions,
+        skills,
+        mini_apps,
         secrets: None,
         workflows,
         workflow_launcher: None,

@@ -64,7 +64,7 @@ fn index_one(
 }
 
 fn search_all(ft: &TantivyFulltext, ctx: &AuthContext, q: &str) -> Vec<Uuid> {
-    ft.search(ctx, q, 10, &PreFilter::TenantOnly, &[])
+    ft.search(ctx, q, 10, &PreFilter::TenantOnly, &[], &[])
         .unwrap()
         .into_iter()
         .map(|h| h.chunk_id)
@@ -109,14 +109,14 @@ fn authz_tags_prefilter_narrows_results() {
     // folder-sales の可読タグだけ持つユーザーは node_a のみヒット。
     let readable = vec![ctx.ns().folder("folder-sales").as_str().to_string()];
     let hits = ft
-        .search(&ctx, "売上", 10, &PreFilter::Tags(readable), &[])
+        .search(&ctx, "売上", 10, &PreFilter::Tags(readable), &[], &[])
         .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].chunk_id, chunk_a);
 
     // 可読タグゼロなら何もヒットしない（fail-closed）。
     let hits = ft
-        .search(&ctx, "売上", 10, &PreFilter::Tags(vec![]), &[])
+        .search(&ctx, "売上", 10, &PreFilter::Tags(vec![]), &[], &[])
         .unwrap();
     assert!(hits.is_empty());
 }
@@ -137,7 +137,7 @@ fn tenant_isolation_is_absolute_even_with_forged_tags() {
     //（Task 2.5 受入条件: tenant 境界は authz_tags と独立に必ず適用）。
     let forged = tags_a.clone();
     let hits = ft
-        .search(&b, "売上", 10, &PreFilter::Tags(forged), &[])
+        .search(&b, "売上", 10, &PreFilter::Tags(forged), &[], &[])
         .unwrap();
     assert!(hits.is_empty());
     // 本来のテナントでは見える。
@@ -221,13 +221,13 @@ fn move_reevaluates_tags_via_replace() {
     let old_readable = vec![ctx.ns().folder("folder-old").as_str().to_string()];
     let new_readable = vec![ctx.ns().folder("folder-new").as_str().to_string()];
     assert!(
-        ft.search(&ctx, "文書", 10, &PreFilter::Tags(old_readable), &[])
+        ft.search(&ctx, "文書", 10, &PreFilter::Tags(old_readable), &[], &[])
             .unwrap()
             .is_empty(),
         "旧フォルダの viewer からは消える"
     );
     assert_eq!(
-        ft.search(&ctx, "文書", 10, &PreFilter::Tags(new_readable), &[])
+        ft.search(&ctx, "文書", 10, &PreFilter::Tags(new_readable), &[], &[])
             .unwrap()
             .len(),
         1,
@@ -245,7 +245,7 @@ fn exclude_skips_already_fetched_chunks() {
     let chunk = index_one(&ft, &ctx, node, "バックフィル対象の文書。", &t);
 
     let hits = ft
-        .search(&ctx, "文書", 10, &PreFilter::TenantOnly, &[chunk])
+        .search(&ctx, "文書", 10, &PreFilter::TenantOnly, &[], &[chunk])
         .unwrap();
     assert!(
         hits.is_empty(),

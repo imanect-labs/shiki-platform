@@ -106,6 +106,16 @@ pub struct Thread {
     pub title: String,
     /// thread 既定のエージェントモード（message 単位で上書き可）。
     pub agent_mode: bool,
+    /// 適用する skill のバージョンピン（Task 6.7・作成時に固定）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_version: Option<i64>,
+    /// ミニアプリ経由のセッション（Task 6.10）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mini_app_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mini_app_version: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

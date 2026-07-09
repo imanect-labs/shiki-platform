@@ -28,6 +28,10 @@ pub mod action;
 pub mod chart;
 pub mod dispatch;
 pub mod emit_tool;
+pub mod miniapp;
+pub mod miniapp_store;
+pub mod skill;
+pub mod skill_store;
 pub mod spec;
 pub mod store;
 pub mod validate;
@@ -38,6 +42,13 @@ pub use action::{ActionBinding, HandlerBinding, ToolBinding, WorkflowBinding, Wo
 pub use chart::{ChartPoint, ChartSpec};
 pub use dispatch::{ActionDispatcher, ActionError, ActionHandler, ActionSource, WorkflowStarter};
 pub use emit_tool::EmitUiTool;
+pub use miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
+pub use miniapp_store::{MiniAppStore, ResolvedMiniApp};
+pub use skill::{
+    validate_skill_body, FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody,
+    SkillScript,
+};
+pub use skill_store::SkillStore;
 pub use spec::{ActionRef, UiNode, UiSpecDoc};
 pub use store::{GuiError, UiSpecStore};
 pub use validate::{validate_spec, GuiValidationError};

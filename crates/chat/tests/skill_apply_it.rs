@@ -1,10 +1,16 @@
-//! 生成ワーカーのエンドツーエンド結合テスト（Task 3.5 / 3.11）。
+//! skill のチャット適用の結合テスト（Task 6.7/6.9 受け入れ条件）。
 //!
-//! `STORAGE_TEST_DATABASE_URL` が設定されている時のみ実行。実 LLM の代わりに決定的 stub
-//! プロバイダを使い、**ChatWorker → llm-gateway(stub) → sink(append+projection) → SSE event_stream**
-//! の実コード経路を走らせて、送信→ストリーミング→確定→復元購読が通ることを検証する。
+//! stub LLM で **thread ピン → run コピー → ワーカー適用（system/few-shot/モデル既定）** の
+//! 実経路を走らせる。`STORAGE_TEST_DATABASE_URL` が設定されている時のみ実行。
+//! - skill を選んでチャットを開始すると system/モデル既定が適用される（llm_usage の実効モデルで観測）
+//! - skill.apply が監査に残る（Task 6.12）
+//!
+//! ⚠️ jobq の `chat_generation` キューはプロセス内で共有されるため、**本バイナリには
+//! ワーカー能力の異なるテストを同居させない**（未配線ワーカーが他テストの run を
+//! 横取りすると偽陽性になる）。fail-closed は `crate::skill` の unit で担保する。
 
 #![allow(
+    clippy::pedantic,
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
@@ -19,12 +25,14 @@ use authz::{
     AuthContext, AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal,
     ReadTupleKey, Relation, Subject,
 };
-use chat::{ChatStore, ChatWorker, ContentBlock, StreamEventKind, WorkerConfig};
+use chat::{ChatStore, ChatWorker, StreamEventKind, WorkerConfig};
 use futures::stream::StreamExt;
 use llm_gateway::{
     GatewayConfig, LlmGateway, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,
 };
+use serde_json::json;
 use sqlx::{postgres::PgPoolOptions, PgPool};
+use uuid::Uuid;
 
 struct AllowAll;
 
@@ -124,38 +132,73 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
         },
         catalog: ModelCatalog {
             default_model: "m".into(),
-            models: vec![ModelEntry {
-                id: "m".into(),
-                real_id: None,
-                prompt_price_micros_per_mtok: 0,
-                completion_price_micros_per_mtok: 0,
-            }],
+            models: vec![
+                ModelEntry {
+                    id: "m".into(),
+                    real_id: None,
+                    prompt_price_micros_per_mtok: 0,
+                    completion_price_micros_per_mtok: 0,
+                },
+                ModelEntry {
+                    id: "skill-model".into(),
+                    real_id: None,
+                    prompt_price_micros_per_mtok: 0,
+                    completion_price_micros_per_mtok: 0,
+                },
+            ],
         },
         langfuse: None,
     };
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
 
+/// skill artifact を直接作る（body は gui の保存時検証を通る形）。
+async fn seed_skill(pool: &PgPool, c: &AuthContext) -> Uuid {
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+    ));
+    let skills = gui::SkillStore::new(artifacts);
+    let body = json!({
+        "description": "経費精算アシスタント",
+        "instructions": "あなたは経費規程の専門家です。",
+        "allowed_tools": ["doc_search"],
+        "model": { "model": "skill-model", "temperature": 0.1, "max_tokens": 512 },
+        "few_shot": [ { "user": "こんにちは", "assistant": "経費のご質問をどうぞ。" } ]
+    });
+    let (id, _) = skills
+        .create(c, "expense-skill", &body, None)
+        .await
+        .expect("skill");
+    id
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn worker_generates_streams_and_persists_projection() {
+async fn skill_pin_applies_model_defaults_and_audits() {
     let Some(pool) = setup().await else { return };
-    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let c = ctx(&tenant);
+    let skill_id = seed_skill(&pool, &c).await;
+
     let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
         .await
         .unwrap();
-    let gateway = stub_gateway(pool.clone());
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+    ));
     let worker = ChatWorker::new(
         pool.clone(),
         store.clone(),
         chat::WorkerDeps {
-            gateway,
+            gateway: stub_gateway(pool.clone()),
             search: None,
             sandbox: None,
             artifacts: None,
             web_search: None,
             storage: None,
             ui_validator: None,
-            skill_artifacts: None,
+            skill_artifacts: Some(artifacts),
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
@@ -165,27 +208,27 @@ async fn worker_generates_streams_and_persists_projection() {
             ..Default::default()
         },
     );
-    // 生成ワーカーを起動（jobq を消費）。
     worker.spawn(1);
 
-    let c = ctx(&tenant);
+    // skill をピンした thread（通常チャット＝classic 経路にも適用される）。
     let thread = store.create_thread(&c, "t", false, None).await.unwrap();
-    let res = store
-        .post_message(&c, thread.id, "hello world", &[], Some(false), false, None)
+    store
+        .set_thread_pins(&c, thread.id, Some((skill_id, 1)), None, None)
         .await
         .unwrap();
 
-    // SSE 相当の event_stream を drain し、トークン→done を受け取る。
+    let res = store
+        .post_message(&c, thread.id, "出張費は？", &[], Some(false), false, None)
+        .await
+        .unwrap();
     let mut rx = store.event_stream(res.run_id, 0);
-    let mut text = String::new();
     let mut done = false;
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
             .await
-            .expect("イベント待ちがタイムアウト（ワーカーが生成しない）");
+            .expect("イベント待ちがタイムアウト");
         let Some(ev) = next else { break };
         match ev.event {
-            StreamEventKind::Token { text: t } => text.push_str(&t),
             StreamEventKind::Done { .. } => {
                 done = true;
                 break;
@@ -194,30 +237,39 @@ async fn worker_generates_streams_and_persists_projection() {
             _ => {}
         }
     }
-    assert!(done, "done イベントを受け取ること");
-    assert!(
-        text.contains("hello world"),
-        "stub 応答が本文を含むこと: {text:?}"
-    );
+    assert!(done);
 
-    // message.content に projection が書き戻されている（接続非依存生成の確定）。
-    let msgs = store.get_messages(&c, thread.id, None).await.unwrap();
-    let asst = msgs
-        .iter()
-        .find(|m| m.id == res.assistant_message_id)
-        .expect("assistant メッセージ");
-    let has_text = asst.content.iter().any(|b| match b {
-        ContentBlock::Text { text } => text.contains("hello world"),
-        _ => false,
-    });
-    assert!(has_text, "確定メッセージに本文 projection が残ること");
-
-    // 会計が刻まれている（tenant スコープ・冪等キー）。
-    let usage_count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM llm_usage WHERE tenant_id = $1")
-            .bind(&tenant)
+    // run 行に skill ピンがコピーされている（thread → run・0028）。
+    let (run_skill, run_skill_v): (Option<Uuid>, Option<i64>) =
+        sqlx::query_as("SELECT skill_id, skill_version FROM generation_run WHERE run_id = $1")
+            .bind(res.run_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert!(usage_count >= 1, "llm_usage に会計行が刻まれること");
+    assert_eq!(run_skill, Some(skill_id));
+    assert_eq!(run_skill_v, Some(1));
+
+    // モデル既定が適用され、会計が実効モデル（skill-model）で刻まれる（6.9 受け入れ条件②）。
+    let models: Vec<String> =
+        sqlx::query_scalar("SELECT model FROM llm_usage WHERE tenant_id = $1")
+            .bind(&tenant)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        models.iter().any(|m| m == "skill-model"),
+        "skill のモデル既定が実効モデルとして会計に載ること: {models:?}"
+    );
+
+    // skill.apply が監査に残り、run の trace 系列と突合できる（6.12）。
+    let applies: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log \
+         WHERE tenant_id = $1 AND action = 'skill.apply' AND object_id = $2",
+    )
+    .bind(&tenant)
+    .bind(skill_id.to_string())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(applies >= 1, "skill.apply 監査が残ること");
 }

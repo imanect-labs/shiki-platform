@@ -17,8 +17,9 @@ shiki-rag.workspace = true
 shiki-llm-gateway.workspace = true
 shiki-agent-core.workspace = true
 shiki-websearch.workspace = true
-# generative UI（emit_ui ツール・chat.submit ハンドラ・Task 6.4/6.5）。
+# generative UI（emit_ui ツール・chat.submit ハンドラ・Task 6.4/6.5）＋skill 適用（Task 6.9）。
 shiki-gui.workspace = true
+shiki-artifact.workspace = true
 # claim/リース/fencing/(id,seq) 追記/Redis pub/sub の共通プリミティブ（Task 10.0）。
 shiki-durable.workspace = true
 
@@ -41,8 +42,6 @@ tokio = { workspace = true }
 shiki-authz.workspace = true
 shiki-jobq.workspace = true
 shiki-llm-gateway.workspace = true
-# genui_it: SpecValidator の構築に artifact ストアが要る。
-shiki-artifact.workspace = true
 sqlx.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 async-trait.workspace = true
@@ -61,6 +60,7 @@ ignored = [
     "shiki-agent-core",
     "shiki-websearch",
     "shiki-gui",
+    "shiki-artifact",
     "shiki-durable",
 ]
 

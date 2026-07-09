@@ -10,6 +10,10 @@ use ts_rs::TS;
 
 use gui::action::{ActionBinding, HandlerBinding, ToolBinding, WorkflowBinding, WorkflowPin};
 use gui::chart::{ChartPoint, ChartSpec};
+use gui::miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
+use gui::skill::{
+    FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody, SkillScript,
+};
 use gui::spec::{
     ActionRef, ButtonProps, ButtonVariant, CellAlign, CellValue, ContainerProps, FormField,
     FormProps, Layout, LinkProps, ReservedProps, SelectOption, SelectProps, TableColumn,
@@ -65,6 +69,16 @@ fn main() {
         WorkflowBinding,
         WorkflowPin,
         GuiValidationError,
+        // skill（Task 6.7）とミニアプリ（Task 6.10）の body 型。
+        SkillBody,
+        KnowledgeScope,
+        ModelDefaults,
+        FewShotExample,
+        SkillScript,
+        ScriptKind,
+        MiniAppBody,
+        ComponentPin,
+        NamedComponentPin,
     );
 
     let header = "// 自動生成: cargo run -p shiki-gui --bin export-gui-ts（編集禁止）\n\

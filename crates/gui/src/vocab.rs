@@ -42,6 +42,7 @@ macro_rules! vocab_enum {
         }
     };
 }
+pub(crate) use vocab_enum;
 
 vocab_enum! {
     /// 信頼コンポーネント・カタログ（Task 6.2）。

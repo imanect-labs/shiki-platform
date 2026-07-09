@@ -94,6 +94,7 @@ async fn search(
                 vector: &unit(vector),
                 limit: 10,
                 prefilter,
+                scope_tags: &[],
                 exclude: &[],
             },
         )

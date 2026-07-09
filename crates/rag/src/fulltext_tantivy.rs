@@ -199,6 +199,7 @@ impl FulltextIndex for TantivyFulltext {
         query_text: &str,
         limit: usize,
         prefilter: &PreFilter,
+        scope_tags: &[String],
         exclude: &[Uuid],
     ) -> Result<Vec<ScoredChunk>, RagError> {
         // index-per-tenant: 自テナントの索引だけを開く（存在しなければヒット 0）。
@@ -235,6 +236,14 @@ impl FulltextIndex for TantivyFulltext {
         // pre-filter: 可読タグのいずれかを持つ chunk のみ（dense 側と同じ権限境界）。
         if let PreFilter::Tags(tags) = prefilter {
             let terms: Vec<Term> = tags
+                .iter()
+                .map(|t| Term::from_field_text(tenant.fields.authz_tags, t))
+                .collect();
+            clauses.push((Occur::Must, Box::new(TermSetQuery::new(terms))));
+        }
+        // 知識スコープ（Task 6.8）: 権限境界と独立の AND 句（TenantOnly 縮退時も維持）。
+        if !scope_tags.is_empty() {
+            let terms: Vec<Term> = scope_tags
                 .iter()
                 .map(|t| Term::from_field_text(tenant.fields.authz_tags, t))
                 .collect();

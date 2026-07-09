@@ -167,7 +167,7 @@ async fn backfill_recovers_top_k_after_mass_deny() {
         ..RagConfig::default()
     };
     let output = service(&env, authz, config)
-        .search(&env.ctx, query, Some(3), SearchMode::Dense, None)
+        .search(&env.ctx, query, Some(3), SearchMode::Dense, None, None)
         .await
         .unwrap();
 
@@ -210,7 +210,7 @@ async fn readable_set_overflow_falls_back_to_tenant_only() {
             ..RagConfig::default()
         },
     )
-    .search(&env.ctx, query, Some(5), SearchMode::Dense, None)
+    .search(&env.ctx, query, Some(5), SearchMode::Dense, None, None)
     .await
     .unwrap();
 
@@ -250,7 +250,7 @@ async fn deleted_node_is_hidden_even_if_indexes_are_stale() {
             ..RagConfig::default()
         },
     )
-    .search(&env.ctx, query, Some(5), SearchMode::Dense, None)
+    .search(&env.ctx, query, Some(5), SearchMode::Dense, None, None)
     .await
     .unwrap();
     assert!(

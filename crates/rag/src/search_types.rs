@@ -29,6 +29,25 @@ pub struct SearchRequest {
     pub debug: bool,
 }
 
+/// 検索の知識スコープ（skill・Task 6.8）。
+///
+/// **絞り込み専用**であり権限を広げない: 実効範囲 = スコープ ∩ ユーザー可読集合
+/// （pre-filter）で、最終可読性は常に post-filter（OpenFGA file check）が再検証する。
+/// folder は配下全体を含む（チャンクは祖先フォルダの構造タグを全て持つ）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchScope {
+    /// 参照を許すフォルダ（配下の全ファイルを含む）。
+    pub folders: Vec<Uuid>,
+    /// 参照を許す個別ファイル。
+    pub files: Vec<Uuid>,
+}
+
+impl SearchScope {
+    pub fn is_empty(&self) -> bool {
+        self.folders.is_empty() && self.files.is_empty()
+    }
+}
+
 /// 引用チャンク 1 件。`file_name`/`folder_id` は検索時点の現在値（node JOIN）。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SearchResult {

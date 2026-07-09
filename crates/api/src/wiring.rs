@@ -221,6 +221,7 @@ pub(crate) fn build_sandbox(
     Ok(Some(Arc::new(client)))
 }
 
+#[allow(clippy::too_many_arguments)] // 依存束の注入点（main からの一回きり・構造化は wire_gui 側で担保）。
 pub(crate) async fn wire_chat(
     config: &AppConfig,
     http: &reqwest::Client,
@@ -229,6 +230,7 @@ pub(crate) async fn wire_chat(
     search: Option<&Arc<rag::SearchService>>,
     storage: &Arc<storage::StorageService>,
     ui_validator: &Arc<gui::SpecValidator>,
+    skill_artifacts: &Arc<artifact::ArtifactStore>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -284,6 +286,8 @@ pub(crate) async fn wire_chat(
             storage: Some(Arc::clone(storage)),
             // generative UI（emit_ui・Task 6.4）。
             ui_validator: Some(Arc::clone(ui_validator)),
+            // skill / ミニアプリのピン解決（Task 6.9・fail-closed）。
+            skill_artifacts: Some(Arc::clone(skill_artifacts)),
         },
         worker_config,
     );
@@ -354,19 +358,31 @@ fn wire_websearch(
     Ok(Some(provider))
 }
 
-/// generative UI の検証層＋UI スペックストアを配線する（Task 6.3）。
+/// generative UI／skill／ミニアプリのストア束（Phase 6 の配線結果）。
+pub(crate) struct GuiWiring {
+    pub(crate) validator: Arc<gui::SpecValidator>,
+    pub(crate) ui_specs: Arc<gui::UiSpecStore>,
+    pub(crate) skills: Arc<gui::SkillStore>,
+    pub(crate) mini_apps: Arc<gui::MiniAppStore>,
+}
+
+/// generative UI の検証層＋各ストアを配線する（Task 6.3/6.7/6.10）。
 ///
 /// 検証は保存（UiSpecStore）・発話（emit_ui）・解決（ミニアプリ）の全経路が同一実装を共有する。
-pub(crate) fn wire_gui(
-    db: &sqlx::PgPool,
-    artifacts: &Arc<artifact::ArtifactStore>,
-) -> (Arc<gui::SpecValidator>, Arc<gui::UiSpecStore>) {
+pub(crate) fn wire_gui(db: &sqlx::PgPool, artifacts: &Arc<artifact::ArtifactStore>) -> GuiWiring {
     let validator = Arc::new(gui::SpecValidator::new(Arc::clone(artifacts), db.clone()));
-    let specs = Arc::new(gui::UiSpecStore::new(
+    let ui_specs = Arc::new(gui::UiSpecStore::new(
         Arc::clone(artifacts),
         Arc::clone(&validator),
     ));
-    (validator, specs)
+    let skills = Arc::new(gui::SkillStore::new(Arc::clone(artifacts)));
+    let mini_apps = Arc::new(gui::MiniAppStore::new(Arc::clone(artifacts), db.clone()));
+    GuiWiring {
+        validator,
+        ui_specs,
+        skills,
+        mini_apps,
+    }
 }
 
 /// workflow-engine 対話トリガの UI アクション向けアダプタ（Task 6.5 の③）。
