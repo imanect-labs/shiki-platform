@@ -45,6 +45,10 @@ pub struct AppState {
     pub storage: Arc<StorageService>,
     /// アーティファクト共通枠（Task 6.1・バージョン付き共有本文の単一チョークポイント）。
     pub artifacts: Arc<artifact::ArtifactStore>,
+    /// UI スペックの保存/取得（Task 6.3・artifact kind=ui_spec の上に保存時検証を載せる）。
+    pub ui_specs: Arc<gui::UiSpecStore>,
+    /// 宣言的 UI アクションの実行系（Task 6.5・照合/本人認可/監査の合流点）。
+    pub ui_actions: Arc<gui::ActionDispatcher>,
     /// シークレット管理（Task 10.9）。マスターキー未設定では `None`（/secrets は 503）。
     pub secrets: Option<Arc<secrets::SecretStore>>,
     /// ワークフロー IR の保存/取得（Task 10.1a・artifact kind=workflow の上に載る）。

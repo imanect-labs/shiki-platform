@@ -161,6 +161,25 @@ pub fn route_table() -> Vec<RouteDecl> {
                     .get(routes::artifacts::list_artifact_shares)
             },
         ),
+        // --- generative UI（Phase 6・保存時検証つき ui_spec ＋ 宣言的アクション） ---
+        r("/ui-specs", &["POST"], Session, || {
+            post(routes::ui_specs::create_ui_spec)
+        }),
+        r("/ui-specs/{id}", &["GET", "PUT"], Session, || {
+            get(routes::ui_specs::get_ui_spec).put(routes::ui_specs::update_ui_spec)
+        }),
+        r(
+            "/ui-specs/{id}/versions/{version}",
+            &["GET"],
+            Session,
+            || get(routes::ui_specs::get_ui_spec_version),
+        ),
+        r(
+            "/threads/{thread_id}/messages/{message_id}/ui-actions",
+            &["POST"],
+            Session,
+            || post(routes::ui_actions::invoke_chat_ui_action),
+        ),
         // --- ワークフロー IR（Task 10.1a・保存時検証 V1〜V7・artifact の上） ---
         r("/workflows", &["POST"], Session, || {
             post(routes::workflows::create_workflow)

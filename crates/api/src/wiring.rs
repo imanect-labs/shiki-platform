@@ -12,6 +12,49 @@ use api::config::{AppConfig, LlmBackend, VectorStoreBackend, WebSearchBackend};
 /// RAG 配線の結果（検索サービスはオプション・テナント消去は常設）。
 pub(crate) type RagWiring = (Option<Arc<rag::SearchService>>, Arc<rag::RagAdmin>);
 
+/// オブジェクトストア＋StorageService を構築する（main の起動フローから切り出し）。
+///
+/// GCS は Phase 8 で同 trait 裏に追加する。s3 設定の必須チェックは minio の分岐内で行う
+/// （gcs 選択時に s3 未設定エラーで誤って落ちないようにする）。
+pub(crate) async fn wire_storage(
+    config: &AppConfig,
+    db: &sqlx::PgPool,
+    authz: &Arc<dyn AuthzClient>,
+) -> anyhow::Result<(Arc<dyn ObjectStore>, Arc<storage::StorageService>)> {
+    use api::config::ObjectStoreBackend;
+    let (object_store, presign_get_ttl, presign_put_ttl): (Arc<dyn ObjectStore>, _, _) =
+        match config.storage.backend {
+            ObjectStoreBackend::Minio => {
+                let s3 = config
+                    .storage
+                    .s3
+                    .as_ref()
+                    .context("storage.s3 が未設定です（backend=minio）")?;
+                (
+                    Arc::new(storage::S3ObjectStore::new(s3)) as Arc<dyn ObjectStore>,
+                    s3.presign_get_ttl(),
+                    s3.presign_put_ttl(),
+                )
+            }
+            ObjectStoreBackend::Gcs => {
+                anyhow::bail!("storage.backend=gcs は Phase 8 で実装予定です")
+            }
+        };
+    object_store
+        .ensure_bucket()
+        .await
+        .context("オブジェクトストアのバケット準備に失敗")?;
+    let service = Arc::new(storage::StorageService::new(
+        db.clone(),
+        object_store.clone(),
+        Arc::clone(authz),
+        presign_get_ttl,
+        presign_put_ttl,
+        config.storage.max_upload_size_bytes,
+    ));
+    Ok((object_store, service))
+}
+
 /// RAG（Phase 2）の依存配線。`rag.enabled=false` なら何も起動せず `None` を返す。
 ///
 /// 依存は全てトレイト裏（DocumentParser/EmbeddingProvider/Reranker/VectorStore/
@@ -185,6 +228,7 @@ pub(crate) async fn wire_chat(
     authz: &Arc<dyn AuthzClient>,
     search: Option<&Arc<rag::SearchService>>,
     storage: &Arc<storage::StorageService>,
+    ui_validator: &Arc<gui::SpecValidator>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -238,6 +282,8 @@ pub(crate) async fn wire_chat(
             web_search,
             // 自律プロファイルのワークスペース（file CRUD/shell・Task 5.4）。
             storage: Some(Arc::clone(storage)),
+            // generative UI（emit_ui・Task 6.4）。
+            ui_validator: Some(Arc::clone(ui_validator)),
         },
         worker_config,
     );
@@ -306,6 +352,80 @@ fn wire_websearch(
         "web 検索プロバイダを配線しました"
     );
     Ok(Some(provider))
+}
+
+/// generative UI の検証層＋UI スペックストアを配線する（Task 6.3）。
+///
+/// 検証は保存（UiSpecStore）・発話（emit_ui）・解決（ミニアプリ）の全経路が同一実装を共有する。
+pub(crate) fn wire_gui(
+    db: &sqlx::PgPool,
+    artifacts: &Arc<artifact::ArtifactStore>,
+) -> (Arc<gui::SpecValidator>, Arc<gui::UiSpecStore>) {
+    let validator = Arc::new(gui::SpecValidator::new(Arc::clone(artifacts), db.clone()));
+    let specs = Arc::new(gui::UiSpecStore::new(
+        Arc::clone(artifacts),
+        Arc::clone(&validator),
+    ));
+    (validator, specs)
+}
+
+/// workflow-engine 対話トリガの UI アクション向けアダプタ（Task 6.5 の③）。
+///
+/// 検証時にピンした版で起動する。認可は launcher 側（本人 viewer で IR 取得・実行時は
+/// scope_ceiling ∩ 本人 ReBAC）に委ねる。IR 取得失敗（不在/権限なし）は存在秘匿で NotFound。
+struct LauncherWorkflowStarter(Arc<workflow_engine::WorkflowRunLauncher>);
+
+#[async_trait::async_trait]
+impl gui::WorkflowStarter for LauncherWorkflowStarter {
+    async fn start_pinned(
+        &self,
+        ctx: &authz::AuthContext,
+        workflow_id: uuid::Uuid,
+        version: i64,
+        input: &serde_json::Value,
+    ) -> Result<Option<uuid::Uuid>, gui::ActionError> {
+        self.0
+            .start_interactive_version(ctx, workflow_id, version, input)
+            .await
+            .map_err(|e| match e {
+                workflow_engine::run::LauncherError::Ir(_) => gui::ActionError::NotFound,
+                other => gui::ActionError::Internal(format!("run 起動: {other}")),
+            })
+    }
+}
+
+/// 宣言的 UI アクションの実行系を配線する（Task 6.5）。
+///
+/// 利用可能な束縛先（chat.submit ハンドラ・安全ツール・workflow 起動）だけを登録する。
+/// 未登録の束縛はディスパッチ時に 503（Unavailable）で fail-closed。
+pub(crate) fn wire_ui_actions(
+    config: &AppConfig,
+    http: &reqwest::Client,
+    db: &sqlx::PgPool,
+    chat: Option<&Arc<chat::ChatStore>>,
+    search: Option<&Arc<rag::SearchService>>,
+    workflow_launcher: Option<&Arc<workflow_engine::WorkflowRunLauncher>>,
+) -> anyhow::Result<Arc<gui::ActionDispatcher>> {
+    let mut dispatcher = gui::ActionDispatcher::new(storage::audit::AuditRecorder::new(db.clone()));
+    if let Some(chat) = chat {
+        dispatcher.register_handler(Arc::new(chat::ChatSubmitHandler::new((**chat).clone())));
+    }
+    if let Some(search) = search {
+        dispatcher.register_tool(
+            agent_core::ToolName::DocSearch,
+            Arc::new(agent_core::DocSearchTool::new(Arc::clone(search))),
+        );
+    }
+    if let Some(provider) = wire_websearch(config, http)? {
+        dispatcher.register_tool(
+            agent_core::ToolName::WebSearch,
+            Arc::new(agent_core::WebSearchTool::new(provider)),
+        );
+    }
+    if let Some(launcher) = workflow_launcher {
+        dispatcher.set_workflow_starter(Arc::new(LauncherWorkflowStarter(Arc::clone(launcher))));
+    }
+    Ok(Arc::new(dispatcher))
 }
 
 /// ワークフロー実行時（run ワーカー/スケジューラ/イベント relay）を配線する（Stage A W3）。

@@ -203,6 +203,38 @@ impl ChatStore {
         Ok(messages)
     }
 
+    /// 単一メッセージを取得する（thread viewer 認可・UI アクションの束縛照合用・Task 6.5）。
+    pub async fn get_message(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        message_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<Message, ChatError> {
+        self.require_thread(ctx, thread_id, Relation::Viewer, "thread.message", trace_id)
+            .await?;
+        let row: Option<MessageRow> = sqlx::query_as(
+            "SELECT id, role, content, agent_mode, parent_id, created_at FROM message \
+             WHERE id = $1 AND thread_id = $2 AND tenant_id = $3",
+        )
+        .bind(message_id)
+        .bind(thread_id)
+        .bind(&ctx.tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        let r = row.ok_or(ChatError::NotFound)?;
+        Ok(Message {
+            id: r.id,
+            role: Role::parse(&r.role)
+                .ok_or_else(|| ChatError::Internal(format!("bad role: {}", r.role)))?,
+            content: r.content.0,
+            agent_mode: r.agent_mode,
+            parent_id: r.parent_id,
+            created_at: r.created_at,
+        })
+    }
+
     /// 各メッセージの citation ブロックを閲覧者の viewer 権限で再評価し、読めない引用を落とす。
     async fn filter_citations_for_viewer(
         &self,

@@ -110,7 +110,7 @@ except Exception as e:
 impl Tool for WebFetchTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "web_fetch"
+        crate::vocab::ToolName::WebFetch.as_str()
     }
 
     #[allow(clippy::unnecessary_literal_bound)]

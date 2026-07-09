@@ -42,7 +42,7 @@ impl FsWriteTool {
 impl Tool for FsWriteTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "fs_write"
+        crate::vocab::ToolName::FsWrite.as_str()
     }
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
@@ -99,7 +99,7 @@ impl FsEditTool {
 impl Tool for FsEditTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "fs_edit"
+        crate::vocab::ToolName::FsEdit.as_str()
     }
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
@@ -174,7 +174,7 @@ impl FsDeleteTool {
 impl Tool for FsDeleteTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn name(&self) -> &str {
-        "fs_delete"
+        crate::vocab::ToolName::FsDelete.as_str()
     }
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {

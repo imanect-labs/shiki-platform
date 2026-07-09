@@ -185,6 +185,7 @@ async fn autonomous_run_writes_workspace_file_e2e() {
             artifacts: None,
             web_search: None,
             storage: Some(storage.clone()),
+            ui_validator: None,
         },
         WorkerConfig {
             system_prompt: "あなたは自律アシスタントです。".into(),

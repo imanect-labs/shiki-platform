@@ -77,6 +77,48 @@ impl WorkflowRunLauncher {
         Ok(Some(run_id))
     }
 
+    /// interactive 起動の**バージョンピン版**（generative UI / ミニアプリのアクション束縛・Task 6.5）。
+    ///
+    /// 検証時にピンした版を実行する（再現性）。認可は [`Self::start_interactive`] と同じく
+    /// 本人の viewer 権限で IR を取得し、ノード実行時は scope_ceiling ∩ 本人 ReBAC の二重ゲート。
+    pub async fn start_interactive_version(
+        &self,
+        ctx: &AuthContext,
+        workflow_id: Uuid,
+        version: i64,
+        input: &Value,
+    ) -> Result<Option<Uuid>, LauncherError> {
+        let (version, ir) = self
+            .workflows
+            .get_version(ctx, workflow_id, version, None)
+            .await
+            .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
+        let ir_json = serde_json::to_value(&ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
+        let graph = RunGraph::build(&ir);
+        let principal_kind = match ctx.principal.kind {
+            authz::PrincipalKind::Workflow => "workflow",
+            authz::PrincipalKind::User => "user",
+        };
+        let run_id = self
+            .runs
+            .create_run(
+                &ctx.tenant_id,
+                &ctx.org,
+                workflow_id,
+                version,
+                "interactive",
+                None,
+                &ctx.principal.id,
+                principal_kind,
+                input,
+                &ir_json,
+                &graph,
+            )
+            .await
+            .map_err(|e| LauncherError::Run(e.to_string()))?;
+        Ok(Some(run_id))
+    }
+
     /// schedule/event の run を起動する（委譲チェック→workflow プリンシパルで create_run）。
     async fn launch_delegated(
         &self,

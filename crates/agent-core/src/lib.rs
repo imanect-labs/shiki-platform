@@ -35,6 +35,7 @@ pub mod plan;
 pub mod profile;
 pub mod tool;
 pub mod tools;
+pub mod vocab;
 pub mod workspace;
 
 pub use agent::{run_agent, AgentStop, RunContext};
@@ -49,6 +50,7 @@ pub use tools::{
     run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsDeleteTool, FsEditTool,
     FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool, WebFetchTool, WebSearchTool,
 };
+pub use vocab::ToolName;
 pub use workspace::{WorkspaceEntry, WorkspaceStore, WorkspaceWrite};
 // サンドボックス契約を再輸出（chat は agent-core 経由で code_interpreter を配線する）。
 // `SandboxBackend` は admin ポリシーで隔離ティアを選ぶ導線で chat 側が渡す。

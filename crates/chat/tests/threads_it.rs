@@ -540,6 +540,7 @@ async fn agent_mode_worker_runs_to_done() {
             artifacts: None,
             web_search: None,
             storage: None,
+            ui_validator: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),

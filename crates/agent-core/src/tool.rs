@@ -53,6 +53,9 @@ pub struct ToolOutcome {
     pub citations: Vec<Citation>,
     /// ツールが保存した成果物（code_interpreter のみ・他ツールは空）。
     pub artifacts: Vec<ArtifactRef>,
+    /// 検証済み generative UI スペック（emit_ui のみ・他ツールは空・Phase 6 Task 6.4）。
+    /// **検証層を通過した JSON のみ**を入れること（chat 側で generative_ui ブロックへ写る）。
+    pub ui_specs: Vec<serde_json::Value>,
     /// 実行がエラーだったか（tool_result.is_error）。
     pub is_error: bool,
 }
@@ -64,6 +67,7 @@ impl ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
             artifacts: Vec::new(),
+            ui_specs: Vec::new(),
             is_error: false,
         }
     }
@@ -74,6 +78,7 @@ impl ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
             artifacts: Vec::new(),
+            ui_specs: Vec::new(),
             is_error: true,
         }
     }

@@ -73,6 +73,27 @@ pub struct VersionListResponse {
     pub items: Vec<VersionMeta>,
 }
 
+/// 汎用 /artifacts の書込を許す kind か検査する（Phase 6 ゲート）。
+///
+/// 専用の保存時検証を持つ kind（workflow=V1〜V7 / ui_spec=カタログ検証 / skill・mini_app=body
+/// 検証）は、汎用 API 経由の**無検証保存バイパス**を塞ぐため 400 で拒否し専用エンドポイントへ
+/// 誘導する（skill/mini_app の専用エンドポイントは Phase 6 後続 PR）。
+fn require_generic_kind(kind: ArtifactKind) -> Result<(), ApiError> {
+    match kind {
+        ArtifactKind::Workflow => Err(ApiError::BadRequest(
+            "kind=workflow は /workflows（保存時検証つき）で作成・更新してください".into(),
+        )),
+        ArtifactKind::UiSpec => Err(ApiError::BadRequest(
+            "kind=ui_spec は /ui-specs（保存時検証つき）で作成・更新してください".into(),
+        )),
+        ArtifactKind::Skill | ArtifactKind::MiniApp => Err(ApiError::BadRequest(format!(
+            "kind={} は専用エンドポイント（保存時検証つき）で作成・更新してください",
+            kind.as_str()
+        ))),
+        ArtifactKind::Script => Ok(()),
+    }
+}
+
 /// アーティファクトを作成する（version 1 込み・201）。
 #[utoipa::path(
     post,
@@ -92,6 +113,7 @@ pub async fn create_artifact(
     trace: TraceIdExt,
     Json(req): Json<CreateArtifactRequest>,
 ) -> Result<(StatusCode, Json<Artifact>), ApiError> {
+    require_generic_kind(req.kind)?;
     let created = state
         .artifacts
         .create(
@@ -202,6 +224,9 @@ pub async fn append_version(
     Path(id): Path<Uuid>,
     Json(req): Json<AppendVersionRequest>,
 ) -> Result<(StatusCode, Json<ArtifactVersion>), ApiError> {
+    // 追記対象の kind を確認してからゲートする（viewer 検査込みの get）。
+    let meta = state.artifacts.get(&ctx, id, trace.as_deref()).await?;
+    require_generic_kind(meta.kind)?;
     let v = state
         .artifacts
         .append_version(&ctx, id, req.body, req.expected_version, trace.as_deref())

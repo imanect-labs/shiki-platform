@@ -61,7 +61,8 @@ time = "0.3"
 
 # 型契約 / codegen
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
-ts-rs = "10"
+# uuid-impl: Uuid フィールドを TS の string として生成（gui の WorkflowPin 等）。
+ts-rs = { version = "10", features = ["uuid-impl"] }
 
 # 可観測性 (OTel エコシステムはバージョンを揃える)
 tracing = "0.1"
@@ -126,6 +127,7 @@ shiki-jobq = { path = "crates/jobq" }
 shiki-rag = { path = "crates/rag" }
 shiki-llm-gateway = { path = "crates/llm-gateway" }
 shiki-agent-core = { path = "crates/agent-core" }
+shiki-gui = { path = "crates/gui" }
 shiki-chat = { path = "crates/chat" }
 shiki-sandbox-client = { path = "crates/sandbox-client" }
 shiki-websearch = { path = "crates/websearch" }
