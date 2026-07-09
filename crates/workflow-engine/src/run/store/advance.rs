@@ -269,7 +269,10 @@ pub(super) async fn checkpoint_and_advance(
     Ok(true)
 }
 
-/// run 失敗時に残る非 terminal step を cancelled 化する（以後 claim されない）。
+/// run 失敗時に残る非 terminal step を cancelled 化する（以後 claim/起床されない）。
+///
+/// 待機中（waiting_timer/event/map）の step も cancelled にし、対応する `wait_subscription` を
+/// 消し込む（fired）。こうしないと run 失敗後もスケジューラ tick が待機 step を起床させ得る。
 pub(super) async fn cancel_remaining_steps(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: &str,
@@ -277,9 +280,20 @@ pub(super) async fn cancel_remaining_steps(
 ) -> Result<(), RunStoreError> {
     sqlx::query(
         "UPDATE step_execution SET status = 'cancelled', lease_owner = NULL, \
-         lease_expires_at = NULL, updated_at = now() \
+         lease_expires_at = NULL, wake_at = NULL, updated_at = now() \
          WHERE tenant_id = $1 AND run_id = $2 \
-           AND status IN ('pending', 'ready', 'running')",
+           AND status IN ('pending', 'ready', 'running', \
+                          'waiting_timer', 'waiting_event', 'waiting_map')",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    // 残る wait 購読を消し込む（イベント/timeout 起床の再発火防止）。
+    sqlx::query(
+        "UPDATE wait_subscription SET fired = true \
+         WHERE tenant_id = $1 AND run_id = $2 AND NOT fired",
     )
     .bind(tenant_id)
     .bind(run_id)

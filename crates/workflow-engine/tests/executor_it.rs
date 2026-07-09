@@ -382,6 +382,23 @@ async fn wait_returns_suspend_directive() {
 }
 
 #[tokio::test]
+async fn wait_rejects_negative_timeout() {
+    let exec = executor(
+        Arc::new(FakePorts::default()),
+        Arc::new(CapturingAudit::default()),
+    );
+    let res = exec
+        .execute(
+            "control.wait",
+            &json!({ "kind": "event", "source": "storage.write", "timeout_sec": -1 }),
+            &ctx(json!({}), vec![]),
+        )
+        .await;
+    assert!(!res.ok);
+    assert_eq!(res.error.unwrap().code, "bad_params");
+}
+
+#[tokio::test]
 async fn map_returns_fanout_directive() {
     let exec = executor(
         Arc::new(FakePorts::default()),

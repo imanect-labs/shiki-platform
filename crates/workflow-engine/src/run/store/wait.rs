@@ -248,7 +248,7 @@ impl RunStore {
             "SELECT s.tenant_id, s.run_id, s.step_path, r.ir_snapshot \
              FROM step_execution s \
              JOIN workflow_run r ON r.tenant_id = s.tenant_id AND r.run_id = s.run_id \
-             WHERE s.status = 'waiting_timer' AND s.wake_at <= $1 \
+             WHERE s.status = 'waiting_timer' AND s.wake_at <= $1 AND r.status = 'running' \
                AND (($2::text IS NULL) OR (s.tenant_id = $2)) \
              ORDER BY s.wake_at LIMIT 256",
         )
@@ -290,7 +290,7 @@ impl RunStore {
             "SELECT w.tenant_id, w.run_id, w.step_path, w.spec, r.ir_snapshot \
              FROM wait_subscription w \
              JOIN workflow_run r ON r.tenant_id = w.tenant_id AND r.run_id = w.run_id \
-             WHERE w.timeout_at <= $1 AND NOT w.fired \
+             WHERE w.timeout_at <= $1 AND NOT w.fired AND r.status = 'running' \
                AND (($2::text IS NULL) OR (w.tenant_id = $2)) \
              ORDER BY w.timeout_at LIMIT 256",
         )
@@ -345,6 +345,7 @@ impl RunStore {
              FROM wait_subscription w \
              JOIN workflow_run r ON r.tenant_id = w.tenant_id AND r.run_id = w.run_id \
              WHERE w.tenant_id = $1 AND w.source = $2 AND w.kind = 'event' AND NOT w.fired \
+               AND r.status = 'running' \
                AND ( (w.spec->'scope'->>'folder') IS NULL \
                      OR EXISTS ( SELECT 1 FROM node_closure c \
                                  WHERE c.tenant_id = $1 \

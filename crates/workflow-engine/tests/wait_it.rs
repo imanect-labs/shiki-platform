@@ -65,6 +65,9 @@ impl NodeExecutor for WaitMapExecutor {
                 },
             }),
             "control.join" => NodeResult::ok(ctx.input.clone()),
+            _ if params.get("fail") == Some(&json!(true)) => {
+                NodeResult::fail("boom", "forced failure", false)
+            }
             _ => NodeResult::ok(json!({ "node": node_type, "step": ctx.step_path })),
         }
     }
@@ -156,7 +159,7 @@ async fn wait_duration_is_durable_across_worker_release() {
 
     // ワーカー無しでスケジューラが wake_at 到来を起床する（＝再起動を跨ぐ durable 継続）。
     let woke = store
-        .wake_due_timers(Utc::now() + Duration::seconds(10), None)
+        .wake_due_timers(Utc::now() + Duration::seconds(10), Some(&tenant))
         .await
         .unwrap();
     assert_eq!(woke, 1, "1 件起床");
@@ -248,7 +251,7 @@ async fn wait_event_timeout_continue_takes_timeout_port() {
 
     // timeout_at 到来を回収 → timeout ポート。
     let woke = store
-        .expire_due_waits(Utc::now() + Duration::seconds(10), None)
+        .expire_due_waits(Utc::now() + Duration::seconds(10), Some(&tenant))
         .await
         .unwrap();
     assert_eq!(woke, 1);
@@ -269,6 +272,71 @@ async fn wait_event_timeout_continue_takes_timeout_port() {
 }
 
 #[tokio::test]
+async fn run_failure_cancels_waiting_step() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    // 2 つの独立エントリ: w(wait) と f(fail)。f を後から走らせ、w が waiting_timer の間に run を失敗させる。
+    let ir = json!({
+        "ir_version": 1, "name": "wait-cancel",
+        "declared_scopes": ["storage.read"],
+        "nodes": [
+            { "id": "w", "type": "control.wait", "params": { "kind": "duration", "duration_sec": 3600 } },
+            { "id": "f", "type": "storage.read", "params": { "fail": true } }
+        ],
+        "edges": []
+    });
+    let run_id = create_run(&store, &tenant, &ir).await;
+    // f を一旦 claim 対象外にして w を先に waiting_timer にする。
+    sqlx::query("UPDATE step_execution SET next_retry_at = now() + interval '1 hour' WHERE tenant_id=$1 AND run_id=$2 AND step_path='f'")
+        .bind(&tenant).bind(run_id).execute(&pool).await.unwrap();
+
+    let w = worker(pool.clone(), &tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+    assert_eq!(
+        store
+            .step_statuses(&tenant, run_id)
+            .await
+            .unwrap()
+            .iter()
+            .find(|(p, _)| p == "w")
+            .unwrap()
+            .1,
+        StepStatus::WaitingTimer,
+        "w は waiting_timer で待機中"
+    );
+
+    // f を claim 可能にして失敗させる → run 失敗。
+    sqlx::query("UPDATE step_execution SET next_retry_at = now() WHERE tenant_id=$1 AND run_id=$2 AND step_path='f'")
+        .bind(&tenant).bind(run_id).execute(&pool).await.unwrap();
+    while w.claim_and_run_once("w1").await.unwrap() {}
+
+    assert_eq!(
+        store.run_status(&tenant, run_id).await.unwrap(),
+        Some(RunStatus::Failed)
+    );
+    // 待機中だった w は cancelled（起床経路で復活しない）。
+    assert_eq!(
+        store
+            .step_statuses(&tenant, run_id)
+            .await
+            .unwrap()
+            .iter()
+            .find(|(p, _)| p == "w")
+            .unwrap()
+            .1,
+        StepStatus::Cancelled,
+        "run 失敗で waiting_timer step が cancelled になる"
+    );
+    // 購読も消し込まれ、以後の起床試行が no-op。
+    let woke = store
+        .wake_due_timers(Utc::now() + Duration::seconds(7200), Some(&tenant))
+        .await
+        .unwrap();
+    assert_eq!(woke, 0, "失敗 run の待機 step は起床しない");
+}
+
+#[tokio::test]
 async fn wait_event_timeout_fail_fails_run() {
     let Some(pool) = setup().await else { return };
     let store = RunStore::new(pool.clone());
@@ -281,7 +349,7 @@ async fn wait_event_timeout_fail_fails_run() {
     while w.claim_and_run_once("w1").await.unwrap() {}
 
     let woke = store
-        .expire_due_waits(Utc::now() + Duration::seconds(10), None)
+        .expire_due_waits(Utc::now() + Duration::seconds(10), Some(&tenant))
         .await
         .unwrap();
     assert_eq!(woke, 1);

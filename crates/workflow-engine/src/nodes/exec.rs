@@ -207,11 +207,15 @@ impl CapabilityNodeExecutor {
                     Some("continue") => OnTimeout::Continue,
                     _ => OnTimeout::Fail,
                 };
-                // timeout_sec 未指定は無期限待ち（timeout_at=None）。
-                let timeout_at = resolve_field(params, "timeout_sec", &r)
-                    .and_then(|v| v.as_i64())
-                    .filter(|s| *s >= 0)
-                    .map(|s| now + Duration::seconds(s));
+                // timeout_sec 未指定は無期限待ち（timeout_at=None）。負値は不正として拒否する。
+                let timeout_at =
+                    match resolve_field(params, "timeout_sec", &r).and_then(|v| v.as_i64()) {
+                        Some(s) if s < 0 => {
+                            return NodeResult::fail("bad_params", "timeout_sec は非負", false)
+                        }
+                        Some(s) => Some(now + Duration::seconds(s)),
+                        None => None,
+                    };
                 NodeResult::wait(Suspend::Event {
                     source: source.to_string(),
                     scope: params.get("scope").cloned().unwrap_or_else(|| json!({})),

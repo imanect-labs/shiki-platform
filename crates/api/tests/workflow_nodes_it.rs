@@ -671,7 +671,10 @@ async fn wait_then_error_port_through_production_executor() {
     // スケジューラ相当の起床（ワーカー解放を跨ぐ durable 継続）。
     let woke = h
         .runs
-        .wake_due_timers(chrono::Utc::now() + chrono::Duration::seconds(10), None)
+        .wake_due_timers(
+            chrono::Utc::now() + chrono::Duration::seconds(10),
+            Some(&h.tenant),
+        )
         .await
         .unwrap();
     assert_eq!(woke, 1);
