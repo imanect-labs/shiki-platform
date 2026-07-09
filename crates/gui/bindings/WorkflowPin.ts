@@ -17,5 +17,6 @@ name: string | null,
 artifact_id: string | null, 
 /**
  * 解決済みバージョン（保存済みスペックでは常に Some）。
+ * JSON 経由の数値のため TS では number（bigint にしない）。
  */
-version: bigint | null, };
+version: number | null, };

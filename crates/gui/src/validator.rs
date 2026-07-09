@@ -44,6 +44,8 @@ impl SpecValidator {
     /// 生 JSON を検証・解決する。失敗は全件エラー＋監査 Deny。
     ///
     /// `source` は監査用の経路識別（"save" / "emit" / "miniapp.resolve" 等）。
+    /// 対象 artifact が既知の経路（更新・解決）は [`Self::validate_for`] を使い、
+    /// 拒否ログから「どの spec が拒否されたか」を突合可能にする（Task 6.12）。
     pub async fn validate(
         &self,
         ctx: &AuthContext,
@@ -51,9 +53,22 @@ impl SpecValidator {
         source: &str,
         trace_id: Option<&str>,
     ) -> Result<ResolvedSpec, Vec<GuiValidationError>> {
+        self.validate_for(ctx, raw, source, None, trace_id).await
+    }
+
+    /// [`Self::validate`] の対象 id つき版（更新・解決経路用）。
+    pub async fn validate_for(
+        &self,
+        ctx: &AuthContext,
+        raw: &serde_json::Value,
+        source: &str,
+        object_id: Option<&str>,
+        trace_id: Option<&str>,
+    ) -> Result<ResolvedSpec, Vec<GuiValidationError>> {
         let result = self.validate_inner(ctx, raw, trace_id).await;
         if let Err(errors) = &result {
-            self.record_deny(ctx, source, errors, trace_id).await;
+            self.record_deny(ctx, source, object_id, errors, trace_id)
+                .await;
         }
         result
     }
@@ -141,17 +156,21 @@ impl SpecValidator {
     }
 
     /// 検証拒否の監査（Task 6.12: セキュリティ事象の追跡可能性）。
+    ///
+    /// `object_id` は検証対象の artifact id（既知の場合）。新規作成・emit のように
+    /// 対象がまだ存在しない経路は経路識別（source）へフォールバックする。
     async fn record_deny(
         &self,
         ctx: &AuthContext,
         source: &str,
+        object_id: Option<&str>,
         errors: &[GuiValidationError],
         trace_id: Option<&str>,
     ) {
         let entry = AuditEntry {
             action: "ui_spec.validate",
             object_type: "ui_spec",
-            object_id: source,
+            object_id: object_id.unwrap_or(source),
             decision: Decision::Deny,
             trace_id,
             metadata: json!({

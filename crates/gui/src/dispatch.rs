@@ -163,7 +163,12 @@ impl ActionDispatcher {
         let result = self.execute(ctx, source, binding, params, trace_id).await;
         match &result {
             Ok(output) => {
-                let run_id = output.get("run_id").cloned().unwrap_or(json!(null));
+                // workflow はトップレベル、handler は result 内（chat.submit の run_id 等）に持つ。
+                let run_id = output
+                    .get("run_id")
+                    .or_else(|| output.get("result").and_then(|r| r.get("run_id")))
+                    .cloned()
+                    .unwrap_or(json!(null));
                 self.record(
                     ctx,
                     action_id,

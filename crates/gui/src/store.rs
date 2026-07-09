@@ -96,7 +96,7 @@ impl UiSpecStore {
         }
         let resolved = self
             .validator
-            .validate(ctx, raw_spec, "save", trace_id)
+            .validate_for(ctx, raw_spec, "save", Some(&id.to_string()), trace_id)
             .await
             .map_err(GuiError::Validation)?;
         let version = self

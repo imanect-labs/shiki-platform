@@ -95,7 +95,9 @@ pub struct WorkflowPin {
     #[serde(default)]
     pub artifact_id: Option<Uuid>,
     /// 解決済みバージョン（保存済みスペックでは常に Some）。
+    /// JSON 経由の数値のため TS では number（bigint にしない）。
     #[serde(default)]
+    #[ts(type = "number | null")]
     pub version: Option<i64>,
 }
 

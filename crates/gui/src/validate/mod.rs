@@ -87,8 +87,17 @@ pub mod limits {
 /// ワークフロー参照の解決（存在・権限・バージョンピン）は含まない —
 /// 呼び出し面は必ず [`SpecValidator`](crate::validator::SpecValidator) を使うこと。
 pub fn validate_spec(raw: &serde_json::Value) -> Result<UiSpecDoc, Vec<GuiValidationError>> {
-    // ① 防御的上限（パース前）。
-    let bytes = serde_json::to_vec(raw).map_or(0, |v| v.len());
+    // ① 防御的上限（パース前）。直列化に失敗した値は fail-closed で拒否する
+    // （0 扱いにするとサイズ検証が素通りし「拒否のみ」の契約と矛盾する）。
+    let bytes = match serde_json::to_vec(raw) {
+        Ok(v) => v.len(),
+        Err(e) => {
+            return Err(vec![GuiValidationError::new(
+                "gui.schema_violation",
+                format!("スペックを直列化できません: {e}"),
+            )]);
+        }
+    };
     if bytes > limits::MAX_SPEC_BYTES {
         return Err(vec![GuiValidationError::new(
             "gui.spec_too_large",
