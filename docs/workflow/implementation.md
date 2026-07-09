@@ -253,7 +253,9 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 
 - **`control.map` / `control.wait` の durable 実行**: `wake_at`/`wait_subscription`/動的
   fan-out/スケジューラ起床経路がエンジンに未接続。呼ばれると `unsupported_stage_a` で失敗する。
-- **`on_error=continue`（エラーポート）**: 未実装。
+- ~~**`on_error=continue`（エラーポート）**: 未実装。~~ **#179 で実装済み**: 失敗（リトライ枯渇後）を
+  `error` ポート（`taken_ports={error}`・output に `{error:{code,message,retryable,node_id,attempt}}`）へ
+  変換し、out 出エッジは dead で skip 伝播。error 解決済み failed step は run 成否に数えない（engine.md §4.5）。
 - イベントトリガの scope は親フォルダ完全一致のみ（祖先束縛は未実装）。
 - **委譲の棚卸しジョブ（engine.md §6.3 の PIT-34 二段目）**: `DelegationStore::inventory`
   （`crates/workflow-engine/src/delegation.rs:286`）自体は実装済みだが、これを周期実行する

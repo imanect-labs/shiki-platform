@@ -178,7 +178,7 @@ impl WorkflowWorker {
         heartbeat.abort();
 
         self.store
-            .checkpoint_and_advance(claimed, &result, &graph, max_attempts)
+            .checkpoint_and_advance(claimed, &result, &graph, max_attempts, node.on_error)
             .await
             .map_err(|e| e.to_string())?;
         Ok(())
