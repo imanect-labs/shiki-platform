@@ -5,14 +5,15 @@
 //! ポイント側、scope ceiling は本 executor 側＝二重ゲート（個別ノードに認可検査を散らさない・INV-2）。
 //!
 //! - 制御ノード branch/switch は純関数（[`control`](crate::control)）で `taken_ports` を決める。
-//!   join は pass-through（待ち合わせは readiness が担保）。map/wait の durable 化は Stage A 未実装
-//!   （後続で `wake_at`/`wait_subscription`/動的 fan-out を結線）。
+//!   join は pass-through（待ち合わせは readiness が担保）。wait/map は terminal 化せず durable に中断する
+//!   （[`NodeResult::wait`]/[`NodeResult::map_fanout`] を返し、checkpoint 側が `waiting_*`/動的 fan-out を結線）。
 //! - 能力呼び出しの本体は [`capability`](super::capability)（node 経路と script の `Shiki.*` 経路で共用）。
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Duration, Utc};
 use script_runtime::engine::{Limits, ScriptEngine};
 use serde_json::{json, Value};
 
@@ -20,11 +21,13 @@ use crate::capability::{check_scope_ceiling, CapabilityAudit, EffectJournal, Sco
 use crate::control::{branch_port, switch_port};
 use crate::ir::expr::{Condition, ValueExpr};
 use crate::ratelimit::{BucketConfig, TokenBucket};
-use crate::run::{NodeContext, NodeExecutor, NodeResult};
+use crate::run::{
+    MapFanout, NodeContext, NodeExecutor, NodeResult, OnItemError, OnTimeout, Suspend,
+};
 use crate::vocab::NodeType;
 
 use super::ports::{ExecCtx, NodePorts};
-use super::resolver::ParamResolver;
+use super::resolver::{resolve_field, ParamResolver};
 
 /// 能力ノードの本番 executor（server 側でポート・journal・audit を注入）。
 pub struct CapabilityNodeExecutor {
@@ -149,6 +152,108 @@ impl CapabilityNodeExecutor {
         let port = switch_port(&value_expr, &cases, &r);
         NodeResult::ok_port(ctx.input.clone(), &port)
     }
+
+    /// control.wait: params から中断指示（timer/event）を組む（durable 化は checkpoint 側・engine.md §9）。
+    fn eval_wait(params: &Value, ctx: &NodeContext) -> NodeResult {
+        let r = ParamResolver::new(ctx);
+        let now = Utc::now();
+        match params.get("kind").and_then(Value::as_str).unwrap_or("") {
+            "duration" => {
+                let Some(secs) = resolve_field(params, "duration_sec", &r).and_then(|v| v.as_i64())
+                else {
+                    return NodeResult::fail(
+                        "bad_params",
+                        "wait(duration) に duration_sec がありません",
+                        false,
+                    );
+                };
+                if secs < 0 {
+                    return NodeResult::fail("bad_params", "duration_sec は非負", false);
+                }
+                NodeResult::wait(Suspend::Timer {
+                    wake_at: now + Duration::seconds(secs),
+                })
+            }
+            "until" => {
+                let Some(ts) =
+                    resolve_field(params, "until", &r).and_then(|v| v.as_str().map(String::from))
+                else {
+                    return NodeResult::fail(
+                        "bad_params",
+                        "wait(until) に until がありません",
+                        false,
+                    );
+                };
+                match DateTime::parse_from_rfc3339(&ts) {
+                    Ok(dt) => NodeResult::wait(Suspend::Timer {
+                        wake_at: dt.with_timezone(&Utc),
+                    }),
+                    Err(_) => NodeResult::fail(
+                        "bad_params",
+                        format!("until が RFC3339 でない: {ts}"),
+                        false,
+                    ),
+                }
+            }
+            "event" => {
+                let Some(source) = params.get("source").and_then(Value::as_str) else {
+                    return NodeResult::fail(
+                        "bad_params",
+                        "wait(event) に source がありません",
+                        false,
+                    );
+                };
+                let on_timeout = match params.get("on_timeout").and_then(Value::as_str) {
+                    Some("continue") => OnTimeout::Continue,
+                    _ => OnTimeout::Fail,
+                };
+                // timeout_sec 未指定は無期限待ち（timeout_at=None）。
+                let timeout_at = resolve_field(params, "timeout_sec", &r)
+                    .and_then(|v| v.as_i64())
+                    .filter(|s| *s >= 0)
+                    .map(|s| now + Duration::seconds(s));
+                NodeResult::wait(Suspend::Event {
+                    source: source.to_string(),
+                    scope: params.get("scope").cloned().unwrap_or_else(|| json!({})),
+                    filter: params.get("filter").cloned(),
+                    timeout_at,
+                    on_timeout,
+                })
+            }
+            other => NodeResult::fail("bad_params", format!("未知の wait kind: {other}"), false),
+        }
+    }
+
+    /// control.map: items を解決し動的 fan-out 指示を組む（要素挿入は checkpoint 側・engine.md §4.5）。
+    fn eval_map(params: &Value, ctx: &NodeContext) -> NodeResult {
+        let r = ParamResolver::new(ctx);
+        let Some(items_val) = resolve_field(params, "items", &r) else {
+            return NodeResult::fail("expr_resolve_error", "map の items が解決できません", false);
+        };
+        let Some(items) = items_val.as_array() else {
+            return NodeResult::fail("bad_params", "map の items が配列ではありません", false);
+        };
+        if items.len() > 1000 {
+            return NodeResult::fail(
+                "fanout_limit_exceeded",
+                format!("map の要素数 {} が上限 1000 を超過", items.len()),
+                false,
+            );
+        }
+        let max_concurrency = resolve_field(params, "max_concurrency", &r)
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(10);
+        let on_item_error = match params.get("on_item_error").and_then(Value::as_str) {
+            Some("collect") => OnItemError::Collect,
+            _ => OnItemError::FailMap,
+        };
+        NodeResult::map_fanout(MapFanout {
+            items: items.clone(),
+            max_concurrency,
+            on_item_error,
+        })
+    }
 }
 
 #[async_trait]
@@ -167,13 +272,9 @@ impl NodeExecutor for CapabilityNodeExecutor {
             NodeType::ControlBranch => return Self::eval_branch(params, ctx),
             NodeType::ControlSwitch => return Self::eval_switch(params, ctx),
             NodeType::ControlJoin => return NodeResult::ok(ctx.input.clone()),
-            NodeType::ControlMap | NodeType::ControlWait => {
-                return NodeResult::fail(
-                    "unsupported_stage_a",
-                    format!("{node_type} の durable 実行は Stage A 未実装"),
-                    false,
-                );
-            }
+            // wait/map は terminal 化せず durable に中断する（checkpoint 側で waiting_*/fan-out へ）。
+            NodeType::ControlWait => return Self::eval_wait(params, ctx),
+            NodeType::ControlMap => return Self::eval_map(params, ctx),
             _ => {}
         }
 
