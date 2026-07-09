@@ -5,7 +5,6 @@ import * as React from "react";
 import { FileDown, LayoutGrid, Share2 } from "lucide-react";
 
 import {
-  getThread,
   getThreadMessages,
   isEmptyContent,
   notifyThreadsChanged,
@@ -166,8 +165,10 @@ export function Conversation({ threadId }: { threadId: string }) {
   }, [flushStream, updateStream]);
 
   const send = React.useCallback(
-    (text: string, attachments: Attachment[]) => {
+    (text: string, attachments: Attachment[], autonomousOverride?: boolean) => {
       setError(null);
+      // ホームからの初回メッセージは選択時点の値を明示指定する（state 初期化のタイミングに依存しない）。
+      const runAutonomous = autonomousOverride ?? autonomous;
       // 楽観的にユーザーメッセージを表示。
       const userBlocks: ContentBlock[] = [
         ...attachments.map((a) => ({ type: "file_ref" as const, node_id: a.node_id, name: a.name })),
@@ -184,8 +185,8 @@ export function Conversation({ threadId }: { threadId: string }) {
         text,
         attachments,
         makeHandlers(),
-        autonomous,
-        autonomous,
+        runAutonomous,
+        runAutonomous,
       );
     },
     [threadId, makeHandlers, autonomous],
@@ -215,14 +216,13 @@ export function Conversation({ threadId }: { threadId: string }) {
     notifyThreadsChanged();
   }, [flushStream]);
 
-  // 初回ロード: スレッド既定モード＋既存メッセージを取得し、進行中生成があれば復元購読する。
+  // 初回ロード: 既存メッセージを取得し、進行中生成があれば復元購読する。
+  // エージェントモードのトグルは thread.agent_mode から復元しない — 旧「エージェント」（Chat）
+  // トグルで作られたスレッドは agent_mode=true でも自律ではないため、復元すると誤って自律へ
+  // 昇格してしまう（agent_mode と autonomous は別物・Codex 指摘）。既定 OFF で始め、ホーム由来の
+  // 初回メッセージのみ pending の値で送る。
   React.useEffect(() => {
     let active = true;
-    getThread(threadId)
-      .then((t) => {
-        if (active) setAutonomous(t.agentMode);
-      })
-      .catch(() => {});
     getThreadMessages(threadId)
       .then(({ messages: msgs, activeRunId }) => {
         if (!active) return;
@@ -242,7 +242,9 @@ export function Conversation({ threadId }: { threadId: string }) {
           sentPending.current = true;
           const pending = popPending(threadId);
           if (pending && msgs.length === 0) {
-            send(pending.text, pending.attachments);
+            // ホームで選んだエージェントモードを初回メッセージへ反映し、トグル表示も合わせる。
+            if (pending.autonomous) setAutonomous(true);
+            send(pending.text, pending.attachments, pending.autonomous ?? false);
           }
         }
       })

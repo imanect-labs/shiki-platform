@@ -42,7 +42,7 @@ export default function HomePage() {
         skill: skill ? { artifactId: skill.id, version: skill.currentVersion } : undefined,
         workspace: autonomous ? workspace ?? undefined : undefined,
       });
-      stashPending(thread.id, { text, attachments });
+      stashPending(thread.id, { text, attachments, autonomous });
       router.push(`/c/${thread.id}`);
     } catch {
       toast({ description: "チャットを開始できませんでした。ログイン状態をご確認ください。" });

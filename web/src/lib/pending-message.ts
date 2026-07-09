@@ -5,7 +5,12 @@ import type { Attachment } from "@/lib/chat-api";
 
 const KEY = "shiki:pending-message:";
 
-export type PendingMessage = { text: string; attachments: Attachment[] };
+export type PendingMessage = {
+  text: string;
+  attachments: Attachment[];
+  /// ホームで選んだエージェントモード（初回メッセージへ確実に反映する・state の初期化タイミングに依存しない）。
+  autonomous?: boolean;
+};
 
 export function stashPending(threadId: string, msg: PendingMessage): void {
   if (typeof sessionStorage === "undefined") return;

@@ -31,11 +31,16 @@ function workflowPinsFrom(spec: unknown): MiniAppBody["workflows"] {
   const actions = (spec as { actions?: unknown }).actions;
   if (!Array.isArray(actions)) return [];
   const pins: MiniAppBody["workflows"] = [];
+  const seen = new Set<string>();
   for (const a of actions) {
     if (a && typeof a === "object" && (a as { type?: string }).type === "workflow") {
       const wf = (a as { workflow?: { name?: string; artifact_id?: string; version?: number } })
         .workflow;
       if (wf?.artifact_id != null && wf.version != null) {
+        // 同一 workflow（同 id＋version）を複数ボタンが起動しても重複ピンを作らない。
+        const key = `${wf.artifact_id}@${wf.version}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
         pins.push({ alias: wf.name ?? wf.artifact_id, artifact_id: wf.artifact_id, version: wf.version });
       }
     }
