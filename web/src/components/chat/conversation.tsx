@@ -2,10 +2,9 @@
 
 import * as React from "react";
 
-import { FileDown, Share2 } from "lucide-react";
+import { FileDown, LayoutGrid, Share2 } from "lucide-react";
 
 import {
-  getThread,
   getThreadMessages,
   isEmptyContent,
   notifyThreadsChanged,
@@ -29,6 +28,7 @@ import { newId } from "@/lib/chat-store";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
 import { ChatGenUiProvider } from "@/components/genui/action-context";
 import { SpecRenderer } from "@/components/genui/spec-renderer";
+import { SaveAsAppDialog, specHasChatOnlyAction } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { Sources } from "@/components/prompt-kit/source";
@@ -76,7 +76,8 @@ export function Conversation({ threadId }: { threadId: string }) {
   const [stream, setStream] = React.useState<StreamState | null>(null);
   const [notFound, setNotFound] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [agentMode, setAgentMode] = React.useState(false);
+  // エージェントモード（＝Autonomous・ワークスペース＋計画＋承認）。通常チャットでもツールは
+  // モデル裁量で自動発火する（issue #102）ため、旧「自動」トグルは廃止した。
   const [autonomous, setAutonomous] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
   // UI アクション（chat.submit 等）成功後に会話を再読込するためのキー。
@@ -164,8 +165,10 @@ export function Conversation({ threadId }: { threadId: string }) {
   }, [flushStream, updateStream]);
 
   const send = React.useCallback(
-    (text: string, attachments: Attachment[]) => {
+    (text: string, attachments: Attachment[], autonomousOverride?: boolean) => {
       setError(null);
+      // ホームからの初回メッセージは選択時点の値を明示指定する（state 初期化のタイミングに依存しない）。
+      const runAutonomous = autonomousOverride ?? autonomous;
       // 楽観的にユーザーメッセージを表示。
       const userBlocks: ContentBlock[] = [
         ...attachments.map((a) => ({ type: "file_ref" as const, node_id: a.node_id, name: a.name })),
@@ -182,11 +185,11 @@ export function Conversation({ threadId }: { threadId: string }) {
         text,
         attachments,
         makeHandlers(),
-        agentMode || autonomous,
-        autonomous,
+        runAutonomous,
+        runAutonomous,
       );
     },
-    [threadId, makeHandlers, agentMode, autonomous],
+    [threadId, makeHandlers, autonomous],
   );
 
   // 承認/却下を送る（自律エージェントのブロックを解く・Task 5.6）。
@@ -213,14 +216,13 @@ export function Conversation({ threadId }: { threadId: string }) {
     notifyThreadsChanged();
   }, [flushStream]);
 
-  // 初回ロード: スレッド既定モード＋既存メッセージを取得し、進行中生成があれば復元購読する。
+  // 初回ロード: 既存メッセージを取得し、進行中生成があれば復元購読する。
+  // エージェントモードのトグルは thread.agent_mode から復元しない — 旧「エージェント」（Chat）
+  // トグルで作られたスレッドは agent_mode=true でも自律ではないため、復元すると誤って自律へ
+  // 昇格してしまう（agent_mode と autonomous は別物・Codex 指摘）。既定 OFF で始め、ホーム由来の
+  // 初回メッセージのみ pending の値で送る。
   React.useEffect(() => {
     let active = true;
-    getThread(threadId)
-      .then((t) => {
-        if (active) setAgentMode(t.agentMode);
-      })
-      .catch(() => {});
     getThreadMessages(threadId)
       .then(({ messages: msgs, activeRunId }) => {
         if (!active) return;
@@ -240,7 +242,9 @@ export function Conversation({ threadId }: { threadId: string }) {
           sentPending.current = true;
           const pending = popPending(threadId);
           if (pending && msgs.length === 0) {
-            send(pending.text, pending.attachments);
+            // ホームで選んだエージェントモードを初回メッセージへ反映し、トグル表示も合わせる。
+            if (pending.autonomous) setAutonomous(true);
+            send(pending.text, pending.attachments, pending.autonomous ?? false);
           }
         }
       })
@@ -316,8 +320,6 @@ export function Conversation({ threadId }: { threadId: string }) {
             onSubmit={send}
             onStop={stop}
             streaming={stream !== null}
-            agentMode={agentMode}
-            onAgentModeChange={setAgentMode}
             autonomous={autonomous}
             onAutonomousChange={setAutonomous}
             autoFocus
@@ -433,7 +435,7 @@ function AssistantRow({
             }}
           >
             {uiSpecs.map((b, i) => (
-              <SpecRenderer key={i} spec={b.spec} />
+              <GenUiBlock key={i} spec={b.spec} />
             ))}
           </ChatGenUiProvider>
         ) : null}
@@ -442,6 +444,37 @@ function AssistantRow({
         {text ? <MessageFooter text={text} /> : null}
       </div>
     </Message>
+  );
+}
+
+/// generative UI ブロック＝描画＋「アプリとして保存」導線（Phase 6 UX）。
+/// chat.submit（チャット専用アクション）を含むスペックはアプリにできないため非活性にする。
+function GenUiBlock({ spec }: { spec: unknown }) {
+  const [saveOpen, setSaveOpen] = React.useState(false);
+  const chatOnly = React.useMemo(() => specHasChatOnlyAction(spec), [spec]);
+  return (
+    <div className="group/gui relative">
+      <SpecRenderer spec={spec} />
+      <div className="mt-1 flex justify-end">
+        <button
+          type="button"
+          disabled={chatOnly}
+          onClick={() => setSaveOpen(true)}
+          title={
+            chatOnly
+              ? "このUIはチャット専用アクションを含むためアプリにできません"
+              : "この画面をアプリとして保存する"
+          }
+          className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[12px] text-foreground/70 transition-colors hover:border-primary/40 hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-transparent"
+        >
+          <LayoutGrid className="size-3.5" aria-hidden />
+          アプリとして保存
+        </button>
+      </div>
+      {!chatOnly ? (
+        <SaveAsAppDialog open={saveOpen} onOpenChange={setSaveOpen} spec={spec} />
+      ) : null}
+    </div>
   );
 }
 

@@ -9,7 +9,6 @@ import {
   HardDrive,
   Paperclip,
   Plus,
-  Sparkles,
   Square,
   Upload,
   X,
@@ -17,7 +16,8 @@ import {
 
 import { cn } from "@/lib/utils";
 import { uploadFile, type NodeResponse } from "@/lib/storage";
-import type { Attachment } from "@/lib/chat-api";
+import type { Attachment, WorkspaceChoice } from "@/lib/chat-api";
+import { FolderPicker } from "@/components/artifacts/folder-picker";
 import {
   PromptInput,
   PromptInputActions,
@@ -45,10 +45,10 @@ export function Composer({
   autoFocus = false,
   disabled = false,
   streaming = false,
-  agentMode = false,
-  onAgentModeChange,
   autonomous = false,
   onAutonomousChange,
+  workspace = null,
+  onWorkspaceChange,
   className,
 }: {
   onSubmit: (text: string, attachments: Attachment[]) => void;
@@ -60,14 +60,15 @@ export function Composer({
   disabled?: boolean;
   /// 生成中フラグ。入力は可能なまま、送信はできず停止ボタンを出す。
   streaming?: boolean;
-  /// エージェントモード（既定 OFF＝通常チャット。ON＝ツールを自律実行）。
-  agentMode?: boolean;
-  /// エージェントモードのトグル（未指定ならトグル UI を出さない）。
-  onAgentModeChange?: (v: boolean) => void;
-  /// 自律モード（既定 OFF。ON＝長ホライズン・フルツール・計画・承認・Task 5.1）。
+  /// エージェントモード（既定 OFF＝通常チャット。ON＝ワークスペース＋計画＋承認の長ホライズン）。
+  /// 通常チャットでもモデルはツールを裁量発火する（issue #102）ため「自動」トグルは無い。
   autonomous?: boolean;
-  /// 自律モードのトグル（未指定ならトグル UI を出さない）。
+  /// エージェントモードのトグル（未指定ならトグル UI を出さない）。
   onAutonomousChange?: (v: boolean) => void;
+  /// エージェントモードのワークスペース作成場所（未選択は Drive 直下）。
+  workspace?: WorkspaceChoice | null;
+  /// ワークスペース選択のハンドラ（未指定ならチップを出さない）。
+  onWorkspaceChange?: (w: WorkspaceChoice | null) => void;
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
@@ -75,6 +76,7 @@ export function Composer({
   const [uploading, setUploading] = React.useState<Uploading | null>(null);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const canSend = value.trim().length > 0 && !disabled && !uploading && !streaming;
@@ -172,40 +174,16 @@ export function Composer({
               onUploadLocal={() => fileInputRef.current?.click()}
               onOpenDrive={() => setPickerOpen(true)}
             />
-            {onAgentModeChange ? (
-              <button
-                type="button"
-                role="switch"
-                aria-checked={agentMode}
-                aria-label="エージェントモード"
-                title={
-                  agentMode
-                    ? "エージェントモード: ON（ツールを自律実行）"
-                    : "エージェントモード: OFF（通常チャット）"
-                }
-                onClick={() => onAgentModeChange(!agentMode)}
-                className={cn(
-                  "inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-[13px] font-medium transition-colors",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
-                  agentMode
-                    ? "border-primary/40 bg-primary/10 text-primary"
-                    : "border-border text-foreground/70 hover:bg-secondary hover:text-foreground",
-                )}
-              >
-                <Sparkles className="size-[15px]" aria-hidden />
-                エージェント
-              </button>
-            ) : null}
             {onAutonomousChange ? (
               <button
                 type="button"
                 role="switch"
                 aria-checked={autonomous}
-                aria-label="自律モード"
+                aria-label="エージェントモード"
                 title={
                   autonomous
-                    ? "自律モード: ON（計画・フルツール・承認つきで目標を達成）"
-                    : "自律モード: OFF"
+                    ? "エージェントモード: ON（ワークスペースで計画・実行・承認つきに目標を達成）"
+                    : "エージェントモード: OFF（通常チャット・必要に応じてツールは自動で使われます）"
                 }
                 onClick={() => onAutonomousChange(!autonomous)}
                 className={cn(
@@ -217,7 +195,21 @@ export function Composer({
                 )}
               >
                 <Bot className="size-[15px]" aria-hidden />
-                自律
+                エージェントモード
+              </button>
+            ) : null}
+            {/* エージェントモード ON 時のみ: ワークスペースの作成場所を選べる */}
+            {onAutonomousChange && autonomous && onWorkspaceChange ? (
+              <button
+                type="button"
+                onClick={() => setWsPickerOpen(true)}
+                title="エージェントが作業するワークスペースの場所を選ぶ"
+                className="inline-flex h-9 min-w-0 items-center gap-1.5 rounded-full border border-border px-3 text-[13px] text-foreground/70 transition-colors hover:bg-secondary hover:text-foreground"
+              >
+                <HardDrive className="size-[15px] shrink-0" aria-hidden />
+                <span className="max-w-[160px] truncate">
+                  {workspace ? workspace.folderName : "マイドライブ"}
+                </span>
               </button>
             ) : null}
           </div>
@@ -265,6 +257,16 @@ export function Composer({
         aria-hidden
       />
       <DrivePicker open={pickerOpen} onOpenChange={setPickerOpen} onSelect={addAttachment} />
+      {onWorkspaceChange ? (
+        <FolderPicker
+          open={wsPickerOpen}
+          onOpenChange={setWsPickerOpen}
+          purpose="workspace"
+          onSelect={(f) =>
+            onWorkspaceChange({ mode: f.mode, folderId: f.id, folderName: f.name })
+          }
+        />
+      ) : null}
     </div>
   );
 }

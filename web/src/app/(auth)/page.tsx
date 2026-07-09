@@ -14,6 +14,7 @@ import { Composer } from "@/components/chat/composer";
 import { ComposerArrow } from "@/components/home/composer-arrow";
 import { SkillPicker } from "@/components/home/skill-picker";
 import { type ArtifactMeta } from "@/lib/artifact-api";
+import { type WorkspaceChoice } from "@/lib/chat-api";
 import { PromptSuggestions } from "@/components/chat/prompt-suggestions";
 import { ShortcutGrid } from "@/components/home/shortcut-grid";
 import { toast } from "@/components/ui/use-toast";
@@ -26,6 +27,9 @@ export default function HomePage() {
   const [starting, setStarting] = React.useState(false);
   // 選択中の skill（次に開始するチャットへ version 込みでピンされる・Phase 6）。
   const [skill, setSkill] = React.useState<ArtifactMeta | null>(null);
+  // エージェントモード（＝Autonomous）とワークスペースの作成場所（Phase 6 UX）。
+  const [autonomous, setAutonomous] = React.useState(false);
+  const [workspace, setWorkspace] = React.useState<WorkspaceChoice | null>(null);
   // 表示名はメールのローカル部から導出する（表示名フィールドはサーバ側実装が入る後続 PR で対応）。
   const name = data?.email?.split("@")[0] ?? null;
 
@@ -33,13 +37,12 @@ export default function HomePage() {
     if (starting || !text.trim()) return;
     setStarting(true);
     try {
-      const thread = await createThread(
-        titleFrom(text),
-        false,
+      const thread = await createThread(titleFrom(text), autonomous, {
         // 選択時点の現行版をピンする（開始までに新版が保存されても選んだ版で適用）。
-        skill ? { skill: { artifactId: skill.id, version: skill.currentVersion } } : undefined,
-      );
-      stashPending(thread.id, { text, attachments });
+        skill: skill ? { artifactId: skill.id, version: skill.currentVersion } : undefined,
+        workspace: autonomous ? workspace ?? undefined : undefined,
+      });
+      stashPending(thread.id, { text, attachments, autonomous });
       router.push(`/c/${thread.id}`);
     } catch {
       toast({ description: "チャットを開始できませんでした。ログイン状態をご確認ください。" });
@@ -66,7 +69,16 @@ export default function HomePage() {
         <div className="relative w-full max-w-2xl">
           {/* 入力欄の右上から、手描き風の点線矢印で「ここから話しかけてね」を演出 */}
           <ComposerArrow className="absolute -top-16 right-4 z-10 hidden md:block" />
-          <Composer onSubmit={startChat} autoFocus disabled={starting} className="w-full" />
+          <Composer
+            onSubmit={startChat}
+            autoFocus
+            disabled={starting}
+            className="w-full"
+            autonomous={autonomous}
+            onAutonomousChange={setAutonomous}
+            workspace={workspace}
+            onWorkspaceChange={setWorkspace}
+          />
         </div>
 
         <SkillPicker selected={skill} onSelect={setSkill} />

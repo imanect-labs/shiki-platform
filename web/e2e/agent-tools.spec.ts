@@ -17,7 +17,9 @@ test.describe("agent tools (web_search / code_interpreter)", () => {
     "agent ツール backend（websearch/サンドボックス）配線環境が必要（E2E_AGENT_TOOLS=1）",
   );
 
-  /// 初回送信でスレッドを作り、会話画面でエージェントモードを ON にして返すヘルパ。
+  /// 初回送信でスレッドを作り、会話画面の入力欄を返すヘルパ。
+  /// 通常チャットがモデル裁量ループ（issue #102）になったため、ツール（web_search /
+  /// code_interpreter）はトグルなしでモデルが自動発火する。
   async function openThreadInAgentMode(page: Page) {
     await loginViaKeycloak(page);
     await page.goto("/");
@@ -27,8 +29,6 @@ test.describe("agent tools (web_search / code_interpreter)", () => {
     await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
     // 初回応答が確定するまで待つ（stub は「回答:」を返す）。
     await expect(page.getByText(/回答/).first()).toBeVisible({ timeout: 30_000 });
-    // エージェントモードを ON にする（会話画面のトグル）。
-    await page.getByRole("switch", { name: "エージェントモード" }).click();
     return input;
   }
 
