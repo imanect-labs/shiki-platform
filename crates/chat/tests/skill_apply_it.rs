@@ -239,7 +239,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
     }
     assert!(done);
 
-    // run 行に skill ピンがコピーされている（thread → run・0028）。
+    // run 行に skill ピンがコピーされている（thread → run・0029）。
     let (run_skill, run_skill_v): (Option<Uuid>, Option<i64>) =
         sqlx::query_as("SELECT skill_id, skill_version FROM generation_run WHERE run_id = $1")
             .bind(res.run_id)
