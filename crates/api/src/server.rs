@@ -207,6 +207,9 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/workflows", &["POST"], Session, || {
             post(routes::workflows::create_workflow)
         }),
+        r("/workflows/validate", &["POST"], Session, || {
+            post(routes::workflows::validate_workflow)
+        }),
         r("/workflows/{id}", &["GET", "PUT"], Session, || {
             get(routes::workflows::get_workflow).put(routes::workflows::update_workflow)
         }),

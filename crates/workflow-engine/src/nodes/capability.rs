@@ -7,11 +7,20 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::capability::{op_digest, JournalDecision};
+use crate::control::eval::resolve_value;
+use crate::ir::params::{
+    RagSearchParams, StorageListParams, StorageReadParams, StorageWriteParams, WorkflowStartParams,
+};
 use crate::run::NodeContext;
 
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{ExecCtx, PortError, StorageWriteReq};
-use super::resolver::{as_bytes, as_string, as_u32, as_uuid, resolve_field, ParamResolver};
+use super::resolver::{as_bytes, as_string, as_u32, as_uuid, ParamResolver};
+
+/// params を typed struct として取り出す（保存済み IR は V1 済み・失敗は permanent 扱い）。
+pub(super) fn parse_params<T: serde::de::DeserializeOwned>(raw: &Value) -> Result<T, PortError> {
+    crate::ir::params::parse(raw).map_err(|e| PortError::invalid(format!("params が不正: {e}")))
+}
 
 /// バイト列の sha256（16 進）。storage.write の op_digest 素材。
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -52,12 +61,11 @@ impl CapabilityNodeExecutor {
         ec: &ExecCtx,
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
-        // ir.md は `id`/`file` が揺れているため両対応（codegen 確定まで）。
-        let raw = resolve_field(params, "id", r)
-            .or_else(|| resolve_field(params, "file", r))
-            .ok_or_else(|| PortError::invalid("storage.read: id/file がありません"))?;
+        let p: StorageReadParams = parse_params(params)?;
+        let raw = resolve_value(&p.file, r)
+            .ok_or_else(|| PortError::invalid("storage.read: file が解決できません"))?;
         let file_id = as_uuid(&raw)
-            .ok_or_else(|| PortError::invalid("storage.read: id が UUID ではありません"))?;
+            .ok_or_else(|| PortError::invalid("storage.read: file が UUID ではありません"))?;
         let out = self.ports.storage_read(ec, file_id).await?;
         self.audit(
             &ec.tenant_id,
@@ -75,14 +83,22 @@ impl CapabilityNodeExecutor {
         ec: &ExecCtx,
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
-        let parent_id = resolve_field(params, "folder", r).and_then(|v| as_uuid(&v));
-        let name = resolve_field(params, "name", r)
+        let p: StorageWriteParams = parse_params(params)?;
+        let parent_id = p
+            .folder
+            .as_ref()
+            .and_then(|e| resolve_value(e, r))
+            .and_then(|v| as_uuid(&v));
+        let name = resolve_value(&p.name, r)
             .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("storage.write: name がありません"))?;
-        let bytes = resolve_field(params, "content", r)
+            .ok_or_else(|| PortError::invalid("storage.write: name が解決できません"))?;
+        let bytes = resolve_value(&p.content, r)
             .map(|v| as_bytes(&v))
-            .ok_or_else(|| PortError::invalid("storage.write: content がありません"))?;
-        let content_type = resolve_field(params, "content_type", r)
+            .ok_or_else(|| PortError::invalid("storage.write: content が解決できません"))?;
+        let content_type = p
+            .content_type
+            .as_ref()
+            .and_then(|e| resolve_value(e, r))
             .and_then(|v| as_string(&v))
             .unwrap_or_else(|| "application/octet-stream".to_string());
 
@@ -125,7 +141,12 @@ impl CapabilityNodeExecutor {
         ec: &ExecCtx,
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
-        let parent_id = resolve_field(params, "folder", r).and_then(|v| as_uuid(&v));
+        let p: StorageListParams = parse_params(params)?;
+        let parent_id = p
+            .folder
+            .as_ref()
+            .and_then(|e| resolve_value(e, r))
+            .and_then(|v| as_uuid(&v));
         let out = self.ports.storage_list(ec, parent_id).await?;
         self.audit(
             &ec.tenant_id,
@@ -145,10 +166,15 @@ impl CapabilityNodeExecutor {
         ec: &ExecCtx,
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
-        let query = resolve_field(params, "query", r)
+        let p: RagSearchParams = parse_params(params)?;
+        let query = resolve_value(&p.query, r)
             .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("rag.search: query がありません"))?;
-        let top_k = resolve_field(params, "top_k", r).and_then(|v| as_u32(&v));
+            .ok_or_else(|| PortError::invalid("rag.search: query が解決できません"))?;
+        let top_k = p
+            .top_k
+            .as_ref()
+            .and_then(|e| resolve_value(e, r))
+            .and_then(|v| as_u32(&v));
         let out = self.ports.rag_search(ec, &query, top_k).await?;
         // クエリ本文は監査に載せない（PII 混入回避）。件数のみ。
         let n = out
@@ -210,10 +236,15 @@ impl CapabilityNodeExecutor {
         ec: &ExecCtx,
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
-        let name = resolve_field(params, "name", r)
+        let p: WorkflowStartParams = parse_params(params)?;
+        let name = resolve_value(&p.name, r)
             .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("workflow.start: name がありません"))?;
-        let input = resolve_field(params, "input", r).unwrap_or(Value::Null);
+            .ok_or_else(|| PortError::invalid("workflow.start: name が解決できません"))?;
+        let input = p
+            .input
+            .as_ref()
+            .and_then(|e| resolve_value(e, r))
+            .unwrap_or(Value::Null);
         self.do_workflow_start(ec, &ctx.idempotency_key, &name, &input)
             .await
     }

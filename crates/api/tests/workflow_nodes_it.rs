@@ -339,7 +339,7 @@ async fn combined_pipeline_covers_many_node_types() {
             { "id": "src", "type": "storage.write", "params": {
                 "name": "src.txt", "content": { "$from": "nodes.gen.output", "path": "/doc" } } },
             { "id": "readback", "type": "storage.read", "params": {
-                "id": { "$from": "nodes.src.output", "path": "/id" } } },
+                "file": { "$from": "nodes.src.output", "path": "/id" } } },
             { "id": "br", "type": "control.branch", "params": {
                 "condition": { "cmp": { "left": { "$from": "nodes.gen.output", "path": "/n" }, "op": "gt", "right": 5 } } } },
             { "id": "ag", "type": "agent.invoke", "params": { "instruction": "do the work", "egress_allowlist": [] } },
@@ -635,7 +635,7 @@ async fn wait_then_error_port_through_production_executor() {
         "nodes": [
             { "id": "wait", "type": "control.wait", "params": { "kind": "duration", "duration_sec": 0 } },
             { "id": "rd", "type": "storage.read", "on_error": "continue",
-              "params": { "id": bad_id } },
+              "params": { "file": bad_id } },
             { "id": "recover", "type": "storage.write", "params": { "name": "recovered.txt", "content": "recovered" } },
             { "id": "normal", "type": "storage.write", "params": { "name": "normal.txt", "content": "normal" } }
         ],

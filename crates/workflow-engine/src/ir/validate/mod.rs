@@ -27,6 +27,9 @@ pub struct ValidationError {
     /// 紐付くエッジ（該当時・`from -> to`）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edge: Option<String>,
+    /// IR 内の位置（`/params/...` の JSON Pointer 風・該当時）。dnd がフォームフィールドへ写像する。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 impl ValidationError {
@@ -36,6 +39,7 @@ impl ValidationError {
             message: message.into(),
             node_id: None,
             edge: None,
+            path: None,
         }
     }
 
@@ -48,6 +52,12 @@ impl ValidationError {
     #[must_use]
     pub fn at_edge(mut self, edge: impl Into<String>) -> Self {
         self.edge = Some(edge.into());
+        self
+    }
+
+    #[must_use]
+    pub fn at_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
         self
     }
 }
@@ -91,6 +101,26 @@ pub fn validate(
                 ir.name
             ),
         ));
+    }
+    // V1b: ノード params の typed 契約照合（deny-unknown・必須・型・ir.md §7「params の正は codegen」）。
+    // 予約語彙/未知 type は V3 が拒否するため対象外。エラーはノード単位に path 付きで収集する。
+    for node in &ir.nodes {
+        let Some(nt) = crate::vocab::NodeType::parse(&node.node_type) else {
+            continue;
+        };
+        if !nt.available_stage_a() {
+            continue;
+        }
+        if let Err(issue) = crate::ir::params::check_params(nt, &node.params) {
+            errors.push(
+                ValidationError::new(
+                    "ir.schema_violation",
+                    format!("params が不正です: {}", issue.message),
+                )
+                .at_node(&node.id)
+                .at_path(issue.path),
+            );
+        }
     }
     // V7: 上限（他段より先に軽く弾く）。
     v7_limits(value, &ir, &mut errors);
@@ -325,7 +355,7 @@ mod tests {
             "name": "wf",
             "declared_scopes": ["storage.read"],
             "nodes": [
-                { "id": "read", "type": "storage.read", "params": { "id": { "$from": "input", "path": "/id" } } }
+                { "id": "read", "type": "storage.read", "params": { "file": { "$from": "input", "path": "/id" } } }
             ],
             "edges": []
         });
@@ -380,6 +410,31 @@ mod tests {
                 "{bad} が拒否されるべき: {errs:?}"
             );
         }
+    }
+
+    #[test]
+    fn v1b_params_violation_has_node_and_path() {
+        // typed params 契約違反が node_id＋path 付きの ir.schema_violation になる（dnd 表示契約）。
+        let ir = json!({
+            "ir_version": 1,
+            "name": "wf",
+            "declared_scopes": ["storage.read"],
+            "nodes": [
+                { "id": "read", "type": "storage.read", "params": {} }
+            ],
+            "edges": []
+        });
+        let errs = validate(&ir, &catalog()).unwrap_err();
+        let e = errs
+            .iter()
+            .find(|e| e.code == "ir.schema_violation")
+            .expect("params 契約違反が収集される");
+        assert_eq!(e.node_id.as_deref(), Some("read"));
+        assert!(
+            e.path.as_deref().unwrap_or_default().starts_with("/params"),
+            "path が /params 起点: {:?}",
+            e.path
+        );
     }
 
     #[test]

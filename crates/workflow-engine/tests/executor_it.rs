@@ -208,7 +208,7 @@ async fn scope_ceiling_denies_out_of_scope() {
     let res = exec
         .execute(
             "storage.read",
-            &json!({ "id": Uuid::nil().to_string() }),
+            &json!({ "file": Uuid::nil().to_string() }),
             &ctx(json!({}), vec![]),
         )
         .await;
@@ -230,7 +230,7 @@ async fn storage_read_dispatches_with_scope() {
     let res = exec
         .execute(
             "storage.read",
-            &json!({ "id": Uuid::nil().to_string() }),
+            &json!({ "file": Uuid::nil().to_string() }),
             &ctx(json!({}), vec!["storage.read".into()]),
         )
         .await;

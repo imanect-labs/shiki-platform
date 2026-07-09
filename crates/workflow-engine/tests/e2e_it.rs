@@ -123,7 +123,7 @@ fn workflow_ir() -> Value {
         "name": "daily-report",
         "declared_scopes": ["storage.read", "http.egress"],
         "nodes": [
-            { "id": "read", "type": "storage.read", "params": {} },
+            { "id": "read", "type": "storage.read", "params": { "file": "00000000-0000-0000-0000-000000000001" } },
             { "id": "post", "type": "http.request", "params": { "url": "https://api.example.com/x" } }
         ],
         "edges": [{ "from": "read", "to": "post" }],

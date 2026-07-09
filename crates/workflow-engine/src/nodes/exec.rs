@@ -18,8 +18,11 @@ use script_runtime::engine::{Limits, ScriptEngine};
 use serde_json::{json, Value};
 
 use crate::capability::{check_scope_ceiling, CapabilityAudit, EffectJournal, ScopeCeiling};
+use crate::control::eval::resolve_value;
 use crate::control::{branch_port, switch_port};
-use crate::ir::expr::{Condition, ValueExpr};
+use crate::ir::params::{
+    self, BranchParams, MapItemError, MapParams, SwitchParams, WaitKind, WaitParams, WaitTimeout,
+};
 use crate::ratelimit::{BucketConfig, TokenBucket};
 use crate::run::{
     MapFanout, NodeContext, NodeExecutor, NodeResult, OnItemError, OnTimeout, Suspend,
@@ -27,7 +30,7 @@ use crate::run::{
 use crate::vocab::NodeType;
 
 use super::ports::{ExecCtx, NodePorts};
-use super::resolver::{resolve_field, ParamResolver};
+use super::resolver::ParamResolver;
 
 /// 能力ノードの本番 executor（server 側でポート・journal・audit を注入）。
 pub struct CapabilityNodeExecutor {
@@ -112,54 +115,47 @@ impl CapabilityNodeExecutor {
 
     /// control.branch: 条件を評価して `true`/`false` ポートを確定する。
     fn eval_branch(params: &Value, ctx: &NodeContext) -> NodeResult {
-        let Some(cond) = params.get("condition") else {
-            return NodeResult::fail("bad_params", "branch に condition がありません", false);
-        };
-        let cond: Condition = match serde_json::from_value(cond.clone()) {
-            Ok(c) => c,
+        let p: BranchParams = match params::parse(params) {
+            Ok(p) => p,
             Err(e) => {
-                return NodeResult::fail("bad_params", format!("condition が不正: {e}"), false)
+                return NodeResult::fail("bad_params", format!("branch params が不正: {e}"), false)
             }
         };
         let r = ParamResolver::new(ctx);
-        NodeResult::ok_port(ctx.input.clone(), branch_port(&cond, &r))
+        NodeResult::ok_port(ctx.input.clone(), branch_port(&p.condition, &r))
     }
 
     /// control.switch: value を各 case とリテラル一致で照合し、一致 port（無ければ default）を確定する。
     fn eval_switch(params: &Value, ctx: &NodeContext) -> NodeResult {
-        let Some(value_raw) = params.get("value") else {
-            return NodeResult::fail("bad_params", "switch に value がありません", false);
+        let p: SwitchParams = match params::parse(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return NodeResult::fail("bad_params", format!("switch params が不正: {e}"), false)
+            }
         };
-        let value_expr: ValueExpr = match serde_json::from_value(value_raw.clone()) {
-            Ok(v) => v,
-            Err(e) => return NodeResult::fail("bad_params", format!("value が不正: {e}"), false),
-        };
-        // cases: [{ "port": "...", "equals": <literal> }, ...]
-        let cases: Vec<(String, Value)> = params
-            .get("cases")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|c| {
-                        let port = c.get("port")?.as_str()?.to_string();
-                        let eq = c.get("equals")?.clone();
-                        Some((port, eq))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let cases: Vec<(String, Value)> = p.cases.into_iter().map(|c| (c.port, c.equals)).collect();
         let r = ParamResolver::new(ctx);
-        let port = switch_port(&value_expr, &cases, &r);
+        let port = switch_port(&p.value, &cases, &r);
         NodeResult::ok_port(ctx.input.clone(), &port)
     }
 
     /// control.wait: params から中断指示（timer/event）を組む（durable 化は checkpoint 側・engine.md §9）。
     fn eval_wait(params: &Value, ctx: &NodeContext) -> NodeResult {
+        let p: WaitParams = match params::parse(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return NodeResult::fail("bad_params", format!("wait params が不正: {e}"), false)
+            }
+        };
         let r = ParamResolver::new(ctx);
         let now = Utc::now();
-        match params.get("kind").and_then(Value::as_str).unwrap_or("") {
-            "duration" => {
-                let Some(secs) = resolve_field(params, "duration_sec", &r).and_then(|v| v.as_i64())
+        match p.kind {
+            WaitKind::Duration => {
+                let Some(secs) = p
+                    .duration_sec
+                    .as_ref()
+                    .and_then(|e| resolve_value(e, &r))
+                    .and_then(|v| v.as_i64())
                 else {
                     return NodeResult::fail(
                         "bad_params",
@@ -177,9 +173,12 @@ impl CapabilityNodeExecutor {
                 };
                 NodeResult::wait(Suspend::Timer { wake_at })
             }
-            "until" => {
-                let Some(ts) =
-                    resolve_field(params, "until", &r).and_then(|v| v.as_str().map(String::from))
+            WaitKind::Until => {
+                let Some(ts) = p
+                    .until
+                    .as_ref()
+                    .and_then(|e| resolve_value(e, &r))
+                    .and_then(|v| v.as_str().map(String::from))
                 else {
                     return NodeResult::fail(
                         "bad_params",
@@ -198,54 +197,64 @@ impl CapabilityNodeExecutor {
                     ),
                 }
             }
-            "event" => {
-                let Some(source) = params.get("source").and_then(Value::as_str) else {
+            WaitKind::Event => {
+                let Some(source) = p.source else {
                     return NodeResult::fail(
                         "bad_params",
                         "wait(event) に source がありません",
                         false,
                     );
                 };
-                let on_timeout = match params.get("on_timeout").and_then(Value::as_str) {
-                    Some("continue") => OnTimeout::Continue,
-                    _ => OnTimeout::Fail,
+                let on_timeout = match p.on_timeout.unwrap_or_default() {
+                    WaitTimeout::Continue => OnTimeout::Continue,
+                    WaitTimeout::Fail => OnTimeout::Fail,
                 };
-                // timeout_sec 未指定は無期限待ち（timeout_at=None）。負値・過大値は不正として拒否する。
-                let timeout_at =
-                    match resolve_field(params, "timeout_sec", &r).and_then(|v| v.as_i64()) {
-                        Some(s) if s < 0 => {
-                            return NodeResult::fail("bad_params", "timeout_sec は非負", false)
-                        }
-                        Some(s) => {
-                            let Some(at) =
-                                Duration::try_seconds(s).and_then(|d| now.checked_add_signed(d))
-                            else {
-                                return NodeResult::fail(
-                                    "bad_params",
-                                    "timeout_sec が大きすぎます",
-                                    false,
-                                );
-                            };
-                            Some(at)
-                        }
-                        None => None,
-                    };
+                // timeout_sec 未指定は無期限待ち（timeout_at=None）。負値・過大値は不正として拒否する
+                // （checked 演算で panic させず bad_params の permanent 失敗として checkpoint する）。
+                let timeout_at = match p
+                    .timeout_sec
+                    .as_ref()
+                    .and_then(|e| resolve_value(e, &r))
+                    .and_then(|v| v.as_i64())
+                {
+                    Some(s) if s < 0 => {
+                        return NodeResult::fail("bad_params", "timeout_sec は非負", false)
+                    }
+                    Some(s) => {
+                        let Some(at) =
+                            Duration::try_seconds(s).and_then(|d| now.checked_add_signed(d))
+                        else {
+                            return NodeResult::fail(
+                                "bad_params",
+                                "timeout_sec が大きすぎます",
+                                false,
+                            );
+                        };
+                        Some(at)
+                    }
+                    None => None,
+                };
                 NodeResult::wait(Suspend::Event {
-                    source: source.to_string(),
-                    scope: params.get("scope").cloned().unwrap_or_else(|| json!({})),
-                    filter: params.get("filter").cloned(),
+                    source,
+                    scope: p.scope.unwrap_or_else(|| json!({})),
+                    filter: p.filter.and_then(|c| serde_json::to_value(c).ok()),
                     timeout_at,
                     on_timeout,
                 })
             }
-            other => NodeResult::fail("bad_params", format!("未知の wait kind: {other}"), false),
         }
     }
 
     /// control.map: items を解決し動的 fan-out 指示を組む（要素挿入は checkpoint 側・engine.md §4.5）。
     fn eval_map(params: &Value, ctx: &NodeContext) -> NodeResult {
+        let p: MapParams = match params::parse(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return NodeResult::fail("bad_params", format!("map params が不正: {e}"), false)
+            }
+        };
         let r = ParamResolver::new(ctx);
-        let Some(items_val) = resolve_field(params, "items", &r) else {
+        let Some(items_val) = resolve_value(&p.items, &r) else {
             return NodeResult::fail("expr_resolve_error", "map の items が解決できません", false);
         };
         let Some(items) = items_val.as_array() else {
@@ -258,17 +267,13 @@ impl CapabilityNodeExecutor {
                 false,
             );
         }
-        let max_concurrency = resolve_field(params, "max_concurrency", &r)
-            .and_then(|v| v.as_u64())
-            .and_then(|n| u32::try_from(n).ok())
-            .unwrap_or(10);
-        let on_item_error = match params.get("on_item_error").and_then(Value::as_str) {
-            Some("collect") => OnItemError::Collect,
-            _ => OnItemError::FailMap,
+        let on_item_error = match p.on_item_error {
+            MapItemError::Collect => OnItemError::Collect,
+            MapItemError::FailMap => OnItemError::FailMap,
         };
         NodeResult::map_fanout(MapFanout {
             items: items.clone(),
-            max_concurrency,
+            max_concurrency: p.max_concurrency.unwrap_or(10),
             on_item_error,
         })
     }
