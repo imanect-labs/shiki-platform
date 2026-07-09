@@ -218,6 +218,24 @@ impl WaitParams {
                         return deny(name);
                     }
                 }
+                // scope は空（run 内購読のワイルドカード）か { "folder": "<uuid>" } のみ
+                // （実行時マッチャの fail-closed 規則と同一契約・非 folder 形状は保存時に弾く）。
+                if let Some(scope) = &self.scope {
+                    let ok = scope.as_object().is_some_and(|o| {
+                        o.is_empty()
+                            || (o.len() == 1
+                                && o.get("folder")
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok()))
+                    });
+                    if !ok {
+                        return Err(ParamsIssue {
+                            path: "/params/scope".to_string(),
+                            message: "wait(event) の scope は空か { \"folder\": \"<uuid>\" } のみ指定できます"
+                                .to_string(),
+                        });
+                    }
+                }
             }
         }
         Ok(())
