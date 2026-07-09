@@ -78,6 +78,23 @@ impl gui::WorkflowStarter for TestStarter {
                 other => gui::ActionError::Internal(format!("run 起動: {other}")),
             })
     }
+
+    async fn start_pinned_via_bundle(
+        &self,
+        ctx: &AuthContext,
+        bundle_id: Uuid,
+        workflow_id: Uuid,
+        version: i64,
+        input: &Value,
+    ) -> Result<Option<Uuid>, gui::ActionError> {
+        self.0
+            .start_interactive_via_bundle(ctx, bundle_id, workflow_id, version, input)
+            .await
+            .map_err(|e| match e {
+                workflow_engine::run::LauncherError::Ir(_) => gui::ActionError::NotFound,
+                other => gui::ActionError::Internal(format!("run 起動: {other}")),
+            })
+    }
 }
 
 #[tokio::test]
@@ -154,13 +171,13 @@ async fn workflow_action_runs_pinned_version_as_caller() {
         .await
         .expect("resolve");
 
-    // ディスパッチ（本人権限で v1 起動）。
+    // ディスパッチ（チャット由来＝本人 viewer 権限で v1 起動）。
     let mut dispatcher =
         gui::ActionDispatcher::new(storage::audit::AuditRecorder::new(pool.clone()));
     dispatcher.set_workflow_starter(Arc::new(TestStarter(launcher.clone())));
-    let source = gui::ActionSource::MiniApp {
-        artifact_id: wf_id,
-        version: 1,
+    let source = gui::ActionSource::ChatMessage {
+        thread_id: Uuid::new_v4(),
+        message_id: Uuid::new_v4(),
     };
     let output = dispatcher
         .dispatch(
@@ -206,4 +223,66 @@ async fn workflow_action_runs_pinned_version_as_caller() {
     .await
     .unwrap();
     assert_eq!(denies, 1);
+
+    // ── ミニアプリのバンドル権限起動（Task 6.10 受け入れ条件「共有相手の実行」）──
+    // alice がバンドル（mini_app artifact）を作り**本体だけ**を bob に共有する。
+    // 部品 workflow は個別共有しないまま、bob がワークフロー束縛を起動できること。
+    let bundle = artifacts
+        .create(
+            &alice,
+            artifact::NewArtifact {
+                kind: artifact::ArtifactKind::MiniApp,
+                name: "app-ui-pin".into(),
+                body: json!({ "workflows": [{ "alias": "wf-ui-pin", "artifact_id": wf_id, "version": 1 }] }),
+            },
+            None,
+        )
+        .await
+        .expect("bundle");
+    artifacts
+        .share(
+            &alice,
+            bundle.id,
+            &storage::ShareTarget::User {
+                id: "bob".to_string(),
+            },
+            artifact::ArtifactRole::Viewer,
+            None,
+        )
+        .await
+        .expect("share bundle");
+
+    let app_source = gui::ActionSource::MiniApp {
+        artifact_id: bundle.id,
+        version: 1,
+    };
+    let output = dispatcher
+        .dispatch(&bob, &app_source, &resolved.doc, "run", json!({}), None)
+        .await
+        .expect("bob はバンドル権限で起動できる");
+    let bob_run: Uuid = serde_json::from_value(output["run_id"].clone()).expect("run id");
+    let (version, principal): (i64, String) = sqlx::query_as(
+        "SELECT version, principal FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&tenant)
+    .bind(bob_run)
+    .fetch_one(&pool)
+    .await
+    .expect("bob run row");
+    assert_eq!(version, 1, "バンドルのピン版で起動する");
+    assert_eq!(principal, "bob", "実行主体は押した本人のまま");
+
+    // バンドル読取が監査に残る（artifact.read_via_bundle・6.12）。
+    let via_bundle: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log \
+         WHERE tenant_id = $1 AND action = 'artifact.read_via_bundle' AND actor = 'bob'",
+    )
+    .bind(&tenant)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(via_bundle >= 1, "バンドル越し読取が監査に残る");
+
+    // バンドル権限は**定義の読取のみ**: bob は部品 workflow へ直接はアクセスできないまま。
+    assert!(workflows.get_version(&bob, wf_id, 1, None).await.is_err());
 }

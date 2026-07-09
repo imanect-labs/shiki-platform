@@ -408,6 +408,23 @@ impl gui::WorkflowStarter for LauncherWorkflowStarter {
                 other => gui::ActionError::Internal(format!("run 起動: {other}")),
             })
     }
+
+    async fn start_pinned_via_bundle(
+        &self,
+        ctx: &authz::AuthContext,
+        bundle_id: uuid::Uuid,
+        workflow_id: uuid::Uuid,
+        version: i64,
+        input: &serde_json::Value,
+    ) -> Result<Option<uuid::Uuid>, gui::ActionError> {
+        self.0
+            .start_interactive_via_bundle(ctx, bundle_id, workflow_id, version, input)
+            .await
+            .map_err(|e| match e {
+                workflow_engine::run::LauncherError::Ir(_) => gui::ActionError::NotFound,
+                other => gui::ActionError::Internal(format!("run 起動: {other}")),
+            })
+    }
 }
 
 /// 宣言的 UI アクションの実行系を配線する（Task 6.5）。
