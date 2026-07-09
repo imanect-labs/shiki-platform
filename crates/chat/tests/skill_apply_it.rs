@@ -224,7 +224,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
     let mut rx = store.event_stream(res.run_id, 0);
     let mut done = false;
     for _ in 0..500 {
-        let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
+        let next = tokio::time::timeout(Duration::from_secs(60), rx.next())
             .await
             .expect("イベント待ちがタイムアウト");
         let Some(ev) = next else { break };

@@ -35,6 +35,8 @@ pub mod skill_limits {
     pub const MAX_REFERENCES: usize = 50;
     /// temperature の上限（0.0..=2.0）。
     pub const MAX_TEMPERATURE: f32 = 2.0;
+    /// モデル既定 max_tokens の上限（暴走的な生成コストを skill 定義で強制できない）。
+    pub const MAX_MAX_TOKENS: u32 = 32_768;
 }
 
 /// skill 本文（artifact kind=skill の body JSONB）。
@@ -220,6 +222,18 @@ pub fn validate_skill_body(raw: &serde_json::Value) -> Result<SkillBody, Vec<Gui
                         .at("model.temperature"),
                 );
             }
+        }
+        if model
+            .max_tokens
+            .is_some_and(|m| m == 0 || m > skill_limits::MAX_MAX_TOKENS)
+        {
+            errors.push(
+                GuiValidationError::new(
+                    "skill.invalid_max_tokens",
+                    format!("max_tokens は 1〜{}", skill_limits::MAX_MAX_TOKENS),
+                )
+                .at("model.max_tokens"),
+            );
         }
     }
     if body.few_shot.len() > skill_limits::MAX_FEW_SHOT {

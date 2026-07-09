@@ -156,6 +156,21 @@ fn skill_body(label: &str) -> serde_json::Value {
 }
 
 fn button_spec() -> serde_json::Value {
+    // handler（chat.submit）はチャット専用でミニアプリでは保存拒否されるため、
+    // ミニアプリ用フィクスチャは表示専用スペックにする（拒否自体は別途固定する）。
+    json!({
+        "version": 1,
+        "actions": [],
+        "root": {
+            "component": "table", "title": "内容",
+            "columns": [ { "label": "項目" } ],
+            "rows": [ ["経費"] ]
+        }
+    })
+}
+
+/// chat.submit（handler 束縛）つきスペック — ミニアプリでの保存拒否検証用。
+fn chat_submit_spec() -> serde_json::Value {
     json!({
         "version": 1,
         "actions": [ { "type": "handler", "id": "submit", "handler": "chat.submit" } ],
@@ -324,6 +339,29 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
     };
     assert!(errors.iter().any(|e| e.code == "miniapp.pin_unresolved"));
 
+    // handler（chat.submit）束縛つき UI スペックはミニアプリでは保存拒否される
+    // （チャット専用・実行時の ChatSubmitHandler 拒否と二重防御）。
+    let (chat_spec_id, _) = s
+        .ui_specs
+        .create(&c, "chat-spec", &chat_submit_spec(), None)
+        .await
+        .expect("chat spec");
+    let handler_app = json!({
+        "description": "x",
+        "ui_spec": { "artifact_id": chat_spec_id, "version": 1 }
+    });
+    let err = s
+        .mini_apps
+        .create(&c, "handler-app", &handler_app, None)
+        .await
+        .expect_err("handler binding must be rejected");
+    let GuiError::Validation(errors) = err else {
+        panic!("validation error expected");
+    };
+    assert!(errors
+        .iter()
+        .any(|e| e.code == "miniapp.handler_not_supported"));
+
     // UI スペックの workflow 束縛がバンドル外なら拒否される（束縛 ⊆ ピン集合）。
     let wf_spec = json!({
         "version": 1,
@@ -404,7 +442,7 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         .await
         .expect("create");
     let mut spec_v2 = button_spec();
-    spec_v2["root"]["fields"][0]["label"] = json!("感想");
+    spec_v2["root"]["columns"][0]["label"] = json!("感想");
     s.ui_specs
         .update(&alice, spec_id, &spec_v2, Some(1), None)
         .await
@@ -448,7 +486,7 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         .expect("bob resolve");
     assert_eq!(resolved.version, 2);
     assert_eq!(
-        resolved.ui_spec_json["root"]["fields"][0]["label"], "感想",
+        resolved.ui_spec_json["root"]["columns"][0]["label"], "感想",
         "current は v2 の ui_spec"
     );
     assert!(resolved.skill.is_some(), "skill もバンドル権限で読める");
@@ -460,7 +498,7 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         .await
         .expect("bob resolve v1");
     assert_eq!(
-        resolved_v1.ui_spec_json["root"]["fields"][0]["label"], "内容",
+        resolved_v1.ui_spec_json["root"]["columns"][0]["label"], "項目",
         "旧版ピンは旧 ui_spec のまま"
     );
 

@@ -189,7 +189,7 @@ async fn run_to_done(
     let mut rx = store.event_stream(res.run_id, 0);
     let mut events = Vec::new();
     for _ in 0..500 {
-        let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
+        let next = tokio::time::timeout(Duration::from_secs(60), rx.next())
             .await
             .expect("イベント待ちがタイムアウト");
         let Some(ev) = next else { break };

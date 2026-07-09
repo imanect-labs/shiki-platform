@@ -127,6 +127,14 @@ impl AppliedSkill {
         }
     }
 
+    /// 指定ツールが許可集合に含まれるか（None は全許可・Task 6.9）。
+    pub(crate) fn allows(&self, name: &str) -> bool {
+        self.body
+            .allowed_tools
+            .as_ref()
+            .is_none_or(|allowed| allowed.iter().any(|t| t.as_str() == name))
+    }
+
     /// 許可ツール集合で提示ツールを**縮小**する（None は全提示のまま・Task 6.9）。
     ///
     /// ⚠️ `opts.approval` には触れない — 破壊系ツールの明示許可（Task 3.9）は skill で

@@ -70,9 +70,9 @@ pub struct ResolveQuery {
 /// ミニアプリの UI アクション実行リクエスト。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct MiniAppActionRequest {
-    /// 実行対象のミニアプリ版（解決済み画面と一致させる・省略時は current）。
-    #[serde(default)]
-    pub version: Option<i64>,
+    /// 実行対象のミニアプリ版（**必須**・解決済み画面の版と一致させる。current 暗黙参照だと
+    /// 画面を開いたまま新版が保存されたとき、別の束縛へ同じ action_id で到達し得る）。
+    pub version: i64,
     pub action_id: String,
     #[serde(default)]
     #[schema(value_type = Object)]
@@ -212,7 +212,7 @@ pub async fn invoke_mini_app_action(
     // 解決（本体 viewer 認可＋部品のバンドル読み＋再検証）を通った束縛のみが照合対象。
     let resolved = state
         .mini_apps
-        .resolve(&ctx, id, req.version, trace.as_deref())
+        .resolve(&ctx, id, Some(req.version), trace.as_deref())
         .await
         .map_err(map_gui_err)?;
     let source = ActionSource::MiniApp {

@@ -265,7 +265,12 @@ impl ChatWorker {
             skill.apply_few_shot(&mut history);
             skill.audit_apply(&self.db, ctx, run).await;
         }
-        if let Some(search) = &self.search {
+        // skill が doc_search を許可していなければ古典事前検索も行わない（Task 6.9 の
+        // セッション級ツール制限は agent/classic 両モードで一貫させる）。
+        let search_allowed = skill
+            .as_ref()
+            .is_none_or(|s| s.allows(agent_core::ToolName::DocSearch.as_str()));
+        if let (Some(search), true) = (&self.search, search_allowed) {
             match run_doc_search(
                 search,
                 ctx,

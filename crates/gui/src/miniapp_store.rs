@@ -174,11 +174,23 @@ impl MiniAppStore {
         })
     }
 
-    /// UI スペック内の workflow 束縛がバンドルのピン集合 ⊆ であることを照合する
-    /// （バンドル外のワークフローへ UI から到達できない）。
+    /// UI スペック内の束縛がミニアプリで成立することを照合する:
+    /// workflow 束縛はバンドルのピン集合 ⊆（バンドル外のワークフローへ UI から到達できない）、
+    /// handler 束縛（chat.submit）はチャット文脈専用のため**保存時に拒否**する
+    /// （実行時も ChatSubmitHandler が MiniApp source を拒む二重防御）。
     fn check_bindings_subset(ui_spec: &UiSpecDoc, body: &MiniAppBody) -> Result<(), GuiError> {
         let mut errors = Vec::new();
         for binding in &ui_spec.actions {
+            if let ActionBinding::Handler(h) = binding {
+                errors.push(GuiValidationError::new(
+                    "miniapp.handler_not_supported",
+                    format!(
+                        "handler 束縛 '{}'（{}）はチャット専用のためミニアプリでは使えません",
+                        h.id,
+                        h.handler.as_str()
+                    ),
+                ));
+            }
             if let ActionBinding::Workflow(b) = binding {
                 let pinned = b.workflow.artifact_id.zip(b.workflow.version);
                 let in_bundle = pinned.is_some_and(|(id, ver)| {
