@@ -226,6 +226,40 @@ async fn wait_event_is_woken_by_matching_event() {
 }
 
 #[tokio::test]
+async fn wait_event_with_non_folder_scope_never_wakes() {
+    // fail-closed: folder 以外のキーだけを持つ scope（未対応形状）はワイルドカードに縮退せず
+    // 一切マッチしない（誤形状の購読が全イベントで起床する事故を防ぐ・Codex P1）。
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let ir = wait_ir(json!({
+        "kind": "event", "source": "storage.write", "scope": { "table": "expense" }
+    }));
+    let run_id = create_run(&store, &tenant, &ir).await;
+
+    let w = worker(pool.clone(), &tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+
+    let woke = store
+        .wake_event_waits(&tenant, "storage.write", None, &json!({ "doc": 1 }))
+        .await
+        .unwrap();
+    assert_eq!(woke, 0, "非 folder scope は起床しない（fail-closed）");
+    assert_eq!(
+        store
+            .step_statuses(&tenant, run_id)
+            .await
+            .unwrap()
+            .iter()
+            .find(|(p, _)| p == "w")
+            .unwrap()
+            .1,
+        StepStatus::WaitingEvent,
+        "待機のまま（全購読化しない）"
+    );
+}
+
+#[tokio::test]
 async fn wait_event_timeout_continue_takes_timeout_port() {
     let Some(pool) = setup().await else { return };
     let store = RunStore::new(pool.clone());

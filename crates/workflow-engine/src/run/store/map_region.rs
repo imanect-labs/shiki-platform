@@ -293,6 +293,9 @@ pub(super) async fn aggregate_map(
         Ok(MapOutcome::Completed)
     } else {
         // fail_map かつ失敗あり・map on_error=fail_run → run を失敗させる。
+        // ただし**ネスト map**（step_path が外側 map の要素内 = '[' を含む）は run を落とさず、
+        // 通常の要素内失敗と同じく「外側要素の失敗」として封じ込め、外側 map の集約
+        // （on_item_error / on_error 方針）に委ねる（要素失敗の封じ込め規則の一貫性）。
         let err_obj = json!({
             "code": "map_item_failed",
             "message": "map 要素が失敗しました（fail_map）",
@@ -310,7 +313,11 @@ pub(super) async fn aggregate_map(
             Some(err_obj),
         )
         .await?;
-        Ok(MapOutcome::RunFailed)
+        if map_step_path.contains('[') {
+            Ok(MapOutcome::Completed)
+        } else {
+            Ok(MapOutcome::RunFailed)
+        }
     }
 }
 

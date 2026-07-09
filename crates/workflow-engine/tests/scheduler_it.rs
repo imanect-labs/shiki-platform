@@ -296,6 +296,45 @@ async fn storage_write_event_triggers_run_once() {
 }
 
 #[tokio::test]
+async fn event_trigger_with_non_folder_scope_never_fires() {
+    // fail-closed: folder キーを持たない scope のトリガは全購読に縮退せず一切発火しない（Codex P1）。
+    // （保存時 V3 は { "folder": "<uuid>" } を強制するが、DB 直書き等の不正形状も実行時に閉じる。）
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let wf = Uuid::new_v4();
+    let folder = Uuid::new_v4();
+    mk_folder(&pool, &tenant, folder, None).await;
+    register(
+        &pool,
+        &tenant,
+        wf,
+        "enabled",
+        "trg-badscope",
+        "event",
+        Some("storage.write"),
+        json!({ "scope": { "table": "expense" } }),
+    )
+    .await;
+    let store = SchedulerStore::new(pool.clone());
+    let launcher = Arc::new(CountingLauncher {
+        launches: AtomicUsize::new(0),
+    });
+    let fired = store
+        .match_event(
+            &tenant,
+            "storage.write",
+            77,
+            Some(folder),
+            &json!({ "parent_id": folder.to_string() }),
+            launcher.as_ref(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fired, 0, "非 folder scope は発火しない（fail-closed）");
+    assert_eq!(launcher.launches.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn leader_lease_is_mutually_exclusive() {
     let Some(pool) = setup().await else { return };
     // 単一行のグローバルリース。まず既存を消してクリーンに。

@@ -212,6 +212,67 @@ async fn map_fail_map_fails_run_but_completes_other_items() {
 }
 
 #[tokio::test]
+async fn nested_map_fail_map_is_contained_in_outer_item() {
+    // ネスト map（深さ 2）: 内側 fail_map の失敗は run を落とさず「外側要素の失敗」として
+    // 封じ込め、外側 map の集約（collect）に委ねる（要素失敗の封じ込め規則の一貫性・Codex P2）。
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let ir = json!({
+        "ir_version": 1, "name": "nested-map",
+        "declared_scopes": ["storage.read"],
+        "nodes": [
+            { "id": "outer", "type": "control.map",
+              "params": { "items": [1, 2], "on_item_error": "collect" } },
+            { "id": "inner", "type": "control.map", "parent": "outer",
+              "params": { "items": [10, 20], "on_item_error": "fail_map" } },
+            { "id": "work", "type": "storage.read", "parent": "inner",
+              "params": { "fail_on_index": 0 } },
+            { "id": "after", "type": "storage.read", "params": {} }
+        ],
+        "edges": [{ "from": "outer", "to": "after" }]
+    });
+    let run_id = create_run(&store, &tenant, &ir).await;
+
+    let w = worker(pool.clone(), &tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+
+    // 内側 map は各外側要素で fail_map 失敗するが、run は落ちず外側 collect が失敗を集約して成功する。
+    assert_eq!(
+        store.run_status(&tenant, run_id).await.unwrap(),
+        Some(RunStatus::Succeeded),
+        "内側 fail_map が run 全体を失敗させない"
+    );
+    let statuses = store.step_statuses(&tenant, run_id).await.unwrap();
+    let inner0 = statuses
+        .iter()
+        .find(|(p, _)| p == "outer[0].inner")
+        .expect("内側 map step が存在");
+    assert_eq!(
+        inner0.1,
+        StepStatus::Failed,
+        "内側 map は失敗として封じ込め"
+    );
+    assert_eq!(
+        statuses.iter().find(|(p, _)| p == "after").unwrap().1,
+        StepStatus::Succeeded,
+        "外側の後続は前進する"
+    );
+    // 外側 map の出力に両要素の失敗が集約される。
+    let outputs = store.step_outputs(&tenant, run_id, "after").await.unwrap();
+    let outer_out = outputs
+        .iter()
+        .find(|(id, _)| id == "outer")
+        .map(|(_, o)| o.clone())
+        .expect("outer の出力");
+    assert_eq!(
+        outer_out["errors"].as_array().map(Vec::len),
+        Some(2),
+        "外側 collect が要素失敗を 2 件集約: {outer_out}"
+    );
+}
+
+#[tokio::test]
 async fn map_collect_gathers_errors_and_succeeds() {
     let Some(pool) = setup().await else { return };
     let store = RunStore::new(pool.clone());

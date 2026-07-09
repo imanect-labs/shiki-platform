@@ -338,7 +338,9 @@ impl RunStore {
         payload: &Value,
     ) -> Result<usize, RunStoreError> {
         // scope 束縛: folder scope はイベントフォルダの祖先（node_closure・自分自身 depth 0 を含む）に
-        // トリガの folder が含まれれば一致（祖先束縛）。folder scope 無しの購読は source 一致で通す。
+        // 購読の folder が含まれれば一致（祖先束縛）。**ワイルドカードは scope 空/欠落のみ**（run 内購読の
+        // 文書化済み挙動）。folder 以外のキーだけを持つ scope（未対応形状）はワイルドカードに縮退させず
+        // 一切マッチしない（fail-closed・誤形状が全購読化する事故を防ぐ）。
         type EventWaitRow = (Uuid, String, Json<Value>, Json<Value>);
         let rows: Vec<EventWaitRow> = sqlx::query_as(
             "SELECT w.run_id, w.step_path, w.spec, r.ir_snapshot \
@@ -346,11 +348,12 @@ impl RunStore {
              JOIN workflow_run r ON r.tenant_id = w.tenant_id AND r.run_id = w.run_id \
              WHERE w.tenant_id = $1 AND w.source = $2 AND w.kind = 'event' AND NOT w.fired \
                AND r.status = 'running' \
-               AND ( (w.spec->'scope'->>'folder') IS NULL \
-                     OR EXISTS ( SELECT 1 FROM node_closure c \
-                                 WHERE c.tenant_id = $1 \
-                                   AND c.ancestor = (w.spec->'scope'->>'folder')::uuid \
-                                   AND c.descendant = $3 ) )",
+               AND ( COALESCE(w.spec->'scope', '{}'::jsonb) = '{}'::jsonb \
+                     OR ( (w.spec->'scope' ? 'folder') \
+                          AND EXISTS ( SELECT 1 FROM node_closure c \
+                                       WHERE c.tenant_id = $1 \
+                                         AND c.ancestor = (w.spec->'scope'->>'folder')::uuid \
+                                         AND c.descendant = $3 ) ) )",
         )
         .bind(tenant_id)
         .bind(source)

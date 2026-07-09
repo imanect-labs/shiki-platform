@@ -234,7 +234,9 @@ impl SchedulerStore {
     ) -> Result<usize, SchedulerStoreError> {
         // (tenant, kind=event, source) index で候補トリガを引く（enabled かつ有効化バージョン一致のみ）。
         // **祖先束縛**: トリガの folder scope が、イベント発生フォルダの祖先（node_closure・自分自身 depth 0
-        // を含むので完全一致も包含）なら一致する。folder scope 無しのトリガは source 一致で通す。
+        // を含むので完全一致も包含）なら一致する。**scope はフォルダ束縛必須（全購読禁止・fail-closed）**:
+        // folder キーを持たない scope（未対応形状・欠落）はワイルドカードに縮退させず一切マッチしない
+        // （保存時 V3 が Stage A の形状 { "folder": "<uuid>" } を強制する）。
         let triggers: Vec<EventTriggerRow> = sqlx::query_as(
             "SELECT t.tenant_id, t.trigger_id, t.workflow_id, t.spec FROM workflow_trigger t \
              JOIN workflow_registration r \
@@ -242,11 +244,11 @@ impl SchedulerStore {
              WHERE t.tenant_id = $1 AND t.kind = 'event' AND t.source = $2 \
                AND t.enabled AND r.status = 'enabled' \
                AND t.version = r.enabled_version \
-               AND ( (t.spec->'scope'->>'folder') IS NULL \
-                     OR EXISTS ( SELECT 1 FROM node_closure c \
-                                 WHERE c.tenant_id = $1 \
-                                   AND c.ancestor = (t.spec->'scope'->>'folder')::uuid \
-                                   AND c.descendant = $3 ) )",
+               AND (t.spec->'scope' ? 'folder') \
+               AND EXISTS ( SELECT 1 FROM node_closure c \
+                            WHERE c.tenant_id = $1 \
+                              AND c.ancestor = (t.spec->'scope'->>'folder')::uuid \
+                              AND c.descendant = $3 )",
         )
         .bind(tenant_id)
         .bind(source)

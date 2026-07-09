@@ -170,9 +170,12 @@ impl CapabilityNodeExecutor {
                 if secs < 0 {
                     return NodeResult::fail("bad_params", "duration_sec は非負", false);
                 }
-                NodeResult::wait(Suspend::Timer {
-                    wake_at: now + Duration::seconds(secs),
-                })
+                // 過大値は checked 演算で拒否する（panic で worker task を殺さない）。
+                let wake_at = Duration::try_seconds(secs).and_then(|d| now.checked_add_signed(d));
+                let Some(wake_at) = wake_at else {
+                    return NodeResult::fail("bad_params", "duration_sec が大きすぎます", false);
+                };
+                NodeResult::wait(Suspend::Timer { wake_at })
             }
             "until" => {
                 let Some(ts) =
@@ -207,13 +210,24 @@ impl CapabilityNodeExecutor {
                     Some("continue") => OnTimeout::Continue,
                     _ => OnTimeout::Fail,
                 };
-                // timeout_sec 未指定は無期限待ち（timeout_at=None）。負値は不正として拒否する。
+                // timeout_sec 未指定は無期限待ち（timeout_at=None）。負値・過大値は不正として拒否する。
                 let timeout_at =
                     match resolve_field(params, "timeout_sec", &r).and_then(|v| v.as_i64()) {
                         Some(s) if s < 0 => {
                             return NodeResult::fail("bad_params", "timeout_sec は非負", false)
                         }
-                        Some(s) => Some(now + Duration::seconds(s)),
+                        Some(s) => {
+                            let Some(at) =
+                                Duration::try_seconds(s).and_then(|d| now.checked_add_signed(d))
+                            else {
+                                return NodeResult::fail(
+                                    "bad_params",
+                                    "timeout_sec が大きすぎます",
+                                    false,
+                                );
+                            };
+                            Some(at)
+                        }
                         None => None,
                     };
                 NodeResult::wait(Suspend::Event {
