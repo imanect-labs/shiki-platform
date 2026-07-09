@@ -12,6 +12,8 @@ import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Composer } from "@/components/chat/composer";
 import { ComposerArrow } from "@/components/home/composer-arrow";
+import { SkillPicker } from "@/components/home/skill-picker";
+import { type ArtifactMeta } from "@/lib/artifact-api";
 import { PromptSuggestions } from "@/components/chat/prompt-suggestions";
 import { ShortcutGrid } from "@/components/home/shortcut-grid";
 import { toast } from "@/components/ui/use-toast";
@@ -22,6 +24,8 @@ export default function HomePage() {
   const router = useRouter();
   const { data, loading } = useMe();
   const [starting, setStarting] = React.useState(false);
+  // 選択中の skill（次に開始するチャットへ version 込みでピンされる・Phase 6）。
+  const [skill, setSkill] = React.useState<ArtifactMeta | null>(null);
   // 表示名はメールのローカル部から導出する（表示名フィールドはサーバ側実装が入る後続 PR で対応）。
   const name = data?.email?.split("@")[0] ?? null;
 
@@ -29,7 +33,12 @@ export default function HomePage() {
     if (starting || !text.trim()) return;
     setStarting(true);
     try {
-      const thread = await createThread(titleFrom(text));
+      const thread = await createThread(
+        titleFrom(text),
+        false,
+        // 選択時点の現行版をピンする（開始までに新版が保存されても選んだ版で適用）。
+        skill ? { skill: { artifactId: skill.id, version: skill.currentVersion } } : undefined,
+      );
       stashPending(thread.id, { text, attachments });
       router.push(`/c/${thread.id}`);
     } catch {
@@ -59,6 +68,8 @@ export default function HomePage() {
           <ComposerArrow className="absolute -top-16 right-4 z-10 hidden md:block" />
           <Composer onSubmit={startChat} autoFocus disabled={starting} className="w-full" />
         </div>
+
+        <SkillPicker selected={skill} onSelect={setSkill} />
 
         <PromptSuggestions onPick={(text) => startChat(text, [])} />
 

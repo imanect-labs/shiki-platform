@@ -2,10 +2,12 @@ import {
   Clock,
   FolderOpen,
   Home,
+  LayoutGrid,
   type LucideIcon,
   MessageSquareText,
   Settings,
   Share2,
+  Sparkles,
   Star,
   Trash2,
 } from "lucide-react";
@@ -37,6 +39,10 @@ export const DRIVE_CHILDREN: DriveChild[] = [
 
 export const DRIVE_ICON: LucideIcon = FolderOpen;
 
+/// スキル / ミニアプリ（Phase 6）。サイドバーのトップレベル項目。
+export const SKILLS_NAV: NavLeaf = { key: "skills", label: "スキル", href: "/skills", icon: Sparkles };
+export const APPS_NAV: NavLeaf = { key: "apps", label: "アプリ", href: "/apps", icon: LayoutGrid };
+
 /// あるパスがナビ項目のアクティブ対象かを判定する。
 /// 完全一致、またはルート（"/" を除く）配下のサブパスを active とみなす。
 export function isActivePath(href: string, pathname: string): boolean {
@@ -49,6 +55,8 @@ export function resolvePageTitle(pathname: string): string {
   if (pathname === "/") return "ホーム";
   if (pathname.startsWith("/c/")) return "チャット";
   if (pathname === "/settings") return "設定";
+  if (isActivePath(SKILLS_NAV.href, pathname)) return "スキル";
+  if (isActivePath(APPS_NAV.href, pathname)) return "アプリ";
   const child = DRIVE_CHILDREN.find((c) => c.href === pathname);
   // ドライブのルート（home child）は単に「ドライブ」。下位ページのみ親付きで示す。
   if (child) return child.key === "home" ? "ドライブ" : `ドライブ・${child.label}`;
@@ -61,6 +69,8 @@ export function resolvePageIcon(pathname: string): LucideIcon {
   if (pathname === "/") return MessageSquareText;
   if (pathname.startsWith("/c/")) return MessageSquareText;
   if (pathname === "/settings") return Settings;
+  if (isActivePath(SKILLS_NAV.href, pathname)) return SKILLS_NAV.icon;
+  if (isActivePath(APPS_NAV.href, pathname)) return APPS_NAV.icon;
   const child = DRIVE_CHILDREN.find((c) => c.href === pathname);
   if (child) return child.icon;
   return DRIVE_ICON;
