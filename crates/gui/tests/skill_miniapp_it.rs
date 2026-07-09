@@ -478,6 +478,26 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         .await
         .expect("share");
 
+    // 共有された分が一覧（実効 viewer 集合）に出る＝UI から見つけて実行できる（6.11）。
+    let shared = s
+        .artifacts
+        .list_shared_with_me(&bob, Some(ArtifactKind::MiniApp), 50)
+        .await
+        .expect("shared list");
+    assert!(
+        shared.iter().any(|a| a.id == app_id),
+        "共有されたミニアプリが bob の一覧に出る"
+    );
+    assert!(
+        s.artifacts
+            .list_shared_with_me(&alice, Some(ArtifactKind::MiniApp), 50)
+            .await
+            .expect("owner shared list")
+            .iter()
+            .all(|a| a.id != app_id),
+        "owner 自身の共有一覧には出ない（所有一覧と重複しない）"
+    );
+
     // 共有相手が resolve できる（6.10 受け入れ条件②・部品はバンドル権限で読む）。
     let resolved = s
         .mini_apps

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use authz::{AuthContext, AuthzClient, Consistency, Relation};
+use authz::{AuthContext, AuthzClient, Consistency, ObjectType, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::types::Json;
@@ -192,6 +192,56 @@ impl ArtifactStore {
         .bind(kind.map(ArtifactKind::as_str))
         .bind(before_at)
         .bind(before_id)
+        .bind(limit)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        rows.into_iter().map(ArtifactRow::into_artifact).collect()
+    }
+
+    /// 自分に**共有された**アーティファクト一覧（owner 除外・kind 絞り込み・更新日降順）。
+    ///
+    /// FGA `list_objects`（viewer の実効集合＝ロール継承込み）→ DB 突き合わせの二段。
+    /// tenant 名前空間の突き合わせ（strip_object_id）と DB 側 tenant/org フィルタの二重防御。
+    /// 共有集合は通常小さい前提で keyset ページングは持たない（上限 `limit`・Task 6.11）。
+    pub async fn list_shared_with_me(
+        &self,
+        ctx: &AuthContext,
+        kind: Option<ArtifactKind>,
+        limit: i64,
+    ) -> Result<Vec<Artifact>, ArtifactError> {
+        let limit = limit.clamp(1, 100);
+        let objs = self
+            .authz
+            .list_objects(&ctx.subject(), Relation::Viewer, ObjectType::Artifact)
+            .await
+            .map_err(|e| ArtifactError::Internal(e.to_string()))?;
+        let mut ids: Vec<Uuid> = Vec::new();
+        for o in objs {
+            let Some((_, id_part)) = o.split_once(':') else {
+                continue;
+            };
+            if let Some(local) = ctx.ns().strip_object_id(id_part) {
+                if let Ok(id) = Uuid::parse_str(local) {
+                    ids.push(id);
+                }
+            }
+        }
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<ArtifactRow> = sqlx::query_as(
+            "SELECT id, kind, name, owner, current_version, created_at, updated_at \
+             FROM artifact \
+             WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND owner <> $4 \
+               AND deleted_at IS NULL AND ($5::text IS NULL OR kind = $5) \
+             ORDER BY updated_at DESC, id DESC LIMIT $6",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(&ids)
+        .bind(&ctx.principal.id)
+        .bind(kind.map(ArtifactKind::as_str))
         .bind(limit)
         .fetch_all(&self.db)
         .await
