@@ -6,6 +6,7 @@
 /// 実行後は実行履歴ページ（?run= deep-link）へ誘導する。
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import { Loader2, Play } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -65,6 +66,7 @@ export function RunNowDialog({
   /// フォームの元になった保存済みバージョン（実行前に最新と一致することを確認する）。
   version: number;
 }) {
+  const router = useRouter();
   const props = schemaProps(ir);
   const [fields, setFields] = React.useState<Record<string, string>>({});
   const [jsonText, setJsonText] = React.useState("{}");
@@ -102,8 +104,8 @@ export function RunNowDialog({
       const runId = await startRun(workflowId, input);
       onOpenChange(false);
       if (runId) {
-        // 実行履歴ページ（次 PR）が入り次第 ?run= の deep-link へ遷移させる。
-        toast({ title: "実行を開始しました", description: "実行履歴で進行を確認できます。" });
+        toast({ title: "実行を開始しました" });
+        router.push(`/workflows/${workflowId}/runs?run=${runId}`);
       } else {
         toast({
           title: "実行は受け付けられませんでした",
