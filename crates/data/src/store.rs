@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use authz::{AuthContext, AuthzClient, Consistency, ObjectType, Relation};
+use authz::{AuthContext, AuthzClient, Consistency, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::types::Json;
