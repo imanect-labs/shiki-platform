@@ -37,10 +37,14 @@ impl RunGraph {
             in_edges.entry(n.id.clone()).or_default();
             out_edges.entry(n.id.clone()).or_default();
             if NodeType::parse(&n.node_type) == Some(NodeType::ControlJoin) {
-                let mode = match n.params.get("mode").and_then(|v| v.as_str()) {
-                    Some("any") => JoinMode::Any,
-                    _ => JoinMode::All,
-                };
+                // typed 契約（ir::params::JoinParams）で読む（V1 と同一契約・graph 独自解釈を持たない）。
+                let mode = crate::ir::params::parse::<crate::ir::params::JoinParams>(&n.params)
+                    .ok()
+                    .and_then(|p| p.mode)
+                    .map_or(JoinMode::All, |m| match m {
+                        crate::ir::params::JoinMode::Any => JoinMode::Any,
+                        crate::ir::params::JoinMode::All => JoinMode::All,
+                    });
                 join_modes.insert(n.id.clone(), mode);
             }
         }

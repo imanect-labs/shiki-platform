@@ -9,9 +9,11 @@
 //! 現ステージで有効化する部分集合は `available_stage_a()` が返す。
 //! 未実装 variant の IR は V3 が「Stage A では未対応」として保存を拒否する。
 
+mod catalog;
 mod node_type;
 mod scope;
 
+pub use catalog::{node_catalog, IdempotencyClass, NodeCatalogEntry, NodeCategory};
 pub use node_type::NodeType;
 pub use scope::Scope;
 

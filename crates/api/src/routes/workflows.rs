@@ -73,6 +73,47 @@ async fn build_catalog(state: &AppState, ctx: &authz::AuthContext) -> Result<Cat
     Ok(catalog)
 }
 
+/// 検証のみのリクエスト（保存しない・dnd のライブ検証用）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ValidateWorkflowRequest {
+    /// ワークフロー IR（JSON DAG）。
+    #[schema(value_type = Object)]
+    pub ir: serde_json::Value,
+}
+
+/// 検証のみのレスポンス（errors 空 = 保存可能）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ValidateWorkflowResponse {
+    pub errors: Vec<ValidationError>,
+}
+
+/// IR を保存せず検証する（dnd エディタのライブ検証・Task 10.12）。
+///
+/// 保存 API と**同一のカタログ・同一の V1〜V7 パイプライン**を通す（結果の乖離をなくす）。
+/// 検証エラーは失敗ではなく 200 の本文で返す（エディタが逐次表示するため）。
+#[utoipa::path(
+    post,
+    path = "/workflows/validate",
+    request_body = ValidateWorkflowRequest,
+    responses(
+        (status = 200, description = "検証結果（errors 空 = 保存可能）", body = ValidateWorkflowResponse),
+        (status = 401, description = "未認証"),
+    ),
+    tag = "workflows"
+)]
+pub async fn validate_workflow(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Json(req): Json<ValidateWorkflowRequest>,
+) -> Result<Json<ValidateWorkflowResponse>, ApiError> {
+    let catalog = build_catalog(&state, &ctx).await?;
+    let errors = match workflow_engine::validate(&req.ir, &catalog) {
+        Ok(_) => Vec::new(),
+        Err(errors) => errors,
+    };
+    Ok(Json(ValidateWorkflowResponse { errors }))
+}
+
 /// 検証エラーを 400 として返す（全件を JSON body へ）。
 fn map_store_err(err: WorkflowStoreError) -> ApiError {
     match err {

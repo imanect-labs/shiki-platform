@@ -18,9 +18,13 @@ use crate::capability::{
 };
 use crate::run::NodeContext;
 
+use crate::control::eval::resolve_value;
+use crate::ir::params::ScriptRunParams;
+
+use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{ExecCtx, NodePorts, PortError, StorageWriteReq};
-use super::resolver::{as_bytes, resolve_field, ParamResolver};
+use super::resolver::{as_bytes, ParamResolver};
 
 impl CapabilityNodeExecutor {
     pub(super) async fn node_script_run(
@@ -35,21 +39,19 @@ impl CapabilityNodeExecutor {
             .ok_or_else(|| PortError::unavailable("script engine が未設定です"))?;
 
         // Stage A は inline のみ（`{ "artifact": "script:<name>@<ver>" }` は Stage B）。
-        let source = params
-            .get("source")
-            .and_then(|s| s.get("inline"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                PortError::invalid(
-                    "script.run: source.inline がありません（artifact 参照は Stage B）",
-                )
-            })?
-            .to_string();
+        let p: ScriptRunParams = parse_params(params)?;
+        let source = p.source.inline.clone().ok_or_else(|| {
+            PortError::invalid("script.run: source.inline がありません（artifact 参照は Stage B）")
+        })?;
         let compiled = script_runtime::compile::compile(&source)
             .map_err(|e| PortError::invalid(format!("script コンパイル失敗: {e}")))?;
 
         let r = ParamResolver::new(ctx);
-        let input = resolve_field(params, "input", &r).unwrap_or_else(|| ctx.input.clone());
+        let input = p
+            .input
+            .as_ref()
+            .and_then(|e| resolve_value(e, &r))
+            .unwrap_or_else(|| ctx.input.clone());
         let input_json = input.to_string();
         let limits = self.script_limits;
         let exec_id = format!("{}:{}", ctx.run_id.simple(), ctx.step_path);
