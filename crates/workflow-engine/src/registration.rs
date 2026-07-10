@@ -149,6 +149,26 @@ impl RegistrationService {
         let current = self.view(tenant, workflow_id).await?;
         let registered = current.status != "none";
 
+        // イベントトリガの folder 束縛は**有効化者が読める範囲**に限る（fail-closed）。
+        // これが無いと editor が任意フォルダの書込イベントを購読でき、ペイロード
+        // （ファイル名/id 等のメタデータ）が読めないフォルダから漏れる側チャネルになる。
+        for t in &ir.triggers {
+            let Trigger::Event(ev) = t else { continue };
+            let Some(folder) = ev.scope.get("folder").and_then(|v| v.as_str()) else {
+                continue; // 形状は保存時 V3 が強制済み（防御的 continue）。
+            };
+            let obj = enabler.ns().folder(folder);
+            let ok = self
+                .delegation
+                .enabler_holds(enabler, authz::Relation::Viewer, &obj)
+                .await?;
+            if !ok {
+                return Err(EnableError::Delegation(DelegationError::OutOfScope(
+                    format!("event trigger folder {folder}（viewer なし）"),
+                )));
+            }
+        }
+
         if grants.is_empty() && registered {
             // 軽量切替: 拡大が無いことを検証（fail-closed・ir.md §9）。
             let missing: Vec<String> = ir

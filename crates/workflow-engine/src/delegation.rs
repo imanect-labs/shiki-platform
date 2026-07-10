@@ -220,6 +220,24 @@ impl DelegationStore {
         Ok(())
     }
 
+    /// 有効化者が (relation, object) を現に持つかを検査する（イベントトリガ束縛の原資確認等）。
+    pub async fn enabler_holds(
+        &self,
+        enabler: &AuthContext,
+        relation: Relation,
+        object: &FgaObject,
+    ) -> Result<bool, DelegationError> {
+        self.authz
+            .check(
+                &enabler.subject(),
+                relation,
+                object,
+                Consistency::HigherConsistency,
+            )
+            .await
+            .map_err(|e| DelegationError::Authz(e.to_string()))
+    }
+
     /// enabled な registration の (org, enabled_version) を返す（enabled でなければ None）。
     ///
     /// schedule/event run は**有効化した版と org** で実行する（最新版や既定 org でなく）。

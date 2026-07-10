@@ -310,6 +310,56 @@ async fn enable_materializes_triggers_and_lifecycle_works() {
 }
 
 #[tokio::test]
+async fn enable_rejects_event_trigger_on_unreadable_folder() {
+    // 有効化者が viewer を持たないフォルダへのイベント購読は全体拒否（fail-closed・Codex P1）。
+    // これを許すと editor が任意フォルダの書込イベント（ファイル名/id 等のメタデータ）を購読できる。
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let folder = Uuid::new_v4();
+    mk_folder(&env.pool, &tenant, folder).await;
+    // フォルダ viewer は付与しない（読めないフォルダ）。
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        env.pool.clone(),
+        Arc::clone(&env.fga),
+    ));
+    let workflows = WorkflowStore::new(Arc::clone(&artifacts));
+    let (wf_id, _) = workflows
+        .create(
+            &alice,
+            &ir_v1(folder),
+            &workflow_engine::Catalog::default(),
+            None,
+        )
+        .await
+        .expect("create");
+    let delegation = DelegationStore::new(env.pool.clone(), Arc::clone(&env.fga));
+    let service = RegistrationService::new(env.pool.clone(), delegation);
+    let ir1 = WorkflowIr::from_json(&ir_v1(folder)).unwrap();
+    let err = service
+        .enable(&alice, wf_id, 1, &ir1, &[])
+        .await
+        .expect_err("読めないフォルダのイベント購読は拒否");
+    assert!(
+        matches!(
+            err,
+            EnableError::Delegation(workflow_engine::DelegationError::OutOfScope(_))
+        ),
+        "{err:?}"
+    );
+    // トリガは実体化されない（fail-closed）。
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_trigger WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(&tenant)
+    .bind(wf_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[tokio::test]
 async fn enable_rejects_out_of_scope_grants() {
     let Some(env) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());

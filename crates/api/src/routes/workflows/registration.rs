@@ -26,8 +26,6 @@ use crate::{
     state::AppState,
 };
 
-use super::save::map_store_err;
-
 /// 委譲 1 件の表示。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DelegationItem {
@@ -145,12 +143,11 @@ pub async fn get_registration(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
 ) -> Result<Json<RegistrationResponse>, ApiError> {
-    // viewer ゲート（存在秘匿は IR 取得と同じ経路）。
-    state
-        .workflows
-        .get_latest(&ctx, id, trace.as_deref())
-        .await
-        .map_err(map_store_err)?;
+    // viewer ＋ kind=workflow ゲート（存在秘匿 404）。
+    let meta = state.artifacts.get(&ctx, id, trace.as_deref()).await?;
+    if meta.kind != artifact::ArtifactKind::Workflow {
+        return Err(ApiError::NotFound);
+    }
     let view = state
         .workflow_registration
         .view(&ctx.tenant_id, id)
@@ -223,6 +220,27 @@ pub async fn consent_plan(
             }
         }
     }
+    // workflow.start の参照名 → 子ワークフロー id 解決（tenant×kind 内で name 一意・Codex P2）。
+    // 解決できない（未作成/権限なし）場合は選択要に落とす（grant を組み立て可能に保つ）。
+    for g in grants
+        .iter_mut()
+        .filter(|g| g.object_kind == "workflow" && g.object_id.is_none())
+    {
+        if let Some(name) = &g.object_name {
+            g.object_id = state
+                .artifacts
+                .get_by_name(
+                    &ctx,
+                    artifact::ArtifactKind::Workflow,
+                    name,
+                    trace.as_deref(),
+                )
+                .await
+                .ok()
+                .map(|a| a.id.to_string());
+            g.needs_user_pick = g.object_id.is_none();
+        }
+    }
     Ok(Json(ConsentPlanResponse {
         declared_scopes: ir.declared_scopes.clone(),
         grants,
@@ -262,7 +280,8 @@ pub async fn enable_workflow(
         .enable(&ctx, id, req.version, &ir, &grants)
         .await
         .map_err(map_enable_err)?;
-    state
+    // 監査はコミット済み操作の記録（失敗しても操作結果は変えず、欠落をログで顕在化する）。
+    if let Err(e) = state
         .audit
         .record(
             &ctx,
@@ -279,7 +298,10 @@ pub async fn enable_workflow(
                 }),
             },
         )
-        .await?;
+        .await
+    {
+        tracing::error!(error = %e, workflow = %id, "workflow.enable の監査記録に失敗");
+    }
     Ok(Json(EnableResponse {
         status: "enabled".into(),
         enabled_version: req.version,
@@ -309,7 +331,7 @@ pub async fn disable_workflow(
         .disable(&ctx.tenant_id, id)
         .await
         .map_err(map_enable_err)?;
-    state
+    if let Err(e) = state
         .audit
         .record(
             &ctx,
@@ -322,7 +344,10 @@ pub async fn disable_workflow(
                 metadata: json!({}),
             },
         )
-        .await?;
+        .await
+    {
+        tracing::error!(error = %e, workflow = %id, "workflow.disable の監査記録に失敗");
+    }
     Ok(Json(json!({ "status": "disabled" })))
 }
 
@@ -334,11 +359,12 @@ async fn fetch_ir(
     version: i64,
     trace: Option<&str>,
 ) -> Result<WorkflowIr, ApiError> {
-    state
-        .workflows
-        .get_latest(ctx, id, trace)
-        .await
-        .map_err(map_store_err)?;
+    // **kind=workflow を必須にする**: script 等の IR 風 body を enable させると保存時 V1〜V7 を
+    // バイパスして workflow_trigger を実体化できてしまう（Codex P1）。存在秘匿は 404。
+    let meta = state.artifacts.get(ctx, id, trace).await?;
+    if meta.kind != artifact::ArtifactKind::Workflow {
+        return Err(ApiError::NotFound);
+    }
     let body = state.artifacts.get_version(ctx, id, version, trace).await?;
     WorkflowIr::from_json(&body.body).map_err(|_| ApiError::NotFound)
 }
