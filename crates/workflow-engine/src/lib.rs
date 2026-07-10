@@ -11,6 +11,7 @@ pub mod concurrency;
 pub mod control;
 pub mod delegation;
 pub mod ir;
+pub mod layout;
 pub mod nodes;
 pub mod ratelimit;
 pub mod registration;
@@ -18,6 +19,7 @@ pub mod retry;
 pub mod run;
 pub mod scheduler;
 pub mod store;
+pub mod summary;
 pub mod vocab;
 
 pub use capability::{
@@ -29,6 +31,7 @@ pub use control::{branch_port, switch_port};
 pub use delegation::{DelegationError, DelegationStore, GrantRequest, RunAdmission};
 pub use ir::validate::{validate, Catalog, ValidationError};
 pub use ir::WorkflowIr;
+pub use layout::{EditorLayoutStore, LayoutError};
 pub use nodes::{
     AgentInvokeReq, CapabilityNodeExecutor, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
     NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
@@ -42,5 +45,7 @@ pub use run::{
     NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus, WorkerConfig,
     WorkflowRunLauncher, WorkflowWorker,
 };
+pub use run::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 pub use scheduler::{LeaderLease, RunLauncher, SchedulerStore};
 pub use store::{WorkflowStore, WorkflowStoreError};
+pub use summary::{WorkflowSummary, WorkflowSummaryStore};

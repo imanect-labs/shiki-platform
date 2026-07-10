@@ -298,6 +298,21 @@ async fn enable_materializes_triggers_and_lifecycle_works() {
     let view = service.view(&tenant, wf_id).await.unwrap();
     assert_eq!(view.enabled_version, Some(1));
 
+    // --- 一覧要約: enabled 状態とトリガ種が単一 SQL 射影で取れる（Task 10.14 一覧 API の材料）。
+    let summaries = workflow_engine::WorkflowSummaryStore::new(env.pool.clone())
+        .list(&tenant, &[wf_id])
+        .await
+        .unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].enabled_status, "enabled");
+    assert_eq!(summaries[0].enabled_version, Some(1));
+    assert_eq!(summaries[0].current_version, 2, "最新版は v2");
+    assert_eq!(
+        summaries[0].trigger_kinds,
+        vec!["schedule", "event", "interactive"],
+        "トリガ種が body から射影される"
+    );
+
     // --- 縮小/同一の軽量切替は grants なしで通る（v1 と同一 scope の v3 相当として v1 を再指定）。
     service
         .enable(&alice, wf_id, 1, &ir1, &[])

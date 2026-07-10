@@ -204,8 +204,8 @@ pub fn route_table() -> Vec<RouteDecl> {
             post(routes::mini_apps::invoke_mini_app_action)
         }),
         // --- ワークフロー IR（Task 10.1a・保存時検証 V1〜V7・artifact の上） ---
-        r("/workflows", &["POST"], Session, || {
-            post(routes::workflows::create_workflow)
+        r("/workflows", &["GET", "POST"], Session, || {
+            get(routes::workflows::list_workflows).post(routes::workflows::create_workflow)
         }),
         r("/workflows/validate", &["POST"], Session, || {
             post(routes::workflows::validate_workflow)
@@ -235,12 +235,27 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/workflows/{id}/disable", &["POST"], Session, || {
             post(routes::workflows::disable_workflow)
         }),
-        r("/workflows/{id}/runs", &["POST"], Session, || {
-            post(routes::workflows::start_workflow_run)
+        r("/workflows/{id}/layout", &["GET", "PUT"], Session, || {
+            get(routes::workflows::get_workflow_layout).put(routes::workflows::put_workflow_layout)
+        }),
+        r("/workflows/{id}/runs", &["GET", "POST"], Session, || {
+            get(routes::workflows::list_workflow_runs).post(routes::workflows::start_workflow_run)
         }),
         r("/workflows/{id}/runs/{run_id}", &["GET"], Session, || {
             get(routes::workflows::get_workflow_run)
         }),
+        r(
+            "/workflows/{id}/runs/{run_id}/steps",
+            &["GET"],
+            Session,
+            || get(routes::workflows::get_workflow_step),
+        ),
+        r(
+            "/workflows/{id}/runs/{run_id}/events",
+            &["GET"],
+            Session,
+            || get(routes::workflows::list_workflow_run_events),
+        ),
         // --- シークレット（Task 10.9・write-only / use-only・平文の読み返しルートは無い） ---
         r("/secrets", &["GET", "POST"], Session, || {
             get(routes::secrets::list_secrets).post(routes::secrets::create_secret)

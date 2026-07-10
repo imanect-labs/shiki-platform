@@ -23,7 +23,10 @@ use uuid::Uuid;
 
 pub use launcher::{LauncherError, WorkflowRunLauncher};
 pub use model::{idempotency_key, RunStatus, StepStatus};
-pub use store::{RunStore, RunStoreError};
+pub use store::{
+    RunDetail, RunEventRow, RunListFilter, RunListItem, RunStore, RunStoreError, StepDetail,
+    StepOverview,
+};
 pub use worker::{WorkerConfig, WorkflowWorker};
 
 /// ノード実行のコンテキスト（NodeContext・engine.md §6.5/§7.2）。
