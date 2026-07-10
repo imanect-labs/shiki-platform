@@ -29,6 +29,7 @@ mod record_share;
 mod revision;
 mod schema;
 mod store;
+mod table_list;
 mod transition;
 mod validate;
 mod view;
