@@ -19,10 +19,26 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/use-toast";
+import { getWorkflow } from "@/lib/workflow-api";
 import { startRun } from "@/lib/workflow-run-api";
 import type { WorkflowIr } from "@/generated/workflow-ir";
 
 type SchemaProps = Record<string, { type?: string; description?: string }>;
+
+/// input_schema の型宣言に合わせて文字列入力を変換する（number/boolean）。
+/// 変換できない値は文字列のまま渡す（実行側の検証・エラーに委ねる）。
+function coerceValue(raw: string, type: string | undefined): unknown {
+  if (type === "number" || type === "integer") {
+    const n = Number(raw);
+    return Number.isFinite(n) && raw.trim() !== "" ? n : raw;
+  }
+  if (type === "boolean") {
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+    return raw;
+  }
+  return raw;
+}
 
 function schemaProps(ir: WorkflowIr): SchemaProps | null {
   const schema = ir.input_schema as
@@ -40,11 +56,14 @@ export function RunNowDialog({
   onOpenChange,
   workflowId,
   ir,
+  version,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   workflowId: string;
   ir: WorkflowIr;
+  /// フォームの元になった保存済みバージョン（実行前に最新と一致することを確認する）。
+  version: number;
 }) {
   const props = schemaProps(ir);
   const [fields, setFields] = React.useState<Record<string, string>>({});
@@ -55,7 +74,9 @@ export function RunNowDialog({
     let input: unknown = {};
     if (props) {
       input = Object.fromEntries(
-        Object.entries(fields).filter(([, v]) => v !== ""),
+        Object.entries(fields)
+          .filter(([, v]) => v !== "")
+          .map(([k, v]) => [k, coerceValue(v, props[k]?.type)]),
       );
     } else {
       try {
@@ -67,6 +88,17 @@ export function RunNowDialog({
     }
     setBusy(true);
     try {
+      // 実行は常に最新保存版で走る（backend 仕様）。別の編集者が保存していた場合、
+      // このフォームは古いスキーマなので実行せず再読込を促す。
+      const latest = await getWorkflow(workflowId);
+      if (latest.version !== version) {
+        toast({
+          variant: "destructive",
+          title: "ワークフローが更新されています",
+          description: "ページを再読み込みして、最新の内容で実行してください。",
+        });
+        return;
+      }
       const runId = await startRun(workflowId, input);
       onOpenChange(false);
       if (runId) {

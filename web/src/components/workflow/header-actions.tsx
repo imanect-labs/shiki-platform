@@ -72,8 +72,15 @@ export function WorkflowHeaderActions({ ctx }: { ctx: EditorContext }) {
       >
         <RotateCcw className="size-4" aria-hidden />
       </Button>
-      {hasAutomaticTrigger ? (
-        <Button variant="outline" size="sm" onClick={() => setEnableOpen(true)}>
+      {/* 有効化済み/再同意待ちの間はトリガを消した編集中でも設定（停止導線）を出し続ける */}
+      {hasAutomaticTrigger || status === "enabled" || status === "suspended_reconsent" ? (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setEnableOpen(true)}
+          disabled={ctx.state.dirty}
+          title={ctx.state.dirty ? "保存してから設定できます（同意は保存済みバージョンに適用されます）" : undefined}
+        >
           <Power className="size-4" aria-hidden />
           {status === "enabled" ? "自動実行の設定" : "自動実行を有効化"}
         </Button>
@@ -102,6 +109,7 @@ export function WorkflowHeaderActions({ ctx }: { ctx: EditorContext }) {
         onOpenChange={setRunOpen}
         workflowId={ctx.workflowId}
         ir={ctx.state.ir}
+        version={ctx.state.savedVersion}
       />
       <VersionsDialog
         open={versionsOpen}

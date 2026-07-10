@@ -82,9 +82,9 @@ export function EnableDialog({
       );
   }, [open, workflowId, version]);
 
-  const unresolved = (plan?.grants ?? []).filter(
-    (g) => g.needsUserPick && !g.picked && g.objectKind === "folder",
-  );
+  // 対象未確定の grant は種類を問わず有効化をブロックする（fail-closed）。
+  // ピッカーを出せるのは folder のみ・それ以外（将来の種類）は保存側の見直しを促す。
+  const unresolved = (plan?.grants ?? []).filter((g) => g.needsUserPick && !g.picked);
 
   const enable = async () => {
     if (!plan) return;
