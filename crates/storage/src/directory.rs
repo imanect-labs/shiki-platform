@@ -157,6 +157,44 @@ impl DirectoryStore {
         Ok(DirectoryPage { items, next_cursor })
     }
 
+    /// ユーザーがテナント（＋ org）内に存在するか（Task 9.2 の user 参照整合検証）。
+    pub async fn user_exists(
+        &self,
+        ctx: &AuthContext,
+        user_id: &str,
+    ) -> Result<bool, StorageError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM directory_user \
+             WHERE tenant_id = $1 AND org = $2 AND user_id = $3)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(user_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(StorageError::Db)?;
+        Ok(exists)
+    }
+
+    /// ロール/部署がテナント（＋ org）内に存在するか（Task 9.2 の role 参照整合検証）。
+    pub async fn role_exists(
+        &self,
+        ctx: &AuthContext,
+        role_id: &str,
+    ) -> Result<bool, StorageError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM directory_role \
+             WHERE tenant_id = $1 AND org = $2 AND role_id = $3)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(role_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(StorageError::Db)?;
+        Ok(exists)
+    }
+
     /// role/部署の冪等 upsert（テナント＋role 単位）。ログイン時 claim 同期・dev_seed 用。
     pub async fn upsert_role(
         &self,

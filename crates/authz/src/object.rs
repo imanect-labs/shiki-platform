@@ -73,6 +73,11 @@ impl FgaObject {
         Self::new(ObjectType::Workflow, id)
     }
 
+    /// 構造化データのテーブルオブジェクト `data_table:<id>`（第1層 ReBAC・Task 9.2）。
+    pub(crate) fn data_table(id: &str) -> Self {
+        Self::new(ObjectType::DataTable, id)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -169,6 +174,11 @@ impl<'a> Namespace<'a> {
     /// ワークフロープリンシパル subject `workflow:<tenant>|<id>`（schedule/event run の実行主体）。
     pub fn workflow_principal(&self, id: &str) -> Subject {
         Subject::object(&self.workflow(id))
+    }
+
+    /// 構造化データのテーブルオブジェクト `data_table:<tenant>|<id>`（Task 9.2）。
+    pub fn data_table(&self, id: &str) -> FgaObject {
+        FgaObject::data_table(&self.qualify(id))
     }
 
     /// ユーザー subject `user:<tenant>|<id>`。

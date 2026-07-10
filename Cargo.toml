@@ -117,6 +117,7 @@ proptest = "1"
 
 # 内部クレート
 shiki-authz = { path = "crates/authz" }
+shiki-data = { path = "crates/data" }
 shiki-durable = { path = "crates/durable" }
 shiki-artifact = { path = "crates/artifact" }
 shiki-secrets = { path = "crates/secrets" }

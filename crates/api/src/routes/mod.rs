@@ -6,6 +6,7 @@ pub mod auth;
 pub mod chat;
 pub mod chat_approval;
 pub mod chat_dto;
+pub mod data;
 pub mod directory;
 pub mod files;
 pub mod folders;

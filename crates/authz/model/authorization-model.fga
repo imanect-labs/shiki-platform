@@ -82,3 +82,15 @@ type secret
   relations
     define owner: [user]
     define can_use: [user, role#member, workflow] or owner
+
+# 構造化データのテーブル（Task 9.2・第1層 ReBAC）。
+# 「テーブル＝ReBAC（数が少ない）／行＝クエリ時述語（数が多い・Task 9.3）」の役割分担で、
+# 全行を FGA タプルにしない（タプル爆発防止・design §4.10）。thread と同型の非階層共有。
+# viewer/editor は workflow プリンシパル subject を受理する（Phase 10 data 系ノードの委譲経路）。
+# owner はミニアプリの所有テーブルプロビジョン（Task 9.13）で miniapp サービス identity も
+# 受理する予定（Task 9.6 で subject 型を追加）。
+type data_table
+  relations
+    define owner: [user, workflow]
+    define editor: [user, role#member, workflow] or owner
+    define viewer: [user, role#member, workflow] or editor

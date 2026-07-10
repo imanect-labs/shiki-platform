@@ -4743,6 +4743,7 @@ dependencies = [
  "shiki-artifact",
  "shiki-authz",
  "shiki-chat",
+ "shiki-data",
  "shiki-gui",
  "shiki-llm-gateway",
  "shiki-rag",
@@ -4819,6 +4820,26 @@ dependencies = [
  "shiki-rag",
  "shiki-storage",
  "shiki-websearch",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "shiki-data"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shiki-authz",
+ "shiki-storage",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

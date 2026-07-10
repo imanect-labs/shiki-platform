@@ -484,6 +484,84 @@
           }
         }
       }
+    },
+    {
+      "type": "data_table",
+      "relations": {
+        "owner": {
+          "this": {}
+        },
+        "editor": {
+          "union": {
+            "child": [
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "owner"
+                }
+              }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "editor"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "owner": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "workflow"
+              }
+            ]
+          },
+          "editor": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "workflow"
+              }
+            ]
+          },
+          "viewer": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "workflow"
+              }
+            ]
+          }
+        }
+      }
     }
   ]
 }

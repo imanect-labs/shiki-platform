@@ -161,6 +161,38 @@ pub fn route_table() -> Vec<RouteDecl> {
                     .get(routes::artifacts::list_artifact_shares)
             },
         ),
+        // --- 構造化データ（Task 9.2/9.5・テーブル ReBAC＋サーバ検証＋リビジョン） ---
+        r("/data/tables", &["GET", "POST"], Session, || {
+            get(routes::data::list_tables).post(routes::data::create_table)
+        }),
+        r("/data/tables/{id}", &["GET", "DELETE"], Session, || {
+            get(routes::data::get_table).delete(routes::data::delete_table)
+        }),
+        r("/data/tables/{id}/schema", &["PUT"], Session, || {
+            put(routes::data::update_table_schema)
+        }),
+        r(
+            "/data/tables/{id}/records",
+            &["GET", "POST"],
+            Session,
+            || get(routes::data::list_records).post(routes::data::create_record),
+        ),
+        r(
+            "/data/tables/{id}/records/{record_id}",
+            &["GET", "PATCH", "DELETE"],
+            Session,
+            || {
+                get(routes::data::get_record)
+                    .patch(routes::data::update_record)
+                    .delete(routes::data::delete_record)
+            },
+        ),
+        r(
+            "/data/tables/{id}/records/{record_id}/revisions",
+            &["GET"],
+            Session,
+            || get(routes::data::list_revisions),
+        ),
         // --- generative UI（Phase 6・保存時検証つき ui_spec ＋ 宣言的アクション） ---
         r("/ui-specs", &["POST"], Session, || {
             post(routes::ui_specs::create_ui_spec)

@@ -90,6 +90,9 @@ pub enum ObjectType {
     Secret,
     /// ワークフロープリンシパル（schedule/event run の実行主体・subject 専用型・Task 10.4a）。
     Workflow,
+    /// 構造化データのテーブル（第1層 ReBAC・viewer/editor/owner・Task 9.2）。
+    /// 行レベルの可視性は Task 9.3 のクエリ時述語（ABAC）が担い、ここはテーブル単位のみ。
+    DataTable,
 }
 
 impl ObjectType {
@@ -105,6 +108,7 @@ impl ObjectType {
             ObjectType::Artifact => "artifact",
             ObjectType::Secret => "secret",
             ObjectType::Workflow => "workflow",
+            ObjectType::DataTable => "data_table",
         }
     }
 }
@@ -212,6 +216,7 @@ mod tests {
         assert_eq!(ObjectType::File.as_str(), "file");
         assert_eq!(ObjectType::Artifact.as_str(), "artifact");
         assert_eq!(ObjectType::Secret.as_str(), "secret");
+        assert_eq!(ObjectType::DataTable.as_str(), "data_table");
         assert_eq!(Relation::CanUse.as_str(), "can_use");
     }
 

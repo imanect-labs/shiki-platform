@@ -129,6 +129,19 @@ impl From<artifact::ArtifactError> for ApiError {
     }
 }
 
+impl From<data::DataError> for ApiError {
+    fn from(err: data::DataError) -> Self {
+        use data::DataError as DE;
+        match err {
+            DE::NotFound => ApiError::NotFound,
+            DE::Forbidden => ApiError::Forbidden,
+            DE::Invalid(msg) => ApiError::BadRequest(msg),
+            DE::Conflict(_) => ApiError::Conflict,
+            DE::Internal(msg) => ApiError::Internal(format!("data: {msg}")),
+        }
+    }
+}
+
 impl From<secrets::SecretError> for ApiError {
     fn from(err: secrets::SecretError) -> Self {
         use secrets::SecretError as SE;

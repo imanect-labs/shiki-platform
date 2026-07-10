@@ -45,6 +45,9 @@ pub struct AppState {
     pub storage: Arc<StorageService>,
     /// アーティファクト共通枠（Task 6.1・バージョン付き共有本文の単一チョークポイント）。
     pub artifacts: Arc<artifact::ArtifactStore>,
+    /// 構造化データサービス（Task 9.2/9.5・テーブル ReBAC＋サーバ検証＋リビジョンの
+    /// 単一チョークポイント。行レベル述語は Task 9.3 でここに載る）。
+    pub data: Arc<data::DataStore>,
     /// UI スペックの保存/取得（Task 6.3・artifact kind=ui_spec の上に保存時検証を載せる）。
     pub ui_specs: Arc<gui::UiSpecStore>,
     /// 宣言的 UI アクションの実行系（Task 6.5・照合/本人認可/監査の合流点）。

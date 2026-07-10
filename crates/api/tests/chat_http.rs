@@ -301,6 +301,14 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
     ));
     let skills = Arc::new(gui::SkillStore::new(Arc::clone(&artifacts)));
     let mini_apps = Arc::new(gui::MiniAppStore::new(Arc::clone(&artifacts), pool.clone()));
+    let data_store = Arc::new(data::DataStore::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+        Arc::new(api::data_refs::ApiRefResolver {
+            directory: Arc::clone(&directory),
+            storage: Arc::clone(&storage),
+        }),
+    ));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool),
@@ -310,6 +318,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         http: reqwest::Client::new(),
         storage,
         artifacts,
+        data: data_store,
         ui_specs,
         ui_actions,
         skills,

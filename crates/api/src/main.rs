@@ -81,6 +81,15 @@ async fn main() -> anyhow::Result<()> {
 
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
+    // 構造化データサービス（Task 9.2/9.5）: 参照整合は directory / StorageService へ委譲する。
+    let data_store = Arc::new(data::DataStore::new(
+        db.clone(),
+        authz.clone(),
+        Arc::new(api::data_refs::ApiRefResolver {
+            directory: Arc::clone(&directory),
+            storage: Arc::clone(&storage),
+        }),
+    ));
     // generative UI / skill / ミニアプリ（Phase 6）: 検証は全経路が同一実装を共有する信頼境界。
     let gui_stores = wiring_gui::wire_gui(&db, &artifacts);
 
@@ -151,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         http,
         storage,
         artifacts,
+        data: data_store,
         ui_specs: gui_stores.ui_specs,
         ui_actions,
         skills: gui_stores.skills,
