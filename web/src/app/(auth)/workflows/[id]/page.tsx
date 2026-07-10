@@ -9,6 +9,7 @@ import { Loader2, Workflow } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ConfigPanel } from "@/components/workflow/editor/config-panel";
 import { WorkflowEditor } from "@/components/workflow/editor/workflow-editor";
+import { WorkflowHeaderActions } from "@/components/workflow/header-actions";
 import { getLayout, getWorkflow, type EditorLayout } from "@/lib/workflow-api";
 import type { WorkflowIr } from "@/generated/workflow-ir";
 
@@ -62,6 +63,7 @@ export default function WorkflowEditorPage() {
       initialVersion={loaded.version}
       initialLayout={loaded.layout}
       renderSidePanel={(ctx) => <ConfigPanel ctx={ctx} />}
+      renderHeaderActions={(ctx) => <WorkflowHeaderActions ctx={ctx} />}
     />
   );
 }
