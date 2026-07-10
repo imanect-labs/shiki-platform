@@ -511,7 +511,8 @@ flowchart TB
   ファイルとして持ち込む/持ち出す表データは CSV、と役割を分ける。
 - **`crates/tabular` = CSV クエリ/パッチの単一チョークポイント**。UI・エージェントツール・ワークフローステップの
   すべてが同一経路を通る（AuthContext 必須）。
-  - **クエリ**: SQL は**読み取り専用**（DDL/DML 拒否）。実行は **DuckDB を非特権別プロセスに隔離**
+  - **クエリ**: SQL は**読み取り専用**（DDL/DML・`ATTACH`・`PRAGMA`・`LOAD`・extension 導入をすべて拒否）。
+    実行は **DuckDB を非特権別プロセスに隔離**
     （sandbox-wasm/script-runtime と同じパターン・敵対的 CSV を api に食わせない）。**外部アクセス無効化**
     （`enable_external_access=false`・httpfs 等 extension 無効・PIT-39）。メモリ/時間/結果サイズのクォータ強制。
     結果はページ配信（グリッドの無限スクロールと共用）。

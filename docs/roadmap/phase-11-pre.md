@@ -50,9 +50,14 @@
   「インポート」として Yjs 側に取り込む単方向規約。メタデータは **frontmatter 型の軽量属性**
   （タイトル・アイコン・タグ・任意 key-value・紐付く thread_id）を Yjs 内に保持し、シリアライズ時に
   YAML frontmatter へ落とす（往復可能・RAG も拾える）。型検証・集計・フィルタはやらない（将来の Notion 型 DB は別トラック）。
+  **シリアライズの往復保証対象を列挙して契約にする**（PIT-37③）: 見出し/段落/リスト/チェックリスト/表/
+  コードブロック/引用/埋め込みブロックの参照表現/frontmatter は md 往復で壊れないこと。
+  **md に落ちない情報**（サジェスト提案マーク・コメント・awareness 等）は往復対象外とし、
+  **Yjs snapshot を正本**としてストレージに併置する。着手時に「md に落ちない情報」の一覧と保存先を仕様に明記。
 - **受け入れ条件**:
   - [ ] 編集内容が md として保存され、検索（RAG）に反映される
-  - [ ] 表・埋め込みブロック・frontmatter がシリアライズ往復で壊れない
+  - [ ] 往復保証対象として列挙した要素（表・埋め込み参照・frontmatter 含む）がシリアライズ往復で壊れない
+  - [ ] md に落ちない情報が Yjs snapshot 側で保全され、md 保存で消失しない（一覧が仕様化されている）
   - [ ] ファイル側の外部書込が編集セッションと衝突せず取り込まれる
 
 ### Task 11P.3: TipTap エディタ
@@ -106,11 +111,12 @@
 - **仕様**: CSV は **StorageService 上のファイルが真実**（authz はファイル単位 ReBAC・data_table には乗せない）。
   `crates/tabular` を CSV クエリ/パッチの**単一チョークポイント**とし、DuckDB 実行は**非特権別プロセスに隔離**
   （sandbox-wasm/script-runtime と同じ隔離パターン・敵対的 CSV を api プロセスに食わせない）。
-  SQL は**読み取り専用**（DDL/DML 拒否）・対象は AuthContext で読めるファイルのみ・**外部アクセス無効化**
+  SQL は**読み取り専用**（DDL/DML・`ATTACH`・`PRAGMA`・`LOAD`・extension 導入をすべて拒否）・
+  対象は AuthContext で読めるファイルのみ・**外部アクセス無効化**
   （`enable_external_access=false`・httpfs 等の extension 無効。PIT-39）。メモリ/時間/結果サイズのクォータを強制。
   結果はページ配信（グリッドの無限スクロールと同じページング API を共用）。
 - **受け入れ条件**:
-  - [ ] 読めないファイルへのクエリ・`read_csv('/etc/...')` 等の外部参照・DML が全て拒否される（fail-closed）
+  - [ ] 読めないファイルへのクエリ・`read_csv('/etc/...')` 等の外部参照・DML/DDL・`ATTACH`/`PRAGMA`/`LOAD`/extension 導入が全て拒否される（fail-closed・PIT-39 の adversarial テストを CI に）
   - [ ] クォータ超過クエリが api を巻き込まず隔離プロセス内で打ち切られる
   - [ ] 10 万行級 CSV でページ取得がインタラクティブなレイテンシで返る
 
