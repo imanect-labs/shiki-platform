@@ -17,6 +17,7 @@ use crate::vocab::RunEventKind;
 mod advance;
 mod backoff;
 mod history;
+mod limits;
 mod map_region;
 mod ops;
 mod wait;
@@ -57,6 +58,7 @@ fn map_db(e: sqlx::Error) -> RunStoreError {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ClaimedStep {
     pub run_id: Uuid,
+    pub workflow_id: Uuid,
     pub step_path: String,
     pub node_id: String,
     pub tenant_id: String,
@@ -89,6 +91,11 @@ impl RunStore {
     ///
     /// `trigger_id` は発火元トリガ（schedule/event の実体化トリガ id・interactive は None）。run 履歴の
     /// リプレイ/監査/キャンセルがどのトリガ由来か辿れるようにする。
+    ///
+    /// **run 多重度**（engine.md §8.3・10.5）: `policies.max_parallel_runs` を超える場合は
+    /// `on_trigger_overflow` に従い **queue**（status=queued で滞留・scheduler tick が promote）
+    /// または **skip**（run を作らず `None`）。判定は per-workflow advisory lock で直列化する
+    /// （並行 create の数え漏れによる上限突破を防ぐ）。
     #[allow(clippy::too_many_arguments)]
     pub async fn create_run(
         &self,
@@ -103,13 +110,47 @@ impl RunStore {
         input: &Value,
         ir_snapshot: &Value,
         graph: &RunGraph,
-    ) -> Result<Uuid, RunStoreError> {
+    ) -> Result<Option<Uuid>, RunStoreError> {
+        let policies: crate::ir::Policies = ir_snapshot
+            .get("policies")
+            .and_then(|p| serde_json::from_value(p.clone()).ok())
+            .unwrap_or_default();
+
         let mut tx = self.db.begin().await.map_err(map_db)?;
+        // 同一 workflow の create/promote を直列化（TX 終了で自動解放）。
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 42))")
+            .bind(tenant_id)
+            .bind(workflow_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db)?;
+        let active: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM workflow_run \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND status IN ('queued', 'running')",
+        )
+        .bind(tenant_id)
+        .bind(workflow_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        let overflow = active >= i64::from(policies.max_parallel_runs.max(1));
+        if overflow && policies.on_trigger_overflow == crate::ir::TriggerOverflow::Skip {
+            // occurrence/配送記録は呼び出し側で済んでいる（二重発火しない）・run は作らない。
+            tx.rollback().await.map_err(map_db)?;
+            return Ok(None);
+        }
+        let queued = overflow; // queue（既定）: 滞留させ tick が promote する。
+
+        let status = if queued { "queued" } else { "running" };
         let run_id: Uuid = sqlx::query_scalar(
             "INSERT INTO workflow_run \
              (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, \
-              principal_kind, input, ir_snapshot, status, started_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'running', now()) RETURNING run_id",
+              principal_kind, input, ir_snapshot, status, started_at, timeout_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
+                     CASE WHEN $11 = 'running' THEN now() END, \
+                     CASE WHEN $11 = 'running' \
+                          THEN now() + ($12 || ' seconds')::interval END) \
+             RETURNING run_id",
         )
         .bind(tenant_id)
         .bind(org)
@@ -121,6 +162,8 @@ impl RunStore {
         .bind(principal_kind)
         .bind(Json(input))
         .bind(Json(ir_snapshot))
+        .bind(status)
+        .bind(i64::from(policies.run_timeout_sec))
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -137,8 +180,8 @@ impl RunStore {
         .map_err(map_db)?;
 
         for node_id in graph.root_body_nodes() {
-            // 入エッジ 0 本の本体ノードは ready、それ以外は pending。
-            let status = if graph.is_root_source(node_id) {
+            // 入エッジ 0 本の本体ノードは ready（queued run では pending 留め置き）、それ以外は pending。
+            let status = if !queued && graph.is_root_source(node_id) {
                 StepStatus::Ready
             } else {
                 StepStatus::Pending
@@ -160,16 +203,19 @@ impl RunStore {
             .map_err(map_db)?;
         }
 
-        append_event(
-            &mut tx,
-            tenant_id,
-            run_id,
-            RunEventKind::RunStarted,
-            &Value::Null,
-        )
-        .await?;
+        if !queued {
+            // run.started は実行開始時のみ（queued は promote 時に追記）。
+            append_event(
+                &mut tx,
+                tenant_id,
+                run_id,
+                RunEventKind::RunStarted,
+                &Value::Null,
+            )
+            .await?;
+        }
         tx.commit().await.map_err(map_db)?;
-        Ok(run_id)
+        Ok(Some(run_id))
     }
 
     /// ready な step を 1 つ claim する（`FOR UPDATE SKIP LOCKED`・fencing +1・lease）。
@@ -203,9 +249,9 @@ impl RunStore {
              JOIN workflow_run r ON r.tenant_id = picked.tenant_id AND r.run_id = picked.run_id \
              WHERE s.tenant_id = picked.tenant_id AND s.run_id = picked.run_id \
                AND s.step_path = picked.step_path \
-             RETURNING s.run_id, s.step_path, s.node_id, s.tenant_id, r.org, r.principal, \
-                       r.principal_kind, s.attempt, s.fencing_token, s.idempotency_key, \
-                       r.input, s.input AS step_input, r.ir_snapshot",
+             RETURNING s.run_id, r.workflow_id, s.step_path, s.node_id, s.tenant_id, r.org, \
+                       r.principal, r.principal_kind, s.attempt, s.fencing_token, \
+                       s.idempotency_key, r.input, s.input AS step_input, r.ir_snapshot",
         )
         .bind(worker_id)
         .bind(lease_secs)

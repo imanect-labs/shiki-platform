@@ -88,7 +88,8 @@ impl WorkflowRunLauncher {
             )
             .await
             .map_err(|e| LauncherError::Run(e.to_string()))?;
-        Ok(Some(run_id))
+        // None = policies.on_trigger_overflow=skip による多重度あふれ（run 不作成・正直に None）。
+        Ok(run_id)
     }
 
     /// interactive 起動の**バージョンピン版**（generative UI / ミニアプリのアクション束縛・Task 6.5）。
@@ -205,7 +206,7 @@ impl WorkflowRunLauncher {
             )
             .await
             .map_err(|e| LauncherError::Run(e.to_string()))?;
-        Ok(Some(run_id))
+        Ok(run_id)
     }
 }
 
