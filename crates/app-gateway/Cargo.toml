@@ -30,6 +30,8 @@ async-trait.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+async-trait.workspace = true
+http-body-util = "0.1"
 
 [package.metadata.cargo-machete]
 ignored = ["shiki-storage"]

@@ -4774,6 +4774,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "http-body-util",
  "jsonwebtoken",
  "reqwest 0.12.28",
  "serde",
