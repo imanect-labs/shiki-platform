@@ -388,6 +388,11 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
     ));
     let skills = Arc::new(gui::SkillStore::new(Arc::clone(&artifacts)));
     let mini_apps = Arc::new(gui::MiniAppStore::new(Arc::clone(&artifacts), db.clone()));
+    let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
+        db.clone(),
+        workflow_engine::DelegationStore::new(db.clone(), Arc::new(AllowAll)),
+    ));
+    let audit_rec = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -404,6 +409,8 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         secrets: None,
         workflows,
         workflow_launcher: None,
+        workflow_registration,
+        audit: audit_rec,
         workflow_runs: None,
         directory,
         tenants,
