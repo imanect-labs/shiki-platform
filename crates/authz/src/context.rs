@@ -19,6 +19,10 @@ pub enum PrincipalKind {
     #[default]
     User,
     Workflow,
+    /// ミニアプリ・サービス identity（B2 自動化＝event/cron 起動の実行主体・Task 9.6）。
+    /// `miniapp:<tenant>|<app_id>` の subject で全 check/ListObjects を評価し、所有テーブルの
+    /// owner タプルにのみ照合する（ユーザー起点の呼び出しは token-exchange で `User` を維持）。
+    MiniApp,
 }
 
 /// 検証済み JWT から抽出した認証主体。
@@ -82,10 +86,31 @@ impl AuthContext {
     /// principal.kind により `user:<tenant>|<id>`（対話）または `workflow:<tenant>|<id>`
     /// （schedule/event run）を返す。schedule/event run はこの workflow subject で全 check/
     /// ListObjects を評価し、委譲タプルに照合する（engine.md §6.1・confused-deputy 防御）。
-    pub fn subject(&self) -> crate::object::Subject {
+    pub fn subject(&self) -> crate::subject::Subject {
         match self.principal.kind {
             PrincipalKind::User => self.ns().user(&self.principal.id),
             PrincipalKind::Workflow => self.ns().workflow_principal(&self.principal.id),
+            PrincipalKind::MiniApp => self.ns().miniapp_principal(&self.principal.id),
+        }
+    }
+
+    /// ミニアプリ・サービス identity の AuthContext を組む（B2 自動化の実行主体・Task 9.6）。
+    ///
+    /// event/cron 起動はこの `miniapp` subject で認可を評価し、所有テーブルの owner タプルに
+    /// のみ照合する（アプリ単独権限へ昇格しない・所有データ束縛）。ユーザー起点の呼び出しは
+    /// token-exchange で `User` プリンシパルを維持する（confused-deputy 防御・design §4.6）。
+    pub fn for_miniapp(tenant_id: String, org: String, app_local_id: &str) -> Self {
+        AuthContext {
+            principal: Principal {
+                kind: PrincipalKind::MiniApp,
+                id: app_local_id.to_string(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(tenant_id.clone()),
+            },
+            org,
+            tenant_id,
         }
     }
 

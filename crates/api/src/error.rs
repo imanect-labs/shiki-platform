@@ -132,6 +132,37 @@ impl From<artifact::ArtifactError> for ApiError {
     }
 }
 
+impl From<data::DataError> for ApiError {
+    fn from(err: data::DataError) -> Self {
+        use data::DataError as DE;
+        match err {
+            DE::NotFound => ApiError::NotFound,
+            DE::Forbidden => ApiError::Forbidden,
+            DE::Invalid(msg) => ApiError::BadRequest(msg),
+            DE::Conflict(reason) => {
+                // 409 の切り分け（rev 不一致 / 同名 / unique 違反）を追跡できるようログに残す
+                // （ボディは他リソースと同じ最小形を維持する）。
+                tracing::info!(%reason, "data conflict (409)");
+                ApiError::Conflict
+            }
+            DE::Internal(msg) => ApiError::Internal(format!("data: {msg}")),
+        }
+    }
+}
+
+impl From<app_platform::AppPlatformError> for ApiError {
+    fn from(err: app_platform::AppPlatformError) -> Self {
+        use app_platform::AppPlatformError as E;
+        match err {
+            E::NotFound => ApiError::NotFound,
+            E::Forbidden => ApiError::Forbidden,
+            E::Invalid(msg) => ApiError::BadRequest(msg),
+            E::Conflict(_) => ApiError::Conflict,
+            E::Internal(msg) => ApiError::Internal(format!("app-platform: {msg}")),
+        }
+    }
+}
+
 impl From<secrets::SecretError> for ApiError {
     fn from(err: secrets::SecretError) -> Self {
         use secrets::SecretError as SE;

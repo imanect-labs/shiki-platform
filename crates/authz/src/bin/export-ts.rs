@@ -8,7 +8,7 @@
 
 use std::{fs, path::PathBuf};
 
-use authz::{ObjectType, Relation};
+use authz::{CapabilityScope, ObjectType, Relation};
 use ts_rs::TS;
 
 fn main() -> std::io::Result<()> {
@@ -26,7 +26,13 @@ fn main() -> std::io::Result<()> {
     contents.push_str("// 認可語彙の単一ソース: crates/authz/src/vocab.rs\n\n");
     // String への writeln! は無謬（fmt::Result は常に Ok）なので結果は破棄する。
     let _ = writeln!(contents, "export {}\n", Relation::decl());
-    let _ = writeln!(contents, "export {}", ObjectType::decl());
+    let _ = writeln!(
+        contents,
+        "export {}
+",
+        ObjectType::decl()
+    );
+    let _ = writeln!(contents, "export {}", CapabilityScope::decl());
 
     let out_file = out_dir.join("authz-vocab.ts");
     fs::write(&out_file, contents)?;

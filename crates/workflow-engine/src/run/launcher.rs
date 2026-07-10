@@ -70,6 +70,8 @@ impl WorkflowRunLauncher {
         let principal_kind = match ctx.principal.kind {
             authz::PrincipalKind::Workflow => "workflow",
             authz::PrincipalKind::User => "user",
+            // ミニアプリ・サービス identity 起動（B2 自動化・Task 9.6）。
+            authz::PrincipalKind::MiniApp => "miniapp",
         };
         let run_id = self
             .runs

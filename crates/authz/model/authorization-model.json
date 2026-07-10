@@ -12,6 +12,11 @@
       "metadata": null
     },
     {
+      "type": "miniapp",
+      "relations": {},
+      "metadata": null
+    },
+    {
       "type": "organization",
       "relations": {
         "member": {
@@ -479,6 +484,141 @@
               },
               {
                 "type": "workflow"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "data_table",
+      "relations": {
+        "owner": {
+          "this": {}
+        },
+        "editor": {
+          "union": {
+            "child": [
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "owner"
+                }
+              }
+            ]
+          }
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "editor"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "owner": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "workflow"
+              },
+              {
+                "type": "miniapp"
+              }
+            ]
+          },
+          "editor": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "workflow"
+              },
+              {
+                "type": "miniapp"
+              }
+            ]
+          },
+          "viewer": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "workflow"
+              },
+              {
+                "type": "miniapp"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "data_record",
+      "relations": {
+        "editor": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "editor"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "editor": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              }
+            ]
+          },
+          "viewer": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
               }
             ]
           }

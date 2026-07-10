@@ -121,3 +121,16 @@ impl JwksCache {
 fn decode_key(jwk: &Jwk) -> Result<DecodingKey, AuthError> {
     DecodingKey::from_jwk(jwk).map_err(|e| AuthError::JwksFetch(format!("from_jwk: {e}")))
 }
+
+/// 公開 API ゲートウェイ（Task 9.6）へ JWKS 検証鍵を供給する。
+///
+/// `crates/api` の [`JwksCache`] を `app_gateway::KeyResolver` へ橋渡しする（同一 issuer の
+/// 鍵集合を内部 API とゲートウェイで共有し、鍵取得のチョークポイントを一本化する）。
+#[async_trait::async_trait]
+impl app_gateway::KeyResolver for JwksCache {
+    async fn resolve(&self, kid: &str) -> Result<DecodingKey, app_gateway::GatewayError> {
+        self.key_for_kid(kid)
+            .await
+            .map_err(|e| app_gateway::GatewayError::Unauthenticated(e.to_string()))
+    }
+}

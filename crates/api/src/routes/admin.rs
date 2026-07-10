@@ -244,23 +244,40 @@ pub async fn delete_tenant(
         tracing::info!(%tenant_id, late_sessions, "tenant purge: 競合セッションを追加失効");
     }
 
-    // 4. データ面の purge（FGA タプル → オブジェクト → DB 行。audit は保持）。
-    state
-        .storage
-        .purge_tenant(&tenant_id, &org, &actor.0)
-        .await?;
-
-    // 4.5. RAG 状態の purge（rag_chunk / rag_ingest_job / jobq / Qdrant / Tantivy）。
-    state
-        .rag_admin
-        .purge_tenant(&tenant_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("rag purge: {e}")))?;
+    // 4. データ面の purge（storage / RAG / 構造化データ。audit は保持）。
+    purge_tenant_data(&state, &tenant_id, &org, &actor.0).await?;
 
     // 5. tombstone 化。
     state.tenants.mark_deleted(&tenant_id).await?;
     tracing::info!(%tenant_id, kc_users = users.len(), "tenant purge: 完了");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// データ面の purge（FGA タプル → オブジェクト → DB 行）。
+///
+/// storage（node/artifact/secret 等）→ RAG（chunk/jobq/Qdrant/Tantivy）→
+/// 構造化データ（data_table CASCADE・式インデックス・FGA タプル・Task 9.2）の順に撤去する。
+async fn purge_tenant_data(
+    state: &AppState,
+    tenant_id: &str,
+    org: &str,
+    actor: &str,
+) -> Result<(), ApiError> {
+    state.storage.purge_tenant(tenant_id, org, actor).await?;
+    state
+        .rag_admin
+        .purge_tenant(tenant_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("rag purge: {e}")))?;
+    let data_tables = state
+        .data
+        .purge_tenant(tenant_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("data purge: {e}")))?;
+    if data_tables > 0 {
+        tracing::info!(%tenant_id, data_tables, "tenant purge: 構造化データを撤去");
+    }
+    Ok(())
 }
 
 /// 一時パスワードを生成する（24 文字英数）。初回ログインで変更必須（UPDATE_PASSWORD）。

@@ -10,7 +10,8 @@ use crate::{
     error::AuthzError,
     fga_http::FgaHttp,
     model,
-    object::{FgaObject, Subject},
+    object::FgaObject,
+    subject::Subject,
     vocab::{ObjectType, Relation},
 };
 

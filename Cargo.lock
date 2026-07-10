@@ -4740,9 +4740,12 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "shiki-agent-core",
+ "shiki-app-gateway",
+ "shiki-app-platform",
  "shiki-artifact",
  "shiki-authz",
  "shiki-chat",
+ "shiki-data",
  "shiki-gui",
  "shiki-llm-gateway",
  "shiki-rag",
@@ -4761,6 +4764,53 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "shiki-app-gateway"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "http-body-util",
+ "jsonwebtoken",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "shiki-authz",
+ "shiki-storage",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "shiki-app-platform"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "hex",
+ "reqwest 0.12.28",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shiki-agent-core",
+ "shiki-artifact",
+ "shiki-authz",
+ "shiki-data",
+ "shiki-gui",
+ "shiki-storage",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
  "utoipa",
  "uuid",
 ]
@@ -4820,6 +4870,27 @@ dependencies = [
  "shiki-storage",
  "shiki-websearch",
  "shiki-workflow-engine",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "shiki-data"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shiki-artifact",
+ "shiki-authz",
+ "shiki-storage",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

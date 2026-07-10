@@ -12,6 +12,7 @@
 //! [`AuthContext::ns`](crate::AuthContext::ns) から得た [`Namespace`] 経由でしか識別子を
 //! 構築できない（tenant を渡さずに構築できない ＝ 型レベルで境界を強制する）。
 
+use crate::subject::Subject;
 use crate::vocab::{ObjectType, Relation};
 
 /// tenant と local id を FGA 識別子へ織り込む区切り文字。
@@ -71,6 +72,21 @@ impl FgaObject {
     /// ワークフローオブジェクト `workflow:<id>`（実行主体プリンシパル・Task 10.4a）。
     pub(crate) fn workflow(id: &str) -> Self {
         Self::new(ObjectType::Workflow, id)
+    }
+
+    /// ミニアプリ・サービス identity `miniapp:<id>`（B2 自動化の実行主体・Task 9.6）。
+    pub(crate) fn miniapp(id: &str) -> Self {
+        Self::new(ObjectType::MiniApp, id)
+    }
+
+    /// 構造化データのテーブルオブジェクト `data_table:<id>`（第1層 ReBAC・Task 9.2）。
+    pub(crate) fn data_table(id: &str) -> Self {
+        Self::new(ObjectType::DataTable, id)
+    }
+
+    /// 個別共有された行オブジェクト `data_record:<id>`（スパースタプル・Task 9.3）。
+    pub(crate) fn data_record(id: &str) -> Self {
+        Self::new(ObjectType::DataRecord, id)
     }
 
     pub fn as_str(&self) -> &str {
@@ -171,6 +187,26 @@ impl<'a> Namespace<'a> {
         Subject::object(&self.workflow(id))
     }
 
+    /// ミニアプリオブジェクト `miniapp:<tenant>|<id>`（サービス identity・Task 9.6）。
+    pub fn miniapp(&self, id: &str) -> FgaObject {
+        FgaObject::miniapp(&self.qualify(id))
+    }
+
+    /// ミニアプリ・プリンシパル subject `miniapp:<tenant>|<id>`（B2 自動化の実行主体・Task 9.6）。
+    pub fn miniapp_principal(&self, id: &str) -> Subject {
+        Subject::object(&self.miniapp(id))
+    }
+
+    /// 構造化データのテーブルオブジェクト `data_table:<tenant>|<id>`（Task 9.2）。
+    pub fn data_table(&self, id: &str) -> FgaObject {
+        FgaObject::data_table(&self.qualify(id))
+    }
+
+    /// 個別共有された行オブジェクト `data_record:<tenant>|<id>`（Task 9.3）。
+    pub fn data_record(&self, id: &str) -> FgaObject {
+        FgaObject::data_record(&self.qualify(id))
+    }
+
     /// ユーザー subject `user:<tenant>|<id>`。
     pub fn user(&self, id: &str) -> Subject {
         Subject::user(&self.qualify(id))
@@ -206,48 +242,6 @@ impl<'a> Namespace<'a> {
 }
 
 impl std::fmt::Display for FgaObject {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-/// OpenFGA のサブジェクト（ユーザー）`user:id`。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Subject(String);
-
-impl Subject {
-    /// ユーザー subject `user:<id>`。tenant 名前空間化は [`Namespace::user`] が担うため
-    /// アプリ側からの生 id 構築を防ぐ `pub(crate)`。
-    pub(crate) fn user(id: &str) -> Self {
-        Subject(format!("{}:{}", ObjectType::User.as_str(), id))
-    }
-
-    /// オブジェクトを subject として参照する（userset 親子の結線に使う）。
-    ///
-    /// 例: `file:<id>#parent@folder:<parent>` の右辺 `folder:<parent>`。
-    /// ReBAC では subject が `user:` 以外（オブジェクト参照）になり得るため、
-    /// [`FgaObject`] からそのまま subject 文字列を作る経路を用意する。
-    pub fn object(object: &FgaObject) -> Self {
-        Subject(object.as_str().to_string())
-    }
-
-    /// userset（`object#relation`）を subject として参照する。
-    ///
-    /// 例: ロール階層の結線 `role:営業部#member@role:営業1課#member` の右辺
-    /// `role:営業1課#member`（配下ロールのメンバー集合を親ロールに含める）。
-    /// `role` 型の `member: [user, role#member]` のように直接型へ userset を許す
-    /// relation のタプルを、チョークポイント（[`AuthzClient`](crate::AuthzClient)）
-    /// 経由で構築するための経路。
-    pub fn userset(object: &FgaObject, relation: crate::vocab::Relation) -> Self {
-        Subject(format!("{}#{}", object.as_str(), relation.as_str()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for Subject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
@@ -336,70 +330,6 @@ mod tests {
         // Clone は等価なオブジェクトを生むこと。
         let a = FgaObject::role("r1");
         assert_eq!(a.clone(), a);
-    }
-
-    // --- Subject ---
-
-    #[test]
-    fn subject_user_prefix() {
-        // Subject::user は常に `user:` prefix を付けること。
-        assert_eq!(Subject::user("bob").as_str(), "user:bob");
-    }
-
-    #[test]
-    fn subject_from_object_keeps_type_prefix() {
-        // Subject::object はオブジェクトの `type:id` をそのまま subject にすること。
-        assert_eq!(
-            Subject::object(&FgaObject::folder("f1")).as_str(),
-            "folder:f1"
-        );
-    }
-
-    #[test]
-    fn subject_userset_appends_relation() {
-        // Subject::userset は `object#relation` を生成すること（ロール階層・共有の結線に使う）。
-        use crate::vocab::Relation;
-        assert_eq!(
-            Subject::userset(&FgaObject::role("sales-sec1"), Relation::Member).as_str(),
-            "role:sales-sec1#member"
-        );
-    }
-
-    #[test]
-    fn subject_display_matches_as_str() {
-        // Display 実装は as_str と一致すること。
-        let s = Subject::user("alice");
-        assert_eq!(s.to_string(), "user:alice");
-        assert_eq!(s.to_string(), s.as_str());
-    }
-
-    #[test]
-    fn subject_empty_id() {
-        // 空 id でも `user:` 形式（境界）。
-        assert_eq!(Subject::user("").as_str(), "user:");
-    }
-
-    #[test]
-    fn subject_eq_and_hash() {
-        // 等価性と Hash の区別を確認する。
-        use std::collections::HashSet;
-        let a = Subject::user("alice");
-        let b = Subject::user("alice");
-        let c = Subject::user("bob");
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-        let mut set = HashSet::new();
-        set.insert(a.clone());
-        set.insert(b);
-        set.insert(c);
-        assert_eq!(set.len(), 2);
-    }
-
-    #[test]
-    fn subject_clone_is_equal() {
-        // Clone は等価。
-        let s = Subject::user("x");
-        assert_eq!(s.clone(), s);
     }
 
     // --- Namespace（SAAS.1 テナント名前空間化） ---

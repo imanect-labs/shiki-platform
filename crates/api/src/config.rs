@@ -43,6 +43,45 @@ pub struct AppConfig {
     /// 既定は無効（/workflows は保存のみ）。
     #[serde(default)]
     pub workflow: crate::workflow_runtime::WorkflowConfig,
+    /// 公開 API ゲートウェイ（第2リスナ・別オリジン・Task 9.6）。既定は無効。
+    #[serde(default)]
+    pub gateway: GatewayConfig,
+}
+
+/// 公開 API ゲートウェイ（ミニアプリ用・第2リスナ）の設定。
+///
+/// 内部 API（cookie セッション）とは**別ポート＝別オリジン**で待ち受ける。`enabled=false`
+/// なら第2リスナを起動しない（既定・段階導入）。有効化には audience（トークンの aud 検証値）
+/// が必要。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayConfig {
+    /// 第2リスナを起動するか（既定 false）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// バインドポート（内部 API とは別ポート＝別オリジン）。既定 8090。
+    #[serde(default = "default_gateway_port")]
+    pub port: u16,
+    /// ゲートウェイトークンの `aud` 検証値（ミニアプリ client に付与される）。既定 `shiki-gateway`。
+    #[serde(default = "default_gateway_audience")]
+    pub audience: String,
+}
+
+fn default_gateway_port() -> u16 {
+    8090
+}
+
+fn default_gateway_audience() -> String {
+    "shiki-gateway".to_string()
+}
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        GatewayConfig {
+            enabled: false,
+            port: default_gateway_port(),
+            audience: default_gateway_audience(),
+        }
+    }
 }
 
 /// シークレット管理の設定。

@@ -20,6 +20,10 @@ use storage::{DirectoryStore, TenantStore};
 
 mod wiring;
 mod wiring_gui;
+// main はアプリ全体（ストレージ/RAG/チャット/ワークフロー/data/ゲートウェイ等）の配線点で
+// あり、各フェーズの依存を順に組み上げる性質上どうしても長くなる（各配線は wire_* ヘルパへ
+// 分離済み）。分割で可読性を落とすより配線列挙として素直に保つ。
+#[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = AppConfig::load().context("設定のロードに失敗")?;
@@ -81,6 +85,13 @@ async fn main() -> anyhow::Result<()> {
 
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
+    // 構造化データサービス（Task 9.2〜9.10）: data ストア＋保存ビュー＋FSM を束ねて配線する。
+    let (data_store, data_views, fsms) = wire_data(&db, &authz, &directory, &storage, &artifacts);
+    // ミニアプリ基盤（Task 9.1/9.13a）: マニフェスト store ＋汎用レジストリ。
+    let mini_app_code = Arc::new(app_platform::MiniAppCodeStore::new(
+        Arc::clone(&artifacts),
+        app_platform::Registry::new(db.clone()),
+    ));
     // generative UI / skill / ミニアプリ（Phase 6）: 検証は全経路が同一実装を共有する信頼境界。
     let gui_stores = wiring_gui::wire_gui(&db, &artifacts);
 
@@ -154,6 +165,12 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     let bind = format!("{}:{}", config.server.host, config.server.port);
+    // 公開 API ゲートウェイ（Task 9.6）: enabled のとき第2リスナ用 Router を組む（別オリジン）。
+    let gateway_router = wiring::wire_gateway(&config, &db, &jwks, &authz);
+    let gateway_bind = config
+        .gateway
+        .enabled
+        .then(|| format!("{}:{}", config.server.host, config.gateway.port));
     let state = AppState {
         config: Arc::new(config),
         // 生 PgPool は StorageService 等のチョークポイントにのみ渡し、AppState には
@@ -165,6 +182,10 @@ async fn main() -> anyhow::Result<()> {
         http,
         storage,
         artifacts,
+        data: data_store,
+        data_views,
+        fsms,
+        mini_app_code,
         ui_specs: gui_stores.ui_specs,
         ui_actions,
         skills: gui_stores.skills,
@@ -184,6 +205,9 @@ async fn main() -> anyhow::Result<()> {
         rag_admin,
     };
 
+    // 第2リスナ（公開 API ゲートウェイ・別ポート＝別オリジン）を先に spawn する。
+    wiring::spawn_gateway_listener(gateway_router, gateway_bind).await?;
+
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .context("bind に失敗")?;
@@ -193,6 +217,41 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("サーバ実行中のエラー")?;
     Ok(())
+}
+
+/// 構造化データ（Task 9.2〜9.10）の 3 ストアを配線する。
+///
+/// data ストア（テーブル/レコード/行述語）・保存ビュー（9.4）・FSM 宣言的ガード（9.10）は
+/// いずれも同じ data チョークポイントと artifact 共通枠の上に載る。
+fn wire_data(
+    db: &sqlx::PgPool,
+    authz: &std::sync::Arc<dyn AuthzClient>,
+    directory: &std::sync::Arc<DirectoryStore>,
+    storage: &std::sync::Arc<storage::StorageService>,
+    artifacts: &std::sync::Arc<artifact::ArtifactStore>,
+) -> (
+    std::sync::Arc<data::DataStore>,
+    std::sync::Arc<data::DataViewStore>,
+    std::sync::Arc<data::FsmStore>,
+) {
+    // 参照整合（user/role/file）は directory / StorageService のチョークポイントへ委譲する。
+    let data_store = Arc::new(data::DataStore::new(
+        db.clone(),
+        authz.clone(),
+        Arc::new(api::data_refs::ApiRefResolver {
+            directory: Arc::clone(directory),
+            storage: Arc::clone(storage),
+        }),
+    ));
+    let data_views = Arc::new(data::DataViewStore::new(
+        Arc::clone(artifacts),
+        (*data_store).clone(),
+    ));
+    let fsms = Arc::new(data::FsmStore::new(
+        Arc::clone(artifacts),
+        (*data_store).clone(),
+    ));
+    (data_store, data_views, fsms)
 }
 
 /// dev fixture の 1 ユーザー（OIDC sub / tenant / org / email / 表示名）。

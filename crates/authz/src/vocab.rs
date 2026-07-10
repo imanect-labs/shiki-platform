@@ -90,6 +90,17 @@ pub enum ObjectType {
     Secret,
     /// ワークフロープリンシパル（schedule/event run の実行主体・subject 専用型・Task 10.4a）。
     Workflow,
+    /// ミニアプリ・サービス identity（B2 自動化の実行主体・subject 専用型・Task 9.6）。
+    /// workflow と同型で自身の relation は持たず、data_table の owner/editor/viewer の
+    /// subject として所有テーブルに束縛される（越境は per-call OpenFGA で拒否）。
+    MiniApp,
+    /// 構造化データのテーブル（第1層 ReBAC・viewer/editor/owner・Task 9.2）。
+    /// 行レベルの可視性は Task 9.3 のクエリ時述語（ABAC）が担い、ここはテーブル単位のみ。
+    DataTable,
+    /// 構造化データの**個別共有された行**（Task 9.3）。
+    /// 全行をタプルにしない原則の唯一の例外で、明示共有した行だけがスパースに載る
+    /// （タプル数は共有件数に比例・design §4.10）。
+    DataRecord,
 }
 
 impl ObjectType {
@@ -105,6 +116,9 @@ impl ObjectType {
             ObjectType::Artifact => "artifact",
             ObjectType::Secret => "secret",
             ObjectType::Workflow => "workflow",
+            ObjectType::MiniApp => "miniapp",
+            ObjectType::DataTable => "data_table",
+            ObjectType::DataRecord => "data_record",
         }
     }
 }
@@ -212,6 +226,8 @@ mod tests {
         assert_eq!(ObjectType::File.as_str(), "file");
         assert_eq!(ObjectType::Artifact.as_str(), "artifact");
         assert_eq!(ObjectType::Secret.as_str(), "secret");
+        assert_eq!(ObjectType::DataTable.as_str(), "data_table");
+        assert_eq!(ObjectType::DataRecord.as_str(), "data_record");
         assert_eq!(Relation::CanUse.as_str(), "can_use");
     }
 

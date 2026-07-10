@@ -220,6 +220,7 @@ fn base_config(db_url: &str) -> AppConfig {
         websearch: api::config::WebSearchConfig::default(),
         secrets: api::config::SecretsConfig::default(),
         workflow: api::workflow_runtime::WorkflowConfig::default(),
+        gateway: api::config::GatewayConfig::default(),
     }
 }
 
@@ -301,6 +302,26 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
     ));
     let skills = Arc::new(gui::SkillStore::new(Arc::clone(&artifacts)));
     let mini_apps = Arc::new(gui::MiniAppStore::new(Arc::clone(&artifacts), pool.clone()));
+    let data_store = Arc::new(data::DataStore::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+        Arc::new(api::data_refs::ApiRefResolver {
+            directory: Arc::clone(&directory),
+            storage: Arc::clone(&storage),
+        }),
+    ));
+    let data_views = Arc::new(data::DataViewStore::new(
+        Arc::clone(&artifacts),
+        (*data_store).clone(),
+    ));
+    let fsms = Arc::new(data::FsmStore::new(
+        Arc::clone(&artifacts),
+        (*data_store).clone(),
+    ));
+    let mini_app_code = Arc::new(app_platform::MiniAppCodeStore::new(
+        Arc::clone(&artifacts),
+        app_platform::Registry::new(pool.clone()),
+    ));
     let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
         pool.clone(),
         workflow_engine::DelegationStore::new(pool.clone(), Arc::new(AllowAll)),
@@ -317,6 +338,10 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         http: reqwest::Client::new(),
         storage,
         artifacts,
+        data: data_store,
+        data_views,
+        fsms,
+        mini_app_code,
         ui_specs,
         ui_actions,
         skills,

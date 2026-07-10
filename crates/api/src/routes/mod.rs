@@ -1,11 +1,16 @@
 //! HTTP ルートハンドラ群。
 
 pub mod admin;
+pub mod app_platform;
 pub mod artifacts;
 pub mod auth;
 pub mod chat;
 pub mod chat_approval;
 pub mod chat_dto;
+pub mod data;
+pub mod data_fsm;
+pub mod data_records;
+pub mod data_views;
 pub mod directory;
 pub mod files;
 pub mod folders;

@@ -16,6 +16,12 @@ pub enum ArtifactKind {
     Workflow,
     UiSpec,
     MiniApp,
+    /// 構造化データの保存ビュー（宣言的クエリ＋表示設定・Task 9.4）。
+    DataView,
+    /// 構造化データの FSM 宣言的ガード（status 遷移＋遷移認可・Task 9.10）。
+    Fsm,
+    /// コードベース・ミニアプリのマニフェスト（Task 9.1）。
+    MiniAppCode,
     Skill,
     Script,
 }
@@ -27,6 +33,9 @@ impl ArtifactKind {
             ArtifactKind::Workflow => "workflow",
             ArtifactKind::UiSpec => "ui_spec",
             ArtifactKind::MiniApp => "mini_app",
+            ArtifactKind::DataView => "data_view",
+            ArtifactKind::Fsm => "fsm",
+            ArtifactKind::MiniAppCode => "mini_app_code",
             ArtifactKind::Skill => "skill",
             ArtifactKind::Script => "script",
         }
@@ -38,6 +47,9 @@ impl ArtifactKind {
             "workflow" => Some(ArtifactKind::Workflow),
             "ui_spec" => Some(ArtifactKind::UiSpec),
             "mini_app" => Some(ArtifactKind::MiniApp),
+            "data_view" => Some(ArtifactKind::DataView),
+            "fsm" => Some(ArtifactKind::Fsm),
+            "mini_app_code" => Some(ArtifactKind::MiniAppCode),
             "skill" => Some(ArtifactKind::Skill),
             "script" => Some(ArtifactKind::Script),
             _ => None,
@@ -121,6 +133,9 @@ mod tests {
             ArtifactKind::Workflow,
             ArtifactKind::UiSpec,
             ArtifactKind::MiniApp,
+            ArtifactKind::DataView,
+            ArtifactKind::Fsm,
+            ArtifactKind::MiniAppCode,
             ArtifactKind::Skill,
             ArtifactKind::Script,
         ] {

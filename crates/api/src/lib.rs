@@ -18,6 +18,7 @@
 )]
 
 pub mod config;
+pub mod data_refs;
 pub mod error;
 pub mod extract;
 pub mod health;
