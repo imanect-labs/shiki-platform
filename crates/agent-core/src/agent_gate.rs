@@ -122,5 +122,11 @@ pub(crate) async fn emit_tool_events(
         sink.emit(AgentEvent::GenerativeUi { spec: spec.clone() })
             .await?;
     }
+    for workflow in &outcome.workflow_refs {
+        sink.emit(AgentEvent::WorkflowRef {
+            workflow: workflow.clone(),
+        })
+        .await?;
+    }
     Ok(())
 }

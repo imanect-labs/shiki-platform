@@ -6,14 +6,16 @@
 use std::time::Duration;
 
 use axum::{
-    extract::Request,
-    http::{header, HeaderName, HeaderValue, Method, StatusCode},
+    http::{header, StatusCode},
     middleware,
     response::IntoResponse,
     routing::{delete, get, patch, post, put, MethodRouter},
     Router,
 };
-use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
+use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
+
+mod http_util;
+use http_util::{cors_layer, make_request_span};
 
 use crate::{health, middleware::require_session, openapi, routes, state::AppState, telemetry};
 
@@ -222,8 +224,11 @@ pub fn route_table() -> Vec<RouteDecl> {
             post(routes::mini_apps::invoke_mini_app_action)
         }),
         // --- ワークフロー IR（Task 10.1a・保存時検証 V1〜V7・artifact の上） ---
-        r("/workflows", &["POST"], Session, || {
-            post(routes::workflows::create_workflow)
+        r("/workflows", &["GET", "POST"], Session, || {
+            get(routes::workflows::list_workflows).post(routes::workflows::create_workflow)
+        }),
+        r("/workflows/validate", &["POST"], Session, || {
+            post(routes::workflows::validate_workflow)
         }),
         r("/workflows/{id}", &["GET", "PUT"], Session, || {
             get(routes::workflows::get_workflow).put(routes::workflows::update_workflow)
@@ -235,12 +240,60 @@ pub fn route_table() -> Vec<RouteDecl> {
             || get(routes::workflows::get_workflow_version),
         ),
         // 対話トリガの run 起動＋実行履歴（Stage A W3）。
-        r("/workflows/{id}/runs", &["POST"], Session, || {
-            post(routes::workflows::start_workflow_run)
+        r("/workflows/{id}/registration", &["GET"], Session, || {
+            get(routes::workflows::get_registration)
+        }),
+        r(
+            "/workflows/{id}/versions/{version}/consent-plan",
+            &["GET"],
+            Session,
+            || get(routes::workflows::consent_plan),
+        ),
+        r("/workflows/{id}/enable", &["POST"], Session, || {
+            post(routes::workflows::enable_workflow)
+        }),
+        r("/workflows/{id}/disable", &["POST"], Session, || {
+            post(routes::workflows::disable_workflow)
+        }),
+        r("/workflows/{id}/layout", &["GET", "PUT"], Session, || {
+            get(routes::workflows::get_workflow_layout).put(routes::workflows::put_workflow_layout)
+        }),
+        r("/workflows/{id}/runs", &["GET", "POST"], Session, || {
+            get(routes::workflows::list_workflow_runs).post(routes::workflows::start_workflow_run)
         }),
         r("/workflows/{id}/runs/{run_id}", &["GET"], Session, || {
             get(routes::workflows::get_workflow_run)
         }),
+        r(
+            "/workflows/{id}/runs/{run_id}/steps",
+            &["GET"],
+            Session,
+            || get(routes::workflows::get_workflow_step),
+        ),
+        r(
+            "/workflows/{id}/runs/{run_id}/events",
+            &["GET"],
+            Session,
+            || get(routes::workflows::list_workflow_run_events),
+        ),
+        r(
+            "/workflows/{id}/runs/{run_id}/events/stream",
+            &["GET"],
+            SessionStreaming,
+            || get(routes::workflows::stream_workflow_run_events),
+        ),
+        r(
+            "/workflows/{id}/runs/{run_id}/cancel",
+            &["POST"],
+            Session,
+            || post(routes::workflows::cancel_workflow_run),
+        ),
+        r(
+            "/workflows/{id}/runs/{run_id}/retry",
+            &["POST"],
+            Session,
+            || post(routes::workflows::retry_workflow_run),
+        ),
         // --- シークレット（Task 10.9・write-only / use-only・平文の読み返しルートは無い） ---
         r("/secrets", &["GET", "POST"], Session, || {
             get(routes::secrets::list_secrets).post(routes::secrets::create_secret)
@@ -429,48 +482,6 @@ pub fn build_router(state: AppState) -> Router {
     };
 
     router.with_state(state)
-}
-
-/// 設定されたオリジンに限定した CORS レイヤを構築する（空なら `None` = レイヤ無効）。
-fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
-    if origins.is_empty() {
-        return None;
-    }
-    let parsed: Vec<HeaderValue> = origins
-        .iter()
-        .filter_map(|o| o.parse::<HeaderValue>().ok())
-        .collect();
-    if parsed.is_empty() {
-        tracing::warn!("cors_allowed_origins が全て不正なため CORS を無効化");
-        return None;
-    }
-    Some(
-        CorsLayer::new()
-            .allow_origin(parsed)
-            .allow_credentials(true)
-            .allow_methods([
-                Method::GET,
-                Method::POST,
-                Method::PUT,
-                Method::PATCH,
-                Method::DELETE,
-                Method::OPTIONS,
-            ])
-            .allow_headers([
-                header::CONTENT_TYPE,
-                HeaderName::from_static("x-csrf-token"),
-            ]),
-    )
-}
-
-/// リクエスト span。`trace_id` は [`telemetry::observe`] が後から記録するため Empty 宣言する。
-fn make_request_span(req: &Request) -> tracing::Span {
-    tracing::info_span!(
-        "http_request",
-        method = %req.method(),
-        path = %req.uri().path(),
-        trace_id = tracing::field::Empty,
-    )
 }
 
 async fn openapi_handler() -> impl IntoResponse {

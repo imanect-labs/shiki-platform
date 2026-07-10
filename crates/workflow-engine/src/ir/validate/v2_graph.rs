@@ -112,12 +112,96 @@ pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
         }
     }
 
+    // map 領域の構造（入口・出口・ネスト深さ・ir.md §5.3）。
+    check_regions(ir, &node_types, &parent_of, &in_edges, errors);
+
     // DAG（循環検出）。
     if let Some(cycle_node) = detect_cycle(ir) {
         errors.push(ValidationError::new(
             "ir.graph_cycle",
             format!("グラフに循環があります（例: {cycle_node} を含む）"),
         ));
+    }
+}
+
+/// map 領域の構造制約（ir.md §5.3）: 各領域は入口 ≥1・**出口ちょうど 1**・**ネスト最大深さ 2**。
+fn check_regions(
+    ir: &WorkflowIr,
+    node_types: &HashMap<&str, Option<NodeType>>,
+    parent_of: &HashMap<&str, Option<&str>>,
+    in_edges: &BTreeMap<&str, usize>,
+    errors: &mut Vec<ValidationError>,
+) {
+    // 領域ノードの出次数（領域閉包で出エッジは領域内に閉じるため全出エッジが領域内）。
+    let mut out_deg: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in &ir.edges {
+        *out_deg.entry(e.from.as_str()).or_insert(0) += 1;
+    }
+    for node in &ir.nodes {
+        if node_types.get(node.id.as_str()).copied().flatten() != Some(NodeType::ControlMap) {
+            continue;
+        }
+        let map_id = node.id.as_str();
+        // 領域ノード（parent==map_id）。
+        let region: Vec<&str> = ir
+            .nodes
+            .iter()
+            .filter(|n| n.parent.as_deref() == Some(map_id))
+            .map(|n| n.id.as_str())
+            .collect();
+        if region.is_empty() {
+            errors.push(
+                ValidationError::new(
+                    "ir.empty_region",
+                    format!("map {map_id} の領域にノードがありません"),
+                )
+                .at_node(map_id),
+            );
+            continue;
+        }
+        let entries = region
+            .iter()
+            .filter(|n| in_edges.get(*n).copied().unwrap_or(0) == 0)
+            .count();
+        let exits = region
+            .iter()
+            .filter(|n| out_deg.get(*n).copied().unwrap_or(0) == 0)
+            .count();
+        if entries == 0 {
+            // DAG なら通常到達不能だが防御的に明示（全ノードが領域内サイクル等）。
+            errors.push(
+                ValidationError::new(
+                    "ir.region_no_entry",
+                    format!("map {map_id} の領域に入口（入エッジ 0）がありません"),
+                )
+                .at_node(map_id),
+            );
+        }
+        if exits != 1 {
+            errors.push(
+                ValidationError::new(
+                    "ir.region_exit",
+                    format!("map {map_id} の領域の出口は 1 つでなければなりません（現在 {exits}）"),
+                )
+                .at_node(map_id),
+            );
+        }
+        // ネスト深さ: map の親 map 連鎖が 2 以上（＝深さ 3 以上）は不可。
+        let mut ancestors = 0;
+        let mut cur = parent_of.get(map_id).copied().flatten();
+        while let Some(p) = cur {
+            ancestors += 1;
+            cur = parent_of.get(p).copied().flatten();
+        }
+        if ancestors >= 2 {
+            errors.push(
+                ValidationError::new(
+                    "ir.region_too_deep",
+                    format!("map {map_id} のネストが深すぎます（最大深さ 2・ir.md §5.3）"),
+                )
+                .at_node(map_id),
+            );
+        }
     }
 }
 
@@ -273,6 +357,69 @@ mod tests {
             &mut errs,
         );
         assert!(errs.iter().any(|e| e.code == "ir.multiple_in_edges"));
+    }
+
+    #[test]
+    fn region_requires_exactly_one_exit() {
+        // 領域に出口（out-edge 0）が 2 つ → ir.region_exit。
+        let mut errs = Vec::new();
+        check(
+            &ir(json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [
+                    { "id": "m", "type": "control.map", "params": { "items": [] } },
+                    { "id": "a", "type": "storage.read", "parent": "m", "params": {} },
+                    { "id": "b", "type": "storage.read", "parent": "m", "params": {} }
+                ],
+                "edges": []
+            })),
+            &mut errs,
+        );
+        assert!(errs.iter().any(|e| e.code == "ir.region_exit"));
+    }
+
+    #[test]
+    fn region_valid_single_node() {
+        // 単一ノード領域（入口=出口）は妥当。
+        let mut errs = Vec::new();
+        check(
+            &ir(json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [
+                    { "id": "m", "type": "control.map", "params": { "items": [] } },
+                    { "id": "w", "type": "storage.read", "parent": "m", "params": {} },
+                    { "id": "after", "type": "storage.read", "params": {} }
+                ],
+                "edges": [{ "from": "m", "to": "after" }]
+            })),
+            &mut errs,
+        );
+        assert!(
+            !errs
+                .iter()
+                .any(|e| e.code.starts_with("ir.region") || e.code == "ir.empty_region"),
+            "単一ノード領域は妥当: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn map_nesting_depth_capped_at_two() {
+        // m1 > m2 > m3（深さ 3）は ir.region_too_deep。
+        let mut errs = Vec::new();
+        check(
+            &ir(json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [
+                    { "id": "m1", "type": "control.map", "params": { "items": [] } },
+                    { "id": "m2", "type": "control.map", "parent": "m1", "params": { "items": [] } },
+                    { "id": "m3", "type": "control.map", "parent": "m2", "params": { "items": [] } },
+                    { "id": "leaf", "type": "storage.read", "parent": "m3", "params": {} }
+                ],
+                "edges": []
+            })),
+            &mut errs,
+        );
+        assert!(errs.iter().any(|e| e.code == "ir.region_too_deep"));
     }
 
     #[test]

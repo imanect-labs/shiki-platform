@@ -96,6 +96,17 @@ impl ChatWorker {
         if let Some(validator) = &self.ui_validator {
             tools.push(Arc::new(gui::EmitUiTool::new(validator.clone())));
         }
+        // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）:
+        // ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。
+        if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
+            tools.push(Arc::new(crate::workflow_tool::EmitWorkflowTool::new(
+                store.clone(),
+                catalog.clone(),
+            )));
+            tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
+                store.clone(),
+            )));
+        }
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {
@@ -419,6 +430,16 @@ fn message_text(blocks: &[ContentBlock]) -> String {
         match b {
             ContentBlock::Text { text } => parts.push(text.clone()),
             ContentBlock::FileRef { name, .. } => parts.push(format!("[添付: {name}]")),
+            // 「さっきのワークフローを直して」等の追編集に id/version が要る（Task 10.13）。
+            ContentBlock::WorkflowRef { workflow } => {
+                let id = workflow.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let name = workflow.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let version = workflow.get("version").and_then(serde_json::Value::as_i64);
+                parts.push(format!(
+                    "[保存済みワークフロー: {name}（workflow_id: {id}, v{}）]",
+                    version.unwrap_or(0)
+                ));
+            }
             _ => {}
         }
     }

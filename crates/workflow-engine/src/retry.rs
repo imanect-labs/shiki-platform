@@ -17,11 +17,16 @@ pub enum RetryClass {
 
 /// エラーコード＋retryable フラグから分類する（engine.md §7.4 の写像）。
 ///
-/// コードが `rate_limited` / `429` / `throttled` のいずれかなら `RateLimited`、
-/// それ以外は `retryable` フラグで Retryable / Permanent。
+/// コードが `rate_limited` / `429` / `throttled` / `concurrency_limited` のいずれかなら
+/// `RateLimited`（attempt 非消費・順番待ち）、それ以外は `retryable` フラグで Retryable / Permanent。
 pub fn classify(code: &str, retryable: bool) -> RetryClass {
     let c = code.to_ascii_lowercase();
-    if c == "rate_limited" || c == "429" || c == "throttled" || c == "too_many_requests" {
+    if c == "rate_limited"
+        || c == "429"
+        || c == "throttled"
+        || c == "too_many_requests"
+        || c == "concurrency_limited"
+    {
         RetryClass::RateLimited
     } else if retryable {
         RetryClass::Retryable

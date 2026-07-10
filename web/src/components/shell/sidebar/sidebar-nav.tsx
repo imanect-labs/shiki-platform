@@ -3,7 +3,7 @@
 import { useRouter, usePathname } from "next/navigation";
 import { PenSquare, Search } from "lucide-react";
 
-import { APPS_NAV, SKILLS_NAV, isActivePath } from "@/lib/nav-config";
+import { APPS_NAV, SKILLS_NAV, WORKFLOWS_NAV, isActivePath } from "@/lib/nav-config";
 import { NavItem } from "./nav-item";
 import { SidebarDriveAccordion } from "./sidebar-drive-accordion";
 import { useSidebar } from "./sidebar-context";
@@ -67,6 +67,17 @@ export function SidebarNav({
           active={isActivePath(APPS_NAV.href, pathname)}
           onClick={() => {
             router.push(APPS_NAV.href);
+            onNavigate?.();
+          }}
+        />
+        {/* ワークフロー（Phase 10） */}
+        <NavItem
+          icon={WORKFLOWS_NAV.icon}
+          label={WORKFLOWS_NAV.label}
+          collapsed={collapsed}
+          active={isActivePath(WORKFLOWS_NAV.href, pathname)}
+          onClick={() => {
+            router.push(WORKFLOWS_NAV.href);
             onNavigate?.();
           }}
         />

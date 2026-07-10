@@ -8,12 +8,17 @@
 use secrets::DestinationBinding;
 use serde_json::{json, Value};
 
+use crate::control::eval::resolve_value;
+use crate::ir::params::{
+    AgentInvokeParams, HttpRequestParams, LlmInvokeParams, SecretAttach, SecretAttachKind,
+};
 use crate::run::NodeContext;
 
+use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
 use super::http::{check_destination, redirect_denied, summarize_response, HttpDenied};
 use super::ports::{AgentInvokeReq, ExecCtx, HttpSendReq, LlmInvokeReq, PortError};
-use super::resolver::{as_bytes, as_string, as_u32, resolve_field, ParamResolver};
+use super::resolver::{as_bytes, as_string, as_u32, ParamResolver};
 
 /// レスポンス本文を JSON（不能ならテキスト）に整形する（1MB 上限）。
 fn parse_body(bytes: &[u8]) -> Value {
@@ -38,12 +43,21 @@ impl CapabilityNodeExecutor {
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
         self.rate_check(ec, "llm.invoke").await?;
-        let prompt = resolve_field(params, "prompt", r)
+        let p: LlmInvokeParams = parse_params(params)?;
+        let prompt = resolve_value(&p.prompt, r)
             .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("llm.invoke: prompt がありません"))?;
-        let model = resolve_field(params, "model", r).and_then(|v| as_string(&v));
-        let system = resolve_field(params, "system", r).and_then(|v| as_string(&v));
-        let max_tokens = resolve_field(params, "max_tokens", r).and_then(|v| as_u32(&v));
+            .ok_or_else(|| PortError::invalid("llm.invoke: prompt が解決できません"))?;
+        let model = p.model.clone();
+        let system = p
+            .system
+            .as_ref()
+            .and_then(|e| resolve_value(e, r))
+            .and_then(|v| as_string(&v));
+        let max_tokens = p
+            .max_tokens
+            .as_ref()
+            .and_then(|e| resolve_value(e, r))
+            .and_then(|v| as_u32(&v));
         let out = self
             .ports
             .llm_invoke(
@@ -77,21 +91,16 @@ impl CapabilityNodeExecutor {
         r: &ParamResolver<'_>,
     ) -> Result<Value, PortError> {
         self.rate_check(ec, "agent.invoke").await?;
-        let code = resolve_field(params, "instruction", r)
+        let p: AgentInvokeParams = parse_params(params)?;
+        let code = resolve_value(&p.instruction, r)
             .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("agent.invoke: instruction がありません"))?;
+            .ok_or_else(|| PortError::invalid("agent.invoke: instruction が解決できません"))?;
         // egress_allowlist は縮小のみ（リテラル配列）。ポートが上限として spec を組む。
-        let egress_allowlist: Vec<String> = params
-            .get("egress_allowlist")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let timeout_ms = resolve_field(params, "max_duration_sec", r)
+        let egress_allowlist = p.egress_allowlist.clone();
+        let timeout_ms = p
+            .max_duration_sec
+            .as_ref()
+            .and_then(|e| resolve_value(e, r))
             .and_then(|v| as_u32(&v))
             .map(|s| u64::from(s) * 1000);
         let out = self
@@ -125,25 +134,19 @@ impl CapabilityNodeExecutor {
     ) -> Result<Value, PortError> {
         self.rate_check(ec, "http.request").await?;
 
-        let method = resolve_field(params, "method", r)
-            .and_then(|v| as_string(&v))
-            .unwrap_or_else(|| "GET".to_string());
-        let base_url = resolve_field(params, "url", r)
-            .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("http.request: url がありません"))?;
-        let suffix = resolve_field(params, "path_suffix", r)
+        let p: HttpRequestParams = parse_params(params)?;
+        let method = p.method.unwrap_or_default().as_str().to_string();
+        let suffix = p
+            .path_suffix
+            .as_ref()
+            .and_then(|e| resolve_value(e, r))
             .and_then(|v| as_string(&v))
             .unwrap_or_default();
-        let url = format!("{base_url}{suffix}");
+        let url = format!("{}{suffix}", p.url);
 
         // secret 解決（あれば）→ 宛先束縛の照合材料。
-        let secret_spec = params.get("secret");
-        let resolved_secret = if let Some(s) = secret_spec {
-            let name = s
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| PortError::invalid("http.request: secret.name がありません"))?;
-            Some(self.ports.resolve_secret(ec, name).await?)
+        let resolved_secret = if let Some(sref) = &p.secret {
+            Some(self.ports.resolve_secret(ec, &sref.name).await?)
         } else {
             None
         };
@@ -154,14 +157,18 @@ impl CapabilityNodeExecutor {
 
         // ヘッダ組み立て（secret 注入 ＋ Idempotency-Key）。平文はここだけに載る。
         let mut headers: Vec<(String, String)> = Vec::new();
-        if let (Some(spec), Some(sec)) = (secret_spec, resolved_secret.as_ref()) {
+        if let (Some(sref), Some(sec)) = (&p.secret, resolved_secret.as_ref()) {
             let value = String::from_utf8_lossy(&sec.plaintext).into_owned();
-            let (hname, hval) = attach_secret(spec.get("attach"), &value);
+            let (hname, hval) = attach_secret(sref.attach.as_ref(), &value);
             headers.push((hname, hval));
         }
         headers.push(("Idempotency-Key".to_string(), ctx.idempotency_key.clone()));
 
-        let body = resolve_field(params, "body", r).map(|v| as_bytes(&v));
+        let body = p
+            .body
+            .as_ref()
+            .and_then(|e| resolve_value(e, r))
+            .map(|v| as_bytes(&v));
 
         // Stage A は **常にリダイレクト非追従**（3xx は拒否）。`follow_stripped` は追従先の宛先束縛
         // 再照合（各ホップの host ∈ binding）が要るため後続で実装するまで fail-closed で扱う
@@ -242,21 +249,14 @@ impl CapabilityNodeExecutor {
 }
 
 /// secret 添付方式からヘッダ名/値を決める（`bearer` → Authorization: Bearer、`header` → 指定ヘッダ）。
-fn attach_secret(attach: Option<&Value>, value: &str) -> (String, String) {
-    let kind = attach
-        .and_then(|a| a.get("kind"))
-        .and_then(Value::as_str)
-        .unwrap_or("bearer");
-    match kind {
-        "header" => {
+fn attach_secret(attach: Option<&SecretAttach>, value: &str) -> (String, String) {
+    match attach.map_or(SecretAttachKind::Bearer, |a| a.kind) {
+        SecretAttachKind::Header => {
             let name = attach
-                .and_then(|a| a.get("header"))
-                .and_then(Value::as_str)
-                .unwrap_or("Authorization")
-                .to_string();
+                .and_then(|a| a.header.clone())
+                .unwrap_or_else(|| "Authorization".to_string());
             (name, value.to_string())
         }
-        // 既定 bearer。
-        _ => ("Authorization".to_string(), format!("Bearer {value}")),
+        SecretAttachKind::Bearer => ("Authorization".to_string(), format!("Bearer {value}")),
     }
 }

@@ -31,6 +31,7 @@ export type ContentBlock =
       score: number;
     }
   | { type: "generative_ui"; spec: unknown }
+  | { type: "workflow_ref"; workflow: unknown }
   | { type: "file_ref"; node_id: string; name: string };
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
@@ -267,6 +268,8 @@ export type StreamHandlers = {
   onFileRef?: (f: Attachment) => void;
   /// 検証済み generative UI スペック（Phase 6・emit_ui）。
   onGenerativeUi?: (spec: unknown) => void;
+  /// 保存済みワークフローへの参照（Task 10.13・emit_workflow）。
+  onWorkflowRef?: (workflow: unknown) => void;
   onStatus?: (status: RunStatus) => void;
   // 自律エージェント（Phase 5）。
   onPlan?: (subtasks: PlanSubtask[]) => void;
@@ -289,6 +292,7 @@ type StreamEventKind =
   | ({ type: "citation" } & Omit<Citation, "type">)
   | { type: "file_ref"; node_id: string; name: string }
   | { type: "generative_ui"; spec: unknown }
+  | { type: "workflow_ref"; workflow: unknown }
   | { type: "plan"; subtasks: PlanSubtask[] }
   | { type: "budget_warning"; kind: string; used: number; limit: number }
   | ({ type: "approval_requested" } & ApprovalRequest)
@@ -343,6 +347,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "generative_ui":
         handlers.onGenerativeUi?.(kind.spec);
+        break;
+      case "workflow_ref":
+        handlers.onWorkflowRef?.(kind.workflow);
         break;
       case "plan":
         handlers.onPlan?.(kind.subtasks);

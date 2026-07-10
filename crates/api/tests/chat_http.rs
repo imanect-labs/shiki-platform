@@ -322,6 +322,13 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         Arc::clone(&artifacts),
         app_platform::Registry::new(pool.clone()),
     ));
+    let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
+        pool.clone(),
+        workflow_engine::DelegationStore::new(pool.clone(), Arc::new(AllowAll)),
+    ));
+    let audit_rec = Arc::new(storage::audit::AuditRecorder::new(pool.clone()));
+    let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(pool.clone()));
+    let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(pool.clone()));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool),
@@ -342,6 +349,10 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         secrets: None,
         workflows,
         workflow_launcher: None,
+        workflow_registration,
+        workflow_summaries,
+        workflow_layout,
+        audit: audit_rec,
         workflow_runs: None,
         directory,
         tenants,

@@ -10,6 +10,7 @@ import {
   Sparkles,
   Star,
   Trash2,
+  Workflow,
 } from "lucide-react";
 
 /// ナビゲーションの単一定義（項目・ルート・アイコン）。
@@ -43,6 +44,14 @@ export const DRIVE_ICON: LucideIcon = FolderOpen;
 export const SKILLS_NAV: NavLeaf = { key: "skills", label: "スキル", href: "/skills", icon: Sparkles };
 export const APPS_NAV: NavLeaf = { key: "apps", label: "アプリ", href: "/apps", icon: LayoutGrid };
 
+/// ワークフロー（Phase 10）。dnd エディタと実行履歴の入口。
+export const WORKFLOWS_NAV: NavLeaf = {
+  key: "workflows",
+  label: "ワークフロー",
+  href: "/workflows",
+  icon: Workflow,
+};
+
 /// あるパスがナビ項目のアクティブ対象かを判定する。
 /// 完全一致、またはルート（"/" を除く）配下のサブパスを active とみなす。
 export function isActivePath(href: string, pathname: string): boolean {
@@ -57,6 +66,7 @@ export function resolvePageTitle(pathname: string): string {
   if (pathname === "/settings") return "設定";
   if (isActivePath(SKILLS_NAV.href, pathname)) return "スキル";
   if (isActivePath(APPS_NAV.href, pathname)) return "アプリ";
+  if (isActivePath(WORKFLOWS_NAV.href, pathname)) return "ワークフロー";
   const child = DRIVE_CHILDREN.find((c) => c.href === pathname);
   // ドライブのルート（home child）は単に「ドライブ」。下位ページのみ親付きで示す。
   if (child) return child.key === "home" ? "ドライブ" : `ドライブ・${child.label}`;
@@ -71,6 +81,7 @@ export function resolvePageIcon(pathname: string): LucideIcon {
   if (pathname === "/settings") return Settings;
   if (isActivePath(SKILLS_NAV.href, pathname)) return SKILLS_NAV.icon;
   if (isActivePath(APPS_NAV.href, pathname)) return APPS_NAV.icon;
+  if (isActivePath(WORKFLOWS_NAV.href, pathname)) return WORKFLOWS_NAV.icon;
   const child = DRIVE_CHILDREN.find((c) => c.href === pathname);
   if (child) return child.icon;
   return DRIVE_ICON;

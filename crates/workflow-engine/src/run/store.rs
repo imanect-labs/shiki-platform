@@ -11,10 +11,19 @@ use uuid::Uuid;
 
 use super::graph::RunGraph;
 use super::model::{idempotency_key, RunStatus, StepStatus};
-use super::readiness::{readiness_join, readiness_non_join, EdgeState, InEdge, Readiness};
-use crate::vocab::{NodeType, RunEventKind};
+use super::readiness::EdgeState;
+use crate::vocab::RunEventKind;
 
 mod advance;
+mod backoff;
+mod history;
+mod limits;
+mod map_region;
+mod ops;
+mod wait;
+
+pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
+pub use ops::{CancelOutcome, ResumeOutcome};
 
 /// step の durable テーブル記述子（複合キー・attempt は claim で増やさない・engine.md §9.5）。
 const STEP_SPEC: RunTableSpec = RunTableSpec {
@@ -49,6 +58,7 @@ fn map_db(e: sqlx::Error) -> RunStoreError {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ClaimedStep {
     pub run_id: Uuid,
+    pub workflow_id: Uuid,
     pub step_path: String,
     pub node_id: String,
     pub tenant_id: String,
@@ -60,6 +70,8 @@ pub struct ClaimedStep {
     pub fencing_token: i64,
     pub idempotency_key: String,
     pub input: Json<Value>,
+    /// step 固有の入力（map 要素の `each` コンテキスト等）。静的ノードは NULL。
+    pub step_input: Option<Json<Value>>,
     /// 開始時にピンした IR（ワーカーがノード params/retry を引く）。
     pub ir_snapshot: Json<Value>,
 }
@@ -79,6 +91,11 @@ impl RunStore {
     ///
     /// `trigger_id` は発火元トリガ（schedule/event の実体化トリガ id・interactive は None）。run 履歴の
     /// リプレイ/監査/キャンセルがどのトリガ由来か辿れるようにする。
+    ///
+    /// **run 多重度**（engine.md §8.3・10.5）: `policies.max_parallel_runs` を超える場合は
+    /// `on_trigger_overflow` に従い **queue**（status=queued で滞留・scheduler tick が promote）
+    /// または **skip**（run を作らず `None`）。判定は per-workflow advisory lock で直列化する
+    /// （並行 create の数え漏れによる上限突破を防ぐ）。
     #[allow(clippy::too_many_arguments)]
     pub async fn create_run(
         &self,
@@ -93,13 +110,47 @@ impl RunStore {
         input: &Value,
         ir_snapshot: &Value,
         graph: &RunGraph,
-    ) -> Result<Uuid, RunStoreError> {
+    ) -> Result<Option<Uuid>, RunStoreError> {
+        let policies: crate::ir::Policies = ir_snapshot
+            .get("policies")
+            .and_then(|p| serde_json::from_value(p.clone()).ok())
+            .unwrap_or_default();
+
         let mut tx = self.db.begin().await.map_err(map_db)?;
+        // 同一 workflow の create/promote を直列化（TX 終了で自動解放）。
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 42))")
+            .bind(tenant_id)
+            .bind(workflow_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db)?;
+        let active: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM workflow_run \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND status IN ('queued', 'running')",
+        )
+        .bind(tenant_id)
+        .bind(workflow_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        let overflow = active >= i64::from(policies.max_parallel_runs.max(1));
+        if overflow && policies.on_trigger_overflow == crate::ir::TriggerOverflow::Skip {
+            // occurrence/配送記録は呼び出し側で済んでいる（二重発火しない）・run は作らない。
+            tx.rollback().await.map_err(map_db)?;
+            return Ok(None);
+        }
+        let queued = overflow; // queue（既定）: 滞留させ tick が promote する。
+
+        let status = if queued { "queued" } else { "running" };
         let run_id: Uuid = sqlx::query_scalar(
             "INSERT INTO workflow_run \
              (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, \
-              principal_kind, input, ir_snapshot, status, started_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'running', now()) RETURNING run_id",
+              principal_kind, input, ir_snapshot, status, started_at, timeout_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
+                     CASE WHEN $11 = 'running' THEN now() END, \
+                     CASE WHEN $11 = 'running' \
+                          THEN now() + ($12 || ' seconds')::interval END) \
+             RETURNING run_id",
         )
         .bind(tenant_id)
         .bind(org)
@@ -111,13 +162,26 @@ impl RunStore {
         .bind(principal_kind)
         .bind(Json(input))
         .bind(Json(ir_snapshot))
+        .bind(status)
+        .bind(i64::from(policies.run_timeout_sec))
         .fetch_one(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        // OTel 相関 id（engine.md §11.1）: run_id の 32-hex を trace_id として採番・記録する
+        //（worker 実行時の trace_id 導出と同一規約 → 監査↔OTel↔Langfuse が run 単位で相関する）。
+        sqlx::query(
+            "UPDATE workflow_run SET trace_id = replace(run_id::text, '-', '') \
+             WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(run_id)
+        .execute(&mut *tx)
         .await
         .map_err(map_db)?;
 
         for node_id in graph.root_body_nodes() {
-            // 入エッジ 0 本の本体ノードは ready、それ以外は pending。
-            let status = if graph.is_root_source(node_id) {
+            // 入エッジ 0 本の本体ノードは ready（queued run では pending 留め置き）、それ以外は pending。
+            let status = if !queued && graph.is_root_source(node_id) {
                 StepStatus::Ready
             } else {
                 StepStatus::Pending
@@ -139,16 +203,19 @@ impl RunStore {
             .map_err(map_db)?;
         }
 
-        append_event(
-            &mut tx,
-            tenant_id,
-            run_id,
-            RunEventKind::RunStarted,
-            &Value::Null,
-        )
-        .await?;
+        if !queued {
+            // run.started は実行開始時のみ（queued は promote 時に追記）。
+            append_event(
+                &mut tx,
+                tenant_id,
+                run_id,
+                RunEventKind::RunStarted,
+                &Value::Null,
+            )
+            .await?;
+        }
         tx.commit().await.map_err(map_db)?;
-        Ok(run_id)
+        Ok(Some(run_id))
     }
 
     /// ready な step を 1 つ claim する（`FOR UPDATE SKIP LOCKED`・fencing +1・lease）。
@@ -171,18 +238,20 @@ impl RunStore {
                  attempt = s.attempt + (CASE WHEN s.status = 'ready' THEN 1 ELSE 0 END), \
                  updated_at = now() \
              FROM ( \
-                 SELECT tenant_id, run_id, step_path FROM step_execution \
-                 WHERE (($3::text IS NULL) OR (tenant_id = $3)) \
-                   AND ((status = 'ready' AND next_retry_at <= now()) \
-                        OR (status = 'running' AND lease_expires_at < now())) \
-                 ORDER BY next_retry_at FOR UPDATE SKIP LOCKED LIMIT 1 \
+                 SELECT s2.tenant_id, s2.run_id, s2.step_path FROM step_execution s2 \
+                 JOIN workflow_run r2 ON r2.tenant_id = s2.tenant_id AND r2.run_id = s2.run_id \
+                 WHERE (($3::text IS NULL) OR (s2.tenant_id = $3)) \
+                   AND NOT r2.cancel_requested \
+                   AND ((s2.status = 'ready' AND s2.next_retry_at <= now()) \
+                        OR (s2.status = 'running' AND s2.lease_expires_at < now())) \
+                 ORDER BY s2.next_retry_at FOR UPDATE OF s2 SKIP LOCKED LIMIT 1 \
              ) picked \
              JOIN workflow_run r ON r.tenant_id = picked.tenant_id AND r.run_id = picked.run_id \
              WHERE s.tenant_id = picked.tenant_id AND s.run_id = picked.run_id \
                AND s.step_path = picked.step_path \
-             RETURNING s.run_id, s.step_path, s.node_id, s.tenant_id, r.org, r.principal, \
-                       r.principal_kind, s.attempt, s.fencing_token, s.idempotency_key, \
-                       r.input, r.ir_snapshot",
+             RETURNING s.run_id, r.workflow_id, s.step_path, s.node_id, s.tenant_id, r.org, \
+                       r.principal, r.principal_kind, s.attempt, s.fencing_token, \
+                       s.idempotency_key, r.input, s.input AS step_input, r.ir_snapshot",
         )
         .bind(worker_id)
         .bind(lease_secs)
@@ -296,20 +365,23 @@ impl RunStore {
             .collect())
     }
 
-    /// run 内で **成功済み** step の `node_id → output` を集める（`$from nodes.<id>.output` 解決用）。
+    /// 実行対象 step から見える `node_id → output` を集める（`$from nodes.<id>.output` 解決用）。
     ///
     /// ワーカーが次ノード実行前に呼び、[`NodeContext`](super::NodeContext) の `node_outputs` を組む。
-    /// map 要素（`<map_id>[<index>].<node_id>`）は Stage A 未対応のため静的ノードのみ対象。
+    /// `step_path` が map 要素（`<map>[i].<node>`）なら **同一要素スコープの兄弟出力**＋静的 body 出力を、
+    /// 静的ノードなら静的 body 出力のみを返す（要素どうしを混同しない）。ノード id は IR 内で一意なので
+    /// スコープ横断でキー衝突しない。on_error=continue で error ポートを取った failed step も含める
+    /// （`$from nodes.<id>.output.error.*` で参照できるように）。
     pub async fn step_outputs(
         &self,
         tenant_id: &str,
         run_id: Uuid,
+        step_path: &str,
     ) -> Result<Vec<(String, Value)>, RunStoreError> {
-        // 成功 step に加え、on_error=continue で error ポートを取った failed step も対象にする
-        // （error オブジェクトを `$from nodes.<id>.output.error.*` で後続が参照できるように）。
+        let (scope_prefix, _) = map_region::split_step_path(step_path);
         let rows: Vec<(String, Option<Json<Value>>)> = sqlx::query_as(
-            "SELECT node_id, output FROM step_execution \
-             WHERE tenant_id = $1 AND run_id = $2 AND step_path = node_id \
+            "SELECT step_path, output FROM step_execution \
+             WHERE tenant_id = $1 AND run_id = $2 \
                AND (status = 'succeeded' \
                     OR (status = 'failed' AND 'error' = ANY(taken_ports)))",
         )
@@ -320,7 +392,12 @@ impl RunStore {
         .map_err(map_db)?;
         Ok(rows
             .into_iter()
-            .map(|(id, out)| (id, out.map_or(Value::Null, |j| j.0)))
+            .filter_map(|(sp, out)| {
+                let (sp_scope, sp_node) = map_region::split_step_path(&sp);
+                // 静的 body 出力（scope 空）＋自要素スコープの兄弟出力のみを見せる。
+                (sp_scope.is_empty() || sp_scope == scope_prefix)
+                    .then(|| (sp_node.to_string(), out.map_or(Value::Null, |j| j.0)))
+            })
             .collect())
     }
 }
@@ -337,31 +414,6 @@ pub(crate) fn edge_state(
         EdgeState::Live
     } else {
         EdgeState::Dead
-    }
-}
-
-/// ノードの readiness をグラフ＋源 step 状態から判定する。
-pub(crate) fn node_readiness(
-    node_id: &str,
-    graph: &RunGraph,
-    terminal_ports: &std::collections::HashMap<String, Vec<String>>,
-) -> Readiness {
-    let edges: Vec<InEdge> = graph
-        .in_edges(node_id)
-        .iter()
-        .map(|(from, from_port)| {
-            let terminal = terminal_ports.contains_key(from);
-            let taken = terminal_ports.get(from).cloned().unwrap_or_default();
-            InEdge {
-                from: from.clone(),
-                state: edge_state(from_port, terminal, &taken),
-            }
-        })
-        .collect();
-    match graph.node_type(node_id) {
-        // join の待ち合わせモードは IR の params.mode（"any"=初回 live で発火・既定 "all"）。
-        Some(NodeType::ControlJoin) => readiness_join(graph.join_mode(node_id), &edges),
-        _ => readiness_non_join(&edges),
     }
 }
 
@@ -393,6 +445,7 @@ pub(crate) async fn append_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run::readiness::Readiness;
     use std::collections::HashMap;
 
     #[test]
@@ -403,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn node_readiness_linear() {
+    fn scoped_readiness_static_linear() {
         use crate::ir::WorkflowIr;
         use serde_json::json;
         let ir = WorkflowIr::from_json(&json!({
@@ -416,14 +469,17 @@ mod tests {
         }))
         .unwrap();
         let graph = RunGraph::build(&ir);
-        // a 未 terminal → b は NotYet。
+        // 静的スコープ（scope 空）は step_path==node_id。a 未 terminal → b は NotYet。
         let mut ports: HashMap<String, Vec<String>> = HashMap::new();
-        assert_eq!(node_readiness("b", &graph, &ports), Readiness::NotYet);
+        let r = |ports: &HashMap<String, Vec<String>>| {
+            map_region::scoped_readiness("", "b", &graph, ports)
+        };
+        assert_eq!(r(&ports), Readiness::NotYet);
         // a が out を出した → b は Ready。
         ports.insert("a".into(), vec!["out".into()]);
-        assert_eq!(node_readiness("b", &graph, &ports), Readiness::Ready);
+        assert_eq!(r(&ports), Readiness::Ready);
         // a が別ポート（out 以外）→ b は Skip。
         ports.insert("a".into(), vec!["error".into()]);
-        assert_eq!(node_readiness("b", &graph, &ports), Readiness::Skip);
+        assert_eq!(r(&ports), Readiness::Skip);
     }
 }

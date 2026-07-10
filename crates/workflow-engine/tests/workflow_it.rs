@@ -118,9 +118,10 @@ fn sample_ir(name: &str, rev: i64) -> serde_json::Value {
         "name": name,
         "declared_scopes": ["storage.read", "storage.write"],
         "nodes": [
-            { "id": "read", "type": "storage.read", "params": { "id": { "$from": "input", "path": "/id" } } },
+            { "id": "read", "type": "storage.read", "params": { "file": { "$from": "input", "path": "/id" } } },
             { "id": "write", "type": "storage.write",
-              "params": { "parent": { "$from": "input", "path": "/parent" }, "name": "out", "rev": rev,
+              "params": { "folder": { "$from": "input", "path": "/parent" },
+                          "name": format!("out-rev{rev}"),
                           "content": { "$from": "nodes.read.output", "path": "/body" } } }
         ],
         "edges": [{ "from": "read", "to": "write" }]

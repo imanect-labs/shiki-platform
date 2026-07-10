@@ -70,6 +70,14 @@ pub struct AppState {
     pub workflow_launcher: Option<Arc<workflow_engine::WorkflowRunLauncher>>,
     /// ワークフロー run/step 状態取得（実行履歴・Stage A W3）。`workflow.enabled=false` では `None`。
     pub workflow_runs: Option<Arc<workflow_engine::RunStore>>,
+    /// ワークフロー有効化・同意・トリガ実体化（Task 10.4a・runtime 無効でも操作可能）。
+    pub workflow_registration: Arc<workflow_engine::RegistrationService>,
+    /// ワークフロー一覧の要約射影（Task 10.14・認可済み id 集合への単一 SQL）。
+    pub workflow_summaries: Arc<workflow_engine::WorkflowSummaryStore>,
+    /// dnd エディタのレイアウト永続化（Task 10.12・IR 外・非バージョン）。
+    pub workflow_layout: Arc<workflow_engine::EditorLayoutStore>,
+    /// API 層の監査レコーダ（有効化/無効化等の管理操作を 1 操作 1 行で記録）。
+    pub audit: Arc<storage::audit::AuditRecorder>,
     /// ユーザーディレクトリ（共有相手検索。tenant_id スコープ）。
     pub directory: Arc<DirectoryStore>,
     /// テナントレジストリ（プロビジョニング/削除のライフサイクル・SAAS.2）。

@@ -12,6 +12,7 @@ use serde_json::Value;
 use super::graph::RunGraph;
 use super::store::{ClaimedStep, RunStore};
 use super::{NodeContext, NodeExecutor, NodeResult};
+use crate::concurrency::{ConcurrencyStore, Slot};
 use crate::ir::WorkflowIr;
 
 /// ワーカー設定（数値は engine 初期値・運用で調整）。
@@ -32,6 +33,24 @@ impl Default for WorkerConfig {
     }
 }
 
+/// 3 階層並行上限（テナント全体 / workflow / ノード種・engine.md §8.2・初期値は設定で調整）。
+#[derive(Debug, Clone, Copy)]
+pub struct ConcurrencyLimits {
+    pub tenant_steps: i32,
+    pub workflow_steps: i32,
+    pub node_kind_steps: i32,
+}
+
+impl Default for ConcurrencyLimits {
+    fn default() -> Self {
+        ConcurrencyLimits {
+            tenant_steps: 64,
+            workflow_steps: 16,
+            node_kind_steps: 8,
+        }
+    }
+}
+
 /// ワーカー。`spawn` で並行タスクを起動する（各タスクが claim ループを回す）。
 #[derive(Clone)]
 pub struct WorkflowWorker {
@@ -40,6 +59,8 @@ pub struct WorkflowWorker {
     config: WorkerConfig,
     /// テナントシャーディング（None=全テナント横断・Some=そのテナントのみ）。
     tenant_scope: Option<String>,
+    /// 3 階層並行制御（None=未結線・実効上限はワーカー並列数のみ）。
+    concurrency: Option<(ConcurrencyStore, ConcurrencyLimits)>,
 }
 
 impl WorkflowWorker {
@@ -49,7 +70,15 @@ impl WorkflowWorker {
             executor,
             config,
             tenant_scope: None,
+            concurrency: None,
         }
+    }
+
+    /// 3 階層並行制御を有効化する（claim 後に予約・取れなければ順番待ち・10.5）。
+    #[must_use]
+    pub fn with_concurrency(mut self, store: ConcurrencyStore, limits: ConcurrencyLimits) -> Self {
+        self.concurrency = Some((store, limits));
+        self
     }
 
     /// 特定テナントの step のみ処理するワーカーにする（tenant シャーディング・テスト分離）。
@@ -113,14 +142,20 @@ impl WorkflowWorker {
             .ok_or_else(|| format!("node {} が IR に無い", claimed.node_id))?;
         let max_attempts = node.retry.max_attempts as i32;
 
-        // $from nodes.<id>.output の源として、先行成功 step の出力を読み込む。
+        // $from nodes.<id>.output の源として、先行成功 step の出力を（要素スコープ考慮で）読み込む。
         let node_outputs = self
             .store
-            .step_outputs(&claimed.tenant_id, claimed.run_id)
+            .step_outputs(&claimed.tenant_id, claimed.run_id, &claimed.step_path)
             .await
             .map_or(Value::Null, |pairs| {
                 Value::Object(pairs.into_iter().collect())
             });
+
+        // map 要素の each コンテキスト（$from each.*）を step 固有入力から取り出す（領域外は None）。
+        let each = claimed
+            .step_input
+            .as_ref()
+            .and_then(|v| v.0.get("each").cloned());
 
         // ノードを実行する。制御ノード（branch/switch/join）も executor 経由で taken_ports を決める。
         // trace_id は run_id（16 バイト UUID）を 32-hex 化して OTel/監査/Langfuse を束ねる。
@@ -137,6 +172,7 @@ impl WorkflowWorker {
             // Stage A: interactive のトリガペイロードは run 入力と同一（schedule/event は Null）。
             trigger: claimed.input.0.clone(),
             node_outputs,
+            each,
             trace_id: Some(claimed.run_id.simple().to_string()),
             // 実効スコープ = declared_scopes（run 開始時に declared ⊆ 委譲 が保証済み）。
             scope_ceiling: ir.declared_scopes.clone(),
@@ -171,16 +207,53 @@ impl WorkflowWorker {
             }
         });
 
+        // 3 階層並行制御（engine.md §8.2）: 全スロット予約に成功して初めて実行する。取れなければ
+        // `concurrency_limited`（RateLimited 分類 = attempt 非消費・backoff ready 戻し）で**順番待ち**。
+        let slots: Option<Vec<Slot>> = self.concurrency.as_ref().map(|(_, lim)| {
+            vec![
+                Slot::global(lim.tenant_steps),
+                Slot::workflow(claimed.workflow_id, lim.workflow_steps),
+                Slot::node_kind(claimed.workflow_id, &node.node_type, lim.node_kind_steps),
+            ]
+        });
+        if let (Some((cstore, _)), Some(slots)) = (self.concurrency.as_ref(), slots.as_ref()) {
+            let acquired = cstore
+                .try_acquire(&claimed.tenant_id, slots)
+                .await
+                .map_err(|e| e.to_string())?;
+            if !acquired {
+                heartbeat.abort();
+                let result = NodeResult::fail(
+                    "concurrency_limited",
+                    "並行上限に達しました（順番待ち）",
+                    true,
+                );
+                self.store
+                    .checkpoint_and_advance(claimed, &result, &graph, max_attempts, node.on_error)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+        }
+
         let result: NodeResult = self
             .executor
             .execute(&node.node_type, &node.params, &ctx)
             .await;
         heartbeat.abort();
 
-        self.store
+        let advanced = self
+            .store
             .checkpoint_and_advance(claimed, &result, &graph, max_attempts, node.on_error)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string());
+        // 予約解放は checkpoint の成否に依らず必ず行う（リークは tick の reconcile が最終回収）。
+        if let (Some((cstore, _)), Some(slots)) = (self.concurrency.as_ref(), slots.as_ref()) {
+            if let Err(e) = cstore.release(&claimed.tenant_id, slots).await {
+                tracing::warn!(error = %e, "並行カウンタ解放に失敗（reconcile が回収）");
+            }
+        }
+        advanced?;
         Ok(())
     }
 }

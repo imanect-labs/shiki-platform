@@ -6,6 +6,7 @@
 pub mod edge;
 pub mod expr;
 pub mod node;
+pub mod params;
 pub mod trigger;
 pub mod validate;
 

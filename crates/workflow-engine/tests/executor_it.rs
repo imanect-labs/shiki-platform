@@ -145,6 +145,7 @@ fn ctx(input: Value, scopes: Vec<String>) -> NodeContext {
         input: input.clone(),
         trigger: input,
         node_outputs: Value::Null,
+        each: None,
         trace_id: Some("trace-1".into()),
         scope_ceiling: scopes,
     }
@@ -207,7 +208,7 @@ async fn scope_ceiling_denies_out_of_scope() {
     let res = exec
         .execute(
             "storage.read",
-            &json!({ "id": Uuid::nil().to_string() }),
+            &json!({ "file": Uuid::nil().to_string() }),
             &ctx(json!({}), vec![]),
         )
         .await;
@@ -229,7 +230,7 @@ async fn storage_read_dispatches_with_scope() {
     let res = exec
         .execute(
             "storage.read",
-            &json!({ "id": Uuid::nil().to_string() }),
+            &json!({ "file": Uuid::nil().to_string() }),
             &ctx(json!({}), vec!["storage.read".into()]),
         )
         .await;
@@ -363,16 +364,75 @@ async fn http_secret_never_appears_in_audit() {
 }
 
 #[tokio::test]
-async fn map_and_wait_are_unsupported_stage_a() {
+async fn wait_returns_suspend_directive() {
     let exec = executor(
         Arc::new(FakePorts::default()),
         Arc::new(CapturingAudit::default()),
     );
-    for nt in ["control.map", "control.wait"] {
-        let res = exec.execute(nt, &json!({}), &ctx(json!({}), vec![])).await;
-        assert!(!res.ok);
-        assert_eq!(res.error.unwrap().code, "unsupported_stage_a");
-    }
+    // wait(duration) は terminal 化せず timer 中断指示を返す。
+    let res = exec
+        .execute(
+            "control.wait",
+            &json!({ "kind": "duration", "duration_sec": 60 }),
+            &ctx(json!({}), vec![]),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert!(res.suspend.is_some(), "wait は suspend を返す");
+}
+
+#[tokio::test]
+async fn wait_rejects_negative_timeout() {
+    let exec = executor(
+        Arc::new(FakePorts::default()),
+        Arc::new(CapturingAudit::default()),
+    );
+    let res = exec
+        .execute(
+            "control.wait",
+            &json!({ "kind": "event", "source": "storage.write", "timeout_sec": -1 }),
+            &ctx(json!({}), vec![]),
+        )
+        .await;
+    assert!(!res.ok);
+    assert_eq!(res.error.unwrap().code, "bad_params");
+}
+
+#[tokio::test]
+async fn map_returns_fanout_directive() {
+    let exec = executor(
+        Arc::new(FakePorts::default()),
+        Arc::new(CapturingAudit::default()),
+    );
+    // map は items を解決して fan-out 指示を返す（要素挿入は checkpoint 側）。
+    let res = exec
+        .execute(
+            "control.map",
+            &json!({ "items": { "$from": "input", "path": "/xs" } }),
+            &ctx(json!({ "xs": [1, 2, 3] }), vec![]),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let fanout = res.fanout.expect("map は fanout を返す");
+    assert_eq!(fanout.items.len(), 3);
+}
+
+#[tokio::test]
+async fn map_fanout_limit_exceeded() {
+    let exec = executor(
+        Arc::new(FakePorts::default()),
+        Arc::new(CapturingAudit::default()),
+    );
+    let big: Vec<Value> = (0..1001).map(|i| json!(i)).collect();
+    let res = exec
+        .execute(
+            "control.map",
+            &json!({ "items": Value::Array(big) }),
+            &ctx(json!({}), vec![]),
+        )
+        .await;
+    assert!(!res.ok);
+    assert_eq!(res.error.unwrap().code, "fanout_limit_exceeded");
 }
 
 #[tokio::test]

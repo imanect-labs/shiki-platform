@@ -99,6 +99,11 @@ pub struct WorkerDeps {
     /// skill / ミニアプリのピン解決（Task 6.7/6.9/6.10）。未配線でピンがある run は失敗する
     /// （fail-closed・skill 無しで黙って生成しない）。
     pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
+    /// ワークフロー IR ストア（emit_workflow / read_workflow・Task 10.13）。
+    /// カタログ源と両方揃った時のみツールを提示する。
+    pub workflow_store: Option<Arc<workflow_engine::WorkflowStore>>,
+    /// 保存 API と同一のカタログ源（secret 名→許可ホスト・モデル一覧・Task 10.13）。
+    pub workflow_catalog: Option<Arc<dyn crate::workflow_tool::WorkflowCatalogSource>>,
 }
 
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
@@ -120,6 +125,10 @@ pub struct ChatWorker {
     ui_validator: Option<Arc<gui::SpecValidator>>,
     /// skill / ミニアプリのピン解決（Task 6.9）。
     skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
+    /// ワークフロー IR ストア（emit_workflow / read_workflow・Task 10.13）。
+    workflow_store: Option<Arc<workflow_engine::WorkflowStore>>,
+    /// カタログ源（保存 API と同一実装を注入・Task 10.13）。
+    workflow_catalog: Option<Arc<dyn crate::workflow_tool::WorkflowCatalogSource>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -134,6 +143,8 @@ impl ChatWorker {
             storage,
             ui_validator,
             skill_artifacts,
+            workflow_store,
+            workflow_catalog,
         } = deps;
         ChatWorker {
             db,
@@ -146,6 +157,8 @@ impl ChatWorker {
             storage,
             ui_validator,
             skill_artifacts,
+            workflow_store,
+            workflow_catalog,
             config: Arc::new(config),
         }
     }

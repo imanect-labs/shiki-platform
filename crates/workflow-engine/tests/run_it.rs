@@ -187,6 +187,7 @@ async fn create_run(store: &RunStore, tenant: &str, ir: &Value) -> uuid::Uuid {
         )
         .await
         .expect("create_run")
+        .expect("admitted")
 }
 
 fn worker(

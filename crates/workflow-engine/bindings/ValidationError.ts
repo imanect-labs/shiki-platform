@@ -19,4 +19,8 @@ node_id: string | null,
 /**
  * 紐付くエッジ（該当時・`from -> to`）。
  */
-edge: string | null, };
+edge: string | null, 
+/**
+ * IR 内の位置（`/params/...` の JSON Pointer 風・該当時）。dnd がフォームフィールドへ写像する。
+ */
+path: string | null, };

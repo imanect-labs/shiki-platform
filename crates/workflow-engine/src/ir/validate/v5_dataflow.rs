@@ -85,10 +85,10 @@ fn check_value(value: &serde_json::Value, ctx: &NodeCtx<'_>, errors: &mut Vec<Va
 
 /// `$from` の source を検証する（祖先性・default 要否）。
 fn check_from(from: &FromRef, ctx: &NodeCtx<'_>, errors: &mut Vec<ValidationError>) {
-    // source 先頭トークンで分類。
+    // source は閉集合へ **exact match**（`each.item` や `input.foo` のような「先頭一致だが
+    // 実行時リゾルバが解決できない」source を保存時に弾く。中身の指定は path で行う）。
     let source = from.from.as_str();
-    let head = source.split('.').next().unwrap_or("");
-    match head {
+    match source {
         "input" | "trigger" | "run" => { /* 静的に許可 */ }
         "each" => {
             // each.* は map 領域内（node.parent が map ノード）でのみ有効。領域外は実行時に
@@ -106,7 +106,7 @@ fn check_from(from: &FromRef, ctx: &NodeCtx<'_>, errors: &mut Vec<ValidationErro
                 );
             }
         }
-        "nodes" => {
+        s if s.starts_with("nodes.") && s.ends_with(".output") => {
             // `nodes.<id>.output` の <id> は当該ノードの祖先必須。
             let referenced = source.split('.').nth(1).unwrap_or("");
             let is_ancestor = ctx.ancestors.is_some_and(|a| a.contains(referenced));
@@ -121,8 +121,13 @@ fn check_from(from: &FromRef, ctx: &NodeCtx<'_>, errors: &mut Vec<ValidationErro
             }
         }
         _ => errors.push(
-            ValidationError::new("ir.bad_ref", format!("未知の $from source: {source}"))
-                .at_node(&ctx.node.id),
+            ValidationError::new(
+                "ir.bad_ref",
+                format!(
+                    "未知の $from source: {source}（input / trigger / run / each / nodes.<id>.output のみ。中身の指定は path を使う）"
+                ),
+            )
+            .at_node(&ctx.node.id),
         ),
     }
 }

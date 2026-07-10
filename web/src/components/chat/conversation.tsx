@@ -36,6 +36,7 @@ import { MessageFooter } from "./message-footer";
 import { type ToolActivityItem } from "./tool-activity";
 import { ChainOfThought } from "./chain-of-thought";
 import { Composer } from "./composer";
+import { WorkflowRefCard } from "./workflow-ref-card";
 import { ThreadShareDialog } from "./share-dialog";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
 
@@ -49,6 +50,8 @@ type StreamState = {
   files: Attachment[];
   /// 検証済み generative UI スペック（Phase 6・emit_ui）。
   uiSpecs: unknown[];
+  /// 保存済みワークフロー参照（Task 10.13・emit_workflow）。
+  workflowRefs: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
   plan: PlanSubtask[];
   approval: ApprovalRequest | null;
@@ -64,6 +67,7 @@ const EMPTY_STREAM: StreamState = {
   citations: [],
   files: [],
   uiSpecs: [],
+  workflowRefs: [],
   plan: [],
   approval: null,
   budget: null,
@@ -129,6 +133,10 @@ export function Conversation({ threadId }: { threadId: string }) {
       onFileRef: (f) => updateStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
       onGenerativeUi: (spec) =>
         updateStream((s) => (s ? { ...s, uiSpecs: [...s.uiSpecs, spec] } : s)),
+      onWorkflowRef: (workflow) =>
+        updateStream((s) =>
+          s ? { ...s, workflowRefs: [...s.workflowRefs, workflow] } : s,
+        ),
       // --- 自律エージェント（Phase 5・Task 5.11） ---
       onRunId: (runId) => updateStream((s) => (s ? { ...s, runId } : s)),
       onPlan: (subtasks) =>
@@ -350,6 +358,8 @@ function finalizeStream(
   for (const f of s.files) blocks.push({ type: "file_ref", node_id: f.node_id, name: f.name });
   // 検証済み generative UI ブロック（アクションは確定 id で再読込後に有効化される）。
   for (const spec of s.uiSpecs) blocks.push({ type: "generative_ui", spec });
+  // 保存済みワークフロー参照カード（Task 10.13）。
+  for (const workflow of s.workflowRefs) blocks.push({ type: "workflow_ref", workflow });
   if (blocks.length === 0) return;
   setMessages((prev) => [
     ...prev,
@@ -419,6 +429,9 @@ function AssistantRow({
   const uiSpecs = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "generative_ui" }> => b.type === "generative_ui",
   );
+  const workflowRefs = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "workflow_ref" }> => b.type === "workflow_ref",
+  );
 
   return (
     <Message className="group justify-start">
@@ -439,6 +452,9 @@ function AssistantRow({
             ))}
           </ChatGenUiProvider>
         ) : null}
+        {workflowRefs.map((b, i) => (
+          <WorkflowRefCard key={i} raw={b.workflow} />
+        ))}
         <ArtifactFiles files={files} />
         <Sources citations={citations} />
         {text ? <MessageFooter text={text} /> : null}
@@ -546,6 +562,9 @@ function StreamingRow({
             ))}
           </ChatGenUiProvider>
         ) : null}
+        {stream.workflowRefs.map((workflow, i) => (
+          <WorkflowRefCard key={i} raw={workflow} />
+        ))}
         <ArtifactFiles files={stream.files} />
       </div>
     </Message>

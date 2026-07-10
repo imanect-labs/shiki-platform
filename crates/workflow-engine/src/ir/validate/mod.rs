@@ -6,12 +6,12 @@
 
 mod refs;
 mod v2_graph;
+mod v3_vocab;
 mod v5_dataflow;
 
 use std::collections::BTreeMap;
 
 use crate::ir::WorkflowIr;
-use crate::vocab::{EventSource, NodeType, Scope};
 
 /// 検証エラー（コード＋メッセージ＋位置）。dnd がノード/エッジに紐付けて表示する。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS, utoipa::ToSchema)]
@@ -27,6 +27,9 @@ pub struct ValidationError {
     /// 紐付くエッジ（該当時・`from -> to`）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edge: Option<String>,
+    /// IR 内の位置（`/params/...` の JSON Pointer 風・該当時）。dnd がフォームフィールドへ写像する。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 impl ValidationError {
@@ -36,6 +39,7 @@ impl ValidationError {
             message: message.into(),
             node_id: None,
             edge: None,
+            path: None,
         }
     }
 
@@ -48,6 +52,12 @@ impl ValidationError {
     #[must_use]
     pub fn at_edge(mut self, edge: impl Into<String>) -> Self {
         self.edge = Some(edge.into());
+        self
+    }
+
+    #[must_use]
+    pub fn at_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
         self
     }
 }
@@ -92,12 +102,32 @@ pub fn validate(
             ),
         ));
     }
+    // V1b: ノード params の typed 契約照合（deny-unknown・必須・型・ir.md §7「params の正は codegen」）。
+    // 予約語彙/未知 type は V3 が拒否するため対象外。エラーはノード単位に path 付きで収集する。
+    for node in &ir.nodes {
+        let Some(nt) = crate::vocab::NodeType::parse(&node.node_type) else {
+            continue;
+        };
+        if !nt.available_stage_a() {
+            continue;
+        }
+        if let Err(issue) = crate::ir::params::check_params(nt, &node.params) {
+            errors.push(
+                ValidationError::new(
+                    "ir.schema_violation",
+                    format!("params が不正です: {}", issue.message),
+                )
+                .at_node(&node.id)
+                .at_path(issue.path),
+            );
+        }
+    }
     // V7: 上限（他段より先に軽く弾く）。
     v7_limits(value, &ir, &mut errors);
     // V2: グラフ（id 一意・エッジ参照・DAG・入エッジ制約・領域閉包・到達性）。
     v2_graph::check(&ir, &mut errors);
     // V3: 語彙照合（node type・scope・event source・model）。
-    v3_vocab(&ir, catalog, &mut errors);
+    v3_vocab::v3_vocab(&ir, catalog, &mut errors);
     // V4: 参照存在（Stage A は secret のみ・宛先束縛の事前チェック）。
     refs::v4_refs(&ir, catalog, &mut errors);
     // V5: データフロー（$from 祖先性・default 要否・条件木型整合・regex）。
@@ -184,112 +214,6 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
     }
 }
 
-/// V3: 語彙照合（Stage A available 集合へ）。
-fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError>) {
-    for scope in &ir.declared_scopes {
-        match Scope::parse(scope) {
-            Some(s) if s.available_stage_a() => {}
-            Some(_) => errors.push(ValidationError::new(
-                "ir.unknown_scope",
-                format!("スコープ {scope} は Stage A では未対応です"),
-            )),
-            None => errors.push(ValidationError::new(
-                "ir.unknown_scope",
-                format!("未知のスコープ: {scope}"),
-            )),
-        }
-    }
-    let declared: std::collections::BTreeSet<&str> =
-        ir.declared_scopes.iter().map(String::as_str).collect();
-    for node in &ir.nodes {
-        match NodeType::parse(&node.node_type) {
-            // 予約語彙（将来ノード・issue #180）: 閉集合には含まれるが現ステージでは保存不可。
-            Some(nt) if !nt.available_stage_a() => errors.push(
-                ValidationError::new(
-                    "ir.unknown_node_type",
-                    format!(
-                        "ノード種 {} は Stage A では未対応です（予約語彙）",
-                        node.node_type
-                    ),
-                )
-                .at_node(&node.id),
-            ),
-            Some(nt) => {
-                // 能力ノードが必要とするスコープが declared_scopes に宣言されているか（宣言天井と
-                // ノードの整合・保存時に弾く。実行時の scope 天井ゲートで初めて落ちるのを防ぐ）。
-                if let Some(required) = refs::required_scope_for(nt) {
-                    if !declared.contains(required) {
-                        errors.push(
-                            ValidationError::new(
-                                "ir.missing_scope",
-                                format!(
-                                    "ノード {} は scope {required} を要しますが declared_scopes に未宣言です",
-                                    node.id
-                                ),
-                            )
-                            .at_node(&node.id),
-                        );
-                    }
-                }
-                // llm.invoke の model をモデルカタログへ照合（カタログが空なら省略）。
-                if nt == NodeType::LlmInvoke && !catalog.models.is_empty() {
-                    match node.params.get("model").and_then(|v| v.as_str()) {
-                        Some(model) if catalog.models.iter().any(|m| m == model) => {}
-                        Some(model) => errors.push(
-                            ValidationError::new(
-                                "ir.unknown_model",
-                                format!("未知のモデル: {model}"),
-                            )
-                            .at_node(&node.id),
-                        ),
-                        // model 欠落/非文字列も保存時に弾く（LLM ゲートウェイ経路に必須）。
-                        None => errors.push(
-                            ValidationError::new(
-                                "ir.missing_model",
-                                format!("llm.invoke（node {}）は params.model が必要です", node.id),
-                            )
-                            .at_node(&node.id),
-                        ),
-                    }
-                }
-            }
-            None => errors.push(
-                ValidationError::new(
-                    "ir.unknown_node_type",
-                    format!("未知/未対応のノード種: {}", node.node_type),
-                )
-                .at_node(&node.id),
-            ),
-        }
-    }
-    // イベント source を閉集合＋Stage A available へ照合。
-    for t in &ir.triggers {
-        match t {
-            crate::ir::Trigger::Event(ev) => match EventSource::parse(&ev.source) {
-                Some(s) if s.available_stage_a() => {}
-                Some(_) => errors.push(ValidationError::new(
-                    "ir.unknown_event_source",
-                    format!("イベント source {} は Stage A では未対応です", ev.source),
-                )),
-                None => errors.push(ValidationError::new(
-                    "ir.unknown_event_source",
-                    format!("未知のイベント source: {}", ev.source),
-                )),
-            },
-            // schedule は cron（5 フィールド）＋IANA tz をパース検証する（実行時の発火不能を保存時に弾く）。
-            crate::ir::Trigger::Schedule(sc) => {
-                if let Err(e) = crate::scheduler::cron::validate(&sc.cron, &sc.tz) {
-                    errors.push(ValidationError::new(
-                        "ir.bad_schedule",
-                        format!("スケジュールが不正です: {e}"),
-                    ));
-                }
-            }
-            crate::ir::Trigger::Interactive(_) => {}
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,11 +230,86 @@ mod tests {
             "name": "wf",
             "declared_scopes": ["storage.read"],
             "nodes": [
-                { "id": "read", "type": "storage.read", "params": { "id": { "$from": "input", "path": "/id" } } }
+                { "id": "read", "type": "storage.read", "params": { "file": { "$from": "input", "path": "/id" } } }
             ],
             "edges": []
         });
         assert!(validate(&ir, &catalog()).is_ok());
+    }
+
+    #[test]
+    fn v3_event_trigger_scope_must_be_folder_binding() {
+        // 全購読禁止: scope 欠落/空/非 folder キー/非 uuid は保存時拒否（fail-closed の一段目）。
+        for bad_scope in [
+            json!({}),
+            json!({ "table": "expense" }),
+            json!({ "folder": "not-a-uuid" }),
+            json!({ "folder": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", "extra": 1 }),
+        ] {
+            let ir = json!({
+                "ir_version": 1, "name": "wf",
+                "triggers": [{ "kind": "event", "source": "storage.write", "scope": bad_scope }],
+                "nodes": [], "edges": []
+            });
+            let errs = validate(&ir, &catalog()).unwrap_err();
+            assert!(
+                errs.iter().any(|e| e.code == "ir.bad_event_scope"),
+                "{bad_scope} が拒否されるべき: {errs:?}"
+            );
+        }
+        let ok = json!({
+            "ir_version": 1, "name": "wf",
+            "triggers": [{ "kind": "event", "source": "storage.write",
+                           "scope": { "folder": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" } }],
+            "nodes": [], "edges": []
+        });
+        assert!(validate(&ok, &catalog()).is_ok());
+    }
+
+    #[test]
+    fn v5_from_source_requires_exact_vocabulary() {
+        // `each.item` のような「先頭一致だが実行時に解決不能」な source は保存時に弾く。
+        for bad in ["each.item", "input.foo", "nodes.read", "nodes.read.out"] {
+            let ir = json!({
+                "ir_version": 1, "name": "wf",
+                "declared_scopes": ["storage.read"],
+                "nodes": [
+                    { "id": "read", "type": "storage.read",
+                      "params": { "file": { "$from": bad } } }
+                ],
+                "edges": []
+            });
+            let errs = validate(&ir, &catalog()).unwrap_err();
+            assert!(
+                errs.iter().any(|e| e.code == "ir.bad_ref"),
+                "{bad} が拒否されるべき: {errs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn v1b_params_violation_has_node_and_path() {
+        // typed params 契約違反が node_id＋path 付きの ir.schema_violation になる（dnd 表示契約）。
+        let ir = json!({
+            "ir_version": 1,
+            "name": "wf",
+            "declared_scopes": ["storage.read"],
+            "nodes": [
+                { "id": "read", "type": "storage.read", "params": {} }
+            ],
+            "edges": []
+        });
+        let errs = validate(&ir, &catalog()).unwrap_err();
+        let e = errs
+            .iter()
+            .find(|e| e.code == "ir.schema_violation")
+            .expect("params 契約違反が収集される");
+        assert_eq!(e.node_id.as_deref(), Some("read"));
+        assert!(
+            e.path.as_deref().unwrap_or_default().starts_with("/params"),
+            "path が /params 起点: {:?}",
+            e.path
+        );
     }
 
     #[test]
