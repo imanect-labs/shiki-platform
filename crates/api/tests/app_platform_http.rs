@@ -288,6 +288,13 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         Arc::clone(&artifacts),
         app_platform::Registry::new(db.clone()),
     ));
+    let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
+        db.clone(),
+        workflow_engine::DelegationStore::new(db.clone(), Arc::new(AllowAll)),
+    ));
+    let audit = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
+    let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(db.clone()));
+    let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -309,6 +316,10 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         workflows,
         workflow_launcher: None,
         workflow_runs: None,
+        workflow_registration,
+        workflow_summaries,
+        workflow_layout,
+        audit,
         directory,
         tenants,
         search: None,

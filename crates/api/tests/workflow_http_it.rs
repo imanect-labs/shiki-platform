@@ -182,6 +182,7 @@ fn config(db_url: &str) -> AppConfig {
         websearch: api::config::WebSearchConfig::default(),
         secrets: api::config::SecretsConfig::default(),
         workflow: api::workflow_runtime::WorkflowConfig::default(),
+        gateway: api::config::GatewayConfig::default(),
     }
 }
 
@@ -245,6 +246,36 @@ async fn setup() -> Option<Env> {
         Arc::clone(&artifacts),
         pool.clone(),
     ));
+    // 構造化データ（Phase 9）: workflow ルートは触らないが AppState 構築に必要。
+    let data_directory = Arc::new(storage::DirectoryStore::new(pool.clone()));
+    let data_storage = Arc::new(storage::StorageService::new(
+        pool.clone(),
+        Arc::new(NoopStore),
+        Arc::clone(&authz),
+        Duration::from_secs(120),
+        Duration::from_secs(900),
+        1024,
+    ));
+    let data_store = Arc::new(data::DataStore::new(
+        pool.clone(),
+        Arc::clone(&authz),
+        Arc::new(api::data_refs::ApiRefResolver {
+            directory: Arc::clone(&data_directory),
+            storage: Arc::clone(&data_storage),
+        }),
+    ));
+    let data_views = Arc::new(data::DataViewStore::new(
+        Arc::clone(&artifacts),
+        (*data_store).clone(),
+    ));
+    let fsms = Arc::new(data::FsmStore::new(
+        Arc::clone(&artifacts),
+        (*data_store).clone(),
+    ));
+    let mini_app_code = Arc::new(app_platform::MiniAppCodeStore::new(
+        Arc::clone(&artifacts),
+        app_platform::Registry::new(pool.clone()),
+    ));
     let state = AppState {
         config: Arc::new(config(&db_url)),
         db: api::state::ReadinessProbe::new(pool.clone()),
@@ -271,6 +302,10 @@ async fn setup() -> Option<Env> {
         )),
         skills: Arc::new(gui::SkillStore::new(Arc::clone(&artifacts))),
         mini_apps: Arc::new(gui::MiniAppStore::new(Arc::clone(&artifacts), pool.clone())),
+        data: data_store,
+        data_views,
+        fsms,
+        mini_app_code,
         secrets: None,
         workflows,
         workflow_launcher: Some(launcher),
