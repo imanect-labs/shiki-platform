@@ -492,9 +492,39 @@ flowchart TB
   保存時に md へシリアライズして StorageService に書く（→書込イベント→RAG 再索引）。
   md ファイルを正にすると並行編集のマージ単位がテキスト行になり表・埋め込みで壊れるため採らない。
 - **AI 編集は共同編集参加者**: エージェントの `document.edit` ツールは Yjs トランザクションを発行する専用クライアント
-  として同一セッションに参加（awareness に「AI」表示・サジェスト/直接適用の2モード）。ファイル直接上書きで
-  人間の編集と衝突する経路を作らない。権限は人間と同じ editor relation チェック。
+  として同一セッションに参加（awareness に「AI」表示・**既定=直接適用**（AI 名義・undo 可）/サジェストは切替）。
+  ファイル直接上書きで人間の編集と衝突する経路を作らない。権限は人間と同じ editor relation チェック。
+- **メタデータは frontmatter 型軽量属性**（タイトル・アイコン・タグ・任意 key-value・紐付く thread_id）。
+  シリアライズ時に YAML frontmatter へ往復可能に落とす。型付きプロパティ DB（Notion 型）はやらない（将来トラック）。
+- **埋め込み境界（stored XSS 遮断）**: ノートに埋め込めるのは ①genui 検証済みシキコンポーネントスペック
+  ②ミニアプリ/artifact の**別オリジン iframe**（B1 と同じ分離）③ドライブファイル参照（**閲覧者本人の ReBAC で解決**）
+  の 3 種のみ。**生 HTML/JSX はレンダリングしない**（コードブロック表示のみ）。既存の信頼境界以外を作らない。
+- **ノート×チャット UI**: ノートページが分割ビューを一元ホストし、チャットスレッド UI をサイドパネルとして再利用。
+  チャット側は note_ref カード（workflow_ref と同型）で保存/遷移。ノート共有とスレッド共有は**別 ReBAC**
+  （thread_id 紐付けはスレッドを暗黙共有しない・権限なしは fail-closed 表示）。
 - 共同編集は **md 系=Yjs / Office 系=Collabora 内蔵** の2系統（二重実装ではなく「Office の共同編集を自作しない」判断）。
+
+### 4.8.2 CSV エディタ・クエリサービス（tabular）
+
+- **ファイルが真実**: CSV は StorageService 上のファイル。authz は**ファイル単位 ReBAC**（読めるなら全行読める）。
+  Phase 9 の data_table（JSONB 行・行 authz）には乗せない — 行レベル権限が要るデータは data_table、
+  ファイルとして持ち込む/持ち出す表データは CSV、と役割を分ける。
+- **`crates/tabular` = CSV クエリ/パッチの単一チョークポイント**。UI・エージェントツール・ワークフローステップの
+  すべてが同一経路を通る（AuthContext 必須）。
+  - **クエリ**: SQL は**読み取り専用**（DDL/DML・`ATTACH`・`PRAGMA`・`LOAD`・extension 導入をすべて拒否）。
+    実行は **DuckDB を非特権別プロセスに隔離**
+    （sandbox-wasm/script-runtime と同じパターン・敵対的 CSV を api に食わせない）。**外部アクセス無効化**
+    （`enable_external_access=false`・httpfs 等 extension 無効・PIT-39）。メモリ/時間/結果サイズのクォータ強制。
+    結果はページ配信（グリッドの無限スクロールと共用）。
+  - **編集**: セル/行/列の**パッチ操作＋rev 楽観ロック**→新バージョン保存（既存バージョニング・書込イベント・
+    RAG 再索引に乗る）。CSV の CRDT 共同編集はやらない（巨大ファイルで update log が破綻するため）。
+  - **公開面**: `csv.query` / `csv.patch` / `csv.write` をエージェントツールとワークフローステップの両方へ。
+    実行主体のファイル ReBAC で判定（workflow の実行主体交差則と同じ）。**操作別に要求 relation を分ける**:
+    query=viewer / patch=editor / write=保存先フォルダへの作成権限（読めるだけの viewer が書き換え・派生保存
+    できてはならない）。ワークフローステップは at-least-once 再試行（PIT-31）に備え、
+    **エンジンの冪等キーを tabular 側で消費して書込を重複排除**する。ノード型/スコープは
+    workflow IR の閉カタログ・codegen 認可語彙（単一定義）に登録して公開する。
+- **将来**: BI（複数ファイルへのクエリ層＋チャート）は tabular を土台に別トラックで足す。
 
 ### 4.9 監視
 
@@ -612,6 +642,7 @@ crates/
   secrets/         # シークレット管理・KeyProvider
   office/          # OfficeSuite トレイト・WOPI ホスト（Collabora）
   collab/          # Yjs(yrs) 共同編集同期サーバ・md シリアライズ
+  tabular/         # CSV クエリ/パッチ単一チョークポイント（DuckDB は非特権別プロセスに隔離）
 ingestion-worker/  # Python: Docling パース・docx/pptx 生成/編集
 web/               # Next.js / TypeScript（generative UIレンダラ・ミニアプリB1配信・dnd/TipTap エディタ）
 help/              # ヘルプコーパス（1ソース→ヘルプUI/RAG shiki-help スコープ）
