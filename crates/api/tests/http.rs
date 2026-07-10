@@ -283,6 +283,10 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         Arc::clone(&artifacts),
         (*data_store).clone(),
     ));
+    let fsms = Arc::new(data::FsmStore::new(
+        Arc::clone(&artifacts),
+        (*data_store).clone(),
+    ));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -294,6 +298,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         artifacts,
         data: data_store,
         data_views,
+        fsms,
         ui_specs,
         ui_actions,
         skills,

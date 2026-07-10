@@ -113,6 +113,7 @@ fn hr_schema() -> TableSchema {
             },
         }],
         aggregate_min_rows: Some(3),
+        fsm_ref: None,
     }
 }
 
@@ -403,6 +404,7 @@ async fn saved_view_reevaluates_per_viewer() {
         }),
         field_policy: vec![],
         aggregate_min_rows: None,
+        fsm_ref: None,
     };
     let table = store
         .create_table(

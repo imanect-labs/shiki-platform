@@ -81,20 +81,8 @@ async fn main() -> anyhow::Result<()> {
 
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
-    // 構造化データサービス（Task 9.2/9.5）: 参照整合は directory / StorageService へ委譲する。
-    let data_store = Arc::new(data::DataStore::new(
-        db.clone(),
-        authz.clone(),
-        Arc::new(api::data_refs::ApiRefResolver {
-            directory: Arc::clone(&directory),
-            storage: Arc::clone(&storage),
-        }),
-    ));
-    // 保存ビュー（Task 9.4）: artifact 共通枠 ＋ data クエリチョークポイントの合流。
-    let data_views = Arc::new(data::DataViewStore::new(
-        Arc::clone(&artifacts),
-        (*data_store).clone(),
-    ));
+    // 構造化データサービス（Task 9.2〜9.10）: data ストア＋保存ビュー＋FSM を束ねて配線する。
+    let (data_store, data_views, fsms) = wire_data(&db, &authz, &directory, &storage, &artifacts);
     // generative UI / skill / ミニアプリ（Phase 6）: 検証は全経路が同一実装を共有する信頼境界。
     let gui_stores = wiring_gui::wire_gui(&db, &artifacts);
 
@@ -167,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
         artifacts,
         data: data_store,
         data_views,
+        fsms,
         ui_specs: gui_stores.ui_specs,
         ui_actions,
         skills: gui_stores.skills,
@@ -191,6 +180,41 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("サーバ実行中のエラー")?;
     Ok(())
+}
+
+/// 構造化データ（Task 9.2〜9.10）の 3 ストアを配線する。
+///
+/// data ストア（テーブル/レコード/行述語）・保存ビュー（9.4）・FSM 宣言的ガード（9.10）は
+/// いずれも同じ data チョークポイントと artifact 共通枠の上に載る。
+fn wire_data(
+    db: &sqlx::PgPool,
+    authz: &std::sync::Arc<dyn AuthzClient>,
+    directory: &std::sync::Arc<DirectoryStore>,
+    storage: &std::sync::Arc<storage::StorageService>,
+    artifacts: &std::sync::Arc<artifact::ArtifactStore>,
+) -> (
+    std::sync::Arc<data::DataStore>,
+    std::sync::Arc<data::DataViewStore>,
+    std::sync::Arc<data::FsmStore>,
+) {
+    // 参照整合（user/role/file）は directory / StorageService のチョークポイントへ委譲する。
+    let data_store = Arc::new(data::DataStore::new(
+        db.clone(),
+        authz.clone(),
+        Arc::new(api::data_refs::ApiRefResolver {
+            directory: Arc::clone(directory),
+            storage: Arc::clone(storage),
+        }),
+    ));
+    let data_views = Arc::new(data::DataViewStore::new(
+        Arc::clone(artifacts),
+        (*data_store).clone(),
+    ));
+    let fsms = Arc::new(data::FsmStore::new(
+        Arc::clone(artifacts),
+        (*data_store).clone(),
+    ));
+    (data_store, data_views, fsms)
 }
 
 /// dev fixture の 1 ユーザー（OIDC sub / tenant / org / email / 表示名）。

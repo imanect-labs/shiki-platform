@@ -60,6 +60,15 @@ pub(crate) fn validate_row_policy(
     Ok(())
 }
 
+/// FSM actor 述語などの単発式検証（行レベル述語と同じ文法・型整合）。
+pub(crate) fn validate_policy_expr(
+    schema: &TableSchema,
+    expr: &PolicyExpr,
+    path: &str,
+) -> Result<(), DataError> {
+    validate_expr(schema, expr, 0, path)
+}
+
 fn validate_expr(
     schema: &TableSchema,
     expr: &PolicyExpr,
@@ -224,6 +233,7 @@ mod tests {
             row_policy: None,
             field_policy: vec![],
             aggregate_min_rows: None,
+            fsm_ref: None,
         }
     }
 

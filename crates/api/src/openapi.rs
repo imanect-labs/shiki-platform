@@ -101,6 +101,10 @@ use utoipa::{
         crate::routes::data_views::update_view,
         crate::routes::data_views::get_view,
         crate::routes::data_views::run_view,
+        crate::routes::data_fsm::create_fsm,
+        crate::routes::data_fsm::update_fsm,
+        crate::routes::data_fsm::get_fsm,
+        crate::routes::data_fsm::transition_record,
     ),
     components(schemas(
         crate::routes::me::MeResponse,
@@ -230,6 +234,14 @@ use utoipa::{
         data::QueryResult,
         data::AggregateGroup,
         data::DataViewBody,
+        // FSM 宣言的ガード（Task 9.10）。
+        crate::routes::data_fsm::CreateFsmRequest,
+        crate::routes::data_fsm::UpdateFsmRequest,
+        crate::routes::data_fsm::FsmResponse,
+        crate::routes::data_fsm::TransitionRequest,
+        data::FsmBody,
+        data::FsmTransition,
+        data::FsmRef,
         // 検索 DTO は rag 側の単一定義（手書きミラー禁止）。
         rag::SearchRequest,
         rag::SearchResponse,

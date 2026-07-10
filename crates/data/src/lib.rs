@@ -16,6 +16,8 @@
 //!   行ポリシー透過適用（PIT-20）なしに参照解決を出荷しない。定義の保存と検証のみ行う。
 
 mod derived;
+mod fsm;
+mod fsm_store;
 mod index;
 mod mask;
 mod model;
@@ -27,9 +29,12 @@ mod record_share;
 mod revision;
 mod schema;
 mod store;
+mod transition;
 mod validate;
 mod view;
 
+pub use fsm::{FsmBody, FsmRef, FsmTransition};
+pub use fsm_store::FsmStore;
 pub use model::{
     ComputedDef, ComputedOp, DataRecord, DataTable, FieldDef, FieldPatch, FieldPolicy, FieldType,
     LookupDef, RecordRevision, TableSchema,
@@ -41,6 +46,7 @@ pub use query::declarative::{
 pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordSort};
 pub use record_share::RecordShareRole;
 pub use store::{DataStore, NewDataTable};
+pub use transition::TRANSITION_EVENT_TYPE;
 pub use validate::RefResolver;
 pub use view::{DataViewBody, DataViewStore};
 

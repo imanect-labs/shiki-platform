@@ -217,6 +217,41 @@ impl DataStore {
         q.fetch_one(&self.db).await.map_err(map_db)
     }
 
+    /// actor 述語（FSM 遷移認可・Task 9.10）を**当該行に対し**評価する。
+    ///
+    /// 読取述語ではなく遷移固有の actor を使う。行は可視前提（ロック済み）で、述語を満たす
+    /// 行が 1 件あるか（＝この主体が遷移を実行してよいか）を返す。
+    pub(crate) async fn actor_allows(
+        &self,
+        ctx: &AuthContext,
+        table: &DataTable,
+        record_id: Uuid,
+        actor: &crate::policy::PolicyExpr,
+    ) -> Result<bool, DataError> {
+        let m = material::resolve(ctx, self.authz.as_ref(), &[actor]).await?;
+        let mut binds = BindSet::new(2);
+        let pred = compile_expr(
+            actor,
+            &table.schema,
+            &m,
+            &ctx.principal.id,
+            RECORD_ALIAS,
+            &mut binds,
+        )?;
+        let id_ph = 3 + binds.binds.len();
+        let sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM data_record {RECORD_ALIAS} \
+             WHERE r.tenant_id = $1 AND r.table_id = $2 AND ({pred}) AND r.id = ${id_ph})"
+        );
+        let mut q = sqlx::query_scalar::<Postgres, bool>(&sql)
+            .bind(&ctx.tenant_id)
+            .bind(table.id);
+        for b in &binds.binds {
+            q = push_bind_scalar(q, b.clone());
+        }
+        q.bind(record_id).fetch_one(&self.db).await.map_err(map_db)
+    }
+
     /// 対象行への**書込可否**（write 述語 or 個別共有 editor・Task 9.3）。
     ///
     /// 読取述語を通ってロック済みの行に対して呼ぶ（可視は前提）。row_policy 未定義なら

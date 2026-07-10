@@ -90,6 +90,13 @@ pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataErro
             ));
         }
     }
+    // FSM 参照があれば status_field は必須（遷移対象の状態フィールドが要る）。
+    // FSM 定義本体（states/transitions）の検証は fsm ストア保存時に行う。
+    if schema.fsm_ref.is_some() && schema.status_field.is_none() {
+        return Err(DataError::Invalid(
+            "fsm_ref を持つテーブルは status_field が必須です".into(),
+        ));
+    }
     if let Some(status) = &schema.status_field {
         let f = schema.field(status).ok_or_else(|| {
             DataError::Invalid(format!("status_field '{status}' が fields にありません"))
@@ -281,6 +288,7 @@ mod tests {
             row_policy: None,
             field_policy: vec![],
             aggregate_min_rows: None,
+            fsm_ref: None,
         }
     }
 

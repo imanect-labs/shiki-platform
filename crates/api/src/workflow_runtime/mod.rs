@@ -249,6 +249,18 @@ async fn relay_events(
     }
     let mut ids = Vec::with_capacity(events.len());
     for ev in &events {
+        // data サービス由来イベント（FSM 遷移等・payload.event_type 付き）は storage.write では
+        // ない。Phase 10.3 の data トリガが消費するまでは配送済みにしてスキップする
+        // （storage.write として誤発火させない・Task 9.10）。
+        if ev
+            .payload
+            .get("event_type")
+            .and_then(|v| v.as_str())
+            .is_some()
+        {
+            ids.push(ev.id);
+            continue;
+        }
         // Stage A: 全 WriteOp を storage.write source に写像。scope はイベントの親フォルダで束縛。
         let scope = ev
             .payload

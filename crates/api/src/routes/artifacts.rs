@@ -86,12 +86,13 @@ fn require_generic_kind(kind: ArtifactKind) -> Result<(), ApiError> {
         ArtifactKind::UiSpec => Err(ApiError::BadRequest(
             "kind=ui_spec は /ui-specs（保存時検証つき）で作成・更新してください".into(),
         )),
-        ArtifactKind::Skill | ArtifactKind::MiniApp | ArtifactKind::DataView => {
-            Err(ApiError::BadRequest(format!(
-                "kind={} は専用エンドポイント（保存時検証つき）で作成・更新してください",
-                kind.as_str()
-            )))
-        }
+        ArtifactKind::Skill
+        | ArtifactKind::MiniApp
+        | ArtifactKind::DataView
+        | ArtifactKind::Fsm => Err(ApiError::BadRequest(format!(
+            "kind={} は専用エンドポイント（保存時検証つき）で作成・更新してください",
+            kind.as_str()
+        ))),
         ArtifactKind::Script => Ok(()),
     }
 }

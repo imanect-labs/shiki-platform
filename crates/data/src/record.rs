@@ -65,6 +65,8 @@ impl DataStore {
         let table = self.fetch_live(ctx, table_id).await?;
         let normalized =
             validate_record_data(ctx, &table.schema, &data, self.resolver.as_ref()).await?;
+        // FSM 管理テーブルでも create は初期 status を置ける（以降の status 変更は遷移 API 経由・
+        // Task 9.10）。「初期状態のみ許可」の厳密化は FSM 定義の参照が要るため後続で行う。
         self.check_record_refs(ctx, &table.schema, &normalized)
             .await?;
 
@@ -195,6 +197,8 @@ impl DataStore {
             self.resolver.as_ref(),
         )
         .await?;
+        // FSM 管理テーブルの status は直接 update できない（遷移 API 経由でのみ・Task 9.10）。
+        Self::reject_fsm_status_write(&table, patch_obj.keys())?;
         self.check_record_refs(ctx, &table.schema, &normalized)
             .await?;
         let patches = diff_fields(&old_map, &normalized);
@@ -308,6 +312,24 @@ impl DataStore {
         )
         .await?;
         tx.commit().await.map_err(map_db)?;
+        Ok(())
+    }
+
+    /// FSM 管理テーブルの status フィールドへの**直接 update** を拒否する（遷移 API を迂回させない）。
+    fn reject_fsm_status_write<'a>(
+        table: &crate::model::DataTable,
+        fields: impl Iterator<Item = &'a String>,
+    ) -> Result<(), DataError> {
+        let (Some(_), Some(status)) = (&table.schema.fsm_ref, &table.schema.status_field) else {
+            return Ok(());
+        };
+        for f in fields {
+            if f == status {
+                return Err(DataError::Invalid(format!(
+                    "status '{status}' は遷移 API（transition）経由でのみ変更できます"
+                )));
+            }
+        }
         Ok(())
     }
 

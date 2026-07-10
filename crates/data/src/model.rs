@@ -125,6 +125,10 @@ pub struct TableSchema {
     /// [`crate::DEFAULT_AGGREGATE_MIN_ROWS`]。既定未満へ下げる変更は監査に残る。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregate_min_rows: Option<i64>,
+    /// FSM 参照（Task 9.10・status 遷移ガード）。定義があると status フィールドの直接更新は
+    /// 禁止され、遷移 API（`transition`）経由でのみ status を変えられる。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fsm_ref: Option<crate::fsm::FsmRef>,
 }
 
 impl TableSchema {

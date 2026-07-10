@@ -18,6 +18,8 @@ pub enum ArtifactKind {
     MiniApp,
     /// 構造化データの保存ビュー（宣言的クエリ＋表示設定・Task 9.4）。
     DataView,
+    /// 構造化データの FSM 宣言的ガード（status 遷移＋遷移認可・Task 9.10）。
+    Fsm,
     Skill,
     Script,
 }
@@ -30,6 +32,7 @@ impl ArtifactKind {
             ArtifactKind::UiSpec => "ui_spec",
             ArtifactKind::MiniApp => "mini_app",
             ArtifactKind::DataView => "data_view",
+            ArtifactKind::Fsm => "fsm",
             ArtifactKind::Skill => "skill",
             ArtifactKind::Script => "script",
         }
@@ -42,6 +45,7 @@ impl ArtifactKind {
             "ui_spec" => Some(ArtifactKind::UiSpec),
             "mini_app" => Some(ArtifactKind::MiniApp),
             "data_view" => Some(ArtifactKind::DataView),
+            "fsm" => Some(ArtifactKind::Fsm),
             "skill" => Some(ArtifactKind::Skill),
             "script" => Some(ArtifactKind::Script),
             _ => None,
@@ -126,6 +130,7 @@ mod tests {
             ArtifactKind::UiSpec,
             ArtifactKind::MiniApp,
             ArtifactKind::DataView,
+            ArtifactKind::Fsm,
             ArtifactKind::Skill,
             ArtifactKind::Script,
         ] {
