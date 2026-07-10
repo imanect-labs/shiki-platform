@@ -140,6 +140,7 @@ fn state(pool: PgPool, tenant: &str) -> GatewayState {
         },
         authz: Arc::new(AllowAll),
         audit: AuditRecorder::new(pool),
+        require_tenant_claim: false,
         default_tenant: tenant.into(),
         default_org: "acme".into(),
     }
@@ -147,15 +148,26 @@ fn state(pool: PgPool, tenant: &str) -> GatewayState {
 
 /// RSA 署名の access token（sub/azp/scope/tenant を載せる）。
 fn token(client_id: &str, scope: &str, tenant: &str) -> String {
-    let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some("test-key".into());
-    let claims = serde_json::json!({
+    signed(&serde_json::json!({
         "sub": "alice", "azp": client_id, "tenant": tenant, "scope": scope,
         "aud": AUDIENCE, "iss": ISSUER, "exp": 9_999_999_999u64,
-    });
+    }))
+}
+
+/// tenant クレームを含まないトークン（multi テナンシーの拒否検証用）。
+fn token_without_tenant(client_id: &str, scope: &str) -> String {
+    signed(&serde_json::json!({
+        "sub": "alice", "azp": client_id, "scope": scope,
+        "aud": AUDIENCE, "iss": ISSUER, "exp": 9_999_999_999u64,
+    }))
+}
+
+fn signed(claims: &serde_json::Value) -> String {
+    let mut header = Header::new(Algorithm::RS256);
+    header.kid = Some("test-key".into());
     encode(
         &header,
-        &claims,
+        claims,
         &EncodingKey::from_rsa_pem(PRIV_PEM.as_bytes()).unwrap(),
     )
     .unwrap()
@@ -270,4 +282,39 @@ async fn broad_token_without_grant_is_denied() {
     // probe（data.read 必要）は granted に無いので 403。
     let (s, _) = get(&app, "/gw/probe", Some(&broad)).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn multi_tenant_rejects_missing_tenant_claim() {
+    // require_tenant_claim=true（SaaS multi）では tenant クレーム欠落を fail-closed で 401。
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let client = format!("app-{}", Uuid::new_v4());
+    AppInstallationStore::new(pool.clone())
+        .upsert(
+            &ctx(&tenant),
+            NewAppInstallation {
+                app_id: Uuid::new_v4(),
+                app_name: "multi",
+                installed_version: "1.0.0",
+                granted_scopes: &["data.read".to_string()],
+                client_id_b1: Some(&client),
+                client_id_b2: None,
+            },
+        )
+        .await
+        .expect("install");
+    let mut st = state(pool.clone(), &tenant);
+    st.require_tenant_claim = true;
+    let app = build_gateway_router(st);
+
+    // tenant クレーム無し → 401（既定テナントへフォールバックしない）。
+    let no_tenant = token_without_tenant(&client, "data.read");
+    let (s, _) = get(&app, "/gw/whoami", Some(&no_tenant)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+
+    // tenant クレームありなら通る。
+    let ok = token(&client, "data.read", &tenant);
+    let (s, _) = get(&app, "/gw/whoami", Some(&ok)).await;
+    assert_eq!(s, StatusCode::OK);
 }

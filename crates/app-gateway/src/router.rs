@@ -34,7 +34,13 @@ pub struct GatewayState {
     /// per-call OpenFGA（ハンドラの第4ゲート）に使う認可クライアント。
     pub authz: Arc<dyn AuthzClient>,
     pub audit: AuditRecorder,
-    /// single テナントのフォールバック（トークンに tenant クレームが無い場合）。
+    /// tenant クレームを必須にするか（SaaS `multi` は true・fail-closed）。
+    ///
+    /// `multi` テナンシーで true にすると、tenant クレームの無いトークンは `default_tenant` へ
+    /// フォールバックせず拒否する（他テナントの既定テナントへ紛れ込むのを防ぐ）。`single`
+    /// （オンプレ/cell）は false でフォールバックを許す。
+    pub require_tenant_claim: bool,
+    /// single テナントのフォールバック（`require_tenant_claim=false` のときのみ使う）。
     pub default_tenant: String,
     pub default_org: String,
 }
@@ -133,11 +139,17 @@ async fn authorize(
     let token = bearer(req)?;
     let identity = verify_gateway_token(&token, &*state.keys, &state.token_cfg).await?;
 
-    // テナント解決（single はフォールバック）。呼出ユーザーの AuthContext を組む。
-    let tenant = identity
-        .tenant
-        .clone()
-        .unwrap_or_else(|| state.default_tenant.clone());
+    // テナント解決。multi では tenant クレーム必須（欠落は fail-closed で拒否＝既定テナントへ
+    // 紛れ込ませない）。single はフォールバックを許す。
+    let tenant = match identity.tenant.clone() {
+        Some(t) if !t.is_empty() => t,
+        _ if state.require_tenant_claim => {
+            return Err(GatewayError::Unauthenticated(
+                "tenant クレームがありません".into(),
+            ));
+        }
+        _ => state.default_tenant.clone(),
+    };
     let auth = AuthContext::new(
         Principal {
             kind: PrincipalKind::User,

@@ -215,8 +215,23 @@ pub fn client_representation(
         "directAccessGrantsEnabled": false, // password grant は無効
         "redirectUris": redirect_uris,
         "attributes": serde_json::Value::Object(attributes),
+        // ゲートウェイ audience を access token の aud に注入する（verify_gateway_token の
+        // aud=shiki-gateway 検証を満たす）。これが無いとトークンが aud 不一致で弾かれる。
+        "protocolMappers": [{
+            "name": "shiki-gateway-audience",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-audience-mapper",
+            "config": {
+                "included.custom.audience": GATEWAY_AUDIENCE,
+                "access.token.claim": "true",
+                "id.token.claim": "false",
+            }
+        }],
     })
 }
+
+/// ゲートウェイトークンの audience（verify_gateway_token の既定 aud と一致させる）。
+const GATEWAY_AUDIENCE: &str = "shiki-gateway";
 
 #[cfg(test)]
 mod tests {
@@ -235,6 +250,15 @@ mod tests {
         assert_eq!(rep["serviceAccountsEnabled"], false);
         assert_eq!(rep["directAccessGrantsEnabled"], false);
         assert_eq!(rep["attributes"]["pkce.code.challenge.method"], "S256");
+        // ゲートウェイ audience マッパーが付く（token の aud=shiki-gateway 検証を満たす）。
+        assert_eq!(
+            rep["protocolMappers"][0]["protocolMapper"],
+            "oidc-audience-mapper"
+        );
+        assert_eq!(
+            rep["protocolMappers"][0]["config"]["included.custom.audience"],
+            "shiki-gateway"
+        );
     }
 
     #[test]
