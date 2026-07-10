@@ -393,6 +393,8 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         workflow_engine::DelegationStore::new(db.clone(), Arc::new(AllowAll)),
     ));
     let audit_rec = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
+    let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(db.clone()));
+    let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -410,6 +412,8 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         workflows,
         workflow_launcher: None,
         workflow_registration,
+        workflow_summaries,
+        workflow_layout,
         audit: audit_rec,
         workflow_runs: None,
         directory,

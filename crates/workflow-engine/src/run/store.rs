@@ -16,8 +16,11 @@ use crate::vocab::RunEventKind;
 
 mod advance;
 mod backoff;
+mod history;
 mod map_region;
 mod wait;
+
+pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 
 /// step の durable テーブル記述子（複合キー・attempt は claim で増やさない・engine.md §9.5）。
 const STEP_SPEC: RunTableSpec = RunTableSpec {
