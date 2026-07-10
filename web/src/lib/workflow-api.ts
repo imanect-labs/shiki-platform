@@ -76,8 +76,23 @@ function json(method: string, body: unknown): RequestInit {
 
 // ── 一覧・取得・保存・検証 ──────────────────────────────────────────
 
-export async function listWorkflows(): Promise<WorkflowSummary[]> {
-  const res = await apiFetch("/workflows");
+/// keyset ページング（backend の既定 50 件・上限 100 件と同じ契約）。
+export type WorkflowListPage = {
+  before?: { updatedAt: string; id: string };
+  limit?: number;
+};
+
+export async function listWorkflows(
+  page: WorkflowListPage = {},
+): Promise<WorkflowSummary[]> {
+  const q = new URLSearchParams();
+  if (page.before) {
+    q.set("before_updated_at", page.before.updatedAt);
+    q.set("before_id", page.before.id);
+  }
+  if (page.limit) q.set("limit", String(page.limit));
+  const qs = q.toString();
+  const res = await apiFetch(`/workflows${qs ? `?${qs}` : ""}`);
   const body = await ok<{ items: Schemas["WorkflowSummaryDto"][] }>(res);
   return body.items.map((i) => ({
     id: i.id,

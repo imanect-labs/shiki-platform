@@ -11,19 +11,30 @@ import {
   Loader2,
   MousePointerClick,
   Plus,
+  Trash2,
   Workflow,
   Zap,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
+import { deleteArtifact } from "@/lib/artifact-api";
 import {
   createWorkflow,
   listWorkflows,
   type WorkflowSummary,
 } from "@/lib/workflow-api";
+
+const PAGE_SIZE = 50;
 import type { WorkflowIr } from "@/generated/workflow-ir";
 
 /// 新規作成時の空フロー（手動トリガのみ・エディタでノードを足していく）。
@@ -74,10 +85,16 @@ export default function WorkflowsPage() {
   const router = useRouter();
   const [items, setItems] = React.useState<WorkflowSummary[] | null>(null);
   const [creating, setCreating] = React.useState(false);
+  const [exhausted, setExhausted] = React.useState(false);
+  const [loadingMore, setLoadingMore] = React.useState(false);
+  const [deleting, setDeleting] = React.useState<WorkflowSummary | null>(null);
 
   React.useEffect(() => {
-    listWorkflows()
-      .then(setItems)
+    listWorkflows({ limit: PAGE_SIZE })
+      .then((page) => {
+        setItems(page);
+        setExhausted(page.length < PAGE_SIZE);
+      })
       .catch((e) => {
         setItems([]);
         toast({
@@ -87,6 +104,41 @@ export default function WorkflowsPage() {
         });
       });
   }, []);
+
+  const loadMore = async () => {
+    if (!items || items.length === 0) return;
+    setLoadingMore(true);
+    try {
+      const last = items[items.length - 1];
+      const page = await listWorkflows({
+        limit: PAGE_SIZE,
+        before: { updatedAt: last.updatedAt, id: last.id },
+      });
+      setItems((prev) => [...(prev ?? []), ...page]);
+      if (page.length < PAGE_SIZE) setExhausted(true);
+    } catch {
+      // 次のクリックで再試行できる。
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const remove = async (wf: WorkflowSummary) => {
+    try {
+      // workflow は artifact（kind=workflow）なので共通のソフト削除で消す。
+      await deleteArtifact(wf.id);
+      setItems((prev) => (prev ?? []).filter((i) => i.id !== wf.id));
+      toast({ title: `「${wf.displayName || wf.name}」を削除しました` });
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "削除できませんでした",
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   const create = async () => {
     setCreating(true);
@@ -138,11 +190,11 @@ export default function WorkflowsPage() {
       ) : (
         <ul className="divide-y rounded-xl border bg-card">
           {items.map((wf) => (
-            <li key={wf.id}>
+            <li key={wf.id} className="group/row relative flex items-center">
               <button
                 type="button"
                 onClick={() => router.push(`/workflows/${wf.id}`)}
-                className="flex w-full items-center gap-4 px-4 py-3.5 text-left transition-colors duration-fast hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex min-w-0 flex-1 items-center gap-4 px-4 py-3.5 text-left transition-colors duration-fast hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                   <Workflow className="size-4.5" aria-hidden />
@@ -179,10 +231,51 @@ export default function WorkflowsPage() {
                   </span>
                 </span>
               </button>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`「${wf.displayName || wf.name}」を削除`}
+                className="mr-2 shrink-0 text-muted-foreground opacity-0 transition-opacity duration-fast focus-visible:opacity-100 group-hover/row:opacity-100"
+                onClick={() => setDeleting(wf)}
+              >
+                <Trash2 className="size-4" aria-hidden />
+              </Button>
             </li>
           ))}
         </ul>
       )}
+      {items !== null && items.length > 0 && !exhausted ? (
+        <div className="mt-3 text-center">
+          <Button variant="ghost" size="sm" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+            さらに読み込む
+          </Button>
+        </div>
+      ) : null}
+
+      <Dialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>ワークフローを削除しますか？</DialogTitle>
+            <DialogDescription>
+              「{deleting ? deleting.displayName || deleting.name : ""}」
+              を削除します。スケジュール等の自動実行も止まります。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setDeleting(null)}>
+              キャンセル
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => deleting && void remove(deleting)}
+            >
+              削除する
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
