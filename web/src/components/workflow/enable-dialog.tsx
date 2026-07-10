@@ -24,7 +24,6 @@ import {
   disableWorkflow,
   enableWorkflow,
   getConsentPlan,
-  getRegistration,
   type GrantInput,
   type Registration,
   type SuggestedGrant,
