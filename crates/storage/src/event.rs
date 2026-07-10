@@ -264,6 +264,50 @@ pub async fn gc_delivered(
     Ok(deleted.rows_affected())
 }
 
+// ---------------------------------------------------------------------------
+// 読み取り専用の覗き見（app-gateway `events.subscribe`・Task 9.8）。
+//
+// 配送状態（processed_at / outbox_delivery）に一切触れない**ライブテール**用。SSE 購読者は
+// 接続時点のカーソル（[`latest_event_id`]）から [`peek_app_events_after`] をポーリングする。
+// 耐久配送ではない（GC 済みイベントは見えない）——B2 関数トリガの at-least-once 消費は
+// [`claim_undelivered`]（配送台帳）を使うこと。
+// ---------------------------------------------------------------------------
+
+/// テナント内 outbox の現在の最大 id（SSE 購読の開始カーソル）。イベントが無ければ 0。
+pub async fn latest_event_id(pool: &sqlx::PgPool, tenant_id: &str) -> Result<i64, StorageError> {
+    let (id,): (i64,) = sqlx::query_as(
+        "SELECT COALESCE(MAX(id), 0) FROM storage_event_outbox WHERE tenant_id = $1",
+    )
+    .bind(tenant_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(id)
+}
+
+/// `after_id` より後の**アプリ向けドメインイベント**（`payload.event_type` 付き）を id 順に返す。
+///
+/// storage の生の書込イベント（file create 等・event_type なし）は含めない（ノード可視性の
+/// 再検証なしにアプリへ流さない）。呼び出し側がテーブル束縛等の追加フィルタを行う。
+pub async fn peek_app_events_after(
+    pool: &sqlx::PgPool,
+    tenant_id: &str,
+    after_id: i64,
+    limit: i64,
+) -> Result<Vec<OutboxEvent>, StorageError> {
+    let rows: Vec<OutboxRow> = sqlx::query_as(
+        "SELECT id, org, tenant_id, node_id, version, op, actor, trace_id, payload, created_at \
+         FROM storage_event_outbox \
+         WHERE tenant_id = $1 AND id > $2 AND payload ? 'event_type' \
+         ORDER BY id LIMIT $3",
+    )
+    .bind(tenant_id)
+    .bind(after_id)
+    .bind(limit.clamp(1, 500))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(OutboxRow::into_event).collect())
+}
+
 #[derive(sqlx::FromRow)]
 struct OutboxRow {
     id: i64,

@@ -19,6 +19,7 @@ use sqlx::postgres::PgPoolOptions;
 use storage::{DirectoryStore, TenantStore};
 
 mod wiring;
+mod wiring_gateway;
 mod wiring_gui;
 // main はアプリ全体（ストレージ/RAG/チャット/ワークフロー/data/ゲートウェイ等）の配線点で
 // あり、各フェーズの依存を順に組み上げる性質上どうしても長くなる（各配線は wire_* ヘルパへ
@@ -190,8 +191,18 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     let bind = format!("{}:{}", config.server.host, config.server.port);
-    // 公開 API ゲートウェイ（Task 9.6）: enabled のとき第2リスナ用 Router を組む（別オリジン）。
-    let gateway_router = wiring::wire_gateway(&config, &db, &jwks, &authz);
+    // 公開 API ゲートウェイ（Task 9.6/9.8）: enabled のとき第2リスナ用 Router を組む（別オリジン）。
+    // 能力アダプタの委譲先は内部 API と同一インスタンス（単一チョークポイント）。
+    let gateway_router = wiring_gateway::wire_gateway(
+        &config,
+        &db,
+        &jwks,
+        &authz,
+        &storage,
+        &data_store,
+        &fsms,
+        search.as_ref(),
+    );
     let gateway_bind = config
         .gateway
         .enabled
@@ -233,7 +244,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // 第2リスナ（公開 API ゲートウェイ・別ポート＝別オリジン）を先に spawn する。
-    wiring::spawn_gateway_listener(gateway_router, gateway_bind).await?;
+    wiring_gateway::spawn_gateway_listener(gateway_router, gateway_bind).await?;
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
