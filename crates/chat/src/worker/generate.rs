@@ -430,6 +430,16 @@ fn message_text(blocks: &[ContentBlock]) -> String {
         match b {
             ContentBlock::Text { text } => parts.push(text.clone()),
             ContentBlock::FileRef { name, .. } => parts.push(format!("[添付: {name}]")),
+            // 「さっきのワークフローを直して」等の追編集に id/version が要る（Task 10.13）。
+            ContentBlock::WorkflowRef { workflow } => {
+                let id = workflow.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let name = workflow.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let version = workflow.get("version").and_then(serde_json::Value::as_i64);
+                parts.push(format!(
+                    "[保存済みワークフロー: {name}（workflow_id: {id}, v{}）]",
+                    version.unwrap_or(0)
+                ));
+            }
             _ => {}
         }
     }

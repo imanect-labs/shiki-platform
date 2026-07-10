@@ -100,6 +100,10 @@ impl EmitWorkflowTool {
 
 #[async_trait::async_trait]
 impl Tool for EmitWorkflowTool {
+    // requires_confirmation は既定 false のまま: 保存されるのは不変バージョン付き artifact で
+    // 旧版に必ず戻せ（fs_write/fs_edit の自動承認と同じ判断基準）、保存しただけでは実行されない
+    //（自動実行は別途ユーザー本人の enable 同意が必須・手動実行も本人操作）。カードが可視な
+    // 確認面になる。ここを承認ゲートにすると 10.13 の中核 UX（会話から直接生成）が壊れる。
     fn name(&self) -> &str {
         ToolName::EmitWorkflow.as_str()
     }
@@ -119,6 +123,10 @@ impl Tool for EmitWorkflowTool {
                 "workflow_id": {
                     "type": "string",
                     "description": "更新対象の既存ワークフロー ID（UUID）。新規作成なら省略"
+                },
+                "expected_version": {
+                    "type": "integer",
+                    "description": "更新時の楽観ロック。read_workflow が返した version をそのまま渡す（他者の編集と競合したら失敗が返る）"
                 }
             },
             "required": ["ir"]
@@ -147,8 +155,12 @@ impl Tool for EmitWorkflowTool {
                     "workflow_id が UUID ではありません: {raw_id}"
                 )));
             };
+            // read_workflow で読んだ version を楽観ロックに使う（他編集者の保存を黙って潰さない）。
+            let expected_version = input
+                .get("expected_version")
+                .and_then(serde_json::Value::as_i64);
             self.store
-                .update(ctx, id, &ir_json, &catalog, None, trace_id)
+                .update(ctx, id, &ir_json, &catalog, expected_version, trace_id)
                 .await
                 .map(|(version, ir)| (id, version, ir))
         } else {
@@ -201,7 +213,7 @@ impl Tool for ReadWorkflowTool {
     }
 
     fn description(&self) -> &'static str {
-        "既存ワークフローの最新 IR（JSON）を読む。emit_workflow で編集する前に必ず呼び、返った IR を基に変更を加えること。"
+        "既存ワークフローの最新 IR（JSON）を読む。emit_workflow で編集する前に必ず呼び、返った IR を基に変更し、返った version を emit_workflow の expected_version に渡すこと。"
     }
 
     fn input_schema(&self) -> serde_json::Value {
