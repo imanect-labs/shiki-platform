@@ -80,6 +80,7 @@ pub(crate) const MAX_POLICY_DEPTH: usize = 8;
 pub(crate) const MAX_POLICY_BRANCHES: usize = 32;
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
     use serde_json::json;
