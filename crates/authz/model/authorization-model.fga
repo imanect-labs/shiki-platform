@@ -17,6 +17,14 @@ type user
 # タプルは有効化時の明示委譲でのみ書かれ、workflow_delegation 行が台帳（engine.md §6）。
 type workflow
 
+# ミニアプリ・サービス identity（B2 自動化の実行主体・subject 専用型・Task 9.6）。
+# workflow と同型の subject 専用プリンシパル（自身の relation は持たない）。ゲートウェイの
+# 二重ゲートは常に呼出ユーザーの ReBAC で判定し、この miniapp subject は B2 の自動化
+# （event/cron 起動）が「所有テーブルのみ」に束縛されることの表現にのみ使う（data_table
+# owner/editor/viewer の subject として受理）。インストール管理の認可は mini_app_code
+# アーティファクト（artifact 型）の owner ReBAC が担う。
+type miniapp
+
 type organization
   relations
     define member: [user]
@@ -87,13 +95,14 @@ type secret
 # 「テーブル＝ReBAC（数が少ない）／行＝クエリ時述語（数が多い・Task 9.3）」の役割分担で、
 # 全行を FGA タプルにしない（タプル爆発防止・design §4.10）。thread と同型の非階層共有。
 # viewer/editor は workflow プリンシパル subject を受理する（Phase 10 data 系ノードの委譲経路）。
-# owner はミニアプリの所有テーブルプロビジョン（Task 9.13）で miniapp サービス identity も
-# 受理する予定（Task 9.6 で subject 型を追加）。
+# owner/editor/viewer はミニアプリ・サービス identity（miniapp subject）も受理する（Task 9.6）。
+# 所有テーブルプロビジョン（Task 9.13）で owner@miniapp を書き、B2 自動化は自アプリの
+# 所有テーブルのみに束縛される（越境は per-call OpenFGA で fail-closed）。
 type data_table
   relations
-    define owner: [user, workflow]
-    define editor: [user, role#member, workflow] or owner
-    define viewer: [user, role#member, workflow] or editor
+    define owner: [user, workflow, miniapp]
+    define editor: [user, role#member, workflow, miniapp] or owner
+    define viewer: [user, role#member, workflow, miniapp] or editor
 
 # 構造化データの個別共有行（Task 9.3）。「全行タプル化しない」原則の唯一の例外で、
 # 明示共有した行だけがスパースに載る（タプル数=共有件数）。行の基礎可視性は

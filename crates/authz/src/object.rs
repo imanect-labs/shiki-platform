@@ -74,6 +74,11 @@ impl FgaObject {
         Self::new(ObjectType::Workflow, id)
     }
 
+    /// ミニアプリ・サービス identity `miniapp:<id>`（B2 自動化の実行主体・Task 9.6）。
+    pub(crate) fn miniapp(id: &str) -> Self {
+        Self::new(ObjectType::MiniApp, id)
+    }
+
     /// 構造化データのテーブルオブジェクト `data_table:<id>`（第1層 ReBAC・Task 9.2）。
     pub(crate) fn data_table(id: &str) -> Self {
         Self::new(ObjectType::DataTable, id)
@@ -180,6 +185,16 @@ impl<'a> Namespace<'a> {
     /// ワークフロープリンシパル subject `workflow:<tenant>|<id>`（schedule/event run の実行主体）。
     pub fn workflow_principal(&self, id: &str) -> Subject {
         Subject::object(&self.workflow(id))
+    }
+
+    /// ミニアプリオブジェクト `miniapp:<tenant>|<id>`（サービス identity・Task 9.6）。
+    pub fn miniapp(&self, id: &str) -> FgaObject {
+        FgaObject::miniapp(&self.qualify(id))
+    }
+
+    /// ミニアプリ・プリンシパル subject `miniapp:<tenant>|<id>`（B2 自動化の実行主体・Task 9.6）。
+    pub fn miniapp_principal(&self, id: &str) -> Subject {
+        Subject::object(&self.miniapp(id))
     }
 
     /// 構造化データのテーブルオブジェクト `data_table:<tenant>|<id>`（Task 9.2）。

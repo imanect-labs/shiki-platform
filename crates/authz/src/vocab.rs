@@ -90,6 +90,10 @@ pub enum ObjectType {
     Secret,
     /// ワークフロープリンシパル（schedule/event run の実行主体・subject 専用型・Task 10.4a）。
     Workflow,
+    /// ミニアプリ・サービス identity（B2 自動化の実行主体・subject 専用型・Task 9.6）。
+    /// workflow と同型で自身の relation は持たず、data_table の owner/editor/viewer の
+    /// subject として所有テーブルに束縛される（越境は per-call OpenFGA で拒否）。
+    MiniApp,
     /// 構造化データのテーブル（第1層 ReBAC・viewer/editor/owner・Task 9.2）。
     /// 行レベルの可視性は Task 9.3 のクエリ時述語（ABAC）が担い、ここはテーブル単位のみ。
     DataTable,
@@ -112,6 +116,7 @@ impl ObjectType {
             ObjectType::Artifact => "artifact",
             ObjectType::Secret => "secret",
             ObjectType::Workflow => "workflow",
+            ObjectType::MiniApp => "miniapp",
             ObjectType::DataTable => "data_table",
             ObjectType::DataRecord => "data_record",
         }

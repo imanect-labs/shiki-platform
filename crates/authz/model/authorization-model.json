@@ -12,6 +12,11 @@
       "metadata": null
     },
     {
+      "type": "miniapp",
+      "relations": {},
+      "metadata": null
+    },
+    {
       "type": "organization",
       "relations": {
         "member": {
@@ -529,6 +534,9 @@
               },
               {
                 "type": "workflow"
+              },
+              {
+                "type": "miniapp"
               }
             ]
           },
@@ -543,6 +551,9 @@
               },
               {
                 "type": "workflow"
+              },
+              {
+                "type": "miniapp"
               }
             ]
           },
@@ -557,6 +568,9 @@
               },
               {
                 "type": "workflow"
+              },
+              {
+                "type": "miniapp"
               }
             ]
           }
