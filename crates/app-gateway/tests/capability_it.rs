@@ -14,7 +14,9 @@ mod common;
 
 use std::sync::Arc;
 
-use app_gateway::{build_gateway_router, fetch_usage, AppInstallationStore, NewAppInstallation};
+use app_gateway::{
+    build_gateway_router, fetch_usage, AiPin, AppInstallationStore, NewAppInstallation,
+};
 use axum::http::StatusCode;
 use common::{ctx, get, request_json, setup, state, state_with, token, token_as, StubAuthz};
 use data::{FieldDef, FieldType, NewDataTable, TableSchema};
@@ -70,6 +72,7 @@ async fn fixture(pool: &PgPool, tenant: &str) -> (Uuid, String, Uuid, Uuid) {
                     .collect::<Vec<_>>(),
                 client_id_b1: Some(&client),
                 client_id_b2: None,
+                ai: AiPin::default(),
             },
         )
         .await

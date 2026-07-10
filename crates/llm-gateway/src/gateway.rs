@@ -27,6 +27,8 @@ pub struct GenerationRecord {
     /// Langfuse 表示用の入力/出力プレビュー（長文は呼び出し側で切る）。
     pub input_preview: String,
     pub output_preview: String,
+    /// 呼び出し元ミニアプリ（ゲートウェイ AI 能力・Task 9.9）。chat 等は `None`。
+    pub app_id: Option<uuid::Uuid>,
 }
 
 /// LLM ゲートウェイ（チョークポイント）。
@@ -133,6 +135,7 @@ impl LlmGateway {
             usage: rec.usage,
             cost_usd_micros: cost,
             trace_id: rec.trace_id.clone(),
+            app_id: rec.app_id,
         };
         if let Err(e) = self.inner.accounting.record(ctx, &usage_rec).await {
             tracing::error!(error = %e, "llm usage accounting failed");
@@ -152,10 +155,20 @@ impl LlmGateway {
                     "org": ctx.org,
                     "user": ctx.principal.id,
                     "cost_usd_micros": cost,
+                    "app_id": rec.app_id,
                 }),
             })
             .await;
         }
+    }
+
+    /// アプリの当日合計コスト（マイクロ USD・日次予算チェック用・Task 9.9）。
+    pub async fn app_spend_today(
+        &self,
+        ctx: &AuthContext,
+        app_id: uuid::Uuid,
+    ) -> Result<i64, sqlx::Error> {
+        self.inner.accounting.app_spend_today(ctx, app_id).await
     }
 }
 

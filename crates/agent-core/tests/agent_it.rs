@@ -247,6 +247,7 @@ fn run_context<'a>(ctx: &'a AuthContext, preview: &str) -> RunContext<'a> {
         idempotency_prefix: format!("run-{}:0", uuid::Uuid::new_v4()),
         trace_id: None,
         input_preview: preview.to_string(),
+        app_id: None,
     }
 }
 

@@ -53,6 +53,8 @@ pub struct RunContext<'a> {
     pub trace_id: Option<String>,
     /// Langfuse 入力プレビュー（発話）。
     pub input_preview: String,
+    /// 呼び出し元ミニアプリ（ゲートウェイ agent.invoke・Task 9.9）。chat 等は `None`。
+    pub app_id: Option<uuid::Uuid>,
 }
 
 /// 累積中のツール呼び出し（1 ステップ分）。
@@ -237,6 +239,7 @@ async fn run_step(
                 trace_id: run.trace_id.clone(),
                 input_preview: run.input_preview.clone(),
                 output_preview: preview(&text_acc),
+                app_id: run.app_id,
             },
         )
         .await;

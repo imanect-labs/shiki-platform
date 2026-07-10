@@ -4867,6 +4867,7 @@ dependencies = [
  "shiki-artifact",
  "shiki-authz",
  "shiki-data",
+ "shiki-llm-gateway",
  "shiki-storage",
  "sqlx",
  "thiserror 2.0.18",
@@ -5077,6 +5078,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -18,8 +18,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use app_gateway::{
-    AppInstallationStore, CapabilityDeps, GatewayError, GatewayState, GatewayTokenConfig,
-    KeyResolver, NotificationStore, RagHit, RagPort,
+    AgentInvokeSpec, AgentPort, AiEvent, AiEventStream, AppInstallationStore, CapabilityDeps,
+    GatewayError, GatewayState, GatewayTokenConfig, KeyResolver, NotificationStore, RagHit,
+    RagPort,
 };
 use async_trait::async_trait;
 use authz::{
@@ -227,6 +228,62 @@ impl RagPort for StubRag {
     }
 }
 
+/// AgentPort スタブ: 受け取った spec（宣言ツール・残額）をイベントで echo する。
+pub struct StubAgent;
+
+#[async_trait]
+impl AgentPort for StubAgent {
+    async fn invoke(
+        &self,
+        _ctx: &AuthContext,
+        spec: AgentInvokeSpec,
+    ) -> Result<AiEventStream, GatewayError> {
+        use futures::StreamExt;
+        let events = vec![
+            AiEvent {
+                event: "agent_stub".into(),
+                data: serde_json::json!({
+                    "declared_tools": spec.declared_tools,
+                    "max_cost_usd_micros": spec.max_cost_usd_micros,
+                    "prompt": spec.prompt,
+                }),
+            },
+            AiEvent {
+                event: "done".into(),
+                data: serde_json::json!({ "stop": "Completed" }),
+            },
+        ];
+        Ok(futures::stream::iter(events).boxed())
+    }
+}
+
+/// 実 LlmGateway（Stub プロバイダ・実 PG 会計・有償単価つき論理モデル "stub-m"）。
+///
+/// llm.invoke の予算/allowlist/会計を**実経路**で検証するために使う。
+pub fn stub_llm(pool: PgPool) -> Arc<llm_gateway::LlmGateway> {
+    use llm_gateway::{GatewayConfig, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind};
+    let cfg = GatewayConfig {
+        provider: ProviderConfig {
+            kind: ProviderKind::Stub,
+            base_url: None,
+            api_key: None,
+            timeout_secs: 5,
+        },
+        catalog: ModelCatalog {
+            default_model: "stub-m".into(),
+            models: vec![ModelEntry {
+                id: "stub-m".into(),
+                real_id: None,
+                // 有償単価（1M tok = 1 USD）＝トークン消費でコストが載る。
+                prompt_price_micros_per_mtok: 1_000_000,
+                completion_price_micros_per_mtok: 1_000_000,
+            }],
+        },
+        langfuse: None,
+    };
+    Arc::new(llm_gateway::LlmGateway::build(pool, reqwest::Client::new(), cfg).expect("stub llm"))
+}
+
 pub async fn setup() -> Option<PgPool> {
     let url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
@@ -297,7 +354,10 @@ pub fn state_with(pool: PgPool, tenant: &str, authz: Arc<dyn AuthzClient>) -> Ga
             data,
             fsms,
             rag: Arc::new(StubRag),
-            notifications: NotificationStore::new(pool),
+            notifications: NotificationStore::new(pool.clone()),
+            llm: Some(stub_llm(pool)),
+            agent: Arc::new(StubAgent),
+            ai_daily_cap_usd_micros: 5_000_000,
         },
     }
 }

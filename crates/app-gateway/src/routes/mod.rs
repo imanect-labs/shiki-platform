@@ -8,6 +8,7 @@
 //! **data.\* のリソース束縛**: アプリ所有テーブル（`data_table.app_id = installation.app_id`）
 //! のみ操作可。スコープが付与されていても非所有テーブルは 403（[`require_app_table`]）。
 
+pub(crate) mod ai;
 pub(crate) mod data;
 pub(crate) mod events;
 pub(crate) mod identity;
@@ -66,6 +67,9 @@ pub(crate) fn capability_router() -> Router<GatewayState> {
         .route("/gw/events/subscribe", get(events::subscribe))
         // notify.send（台帳記録）
         .route("/gw/notify/send", post(notify::send))
+        // llm.invoke / agent.invoke（SSE・Task 9.9）
+        .route("/gw/ai/llm/invoke", post(ai::llm_invoke))
+        .route("/gw/ai/agent/invoke", post(ai::agent_invoke))
 }
 
 /// アプリ所有テーブル束縛（data.\* の第5のリソースゲート）。

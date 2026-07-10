@@ -40,6 +40,12 @@ pub struct CapabilityDeps {
     pub fsms: Arc<data::FsmStore>,
     pub rag: Arc<dyn RagPort>,
     pub notifications: NotificationStore,
+    /// llm.invoke の委譲先（Task 9.9・未構成なら 502）。会計（llm_usage）はこの中。
+    pub llm: Option<Arc<llm_gateway::LlmGateway>>,
+    /// agent.invoke の委譲先（Task 9.9・実装は api 配線＝agent-core の重依存を持ち込まない）。
+    pub agent: Arc<dyn crate::ports::AgentPort>,
+    /// AI 日次予算の管理者キャップ（マイクロ USD・アプリ宣言との min が実効上限）。
+    pub ai_daily_cap_usd_micros: i64,
 }
 
 /// ゲートウェイの共有状態（第2リスナの `Router` へ載せる）。
@@ -81,6 +87,7 @@ impl IntoResponse for GatewayError {
             GatewayError::NotFound => StatusCode::NOT_FOUND,
             GatewayError::Invalid(_) => StatusCode::BAD_REQUEST,
             GatewayError::Conflict(_) => StatusCode::CONFLICT,
+            GatewayError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
             GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
