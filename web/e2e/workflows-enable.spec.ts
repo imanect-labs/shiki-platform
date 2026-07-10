@@ -69,7 +69,8 @@ test("有効化: スケジュール設定→同意→有効→停止", async ({ 
 
   // 一覧にも有効バッジが出る。
   await page.goto("/workflows");
-  const row = page.getByRole("button", { name: new RegExp(name) });
+  // 行ボタンに限定する（削除ボタンの aria-label「「<name>」を削除」も名前を含むため先頭一致）。
+  const row = page.getByRole("button", { name: new RegExp(`^${name}`) });
   await expect(row.getByText("有効", { exact: true })).toBeVisible();
 
   // 停止: 設定ダイアログから無効化 → バッジが消える。
