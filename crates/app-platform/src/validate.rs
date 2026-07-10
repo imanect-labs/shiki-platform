@@ -167,4 +167,52 @@ mod tests {
         assert!(!is_valid_egress_pattern("has space"));
         assert!(!is_valid_egress_pattern("*."));
     }
+
+    #[test]
+    fn rejects_empty_and_overlong_name() {
+        let mut m = base();
+        m.name = "   ".into();
+        assert!(validate_manifest(&m).is_err());
+        let mut m = base();
+        m.name = "a".repeat(MAX_NAME_LEN + 1);
+        assert!(validate_manifest(&m).is_err());
+    }
+
+    #[test]
+    fn rejects_too_many_and_duplicate_tables() {
+        use crate::manifest::ManifestTable;
+        // 1 フィールドの有効スキーマ（重複名チェックがスキーマ検証より先に効くことを見る）。
+        let schema: data::TableSchema =
+            serde_json::from_value(serde_json::json!({"fields":[{"name":"title","type":"text"}]}))
+                .unwrap();
+        let tbl = |n: &str| ManifestTable {
+            name: n.into(),
+            schema: schema.clone(),
+        };
+        // 数の上限。
+        let mut m = base();
+        m.tables = (0..=MAX_TABLES).map(|i| tbl(&format!("t{i}"))).collect();
+        assert!(validate_manifest(&m).is_err());
+        // 重複名。
+        let mut m = base();
+        m.tables = vec![tbl("dup"), tbl("dup")];
+        assert!(validate_manifest(&m).is_err());
+        // 空テーブル名。
+        let mut m = base();
+        m.tables = vec![tbl("  ")];
+        assert!(validate_manifest(&m).is_err());
+    }
+
+    #[test]
+    fn rejects_negative_budget_and_bad_egress() {
+        let mut m = base();
+        m.budget.daily_usd_micros = Some(-1);
+        assert!(validate_manifest(&m).is_err());
+        let mut m = base();
+        m.server = Some(crate::manifest::ServerSpec {
+            egress_allowlist: vec!["bad host".into()],
+            ..Default::default()
+        });
+        assert!(validate_manifest(&m).is_err());
+    }
 }

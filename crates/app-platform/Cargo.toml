@@ -10,7 +10,6 @@ version = "0.0.0"
 name = "app_platform"
 
 [dependencies]
-tracing.workspace = true
 shiki-authz.workspace = true
 shiki-artifact.workspace = true
 shiki-storage.workspace = true
@@ -35,7 +34,7 @@ reqwest.workspace = true
 async-trait.workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-storage", "shiki-data", "shiki-agent-core", "shiki-gui"]
+ignored = ["shiki-authz", "shiki-artifact", "shiki-storage", "shiki-data", "shiki-agent-core", "shiki-gui"]
 
 [lints]
 workspace = true

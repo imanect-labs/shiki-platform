@@ -48,3 +48,40 @@ pub(crate) fn map_artifact(e: artifact::ArtifactError) -> AppPlatformError {
         AE::Internal(m) => AppPlatformError::Internal(format!("artifact: {m}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use artifact::ArtifactError as AE;
+
+    #[test]
+    fn artifact_errors_map_by_kind() {
+        assert!(matches!(
+            map_artifact(AE::NotFound),
+            AppPlatformError::NotFound
+        ));
+        assert!(matches!(
+            map_artifact(AE::Forbidden),
+            AppPlatformError::Forbidden
+        ));
+        assert!(matches!(
+            map_artifact(AE::Invalid("x".into())),
+            AppPlatformError::Invalid(_)
+        ));
+        assert!(matches!(
+            map_artifact(AE::Conflict("x".into())),
+            AppPlatformError::Conflict(_)
+        ));
+        // Internal は原文脈を残してラップする。
+        let mapped = map_artifact(AE::Internal("boom".into()));
+        assert!(matches!(&mapped, AppPlatformError::Internal(m) if m.contains("boom")));
+    }
+
+    #[test]
+    fn db_error_maps_to_internal() {
+        let mapped = map_db(sqlx::Error::RowNotFound);
+        assert!(matches!(mapped, AppPlatformError::Internal(_)));
+        // ユーザー可読メッセージが付く。
+        assert!(!mapped.to_string().is_empty());
+    }
+}

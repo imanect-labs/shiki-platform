@@ -199,6 +199,75 @@ async fn publish_is_immutable() {
     assert_ne!(e2.id, entry.id);
 }
 
+/// レジストリの解決系（latest/get）と yank（不変性を保ちつつ新規解決を止める）を検証する。
+#[tokio::test]
+async fn registry_resolve_and_yank() {
+    let Some(pool) = setup().await else { return };
+    let artifacts = Arc::new(ArtifactStore::new(pool.clone(), Arc::new(AllowAll)));
+    let registry = Registry::new(pool.clone());
+    let s = MiniAppCodeStore::new(Arc::clone(&artifacts), registry.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let c = ctx(&tenant, "alice");
+    let kind = ArtifactKind::MiniAppCode.as_str();
+
+    let id = s
+        .create(&c, &manifest("resolver", "1.0.0"), None)
+        .await
+        .expect("create");
+    let e1 = s.publish(&c, id, Some(1), None, None).await.expect("v1");
+    s.update(&c, id, &manifest("resolver", "2.0.0"), Some(1), None)
+        .await
+        .expect("v2");
+    let e2 = s.publish(&c, id, Some(2), None, None).await.expect("v2");
+
+    // latest は最新（未 yank）＝ 2.0.0 を返す。
+    let latest = registry
+        .latest(&c, kind, "resolver")
+        .await
+        .expect("latest")
+        .expect("some");
+    assert_eq!(latest.version, "2.0.0");
+    assert_eq!(latest.id, e2.id);
+
+    // 特定バージョンの get。
+    let got = registry
+        .get(&c, kind, "resolver", "1.0.0")
+        .await
+        .expect("get")
+        .expect("some");
+    assert_eq!(got.id, e1.id);
+    assert!(registry
+        .get(&c, kind, "resolver", "9.9.9")
+        .await
+        .expect("get")
+        .is_none());
+
+    // yank は行を残しつつ latest から外す（不変性は保つ）。
+    registry.yank(&c, e2.id).await.expect("yank");
+    let after = registry
+        .latest(&c, kind, "resolver")
+        .await
+        .expect("latest")
+        .expect("some");
+    assert_eq!(
+        after.version, "1.0.0",
+        "yank 後は前バージョンへフォールバック"
+    );
+    // yanked 行自体は get で依然引ける（不変台帳）。
+    let yanked = registry
+        .get(&c, kind, "resolver", "2.0.0")
+        .await
+        .expect("get")
+        .expect("some");
+    assert!(yanked.yanked);
+
+    // 存在しない id の yank は NotFound。
+    assert!(matches!(
+        registry.yank(&c, uuid::Uuid::new_v4()).await,
+        Err(app_platform::AppPlatformError::NotFound)
+    ));
+}
+
 /// A（宣言的 mini_app）と B（mini_app_code）が同じ artifact テーブル・list/共有経路に乗る。
 #[tokio::test]
 async fn a_and_b_share_artifact_plane() {
