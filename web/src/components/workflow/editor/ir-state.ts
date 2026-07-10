@@ -43,8 +43,8 @@ export type EditorAction =
   | { type: "set_triggers"; triggers: Trigger[] }
   | { type: "select"; selection: Selection }
   | { type: "set_errors"; errors: ValidationError[] }
-  | { type: "saved"; version: number; ir?: WorkflowIr }
-  | { type: "layout_saved" }
+  | { type: "saved"; version: number; savedIr: WorkflowIr; ir?: WorkflowIr }
+  | { type: "layout_saved"; layout: EditorLayout }
   | { type: "undo" }
   | { type: "redo" };
 
@@ -59,27 +59,38 @@ export function newNodeId(ir: WorkflowIr, nodeType: string): string {
   return `${base}_${n}`;
 }
 
+/// ノード種の既定の出力ポート（挿入・尻尾追加でエッジを張るときの継続側）。
+/// switch は cases から動的導出のため、常に存在するフォールバック `default` を使う
+/// （実行エンジンは `out` を発しないので `out` エッジは不発になる）。
+export function defaultOutPort(nodeType: string): string {
+  const entry = NODE_CATALOG.find((c) => c.type === nodeType);
+  if (entry?.dynamic_ports) return "default";
+  return entry?.output_ports[0] ?? "out";
+}
+
 /// カタログの既定 params（必須フィールドの雛形・右パネルで埋める前提の最小形）。
+/// **入力全体を指す `$from` は `path` を持たない**（JSON Pointer の `"/"` は
+/// 「空文字キーのプロパティ」であり全体ではない・実行時に解決不能になる）。
 export function defaultParams(nodeType: string): unknown {
   switch (nodeType) {
     case "control.branch":
-      return { condition: { cmp: { left: { $from: "input", path: "/" }, op: "exists" } } };
+      return { condition: { cmp: { left: { $from: "input" }, op: "exists" } } };
     case "control.switch":
-      return { value: { $from: "input", path: "/" }, cases: [] };
+      return { value: { $from: "input" }, cases: [] };
     case "control.map":
-      return { items: { $from: "input", path: "/" } };
+      return { items: { $from: "input" } };
     case "control.wait":
       return { kind: "duration", duration_sec: 60 };
     case "storage.read":
       return { file: { $from: "input", path: "/file_id" } };
     case "storage.write":
-      return { name: "output.txt", content: { $from: "input", path: "/" } };
+      return { name: "output.txt", content: { $from: "input" } };
     case "rag.search":
-      return { query: { $from: "input", path: "/" } };
+      return { query: { $from: "input" } };
     case "llm.invoke":
-      return { prompt: { $from: "input", path: "/" } };
+      return { prompt: { $from: "input" } };
     case "agent.invoke":
-      return { instruction: { $from: "input", path: "/" } };
+      return { instruction: { $from: "input" } };
     case "http.request":
       return { url: "https://" };
     case "script.run":
@@ -149,7 +160,9 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         (e.from_port ?? "out") === (action.edge.from_port ?? "out")
           ? [
               { from: e.from, from_port: e.from_port, to: node.id } as Edge,
-              { from: node.id, from_port: "out", to: e.to } as Edge,
+              // 挿入ノードの継続はノード種の実ポートで張る（branch=true / switch=default 等。
+              // "out" 固定だと制御ノード挿入時に下流が実行時に不発になる）。
+              { from: node.id, from_port: defaultOutPort(action.nodeType), to: e.to } as Edge,
             ]
           : [e],
       );
@@ -287,11 +300,16 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       return {
         ...state,
         savedVersion: action.version,
-        dirty: false,
+        // 保存中に続けた編集を「保存済み」と偽らない: PUT へ送ったスナップショットと
+        // 現在の IR が同一（reducer は毎編集で新オブジェクトを作る＝参照比較で足りる）の
+        // ときだけ dirty を下ろす。
+        dirty: action.ir ? false : state.ir !== action.savedIr,
         ...(action.ir ? { ir: action.ir } : {}),
       };
     case "layout_saved":
-      return { ...state, layoutDirty: false };
+      // 古い PUT の完了が新しいドラッグの未保存分を握り潰さないよう、送った layout と
+      // 現在の layout が同一参照のときだけクリーンにする。
+      return state.layout === action.layout ? { ...state, layoutDirty: false } : state;
     case "undo": {
       const prev = state.undoStack.at(-1);
       if (!prev) return state;

@@ -81,9 +81,12 @@ export function WorkflowEditor({
   // ── レイアウト自動保存（1s debounce・非バージョン）───────────────────────
   React.useEffect(() => {
     if (!state.layoutDirty) return;
+    // 送ったスナップショットを渡し、完了時に「まだ最新か」を reducer 側で照合する
+    //（古い PUT の完了が新しいドラッグ分の保存をスキップさせない）。
+    const snapshot = state.layout;
     const timer = setTimeout(() => {
-      putLayout(workflowId, state.layout)
-        .then(() => dispatch({ type: "layout_saved" }))
+      putLayout(workflowId, snapshot)
+        .then(() => dispatch({ type: "layout_saved", layout: snapshot }))
         .catch(() => {
           // 座標は化粧品（次回 dagre で復元可能）。失敗は黙って次回に任せる。
         });
@@ -102,10 +105,15 @@ export function WorkflowEditor({
   }, [state.dirty]);
 
   const save = React.useCallback(async () => {
+    // Ctrl/Cmd+S 経由でも「保存中・変更なし」では走らせない（毎 PUT が不変バージョンを
+    // 追記するため、無変更保存は版の無駄な増殖・連打は自己競合になる）。
+    if (saving || !state.dirty) return;
     setSaving(true);
+    // 送るスナップショットを固定し、保存中に続いた編集を「保存済み」と誤表示しない。
+    const irToSave = state.ir;
     try {
-      const saved = await updateWorkflow(workflowId, state.ir, state.savedVersion);
-      dispatch({ type: "saved", version: saved.version });
+      const saved = await updateWorkflow(workflowId, irToSave, state.savedVersion);
+      dispatch({ type: "saved", version: saved.version, savedIr: irToSave });
       dispatch({ type: "set_errors", errors: [] });
       toast({ title: `保存しました（v${saved.version}）` });
     } catch (e) {
@@ -132,7 +140,7 @@ export function WorkflowEditor({
     } finally {
       setSaving(false);
     }
-  }, [workflowId, state.ir, state.savedVersion, dispatch]);
+  }, [workflowId, state.ir, state.savedVersion, state.dirty, saving, dispatch]);
 
   // ── キーボード: Ctrl/Cmd+Z / Shift+Z / S ────────────────────────────────
   React.useEffect(() => {

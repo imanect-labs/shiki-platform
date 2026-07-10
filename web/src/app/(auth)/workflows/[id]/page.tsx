@@ -53,6 +53,9 @@ export default function WorkflowEditorPage() {
   }
   return (
     <WorkflowEditor
+      // id ごとに reducer を作り直す（同一コンポーネント再利用で前の workflow の IR を
+      // 新しい id に保存してしまう事故を防ぐ）。
+      key={id}
       workflowId={id}
       initialIr={loaded.ir}
       initialVersion={loaded.version}

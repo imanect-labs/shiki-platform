@@ -37,8 +37,9 @@ export function outputPorts(irNode: IrNode): string[] {
   let ports: string[];
   if (irNode.type === "control.switch") {
     const cases = (irNode.params as { cases?: { port: string }[] } | null)?.cases ?? [];
-    ports = [...new Set(cases.map((c) => c.port))];
-    if (ports.length === 0) ports = ["out"];
+    // どの case にも一致しない値は実行エンジンが `default` へ流す（control/mod.rs）。
+    // フォールバック経路を配線できるよう常に default ハンドルを出す（`out` は発しない）。
+    ports = [...new Set([...cases.map((c) => c.port), "default"])];
   } else {
     ports = [...(entry?.output_ports ?? ["out"])];
   }
@@ -56,6 +57,7 @@ const PORT_LABELS: Record<string, string> = {
   out: "",
   true: "はい",
   false: "いいえ",
+  default: "その他",
   error: "エラー時",
   timeout: "時間切れ",
 };
