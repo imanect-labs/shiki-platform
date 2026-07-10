@@ -129,7 +129,8 @@ impl DataStore {
             .await?
             .ok_or(DataError::NotFound)?;
         let mut records = vec![row.into_record()];
-        self.resolve_derived_fields(ctx, &table, &mut records).await?;
+        self.resolve_derived_fields(ctx, &table, &mut records)
+            .await?;
         Ok(records.remove(0))
     }
 
@@ -332,20 +333,35 @@ impl DataStore {
             let Some(ref_table) = f.ref_table else {
                 continue;
             };
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM data_record WHERE tenant_id = $1 AND table_id = $2 AND id = $3)",
-            )
-            .bind(&ctx.tenant_id)
-            .bind(ref_table)
-            .bind(ref_id)
-            .fetch_one(&self.db)
-            .await
-            .map_err(map_db)?;
-            if !exists {
-                return Err(DataError::Invalid(format!(
-                    "'{}' の参照先レコードが見つかりません",
-                    f.name
-                )));
+            // 参照整合は「書き手が参照先を**見える**こと」まで要求する（PIT-20:
+            // テーブル viewer ＋ 参照先テーブルの行述語。存在オラクル・不可視行への
+            // 参照持ち込みの双方を塞ぐ）。不可視は「見つからない」と同一応答。
+            let not_found =
+                || DataError::Invalid(format!("'{}' の参照先レコードが見つかりません", f.name));
+            let can_view_ref = self
+                .authz
+                .check(
+                    &ctx.subject(),
+                    Relation::Viewer,
+                    &ctx.ns().data_table(&ref_table.to_string()),
+                    authz::Consistency::HigherConsistency,
+                )
+                .await
+                .map_err(|e| DataError::Internal(e.to_string()))?;
+            if !can_view_ref {
+                return Err(not_found());
+            }
+            let ref_meta = match self.fetch_live(ctx, ref_table).await {
+                Ok(t) => t,
+                Err(DataError::NotFound) => return Err(not_found()),
+                Err(e) => return Err(e),
+            };
+            if self
+                .select_visible_by_id(ctx, &ref_meta, ref_id)
+                .await?
+                .is_none()
+            {
+                return Err(not_found());
             }
         }
         Ok(())

@@ -58,7 +58,9 @@ fn validate_expr(
         }
         PolicyExpr::FieldCmp { field, op, value } => {
             let f = schema.field(field).ok_or_else(|| {
-                DataError::Invalid(format!("{path}: フィールド '{field}' がスキーマにありません"))
+                DataError::Invalid(format!(
+                    "{path}: フィールド '{field}' がスキーマにありません"
+                ))
             })?;
             // 派生フィールドは述語の材料にしない（値が書込時検証を通らないため信頼できない）。
             if matches!(f.field_type, FieldType::Lookup | FieldType::Computed) {

@@ -44,7 +44,7 @@ pub(crate) struct PolicyMaterial {
 
 impl PolicyMaterial {
     /// HasRole / UserRoles の判定用ロール集合。
-    pub fn roles(&self, subtree: bool) -> &[String] {
+    pub(crate) fn roles(&self, subtree: bool) -> &[String] {
         let set = if subtree {
             self.roles_effective.as_ref()
         } else {
@@ -68,14 +68,8 @@ fn analyze(expr: &PolicyExpr, needs: &mut Needs) {
                 analyze(c, needs);
             }
         }
-        PolicyExpr::HasRole { subtree, .. } => {
-            if *subtree {
-                needs.roles_effective = true;
-            } else {
-                needs.roles_direct = true;
-            }
-        }
-        PolicyExpr::FieldCmp {
+        PolicyExpr::HasRole { subtree, .. }
+        | PolicyExpr::FieldCmp {
             value: PolicyOperand::UserRoles { subtree },
             ..
         } => {
@@ -118,7 +112,7 @@ impl Default for MaterialCache {
 
 impl MaterialCache {
     /// 共有/ロールのタプルが変わったら呼ぶ（全キャッシュを世代で即時失効）。
-    pub fn invalidate(&self) {
+    pub(crate) fn invalidate(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
         // エントリ自体は get 時の世代比較で弾かれる（遅延掃除）。肥大防止に都度クリア。
         if let Ok(mut map) = self.map.write() {
@@ -170,14 +164,12 @@ pub(crate) async fn resolve(
     let mut material = PolicyMaterial::default();
 
     if needs.roles_direct {
-        material.roles_direct = Some(
-            cached_role_set(ctx, authz, cache, KIND_ROLES_DIRECT, false).await?,
-        );
+        material.roles_direct =
+            Some(cached_role_set(ctx, authz, cache, KIND_ROLES_DIRECT, false).await?);
     }
     if needs.roles_effective {
-        material.roles_effective = Some(
-            cached_role_set(ctx, authz, cache, KIND_ROLES_EFFECTIVE, true).await?,
-        );
+        material.roles_effective =
+            Some(cached_role_set(ctx, authz, cache, KIND_ROLES_EFFECTIVE, true).await?);
     }
 
     // 個別共有集合（viewer/editor の直接タプル。読取はどちらでも可視になる）。

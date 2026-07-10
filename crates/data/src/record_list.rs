@@ -163,8 +163,14 @@ impl DataStore {
         filter: Option<&RecordFilter>,
         trace_id: Option<&str>,
     ) -> Result<i64, DataError> {
-        self.require(ctx, table_id, Relation::Viewer, "data.record.count", trace_id)
-            .await?;
+        self.require(
+            ctx,
+            table_id,
+            Relation::Viewer,
+            "data.record.count",
+            trace_id,
+        )
+        .await?;
         let table = self.fetch_live(ctx, table_id).await?;
         let exec_filter = match filter {
             None => None,

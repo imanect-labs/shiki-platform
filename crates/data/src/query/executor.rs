@@ -13,9 +13,7 @@ use sqlx::{PgConnection, Postgres};
 use uuid::Uuid;
 
 use crate::model::DataTable;
-use crate::policy::compile::{
-    compile_expr, compile_read_predicate, Bind, BindSet, RECORD_ALIAS,
-};
+use crate::policy::compile::{compile_expr, compile_read_predicate, Bind, BindSet, RECORD_ALIAS};
 use crate::policy::material;
 use crate::record::RecordRow;
 use crate::store::DataStore;
@@ -48,8 +46,7 @@ pub(crate) struct ReadPredicate {
     pub shares_truncated: bool,
 }
 
-const SELECT_COLS: &str =
-    "r.id, r.table_id, r.data, r.rev, r.owner, r.created_at, r.updated_at";
+const SELECT_COLS: &str = "r.id, r.table_id, r.data, r.rev, r.owner, r.created_at, r.updated_at";
 
 impl DataStore {
     /// 読取述語を解決する（材料解決込み・プレースホルダは $3 起点）。
@@ -94,8 +91,13 @@ impl DataStore {
              WHERE r.tenant_id = $1 AND r.table_id = $2 AND ({}) AND r.id = ${id_ph}",
             pred.sql
         );
-        let q = bind_all(sqlx::query_as::<Postgres, RecordRow>(&sql), ctx, table.id, &pred.binds)
-            .bind(id);
+        let q = bind_all(
+            sqlx::query_as::<Postgres, RecordRow>(&sql),
+            ctx,
+            table.id,
+            &pred.binds,
+        )
+        .bind(id);
         q.fetch_optional(&self.db).await.map_err(map_db)
     }
 
@@ -116,8 +118,13 @@ impl DataStore {
              WHERE r.tenant_id = $1 AND r.table_id = $2 AND ({}) AND r.id = ${id_ph} FOR UPDATE",
             pred.sql
         );
-        let q = bind_all(sqlx::query_as::<Postgres, RecordRow>(&sql), ctx, table.id, &pred.binds)
-            .bind(id);
+        let q = bind_all(
+            sqlx::query_as::<Postgres, RecordRow>(&sql),
+            ctx,
+            table.id,
+            &pred.binds,
+        )
+        .bind(id);
         q.fetch_optional(&mut *conn).await.map_err(map_db)
     }
 
@@ -235,7 +242,11 @@ impl DataStore {
         for b in &binds.binds {
             q = push_bind_scalar(q, b.clone());
         }
-        let by_policy = q.bind(record_id).fetch_one(&self.db).await.map_err(map_db)?;
+        let by_policy = q
+            .bind(record_id)
+            .fetch_one(&self.db)
+            .await
+            .map_err(map_db)?;
         if by_policy {
             return Ok(true);
         }
@@ -364,10 +375,10 @@ fn bind_all<'q>(
     q
 }
 
-fn push_bind<'q>(
-    q: QueryAs<'q, Postgres, RecordRow, PgArguments>,
+fn push_bind(
+    q: QueryAs<'_, Postgres, RecordRow, PgArguments>,
     b: Bind,
-) -> QueryAs<'q, Postgres, RecordRow, PgArguments> {
+) -> QueryAs<'_, Postgres, RecordRow, PgArguments> {
     match b {
         Bind::Text(v) => q.bind(v),
         Bind::TextArray(v) => q.bind(v),
@@ -376,10 +387,10 @@ fn push_bind<'q>(
     }
 }
 
-fn push_bind_scalar<'q, T>(
-    q: sqlx::query::QueryScalar<'q, Postgres, T, PgArguments>,
+fn push_bind_scalar<T>(
+    q: sqlx::query::QueryScalar<'_, Postgres, T, PgArguments>,
     b: Bind,
-) -> sqlx::query::QueryScalar<'q, Postgres, T, PgArguments> {
+) -> sqlx::query::QueryScalar<'_, Postgres, T, PgArguments> {
     match b {
         Bind::Text(v) => q.bind(v),
         Bind::TextArray(v) => q.bind(v),

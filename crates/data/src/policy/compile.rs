@@ -90,9 +90,16 @@ pub(crate) fn compile_expr(
             }
             Ok(format!("({})", parts.join(" AND ")))
         }
-        PolicyExpr::FieldCmp { field, op, value } => {
-            compile_field_cmp(schema, material, ctx_user_id, alias, binds, field, *op, value)
-        }
+        PolicyExpr::FieldCmp { field, op, value } => compile_field_cmp(
+            schema,
+            material,
+            ctx_user_id,
+            alias,
+            binds,
+            field,
+            *op,
+            value,
+        ),
     }
 }
 
@@ -107,9 +114,9 @@ fn compile_field_cmp(
     op: CmpOp,
     value: &PolicyOperand,
 ) -> Result<String, DataError> {
-    let f = schema
-        .field(field)
-        .ok_or_else(|| DataError::Internal(format!("row_policy が未知フィールド '{field}' を参照")))?;
+    let f = schema.field(field).ok_or_else(|| {
+        DataError::Internal(format!("row_policy が未知フィールド '{field}' を参照"))
+    })?;
     // 埋め込み直前の再検証（スキーマ検証と二重・PIT-21）。
     if !is_valid_field_name(field) {
         return Err(DataError::Internal(format!(
@@ -267,7 +274,7 @@ mod tests {
         let sql = compile_read_predicate(&schema, &m, "alice", "r", &mut binds).unwrap();
         assert_eq!(
             sql,
-            "(((r.data ->> 'applicant') = $3) OR ((r.data ->> 'dept') = ANY($4::text[])))"
+            "((((r.data ->> 'applicant') = $3) OR ((r.data ->> 'dept') = ANY($4::text[]))))"
         );
         assert_eq!(binds.binds.len(), 2);
         // 値は SQL テキストに現れない（全てバインド）。
@@ -325,14 +332,8 @@ mod tests {
             row_policy: None,
         };
         let mut binds = BindSet::new(0);
-        let sql = compile_read_predicate(
-            &schema,
-            &PolicyMaterial::default(),
-            "u",
-            "r",
-            &mut binds,
-        )
-        .unwrap();
+        let sql = compile_read_predicate(&schema, &PolicyMaterial::default(), "u", "r", &mut binds)
+            .unwrap();
         assert_eq!(sql, "TRUE");
         assert!(binds.binds.is_empty());
     }
@@ -352,9 +353,15 @@ mod tests {
             },
         ]));
         let mut binds = BindSet::new(0);
-        let sql = compile_read_predicate(&schema, &material(&[], &[]), "u", "r", &mut binds)
-            .unwrap();
-        assert!(sql.contains("((r.data ->> 'amount'))::numeric <> $1::numeric"), "{sql}");
-        assert!(sql.contains("(r.data ->> 'dept') = ANY($2::text[])"), "{sql}");
+        let sql =
+            compile_read_predicate(&schema, &material(&[], &[]), "u", "r", &mut binds).unwrap();
+        assert!(
+            sql.contains("((r.data ->> 'amount'))::numeric <> $1::numeric"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("(r.data ->> 'dept') = ANY($2::text[])"),
+            "{sql}"
+        );
     }
 }

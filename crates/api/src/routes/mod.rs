@@ -7,6 +7,7 @@ pub mod chat;
 pub mod chat_approval;
 pub mod chat_dto;
 pub mod data;
+pub mod data_records;
 pub mod directory;
 pub mod files;
 pub mod folders;

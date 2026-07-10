@@ -47,6 +47,23 @@ pub struct RouteDecl {
     handler: fn() -> MethodRouter<AppState>,
 }
 
+impl RouteDecl {
+    /// ルート宣言を組む（route_table と分離宣言ファイルの共通コンストラクタ）。
+    pub(crate) fn new(
+        path: &'static str,
+        methods: &'static [&'static str],
+        policy: AccessPolicy,
+        handler: fn() -> MethodRouter<AppState>,
+    ) -> Self {
+        RouteDecl {
+            path,
+            methods,
+            policy,
+            handler,
+        }
+    }
+}
+
 /// 全エンドポイントの単一定義（宣言的スコープマップ）。
 ///
 /// ルータは本表からのみ構築されるため、「表に無いエンドポイント」は存在できない。
@@ -67,7 +84,7 @@ pub fn route_table() -> Vec<RouteDecl> {
             handler,
         }
     }
-    vec![
+    let mut table = vec![
         // --- Public（認証不要。/auth/* はセッション確立前に叩く。logout は内部で CSRF 自己検証） ---
         r("/healthz", &["GET"], Public, || get(health::healthz)),
         r("/readyz", &["GET"], Public, || get(health::readyz)),
@@ -161,38 +178,7 @@ pub fn route_table() -> Vec<RouteDecl> {
                     .get(routes::artifacts::list_artifact_shares)
             },
         ),
-        // --- 構造化データ（Task 9.2/9.5・テーブル ReBAC＋サーバ検証＋リビジョン） ---
-        r("/data/tables", &["GET", "POST"], Session, || {
-            get(routes::data::list_tables).post(routes::data::create_table)
-        }),
-        r("/data/tables/{id}", &["GET", "DELETE"], Session, || {
-            get(routes::data::get_table).delete(routes::data::delete_table)
-        }),
-        r("/data/tables/{id}/schema", &["PUT"], Session, || {
-            put(routes::data::update_table_schema)
-        }),
-        r(
-            "/data/tables/{id}/records",
-            &["GET", "POST"],
-            Session,
-            || get(routes::data::list_records).post(routes::data::create_record),
-        ),
-        r(
-            "/data/tables/{id}/records/{record_id}",
-            &["GET", "PATCH", "DELETE"],
-            Session,
-            || {
-                get(routes::data::get_record)
-                    .patch(routes::data::update_record)
-                    .delete(routes::data::delete_record)
-            },
-        ),
-        r(
-            "/data/tables/{id}/records/{record_id}/revisions",
-            &["GET"],
-            Session,
-            || get(routes::data::list_revisions),
-        ),
+        // --- 構造化データ（Task 9.2/9.3/9.5）: 宣言は data_route_decls に分離 ---
         // --- generative UI（Phase 6・保存時検証つき ui_spec ＋ 宣言的アクション） ---
         r("/ui-specs", &["POST"], Session, || {
             post(routes::ui_specs::create_ui_spec)
@@ -358,7 +344,9 @@ pub fn route_table() -> Vec<RouteDecl> {
             Provisioner,
             || delete(routes::admin::delete_tenant),
         ),
-    ]
+    ];
+    table.extend(routes::data::data_route_decls());
+    table
 }
 
 /// アプリの axum ルータを構築する（テストからも利用）。

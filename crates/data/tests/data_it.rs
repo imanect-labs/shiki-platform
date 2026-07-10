@@ -705,6 +705,7 @@ async fn date_normalized_and_ref_table_immutable() {
                 schema: TableSchema {
                     fields: vec![due],
                     status_field: None,
+                    row_policy: None,
                 },
             },
             None,
@@ -727,6 +728,7 @@ async fn date_normalized_and_ref_table_immutable() {
                 schema: TableSchema {
                     fields: vec![field("name", FieldType::Text)],
                     status_field: None,
+                    row_policy: None,
                 },
             },
             None,
@@ -741,6 +743,7 @@ async fn date_normalized_and_ref_table_immutable() {
                 schema: TableSchema {
                     fields: vec![field("name", FieldType::Text)],
                     status_field: None,
+                    row_policy: None,
                 },
             },
             None,
@@ -757,6 +760,7 @@ async fn date_normalized_and_ref_table_immutable() {
                 schema: TableSchema {
                     fields: vec![ref_f.clone()],
                     status_field: None,
+                    row_policy: None,
                 },
             },
             None,
@@ -772,6 +776,7 @@ async fn date_normalized_and_ref_table_immutable() {
             TableSchema {
                 fields: vec![moved],
                 status_field: None,
+                row_policy: None,
             },
             None,
             None,

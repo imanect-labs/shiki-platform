@@ -14,8 +14,8 @@ use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 
 use crate::index::ensure_indexes;
-use crate::policy::material::MaterialCache;
 use crate::model::{DataTable, TableSchema};
+use crate::policy::material::MaterialCache;
 use crate::schema::{validate_schema_update, validate_table_name, validate_table_schema};
 use crate::validate::RefResolver;
 use crate::{map_db, DataError};

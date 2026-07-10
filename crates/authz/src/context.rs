@@ -82,7 +82,7 @@ impl AuthContext {
     /// principal.kind により `user:<tenant>|<id>`（対話）または `workflow:<tenant>|<id>`
     /// （schedule/event run）を返す。schedule/event run はこの workflow subject で全 check/
     /// ListObjects を評価し、委譲タプルに照合する（engine.md §6.1・confused-deputy 防御）。
-    pub fn subject(&self) -> crate::object::Subject {
+    pub fn subject(&self) -> crate::subject::Subject {
         match self.principal.kind {
             PrincipalKind::User => self.ns().user(&self.principal.id),
             PrincipalKind::Workflow => self.ns().workflow_principal(&self.principal.id),

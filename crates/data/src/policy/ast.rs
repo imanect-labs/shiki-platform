@@ -33,6 +33,7 @@ impl RowPolicy {
 /// 述語式（閉じた文法・ネスト上限は検証で強制）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[schema(no_recursion)]
 pub enum PolicyExpr {
     /// いずれかを満たす（OR）。空は不成立（fail-closed）。
     Any(Vec<PolicyExpr>),
@@ -97,8 +98,7 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
         // 未知バリアントは fail-closed。
-        let bad: Result<PolicyExpr, _> =
-            serde_json::from_value(json!({ "raw_sql": "1=1" }));
+        let bad: Result<PolicyExpr, _> = serde_json::from_value(json!({ "raw_sql": "1=1" }));
         assert!(bad.is_err());
     }
 

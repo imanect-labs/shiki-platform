@@ -48,7 +48,9 @@ impl DataStore {
             let Some(via) = table.schema.field(&def.via_field) else {
                 continue;
             };
-            let Some(ref_table_id) = via.ref_table else { continue };
+            let Some(ref_table_id) = via.ref_table else {
+                continue;
+            };
 
             // 参照 id を収集。
             let mut ids: HashSet<Uuid> = HashSet::new();
@@ -132,9 +134,10 @@ impl DataStore {
             Err(e) => return Err(e),
         };
         // 射影対象はスカラーの実フィールドのみ（派生の連鎖・再帰はしない）。
-        let ok_target = ref_table.schema.field(target_field).is_some_and(|tf| {
-            !matches!(tf.field_type, FieldType::Lookup | FieldType::Computed)
-        });
+        let ok_target = ref_table
+            .schema
+            .field(target_field)
+            .is_some_and(|tf| !matches!(tf.field_type, FieldType::Lookup | FieldType::Computed));
         if !ok_target || !crate::schema::is_valid_field_name(target_field) {
             return Ok(HashMap::new());
         }

@@ -32,10 +32,10 @@ pub use model::{
     ComputedDef, ComputedOp, DataRecord, DataTable, FieldDef, FieldPatch, FieldType, LookupDef,
     RecordRevision, TableSchema,
 };
+pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
 pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordSort};
 pub use record_share::RecordShareRole;
 pub use store::{DataStore, NewDataTable};
-pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
 pub use validate::RefResolver;
 
 /// 構造化データ操作のエラー。
