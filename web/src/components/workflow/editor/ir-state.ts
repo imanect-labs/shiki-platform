@@ -38,6 +38,8 @@ export type EditorAction =
   | { type: "move"; positions: Record<string, { x: number; y: number }> }
   | { type: "move_trigger"; key: string; position: { x: number; y: number } }
   | { type: "update_node"; id: string; patch: Partial<Node> }
+  /// switch の case 出口名変更（params 更新と当該ポートのエッジ from_port 追随を 1 手で行う）。
+  | { type: "rename_out_port"; id: string; fromPort: string; toPort: string; params: unknown }
   | { type: "rename_node"; id: string; nextId: string }
   | { type: "update_meta"; patch: Partial<Pick<WorkflowIr, "display_name" | "description" | "policies" | "declared_scopes">> }
   | { type: "set_triggers"; triggers: Trigger[] }
@@ -114,6 +116,32 @@ function makeNode(ir: WorkflowIr, nodeType: string): Node {
     timeout_sec: null,
     on_error: "fail_run",
   } as unknown as Node;
+}
+
+/// params JSON 内の `$from` 参照（`"<id>"` / `"nodes.<id>.output"`）を新 id へ書き換える。
+function rewriteFromRefs(value: unknown, oldId: string, nextId: string): unknown {
+  if (Array.isArray(value)) {
+    return value.map((v) => rewriteFromRefs(v, oldId, nextId));
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === "$from" && typeof v === "string") {
+        if (v === oldId) {
+          out[k] = nextId;
+          continue;
+        }
+        if (v === `nodes.${oldId}.output`) {
+          out[k] = `nodes.${nextId}.output`;
+          continue;
+        }
+      }
+      out[k] = rewriteFromRefs(v, oldId, nextId);
+    }
+    return out;
+  }
+  return value;
 }
 
 function pushUndo(state: EditorState): Pick<EditorState, "undoStack" | "redoStack"> {
@@ -254,6 +282,19 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         ),
       });
     }
+    case "rename_out_port": {
+      return withIr(state, {
+        ...state.ir,
+        nodes: state.ir.nodes.map((n) =>
+          n.id === action.id ? ({ ...n, params: action.params } as Node) : n,
+        ),
+        edges: state.ir.edges.map((e) =>
+          e.from === action.id && (e.from_port ?? "out") === action.fromPort
+            ? ({ ...e, from_port: action.toPort } as Edge)
+            : e,
+        ),
+      });
+    }
     case "rename_node": {
       const nextId = action.nextId;
       if (
@@ -270,9 +311,17 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       }
       const renamed = withIr(state, {
         ...state.ir,
-        nodes: state.ir.nodes.map((n) =>
-          n.id === action.id ? ({ ...n, id: nextId } as Node) : n,
-        ),
+        nodes: state.ir.nodes.map((n) => {
+          const node =
+            n.id === action.id ? ({ ...n, id: nextId } as Node) : n;
+          return {
+            ...node,
+            // map 領域の親リンクと、params 内の $from 参照も追随させる
+            //（残すと保存時検証で落ちるか、map 関係が壊れる）。
+            parent: node.parent === action.id ? nextId : node.parent,
+            params: rewriteFromRefs(node.params, action.id, nextId),
+          } as Node;
+        }),
         edges: state.ir.edges.map((e) => ({
           ...e,
           from: e.from === action.id ? nextId : e.from,
