@@ -84,21 +84,8 @@ async fn main() -> anyhow::Result<()> {
     // generative UI / skill / ミニアプリ（Phase 6）: 検証は全経路が同一実装を共有する信頼境界。
     let gui_stores = wiring_gui::wire_gui(&db, &artifacts);
 
-    // チャット（Phase 3）: enabled のとき llm-gateway＋生成ワーカーを配線し、API 用ストアを返す。
-    // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
-    let chat = wiring::wire_chat(
-        &config,
-        &http,
-        &db,
-        &authz,
-        search.as_ref(),
-        &storage,
-        &gui_stores.validator,
-        &artifacts,
-    )
-    .await?;
-
     // ワークフロー IR ストア（Task 10.1a）: artifact の上に保存時検証を載せる。
+    // chat（emit_workflow・Task 10.13）が使うため wire_chat より先に組む。
     let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
 
     // シークレット管理（Task 10.9）: マスターキーファイルが設定されていれば配線する。
@@ -115,6 +102,23 @@ async fn main() -> anyhow::Result<()> {
         }
         None => None,
     };
+
+    // チャット（Phase 3）: enabled のとき llm-gateway＋生成ワーカーを配線し、API 用ストアを返す。
+    // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
+    // workflows/secrets は AI ワークフロー編集（emit_workflow・Task 10.13）のカタログ源。
+    let chat = wiring::wire_chat(
+        &config,
+        &http,
+        &db,
+        &authz,
+        search.as_ref(),
+        &storage,
+        &gui_stores.validator,
+        &artifacts,
+        &workflows,
+        secrets.as_ref(),
+    )
+    .await?;
 
     // ワークフロー実行時（Stage A W3）: enabled のとき launcher/runs を組み、worker/scheduler/relay を spawn。
     let (workflow_launcher, workflow_runs) = wiring::wire_workflow(

@@ -96,6 +96,17 @@ impl ChatWorker {
         if let Some(validator) = &self.ui_validator {
             tools.push(Arc::new(gui::EmitUiTool::new(validator.clone())));
         }
+        // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）:
+        // ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。
+        if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
+            tools.push(Arc::new(crate::workflow_tool::EmitWorkflowTool::new(
+                store.clone(),
+                catalog.clone(),
+            )));
+            tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
+                store.clone(),
+            )));
+        }
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {

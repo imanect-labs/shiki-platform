@@ -19,6 +19,8 @@ shiki-agent-core.workspace = true
 shiki-websearch.workspace = true
 # generative UI（emit_ui ツール・chat.submit ハンドラ・Task 6.4/6.5）＋skill 適用（Task 6.9）。
 shiki-gui.workspace = true
+# AI 編集ツール emit_workflow / read_workflow（保存パイプライン検証・Task 10.13）。
+shiki-workflow-engine.workspace = true
 shiki-artifact.workspace = true
 # claim/リース/fencing/(id,seq) 追記/Redis pub/sub の共通プリミティブ（Task 10.0）。
 shiki-durable.workspace = true
@@ -60,6 +62,7 @@ ignored = [
     "shiki-agent-core",
     "shiki-websearch",
     "shiki-gui",
+    "shiki-workflow-engine",
     "shiki-artifact",
     "shiki-durable",
 ]

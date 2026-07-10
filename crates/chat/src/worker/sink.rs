@@ -96,6 +96,12 @@ impl WorkerSink {
                 self.content
                     .push(ContentBlock::GenerativeUi { spec: spec.clone() });
             }
+            // 保存パイプライン通過済みの参照のみが emit_workflow から届く（Task 10.13）。
+            AgentEvent::WorkflowRef { workflow } => {
+                self.content.push(ContentBlock::WorkflowRef {
+                    workflow: workflow.clone(),
+                });
+            }
             // 自律プロファイルの構造化イベント（計画/サブタスク/予算/承認/失敗回復）は
             // content block へは projection しない（進捗の可視化はライブ SSE 側で扱う・W4 で結線）。
             AgentEvent::PlanUpdated(_)
@@ -134,6 +140,9 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
             name: artifact.name.clone(),
         },
         AgentEvent::GenerativeUi { spec } => StreamEventKind::GenerativeUi { spec: spec.clone() },
+        AgentEvent::WorkflowRef { workflow } => StreamEventKind::WorkflowRef {
+            workflow: workflow.clone(),
+        },
         // 自律プロファイルの構造化イベント（Task 5.9 ライブ配信）。generation_event に append され
         // replay 可能（監査・5.10）だが message.content へは projection しない。
         AgentEvent::PlanUpdated(plan) => StreamEventKind::Plan {
