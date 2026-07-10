@@ -100,7 +100,8 @@ async fn run_to_completion(
             &graph,
         )
         .await
-        .expect("create_run");
+        .expect("create_run")
+        .expect("admitted");
     let w = WorkflowWorker::new(
         RunStore::new(pool.clone()),
         Arc::new(PassExecutor),

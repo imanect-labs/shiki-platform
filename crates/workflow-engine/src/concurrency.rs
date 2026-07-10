@@ -136,6 +136,39 @@ impl ConcurrencyStore {
         Ok(true)
     }
 
+    /// カウンタを実 running 数へ突合する（scheduler tick・リーダーのみ・リーク回収）。
+    ///
+    /// リース失効 takeover やプロセス kill で release が漏れたぶんを、実際の running step 数から
+    /// 再計算して回収する。node 階層は ir_snapshot からノード種を引く（running は少数前提）。
+    pub async fn reconcile(&self) -> Result<u64, ConcurrencyError> {
+        let mut fixed = 0u64;
+        // global（tenant 全体）。
+        fixed += sqlx::query(
+            "UPDATE concurrency_counter c SET current_n = sub.actual, updated_at = now()              FROM (SELECT c2.tenant_id, c2.scope_key,                           (SELECT count(*) FROM step_execution s                            WHERE s.tenant_id = c2.tenant_id AND s.status = 'running') AS actual                    FROM concurrency_counter c2 WHERE c2.scope_kind = 'global') sub              WHERE c.scope_kind = 'global' AND c.tenant_id = sub.tenant_id                AND c.scope_key = sub.scope_key AND c.current_n <> sub.actual",
+        )
+        .execute(&self.db)
+        .await
+        .map_err(map_db)?
+        .rows_affected();
+        // workflow 単位。
+        fixed += sqlx::query(
+            "UPDATE concurrency_counter c SET current_n = sub.actual, updated_at = now()              FROM (SELECT c2.tenant_id, c2.scope_key,                           (SELECT count(*) FROM step_execution s                            JOIN workflow_run r ON r.tenant_id = s.tenant_id AND r.run_id = s.run_id                            WHERE s.tenant_id = c2.tenant_id AND s.status = 'running'                              AND r.workflow_id::text = c2.scope_key) AS actual                    FROM concurrency_counter c2 WHERE c2.scope_kind = 'workflow') sub              WHERE c.scope_kind = 'workflow' AND c.tenant_id = sub.tenant_id                AND c.scope_key = sub.scope_key AND c.current_n <> sub.actual",
+        )
+        .execute(&self.db)
+        .await
+        .map_err(map_db)?
+        .rows_affected();
+        // node 種単位（scope_key = '<workflow_id>|<node_kind>'・ノード種は ir_snapshot から導出）。
+        fixed += sqlx::query(
+            "UPDATE concurrency_counter c SET current_n = sub.actual, updated_at = now()              FROM (SELECT c2.tenant_id, c2.scope_key,                           (SELECT count(*) FROM step_execution s                            JOIN workflow_run r ON r.tenant_id = s.tenant_id AND r.run_id = s.run_id                            WHERE s.tenant_id = c2.tenant_id AND s.status = 'running'                              AND r.workflow_id::text = split_part(c2.scope_key, '|', 1)                              AND (SELECT n->>'type'                                   FROM jsonb_array_elements(r.ir_snapshot->'nodes') n                                   WHERE n->>'id' = s.node_id LIMIT 1)                                  = split_part(c2.scope_key, '|', 2)) AS actual                    FROM concurrency_counter c2 WHERE c2.scope_kind = 'node') sub              WHERE c.scope_kind = 'node' AND c.tenant_id = sub.tenant_id                AND c.scope_key = sub.scope_key AND c.current_n <> sub.actual",
+        )
+        .execute(&self.db)
+        .await
+        .map_err(map_db)?
+        .rows_affected();
+        Ok(fixed)
+    }
+
     /// 予約を解放する（完了時・全スロット -1・0 未満にはしない）。
     pub async fn release(&self, tenant_id: &str, slots: &[Slot]) -> Result<(), ConcurrencyError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;

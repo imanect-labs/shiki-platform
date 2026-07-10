@@ -89,6 +89,7 @@ async fn create_run(store: &RunStore, tenant: &str, wf: Uuid, ir: &Value) -> Uui
         )
         .await
         .expect("create_run")
+        .expect("admitted")
 }
 
 fn worker(

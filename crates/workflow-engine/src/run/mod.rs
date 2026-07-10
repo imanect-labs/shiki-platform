@@ -27,7 +27,7 @@ pub use store::{
     CancelOutcome, ResumeOutcome, RunDetail, RunEventRow, RunListFilter, RunListItem, RunStore,
     RunStoreError, StepDetail, StepOverview,
 };
-pub use worker::{WorkerConfig, WorkflowWorker};
+pub use worker::{ConcurrencyLimits, WorkerConfig, WorkflowWorker};
 
 /// ノード実行のコンテキスト（NodeContext・engine.md §6.5/§7.2）。
 ///

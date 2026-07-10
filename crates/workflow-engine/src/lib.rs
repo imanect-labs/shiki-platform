@@ -46,8 +46,8 @@ pub use run::{
     StepOverview,
 };
 pub use run::{
-    NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus, WorkerConfig,
-    WorkflowRunLauncher, WorkflowWorker,
+    ConcurrencyLimits, NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus,
+    WorkerConfig, WorkflowRunLauncher, WorkflowWorker,
 };
 pub use scheduler::{LeaderLease, RunLauncher, SchedulerStore};
 pub use store::{WorkflowStore, WorkflowStoreError};

@@ -242,7 +242,7 @@ impl RunStore {
 
 /// 1 run のドレイン: 実行中でない step を cancelled 化し、running が残らなければ run を
 /// terminal（cancelled）化する。戻り値 = run を terminal 化したか。
-async fn drain_one(
+pub(super) async fn drain_one(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: &str,
     run_id: Uuid,
@@ -301,24 +301,34 @@ async fn drain_one(
     if running > 0 {
         return Ok(false);
     }
+    // run_timeout 起因のドレインは failed（ユーザーキャンセルと区別する・engine.md §5.3）。
+    let timeout: bool = sqlx::query_scalar(
+        "SELECT COALESCE(fail_reason = 'run_timeout', false) FROM workflow_run \
+         WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_db)?
+    .unwrap_or(false);
+    let (final_status, kind) = if timeout {
+        ("failed", RunEventKind::RunFailed)
+    } else {
+        ("cancelled", RunEventKind::RunCancelled)
+    };
     let updated = sqlx::query(
-        "UPDATE workflow_run SET status = 'cancelled', finished_at = now(), updated_at = now() \
+        "UPDATE workflow_run SET status = $3, finished_at = now(), updated_at = now() \
          WHERE tenant_id = $1 AND run_id = $2 AND status IN ('queued', 'running')",
     )
     .bind(tenant_id)
     .bind(run_id)
+    .bind(final_status)
     .execute(&mut **tx)
     .await
     .map_err(map_db)?;
     if updated.rows_affected() > 0 {
-        append_event(
-            tx,
-            tenant_id,
-            run_id,
-            RunEventKind::RunCancelled,
-            &Value::Null,
-        )
-        .await?;
+        append_event(tx, tenant_id, run_id, kind, &Value::Null).await?;
         return Ok(true);
     }
     Ok(false)

@@ -462,15 +462,16 @@ pub(super) async fn finalize_run_if_done(
     });
     // ユーザーキャンセル要求中の run は成功扱いにしない（実行中 step の完走を待って cancelled 化・
     // engine.md §9.3 の step 境界検知）。失敗はキャンセルより情報量が多いので優先する。
-    let cancel_requested: bool = sqlx::query_scalar(
-        "SELECT cancel_requested FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+    let (cancel_requested, timed_out): (bool, bool) = sqlx::query_as(
+        "SELECT cancel_requested, COALESCE(fail_reason = 'run_timeout', false) AS timed_out \
+         FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
     )
     .bind(tenant_id)
     .bind(run_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(map_db)?;
-    let (run_status, kind) = if any_unhandled_failed {
+    let (run_status, kind) = if any_unhandled_failed || timed_out {
         (RunStatus::Failed, RunEventKind::RunFailed)
     } else if cancel_requested {
         (RunStatus::Cancelled, RunEventKind::RunCancelled)

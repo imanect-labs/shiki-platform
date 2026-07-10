@@ -30,6 +30,15 @@ pub struct WorkflowConfig {
     /// スケジューラ/relay の tick 間隔（秒）。
     #[serde(default = "default_tick_secs")]
     pub tick_secs: u64,
+    /// 3 階層並行上限: テナント全体の同時 step 数。
+    #[serde(default = "default_tenant_steps")]
+    pub tenant_step_limit: i32,
+    /// 3 階層並行上限: workflow 単位の同時 step 数。
+    #[serde(default = "default_workflow_steps")]
+    pub workflow_step_limit: i32,
+    /// 3 階層並行上限: ノード種単位の同時 step 数。
+    #[serde(default = "default_node_kind_steps")]
+    pub node_kind_step_limit: i32,
     /// step リース秒数。
     #[serde(default = "default_lease_secs")]
     pub lease_secs: i64,
@@ -52,6 +61,9 @@ impl Default for WorkflowConfig {
             enabled: false,
             worker_concurrency: default_worker_concurrency(),
             tick_secs: default_tick_secs(),
+            tenant_step_limit: default_tenant_steps(),
+            workflow_step_limit: default_workflow_steps(),
+            node_kind_step_limit: default_node_kind_steps(),
             lease_secs: default_lease_secs(),
             http_allowlist: Vec::new(),
             http_timeout_ms: default_http_timeout_ms(),
@@ -66,6 +78,15 @@ fn default_worker_concurrency() -> usize {
 }
 fn default_tick_secs() -> u64 {
     5
+}
+fn default_tenant_steps() -> i32 {
+    64
+}
+fn default_workflow_steps() -> i32 {
+    16
+}
+fn default_node_kind_steps() -> i32 {
+    8
 }
 fn default_lease_secs() -> i64 {
     30
@@ -177,13 +198,22 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     let executor: Arc<dyn workflow_engine::NodeExecutor> =
         Arc::new(build_prod_executor(&deps, &launcher).await);
 
-    // ① run ワーカー（多重起動安全・detach）。
+    // ① run ワーカー（多重起動安全・detach）。3 階層並行制御を結線（10.5・順番待ち）。
+    let concurrency_store = workflow_engine::ConcurrencyStore::new(deps.db.clone());
     let worker = WorkflowWorker::new(
         runs.clone(),
         executor,
         WorkerConfig {
             lease_secs: deps.config.lease_secs,
             ..WorkerConfig::default()
+        },
+    )
+    .with_concurrency(
+        concurrency_store.clone(),
+        workflow_engine::ConcurrencyLimits {
+            tenant_steps: deps.config.tenant_step_limit,
+            workflow_steps: deps.config.workflow_step_limit,
+            node_kind_steps: deps.config.node_kind_step_limit,
         },
     );
     let worker_id = format!("wf-worker-{}", std::process::id());
@@ -201,6 +231,7 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     let tick = std::time::Duration::from_secs(deps.config.tick_secs.max(1));
     let relay_db = deps.db.clone();
     let tick_runs = deps.runs.clone();
+    let tick_concurrency = concurrency_store;
 
     // event consumer を登録し、現バックログ（有効化前の storage.write）を飛ばす。
     {
@@ -239,6 +270,16 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                     // ユーザーキャンセルのドレイン回収（running 完走後の terminal 化・Task 10.14）。
                     if let Err(e) = tick_runs.drain_cancel_requested(None).await {
                         tracing::warn!(error = %e, "cancel ドレインでエラー");
+                    }
+                    // run 多重度の promote・run timeout・並行カウンタ突合（10.5）。
+                    if let Err(e) = tick_runs.promote_queued_runs(None).await {
+                        tracing::warn!(error = %e, "queued promote でエラー");
+                    }
+                    if let Err(e) = tick_runs.expire_run_timeouts(now, None).await {
+                        tracing::warn!(error = %e, "run timeout 回収でエラー");
+                    }
+                    if let Err(e) = tick_concurrency.reconcile().await {
+                        tracing::warn!(error = %e, "並行カウンタ reconcile でエラー");
                     }
                 }
                 Ok(false) => {} // 別インスタンスがリーダー。
