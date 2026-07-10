@@ -145,6 +145,7 @@ impl ChatWorker {
             // run に永続化した trace_id を伝播（Langfuse/OTel/監査を相関・Task 5.9）。
             trace_id: run.trace_id.clone(),
             input_preview,
+            app_id: None,
         };
 
         // 自律プロファイル: フルツール（fs CRUD/grep/shell）＋予算＋計画＋承認ゲート（Task 5.1/5.4/5.6/5.7）。
@@ -425,6 +426,7 @@ impl ChatWorker {
                     trace_id: run.trace_id.clone(),
                     input_preview: query,
                     output_preview: text_acc.chars().take(2000).collect(),
+                    app_id: None,
                 },
             )
             .await;

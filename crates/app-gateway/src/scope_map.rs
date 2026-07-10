@@ -129,6 +129,17 @@ pub(crate) const GATEWAY_ROUTES: &[GatewayRoute] = &[
         path: "/gw/notify/send",
         scope: RouteScope::Scoped(CapabilityScope::NotifySend),
     },
+    // --- llm.invoke / agent.invoke（ミニアプリ内 AI・Task 9.9） ---
+    GatewayRoute {
+        method: "POST",
+        path: "/gw/ai/llm/invoke",
+        scope: RouteScope::Scoped(CapabilityScope::LlmInvoke),
+    },
+    GatewayRoute {
+        method: "POST",
+        path: "/gw/ai/agent/invoke",
+        scope: RouteScope::Scoped(CapabilityScope::AgentInvoke),
+    },
 ];
 
 /// メソッド＋マッチ済みパステンプレートからスコープ要件を引く（未宣言は `None`＝fail-closed 拒否）。
@@ -184,6 +195,14 @@ mod tests {
         assert_eq!(
             required_scope_for("POST", "/gw/storage/folders"),
             Some(RouteScope::Scoped(CapabilityScope::StorageWrite))
+        );
+        assert_eq!(
+            required_scope_for("POST", "/gw/ai/llm/invoke"),
+            Some(RouteScope::Scoped(CapabilityScope::LlmInvoke))
+        );
+        assert_eq!(
+            required_scope_for("POST", "/gw/ai/agent/invoke"),
+            Some(RouteScope::Scoped(CapabilityScope::AgentInvoke))
         );
     }
 

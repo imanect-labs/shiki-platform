@@ -38,6 +38,62 @@ pub trait RagPort: Send + Sync {
     ) -> Result<Vec<RagHit>, GatewayError>;
 }
 
+/// AI ストリーミングの 1 イベント（SSE の event/data に対応・Task 9.9）。
+#[derive(Debug, Clone, Serialize)]
+pub struct AiEvent {
+    pub event: String,
+    pub data: serde_json::Value,
+}
+
+/// AI イベントの非同期ストリーム（llm.invoke / agent.invoke 共通の SSE 源）。
+pub type AiEventStream = futures::stream::BoxStream<'static, AiEvent>;
+
+/// agent.invoke の入力（ガードレール確定済み・port 実装はこれを超えられない）。
+#[derive(Debug, Clone)]
+pub struct AgentInvokeSpec {
+    pub app_id: uuid::Uuid,
+    pub prompt: String,
+    /// 論理モデル名（allowlist 検証済み・None はテナント既定）。
+    pub model: Option<String>,
+    /// インストール時ピンの宣言ツール（実装側で ToolName 閉集合 ∩ 実配線と交差する）。
+    pub declared_tools: Vec<String>,
+    /// 1 生成の出力トークン上限（インストール時ピン）。
+    pub max_tokens: Option<i64>,
+    pub max_steps: Option<usize>,
+    /// この呼び出しで使ってよい累積コスト上限（日次残額・マイクロ USD）。
+    pub max_cost_usd_micros: i64,
+    pub trace_id: Option<String>,
+}
+
+/// agent.invoke の port（実装は api 配線＝agent-core run_agent ラッパ）。
+///
+/// **ツールと RAG は呼出ユーザーの ReBAC で絞る**（doc_search は ctx 経由の permission-aware
+/// 検索・宣言外ツールは提示しない）。LLM 呼び出しは llm-gateway を通り app_id 付きで計上される。
+#[async_trait]
+pub trait AgentPort: Send + Sync {
+    async fn invoke(
+        &self,
+        ctx: &AuthContext,
+        spec: AgentInvokeSpec,
+    ) -> Result<AiEventStream, GatewayError>;
+}
+
+/// agent 実行未構成時のフォールバック（agent.invoke は 502 を返す）。
+pub struct NoAgent;
+
+#[async_trait]
+impl AgentPort for NoAgent {
+    async fn invoke(
+        &self,
+        _ctx: &AuthContext,
+        _spec: AgentInvokeSpec,
+    ) -> Result<AiEventStream, GatewayError> {
+        Err(GatewayError::Upstream(
+            "エージェント実行がこの環境では構成されていません".into(),
+        ))
+    }
+}
+
 /// RAG 未構成時のフォールバック（rag.query は 502 を返す）。
 pub struct NoRag;
 

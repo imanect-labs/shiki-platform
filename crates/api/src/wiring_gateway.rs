@@ -43,15 +43,16 @@ impl app_gateway::RagPort for GatewayRagPort {
     }
 }
 
-/// 公開 API ゲートウェイ（Task 9.6/9.8）の第2リスナ用 `Router` を組む（無効時は `None`）。
+/// 公開 API ゲートウェイ（Task 9.6/9.8/9.9）の第2リスナ用 `Router` を組む（無効時は `None`）。
 ///
 /// 内部 API（cookie セッション）とは別ポート＝別オリジンで待ち受ける Bearer 専用の面。
 /// JWKS は内部 API と同じ `JwksCache` を共有し（同一 issuer）、認可は同一 OpenFGA
 /// クライアント（`authz`）を共有する（鍵/認可のチョークポイントを一本化する）。
-/// 能力アダプタの委譲先（storage/data/fsm/rag）も**内部 API と同一インスタンス**を渡す。
+/// 能力アダプタの委譲先（storage/data/fsm/rag/llm）も**内部 API と同一チョークポイント**。
 #[allow(clippy::too_many_arguments)] // 依存束の注入点（main からの一回きり）。
 pub(crate) fn wire_gateway(
     config: &AppConfig,
+    http: &reqwest::Client,
     db: &sqlx::PgPool,
     jwks: &Arc<api::middleware::JwksCache>,
     authz: &Arc<dyn AuthzClient>,
@@ -67,6 +68,22 @@ pub(crate) fn wire_gateway(
     let rag_port: Arc<dyn app_gateway::RagPort> = match search {
         Some(s) => Arc::new(GatewayRagPort(Arc::clone(s))),
         None => Arc::new(app_gateway::NoRag),
+    };
+    // llm.invoke / agent.invoke（Task 9.9）: llm-gateway は chat と同じ config.llm から構築
+    // （会計は同一 DB の llm_usage・app_id 付き）。構築失敗（設定不備）は AI 能力のみ無効化する。
+    let llm = match crate::wiring::build_gateway(config, http, db) {
+        Ok(g) => Some(Arc::new(g)),
+        Err(e) => {
+            tracing::warn!(error = %e, "llm-gateway 構築に失敗（AI 能力は 502 で応答）");
+            None
+        }
+    };
+    let agent: Arc<dyn app_gateway::AgentPort> = match &llm {
+        Some(llm) => Arc::new(crate::gateway_ai::GatewayAgentPort {
+            llm: Arc::clone(llm),
+            search: search.map(Arc::clone),
+        }),
+        None => Arc::new(app_gateway::NoAgent),
     };
     let state = app_gateway::GatewayState {
         installations: app_gateway::AppInstallationStore::new(db.clone()),
@@ -92,6 +109,9 @@ pub(crate) fn wire_gateway(
             fsms: Arc::clone(fsms),
             rag: rag_port,
             notifications: app_gateway::NotificationStore::new(db.clone()),
+            llm,
+            agent,
+            ai_daily_cap_usd_micros: config.gateway.ai_daily_cap_usd_micros,
         },
     };
     Some(app_gateway::build_gateway_router(state))

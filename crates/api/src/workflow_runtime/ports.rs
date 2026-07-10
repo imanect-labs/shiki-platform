@@ -242,6 +242,7 @@ impl NodePorts for ProdNodePorts {
                     trace_id: ec.trace_id.clone(),
                     input_preview: preview(&req.prompt),
                     output_preview: preview(&text),
+                    app_id: None,
                 },
             )
             .await;

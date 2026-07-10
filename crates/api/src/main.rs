@@ -15,6 +15,7 @@ use sqlx::postgres::PgPoolOptions;
 use storage::{DirectoryStore, TenantStore};
 
 mod dev_seed;
+mod gateway_ai;
 mod wiring;
 mod wiring_gateway;
 mod wiring_gui;
@@ -192,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
     // 能力アダプタの委譲先は内部 API と同一インスタンス（単一チョークポイント）。
     let gateway_router = wiring_gateway::wire_gateway(
         &config,
+        &http,
         &db,
         &jwks,
         &authz,
