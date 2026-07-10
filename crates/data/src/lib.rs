@@ -36,7 +36,7 @@ pub use model::{
 };
 pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
 pub use query::declarative::{
-    Aggregate, AggregateGroup, DataQuery, Metric, QueryFilter, QueryOp, QueryResult, QuerySort,
+    Aggregate, AggregateGroup, DataQuery, Metric, QueryFilter, QueryResult, QuerySort,
 };
 pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordSort};
 pub use record_share::RecordShareRole;

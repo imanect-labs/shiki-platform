@@ -15,20 +15,13 @@ use crate::query::executor::{ListFilter, ListSort};
 use crate::store::DataStore;
 use crate::{DataError, DEFAULT_AGGREGATE_MIN_ROWS};
 
-/// フィルタ演算子（閉じた集合）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryOp {
-    Eq,
-    /// text 系の等値（multi_select は「含む」）。number は Eq を使う。
-    Contains,
-}
-
 /// フィルタ条件（宣言フィールド・値はバインド）。
+///
+/// 演算子はフィールド型で決まる（multi_select は「含む」、その他は等値）。呼び出し側で
+/// 演算子を選ばせない（型と不整合な組合せを構造的に排除する）。
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct QueryFilter {
     pub field: String,
-    pub op: QueryOp,
     pub value: serde_json::Value,
 }
 

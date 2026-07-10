@@ -224,7 +224,6 @@ use utoipa::{
         crate::routes::data_views::ViewResponse,
         data::DataQuery,
         data::QueryFilter,
-        data::QueryOp,
         data::QuerySort,
         data::Aggregate,
         data::Metric,

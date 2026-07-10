@@ -14,6 +14,15 @@ use crate::DataError;
 /// マスク判定はリクエスト単位で一度だけ評価するため、行の値に依存する式
 /// （field_cmp / is_owner）は使えない。
 pub(crate) fn validate_role_level_expr(expr: &PolicyExpr, path: &str) -> Result<(), DataError> {
+    validate_role_level_at(expr, 0, path)
+}
+
+fn validate_role_level_at(expr: &PolicyExpr, depth: usize, path: &str) -> Result<(), DataError> {
+    if depth > MAX_POLICY_DEPTH {
+        return Err(DataError::Invalid(format!(
+            "{path}: ネストが深すぎます（最大 {MAX_POLICY_DEPTH}）"
+        )));
+    }
     match expr {
         PolicyExpr::Public => Ok(()),
         PolicyExpr::HasRole { role, .. } => {
@@ -29,7 +38,7 @@ pub(crate) fn validate_role_level_expr(expr: &PolicyExpr, path: &str) -> Result<
                 )));
             }
             for (i, c) in children.iter().enumerate() {
-                validate_role_level_expr(c, &format!("{path}[{i}]"))?;
+                validate_role_level_at(c, depth + 1, &format!("{path}[{i}]"))?;
             }
             Ok(())
         }

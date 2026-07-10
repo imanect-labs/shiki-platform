@@ -69,6 +69,7 @@ impl DataStore {
         )
         .await?;
         let table = self.fetch_live(ctx, table_id).await?;
+        let masked = self.masked_fields(ctx, &table).await?;
         let limit = opts.limit.clamp(1, 200);
         let offset = opts.offset.clamp(0, 10_000);
 
@@ -78,6 +79,7 @@ impl DataStore {
         let exec_filter = match filter {
             None => None,
             Some(fl) => {
+                Self::ensure_queryable(&masked, &fl.field)?;
                 let f = indexed_field(&table.schema, &fl.field)?;
                 Some(match f.field_type {
                     FieldType::Number => {
@@ -122,6 +124,7 @@ impl DataStore {
         let exec_sort = match sort {
             None => None,
             Some(st) => {
+                Self::ensure_queryable(&masked, &st.field)?;
                 let f = indexed_field(&table.schema, &st.field)?;
                 if f.field_type == FieldType::MultiSelect {
                     return Err(DataError::Invalid(
@@ -147,7 +150,6 @@ impl DataStore {
             .await?;
         let mut items: Vec<DataRecord> = rows.into_iter().map(RecordRow::into_record).collect();
         self.resolve_derived_fields(ctx, &table, &mut items).await?;
-        let masked = self.masked_fields(ctx, &table).await?;
         Self::apply_mask_records(&masked, &mut items);
         Ok(ListRecordsPage {
             items,
@@ -174,9 +176,11 @@ impl DataStore {
         )
         .await?;
         let table = self.fetch_live(ctx, table_id).await?;
+        let masked = self.masked_fields(ctx, &table).await?;
         let exec_filter = match filter {
             None => None,
             Some(fl) => {
+                Self::ensure_queryable(&masked, &fl.field)?;
                 let f = indexed_field(&table.schema, &fl.field)?;
                 Some(match f.field_type {
                     FieldType::Number => {

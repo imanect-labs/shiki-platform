@@ -16,7 +16,7 @@ use authz::client::{OpenFgaClient, OpenFgaConfig};
 use authz::{AuthContext, AuthzClient, Principal, Relation};
 use data::{
     Aggregate, CmpOp, DataError, DataQuery, DataStore, DataViewBody, DataViewStore, FieldDef,
-    FieldPolicy, FieldType, Metric, NewDataTable, PolicyExpr, PolicyOperand, QueryFilter, QueryOp,
+    FieldPolicy, FieldType, Metric, NewDataTable, PolicyExpr, PolicyOperand, QueryFilter,
     RefResolver, RowPolicy, TableSchema,
 };
 use serde_json::json;
@@ -173,7 +173,6 @@ async fn field_mask_hides_and_blocks_search() {
             &DataQuery {
                 filter: Some(QueryFilter {
                     field: "salary".into(),
-                    op: QueryOp::Eq,
                     value: json!(500),
                 }),
                 ..Default::default()
