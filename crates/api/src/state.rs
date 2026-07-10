@@ -52,6 +52,8 @@ pub struct AppState {
     pub data_views: Arc<data::DataViewStore>,
     /// FSM 定義の保存/解決（Task 9.10・artifact kind=fsm の上・遷移は data チョークポイント）。
     pub fsms: Arc<data::FsmStore>,
+    /// コードベース・ミニアプリのマニフェスト/publish（Task 9.1/9.13a）。
+    pub mini_app_code: Arc<app_platform::MiniAppCodeStore>,
     /// UI スペックの保存/取得（Task 6.3・artifact kind=ui_spec の上に保存時検証を載せる）。
     pub ui_specs: Arc<gui::UiSpecStore>,
     /// 宣言的 UI アクションの実行系（Task 6.5・照合/本人認可/監査の合流点）。

@@ -287,6 +287,10 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         Arc::clone(&artifacts),
         (*data_store).clone(),
     ));
+    let mini_app_code = Arc::new(app_platform::MiniAppCodeStore::new(
+        Arc::clone(&artifacts),
+        app_platform::Registry::new(db.clone()),
+    ));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -299,6 +303,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         data: data_store,
         data_views,
         fsms,
+        mini_app_code,
         ui_specs,
         ui_actions,
         skills,

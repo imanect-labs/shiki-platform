@@ -20,6 +20,8 @@ pub enum ArtifactKind {
     DataView,
     /// 構造化データの FSM 宣言的ガード（status 遷移＋遷移認可・Task 9.10）。
     Fsm,
+    /// コードベース・ミニアプリのマニフェスト（Task 9.1）。
+    MiniAppCode,
     Skill,
     Script,
 }
@@ -33,6 +35,7 @@ impl ArtifactKind {
             ArtifactKind::MiniApp => "mini_app",
             ArtifactKind::DataView => "data_view",
             ArtifactKind::Fsm => "fsm",
+            ArtifactKind::MiniAppCode => "mini_app_code",
             ArtifactKind::Skill => "skill",
             ArtifactKind::Script => "script",
         }
@@ -46,6 +49,7 @@ impl ArtifactKind {
             "mini_app" => Some(ArtifactKind::MiniApp),
             "data_view" => Some(ArtifactKind::DataView),
             "fsm" => Some(ArtifactKind::Fsm),
+            "mini_app_code" => Some(ArtifactKind::MiniAppCode),
             "skill" => Some(ArtifactKind::Skill),
             "script" => Some(ArtifactKind::Script),
             _ => None,
@@ -131,6 +135,7 @@ mod tests {
             ArtifactKind::MiniApp,
             ArtifactKind::DataView,
             ArtifactKind::Fsm,
+            ArtifactKind::MiniAppCode,
             ArtifactKind::Skill,
             ArtifactKind::Script,
         ] {

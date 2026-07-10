@@ -89,7 +89,8 @@ fn require_generic_kind(kind: ArtifactKind) -> Result<(), ApiError> {
         ArtifactKind::Skill
         | ArtifactKind::MiniApp
         | ArtifactKind::DataView
-        | ArtifactKind::Fsm => Err(ApiError::BadRequest(format!(
+        | ArtifactKind::Fsm
+        | ArtifactKind::MiniAppCode => Err(ApiError::BadRequest(format!(
             "kind={} は専用エンドポイント（保存時検証つき）で作成・更新してください",
             kind.as_str()
         ))),

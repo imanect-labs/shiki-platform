@@ -33,6 +33,7 @@ pub mod ident;
 pub mod migrate;
 pub mod model;
 pub mod object;
+pub mod scope;
 pub mod subject;
 pub mod vocab;
 
@@ -41,5 +42,6 @@ pub use context::{AuthContext, Principal, PrincipalKind};
 pub use error::AuthzError;
 pub use ident::{validate_local_id, validate_tenant_id, IdentViolation};
 pub use object::{FgaObject, Namespace, TENANT_SEP};
+pub use scope::CapabilityScope;
 pub use subject::Subject;
 pub use vocab::{ObjectType, Relation};

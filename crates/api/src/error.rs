@@ -147,6 +147,19 @@ impl From<data::DataError> for ApiError {
     }
 }
 
+impl From<app_platform::AppPlatformError> for ApiError {
+    fn from(err: app_platform::AppPlatformError) -> Self {
+        use app_platform::AppPlatformError as E;
+        match err {
+            E::NotFound => ApiError::NotFound,
+            E::Forbidden => ApiError::Forbidden,
+            E::Invalid(msg) => ApiError::BadRequest(msg),
+            E::Conflict(_) => ApiError::Conflict,
+            E::Internal(msg) => ApiError::Internal(format!("app-platform: {msg}")),
+        }
+    }
+}
+
 impl From<secrets::SecretError> for ApiError {
     fn from(err: secrets::SecretError) -> Self {
         use secrets::SecretError as SE;

@@ -46,6 +46,10 @@ pub(crate) fn is_valid_field_name(name: &str) -> bool {
 }
 
 /// スキーマ全体を検証する（登録時）。
+pub fn validate_table_schema_public(schema: &TableSchema) -> Result<(), DataError> {
+    validate_table_schema(schema)
+}
+
 pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataError> {
     if schema.fields.is_empty() {
         return Err(DataError::Invalid("fields が空です".into()));

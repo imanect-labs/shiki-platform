@@ -83,6 +83,11 @@ async fn main() -> anyhow::Result<()> {
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
     // 構造化データサービス（Task 9.2〜9.10）: data ストア＋保存ビュー＋FSM を束ねて配線する。
     let (data_store, data_views, fsms) = wire_data(&db, &authz, &directory, &storage, &artifacts);
+    // ミニアプリ基盤（Task 9.1/9.13a）: マニフェスト store ＋汎用レジストリ。
+    let mini_app_code = Arc::new(app_platform::MiniAppCodeStore::new(
+        Arc::clone(&artifacts),
+        app_platform::Registry::new(db.clone()),
+    ));
     // generative UI / skill / ミニアプリ（Phase 6）: 検証は全経路が同一実装を共有する信頼境界。
     let gui_stores = wiring_gui::wire_gui(&db, &artifacts);
 
@@ -156,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
         data: data_store,
         data_views,
         fsms,
+        mini_app_code,
         ui_specs: gui_stores.ui_specs,
         ui_actions,
         skills: gui_stores.skills,

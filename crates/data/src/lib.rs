@@ -45,6 +45,7 @@ pub use query::declarative::{
 };
 pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordSort};
 pub use record_share::RecordShareRole;
+pub use schema::validate_table_schema_public;
 pub use store::{DataStore, NewDataTable};
 pub use transition::TRANSITION_EVENT_TYPE;
 pub use validate::RefResolver;
