@@ -6,6 +6,7 @@
 
 pub mod list;
 pub mod registration;
+pub mod run_ops;
 pub mod runs;
 pub mod save;
 
@@ -17,6 +18,10 @@ pub use registration::{
     consent_plan, disable_workflow, enable_workflow, get_registration, ConsentPlanResponse,
     DelegationItem, EnableRequest, EnableResponse, GrantItem, RegistrationResponse,
     SuggestedGrantItem,
+};
+pub use run_ops::{
+    cancel_workflow_run, retry_workflow_run, stream_workflow_run_events, CancelResponse,
+    RetryRequest, RetryResponse,
 };
 pub use runs::{
     get_workflow_run, get_workflow_step, list_workflow_run_events, list_workflow_runs,

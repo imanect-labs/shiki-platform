@@ -6,14 +6,16 @@
 use std::time::Duration;
 
 use axum::{
-    extract::Request,
-    http::{header, HeaderName, HeaderValue, Method, StatusCode},
+    http::{header, StatusCode},
     middleware,
     response::IntoResponse,
     routing::{delete, get, patch, post, put, MethodRouter},
     Router,
 };
-use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
+use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
+
+mod http_util;
+use http_util::{cors_layer, make_request_span};
 
 use crate::{health, middleware::require_session, openapi, routes, state::AppState, telemetry};
 
@@ -256,6 +258,24 @@ pub fn route_table() -> Vec<RouteDecl> {
             Session,
             || get(routes::workflows::list_workflow_run_events),
         ),
+        r(
+            "/workflows/{id}/runs/{run_id}/events/stream",
+            &["GET"],
+            SessionStreaming,
+            || get(routes::workflows::stream_workflow_run_events),
+        ),
+        r(
+            "/workflows/{id}/runs/{run_id}/cancel",
+            &["POST"],
+            Session,
+            || post(routes::workflows::cancel_workflow_run),
+        ),
+        r(
+            "/workflows/{id}/runs/{run_id}/retry",
+            &["POST"],
+            Session,
+            || post(routes::workflows::retry_workflow_run),
+        ),
         // --- シークレット（Task 10.9・write-only / use-only・平文の読み返しルートは無い） ---
         r("/secrets", &["GET", "POST"], Session, || {
             get(routes::secrets::list_secrets).post(routes::secrets::create_secret)
@@ -439,48 +459,6 @@ pub fn build_router(state: AppState) -> Router {
     };
 
     router.with_state(state)
-}
-
-/// 設定されたオリジンに限定した CORS レイヤを構築する（空なら `None` = レイヤ無効）。
-fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
-    if origins.is_empty() {
-        return None;
-    }
-    let parsed: Vec<HeaderValue> = origins
-        .iter()
-        .filter_map(|o| o.parse::<HeaderValue>().ok())
-        .collect();
-    if parsed.is_empty() {
-        tracing::warn!("cors_allowed_origins が全て不正なため CORS を無効化");
-        return None;
-    }
-    Some(
-        CorsLayer::new()
-            .allow_origin(parsed)
-            .allow_credentials(true)
-            .allow_methods([
-                Method::GET,
-                Method::POST,
-                Method::PUT,
-                Method::PATCH,
-                Method::DELETE,
-                Method::OPTIONS,
-            ])
-            .allow_headers([
-                header::CONTENT_TYPE,
-                HeaderName::from_static("x-csrf-token"),
-            ]),
-    )
-}
-
-/// リクエスト span。`trace_id` は [`telemetry::observe`] が後から記録するため Empty 宣言する。
-fn make_request_span(req: &Request) -> tracing::Span {
-    tracing::info_span!(
-        "http_request",
-        method = %req.method(),
-        path = %req.uri().path(),
-        trace_id = tracing::field::Empty,
-    )
 }
 
 async fn openapi_handler() -> impl IntoResponse {

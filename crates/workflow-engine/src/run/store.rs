@@ -18,9 +18,11 @@ mod advance;
 mod backoff;
 mod history;
 mod map_region;
+mod ops;
 mod wait;
 
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
+pub use ops::{CancelOutcome, ResumeOutcome};
 
 /// step の durable テーブル記述子（複合キー・attempt は claim で増やさない・engine.md §9.5）。
 const STEP_SPEC: RunTableSpec = RunTableSpec {
@@ -122,6 +124,17 @@ impl RunStore {
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
+        // OTel 相関 id（engine.md §11.1）: run_id の 32-hex を trace_id として採番・記録する
+        //（worker 実行時の trace_id 導出と同一規約 → 監査↔OTel↔Langfuse が run 単位で相関する）。
+        sqlx::query(
+            "UPDATE workflow_run SET trace_id = replace(run_id::text, '-', '') \
+             WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
 
         for node_id in graph.root_body_nodes() {
             // 入エッジ 0 本の本体ノードは ready、それ以外は pending。
@@ -179,11 +192,13 @@ impl RunStore {
                  attempt = s.attempt + (CASE WHEN s.status = 'ready' THEN 1 ELSE 0 END), \
                  updated_at = now() \
              FROM ( \
-                 SELECT tenant_id, run_id, step_path FROM step_execution \
-                 WHERE (($3::text IS NULL) OR (tenant_id = $3)) \
-                   AND ((status = 'ready' AND next_retry_at <= now()) \
-                        OR (status = 'running' AND lease_expires_at < now())) \
-                 ORDER BY next_retry_at FOR UPDATE SKIP LOCKED LIMIT 1 \
+                 SELECT s2.tenant_id, s2.run_id, s2.step_path FROM step_execution s2 \
+                 JOIN workflow_run r2 ON r2.tenant_id = s2.tenant_id AND r2.run_id = s2.run_id \
+                 WHERE (($3::text IS NULL) OR (s2.tenant_id = $3)) \
+                   AND NOT r2.cancel_requested \
+                   AND ((s2.status = 'ready' AND s2.next_retry_at <= now()) \
+                        OR (s2.status = 'running' AND s2.lease_expires_at < now())) \
+                 ORDER BY s2.next_retry_at FOR UPDATE OF s2 SKIP LOCKED LIMIT 1 \
              ) picked \
              JOIN workflow_run r ON r.tenant_id = picked.tenant_id AND r.run_id = picked.run_id \
              WHERE s.tenant_id = picked.tenant_id AND s.run_id = picked.run_id \

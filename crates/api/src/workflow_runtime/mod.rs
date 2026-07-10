@@ -236,6 +236,10 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                     if let Err(e) = tick_runs.expire_due_waits(now, None).await {
                         tracing::warn!(error = %e, "wait timeout 回収でエラー");
                     }
+                    // ユーザーキャンセルのドレイン回収（running 完走後の terminal 化・Task 10.14）。
+                    if let Err(e) = tick_runs.drain_cancel_requested(None).await {
+                        tracing::warn!(error = %e, "cancel ドレインでエラー");
+                    }
                 }
                 Ok(false) => {} // 別インスタンスがリーダー。
                 Err(e) => tracing::warn!(error = %e, "リーダーリース取得に失敗"),

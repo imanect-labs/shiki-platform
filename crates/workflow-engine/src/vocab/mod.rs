@@ -76,7 +76,7 @@ impl EventSource {
 }
 
 vocab_enum! {
-    /// run_event の種（engine.md §3.3 の 12 種）。DB の run_event.kind に書く値と一致。
+    /// run_event の種（engine.md §3.3・resume を含む）。DB の run_event.kind に書く値と一致。
     pub enum RunEventKind {
         RunStarted => "run.started",
         StepReady => "step.ready",
@@ -90,6 +90,8 @@ vocab_enum! {
         RunSucceeded => "run.succeeded",
         RunFailed => "run.failed",
         RunCancelled => "run.cancelled",
+        /// 失敗 step からの再開（engine.md §11.4・Task 10.14）。
+        RunResumed => "run.resumed",
     }
 }
 
