@@ -168,7 +168,9 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<gui::SpecValidator>) {
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
             model: Some("m".into()),
-            lease_secs: 30,
+            // Coverage（cargo-llvm-cov）は計装＋全テスト並列で 1 step が大きく遅くなる。
+            // 30s では worker のリース失効で run が orphan 化して flake るため余裕を持たせる。
+            lease_secs: 120,
             max_steps: 4,
             ..Default::default()
         },
@@ -191,7 +193,7 @@ async fn run_to_done(
     let mut rx = store.event_stream(res.run_id, 0);
     let mut events = Vec::new();
     for _ in 0..500 {
-        let next = tokio::time::timeout(Duration::from_secs(60), rx.next())
+        let next = tokio::time::timeout(Duration::from_secs(180), rx.next())
             .await
             .expect("イベント待ちがタイムアウト");
         let Some(ev) = next else { break };
@@ -228,7 +230,7 @@ async fn validated_generative_ui_is_streamed_and_persisted() {
         let mut rx = store.event_stream(res.run_id, 0);
         let mut saw_ui = false;
         for _ in 0..500 {
-            let next = tokio::time::timeout(Duration::from_secs(60), rx.next())
+            let next = tokio::time::timeout(Duration::from_secs(180), rx.next())
                 .await
                 .expect("イベント待ちタイムアウト");
             let Some(ev) = next else { break };

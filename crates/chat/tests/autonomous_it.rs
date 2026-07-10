@@ -188,7 +188,9 @@ async fn workspace_harness(pool: PgPool) -> (ChatStore, Arc<StorageService>) {
         WorkerConfig {
             system_prompt: "あなたは自律アシスタントです。".into(),
             model: Some("m".into()),
-            lease_secs: 30,
+            // Coverage（cargo-llvm-cov）は計装＋全テスト並列で 1 step が大きく遅くなる。
+            // 30s では worker のリース失効で run が orphan 化して flake るため余裕を持たせる。
+            lease_secs: 120,
             max_steps: 4,
             ..Default::default()
         },
