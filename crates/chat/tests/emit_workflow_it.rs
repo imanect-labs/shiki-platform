@@ -182,7 +182,10 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<WorkflowStore>) {
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
             model: Some("m".into()),
-            lease_secs: 30,
+            // Coverage（cargo-llvm-cov）は計装＋全テスト並列で 1 step が大きく遅くなる。
+            // emit_workflow は WorkflowStore.create（V1〜V7 検証＋artifact 書込）を伴い重いため、
+            // 30s ではリース失効で run が orphan 化して flake る。十分な余裕を持たせる。
+            lease_secs: 120,
             max_steps: 4,
             ..Default::default()
         },
