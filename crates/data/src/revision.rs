@@ -57,10 +57,11 @@ struct RevisionRow {
 }
 
 impl DataStore {
-    /// リビジョン履歴を取得する（テーブル viewer・rev 降順・keyset）。
+    /// リビジョン履歴を取得する（テーブル viewer＋**行可視性**・rev 降順・keyset）。
     ///
-    /// 行レベル認可（Task 9.3）導入後は record 本体と同じ述語で行の可視性を検査する
-    /// （現段階の可視性はテーブル ReBAC のみ）。
+    /// 行レベル認可（Task 9.3）: 現存レコードは本体と同じ読取述語で可視な場合のみ履歴を
+    /// 返す（不可視は 404＝存在オラクルなし・Codex P1）。削除済みレコードの履歴は
+    /// **テーブル owner のみ**参照できる（監査証跡の閲覧はテーブル管理者の権限）。
     pub async fn list_revisions(
         &self,
         ctx: &AuthContext,
@@ -79,7 +80,35 @@ impl DataStore {
         )
         .await?;
         // テーブルが生存していること（削除済みテーブルの履歴を残存タプルで読ませない）。
-        self.fetch_live(ctx, table_id).await?;
+        let table = self.fetch_live(ctx, table_id).await?;
+        // 行可視性ゲート: 現存かつ不可視なら 404。削除済み実在履歴は owner のみ。
+        if self
+            .select_visible_by_id(ctx, &table, record_id)
+            .await?
+            .is_none()
+        {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM data_record WHERE tenant_id = $1 AND table_id = $2 AND id = $3)",
+            )
+            .bind(&ctx.tenant_id)
+            .bind(table_id)
+            .bind(record_id)
+            .fetch_one(&self.db)
+            .await
+            .map_err(map_db)?;
+            if exists {
+                return Err(DataError::NotFound); // 現存だが不可視＝存在しない扱い。
+            }
+            self.require(
+                ctx,
+                table_id,
+                Relation::Owner,
+                "data.record.revisions",
+                trace_id,
+            )
+            .await
+            .map_err(|_| DataError::NotFound)?;
+        }
         let limit = limit.clamp(1, 200);
         let rows: Vec<RevisionRow> = sqlx::query_as(
             "SELECT record_id, rev, changed_by, change_kind, patch, created_at \

@@ -48,20 +48,35 @@ impl DataStore {
             .await?;
         let obj = ctx.ns().data_record(&record_id.to_string());
         let subject = target.subject(&ctx.ns());
-        self.authz
+        let wrote = self
+            .authz
             .write_tuple(&subject, role.relation(), &obj)
             .await
             .map_err(|e| DataError::Internal(format!("share tuple: {e}")))?;
-        // 共有集合キャッシュを世代失効（付与の即時反映）。
-        self.material_cache.invalidate();
-        self.record_share_audit(
-            ctx,
-            "data.record.share",
-            record_id,
-            trace_id,
-            json!({ "table_id": table_id, "target": target, "role": role }),
-        )
-        .await
+        // 監査失敗時はタプルを補償（監査なしの共有を残さない・Codex P2）。撤回は
+        // 実際に付与した場合のみ（冪等 write の false は既存タプル＝撤回しない）。
+        if let Err(e) = self
+            .record_share_audit(
+                ctx,
+                "data.record.share",
+                record_id,
+                trace_id,
+                json!({ "table_id": table_id, "target": target, "role": role }),
+            )
+            .await
+        {
+            if wrote {
+                if let Err(c) = self
+                    .authz
+                    .delete_tuple(&subject, role.relation(), &obj)
+                    .await
+                {
+                    tracing::error!(error = %c, %record_id, "共有監査失敗後のタプル補償削除にも失敗");
+                }
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// 個別共有を解除する（冪等・即時反映）。
@@ -78,19 +93,34 @@ impl DataStore {
             .await?;
         let obj = ctx.ns().data_record(&record_id.to_string());
         let subject = target.subject(&ctx.ns());
-        self.authz
+        let removed = self
+            .authz
             .delete_tuple(&subject, role.relation(), &obj)
             .await
             .map_err(|e| DataError::Internal(format!("unshare tuple: {e}")))?;
-        self.material_cache.invalidate();
-        self.record_share_audit(
-            ctx,
-            "data.record.unshare",
-            record_id,
-            trace_id,
-            json!({ "table_id": table_id, "target": target, "role": role }),
-        )
-        .await
+        // 監査失敗時はタプルを再付与して整合を保つ（撤回が監査に残らない状態を避ける）。
+        if let Err(e) = self
+            .record_share_audit(
+                ctx,
+                "data.record.unshare",
+                record_id,
+                trace_id,
+                json!({ "table_id": table_id, "target": target, "role": role }),
+            )
+            .await
+        {
+            if removed {
+                if let Err(c) = self
+                    .authz
+                    .write_tuple(&subject, role.relation(), &obj)
+                    .await
+                {
+                    tracing::error!(error = %c, %record_id, "unshare 監査失敗後のタプル再付与にも失敗");
+                }
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// 共有権限の検査: テーブル owner または当該レコードの作成者（本人に可視な行のみ）。

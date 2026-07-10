@@ -61,7 +61,7 @@ impl DataStore {
             .as_ref()
             .map(|p| vec![&p.read])
             .unwrap_or_default();
-        let m = material::resolve(ctx, self.authz.as_ref(), &self.material_cache, &exprs).await?;
+        let m = material::resolve(ctx, self.authz.as_ref(), &exprs).await?;
         let mut binds = BindSet::new(2);
         let sql = compile_read_predicate(
             &table.schema,
@@ -215,13 +215,7 @@ impl DataStore {
             return Ok(true);
         };
         let write_expr = policy.write_expr();
-        let m = material::resolve(
-            ctx,
-            self.authz.as_ref(),
-            &self.material_cache,
-            &[write_expr],
-        )
-        .await?;
+        let m = material::resolve(ctx, self.authz.as_ref(), &[write_expr]).await?;
         let mut binds = BindSet::new(2);
         let pred = compile_expr(
             write_expr,

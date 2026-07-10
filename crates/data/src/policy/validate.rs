@@ -126,6 +126,13 @@ fn validate_lit(
             }
         }
         CmpOp::In => {
+            // number の in はコンパイラ側で未対応（配列 numeric 比較を組まない）。
+            // 述語が実行時 500 になるのを防ぐため保存時に拒否する（Codex P2）。
+            if ty == FieldType::Number {
+                return Err(DataError::Invalid(format!(
+                    "{path}: number フィールドに in は使えません（eq/ne を使ってください）"
+                )));
+            }
             let arr = v.as_array().ok_or_else(|| {
                 DataError::Invalid(format!("{path}: in のリテラルは配列で指定してください"))
             })?;

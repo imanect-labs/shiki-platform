@@ -15,7 +15,6 @@ use uuid::Uuid;
 
 use crate::index::ensure_indexes;
 use crate::model::{DataTable, TableSchema};
-use crate::policy::material::MaterialCache;
 use crate::schema::{validate_schema_update, validate_table_name, validate_table_schema};
 use crate::validate::RefResolver;
 use crate::{map_db, DataError};
@@ -62,8 +61,6 @@ pub struct DataStore {
     pub(crate) authz: Arc<dyn AuthzClient>,
     pub(crate) audit: AuditRecorder,
     pub(crate) resolver: Arc<dyn RefResolver>,
-    /// 述語材料（ロール集合・個別共有 ID）の TTL＋世代キャッシュ（PIT-18）。
-    pub(crate) material_cache: Arc<MaterialCache>,
 }
 
 impl DataStore {
@@ -74,7 +71,6 @@ impl DataStore {
             authz,
             audit,
             resolver,
-            material_cache: Arc::new(MaterialCache::default()),
         }
     }
 

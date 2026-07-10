@@ -511,7 +511,7 @@ async fn lookup_does_not_leak_invisible_reference() {
         .await
         .expect("alice get");
     assert_eq!(got.data["grade"], json!("S1"));
-    // bob には **null**（参照なしと区別できない＝存在オラクルなし）。
+    // bob には **null**（参照なしと区別できない＝存在オラクルなし）。行述語で防波堤。
     let got = store
         .get_record(&bob, members.id, row.id, None)
         .await
@@ -716,6 +716,14 @@ async fn share_overflow_fails_closed_with_truncation_flag() {
             r: Relation,
             t: ObjectType,
         ) -> Result<Vec<String>, AuthzError> {
+            if t == ObjectType::DataRecord {
+                // 10,000 件のダミー + 実共有 id を末尾（上限で切り詰められる位置）。
+                let mut v: Vec<String> = (0..10_000)
+                    .map(|_| format!("data_record:{}|{}", self.tenant, Uuid::new_v4()))
+                    .collect();
+                v.push(format!("data_record:{}|{}", self.tenant, self.real));
+                return Ok(v);
+            }
             self.inner.list_objects(s, r, t).await
         }
         async fn delete_object_tuples(&self, o: &FgaObject) -> Result<u32, AuthzError> {
@@ -726,14 +734,6 @@ async fn share_overflow_fails_closed_with_truncation_flag() {
             s: &Subject,
             t: ObjectType,
         ) -> Result<Vec<String>, AuthzError> {
-            if t == ObjectType::DataRecord {
-                // 10,000 件のダミー + 実共有 id を末尾（上限で切り詰められる位置）。
-                let mut v: Vec<String> = (0..10_000)
-                    .map(|_| format!("data_record:{}|{}", self.tenant, Uuid::new_v4()))
-                    .collect();
-                v.push(format!("data_record:{}|{}", self.tenant, self.real));
-                return Ok(v);
-            }
             self.inner.read_subject_objects(s, t).await
         }
     }

@@ -128,6 +128,21 @@ impl DataStore {
         target_field: &str,
         ids: &HashSet<Uuid>,
     ) -> Result<HashMap<Uuid, Value>, DataError> {
+        // 参照先テーブルの viewer を要求する（第1層 ReBAC を lookup 射影でも維持・Codex P1）。
+        // 不可視なら空（＝全 lookup が null）。行レベルの可視性は select 側の述語が別途担う。
+        let can_view = self
+            .authz
+            .check(
+                &ctx.subject(),
+                authz::Relation::Viewer,
+                &ctx.ns().data_table(&ref_table_id.to_string()),
+                authz::Consistency::HigherConsistency,
+            )
+            .await
+            .map_err(|e| DataError::Internal(e.to_string()))?;
+        if !can_view {
+            return Ok(HashMap::new());
+        }
         let ref_table = match self.fetch_live(ctx, ref_table_id).await {
             Ok(t) => t,
             Err(DataError::NotFound) => return Ok(HashMap::new()),
