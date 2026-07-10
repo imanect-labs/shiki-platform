@@ -124,6 +124,17 @@ impl RunStore {
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
+        // OTel 相関 id（engine.md §11.1）: run_id の 32-hex を trace_id として採番・記録する
+        //（worker 実行時の trace_id 導出と同一規約 → 監査↔OTel↔Langfuse が run 単位で相関する）。
+        sqlx::query(
+            "UPDATE workflow_run SET trace_id = replace(run_id::text, '-', '') \
+             WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
 
         for node_id in graph.root_body_nodes() {
             // 入エッジ 0 本の本体ノードは ready、それ以外は pending。

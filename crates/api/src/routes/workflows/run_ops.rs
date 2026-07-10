@@ -171,9 +171,16 @@ pub async fn retry_workflow_run(
                 .map_err(|e| ApiError::Internal(format!("run: {e}")))?
                 .ok_or(ApiError::NotFound)?;
             if detail.trigger_kind != "interactive" {
+                // 検査対象は**この run のピン済み declared_scopes**（現 consented を渡すと
+                // 再同意で縮小した scope の検知が自明式になり失われる・Codex P1）。
+                let declared = runs
+                    .run_declared_scopes(&ctx.tenant_id, id, run_id)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("run scopes: {e}")))?
+                    .ok_or(ApiError::NotFound)?;
                 let admission = state
                     .workflow_registration
-                    .check_run_start(&ctx.tenant_id, id)
+                    .check_run_start(&ctx.tenant_id, id, &declared)
                     .await
                     .map_err(|e| ApiError::Internal(format!("delegation: {e}")))?;
                 if !matches!(admission, workflow_engine::RunAdmission::Ok) {
@@ -320,6 +327,11 @@ pub async fn stream_workflow_run_events(
                 }
             }
             Err(e) => tracing::warn!(error = %e, "run_event リプレイに失敗（SSE 継続）"),
+        }
+        // terminal 判定はリプレイが**追いついた**（1 ページ未満）ときだけ行う。500 件超の
+        // バックログを持つ terminal run で残りを取りこぼして閉じない（Codex P2）。
+        if batch.len() >= 500 {
+            return Some((futures::stream::iter(batch), st));
         }
         // terminal なら終端イベントを添えて次回 None（EventSource は再接続不要）。
         match st.runs.run_detail(&st.tenant, st.id, st.run_id).await {

@@ -123,6 +123,32 @@ impl RunStore {
         .map_err(map_db)
     }
 
+    /// run にピンされた IR の declared_scopes を返す（resume の委譲再検査用・fail-closed 材料）。
+    pub async fn run_declared_scopes(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+        run_id: Uuid,
+    ) -> Result<Option<Vec<String>>, RunStoreError> {
+        let row: Option<(Value,)> = sqlx::query_as(
+            "SELECT COALESCE(ir_snapshot->'declared_scopes', '[]'::jsonb) FROM workflow_run \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND run_id = $3",
+        )
+        .bind(tenant_id)
+        .bind(workflow_id)
+        .bind(run_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(row.map(|(v,)| {
+            v.as_array().map_or_else(Vec::new, |a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(ToString::to_string))
+                    .collect()
+            })
+        }))
+    }
+
     /// failed run を失敗 step から再開する（成功済み checkpoint は再利用・engine.md §11.4）。
     pub async fn resume_failed(
         &self,
@@ -164,10 +190,25 @@ impl RunStore {
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
-        // 失敗ドレインで cancelled になった未実行 step を pending に復元（readiness は下で再計算）。
+        // 失敗ドレインで cancelled になった**未 claim** step（attempt=0）を pending に復元
+        //（readiness は下で再計算）。
         sqlx::query(
             "UPDATE step_execution SET status = 'pending', updated_at = now() \
-             WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled'",
+             WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled' AND attempt = 0",
+        )
+        .bind(tenant_id)
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        // claim 済みで中断された step（attempt>0）は ready に戻すが、**旧リース分の猶予**を置く
+        //（失敗直後の resume で、まだ実行中かもしれない元 worker と二重実行しない・Codex P1。
+        // 元 worker の checkpoint は fencing で無害化されるが、外部副作用の同時併走を避ける）。
+        sqlx::query(
+            "UPDATE step_execution SET status = 'ready', \
+                 next_retry_at = now() + interval '35 seconds', \
+                 lease_owner = NULL, lease_expires_at = NULL, updated_at = now() \
+             WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled' AND attempt > 0",
         )
         .bind(tenant_id)
         .bind(run_id)
@@ -206,12 +247,30 @@ async fn drain_one(
     tenant_id: &str,
     run_id: Uuid,
 ) -> Result<bool, RunStoreError> {
+    // 候補選定〜本 TX の間に resume 等で状態が変わり得るため、行ロックの上で
+    // cancel_requested を**再検証**する（stale ドレインが再開済み run を殺さない・Codex P1）。
+    let still_requested: bool = sqlx::query_scalar(
+        "SELECT cancel_requested FROM workflow_run \
+         WHERE tenant_id = $1 AND run_id = $2 AND status IN ('queued', 'running') FOR UPDATE",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_db)?
+    .unwrap_or(false);
+    if !still_requested {
+        return Ok(false);
+    }
     // 実行中（リース有効）以外を cancelled 化（v1 = step 境界検知・engine.md §9.3）。
+    // **リース失効した running**（worker 死亡）も対象にする — claim は cancel_requested run を
+    // 除外するため takeover は起きず、ここで回収しないと run が永久に cancelling で残る（Codex P1）。
     sqlx::query(
         "UPDATE step_execution SET status = 'cancelled', lease_owner = NULL, \
              lease_expires_at = NULL, wake_at = NULL, updated_at = now() \
          WHERE tenant_id = $1 AND run_id = $2 \
-           AND status IN ('pending', 'ready', 'waiting_timer', 'waiting_event', 'waiting_map')",
+           AND (status IN ('pending', 'ready', 'waiting_timer', 'waiting_event', 'waiting_map') \
+                OR (status = 'running' AND lease_expires_at < now()))",
     )
     .bind(tenant_id)
     .bind(run_id)
@@ -231,7 +290,8 @@ async fn drain_one(
     // running（リース有効）が残っていれば完走待ち（checkpoint 側 finalize が cancelled 化する）。
     let running: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM step_execution \
-         WHERE tenant_id = $1 AND run_id = $2 AND status = 'running'",
+         WHERE tenant_id = $1 AND run_id = $2 AND status = 'running' \
+           AND lease_expires_at >= now()",
     )
     .bind(tenant_id)
     .bind(run_id)

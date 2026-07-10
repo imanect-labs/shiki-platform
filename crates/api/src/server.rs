@@ -261,7 +261,7 @@ pub fn route_table() -> Vec<RouteDecl> {
         r(
             "/workflows/{id}/runs/{run_id}/events/stream",
             &["GET"],
-            Session,
+            SessionStreaming,
             || get(routes::workflows::stream_workflow_run_events),
         ),
         r(
