@@ -78,6 +78,8 @@ impl DataStore {
             trace_id,
         )
         .await?;
+        // テーブルが生存していること（削除済みテーブルの履歴を残存タプルで読ませない）。
+        self.fetch_live(ctx, table_id).await?;
         let limit = limit.clamp(1, 200);
         let rows: Vec<RevisionRow> = sqlx::query_as(
             "SELECT record_id, rev, changed_by, change_kind, patch, created_at \

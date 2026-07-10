@@ -115,6 +115,11 @@ impl DataStore {
             .write_tuple(&ctx.subject(), Relation::Owner, &obj)
             .await
         {
+            // 補償: 物理インデックス → 行の順で片付ける（インデックスは行に従属しないため
+            // 明示 DROP が要る。registry 行は data_table への CASCADE で消える）。
+            if let Err(cleanup) = self.drop_table_indexes(&ctx.tenant_id, id).await {
+                tracing::error!(error = %cleanup, table_id = %id, "補償時のインデックス削除に失敗（孤立インデックスが残存）");
+            }
             if let Err(cleanup) =
                 sqlx::query("DELETE FROM data_table WHERE tenant_id = $1 AND id = $2")
                     .bind(&ctx.tenant_id)
@@ -126,14 +131,15 @@ impl DataStore {
             }
             return Err(DataError::Internal(format!("owner tuple: {e}")));
         }
-        self.record_audit(
+        // テーブルは確定済み。以降の監査失敗は結果に影響させない（重複再試行を防ぐ）。
+        self.record_audit_best_effort(
             ctx,
             "data.table.create",
             &id.to_string(),
             trace_id,
             json!({ "name": name }),
         )
-        .await?;
+        .await;
         Ok(row.into_table())
     }
 
@@ -242,8 +248,9 @@ impl DataStore {
         .await
         .map_err(map_db)?;
         ensure_indexes(&mut tx, &ctx.tenant_id, id, &next).await?;
-        tx.commit().await.map_err(map_db)?;
-        self.record_audit(
+        // 実データ変更のためスキーマ更新と同一 Tx で監査を残す（原子的・Chain=Yes）。
+        self.record_audit_on(
+            &mut tx,
             ctx,
             "data.table.update_schema",
             &id.to_string(),
@@ -251,6 +258,7 @@ impl DataStore {
             json!({ "schema_version": row.schema_version }),
         )
         .await?;
+        tx.commit().await.map_err(map_db)?;
         Ok(row.into_table())
     }
 
@@ -275,14 +283,69 @@ impl DataStore {
         if updated.rows_affected() == 0 {
             return Err(DataError::NotFound);
         }
-        self.record_audit(
+        self.record_audit_best_effort(
             ctx,
             "data.table.delete",
             &id.to_string(),
             trace_id,
             json!({}),
         )
+        .await;
+        Ok(())
+    }
+
+    /// テナント消去（SAAS.2）: data_table（CASCADE で record/registry/revision も）と
+    /// 物理式インデックス・FGA タプルを撤去する。監査ログは保持（purge 方針は storage と同一）。
+    pub async fn purge_tenant(&self, tenant_id: &str) -> Result<u32, DataError> {
+        let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM data_table WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .fetch_all(&self.db)
+            .await
+            .map_err(map_db)?;
+        let ns = authz::Namespace::for_tenant(tenant_id);
+        let mut purged = 0u32;
+        for id in &ids {
+            // 物理インデックス（partial・テーブル行に従属しない）→ FGA タプルの順で撤去。
+            self.drop_table_indexes(tenant_id, *id).await?;
+            self.authz
+                .delete_object_tuples(&ns.data_table(&id.to_string()))
+                .await
+                .map_err(|e| DataError::Internal(format!("fga purge: {e}")))?;
+            purged += 1;
+        }
+        sqlx::query("DELETE FROM data_table WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(&self.db)
+            .await
+            .map_err(map_db)?;
+        Ok(purged)
+    }
+
+    /// テーブルの物理式インデックスを台帳経由で DROP する（補償・purge 用）。
+    pub(crate) async fn drop_table_indexes(
+        &self,
+        tenant_id: &str,
+        table_id: Uuid,
+    ) -> Result<(), DataError> {
+        let names: Vec<String> = sqlx::query_scalar(
+            "SELECT index_name FROM data_index_registry WHERE tenant_id = $1 AND table_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(table_id)
+        .fetch_all(&self.db)
         .await
+        .map_err(map_db)?;
+        for name in names {
+            // 台帳由来（本 crate が決定的命名で作った名前）のみ。防御的に識別子検証する。
+            if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+            sqlx::query(&format!("DROP INDEX IF EXISTS {name}"))
+                .execute(&self.db)
+                .await
+                .map_err(map_db)?;
+        }
+        Ok(())
     }
 
     /// 生存テーブル行を引く（認可済み前提の内部ヘルパ）。
@@ -293,9 +356,11 @@ impl DataStore {
     ) -> Result<DataTable, DataError> {
         let row: Option<TableRow> = sqlx::query_as(
             "SELECT id, name, app_id, schema, schema_version, created_by, created_at, updated_at \
-             FROM data_table WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
+             FROM data_table \
+             WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL",
         )
         .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
         .bind(id)
         .fetch_optional(&self.db)
         .await
@@ -341,6 +406,50 @@ impl DataStore {
             return Err(DataError::Forbidden);
         }
         Ok(())
+    }
+
+    /// 既存 Tx 上で監査を残す（実データ変更用・Chain=Yes・書込と原子的）。
+    pub(crate) async fn record_audit_on(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        ctx: &AuthContext,
+        action: &str,
+        object_id: &str,
+        trace_id: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<(), DataError> {
+        storage::audit::record_on(
+            conn,
+            ctx,
+            AuditEntry {
+                action,
+                object_type: "data_table",
+                object_id,
+                decision: Decision::Allow,
+                trace_id,
+                metadata,
+            },
+            storage::audit::Chain::Yes,
+        )
+        .await
+        .map_err(|e| DataError::Internal(format!("audit: {e}")))
+    }
+
+    /// コミット済み操作の事後監査（失敗しても結果を覆さない・ログのみ）。
+    pub(crate) async fn record_audit_best_effort(
+        &self,
+        ctx: &AuthContext,
+        action: &str,
+        object_id: &str,
+        trace_id: Option<&str>,
+        metadata: serde_json::Value,
+    ) {
+        if let Err(e) = self
+            .record_audit(ctx, action, object_id, trace_id, metadata)
+            .await
+        {
+            tracing::error!(error = %e, action, object_id, "監査ログの書込に失敗（操作自体は成功済み）");
+        }
     }
 
     pub(crate) async fn record_audit(

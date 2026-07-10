@@ -114,8 +114,11 @@ async fn validate_field_value(
         }
         FieldType::Date => {
             let s = v.as_str().ok_or_else(|| type_err("YYYY-MM-DD 文字列"))?;
-            NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| type_err("YYYY-MM-DD 文字列"))?;
-            Ok(v.clone())
+            let d = NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .map_err(|_| type_err("YYYY-MM-DD 文字列"))?;
+            // chrono はゼロ詰めなし（2026-7-5）も受理するため、**ゼロ詰めの正準形へ正規化**
+            // して保存する（辞書順＝日付順と等値フィルタの一致性を保証する）。
+            Ok(Value::String(d.format("%Y-%m-%d").to_string()))
         }
         FieldType::DateTime => {
             let s = v.as_str().ok_or_else(|| type_err("RFC3339 文字列"))?;

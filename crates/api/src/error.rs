@@ -136,7 +136,12 @@ impl From<data::DataError> for ApiError {
             DE::NotFound => ApiError::NotFound,
             DE::Forbidden => ApiError::Forbidden,
             DE::Invalid(msg) => ApiError::BadRequest(msg),
-            DE::Conflict(_) => ApiError::Conflict,
+            DE::Conflict(reason) => {
+                // 409 の切り分け（rev 不一致 / 同名 / unique 違反）を追跡できるようログに残す
+                // （ボディは他リソースと同じ最小形を維持する）。
+                tracing::info!(%reason, "data conflict (409)");
+                ApiError::Conflict
+            }
             DE::Internal(msg) => ApiError::Internal(format!("data: {msg}")),
         }
     }

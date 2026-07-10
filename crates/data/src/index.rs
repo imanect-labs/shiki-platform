@@ -68,9 +68,11 @@ fn plan_for_field(f: &FieldDef) -> Vec<IndexKind> {
     plan
 }
 
-/// 決定的なインデックス名 `dr_<table 先頭8hex>_<sha256(field:kind) 先頭8hex>`。
+/// 決定的なインデックス名 `dr_<table 全32hex>_<sha256(field:kind) 先頭8hex>`。
 ///
-/// PostgreSQL の識別子上限（63 バイト）に収まり、テーブル×フィールド×種別で一意。
+/// インデックス名は PostgreSQL スキーマ全体で一意のため、table id は**全桁**含める
+/// （先頭 8hex だけでは別テーブル間で衝突し 2 個目の作成が黙って失敗する）。
+/// 3+32+1+8=44 文字で識別子上限（63 バイト）に収まる。
 fn index_name(table_id: Uuid, field: &str, kind: IndexKind) -> String {
     let tid = table_id.simple().to_string();
     let mut hasher = Sha256::new();
@@ -78,7 +80,7 @@ fn index_name(table_id: Uuid, field: &str, kind: IndexKind) -> String {
     hasher.update(b":");
     hasher.update(kind.as_str().as_bytes());
     let digest = hex_prefix(&hasher.finalize(), 8);
-    format!("dr_{}_{digest}", &tid[..8])
+    format!("dr_{tid}_{digest}")
 }
 
 fn hex_prefix(bytes: &[u8], len: usize) -> String {
@@ -286,8 +288,11 @@ mod tests {
         let a = index_name(tid, "title", IndexKind::BtreeText);
         let b = index_name(tid, "title", IndexKind::BtreeText);
         assert_eq!(a, b);
-        assert!(a.starts_with("dr_6f1b24a0_"));
+        assert!(a.starts_with("dr_6f1b24a0"));
         assert!(a.len() <= 63);
+        // table id は全桁を含む（先頭 8hex 共有の別テーブルと衝突しない）。
+        let other = Uuid::parse_str("6f1b24a0-0000-0000-0000-000000000001").unwrap();
+        assert_ne!(a, index_name(other, "title", IndexKind::BtreeText));
         // 種別が違えば名前も違う（型変更時に別インデックスとして張り替わる）。
         assert_ne!(a, index_name(tid, "title", IndexKind::UniqueText));
     }

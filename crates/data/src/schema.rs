@@ -219,6 +219,19 @@ pub(crate) fn validate_schema_update(
                 cur.name
             )));
         }
+        // 型固有の定義（参照先・派生定義）も不変（保存済み値の解釈が変わるため）。
+        if nf.ref_table != cur.ref_table {
+            return Err(DataError::Invalid(format!(
+                "フィールド '{}' の ref_table は変更できません",
+                cur.name
+            )));
+        }
+        if nf.lookup != cur.lookup || nf.computed != cur.computed {
+            return Err(DataError::Invalid(format!(
+                "フィールド '{}' の lookup/computed 定義は変更できません",
+                cur.name
+            )));
+        }
     }
     Ok(())
 }

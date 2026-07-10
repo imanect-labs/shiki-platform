@@ -639,6 +639,140 @@ async fn schema_update_additive_and_index_reapply() {
     assert!(matches!(stale, Err(DataError::Conflict(_))), "{stale:?}");
 }
 
+#[tokio::test]
+async fn deleted_table_denies_record_access() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool);
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let table = store
+        .create_table(
+            &c,
+            NewDataTable {
+                name: "gone".into(),
+                schema: expense_schema(),
+            },
+            None,
+        )
+        .await
+        .expect("table");
+    let rec = store
+        .create_record(&c, table.id, json!({"title": "残存"}), None)
+        .await
+        .expect("record");
+    store
+        .delete_table(&c, table.id, None)
+        .await
+        .expect("delete table");
+
+    // 削除後は FGA タプルが残っていても record 経路すべてが 404（fail-closed・Codex P1）。
+    assert!(matches!(
+        store.get_record(&c, table.id, rec.id, None).await,
+        Err(DataError::NotFound)
+    ));
+    assert!(matches!(
+        store.delete_record(&c, table.id, rec.id, 1, None).await,
+        Err(DataError::NotFound)
+    ));
+    assert!(matches!(
+        store
+            .list_revisions(&c, table.id, rec.id, None, 10, None)
+            .await,
+        Err(DataError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn date_normalized_and_ref_table_immutable() {
+    let Some(pool) = setup().await else { return };
+    let store = store_with(pool);
+    let tenant = unique_tenant();
+    let c = ctx(&tenant, "alice");
+    let mut due = field("due", FieldType::Date);
+    due.indexed = true;
+    let table = store
+        .create_table(
+            &c,
+            NewDataTable {
+                name: "dates".into(),
+                schema: TableSchema {
+                    fields: vec![due],
+                    status_field: None,
+                },
+            },
+            None,
+        )
+        .await
+        .expect("table");
+    // ゼロ詰めなしの日付は正準形（ゼロ詰め）へ正規化して保存する（CodeRabbit 指摘）。
+    let rec = store
+        .create_record(&c, table.id, json!({"due": "2026-7-5"}), None)
+        .await
+        .expect("record");
+    assert_eq!(rec.data["due"], json!("2026-07-05"));
+
+    // record_ref の参照先変更は additive 契約違反として拒否（Codex/CodeRabbit 指摘）。
+    let customer = store
+        .create_table(
+            &c,
+            NewDataTable {
+                name: "cust-a".into(),
+                schema: TableSchema {
+                    fields: vec![field("name", FieldType::Text)],
+                    status_field: None,
+                },
+            },
+            None,
+        )
+        .await
+        .expect("cust-a");
+    let other = store
+        .create_table(
+            &c,
+            NewDataTable {
+                name: "cust-b".into(),
+                schema: TableSchema {
+                    fields: vec![field("name", FieldType::Text)],
+                    status_field: None,
+                },
+            },
+            None,
+        )
+        .await
+        .expect("cust-b");
+    let mut ref_f = field("customer", FieldType::RecordRef);
+    ref_f.ref_table = Some(customer.id);
+    let orders = store
+        .create_table(
+            &c,
+            NewDataTable {
+                name: "orders-imm".into(),
+                schema: TableSchema {
+                    fields: vec![ref_f.clone()],
+                    status_field: None,
+                },
+            },
+            None,
+        )
+        .await
+        .expect("orders");
+    let mut moved = ref_f;
+    moved.ref_table = Some(other.id);
+    let res = store
+        .update_table_schema(
+            &c,
+            orders.id,
+            TableSchema {
+                fields: vec![moved],
+                status_field: None,
+            },
+            None,
+            None,
+        )
+        .await;
+    assert!(matches!(res, Err(DataError::Invalid(_))), "{res:?}");
+}
+
 /// 実 OpenFGA でのテーブル ReBAC（第1層）検証: 未共有ユーザーは CRUD も履歴も拒否。
 #[tokio::test]
 async fn table_rebac_with_live_openfga() {

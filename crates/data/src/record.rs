@@ -96,9 +96,9 @@ impl DataStore {
             },
         )
         .await?;
-        tx.commit().await.map_err(map_db)?;
-
-        self.record_audit(
+        // 実データ変更の監査は書込と同一 Tx（原子的・コミット後の監査失敗で成功を偽らない）。
+        self.record_audit_on(
+            &mut tx,
             ctx,
             "data.record.create",
             &row.id.to_string(),
@@ -106,6 +106,7 @@ impl DataStore {
             serde_json::json!({ "table_id": table_id }),
         )
         .await?;
+        tx.commit().await.map_err(map_db)?;
         Ok(row.into_record())
     }
 
@@ -119,6 +120,8 @@ impl DataStore {
     ) -> Result<DataRecord, DataError> {
         self.require(ctx, table_id, Relation::Viewer, "data.record.get", trace_id)
             .await?;
+        // テーブルが生存していること（削除済みテーブルの残存 FGA タプルで読ませない・fail-closed）。
+        self.fetch_live(ctx, table_id).await?;
         let row: Option<RecordRow> = sqlx::query_as(
             "SELECT id, table_id, data, rev, owner, created_at, updated_at \
              FROM data_record WHERE tenant_id = $1 AND table_id = $2 AND id = $3",
@@ -228,9 +231,8 @@ impl DataStore {
             },
         )
         .await?;
-        tx.commit().await.map_err(map_db)?;
-
-        self.record_audit(
+        self.record_audit_on(
+            &mut tx,
             ctx,
             "data.record.update",
             &id.to_string(),
@@ -238,6 +240,7 @@ impl DataStore {
             serde_json::json!({ "table_id": table_id, "rev": new_rev }),
         )
         .await?;
+        tx.commit().await.map_err(map_db)?;
         Ok(row.into_record())
     }
 
@@ -258,6 +261,8 @@ impl DataStore {
             trace_id,
         )
         .await?;
+        // テーブルが生存していること（削除済みテーブルの残存 FGA タプルで消させない）。
+        self.fetch_live(ctx, table_id).await?;
         let mut tx = self.db.begin().await.map_err(map_db)?;
         let current: Option<RecordRow> = sqlx::query_as(
             "SELECT id, table_id, data, rev, owner, created_at, updated_at \
@@ -299,15 +304,17 @@ impl DataStore {
             },
         )
         .await?;
-        tx.commit().await.map_err(map_db)?;
-        self.record_audit(
+        self.record_audit_on(
+            &mut tx,
             ctx,
             "data.record.delete",
             &id.to_string(),
             trace_id,
             serde_json::json!({ "table_id": table_id }),
         )
-        .await
+        .await?;
+        tx.commit().await.map_err(map_db)?;
+        Ok(())
     }
 
     /// record_ref 値の存在検証（参照先テーブル・同一テナント内）。
