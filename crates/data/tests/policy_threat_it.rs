@@ -135,6 +135,8 @@ fn expense_schema_with_policy() -> TableSchema {
                 value: PolicyOperand::UserId,
             }),
         }),
+        field_policy: vec![],
+        aggregate_min_rows: None,
     }
 }
 
@@ -446,6 +448,8 @@ async fn lookup_does_not_leak_invisible_reference() {
                         },
                         write: None,
                     }),
+                    field_policy: vec![],
+                    aggregate_min_rows: None,
                 },
             },
             None,
@@ -479,6 +483,8 @@ async fn lookup_does_not_leak_invisible_reference() {
                     fields: vec![field("name", FieldType::Text), ref_f, lk],
                     status_field: None,
                     row_policy: None,
+                    field_policy: vec![],
+                    aggregate_min_rows: None,
                 },
             },
             None,

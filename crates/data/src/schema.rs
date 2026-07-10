@@ -74,6 +74,22 @@ pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataErro
     if let Some(policy) = &schema.row_policy {
         crate::policy::validate::validate_row_policy(schema, policy)?;
     }
+    for fp in &schema.field_policy {
+        if schema.field(&fp.field).is_none() {
+            return Err(DataError::Invalid(format!(
+                "field_policy の対象 '{}' が fields にありません",
+                fp.field
+            )));
+        }
+        crate::policy::validate::validate_role_level_expr(&fp.readable_by, "field_policy")?;
+    }
+    if let Some(k) = schema.aggregate_min_rows {
+        if k < 1 {
+            return Err(DataError::Invalid(
+                "aggregate_min_rows は 1 以上で指定してください".into(),
+            ));
+        }
+    }
     if let Some(status) = &schema.status_field {
         let f = schema.field(status).ok_or_else(|| {
             DataError::Invalid(format!("status_field '{status}' が fields にありません"))
@@ -263,6 +279,8 @@ mod tests {
             fields,
             status_field: None,
             row_policy: None,
+            field_policy: vec![],
+            aggregate_min_rows: None,
         }
     }
 

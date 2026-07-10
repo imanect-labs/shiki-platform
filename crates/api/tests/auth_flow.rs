@@ -396,6 +396,10 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
             storage: Arc::clone(&storage),
         }),
     ));
+    let data_views = Arc::new(data::DataViewStore::new(
+        Arc::clone(&artifacts),
+        (*data_store).clone(),
+    ));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -406,6 +410,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         storage,
         artifacts,
         data: data_store,
+        data_views,
         ui_specs,
         ui_actions,
         skills,

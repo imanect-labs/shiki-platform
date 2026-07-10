@@ -90,6 +90,11 @@ async fn main() -> anyhow::Result<()> {
             storage: Arc::clone(&storage),
         }),
     ));
+    // 保存ビュー（Task 9.4）: artifact 共通枠 ＋ data クエリチョークポイントの合流。
+    let data_views = Arc::new(data::DataViewStore::new(
+        Arc::clone(&artifacts),
+        (*data_store).clone(),
+    ));
     // generative UI / skill / ミニアプリ（Phase 6）: 検証は全経路が同一実装を共有する信頼境界。
     let gui_stores = wiring_gui::wire_gui(&db, &artifacts);
 
@@ -161,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
         storage,
         artifacts,
         data: data_store,
+        data_views,
         ui_specs: gui_stores.ui_specs,
         ui_actions,
         skills: gui_stores.skills,

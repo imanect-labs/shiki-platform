@@ -91,6 +91,19 @@ pub struct FieldDef {
     pub computed: Option<ComputedDef>,
 }
 
+/// フィールドマスク（Task 9.4・PIT-19）。
+///
+/// `readable_by` を満たさない実行主体には、対象フィールドを**応答から除去**し、かつ
+/// **filter/sort/group_by/metrics の対象からも除外**する（「表示を隠す」と「検索に
+/// 使わせない」を同時に強制。ソート順・絞り込み・集計値からの推測を塞ぐ）。
+/// 式はロール/ユーザーレベル（has_role/public とその any/all 合成）のみ
+/// （行の値に依存する式は不可＝リクエスト単位で一度だけ評価できる形に限定）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FieldPolicy {
+    pub field: String,
+    pub readable_by: crate::policy::PolicyExpr,
+}
+
 /// テーブルスキーマ（`data_table.schema` JSONB の正本型）。
 ///
 /// Task 9.4 で `field_policy` / `aggregate_min_rows`、9.10 で `fsm_ref` を
@@ -105,6 +118,13 @@ pub struct TableSchema {
     /// （行制限はオプトイン。テーブル自体の ReBAC は常に第1層として効く）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_policy: Option<crate::policy::RowPolicy>,
+    /// フィールドマスク（Task 9.4・PIT-19）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_policy: Vec<FieldPolicy>,
+    /// 集計スモールセル抑制の最小件数 K（Task 9.4・PIT-17）。未指定は既定
+    /// [`crate::DEFAULT_AGGREGATE_MIN_ROWS`]。既定未満へ下げる変更は監査に残る。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregate_min_rows: Option<i64>,
 }
 
 impl TableSchema {

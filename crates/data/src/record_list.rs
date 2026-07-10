@@ -147,6 +147,8 @@ impl DataStore {
             .await?;
         let mut items: Vec<DataRecord> = rows.into_iter().map(RecordRow::into_record).collect();
         self.resolve_derived_fields(ctx, &table, &mut items).await?;
+        let masked = self.masked_fields(ctx, &table).await?;
+        Self::apply_mask_records(&masked, &mut items);
         Ok(ListRecordsPage {
             items,
             shares_truncated,

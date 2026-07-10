@@ -13,6 +13,7 @@ name = "data"
 tracing.workspace = true
 shiki-authz.workspace = true
 shiki-storage.workspace = true
+shiki-artifact.workspace = true
 
 sqlx.workspace = true
 serde.workspace = true
@@ -31,7 +32,7 @@ reqwest.workspace = true
 
 # lib 名 authz/storage で参照するため machete が誤検出する。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-storage"]
+ignored = ["shiki-authz", "shiki-storage", "shiki-artifact"]
 
 [lints]
 workspace = true

@@ -175,6 +175,9 @@ impl DataStore {
                 current.rev
             )));
         }
+        // マスク対象フィールドへの書込（変更）は拒否（盲目上書き防止・PIT-19）。
+        let masked = self.masked_fields(ctx, &table).await?;
+        Self::ensure_writable_fields(&masked, patch_obj)?;
         // merge: null は除去・それ以外は上書き。
         let old_map = current.data.0.as_object().cloned().unwrap_or_default();
         let mut merged = old_map.clone();

@@ -309,6 +309,10 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
             storage: Arc::clone(&storage),
         }),
     ));
+    let data_views = Arc::new(data::DataViewStore::new(
+        Arc::clone(&artifacts),
+        (*data_store).clone(),
+    ));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool),
@@ -319,6 +323,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         storage,
         artifacts,
         data: data_store,
+        data_views,
         ui_specs,
         ui_actions,
         skills,

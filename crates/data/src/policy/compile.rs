@@ -243,6 +243,8 @@ mod tests {
             ],
             status_field: None,
             row_policy: Some(RowPolicy { read, write: None }),
+            field_policy: vec![],
+            aggregate_min_rows: None,
         }
     }
 
@@ -330,6 +332,8 @@ mod tests {
             fields: vec![field("t", FieldType::Text)],
             status_field: None,
             row_policy: None,
+            field_policy: vec![],
+            aggregate_min_rows: None,
         };
         let mut binds = BindSet::new(0);
         let sql = compile_read_predicate(&schema, &PolicyMaterial::default(), "u", "r", &mut binds)

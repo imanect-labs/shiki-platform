@@ -9,6 +9,36 @@ use crate::policy::ast::{
 };
 use crate::DataError;
 
+/// ロール/ユーザーレベル式のみを許す検証（field_policy の readable_by 用・Task 9.4）。
+///
+/// マスク判定はリクエスト単位で一度だけ評価するため、行の値に依存する式
+/// （field_cmp / is_owner）は使えない。
+pub(crate) fn validate_role_level_expr(expr: &PolicyExpr, path: &str) -> Result<(), DataError> {
+    match expr {
+        PolicyExpr::Public => Ok(()),
+        PolicyExpr::HasRole { role, .. } => {
+            if role.is_empty() || role.len() > 256 {
+                return Err(DataError::Invalid(format!("{path}: role が不正です")));
+            }
+            Ok(())
+        }
+        PolicyExpr::Any(children) | PolicyExpr::All(children) => {
+            if children.is_empty() || children.len() > MAX_POLICY_BRANCHES {
+                return Err(DataError::Invalid(format!(
+                    "{path}: any/all の子は 1〜{MAX_POLICY_BRANCHES} 件で指定してください"
+                )));
+            }
+            for (i, c) in children.iter().enumerate() {
+                validate_role_level_expr(c, &format!("{path}[{i}]"))?;
+            }
+            Ok(())
+        }
+        PolicyExpr::FieldCmp { .. } | PolicyExpr::IsOwner => Err(DataError::Invalid(format!(
+            "{path}: 行の値に依存する式（field_cmp/is_owner）はフィールドマスクに使えません"
+        ))),
+    }
+}
+
 /// row_policy 全体を検証する。
 pub(crate) fn validate_row_policy(
     schema: &TableSchema,
@@ -183,6 +213,8 @@ mod tests {
             ],
             status_field: None,
             row_policy: None,
+            field_policy: vec![],
+            aggregate_min_rows: None,
         }
     }
 

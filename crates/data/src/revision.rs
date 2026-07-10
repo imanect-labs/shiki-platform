@@ -125,15 +125,20 @@ impl DataStore {
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
+        let masked = self.masked_fields(ctx, &table).await?;
         Ok(rows
             .into_iter()
-            .map(|r| RecordRevision {
-                record_id: r.record_id,
-                rev: r.rev,
-                changed_by: r.changed_by,
-                change_kind: r.change_kind,
-                patch: r.patch.0,
-                created_at: r.created_at,
+            .map(|r| {
+                let mut patch = r.patch.0;
+                Self::apply_mask_patches(&masked, &mut patch);
+                RecordRevision {
+                    record_id: r.record_id,
+                    rev: r.rev,
+                    changed_by: r.changed_by,
+                    change_kind: r.change_kind,
+                    patch,
+                    created_at: r.created_at,
+                }
             })
             .collect())
     }

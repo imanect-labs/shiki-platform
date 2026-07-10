@@ -285,6 +285,8 @@ mod tests {
             fields,
             status_field: None,
             row_policy: None,
+            field_policy: vec![],
+            aggregate_min_rows: None,
         }
     }
 

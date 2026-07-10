@@ -46,6 +46,22 @@ pub(crate) struct ReadPredicate {
     pub shares_truncated: bool,
 }
 
+impl ReadPredicate {
+    /// 述語 SQL 断片（集計クエリ組み立てが参照する）。
+    pub(crate) fn sql(&self) -> &str {
+        &self.sql
+    }
+    /// 述語のバインド列（$3 起点で順に bind する）。
+    pub(crate) fn binds(&self) -> &[Bind] {
+        &self.binds
+    }
+}
+
+/// レコード行を DTO へ変換する（宣言的クエリ層から使う）。
+pub(crate) fn row_into_record(row: RecordRow) -> crate::model::DataRecord {
+    row.into_record()
+}
+
 const SELECT_COLS: &str = "r.id, r.table_id, r.data, r.rev, r.owner, r.created_at, r.updated_at";
 
 impl DataStore {

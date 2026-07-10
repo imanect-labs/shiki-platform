@@ -17,6 +17,7 @@
 
 mod derived;
 mod index;
+mod mask;
 mod model;
 pub mod policy;
 mod query;
@@ -27,16 +28,27 @@ mod revision;
 mod schema;
 mod store;
 mod validate;
+mod view;
 
 pub use model::{
-    ComputedDef, ComputedOp, DataRecord, DataTable, FieldDef, FieldPatch, FieldType, LookupDef,
-    RecordRevision, TableSchema,
+    ComputedDef, ComputedOp, DataRecord, DataTable, FieldDef, FieldPatch, FieldPolicy, FieldType,
+    LookupDef, RecordRevision, TableSchema,
 };
 pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
+pub use query::declarative::{
+    Aggregate, AggregateGroup, DataQuery, Metric, QueryFilter, QueryOp, QueryResult, QuerySort,
+};
 pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordSort};
 pub use record_share::RecordShareRole;
 pub use store::{DataStore, NewDataTable};
 pub use validate::RefResolver;
+pub use view::{DataViewBody, DataViewStore};
+
+/// 集計スモールセル抑制の既定 K（PIT-17・design-caveats）。
+///
+/// K 未満のグループ/全体集計は値を返さず suppressed 通知に置き換える。反復差分攻撃の
+/// 完全防御（差分プライバシー）は非目標で、集計クエリ自体の監査記録で検知可能性を残す。
+pub const DEFAULT_AGGREGATE_MIN_ROWS: i64 = 5;
 
 /// 構造化データ操作のエラー。
 #[derive(Debug, thiserror::Error)]

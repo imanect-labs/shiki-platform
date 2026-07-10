@@ -7,4 +7,6 @@
 //! 書込（update/delete/遷移）の対象行ロックも読取述語つきの [`executor`] を通り、
 //! 不可視行は存在しない扱い（404・rev オラクルなし）になる。
 
+pub(crate) mod aggregate;
+pub(crate) mod declarative;
 pub(crate) mod executor;
