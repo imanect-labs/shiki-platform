@@ -64,10 +64,9 @@ pub(crate) async fn subscribe(
     let allowed: HashSet<Uuid> = state
         .caps
         .data
-        .list_tables(&ctx.auth, 200)
+        .list_app_tables(&ctx.auth, ctx.installation.app_id, 200)
         .await?
         .into_iter()
-        .filter(|t| t.app_id == Some(ctx.installation.app_id))
         .map(|t| t.id)
         .collect();
     // 接続時点のカーソルから未来分のみ（履歴のリプレイはしない）。

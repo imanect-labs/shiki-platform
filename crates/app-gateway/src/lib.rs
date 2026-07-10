@@ -61,6 +61,9 @@ pub enum GatewayError {
     Internal(String),
 }
 
+/// 内部詳細を out-of-trust クライアントへ出さない汎用 500 本文。詳細は tracing にのみ残す。
+const INTERNAL_MSG: &str = "内部エラーが発生しました";
+
 impl From<data::DataError> for GatewayError {
     fn from(e: data::DataError) -> Self {
         use data::DataError;
@@ -70,7 +73,10 @@ impl From<data::DataError> for GatewayError {
             DataError::Forbidden => GatewayError::Forbidden("この操作は許可されていません".into()),
             DataError::Invalid(m) => GatewayError::Invalid(m),
             DataError::Conflict(m) => GatewayError::Conflict(m),
-            DataError::Internal(m) => GatewayError::Internal(m),
+            DataError::Internal(m) => {
+                tracing::error!(error = %m, "gateway data 内部エラー");
+                GatewayError::Internal(INTERNAL_MSG.into())
+            }
         }
     }
 }
@@ -85,13 +91,17 @@ impl From<storage::StorageError> for GatewayError {
             }
             StorageError::Invalid(m) => GatewayError::Invalid(m),
             StorageError::Conflict => GatewayError::Conflict("名前が競合しています".into()),
-            // 整合性・オブジェクトストア・DB・authz 障害は詳細をクライアントへ出さない。
-            other => GatewayError::Internal(other.to_string()),
+            // 整合性・オブジェクトストア・DB・authz 障害の詳細はクライアントへ出さない。
+            other => {
+                tracing::error!(error = %other, "gateway storage 内部エラー");
+                GatewayError::Internal(INTERNAL_MSG.into())
+            }
         }
     }
 }
 
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn map_db(e: sqlx::Error) -> GatewayError {
-    GatewayError::Internal(format!("db: {e}"))
+    tracing::error!(error = %e, "gateway db エラー");
+    GatewayError::Internal(INTERNAL_MSG.into())
 }

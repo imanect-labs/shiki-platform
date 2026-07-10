@@ -192,16 +192,19 @@ async fn authorize(
         }
         _ => state.default_tenant.clone(),
     };
+    // org はグループの先頭セグメントから解決する（内部 API の resolve_org と同一規則）。
+    // グループ未付与のトークンは設定の default_org へフォールバックする。
+    let org = org_from_groups(&identity.groups).unwrap_or_else(|| state.default_org.clone());
     let auth = AuthContext::new(
         Principal {
             kind: PrincipalKind::User,
             id: identity.user_sub.clone(),
             email: None,
-            groups: vec![],
+            groups: identity.groups.clone(),
             roles: vec![],
             tenant_id: Some(tenant.clone()),
         },
-        state.default_org.clone(),
+        org,
         tenant.clone(),
     );
 
@@ -233,6 +236,15 @@ async fn authorize(
         identity,
         installation,
     })
+}
+
+/// グループパスの先頭セグメントを org として解決する（api::extract::resolve_org と同一規則）。
+fn org_from_groups(groups: &[String]) -> Option<String> {
+    groups
+        .iter()
+        .filter_map(|g| g.trim_start_matches('/').split('/').next())
+        .find(|seg| !seg.is_empty())
+        .map(str::to_string)
 }
 
 /// ゲートウェイ判定を監査へ残す（拒否は security タグ・trace_id は後続 PR12 で貫通強化）。
@@ -278,4 +290,25 @@ async fn whoami(Extension(ctx): Extension<GatewayCtx>) -> Json<serde_json::Value
         "app_name": ctx.installation.app_name,
         "granted_scopes": ctx.installation.granted_scopes,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::org_from_groups;
+
+    #[test]
+    fn org_resolution_matches_internal_rule() {
+        // 先頭グループの最上位セグメント（api::extract::resolve_org と同一規則）。
+        assert_eq!(
+            org_from_groups(&["/acme/dev".into(), "/other".into()]),
+            Some("acme".to_string())
+        );
+        assert_eq!(
+            org_from_groups(&["sales".into()]),
+            Some("sales".to_string())
+        );
+        // 空・スラッシュのみはフォールバック（None）。
+        assert_eq!(org_from_groups(&[]), None);
+        assert_eq!(org_from_groups(&["/".into()]), None);
+    }
 }

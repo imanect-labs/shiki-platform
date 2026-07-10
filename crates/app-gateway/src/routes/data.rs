@@ -34,10 +34,13 @@ pub(crate) async fn list_tables(
     State(state): State<GatewayState>,
     Extension(ctx): Extension<GatewayCtx>,
 ) -> Result<Json<Vec<GwTable>>, GatewayError> {
-    let tables = state.caps.data.list_tables(&ctx.auth, 200).await?;
+    let tables = state
+        .caps
+        .data
+        .list_app_tables(&ctx.auth, ctx.installation.app_id, 200)
+        .await?;
     let own = tables
         .into_iter()
-        .filter(|t| t.app_id == Some(ctx.installation.app_id))
         .map(|t| GwTable {
             id: t.id,
             name: t.name,

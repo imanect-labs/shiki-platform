@@ -453,42 +453,32 @@ async fn events_subscribe_streams_owned_table_events() {
         Some("text/event-stream")
     );
 
-    // 所有テーブルのイベント＋無関係イベントを発行。
+    // 除外系を**先に**発行してから所有イベントを発行する（id 順に配信されるため、もし除外が
+    // 漏れていれば所有イベントより先に届く＝最初のフレーム検証で検出できる）。
+    // ①非所有・ユーザー可視の foreign（アプリ所有束縛で除外されるべき）
+    // ②存在しないテーブル（ReBAC 不可視相当・除外されるべき）
+    // ③所有テーブル owned（これだけが届く）
     let c = ctx(&tenant);
     let mut tx = pool.begin().await.unwrap();
-    storage::event::emit_on(
-        &mut tx,
-        &c,
-        storage::event::WriteEvent {
-            node_id: Uuid::new_v4(),
-            version: 1,
-            op: storage::event::WriteOp::Update,
-            payload: json!({
-                "event_type": "data.record.transitioned",
-                "table_id": owned,
-                "to": "submitted",
-            }),
-        },
-        None,
-    )
-    .await
-    .unwrap();
-    storage::event::emit_on(
-        &mut tx,
-        &c,
-        storage::event::WriteEvent {
-            node_id: Uuid::new_v4(),
-            version: 1,
-            op: storage::event::WriteOp::Update,
-            payload: json!({
-                "event_type": "data.record.transitioned",
-                "table_id": Uuid::new_v4(), // 非所有テーブル → 流れない
-            }),
-        },
-        None,
-    )
-    .await
-    .unwrap();
+    for table_id in [foreign, Uuid::new_v4(), owned] {
+        storage::event::emit_on(
+            &mut tx,
+            &c,
+            storage::event::WriteEvent {
+                node_id: Uuid::new_v4(),
+                version: 1,
+                op: storage::event::WriteOp::Update,
+                payload: json!({
+                    "event_type": "data.record.transitioned",
+                    "table_id": table_id,
+                    "to": "submitted",
+                }),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    }
     tx.commit().await.unwrap();
 
     // 最初のデータフレームを最大 10 秒待つ（ポーリング間隔 1s）。
@@ -510,5 +500,7 @@ async fn events_subscribe_streams_owned_table_events() {
     })
     .await
     .expect("SSE イベントがタイムアウト内に届く");
+    // 最初に届いた遷移イベントが owned（先に発行した foreign/不可視が漏れていない）。
     assert!(frame.contains(&owned.to_string()), "{frame}");
+    assert!(!frame.contains(&foreign.to_string()), "{frame}");
 }

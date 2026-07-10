@@ -35,7 +35,8 @@ pub(crate) async fn record_usage(
              (tenant_id, org, app_id, user_sub, capability, day) \
          VALUES ($1, $2, $3, $4, $5, CURRENT_DATE) \
          ON CONFLICT (tenant_id, app_id, user_sub, capability, day) \
-         DO UPDATE SET calls = app_capability_usage.calls + 1, updated_at = now()",
+         DO UPDATE SET calls = app_capability_usage.calls + 1, \
+                       org = EXCLUDED.org, updated_at = now()",
     )
     .bind(tenant_id)
     .bind(org)

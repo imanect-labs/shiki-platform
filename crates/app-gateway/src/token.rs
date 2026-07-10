@@ -45,6 +45,9 @@ struct GatewayClaims {
     /// 付与スコープ（スペース区切り・OIDC 標準の `scope` クレーム）。
     #[serde(default)]
     scope: String,
+    /// グループ（Keycloak group mapper 由来・org 解決に使う。無ければ空）。
+    #[serde(default)]
+    groups: Vec<String>,
 }
 
 /// 検証済みトークンから得たゲートウェイ呼出主体。
@@ -58,6 +61,8 @@ pub struct GatewayIdentity {
     pub tenant: Option<String>,
     /// トークンが付与された能力スコープ（未知スコープは fail-closed で拒否済み）。
     pub token_scopes: Vec<CapabilityScope>,
+    /// グループ（org 解決用・内部 API の resolve_org と同じ規則で先頭セグメントを使う）。
+    pub groups: Vec<String>,
 }
 
 /// Bearer トークンを検証して [`GatewayIdentity`] を得る（JWKS ローカル検証）。
@@ -98,6 +103,7 @@ pub async fn verify_gateway_token(
         client_id,
         tenant: claims.tenant,
         token_scopes,
+        groups: claims.groups,
     })
 }
 
@@ -141,6 +147,7 @@ mod tests {
             client_id,
             tenant: claims.tenant,
             token_scopes,
+            groups: claims.groups,
         })
     }
 

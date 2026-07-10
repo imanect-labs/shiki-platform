@@ -161,6 +161,28 @@ impl DataStore {
         ctx: &AuthContext,
         limit: i64,
     ) -> Result<Vec<DataTable>, DataError> {
+        self.list_tables_filtered(ctx, None, limit).await
+    }
+
+    /// アプリ所有 ∩ 自分が viewer のテーブル一覧（app-gateway の所有束縛・Task 9.8）。
+    ///
+    /// `app_id` の絞り込みを **LIMIT より前に SQL で**行う（可視テーブルが上限を超えても
+    /// アプリ所有分が一覧から欠落しない）。
+    pub async fn list_app_tables(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<DataTable>, DataError> {
+        self.list_tables_filtered(ctx, Some(app_id), limit).await
+    }
+
+    async fn list_tables_filtered(
+        &self,
+        ctx: &AuthContext,
+        app_id: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<DataTable>, DataError> {
         let limit = limit.clamp(1, 200);
         let objs = self
             .authz
@@ -185,12 +207,14 @@ impl DataStore {
             "SELECT id, name, app_id, schema, schema_version, created_by, created_at, updated_at \
              FROM data_table \
              WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND deleted_at IS NULL \
+               AND ($5::uuid IS NULL OR app_id = $5) \
              ORDER BY updated_at DESC, id DESC LIMIT $4",
         )
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(&ids)
         .bind(limit)
+        .bind(app_id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
