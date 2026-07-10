@@ -52,8 +52,6 @@ impl std::fmt::Display for Subject {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::Namespace;
-    use crate::vocab::Relation;
 
     #[test]
     fn subject_user_prefix() {
