@@ -460,8 +460,20 @@ pub(super) async fn finalize_run_if_done(
     let any_unhandled_failed = steps.iter().any(|(path, s, ports)| {
         *s == StepStatus::Failed && ports.is_empty() && !path.contains('[')
     });
+    // ユーザーキャンセル要求中の run は成功扱いにしない（実行中 step の完走を待って cancelled 化・
+    // engine.md §9.3 の step 境界検知）。失敗はキャンセルより情報量が多いので優先する。
+    let cancel_requested: bool = sqlx::query_scalar(
+        "SELECT cancel_requested FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_db)?;
     let (run_status, kind) = if any_unhandled_failed {
         (RunStatus::Failed, RunEventKind::RunFailed)
+    } else if cancel_requested {
+        (RunStatus::Cancelled, RunEventKind::RunCancelled)
     } else {
         (RunStatus::Succeeded, RunEventKind::RunSucceeded)
     };

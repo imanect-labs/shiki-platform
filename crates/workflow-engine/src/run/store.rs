@@ -18,9 +18,11 @@ mod advance;
 mod backoff;
 mod history;
 mod map_region;
+mod ops;
 mod wait;
 
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
+pub use ops::{CancelOutcome, ResumeOutcome};
 
 /// step の durable テーブル記述子（複合キー・attempt は claim で増やさない・engine.md §9.5）。
 const STEP_SPEC: RunTableSpec = RunTableSpec {
@@ -179,11 +181,13 @@ impl RunStore {
                  attempt = s.attempt + (CASE WHEN s.status = 'ready' THEN 1 ELSE 0 END), \
                  updated_at = now() \
              FROM ( \
-                 SELECT tenant_id, run_id, step_path FROM step_execution \
-                 WHERE (($3::text IS NULL) OR (tenant_id = $3)) \
-                   AND ((status = 'ready' AND next_retry_at <= now()) \
-                        OR (status = 'running' AND lease_expires_at < now())) \
-                 ORDER BY next_retry_at FOR UPDATE SKIP LOCKED LIMIT 1 \
+                 SELECT s2.tenant_id, s2.run_id, s2.step_path FROM step_execution s2 \
+                 JOIN workflow_run r2 ON r2.tenant_id = s2.tenant_id AND r2.run_id = s2.run_id \
+                 WHERE (($3::text IS NULL) OR (s2.tenant_id = $3)) \
+                   AND NOT r2.cancel_requested \
+                   AND ((s2.status = 'ready' AND s2.next_retry_at <= now()) \
+                        OR (s2.status = 'running' AND s2.lease_expires_at < now())) \
+                 ORDER BY s2.next_retry_at FOR UPDATE OF s2 SKIP LOCKED LIMIT 1 \
              ) picked \
              JOIN workflow_run r ON r.tenant_id = picked.tenant_id AND r.run_id = picked.run_id \
              WHERE s.tenant_id = picked.tenant_id AND s.run_id = picked.run_id \

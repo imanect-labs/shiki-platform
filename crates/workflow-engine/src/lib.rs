@@ -42,10 +42,13 @@ pub use registration::{
 };
 pub use retry::{backoff_with_jitter, classify, RetryClass};
 pub use run::{
+    CancelOutcome, ResumeOutcome, RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail,
+    StepOverview,
+};
+pub use run::{
     NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus, WorkerConfig,
     WorkflowRunLauncher, WorkflowWorker,
 };
-pub use run::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 pub use scheduler::{LeaderLease, RunLauncher, SchedulerStore};
 pub use store::{WorkflowStore, WorkflowStoreError};
 pub use summary::{WorkflowSummary, WorkflowSummaryStore};

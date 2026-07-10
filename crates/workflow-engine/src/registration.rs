@@ -213,6 +213,19 @@ impl RegistrationService {
         Ok(())
     }
 
+    /// run 開始/再開の委譲チェック（[`DelegationStore::check_run_start`] の合流点・fail-closed）。
+    pub async fn check_run_start(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+    ) -> Result<crate::delegation::RunAdmission, EnableError> {
+        let view = self.view(tenant_id, workflow_id).await?;
+        self.delegation
+            .check_run_start(tenant_id, workflow_id, &view.consented_scopes)
+            .await
+            .map_err(EnableError::Delegation)
+    }
+
     /// 無効化（トリガ停止＋status=disabled・単一 TX）。
     ///
     /// 委譲タプルは撤去しない（再有効化で再同意なく戻せる。run 開始は status で fail-closed に
