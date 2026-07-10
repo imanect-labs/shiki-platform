@@ -38,16 +38,22 @@ const CATALOG_LABELS = new Map<string, string>(
   NODE_CATALOG.map((e) => [e.type, e.label_ja]),
 );
 
-/// run の version にピンされた IR の node_id → 表示情報。version 単位でキャッシュする。
+/// run の version にピンされた IR の node_id → 表示情報。workflow×version でキャッシュする
+/// （version 番号は workflow 間で衝突するため、単独キーだと別 workflow のラベルが残る）。
 function useNodeInfo(workflowId: string, version: number | null) {
   const [map, setMap] = React.useState<Map<string, NodeInfo> | null>(null);
-  const loadedVersion = React.useRef<number | null>(null);
+  const loadedKey = React.useRef<string | null>(null);
 
   React.useEffect(() => {
-    if (version === null || loadedVersion.current === version) return;
-    loadedVersion.current = version;
+    if (version === null) return;
+    const key = `${workflowId}:${version}`;
+    if (loadedKey.current === key) return;
+    loadedKey.current = key;
+    setMap(null);
+    let stale = false;
     getWorkflowVersion(workflowId, version)
       .then(({ ir }) => {
+        if (stale) return;
         const nodes = (ir as WorkflowIr).nodes ?? [];
         setMap(
           new Map(
@@ -60,8 +66,11 @@ function useNodeInfo(workflowId: string, version: number | null) {
       })
       .catch(() => {
         // IR が引けなくても node_id 表示で成立する。
-        setMap(new Map());
+        if (!stale) setMap(new Map());
       });
+    return () => {
+      stale = true;
+    };
   }, [workflowId, version]);
 
   return React.useCallback(

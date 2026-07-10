@@ -28,12 +28,20 @@ export function useRunStream(
   // 再取得をトリガするためのシグナル（cancel/retry 直後に呼ぶ）。
   const [tick, setTick] = React.useState(0);
   const refresh = React.useCallback(() => setTick((t) => t + 1), []);
+  // 別の run へ切り替えたら前の run の表示を即クリアする（cancel/retry 後の refresh では保持）。
+  const shownRunId = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     if (!runId) {
+      shownRunId.current = null;
       setDetail(null);
       setError(null);
       return;
+    }
+    if (shownRunId.current !== runId) {
+      shownRunId.current = runId;
+      setDetail(null);
+      setError(null);
     }
     let closed = false;
     let throttling = false;

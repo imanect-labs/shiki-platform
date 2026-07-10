@@ -201,7 +201,15 @@ export function RunsTable({
         }
         const freshById = new Map(fresh.map((i) => [i.runId, i]));
         const known = new Set(prev.map((i) => i.runId));
-        const updated = prev.map((i) => freshById.get(i.runId) ?? i);
+        // 先頭ページの窓（fresh が満杯なら最古行以降）に入るのに fresh に無い既知行は、
+        // フィルタに合致しなくなった行（例: running 絞り込み中に完了）なので落とす。
+        const cutoff = fresh.length === PAGE_SIZE ? fresh[fresh.length - 1].createdAt : null;
+        const updated = prev
+          .filter(
+            (i) =>
+              freshById.has(i.runId) || (cutoff !== null && i.createdAt < cutoff),
+          )
+          .map((i) => freshById.get(i.runId) ?? i);
         const newOnes = fresh.filter((i) => !known.has(i.runId));
         return [...newOnes, ...updated];
       });

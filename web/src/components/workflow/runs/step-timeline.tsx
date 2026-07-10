@@ -230,7 +230,8 @@ export function StepTimeline({
     <ul className="space-y-1.5">
       {steps.map((s) => (
         <StepRow
-          key={s.stepPath}
+          // 同じ workflow の別 run は step_path が一致するため、run 跨ぎの state 再利用を防ぐ。
+          key={`${runId}:${s.stepPath}`}
           workflowId={workflowId}
           runId={runId}
           step={s}
