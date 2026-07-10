@@ -55,7 +55,8 @@ test("有効化: スケジュール設定→同意→有効→停止", async ({ 
   const enableButton = page.getByRole("button", { name: "自動実行を有効化" });
   await expect(enableButton).toBeDisabled();
   await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.getByText(/保存しました/)).toBeVisible({ timeout: 15_000 });
+  // toast は aria-live 領域にも複製されるため first() で strict 違反を避ける。
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
   await enableButton.click();
 
   // 同意ダイアログ: 何ができるかの日本語説明 → 同意して有効化。
@@ -63,7 +64,7 @@ test("有効化: スケジュール設定→同意→有効→停止", async ({ 
   await expect(dialog.getByText("自動実行の設定")).toBeVisible();
   await expect(dialog.getByText("このワークフローができること")).toBeVisible();
   await dialog.getByRole("button", { name: "同意して有効化" }).click();
-  await expect(page.getByText(/自動実行を有効にしました/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/自動実行を有効にしました/).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/自動実行 有効/)).toBeVisible({ timeout: 10_000 });
 
   // 一覧にも有効バッジが出る。
@@ -79,6 +80,6 @@ test("有効化: スケジュール設定→同意→有効→停止", async ({ 
     .locator('[role="dialog"]')
     .getByRole("button", { name: "自動実行を止める" })
     .click();
-  await expect(page.getByText(/自動実行を無効にしました/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/自動実行を無効にしました/).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/自動実行 有効/)).toHaveCount(0);
 });

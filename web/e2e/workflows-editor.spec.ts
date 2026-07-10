@@ -41,7 +41,8 @@ test("エディタ: 作成→追加→エラーバッジ→修正→保存→実
 
   // 保存 → 実行 → 実行履歴の deep-link へ遷移し、ライブ更新で成功する。
   await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.getByText(/保存しました/)).toBeVisible({ timeout: 15_000 });
+  // toast は aria-live 領域にも複製されるため first() で strict 違反を避ける。
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "実行", exact: true }).click();
   await page.getByRole("button", { name: "実行する" }).click();
   await page.waitForURL(/\/runs\?run=/, { timeout: 20_000 });

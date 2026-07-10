@@ -56,7 +56,8 @@ test("実行履歴: 失敗詳細→フィルタ→失敗ステップから再開
   // 決定的に再失敗するため過渡状態（実行中）は数秒で消える。再実行の証跡は
   // step タイムラインの「試行 2 回目」バッジ（SSE ライブ更新で反映）で確認する。
   await sheet.getByRole("button", { name: "失敗したところから再開" }).click();
-  await expect(page.getByText(/失敗したところから再開しました/)).toBeVisible({
+  // toast は aria-live 領域にも複製されるため first() で strict 違反を避ける。
+  await expect(page.getByText(/失敗したところから再開しました/).first()).toBeVisible({
     timeout: 15_000,
   });
   await expect(sheet.getByText(/2 回目/)).toBeVisible({ timeout: 60_000 });
