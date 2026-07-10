@@ -75,6 +75,23 @@ function build(flat: NonNullable<FlatCondition>): Condition {
   return (flat.mode === "all" ? { all: cmps } : { any: cmps }) as Condition;
 }
 
+/// switch case のリテラルをテキストから型付きで解釈する（完全一致比較のため型が正）。
+/// 数値・true/false・JSON（[ / { / " 始まり）は解釈し、それ以外は文字列として扱う。
+function parseCaseLiteral(text: string): unknown {
+  const t = text.trim();
+  if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
+  if (t === "true") return true;
+  if (t === "false") return false;
+  if (/^[\[{"]/.test(t)) {
+    try {
+      return JSON.parse(t);
+    } catch {
+      // 入力途中は文字列のまま。
+    }
+  }
+  return text;
+}
+
 export function ConditionEditor({
   value,
   onChange,
@@ -244,10 +261,14 @@ export function SwitchForm({ node, dispatch, refCandidates, inMapRegion, fieldEr
           {cases.map((c, i) => (
             <div key={i} className="flex items-center gap-1.5">
               <Input
-                value={String(c.equals ?? "")}
+                value={
+                  typeof c.equals === "string" ? c.equals : JSON.stringify(c.equals)
+                }
                 onChange={(e) => {
                   const next = [...cases];
-                  next[i] = { ...c, equals: e.target.value };
+                  // switch はリテラルの完全一致で比較するため、数値/真偽/JSON は
+                  // 型を保持して保存する（"1" と 1 は一致しない）。
+                  next[i] = { ...c, equals: parseCaseLiteral(e.target.value) };
                   patchParams(dispatch, node, { cases: next });
                 }}
                 placeholder="この値のとき"
@@ -260,7 +281,15 @@ export function SwitchForm({ node, dispatch, refCandidates, inMapRegion, fieldEr
                 onChange={(e) => {
                   const next = [...cases];
                   next[i] = { ...c, port: e.target.value };
-                  patchParams(dispatch, node, { cases: next });
+                  // 配線済みエッジの from_port も同時に付け替える（古い出口名の
+                  // エッジが残ると実行時にその行き先へ流れなくなる）。
+                  dispatch({
+                    type: "rename_out_port",
+                    id: node.id,
+                    fromPort: c.port,
+                    toPort: e.target.value,
+                    params: { ...(node.params as Record<string, unknown>), cases: next },
+                  });
                 }}
                 placeholder="出口名"
                 className="h-8 w-24 font-mono text-xs"
@@ -389,7 +418,13 @@ export function WaitForm({ node, dispatch, refCandidates, inMapRegion, fieldErro
         <ValueExprInput
           label="待つ秒数"
           value={p.duration_sec as ValueExpr | undefined}
-          onChange={(v) => patchParams(dispatch, node, { duration_sec: v })}
+          onChange={(v) =>
+            patchParams(dispatch, node, {
+              // 実行側は数値として解決する（as_i64）ため、数字テキストは number で保存する。
+              duration_sec:
+                typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v.trim()) : v,
+            })
+          }
           refCandidates={refCandidates}
           inMapRegion={inMapRegion}
           placeholder="例: 3600"

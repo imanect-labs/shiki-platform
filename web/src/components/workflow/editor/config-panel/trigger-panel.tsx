@@ -66,6 +66,10 @@ function cronToPreset(cron: string): Preset {
 }
 
 function nextFires(cron: string, tz: string, count = 2): string[] {
+  // backend スケジューラは 5 フィールド（分 時 日 月 曜日）のみ受け付ける。
+  // cron-parser は秒付き 6 フィールドも解釈できてしまうため、先に形を照合する
+  //（プレビューが出るのに保存/有効化で落ちる齟齬を防ぐ）。
+  if (cron.trim().split(/\s+/).length !== 5) return [];
   try {
     const it = parser.parseExpression(cron, { tz });
     const out: string[] = [];

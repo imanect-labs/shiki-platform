@@ -81,8 +81,8 @@ export function ValueExprInput({
   const setMode = (next: Mode) => {
     if (next === mode) return;
     if (next === "literal") onChange("" as unknown as ValueExpr);
-    if (next === "from")
-      onChange({ $from: "input", path: "/" } as unknown as ValueExpr);
+    // 全体参照は path 省略が正（JSON Pointer の "/" は空文字キーであり全体ではない）。
+    if (next === "from") onChange({ $from: "input" } as unknown as ValueExpr);
     if (next === "template")
       onChange({ $template: "", vars: {} } as unknown as ValueExpr);
   };
@@ -154,7 +154,24 @@ export function ValueExprInput({
             />
           )}
           <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <Switch checked={jsonMode} onCheckedChange={setJsonMode} className="scale-75" />
+            <Switch
+              checked={jsonMode}
+              onCheckedChange={(on) => {
+                setJsonMode(on);
+                // 切替時に IR 内の値も追随させる（ON: 今のテキストを JSON として解釈、
+                // OFF: 文字列に戻す）。トグルだけで型が変わらない齟齬を防ぐ。
+                if (on) {
+                  try {
+                    onChange(JSON.parse(literal.text) as ValueExpr);
+                  } catch {
+                    // 解釈できないテキストは文字列のまま（入力継続で解釈される）。
+                  }
+                } else if (literal.isJson) {
+                  onChange(literal.text as unknown as ValueExpr);
+                }
+              }}
+              className="scale-75"
+            />
             数値やリストとして扱う（JSON）
           </label>
         </div>
@@ -306,7 +323,7 @@ function TemplateEditor({
           const next = { ...(template.vars ?? {}) };
           let n = vars.length + 1;
           while (next[`v${n}`]) n += 1;
-          next[`v${n}`] = { $from: "input", path: "/" } as unknown as ValueExpr;
+          next[`v${n}`] = { $from: "input" } as unknown as ValueExpr;
           onChange({ ...template, vars: next });
         }}
       >
