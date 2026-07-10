@@ -13,6 +13,7 @@ pub mod delegation;
 pub mod ir;
 pub mod nodes;
 pub mod ratelimit;
+pub mod registration;
 pub mod retry;
 pub mod run;
 pub mod scheduler;
@@ -33,6 +34,9 @@ pub use nodes::{
     NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
+pub use registration::{
+    DelegationView, EnableError, RegistrationService, RegistrationView, SuggestedGrant,
+};
 pub use retry::{backoff_with_jitter, classify, RetryClass};
 pub use run::{
     NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus, WorkerConfig,

@@ -129,6 +129,14 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
+    // ワークフロー有効化・同意・トリガ実体化（Task 10.4a）。runtime 無効でも enable/disable は
+    // 受け付ける（トリガは runtime 有効時に発火）。
+    let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
+        db.clone(),
+        workflow_engine::DelegationStore::new(db.clone(), authz.clone()),
+    ));
+    let audit = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
+
     // 宣言的 UI アクションの実行系（Task 6.5）: chat.submit・安全ツール・workflow 起動を束ねる。
     let ui_actions = wiring_gui::wire_ui_actions(
         &config,
@@ -159,6 +167,8 @@ async fn main() -> anyhow::Result<()> {
         workflows,
         workflow_launcher,
         workflow_runs,
+        workflow_registration,
+        audit,
         directory,
         tenants,
         search,

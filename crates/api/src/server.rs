@@ -220,6 +220,21 @@ pub fn route_table() -> Vec<RouteDecl> {
             || get(routes::workflows::get_workflow_version),
         ),
         // 対話トリガの run 起動＋実行履歴（Stage A W3）。
+        r("/workflows/{id}/registration", &["GET"], Session, || {
+            get(routes::workflows::get_registration)
+        }),
+        r(
+            "/workflows/{id}/versions/{version}/consent-plan",
+            &["GET"],
+            Session,
+            || get(routes::workflows::consent_plan),
+        ),
+        r("/workflows/{id}/enable", &["POST"], Session, || {
+            post(routes::workflows::enable_workflow)
+        }),
+        r("/workflows/{id}/disable", &["POST"], Session, || {
+            post(routes::workflows::disable_workflow)
+        }),
         r("/workflows/{id}/runs", &["POST"], Session, || {
             post(routes::workflows::start_workflow_run)
         }),

@@ -17,6 +17,9 @@ pub enum ApiError {
     NotFound,
     #[error("競合しています")]
     Conflict,
+    /// 構造化 409 ボディ（scope 拡大の missing_scopes 等・詳細ペイロードを保つ）。
+    #[error("競合しています")]
+    ConflictJson(serde_json::Value),
     #[error("不正なリクエスト: {0}")]
     BadRequest(String),
     /// 検証エラー等の**構造化 400 ボディ**をそのまま返す（per-node/per-edge エラー等）。
@@ -36,7 +39,7 @@ impl ApiError {
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::Forbidden => StatusCode::FORBIDDEN,
             ApiError::NotFound => StatusCode::NOT_FOUND,
-            ApiError::Conflict => StatusCode::CONFLICT,
+            ApiError::Conflict | ApiError::ConflictJson(_) => StatusCode::CONFLICT,
             ApiError::BadRequest(_) | ApiError::UnprocessableJson(_) => StatusCode::BAD_REQUEST,
             ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -56,7 +59,7 @@ impl IntoResponse for ApiError {
             tracing::warn!(error = %detail, "サービス利用不可（503）");
         }
         // 構造化ボディはそのまま返す（検証エラーの per-node/per-edge 詳細を保つ）。
-        if let ApiError::UnprocessableJson(payload) = self {
+        if let ApiError::UnprocessableJson(payload) | ApiError::ConflictJson(payload) = self {
             return (status, Json(payload)).into_response();
         }
         let body = Json(json!({

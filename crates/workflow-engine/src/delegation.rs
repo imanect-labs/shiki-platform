@@ -77,6 +77,34 @@ impl DelegationStore {
         declared_scopes: &[String],
         grants: &[GrantRequest],
     ) -> Result<(), DelegationError> {
+        let mut tx = self.db.begin().await.map_err(map_db)?;
+        self.enable_within(
+            &mut tx,
+            enabler,
+            workflow_id,
+            version,
+            declared_scopes,
+            grants,
+        )
+        .await?;
+        tx.commit().await.map_err(map_db)?;
+        Ok(())
+    }
+
+    /// [`enable`](Self::enable) の本体（呼び出し側 TX に同居させる版）。
+    ///
+    /// [`RegistrationService`](crate::registration::RegistrationService) がトリガ実体化と
+    /// **単一 TX** で有効化するために分離（enable コミット済みなのにトリガ未実体化、の中間状態を作らない）。
+    /// FGA タプルは TX 外で先に書く（失敗時は未コミットで戻る＝all-or-nothing・従来と同じ）。
+    pub(crate) async fn enable_within(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        enabler: &AuthContext,
+        workflow_id: Uuid,
+        version: i64,
+        declared_scopes: &[String],
+        grants: &[GrantRequest],
+    ) -> Result<(), DelegationError> {
         let tenant = &enabler.tenant_id;
         // ① 範囲検証: 有効化者が全 grant の relation を持つか（1 つでも欠ければ全体拒否）。
         for g in grants {
@@ -130,7 +158,6 @@ impl DelegationStore {
             }
         }
 
-        let mut tx = self.db.begin().await.map_err(map_db)?;
         sqlx::query(
             "INSERT INTO workflow_registration \
              (tenant_id, workflow_id, org, status, enabled_version, consented_scopes, enabled_by) \
@@ -145,7 +172,7 @@ impl DelegationStore {
         .bind(version)
         .bind(declared_scopes)
         .bind(&enabler.principal.id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(map_db)?;
 
@@ -158,7 +185,7 @@ impl DelegationStore {
         .bind(tenant)
         .bind(workflow_id)
         .bind(new_objs.iter().copied().collect::<Vec<&str>>())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(map_db)?;
 
@@ -176,7 +203,7 @@ impl DelegationStore {
             .bind(&g.scope)
             .bind(g.object.as_str())
             .bind(g.relation.as_str())
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(map_db)?;
         }
@@ -190,7 +217,6 @@ impl DelegationStore {
             .await
             .map_err(|e| DelegationError::Authz(e.to_string()))?;
 
-        tx.commit().await.map_err(map_db)?;
         Ok(())
     }
 

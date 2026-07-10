@@ -301,6 +301,11 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
     ));
     let skills = Arc::new(gui::SkillStore::new(Arc::clone(&artifacts)));
     let mini_apps = Arc::new(gui::MiniAppStore::new(Arc::clone(&artifacts), pool.clone()));
+    let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
+        pool.clone(),
+        workflow_engine::DelegationStore::new(pool.clone(), Arc::new(AllowAll)),
+    ));
+    let audit_rec = Arc::new(storage::audit::AuditRecorder::new(pool.clone()));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool),
@@ -317,6 +322,8 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         secrets: None,
         workflows,
         workflow_launcher: None,
+        workflow_registration,
+        audit: audit_rec,
         workflow_runs: None,
         directory,
         tenants,
