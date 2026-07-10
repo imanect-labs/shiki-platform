@@ -35,6 +35,16 @@
 > をスケジューラ tick が「ready に戻さず直接 terminal 化」で起床、map は `waiting_map`＋要素スコープ前進で
 > 動的 fan-out→集約（fail_map/collect）、イベント scope は `node_closure` 祖先束縛＋filter 評価、event
 > ペイロードは run 入力に載せて `$from trigger` 透過。`unsupported_stage_a`（map/wait 分）は撤去済み。
+>
+> **Phase 10 完遂（2026-07-10・PR #203〜）**: 残タスクを 13 本の stacked PR 系列で実装。
+> ①エンジン仕上げ（#203 map/wait 着地／#205 typed params 契約＋ノードカタログ codegen＋validate API／
+> #207 有効化・同意・トリガ実体化 API／#209 実行履歴 read・一覧・レイアウト永続化／#210 cancel・retry(resume/new)・
+> run_event SSE／#211 3 階層 concurrency 結線・max_parallel_runs・run timeout）
+> ②UI（#214 基盤・一覧／#215 dnd エディタ核（React Flow・ドットグリッド・尻尾プラス・ライブ検証）／
+> #216 ノード設定パネル＋トリガ設定（cron プリセット・次回実行プレビュー）／#219 有効化同意・手動実行・バージョン／
+> #220 実行履歴 UI（data-table・詳細シート・step タイムライン・SSE ライブ更新））
+> ③AI 編集（#225 emit_workflow / read_workflow・workflow_ref カード・保存パイプライン共有）④e2e＋docs（本 PR）。
+> **未了（Phase 9 依存・human 決定で除外）**: 10.11・10.15・10.1b（skill 照合）・10.4b・10.6b・10.3 の data 系 source。
 
 > **human 決定（2026-07-07）**: Phase 10 のエンジン核心に**部分前倒しで着手**する。詳細設計（docs/workflow/・#119）が
 > 完了しており、依存分析の結果、本フェーズの本質的ブロッカーは Phase 9 全体ではなく **6.1（artifact 共通枠）と
@@ -117,9 +127,9 @@
   **fencing token**・`(id, seq)` 追記 exactly-once・Redis pub/sub 配信を共通クレートへ切り出し、
   chat を移行する。キュー・レーン・優先度・状態機械は共有しない（[engine.md §1.2](../workflow/engine.md) の分担表が正）。
 - **受け入れ条件**:
-  - [ ] chat の既存テスト（claim/リース/fencing/seq）が共通クレート経由で全緑のまま
-  - [ ] chat の挙動・レーン分離に変化がない（純リファクタ）
-  - [ ] workflow-engine が同一プリミティブを import できる
+  - [x] chat の既存テスト（claim/リース/fencing/seq）が共通クレート経由で全緑のまま
+  - [x] chat の挙動・レーン分離に変化がない（純リファクタ）
+  - [x] workflow-engine が同一プリミティブを import できる
 
 ### Task 10.1: ワークフロー IR スキーマ＋artifact 化＋語彙照合検証
 > **Stage 分割**: **10.1a（Stage A）** = IR スキーマ・保存時検証 **V1/V2/V3/V5/V6/V7**・ワークフロー語彙
@@ -133,9 +143,9 @@
   バージョン付き artifact（6.1 枠・ReBAC 共有）。保存時にスキーマ検証＋**codegen 認可語彙・skill/secret レジストリの
   閉じた集合への照合**（実在しないツール/スコープ/skill/secret 参照を拒否＝ハルシネーション境界）。
 - **受け入れ条件**:
-  - [ ] IR を artifact として保存・バージョン管理・ReBAC 共有できる
-  - [ ] 存在しないツール名/スコープ/skill/secret を参照する IR が保存時に拒否される
-  - [ ] 旧バージョンの IR が不変で取得できる
+  - [x] IR を artifact として保存・バージョン管理・ReBAC 共有できる
+  - [x] 存在しないツール名/スコープ/skill/secret を参照する IR が保存時に拒否される（skill 照合のみ 10.1b・Stage B）
+  - [x] 旧バージョンの IR が不変で取得できる
 
 ### Task 10.2: run/step 永続化＋ワーカー
 - **area**: data / **path**: `crates/workflow-engine`, migrations
@@ -144,9 +154,9 @@
   リース失効→別ワーカーが完了済みステップを復元し未完ステップのみ再実行（at-least-once）。
   チャット run（3.11/#82）と claim/リース/seq イベントの**共有モジュール**を切り出す（キューは分離）。
 - **受け入れ条件**:
-  - [ ] ワーカー kill →別ワーカーが完了済みステップを再実行せずに run を継続する
-  - [ ] `(run_id, seq)` unique で追記が exactly-once に潰れる
-  - [ ] 全テーブル・全クエリが tenant_id スコープ
+  - [x] ワーカー kill →別ワーカーが完了済みステップを再実行せずに run を継続する
+  - [x] `(run_id, seq)` unique で追記が exactly-once に潰れる
+  - [x] 全テーブル・全クエリが tenant_id スコープ
 
 ### Task 10.3: トリガ（スケジューラ＋イベント）
 > **Stage A 注記**: イベント source は既存 outbox で発行済みの `storage.write` 系のみ先行。
@@ -159,11 +169,11 @@
   **前提**: storage.write を購読するには outbox が per-consumer fan-out 化されていること（P10-A0）。現状の
   単一 `processed_at` 破壊消費のままだと rag と取り合ってイベントを取りこぼす。
 - **受け入れ条件**:
-  - [ ] 複数インスタンス起動時もスケジュールが1回だけ発火する
-  - [ ] スケジューラを enqueue 直後に kill →再起動しても同一 occurrence の run が1つしか作られない
-  - [ ] storage 書込でワークフローが起動する（Stage A・**rag の消費と取りこぼしなく両立**する＝P10-A0 前提）
+  - [x] 複数インスタンス起動時もスケジュールが1回だけ発火する
+  - [x] スケジューラを enqueue 直後に kill →再起動しても同一 occurrence の run が1つしか作られない
+  - [x] storage 書込でワークフローが起動する（Stage A・**rag の消費と取りこぼしなく両立**する＝P10-A0 前提）
   - [ ] record 変更／status 遷移でワークフローが起動する（**Stage B**・9.10 の outbox 発行後。Stage A の実装は source を閉じた集合で持ち、追加が既存経路の再設計にならない形にする）
-  - [ ] 無効化済みワークフローのトリガが発火しない
+  - [x] 無効化済みワークフローのトリガが発火しない
 
 ### Task 10.4: 実行主体・委譲モデル（FR-12 最重要）
 > **Stage 分割**: **10.4a（Stage A）** = workflow プリンシパル（`Namespace::workflow()`）・**`AuthContext` の
@@ -183,20 +193,20 @@
   委譲タプルは委譲者にリンクし、**委譲者の失権・退職で該当ワークフローを fail-closed 停止→再同意要求**。
   監査: run_id・トリガ種別・実行プリンシパル・委譲者。
 - **受け入れ条件**:
-  - [ ] schedule/event run の能力呼び出しが `workflow:<tenant>|<id>` サブジェクトで check される（user サブジェクトに落ちない・principal 種別拡張が効く）
-  - [ ] 対話トリガで本人が読めないデータにワークフロー越しでも到達できない
-  - [ ] 有効化者の権限外スコープの委譲が拒否される
-  - [ ] 委譲者の権限剥奪後、次回実行が開始されず「再同意要求」状態になる（黙って動き続けない）
-  - [ ] ノード設定はどう書いても実効権限を拡大できない（縮小のみ）
+  - [x] schedule/event run の能力呼び出しが `workflow:<tenant>|<id>` サブジェクトで check される（user サブジェクトに落ちない・principal 種別拡張が効く）
+  - [x] 対話トリガで本人が読めないデータにワークフロー越しでも到達できない
+  - [x] 有効化者の権限外スコープの委譲が拒否される
+  - [x] 委譲者の権限剥奪後、次回実行が開始されず「再同意要求」状態になる（黙って動き続けない）
+  - [x] ノード設定はどう書いても実効権限を拡大できない（縮小のみ）
 
 ### Task 10.5: 制御ノード＋リトライ＋concurrency/rate limit
 - **area**: data / **path**: `crates/workflow-engine`
 - **仕様**: 分岐・並列（fan-out）・join・待機（時間/イベント）。step retry policy（max/backoff・冪等キー供給）。
   同時実行上限（テナント/ワークフロー/ノード種の3階層・Postgres カウンタ）。rate limit（テナント×能力トークンバケット・Redis）。
 - **受け入れ条件**:
-  - [ ] fan-out→join が正しく待ち合わせ、失敗分岐のみリトライされる
-  - [ ] 上限超過の run/step が実行されず順番待ちになる（拒否ではなくバックプレッシャ）
-  - [ ] rate limit 超過が step を失敗させず遅延させる
+  - [x] fan-out→join が正しく待ち合わせ、失敗分岐のみリトライされる
+  - [x] 上限超過の run/step が実行されず順番待ちになる（拒否ではなくバックプレッシャ）
+  - [x] rate limit 超過が step を失敗させず遅延させる
 
 ### Task 10.6: 能力ノード＋AI ノード2種＋ノード設定パネル契約
 > **Stage 分割**: **10.6a（Stage A）** = storage.read/write/list・rag.search・`llm.invoke`・`agent.invoke`
@@ -208,9 +218,9 @@
   **設定は capability 縮小のみ**）。`llm.invoke` ノード=llm-gateway 直行（モデルカタログ・予算）。
   ノード設定スキーマは codegen で TS 型へ（右パネル UI の契約）。
 - **受け入れ条件**:
-  - [ ] agent.invoke がノード設定どおりに制限されたサンドボックスで実行される
-  - [ ] ノード設定で ReBAC 外の権限が付与できないことがテストで担保される
-  - [ ] 全ノードの呼び出しが監査に run_id 付きで残る
+  - [x] agent.invoke がノード設定どおりに制限されたサンドボックスで実行される
+  - [x] ノード設定で ReBAC 外の権限が付与できないことがテストで担保される
+  - [x] 全ノードの呼び出しが監査に run_id 付きで残る
 
 ### Task 10.7: script-runtime
 > **Stage A 注記**: ランタイム・ブリッジ・リソース制限は全部 Stage A。ただし `Shiki.*` の能力面は
@@ -222,18 +232,18 @@
   fuel/メモリ上限/epoch interruption。`Shiki.*` ホスト関数ブリッジ（同期スタイル→ホスト側 async 橋渡し）は
   能力ゲートウェイへ合流し AuthContext 認可・監査を通る。npm import 不可。
 - **受け入れ条件**:
-  - [ ] `Shiki.storage.read(...)`（Stage B では `Shiki.data.query(...)`）の同期スタイル script が実行でき、認可・監査が通常経路で効く
-  - [ ] 無限ループ/メモリ爆発が fuel/上限で強制中断される
-  - [ ] wasm 内からホスト関数以外の外界（fs/net）に到達できない
-  - [ ] コールドスタートが ms 級（スプレッドシート関数要件）
+  - [x] `Shiki.storage.read(...)`（Stage B では `Shiki.data.query(...)`）の同期スタイル script が実行でき、認可・監査が通常経路で効く
+  - [x] 無限ループ/メモリ爆発が fuel/上限で強制中断される
+  - [x] wasm 内からホスト関数以外の外界（fs/net）に到達できない
+  - [x] コールドスタートが ms 級（スプレッドシート関数要件）
 
 ### Task 10.8: script ノード＋script→ワークフロー起動
 - **area**: data / **path**: `crates/workflow-engine`, `crates/script-runtime`
 - **仕様**: script ノード=1 回の有界実行（タイムアウト・ステートレス・at-least-once）。
   `Shiki.workflow.start(name, input)`（fire-and-forget / run_id 取得）。script 自体は durable にならない。
 - **受け入れ条件**:
-  - [ ] script ノードのリトライが冪等キー供給付きで再実行される
-  - [ ] script から名前指定でワークフローを起動でき、権限は実行主体で評価される
+  - [x] script ノードのリトライが冪等キー供給付きで再実行される
+  - [x] script から名前指定でワークフローを起動でき、権限は実行主体で評価される
 
 ### Task 10.9: シークレット管理
 - **area**: auth / **path**: `crates/secrets`, migrations
@@ -242,17 +252,17 @@
   envelope encryption＋ **`KeyProvider` トレイト**（Cloud KMS / ローカルキーファイル）。解決イベント毎回監査。
   ログ・run 履歴・エラーの自動レダクト。
 - **受け入れ条件**:
-  - [ ] 登録後、いかなる API/UI からも平文を読み返せない
-  - [ ] can_use を持たない実行主体の解決が拒否される
-  - [ ] 宣言宛先以外への添付（リダイレクト含む）が拒否され監査に残る
-  - [ ] run 履歴・ログに平文が現れない（レダクトテスト）
+  - [x] 登録後、いかなる API/UI からも平文を読み返せない
+  - [x] can_use を持たない実行主体の解決が拒否される
+  - [x] 宣言宛先以外への添付（リダイレクト含む）が拒否され監査に残る
+  - [x] run 履歴・ログに平文が現れない（レダクトテスト）
 
 ### Task 10.10: http.request ノード
 - **area**: data / **path**: `crates/workflow-engine`
 - **仕様**: egress allowlist × シークレット宛先束縛の AND。タイムアウト・サイズ上限・リトライポリシ。
 - **受け入れ条件**:
-  - [ ] allowlist 外・束縛外への送信が遮断される
-  - [ ] 応答が step 出力として次ノードに渡る
+  - [x] allowlist 外・束縛外への送信が遮断される
+  - [x] 応答が step 出力として次ノードに渡る
 
 ### Task 10.11: skill＆スキルストア
 - **area**: app / **path**: `crates/app-platform`（skill 種）, `sdk/`
@@ -269,24 +279,24 @@
 - **仕様**: IR の直接編集（ノード配置・接続・右パネル設定）。設定パネルは codegen 型（10.6）駆動。
   保存時にサーバ側検証（10.1）を通す。
 - **受け入れ条件**:
-  - [ ] dnd で作成→保存→実行が一気通貫で動く
-  - [ ] 検証エラー（語彙違反等）が該当ノード上に表示される
+  - [x] dnd で作成→保存→実行が一気通貫で動く
+  - [x] 検証エラー（語彙違反等）が該当ノード上に表示される
 
 ### Task 10.13: AI 編集
 - **area**: ai / **path**: `crates/agent-core`, `web/`
 - **仕様**: チャット/エディタ内 AI に「IR を生成・変更するツール」を与える（generative UI と同じ検証済みスペック方式）。
   AI 出力は必ず 10.1 検証を通り、**dnd でそのまま人間が続きを編集できる**。
 - **受け入れ条件**:
-  - [ ] 自然言語からワークフローが生成され、dnd に表示・編集できる
-  - [ ] AI が実在しないツール/スコープを参照した場合に保存前に拒否される
+  - [x] 自然言語からワークフローが生成され、dnd に表示・編集できる
+  - [x] AI が実在しないツール/スコープを参照した場合に保存前に拒否される
 
 ### Task 10.14: 実行履歴 UI＋Observability
 - **area**: obs / **path**: `web/`, `crates/workflow-engine`
 - **仕様**: run/step テーブルを正とする実行履歴（入出力プレビュー・リトライ経過・失敗ステップ・再実行操作）。
   OTel span（run→step）。AI ノードは Langfuse trace_id 突合（3.8 枠）。
 - **受け入れ条件**:
-  - [ ] 失敗 run の原因ステップと入出力（シークレットはレダクト）を UI で辿れる
-  - [ ] 監査↔OTel↔Langfuse が run_id/trace_id で相関する
+  - [x] 失敗 run の原因ステップと入出力（シークレットはレダクト）を UI で辿れる
+  - [x] 監査↔OTel↔Langfuse が run_id/trace_id で相関する
 
 ### Task 10.15: first-party skill 初期セット
 - **area**: app / **path**: `sdk/`, レジストリ

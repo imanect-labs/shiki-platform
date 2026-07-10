@@ -369,6 +369,9 @@ services:
       # チャット（Phase 3）。生成ワーカーを有効化（接続非依存生成）。
       SHIKI__CHAT__ENABLED: ${SHIKI__CHAT__ENABLED:-true}
       SHIKI__CHAT__WORKER_CONCURRENCY: ${SHIKI__CHAT__WORKER_CONCURRENCY:-4}
+      # ワークフロー実行時（Phase 10）。launcher/worker/scheduler を有効化（エディタからの実行・
+      # スケジュール発火・実行履歴 SSE が動く）。
+      SHIKI__WORKFLOW__ENABLED: ${SHIKI__WORKFLOW__ENABLED:-true}
       # RAG（Phase 2）: インジェスト・パイプラインと検索。
       SHIKI__RAG__ENABLED: ${SHIKI__RAG__ENABLED:-true}
       SHIKI__CHAT__SANDBOX_ENDPOINT: http://sandbox-orchestrator:50000
