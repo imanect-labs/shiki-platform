@@ -60,6 +60,10 @@ vocab_enum! {
         Shell => "shell",
         /// generative UI スペックの発話ツール（Phase 6 Task 6.4）。
         EmitUi => "emit_ui",
+        /// ワークフロー IR の生成/更新ツール（保存パイプライン検証・Task 10.13）。
+        EmitWorkflow => "emit_workflow",
+        /// 既存ワークフロー IR の読み取りツール（AI 編集の前提・Task 10.13）。
+        ReadWorkflow => "read_workflow",
     }
 }
 

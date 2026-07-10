@@ -123,6 +123,7 @@ impl Tool for MockSearchTool {
                 name: "result.csv".into(),
             }],
             ui_specs: vec![],
+            workflow_refs: vec![],
             is_error: false,
         })
     }

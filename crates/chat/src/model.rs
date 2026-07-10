@@ -88,6 +88,9 @@ pub enum ContentBlock {
     Citation(Citation),
     /// 宣言的 UI（Phase 6 で実体化。Phase 3 はプレースホルダ）。
     GenerativeUi { spec: serde_json::Value },
+    /// 保存済みワークフローへの参照カード（emit_workflow・Task 10.13）。
+    /// `workflow = {id, name, display_name, version}`（保存パイプライン通過済みのみ）。
+    WorkflowRef { workflow: serde_json::Value },
     /// 添付ファイル参照（ストレージ node 参照のみ）。
     FileRef { node_id: String, name: String },
 }
@@ -209,6 +212,8 @@ pub enum StreamEventKind {
     FileRef { node_id: String, name: String },
     /// 宣言的 UI（Phase 6）。
     GenerativeUi { spec: serde_json::Value },
+    /// 保存済みワークフローへの参照カード（emit_workflow・Task 10.13）。
+    WorkflowRef { workflow: serde_json::Value },
     /// 計画の改訂（自律エージェント・Task 5.2）。サブタスク列を丸ごと配信する。
     Plan { subtasks: Vec<PlanSubtask> },
     /// 予算上限への接近警告（Task 5.7）。
@@ -255,6 +260,7 @@ impl StreamEventKind {
             StreamEventKind::Citation(_) => "citation",
             StreamEventKind::FileRef { .. } => "file_ref",
             StreamEventKind::GenerativeUi { .. } => "generative_ui",
+            StreamEventKind::WorkflowRef { .. } => "workflow_ref",
             StreamEventKind::Plan { .. } => "plan",
             StreamEventKind::BudgetWarning { .. } => "budget_warning",
             StreamEventKind::ApprovalRequested { .. } => "approval_requested",

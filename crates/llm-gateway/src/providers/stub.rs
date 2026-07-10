@@ -74,6 +74,31 @@ fn tool_trigger(user_text: &str) -> Option<(&'static str, &'static str, String)>
     })
 }
 
+/// `emitwf:` 駆動の固定ワークフロー IR（Task 10.13 の決定的検証）。
+/// `emitwf:ok <name>` は保存パイプライン（V1〜V7）を通る IR、`emitwf:bad <name>` は
+/// 語彙外ノード type を含む不正 IR（検証エラー全件のフォールバック検証用）。
+fn emitwf_ir(kind: &str) -> serde_json::Value {
+    let (variant, name) = kind.split_once(' ').unwrap_or((kind, "stub-flow"));
+    let node_type = if variant == "bad" {
+        "bogus.node"
+    } else {
+        "script.run"
+    };
+    serde_json::json!({
+        "ir_version": 1,
+        "name": name.trim(),
+        "display_name": "スタブフロー",
+        "declared_scopes": [],
+        "triggers": [{ "kind": "interactive" }],
+        "nodes": [{
+            "id": "compute",
+            "type": node_type,
+            "params": { "source": { "inline": "function main(i){ return { ok: true }; }" } }
+        }],
+        "edges": []
+    })
+}
+
 /// `genui:` 駆動の固定 UI スペック（gui クレートの検証を通る形・`bad` のみ意図的に不正）。
 fn genui_spec(kind: &str) -> serde_json::Value {
     use serde_json::json;
@@ -226,6 +251,20 @@ impl LlmProvider for StubProvider {
                     return Ok(tool_call_stream(
                         t.name.clone(),
                         serde_json::json!({ "spec": spec }),
+                        prompt_tokens,
+                    ));
+                }
+            }
+        }
+
+        // --- AI ワークフロー編集駆動 `emitwf:`（Task 10.13 の決定的検証）。 ---
+        if !has_tool_result(req) {
+            if let Some(rest) = user_text.strip_prefix("emitwf:") {
+                if let Some(t) = req.tools.iter().find(|t| t.name == "emit_workflow") {
+                    let ir = emitwf_ir(rest.trim());
+                    return Ok(tool_call_stream(
+                        t.name.clone(),
+                        serde_json::json!({ "ir": ir }),
                         prompt_tokens,
                     ));
                 }

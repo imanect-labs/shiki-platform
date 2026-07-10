@@ -4819,6 +4819,7 @@ dependencies = [
  "shiki-rag",
  "shiki-storage",
  "shiki-websearch",
+ "shiki-workflow-engine",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

@@ -52,26 +52,20 @@ pub struct ValidationErrorResponse {
 }
 
 /// API 層でカタログを組む（Stage A: 登録済み secret の名前→許可ホスト・モデルカタログ）。
+///
+/// 実装は [`crate::workflow_catalog::build_catalog_from`]（emit_workflow と共有・乖離禁止）。
 pub(crate) async fn build_catalog(
     state: &AppState,
     ctx: &authz::AuthContext,
 ) -> Result<Catalog, ApiError> {
-    let mut catalog = Catalog::default();
-    // secret の参照名→許可ホスト（V4 の宛先束縛事前照合に使う）。
-    if let Some(secrets) = state.secrets.as_deref() {
-        for meta in secrets.list_mine(ctx).await? {
-            catalog.secrets.insert(meta.name, meta.allowed_hosts);
-        }
-    }
-    // モデルカタログ（llm.invoke の model 照合）。設定済みモデルを使う。
-    catalog.models = state
+    let models: Vec<String> = state
         .config
         .llm
         .models
         .iter()
         .map(|m| m.id.clone())
         .collect();
-    Ok(catalog)
+    Ok(crate::workflow_catalog::build_catalog_from(state.secrets.as_deref(), &models, ctx).await?)
 }
 
 /// 検証のみのリクエスト（保存しない・dnd のライブ検証用）。

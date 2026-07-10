@@ -231,6 +231,8 @@ pub(crate) async fn wire_chat(
     storage: &Arc<storage::StorageService>,
     ui_validator: &Arc<gui::SpecValidator>,
     skill_artifacts: &Arc<artifact::ArtifactStore>,
+    workflows: &Arc<workflow_engine::WorkflowStore>,
+    secrets: Option<&Arc<secrets::SecretStore>>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -289,6 +291,15 @@ pub(crate) async fn wire_chat(
             ui_validator: Some(Arc::clone(ui_validator)),
             // skill / ミニアプリのピン解決（Task 6.9・fail-closed）。
             skill_artifacts: Some(Arc::clone(skill_artifacts)),
+            // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）。
+            // カタログ源は保存 API（build_catalog）と同一実装を注入する（検証乖離の禁止）。
+            workflow_store: Some(Arc::clone(workflows)),
+            workflow_catalog: Some(Arc::new(
+                api::workflow_catalog::ApiWorkflowCatalogSource::new(
+                    secrets.cloned(),
+                    config.llm.models.iter().map(|m| m.id.clone()).collect(),
+                ),
+            )),
         },
         worker_config,
     );

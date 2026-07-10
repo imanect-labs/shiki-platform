@@ -31,6 +31,7 @@ pub mod model;
 pub(crate) mod skill;
 pub mod store;
 pub mod worker;
+pub mod workflow_tool;
 pub mod workspace;
 
 pub use approver::DbApprover;
@@ -43,4 +44,5 @@ pub use model::{
 };
 pub use store::{ChatStore, ClaimedRun, PostResult, CHAT_GENERATION_QUEUE};
 pub use worker::{ChatWorker, WorkerConfig, WorkerDeps};
+pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};
 pub use workspace::StorageWorkspaceStore;
