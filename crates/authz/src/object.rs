@@ -78,6 +78,11 @@ impl FgaObject {
         Self::new(ObjectType::DataTable, id)
     }
 
+    /// 個別共有された行オブジェクト `data_record:<id>`（スパースタプル・Task 9.3）。
+    pub(crate) fn data_record(id: &str) -> Self {
+        Self::new(ObjectType::DataRecord, id)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -179,6 +184,11 @@ impl<'a> Namespace<'a> {
     /// 構造化データのテーブルオブジェクト `data_table:<tenant>|<id>`（Task 9.2）。
     pub fn data_table(&self, id: &str) -> FgaObject {
         FgaObject::data_table(&self.qualify(id))
+    }
+
+    /// 個別共有された行オブジェクト `data_record:<tenant>|<id>`（Task 9.3）。
+    pub fn data_record(&self, id: &str) -> FgaObject {
+        FgaObject::data_record(&self.qualify(id))
     }
 
     /// ユーザー subject `user:<tenant>|<id>`。

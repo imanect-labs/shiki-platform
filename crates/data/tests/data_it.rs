@@ -171,6 +171,7 @@ fn expense_schema() -> TableSchema {
     TableSchema {
         fields: vec![title, amount, status, applicant, code],
         status_field: Some("status".into()),
+        row_policy: None,
     }
 }
 
@@ -395,6 +396,7 @@ async fn record_refs_validated_and_file_ref_denied() {
                 schema: TableSchema {
                     fields: vec![field("name", FieldType::Text)],
                     status_field: None,
+                    row_policy: None,
                 },
             },
             None,
@@ -415,6 +417,7 @@ async fn record_refs_validated_and_file_ref_denied() {
                         field("attachment", FieldType::FileRef),
                     ],
                     status_field: None,
+                    row_policy: None,
                 },
             },
             None,
@@ -571,6 +574,7 @@ async fn schema_update_additive_and_index_reapply() {
                 schema: TableSchema {
                     fields: vec![field("title", FieldType::Text)],
                     status_field: None,
+                    row_policy: None,
                 },
             },
             None,
@@ -590,6 +594,7 @@ async fn schema_update_additive_and_index_reapply() {
             TableSchema {
                 fields: vec![title, price],
                 status_field: None,
+                row_policy: None,
             },
             Some(1),
             None,
@@ -615,6 +620,7 @@ async fn schema_update_additive_and_index_reapply() {
             TableSchema {
                 fields: vec![field("title", FieldType::Number)],
                 status_field: None,
+                row_policy: None,
             },
             None,
             None,
@@ -631,6 +637,7 @@ async fn schema_update_additive_and_index_reapply() {
             TableSchema {
                 fields: vec![field("title", FieldType::Text)],
                 status_field: None,
+                row_policy: None,
             },
             Some(1),
             None,

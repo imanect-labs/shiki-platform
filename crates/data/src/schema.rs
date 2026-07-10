@@ -71,6 +71,9 @@ pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataErro
         }
         validate_field(schema, f)?;
     }
+    if let Some(policy) = &schema.row_policy {
+        crate::policy::validate::validate_row_policy(schema, policy)?;
+    }
     if let Some(status) = &schema.status_field {
         let f = schema.field(status).ok_or_else(|| {
             DataError::Invalid(format!("status_field '{status}' が fields にありません"))
@@ -259,6 +262,7 @@ mod tests {
         TableSchema {
             fields,
             status_field: None,
+            row_policy: None,
         }
     }
 

@@ -93,6 +93,10 @@ pub enum ObjectType {
     /// 構造化データのテーブル（第1層 ReBAC・viewer/editor/owner・Task 9.2）。
     /// 行レベルの可視性は Task 9.3 のクエリ時述語（ABAC）が担い、ここはテーブル単位のみ。
     DataTable,
+    /// 構造化データの**個別共有された行**（Task 9.3）。
+    /// 全行をタプルにしない原則の唯一の例外で、明示共有した行だけがスパースに載る
+    /// （タプル数は共有件数に比例・design §4.10）。
+    DataRecord,
 }
 
 impl ObjectType {
@@ -109,6 +113,7 @@ impl ObjectType {
             ObjectType::Secret => "secret",
             ObjectType::Workflow => "workflow",
             ObjectType::DataTable => "data_table",
+            ObjectType::DataRecord => "data_record",
         }
     }
 }
@@ -217,6 +222,7 @@ mod tests {
         assert_eq!(ObjectType::Artifact.as_str(), "artifact");
         assert_eq!(ObjectType::Secret.as_str(), "secret");
         assert_eq!(ObjectType::DataTable.as_str(), "data_table");
+        assert_eq!(ObjectType::DataRecord.as_str(), "data_record");
         assert_eq!(Relation::CanUse.as_str(), "can_use");
     }
 

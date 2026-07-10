@@ -94,3 +94,11 @@ type data_table
     define owner: [user, workflow]
     define editor: [user, role#member, workflow] or owner
     define viewer: [user, role#member, workflow] or editor
+
+# 構造化データの個別共有行（Task 9.3）。「全行タプル化しない」原則の唯一の例外で、
+# 明示共有した行だけがスパースに載る（タプル数=共有件数）。行の基礎可視性は
+# data サービスのクエリ時述語（ABAC）が決め、ここは追加の許可のみ（拒否は表現しない）。
+type data_record
+  relations
+    define editor: [user, role#member]
+    define viewer: [user, role#member] or editor

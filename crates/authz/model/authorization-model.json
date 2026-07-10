@@ -562,6 +562,54 @@
           }
         }
       }
+    },
+    {
+      "type": "data_record",
+      "relations": {
+        "editor": {
+          "this": {}
+        },
+        "viewer": {
+          "union": {
+            "child": [
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "editor"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "editor": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              }
+            ]
+          },
+          "viewer": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
+              }
+            ]
+          }
+        }
+      }
     }
   ]
 }

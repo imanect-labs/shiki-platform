@@ -15,10 +15,14 @@
 //! - **lookup / 計算フィールドの読み出し解決は Task 9.3 まで封印**: 参照先テーブルの
 //!   行ポリシー透過適用（PIT-20）なしに参照解決を出荷しない。定義の保存と検証のみ行う。
 
+mod derived;
 mod index;
 mod model;
+pub mod policy;
+mod query;
 mod record;
 mod record_list;
+mod record_share;
 mod revision;
 mod schema;
 mod store;
@@ -29,7 +33,9 @@ pub use model::{
     RecordRevision, TableSchema,
 };
 pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordSort};
+pub use record_share::RecordShareRole;
 pub use store::{DataStore, NewDataTable};
+pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
 pub use validate::RefResolver;
 
 /// 構造化データ操作のエラー。

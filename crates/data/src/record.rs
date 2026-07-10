@@ -22,13 +22,13 @@ use crate::{map_db, DataError};
 /// data_record 行。
 #[derive(sqlx::FromRow)]
 pub(crate) struct RecordRow {
-    id: Uuid,
-    table_id: Uuid,
-    data: Json<Value>,
-    rev: i64,
-    owner: String,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    pub(crate) id: Uuid,
+    pub(crate) table_id: Uuid,
+    pub(crate) data: Json<Value>,
+    pub(crate) rev: i64,
+    pub(crate) owner: String,
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) updated_at: DateTime<Utc>,
 }
 
 impl RecordRow {
@@ -110,7 +110,9 @@ impl DataStore {
         Ok(row.into_record())
     }
 
-    /// レコードを取得する（viewer）。
+    /// レコードを取得する（viewer・行述語つき）。
+    ///
+    /// 行述語で不可視の行は存在しない行と**同一応答**（404・存在オラクルなし・PIT-21）。
     pub async fn get_record(
         &self,
         ctx: &AuthContext,
@@ -120,19 +122,15 @@ impl DataStore {
     ) -> Result<DataRecord, DataError> {
         self.require(ctx, table_id, Relation::Viewer, "data.record.get", trace_id)
             .await?;
-        // テーブルが生存していること（削除済みテーブルの残存 FGA タプルで読ませない・fail-closed）。
-        self.fetch_live(ctx, table_id).await?;
-        let row: Option<RecordRow> = sqlx::query_as(
-            "SELECT id, table_id, data, rev, owner, created_at, updated_at \
-             FROM data_record WHERE tenant_id = $1 AND table_id = $2 AND id = $3",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(table_id)
-        .bind(id)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(map_db)?;
-        Ok(row.ok_or(DataError::NotFound)?.into_record())
+        // テーブルの生存チェック込み（削除済みテーブルの残存 FGA タプルで読ませない）。
+        let table = self.fetch_live(ctx, table_id).await?;
+        let row = self
+            .select_visible_by_id(ctx, &table, id)
+            .await?
+            .ok_or(DataError::NotFound)?;
+        let mut records = vec![row.into_record()];
+        self.resolve_derived_fields(ctx, &table, &mut records).await?;
+        Ok(records.remove(0))
     }
 
     /// レコードを更新する（editor・merge patch・楽観ロック・リビジョン同時記録）。
@@ -162,18 +160,14 @@ impl DataStore {
         })?;
 
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        let current: Option<RecordRow> = sqlx::query_as(
-            "SELECT id, table_id, data, rev, owner, created_at, updated_at \
-             FROM data_record \
-             WHERE tenant_id = $1 AND table_id = $2 AND id = $3 FOR UPDATE",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(table_id)
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(map_db)?;
-        let current = current.ok_or(DataError::NotFound)?;
+        // 行述語つきロック: 不可視行は NotFound（rev オラクル封じ・PIT-21）。
+        let current = self
+            .lock_visible_by_id(ctx, &mut tx, &table, id)
+            .await?
+            .ok_or(DataError::NotFound)?;
+        if !self.write_allowed(ctx, &table, id).await? {
+            return Err(DataError::Forbidden);
+        }
         if current.rev != expected_rev {
             return Err(DataError::Conflict(format!(
                 "rev が一致しません（現在 {}・指定 {expected_rev}）",
@@ -261,21 +255,17 @@ impl DataStore {
             trace_id,
         )
         .await?;
-        // テーブルが生存していること（削除済みテーブルの残存 FGA タプルで消させない）。
-        self.fetch_live(ctx, table_id).await?;
+        // テーブルの生存チェック込み（削除済みテーブルの残存 FGA タプルで消させない）。
+        let table = self.fetch_live(ctx, table_id).await?;
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        let current: Option<RecordRow> = sqlx::query_as(
-            "SELECT id, table_id, data, rev, owner, created_at, updated_at \
-             FROM data_record \
-             WHERE tenant_id = $1 AND table_id = $2 AND id = $3 FOR UPDATE",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(table_id)
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(map_db)?;
-        let current = current.ok_or(DataError::NotFound)?;
+        // 行述語つきロック: 不可視行は NotFound（rev オラクル封じ・PIT-21）。
+        let current = self
+            .lock_visible_by_id(ctx, &mut tx, &table, id)
+            .await?
+            .ok_or(DataError::NotFound)?;
+        if !self.write_allowed(ctx, &table, id).await? {
+            return Err(DataError::Forbidden);
+        }
         if current.rev != expected_rev {
             return Err(DataError::Conflict(format!(
                 "rev が一致しません（現在 {}・指定 {expected_rev}）",

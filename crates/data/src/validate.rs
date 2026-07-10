@@ -284,6 +284,7 @@ mod tests {
         TableSchema {
             fields,
             status_field: None,
+            row_policy: None,
         }
     }
 

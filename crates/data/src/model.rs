@@ -93,14 +93,18 @@ pub struct FieldDef {
 
 /// テーブルスキーマ（`data_table.schema` JSONB の正本型）。
 ///
-/// Task 9.3 で `row_policy`、9.4 で `field_policy` / `aggregate_min_rows`、
-/// 9.10 で `fsm_ref` を同じ構造体に追記する（serde default で後方互換）。
+/// Task 9.4 で `field_policy` / `aggregate_min_rows`、9.10 で `fsm_ref` を
+/// 同じ構造体に追記する（serde default で後方互換）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TableSchema {
     pub fields: Vec<FieldDef>,
     /// FSM（Task 9.10）が状態として扱う select フィールド名。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_field: Option<String>,
+    /// 行レベル認可の宣言（Task 9.3）。未定義はテーブル viewer 全員が全行可視
+    /// （行制限はオプトイン。テーブル自体の ReBAC は常に第1層として効く）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_policy: Option<crate::policy::RowPolicy>,
 }
 
 impl TableSchema {

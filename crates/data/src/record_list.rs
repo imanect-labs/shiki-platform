@@ -7,15 +7,13 @@
 
 use authz::{AuthContext, Relation};
 use serde_json::Value;
-use sqlx::postgres::PgArguments;
-use sqlx::query::QueryAs;
-use sqlx::Postgres;
 use uuid::Uuid;
 
 use crate::model::{DataRecord, FieldType, TableSchema};
+use crate::query::executor::{ListFilter, ListSort};
 use crate::record::RecordRow;
 use crate::store::DataStore;
-use crate::{map_db, DataError};
+use crate::DataError;
 
 /// 一覧のフィルタ（PR1 は宣言フィールドへの等値/包含のみ。宣言的クエリ API は Task 9.4）。
 #[derive(Debug, Clone)]
@@ -44,6 +42,9 @@ pub struct ListRecordsOptions {
 #[derive(Debug, Clone)]
 pub struct ListRecordsPage {
     pub items: Vec<DataRecord>,
+    /// 個別共有集合が上限（PIT-18）で切り詰められ、共有経由の一部行が
+    /// 表示されていない可能性がある（fail-closed・可視減方向）。
+    pub shares_truncated: bool,
 }
 
 impl DataStore {
@@ -71,96 +72,146 @@ impl DataStore {
         let limit = opts.limit.clamp(1, 200);
         let offset = opts.offset.clamp(0, 10_000);
 
-        // フィルタ/ソート句を組み立てる。フィールド名はスキーマ検証済みの宣言名のみを
-        // 埋め込む（値は常にバインド）。式インデックスと同形の式にして索引を効かせる。
-        use std::fmt::Write as _;
-        let mut sql = String::from(
-            "SELECT id, table_id, data, rev, owner, created_at, updated_at \
-             FROM data_record WHERE tenant_id = $1 AND table_id = $2",
-        );
-        // バインドは $3 以降（filter 値のみ可変）。
-        let mut filter_bind: Option<&Value> = None;
-        if let Some(fl) = filter {
-            let f = indexed_field(&table.schema, &fl.field)?;
-            match f.field_type {
-                FieldType::Number => {
-                    if !fl.value.is_number() {
-                        return Err(DataError::Invalid(format!(
-                            "フィルタ '{}' は数値で指定してください",
-                            fl.field
-                        )));
+        // フィルタ/ソートを検証し、閉じた形（executor の型）へ写す。SQL の組み立ては
+        // クエリ実行チョークポイント（query::executor）だけが行い、行述語が無条件に
+        // AND 合成される（Task 9.3・PIT-21）。
+        let exec_filter = match filter {
+            None => None,
+            Some(fl) => {
+                let f = indexed_field(&table.schema, &fl.field)?;
+                Some(match f.field_type {
+                    FieldType::Number => {
+                        let Some(n) = fl.value.as_f64() else {
+                            return Err(DataError::Invalid(format!(
+                                "フィルタ '{}' は数値で指定してください",
+                                fl.field
+                            )));
+                        };
+                        ListFilter::NumberEq {
+                            field: f.name.clone(),
+                            value: n,
+                        }
                     }
-                    let _ = write!(sql, " AND ((data ->> '{}'))::numeric = $3::numeric", f.name);
-                }
-                FieldType::MultiSelect => {
-                    if !fl.value.is_string() {
-                        return Err(DataError::Invalid(format!(
-                            "フィルタ '{}' は文字列で指定してください",
-                            fl.field
-                        )));
+                    FieldType::MultiSelect => {
+                        let Some(v) = fl.value.as_str() else {
+                            return Err(DataError::Invalid(format!(
+                                "フィルタ '{}' は文字列で指定してください",
+                                fl.field
+                            )));
+                        };
+                        ListFilter::MultiContains {
+                            field: f.name.clone(),
+                            value: v.to_string(),
+                        }
                     }
-                    // GIN の存在演算子（配列が値を含むか）。
-                    let _ = write!(sql, " AND (data -> '{}') ? $3", f.name);
-                }
-                _ => {
-                    if !fl.value.is_string() {
-                        return Err(DataError::Invalid(format!(
-                            "フィルタ '{}' は文字列で指定してください",
-                            fl.field
-                        )));
+                    _ => {
+                        let Some(v) = fl.value.as_str() else {
+                            return Err(DataError::Invalid(format!(
+                                "フィルタ '{}' は文字列で指定してください",
+                                fl.field
+                            )));
+                        };
+                        ListFilter::TextEq {
+                            field: f.name.clone(),
+                            value: v.to_string(),
+                        }
                     }
-                    let _ = write!(sql, " AND (data ->> '{}') = $3", f.name);
-                }
+                })
             }
-            filter_bind = Some(&fl.value);
-        }
-        if let Some(st) = sort {
-            let f = indexed_field(&table.schema, &st.field)?;
-            if f.field_type == FieldType::MultiSelect {
-                return Err(DataError::Invalid(
-                    "multi_select はソートに使えません".into(),
-                ));
-            }
-            let dir = if st.descending { "DESC" } else { "ASC" };
-            let expr = if f.field_type == FieldType::Number {
-                format!("((data ->> '{}'))::numeric", f.name)
-            } else {
-                format!("(data ->> '{}')", f.name)
-            };
-            // NULLS LAST: 値なし行を末尾へ（昇降順で一貫）。id で決定的に並べる。
-            let _ = write!(sql, " ORDER BY {expr} {dir} NULLS LAST, id {dir}");
-        } else {
-            sql.push_str(" ORDER BY updated_at DESC, id DESC");
-        }
-        let (limit_ph, offset_ph) = if filter_bind.is_some() {
-            ("$4", "$5")
-        } else {
-            ("$3", "$4")
         };
-        let _ = write!(sql, " LIMIT {limit_ph} OFFSET {offset_ph}");
-
-        let mut query: QueryAs<'_, Postgres, RecordRow, PgArguments> = sqlx::query_as(&sql);
-        query = query.bind(&ctx.tenant_id).bind(table_id);
-        if let Some(v) = filter_bind {
-            query = match v {
-                Value::Number(n) => query.bind(n.as_f64().unwrap_or(f64::NAN)),
-                Value::String(s) => query.bind(s.clone()),
-                _ => {
+        let exec_sort = match sort {
+            None => None,
+            Some(st) => {
+                let f = indexed_field(&table.schema, &st.field)?;
+                if f.field_type == FieldType::MultiSelect {
                     return Err(DataError::Invalid(
-                        "フィルタ値は文字列または数値で指定してください".into(),
-                    ))
+                        "multi_select はソートに使えません".into(),
+                    ));
                 }
-            };
-        }
-        let rows: Vec<RecordRow> = query
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&self.db)
-            .await
-            .map_err(map_db)?;
+                Some(ListSort {
+                    field: f.name.clone(),
+                    numeric: f.field_type == FieldType::Number,
+                    descending: st.descending,
+                })
+            }
+        };
+        let (rows, shares_truncated) = self
+            .select_visible_rows(
+                ctx,
+                &table,
+                exec_filter.as_ref(),
+                exec_sort.as_ref(),
+                limit,
+                offset,
+            )
+            .await?;
+        let mut items: Vec<DataRecord> = rows.into_iter().map(RecordRow::into_record).collect();
+        self.resolve_derived_fields(ctx, &table, &mut items).await?;
         Ok(ListRecordsPage {
-            items: rows.into_iter().map(RecordRow::into_record).collect(),
+            items,
+            shares_truncated,
         })
+    }
+}
+
+impl DataStore {
+    /// 可視行の件数（Task 9.3: 集計にも行述語を適用する・不可視行は件数に混入しない）。
+    pub async fn count_records(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        filter: Option<&RecordFilter>,
+        trace_id: Option<&str>,
+    ) -> Result<i64, DataError> {
+        self.require(ctx, table_id, Relation::Viewer, "data.record.count", trace_id)
+            .await?;
+        let table = self.fetch_live(ctx, table_id).await?;
+        let exec_filter = match filter {
+            None => None,
+            Some(fl) => {
+                let f = indexed_field(&table.schema, &fl.field)?;
+                Some(match f.field_type {
+                    FieldType::Number => {
+                        let Some(n) = fl.value.as_f64() else {
+                            return Err(DataError::Invalid(format!(
+                                "フィルタ '{}' は数値で指定してください",
+                                fl.field
+                            )));
+                        };
+                        ListFilter::NumberEq {
+                            field: f.name.clone(),
+                            value: n,
+                        }
+                    }
+                    FieldType::MultiSelect => {
+                        let Some(v) = fl.value.as_str() else {
+                            return Err(DataError::Invalid(format!(
+                                "フィルタ '{}' は文字列で指定してください",
+                                fl.field
+                            )));
+                        };
+                        ListFilter::MultiContains {
+                            field: f.name.clone(),
+                            value: v.to_string(),
+                        }
+                    }
+                    _ => {
+                        let Some(v) = fl.value.as_str() else {
+                            return Err(DataError::Invalid(format!(
+                                "フィルタ '{}' は文字列で指定してください",
+                                fl.field
+                            )));
+                        };
+                        ListFilter::TextEq {
+                            field: f.name.clone(),
+                            value: v.to_string(),
+                        }
+                    }
+                })
+            }
+        };
+        self.count_visible_rows(ctx, &table, exec_filter.as_ref())
+            .await
     }
 }
 
