@@ -37,6 +37,7 @@ flowchart LR
   P5 --> P10
   P9 --> P10
   P3 --> P11P["Phase 11-pre<br/>ノート/CSVエディタ<br/>Yjs・DuckDB"]
+  P10A -.->|csvワークフロー公開 11P.9| P11P
   P11P --> P11["Phase 11<br/>Office統合<br/>Collabora"]
   P8 --> P12["Phase 12<br/>SaaSアルファ運用<br/>管理2枚/フィードバック/IaC"]
   P10 --> ALPHA["★プライベートアルファ"]
