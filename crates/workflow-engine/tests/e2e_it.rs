@@ -209,7 +209,12 @@ async fn interactive_and_scheduled_run_complete_with_exactly_once_effects() {
 
     // ⑤ schedule トリガでも同じワークフローが workflow プリンシパルで起動する。
     let sched_run = <WorkflowRunLauncher as workflow_engine::RunLauncher>::launch(
-        &launcher, &tenant, wf_id, "schedule", "trg-1",
+        &launcher,
+        &tenant,
+        wf_id,
+        "schedule",
+        "trg-1",
+        &serde_json::Value::Null,
     )
     .await
     .expect("scheduled run id");
@@ -282,7 +287,12 @@ async fn suspended_workflow_scheduled_launch_creates_no_run() {
     let launcher = WorkflowRunLauncher::new(delegation.clone(), workflows.clone(), runs.clone());
     // schedule 起動は委譲チェックで弾かれ run を作らない。
     let result = <WorkflowRunLauncher as workflow_engine::RunLauncher>::launch(
-        &launcher, &tenant, wf_id, "schedule", "trg-1",
+        &launcher,
+        &tenant,
+        wf_id,
+        "schedule",
+        "trg-1",
+        &serde_json::Value::Null,
     )
     .await;
     assert!(

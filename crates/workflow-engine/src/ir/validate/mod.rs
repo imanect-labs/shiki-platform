@@ -265,17 +265,36 @@ fn v3_vocab(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError
     // イベント source を閉集合＋Stage A available へ照合。
     for t in &ir.triggers {
         match t {
-            crate::ir::Trigger::Event(ev) => match EventSource::parse(&ev.source) {
-                Some(s) if s.available_stage_a() => {}
-                Some(_) => errors.push(ValidationError::new(
-                    "ir.unknown_event_source",
-                    format!("イベント source {} は Stage A では未対応です", ev.source),
-                )),
-                None => errors.push(ValidationError::new(
-                    "ir.unknown_event_source",
-                    format!("未知のイベント source: {}", ev.source),
-                )),
-            },
+            crate::ir::Trigger::Event(ev) => {
+                match EventSource::parse(&ev.source) {
+                    Some(s) if s.available_stage_a() => {}
+                    Some(_) => errors.push(ValidationError::new(
+                        "ir.unknown_event_source",
+                        format!("イベント source {} は Stage A では未対応です", ev.source),
+                    )),
+                    None => errors.push(ValidationError::new(
+                        "ir.unknown_event_source",
+                        format!("未知のイベント source: {}", ev.source),
+                    )),
+                }
+                // scope はフォルダ束縛必須（全購読禁止・ir.md §6.2）。Stage A の形状は
+                // { "folder": "<uuid>" } のみ（マッチャは folder キー以外を fail-closed で不一致にする）。
+                let scope_ok = ev.scope.as_object().is_some_and(|o| {
+                    o.len() == 1
+                        && o.get("folder")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
+                });
+                if !scope_ok {
+                    errors.push(ValidationError::new(
+                        "ir.bad_event_scope",
+                        format!(
+                            "イベントトリガ（source {}）の scope は {{ \"folder\": \"<uuid>\" }} が必要です（全購読は禁止）",
+                            ev.source
+                        ),
+                    ));
+                }
+            }
             // schedule は cron（5 フィールド）＋IANA tz をパース検証する（実行時の発火不能を保存時に弾く）。
             crate::ir::Trigger::Schedule(sc) => {
                 if let Err(e) = crate::scheduler::cron::validate(&sc.cron, &sc.tz) {
@@ -311,6 +330,56 @@ mod tests {
             "edges": []
         });
         assert!(validate(&ir, &catalog()).is_ok());
+    }
+
+    #[test]
+    fn v3_event_trigger_scope_must_be_folder_binding() {
+        // 全購読禁止: scope 欠落/空/非 folder キー/非 uuid は保存時拒否（fail-closed の一段目）。
+        for bad_scope in [
+            json!({}),
+            json!({ "table": "expense" }),
+            json!({ "folder": "not-a-uuid" }),
+            json!({ "folder": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", "extra": 1 }),
+        ] {
+            let ir = json!({
+                "ir_version": 1, "name": "wf",
+                "triggers": [{ "kind": "event", "source": "storage.write", "scope": bad_scope }],
+                "nodes": [], "edges": []
+            });
+            let errs = validate(&ir, &catalog()).unwrap_err();
+            assert!(
+                errs.iter().any(|e| e.code == "ir.bad_event_scope"),
+                "{bad_scope} が拒否されるべき: {errs:?}"
+            );
+        }
+        let ok = json!({
+            "ir_version": 1, "name": "wf",
+            "triggers": [{ "kind": "event", "source": "storage.write",
+                           "scope": { "folder": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" } }],
+            "nodes": [], "edges": []
+        });
+        assert!(validate(&ok, &catalog()).is_ok());
+    }
+
+    #[test]
+    fn v5_from_source_requires_exact_vocabulary() {
+        // `each.item` のような「先頭一致だが実行時に解決不能」な source は保存時に弾く。
+        for bad in ["each.item", "input.foo", "nodes.read", "nodes.read.out"] {
+            let ir = json!({
+                "ir_version": 1, "name": "wf",
+                "declared_scopes": ["storage.read"],
+                "nodes": [
+                    { "id": "read", "type": "storage.read",
+                      "params": { "file": { "$from": bad } } }
+                ],
+                "edges": []
+            });
+            let errs = validate(&ir, &catalog()).unwrap_err();
+            assert!(
+                errs.iter().any(|e| e.code == "ir.bad_ref"),
+                "{bad} が拒否されるべき: {errs:?}"
+            );
+        }
     }
 
     #[test]
