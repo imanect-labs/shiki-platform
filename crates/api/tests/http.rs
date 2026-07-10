@@ -234,6 +234,7 @@ fn base_config() -> AppConfig {
         websearch: api::config::WebSearchConfig::default(),
         secrets: api::config::SecretsConfig::default(),
         workflow: api::workflow_runtime::WorkflowConfig::default(),
+        gateway: api::config::GatewayConfig::default(),
     }
 }
 

@@ -147,6 +147,12 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     let bind = format!("{}:{}", config.server.host, config.server.port);
+    // 公開 API ゲートウェイ（Task 9.6）: enabled のとき第2リスナ用 Router を組む（別オリジン）。
+    let gateway_router = wire_gateway(&config, &db, &jwks, &authz);
+    let gateway_bind = config
+        .gateway
+        .enabled
+        .then(|| format!("{}:{}", config.server.host, config.gateway.port));
     let state = AppState {
         config: Arc::new(config),
         // 生 PgPool は StorageService 等のチョークポイントにのみ渡し、AppState には
@@ -177,6 +183,9 @@ async fn main() -> anyhow::Result<()> {
         rag_admin,
     };
 
+    // 第2リスナ（公開 API ゲートウェイ・別ポート＝別オリジン）を先に spawn する。
+    spawn_gateway_listener(gateway_router, gateway_bind).await?;
+
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .context("bind に失敗")?;
@@ -186,6 +195,62 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("サーバ実行中のエラー")?;
     Ok(())
+}
+
+/// 公開 API ゲートウェイの第2リスナを spawn する（router/bind が揃ったときのみ）。
+///
+/// 別ポート＝別オリジンでミニアプリ向けの面を提供する。graceful shutdown はプロセス終了で
+/// 代替する（alpha・メインリスナの停止で全体が落ちる）。
+async fn spawn_gateway_listener(
+    router: Option<axum::Router>,
+    bind: Option<String>,
+) -> anyhow::Result<()> {
+    if let (Some(router), Some(bind)) = (router, bind) {
+        let listener = tokio::net::TcpListener::bind(&bind)
+            .await
+            .context("gateway bind に失敗")?;
+        tracing::info!(%bind, "gateway listening（第2リスナ）");
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, router).await {
+                tracing::error!(error = %e, "ゲートウェイ・リスナが停止しました");
+            }
+        });
+    }
+    Ok(())
+}
+
+/// 公開 API ゲートウェイ（Task 9.6）の第2リスナ用 `Router` を組む（無効時は `None`）。
+///
+/// 内部 API（cookie セッション）とは別ポート＝別オリジンで待ち受ける Bearer 専用の面。
+/// JWKS は内部 API と同じ [`JwksCache`] を共有し（同一 issuer）、認可は同一 OpenFGA
+/// クライアント（`authz`）を共有する（鍵/認可のチョークポイントを一本化する）。
+fn wire_gateway(
+    config: &AppConfig,
+    db: &sqlx::PgPool,
+    jwks: &Arc<JwksCache>,
+    authz: &Arc<dyn AuthzClient>,
+) -> Option<axum::Router> {
+    if !config.gateway.enabled {
+        return None;
+    }
+    let keys: Arc<dyn app_gateway::KeyResolver> = jwks.clone();
+    let state = app_gateway::GatewayState {
+        installations: app_gateway::AppInstallationStore::new(db.clone()),
+        keys,
+        token_cfg: app_gateway::GatewayTokenConfig {
+            audience: config.gateway.audience.clone(),
+            issuer: config.auth.issuer.clone(),
+        },
+        authz: authz.clone(),
+        audit: storage::audit::AuditRecorder::new(db.clone()),
+        default_tenant: config
+            .auth
+            .tenant_id
+            .clone()
+            .unwrap_or_else(|| "default".to_string()),
+        default_org: "default".to_string(),
+    };
+    Some(app_gateway::build_gateway_router(state))
 }
 
 /// 構造化データ（Task 9.2〜9.10）の 3 ストアを配線する。

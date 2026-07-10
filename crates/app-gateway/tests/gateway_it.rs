@@ -47,10 +47,20 @@ impl AuthzClient for AllowAll {
     ) -> Result<bool, AuthzError> {
         Ok(true)
     }
-    async fn write_tuple(&self, _: &Subject, _: Relation, _: &FgaObject) -> Result<bool, AuthzError> {
+    async fn write_tuple(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: &FgaObject,
+    ) -> Result<bool, AuthzError> {
         Ok(true)
     }
-    async fn delete_tuple(&self, _: &Subject, _: Relation, _: &FgaObject) -> Result<bool, AuthzError> {
+    async fn delete_tuple(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: &FgaObject,
+    ) -> Result<bool, AuthzError> {
         Ok(true)
     }
     async fn read_tuples(
@@ -121,7 +131,9 @@ fn ctx(tenant: &str) -> AuthContext {
 fn state(pool: PgPool, tenant: &str) -> GatewayState {
     GatewayState {
         installations: AppInstallationStore::new(pool.clone()),
-        keys: Arc::new(StaticKey(DecodingKey::from_rsa_pem(PUB_PEM.as_bytes()).unwrap())),
+        keys: Arc::new(StaticKey(
+            DecodingKey::from_rsa_pem(PUB_PEM.as_bytes()).unwrap(),
+        )),
         token_cfg: GatewayTokenConfig {
             audience: AUDIENCE.into(),
             issuer: ISSUER.into(),
@@ -149,7 +161,11 @@ fn token(client_id: &str, scope: &str, tenant: &str) -> String {
     .unwrap()
 }
 
-async fn get(app: &axum::Router, path: &str, bearer: Option<&str>) -> (StatusCode, serde_json::Value) {
+async fn get(
+    app: &axum::Router,
+    path: &str,
+    bearer: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
     let mut req = Request::builder().uri(path);
     if let Some(t) = bearer {
         req = req.header(AUTHORIZATION, format!("Bearer {t}"));

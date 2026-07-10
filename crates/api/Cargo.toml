@@ -25,6 +25,7 @@ path = "src/bin/export-openapi.rs"
 shiki-authz.workspace = true
 shiki-data.workspace = true
 shiki-app-platform.workspace = true
+shiki-app-gateway.workspace = true
 shiki-storage.workspace = true
 shiki-rag.workspace = true
 shiki-chat.workspace = true
@@ -75,7 +76,7 @@ http-body-util = "0.1"
 # shiki-authz / shiki-storage / shiki-rag は lib 名 `authz` / `storage` / `rag` で参照する
 # ため cargo-machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-data", "shiki-app-platform", "shiki-storage", "shiki-rag", "shiki-chat", "shiki-llm-gateway", "shiki-agent-core", "shiki-sandbox-client", "shiki-websearch", "shiki-artifact", "shiki-gui", "shiki-secrets", "shiki-workflow-engine", "shiki-script-runtime"]
+ignored = ["shiki-authz", "shiki-data", "shiki-app-platform", "shiki-app-gateway", "shiki-storage", "shiki-rag", "shiki-chat", "shiki-llm-gateway", "shiki-agent-core", "shiki-sandbox-client", "shiki-websearch", "shiki-artifact", "shiki-gui", "shiki-secrets", "shiki-workflow-engine", "shiki-script-runtime"]
 
 [lints]
 workspace = true

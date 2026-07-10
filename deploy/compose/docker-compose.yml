@@ -26,7 +26,10 @@ services:
       retries: 10
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0
+    # 26.2 で Standard Token Exchange（RFC 8693・V2）が GA（プレビュー flag 不要）。
+    # ミニアプリ B2 の on-behalf-of は client 属性 standard.token.exchange.enabled=true で有効化する
+    # （Task 9.7・crates/app-gateway/src/oauth.rs）。
+    image: quay.io/keycloak/keycloak:26.2
     command: ["start-dev", "--import-realm", "--http-port=8080"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
