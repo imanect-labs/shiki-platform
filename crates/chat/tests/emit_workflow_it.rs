@@ -205,7 +205,9 @@ async fn run_to_done(
     let mut rx = store.event_stream(res.run_id, 0);
     let mut events = Vec::new();
     for _ in 0..500 {
-        let next = tokio::time::timeout(Duration::from_secs(60), rx.next())
+        // Coverage（cargo-llvm-cov）実行時は計装＋並列テストバイナリで大きく遅くなるため
+        // 余裕を持つ（60s では稀に claim 前にタイムアウトする・genui_it と同型の flake 対策）。
+        let next = tokio::time::timeout(Duration::from_secs(180), rx.next())
             .await
             .expect("イベント待ちがタイムアウト");
         let Some(ev) = next else { break };
