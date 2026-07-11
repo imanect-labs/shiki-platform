@@ -194,9 +194,5 @@ fn canonical_json(value: &serde_json::Value) -> String {
 }
 
 fn trust_tier_str(manifest: &MiniAppManifest) -> &'static str {
-    match manifest.trust_tier {
-        crate::manifest::TrustTier::FirstParty => "first_party",
-        crate::manifest::TrustTier::InHouse => "in_house",
-        crate::manifest::TrustTier::Marketplace => "marketplace",
-    }
+    manifest.trust_tier.as_str()
 }

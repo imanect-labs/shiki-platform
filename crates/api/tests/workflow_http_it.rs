@@ -302,6 +302,15 @@ async fn setup() -> Option<Env> {
         tabular::RunnerConfig::new("shiki-tabular-runner", Duration::from_secs(5)),
         tabular::Quotas::default(),
     ));
+    let installs = Arc::new(app_platform::InstallService::new(
+        pool.clone(),
+        app_platform::Registry::new(pool.clone()),
+        Arc::clone(&mini_app_code),
+        Arc::clone(&data_store),
+        Arc::new(AllowAll),
+        None,
+        vec![],
+    ));
     let state = AppState {
         config: Arc::new(config(&db_url)),
         db: api::state::ReadinessProbe::new(pool.clone()),
@@ -334,6 +343,7 @@ async fn setup() -> Option<Env> {
         data_views,
         fsms,
         mini_app_code,
+        installs,
         secrets: None,
         workflows,
         workflow_launcher: Some(launcher),

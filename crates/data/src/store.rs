@@ -81,13 +81,38 @@ impl DataStore {
         input: NewDataTable,
         trace_id: Option<&str>,
     ) -> Result<DataTable, DataError> {
+        self.create_table_bound(ctx, input, None, trace_id).await
+    }
+
+    /// アプリ所有テーブルを作成する（インストール時プロビジョン・Task 9.13b）。
+    ///
+    /// `app_id` を作成時に束縛する（app-gateway data.\* の所有束縛の正）。呼び出しは
+    /// InstallService（同意フロー）に限る想定——スタンドアロン API からは `create_table` を使う。
+    pub async fn create_table_for_app(
+        &self,
+        ctx: &AuthContext,
+        input: NewDataTable,
+        app_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<DataTable, DataError> {
+        self.create_table_bound(ctx, input, Some(app_id), trace_id)
+            .await
+    }
+
+    async fn create_table_bound(
+        &self,
+        ctx: &AuthContext,
+        input: NewDataTable,
+        app_id: Option<Uuid>,
+        trace_id: Option<&str>,
+    ) -> Result<DataTable, DataError> {
         let name = validate_table_name(&input.name)?;
         validate_table_schema(&input.schema)?;
 
         let mut tx = self.db.begin().await.map_err(map_db)?;
         let row: TableRow = sqlx::query_as(
-            "INSERT INTO data_table (tenant_id, org, name, schema, created_by) \
-             VALUES ($1, $2, $3, $4, $5) \
+            "INSERT INTO data_table (tenant_id, org, name, schema, created_by, app_id) \
+             VALUES ($1, $2, $3, $4, $5, $6) \
              RETURNING id, name, app_id, schema, schema_version, created_by, created_at, updated_at",
         )
         .bind(&ctx.tenant_id)
@@ -95,6 +120,7 @@ impl DataStore {
         .bind(name)
         .bind(Json(&input.schema))
         .bind(&ctx.principal.id)
+        .bind(app_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| match &e {

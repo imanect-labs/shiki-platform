@@ -143,6 +143,28 @@ impl Registry {
         Ok(row)
     }
 
+    /// エントリの署名（publish 時添付・first-party インストール検証用）。
+    pub async fn signature_of(
+        &self,
+        ctx: &AuthContext,
+        artifact_kind: &str,
+        name: &str,
+        version: &str,
+    ) -> Result<Option<Vec<u8>>, AppPlatformError> {
+        let row: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
+            "SELECT signature FROM registry_entry \
+             WHERE tenant_id = $1 AND artifact_kind = $2 AND name = $3 AND version = $4",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(artifact_kind)
+        .bind(name)
+        .bind(version)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(row.and_then(|(s,)| s))
+    }
+
     /// エントリを yank する（新規インストールを止める・行は不変で残す）。
     pub async fn yank(&self, ctx: &AuthContext, id: Uuid) -> Result<(), AppPlatformError> {
         let updated =

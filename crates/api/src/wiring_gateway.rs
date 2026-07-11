@@ -138,3 +138,43 @@ pub(crate) async fn spawn_gateway_listener(
     }
     Ok(())
 }
+
+/// 同意インストール（Task 9.13b）の InstallService を組む。
+///
+/// Keycloak admin（provisioner 資格情報＋admin base）が構成済みなら client 登録も配線する。
+/// 未構成（dev/テスト）は登録スキップ（InstallService 側で warn）。
+pub(crate) fn wire_installs(
+    config: &AppConfig,
+    http: &reqwest::Client,
+    db: &sqlx::PgPool,
+    authz: &Arc<dyn AuthzClient>,
+    mini_app_code: &Arc<app_platform::MiniAppCodeStore>,
+    data_store: &Arc<data::DataStore>,
+) -> app_platform::InstallService {
+    let oauth = if let (Some(base), Some((id, secret))) = (
+        config.auth.admin_base(),
+        config.auth.provisioner_credentials(),
+    ) {
+        Some(app_gateway::OAuthClient::new(
+            http.clone(),
+            base,
+            config.auth.token_endpoint(),
+            id.to_string(),
+            secret.to_string(),
+        ))
+    } else {
+        tracing::info!("Keycloak admin 未構成: インストール時の client 登録は無効（dev）");
+        None
+    };
+    // B1 redirect は web シェルの popup callback（PR10 が消費）。web origin 由来。
+    let b1_redirects = vec![config.auth.redirect_uri.clone()];
+    app_platform::InstallService::new(
+        db.clone(),
+        app_platform::Registry::new(db.clone()),
+        Arc::clone(mini_app_code),
+        Arc::clone(data_store),
+        authz.clone(),
+        oauth,
+        b1_redirects,
+    )
+}

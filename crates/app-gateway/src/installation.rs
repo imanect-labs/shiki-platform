@@ -217,6 +217,39 @@ impl AppInstallationStore {
         Ok(row.map(Into::into))
     }
 
+    /// app_id から**有効な**インストールを引く（アンインストール時の client 特定など）。
+    pub async fn resolve_active_by_app(
+        &self,
+        tenant_id: &str,
+        app_id: Uuid,
+    ) -> Result<Option<AppInstallation>, GatewayError> {
+        let sql = format!(
+            "SELECT {COLS} FROM app_installation \
+             WHERE tenant_id = $1 AND app_id = $2 AND status = 'active' LIMIT 1"
+        );
+        let row: Option<Row> = sqlx::query_as(&sql)
+            .bind(tenant_id)
+            .bind(app_id)
+            .fetch_optional(&self.db)
+            .await
+            .map_err(map_db)?;
+        Ok(row.map(Into::into))
+    }
+
+    /// テナント内の全インストール一覧（管理 UI 用・状態問わず新しい順）。
+    pub async fn list(&self, ctx: &AuthContext) -> Result<Vec<AppInstallation>, GatewayError> {
+        let sql = format!(
+            "SELECT {COLS} FROM app_installation \
+             WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 200"
+        );
+        let rows: Vec<Row> = sqlx::query_as(&sql)
+            .bind(&ctx.tenant_id)
+            .fetch_all(&self.db)
+            .await
+            .map_err(map_db)?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     /// インストールを失効させる（アンインストール・即時反映）。
     pub async fn revoke(&self, ctx: &AuthContext, app_id: Uuid) -> Result<(), GatewayError> {
         let updated = sqlx::query(&format!(

@@ -33,6 +33,28 @@ impl DataStore {
         self.list_tables_filtered(ctx, Some(app_id), limit).await
     }
 
+    /// アプリが所有する**全**テーブル ID（FGA 突合なし・Task 9.13b アンインストール撤去用）。
+    ///
+    /// 呼び出し側（InstallService）が mini_app_code アーティファクトの owner を検証してから
+    /// 使うこと。ユーザー可視性でフィルタすると失効済み共有の残骸テーブルを撤去できないため、
+    /// ここは意図的に tenant＋app_id 束縛のみとする。
+    pub async fn table_ids_owned_by_app(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+    ) -> Result<Vec<Uuid>, DataError> {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM data_table \
+             WHERE tenant_id = $1 AND app_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(app_id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     async fn list_tables_filtered(
         &self,
         ctx: &AuthContext,

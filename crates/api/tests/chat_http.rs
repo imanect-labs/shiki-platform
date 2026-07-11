@@ -323,6 +323,15 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         Arc::clone(&artifacts),
         app_platform::Registry::new(pool.clone()),
     ));
+    let installs = Arc::new(app_platform::InstallService::new(
+        pool.clone(),
+        app_platform::Registry::new(pool.clone()),
+        Arc::clone(&mini_app_code),
+        Arc::clone(&data_store),
+        Arc::new(AllowAll),
+        None,
+        vec![],
+    ));
     let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
         pool.clone(),
         workflow_engine::DelegationStore::new(pool.clone(), Arc::new(AllowAll)),
@@ -355,6 +364,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         data_views,
         fsms,
         mini_app_code,
+        installs,
         ui_specs,
         ui_actions,
         skills,

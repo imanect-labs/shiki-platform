@@ -5,16 +5,22 @@
 //! 監査枠に乗る。要求スコープ/ツールは閉じた語彙（[`authz::CapabilityScope`] /
 //! [`agent_core::ToolName`]）へ照合し、実在しない権限名を拒否する（ハルシネーション境界）。
 
+mod install;
 mod manifest;
 mod registry;
+mod sign;
 mod store;
+mod trusted_key;
 mod validate;
 
+pub use install::{InstallRequest, InstallService, Installed};
 pub use manifest::{
     Budget, CronEntry, FrontendBundle, ManifestTable, MiniAppManifest, ServerSpec, TrustTier,
 };
 pub use registry::{NewRegistryEntry, Registry, RegistryEntry};
+pub use sign::{sign_manifest, verify_manifest_signature};
 pub use store::{manifest_digest, MiniAppCodeStore};
+pub use trusted_key::{TrustedKey, TrustedKeyStore};
 pub use validate::validate_manifest;
 
 /// ミニアプリ基盤のエラー。
@@ -35,6 +41,19 @@ pub enum AppPlatformError {
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn map_db(e: sqlx::Error) -> AppPlatformError {
     AppPlatformError::Internal(format!("db: {e}"))
+}
+
+impl From<data::DataError> for AppPlatformError {
+    fn from(e: data::DataError) -> Self {
+        use data::DataError;
+        match e {
+            DataError::NotFound => AppPlatformError::NotFound,
+            DataError::Forbidden => AppPlatformError::Forbidden,
+            DataError::Invalid(m) => AppPlatformError::Invalid(m),
+            DataError::Conflict(m) => AppPlatformError::Conflict(m),
+            DataError::Internal(m) => AppPlatformError::Internal(m),
+        }
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
