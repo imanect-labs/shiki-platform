@@ -276,6 +276,19 @@ async fn setup() -> Option<Env> {
         Arc::clone(&artifacts),
         app_platform::Registry::new(pool.clone()),
     ));
+    let collab_storage = Arc::new(storage::StorageService::new(
+        pool.clone(),
+        Arc::new(NoopStore),
+        Arc::clone(&authz),
+        Duration::from_secs(120),
+        Duration::from_secs(900),
+        1024,
+    ));
+    let collab_hub = Arc::new(collab::CollabHub::new(
+        pool.clone(),
+        Arc::clone(&authz),
+        collab_storage,
+    ));
     let state = AppState {
         config: Arc::new(config(&db_url)),
         db: api::state::ReadinessProbe::new(pool.clone()),
@@ -295,6 +308,7 @@ async fn setup() -> Option<Env> {
             Duration::from_secs(900),
             1024,
         )),
+        collab: collab_hub,
         artifacts: Arc::clone(&artifacts),
         ui_specs: Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator)),
         ui_actions: Arc::new(gui::ActionDispatcher::new(

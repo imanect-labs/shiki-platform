@@ -151,6 +151,12 @@ async fn main() -> anyhow::Result<()> {
         workflow_engine::DelegationStore::new(db.clone(), authz.clone()),
     ));
     let audit = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
+    // ノート共同編集ハブ（Task 11P.1）: authz ゲート＋update log/snapshot 永続化。
+    let collab = Arc::new(collab::CollabHub::new(
+        db.clone(),
+        authz.clone(),
+        storage.clone(),
+    ));
     let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(db.clone()));
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
 
@@ -181,6 +187,7 @@ async fn main() -> anyhow::Result<()> {
         sessions,
         http,
         storage,
+        collab,
         artifacts,
         data: data_store,
         data_views,

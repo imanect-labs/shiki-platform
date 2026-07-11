@@ -299,6 +299,11 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
     let audit_rec = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
     let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(db.clone()));
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
+    let collab_hub = Arc::new(collab::CollabHub::new(
+        db.clone(),
+        Arc::new(AllowAll),
+        Arc::clone(&storage),
+    ));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -307,6 +312,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         sessions,
         http: reqwest::Client::new(),
         storage,
+        collab: collab_hub,
         artifacts,
         data: data_store,
         data_views,
