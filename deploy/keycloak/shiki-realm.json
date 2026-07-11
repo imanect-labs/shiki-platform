@@ -239,7 +239,8 @@
           "manage-users",
           "manage-realm",
           "query-groups",
-          "query-users"
+          "query-users",
+          "manage-clients"
         ]
       }
     }
