@@ -1670,20 +1670,32 @@ async fn resolve_display_names_is_tenant_scoped() {
         .await
         .expect("seed bob");
     // charlie は別テナント（tb）。同 org でも tenant_id で除外されること。
-    dir.upsert_user(&charlie, &tb, &org, &format!("{charlie}@b.example"), "Charlie")
-        .await
-        .expect("seed charlie");
+    dir.upsert_user(
+        &charlie,
+        &tb,
+        &org,
+        &format!("{charlie}@b.example"),
+        "Charlie",
+    )
+    .await
+    .expect("seed charlie");
 
     let ctx = make_ctx_tenant(&org, &ta, &alice);
     let unknown = format!("ai-agent-{s}");
     let names = dir
-        .resolve_display_names(&ctx, &[alice.clone(), bob.clone(), charlie.clone(), unknown.clone()])
+        .resolve_display_names(
+            &ctx,
+            &[alice.clone(), bob.clone(), charlie.clone(), unknown.clone()],
+        )
         .await
         .expect("resolve");
     assert_eq!(names.get(&alice).map(String::as_str), Some("Alice"));
     assert_eq!(names.get(&bob).map(String::as_str), Some("Bob"));
     assert!(!names.contains_key(&charlie), "別テナントは解決しない");
-    assert!(!names.contains_key(&unknown), "未登録 subject（AI 等）は解決しない");
+    assert!(
+        !names.contains_key(&unknown),
+        "未登録 subject（AI 等）は解決しない"
+    );
 
     // 空入力は空マップ（クエリを撃たない）。
     let empty = dir.resolve_display_names(&ctx, &[]).await.expect("empty");
