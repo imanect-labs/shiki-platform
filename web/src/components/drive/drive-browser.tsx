@@ -34,6 +34,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
 import { createNote } from "@/lib/notes-api";
+import { saveNewCsv } from "@/lib/tabular-api";
 import { useContentSearch, type ContentHit } from "@/lib/drive-search";
 import {
   breadcrumb,
@@ -129,6 +130,29 @@ export function DriveBrowser() {
       });
     } finally {
       setCreatingNote(false);
+    }
+  };
+
+  // CSV（グリッドエディタ・Task 11P.8）を作成してエディタへ遷移する。ヘッダのみの空 CSV。
+  const [creatingCsv, setCreatingCsv] = React.useState(false);
+  const createCsvAndOpen = async () => {
+    if (creatingCsv) return;
+    setCreatingCsv(true);
+    try {
+      const saved = await saveNewCsv({
+        parentId: folderId ?? undefined,
+        name: "無題のスプレッドシート",
+        csv: "列1,列2,列3\n,,\n",
+      });
+      router.push(`/csv/${saved.node_id}`);
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "CSV の作成に失敗しました",
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setCreatingCsv(false);
     }
   };
 
@@ -279,6 +303,7 @@ export function DriveBrowser() {
         // その他ファイルはダウンロードで内容を取得する（インラインプレビューは未提供）。
         if (node.kind === "folder") navigateTo(node.id);
         else if (node.name.toLowerCase().endsWith(".md")) router.push(`/notes/${node.id}`);
+        else if (node.name.toLowerCase().endsWith(".csv")) router.push(`/csv/${node.id}`);
         else
           triggerDownload(node.id).catch((e) =>
             toast({
@@ -337,9 +362,12 @@ export function DriveBrowser() {
               <Presentation className="text-orange-500" aria-hidden />
               スライド
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => createDocument("スプレッドシート")}>
+            <DropdownMenuItem
+              onSelect={() => void createCsvAndOpen()}
+              data-testid="new-csv"
+            >
               <FileSpreadsheet className="text-green-600" aria-hidden />
-              スプレッドシート
+              CSV（表）
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
