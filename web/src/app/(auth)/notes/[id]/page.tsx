@@ -13,6 +13,7 @@ import { useParams } from "next/navigation";
 import * as React from "react";
 import * as Y from "yjs";
 
+import { embedSlashItems } from "@/components/notes/embed/embed-slash-items";
 import { MetadataPanel } from "@/components/notes/metadata-panel";
 import { NoteChatPanel } from "@/components/notes/note-chat-panel";
 import { NoteEditor } from "@/components/notes/note-editor";
@@ -153,6 +154,7 @@ export default function NotePage() {
                   provider={session.provider}
                   editable={editable}
                   user={{ id: userId, name: userName }}
+                  extraSlashItems={embedSlashItems}
                 />
               </div>
             </div>
