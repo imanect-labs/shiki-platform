@@ -437,6 +437,10 @@ async fn setup() -> Option<Harness> {
         Arc::clone(&authz_dyn),
         storage::audit::AuditRecorder::new(pool.clone()),
     ));
+    let app_usage = Arc::new(app_platform::AppUsageStore::new(
+        pool.clone(),
+        Arc::clone(&authz_dyn),
+    ));
     let tabular_svc = std::sync::Arc::new(tabular::TabularService::new(
         std::sync::Arc::clone(&storage_svc),
         tabular::RunnerConfig::new("shiki-tabular-runner", std::time::Duration::from_secs(5)),
@@ -459,6 +463,7 @@ async fn setup() -> Option<Harness> {
         mini_app_code,
         installs,
         bundles,
+        app_usage,
         ui_specs,
         ui_actions,
         skills,
