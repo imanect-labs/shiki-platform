@@ -100,6 +100,12 @@ async fn main() -> anyhow::Result<()> {
         &mini_app_code,
         &data_store,
     ));
+    // B1 フロントバンドル保管（Task 9.11・content-addressed・owner のみ put）。
+    let bundles = Arc::new(app_platform::BundleStore::new(
+        Arc::clone(&object_store),
+        authz.clone(),
+        storage::audit::AuditRecorder::new(db.clone()),
+    ));
     // generative UI / skill / ミニアプリ（Phase 6）: 検証は全経路が同一実装を共有する信頼境界。
     let gui_stores = wiring_gui::wire_gui(&db, &artifacts);
 
@@ -215,6 +221,12 @@ async fn main() -> anyhow::Result<()> {
         .gateway
         .enabled
         .then(|| format!("{}:{}", config.server.host, config.gateway.port));
+    // B1 配信（第3リスナ・apps オリジン・Task 9.11）。
+    let b1_router = wiring_gateway::wire_b1(&config, &db, &object_store);
+    let b1_bind = config
+        .gateway
+        .enabled
+        .then(|| format!("{}:{}", config.server.host, config.gateway.b1_port));
     let state = AppState {
         config: Arc::new(config),
         // 生 PgPool は StorageService 等のチョークポイントにのみ渡し、AppState には
@@ -233,6 +245,7 @@ async fn main() -> anyhow::Result<()> {
         fsms,
         mini_app_code,
         installs,
+        bundles,
         ui_specs: gui_stores.ui_specs,
         ui_actions,
         skills: gui_stores.skills,
@@ -254,6 +267,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 第2リスナ（公開 API ゲートウェイ・別ポート＝別オリジン）を先に spawn する。
     wiring_gateway::spawn_gateway_listener(gateway_router, gateway_bind).await?;
+    wiring_gateway::spawn_gateway_listener(b1_router, b1_bind).await?;
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await

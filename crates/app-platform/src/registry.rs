@@ -143,6 +143,29 @@ impl Registry {
         Ok(row)
     }
 
+    /// テナント内のエントリ一覧（新しい順・インストール UI 用）。
+    pub async fn list(
+        &self,
+        ctx: &AuthContext,
+        artifact_kind: &str,
+        limit: i64,
+    ) -> Result<Vec<RegistryEntry>, AppPlatformError> {
+        let rows: Vec<RegistryEntry> = sqlx::query_as(
+            "SELECT id, artifact_kind, name, version, artifact_id, artifact_version, \
+                    manifest_digest, publisher, trust_tier, yanked, created_at \
+             FROM registry_entry \
+             WHERE tenant_id = $1 AND artifact_kind = $2 \
+             ORDER BY created_at DESC LIMIT $3",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(artifact_kind)
+        .bind(limit.clamp(1, 200))
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(rows)
+    }
+
     /// エントリの署名（publish 時添付・first-party インストール検証用）。
     pub async fn signature_of(
         &self,

@@ -332,6 +332,11 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         None,
         vec![],
     ));
+    let bundles = Arc::new(app_platform::BundleStore::new(
+        Arc::new(FakeStore),
+        Arc::new(AllowAll),
+        storage::audit::AuditRecorder::new(pool.clone()),
+    ));
     let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
         pool.clone(),
         workflow_engine::DelegationStore::new(pool.clone(), Arc::new(AllowAll)),
@@ -365,6 +370,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         fsms,
         mini_app_code,
         installs,
+        bundles,
         ui_specs,
         ui_actions,
         skills,

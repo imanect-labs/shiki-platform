@@ -8,6 +8,7 @@
 //! クライアント表現（登録 body）の組み立ては純粋関数（[`client_representation`]）に切り出し
 //! 単体検証する。実登録は Keycloak admin REST（provisioner service account）で行い IT で確認する。
 
+use authz::CapabilityScope;
 use serde::Deserialize;
 
 use crate::GatewayError;
@@ -231,6 +232,10 @@ pub fn client_representation(
             serde_json::json!("true"),
         );
     }
+    // 能力スコープ（CapabilityScope 閉集合）を optional client scope として付与する。
+    // アプリは authorize の `scope=` で必要分だけ要求し、ゲートウェイが granted ∩ token を
+    // 強制する（realm 側の clientScopes 定義は deploy/keycloak/shiki-realm.json）。
+    let capability_scopes: Vec<&str> = CapabilityScope::ALL.iter().map(|s| s.as_str()).collect();
     serde_json::json!({
         "clientId": client_id,
         "name": app_name,
@@ -241,6 +246,10 @@ pub fn client_representation(
         "serviceAccountsEnabled": !public,  // B2 は service account（自動化）
         "directAccessGrantsEnabled": false, // password grant は無効
         "redirectUris": redirect_uris,
+        // ブラウザ（B1）から token エンドポイントを直接叩けるように CORS を許可
+        // （"+" = redirectUris のオリジン）。
+        "webOrigins": ["+"],
+        "optionalClientScopes": capability_scopes,
         "attributes": serde_json::Value::Object(attributes),
         // ゲートウェイ audience を access token の aud に注入する（verify_gateway_token の
         // aud=shiki-gateway 検証を満たす）。これが無いとトークンが aud 不一致で弾かれる。

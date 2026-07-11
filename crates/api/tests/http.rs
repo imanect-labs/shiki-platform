@@ -302,6 +302,11 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         None,
         vec![],
     ));
+    let bundles = Arc::new(app_platform::BundleStore::new(
+        Arc::new(FakeStore),
+        Arc::new(AllowAll),
+        storage::audit::AuditRecorder::new(db.clone()),
+    ));
     let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
         db.clone(),
         workflow_engine::DelegationStore::new(db.clone(), Arc::new(AllowAll)),
@@ -335,6 +340,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         fsms,
         mini_app_code,
         installs,
+        bundles,
         ui_specs,
         ui_actions,
         skills,

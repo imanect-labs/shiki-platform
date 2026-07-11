@@ -311,6 +311,11 @@ async fn setup() -> Option<Env> {
         None,
         vec![],
     ));
+    let bundles = Arc::new(app_platform::BundleStore::new(
+        Arc::new(NoopStore),
+        Arc::new(AllowAll),
+        storage::audit::AuditRecorder::new(pool.clone()),
+    ));
     let state = AppState {
         config: Arc::new(config(&db_url)),
         db: api::state::ReadinessProbe::new(pool.clone()),
@@ -344,6 +349,7 @@ async fn setup() -> Option<Env> {
         fsms,
         mini_app_code,
         installs,
+        bundles,
         secrets: None,
         workflows,
         workflow_launcher: Some(launcher),

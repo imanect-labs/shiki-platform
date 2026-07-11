@@ -186,6 +186,36 @@ pub async fn publish_manifest(
     Ok((StatusCode::CREATED, Json(entry)))
 }
 
+/// バンドル upload 応答（content address）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BundleUploadResponse {
+    /// sha256 hex（マニフェスト frontend.bundle_key / sha256 に設定する値）。
+    pub sha256: String,
+}
+
+/// B1 フロントバンドルをアップロードする（owner・単一 self-contained HTML・content-addressed）。
+#[utoipa::path(
+    post,
+    path = "/apps/manifests/{id}/bundle",
+    params(("id" = Uuid, Path, description = "マニフェスト（artifact）ID")),
+    request_body(content = String, content_type = "text/html"),
+    responses(
+        (status = 200, description = "保存済み（sha256 を返す）", body = BundleUploadResponse),
+        (status = 400, description = "空/サイズ超過"),
+        (status = 403, description = "owner でない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn upload_bundle(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Path(id): Path<Uuid>,
+    body: axum::body::Bytes,
+) -> Result<Json<BundleUploadResponse>, ApiError> {
+    let sha256 = state.bundles.put(&ctx, id, &body).await?;
+    Ok(Json(BundleUploadResponse { sha256 }))
+}
+
 /// ミニアプリ／レジストリ（Task 9.1/9.13a）のルート宣言。
 pub(crate) fn app_platform_route_decls() -> Vec<crate::server::RouteDecl> {
     use crate::server::AccessPolicy::Session;
@@ -200,6 +230,12 @@ pub(crate) fn app_platform_route_decls() -> Vec<crate::server::RouteDecl> {
         }),
         r("/apps/manifests/{id}/publish", &["POST"], Session, || {
             post(publish_manifest)
+        }),
+        r("/apps/manifests/{id}/bundle", &["POST"], Session, || {
+            // 単一 HTML バンドル（≤5MiB）。axum 既定 2MB を上限まで引き上げる。
+            post(upload_bundle).layer(axum::extract::DefaultBodyLimit::max(
+                app_platform::MAX_BUNDLE_BYTES + 1024,
+            ))
         }),
     ]
 }

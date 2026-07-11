@@ -71,6 +71,17 @@ pub struct GatewayConfig {
     /// アプリのマニフェスト宣言との min が実効上限。既定 $5/日。
     #[serde(default = "default_ai_daily_cap")]
     pub ai_daily_cap_usd_micros: i64,
+    /// B1 バンドル配信（第3リスナ・apps オリジン）のポート（Task 9.11）。既定 8091。
+    #[serde(default = "default_b1_port")]
+    pub b1_port: u16,
+    /// ブラウザから見たゲートウェイのオリジン（CSP connect-src）。未設定は
+    /// `http://localhost:<port>`（dev 既定）。
+    #[serde(default)]
+    pub public_origin: Option<String>,
+    /// ホスト（web シェル）のオリジン（CSP frame-ancestors）。未設定は
+    /// `auth.redirect_uri` のオリジンから導出。
+    #[serde(default)]
+    pub web_origin: Option<String>,
 }
 
 fn default_gateway_port() -> u16 {
@@ -85,6 +96,10 @@ fn default_ai_daily_cap() -> i64 {
     5_000_000
 }
 
+fn default_b1_port() -> u16 {
+    8091
+}
+
 impl Default for GatewayConfig {
     fn default() -> Self {
         GatewayConfig {
@@ -92,6 +107,9 @@ impl Default for GatewayConfig {
             port: default_gateway_port(),
             audience: default_gateway_audience(),
             ai_daily_cap_usd_micros: default_ai_daily_cap(),
+            b1_port: default_b1_port(),
+            public_origin: None,
+            web_origin: None,
         }
     }
 }

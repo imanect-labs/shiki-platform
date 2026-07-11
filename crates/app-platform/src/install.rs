@@ -98,6 +98,10 @@ impl InstallService {
         &self.installations
     }
 
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
     /// 同意インストール（本文はモジュール rustdoc の①〜⑦）。
     pub async fn install(
         &self,
@@ -166,6 +170,7 @@ impl InstallService {
                         budget_max_tokens: manifest.budget.max_tokens,
                         agent_tools: manifest.tools.clone(),
                     },
+                    frontend_bundle: manifest.frontend.as_ref().map(|f| f.sha256.as_str()),
                 },
             )
             .await

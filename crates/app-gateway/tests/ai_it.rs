@@ -38,6 +38,7 @@ async fn install(pool: &PgPool, tenant: &str, ai: AiPin) -> (Uuid, String) {
                 client_id_b1: Some(&client),
                 client_id_b2: None,
                 ai,
+                frontend_bundle: None,
             },
         )
         .await
