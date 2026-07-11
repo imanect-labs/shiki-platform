@@ -54,8 +54,8 @@ async fn seed_file_node(pool: &PgPool, org: &str, tenant: &str) -> Uuid {
     .expect("blob 播種");
     let node_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO node (id, org, tenant_id, kind, name, blob_sha256, size_bytes, content_type, created_by)
-         VALUES ($1, $2, $3, 'file', $1::text || '-note.md', $4, 1, 'text/markdown', 'tester')",
+        "INSERT INTO node (id, org, tenant_id, kind, name, blob_sha256, size_bytes, content_type, created_by, updated_by)
+         VALUES ($1, $2, $3, 'file', $1::text || '-note.md', $4, 1, 'text/markdown', 'tester', 'tester')",
     )
     .bind(node_id)
     .bind(org)

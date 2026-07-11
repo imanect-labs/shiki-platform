@@ -477,8 +477,8 @@ async fn storage_end_to_end() {
 
     // --- move（フォルダを直接用意し、closure を検証） ---
     let folder_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO node (org, tenant_id, kind, name, created_by) \
-         VALUES ($1, 'default', 'folder', 'myfolder', $2) RETURNING id",
+        "INSERT INTO node (org, tenant_id, kind, name, created_by, updated_by) \
+         VALUES ($1, 'default', 'folder', 'myfolder', $2, $2) RETURNING id",
     )
     .bind(&org)
     .bind(&uid)
@@ -1160,6 +1160,58 @@ async fn role_sharing_end_to_end() {
     );
 }
 
+/// updated_by が更新の実行主体を追跡する（Task 11P.10）: 別主体（AI 相当）が editor として
+/// 内容更新すると updated_by が切り替わり、created_by は作成者のまま不変。csv.patch・AI 共同編集の
+/// 保存も同じ `update_file_content_internal` 経路＝同じ名義記録になる。
+#[tokio::test]
+async fn updated_by_tracks_editor() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let alice = format!("ituser{}", Uuid::new_v4().simple());
+    seed_org_member(&authz, &org, &alice).await;
+    let actx = make_ctx(&org, &alice);
+
+    let file = upload(&service, &http, &actx, None, "shared.txt", b"v1")
+        .await
+        .expect("upload v1");
+    assert_eq!(file.created_by, alice);
+    assert_eq!(file.updated_by, alice);
+
+    // AI 相当の別主体へ editor を共有し、その主体で内容更新する。
+    let ai = format!("ai-agent-{}", Uuid::new_v4().simple());
+    let ai_ctx = make_ctx(&org, &ai);
+    service
+        .share_node(
+            &actx,
+            file.id,
+            &storage::ShareTarget::User { id: ai.clone() },
+            storage::ShareRole::Editor,
+            None,
+        )
+        .await
+        .expect("share editor to ai");
+    let edited = service
+        .update_file_content_internal(&ai_ctx, file.id, b"edited by ai", "text/plain", None)
+        .await
+        .expect("ai content update");
+    assert_eq!(edited.updated_by, ai, "更新者が AI 主体名義になる");
+    assert_eq!(edited.created_by, alice, "作成者は不変");
+    // 版の author も更新主体（既存 FileVersion.author）。
+    let (history, _) = service
+        .list_versions(&actx, file.id, None, 50, None)
+        .await
+        .expect("list versions");
+    assert_eq!(history[0].author, ai, "最新版の author は AI 主体");
+    assert_eq!(history[1].author, alice, "初版の author は作成者");
+}
+
 #[tokio::test]
 async fn versioning_end_to_end() {
     let Some(ctx) = setup().await else { return };
@@ -1183,6 +1235,9 @@ async fn versioning_end_to_end() {
         .await
         .expect("upload v1");
     assert_eq!(file.version, 1);
+    // 作成時は updated_by = 作成者（Task 11P.10）。
+    assert_eq!(file.updated_by, alice);
+    assert_eq!(file.created_by, alice);
     assert_eq!(node_version_count(&pool, file.id).await, 1);
     assert_eq!(blob_refcount(&pool, &org, &sha_v1).await, 1);
 
@@ -1194,6 +1249,9 @@ async fn versioning_end_to_end() {
         .expect("upload v2");
     assert_eq!(updated.version, 2);
     assert_eq!(updated.blob_sha256.as_deref(), Some(sha_v2.as_str()));
+    // 同一主体の更新なので updated_by は据え置き、created_by は不変（Task 11P.10）。
+    assert_eq!(updated.updated_by, alice);
+    assert_eq!(updated.created_by, alice);
     assert_eq!(node_version_count(&pool, file.id).await, 2);
     // 旧版の blob は減らさない（履歴＝安全網のため download/restore 可能）。
     assert_eq!(blob_refcount(&pool, &org, &sha_v1).await, 1);

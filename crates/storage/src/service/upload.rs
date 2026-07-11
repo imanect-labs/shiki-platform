@@ -231,8 +231,8 @@ impl StorageService {
         content_type: &str,
     ) -> Result<Node, StorageError> {
         let sql = format!(
-            "INSERT INTO node (org, tenant_id, kind, name, parent_id, blob_sha256, size_bytes, content_type, created_by) \
-             VALUES ($1, $2, 'file', $3, $4, $5, $6, $7, $8) RETURNING {NODE_COLS}"
+            "INSERT INTO node (org, tenant_id, kind, name, parent_id, blob_sha256, size_bytes, content_type, created_by, updated_by) \
+             VALUES ($1, $2, 'file', $3, $4, $5, $6, $7, $8, $8) RETURNING {NODE_COLS}"
         );
         let row: NodeRow = sqlx::query_as(&sql)
             .bind(&ctx.org)

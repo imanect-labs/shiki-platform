@@ -186,8 +186,8 @@ async fn disabled_workflow_does_not_fire() {
 /// フォルダノード＋自己 closure（depth 0）を作る。`parent` を渡すと祖先 closure も張る。
 async fn mk_folder(pool: &PgPool, tenant: &str, id: Uuid, parent: Option<Uuid>) {
     sqlx::query(
-        "INSERT INTO node (id, org, tenant_id, kind, name, parent_id, created_by) \
-         VALUES ($1, 'acme', $2, 'folder', $3, $4, 'alice')",
+        "INSERT INTO node (id, org, tenant_id, kind, name, parent_id, created_by, updated_by) \
+         VALUES ($1, 'acme', $2, 'folder', $3, $4, 'alice', 'alice')",
     )
     .bind(id)
     .bind(tenant)

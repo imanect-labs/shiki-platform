@@ -49,7 +49,8 @@ impl StorageService {
         // deleted_at=NULL に戻す。生存兄弟と同名なら部分ユニークが効き Conflict になる。
         // version も進めて書込イベントの冪等キー (node_id, version) を一意に保つ。
         let sql = format!(
-            "UPDATE node SET deleted_at = NULL, updated_at = now(), version = version + 1 \
+            "UPDATE node SET deleted_at = NULL, updated_at = now(), version = version + 1, \
+             updated_by = $4 \
              WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NOT NULL \
              RETURNING {NODE_COLS}"
         );
@@ -57,6 +58,7 @@ impl StorageService {
             .bind(file_id)
             .bind(&ctx.org)
             .bind(&ctx.tenant_id)
+            .bind(&ctx.principal.id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;
@@ -151,7 +153,8 @@ impl StorageService {
         // 同一バッチ（同時削除）の配下を一括復元する。version も進めて書込イベントの冪等キーを保つ。
         // 生存兄弟と同名なら部分ユニークが効き Conflict になる。
         let affected: Vec<(Uuid, i64)> = sqlx::query_as(
-            "UPDATE node SET deleted_at = NULL, updated_at = now(), version = version + 1 \
+            "UPDATE node SET deleted_at = NULL, updated_at = now(), version = version + 1, \
+             updated_by = $5 \
              WHERE org = $1 AND tenant_id = $2 AND deleted_at = $3 \
                AND id IN (SELECT descendant FROM node_closure WHERE tenant_id = $2 AND ancestor = $4) \
              RETURNING id, version",
@@ -160,6 +163,7 @@ impl StorageService {
         .bind(&ctx.tenant_id)
         .bind(batch)
         .bind(folder_id)
+        .bind(&ctx.principal.id)
         .fetch_all(&mut *tx)
         .await?;
         let folder_version = affected
@@ -264,7 +268,8 @@ impl StorageService {
         .await?;
         let sql = format!(
             "UPDATE node \
-             SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = version + 1, updated_at = now() \
+             SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = version + 1, \
+             updated_by = $7, updated_at = now() \
              WHERE id = $4 AND org = $5 AND tenant_id = $6 AND kind = 'file' AND deleted_at IS NULL \
              RETURNING {NODE_COLS}"
         );
@@ -275,6 +280,7 @@ impl StorageService {
             .bind(file_id)
             .bind(&ctx.org)
             .bind(&ctx.tenant_id)
+            .bind(&ctx.principal.id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;

@@ -33,7 +33,8 @@ use crate::{
 
 /// `node` テーブルの選択カラム（NodeRow と一致させる）。
 const NODE_COLS: &str = "id, org, tenant_id, kind, name, parent_id, blob_sha256, size_bytes, \
-                         content_type, version, deleted_at, created_by, created_at, updated_at";
+                         content_type, version, deleted_at, created_by, updated_by, created_at, \
+                         updated_at";
 
 /// 単一チョークポイントの StorageService。
 pub struct StorageService {
@@ -62,6 +63,7 @@ struct NodeRow {
     version: i64,
     deleted_at: Option<DateTime<Utc>>,
     created_by: String,
+    updated_by: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -157,6 +159,7 @@ fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {
         version: row.version,
         deleted_at: row.deleted_at,
         created_by: row.created_by,
+        updated_by: row.updated_by,
         created_at: row.created_at,
         updated_at: row.updated_at,
     })

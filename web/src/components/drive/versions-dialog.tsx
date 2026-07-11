@@ -115,6 +115,7 @@ export function VersionsDialog({
                       </p>
                       <p className="truncate text-xs text-muted-foreground">
                         {formatDateTime(v.created_at)} · {formatBytes(v.size_bytes)}
+                        {v.author ? ` · ${v.author}` : ""}
                       </p>
                     </div>
                     <Button type="button" size="sm" variant="ghost" onClick={() => void download(v.version)}>

@@ -195,7 +195,8 @@ impl StorageService {
 
         // version をインクリメント（メタ変更を後段の write-event/索引が検知できるように）。
         let sql = format!(
-            "UPDATE node SET name = $1, parent_id = $2, version = version + 1, updated_at = now() \
+            "UPDATE node SET name = $1, parent_id = $2, version = version + 1, \
+             updated_by = $6, updated_at = now() \
              WHERE id = $3 AND org = $4 AND tenant_id = $5 AND deleted_at IS NULL RETURNING {NODE_COLS}"
         );
         let row: NodeRow = sqlx::query_as(&sql)
@@ -204,6 +205,7 @@ impl StorageService {
             .bind(node_id)
             .bind(&ctx.org)
             .bind(&ctx.tenant_id)
+            .bind(&ctx.principal.id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;
