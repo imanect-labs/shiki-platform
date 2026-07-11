@@ -35,24 +35,34 @@ impl GatewayFunctionPort {
     }
 
     /// service identity のトークン（B2 client_credentials・event/cron 起動用）。
+    ///
+    /// 能力スコープは client の optional client scope なので、`scopes`（＝インストールの
+    /// granted_scopes）を `scope` パラメタで明示要求する。これが無いと service token に
+    /// data.* / notify.send 等が乗らず、関数内の能力呼び出しが二重ゲートで 403 になる。
     pub(crate) async fn client_credentials_token(
         &self,
         client_id: &str,
         client_secret: &str,
+        scopes: &[String],
     ) -> Result<String, GatewayError> {
         #[derive(serde::Deserialize)]
         struct Tok {
             access_token: String,
         }
+        let scope = scopes.join(" ");
+        let mut form = vec![
+            ("grant_type", "client_credentials"),
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("audience", self.gateway_audience.as_str()),
+        ];
+        if !scope.is_empty() {
+            form.push(("scope", scope.as_str()));
+        }
         let resp = self
             .http
             .post(&self.token_endpoint)
-            .form(&[
-                ("grant_type", "client_credentials"),
-                ("client_id", client_id),
-                ("client_secret", client_secret),
-                ("audience", self.gateway_audience.as_str()),
-            ])
+            .form(&form)
             .send()
             .await
             .map_err(|e| GatewayError::Upstream(format!("service token 取得: {e}")))?;
@@ -110,7 +120,14 @@ impl FunctionPort for GatewayFunctionPort {
         let Some(client_id_b2) = spec.client_id_b2.as_deref() else {
             return Err(GatewayError::Invalid("B2 client が未登録です".into()));
         };
-        let secret = self.resolve_b2_secret(ctx, spec.app_id).await?;
+        // B2 client secret はアプリ所有の資格情報なので、呼出ユーザーではなくアプリの
+        // service identity（miniapp）で解決する（installer 以外のユーザーでも起動できる）。
+        let app_ctx = AuthContext::for_miniapp(
+            ctx.tenant_id.clone(),
+            ctx.org.clone(),
+            &spec.app_id.to_string(),
+        );
+        let secret = self.resolve_b2_secret(&app_ctx, spec.app_id).await?;
         // sub=ユーザーを維持したまま B2 クライアントのトークンへ交換（RFC 8693）。
         let exchanged = app_gateway::exchange_for_user(
             &self.http,

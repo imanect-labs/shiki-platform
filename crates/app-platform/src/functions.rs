@@ -373,6 +373,11 @@ impl GatewayHostCallHandler {
         if !egress_allowed(&self.egress_allowlist, host) {
             return deny(host, "egress allowlist に含まれていません");
         }
+        // SSRF 防御: 許可ホストが内部/メタデータ IP に解決される場合は拒否（PIT-23）。
+        let port = url.port_or_known_default().unwrap_or(443);
+        if let Err(reason) = crate::egress_guard::ensure_public_host(host, port).await {
+            return deny(host, reason);
+        }
         let method = args
             .get("method")
             .and_then(|v| v.as_str())

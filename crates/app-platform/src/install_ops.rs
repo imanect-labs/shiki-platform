@@ -43,36 +43,60 @@ impl InstallService {
             tracing::warn!(%app_id, "secrets 未配線: B2 client secret を保管できません（B2 実行は無効）");
             return;
         };
-        let allowed_hosts = self.token_host.iter().cloned().collect::<Vec<_>>();
-        let result = store
+        let Some(id) = self.upsert_b2_secret(store, ctx, app_id, secret).await else {
+            return;
+        };
+        // 実行時の解決主体はアプリの service identity（miniapp）。ユーザー起動/トリガ双方が
+        // この principal で resolve するため、can_use を miniapp へ付与する（installer 本人
+        // 以外・サービス起動でも解決できるようにする）。
+        let app_ctx =
+            AuthContext::for_miniapp(ctx.tenant_id.clone(), ctx.org.clone(), &app_id.to_string());
+        if let Err(e) = store.grant_can_use(ctx, id, &app_ctx.subject(), None).await {
+            tracing::error!(error = %e, %app_id, "B2 secret の can_use@miniapp 付与に失敗");
+        }
+    }
+
+    /// B2 secret を作成（既存なら rotate）し、その id を返す（失敗は None＋error ログ）。
+    async fn upsert_b2_secret(
+        &self,
+        store: &secrets::SecretStore,
+        ctx: &AuthContext,
+        app_id: Uuid,
+        secret: &str,
+    ) -> Option<Uuid> {
+        let name = b2_secret_name(app_id);
+        let bytes = secret.as_bytes().to_vec();
+        let create_err = match store
             .create(
                 ctx,
                 secrets::NewSecret {
-                    name: b2_secret_name(app_id),
-                    plaintext: secret.as_bytes().to_vec(),
-                    allowed_hosts,
+                    name: name.clone(),
+                    plaintext: bytes.clone(),
+                    allowed_hosts: self.token_host.iter().cloned().collect(),
                 },
                 None,
             )
-            .await;
-        if let Err(e) = result {
-            // 再インストール（既存名）は id を引いて rotate で上書きする。
-            let rotated = async {
-                let name = b2_secret_name(app_id);
-                let metas = store.list_mine(ctx).await?;
-                let Some(meta) = metas.into_iter().find(|m| m.name == name) else {
-                    return Err(secrets::SecretError::NotFound);
-                };
-                store
-                    .rotate(ctx, meta.id, secret.as_bytes().to_vec(), None)
-                    .await
-                    .map(|_| ())
+            .await
+        {
+            Ok(meta) => return Some(meta.id),
+            Err(e) => e,
+        };
+        // 作成失敗＝既存（再インストール）想定。id を引いて rotate で上書きする。
+        let metas = match store.list_mine(ctx).await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!(error = %create_err, list_error = %e, %app_id, "B2 secret 一覧取得に失敗");
+                return None;
             }
-            .await;
-            if let Err(e2) = rotated {
-                tracing::error!(error = %e, rotate_error = %e2, %app_id, "B2 secret の保管に失敗");
-            }
+        };
+        let Some(meta) = metas.into_iter().find(|m| m.name == name) else {
+            tracing::error!(error = %create_err, %app_id, "B2 secret の再解決に失敗");
+            return None;
+        };
+        if let Err(e) = store.rotate(ctx, meta.id, bytes, None).await {
+            tracing::error!(error = %create_err, rotate_error = %e, %app_id, "B2 secret の保管に失敗");
         }
+        Some(meta.id)
     }
 
     /// event 購読と cron スケジュールをインストール時ピンから実体化する。

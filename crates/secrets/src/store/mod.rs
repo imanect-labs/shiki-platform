@@ -19,6 +19,9 @@ use crate::key_provider::{KeyProvider, WrappedKey};
 use crate::store_helpers::{normalize_hosts, to_meta, validate_name};
 use crate::{crypto, map_db, SecretError};
 
+/// can_use 授権（子モジュール＝private フィールドへ到達するため store の子に置く）。
+mod grant;
+
 /// 参照名の上限長。
 pub(crate) const MAX_NAME_LEN: usize = 128;
 /// 平文の上限（防御的・トークン/PEM 想定）。

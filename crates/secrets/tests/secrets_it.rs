@@ -77,6 +77,74 @@ impl AuthzClient for AllowAll {
     }
 }
 
+/// タプルを記録し、can_use = 直接付与 or owner を再現する authz スタブ（grant 検証用）。
+#[derive(Default)]
+struct RecordingAuthz {
+    tuples: std::sync::Mutex<std::collections::HashSet<(String, String, String)>>,
+}
+
+#[async_trait]
+impl AuthzClient for RecordingAuthz {
+    async fn check(
+        &self,
+        s: &Subject,
+        rel: Relation,
+        obj: &FgaObject,
+        _: Consistency,
+    ) -> Result<bool, AuthzError> {
+        let t = self.tuples.lock().unwrap();
+        let has = |r: &str| t.contains(&(s.to_string(), r.to_string(), obj.to_string()));
+        // FGA モデル: can_use は直接付与 or owner。
+        Ok(has(rel.as_str()) || (rel == Relation::CanUse && has("owner")))
+    }
+    async fn write_tuple(
+        &self,
+        s: &Subject,
+        rel: Relation,
+        obj: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        self.tuples.lock().unwrap().insert((
+            s.to_string(),
+            rel.as_str().to_string(),
+            obj.to_string(),
+        ));
+        Ok(true)
+    }
+    async fn delete_tuple(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
+    }
+    async fn read_tuples(
+        &self,
+        _: &FgaObject,
+        _: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        Ok(vec![])
+    }
+    async fn list_objects(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+    async fn delete_object_tuples(&self, _: &FgaObject) -> Result<u32, AuthzError> {
+        Ok(0)
+    }
+    async fn read_subject_objects(
+        &self,
+        _: &Subject,
+        _: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+}
+
 async fn setup() -> Option<PgPool> {
     let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
@@ -327,6 +395,53 @@ async fn resolve_denied_without_can_use() {
         .unwrap();
     assert!(matches!(
         s.resolve(&bob, "shared-token", None, None).await,
+        Err(SecretError::Forbidden)
+    ));
+}
+
+/// grant_can_use: owner が別プリンシパル（miniapp）へ can_use を付与すると解決できる。
+/// アプリ所有の資格情報（B2 client secret）を installer 以外・サービス起動で使うための授権（Task 9.12）。
+#[tokio::test]
+async fn grant_can_use_lets_miniapp_resolve() {
+    let Some(pool) = setup().await else { return };
+    let s = store(pool.clone(), Arc::new(RecordingAuthz::default()));
+    let t = tenant();
+    let owner = ctx(&t, "installer");
+
+    let meta = s
+        .create(
+            &owner,
+            NewSecret {
+                name: "miniapp-b2-x".into(),
+                plaintext: b"confidential-client-secret".to_vec(),
+                allowed_hosts: vec!["kc.example".into()],
+            },
+            None,
+        )
+        .await
+        .expect("create");
+
+    // 付与前: アプリ（miniapp）identity は can_use を持たず解決不可。
+    let app_ctx = AuthContext::for_miniapp(t.clone(), "acme".into(), "app-1");
+    assert!(matches!(
+        s.resolve(&app_ctx, "miniapp-b2-x", None, None).await,
+        Err(SecretError::Forbidden)
+    ));
+
+    // owner が miniapp へ can_use を付与 → 解決できる。
+    s.grant_can_use(&owner, meta.id, &app_ctx.subject(), None)
+        .await
+        .expect("grant");
+    let resolved = s
+        .resolve(&app_ctx, "miniapp-b2-x", None, None)
+        .await
+        .expect("resolve after grant");
+    assert_eq!(resolved.plaintext, b"confidential-client-secret");
+
+    // 無関係なユーザーは付与されず解決不可（越境しない）。
+    let other = ctx(&t, "other-user");
+    assert!(matches!(
+        s.resolve(&other, "miniapp-b2-x", None, None).await,
         Err(SecretError::Forbidden)
     ));
 }

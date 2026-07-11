@@ -89,7 +89,7 @@ type artifact
 type secret
   relations
     define owner: [user]
-    define can_use: [user, role#member, workflow] or owner
+    define can_use: [user, role#member, workflow, miniapp] or owner
 
 # 構造化データのテーブル（Task 9.2・第1層 ReBAC）。
 # 「テーブル＝ReBAC（数が少ない）／行＝クエリ時述語（数が多い・Task 9.3）」の役割分担で、
