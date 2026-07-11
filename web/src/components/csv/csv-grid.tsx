@@ -40,6 +40,27 @@ interface Props {
 /// ページキャッシュ（行 index → セル値配列）。取得中の行は undefined。
 type PageCache = Map<number, Array<Array<string | null>>>;
 
+/// サンプル行から数値列を判定する（非空セルが 1 つ以上あり、その全てが有限数）。
+/// カンマ区切りの桁（1,250,000）も数値扱いにする。全列 VARCHAR ロードのため値で推定する。
+function detectNumericCols(rows: Array<Array<string | null>>, ncols: number): ReadonlySet<number> {
+  const nums = new Set<number>();
+  for (let c = 0; c < ncols; c++) {
+    let sawValue = false;
+    let allNumeric = true;
+    for (const row of rows) {
+      const v = row[c];
+      if (v == null || v === "") continue;
+      sawValue = true;
+      if (!Number.isFinite(Number(v.replace(/,/g, "")))) {
+        allNumeric = false;
+        break;
+      }
+    }
+    if (sawValue && allNumeric) nums.add(c);
+  }
+  return nums;
+}
+
 export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
   { nodeId, columns, totalRows, editable, onDirtyChange },
   ref,
@@ -51,6 +72,8 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
   const patches = React.useRef<PatchOp[]>([]);
   const [version, setVersion] = React.useState(0);
   const bump = React.useCallback(() => setVersion((v) => v + 1), []);
+  // 数値列（右寄せ表示・表計算ソフトの体裁）。最初のページのサンプルから判定する。
+  const [numericCols, setNumericCols] = React.useState<ReadonlySet<number>>(new Set());
 
   const gridColumns: GridColumn[] = React.useMemo(
     () => columns.map((title) => ({ title, id: title, width: 160 })),
@@ -64,6 +87,8 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
       getRows(nodeId, page * PAGE_SIZE)
         .then((res: TableResponse) => {
           cache.current.set(page, res.rows);
+          // 先頭ページのサンプルで数値列を判定（非空セルが全て数値なら右寄せ）。
+          if (page === 0) setNumericCols(detectNumericCols(res.rows, columns.length));
           bump();
         })
         .catch(() => {
@@ -73,7 +98,7 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
         })
         .finally(() => fetching.current.delete(page));
     },
-    [nodeId, bump],
+    [nodeId, bump, columns.length],
   );
 
   const getCellContent = React.useCallback(
@@ -97,11 +122,12 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
         displayData: raw,
         allowOverlay: editable,
         readonly: !editable,
+        contentAlign: numericCols.has(col) ? "right" : undefined,
       };
     },
     // version をデップスに入れて再取得後に再評価させる。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [editable, fetchPage, version],
+    [editable, fetchPage, version, numericCols],
   );
 
   const onCellEdited = React.useCallback(

@@ -157,6 +157,32 @@ impl DirectoryStore {
         Ok(DirectoryPage { items, next_cursor })
     }
 
+    /// ユーザー id 群 → 表示名の一括解決（更新者/作成者/版 author の表出用・Task 11P.10）。
+    ///
+    /// テナント（＋ org）で必ず絞る（別テナントの表示名を漏らさない）。ディレクトリに
+    /// 無い id（AI エージェント主体など）は結果に含めない＝呼び出し側でフォールバックする。
+    /// N+1 を避けるため `= ANY($ids)` の 1 クエリで引く。
+    pub async fn resolve_display_names(
+        &self,
+        ctx: &AuthContext,
+        ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>, StorageError> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT user_id, display_name FROM directory_user \
+             WHERE tenant_id = $1 AND org = $2 AND user_id = ANY($3)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(ids)
+        .fetch_all(&self.db)
+        .await
+        .map_err(StorageError::Db)?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// ユーザーがテナント（＋ org）内に存在するか（Task 9.2 の user 参照整合検証）。
     pub async fn user_exists(
         &self,

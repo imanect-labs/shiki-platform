@@ -93,6 +93,8 @@ fn map_tabular(e: tabular::TabularError) -> PortError {
             PortError::new("quota_exceeded", format!("csv クォータ超過: {m}"), false)
         }
         T::Runner(m) => PortError::unavailable(format!("csv runner: {m}")),
+        // ユーザー SQL の誤り＝入力不正（非 retryable。再試行しても直らない）。
+        T::QueryFailed(m) => PortError::invalid(format!("csv クエリ失敗: {m}")),
         T::Internal(m) => PortError::unavailable(format!("csv internal: {m}")),
     }
 }

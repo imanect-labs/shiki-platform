@@ -52,6 +52,12 @@ fn to_api_error(err: tabular::TabularError) -> ApiError {
             "current_rev": current,
         })),
         TE::Runner(m) => ApiError::Internal(format!("tabular runner: {m}")),
+        // ユーザー SQL の実行失敗は 400 で理由（DuckDB のエラー文）をそのまま返す。
+        // `BadRequest` は body が {status,title} に潰れるため、詳細を保つ構造化 400 を使う。
+        TE::QueryFailed(m) => ApiError::UnprocessableJson(serde_json::json!({
+            "status": 400,
+            "title": m,
+        })),
         TE::Internal(m) => ApiError::Internal(m),
     }
 }

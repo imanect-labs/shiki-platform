@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/use-toast";
+import { useMe } from "@/hooks/use-me";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
 import {
   listVersions,
@@ -37,7 +38,11 @@ export function VersionsDialog({
   /// 版復元で新版が増えたら一覧側を更新する。
   onRestored?: () => void;
 }) {
+  const me = useMe();
   const fileId = node?.id;
+  /// 版作成者の表示名（自分は「自分」、他者は解決名、未解決は subject）。
+  const authorLabel = (v: FileVersionResponse): string =>
+    me.data?.id && v.author === me.data.id ? "自分" : (v.author_name ?? v.author);
   const fetchPage = React.useCallback(
     (cursor?: string) => {
       if (!fileId) return Promise.resolve({ items: [] as FileVersionResponse[], next_cursor: null });
@@ -115,7 +120,7 @@ export function VersionsDialog({
                       </p>
                       <p className="truncate text-xs text-muted-foreground">
                         {formatDateTime(v.created_at)} · {formatBytes(v.size_bytes)}
-                        {v.author ? ` · ${v.author}` : ""}
+                        {v.author ? ` · ${authorLabel(v)}` : ""}
                       </p>
                     </div>
                     <Button type="button" size="sm" variant="ghost" onClick={() => void download(v.version)}>

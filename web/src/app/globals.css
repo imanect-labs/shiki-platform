@@ -383,6 +383,14 @@
   .note-prose {
     @apply px-2 text-[15px] leading-7 text-foreground;
   }
+  /* 本文はカーソルで編集位置が分かるため、フォーカス枠は出さない（Notion/エディタ流儀）。
+     グローバルの :focus-visible リング（ring-2＝box-shadow）も文書全体には不要なので打ち消す。 */
+  .note-prose:focus,
+  .note-prose:focus-visible,
+  .note-prose:focus-within {
+    outline: none;
+    box-shadow: none;
+  }
   .note-prose > * + * {
     margin-top: 0.5rem;
   }

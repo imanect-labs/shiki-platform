@@ -112,7 +112,7 @@ export default function NotePage() {
           <ArrowLeft className="size-4" />
         </Link>
         <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
-          {access.name}
+          {access.name.replace(/\.md$/i, "")}
         </span>
         {!editable && (
           <span

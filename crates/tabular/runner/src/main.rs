@@ -63,12 +63,17 @@ fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
     ))
     .map_err(|e| format!("クォータ設定に失敗: {e}"))?;
 
-    // 唯一のファイル読取: 我々が渡した信頼パスから data テーブルへ（全列 VARCHAR で取り込み、
-    // 型推論の副作用を避ける＝セル編集・往復を安定させる）。
+    // 唯一のファイル読取: 我々が渡した信頼パスから data テーブルへ。
+    // - グリッド（Schema/Rows）: 全列 VARCHAR で取り込み、型推論の副作用を避ける
+    //   ＝セル編集・往復（patch/write）を安定させる（値の正規化で勝手に書き換えない）。
+    // - 分析（Query）: 型推論を有効にする。VARCHAR だと sum/avg 等の集計がそのまま効かず
+    //   利用者に不親切なため、クエリ経路だけ数値/日付を推論する（結果は読み取り専用で忠実性不要）。
+    let all_varchar = !matches!(req.op, RunnerOp::Query { .. });
+    let load_sql = format!(
+        "CREATE TABLE data AS SELECT * FROM read_csv_auto(?, all_varchar={all_varchar}, header=true)"
+    );
     let mut stmt = conn
-        .prepare(
-            "CREATE TABLE data AS SELECT * FROM read_csv_auto(?, all_varchar=true, header=true)",
-        )
+        .prepare(&load_sql)
         .map_err(|e| format!("CSV ロード準備に失敗: {e}"))?;
     stmt.execute([req.csv_path.as_str()])
         .map_err(|e| format!("CSV ロードに失敗: {e}"))?;

@@ -49,6 +49,8 @@ export function MetadataPanel({
 }) {
   const [state, setState] = React.useState<MetaState>(() => readMeta(meta));
   const [tagDraft, setTagDraft] = React.useState("");
+  // プロパティ追加行は既定で畳む（Notion 風・常時ダッシュ枠を出さない）。
+  const [adding, setAdding] = React.useState(false);
   const [kvDraft, setKvDraft] = React.useState<{ key: string; value: string }>({
     key: "",
     value: "",
@@ -85,6 +87,7 @@ export function MetadataPanel({
     if (!key || RESERVED_KEYS.has(key)) return;
     meta.set(key, kvDraft.value);
     setKvDraft({ key: "", value: "" });
+    setAdding(false);
   };
 
   return (
@@ -150,17 +153,18 @@ export function MetadataPanel({
       </div>
 
       {(state.extra.length > 0 || editable) && (
-        <dl className="space-y-1.5 px-2">
+        <dl className="space-y-0.5 px-2">
           {state.extra.map(([key, value]) => (
-            <div key={key} className="flex items-center gap-2 text-sm">
-              <dt className="w-36 shrink-0 truncate text-muted-foreground">{key}</dt>
+            <div key={key} className="group/prop flex items-center gap-2 text-sm">
+              <dt className="w-36 shrink-0 truncate text-[13px] text-muted-foreground">{key}</dt>
               <dd className="min-w-0 flex-1">
                 <Input
                   value={value}
                   onChange={(e) => setKey(key, e.target.value)}
                   disabled={!editable}
                   aria-label={`プロパティ ${key}`}
-                  className="h-8 text-sm"
+                  placeholder="空"
+                  className="h-8 border-transparent bg-transparent px-2 text-sm shadow-none placeholder:text-muted-foreground/50 hover:bg-accent/50 focus-visible:border-input focus-visible:bg-background"
                 />
               </dd>
               {editable && (
@@ -170,47 +174,63 @@ export function MetadataPanel({
                   size="icon"
                   onClick={() => meta.delete(key)}
                   aria-label={`プロパティ ${key} を削除`}
-                  className="size-8 shrink-0 text-muted-foreground"
+                  className="size-8 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/prop:opacity-100 focus-visible:opacity-100"
                 >
                   <X className="size-4" />
                 </Button>
               )}
             </div>
           ))}
-          {editable && (
-            <div className="flex items-center gap-2 pt-1 text-sm">
-              <Input
-                value={kvDraft.key}
-                onChange={(e) => setKvDraft((d) => ({ ...d, key: e.target.value }))}
-                placeholder="プロパティ名"
-                aria-label="プロパティ名"
-                className="h-8 w-36 shrink-0 border-dashed text-sm"
-              />
-              <Input
-                value={kvDraft.value}
-                onChange={(e) => setKvDraft((d) => ({ ...d, value: e.target.value }))}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addKv();
-                  }
-                }}
-                placeholder="値"
-                aria-label="プロパティ値"
-                className="h-8 flex-1 border-dashed text-sm"
-              />
-              <Button
+          {editable &&
+            (adding ? (
+              <div className="flex items-center gap-2 pt-1 text-sm">
+                <Input
+                  value={kvDraft.key}
+                  onChange={(e) => setKvDraft((d) => ({ ...d, key: e.target.value }))}
+                  placeholder="プロパティ名"
+                  aria-label="プロパティ名"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setAdding(false);
+                  }}
+                  className="h-8 w-36 shrink-0 text-sm"
+                />
+                <Input
+                  value={kvDraft.value}
+                  onChange={(e) => setKvDraft((d) => ({ ...d, value: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addKv();
+                    } else if (e.key === "Escape") {
+                      setAdding(false);
+                    }
+                  }}
+                  placeholder="値"
+                  aria-label="プロパティ値"
+                  className="h-8 flex-1 text-sm"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={addKv}
+                  aria-label="プロパティを保存"
+                  className="size-8 shrink-0 text-muted-foreground"
+                >
+                  <Plus className="size-4" />
+                </Button>
+              </div>
+            ) : (
+              <button
                 type="button"
-                variant="ghost"
-                size="icon"
-                onClick={addKv}
-                aria-label="プロパティを追加"
-                className="size-8 shrink-0 text-muted-foreground"
+                onClick={() => setAdding(true)}
+                className="mt-0.5 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
-                <Plus className="size-4" />
-              </Button>
-            </div>
-          )}
+                <Plus className="size-3.5" aria-hidden />
+                プロパティを追加
+              </button>
+            ))}
         </dl>
       )}
     </section>

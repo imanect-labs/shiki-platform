@@ -101,6 +101,42 @@ async fn valid_select_query_works() {
     assert_eq!(resp.rows[0][0], Some("2".to_string()));
 }
 
+/// Query 経路は型推論で読み込むため、数値集計（sum/avg 等）がキャストなしで通る（Task 11P.10 UX）。
+#[tokio::test]
+async fn aggregation_query_infers_numeric_types() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let csv = write_csv("region,amount\ntokyo,100\nosaka,50\ntokyo,30\n");
+    let resp = run(
+        &csv,
+        RunnerOp::Query {
+            sql: "SELECT region, sum(amount) AS total FROM data GROUP BY region ORDER BY total DESC"
+                .into(),
+        },
+    )
+    .await;
+    assert!(resp.ok, "集計クエリは型推論で成功する: {:?}", resp.error);
+    assert_eq!(resp.rows[0][0], Some("tokyo".to_string()));
+    assert_eq!(resp.rows[0][1], Some("130".to_string()), "sum(amount) が数値集計される");
+}
+
+/// グリッド（Rows/Schema）は all_varchar 固定＝編集/往復の忠実性を保つ（先頭ゼロ等を潰さない）。
+#[tokio::test]
+async fn grid_rows_stay_varchar_for_fidelity() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let csv = write_csv("code\n007\n042\n");
+    let rows = run(&csv, RunnerOp::Rows { offset: 0 }).await;
+    assert!(rows.ok);
+    assert_eq!(
+        rows.rows[0][0],
+        Some("007".to_string()),
+        "グリッドは文字列忠実（型推論で 7 に潰れない）"
+    );
+}
+
 /// PIT-39 ①: 任意パス参照（read_csv('/etc/passwd')）が拒否される。
 #[tokio::test]
 async fn rejects_arbitrary_path_read() {
