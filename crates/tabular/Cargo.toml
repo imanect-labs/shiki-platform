@@ -1,0 +1,37 @@
+[package]
+name = "shiki-tabular"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+
+[lib]
+name = "tabular"
+
+# CSV クエリ/パッチの単一チョークポイント（Task 11P.7・design §4.8.2）。
+# **DuckDB は含まない**。実行は非特権別プロセス（`crates/tabular/runner`・workspace 除外）に
+# 隔離し、本 lib はプロトコル・SQL 検証・パッチ・ランナー起動のみを持つ＝敵対的 CSV を
+# api プロセス（本 lib の利用者）に一切食わせない（PIT-39）。
+[dependencies]
+shiki-authz.workspace = true
+shiki-storage.workspace = true
+
+# SQL の読み取り専用検証（単一 SELECT/WITH のみ許可・DDL/DML/ATTACH/PRAGMA 等を拒否）。
+sqlparser.workspace = true
+# CSV 読み書き（パッチ書換）。
+csv.workspace = true
+
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+# CSV を隔離ランナーへ渡すための一時ファイル（api 側の私有 tmp）。
+tempfile = "3"
+
+[dev-dependencies]
+
+[lints]
+workspace = true

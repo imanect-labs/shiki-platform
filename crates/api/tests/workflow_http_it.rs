@@ -183,6 +183,7 @@ fn config(db_url: &str) -> AppConfig {
         secrets: api::config::SecretsConfig::default(),
         workflow: api::workflow_runtime::WorkflowConfig::default(),
         gateway: api::config::GatewayConfig::default(),
+        tabular: api::config::TabularConfig::default(),
     }
 }
 
@@ -289,6 +290,18 @@ async fn setup() -> Option<Env> {
         Arc::clone(&authz),
         collab_storage,
     ));
+    let tabular_svc = Arc::new(tabular::TabularService::new(
+        Arc::new(storage::StorageService::new(
+            pool.clone(),
+            Arc::new(NoopStore),
+            Arc::clone(&authz),
+            Duration::from_secs(120),
+            Duration::from_secs(900),
+            1024,
+        )),
+        tabular::RunnerConfig::new("shiki-tabular-runner", Duration::from_secs(5)),
+        tabular::Quotas::default(),
+    ));
     let state = AppState {
         config: Arc::new(config(&db_url)),
         db: api::state::ReadinessProbe::new(pool.clone()),
@@ -309,6 +322,7 @@ async fn setup() -> Option<Env> {
             1024,
         )),
         collab: collab_hub,
+        tabular: tabular_svc,
         artifacts: Arc::clone(&artifacts),
         ui_specs: Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator)),
         ui_actions: Arc::new(gui::ActionDispatcher::new(

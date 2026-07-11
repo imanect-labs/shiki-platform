@@ -160,6 +160,58 @@ pub struct ChatConfig {
     pub sandbox_backend: Option<sandbox_client::SandboxBackend>,
 }
 
+/// CSV クエリサービス（tabular・Task 11P.7）の設定。
+///
+/// DuckDB 実行は非特権別プロセス（`shiki-tabular-runner`）に隔離する（PIT-39）。
+/// `runner_path` はそのバイナリの実行パス（compose ではイメージ内の絶対パス、ローカルは
+/// `target/debug/shiki-tabular-runner`）。未指定なら PATH 上の同名を使う。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TabularConfig {
+    /// 隔離ランナーの実行パス（未指定は `shiki-tabular-runner`＝PATH 解決）。
+    #[serde(default = "default_runner_path")]
+    pub runner_path: String,
+    /// 1 クエリの時間上限（秒・クォータ）。
+    #[serde(default = "default_tabular_timeout_secs")]
+    pub timeout_secs: u64,
+    /// メモリ上限（MB・クォータ）。
+    #[serde(default = "default_tabular_memory_mb")]
+    pub memory_limit_mb: u32,
+    /// 結果の最大行数（クォータ）。
+    #[serde(default = "default_tabular_max_rows")]
+    pub max_rows: u32,
+    /// グリッド無限スクロールの 1 ページ行数。
+    #[serde(default = "default_tabular_page_size")]
+    pub page_size: u32,
+}
+
+fn default_runner_path() -> String {
+    "shiki-tabular-runner".to_string()
+}
+fn default_tabular_timeout_secs() -> u64 {
+    20
+}
+fn default_tabular_memory_mb() -> u32 {
+    512
+}
+fn default_tabular_max_rows() -> u32 {
+    10_000
+}
+fn default_tabular_page_size() -> u32 {
+    1_000
+}
+
+impl Default for TabularConfig {
+    fn default() -> Self {
+        TabularConfig {
+            runner_path: default_runner_path(),
+            timeout_secs: default_tabular_timeout_secs(),
+            memory_limit_mb: default_tabular_memory_mb(),
+            max_rows: default_tabular_max_rows(),
+            page_size: default_tabular_page_size(),
+        }
+    }
+}
+
 /// web 検索プロバイダ（web_search / web_fetch ツール・Phase 4）。
 ///
 /// クラウド/オンプレの差は backend の値で吸収する（SaaS=Brave / オンプレ=SearXNG /

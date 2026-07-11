@@ -350,6 +350,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         secrets: api::config::SecretsConfig::default(),
         workflow: api::workflow_runtime::WorkflowConfig::default(),
         gateway: api::config::GatewayConfig::default(),
+        tabular: api::config::TabularConfig::default(),
     }
 }
 
@@ -421,6 +422,11 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         Arc::new(AllowAll),
         Arc::clone(&storage),
     ));
+    let tabular_svc = std::sync::Arc::new(tabular::TabularService::new(
+        std::sync::Arc::clone(&storage),
+        tabular::RunnerConfig::new("shiki-tabular-runner", std::time::Duration::from_secs(5)),
+        tabular::Quotas::default(),
+    ));
     AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(db),
@@ -430,6 +436,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         http: reqwest::Client::new(),
         storage,
         collab: collab_hub,
+        tabular: tabular_svc,
         artifacts,
         data: data_store,
         data_views,

@@ -266,6 +266,7 @@ fn base_config(db_url: &str) -> AppConfig {
         secrets: api::config::SecretsConfig::default(),
         workflow: api::workflow_runtime::WorkflowConfig::default(),
         gateway: api::config::GatewayConfig::default(),
+        tabular: api::config::TabularConfig::default(),
     }
 }
 
@@ -422,6 +423,11 @@ async fn setup() -> Option<Harness> {
         config.auth.effective_jwks_uri(),
         Duration::from_secs(300),
     ));
+    let tabular_svc = std::sync::Arc::new(tabular::TabularService::new(
+        std::sync::Arc::clone(&storage_svc),
+        tabular::RunnerConfig::new("shiki-tabular-runner", std::time::Duration::from_secs(5)),
+        tabular::Quotas::default(),
+    ));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool.clone()),
@@ -431,6 +437,7 @@ async fn setup() -> Option<Harness> {
         http: reqwest::Client::new(),
         storage: storage_svc,
         collab: collab_hub,
+        tabular: tabular_svc,
         artifacts,
         data: data_store,
         data_views,

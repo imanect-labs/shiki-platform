@@ -1,0 +1,22 @@
+# 隔離 DuckDB ランナー（Task 11P.7・PIT-39）。**メイン workspace から除外**された独立
+# クレート（root Cargo.toml の exclude 参照）。重い C++（bundled DuckDB）を含むため、
+# メインの --all-features build/clippy/coverage から切り離して別 target でビルドする。
+# ビルド: cargo build --manifest-path crates/tabular/runner/Cargo.toml --release
+[package]
+name = "shiki-tabular-runner"
+edition = "2021"
+rust-version = "1.96"
+license = "UNLICENSED"
+publish = false
+version = "0.0.0"
+
+[[bin]]
+name = "shiki-tabular-runner"
+path = "src/main.rs"
+
+[dependencies]
+# プロトコル型（RunnerRequest/RunnerResponse）を lib と共有する。
+shiki-tabular = { path = ".." }
+# 隔離 DuckDB（bundled C++）。このクレートだけがリンクする。
+duckdb = { version = "1", features = ["bundled"] }
+serde_json = "1"
