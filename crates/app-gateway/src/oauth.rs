@@ -106,6 +106,9 @@ impl OAuthClient {
         redirect_uris: &[String],
     ) -> Result<RegisteredClient, GatewayError> {
         let token = self.admin_token().await?;
+        // 能力スコープの realm client-scope を冪等作成する（optionalClientScopes 名前解決の前提）。
+        // realm JSON のビルトインを汚さないため動的に用意する（Task 9.11/9.12）。
+        self.ensure_capability_scopes(&token).await?;
         let body = client_representation(kind, client_id, app_name, redirect_uris);
         let resp = self
             .http
@@ -129,6 +132,38 @@ impl OAuthClient {
             client_id: client_id.to_string(),
             client_secret,
         })
+    }
+
+    /// 能力スコープを realm の client-scope として冪等作成する（既存 409 は許容）。
+    ///
+    /// `include.in.token.scope=true` で、要求された scope がアクセストークンの `scope`
+    /// クレームに載る（二重ゲート③ granted ∩ token の token 側の素）。
+    async fn ensure_capability_scopes(&self, token: &str) -> Result<(), GatewayError> {
+        for cap in CapabilityScope::ALL {
+            let body = serde_json::json!({
+                "name": cap.as_str(),
+                "protocol": "openid-connect",
+                "attributes": {
+                    "include.in.token.scope": "true",
+                    "display.on.consent.screen": "false",
+                },
+            });
+            let resp = self
+                .http
+                .post(format!("{}/client-scopes", self.admin_base))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| GatewayError::Upstream(format!("client-scope 作成: {e}")))?;
+            let status = resp.status();
+            if !status.is_success() && status.as_u16() != 409 {
+                return Err(GatewayError::Upstream(format!(
+                    "client-scope 作成応答: {status}"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// クライアントの有効/無効を切り替える（アンインストール失効・補償に使う）。
