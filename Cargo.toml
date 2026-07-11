@@ -12,6 +12,9 @@ exclude = [
     "vendor/secure-exec",
     "crates/script-runtime/guest",
     "crates/script-runtime/fuzz",
+    # 隔離 DuckDB ランナー（Task 11P.7）。重い C++（bundled DuckDB）を含み、メイン
+    # workspace の --all-features build/clippy から切り離す（別 target・別ビルド）。
+    "crates/tabular/runner",
 ]
 
 [workspace.package]
@@ -119,10 +122,18 @@ proptest = "1"
 yrs = "0.27"
 # ノートの md シリアライズ往復（Task 11P.2・CommonMark+GFM テーブル/タスクリスト）
 pulldown-cmark = { version = "0.13", default-features = false }
+# CSV クエリサービス（Task 11P.7）: SQL RO 検証（sqlparser）。DuckDB（重い C++）は
+# 隔離ランナー専用クレート `crates/tabular/runner`（workspace 除外）だけが依存する
+# ＝メイン workspace の --all-features clippy/build に DuckDB を混ぜない（CI 高速化・
+# api プロセスに DuckDB をリンクしない）。
+sqlparser = "0.62"
+# CSV パッチ書換（ストリーム読み書き）。
+csv = "1"
 
 # 内部クレート
 shiki-authz = { path = "crates/authz" }
 shiki-collab = { path = "crates/collab" }
+shiki-tabular = { path = "crates/tabular" }
 shiki-data = { path = "crates/data" }
 shiki-app-platform = { path = "crates/app-platform" }
 shiki-app-gateway = { path = "crates/app-gateway" }

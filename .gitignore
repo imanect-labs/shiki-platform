@@ -28,3 +28,4 @@ __pycache__/
 
 # CI がビルド済み shiki-server バイナリを配置する場所（docker-compose.ci.yml が焼く）
 deploy/compose/prebuilt/
+crates/tabular/runner/target/

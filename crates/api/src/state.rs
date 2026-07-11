@@ -45,6 +45,8 @@ pub struct AppState {
     pub storage: Arc<StorageService>,
     /// ノート共同編集ハブ（Task 11P.1・Yjs update log/snapshot と authz ゲート）。
     pub collab: Arc<collab::CollabHub>,
+    /// CSV クエリ/パッチの単一チョークポイント（Task 11P.7・隔離 DuckDB ランナー経由）。
+    pub tabular: Arc<tabular::TabularService>,
     /// アーティファクト共通枠（Task 6.1・バージョン付き共有本文の単一チョークポイント）。
     pub artifacts: Arc<artifact::ArtifactStore>,
     /// 構造化データサービス（Task 9.2/9.5・テーブル ReBAC＋サーバ検証＋リビジョンの

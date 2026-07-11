@@ -120,6 +120,41 @@ jobs:
         with:
           command: check
 
+  # CSV クエリサービスの隔離 DuckDB ランナー（Task 11P.7・PIT-39）。DuckDB（bundled C++）を
+  # 含む workspace 除外クレートを専用ジョブでビルドし、外部パス/URL 参照・DML/DDL・
+  # クォータ超過の adversarial テストを走らせる（メイン rust ジョブに DuckDB を混ぜない）。
+  tabular-runner:
+    name: Tabular runner (隔離 DuckDB・PIT-39 adversarial)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: free disk space (不要プリインストール削除)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      # 除外クレート（別 target）とメイン target を別々にキャッシュする。
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            crates/tabular/runner
+      - name: fmt / clippy (runner)
+        run: |
+          cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check
+          cargo clippy --manifest-path crates/tabular/runner/Cargo.toml --release -- -D warnings
+      # 隔離ランナー（DuckDB bundled）を release ビルドする。
+      - name: build isolated runner (bundled DuckDB)
+        run: cargo build --manifest-path crates/tabular/runner/Cargo.toml --release
+      # adversarial テスト（PIT-39 の 4 系統）を実行する。ランナーは SHIKI_TABULAR_RUNNER で指す。
+      - name: adversarial tests (外部参照/DML/DDL/クォータ超過の拒否)
+        env:
+          SHIKI_TABULAR_RUNNER: crates/tabular/runner/target/release/shiki-tabular-runner
+        run: cargo test -p shiki-tabular --test runner_adversarial_it
+
   python:
     name: Python (ingestion-worker ruff / pytest)
     runs-on: ubuntu-latest

@@ -122,6 +122,19 @@ async fn main() -> anyhow::Result<()> {
         authz.clone(),
         storage.clone(),
     ));
+    // CSV クエリ/パッチサービス（Task 11P.7）: 隔離 DuckDB ランナーへ委譲するチョークポイント。
+    let tabular = Arc::new(tabular::TabularService::new(
+        storage.clone(),
+        tabular::RunnerConfig::new(
+            config.tabular.runner_path.clone(),
+            std::time::Duration::from_secs(config.tabular.timeout_secs),
+        ),
+        tabular::Quotas {
+            memory_limit_mb: config.tabular.memory_limit_mb,
+            max_rows: config.tabular.max_rows,
+            page_size: config.tabular.page_size,
+        },
+    ));
 
     // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
     // workflows/secrets は AI ワークフロー編集（emit_workflow・Task 10.13）のカタログ源。
@@ -192,6 +205,7 @@ async fn main() -> anyhow::Result<()> {
         http,
         storage,
         collab,
+        tabular,
         artifacts,
         data: data_store,
         data_views,

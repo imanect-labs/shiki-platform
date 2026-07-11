@@ -36,6 +36,9 @@ pub struct AppConfig {
     /// web 検索（web_search / web_fetch ツール・Phase 4）。既定は無効。
     #[serde(default)]
     pub websearch: WebSearchConfig,
+    /// CSV クエリサービス（tabular・Task 11P.7）。既定値で有効（隔離 DuckDB ランナー）。
+    #[serde(default)]
+    pub tabular: TabularConfig,
     /// シークレット管理（Task 10.9）。既定は無効（マスターキー未設定なら /secrets は 503）。
     #[serde(default)]
     pub secrets: SecretsConfig,
@@ -118,8 +121,8 @@ mod tests;
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
 pub use backends::{
     AuthzConfig, ChatConfig, LangfuseConfig, LlmBackend, LlmConfig, LlmModelEntry, LogFormat,
-    ObjectStoreBackend, StorageConfig, TelemetryConfig, VectorConfig, VectorStoreBackend,
-    WebSearchBackend, WebSearchConfig,
+    ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig, VectorConfig,
+    VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
 
 #[derive(Debug, thiserror::Error)]
