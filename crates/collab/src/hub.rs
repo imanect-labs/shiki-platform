@@ -130,6 +130,15 @@ impl CollabHub {
     /// 認可済みであること（[`Self::authorize`]）を呼び出し側の責務とする。
     /// ノート（.md）は初回ロード時に外部書込のインポート判定を行い（Task 11P.2 の
     /// 単方向規約）、デバウンス保存タスクを併走させる。
+    ///
+    /// 並行性の注記（既知のスケーラビリティ制約）: 初回ロード（`load_or_init` の DB I/O ＋
+    /// ノートの `import_if_stale`）を `docs` グローバルロック下で行うため、ある文書の初回
+    /// ロード中は無関係な文書の join も直列化する。これは**意図的に correctness を優先**した
+    /// 選択である: import_if_stale は snapshot 差し替え・version 記録という「1 回だけ・共有前に」
+    /// 実行すべき DB 書込を含み、ロード外出し（load-outside-lock）にすると初回同時 join で
+    /// 二重インポート競合を生む。高並行下のレイテンシが問題化したら「per-doc ロードガード
+    /// （プレースホルダ挿入でグローバルロックを解放しつつ同一文書のロードは 1 回に絞る）」へ
+    /// 差し替える（follow-up）。現フェーズの想定負荷では許容する。
     pub async fn join(&self, ctx: &AuthContext, node: &Node) -> Result<Arc<LiveDoc>, CollabError> {
         let node_id = node.id;
         let mut docs = self.docs.lock().await;
@@ -150,6 +159,7 @@ impl CollabHub {
                     node_id,
                     node.version,
                     persisted.saved_node_version,
+                    persisted.next_seq - 1,
                 )
                 .await?;
                 Some(note::saver::spawn(

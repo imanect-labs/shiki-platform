@@ -495,6 +495,22 @@ async fn connect_ws(
     Ok(ws)
 }
 
+/// サーバの初期ハンドシェイク（SyncStep1）を 1 通受け取り、サーバ側セッションの
+/// `doc.subscribe()` 完了を待つ。サーバは購読の**後**に SyncStep1 を送るため、これを
+/// 受け取れた時点で以降の broadcast を取りこぼさない。connect 直後に編集を送ると相手
+/// セッションの購読が間に合わず最初の update を落とす競合を防ぐ。
+async fn await_server_ready(ws: &mut Ws) {
+    let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("サーバ初期ハンドシェイク待ちタイムアウト")
+        .expect("接続が閉じた")
+        .expect("ws 受信エラー");
+    assert!(
+        matches!(msg, TgMessage::Binary(_)),
+        "初期メッセージは binary（SyncStep1）"
+    );
+}
+
 /// サーバへ yrs sync メッセージを送る。
 async fn send_msg(ws: &mut Ws, msg: yrs::sync::Message) {
     ws.send(TgMessage::Binary(msg.encode_v1().into()))
@@ -579,6 +595,9 @@ async fn two_clients_converge_and_reconnect_syncs() {
 
     let mut ws1 = connect_ws(&h, "sid-alice").await.unwrap();
     let mut ws2 = connect_ws(&h, "sid-alice").await.unwrap();
+    // 双方のサーバセッションが購読を確立するまで待つ（初回 update の取りこぼし防止）。
+    await_server_ready(&mut ws1).await;
+    await_server_ready(&mut ws2).await;
     let doc1 = Doc::new();
     let doc2 = Doc::new();
 

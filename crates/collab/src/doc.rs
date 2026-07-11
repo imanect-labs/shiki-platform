@@ -4,7 +4,7 @@
 //! 「適用 → 追記（DB） → ブロードキャスト」。DB 追記前に配信しないことで、
 //! クラッシュ時に「他クライアントは見たが永続化されていない update」を作らない。
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
@@ -39,6 +39,11 @@ pub struct LiveDoc {
     conns: AtomicUsize,
     /// 最後の圧縮以降に追記した update 件数（[`COMPACT_EVERY`] で圧縮発火）。
     appended_since_compact: AtomicUsize,
+    /// この LiveDoc が最後に永続化した update の seq（アンロード最終圧縮の削除上限に使う）。
+    /// これを固定値で `compact` に渡すことで、アンロード中に別 LiveDoc の再 join/append が
+    /// 進んでも、その新 seq を snapshot 外で削除して失う事故を防ぐ（`compact_latest` の
+    /// `next_seq - 1` 再計算が起こしていたデータロスの修正）。
+    last_persisted_seq: AtomicI64,
     /// ノート保存（Task 11P.2）用の未保存状態。md 以外のドキュメントでは使われない。
     note: NoteDirty,
 }
@@ -75,6 +80,8 @@ impl LiveDoc {
             tx,
             conns: AtomicUsize::new(0),
             appended_since_compact: AtomicUsize::new(persisted.updates.len()),
+            // ロード時点の最終 seq（next_seq は「次に発番する」ので -1 が最後の実在 seq）。
+            last_persisted_seq: AtomicI64::new(persisted.next_seq - 1),
             note: NoteDirty::default(),
         })
     }
@@ -168,7 +175,17 @@ impl LiveDoc {
 
     /// update を「適用 → 追記 → （しきい値で）圧縮」まで済ませる。
     ///
-    /// 圧縮は best-effort（失敗しても適用済み update は log にあり整合は崩れない）。
+    /// 順序と失敗時の扱い（重要）:
+    /// - 適用（メモリ）→ DB 追記 → 圧縮。呼び出し側（session）はこの成功後に限り他接続へ
+    ///   broadcast するため、「他クライアントは見たが未永続化」の update は作らない。
+    /// - `append_update` 失敗時はメモリには適用済み・DB には未記録の乖離が一過性に生じるが、
+    ///   本メソッドは `Err` を返し、session はそれを受けて**当該接続を切断**する
+    ///   （[`crate::session`] の掃除経路）。切断＝最終接続なら [`Self::compact_now`] が
+    ///   その時点の全メモリ状態（適用済み update を含む）を snapshot として永続化するため、
+    ///   通常運用ではロスしない。残る唯一の窓は「圧縮前のプロセスクラッシュ」で、これは
+    ///   best-effort として許容する（クライアントは再接続の sync step1/2 で回復）。
+    /// - 圧縮自体も best-effort（失敗しても update は log にあり整合は崩れない）。
+    ///
     /// 併せてノート保存のための dirty マークと実行主体を記録する。
     pub async fn apply_and_persist(
         &self,
@@ -179,6 +196,7 @@ impl LiveDoc {
         self.apply_update_bytes(payload)?;
         let author = ctx.principal.id.as_str();
         let seq = store.append_update(self.node_id, payload, author).await?;
+        self.last_persisted_seq.store(seq, Ordering::SeqCst);
         self.note_mark_dirty(ctx);
         let appended = self.appended_since_compact.fetch_add(1, Ordering::SeqCst) + 1;
         if appended as i64 >= COMPACT_EVERY {
@@ -197,8 +215,12 @@ impl LiveDoc {
         if self.appended_since_compact.swap(0, Ordering::SeqCst) == 0 {
             return Ok(());
         }
+        // 削除上限はこの LiveDoc が最後に永続化した seq に固定する（DB の next_seq を
+        // その場で読み直さない）。アンロード中に別 LiveDoc が再 join して新しい seq を
+        // append しても、その新 update を snapshot 外で消して失う事故を防ぐ。
+        let upto_seq = self.last_persisted_seq.load(Ordering::SeqCst);
         let snapshot = self.full_state()?;
-        store.compact_latest(self.node_id, &snapshot).await
+        store.compact(self.node_id, &snapshot, upto_seq).await
     }
 
     // --- ノート保存トラッキング（Task 11P.2）---
@@ -289,6 +311,7 @@ impl LiveDoc {
     ) -> Result<(), CollabError> {
         let author = format!("ai:{}", ctx.principal.id);
         let seq = store.append_update(self.node_id, update, &author).await?;
+        self.last_persisted_seq.store(seq, Ordering::SeqCst);
         self.note_mark_dirty(ctx);
         let appended = self.appended_since_compact.fetch_add(1, Ordering::SeqCst) + 1;
         if appended as i64 >= COMPACT_EVERY {
