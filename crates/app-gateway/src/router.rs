@@ -46,6 +46,8 @@ pub struct CapabilityDeps {
     pub agent: Arc<dyn crate::ports::AgentPort>,
     /// AI 日次予算の管理者キャップ（マイクロ USD・アプリ宣言との min が実効上限）。
     pub ai_daily_cap_usd_micros: i64,
+    /// B2 関数起動の委譲先（Task 9.12・実装は api 配線）。
+    pub functions: Arc<dyn crate::ports::FunctionPort>,
 }
 
 /// ゲートウェイの共有状態（第2リスナの `Router` へ載せる）。

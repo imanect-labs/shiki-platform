@@ -33,7 +33,8 @@ pub use installation::{
 pub use notification::{AppNotification, NotificationStore};
 pub use oauth::{client_representation, ClientKind, OAuthClient, RegisteredClient};
 pub use ports::{
-    AgentInvokeSpec, AgentPort, AiEvent, AiEventStream, NoAgent, NoRag, RagHit, RagPort,
+    AgentInvokeSpec, AgentPort, AiEvent, AiEventStream, FunctionInvokeSpec, FunctionPort, NoAgent,
+    NoFunctions, NoRag, RagHit, RagPort,
 };
 pub use router::{build_gateway_router, CapabilityDeps, GatewayCtx, GatewayState};
 pub use scope_map::{required_scope_for, GatewayRoute, RouteScope};

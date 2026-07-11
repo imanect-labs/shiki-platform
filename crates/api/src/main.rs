@@ -16,6 +16,8 @@ use storage::{DirectoryStore, TenantStore};
 
 mod dev_seed;
 mod gateway_ai;
+mod gateway_functions;
+mod miniapp_triggers;
 mod wiring;
 mod wiring_gateway;
 mod wiring_gui;
@@ -91,15 +93,6 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&artifacts),
         app_platform::Registry::new(db.clone()),
     ));
-    // 同意インストール（Task 9.13b）: Keycloak admin（provisioner）があれば client 登録も行う。
-    let installs = Arc::new(wiring_gateway::wire_installs(
-        &config,
-        &http,
-        &db,
-        &authz,
-        &mini_app_code,
-        &data_store,
-    ));
     // B1 フロントバンドル保管（Task 9.11・content-addressed・owner のみ put）。
     let bundles = Arc::new(app_platform::BundleStore::new(
         Arc::clone(&object_store),
@@ -127,6 +120,17 @@ async fn main() -> anyhow::Result<()> {
         }
         None => None,
     };
+
+    // 同意インストール（Task 9.13b）: Keycloak admin（provisioner）があれば client 登録も行う。
+    let installs = Arc::new(wiring_gateway::wire_installs(
+        &config,
+        &http,
+        &db,
+        &authz,
+        &mini_app_code,
+        &data_store,
+        secrets.as_ref(),
+    ));
 
     // チャット（Phase 3）: enabled のとき llm-gateway＋生成ワーカーを配線し、API 用ストアを返す。
     // ノート共同編集ハブ（Task 11P.1）: authz ゲート＋update log/snapshot 永続化。
@@ -204,29 +208,22 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     let bind = format!("{}:{}", config.server.host, config.server.port);
-    // 公開 API ゲートウェイ（Task 9.6/9.8）: enabled のとき第2リスナ用 Router を組む（別オリジン）。
-    // 能力アダプタの委譲先は内部 API と同一インスタンス（単一チョークポイント）。
-    let gateway_router = wiring_gateway::wire_gateway(
-        &config,
-        &http,
-        &db,
-        &jwks,
-        &authz,
-        &storage,
-        &data_store,
-        &fsms,
-        search.as_ref(),
-    );
-    let gateway_bind = config
-        .gateway
-        .enabled
-        .then(|| format!("{}:{}", config.server.host, config.gateway.port));
-    // B1 配信（第3リスナ・apps オリジン・Task 9.11）。
-    let b1_router = wiring_gateway::wire_b1(&config, &db, &object_store);
-    let b1_bind = config
-        .gateway
-        .enabled
-        .then(|| format!("{}:{}", config.server.host, config.gateway.b1_port));
+    // ミニアプリの第2/第3リスナ（ゲートウェイ・B1 配信）と B2 トリガ（event/cron）を
+    // 一括で組んで spawn する（Task 9.6/9.8/9.9/9.11/9.12・enabled 時のみ）。
+    wiring_gateway::spawn_miniapp_listeners(wiring_gateway::MiniappListenerDeps {
+        config: &config,
+        http: &http,
+        db: &db,
+        jwks: &jwks,
+        authz: &authz,
+        storage: &storage,
+        data: &data_store,
+        fsms: &fsms,
+        search: search.as_ref(),
+        object_store: &object_store,
+        secrets: secrets.as_ref(),
+    })
+    .await?;
     let state = AppState {
         config: Arc::new(config),
         // 生 PgPool は StorageService 等のチョークポイントにのみ渡し、AppState には
@@ -264,10 +261,6 @@ async fn main() -> anyhow::Result<()> {
         chat,
         rag_admin,
     };
-
-    // 第2リスナ（公開 API ゲートウェイ・別ポート＝別オリジン）を先に spawn する。
-    wiring_gateway::spawn_gateway_listener(gateway_router, gateway_bind).await?;
-    wiring_gateway::spawn_gateway_listener(b1_router, b1_bind).await?;
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await

@@ -35,6 +35,8 @@ async fn dual_gate_enforces_token_installation_and_scope() {
                 client_id_b2: None,
                 ai: AiPin::default(),
                 frontend_bundle: None,
+                server_bundle: None,
+                server_spec: None,
             },
         )
         .await
@@ -94,6 +96,8 @@ async fn broad_token_without_grant_is_denied() {
                 client_id_b2: None,
                 ai: AiPin::default(),
                 frontend_bundle: None,
+                server_bundle: None,
+                server_spec: None,
             },
         )
         .await
@@ -130,6 +134,8 @@ async fn multi_tenant_rejects_missing_tenant_claim() {
                 client_id_b2: None,
                 ai: AiPin::default(),
                 frontend_bundle: None,
+                server_bundle: None,
+                server_spec: None,
             },
         )
         .await

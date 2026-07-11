@@ -75,6 +75,10 @@ pub struct AppInstallation {
     pub ai: AiPin,
     /// B1 フロントバンドルの同意時ピン（sha256 hex・Task 9.11・None=フロントなし）。
     pub frontend_bundle: Option<String>,
+    /// B2 サーバコードバンドルの同意時ピン（sha256 hex・Task 9.12・None=サーバなし）。
+    pub server_bundle: Option<String>,
+    /// ServerSpec 全体の同意時ピン（JSON・app-platform が解釈する。gateway は不透明に運ぶ）。
+    pub server_spec: Option<serde_json::Value>,
 }
 
 /// インストール作成の入力（PR9 の同意フロー・本 PR はデブ用 fixture）。
@@ -90,6 +94,10 @@ pub struct NewAppInstallation<'a> {
     pub ai: AiPin,
     /// B1 フロントバンドルの同意時ピン（Task 9.11）。
     pub frontend_bundle: Option<&'a str>,
+    /// B2 サーバコードバンドルの同意時ピン（Task 9.12）。
+    pub server_bundle: Option<&'a str>,
+    /// ServerSpec 全体の同意時ピン（Task 9.12）。
+    pub server_spec: Option<serde_json::Value>,
 }
 
 /// sqlx 実行時マップ用の生行（`FromRow`）。status は文字列で受けて enum へ写す。
@@ -110,6 +118,8 @@ struct Row {
     budget_max_tokens: Option<i64>,
     agent_tools: Vec<String>,
     frontend_bundle: Option<String>,
+    server_bundle: Option<String>,
+    server_spec: Option<serde_json::Value>,
 }
 
 impl From<Row> for AppInstallation {
@@ -132,6 +142,8 @@ impl From<Row> for AppInstallation {
                 agent_tools: r.agent_tools,
             },
             frontend_bundle: r.frontend_bundle,
+            server_bundle: r.server_bundle,
+            server_spec: r.server_spec,
         }
     }
 }
@@ -140,7 +152,7 @@ impl From<Row> for AppInstallation {
 const COLS: &str = "id, app_id, app_name, installed_version, granted_scopes, \
                     client_id_b1, client_id_b2, status, installed_by, created_at, \
                     budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools, \
-                    frontend_bundle";
+                    frontend_bundle, server_bundle, server_spec";
 
 /// インストール台帳ストア（Postgres・tenant スコープ）。
 #[derive(Clone)]
@@ -166,8 +178,8 @@ impl AppInstallationStore {
                  (tenant_id, org, app_id, app_name, installed_version, granted_scopes, \
                   client_id_b1, client_id_b2, status, installed_by, \
                   budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools, \
-                  frontend_bundle) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $12, $13, $14) \
+                  frontend_bundle, server_bundle, server_spec) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $12, $13, $14, $15, $16) \
              ON CONFLICT (tenant_id, app_id) DO UPDATE SET \
                  app_name = EXCLUDED.app_name, \
                  installed_version = EXCLUDED.installed_version, \
@@ -179,6 +191,8 @@ impl AppInstallationStore {
                  budget_max_tokens = EXCLUDED.budget_max_tokens, \
                  agent_tools = EXCLUDED.agent_tools, \
                  frontend_bundle = EXCLUDED.frontend_bundle, \
+                 server_bundle = EXCLUDED.server_bundle, \
+                 server_spec = EXCLUDED.server_spec, \
                  status = 'active', \
                  updated_at = now() \
              RETURNING {COLS}"
@@ -198,6 +212,8 @@ impl AppInstallationStore {
             .bind(new.ai.budget_max_tokens)
             .bind(&new.ai.agent_tools)
             .bind(new.frontend_bundle)
+            .bind(new.server_bundle)
+            .bind(&new.server_spec)
             .fetch_one(&self.db)
             .await
             .map_err(map_db)?;

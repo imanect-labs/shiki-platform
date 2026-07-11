@@ -78,6 +78,8 @@ async fn serves_pinned_bundle_with_isolation_headers() {
                 client_id_b2: None,
                 ai: AiPin::default(),
                 frontend_bundle: Some(&sha),
+                server_bundle: None,
+                server_spec: None,
             },
         )
         .await

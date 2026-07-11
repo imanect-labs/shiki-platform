@@ -60,6 +60,7 @@ pub(crate) fn wire_gateway(
     data_store: &Arc<data::DataStore>,
     fsms: &Arc<data::FsmStore>,
     search: Option<&Arc<rag::SearchService>>,
+    functions: Arc<dyn app_gateway::FunctionPort>,
 ) -> Option<axum::Router> {
     if !config.gateway.enabled {
         return None;
@@ -112,6 +113,8 @@ pub(crate) fn wire_gateway(
             llm,
             agent,
             ai_daily_cap_usd_micros: config.gateway.ai_daily_cap_usd_micros,
+            // B2 関数実行（Task 9.12）: 実装は wire_functions（main が後段で差し込む）。
+            functions,
         },
     };
     Some(app_gateway::build_gateway_router(state))
@@ -150,6 +153,7 @@ pub(crate) fn wire_installs(
     authz: &Arc<dyn AuthzClient>,
     mini_app_code: &Arc<app_platform::MiniAppCodeStore>,
     data_store: &Arc<data::DataStore>,
+    secrets: Option<&Arc<secrets::SecretStore>>,
 ) -> app_platform::InstallService {
     let oauth = if let (Some(base), Some((id, secret))) = (
         config.auth.admin_base(),
@@ -168,6 +172,9 @@ pub(crate) fn wire_installs(
     };
     // B1 redirect は web シェルの popup callback（PR10 が消費）。web origin 由来。
     let b1_redirects = vec![config.auth.redirect_uri.clone()];
+    let token_host = url::Url::parse(&config.auth.token_endpoint())
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string));
     app_platform::InstallService::new(
         db.clone(),
         app_platform::Registry::new(db.clone()),
@@ -177,6 +184,7 @@ pub(crate) fn wire_installs(
         oauth,
         b1_redirects,
     )
+    .with_secrets(secrets.cloned(), token_host)
 }
 
 /// B1 フロントバンドル配信（第3リスナ・Task 9.11）の Router を組む（gateway 無効時は None）。
@@ -218,4 +226,109 @@ pub(crate) fn wire_b1(
         host_origin,
     };
     Some(app_gateway::build_b1_router(state))
+}
+
+/// B2 関数実行（Task 9.12）の runner/port を組む（gateway 無効 or エンジン初期化失敗は None）。
+///
+/// runner のゲートウェイ委譲はプロセス内ループバック（`127.0.0.1:<gateway.port>`）で
+/// 第2リスナへ入る＝関数内の能力呼び出しも二重ゲートを通る（単一チョークポイント）。
+pub(crate) fn wire_functions(
+    config: &AppConfig,
+    db: &sqlx::PgPool,
+    object_store: &Arc<dyn storage::ObjectStore>,
+    secrets: Option<&Arc<secrets::SecretStore>>,
+) -> Option<(
+    Arc<crate::gateway_functions::GatewayFunctionPort>,
+    Arc<app_platform::FunctionRunner>,
+)> {
+    if !config.gateway.enabled {
+        return None;
+    }
+    let engine = match script_runtime::ScriptEngine::new() {
+        Ok(e) => Arc::new(e),
+        Err(e) => {
+            tracing::warn!(error = %e, "script エンジン初期化に失敗（B2 関数は無効）");
+            return None;
+        }
+    };
+    let loopback = format!("http://127.0.0.1:{}", config.gateway.port);
+    let runner = match app_platform::FunctionRunner::new(engine, Arc::clone(object_store), loopback)
+    {
+        Ok(r) => Arc::new(r),
+        Err(e) => {
+            tracing::warn!(error = %e, "FunctionRunner 構築に失敗（B2 関数は無効）");
+            return None;
+        }
+    };
+    let port = Arc::new(crate::gateway_functions::GatewayFunctionPort {
+        runner: Arc::clone(&runner),
+        http: reqwest::Client::new(),
+        token_endpoint: config.auth.token_endpoint(),
+        secrets: secrets.cloned(),
+        gateway_audience: config.gateway.audience.clone(),
+        installations: app_gateway::AppInstallationStore::new(db.clone()),
+    });
+    Some((port, runner))
+}
+
+/// ミニアプリ・リスナ配線の依存束（第2/第3リスナ＋B2 トリガ）。
+pub(crate) struct MiniappListenerDeps<'a> {
+    pub config: &'a AppConfig,
+    pub http: &'a reqwest::Client,
+    pub db: &'a sqlx::PgPool,
+    pub jwks: &'a Arc<api::middleware::JwksCache>,
+    pub authz: &'a Arc<dyn AuthzClient>,
+    pub storage: &'a Arc<storage::StorageService>,
+    pub data: &'a Arc<data::DataStore>,
+    pub fsms: &'a Arc<data::FsmStore>,
+    pub search: Option<&'a Arc<rag::SearchService>>,
+    pub object_store: &'a Arc<dyn storage::ObjectStore>,
+    pub secrets: Option<&'a Arc<secrets::SecretStore>>,
+}
+
+/// ゲートウェイ（第2リスナ）・B1 配信（第3リスナ）・B2 event/cron トリガをまとめて起動する。
+///
+/// `gateway.enabled=false` なら何もしない。B2 実行（runner/port）は wasm エンジンと
+/// object store から組み、ゲートウェイへはループバックで委譲する（関数内の能力呼び出しも
+/// 二重ゲートを通る）。
+pub(crate) async fn spawn_miniapp_listeners(deps: MiniappListenerDeps<'_>) -> anyhow::Result<()> {
+    let functions = wire_functions(deps.config, deps.db, deps.object_store, deps.secrets);
+    let functions_port: Arc<dyn app_gateway::FunctionPort> = match &functions {
+        Some((port, _)) => port.clone(),
+        None => Arc::new(app_gateway::NoFunctions),
+    };
+    let gateway_router = wire_gateway(
+        deps.config,
+        deps.http,
+        deps.db,
+        deps.jwks,
+        deps.authz,
+        deps.storage,
+        deps.data,
+        deps.fsms,
+        deps.search,
+        functions_port,
+    );
+    let host = &deps.config.server.host;
+    let gateway_bind = deps
+        .config
+        .gateway
+        .enabled
+        .then(|| format!("{host}:{}", deps.config.gateway.port));
+    let b1_router = wire_b1(deps.config, deps.db, deps.object_store);
+    let b1_bind = deps
+        .config
+        .gateway
+        .enabled
+        .then(|| format!("{host}:{}", deps.config.gateway.b1_port));
+    spawn_gateway_listener(gateway_router, gateway_bind).await?;
+    spawn_gateway_listener(b1_router, b1_bind).await?;
+    if let Some((port, runner)) = functions {
+        crate::miniapp_triggers::spawn_miniapp_triggers(crate::miniapp_triggers::TriggerDeps {
+            db: deps.db.clone(),
+            runner,
+            port,
+        });
+    }
+    Ok(())
 }

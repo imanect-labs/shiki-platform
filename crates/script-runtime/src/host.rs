@@ -60,9 +60,11 @@ pub trait HostCallHandler: Send + Sync {
     async fn handle(&self, call: &HostCall) -> HostResponse;
 }
 
-/// runtime が受理する能力 api の閉じた集合（Stage A・script.md §6）。
+/// runtime が受理する能力 api の閉じた集合（Stage A ＋ Stage B data/notify・script.md §6）。
 ///
-/// Stage B で `data.*` / `notify.send` を追加する（能力面のみ・9.2/9.10 後）。
+/// B2 ミニアプリ関数（Task 9.12）は `data.*` / `notify.send` をゲートウェイ HTTP 越しに使う
+/// （ホストが Bearer を付与・二重ゲートが認可）。ハンドラ実装が未対応の api は
+/// `HostResponse::Err` を返すため、ここへの追加は既存経路（workflow script）に対して安全。
 pub const ALLOWED_APIS: &[&str] = &[
     "storage.read",
     "storage.list",
@@ -72,6 +74,12 @@ pub const ALLOWED_APIS: &[&str] = &[
     "workflow.start",
     "log",
     "context",
+    "data.list_tables",
+    "data.query",
+    "data.get",
+    "data.create",
+    "data.update",
+    "notify.send",
 ];
 
 /// api 名が閉じた集合に属するか。

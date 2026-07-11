@@ -11,6 +11,7 @@
 pub(crate) mod ai;
 pub(crate) mod data;
 pub(crate) mod events;
+pub(crate) mod functions;
 pub(crate) mod identity;
 pub(crate) mod notify;
 pub(crate) mod rag;
@@ -70,6 +71,11 @@ pub(crate) fn capability_router() -> Router<GatewayState> {
         // llm.invoke / agent.invoke（SSE・Task 9.9）
         .route("/gw/ai/llm/invoke", post(ai::llm_invoke))
         .route("/gw/ai/agent/invoke", post(ai::agent_invoke))
+        // B2 関数のユーザー起点起動（Task 9.12）
+        .route(
+            "/gw/apps/functions/{function}/invoke",
+            post(functions::invoke),
+        )
 }
 
 /// アプリ所有テーブル束縛（data.\* の第5のリソースゲート）。

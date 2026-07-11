@@ -69,7 +69,11 @@ pub struct FrontendBundle {
 /// B2 サーバ関数の宣言（サンドボックスで実行）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
 pub struct ServerSpec {
-    /// エントリポイント（バンドル内のモジュールパス）。
+    /// サーバコードバンドル（単一 JS・content address sha256 hex・BundleStore 管理）。
+    /// インストール時に installation へピンされる（Task 9.12）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_sha256: Option<String>,
+    /// エントリポイント（バンドル内のモジュールパス・将来のマルチモジュール用・現状未使用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
     /// 公開する関数名（event/cron/ユーザー起動の対象）。
