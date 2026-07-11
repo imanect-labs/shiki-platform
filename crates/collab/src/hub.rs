@@ -205,4 +205,76 @@ impl CollabHub {
     pub async fn save_note_now(&self, doc: &Arc<LiveDoc>) -> Result<Option<i64>, CollabError> {
         note::saver::save_note(doc, &self.store, &self.storage).await
     }
+
+    /// ノート本文を正規化 md で読む（`document.read`・Task 11P.4）。viewer 以上で可。
+    pub async fn read_note_markdown(
+        &self,
+        ctx: &AuthContext,
+        node: &Node,
+    ) -> Result<String, CollabError> {
+        if node.kind != NodeKind::File || !note::is_note_file(&node.name) {
+            return Err(CollabError::NotFound(format!("note {}", node.id)));
+        }
+        // viewer 認可（読めなければ Forbidden→存在秘匿は呼び出し側で 404 化）。
+        self.authorize(ctx, node.id).await?;
+        let doc = self.join(ctx, node).await?;
+        let markdown = doc.to_markdown();
+        self.leave(&doc).await;
+        markdown
+    }
+
+    /// AI（`document.edit`）の編集を共有ドキュメントへ適用する（Task 11P.4）。
+    ///
+    /// 権限は**実行主体の editor@file**（人間と同一経路・viewer は拒否）。編集は共有
+    /// LiveDoc に適用され（Yjs が人間の並行編集と収束させる）、生成 update を永続化＋
+    /// 接続中の人間へブロードキャストする。ファイル直接上書きの経路は作らない。
+    pub async fn apply_ai_edit(
+        &self,
+        ctx: &AuthContext,
+        node: &Node,
+        ops: &[note::EditOp],
+        mode: note::EditMode,
+    ) -> Result<note::EditReport, CollabError> {
+        // ファイル種別＋実在（viewer 認可・監査つき）。
+        if node.kind != NodeKind::File || !note::is_note_file(&node.name) {
+            return Err(CollabError::NotFound(format!("note {}", node.id)));
+        }
+        // editor 権限（human と同一経路・fail-closed）。
+        match self.authorize(ctx, node.id).await? {
+            AccessMode::Editor => {}
+            AccessMode::Viewer => {
+                return Err(CollabError::Forbidden(format!(
+                    "editor 権限がありません: {}",
+                    node.id
+                )))
+            }
+        }
+        let doc = self.join(ctx, node).await?;
+        let result = self.apply_ai_edit_locked(&doc, ctx, ops, mode).await;
+        // AI 編集は一過性の参加。leave が最終接続なら保存＋アンロードまで面倒を見る。
+        self.leave(&doc).await;
+        result
+    }
+
+    /// join 済みドキュメントへ AI 編集を適用し、永続化＋ブロードキャストする。
+    async fn apply_ai_edit_locked(
+        &self,
+        doc: &Arc<LiveDoc>,
+        ctx: &AuthContext,
+        ops: &[note::EditOp],
+        mode: note::EditMode,
+    ) -> Result<note::EditReport, CollabError> {
+        let (update, report) = doc.apply_ai_edit(ops, mode)?;
+        doc.persist_ai_update(&self.store, &update, ctx).await?;
+        // 接続中の人間へライブ配信する（from=0 は合成 id・全接続が受信）。
+        doc.broadcast(0, ai_sync_update_frame(&update));
+        Ok(report)
+    }
+}
+
+/// update バイト列を y-sync の `Update` メッセージフレームに包む（クライアントが解釈できる形）。
+fn ai_sync_update_frame(update: &[u8]) -> Vec<u8> {
+    use yrs::sync::{Message, SyncMessage};
+    use yrs::updates::encoder::Encode;
+    Message::Sync(SyncMessage::Update(update.to_vec())).encode_v1()
 }

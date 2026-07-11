@@ -258,6 +258,47 @@ impl LiveDoc {
         Ok(crate::note::doc_to_markdown(awareness.doc()))
     }
 
+    /// AI 編集オペを共有ドキュメントに適用し、生成された update（差分）と適用結果を返す
+    /// （Task 11P.4）。トランザクション origin を AI にして人間編集と区別する。返した
+    /// update は呼び出し側が永続化＋ブロードキャストする（人間の update と同じ経路）。
+    pub fn apply_ai_edit(
+        &self,
+        ops: &[crate::note::EditOp],
+        mode: crate::note::EditMode,
+    ) -> Result<(Vec<u8>, crate::note::EditReport), CollabError> {
+        let awareness = self.read_awareness()?;
+        let doc = awareness.doc();
+        let fragment = doc.get_or_insert_xml_fragment(crate::note::yjs_map::FRAGMENT_NAME);
+        let meta = doc.get_or_insert_map(crate::note::yjs_map::META_MAP_NAME);
+        let before = doc.transact().state_vector();
+        let report = {
+            let mut txn = doc.transact_mut_with(crate::note::AI_ORIGIN);
+            crate::note::ai_edit::apply_ops(&mut txn, &fragment, &meta, ops, mode)
+        };
+        let update = doc.transact().encode_state_as_update_v1(&before);
+        Ok((update, report))
+    }
+
+    /// AI 由来の update を「追記（DB）→（しきい値で）圧縮」する（適用は済んでいる前提）。
+    /// dirty マークも付け、デバウンス保存で md へ落ちるようにする。
+    pub async fn persist_ai_update(
+        &self,
+        store: &DocStore,
+        update: &[u8],
+        ctx: &AuthContext,
+    ) -> Result<(), CollabError> {
+        let author = format!("ai:{}", ctx.principal.id);
+        let seq = store.append_update(self.node_id, update, &author).await?;
+        self.note_mark_dirty(ctx);
+        let appended = self.appended_since_compact.fetch_add(1, Ordering::SeqCst) + 1;
+        if appended as i64 >= COMPACT_EVERY {
+            self.appended_since_compact.store(0, Ordering::SeqCst);
+            let snapshot = self.full_state()?;
+            store.compact(self.node_id, &snapshot, seq).await?;
+        }
+        Ok(())
+    }
+
     /// md 全文を全置換で取り込む（外部書込のインポート・Task 11P.2 単方向規約）。
     pub fn import_markdown(&self, markdown: &str) -> Result<(), CollabError> {
         let awareness = self.read_awareness()?;

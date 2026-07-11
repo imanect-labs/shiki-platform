@@ -107,6 +107,19 @@ impl ChatWorker {
                 store.clone(),
             )));
         }
+        // AI ノート共同編集（document.edit / document.read・Task 11P.4）:
+        // collab ハブと storage が両方配線されている時のみ提示する。編集は共有 Yjs へ
+        // 適用され、権限は実行主体の editor@file（human と同一経路・昇格しない）。
+        if let (Some(collab), Some(storage)) = (&self.collab, &self.storage) {
+            tools.push(Arc::new(crate::document_tool::DocumentReadTool::new(
+                collab.clone(),
+                storage.clone(),
+            )));
+            tools.push(Arc::new(crate::document_tool::DocumentEditTool::new(
+                collab.clone(),
+                storage.clone(),
+            )));
+        }
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {

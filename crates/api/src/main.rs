@@ -115,8 +115,17 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // チャット（Phase 3）: enabled のとき llm-gateway＋生成ワーカーを配線し、API 用ストアを返す。
+    // ノート共同編集ハブ（Task 11P.1）: authz ゲート＋update log/snapshot 永続化。
+    // wire_chat（document.edit・Task 11P.4）より先に組む。
+    let collab = Arc::new(collab::CollabHub::new(
+        db.clone(),
+        authz.clone(),
+        storage.clone(),
+    ));
+
     // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
     // workflows/secrets は AI ワークフロー編集（emit_workflow・Task 10.13）のカタログ源。
+    // collab は AI ノート共同編集（document.edit・Task 11P.4）。
     let chat = wiring::wire_chat(
         &config,
         &http,
@@ -128,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
         &artifacts,
         &workflows,
         secrets.as_ref(),
+        &collab,
     )
     .await?;
 
@@ -151,12 +161,6 @@ async fn main() -> anyhow::Result<()> {
         workflow_engine::DelegationStore::new(db.clone(), authz.clone()),
     ));
     let audit = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
-    // ノート共同編集ハブ（Task 11P.1）: authz ゲート＋update log/snapshot 永続化。
-    let collab = Arc::new(collab::CollabHub::new(
-        db.clone(),
-        authz.clone(),
-        storage.clone(),
-    ));
     let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(db.clone()));
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
 

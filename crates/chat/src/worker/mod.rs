@@ -104,6 +104,9 @@ pub struct WorkerDeps {
     pub workflow_store: Option<Arc<workflow_engine::WorkflowStore>>,
     /// 保存 API と同一のカタログ源（secret 名→許可ホスト・モデル一覧・Task 10.13）。
     pub workflow_catalog: Option<Arc<dyn crate::workflow_tool::WorkflowCatalogSource>>,
+    /// ノート共同編集ハブ（document.edit / document.read・Task 11P.4）。
+    /// storage と両方揃った時のみノート編集ツールを提示する。
+    pub collab: Option<Arc<collab::CollabHub>>,
 }
 
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
@@ -129,6 +132,8 @@ pub struct ChatWorker {
     workflow_store: Option<Arc<workflow_engine::WorkflowStore>>,
     /// カタログ源（保存 API と同一実装を注入・Task 10.13）。
     workflow_catalog: Option<Arc<dyn crate::workflow_tool::WorkflowCatalogSource>>,
+    /// ノート共同編集ハブ（document.edit / document.read・Task 11P.4）。
+    collab: Option<Arc<collab::CollabHub>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -145,6 +150,7 @@ impl ChatWorker {
             skill_artifacts,
             workflow_store,
             workflow_catalog,
+            collab,
         } = deps;
         ChatWorker {
             db,
@@ -159,6 +165,7 @@ impl ChatWorker {
             skill_artifacts,
             workflow_store,
             workflow_catalog,
+            collab,
             config: Arc::new(config),
         }
     }
