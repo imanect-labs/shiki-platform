@@ -20,3 +20,7 @@ shiki-tabular = { path = ".." }
 # 隔離 DuckDB（bundled C++）。このクレートだけがリンクする。
 duckdb = { version = "1", features = ["bundled"] }
 serde_json = "1"
+
+# lib 名 tabular で参照するため machete（名前一致）が誤検出する。
+[package.metadata.cargo-machete]
+ignored = ["shiki-tabular"]

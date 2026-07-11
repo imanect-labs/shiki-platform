@@ -70,6 +70,12 @@ vocab_enum! {
         DocumentRead => "document.read",
         /// AI 生成 md を新規ノートとして保存するツール（note_ref カード化・Task 11P.5）。
         SaveNote => "save_note",
+        /// CSV への読み取り専用 SQL クエリ（隔離 DuckDB 経由・Task 11P.9）。
+        CsvQuery => "csv.query",
+        /// CSV のパッチ編集→新バージョン（editor・Task 11P.9）。
+        CsvPatch => "csv.patch",
+        /// 新規 CSV の保存（作成権限・Task 11P.9）。
+        CsvWrite => "csv.write",
     }
 }
 

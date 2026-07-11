@@ -184,4 +184,31 @@ pub trait NodePorts: Send + Sync {
         name: &str,
         input: &Value,
     ) -> Result<Value, PortError>;
+
+    /// csv.query（`TabularService.query`・隔離 DuckDB での RO SQL・viewer）。返り値は列＋行の要約。
+    async fn csv_query(&self, ctx: &ExecCtx, file_id: Uuid, sql: &str) -> Result<Value, PortError>;
+
+    /// csv.patch（`TabularService.patch`・editor・rev 楽観ロック）。冪等化は capability 層の
+    /// effect_journal が担保するため、ポートは副作用の適用のみを行う。`ops` は `PatchOp` 配列の JSON。
+    async fn csv_patch(&self, ctx: &ExecCtx, req: CsvPatchReq) -> Result<Value, PortError>;
+
+    /// csv.write（`TabularService.save_new`・作成権限）。冪等化は capability 層が担保する。
+    async fn csv_write(&self, ctx: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError>;
+}
+
+/// csv.patch の要求（冪等化は capability 層の effect_journal・ポートは適用のみ）。
+#[derive(Debug, Clone)]
+pub struct CsvPatchReq {
+    pub file_id: Uuid,
+    pub base_rev: i64,
+    /// `tabular::PatchOp` の配列に解決される JSON 値（ポート実装で型変換する）。
+    pub ops: Value,
+}
+
+/// csv.write の要求（冪等化は capability 層の effect_journal・ポートは適用のみ）。
+#[derive(Debug, Clone)]
+pub struct CsvWriteReq {
+    pub parent_id: Option<Uuid>,
+    pub name: String,
+    pub csv_bytes: Vec<u8>,
 }

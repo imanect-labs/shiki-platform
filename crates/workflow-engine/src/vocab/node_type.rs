@@ -26,6 +26,13 @@ vocab_enum! {
         HttpRequest => "http.request",
         ScriptRun => "script.run",
         WorkflowStart => "workflow.start",
+        // ---- CSV 表データ（Task 11P.9・隔離 DuckDB 経由の tabular サービス）----
+        /// CSV への読み取り専用 SQL（viewer・pure）。
+        CsvQuery => "csv.query",
+        /// CSV のパッチ編集→新バージョン（editor・EngineDedup）。
+        CsvPatch => "csv.patch",
+        /// 新規 CSV の保存（作成権限・EngineDedup）。
+        CsvWrite => "csv.write",
         // ---- Stage B（ir.md §7 設計済み・未実装）----
         DataQuery => "data.query",
         DataRecordCreate => "data.record.create",
@@ -117,6 +124,9 @@ impl NodeType {
                 | NodeType::HttpRequest
                 | NodeType::ScriptRun
                 | NodeType::WorkflowStart
+                | NodeType::CsvQuery
+                | NodeType::CsvPatch
+                | NodeType::CsvWrite
         )
     }
 }
@@ -149,6 +159,9 @@ mod tests {
                 "http.request",
                 "script.run",
                 "workflow.start",
+                "csv.query",
+                "csv.patch",
+                "csv.write",
             ]
         );
     }

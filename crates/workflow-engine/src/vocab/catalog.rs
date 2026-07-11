@@ -193,6 +193,21 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
             "別のフローを開始",
             "別のワークフローを起動する（結果は待たない）",
         ),
+        NodeType::CsvQuery => (
+            C::Storage,
+            "CSV を集計",
+            "CSV ファイルに読み取り専用の SQL を実行して集計・抽出する",
+        ),
+        NodeType::CsvPatch => (
+            C::Storage,
+            "CSV を編集",
+            "CSV のセル・行・列を書き換えて新しいバージョンを保存する",
+        ),
+        NodeType::CsvWrite => (
+            C::Storage,
+            "CSV を保存",
+            "新しい CSV ファイルをドライブに保存する",
+        ),
         NodeType::DataQuery => (
             C::Data,
             "データを調べる",
@@ -338,6 +353,8 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         | NodeType::WorkflowStart
         | NodeType::MemorySet
         | NodeType::EventPublish
+        | NodeType::CsvPatch
+        | NodeType::CsvWrite
         | NodeType::WorkflowCall => EngineDedup,
         NodeType::ScriptRun
         | NodeType::AgentInvoke
@@ -359,6 +376,9 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         NodeType::StorageRead
         | NodeType::StorageWrite
         | NodeType::StorageList
+        | NodeType::CsvQuery
+        | NodeType::CsvPatch
+        | NodeType::CsvWrite
         | NodeType::DataQuery
         | NodeType::DataRecordCreate
         | NodeType::DataRecordUpdate

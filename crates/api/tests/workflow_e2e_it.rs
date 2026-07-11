@@ -209,6 +209,7 @@ async fn interactive_run_completes_through_production_executor() {
         sandbox: None,
         sandbox_backend: sandbox_client::SandboxBackend::Wasm,
         secrets: None,
+        tabular: None,
         launcher: launcher.clone(),
         http: reqwest::Client::new(),
         db: env.pool.clone(),

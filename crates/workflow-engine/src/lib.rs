@@ -33,8 +33,8 @@ pub use ir::validate::{validate, Catalog, ValidationError};
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};
 pub use nodes::{
-    AgentInvokeReq, CapabilityNodeExecutor, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
-    NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+    AgentInvokeReq, CapabilityNodeExecutor, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq,
+    HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{

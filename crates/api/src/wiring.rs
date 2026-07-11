@@ -234,6 +234,7 @@ pub(crate) async fn wire_chat(
     workflows: &Arc<workflow_engine::WorkflowStore>,
     secrets: Option<&Arc<secrets::SecretStore>>,
     collab: &Arc<collab::CollabHub>,
+    tabular: &Arc<tabular::TabularService>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -303,6 +304,8 @@ pub(crate) async fn wire_chat(
             )),
             // AI ノート共同編集（document.edit / document.read・Task 11P.4）。
             collab: Some(Arc::clone(collab)),
+            // CSV ツール（csv.query / csv.patch / csv.write・Task 11P.9）。
+            tabular: Some(Arc::clone(tabular)),
         },
         worker_config,
     );
@@ -387,6 +390,7 @@ pub(crate) async fn wire_workflow(
     storage: &Arc<storage::StorageService>,
     search: Option<&Arc<rag::SearchService>>,
     secrets: Option<&Arc<secrets::SecretStore>>,
+    tabular: &Arc<tabular::TabularService>,
 ) -> anyhow::Result<(
     Option<Arc<workflow_engine::WorkflowRunLauncher>>,
     Option<Arc<workflow_engine::RunStore>>,
@@ -412,6 +416,7 @@ pub(crate) async fn wire_workflow(
         // code_interpreter の隔離ティアは chat と同一の admin ポリシー（単一ソース）。
         sandbox_backend: config.chat.sandbox_backend.unwrap_or_default(),
         secrets: secrets.cloned(),
+        tabular: Some(Arc::clone(tabular)),
         http: http.clone(),
         redis_url: Some(config.session.redis_url.clone()),
         config: config.workflow.clone(),

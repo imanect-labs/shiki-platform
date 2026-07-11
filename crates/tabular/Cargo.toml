@@ -25,13 +25,16 @@ csv.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 tokio.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 # CSV を隔離ランナーへ渡すための一時ファイル（api 側の私有 tmp）。
 tempfile = "3"
 
 [dev-dependencies]
+
+# lib 名 authz/storage で参照するため machete（名前一致）が誤検出する。
+[package.metadata.cargo-machete]
+ignored = ["shiki-authz", "shiki-storage"]
 
 [lints]
 workspace = true

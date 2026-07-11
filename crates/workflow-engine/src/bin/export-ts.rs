@@ -13,11 +13,11 @@ use workflow_engine::ir::edge::Edge;
 use workflow_engine::ir::expr::{CmpOp, Comparison, Condition, FromRef, TemplateExpr, ValueExpr};
 use workflow_engine::ir::node::{Backoff, Node, OnError, RetryPolicy};
 use workflow_engine::ir::params::{
-    AgentInvokeParams, BranchParams, HttpMethod, HttpRequestParams, HttpSecretRef, JoinMode,
-    JoinParams, LlmInvokeParams, MapItemError, MapParams, RagSearchParams, RedirectPolicy,
-    ScriptRunParams, ScriptSourceSpec, SecretAttach, SecretAttachKind, StorageListParams,
-    StorageReadParams, StorageWriteParams, SwitchCase, SwitchParams, WaitKind, WaitParams,
-    WaitTimeout, WorkflowStartParams,
+    AgentInvokeParams, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams, HttpMethod,
+    HttpRequestParams, HttpSecretRef, JoinMode, JoinParams, LlmInvokeParams, MapItemError,
+    MapParams, RagSearchParams, RedirectPolicy, ScriptRunParams, ScriptSourceSpec, SecretAttach,
+    SecretAttachKind, StorageListParams, StorageReadParams, StorageWriteParams, SwitchCase,
+    SwitchParams, WaitKind, WaitParams, WaitTimeout, WorkflowStartParams,
 };
 use workflow_engine::ir::trigger::{
     Catchup, EventTrigger, InteractiveTrigger, ScheduleTrigger, Trigger, TriggerKind,
@@ -45,6 +45,9 @@ const PARAMS_BY_TYPE: &[(NodeType, &str)] = &[
     (NodeType::HttpRequest, "HttpRequestParams"),
     (NodeType::ScriptRun, "ScriptRunParams"),
     (NodeType::WorkflowStart, "WorkflowStartParams"),
+    (NodeType::CsvQuery, "CsvQueryParams"),
+    (NodeType::CsvPatch, "CsvPatchParams"),
+    (NodeType::CsvWrite, "CsvWriteParams"),
 ];
 
 fn main() {
@@ -113,6 +116,9 @@ fn main() {
         ScriptSourceSpec,
         ScriptRunParams,
         WorkflowStartParams,
+        CsvQueryParams,
+        CsvPatchParams,
+        CsvWriteParams,
         // ---- カタログ ----
         NodeCategory,
         IdempotencyClass,

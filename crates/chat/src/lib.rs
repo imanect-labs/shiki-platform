@@ -25,6 +25,7 @@
 
 pub mod approver;
 pub mod artifacts;
+pub mod csv_tool;
 pub mod document_tool;
 pub mod error;
 pub mod gui_actions;
@@ -37,6 +38,7 @@ pub mod workspace;
 
 pub use approver::DbApprover;
 pub use artifacts::StorageArtifactStore;
+pub use csv_tool::{CsvPatchTool, CsvQueryTool, CsvWriteTool};
 pub use document_tool::{DocumentEditTool, DocumentReadTool, SaveNoteTool};
 pub use error::ChatError;
 pub use gui_actions::ChatSubmitHandler;

@@ -299,15 +299,17 @@ impl Tool for DocumentEditTool {
             collab::note::EditMode::Direct => "直接適用",
             collab::note::EditMode::Suggest => "提案",
         };
+        use std::fmt::Write as _;
         let mut content = format!(
             "ノート「{}」を編集しました（{mode_label}・{} 件適用）。",
             node.name, report.applied
         );
         if !report.skipped.is_empty() {
-            content.push_str(&format!(
+            let _ = write!(
+                content,
                 "\n次の操作は対象が見つからずスキップしました: {}",
                 report.skipped.join(", ")
-            ));
+            );
         }
         let outcome = if report.applied == 0 {
             ToolOutcome::error(content)

@@ -125,6 +125,8 @@ pub struct RuntimeDeps {
     /// コード実行系（agent_invoke ノード）の隔離ティア（admin ポリシー・chat と同一の単一ソース）。
     pub sandbox_backend: sandbox_client::SandboxBackend,
     pub secrets: Option<Arc<secrets::SecretStore>>,
+    /// CSV 表データ（csv.query/patch/write ノード・Task 11P.9）。
+    pub tabular: Option<Arc<tabular::TabularService>>,
     pub http: reqwest::Client,
     pub redis_url: Option<String>,
     pub config: WorkflowConfig,
@@ -142,6 +144,7 @@ async fn build_prod_executor(
         sandbox: deps.sandbox.clone(),
         sandbox_backend: deps.sandbox_backend,
         secrets: deps.secrets.clone(),
+        tabular: deps.tabular.clone(),
         launcher: launcher.clone(),
         http: deps.http.clone(),
         db: deps.db.clone(),

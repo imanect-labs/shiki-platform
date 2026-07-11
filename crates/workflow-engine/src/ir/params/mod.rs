@@ -16,6 +16,7 @@ mod ai;
 mod control;
 mod external;
 mod storage;
+mod tabular;
 
 pub use ai::{AgentInvokeParams, LlmInvokeParams};
 pub use control::{
@@ -27,6 +28,7 @@ pub use external::{
     ScriptSourceSpec, SecretAttach, SecretAttachKind, WorkflowStartParams,
 };
 pub use storage::{RagSearchParams, StorageListParams, StorageReadParams, StorageWriteParams};
+pub use tabular::{CsvPatchParams, CsvQueryParams, CsvWriteParams};
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -129,6 +131,9 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
             Ok(())
         }
         NodeType::WorkflowStart => check_as::<WorkflowStartParams>(raw),
+        NodeType::CsvQuery => check_as::<CsvQueryParams>(raw),
+        NodeType::CsvPatch => check_as::<CsvPatchParams>(raw),
+        NodeType::CsvWrite => check_as::<CsvWriteParams>(raw),
         // 予約語彙は V3 が「Stage A では未対応」で拒否する（params 契約は実装フェーズで追加）。
         _ => Ok(()),
     }

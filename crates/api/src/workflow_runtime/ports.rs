@@ -21,8 +21,8 @@ use storage::model::ChildSort;
 use storage::StorageService;
 use uuid::Uuid;
 use workflow_engine::{
-    ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView,
-    StorageWriteReq, WorkflowRunLauncher,
+    CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts,
+    PortError, ResolvedSecretView, StorageWriteReq, WorkflowRunLauncher,
 };
 
 /// 本番ポート（AppState のチョークポイント参照を保持）。
@@ -34,6 +34,8 @@ pub struct ProdNodePorts {
     /// コード実行系（agent_invoke）の隔離ティア（admin ポリシー・design §4.6）。
     pub sandbox_backend: sandbox_client::SandboxBackend,
     pub secrets: Option<Arc<SecretStore>>,
+    /// CSV 表データ（csv.query/patch/write・隔離 DuckDB 経由の Task 11P.9）。
+    pub tabular: Option<Arc<tabular::TabularService>>,
     pub launcher: WorkflowRunLauncher,
     /// http.request の外部送信クライアント（リダイレクト非追従の別クライアントも内部で使う）。
     pub http: reqwest::Client,
@@ -69,6 +71,29 @@ fn map_storage(e: storage::StorageError) -> PortError {
         S::Conflict => PortError::new("conflict", "冪等衝突/競合", false),
         S::Invalid(m) => PortError::invalid(m),
         other => PortError::unavailable(format!("storage: {other}")),
+    }
+}
+
+/// tabular エラー → PortError（認可拒否は fail-closed の forbidden・競合/クォータは非 retryable）。
+fn map_tabular(e: tabular::TabularError) -> PortError {
+    use tabular::TabularError as T;
+    match e {
+        T::Forbidden => PortError::forbidden("csv 権限なし"),
+        T::Authz(_) => PortError::forbidden("csv 認可失敗"),
+        T::Storage(s) => map_storage(s),
+        T::NotFound(m) => PortError::new("not_found", format!("csv: {m}"), false),
+        T::SqlRejected(m) => PortError::invalid(format!("csv SQL 拒否: {m}")),
+        T::InvalidPatch(m) => PortError::invalid(format!("csv パッチ不正: {m}")),
+        T::RevConflict { base, current } => PortError::new(
+            "conflict",
+            format!("csv 競合: base={base}, current={current}"),
+            false,
+        ),
+        T::QuotaExceeded(m) => {
+            PortError::new("quota_exceeded", format!("csv クォータ超過: {m}"), false)
+        }
+        T::Runner(m) => PortError::unavailable(format!("csv runner: {m}")),
+        T::Internal(m) => PortError::unavailable(format!("csv internal: {m}")),
     }
 }
 
@@ -376,6 +401,85 @@ impl NodePorts for ProdNodePorts {
             .map_err(|e| PortError::unavailable(format!("workflow.start: {e}")))?;
         Ok(json!({ "run_id": run_id.map(|r| r.to_string()) }))
     }
+
+    async fn csv_query(&self, ec: &ExecCtx, file_id: Uuid, sql: &str) -> Result<Value, PortError> {
+        let ctx = auth_ctx(ec);
+        let tabular = self
+            .tabular
+            .as_ref()
+            .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
+        let resp = tabular
+            .query(&ctx, file_id, sql, ec.trace_id.as_deref())
+            .await
+            .map_err(map_tabular)?;
+        let rows: Vec<Value> = resp
+            .rows
+            .iter()
+            .map(|row| Value::Array(row.iter().map(|c| cell_to_json(c.as_deref())).collect()))
+            .collect();
+        Ok(json!({
+            "columns": resp.columns,
+            "column_types": resp.column_types,
+            "rows": rows,
+            "total_rows": resp.total_rows,
+            "truncated": resp.truncated,
+        }))
+    }
+
+    async fn csv_patch(&self, ec: &ExecCtx, req: CsvPatchReq) -> Result<Value, PortError> {
+        let ctx = auth_ctx(ec);
+        let tabular = self
+            .tabular
+            .as_ref()
+            .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
+        // ops（JSON 配列）を tabular の PatchOp へ型変換する（不正は permanent の invalid）。
+        let ops: Vec<tabular::PatchOp> = serde_json::from_value(req.ops)
+            .map_err(|e| PortError::invalid(format!("csv.patch: ops が不正: {e}")))?;
+        let applied = tabular
+            .patch(
+                &ctx,
+                req.file_id,
+                req.base_rev,
+                &ops,
+                ec.trace_id.as_deref(),
+            )
+            .await
+            .map_err(map_tabular)?;
+        Ok(json!({
+            "node_id": applied.node_id.to_string(),
+            "version": applied.version,
+            "rows": applied.rows,
+            "cols": applied.cols,
+        }))
+    }
+
+    async fn csv_write(&self, ec: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError> {
+        let ctx = auth_ctx(ec);
+        let tabular = self
+            .tabular
+            .as_ref()
+            .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
+        let saved = tabular
+            .save_new(
+                &ctx,
+                req.parent_id,
+                &req.name,
+                &req.csv_bytes,
+                ec.trace_id.as_deref(),
+            )
+            .await
+            .map_err(map_tabular)?;
+        Ok(json!({
+            "node_id": saved.node_id.to_string(),
+            "version": saved.version,
+            "name": saved.name,
+        }))
+    }
+}
+
+/// CSV セル（NULL は None）を JSON 値へ（NULL → null・値 → 文字列）。
+fn cell_to_json(cell: Option<&str>) -> Value {
+    cell.map_or(Value::Null, |s| Value::String(s.to_string()))
 }
 
 /// 監査/記録用の短いプレビュー（先頭 200 文字・改行畳み）。

@@ -15,6 +15,6 @@ pub mod script;
 
 pub use exec::CapabilityNodeExecutor;
 pub use ports::{
-    AgentInvokeReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError,
-    ResolvedSecretView, StorageWriteReq,
+    AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
+    NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
 };

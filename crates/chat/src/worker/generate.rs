@@ -124,6 +124,19 @@ impl ChatWorker {
                 storage.clone(),
             )));
         }
+        // CSV ツール（csv.query / csv.patch / csv.write・Task 11P.9）: tabular 配線時のみ。
+        // 認可は操作別のファイル ReBAC（TabularService が StorageService 経由で強制）。
+        if let Some(tabular) = &self.tabular {
+            tools.push(Arc::new(crate::csv_tool::CsvQueryTool::new(
+                tabular.clone(),
+            )));
+            tools.push(Arc::new(crate::csv_tool::CsvPatchTool::new(
+                tabular.clone(),
+            )));
+            tools.push(Arc::new(crate::csv_tool::CsvWriteTool::new(
+                tabular.clone(),
+            )));
+        }
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {

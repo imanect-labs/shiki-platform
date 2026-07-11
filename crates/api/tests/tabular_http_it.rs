@@ -39,25 +39,54 @@ struct AllowAll;
 
 #[async_trait]
 impl AuthzClient for AllowAll {
-    async fn check(&self, _: &Subject, _: Relation, _: &FgaObject, _: Consistency) -> Result<bool, AuthzError> {
+    async fn check(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: &FgaObject,
+        _: Consistency,
+    ) -> Result<bool, AuthzError> {
         Ok(true)
     }
-    async fn write_tuple(&self, _: &Subject, _: Relation, _: &FgaObject) -> Result<bool, AuthzError> {
+    async fn write_tuple(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: &FgaObject,
+    ) -> Result<bool, AuthzError> {
         Ok(true)
     }
-    async fn delete_tuple(&self, _: &Subject, _: Relation, _: &FgaObject) -> Result<bool, AuthzError> {
+    async fn delete_tuple(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: &FgaObject,
+    ) -> Result<bool, AuthzError> {
         Ok(true)
     }
-    async fn read_tuples(&self, _: &FgaObject, _: Option<Relation>) -> Result<Vec<ReadTupleKey>, AuthzError> {
+    async fn read_tuples(
+        &self,
+        _: &FgaObject,
+        _: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
         Ok(vec![])
     }
-    async fn list_objects(&self, _: &Subject, _: Relation, _: ObjectType) -> Result<Vec<String>, AuthzError> {
+    async fn list_objects(
+        &self,
+        _: &Subject,
+        _: Relation,
+        _: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
         Ok(vec![])
     }
     async fn delete_object_tuples(&self, _: &FgaObject) -> Result<u32, AuthzError> {
         Ok(0)
     }
-    async fn read_subject_objects(&self, _: &Subject, _: ObjectType) -> Result<Vec<String>, AuthzError> {
+    async fn read_subject_objects(
+        &self,
+        _: &Subject,
+        _: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
         Ok(vec![])
     }
 }
@@ -170,8 +199,8 @@ async fn setup() -> Option<Env> {
         eprintln!("隔離ランナー未ビルドのためスキップ");
         return None;
     };
-    let s3_endpoint =
-        std::env::var("STORAGE_TEST_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into());
+    let s3_endpoint = std::env::var("STORAGE_TEST_S3_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:9000".into());
     let access_key =
         std::env::var("STORAGE_TEST_S3_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".into());
     let secret_key =
@@ -182,7 +211,10 @@ async fn setup() -> Option<Env> {
         .connect(&db_url)
         .await
         .expect("pg");
-    sqlx::migrate!("../../migrations").run(&pool).await.expect("migrate");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrate");
 
     let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll);
     let s3 = storage::object_store::S3Config {
@@ -208,7 +240,10 @@ async fn setup() -> Option<Env> {
     ));
     let tabular = Arc::new(tabular::TabularService::new(
         Arc::clone(&storage),
-        tabular::RunnerConfig::new(runner.to_string_lossy().to_string(), Duration::from_secs(20)),
+        tabular::RunnerConfig::new(
+            runner.to_string_lossy().to_string(),
+            Duration::from_secs(20),
+        ),
         tabular::Quotas::default(),
     ));
 
@@ -232,7 +267,14 @@ async fn setup() -> Option<Env> {
         .await
         .unwrap();
 
-    let app = build_app(&pool, config(&db_url), storage.clone(), tabular, sessions, &authz);
+    let app = build_app(
+        &pool,
+        config(&db_url),
+        storage.clone(),
+        tabular,
+        sessions,
+        &authz,
+    );
     Some(Env {
         app,
         storage,
@@ -260,7 +302,10 @@ fn build_app(
     sessions: Arc<MemorySessionStore>,
     authz: &Arc<dyn AuthzClient>,
 ) -> axum::Router {
-    let artifacts = Arc::new(artifact::ArtifactStore::new(pool.clone(), Arc::clone(authz)));
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        pool.clone(),
+        Arc::clone(authz),
+    ));
     let directory = Arc::new(storage::DirectoryStore::new(pool.clone()));
     let data_store = Arc::new(data::DataStore::new(
         pool.clone(),
@@ -275,7 +320,10 @@ fn build_app(
         Arc::clone(authz),
         Arc::clone(&storage),
     ));
-    let ui_validator = Arc::new(gui::SpecValidator::new(Arc::clone(&artifacts), pool.clone()));
+    let ui_validator = Arc::new(gui::SpecValidator::new(
+        Arc::clone(&artifacts),
+        pool.clone(),
+    ));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool.clone()),
@@ -292,16 +340,22 @@ fn build_app(
         tabular,
         artifacts: Arc::clone(&artifacts),
         data: Arc::clone(&data_store),
-        data_views: Arc::new(data::DataViewStore::new(Arc::clone(&artifacts), (*data_store).clone())),
-        fsms: Arc::new(data::FsmStore::new(Arc::clone(&artifacts), (*data_store).clone())),
+        data_views: Arc::new(data::DataViewStore::new(
+            Arc::clone(&artifacts),
+            (*data_store).clone(),
+        )),
+        fsms: Arc::new(data::FsmStore::new(
+            Arc::clone(&artifacts),
+            (*data_store).clone(),
+        )),
         mini_app_code: Arc::new(app_platform::MiniAppCodeStore::new(
             Arc::clone(&artifacts),
             app_platform::Registry::new(pool.clone()),
         )),
         ui_specs: Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator)),
-        ui_actions: Arc::new(gui::ActionDispatcher::new(storage::audit::AuditRecorder::new(
-            pool.clone(),
-        ))),
+        ui_actions: Arc::new(gui::ActionDispatcher::new(
+            storage::audit::AuditRecorder::new(pool.clone()),
+        )),
         skills: Arc::new(gui::SkillStore::new(Arc::clone(&artifacts))),
         mini_apps: Arc::new(gui::MiniAppStore::new(Arc::clone(&artifacts), pool.clone())),
         secrets: None,
