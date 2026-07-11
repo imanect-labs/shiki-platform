@@ -32,7 +32,9 @@ pub struct ManifestTable {
 /// AI/能力の予算ガードレール（アプリ登録時宣言・管理者キャップとの min が効く）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
 pub struct Budget {
-    /// 使用可能モデル（空＝テナントカタログ既定）。
+    /// 使用可能モデルの allowlist。**空 = テナントカタログに委ねる**（カタログは管理者管理の
+    /// 閉集合で最終判定）。特定モデルに絞りたいアプリは明示的に列挙する。非空のとき
+    /// ゲートウェイはモデル未指定の呼び出しも拒否する（既定モデルへのすり抜け防止）。
     #[serde(default)]
     pub models: Vec<String>,
     /// 日次コスト上限（マイクロ USD・None＝管理者キャップのみ）。

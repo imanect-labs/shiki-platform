@@ -76,7 +76,11 @@ async fn check_budget(
     let spent = llm
         .app_spend_today(&ctx.auth, ctx.installation.app_id)
         .await
-        .map_err(|e| GatewayError::Internal(format!("llm_usage 集計に失敗: {e}")))?;
+        .map_err(|e| {
+            // DB 詳細は out-of-trust クライアントへ出さない（tracing にのみ残す）。
+            tracing::error!(error = %e, "llm_usage 日次集計に失敗");
+            GatewayError::Internal("内部エラーが発生しました".into())
+        })?;
     if spent >= limit {
         return Err(GatewayError::RateLimited(format!(
             "本日の AI 予算（{limit} µUSD）を使い切りました"
