@@ -10,6 +10,7 @@ import {
   FolderPlus,
   LayoutGrid,
   List as ListIcon,
+  NotebookPen,
   Loader2,
   Plus,
   Presentation,
@@ -32,6 +33,7 @@ import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
+import { createNote } from "@/lib/notes-api";
 import { useContentSearch, type ContentHit } from "@/lib/drive-search";
 import {
   breadcrumb,
@@ -110,6 +112,25 @@ export function DriveBrowser() {
   // バックエンド（生成・テンプレート）実装までは「準備中」を知らせる。
   const createDocument = (label: string) =>
     toast({ title: `${label}を作成`, description: "この機能は近日対応予定です。" });
+
+  // ノート（md 共同編集・Task 11P.5）を作成してエディタへ遷移する。
+  const [creatingNote, setCreatingNote] = React.useState(false);
+  const createNoteAndOpen = async () => {
+    if (creatingNote) return;
+    setCreatingNote(true);
+    try {
+      const note = await createNote({ parentId: folderId ?? undefined, name: "無題のノート" });
+      router.push(`/notes/${note.id}`);
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "ノートの作成に失敗しました",
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setCreatingNote(false);
+    }
+  };
 
   // 検索: 入力は即時、クエリは少し待ってから反映（打鍵ごとの再取得を抑える）。
   // ⌘K パレットの「"q"で検索」からは ?q= で遷移してくるため、URL からも初期化・追従する。
@@ -301,6 +322,13 @@ export function DriveBrowser() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-52">
             <DropdownMenuLabel>新規作成</DropdownMenuLabel>
+            <DropdownMenuItem
+              onSelect={() => void createNoteAndOpen()}
+              data-testid="new-note"
+            >
+              <NotebookPen className="text-primary" aria-hidden />
+              ノート
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => createDocument("ドキュメント")}>
               <FileText className="text-blue-600" aria-hidden />
               ドキュメント

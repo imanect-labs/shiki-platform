@@ -37,7 +37,7 @@ pub mod workspace;
 
 pub use approver::DbApprover;
 pub use artifacts::StorageArtifactStore;
-pub use document_tool::{DocumentEditTool, DocumentReadTool};
+pub use document_tool::{DocumentEditTool, DocumentReadTool, SaveNoteTool};
 pub use error::ChatError;
 pub use gui_actions::ChatSubmitHandler;
 pub use model::{

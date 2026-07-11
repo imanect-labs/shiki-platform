@@ -60,6 +60,10 @@ pub struct ToolOutcome {
     /// `{id, name, display_name, version}` の JSON。**保存パイプライン（V1〜V7）を通過し
     /// artifact 化されたもののみ**を入れること（chat 側で workflow_ref ブロックへ写る）。
     pub workflow_refs: Vec<serde_json::Value>,
+    /// 保存済みノートへの参照（save_note のみ・Task 11P.5）。
+    /// `{id, name}` の JSON。**StorageService へ作成済みのノードのみ**を入れること
+    /// （chat 側で note_ref ブロックへ写る）。
+    pub note_refs: Vec<serde_json::Value>,
     /// 実行がエラーだったか（tool_result.is_error）。
     pub is_error: bool,
 }
@@ -73,6 +77,7 @@ impl ToolOutcome {
             artifacts: Vec::new(),
             ui_specs: Vec::new(),
             workflow_refs: Vec::new(),
+            note_refs: Vec::new(),
             is_error: false,
         }
     }
@@ -85,6 +90,7 @@ impl ToolOutcome {
             artifacts: Vec::new(),
             ui_specs: Vec::new(),
             workflow_refs: Vec::new(),
+            note_refs: Vec::new(),
             is_error: true,
         }
     }

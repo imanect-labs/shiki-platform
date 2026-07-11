@@ -198,3 +198,68 @@ test("AI サジェスト: 提案の承認と棄却", async ({ page }) => {
   await expect(page.getByTestId("note-suggestion-bar")).toHaveCount(0);
   await expect(editor.getByText("棄却される提案。")).toHaveCount(0);
 });
+
+/// ノート×チャット分割ビュー（Task 11P.5）: パネル開閉とスレッド紐付けを検証する。
+test("ノート分割ビュー: チャットパネルの開閉とスレッド紐付け", async ({ page }) => {
+  await loginViaKeycloak(page); // alice
+  await page.goto("/drive");
+  const nodeId = await createNoteViaApi(page, uniqueName("split-note"));
+  await openNote(page, nodeId);
+
+  // アシスタントパネルを開く → スレッドが自動作成され Conversation が出る。
+  await page.getByTestId("note-chat-toggle").click();
+  await expect(page.getByTestId("note-chat-panel")).toBeVisible();
+  // コンポーザ（メッセージ入力）が見える＝Conversation が載っている。
+  await expect(page.getByTestId("note-chat-panel").getByLabel("メッセージを入力")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  // 閉じる → パネルが消える。エディタは残る。
+  await page.getByRole("button", { name: "チャットを閉じる" }).click();
+  await expect(page.getByTestId("note-chat-panel")).toHaveCount(0);
+  await expect(editorLocator(page)).toBeVisible();
+});
+
+/// ドライブ「新規作成 > ノート」からノートを作成してエディタへ遷移できる（Task 11P.5）。
+test("ドライブ: 新規作成ノート → エディタ遷移", async ({ page }) => {
+  await loginViaKeycloak(page); // alice
+  await page.goto("/drive");
+  await page.getByRole("button", { name: "新規作成" }).click();
+  await page.getByTestId("new-note").click();
+  // ノートページへ遷移し、エディタが同期完了する。
+  await page.waitForURL(/\/notes\//, { timeout: 15_000 });
+  await expect(page.getByTestId("note-sync-status")).toHaveText("同期済み", {
+    timeout: 20_000,
+  });
+  await expect(editorLocator(page)).toBeVisible();
+});
+
+/// fail-closed（Task 11P.5）: スレッド閲覧権限のないノート共同編集者にスレッド内容が漏れない。
+test("分割ビュー fail-closed: スレッド非共有では会話が見えない", async ({ page, browser }) => {
+  await loginViaKeycloak(page); // alice
+  await page.goto("/drive");
+  const nodeId = await createNoteViaApi(page, uniqueName("failclosed-note"));
+  await openNote(page, nodeId);
+
+  // alice がチャットパネルを開いてスレッドを作成（thread_id が meta に入る）。
+  await page.getByTestId("note-chat-toggle").click();
+  await expect(page.getByTestId("note-chat-panel").getByLabel("メッセージを入力")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  // bob をノートの editor に共有する（スレッドは共有しない＝別 ReBAC）。
+  await shareViaApi(page, nodeId, "editor");
+
+  // bob はノートを編集できるが、チャットパネルを開いてもスレッド内容は見えない（fail-closed）。
+  const bobCtx = await browser.newContext();
+  const bobPage = await bobCtx.newPage();
+  await loginAs(bobPage, "bob");
+  await openNote(bobPage, nodeId);
+  await bobPage.getByTestId("note-chat-toggle").click();
+  await expect(bobPage.getByTestId("note-chat-panel")).toBeVisible();
+  // Conversation は 403/404 を fail-closed で「見つかりません」に落とす。
+  await expect(bobPage.getByText("この会話は見つかりませんでした。")).toBeVisible({
+    timeout: 15_000,
+  });
+  await bobCtx.close();
+});
