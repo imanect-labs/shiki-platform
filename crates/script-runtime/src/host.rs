@@ -109,8 +109,10 @@ mod tests {
     fn allowed_apis_closed_set() {
         assert!(is_allowed_api("storage.read"));
         assert!(is_allowed_api("workflow.start"));
-        // data.* は Stage B（現時点では拒否）。
-        assert!(!is_allowed_api("data.query"));
+        // Stage B（Task 9.12）: data.* / notify.send はゲートウェイ HTTP 越しに許可。
+        assert!(is_allowed_api("data.query"));
+        assert!(is_allowed_api("notify.send"));
+        // 閉集合外は拒否（secrets 直参照禁止・パストラバーサル）。
         assert!(!is_allowed_api("secrets.get"));
         assert!(!is_allowed_api("../escape"));
     }
