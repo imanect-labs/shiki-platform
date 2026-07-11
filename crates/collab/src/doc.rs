@@ -4,9 +4,11 @@
 //! 「適用 → 追記（DB） → ブロードキャスト」。DB 追記前に配信しないことで、
 //! クラッシュ時に「他クライアントは見たが永続化されていない update」を作らない。
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, RwLock};
+use std::time::Instant;
 
+use authz::AuthContext;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 use yrs::sync::{Awareness, AwarenessUpdate};
@@ -37,6 +39,20 @@ pub struct LiveDoc {
     conns: AtomicUsize,
     /// 最後の圧縮以降に追記した update 件数（[`COMPACT_EVERY`] で圧縮発火）。
     appended_since_compact: AtomicUsize,
+    /// ノート保存（Task 11P.2）用の未保存状態。md 以外のドキュメントでは使われない。
+    note: NoteDirty,
+}
+
+/// ノートの未保存編集トラッキング（デバウンス保存の判定材料）。
+#[derive(Default)]
+struct NoteDirty {
+    dirty: AtomicBool,
+    /// 最後の編集時刻。
+    last_edit: Mutex<Option<Instant>>,
+    /// 未保存編集の先頭時刻（SAVE_MAX 判定）。
+    first_dirty: Mutex<Option<Instant>>,
+    /// 保存の実行主体（最後に編集した人間/AI の AuthContext）。
+    save_ctx: Mutex<Option<AuthContext>>,
 }
 
 impl LiveDoc {
@@ -59,6 +75,7 @@ impl LiveDoc {
             tx,
             conns: AtomicUsize::new(0),
             appended_since_compact: AtomicUsize::new(persisted.updates.len()),
+            note: NoteDirty::default(),
         })
     }
 
@@ -152,14 +169,17 @@ impl LiveDoc {
     /// update を「適用 → 追記 → （しきい値で）圧縮」まで済ませる。
     ///
     /// 圧縮は best-effort（失敗しても適用済み update は log にあり整合は崩れない）。
+    /// 併せてノート保存のための dirty マークと実行主体を記録する。
     pub async fn apply_and_persist(
         &self,
         store: &DocStore,
         payload: &[u8],
-        author: &str,
+        ctx: &AuthContext,
     ) -> Result<(), CollabError> {
         self.apply_update_bytes(payload)?;
+        let author = ctx.principal.id.as_str();
         let seq = store.append_update(self.node_id, payload, author).await?;
+        self.note_mark_dirty(ctx);
         let appended = self.appended_since_compact.fetch_add(1, Ordering::SeqCst) + 1;
         if appended as i64 >= COMPACT_EVERY {
             self.appended_since_compact.store(0, Ordering::SeqCst);
@@ -179,6 +199,70 @@ impl LiveDoc {
         }
         let snapshot = self.full_state()?;
         store.compact_latest(self.node_id, &snapshot).await
+    }
+
+    // --- ノート保存トラッキング（Task 11P.2）---
+
+    /// 未保存編集をマークする（保存の実行主体を最後の編集者で更新）。
+    pub fn note_mark_dirty(&self, ctx: &AuthContext) {
+        let now = Instant::now();
+        if let Ok(mut last) = self.note.last_edit.lock() {
+            *last = Some(now);
+        }
+        if let Ok(mut first) = self.note.first_dirty.lock() {
+            first.get_or_insert(now);
+        }
+        if let Ok(mut save_ctx) = self.note.save_ctx.lock() {
+            *save_ctx = Some(ctx.clone());
+        }
+        self.note.dirty.store(true, Ordering::SeqCst);
+    }
+
+    /// 保存条件（アイドル or 最大滞留）を満たしているか。
+    pub fn note_should_save(&self, idle: std::time::Duration, max: std::time::Duration) -> bool {
+        if !self.note.dirty.load(Ordering::SeqCst) {
+            return false;
+        }
+        let now = Instant::now();
+        let idle_ok = self
+            .note
+            .last_edit
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .is_some_and(|t| now.duration_since(t) >= idle);
+        let max_ok = self
+            .note
+            .first_dirty
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .is_some_and(|t| now.duration_since(t) >= max);
+        idle_ok || max_ok
+    }
+
+    /// dirty を消費して保存主体を取り出す（dirty でなければ None）。
+    pub fn note_take_dirty(&self) -> Option<AuthContext> {
+        if !self.note.dirty.swap(false, Ordering::SeqCst) {
+            return None;
+        }
+        if let Ok(mut first) = self.note.first_dirty.lock() {
+            *first = None;
+        }
+        self.note.save_ctx.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// 現在の内容を正規化 md（frontmatter 付き）へシリアライズする。
+    pub fn to_markdown(&self) -> Result<String, CollabError> {
+        let awareness = self.read_awareness()?;
+        Ok(crate::note::doc_to_markdown(awareness.doc()))
+    }
+
+    /// md 全文を全置換で取り込む（外部書込のインポート・Task 11P.2 単方向規約）。
+    pub fn import_markdown(&self, markdown: &str) -> Result<(), CollabError> {
+        let awareness = self.read_awareness()?;
+        crate::note::import_markdown(awareness.doc(), markdown);
+        Ok(())
     }
 
     fn read_awareness(&self) -> Result<std::sync::RwLockReadGuard<'_, Awareness>, CollabError> {

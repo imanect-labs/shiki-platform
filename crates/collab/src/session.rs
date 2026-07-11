@@ -78,7 +78,7 @@ async fn session_loop(
                     Some(Ok(WsMessage::Binary(bytes))) => {
                         if let Some(reason) = handle_client_message(
                             &mut socket, hub, doc, mode, conn_id, &bytes,
-                            &ctx.principal.id, &mut announced_clients,
+                            ctx, &mut announced_clients,
                         ).await? {
                             break Some(reason);
                         }
@@ -131,7 +131,7 @@ async fn handle_client_message(
     mode: AccessMode,
     conn_id: u64,
     bytes: &[u8],
-    author: &str,
+    ctx: &AuthContext,
     announced_clients: &mut Vec<yrs::block::ClientID>,
 ) -> Result<Option<&'static str>, CollabError> {
     // デコード不能な入力は敵対的とみなし切断する（PIT-23 と同じ前提）。
@@ -151,7 +151,7 @@ async fn handle_client_message(
                 tracing::debug!(node_id = %doc.node_id, conn_id, "viewer からの update を破棄");
                 return Ok(None);
             }
-            doc.apply_and_persist(hub.store(), &update, author).await?;
+            doc.apply_and_persist(hub.store(), &update, ctx).await?;
             doc.broadcast(
                 conn_id,
                 Message::Sync(SyncMessage::Update(update)).encode_v1(),

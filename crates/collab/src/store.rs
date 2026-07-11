@@ -167,6 +167,22 @@ impl DocStore {
         Ok(())
     }
 
+    /// md 保存済みの node.version を記録する（外部書込検出・Task 11P.2）。
+    pub async fn set_saved_node_version(
+        &self,
+        node_id: Uuid,
+        version: i64,
+    ) -> Result<(), CollabError> {
+        sqlx::query(
+            "UPDATE collab_doc SET saved_node_version = $2, updated_at = now() WHERE node_id = $1",
+        )
+        .bind(node_id)
+        .bind(version)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// 未圧縮 update の件数（圧縮判断・テスト検証用）。
     pub async fn pending_update_count(&self, node_id: Uuid) -> Result<i64, CollabError> {
         let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM collab_update WHERE node_id = $1")
