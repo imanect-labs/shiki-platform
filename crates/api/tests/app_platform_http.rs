@@ -303,6 +303,10 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         Arc::new(AllowAll),
         storage::audit::AuditRecorder::new(db.clone()),
     ));
+    let app_usage = Arc::new(app_platform::AppUsageStore::new(
+        db.clone(),
+        Arc::new(AllowAll),
+    ));
     let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
         db.clone(),
         workflow_engine::DelegationStore::new(db.clone(), Arc::new(AllowAll)),
@@ -337,6 +341,7 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         mini_app_code,
         installs,
         bundles,
+        app_usage,
         ui_specs,
         ui_actions,
         skills,
@@ -704,4 +709,40 @@ async fn install_import_uninstall_over_http() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+}
+
+/// 利用量 API（/apps/{id}/usage）の owner ゲートと応答形状（Task 9.15）。
+#[tokio::test]
+async fn app_usage_endpoint_requires_owner() {
+    let Some(pool) = setup().await else { return };
+    let sessions = Arc::new(MemorySessionStore::new());
+    sessions
+        .put(
+            "default",
+            "sid-usage",
+            &session_record("csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with(pool.clone(), sessions));
+    let cookie = "shiki_session=sid-usage.default; shiki_csrf=csrf";
+
+    // AllowAll authz なので owner チェックは通り、集計は空でも 200＋形状。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/apps/{}/usage", uuid::Uuid::new_v4()))
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(body["capabilities"].is_array());
+    assert!(body["llm"].is_array());
 }

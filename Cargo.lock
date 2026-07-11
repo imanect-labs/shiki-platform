@@ -4958,6 +4958,7 @@ dependencies = [
  "shiki-authz",
  "shiki-data",
  "shiki-gui",
+ "shiki-llm-gateway",
  "shiki-script-runtime",
  "shiki-secrets",
  "shiki-storage",

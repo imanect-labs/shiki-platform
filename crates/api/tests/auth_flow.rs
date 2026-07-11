@@ -424,6 +424,10 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         Arc::new(AllowAll),
         storage::audit::AuditRecorder::new(db.clone()),
     ));
+    let app_usage = Arc::new(app_platform::AppUsageStore::new(
+        db.clone(),
+        Arc::new(AllowAll),
+    ));
     let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
         db.clone(),
         workflow_engine::DelegationStore::new(db.clone(), Arc::new(AllowAll)),
@@ -458,6 +462,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         mini_app_code,
         installs,
         bundles,
+        app_usage,
         ui_specs,
         ui_actions,
         skills,

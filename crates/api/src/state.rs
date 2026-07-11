@@ -62,6 +62,8 @@ pub struct AppState {
     pub installs: Arc<app_platform::InstallService>,
     /// B1 フロントバンドル保管（Task 9.11・content-addressed）。
     pub bundles: Arc<app_platform::BundleStore>,
+    /// アプリ利用量集計（Task 9.15・capability＋llm）。
+    pub app_usage: Arc<app_platform::AppUsageStore>,
     /// UI スペックの保存/取得（Task 6.3・artifact kind=ui_spec の上に保存時検証を載せる）。
     pub ui_specs: Arc<gui::UiSpecStore>,
     /// 宣言的 UI アクションの実行系（Task 6.5・照合/本人認可/監査の合流点）。

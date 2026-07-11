@@ -316,6 +316,10 @@ async fn setup() -> Option<Env> {
         Arc::new(AllowAll),
         storage::audit::AuditRecorder::new(pool.clone()),
     ));
+    let app_usage = Arc::new(app_platform::AppUsageStore::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+    ));
     let state = AppState {
         config: Arc::new(config(&db_url)),
         db: api::state::ReadinessProbe::new(pool.clone()),
@@ -350,6 +354,7 @@ async fn setup() -> Option<Env> {
         mini_app_code,
         installs,
         bundles,
+        app_usage,
         secrets: None,
         workflows,
         workflow_launcher: Some(launcher),
