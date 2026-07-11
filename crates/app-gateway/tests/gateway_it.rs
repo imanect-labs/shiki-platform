@@ -148,3 +148,62 @@ async fn multi_tenant_rejects_missing_tenant_claim() {
     let (s, _) = get(&app, "/gw/whoami", Some(&ok)).await;
     assert_eq!(s, StatusCode::OK);
 }
+
+/// CORS: B1 の opaque origin（Origin: null）からのプリフライトと能力応答にヘッダが付く。
+#[tokio::test]
+async fn cors_allows_opaque_origin_preflight_and_reflects_origin() {
+    use axum::body::Body;
+    use axum::http::{header, Request};
+    use tower::ServiceExt;
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let app = build_gateway_router(state(pool.clone(), &tenant));
+
+    // プリフライト（OPTIONS・Bearer なし）は dual_gate より外側で 204＋CORS を返す。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/gw/data/tables")
+                .header(header::ORIGIN, "null")
+                .header("access-control-request-method", "GET")
+                .header("access-control-request-headers", "authorization")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let h = resp.headers();
+    assert_eq!(
+        h.get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .and_then(|v| v.to_str().ok()),
+        Some("null")
+    );
+    assert!(h
+        .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("authorization")));
+
+    // 実リクエスト（未認証）でも応答に ACAO が付く（ブラウザが 401 本文を読めるように）。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/gw/whoami")
+                .header(header::ORIGIN, "null")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        resp.headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .and_then(|v| v.to_str().ok()),
+        Some("null")
+    );
+}

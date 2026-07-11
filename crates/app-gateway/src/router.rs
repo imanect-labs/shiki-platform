@@ -10,7 +10,7 @@ use std::sync::Arc;
 use authz::{AuthContext, AuthzClient, Principal, PrincipalKind};
 use axum::{
     extract::{MatchedPath, State},
-    http::{header::AUTHORIZATION, Request, StatusCode},
+    http::{header, header::AUTHORIZATION, HeaderMap, HeaderValue, Method, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Json, Response},
     routing::get,
@@ -107,7 +107,50 @@ pub fn build_gateway_router(state: GatewayState) -> Router {
             state.clone(),
             dual_gate,
         ))
+        // CORS は dual_gate より外側（preflight を Bearer 無しでも処理する）。
+        .layer(axum::middleware::from_fn(cors))
         .with_state(state)
+}
+
+/// CORS 付与（B1 の opaque origin＝`Origin: null` からの能力呼び出しを許可する）。
+///
+/// ゲートウェイは **Bearer 専用（cookie/credentials なし）** なのでオリジンを反射しても
+/// アンビエント権限は漏れない（CORS が守るのは cookie ベース認証＝ここには無い）。認可は
+/// 二重ゲート（token∩granted∩ReBAC）が担う。preflight（OPTIONS）は `dual_gate` より外側で
+/// 204 応答する（プリフライトは Bearer を運べないため）。
+async fn cors(req: Request<axum::body::Body>, next: Next) -> Response {
+    let origin = req.headers().get(header::ORIGIN).cloned();
+    if req.method() == Method::OPTIONS {
+        let mut resp = StatusCode::NO_CONTENT.into_response();
+        apply_cors(resp.headers_mut(), origin.as_ref());
+        return resp;
+    }
+    let mut resp = next.run(req).await;
+    apply_cors(resp.headers_mut(), origin.as_ref());
+    resp
+}
+
+fn apply_cors(headers: &mut HeaderMap, origin: Option<&HeaderValue>) {
+    // credentials は付与しない（Bearer 専用）ため、オリジン反射で安全。Origin 欠落
+    // （同一オリジン/サーバ間）は "null" を返す（害はない）。
+    let allow = origin
+        .cloned()
+        .unwrap_or_else(|| HeaderValue::from_static("null"));
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, allow);
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, PATCH, DELETE, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("authorization, content-type"),
+    );
+    // オリジンごとに応答が変わるためキャッシュ健全性のため Vary を付ける。
+    headers.insert(header::VARY, HeaderValue::from_static("origin"));
+    headers.insert(
+        header::ACCESS_CONTROL_MAX_AGE,
+        HeaderValue::from_static("600"),
+    );
 }
 
 /// Bearer トークンを取り出す（`Authorization: Bearer <t>`）。
