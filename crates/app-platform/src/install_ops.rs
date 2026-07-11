@@ -363,3 +363,49 @@ impl InstallService {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::{b2_secret_name, next_cron_run_after};
+    use crate::AppPlatformError;
+
+    #[test]
+    fn b2_secret_name_is_app_scoped() {
+        let a = uuid::Uuid::nil();
+        assert_eq!(b2_secret_name(a), format!("miniapp-b2-{a}"));
+        // 別アプリは別名（テナント内衝突なし）。
+        assert_ne!(b2_secret_name(uuid::Uuid::new_v4()), b2_secret_name(a));
+    }
+
+    #[test]
+    fn next_cron_run_after_normalizes_five_fields() {
+        // 毎日 09:00（5 フィールド）＝秒 0 補完で解釈される。
+        let after = chrono::DateTime::parse_from_rfc3339("2026-07-09T08:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let next = next_cron_run_after("0 9 * * *", after).expect("valid cron");
+        assert_eq!(next.to_rfc3339(), "2026-07-09T09:00:00+00:00");
+        // 同日 09:00 を過ぎていれば翌日へ送る。
+        let after2 = chrono::DateTime::parse_from_rfc3339("2026-07-09T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let next2 = next_cron_run_after("0 9 * * *", after2).expect("valid cron");
+        assert_eq!(next2.to_rfc3339(), "2026-07-10T09:00:00+00:00");
+    }
+
+    #[test]
+    fn next_cron_run_after_rejects_malformed_expr() {
+        let after = chrono::Utc::now();
+        assert!(matches!(
+            next_cron_run_after("not a cron", after),
+            Err(AppPlatformError::Invalid(_))
+        ));
+        // フィールド不足も不正。
+        assert!(matches!(
+            next_cron_run_after("0 9", after),
+            Err(AppPlatformError::Invalid(_))
+        ));
+    }
+}

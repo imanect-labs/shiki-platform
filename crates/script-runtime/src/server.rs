@@ -269,3 +269,147 @@ fn host_err(msg: &str) -> HostResponse {
         retryable: true,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{ExecOutcome, Termination};
+
+    #[test]
+    fn shrink_to_unspecified_uses_ceiling() {
+        // 0（未指定）は天井をそのまま採用する。
+        assert_eq!(shrink_to(0, 100), 100);
+    }
+
+    #[test]
+    fn shrink_to_clamps_and_passes_through() {
+        // 天井未満はそのまま・天井以上は縮小（拡大させない）。
+        assert_eq!(shrink_to(40, 100), 40);
+        assert_eq!(shrink_to(100, 100), 100);
+        assert_eq!(shrink_to(500, 100), 100);
+    }
+
+    #[test]
+    fn to_limits_none_returns_default() {
+        let d = Limits::default();
+        let l = to_limits(None);
+        assert_eq!(l.fuel, d.fuel);
+        assert_eq!(l.memory_bytes, d.memory_bytes);
+        assert_eq!(l.epoch_deadline, d.epoch_deadline);
+        assert_eq!(l.max_host_calls, d.max_host_calls);
+    }
+
+    #[test]
+    fn to_limits_honors_requested_below_ceiling() {
+        // 天井より厳しい要求はそのまま採用する。
+        let req = proto::Limits {
+            fuel: 1_000,
+            memory_bytes: 1024 * 1024,
+            epoch_deadline_ms: 4_500,
+            max_host_calls: 10,
+        };
+        let l = to_limits(Some(&req));
+        assert_eq!(l.fuel, 1_000);
+        assert_eq!(l.memory_bytes, 1024 * 1024);
+        assert_eq!(l.epoch_deadline, std::time::Duration::from_millis(4_500));
+        assert_eq!(l.max_host_calls, 10);
+    }
+
+    #[test]
+    fn to_limits_clamps_above_ceiling_and_zero_uses_ceiling() {
+        // 天井より緩い要求は縮小のみ・0（未指定）は天井を採用する（拡大禁止・script.md §4.3）。
+        let d = Limits::default();
+        let req = proto::Limits {
+            fuel: u64::MAX,
+            memory_bytes: u32::MAX,
+            epoch_deadline_ms: 0,
+            max_host_calls: u32::MAX,
+        };
+        let l = to_limits(Some(&req));
+        assert_eq!(l.fuel, d.fuel);
+        assert_eq!(l.memory_bytes, d.memory_bytes);
+        assert_eq!(l.epoch_deadline, d.epoch_deadline);
+        assert_eq!(l.max_host_calls, d.max_host_calls);
+    }
+
+    #[test]
+    fn to_exec_result_maps_success() {
+        let outcome = ExecOutcome {
+            ok: true,
+            value: Some(serde_json::json!({ "n": 7 })),
+            error: None,
+            termination: Termination::Completed,
+            logs: Vec::new(),
+        };
+        let r = to_exec_result("exec-1", &outcome);
+        assert_eq!(r.exec_id, "exec-1");
+        assert!(r.ok);
+        assert_eq!(r.value_json, "{\"n\":7}");
+        assert!(r.error_message.is_empty());
+        assert!(r.error_code.is_empty());
+        assert!(!r.retryable);
+        assert_eq!(r.termination, "Completed");
+    }
+
+    #[test]
+    fn to_exec_result_maps_error_with_empty_value() {
+        let outcome = ExecOutcome {
+            ok: false,
+            value: None,
+            error: Some(("boom".into(), "resource".into(), true)),
+            termination: Termination::Fuel,
+            logs: Vec::new(),
+        };
+        let r = to_exec_result("e2", &outcome);
+        assert!(!r.ok);
+        assert!(r.value_json.is_empty());
+        assert_eq!(r.error_message, "boom");
+        assert_eq!(r.error_code, "resource");
+        assert!(r.retryable);
+        assert_eq!(r.termination, "Fuel");
+    }
+
+    #[test]
+    fn to_exec_result_missing_error_tuple_defaults_empty() {
+        // ok=false だが error タプルが無い異常系でも空文字へ落とす（unwrap_or_else 経路）。
+        let outcome = ExecOutcome {
+            ok: false,
+            value: None,
+            error: None,
+            termination: Termination::Trap("t".into()),
+            logs: Vec::new(),
+        };
+        let r = to_exec_result("e3", &outcome);
+        assert!(!r.ok);
+        assert!(r.error_message.is_empty());
+        assert!(r.error_code.is_empty());
+        assert!(!r.retryable);
+        assert!(r.termination.starts_with("Trap"));
+    }
+
+    #[test]
+    fn host_err_is_retryable_internal() {
+        let r = host_err("nope");
+        assert!(matches!(
+            &r,
+            HostResponse::Err { code, retryable, .. } if code == "internal" && *retryable
+        ));
+        if let HostResponse::Err { message, .. } = r {
+            assert_eq!(message, "nope");
+        }
+    }
+
+    #[test]
+    fn concurrency_floor_is_one_and_default_is_applied() {
+        let engine = Arc::new(ScriptEngine::new().expect("engine"));
+        // 0 指定でも最低 1 permit（max(1)）。
+        let svc = ScriptRuntimeService::with_concurrency(Arc::clone(&engine), 0);
+        assert_eq!(svc.admission.available_permits(), 1);
+        // new() は既定上限を使う。
+        let svc_default = ScriptRuntimeService::new(engine);
+        assert_eq!(
+            svc_default.admission.available_permits(),
+            DEFAULT_MAX_CONCURRENT
+        );
+    }
+}

@@ -11,7 +11,7 @@ mod common;
 
 use app_gateway::{build_gateway_router, AiPin, AppInstallationStore, NewAppInstallation};
 use axum::http::StatusCode;
-use common::{ctx, get, setup, state, token, token_without_tenant};
+use common::{ctx, get, request_json, setup, state, token, token_without_tenant};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -212,4 +212,60 @@ async fn cors_allows_opaque_origin_preflight_and_reflects_origin() {
             .and_then(|v| v.to_str().ok()),
         Some("null")
     );
+}
+
+/// B2 関数起動ルート（Task 9.12）: 宣言済み関数は FunctionPort へ委譲し、宣言外は存在秘匿 404。
+#[tokio::test]
+async fn b2_function_invoke_delegates_and_hides_undeclared() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let app_id = Uuid::new_v4();
+    let client_b2 = format!("b2-{}", Uuid::new_v4());
+    let installations = AppInstallationStore::new(pool.clone());
+    installations
+        .upsert(
+            &ctx(&tenant),
+            NewAppInstallation {
+                app_id,
+                app_name: "経費",
+                installed_version: "1.0.0",
+                granted_scopes: &[],
+                client_id_b1: None,
+                client_id_b2: Some(&client_b2),
+                ai: AiPin::default(),
+                frontend_bundle: None,
+                server_bundle: Some("deadbeef"),
+                server_spec: Some(serde_json::json!({ "functions": ["on_approved"] })),
+            },
+        )
+        .await
+        .expect("install");
+
+    let app = build_gateway_router(state(pool.clone(), &tenant));
+    let tok = token(&client_b2, "", &tenant);
+
+    // 宣言済み関数 → 委譲され StubFunctions が echo（subject_token はハンドラが Bearer から抽出）。
+    let (s, body) = request_json(
+        &app,
+        "POST",
+        "/gw/apps/functions/on_approved/invoke",
+        Some(&tok),
+        &serde_json::json!({ "record": "r1" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["function_stub"], "on_approved");
+    assert_eq!(body["has_subject_token"], true);
+    assert_eq!(body["server_bundle"], "deadbeef");
+
+    // 宣言外関数 → server_spec.functions に無いので 404（存在秘匿）。
+    let (s, _) = request_json(
+        &app,
+        "POST",
+        "/gw/apps/functions/unknown/invoke",
+        Some(&tok),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }

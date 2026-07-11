@@ -208,3 +208,42 @@ impl ExecOutcome {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unpack_splits_high_ptr_and_low_len() {
+        let packed = (0x1234_5678u64 << 32) | 0x00ab_cdef;
+        assert_eq!(unpack(packed), (0x1234_5678, 0x00ab_cdef));
+    }
+
+    #[test]
+    fn unpack_zero_is_zero() {
+        assert_eq!(unpack(0), (0, 0));
+    }
+
+    #[test]
+    fn unpack_len_only_leaves_ptr_zero() {
+        assert_eq!(unpack(0xffff_ffff), (0, 0xffff_ffff));
+    }
+
+    #[test]
+    fn unpack_ptr_only_leaves_len_zero() {
+        assert_eq!(unpack(0xffff_ffff_0000_0000), (0xffff_ffff, 0));
+    }
+
+    #[test]
+    fn exec_outcome_trap_shape() {
+        let o = ExecOutcome::trap("bad thing".to_string());
+        assert!(!o.ok);
+        assert!(o.value.is_none());
+        assert_eq!(
+            o.error,
+            Some(("bad thing".to_string(), "internal".to_string(), false))
+        );
+        assert!(matches!(o.termination, Termination::Trap(m) if m == "bad thing"));
+        assert!(o.logs.is_empty());
+    }
+}

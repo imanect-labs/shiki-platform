@@ -166,3 +166,246 @@ fn read_bytes(caller: &mut Caller<'_, HostState>, ptr: u32, out: &mut [u8]) -> i
         None => ERRNO_BADF,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use wasmtime::{Engine, Instance, Linker, Module, Store, TypedFunc};
+
+    use super::*;
+    use crate::engine::HostState;
+    use crate::host::HostResponse;
+
+    /// WASI スタブ関数を import して呼び出すだけの薄いテスト用ゲスト（memory を export）。
+    const HARNESS_WAT: &str = r#"
+    (module
+      (import "wasi_snapshot_preview1" "random_get" (func $random_get (param i32 i32) (result i32)))
+      (import "wasi_snapshot_preview1" "clock_time_get" (func $clock (param i32 i64 i32) (result i32)))
+      (import "wasi_snapshot_preview1" "environ_sizes_get" (func $env_sizes (param i32 i32) (result i32)))
+      (import "wasi_snapshot_preview1" "environ_get" (func $env_get (param i32 i32) (result i32)))
+      (import "wasi_snapshot_preview1" "fd_write" (func $fd_write (param i32 i32 i32 i32) (result i32)))
+      (import "wasi_snapshot_preview1" "fd_read" (func $fd_read (param i32 i32 i32 i32) (result i32)))
+      (import "wasi_snapshot_preview1" "fd_seek" (func $fd_seek (param i32 i64 i32 i32) (result i32)))
+      (import "wasi_snapshot_preview1" "fd_close" (func $fd_close (param i32) (result i32)))
+      (import "wasi_snapshot_preview1" "fd_fdstat_get" (func $fd_fdstat_get (param i32 i32) (result i32)))
+      (import "wasi_snapshot_preview1" "proc_exit" (func $proc_exit (param i32)))
+      (memory (export "memory") 1)
+      (func (export "call_random") (param i32 i32) (result i32)
+        (call $random_get (local.get 0) (local.get 1)))
+      (func (export "call_clock") (param i32) (result i32)
+        (call $clock (i32.const 0) (i64.const 0) (local.get 0)))
+      (func (export "call_env_sizes") (param i32 i32) (result i32)
+        (call $env_sizes (local.get 0) (local.get 1)))
+      (func (export "call_env_get") (param i32 i32) (result i32)
+        (call $env_get (local.get 0) (local.get 1)))
+      (func (export "call_fd_write") (param i32 i32 i32 i32) (result i32)
+        (call $fd_write (local.get 0) (local.get 1) (local.get 2) (local.get 3)))
+      (func (export "call_fd_read") (param i32 i32 i32 i32) (result i32)
+        (call $fd_read (local.get 0) (local.get 1) (local.get 2) (local.get 3)))
+      (func (export "call_fd_seek") (param i32 i64 i32 i32) (result i32)
+        (call $fd_seek (local.get 0) (local.get 1) (local.get 2) (local.get 3)))
+      (func (export "call_fd_close") (param i32) (result i32)
+        (call $fd_close (local.get 0)))
+      (func (export "call_fd_fdstat") (param i32 i32) (result i32)
+        (call $fd_fdstat_get (local.get 0) (local.get 1)))
+      (func (export "call_proc_exit") (param i32)
+        (call $proc_exit (local.get 0)))
+    )
+    "#;
+
+    struct Harness {
+        store: Store<HostState>,
+        instance: Instance,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let engine = Engine::default();
+            let mut linker = Linker::new(&engine);
+            add_to_linker(&mut linker).expect("add wasi stub");
+            let module = Module::new(&engine, HARNESS_WAT).expect("wat module");
+            let host_fn =
+                Box::new(|_c: &crate::host::HostCall| HostResponse::Ok(serde_json::Value::Null));
+            let mut store = Store::new(&engine, HostState::new_for_test(host_fn));
+            let instance = linker
+                .instantiate(&mut store, &module)
+                .expect("instantiate");
+            Harness { store, instance }
+        }
+
+        fn func2(&mut self, name: &str) -> TypedFunc<(i32, i32), i32> {
+            self.instance
+                .get_typed_func::<(i32, i32), i32>(&mut self.store, name)
+                .expect("typed func2")
+        }
+
+        fn read(&mut self, ptr: usize, out: &mut [u8]) {
+            let mem = self
+                .instance
+                .get_memory(&mut self.store, "memory")
+                .expect("memory");
+            mem.read(&self.store, ptr, out).expect("read");
+        }
+
+        fn write(&mut self, ptr: usize, bytes: &[u8]) {
+            let mem = self
+                .instance
+                .get_memory(&mut self.store, "memory")
+                .expect("memory");
+            mem.write(&mut self.store, ptr, bytes).expect("write");
+        }
+    }
+
+    #[test]
+    fn clock_is_monotonic_and_writes_le_bytes() {
+        let mut h = Harness::new();
+        let clock = h
+            .instance
+            .get_typed_func::<i32, i32>(&mut h.store, "call_clock")
+            .expect("clock");
+        let rc = clock.call(&mut h.store, 0).expect("call");
+        assert_eq!(rc, ERRNO_SUCCESS);
+        let mut buf = [0u8; 8];
+        h.read(0, &mut buf);
+        assert_eq!(u64::from_le_bytes(buf), 1_000_000);
+        // 2 回目は +1_000_000 単調増加。
+        clock.call(&mut h.store, 8).expect("call2");
+        h.read(8, &mut buf);
+        assert_eq!(u64::from_le_bytes(buf), 2_000_000);
+    }
+
+    #[test]
+    fn clock_write_out_of_bounds_returns_badf() {
+        let mut h = Harness::new();
+        let clock = h
+            .instance
+            .get_typed_func::<i32, i32>(&mut h.store, "call_clock")
+            .expect("clock");
+        // 1 ページ (64KB) の外へ書こうとすると write_bytes が失敗し BADF。
+        let rc = clock.call(&mut h.store, 10_000_000).expect("call");
+        assert_eq!(rc, ERRNO_BADF);
+    }
+
+    #[test]
+    fn random_fills_and_rejects_oversized() {
+        let mut h = Harness::new();
+        let random = h.func2("call_random");
+        let rc = random.call(&mut h.store, (16, 32)).expect("call");
+        assert_eq!(rc, ERRNO_SUCCESS);
+        // 64KB 超の 1 回要求は EINVAL(28) で拒否（DoS 対策）。
+        let rc_big = random.call(&mut h.store, (16, 70_000)).expect("call big");
+        assert_eq!(rc_big, 28);
+    }
+
+    #[test]
+    fn environ_reports_empty() {
+        let mut h = Harness::new();
+        let env_sizes = h.func2("call_env_sizes");
+        let rc = env_sizes.call(&mut h.store, (100, 108)).expect("call");
+        assert_eq!(rc, ERRNO_SUCCESS);
+        let mut count = [0u8; 4];
+        let mut size = [0u8; 4];
+        h.read(100, &mut count);
+        h.read(108, &mut size);
+        assert_eq!(u32::from_le_bytes(count), 0);
+        assert_eq!(u32::from_le_bytes(size), 0);
+
+        let env_get = h.func2("call_env_get");
+        assert_eq!(
+            env_get.call(&mut h.store, (0, 0)).expect("env_get"),
+            ERRNO_SUCCESS
+        );
+    }
+
+    #[test]
+    fn fd_write_sums_iov_lengths_for_stdio() {
+        let mut h = Harness::new();
+        // iov[0] = (buf_ptr=300, buf_len=5) を 200 番地へ置く。
+        let mut iov = [0u8; 8];
+        iov[0..4].copy_from_slice(&300u32.to_le_bytes());
+        iov[4..8].copy_from_slice(&5u32.to_le_bytes());
+        h.write(200, &iov);
+
+        let fd_write = h
+            .instance
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut h.store, "call_fd_write")
+            .expect("fd_write");
+        // fd=1 (stdout)・iovs=200・iovs_len=1・nwritten=400。
+        let rc = fd_write.call(&mut h.store, (1, 200, 1, 400)).expect("call");
+        assert_eq!(rc, ERRNO_SUCCESS);
+        let mut nwritten = [0u8; 4];
+        h.read(400, &mut nwritten);
+        assert_eq!(u32::from_le_bytes(nwritten), 5);
+    }
+
+    #[test]
+    fn fd_write_rejects_non_stdio_fd() {
+        let mut h = Harness::new();
+        let fd_write = h
+            .instance
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut h.store, "call_fd_write")
+            .expect("fd_write");
+        // fd=5（stdout/stderr 以外）は BADF。
+        let rc = fd_write.call(&mut h.store, (5, 200, 1, 400)).expect("call");
+        assert_eq!(rc, ERRNO_BADF);
+    }
+
+    #[test]
+    fn fd_write_iov_out_of_bounds_returns_badf() {
+        let mut h = Harness::new();
+        let fd_write = h
+            .instance
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut h.store, "call_fd_write")
+            .expect("fd_write");
+        // iovs ポインタがメモリ外 → iov の読取（read_bytes）が失敗し BADF。
+        let rc = fd_write
+            .call(&mut h.store, (1, 10_000_000, 1, 400))
+            .expect("call");
+        assert_eq!(rc, ERRNO_BADF);
+    }
+
+    #[test]
+    fn fs_ops_are_unavailable() {
+        let mut h = Harness::new();
+        // fd_read / fd_seek / fd_close / fd_fdstat_get は preopen が無く常に BADF。
+        let fd_read = h
+            .instance
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut h.store, "call_fd_read")
+            .expect("fd_read");
+        assert_eq!(
+            fd_read.call(&mut h.store, (0, 0, 0, 0)).expect("read"),
+            ERRNO_BADF
+        );
+
+        let fd_seek = h
+            .instance
+            .get_typed_func::<(i32, i64, i32, i32), i32>(&mut h.store, "call_fd_seek")
+            .expect("fd_seek");
+        assert_eq!(
+            fd_seek.call(&mut h.store, (0, 0, 0, 0)).expect("seek"),
+            ERRNO_BADF
+        );
+
+        let fd_close = h
+            .instance
+            .get_typed_func::<i32, i32>(&mut h.store, "call_fd_close")
+            .expect("fd_close");
+        assert_eq!(fd_close.call(&mut h.store, 0).expect("close"), ERRNO_BADF);
+
+        let fd_fdstat = h.func2("call_fd_fdstat");
+        assert_eq!(
+            fd_fdstat.call(&mut h.store, (0, 0)).expect("fdstat"),
+            ERRNO_BADF
+        );
+    }
+
+    #[test]
+    fn proc_exit_traps() {
+        let mut h = Harness::new();
+        let proc_exit = h
+            .instance
+            .get_typed_func::<i32, ()>(&mut h.store, "call_proc_exit")
+            .expect("proc_exit");
+        // proc_exit は trap で実行を終わらせる（ゲストの異常終了）。
+        assert!(proc_exit.call(&mut h.store, 3).is_err());
+    }
+}
