@@ -233,6 +233,7 @@ pub(crate) async fn wire_chat(
     skill_artifacts: &Arc<artifact::ArtifactStore>,
     workflows: &Arc<workflow_engine::WorkflowStore>,
     secrets: Option<&Arc<secrets::SecretStore>>,
+    collab: &Arc<collab::CollabHub>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -300,6 +301,8 @@ pub(crate) async fn wire_chat(
                     config.llm.models.iter().map(|m| m.id.clone()).collect(),
                 ),
             )),
+            // AI ノート共同編集（document.edit / document.read・Task 11P.4）。
+            collab: Some(Arc::clone(collab)),
         },
         worker_config,
     );

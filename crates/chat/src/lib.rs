@@ -25,6 +25,7 @@
 
 pub mod approver;
 pub mod artifacts;
+pub mod document_tool;
 pub mod error;
 pub mod gui_actions;
 pub mod model;
@@ -36,6 +37,7 @@ pub mod workspace;
 
 pub use approver::DbApprover;
 pub use artifacts::StorageArtifactStore;
+pub use document_tool::{DocumentEditTool, DocumentReadTool};
 pub use error::ChatError;
 pub use gui_actions::ChatSubmitHandler;
 pub use model::{

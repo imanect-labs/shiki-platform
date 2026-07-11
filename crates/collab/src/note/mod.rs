@@ -21,16 +21,22 @@
 //! Yjs が真実であり続け、保存はファイルを新バージョンで上書きする（外部書込は
 //! バージョン履歴に残り失われない）。逆方向（Yjs→md）は保存経路のみ。
 
+pub mod ai_edit;
 pub mod ast;
 pub mod frontmatter;
 pub mod md_parse;
 pub mod saver;
 pub mod yjs_map;
 pub mod yjs_meta;
+pub mod yjs_write;
 
+pub use ai_edit::{EditMode, EditOp, EditReport};
 pub use frontmatter::NoteMeta;
 
 use yrs::{Doc, Transact};
+
+/// AI 編集トランザクションの origin タグ（awareness/監査で人間編集と区別する）。
+pub const AI_ORIGIN: &str = "shiki:ai";
 
 /// ノート（md）としてこの collab 経路の対象になるファイルか。
 pub fn is_note_file(name: &str) -> bool {

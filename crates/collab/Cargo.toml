@@ -18,6 +18,7 @@ yrs = { workspace = true, features = ["sync"] }
 
 # md シリアライズ往復（Task 11P.2）: 正規化 md ⇔ ノート AST ⇔ Yjs XmlFragment。
 pulldown-cmark.workspace = true
+serde = { workspace = true }
 serde_json.workspace = true
 
 # WS セッションループは axum の WebSocket 型を直接受ける（api 層は upgrade だけの薄い皮）。

@@ -54,6 +54,32 @@ pub fn write_meta(txn: &mut TransactionMut<'_>, map: &MapRef, meta: &NoteMeta) {
     }
 }
 
+/// メタデータ 1 件を設定する（AI 編集の SetMeta・Task 11P.4）。
+///
+/// `tags` は `,` 区切りを配列へ、`title`/`icon`/`thread_id`/任意 kv は文字列で設定する。
+/// 空値は削除（title="" 等でクリアできる）。
+pub fn write_meta_pair(txn: &mut TransactionMut<'_>, map: &MapRef, key: &str, value: &str) {
+    if key == "tags" {
+        let tags: Vec<Any> = value
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(Any::from)
+            .collect();
+        if tags.is_empty() {
+            map.remove(txn, "tags");
+        } else {
+            map.insert(txn, "tags", Any::from(tags));
+        }
+        return;
+    }
+    if value.is_empty() {
+        map.remove(txn, key);
+    } else {
+        map.insert(txn, key, Any::from(value));
+    }
+}
+
 fn any_string(any: &Any) -> Option<String> {
     match any {
         Any::String(s) => Some(s.to_string()),

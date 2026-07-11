@@ -158,6 +158,7 @@ async fn worker_generates_streams_and_persists_projection() {
             skill_artifacts: None,
             workflow_store: None,
             workflow_catalog: None,
+            collab: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),

@@ -201,6 +201,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             skill_artifacts: Some(artifacts),
             workflow_store: None,
             workflow_catalog: None,
+            collab: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),

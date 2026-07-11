@@ -12,6 +12,8 @@ name = "chat"
 [dependencies]
 shiki-authz.workspace = true
 shiki-storage.workspace = true
+# AI ノート共同編集ツール document.edit / document.read（Task 11P.4）。
+shiki-collab.workspace = true
 shiki-jobq.workspace = true
 shiki-rag.workspace = true
 shiki-llm-gateway.workspace = true
@@ -55,6 +57,7 @@ reqwest.workspace = true
 [package.metadata.cargo-machete]
 ignored = [
     "shiki-authz",
+    "shiki-collab",
     "shiki-storage",
     "shiki-jobq",
     "shiki-rag",

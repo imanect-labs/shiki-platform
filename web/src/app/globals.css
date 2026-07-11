@@ -463,3 +463,10 @@
     @apply absolute -top-5 left-[-2px] select-none whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white;
   }
 }
+
+/* AI 提案マーク（document.edit suggest モード・Task 11P.4） */
+@layer components {
+  .note-prose .note-ai-suggestion {
+    @apply rounded-sm bg-primary/15 decoration-primary/50 underline decoration-dotted underline-offset-2;
+  }
+}

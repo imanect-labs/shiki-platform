@@ -64,6 +64,10 @@ vocab_enum! {
         EmitWorkflow => "emit_workflow",
         /// 既存ワークフロー IR の読み取りツール（AI 編集の前提・Task 10.13）。
         ReadWorkflow => "read_workflow",
+        /// ノート（md/Yjs）の共同編集ツール（AI が編集参加者として編集・Task 11P.4）。
+        DocumentEdit => "document.edit",
+        /// ノート本文の読み取りツール（document.edit の前提・現状の md を得る・Task 11P.4）。
+        DocumentRead => "document.read",
     }
 }
 
