@@ -9,7 +9,7 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -32,7 +32,62 @@ pub(crate) fn collab_route_decls() -> Vec<RouteDecl> {
             || get(collab_ws),
         ),
         r("/notes", &["POST"], Session, || post(create_note)),
+        r("/collab/docs/{node_id}/access", &["GET"], Session, || {
+            get(get_access)
+        }),
     ]
+}
+
+/// 共同編集アクセスモード（UI の編集可否切替に使う表示用ヒント）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CollabAccessResponse {
+    /// "editor"（読み書き）または "viewer"（読み取りのみ）。
+    pub mode: String,
+    /// ノード名（エディタ種別の判定・タイトル表示用）。
+    pub name: String,
+    /// 現在の node.version（外部書込検出の参考値）。
+    pub version: i64,
+}
+
+/// 実行主体の共同編集アクセスモードを返す。
+///
+/// UI はこれで読み取り専用表示に切り替えるが、**書込の強制は WS セッション側**
+/// （viewer の update 不受理・定期再チェック）が行う。
+#[utoipa::path(
+    get, path = "/collab/docs/{node_id}/access",
+    params(("node_id" = Uuid, Path, description = "ノード（ファイル）ID")),
+    responses(
+        (status = 200, description = "アクセスモード", body = CollabAccessResponse),
+        (status = 401, description = "未認証"),
+        (status = 404, description = "ノードが存在しない・読めない（存在秘匿）"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn get_access(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(node_id): Path<Uuid>,
+) -> Result<Json<CollabAccessResponse>, ApiError> {
+    let node = state
+        .collab
+        .require_file(&ctx, node_id, trace.0.as_deref())
+        .await
+        .map_err(to_api_error)?;
+    let mode = state
+        .collab
+        .authorize(&ctx, node_id)
+        .await
+        .map_err(to_api_error)?;
+    let mode = match mode {
+        collab::AccessMode::Editor => "editor",
+        collab::AccessMode::Viewer => "viewer",
+    };
+    Ok(Json(CollabAccessResponse {
+        mode: mode.to_string(),
+        name: node.name,
+        version: node.version,
+    }))
 }
 
 /// ノート作成リクエスト（Task 11P.2・「新規作成 > ノート」/ note_ref 保存の共通経路）。

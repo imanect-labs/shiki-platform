@@ -373,3 +373,93 @@
     @apply ring-2 ring-ring ring-offset-2 ring-offset-background;
   }
 }
+
+/* ============================================================================
+   ノートエディタ（Task 11P.3・TipTap/ProseMirror）
+   Notion/Loop 風の読みやすい本文タイポグラフィ。トークンは globals の
+   semantic tokens を使い、ライト/ダーク両対応にする。
+   ========================================================================== */
+@layer components {
+  .note-prose {
+    @apply px-2 text-[15px] leading-7 text-foreground;
+  }
+  .note-prose > * + * {
+    margin-top: 0.5rem;
+  }
+  .note-prose h1 {
+    @apply mt-8 text-3xl font-bold tracking-tight;
+  }
+  .note-prose h2 {
+    @apply mt-6 text-2xl font-semibold tracking-tight;
+  }
+  .note-prose h3 {
+    @apply mt-5 text-xl font-semibold;
+  }
+  .note-prose ul:not([data-type="taskList"]) {
+    @apply list-disc pl-6;
+  }
+  .note-prose ol {
+    @apply list-decimal pl-6;
+  }
+  .note-prose li > p {
+    margin: 0;
+  }
+  .note-prose ul[data-type="taskList"] {
+    @apply list-none pl-1;
+  }
+  .note-prose ul[data-type="taskList"] li {
+    @apply flex items-start gap-2;
+  }
+  .note-prose ul[data-type="taskList"] li > label {
+    @apply mt-1.5 flex-shrink-0;
+  }
+  .note-prose ul[data-type="taskList"] li > label input[type="checkbox"] {
+    @apply size-4 cursor-pointer accent-primary;
+  }
+  .note-prose ul[data-type="taskList"] li[data-checked="true"] > div {
+    @apply text-muted-foreground line-through;
+  }
+  .note-prose blockquote {
+    @apply border-l-2 pl-4 text-muted-foreground;
+    border-color: var(--rule-color);
+  }
+  .note-prose pre {
+    @apply overflow-x-auto rounded-lg border bg-muted/50 p-4 font-mono text-sm leading-6;
+  }
+  .note-prose code:not(pre code) {
+    @apply rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[0.85em];
+  }
+  .note-prose a {
+    @apply text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary;
+  }
+  .note-prose hr {
+    @apply my-6 border-t;
+    border-color: var(--rule-color);
+  }
+  .note-prose table {
+    @apply my-3 w-full border-collapse text-sm;
+  }
+  .note-prose th,
+  .note-prose td {
+    @apply border px-3 py-1.5 text-left align-top;
+    border-color: var(--rule-color);
+  }
+  .note-prose th {
+    @apply bg-muted/50 font-semibold;
+  }
+  .note-prose p.is-editor-empty:first-child::before {
+    content: attr(data-placeholder);
+    @apply pointer-events-none float-left h-0 text-muted-foreground/60;
+  }
+  .note-prose .selectedCell {
+    @apply bg-primary/10;
+  }
+
+  /* 共同編集カーソル（CollaborationCaret / y-prosemirror） */
+  .note-prose .collaboration-carets__caret {
+    @apply relative mx-[-1px] border-l-2 break-normal;
+  }
+  .note-prose .collaboration-carets__label {
+    @apply absolute -top-5 left-[-2px] select-none whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white;
+  }
+}
