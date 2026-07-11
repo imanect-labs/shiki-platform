@@ -398,6 +398,7 @@ pub fn route_table() -> Vec<RouteDecl> {
             || delete(routes::admin::delete_tenant),
         ),
     ];
+    table.extend(routes::collab::collab_route_decls());
     table.extend(routes::data::data_route_decls());
     table.extend(routes::data_views::data_view_route_decls());
     table.extend(routes::data_fsm::data_fsm_route_decls());

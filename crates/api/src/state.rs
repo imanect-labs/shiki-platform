@@ -43,6 +43,8 @@ pub struct AppState {
     pub http: reqwest::Client,
     /// ストレージの単一チョークポイント（権限・監査・content-addressing）。
     pub storage: Arc<StorageService>,
+    /// ノート共同編集ハブ（Task 11P.1・Yjs update log/snapshot と authz ゲート）。
+    pub collab: Arc<collab::CollabHub>,
     /// アーティファクト共通枠（Task 6.1・バージョン付き共有本文の単一チョークポイント）。
     pub artifacts: Arc<artifact::ArtifactStore>,
     /// 構造化データサービス（Task 9.2/9.5・テーブル ReBAC＋サーバ検証＋リビジョンの

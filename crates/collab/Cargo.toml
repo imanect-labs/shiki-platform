@@ -1,0 +1,34 @@
+[package]
+name = "shiki-collab"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+
+[lib]
+name = "collab"
+
+[dependencies]
+shiki-authz.workspace = true
+shiki-storage.workspace = true
+
+# Yjs 互換 CRDT（design §4.8.1）。sync = y-protocols 互換ワイヤ（sync step1/2・update・awareness）。
+yrs = { workspace = true, features = ["sync"] }
+
+# WS セッションループは axum の WebSocket 型を直接受ける（api 層は upgrade だけの薄い皮）。
+axum.workspace = true
+
+tokio.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+futures.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+
+[lints]
+workspace = true

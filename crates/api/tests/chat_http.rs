@@ -329,6 +329,11 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
     let audit_rec = Arc::new(storage::audit::AuditRecorder::new(pool.clone()));
     let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(pool.clone()));
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(pool.clone()));
+    let collab_hub = Arc::new(collab::CollabHub::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+        Arc::clone(&storage),
+    ));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool),
@@ -337,6 +342,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         sessions: sessions.clone(),
         http: reqwest::Client::new(),
         storage,
+        collab: collab_hub,
         artifacts,
         data: data_store,
         data_views,

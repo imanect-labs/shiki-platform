@@ -23,7 +23,7 @@ publish = false
 [workspace.dependencies]
 # async ランタイム / HTTP サーバ
 tokio = { version = "1", features = ["full"] }
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors", "timeout"] }
 
@@ -115,8 +115,12 @@ tokio-stream = "0.1"
 # プロパティテスト（proto round-trip / validate.rs）
 proptest = "1"
 
+# ノート共同編集 CRDT（design §4.8.1・Yjs 互換の yrs。sync ワイヤプロトコル込み）
+yrs = "0.27"
+
 # 内部クレート
 shiki-authz = { path = "crates/authz" }
+shiki-collab = { path = "crates/collab" }
 shiki-data = { path = "crates/data" }
 shiki-app-platform = { path = "crates/app-platform" }
 shiki-app-gateway = { path = "crates/app-gateway" }
