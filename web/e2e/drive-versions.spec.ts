@@ -41,6 +41,10 @@ test("版履歴: 再アップロードで版が増え、旧版を復元できる
   await expect(dialog.getByText("バージョン 2")).toBeVisible({ timeout: 10_000 });
   await expect(dialog.getByText("バージョン 1")).toBeVisible();
 
+  // 各版に作者が表示される（日時 · サイズ · 作者 の 3 セグメント・Task 11P.10）。
+  const v2Meta = dialog.locator("li", { hasText: "バージョン 2" }).locator("p").last();
+  await expect(v2Meta).toHaveText(/·.+·.+/);
+
   // バージョン 1 を復元 → 新版（バージョン 3）が追記される。
   const v1Row = dialog.locator("li", { hasText: "バージョン 1" });
   await v1Row.getByRole("button", { name: "復元" }).click();

@@ -46,6 +46,9 @@ pub struct Node {
     pub version: i64,
     pub deleted_at: Option<DateTime<Utc>>,
     pub created_by: String,
+    /// 最終更新者の subject（Task 11P.10）。内容更新/リネーム/移動/削除/復元で設定する
+    /// （AI 編集は AI 主体名義）。作成時は created_by と一致する。
+    pub updated_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

@@ -43,9 +43,8 @@ export function NodeRow({
         {formatDateTime(node.updated_at)}
       </span>
       <span className="hidden truncate text-[13px] text-muted-foreground lg:block">
-        {/* created_by_name（作成者の表示名）はバックエンド実装が入る後続 PR で提供。
-            未提供時は作成者 id にフォールバックする。 */}
-        {(node as { created_by_name?: string }).created_by_name ?? node.created_by}
+        {/* 最終更新者（updated_by・11P.10）。AI 編集は AI 主体名義で表示される。 */}
+        {node.updated_by}
       </span>
       <span className="hidden truncate text-[13px] text-muted-foreground sm:block">
         {isFolder ? "—" : formatBytes(node.size_bytes)}

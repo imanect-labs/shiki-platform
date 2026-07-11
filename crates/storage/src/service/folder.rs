@@ -115,8 +115,8 @@ impl StorageService {
                 }
             }
             let sql = format!(
-                "INSERT INTO node (org, tenant_id, kind, name, parent_id, created_by) \
-                 VALUES ($1, $2, 'folder', $3, $4, $5) RETURNING {NODE_COLS}"
+                "INSERT INTO node (org, tenant_id, kind, name, parent_id, created_by, updated_by) \
+                 VALUES ($1, $2, 'folder', $3, $4, $5, $5) RETURNING {NODE_COLS}"
             );
             let row: NodeRow = sqlx::query_as(&sql)
                 .bind(&ctx.org)

@@ -209,7 +209,10 @@ impl Harness {
     fn executor_with_tabular(&self, runner: &std::path::Path) -> Arc<dyn NodeExecutor> {
         let tabular = Arc::new(tabular::TabularService::new(
             Arc::clone(&self.storage),
-            tabular::RunnerConfig::new(runner.to_string_lossy().to_string(), Duration::from_secs(20)),
+            tabular::RunnerConfig::new(
+                runner.to_string_lossy().to_string(),
+                Duration::from_secs(20),
+            ),
             tabular::Quotas::default(),
         ));
         let ports = Arc::new(api::workflow_runtime::ProdNodePorts {
@@ -799,7 +802,11 @@ async fn csv_query_node_reads_uploaded_csv() {
     let (_run, status) = h
         .run(wf_id, &json!({ "file": node.id.to_string() }), executor)
         .await;
-    assert_eq!(status, RunStatus::Succeeded, "csv.query パイプラインが完走する");
+    assert_eq!(
+        status,
+        RunStatus::Succeeded,
+        "csv.query パイプラインが完走する"
+    );
 
     let result = h
         .read_file_by_name("csv-result.json")

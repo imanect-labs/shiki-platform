@@ -36,7 +36,8 @@ impl StorageService {
         // サブツリー（自身含む）の生存ノードをまとめて論理削除する。version も進めて、各書込
         // イベントの冪等キー (node_id, version) が move/delete/restore 間で衝突しないようにする。
         let affected: Vec<(Uuid, i64)> = sqlx::query_as(
-            "UPDATE node SET deleted_at = now(), updated_at = now(), version = version + 1 \
+            "UPDATE node SET deleted_at = now(), updated_at = now(), version = version + 1, \
+             updated_by = $4 \
              WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL \
                AND id IN (SELECT descendant FROM node_closure WHERE tenant_id = $2 AND ancestor = $3) \
              RETURNING id, version",
@@ -44,6 +45,7 @@ impl StorageService {
         .bind(&ctx.org)
         .bind(&ctx.tenant_id)
         .bind(folder_id)
+        .bind(&ctx.principal.id)
         .fetch_all(&mut *tx)
         .await?;
         if affected.is_empty() {
@@ -115,13 +117,15 @@ impl StorageService {
         let mut tx = self.db.begin().await?;
         // version も進めて書込イベントの冪等キー (node_id, version) を一意に保つ。
         let new_version: Option<i64> = sqlx::query_scalar(
-            "UPDATE node SET deleted_at = now(), updated_at = now(), version = version + 1 \
+            "UPDATE node SET deleted_at = now(), updated_at = now(), version = version + 1, \
+             updated_by = $4 \
              WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL \
              RETURNING version",
         )
         .bind(file_id)
         .bind(&ctx.org)
         .bind(&ctx.tenant_id)
+        .bind(&ctx.principal.id)
         .fetch_optional(&mut *tx)
         .await?;
         let Some(new_version) = new_version else {

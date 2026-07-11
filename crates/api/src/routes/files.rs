@@ -35,6 +35,8 @@ pub struct NodeResponse {
     pub content_type: Option<String>,
     pub version: i64,
     pub created_by: String,
+    /// 最終更新者の subject（Task 11P.10・AI 編集は AI 主体名義）。
+    pub updated_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -50,6 +52,7 @@ impl From<Node> for NodeResponse {
             content_type: n.content_type,
             version: n.version,
             created_by: n.created_by,
+            updated_by: n.updated_by,
             created_at: n.created_at,
             updated_at: n.updated_at,
         }

@@ -83,8 +83,8 @@ async fn setup() -> Option<Env> {
 
 async fn mk_folder(pool: &sqlx::PgPool, tenant: &str, id: Uuid) {
     sqlx::query(
-        "INSERT INTO node (id, org, tenant_id, kind, name, parent_id, created_by) \
-         VALUES ($1, 'acme', $2, 'folder', $3, NULL, 'alice')",
+        "INSERT INTO node (id, org, tenant_id, kind, name, parent_id, created_by, updated_by) \
+         VALUES ($1, 'acme', $2, 'folder', $3, NULL, 'alice', 'alice')",
     )
     .bind(id)
     .bind(tenant)
