@@ -325,7 +325,7 @@ async fn seed_file_node(pool: &PgPool) -> Uuid {
     let node_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO node (id, org, tenant_id, kind, name, blob_sha256, size_bytes, content_type, created_by)
-         VALUES ($1, 'acme', 'default', 'file', $1::text || '-note.md', $2, 1, 'text/markdown', 'tester')",
+         VALUES ($1, 'acme', 'default', 'file', $1::text || '-doc.bin', $2, 1, 'application/octet-stream', 'tester')",
     )
     .bind(node_id)
     .bind(&sha)

@@ -254,9 +254,10 @@ export function DriveBrowser() {
   const handleAction = (action: NodeAction, node: NodeResponse) => {
     switch (action) {
       case "open":
-        // フォルダは配下をブラウズ。ファイルはダウンロードで内容を取得する
-        // （インラインのファイルプレビューは現状未提供）。
+        // フォルダは配下をブラウズ。ノート（.md）は共同編集エディタで開き（Task 11P.3）、
+        // その他ファイルはダウンロードで内容を取得する（インラインプレビューは未提供）。
         if (node.kind === "folder") navigateTo(node.id);
+        else if (node.name.toLowerCase().endsWith(".md")) router.push(`/notes/${node.id}`);
         else
           triggerDownload(node.id).catch((e) =>
             toast({
