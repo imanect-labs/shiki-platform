@@ -16,6 +16,11 @@ vocab_enum! {
         NotifySend => "notify.send",
         HttpEgress => "http.egress",
         WorkflowStart => "workflow.start",
+        // ---- CSV 表データ（Task 11P.9）----
+        /// CSV への読み取り専用 SQL（viewer 相当・csv.query）。
+        CsvRead => "csv.read",
+        /// CSV の編集・新規保存（editor/作成権限・csv.patch/csv.write）。
+        CsvWrite => "csv.write",
         // ---- 将来予約（issue #180）----
         SheetRead => "sheet.read",
         SheetWrite => "sheet.write",
@@ -43,6 +48,8 @@ impl Scope {
             "rag.search" => Scope::RagQuery,
             "http.request" | "graphql.query" => Scope::HttpEgress,
             "workflow.start" | "workflow.call" => Scope::WorkflowStart,
+            "csv.query" => Scope::CsvRead,
+            "csv.patch" | "csv.write" => Scope::CsvWrite,
             "data.query" | "data.get" => Scope::DataRead,
             "data.record.create" | "data.record.update" | "data.transition" => Scope::DataWrite,
             "notify.send" | "human.approval" => Scope::NotifySend,
@@ -67,6 +74,8 @@ impl Scope {
                 | Scope::RagQuery
                 | Scope::HttpEgress
                 | Scope::WorkflowStart
+                | Scope::CsvRead
+                | Scope::CsvWrite
         )
     }
 }

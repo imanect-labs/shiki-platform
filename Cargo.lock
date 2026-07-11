@@ -4952,6 +4952,7 @@ dependencies = [
  "shiki-llm-gateway",
  "shiki-rag",
  "shiki-storage",
+ "shiki-tabular",
  "shiki-websearch",
  "shiki-workflow-engine",
  "sqlx",
@@ -4968,8 +4969,6 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "axum",
- "chrono",
- "futures",
  "hex",
  "pulldown-cmark",
  "serde",
@@ -5266,7 +5265,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
  "uuid",
 ]
 

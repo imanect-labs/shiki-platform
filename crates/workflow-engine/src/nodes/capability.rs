@@ -9,12 +9,13 @@ use sha2::{Digest, Sha256};
 use crate::capability::{op_digest, JournalDecision};
 use crate::control::eval::resolve_value;
 use crate::ir::params::{
-    RagSearchParams, StorageListParams, StorageReadParams, StorageWriteParams, WorkflowStartParams,
+    CsvPatchParams, CsvQueryParams, CsvWriteParams, RagSearchParams, StorageListParams,
+    StorageReadParams, StorageWriteParams, WorkflowStartParams,
 };
 use crate::run::NodeContext;
 
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{ExecCtx, PortError, StorageWriteReq};
+use super::ports::{CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageWriteReq};
 use super::resolver::{as_bytes, as_string, as_u32, as_uuid, ParamResolver};
 
 /// params を typed struct として取り出す（保存済み IR は V1 済み・失敗は permanent 扱い）。
@@ -247,5 +248,185 @@ impl CapabilityNodeExecutor {
             .unwrap_or(Value::Null);
         self.do_workflow_start(ec, &ctx.idempotency_key, &name, &input)
             .await
+    }
+
+    // --- csv（隔離 DuckDB 経由の tabular・Task 11P.9） -------------------
+
+    /// csv.query（RO SQL・viewer・pure）。副作用が無いため journal 不要。
+    pub(super) async fn node_csv_query(
+        &self,
+        params: &Value,
+        _ctx: &NodeContext,
+        ec: &ExecCtx,
+        r: &ParamResolver<'_>,
+    ) -> Result<Value, PortError> {
+        let p: CsvQueryParams = parse_params(params)?;
+        let file_id = resolve_value(&p.file, r)
+            .and_then(|v| as_uuid(&v))
+            .ok_or_else(|| PortError::invalid("csv.query: file が UUID に解決できません"))?;
+        let sql = resolve_value(&p.sql, r)
+            .and_then(|v| as_string(&v))
+            .ok_or_else(|| PortError::invalid("csv.query: sql が解決できません"))?;
+        let out = self.ports.csv_query(ec, file_id, &sql).await?;
+        // SQL 本文は監査に載せない（PII/秘匿クエリ回避）。件数のみ。
+        let rows = out
+            .get("rows")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        self.audit(
+            &ec.tenant_id,
+            "csv.query",
+            true,
+            &json!({ "file_id": file_id.to_string(), "rows": rows }),
+        );
+        Ok(out)
+    }
+
+    /// csv.patch（editor・EngineDedup）。cross-TX effect_journal で at-least-once を高々 1 回に畳む
+    /// （rev 楽観ロックのため、再試行時に version が進んでいると RevConflict になる—journal が
+    /// 先に AlreadyDone を返すことで再適用も競合も避ける・PIT-31）。
+    pub(super) async fn node_csv_patch(
+        &self,
+        params: &Value,
+        ctx: &NodeContext,
+        ec: &ExecCtx,
+        r: &ParamResolver<'_>,
+    ) -> Result<Value, PortError> {
+        let p: CsvPatchParams = parse_params(params)?;
+        let file_id = resolve_value(&p.file, r)
+            .and_then(|v| as_uuid(&v))
+            .ok_or_else(|| PortError::invalid("csv.patch: file が UUID に解決できません"))?;
+        let base_rev = resolve_value(&p.base_rev, r)
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| PortError::invalid("csv.patch: base_rev が整数に解決できません"))?;
+        let ops = resolve_value(&p.ops, r)
+            .ok_or_else(|| PortError::invalid("csv.patch: ops が解決できません"))?;
+        if !ops.is_array() {
+            return Err(PortError::invalid(
+                "csv.patch: ops は配列である必要があります",
+            ));
+        }
+
+        let digest = op_digest(
+            "csv.patch",
+            &json!({ "file": file_id.to_string(), "base_rev": base_rev, "ops": ops }),
+        );
+        let key = &ctx.idempotency_key;
+        match self
+            .journal
+            .check(&ec.tenant_id, key, &digest)
+            .await
+            .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
+        {
+            JournalDecision::Proceed => {
+                let out = self
+                    .ports
+                    .csv_patch(
+                        ec,
+                        CsvPatchReq {
+                            file_id,
+                            base_rev,
+                            ops,
+                        },
+                    )
+                    .await?;
+                self.journal
+                    .record(&ec.tenant_id, key, &digest, &out)
+                    .await
+                    .map_err(|e| PortError::unavailable(format!("journal record: {e}")))?;
+                self.audit(
+                    &ec.tenant_id,
+                    "csv.patch",
+                    true,
+                    &json!({ "file_id": file_id.to_string() }),
+                );
+                Ok(out)
+            }
+            JournalDecision::AlreadyDone(v) => Ok(v),
+            JournalDecision::InProgress => Err(PortError::new(
+                "effect_in_progress",
+                "別ワーカーが編集処理中",
+                true,
+            )),
+            JournalDecision::DigestMismatch => Err(PortError::new(
+                "effect_conflict",
+                "同一冪等キーで別の編集要求",
+                false,
+            )),
+        }
+    }
+
+    /// csv.write（作成権限・EngineDedup）。cross-TX effect_journal で重複保存を防ぐ。
+    pub(super) async fn node_csv_write(
+        &self,
+        params: &Value,
+        ctx: &NodeContext,
+        ec: &ExecCtx,
+        r: &ParamResolver<'_>,
+    ) -> Result<Value, PortError> {
+        let p: CsvWriteParams = parse_params(params)?;
+        let parent_id = p
+            .folder
+            .as_ref()
+            .and_then(|e| resolve_value(e, r))
+            .and_then(|v| as_uuid(&v));
+        let name = resolve_value(&p.name, r)
+            .and_then(|v| as_string(&v))
+            .ok_or_else(|| PortError::invalid("csv.write: name が解決できません"))?;
+        let csv_bytes = resolve_value(&p.content, r)
+            .map(|v| as_bytes(&v))
+            .ok_or_else(|| PortError::invalid("csv.write: content が解決できません"))?;
+
+        let digest = op_digest(
+            "csv.write",
+            &json!({
+                "parent": parent_id.map(|p| p.to_string()),
+                "name": name,
+                "content_sha256": sha256_hex(&csv_bytes),
+            }),
+        );
+        let key = &ctx.idempotency_key;
+        match self
+            .journal
+            .check(&ec.tenant_id, key, &digest)
+            .await
+            .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
+        {
+            JournalDecision::Proceed => {
+                let out = self
+                    .ports
+                    .csv_write(
+                        ec,
+                        CsvWriteReq {
+                            parent_id,
+                            name: name.clone(),
+                            csv_bytes,
+                        },
+                    )
+                    .await?;
+                self.journal
+                    .record(&ec.tenant_id, key, &digest, &out)
+                    .await
+                    .map_err(|e| PortError::unavailable(format!("journal record: {e}")))?;
+                self.audit(
+                    &ec.tenant_id,
+                    "csv.write",
+                    true,
+                    &json!({ "name": name, "parent": parent_id.map(|p| p.to_string()) }),
+                );
+                Ok(out)
+            }
+            JournalDecision::AlreadyDone(v) => Ok(v),
+            JournalDecision::InProgress => Err(PortError::new(
+                "effect_in_progress",
+                "別ワーカーが保存処理中",
+                true,
+            )),
+            JournalDecision::DigestMismatch => Err(PortError::new(
+                "effect_conflict",
+                "同一冪等キーで別の保存要求",
+                false,
+            )),
+        }
     }
 }

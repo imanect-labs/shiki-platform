@@ -19,8 +19,8 @@ use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use workflow_engine::nodes::ports::{
-    AgentInvokeReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError,
-    ResolvedSecretView, StorageWriteReq,
+    AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
+    NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
 };
 use workflow_engine::{
     CapabilityAudit, CapabilityNodeExecutor, EffectJournal, NodeContext, NodeExecutor,
@@ -47,6 +47,9 @@ struct FakePorts {
     last_http: Mutex<Option<HttpSendReq>>,
     http_status: Mutex<u16>,
     secret_hosts: Mutex<Vec<String>>,
+    /// csv.patch/csv.write の実際の適用回数（journal 冪等の検証用）。
+    csv_patch_calls: Mutex<u32>,
+    csv_write_calls: Mutex<u32>,
 }
 impl FakePorts {
     fn with_http_status(status: u16) -> Self {
@@ -116,6 +119,27 @@ impl NodePorts for FakePorts {
         _input: &Value,
     ) -> Result<Value, PortError> {
         Ok(json!({ "run_id": Uuid::nil().to_string() }))
+    }
+    async fn csv_query(
+        &self,
+        _ctx: &ExecCtx,
+        file_id: Uuid,
+        _sql: &str,
+    ) -> Result<Value, PortError> {
+        Ok(json!({
+            "columns": ["a", "b"],
+            "rows": [["1", "2"], ["3", "4"]],
+            "total_rows": 2,
+            "file_id": file_id.to_string(),
+        }))
+    }
+    async fn csv_patch(&self, _ctx: &ExecCtx, req: CsvPatchReq) -> Result<Value, PortError> {
+        *self.csv_patch_calls.lock().unwrap() += 1;
+        Ok(json!({ "node_id": req.file_id.to_string(), "version": req.base_rev + 1 }))
+    }
+    async fn csv_write(&self, _ctx: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError> {
+        *self.csv_write_calls.lock().unwrap() += 1;
+        Ok(json!({ "node_id": Uuid::nil().to_string(), "name": req.name, "version": 0 }))
     }
 }
 

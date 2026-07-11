@@ -165,6 +165,7 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<gui::SpecValidator>) {
             workflow_store: None,
             workflow_catalog: None,
             collab: None,
+            tabular: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),

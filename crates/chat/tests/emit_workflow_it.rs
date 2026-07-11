@@ -179,6 +179,7 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<WorkflowStore>) {
             workflow_store: Some(Arc::clone(&workflows)),
             workflow_catalog: Some(Arc::new(TestCatalogSource)),
             collab: None,
+            tabular: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),

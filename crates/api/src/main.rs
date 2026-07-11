@@ -151,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
         &workflows,
         secrets.as_ref(),
         &collab,
+        &tabular,
     )
     .await?;
 
@@ -164,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
         &storage,
         search.as_ref(),
         secrets.as_ref(),
+        &tabular,
     )
     .await?;
 

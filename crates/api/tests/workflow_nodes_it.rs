@@ -18,6 +18,7 @@
     clippy::too_many_lines
 )]
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -187,6 +188,7 @@ impl Harness {
             sandbox,
             sandbox_backend: sandbox_client::SandboxBackend::Wasm,
             secrets: None,
+            tabular: None,
             launcher: self.launcher.clone(),
             http: reqwest::Client::new(),
             db: self.pool.clone(),
@@ -201,6 +203,32 @@ impl Harness {
             .with_script_engine(engine, script_runtime::engine::Limits::default())
             .with_http_allowlist(http_allowlist, 5_000),
         )
+    }
+
+    /// 本番 executor（隔離 DuckDB ランナー付き・csv.* ノード用）を組む。
+    fn executor_with_tabular(&self, runner: &std::path::Path) -> Arc<dyn NodeExecutor> {
+        let tabular = Arc::new(tabular::TabularService::new(
+            Arc::clone(&self.storage),
+            tabular::RunnerConfig::new(runner.to_string_lossy().to_string(), Duration::from_secs(20)),
+            tabular::Quotas::default(),
+        ));
+        let ports = Arc::new(api::workflow_runtime::ProdNodePorts {
+            storage: Arc::clone(&self.storage),
+            search: None,
+            gateway: Arc::clone(&self.gateway),
+            sandbox: None,
+            sandbox_backend: sandbox_client::SandboxBackend::Wasm,
+            secrets: None,
+            tabular: Some(tabular),
+            launcher: self.launcher.clone(),
+            http: reqwest::Client::new(),
+            db: self.pool.clone(),
+        });
+        Arc::new(CapabilityNodeExecutor::new(
+            ports,
+            EffectJournal::new(self.pool.clone()),
+            Arc::new(NoopAudit),
+        ))
     }
 
     /// IR を保存して workflow_id を返す。
@@ -705,4 +733,118 @@ async fn wait_then_error_port_through_production_executor() {
         h.read_file_by_name("recovered.txt").await.as_deref(),
         Some("recovered")
     );
+}
+
+// ------- Test 7: csv.query ノード（本番 executor＋隔離 DuckDB ランナー・Task 11P.9）--------
+
+/// 隔離ランナーの実体（`SHIKI_TABULAR_RUNNER` か除外クレートの既定ビルド先）。
+fn runner_path() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("SHIKI_TABULAR_RUNNER") {
+        let p = PathBuf::from(p);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()?
+        .parent()?
+        .to_path_buf();
+    for profile in ["release", "debug"] {
+        let p = root
+            .join("crates/tabular/runner/target")
+            .join(profile)
+            .join("shiki-tabular-runner");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// csv.query ノードが、アップロードした CSV を隔離 DuckDB 経由で読み、RO SQL の結果を
+/// 後続 storage.write へ流す（IR → executor → scope 天井 → ProdNodePorts.csv_query →
+/// TabularService → ランナー → DuckDB の全経路 e2e）。
+#[tokio::test]
+async fn csv_query_node_reads_uploaded_csv() {
+    let Some(h) = setup().await else { return };
+    let Some(runner) = runner_path() else {
+        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        return;
+    };
+    // alice が CSV をアップロード（作成者＝owner なので viewer で読める）。
+    let csv = b"name,price\nAAA,50\nBBB,150\nCCC,200\n";
+    let node = h
+        .storage
+        .write_file_internal(&h.alice, None, "data.csv", csv, "text/csv", None)
+        .await
+        .expect("csv アップロード");
+
+    let executor = h.executor_with_tabular(&runner);
+    let ir = json!({
+        "ir_version": 1,
+        "name": "csv-query-e2e",
+        "declared_scopes": ["csv.read", "storage.write"],
+        "nodes": [
+            { "id": "q", "type": "csv.query", "params": {
+                "file": { "$from": "input", "path": "/file" },
+                "sql": "SELECT name FROM data WHERE name != 'AAA' ORDER BY name" } },
+            { "id": "save", "type": "storage.write", "params": {
+                "name": "csv-result.json",
+                "content": { "$from": "nodes.q.output" },
+                "content_type": "application/json" } }
+        ],
+        "edges": [ { "from": "q", "to": "save" } ]
+    });
+    let wf_id = h.save(&ir).await;
+    let (_run, status) = h
+        .run(wf_id, &json!({ "file": node.id.to_string() }), executor)
+        .await;
+    assert_eq!(status, RunStatus::Succeeded, "csv.query パイプラインが完走する");
+
+    let result = h
+        .read_file_by_name("csv-result.json")
+        .await
+        .expect("結果ファイル");
+    // 読み取り専用 SQL の絞り込み結果が流れている（AAA は除外）。
+    assert!(result.contains("BBB"), "結果に BBB: {result}");
+    assert!(result.contains("CCC"), "結果に CCC: {result}");
+    assert!(!result.contains("AAA"), "AAA は WHERE で除外: {result}");
+}
+
+/// csv.query は declared_scopes に csv.read が無いと scope 天井で拒否される（fail-closed）。
+#[tokio::test]
+async fn csv_query_denied_without_declared_scope() {
+    let Some(h) = setup().await else { return };
+    let Some(runner) = runner_path() else {
+        eprintln!("shiki-tabular-runner 未ビルドのためスキップ");
+        return;
+    };
+    let executor = h.executor_with_tabular(&runner);
+    // declared_scopes に csv.read を含めない → 保存時 V3 か実行時 scope 天井で弾かれる。
+    let ir = json!({
+        "ir_version": 1,
+        "name": "csv-query-noscope",
+        "declared_scopes": ["storage.write"],
+        "nodes": [
+            { "id": "q", "type": "csv.query", "params": {
+                "file": { "$from": "input", "path": "/file" },
+                "sql": "SELECT 1" } }
+        ],
+        "edges": []
+    });
+    // 保存が通る場合でも実行時に out_of_scope で失敗する（多層防御）。保存自体が弾く実装なら
+    // create が Err になるため、その場合も期待どおり（csv.read 未宣言では実行できない）。
+    let Ok((wf_id, _)) = h
+        .workflows
+        .create(&h.alice, &ir, &Catalog::default(), None)
+        .await
+    else {
+        return; // 保存時 V(scope) で拒否＝期待どおり。
+    };
+    let (run_id, status) = h
+        .run(wf_id, &json!({ "file": Uuid::nil().to_string() }), executor)
+        .await;
+    assert_eq!(status, RunStatus::Failed, "csv.read 未宣言では失敗する");
+    let steps = h.step_map(run_id).await;
+    assert_eq!(steps.get("q"), Some(&StepStatus::Failed));
 }

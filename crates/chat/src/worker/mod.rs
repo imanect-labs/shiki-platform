@@ -107,6 +107,8 @@ pub struct WorkerDeps {
     /// ノート共同編集ハブ（document.edit / document.read・Task 11P.4）。
     /// storage と両方揃った時のみノート編集ツールを提示する。
     pub collab: Option<Arc<collab::CollabHub>>,
+    /// CSV クエリ/パッチサービス（csv.query / csv.patch / csv.write・Task 11P.9）。
+    pub tabular: Option<Arc<tabular::TabularService>>,
 }
 
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
@@ -134,6 +136,8 @@ pub struct ChatWorker {
     workflow_catalog: Option<Arc<dyn crate::workflow_tool::WorkflowCatalogSource>>,
     /// ノート共同編集ハブ（document.edit / document.read・Task 11P.4）。
     collab: Option<Arc<collab::CollabHub>>,
+    /// CSV クエリ/パッチサービス（Task 11P.9）。
+    tabular: Option<Arc<tabular::TabularService>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -151,6 +155,7 @@ impl ChatWorker {
             workflow_store,
             workflow_catalog,
             collab,
+            tabular,
         } = deps;
         ChatWorker {
             db,
@@ -166,6 +171,7 @@ impl ChatWorker {
             workflow_store,
             workflow_catalog,
             collab,
+            tabular,
             config: Arc::new(config),
         }
     }

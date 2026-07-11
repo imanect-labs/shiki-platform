@@ -28,13 +28,15 @@ tokio.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-chrono.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-futures.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
 async-trait.workspace = true
+
+# lib 名 authz/storage で参照するため machete（名前一致）が誤検出する。
+[package.metadata.cargo-machete]
+ignored = ["shiki-authz", "shiki-storage"]
 
 [lints]
 workspace = true
