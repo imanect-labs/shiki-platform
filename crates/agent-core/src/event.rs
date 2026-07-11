@@ -63,6 +63,9 @@ pub enum AgentEvent {
     /// 保存済みワークフローへの参照（emit_workflow・Task 10.13）。
     /// **保存パイプライン（V1〜V7）を通過し artifact 化された参照のみ**がここへ乗る。
     WorkflowRef { workflow: serde_json::Value },
+    /// 保存済みノートへの参照（save_note・Task 11P.5）。
+    /// **StorageService へ作成済みのノードのみ**がここへ乗る（chat 側で note_ref へ写る）。
+    NoteRef { note: serde_json::Value },
     /// 計画が改訂された（全サブタスク列・revision 付き・Task 5.2）。
     PlanUpdated(Plan),
     /// 単一サブタスクの状態遷移（軽量更新・Task 5.2）。

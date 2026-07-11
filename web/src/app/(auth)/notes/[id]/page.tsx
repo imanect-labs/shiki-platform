@@ -7,15 +7,17 @@
 ///   /collab/docs/{id}/access の表示用ヒントで editable を切り替える。
 /// - 11P.5 で本ページが「ノート×チャット分割ビュー」のホストになる。
 
-import { ArrowLeft, Eye, Loader2 } from "lucide-react";
+import { ArrowLeft, Eye, Loader2, MessageSquare } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import * as React from "react";
 import * as Y from "yjs";
 
 import { MetadataPanel } from "@/components/notes/metadata-panel";
+import { NoteChatPanel } from "@/components/notes/note-chat-panel";
 import { NoteEditor } from "@/components/notes/note-editor";
 import { PresenceAvatars } from "@/components/notes/presence";
+import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useMe } from "@/hooks/use-me";
 import { CollabProvider, type CollabStatus } from "@/lib/collab";
@@ -37,6 +39,7 @@ export default function NotePage() {
   );
   const [status, setStatus] = React.useState<CollabStatus>("connecting");
   const [synced, setSynced] = React.useState(false);
+  const [chatOpen, setChatOpen] = React.useState(false);
 
   // Yjs ドキュメントとプロバイダ（ノート単位で 1 つ・アンマウントで破棄）。
   const [session, setSession] = React.useState<{
@@ -98,8 +101,8 @@ export default function NotePage() {
   const userName = me.data?.email?.split("@")[0] ?? userId;
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-3xl flex-col px-4">
-      <header className="flex items-center gap-3 py-3">
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex items-center gap-3 border-b px-4 py-2.5">
         <Link
           href="/drive"
           className="flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -126,20 +129,46 @@ export default function NotePage() {
         >
           {statusLabel(status, synced)}
         </span>
+        <Button
+          type="button"
+          variant={chatOpen ? "secondary" : "ghost"}
+          size="sm"
+          onClick={() => setChatOpen((v) => !v)}
+          aria-pressed={chatOpen}
+          data-testid="note-chat-toggle"
+        >
+          <MessageSquare className="mr-1.5 size-4" aria-hidden />
+          アシスタント
+        </Button>
       </header>
 
-      {session && (
-        <div className="flex-1 overflow-y-auto pb-24">
-          <MetadataPanel meta={session.doc.getMap("meta")} editable={editable} />
-          <div className="mt-4">
-            <NoteEditor
-              provider={session.provider}
+      {/* 分割ビュー: 本ページが一元ホスト（Conversation を再利用・実装は一箇所） */}
+      <div className="flex min-h-0 flex-1">
+        {session && (
+          <div className="min-w-0 flex-1 overflow-y-auto">
+            <div className="mx-auto max-w-3xl px-4 pb-24 pt-4">
+              <MetadataPanel meta={session.doc.getMap("meta")} editable={editable} />
+              <div className="mt-4">
+                <NoteEditor
+                  provider={session.provider}
+                  editable={editable}
+                  user={{ id: userId, name: userName }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+        {session && chatOpen && (
+          <div className="w-full max-w-md shrink-0 md:w-[420px]">
+            <NoteChatPanel
+              meta={session.doc.getMap("meta")}
+              noteName={access.name}
               editable={editable}
-              user={{ id: userId, name: userName }}
+              onClose={() => setChatOpen(false)}
             />
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

@@ -128,5 +128,9 @@ pub(crate) async fn emit_tool_events(
         })
         .await?;
     }
+    for note in &outcome.note_refs {
+        sink.emit(AgentEvent::NoteRef { note: note.clone() })
+            .await?;
+    }
     Ok(())
 }

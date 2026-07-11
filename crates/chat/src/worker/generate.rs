@@ -119,6 +119,10 @@ impl ChatWorker {
                 collab.clone(),
                 storage.clone(),
             )));
+            // ノートとして保存（note_ref カード・Task 11P.5）。storage だけで足りる。
+            tools.push(Arc::new(crate::document_tool::SaveNoteTool::new(
+                storage.clone(),
+            )));
         }
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
@@ -452,6 +456,12 @@ fn message_text(blocks: &[ContentBlock]) -> String {
                     "[保存済みワークフロー: {name}（workflow_id: {id}, v{}）]",
                     version.unwrap_or(0)
                 ));
+            }
+            // 「さっき作ったノートに追記して」等の追編集に node_id が要る（Task 11P.5）。
+            ContentBlock::NoteRef { note } => {
+                let id = note.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let name = note.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                parts.push(format!("[保存済みノート: {name}（node_id: {id}）]"));
             }
             _ => {}
         }

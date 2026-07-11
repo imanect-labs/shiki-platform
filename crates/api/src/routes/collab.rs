@@ -138,18 +138,54 @@ pub async fn create_note(
         .as_deref()
         .map(collab::note::normalize_markdown)
         .unwrap_or_default();
-    let node = state
-        .storage
-        .write_file_internal(
-            &ctx,
-            req.parent_id,
-            &file_name,
-            markdown.as_bytes(),
-            "text/markdown",
-            trace.0.as_deref(),
-        )
-        .await?;
+    // 同名衝突は Drive 風に連番でリネームして回避する（「新規作成」を連打しても成功する）。
+    let node = create_note_unique(
+        &state,
+        &ctx,
+        req.parent_id,
+        &file_name,
+        markdown.as_bytes(),
+        trace.0.as_deref(),
+    )
+    .await?;
     Ok(Json(NodeResponse::from(node)))
+}
+
+/// 最大リネーム試行回数（`無題のノート (2).md` … を試す上限）。
+const MAX_NAME_ATTEMPTS: u32 = 50;
+
+/// 同名衝突時に ` (2)` `(3)` … を付けて作成をリトライする（fail-closed・上限あり）。
+async fn create_note_unique(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    parent_id: Option<Uuid>,
+    file_name: &str,
+    bytes: &[u8],
+    trace_id: Option<&str>,
+) -> Result<storage::Node, ApiError> {
+    let (stem, ext) = file_name
+        .rsplit_once('.')
+        .map_or((file_name, ""), |(s, e)| (s, e));
+    for attempt in 1..=MAX_NAME_ATTEMPTS {
+        let candidate = if attempt == 1 {
+            file_name.to_string()
+        } else if ext.is_empty() {
+            format!("{stem} ({attempt})")
+        } else {
+            format!("{stem} ({attempt}).{ext}")
+        };
+        match state
+            .storage
+            .write_file_internal(ctx, parent_id, &candidate, bytes, "text/markdown", trace_id)
+            .await
+        {
+            Ok(node) => return Ok(node),
+            // 名前衝突は次候補（連番付き）へ。それ以外の失敗はそのまま返す。
+            Err(storage::StorageError::Conflict) => {}
+            Err(e) => return Err(ApiError::from(e)),
+        }
+    }
+    Err(ApiError::Conflict)
 }
 
 /// collab のエラーを HTTP エラーへ写す（fail-closed: 判定不能は 403 に倒す）。

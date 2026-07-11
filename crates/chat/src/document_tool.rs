@@ -95,6 +95,106 @@ impl Tool for DocumentReadTool {
     }
 }
 
+/// AI 生成 md を新規ノートとして保存するツール（note_ref カード化・Task 11P.5）。
+///
+/// チャットで生成した内容を「ノートとして保存」する経路。作成は StorageService の内部書込
+/// （発話ユーザーの AuthContext・認可・監査・書込イベント→RAG 再索引）を通り、初期 md は
+/// 正規化して保存する（生 HTML は縮退・XSS 遮断）。返り値は note_ref（chat がカード化）。
+pub struct SaveNoteTool {
+    storage: Arc<StorageService>,
+}
+
+impl SaveNoteTool {
+    pub fn new(storage: Arc<StorageService>) -> Self {
+        SaveNoteTool { storage }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SaveNoteInput {
+    /// ノート名（`.md` は自動付与）。
+    name: String,
+    /// 本文 md。
+    markdown: String,
+    /// 配置先フォルダ（省略時は org ルート直下）。
+    #[serde(default)]
+    parent_id: Option<Uuid>,
+}
+
+#[async_trait::async_trait]
+impl Tool for SaveNoteTool {
+    fn name(&self) -> &str {
+        ToolName::SaveNote.as_str()
+    }
+    fn description(&self) -> &'static str {
+        "会話で生成した内容を新しいノート（.md ファイル）として保存する。ユーザーが\
+         「ノートとして保存して」等と依頼したときに使う。保存後は参照カードが表示され、\
+         ユーザーはノートページを開いて共同編集できる。"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "ノート名（.md は自動付与）" },
+                "markdown": { "type": "string", "description": "ノート本文の Markdown" },
+                "parent_id": { "type": "string", "format": "uuid", "description": "配置先フォルダ ID（省略で直下）" }
+            },
+            "required": ["name", "markdown"]
+        })
+    }
+    fn requires_confirmation(&self) -> bool {
+        true
+    }
+
+    async fn call(
+        &self,
+        ctx: &AuthContext,
+        input: serde_json::Value,
+        trace_id: Option<&str>,
+    ) -> Result<ToolOutcome, ToolError> {
+        let input: SaveNoteInput = serde_json::from_value(input)
+            .map_err(|e| ToolError::Invalid(format!("入力が不正です: {e}")))?;
+        let name = input.name.trim();
+        if name.is_empty() {
+            return Err(ToolError::Invalid("ノート名を指定してください".into()));
+        }
+        let file_name = if collab::note::is_note_file(name) {
+            name.to_string()
+        } else {
+            format!("{name}.md")
+        };
+        // 初期 md は正規化して保存する（生 HTML はコードブロックへ縮退＝XSS 遮断・Task 11P.6）。
+        let markdown = collab::note::normalize_markdown(&input.markdown);
+        let node = match self
+            .storage
+            .write_file_internal(
+                ctx,
+                input.parent_id,
+                &file_name,
+                markdown.as_bytes(),
+                "text/markdown",
+                trace_id,
+            )
+            .await
+        {
+            Ok(node) => node,
+            Err(storage::StorageError::Forbidden) => {
+                return Ok(ToolOutcome::error("ノートを作成する権限がありません。"))
+            }
+            Err(e) => return Err(ToolError::Internal(format!("ノート作成に失敗: {e}"))),
+        };
+        let mut outcome = ToolOutcome::ok(format!(
+            "ノート「{}」を保存しました。参照カードから開いて共同編集できます。",
+            node.name
+        ));
+        outcome.note_refs.push(serde_json::json!({
+            "id": node.id.to_string(),
+            "name": node.name,
+        }));
+        Ok(outcome)
+    }
+}
+
 /// ノートを編集するツール（共同編集参加者として Yjs へ適用）。
 pub struct DocumentEditTool {
     collab: Arc<CollabHub>,

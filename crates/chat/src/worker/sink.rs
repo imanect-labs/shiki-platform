@@ -102,6 +102,11 @@ impl WorkerSink {
                     workflow: workflow.clone(),
                 });
             }
+            // StorageService へ作成済みのノート参照のみが save_note から届く（Task 11P.5）。
+            AgentEvent::NoteRef { note } => {
+                self.content
+                    .push(ContentBlock::NoteRef { note: note.clone() });
+            }
             // 自律プロファイルの構造化イベント（計画/サブタスク/予算/承認/失敗回復）は
             // content block へは projection しない（進捗の可視化はライブ SSE 側で扱う・W4 で結線）。
             AgentEvent::PlanUpdated(_)
@@ -143,6 +148,7 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         AgentEvent::WorkflowRef { workflow } => StreamEventKind::WorkflowRef {
             workflow: workflow.clone(),
         },
+        AgentEvent::NoteRef { note } => StreamEventKind::NoteRef { note: note.clone() },
         // 自律プロファイルの構造化イベント（Task 5.9 ライブ配信）。generation_event に append され
         // replay 可能（監査・5.10）だが message.content へは projection しない。
         AgentEvent::PlanUpdated(plan) => StreamEventKind::Plan {

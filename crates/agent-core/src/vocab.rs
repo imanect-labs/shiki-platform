@@ -68,6 +68,8 @@ vocab_enum! {
         DocumentEdit => "document.edit",
         /// ノート本文の読み取りツール（document.edit の前提・現状の md を得る・Task 11P.4）。
         DocumentRead => "document.read",
+        /// AI 生成 md を新規ノートとして保存するツール（note_ref カード化・Task 11P.5）。
+        SaveNote => "save_note",
     }
 }
 

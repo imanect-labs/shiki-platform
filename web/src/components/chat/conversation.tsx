@@ -37,6 +37,7 @@ import { type ToolActivityItem } from "./tool-activity";
 import { ChainOfThought } from "./chain-of-thought";
 import { Composer } from "./composer";
 import { WorkflowRefCard } from "./workflow-ref-card";
+import { NoteRefCard } from "./note-ref-card";
 import { ThreadShareDialog } from "./share-dialog";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
 
@@ -52,6 +53,8 @@ type StreamState = {
   uiSpecs: unknown[];
   /// 保存済みワークフロー参照（Task 10.13・emit_workflow）。
   workflowRefs: unknown[];
+  /// 保存済みノート参照（Task 11P.5・save_note）。
+  noteRefs: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
   plan: PlanSubtask[];
   approval: ApprovalRequest | null;
@@ -68,6 +71,7 @@ const EMPTY_STREAM: StreamState = {
   files: [],
   uiSpecs: [],
   workflowRefs: [],
+  noteRefs: [],
   plan: [],
   approval: null,
   budget: null,
@@ -137,6 +141,8 @@ export function Conversation({ threadId }: { threadId: string }) {
         updateStream((s) =>
           s ? { ...s, workflowRefs: [...s.workflowRefs, workflow] } : s,
         ),
+      onNoteRef: (note) =>
+        updateStream((s) => (s ? { ...s, noteRefs: [...s.noteRefs, note] } : s)),
       // --- 自律エージェント（Phase 5・Task 5.11） ---
       onRunId: (runId) => updateStream((s) => (s ? { ...s, runId } : s)),
       onPlan: (subtasks) =>
@@ -360,6 +366,8 @@ function finalizeStream(
   for (const spec of s.uiSpecs) blocks.push({ type: "generative_ui", spec });
   // 保存済みワークフロー参照カード（Task 10.13）。
   for (const workflow of s.workflowRefs) blocks.push({ type: "workflow_ref", workflow });
+  // 保存済みノート参照カード（Task 11P.5）。
+  for (const note of s.noteRefs) blocks.push({ type: "note_ref", note });
   if (blocks.length === 0) return;
   setMessages((prev) => [
     ...prev,
@@ -432,6 +440,9 @@ function AssistantRow({
   const workflowRefs = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "workflow_ref" }> => b.type === "workflow_ref",
   );
+  const noteRefs = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "note_ref" }> => b.type === "note_ref",
+  );
 
   return (
     <Message className="group justify-start">
@@ -454,6 +465,9 @@ function AssistantRow({
         ) : null}
         {workflowRefs.map((b, i) => (
           <WorkflowRefCard key={i} raw={b.workflow} />
+        ))}
+        {noteRefs.map((b, i) => (
+          <NoteRefCard key={i} raw={b.note} />
         ))}
         <ArtifactFiles files={files} />
         <Sources citations={citations} />

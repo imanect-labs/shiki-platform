@@ -124,6 +124,7 @@ impl Tool for MockSearchTool {
             }],
             ui_specs: vec![],
             workflow_refs: vec![],
+            note_refs: vec![],
             is_error: false,
         })
     }
