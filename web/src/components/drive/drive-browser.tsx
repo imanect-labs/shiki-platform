@@ -33,6 +33,7 @@ import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
+import { useMe } from "@/hooks/use-me";
 import { createNote } from "@/lib/notes-api";
 import { saveNewCsv } from "@/lib/tabular-api";
 import { useContentSearch, type ContentHit } from "@/lib/drive-search";
@@ -81,6 +82,8 @@ export function DriveBrowser() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const folderId = searchParams.get("folder");
+  // 更新者列の「自分」判定用（行ごとに /me を叩かず親で 1 回だけ解決する）。
+  const me = useMe();
 
   const [sort, setSort] = React.useState<SortField>("name");
   const [desc, setDesc] = React.useState(false);
@@ -631,7 +634,7 @@ export function DriveBrowser() {
         ) : (
           <div className="flex flex-col">
             {list.items.map((node) => (
-              <NodeRow key={node.id} node={node} onAction={handleAction} />
+              <NodeRow key={node.id} node={node} onAction={handleAction} meId={me.data?.id} />
             ))}
             {list.hasMore ? <div ref={sentinelRef}>{list.loadingMore ? <LoadingRow /> : null}</div> : null}
           </div>

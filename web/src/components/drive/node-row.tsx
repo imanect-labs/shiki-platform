@@ -11,13 +11,22 @@ import { LIST_GRID, NodeIcon } from "./primitives";
 
 export type { NodeAction };
 
+/// 更新者の表示名。自分は「自分」、他者はディレクトリ解決名、未解決（AI 等）は subject を出す。
+export function editorLabel(node: NodeResponse, meId: string | undefined): string {
+  if (meId && node.updated_by === meId) return "自分";
+  return node.updated_by_name ?? node.updated_by;
+}
+
 /// 一覧の 1 行。フォルダは開く、ファイルはダウンロード。… メニューから各操作。
 export function NodeRow({
   node,
   onAction,
+  meId,
 }: {
   node: NodeResponse;
   onAction: (action: NodeAction, node: NodeResponse) => void;
+  /// 現在ユーザー id（更新者列の「自分」判定用・親で 1 回だけ解決して渡す）。
+  meId?: string;
 }) {
   const isFolder = node.kind === "folder";
   // フォルダは開く、ファイルはビューアで開く（ダウンロードはメニューから）。
@@ -43,8 +52,8 @@ export function NodeRow({
         {formatDateTime(node.updated_at)}
       </span>
       <span className="hidden truncate text-[13px] text-muted-foreground lg:block">
-        {/* 最終更新者（updated_by・11P.10）。AI 編集は AI 主体名義で表示される。 */}
-        {node.updated_by}
+        {/* 最終更新者（updated_by・11P.10）。自分は「自分」、他者は表示名、AI は主体名義。 */}
+        {editorLabel(node, meId)}
       </span>
       <span className="hidden truncate text-[13px] text-muted-foreground sm:block">
         {isFolder ? "—" : formatBytes(node.size_bytes)}

@@ -15,6 +15,11 @@ use uuid::Uuid;
 /// tabular エラーを**モデルが読む error 観測**へ（fail-closed・存在秘匿）。
 fn denied(err: &tabular::TabularError) -> ToolOutcome {
     use tabular::TabularError as TE;
+    // クエリ実行エラー（未知の列・型不一致等）は DuckDB の理由をそのまま返し、モデルが
+    // SQL を自己修正できるようにする（viewer 権限は既に確認済み＝存在秘匿の懸念なし）。
+    if let TE::QueryFailed(m) = err {
+        return ToolOutcome::error(format!("SQL の実行に失敗しました: {m}"));
+    }
     let msg = match err {
         TE::Forbidden | TE::Authz(_) | TE::Storage(storage::StorageError::Forbidden) => {
             "この CSV を操作する権限がありません。"

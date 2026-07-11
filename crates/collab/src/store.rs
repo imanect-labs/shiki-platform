@@ -64,7 +64,16 @@ impl DocStore {
     }
 
     /// 永続状態をロードする（行が無ければ NotFound）。
+    ///
+    /// snapshot 行取得と「snapshot 以降の update 列」取得の 2 クエリは **REPEATABLE READ の
+    /// 単一トランザクション**で撮る。並行 `compact` が 2 クエリの間に snapshot_seq を進めて
+    /// update 行を削除しても、トランザクション開始時点の一貫スナップショットを見るため
+    /// 「新 snapshot は読まず、畳まれた update も取りこぼす」欠落状態を作らない。
     pub async fn load(&self, node_id: Uuid, tenant_id: &str) -> Result<PersistedDoc, CollabError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(&mut *tx)
+            .await?;
         type DocRow = (Option<Vec<u8>>, i64, i64, Option<i64>);
         let row: Option<DocRow> = sqlx::query_as(
             "SELECT snapshot, snapshot_seq, next_seq, saved_node_version
@@ -72,7 +81,7 @@ impl DocStore {
         )
         .bind(node_id)
         .bind(tenant_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
         let Some((snapshot, snapshot_seq, next_seq, saved_node_version)) = row else {
             return Err(CollabError::NotFound(format!("collab_doc {node_id}")));
@@ -82,8 +91,9 @@ impl DocStore {
         )
         .bind(node_id)
         .bind(snapshot_seq)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(PersistedDoc {
             snapshot,
             snapshot_seq,
@@ -147,20 +157,31 @@ impl DocStore {
         Ok(())
     }
 
-    /// 発番済み seq 全てを snapshot に畳む（アンロード時の最終圧縮）。
-    pub async fn compact_latest(&self, node_id: Uuid, snapshot: &[u8]) -> Result<(), CollabError> {
+    /// snapshot を**無条件に**差し替え、`upto_seq` までの update を削除する（md インポート用）。
+    ///
+    /// [`Self::compact`] は `snapshot_seq < upto_seq` のときだけ snapshot を書くが、インポートは
+    /// seq が進まなくても内容（本文）が変わるため無条件に書く必要がある。`upto_seq` は呼び出し元が
+    /// 確定値で渡す（DB の `next_seq` を再計算しない）。ロード時（＝共有前・並行 append 無し）にのみ
+    /// 呼ばれる前提。
+    pub async fn overwrite_snapshot(
+        &self,
+        node_id: Uuid,
+        snapshot: &[u8],
+        upto_seq: i64,
+    ) -> Result<(), CollabError> {
         let mut tx = self.pool.begin().await?;
-        let (upto,): (i64,) = sqlx::query_as(
-            "UPDATE collab_doc SET snapshot = $2, snapshot_seq = next_seq - 1, updated_at = now()
-             WHERE node_id = $1 RETURNING snapshot_seq",
+        sqlx::query(
+            "UPDATE collab_doc SET snapshot = $2, snapshot_seq = $3, updated_at = now()
+             WHERE node_id = $1",
         )
         .bind(node_id)
         .bind(snapshot)
-        .fetch_one(&mut *tx)
+        .bind(upto_seq)
+        .execute(&mut *tx)
         .await?;
         sqlx::query("DELETE FROM collab_update WHERE node_id = $1 AND seq <= $2")
             .bind(node_id)
-            .bind(upto)
+            .bind(upto_seq)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;

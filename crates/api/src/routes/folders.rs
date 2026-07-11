@@ -94,6 +94,22 @@ pub struct ChildrenResponse {
     pub next_cursor: Option<String>,
 }
 
+/// NodeResponse 群の `updated_by` を表示名で補完する（Task 11P.10）。
+/// ディレクトリ（テナント＋org スコープ）で一括解決し、未登録 subject（AI 等）は null のまま。
+/// 解決失敗は非致命（クライアントがフォールバック表示する）。
+async fn resolve_updated_by_names(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    items: &mut [NodeResponse],
+) {
+    let ids: Vec<String> = items.iter().map(|n| n.updated_by.clone()).collect();
+    if let Ok(names) = state.directory.resolve_display_names(ctx, &ids).await {
+        for n in &mut *items {
+            n.updated_by_name = names.get(&n.updated_by).cloned();
+        }
+    }
+}
+
 /// パンくず 1 要素（祖先ノード）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CrumbResponse {
@@ -183,8 +199,10 @@ pub async fn list_children(
                 .await?
         }
     };
+    let mut items: Vec<NodeResponse> = page.items.into_iter().map(Into::into).collect();
+    resolve_updated_by_names(&state, &ctx, &mut items).await;
     Ok(Json(ChildrenResponse {
-        items: page.items.into_iter().map(Into::into).collect(),
+        items,
         next_cursor: page.next_cursor,
     }))
 }
@@ -338,8 +356,10 @@ pub async fn list_trash(
             trace.as_deref(),
         )
         .await?;
+    let mut items: Vec<NodeResponse> = page.items.into_iter().map(Into::into).collect();
+    resolve_updated_by_names(&state, &ctx, &mut items).await;
     Ok(Json(ChildrenResponse {
-        items: page.items.into_iter().map(Into::into).collect(),
+        items,
         next_cursor: page.next_cursor,
     }))
 }

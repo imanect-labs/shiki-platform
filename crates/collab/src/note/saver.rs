@@ -86,6 +86,7 @@ pub async fn save_note(
 ///
 /// `saved_node_version` が現在の `node_version` と異なる場合のみ、ファイル内容を
 /// Yjs へ全置換で取り込み、取り込み後の全状態を snapshot として即時永続化する。
+#[allow(clippy::too_many_arguments)] // ロード文脈の値を束ねず素で受ける（呼び出し元は 1 箇所＋テスト）。
 pub async fn import_if_stale(
     doc: &Arc<LiveDoc>,
     store: &DocStore,
@@ -94,6 +95,8 @@ pub async fn import_if_stale(
     node_id: Uuid,
     node_version: i64,
     saved_node_version: Option<i64>,
+    // ロード時点の最終 seq（= 既存 update 列の消し込み上限。呼び出し元が確定値で渡す）。
+    upto_seq: i64,
 ) -> Result<(), CollabError> {
     if saved_node_version == Some(node_version) {
         return Ok(());
@@ -102,8 +105,11 @@ pub async fn import_if_stale(
     let markdown = String::from_utf8_lossy(&bytes);
     doc.import_markdown(&markdown)?;
     // インポート結果は update log を経ないため、snapshot として即時に正本へ落とす。
+    // ロード時（共有前・並行 append 無し）なので upto_seq は確定値でよい。
     let snapshot = doc.full_state()?;
-    store.compact_latest(node_id, &snapshot).await?;
+    store
+        .overwrite_snapshot(node_id, &snapshot, upto_seq)
+        .await?;
     store.set_saved_node_version(node_id, node_version).await?;
     Ok(())
 }

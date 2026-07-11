@@ -35,8 +35,12 @@ pub struct NodeResponse {
     pub content_type: Option<String>,
     pub version: i64,
     pub created_by: String,
-    /// 最終更新者の subject（Task 11P.10・AI 編集は AI 主体名義）。
+    /// 最終更新者の subject id（Task 11P.10・AI 編集は AI 主体名義）。
     pub updated_by: String,
+    /// 最終更新者の表示名（ディレクトリ解決済み・Task 11P.10）。ディレクトリに無い
+    /// subject（AI エージェント等）や未解決時は `null`＝クライアント側でフォールバック。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_by_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -53,6 +57,7 @@ impl From<Node> for NodeResponse {
             version: n.version,
             created_by: n.created_by,
             updated_by: n.updated_by,
+            updated_by_name: None,
             created_at: n.created_at,
             updated_at: n.updated_at,
         }
@@ -116,6 +121,9 @@ pub struct FileVersionResponse {
     pub content_type: String,
     /// この版を作成したユーザー id。
     pub author: String,
+    /// 作成者の表示名（ディレクトリ解決済み・Task 11P.10）。未解決時は `null`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author_name: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -127,6 +135,7 @@ impl From<FileVersion> for FileVersionResponse {
             size_bytes: v.size_bytes,
             content_type: v.content_type,
             author: v.author,
+            author_name: None,
             created_at: v.created_at,
         }
     }
@@ -393,10 +402,15 @@ pub async fn list_versions(
             trace.as_deref(),
         )
         .await?;
-    Ok(Json(FileVersionsResponse {
-        items: versions.into_iter().map(Into::into).collect(),
-        next_cursor,
-    }))
+    let mut items: Vec<FileVersionResponse> = versions.into_iter().map(Into::into).collect();
+    // 版 author を表示名で補完（ディレクトリ・テナントスコープ。未登録 subject は null）。
+    let ids: Vec<String> = items.iter().map(|v| v.author.clone()).collect();
+    if let Ok(names) = state.directory.resolve_display_names(&ctx, &ids).await {
+        for v in &mut items {
+            v.author_name = names.get(&v.author).cloned();
+        }
+    }
+    Ok(Json(FileVersionsResponse { items, next_cursor }))
 }
 
 /// 特定版の presigned ダウンロード URL を発行する（Task 1.7）。

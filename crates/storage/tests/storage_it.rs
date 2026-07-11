@@ -1650,6 +1650,58 @@ async fn directory_search_is_tenant_scoped() {
     assert_ne!(p1.items[0].id, p2.items[0].id, "ページ跨ぎで重複しない");
 }
 
+/// 更新者/作者の表示名解決（Task 11P.10）: 同テナントは解決、別テナント・未登録は除外。
+#[tokio::test]
+async fn resolve_display_names_is_tenant_scoped() {
+    let Some(cx) = setup().await else {
+        return;
+    };
+    let dir = DirectoryStore::new(cx.pool.clone());
+    let s = Uuid::new_v4().simple().to_string();
+    let (ta, tb) = (format!("ta-{s}"), format!("tb-{s}"));
+    let org = format!("o-{s}");
+    let alice = format!("alice-{s}");
+    let bob = format!("bob-{s}");
+    let charlie = format!("charlie-{s}");
+    dir.upsert_user(&alice, &ta, &org, &format!("{alice}@a.example"), "Alice")
+        .await
+        .expect("seed alice");
+    dir.upsert_user(&bob, &ta, &org, &format!("{bob}@a.example"), "Bob")
+        .await
+        .expect("seed bob");
+    // charlie は別テナント（tb）。同 org でも tenant_id で除外されること。
+    dir.upsert_user(
+        &charlie,
+        &tb,
+        &org,
+        &format!("{charlie}@b.example"),
+        "Charlie",
+    )
+    .await
+    .expect("seed charlie");
+
+    let ctx = make_ctx_tenant(&org, &ta, &alice);
+    let unknown = format!("ai-agent-{s}");
+    let names = dir
+        .resolve_display_names(
+            &ctx,
+            &[alice.clone(), bob.clone(), charlie.clone(), unknown.clone()],
+        )
+        .await
+        .expect("resolve");
+    assert_eq!(names.get(&alice).map(String::as_str), Some("Alice"));
+    assert_eq!(names.get(&bob).map(String::as_str), Some("Bob"));
+    assert!(!names.contains_key(&charlie), "別テナントは解決しない");
+    assert!(
+        !names.contains_key(&unknown),
+        "未登録 subject（AI 等）は解決しない"
+    );
+
+    // 空入力は空マップ（クエリを撃たない）。
+    let empty = dir.resolve_display_names(&ctx, &[]).await.expect("empty");
+    assert!(empty.is_empty());
+}
+
 #[tokio::test]
 async fn trash_lists_roots_and_folder_restore_roundtrips() {
     let Some(cx) = setup().await else {

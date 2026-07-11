@@ -361,6 +361,7 @@ async fn external_write_is_imported_on_load() {
         node.id,
         external.version,
         persisted.saved_node_version,
+        persisted.next_seq - 1,
     )
     .await
     .expect("インポート");
@@ -428,6 +429,8 @@ async fn import_is_skipped_when_version_matches() {
         node.id,
         node.version,
         Some(node.version),
+        // saved == version で早期 return するため upto_seq は未使用（0 でよい）。
+        0,
     )
     .await
     .expect("判定");

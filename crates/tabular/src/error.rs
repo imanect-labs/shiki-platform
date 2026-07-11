@@ -26,6 +26,11 @@ pub enum TabularError {
     /// 隔離ランナーの実行失敗（デコード/プロセス異常）。
     #[error("runner error: {0}")]
     Runner(String),
+    /// ユーザー SQL が DuckDB 実行で失敗（未知の列・型不一致・構文以外の意味エラー等）。
+    /// 構文/RO 検証は通ったがクエリ自体が誤り＝**利用者起因**なので 400 で理由を返す
+    /// （プロセス異常＝500 の `Runner` とは区別する）。
+    #[error("query failed: {0}")]
+    QueryFailed(String),
     /// ストレージ（CSV 取得/保存）の失敗。
     #[error("storage error: {0}")]
     Storage(#[from] storage::StorageError),

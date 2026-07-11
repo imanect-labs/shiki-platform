@@ -219,6 +219,9 @@ impl TabularService {
         csv_path: &std::path::Path,
         max_rows: u32,
     ) -> Result<RunnerResponse, TabularError> {
+        // ユーザー SQL（Query）の実行失敗は利用者起因（400）、それ以外の op はこちらの
+        // 生成 SQL なので失敗＝内部異常（500）として区別する。
+        let is_user_query = matches!(op, RunnerOp::Query { .. });
         let request = RunnerRequest {
             op,
             csv_path: csv_path.to_string_lossy().into_owned(),
@@ -227,9 +230,12 @@ impl TabularService {
         };
         let response = run_isolated(&self.runner, &request).await?;
         if !response.ok {
-            return Err(TabularError::Runner(
-                response.error.unwrap_or_else(|| "unknown".into()),
-            ));
+            let msg = response.error.unwrap_or_else(|| "unknown".into());
+            return Err(if is_user_query {
+                TabularError::QueryFailed(msg)
+            } else {
+                TabularError::Runner(msg)
+            });
         }
         Ok(response)
     }

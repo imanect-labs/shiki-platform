@@ -26,6 +26,27 @@ export function SqlConsole({
   const [running, setRunning] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  // 数値列（右寄せ表示・表計算ソフトの体裁）。結果のサンプルから判定する。
+  const numericCols = React.useMemo(() => {
+    const nums = new Set<number>();
+    if (!result) return nums;
+    for (let c = 0; c < result.columns.length; c++) {
+      let sawValue = false;
+      let allNumeric = true;
+      for (const row of result.rows) {
+        const v = row[c];
+        if (v == null || v === "") continue;
+        sawValue = true;
+        if (!Number.isFinite(Number(v.replace(/,/g, "")))) {
+          allNumeric = false;
+          break;
+        }
+      }
+      if (sawValue && allNumeric) nums.add(c);
+    }
+    return nums;
+  }, [result]);
+
   const run = async () => {
     setRunning(true);
     setError(null);
@@ -105,8 +126,11 @@ export function SqlConsole({
           <table className="w-full border-collapse text-sm">
             <thead className="sticky top-0 bg-muted/60">
               <tr>
-                {result.columns.map((c) => (
-                  <th key={c} className="border-b px-3 py-1.5 text-left font-semibold">
+                {result.columns.map((c, j) => (
+                  <th
+                    key={c}
+                    className={`border-b px-3 py-1.5 font-semibold ${numericCols.has(j) ? "text-right" : "text-left"}`}
+                  >
                     {c}
                   </th>
                 ))}
@@ -116,7 +140,10 @@ export function SqlConsole({
               {result.rows.map((row, i) => (
                 <tr key={i} className="odd:bg-muted/20">
                   {row.map((cell, j) => (
-                    <td key={j} className="border-b px-3 py-1 tabular-nums">
+                    <td
+                      key={j}
+                      className={`border-b px-3 py-1 tabular-nums ${numericCols.has(j) ? "text-right" : "text-left"}`}
+                    >
                       {cell ?? ""}
                     </td>
                   ))}

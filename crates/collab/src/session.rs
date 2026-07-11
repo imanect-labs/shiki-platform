@@ -42,19 +42,19 @@ pub async fn run_session(
     hub.leave(&doc).await;
 }
 
-/// セッション本体。終了理由に関わらず awareness の掃除は呼び出し側で行うため、
-/// ここでは観測した client id を返す代わりに内部で掃除まで済ませる。
-async fn session_loop(
-    mut socket: WebSocket,
+/// セッション本体。ハンドシェイク／送受信ループを回し、終了理由（`Some`）またはエラーを返す。
+/// **awareness の掃除は呼び出し元 [`session_loop`] が終了経路に関わらず必ず行う**ため、
+/// ここでは早期 return（`?`）してよい（掃除漏れによるプレゼンス残留を起こさない）。
+async fn session_body(
+    socket: &mut WebSocket,
     hub: &Arc<CollabHub>,
     ctx: &AuthContext,
     doc: &Arc<LiveDoc>,
     mut mode: AccessMode,
     conn_id: u64,
-) -> Result<(), CollabError> {
+    announced_clients: &mut Vec<yrs::block::ClientID>,
+) -> Result<Option<&'static str>, CollabError> {
     let mut rx = doc.subscribe();
-    // この接続が awareness で名乗った client 群（切断時に削除通知を流す）。
-    let mut announced_clients: Vec<yrs::block::ClientID> = Vec::new();
     // 権限再チェック間隔（PIT-37②・WOPI と同じ「定期再チェック」の粒度）。
     let mut recheck = tokio::time::interval(hub.recheck_interval());
     recheck.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -63,12 +63,12 @@ async fn session_loop(
     // 初期ハンドシェイク: サーバ state vector と awareness 全状態。
     let sv = doc.state_vector()?;
     send_binary(
-        &mut socket,
+        socket,
         Message::Sync(SyncMessage::SyncStep1(sv)).encode_v1(),
     )
     .await?;
     if let Some(update) = doc.awareness_full()? {
-        send_binary(&mut socket, Message::Awareness(update).encode_v1()).await?;
+        send_binary(socket, Message::Awareness(update).encode_v1()).await?;
     }
 
     let close_reason = loop {
@@ -77,8 +77,8 @@ async fn session_loop(
                 match incoming {
                     Some(Ok(WsMessage::Binary(bytes))) => {
                         if let Some(reason) = handle_client_message(
-                            &mut socket, hub, doc, mode, conn_id, &bytes,
-                            ctx, &mut announced_clients,
+                            socket, hub, doc, mode, conn_id, &bytes,
+                            ctx, announced_clients,
                         ).await? {
                             break Some(reason);
                         }
@@ -91,7 +91,7 @@ async fn session_loop(
             frame = rx.recv() => {
                 match frame {
                     Ok(f) if f.from == conn_id => {}
-                    Ok(f) => send_binary(&mut socket, f.data).await?,
+                    Ok(f) => send_binary(socket, f.data).await?,
                     // 取りこぼしは再接続での再同期に倒す（安全側）。
                     Err(RecvError::Lagged(_)) => break Some("resync required"),
                     Err(RecvError::Closed) => break None,
@@ -106,11 +106,40 @@ async fn session_loop(
             }
         }
     };
+    Ok(close_reason)
+}
 
-    // 切断掃除: この接続が名乗っていた awareness を削除し他接続へ通知する。
-    if let Some(update) = doc.remove_awareness_clients(&announced_clients)? {
+/// セッションを実行し、**正常・異常のいずれの終了でも** awareness を掃除する。
+///
+/// 本体（[`session_body`]）の送信/永続化失敗による早期 return でも、名乗り済み client の
+/// awareness 削除通知を必ず流す（掃除漏れで切断済み接続のプレゼンスが残る不具合の修正）。
+async fn session_loop(
+    mut socket: WebSocket,
+    hub: &Arc<CollabHub>,
+    ctx: &AuthContext,
+    doc: &Arc<LiveDoc>,
+    mode: AccessMode,
+    conn_id: u64,
+) -> Result<(), CollabError> {
+    // この接続が awareness で名乗った client 群（終了時に削除通知を流す）。
+    let mut announced_clients: Vec<yrs::block::ClientID> = Vec::new();
+    let outcome = session_body(
+        &mut socket,
+        hub,
+        ctx,
+        doc,
+        mode,
+        conn_id,
+        &mut announced_clients,
+    )
+    .await;
+
+    // 切断掃除（終了理由に関わらず必ず実行）。掃除自体の失敗は best-effort で握る。
+    if let Ok(Some(update)) = doc.remove_awareness_clients(&announced_clients) {
         doc.broadcast(conn_id, Message::Awareness(update).encode_v1());
     }
+
+    let close_reason = outcome?;
     if let Some(reason) = close_reason {
         let _ = socket
             .send(WsMessage::Close(Some(axum::extract::ws::CloseFrame {
