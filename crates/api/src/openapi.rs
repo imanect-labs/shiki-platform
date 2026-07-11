@@ -42,6 +42,7 @@ use utoipa::{
         crate::routes::chat::stream_thread,
         crate::routes::chat::cancel_run,
         crate::routes::collab::collab_ws,
+        crate::routes::collab::create_note,
         crate::routes::chat_approval::submit_approval,
         crate::routes::chat::share_thread,
         crate::routes::chat::unshare_thread,

@@ -7,25 +7,94 @@
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Path, State};
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, post};
+use axum::Json;
+use serde::Deserialize;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::extract::{AuthContextExt, TraceIdExt};
+use crate::routes::files::NodeResponse;
 use crate::server::RouteDecl;
 use crate::state::AppState;
 
 /// collab のルート宣言（route_table から分離・同じ宣言的マップの一部）。
 pub(crate) fn collab_route_decls() -> Vec<RouteDecl> {
     // 編集セッションの WS が長時間開くためタイムアウト無しの streaming ポリシ。
-    use crate::server::AccessPolicy::SessionStreaming;
+    use crate::server::AccessPolicy::{Session, SessionStreaming};
     let r = RouteDecl::new;
-    vec![r(
-        "/collab/docs/{node_id}/ws",
-        &["GET"],
-        SessionStreaming,
-        || get(collab_ws),
-    )]
+    vec![
+        r(
+            "/collab/docs/{node_id}/ws",
+            &["GET"],
+            SessionStreaming,
+            || get(collab_ws),
+        ),
+        r("/notes", &["POST"], Session, || post(create_note)),
+    ]
+}
+
+/// ノート作成リクエスト（Task 11P.2・「新規作成 > ノート」/ note_ref 保存の共通経路）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateNoteRequest {
+    /// 配置先フォルダ（None は org ルート直下）。
+    pub parent_id: Option<Uuid>,
+    /// ファイル名（`.md` は自動付与）。
+    pub name: String,
+    /// 初期内容の md（省略時は空ノート）。保存前に正規形へ正規化される。
+    #[serde(default)]
+    pub markdown: Option<String>,
+}
+
+/// ノート（.md ファイル）を作成する。
+///
+/// 実体は通常のドライブファイル（真実は Yjs・md はシリアライズ形式）。作成は
+/// StorageService の内部書込（認可・監査・書込イベント→RAG 再索引つき）を通る。
+#[utoipa::path(
+    post, path = "/notes", request_body = CreateNoteRequest,
+    responses(
+        (status = 200, description = "作成したノートのノードメタ", body = NodeResponse),
+        (status = 400, description = "名前が不正"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "配置先への作成権限が無い"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn create_note(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Json(req): Json<CreateNoteRequest>,
+) -> Result<Json<NodeResponse>, ApiError> {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::BadRequest("ノート名を指定してください".into()));
+    }
+    let file_name = if collab::note::is_note_file(name) {
+        name.to_string()
+    } else {
+        format!("{name}.md")
+    };
+    // 初期 md は正規形へ正規化して保存する（往復契約の起点を正規形に揃える。
+    // 生 HTML はこの時点でコードブロックへ縮退する＝note_ref 流入経路の XSS 遮断）。
+    let markdown = req
+        .markdown
+        .as_deref()
+        .map(collab::note::normalize_markdown)
+        .unwrap_or_default();
+    let node = state
+        .storage
+        .write_file_internal(
+            &ctx,
+            req.parent_id,
+            &file_name,
+            markdown.as_bytes(),
+            "text/markdown",
+            trace.0.as_deref(),
+        )
+        .await?;
+    Ok(Json(NodeResponse::from(node)))
 }
 
 /// collab のエラーを HTTP エラーへ写す（fail-closed: 判定不能は 403 に倒す）。
@@ -67,7 +136,7 @@ pub async fn collab_ws(
         .map_err(to_api_error)?;
     let mode = hub.authorize(&ctx, node_id).await.map_err(to_api_error)?;
     Ok(ws.on_upgrade(move |socket| async move {
-        match hub.join(node_id, &node.org, &node.tenant_id).await {
+        match hub.join(&ctx, &node).await {
             Ok(doc) => collab::run_session(socket, hub, ctx, doc, mode).await,
             Err(e) => {
                 tracing::warn!(%node_id, error = %e, "collab ドキュメントのロードに失敗");

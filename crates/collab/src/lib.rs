@@ -25,6 +25,7 @@
 pub mod doc;
 pub mod error;
 pub mod hub;
+pub mod note;
 pub mod session;
 pub mod store;
 

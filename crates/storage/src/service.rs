@@ -126,6 +126,7 @@ impl StorageService {
 }
 
 mod admin;
+mod content_update;
 mod finalize;
 mod folder;
 mod internal_io;

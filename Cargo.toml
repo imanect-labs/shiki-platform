@@ -117,6 +117,8 @@ proptest = "1"
 
 # ノート共同編集 CRDT（design §4.8.1・Yjs 互換の yrs。sync ワイヤプロトコル込み）
 yrs = "0.27"
+# ノートの md シリアライズ往復（Task 11P.2・CommonMark+GFM テーブル/タスクリスト）
+pulldown-cmark = { version = "0.13", default-features = false }
 
 # 内部クレート
 shiki-authz = { path = "crates/authz" }

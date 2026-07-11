@@ -67,6 +67,22 @@ async fn seed_file_node(pool: &PgPool, org: &str, tenant: &str) -> Uuid {
     node_id
 }
 
+/// 編集主体のテスト用 AuthContext（author 記録・保存主体）。
+fn test_ctx() -> authz::AuthContext {
+    authz::AuthContext::new(
+        authz::Principal {
+            kind: authz::PrincipalKind::User,
+            id: "tester".into(),
+            email: None,
+            groups: vec!["/acme".into()],
+            roles: vec![],
+            tenant_id: None,
+        },
+        "acme".into(),
+        "default".into(),
+    )
+}
+
 /// 空の永続状態（LiveDoc をメモリ内だけで使うテスト用）。
 fn empty_persisted() -> PersistedDoc {
     PersistedDoc {
@@ -162,7 +178,7 @@ async fn update_log_compacts_into_snapshot() {
         );
         let update = client_update(&client, &last_sv);
         last_sv = client.transact().state_vector();
-        live.apply_and_persist(&store, &update, "tester")
+        live.apply_and_persist(&store, &update, &test_ctx())
             .await
             .expect("適用と追記");
     }
