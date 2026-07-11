@@ -41,7 +41,7 @@ use tokio_tungstenite::tungstenite::Message as TgMessage;
 use uuid::Uuid;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
-use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Transact, Update};
+use yrs::{Doc, GetString, ReadTxn, Text, Transact, Update};
 
 /// (subject, relation) の付与集合を実行中に増減できる authz モック（剥奪切断の検証用）。
 struct RoleAuthz {
