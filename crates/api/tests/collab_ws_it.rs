@@ -423,6 +423,15 @@ async fn setup() -> Option<Harness> {
         config.auth.effective_jwks_uri(),
         Duration::from_secs(300),
     ));
+    let installs = Arc::new(app_platform::InstallService::new(
+        pool.clone(),
+        app_platform::Registry::new(pool.clone()),
+        Arc::clone(&mini_app_code),
+        Arc::clone(&data_store),
+        Arc::clone(&authz_dyn),
+        None,
+        vec![],
+    ));
     let tabular_svc = std::sync::Arc::new(tabular::TabularService::new(
         std::sync::Arc::clone(&storage_svc),
         tabular::RunnerConfig::new("shiki-tabular-runner", std::time::Duration::from_secs(5)),
@@ -443,6 +452,7 @@ async fn setup() -> Option<Harness> {
         data_views,
         fsms,
         mini_app_code,
+        installs,
         ui_specs,
         ui_actions,
         skills,
