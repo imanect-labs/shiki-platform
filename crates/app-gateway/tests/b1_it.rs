@@ -57,7 +57,6 @@ async fn serves_pinned_bundle_with_isolation_headers() {
     let app = build_b1_router(B1State {
         installations: installations.clone(),
         store: store.clone(),
-        tenant_id: tenant.clone(),
         gateway_origin: "http://gw.example:8090".into(),
         host_origin: "http://host.example:3000".into(),
     });

@@ -29,9 +29,6 @@ use crate::AppInstallationStore;
 pub struct B1State {
     pub installations: AppInstallationStore,
     pub store: Arc<dyn ObjectStore>,
-    /// single テナントの既定（B1 配信はトークンを持たないため tenant はパスでなく設定から。
-    /// SaaS multi はホスト名分離（per-tenant origin）がポストアルファ）。
-    pub tenant_id: String,
     /// CSP `connect-src` に許可するゲートウェイのオリジン（例 `http://localhost:8090`）。
     pub gateway_origin: String,
     /// CSP `frame-ancestors` に許可するホスト（web シェル）のオリジン。
@@ -71,12 +68,14 @@ async fn serve_bundle(
         return StatusCode::NOT_FOUND.into_response();
     }
     // 同意時ピン突合: active インストールの frontend_bundle と一致しなければ存在秘匿 404。
-    let installation = match state
+    // B1 リスナは cookie/URL にテナントを持たない（opaque origin・cookieless）ため、
+    // グローバル一意な app_id から active インストールと所属テナントを解決する。
+    let (tenant_id, installation) = match state
         .installations
-        .resolve_active_by_app(&state.tenant_id, app_id)
+        .resolve_active_by_app_global(app_id)
         .await
     {
-        Ok(Some(i)) => i,
+        Ok(Some(pair)) => pair,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!(error = %e, "B1 配信のインストール解決に失敗");
@@ -86,7 +85,7 @@ async fn serve_bundle(
     if installation.frontend_bundle.as_deref() != Some(sha.as_str()) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let key = miniapp_bundle_key(&state.tenant_id, &sha);
+    let key = miniapp_bundle_key(&tenant_id, &sha);
     let bytes = match state.store.get_object(&key).await {
         Ok(b) => b,
         Err(storage::ObjectStoreError::NotFound(_)) => {

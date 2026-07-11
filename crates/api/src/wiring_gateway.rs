@@ -214,11 +214,6 @@ pub(crate) fn wire_b1(
     let state = app_gateway::B1State {
         installations: app_gateway::AppInstallationStore::new(db.clone()),
         store: Arc::clone(object_store),
-        tenant_id: config
-            .auth
-            .tenant_id
-            .clone()
-            .unwrap_or_else(|| "default".to_string()),
         gateway_origin,
         host_origin,
     };

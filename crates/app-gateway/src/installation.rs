@@ -246,6 +246,33 @@ impl AppInstallationStore {
         Ok(row.map(Into::into))
     }
 
+    /// app_id から**有効な**インストールを引く（テナント跨ぎ・B1 配信用）。
+    ///
+    /// B1 第3リスナは cookie/token を持たず URL にテナントを含まない（opaque origin 配信）。
+    /// `app_id`（mini_app_code アーティファクトの UUID）はテナント跨ぎで一意なため、これで
+    /// 解決し、返った `tenant_id` でバンドルキー（tenant スコープの content address）を組む。
+    /// バンドルはアプリ自身のフロント資産（content-addressed・ピン一致必須）でユーザーデータを
+    /// 含まないため、この解決でテナント隔離は損なわれない。
+    pub async fn resolve_active_by_app_global(
+        &self,
+        app_id: Uuid,
+    ) -> Result<Option<(String, AppInstallation)>, GatewayError> {
+        // tenant を先に解決してから tenant スコープの取得へ（Row の FromRow を汚さない）。
+        let tenant: Option<(String,)> = sqlx::query_as(
+            "SELECT tenant_id FROM app_installation \
+             WHERE app_id = $1 AND status = 'active' LIMIT 1",
+        )
+        .bind(app_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        let Some((tenant_id,)) = tenant else {
+            return Ok(None);
+        };
+        let installation = self.resolve_active_by_app(&tenant_id, app_id).await?;
+        Ok(installation.map(|i| (tenant_id, i)))
+    }
+
     /// テナント内の全インストール一覧（管理 UI 用・状態問わず新しい順）。
     pub async fn list(&self, ctx: &AuthContext) -> Result<Vec<AppInstallation>, GatewayError> {
         let sql = format!(
