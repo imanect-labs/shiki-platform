@@ -24,6 +24,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import type { CollabProvider } from "@/lib/collab";
 import { AiSuggestionMark } from "./ai-suggestion-mark";
+import { ShikiEmbed } from "./embed/shiki-embed-node";
 import { createSlashCommand, type SlashItem } from "./slash-command";
 
 /// 参加者カーソルの配色（design token に寄せた識別しやすい 8 色）。
@@ -78,6 +79,8 @@ export function NoteEditor({ provider, editable, user, extraSlashItems }: NoteEd
       }),
       // AI 提案マーク（document.edit suggest モード・Task 11P.4）。
       AiSuggestionMark,
+      // 埋め込みブロック（Task 11P.6・3 種のみ・生 HTML 不可）。
+      ShikiEmbed,
       Collaboration.configure({ document: provider.doc, field: "default" }),
       CollaborationCaret.configure({
         provider,

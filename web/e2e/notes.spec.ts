@@ -263,3 +263,90 @@ test("分割ビュー fail-closed: スレッド非共有では会話が見えな
   });
   await bobCtx.close();
 });
+
+/// 埋め込みブロック（Task 11P.6）: 3 種の描画・往復・生 HTML 非実行を検証する。
+test("埋め込み: 3 種の描画・md 往復・生 HTML 非実行", async ({ page }) => {
+  await loginViaKeycloak(page); // alice
+  await page.goto("/drive");
+  const nodeId = await createNoteViaApi(page, uniqueName("embed-note"));
+  await openNote(page, nodeId);
+  const editor = editorLocator(page);
+  await editor.click();
+
+  // エディタ API で 3 種の埋め込みを挿入する（スラッシュの prompt を介さず確定的に）。
+  const insertEmbed = (payload: unknown) =>
+    page.evaluate((p) => {
+      const editor = (window as unknown as { __shikiNoteEditor?: { chain: () => any } })
+        .__shikiNoteEditor;
+      if (!editor) throw new Error("editor 未公開");
+      editor.chain().focus().insertShikiEmbed(p).run();
+    }, payload);
+
+  await insertEmbed({
+    kind: "genui",
+    spec: { version: 1, actions: [], root: { component: "text", text: "GenUI 埋め込み" } },
+  });
+  await insertEmbed({ kind: "iframe", src: "https://example.com/app" });
+  // drive は存在しない node → アクセス不可プレースホルダ（作成者の権限を借用しない）。
+  await insertEmbed({ kind: "drive", node_id: "00000000-0000-0000-0000-000000000abc" });
+
+  // genui はシキコンポーネントとして描画される（HTML 実行なし）。
+  await expect(editor.getByTestId("embed-genui")).toBeVisible();
+  await expect(editor.getByText("GenUI 埋め込み")).toBeVisible();
+  // iframe は sandbox 属性付き・same-origin なし（別オリジン分離）。
+  const iframe = editor.getByTestId("embed-iframe").locator("iframe");
+  await expect(iframe).toHaveAttribute("sandbox", /allow-scripts/);
+  await expect(iframe).not.toHaveAttribute("sandbox", /allow-same-origin/);
+  await expect(iframe).toHaveAttribute("src", "https://example.com/app");
+  // drive は閲覧者本人の権限で解決 → 権限なしはプレースホルダに落ちる（漏洩しない）。
+  await expect(editor.getByText("表示できない埋め込みです（アクセス権がありません）。")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  // リロード後も埋め込みが残る（Yjs→md→Yjs 往復で壊れない）。
+  await page.reload();
+  await expect(page.getByTestId("note-sync-status")).toHaveText("同期済み", { timeout: 20_000 });
+  await expect(editorLocator(page).getByTestId("embed-genui")).toBeVisible();
+  await expect(editorLocator(page).getByTestId("embed-iframe").locator("iframe")).toBeVisible();
+});
+
+/// XSS negative（Task 11P.6）: どの流入経路でも生 HTML/script が実行されない。
+test("埋め込み XSS: 生 HTML は全流入経路で実行されない", async ({ page }) => {
+  await loginViaKeycloak(page); // alice
+  await page.goto("/drive");
+
+  // 流入経路①: note_ref 保存相当（POST /notes で md に script を含めて作成）。
+  // 流入経路②: ファイル側 md 直接書込→インポート（同じ POST /notes 経路で検証）。
+  const malicious =
+    "# 見出し\n\n<script>window.__xss_fired = true;</script>\n\n通常の <b onclick=alert(1)>本文</b>。\n";
+  const nodeId = await page.evaluate(async (md) => {
+    const csrf = document.cookie.match(/(?:^|;\s*)shiki_csrf=([^;]+)/)?.[1] ?? "";
+    const res = await fetch("/api/notes", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ name: `xss-${Date.now()}`, parent_id: null, markdown: md }),
+    });
+    return (await res.json()).id as string;
+  }, malicious);
+
+  await openNote(page, nodeId);
+  // script は実行されない（グローバルフラグが立たない）。
+  const fired = await page.evaluate(() => (window as unknown as { __xss_fired?: boolean }).__xss_fired ?? false);
+  expect(fired).toBe(false);
+  // 生 HTML はコードブロック等へ縮退し、<script> タグはレンダリングされない。
+  await expect(page.locator("script:has-text('__xss_fired')")).toHaveCount(0);
+  // 見出しは正しく残る（本文は壊さない）。
+  await expect(editorLocator(page).locator("h1", { hasText: "見出し" })).toBeVisible();
+
+  // 流入経路③: エディタ貼り付け相当（script を含む HTML をエディタ内容として挿入）。
+  await editorLocator(page).click();
+  await page.evaluate(() => {
+    const editor = (window as unknown as { __shikiNoteEditor?: { chain: () => any } })
+      .__shikiNoteEditor;
+    editor?.chain().focus().insertContent("<script>window.__xss_fired = true;</script>").run();
+  });
+  await page.waitForTimeout(500);
+  const fired2 = await page.evaluate(() => (window as unknown as { __xss_fired?: boolean }).__xss_fired ?? false);
+  expect(fired2).toBe(false);
+});
