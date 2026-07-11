@@ -40,6 +40,11 @@ async fn spawn_mock_keycloak() -> (String, String) {
                 },
             ),
         )
+        // 能力スコープの client-scope 冪等作成（register が呼ぶ・201 を返す）。
+        .route(
+            "/admin/realms/shiki/client-scopes",
+            post(|| async { (axum::http::StatusCode::CREATED, "") }),
+        )
         // confidential client の secret 取得。
         .route(
             "/admin/realms/shiki/clients/{id}/client-secret",
