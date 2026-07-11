@@ -6,6 +6,7 @@
 //! [`agent_core::ToolName`]）へ照合し、実在しない権限名を拒否する（ハルシネーション境界）。
 
 mod install;
+mod install_ops;
 mod manifest;
 mod registry;
 mod sign;
