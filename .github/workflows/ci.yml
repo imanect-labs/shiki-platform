@@ -125,7 +125,8 @@ jobs:
   # クォータ超過の adversarial テストを走らせる（メイン rust ジョブに DuckDB を混ぜない）。
   tabular-runner:
     name: Tabular runner (隔離 DuckDB・PIT-39 adversarial)
-    runs-on: ubuntu-latest
+    # runtime-only イメージ（ubuntu:24.04）と glibc を一致させるため 24.04 固定。
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -154,6 +155,13 @@ jobs:
         env:
           SHIKI_TABULAR_RUNNER: crates/tabular/runner/target/release/shiki-tabular-runner
         run: cargo test -p shiki-tabular --test runner_adversarial_it
+      # E2E の runtime-only イメージへ焼くため、ビルド済みランナーを artifact 共有する。
+      - name: upload runner binary (web-e2e 用)
+        uses: actions/upload-artifact@v4
+        with:
+          name: shiki-tabular-runner-bin
+          path: crates/tabular/runner/target/release/shiki-tabular-runner
+          if-no-files-found: error
 
   python:
     name: Python (ingestion-worker ruff / pytest)
@@ -337,7 +345,7 @@ jobs:
     name: compose smoke (/healthz, /me, skillex)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: build-server
+    needs: [build-server, tabular-runner]
     env:
       # shiki-server はビルド済みバイナリの runtime-only イメージ（CI override）を使う。
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
@@ -351,6 +359,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: shiki-server-bin
+          path: deploy/compose/prebuilt
+      # Dockerfile.ci が /usr/local/bin へ焼く隔離 DuckDB ランナー（COPY 対象・欠落するとビルド失敗）。
+      - name: download tabular runner binary (tabular-runner の成果物)
+        uses: actions/download-artifact@v4
+        with:
+          name: shiki-tabular-runner-bin
           path: deploy/compose/prebuilt
       # compose 起動（イメージ pull ＋ healthcheck 待ち）は authz テストのコンパイルと独立
       # なので background step で並列化する（2026-06 の parallel steps 機能）。
@@ -403,7 +417,7 @@ jobs:
     name: "Web E2E (Playwright: ログイン→保護ページ→ログアウト)"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: build-server
+    needs: [build-server, tabular-runner]
     env:
       # shiki-server はビルド済みバイナリの runtime-only イメージ（CI override）を使う。
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
@@ -417,6 +431,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: shiki-server-bin
+          path: deploy/compose/prebuilt
+      # CSV クエリの隔離 DuckDB ランナー（Dockerfile.ci が /usr/local/bin へ焼く）。
+      - name: download tabular runner binary (tabular-runner の成果物)
+        uses: actions/download-artifact@v4
+        with:
+          name: shiki-tabular-runner-bin
           path: deploy/compose/prebuilt
       - uses: pnpm/action-setup@v4
         with:
