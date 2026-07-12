@@ -67,6 +67,10 @@ pub struct GatewayConfig {
     /// ゲートウェイトークンの `aud` 検証値（ミニアプリ client に付与される）。既定 `shiki-gateway`。
     #[serde(default = "default_gateway_audience")]
     pub audience: String,
+    /// ミニアプリ AI（llm/agent.invoke）の日次予算・管理者キャップ（マイクロ USD・Task 9.9）。
+    /// アプリのマニフェスト宣言との min が実効上限。既定 $5/日。
+    #[serde(default = "default_ai_daily_cap")]
+    pub ai_daily_cap_usd_micros: i64,
 }
 
 fn default_gateway_port() -> u16 {
@@ -77,12 +81,17 @@ fn default_gateway_audience() -> String {
     "shiki-gateway".to_string()
 }
 
+fn default_ai_daily_cap() -> i64 {
+    5_000_000
+}
+
 impl Default for GatewayConfig {
     fn default() -> Self {
         GatewayConfig {
             enabled: false,
             port: default_gateway_port(),
             audience: default_gateway_audience(),
+            ai_daily_cap_usd_micros: default_ai_daily_cap(),
         }
     }
 }

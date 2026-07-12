@@ -25,10 +25,14 @@ mod token;
 mod token_exchange;
 mod usage;
 
-pub use installation::{AppInstallation, AppInstallationStore, InstallStatus, NewAppInstallation};
+pub use installation::{
+    AiPin, AppInstallation, AppInstallationStore, InstallStatus, NewAppInstallation,
+};
 pub use notification::{AppNotification, NotificationStore};
 pub use oauth::{client_representation, ClientKind, OAuthClient, RegisteredClient};
-pub use ports::{NoRag, RagHit, RagPort};
+pub use ports::{
+    AgentInvokeSpec, AgentPort, AiEvent, AiEventStream, NoAgent, NoRag, RagHit, RagPort,
+};
 pub use router::{build_gateway_router, CapabilityDeps, GatewayCtx, GatewayState};
 pub use scope_map::{required_scope_for, GatewayRoute, RouteScope};
 pub use token::{verify_gateway_token, GatewayIdentity, GatewayTokenConfig, KeyResolver};
@@ -53,6 +57,9 @@ pub enum GatewayError {
     /// 楽観ロック不一致・名前重複など（409）。
     #[error("競合しています: {0}")]
     Conflict(String),
+    /// AI 日次予算の超過（429・翌日 UTC に回復）。
+    #[error("予算上限に達しました: {0}")]
+    RateLimited(String),
     /// Keycloak / 上流エラー（502 相当）。
     #[error("上流エラー: {0}")]
     Upstream(String),

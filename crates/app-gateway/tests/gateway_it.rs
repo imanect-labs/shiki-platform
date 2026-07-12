@@ -9,7 +9,7 @@
 
 mod common;
 
-use app_gateway::{build_gateway_router, AppInstallationStore, NewAppInstallation};
+use app_gateway::{build_gateway_router, AiPin, AppInstallationStore, NewAppInstallation};
 use axum::http::StatusCode;
 use common::{ctx, get, setup, state, token, token_without_tenant};
 use uuid::Uuid;
@@ -33,6 +33,7 @@ async fn dual_gate_enforces_token_installation_and_scope() {
                 granted_scopes: &["data.read".to_string()],
                 client_id_b1: Some(&client_b1),
                 client_id_b2: None,
+                ai: AiPin::default(),
             },
         )
         .await
@@ -90,6 +91,7 @@ async fn broad_token_without_grant_is_denied() {
                 granted_scopes: &["identity.read".to_string()],
                 client_id_b1: Some(&client),
                 client_id_b2: None,
+                ai: AiPin::default(),
             },
         )
         .await
@@ -124,6 +126,7 @@ async fn multi_tenant_rejects_missing_tenant_claim() {
                 granted_scopes: &["data.read".to_string()],
                 client_id_b1: Some(&client),
                 client_id_b2: None,
+                ai: AiPin::default(),
             },
         )
         .await

@@ -41,6 +41,21 @@ impl InstallStatus {
     }
 }
 
+/// AI ガードレールの同意時ピン（Task 9.9・PR9 の同意フローがマニフェスト Budget/tools から焼き込む）。
+///
+/// 実行時は registry/artifact を読まず**この行だけ**が効く＝ユーザーが同意した内容が上限。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AiPin {
+    /// 使用可能モデル（空＝テナントカタログ全体を許可）。
+    pub budget_models: Vec<String>,
+    /// 日次コスト上限（マイクロ USD・None＝管理者キャップのみ）。
+    pub budget_daily_usd_micros: Option<i64>,
+    /// 1 回の呼び出しの最大トークン。
+    pub budget_max_tokens: Option<i64>,
+    /// agent.invoke で提示してよい宣言ツール（ToolName 閉集合へ実行時照合）。
+    pub agent_tools: Vec<String>,
+}
+
 /// インストール台帳の 1 行。
 #[derive(Debug, Clone, Serialize)]
 pub struct AppInstallation {
@@ -56,6 +71,8 @@ pub struct AppInstallation {
     pub status: InstallStatus,
     pub installed_by: String,
     pub created_at: DateTime<Utc>,
+    /// AI ガードレールの同意時ピン（Task 9.9）。
+    pub ai: AiPin,
 }
 
 /// インストール作成の入力（PR9 の同意フロー・本 PR はデブ用 fixture）。
@@ -67,6 +84,8 @@ pub struct NewAppInstallation<'a> {
     pub granted_scopes: &'a [String],
     pub client_id_b1: Option<&'a str>,
     pub client_id_b2: Option<&'a str>,
+    /// AI ガードレールの同意時ピン（Task 9.9・既定＝管理者キャップのみ）。
+    pub ai: AiPin,
 }
 
 /// sqlx 実行時マップ用の生行（`FromRow`）。status は文字列で受けて enum へ写す。
@@ -82,6 +101,10 @@ struct Row {
     status: String,
     installed_by: String,
     created_at: DateTime<Utc>,
+    budget_models: Vec<String>,
+    budget_daily_usd_micros: Option<i64>,
+    budget_max_tokens: Option<i64>,
+    agent_tools: Vec<String>,
 }
 
 impl From<Row> for AppInstallation {
@@ -97,13 +120,20 @@ impl From<Row> for AppInstallation {
             status: InstallStatus::parse(&r.status),
             installed_by: r.installed_by,
             created_at: r.created_at,
+            ai: AiPin {
+                budget_models: r.budget_models,
+                budget_daily_usd_micros: r.budget_daily_usd_micros,
+                budget_max_tokens: r.budget_max_tokens,
+                agent_tools: r.agent_tools,
+            },
         }
     }
 }
 
 /// 全列（RETURNING / SELECT 共通・Row の FromRow と対応）。
 const COLS: &str = "id, app_id, app_name, installed_version, granted_scopes, \
-                    client_id_b1, client_id_b2, status, installed_by, created_at";
+                    client_id_b1, client_id_b2, status, installed_by, created_at, \
+                    budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools";
 
 /// インストール台帳ストア（Postgres・tenant スコープ）。
 #[derive(Clone)]
@@ -127,14 +157,19 @@ impl AppInstallationStore {
         let sql = format!(
             "INSERT INTO app_installation \
                  (tenant_id, org, app_id, app_name, installed_version, granted_scopes, \
-                  client_id_b1, client_id_b2, status, installed_by) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9) \
+                  client_id_b1, client_id_b2, status, installed_by, \
+                  budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $12, $13) \
              ON CONFLICT (tenant_id, app_id) DO UPDATE SET \
                  app_name = EXCLUDED.app_name, \
                  installed_version = EXCLUDED.installed_version, \
                  granted_scopes = EXCLUDED.granted_scopes, \
                  client_id_b1 = EXCLUDED.client_id_b1, \
                  client_id_b2 = EXCLUDED.client_id_b2, \
+                 budget_models = EXCLUDED.budget_models, \
+                 budget_daily_usd_micros = EXCLUDED.budget_daily_usd_micros, \
+                 budget_max_tokens = EXCLUDED.budget_max_tokens, \
+                 agent_tools = EXCLUDED.agent_tools, \
                  status = 'active', \
                  updated_at = now() \
              RETURNING {COLS}"
@@ -149,6 +184,10 @@ impl AppInstallationStore {
             .bind(new.client_id_b1)
             .bind(new.client_id_b2)
             .bind(&ctx.principal.id)
+            .bind(&new.ai.budget_models)
+            .bind(new.ai.budget_daily_usd_micros)
+            .bind(new.ai.budget_max_tokens)
+            .bind(&new.ai.agent_tools)
             .fetch_one(&self.db)
             .await
             .map_err(map_db)?;
