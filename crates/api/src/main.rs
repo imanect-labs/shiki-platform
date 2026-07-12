@@ -91,6 +91,15 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&artifacts),
         app_platform::Registry::new(db.clone()),
     ));
+    // 同意インストール（Task 9.13b）: Keycloak admin（provisioner）があれば client 登録も行う。
+    let installs = Arc::new(wiring_gateway::wire_installs(
+        &config,
+        &http,
+        &db,
+        &authz,
+        &mini_app_code,
+        &data_store,
+    ));
     // generative UI / skill / ミニアプリ（Phase 6）: 検証は全経路が同一実装を共有する信頼境界。
     let gui_stores = wiring_gui::wire_gui(&db, &artifacts);
 
@@ -223,6 +232,7 @@ async fn main() -> anyhow::Result<()> {
         data_views,
         fsms,
         mini_app_code,
+        installs,
         ui_specs: gui_stores.ui_specs,
         ui_actions,
         skills: gui_stores.skills,

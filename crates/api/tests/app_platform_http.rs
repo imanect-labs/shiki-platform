@@ -289,6 +289,15 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         Arc::clone(&artifacts),
         app_platform::Registry::new(db.clone()),
     ));
+    let installs = Arc::new(app_platform::InstallService::new(
+        db.clone(),
+        app_platform::Registry::new(db.clone()),
+        Arc::clone(&mini_app_code),
+        Arc::clone(&data_store),
+        Arc::new(AllowAll),
+        None,
+        vec![],
+    ));
     let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
         db.clone(),
         workflow_engine::DelegationStore::new(db.clone(), Arc::new(AllowAll)),
@@ -321,6 +330,7 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         data_views,
         fsms,
         mini_app_code,
+        installs,
         ui_specs,
         ui_actions,
         skills,
@@ -414,9 +424,15 @@ async fn manifest_crud_and_publish_over_http() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body: serde_json::Value =
-        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let id = body["id"].as_str().unwrap().to_string();
     assert_eq!(body["version"], 1);
 
@@ -504,4 +520,182 @@ async fn manifest_crud_and_publish_over_http() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+/// publish → 同意インストール → 一覧 → import → アンインストールの HTTP 一気通貫（Task 9.13b）。
+#[tokio::test]
+async fn install_import_uninstall_over_http() {
+    let Some(pool) = setup().await else { return };
+    let sessions = Arc::new(MemorySessionStore::new());
+    sessions
+        .put(
+            "default",
+            "sid-inst",
+            &session_record("csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with(pool.clone(), sessions));
+    let cookie = "shiki_session=sid-inst.default; shiki_csrf=csrf";
+    let post = |uri: String, body: serde_json::Value| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, cookie)
+            .header("x-csrf-token", "csrf")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
+    };
+
+    // publish まで（テーブル 1 本つきマニフェスト）。
+    let mut m = manifest_json("http-install", "1.0.0");
+    m["tables"] = serde_json::json!([{
+        "name": "http_install_t",
+        "schema": { "fields": [ { "name": "title", "type": "text", "required": true } ] },
+    }]);
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/apps/manifests".into(),
+            serde_json::json!({ "manifest": m }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let id = body["id"].as_str().unwrap().to_string();
+    let resp = app
+        .clone()
+        .oneshot(post(
+            format!("/apps/manifests/{id}/publish"),
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // granted ⊄ requested → 400。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/apps/installations".into(),
+            serde_json::json!({
+                "name": "http-install", "version": "1.0.0",
+                "granted_scopes": ["rag.query"],
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // 同意インストール → 200＋テーブルプロビジョン。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/apps/installations".into(),
+            serde_json::json!({
+                "name": "http-install", "version": "1.0.0",
+                "granted_scopes": ["data.read", "data.write"],
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["app_id"].as_str().unwrap(), id);
+    assert_eq!(body["table_ids"].as_array().unwrap().len(), 1);
+
+    // 一覧に載る。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/apps/installations")
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i["app_id"] == id.as_str()));
+
+    // オフライン import: 信頼鍵を台帳へ直接登録 → 署名付きマニフェストを import。
+    let secret = [11u8; 32];
+    let public = {
+        use ed25519_dalek::SigningKey;
+        SigningKey::from_bytes(&secret).verifying_key().to_bytes()
+    };
+    let keys = app_platform::TrustedKeyStore::new(pool.clone());
+    let kctx = authz::AuthContext::new(
+        Principal {
+            kind: authz::PrincipalKind::User,
+            id: "provisioner".into(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: Some("default".into()),
+        },
+        "acme".into(),
+        "default".into(),
+    );
+    keys.add(&kctx, "http-key", &public, None).await.unwrap();
+    let import_manifest: app_platform::MiniAppManifest =
+        serde_json::from_value(manifest_json("http-imported", "2.0.0")).unwrap();
+    let sig = app_platform::sign_manifest(&import_manifest, &secret).unwrap();
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/apps/registry/import".into(),
+            serde_json::json!({
+                "manifest": manifest_json("http-imported", "2.0.0"),
+                "signature_hex": hex::encode(&sig),
+                "key_id": "http-key",
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // 改竄署名は 403。
+    let mut bad = sig.clone();
+    bad[0] ^= 0xff;
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/apps/registry/import".into(),
+            serde_json::json!({
+                "manifest": manifest_json("http-imported-2", "2.0.0"),
+                "signature_hex": hex::encode(&bad),
+                "key_id": "http-key",
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // アンインストール → 204。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/apps/installations/{id}"))
+                .header(COOKIE, cookie)
+                .header("x-csrf-token", "csrf")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 }

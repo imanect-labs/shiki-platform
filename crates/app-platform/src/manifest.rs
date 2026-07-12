@@ -21,6 +21,18 @@ pub enum TrustTier {
     Marketplace,
 }
 
+impl TrustTier {
+    /// registry_entry.trust_tier の文字列表現（単一定義）。
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TrustTier::FirstParty => "first_party",
+            TrustTier::InHouse => "in_house",
+            TrustTier::Marketplace => "marketplace",
+        }
+    }
+}
+
 /// 所有テーブル定義（インストール時に自動プロビジョンされる）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ManifestTable {

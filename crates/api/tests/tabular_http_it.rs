@@ -324,6 +324,19 @@ fn build_app(
         Arc::clone(&artifacts),
         pool.clone(),
     ));
+    let mini_app_code = Arc::new(app_platform::MiniAppCodeStore::new(
+        Arc::clone(&artifacts),
+        app_platform::Registry::new(pool.clone()),
+    ));
+    let installs = Arc::new(app_platform::InstallService::new(
+        pool.clone(),
+        app_platform::Registry::new(pool.clone()),
+        Arc::clone(&mini_app_code),
+        Arc::clone(&data_store),
+        Arc::clone(authz),
+        None,
+        vec![],
+    ));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool.clone()),
@@ -348,10 +361,8 @@ fn build_app(
             Arc::clone(&artifacts),
             (*data_store).clone(),
         )),
-        mini_app_code: Arc::new(app_platform::MiniAppCodeStore::new(
-            Arc::clone(&artifacts),
-            app_platform::Registry::new(pool.clone()),
-        )),
+        mini_app_code: Arc::clone(&mini_app_code),
+        installs,
         ui_specs: Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator)),
         ui_actions: Arc::new(gui::ActionDispatcher::new(
             storage::audit::AuditRecorder::new(pool.clone()),

@@ -410,6 +410,15 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         Arc::clone(&artifacts),
         app_platform::Registry::new(db.clone()),
     ));
+    let installs = Arc::new(app_platform::InstallService::new(
+        db.clone(),
+        app_platform::Registry::new(db.clone()),
+        Arc::clone(&mini_app_code),
+        Arc::clone(&data_store),
+        Arc::new(AllowAll),
+        None,
+        vec![],
+    ));
     let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
         db.clone(),
         workflow_engine::DelegationStore::new(db.clone(), Arc::new(AllowAll)),
@@ -442,6 +451,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         data_views,
         fsms,
         mini_app_code,
+        installs,
         ui_specs,
         ui_actions,
         skills,

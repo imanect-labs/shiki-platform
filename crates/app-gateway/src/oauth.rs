@@ -130,8 +130,31 @@ impl OAuthClient {
         })
     }
 
-    /// confidential client の生成 secret を取得する（内部 uuid を引いてから secret を GET）。
-    async fn fetch_secret(&self, token: &str, client_id: &str) -> Result<String, GatewayError> {
+    /// クライアントの有効/無効を切り替える（アンインストール失効・補償に使う）。
+    ///
+    /// 無効化は削除ではなく enabled=false（client_id の再利用と監査可能性を保つ）。
+    pub async fn set_enabled(&self, client_id: &str, enabled: bool) -> Result<(), GatewayError> {
+        let token = self.admin_token().await?;
+        let internal_id = self.find_internal_id(&token, client_id).await?;
+        let resp = self
+            .http
+            .put(format!("{}/clients/{internal_id}", self.admin_base))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "clientId": client_id, "enabled": enabled }))
+            .send()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("client 更新: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(GatewayError::Upstream(format!(
+                "client 更新応答: {}",
+                resp.status()
+            )));
+        }
+        Ok(())
+    }
+
+    /// client_id → Keycloak 内部 uuid。
+    async fn find_internal_id(&self, token: &str, client_id: &str) -> Result<String, GatewayError> {
         let list: Vec<KcClient> = self
             .http
             .get(format!("{}/clients", self.admin_base))
@@ -143,11 +166,15 @@ impl OAuthClient {
             .json()
             .await
             .map_err(|e| GatewayError::Upstream(format!("client 検索 parse: {e}")))?;
-        let internal_id = list
-            .into_iter()
+        list.into_iter()
             .next()
             .map(|c| c.id)
-            .ok_or(GatewayError::NotFound)?;
+            .ok_or(GatewayError::NotFound)
+    }
+
+    /// confidential client の生成 secret を取得する（内部 uuid を引いてから secret を GET）。
+    async fn fetch_secret(&self, token: &str, client_id: &str) -> Result<String, GatewayError> {
+        let internal_id = self.find_internal_id(token, client_id).await?;
         #[derive(Deserialize)]
         struct Secret {
             value: String,
