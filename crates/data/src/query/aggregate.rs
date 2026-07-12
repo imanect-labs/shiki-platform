@@ -229,3 +229,123 @@ fn bind_dyn(
         Bind::UuidArray(v) => q.bind(v),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! 集計 SQL 組み立てとフィルタ断片/バインドの純関数を検証する（DB 不要）。
+    #![allow(clippy::unwrap_used)]
+
+    use super::{build_aggregate_sql, filter_bind, filter_fragment};
+    use crate::policy::compile::Bind;
+    use crate::query::declarative::Metric;
+    use crate::query::executor::{ListFilter, ReadPredicate};
+
+    fn pred() -> ReadPredicate {
+        ReadPredicate::for_test("r.owner = $1", vec![])
+    }
+
+    #[test]
+    fn count_without_group_has_no_group_by() {
+        let sql = build_aggregate_sql(&[], Metric::Count, None, &pred(), None);
+        assert!(sql.contains("count(*) AS grp_count"));
+        assert!(sql.contains("FROM data_record"));
+        assert!(sql.contains("r.owner = $1"), "行述語を無条件合成: {sql}");
+        assert!(!sql.contains("GROUP BY"));
+        assert!(!sql.contains("metric_value"), "count は metric 列なし");
+    }
+
+    #[test]
+    fn group_by_projects_key_and_group_clause() {
+        let sql = build_aggregate_sql(&["status".to_string()], Metric::Count, None, &pred(), None);
+        assert!(sql.contains("->> 'status'"));
+        assert!(sql.contains("GROUP BY"));
+    }
+
+    #[test]
+    fn numeric_metric_projects_float8_value() {
+        let sql = build_aggregate_sql(
+            &["dept".to_string()],
+            Metric::Sum,
+            Some("amount"),
+            &pred(),
+            None,
+        );
+        assert!(sql.contains("sum("));
+        assert!(sql.contains("'amount'"));
+        assert!(sql.contains("::float8 AS metric_value"));
+    }
+
+    #[test]
+    fn invalid_field_name_collapses_to_empty_aggregate() {
+        // 識別子規約外（空白）は空集計へ倒す（PIT-21・二重化）。
+        let sql = build_aggregate_sql(
+            &["bad name".to_string()],
+            Metric::Count,
+            None,
+            &pred(),
+            None,
+        );
+        assert_eq!(sql, "SELECT 0 AS grp_count WHERE false");
+        // metric_field が不正でも同様。
+        let sql2 = build_aggregate_sql(&[], Metric::Max, Some("x;y"), &pred(), None);
+        assert_eq!(sql2, "SELECT 0 AS grp_count WHERE false");
+    }
+
+    #[test]
+    fn filter_is_appended_after_predicate_placeholders() {
+        let f = ListFilter::TextEq {
+            field: "cat".to_string(),
+            value: "x".to_string(),
+        };
+        let sql = build_aggregate_sql(&[], Metric::Count, None, &pred(), Some(&f));
+        // next_ph = 3 + pred.binds().len()(=0) = 3。
+        assert!(sql.contains("AND (r.data ->> 'cat') = $3"), "{sql}");
+    }
+
+    #[test]
+    fn filter_fragment_per_kind() {
+        let t = filter_fragment(
+            &ListFilter::TextEq {
+                field: "f".into(),
+                value: "v".into(),
+            },
+            5,
+        );
+        assert!(t.contains("->> 'f') = $5"));
+        let n = filter_fragment(
+            &ListFilter::NumberEq {
+                field: "f".into(),
+                value: 1.0,
+            },
+            6,
+        );
+        assert!(n.contains("::numeric = $6::numeric"));
+        let m = filter_fragment(
+            &ListFilter::MultiContains {
+                field: "f".into(),
+                value: "v".into(),
+            },
+            7,
+        );
+        assert!(m.contains("? $7"));
+    }
+
+    #[test]
+    fn filter_bind_maps_value_kind() {
+        assert!(matches!(
+            filter_bind(&ListFilter::TextEq { field: "f".into(), value: "v".into() }),
+            Bind::Text(v) if v == "v"
+        ));
+        assert!(matches!(
+            filter_bind(&ListFilter::MultiContains {
+                field: "f".into(),
+                value: "v".into()
+            }),
+            Bind::Text(_)
+        ));
+        assert!(matches!(
+            filter_bind(&ListFilter::NumberEq { field: "f".into(), value: 2.5 }),
+            Bind::Number(n) if (n - 2.5).abs() < f64::EPSILON
+        ));
+    }
+}

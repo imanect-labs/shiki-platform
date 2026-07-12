@@ -240,3 +240,96 @@ impl Tool for CsvWriteTool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! error 写像（`denied`）と結果整形（`format_table`）の純関数を検証する。
+    use super::{denied, format_table};
+    use tabular::{RunnerResponse, TabularError as TE};
+
+    #[test]
+    fn denied_query_failed_returns_duckdb_reason() {
+        let o = denied(&TE::QueryFailed("no column x".into()));
+        assert!(o.is_error);
+        assert!(
+            o.content.contains("SQL の実行に失敗"),
+            "理由を素通しする: {}",
+            o.content
+        );
+        assert!(o.content.contains("no column x"));
+    }
+
+    #[test]
+    fn denied_maps_each_variant_to_fixed_message() {
+        assert!(denied(&TE::Forbidden).content.contains("権限がありません"));
+        assert!(
+            denied(&TE::Authz(authz::AuthzError::InvalidModel("m".into())))
+                .content
+                .contains("権限がありません")
+        );
+        assert!(denied(&TE::Storage(storage::StorageError::Forbidden))
+            .content
+            .contains("権限がありません"));
+        assert!(denied(&TE::NotFound("f".into()))
+            .content
+            .contains("見つかりません"));
+        assert!(denied(&TE::Storage(storage::StorageError::NotFound))
+            .content
+            .contains("見つかりません"));
+        assert!(denied(&TE::SqlRejected("ddl".into()))
+            .content
+            .contains("SQL が拒否されました"));
+        assert!(denied(&TE::RevConflict {
+            base: 1,
+            current: 2
+        })
+        .content
+        .contains("他の編集で更新されています"));
+        // フォールバック（_）: クォータ超過等は汎用メッセージへ。
+        assert_eq!(
+            denied(&TE::QuotaExceeded("mem".into())).content,
+            "CSV 操作に失敗しました。"
+        );
+        assert!(denied(&TE::Runner("proc".into())).is_error);
+    }
+
+    fn resp(rows: Vec<Vec<Option<String>>>, total: Option<u64>, truncated: bool) -> RunnerResponse {
+        RunnerResponse {
+            ok: true,
+            columns: vec!["a".into(), "b".into()],
+            column_types: vec![],
+            rows,
+            total_rows: total,
+            truncated,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn format_table_header_total_and_null_cells() {
+        let r = resp(vec![vec![Some("1".into()), None]], Some(42), false);
+        let out = format_table(&r, 50);
+        assert!(out.contains("列: a, b"));
+        assert!(out.contains("総行数: 42"));
+        assert!(out.contains("1, "), "NULL セルは空文字へ: {out}");
+        assert!(!out.contains("一部のみ表示"));
+    }
+
+    #[test]
+    fn format_table_marks_preview_when_over_limit_or_truncated() {
+        let many = resp(
+            (0..5).map(|i| vec![Some(i.to_string()), None]).collect(),
+            None,
+            false,
+        );
+        let out = format_table(&many, 2);
+        assert!(
+            out.contains("一部のみ表示"),
+            "max_preview 超過で注記: {out}"
+        );
+        assert!(!out.contains("総行数"), "total_rows None なら行数表示なし");
+
+        let trunc = resp(vec![vec![Some("x".into()), Some("y".into())]], None, true);
+        assert!(format_table(&trunc, 50).contains("一部のみ表示"));
+    }
+}

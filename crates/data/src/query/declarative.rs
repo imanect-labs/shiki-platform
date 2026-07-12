@@ -249,3 +249,129 @@ impl DataStore {
         Ok(f)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! クエリフィルタのコンパイル（純粋・DB 不要）: 型別 ListFilter 写像・索引/マスク検証。
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::pedantic
+    )]
+
+    use super::*;
+    use crate::model::{DataTable, FieldDef, TableSchema};
+    use crate::store::DataStore;
+    use std::collections::HashSet;
+
+    fn field(name: &str, ty: FieldType, indexed: bool) -> FieldDef {
+        FieldDef {
+            name: name.into(),
+            field_type: ty,
+            required: false,
+            unique: false,
+            indexed,
+            options: if matches!(ty, FieldType::MultiSelect | FieldType::Select) {
+                vec!["a".into(), "b".into()]
+            } else {
+                vec![]
+            },
+            ref_table: None,
+            lookup: None,
+            computed: None,
+        }
+    }
+
+    fn table() -> DataTable {
+        let ts = chrono::DateTime::from_timestamp(0, 0).unwrap();
+        DataTable {
+            id: uuid::Uuid::nil(),
+            name: "t".into(),
+            app_id: None,
+            schema: TableSchema {
+                fields: vec![
+                    field("title", FieldType::Text, true),
+                    field("amount", FieldType::Number, true),
+                    field("tags", FieldType::MultiSelect, true),
+                    field("memo", FieldType::Text, false),
+                ],
+                status_field: None,
+                row_policy: None,
+                field_policy: vec![],
+                aggregate_min_rows: None,
+                fsm_ref: None,
+            },
+            schema_version: 1,
+            created_by: "alice".into(),
+            created_at: ts,
+            updated_at: ts,
+        }
+    }
+
+    fn qf(field: &str, value: serde_json::Value) -> QueryFilter {
+        QueryFilter {
+            field: field.into(),
+            value,
+        }
+    }
+
+    #[test]
+    fn indexed_queryable_enforces_mask_declared_and_indexed() {
+        let t = table();
+        let mut masked = HashSet::new();
+        masked.insert("title".to_string());
+        // マスク列は 403（Forbidden）。
+        assert!(matches!(
+            DataStore::indexed_queryable(&t, &masked, "title"),
+            Err(DataError::Forbidden)
+        ));
+        // 未知フィールド。
+        assert!(DataStore::indexed_queryable(&t, &HashSet::new(), "nope").is_err());
+        // 非 indexed フィールド。
+        assert!(DataStore::indexed_queryable(&t, &HashSet::new(), "memo").is_err());
+        // 索引付きは OK。
+        assert!(DataStore::indexed_queryable(&t, &HashSet::new(), "title").is_ok());
+    }
+
+    #[test]
+    fn compile_filter_maps_by_field_type() {
+        let t = table();
+        let m = HashSet::new();
+        // number → NumberEq（非数値は拒否）。
+        assert!(matches!(
+            DataStore::compile_query_filter(&t, &m, &qf("amount", serde_json::json!(5))).unwrap(),
+            ListFilter::NumberEq { .. }
+        ));
+        assert!(
+            DataStore::compile_query_filter(&t, &m, &qf("amount", serde_json::json!("x"))).is_err()
+        );
+        // multi_select → MultiContains（非文字列は拒否）。
+        assert!(matches!(
+            DataStore::compile_query_filter(&t, &m, &qf("tags", serde_json::json!("a"))).unwrap(),
+            ListFilter::MultiContains { .. }
+        ));
+        assert!(
+            DataStore::compile_query_filter(&t, &m, &qf("tags", serde_json::json!(1))).is_err()
+        );
+        // text → TextEq（非文字列は拒否）。
+        assert!(matches!(
+            DataStore::compile_query_filter(&t, &m, &qf("title", serde_json::json!("hi"))).unwrap(),
+            ListFilter::TextEq { .. }
+        ));
+        assert!(
+            DataStore::compile_query_filter(&t, &m, &qf("title", serde_json::json!(1))).is_err()
+        );
+    }
+
+    #[test]
+    fn ensure_queryable_flags_masked() {
+        let mut m = HashSet::new();
+        m.insert("secret".to_string());
+        assert!(matches!(
+            DataStore::ensure_queryable(&m, "secret"),
+            Err(DataError::Forbidden)
+        ));
+        assert!(DataStore::ensure_queryable(&m, "public").is_ok());
+    }
+}

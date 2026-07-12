@@ -249,3 +249,85 @@ impl WaitParams {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::unnecessary_wraps)]
+
+    use super::{WaitKind, WaitParams};
+    use crate::ir::expr::ValueExpr;
+    use serde_json::json;
+
+    /// 全フィールド None の素の WaitParams（各テストで必要分だけ埋める）。
+    fn wp(kind: WaitKind) -> WaitParams {
+        WaitParams {
+            kind,
+            duration_sec: None,
+            until: None,
+            source: None,
+            scope: None,
+            filter: None,
+            timeout_sec: None,
+            on_timeout: None,
+        }
+    }
+
+    fn lit(v: serde_json::Value) -> Option<ValueExpr> {
+        Some(ValueExpr::Literal(v))
+    }
+
+    #[test]
+    fn duration_requires_only_duration_sec() {
+        let mut p = wp(WaitKind::Duration);
+        assert!(p.check_cross_fields().is_err(), "duration_sec 必須");
+        p.duration_sec = lit(json!(60));
+        assert!(p.check_cross_fields().is_ok());
+        // 他 kind のフィールドが混ざると拒否。
+        p.until = lit(json!("2030-01-01T00:00:00Z"));
+        let e = p.check_cross_fields().unwrap_err();
+        assert_eq!(e.path, "/params/until");
+    }
+
+    #[test]
+    fn until_requires_only_until() {
+        let mut p = wp(WaitKind::Until);
+        assert!(p.check_cross_fields().is_err(), "until 必須");
+        p.until = lit(json!("2030-01-01T00:00:00Z"));
+        assert!(p.check_cross_fields().is_ok());
+        p.source = Some("file.created".into());
+        let e = p.check_cross_fields().unwrap_err();
+        assert_eq!(e.path, "/params/source");
+    }
+
+    #[test]
+    fn event_requires_source_and_rejects_time_fields() {
+        let mut p = wp(WaitKind::Event);
+        assert!(p.check_cross_fields().is_err(), "source 必須");
+        p.source = Some("file.created".into());
+        assert!(p.check_cross_fields().is_ok());
+        // timeout_sec/on_timeout は event で許容。
+        p.timeout_sec = lit(json!(30));
+        assert!(p.check_cross_fields().is_ok());
+        // duration_sec は event で禁止。
+        p.duration_sec = lit(json!(1));
+        let e = p.check_cross_fields().unwrap_err();
+        assert_eq!(e.path, "/params/duration_sec");
+    }
+
+    #[test]
+    fn event_scope_must_be_empty_or_single_folder_uuid() {
+        let mut p = wp(WaitKind::Event);
+        p.source = Some("file.created".into());
+        // 空オブジェクトは可（run 内ワイルドカード）。
+        p.scope = Some(json!({}));
+        assert!(p.check_cross_fields().is_ok());
+        // { folder: <uuid> } は可。
+        p.scope = Some(json!({ "folder": "11111111-1111-1111-1111-111111111111" }));
+        assert!(p.check_cross_fields().is_ok());
+        // 非 uuid・別キー・複数キーは不可。
+        p.scope = Some(json!({ "folder": "not-a-uuid" }));
+        assert!(p.check_cross_fields().is_err());
+        p.scope = Some(json!({ "other": "x" }));
+        assert!(p.check_cross_fields().is_err());
+    }
+}

@@ -352,3 +352,7 @@ impl NodeExecutor for CapabilityNodeExecutor {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "exec_tests.rs"]
+mod tests;
