@@ -86,9 +86,10 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_tag:
     .await
     .unwrap();
     let node_id: Uuid = sqlx::query_scalar(
+        // updated_by は NOT NULL（migration 0045）。作成＝最初の更新なので created_by と同値。
         "insert into node (org, tenant_id, kind, name, blob_sha256, size_bytes, content_type, \
-                           created_by) \
-         values ($1, $2, 'file', $3, $4, 10, 'text/plain', $5) returning id",
+                           created_by, updated_by) \
+         values ($1, $2, 'file', $3, $4, 10, 'text/plain', $5, $5) returning id",
     )
     .bind(&ctx.org)
     .bind(&ctx.tenant_id)

@@ -166,8 +166,9 @@ async fn create_folder(env: &Env, name: &str) -> Uuid {
     let ctx = &env.alice;
     let mut tx = env.pool.begin().await.unwrap();
     let id: Uuid = sqlx::query_scalar(
-        "insert into node (org, tenant_id, kind, name, created_by) \
-         values ($1, $2, 'folder', $3, $4) returning id",
+        // updated_by は NOT NULL（migration 0045）。作成＝最初の更新なので created_by と同値。
+        "insert into node (org, tenant_id, kind, name, created_by, updated_by) \
+         values ($1, $2, 'folder', $3, $4, $4) returning id",
     )
     .bind(&ctx.org)
     .bind(&ctx.tenant_id)
@@ -208,9 +209,10 @@ async fn index_file(env: &Env, folder: Uuid, name: &str) -> Uuid {
     .await
     .unwrap();
     let node_id: Uuid = sqlx::query_scalar(
+        // updated_by は NOT NULL（migration 0045）。作成＝最初の更新なので created_by と同値。
         "insert into node (org, tenant_id, kind, name, parent_id, blob_sha256, size_bytes, \
-                           content_type, created_by) \
-         values ($1, $2, 'file', $3, $4, $5, 10, 'text/plain', $6) returning id",
+                           content_type, created_by, updated_by) \
+         values ($1, $2, 'file', $3, $4, $5, 10, 'text/plain', $6, $6) returning id",
     )
     .bind(&ctx.org)
     .bind(&ctx.tenant_id)
