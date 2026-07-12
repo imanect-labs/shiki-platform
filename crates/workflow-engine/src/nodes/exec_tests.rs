@@ -36,12 +36,18 @@ fn err_code(r: &crate::run::NodeResult) -> String {
 #[test]
 fn branch_true_and_false_ports() {
     let c = ctx(json!({ "keep": 1 }));
-    let t = Exec::eval_branch(&json!({ "condition": { "cmp": { "left": 5, "op": "gt", "right": 3 } } }), &c);
+    let t = Exec::eval_branch(
+        &json!({ "condition": { "cmp": { "left": 5, "op": "gt", "right": 3 } } }),
+        &c,
+    );
     assert!(t.ok);
     assert_eq!(t.taken_ports, vec!["true".to_string()]);
     assert_eq!(t.output, json!({ "keep": 1 }), "input を素通しする");
 
-    let f = Exec::eval_branch(&json!({ "condition": { "cmp": { "left": 1, "op": "gt", "right": 3 } } }), &c);
+    let f = Exec::eval_branch(
+        &json!({ "condition": { "cmp": { "left": 1, "op": "gt", "right": 3 } } }),
+        &c,
+    );
     assert!(f.ok);
     assert_eq!(f.taken_ports, vec!["false".to_string()]);
 }
@@ -72,7 +78,10 @@ fn switch_matches_case_then_default() {
 
 #[test]
 fn switch_bad_params_fails() {
-    let r = Exec::eval_switch(&json!({ "value": "x", "cases": "not-array" }), &ctx(json!({})));
+    let r = Exec::eval_switch(
+        &json!({ "value": "x", "cases": "not-array" }),
+        &ctx(json!({})),
+    );
     assert!(!r.ok);
     assert_eq!(err_code(&r), "bad_params");
 }
@@ -98,7 +107,10 @@ fn wait_duration_ok_and_error_paths() {
 #[test]
 fn wait_until_ok_and_error_paths() {
     let c = ctx(json!({}));
-    let ok = Exec::eval_wait(&json!({ "kind": "until", "until": "2030-01-01T00:00:00Z" }), &c);
+    let ok = Exec::eval_wait(
+        &json!({ "kind": "until", "until": "2030-01-01T00:00:00Z" }),
+        &c,
+    );
     assert!(matches!(ok.suspend, Some(Suspend::Timer { .. })));
 
     let missing = Exec::eval_wait(&json!({ "kind": "until" }), &c);
@@ -111,9 +123,17 @@ fn wait_until_ok_and_error_paths() {
 // ---- wait: event ----
 #[test]
 fn wait_event_ok_default_fail_and_no_timeout() {
-    let r = Exec::eval_wait(&json!({ "kind": "event", "source": "file.created" }), &ctx(json!({})));
+    let r = Exec::eval_wait(
+        &json!({ "kind": "event", "source": "file.created" }),
+        &ctx(json!({})),
+    );
     match r.suspend {
-        Some(Suspend::Event { source, timeout_at, on_timeout, .. }) => {
+        Some(Suspend::Event {
+            source,
+            timeout_at,
+            on_timeout,
+            ..
+        }) => {
             assert_eq!(source, "file.created");
             assert!(timeout_at.is_none(), "timeout_sec 省略は無期限");
             assert_eq!(on_timeout, OnTimeout::Fail, "既定は fail");
@@ -129,7 +149,11 @@ fn wait_event_with_timeout_continue() {
         &ctx(json!({})),
     );
     match r.suspend {
-        Some(Suspend::Event { timeout_at, on_timeout, .. }) => {
+        Some(Suspend::Event {
+            timeout_at,
+            on_timeout,
+            ..
+        }) => {
             assert!(timeout_at.is_some());
             assert_eq!(on_timeout, OnTimeout::Continue);
         }
@@ -143,8 +167,10 @@ fn wait_event_error_paths() {
     let missing_source = Exec::eval_wait(&json!({ "kind": "event" }), &c);
     assert_eq!(err_code(&missing_source), "bad_params");
 
-    let neg_timeout =
-        Exec::eval_wait(&json!({ "kind": "event", "source": "x", "timeout_sec": -5 }), &c);
+    let neg_timeout = Exec::eval_wait(
+        &json!({ "kind": "event", "source": "x", "timeout_sec": -5 }),
+        &c,
+    );
     assert_eq!(err_code(&neg_timeout), "bad_params");
 }
 

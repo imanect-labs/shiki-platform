@@ -278,7 +278,13 @@ mod tests {
     #[test]
     fn invalid_field_name_collapses_to_empty_aggregate() {
         // 識別子規約外（空白）は空集計へ倒す（PIT-21・二重化）。
-        let sql = build_aggregate_sql(&["bad name".to_string()], Metric::Count, None, &pred(), None);
+        let sql = build_aggregate_sql(
+            &["bad name".to_string()],
+            Metric::Count,
+            None,
+            &pred(),
+            None,
+        );
         assert_eq!(sql, "SELECT 0 AS grp_count WHERE false");
         // metric_field が不正でも同様。
         let sql2 = build_aggregate_sql(&[], Metric::Max, Some("x;y"), &pred(), None);
@@ -287,7 +293,10 @@ mod tests {
 
     #[test]
     fn filter_is_appended_after_predicate_placeholders() {
-        let f = ListFilter::TextEq { field: "cat".to_string(), value: "x".to_string() };
+        let f = ListFilter::TextEq {
+            field: "cat".to_string(),
+            value: "x".to_string(),
+        };
         let sql = build_aggregate_sql(&[], Metric::Count, None, &pred(), Some(&f));
         // next_ph = 3 + pred.binds().len()(=0) = 3。
         assert!(sql.contains("AND (r.data ->> 'cat') = $3"), "{sql}");
@@ -295,11 +304,29 @@ mod tests {
 
     #[test]
     fn filter_fragment_per_kind() {
-        let t = filter_fragment(&ListFilter::TextEq { field: "f".into(), value: "v".into() }, 5);
+        let t = filter_fragment(
+            &ListFilter::TextEq {
+                field: "f".into(),
+                value: "v".into(),
+            },
+            5,
+        );
         assert!(t.contains("->> 'f') = $5"));
-        let n = filter_fragment(&ListFilter::NumberEq { field: "f".into(), value: 1.0 }, 6);
+        let n = filter_fragment(
+            &ListFilter::NumberEq {
+                field: "f".into(),
+                value: 1.0,
+            },
+            6,
+        );
         assert!(n.contains("::numeric = $6::numeric"));
-        let m = filter_fragment(&ListFilter::MultiContains { field: "f".into(), value: "v".into() }, 7);
+        let m = filter_fragment(
+            &ListFilter::MultiContains {
+                field: "f".into(),
+                value: "v".into(),
+            },
+            7,
+        );
         assert!(m.contains("? $7"));
     }
 
@@ -310,7 +337,10 @@ mod tests {
             Bind::Text(v) if v == "v"
         ));
         assert!(matches!(
-            filter_bind(&ListFilter::MultiContains { field: "f".into(), value: "v".into() }),
+            filter_bind(&ListFilter::MultiContains {
+                field: "f".into(),
+                value: "v".into()
+            }),
             Bind::Text(_)
         ));
         assert!(matches!(

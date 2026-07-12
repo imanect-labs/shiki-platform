@@ -276,7 +276,11 @@ mod tests {
         // 1MB 超は先頭 1MB だけ見る（String 化される非 JSON で長さを確認）。
         let big = vec![b'x'; 1024 * 1024 + 500];
         let v = parse_body(&big);
-        assert_eq!(v.as_str().map(str::len), Some(1024 * 1024), "CAP で切り詰め");
+        assert_eq!(
+            v.as_str().map(str::len),
+            Some(1024 * 1024),
+            "CAP で切り詰め"
+        );
     }
 
     #[test]
@@ -286,7 +290,10 @@ mod tests {
             attach_secret(None, "tok"),
             ("Authorization".to_string(), "Bearer tok".to_string())
         );
-        let bearer = SecretAttach { kind: SecretAttachKind::Bearer, header: None };
+        let bearer = SecretAttach {
+            kind: SecretAttachKind::Bearer,
+            header: None,
+        };
         assert_eq!(
             attach_secret(Some(&bearer), "tok"),
             ("Authorization".to_string(), "Bearer tok".to_string())
@@ -304,7 +311,10 @@ mod tests {
             ("X-Api-Key".to_string(), "tok".to_string())
         );
         // header 省略時は Authorization に生値（Bearer 前置なし）。
-        let unnamed = SecretAttach { kind: SecretAttachKind::Header, header: None };
+        let unnamed = SecretAttach {
+            kind: SecretAttachKind::Header,
+            header: None,
+        };
         assert_eq!(
             attach_secret(Some(&unnamed), "tok"),
             ("Authorization".to_string(), "tok".to_string())

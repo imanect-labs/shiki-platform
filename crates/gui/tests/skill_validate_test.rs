@@ -53,7 +53,11 @@ fn full_valid_body_passes() {
         "scripts": [{ "path": "scripts/run.shiki", "kind": "shiki", "source": "1" }],
         "references": [NIL]
     });
-    assert!(validate_skill_body(&raw).is_ok(), "codes={:?}", error_codes(raw));
+    assert!(
+        validate_skill_body(&raw).is_ok(),
+        "codes={:?}",
+        error_codes(raw)
+    );
 }
 
 #[test]
@@ -125,7 +129,9 @@ fn invalid_model_params_rejected() {
 
 #[test]
 fn few_shot_limits_rejected() {
-    let many: Vec<Value> = (0..9).map(|_| json!({ "user": "u", "assistant": "a" })).collect();
+    let many: Vec<Value> = (0..9)
+        .map(|_| json!({ "user": "u", "assistant": "a" }))
+        .collect();
     let mut raw = minimal();
     raw["few_shot"] = json!(many);
     assert_rejected_with(raw, "skill.too_many_few_shot");
@@ -137,7 +143,12 @@ fn few_shot_limits_rejected() {
 
 #[test]
 fn script_path_safety_enforced() {
-    for bad in ["../evil.shiki", "/abs/x.shiki", "a\\b.shiki", "scripts/€.shiki"] {
+    for bad in [
+        "../evil.shiki",
+        "/abs/x.shiki",
+        "a\\b.shiki",
+        "scripts/€.shiki",
+    ] {
         let mut raw = minimal();
         raw["scripts"] = json!([{ "path": bad, "kind": "shiki", "source": "1" }]);
         assert_rejected_with(raw, "skill.invalid_script_path");
