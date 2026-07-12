@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { FileDown, LayoutGrid, Share2 } from "lucide-react";
+import { FileDown, LayoutGrid } from "lucide-react";
 
 import {
   getThreadMessages,
@@ -39,7 +39,9 @@ import { Composer } from "./composer";
 import { WorkflowRefCard } from "./workflow-ref-card";
 import { NoteRefCard } from "./note-ref-card";
 import { ThreadShareDialog } from "./share-dialog";
+import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
+import { cn } from "@/lib/utils";
 
 /// ストリーミング中のアシスタント応答の蓄積状態。
 type StreamState = {
@@ -79,7 +81,16 @@ const EMPTY_STREAM: StreamState = {
   approvalPending: false,
 };
 
-export function Conversation({ threadId }: { threadId: string }) {
+export function Conversation({
+  threadId,
+  variant = "page",
+}: {
+  threadId: string;
+  /// "page"=/c/[id] 単独表示（統一ヘッダにタイトル/共有/設定を注入・幅は max-w-3xl 中央）。
+  /// "panel"=ノート分割ビューの埋め込み（自前ヘッダ無し・幅いっぱい・免責は凝縮）。
+  variant?: "page" | "panel";
+}) {
+  const isPanel = variant === "panel";
   const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
   const [stream, setStream] = React.useState<StreamState | null>(null);
   const [notFound, setNotFound] = React.useState(false);
@@ -88,6 +99,8 @@ export function Conversation({ threadId }: { threadId: string }) {
   // モデル裁量で自動発火する（issue #102）ため、旧「自動」トグルは廃止した。
   const [autonomous, setAutonomous] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
+  // ヘッダスロットへ渡すため安定した参照にする（streaming の毎レンダーで再注入しない）。
+  const openShare = React.useCallback(() => setShareOpen(true), []);
   // UI アクション（chat.submit 等）成功後に会話を再読込するためのキー。
   const [reloadKey, setReloadKey] = React.useState(0);
   const bottomRef = React.useRef<HTMLDivElement | null>(null);
@@ -290,21 +303,18 @@ export function Conversation({ threadId }: { threadId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* ヘッダ: 共有 */}
-      <div className="flex items-center justify-end border-b border-border/60 px-4 py-2">
-        <button
-          type="button"
-          onClick={() => setShareOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-foreground/70 transition-colors hover:bg-secondary hover:text-foreground"
-        >
-          <Share2 className="size-4" aria-hidden />
-          共有
-        </button>
-      </div>
+      {/* page: 統一ヘッダスロットへタイトル＋共有/設定を注入（横バー二重を解消）。
+          panel: 注入しない（分割ビューは自前ヘッダを持つ・null を返すだけ）。 */}
+      {!isPanel ? <ChatPageHeaderSlot title="会話" onShare={openShare} /> : null}
       <ThreadShareDialog open={shareOpen} onOpenChange={setShareOpen} threadId={threadId} />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8">
+        <div
+          className={cn(
+            "mx-auto flex w-full flex-col gap-6 px-4 py-8",
+            isPanel ? "max-w-none px-4 py-5" : "max-w-3xl",
+          )}
+        >
           {messages.map((m) =>
             m.role === "user" ? (
               <UserRow key={m.id} blocks={m.content} />
@@ -329,7 +339,7 @@ export function Conversation({ threadId }: { threadId: string }) {
       </div>
 
       <div className="bg-background">
-        <div className="mx-auto w-full max-w-3xl px-4 py-4">
+        <div className={cn("mx-auto w-full px-4 py-4", isPanel ? "max-w-none pb-3" : "max-w-3xl")}>
           <Composer
             onSubmit={send}
             onStop={stop}
@@ -339,7 +349,9 @@ export function Conversation({ threadId }: { threadId: string }) {
             autoFocus
           />
           <p className="mt-2 text-center text-xs text-muted-foreground">
-            Shiki は社内文書を参照して回答します。誤りが含まれる場合があります。
+            {isPanel
+              ? "誤りが含まれる場合があります。"
+              : "Shiki は社内文書を参照して回答します。誤りが含まれる場合があります。"}
           </p>
         </div>
       </div>

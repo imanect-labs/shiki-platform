@@ -84,7 +84,7 @@ export function NoteChatPanel({
       </header>
       <div className="min-h-0 flex-1">
         {threadId ? (
-          <Conversation threadId={threadId} />
+          <Conversation threadId={threadId} variant="panel" />
         ) : error ? (
           <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
             {error}

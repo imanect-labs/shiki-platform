@@ -7,6 +7,7 @@ import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ActiveIndicator } from "@/components/ui/motion-primitives";
 
 type BaseProps = {
   icon: LucideIcon;
@@ -63,9 +64,22 @@ function Inner({
   const seasonTint = active && seasonIndex != null;
   return (
     <>
+      {/* アクティブ位置をアイテム間でスライドする左アクセントバー（layoutId・唯一の動く要素）。 */}
+      {active ? (
+        <ActiveIndicator
+          layoutId="sidebar-active-nav"
+          className={cn(
+            "absolute inset-y-1.5 left-1 w-[3px] rounded-full",
+            seasonTint ? "" : "bg-primary",
+          )}
+          style={seasonTint ? { backgroundColor: seasonVar(seasonIndex) } : undefined}
+        />
+      ) : null}
       <Icon
         className={cn(
-          "size-[18px] shrink-0",
+          "size-[18px] shrink-0 transition-transform duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+          // ホバーで軽くアイコンをずらす（微インタラクション・CSS のみ）。
+          "group-hover/navitem:translate-x-0.5",
           seasonTint ? "" : active ? "text-sidebar-foreground" : "text-sidebar-foreground/55",
         )}
         style={seasonTint ? { color: seasonVar(seasonIndex) } : undefined}

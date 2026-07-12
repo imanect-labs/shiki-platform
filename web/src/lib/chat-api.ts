@@ -121,12 +121,20 @@ export function groupThreadsByDate(
 }
 
 /// 自分のスレッド一覧を購読する React フック（更新日降順の先頭ページ）。
-export function useThreads(): Thread[] {
+/// `loading` で「取得前」と「本当に空」を区別できる（空状態フラッシュ/スケルトン用）。
+export function useThreadsState(): { threads: Thread[]; loading: boolean } {
   const [threads, setThreads] = React.useState<Thread[]>([]);
+  const [loading, setLoading] = React.useState(true);
   const reload = React.useCallback(() => {
     listThreads()
-      .then((r) => setThreads(r.threads))
-      .catch(() => setThreads([]));
+      .then((r) => {
+        setThreads(r.threads);
+        setLoading(false);
+      })
+      .catch(() => {
+        setThreads([]);
+        setLoading(false);
+      });
   }, []);
   React.useEffect(() => {
     reload();
@@ -135,7 +143,12 @@ export function useThreads(): Thread[] {
       threadListeners.delete(reload);
     };
   }, [reload]);
-  return threads;
+  return { threads, loading };
+}
+
+/// スレッド一覧（配列のみ）。既存呼び出し互換のため useThreadsState を薄くラップする。
+export function useThreads(): Thread[] {
+  return useThreadsState().threads;
 }
 
 // ── REST ──────────────────────────────────────────────────────────────

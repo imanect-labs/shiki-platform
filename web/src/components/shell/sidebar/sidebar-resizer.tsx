@@ -114,17 +114,20 @@ export function SidebarResizer({
       onKeyDown={onKeyDown}
       onDoubleClick={resetWidth}
       className={cn(
-        "group absolute -right-1.5 top-0 z-20 flex h-full w-3 cursor-col-resize touch-none items-stretch justify-center outline-none",
+        "group absolute -right-1.5 top-0 z-20 flex h-full w-3 cursor-col-resize touch-none items-center justify-center outline-none",
         "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
       )}
     >
-      {/* 視覚的なヒント線（ホバー/ドラッグ/フォーカスで現れる） */}
+      {/* グリップ（ドラッグ可能を示す丸みのある縦バー）。ホバー/フォーカス/ドラッグで
+          高さ・濃さが増して所在を明示する。動かすのは transform/opacity/color のみ。 */}
       <span
         aria-hidden
         className={cn(
-          "h-full w-px bg-transparent transition-colors",
-          "group-hover:bg-sidebar-ring/60 group-focus-visible:bg-sidebar-ring",
-          dragging && "bg-sidebar-ring",
+          "w-1 rounded-full transition-all duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+          "h-8 bg-sidebar-border",
+          "group-hover:h-14 group-hover:bg-sidebar-ring/70",
+          "group-focus-visible:h-14 group-focus-visible:bg-sidebar-ring",
+          dragging && "!h-16 !bg-sidebar-ring",
         )}
       />
     </div>
