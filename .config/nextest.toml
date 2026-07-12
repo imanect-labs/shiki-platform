@@ -1,10 +1,7 @@
-# cargo-nextest 設定（CI 高速化・#CI-speedup）。
-#
-# nextest はテストバイナリを跨いで並列実行し `cargo test` より速い。DB 系 IT の
-# 一過性 flake（threads_it / emit_workflow_it 等・[[chat-threads-it-flake]]）は
-# retries で自動再試行して吸収する（再実行で直る性質のため）。
+# cargo-nextest 設定（CI 高速化）。rust ジョブ（compose 非依存＝ユニット中心）で使う。
+# coverage ジョブは DB IT 競合を避けるため cargo test のまま（ci.yml 参照）。
 [profile.default]
 # 一過性 flake を自動リトライで緑化（真の失敗は 2 回とも落ちるので検知は保つ）。
 retries = 2
-# 遅い IT（承認待ち・lease 120s / event timeout 180s 等）は警告のみで kill しない。
+# 遅いテストは警告のみで kill しない（誤検知回避）。
 slow-timeout = "120s"

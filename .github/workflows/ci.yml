@@ -220,7 +220,6 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: taiki-e/install-action@nextest
       # live 依存（OpenFGA / Redis）を起動し、結合テストのカバレッジも算入する。
       # これにより fga_http / client（OpenFGA 経路）と redis_store（Redis 経路）も
       # 単体テストでは届かない実経路をカバーした上で全体カバレッジを評価する。
@@ -257,10 +256,11 @@ jobs:
           STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
           STORAGE_TEST_S3_ENDPOINT: http://localhost:9000
           RAG_TEST_QDRANT_URL: http://localhost:6333
-        # nextest でテストを並列化（+.config/nextest.toml の retries で DB IT flake を吸収）。
-        # doctest は当リポジトリに実質存在せず（実行可能 fence ≒0）nextest 非対応でも影響なし。
-        # --no-fail-fast: 失敗があっても全テストを走らせ profdata を完全に集める（ゲート計測用）。
-        run: cargo llvm-cov nextest --workspace --no-report --no-fail-fast
+        # DB 系 IT（chat worker / rag 等）は outbox・lease・OpenFGA tuple を共有し、nextest の
+        # バイナリ跨ぎ並列では競合して壊れる（autonomous_it/emit_workflow_it 等）。coverage は
+        # cargo test（バイナリ逐次）のまま安全側に保つ。速度は debuginfo 削減（行テーブルのみ）で
+        # 計装ビルドを短縮して稼ぐ。テスト実行並列化は test-groups で IT を直列化する別 PR で検討。
+        run: cargo llvm-cov --all --no-report
       - name: coverage report (lcov + summary + job summary)
         run: |
           cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
