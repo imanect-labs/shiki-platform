@@ -305,4 +305,135 @@ mod tests {
         }
         assert!(validate_row_policy(&schema(), &policy(e)).is_err());
     }
+
+    #[test]
+    fn write_branch_and_all_too_many_and_hasrole_empty() {
+        // write 側も検証される（未知フィールドを write に入れると拒否）。
+        let p = RowPolicy {
+            read: PolicyExpr::Public,
+            write: Some(PolicyExpr::FieldCmp {
+                field: "nope".into(),
+                op: CmpOp::Eq,
+                value: PolicyOperand::UserId,
+            }),
+        };
+        assert!(validate_row_policy(&schema(), &p).is_err());
+        // all の子が多すぎる。
+        let many: Vec<PolicyExpr> = (0..=MAX_POLICY_BRANCHES)
+            .map(|_| PolicyExpr::Public)
+            .collect();
+        assert!(validate_row_policy(&schema(), &policy(PolicyExpr::All(many))).is_err());
+        // role 空は不正。
+        let p = policy(PolicyExpr::HasRole {
+            role: String::new(),
+            subtree: false,
+        });
+        assert!(validate_row_policy(&schema(), &p).is_err());
+    }
+
+    #[test]
+    fn lit_in_operator_rules() {
+        // select の in（配列）は OK。
+        let ok = policy(PolicyExpr::FieldCmp {
+            field: "status".into(),
+            op: CmpOp::In,
+            value: PolicyOperand::Lit(json!(["draft", "done"])),
+        });
+        assert!(validate_row_policy(&schema(), &ok).is_ok());
+        // number に in は不可。
+        let num_in = policy(PolicyExpr::FieldCmp {
+            field: "amount".into(),
+            op: CmpOp::In,
+            value: PolicyOperand::Lit(json!([1, 2])),
+        });
+        assert!(validate_row_policy(&schema(), &num_in).is_err());
+        // in のリテラルが配列でない。
+        let not_arr = policy(PolicyExpr::FieldCmp {
+            field: "status".into(),
+            op: CmpOp::In,
+            value: PolicyOperand::Lit(json!("draft")),
+        });
+        assert!(validate_row_policy(&schema(), &not_arr).is_err());
+        // in の配列が空。
+        let empty = policy(PolicyExpr::FieldCmp {
+            field: "status".into(),
+            op: CmpOp::In,
+            value: PolicyOperand::Lit(json!([])),
+        });
+        assert!(validate_row_policy(&schema(), &empty).is_err());
+        // in の要素型不一致（select に数値）。
+        let bad_elem = policy(PolicyExpr::FieldCmp {
+            field: "status".into(),
+            op: CmpOp::In,
+            value: PolicyOperand::Lit(json!([1])),
+        });
+        assert!(validate_row_policy(&schema(), &bad_elem).is_err());
+    }
+
+    #[test]
+    fn fsm_actor_expr_is_validated() {
+        // validate_policy_expr（FSM actor 述語）は行述語と同じ文法・型整合。
+        let ok = PolicyExpr::FieldCmp {
+            field: "applicant".into(),
+            op: CmpOp::Eq,
+            value: PolicyOperand::UserId,
+        };
+        assert!(validate_policy_expr(&schema(), &ok, "fsm.actor").is_ok());
+        let bad = PolicyExpr::FieldCmp {
+            field: "amount".into(),
+            op: CmpOp::Eq,
+            value: PolicyOperand::UserId,
+        };
+        assert!(validate_policy_expr(&schema(), &bad, "fsm.actor").is_err());
+    }
+
+    #[test]
+    fn role_level_expr_allows_role_shapes_only() {
+        // field_policy.readable_by 用: role/公開の形のみ許す。
+        assert!(validate_role_level_expr(&PolicyExpr::Public, "fp").is_ok());
+        assert!(validate_role_level_expr(
+            &PolicyExpr::HasRole {
+                role: "keiri".into(),
+                subtree: true
+            },
+            "fp"
+        )
+        .is_ok());
+        assert!(validate_role_level_expr(
+            &PolicyExpr::Any(vec![PolicyExpr::HasRole {
+                role: "a".into(),
+                subtree: false,
+            }]),
+            "fp"
+        )
+        .is_ok());
+        // role 空は不正。
+        assert!(validate_role_level_expr(
+            &PolicyExpr::HasRole {
+                role: String::new(),
+                subtree: false
+            },
+            "fp"
+        )
+        .is_err());
+        // any の子が空は不正。
+        assert!(validate_role_level_expr(&PolicyExpr::Any(vec![]), "fp").is_err());
+        // 行の値に依存する式（field_cmp / is_owner）はマスクに使えない。
+        assert!(validate_role_level_expr(&PolicyExpr::IsOwner, "fp").is_err());
+        assert!(validate_role_level_expr(
+            &PolicyExpr::FieldCmp {
+                field: "applicant".into(),
+                op: CmpOp::Eq,
+                value: PolicyOperand::UserId,
+            },
+            "fp"
+        )
+        .is_err());
+        // 深さ超過。
+        let mut e = PolicyExpr::Public;
+        for _ in 0..(MAX_POLICY_DEPTH + 2) {
+            e = PolicyExpr::All(vec![e]);
+        }
+        assert!(validate_role_level_expr(&e, "fp").is_err());
+    }
 }
