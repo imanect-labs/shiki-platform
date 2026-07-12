@@ -14,6 +14,7 @@
 //! 実効権限 = アプリ付与スコープ ∩ ユーザー ReBAC。B1=public+PKCE / B2=confidential+token-exchange
 //! の OAuth2 クライアントは [`oauth`] が Keycloak へ動的登録する（新しい認証基盤は作らない）。
 
+mod b1;
 mod installation;
 mod notification;
 mod oauth;
@@ -25,6 +26,7 @@ mod token;
 mod token_exchange;
 mod usage;
 
+pub use b1::{build_b1_router, bundle_csp, B1State};
 pub use installation::{
     AiPin, AppInstallation, AppInstallationStore, InstallStatus, NewAppInstallation,
 };

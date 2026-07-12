@@ -144,6 +144,25 @@ pub async fn uninstall_app(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+/// レジストリ一覧（インストール UI 用・publish 済みエントリ）。
+#[utoipa::path(
+    get,
+    path = "/apps/registry",
+    responses((status = 200, description = "レジストリ一覧")),
+    security(("session" = [])),
+)]
+pub async fn list_registry(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let items = state
+        .installs
+        .registry()
+        .list(&ctx, "mini_app_code", 200)
+        .await?;
+    Ok(Json(serde_json::json!({ "items": items })))
+}
+
 /// オフライン import 要求（署名付きマニフェスト・エアギャップ配布）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ImportAppRequest {
@@ -298,6 +317,7 @@ pub(crate) fn app_install_route_decls() -> Vec<crate::server::RouteDecl> {
         r("/apps/registry/import", &["POST"], Session, || {
             post(import_app)
         }),
+        r("/apps/registry", &["GET"], Session, || get(list_registry)),
     ]
 }
 

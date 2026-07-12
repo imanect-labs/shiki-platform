@@ -73,6 +73,7 @@ async fn fixture(pool: &PgPool, tenant: &str) -> (Uuid, String, Uuid, Uuid) {
                 client_id_b1: Some(&client),
                 client_id_b2: None,
                 ai: AiPin::default(),
+                frontend_bundle: None,
             },
         )
         .await

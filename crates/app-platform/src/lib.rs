@@ -5,6 +5,7 @@
 //! 監査枠に乗る。要求スコープ/ツールは閉じた語彙（[`authz::CapabilityScope`] /
 //! [`agent_core::ToolName`]）へ照合し、実在しない権限名を拒否する（ハルシネーション境界）。
 
+mod bundle;
 mod install;
 mod install_ops;
 mod manifest;
@@ -14,6 +15,7 @@ mod store;
 mod trusted_key;
 mod validate;
 
+pub use bundle::{BundleStore, MAX_BUNDLE_BYTES};
 pub use install::{InstallRequest, InstallService, Installed};
 pub use manifest::{
     Budget, CronEntry, FrontendBundle, ManifestTable, MiniAppManifest, ServerSpec, TrustTier,

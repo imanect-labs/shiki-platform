@@ -60,6 +60,8 @@ pub struct AppState {
     pub mini_app_code: Arc<app_platform::MiniAppCodeStore>,
     /// 同意インストール／プロビジョン／import（Task 9.13b）。
     pub installs: Arc<app_platform::InstallService>,
+    /// B1 フロントバンドル保管（Task 9.11・content-addressed）。
+    pub bundles: Arc<app_platform::BundleStore>,
     /// UI スペックの保存/取得（Task 6.3・artifact kind=ui_spec の上に保存時検証を載せる）。
     pub ui_specs: Arc<gui::UiSpecStore>,
     /// 宣言的 UI アクションの実行系（Task 6.5・照合/本人認可/監査の合流点）。

@@ -91,6 +91,73 @@ impl AuthzClient for AllowAll {
     }
 }
 
+/// no-op ObjectStore（BundleStore の AppState 充足用・本テストは bundle 面を叩かない）。
+struct NoopStore;
+
+#[async_trait]
+impl storage::object_store::ObjectStore for NoopStore {
+    async fn ensure_bucket(&self) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
+    async fn presign_get_internal(
+        &self,
+        _k: &str,
+        _t: Duration,
+    ) -> Result<String, storage::ObjectStoreError> {
+        Ok("http://noop".into())
+    }
+    async fn presign_put(
+        &self,
+        _k: &str,
+        _t: Duration,
+        _l: i64,
+    ) -> Result<String, storage::ObjectStoreError> {
+        Ok("http://noop".into())
+    }
+    async fn presign_get(
+        &self,
+        _k: &str,
+        _t: Duration,
+        _f: Option<&str>,
+        _c: Option<&str>,
+    ) -> Result<String, storage::ObjectStoreError> {
+        Ok("http://noop".into())
+    }
+    async fn read_and_hash(&self, _k: &str) -> Result<(String, u64), storage::ObjectStoreError> {
+        Err(storage::ObjectStoreError::NotFound("noop".into()))
+    }
+    async fn put_object(
+        &self,
+        _k: &str,
+        _b: Vec<u8>,
+        _c: &str,
+    ) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
+    async fn get_object(&self, _k: &str) -> Result<Vec<u8>, storage::ObjectStoreError> {
+        Err(storage::ObjectStoreError::NotFound("noop".into()))
+    }
+    async fn exists(&self, _k: &str) -> Result<bool, storage::ObjectStoreError> {
+        Ok(false)
+    }
+    async fn copy(&self, _s: &str, _d: &str) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
+    async fn delete(&self, _k: &str) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
+    async fn list_prefix(
+        &self,
+        _p: &str,
+        _c: Option<&str>,
+    ) -> Result<(Vec<String>, Option<String>), storage::ObjectStoreError> {
+        Ok((vec![], None))
+    }
+    async fn delete_batch(&self, _k: &[String]) -> Result<(), storage::ObjectStoreError> {
+        Ok(())
+    }
+}
+
 fn runner_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("SHIKI_TABULAR_RUNNER") {
         let p = PathBuf::from(p);
@@ -337,6 +404,11 @@ fn build_app(
         None,
         vec![],
     ));
+    let bundles = Arc::new(app_platform::BundleStore::new(
+        Arc::new(NoopStore),
+        Arc::clone(authz),
+        storage::audit::AuditRecorder::new(pool.clone()),
+    ));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool.clone()),
@@ -363,6 +435,7 @@ fn build_app(
         )),
         mini_app_code: Arc::clone(&mini_app_code),
         installs,
+        bundles,
         ui_specs: Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator)),
         ui_actions: Arc::new(gui::ActionDispatcher::new(
             storage::audit::AuditRecorder::new(pool.clone()),

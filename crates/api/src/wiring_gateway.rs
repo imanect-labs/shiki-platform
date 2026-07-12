@@ -178,3 +178,44 @@ pub(crate) fn wire_installs(
         b1_redirects,
     )
 }
+
+/// B1 フロントバンドル配信（第3リスナ・Task 9.11）の Router を組む（gateway 無効時は None）。
+///
+/// apps オリジン＝第2リスナともホストとも別ポート。cookie を持たず、CSP はゲートウェイ
+/// への connect とホストからの埋め込みのみを許す（B1State の rustdoc 参照）。
+pub(crate) fn wire_b1(
+    config: &AppConfig,
+    db: &sqlx::PgPool,
+    object_store: &Arc<dyn storage::ObjectStore>,
+) -> Option<axum::Router> {
+    if !config.gateway.enabled {
+        return None;
+    }
+    let gateway_origin = config
+        .gateway
+        .public_origin
+        .clone()
+        .unwrap_or_else(|| format!("http://localhost:{}", config.gateway.port));
+    // frame-ancestors は web シェルのオリジン（未設定は auth.redirect_uri から導出）。
+    let host_origin = config.gateway.web_origin.clone().unwrap_or_else(|| {
+        url::Url::parse(&config.auth.redirect_uri)
+            .ok()
+            .and_then(|u| {
+                u.port_or_known_default().map(|p| {
+                    format!(
+                        "{}://{}:{p}",
+                        u.scheme(),
+                        u.host_str().unwrap_or("localhost")
+                    )
+                })
+            })
+            .unwrap_or_else(|| "http://localhost:3000".to_string())
+    });
+    let state = app_gateway::B1State {
+        installations: app_gateway::AppInstallationStore::new(db.clone()),
+        store: Arc::clone(object_store),
+        gateway_origin,
+        host_origin,
+    };
+    Some(app_gateway::build_b1_router(state))
+}

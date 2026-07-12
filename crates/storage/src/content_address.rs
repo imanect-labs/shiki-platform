@@ -42,6 +42,14 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// content-addressed blob の ObjectStore キー（PIT-14: `{tenant_id}/{org}` 名前空間）。
+/// ミニアプリ・フロントバンドルのオブジェクトキー（Task 9.11・content-addressed）。
+///
+/// ユーザーファイル（node/blob）とは別枠のアプリ資産。キー体系をここ（storage）に置くのは
+/// 書込側（app-platform BundleStore）と配信側（app-gateway 第3リスナ）のキー drift を防ぐため。
+pub fn miniapp_bundle_key(tenant_id: &str, sha256: &str) -> String {
+    format!("miniapp-bundle/{tenant_id}/{sha256}")
+}
+
 pub fn blob_object_key(tenant_id: &str, org: &str, sha256: &str) -> String {
     format!("{tenant_id}/{org}/{sha256}")
 }

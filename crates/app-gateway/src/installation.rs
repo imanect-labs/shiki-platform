@@ -73,6 +73,8 @@ pub struct AppInstallation {
     pub created_at: DateTime<Utc>,
     /// AI ガードレールの同意時ピン（Task 9.9）。
     pub ai: AiPin,
+    /// B1 フロントバンドルの同意時ピン（sha256 hex・Task 9.11・None=フロントなし）。
+    pub frontend_bundle: Option<String>,
 }
 
 /// インストール作成の入力（PR9 の同意フロー・本 PR はデブ用 fixture）。
@@ -86,6 +88,8 @@ pub struct NewAppInstallation<'a> {
     pub client_id_b2: Option<&'a str>,
     /// AI ガードレールの同意時ピン（Task 9.9・既定＝管理者キャップのみ）。
     pub ai: AiPin,
+    /// B1 フロントバンドルの同意時ピン（Task 9.11）。
+    pub frontend_bundle: Option<&'a str>,
 }
 
 /// sqlx 実行時マップ用の生行（`FromRow`）。status は文字列で受けて enum へ写す。
@@ -105,6 +109,7 @@ struct Row {
     budget_daily_usd_micros: Option<i64>,
     budget_max_tokens: Option<i64>,
     agent_tools: Vec<String>,
+    frontend_bundle: Option<String>,
 }
 
 impl From<Row> for AppInstallation {
@@ -126,6 +131,7 @@ impl From<Row> for AppInstallation {
                 budget_max_tokens: r.budget_max_tokens,
                 agent_tools: r.agent_tools,
             },
+            frontend_bundle: r.frontend_bundle,
         }
     }
 }
@@ -133,7 +139,8 @@ impl From<Row> for AppInstallation {
 /// 全列（RETURNING / SELECT 共通・Row の FromRow と対応）。
 const COLS: &str = "id, app_id, app_name, installed_version, granted_scopes, \
                     client_id_b1, client_id_b2, status, installed_by, created_at, \
-                    budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools";
+                    budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools, \
+                    frontend_bundle";
 
 /// インストール台帳ストア（Postgres・tenant スコープ）。
 #[derive(Clone)]
@@ -158,8 +165,9 @@ impl AppInstallationStore {
             "INSERT INTO app_installation \
                  (tenant_id, org, app_id, app_name, installed_version, granted_scopes, \
                   client_id_b1, client_id_b2, status, installed_by, \
-                  budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $12, $13) \
+                  budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools, \
+                  frontend_bundle) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $12, $13, $14) \
              ON CONFLICT (tenant_id, app_id) DO UPDATE SET \
                  app_name = EXCLUDED.app_name, \
                  installed_version = EXCLUDED.installed_version, \
@@ -170,6 +178,7 @@ impl AppInstallationStore {
                  budget_daily_usd_micros = EXCLUDED.budget_daily_usd_micros, \
                  budget_max_tokens = EXCLUDED.budget_max_tokens, \
                  agent_tools = EXCLUDED.agent_tools, \
+                 frontend_bundle = EXCLUDED.frontend_bundle, \
                  status = 'active', \
                  updated_at = now() \
              RETURNING {COLS}"
@@ -188,6 +197,7 @@ impl AppInstallationStore {
             .bind(new.ai.budget_daily_usd_micros)
             .bind(new.ai.budget_max_tokens)
             .bind(&new.ai.agent_tools)
+            .bind(new.frontend_bundle)
             .fetch_one(&self.db)
             .await
             .map_err(map_db)?;
@@ -236,11 +246,41 @@ impl AppInstallationStore {
         Ok(row.map(Into::into))
     }
 
-    /// テナント内の全インストール一覧（管理 UI 用・状態問わず新しい順）。
+    /// app_id から**有効な**インストールを引く（テナント跨ぎ・B1 配信用）。
+    ///
+    /// B1 第3リスナは cookie/token を持たず URL にテナントを含まない（opaque origin 配信）。
+    /// `app_id`（mini_app_code アーティファクトの UUID）はテナント跨ぎで一意なため、これで
+    /// 解決し、返った `tenant_id` でバンドルキー（tenant スコープの content address）を組む。
+    /// バンドルはアプリ自身のフロント資産（content-addressed・ピン一致必須）でユーザーデータを
+    /// 含まないため、この解決でテナント隔離は損なわれない。
+    pub async fn resolve_active_by_app_global(
+        &self,
+        app_id: Uuid,
+    ) -> Result<Option<(String, AppInstallation)>, GatewayError> {
+        // tenant を先に解決してから tenant スコープの取得へ（Row の FromRow を汚さない）。
+        let tenant: Option<(String,)> = sqlx::query_as(
+            "SELECT tenant_id FROM app_installation \
+             WHERE app_id = $1 AND status = 'active' LIMIT 1",
+        )
+        .bind(app_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        let Some((tenant_id,)) = tenant else {
+            return Ok(None);
+        };
+        let installation = self.resolve_active_by_app(&tenant_id, app_id).await?;
+        Ok(installation.map(|i| (tenant_id, i)))
+    }
+
+    /// テナント内の active インストール一覧（インストール済みアプリ一覧 UI 用・新しい順）。
+    ///
+    /// アンインストール（status=revoked）は起動不能なため一覧から除く。撤去済みアプリが
+    /// シェル一覧・B1 実行画面に残らないよう active に限定する（失効の即時反映）。
     pub async fn list(&self, ctx: &AuthContext) -> Result<Vec<AppInstallation>, GatewayError> {
         let sql = format!(
             "SELECT {COLS} FROM app_installation \
-             WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 200"
+             WHERE tenant_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 200"
         );
         let rows: Vec<Row> = sqlx::query_as(&sql)
             .bind(&ctx.tenant_id)

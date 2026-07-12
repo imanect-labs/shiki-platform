@@ -188,6 +188,67 @@ impl ObjectStore for StubObjectStore {
     }
 }
 
+/// メモリ ObjectStore（B1 配信 IT 用・put/get のみ実体）。
+#[derive(Default)]
+pub struct MemStore(pub std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>);
+
+#[async_trait]
+impl ObjectStore for MemStore {
+    async fn ensure_bucket(&self) -> Result<(), ObjectStoreError> {
+        Ok(())
+    }
+    async fn presign_put(&self, _: &str, _: Duration, _: i64) -> Result<String, ObjectStoreError> {
+        Ok("https://mem/put".into())
+    }
+    async fn presign_get(
+        &self,
+        _: &str,
+        _: Duration,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<String, ObjectStoreError> {
+        Ok("https://mem/get".into())
+    }
+    async fn presign_get_internal(&self, _: &str, _: Duration) -> Result<String, ObjectStoreError> {
+        Ok("https://mem/get".into())
+    }
+    async fn read_and_hash(&self, key: &str) -> Result<(String, u64), ObjectStoreError> {
+        Err(ObjectStoreError::NotFound(key.into()))
+    }
+    async fn put_object(&self, key: &str, bytes: Vec<u8>, _: &str) -> Result<(), ObjectStoreError> {
+        self.0.lock().unwrap().insert(key.to_string(), bytes);
+        Ok(())
+    }
+    async fn get_object(&self, key: &str) -> Result<Vec<u8>, ObjectStoreError> {
+        self.0
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+            .ok_or_else(|| ObjectStoreError::NotFound(key.into()))
+    }
+    async fn exists(&self, key: &str) -> Result<bool, ObjectStoreError> {
+        Ok(self.0.lock().unwrap().contains_key(key))
+    }
+    async fn copy(&self, _: &str, _: &str) -> Result<(), ObjectStoreError> {
+        Ok(())
+    }
+    async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+    async fn list_prefix(
+        &self,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<(Vec<String>, Option<String>), ObjectStoreError> {
+        Ok((vec![], None))
+    }
+    async fn delete_batch(&self, _: &[String]) -> Result<(), ObjectStoreError> {
+        Ok(())
+    }
+}
+
 /// 参照リゾルバのスタブ（alice/bob と role sales のみ存在・file は不可視）。
 pub struct FixedResolver;
 

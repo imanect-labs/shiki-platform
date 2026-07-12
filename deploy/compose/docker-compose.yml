@@ -345,6 +345,12 @@ services:
       SHIKI__SESSION__SECURE: "false"
       SHIKI__AUTHZ__BASE_URL: http://openfga:8080
       SHIKI__AUTHZ__STORE_NAME: shiki
+      # 公開 API ゲートウェイ（第2リスナ 8090）＋ B1 配信（第3リスナ 8091）・Task 9.6/9.11。
+      SHIKI__GATEWAY__ENABLED: ${SHIKI__GATEWAY__ENABLED:-true}
+      SHIKI__GATEWAY__PORT: "8090"
+      SHIKI__GATEWAY__B1_PORT: "8091"
+      SHIKI__GATEWAY__PUBLIC_ORIGIN: ${SHIKI__GATEWAY__PUBLIC_ORIGIN:-http://localhost:8090}
+      SHIKI__GATEWAY__WEB_ORIGIN: ${SHIKI__GATEWAY__WEB_ORIGIN:-http://localhost:3000}
       # 監視は observability profile のオプトイン。空 = OTel エクスポート無効。
       SHIKI__TELEMETRY__OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
       SHIKI__TELEMETRY__SERVICE_NAME: shiki-server
@@ -398,6 +404,9 @@ services:
       RUST_LOG: "info,shiki_api=debug,authz=debug"
     ports:
       - "8080:8080"
+      # 第2リスナ（ゲートウェイ・別オリジン）と第3リスナ（B1 配信）。
+      - "8090:8090"
+      - "8091:8091"
     volumes:
       # Tantivy 全文インデックス（index-per-tenant）の永続化先。
       - shiki-index-data:/var/lib/shiki/index

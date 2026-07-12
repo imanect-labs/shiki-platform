@@ -13,6 +13,7 @@ import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { MiniAppEditorDialog } from "@/components/artifacts/miniapp-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
 import { deleteArtifact, listArtifacts, type ArtifactMeta } from "@/lib/artifact-api";
+import { InstalledAppsSection } from "@/components/miniapp/installed-apps";
 
 type DialogState =
   | { kind: "closed" }
@@ -131,6 +132,8 @@ export default function AppsPage() {
           ))}
         </ul>
       )}
+
+      <InstalledAppsSection />
 
       <MiniAppEditorDialog
         open={dialog.kind === "create"}
