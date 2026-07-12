@@ -152,7 +152,7 @@ export function EnableDialog({
         </DialogHeader>
 
         {reconsent ? (
-          <p className="flex items-start gap-2 rounded-md border border-[oklch(0.7_0.12_80)]/50 bg-[oklch(0.94_0.06_80)]/50 p-2.5 text-xs text-[oklch(0.4_0.1_70)] dark:bg-[oklch(0.32_0.06_80)]/50 dark:text-[oklch(0.87_0.09_85)]">
+          <p className="flex items-start gap-2 rounded-md border p-2.5 text-xs text-foreground/80" style={{ borderColor: "color-mix(in oklab, var(--season-autumn) 45%, transparent)", backgroundColor: "color-mix(in oklab, var(--season-autumn) 10%, transparent)" }}>
             <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
             権限の変更により自動実行が停止しています。内容を確認して、もう一度有効化してください。
           </p>

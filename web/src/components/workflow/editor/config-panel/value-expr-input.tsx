@@ -132,7 +132,7 @@ export function ValueExprInput({
                 }
                 onChange(text as unknown as ValueExpr);
               }}
-              className={cn(error && "border-[oklch(0.6_0.15_25)]")}
+              className={cn(error && "border-destructive")}
             />
           ) : (
             <Input
@@ -150,7 +150,7 @@ export function ValueExprInput({
                 }
                 onChange(text as unknown as ValueExpr);
               }}
-              className={cn("h-8", error && "border-[oklch(0.6_0.15_25)]")}
+              className={cn("h-8", error && "border-destructive")}
             />
           )}
           <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -218,7 +218,7 @@ export function ValueExprInput({
         />
       ) : null}
 
-      {error ? <p className="text-[11px] text-[oklch(0.55_0.15_25)]">{error}</p> : null}
+      {error ? <p className="text-[11px] text-destructive">{error}</p> : null}
     </div>
   );
 }

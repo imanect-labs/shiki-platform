@@ -211,7 +211,7 @@ export function RunDetailSheet({
           ) : (
             <div className="space-y-5">
               {detail.status === "failed" && detail.failReason ? (
-                <p className="rounded-md border border-[oklch(0.55_0.15_25)]/40 bg-[oklch(0.93_0.05_25)]/40 p-2.5 text-xs text-[oklch(0.4_0.14_25)] dark:bg-[oklch(0.3_0.08_25)]/30 dark:text-[oklch(0.85_0.09_25)]">
+                <p className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs text-destructive">
                   {FAIL_REASON_LABELS[detail.failReason] ?? detail.failReason}
                 </p>
               ) : null}

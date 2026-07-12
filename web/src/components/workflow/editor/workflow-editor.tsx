@@ -175,7 +175,7 @@ export function WorkflowEditor({
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
             <span>v{state.savedVersion}</span>
             {state.dirty ? (
-              <span className="text-[oklch(0.55_0.1_70)]">未保存の変更</span>
+              <span className="text-[color:var(--season-autumn)]">未保存の変更</span>
             ) : (
               <span className="flex items-center gap-1">
                 <CheckCircle2 className="size-3" aria-hidden />
@@ -183,7 +183,7 @@ export function WorkflowEditor({
               </span>
             )}
             {errorCount > 0 ? (
-              <span className="text-[oklch(0.55_0.15_25)]">検証エラー {errorCount} 件</span>
+              <span className="text-destructive">検証エラー {errorCount} 件</span>
             ) : null}
           </p>
         </div>

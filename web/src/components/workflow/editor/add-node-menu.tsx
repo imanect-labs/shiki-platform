@@ -51,7 +51,7 @@ export function AddNodeMenu({ onPick, contextLabel }: Props) {
   const upcoming = filtered.filter((e) => !e.available);
 
   return (
-    <div className="flex max-h-96 w-80 flex-col">
+    <div className="flex max-h-96 w-80 flex-col" data-testid="add-node-menu">
       {contextLabel ? (
         <p className="px-1 pb-2 text-xs text-muted-foreground">{contextLabel}</p>
       ) : null}

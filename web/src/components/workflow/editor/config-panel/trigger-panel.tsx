@@ -230,7 +230,7 @@ function ScheduleEditor({
           次回の実行: {fires.join("、")}
         </p>
       ) : (
-        <p className="text-[11px] text-[oklch(0.55_0.15_25)]">cron 式を確認してください</p>
+        <p className="text-[11px] text-destructive">cron 式を確認してください</p>
       )}
     </div>
   );
@@ -356,7 +356,7 @@ export function TriggerPanel({
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 text-xs text-[oklch(0.55_0.15_25)]"
+            className="h-7 text-xs text-destructive"
             onClick={() => onChange(triggers.filter((_, i) => i !== index))}
           >
             <Trash2 className="size-3.5" aria-hidden />

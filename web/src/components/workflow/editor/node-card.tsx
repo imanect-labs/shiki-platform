@@ -22,6 +22,7 @@ import type { Node as IrNode, ValidationError } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import { AddNodeMenu } from "./add-node-menu";
 import { nodeIcon } from "./icons";
+import { categoryVar } from "../category-accent";
 
 export type NodeCardData = {
   irNode: IrNode;
@@ -67,8 +68,8 @@ function portLabel(port: string): string {
 }
 
 function portColor(port: string): string {
-  if (port === "error") return "!bg-[oklch(0.6_0.15_25)]";
-  if (port === "timeout") return "!bg-[oklch(0.65_0.12_80)]";
+  if (port === "error") return "!bg-destructive";
+  if (port === "timeout") return "!bg-[var(--season-autumn)]";
   return "!bg-primary";
 }
 
@@ -79,29 +80,48 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
   const ports = outputPorts(irNode);
   const hasError = errors.length > 0;
   const [menuOpen, setMenuOpen] = React.useState(false);
+  // カテゴリ由来の季節色（左アクセント＋アイコンチップ）。エラー時は破壊的色を優先。
+  const accent = categoryVar(entry?.category);
 
   return (
     <div
+      style={{ ["--accent" as string]: accent }}
       className={cn(
-        "group/node relative w-60 rounded-xl border bg-card text-card-foreground shadow-sm",
-        "transition-shadow duration-fast",
-        selected && "ring-2 ring-primary shadow-md",
-        hasError && "border-[oklch(0.6_0.15_25)]",
+        "group/node relative w-60 overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm",
+        // ⚠️ xyflow ノードは motion layout を使わず CSS transition のみ（transform/shadow/border）。
+        "transition-[transform,box-shadow,border-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+        "hover:-translate-y-0.5 hover:shadow-md",
+        selected && "shadow-lg ring-2 ring-primary",
+        hasError && "border-destructive",
       )}
     >
+      {/* 左端のカテゴリ アクセントバー（季節色・エラー時は破壊的）。 */}
+      <span
+        aria-hidden
+        className="absolute inset-y-0 left-0 w-1"
+        style={{ backgroundColor: hasError ? "var(--destructive)" : "var(--accent)" }}
+      />
       {/* 入力ポート（join は複数エッジを受けるが handle は 1 つ）。 */}
       <Handle
         type="target"
         position={Position.Left}
-        className="!size-2.5 !border-2 !border-background !bg-muted-foreground"
+        className="!size-2.5 !border-2 !border-background !bg-muted-foreground transition-transform duration-[var(--duration-fast)] hover:!scale-125"
       />
 
-      <div className="flex items-start gap-2.5 px-3.5 py-3">
+      <div className="flex items-start gap-2.5 px-3.5 py-3 pl-4">
         <span
           className={cn(
             "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg",
-            hasError ? "bg-[oklch(0.6_0.15_25)]/10 text-[oklch(0.6_0.15_25)]" : "bg-primary/10 text-primary",
+            hasError ? "bg-destructive/10 text-destructive" : "",
           )}
+          style={
+            hasError
+              ? undefined
+              : {
+                  backgroundColor: "color-mix(in oklab, var(--accent) 14%, transparent)",
+                  color: "var(--accent)",
+                }
+          }
         >
           <Icon className="size-4" aria-hidden />
         </span>
@@ -117,7 +137,7 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
           <Tooltip>
             <TooltipTrigger asChild>
               <span
-                className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-[oklch(0.6_0.15_25)] text-white"
+                className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-destructive text-destructive-foreground"
                 aria-label={`検証エラー ${errors.length} 件`}
               >
                 <AlertCircle className="size-3.5" aria-hidden />
@@ -141,7 +161,10 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
           id={ports[0]}
           type="source"
           position={Position.Right}
-          className={cn("!size-2.5 !border-2 !border-background", portColor(ports[0]))}
+          className={cn(
+            "!size-2.5 !border-2 !border-background transition-transform duration-[var(--duration-fast)] hover:!scale-125",
+            portColor(ports[0]),
+          )}
         />
       ) : (
         <div className="border-t px-3.5 py-1.5">

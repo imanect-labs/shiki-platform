@@ -34,7 +34,7 @@ export function Field({
       <label className="text-xs font-medium text-foreground">{label}</label>
       {children}
       {error ? (
-        <p className="text-[11px] text-[oklch(0.55_0.15_25)]">{error}</p>
+        <p className="text-[11px] text-destructive">{error}</p>
       ) : hint ? (
         <p className="text-[11px] text-muted-foreground">{hint}</p>
       ) : null}
@@ -71,7 +71,7 @@ export function NumberInput({
         const n = Number(raw);
         if (Number.isFinite(n)) onChange(n);
       }}
-      className={cn("h-8", error && "border-[oklch(0.6_0.15_25)]")}
+      className={cn("h-8", error && "border-destructive")}
     />
   );
 }

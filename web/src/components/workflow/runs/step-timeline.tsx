@@ -39,15 +39,15 @@ const PORT_LABELS: Record<string, string> = {
 function statusIcon(status: string): React.ReactNode {
   switch (status) {
     case "succeeded":
-      return <Check className="size-3.5 text-[oklch(0.55_0.12_150)]" aria-hidden />;
+      return <Check className="size-3.5 text-[color:var(--season-summer)]" aria-hidden />;
     case "failed":
-      return <XCircle className="size-3.5 text-[oklch(0.55_0.15_25)]" aria-hidden />;
+      return <XCircle className="size-3.5 text-destructive" aria-hidden />;
     case "running":
       return <Loader2 className="size-3.5 animate-spin text-primary" aria-hidden />;
     case "waiting_timer":
     case "waiting_event":
     case "waiting_map":
-      return <Clock className="size-3.5 text-[oklch(0.6_0.1_80)]" aria-hidden />;
+      return <Clock className="size-3.5 text-[color:var(--season-autumn)]" aria-hidden />;
     case "skipped":
       return <MinusCircle className="size-3.5 text-muted-foreground" aria-hidden />;
     case "cancelled":
@@ -110,7 +110,7 @@ function StepRow({
       className={cn(
         "rounded-lg border transition-colors duration-fast",
         failed
-          ? "border-[oklch(0.55_0.15_25)]/40 bg-[oklch(0.93_0.05_25)]/30 dark:bg-[oklch(0.3_0.08_25)]/20"
+          ? "border-destructive/40 bg-destructive/5"
           : "bg-card",
       )}
     >
@@ -161,7 +161,7 @@ function StepRow({
             ) : null}
           </span>
           {failed && message ? (
-            <span className="mt-1 flex items-start gap-1 text-[11px] text-[oklch(0.5_0.14_25)] dark:text-[oklch(0.8_0.09_25)]">
+            <span className="mt-1 flex items-start gap-1 text-[11px] text-destructive">
               <AlertCircle className="mt-0.5 size-3 shrink-0" aria-hidden />
               <span className="min-w-0 break-all">{message}</span>
             </span>
