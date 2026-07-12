@@ -76,7 +76,10 @@ test("ノート編集: スラッシュコマンド・メタデータ・リロー
   await expect(page.getByTestId("slash-menu")).toBeVisible();
   await page.getByRole("menuitem", { name: /見出し 1/ }).click();
   await page.keyboard.type("アジェンダ");
-  await expect(editor.locator("h1", { hasText: "アジェンダ" })).toBeVisible();
+  // CI ランナー負荷下では TipTap+Yjs の反映が既定 5s を超える場合がある（#271 flake）。
+  await expect(editor.locator("h1", { hasText: "アジェンダ" })).toBeVisible({
+    timeout: 15_000,
+  });
 
   // 本文とチェックリスト。
   await page.keyboard.press("Enter");
@@ -86,15 +89,19 @@ test("ノート編集: スラッシュコマンド・メタデータ・リロー
   await page.keyboard.type("資料を用意する");
   await expect(
     editor.locator('ul[data-type="taskList"] li', { hasText: "資料を用意する" }),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 15_000 });
 
   // リロードしても内容が残る（Yjs update log からの復元）。
   await page.reload();
   await expect(page.getByTestId("note-sync-status")).toHaveText("同期済み", {
     timeout: 20_000,
   });
-  await expect(editorLocator(page).locator("h1", { hasText: "アジェンダ" })).toBeVisible();
-  await expect(page.getByTestId("note-title-input")).toHaveValue("週次ミーティング");
+  await expect(editorLocator(page).locator("h1", { hasText: "アジェンダ" })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByTestId("note-title-input")).toHaveValue("週次ミーティング", {
+    timeout: 15_000,
+  });
 });
 
 test("共同編集: 2 クライアントの収束とプレゼンス表示", async ({ page, browser }) => {
