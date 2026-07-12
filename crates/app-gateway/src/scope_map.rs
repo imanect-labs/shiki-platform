@@ -140,6 +140,13 @@ pub(crate) const GATEWAY_ROUTES: &[GatewayRoute] = &[
         path: "/gw/ai/agent/invoke",
         scope: RouteScope::Scoped(CapabilityScope::AgentInvoke),
     },
+    // --- B2 関数起動（Task 9.12・能力スコープ不要=関数自体がアプリのロジック。
+    //     関数内の能力呼び出しは exchange 後のトークンで二重ゲートを通る） ---
+    GatewayRoute {
+        method: "POST",
+        path: "/gw/apps/functions/{function}/invoke",
+        scope: RouteScope::Public,
+    },
 ];
 
 /// メソッド＋マッチ済みパステンプレートからスコープ要件を引く（未宣言は `None`＝fail-closed 拒否）。

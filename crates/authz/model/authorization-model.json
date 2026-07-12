@@ -484,6 +484,9 @@
               },
               {
                 "type": "workflow"
+              },
+              {
+                "type": "miniapp"
               }
             ]
           }

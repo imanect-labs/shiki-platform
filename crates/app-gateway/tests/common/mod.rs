@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use app_gateway::{
     AgentInvokeSpec, AgentPort, AiEvent, AiEventStream, AppInstallationStore, CapabilityDeps,
-    GatewayError, GatewayState, GatewayTokenConfig, KeyResolver, NotificationStore, RagHit,
-    RagPort,
+    FunctionInvokeSpec, FunctionPort, GatewayError, GatewayState, GatewayTokenConfig, KeyResolver,
+    NotificationStore, RagHit, RagPort,
 };
 use async_trait::async_trait;
 use authz::{
@@ -318,6 +318,25 @@ impl AgentPort for StubAgent {
     }
 }
 
+/// FunctionPort スタブ: 受け取った spec を echo する（起動経路の IT 用）。
+pub struct StubFunctions;
+
+#[async_trait]
+impl FunctionPort for StubFunctions {
+    async fn invoke(
+        &self,
+        _ctx: &AuthContext,
+        spec: FunctionInvokeSpec,
+    ) -> Result<serde_json::Value, GatewayError> {
+        Ok(serde_json::json!({
+            "function_stub": spec.function,
+            "payload": spec.payload,
+            "has_subject_token": !spec.subject_token.is_empty(),
+            "server_bundle": spec.server_bundle,
+        }))
+    }
+}
+
 /// 実 LlmGateway（Stub プロバイダ・実 PG 会計・有償単価つき論理モデル "stub-m"）。
 ///
 /// llm.invoke の予算/allowlist/会計を**実経路**で検証するために使う。
@@ -419,6 +438,7 @@ pub fn state_with(pool: PgPool, tenant: &str, authz: Arc<dyn AuthzClient>) -> Ga
             llm: Some(stub_llm(pool)),
             agent: Arc::new(StubAgent),
             ai_daily_cap_usd_micros: 5_000_000,
+            functions: Arc::new(StubFunctions),
         },
     }
 }

@@ -4942,7 +4942,9 @@ name = "shiki-app-platform"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "axum",
  "chrono",
+ "cron",
  "ed25519-dalek",
  "hex",
  "reqwest 0.12.28",
@@ -4956,11 +4958,14 @@ dependencies = [
  "shiki-authz",
  "shiki-data",
  "shiki-gui",
+ "shiki-script-runtime",
+ "shiki-secrets",
  "shiki-storage",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
  "utoipa",
  "uuid",
 ]

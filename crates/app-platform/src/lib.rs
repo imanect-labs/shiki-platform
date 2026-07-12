@@ -6,6 +6,8 @@
 //! [`agent_core::ToolName`]）へ照合し、実在しない権限名を拒否する（ハルシネーション境界）。
 
 mod bundle;
+mod egress_guard;
+mod functions;
 mod install;
 mod install_ops;
 mod manifest;
@@ -16,7 +18,11 @@ mod trusted_key;
 mod validate;
 
 pub use bundle::{BundleStore, MAX_BUNDLE_BYTES};
+pub use functions::{
+    egress_allowed, FunctionActor, FunctionInvocation, FunctionOutcome, FunctionRunner,
+};
 pub use install::{InstallRequest, InstallService, Installed};
+pub use install_ops::next_cron_run_after;
 pub use manifest::{
     Budget, CronEntry, FrontendBundle, ManifestTable, MiniAppManifest, ServerSpec, TrustTier,
 };

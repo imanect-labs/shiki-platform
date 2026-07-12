@@ -433,3 +433,26 @@ impl HostState {
         self.validator.peek_next_seq()
     }
 }
+
+#[cfg(test)]
+impl HostState {
+    /// テスト専用: WASI スタブ / `terminated` エンベロープ経路を Store 越しに直接駆動するための
+    /// 最小状態を作る（`host_fn` は WASI テストでは呼ばれない）。
+    pub(crate) fn new_for_test(host_fn: HostFn) -> Self {
+        HostState {
+            validator: FrameValidator::new("test-exec", 1000),
+            logs: Vec::new(),
+            frame_violation: None,
+            limiter: MemLimiter {
+                max_bytes: 128 * 1024 * 1024,
+            },
+            host_fn,
+            rng: 0x1234_5678_9abc_def0,
+            clock: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "engine_tests.rs"]
+mod tests;

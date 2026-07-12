@@ -17,6 +17,8 @@ shiki-data.workspace = true
 shiki-agent-core.workspace = true
 shiki-gui.workspace = true
 shiki-app-gateway.workspace = true
+shiki-script-runtime.workspace = true
+shiki-secrets.workspace = true
 
 sqlx.workspace = true
 serde.workspace = true
@@ -24,6 +26,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 tracing.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+url.workspace = true
+cron.workspace = true
 sha2.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true
@@ -32,12 +39,11 @@ uuid = { workspace = true, features = ["v4"] }
 utoipa.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 tokio.workspace = true
-reqwest.workspace = true
-async-trait.workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-artifact", "shiki-storage", "shiki-data", "shiki-agent-core", "shiki-gui", "shiki-app-gateway"]
+ignored = ["shiki-authz", "shiki-artifact", "shiki-storage", "shiki-data", "shiki-agent-core", "shiki-gui", "shiki-app-gateway", "shiki-script-runtime", "shiki-secrets"]
 
 [lints]
 workspace = true

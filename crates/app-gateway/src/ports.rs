@@ -94,6 +94,46 @@ impl AgentPort for NoAgent {
     }
 }
 
+/// B2 関数起動の入力（二重ゲート通過済み・ユーザー起点）。
+#[derive(Debug, Clone)]
+pub struct FunctionInvokeSpec {
+    pub app_id: uuid::Uuid,
+    pub function: String,
+    pub payload: serde_json::Value,
+    /// 呼出ユーザーの gateway トークン（RFC 8693 exchange の subject・ゲストへは渡らない）。
+    pub subject_token: String,
+    /// インストール時ピン（server_bundle sha / ServerSpec JSON / B2 client id）。
+    pub server_bundle: Option<String>,
+    pub server_spec: Option<serde_json::Value>,
+    pub client_id_b2: Option<String>,
+}
+
+/// B2 関数実行の port（実装は api 配線＝app-platform FunctionRunner＋token-exchange）。
+#[async_trait]
+pub trait FunctionPort: Send + Sync {
+    async fn invoke(
+        &self,
+        ctx: &AuthContext,
+        spec: FunctionInvokeSpec,
+    ) -> Result<serde_json::Value, GatewayError>;
+}
+
+/// B2 実行未構成時のフォールバック（502）。
+pub struct NoFunctions;
+
+#[async_trait]
+impl FunctionPort for NoFunctions {
+    async fn invoke(
+        &self,
+        _ctx: &AuthContext,
+        _spec: FunctionInvokeSpec,
+    ) -> Result<serde_json::Value, GatewayError> {
+        Err(GatewayError::Upstream(
+            "B2 関数実行がこの環境では構成されていません".into(),
+        ))
+    }
+}
+
 /// RAG 未構成時のフォールバック（rag.query は 502 を返す）。
 pub struct NoRag;
 

@@ -59,6 +59,7 @@ axum-extra = { version = "0.10", features = ["cookie"] }
 rand = "0.8"
 sha2 = "0.10"
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "rand_core"] }
+cron = "0.15"
 base64 = "0.22"
 # cookie crate(axum-extra 経由)と同じ time 0.3 を使い Max-Age を組み立てる。
 time = "0.3"

@@ -62,6 +62,10 @@ pub struct InstallService {
     pub(crate) audit: AuditRecorder,
     /// B1 public client の redirect URI（ホスト支援 PKCE のシェル callback・PR10 が消費）。
     pub(crate) b1_redirect_uris: Vec<String>,
+    /// B2 confidential secret の保管先（宛先束縛・未配線は保管スキップ＝トリガ無効）。
+    pub(crate) secrets: Option<Arc<secrets::SecretStore>>,
+    /// secret の宛先束縛に使う token endpoint ホスト。
+    pub(crate) token_host: Option<String>,
 }
 
 impl InstallService {
@@ -87,7 +91,21 @@ impl InstallService {
             oauth,
             audit,
             b1_redirect_uris,
+            secrets: None,
+            token_host: None,
         }
+    }
+
+    /// B2 confidential secret の保管先を配線する（Task 9.12・宛先束縛=token endpoint）。
+    #[must_use]
+    pub fn with_secrets(
+        mut self,
+        secrets: Option<Arc<secrets::SecretStore>>,
+        token_host: Option<String>,
+    ) -> Self {
+        self.secrets = secrets;
+        self.token_host = token_host;
+        self
     }
 
     pub fn trusted_keys(&self) -> &TrustedKeyStore {
@@ -171,6 +189,14 @@ impl InstallService {
                         agent_tools: manifest.tools.clone(),
                     },
                     frontend_bundle: manifest.frontend.as_ref().map(|f| f.sha256.as_str()),
+                    server_bundle: manifest
+                        .server
+                        .as_ref()
+                        .and_then(|s| s.code_sha256.as_deref()),
+                    server_spec: manifest
+                        .server
+                        .as_ref()
+                        .and_then(|s| serde_json::to_value(s).ok()),
                 },
             )
             .await
@@ -184,6 +210,19 @@ impl InstallService {
                 return Err(e);
             }
         };
+
+        // B2: secret 保管（宛先束縛）＋ event/cron トリガの実体化（Task 9.12）。
+        if let Some(secret) = secret_b2.as_deref() {
+            self.store_b2_secret(ctx, app_id, secret).await;
+        }
+        if let Some(spec) = &manifest.server {
+            if let Err(e) = self.provision_triggers(ctx, app_id, spec).await {
+                self.compensate_tables(ctx, &created, trace_id).await;
+                self.disable_clients_best_effort(client_b1.as_deref(), client_b2.as_deref())
+                    .await;
+                return Err(e);
+            }
+        }
 
         // ⑦ 監査＋outbox（app.installed・B2 トリガ/UI 更新の種）。
         self.record_installed_event(ctx, app_id, &manifest, &created, trace_id)
