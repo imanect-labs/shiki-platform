@@ -33,15 +33,24 @@ import {
 import { ToolbarButton, ToolbarSeparator } from "@/components/ui/floating-toolbar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
-/// editor の transaction 毎に再描画し、isActive/can の状態をボタンへ反映する。
+/// 選択/内容の変化時に再描画し、isActive/can の状態をボタンへ反映する。
+/// ⚠️ "transaction" は BubbleMenu のプラグイン登録などでも発火し、force 再描画 →
+/// 再登録 → transaction… の無限ループになる。docChanged/selectionSet に限定される
+/// "update"/"selectionUpdate"（＋focus/blur）だけを購読してループを断つ。
 function useEditorTick(editor: Editor | null): void {
   const [, force] = React.useReducer((x: number) => x + 1, 0);
   React.useEffect(() => {
     if (!editor) return;
     const on = () => force();
-    editor.on("transaction", on);
+    editor.on("selectionUpdate", on);
+    editor.on("update", on);
+    editor.on("focus", on);
+    editor.on("blur", on);
     return () => {
-      editor.off("transaction", on);
+      editor.off("selectionUpdate", on);
+      editor.off("update", on);
+      editor.off("focus", on);
+      editor.off("blur", on);
     };
   }, [editor]);
 }
