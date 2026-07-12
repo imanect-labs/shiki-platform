@@ -31,6 +31,11 @@ env:
   # （CARGO_NET_RETRY では救えない）。HTTP/1.1 に固定する定番回避策。ダウンロードは
   # rust-cache が効くため直列化の影響は小さい。
   CARGO_HTTP_MULTIPLEXING: "false"
+  # CI 高速化: デバッグ情報を行テーブルのみに削る（panic の行番号は保つ）。フル debuginfo
+  # の生成・リンクは debug/test/coverage ビルドの大きなコストで、CI では不要。
+  CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+  # 増分コンパイルは CI（毎回クリーン相当・rust-cache 復元）では利得がなくオーバーヘッド。
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   rust:
@@ -50,10 +55,14 @@ jobs:
           toolchain: "1.96.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all
-      - run: cargo build --all
+      # nextest はテストバイナリを跨いで並列実行し cargo test より速い（本ジョブは compose
+      # 非依存＝env-gate の IT はスキップされ実質ユニットのみ・DB 競合なし）。doctest は
+      # nextest 非対応だが coverage ジョブの `cargo llvm-cov --all` 側で実行される。
+      # clippy --all-targets が全ターゲットの型検査を兼ねるため `cargo build --all` は廃止。
+      - run: cargo nextest run --workspace --all-features
 
   # shiki-server の release バイナリを 1 回だけビルドして compose ジョブ（smoke / web-e2e）へ
   # artifact 共有する。以前は各 compose ジョブが Docker 内で cargo フルビルドしており、
@@ -78,7 +87,12 @@ jobs:
         with:
           # release プロファイル専用キャッシュ（debug 系ジョブと混ぜて肥大化させない）。
           shared-key: release-server
+      # CI 用に release ビルドを高速化する（compose smoke / web-e2e 用バイナリ・実行時の
+      # 微差は許容）。codegen-units を上げて並列コード生成・opt-level=2 でコンパイル短縮。
       - run: cargo build --release --bin shiki-server
+        env:
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: "2"
       - uses: actions/upload-artifact@v4
         with:
           name: shiki-server-bin
@@ -242,6 +256,10 @@ jobs:
           STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
           STORAGE_TEST_S3_ENDPOINT: http://localhost:9000
           RAG_TEST_QDRANT_URL: http://localhost:6333
+        # DB 系 IT（chat worker / rag 等）は outbox・lease・OpenFGA tuple を共有し、nextest の
+        # バイナリ跨ぎ並列では競合して壊れる（autonomous_it/emit_workflow_it 等）。coverage は
+        # cargo test（バイナリ逐次）のまま安全側に保つ。速度は debuginfo 削減（行テーブルのみ）で
+        # 計装ビルドを短縮して稼ぐ。テスト実行並列化は test-groups で IT を直列化する別 PR で検討。
         run: cargo llvm-cov --all --no-report
       - name: coverage report (lcov + summary + job summary)
         run: |
