@@ -31,6 +31,11 @@ env:
   # （CARGO_NET_RETRY では救えない）。HTTP/1.1 に固定する定番回避策。ダウンロードは
   # rust-cache が効くため直列化の影響は小さい。
   CARGO_HTTP_MULTIPLEXING: "false"
+  # CI 高速化: デバッグ情報を行テーブルのみに削る（panic の行番号は保つ）。フル debuginfo
+  # の生成・リンクは debug/test/coverage ビルドの大きなコストで、CI では不要。
+  CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+  # 増分コンパイルは CI（毎回クリーン相当・rust-cache 復元）では利得がなくオーバーヘッド。
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   rust:
@@ -50,10 +55,14 @@ jobs:
           toolchain: "1.96.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all
-      - run: cargo build --all
+      # nextest はテストバイナリを跨いで並列実行し cargo test より速い（本ジョブは compose
+      # 非依存＝env-gate の IT はスキップされ実質ユニットのみ・DB 競合なし）。doctest は
+      # nextest 非対応だが coverage ジョブの `cargo llvm-cov --all` 側で実行される。
+      # clippy --all-targets が全ターゲットの型検査を兼ねるため `cargo build --all` は廃止。
+      - run: cargo nextest run --workspace --all-features
 
   # shiki-server の release バイナリを 1 回だけビルドして compose ジョブ（smoke / web-e2e）へ
   # artifact 共有する。以前は各 compose ジョブが Docker 内で cargo フルビルドしており、
@@ -78,7 +87,12 @@ jobs:
         with:
           # release プロファイル専用キャッシュ（debug 系ジョブと混ぜて肥大化させない）。
           shared-key: release-server
+      # CI 用に release ビルドを高速化する（compose smoke / web-e2e 用バイナリ・実行時の
+      # 微差は許容）。codegen-units を上げて並列コード生成・opt-level=2 でコンパイル短縮。
       - run: cargo build --release --bin shiki-server
+        env:
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: "2"
       - uses: actions/upload-artifact@v4
         with:
           name: shiki-server-bin
@@ -206,6 +220,7 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
       # live 依存（OpenFGA / Redis）を起動し、結合テストのカバレッジも算入する。
       # これにより fga_http / client（OpenFGA 経路）と redis_store（Redis 経路）も
       # 単体テストでは届かない実経路をカバーした上で全体カバレッジを評価する。
@@ -242,7 +257,10 @@ jobs:
           STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
           STORAGE_TEST_S3_ENDPOINT: http://localhost:9000
           RAG_TEST_QDRANT_URL: http://localhost:6333
-        run: cargo llvm-cov --all --no-report
+        # nextest でテストを並列化（+.config/nextest.toml の retries で DB IT flake を吸収）。
+        # doctest は当リポジトリに実質存在せず（実行可能 fence ≒0）nextest 非対応でも影響なし。
+        # --no-fail-fast: 失敗があっても全テストを走らせ profdata を完全に集める（ゲート計測用）。
+        run: cargo llvm-cov nextest --workspace --no-report --no-fail-fast
       - name: coverage report (lcov + summary + job summary)
         run: |
           cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
