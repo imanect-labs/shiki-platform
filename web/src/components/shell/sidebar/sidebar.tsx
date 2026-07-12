@@ -92,13 +92,18 @@ export function SidebarContent({
         ) : null}
       </div>
 
-      {/* 上部固定ナビ（検索＋新しいチャット＋ドライブ） */}
+      {/* 上部固定ナビ（新しいチャット＋検索＋ドライブ） */}
       <div className="shrink-0">
         <SidebarNav collapsed={collapsed} onNavigate={onNavigate} />
       </div>
 
+      {/* ナビと履歴の間を荒い破線で区切る（和のシグネチャ・rule-soft で控えめに）。 */}
+      <div className="shrink-0 px-2.5 pt-3" aria-hidden>
+        <div className="rule-soft shiki-dash-x h-1.5" />
+      </div>
+
       {/* 中段: チャット履歴 */}
-      {!collapsed ? <SectionLabel>チャット履歴</SectionLabel> : <div className="h-2" />}
+      {!collapsed ? <SectionLabel>チャット履歴</SectionLabel> : <div className="h-1" />}
       <SidebarChatHistory collapsed={collapsed} />
 
       {/* 最下部: アカウント（上端は荒い破線で区切る） */}

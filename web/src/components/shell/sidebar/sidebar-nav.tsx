@@ -5,6 +5,7 @@ import { PenSquare, Search } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { APPS_NAV, SKILLS_NAV, WORKFLOWS_NAV, isActivePath } from "@/lib/nav-config";
+import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NavItem } from "./nav-item";
 import { SidebarDriveAccordion } from "./sidebar-drive-accordion";
@@ -30,7 +31,8 @@ export function SidebarNav({
 
   return (
     <div className="flex flex-col gap-2 px-2.5">
-      {/* 主役 CTA: 新しいチャット（プライマリ塗り・押下フィードバック）。 */}
+      {/* 主役 CTA: 新しいチャット（白の浮き上がるボタン＋季節色のペン・押下フィードバック）。
+          重い navy 塗りは避け、カード面＋境界＋淡い影で「押せる主役」を軽やかに示す。 */}
       {collapsed ? (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -38,9 +40,13 @@ export function SidebarNav({
               type="button"
               onClick={startNewChat}
               aria-label="新しいチャット"
-              className="mx-auto flex size-9 items-center justify-center rounded-[10px] bg-primary text-primary-foreground shadow-xs outline-none transition-transform duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-95"
+              className="mx-auto flex size-9 items-center justify-center rounded-[10px] border border-sidebar-border bg-card text-sidebar-foreground shadow-sm outline-none transition-[transform,box-shadow] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:shadow-md focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-95"
             >
-              <PenSquare className="size-[18px]" aria-hidden />
+              <PenSquare
+                className="size-[18px]"
+                style={{ color: seasonVar(currentSeasonIndex()) }}
+                aria-hidden
+              />
             </button>
           </TooltipTrigger>
           <TooltipContent side="right">新しいチャット</TooltipContent>
@@ -49,9 +55,13 @@ export function SidebarNav({
         <button
           type="button"
           onClick={startNewChat}
-          className="flex h-9 w-full items-center gap-2 rounded-[10px] bg-primary px-3 text-[13.5px] font-medium text-primary-foreground shadow-xs outline-none transition-[transform,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-[0.98]"
+          className="flex h-9 w-full items-center gap-2 rounded-[10px] border border-sidebar-border bg-card px-3 text-[13.5px] font-medium text-sidebar-foreground shadow-sm outline-none transition-[transform,background-color,box-shadow] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-sidebar-accent/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-[0.98]"
         >
-          <PenSquare className="size-[18px] shrink-0" aria-hidden />
+          <PenSquare
+            className="size-[18px] shrink-0"
+            style={{ color: seasonVar(currentSeasonIndex()) }}
+            aria-hidden
+          />
           新しいチャット
         </button>
       )}
