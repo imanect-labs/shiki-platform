@@ -70,23 +70,28 @@ test("ノート編集: スラッシュコマンド・メタデータ・リロー
   await expect(page.getByText("議事録", { exact: true })).toBeVisible();
 
   // スラッシュコマンドで見出しを挿入。
+  // #271: メニュー項目（contenteditable 外の button）click でエディタが blur し、
+  // コマンドの .focus() で戻る前に page.keyboard.type すると入力が別要素へ流れて
+  // h1 が生成されない CI flake があった。(1) メニューが閉じる＝コマンド適用完了を待ち、
+  // (2) エディタ locator を対象にフォーカスしてから打つ pressSequentially を使う。
   const editor = editorLocator(page);
   await editor.click();
-  await page.keyboard.type("/");
+  await editor.pressSequentially("/");
   await expect(page.getByTestId("slash-menu")).toBeVisible();
   await page.getByRole("menuitem", { name: /見出し 1/ }).click();
-  await page.keyboard.type("アジェンダ");
-  // CI ランナー負荷下では TipTap+Yjs の反映が既定 5s を超える場合がある（#271 flake）。
+  await expect(page.getByTestId("slash-menu")).toHaveCount(0);
+  await editor.pressSequentially("アジェンダ");
   await expect(editor.locator("h1", { hasText: "アジェンダ" })).toBeVisible({
     timeout: 15_000,
   });
 
   // 本文とチェックリスト。
-  await page.keyboard.press("Enter");
-  await page.keyboard.type("/チェック");
+  await editor.press("Enter");
+  await editor.pressSequentially("/チェック");
   await expect(page.getByTestId("slash-menu")).toBeVisible();
   await page.getByRole("menuitem", { name: "チェックリスト" }).click();
-  await page.keyboard.type("資料を用意する");
+  await expect(page.getByTestId("slash-menu")).toHaveCount(0);
+  await editor.pressSequentially("資料を用意する");
   await expect(
     editor.locator('ul[data-type="taskList"] li', { hasText: "資料を用意する" }),
   ).toBeVisible({ timeout: 15_000 });
