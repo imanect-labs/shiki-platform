@@ -3,12 +3,14 @@
 import { useRouter, usePathname } from "next/navigation";
 import { PenSquare, Search } from "lucide-react";
 
+import { cn } from "@/lib/utils";
 import { APPS_NAV, SKILLS_NAV, WORKFLOWS_NAV, isActivePath } from "@/lib/nav-config";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NavItem } from "./nav-item";
 import { SidebarDriveAccordion } from "./sidebar-drive-accordion";
 import { useSidebar } from "./sidebar-context";
 
-/// サイドバー上部: 検索（/ ヒント）＋ 新しいチャット ＋ ドライブ（アコーディオン）。
+/// サイドバー上部: 新規チャット（主役 CTA）＋ 検索（検索ボックス風）＋ ナビ（ドライブ/スキル/アプリ/ワークフロー）。
 /// 検索ダイアログ本体はシェルで単一管理し、ここは開くトリガーのみ（多重マウント回避）。
 export function SidebarNav({
   collapsed,
@@ -27,31 +29,68 @@ export function SidebarNav({
   };
 
   return (
-    <div className="px-2.5">
-      {/* 一次ナビ（検索も他の項目と同じ行スタイル） */}
-      <nav aria-label="メインナビゲーション" className="flex flex-col gap-0.5">
-        <NavItem
-          icon={Search}
-          label="検索"
-          collapsed={collapsed}
-          onClick={() => setSearchOpen(true)}
-          trailing={
-            !collapsed ? (
-              <kbd className="rounded border border-sidebar-border bg-sidebar-accent/50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-sidebar-foreground/45">
-                ⌘K
-              </kbd>
-            ) : undefined
-          }
-        />
-        <NavItem
-          icon={PenSquare}
-          label="新しいチャット"
-          collapsed={collapsed}
-          active={pathname === "/"}
+    <div className="flex flex-col gap-2 px-2.5">
+      {/* 主役 CTA: 新しいチャット（プライマリ塗り・押下フィードバック）。 */}
+      {collapsed ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={startNewChat}
+              aria-label="新しいチャット"
+              className="mx-auto flex size-9 items-center justify-center rounded-[10px] bg-primary text-primary-foreground shadow-xs outline-none transition-transform duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-95"
+            >
+              <PenSquare className="size-[18px]" aria-hidden />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">新しいチャット</TooltipContent>
+        </Tooltip>
+      ) : (
+        <button
+          type="button"
           onClick={startNewChat}
-        />
+          className="flex h-9 w-full items-center gap-2 rounded-[10px] bg-primary px-3 text-[13.5px] font-medium text-primary-foreground shadow-xs outline-none transition-[transform,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-[0.98]"
+        >
+          <PenSquare className="size-[18px] shrink-0" aria-hidden />
+          新しいチャット
+        </button>
+      )}
+
+      {/* 検索: 検索ボックス風のトリガ（実体はシェルのパレット）。 */}
+      {collapsed ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              aria-label="検索"
+              className="mx-auto flex size-9 items-center justify-center rounded-[10px] text-sidebar-foreground/60 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+            >
+              <Search className="size-[18px]" aria-hidden />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">検索</TooltipContent>
+        </Tooltip>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setSearchOpen(true)}
+          className="group flex h-9 w-full items-center gap-2.5 rounded-[10px] border border-sidebar-border bg-sidebar-accent/40 px-2.5 text-left outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+        >
+          <Search className="size-4 shrink-0 text-sidebar-foreground/45" aria-hidden />
+          <span className="flex-1 text-[13px] text-sidebar-foreground/45">検索</span>
+          <kbd className="rounded border border-sidebar-border bg-sidebar px-1.5 py-0.5 text-[10px] font-medium leading-none text-sidebar-foreground/45">
+            ⌘K
+          </kbd>
+        </button>
+      )}
+
+      {/* ナビ（検索/新規チャットとは間を空けて視覚分離）。 */}
+      <nav
+        aria-label="メインナビゲーション"
+        className={cn("flex flex-col gap-0.5", collapsed ? "pt-1" : "pt-1.5")}
+      >
         <SidebarDriveAccordion collapsed={collapsed} onNavigate={onNavigate} />
-        {/* スキル / ミニアプリ（Phase 6） */}
         <NavItem
           icon={SKILLS_NAV.icon}
           label={SKILLS_NAV.label}
@@ -72,7 +111,6 @@ export function SidebarNav({
             onNavigate?.();
           }}
         />
-        {/* ワークフロー（Phase 10） */}
         <NavItem
           icon={WORKFLOWS_NAV.icon}
           label={WORKFLOWS_NAV.label}
