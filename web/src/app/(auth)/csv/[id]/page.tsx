@@ -6,12 +6,12 @@
 /// - 編集は明示保存（Cmd/Ctrl+S）で rev 付きパッチ→楽観ロック（409 は衝突ダイアログ）。
 /// - SQL コンソール（RO・隔離 DuckDB 経由）を併設し、結果を「新規 CSV」として保存できる。
 
-import { ArrowLeft, Eye, Loader2, Save, Table2, Terminal } from "lucide-react";
-import Link from "next/link";
+import { Loader2 } from "lucide-react";
 import { useParams } from "next/navigation";
 import * as React from "react";
 
 import { CsvGrid, type CsvGridHandle } from "@/components/csv/csv-grid";
+import { CsvHeaderSlot } from "@/components/csv/csv-header-slot";
 import { SqlConsole } from "@/components/csv/sql-console";
 import { Button } from "@/components/ui/button";
 import {
@@ -126,64 +126,18 @@ export default function CsvPage() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex items-center gap-3 border-b px-4 py-2">
-        <Link
-          href="/drive"
-          className="flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          aria-label="ドライブへ戻る"
-        >
-          <ArrowLeft className="size-4" />
-        </Link>
-        <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
-          {loaded.access.name}
-        </span>
-        <span className="text-xs text-muted-foreground tabular-nums">
-          {loaded.schema.total_rows ?? 0} 行 × {loaded.schema.columns.length} 列
-        </span>
-        {!editable && (
-          <span
-            className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
-            data-testid="csv-readonly-badge"
-          >
-            <Eye className="size-3.5" aria-hidden />
-            閲覧のみ
-          </span>
-        )}
-        {/* タブ切替（グリッド / SQL） */}
-        <div className="flex items-center rounded-lg border p-0.5">
-          <button
-            type="button"
-            onClick={() => setTab("grid")}
-            data-testid="csv-tab-grid"
-            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium ${tab === "grid" ? "bg-accent text-accent-foreground" : "text-muted-foreground"}`}
-          >
-            <Table2 className="size-3.5" aria-hidden />
-            グリッド
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("sql")}
-            data-testid="csv-tab-sql"
-            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium ${tab === "sql" ? "bg-accent text-accent-foreground" : "text-muted-foreground"}`}
-          >
-            <Terminal className="size-3.5" aria-hidden />
-            SQL
-          </button>
-        </div>
-        {editable && (
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => void save()}
-            disabled={!dirty || saving}
-            data-testid="csv-save"
-          >
-            {saving ? <Loader2 className="mr-1 size-4 animate-spin" /> : <Save className="mr-1 size-4" />}
-            保存{dirty ? "*" : ""}
-          </Button>
-        )}
-      </header>
+    <div className="flex h-full min-h-0 flex-col p-3">
+      <CsvHeaderSlot
+        name={loaded.access.name}
+        totalRows={loaded.schema.total_rows ?? 0}
+        cols={loaded.schema.columns.length}
+        editable={!!editable}
+        tab={tab}
+        onTabChange={setTab}
+        dirty={dirty}
+        saving={saving}
+        onSave={save}
+      />
 
       <div className="min-h-0 flex-1">
         {tab === "grid" ? (

@@ -14,10 +14,58 @@ import {
   type GridCell,
   type GridColumn,
   type Item,
+  type Theme,
 } from "@glideapps/glide-data-grid";
+import { useTheme } from "next-themes";
 import * as React from "react";
 
 import { getRows, type PatchOp, type TableResponse } from "@/lib/tabular-api";
+
+/// glide-data-grid の配色をアプリのセマンティックトークンへ揃える（ダークモード対応）。
+/// oklch トークンを getComputedStyle で読み、テーマ切替（next-themes）で再計算する。
+/// 既定（テーマ未指定）だと glide はライト固定パレットで、ダークで破綻するため必須。
+function useGlideTheme(): Partial<Theme> {
+  const { resolvedTheme } = useTheme();
+  const [theme, setTheme] = React.useState<Partial<Theme>>({});
+
+  React.useEffect(() => {
+    // クラス反映後に読むため 1 フレーム遅らせる。
+    const id = requestAnimationFrame(() => {
+      const cs = getComputedStyle(document.documentElement);
+      const v = (name: string) => cs.getPropertyValue(name).trim();
+      const mix = (name: string, pct: number) =>
+        `color-mix(in oklab, ${v(name)} ${pct}%, transparent)`;
+      setTheme({
+        accentColor: v("--primary"),
+        accentLight: mix("--primary", 14),
+        textDark: v("--foreground"),
+        textMedium: v("--muted-foreground"),
+        textLight: v("--muted-foreground"),
+        textBubble: v("--foreground"),
+        bgIconHeader: v("--muted-foreground"),
+        fgIconHeader: v("--background"),
+        textHeader: v("--muted-foreground"),
+        textHeaderSelected: v("--foreground"),
+        bgCell: v("--card"),
+        bgCellMedium: v("--muted"),
+        bgHeader: v("--muted"),
+        bgHeaderHasFocus: v("--accent"),
+        bgHeaderHovered: v("--accent"),
+        bgBubble: v("--popover"),
+        bgSearchResult: mix("--primary", 16),
+        borderColor: v("--border"),
+        drilldownBorder: v("--border"),
+        linkColor: v("--primary"),
+        fontFamily: v("--font-sans") || "ui-sans-serif, system-ui, sans-serif",
+        baseFontStyle: "13px",
+        headerFontStyle: "600 12px",
+      });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [resolvedTheme]);
+
+  return theme;
+}
 
 const PAGE_SIZE = 1_000;
 
@@ -65,6 +113,7 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
   { nodeId, columns, totalRows, editable, onDirtyChange },
   ref,
 ) {
+  const glideTheme = useGlideTheme();
   const cache = React.useRef<PageCache>(new Map());
   const fetching = React.useRef<Set<number>>(new Set());
   // セル編集の上書き（"row,col" → 新値）。保存でパッチへ変換。
@@ -123,6 +172,11 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
         allowOverlay: editable,
         readonly: !editable,
         contentAlign: numericCols.has(col) ? "right" : undefined,
+        // 未保存の編集セルは薄い primary で塗り、保存前に「何が変わったか」を可視化する。
+        themeOverride:
+          edited !== undefined
+            ? { bgCell: "color-mix(in oklab, var(--primary) 12%, var(--card))" }
+            : undefined,
       };
     },
     // version をデップスに入れて再取得後に再評価させる。
@@ -162,8 +216,12 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
   }));
 
   return (
-    <div className="csv-grid h-full w-full" data-testid="csv-grid">
+    <div
+      className="csv-grid h-full w-full overflow-hidden rounded-lg border border-border shadow-xs"
+      data-testid="csv-grid"
+    >
       <DataEditor
+        theme={glideTheme}
         columns={gridColumns}
         rows={totalRows}
         getCellContent={getCellContent}
