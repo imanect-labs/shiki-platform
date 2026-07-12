@@ -252,7 +252,7 @@ impl WaitParams {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::unnecessary_wraps)]
 
     use super::{WaitKind, WaitParams};
     use crate::ir::expr::ValueExpr;
