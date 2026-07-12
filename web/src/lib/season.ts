@@ -1,3 +1,5 @@
+import type * as React from "react";
+
 /// 四季(shiki)アクセントの共有ヘルパ。色そのものは globals.css の semantic token
 /// （--season-spring/summer/autumn/winter）が正本で、ここは「巡回（春→夏→秋→冬）」の
 /// 規則だけを一元化する。各コンポーネントは seasonVar(i) を CSS 変数として受け取り、
@@ -19,4 +21,12 @@ export function currentSeasonIndex(): number {
   if (m >= 6 && m <= 8) return 1;
   if (m >= 9 && m <= 11) return 2;
   return 3;
+}
+
+/// 季節アクセントを CSS 変数 `--season` として要素に注入する style を返す。
+/// これで className 側は `hover:bg-[var(--season)]/[0.08]` `group-hover:text-[var(--season)]`
+/// のように季節色を参照できる（shortcut-grid のホバー点灯レシピを全所で再利用するため）。
+/// 例: <div style={seasonAccentStyle(i)} className="hover:text-[var(--season)]">
+export function seasonAccentStyle(i: number): React.CSSProperties {
+  return { ["--season" as string]: seasonVar(i) } as React.CSSProperties;
 }
