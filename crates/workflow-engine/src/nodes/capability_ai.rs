@@ -260,3 +260,54 @@ fn attach_secret(attach: Option<&SecretAttach>, value: &str) -> (String, String)
         SecretAttachKind::Bearer => ("Authorization".to_string(), format!("Bearer {value}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{attach_secret, parse_body};
+    use crate::ir::params::{SecretAttach, SecretAttachKind};
+    use serde_json::json;
+
+    #[test]
+    fn parse_body_json_text_and_cap() {
+        // 有効 JSON はそのまま Value に。
+        assert_eq!(parse_body(br#"{"a":1}"#), json!({ "a": 1 }));
+        // 非 JSON はテキスト（String）へフォールバック。
+        assert_eq!(parse_body(b"not json"), json!("not json"));
+        // 1MB 超は先頭 1MB だけ見る（String 化される非 JSON で長さを確認）。
+        let big = vec![b'x'; 1024 * 1024 + 500];
+        let v = parse_body(&big);
+        assert_eq!(v.as_str().map(str::len), Some(1024 * 1024), "CAP で切り詰め");
+    }
+
+    #[test]
+    fn attach_secret_bearer_default_and_explicit() {
+        // None（既定）と明示 Bearer はどちらも Authorization: Bearer。
+        assert_eq!(
+            attach_secret(None, "tok"),
+            ("Authorization".to_string(), "Bearer tok".to_string())
+        );
+        let bearer = SecretAttach { kind: SecretAttachKind::Bearer, header: None };
+        assert_eq!(
+            attach_secret(Some(&bearer), "tok"),
+            ("Authorization".to_string(), "Bearer tok".to_string())
+        );
+    }
+
+    #[test]
+    fn attach_secret_header_named_and_defaulted() {
+        let named = SecretAttach {
+            kind: SecretAttachKind::Header,
+            header: Some("X-Api-Key".to_string()),
+        };
+        assert_eq!(
+            attach_secret(Some(&named), "tok"),
+            ("X-Api-Key".to_string(), "tok".to_string())
+        );
+        // header 省略時は Authorization に生値（Bearer 前置なし）。
+        let unnamed = SecretAttach { kind: SecretAttachKind::Header, header: None };
+        assert_eq!(
+            attach_secret(Some(&unnamed), "tok"),
+            ("Authorization".to_string(), "tok".to_string())
+        );
+    }
+}

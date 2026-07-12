@@ -319,3 +319,40 @@ impl Tool for DocumentEditTool {
         Ok(outcome)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! collab error → モデル観測メッセージの写像（`denied_outcome`）を検証する。
+    use super::denied_outcome;
+    use collab::CollabError as CE;
+
+    #[test]
+    fn forbidden_family_maps_to_permission_message() {
+        for e in [
+            CE::Forbidden("x".into()),
+            CE::Authz(authz::AuthzError::InvalidModel("m".into())),
+            CE::Storage(storage::StorageError::Forbidden),
+        ] {
+            let o = denied_outcome(&e);
+            assert!(o.is_error);
+            assert!(o.content.contains("権限がありません"), "got: {}", o.content);
+        }
+    }
+
+    #[test]
+    fn not_found_family_maps_to_not_found_message() {
+        for e in [
+            CE::NotFound("x".into()),
+            CE::Storage(storage::StorageError::NotFound),
+        ] {
+            assert!(denied_outcome(&e).content.contains("見つかりません"));
+        }
+    }
+
+    #[test]
+    fn other_errors_fall_back_to_generic_message() {
+        let o = denied_outcome(&CE::InvalidUpdate("bad yjs".into()));
+        assert!(o.is_error);
+        assert_eq!(o.content, "ノート編集に失敗しました。");
+    }
+}

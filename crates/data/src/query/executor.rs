@@ -55,6 +55,16 @@ impl ReadPredicate {
     pub(crate) fn binds(&self) -> &[Bind] {
         &self.binds
     }
+
+    /// テスト専用: SQL 断片とバインドから直接組む（集計 SQL 組み立ての純関数検証用）。
+    #[cfg(test)]
+    pub(crate) fn for_test(sql: impl Into<String>, binds: Vec<Bind>) -> Self {
+        ReadPredicate {
+            sql: sql.into(),
+            binds,
+            shares_truncated: false,
+        }
+    }
 }
 
 /// レコード行を DTO へ変換する（宣言的クエリ層から使う）。
