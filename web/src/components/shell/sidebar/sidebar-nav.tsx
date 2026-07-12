@@ -37,7 +37,9 @@ export function SidebarNav({
           onClick={() => setSearchOpen(true)}
           trailing={
             !collapsed ? (
-              <kbd className="text-[11px] leading-none text-sidebar-foreground/40">/</kbd>
+              <kbd className="rounded border border-sidebar-border bg-sidebar-accent/50 px-1.5 py-0.5 text-[10px] font-medium leading-none text-sidebar-foreground/45">
+                ⌘K
+              </kbd>
             ) : undefined
           }
         />

@@ -158,7 +158,7 @@ const SlashMenu = React.forwardRef<MenuHandle, MenuProps>(function SlashMenu(
 
   if (items.length === 0) {
     return (
-      <div className="w-64 rounded-lg border bg-popover p-2 text-sm text-muted-foreground shadow-lg">
+      <div className="w-64 rounded-lg border bg-popover p-2 text-sm text-muted-foreground shadow-md">
         該当するコマンドがありません
       </div>
     );
@@ -167,7 +167,7 @@ const SlashMenu = React.forwardRef<MenuHandle, MenuProps>(function SlashMenu(
     <div
       role="menu"
       aria-label="ブロックを挿入"
-      className="max-h-80 w-72 overflow-y-auto rounded-lg border bg-popover p-1.5 shadow-lg"
+      className="scrollbar-subtle max-h-80 w-72 overflow-y-auto rounded-lg border bg-popover p-1.5 shadow-md animate-in fade-in-0 zoom-in-95 duration-[var(--duration-fast)]"
       data-testid="slash-menu"
     >
       {items.map((item, index) => {
@@ -183,7 +183,7 @@ const SlashMenu = React.forwardRef<MenuHandle, MenuProps>(function SlashMenu(
               index === selected ? "bg-accent text-accent-foreground" : "text-foreground"
             }`}
           >
-            <span className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-background">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border bg-background">
               <Icon className="size-4 text-muted-foreground" />
             </span>
             <span className="min-w-0">

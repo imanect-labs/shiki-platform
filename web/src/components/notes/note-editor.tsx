@@ -26,6 +26,7 @@ import type { CollabProvider } from "@/lib/collab";
 import { AiSuggestionMark } from "./ai-suggestion-mark";
 import { ShikiEmbed } from "./embed/shiki-embed-node";
 import { createSlashCommand, type SlashItem } from "./slash-command";
+import { NoteBubbleMenu, NoteToolbar } from "./note-toolbar";
 
 /// 参加者カーソルの配色（design token に寄せた識別しやすい 8 色）。
 export const PRESENCE_COLORS = [
@@ -124,6 +125,8 @@ export function NoteEditor({ provider, editable, user, extraSlashItems }: NoteEd
 
   return (
     <div className="note-editor-root min-h-[50vh]">
+      {editor && editable ? <NoteToolbar editor={editor} /> : null}
+      {editor && editable ? <NoteBubbleMenu editor={editor} /> : null}
       {editor && editable && <SuggestionReviewBar editor={editor} />}
       <EditorContent editor={editor} />
     </div>
