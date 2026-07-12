@@ -14,5 +14,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # build context はリポジトリルート。バイナリは CI が deploy/compose/prebuilt/ に配置する。
 COPY deploy/compose/prebuilt/shiki-server /usr/local/bin/shiki-server
 RUN chmod +x /usr/local/bin/shiki-server
+# CSV クエリの隔離 DuckDB ランナー（Task 11P.7）。既定 runner_path=`shiki-tabular-runner`
+# （PATH 解決）に一致させて /usr/local/bin へ焼く。これが無いと E2E で CSV グリッドが出ない。
+COPY deploy/compose/prebuilt/shiki-tabular-runner /usr/local/bin/shiki-tabular-runner
+RUN chmod +x /usr/local/bin/shiki-tabular-runner
 EXPOSE 8080
 ENTRYPOINT ["shiki-server"]
