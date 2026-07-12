@@ -144,6 +144,26 @@ pub async fn uninstall_app(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+/// アプリ利用量（capability＋llm・user×app 集計・Task 9.15）。
+#[utoipa::path(
+    get,
+    path = "/apps/{app_id}/usage",
+    params(("app_id" = Uuid, Path, description = "アプリ（mini_app_code artifact）ID")),
+    responses(
+        (status = 200, description = "利用量集計"),
+        (status = 403, description = "アーティファクト owner でない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn app_usage(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Path(app_id): Path<Uuid>,
+) -> Result<Json<app_platform::AppUsage>, ApiError> {
+    let usage = state.app_usage.app_usage(&ctx, app_id).await?;
+    Ok(Json(usage))
+}
+
 /// レジストリ一覧（インストール UI 用・publish 済みエントリ）。
 #[utoipa::path(
     get,
@@ -318,6 +338,7 @@ pub(crate) fn app_install_route_decls() -> Vec<crate::server::RouteDecl> {
             post(import_app)
         }),
         r("/apps/registry", &["GET"], Session, || get(list_registry)),
+        r("/apps/{app_id}/usage", &["GET"], Session, || get(app_usage)),
     ]
 }
 

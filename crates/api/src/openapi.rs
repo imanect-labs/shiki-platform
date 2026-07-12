@@ -137,6 +137,7 @@ use utoipa::{
         crate::routes::app_install::uninstall_app,
         crate::routes::app_install::import_app,
         crate::routes::app_install::list_registry,
+        crate::routes::app_install::app_usage,
         crate::routes::app_install::admin_add_trusted_key,
         crate::routes::app_install::admin_list_trusted_keys,
         crate::routes::app_install::admin_revoke_trusted_key,

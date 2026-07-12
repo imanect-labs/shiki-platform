@@ -409,6 +409,10 @@ fn build_app(
         Arc::clone(authz),
         storage::audit::AuditRecorder::new(pool.clone()),
     ));
+    let app_usage = Arc::new(app_platform::AppUsageStore::new(
+        pool.clone(),
+        Arc::clone(authz),
+    ));
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool.clone()),
@@ -436,6 +440,7 @@ fn build_app(
         mini_app_code: Arc::clone(&mini_app_code),
         installs,
         bundles,
+        app_usage,
         ui_specs: Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator)),
         ui_actions: Arc::new(gui::ActionDispatcher::new(
             storage::audit::AuditRecorder::new(pool.clone()),

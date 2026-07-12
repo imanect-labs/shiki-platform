@@ -15,6 +15,7 @@ mod registry;
 mod sign;
 mod store;
 mod trusted_key;
+mod usage;
 mod validate;
 
 pub use bundle::{BundleStore, MAX_BUNDLE_BYTES};
@@ -30,6 +31,7 @@ pub use registry::{NewRegistryEntry, Registry, RegistryEntry};
 pub use sign::{sign_manifest, verify_manifest_signature};
 pub use store::{manifest_digest, MiniAppCodeStore};
 pub use trusted_key::{TrustedKey, TrustedKeyStore};
+pub use usage::{AppUsage, AppUsageStore};
 pub use validate::validate_manifest;
 
 /// ミニアプリ基盤のエラー。

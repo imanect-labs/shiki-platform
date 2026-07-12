@@ -1,0 +1,21 @@
+{
+  "name": "@shiki/cli",
+  "version": "0.0.0",
+  "description": "shiki ミニアプリ CLI（init/dev/publish）",
+  "type": "module",
+  "bin": {
+    "shiki": "src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types src/*.test.ts"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "esbuild": "^0.24.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

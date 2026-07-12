@@ -99,6 +99,8 @@ async fn main() -> anyhow::Result<()> {
         authz.clone(),
         storage::audit::AuditRecorder::new(db.clone()),
     ));
+    // アプリ利用量集計（Task 9.15・capability＋llm）。
+    let app_usage = Arc::new(app_platform::AppUsageStore::new(db.clone(), authz.clone()));
     // generative UI / skill / ミニアプリ（Phase 6）: 検証は全経路が同一実装を共有する信頼境界。
     let gui_stores = wiring_gui::wire_gui(&db, &artifacts);
 
@@ -243,6 +245,7 @@ async fn main() -> anyhow::Result<()> {
         mini_app_code,
         installs,
         bundles,
+        app_usage,
         ui_specs: gui_stores.ui_specs,
         ui_actions,
         skills: gui_stores.skills,

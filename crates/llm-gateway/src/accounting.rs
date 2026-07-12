@@ -27,6 +27,16 @@ pub struct UsageRecord {
     pub app_id: Option<Uuid>,
 }
 
+/// アプリの LLM 利用量集計行（user×app×model）。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AppLlmUsage {
+    pub user_sub: String,
+    pub model: String,
+    pub calls: i64,
+    pub tokens: i64,
+    pub cost_usd_micros: i64,
+}
+
 /// 会計レコーダ（`llm_usage` への冪等追記）。
 #[derive(Clone)]
 pub struct UsageRecorder {
@@ -61,6 +71,27 @@ impl UsageRecorder {
         .execute(&self.db)
         .await?;
         Ok(())
+    }
+
+    /// アプリの LLM 利用量集計（user_sub 別・コスト/トークン・GET /apps/{id}/usage 用）。
+    pub async fn app_llm_usage(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+    ) -> Result<Vec<AppLlmUsage>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT COALESCE(user_sub, '') AS user_sub, model, \
+                    COUNT(*)::bigint AS calls, \
+                    COALESCE(SUM(prompt_tokens + completion_tokens), 0)::bigint AS tokens, \
+                    COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros \
+             FROM llm_usage \
+             WHERE tenant_id = $1 AND app_id = $2 \
+             GROUP BY user_sub, model ORDER BY cost_usd_micros DESC",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(app_id)
+        .fetch_all(&self.db)
+        .await
     }
 
     /// アプリの当日（サーバ日付・UTC）の合計コスト（マイクロ USD）を返す。

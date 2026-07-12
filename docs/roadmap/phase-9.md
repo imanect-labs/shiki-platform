@@ -1,5 +1,12 @@
 # Phase 9 — ミニアプリ／業務アプリ基盤
 
+> **ステータス（2026-07-11）: 実装完了（9.1〜9.15）。** 12 本の stacked PR で実装。
+> data 基盤/行 authz/クエリ・マスク・集計抑制/FSM ガード/マニフェスト＋レジストリ/公開 API ゲートウェイ
+> ＋OAuth2(PKCE)/token-exchange/能力アダプタ/ミニアプリ内 AI/同意インストール＋プロビジョン＋署名/
+> B1 ランタイム（opaque origin＋CSP＋ホスト支援 PKCE）/B2 ランタイム（wasm 関数＋egress allowlist＋
+> event/cron）/SDK＋CLI＋監査計装（利用量 API）。DoD の各段は crates/data・app-gateway・app-platform の
+> IT（capability_it/ai_it/functions_it/b1_it/install_it）と web/e2e（miniapp-b1.spec）で検証済み。
+
 > 目的: Phase 6（A=宣言的ミニアプリ）の上に **B=コードベース・ミニアプリ**と**業務アプリ中核（構造化データ＋
 > ワークフロー）**を足し、「社内業務アプリが自然増殖する基盤」を立ち上げる。中核は **out-of-trust な
 > ミニアプリから内部APIをセキュアに叩く仕組み** ＝ ①公開APIゲートウェイ（唯一の入口・能力面再公開）
