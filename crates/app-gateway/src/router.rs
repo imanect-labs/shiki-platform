@@ -20,10 +20,27 @@ use serde_json::json;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
 
 use crate::{
+    notification::NotificationStore,
+    ports::RagPort,
     scope_map::{required_scope_for, RouteScope},
     token::{verify_gateway_token, GatewayIdentity, GatewayTokenConfig, KeyResolver},
-    AppInstallation, AppInstallationStore, GatewayError,
+    usage, AppInstallation, AppInstallationStore, GatewayError,
 };
+
+/// 能力アダプタ（Task 9.8）の委譲先チョークポイント束。
+///
+/// ゲートウェイは権限判定を自前で持たない——`DataStore` / `StorageService` / [`RagPort`] の
+/// 内部にある per-call OpenFGA（第4ゲート）へ呼出ユーザーの [`AuthContext`] を渡すだけ。
+#[derive(Clone)]
+pub struct CapabilityDeps {
+    /// 利用量計上（`app_capability_usage`）と outbox 覗き見に使う。ハンドラの生 SQL 禁止。
+    pub db: sqlx::PgPool,
+    pub storage: Arc<storage::StorageService>,
+    pub data: Arc<data::DataStore>,
+    pub fsms: Arc<data::FsmStore>,
+    pub rag: Arc<dyn RagPort>,
+    pub notifications: NotificationStore,
+}
 
 /// ゲートウェイの共有状態（第2リスナの `Router` へ載せる）。
 #[derive(Clone)]
@@ -43,6 +60,8 @@ pub struct GatewayState {
     /// single テナントのフォールバック（`require_tenant_claim=false` のときのみ使う）。
     pub default_tenant: String,
     pub default_org: String,
+    /// 能力アダプタの委譲先（Task 9.8）。
+    pub caps: CapabilityDeps,
 }
 
 /// 二重ゲートを通過した呼出コンテキスト（ハンドラは `Extension` で読む）。
@@ -61,6 +80,7 @@ impl IntoResponse for GatewayError {
             GatewayError::Forbidden(_) => StatusCode::FORBIDDEN,
             GatewayError::NotFound => StatusCode::NOT_FOUND,
             GatewayError::Invalid(_) => StatusCode::BAD_REQUEST,
+            GatewayError::Conflict(_) => StatusCode::CONFLICT,
             GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
             GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -70,12 +90,12 @@ impl IntoResponse for GatewayError {
 
 /// ゲートウェイの `Router` を組む（全ルートに二重ゲートを適用）。
 ///
-/// 能力アダプタ（storage/data/rag/...・PR7）はここへルートを足し、[`crate::scope_map`] にも
+/// 能力アダプタは [`crate::routes::capability_router`] にルートを足し、[`crate::scope_map`] にも
 /// 対応スコープ行を追加する（両者の欠落は middleware が fail-closed で拒否する）。
 pub fn build_gateway_router(state: GatewayState) -> Router {
     Router::new()
         .route("/gw/whoami", get(whoami))
-        .route("/gw/probe", get(probe))
+        .merge(crate::routes::capability_router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             dual_gate,
@@ -99,12 +119,19 @@ fn bearer(req: &Request<axum::body::Body>) -> Result<String, GatewayError> {
 /// 二重ゲート middleware（①トークン ②スコープマップ ③granted_scopes 突合）。
 ///
 /// ④の per-call OpenFGA はハンドラ側（能力アダプタ）が [`GatewayCtx::auth`] で評価する。
+/// 成功応答（2xx）した Scoped ルートは利用量を (ユーザー×アプリ×能力×日) で計上する
+/// （Task 9.8・ハンドラに散らさない単一計上点）。
 async fn dual_gate(
     State(state): State<GatewayState>,
-    matched: MatchedPath,
+    matched: Option<MatchedPath>,
     mut req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
+    // ルータに登録の無いパス（fallback）は MatchedPath を持たない → 404（500 にしない）。
+    let Some(matched) = matched else {
+        return GatewayError::NotFound.into_response();
+    };
+    let method = req.method().as_str().to_string();
     match authorize(&state, &matched, &mut req).await {
         Ok(ctx) => {
             record(
@@ -115,8 +142,23 @@ async fn dual_gate(
                 Decision::Allow,
             )
             .await;
+            let usage_key = required_scope_for(&method, matched.as_str());
+            let (tenant, org) = (ctx.auth.tenant_id.clone(), ctx.auth.org.clone());
+            let (app_id, user_sub) = (ctx.installation.app_id, ctx.identity.user_sub.clone());
             req.extensions_mut().insert(ctx);
-            next.run(req).await
+            let resp = next.run(req).await;
+            if resp.status().is_success() {
+                if let Some(RouteScope::Scoped(cap)) = usage_key {
+                    // 計上失敗はリクエストを止めない（best-effort・欠落は tracing に残す）。
+                    if let Err(e) =
+                        usage::record_usage(&state.caps.db, &tenant, &org, app_id, &user_sub, cap)
+                            .await
+                    {
+                        tracing::warn!(error = %e, capability = cap.as_str(), "利用量計上に失敗");
+                    }
+                }
+            }
+            resp
         }
         Err(e) => e.into_response(),
     }
@@ -150,16 +192,19 @@ async fn authorize(
         }
         _ => state.default_tenant.clone(),
     };
+    // org はグループの先頭セグメントから解決する（内部 API の resolve_org と同一規則）。
+    // グループ未付与のトークンは設定の default_org へフォールバックする。
+    let org = org_from_groups(&identity.groups).unwrap_or_else(|| state.default_org.clone());
     let auth = AuthContext::new(
         Principal {
             kind: PrincipalKind::User,
             id: identity.user_sub.clone(),
             email: None,
-            groups: vec![],
+            groups: identity.groups.clone(),
             roles: vec![],
             tenant_id: Some(tenant.clone()),
         },
-        state.default_org.clone(),
+        org,
         tenant.clone(),
     );
 
@@ -191,6 +236,15 @@ async fn authorize(
         identity,
         installation,
     })
+}
+
+/// グループパスの先頭セグメントを org として解決する（api::extract::resolve_org と同一規則）。
+fn org_from_groups(groups: &[String]) -> Option<String> {
+    groups
+        .iter()
+        .filter_map(|g| g.trim_start_matches('/').split('/').next())
+        .find(|seg| !seg.is_empty())
+        .map(str::to_string)
 }
 
 /// ゲートウェイ判定を監査へ残す（拒否は security タグ・trace_id は後続 PR12 で貫通強化）。
@@ -238,7 +292,23 @@ async fn whoami(Extension(ctx): Extension<GatewayCtx>) -> Json<serde_json::Value
     }))
 }
 
-/// data.read スコープを要求するプローブ（機構証明用・PR7 で実能力アダプタへ置換）。
-async fn probe(Extension(ctx): Extension<GatewayCtx>) -> Json<serde_json::Value> {
-    Json(json!({ "ok": true, "user_sub": ctx.identity.user_sub }))
+#[cfg(test)]
+mod tests {
+    use super::org_from_groups;
+
+    #[test]
+    fn org_resolution_matches_internal_rule() {
+        // 先頭グループの最上位セグメント（api::extract::resolve_org と同一規則）。
+        assert_eq!(
+            org_from_groups(&["/acme/dev".into(), "/other".into()]),
+            Some("acme".to_string())
+        );
+        assert_eq!(
+            org_from_groups(&["sales".into()]),
+            Some("sales".to_string())
+        );
+        // 空・スラッシュのみはフォールバック（None）。
+        assert_eq!(org_from_groups(&[]), None);
+        assert_eq!(org_from_groups(&["/".into()]), None);
+    }
 }

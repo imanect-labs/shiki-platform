@@ -30,6 +30,7 @@ pub struct GatewayRoute {
 /// ゲートウェイの全ルートとスコープ要件（宣言的マップ・単一定義）。
 ///
 /// 新しい能力ルートは必ずここへ追加する（追加漏れは middleware が fail-closed で弾く＝到達不能）。
+/// [`crate::routes::capability_router`] の登録と 1:1 対応させること。
 pub(crate) const GATEWAY_ROUTES: &[GatewayRoute] = &[
     // 呼出主体の自己情報（app_id・granted_scopes・user sub）。能力スコープ不要。
     GatewayRoute {
@@ -37,11 +38,96 @@ pub(crate) const GATEWAY_ROUTES: &[GatewayRoute] = &[
         path: "/gw/whoami",
         scope: RouteScope::Public,
     },
-    // 機構証明用: data.read スコープを要求するプローブ（PR7 で実能力アダプタへ置換）。
+    // --- data.*（アプリ所有テーブル束縛・Task 9.8） ---
     GatewayRoute {
         method: "GET",
-        path: "/gw/probe",
+        path: "/gw/data/tables",
         scope: RouteScope::Scoped(CapabilityScope::DataRead),
+    },
+    GatewayRoute {
+        method: "GET",
+        path: "/gw/data/tables/{table_id}/schema",
+        scope: RouteScope::Scoped(CapabilityScope::DataSchema),
+    },
+    GatewayRoute {
+        method: "GET",
+        path: "/gw/data/tables/{table_id}/records",
+        scope: RouteScope::Scoped(CapabilityScope::DataRead),
+    },
+    GatewayRoute {
+        method: "POST",
+        path: "/gw/data/tables/{table_id}/records",
+        scope: RouteScope::Scoped(CapabilityScope::DataWrite),
+    },
+    GatewayRoute {
+        method: "GET",
+        path: "/gw/data/tables/{table_id}/records/{record_id}",
+        scope: RouteScope::Scoped(CapabilityScope::DataRead),
+    },
+    GatewayRoute {
+        method: "PATCH",
+        path: "/gw/data/tables/{table_id}/records/{record_id}",
+        scope: RouteScope::Scoped(CapabilityScope::DataWrite),
+    },
+    GatewayRoute {
+        method: "DELETE",
+        path: "/gw/data/tables/{table_id}/records/{record_id}",
+        scope: RouteScope::Scoped(CapabilityScope::DataWrite),
+    },
+    GatewayRoute {
+        method: "POST",
+        path: "/gw/data/tables/{table_id}/query",
+        scope: RouteScope::Scoped(CapabilityScope::DataRead),
+    },
+    GatewayRoute {
+        method: "POST",
+        path: "/gw/data/tables/{table_id}/records/{record_id}/transition",
+        scope: RouteScope::Scoped(CapabilityScope::DataWrite),
+    },
+    // --- storage.*（個人 ReBAC・StorageService 委譲） ---
+    GatewayRoute {
+        method: "GET",
+        path: "/gw/storage/nodes/{node_id}",
+        scope: RouteScope::Scoped(CapabilityScope::StorageRead),
+    },
+    GatewayRoute {
+        method: "GET",
+        path: "/gw/storage/nodes/{node_id}/children",
+        scope: RouteScope::Scoped(CapabilityScope::StorageRead),
+    },
+    GatewayRoute {
+        method: "GET",
+        path: "/gw/storage/nodes/{node_id}/download-url",
+        scope: RouteScope::Scoped(CapabilityScope::StorageRead),
+    },
+    GatewayRoute {
+        method: "POST",
+        path: "/gw/storage/folders",
+        scope: RouteScope::Scoped(CapabilityScope::StorageWrite),
+    },
+    // --- rag.query（permission-aware 検索） ---
+    GatewayRoute {
+        method: "POST",
+        path: "/gw/rag/query",
+        scope: RouteScope::Scoped(CapabilityScope::RagQuery),
+    },
+    // --- identity.read（本人の最小 identity） ---
+    GatewayRoute {
+        method: "GET",
+        path: "/gw/identity/me",
+        scope: RouteScope::Scoped(CapabilityScope::IdentityRead),
+    },
+    // --- events.subscribe（SSE ライブテール） ---
+    GatewayRoute {
+        method: "GET",
+        path: "/gw/events/subscribe",
+        scope: RouteScope::Scoped(CapabilityScope::EventsSubscribe),
+    },
+    // --- notify.send（通知台帳へ記録） ---
+    GatewayRoute {
+        method: "POST",
+        path: "/gw/notify/send",
+        scope: RouteScope::Scoped(CapabilityScope::NotifySend),
     },
 ];
 
@@ -64,9 +150,61 @@ mod tests {
             Some(RouteScope::Public)
         );
         assert_eq!(
-            required_scope_for("get", "/gw/probe"),
+            required_scope_for("get", "/gw/data/tables"),
             Some(RouteScope::Scoped(CapabilityScope::DataRead))
         );
+        assert_eq!(
+            required_scope_for("POST", "/gw/data/tables/{table_id}/records"),
+            Some(RouteScope::Scoped(CapabilityScope::DataWrite))
+        );
+        assert_eq!(
+            required_scope_for("GET", "/gw/data/tables/{table_id}/schema"),
+            Some(RouteScope::Scoped(CapabilityScope::DataSchema))
+        );
+        assert_eq!(
+            required_scope_for("POST", "/gw/rag/query"),
+            Some(RouteScope::Scoped(CapabilityScope::RagQuery))
+        );
+        assert_eq!(
+            required_scope_for("GET", "/gw/identity/me"),
+            Some(RouteScope::Scoped(CapabilityScope::IdentityRead))
+        );
+        assert_eq!(
+            required_scope_for("GET", "/gw/events/subscribe"),
+            Some(RouteScope::Scoped(CapabilityScope::EventsSubscribe))
+        );
+        assert_eq!(
+            required_scope_for("POST", "/gw/notify/send"),
+            Some(RouteScope::Scoped(CapabilityScope::NotifySend))
+        );
+        assert_eq!(
+            required_scope_for("GET", "/gw/storage/nodes/{node_id}"),
+            Some(RouteScope::Scoped(CapabilityScope::StorageRead))
+        );
+        assert_eq!(
+            required_scope_for("POST", "/gw/storage/folders"),
+            Some(RouteScope::Scoped(CapabilityScope::StorageWrite))
+        );
+    }
+
+    #[test]
+    fn write_routes_never_require_read_scope() {
+        // 書込系メソッドのルートに read スコープを誤宣言していない（権限降格の防止）。
+        for r in GATEWAY_ROUTES {
+            if matches!(r.method, "POST" | "PATCH" | "PUT" | "DELETE") {
+                assert!(
+                    !matches!(
+                        r.scope,
+                        RouteScope::Scoped(
+                            CapabilityScope::DataRead | CapabilityScope::StorageRead
+                        )
+                    ) || r.path.ends_with("/query"),
+                    "書込メソッドに read スコープ: {} {}",
+                    r.method,
+                    r.path
+                );
+            }
+        }
     }
 
     #[test]
