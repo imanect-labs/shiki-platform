@@ -21,13 +21,13 @@ import { cn } from "@/lib/utils";
 import { useGenUiAction } from "./action-context";
 import { ActionResultNote, describeActionError } from "./action-result";
 
-const OTHER = "__other__";
-
-/// 1 問の回答状態。options 質問は選択ラベル集合＋その他自由記述、自由記述質問は text。
-type Answer = { selected: string[]; other: string; text: string };
+/// 1 問の回答状態。options 質問は選択ラベル集合＋「その他」（専用フラグ・自由記述）、
+/// 自由記述質問は text。`otherSelected` を選択集合と分けることで、選択肢ラベルが
+/// 予約語と衝突しても誤判定しない。
+type Answer = { selected: string[]; otherSelected: boolean; other: string; text: string };
 
 function emptyAnswer(): Answer {
-  return { selected: [], other: "", text: "" };
+  return { selected: [], otherSelected: false, other: "", text: "" };
 }
 
 /// 質問の回答を「見出し（無ければ質問文）: 回答」の可読テキストへ整形するためのキー。
@@ -38,8 +38,8 @@ function answerKey(q: QuestionItem): string {
 /// 1 問分の回答を送信用の文字列にする（未回答は空文字＝バックエンドが除外）。
 function answerValue(q: QuestionItem, a: Answer): string {
   if ((q.options ?? []).length === 0) return a.text.trim();
-  const parts = a.selected.filter((s) => s !== OTHER);
-  if (a.selected.includes(OTHER) && a.other.trim()) parts.push(a.other.trim());
+  const parts = [...a.selected];
+  if (a.otherSelected && a.other.trim()) parts.push(a.other.trim());
   return parts.join("、");
 }
 
@@ -69,9 +69,14 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
     if (q.multi_select) {
       update({ selected: has ? a.selected.filter((s) => s !== label) : [...a.selected, label] });
     } else {
-      // 単一選択: その選択肢だけにする（同じものを再タップで解除）。
-      update({ selected: has ? [] : [label] });
+      // 単一選択: その選択肢だけにする（同じものを再タップで解除・その他は排他）。
+      update({ selected: has ? [] : [label], otherSelected: false });
     }
+  };
+
+  const toggleOther = () => {
+    // 単一選択では実選択肢と排他、複数選択では独立にトグルする。
+    update(q.multi_select ? { otherSelected: !a.otherSelected } : { otherSelected: !a.otherSelected, selected: [] });
   };
 
   const go = (next: number) => {
@@ -170,10 +175,19 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
                 {q.header}
               </span>
             ) : null}
-            <p className="text-[15px] font-medium leading-relaxed text-foreground">{q.question}</p>
+            <p
+              id={`genui-q-${card.id}-${q.id}`}
+              className="text-[15px] font-medium leading-relaxed text-foreground"
+            >
+              {q.question}
+            </p>
 
             {options.length > 0 ? (
-              <div className="mt-3 flex flex-col gap-2" role={q.multi_select ? "group" : "radiogroup"}>
+              <div
+                className="mt-3 flex flex-col gap-2"
+                role={q.multi_select ? "group" : "radiogroup"}
+                aria-labelledby={`genui-q-${card.id}-${q.id}`}
+              >
                 {options.map((opt) => (
                   <OptionCard
                     key={opt.label}
@@ -191,16 +205,17 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
                     description="選択肢にない場合は自由に入力してください"
                     icon={<PencilLine className="size-4" />}
                     multi={q.multi_select}
-                    selected={a.selected.includes(OTHER)}
+                    selected={a.otherSelected}
                     disabled={busy || done}
-                    onSelect={() => toggle(OTHER)}
+                    onSelect={toggleOther}
                   />
                 ) : null}
-                {q.allow_other && a.selected.includes(OTHER) ? (
+                {q.allow_other && a.otherSelected ? (
                   <textarea
                     value={a.other}
                     onChange={(e) => update({ other: e.target.value })}
                     placeholder={q.placeholder ?? "自由に入力してください"}
+                    aria-label="その他の回答"
                     rows={2}
                     disabled={busy || done}
                     className="mt-0.5 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
@@ -212,6 +227,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
                 value={a.text}
                 onChange={(e) => update({ text: e.target.value })}
                 placeholder={q.placeholder ?? "回答を入力してください"}
+                aria-labelledby={`genui-q-${card.id}-${q.id}`}
                 rows={4}
                 disabled={busy || done}
                 className="mt-3 w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"

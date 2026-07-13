@@ -98,6 +98,9 @@ test.describe("generative UI ギャラリー（検証済みスペックの描画
     await expect(questionCard.getByText("旅のペースはどれくらいが好みですか？")).toBeVisible();
 
     if (SHOTS) {
+      // 直前の操作（質問カードのステップ遷移等）を捨て初期状態から撮る。
+      await page.reload({ waitUntil: "networkidle" });
+      await waitForCharts(page);
       // 全コンポーネントをライト/ダーク両方で撮る（デザイン改善ループの棚卸し用）。
       const ALL_CELLS = [
         ...CHART_CELL_IDS,

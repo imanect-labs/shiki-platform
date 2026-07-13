@@ -79,10 +79,7 @@ export function renderRadialBar(spec: ChartSpec): React.ReactElement {
           fill="var(--card)"
           fontSize={11}
           fontWeight={600}
-          formatter={(value) => {
-            const n = Number(value);
-            return max === 100 ? `${n}%` : n.toLocaleString("ja-JP");
-          }}
+          formatter={(value) => Number(value).toLocaleString("ja-JP")}
         />
       </RadialBar>
     </RadialBarChart>
