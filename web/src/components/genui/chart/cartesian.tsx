@@ -22,17 +22,20 @@ const MARGIN = { top: 8, right: 12, bottom: 4, left: 0 } as const;
 
 export function renderBar(spec: ChartSpec, rows: Row[], series: string[]): React.ReactElement {
   const stackId = spec.stacked ? "stack" : undefined;
+  const grads = series.map((name, i) => ({ id: `genui-bar-${i}`, color: colorFor(i) }));
   return (
     <BarChart data={rows} margin={MARGIN}>
+      {/* 上端は濃く下端をわずかに落として立体感を出す（生の平塗りより上質に）。 */}
+      <GradientDefs ids={grads} from={1} to={0.72} />
       <CartesianAxes spec={spec} seriesCount={series.length} />
       {series.map((name, i) => (
         <Bar
           key={name}
           dataKey={name}
           stackId={stackId}
-          fill={colorFor(i)}
-          radius={spec.stacked ? [0, 0, 0, 0] : [4, 4, 0, 0]}
-          maxBarSize={48}
+          fill={`url(#genui-bar-${i})`}
+          radius={spec.stacked ? [0, 0, 0, 0] : [5, 5, 0, 0]}
+          maxBarSize={44}
           isAnimationActive={false}
         />
       ))}
@@ -86,8 +89,12 @@ export function renderArea(spec: ChartSpec, rows: Row[], series: string[]): Reac
 /// 複合: line_series に列挙された系列を line、それ以外を bar で描く。
 export function renderCombo(spec: ChartSpec, rows: Row[], series: string[]): React.ReactElement {
   const asLine = new Set(spec.line_series ?? []);
+  const grads = series
+    .map((name, i) => ({ id: `genui-combo-${i}`, color: colorFor(i) }))
+    .filter((_, i) => !asLine.has(series[i]));
   return (
     <ComposedChart data={rows} margin={MARGIN}>
+      <GradientDefs ids={grads} from={1} to={0.72} />
       <CartesianAxes spec={spec} seriesCount={series.length} />
       {series.map((name, i) =>
         asLine.has(name) ? (
@@ -96,16 +103,17 @@ export function renderCombo(spec: ChartSpec, rows: Row[], series: string[]): Rea
             type="monotone"
             dataKey={name}
             stroke={colorFor(i)}
-            strokeWidth={2}
-            dot={{ r: 2.5 }}
+            strokeWidth={2.25}
+            dot={{ r: 2.5, strokeWidth: 0, fill: colorFor(i) }}
+            activeDot={{ r: 4 }}
             isAnimationActive={false}
           />
         ) : (
           <Bar
             key={name}
             dataKey={name}
-            fill={colorFor(i)}
-            radius={[4, 4, 0, 0]}
+            fill={`url(#genui-combo-${i})`}
+            radius={[5, 5, 0, 0]}
             maxBarSize={40}
             isAnimationActive={false}
           />

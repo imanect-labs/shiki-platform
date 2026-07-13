@@ -88,8 +88,16 @@ export function renderFunnel(spec: ChartSpec): React.ReactElement {
   return (
     <FunnelChart>
       <Tooltip contentStyle={TOOLTIP_STYLE} />
-      <Funnel dataKey="value" data={data} isAnimationActive={false} stroke="var(--card)">
+      <Funnel dataKey="value" data={data} isAnimationActive={false} stroke="var(--card)" strokeWidth={2}>
         <LabelList position="right" fill="var(--foreground)" stroke="none" dataKey="name" fontSize={12} />
+        <LabelList
+          position="center"
+          fill="var(--card)"
+          stroke="none"
+          dataKey="value"
+          fontSize={12}
+          fontWeight={600}
+        />
         {data.map((d) => (
           <Cell key={d.name} fill={d.fill} />
         ))}
@@ -100,7 +108,7 @@ export function renderFunnel(spec: ChartSpec): React.ReactElement {
 
 /// ツリーマップ: x ラベルごとの合算値を面積で表現（季節トークンで色分け）。
 export function renderTreemap(spec: ChartSpec): React.ReactElement {
-  const data = toTotals(spec).map((d) => ({ name: d.name, size: Math.max(0, d.value) }));
+  const data = toTotals(spec).map((d) => ({ name: d.name, size: Math.max(0, d.value), value: d.value }));
   return (
     <Treemap
       data={data}
@@ -112,7 +120,7 @@ export function renderTreemap(spec: ChartSpec): React.ReactElement {
   );
 }
 
-/// ツリーマップの 1 セル（季節トークンで塗り分け、収まる場合のみラベル表示）。
+/// ツリーマップの 1 セル（季節トークンで塗り分け、収まる場合のみラベル＋値を表示）。
 function TreemapCell(props: {
   x?: number;
   y?: number;
@@ -120,15 +128,31 @@ function TreemapCell(props: {
   height?: number;
   index?: number;
   name?: string;
+  value?: number;
 }) {
-  const { x = 0, y = 0, width = 0, height = 0, index = 0, name = "" } = props;
-  const showLabel = width > 44 && height > 20;
+  const { x = 0, y = 0, width = 0, height = 0, index = 0, name = "", value } = props;
+  const showLabel = width > 44 && height > 24;
+  const showValue = showLabel && height > 44 && value != null;
   return (
     <g>
-      <rect x={x} y={y} width={width} height={height} fill={colorFor(index)} stroke="var(--card)" strokeWidth={2} />
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        fill={colorFor(index)}
+        stroke="var(--card)"
+        strokeWidth={2}
+        rx={2}
+      />
       {showLabel ? (
-        <text x={x + 6} y={y + 16} fontSize={11} fill="var(--card)" style={{ pointerEvents: "none" }}>
+        <text x={x + 8} y={y + 18} fontSize={12} fontWeight={600} fill="var(--card)" style={{ pointerEvents: "none" }}>
           {name}
+        </text>
+      ) : null}
+      {showValue ? (
+        <text x={x + 8} y={y + 34} fontSize={11} fill="var(--card)" opacity={0.85} style={{ pointerEvents: "none" }}>
+          {value.toLocaleString("ja-JP")}
         </text>
       ) : null}
     </g>

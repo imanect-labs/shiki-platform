@@ -21,27 +21,34 @@ function Cell({ id, title, spec }: { id: string; title: string; spec: unknown })
   );
 }
 
-/// チャート 1 種のフィクスチャ（多系列・combo/stacked/xv も含む）。
-function chart(kind: string, extra: Record<string, unknown> = {}): unknown {
-  return {
-    version: 1,
-    root: {
-      component: "chart",
-      kind,
-      title: `${kind} チャート`,
-      data: [
-        { x: "1月", y: 12, series: "実績", xv: 1 },
-        { x: "2月", y: 19, series: "実績", xv: 2 },
-        { x: "3月", y: 15, series: "実績", xv: 3 },
-        { x: "4月", y: 24, series: "実績", xv: 4 },
-        { x: "1月", y: 10, series: "目標", xv: 1 },
-        { x: "2月", y: 16, series: "目標", xv: 2 },
-        { x: "3月", y: 20, series: "目標", xv: 3 },
-        { x: "4月", y: 22, series: "目標", xv: 4 },
-      ],
-      ...extra,
-    },
-  };
+/// 2 系列（実績 vs 目標）の月次データ（bar/line/area/combo/radar/scatter 用）。
+const SERIES_DATA = [
+  { x: "1月", y: 320, series: "実績", xv: 1 },
+  { x: "2月", y: 410, series: "実績", xv: 2 },
+  { x: "3月", y: 385, series: "実績", xv: 3 },
+  { x: "4月", y: 512, series: "実績", xv: 4 },
+  { x: "1月", y: 300, series: "目標", xv: 1 },
+  { x: "2月", y: 360, series: "目標", xv: 2 },
+  { x: "3月", y: 420, series: "目標", xv: 3 },
+  { x: "4月", y: 480, series: "目標", xv: 4 },
+];
+
+/// 単一次元の構成比データ（pie/donut/treemap 用・流入チャネル）。
+const CHANNEL_DATA = [
+  { x: "オーガニック検索", y: 4200 },
+  { x: "SNS", y: 2600 },
+  { x: "リファラル", y: 1500 },
+  { x: "広告", y: 1100 },
+];
+
+/// チャート 1 種のフィクスチャ。title は実運用を想定した具体名にする（開発用の仮題を避ける）。
+function chart(
+  kind: string,
+  title: string,
+  data: unknown = SERIES_DATA,
+  extra: Record<string, unknown> = {},
+): unknown {
+  return { version: 1, root: { component: "chart", kind, title, data, ...extra } };
 }
 
 function stat(root: Record<string, unknown>): unknown {
@@ -49,39 +56,63 @@ function stat(root: Record<string, unknown>): unknown {
 }
 
 const CHARTS: { id: string; title: string; spec: unknown }[] = [
-  { id: "bar", title: "棒（bar）", spec: chart("bar") },
-  { id: "bar-stacked", title: "積み上げ棒", spec: chart("bar", { stacked: true }) },
-  { id: "line", title: "折れ線（line）", spec: chart("line") },
-  { id: "area", title: "面（area）", spec: chart("area") },
-  { id: "area-stacked", title: "積み上げ面", spec: chart("area", { stacked: true }) },
-  { id: "combo", title: "複合（combo）", spec: chart("combo", { line_series: ["目標"] }) },
-  { id: "pie", title: "円（pie）", spec: chart("pie") },
-  { id: "donut", title: "ドーナツ（donut）", spec: chart("donut") },
-  { id: "scatter", title: "散布（scatter・数値 x）", spec: chart("scatter") },
+  { id: "bar", title: "棒（bar）", spec: chart("bar", "月次売上（実績 vs 目標・万円）") },
+  {
+    id: "bar-stacked",
+    title: "積み上げ棒",
+    spec: chart("bar", "四半期の内訳（積み上げ）", SERIES_DATA, { stacked: true }),
+  },
+  { id: "line", title: "折れ線（line）", spec: chart("line", "週次アクティブユーザーの推移") },
+  { id: "area", title: "面（area）", spec: chart("area", "累計サインアップ数") },
+  {
+    id: "area-stacked",
+    title: "積み上げ面",
+    spec: chart("area", "プラン別 MRR の推移", SERIES_DATA, { stacked: true }),
+  },
+  {
+    id: "combo",
+    title: "複合（combo）",
+    spec: chart("combo", "売上（棒）と目標ライン（線）", SERIES_DATA, { line_series: ["目標"] }),
+  },
+  { id: "pie", title: "円（pie）", spec: chart("pie", "流入チャネルの構成", CHANNEL_DATA) },
+  { id: "donut", title: "ドーナツ（donut）", spec: chart("donut", "デバイス別セッション", CHANNEL_DATA) },
+  { id: "scatter", title: "散布（scatter・数値 x）", spec: chart("scatter", "広告費とコンバージョンの相関") },
   {
     id: "scatter-cat",
     title: "散布（scatter・カテゴリ x）",
-    spec: {
-      version: 1,
-      root: {
-        component: "chart",
-        kind: "scatter",
-        title: "カテゴリ別スコア",
-        data: [
-          { x: "A", y: 12, series: "実績" },
-          { x: "B", y: 19, series: "実績" },
-          { x: "C", y: 8, series: "実績" },
-          { x: "A", y: 15, series: "目標" },
-          { x: "B", y: 17, series: "目標" },
-          { x: "C", y: 11, series: "目標" },
-        ],
-      },
-    },
+    spec: chart("scatter", "拠点別スコア（実績 vs 目標）", [
+      { x: "東京", y: 82, series: "実績" },
+      { x: "大阪", y: 74, series: "実績" },
+      { x: "福岡", y: 68, series: "実績" },
+      { x: "東京", y: 78, series: "目標" },
+      { x: "大阪", y: 80, series: "目標" },
+      { x: "福岡", y: 72, series: "目標" },
+    ]),
   },
-  { id: "radar", title: "レーダー（radar）", spec: chart("radar") },
-  { id: "radial", title: "放射状バー（radial_bar）", spec: chart("radial_bar") },
-  { id: "funnel", title: "ファネル（funnel）", spec: chart("funnel") },
-  { id: "treemap", title: "ツリーマップ（treemap）", spec: chart("treemap") },
+  {
+    id: "radar",
+    title: "レーダー（radar）",
+    spec: chart("radar", "スキル評価（現状 vs 目標）", [
+      { x: "技術力", y: 82, series: "現状" },
+      { x: "コミュ力", y: 70, series: "現状" },
+      { x: "設計", y: 65, series: "現状" },
+      { x: "運用", y: 78, series: "現状" },
+      { x: "スピード", y: 60, series: "現状" },
+      { x: "技術力", y: 90, series: "目標" },
+      { x: "コミュ力", y: 80, series: "目標" },
+      { x: "設計", y: 85, series: "目標" },
+      { x: "運用", y: 82, series: "目標" },
+      { x: "スピード", y: 75, series: "目標" },
+    ]),
+  },
+  { id: "radial", title: "放射状バー（radial_bar）", spec: chart("radial_bar", "チャネル別 目標達成率", CHANNEL_DATA) },
+  { id: "funnel", title: "ファネル（funnel）", spec: chart("funnel", "購入ファネル", [
+    { x: "訪問", y: 12000 },
+    { x: "カート", y: 5200 },
+    { x: "決済開始", y: 2400 },
+    { x: "購入完了", y: 1500 },
+  ]) },
+  { id: "treemap", title: "ツリーマップ（treemap）", spec: chart("treemap", "カテゴリ別売上", CHANNEL_DATA) },
 ];
 
 const STATS: { id: string; title: string; spec: unknown }[] = [
@@ -277,6 +308,60 @@ const RICH_FORM: unknown = {
   },
 };
 
+const QUESTION_CARD: unknown = {
+  version: 1,
+  actions: [{ type: "handler", id: "answer", handler: "chat.submit" }],
+  root: {
+    component: "question_card",
+    id: "trip",
+    title: "旅行プランの確認",
+    intro: "ぴったりの旅程を提案するために、いくつか教えてください。",
+    submit: { action: "answer" },
+    submit_label: "回答する",
+    questions: [
+      {
+        id: "purpose",
+        header: "目的",
+        question: "今回の旅行の主な目的は何ですか？",
+        options: [
+          { label: "観光・レジャー", description: "名所や自然、グルメなど旅先を楽しむのが中心" },
+          { label: "出張・ビジネス", description: "会議や商談が主目的。移動効率と宿の作業環境を重視" },
+          { label: "帰省・イベント", description: "家族の集まりや結婚式・ライブなど特定の予定に合わせる" },
+        ],
+        allow_other: true,
+      },
+      {
+        id: "pace",
+        header: "ペース",
+        question: "旅のペースはどれくらいが好みですか？",
+        options: [
+          { label: "ゆったり", description: "1 日 1〜2 か所。休憩やカフェの時間をしっかり取る" },
+          { label: "しっかり", description: "主要スポットを効率よく巡る、バランス型" },
+          { label: "詰め込み", description: "朝から晩まで、行けるところは全部回りたい" },
+        ],
+      },
+      {
+        id: "interests",
+        header: "興味",
+        question: "特に興味があるものはどれですか？（複数選択できます）",
+        options: [
+          { label: "グルメ", description: "地元の名物や話題の店を巡りたい" },
+          { label: "自然・絶景", description: "山・海・公園など景色を楽しみたい" },
+          { label: "歴史・文化", description: "寺社・城・博物館など" },
+          { label: "ショッピング", description: "買い物や土産選びを楽しみたい" },
+        ],
+        multi_select: true,
+        allow_other: true,
+      },
+      {
+        id: "notes",
+        question: "その他、希望や制約があれば自由にお書きください。",
+        placeholder: "例: 子ども連れ／車椅子で移動／予算は 1 人 5 万円まで など",
+      },
+    ],
+  },
+};
+
 export default function GenUiGalleryPage() {
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
@@ -322,6 +407,15 @@ export default function GenUiGalleryPage() {
         </h2>
         <div className="max-w-md">
           <Cell id="rich-form" title="全フィールド" spec={RICH_FORM} />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="mb-3 text-[13px] font-semibold tracking-wide text-foreground/70">
+          質問カード（AI からの問いかけ）
+        </h2>
+        <div className="max-w-md">
+          <Cell id="question-card" title="複数質問＋自由記述" spec={QUESTION_CARD} />
         </div>
       </section>
     </main>

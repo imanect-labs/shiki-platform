@@ -78,12 +78,49 @@ test.describe("generative UI ギャラリー（検証済みスペックの描画
     await expect(richForm.locator('input[type="date"]')).toHaveCount(3); // 開始日＋期間(開始/終了)
     await expect(richForm.getByRole("radio", { name: "4" })).toBeVisible(); // rating の星
 
+    // 質問カード（PR4）: Claude Code 風の 1 問 1 ステップ・説明付き選択肢カード。
+    const questionCard = page.getByTestId("gallery-question-card");
+    await expect(questionCard).toBeVisible();
+    // 1 問目（目的・単一選択＋その他）だけが表示され、選択肢はカード（説明付き）。
+    await expect(questionCard.getByText("今回の旅行の主な目的は何ですか？")).toBeVisible();
+    await expect(questionCard.getByTestId("genui-question-option")).toHaveCount(4); // 3 択＋その他
+    await expect(questionCard.getByText("名所や自然、グルメなど旅先を楽しむのが中心")).toBeVisible();
+    // スライダーは使わない（数値入力のバーが無いこと）。
+    await expect(questionCard.locator('input[type="range"]')).toHaveCount(0);
+    // ウィザードの進行（次へ）。1 問ずつなので 2 問目はまだ出ていない。
+    await expect(questionCard.getByRole("button", { name: "次へ" })).toBeVisible();
+    await expect(questionCard.getByText("旅のペースはどれくらいが好みですか？")).toHaveCount(0);
+    // 選択肢を選ぶと aria-checked が立ち、次へで 2 問目へ進む。
+    const firstOption = questionCard.getByTestId("genui-question-option").first();
+    await firstOption.click();
+    await expect(firstOption).toHaveAttribute("aria-checked", "true");
+    await questionCard.getByRole("button", { name: "次へ" }).click();
+    await expect(questionCard.getByText("旅のペースはどれくらいが好みですか？")).toBeVisible();
+
     if (SHOTS) {
-      for (const id of CHART_CELL_IDS) {
-        await page.getByTestId(`gallery-${id}`).screenshot({ path: `${SHOTS}/chart-${id}.png` });
-      }
-      for (const id of ["stat-up", "stat-down", "stat-plain"]) {
-        await page.getByTestId(`gallery-${id}`).screenshot({ path: `${SHOTS}/${id}.png` });
+      // 全コンポーネントをライト/ダーク両方で撮る（デザイン改善ループの棚卸し用）。
+      const ALL_CELLS = [
+        ...CHART_CELL_IDS,
+        "stat-up",
+        "stat-down",
+        "stat-plain",
+        "callout",
+        "accordion",
+        "tabs",
+        "stepper",
+        "badge_list",
+        "key_value",
+        "code_block",
+        "rich-form",
+        "question-card",
+      ];
+      for (const scheme of ["light", "dark"] as const) {
+        await page.emulateMedia({ colorScheme: scheme });
+        for (const id of ALL_CELLS) {
+          await page
+            .getByTestId(`gallery-${id}`)
+            .screenshot({ path: `${SHOTS}/${scheme}-${id}.png` });
+        }
       }
     }
   });

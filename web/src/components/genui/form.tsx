@@ -88,7 +88,8 @@ export function GenUiForm({ form }: { form: FormProps }) {
   );
 }
 
-function FieldView({
+/// 1 フィールドの描画（question_card でも再利用するため公開）。
+export function FieldView({
   field,
   value,
   onChange,
