@@ -28,6 +28,7 @@ pub mod action;
 pub mod chart;
 pub mod dispatch;
 pub mod emit_tool;
+pub mod layout;
 pub mod miniapp;
 pub mod miniapp_store;
 pub mod skill;

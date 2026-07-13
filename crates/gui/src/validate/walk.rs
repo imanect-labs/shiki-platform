@@ -169,6 +169,59 @@ impl<'a> Walk<'a> {
                 }
             }
             UiNode::Stat(p) => self.stat(p, path),
+            UiNode::Callout(p) => {
+                self.opt_label(p.title.as_deref(), &format!("{path}.title"));
+                self.text(&p.text, limits::MAX_TEXT_CHARS, &format!("{path}.text"));
+            }
+            UiNode::Accordion(p) => {
+                self.count(p.items.len(), &format!("{path}.items"));
+                for (i, item) in p.items.iter().enumerate() {
+                    self.label(&item.title, &format!("{path}.items[{i}].title"));
+                    self.children(&item.children, &format!("{path}.items[{i}]"), depth);
+                }
+            }
+            UiNode::Tabs(p) => {
+                self.count(p.tabs.len(), &format!("{path}.tabs"));
+                for (i, tab) in p.tabs.iter().enumerate() {
+                    self.label(&tab.label, &format!("{path}.tabs[{i}].label"));
+                    self.children(&tab.children, &format!("{path}.tabs[{i}]"), depth);
+                }
+            }
+            UiNode::Stepper(p) => {
+                self.count(p.steps.len(), &format!("{path}.steps"));
+                for (i, s) in p.steps.iter().enumerate() {
+                    self.label(&s.title, &format!("{path}.steps[{i}].title"));
+                    if let Some(d) = &s.description {
+                        self.text(
+                            d,
+                            limits::MAX_TEXT_CHARS,
+                            &format!("{path}.steps[{i}].description"),
+                        );
+                    }
+                }
+            }
+            UiNode::BadgeList(p) => {
+                self.count(p.badges.len(), &format!("{path}.badges"));
+                for (i, b) in p.badges.iter().enumerate() {
+                    self.label(&b.label, &format!("{path}.badges[{i}].label"));
+                }
+            }
+            UiNode::KeyValue(p) => {
+                self.opt_label(p.title.as_deref(), &format!("{path}.title"));
+                self.count(p.items.len(), &format!("{path}.items"));
+                for (i, kv) in p.items.iter().enumerate() {
+                    self.label(&kv.key, &format!("{path}.items[{i}].key"));
+                    self.text(
+                        &kv.value,
+                        limits::MAX_TEXT_CHARS,
+                        &format!("{path}.items[{i}].value"),
+                    );
+                }
+            }
+            UiNode::CodeBlock(p) => {
+                self.text(&p.code, limits::MAX_CODE_CHARS, &format!("{path}.code"));
+                self.opt_label(p.language.as_deref(), &format!("{path}.language"));
+            }
             // available() 判定で早期 return 済み。
             UiNode::Map(_) | UiNode::Image(_) => unreachable!("reserved components return early"),
         }
@@ -334,6 +387,35 @@ impl<'a> Walk<'a> {
                         .at(format!("{path}.trend[{i}]")),
                 );
             }
+        }
+    }
+
+    /// 項目数の上限（accordion/tabs/stepper/badge/key_value 等の直下要素数）。
+    fn count(&mut self, len: usize, path: &str) {
+        if len > limits::MAX_CHILDREN {
+            self.errors.push(
+                GuiValidationError::new(
+                    "gui.too_many_children",
+                    format!("要素が多すぎます（最大 {}）", limits::MAX_CHILDREN),
+                )
+                .at(path),
+            );
+        }
+    }
+
+    /// 子ツリー列を走査する（数の上限＋各子を depth+1 で再帰検証）。
+    fn children(&mut self, children: &[UiNode], path: &str, depth: usize) {
+        if children.len() > limits::MAX_CHILDREN {
+            self.errors.push(
+                GuiValidationError::new(
+                    "gui.too_many_children",
+                    format!("子要素が多すぎます（最大 {}）", limits::MAX_CHILDREN),
+                )
+                .at(path),
+            );
+        }
+        for (i, child) in children.iter().enumerate() {
+            self.node(child, &format!("{path}.children[{i}]"), depth + 1);
         }
     }
 

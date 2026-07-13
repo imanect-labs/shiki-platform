@@ -116,6 +116,116 @@ const STATS: { id: string; title: string; spec: unknown }[] = [
   },
 ];
 
+function node(root: Record<string, unknown>): unknown {
+  return { version: 1, root };
+}
+
+const LAYOUT: { id: string; title: string; spec: unknown }[] = [
+  {
+    id: "callout",
+    title: "callout（4 トーン）",
+    spec: node({
+      component: "container",
+      children: [
+        { component: "callout", tone: "info", title: "情報", text: "これは info トーンです。" },
+        { component: "callout", tone: "success", title: "成功", text: "処理が完了しました。" },
+        { component: "callout", tone: "warning", text: "警告: 残り容量が少なくなっています。" },
+        { component: "callout", tone: "danger", title: "エラー", text: "接続に失敗しました。" },
+      ],
+    }),
+  },
+  {
+    id: "accordion",
+    title: "accordion",
+    spec: node({
+      component: "accordion",
+      items: [
+        {
+          title: "配送について",
+          open: true,
+          children: [{ component: "text", text: "通常 2〜3 営業日でお届けします。" }],
+        },
+        {
+          title: "返品ポリシー",
+          children: [{ component: "text", text: "到着後 14 日以内なら返品できます。" }],
+        },
+      ],
+    }),
+  },
+  {
+    id: "tabs",
+    title: "tabs",
+    spec: node({
+      component: "tabs",
+      tabs: [
+        { label: "概要", children: [{ component: "text", text: "プロジェクトの概要です。" }] },
+        {
+          label: "指標",
+          children: [
+            {
+              component: "stat",
+              label: "進捗",
+              value: "72",
+              unit: "%",
+              delta: 4.1,
+              delta_label: "前週比",
+            },
+          ],
+        },
+      ],
+    }),
+  },
+  {
+    id: "stepper",
+    title: "stepper",
+    spec: node({
+      component: "stepper",
+      steps: [
+        { title: "要件定義", status: "done" },
+        { title: "実装", status: "doing", description: "PR2 レイアウト基盤を作成中" },
+        { title: "レビュー", status: "todo" },
+        { title: "リリース", status: "todo" },
+      ],
+    }),
+  },
+  {
+    id: "badge_list",
+    title: "badge_list",
+    spec: node({
+      component: "badge_list",
+      badges: [
+        { label: "Rust", tone: "info" },
+        { label: "安定", tone: "success" },
+        { label: "レビュー中", tone: "warning" },
+        { label: "破壊的変更", tone: "danger" },
+        { label: "docs", tone: "neutral" },
+      ],
+    }),
+  },
+  {
+    id: "key_value",
+    title: "key_value",
+    spec: node({
+      component: "key_value",
+      title: "注文詳細",
+      items: [
+        { key: "注文番号", value: "#A-10293" },
+        { key: "ステータス", value: "発送済み" },
+        { key: "合計", value: "¥12,800" },
+      ],
+    }),
+  },
+  {
+    id: "code_block",
+    title: "code_block",
+    spec: node({
+      component: "code_block",
+      language: "typescript",
+      code: 'const greet = (name: string) => `こんにちは、${name}さん`;\nconsole.log(greet("世界"));',
+    }),
+  },
+];
+
 export default function GenUiGalleryPage() {
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
@@ -140,6 +250,17 @@ export default function GenUiGalleryPage() {
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-3">
           {STATS.map((s) => (
             <Cell key={s.id} id={s.id} title={s.title} spec={s.spec} />
+          ))}
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="mb-3 text-[13px] font-semibold tracking-wide text-foreground/70">
+          レイアウト / コンテンツ
+        </h2>
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+          {LAYOUT.map((l) => (
+            <Cell key={l.id} id={l.id} title={l.title} spec={l.spec} />
           ))}
         </div>
       </section>

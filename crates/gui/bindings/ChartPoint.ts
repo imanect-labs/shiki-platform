@@ -9,6 +9,7 @@ export type ChartPoint = { x: string, y: number,
  */
 series: string | null, 
 /**
- * 散布図（`scatter`）の数値 x。省略時は `x`（カテゴリ）を軸に使う。
+ * 散布図（`scatter`）の数値 x。省略時は各データ点の配列インデックスを x に使い、
+ * `x`（文字列）はツールチップのラベルになる。他種では無視される。
  */
 xv: number | null, };

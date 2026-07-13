@@ -53,6 +53,22 @@ test.describe("generative UI ギャラリー（検証済みスペックの描画
     await expect(page.getByTestId("gallery-stat-up")).toBeVisible();
     await expect(page.getByTestId("gallery-stat-up").getByText("¥1.28M")).toBeVisible();
 
+    // レイアウト/コンテンツ基盤（PR2）。
+    for (const id of [
+      "callout",
+      "accordion",
+      "tabs",
+      "stepper",
+      "badge_list",
+      "key_value",
+      "code_block",
+    ]) {
+      await expect(page.getByTestId(`gallery-${id}`), `layout ${id}`).toBeVisible();
+    }
+    // 代表的な中身の描画確認（callout の 4 トーン・code_block・accordion 展開）。
+    await expect(page.getByTestId("gallery-callout").getByTestId("genui-callout")).toHaveCount(4);
+    await expect(page.getByTestId("gallery-code_block").locator("code")).toBeVisible();
+
     if (SHOTS) {
       for (const id of CHART_CELL_IDS) {
         await page.getByTestId(`gallery-${id}`).screenshot({ path: `${SHOTS}/chart-${id}.png` });

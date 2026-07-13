@@ -18,6 +18,15 @@ import { GenUiButton } from "./gen-button";
 import { GenUiTable } from "./gen-table";
 import { GenUiChart } from "./gen-chart";
 import { GenUiStat } from "./gen-stat";
+import {
+  GenUiAccordion,
+  GenUiBadgeList,
+  GenUiCallout,
+  GenUiCodeBlock,
+  GenUiKeyValue,
+  GenUiStepper,
+  GenUiTabs,
+} from "./gen-layout";
 
 /// レンダラの深さ上限（サーバ検証の MAX_DEPTH=8 に余裕を足した防御値）。
 const MAX_RENDER_DEPTH = 10;
@@ -112,6 +121,34 @@ export function NodeView({ node, depth }: { node: UiNode; depth: number }) {
       return <GenUiChart spec={node} />;
     case "stat":
       return <GenUiStat stat={node} />;
+    case "callout":
+      return <GenUiCallout callout={node} />;
+    case "stepper":
+      return <GenUiStepper stepper={node} />;
+    case "badge_list":
+      return <GenUiBadgeList badgeList={node} />;
+    case "key_value":
+      return <GenUiKeyValue keyValue={node} />;
+    case "code_block":
+      return <GenUiCodeBlock codeBlock={node} />;
+    case "accordion":
+      return (
+        <GenUiAccordion
+          accordion={node}
+          renderChildren={(nodes) =>
+            nodes.map((n, i) => <NodeView key={i} node={n} depth={depth + 1} />)
+          }
+        />
+      );
+    case "tabs":
+      return (
+        <GenUiTabs
+          tabs={node}
+          renderChildren={(nodes) =>
+            nodes.map((n, i) => <NodeView key={i} node={n} depth={depth + 1} />)
+          }
+        />
+      );
     default:
       // 予約 variant（map/image）や将来カタログはプレースホルダ縮退（クラッシュさせない）。
       return <UnknownComponent label={node.component} />;

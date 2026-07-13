@@ -62,6 +62,21 @@ vocab_enum! {
         Chart => "chart",
         /// KPI スタットタイル（数値＋前期比デルタ＋インライン sparkline）。
         Stat => "stat",
+        // ---- レイアウト/コンテンツ基盤（PR2・すべて表示専用） ----
+        /// 注意喚起カード（info/success/warning/danger）。
+        Callout => "callout",
+        /// アコーディオン（折りたたみ節・子ツリーを持つ）。
+        Accordion => "accordion",
+        /// タブ（子ツリーを持つ）。
+        Tabs => "tabs",
+        /// ステッパー（工程の進捗）。
+        Stepper => "stepper",
+        /// バッジ列（タグの集まり）。
+        BadgeList => "badge_list",
+        /// 定義リスト（キー: 値）。
+        KeyValue => "key_value",
+        /// コードブロック（表示専用）。
+        CodeBlock => "code_block",
         // ---- 将来予約（serde 名を凍結・Phase 6 では検証が拒否する） ----
         /// 地図（タイル表示＋ピン・design §4.7。外部タイル依存のため後続）。
         Map => "map",

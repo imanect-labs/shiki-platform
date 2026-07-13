@@ -344,6 +344,46 @@ fn rejects_negative_values_for_magnitude_charts() {
 }
 
 #[test]
+fn accepts_layout_components_with_nesting() {
+    // PR2: callout/accordion/tabs/stepper/badge_list/key_value/code_block。
+    let spec = json!({
+        "version": 1,
+        "root": {
+            "component": "container",
+            "children": [
+                { "component": "callout", "tone": "warning", "title": "注意", "text": "在庫僅少" },
+                { "component": "accordion", "items": [
+                    { "title": "詳細", "open": true, "children": [ { "component": "text", "text": "本文" } ] }
+                ] },
+                { "component": "tabs", "tabs": [
+                    { "label": "A", "children": [ { "component": "text", "text": "a" } ] },
+                    { "label": "B", "children": [ { "component": "badge_list", "badges": [ {"label": "x"} ] } ] }
+                ] },
+                { "component": "stepper", "steps": [
+                    { "title": "S1", "status": "done" }, { "title": "S2", "status": "doing" }
+                ] },
+                { "component": "badge_list", "badges": [ {"label": "tag", "tone": "info"} ] },
+                { "component": "key_value", "title": "詳細", "items": [ {"key": "k", "value": "v"} ] },
+                { "component": "code_block", "code": "let x = 1;", "language": "rust" }
+            ]
+        }
+    });
+    assert!(validate_spec(&spec).is_ok(), "{:?}", error_codes(spec));
+}
+
+#[test]
+fn rejects_bad_child_inside_accordion() {
+    // ネストした子ツリーも走査検証される（カタログ外は拒否）。
+    assert_rejected_with(
+        minimal(json!({
+            "component": "accordion",
+            "items": [ { "title": "t", "children": [ { "component": "iframe", "src": "https://x" } ] } ]
+        })),
+        "gui.unknown_component",
+    );
+}
+
+#[test]
 fn accepts_stat_tile() {
     let spec = minimal(json!({
         "component": "stat",
