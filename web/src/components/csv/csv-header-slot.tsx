@@ -59,8 +59,8 @@ export function CsvHeaderSlot({
           value={tab}
           onValueChange={(v) => onTabChange(v as "grid" | "sql")}
           options={[
-            { value: "grid", label: "グリッド", icon: Table2 },
-            { value: "sql", label: "SQL", icon: Terminal },
+            { value: "grid", label: "グリッド", icon: Table2, testId: "csv-tab-grid" },
+            { value: "sql", label: "SQL", icon: Terminal, testId: "csv-tab-sql" },
           ]}
         />
         {editable ? (

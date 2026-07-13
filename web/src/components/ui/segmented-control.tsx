@@ -19,6 +19,8 @@ export interface SegmentedOption {
   value: string;
   label: string;
   icon?: LucideIcon;
+  /// E2E 等のための data-testid（任意）。
+  testId?: string;
 }
 
 interface Props {
@@ -60,6 +62,7 @@ export function SegmentedControl({
             type="button"
             role="tab"
             aria-selected={active}
+            data-testid={o.testId}
             onClick={() => onValueChange(o.value)}
             className={cn(
               "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-md font-medium outline-none",
