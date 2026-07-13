@@ -117,6 +117,16 @@ impl<'a> Walk<'a> {
                         .at(path),
                     );
                 }
+                // 面積/割合で大小を表す種別は負値が無意味（描画で黙って 0 化すると欠落して誤解を招く）。
+                use crate::vocab::ChartKind;
+                let magnitude_only = matches!(
+                    spec.kind,
+                    ChartKind::Pie
+                        | ChartKind::Donut
+                        | ChartKind::Funnel
+                        | ChartKind::Treemap
+                        | ChartKind::RadialBar
+                );
                 for (i, point) in spec.data.iter().enumerate() {
                     self.label(&point.x, &format!("{path}.data[{i}].x"));
                     self.opt_label(point.series.as_deref(), &format!("{path}.data[{i}].series"));
@@ -124,6 +134,15 @@ impl<'a> Walk<'a> {
                         self.errors.push(
                             GuiValidationError::new("gui.invalid_number", "y は有限数のみ")
                                 .at(format!("{path}.data[{i}].y")),
+                        );
+                    }
+                    if magnitude_only && point.y < 0.0 {
+                        self.errors.push(
+                            GuiValidationError::new(
+                                "gui.negative_not_allowed",
+                                "この種別（pie/donut/funnel/treemap/radial_bar）では y に負値を使えません",
+                            )
+                            .at(format!("{path}.data[{i}].y")),
                         );
                     }
                     if point.xv.is_some_and(|v| !v.is_finite()) {

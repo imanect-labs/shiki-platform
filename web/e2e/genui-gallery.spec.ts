@@ -19,6 +19,7 @@ const CHART_CELL_IDS = [
   "pie",
   "donut",
   "scatter",
+  "scatter-cat",
   "radar",
   "radial",
   "funnel",

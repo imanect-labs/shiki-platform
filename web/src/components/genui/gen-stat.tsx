@@ -62,7 +62,7 @@ export function GenUiStat({ stat }: { stat: StatProps }) {
           </svg>
         ) : null}
       </div>
-      {(hasDelta || caption) && (
+      {(hasDelta || delta_label || caption) && (
         <div className="mt-1.5 flex items-center gap-2">
           {hasDelta ? (
             <span

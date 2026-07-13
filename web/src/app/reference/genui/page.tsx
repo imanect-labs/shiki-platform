@@ -57,7 +57,27 @@ const CHARTS: { id: string; title: string; spec: unknown }[] = [
   { id: "combo", title: "複合（combo）", spec: chart("combo", { line_series: ["目標"] }) },
   { id: "pie", title: "円（pie）", spec: chart("pie") },
   { id: "donut", title: "ドーナツ（donut）", spec: chart("donut") },
-  { id: "scatter", title: "散布（scatter）", spec: chart("scatter") },
+  { id: "scatter", title: "散布（scatter・数値 x）", spec: chart("scatter") },
+  {
+    id: "scatter-cat",
+    title: "散布（scatter・カテゴリ x）",
+    spec: {
+      version: 1,
+      root: {
+        component: "chart",
+        kind: "scatter",
+        title: "カテゴリ別スコア",
+        data: [
+          { x: "A", y: 12, series: "実績" },
+          { x: "B", y: 19, series: "実績" },
+          { x: "C", y: 8, series: "実績" },
+          { x: "A", y: 15, series: "目標" },
+          { x: "B", y: 17, series: "目標" },
+          { x: "C", y: 11, series: "目標" },
+        ],
+      },
+    },
+  },
   { id: "radar", title: "レーダー（radar）", spec: chart("radar") },
   { id: "radial", title: "放射状バー（radial_bar）", spec: chart("radial_bar") },
   { id: "funnel", title: "ファネル（funnel）", spec: chart("funnel") },

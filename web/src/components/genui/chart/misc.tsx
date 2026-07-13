@@ -22,30 +22,46 @@ import {
 import type { ChartSpec } from "@/generated/gui-spec";
 import { AXIS_TICK, colorFor, DEFAULT_SERIES, TOOLTIP_STYLE, toTotals } from "./palette";
 
-/// 散布図: 系列ごとに {x: xv ?? 連番, y, label} をプロット。
+/// 散布図: 系列ごとに点をプロット。数値 x（`xv`）があれば数値軸、無ければ
+/// カテゴリ軸（`x` ラベル）で同一カテゴリを揃える（連番だと系列間で位置がずれるため）。
 /// ScatterChart は XAxis/YAxis の dataKey で座標系を決めるため専用軸を持つ（共有軸は使わない）。
 export function renderScatter(spec: ChartSpec): React.ReactElement {
-  const bySeries = new Map<string, { x: number; y: number; label: string }[]>();
+  const numericX = (spec.data ?? []).some((p) => p.xv != null);
+  const bySeries = new Map<string, { x: number; label: string; y: number }[]>();
   const order: string[] = [];
-  (spec.data ?? []).forEach((p, idx) => {
+  for (const p of spec.data ?? []) {
     const name = p.series ?? DEFAULT_SERIES;
     if (!bySeries.has(name)) {
       bySeries.set(name, []);
       order.push(name);
     }
-    bySeries.get(name)!.push({ x: p.xv ?? idx, y: p.y, label: p.x });
-  });
+    bySeries.get(name)!.push({ x: p.xv ?? 0, label: p.x, y: p.y });
+  }
+  // カテゴリ軸では dataKey="label"（同一カテゴリを揃える）、数値軸では dataKey="x"（xv）。
+  const xAxis = numericX ? (
+    <XAxis
+      type="number"
+      dataKey="x"
+      name={spec.x_label ?? "x"}
+      tick={AXIS_TICK}
+      tickLine={false}
+      axisLine={{ stroke: "var(--border)" }}
+    />
+  ) : (
+    <XAxis
+      type="category"
+      dataKey="label"
+      allowDuplicatedCategory={false}
+      name={spec.x_label ?? "x"}
+      tick={AXIS_TICK}
+      tickLine={false}
+      axisLine={{ stroke: "var(--border)" }}
+    />
+  );
   return (
     <ScatterChart margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
       <CartesianGrid stroke="var(--border)" strokeDasharray="2 4" />
-      <XAxis
-        type="number"
-        dataKey="x"
-        name={spec.x_label ?? "x"}
-        tick={AXIS_TICK}
-        tickLine={false}
-        axisLine={{ stroke: "var(--border)" }}
-      />
+      {xAxis}
       <YAxis
         type="number"
         dataKey="y"

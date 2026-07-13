@@ -324,6 +324,26 @@ fn rejects_overlong_line_series_label() {
 }
 
 #[test]
+fn rejects_negative_values_for_magnitude_charts() {
+    // 面積/割合で大小を表す種別は負値を拒否（bar/line 等は許容）。
+    for kind in ["pie", "donut", "funnel", "treemap", "radial_bar"] {
+        assert_rejected_with(
+            minimal(json!({
+                "component": "chart", "kind": kind,
+                "data": [ { "x": "A", "y": 5.0 }, { "x": "B", "y": -2.0 } ]
+            })),
+            "gui.negative_not_allowed",
+        );
+    }
+    // bar は負値可（前年差分など）。
+    let ok = minimal(json!({
+        "component": "chart", "kind": "bar",
+        "data": [ { "x": "A", "y": -2.0 } ]
+    }));
+    assert!(validate_spec(&ok).is_ok(), "{:?}", error_codes(ok));
+}
+
+#[test]
 fn accepts_stat_tile() {
     let spec = minimal(json!({
         "component": "stat",
