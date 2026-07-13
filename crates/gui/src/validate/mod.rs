@@ -76,6 +76,8 @@ pub mod limits {
     pub const MAX_LINE_SERIES: usize = 50;
     /// スタットタイルの sparkline 値数上限。
     pub const MAX_SPARKLINE_POINTS: usize = 200;
+    /// コードブロックの文字数上限（表示スニペット想定）。
+    pub const MAX_CODE_CHARS: usize = 8000;
     /// 本文テキスト（text/セル/default 値）の文字数上限。
     pub const MAX_TEXT_CHARS: usize = 4000;
     /// ラベル類（label/title/placeholder/x など）の文字数上限。

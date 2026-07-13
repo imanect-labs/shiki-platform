@@ -10,6 +10,11 @@ use ts_rs::TS;
 
 use gui::action::{ActionBinding, HandlerBinding, ToolBinding, WorkflowBinding, WorkflowPin};
 use gui::chart::{ChartPoint, ChartSpec};
+use gui::layout::{
+    AccordionItem, AccordionProps, BadgeItem, BadgeListProps, BadgeTone, CalloutProps, CalloutTone,
+    CodeBlockProps, KeyValueItem, KeyValueProps, StepItem, StepStatus, StepperProps, TabItem,
+    TabsProps,
+};
 use gui::miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
 use gui::skill::{
     FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody, SkillScript,
@@ -64,6 +69,21 @@ fn main() {
         ChartSpec,
         ChartPoint,
         StatProps,
+        CalloutProps,
+        CalloutTone,
+        AccordionProps,
+        AccordionItem,
+        TabsProps,
+        TabItem,
+        StepperProps,
+        StepItem,
+        StepStatus,
+        BadgeListProps,
+        BadgeItem,
+        BadgeTone,
+        KeyValueProps,
+        KeyValueItem,
+        CodeBlockProps,
         ActionBinding,
         ToolBinding,
         HandlerBinding,

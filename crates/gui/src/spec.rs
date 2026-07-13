@@ -51,6 +51,14 @@ pub enum UiNode {
     Table(TableProps),
     Chart(ChartSpec),
     Stat(StatProps),
+    // ---- レイアウト/コンテンツ基盤（PR2・props は crate::layout） ----
+    Callout(crate::layout::CalloutProps),
+    Accordion(crate::layout::AccordionProps),
+    Tabs(crate::layout::TabsProps),
+    Stepper(crate::layout::StepperProps),
+    BadgeList(crate::layout::BadgeListProps),
+    KeyValue(crate::layout::KeyValueProps),
+    CodeBlock(crate::layout::CodeBlockProps),
     // ---- 将来予約（vocab::ComponentKind と同期・検証が拒否する） ----
     Map(ReservedProps),
     Image(ReservedProps),
@@ -68,6 +76,13 @@ impl UiNode {
             UiNode::Table(_) => ComponentKind::Table,
             UiNode::Chart(_) => ComponentKind::Chart,
             UiNode::Stat(_) => ComponentKind::Stat,
+            UiNode::Callout(_) => ComponentKind::Callout,
+            UiNode::Accordion(_) => ComponentKind::Accordion,
+            UiNode::Tabs(_) => ComponentKind::Tabs,
+            UiNode::Stepper(_) => ComponentKind::Stepper,
+            UiNode::BadgeList(_) => ComponentKind::BadgeList,
+            UiNode::KeyValue(_) => ComponentKind::KeyValue,
+            UiNode::CodeBlock(_) => ComponentKind::CodeBlock,
             UiNode::Map(_) => ComponentKind::Map,
             UiNode::Image(_) => ComponentKind::Image,
         }
