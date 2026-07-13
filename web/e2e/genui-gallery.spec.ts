@@ -7,16 +7,20 @@ import type { Page } from "@playwright/test";
 /// `SHOTS_DIR` を渡すとチャート/スタットの PNG を保存する（web/e2e/visual.spec.ts と同方針）。
 const SHOTS = process.env.SHOTS_DIR;
 
-const CHART_KINDS = [
+/// ギャラリーのチャートセル id（一意）。同一 kind が複数（bar と bar-stacked 等）あるため
+/// data-chart-kind ではなくセル id で選択する。
+const CHART_CELL_IDS = [
   "bar",
+  "bar-stacked",
   "line",
   "area",
+  "area-stacked",
   "combo",
   "pie",
   "donut",
   "scatter",
   "radar",
-  "radial_bar",
+  "radial",
   "funnel",
   "treemap",
 ] as const;
@@ -37,11 +41,11 @@ test.describe("generative UI ギャラリー（検証済みスペックの描画
     await page.goto("/reference/genui", { waitUntil: "networkidle" });
     await waitForCharts(page);
 
-    // 各チャート種が SVG を伴って描画される（data-chart-kind で選択）。
-    for (const kind of CHART_KINDS) {
-      const chart = page.locator(`[data-chart-kind="${kind}"]`);
-      await expect(chart, `chart kind ${kind}`).toBeVisible();
-      await expect(chart.locator("svg.recharts-surface").first()).toBeVisible();
+    // 各チャートセルが recharts の SVG を伴って描画される（セル id で一意選択）。
+    for (const id of CHART_CELL_IDS) {
+      const cell = page.getByTestId(`gallery-${id}`);
+      await expect(cell, `chart cell ${id}`).toBeVisible();
+      await expect(cell.locator("svg.recharts-surface").first()).toBeVisible();
     }
 
     // KPI スタットタイル（値・sparkline）。
@@ -49,10 +53,8 @@ test.describe("generative UI ギャラリー（検証済みスペックの描画
     await expect(page.getByTestId("gallery-stat-up").getByText("¥1.28M")).toBeVisible();
 
     if (SHOTS) {
-      for (const kind of CHART_KINDS) {
-        await page
-          .locator(`[data-chart-kind="${kind}"]`)
-          .screenshot({ path: `${SHOTS}/chart-${kind}.png` });
+      for (const id of CHART_CELL_IDS) {
+        await page.getByTestId(`gallery-${id}`).screenshot({ path: `${SHOTS}/chart-${id}.png` });
       }
       for (const id of ["stat-up", "stat-down", "stat-plain"]) {
         await page.getByTestId(`gallery-${id}`).screenshot({ path: `${SHOTS}/${id}.png` });
