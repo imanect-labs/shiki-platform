@@ -223,6 +223,7 @@ impl<'a> Walk<'a> {
                 self.text(&p.code, limits::MAX_CODE_CHARS, &format!("{path}.code"));
                 self.opt_label(p.language.as_deref(), &format!("{path}.language"));
             }
+            UiNode::QuestionCard(p) => self.question_card(p, path),
             // available() 判定で早期 return 済み。
             UiNode::Map(_) | UiNode::Image(_) => unreachable!("reserved components return early"),
         }

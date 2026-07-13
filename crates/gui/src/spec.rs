@@ -59,6 +59,8 @@ pub enum UiNode {
     BadgeList(crate::layout::BadgeListProps),
     KeyValue(crate::layout::KeyValueProps),
     CodeBlock(crate::layout::CodeBlockProps),
+    // ---- 対話（PR4・回答は宣言済みアクションへ送信） ----
+    QuestionCard(crate::question::QuestionCardProps),
     // ---- 将来予約（vocab::ComponentKind と同期・検証が拒否する） ----
     Map(ReservedProps),
     Image(ReservedProps),
@@ -83,6 +85,7 @@ impl UiNode {
             UiNode::BadgeList(_) => ComponentKind::BadgeList,
             UiNode::KeyValue(_) => ComponentKind::KeyValue,
             UiNode::CodeBlock(_) => ComponentKind::CodeBlock,
+            UiNode::QuestionCard(_) => ComponentKind::QuestionCard,
             UiNode::Map(_) => ComponentKind::Map,
             UiNode::Image(_) => ComponentKind::Image,
         }
@@ -400,6 +403,16 @@ mod tests {
                 delta_label: None,
                 trend: vec![],
                 caption: None,
+            }),
+            UiNode::QuestionCard(crate::question::QuestionCardProps {
+                id: String::new(),
+                title: None,
+                intro: None,
+                submit: ActionRef {
+                    action: String::new(),
+                },
+                questions: vec![],
+                submit_label: None,
             }),
             UiNode::Map(ReservedProps {}),
             UiNode::Image(ReservedProps {}),

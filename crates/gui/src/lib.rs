@@ -32,6 +32,7 @@ pub mod form_fields;
 pub mod layout;
 pub mod miniapp;
 pub mod miniapp_store;
+pub mod question;
 pub mod skill;
 pub mod skill_store;
 pub mod spec;

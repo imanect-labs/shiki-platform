@@ -6,21 +6,93 @@ use crate::validate::{check_id, limits, GuiValidationError};
 
 impl Walk<'_> {
     pub(super) fn form(&mut self, p: &crate::spec::FormProps, path: &str) {
-        check_id(&p.id, &format!("{path}.id"), self.errors);
-        if self.form_ids.iter().any(|id| id == &p.id) {
+        self.register_form_id(&p.id, path);
+        self.opt_label(p.title.as_deref(), &format!("{path}.title"));
+        self.opt_label(p.submit_label.as_deref(), &format!("{path}.submit_label"));
+        self.action_ref(&p.submit, &format!("{path}.submit"));
+        self.form_fields(&p.fields, path, "fields");
+    }
+
+    /// 質問カード（PR4）。フォームと同じ送信フロー（chat.submit）を使う。
+    /// 各問は独自型 [`QuestionItem`](crate::question::QuestionItem)（選択肢はラベル＋説明）。
+    pub(super) fn question_card(&mut self, p: &crate::question::QuestionCardProps, path: &str) {
+        self.register_form_id(&p.id, path);
+        self.opt_label(p.title.as_deref(), &format!("{path}.title"));
+        if let Some(intro) = &p.intro {
+            self.text(intro, limits::MAX_TEXT_CHARS, &format!("{path}.intro"));
+        }
+        self.opt_label(p.submit_label.as_deref(), &format!("{path}.submit_label"));
+        self.action_ref(&p.submit, &format!("{path}.submit"));
+        if p.questions.len() > limits::MAX_FORM_FIELDS {
             self.errors.push(
                 GuiValidationError::new(
-                    "gui.duplicate_form_id",
-                    format!("フォーム id '{}' が重複しています", p.id),
+                    "gui.too_many_fields",
+                    format!("質問が多すぎます（最大 {}）", limits::MAX_FORM_FIELDS),
                 )
                 .at(path),
             );
         }
-        self.form_ids.push(p.id.clone());
-        self.opt_label(p.title.as_deref(), &format!("{path}.title"));
-        self.opt_label(p.submit_label.as_deref(), &format!("{path}.submit_label"));
-        self.action_ref(&p.submit, &format!("{path}.submit"));
-        if p.fields.len() > limits::MAX_FORM_FIELDS {
+        let mut seen = std::collections::HashSet::new();
+        for (i, q) in p.questions.iter().enumerate() {
+            let qpath = format!("{path}.questions[{i}]");
+            check_id(&q.id, &qpath, self.errors);
+            if !seen.insert(q.id.clone()) {
+                self.errors.push(
+                    GuiValidationError::new(
+                        "gui.duplicate_field_id",
+                        format!("質問 id '{}' が重複しています", q.id),
+                    )
+                    .at(&qpath),
+                );
+            }
+            self.opt_label(q.header.as_deref(), &format!("{qpath}.header"));
+            self.text(
+                &q.question,
+                limits::MAX_TEXT_CHARS,
+                &format!("{qpath}.question"),
+            );
+            self.opt_label(q.placeholder.as_deref(), &format!("{qpath}.placeholder"));
+            if q.options.len() > limits::MAX_SELECT_OPTIONS {
+                self.errors.push(
+                    GuiValidationError::new(
+                        "gui.too_many_options",
+                        format!("選択肢が多すぎます（最大 {}）", limits::MAX_SELECT_OPTIONS),
+                    )
+                    .at(&qpath),
+                );
+            }
+            for (j, opt) in q.options.iter().enumerate() {
+                self.label(&opt.label, &format!("{qpath}.options[{j}].label"));
+                if let Some(d) = &opt.description {
+                    self.text(
+                        d,
+                        limits::MAX_TEXT_CHARS,
+                        &format!("{qpath}.options[{j}].description"),
+                    );
+                }
+            }
+        }
+    }
+
+    /// 送信可能単位（form / question_card）の id を検査し重複を防ぐ（共通名前空間）。
+    fn register_form_id(&mut self, id: &str, path: &str) {
+        check_id(id, &format!("{path}.id"), self.errors);
+        if self.form_ids.iter().any(|fid| fid == id) {
+            self.errors.push(
+                GuiValidationError::new(
+                    "gui.duplicate_form_id",
+                    format!("フォーム id '{id}' が重複しています"),
+                )
+                .at(path),
+            );
+        }
+        self.form_ids.push(id.to_string());
+    }
+
+    /// フィールド列（form の `fields` / question_card の `questions`）の検証。
+    /// `arr` はパス表示用の配列名。
+    pub(super) fn form_fields(&mut self, fields: &[FormField], path: &str, arr: &str) {
+        if fields.len() > limits::MAX_FORM_FIELDS {
             self.errors.push(
                 GuiValidationError::new(
                     "gui.too_many_fields",
@@ -30,8 +102,8 @@ impl Walk<'_> {
             );
         }
         let mut seen = std::collections::HashSet::new();
-        for (i, field) in p.fields.iter().enumerate() {
-            let fpath = format!("{path}.fields[{i}]");
+        for (i, field) in fields.iter().enumerate() {
+            let fpath = format!("{path}.{arr}[{i}]");
             check_id(field.id(), &fpath, self.errors);
             if !seen.insert(field.id().to_string()) {
                 self.errors.push(

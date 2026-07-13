@@ -43,7 +43,13 @@ impl Tool for EmitUiTool {
          (info/success/warning/danger)+title?+text。accordion は items[{title,open?,children}]、\
          tabs は tabs[{label,children}]、stepper は steps[{title,status:todo/doing/done,description?}]、\
          badge_list は badges[{label,tone?}]、key_value は title?+items[{key,value}]、code_block は \
-         code+language?（表示専用）。フォーム送信やボタンは \
+         code+language?（表示専用）。ユーザーへ確認・選択を求めたいときは question_card で \
+         質問できる（id・title?・intro?・submit・questions・submit_label?）。フロントは 1 問ずつ \
+         ステップ表示する。各質問は {id, header?[短い見出しチップ], question[質問文], \
+         options?[各 {label, description?} の選択肢カード], multi_select?, allow_other?, \
+         placeholder?}。options を空にすると自由記述（テキストエリア・長文可）になる。回答は \
+         chat.submit へまとめて送信され次ターンの発話になる。選択肢に説明を添え、数値は選択肢か \
+         自由記述で問う（スライダーは使わない）。フォーム送信やボタンは \
          spec.actions に宣言した束縛（type: handler の chat.submit、type: tool の doc_search / \
          web_search、type: workflow の name 参照）だけを action id で参照できる。検証に失敗した \
          場合はエラーを直して再試行するか、通常のテキストで回答する。"

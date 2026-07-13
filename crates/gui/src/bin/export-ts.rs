@@ -17,6 +17,7 @@ use gui::layout::{
     TabsProps,
 };
 use gui::miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
+use gui::question::{QuestionCardProps, QuestionItem, QuestionOption};
 use gui::skill::{
     FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody, SkillScript,
 };
@@ -90,6 +91,9 @@ fn main() {
         KeyValueProps,
         KeyValueItem,
         CodeBlockProps,
+        QuestionCardProps,
+        QuestionItem,
+        QuestionOption,
         ActionBinding,
         ToolBinding,
         HandlerBinding,
