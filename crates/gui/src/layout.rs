@@ -161,3 +161,67 @@ pub struct CodeBlockProps {
     #[serde(default)]
     pub language: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::{TextProps, TextVariant, UiNode};
+
+    /// レイアウト各 props の serde ラウンドトリップ（Serialize/Deserialize 両方向）。
+    #[test]
+    fn layout_props_roundtrip() {
+        let child = UiNode::Text(TextProps {
+            text: "本文".into(),
+            variant: TextVariant::Body,
+        });
+        let nodes: Vec<UiNode> = vec![
+            UiNode::Callout(CalloutProps {
+                tone: CalloutTone::Warning,
+                title: Some("注意".into()),
+                text: "在庫僅少".into(),
+            }),
+            UiNode::Accordion(AccordionProps {
+                items: vec![AccordionItem {
+                    title: "詳細".into(),
+                    open: true,
+                    children: vec![child.clone()],
+                }],
+            }),
+            UiNode::Tabs(TabsProps {
+                tabs: vec![TabItem {
+                    label: "A".into(),
+                    children: vec![child.clone()],
+                }],
+            }),
+            UiNode::Stepper(StepperProps {
+                steps: vec![StepItem {
+                    title: "S1".into(),
+                    status: StepStatus::Done,
+                    description: Some("済".into()),
+                }],
+            }),
+            UiNode::BadgeList(BadgeListProps {
+                badges: vec![BadgeItem {
+                    label: "tag".into(),
+                    tone: BadgeTone::Info,
+                }],
+            }),
+            UiNode::KeyValue(KeyValueProps {
+                title: Some("詳細".into()),
+                items: vec![KeyValueItem {
+                    key: "k".into(),
+                    value: "v".into(),
+                }],
+            }),
+            UiNode::CodeBlock(CodeBlockProps {
+                code: "let x = 1;".into(),
+                language: Some("rust".into()),
+            }),
+        ];
+        for node in nodes {
+            let json = serde_json::to_value(&node).expect("serialize");
+            let back: UiNode = serde_json::from_value(json).expect("deserialize");
+            assert_eq!(back, node);
+        }
+    }
+}
