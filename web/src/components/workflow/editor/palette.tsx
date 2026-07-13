@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { NodeCatalogEntry } from "@/generated/workflow-ir";
 import { nodeIcon } from "./icons";
+import { categoryVar } from "../category-accent";
 
 export const PALETTE_DND_TYPE = "application/x-shiki-node-type";
 
@@ -86,7 +87,7 @@ export function Palette() {
                       title={entry.description_ja}
                     >
                       <GripVertical className="size-3.5 shrink-0 text-muted-foreground/50" aria-hidden />
-                      <Icon className="size-4 shrink-0 text-primary" aria-hidden />
+                      <Icon className="size-4 shrink-0" style={{ color: categoryVar(entry.category) }} aria-hidden />
                       <span className="truncate text-sm">{entry.label_ja}</span>
                     </div>
                   </li>

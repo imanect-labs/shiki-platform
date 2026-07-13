@@ -1,7 +1,8 @@
 import * as React from "react";
-import type { LucideIcon } from "lucide-react";
+import { Leaf, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { currentSeasonIndex, seasonVar } from "@/lib/season";
 
 type EmptyStateProps = React.ComponentProps<"div"> & {
   icon?: LucideIcon;
@@ -9,6 +10,8 @@ type EmptyStateProps = React.ComponentProps<"div"> & {
   description?: string;
   /// 補助アクション（例: 「アップロード」ボタン）。
   action?: React.ReactNode;
+  /// アイコンバッジに今季の葉を小さく添える（ブランド identity を空の瞬間にも運ぶ）。
+  seasonal?: boolean;
 };
 
 /// データが無いことを丁寧に伝える共通サーフェス（フェイクデータの代わり）。
@@ -18,6 +21,7 @@ function EmptyState({
   title,
   description,
   action,
+  seasonal,
   className,
   ...props
 }: EmptyStateProps) {
@@ -30,8 +34,16 @@ function EmptyState({
       {...props}
     >
       {Icon ? (
-        <div className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+        <div className="relative flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
           <Icon className="size-6" aria-hidden />
+          {seasonal ? (
+            <Leaf
+              className="absolute -right-1 -top-1 size-4 rotate-12"
+              style={{ color: seasonVar(currentSeasonIndex()) }}
+              strokeWidth={2.5}
+              aria-hidden
+            />
+          ) : null}
         </div>
       ) : null}
       <div className="flex flex-col gap-1">
