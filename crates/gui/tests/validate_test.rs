@@ -310,11 +310,12 @@ fn accepts_extended_chart_kinds_and_flags() {
 }
 
 #[test]
-fn rejects_non_finite_chart_numbers() {
-    // y/xv は有限数のみ（NaN/Inf は JSON で null 化 → 型不整合で拒否される）。
+fn rejects_overlong_line_series_label() {
+    // line_series の各系列名はラベル上限を超えると拒否（NaN/Inf は JSON に載らないため
+    // y/xv の有限数チェックは型の段で担保され、ここでは文字列上限を突く）。
     assert_rejected_with(
         minimal(json!({
-            "component": "chart", "kind": "bar",
+            "component": "chart", "kind": "combo",
             "data": [ { "x": "a", "y": 1.0, "xv": 2.0 } ],
             "line_series": [ "x".repeat(limits::MAX_LABEL_CHARS + 1) ]
         })),

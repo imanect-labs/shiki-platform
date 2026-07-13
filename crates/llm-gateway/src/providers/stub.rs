@@ -131,12 +131,27 @@ fn genui_spec(kind: &str) -> serde_json::Value {
             }
         }),
         // `chart` は bar、`chart:<kind>` は種別指定（scatter/radar/... の決定的描画）。
+        // 未知の接尾辞はそのまま渡すと検証で拒否されるため、閉語彙でホワイトリスト化し
+        // 未知値は bar にフォールバックして常に検証を通る固定スペックにする。
         k if k == "chart" || k.starts_with("chart:") => {
-            let chart_kind = k.strip_prefix("chart:").unwrap_or("bar").trim();
-            let chart_kind = if chart_kind.is_empty() {
-                "bar"
+            const KNOWN_KINDS: &[&str] = &[
+                "bar",
+                "line",
+                "area",
+                "pie",
+                "donut",
+                "scatter",
+                "radar",
+                "radial_bar",
+                "combo",
+                "funnel",
+                "treemap",
+            ];
+            let requested = k.strip_prefix("chart:").unwrap_or("bar").trim();
+            let chart_kind = if KNOWN_KINDS.contains(&requested) {
+                requested
             } else {
-                chart_kind
+                "bar"
             };
             json!({
                 "version": 1,
@@ -477,6 +492,8 @@ mod tests {
         assert_eq!(genui_spec("chart")["root"]["kind"], "bar");
         assert_eq!(genui_spec("chart:")["root"]["kind"], "bar");
         assert_eq!(genui_spec("chart:bar")["root"]["component"], "chart");
+        // 未知の kind は bar にフォールバック（常に検証を通る固定スペック）。
+        assert_eq!(genui_spec("chart:unknown")["root"]["kind"], "bar");
     }
 
     #[test]

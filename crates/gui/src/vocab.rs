@@ -98,7 +98,7 @@ vocab_enum! {
         Pie => "pie",
         /// 中央に穴を空けた円グラフ（構成比）。
         Donut => "donut",
-        /// 散布図（数値 x は `ChartPoint::xv`・省略時はカテゴリ）。
+        /// 散布図（数値 x は `ChartPoint::xv`・省略時は配列インデックス）。
         Scatter => "scatter",
         /// レーダー（系列を多角形で重ねる・項目間バランス）。
         Radar => "radar",

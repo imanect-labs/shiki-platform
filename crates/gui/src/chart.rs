@@ -40,7 +40,8 @@ pub struct ChartPoint {
     /// 複数系列チャートの系列名（単一系列なら省略）。
     #[serde(default)]
     pub series: Option<String>,
-    /// 散布図（`scatter`）の数値 x。省略時は `x`（カテゴリ）を軸に使う。
+    /// 散布図（`scatter`）の数値 x。省略時は各データ点の配列インデックスを x に使い、
+    /// `x`（文字列）はツールチップのラベルになる。他種では無視される。
     #[serde(default)]
     pub xv: Option<f64>,
 }
