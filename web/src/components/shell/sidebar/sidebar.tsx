@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { PanelLeft } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -70,7 +70,7 @@ export function SidebarContent({
                 aria-expanded
                 className="ml-auto flex size-7 items-center justify-center rounded-md text-sidebar-foreground/55 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
               >
-                <PanelLeft className="size-[18px]" aria-hidden />
+                <PanelLeftClose className="size-[18px]" aria-hidden />
               </button>
             ) : null}
           </>
@@ -84,7 +84,7 @@ export function SidebarContent({
                 aria-expanded={false}
                 className="flex size-9 items-center justify-center rounded-[9px] text-sidebar-foreground/55 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
               >
-                <PanelLeft className="size-[18px]" aria-hidden />
+                <PanelLeftOpen className="size-[18px]" aria-hidden />
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">サイドバーを開く</TooltipContent>
@@ -92,13 +92,18 @@ export function SidebarContent({
         ) : null}
       </div>
 
-      {/* 上部固定ナビ（検索＋新しいチャット＋ドライブ） */}
+      {/* 上部固定ナビ（新しいチャット＋検索＋ドライブ） */}
       <div className="shrink-0">
         <SidebarNav collapsed={collapsed} onNavigate={onNavigate} />
       </div>
 
+      {/* ナビと履歴の間を荒い破線で区切る（和のシグネチャ・rule-soft で控えめに）。 */}
+      <div className="shrink-0 px-2.5 pt-3" aria-hidden>
+        <div className="rule-soft shiki-dash-x h-1.5" />
+      </div>
+
       {/* 中段: チャット履歴 */}
-      {!collapsed ? <SectionLabel>チャット履歴</SectionLabel> : <div className="h-2" />}
+      {!collapsed ? <SectionLabel>チャット履歴</SectionLabel> : <div className="h-1" />}
       <SidebarChatHistory collapsed={collapsed} />
 
       {/* 最下部: アカウント（上端は荒い破線で区切る） */}
@@ -110,6 +115,9 @@ export function SidebarContent({
 }
 
 /// デスクトップの aside。幅は context 由来、右端にリサイズハンドル。
+/// 本文から少し浮かせた「フローティング パネル」にする（周囲 8px の間・角丸・淡い影）。
+/// 角丸クリップは内側ラッパの overflow-hidden で行い、外側 aside は overflow を残して
+/// リサイザ（右端外側に配置）が切れないようにする。
 export function Sidebar() {
   const { collapsed, effectiveWidthPx } = useSidebar();
   const asideRef = React.useRef<HTMLElement | null>(null);
@@ -119,9 +127,11 @@ export function Sidebar() {
       ref={asideRef}
       style={{ width: effectiveWidthPx }}
       data-collapsed={collapsed}
-      className="relative hidden h-dvh shrink-0 border-r border-sidebar-border transition-[width] duration-200 ease-[var(--ease-standard)] md:block"
+      className="relative m-2 hidden h-[calc(100dvh-1rem)] shrink-0 transition-[width] duration-200 ease-[var(--ease-standard)] md:block"
     >
-      <SidebarContent collapsed={collapsed} />
+      <div className="h-full overflow-hidden rounded-xl border border-sidebar-border bg-sidebar shadow-sm">
+        <SidebarContent collapsed={collapsed} />
+      </div>
       {!collapsed ? <SidebarResizer targetRef={asideRef} /> : null}
     </aside>
   );

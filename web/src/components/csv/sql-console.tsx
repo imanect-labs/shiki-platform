@@ -5,10 +5,18 @@
 /// テーブル名は `data`。結果は簡易テーブルで表示し、「新規 CSV として保存」を明示操作で提供。
 /// 実行は tabular サービス（11P.7・隔離 DuckDB）経由の RO SQL。
 
-import { Loader2, Play, Save } from "lucide-react";
+import { Play, Save } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/use-toast";
 import { runQuery, saveNewCsv, tableToCsv, type TableResponse } from "@/lib/tabular-api";
 
@@ -25,6 +33,10 @@ export function SqlConsole({
   const [result, setResult] = React.useState<TableResponse | null>(null);
   const [running, setRunning] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [elapsedMs, setElapsedMs] = React.useState<number | null>(null);
+  const [saveOpen, setSaveOpen] = React.useState(false);
+  const [saveName, setSaveName] = React.useState("query-result");
+  const [savingCsv, setSavingCsv] = React.useState(false);
 
   // 数値列（右寄せ表示・表計算ソフトの体裁）。結果のサンプルから判定する。
   const numericCols = React.useMemo(() => {
@@ -50,23 +62,28 @@ export function SqlConsole({
   const run = async () => {
     setRunning(true);
     setError(null);
+    const started = performance.now();
     try {
-      setResult(await runQuery(nodeId, sql));
+      const res = await runQuery(nodeId, sql);
+      setResult(res);
+      setElapsedMs(Math.round(performance.now() - started));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setResult(null);
+      setElapsedMs(null);
     } finally {
       setRunning(false);
     }
   };
 
   const saveResult = async () => {
-    if (!result) return;
-    const name = window.prompt("新しい CSV の名前", "query-result");
-    if (!name) return;
+    // savingCsv 中は二重発火を防ぐ（Enter と 保存ボタンの多重呼び出し対策）。
+    if (!result || !saveName.trim() || savingCsv) return;
+    setSavingCsv(true);
     try {
-      const saved = await saveNewCsv({ parentId, name, csv: tableToCsv(result) });
+      const saved = await saveNewCsv({ parentId, name: saveName.trim(), csv: tableToCsv(result) });
       toast({ title: "保存しました", description: `${saved.name} を作成しました。` });
+      setSaveOpen(false);
       onSaved?.(saved.node_id);
     } catch (e) {
       toast({
@@ -74,6 +91,8 @@ export function SqlConsole({
         title: "保存に失敗しました",
         description: e instanceof Error ? e.message : String(e),
       });
+    } finally {
+      setSavingCsv(false);
     }
   };
 
@@ -93,24 +112,34 @@ export function SqlConsole({
           spellCheck={false}
           aria-label="SQL"
           data-testid="sql-input"
-          className="min-h-16 flex-1 resize-y rounded-md border bg-background p-2 font-mono text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="scrollbar-subtle min-h-16 flex-1 resize-y rounded-md border bg-background p-2 font-mono text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
         <div className="flex flex-col gap-2">
-          <Button type="button" size="sm" onClick={() => void run()} disabled={running} data-testid="sql-run">
-            {running ? <Loader2 className="mr-1 size-4 animate-spin" /> : <Play className="mr-1 size-4" />}
+          <Button
+            type="button"
+            size="sm"
+            loading={running}
+            onClick={() => void run()}
+            disabled={running}
+            data-testid="sql-run"
+          >
+            {!running ? <Play className="size-4" aria-hidden /> : null}
             実行
           </Button>
           <Button
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => void saveResult()}
+            onClick={() => setSaveOpen(true)}
             disabled={!result}
             data-testid="sql-save"
           >
-            <Save className="mr-1 size-4" />
+            <Save className="size-4" aria-hidden />
             新規 CSV
           </Button>
+          <kbd className="rounded border bg-muted/50 px-1.5 py-0.5 text-center text-[10px] font-medium text-muted-foreground">
+            ⌘↵ で実行
+          </kbd>
         </div>
       </div>
       {error && (
@@ -122,7 +151,16 @@ export function SqlConsole({
         </p>
       )}
       {result && (
-        <div className="min-h-0 flex-1 overflow-auto rounded-md border">
+        <div className="flex items-center gap-2 px-0.5 text-xs text-muted-foreground">
+          <span className="font-medium text-foreground/70">{result.rows.length} 行</span>
+          {elapsedMs != null ? <span>· {elapsedMs} ms</span> : null}
+          {result.truncated ? (
+            <span className="text-[color:var(--season-autumn)]">· 上限で打ち切り</span>
+          ) : null}
+        </div>
+      )}
+      {result && (
+        <div className="scrollbar-subtle min-h-0 flex-1 overflow-auto rounded-lg border shadow-xs">
           <table className="w-full border-collapse text-sm">
             <thead className="sticky top-0 bg-muted/60">
               <tr>
@@ -158,6 +196,41 @@ export function SqlConsole({
           )}
         </div>
       )}
+
+      {/* 新規 CSV として保存（window.prompt の代わりにアプリの Dialog を使う） */}
+      <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
+        <DialogContent data-testid="sql-save-dialog">
+          <DialogHeader>
+            <DialogTitle>新規 CSV として保存</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="sql-save-name" className="text-sm font-medium">
+              ファイル名
+            </label>
+            <Input
+              id="sql-save-name"
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void saveResult();
+                }
+              }}
+              autoFocus
+              placeholder="query-result"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setSaveOpen(false)}>
+              キャンセル
+            </Button>
+            <Button loading={savingCsv} disabled={!saveName.trim()} onClick={() => void saveResult()}>
+              保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

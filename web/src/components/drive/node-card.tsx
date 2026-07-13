@@ -19,7 +19,7 @@ export function NodeCard({
 }) {
   const isFolder = node.kind === "folder";
   return (
-    <div className="group relative min-w-0 overflow-hidden rounded-xl border border-border/60 bg-card/40 transition-colors hover:border-border hover:bg-accent">
+    <div className="group relative min-w-0 overflow-hidden rounded-xl border border-border/60 bg-card/40 transition-[transform,box-shadow,border-color,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:-translate-y-0.5 hover:border-border hover:bg-accent hover:shadow-md">
       <div className="absolute right-1 top-1 z-10">
         <NodeActionsMenu
           node={node}

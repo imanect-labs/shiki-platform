@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
+import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/use-toast";
 import { deleteArtifact } from "@/lib/artifact-api";
 import {
@@ -183,14 +184,21 @@ export default function WorkflowsPage() {
         </div>
       ) : items.length === 0 ? (
         <EmptyState
+          seasonal
           icon={Workflow}
           title="まだワークフローがありません"
           description="「新しいワークフロー」から作成すると、ドラッグ＆ドロップで流れを組み立てられます。"
         />
       ) : (
-        <ul className="divide-y rounded-xl border bg-card">
-          {items.map((wf) => (
-            <li key={wf.id} className="group/row relative flex items-center">
+        <ul className="rule-soft overflow-hidden rounded-xl border bg-card">
+          {items.map((wf, i) => (
+            <li
+              key={wf.id}
+              className={cn(
+                "group/row relative flex items-center",
+                i > 0 && "shiki-dash-top",
+              )}
+            >
               <button
                 type="button"
                 onClick={() => router.push(`/workflows/${wf.id}`)}

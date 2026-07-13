@@ -9,6 +9,7 @@ import * as React from "react";
 import { Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { FadeSlide } from "@/components/ui/motion-primitives";
 import type { Node as IrNode, Trigger } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorContext } from "../workflow-editor";
@@ -119,7 +120,7 @@ function NodePanel({ ctx, node }: { ctx: EditorContext; node: IrNode }) {
       </div>
       <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4 scrollbar-subtle">
         {unmappedErrors.length > 0 ? (
-          <ul className="space-y-1 rounded-md border border-[oklch(0.6_0.15_25)]/40 bg-[oklch(0.6_0.15_25)]/5 p-2 text-[11px] text-[oklch(0.5_0.14_25)]">
+          <ul className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-2 text-[11px] text-destructive">
             {unmappedErrors.map((e, i) => (
               <li key={i}>{e.message}</li>
             ))}
@@ -142,7 +143,7 @@ function NodePanel({ ctx, node }: { ctx: EditorContext; node: IrNode }) {
         <Button
           variant="outline"
           size="sm"
-          className="w-full text-[oklch(0.55_0.15_25)]"
+          className="w-full text-destructive"
           onClick={() => ctx.dispatch({ type: "delete_nodes", ids: [node.id] })}
         >
           <Trash2 className="size-4" aria-hidden />
@@ -160,22 +161,16 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
     const node = ir.nodes.find((n) => n.id === selection.id);
     if (node) {
       return (
-        <aside
-          className="flex w-80 shrink-0 flex-col border-l bg-background"
-          aria-label="ブロックの設定"
-        >
+        <PanelShell label="ブロックの設定">
           <NodePanel ctx={ctx} node={node} />
-        </aside>
+        </PanelShell>
       );
     }
   }
   if (selection.kind === "trigger") {
     return (
-      <aside
-        className="flex w-80 shrink-0 flex-col border-l bg-background"
-        aria-label="きっかけの設定"
-      >
-        <div className="flex items-center justify-between border-b px-4 py-3">
+      <PanelShell label="きっかけの設定">
+        <div className="flex items-center justify-between shiki-dash-bottom px-4 py-3">
           <h2 className="text-sm font-semibold">きっかけ</h2>
           <Button
             variant="ghost"
@@ -194,8 +189,24 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
             onChange={(triggers) => ctx.dispatch({ type: "set_triggers", triggers })}
           />
         </div>
-      </aside>
+      </PanelShell>
     );
   }
   return null;
+}
+
+/// 設定パネルの外殻。キャンバスから少し浮かせた elevated カード（右から fade/slide 入場）。
+function PanelShell({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="shrink-0 p-2 pl-0">
+      <FadeSlide
+        from="right"
+        role="complementary"
+        aria-label={label}
+        className="flex h-full w-80 flex-col overflow-hidden rounded-xl border bg-card shadow-lg"
+      >
+        {children}
+      </FadeSlide>
+    </div>
+  );
 }

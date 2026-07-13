@@ -63,7 +63,7 @@ export function PlusEdge({
         className={cn(
           "!stroke-[1.5]",
           hasError
-            ? "!stroke-[oklch(0.6_0.15_25)]"
+            ? "!stroke-destructive"
             : selected
               ? "!stroke-primary"
               : "!stroke-border",

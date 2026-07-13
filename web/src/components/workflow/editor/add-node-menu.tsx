@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { NodeCatalogEntry } from "@/generated/workflow-ir";
 import { nodeIcon } from "./icons";
+import { categoryVar } from "../category-accent";
 
 type Props = {
   onPick: (nodeType: string) => void;
@@ -51,7 +52,7 @@ export function AddNodeMenu({ onPick, contextLabel }: Props) {
   const upcoming = filtered.filter((e) => !e.available);
 
   return (
-    <div className="flex max-h-96 w-80 flex-col">
+    <div className="flex max-h-96 w-80 flex-col" data-testid="add-node-menu">
       {contextLabel ? (
         <p className="px-1 pb-2 text-xs text-muted-foreground">{contextLabel}</p>
       ) : null}
@@ -88,7 +89,11 @@ export function AddNodeMenu({ onPick, contextLabel }: Props) {
                         "transition-colors duration-fast hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       )}
                     >
-                      <Icon className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
+                      <Icon
+                        className="mt-0.5 size-4 shrink-0"
+                        style={{ color: categoryVar(entry.category) }}
+                        aria-hidden
+                      />
                       <span className="min-w-0">
                         <span className="block text-sm font-medium leading-5">
                           {entry.label_ja}

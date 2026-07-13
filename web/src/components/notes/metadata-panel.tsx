@@ -6,12 +6,13 @@
 /// 反映は保存時のシリアライズ（Task 11P.2）が行うため、ここは Yjs だけを触る。
 /// thread_id は 11P.5 が管理する（このパネルには出さない）。
 
-import { Plus, Tag, X } from "lucide-react";
+import { Plus, SmilePlus, Tag, X } from "lucide-react";
 import * as React from "react";
 import type * as Y from "yjs";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 /// パネルが扱う予約キー（title/icon は専用 UI・thread_id は非表示）。
 const RESERVED_KEYS = new Set(["title", "icon", "tags", "thread_id"]);
@@ -93,15 +94,27 @@ export function MetadataPanel({
   return (
     <section aria-label="ノートのプロパティ" className="space-y-3" data-testid="note-meta-panel">
       <div className="flex items-start gap-3">
-        {/* アイコン（絵文字 1 文字想定・自由入力） */}
-        <Input
-          value={state.icon}
-          onChange={(e) => setKey("icon", e.target.value)}
-          disabled={!editable}
-          placeholder="📝"
-          aria-label="アイコン"
-          className="size-14 shrink-0 border-transparent bg-transparent text-center text-3xl shadow-none focus-visible:border-input"
-        />
+        {/* アイコン（絵文字 1 文字想定・自由入力）。未設定時は絵文字 placeholder（環境により
+            豆腐□になる）を使わず、muted の lucide アイコンを重ねて「追加できる枠」だと示す。 */}
+        <div className="relative size-14 shrink-0">
+          <Input
+            value={state.icon}
+            onChange={(e) => setKey("icon", e.target.value)}
+            disabled={!editable}
+            aria-label="アイコン"
+            className={cn(
+              "size-14 rounded-lg border-transparent bg-transparent text-center text-3xl shadow-none",
+              "transition-colors focus-visible:border-input",
+              editable && !state.icon && "hover:bg-accent/50",
+            )}
+          />
+          {!state.icon ? (
+            <SmilePlus
+              className="pointer-events-none absolute inset-0 m-auto size-6 text-muted-foreground/40"
+              aria-hidden
+            />
+          ) : null}
+        </div>
         <div className="min-w-0 flex-1">
           <Input
             value={state.title}

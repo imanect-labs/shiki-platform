@@ -9,12 +9,11 @@
 /// - ノート共有とスレッド共有は**別 ReBAC**。スレッド閲覧権限が無い共同編集者には
 ///   `Conversation` が fail-closed で「見つかりません」を表示する（暗黙共有しない）。
 
-import { Loader2, X } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import * as React from "react";
 import type * as Y from "yjs";
 
 import { Conversation } from "@/components/chat/conversation";
-import { Button } from "@/components/ui/button";
 import { createThread } from "@/lib/chat-api";
 
 /// meta から thread_id を読む（文字列のみ）。
@@ -27,13 +26,11 @@ export function NoteChatPanel({
   meta,
   noteName,
   editable,
-  onClose,
 }: {
   meta: Y.Map<unknown>;
   noteName: string;
   /// editor のみがスレッドを新規作成できる（viewer は既存スレッドの閲覧のみ）。
   editable: boolean;
-  onClose: () => void;
 }) {
   const [threadId, setThreadId] = React.useState<string | null>(() => readThreadId(meta));
   const [error, setError] = React.useState<string | null>(null);
@@ -64,42 +61,27 @@ export function NoteChatPanel({
   }, [threadId, editable, meta, noteName]);
 
   return (
-    <aside
-      className="flex h-full min-h-0 w-full flex-col border-l bg-background"
+    <div
+      className="flex h-full min-h-0 w-full flex-col"
       aria-label="ノートのチャット"
       data-testid="note-chat-panel"
     >
-      <header className="flex items-center gap-2 border-b px-3 py-2">
-        <span className="flex-1 text-sm font-medium">アシスタント</span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          onClick={onClose}
-          aria-label="チャットを閉じる"
-          className="size-8"
-        >
-          <X className="size-4" />
-        </Button>
-      </header>
-      <div className="min-h-0 flex-1">
-        {threadId ? (
-          <Conversation threadId={threadId} />
-        ) : error ? (
-          <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
-            {error}
-          </div>
-        ) : editable ? (
-          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            チャットを準備しています…
-          </div>
-        ) : (
-          <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
-            まだチャットが開始されていません。
-          </div>
-        )}
-      </div>
-    </aside>
+      {threadId ? (
+        <Conversation threadId={threadId} variant="panel" />
+      ) : error ? (
+        <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
+          {error}
+        </div>
+      ) : editable ? (
+        <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" aria-hidden />
+          チャットを準備しています…
+        </div>
+      ) : (
+        <div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
+          まだチャットが開始されていません。
+        </div>
+      )}
+    </div>
   );
 }

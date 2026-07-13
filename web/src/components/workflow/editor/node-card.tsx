@@ -22,6 +22,7 @@ import type { Node as IrNode, ValidationError } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import { AddNodeMenu } from "./add-node-menu";
 import { nodeIcon } from "./icons";
+import { categoryVar } from "../category-accent";
 
 export type NodeCardData = {
   irNode: IrNode;
@@ -67,8 +68,8 @@ function portLabel(port: string): string {
 }
 
 function portColor(port: string): string {
-  if (port === "error") return "!bg-[oklch(0.6_0.15_25)]";
-  if (port === "timeout") return "!bg-[oklch(0.65_0.12_80)]";
+  if (port === "error") return "!bg-destructive";
+  if (port === "timeout") return "!bg-[var(--season-autumn)]";
   return "!bg-primary";
 }
 
@@ -79,29 +80,43 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
   const ports = outputPorts(irNode);
   const hasError = errors.length > 0;
   const [menuOpen, setMenuOpen] = React.useState(false);
+  // カテゴリ由来の季節色（アイコンチップの tint で示す）。エラー時は破壊的色を優先。
+  const accent = categoryVar(entry?.category);
 
   return (
     <div
+      style={{ ["--accent" as string]: accent }}
+      // ⚠️ overflow-hidden は付けない（尻尾の＋が -right-9 でカード外に出るため一緒に切れる）。
       className={cn(
         "group/node relative w-60 rounded-xl border bg-card text-card-foreground shadow-sm",
-        "transition-shadow duration-fast",
-        selected && "ring-2 ring-primary shadow-md",
-        hasError && "border-[oklch(0.6_0.15_25)]",
+        // ⚠️ xyflow ノードは motion layout を使わず CSS transition のみ（transform/shadow/border）。
+        "transition-[transform,box-shadow,border-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+        "hover:-translate-y-0.5 hover:shadow-md",
+        selected && "shadow-lg ring-2 ring-primary",
+        hasError && "border-destructive",
       )}
     >
       {/* 入力ポート（join は複数エッジを受けるが handle は 1 つ）。 */}
       <Handle
         type="target"
         position={Position.Left}
-        className="!size-2.5 !border-2 !border-background !bg-muted-foreground"
+        className="!size-2.5 !border-2 !border-background !bg-muted-foreground transition-transform duration-[var(--duration-fast)] hover:!scale-125"
       />
 
       <div className="flex items-start gap-2.5 px-3.5 py-3">
         <span
           className={cn(
             "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg",
-            hasError ? "bg-[oklch(0.6_0.15_25)]/10 text-[oklch(0.6_0.15_25)]" : "bg-primary/10 text-primary",
+            hasError ? "bg-destructive/10 text-destructive" : "",
           )}
+          style={
+            hasError
+              ? undefined
+              : {
+                  backgroundColor: "color-mix(in oklab, var(--accent) 14%, transparent)",
+                  color: "var(--accent)",
+                }
+          }
         >
           <Icon className="size-4" aria-hidden />
         </span>
@@ -117,7 +132,7 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
           <Tooltip>
             <TooltipTrigger asChild>
               <span
-                className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-[oklch(0.6_0.15_25)] text-white"
+                className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-destructive text-destructive-foreground"
                 aria-label={`検証エラー ${errors.length} 件`}
               >
                 <AlertCircle className="size-3.5" aria-hidden />
@@ -141,7 +156,10 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
           id={ports[0]}
           type="source"
           position={Position.Right}
-          className={cn("!size-2.5 !border-2 !border-background", portColor(ports[0]))}
+          className={cn(
+            "!size-2.5 !border-2 !border-background transition-transform duration-[var(--duration-fast)] hover:!scale-125",
+            portColor(ports[0]),
+          )}
         />
       ) : (
         <div className="border-t px-3.5 py-1.5">
@@ -172,9 +190,11 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
             className={cn(
               "nodrag absolute -right-9 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center",
               "rounded-full border bg-background text-muted-foreground shadow-sm",
-              "opacity-0 transition-opacity duration-fast group-hover/node:opacity-100 focus-visible:opacity-100",
-              "hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              menuOpen && "opacity-100 border-primary text-primary",
+              // 常時うっすら表示し（発見性）、ホバー/フォーカスで全表示＋プライマリ強調。
+              "opacity-60 transition-all duration-fast group-hover/node:opacity-100 focus-visible:opacity-100",
+              "hover:border-primary hover:bg-primary hover:text-primary-foreground hover:scale-110",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              menuOpen && "opacity-100 border-primary bg-primary text-primary-foreground",
             )}
           >
             <Plus className="size-4" aria-hidden />

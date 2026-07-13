@@ -7,6 +7,7 @@ import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ActiveIndicator } from "@/components/ui/motion-primitives";
 
 type BaseProps = {
   icon: LucideIcon;
@@ -34,11 +35,13 @@ type ButtonProps = BaseProps & {
 // アクティブ＝ホバーと同系のグレー（白カードは廃止）。アクティブはやや濃いグレーで区別。
 function itemClasses(active: boolean, collapsed: boolean, depth: number) {
   return cn(
-    "group/navitem relative flex h-9 items-center gap-2.5 rounded-[9px] text-[13.5px] outline-none transition-colors",
+    // isolate: 独自の stacking context を作り、アクティブピル（-z-10）を項目内に収める
+    // （サイドバー背景の下へ潜って見えなくなる事故を防ぐ）。
+    "group/navitem relative isolate flex h-9 items-center gap-2.5 rounded-[9px] text-[13.5px] outline-none transition-colors",
     "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
     collapsed ? "w-9 justify-center px-0" : "w-full px-2.5",
     active
-      ? "bg-sidebar-accent font-medium text-sidebar-foreground"
+      ? "font-medium text-sidebar-foreground"
       : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
     !collapsed && depth > 0 && "pl-9",
   );
@@ -63,9 +66,19 @@ function Inner({
   const seasonTint = active && seasonIndex != null;
   return (
     <>
+      {/* アクティブをアイテム間でスライドする塗りピル（layoutId・唯一の動く要素）。
+          細い縦線ではなく丸角の面が滑ることで安っぽさを避ける。季節色はアイコン側で示す。 */}
+      {active ? (
+        <ActiveIndicator
+          layoutId="sidebar-active-nav"
+          className="absolute inset-0 -z-10 rounded-[9px] bg-sidebar-accent"
+        />
+      ) : null}
       <Icon
         className={cn(
-          "size-[18px] shrink-0",
+          "size-[18px] shrink-0 transition-transform duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+          // ホバーで軽くアイコンをずらす（微インタラクション・CSS のみ）。
+          "group-hover/navitem:translate-x-0.5",
           seasonTint ? "" : active ? "text-sidebar-foreground" : "text-sidebar-foreground/55",
         )}
         style={seasonTint ? { color: seasonVar(seasonIndex) } : undefined}

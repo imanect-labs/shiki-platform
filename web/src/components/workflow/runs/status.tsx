@@ -6,7 +6,6 @@
 /// 未知の値はそのまま表示する（新語彙が増えても UI が壊れない fail-open 表示）。
 
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
 
 type BadgeVariant = "success" | "warning" | "destructive" | "muted" | "secondary";
 
@@ -41,13 +40,13 @@ export function RunStatusBadge({ status }: { status: string }) {
   const s = RUN_STATUS[status] ?? { label: status, variant: "muted" as const };
   return (
     <Badge variant={s.variant}>
-      <span
-        className={cn(
-          "size-1.5 rounded-full bg-current",
-          s.live && "animate-pulse",
-        )}
-        aria-hidden
-      />
+      {/* 実行中は控えめな pulse リング（ping）付きのドットで生きている感を出す。 */}
+      <span className="relative flex size-1.5 items-center justify-center" aria-hidden>
+        {s.live ? (
+          <span className="absolute inline-flex size-1.5 animate-ping rounded-full bg-current opacity-75" />
+        ) : null}
+        <span className="relative size-1.5 rounded-full bg-current" />
+      </span>
       {s.label}
     </Badge>
   );

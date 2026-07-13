@@ -7,8 +7,7 @@
 ///   /collab/docs/{id}/access の表示用ヒントで editable を切り替える。
 /// - 11P.5 で本ページが「ノート×チャット分割ビュー」のホストになる。
 
-import { ArrowLeft, Eye, Loader2, MessageSquare } from "lucide-react";
-import Link from "next/link";
+import { Loader2, MessageSquare, X } from "lucide-react";
 import { useParams } from "next/navigation";
 import * as React from "react";
 import * as Y from "yjs";
@@ -17,19 +16,13 @@ import { embedSlashItems } from "@/components/notes/embed/embed-slash-items";
 import { MetadataPanel } from "@/components/notes/metadata-panel";
 import { NoteChatPanel } from "@/components/notes/note-chat-panel";
 import { NoteEditor } from "@/components/notes/note-editor";
-import { PresenceAvatars } from "@/components/notes/presence";
-import { Button } from "@/components/ui/button";
+import { NoteSyncSlot } from "@/components/notes/note-header-slot";
 import { EmptyState } from "@/components/ui/empty-state";
+import { FadeSlide } from "@/components/ui/motion-primitives";
 import { useMe } from "@/hooks/use-me";
 import { CollabProvider, type CollabStatus } from "@/lib/collab";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
-
-/// 接続状態のラベル（保存はサーバ側デバウンス・切断時のみ注意を促す）。
-function statusLabel(status: CollabStatus, synced: boolean): string {
-  if (status === "connected") return synced ? "同期済み" : "同期中…";
-  if (status === "connecting") return "接続中…";
-  return "オフライン（再接続します）";
-}
+import { cn } from "@/lib/utils";
 
 export default function NotePage() {
   const params = useParams<{ id: string }>();
@@ -41,6 +34,8 @@ export default function NotePage() {
   const [status, setStatus] = React.useState<CollabStatus>("connecting");
   const [synced, setSynced] = React.useState(false);
   const [chatOpen, setChatOpen] = React.useState(false);
+  // ヘッダスロットへ渡す安定参照（毎レンダーの再注入を避ける）。
+  const toggleChat = React.useCallback(() => setChatOpen((v) => !v), []);
 
   // Yjs ドキュメントとプロバイダ（ノート単位で 1 つ・アンマウントで破棄）。
   const [session, setSession] = React.useState<{
@@ -103,50 +98,28 @@ export default function NotePage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex items-center gap-3 border-b px-4 py-2.5">
-        <Link
-          href="/drive"
-          className="flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          aria-label="ドライブへ戻る"
-        >
-          <ArrowLeft className="size-4" />
-        </Link>
-        <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
-          {access.name.replace(/\.md$/i, "")}
-        </span>
-        {!editable && (
-          <span
-            className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
-            data-testid="note-readonly-badge"
-          >
-            <Eye className="size-3.5" aria-hidden />
-            閲覧のみ
-          </span>
-        )}
-        {session && <PresenceAvatars provider={session.provider} />}
-        <span
-          className="text-xs text-muted-foreground tabular-nums"
-          data-testid="note-sync-status"
-        >
-          {statusLabel(status, synced)}
-        </span>
-        <Button
-          type="button"
-          variant={chatOpen ? "secondary" : "ghost"}
-          size="sm"
-          onClick={() => setChatOpen((v) => !v)}
-          aria-pressed={chatOpen}
-          data-testid="note-chat-toggle"
-        >
-          <MessageSquare className="mr-1.5 size-4" aria-hidden />
-          アシスタント
-        </Button>
-      </header>
+      {/* 統一ヘッダへ注入（横バー二重を解消・null を返すだけ） */}
+      <NoteSyncSlot
+        name={access.name.replace(/\.md$/i, "")}
+        editable={editable}
+        status={status}
+        synced={synced}
+        chatOpen={chatOpen}
+        onToggleChat={toggleChat}
+        provider={session?.provider ?? null}
+      />
 
-      {/* 分割ビュー: 本ページが一元ホスト（Conversation を再利用・実装は一箇所） */}
-      <div className="flex min-h-0 flex-1">
+      {/* 分割ビュー: 本ページが一元ホスト（Conversation を再利用・実装は一箇所）。
+          アシスタントは「きっかけ」のように浮遊した角丸カード（本文の右側に重ねる）。 */}
+      <div className="relative flex min-h-0 flex-1">
         {session && (
-          <div className="min-w-0 flex-1 overflow-y-auto">
+          <div
+            className={cn(
+              "min-w-0 flex-1 overflow-y-auto transition-[padding] duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
+              // アシスタント表示中は本文を「パネルを除いた領域」の中央へ寄せる（右寄り解消）。
+              chatOpen && "lg:pr-[28rem]",
+            )}
+          >
             <div className="mx-auto max-w-3xl px-4 pb-24 pt-4">
               <MetadataPanel meta={session.doc.getMap("meta")} editable={editable} />
               <div className="mt-4">
@@ -161,14 +134,33 @@ export default function NotePage() {
           </div>
         )}
         {session && chatOpen && (
-          <div className="w-full max-w-md shrink-0 md:w-[420px]">
-            <NoteChatPanel
-              meta={session.doc.getMap("meta")}
-              noteName={access.name}
-              editable={editable}
-              onClose={() => setChatOpen(false)}
-            />
-          </div>
+          <FadeSlide
+            from="right"
+            role="complementary"
+            aria-label="ノートのアシスタント"
+            className="absolute inset-y-3 right-3 z-20 flex w-[min(420px,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border bg-card shadow-lg"
+          >
+            {/* 浮遊カードの自前ヘッダ＋幅いっぱいの会話（variant=panel） */}
+            <div className="flex h-11 shrink-0 items-center gap-2 px-3 shiki-dash-bottom">
+              <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
+              <span className="flex-1 text-sm font-medium">アシスタント</span>
+              <button
+                type="button"
+                onClick={() => setChatOpen(false)}
+                aria-label="チャットを閉じる"
+                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-90"
+              >
+                <X className="size-4" aria-hidden />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1">
+              <NoteChatPanel
+                meta={session.doc.getMap("meta")}
+                noteName={access.name}
+                editable={editable}
+              />
+            </div>
+          </FadeSlide>
         )}
       </div>
     </div>

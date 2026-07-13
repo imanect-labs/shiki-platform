@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { NodeCatalogEntry } from "@/generated/workflow-ir";
 import { nodeIcon } from "./icons";
+import { categoryVar } from "../category-accent";
 
 export const PALETTE_DND_TYPE = "application/x-shiki-node-type";
 
@@ -40,10 +41,10 @@ export function Palette() {
 
   return (
     <aside
-      className="flex w-64 shrink-0 flex-col border-r bg-background"
+      className="flex h-full w-64 flex-col overflow-hidden rounded-xl border bg-card shadow-lg"
       aria-label="ブロック一覧"
     >
-      <div className="border-b px-3 py-3">
+      <div className="shiki-dash-bottom px-3 py-3">
         <h2 className="text-sm font-semibold">ブロック</h2>
         <p className="mt-0.5 text-xs text-muted-foreground">
           ドラッグして置くか、ノードの＋から追加
@@ -86,7 +87,7 @@ export function Palette() {
                       title={entry.description_ja}
                     >
                       <GripVertical className="size-3.5 shrink-0 text-muted-foreground/50" aria-hidden />
-                      <Icon className="size-4 shrink-0 text-primary" aria-hidden />
+                      <Icon className="size-4 shrink-0" style={{ color: categoryVar(entry.category) }} aria-hidden />
                       <span className="truncate text-sm">{entry.label_ja}</span>
                     </div>
                   </li>

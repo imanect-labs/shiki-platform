@@ -10,6 +10,7 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { CalendarClock, MousePointerClick, Zap } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { seasonVar } from "@/lib/season";
 import type { Trigger } from "@/generated/workflow-ir";
 
 export type TriggerNodeData = {
@@ -17,6 +18,11 @@ export type TriggerNodeData = {
   index: number;
   [key: string]: unknown;
 };
+
+/// きっかけの種類ごとの季節色（schedule=秋/event=夏/manual=春）。差し色で3種を識別する。
+function triggerSeasonIndex(kind: Trigger["kind"]): number {
+  return kind === "schedule" ? 2 : kind === "event" ? 1 : 0;
+}
 
 function triggerView(trigger: Trigger): {
   icon: React.ElementType;
@@ -40,6 +46,7 @@ function triggerView(trigger: Trigger): {
 export function TriggerNode({ data, selected }: NodeProps & { data: TriggerNodeData }) {
   const view = triggerView(data.trigger);
   const Icon = view.icon;
+  const accent = seasonVar(triggerSeasonIndex(data.trigger.kind));
   return (
     <div
       className={cn(
@@ -49,7 +56,14 @@ export function TriggerNode({ data, selected }: NodeProps & { data: TriggerNodeD
       )}
     >
       <div className="flex items-center gap-2.5">
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-secondary text-secondary-foreground">
+        <span
+          className="flex size-7 shrink-0 items-center justify-center rounded-lg"
+          style={{
+            backgroundColor: "color-mix(in oklab, var(--tk) 16%, transparent)",
+            color: "var(--tk)",
+            ["--tk" as string]: accent,
+          }}
+        >
           <Icon className="size-4" aria-hidden />
         </span>
         <span className="min-w-0">
