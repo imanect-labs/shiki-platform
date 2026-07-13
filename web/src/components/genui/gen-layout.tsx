@@ -70,18 +70,24 @@ export function GenUiCallout({ callout }: { callout: CalloutProps }) {
   );
 }
 
-const STEP_META: Record<StepStatus, { dot: string; text: string; ring: string }> = {
-  todo: { dot: "bg-muted-foreground/30", text: "text-foreground/70", ring: "border-border" },
-  doing: { dot: "bg-primary", text: "text-foreground font-medium", ring: "border-primary" },
-  done: { dot: "bg-[var(--season-summer)]", text: "text-foreground/60", ring: "border-[var(--season-summer)]/50" },
+const STEP_META: Record<StepStatus, { dot: string; text: string; ring: string; label: string }> = {
+  todo: { dot: "bg-muted-foreground/30", text: "text-foreground/70", ring: "border-border", label: "未着手" },
+  doing: { dot: "bg-primary", text: "text-foreground font-medium", ring: "border-primary", label: "進行中" },
+  done: {
+    dot: "bg-[var(--season-summer)]",
+    text: "text-foreground/60",
+    ring: "border-[var(--season-summer)]/50",
+    label: "完了",
+  },
 };
 
 export function GenUiStepper({ stepper }: { stepper: StepperProps }) {
+  const steps = stepper.steps ?? [];
   return (
     <ol data-testid="genui-stepper" className="space-y-0">
-      {stepper.steps.map((s, i) => {
+      {steps.map((s, i) => {
         const meta = STEP_META[s.status] ?? STEP_META.todo;
-        const last = i === stepper.steps.length - 1;
+        const last = i === steps.length - 1;
         return (
           <li key={i} className="flex gap-3">
             <div className="flex flex-col items-center">
@@ -96,6 +102,8 @@ export function GenUiStepper({ stepper }: { stepper: StepperProps }) {
               {!last ? <span className="w-px flex-1 bg-border" aria-hidden /> : null}
             </div>
             <div className={cn("pb-4 text-[13px]", meta.text)}>
+              {/* 状態を色だけに頼らず読み上げ/高コントラストにも伝える。 */}
+              <span className="sr-only">{`（${meta.label}）`}</span>
               {s.title}
               {s.description ? (
                 <p className="mt-0.5 text-[12px] text-muted-foreground">{s.description}</p>
@@ -119,7 +127,7 @@ const BADGE_VARIANT: Record<BadgeTone, "outline" | "default" | "success" | "warn
 export function GenUiBadgeList({ badgeList }: { badgeList: BadgeListProps }) {
   return (
     <div data-testid="genui-badge-list" className="flex flex-wrap gap-1.5">
-      {badgeList.badges.map((b, i) => (
+      {(badgeList.badges ?? []).map((b, i) => (
         <Badge key={i} variant={BADGE_VARIANT[b.tone] ?? "outline"}>
           {b.label}
         </Badge>
@@ -135,7 +143,7 @@ export function GenUiKeyValue({ keyValue }: { keyValue: KeyValueProps }) {
         <p className="mb-2 text-[13px] font-semibold text-foreground/80">{keyValue.title}</p>
       ) : null}
       <dl className="divide-y divide-border/60 rounded-xl border border-border">
-        {keyValue.items.map((kv, i) => (
+        {(keyValue.items ?? []).map((kv, i) => (
           <div key={i} className="grid grid-cols-[minmax(6rem,32%)_1fr] gap-2 px-3 py-2">
             <dt className="truncate text-[12px] text-muted-foreground">{kv.key}</dt>
             <dd className="min-w-0 whitespace-pre-wrap break-words text-[13px] text-foreground">
@@ -170,7 +178,8 @@ export function GenUiAccordion({
   accordion: AccordionProps;
   renderChildren: RenderChildren;
 }) {
-  const defaultOpen = accordion.items
+  const items = accordion.items ?? [];
+  const defaultOpen = items
     .map((it, i) => (it.open ? String(i) : null))
     .filter((v): v is string => v !== null);
   return (
@@ -180,7 +189,7 @@ export function GenUiAccordion({
       data-testid="genui-accordion"
       className="rounded-xl border border-border"
     >
-      {accordion.items.map((it, i) => (
+      {items.map((it, i) => (
         <AccordionItem key={i} value={String(i)} className="border-b border-border/60 last:border-b-0 px-3">
           <AccordionTrigger className="text-[13px] font-medium">{it.title}</AccordionTrigger>
           <AccordionContent>
@@ -199,17 +208,19 @@ export function GenUiTabs({
   tabs: TabsProps;
   renderChildren: RenderChildren;
 }) {
-  if (tabs.tabs.length === 0) return null;
+  const list = tabs.tabs ?? [];
+  if (list.length === 0) return null;
   return (
     <Tabs defaultValue="0" data-testid="genui-tabs" className="min-w-0">
-      <TabsList>
-        {tabs.tabs.map((t, i) => (
+      {/* タブが多い/ラベルが長い場合もカードからはみ出さないよう折り返す。 */}
+      <TabsList className="h-auto flex-wrap">
+        {list.map((t, i) => (
           <TabsTrigger key={i} value={String(i)}>
             {t.label}
           </TabsTrigger>
         ))}
       </TabsList>
-      {tabs.tabs.map((t, i) => (
+      {list.map((t, i) => (
         <TabsContent key={i} value={String(i)}>
           <div className="flex flex-col gap-3">{renderChildren(t.children)}</div>
         </TabsContent>

@@ -38,9 +38,9 @@ impl Tool for EmitUiTool {
          combo・funnel・treemap（データ点は {x, y, series?, xv?}、stacked=true で bar/area 積み上げ、\
          combo は line_series に線で描く系列名を列挙）。stat は KPI タイル（label・value・unit?・\
          delta?・delta_label?・trend?[数値列で sparkline]・caption?）。callout は tone \
-         (info/success/warning/danger)+title?+text。accordion は items[{title,children}]、\
-         tabs は tabs[{label,children}]、stepper は steps[{title,status:todo/doing/done}]、\
-         badge_list は badges[{label,tone?}]、key_value は items[{key,value}]、code_block は \
+         (info/success/warning/danger)+title?+text。accordion は items[{title,open?,children}]、\
+         tabs は tabs[{label,children}]、stepper は steps[{title,status:todo/doing/done,description?}]、\
+         badge_list は badges[{label,tone?}]、key_value は title?+items[{key,value}]、code_block は \
          code+language?（表示専用）。フォーム送信やボタンは \
          spec.actions に宣言した束縛（type: handler の chat.submit、type: tool の doc_search / \
          web_search、type: workflow の name 参照）だけを action id で参照できる。検証に失敗した \
