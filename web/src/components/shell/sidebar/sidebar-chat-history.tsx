@@ -34,14 +34,14 @@ function ThreadRow({ id, title, active }: { id: string; title: string; active: b
           "group/thread relative flex h-8 items-center rounded-[9px] pl-2.5 pr-1 text-[13px] outline-none",
           "transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring",
           active
-            ? "bg-sidebar-accent font-medium text-sidebar-foreground"
+            ? "font-medium text-sidebar-foreground"
             : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
         )}
       >
         {active ? (
           <ActiveIndicator
             layoutId="sidebar-active-thread"
-            className="absolute inset-y-1.5 left-1 w-[3px] rounded-full bg-primary"
+            className="absolute inset-0 -z-10 rounded-[9px] bg-sidebar-accent"
           />
         ) : null}
         <span className="min-w-0 flex-1 truncate">{title}</span>

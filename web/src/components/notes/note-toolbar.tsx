@@ -231,7 +231,9 @@ export function NoteToolbar({ editor }: { editor: Editor }) {
 
   return (
     <div
-      className="sticky top-3 z-10 mx-auto mb-4 flex w-fit max-w-full flex-wrap items-center justify-center gap-0.5 rounded-xl border bg-popover/95 px-1.5 py-1.5 shadow-md backdrop-blur supports-[backdrop-filter]:bg-popover/80"
+      // スクロール追従（スクロール域の上端に張り付く清潔なツールバー）。浮遊ピルではなく
+      // 全幅の細いバー＋ hairline の下線。ページヘッダの直下に固定される。
+      className="sticky top-0 z-20 -mx-4 mb-3 flex flex-wrap items-center gap-0.5 border-b bg-background/95 px-3 py-1.5 backdrop-blur supports-[backdrop-filter]:bg-background/75"
       data-testid="note-toolbar"
     >
       <ToolbarButton

@@ -39,7 +39,7 @@ function itemClasses(active: boolean, collapsed: boolean, depth: number) {
     "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
     collapsed ? "w-9 justify-center px-0" : "w-full px-2.5",
     active
-      ? "bg-sidebar-accent font-medium text-sidebar-foreground"
+      ? "font-medium text-sidebar-foreground"
       : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
     !collapsed && depth > 0 && "pl-9",
   );
@@ -64,15 +64,12 @@ function Inner({
   const seasonTint = active && seasonIndex != null;
   return (
     <>
-      {/* アクティブ位置をアイテム間でスライドする左アクセントバー（layoutId・唯一の動く要素）。 */}
+      {/* アクティブをアイテム間でスライドする塗りピル（layoutId・唯一の動く要素）。
+          細い縦線ではなく丸角の面が滑ることで安っぽさを避ける。季節色はアイコン側で示す。 */}
       {active ? (
         <ActiveIndicator
           layoutId="sidebar-active-nav"
-          className={cn(
-            "absolute inset-y-1.5 left-1 w-[3px] rounded-full",
-            seasonTint ? "" : "bg-primary",
-          )}
-          style={seasonTint ? { backgroundColor: seasonVar(seasonIndex) } : undefined}
+          className="absolute inset-0 -z-10 rounded-[9px] bg-sidebar-accent"
         />
       ) : null}
       <Icon

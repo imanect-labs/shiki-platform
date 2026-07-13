@@ -40,7 +40,7 @@ export function SidebarNav({
               type="button"
               onClick={startNewChat}
               aria-label="新しいチャット"
-              className="mx-auto flex size-9 items-center justify-center rounded-[10px] border border-sidebar-border bg-card text-sidebar-foreground shadow-sm outline-none transition-[transform,box-shadow] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:shadow-md focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-95"
+              className="mx-auto flex size-9 items-center justify-center rounded-[10px] bg-sidebar-accent text-sidebar-foreground outline-none transition-[transform,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-sidebar-accent/70 focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-95"
             >
               <PenSquare
                 className="size-[18px]"
@@ -55,7 +55,7 @@ export function SidebarNav({
         <button
           type="button"
           onClick={startNewChat}
-          className="flex h-9 w-full items-center gap-2 rounded-[10px] border border-sidebar-border bg-card px-3 text-[13.5px] font-medium text-sidebar-foreground shadow-sm outline-none transition-[transform,background-color,box-shadow] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-sidebar-accent/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-[0.98]"
+          className="flex h-9 w-full items-center gap-2 rounded-[10px] bg-sidebar-accent px-3 text-[13.5px] font-medium text-sidebar-foreground outline-none transition-[transform,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-sidebar-accent/70 focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-[0.98]"
         >
           <PenSquare
             className="size-[18px] shrink-0"
