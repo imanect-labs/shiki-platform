@@ -231,7 +231,7 @@ export function NoteToolbar({ editor }: { editor: Editor }) {
 
   return (
     <div
-      className="sticky top-0 z-10 mb-2 flex flex-wrap items-center gap-0.5 bg-background/90 px-1 py-1.5 backdrop-blur shiki-dash-bottom"
+      className="sticky top-3 z-10 mx-auto mb-4 flex w-fit max-w-full flex-wrap items-center justify-center gap-0.5 rounded-xl border bg-popover/95 px-1.5 py-1.5 shadow-md backdrop-blur supports-[backdrop-filter]:bg-popover/80"
       data-testid="note-toolbar"
     >
       <ToolbarButton

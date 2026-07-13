@@ -11,6 +11,7 @@
 import * as React from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import {
+  Blocks,
   CheckCircle2,
   CloudUpload,
   Loader2,
@@ -64,6 +65,8 @@ export function WorkflowEditor({
     layout: initialLayout,
   });
   const [saving, setSaving] = React.useState(false);
+  // ブロックパレットは既定で隠す（視界を奪わない）。トグルで表示、追加は主にノード尻尾の＋から。
+  const [paletteOpen, setPaletteOpen] = React.useState(false);
 
   // ── ライブ検証（600ms debounce・保存しない）─────────────────────────────
   React.useEffect(() => {
@@ -189,6 +192,16 @@ export function WorkflowEditor({
         </div>
         <div className="flex items-center gap-1.5">
           <Button
+            variant={paletteOpen ? "secondary" : "ghost"}
+            size="sm"
+            aria-pressed={paletteOpen}
+            onClick={() => setPaletteOpen((p) => !p)}
+            title="ブロック一覧の表示切替"
+          >
+            <Blocks className="size-4" aria-hidden />
+            ブロック
+          </Button>
+          <Button
             variant="ghost"
             size="icon"
             aria-label="元に戻す"
@@ -236,9 +249,9 @@ export function WorkflowEditor({
         </div>
       </header>
 
-      {/* 3 ペイン本体。 */}
+      {/* 本体。パレットは既定で隠し、トグルで表示（追加は主にノード尻尾の＋・最初のブロック）。 */}
       <div className="flex min-h-0 flex-1">
-        <Palette />
+        {paletteOpen ? <Palette /> : null}
         <div className={cn("relative min-w-0 flex-1")}>
           <ReactFlowProvider>
             <Canvas
