@@ -164,6 +164,12 @@ pub struct FormProps {
 pub enum FormField {
     TextInput(TextInputProps),
     Select(SelectProps),
+    // ---- リッチ入力（PR3・props は crate::form_fields） ----
+    Checkbox(crate::form_fields::CheckboxGroupProps),
+    Radio(crate::form_fields::RadioGroupProps),
+    Date(crate::form_fields::DateProps),
+    Slider(crate::form_fields::SliderProps),
+    Rating(crate::form_fields::RatingProps),
 }
 
 impl FormField {
@@ -172,6 +178,11 @@ impl FormField {
         match self {
             FormField::TextInput(p) => &p.id,
             FormField::Select(p) => &p.id,
+            FormField::Checkbox(p) => &p.id,
+            FormField::Radio(p) => &p.id,
+            FormField::Date(p) => &p.id,
+            FormField::Slider(p) => &p.id,
+            FormField::Rating(p) => &p.id,
         }
     }
 }
@@ -206,6 +217,9 @@ pub struct SelectProps {
     pub required: bool,
     #[serde(default)]
     pub default: Option<String>,
+    /// 「その他」自由記述を許す。
+    #[serde(default)]
+    pub allow_other: bool,
 }
 
 /// 選択肢 1 件。

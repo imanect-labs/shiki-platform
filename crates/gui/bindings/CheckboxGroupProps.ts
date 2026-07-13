@@ -2,9 +2,13 @@
 import type { SelectOption } from "./SelectOption";
 
 /**
- * 選択（宣言された選択肢のみ）。
+ * 複数選択（チェックボックス群）。
  */
-export type SelectProps = { id: string, label: string, options: Array<SelectOption>, required: boolean, default: string | null, 
+export type CheckboxGroupProps = { id: string, label: string, options: Array<SelectOption>, 
+/**
+ * 既定で選択済みの value 群。
+ */
+default: Array<string>, required: boolean, 
 /**
  * 「その他」自由記述を許す。
  */

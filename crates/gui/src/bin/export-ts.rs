@@ -10,6 +10,7 @@ use ts_rs::TS;
 
 use gui::action::{ActionBinding, HandlerBinding, ToolBinding, WorkflowBinding, WorkflowPin};
 use gui::chart::{ChartPoint, ChartSpec};
+use gui::form_fields::{CheckboxGroupProps, DateProps, RadioGroupProps, RatingProps, SliderProps};
 use gui::layout::{
     AccordionItem, AccordionProps, BadgeItem, BadgeListProps, BadgeTone, CalloutProps, CalloutTone,
     CodeBlockProps, KeyValueItem, KeyValueProps, StepItem, StepStatus, StepperProps, TabItem,
@@ -59,6 +60,11 @@ fn main() {
         TextInputProps,
         SelectProps,
         SelectOption,
+        CheckboxGroupProps,
+        RadioGroupProps,
+        DateProps,
+        SliderProps,
+        RatingProps,
         ButtonProps,
         ButtonVariant,
         TableProps,

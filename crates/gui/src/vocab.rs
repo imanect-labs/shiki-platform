@@ -57,6 +57,12 @@ vocab_enum! {
         Form => "form",
         TextInput => "text_input",
         Select => "select",
+        // ---- リッチ入力フォーム部品（PR3・FormField として出現） ----
+        Checkbox => "checkbox",
+        Radio => "radio",
+        Date => "date",
+        Slider => "slider",
+        Rating => "rating",
         Button => "button",
         Table => "table",
         Chart => "chart",

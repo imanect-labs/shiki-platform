@@ -15,12 +15,23 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useGenUiAction } from "./action-context";
 import { ActionResultNote, describeActionError } from "./action-result";
+import {
+  CheckboxField,
+  DateField,
+  RadioField,
+  RatingField,
+  SelectField,
+  SliderField,
+} from "./form-fields";
 
 export function GenUiForm({ form }: { form: FormProps }) {
   const { dispatch, onActionCompleted } = useGenUiAction();
   const [values, setValues] = React.useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
-    for (const f of form.fields ?? []) init[f.id] = f.default ?? "";
+    // text_input のみ親が値を持つ（他フィールドは自前で状態管理し onChange で反映）。
+    for (const f of form.fields ?? []) {
+      init[f.id] = f.component === "text_input" && typeof f.default === "string" ? f.default : "";
+    }
     return init;
   });
   const [busy, setBusy] = React.useState(false);
@@ -120,29 +131,17 @@ function FieldView({
         </div>
       );
     case "select":
-      return (
-        <div className="space-y-1.5">
-          <label htmlFor={id} className="block text-xs font-medium text-foreground/70">
-            {field.label}
-            {field.required ? <span className="ml-0.5 text-destructive">*</span> : null}
-          </label>
-          <select
-            id={id}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            required={field.required}
-            disabled={disabled}
-            className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-          >
-            {!field.required && !field.default ? <option value="">選択してください</option> : null}
-            {(field.options ?? []).map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      );
+      return <SelectField field={field} onChange={onChange} disabled={disabled} />;
+    case "checkbox":
+      return <CheckboxField field={field} onChange={onChange} disabled={disabled} />;
+    case "radio":
+      return <RadioField field={field} onChange={onChange} disabled={disabled} />;
+    case "date":
+      return <DateField field={field} onChange={onChange} disabled={disabled} />;
+    case "slider":
+      return <SliderField field={field} onChange={onChange} disabled={disabled} />;
+    case "rating":
+      return <RatingField field={field} onChange={onChange} disabled={disabled} />;
     default:
       return null; // 未知フィールドは黙って落とす（クラッシュさせない）
   }
