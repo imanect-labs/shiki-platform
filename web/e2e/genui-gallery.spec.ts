@@ -69,6 +69,15 @@ test.describe("generative UI ギャラリー（検証済みスペックの描画
     await expect(page.getByTestId("gallery-callout").getByTestId("genui-callout")).toHaveCount(4);
     await expect(page.getByTestId("gallery-code_block").locator("code")).toBeVisible();
 
+    // リッチ入力フォーム（PR3）: 各フィールド種が描画される。
+    const richForm = page.getByTestId("gallery-rich-form").getByTestId("genui-form-survey");
+    await expect(richForm).toBeVisible();
+    await expect(richForm.locator('input[type="checkbox"]')).toHaveCount(4); // 3 選択肢＋その他
+    await expect(richForm.locator('input[type="radio"]')).toHaveCount(2);
+    await expect(richForm.locator('input[type="range"]')).toBeVisible();
+    await expect(richForm.locator('input[type="date"]')).toHaveCount(3); // 開始日＋期間(開始/終了)
+    await expect(richForm.getByRole("radio", { name: "4" })).toBeVisible(); // rating の星
+
     if (SHOTS) {
       for (const id of CHART_CELL_IDS) {
         await page.getByTestId(`gallery-${id}`).screenshot({ path: `${SHOTS}/chart-${id}.png` });

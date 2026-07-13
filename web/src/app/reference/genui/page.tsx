@@ -226,6 +226,57 @@ const LAYOUT: { id: string; title: string; spec: unknown }[] = [
   },
 ];
 
+const RICH_FORM: unknown = {
+  version: 1,
+  actions: [{ type: "handler", id: "submit", handler: "chat.submit" }],
+  root: {
+    component: "form",
+    id: "survey",
+    title: "アンケート",
+    submit: { action: "submit" },
+    submit_label: "送信",
+    fields: [
+      { component: "text_input", id: "name", label: "お名前", placeholder: "山田太郎" },
+      {
+        component: "select",
+        id: "plan",
+        label: "プラン",
+        options: [
+          { value: "free", label: "無料" },
+          { value: "pro", label: "Pro" },
+        ],
+        allow_other: true,
+      },
+      {
+        component: "radio",
+        id: "freq",
+        label: "利用頻度",
+        options: [
+          { value: "daily", label: "毎日" },
+          { value: "weekly", label: "毎週" },
+        ],
+        default: "daily",
+      },
+      {
+        component: "checkbox",
+        id: "features",
+        label: "使う機能",
+        options: [
+          { value: "chat", label: "チャット" },
+          { value: "rag", label: "RAG" },
+          { value: "wf", label: "ワークフロー" },
+        ],
+        default: ["chat"],
+        allow_other: true,
+      },
+      { component: "date", id: "start", label: "開始日" },
+      { component: "date", id: "period", label: "利用期間", range: true },
+      { component: "slider", id: "budget", label: "予算（万円）", min: 0, max: 100, step: 5, default: 30 },
+      { component: "rating", id: "nps", label: "満足度", max: 5, default: 4 },
+    ],
+  },
+};
+
 export default function GenUiGalleryPage() {
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
@@ -262,6 +313,15 @@ export default function GenUiGalleryPage() {
           {LAYOUT.map((l) => (
             <Cell key={l.id} id={l.id} title={l.title} spec={l.spec} />
           ))}
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="mb-3 text-[13px] font-semibold tracking-wide text-foreground/70">
+          リッチ入力フォーム
+        </h2>
+        <div className="max-w-md">
+          <Cell id="rich-form" title="全フィールド" spec={RICH_FORM} />
         </div>
       </section>
     </main>

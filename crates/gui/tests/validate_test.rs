@@ -344,6 +344,47 @@ fn rejects_negative_values_for_magnitude_charts() {
 }
 
 #[test]
+fn accepts_rich_input_fields() {
+    // PR3: checkbox/radio/date/slider/rating ＋ allow_other。
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "s", "handler": "chat.submit" } ],
+        "root": {
+            "component": "form", "id": "f", "submit": { "action": "s" },
+            "fields": [
+                { "component": "checkbox", "id": "c", "label": "好み",
+                  "options": [ {"value": "1", "label": "A"} ], "default": ["1"], "allow_other": true },
+                { "component": "radio", "id": "r", "label": "評価",
+                  "options": [ {"value": "1", "label": "低"} ], "default": "1" },
+                { "component": "date", "id": "d", "label": "期間", "range": true },
+                { "component": "slider", "id": "sl", "label": "量", "min": 0.0, "max": 10.0, "step": 1.0, "default": 5.0 },
+                { "component": "rating", "id": "rt", "label": "満足度", "max": 5, "default": 4 }
+            ]
+        }
+    });
+    assert!(validate_spec(&spec).is_ok(), "{:?}", error_codes(spec));
+}
+
+#[test]
+fn rejects_invalid_slider_and_rating() {
+    let bad_slider = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "s", "handler": "chat.submit" } ],
+        "root": { "component": "form", "id": "f", "submit": { "action": "s" },
+            "fields": [ { "component": "slider", "id": "sl", "label": "x", "min": 10.0, "max": 1.0 } ] }
+    });
+    assert_rejected_with(bad_slider, "gui.invalid_range");
+
+    let bad_rating = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "s", "handler": "chat.submit" } ],
+        "root": { "component": "form", "id": "f", "submit": { "action": "s" },
+            "fields": [ { "component": "rating", "id": "rt", "label": "x", "max": 3, "default": 9 } ] }
+    });
+    assert_rejected_with(bad_rating, "gui.invalid_default");
+}
+
+#[test]
 fn accepts_layout_components_with_nesting() {
     // PR2: callout/accordion/tabs/stepper/badge_list/key_value/code_block。
     let spec = json!({

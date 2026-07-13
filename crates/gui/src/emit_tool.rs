@@ -32,7 +32,9 @@ impl Tool for EmitUiTool {
     fn description(&self) -> &'static str {
         "フォーム・テーブル・チャート・指標タイル等の UI をチャット内に描画する。spec には \
          信頼カタログのコンポーネントツリー（JSON）を渡す。使えるコンポーネント: container / \
-         text / link / form（fields に text_input・select）/ button / table / \
+         text / link / form（fields に text_input・select・checkbox・radio・date・slider・rating。\
+         select/radio/checkbox は allow_other で自由記述可・date は range で期間・slider は min/max/step?・\
+         rating は max?）/ button / table / \
          chart / stat / callout / accordion / tabs / stepper / badge_list / key_value / \
          code_block。chart の kind は bar・line・area・pie・donut・scatter・radar・radial_bar・\
          combo・funnel・treemap（データ点は {x, y, series?, xv?}、stacked=true で bar/area 積み上げ、\
