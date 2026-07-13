@@ -22,6 +22,7 @@ import { FadeSlide } from "@/components/ui/motion-primitives";
 import { useMe } from "@/hooks/use-me";
 import { CollabProvider, type CollabStatus } from "@/lib/collab";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
+import { cn } from "@/lib/utils";
 
 export default function NotePage() {
   const params = useParams<{ id: string }>();
@@ -112,7 +113,13 @@ export default function NotePage() {
           アシスタントは「きっかけ」のように浮遊した角丸カード（本文の右側に重ねる）。 */}
       <div className="relative flex min-h-0 flex-1">
         {session && (
-          <div className="min-w-0 flex-1 overflow-y-auto">
+          <div
+            className={cn(
+              "min-w-0 flex-1 overflow-y-auto transition-[padding] duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
+              // アシスタント表示中は本文を「パネルを除いた領域」の中央へ寄せる（右寄り解消）。
+              chatOpen && "lg:pr-[28rem]",
+            )}
+          >
             <div className="mx-auto max-w-3xl px-4 pb-24 pt-4">
               <MetadataPanel meta={session.doc.getMap("meta")} editable={editable} />
               <div className="mt-4">
