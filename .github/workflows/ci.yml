@@ -130,9 +130,16 @@ jobs:
         with:
           # GITHUB_TOKEN を .git/config に残さない（後続サードパーティ処理からの窃取防止）。
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # EmbarkStudios/cargo-deny-action@v2 は内部で `--log-level warn` を渡すが、
+      # 新しい cargo-deny CLI はこれを廃止したため `unrecognized subcommand 'warn'` で全 PR が赤化する。
+      # cargo-machete と同じく taiki-e/install-action でバイナリを入れ、引数を自分で制御する。
+      - uses: dtolnay/rust-toolchain@master
         with:
-          command: check
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-deny
+      - name: cargo deny check (advisories / licenses / bans / sources)
+        run: cargo deny --all-features check
 
   # CSV クエリサービスの隔離 DuckDB ランナー（Task 11P.7・PIT-39）。DuckDB（bundled C++）を
   # 含む workspace 除外クレートを専用ジョブでビルドし、外部パス/URL 参照・DML/DDL・
