@@ -275,3 +275,90 @@ fn oversized_spec_is_rejected() {
     }));
     assert_rejected_with(spec, "gui.spec_too_large");
 }
+
+#[test]
+fn accepts_extended_chart_kinds_and_flags() {
+    // 拡張チャート種（PR1）: donut/scatter/radar/radial_bar/combo/funnel/treemap ＋ stacked/line_series/xv。
+    for kind in [
+        "bar",
+        "line",
+        "area",
+        "pie",
+        "donut",
+        "scatter",
+        "radar",
+        "radial_bar",
+        "combo",
+        "funnel",
+        "treemap",
+    ] {
+        let spec = minimal(json!({
+            "component": "chart", "kind": kind, "title": "t",
+            "stacked": true,
+            "line_series": ["目標"],
+            "data": [
+                { "x": "1月", "y": 1.0, "series": "実績", "xv": 1.0 },
+                { "x": "2月", "y": 2.5, "series": "目標", "xv": 2.0 }
+            ]
+        }));
+        assert!(
+            validate_spec(&spec).is_ok(),
+            "kind {kind} should validate: {:?}",
+            error_codes(spec)
+        );
+    }
+}
+
+#[test]
+fn rejects_overlong_line_series_label() {
+    // line_series の各系列名はラベル上限を超えると拒否（NaN/Inf は JSON に載らないため
+    // y/xv の有限数チェックは型の段で担保され、ここでは文字列上限を突く）。
+    assert_rejected_with(
+        minimal(json!({
+            "component": "chart", "kind": "combo",
+            "data": [ { "x": "a", "y": 1.0, "xv": 2.0 } ],
+            "line_series": [ "x".repeat(limits::MAX_LABEL_CHARS + 1) ]
+        })),
+        "gui.string_too_long",
+    );
+}
+
+#[test]
+fn rejects_negative_values_for_magnitude_charts() {
+    // 面積/割合で大小を表す種別は負値を拒否（bar/line 等は許容）。
+    for kind in ["pie", "donut", "funnel", "treemap", "radial_bar"] {
+        assert_rejected_with(
+            minimal(json!({
+                "component": "chart", "kind": kind,
+                "data": [ { "x": "A", "y": 5.0 }, { "x": "B", "y": -2.0 } ]
+            })),
+            "gui.negative_not_allowed",
+        );
+    }
+    // bar は負値可（前年差分など）。
+    let ok = minimal(json!({
+        "component": "chart", "kind": "bar",
+        "data": [ { "x": "A", "y": -2.0 } ]
+    }));
+    assert!(validate_spec(&ok).is_ok(), "{:?}", error_codes(ok));
+}
+
+#[test]
+fn accepts_stat_tile() {
+    let spec = minimal(json!({
+        "component": "stat",
+        "label": "今月の売上", "value": "¥1.2M", "unit": "円",
+        "delta": 12.4, "delta_label": "前月比",
+        "trend": [1.0, 2.0, 1.5, 3.0], "caption": "順調"
+    }));
+    assert!(validate_spec(&spec).is_ok(), "{:?}", error_codes(spec));
+}
+
+#[test]
+fn rejects_stat_with_too_many_trend_points() {
+    let spec = minimal(json!({
+        "component": "stat", "label": "l", "value": "v",
+        "trend": vec![1.0_f64; limits::MAX_SPARKLINE_POINTS + 1]
+    }));
+    assert_rejected_with(spec, "gui.too_many_points");
+}

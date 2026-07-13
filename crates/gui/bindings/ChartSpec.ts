@@ -9,4 +9,12 @@ export type ChartSpec = { kind: ChartKind,
 /**
  * データ点（上限は validate が課す）。
  */
-data: Array<ChartPoint>, title: string | null, x_label: string | null, y_label: string | null, };
+data: Array<ChartPoint>, title: string | null, x_label: string | null, y_label: string | null, 
+/**
+ * 多系列を積み上げる（bar / area のみ有効・他種では無視）。
+ */
+stacked: boolean, 
+/**
+ * `combo` で line として描く系列名（空なら全系列 bar）。存在しない系列名は無視。
+ */
+line_series: Array<string>, };

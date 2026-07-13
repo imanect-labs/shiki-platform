@@ -8,7 +8,8 @@
 //!   対応するツールを 1 回だけ呼び出す（agent ループ・各ツールの決定的検証）。プレフィックス
 //!   に対応するツールが提示されていなければ最初のツールへフォールバックする（後方互換）。
 //! - generative UI（Phase 6）検証用の駆動プレフィックス `genui:`:
-//!   `genui:form|table|chart` は検証を通る固定スペック、`genui:bad` は不正スペック、
+//!   `genui:form|table|chart|stat` は検証を通る固定スペック（`genui:chart:<kind>` で
+//!   scatter/radar/... を種別指定）、`genui:bad` は不正スペック、
 //!   `genui:workflow <name>` は名前参照のワークフロー起動ボタンで `emit_ui` を呼ぶ。
 //! - 自律プロファイル（Phase 5）検証用の駆動プレフィックス:
 //!   - `plan: A, B, C` … 1 ターン目に `plan` メタツールをカンマ区切りのサブタスクで呼ぶ（計画分解の検証）。
@@ -17,6 +18,7 @@
 
 use futures::stream::{self, StreamExt};
 
+use super::stub_fixtures::genui_spec;
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 
@@ -97,70 +99,6 @@ fn emitwf_ir(kind: &str) -> serde_json::Value {
         }],
         "edges": []
     })
-}
-
-/// `genui:` 駆動の固定 UI スペック（gui クレートの検証を通る形・`bad` のみ意図的に不正）。
-fn genui_spec(kind: &str) -> serde_json::Value {
-    use serde_json::json;
-    if let Some(name) = kind.strip_prefix("workflow") {
-        // `genui:workflow <name>`: 名前参照のワークフロー起動ボタン（検証時に version がピンされる）。
-        let name = name.trim();
-        return json!({
-            "version": 1,
-            "actions": [
-                { "type": "workflow", "id": "run", "workflow": { "name": name } }
-            ],
-            "root": {
-                "component": "container",
-                "title": "ワークフロー実行",
-                "children": [
-                    { "component": "button", "label": "実行", "on_click": { "action": "run" } }
-                ]
-            }
-        });
-    }
-    match kind {
-        "table" => json!({
-            "version": 1,
-            "root": {
-                "component": "table",
-                "title": "サンプル表",
-                "columns": [ { "label": "項目" }, { "label": "値", "align": "right" } ],
-                "rows": [ ["A", 1.0], ["B", 2.0] ]
-            }
-        }),
-        "chart" => json!({
-            "version": 1,
-            "root": {
-                "component": "chart",
-                "kind": "bar",
-                "title": "月次売上",
-                "data": [ { "x": "1月", "y": 10.0 }, { "x": "2月", "y": 20.0 } ]
-            }
-        }),
-        // カタログ外コンポーネント（検証拒否→テキストフォールバックの決定的検証用）。
-        "bad" => json!({
-            "version": 1,
-            "root": { "component": "iframe", "src": "https://evil.example" }
-        }),
-        // 既定はフォーム（chat.submit 束縛）。
-        _ => json!({
-            "version": 1,
-            "actions": [
-                { "type": "handler", "id": "submit", "handler": "chat.submit" }
-            ],
-            "root": {
-                "component": "form",
-                "id": "feedback",
-                "title": "フィードバック",
-                "submit": { "action": "submit" },
-                "submit_label": "送信",
-                "fields": [
-                    { "component": "text_input", "id": "comment", "label": "コメント", "required": true }
-                ]
-            }
-        }),
-    }
 }
 
 /// 単一ツール呼び出し（ToolUse で停止）のストリームを組む決定的ヘルパ。

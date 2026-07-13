@@ -22,6 +22,12 @@ pub struct ChartSpec {
     pub x_label: Option<String>,
     #[serde(default)]
     pub y_label: Option<String>,
+    /// 多系列を積み上げる（bar / area のみ有効・他種では無視）。
+    #[serde(default)]
+    pub stacked: bool,
+    /// `combo` で line として描く系列名（空なら全系列 bar）。存在しない系列名は無視。
+    #[serde(default)]
+    pub line_series: Vec<String>,
 }
 
 /// データ点 1 件（カテゴリ x ＋ 値 y ＋ 任意の系列名）。
@@ -34,6 +40,10 @@ pub struct ChartPoint {
     /// 複数系列チャートの系列名（単一系列なら省略）。
     #[serde(default)]
     pub series: Option<String>,
+    /// 散布図（`scatter`）の数値 x。省略時は各データ点の配列インデックスを x に使い、
+    /// `x`（文字列）はツールチップのラベルになる。他種では無視される。
+    #[serde(default)]
+    pub xv: Option<f64>,
 }
 
 #[cfg(test)]

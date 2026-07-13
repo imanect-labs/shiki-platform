@@ -6,4 +6,4 @@
  * 新ツールはここへ variant を足し、`Tool::name()` は `as_str()` を返す。
  * skill の許可ツール・UI アクションの tool 束縛はこの語彙へ照合して未知名を弾く。
  */
-export type ToolName = "doc_search" | "web_search" | "web_fetch" | "code_interpreter" | "fs_list" | "fs_read" | "grep" | "fs_write" | "fs_edit" | "fs_delete" | "shell" | "emit_ui";
+export type ToolName = "doc_search" | "web_search" | "web_fetch" | "code_interpreter" | "fs_list" | "fs_read" | "grep" | "fs_write" | "fs_edit" | "fs_delete" | "shell" | "emit_ui" | "emit_workflow" | "read_workflow" | "document.edit" | "document.read" | "save_note" | "csv.query" | "csv.patch" | "csv.write";

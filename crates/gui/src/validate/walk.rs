@@ -117,6 +117,16 @@ impl<'a> Walk<'a> {
                         .at(path),
                     );
                 }
+                // 面積/割合で大小を表す種別は負値が無意味（描画で黙って 0 化すると欠落して誤解を招く）。
+                use crate::vocab::ChartKind;
+                let magnitude_only = matches!(
+                    spec.kind,
+                    ChartKind::Pie
+                        | ChartKind::Donut
+                        | ChartKind::Funnel
+                        | ChartKind::Treemap
+                        | ChartKind::RadialBar
+                );
                 for (i, point) in spec.data.iter().enumerate() {
                     self.label(&point.x, &format!("{path}.data[{i}].x"));
                     self.opt_label(point.series.as_deref(), &format!("{path}.data[{i}].series"));
@@ -126,8 +136,39 @@ impl<'a> Walk<'a> {
                                 .at(format!("{path}.data[{i}].y")),
                         );
                     }
+                    if magnitude_only && point.y < 0.0 {
+                        self.errors.push(
+                            GuiValidationError::new(
+                                "gui.negative_not_allowed",
+                                "この種別（pie/donut/funnel/treemap/radial_bar）では y に負値を使えません",
+                            )
+                            .at(format!("{path}.data[{i}].y")),
+                        );
+                    }
+                    if point.xv.is_some_and(|v| !v.is_finite()) {
+                        self.errors.push(
+                            GuiValidationError::new("gui.invalid_number", "xv は有限数のみ")
+                                .at(format!("{path}.data[{i}].xv")),
+                        );
+                    }
+                }
+                if spec.line_series.len() > limits::MAX_LINE_SERIES {
+                    self.errors.push(
+                        GuiValidationError::new(
+                            "gui.too_many_line_series",
+                            format!(
+                                "line_series が多すぎます（最大 {}）",
+                                limits::MAX_LINE_SERIES
+                            ),
+                        )
+                        .at(path),
+                    );
+                }
+                for (i, s) in spec.line_series.iter().enumerate() {
+                    self.label(s, &format!("{path}.line_series[{i}]"));
                 }
             }
+            UiNode::Stat(p) => self.stat(p, path),
             // available() 判定で早期 return 済み。
             UiNode::Map(_) | UiNode::Image(_) => unreachable!("reserved components return early"),
         }
@@ -258,6 +299,40 @@ impl<'a> Walk<'a> {
                 if let crate::spec::CellValue::Text(t) = cell {
                     self.text(t, limits::MAX_TEXT_CHARS, &format!("{path}.rows[{i}][{j}]"));
                 }
+            }
+        }
+    }
+
+    fn stat(&mut self, p: &crate::spec::StatProps, path: &str) {
+        self.label(&p.label, &format!("{path}.label"));
+        self.label(&p.value, &format!("{path}.value"));
+        self.opt_label(p.unit.as_deref(), &format!("{path}.unit"));
+        self.opt_label(p.delta_label.as_deref(), &format!("{path}.delta_label"));
+        self.opt_label(p.caption.as_deref(), &format!("{path}.caption"));
+        if p.delta.is_some_and(|v| !v.is_finite()) {
+            self.errors.push(
+                GuiValidationError::new("gui.invalid_number", "delta は有限数のみ")
+                    .at(format!("{path}.delta")),
+            );
+        }
+        if p.trend.len() > limits::MAX_SPARKLINE_POINTS {
+            self.errors.push(
+                GuiValidationError::new(
+                    "gui.too_many_points",
+                    format!(
+                        "trend の点が多すぎます（最大 {}）",
+                        limits::MAX_SPARKLINE_POINTS
+                    ),
+                )
+                .at(path),
+            );
+        }
+        for (i, v) in p.trend.iter().enumerate() {
+            if !v.is_finite() {
+                self.errors.push(
+                    GuiValidationError::new("gui.invalid_number", "trend は有限数のみ")
+                        .at(format!("{path}.trend[{i}]")),
+                );
             }
         }
     }

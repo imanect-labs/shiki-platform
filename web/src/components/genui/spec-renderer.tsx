@@ -17,6 +17,7 @@ import { GenUiForm } from "./form";
 import { GenUiButton } from "./gen-button";
 import { GenUiTable } from "./gen-table";
 import { GenUiChart } from "./gen-chart";
+import { GenUiStat } from "./gen-stat";
 
 /// レンダラの深さ上限（サーバ検証の MAX_DEPTH=8 に余裕を足した防御値）。
 const MAX_RENDER_DEPTH = 10;
@@ -109,6 +110,8 @@ export function NodeView({ node, depth }: { node: UiNode; depth: number }) {
       return <GenUiTable table={node} />;
     case "chart":
       return <GenUiChart spec={node} />;
+    case "stat":
+      return <GenUiStat stat={node} />;
     default:
       // 予約 variant（map/image）や将来カタログはプレースホルダ縮退（クラッシュさせない）。
       return <UnknownComponent label={node.component} />;

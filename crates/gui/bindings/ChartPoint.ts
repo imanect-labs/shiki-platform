@@ -7,4 +7,8 @@ export type ChartPoint = { x: string, y: number,
 /**
  * 複数系列チャートの系列名（単一系列なら省略）。
  */
-series: string | null, };
+series: string | null, 
+/**
+ * 散布図（`scatter`）の数値 x。省略時は `x`（カテゴリ）を軸に使う。
+ */
+xv: number | null, };
