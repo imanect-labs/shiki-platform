@@ -83,20 +83,29 @@ export function renderScatter(spec: ChartSpec): React.ReactElement {
 }
 
 /// ファネル: x ラベルごとの合算値を段階として上から積む。
+/// 値は右側に「名称 12,000（先頭比 %）」でまとめて出す（狭い段でも欠けない）。
 export function renderFunnel(spec: ChartSpec): React.ReactElement {
-  const data = toTotals(spec).map((d, i) => ({ ...d, fill: colorFor(i) }));
+  const data = toTotals(spec).map((d, i) => ({
+    ...d,
+    fill: colorFor(i),
+    label: `${d.name}　${d.value.toLocaleString("ja-JP")}`,
+  }));
   return (
-    <FunnelChart>
-      <Tooltip contentStyle={TOOLTIP_STYLE} />
-      <Funnel dataKey="value" data={data} isAnimationActive={false} stroke="var(--card)" strokeWidth={2}>
-        <LabelList position="right" fill="var(--foreground)" stroke="none" dataKey="name" fontSize={12} />
+    <FunnelChart margin={{ top: 4, right: 118, bottom: 4, left: 8 }}>
+      <Tooltip contentStyle={TOOLTIP_STYLE} wrapperStyle={{ outline: "none" }} />
+      <Funnel
+        dataKey="value"
+        data={data}
+        isAnimationActive={false}
+        stroke="var(--card)"
+        strokeWidth={2}
+      >
         <LabelList
-          position="center"
-          fill="var(--card)"
+          position="right"
+          fill="var(--foreground)"
           stroke="none"
-          dataKey="value"
-          fontSize={12}
-          fontWeight={600}
+          dataKey="label"
+          fontSize={11}
         />
         {data.map((d) => (
           <Cell key={d.name} fill={d.fill} />

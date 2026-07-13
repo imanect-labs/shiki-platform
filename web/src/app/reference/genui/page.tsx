@@ -76,7 +76,23 @@ const CHARTS: { id: string; title: string; spec: unknown }[] = [
   },
   { id: "pie", title: "円（pie）", spec: chart("pie", "流入チャネルの構成", CHANNEL_DATA) },
   { id: "donut", title: "ドーナツ（donut）", spec: chart("donut", "デバイス別セッション", CHANNEL_DATA) },
-  { id: "scatter", title: "散布（scatter・数値 x）", spec: chart("scatter", "広告費とコンバージョンの相関") },
+  {
+    id: "scatter",
+    title: "散布（scatter・数値 x）",
+    spec: chart(
+      "scatter",
+      "広告費とコンバージョンの相関",
+      [
+        { x: "キャンペーン1", xv: 15, y: 48, series: "検索広告" },
+        { x: "キャンペーン2", xv: 32, y: 95, series: "検索広告" },
+        { x: "キャンペーン3", xv: 48, y: 128, series: "検索広告" },
+        { x: "キャンペーン4", xv: 22, y: 60, series: "SNS広告" },
+        { x: "キャンペーン5", xv: 40, y: 84, series: "SNS広告" },
+        { x: "キャンペーン6", xv: 62, y: 138, series: "SNS広告" },
+      ],
+      { x_label: "広告費（万円）", y_label: "CV数" },
+    ),
+  },
   {
     id: "scatter-cat",
     title: "散布（scatter・カテゴリ x）",
@@ -105,7 +121,16 @@ const CHARTS: { id: string; title: string; spec: unknown }[] = [
       { x: "スピード", y: 75, series: "目標" },
     ]),
   },
-  { id: "radial", title: "放射状バー（radial_bar）", spec: chart("radial_bar", "チャネル別 目標達成率", CHANNEL_DATA) },
+  {
+    id: "radial",
+    title: "放射状バー（radial_bar）",
+    spec: chart("radial_bar", "チャネル別 目標達成率（%）", [
+      { x: "SNS", y: 82 },
+      { x: "オーガニック検索", y: 68 },
+      { x: "リファラル", y: 91 },
+      { x: "広告", y: 54 },
+    ]),
+  },
   { id: "funnel", title: "ファネル（funnel）", spec: chart("funnel", "購入ファネル", [
     { x: "訪問", y: 12000 },
     { x: "カート", y: 5200 },
