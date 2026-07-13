@@ -245,25 +245,46 @@ jobs:
             done
             [ -n "$ok" ] || { echo "$svc が healthy になりませんでした"; exit 1; }
           done
-      # --no-report は llvm-cov 標準のクリーンアップを抑止するため、rust-cache が復元した
-      # 過去の profraw/profdata が混入し得る。計測前に明示的に掃除して当該 run のみを反映させる。
+      # 計装ビルド（最重量・compile 律速）を DB を待たずに先行させ、compose の起動＋healthcheck
+      # 待ちをビルドの裏に隠すため、build と test-run を別ステップに分ける。cargo-llvm-cov の
+      # `--no-report`（build+test 融合）は「計装 env を撒いて cargo test を走らせる」実体なので、
+      # `show-env` でその env を取り出して後続ステップ（build → wait → run → report）へ共有すれば
+      # 挙動・カバレッジ値は不変のまま、計装ビルドだけを先行できる。副次的に build と test-run が
+      # ステップ分割されて GitHub UI に compile / test 実行の内訳が出る（次の高速化投資先の実測）。
+      - name: export llvm-cov env (計装 env を後続ステップへ共有)
+        run: |
+          # show-env は 1 回だけ呼んで capture する。2 回呼ぶと 2 回目が「pre-existing wrapper」を
+          # 検知して __CARGO_LLVM_COV_RUSTC_WRAPPER_PRE_EXISTING=self を混入させ wrapper 連鎖を壊す。
+          env_sh="$(cargo llvm-cov show-env --export-prefix)"
+          source <(printf '%s\n' "$env_sh")
+          # capture した export 行から変数名を拾い、bash が展開した生値（クォート除去済み・
+          # 引用/非引用どちらも可）を GITHUB_ENV へ書く。以降 clean/build/run/report が同一
+          # target/profile/profraw を指す（＝カバレッジ値は現行 --no-report と同一）。
+          printf '%s\n' "$env_sh" \
+            | sed -n 's/^export \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' \
+            | while read -r v; do printf '%s=%s\n' "$v" "${!v}"; done >> "$GITHUB_ENV"
+      # rust-cache が復元した過去の profraw/profdata が混入し得るため、計測前に明示的に掃除して
+      # 当該 run のみを反映させる（llvm-cov 標準のクリーンアップは show-env 経路では走らない）。
       - name: clean stale coverage artifacts
         run: cargo llvm-cov clean --workspace
+      # 計装ビルドのみ（--no-run＝テスト実行しない＝DB 不要）を compose 起動と並列で先行させる。
+      - name: build + instrument (計装ビルドのみ・compose 起動と並列)
+        run: cargo test --workspace --no-run
       - name: wait for services healthy
         wait: compose-up
       # 単体＋結合テストをまとめて計測（各 *_TEST_* env を見て結合テストが実走する）。
       # storage の結合テストは postgres + minio + openfga 実体を使う（presigned/closure/監査を実経路で検証）。
-      - name: test + coverage (cargo-llvm-cov)
+      # 直前の --no-run で計装ビルド済みのため、ここは再ビルドせずテスト実行のみ（≒ test-run 時間）。
+      # coverage は cargo test（バイナリ逐次＝in-process 共有 fixture が壊れない安全な実行モデル）のまま。
+      # nextest はプロセス毎実行で in-process 共有状態に依存する IT を壊す実績があり不採用。
+      - name: test + coverage (cargo test・show-env 計装)
         env:
           OPENFGA_TEST_URL: http://localhost:8082
           REDIS_TEST_URL: redis://localhost:6379
           STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
           STORAGE_TEST_S3_ENDPOINT: http://localhost:9000
           RAG_TEST_QDRANT_URL: http://localhost:6333
-        # coverage は cargo test（バイナリ逐次＝in-process 共有 fixture が壊れない安全な実行
-        # モデル）のまま。nextest はプロセス毎実行で in-process 共有状態に依存する IT を壊す
-        # 実績があり不採用。速度は debuginfo 削減の計装ビルド短縮＋cache-on-failure で稼ぐ。
-        run: cargo llvm-cov --all --no-report
+        run: cargo test --workspace
       - name: coverage report (lcov + summary + job summary)
         run: |
           cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
