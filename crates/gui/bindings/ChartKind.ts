@@ -2,5 +2,9 @@
 
 /**
  * チャート種（vega-lite 的サブセット・design §4.7）。
+ *
+ * いずれも宣言的な `{x, y, series}` データ点だけで描け、式・外部参照は持たない。
+ * `stacked` / `line_series` フラグ（[`ChartSpec`](crate::chart::ChartSpec)）で
+ * 積み上げ・複合（bar+line）を切り替える。
  */
-export type ChartKind = "bar" | "line" | "area" | "pie";
+export type ChartKind = "bar" | "line" | "area" | "pie" | "donut" | "scatter" | "radar" | "radial_bar" | "combo" | "funnel" | "treemap";

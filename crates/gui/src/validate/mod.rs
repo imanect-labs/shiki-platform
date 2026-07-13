@@ -72,6 +72,10 @@ pub mod limits {
     pub const MAX_TABLE_ROWS: usize = 500;
     /// チャートのデータ点上限。
     pub const MAX_CHART_POINTS: usize = 1000;
+    /// `combo` の line 指定系列名の数上限。
+    pub const MAX_LINE_SERIES: usize = 50;
+    /// スタットタイルの sparkline 値数上限。
+    pub const MAX_SPARKLINE_POINTS: usize = 200;
     /// 本文テキスト（text/セル/default 値）の文字数上限。
     pub const MAX_TEXT_CHARS: usize = 4000;
     /// ラベル類（label/title/placeholder/x など）の文字数上限。

@@ -7,4 +7,4 @@
  * （対応は `UiNode::kind()` に単一化し、drift はテストで固定）。
  * `text_input` / `select` はフォーム部品としてのみ出現する（[`FormField`](crate::spec::FormField)）。
  */
-export type ComponentKind = "container" | "text" | "link" | "form" | "text_input" | "select" | "button" | "table" | "chart" | "map" | "image";
+export type ComponentKind = "container" | "text" | "link" | "form" | "text_input" | "select" | "button" | "table" | "chart" | "stat" | "map" | "image";

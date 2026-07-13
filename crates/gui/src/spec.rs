@@ -50,6 +50,7 @@ pub enum UiNode {
     Button(ButtonProps),
     Table(TableProps),
     Chart(ChartSpec),
+    Stat(StatProps),
     // ---- 将来予約（vocab::ComponentKind と同期・検証が拒否する） ----
     Map(ReservedProps),
     Image(ReservedProps),
@@ -66,6 +67,7 @@ impl UiNode {
             UiNode::Button(_) => ComponentKind::Button,
             UiNode::Table(_) => ComponentKind::Table,
             UiNode::Chart(_) => ComponentKind::Chart,
+            UiNode::Stat(_) => ComponentKind::Stat,
             UiNode::Map(_) => ComponentKind::Map,
             UiNode::Image(_) => ComponentKind::Image,
         }
@@ -264,6 +266,35 @@ pub enum CellValue {
     Bool(bool),
 }
 
+/// KPI スタットタイル（数値＋前期比デルタ＋インライン sparkline）。
+///
+/// `value` は表示用の整形済み文字列（例 `"¥1.2M"` `"98.3"`）。`delta` は前期比などの
+/// 変化率で、正なら改善（↑・緑）／負なら悪化（↓・赤）として色付けする。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct StatProps {
+    /// 指標名（例「今月の売上」）。
+    pub label: String,
+    /// 表示値（整形済み文字列）。
+    pub value: String,
+    /// 単位（例「件」「%」）。
+    #[serde(default)]
+    pub unit: Option<String>,
+    /// 前期比などの変化率（正=改善・負=悪化として色付け）。
+    #[serde(default)]
+    pub delta: Option<f64>,
+    /// デルタの補足ラベル（例「前月比」）。
+    #[serde(default)]
+    pub delta_label: Option<String>,
+    /// インライン sparkline の値列（省略可・上限は validate が課す）。
+    #[serde(default)]
+    pub trend: Vec<f64>,
+    /// 補足キャプション。
+    #[serde(default)]
+    pub caption: Option<String>,
+}
+
 /// 予約コンポーネントの props（プレースホルダ・props を持たない）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -331,6 +362,15 @@ mod tests {
                     action: String::new(),
                 },
                 variant: ButtonVariant::Primary,
+            }),
+            UiNode::Stat(StatProps {
+                label: String::new(),
+                value: String::new(),
+                unit: None,
+                delta: None,
+                delta_label: None,
+                trend: vec![],
+                caption: None,
             }),
             UiNode::Map(ReservedProps {}),
             UiNode::Image(ReservedProps {}),

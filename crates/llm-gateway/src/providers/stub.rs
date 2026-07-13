@@ -8,7 +8,8 @@
 //!   対応するツールを 1 回だけ呼び出す（agent ループ・各ツールの決定的検証）。プレフィックス
 //!   に対応するツールが提示されていなければ最初のツールへフォールバックする（後方互換）。
 //! - generative UI（Phase 6）検証用の駆動プレフィックス `genui:`:
-//!   `genui:form|table|chart` は検証を通る固定スペック、`genui:bad` は不正スペック、
+//!   `genui:form|table|chart|stat` は検証を通る固定スペック（`genui:chart:<kind>` で
+//!   scatter/radar/... を種別指定）、`genui:bad` は不正スペック、
 //!   `genui:workflow <name>` は名前参照のワークフロー起動ボタンで `emit_ui` を呼ぶ。
 //! - 自律プロファイル（Phase 5）検証用の駆動プレフィックス:
 //!   - `plan: A, B, C` … 1 ターン目に `plan` メタツールをカンマ区切りのサブタスクで呼ぶ（計画分解の検証）。
@@ -129,13 +130,43 @@ fn genui_spec(kind: &str) -> serde_json::Value {
                 "rows": [ ["A", 1.0], ["B", 2.0] ]
             }
         }),
-        "chart" => json!({
+        // `chart` は bar、`chart:<kind>` は種別指定（scatter/radar/... の決定的描画）。
+        k if k == "chart" || k.starts_with("chart:") => {
+            let chart_kind = k.strip_prefix("chart:").unwrap_or("bar").trim();
+            let chart_kind = if chart_kind.is_empty() {
+                "bar"
+            } else {
+                chart_kind
+            };
+            json!({
+                "version": 1,
+                "root": {
+                    "component": "chart",
+                    "kind": chart_kind,
+                    "title": "月次売上",
+                    "stacked": chart_kind == "area" || chart_kind == "bar",
+                    "line_series": ["目標"],
+                    "data": [
+                        { "x": "1月", "y": 10.0, "series": "実績", "xv": 1.0 },
+                        { "x": "2月", "y": 20.0, "series": "実績", "xv": 2.0 },
+                        { "x": "3月", "y": 16.0, "series": "実績", "xv": 3.0 },
+                        { "x": "1月", "y": 12.0, "series": "目標", "xv": 1.0 },
+                        { "x": "2月", "y": 18.0, "series": "目標", "xv": 2.0 },
+                        { "x": "3月", "y": 22.0, "series": "目標", "xv": 3.0 }
+                    ]
+                }
+            })
+        }
+        "stat" => json!({
             "version": 1,
             "root": {
-                "component": "chart",
-                "kind": "bar",
-                "title": "月次売上",
-                "data": [ { "x": "1月", "y": 10.0 }, { "x": "2月", "y": 20.0 } ]
+                "component": "stat",
+                "label": "今月の売上",
+                "value": "¥1.28M",
+                "delta": 12.4,
+                "delta_label": "前月比",
+                "trend": [8.0, 9.5, 9.0, 11.0, 10.5, 12.8],
+                "caption": "目標達成"
             }
         }),
         // カタログ外コンポーネント（検証拒否→テキストフォールバックの決定的検証用）。

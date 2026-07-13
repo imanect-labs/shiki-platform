@@ -16,7 +16,7 @@ use gui::skill::{
 };
 use gui::spec::{
     ActionRef, ButtonProps, ButtonVariant, CellAlign, CellValue, ContainerProps, FormField,
-    FormProps, Layout, LinkProps, ReservedProps, SelectOption, SelectProps, TableColumn,
+    FormProps, Layout, LinkProps, ReservedProps, SelectOption, SelectProps, StatProps, TableColumn,
     TableProps, TextInputProps, TextProps, TextVariant, UiNode, UiSpecDoc,
 };
 use gui::validate::GuiValidationError;
@@ -63,6 +63,7 @@ fn main() {
         ReservedProps,
         ChartSpec,
         ChartPoint,
+        StatProps,
         ActionBinding,
         ToolBinding,
         HandlerBinding,

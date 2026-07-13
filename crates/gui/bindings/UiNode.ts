@@ -5,10 +5,11 @@ import type { ContainerProps } from "./ContainerProps";
 import type { FormProps } from "./FormProps";
 import type { LinkProps } from "./LinkProps";
 import type { ReservedProps } from "./ReservedProps";
+import type { StatProps } from "./StatProps";
 import type { TableProps } from "./TableProps";
 import type { TextProps } from "./TextProps";
 
 /**
  * 信頼カタログのコンポーネントツリー（`component` タグ・閉じた集合）。
  */
-export type UiNode = { "component": "container" } & ContainerProps | { "component": "text" } & TextProps | { "component": "link" } & LinkProps | { "component": "form" } & FormProps | { "component": "button" } & ButtonProps | { "component": "table" } & TableProps | { "component": "chart" } & ChartSpec | { "component": "map" } & ReservedProps | { "component": "image" } & ReservedProps;
+export type UiNode = { "component": "container" } & ContainerProps | { "component": "text" } & TextProps | { "component": "link" } & LinkProps | { "component": "form" } & FormProps | { "component": "button" } & ButtonProps | { "component": "table" } & TableProps | { "component": "chart" } & ChartSpec | { "component": "stat" } & StatProps | { "component": "map" } & ReservedProps | { "component": "image" } & ReservedProps;

@@ -275,3 +275,69 @@ fn oversized_spec_is_rejected() {
     }));
     assert_rejected_with(spec, "gui.spec_too_large");
 }
+
+#[test]
+fn accepts_extended_chart_kinds_and_flags() {
+    // 拡張チャート種（PR1）: donut/scatter/radar/radial_bar/combo/funnel/treemap ＋ stacked/line_series/xv。
+    for kind in [
+        "bar",
+        "line",
+        "area",
+        "pie",
+        "donut",
+        "scatter",
+        "radar",
+        "radial_bar",
+        "combo",
+        "funnel",
+        "treemap",
+    ] {
+        let spec = minimal(json!({
+            "component": "chart", "kind": kind, "title": "t",
+            "stacked": true,
+            "line_series": ["目標"],
+            "data": [
+                { "x": "1月", "y": 1.0, "series": "実績", "xv": 1.0 },
+                { "x": "2月", "y": 2.5, "series": "目標", "xv": 2.0 }
+            ]
+        }));
+        assert!(
+            validate_spec(&spec).is_ok(),
+            "kind {kind} should validate: {:?}",
+            error_codes(spec)
+        );
+    }
+}
+
+#[test]
+fn rejects_non_finite_chart_numbers() {
+    // y/xv は有限数のみ（NaN/Inf は JSON で null 化 → 型不整合で拒否される）。
+    assert_rejected_with(
+        minimal(json!({
+            "component": "chart", "kind": "bar",
+            "data": [ { "x": "a", "y": 1.0, "xv": 2.0 } ],
+            "line_series": [ "x".repeat(limits::MAX_LABEL_CHARS + 1) ]
+        })),
+        "gui.string_too_long",
+    );
+}
+
+#[test]
+fn accepts_stat_tile() {
+    let spec = minimal(json!({
+        "component": "stat",
+        "label": "今月の売上", "value": "¥1.2M", "unit": "円",
+        "delta": 12.4, "delta_label": "前月比",
+        "trend": [1.0, 2.0, 1.5, 3.0], "caption": "順調"
+    }));
+    assert!(validate_spec(&spec).is_ok(), "{:?}", error_codes(spec));
+}
+
+#[test]
+fn rejects_stat_with_too_many_trend_points() {
+    let spec = minimal(json!({
+        "component": "stat", "label": "l", "value": "v",
+        "trend": vec![1.0_f64; limits::MAX_SPARKLINE_POINTS + 1]
+    }));
+    assert_rejected_with(spec, "gui.too_many_points");
+}

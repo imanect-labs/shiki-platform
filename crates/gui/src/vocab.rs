@@ -60,6 +60,8 @@ vocab_enum! {
         Button => "button",
         Table => "table",
         Chart => "chart",
+        /// KPI スタットタイル（数値＋前期比デルタ＋インライン sparkline）。
+        Stat => "stat",
         // ---- 将来予約（serde 名を凍結・Phase 6 では検証が拒否する） ----
         /// 地図（タイル表示＋ピン・design §4.7。外部タイル依存のため後続）。
         Map => "map",
@@ -85,11 +87,29 @@ vocab_enum! {
 
 vocab_enum! {
     /// チャート種（vega-lite 的サブセット・design §4.7）。
+    ///
+    /// いずれも宣言的な `{x, y, series}` データ点だけで描け、式・外部参照は持たない。
+    /// `stacked` / `line_series` フラグ（[`ChartSpec`](crate::chart::ChartSpec)）で
+    /// 積み上げ・複合（bar+line）を切り替える。
     pub enum ChartKind {
         Bar => "bar",
         Line => "line",
         Area => "area",
         Pie => "pie",
+        /// 中央に穴を空けた円グラフ（構成比）。
+        Donut => "donut",
+        /// 散布図（数値 x は `ChartPoint::xv`・省略時はカテゴリ）。
+        Scatter => "scatter",
+        /// レーダー（系列を多角形で重ねる・項目間バランス）。
+        Radar => "radar",
+        /// 放射状バー（ゲージ/進捗の比較）。
+        RadialBar => "radial_bar",
+        /// 複合（既定は bar＋`line_series` 指定系列を line で重ねる）。
+        Combo => "combo",
+        /// ファネル（段階ごとの減衰）。
+        Funnel => "funnel",
+        /// ツリーマップ（面積で大小）。
+        Treemap => "treemap",
     }
 }
 
