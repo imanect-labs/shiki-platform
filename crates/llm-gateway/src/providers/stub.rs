@@ -468,4 +468,21 @@ mod tests {
         }
         assert_eq!(tool_name.as_deref(), Some("doc_search"));
     }
+
+    #[test]
+    fn genui_chart_kind_is_parametrized() {
+        // `genui:chart:<kind>` は kind を反映し、`chart`/`chart:` は既定 bar。
+        assert_eq!(genui_spec("chart:radar")["root"]["kind"], "radar");
+        assert_eq!(genui_spec("chart:scatter")["root"]["kind"], "scatter");
+        assert_eq!(genui_spec("chart")["root"]["kind"], "bar");
+        assert_eq!(genui_spec("chart:")["root"]["kind"], "bar");
+        assert_eq!(genui_spec("chart:bar")["root"]["component"], "chart");
+    }
+
+    #[test]
+    fn genui_stat_spec_shape() {
+        let spec = genui_spec("stat");
+        assert_eq!(spec["root"]["component"], "stat");
+        assert!(!spec["root"]["trend"].as_array().unwrap().is_empty());
+    }
 }
