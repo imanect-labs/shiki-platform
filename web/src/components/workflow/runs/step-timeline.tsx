@@ -93,6 +93,7 @@ function StepRow({
     null,
   );
   const failed = step.status === "failed";
+  const running = step.status === "running";
   const message = errorMessage(step.error);
   const expandable = step.hasOutput || step.error !== null;
   const Icon = info ? nodeIcon(info.type) : null;
@@ -108,10 +109,12 @@ function StepRow({
   return (
     <li
       className={cn(
-        "rounded-lg border transition-colors duration-fast",
+        "relative rounded-lg border transition-colors duration-fast",
         failed
           ? "border-destructive/40 bg-destructive/5"
           : "bg-card",
+        // 実行中は枠を光弧が時計回りに走る（進捗表示）。
+        running && "shiki-running-border border-primary/30",
       )}
     >
       <button

@@ -1,9 +1,8 @@
 "use client";
 
-/// ノートの同期状態ピル。muted テキストではなく、状態が一目で分かる小さな pill にする。
-/// 同期済み=夏の新緑 / 同期中=プライマリ＋スピナ / オフライン=破壊的（status-tokens 準拠）。
-
-import { Loader2 } from "lucide-react";
+/// ノートの同期状態インジケータ。色枠のピルは安っぽく見えるため、控えめな
+/// 「小さなドット＋muted テキスト」の上品な表示にする。色はドットにだけ乗せる。
+/// 同期済み=夏の新緑 / 同期中=プライマリ＋パルス / オフライン=破壊的（status-tokens 準拠）。
 
 import { cn } from "@/lib/utils";
 import type { CollabStatus } from "@/lib/collab";
@@ -19,8 +18,7 @@ export function SyncPill({ status, synced }: { status: CollabStatus; synced: boo
         : "offline";
 
   const label = state === "synced" ? "同期済み" : state === "syncing" ? "同期中…" : "オフライン";
-  // 色はトークン経由（ライト/ダーク自動反転）。
-  const color =
+  const dotColor =
     state === "synced"
       ? "var(--season-summer)"
       : state === "syncing"
@@ -29,19 +27,24 @@ export function SyncPill({ status, synced }: { status: CollabStatus; synced: boo
 
   return (
     <span
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium",
-        "transition-colors duration-[var(--duration-normal)]",
-      )}
-      style={{ color, borderColor: "color-mix(in oklab, currentColor 30%, transparent)" }}
+      className="inline-flex select-none items-center gap-1.5 text-xs text-muted-foreground"
       data-testid="note-sync-status"
       data-state={state}
+      title={label}
     >
-      {state === "syncing" ? (
-        <Loader2 className="size-3 animate-spin" aria-hidden />
-      ) : (
-        <span className="size-1.5 rounded-full bg-current" aria-hidden />
-      )}
+      {/* 色はドットにだけ。同期中は控えめなパルス、オフラインはリング付きで注意を促す。 */}
+      <span className="relative flex size-2 items-center justify-center" aria-hidden>
+        {state === "syncing" ? (
+          <span
+            className="absolute inline-flex size-2 animate-ping rounded-full opacity-60"
+            style={{ backgroundColor: dotColor }}
+          />
+        ) : null}
+        <span
+          className={cn("relative size-1.5 rounded-full", state === "offline" && "ring-2 ring-destructive/30")}
+          style={{ backgroundColor: dotColor }}
+        />
+      </span>
       {label}
     </span>
   );

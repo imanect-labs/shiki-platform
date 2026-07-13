@@ -37,6 +37,7 @@ import { Canvas } from "./canvas";
 import { useEditorState } from "./ir-state";
 import { Palette } from "./palette";
 import { FadeSlide } from "@/components/ui/motion-primitives";
+import { usePageHeader } from "@/components/shell/page-header-context";
 
 type Props = {
   workflowId: string;
@@ -168,30 +169,28 @@ export function WorkflowEditor({
   const ctx = { state, dispatch, workflowId, save, saving } as EditorContext;
   const errorCount = state.serverErrors.length;
 
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      {/* ヘッダ（タイトル・保存状態・操作）。 */}
-      <header className="flex shrink-0 items-center gap-3 border-b bg-background px-4 py-2.5">
-        <div className="min-w-0 flex-1">
-          <h1 className="truncate text-sm font-semibold">
+  // 統一ヘッダへ「タイトル・保存状態・操作」を注入し、エディタ自前のバー（横バー二重）を廃する。
+  usePageHeader(
+    () => (
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-semibold text-foreground">
             {state.ir.display_name || state.ir.name}
-          </h1>
-          <p className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>v{state.savedVersion}</span>
-            {state.dirty ? (
-              <span className="text-[color:var(--season-autumn)]">未保存の変更</span>
-            ) : (
-              <span className="flex items-center gap-1">
-                <CheckCircle2 className="size-3" aria-hidden />
-                保存済み
-              </span>
-            )}
-            {errorCount > 0 ? (
-              <span className="text-destructive">検証エラー {errorCount} 件</span>
-            ) : null}
-          </p>
+          </span>
+          <span className="shrink-0 text-xs text-muted-foreground">v{state.savedVersion}</span>
+          {state.dirty ? (
+            <span className="shrink-0 text-xs text-[color:var(--season-autumn)]">未保存</span>
+          ) : (
+            <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+              <CheckCircle2 className="size-3" aria-hidden />
+              保存済み
+            </span>
+          )}
+          {errorCount > 0 ? (
+            <span className="shrink-0 text-xs text-destructive">エラー {errorCount}</span>
+          ) : null}
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
           <Button
             variant={paletteOpen ? "secondary" : "ghost"}
             size="sm"
@@ -248,8 +247,24 @@ export function WorkflowEditor({
             保存
           </Button>
         </div>
-      </header>
+      </div>
+    ),
+    [
+      state.ir.display_name,
+      state.ir.name,
+      state.savedVersion,
+      state.dirty,
+      errorCount,
+      state.undoStack.length,
+      state.redoStack.length,
+      state.ir.nodes.length,
+      paletteOpen,
+      saving,
+    ],
+  );
 
+  return (
+    <div className="flex h-full min-h-0 flex-col">
       {/* 本体。パレットは既定で隠し、トグルで「きっかけ」のように浮遊した角丸カードで重ねる
           （追加は主にノード尻尾の＋・最初のブロック）。 */}
       <div className="flex min-h-0 flex-1">
