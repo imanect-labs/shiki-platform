@@ -23,6 +23,14 @@ impl Walk<'_> {
         }
         self.opt_label(p.submit_label.as_deref(), &format!("{path}.submit_label"));
         self.action_ref(&p.submit, &format!("{path}.submit"));
+        self.require_chat_submit(&p.submit.action, path);
+        // 空の質問カードは描画すると何も出ず回答手段が無い（保存前に拒否する）。
+        if p.questions.is_empty() {
+            self.errors.push(
+                GuiValidationError::new("gui.empty_question_card", "questions は 1 問以上必要です")
+                    .at(path),
+            );
+        }
         if p.questions.len() > limits::MAX_FORM_FIELDS {
             self.errors.push(
                 GuiValidationError::new(
@@ -61,8 +69,19 @@ impl Walk<'_> {
                     .at(&qpath),
                 );
             }
+            // label は回答値そのもの＝質問内で一意でないと選択/送信が曖昧になる。
+            let mut opt_labels = std::collections::HashSet::new();
             for (j, opt) in q.options.iter().enumerate() {
                 self.label(&opt.label, &format!("{qpath}.options[{j}].label"));
+                if !opt_labels.insert(opt.label.as_str()) {
+                    self.errors.push(
+                        GuiValidationError::new(
+                            "gui.duplicate_option_label",
+                            format!("選択肢ラベル '{}' が質問内で重複しています", opt.label),
+                        )
+                        .at(format!("{qpath}.options[{j}].label")),
+                    );
+                }
                 if let Some(d) = &opt.description {
                     self.text(
                         d,
@@ -81,12 +100,26 @@ impl Walk<'_> {
             self.errors.push(
                 GuiValidationError::new(
                     "gui.duplicate_form_id",
-                    format!("フォーム id '{id}' が重複しています"),
+                    format!("送信単位 id '{id}' が重複しています（form / question_card 共通）"),
                 )
                 .at(path),
             );
         }
         self.form_ids.push(id.to_string());
+    }
+
+    /// question_card の submit が `chat.submit` ハンドラを指すことを保証する。
+    /// tool/workflow 束縛だと回答が検索/WF 起動へ誤配送され、返信ターンが作られない。
+    fn require_chat_submit(&mut self, action: &str, path: &str) {
+        if !self.chat_submit_ids.contains(&action) {
+            self.errors.push(
+                GuiValidationError::new(
+                    "gui.question_submit_not_chat",
+                    "question_card の submit は chat.submit ハンドラ束縛のみ指定できます",
+                )
+                .at(format!("{path}.submit")),
+            );
+        }
     }
 
     /// フィールド列（form の `fields` / question_card の `questions`）の検証。
@@ -101,19 +134,24 @@ impl Walk<'_> {
                 .at(path),
             );
         }
-        let mut seen = std::collections::HashSet::new();
         for (i, field) in fields.iter().enumerate() {
             let fpath = format!("{path}.{arr}[{i}]");
             check_id(field.id(), &fpath, self.errors);
-            if !seen.insert(field.id().to_string()) {
+            // レンダラは `genui-field-{id}` を DOM id にするため文書全体で一意を要求する
+            // （複数フォーム同時表示でも label の紐付けが壊れない）。
+            if self.field_ids.iter().any(|id| id == field.id()) {
                 self.errors.push(
                     GuiValidationError::new(
                         "gui.duplicate_field_id",
-                        format!("フィールド id '{}' が重複しています", field.id()),
+                        format!(
+                            "フィールド id '{}' が重複しています（文書内で一意）",
+                            field.id()
+                        ),
                     )
                     .at(&fpath),
                 );
             }
+            self.field_ids.push(field.id().to_string());
             match field {
                 FormField::TextInput(f) => {
                     self.label(&f.label, &format!("{fpath}.label"));

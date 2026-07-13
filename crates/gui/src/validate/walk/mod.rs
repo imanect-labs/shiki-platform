@@ -11,19 +11,29 @@ mod leaf;
 pub(super) struct Walk<'a> {
     errors: &'a mut Vec<GuiValidationError>,
     action_ids: &'a [&'a str],
+    /// `chat.submit` ハンドラ束縛の id（question_card の submit 制約用）。
+    chat_submit_ids: &'a [&'a str],
     node_count: usize,
     node_overflow: bool,
     form_ids: Vec<String>,
+    /// フォーム部品 id（文書全体で一意・レンダラの DOM id 衝突を防ぐ）。
+    field_ids: Vec<String>,
 }
 
 impl<'a> Walk<'a> {
-    pub(super) fn new(errors: &'a mut Vec<GuiValidationError>, action_ids: &'a [&'a str]) -> Self {
+    pub(super) fn new(
+        errors: &'a mut Vec<GuiValidationError>,
+        action_ids: &'a [&'a str],
+        chat_submit_ids: &'a [&'a str],
+    ) -> Self {
         Walk {
             errors,
             action_ids,
+            chat_submit_ids,
             node_count: 0,
             node_overflow: false,
             form_ids: Vec::new(),
+            field_ids: Vec::new(),
         }
     }
 

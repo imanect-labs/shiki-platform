@@ -83,10 +83,17 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
     if (busy || done) return;
     setBusy(true);
     setError(null);
-    const payload: Record<string, string> = {};
+    // 回答は「質問の見出し（無ければ質問文）: 回答」で送る。__proto__ 等でも own property に
+    // なるよう null プロトタイプにし、キー衝突時は id を添えて一意化する。
+    const payload = Object.create(null) as Record<string, string>;
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(payload, k);
     for (const item of questions) {
       const base = answerKey(item);
-      const key = base in payload ? `${base}（${item.id}）` : base;
+      let key = base;
+      if (has(key)) {
+        key = `${base}（${item.id}）`;
+        for (let n = 2; has(key); n++) key = `${base}（${item.id}）-${n}`;
+      }
       payload[key] = answerValue(item, answers[item.id] ?? emptyAnswer());
     }
     try {

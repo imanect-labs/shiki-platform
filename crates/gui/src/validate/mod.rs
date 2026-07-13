@@ -158,7 +158,18 @@ pub fn validate_spec(raw: &serde_json::Value) -> Result<UiSpecDoc, Vec<GuiValida
     }
     validate_actions(&doc.actions, &mut errors);
     let action_ids: Vec<&str> = doc.actions.iter().map(ActionBinding::id).collect();
-    let mut walk = Walk::new(&mut errors, &action_ids);
+    // question_card の回答は chat.submit ハンドラのみに送れる（tool/workflow への誤配送を防ぐ）。
+    let chat_submit_ids: Vec<&str> = doc
+        .actions
+        .iter()
+        .filter_map(|b| match b {
+            ActionBinding::Handler(h) if h.handler == crate::vocab::HandlerKind::ChatSubmit => {
+                Some(h.id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut walk = Walk::new(&mut errors, &action_ids, &chat_submit_ids);
     walk.node(&doc.root, "root", 1);
 
     if errors.is_empty() {
