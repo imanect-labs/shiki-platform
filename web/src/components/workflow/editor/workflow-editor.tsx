@@ -250,6 +250,10 @@ export function WorkflowEditor({
       </div>
     ),
     [
+      // save は state.ir を deps に持つため、IR が変わるたび identity が変わる。これを
+      // ヘッダ deps に入れることで、ノード params 等の編集でも保存/実行アクションが最新の
+      // IR を掴む（stale なヘッダアクションで旧 IR を保存/実行する事故を防ぐ）。
+      save,
       state.ir.display_name,
       state.ir.name,
       state.savedVersion,

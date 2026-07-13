@@ -35,7 +35,9 @@ type ButtonProps = BaseProps & {
 // アクティブ＝ホバーと同系のグレー（白カードは廃止）。アクティブはやや濃いグレーで区別。
 function itemClasses(active: boolean, collapsed: boolean, depth: number) {
   return cn(
-    "group/navitem relative flex h-9 items-center gap-2.5 rounded-[9px] text-[13.5px] outline-none transition-colors",
+    // isolate: 独自の stacking context を作り、アクティブピル（-z-10）を項目内に収める
+    // （サイドバー背景の下へ潜って見えなくなる事故を防ぐ）。
+    "group/navitem relative isolate flex h-9 items-center gap-2.5 rounded-[9px] text-[13.5px] outline-none transition-colors",
     "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
     collapsed ? "w-9 justify-center px-0" : "w-full px-2.5",
     active

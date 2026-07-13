@@ -77,7 +77,8 @@ export function SqlConsole({
   };
 
   const saveResult = async () => {
-    if (!result || !saveName.trim()) return;
+    // savingCsv 中は二重発火を防ぐ（Enter と 保存ボタンの多重呼び出し対策）。
+    if (!result || !saveName.trim() || savingCsv) return;
     setSavingCsv(true);
     try {
       const saved = await saveNewCsv({ parentId, name: saveName.trim(), csv: tableToCsv(result) });

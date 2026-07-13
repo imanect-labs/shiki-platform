@@ -13,9 +13,8 @@ import { ActiveIndicator } from "@/components/ui/motion-primitives";
 /// 履歴 1 行。アクティブは左アクセントバー、ホバーでリンクコピーの小ボタンを出す
 /// （スレッドのリネーム/削除は backend 未提供のため、実在する「コピー」のみ）。
 function ThreadRow({ id, title, active }: { id: string; title: string; active: boolean }) {
-  const copyLink = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  // コピーボタンは Link の兄弟（インタラクティブ要素のネストを避ける・有効な HTML）。
+  const copyLink = async () => {
     try {
       await navigator.clipboard.writeText(`${window.location.origin}/c/${id}`);
       toast({ description: "リンクをコピーしました。" });
@@ -25,40 +24,40 @@ function ThreadRow({ id, title, active }: { id: string; title: string; active: b
   };
 
   return (
-    <li>
+    <li className="group/thread relative isolate">
+      {active ? (
+        <ActiveIndicator
+          layoutId="sidebar-active-thread"
+          className="absolute inset-0 -z-10 rounded-[9px] bg-sidebar-accent"
+        />
+      ) : null}
       <Link
         href={`/c/${id}`}
         aria-current={active ? "page" : undefined}
         title={title}
         className={cn(
-          "group/thread relative flex h-8 items-center rounded-[9px] pl-2.5 pr-1 text-[13px] outline-none",
+          "flex h-8 items-center rounded-[9px] pl-2.5 pr-9 text-[13px] outline-none",
           "transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring",
           active
             ? "font-medium text-sidebar-foreground"
             : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
         )}
       >
-        {active ? (
-          <ActiveIndicator
-            layoutId="sidebar-active-thread"
-            className="absolute inset-0 -z-10 rounded-[9px] bg-sidebar-accent"
-          />
-        ) : null}
         <span className="min-w-0 flex-1 truncate">{title}</span>
-        <button
-          type="button"
-          onClick={copyLink}
-          aria-label="リンクをコピー"
-          className={cn(
-            "flex size-6 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/55 outline-none",
-            "opacity-0 transition-opacity duration-[var(--duration-fast)] focus-visible:opacity-100",
-            "hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/thread:opacity-100",
-            "focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-90",
-          )}
-        >
-          <Link2 className="size-3.5" aria-hidden />
-        </button>
       </Link>
+      <button
+        type="button"
+        onClick={copyLink}
+        aria-label="リンクをコピー"
+        className={cn(
+          "absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-sidebar-foreground/55 outline-none",
+          "opacity-0 transition-opacity duration-[var(--duration-fast)] focus-visible:opacity-100",
+          "hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/thread:opacity-100",
+          "focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-90",
+        )}
+      >
+        <Link2 className="size-3.5" aria-hidden />
+      </button>
     </li>
   );
 }
