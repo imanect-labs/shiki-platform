@@ -36,6 +36,7 @@ import { AddNodeMenu } from "./add-node-menu";
 import { Canvas } from "./canvas";
 import { useEditorState } from "./ir-state";
 import { Palette } from "./palette";
+import { FadeSlide } from "@/components/ui/motion-primitives";
 
 type Props = {
   workflowId: string;
@@ -249,9 +250,9 @@ export function WorkflowEditor({
         </div>
       </header>
 
-      {/* 本体。パレットは既定で隠し、トグルで表示（追加は主にノード尻尾の＋・最初のブロック）。 */}
+      {/* 本体。パレットは既定で隠し、トグルで「きっかけ」のように浮遊した角丸カードで重ねる
+          （追加は主にノード尻尾の＋・最初のブロック）。 */}
       <div className="flex min-h-0 flex-1">
-        {paletteOpen ? <Palette /> : null}
         <div className={cn("relative min-w-0 flex-1")}>
           <ReactFlowProvider>
             <Canvas
@@ -262,6 +263,14 @@ export function WorkflowEditor({
               dispatch={dispatch}
             />
           </ReactFlowProvider>
+          {paletteOpen ? (
+            <FadeSlide
+              from="left"
+              className="absolute inset-y-3 left-3 z-10 w-64"
+            >
+              <Palette />
+            </FadeSlide>
+          ) : null}
         </div>
         {renderSidePanel?.(ctx)}
       </div>

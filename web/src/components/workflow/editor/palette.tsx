@@ -40,10 +40,10 @@ export function Palette() {
 
   return (
     <aside
-      className="flex w-64 shrink-0 flex-col border-r bg-background"
+      className="flex h-full w-64 flex-col overflow-hidden rounded-xl border bg-card shadow-lg"
       aria-label="ブロック一覧"
     >
-      <div className="border-b px-3 py-3">
+      <div className="shiki-dash-bottom px-3 py-3">
         <h2 className="text-sm font-semibold">ブロック</h2>
         <p className="mt-0.5 text-xs text-muted-foreground">
           ドラッグして置くか、ノードの＋から追加

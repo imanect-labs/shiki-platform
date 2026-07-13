@@ -18,6 +18,7 @@ import { NoteChatPanel } from "@/components/notes/note-chat-panel";
 import { NoteEditor } from "@/components/notes/note-editor";
 import { NoteSyncSlot } from "@/components/notes/note-header-slot";
 import { EmptyState } from "@/components/ui/empty-state";
+import { FadeSlide } from "@/components/ui/motion-primitives";
 import { useMe } from "@/hooks/use-me";
 import { CollabProvider, type CollabStatus } from "@/lib/collab";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
@@ -107,8 +108,9 @@ export default function NotePage() {
         provider={session?.provider ?? null}
       />
 
-      {/* 分割ビュー: 本ページが一元ホスト（Conversation を再利用・実装は一箇所） */}
-      <div className="flex min-h-0 flex-1">
+      {/* 分割ビュー: 本ページが一元ホスト（Conversation を再利用・実装は一箇所）。
+          アシスタントは「きっかけ」のように浮遊した角丸カード（本文の右側に重ねる）。 */}
+      <div className="relative flex min-h-0 flex-1">
         {session && (
           <div className="min-w-0 flex-1 overflow-y-auto">
             <div className="mx-auto max-w-3xl px-4 pb-24 pt-4">
@@ -125,8 +127,13 @@ export default function NotePage() {
           </div>
         )}
         {session && chatOpen && (
-          <aside className="flex w-full min-w-0 max-w-md shrink-0 flex-col border-l border-sidebar-border bg-sidebar/40 md:w-[440px]">
-            {/* 分割ビューのチャット: パネル自前ヘッダ＋幅いっぱいの会話（variant=panel） */}
+          <FadeSlide
+            from="right"
+            role="complementary"
+            aria-label="ノートのアシスタント"
+            className="absolute inset-y-3 right-3 z-20 flex w-[min(420px,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border bg-card shadow-lg"
+          >
+            {/* 浮遊カードの自前ヘッダ＋幅いっぱいの会話（variant=panel） */}
             <div className="flex h-11 shrink-0 items-center gap-2 px-3 shiki-dash-bottom">
               <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
               <span className="flex-1 text-sm font-medium">アシスタント</span>
@@ -146,7 +153,7 @@ export default function NotePage() {
                 editable={editable}
               />
             </div>
-          </aside>
+          </FadeSlide>
         )}
       </div>
     </div>

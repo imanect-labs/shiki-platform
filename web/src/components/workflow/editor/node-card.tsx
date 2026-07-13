@@ -80,14 +80,15 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
   const ports = outputPorts(irNode);
   const hasError = errors.length > 0;
   const [menuOpen, setMenuOpen] = React.useState(false);
-  // カテゴリ由来の季節色（左アクセント＋アイコンチップ）。エラー時は破壊的色を優先。
+  // カテゴリ由来の季節色（アイコンチップの tint で示す）。エラー時は破壊的色を優先。
   const accent = categoryVar(entry?.category);
 
   return (
     <div
       style={{ ["--accent" as string]: accent }}
+      // ⚠️ overflow-hidden は付けない（尻尾の＋が -right-9 でカード外に出るため一緒に切れる）。
       className={cn(
-        "group/node relative w-60 overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm",
+        "group/node relative w-60 rounded-xl border bg-card text-card-foreground shadow-sm",
         // ⚠️ xyflow ノードは motion layout を使わず CSS transition のみ（transform/shadow/border）。
         "transition-[transform,box-shadow,border-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
         "hover:-translate-y-0.5 hover:shadow-md",
@@ -95,12 +96,6 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
         hasError && "border-destructive",
       )}
     >
-      {/* 左端のカテゴリ アクセントバー（季節色・エラー時は破壊的）。 */}
-      <span
-        aria-hidden
-        className="absolute inset-y-0 left-0 w-1"
-        style={{ backgroundColor: hasError ? "var(--destructive)" : "var(--accent)" }}
-      />
       {/* 入力ポート（join は複数エッジを受けるが handle は 1 つ）。 */}
       <Handle
         type="target"
@@ -108,7 +103,7 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
         className="!size-2.5 !border-2 !border-background !bg-muted-foreground transition-transform duration-[var(--duration-fast)] hover:!scale-125"
       />
 
-      <div className="flex items-start gap-2.5 px-3.5 py-3 pl-4">
+      <div className="flex items-start gap-2.5 px-3.5 py-3">
         <span
           className={cn(
             "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg",
@@ -195,9 +190,11 @@ export function NodeCard({ data, selected }: NodeProps & { data: NodeCardData })
             className={cn(
               "nodrag absolute -right-9 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center",
               "rounded-full border bg-background text-muted-foreground shadow-sm",
-              "opacity-0 transition-opacity duration-fast group-hover/node:opacity-100 focus-visible:opacity-100",
-              "hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              menuOpen && "opacity-100 border-primary text-primary",
+              // 常時うっすら表示し（発見性）、ホバー/フォーカスで全表示＋プライマリ強調。
+              "opacity-60 transition-all duration-fast group-hover/node:opacity-100 focus-visible:opacity-100",
+              "hover:border-primary hover:bg-primary hover:text-primary-foreground hover:scale-110",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              menuOpen && "opacity-100 border-primary bg-primary text-primary-foreground",
             )}
           >
             <Plus className="size-4" aria-hidden />
