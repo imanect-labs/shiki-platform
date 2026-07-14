@@ -103,16 +103,17 @@ const ROUTE_PROFILE: Record<RouteMode, string | null> = {
   flight: null,
 };
 
-/// 経由地を道なりの経路へスナップする（キー不要の OSRM・既定は FOSSGIS の公開ルータ）。
-/// `NEXT_PUBLIC_MAP_ROUTING_URL` で自己ホスト/商用ルータへ差し替え可能（設定式・信頼境界）。
-/// 失敗（air-gapped/CI/レート制限）時は null を返し、呼び出し側は直線にフォールバックする。
+/// 経由地を道なりの経路へスナップする（OSRM 互換ルータ）。**プライバシー既定 = 送信しない**:
+/// `NEXT_PUBLIC_MAP_ROUTING_URL` が設定された**信頼できるルータがある時だけ**座標を送る。未設定なら
+/// 何もせず（null）呼び出し側は与えられた経路をそのまま描く（行程座標を第三者へ勝手に渡さない）。
+/// 失敗（到達不可/レート制限）時も null。
 async function snapRoute(
   waypoints: { lat: number; lng: number }[],
   mode: RouteMode,
 ): Promise<[number, number][] | null> {
+  const base = process.env.NEXT_PUBLIC_MAP_ROUTING_URL;
   const profile = ROUTE_PROFILE[mode];
-  if (!profile || waypoints.length < 2) return null;
-  const base = process.env.NEXT_PUBLIC_MAP_ROUTING_URL ?? "https://routing.openstreetmap.de";
+  if (!base || !profile || waypoints.length < 2) return null;
   const coords = waypoints.map((w) => `${w.lng},${w.lat}`).join(";");
   const url = `${base}/routed-${profile}/route/v1/${profile}/${coords}?overview=full&geometries=geojson`;
   try {
