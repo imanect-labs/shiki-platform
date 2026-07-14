@@ -49,7 +49,12 @@ impl Tool for EmitUiTool {
          options?[各 {label, description?} の選択肢カード], multi_select?, allow_other?, \
          placeholder?}。options を空にすると自由記述（テキストエリア・長文可）になる。回答は \
          chat.submit へまとめて送信され次ターンの発話になる。選択肢に説明を添え、数値は選択肢か \
-         自由記述で問う（スライダーは使わない）。フォーム送信やボタンは \
+         自由記述で問う（スライダーは使わない）。地図は map で描ける（旅行/出張のルート提示など）。\
+         center{lat,lng}・zoom?・markers[{lat,lng,label?,description?,kind?:place/start/end/stop/\
+         lodging/food/sight}]・route?{waypoints[{lat,lng}](2 点以上・順に線で結ぶ),mode?:driving/\
+         walking/transit/flight}・bounds?{south,west,north,east}・title? を渡す。緯度経度は \
+         lat∈[-90,90]・lng∈[-180,180] の構造化データのみ（タイル URL はサーバ設定で注入されるため \
+         指定しない）。フォーム送信やボタンは \
          spec.actions に宣言した束縛（type: handler の chat.submit、type: tool の doc_search / \
          web_search、type: workflow の name 参照）だけを action id で参照できる。検証に失敗した \
          場合はエラーを直して再試行するか、通常のテキストで回答する。"

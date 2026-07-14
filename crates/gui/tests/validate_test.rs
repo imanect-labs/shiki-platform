@@ -118,14 +118,76 @@ fn rejects_unknown_action_ref() {
 
 #[test]
 fn rejects_reserved_components() {
-    assert_rejected_with(
-        minimal(json!({ "component": "map" })),
-        "gui.component_unavailable",
-    );
+    // image のみ予約（map は PR5 で有効化済み）。
     assert_rejected_with(
         minimal(json!({ "component": "image" })),
         "gui.component_unavailable",
     );
+}
+
+#[test]
+fn accepts_map_with_markers_and_route() {
+    let spec = minimal(json!({
+        "component": "map",
+        "center": { "lat": 35.68, "lng": 139.76 },
+        "zoom": 12,
+        "markers": [
+            { "lat": 35.68, "lng": 139.76, "label": "駅", "kind": "start" },
+            { "lat": 35.65, "lng": 139.74, "kind": "sight" }
+        ],
+        "route": {
+            "mode": "walking",
+            "waypoints": [
+                { "lat": 35.68, "lng": 139.76 },
+                { "lat": 35.65, "lng": 139.74 }
+            ]
+        }
+    }));
+    gui::validate::validate_spec(&spec).expect("valid map spec");
+}
+
+#[test]
+fn rejects_map_out_of_range_coord() {
+    // 緯度 100 は範囲外（[-90,90]）。
+    assert_rejected_with(
+        minimal(json!({
+            "component": "map",
+            "center": { "lat": 100.0, "lng": 139.0 }
+        })),
+        "gui.invalid_coord",
+    );
+    // 経度 200 は範囲外（[-180,180]）。
+    assert_rejected_with(
+        minimal(json!({
+            "component": "map",
+            "center": { "lat": 35.0, "lng": 200.0 },
+            "markers": [{ "lat": 35.0, "lng": 200.0 }]
+        })),
+        "gui.invalid_coord",
+    );
+}
+
+#[test]
+fn rejects_map_route_with_single_waypoint() {
+    assert_rejected_with(
+        minimal(json!({
+            "component": "map",
+            "center": { "lat": 35.0, "lng": 139.0 },
+            "route": { "waypoints": [{ "lat": 35.0, "lng": 139.0 }] }
+        })),
+        "gui.invalid_route",
+    );
+}
+
+#[test]
+fn rejects_map_unknown_marker_kind() {
+    // 閉語彙外の kind は serde（deny_unknown_fields ではなく enum）で表現不可能＝拒否。
+    let spec = minimal(json!({
+        "component": "map",
+        "center": { "lat": 35.0, "lng": 139.0 },
+        "markers": [{ "lat": 35.0, "lng": 139.0, "kind": "nuclear_site" }]
+    }));
+    assert!(gui::validate::validate_spec(&spec).is_err());
 }
 
 #[test]

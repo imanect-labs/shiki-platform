@@ -80,6 +80,12 @@ pub mod limits {
     pub const MAX_CODE_CHARS: usize = 8000;
     /// レーティングの最大値の上限（星 N 個の N）。
     pub const MAX_RATING: u32 = 20;
+    /// 地図のマーカー数上限。
+    pub const MAX_MAP_MARKERS: usize = 100;
+    /// 地図ルートの waypoint 数上限。
+    pub const MAX_ROUTE_WAYPOINTS: usize = 200;
+    /// 地図ズームの上限（MapLibre の建物レベル）。
+    pub const MAX_MAP_ZOOM: f64 = 22.0;
     /// 本文テキスト（text/セル/default 値）の文字数上限。
     pub const MAX_TEXT_CHARS: usize = 4000;
     /// ラベル類（label/title/placeholder/x など）の文字数上限。

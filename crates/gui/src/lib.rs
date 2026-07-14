@@ -30,6 +30,7 @@ pub mod dispatch;
 pub mod emit_tool;
 pub mod form_fields;
 pub mod layout;
+pub mod map;
 pub mod miniapp;
 pub mod miniapp_store;
 pub mod question;

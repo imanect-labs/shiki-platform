@@ -94,6 +94,8 @@ pub(super) fn genui_spec(kind: &str) -> Value {
         }),
         // 質問カード（Claude Code 風・複数質問＋自由記述・回答は chat.submit へ）。
         "question" => question_spec(),
+        // 地図（マーカー＋ルート・座標のみ／タイルはサーバ設定・PR5）。
+        "map" => map_spec(),
         // カタログ外コンポーネント（検証拒否→テキストフォールバックの決定的検証用）。
         "bad" => json!({
             "version": 1,
@@ -179,6 +181,37 @@ fn question_spec() -> Value {
     })
 }
 
+/// 地図（マーカー＋ルート）の固定スペック。座標のみで完結し、タイルはサーバ設定で注入される。
+/// 東京の半日さんぽ（駅→タワー→美術館→庭園）を徒歩ルートで示す。
+fn map_spec() -> Value {
+    json!({
+        "version": 1,
+        "root": {
+            "component": "map",
+            "title": "東京 半日さんぽ（徒歩ルート）",
+            "center": { "lat": 35.665, "lng": 139.752 },
+            "zoom": 13,
+            "markers": [
+                { "lat": 35.6812, "lng": 139.7671, "label": "東京駅", "description": "出発地・10:00", "kind": "start" },
+                { "lat": 35.6586, "lng": 139.7454, "label": "東京タワー", "description": "展望・11:00", "kind": "sight" },
+                { "lat": 35.6604, "lng": 139.7292, "label": "六本木で昼食", "description": "12:30", "kind": "food" },
+                { "lat": 35.6852, "lng": 139.7528, "label": "皇居東御苑", "description": "散策・14:30", "kind": "sight" },
+                { "lat": 35.6749, "lng": 139.763, "label": "有楽町のホテル", "description": "チェックイン・16:00", "kind": "lodging" }
+            ],
+            "route": {
+                "mode": "walking",
+                "waypoints": [
+                    { "lat": 35.6812, "lng": 139.7671 },
+                    { "lat": 35.6586, "lng": 139.7454 },
+                    { "lat": 35.6604, "lng": 139.7292 },
+                    { "lat": 35.6852, "lng": 139.7528 },
+                    { "lat": 35.6749, "lng": 139.763 }
+                ]
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +242,15 @@ mod tests {
         assert_eq!(spec["root"]["component"], "question_card");
         assert_eq!(spec["actions"][0]["handler"], "chat.submit");
         assert!(spec["root"]["questions"].as_array().unwrap().len() >= 3);
+    }
+
+    #[test]
+    fn genui_map_spec_shape() {
+        // 地図はマーカー＋ルート waypoint を持つ（座標のみ・タイル URL 無し）。
+        let spec = genui_spec("map");
+        assert_eq!(spec["root"]["component"], "map");
+        assert!(spec["root"]["markers"].as_array().unwrap().len() >= 2);
+        assert_eq!(spec["root"]["route"]["mode"], "walking");
+        assert!(spec["root"]["route"]["waypoints"].as_array().unwrap().len() >= 2);
     }
 }

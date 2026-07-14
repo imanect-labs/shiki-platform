@@ -97,10 +97,25 @@ test.describe("generative UI ギャラリー（検証済みスペックの描画
     await questionCard.getByRole("button", { name: "次へ" }).click();
     await expect(questionCard.getByText("旅のペースはどれくらいが好みですか？")).toBeVisible();
 
+    // 地図（PR5）: maplibre キャンバス＋ルート順のマーカーがオフライン既定スタイルで描画される。
+    const mapCell = page.getByTestId("gallery-map");
+    await expect(mapCell).toBeVisible();
+    await expect(mapCell.getByTestId("genui-map-canvas")).toBeVisible();
+    await expect(mapCell.locator("canvas.maplibregl-canvas")).toBeVisible();
+    // 5 地点のマーカー DOM（番号ピン＋ラベル）が乗る。
+    await expect(mapCell.locator(".genui-map-marker")).toHaveCount(5);
+    await expect(mapCell.getByText("東京駅")).toBeVisible();
+
     if (SHOTS) {
       // 直前の操作（質問カードのステップ遷移等）を捨て初期状態から撮る。
       await page.reload({ waitUntil: "networkidle" });
       await waitForCharts(page);
+      // 地図の maplibre キャンバスとマーカーが乗るまで待つ（オフライン既定＝ネット不要）。
+      await page
+        .getByTestId("gallery-map")
+        .locator(".genui-map-marker")
+        .first()
+        .waitFor({ timeout: 20_000 });
       // 全コンポーネントをライト/ダーク両方で撮る（デザイン改善ループの棚卸し用）。
       const ALL_CELLS = [
         ...CHART_CELL_IDS,
@@ -116,6 +131,7 @@ test.describe("generative UI ギャラリー（検証済みスペックの描画
         "code_block",
         "rich-form",
         "question-card",
+        "map",
       ];
       for (const scheme of ["light", "dark"] as const) {
         await page.emulateMedia({ colorScheme: scheme });

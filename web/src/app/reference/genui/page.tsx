@@ -387,6 +387,34 @@ const QUESTION_CARD: unknown = {
   },
 };
 
+/// 地図（マーカー＋徒歩ルート・座標のみ／タイルはサーバ設定・PR5）。東京の半日さんぽ。
+const MAP_CARD: unknown = {
+  version: 1,
+  root: {
+    component: "map",
+    title: "東京 半日さんぽ（徒歩ルート）",
+    center: { lat: 35.665, lng: 139.752 },
+    zoom: 13,
+    markers: [
+      { lat: 35.6812, lng: 139.7671, label: "東京駅", description: "出発 10:00", kind: "start" },
+      { lat: 35.6586, lng: 139.7454, label: "東京タワー", description: "展望 11:00", kind: "sight" },
+      { lat: 35.6604, lng: 139.7292, label: "六本木で昼食", description: "12:30", kind: "food" },
+      { lat: 35.6852, lng: 139.7528, label: "皇居東御苑", description: "散策 14:30", kind: "sight" },
+      { lat: 35.6749, lng: 139.763, label: "有楽町のホテル", description: "16:00", kind: "lodging" },
+    ],
+    route: {
+      mode: "walking",
+      waypoints: [
+        { lat: 35.6812, lng: 139.7671 },
+        { lat: 35.6586, lng: 139.7454 },
+        { lat: 35.6604, lng: 139.7292 },
+        { lat: 35.6852, lng: 139.7528 },
+        { lat: 35.6749, lng: 139.763 },
+      ],
+    },
+  },
+};
+
 export default function GenUiGalleryPage() {
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
@@ -441,6 +469,15 @@ export default function GenUiGalleryPage() {
         </h2>
         <div className="max-w-md">
           <Cell id="question-card" title="複数質問＋自由記述" spec={QUESTION_CARD} />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="mb-3 text-[13px] font-semibold tracking-wide text-foreground/70">
+          地図（ルート＋マーカー）
+        </h2>
+        <div className="max-w-xl">
+          <Cell id="map" title="旅程の徒歩ルート" spec={MAP_CARD} />
         </div>
       </section>
     </main>

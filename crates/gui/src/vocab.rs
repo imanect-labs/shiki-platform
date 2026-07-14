@@ -85,18 +85,18 @@ vocab_enum! {
         CodeBlock => "code_block",
         /// 質問カード（AI がユーザーへ複数質問・回答は chat.submit へ・PR4）。
         QuestionCard => "question_card",
-        // ---- 将来予約（serde 名を凍結・Phase 6 では検証が拒否する） ----
-        /// 地図（タイル表示＋ピン・design §4.7。外部タイル依存のため後続）。
+        /// 地図（マーカー＋ルート・タイルはサーバ設定で注入・PR5）。
         Map => "map",
+        // ---- 将来予約（serde 名を凍結・検証が拒否する） ----
         /// 画像（ストレージ node 参照のみ許す設計を確定してから有効化する）。
         Image => "image",
     }
 }
 
 impl ComponentKind {
-    /// Phase 6 で描画・保存を許すカタログ部分集合（予約 variant は false）。
+    /// 描画・保存を許すカタログ部分集合（予約 variant は false）。
     pub fn available(self) -> bool {
-        !matches!(self, ComponentKind::Map | ComponentKind::Image)
+        !matches!(self, ComponentKind::Image)
     }
 }
 
@@ -157,8 +157,9 @@ mod tests {
 
     #[test]
     fn reserved_components_are_unavailable() {
-        assert!(!ComponentKind::Map.available());
+        // image のみ予約（map は PR5 で有効化済み）。
         assert!(!ComponentKind::Image.available());
+        assert!(ComponentKind::Map.available());
         assert!(ComponentKind::Form.available());
         assert!(ComponentKind::Chart.available());
     }

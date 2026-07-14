@@ -16,6 +16,7 @@ use gui::layout::{
     CodeBlockProps, KeyValueItem, KeyValueProps, StepItem, StepStatus, StepperProps, TabItem,
     TabsProps,
 };
+use gui::map::{GeoBounds, GeoPoint, MapMarker, MapProps, MapRoute, MarkerKind, RouteMode};
 use gui::miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
 use gui::question::{QuestionCardProps, QuestionItem, QuestionOption};
 use gui::skill::{
@@ -94,6 +95,13 @@ fn main() {
         QuestionCardProps,
         QuestionItem,
         QuestionOption,
+        MapProps,
+        GeoPoint,
+        MapMarker,
+        MarkerKind,
+        MapRoute,
+        RouteMode,
+        GeoBounds,
         ActionBinding,
         ToolBinding,
         HandlerBinding,

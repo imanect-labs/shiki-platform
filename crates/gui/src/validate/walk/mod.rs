@@ -6,6 +6,7 @@ use super::{limits, GuiValidationError};
 use crate::spec::UiNode;
 
 mod leaf;
+mod map;
 
 /// ツリー走査の状態。
 pub(super) struct Walk<'a> {
@@ -234,8 +235,9 @@ impl<'a> Walk<'a> {
                 self.opt_label(p.language.as_deref(), &format!("{path}.language"));
             }
             UiNode::QuestionCard(p) => self.question_card(p, path),
-            // available() 判定で早期 return 済み。
-            UiNode::Map(_) | UiNode::Image(_) => unreachable!("reserved components return early"),
+            UiNode::Map(p) => self.map(p, path),
+            // image は予約（available() 判定で早期 return 済み）。
+            UiNode::Image(_) => unreachable!("reserved components return early"),
         }
     }
 }
