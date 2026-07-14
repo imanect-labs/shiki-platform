@@ -106,6 +106,22 @@ test.describe("generative UI ギャラリー（検証済みスペックの描画
     await expect(mapCell.locator(".genui-map-marker")).toHaveCount(5);
     await expect(mapCell.getByText("東京駅")).toBeVisible();
 
+    // ドメインカード（PR6）: 5 種が描画される。
+    for (const [id, testId] of [
+      ["source_card", "genui-source-card"],
+      ["itinerary", "genui-itinerary"],
+      ["weather", "genui-weather"],
+      ["comparison", "genui-comparison"],
+      ["timeline", "genui-timeline"],
+    ] as const) {
+      await expect(page.getByTestId(`gallery-${id}`).getByTestId(testId), `domain ${id}`).toBeVisible();
+    }
+    // 代表的な中身: 出典リンク（https・外部）／比較の推し列強調。
+    await expect(
+      page.getByTestId("gallery-source_card").getByRole("link", { name: /二段 authz/ }),
+    ).toHaveAttribute("href", /^https:\/\//);
+    await expect(page.getByTestId("gallery-comparison").getByText("¥1,480")).toBeVisible();
+
     if (SHOTS) {
       // 直前の操作（質問カードのステップ遷移等）を捨て初期状態から撮る。
       await page.reload({ waitUntil: "networkidle" });
@@ -132,6 +148,11 @@ test.describe("generative UI ギャラリー（検証済みスペックの描画
         "rich-form",
         "question-card",
         "map",
+        "source_card",
+        "itinerary",
+        "weather",
+        "comparison",
+        "timeline",
       ];
       for (const scheme of ["light", "dark"] as const) {
         await page.emulateMedia({ colorScheme: scheme });

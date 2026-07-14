@@ -21,6 +21,13 @@ import { GenUiChart } from "./gen-chart";
 import { GenUiStat } from "./gen-stat";
 import { GenUiQuestionCard } from "./gen-question-card";
 import {
+  GenUiComparison,
+  GenUiItinerary,
+  GenUiSourceCard,
+  GenUiTimeline,
+  GenUiWeather,
+} from "./gen-domain";
+import {
   GenUiAccordion,
   GenUiBadgeList,
   GenUiCallout,
@@ -146,6 +153,16 @@ export function NodeView({ node, depth }: { node: UiNode; depth: number }) {
       return <GenUiQuestionCard card={node} />;
     case "map":
       return <GenUiMap map={node} />;
+    case "source_card":
+      return <GenUiSourceCard card={node} />;
+    case "itinerary":
+      return <GenUiItinerary itinerary={node} />;
+    case "weather":
+      return <GenUiWeather weather={node} />;
+    case "comparison":
+      return <GenUiComparison comparison={node} />;
+    case "timeline":
+      return <GenUiTimeline timeline={node} />;
     case "accordion":
       return (
         <GenUiAccordion

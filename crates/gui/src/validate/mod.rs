@@ -80,6 +80,8 @@ pub mod limits {
     pub const MAX_CODE_CHARS: usize = 8000;
     /// レーティングの最大値の上限（星 N 個の N）。
     pub const MAX_RATING: u32 = 20;
+    /// 比較カードの列数上限。
+    pub const MAX_COMPARISON_COLS: usize = 8;
     /// 地図のマーカー数上限。
     pub const MAX_MAP_MARKERS: usize = 100;
     /// 地図ルートの waypoint 数上限。

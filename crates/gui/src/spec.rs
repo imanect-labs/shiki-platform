@@ -61,6 +61,12 @@ pub enum UiNode {
     CodeBlock(crate::layout::CodeBlockProps),
     // ---- 対話（PR4・回答は宣言済みアクションへ送信） ----
     QuestionCard(crate::question::QuestionCardProps),
+    // ---- ドメインカード（PR6・表示専用・props は crate::domain） ----
+    SourceCard(crate::domain::SourceCardProps),
+    Itinerary(crate::domain::ItineraryProps),
+    Weather(crate::domain::WeatherProps),
+    Comparison(crate::domain::ComparisonProps),
+    Timeline(crate::domain::TimelineProps),
     // ---- 地図（PR5・座標/マーカー/ルートは構造化のみ・タイルはサーバ設定） ----
     Map(crate::map::MapProps),
     // ---- 将来予約（vocab::ComponentKind と同期・検証が拒否する） ----
@@ -87,6 +93,11 @@ impl UiNode {
             UiNode::KeyValue(_) => ComponentKind::KeyValue,
             UiNode::CodeBlock(_) => ComponentKind::CodeBlock,
             UiNode::QuestionCard(_) => ComponentKind::QuestionCard,
+            UiNode::SourceCard(_) => ComponentKind::SourceCard,
+            UiNode::Itinerary(_) => ComponentKind::Itinerary,
+            UiNode::Weather(_) => ComponentKind::Weather,
+            UiNode::Comparison(_) => ComponentKind::Comparison,
+            UiNode::Timeline(_) => ComponentKind::Timeline,
             UiNode::Map(_) => ComponentKind::Map,
             UiNode::Image(_) => ComponentKind::Image,
         }
@@ -414,6 +425,29 @@ mod tests {
                 },
                 questions: vec![],
                 submit_label: None,
+            }),
+            UiNode::SourceCard(crate::domain::SourceCardProps {
+                title: None,
+                sources: vec![],
+            }),
+            UiNode::Itinerary(crate::domain::ItineraryProps {
+                title: None,
+                days: vec![],
+            }),
+            UiNode::Weather(crate::domain::WeatherProps {
+                location: String::new(),
+                title: None,
+                days: vec![],
+            }),
+            UiNode::Comparison(crate::domain::ComparisonProps {
+                title: None,
+                columns: vec![],
+                rows: vec![],
+                highlight: None,
+            }),
+            UiNode::Timeline(crate::domain::TimelineProps {
+                title: None,
+                events: vec![],
             }),
             UiNode::Map(crate::map::MapProps {
                 center: crate::map::GeoPoint { lat: 0.0, lng: 0.0 },

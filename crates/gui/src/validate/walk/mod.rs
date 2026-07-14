@@ -5,6 +5,7 @@
 use super::{limits, GuiValidationError};
 use crate::spec::UiNode;
 
+mod domain;
 mod leaf;
 mod map;
 
@@ -235,6 +236,11 @@ impl<'a> Walk<'a> {
                 self.opt_label(p.language.as_deref(), &format!("{path}.language"));
             }
             UiNode::QuestionCard(p) => self.question_card(p, path),
+            UiNode::SourceCard(p) => self.source_card(p, path),
+            UiNode::Itinerary(p) => self.itinerary(p, path),
+            UiNode::Weather(p) => self.weather(p, path),
+            UiNode::Comparison(p) => self.comparison(p, path),
+            UiNode::Timeline(p) => self.timeline(p, path),
             UiNode::Map(p) => self.map(p, path),
             // image は予約（available() 判定で早期 return 済み）。
             UiNode::Image(_) => unreachable!("reserved components return early"),

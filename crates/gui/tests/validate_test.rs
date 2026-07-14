@@ -180,6 +180,90 @@ fn rejects_map_route_with_single_waypoint() {
 }
 
 #[test]
+fn accepts_domain_cards() {
+    for root in [
+        json!({
+            "component": "source_card",
+            "sources": [
+                { "title": "設計", "snippet": "二段 authz…", "url": "https://ex.com/d", "score": 0.9, "label": "PDF" }
+            ]
+        }),
+        json!({
+            "component": "itinerary",
+            "title": "東京 1 泊 2 日",
+            "days": [{ "label": "1 日目", "items": [
+                { "time": "10:00", "title": "集合", "location": "東京駅", "kind": "travel" }
+            ]}]
+        }),
+        json!({
+            "component": "weather",
+            "location": "東京",
+            "days": [{ "label": "今日", "condition": "partly_cloudy", "high": 28.0, "low": 21.0, "precipitation": 30.0 }]
+        }),
+        json!({
+            "component": "comparison",
+            "columns": ["無料", "Pro"],
+            "rows": [{ "label": "容量", "values": ["1GB", "100GB"] }],
+            "highlight": 1
+        }),
+        json!({
+            "component": "timeline",
+            "events": [{ "time": "2026-07", "title": "リリース", "tone": "success" }]
+        }),
+    ] {
+        gui::validate::validate_spec(&minimal(root)).expect("valid domain card");
+    }
+}
+
+#[test]
+fn rejects_comparison_row_mismatch() {
+    assert_rejected_with(
+        minimal(json!({
+            "component": "comparison",
+            "columns": ["A", "B"],
+            "rows": [{ "label": "x", "values": ["only-one"] }]
+        })),
+        "gui.comparison_row_mismatch",
+    );
+}
+
+#[test]
+fn rejects_comparison_highlight_out_of_range() {
+    assert_rejected_with(
+        minimal(json!({
+            "component": "comparison",
+            "columns": ["A", "B"],
+            "rows": [{ "label": "x", "values": ["1", "2"] }],
+            "highlight": 5
+        })),
+        "gui.invalid_range",
+    );
+}
+
+#[test]
+fn rejects_weather_precipitation_out_of_range() {
+    assert_rejected_with(
+        minimal(json!({
+            "component": "weather",
+            "location": "東京",
+            "days": [{ "label": "今日", "condition": "rain", "precipitation": 150.0 }]
+        })),
+        "gui.invalid_range",
+    );
+}
+
+#[test]
+fn rejects_source_card_non_https_url() {
+    assert_rejected_with(
+        minimal(json!({
+            "component": "source_card",
+            "sources": [{ "title": "x", "url": "http://insecure.example" }]
+        })),
+        "gui.forbidden_url_scheme",
+    );
+}
+
+#[test]
 fn rejects_map_unknown_marker_kind() {
     // 閉語彙外の kind は serde（deny_unknown_fields ではなく enum）で表現不可能＝拒否。
     let spec = minimal(json!({
