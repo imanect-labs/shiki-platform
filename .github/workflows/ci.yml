@@ -268,8 +268,26 @@ jobs:
       - name: clean stale coverage artifacts
         run: cargo llvm-cov clean --workspace
       # 計装ビルドのみ（--no-run＝テスト実行しない＝DB 不要）を compose 起動と並列で先行させる。
+      # 【一時診断・#281】coverage 固有の依存再ビルド（rust ジョブは warm なのに 600 deps 再コンパイル）
+      # の原因を切り分ける。cargo fingerprint ログで「dirty: <理由>」（mtime stale 等）を出しつつ、
+      # dirty 行が無いのに Compiling が多い＝RUSTFLAGS/metadata drift（キャッシュと別ハッシュ）を判別する。
       - name: build + instrument (計装ビルドのみ・compose 起動と並列)
-        run: cargo test --workspace --no-run
+        run: |
+          set -o pipefail
+          echo "=== 計装 env（drift 源の確認） ==="
+          env | grep -aE 'RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|RUSTC_WRAPPER|CARGO_LLVM_COV(_SHOW_ENV)?=' | sed -E 's/(WRAPPER=).*/\1<path>/' || true
+          echo "=== 復元キャッシュ内の依存 rlib 数（build 前） ==="
+          ls target/debug/deps/*.rlib 2>/dev/null | wc -l || true
+          CARGO_LOG=cargo::core::compiler::fingerprint=info cargo test --workspace --no-run 2>build-fp.log \
+            || { echo '--- build failed; log tail ---'; tail -80 build-fp.log; exit 1; }
+          echo "=== Compiling total ==="; grep -ac 'Compiling' build-fp.log || true
+          echo "=== 'dirty:' 行 total（>0=mtime/内容 stale, ~0=metadata drift で新規扱い） ==="; grep -ac 'dirty:' build-fp.log || true
+          echo "=== dirty reason type 分布 ==="
+          grep -aoE 'dirty: [A-Za-z_]+' build-fp.log | sort | uniq -c | sort -rn | head -15 || true
+          echo "=== dirty for ヘッダ サンプル（依存＝registry パス） ==="
+          grep -a 'fingerprint dirty for' build-fp.log | grep -a 'registry' | head -6 || true
+          echo "=== Compiling サンプル（依存が新規ビルドされているか） ==="
+          grep -a 'Compiling' build-fp.log | grep -avE 'shiki' | head -6 || true
       - name: wait for services healthy
         wait: compose-up
       # 単体＋結合テストをまとめて計測（各 *_TEST_* env を見て結合テストが実走する）。
