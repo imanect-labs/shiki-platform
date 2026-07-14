@@ -476,7 +476,8 @@ const DOMAIN: { id: string; title: string; spec: unknown }[] = [
     title: "weather（天気）",
     spec: node({
       component: "weather",
-      location: "東京の天気",
+      title: "週末の予報",
+      location: "東京",
       days: [
         { label: "今日", condition: "sunny", high: 31, low: 24, precipitation: 10 },
         { label: "明日", condition: "partly_cloudy", high: 29, low: 23, precipitation: 30 },

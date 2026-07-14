@@ -44,11 +44,13 @@ import { cn } from "@/lib/utils";
 function DomainCard({
   icon,
   title,
+  subtitle,
   children,
   testId,
 }: {
   icon: React.ReactNode;
   title: string | null;
+  subtitle?: string | null;
   children: React.ReactNode;
   testId: string;
 }) {
@@ -70,7 +72,14 @@ function DomainCard({
           >
             {icon}
           </span>
-          <h3 className="truncate text-sm font-semibold tracking-tight text-foreground">{title}</h3>
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold tracking-tight text-foreground">
+              {title}
+            </h3>
+            {subtitle ? (
+              <p className="truncate text-[11px] text-muted-foreground">{subtitle}</p>
+            ) : null}
+          </div>
         </header>
       ) : null}
       {children}
@@ -90,7 +99,9 @@ export function GenUiSourceCard({ card }: { card: SourceCardProps }) {
             className={cn("px-3.5 py-2.5", i < sources.length - 1 && "shiki-dash-bottom")}
           >
             <div className="flex items-start justify-between gap-2">
-              {s.url ? (
+              {/* 未検証 payload（note 埋め込み等）でも javascript:/data: を踏ませないよう
+                  レンダラ側でも https を再確認する（link コンポーネントと同じ防御）。 */}
+              {s.url && s.url.startsWith("https://") ? (
                 <a
                   href={s.url}
                   target="_blank"
@@ -210,15 +221,15 @@ export function GenUiItinerary({ itinerary }: { itinerary: ItineraryProps }) {
   );
 }
 
-/// 天候 → アイコン＋色。
-const WEATHER_META: Record<WeatherCondition, { icon: React.ElementType; cls: string }> = {
-  sunny: { icon: Sun, cls: "text-amber-500" },
-  partly_cloudy: { icon: CloudSun, cls: "text-amber-500/80" },
-  cloudy: { icon: Cloud, cls: "text-muted-foreground" },
-  rain: { icon: CloudRain, cls: "text-[var(--season-winter)]" },
-  storm: { icon: CloudLightning, cls: "text-[var(--season-winter)]" },
-  snow: { icon: Snowflake, cls: "text-sky-400" },
-  fog: { icon: CloudFog, cls: "text-muted-foreground/70" },
+/// 天候 → アイコン＋色＋読み上げ用ラベル（色だけに頼らず condition を伝える）。
+const WEATHER_META: Record<WeatherCondition, { icon: React.ElementType; cls: string; label: string }> = {
+  sunny: { icon: Sun, cls: "text-amber-500", label: "晴れ" },
+  partly_cloudy: { icon: CloudSun, cls: "text-amber-500/80", label: "晴れ時々くもり" },
+  cloudy: { icon: Cloud, cls: "text-muted-foreground", label: "くもり" },
+  rain: { icon: CloudRain, cls: "text-[var(--season-winter)]", label: "雨" },
+  storm: { icon: CloudLightning, cls: "text-[var(--season-winter)]", label: "雷雨" },
+  snow: { icon: Snowflake, cls: "text-sky-400", label: "雪" },
+  fog: { icon: CloudFog, cls: "text-muted-foreground/70", label: "霧" },
 };
 
 /// 天気カード（地点＋日別の天候）。
@@ -230,6 +241,8 @@ export function GenUiWeather({ weather }: { weather: WeatherProps }) {
     <DomainCard
       icon={<CloudSun className="size-4" />}
       title={weather.title || weather.location}
+      // title を明示した場合でも地点情報を失わないよう副題に location を出す。
+      subtitle={weather.title ? weather.location : null}
       testId="genui-weather"
     >
       <div className="grid grid-cols-2 gap-2 p-3 sm:grid-cols-3 md:grid-cols-4">
@@ -242,7 +255,9 @@ export function GenUiWeather({ weather }: { weather: WeatherProps }) {
               className="flex flex-col items-center gap-1 rounded-lg border border-border/60 bg-card/40 px-2 py-2.5"
             >
               <span className="text-[11px] font-medium text-muted-foreground">{d.label}</span>
-              <Icon className={cn("size-6", meta.cls)} aria-hidden />
+              <Icon className={cn("size-6", meta.cls)} role="img" aria-label={meta.label} />
+              {/* アイコンだけだと読み上げ/高コントラストで天候が伝わらないため補う。 */}
+              <span className="sr-only">{meta.label}</span>
               <div className="flex items-baseline gap-1 tabular-nums">
                 <span className="text-[13px] font-semibold text-foreground">{fmt(d.high)}</span>
                 <span className="text-[11px] text-muted-foreground">{fmt(d.low)}</span>
