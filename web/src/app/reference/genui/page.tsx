@@ -387,6 +387,44 @@ const QUESTION_CARD: unknown = {
   },
 };
 
+/// 地図（マーカー＋徒歩ルート・座標のみ／タイルはサーバ設定・PR5）。東京の半日さんぽ。
+const MAP_CARD: unknown = {
+  version: 1,
+  root: {
+    component: "map",
+    title: "東京 半日さんぽ（徒歩ルート）",
+    center: { lat: 35.665, lng: 139.752 },
+    zoom: 13,
+    markers: [
+      { lat: 35.6812, lng: 139.7671, label: "東京駅", description: "出発 10:00", kind: "start" },
+      { lat: 35.6586, lng: 139.7454, label: "東京タワー", description: "展望 11:00", kind: "sight" },
+      { lat: 35.6604, lng: 139.7292, label: "六本木で昼食", description: "12:30", kind: "food" },
+      { lat: 35.6852, lng: 139.7528, label: "皇居東御苑", description: "散策 14:30", kind: "sight" },
+      { lat: 35.6749, lng: 139.763, label: "有楽町のホテル", description: "16:00", kind: "lodging" },
+    ],
+    // route.waypoints は徒歩ルータで実際の街路に沿わせた密なポリライン（AI が経路ツールで
+    // 出す想定の形）。クライアントは外部へ問い合わせず、この経路をそのまま描く。
+    route: {
+      mode: "walking",
+      waypoints: [
+        { lat: 35.6812, lng: 139.76711 }, { lat: 35.68048, lng: 139.7659 }, { lat: 35.67941, lng: 139.7639 }, { lat: 35.67862, lng: 139.76293 },
+        { lat: 35.67833, lng: 139.76216 }, { lat: 35.67545, lng: 139.75974 }, { lat: 35.67409, lng: 139.75835 }, { lat: 35.6697, lng: 139.75528 },
+        { lat: 35.66782, lng: 139.75447 }, { lat: 35.6647, lng: 139.75302 }, { lat: 35.66301, lng: 139.75222 }, { lat: 35.66104, lng: 139.75125 },
+        { lat: 35.6599, lng: 139.74957 }, { lat: 35.65971, lng: 139.74723 }, { lat: 35.65917, lng: 139.74533 }, { lat: 35.65952, lng: 139.74313 },
+        { lat: 35.66007, lng: 139.74055 }, { lat: 35.66139, lng: 139.73704 }, { lat: 35.662, lng: 139.73496 }, { lat: 35.66228, lng: 139.73271 },
+        { lat: 35.66113, lng: 139.73045 }, { lat: 35.66068, lng: 139.72955 }, { lat: 35.66075, lng: 139.72969 }, { lat: 35.6617, lng: 139.73023 },
+        { lat: 35.6619, lng: 139.73046 }, { lat: 35.66337, lng: 139.73199 }, { lat: 35.66431, lng: 139.73404 }, { lat: 35.6685, lng: 139.74013 },
+        { lat: 35.67054, lng: 139.74219 }, { lat: 35.6719, lng: 139.74379 }, { lat: 35.67372, lng: 139.74743 }, { lat: 35.67667, lng: 139.74926 },
+        { lat: 35.67737, lng: 139.7505 }, { lat: 35.677, lng: 139.75579 }, { lat: 35.68452, lng: 139.76027 }, { lat: 35.68588, lng: 139.76037 },
+        { lat: 35.68607, lng: 139.75804 }, { lat: 35.68518, lng: 139.75687 }, { lat: 35.68573, lng: 139.75517 }, { lat: 35.68616, lng: 139.75473 },
+        { lat: 35.68574, lng: 139.75536 }, { lat: 35.68501, lng: 139.75729 }, { lat: 35.68623, lng: 139.75827 }, { lat: 35.68572, lng: 139.761 },
+        { lat: 35.68466, lng: 139.76278 }, { lat: 35.68221, lng: 139.76346 }, { lat: 35.67942, lng: 139.76275 }, { lat: 35.67587, lng: 139.76286 },
+        { lat: 35.67488, lng: 139.76303 },
+      ],
+    },
+  },
+};
+
 export default function GenUiGalleryPage() {
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
@@ -441,6 +479,15 @@ export default function GenUiGalleryPage() {
         </h2>
         <div className="max-w-md">
           <Cell id="question-card" title="複数質問＋自由記述" spec={QUESTION_CARD} />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="mb-3 text-[13px] font-semibold tracking-wide text-foreground/70">
+          地図（ルート＋マーカー）
+        </h2>
+        <div className="max-w-xl">
+          <Cell id="map" title="旅程の徒歩ルート" spec={MAP_CARD} />
         </div>
       </section>
     </main>

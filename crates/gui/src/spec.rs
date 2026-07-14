@@ -61,8 +61,9 @@ pub enum UiNode {
     CodeBlock(crate::layout::CodeBlockProps),
     // ---- 対話（PR4・回答は宣言済みアクションへ送信） ----
     QuestionCard(crate::question::QuestionCardProps),
+    // ---- 地図（PR5・座標/マーカー/ルートは構造化のみ・タイルはサーバ設定） ----
+    Map(crate::map::MapProps),
     // ---- 将来予約（vocab::ComponentKind と同期・検証が拒否する） ----
-    Map(ReservedProps),
     Image(ReservedProps),
 }
 
@@ -414,7 +415,14 @@ mod tests {
                 questions: vec![],
                 submit_label: None,
             }),
-            UiNode::Map(ReservedProps {}),
+            UiNode::Map(crate::map::MapProps {
+                center: crate::map::GeoPoint { lat: 0.0, lng: 0.0 },
+                zoom: None,
+                markers: vec![],
+                route: None,
+                bounds: None,
+                title: None,
+            }),
             UiNode::Image(ReservedProps {}),
         ];
         for node in samples {

@@ -9,6 +9,7 @@
 
 import * as React from "react";
 
+import dynamic from "next/dynamic";
 import { ExternalLink, Puzzle } from "lucide-react";
 
 import type { UiNode, UiSpecDoc } from "@/generated/gui-spec";
@@ -28,6 +29,15 @@ import {
   GenUiStepper,
   GenUiTabs,
 } from "./gen-layout";
+
+/// 地図は重量級（maplibre-gl）なので map ノードがある時だけ遅延ロードする（ssr:false・
+/// perf ガードレール）。読み込み中はカードと同じ高さのスケルトンを出しレイアウト移動を防ぐ。
+const GenUiMap = dynamic(() => import("./gen-map").then((m) => m.GenUiMap), {
+  ssr: false,
+  loading: () => (
+    <div className="h-72 w-full animate-pulse rounded-xl border border-border/60 bg-secondary/40" />
+  ),
+});
 
 /// レンダラの深さ上限（サーバ検証の MAX_DEPTH=8 に余裕を足した防御値）。
 const MAX_RENDER_DEPTH = 10;
@@ -134,6 +144,8 @@ export function NodeView({ node, depth }: { node: UiNode; depth: number }) {
       return <GenUiCodeBlock codeBlock={node} />;
     case "question_card":
       return <GenUiQuestionCard card={node} />;
+    case "map":
+      return <GenUiMap map={node} />;
     case "accordion":
       return (
         <GenUiAccordion
@@ -153,7 +165,7 @@ export function NodeView({ node, depth }: { node: UiNode; depth: number }) {
         />
       );
     default:
-      // 予約 variant（map/image）や将来カタログはプレースホルダ縮退（クラッシュさせない）。
+      // 予約 variant（image）や将来カタログはプレースホルダ縮退（クラッシュさせない）。
       return <UnknownComponent label={node.component} />;
   }
 }
