@@ -161,7 +161,7 @@ fn rejects_map_out_of_range_coord() {
         minimal(json!({
             "component": "map",
             "center": { "lat": 35.0, "lng": 200.0 },
-            "markers": [{ "lat": 35.0, "lng": 200.0 }]
+            "markers": [{ "lat": 35.0, "lng": 200.0, "kind": "sight" }]
         })),
         "gui.invalid_coord",
     );

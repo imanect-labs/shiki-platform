@@ -71,6 +71,23 @@ function makeColorResolver(host: HTMLElement) {
   };
 }
 
+/// ルート waypoint の経度を連続化する（隣接点の差が 180°を超えたら ±360 して短い方を採る）。
+/// 日付変更線を跨ぐルートが世界の反対側を回る長い線として描かれるのを防ぐ。
+function unwrapRoute(wps: { lat: number; lng: number }[]): [number, number][] {
+  const out: [number, number][] = [];
+  let prev = 0;
+  wps.forEach((w, i) => {
+    let lng = w.lng;
+    if (i > 0) {
+      while (lng - prev > 180) lng -= 360;
+      while (lng - prev < -180) lng += 360;
+    }
+    prev = lng;
+    out.push([lng, w.lat]);
+  });
+  return out;
+}
+
 /// data の全座標を含む LngLatBounds を作る（fitBounds 用）。
 function collectBounds(map: MapProps): maplibregl.LngLatBounds | null {
   const pts: [number, number][] = [];
@@ -141,9 +158,16 @@ function useThemeTick(): number {
 /// テキストのグリフ依存を避ける）。バッジ＋ラベルを縦フローに積み、anchor:bottom で座標に
 /// 合わせる（絶対配置は maplibre の anchor 計算幅を狂わせるため使わない）。白リング・淡い影で
 /// node-card 風の質感にする。
-function buildPinElement(color: string, order: number | null, label: string | null): HTMLElement {
+function buildPinElement(
+  color: string,
+  order: number | null,
+  label: string | null,
+  clickable: boolean,
+): HTMLElement {
   const el = document.createElement("div");
   el.className = "genui-map-marker";
+  // 既定は地図ドラッグを妨げないよう pointer-events を切るが、説明ポップアップを持つ
+  // マーカーはドット部分だけクリック可能にする。
   el.style.cssText =
     "display:flex;flex-direction:column;align-items:center;gap:3px;pointer-events:none;";
 
@@ -158,6 +182,7 @@ function buildPinElement(color: string, order: number | null, label: string | nu
     "box-shadow:0 1px 3px rgb(0 0 0 / 0.3)",
     "display:flex;align-items:center;justify-content:center",
     "color:#fff;font-size:12px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums",
+    ...(clickable ? ["pointer-events:auto", "cursor:pointer"] : []),
   ].join(";");
   if (order !== null) dot.textContent = String(order);
   el.appendChild(dot);
@@ -237,6 +262,9 @@ export function GenUiMap({ map }: { map: MapProps }) {
         dragRotate: false,
         pitchWithRotate: false,
       });
+      // 非同期の失敗（スタイル/タイル取得失敗・WebGL コンテキストロスト）は error イベントで
+      // 届く。try/catch では捕まらないため、ここで一覧縮退へ切り替える。
+      instance.on("error", () => setFailed(true));
       instance.addControl(
         new maplibregl.NavigationControl({ showCompass: false, visualizePitch: false }),
         "top-right",
@@ -250,7 +278,8 @@ export function GenUiMap({ map }: { map: MapProps }) {
           const line: Feature<LineString> = {
             type: "Feature",
             properties: {},
-            geometry: { type: "LineString", coordinates: wps.map((w) => [w.lng, w.lat]) },
+            // 日付変更線を跨ぐルート（例: 179E→179W の flight）は経度を連続化して短い方を描く。
+            geometry: { type: "LineString", coordinates: unwrapRoute(wps) },
           };
           m.addSource("route", { type: "geojson", data: line });
           m.addLayer({
@@ -277,10 +306,21 @@ export function GenUiMap({ map }: { map: MapProps }) {
         const numbered = (map.markers?.length ?? 0) > 0 && wps.length >= 2;
         (map.markers ?? []).forEach((mk, i) => {
           const color = resolver.resolve(MARKER_COLOR[mk.kind] ?? MARKER_COLOR.place);
-          const el = buildPinElement(color, numbered ? i + 1 : null, mk.label ?? null);
-          new maplibregl.Marker({ element: el, anchor: "center" })
-            .setLngLat([mk.lng, mk.lat])
-            .addTo(m);
+          const hasDetail = Boolean(mk.description);
+          const el = buildPinElement(color, numbered ? i + 1 : null, mk.label ?? null, hasDetail);
+          const marker = new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat([
+            mk.lng,
+            mk.lat,
+          ]);
+          // 説明はラベルとは別に保持し、クリックでポップアップ表示する（詳細を失わない）。
+          if (mk.description) {
+            marker.setPopup(
+              new maplibregl.Popup({ offset: 16, closeButton: false }).setText(
+                [mk.label, mk.description].filter(Boolean).join(" — "),
+              ),
+            );
+          }
+          marker.addTo(m);
         });
 
         // 表示範囲: 明示 bounds > データ包含 > center+zoom。
@@ -306,7 +346,8 @@ export function GenUiMap({ map }: { map: MapProps }) {
     };
   }, [map, seasonIdx, themeTick]);
 
-  const markers = map.markers ?? [];
+  // 縮退一覧は未検証 payload（note 埋め込み等）でも壊れないよう配列を保証する。
+  const markers = Array.isArray(map.markers) ? map.markers : [];
 
   return (
     <figure
