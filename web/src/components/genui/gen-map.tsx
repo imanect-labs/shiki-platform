@@ -3,16 +3,17 @@
 /// generative UI の地図（MapLibre GL・PR5）。
 ///
 /// AI は座標・マーカー・ルート waypoint など**構造化データのみ**を渡す（サーバ検証済み）。
-/// タイル/スタイルの URL は AI ではなく**サーバ設定**（`NEXT_PUBLIC_MAP_STYLE_URL`）で注入し、
-/// 未設定時は自己完結のオフライン既定スタイルで描画する（air-gapped/CI でも決定論的）。
-/// 配色はアプリのデザイン言語（season アクセント・border/card トークン）に合わせ、CSS 変数を
-/// 実色へ解決してから MapLibre の paint へ渡す（ライト/ダーク両対応）。重量級の maplibre-gl は
-/// spec-renderer が `next/dynamic`（ssr:false）で map ノードがある時だけ遅延ロードする。
+/// タイル/スタイルの URL は AI ではなく**サーバ設定**（`NEXT_PUBLIC_MAP_STYLE_URL`）で注入する
+/// （信頼境界）。既定は key 不要の実タイル（CARTO/OSM・ライト/ダーク切替）で本物の街路地図を描き、
+/// 運用側で自己ホスト/商用スタイル/オフラインタイルに差し替えられる。タイル取得に失敗する環境
+/// （air-gapped で未設定 等）では地点一覧へ安全に縮退する。route/marker のアクセント色は season
+/// トークンを実色へ解決して描く。重量級の maplibre-gl は spec-renderer が `next/dynamic`
+/// （ssr:false）で map ノードがある時だけ遅延ロードする。
 
 import * as React from "react";
 
 import maplibregl from "maplibre-gl";
-import type { Feature, FeatureCollection, LineString } from "geojson";
+import type { Feature, LineString } from "geojson";
 import { MapPin } from "lucide-react";
 
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -88,6 +89,39 @@ function unwrapRoute(wps: { lat: number; lng: number }[]): [number, number][] {
   return out;
 }
 
+/// 移動手段 → OSRM プロファイル（道なりに追従できるもののみ）。transit/flight は経路網が
+/// 無い/意味が違うため直線のまま描く。
+const ROUTE_PROFILE: Record<RouteMode, string | null> = {
+  walking: "foot",
+  driving: "car",
+  transit: null,
+  flight: null,
+};
+
+/// 経由地を道なりの経路へスナップする（キー不要の OSRM・既定は FOSSGIS の公開ルータ）。
+/// `NEXT_PUBLIC_MAP_ROUTING_URL` で自己ホスト/商用ルータへ差し替え可能（設定式・信頼境界）。
+/// 失敗（air-gapped/CI/レート制限）時は null を返し、呼び出し側は直線にフォールバックする。
+async function snapRoute(
+  waypoints: { lat: number; lng: number }[],
+  mode: RouteMode,
+): Promise<[number, number][] | null> {
+  const profile = ROUTE_PROFILE[mode];
+  if (!profile || waypoints.length < 2) return null;
+  const base = process.env.NEXT_PUBLIC_MAP_ROUTING_URL ?? "https://routing.openstreetmap.de";
+  const coords = waypoints.map((w) => `${w.lng},${w.lat}`).join(";");
+  const url = `${base}/routed-${profile}/route/v1/${profile}/${coords}?overview=full&geometries=geojson`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json: unknown = await res.json();
+    const geom = (json as { routes?: { geometry?: { coordinates?: [number, number][] } }[] })
+      ?.routes?.[0]?.geometry?.coordinates;
+    return Array.isArray(geom) && geom.length >= 2 ? geom : null;
+  } catch {
+    return null;
+  }
+}
+
 /// data の全座標を含む LngLatBounds を作る（fitBounds 用）。
 function collectBounds(map: MapProps): maplibregl.LngLatBounds | null {
   const pts: [number, number][] = [];
@@ -99,38 +133,23 @@ function collectBounds(map: MapProps): maplibregl.LngLatBounds | null {
   return b;
 }
 
-/// bounds を N 分割した緯線/経線の FeatureCollection（オフライン時の地理的グリッド）。
-function buildGraticule(
-  b: maplibregl.LngLatBounds,
-  divisions = 6,
-): FeatureCollection<LineString> {
-  const w = b.getWest();
-  const e = b.getEast();
-  const s = b.getSouth();
-  const n = b.getNorth();
-  // データが 1 点だと幅 0 になるため最小マージンを足す。
-  const padX = (e - w || 0.02) * 0.15;
-  const padY = (n - s || 0.02) * 0.15;
-  const west = w - padX;
-  const east = e + padX;
-  const south = s - padY;
-  const north = n + padY;
-  const features: Feature<LineString>[] = [];
-  for (let i = 0; i <= divisions; i++) {
-    const lng = west + ((east - west) * i) / divisions;
-    features.push({
-      type: "Feature",
-      properties: {},
-      geometry: { type: "LineString", coordinates: [[lng, south], [lng, north]] },
-    });
-    const lat = south + ((north - south) * i) / divisions;
-    features.push({
-      type: "Feature",
-      properties: {},
-      geometry: { type: "LineString", coordinates: [[west, lat], [east, lat]] },
-    });
-  }
-  return { type: "FeatureCollection", features };
+/// 既定ベースマップ（key 不要の CARTO ラスタ・OSM ベース）。ライト/ダークで実タイルを切替。
+/// 商用/自己ホスト/オフラインは NEXT_PUBLIC_MAP_STYLE_URL で差し替える（設定式タイル）。
+function basemapStyle(dark: boolean): maplibregl.StyleSpecification {
+  const variant = dark ? "dark_all" : "light_all";
+  return {
+    version: 8,
+    sources: {
+      base: {
+        type: "raster",
+        tiles: [`https://a.basemaps.cartocdn.com/${variant}/{z}/{x}/{y}.png`],
+        tileSize: 256,
+        maxzoom: 20,
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © CARTO',
+      },
+    },
+    layers: [{ id: "base", type: "raster", source: "base" }],
+  };
 }
 
 /// prefers-color-scheme・`.dark` クラス・data-theme のいずれの切替でも再描画するためのティック。
@@ -219,52 +238,40 @@ export function GenUiMap({ map }: { map: MapProps }) {
     const resolver = makeColorResolver(host);
     let instance: maplibregl.Map | null = null;
     try {
-      // 実色の解決（ライト/ダークは host の算出値に自然に追従する）。
-      const bg = resolver.resolve("var(--secondary)", "#f1f1f4");
-      const grid = resolver.resolve("var(--border)", "#e5e5ea");
+      // 実色の解決（route/marker のアクセント。地図タイルは実タイルなので背景色は不要）。
       const routeColor = resolver.resolve("var(--season)", "#3b82f6");
       const casing = resolver.resolve("var(--card)", "#ffffff");
-      const ring = resolver.resolve("var(--card)", "#ffffff");
       // マーカー DOM 要素が参照する CSS 変数を host に注入（実色）。
-      host.style.setProperty("--map-ring", ring);
+      host.style.setProperty("--map-ring", resolver.resolve("var(--card)", "#ffffff"));
       host.style.setProperty("--map-chip-bg", resolver.resolve("var(--card)", "#ffffff"));
       host.style.setProperty("--map-chip-fg", resolver.resolve("var(--foreground)", "#111111"));
       host.style.setProperty("--map-chip-border", resolver.resolve("var(--border)", "#e5e5ea"));
 
       const dataBounds = collectBounds(map);
-      const style: maplibregl.StyleSpecification | string = styleUrl ?? {
-        version: 8,
-        sources: dataBounds
-          ? { graticule: { type: "geojson", data: buildGraticule(dataBounds) } }
-          : {},
-        layers: [
-          { id: "bg", type: "background", paint: { "background-color": bg } },
-          ...(dataBounds
-            ? [
-                {
-                  id: "graticule",
-                  type: "line" as const,
-                  source: "graticule",
-                  paint: { "line-color": grid, "line-width": 1, "line-opacity": 0.7 },
-                },
-              ]
-            : []),
-        ],
-      };
+      // 既定は key 不要の実タイル（CARTO ラスタ・OSM ベース）で本物の街路地図を描く。
+      // ライト/ダークでベースマップを切り替える（themeTick で作り直す）。運用では
+      // NEXT_PUBLIC_MAP_STYLE_URL で自己ホスト/商用スタイルに差し替える（設定式タイル・信頼境界）。
+      const isDark =
+        document.documentElement.classList.contains("dark") ||
+        window.matchMedia("(prefers-color-scheme: dark)").matches;
+      const style: maplibregl.StyleSpecification | string = styleUrl ?? basemapStyle(isDark);
 
       instance = new maplibregl.Map({
         container: host,
         style,
         center: [map.center.lng, map.center.lat],
         zoom: map.zoom ?? 11,
-        attributionControl: styleUrl ? { compact: true } : false,
+        attributionControl: { compact: true },
         scrollZoom: false, // チャット内でのスクロール横取りを防ぐ（+/- は NavigationControl）。
         dragRotate: false,
         pitchWithRotate: false,
       });
-      // 非同期の失敗（スタイル/タイル取得失敗・WebGL コンテキストロスト）は error イベントで
-      // 届く。try/catch では捕まらないため、ここで一覧縮退へ切り替える。
-      instance.on("error", () => setFailed(true));
+      // 個々のタイル取得失敗（source エラー）は部分描画で継続してよい。スタイル解釈失敗や
+      // WebGL コンテキストロスト等の致命的失敗のみ一覧へ縮退する（try/catch では届かない）。
+      instance.on("error", (e) => {
+        if ((e as { sourceId?: string })?.sourceId) return;
+        setFailed(true);
+      });
       instance.addControl(
         new maplibregl.NavigationControl({ showCompass: false, visualizePitch: false }),
         "top-right",
@@ -275,13 +282,14 @@ export function GenUiMap({ map }: { map: MapProps }) {
         // ルート（順序付き waypoint を線で結ぶ・casing で下地を敷いてコントラストを上げる）。
         const wps = map.route?.waypoints ?? [];
         if (map.route && wps.length >= 2) {
-          const line: Feature<LineString> = {
+          const routeMode = map.route.mode;
+          const line = (coords: [number, number][]): Feature<LineString> => ({
             type: "Feature",
             properties: {},
-            // 日付変更線を跨ぐルート（例: 179E→179W の flight）は経度を連続化して短い方を描く。
-            geometry: { type: "LineString", coordinates: unwrapRoute(wps) },
-          };
-          m.addSource("route", { type: "geojson", data: line });
+            geometry: { type: "LineString", coordinates: coords },
+          });
+          // まず直線（日付変更線跨ぎは経度連続化）で即描画し、道なり経路が取れたら差し替える。
+          m.addSource("route", { type: "geojson", data: line(unwrapRoute(wps)) });
           m.addLayer({
             id: "route-casing",
             type: "line",
@@ -297,8 +305,13 @@ export function GenUiMap({ map }: { map: MapProps }) {
             paint: {
               "line-color": routeColor,
               "line-width": 3.5,
-              ...(DASHED_MODES.includes(map.route.mode) ? { "line-dasharray": [1.5, 1.2] } : {}),
+              ...(DASHED_MODES.includes(routeMode) ? { "line-dasharray": [1.5, 1.2] } : {}),
             },
+          });
+          // 徒歩/車は道なりにスナップ（キー不要ルータ・失敗時は直線のまま）。
+          void snapRoute(wps, routeMode).then((snapped) => {
+            const src = snapped && m.getSource("route");
+            if (src) (src as maplibregl.GeoJSONSource).setData(line(snapped));
           });
         }
 
