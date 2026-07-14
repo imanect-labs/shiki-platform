@@ -25,6 +25,8 @@ import { Button } from "@/components/ui/button";
 import type { CollabProvider } from "@/lib/collab";
 import { AiSuggestionMark } from "./ai-suggestion-mark";
 import { ShikiEmbed } from "./embed/shiki-embed-node";
+import { LivePreview } from "./live-preview";
+import { MarkdownClipboard } from "./markdown-clipboard";
 import { createSlashCommand, type SlashItem } from "./slash-command";
 import { NoteBubbleMenu, NoteToolbar } from "./note-toolbar";
 
@@ -82,6 +84,10 @@ export function NoteEditor({ provider, editable, user, extraSlashItems }: NoteEd
       AiSuggestionMark,
       // 埋め込みブロック（Task 11P.6・3 種のみ・生 HTML 不可）。
       ShikiEmbed,
+      // Markdown ネイティブ化（issue #297）: コピー→md／素 md ペースト→ブロック変換。
+      MarkdownClipboard,
+      // フォーカス行の記法可視化（issue #297・表示専用で collab セーフ）。
+      LivePreview,
       Collaboration.configure({ document: provider.doc, field: "default" }),
       CollaborationCaret.configure({
         provider,
