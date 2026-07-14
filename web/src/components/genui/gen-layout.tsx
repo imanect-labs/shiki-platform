@@ -54,7 +54,7 @@ export function GenUiCallout({ callout }: { callout: CalloutProps }) {
   return (
     <div
       data-testid="genui-callout"
-      className={cn("flex gap-2.5 rounded-xl border p-3", meta.cls)}
+      className={cn("flex gap-2.5 rounded-xl border p-3.5", meta.cls)}
       role="note"
     >
       <Icon className={cn("mt-0.5 size-4 shrink-0", meta.iconCls)} aria-hidden />
@@ -137,15 +137,23 @@ export function GenUiBadgeList({ badgeList }: { badgeList: BadgeListProps }) {
 }
 
 export function GenUiKeyValue({ keyValue }: { keyValue: KeyValueProps }) {
+  const items = keyValue.items ?? [];
   return (
     <div data-testid="genui-key-value" className="min-w-0">
       {keyValue.title ? (
-        <p className="mb-2 text-[13px] font-semibold text-foreground/80">{keyValue.title}</p>
+        <p className="mb-2 text-sm font-medium tracking-tight text-foreground">{keyValue.title}</p>
       ) : null}
-      <dl className="divide-y divide-border/60 rounded-xl border border-border">
-        {(keyValue.items ?? []).map((kv, i) => (
-          <div key={i} className="grid grid-cols-[minmax(6rem,32%)_1fr] gap-2 px-3 py-2">
-            <dt className="truncate text-[12px] text-muted-foreground">{kv.key}</dt>
+      {/* 区切りは既存画面と同じ破線グラデ（shiki-dash）。枠は柔らかく背景は半透明。 */}
+      <dl className="overflow-hidden rounded-xl border border-border/60 bg-card/40">
+        {items.map((kv, i) => (
+          <div
+            key={i}
+            className={cn(
+              "grid grid-cols-[minmax(6rem,32%)_1fr] gap-3 px-3.5 py-2.5",
+              i < items.length - 1 && "shiki-dash-bottom",
+            )}
+          >
+            <dt className="truncate text-[13px] text-muted-foreground">{kv.key}</dt>
             <dd className="min-w-0 whitespace-pre-wrap break-words text-[13px] text-foreground">
               {kv.value}
             </dd>
@@ -164,7 +172,7 @@ export function GenUiCodeBlock({ codeBlock }: { codeBlock: CodeBlockProps }) {
           {codeBlock.language}
         </figcaption>
       ) : null}
-      <pre className="overflow-x-auto rounded-lg border border-border bg-secondary/50 p-3 text-[12px] leading-relaxed">
+      <pre className="overflow-x-auto rounded-xl border border-border/60 bg-secondary/40 p-3.5 text-[12px] leading-relaxed">
         <code className="font-mono text-foreground/90">{codeBlock.code}</code>
       </pre>
     </figure>
@@ -187,11 +195,15 @@ export function GenUiAccordion({
       type="multiple"
       defaultValue={defaultOpen}
       data-testid="genui-accordion"
-      className="rounded-xl border border-border"
+      className="overflow-hidden rounded-xl border border-border/60 bg-card/40"
     >
       {items.map((it, i) => (
-        <AccordionItem key={i} value={String(i)} className="border-b border-border/60 last:border-b-0 px-3">
-          <AccordionTrigger className="text-[13px] font-medium">{it.title}</AccordionTrigger>
+        <AccordionItem
+          key={i}
+          value={String(i)}
+          className={cn("px-3.5", i < items.length - 1 && "shiki-dash-bottom")}
+        >
+          <AccordionTrigger className="text-sm font-medium">{it.title}</AccordionTrigger>
           <AccordionContent>
             <div className="flex flex-col gap-3 pb-1">{renderChildren(it.children)}</div>
           </AccordionContent>

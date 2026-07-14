@@ -129,7 +129,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
           <MessagesSquare className="size-4" />
         </span>
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-[13px] font-semibold tracking-wide text-foreground">
+          <h3 className="truncate text-sm font-semibold tracking-tight text-foreground">
             {card.title || "AI からの質問"}
           </h3>
         </div>
@@ -148,7 +148,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
       </div>
 
       {card.intro && step === 0 ? (
-        <p className="mt-3 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+        <p className="mt-3 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground">
           {card.intro}
         </p>
       ) : null}
@@ -177,14 +177,14 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
             ) : null}
             <p
               id={`genui-q-${card.id}-${q.id}`}
-              className="text-[15px] font-medium leading-relaxed text-foreground"
+              className="text-[15px] font-semibold leading-relaxed tracking-tight text-foreground"
             >
               {q.question}
             </p>
 
             {options.length > 0 ? (
               <div
-                className="mt-3 flex flex-col gap-2"
+                className="mt-3.5 flex flex-col gap-2"
                 role={q.multi_select ? "group" : "radiogroup"}
                 aria-labelledby={`genui-q-${card.id}-${q.id}`}
               >
@@ -301,24 +301,28 @@ function OptionCard({
       disabled={disabled}
       data-testid="genui-question-option"
       className={cn(
-        "group/opt flex w-full items-start gap-3 rounded-xl border bg-card px-3.5 py-2.5 text-left shadow-sm",
-        "transition-[transform,box-shadow,border-color,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+        // 既存画面の作法: 選択は塗り(bg-accent)で示し、border-primary の黒い枠は使わない。
+        // 枠は常に中立色・余白は上下左右そろえる（p-4）・影は elevation トークン。
+        "group/opt flex w-full items-start gap-3 rounded-xl border p-4 text-left",
+        "transition-[background-color,border-color,box-shadow] duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
         "disabled:pointer-events-none disabled:opacity-60",
         selected
-          ? "border-primary bg-[color-mix(in_oklab,var(--primary)_5%,var(--card))] shadow-md ring-1 ring-primary"
-          : "hover:-translate-y-px hover:border-foreground/15 hover:shadow-md",
+          ? "border-border bg-accent shadow-sm"
+          : "border-border/60 bg-card/40 hover:border-border hover:bg-accent/50",
       )}
     >
-      {/* 選択インジケータ（単一=丸／複数=角丸）。 */}
+      {/* 選択インジケータ（単一=丸／複数=角丸）。選択時のみ primary で塗る。 */}
       <span
         className={cn(
-          "mt-0.5 grid size-5 shrink-0 place-items-center border transition-colors",
-          multi ? "rounded-md" : "rounded-full",
-          selected ? "border-primary bg-primary text-primary-foreground" : "border-input bg-background",
+          "mt-px grid size-[18px] shrink-0 place-items-center border-[1.5px] transition-colors",
+          multi ? "rounded-[6px]" : "rounded-full",
+          selected
+            ? "border-primary bg-primary text-primary-foreground"
+            : "border-muted-foreground/40 bg-transparent",
         )}
         aria-hidden
       >
-        {selected ? <Check className="size-3.5" /> : null}
+        {selected ? <Check className="size-3" strokeWidth={3} /> : null}
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
@@ -330,7 +334,7 @@ function OptionCard({
           {label}
         </span>
         {description ? (
-          <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
+          <span className="mt-1 block text-[13px] leading-relaxed text-muted-foreground">
             {description}
           </span>
         ) : null}

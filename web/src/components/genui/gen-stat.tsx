@@ -32,10 +32,12 @@ export function GenUiStat({ stat }: { stat: StatProps }) {
 
   return (
     <figure
-      className="min-w-0 rounded-xl border border-border bg-card/60 p-3.5"
+      className="min-w-0 rounded-xl border border-border/60 bg-card/40 p-4"
       data-testid="genui-stat"
     >
-      <figcaption className="truncate text-[12px] font-medium text-muted-foreground">{label}</figcaption>
+      <figcaption className="truncate text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground/70">
+        {label}
+      </figcaption>
       <div className="mt-1 flex items-end justify-between gap-3">
         <div className="flex items-baseline gap-1 min-w-0">
           <span className="text-2xl font-semibold tabular-nums tracking-tight text-foreground">
