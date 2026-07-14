@@ -10,6 +10,11 @@ use ts_rs::TS;
 
 use gui::action::{ActionBinding, HandlerBinding, ToolBinding, WorkflowBinding, WorkflowPin};
 use gui::chart::{ChartPoint, ChartSpec};
+use gui::domain::{
+    ComparisonProps, ComparisonRow, ItineraryDay, ItineraryItem, ItineraryKind, ItineraryProps,
+    SourceCardProps, SourceItem, TimelineEvent, TimelineProps, WeatherCondition, WeatherDay,
+    WeatherProps,
+};
 use gui::form_fields::{CheckboxGroupProps, DateProps, RadioGroupProps, RatingProps, SliderProps};
 use gui::layout::{
     AccordionItem, AccordionProps, BadgeItem, BadgeListProps, BadgeTone, CalloutProps, CalloutTone,
@@ -102,6 +107,19 @@ fn main() {
         MapRoute,
         RouteMode,
         GeoBounds,
+        SourceCardProps,
+        SourceItem,
+        ItineraryProps,
+        ItineraryDay,
+        ItineraryItem,
+        ItineraryKind,
+        WeatherProps,
+        WeatherDay,
+        WeatherCondition,
+        ComparisonProps,
+        ComparisonRow,
+        TimelineProps,
+        TimelineEvent,
         ActionBinding,
         ToolBinding,
         HandlerBinding,

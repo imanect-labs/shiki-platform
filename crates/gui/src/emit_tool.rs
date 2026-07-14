@@ -54,7 +54,13 @@ impl Tool for EmitUiTool {
          lodging/food/sight}]・route?{waypoints[{lat,lng}](2 点以上・順に線で結ぶ),mode?:driving/\
          walking/transit/flight}・bounds?{south,west,north,east}・title? を渡す。緯度経度は \
          lat∈[-90,90]・lng∈[-180,180] の構造化データのみ（タイル URL はサーバ設定で注入されるため \
-         指定しない）。フォーム送信やボタンは \
+         指定しない）。ドメインカード（表示専用）: source_card は RAG 引用元 \
+         （title?・sources[{title,snippet?,url?(https),score?,label?}]）、itinerary は旅程 \
+         （title?・days[{label?,date?,items[{time?,title,description?,location?,kind?:activity/\
+         travel/food/lodging/sight}]}]）、weather は天気（location・days[{label,condition:sunny/\
+         partly_cloudy/cloudy/rain/storm/snow/fog,high?,low?,precipitation?(0-100)}]）、comparison \
+         は比較表（columns[列見出し]・rows[{label,values[列と同数]}]・highlight?[推し列 index]）、\
+         timeline は時系列イベント（events[{time?,title,description?,tone?}]）。フォーム送信やボタンは \
          spec.actions に宣言した束縛（type: handler の chat.submit、type: tool の doc_search / \
          web_search、type: workflow の name 参照）だけを action id で参照できる。検証に失敗した \
          場合はエラーを直して再試行するか、通常のテキストで回答する。"

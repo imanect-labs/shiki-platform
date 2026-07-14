@@ -5,20 +5,25 @@ import type { ButtonProps } from "./ButtonProps";
 import type { CalloutProps } from "./CalloutProps";
 import type { ChartSpec } from "./ChartSpec";
 import type { CodeBlockProps } from "./CodeBlockProps";
+import type { ComparisonProps } from "./ComparisonProps";
 import type { ContainerProps } from "./ContainerProps";
 import type { FormProps } from "./FormProps";
+import type { ItineraryProps } from "./ItineraryProps";
 import type { KeyValueProps } from "./KeyValueProps";
 import type { LinkProps } from "./LinkProps";
 import type { MapProps } from "./MapProps";
 import type { QuestionCardProps } from "./QuestionCardProps";
 import type { ReservedProps } from "./ReservedProps";
+import type { SourceCardProps } from "./SourceCardProps";
 import type { StatProps } from "./StatProps";
 import type { StepperProps } from "./StepperProps";
 import type { TableProps } from "./TableProps";
 import type { TabsProps } from "./TabsProps";
 import type { TextProps } from "./TextProps";
+import type { TimelineProps } from "./TimelineProps";
+import type { WeatherProps } from "./WeatherProps";
 
 /**
  * 信頼カタログのコンポーネントツリー（`component` タグ・閉じた集合）。
  */
-export type UiNode = { "component": "container" } & ContainerProps | { "component": "text" } & TextProps | { "component": "link" } & LinkProps | { "component": "form" } & FormProps | { "component": "button" } & ButtonProps | { "component": "table" } & TableProps | { "component": "chart" } & ChartSpec | { "component": "stat" } & StatProps | { "component": "callout" } & CalloutProps | { "component": "accordion" } & AccordionProps | { "component": "tabs" } & TabsProps | { "component": "stepper" } & StepperProps | { "component": "badge_list" } & BadgeListProps | { "component": "key_value" } & KeyValueProps | { "component": "code_block" } & CodeBlockProps | { "component": "question_card" } & QuestionCardProps | { "component": "map" } & MapProps | { "component": "image" } & ReservedProps;
+export type UiNode = { "component": "container" } & ContainerProps | { "component": "text" } & TextProps | { "component": "link" } & LinkProps | { "component": "form" } & FormProps | { "component": "button" } & ButtonProps | { "component": "table" } & TableProps | { "component": "chart" } & ChartSpec | { "component": "stat" } & StatProps | { "component": "callout" } & CalloutProps | { "component": "accordion" } & AccordionProps | { "component": "tabs" } & TabsProps | { "component": "stepper" } & StepperProps | { "component": "badge_list" } & BadgeListProps | { "component": "key_value" } & KeyValueProps | { "component": "code_block" } & CodeBlockProps | { "component": "question_card" } & QuestionCardProps | { "component": "source_card" } & SourceCardProps | { "component": "itinerary" } & ItineraryProps | { "component": "weather" } & WeatherProps | { "component": "comparison" } & ComparisonProps | { "component": "timeline" } & TimelineProps | { "component": "map" } & MapProps | { "component": "image" } & ReservedProps;

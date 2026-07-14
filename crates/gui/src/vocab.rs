@@ -85,6 +85,17 @@ vocab_enum! {
         CodeBlock => "code_block",
         /// 質問カード（AI がユーザーへ複数質問・回答は chat.submit へ・PR4）。
         QuestionCard => "question_card",
+        // ---- ドメインカード（PR6・表示専用） ----
+        /// RAG 引用元カード（タイトル＋抜粋＋スコア＋出典リンク）。
+        SourceCard => "source_card",
+        /// 旅程カード（日ごとの時系列タイムライン）。
+        Itinerary => "itinerary",
+        /// 天気カード（地点＋日別の天候）。
+        Weather => "weather",
+        /// 比較カード（2〜N 列の項目別比較表）。
+        Comparison => "comparison",
+        /// タイムライン（時系列イベント列）。
+        Timeline => "timeline",
         /// 地図（マーカー＋ルート・タイルはサーバ設定で注入・PR5）。
         Map => "map",
         // ---- 将来予約（serde 名を凍結・検証が拒否する） ----

@@ -425,6 +425,98 @@ const MAP_CARD: unknown = {
   },
 };
 
+/// ドメインカード（PR6・RAG/旅行/意思決定ユース）。
+const DOMAIN: { id: string; title: string; spec: unknown }[] = [
+  {
+    id: "source_card",
+    title: "source_card（RAG 引用元）",
+    spec: node({
+      component: "source_card",
+      title: "参照した資料",
+      sources: [
+        {
+          title: "設計ドキュメント — 二段 authz",
+          snippet: "RAG/構造化データは pre-filter と post-filter の両方を通す。実効権限 = スコープ ∩ ReBAC。",
+          url: "https://example.com/docs/design",
+          score: 0.94,
+          label: "PDF",
+        },
+        {
+          title: "オンボーディングガイド",
+          snippet: "AuthContext { principal, org, tenant_id } を通して全データアクセスを行う。",
+          url: "https://example.com/guide",
+          score: 0.81,
+          label: "Web",
+        },
+      ],
+    }),
+  },
+  {
+    id: "itinerary",
+    title: "itinerary（旅程）",
+    spec: node({
+      component: "itinerary",
+      title: "東京 日帰りプラン",
+      days: [
+        {
+          label: "1 日目",
+          date: "7/13(日)",
+          items: [
+            { time: "10:00", title: "東京駅 集合", location: "丸の内北口", kind: "travel" },
+            { time: "11:00", title: "東京タワー", description: "展望デッキから都心を一望", location: "芝公園", kind: "sight" },
+            { time: "12:30", title: "六本木でランチ", location: "六本木ヒルズ", kind: "food" },
+            { time: "16:00", title: "有楽町のホテルにチェックイン", kind: "lodging" },
+          ],
+        },
+      ],
+    }),
+  },
+  {
+    id: "weather",
+    title: "weather（天気）",
+    spec: node({
+      component: "weather",
+      title: "週末の予報",
+      location: "東京",
+      days: [
+        { label: "今日", condition: "sunny", high: 31, low: 24, precipitation: 10 },
+        { label: "明日", condition: "partly_cloudy", high: 29, low: 23, precipitation: 30 },
+        { label: "水", condition: "rain", high: 26, low: 22, precipitation: 80 },
+        { label: "木", condition: "cloudy", high: 28, low: 23, precipitation: 40 },
+      ],
+    }),
+  },
+  {
+    id: "comparison",
+    title: "comparison（比較）",
+    spec: node({
+      component: "comparison",
+      title: "プラン比較",
+      columns: ["Free", "Pro", "Enterprise"],
+      highlight: 1,
+      rows: [
+        { label: "月額", values: ["¥0", "¥1,480", "要問合せ"] },
+        { label: "ストレージ", values: ["1 GB", "100 GB", "無制限"] },
+        { label: "サポート", values: ["コミュニティ", "メール", "専任担当"] },
+        { label: "SLA", values: ["—", "99.9%", "99.99%"] },
+      ],
+    }),
+  },
+  {
+    id: "timeline",
+    title: "timeline（時系列）",
+    spec: node({
+      component: "timeline",
+      title: "リリース履歴",
+      events: [
+        { time: "2026-05", title: "Phase 5 自律エージェント", description: "Durable Workspace と承認ゲート", tone: "success" },
+        { time: "2026-06", title: "Phase 6 generative UI", description: "信頼カタログと emit_ui", tone: "info" },
+        { time: "2026-07", title: "genui 拡充（進行中）", description: "地図・ドメインカード", tone: "warning" },
+      ],
+    }),
+  },
+];
+
 export default function GenUiGalleryPage() {
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
@@ -488,6 +580,17 @@ export default function GenUiGalleryPage() {
         </h2>
         <div className="max-w-xl">
           <Cell id="map" title="旅程の徒歩ルート" spec={MAP_CARD} />
+        </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="mb-3 text-[13px] font-semibold tracking-wide text-foreground/70">
+          ドメインカード（RAG / 旅行 / 意思決定）
+        </h2>
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          {DOMAIN.map((d) => (
+            <Cell key={d.id} id={d.id} title={d.title} spec={d.spec} />
+          ))}
         </div>
       </section>
     </main>

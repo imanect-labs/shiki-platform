@@ -96,6 +96,8 @@ pub(super) fn genui_spec(kind: &str) -> Value {
         "question" => question_spec(),
         // 地図（マーカー＋ルート・座標のみ／タイルはサーバ設定・PR5）。
         "map" => map_spec(),
+        // ドメインカード（RAG 引用元・旅程・天気・比較・タイムライン・PR6）。
+        "domain" => domain_spec(),
         // カタログ外コンポーネント（検証拒否→テキストフォールバックの決定的検証用）。
         "bad" => json!({
             "version": 1,
@@ -260,6 +262,62 @@ fn map_spec() -> Value {
     })
 }
 
+/// ドメインカード（RAG 引用元・旅程・天気・比較・タイムライン）を 1 コンテナにまとめた固定スペック。
+fn domain_spec() -> Value {
+    json!({
+        "version": 1,
+        "root": {
+            "component": "container",
+            "children": [
+                {
+                    "component": "source_card",
+                    "title": "参照した資料",
+                    "sources": [
+                        { "title": "設計ドキュメント", "snippet": "二段 authz は pre/post filter…", "url": "https://example.com/d", "score": 0.94, "label": "PDF" },
+                        { "title": "オンボーディング", "snippet": "AuthContext 経由で全アクセス", "url": "https://example.com/g", "score": 0.81, "label": "Web" }
+                    ]
+                },
+                {
+                    "component": "itinerary",
+                    "title": "東京 日帰りプラン",
+                    "days": [
+                        { "label": "1 日目", "date": "7/13(日)", "items": [
+                            { "time": "10:00", "title": "東京駅 集合", "location": "丸の内北口", "kind": "travel" },
+                            { "time": "12:30", "title": "六本木でランチ", "kind": "food" }
+                        ]}
+                    ]
+                },
+                {
+                    "component": "weather",
+                    "location": "東京の天気",
+                    "days": [
+                        { "label": "今日", "condition": "sunny", "high": 31.0, "low": 24.0, "precipitation": 10.0 },
+                        { "label": "明日", "condition": "rain", "high": 26.0, "low": 22.0, "precipitation": 80.0 }
+                    ]
+                },
+                {
+                    "component": "comparison",
+                    "title": "プラン比較",
+                    "columns": ["Free", "Pro", "Enterprise"],
+                    "highlight": 1,
+                    "rows": [
+                        { "label": "月額", "values": ["¥0", "¥1,480", "要問合せ"] },
+                        { "label": "容量", "values": ["1GB", "100GB", "無制限"] }
+                    ]
+                },
+                {
+                    "component": "timeline",
+                    "title": "リリース履歴",
+                    "events": [
+                        { "time": "2026-06", "title": "generative UI", "tone": "info" },
+                        { "time": "2026-07", "title": "genui 拡充", "tone": "warning" }
+                    ]
+                }
+            ]
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +358,28 @@ mod tests {
         assert!(spec["root"]["markers"].as_array().unwrap().len() >= 2);
         assert_eq!(spec["root"]["route"]["mode"], "walking");
         assert!(spec["root"]["route"]["waypoints"].as_array().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn genui_domain_spec_shape() {
+        // ドメインカードは 5 種を 1 コンテナに束ねる（すべて検証を通る形）。
+        let spec = genui_spec("domain");
+        assert_eq!(spec["root"]["component"], "container");
+        let kinds: Vec<&str> = spec["root"]["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["component"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "source_card",
+                "itinerary",
+                "weather",
+                "comparison",
+                "timeline"
+            ]
+        );
     }
 }
