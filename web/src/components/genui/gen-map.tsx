@@ -72,21 +72,26 @@ function makeColorResolver(host: HTMLElement) {
   };
 }
 
-/// ルート waypoint の経度を連続化する（隣接点の差が 180°を超えたら ±360 して短い方を採る）。
-/// 日付変更線を跨ぐルートが世界の反対側を回る長い線として描かれるのを防ぐ。
-function unwrapRoute(wps: { lat: number; lng: number }[]): [number, number][] {
+/// 経度列を連続化する（隣接点の差が 180°を超えたら ±360 して短い方を採る）。日付変更線を
+/// 跨ぐ線が世界の反対側を回るのを防ぐ。直線・スナップ後の経路の両方に適用する。
+function unwrapCoords(coords: [number, number][]): [number, number][] {
   const out: [number, number][] = [];
   let prev = 0;
-  wps.forEach((w, i) => {
-    let lng = w.lng;
+  coords.forEach(([lng, lat], i) => {
+    let x = lng;
     if (i > 0) {
-      while (lng - prev > 180) lng -= 360;
-      while (lng - prev < -180) lng += 360;
+      while (x - prev > 180) x -= 360;
+      while (x - prev < -180) x += 360;
     }
-    prev = lng;
-    out.push([lng, w.lat]);
+    prev = x;
+    out.push([x, lat]);
   });
   return out;
+}
+
+/// ルート waypoint（{lat,lng}）を [lng,lat] へ変換しつつ経度を連続化する。
+function unwrapRoute(wps: { lat: number; lng: number }[]): [number, number][] {
+  return unwrapCoords(wps.map((w) => [w.lng, w.lat]));
 }
 
 /// 移動手段 → OSRM プロファイル（道なりに追従できるもののみ）。transit/flight は経路網が
@@ -308,10 +313,11 @@ export function GenUiMap({ map }: { map: MapProps }) {
               ...(DASHED_MODES.includes(routeMode) ? { "line-dasharray": [1.5, 1.2] } : {}),
             },
           });
-          // 徒歩/車は道なりにスナップ（キー不要ルータ・失敗時は直線のまま）。
+          // 徒歩/車は道なりにスナップ（キー不要ルータ・失敗時は直線のまま）。スナップ後の
+          // 生座標も経度を連続化してから差し替える（日付変更線跨ぎで世界を横断しないよう）。
           void snapRoute(wps, routeMode).then((snapped) => {
             const src = snapped && m.getSource("route");
-            if (src) (src as maplibregl.GeoJSONSource).setData(line(snapped));
+            if (src) (src as maplibregl.GeoJSONSource).setData(line(unwrapCoords(snapped)));
           });
         }
 
