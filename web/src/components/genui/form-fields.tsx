@@ -305,6 +305,7 @@ export function DateField({
           <input
             id={id}
             type="date"
+            lang="ja"
             value={start}
             min={field.min ?? undefined}
             max={field.max ?? undefined}
@@ -318,6 +319,7 @@ export function DateField({
           <span className="text-muted-foreground">〜</span>
           <input
             type="date"
+            lang="ja"
             value={end}
             min={start || (field.min ?? undefined)}
             max={field.max ?? undefined}
@@ -333,6 +335,7 @@ export function DateField({
         <input
           id={id}
           type="date"
+            lang="ja"
           value={start}
           min={field.min ?? undefined}
           max={field.max ?? undefined}

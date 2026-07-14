@@ -92,6 +92,8 @@ pub(super) fn genui_spec(kind: &str) -> Value {
                 "caption": "目標達成"
             }
         }),
+        // 質問カード（Claude Code 風・複数質問＋自由記述・回答は chat.submit へ）。
+        "question" => question_spec(),
         // カタログ外コンポーネント（検証拒否→テキストフォールバックの決定的検証用）。
         "bad" => json!({
             "version": 1,
@@ -117,6 +119,66 @@ pub(super) fn genui_spec(kind: &str) -> Value {
     }
 }
 
+/// 質問カード（Claude Code の AskUserQuestion 相当）の固定スペック。
+/// `genui_spec` の肥大化を避けて分離する。短い選択式・複数選択・自由記述を混在させる。
+fn question_spec() -> Value {
+    json!({
+        "version": 1,
+        "actions": [
+            { "type": "handler", "id": "answer", "handler": "chat.submit" }
+        ],
+        "root": {
+            "component": "question_card",
+            "id": "trip",
+            "title": "旅行プランの確認",
+            "intro": "ぴったりの旅程を提案するために、いくつか教えてください。",
+            "submit": { "action": "answer" },
+            "submit_label": "回答する",
+            "questions": [
+                {
+                    "id": "purpose",
+                    "header": "目的",
+                    "question": "今回の旅行の主な目的は何ですか？",
+                    "options": [
+                        { "label": "観光・レジャー", "description": "名所や自然、グルメなど旅先を楽しむのが中心" },
+                        { "label": "出張・ビジネス", "description": "会議や商談が主目的。移動効率と宿の作業環境を重視" },
+                        { "label": "帰省・イベント", "description": "家族の集まりや結婚式・ライブなど特定の予定に合わせる" }
+                    ],
+                    "allow_other": true
+                },
+                {
+                    "id": "pace",
+                    "header": "ペース",
+                    "question": "旅のペースはどれくらいが好みですか？",
+                    "options": [
+                        { "label": "ゆったり", "description": "1 日 1〜2 か所。休憩やカフェの時間をしっかり取る" },
+                        { "label": "しっかり", "description": "主要スポットを効率よく巡る、バランス型" },
+                        { "label": "詰め込み", "description": "朝から晩まで、行けるところは全部回りたい" }
+                    ]
+                },
+                {
+                    "id": "interests",
+                    "header": "興味",
+                    "question": "特に興味があるものはどれですか？（複数選択できます）",
+                    "options": [
+                        { "label": "グルメ", "description": "地元の名物や話題の店を巡りたい" },
+                        { "label": "自然・絶景", "description": "山・海・公園など景色を楽しみたい" },
+                        { "label": "歴史・文化", "description": "寺社・城・博物館など" },
+                        { "label": "ショッピング", "description": "買い物や土産選びを楽しみたい" }
+                    ],
+                    "multi_select": true,
+                    "allow_other": true
+                },
+                {
+                    "id": "notes",
+                    "question": "その他、希望や制約があれば自由にお書きください。",
+                    "placeholder": "例: 子ども連れ／車椅子で移動／予算は 1 人 5 万円まで など"
+                }
+            ]
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +200,14 @@ mod tests {
         let spec = genui_spec("stat");
         assert_eq!(spec["root"]["component"], "stat");
         assert!(!spec["root"]["trend"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn genui_question_spec_shape() {
+        // question カードは chat.submit 束縛＋複数質問を持つ（検証を通る形）。
+        let spec = genui_spec("question");
+        assert_eq!(spec["root"]["component"], "question_card");
+        assert_eq!(spec["actions"][0]["handler"], "chat.submit");
+        assert!(spec["root"]["questions"].as_array().unwrap().len() >= 3);
     }
 }

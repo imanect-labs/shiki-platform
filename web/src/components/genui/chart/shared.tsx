@@ -43,22 +43,39 @@ export function CartesianAxes({
             : undefined
         }
       />
-      <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: "var(--secondary)", opacity: 0.5 }} />
+      <Tooltip
+        contentStyle={TOOLTIP_STYLE}
+        cursor={{ fill: "var(--secondary)", opacity: 0.45 }}
+        wrapperStyle={{ outline: "none" }}
+      />
       {seriesCount > 1 ? (
-        <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
+        <Legend
+          iconType="circle"
+          iconSize={8}
+          wrapperStyle={{ fontSize: 12, paddingTop: 10 }}
+        />
       ) : null}
     </>
   );
 }
 
 /// 面/バーのグラデーション定義（四季トークン→透明）。id は系列インデックスで一意。
-export function GradientDefs({ ids }: { ids: { id: string; color: string }[] }) {
+/// `from`/`to` で上端/下端の不透明度を渡せる（面は淡く、バーは濃いめに使う）。
+export function GradientDefs({
+  ids,
+  from = 0.35,
+  to = 0.02,
+}: {
+  ids: { id: string; color: string }[];
+  from?: number;
+  to?: number;
+}) {
   return (
     <defs>
       {ids.map(({ id, color }) => (
         <linearGradient key={id} id={id} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity={0.35} />
-          <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+          <stop offset="0%" stopColor={color} stopOpacity={from} />
+          <stop offset="100%" stopColor={color} stopOpacity={to} />
         </linearGradient>
       ))}
     </defs>

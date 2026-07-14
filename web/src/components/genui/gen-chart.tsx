@@ -31,7 +31,7 @@ export function GenUiChart({ spec }: { spec: ChartSpec }) {
   return (
     <figure className="min-w-0" data-testid="genui-chart" data-chart-kind={spec.kind}>
       {spec.title ? (
-        <figcaption className="mb-2 text-[13px] font-semibold tracking-wide text-foreground/80">
+        <figcaption className="mb-2 text-sm font-semibold tracking-tight text-foreground">
           {spec.title}
         </figcaption>
       ) : null}

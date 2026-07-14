@@ -385,6 +385,135 @@ fn rejects_invalid_slider_and_rating() {
 }
 
 #[test]
+fn accepts_question_card_with_options_and_freetext() {
+    // PR4: 説明付き選択肢・複数選択・自由記述（options 空）が受理される。
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "a", "handler": "chat.submit" } ],
+        "root": {
+            "component": "question_card", "id": "q",
+            "title": "確認", "intro": "教えてください。",
+            "submit": { "action": "a" },
+            "questions": [
+                { "id": "purpose", "header": "目的", "question": "目的は？",
+                  "options": [
+                      { "label": "観光", "description": "名所を巡る" },
+                      { "label": "出張" }
+                  ],
+                  "allow_other": true },
+                { "id": "interests", "question": "興味は？（複数可）",
+                  "options": [ { "label": "食" }, { "label": "自然" } ],
+                  "multi_select": true },
+                { "id": "notes", "question": "その他ご要望", "placeholder": "自由記述" }
+            ]
+        }
+    });
+    assert!(validate_spec(&spec).is_ok(), "{:?}", error_codes(spec));
+}
+
+#[test]
+fn rejects_question_card_with_unknown_action_and_duplicate_qid() {
+    // 未宣言アクション参照＋質問 id 重複を両方拾う。
+    let spec = json!({
+        "version": 1,
+        "root": {
+            "component": "question_card", "id": "q",
+            "submit": { "action": "missing" },
+            "questions": [
+                { "id": "dup", "question": "A", "options": [ { "label": "x" } ] },
+                { "id": "dup", "question": "B", "options": [ { "label": "y" } ] }
+            ]
+        }
+    });
+    let codes = error_codes(spec);
+    assert!(
+        codes.iter().any(|c| c == "gui.unknown_action_ref"),
+        "{codes:?}"
+    );
+    assert!(
+        codes.iter().any(|c| c == "gui.duplicate_field_id"),
+        "{codes:?}"
+    );
+}
+
+#[test]
+fn rejects_duplicate_id_across_form_and_question_card() {
+    // form と question_card は送信可能単位として同一名前空間で重複を禁止する。
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "a", "handler": "chat.submit" } ],
+        "root": {
+            "component": "container",
+            "children": [
+                { "component": "form", "id": "dup", "submit": { "action": "a" },
+                  "fields": [ { "component": "text_input", "id": "t", "label": "x" } ] },
+                { "component": "question_card", "id": "dup", "submit": { "action": "a" },
+                  "questions": [ { "id": "u", "question": "y", "options": [ { "label": "z" } ] } ] }
+            ]
+        }
+    });
+    assert_rejected_with(spec, "gui.duplicate_form_id");
+}
+
+#[test]
+fn rejects_question_card_submit_to_non_chat_binding() {
+    // 回答は chat.submit ハンドラのみへ送れる（tool/workflow 束縛は拒否）。
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "tool", "id": "s", "tool": "doc_search" } ],
+        "root": {
+            "component": "question_card", "id": "q", "submit": { "action": "s" },
+            "questions": [ { "id": "a", "question": "?", "options": [ { "label": "x" } ] } ]
+        }
+    });
+    assert_rejected_with(spec, "gui.question_submit_not_chat");
+}
+
+#[test]
+fn rejects_empty_question_card() {
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "a", "handler": "chat.submit" } ],
+        "root": { "component": "question_card", "id": "q", "submit": { "action": "a" }, "questions": [] }
+    });
+    assert_rejected_with(spec, "gui.empty_question_card");
+}
+
+#[test]
+fn rejects_duplicate_option_label_within_question() {
+    // label は回答値そのもの＝質問内で一意でないと選択/送信が曖昧。
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "a", "handler": "chat.submit" } ],
+        "root": {
+            "component": "question_card", "id": "q", "submit": { "action": "a" },
+            "questions": [ { "id": "x", "question": "?",
+                "options": [ { "label": "同じ" }, { "label": "同じ" } ] } ]
+        }
+    });
+    assert_rejected_with(spec, "gui.duplicate_option_label");
+}
+
+#[test]
+fn rejects_duplicate_field_id_across_separate_forms() {
+    // フィールド id はレンダラの DOM id になるため文書全体で一意（フォーム跨ぎでも衝突を拒否）。
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "a", "handler": "chat.submit" } ],
+        "root": {
+            "component": "container",
+            "children": [
+                { "component": "form", "id": "f1", "submit": { "action": "a" },
+                  "fields": [ { "component": "text_input", "id": "same", "label": "x" } ] },
+                { "component": "form", "id": "f2", "submit": { "action": "a" },
+                  "fields": [ { "component": "text_input", "id": "same", "label": "y" } ] }
+            ]
+        }
+    });
+    assert_rejected_with(spec, "gui.duplicate_field_id");
+}
+
+#[test]
 fn accepts_layout_components_with_nesting() {
     // PR2: callout/accordion/tabs/stepper/badge_list/key_value/code_block。
     let spec = json!({

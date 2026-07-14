@@ -83,6 +83,8 @@ vocab_enum! {
         KeyValue => "key_value",
         /// コードブロック（表示専用）。
         CodeBlock => "code_block",
+        /// 質問カード（AI がユーザーへ複数質問・回答は chat.submit へ・PR4）。
+        QuestionCard => "question_card",
         // ---- 将来予約（serde 名を凍結・Phase 6 では検証が拒否する） ----
         /// 地図（タイル表示＋ピン・design §4.7。外部タイル依存のため後続）。
         Map => "map",

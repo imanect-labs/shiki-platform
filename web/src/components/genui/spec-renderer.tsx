@@ -18,6 +18,7 @@ import { GenUiButton } from "./gen-button";
 import { GenUiTable } from "./gen-table";
 import { GenUiChart } from "./gen-chart";
 import { GenUiStat } from "./gen-stat";
+import { GenUiQuestionCard } from "./gen-question-card";
 import {
   GenUiAccordion,
   GenUiBadgeList,
@@ -131,6 +132,8 @@ export function NodeView({ node, depth }: { node: UiNode; depth: number }) {
       return <GenUiKeyValue keyValue={node} />;
     case "code_block":
       return <GenUiCodeBlock codeBlock={node} />;
+    case "question_card":
+      return <GenUiQuestionCard card={node} />;
     case "accordion":
       return (
         <GenUiAccordion
