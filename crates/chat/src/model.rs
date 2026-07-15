@@ -94,6 +94,10 @@ pub enum ContentBlock {
     /// 保存済みノートへの参照カード（save_note・Task 11P.5）。
     /// `note = {id, name}`（StorageService へ作成済みのみ）。
     NoteRef { note: serde_json::Value },
+    /// 未保存の下書きノートカード（save_note の下書き確定型・issue #282）。
+    /// `draft = {name, markdown}`（まだ StorageService 未作成）。フロントは下書きノート画面を
+    /// 開いて詰めてから「ドライブに保存」で確定する。
+    NoteDraft { draft: serde_json::Value },
     /// 添付ファイル参照（ストレージ node 参照のみ）。
     FileRef { node_id: String, name: String },
 }
@@ -122,6 +126,13 @@ pub struct Thread {
     pub mini_app_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mini_app_version: Option<i64>,
+    /// 由来ノートの id（ノートの分割ビューから作られたスレッド・issue #282）。
+    /// 通常チャット由来は None。サイドバー履歴の「ノート由来」表示とノート側の会話一覧に使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_note_id: Option<Uuid>,
+    /// 由来ノートの表示名（作成時点の非正規化・リネーム非追随・履歴表示用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_note_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -219,6 +230,8 @@ pub enum StreamEventKind {
     WorkflowRef { workflow: serde_json::Value },
     /// 保存済みノートへの参照カード（save_note・Task 11P.5）。
     NoteRef { note: serde_json::Value },
+    /// 未保存の下書きノートカード（save_note の下書き確定型・issue #282）。
+    NoteDraft { draft: serde_json::Value },
     /// 計画の改訂（自律エージェント・Task 5.2）。サブタスク列を丸ごと配信する。
     Plan { subtasks: Vec<PlanSubtask> },
     /// 予算上限への接近警告（Task 5.7）。
@@ -267,6 +280,7 @@ impl StreamEventKind {
             StreamEventKind::GenerativeUi { .. } => "generative_ui",
             StreamEventKind::WorkflowRef { .. } => "workflow_ref",
             StreamEventKind::NoteRef { .. } => "note_ref",
+            StreamEventKind::NoteDraft { .. } => "note_draft",
             StreamEventKind::Plan { .. } => "plan",
             StreamEventKind::BudgetWarning { .. } => "budget_warning",
             StreamEventKind::ApprovalRequested { .. } => "approval_requested",

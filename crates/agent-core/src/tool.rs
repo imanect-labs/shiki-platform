@@ -64,6 +64,10 @@ pub struct ToolOutcome {
     /// `{id, name}` の JSON。**StorageService へ作成済みのノードのみ**を入れること
     /// （chat 側で note_ref ブロックへ写る）。
     pub note_refs: Vec<serde_json::Value>,
+    /// 未保存の下書きノート（save_note の下書き確定型・issue #282）。
+    /// `{name, markdown}` の JSON。**まだ StorageService へ作成していない**下書き本文を入れる
+    /// （chat 側で note_draft ブロックへ写り、フロントが下書きノート画面で詰めてから確定保存する）。
+    pub note_drafts: Vec<serde_json::Value>,
     /// 実行がエラーだったか（tool_result.is_error）。
     pub is_error: bool,
 }
@@ -78,6 +82,7 @@ impl ToolOutcome {
             ui_specs: Vec::new(),
             workflow_refs: Vec::new(),
             note_refs: Vec::new(),
+            note_drafts: Vec::new(),
             is_error: false,
         }
     }
@@ -91,6 +96,7 @@ impl ToolOutcome {
             ui_specs: Vec::new(),
             workflow_refs: Vec::new(),
             note_refs: Vec::new(),
+            note_drafts: Vec::new(),
             is_error: true,
         }
     }

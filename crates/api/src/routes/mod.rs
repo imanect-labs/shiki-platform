@@ -8,6 +8,7 @@ pub mod auth;
 pub mod chat;
 pub mod chat_approval;
 pub mod chat_dto;
+pub mod chat_notes;
 pub mod collab;
 pub mod data;
 pub mod data_fsm;

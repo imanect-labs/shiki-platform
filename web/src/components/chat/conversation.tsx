@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import { useRouter } from "next/navigation";
 import { FileDown, LayoutGrid } from "lucide-react";
 
 import {
@@ -38,6 +39,9 @@ import { ChainOfThought } from "./chain-of-thought";
 import { Composer } from "./composer";
 import { WorkflowRefCard } from "./workflow-ref-card";
 import { NoteRefCard } from "./note-ref-card";
+import { NoteDraftCard } from "./note-draft-card";
+import { upsertDraft, parseNoteDraft } from "@/lib/notes/draft-store";
+import { draftHref } from "@/lib/notes/draft-nav";
 import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
@@ -57,6 +61,8 @@ type StreamState = {
   workflowRefs: unknown[];
   /// 保存済みノート参照（Task 11P.5・save_note）。
   noteRefs: unknown[];
+  /// 未保存の下書きノート（issue #282・save_note の下書き確定型）。
+  noteDrafts: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
   plan: PlanSubtask[];
   approval: ApprovalRequest | null;
@@ -74,6 +80,7 @@ const EMPTY_STREAM: StreamState = {
   uiSpecs: [],
   workflowRefs: [],
   noteRefs: [],
+  noteDrafts: [],
   plan: [],
   approval: null,
   budget: null,
@@ -84,13 +91,18 @@ const EMPTY_STREAM: StreamState = {
 export function Conversation({
   threadId,
   variant = "page",
+  onNoteDraftOpened,
 }: {
   threadId: string;
   /// "page"=/c/[id] 単独表示（統一ヘッダにタイトル/共有/設定を注入・幅は max-w-3xl 中央）。
   /// "panel"=ノート分割ビューの埋め込み（自前ヘッダ無し・幅いっぱい・免責は凝縮）。
   variant?: "page" | "panel";
+  /// save_note の下書き（note_draft）を受けたときの導線（issue #282）。渡されない場合は
+  /// 下書きノート画面へ遷移する（主線）。下書き画面自身は自前で受けて遷移せずアクティブ切替する。
+  onNoteDraftOpened?: (name: string) => void;
 }) {
   const isPanel = variant === "panel";
+  const router = useRouter();
   const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
   const [stream, setStream] = React.useState<StreamState | null>(null);
   const [notFound, setNotFound] = React.useState(false);
@@ -156,6 +168,16 @@ export function Conversation({
         ),
       onNoteRef: (note) =>
         updateStream((s) => (s ? { ...s, noteRefs: [...s.noteRefs, note] } : s)),
+      onNoteDraft: (raw) => {
+        // 下書きをストリームに残しつつ、クライアント下書きストアへ upsert（source=ai＝流し込み）。
+        // 主線は下書きノート画面へ遷移。下書き画面自身は onNoteDraftOpened を渡してアクティブ切替のみ。
+        updateStream((s) => (s ? { ...s, noteDrafts: [...s.noteDrafts, raw] } : s));
+        const d = parseNoteDraft(raw);
+        if (!d) return;
+        upsertDraft(threadId, d.name, d.markdown, "ai");
+        if (onNoteDraftOpened) onNoteDraftOpened(d.name);
+        else router.push(draftHref(threadId, d.name));
+      },
       // --- 自律エージェント（Phase 5・Task 5.11） ---
       onRunId: (runId) => updateStream((s) => (s ? { ...s, runId } : s)),
       onPlan: (subtasks) =>
@@ -189,7 +211,7 @@ export function Conversation({
         cancelRef.current = null;
       },
     };
-  }, [flushStream, updateStream]);
+  }, [flushStream, updateStream, threadId, onNoteDraftOpened, router]);
 
   const send = React.useCallback(
     (text: string, attachments: Attachment[], autonomousOverride?: boolean) => {
@@ -328,7 +350,9 @@ export function Conversation({
               />
             ),
           )}
-          {stream ? <StreamingRow stream={stream} onApproval={decideApproval} /> : null}
+          {stream ? (
+            <StreamingRow stream={stream} onApproval={decideApproval} threadId={threadId} />
+          ) : null}
           {error ? (
             <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
               {error}
@@ -380,6 +404,8 @@ function finalizeStream(
   for (const workflow of s.workflowRefs) blocks.push({ type: "workflow_ref", workflow });
   // 保存済みノート参照カード（Task 11P.5）。
   for (const note of s.noteRefs) blocks.push({ type: "note_ref", note });
+  // 未保存の下書きノートカード（issue #282）。履歴からも下書きへ辿れるよう残す。
+  for (const draft of s.noteDrafts) blocks.push({ type: "note_draft", draft });
   if (blocks.length === 0) return;
   setMessages((prev) => [
     ...prev,
@@ -455,6 +481,9 @@ function AssistantRow({
   const noteRefs = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "note_ref" }> => b.type === "note_ref",
   );
+  const noteDrafts = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "note_draft" }> => b.type === "note_draft",
+  );
 
   return (
     <Message className="group justify-start">
@@ -480,6 +509,9 @@ function AssistantRow({
         ))}
         {noteRefs.map((b, i) => (
           <NoteRefCard key={i} raw={b.note} />
+        ))}
+        {noteDrafts.map((b, i) => (
+          <NoteDraftCard key={i} raw={b.draft} threadId={threadId} />
         ))}
         <ArtifactFiles files={files} />
         <Sources citations={citations} />
@@ -544,9 +576,11 @@ function ArtifactFiles({ files }: { files: { node_id: string; name: string }[] }
 function StreamingRow({
   stream,
   onApproval,
+  threadId,
 }: {
   stream: StreamState;
   onApproval: (approved: boolean) => void;
+  threadId: string;
 }) {
   const showLoader =
     !stream.text &&
@@ -590,6 +624,9 @@ function StreamingRow({
         ) : null}
         {stream.workflowRefs.map((workflow, i) => (
           <WorkflowRefCard key={i} raw={workflow} />
+        ))}
+        {stream.noteDrafts.map((draft, i) => (
+          <NoteDraftCard key={i} raw={draft} threadId={threadId} />
         ))}
         <ArtifactFiles files={stream.files} />
       </div>

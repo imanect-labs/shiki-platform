@@ -37,6 +37,7 @@ use utoipa::{
         crate::routes::chat::create_thread,
         crate::routes::chat::list_threads,
         crate::routes::chat::get_thread,
+        crate::routes::chat_notes::set_thread_origin_note,
         crate::routes::chat::get_messages,
         crate::routes::chat::post_message,
         crate::routes::chat::stream_thread,
@@ -165,6 +166,7 @@ use utoipa::{
         crate::routes::admin::CreateTenantResponse,
         // チャット DTO/イベント型は chat 側の単一定義（フロント chat-api.ts と同型）。
         crate::routes::chat::CreateThreadRequest,
+        crate::routes::chat_notes::SetOriginNoteRequest,
         crate::routes::chat::ThreadListResponse,
         crate::routes::chat::MessagesResponse,
         crate::routes::chat::PostMessageRequest,

@@ -68,6 +68,8 @@ vocab_enum! {
         DocumentEdit => "document.edit",
         /// ノート本文の読み取りツール（document.edit の前提・現状の md を得る・Task 11P.4）。
         DocumentRead => "document.read",
+        /// ノート本文への genui 埋め込み挿入ツール（グラフ等・非破壊 append・確認不要・issue #282）。
+        DocumentEmbed => "document.embed",
         /// AI 生成 md を新規ノートとして保存するツール（note_ref カード化・Task 11P.5）。
         SaveNote => "save_note",
         /// CSV への読み取り専用 SQL クエリ（隔離 DuckDB 経由・Task 11P.9）。

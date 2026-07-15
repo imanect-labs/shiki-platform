@@ -8,7 +8,7 @@
 /// - 11P.5 で本ページが「ノート×チャット分割ビュー」のホストになる。
 
 import { Loader2, MessageSquare, X } from "lucide-react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import * as React from "react";
 import * as Y from "yjs";
 
@@ -27,13 +27,17 @@ import { cn } from "@/lib/utils";
 export default function NotePage() {
   const params = useParams<{ id: string }>();
   const nodeId = params.id;
+  const searchParams = useSearchParams();
+  // サイドバーの「ノート由来」履歴から来たときは、その会話を開く（?thread=）。
+  const initialThreadId = searchParams.get("thread");
   const me = useMe();
   const [access, setAccess] = React.useState<CollabAccess | null | "notfound" | "loading">(
     "loading",
   );
   const [status, setStatus] = React.useState<CollabStatus>("connecting");
   const [synced, setSynced] = React.useState(false);
-  const [chatOpen, setChatOpen] = React.useState(false);
+  // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため）。
+  const [chatOpen, setChatOpen] = React.useState(Boolean(initialThreadId));
   // ヘッダスロットへ渡す安定参照（毎レンダーの再注入を避ける）。
   const toggleChat = React.useCallback(() => setChatOpen((v) => !v), []);
 
@@ -156,8 +160,10 @@ export default function NotePage() {
             <div className="min-h-0 flex-1">
               <NoteChatPanel
                 meta={session.doc.getMap("meta")}
+                noteId={nodeId}
                 noteName={access.name}
                 editable={editable}
+                initialThreadId={initialThreadId}
               />
             </div>
           </FadeSlide>

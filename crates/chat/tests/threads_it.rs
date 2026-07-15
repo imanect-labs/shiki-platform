@@ -21,7 +21,7 @@ use authz::{
 };
 use chat::{
     ChatError, ChatStore, ChatWorker, ContentBlock, DbApprover, Role, RunStatus, StreamEventKind,
-    ThreadRole, WorkerConfig,
+    ThreadOrigin, ThreadRole, WorkerConfig,
 };
 use futures::stream::StreamExt;
 use llm_gateway::{
@@ -183,13 +183,13 @@ async fn create_list_get_thread_roundtrips() {
     let c = ctx(&tenant);
 
     let created = store
-        .create_thread(&c, "設計相談", false, None)
+        .create_thread(&c, "設計相談", false, None, None)
         .await
         .unwrap();
     assert_eq!(created.title, "設計相談");
 
     // list_threads は作成したスレッドを含む。
-    let listed = store.list_threads(&c, None, None, 50).await.unwrap();
+    let listed = store.list_threads(&c, None, None, None, 50).await.unwrap();
     assert!(
         listed.iter().any(|t| t.id == created.id),
         "作成したスレッドが一覧に含まれること"
@@ -208,6 +208,93 @@ async fn create_list_get_thread_roundtrips() {
     );
 }
 
+/// ノート由来（origin_note_id）: 作成時付与・list の origin フィルタ・後付け設定を検証する（issue #282）。
+#[tokio::test]
+async fn thread_origin_note_filter_and_backfill() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let c = ctx(&tenant);
+    let note_a = uuid::Uuid::new_v4();
+    let note_b = uuid::Uuid::new_v4();
+
+    // note_a 由来を 2 本＋通常 1 本。
+    let t1 = store
+        .create_thread(
+            &c,
+            "ノート: A",
+            false,
+            Some(ThreadOrigin {
+                note_id: note_a,
+                note_name: "A".into(),
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+    let t2 = store
+        .create_thread(
+            &c,
+            "ノート: A (2)",
+            false,
+            Some(ThreadOrigin {
+                note_id: note_a,
+                note_name: "A".into(),
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+    let plain = store
+        .create_thread(&c, "通常", false, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(t1.origin_note_id, Some(note_a));
+    assert_eq!(t1.origin_note_name.as_deref(), Some("A"));
+    assert_eq!(plain.origin_note_id, None);
+
+    // origin フィルタ = note_a → t1, t2 のみ（通常は出ない）。
+    let a_only = store
+        .list_threads(&c, None, None, Some(note_a), 50)
+        .await
+        .unwrap();
+    let ids: std::collections::HashSet<_> = a_only.iter().map(|t| t.id).collect();
+    assert!(ids.contains(&t1.id) && ids.contains(&t2.id));
+    assert!(
+        !ids.contains(&plain.id),
+        "通常スレッドは note_a 一覧に出ない"
+    );
+
+    // note_b はまだ空。
+    let b_only = store
+        .list_threads(&c, None, None, Some(note_b), 50)
+        .await
+        .unwrap();
+    assert!(b_only.is_empty());
+
+    // フィルタ無し（全件）は通常スレッドも含む。
+    let all = store.list_threads(&c, None, None, None, 50).await.unwrap();
+    assert!(all.iter().any(|t| t.id == plain.id));
+
+    // 後付け: 通常スレッドを note_b 由来にする（下書き確定→ノート実体化の紐付け）。
+    store
+        .set_thread_origin_note(&c, plain.id, note_b, "B", None)
+        .await
+        .unwrap();
+    let b_after = store
+        .list_threads(&c, None, None, Some(note_b), 50)
+        .await
+        .unwrap();
+    assert!(
+        b_after.iter().any(|t| t.id == plain.id),
+        "後付けで note_b 一覧に出る"
+    );
+    let got = store.get_thread(&c, plain.id, None).await.unwrap();
+    assert_eq!(got.origin_note_id, Some(note_b));
+    assert_eq!(got.origin_note_name.as_deref(), Some("B"));
+}
+
 /// 空タイトルは既定名に正規化される。
 #[tokio::test]
 async fn create_thread_defaults_blank_title() {
@@ -216,7 +303,10 @@ async fn create_thread_defaults_blank_title() {
     let store = store(&pool, Arc::new(AllowAll::new())).await;
     let c = ctx(&tenant);
 
-    let created = store.create_thread(&c, "   ", false, None).await.unwrap();
+    let created = store
+        .create_thread(&c, "   ", false, None, None)
+        .await
+        .unwrap();
     assert_eq!(created.title, "新しいチャット");
 }
 
@@ -230,7 +320,7 @@ async fn set_thread_workspace_roundtrips_folder_and_parent() {
 
     // new_under: parent 列に入り、folder 列は空のまま（初回 run で lazy 作成）。
     let t1 = store
-        .create_thread(&c, "親配下", false, None)
+        .create_thread(&c, "親配下", false, None, None)
         .await
         .unwrap();
     let parent = uuid::Uuid::new_v4();
@@ -254,7 +344,10 @@ async fn set_thread_workspace_roundtrips_folder_and_parent() {
     );
 
     // existing: folder 列に直接入る（新規作成しない）。
-    let t2 = store.create_thread(&c, "既存", false, None).await.unwrap();
+    let t2 = store
+        .create_thread(&c, "既存", false, None, None)
+        .await
+        .unwrap();
     let folder = uuid::Uuid::new_v4();
     store
         .set_thread_workspace(t2.id, &c.tenant_id, Some(folder), None)
@@ -277,7 +370,10 @@ async fn get_messages_returns_ordered_roles_and_content() {
     let store = store(&pool, Arc::new(AllowAll::new())).await;
     let c = ctx(&tenant);
 
-    let thread = store.create_thread(&c, "会話", false, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "会話", false, None, None)
+        .await
+        .unwrap();
     store
         .post_message(&c, thread.id, "1つ目の質問", &[], Some(false), false, None)
         .await
@@ -327,7 +423,7 @@ async fn share_list_and_unshare_thread() {
     let c = ctx(&tenant);
 
     let thread = store
-        .create_thread(&c, "共有対象", false, None)
+        .create_thread(&c, "共有対象", false, None, None)
         .await
         .unwrap();
 
@@ -370,7 +466,7 @@ async fn share_thread_propagates_workspace_editor() {
     let c = ctx(&tenant);
 
     let thread = store
-        .create_thread(&c, "ws共有", false, None)
+        .create_thread(&c, "ws共有", false, None, None)
         .await
         .unwrap();
     // ワークスペースフォルダを紐づける（通常は初回自律 run が作る）。
@@ -433,7 +529,7 @@ async fn backfill_grants_workspace_to_thread_members() {
     let c = ctx(&tenant);
 
     let thread = store
-        .create_thread(&c, "backfill", false, None)
+        .create_thread(&c, "backfill", false, None, None)
         .await
         .unwrap();
     // ワークスペース作成**前**に editor 共有（この時点ではフォルダが無く伝播されない）。
@@ -486,20 +582,20 @@ async fn list_threads_keyset_pagination() {
     let mut created = vec![];
     for i in 0..5 {
         let t = store
-            .create_thread(&c, &format!("スレッド{i}"), false, None)
+            .create_thread(&c, &format!("スレッド{i}"), false, None, None)
             .await
             .unwrap();
         created.push(t.id);
     }
 
     // 1 ページ目（limit=2）。
-    let page1 = store.list_threads(&c, None, None, 2).await.unwrap();
+    let page1 = store.list_threads(&c, None, None, None, 2).await.unwrap();
     assert_eq!(page1.len(), 2, "1 ページ目は 2 件");
 
     // カーソルで 2 ページ目。
     let last = page1.last().unwrap();
     let page2 = store
-        .list_threads(&c, Some(last.updated_at), Some(last.id), 2)
+        .list_threads(&c, Some(last.updated_at), Some(last.id), None, 2)
         .await
         .unwrap();
     assert_eq!(page2.len(), 2, "2 ページ目は 2 件");
@@ -521,7 +617,10 @@ async fn event_stream_replays_appended_events() {
     let store = store(&pool, Arc::new(AllowAll::new())).await;
     let c = ctx(&tenant);
 
-    let thread = store.create_thread(&c, "配信", false, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "配信", false, None, None)
+        .await
+        .unwrap();
     let res = store
         .post_message(&c, thread.id, "hi", &[], Some(false), false, None)
         .await
@@ -610,7 +709,10 @@ async fn agent_mode_worker_runs_to_done() {
 
     let c = ctx(&tenant);
     // agent_mode=true のスレッド → post_message は既定でエージェントモード。
-    let thread = store.create_thread(&c, "agent", true, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "agent", true, None, None)
+        .await
+        .unwrap();
     let res = store
         .post_message(&c, thread.id, "hello agent", &[], None, false, None)
         .await
@@ -648,7 +750,10 @@ async fn db_approver_blocks_until_decision() {
     let store = store(&pool, Arc::new(AllowAll::new())).await;
     let c = ctx(&tenant);
 
-    let thread = store.create_thread(&c, "承認", true, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "承認", true, None, None)
+        .await
+        .unwrap();
     let res = store
         .post_message(&c, thread.id, "do danger", &[], None, false, None)
         .await
@@ -729,7 +834,7 @@ async fn db_approver_cancelled_by_flag() {
     let c = ctx(&tenant);
 
     let thread = store
-        .create_thread(&c, "承認cancel", true, None)
+        .create_thread(&c, "承認cancel", true, None, None)
         .await
         .unwrap();
     let res = store

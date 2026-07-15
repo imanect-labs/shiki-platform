@@ -115,12 +115,28 @@ pub async fn create_thread(
         None
     };
 
+    // 由来ノートは**発話ユーザーの viewer 権限**で解決する（見えないノートに紐づけられない・
+    // 表示名は解決時点の name を非正規化して持つ・issue #282）。fail-closed。
+    let origin = if let Some(note_id) = req.origin_note_id {
+        let node = state
+            .storage
+            .get_metadata(&ctx, note_id, trace.as_deref())
+            .await?;
+        Some(chat::ThreadOrigin {
+            note_id,
+            note_name: node.name,
+        })
+    } else {
+        None
+    };
+
     let store = chat_store(&state)?;
     let mut thread = store
         .create_thread(
             &ctx,
             req.title.as_deref().unwrap_or(""),
             req.agent_mode.unwrap_or(false),
+            origin,
             trace.as_deref(),
         )
         .await?;
@@ -147,6 +163,7 @@ pub async fn create_thread(
     params(
         ("cursor" = Option<String>, Query, description = "続きのカーソル"),
         ("limit" = Option<i64>, Query, description = "件数（既定 30・上限 100）"),
+        ("origin_note_id" = Option<Uuid>, Query, description = "由来ノートで絞り込む（ノート側の会話一覧・#282）"),
     ),
     responses(
         (status = 200, description = "スレッド一覧", body = ThreadListResponse),
@@ -166,7 +183,7 @@ pub async fn list_threads(
         None => (None, None),
     };
     let threads = chat_store(&state)?
-        .list_threads(&ctx, before_ts, before_id, limit)
+        .list_threads(&ctx, before_ts, before_id, q.origin_note_id, limit)
         .await?;
     let next_cursor = if threads.len() as i64 == limit {
         threads.last().map(|t| encode_cursor(t.updated_at, t.id))

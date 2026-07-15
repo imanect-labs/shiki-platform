@@ -235,7 +235,10 @@ async fn autonomous_run_writes_workspace_file_e2e() {
     let c = ctx(&tenant);
 
     // ── ① 既定（場所未指定）: Drive 直下に lazy 作成され、fs_write がそこへ書く ──
-    let thread = store.create_thread(&c, "自律", false, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "自律", false, None, None)
+        .await
+        .unwrap();
     // autonomous=true で投入 → stub が fs_write を呼ぶ（fswrite: プレフィックス・ApprovalPolicy=auto で承認不要）。
     let res = store
         .post_message(&c, thread.id, "fswrite: hello-e2e", &[], None, true, None)
@@ -300,7 +303,7 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         .await
         .unwrap();
     let t1 = store
-        .create_thread(&c, "新規作成", false, None)
+        .create_thread(&c, "新規作成", false, None, None)
         .await
         .unwrap();
     store
@@ -330,7 +333,10 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         .create_folder(&c, None, "既存を使う", None)
         .await
         .unwrap();
-    let t2 = store.create_thread(&c, "既存", false, None).await.unwrap();
+    let t2 = store
+        .create_thread(&c, "既存", false, None, None)
+        .await
+        .unwrap();
     store
         .set_thread_workspace(t2.id, &c.tenant_id, Some(existing.id), None)
         .await

@@ -101,6 +101,34 @@ fn emitwf_ir(kind: &str) -> serde_json::Value {
     })
 }
 
+/// ノートツールの決定的駆動（issue #282 の e2e）。
+/// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（genui chart）。
+fn note_tool_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let call = |tool: &str, input: serde_json::Value| {
+        req.tools
+            .iter()
+            .find(|t| t.name == tool)
+            .map(|t| tool_call_stream(t.name.clone(), input, prompt_tokens))
+    };
+    if let Some(name) = user_text.strip_prefix("savenote:").map(str::trim) {
+        return call(
+            "save_note",
+            serde_json::json!({ "name": name, "markdown": format!("# {name}\n\nAI が用意した下書き本文。\n") }),
+        );
+    }
+    if let Some(id) = user_text.strip_prefix("docembed:").map(str::trim) {
+        return call(
+            "document.embed",
+            serde_json::json!({ "node_id": id, "spec": genui_spec("chart") }),
+        );
+    }
+    None
+}
+
 /// 単一ツール呼び出し（ToolUse で停止）のストリームを組む決定的ヘルパ。
 fn tool_call_stream(name: String, input: serde_json::Value, prompt_tokens: u64) -> DeltaStream {
     let id = "stubtool_1".to_string();
@@ -192,6 +220,13 @@ impl LlmProvider for StubProvider {
                         prompt_tokens,
                     ));
                 }
+            }
+        }
+
+        // --- ノートツール駆動（issue #282 の e2e）: savenote:<name>→save_note / docembed:<id>→document.embed。 ---
+        if !has_tool_result(req) {
+            if let Some(s) = note_tool_call(req, &user_text, prompt_tokens) {
+                return Ok(s);
             }
         }
 

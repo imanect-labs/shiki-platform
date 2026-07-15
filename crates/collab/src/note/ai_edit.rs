@@ -48,6 +48,10 @@ pub enum EditOp {
     ReplaceAll { markdown: String },
     /// メタデータ（frontmatter 型属性）を 1 件設定する（tags は `,` 区切り可）。
     SetMeta { key: String, value: String },
+    /// genui 埋め込みブロック（グラフ等の宣言的 UI スペック）を本文末尾に挿入する（issue #282）。
+    /// `spec` は emit_ui と同じ検証済み genui スペック。フロント `SpecRenderer` が fail-closed で
+    /// 描画する（未知種別/不正スペックは描画されない）。
+    InsertEmbed { spec: serde_json::Value },
 }
 
 /// 操作の適用結果サマリ（ツールが観測テキストに載せる）。
@@ -131,6 +135,20 @@ fn apply_one(
         }
         EditOp::SetMeta { key, value } => {
             write_meta_pair(txn, meta, key, value);
+            true
+        }
+        EditOp::InsertEmbed { spec } => {
+            // 最低限の防御: genui スペックは JSON オブジェクト（不正なら挿入しない・fail-closed）。
+            // 本検証はフロント SpecRenderer/parseEmbedPayload が担う（描画時に弾く・#282）。
+            if !spec.is_object() {
+                return false;
+            }
+            // フロント serializeEmbedPayload と同型の payload（kind=genui）を shiki-embed 埋め込み
+            // ブロックとして末尾に挿入する。md↔AST↔Yjs はこの payload を opaque に往復する。
+            let payload = serde_json::json!({ "kind": "genui", "spec": spec }).to_string();
+            let blocks = [Block::Embed { payload }];
+            let at = fragment.len(txn);
+            insert_blocks(txn, fragment, at, &blocks, mode);
             true
         }
     }
@@ -221,5 +239,6 @@ fn describe(op: &EditOp) -> String {
             format!("replace_section（見出し「{heading}」が見つからない）")
         }
         EditOp::SetMeta { key, .. } => format!("set_meta（{key}）"),
+        EditOp::InsertEmbed { .. } => "insert_embed（不正な genui スペック）".into(),
     }
 }

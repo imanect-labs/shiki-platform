@@ -50,6 +50,10 @@ pub struct CreateThreadRequest {
     /// エージェントモードのワークスペース作成場所（未指定は Drive 直下＝現行挙動）。
     #[serde(default)]
     pub workspace: Option<WorkspaceChoiceRequest>,
+    /// 由来ノート（ノートの分割ビューから作るスレッド・issue #282）。指定時はサイドバー
+    /// 履歴で「ノート由来」と分かり、当該ノートの会話一覧に載る。通常チャットは未指定。
+    #[serde(default)]
+    pub origin_note_id: Option<Uuid>,
 }
 
 /// スレッド一覧レスポンス（keyset ページング）。
@@ -111,6 +115,12 @@ pub struct ThreadSharesResponse {
     pub shares: Vec<ThreadShareEntry>,
 }
 
+/// スレッドの由来ノート設定リクエスト（下書き確定→ノート実体化の紐付け・issue #282）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetOriginNoteRequest {
+    pub note_id: Uuid,
+}
+
 /// 一覧クエリ。
 #[derive(Debug, Deserialize)]
 pub struct ListThreadsQuery {
@@ -118,6 +128,9 @@ pub struct ListThreadsQuery {
     pub cursor: Option<String>,
     #[serde(default)]
     pub limit: Option<i64>,
+    /// 由来ノートで絞り込む（ノート側の会話一覧・issue #282）。未指定は全件（履歴）。
+    #[serde(default)]
+    pub origin_note_id: Option<Uuid>,
 }
 
 /// SSE クエリ（Last-Event-ID の代替）。

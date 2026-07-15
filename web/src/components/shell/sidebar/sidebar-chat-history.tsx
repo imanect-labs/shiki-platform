@@ -3,20 +3,30 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Link2, MessageSquareText } from "lucide-react";
+import { Link2, MessageSquareText, NotebookPen } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { groupThreadsByDate, useThreadsState } from "@/lib/chat-api";
+import { groupThreadsByDate, useThreadsState, type Thread } from "@/lib/chat-api";
 import { toast } from "@/components/ui/use-toast";
 import { ActiveIndicator } from "@/components/ui/motion-primitives";
 
 /// 履歴 1 行。アクティブは左アクセントバー、ホバーでリンクコピーの小ボタンを出す
 /// （スレッドのリネーム/削除は backend 未提供のため、実在する「コピー」のみ）。
-function ThreadRow({ id, title, active }: { id: string; title: string; active: boolean }) {
+///
+/// **ノート由来スレッド（issue #282）**は先頭にノートアイコンを出して「ノート由来」と分かる形に
+/// し、行のリンク先を**ノートの分割ビュー（その会話をアクティブに）**にする（ノートからも履歴
+/// からも辿れる）。通常チャットは従来どおり /c/{id}。
+function ThreadRow({ thread, active }: { thread: Thread; active: boolean }) {
+  const { id, title, originNoteId, originNoteName } = thread;
+  const isNoteOrigin = Boolean(originNoteId);
+  // ノート由来は分割ビューを開き、この会話をアクティブにする（?thread で指定）。
+  const href = isNoteOrigin
+    ? `/notes/${originNoteId}?thread=${id}`
+    : `/c/${id}`;
   // コピーボタンは Link の兄弟（インタラクティブ要素のネストを避ける・有効な HTML）。
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(`${window.location.origin}/c/${id}`);
+      await navigator.clipboard.writeText(`${window.location.origin}${href}`);
       toast({ description: "リンクをコピーしました。" });
     } catch {
       toast({ description: "リンクをコピーできませんでした。" });
@@ -32,17 +42,23 @@ function ThreadRow({ id, title, active }: { id: string; title: string; active: b
         />
       ) : null}
       <Link
-        href={`/c/${id}`}
+        href={href}
         aria-current={active ? "page" : undefined}
-        title={title}
+        title={isNoteOrigin ? `ノート「${originNoteName ?? ""}」の会話` : title}
         className={cn(
-          "flex h-8 items-center rounded-[9px] pl-2.5 pr-9 text-[13px] outline-none",
+          "flex h-8 items-center gap-1.5 rounded-[9px] pl-2.5 pr-9 text-[13px] outline-none",
           "transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring",
           active
             ? "font-medium text-sidebar-foreground"
             : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
         )}
       >
+        {isNoteOrigin ? (
+          <NotebookPen
+            className="size-3.5 shrink-0 text-sidebar-foreground/45"
+            aria-label="ノート由来"
+          />
+        ) : null}
         <span className="min-w-0 flex-1 truncate">{title}</span>
       </Link>
       <button
@@ -112,9 +128,12 @@ export function SidebarChatHistory({ collapsed }: { collapsed: boolean }) {
             {group.threads.map((thread) => (
               <ThreadRow
                 key={thread.id}
-                id={thread.id}
-                title={thread.title}
-                active={pathname === `/c/${thread.id}`}
+                thread={thread}
+                active={
+                  thread.originNoteId
+                    ? pathname === `/notes/${thread.originNoteId}`
+                    : pathname === `/c/${thread.id}`
+                }
               />
             ))}
           </ul>

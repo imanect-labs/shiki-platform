@@ -119,10 +119,12 @@ impl ChatWorker {
                 collab.clone(),
                 storage.clone(),
             )));
-            // ノートとして保存（note_ref カード・Task 11P.5）。storage だけで足りる。
-            tools.push(Arc::new(crate::document_tool::SaveNoteTool::new(
+            tools.push(Arc::new(crate::document_tool::DocumentEmbedTool::new(
+                collab.clone(), // 本文への genui 埋め込み（非破壊 append・確認不要・#282）。
                 storage.clone(),
             )));
+            // 下書きノートを用意（note_draft・下書き確定型・#282・storage 非依存・確定は UI 保存）。
+            tools.push(Arc::new(crate::document_tool::SaveNoteTool::new()));
         }
         // CSV ツール（csv.query / csv.patch / csv.write・Task 11P.9）: tabular 配線時のみ。
         // 認可は操作別のファイル ReBAC（TabularService が StorageService 経由で強制）。
@@ -478,6 +480,7 @@ fn message_text(blocks: &[ContentBlock]) -> String {
                 let name = note.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 parts.push(format!("[保存済みノート: {name}（node_id: {id}）]"));
             }
+            // 下書き（note_draft）は履歴カードとして描く。refine 誘導は save_note の説明が担う。
             _ => {}
         }
     }
