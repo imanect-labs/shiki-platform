@@ -72,6 +72,10 @@ vocab_enum! {
         DocumentEmbed => "document.embed",
         /// AI 生成 md を新規ノートとして保存するツール（note_ref カード化・Task 11P.5）。
         SaveNote => "save_note",
+        /// スライド（.slide/Yjs）の共同編集ツール（AI が編集参加者・排他なし・Task 11.3）。
+        SlideEdit => "slide.edit",
+        /// スライド内容の読み取りツール（slide.edit の前提・正規化 JSON を得る・Task 11.3）。
+        SlideRead => "slide.read",
         /// CSV への読み取り専用 SQL クエリ（隔離 DuckDB 経由・Task 11P.9）。
         CsvQuery => "csv.query",
         /// CSV のパッチ編集→新バージョン（editor・Task 11P.9）。

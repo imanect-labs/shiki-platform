@@ -31,6 +31,7 @@ pub mod error;
 pub mod gui_actions;
 pub mod model;
 pub(crate) mod skill;
+pub mod slide_tool;
 pub mod store;
 pub mod worker;
 pub mod workflow_tool;
@@ -46,6 +47,7 @@ pub use model::{
     Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunStatus, StreamEvent,
     StreamEventKind, Thread, ThreadRole,
 };
+pub use slide_tool::{SlideEditTool, SlideReadTool};
 pub use store::{ChatStore, ClaimedRun, PostResult, ThreadOrigin, CHAT_GENERATION_QUEUE};
 pub use worker::{ChatWorker, WorkerConfig, WorkerDeps};
 pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};

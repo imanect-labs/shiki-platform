@@ -108,25 +108,8 @@ impl ChatWorker {
                 store.clone(),
             )));
         }
-        // AI ノート共同編集（document.edit / document.read・Task 11P.4）:
-        // collab ハブと storage が両方配線されている時のみ提示する。編集は共有 Yjs へ
-        // 適用され、権限は実行主体の editor@file（human と同一経路・昇格しない）。
-        if let (Some(collab), Some(storage)) = (&self.collab, &self.storage) {
-            tools.push(Arc::new(crate::document_tool::DocumentReadTool::new(
-                collab.clone(),
-                storage.clone(),
-            )));
-            tools.push(Arc::new(crate::document_tool::DocumentEditTool::new(
-                collab.clone(),
-                storage.clone(),
-            )));
-            tools.push(Arc::new(crate::document_tool::DocumentEmbedTool::new(
-                collab.clone(), // 本文への genui 埋め込み（非破壊 append・確認不要・#282）。
-                storage.clone(),
-            )));
-            // 下書きノートを用意（note_draft・下書き確定型・#282・storage 非依存・確定は UI 保存）。
-            tools.push(Arc::new(crate::document_tool::SaveNoteTool::new()));
-        }
+        // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）。
+        self.push_collab_tools(&mut tools);
         // CSV ツール（csv.query / csv.patch / csv.write・Task 11P.9）: tabular 配線時のみ。
         // 認可は操作別のファイル ReBAC（TabularService が StorageService 経由で強制）。
         if let Some(tabular) = &self.tabular {
@@ -215,6 +198,40 @@ impl ChatWorker {
     }
 
     /// 自律ツール（file CRUD/grep/shell）を tools へ追加する。
+    /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。
+    ///
+    /// collab ハブと storage が両方配線されている時のみ提示する。編集は共有 Yjs へ
+    /// 適用され、権限は実行主体の editor@file（human と同一経路・昇格しない・排他なし）。
+    fn push_collab_tools(&self, tools: &mut Vec<Arc<dyn Tool>>) {
+        let (Some(collab), Some(storage)) = (&self.collab, &self.storage) else {
+            return;
+        };
+        tools.push(Arc::new(crate::document_tool::DocumentReadTool::new(
+            collab.clone(),
+            storage.clone(),
+        )));
+        tools.push(Arc::new(crate::document_tool::DocumentEditTool::new(
+            collab.clone(),
+            storage.clone(),
+        )));
+        tools.push(Arc::new(crate::document_tool::DocumentEmbedTool::new(
+            collab.clone(), // 本文への genui 埋め込み（非破壊 append・確認不要・#282）。
+            storage.clone(),
+        )));
+        // 下書きノートを用意（note_draft・下書き確定型・#282・storage 非依存・確定は UI 保存）。
+        tools.push(Arc::new(crate::document_tool::SaveNoteTool::new()));
+        // AI スライド共同編集（slide.read / slide.edit・Task 11.3）: ノートと同じ
+        // 共同編集参加者モデル（排他なし・editor@file・HTML はサーバ側サニタイズ）。
+        tools.push(Arc::new(crate::slide_tool::SlideReadTool::new(
+            collab.clone(),
+            storage.clone(),
+        )));
+        tools.push(Arc::new(crate::slide_tool::SlideEditTool::new(
+            collab.clone(),
+            storage.clone(),
+        )));
+    }
+
     fn push_autonomous_tools(
         &self,
         tools: &mut Vec<Arc<dyn Tool>>,
