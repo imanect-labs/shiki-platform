@@ -1,4 +1,5 @@
-//! ノート（md）共同編集の同期サブシステム（Phase 11-pre Task 11P.1・design §4.8.1）。
+//! ドキュメント共同編集の同期サブシステム（ノート md＝Task 11P.1／スライド＝Task 11.1・
+//! design §4.8.1/§4.8.3）。ドキュメント種は [`doc_kind::DocKind`] の閉集合。
 //!
 //! # 設計（PIT-37 への回答）
 //!
@@ -23,13 +24,17 @@
 //! - 相対位置（RelativePosition）等の CRDT 内部参照
 
 pub mod doc;
+pub mod doc_kind;
 pub mod error;
 pub mod hub;
 pub mod note;
+pub mod saver;
 pub mod session;
+pub mod slide;
 pub mod store;
 
 pub use doc::LiveDoc;
+pub use doc_kind::{DocKind, SLIDE_MIME};
 pub use error::CollabError;
 pub use hub::{AccessMode, CollabHub};
 pub use session::run_session;

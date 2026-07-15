@@ -1,10 +1,12 @@
-//! ノート保存／インポートの結合テスト（Task 11P.2・実 Postgres が必要）。
+//! スライド保存／インポートの結合テスト（Task 11.1・実 Postgres が必要）。
 //!
 //! `STORAGE_TEST_DATABASE_URL` が設定されている時のみ実行し、未設定ならスキップする。
-//! バイト層は in-memory ObjectStore（put/get を実装）で密閉する。検証:
-//! - 編集 → md シリアライズ保存 → 新バージョン＋書込イベント（outbox）→ RAG 再索引経路
-//! - ファイル側の外部書込 → ロード時インポート（単方向規約）→ snapshot 即時永続化
-//! - 保存主体（最終編集者の AuthContext）の editor 認可を write 側で通ること
+//! 検証（phase-11 Task 11.1 受け入れ条件）:
+//! - 編集 → 正規化 JSON シリアライズ保存 → 新バージョン＋書込イベント（→RAG 再索引経路）
+//! - **WS 直伝搬（サーバ書込サニタイズを通らない経路）の敵対的 HTML が保存 JSON に残らない**
+//!   （PIT-40: シリアライズが最終防壁になること）
+//! - ファイル側の外部書込 → ロード時インポート（単方向規約）
+//! - 不正 JSON のインポートが fail-closed（Yjs 側を壊さない）
 
 // テストコード: pedantic/安全系 lint は本番コードのみ厳格化する方針のため許容する。
 #![allow(
@@ -26,8 +28,8 @@ use authz::{
     AuthContext, AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal,
     ReadTupleKey, Relation, Subject,
 };
-use collab::saver;
-use collab::{DocStore, LiveDoc, PersistedDoc};
+use collab::slide::{Slide, SlideDoc};
+use collab::{saver, DocKind, DocStore, LiveDoc, PersistedDoc, SLIDE_MIME};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::StorageService;
 use uuid::Uuid;
@@ -234,45 +236,72 @@ fn empty_persisted() -> PersistedDoc {
     }
 }
 
-/// クライアント Doc で md を組み立て、その全状態を update として返す（編集の模擬）。
-fn update_for_markdown(md: &str) -> Vec<u8> {
+fn slide_json(title: &str, html: &str) -> String {
+    SlideDoc {
+        meta: collab::note::NoteMeta {
+            title: Some(title.to_string()),
+            ..Default::default()
+        },
+        slides: vec![Slide {
+            id: "s1".into(),
+            html: html.to_string(),
+            notes: String::new(),
+            bg: None,
+        }],
+    }
+    .to_json()
+}
+
+/// クライアント Doc でスライドを組み立て、その全状態を update として返す（編集の模擬）。
+///
+/// **サニタイズを通さず** Yjs 構造へ直接書く＝悪意あるクライアントの WS update と同じ経路。
+fn update_for_raw_slides(slides: &[Slide]) -> Vec<u8> {
     use yrs::{Doc, ReadTxn, StateVector, Transact};
     let doc = Doc::new();
-    collab::note::import_markdown(&doc, md);
+    let array = doc.get_or_insert_array(collab::slide::yjs_doc::SLIDES_ARRAY_NAME);
+    {
+        let mut txn = doc.transact_mut();
+        collab::slide::yjs_doc::write_slides(&mut txn, &array, slides);
+    }
     let update = doc
         .transact()
         .encode_state_as_update_v1(&StateVector::default());
     update
 }
 
-/// 受け入れ条件: 編集内容が md として保存され、書込イベント（→RAG 再索引）が流れる。
+/// 受け入れ条件: 編集内容が正規化 JSON として保存され、書込イベント（→RAG 再索引）が流れる。
+/// あわせて **WS 直伝搬の敵対的 HTML が保存 JSON に残らない**こと（PIT-40）を検証する。
 #[tokio::test]
-async fn edits_are_saved_as_markdown_with_write_event() {
+async fn edits_are_saved_as_sanitized_json_with_write_event() {
     let Some(env) = setup().await else { return };
     let alice = ctx_for("alice");
 
-    // ノート作成（POST /notes 相当の内部書込・org ルート直下）。
-    let name = format!("note-{}.md", Uuid::new_v4());
+    let name = format!("deck-{}.slide", Uuid::new_v4());
+    let initial = slide_json("初期", "<h1>初期</h1>");
     let node = env
         .storage
-        .write_file_internal(&alice, None, &name, b"", "text/markdown", None)
+        .write_file_internal(&alice, None, &name, initial.as_bytes(), SLIDE_MIME, None)
         .await
-        .expect("ノート作成");
+        .expect("スライド作成");
     env.store
         .load_or_init(node.id, "acme", "default")
         .await
         .expect("collab_doc init");
 
-    // 編集セッション: update を適用（dirty マーク＋update log 追記）。
-    // 内容は実行ごとに一意化する（content-addressing の dedup により、過去実行が
-    // 同一ハッシュの blob 行を残していると put_object がスキップされるため）。
+    // 悪意あるクライアントの WS update 相当（サニタイズを通らない書込経路）。
+    let unique = Uuid::new_v4();
     let live = Arc::new(
-        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &empty_persisted())
-            .expect("restore"),
+        LiveDoc::restore(node.id, Some(DocKind::Slide), &empty_persisted()).expect("restore"),
     );
-    let canonical = format!("# 会議メモ {}\n\n- 決定事項\n", Uuid::new_v4());
-    let canonical = canonical.as_str();
-    live.apply_and_persist(&env.store, &update_for_markdown(canonical), &alice)
+    let dirty = vec![Slide {
+        id: "s1".into(),
+        html: format!(
+            r#"<h1>更新 {unique}</h1><script>alert(1)</script><p onclick="x()">本文</p>"#
+        ),
+        notes: "ノート".into(),
+        bg: None,
+    }];
+    live.apply_and_persist(&env.store, &update_for_raw_slides(&dirty), &alice)
         .await
         .expect("適用");
 
@@ -283,14 +312,21 @@ async fn edits_are_saved_as_markdown_with_write_event() {
         .expect("dirty だったので保存される");
     assert_eq!(version, node.version + 1, "新バージョンが切られること");
 
-    // 保存内容 = 正規化 md（frontmatter なしの本文）。
+    // 保存内容 = サニタイズ済みの正規化 JSON（script/on* が落ちる）。
     let (saved_node, bytes) = env
         .storage
         .read_file_internal(&alice, node.id, None)
         .await
         .expect("読み戻し");
     assert_eq!(saved_node.version, version);
-    assert_eq!(String::from_utf8_lossy(&bytes), canonical);
+    let saved = String::from_utf8_lossy(&bytes);
+    assert!(saved.contains(&format!("更新 {unique}")));
+    assert!(saved.contains("本文"));
+    assert!(!saved.contains("script"), "script が保存に残留: {saved}");
+    assert!(!saved.contains("onclick"), "onclick が保存に残留: {saved}");
+    // 正規形（再パース→再シリアライズで安定）。
+    let reparsed = SlideDoc::from_json(&saved).expect("保存 JSON がパース可能");
+    assert_eq!(reparsed.to_json(), saved);
 
     // 書込イベントが outbox に発行されている（op=update・RAG 再索引のトリガ）。
     let (events,): (i64,) = sqlx::query_as(
@@ -302,33 +338,25 @@ async fn edits_are_saved_as_markdown_with_write_event() {
     .expect("outbox 照会");
     assert!(events >= 1, "書込イベントが発行されること");
 
-    // saved_node_version が更新され、再ロードでインポートが走らない状態になる。
     let persisted = env.store.load(node.id, "default").await.expect("reload");
     assert_eq!(persisted.saved_node_version, Some(version));
-
-    // dirty は消費済み（連続保存は no-op）。
-    let again = saver::save_doc(&live, &env.store, &env.storage)
-        .await
-        .expect("2回目");
-    assert_eq!(again, None, "dirty でなければ保存しない");
 }
 
-/// 受け入れ条件: ファイル側の外部書込が編集セッションと衝突せず取り込まれる。
+/// 受け入れ条件: ファイル側の外部書込がロード時インポートで取り込まれる（単方向規約）。
 #[tokio::test]
 async fn external_write_is_imported_on_load() {
     let Some(env) = setup().await else { return };
     let alice = ctx_for("alice");
-    let agent = ctx_for("agent-fs-write");
 
-    let name = format!("note-{}.md", Uuid::new_v4());
+    let name = format!("deck-{}.slide", Uuid::new_v4());
     let node = env
         .storage
         .write_file_internal(
             &alice,
             None,
             &name,
-            format!("# v1 {}\n", Uuid::new_v4()).as_bytes(),
-            "text/markdown",
+            slide_json("v1", &format!("<h1>v1 {}</h1>", Uuid::new_v4())).as_bytes(),
+            SLIDE_MIME,
             None,
         )
         .await
@@ -338,26 +366,21 @@ async fn external_write_is_imported_on_load() {
         .await
         .expect("init");
 
-    // 外部書込（エージェントの file write 相当・collab を経由しない）。内容は一意化する。
-    let external_md = format!("# 外部更新 {}\n\n追記された行。\n", Uuid::new_v4());
+    // 外部書込（エージェントの file write 相当）。敵対的 HTML 込み → インポートで落ちる。
+    let unique = Uuid::new_v4();
+    let external_json = slide_json(
+        "外部更新",
+        &format!("<h1>外部 {unique}</h1><iframe src=\"https://evil\"></iframe>"),
+    );
     let external = env
         .storage
-        .update_file_content_internal(
-            &agent,
-            node.id,
-            external_md.as_bytes(),
-            "text/markdown",
-            None,
-        )
+        .update_file_content_internal(&alice, node.id, external_json.as_bytes(), SLIDE_MIME, None)
         .await
         .expect("外部書込");
-    assert_eq!(external.version, node.version + 1);
 
-    // ロード時インポート（saved_node_version 不一致 → md を Yjs へ全置換）。
     let persisted = env.store.load(node.id, "default").await.expect("load");
-    let live = Arc::new(
-        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &persisted).expect("restore"),
-    );
+    let live =
+        Arc::new(LiveDoc::restore(node.id, Some(DocKind::Slide), &persisted).expect("restore"));
     saver::import_if_stale(
         &live,
         &env.store,
@@ -370,47 +393,33 @@ async fn external_write_is_imported_on_load() {
     )
     .await
     .expect("インポート");
-    assert_eq!(
-        live.to_markdown().expect("md 化"),
-        external_md,
-        "外部書込の内容が Yjs に取り込まれること"
-    );
 
-    // インポート結果は snapshot として即時永続化され、再ロードでも同じ内容になる。
+    let serialized = live.serialize_content().expect("シリアライズ");
+    assert!(serialized.contains(&format!("外部 {unique}")));
+    assert!(
+        !serialized.contains("iframe"),
+        "インポート経路で iframe が残留: {serialized}"
+    );
     let persisted = env.store.load(node.id, "default").await.expect("reload");
     assert_eq!(persisted.saved_node_version, Some(external.version));
-    assert!(persisted.snapshot.is_some(), "snapshot が書かれること");
-    let restored = Arc::new(
-        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &persisted).expect("restore2"),
-    );
-    assert_eq!(restored.to_markdown().expect("md 化"), external_md);
-
-    // インポート後の編集セッションが通常どおり収束・保存できる（衝突しない）。
-    restored
-        .apply_and_persist(&env.store, &update_for_markdown("# 追加編集\n"), &alice)
-        .await
-        .expect("追記適用");
-    let saved = saver::save_doc(&restored, &env.store, &env.storage)
-        .await
-        .expect("保存")
-        .expect("保存される");
-    assert_eq!(saved, external.version + 1);
 }
 
-/// 同一 node.version なら再ロードでインポートは走らない（Yjs 真実の維持）。
+/// 不正 JSON の外部書込はインポートが fail-closed（エラー・Yjs 側を壊さない）。
 #[tokio::test]
-async fn import_is_skipped_when_version_matches() {
+async fn corrupt_external_json_fails_closed() {
     let Some(env) = setup().await else { return };
     let alice = ctx_for("alice");
-    let name = format!("note-{}.md", Uuid::new_v4());
+
+    let name = format!("deck-{}.slide", Uuid::new_v4());
+    let unique = Uuid::new_v4();
     let node = env
         .storage
         .write_file_internal(
             &alice,
             None,
             &name,
-            format!("# f {}\n", Uuid::new_v4()).as_bytes(),
-            "text/markdown",
+            slide_json("v1", &format!("<h1>正常 {unique}</h1>")).as_bytes(),
+            SLIDE_MIME,
             None,
         )
         .await
@@ -419,18 +428,11 @@ async fn import_is_skipped_when_version_matches() {
         .load_or_init(node.id, "acme", "default")
         .await
         .expect("init");
-    env.store
-        .set_saved_node_version(node.id, node.version)
-        .await
-        .expect("saved 記録");
 
-    let live = Arc::new(
-        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &empty_persisted())
-            .expect("restore"),
-    );
-    // Yjs 側にのみ存在する内容（ファイルとは異なる）。
-    live.apply_update_bytes(&update_for_markdown("# Yjs 側の真実\n"))
-        .expect("適用");
+    // まず正常内容をインポートして Yjs 側の真実を作る。
+    let persisted = env.store.load(node.id, "default").await.expect("load");
+    let live =
+        Arc::new(LiveDoc::restore(node.id, Some(DocKind::Slide), &persisted).expect("restore"));
     saver::import_if_stale(
         &live,
         &env.store,
@@ -438,15 +440,35 @@ async fn import_is_skipped_when_version_matches() {
         &alice,
         node.id,
         node.version,
-        Some(node.version),
-        // saved == version で早期 return するため upto_seq は未使用（0 でよい）。
-        0,
+        persisted.saved_node_version,
+        persisted.next_seq - 1,
     )
     .await
-    .expect("判定");
+    .expect("初回インポート");
+    let before = live.serialize_content().expect("シリアライズ");
+
+    // 壊れた JSON の外部書込 → 次のロードのインポートはエラー（空で上書きしない）。
+    let corrupt = env
+        .storage
+        .update_file_content_internal(&alice, node.id, b"{broken json", SLIDE_MIME, None)
+        .await
+        .expect("外部書込");
+    let persisted = env.store.load(node.id, "default").await.expect("load2");
+    let result = saver::import_if_stale(
+        &live,
+        &env.store,
+        &env.storage,
+        &alice,
+        node.id,
+        corrupt.version,
+        persisted.saved_node_version,
+        persisted.next_seq - 1,
+    )
+    .await;
+    assert!(result.is_err(), "不正 JSON のインポートはエラーになること");
     assert_eq!(
-        live.to_markdown().expect("md 化"),
-        "# Yjs 側の真実\n",
-        "version 一致ならインポートで上書きされないこと"
+        live.serialize_content().expect("シリアライズ"),
+        before,
+        "失敗したインポートが Yjs 側を壊さないこと"
     );
 }

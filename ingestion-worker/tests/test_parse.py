@@ -42,6 +42,55 @@ def test_parse_plain_text_splits_paragraphs(
     assert all(b["type"] == "paragraph" for b in blocks)
 
 
+def test_parse_slide_extracts_text_per_slide(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slide_json = (
+        '{"version":1,"meta":{"title":"提案書"},"slides":['
+        '{"id":"s1","html":"<h1>表紙</h1><p>ご提案の概要</p>","notes":"最初に挨拶"},'
+        '{"id":"s2","html":"<div><h2>課題</h2><ul><li>コスト</li><li>速度</li></ul></div>"}'
+        "]}"
+    )
+    _stub_download(monkeypatch, slide_json.encode())
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "source_url": "http://minio:9000/blob",
+            "content_type": "application/vnd.shiki.slide+json",
+            "file_name": "deck.slide",
+        },
+    )
+    assert resp.status_code == 200
+    blocks = resp.json()["blocks"]
+    # 文書タイトル → スライド1（見出し＋段落＋ノート）→ スライド2（見出し＋箇条書き）。
+    assert blocks[0] == {"type": "heading", "level": 1, "text": "提案書", "page": None}
+    texts = [b["text"] for b in blocks]
+    for expected in ["表紙", "ご提案の概要", "最初に挨拶", "課題", "コスト", "速度"]:
+        assert expected in texts, f"{expected} が抽出されていない: {texts}"
+    # page = スライド番号（引用位置）。
+    assert [b["page"] for b in blocks if b["text"] == "課題"] == [2]
+    # HTML タグ・スクリプトはテキストとして残らない。
+    assert not any("<" in t for t in texts)
+
+
+def test_parse_slide_invalid_json_is_structured_422(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_download(monkeypatch, b"{broken json")
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "source_url": "http://minio:9000/blob",
+            "content_type": "application/vnd.shiki.slide+json",
+            "file_name": "deck.slide",
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "parse_failed"
+
+
 def test_parse_unsupported_content_type_is_structured_422(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

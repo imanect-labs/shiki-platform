@@ -34,6 +34,8 @@ const SUPPORTED_TYPES: &[&str] = &[
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    // shiki スライド（Task 11.1）。worker 側はスライド順テキスト抽出の軽量経路。
+    "application/vnd.shiki.slide+json",
     "text/html",
     "text/markdown",
     "text/csv",

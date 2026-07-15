@@ -423,7 +423,12 @@ async fn replace_section_replaces_body_keeps_heading() {
 /// （kind=genui）として往復することを確認する（issue #282・DB 不要）。
 #[test]
 fn insert_embed_writes_genui_fence() {
-    let live = LiveDoc::restore(Uuid::new_v4(), &empty_persisted()).expect("restore");
+    let live = LiveDoc::restore(
+        Uuid::new_v4(),
+        Some(collab::DocKind::Note),
+        &empty_persisted(),
+    )
+    .expect("restore");
     live.import_markdown("# レポート\n\n本文。\n")
         .expect("seed");
 
@@ -456,7 +461,12 @@ fn insert_embed_writes_genui_fence() {
 /// insert_embed の spec がオブジェクトでない（不正）場合は挿入せず skip する（fail-closed・#282）。
 #[test]
 fn insert_embed_rejects_non_object_spec() {
-    let live = LiveDoc::restore(Uuid::new_v4(), &empty_persisted()).expect("restore");
+    let live = LiveDoc::restore(
+        Uuid::new_v4(),
+        Some(collab::DocKind::Note),
+        &empty_persisted(),
+    )
+    .expect("restore");
     live.import_markdown("# 本文\n").expect("seed");
     let report = live
         .apply_ai_edit(
@@ -501,7 +511,12 @@ async fn missing_heading_is_skipped() {
 /// 履歴を共有する（sync step2 = 全状態取り込み）→ その後 AI 編集の差分を適用する。
 #[test]
 fn ai_edit_produces_applicable_update() {
-    let live = LiveDoc::restore(Uuid::new_v4(), &empty_persisted()).expect("restore");
+    let live = LiveDoc::restore(
+        Uuid::new_v4(),
+        Some(collab::DocKind::Note),
+        &empty_persisted(),
+    )
+    .expect("restore");
     live.import_markdown("# 既存\n\n人間の段落。\n")
         .expect("seed");
 

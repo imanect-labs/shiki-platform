@@ -25,7 +25,6 @@ pub mod ai_edit;
 pub mod ast;
 pub mod frontmatter;
 pub mod md_parse;
-pub mod saver;
 pub mod yjs_map;
 pub mod yjs_meta;
 pub mod yjs_write;
@@ -40,7 +39,7 @@ pub const AI_ORIGIN: &str = "shiki:ai";
 
 /// ノート（md）としてこの collab 経路の対象になるファイルか。
 pub fn is_note_file(name: &str) -> bool {
-    name.to_lowercase().ends_with(".md")
+    crate::doc_kind::DocKind::from_name(name) == Some(crate::doc_kind::DocKind::Note)
 }
 
 /// Yjs ドキュメント全体を正規化 md（frontmatter 付き）へシリアライズする。

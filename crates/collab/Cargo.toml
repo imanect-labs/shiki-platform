@@ -21,6 +21,9 @@ pulldown-cmark.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 
+# スライド HTML の書込時サニタイズ（Task 11.1・design §4.8.3・PIT-40 第1層）。
+ammonia.workspace = true
+
 # WS セッションループは axum の WebSocket 型を直接受ける（api 層は upgrade だけの薄い皮）。
 axum.workspace = true
 

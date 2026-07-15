@@ -105,7 +105,7 @@ fn client_update(doc: &Doc, since: &StateVector) -> Vec<u8> {
 /// [`LiveDoc`] に適用→サーバ状態を双方に配って全員が同一文書になることを検証する。
 #[test]
 fn concurrent_edits_converge_via_live_doc() {
-    let live = LiveDoc::restore(Uuid::new_v4(), &empty_persisted()).expect("restore");
+    let live = LiveDoc::restore(Uuid::new_v4(), None, &empty_persisted()).expect("restore");
 
     // クライアント A: 先頭に "hello "、クライアント B: "world"（並行・互いを知らない）。
     let doc_a = Doc::new();
@@ -144,7 +144,7 @@ fn concurrent_edits_converge_via_live_doc() {
 /// 不正なバイト列（敵対的入力）は適用を拒否する（fail-closed）。
 #[test]
 fn garbage_update_is_rejected() {
-    let live = LiveDoc::restore(Uuid::new_v4(), &empty_persisted()).expect("restore");
+    let live = LiveDoc::restore(Uuid::new_v4(), None, &empty_persisted()).expect("restore");
     let err = live.apply_update_bytes(&[0xFF, 0x00, 0xAB, 0xCD]);
     assert!(err.is_err(), "壊れた update は拒否されること");
 }
@@ -163,7 +163,7 @@ async fn update_log_compacts_into_snapshot() {
         .await
         .expect("init");
 
-    let live = LiveDoc::restore(node_id, &empty_persisted()).expect("restore");
+    let live = LiveDoc::restore(node_id, None, &empty_persisted()).expect("restore");
     let client = Doc::new();
     let text = client.get_or_insert_text("t");
 
@@ -193,7 +193,7 @@ async fn update_log_compacts_into_snapshot() {
     // snapshot＋残 update からの復元が元文書に一致すること。
     let persisted = store.load(node_id, "default").await.expect("reload");
     assert!(persisted.snapshot.is_some(), "snapshot が作られていること");
-    let restored = LiveDoc::restore(node_id, &persisted).expect("restore from snapshot");
+    let restored = LiveDoc::restore(node_id, None, &persisted).expect("restore from snapshot");
     let full = restored.full_state().expect("full state");
     let check = Doc::new();
     let check_text = check.get_or_insert_text("t");
@@ -212,7 +212,7 @@ async fn update_log_compacts_into_snapshot() {
     let pending = store.pending_update_count(node_id).await.expect("count");
     assert_eq!(pending, 0, "最終圧縮で log が空になること");
     let persisted = store.load(node_id, "default").await.expect("reload");
-    let restored = LiveDoc::restore(node_id, &persisted).expect("restore");
+    let restored = LiveDoc::restore(node_id, None, &persisted).expect("restore");
     assert_eq!(
         restored.full_state().expect("full"),
         full,

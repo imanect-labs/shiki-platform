@@ -13,11 +13,13 @@ use storage::{Node, NodeKind, StorageService};
 use uuid::Uuid;
 
 use crate::doc::LiveDoc;
+use crate::doc_kind::DocKind;
 use crate::error::CollabError;
 use crate::note;
+use crate::saver;
 use crate::store::DocStore;
 
-/// ロード済みドキュメント 1 件（ノートの場合は自動保存タスクを併走させる）。
+/// ロード済みドキュメント 1 件（ファイル保存を持つ種別は自動保存タスクを併走させる）。
 struct DocEntry {
     doc: Arc<LiveDoc>,
     saver: Option<tokio::task::JoinHandle<()>>,
@@ -128,8 +130,8 @@ impl CollabHub {
     /// ドキュメントに参加する（未ロードなら永続状態から復元）。
     ///
     /// 認可済みであること（[`Self::authorize`]）を呼び出し側の責務とする。
-    /// ノート（.md）は初回ロード時に外部書込のインポート判定を行い（Task 11P.2 の
-    /// 単方向規約）、デバウンス保存タスクを併走させる。
+    /// ファイル保存を持つ種別（[`DocKind`]・ノート/スライド）は初回ロード時に外部書込の
+    /// インポート判定を行い（Task 11P.2/11.1 の単方向規約）、デバウンス保存タスクを併走させる。
     ///
     /// 並行性の注記（既知のスケーラビリティ制約）: 初回ロード（`load_or_init` の DB I/O ＋
     /// ノートの `import_if_stale`）を `docs` グローバルロック下で行うため、ある文書の初回
@@ -149,9 +151,10 @@ impl CollabHub {
                 .store
                 .load_or_init(node_id, &node.org, &node.tenant_id)
                 .await?;
-            let live = Arc::new(LiveDoc::restore(node_id, &persisted)?);
-            let saver = if note::is_note_file(&node.name) {
-                note::saver::import_if_stale(
+            let kind = DocKind::from_name(&node.name);
+            let live = Arc::new(LiveDoc::restore(node_id, kind, &persisted)?);
+            let saver = if kind.is_some() {
+                saver::import_if_stale(
                     &live,
                     &self.store,
                     &self.storage,
@@ -162,7 +165,7 @@ impl CollabHub {
                     persisted.next_seq - 1,
                 )
                 .await?;
-                Some(note::saver::spawn(
+                Some(saver::spawn(
                     Arc::clone(&live),
                     self.store.clone(),
                     Arc::clone(&self.storage),
@@ -201,19 +204,19 @@ impl CollabHub {
         {
             saver.abort();
         }
-        // 未保存編集があれば md へ最終保存する（デバウンス待ちを打ち切る）。
-        if let Err(e) = note::saver::save_note(doc, &self.store, &self.storage).await {
+        // 未保存編集があれば種別のシリアライズ形式で最終保存する（デバウンス待ちを打ち切る）。
+        if let Err(e) = saver::save_doc(doc, &self.store, &self.storage).await {
             tracing::warn!(node_id = %doc.node_id, error = %e,
-                "アンロード時のノート保存に失敗（Yjs 側は保全済み）");
+                "アンロード時のドキュメント保存に失敗（Yjs 側は保全済み）");
         }
         if let Err(e) = doc.compact_now(&self.store).await {
             tracing::warn!(node_id = %doc.node_id, error = %e, "最終圧縮に失敗（log は保全済み）");
         }
     }
 
-    /// ノートを即時保存する（テスト・明示保存用）。返り値は保存時の新 version。
-    pub async fn save_note_now(&self, doc: &Arc<LiveDoc>) -> Result<Option<i64>, CollabError> {
-        note::saver::save_note(doc, &self.store, &self.storage).await
+    /// ドキュメントを即時保存する（テスト・明示保存用）。返り値は保存時の新 version。
+    pub async fn save_now(&self, doc: &Arc<LiveDoc>) -> Result<Option<i64>, CollabError> {
+        saver::save_doc(doc, &self.store, &self.storage).await
     }
 
     /// ノート本文を正規化 md で読む（`document.read`・Task 11P.4）。viewer 以上で可。
