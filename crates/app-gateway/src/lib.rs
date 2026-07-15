@@ -15,6 +15,7 @@
 //! の OAuth2 クライアントは [`oauth`] が Keycloak へ動的登録する（新しい認証基盤は作らない）。
 
 mod b1;
+mod builtin;
 mod installation;
 mod notification;
 mod oauth;
@@ -27,6 +28,7 @@ mod token_exchange;
 mod usage;
 
 pub use b1::{build_b1_router, bundle_csp, B1State};
+pub use builtin::{build_builtin_router, builtin_csp, BuiltinState};
 pub use installation::{
     AiPin, AppInstallation, AppInstallationStore, InstallStatus, NewAppInstallation,
 };

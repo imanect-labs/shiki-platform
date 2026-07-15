@@ -569,15 +569,20 @@ FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメ
   同一スライド内の並行編集は Y.Text の文字粒度マージ＋取り込み時 DOMParser 正規化で自己修復（PIT-41）。
 - **エディタ = GrapesJS core を別オリジン砂箱で**: コンテンツモデルは**自由 HTML 許可**。
   そのため「生 HTML をアプリオリジンでレンダリングしない」不変条件を守る配置にする —
-  エディタ全体（GrapesJS＋ブリッジ）を self-contained バンドルとして app-gateway 第3リスナから
-  content-address 付きで配信し、web からは **opaque origin iframe**（`allow-same-origin` なし・
-  B1 と同じ `bundle_csp`）で埋め込む。親（アプリオリジン）が Yjs doc と CollabProvider を保持し、
-  MessagePort ブリッジ（スキーマ検証・砂箱発は敵対的入力として扱う=PIT-23 と同型）で
-  スライド HTML の入出力のみを行う。砂箱に認証情報を渡さない。
+  エディタ全体（GrapesJS＋ブリッジ）を self-contained バンドル（`web/editor-sandbox/`）として
+  app-gateway 第3リスナ（apps オリジン）の `/builtin/slide-editor` から配信し、web からは
+  `sandbox="allow-scripts allow-same-origin"` の iframe で埋め込む。**opaque origin にはしない**
+  （GrapesJS は自身のキャンバス iframe に同一オリジンで触る必要があり、opaque origin では動かない・実測）。
+  隔離は「**アプリ本体と別オリジン**（同一オリジンポリシーでアプリの DOM/cookie に不可達）＋
+  **通信の全遮断 CSP**（`default-src 'none'`・connect 不許可）」で担保する。組み込みバンドルは
+  プラットフォーム同梱の信頼済みコードであり、**ユーザー供給の B1 バンドルは従来どおり opaque origin**
+  （`bundle_csp`）— 信頼境界の緩和は同梱コードに限る。親（アプリオリジン）が Yjs doc と
+  CollabProvider を保持し、MessagePort ブリッジ（スキーマ検証・砂箱発は敵対的入力として扱う=
+  PIT-23 と同型）でスライド HTML の入出力のみを行う。砂箱に認証情報を渡さない。
 - **XSS 多層防御（4層・PIT-40）**: ①書込時サニタイズ（サーバ最終防壁・ammonia。AI 編集・保存・
   インポートの全経路。script/iframe/object/on*/javascript: と外部 URL を除去、画像は data: と
   ドライブ参照のみ）②描画直前 DOMPurify ③閲覧= srcdoc＋`sandbox=""`（scripts 全拒否）
-  ④編集=上記 opaque origin 砂箱。
+  ④編集=上記の別オリジン砂箱（通信全遮断 CSP）。
 - **AI 編集は共同編集参加者**（ノートと同一原則・排他なし）: `slide.edit` ツールが `SlideEditOp`
   （スライド追加/差替/削除・要素差替・ノート/背景/メタ設定）を Yjs トランザクションとして発行
   （editor relation・HigherConsistency・人間と同一経路）。`save_slide` は**下書き確定型**

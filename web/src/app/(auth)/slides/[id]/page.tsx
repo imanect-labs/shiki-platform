@@ -12,7 +12,7 @@ import * as React from "react";
 import * as Y from "yjs";
 
 import { SlideHeaderSlot } from "@/components/slides/slide-header-slot";
-import { SlideViewer } from "@/components/slides/slide-viewer";
+import { SlideWorkspace } from "@/components/slides/slide-workspace";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CollabProvider, type CollabStatus } from "@/lib/collab";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
@@ -92,7 +92,7 @@ export default function SlidePage() {
       />
       <div className="min-h-0 flex-1">
         {session && synced ? (
-          <SlideViewer doc={session.doc} />
+          <SlideWorkspace doc={session.doc} editable={editable} />
         ) : (
           <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />
