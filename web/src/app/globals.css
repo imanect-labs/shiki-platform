@@ -525,6 +525,17 @@
   .note-prose .selectedCell {
     @apply bg-primary/10;
   }
+  /* ライブプレビュー（issue #297）: フォーカス行に重ねる記法マーカー。
+     淡色・等幅で「今この行は Markdown」だと分かる最小限の表示。装飾（widget）なので
+     選択・コピーには含まれず、レイアウトも押し広げない。 */
+  .note-prose .note-md-marker {
+    @apply font-normal text-muted-foreground/45;
+
+    font-family: var(--font-mono, ui-monospace, monospace);
+    user-select: none;
+    pointer-events: none;
+    white-space: pre;
+  }
 
   /* 共同編集カーソル（CollaborationCaret / y-prosemirror） */
   .note-prose .collaboration-carets__caret {
