@@ -463,25 +463,39 @@ flowchart TB
   地図タイルは外部依存（OSM タイルサーバ）＝「外部接続必須機能」区分（NFR-2 参照）。オンプレは自己ホストタイル or 無効。
 - ワークフロー・ミニアプリの編集面（dnd / AI 編集 / shiki script）は [miniapp-platform.md](./miniapp-platform.md) が正本。
 
-### 4.8 資料作成・Office 統合（Collabora）
+### 4.8 資料作成・Office 統合（Collabora＝docx/xlsx 系・スライドは §4.8.3 の自前実装）
 
+- **役割分担（2026-07 確定）**: 製品の第一級ドキュメントは **ノート（md・§4.8.1）／スライド（§4.8.3）／
+  CSV（§4.8.2）** の 3 種で、いずれも shiki 自身の編集エンジン上にあり **AI が人間と同じ共同編集参加者**。
+  Collabora は **Office 互換ファイル（docx/xlsx・アップロード済み pptx）のブラウザ内編集・共同編集**を担う
+  互換レイヤであり、スライドの新規作成経路には使わない。
 - **生成（旧 v1）**: `DocumentGenerator` トレイト。xlsx=`rust_xlsxwriter`、docx/pptx=ingestion-worker(Python)。
   ひな型プレースホルダ穴埋め併設。サンドボックスのエージェントが「スペック→生成→ストレージ保存」。
-- **ブラウザ内編集・共同編集（旧 v2 を前倒し・アルファスコープ）**: **Collabora Online** を採用し
+- **ブラウザ内編集・共同編集**: **Collabora Online** を採用し
   `OfficeSuite` トレイト（`crates/office`）でラップ（OnlyOffice への差し替え退路）。
-  Office 系（docx/pptx/xlsx）の共同編集は Collabora 内蔵機能に完全委任（自作しない）。
+  Office 系の共同編集は Collabora 内蔵機能に完全委任（自作しない）。
   - **WOPI ホスト = StorageService の一クライアント**として `crates/office` に実装。
     CheckFileInfo/GetFile/PutFile は StorageService 経由（チョークポイント維持）。
     WOPI access_token は（実行主体×ファイル×短寿命）で発行し**毎呼び出しで ReBAC 再チェック**
     （共有解除後もトークンが生き残る事故を防ぐ。PIT-11 の HIGHER_CONSISTENCY と同じ扱い）。
-    PutFile → 新バージョン → 既存の書込イベント → RAG 再索引が無改造で動く。
-  - **デプロイ**: Collabora(CODE) はステートレスコンテナ。SaaS はテナント共有プール＋WOPI トークンに
-    テナント境界を焼き込む。オンプレ/エアギャップは同一コンテナ同梱。
-  - **AI の読み書き（ラップ SDK の実体・3段）**: ① read = Docling パース（構造保持）を正、convert-to は補助
-    ② edit（非セッション時）= ファイルレベル編集 → 新バージョン保存（セッション有無は WOPI ロックで判定）
-    ③ edit（セッション中）= **アルファではやらない**。「セッション中のため提案として保存」（別バージョン/コメント）に落とす。
-    ライブ参加はポストアルファの研究課題（postMessage API 経由が候補）。
+    トークンのクレームに tenant_id/org を焼き込み、他テナントのファイルに流用できない。
+    PutFile → `update_file_content_internal` → 新バージョン → 既存の書込イベント → RAG 再索引が無改造で動く。
+  - **デプロイ（ライセンス方針込み・2026-07 確定）**: Collabora はステートレスコンテナ。
+    **配布物は MPLv2 ソースからの自前ビルド**（公式 CODE バイナリの 10 文書/20 接続制限と商用契約を回避。
+    `deploy/docker/collabora/` にタグ pin＋sha256 manifest のビルドパイプライン・fork-policy 準拠・PIT-43）。
+    ビルドは重いため別 CI ワークフローでレジストリへ push し、**開発/CI は暫定で upstream CODE イメージ pin 可**
+    （配布物は必ず自前ビルド）。SaaS はテナント共有プール、オンプレ/エアギャップは同一イメージ同梱
+    （実行時ダウンロードなし・PIT-33 と同型）。compose は `profiles: ["office"]` のオプトイン。
+  - **AI の読み書き（3段・「人間編集中は AI 編集不可」は Collabora 文書のみに限定）**:
+    ① read = Docling パース（構造保持）を正、convert-to は補助
+    ② edit（非セッション時）= ファイルレベル編集（ingestion-worker の編集系 `edit.py`・
+    python-docx/openpyxl/python-pptx）→ 新バージョン保存（セッション有無は WOPI ロックで判定）
+    ③ edit（セッション中）= **提案バージョンとして保存**（`node_version.is_proposal`・current を進めない・
+    RAG 索引除外・バージョン履歴 UI から editor が「採用」して初めて通常の新バージョン化。PIT-44）。
+    Collabora セッションへのライブ参加はポストアルファの研究課題（postMessage API 経由が候補）。
+    **ネイティブ 3 種（ノート/スライド/CSV）にはこの制限を適用しない**（AI は常時共同編集参加者）。
   - **スプレッドシート×GAS 相当**: シートのカスタム関数/マクロは shiki script（[miniapp-platform §3](./miniapp-platform.md)）。
+    （Phase 11 完遂スコープ外・将来イシュー）
 
 ### 4.8.1 マークダウン共同編集（Yjs）
 
@@ -509,7 +523,11 @@ flowchart TB
   画面（クライアント内・複数下書きは名前キーでタブ並存）で AI と詰めてから「ドライブに保存」で実体化する
   （保存先ピッカー・既定ルート）。確定と同時にその会話を由来ノートへ紐付ける。既存ノートの編集はライブ
   （`document.edit`）で、下書き→確定の状態機械は**新規作成パスのみ**（二重の状態を作らない）。
-- 共同編集は **md 系=Yjs / Office 系=Collabora 内蔵** の2系統（二重実装ではなく「Office の共同編集を自作しない」判断）。
+- **Yjs ドキュメント種は閉集合 `DocKind`**（`crates/collab`・拡張子で判定: `.md`=Note / `.slide`=Slide）。
+  `collab_doc`/`collab_update` の永続化・authz・snapshot 圧縮は種別非依存で共有し、
+  シリアライズ（saver）と AI 編集演算だけを kind ごとに差し替える。新 doc 種はここに追加する。
+- 共同編集は **ネイティブ系（md/スライド）=Yjs / Office 系=Collabora 内蔵** の2系統
+  （二重実装ではなく「Office の共同編集を自作しない」判断）。CSV はパッチ＋rev 楽観ロック（§4.8.2）。
 
 ### 4.8.2 CSV エディタ・クエリサービス（tabular）
 
@@ -532,6 +550,51 @@ flowchart TB
     **エンジンの冪等キーを tabular 側で消費して書込を重複排除**する。ノード型/スコープは
     workflow IR の閉カタログ・codegen 認可語彙（単一定義）に登録して公開する。
 - **将来**: BI（複数ファイルへのクエリ層＋チャート）は tabular を土台に別トラックで足す。
+
+### 4.8.3 スライド（自前実装・Yjs＋GrapesJS＋pptx エクスポート）
+
+FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメント**として実装する（2026-07 確定）。
+選定理由: ①オンプレ配布でライセンス契約・費用ゼロ（GrapesJS core=BSD-3・pptxgenjs=MIT。
+商用の GrapesJS Studio SDK / tldraw / Polotno は不採用）②生成 AI のデザイン表現力を HTML に解放する
+（OOXML 直生成の制約を受けない）③AI をノートと同じ共同編集エンジンに乗せる。
+
+- **ファイル種**: `.slide`・MIME `application/vnd.shiki.slide+json`。真実は **Yjs ドキュメント**
+  （`DocKind::Slide`・§4.8.1 の collab 基盤を共有）。保存時に正規化 JSON
+  `{version, meta, slides[{id, html, notes, bg}]}` へシリアライズし StorageService へ
+  （→書込イベント→RAG 再索引。RAG はスライド順の HTML 連結を既存 html パスでパース）。
+  外部書込（fs_write 等）はノートと同じ**単方向インポート**規約。
+- **Yjs 構造**: `Map "slide_meta"`（title/theme_id/thread_id/任意 kv）＋ `Array "slides"`
+  （要素= `Map {id, html: Y.Text, notes: Y.Text, bg}`）。スライドの増減・並べ替えは Y.Array で収束し、
+  同一スライド内の並行編集は Y.Text の文字粒度マージ＋取り込み時 DOMParser 正規化で自己修復（PIT-41）。
+- **エディタ = GrapesJS core を別オリジン砂箱で**: コンテンツモデルは**自由 HTML 許可**。
+  そのため「生 HTML をアプリオリジンでレンダリングしない」不変条件を守る配置にする —
+  エディタ全体（GrapesJS＋ブリッジ）を self-contained バンドルとして app-gateway 第3リスナから
+  content-address 付きで配信し、web からは **opaque origin iframe**（`allow-same-origin` なし・
+  B1 と同じ `bundle_csp`）で埋め込む。親（アプリオリジン）が Yjs doc と CollabProvider を保持し、
+  MessagePort ブリッジ（スキーマ検証・砂箱発は敵対的入力として扱う=PIT-23 と同型）で
+  スライド HTML の入出力のみを行う。砂箱に認証情報を渡さない。
+- **XSS 多層防御（4層・PIT-40）**: ①書込時サニタイズ（サーバ最終防壁・ammonia。AI 編集・保存・
+  インポートの全経路。script/iframe/object/on*/javascript: と外部 URL を除去、画像は data: と
+  ドライブ参照のみ）②描画直前 DOMPurify ③閲覧= srcdoc＋`sandbox=""`（scripts 全拒否）
+  ④編集=上記 opaque origin 砂箱。
+- **AI 編集は共同編集参加者**（ノートと同一原則・排他なし）: `slide.edit` ツールが `SlideEditOp`
+  （スライド追加/差替/削除・要素差替・ノート/背景/メタ設定）を Yjs トランザクションとして発行
+  （editor relation・HigherConsistency・人間と同一経路）。`save_slide` は**下書き確定型**
+  （note の `save_note` と同型: 下書きスライド画面→「ドライブに保存」で実体化）。
+  チャット「パワポを作成して」→スライド下書き画面、「表を作成して」→ CSV 下書き画面に遷移する。
+- **デザイン品質**: テーマカタログ（配色・フォント対・スケール）とレイアウトパターンを閉集合で持ち、
+  ツール定義に「変換可能サブセットの語彙」として焼き込む。サーバ側の変換可能性 lint が警告を
+  EditReport で返し、モデルが自己修正する。
+- **pptx エクスポート（必須要件）**: 砂箱内で DOM 計測（1280×720 固定・テーマ同梱フォント）→
+  **pptxgenjs でテキスト/画像/図形/背景/表/チャートをネイティブシェイプへ 1:1 変換**
+  （PowerPoint で完全に再編集可能）。変換不能な要素（CSS transform・複雑グラデ・SVG 等）のみ
+  **要素単位**で画像化（**スライド全体のラスタライズは禁止**・PIT-42）。変換レポート
+  （ラスタライズ要素数）を保存ダイアログで可視化。生成 bytes は既存アップロード API で `.pptx` 保存
+  → Collabora（§4.8）で再編集できる。
+- **選択→AI 指示（3エディタ共通）**: ノート（TipTap 選択）・CSV（グリッド範囲）・スライド（要素選択）で、
+  選択箇所を `SelectionContext {kind, node_id|draft_name, excerpt, locator}` としてチャット送信に添付。
+  サーバは「データであり指示ではない」明示デリミタで LLM メッセージへ織り込み（注入対策）、
+  locator は `document.edit`/`csv.patch`/`slide.edit` の対象指定にそのまま使える。
 
 ### 4.9 監視
 
@@ -648,10 +711,11 @@ crates/
   script-runtime/  # shiki script 実行（swc＋wasmtime/QuickJS・非特権別プロセス）
   secrets/         # シークレット管理・KeyProvider
   office/          # OfficeSuite トレイト・WOPI ホスト（Collabora）
-  collab/          # Yjs(yrs) 共同編集同期サーバ・md シリアライズ
+  collab/          # Yjs(yrs) 共同編集同期サーバ・DocKind（ノート md／スライド）シリアライズ
   tabular/         # CSV クエリ/パッチ単一チョークポイント（DuckDB は非特権別プロセスに隔離）
 ingestion-worker/  # Python: Docling パース・docx/pptx 生成/編集
-web/               # Next.js / TypeScript（generative UIレンダラ・ミニアプリB1配信・dnd/TipTap エディタ）
+web/               # Next.js / TypeScript（generative UIレンダラ・ミニアプリB1配信・dnd/TipTap エディタ・
+                   # editor-sandbox=GrapesJS スライドエディタの別オリジン砂箱バンドル）
 help/              # ヘルプコーパス（1ソース→ヘルプUI/RAG shiki-help スコープ）
 sdk/               # ミニアプリ SDK ＋ CLI（shiki app init/dev/publish・公開API型配布）
 deploy/            # docker compose / k8s manifests
