@@ -71,11 +71,13 @@ export function NoteChatPanel({
     return () => meta.unobserve(update);
   }, [meta]);
 
-  // ?thread= で来た会話を初回にアクティブへ（サイドバーの「ノート由来」からの遷移）。
-  const appliedInitial = React.useRef(false);
+  // ?thread= で来た会話をアクティブへ（サイドバーの「ノート由来」からの遷移）。同一ノートの別会話
+  // リンク（?thread が A→B に変わる）でもコンポーネントは再マウントされないため、**値が変わるたび**
+  // 反映する（一度きりにすると deep link 切替が効かない）。
+  const appliedInitialRef = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (appliedInitial.current || !initialThreadId) return;
-    appliedInitial.current = true;
+    if (!initialThreadId || appliedInitialRef.current === initialThreadId) return;
+    appliedInitialRef.current = initialThreadId;
     if (initialThreadId !== readActiveThreadId(meta)) {
       setActiveThreadId(meta, initialThreadId);
       setActiveThreadIdState(initialThreadId);

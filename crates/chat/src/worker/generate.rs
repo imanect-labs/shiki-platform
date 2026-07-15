@@ -18,9 +18,10 @@ use llm_gateway::{
 };
 use uuid::Uuid;
 
+use super::history::{message_preview, message_text};
 use super::sink::WorkerSink;
 use super::ChatWorker;
-use crate::model::{ContentBlock, Role};
+use crate::model::Role;
 use crate::store::ClaimedRun;
 use crate::ChatError;
 
@@ -455,46 +456,4 @@ fn autonomous_system_prompt(base: &str) -> String {
          - 破壊的な操作（shell・削除）は承認が必要な場合がある。承認待ちで停止したら結果を待つ。\n\
          - 目標を達成したら簡潔に要約して終了する。"
     )
-}
-
-/// content block 列からテキスト（＋添付名）を抽出する（LLM 履歴用）。
-fn message_text(blocks: &[ContentBlock]) -> String {
-    let mut parts = Vec::new();
-    for b in blocks {
-        match b {
-            ContentBlock::Text { text } => parts.push(text.clone()),
-            ContentBlock::FileRef { name, .. } => parts.push(format!("[添付: {name}]")),
-            // 「さっきのワークフローを直して」等の追編集に id/version が要る（Task 10.13）。
-            ContentBlock::WorkflowRef { workflow } => {
-                let id = workflow.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let name = workflow.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let version = workflow.get("version").and_then(serde_json::Value::as_i64);
-                parts.push(format!(
-                    "[保存済みワークフロー: {name}（workflow_id: {id}, v{}）]",
-                    version.unwrap_or(0)
-                ));
-            }
-            // 「さっき作ったノートに追記して」等の追編集に node_id が要る（Task 11P.5）。
-            ContentBlock::NoteRef { note } => {
-                let id = note.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let name = note.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                parts.push(format!("[保存済みノート: {name}（node_id: {id}）]"));
-            }
-            // 下書き（note_draft）は履歴カードとして描く。refine 誘導は save_note の説明が担う。
-            _ => {}
-        }
-    }
-    parts.join("\n")
-}
-
-/// LLM メッセージのテキストプレビュー（Langfuse/検索クエリ用）。
-fn message_preview(m: &LlmMessage) -> String {
-    m.content
-        .iter()
-        .filter_map(|b| match b {
-            llm_gateway::Block::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }

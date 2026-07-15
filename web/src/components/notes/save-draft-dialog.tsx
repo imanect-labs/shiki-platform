@@ -40,12 +40,16 @@ export function SaveDraftDialog({
   const [folder, setFolder] = React.useState<{ id: string; name: string } | null>(null);
   const [pickerOpen, setPickerOpen] = React.useState(false);
 
-  // ダイアログを開くたびに既定名へ戻す（別の下書きを保存するとき混ざらない）。
+  // ダイアログを**開いた瞬間だけ**既定名へ戻す（open が false→true の遷移時のみ）。開いたまま
+  // defaultName（呼び出し元の activeName）が AI 流し込みで変わっても、ユーザーの入力中の名前/保存先を
+  // 黙ってリセットしない。
+  const prevOpen = React.useRef(false);
   React.useEffect(() => {
-    if (open) {
+    if (open && !prevOpen.current) {
       setName(defaultName);
       setFolder(null);
     }
+    prevOpen.current = open;
   }, [open, defaultName]);
 
   const canSave = name.trim().length > 0 && !saving;

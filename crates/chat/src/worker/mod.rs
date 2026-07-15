@@ -8,6 +8,7 @@
 //! - **協調キャンセル**: ユーザー明示停止（cancel_requested）のみ。ページ離脱はキャンセルしない。
 
 mod generate;
+mod history;
 mod sink;
 
 use std::sync::atomic::{AtomicBool, Ordering};

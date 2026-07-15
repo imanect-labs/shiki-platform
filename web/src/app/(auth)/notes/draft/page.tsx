@@ -104,13 +104,16 @@ function DraftNotePageInner() {
     };
   }, [threadId]);
 
-  // 初回に対象下書きをアクティブへ（?name 優先・無ければ最新）。復元完了後に一度だけ。
-  const openedInitial = React.useRef(false);
+  // 対象下書きをアクティブへ（?name 優先・無ければ最新）。復元完了後、**nameParam ごとに一度**開く
+  // （同じ ?name の再処理は抑止しつつ、?name が変わる deep link 切替では再オープンする）。
+  const openedForRef = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (!recovered || openedInitial.current) return;
+    if (!recovered) return;
     const list = listDrafts(threadId);
     if (list.length === 0) return;
-    openedInitial.current = true;
+    const key = nameParam || "__latest__";
+    if (openedForRef.current === key) return;
+    openedForRef.current = key;
     const target =
       (nameParam && list.find((d) => d.name === nameParam)?.name) ??
       list[list.length - 1].name;

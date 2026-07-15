@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { Link2, MessageSquareText, NotebookPen } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -82,6 +82,9 @@ function ThreadRow({ thread, active }: { thread: Thread; active: boolean }) {
 export function SidebarChatHistory({ collapsed }: { collapsed: boolean }) {
   const { threads, loading } = useThreadsState();
   const pathname = usePathname();
+  // ノート由来行は `/notes/{noteId}?thread={id}` へ張るため、active 判定は thread クエリまで見る
+  // （同一ノートに複数会話がある 1:N で、全行が同時 active になるのを防ぐ）。
+  const searchParams = useSearchParams();
 
   if (collapsed) return <div className="flex-1" aria-hidden />;
 
@@ -131,7 +134,8 @@ export function SidebarChatHistory({ collapsed }: { collapsed: boolean }) {
                 thread={thread}
                 active={
                   thread.originNoteId
-                    ? pathname === `/notes/${thread.originNoteId}`
+                    ? pathname === `/notes/${thread.originNoteId}` &&
+                      searchParams.get("thread") === thread.id
                     : pathname === `/c/${thread.id}`
                 }
               />

@@ -14,7 +14,5 @@
 alter table thread add column if not exists origin_note_id uuid;
 alter table thread add column if not exists origin_note_name text;
 
--- ノート側の会話一覧引き（テナント内・当該ノート・未削除・更新日降順）を効かせる。
-create index if not exists thread_origin_note_idx
-    on thread (tenant_id, org, origin_note_id, updated_at desc)
-    where origin_note_id is not null and deleted_at is null;
+-- ノート側の会話一覧引き（テナント内・当該ノート・未削除・更新日降順）を効かせる index は、
+-- transaction 内 CREATE INDEX が thread への書込を止めるため、次の 0048 で CONCURRENTLY に分ける。
