@@ -217,7 +217,10 @@ async fn skill_pin_applies_model_defaults_and_audits() {
     worker.spawn(1);
 
     // skill をピンした thread（通常チャット＝classic 経路にも適用される）。
-    let thread = store.create_thread(&c, "t", false, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "t", false, None, None)
+        .await
+        .unwrap();
     store
         .set_thread_pins(&c, thread.id, Some((skill_id, 1)), None, None)
         .await

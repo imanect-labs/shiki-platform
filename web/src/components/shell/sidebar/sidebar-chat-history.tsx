@@ -2,21 +2,31 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Link2, MessageSquareText } from "lucide-react";
+import { usePathname, useSearchParams } from "next/navigation";
+import { Link2, MessageSquareText, NotebookPen } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { groupThreadsByDate, useThreadsState } from "@/lib/chat-api";
+import { groupThreadsByDate, useThreadsState, type Thread } from "@/lib/chat-api";
 import { toast } from "@/components/ui/use-toast";
 import { ActiveIndicator } from "@/components/ui/motion-primitives";
 
 /// 履歴 1 行。アクティブは左アクセントバー、ホバーでリンクコピーの小ボタンを出す
 /// （スレッドのリネーム/削除は backend 未提供のため、実在する「コピー」のみ）。
-function ThreadRow({ id, title, active }: { id: string; title: string; active: boolean }) {
+///
+/// **ノート由来スレッド（issue #282）**は先頭にノートアイコンを出して「ノート由来」と分かる形に
+/// し、行のリンク先を**ノートの分割ビュー（その会話をアクティブに）**にする（ノートからも履歴
+/// からも辿れる）。通常チャットは従来どおり /c/{id}。
+function ThreadRow({ thread, active }: { thread: Thread; active: boolean }) {
+  const { id, title, originNoteId, originNoteName } = thread;
+  const isNoteOrigin = Boolean(originNoteId);
+  // ノート由来は分割ビューを開き、この会話をアクティブにする（?thread で指定）。
+  const href = isNoteOrigin
+    ? `/notes/${originNoteId}?thread=${id}`
+    : `/c/${id}`;
   // コピーボタンは Link の兄弟（インタラクティブ要素のネストを避ける・有効な HTML）。
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(`${window.location.origin}/c/${id}`);
+      await navigator.clipboard.writeText(`${window.location.origin}${href}`);
       toast({ description: "リンクをコピーしました。" });
     } catch {
       toast({ description: "リンクをコピーできませんでした。" });
@@ -32,17 +42,23 @@ function ThreadRow({ id, title, active }: { id: string; title: string; active: b
         />
       ) : null}
       <Link
-        href={`/c/${id}`}
+        href={href}
         aria-current={active ? "page" : undefined}
-        title={title}
+        title={isNoteOrigin ? `ノート「${originNoteName ?? ""}」の会話` : title}
         className={cn(
-          "flex h-8 items-center rounded-[9px] pl-2.5 pr-9 text-[13px] outline-none",
+          "flex h-8 items-center gap-1.5 rounded-[9px] pl-2.5 pr-9 text-[13px] outline-none",
           "transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring",
           active
             ? "font-medium text-sidebar-foreground"
             : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
         )}
       >
+        {isNoteOrigin ? (
+          <NotebookPen
+            className="size-3.5 shrink-0 text-sidebar-foreground/45"
+            aria-label="ノート由来"
+          />
+        ) : null}
         <span className="min-w-0 flex-1 truncate">{title}</span>
       </Link>
       <button
@@ -63,9 +79,23 @@ function ThreadRow({ id, title, active }: { id: string; title: string; active: b
 }
 
 /// サイドバー中段のチャット履歴。backend のスレッドを日付グループで表示する。
+///
+/// `useSearchParams`（ノート由来行の active 判定に使用）を含むため Suspense 境界でラップする
+/// （静的プリレンダされる (auth) ページ /apps 等で CSR bailout を起こさない・#282）。
 export function SidebarChatHistory({ collapsed }: { collapsed: boolean }) {
+  return (
+    <React.Suspense fallback={<div className="min-h-0 flex-1" aria-hidden />}>
+      <SidebarChatHistoryInner collapsed={collapsed} />
+    </React.Suspense>
+  );
+}
+
+function SidebarChatHistoryInner({ collapsed }: { collapsed: boolean }) {
   const { threads, loading } = useThreadsState();
   const pathname = usePathname();
+  // ノート由来行は `/notes/{noteId}?thread={id}` へ張るため、active 判定は thread クエリまで見る
+  // （同一ノートに複数会話がある 1:N で、全行が同時 active になるのを防ぐ）。
+  const searchParams = useSearchParams();
 
   if (collapsed) return <div className="flex-1" aria-hidden />;
 
@@ -112,9 +142,13 @@ export function SidebarChatHistory({ collapsed }: { collapsed: boolean }) {
             {group.threads.map((thread) => (
               <ThreadRow
                 key={thread.id}
-                id={thread.id}
-                title={thread.title}
-                active={pathname === `/c/${thread.id}`}
+                thread={thread}
+                active={
+                  thread.originNoteId
+                    ? pathname === `/notes/${thread.originNoteId}` &&
+                      searchParams.get("thread") === thread.id
+                    : pathname === `/c/${thread.id}`
+                }
               />
             ))}
           </ul>

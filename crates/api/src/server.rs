@@ -310,8 +310,8 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/threads", &["GET", "POST"], Session, || {
             get(routes::chat::list_threads).post(routes::chat::create_thread)
         }),
-        r("/threads/{id}", &["GET"], Session, || {
-            get(routes::chat::get_thread)
+        r("/threads/{id}", &["GET", "PATCH"], Session, || {
+            get(routes::chat::get_thread).patch(routes::chat_notes::set_thread_origin_note)
         }),
         r("/threads/{id}/messages", &["GET", "POST"], Session, || {
             get(routes::chat::get_messages).post(routes::chat::post_message)

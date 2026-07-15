@@ -217,7 +217,10 @@ async fn validated_generative_ui_is_streamed_and_persisted() {
     let tenant = format!("t-{}", Uuid::new_v4());
     let (store, _validator) = spawn_worker(&pool).await;
     let c = ctx(&tenant);
-    let thread = store.create_thread(&c, "t", true, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "t", true, None, None)
+        .await
+        .unwrap();
 
     let (asst_id, events) = run_to_done(&store, &c, thread.id, "genui:form").await;
 
@@ -276,7 +279,10 @@ async fn invalid_spec_falls_back_to_text_and_is_audited() {
     let tenant = format!("t-{}", Uuid::new_v4());
     let (store, _validator) = spawn_worker(&pool).await;
     let c = ctx(&tenant);
-    let thread = store.create_thread(&c, "t", true, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "t", true, None, None)
+        .await
+        .unwrap();
 
     let (asst_id, events) = run_to_done(&store, &c, thread.id, "genui:bad").await;
 
@@ -323,7 +329,10 @@ async fn chat_submit_action_posts_message_and_undeclared_is_denied() {
     let tenant = format!("t-{}", Uuid::new_v4());
     let (store, _validator) = spawn_worker(&pool).await;
     let c = ctx(&tenant);
-    let thread = store.create_thread(&c, "t", true, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "t", true, None, None)
+        .await
+        .unwrap();
 
     // UI ブロックを実経路で作る。
     let (asst_id, _) = run_to_done(&store, &c, thread.id, "genui:form").await;

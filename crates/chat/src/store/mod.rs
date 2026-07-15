@@ -15,6 +15,7 @@ mod stream;
 mod threads;
 
 pub use runs::{ClaimedRun, PostResult, CHAT_GENERATION_QUEUE};
+pub use threads::ThreadOrigin;
 
 use std::sync::Arc;
 

@@ -175,7 +175,10 @@ async fn worker_generates_streams_and_persists_projection() {
     worker.spawn(1);
 
     let c = ctx(&tenant);
-    let thread = store.create_thread(&c, "t", false, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "t", false, None, None)
+        .await
+        .unwrap();
     let res = store
         .post_message(&c, thread.id, "hello world", &[], Some(false), false, None)
         .await

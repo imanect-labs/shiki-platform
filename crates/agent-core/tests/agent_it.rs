@@ -125,6 +125,7 @@ impl Tool for MockSearchTool {
             ui_specs: vec![],
             workflow_refs: vec![],
             note_refs: vec![],
+            note_drafts: vec![],
             is_error: false,
         })
     }

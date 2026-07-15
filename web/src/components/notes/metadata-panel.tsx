@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 /// パネルが扱う予約キー（title/icon は専用 UI・thread_id は非表示）。
-const RESERVED_KEYS = new Set(["title", "icon", "tags", "thread_id"]);
+const RESERVED_KEYS = new Set(["title", "icon", "tags", "thread_id", "active_thread_id"]);
 
 interface MetaState {
   title: string;

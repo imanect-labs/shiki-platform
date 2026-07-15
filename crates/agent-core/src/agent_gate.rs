@@ -132,5 +132,11 @@ pub(crate) async fn emit_tool_events(
         sink.emit(AgentEvent::NoteRef { note: note.clone() })
             .await?;
     }
+    for draft in &outcome.note_drafts {
+        sink.emit(AgentEvent::NoteDraft {
+            draft: draft.clone(),
+        })
+        .await?;
+    }
     Ok(())
 }

@@ -33,7 +33,11 @@ export type ContentBlock =
   | { type: "generative_ui"; spec: unknown }
   | { type: "workflow_ref"; workflow: unknown }
   | { type: "note_ref"; note: unknown }
+  | { type: "note_draft"; draft: unknown }
   | { type: "file_ref"; node_id: string; name: string };
+
+/// 未保存の下書きノート（save_note の下書き確定型・issue #282）。
+export type NoteDraft = { name: string; markdown: string };
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
 export type RunStatus = "queued" | "running" | "done" | "failed" | "cancelled";
@@ -47,6 +51,9 @@ export type Thread = {
   skillVersion?: number | null;
   miniAppId?: string | null;
   miniAppVersion?: number | null;
+  /// 由来ノート（ノートの分割ビューから作られたスレッド・issue #282）。通常チャットは null。
+  originNoteId?: string | null;
+  originNoteName?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -161,6 +168,8 @@ type ApiThread = {
   skill_version?: number | null;
   mini_app_id?: string | null;
   mini_app_version?: number | null;
+  origin_note_id?: string | null;
+  origin_note_name?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -174,6 +183,8 @@ function toThread(t: ApiThread): Thread {
     skillVersion: t.skill_version ?? null,
     miniAppId: t.mini_app_id ?? null,
     miniAppVersion: t.mini_app_version ?? null,
+    originNoteId: t.origin_note_id ?? null,
+    originNoteName: t.origin_note_name ?? null,
     createdAt: t.created_at,
     updatedAt: t.updated_at,
   };
@@ -186,8 +197,12 @@ async function ok<T>(res: Response): Promise<T> {
 
 export async function listThreads(
   cursor?: string,
+  opts?: { originNoteId?: string },
 ): Promise<{ threads: Thread[]; nextCursor: string | null }> {
-  const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  const params = new URLSearchParams();
+  if (cursor) params.set("cursor", cursor);
+  if (opts?.originNoteId) params.set("origin_note_id", opts.originNoteId);
+  const qs = params.toString() ? `?${params.toString()}` : "";
   const data = await ok<{ threads: ApiThread[]; next_cursor: string | null }>(
     await apiFetch(`/threads${qs}`),
   );
@@ -197,7 +212,13 @@ export async function listThreads(
 export async function createThread(
   title?: string,
   agentMode = false,
-  pins?: { skill?: ArtifactPin; miniApp?: ArtifactPin; workspace?: WorkspaceChoice },
+  pins?: {
+    skill?: ArtifactPin;
+    miniApp?: ArtifactPin;
+    workspace?: WorkspaceChoice;
+    /// 由来ノート（ノートの分割ビューから作るスレッド・issue #282）。
+    originNoteId?: string;
+  },
 ): Promise<Thread> {
   const toPin = (p?: ArtifactPin) =>
     p ? { artifact_id: p.artifactId, version: p.version ?? undefined } : undefined;
@@ -214,11 +235,24 @@ export async function createThread(
         skill: toPin(pins?.skill),
         mini_app: toPin(pins?.miniApp),
         workspace,
+        origin_note_id: pins?.originNoteId,
       }),
     }),
   );
   notifyThreadsChanged();
   return toThread(data);
+}
+
+/// スレッドの由来ノートを設定する（下書き確定→ノート実体化の紐付け・issue #282）。
+/// これでこの会話が「ノート由来」になり、ノートの会話一覧・サイドバー履歴に反映される。
+export async function setThreadOriginNote(threadId: string, noteId: string): Promise<void> {
+  const res = await apiFetch(`/threads/${threadId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note_id: noteId }),
+  });
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  notifyThreadsChanged();
 }
 
 export class ThreadNotFound extends Error {
@@ -285,6 +319,8 @@ export type StreamHandlers = {
   /// 保存済みワークフローへの参照（Task 10.13・emit_workflow）。
   onWorkflowRef?: (workflow: unknown) => void;
   onNoteRef?: (note: unknown) => void;
+  /// 未保存の下書きノート（save_note の下書き確定型・issue #282）。下書き画面を開く/流し込む。
+  onNoteDraft?: (draft: unknown) => void;
   onStatus?: (status: RunStatus) => void;
   // 自律エージェント（Phase 5）。
   onPlan?: (subtasks: PlanSubtask[]) => void;
@@ -309,6 +345,7 @@ type StreamEventKind =
   | { type: "generative_ui"; spec: unknown }
   | { type: "workflow_ref"; workflow: unknown }
   | { type: "note_ref"; note: unknown }
+  | { type: "note_draft"; draft: unknown }
   | { type: "plan"; subtasks: PlanSubtask[] }
   | { type: "budget_warning"; kind: string; used: number; limit: number }
   | ({ type: "approval_requested" } & ApprovalRequest)
@@ -369,6 +406,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "note_ref":
         handlers.onNoteRef?.(kind.note);
+        break;
+      case "note_draft":
+        handlers.onNoteDraft?.(kind.draft);
         break;
       case "plan":
         handlers.onPlan?.(kind.subtasks);

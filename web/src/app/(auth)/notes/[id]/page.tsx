@@ -8,7 +8,8 @@
 /// - 11P.5 で本ページが「ノート×チャット分割ビュー」のホストになる。
 
 import { Loader2, MessageSquare, X } from "lucide-react";
-import { useParams } from "next/navigation";
+import Link from "next/link";
+import { useParams, useSearchParams } from "next/navigation";
 import * as React from "react";
 import * as Y from "yjs";
 
@@ -24,16 +25,36 @@ import { CollabProvider, type CollabStatus } from "@/lib/collab";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
 import { cn } from "@/lib/utils";
 
+/// useSearchParams を使うため Suspense 境界でラップする（App Router の CSR bailout 対策・#282）。
 export default function NotePage() {
+  return (
+    <React.Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" aria-hidden />
+          ノートを開いています…
+        </div>
+      }
+    >
+      <NotePageInner />
+    </React.Suspense>
+  );
+}
+
+function NotePageInner() {
   const params = useParams<{ id: string }>();
   const nodeId = params.id;
+  const searchParams = useSearchParams();
+  // サイドバーの「ノート由来」履歴から来たときは、その会話を開く（?thread=）。
+  const initialThreadId = searchParams.get("thread");
   const me = useMe();
   const [access, setAccess] = React.useState<CollabAccess | null | "notfound" | "loading">(
     "loading",
   );
   const [status, setStatus] = React.useState<CollabStatus>("connecting");
   const [synced, setSynced] = React.useState(false);
-  const [chatOpen, setChatOpen] = React.useState(false);
+  // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため）。
+  const [chatOpen, setChatOpen] = React.useState(Boolean(initialThreadId));
   // ヘッダスロットへ渡す安定参照（毎レンダーの再注入を避ける）。
   const toggleChat = React.useCallback(() => setChatOpen((v) => !v), []);
 
@@ -84,10 +105,23 @@ export default function NotePage() {
     );
   }
   if (access === "notfound" || access === null) {
+    // ノート由来履歴（?thread=）から来てノートが読めない（削除/権限剥奪）場合でも、会話自体が
+    // 閲覧可能なら通常のチャットへ辿れるようにする（履歴からの導線を失わせない・#282）。
     return (
       <EmptyState
         title="ノートが見つかりません"
         description="削除されたか、アクセス権がありません。"
+        action={
+          initialThreadId ? (
+            <Link
+              href={`/c/${initialThreadId}`}
+              className="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <MessageSquare className="size-4" aria-hidden />
+              この会話をチャットで開く
+            </Link>
+          ) : undefined
+        }
       />
     );
   }
@@ -156,8 +190,10 @@ export default function NotePage() {
             <div className="min-h-0 flex-1">
               <NoteChatPanel
                 meta={session.doc.getMap("meta")}
+                noteId={nodeId}
                 noteName={access.name}
                 editable={editable}
+                initialThreadId={initialThreadId}
               />
             </div>
           </FadeSlide>

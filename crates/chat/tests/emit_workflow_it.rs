@@ -234,7 +234,10 @@ async fn valid_ir_is_saved_and_workflow_ref_streamed_and_persisted() {
     let tenant = format!("t-{}", Uuid::new_v4());
     let (store, workflows) = spawn_worker(&pool).await;
     let c = ctx(&tenant);
-    let thread = store.create_thread(&c, "t", true, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "t", true, None, None)
+        .await
+        .unwrap();
 
     let name = format!("emitwf-{}", Uuid::new_v4().simple());
     let (asst_id, events) = run_to_done(&store, &c, thread.id, &format!("emitwf:ok {name}")).await;
@@ -281,7 +284,10 @@ async fn invalid_ir_is_rejected_with_all_errors_and_not_saved() {
     let tenant = format!("t-{}", Uuid::new_v4());
     let (store, _workflows) = spawn_worker(&pool).await;
     let c = ctx(&tenant);
-    let thread = store.create_thread(&c, "t", true, None).await.unwrap();
+    let thread = store
+        .create_thread(&c, "t", true, None, None)
+        .await
+        .unwrap();
 
     let name = format!("emitwf-bad-{}", Uuid::new_v4().simple());
     let (asst_id, events) = run_to_done(&store, &c, thread.id, &format!("emitwf:bad {name}")).await;

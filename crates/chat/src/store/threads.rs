@@ -22,6 +22,8 @@ struct ThreadRow {
     skill_version: Option<i64>,
     mini_app_id: Option<Uuid>,
     mini_app_version: Option<i64>,
+    origin_note_id: Option<Uuid>,
+    origin_note_name: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -36,10 +38,19 @@ impl ThreadRow {
             skill_version: self.skill_version,
             mini_app_id: self.mini_app_id,
             mini_app_version: self.mini_app_version,
+            origin_note_id: self.origin_note_id,
+            origin_note_name: self.origin_note_name,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
     }
+}
+
+/// スレッドの由来ノート（ノートの分割ビューから作られたスレッド・issue #282）。
+#[derive(Debug, Clone)]
+pub struct ThreadOrigin {
+    pub note_id: Uuid,
+    pub note_name: String,
 }
 
 /// message 行。
@@ -60,6 +71,7 @@ impl ChatStore {
         ctx: &AuthContext,
         title: &str,
         agent_mode: bool,
+        origin: Option<ThreadOrigin>,
         trace_id: Option<&str>,
     ) -> Result<Thread, ChatError> {
         let id = Uuid::new_v4();
@@ -71,10 +83,14 @@ impl ChatStore {
                 t
             }
         };
+        let (origin_note_id, origin_note_name) = match &origin {
+            Some(o) => (Some(o.note_id), Some(o.note_name.as_str())),
+            None => (None, None),
+        };
         let row: ThreadRow = sqlx::query_as(
-            "INSERT INTO thread (id, org, tenant_id, owner, title, agent_mode) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
-             RETURNING id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, created_at, updated_at",
+            "INSERT INTO thread (id, org, tenant_id, owner, title, agent_mode, origin_note_id, origin_note_name) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+             RETURNING id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at",
         )
         .bind(id)
         .bind(&ctx.org)
@@ -82,6 +98,8 @@ impl ChatStore {
         .bind(&ctx.principal.id)
         .bind(title)
         .bind(agent_mode)
+        .bind(origin_note_id)
+        .bind(origin_note_name)
         .fetch_one(&self.db)
         .await
         .map_err(map_db)?;
@@ -109,7 +127,7 @@ impl ChatStore {
                     object_id: &id.to_string(),
                     decision: Decision::Allow,
                     trace_id,
-                    metadata: json!({ "agent_mode": agent_mode }),
+                    metadata: json!({ "agent_mode": agent_mode, "origin_note_id": origin_note_id }),
                 },
             )
             .await
@@ -168,19 +186,76 @@ impl ChatStore {
         Ok(())
     }
 
+    /// スレッドの由来ノートを（後付けで）設定する（下書き確定→ノート実体化の紐付け・issue #282）。
+    ///
+    /// チャットで作った下書きを「ドライブに保存」したとき、その会話を新しく実体化したノートへ
+    /// 紐付けて「ノート由来」にする。owner のみ（自分の会話の紐付け）。ノートの存在/閲覧可否は
+    /// API 層が**発話ユーザーの viewer 権限**で検証してから呼ぶこと（見えないノートに紐づけない）。
+    pub async fn set_thread_origin_note(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        note_id: Uuid,
+        note_name: &str,
+        trace_id: Option<&str>,
+    ) -> Result<(), ChatError> {
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Owner,
+            "thread.set_origin",
+            trace_id,
+        )
+        .await?;
+        let updated = sqlx::query(
+            "UPDATE thread SET origin_note_id = $3, origin_note_name = $4, updated_at = now() \
+             WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(thread_id)
+        .bind(&ctx.tenant_id)
+        .bind(note_id)
+        .bind(note_name)
+        .execute(&self.db)
+        .await
+        .map_err(map_db)?;
+        if updated.rows_affected() == 0 {
+            return Err(ChatError::NotFound);
+        }
+        self.audit
+            .record(
+                ctx,
+                AuditEntry {
+                    action: "thread.set_origin",
+                    object_type: "thread",
+                    object_id: &thread_id.to_string(),
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: json!({ "origin_note_id": note_id.to_string() }),
+                },
+            )
+            .await
+            .map_err(map_storage)?;
+        Ok(())
+    }
+
     /// 自分が owner のスレッド一覧（更新日降順・keyset ページング）。
+    ///
+    /// `origin_note_id` を渡すと当該ノート由来のスレッドのみに絞る（ノート側の会話一覧・issue #282）。
+    /// 未指定（None）はサイドバー履歴の全件（現行挙動）。
     pub async fn list_threads(
         &self,
         ctx: &AuthContext,
         before_updated_at: Option<DateTime<Utc>>,
         before_id: Option<Uuid>,
+        origin_note_id: Option<Uuid>,
         limit: i64,
     ) -> Result<Vec<Thread>, ChatError> {
         let limit = limit.clamp(1, 100);
         let rows: Vec<ThreadRow> = sqlx::query_as(
-            "SELECT id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, created_at, updated_at FROM thread \
+            "SELECT id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at FROM thread \
              WHERE tenant_id = $1 AND org = $2 AND owner = $3 AND deleted_at IS NULL \
                AND ($4::timestamptz IS NULL OR (updated_at, id) < ($4::timestamptz, $5)) \
+               AND ($7::uuid IS NULL OR origin_note_id = $7) \
              ORDER BY updated_at DESC, id DESC LIMIT $6",
         )
         .bind(&ctx.tenant_id)
@@ -189,6 +264,7 @@ impl ChatStore {
         .bind(before_updated_at)
         .bind(before_id)
         .bind(limit)
+        .bind(origin_note_id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -205,7 +281,7 @@ impl ChatStore {
         self.require_thread(ctx, thread_id, Relation::Viewer, "thread.get", trace_id)
             .await?;
         let row: Option<ThreadRow> = sqlx::query_as(
-            "SELECT id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, created_at, updated_at FROM thread \
+            "SELECT id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at FROM thread \
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
         )
         .bind(thread_id)
