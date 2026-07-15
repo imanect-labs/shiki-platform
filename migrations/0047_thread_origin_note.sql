@@ -14,5 +14,12 @@
 alter table thread add column if not exists origin_note_id uuid;
 alter table thread add column if not exists origin_note_name text;
 
--- ノート側の会話一覧引き（テナント内・当該ノート・未削除・更新日降順）を効かせる index は、
--- transaction 内 CREATE INDEX が thread への書込を止めるため、次の 0048 で CONCURRENTLY に分ける。
+-- ノート側の会話一覧引き（テナント内・当該ノート・未削除・更新日降順）を効かせる。
+-- 注: CodeRabbit は CONCURRENTLY を提案したが、本リポジトリの CI（Coverage ジョブ）は DB IT を
+-- バイナリ跨ぎで**並列**に同一 DB へ流し各々 `sqlx::migrate!` を走らせるため、no-transaction な
+-- CREATE INDEX CONCURRENTLY は他バイナリの transaction と advisory lock で**デッドロック**する。
+-- transaction 内の通常 CREATE INDEX は migrator の advisory lock で直列化され安全。thread は
+-- 小さく index 構築の書込ロックは一瞬なので、ここでは通常の CREATE INDEX を採る。
+create index if not exists thread_origin_note_idx
+    on thread (tenant_id, org, origin_note_id, updated_at desc)
+    where origin_note_id is not null and deleted_at is null;
