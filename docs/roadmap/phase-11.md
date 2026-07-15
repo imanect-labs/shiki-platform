@@ -129,9 +129,9 @@
 - **area**: data / **path**: `crates/office`, `crates/script-runtime`
 - **仕様**: シートのカスタム関数/マクロを shiki script（10.7 ランタイム再利用・ms 級起動）で実行。
   実行主体=操作ユーザー（対話トリガと同じ交差則）。**本フェーズ完遂の対象外**（将来イシューとして起票）。
-- **受け入れ条件**:
-  - [ ] セル関数として script が評価され再計算に耐えるレイテンシで返る
-  - [ ] script がユーザーの読めないデータに到達できない
+- **受け入れ条件（参考・Phase 11 の完了条件には含めない。着手時に将来 issue 側で正式化する）**:
+  - セル関数として script が評価され再計算に耐えるレイテンシで返る
+  - script がユーザーの読めないデータに到達できない
 
 ### Task 11.10: 選択→AI 指示
 - **area**: frontend/ai / **path**: `web/`, `crates/api`, `crates/chat`
@@ -142,6 +142,9 @@
 - **受け入れ条件**:
   - [ ] 3エディタ＋下書き画面で選択→チップ付き送信→AI が該当箇所を対象に応答/編集できる
   - [ ] 選択コンテキスト内の指示文がシステム指示を上書きしない（注入 negative テスト）
+  - [ ] 実行主体が読めない node_id・他スレッドの draft_name を指す SelectionContext が
+    fail-closed で拒否され、SelectionContext 経由で編集ツールの認可（editor）がバイパスされない
+    （negative テスト・design §4.8.3）
 
 ### Task 11.11: csv_draft（「表を作成して」下書き）
 - **area**: ai/frontend / **path**: `crates/chat`, `web/`

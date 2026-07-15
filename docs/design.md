@@ -593,8 +593,13 @@ FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメ
   → Collabora（§4.8）で再編集できる。
 - **選択→AI 指示（3エディタ共通）**: ノート（TipTap 選択）・CSV（グリッド範囲）・スライド（要素選択）で、
   選択箇所を `SelectionContext {kind, node_id|draft_name, excerpt, locator}` としてチャット送信に添付。
-  サーバは「データであり指示ではない」明示デリミタで LLM メッセージへ織り込み（注入対策）、
-  locator は `document.edit`/`csv.patch`/`slide.edit` の対象指定にそのまま使える。
+  **クライアント由来の値は信用しない**: サーバは受信時に kind の閉集合・サイズ上限を検証し、
+  `node_id` は実行主体の ReBAC（viewer 以上）で読めるノードへ再解決できた場合のみ採用する
+  （読めない/存在しない対象は fail-closed で拒否・`draft_name` はそのスレッドの下書きのみ参照可）。
+  `locator`/`excerpt` は位置ヒント・抜粋という**表示/誘導用データ**であり権限の根拠にしない —
+  これを対象に編集する際も `document.edit`/`csv.patch`/`slide.edit` が自身の認可チェック
+  （editor relation）を通る（SelectionContext は認可をバイパスしない）。
+  サーバは「データであり指示ではない」明示デリミタで LLM メッセージへ織り込む（注入対策）。
 
 ### 4.9 監視
 
