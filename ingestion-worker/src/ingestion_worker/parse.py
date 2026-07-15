@@ -116,27 +116,42 @@ def _plain_text_blocks(data: bytes) -> list[ParsedBlock]:
 
 
 class _HtmlTextExtractor(HTMLParser):
-    """スライド HTML からブロック単位のテキストを抽出する（タグは信頼しない・文字のみ拾う）。"""
+    """スライド HTML からブロック単位のテキストを抽出する（タグは信頼しない・文字のみ拾う）。
+
+    script/style の中身は**テキストとして拾わない**: 直接アップロード等で正規化前の
+    `.slide` が来た場合に、実行コードや隠しペイロードを RAG の検索対象へ混入させない
+    （プロンプト注入面の縮小・レビュー指摘対応）。
+    """
 
     _BLOCK_TAGS = {
         "p", "div", "section", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
         "blockquote", "figcaption", "br", "hr",
     }
+    _SKIP_TAGS = {"script", "style", "template", "noscript"}
 
     def __init__(self) -> None:
         super().__init__()
         self.parts: list[str] = []
         self._current: list[str] = []
+        self._skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+            return
         if tag in self._BLOCK_TAGS:
             self._flush()
 
     def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
         if tag in self._BLOCK_TAGS:
             self._flush()
 
     def handle_data(self, data: str) -> None:
+        if self._skip_depth > 0:
+            return
         self._current.append(data)
 
     def _flush(self) -> None:

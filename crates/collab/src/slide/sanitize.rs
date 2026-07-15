@@ -170,9 +170,22 @@ fn filter_attribute<'v>(element: &str, attribute: &str, value: &'v str) -> Optio
 }
 
 /// インライン style の安全判定（`url()` は data: のみ・レガシー実行ベクタ拒否）。
+///
+/// fail-closed の原則: 判定を騙せる余地のある構文は**値ごと**落とす。
+/// - `\` を含む値は全拒否（CSS エスケープ `u\72l(...)` による関数名難読化を構造的に遮断）
+/// - `://` を含む値は全拒否（url() 以外の関数＝`image-set("https://…")` 等への
+///   文字列 URL 密輸を遮断。data: URL には `://` が現れないため誤爆しない）
+/// - `image-set(`/`src(` は URL を取り得る関数のため全拒否
 fn style_is_safe(value: &str) -> bool {
     let lower = value.to_lowercase();
-    if lower.contains("expression(") || lower.contains("-moz-binding") || lower.contains('<') {
+    if lower.contains('\\')
+        || lower.contains("://")
+        || lower.contains('<')
+        || lower.contains("expression(")
+        || lower.contains("-moz-binding")
+        || lower.contains("image-set(")
+        || lower.contains("src(")
+    {
         return false;
     }
     // すべての url( ... ) の中身が data: で始まることを確認する（引用符・空白は剥がす）。
@@ -255,6 +268,19 @@ mod tests {
         let clean = sanitize_html(dirty);
         assert!(!clean.contains("evil"));
         assert!(clean.contains("<p>ok</p>"));
+    }
+
+    #[test]
+    fn cssエスケープ難読化と文字列url密輸を拒否する() {
+        // CSS エスケープで url( を難読化（u\72l = url）。
+        let escaped = r#"<div style="background-image:u\72l(https://evil/p.png)">x</div>"#;
+        assert!(!sanitize_html(escaped).contains("style="));
+        // image-set への文字列 URL 密輸。
+        let image_set = r#"<div style='background:image-set("https://evil/p.png" 1x)'>x</div>"#;
+        assert!(!sanitize_html(image_set).contains("style="));
+        // :// を含む値は関数を問わず拒否。
+        let smuggle = r#"<div style="--x:'https://evil'">x</div>"#;
+        assert!(!sanitize_html(smuggle).contains("style="));
     }
 
     #[test]

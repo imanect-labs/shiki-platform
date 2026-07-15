@@ -70,8 +70,17 @@ impl SlideDoc {
     }
 
     /// JSON からパースする（未知キーは無視・欠損はデフォルト・不正 JSON は Err）。
+    ///
+    /// **未知の version は fail-closed で Err**: 将来形式のファイルを v1 として読み
+    /// 「空デッキとして取り込み→保存で上書き」のデータ喪失を防ぐ（レビュー指摘対応）。
     pub fn from_json(src: &str) -> Result<SlideDoc, serde_json::Error> {
         let json: SlideDocJson = serde_json::from_str(src)?;
+        if json.version != SLIDE_DOC_VERSION {
+            return Err(serde::de::Error::custom(format!(
+                "未対応のスライド形式バージョンです: {}（対応: {SLIDE_DOC_VERSION}）",
+                json.version
+            )));
+        }
         Ok(SlideDoc {
             meta: meta_from_json(&json.meta),
             slides: json.slides,
@@ -165,5 +174,15 @@ mod tests {
     #[test]
     fn 不正jsonはエラー() {
         assert!(SlideDoc::from_json("{not json").is_err());
+    }
+
+    #[test]
+    fn 未知バージョンはfail_closed() {
+        // 将来形式を v1 として読み「空デッキ→保存で上書き」する事故を防ぐ。
+        assert!(SlideDoc::from_json(r#"{"version":2,"slides":[]}"#).is_err());
+        assert!(
+            SlideDoc::from_json(r#"{"slides":[]}"#).is_err(),
+            "version 欠損も拒否"
+        );
     }
 }
