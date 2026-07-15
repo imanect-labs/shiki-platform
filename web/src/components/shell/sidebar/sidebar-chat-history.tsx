@@ -79,7 +79,18 @@ function ThreadRow({ thread, active }: { thread: Thread; active: boolean }) {
 }
 
 /// サイドバー中段のチャット履歴。backend のスレッドを日付グループで表示する。
+///
+/// `useSearchParams`（ノート由来行の active 判定に使用）を含むため Suspense 境界でラップする
+/// （静的プリレンダされる (auth) ページ /apps 等で CSR bailout を起こさない・#282）。
 export function SidebarChatHistory({ collapsed }: { collapsed: boolean }) {
+  return (
+    <React.Suspense fallback={<div className="min-h-0 flex-1" aria-hidden />}>
+      <SidebarChatHistoryInner collapsed={collapsed} />
+    </React.Suspense>
+  );
+}
+
+function SidebarChatHistoryInner({ collapsed }: { collapsed: boolean }) {
   const { threads, loading } = useThreadsState();
   const pathname = usePathname();
   // ノート由来行は `/notes/{noteId}?thread={id}` へ張るため、active 判定は thread クエリまで見る
