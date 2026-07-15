@@ -37,7 +37,7 @@
 ### Task 11.1: スライド doc 種＋閲覧ビュー
 - **area**: storage/frontend / **path**: `crates/collab`, `crates/api`, `web/`, `ingestion-worker/`
 - **仕様**: `crates/collab` の doc 種判定（`.md` 拡張子分岐）を `DocKind` 閉集合へ一般化し、
-  `.slide`（MIME `application/vnd.shiki.slide+json`）を追加。真実=Yjs（`Map "slide_meta"`＋`Array "slides"`、
+  `.slide`（MIME `application/vnd.shiki.slide+json`）を追加。真実=Yjs（`Map "meta"`（ノートと共用）＋`Array "slides"`、
   各スライド=`Map {id, html: Y.Text, notes: Y.Text, bg}`）。保存時に正規化 JSON へシリアライズ→
   `update_file_content_internal`（版/監査/outbox/RAG 既存経路）。**書込全経路で ammonia サニタイズ**
   （PIT-40 の第1層）。parse.py に `.slide` ハンドラ（スライド順 HTML 連結→既存 html パス）。

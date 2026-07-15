@@ -563,7 +563,8 @@ FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメ
   `{version, meta, slides[{id, html, notes, bg}]}` へシリアライズし StorageService へ
   （→書込イベント→RAG 再索引。RAG はスライド順の HTML 連結を既存 html パスでパース）。
   外部書込（fs_write 等）はノートと同じ**単方向インポート**規約。
-- **Yjs 構造**: `Map "slide_meta"`（title/theme_id/thread_id/任意 kv）＋ `Array "slides"`
+- **Yjs 構造**: `Map "meta"`（title/theme_id/thread_id/任意 kv・**ノートと同一マップ名/型を共用** —
+  メタデータパネル・アシスタントパネルのフロント実装を共通化するため）＋ `Array "slides"`
   （要素= `Map {id, html: Y.Text, notes: Y.Text, bg}`）。スライドの増減・並べ替えは Y.Array で収束し、
   同一スライド内の並行編集は Y.Text の文字粒度マージ＋取り込み時 DOMParser 正規化で自己修復（PIT-41）。
 - **エディタ = GrapesJS core を別オリジン砂箱で**: コンテンツモデルは**自由 HTML 許可**。
