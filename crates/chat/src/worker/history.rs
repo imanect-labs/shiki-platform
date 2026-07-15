@@ -56,3 +56,42 @@ pub(super) fn message_preview(m: &LlmMessage) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::message_text;
+    use crate::model::ContentBlock;
+
+    /// 追編集に要る参照（添付/ワークフロー/保存済みノート/下書き）が観測テキストへ載る。
+    #[test]
+    fn message_text_surfaces_refs_and_draft_name_for_refine() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "本文".into(),
+            },
+            ContentBlock::FileRef {
+                node_id: "n".into(),
+                name: "a.pdf".into(),
+            },
+            ContentBlock::WorkflowRef {
+                workflow: serde_json::json!({ "id": "w1", "name": "flow", "version": 2 }),
+            },
+            ContentBlock::NoteRef {
+                note: serde_json::json!({ "id": "no1", "name": "議事録" }),
+            },
+            ContentBlock::NoteDraft {
+                draft: serde_json::json!({ "name": "予算計画", "markdown": "# 予算" }),
+            },
+        ];
+        let out = message_text(&blocks);
+        assert!(out.contains("本文"));
+        assert!(out.contains("[添付: a.pdf]"));
+        assert!(out.contains("workflow_id: w1") && out.contains("v2"));
+        assert!(out.contains("node_id: no1"));
+        // refine で同名再利用を誘導するため、下書き名が観測テキストに載ること（#282）。
+        assert!(
+            out.contains("予算計画") && out.contains("save_note"),
+            "下書き名と誘導が載る: {out}"
+        );
+    }
+}
