@@ -9,7 +9,9 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stderr
+    clippy::print_stderr,
+    // 3 経路（既定/new_under/existing）を単一 worker に集約する e2e のため長い（jobq 相乗り回避）。
+    clippy::too_many_lines
 )]
 
 use std::sync::Arc;
