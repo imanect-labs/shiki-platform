@@ -38,8 +38,16 @@ function renderBlocks(blocks: PMNode[]): string {
 /// 1 ブロックを描画する（複数行・末尾改行なし）。
 function renderBlock(node: PMNode): string {
   switch (node.type.name) {
-    case "paragraph":
-      return renderInlineChildren(node);
+    case "paragraph": {
+      // 段落の先頭行がブロック記法（見出し #・箇条書き -/+・番号 1.）に一致すると、
+      // 素テキストで貼り戻したとき別ブロックに再解釈される。先頭行だけエスケープして
+      // 往復で意味が変わらないようにする（継続行は同一段落に属するので対象外）。
+      const rendered = renderInlineChildren(node);
+      const nl = rendered.indexOf("\n");
+      return nl === -1
+        ? escapeBlockStart(rendered)
+        : escapeBlockStart(rendered.slice(0, nl)) + rendered.slice(nl);
+    }
     case "heading": {
       const level = clampLevel(node.attrs.level);
       return `${"#".repeat(level)} ${renderInlineChildren(node)}`;
@@ -153,9 +161,18 @@ function firstTextblock(cell: PMNode): PMNode | null {
 }
 
 /// コード/埋め込みフェンスを描画する（末尾改行を正規化）。
+/// フェンス長は内容中の最長バックティック連長 +1（最小 3）に追従させ、内容が ``` 行を
+/// 含んでも早期終端しないようにする（往復安定）。
 function renderFence(lang: string, code: string): string {
   const body = code.endsWith("\n") || code.length === 0 ? code : `${code}\n`;
-  return `\`\`\`${lang}\n${body}\`\`\``;
+  const fence = "`".repeat(Math.max(3, longestBacktickRun(code) + 1));
+  return `${fence}${lang}\n${body}${fence}`;
+}
+
+/// 文字列中の連続バックティックの最長長を返す。
+function longestBacktickRun(s: string): number {
+  const runs = s.match(/`+/g);
+  return runs ? Math.max(...runs.map((r) => r.length)) : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +229,23 @@ function renderCodeSpan(text: string): string {
 /// インライン特殊文字のバックスラッシュエスケープ（Rust `escape_inline` と一致）。
 function escapeInline(text: string): string {
   return text.replace(/[\\`*_[\]<>~|]/g, (c) => `\\${c}`);
+}
+
+/// 段落先頭行のブロック記法をエスケープする（`escapeInline` 済みの文字列に適用）。
+/// `*`/`>`/`` ` `` は `escapeInline` で既にエスケープ済みなので、残る `#`・`-`・`+`・
+/// 番号付きリスト（`1.`/`1)`）だけを対象にする。
+function escapeBlockStart(line: string): string {
+  const marker = /^(\s*)([#\-+])(\s|$)/.exec(line);
+  if (marker) {
+    return `${marker[1]}\\${line.slice(marker[1].length)}`;
+  }
+  const ordered = /^(\s*)(\d{1,9})([.)])(\s|$)/.exec(line);
+  if (ordered) {
+    // 区切り記号（`.`/`)`）の直前に `\` を入れて番号付きリスト化を断つ（`1\. …`）。
+    const head = `${ordered[1]}${ordered[2]}`;
+    return `${head}\\${line.slice(head.length)}`;
+  }
+  return line;
 }
 
 /// リンク先: 空白・括弧を含む URL は <> で包む（Rust `escape_link_dest`）。

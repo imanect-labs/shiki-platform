@@ -136,6 +136,33 @@ test("コピー=Markdown・素 md ペースト=ブロック変換・往復", asy
   await expect(editor3.locator("pre", { hasText: "const x = 1;" })).toBeVisible();
 });
 
+test("コピー: 段落先頭のブロック記法をエスケープする（往復で見出し化しない）", async ({ page }) => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await loginViaKeycloak(page);
+  await page.goto("/drive");
+  const nodeId = await createNoteViaApi(page, uniqueName("md-escape"));
+  await openNote(page, nodeId);
+
+  const editor = editorLocator(page);
+  await editor.click();
+  // 入力規則を回避して「# 」始まりの段落を作る（insertContent は文字列を text として挿入）。
+  await page.evaluate(() => {
+    const ed = (window as unknown as { __shikiNoteEditor?: { chain: () => any } }).__shikiNoteEditor;
+    ed?.chain().focus().insertContent("# これは見出しではない段落").run();
+  });
+  await expect(editor.locator("p", { hasText: "これは見出しではない段落" })).toBeVisible({
+    timeout: 15_000,
+  });
+  // エディタ上では段落のまま（見出しになっていない）。
+  await expect(editor.locator("h1")).toHaveCount(0);
+
+  // コピー結果は先頭 # がエスケープされている（外部 md でも見出しに化けない）。
+  await editor.press("ControlOrMeta+a");
+  await editor.press("ControlOrMeta+c");
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain("\\# これは見出しではない段落");
+});
+
 test("ペースト安全性: shiki-embed フェンスは埋め込み化しない（confused-deputy 回避）", async ({
   page,
 }) => {
@@ -158,4 +185,35 @@ test("ペースト安全性: shiki-embed フェンスは埋め込み化しない
   await expect(editor.locator("pre", { hasText: "kind" })).toBeVisible({ timeout: 15_000 });
   // iframe 要素は描画されない。
   await expect(editor.locator("iframe")).toHaveCount(0);
+
+  // language も無害化されている（"shiki-embed" のまま保存すると再読込で埋め込みへ
+  // 昇格する confused-deputy を断つ）。エディタ JSON にコードブロックが shiki-embed
+  // 言語で残っていないことを確認する。
+  const hasReservedLang = await page.evaluate(() => {
+    const editor = (
+      window as unknown as { __shikiNoteEditor?: { getJSON: () => unknown } }
+    ).__shikiNoteEditor;
+    const json = JSON.stringify(editor?.getJSON() ?? {});
+    return json.includes('"language":"shiki-embed"');
+  });
+  expect(hasReservedLang).toBe(false);
+});
+
+test("ペースト安全性: 危険スキームのリンクはリンク化しない（javascript:）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await page.goto("/drive");
+  const nodeId = await createNoteViaApi(page, uniqueName("md-link-safe"));
+  await openNote(page, nodeId);
+  await editorLocator(page).click();
+
+  // 見出しを含めてブロック解析経路を通しつつ、危険スキームのリンクを貼る。
+  await pastePlainMarkdown(page, "# リンク検証\n\n[クリック](javascript:alert(1)) と [安全](https://example.com)\n");
+
+  const editor = editorLocator(page);
+  await expect(editor.locator("h1", { hasText: "リンク検証" })).toBeVisible({ timeout: 15_000 });
+  // javascript: リンクは <a> 化されない（テキストは残る）。
+  await expect(editor.locator('a[href^="javascript"]')).toHaveCount(0);
+  await expect(editor.getByText("クリック")).toBeVisible();
+  // 安全な https リンクはリンクとして残る。
+  await expect(editor.locator('a[href="https://example.com"]')).toHaveCount(1);
 });

@@ -530,6 +530,7 @@
      選択・コピーには含まれず、レイアウトも押し広げない。 */
   .note-prose .note-md-marker {
     @apply font-normal text-muted-foreground/45;
+
     font-family: var(--font-mono, ui-monospace, monospace);
     user-select: none;
     pointer-events: none;

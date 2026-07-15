@@ -126,9 +126,16 @@ function blockTokenToNode(tok: Tok): PmJson | PmJson[] | null {
   }
 }
 
+/// md 埋め込みフェンスの予約語（Rust `ast.rs` の `EMBED_FENCE_LANG` と対）。
+const RESERVED_EMBED_LANG = "shiki-embed";
+
 /// コードフェンス。```shiki-embed は昇格せず通常コードブロックに落とす（confused-deputy 回避）。
 function codeBlockNode(tok: Tok): PmJson {
-  const lang = firstWord(tok.lang ?? "");
+  let lang = firstWord(tok.lang ?? "");
+  // 予約語 shiki-embed をそのまま残すと、保存 md を Rust `md_parse.rs` が再読込した
+  // 際に `Block::Embed` へ昇格し、任意ペーストが実埋め込みになる（confused-deputy）。
+  // language を無害化して昇格経路を断つ（ペイロードは inert なコードとして残す）。
+  if (lang === RESERVED_EMBED_LANG) lang = "";
   return codeBlock(lang, tok.text ?? "");
 }
 
@@ -244,13 +251,28 @@ function pushInline(out: PmJson[], tok: Tok, marks: MarkJson[]): void {
     case "del":
       recurseInline(out, tok, marks, { type: "strike" });
       break;
-    case "codespan":
-      // コードは排他マーク（他マークは付けない・md の意味論）。
-      pushText(out, decodeEntities(tok.text ?? ""), [{ type: "code" }]);
+    case "codespan": {
+      // コードは bold/italic/strike と排他（md の意味論）だが、外側の link は保持する
+      // （Rust `render_marked_text` と一致・`[`code`](url)` でリンクが消えないように）。
+      const link = marks.find((m) => m.type === "link");
+      pushText(out, decodeEntities(tok.text ?? ""), link ? [link, { type: "code" }] : [{ type: "code" }]);
       break;
-    case "link":
-      recurseInline(out, tok, marks, { type: "link", attrs: { href: tok.href ?? "" } });
+    }
+    case "link": {
+      // 危険スキーム（javascript:/data: 等）は Link 拡張の scheme ガードを迂回して
+      // 実行可能リンクになりうるため、ここで検証してリンク化しない（テキストは残す）。
+      const safe = safeLinkHref(tok.href ?? "");
+      if (safe === null) {
+        if (tok.tokens && tok.tokens.length > 0) {
+          for (const c of tok.tokens) pushInline(out, c, marks);
+        } else {
+          pushText(out, decodeEntities(tok.text ?? ""), marks);
+        }
+      } else {
+        recurseInline(out, tok, marks, { type: "link", attrs: { href: safe } });
+      }
       break;
+    }
     case "br":
       out.push({ type: "hardBreak" });
       break;
@@ -301,6 +323,15 @@ function decodeEntities(s: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'");
+}
+
+/// リンク先を安全なスキームだけ許可する（note-editor の Link 拡張の protocols と一致）。
+/// http/https/mailto と、スキームを持たない相対/アンカーのみ許可。危険スキームは null。
+function safeLinkHref(href: string): string | null {
+  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(href);
+  if (!m) return href; // スキーム無し（相対・#anchor）は許可。
+  const scheme = m[1].toLowerCase();
+  return scheme === "http" || scheme === "https" || scheme === "mailto" ? href : null;
 }
 
 function firstWord(s: string): string {

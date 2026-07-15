@@ -32,7 +32,16 @@ export const MarkdownClipboard = Extension.create({
         key: new PluginKey("markdownClipboard"),
         props: {
           // A: コピー時の text/plain を正規化 Markdown にする（text/html は既定のまま）。
-          clipboardTextSerializer: (slice) => serializeFragment(slice.content),
+          // ただし両端が途中で切れた部分選択（コードブロック内の語・リスト項目内の
+          // 語など）はブロック記法を捏造せず素テキストに落とす（部分コピーを壊さない）。
+          clipboardTextSerializer: (slice) => {
+            if (slice.openStart > 0 && slice.openEnd > 0) {
+              return slice.content.textBetween(0, slice.content.size, "\n\n", (leaf) =>
+                leaf.type.name === "hardBreak" ? "\n" : "",
+              );
+            }
+            return serializeFragment(slice.content);
+          },
 
           // B: 素テキストのブロック Markdown をブロックノードへ変換する。
           handlePaste: (view, event) => {
