@@ -207,11 +207,17 @@ test("ペースト安全性: 危険スキームのリンクはリンク化しな
   await editorLocator(page).click();
 
   // 見出しを含めてブロック解析経路を通しつつ、危険スキームのリンクを貼る。
-  await pastePlainMarkdown(page, "# リンク検証\n\n[クリック](javascript:alert(1)) と [安全](https://example.com)\n");
+  // 制御文字（タブ）で難読化した javascript: も含める。
+  await pastePlainMarkdown(
+    page,
+    "# リンク検証\n\n[クリック](javascript:alert(1)) と [難読](java\tscript:alert(1)) と [安全](https://example.com)\n",
+  );
 
   const editor = editorLocator(page);
   await expect(editor.locator("h1", { hasText: "リンク検証" })).toBeVisible({ timeout: 15_000 });
-  // javascript: リンクは <a> 化されない（テキストは残る）。
+  // 危険リンクは <a>（どんな href でも）にならない＝リンク化されない（テキストは残る）。
+  await expect(editor.locator("a", { hasText: "クリック" })).toHaveCount(0);
+  await expect(editor.locator("a", { hasText: "難読" })).toHaveCount(0);
   await expect(editor.locator('a[href^="javascript"]')).toHaveCount(0);
   await expect(editor.getByText("クリック")).toBeVisible();
   // 安全な https リンクはリンクとして残る。

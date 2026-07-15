@@ -327,11 +327,22 @@ function decodeEntities(s: string): string {
 
 /// リンク先を安全なスキームだけ許可する（note-editor の Link 拡張の protocols と一致）。
 /// http/https/mailto と、スキームを持たない相対/アンカーのみ許可。危険スキームは null。
+///
+/// ブラウザは URL 評価前に TAB/改行などの制御文字を除去するため、`java\tscript:` の
+/// ような難読化は素の正規表現をすり抜ける。判定前に制御文字を除去し、正規化後の
+/// href を返す（受理経路にも制御文字を残さない）。
 function safeLinkHref(href: string): string | null {
-  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(href);
-  if (!m) return href; // スキーム無し（相対・#anchor）は許可。
+  // C0 制御文字（TAB/改行等）・空白・DEL を除去してから判定する（`java<TAB>script:` や
+  // 先頭空白での難読化はブラウザの URL パーサに無視され実行されうるため封じる）。
+  let cleaned = "";
+  for (const ch of href) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code > 0x20 && code !== 0x7f) cleaned += ch;
+  }
+  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(cleaned);
+  if (!m) return cleaned; // スキーム無し（相対・#anchor）は許可。
   const scheme = m[1].toLowerCase();
-  return scheme === "http" || scheme === "https" || scheme === "mailto" ? href : null;
+  return scheme === "http" || scheme === "https" || scheme === "mailto" ? cleaned : null;
 }
 
 function firstWord(s: string): string {

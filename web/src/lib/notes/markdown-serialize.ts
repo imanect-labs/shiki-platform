@@ -245,6 +245,11 @@ function escapeBlockStart(line: string): string {
     const head = `${ordered[1]}${ordered[2]}`;
     return `${head}\\${line.slice(head.length)}`;
   }
+  // 水平線（`---` / `- - -` 等・ハイフンのみ。`***`/`___` は escapeInline で処理済み）。
+  const rule = /^(\s*)-[ \t-]*-[ \t-]*-[ \t-]*$/.exec(line);
+  if (rule) {
+    return `${rule[1]}\\${line.slice(rule[1].length)}`;
+  }
   return line;
 }
 
