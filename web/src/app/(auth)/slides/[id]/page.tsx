@@ -92,7 +92,11 @@ export default function SlidePage() {
       />
       <div className="min-h-0 flex-1">
         {session && synced ? (
-          <SlideWorkspace doc={session.doc} editable={editable} />
+          <SlideWorkspace
+            doc={session.doc}
+            editable={editable}
+            name={access.name.replace(/\.slide$/i, "")}
+          />
         ) : (
           <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />

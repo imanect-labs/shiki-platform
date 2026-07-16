@@ -4,10 +4,11 @@
 /// editor 権限なら GrapesJS 砂箱エディタ、viewer なら安全な閲覧フレームを出す。
 /// スライドの追加/削除/並べ替え・ノート編集は親（ここ）が Yjs へ書く。
 
-import { ChevronDown, ChevronUp, Plus, Presentation, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, FileDown, Plus, Presentation, Trash2 } from "lucide-react";
 import * as React from "react";
 import type * as Y from "yjs";
 
+import { ExportDialog } from "@/components/slides/export-dialog";
 import { PresentMode } from "@/components/slides/present-mode";
 import { SlideEditorHost } from "@/components/slides/slide-editor-host";
 import { SlideFrame } from "@/components/slides/slide-frame";
@@ -17,10 +18,20 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { addSlide, moveSlide, removeSlide, updateSlideNotes } from "@/lib/slides-doc";
 import { cn } from "@/lib/utils";
 
-export function SlideWorkspace({ doc, editable }: { doc: Y.Doc; editable: boolean }) {
+export function SlideWorkspace({
+  doc,
+  editable,
+  name = "スライド",
+}: {
+  doc: Y.Doc;
+  editable: boolean;
+  /// ファイル名（拡張子なし・pptx エクスポート名に使う）。
+  name?: string;
+}) {
   const slides = useSlides(doc);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [presenting, setPresenting] = React.useState(false);
+  const [exporting, setExporting] = React.useState(false);
   // エディタバンドル未配備（/builtin 404）時の閲覧フォールバック。
   const [editorUnavailable, setEditorUnavailable] = React.useState(false);
 
@@ -127,6 +138,17 @@ export function SlideWorkspace({ doc, editable }: { doc: Y.Doc; editable: boolea
             type="button"
             variant="outline"
             size="sm"
+            onClick={() => setExporting(true)}
+            disabled={slides.length === 0}
+            data-testid="slide-export"
+          >
+            <FileDown className="mr-1.5 size-4" aria-hidden />
+            エクスポート
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
             onClick={() => setPresenting(true)}
             disabled={slides.length === 0}
             data-testid="slide-present"
@@ -186,6 +208,9 @@ export function SlideWorkspace({ doc, editable }: { doc: Y.Doc; editable: boolea
           initialIndex={Math.max(selectedIndex, 0)}
           onClose={() => setPresenting(false)}
         />
+      ) : null}
+      {exporting ? (
+        <ExportDialog doc={doc} name={name} open={exporting} onClose={() => setExporting(false)} />
       ) : null}
     </div>
   );

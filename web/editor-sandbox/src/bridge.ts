@@ -4,15 +4,20 @@
 /// 通信は初回 handshake で親から移譲された MessagePort のみ。**親から見て砂箱発の
 /// メッセージは敵対的入力**（PIT-23 と同型）— 検証は親側（editor-bridge.ts）が行う。
 
+import type { ExportReport, ExportSlide } from "./export";
+
 /// 親 → 砂箱。
 export type HostMessage =
   | { type: "slide:load"; id: string; html: string; editable: boolean }
-  | { type: "deck:empty" };
+  | { type: "deck:empty" }
+  | { type: "export:run"; slides: ExportSlide[]; title: string };
 
 /// 砂箱 → 親。
 export type SandboxMessage =
   | { type: "ready" }
-  | { type: "slide:changed"; id: string; html: string };
+  | { type: "slide:changed"; id: string; html: string }
+  | { type: "export:done"; blob: Blob; report: ExportReport }
+  | { type: "export:error"; message: string };
 
 /// handshake: 親が `{type:"shiki:editor-port"}` と共に port を postMessage してくる。
 export function acceptPort(onMessage: (msg: HostMessage) => void): Promise<MessagePort> {
