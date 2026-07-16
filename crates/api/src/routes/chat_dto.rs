@@ -78,6 +78,10 @@ pub struct PostMessageRequest {
     pub text: String,
     #[serde(default)]
     pub attachments: Option<Vec<Attachment>>,
+    /// エディタの選択コンテキスト（選択→AI 指示・Task 11.10）。node_id は実行主体の
+    /// viewer 権限で再解決できた場合のみ受理される（fail-closed・design §4.8.3）。
+    #[serde(default)]
+    pub context: Option<chat::SelectionContext>,
     /// このメッセージのエージェントモード上書き（未指定はスレッド既定）。
     #[serde(default)]
     pub agent_mode: Option<bool>,

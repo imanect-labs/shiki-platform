@@ -55,9 +55,17 @@ export interface NoteEditorProps {
   user: { id: string; name: string };
   /// スラッシュメニューへ追加する項目（11P.5 の AI アクション・11P.6 の埋め込み）。
   extraSlashItems?: () => SlashItem[];
+  /// 選択→AI 指示（Task 11.10。未指定ならバブルメニューにボタンを出さない）。
+  onAskAi?: (selection: { text: string; headingPath: string[] }) => void;
 }
 
-export function NoteEditor({ provider, editable, user, extraSlashItems }: NoteEditorProps) {
+export function NoteEditor({
+  provider,
+  editable,
+  user,
+  extraSlashItems,
+  onAskAi,
+}: NoteEditorProps) {
   const extensions = React.useMemo(
     () => [
       StarterKit.configure({
@@ -132,7 +140,7 @@ export function NoteEditor({ provider, editable, user, extraSlashItems }: NoteEd
   return (
     <div className="note-editor-root min-h-[50vh]">
       {editor && editable ? <NoteToolbar editor={editor} /> : null}
-      {editor && editable ? <NoteBubbleMenu editor={editor} /> : null}
+      {editor && editable ? <NoteBubbleMenu editor={editor} onAskAi={onAskAi} /> : null}
       {editor && editable && <SuggestionReviewBar editor={editor} />}
       <EditorContent editor={editor} />
     </div>

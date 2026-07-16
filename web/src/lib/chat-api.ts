@@ -13,6 +13,7 @@ import * as React from "react";
 
 import { apiFetch } from "@/lib/api";
 import { newId } from "@/lib/chat-store";
+import type { SelectionContext } from "@/lib/selection-context";
 
 // ── content-block（backend chat::ContentBlock と一致）───────────────────
 
@@ -34,7 +35,8 @@ export type ContentBlock =
   | { type: "workflow_ref"; workflow: unknown }
   | { type: "note_ref"; note: unknown }
   | { type: "note_draft"; draft: unknown }
-  | { type: "file_ref"; node_id: string; name: string };
+  | { type: "file_ref"; node_id: string; name: string }
+  | { type: "selection_context"; context: SelectionContext };
 
 /// 未保存の下書きノート（save_note の下書き確定型・issue #282）。
 export type NoteDraft = { name: string; markdown: string };
@@ -470,6 +472,8 @@ export function streamMessage(
   handlers: StreamHandlers,
   agentMode?: boolean,
   autonomous?: boolean,
+  // エディタの選択コンテキスト（選択→AI 指示・Task 11.10）。
+  context?: SelectionContext,
 ): (opts?: { cancelServer?: boolean }) => void {
   let unsub: (() => void) | null = null;
   let runId: string | null = null;
@@ -478,7 +482,7 @@ export function streamMessage(
   apiFetch(`/threads/${threadId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, attachments, agent_mode: agentMode, autonomous }),
+    body: JSON.stringify({ text, attachments, context: context ?? null, agent_mode: agentMode, autonomous }),
   })
     .then(async (res) => {
       if (!res.ok) throw new Error(`送信に失敗しました (${res.status})`);

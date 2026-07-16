@@ -181,6 +181,8 @@ use utoipa::{
         chat::ContentBlock,
         chat::Citation,
         chat::Attachment,
+        chat::SelectionContext,
+        chat::SelectionKind,
         chat::Role,
         chat::RunStatus,
         chat::ThreadRole,

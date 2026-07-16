@@ -90,12 +90,16 @@ impl ChatStore {
     ///
     /// editor 権限を要求する（viewer は投稿不可）。同期実行はせず run_id を返す（202・Task 3.5）。
     #[allow(clippy::too_many_arguments)] // ctx＋thread/text/attachments/agent_mode/autonomous/trace は本質的。
+    #[allow(clippy::too_many_arguments)] // 発話の全構成要素（呼び出し元は api 1 箇所＋UI アクション）。
     pub async fn post_message(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
         text: &str,
         attachments: &[Attachment],
+        // エディタの選択コンテキスト（Task 11.10）。node_id の可読性検証は api 層の責務
+        // （storage.get_metadata の viewer 判定・監査つき）。ここでは上限の切り詰めのみ行う。
+        selection: Option<crate::model::SelectionContext>,
         agent_mode_override: Option<bool>,
         autonomous: bool,
         trace_id: Option<&str>,
@@ -125,14 +129,17 @@ impl ChatStore {
         // 自律プロファイルはエージェントモードを含意する（ツールループが前提）。
         let agent_mode = agent_mode_override.unwrap_or(thread_default) || autonomous;
 
-        // user メッセージ content: 添付（file_ref）＋text。
-        let mut user_content: Vec<ContentBlock> = attachments
-            .iter()
-            .map(|a| ContentBlock::FileRef {
-                node_id: a.node_id.clone(),
-                name: a.name.clone(),
-            })
-            .collect();
+        // user メッセージ content: 選択コンテキスト＋添付（file_ref）＋text。
+        let mut user_content: Vec<ContentBlock> = Vec::new();
+        if let Some(selection) = selection {
+            user_content.push(ContentBlock::SelectionContext {
+                context: selection.clamped(),
+            });
+        }
+        user_content.extend(attachments.iter().map(|a| ContentBlock::FileRef {
+            node_id: a.node_id.clone(),
+            name: a.name.clone(),
+        }));
         if !text.is_empty() {
             user_content.push(ContentBlock::Text {
                 text: text.to_string(),

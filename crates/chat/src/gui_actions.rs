@@ -45,7 +45,7 @@ impl ActionHandler for ChatSubmitHandler {
         }
         let result = self
             .store
-            .post_message(ctx, *thread_id, &text, &[], None, false, trace_id)
+            .post_message(ctx, *thread_id, &text, &[], None, None, false, trace_id)
             .await
             .map_err(map_chat_err)?;
         Ok(serde_json::json!({

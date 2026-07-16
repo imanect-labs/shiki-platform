@@ -275,12 +275,29 @@ pub async fn post_message(
     Json(req): Json<PostMessageRequest>,
 ) -> Result<(StatusCode, Json<PostMessageResponse>), ApiError> {
     let attachments = req.attachments.unwrap_or_default();
+    // 選択コンテキストの node_id はクライアント由来＝信用しない。実行主体の viewer 権限で
+    // 再解決できた場合のみ受理する（読めない/存在しない対象は fail-closed で 404・存在秘匿・
+    // Task 11.10・design §4.8.3）。locator/excerpt は表示・誘導用データであり権限の根拠にしない
+    // （編集ツール側が自身の editor 認可を通る＝SelectionContext は認可をバイパスしない）。
+    let selection = match req.context {
+        Some(context) => {
+            if let Some(node_id) = context.node_id {
+                state
+                    .storage
+                    .get_metadata(&ctx, node_id, trace.as_deref())
+                    .await?;
+            }
+            Some(context)
+        }
+        None => None,
+    };
     let r = chat_store(&state)?
         .post_message(
             &ctx,
             id,
             &req.text,
             &attachments,
+            selection,
             req.agent_mode,
             req.autonomous.unwrap_or(false),
             trace.as_deref(),
