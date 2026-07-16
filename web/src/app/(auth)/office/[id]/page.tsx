@@ -34,7 +34,9 @@ export default function OfficePage() {
   const fileId = params.id;
   const router = useRouter();
   const [state, setState] = React.useState<LoadState>({ phase: "loading" });
-  // Collabora の Frame_Ready まではスピナーを重ねる（白画面のちらつきを見せない）。
+  // Collabora の HTML が iframe に届くまでスピナーを重ねる（白画面のちらつきを見せない）。
+  // 解除は iframe の load（postMessage は PostMessageOrigin 不一致で届かない可能性が
+  // あるため、表示制御をそれに依存させない）。
   const [frameReady, setFrameReady] = React.useState(false);
   const iframeRef = React.useRef<HTMLIFrameElement>(null);
 
@@ -73,7 +75,6 @@ export default function OfficePage() {
       if (msg.MessageId === "App_LoadingStatus") {
         const values = msg.Values as { Status?: string } | undefined;
         if (values?.Status === "Frame_Ready") {
-          setFrameReady(true);
           iframeRef.current?.contentWindow?.postMessage(
             JSON.stringify({ MessageId: "Host_PostmessageReady" }),
             collaboraOrigin,
@@ -89,8 +90,12 @@ export default function OfficePage() {
 
   // セッション取得後、非表示 form を iframe へ POST してエディタを起動する。
   const formRef = React.useRef<HTMLFormElement>(null);
+  const formSubmittedRef = React.useRef(false);
   React.useEffect(() => {
-    if (state.phase === "ready") formRef.current?.submit();
+    if (state.phase === "ready" && !formSubmittedRef.current) {
+      formSubmittedRef.current = true;
+      formRef.current?.submit();
+    }
   }, [state]);
 
   if (state.phase === "loading") {
@@ -156,6 +161,17 @@ export default function OfficePage() {
         data-testid="office-frame"
         className="h-full w-full border-0"
         allow="clipboard-read; clipboard-write"
+        onLoad={() => {
+          // form POST の応答（Collabora 本体）が届いた時点でスピナーを外す。
+          // about:blank（挿入直後の初期 load）は同一オリジンで href が読める＝無視。
+          // Collabora 到着後はクロスオリジンで href 参照が throw する＝読み込み完了。
+          try {
+            if (iframeRef.current?.contentWindow?.location.href === "about:blank") return;
+          } catch {
+            /* クロスオリジン＝Collabora の応答が描画された */
+          }
+          setFrameReady(true);
+        }}
       />
     </div>
   );
