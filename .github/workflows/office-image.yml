@@ -1,0 +1,96 @@
+# Collabora Online 自前ビルドイメージ（Task 11.5・deploy/docker/collabora/）。
+#
+# フルソースビルドは数時間級のため PR CI では走らせない。本ワークフローが
+#   - main への deploy/docker/collabora/** 変更 push（＝ピン更新のマージ）
+#   - 手動 workflow_dispatch
+#   - 週次（上流セキュリティタグ追従漏れ・ビルド腐敗の検知）
+# でビルドし、GHCR へ push する。compose は COLLABORA_IMAGE でこのイメージを参照する。
+name: office-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/docker/collabora/**"
+      - ".github/workflows/office-image.yml"
+  workflow_dispatch:
+  schedule:
+    # 週次（月曜 18:00 UTC）。キャッシュ無しのクリーンビルドで腐敗を検知する。
+    - cron: "0 18 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: office-image
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: Collabora ソースビルド → GHCR push
+    runs-on: ubuntu-latest
+    # LibreOffice core のフルビルドを含むため長い（キャッシュ無しで 4〜5 時間を見込む）。
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: free disk space (不要プリインストール削除)
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+
+      - name: manifest 読み込み（タグ＋コミットの二重ピンが正）
+        run: |
+          set -euo pipefail
+          source deploy/docker/collabora/office-manifest.env
+          for v in CORE_REPO CORE_REF CORE_COMMIT ONLINE_REPO ONLINE_REF ONLINE_COMMIT; do
+            [ -n "${!v}" ] || { echo "manifest に $v が無い"; exit 1; }
+            echo "$v=${!v}" >> "$GITHUB_ENV"
+          done
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/docker/collabora
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest
+          build-args: |
+            CORE_REPO=${{ env.CORE_REPO }}
+            CORE_REF=${{ env.CORE_REF }}
+            CORE_COMMIT=${{ env.CORE_COMMIT }}
+            ONLINE_REPO=${{ env.ONLINE_REPO }}
+            ONLINE_REF=${{ env.ONLINE_REF }}
+            ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MPL-2.0
+            io.shiki.collabora.core=${{ env.CORE_REF }}@${{ env.CORE_COMMIT }}
+            io.shiki.collabora.online=${{ env.ONLINE_REF }}@${{ env.ONLINE_COMMIT }}
+
+      - name: smoke（discovery が取れること）
+        run: |
+          set -euo pipefail
+          docker run -d --rm --name collabora-smoke -p 127.0.0.1:19980:9980 \
+            "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
+            coolwsd --o:sys_template_path=/opt/cool/systemplate \
+              --o:child_root_path=/opt/cool/child-roots \
+              --o:lo_template_path=/opt/collaboraoffice \
+              --o:ssl.enable=false --o:ssl.termination=false
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
+              echo "discovery OK"; docker stop collabora-smoke; exit 0
+            fi
+            sleep 2
+          done
+          echo "discovery が 120 秒で応答しない"; docker logs collabora-smoke; exit 1
