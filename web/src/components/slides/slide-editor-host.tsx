@@ -52,6 +52,8 @@ export function SlideEditorHost({
   }, [doc]);
 
   // ブリッジの確立（iframe ロード後に port を移譲）。
+  // src はリスナ登録**後**にここで設定する — マウント時に src を持たせると、キャッシュ命中や
+  // 高速な 404 で load がリスナ登録前に発火し、ブリッジ未確立のまま固まるレースがある。
   React.useEffect(() => {
     const iframe = iframeRef.current;
     if (!iframe) return;
@@ -83,6 +85,7 @@ export function SlideEditorHost({
       }, READY_TIMEOUT_MS);
     };
     iframe.addEventListener("load", onLoad);
+    iframe.src = `${b1Origin()}/builtin/slide-editor`;
     return () => {
       iframe.removeEventListener("load", onLoad);
       if (readyTimer !== null) window.clearTimeout(readyTimer);
@@ -124,7 +127,6 @@ export function SlideEditorHost({
       ) : null}
       <iframe
         ref={iframeRef}
-        src={`${b1Origin()}/builtin/slide-editor`}
         title="スライドエディタ"
         // allow-same-origin は **apps オリジン（アプリ本体とは別オリジン）に対して**であり、
         // アプリの DOM/cookie には同一オリジンポリシーで到達できない。GrapesJS が自身の

@@ -10,8 +10,19 @@
 /// - キャンバスは 1280×720 固定（ビューア/pptx 計測と同一の論理キャンバス）
 /// - スクリプト実行はしない（GrapesJS 既定で component script は無効・allowScripts 未設定）
 
+import createDOMPurify from "dompurify";
 import grapesjs, { type Editor } from "grapesjs";
 import { acceptPort, type SandboxMessage } from "./bridge";
+
+/// キャンバスへロードする HTML のサニタイズ（PIT-40 第2層・共同編集の WS 直伝搬は
+/// サーバの書込サニタイズを通らないため、描画面へ入れる前にここでも落とす）。
+const purify = createDOMPurify(window);
+const sanitizeForCanvas = (html: string): string =>
+  purify.sanitize(html, {
+    FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "input", "style", "link", "meta"],
+    FORBID_ATTR: ["srcset", "formaction", "xlink:href"],
+    USE_PROFILES: { html: true, svg: true },
+  });
 
 /// ビューア（slide-frame.tsx）と揃えた基本タイポグラフィ。キャンバス内にのみ適用される。
 const CANVAS_CSS = `
@@ -173,9 +184,22 @@ function boot() {
     send({ type: "ready" });
   });
 
+  /// テキスト編集（RTE）がアクティブか。
+  const rteActive = () => {
+    const em = editor.getModel() as unknown as { getEditing?: () => unknown };
+    return Boolean(em.getEditing?.());
+  };
+
   async function handle(msg: Parameters<Parameters<typeof acceptPort>[0]>[0]) {
     switch (msg.type) {
       case "slide:load": {
+        // 同一スライドの再ロード（リモート/AI の並行編集）中にローカル編集が進行中なら
+        // 再ロードしない — タイプ中のキャンバス差し替え（編集消失）を防ぐ。
+        // このスライドはローカルの確定時に上書きされる（同一スライドの並行編集は
+        // last-writer-wins・PIT-41 の契約）。
+        if (currentId === msg.id && (pending !== null || rteActive())) {
+          break;
+        }
         // 別スライドへの切替なら、直前のスライドの未確定編集を先に確定・送信する。
         if (currentId && currentId !== msg.id) await flushCurrent();
         applyingRemote = true;
@@ -185,7 +209,7 @@ function boot() {
             pending = null;
           }
           currentId = msg.id;
-          editor.setComponents(msg.html);
+          editor.setComponents(sanitizeForCanvas(msg.html));
           // 閲覧のみでは編集ジェスチャを無効化する（強制はサーバ側の viewer 拒否）。
           editor.getModel().set("editing", false);
           const body = editor.Canvas.getBody();
