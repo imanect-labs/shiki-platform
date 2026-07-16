@@ -351,6 +351,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         workflow: api::workflow_runtime::WorkflowConfig::default(),
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
+        office: api::config::OfficeConfig::default(),
     }
 }
 
@@ -480,6 +481,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         search: None,
         chat: None,
         rag_admin,
+        office: None,
     }
 }
 

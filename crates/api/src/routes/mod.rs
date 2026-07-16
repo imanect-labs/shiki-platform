@@ -20,6 +20,7 @@ pub mod files;
 pub mod folders;
 pub mod me;
 pub mod mini_apps;
+pub mod office;
 pub mod search;
 pub mod secrets;
 pub mod shares;

@@ -248,6 +248,7 @@ fn config(db_url: &str) -> AppConfig {
         workflow: api::workflow_runtime::WorkflowConfig::default(),
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
+        office: api::config::OfficeConfig::default(),
     }
 }
 
@@ -463,6 +464,7 @@ fn build_app(
         search: None,
         chat: None,
         rag_admin: Arc::new(rag::RagAdmin::new(pool.clone(), None, None)),
+        office: None,
     };
     build_router(state)
 }

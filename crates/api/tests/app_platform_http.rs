@@ -237,6 +237,7 @@ fn base_config(db_url: &str) -> AppConfig {
         workflow: api::workflow_runtime::WorkflowConfig::default(),
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
+        office: api::config::OfficeConfig::default(),
     }
 }
 
@@ -359,6 +360,7 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         search: None,
         chat: None,
         rag_admin,
+        office: None,
     }
 }
 

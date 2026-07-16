@@ -184,6 +184,7 @@ fn config(db_url: &str) -> AppConfig {
         workflow: api::workflow_runtime::WorkflowConfig::default(),
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
+        office: api::config::OfficeConfig::default(),
     }
 }
 
@@ -371,6 +372,7 @@ async fn setup() -> Option<Env> {
         search: None,
         chat: None,
         rag_admin: Arc::new(rag::RagAdmin::new(pool.clone(), None, None)),
+        office: None,
     };
     Some(Env {
         app: build_router(state),
