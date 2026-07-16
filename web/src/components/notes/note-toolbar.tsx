@@ -238,7 +238,8 @@ export function NoteBubbleMenu({
       // 画像やコードブロック内など、テキスト選択でない場合は出さない。
       shouldShow={({ editor: e, from, to }) =>
         from !== to && !e.isActive("codeBlock") && e.isEditable}
-      className="flex items-center gap-0.5 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md"
+      // z-30: 静的ツールバー（sticky・z-20）より前面に出す（文頭選択でボタンが覆われる不具合対策）。
+      className="z-30 flex items-center gap-0.5 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md"
     >
       <InlineMarks editor={editor} compact />
       <LinkControl editor={editor} compact />

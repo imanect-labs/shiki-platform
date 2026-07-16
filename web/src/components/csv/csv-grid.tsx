@@ -8,14 +8,17 @@
 import "@glideapps/glide-data-grid/dist/index.css";
 
 import {
+  CompactSelection,
   DataEditor,
   GridCellKind,
   type EditableGridCell,
   type GridCell,
   type GridColumn,
+  type GridSelection,
   type Item,
   type Theme,
 } from "@glideapps/glide-data-grid";
+import { Sparkles } from "lucide-react";
 import { useTheme } from "next-themes";
 import * as React from "react";
 
@@ -112,6 +115,12 @@ interface Props {
   totalRows: number;
   editable: boolean;
   onDirtyChange?: (dirty: boolean) => void;
+  /// 選択→AI 指示（Task 11.10）。範囲選択時に「AI に依頼」を出し、TSV 抜粋と範囲を渡す。
+  onAskAi?: (selection: {
+    excerpt: string;
+    rows: [number, number];
+    cols: [number, number];
+  }) => void;
 }
 
 /// ページキャッシュ（行 index → セル値配列）。取得中の行は undefined。
@@ -139,7 +148,7 @@ function detectNumericCols(rows: Array<Array<string | null>>, ncols: number): Re
 }
 
 export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
-  { nodeId, columns, totalRows, editable, onDirtyChange },
+  { nodeId, columns, totalRows, editable, onDirtyChange, onAskAi },
   ref,
 ) {
   const { theme: glideTheme, editedBg } = useGlideTheme();
@@ -152,6 +161,41 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
   const bump = React.useCallback(() => setVersion((v) => v + 1), []);
   // 数値列（右寄せ表示・表計算ソフトの体裁）。最初のページのサンプルから判定する。
   const [numericCols, setNumericCols] = React.useState<ReadonlySet<number>>(new Set());
+  // 範囲選択（選択→AI 指示・Task 11.10）。
+  const [selection, setSelection] = React.useState<GridSelection>({
+    columns: CompactSelection.empty(),
+    rows: CompactSelection.empty(),
+  });
+  const selectionRange = selection.current?.range ?? null;
+
+  /// 選択範囲の TSV 抜粋（キャッシュ済みセル＋未保存編集を反映・上限 50×20 セル）。
+  const buildSelectionInfo = (range: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }): { excerpt: string; rows: [number, number]; cols: [number, number] } => {
+    const maxRows = Math.min(range.height, 50);
+    const maxCols = Math.min(range.width, 20);
+    const lines: string[] = [
+      columns.slice(range.x, range.x + maxCols).join("\t"),
+    ];
+    for (let r = range.y; r < range.y + maxRows; r += 1) {
+      const page = Math.floor(r / PAGE_SIZE);
+      const pageRows = cache.current.get(page);
+      const localRow = pageRows?.[r - page * PAGE_SIZE];
+      const cells: string[] = [];
+      for (let c = range.x; c < range.x + maxCols; c += 1) {
+        cells.push(edits.current.get(`${r},${c}`) ?? localRow?.[c] ?? "");
+      }
+      lines.push(cells.join("\t"));
+    }
+    return {
+      excerpt: lines.join("\n"),
+      rows: [range.y, range.y + range.height - 1],
+      cols: [range.x, range.x + range.width - 1],
+    };
+  };
 
   const gridColumns: GridColumn[] = React.useMemo(
     () => columns.map((title) => ({ title, id: title, width: 160 })),
@@ -243,7 +287,7 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
 
   return (
     <div
-      className="csv-grid h-full w-full overflow-hidden rounded-lg border border-border shadow-xs"
+      className="csv-grid relative h-full w-full overflow-hidden rounded-lg border border-border shadow-xs"
       data-testid="csv-grid"
     >
       <DataEditor
@@ -252,6 +296,8 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
         rows={totalRows}
         getCellContent={getCellContent}
         onCellEdited={editable ? onCellEdited : undefined}
+        gridSelection={selection}
+        onGridSelectionChange={setSelection}
         rowMarkers="number"
         smoothScrollX
         smoothScrollY
@@ -259,6 +305,18 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
         height="100%"
         getCellsForSelection
       />
+      {/* 選択→AI 指示（Task 11.10）: 範囲選択時にフロートボタンを出す。 */}
+      {onAskAi && selectionRange ? (
+        <button
+          type="button"
+          data-testid="csv-ask-ai"
+          onClick={() => onAskAi(buildSelectionInfo(selectionRange))}
+          className="absolute right-3 top-3 z-10 inline-flex items-center gap-1 rounded-full border border-border/60 bg-card px-3 py-1.5 text-xs font-medium text-primary shadow-sm transition-colors hover:bg-accent"
+        >
+          <Sparkles className="size-3.5" aria-hidden />
+          選択範囲を AI に依頼
+        </button>
+      ) : null}
       {/* Glide のオーバーレイエディタ用ポータル。 */}
       <div id="portal" style={{ position: "fixed", left: 0, top: 0, zIndex: 9999 }} />
     </div>

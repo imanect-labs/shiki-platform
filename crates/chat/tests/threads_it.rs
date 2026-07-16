@@ -375,11 +375,29 @@ async fn get_messages_returns_ordered_roles_and_content() {
         .await
         .unwrap();
     store
-        .post_message(&c, thread.id, "1つ目の質問", &[], Some(false), false, None)
+        .post_message(
+            &c,
+            thread.id,
+            "1つ目の質問",
+            &[],
+            None,
+            Some(false),
+            false,
+            None,
+        )
         .await
         .unwrap();
     store
-        .post_message(&c, thread.id, "2つ目の質問", &[], Some(false), false, None)
+        .post_message(
+            &c,
+            thread.id,
+            "2つ目の質問",
+            &[],
+            None,
+            Some(false),
+            false,
+            None,
+        )
         .await
         .unwrap();
 
@@ -622,7 +640,7 @@ async fn event_stream_replays_appended_events() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "hi", &[], Some(false), false, None)
+        .post_message(&c, thread.id, "hi", &[], None, Some(false), false, None)
         .await
         .unwrap();
     let run_id = res.run_id;
@@ -714,7 +732,7 @@ async fn agent_mode_worker_runs_to_done() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "hello agent", &[], None, false, None)
+        .post_message(&c, thread.id, "hello agent", &[], None, None, false, None)
         .await
         .unwrap();
 
@@ -755,7 +773,7 @@ async fn db_approver_blocks_until_decision() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "do danger", &[], None, false, None)
+        .post_message(&c, thread.id, "do danger", &[], None, None, false, None)
         .await
         .unwrap();
     let run_id = res.run_id;
@@ -838,7 +856,7 @@ async fn db_approver_cancelled_by_flag() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "do danger", &[], None, false, None)
+        .post_message(&c, thread.id, "do danger", &[], None, None, false, None)
         .await
         .unwrap();
     let run_id = res.run_id;

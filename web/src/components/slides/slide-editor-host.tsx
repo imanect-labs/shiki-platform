@@ -23,12 +23,15 @@ export function SlideEditorHost({
   doc,
   slideId,
   onUnavailable,
+  onSelection,
 }: {
   doc: Y.Doc;
   /// 編集対象のスライド id（フィルムストリップの選択・null はデッキ空）。
   slideId: string | null;
   /// エディタバンドル未配備時に呼ぶ（親が閲覧フォールバックへ切り替える）。
   onUnavailable: () => void;
+  /// キャンバスの要素選択の通知（選択→AI 指示・Task 11.10。null=選択解除）。
+  onSelection?: (selection: { slideId: string; html: string } | null) => void;
 }) {
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
   const bridgeRef = React.useRef<EditorBridge | null>(null);
@@ -66,6 +69,12 @@ export function SlideEditorHost({
             if (readyTimer !== null) window.clearTimeout(readyTimer);
             setReady(true);
             loadCurrent();
+            break;
+          case "selection":
+            onSelection?.({ slideId: msg.id, html: msg.html });
+            break;
+          case "selection:clear":
+            onSelection?.(null);
             break;
           case "slide:changed": {
             // スライド切替時は「前のスライドの確定分」が選択変更後に届く（正当）。

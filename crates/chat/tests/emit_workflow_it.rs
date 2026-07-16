@@ -204,7 +204,7 @@ async fn run_to_done(
     text: &str,
 ) -> (Uuid, Vec<StreamEventKind>) {
     let res = store
-        .post_message(c, thread_id, text, &[], Some(true), false, None)
+        .post_message(c, thread_id, text, &[], None, Some(true), false, None)
         .await
         .unwrap();
     let mut rx = store.event_stream(res.run_id, 0);

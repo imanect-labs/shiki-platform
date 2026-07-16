@@ -30,6 +30,7 @@ pub mod document_tool;
 pub mod error;
 pub mod gui_actions;
 pub mod model;
+pub mod selection;
 pub(crate) mod skill;
 pub mod slide_tool;
 pub mod store;

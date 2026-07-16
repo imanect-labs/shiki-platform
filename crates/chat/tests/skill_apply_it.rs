@@ -227,7 +227,16 @@ async fn skill_pin_applies_model_defaults_and_audits() {
         .unwrap();
 
     let res = store
-        .post_message(&c, thread.id, "出張費は？", &[], Some(false), false, None)
+        .post_message(
+            &c,
+            thread.id,
+            "出張費は？",
+            &[],
+            None,
+            Some(false),
+            false,
+            None,
+        )
         .await
         .unwrap();
     let mut rx = store.event_stream(res.run_id, 0);

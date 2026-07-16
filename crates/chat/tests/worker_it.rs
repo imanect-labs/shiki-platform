@@ -180,7 +180,16 @@ async fn worker_generates_streams_and_persists_projection() {
         .await
         .unwrap();
     let res = store
-        .post_message(&c, thread.id, "hello world", &[], Some(false), false, None)
+        .post_message(
+            &c,
+            thread.id,
+            "hello world",
+            &[],
+            None,
+            Some(false),
+            false,
+            None,
+        )
         .await
         .unwrap();
 
