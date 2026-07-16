@@ -371,6 +371,7 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
     ));
     let office_runtime = with_office.then(|| api::state::OfficeRuntime {
         suite: Arc::new(FixedSuite),
+        wopi_base_url: "http://shiki-server:8080".into(),
         wopi: office::WopiState {
             storage: Arc::clone(&storage),
             authz: Arc::new(AllowAll),
@@ -515,6 +516,11 @@ async fn office_session_issues_token_and_wopi_is_mounted() {
     assert_eq!(
         session["action_url"],
         "http://collabora.test/browser/x/cool.html?"
+    );
+    // WOPISrc は「Collabora から見た shiki-server の URL」。web が iframe URL に付ける。
+    assert_eq!(
+        session["wopi_src"],
+        format!("http://shiki-server:8080/wopi/files/{}", node.id)
     );
     assert!(session["access_token_ttl_ms"].as_u64().unwrap() > 0);
     let token = session["access_token"].as_str().unwrap().to_string();

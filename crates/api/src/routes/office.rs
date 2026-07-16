@@ -41,6 +41,9 @@ pub struct CreateOfficeSessionRequest {
 pub struct OfficeSessionResponse {
     /// Collabora の編集アクション URL（discovery 由来・WOPISrc を付与して使う）。
     pub action_url: String,
+    /// WOPISrc（Collabora から見た WOPI ファイル URL）。web は
+    /// `action_url + "WOPISrc=" + encodeURIComponent(wopi_src)` に使う。
+    pub wopi_src: String,
     /// WOPI access_token（実行主体×ファイル×短寿命。form post で iframe へ注入する）。
     pub access_token: String,
     /// トークンの有効期間（ミリ秒）。
@@ -104,6 +107,7 @@ pub async fn create_office_session(
         .map_err(|e| ApiError::Internal(format!("office token: {e}")))?;
     Ok(Json(OfficeSessionResponse {
         action_url,
+        wopi_src: format!("{}/wopi/files/{}", office.wopi_base_url, req.file_id),
         access_token,
         access_token_ttl_ms: office::TOKEN_TTL.as_millis() as u64,
     }))

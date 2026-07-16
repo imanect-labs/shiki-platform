@@ -76,6 +76,15 @@ pub(crate) fn wire_office(
         .collabora_base_url
         .as_deref()
         .context("office.collabora_base_url が未設定です（office.enabled=true では必須）")?;
+    // Collabora から見た shiki-server のベース URL。ブラウザ側では知り得ないため
+    // 推定フォールバックはせず、enabled 時は必須とする（fail-closed）。
+    let wopi_base_url = config
+        .office
+        .wopi_base_url
+        .as_deref()
+        .context("office.wopi_base_url が未設定です（office.enabled=true では必須・例 http://shiki-server:8080）")?
+        .trim_end_matches('/')
+        .to_string();
     let token_key = if let Some(secret) = &config.office.token_secret {
         office::OfficeTokenKey::from_secret(secret)
             .map_err(|e| anyhow::anyhow!("office.token_secret が不正です: {e}"))?
@@ -97,8 +106,12 @@ pub(crate) fn wire_office(
         max_body_bytes: usize::try_from(config.storage.max_upload_size_bytes)
             .context("storage.max_upload_size_bytes が不正です")?,
     };
-    tracing::info!(%base_url, "Office 統合を配線しました（Collabora・WOPI ホスト）");
-    Ok(Some(api::state::OfficeRuntime { suite, wopi }))
+    tracing::info!(%base_url, %wopi_base_url, "Office 統合を配線しました（Collabora・WOPI ホスト）");
+    Ok(Some(api::state::OfficeRuntime {
+        suite,
+        wopi,
+        wopi_base_url,
+    }))
 }
 
 /// RAG（Phase 2）の依存配線。`rag.enabled=false` なら何も起動せず `None` を返す。

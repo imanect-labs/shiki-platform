@@ -109,8 +109,11 @@ pub struct AppState {
 ///
 /// `wopi` は WOPI ルータの共有状態（storage/authz チョークポイント＋トークン鍵）、
 /// `suite` は編集アクション URL の解決（Collabora discovery・OnlyOffice への差し替え退路）。
+/// `wopi_base_url` は **Collabora から見た** shiki-server のベース URL（起動時検証済み・
+/// 末尾スラッシュなし）。WOPISrc の組み立てに使う。
 #[derive(Clone)]
 pub struct OfficeRuntime {
     pub suite: Arc<dyn office::OfficeSuite>,
     pub wopi: office::WopiState,
+    pub wopi_base_url: String,
 }
