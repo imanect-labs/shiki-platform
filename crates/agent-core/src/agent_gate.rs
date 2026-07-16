@@ -138,5 +138,11 @@ pub(crate) async fn emit_tool_events(
         })
         .await?;
     }
+    for draft in &outcome.slide_drafts {
+        sink.emit(AgentEvent::SlideDraft {
+            draft: serde_json::json!({ "name": draft.name, "content": draft.content }),
+        })
+        .await?;
+    }
     Ok(())
 }

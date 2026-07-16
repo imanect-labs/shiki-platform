@@ -68,7 +68,7 @@ function DraftNotePageInner() {
     (name: string) => {
       nonceRef.current += 1;
       setActiveName(name);
-      setSeed({ markdown: getDraft(threadId, name)?.markdown ?? "", nonce: nonceRef.current });
+      setSeed({ markdown: getDraft(threadId, name)?.content ?? "", nonce: nonceRef.current });
     },
     [threadId],
   );
@@ -141,7 +141,7 @@ function DraftNotePageInner() {
       setSaving(true);
       const markdown = editorRef.current
         ? serializeFragment(editorRef.current.state.doc.content)
-        : (getDraft(threadId, activeName)?.markdown ?? "");
+        : (getDraft(threadId, activeName)?.content ?? "");
       createNote({ parentId: target.parentId, name: target.name, markdown })
         .then(async (node) => {
           // この会話をノートへ紐付けて「ノート由来」にする（best-effort・失敗しても保存は成立）。

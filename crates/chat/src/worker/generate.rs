@@ -237,6 +237,8 @@ impl ChatWorker {
             collab.clone(),
             storage.clone(),
         )));
+        // 下書きスライドを用意（slide_draft・下書き確定型・Task 11.3・storage 非依存・確定は UI 保存）。
+        tools.push(Arc::new(crate::slide_tool::SaveSlideTool::new()));
     }
 
     fn push_autonomous_tools(

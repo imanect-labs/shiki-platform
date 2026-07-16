@@ -35,11 +35,15 @@ export type ContentBlock =
   | { type: "workflow_ref"; workflow: unknown }
   | { type: "note_ref"; note: unknown }
   | { type: "note_draft"; draft: unknown }
+  | { type: "slide_draft"; draft: unknown }
   | { type: "file_ref"; node_id: string; name: string }
   | { type: "selection_context"; context: SelectionContext };
 
 /// 未保存の下書きノート（save_note の下書き確定型・issue #282）。
 export type NoteDraft = { name: string; markdown: string };
+
+/// 未保存の下書きスライド（save_slide の下書き確定型・Task 11.3）。content=正規化スライド JSON。
+export type SlideDraft = { name: string; content: string };
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
 export type RunStatus = "queued" | "running" | "done" | "failed" | "cancelled";
@@ -323,6 +327,8 @@ export type StreamHandlers = {
   onNoteRef?: (note: unknown) => void;
   /// 未保存の下書きノート（save_note の下書き確定型・issue #282）。下書き画面を開く/流し込む。
   onNoteDraft?: (draft: unknown) => void;
+  /// 未保存の下書きスライド（save_slide の下書き確定型・Task 11.3）。下書き画面を開く/流し込む。
+  onSlideDraft?: (draft: unknown) => void;
   onStatus?: (status: RunStatus) => void;
   // 自律エージェント（Phase 5）。
   onPlan?: (subtasks: PlanSubtask[]) => void;
@@ -348,6 +354,7 @@ type StreamEventKind =
   | { type: "workflow_ref"; workflow: unknown }
   | { type: "note_ref"; note: unknown }
   | { type: "note_draft"; draft: unknown }
+  | { type: "slide_draft"; draft: unknown }
   | { type: "plan"; subtasks: PlanSubtask[] }
   | { type: "budget_warning"; kind: string; used: number; limit: number }
   | ({ type: "approval_requested" } & ApprovalRequest)
@@ -411,6 +418,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "note_draft":
         handlers.onNoteDraft?.(kind.draft);
+        break;
+      case "slide_draft":
+        handlers.onSlideDraft?.(kind.draft);
         break;
       case "plan":
         handlers.onPlan?.(kind.subtasks);

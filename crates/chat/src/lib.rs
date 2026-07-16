@@ -33,6 +33,7 @@ pub mod model;
 pub mod office_tool;
 pub mod selection;
 pub(crate) mod skill;
+pub mod slide_templates;
 pub mod slide_tool;
 pub mod store;
 pub mod worker;
@@ -49,7 +50,7 @@ pub use model::{
     Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunStatus, SelectionContext,
     SelectionKind, StreamEvent, StreamEventKind, Thread, ThreadRole,
 };
-pub use slide_tool::{SlideEditTool, SlideReadTool};
+pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
 pub use store::{ChatStore, ClaimedRun, PostResult, ThreadOrigin, CHAT_GENERATION_QUEUE};
 pub use worker::{ChatWorker, WorkerConfig, WorkerDeps};
 pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};

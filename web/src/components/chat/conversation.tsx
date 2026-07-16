@@ -41,8 +41,10 @@ import { Composer } from "./composer";
 import { WorkflowRefCard } from "./workflow-ref-card";
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
+import { SlideDraftCard } from "./slide-draft-card";
 import { upsertDraft, parseNoteDraft } from "@/lib/notes/draft-store";
 import { draftHref } from "@/lib/notes/draft-nav";
+import { parseSlideDraft, slideDraftHref, slideDraftStore } from "@/lib/slides/draft";
 import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
@@ -64,6 +66,8 @@ type StreamState = {
   noteRefs: unknown[];
   /// 未保存の下書きノート（issue #282・save_note の下書き確定型）。
   noteDrafts: unknown[];
+  /// 未保存の下書きスライド（Task 11.3・save_slide の下書き確定型）。
+  slideDrafts: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
   plan: PlanSubtask[];
   approval: ApprovalRequest | null;
@@ -82,6 +86,7 @@ const EMPTY_STREAM: StreamState = {
   workflowRefs: [],
   noteRefs: [],
   noteDrafts: [],
+  slideDrafts: [],
   plan: [],
   approval: null,
   budget: null,
@@ -93,6 +98,7 @@ export function Conversation({
   threadId,
   variant = "page",
   onNoteDraftOpened,
+  onSlideDraftOpened,
 }: {
   threadId: string;
   /// "page"=/c/[id] 単独表示（統一ヘッダにタイトル/共有/設定を注入・幅は max-w-3xl 中央）。
@@ -101,6 +107,8 @@ export function Conversation({
   /// save_note の下書き（note_draft）を受けたときの導線（issue #282）。渡されない場合は
   /// 下書きノート画面へ遷移する（主線）。下書き画面自身は自前で受けて遷移せずアクティブ切替する。
   onNoteDraftOpened?: (name: string) => void;
+  /// save_slide の下書き（slide_draft）を受けたときの導線（Task 11.3・note と同型）。
+  onSlideDraftOpened?: (name: string) => void;
 }) {
   const isPanel = variant === "panel";
   const router = useRouter();
@@ -179,6 +187,16 @@ export function Conversation({
         if (onNoteDraftOpened) onNoteDraftOpened(d.name);
         else router.push(draftHref(threadId, d.name));
       },
+      onSlideDraft: (raw) => {
+        // note_draft と同型: ストリームに残しつつ下書きストアへ upsert（source=ai＝流し込み）。
+        // 主線は下書きスライド画面へ遷移。下書き画面自身はアクティブ切替のみ。
+        updateStream((s) => (s ? { ...s, slideDrafts: [...s.slideDrafts, raw] } : s));
+        const d = parseSlideDraft(raw);
+        if (!d) return;
+        slideDraftStore.upsert(threadId, d.name, d.content, "ai");
+        if (onSlideDraftOpened) onSlideDraftOpened(d.name);
+        else router.push(slideDraftHref(threadId, d.name));
+      },
       // --- 自律エージェント（Phase 5・Task 5.11） ---
       onRunId: (runId) => updateStream((s) => (s ? { ...s, runId } : s)),
       onPlan: (subtasks) =>
@@ -212,7 +230,7 @@ export function Conversation({
         cancelRef.current = null;
       },
     };
-  }, [flushStream, updateStream, threadId, onNoteDraftOpened, router]);
+  }, [flushStream, updateStream, threadId, onNoteDraftOpened, onSlideDraftOpened, router]);
 
   const send = React.useCallback(
     (
@@ -415,6 +433,8 @@ function finalizeStream(
   for (const note of s.noteRefs) blocks.push({ type: "note_ref", note });
   // 未保存の下書きノートカード（issue #282）。履歴からも下書きへ辿れるよう残す。
   for (const draft of s.noteDrafts) blocks.push({ type: "note_draft", draft });
+  // 未保存の下書きスライドカード（Task 11.3）。
+  for (const draft of s.slideDrafts) blocks.push({ type: "slide_draft", draft });
   if (blocks.length === 0) return;
   setMessages((prev) => [
     ...prev,
@@ -506,6 +526,9 @@ function AssistantRow({
   const noteDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "note_draft" }> => b.type === "note_draft",
   );
+  const slideDrafts = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "slide_draft" }> => b.type === "slide_draft",
+  );
 
   return (
     <Message className="group justify-start">
@@ -534,6 +557,9 @@ function AssistantRow({
         ))}
         {noteDrafts.map((b, i) => (
           <NoteDraftCard key={i} raw={b.draft} threadId={threadId} />
+        ))}
+        {slideDrafts.map((b, i) => (
+          <SlideDraftCard key={i} raw={b.draft} threadId={threadId} />
         ))}
         <ArtifactFiles files={files} />
         <Sources citations={citations} />
@@ -649,6 +675,9 @@ function StreamingRow({
         ))}
         {stream.noteDrafts.map((draft, i) => (
           <NoteDraftCard key={i} raw={draft} threadId={threadId} />
+        ))}
+        {stream.slideDrafts.map((draft, i) => (
+          <SlideDraftCard key={i} raw={draft} threadId={threadId} />
         ))}
         <ArtifactFiles files={stream.files} />
       </div>

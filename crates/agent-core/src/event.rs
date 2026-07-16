@@ -70,6 +70,10 @@ pub enum AgentEvent {
     /// `{name, markdown}`。**まだ作成していない**下書き本文（chat 側で note_draft へ写り、
     /// フロントが下書きノート画面で詰めてから「ドライブに保存」で確定する）。
     NoteDraft { draft: serde_json::Value },
+    /// 未保存の下書きスライド（save_slide の下書き確定型・Task 11.3）。
+    /// `{name, content}`（content=正規化スライド JSON 文字列）。**まだ作成していない**下書き
+    /// （chat 側で slide_draft へ写り、フロントが下書きスライド画面で詰めてから確定する）。
+    SlideDraft { draft: serde_json::Value },
     /// 計画が改訂された（全サブタスク列・revision 付き・Task 5.2）。
     PlanUpdated(Plan),
     /// 単一サブタスクの状態遷移（軽量更新・Task 5.2）。

@@ -100,6 +100,10 @@ pub enum ContentBlock {
     /// `draft = {name, markdown}`（まだ StorageService 未作成）。フロントは下書きノート画面を
     /// 開いて詰めてから「ドライブに保存」で確定する。
     NoteDraft { draft: serde_json::Value },
+    /// 未保存の下書きスライドカード（save_slide の下書き確定型・Task 11.3）。
+    /// `draft = {name, content}`（content=正規化スライド JSON 文字列・StorageService 未作成）。
+    /// フロントは下書きスライド画面を開いて詰めてから「ドライブに保存」で確定する。
+    SlideDraft { draft: serde_json::Value },
     /// 添付ファイル参照（ストレージ node 参照のみ）。
     FileRef { node_id: String, name: String },
     /// エディタの選択コンテキスト（選択→AI 指示・Task 11.10・design §4.8.3）。
@@ -238,6 +242,8 @@ pub enum StreamEventKind {
     NoteRef { note: serde_json::Value },
     /// 未保存の下書きノートカード（save_note の下書き確定型・issue #282）。
     NoteDraft { draft: serde_json::Value },
+    /// 未保存の下書きスライドカード（save_slide の下書き確定型・Task 11.3）。
+    SlideDraft { draft: serde_json::Value },
     /// 計画の改訂（自律エージェント・Task 5.2）。サブタスク列を丸ごと配信する。
     Plan { subtasks: Vec<PlanSubtask> },
     /// 予算上限への接近警告（Task 5.7）。
@@ -287,6 +293,7 @@ impl StreamEventKind {
             StreamEventKind::WorkflowRef { .. } => "workflow_ref",
             StreamEventKind::NoteRef { .. } => "note_ref",
             StreamEventKind::NoteDraft { .. } => "note_draft",
+            StreamEventKind::SlideDraft { .. } => "slide_draft",
             StreamEventKind::Plan { .. } => "plan",
             StreamEventKind::BudgetWarning { .. } => "budget_warning",
             StreamEventKind::ApprovalRequested { .. } => "approval_requested",

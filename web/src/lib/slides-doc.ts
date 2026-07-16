@@ -139,3 +139,89 @@ export function readSlideHtml(doc: Y.Doc, id: string): string | null {
   const html = slide.get("html");
   return html instanceof Y.Text ? html.toString() : typeof html === "string" ? html : "";
 }
+
+// ── 下書きスライド（ローカル Y.Doc・Task 11.3）────────────────────────────
+//
+// 下書き画面はサーバ collab に繋がず、正規化スライド JSON（save_slide の content）を
+// ローカル Y.Doc へ流し込んで SlideWorkspace を動かす。保存時は Y.Doc から読み戻して
+// POST /slides の content にする（サニタイズ・正規化はサーバ側が最終防壁・PIT-40）。
+
+/// 正規化スライド JSON の 1 枚（ワイヤ形式・サーバ collab::slide::Slide と対）。
+export type SlideJsonItem = {
+  id?: string;
+  html?: string;
+  notes?: string;
+  bg?: Record<string, unknown> | null;
+};
+
+/// 正規化スライド JSON 文字列をパースする（fail-closed・version 1 以外は null）。
+export function parseSlideDocJson(
+  json: string,
+): { meta: Record<string, unknown>; slides: SlideJsonItem[] } | null {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object") return null;
+    const o = parsed as { version?: unknown; meta?: unknown; slides?: unknown };
+    if (o.version !== 1) return null;
+    const meta =
+      o.meta && typeof o.meta === "object" && !Array.isArray(o.meta)
+        ? (o.meta as Record<string, unknown>)
+        : {};
+    const slides = Array.isArray(o.slides) ? (o.slides as SlideJsonItem[]) : [];
+    return { meta, slides };
+  } catch {
+    return null;
+  }
+}
+
+/// スライド列をローカル Y.Doc へ**全置換**で流し込む（下書きの seed / AI 流し込みの再シード）。
+export function seedSlides(doc: Y.Doc, slides: SlideJsonItem[]) {
+  doc.transact(() => {
+    const arr = slidesArray(doc);
+    if (arr.length > 0) arr.delete(0, arr.length);
+    const entries = slides.map((s) => {
+      const slide = new Y.Map<unknown>();
+      slide.set("id", typeof s.id === "string" && s.id ? s.id : crypto.randomUUID());
+      const html = new Y.Text();
+      html.insert(0, typeof s.html === "string" ? s.html : "");
+      slide.set("html", html);
+      const notes = new Y.Text();
+      notes.insert(0, typeof s.notes === "string" ? s.notes : "");
+      slide.set("notes", notes);
+      if (s.bg && typeof s.bg === "object") slide.set("bg", JSON.stringify(s.bg));
+      return slide;
+    });
+    if (entries.length > 0) arr.insert(0, entries);
+  }, LOCAL_ORIGIN);
+}
+
+/// ローカル Y.Doc のスライド列を正規化 JSON のワイヤ形式へ読み戻す（下書き保存用）。
+export function readSlidesJson(doc: Y.Doc): SlideJsonItem[] {
+  const out: SlideJsonItem[] = [];
+  for (const entry of slidesArray(doc)) {
+    if (!(entry instanceof Y.Map)) continue;
+    const id = entry.get("id");
+    if (typeof id !== "string" || id.length === 0) continue;
+    const html = entry.get("html");
+    const notes = entry.get("notes");
+    const bgRaw = entry.get("bg");
+    let bg: Record<string, unknown> | undefined;
+    if (typeof bgRaw === "string" && bgRaw.length > 0) {
+      try {
+        const parsed: unknown = JSON.parse(bgRaw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          bg = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // 壊れた bg は落とす（描画側も未知キーは無視する）。
+      }
+    }
+    out.push({
+      id,
+      html: html instanceof Y.Text ? html.toString() : typeof html === "string" ? html : "",
+      notes: notes instanceof Y.Text ? notes.toString() : typeof notes === "string" ? notes : "",
+      ...(bg ? { bg } : {}),
+    });
+  }
+  return out;
+}

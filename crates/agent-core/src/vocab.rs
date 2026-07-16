@@ -72,6 +72,9 @@ vocab_enum! {
         DocumentEmbed => "document.embed",
         /// AI 生成 md を新規ノートとして保存するツール（note_ref カード化・Task 11P.5）。
         SaveNote => "save_note",
+        /// AI 生成スライドを**下書き**として用意するツール（slide_draft カード化・保存しない・
+        /// 確認不要・save_note と同型の下書き確定型・Task 11.3）。
+        SaveSlide => "save_slide",
         /// スライド（.slide/Yjs）の共同編集ツール（AI が編集参加者・排他なし・Task 11.3）。
         SlideEdit => "slide.edit",
         /// スライド内容の読み取りツール（slide.edit の前提・正規化 JSON を得る・Task 11.3）。

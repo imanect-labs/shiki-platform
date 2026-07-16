@@ -115,6 +115,13 @@ impl WorkerSink {
                     draft: draft.clone(),
                 });
             }
+            // 未保存の下書きスライド（save_slide の下書き確定型・Task 11.3）。note_draft と同じく
+            // 履歴からも下書きへ辿れるよう content block に残す（開き直しの seed・確定は UI 保存）。
+            AgentEvent::SlideDraft { draft } => {
+                self.content.push(ContentBlock::SlideDraft {
+                    draft: draft.clone(),
+                });
+            }
             // 自律プロファイルの構造化イベント（計画/サブタスク/予算/承認/失敗回復）は
             // content block へは projection しない（進捗の可視化はライブ SSE 側で扱う・W4 で結線）。
             AgentEvent::PlanUpdated(_)
@@ -158,6 +165,9 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         },
         AgentEvent::NoteRef { note } => StreamEventKind::NoteRef { note: note.clone() },
         AgentEvent::NoteDraft { draft } => StreamEventKind::NoteDraft {
+            draft: draft.clone(),
+        },
+        AgentEvent::SlideDraft { draft } => StreamEventKind::SlideDraft {
             draft: draft.clone(),
         },
         // 自律プロファイルの構造化イベント（Task 5.9 ライブ配信）。generation_event に append され
@@ -296,6 +306,19 @@ mod tests {
                 assert_eq!(kind, "tokens");
                 assert_eq!((used, limit), (8, 10));
             }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn slide_draft_event_maps_to_sse_and_projection() {
+        // AgentEvent::SlideDraft → SSE slide_draft（履歴 projection でも残る・Task 11.3）。
+        let draft = serde_json::json!({ "name": "提案書", "content": "{\"version\":1}" });
+        let ev = AgentEvent::SlideDraft {
+            draft: draft.clone(),
+        };
+        match to_stream_kind(&ev) {
+            StreamEventKind::SlideDraft { draft: d } => assert_eq!(d, draft),
             other => panic!("unexpected: {other:?}"),
         }
     }
