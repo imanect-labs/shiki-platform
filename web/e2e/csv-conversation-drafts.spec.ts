@@ -20,18 +20,10 @@ async function sendFromHome(page: Page, text: string) {
 test("下書き: チャット→下書き CSV 画面→ドライブに保存で /csv/{id} が開く", async ({ page }) => {
   await loginViaKeycloak(page); // alice
   const csvName = uniqueName("集計");
-  page.on("console", (m) => { if (m.type() === "error") console.log("[console.error]", m.text().slice(0, 300)); });
-  page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 300)));
   await sendFromHome(page, `savecsv:${csvName}`);
 
   // 下書き CSV 画面へ遷移する（自動）。下書きバッジとローカルグリッドが出る。
-  try {
-    await page.waitForURL(/\/csv\/draft/, { timeout: 25_000 });
-  } catch (e) {
-    console.log("STUCK at", page.url());
-    console.log("main text:", (await page.locator("main").innerText().catch(() => "")).slice(0, 600));
-    throw e;
-  }
+  await page.waitForURL(/\/csv\/draft/, { timeout: 25_000 });
   await expect(page.getByTestId("draft-badge")).toBeVisible();
   await expect(page.getByTestId("csv-draft-grid")).toBeVisible({ timeout: 20_000 });
 
