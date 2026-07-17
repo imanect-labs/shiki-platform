@@ -63,13 +63,11 @@ function DraftCsvPageInner() {
     [threadId],
   );
 
-  // 下書きストアが空なら、会話履歴の csv_draft ブロックから復元する（リロード/別端末）。
+  // 会話履歴の csv_draft ブロックから復元する（リロード/別端末）。ローカルに一部だけ
+  // 残っている場合も履歴を常に取得し、**未登録の (threadId, name) のみ**追加する
+  // （ローカルのユーザー編集は上書きしない・notes/slides 下書きと同型）。
   React.useEffect(() => {
     if (!threadId) {
-      setRecovered(true);
-      return;
-    }
-    if (csvDraftStore.list(threadId).length > 0) {
       setRecovered(true);
       return;
     }
@@ -81,7 +79,9 @@ function DraftCsvPageInner() {
           for (const b of m.content) {
             if (b.type === "csv_draft") {
               const d = parseCsvDraft(b.draft);
-              if (d) csvDraftStore.upsert(threadId, d.name, d.csv, "ai");
+              if (d && !csvDraftStore.get(threadId, d.name)) {
+                csvDraftStore.upsert(threadId, d.name, d.csv, "ai");
+              }
             }
           }
         }
