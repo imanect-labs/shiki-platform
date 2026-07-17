@@ -4,7 +4,13 @@
 //! - [`MemStore`]: バイト保持の in-memory ObjectStore。
 //! - [`ctx_for`]: テスト用 AuthContext。
 
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    dead_code,
+    unreachable_pub,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use std::collections::HashSet;
 use std::sync::Mutex;
