@@ -10,7 +10,7 @@ import { Sidebar } from "./sidebar/sidebar";
 import { MobileSidebar } from "./mobile-sidebar";
 import { SidebarSearch } from "./sidebar/sidebar-search";
 import { Header } from "./header";
-import { PageHeaderProvider } from "./page-header-context";
+import { PageHeaderProvider, usePageHeaderValue } from "./page-header-context";
 
 /// 検索パレットの単一インスタンス（⌘K / "/" リスナーもここに 1 つだけ存在させる）。
 /// デスクトップ/モバイル双方のサイドバーが同じ context 状態で開く。
@@ -32,11 +32,14 @@ function ImmersiveController() {
   return null;
 }
 
-/// 上部バー（Header）を出すかはルート次第。没入エディタでは各エディタが自前の
-/// ツールバー/タイトルを持つため、シェルの汎用バーは畳んで縦の作業領域を最大化する。
+/// 上部バーの表示制御。没入エディタでは既定の現在地バー（📁 現在地）を出さず縦の作業
+/// 領域を最大化する。ただしエディタが usePageHeader で独自ヘッダ（戻る/名前/AI に依頼）を
+/// 注入している場合はそれを唯一のバーとして表示する（ノート/スライド）。Office のように
+/// 自前の in-page ヘッダを持つページは注入しないため、この汎用バーは消える。
 function ShellHeader() {
   const pathname = usePathname();
-  if (isEditorRoute(pathname)) return null;
+  const injected = usePageHeaderValue();
+  if (isEditorRoute(pathname) && !injected) return null;
   return <Header />;
 }
 

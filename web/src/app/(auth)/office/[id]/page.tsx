@@ -19,7 +19,6 @@ import { EditorLoading } from "@/components/shell/editor-loading";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { FadeSlide } from "@/components/ui/motion-primitives";
-import { toast } from "@/components/ui/use-toast";
 import {
   createOfficeSession,
   OfficeSessionError,
@@ -66,18 +65,35 @@ export default function OfficePage() {
     };
   }, [fileId]);
 
-  const askAiAboutSelection = React.useCallback(async () => {
+  // 直近で挿入した選択テキスト（ポーリングの重複挿入を避ける）。
+  const lastSelRef = React.useRef<string | null>(null);
+
+  const captureSelectionIntoChat = React.useCallback(async () => {
     const text = await editorRef.current?.getSelectionText();
-    if (!text) {
-      toast({
-        title: "選択範囲がありません",
-        description: "文書内でテキストを選択してから「AI に依頼」を押してください。",
-      });
+    if (text && text !== lastSelRef.current) {
+      lastSelRef.current = text;
+      setPendingSelection({ kind: "office_selection", node_id: fileId, excerpt: text });
+    }
+  }, [fileId]);
+
+  // 「AI に依頼」= アシスタントパネルを開く（＋その時の選択があればチャットへ挿入）。
+  const openAssistant = React.useCallback(() => {
+    setChatOpen((open) => {
+      if (!open) void captureSelectionIntoChat();
+      return !open;
+    });
+  }, [captureSelectionIntoChat]);
+
+  // パネルを開いている間は選択を監視してチャットへ自動挿入する。Collabora は選択変更
+  // イベントを出さないため、軽いポーリングで現在の選択を拾う（変化時のみ挿入）。
+  React.useEffect(() => {
+    if (!chatOpen) {
+      lastSelRef.current = null;
       return;
     }
-    setPendingSelection({ kind: "office_selection", node_id: fileId, excerpt: text });
-    setChatOpen(true);
-  }, [fileId]);
+    const id = window.setInterval(() => void captureSelectionIntoChat(), 1000);
+    return () => window.clearInterval(id);
+  }, [chatOpen, captureSelectionIntoChat]);
 
   if (state.phase === "loading") {
     // 拡張子から表計算/文書を推定して骨格を出し分ける（初回は URL しか無いので doc 既定）。
@@ -117,25 +133,14 @@ export default function OfficePage() {
         <Button
           type="button"
           size="sm"
-          variant="ghost"
-          onClick={() => void askAiAboutSelection()}
+          variant={chatOpen ? "secondary" : "ghost"}
+          onClick={openAssistant}
+          aria-pressed={chatOpen}
           data-testid="office-ask-ai"
           className="gap-1.5"
         >
           <Sparkles className="size-4" aria-hidden />
           AI に依頼
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant={chatOpen ? "secondary" : "ghost"}
-          onClick={() => setChatOpen((v) => !v)}
-          aria-pressed={chatOpen}
-          data-testid="office-chat-toggle"
-          className="gap-1.5"
-        >
-          <MessageSquare className="size-4" aria-hidden />
-          アシスタント
         </Button>
       </div>
 

@@ -4,7 +4,7 @@
 /// 描画すると、戻る/名前/閲覧のみ/プレゼンス/同期ピル/アシスタント切替を共通ヘッダへ寄せる。
 /// null を返すだけなのでレイアウトには影響しない。
 
-import { ArrowLeft, Eye, MessageSquare } from "lucide-react";
+import { ArrowLeft, Eye, Sparkles } from "lucide-react";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
@@ -58,10 +58,10 @@ export function NoteSyncSlot({
           size="sm"
           onClick={onToggleChat}
           aria-pressed={chatOpen}
-          data-testid="note-chat-toggle"
+          data-testid="note-ask-ai"
         >
-          <MessageSquare className="mr-1.5 size-4" aria-hidden />
-          アシスタント
+          <Sparkles className="mr-1.5 size-4" aria-hidden />
+          AI に依頼
         </Button>
       </div>
     ),

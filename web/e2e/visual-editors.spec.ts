@@ -78,7 +78,7 @@ test("ノートエディタのスクショ", async ({ page }) => {
   await page.keyboard.press("Escape");
 
   // チャットパネルを開いたところ。
-  await page.getByTestId("note-chat-toggle").click();
+  await page.getByTestId("note-ask-ai").click();
   await page.waitForTimeout(800);
   await page.screenshot({ path: `${SHOTS}/note-03-chat.png`, fullPage: true });
 });

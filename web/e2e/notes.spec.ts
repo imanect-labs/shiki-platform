@@ -219,7 +219,7 @@ test("ノート分割ビュー: チャットパネルの開閉とスレッド紐
   await openNote(page, nodeId);
 
   // アシスタントパネルを開く → スレッドが自動作成され Conversation が出る。
-  await page.getByTestId("note-chat-toggle").click();
+  await page.getByTestId("note-ask-ai").click();
   await expect(page.getByTestId("note-chat-panel")).toBeVisible();
   // コンポーザ（メッセージ入力）が見える＝Conversation が載っている。
   await expect(page.getByTestId("note-chat-panel").getByLabel("メッセージを入力")).toBeVisible({
@@ -254,7 +254,7 @@ test("分割ビュー fail-closed: スレッド非共有では会話が見えな
   await openNote(page, nodeId);
 
   // alice がチャットパネルを開いてスレッドを作成（thread_id が meta に入る）。
-  await page.getByTestId("note-chat-toggle").click();
+  await page.getByTestId("note-ask-ai").click();
   await expect(page.getByTestId("note-chat-panel").getByLabel("メッセージを入力")).toBeVisible({
     timeout: 15_000,
   });
@@ -267,7 +267,7 @@ test("分割ビュー fail-closed: スレッド非共有では会話が見えな
   const bobPage = await bobCtx.newPage();
   await loginAs(bobPage, "bob");
   await openNote(bobPage, nodeId);
-  await bobPage.getByTestId("note-chat-toggle").click();
+  await bobPage.getByTestId("note-ask-ai").click();
   await expect(bobPage.getByTestId("note-chat-panel")).toBeVisible();
   // Conversation は 403/404 を fail-closed で「見つかりません」に落とす。
   await expect(bobPage.getByText("この会話は見つかりませんでした。")).toBeVisible({

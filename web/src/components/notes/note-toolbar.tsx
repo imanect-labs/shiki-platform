@@ -26,7 +26,7 @@ import {
   Redo2,
   Strikethrough,
   Table2,
-  Sparkles,
+
   Undo2,
   X,
 } from "lucide-react";
@@ -205,33 +205,27 @@ function BlockTypes({ editor, compact }: { editor: Editor; compact?: boolean }) 
   );
 }
 
+/// 現在の選択テキストと見出しパス（選択→AI の locator ヒント）を読む。選択が空なら null。
+export function readNoteSelection(editor: Editor): { text: string; headingPath: string[] } | null {
+  const { from, to } = editor.state.selection;
+  const text = editor.state.doc.textBetween(from, to, "\n");
+  if (!text.trim()) return null;
+  // 選択位置の直前にある見出しを親から順に辿る（locator の位置ヒント）。
+  const headingPath: string[] = [];
+  editor.state.doc.nodesBetween(0, from, (node) => {
+    if (node.type.name === "heading") {
+      const level = Number(node.attrs.level ?? 1);
+      while (headingPath.length >= level) headingPath.pop();
+      headingPath.push(node.textContent);
+    }
+    return true;
+  });
+  return { text, headingPath };
+}
+
 /// テキスト選択時に浮かぶバブルメニュー（インライン書式＋turn-into＋リンク）。
-export function NoteBubbleMenu({
-  editor,
-  onAskAi,
-}: {
-  editor: Editor;
-  /// 選択→AI 指示（Task 11.10）。選択テキストと見出しパスを渡す（未指定ならボタン非表示）。
-  onAskAi?: (selection: { text: string; headingPath: string[] }) => void;
-}) {
+export function NoteBubbleMenu({ editor }: { editor: Editor }) {
   useEditorTick(editor);
-  const askAi = () => {
-    const { from, to } = editor.state.selection;
-    const text = editor.state.doc.textBetween(from, to, "\n");
-    if (!text.trim()) return;
-    // 選択位置の直前にある見出しを親から順に辿る（locator の位置ヒント）。
-    const headingPath: string[] = [];
-    editor.state.doc.nodesBetween(0, from, (node) => {
-      if (node.type.name === "heading") {
-        const level = Number(node.attrs.level ?? 1);
-        // 同位以下の見出しを置き換えつつ積む（単純なパス近似で十分）。
-        while (headingPath.length >= level) headingPath.pop();
-        headingPath.push(node.textContent);
-      }
-      return true;
-    });
-    onAskAi?.({ text, headingPath });
-  };
   return (
     <BubbleMenu
       editor={editor}
@@ -248,20 +242,6 @@ export function NoteBubbleMenu({
       <LinkControl editor={editor} compact />
       <ToolbarSeparator />
       <BlockTypes editor={editor} compact />
-      {onAskAi ? (
-        <>
-          <ToolbarSeparator />
-          <button
-            type="button"
-            onClick={askAi}
-            data-testid="note-ask-ai"
-            className="flex h-7 items-center gap-1 rounded px-2 text-xs font-medium text-primary transition-colors hover:bg-accent"
-          >
-            <Sparkles className="size-3.5" aria-hidden />
-            AI に依頼
-          </button>
-        </>
-      ) : null}
     </BubbleMenu>
   );
 }
