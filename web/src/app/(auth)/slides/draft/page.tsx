@@ -99,13 +99,11 @@ function DraftSlidePageInner() {
     return () => arr.unobserveDeep(onChange);
   }, [doc, threadId, activeName]);
 
-  // 下書きストアが空なら、会話履歴の slide_draft ブロックから復元する（リロード/別端末）。
+  // 会話履歴の slide_draft ブロックから復元する（リロード/別端末）。ローカルに一部だけ
+  // 残っている場合も履歴を常に取得し、**未登録の (threadId, name) のみ**追加する
+  // （ローカルのユーザー編集は上書きしない・レビュー指摘対応）。
   React.useEffect(() => {
     if (!threadId) {
-      setRecovered(true);
-      return;
-    }
-    if (slideDraftStore.list(threadId).length > 0) {
       setRecovered(true);
       return;
     }
@@ -117,7 +115,9 @@ function DraftSlidePageInner() {
           for (const b of m.content) {
             if (b.type === "slide_draft") {
               const d = parseSlideDraft(b.draft);
-              if (d) slideDraftStore.upsert(threadId, d.name, d.content, "ai");
+              if (d && !slideDraftStore.get(threadId, d.name)) {
+                slideDraftStore.upsert(threadId, d.name, d.content, "ai");
+              }
             }
           }
         }

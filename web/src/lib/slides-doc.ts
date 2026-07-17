@@ -154,7 +154,21 @@ export type SlideJsonItem = {
   bg?: Record<string, unknown> | null;
 };
 
-/// 正規化スライド JSON 文字列をパースする（fail-closed・version 1 以外は null）。
+/// slides 配列の 1 要素として妥当か（オブジェクトかつ既知フィールドが正しい型）。
+function isSlideJsonItem(value: unknown): value is SlideJsonItem {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return (
+    (item.id === undefined || typeof item.id === "string") &&
+    (item.html === undefined || typeof item.html === "string") &&
+    (item.notes === undefined || typeof item.notes === "string") &&
+    (item.bg === undefined ||
+      item.bg === null ||
+      (typeof item.bg === "object" && !Array.isArray(item.bg)))
+  );
+}
+
+/// 正規化スライド JSON 文字列をパースする（fail-closed・version 1 以外や不正要素を含む文書は null）。
 export function parseSlideDocJson(
   json: string,
 ): { meta: Record<string, unknown>; slides: SlideJsonItem[] } | null {
@@ -167,8 +181,10 @@ export function parseSlideDocJson(
       o.meta && typeof o.meta === "object" && !Array.isArray(o.meta)
         ? (o.meta as Record<string, unknown>)
         : {};
-    const slides = Array.isArray(o.slides) ? (o.slides as SlideJsonItem[]) : [];
-    return { meta, slides };
+    if (!Array.isArray(o.slides)) return null;
+    // 要素単位でも検証する（`slides: [null]` 等で描画側がクラッシュしない・fail-closed）。
+    if (!o.slides.every(isSlideJsonItem)) return null;
+    return { meta, slides: o.slides };
   } catch {
     return null;
   }

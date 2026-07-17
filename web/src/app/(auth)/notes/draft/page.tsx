@@ -73,13 +73,11 @@ function DraftNotePageInner() {
     [threadId],
   );
 
-  // 下書きストアが空なら、会話履歴の note_draft ブロックから復元する（リロード/別端末・#282）。
+  // 会話履歴の note_draft ブロックから復元する（リロード/別端末・#282）。ローカルに一部だけ
+  // 残っている場合も履歴を常に取得し、**未登録の (threadId, name) のみ**追加する
+  // （ローカルのユーザー編集は上書きしない・スライド下書きと同型）。
   React.useEffect(() => {
     if (!threadId) {
-      setRecovered(true);
-      return;
-    }
-    if (listDrafts(threadId).length > 0) {
       setRecovered(true);
       return;
     }
@@ -91,7 +89,9 @@ function DraftNotePageInner() {
           for (const b of m.content) {
             if (b.type === "note_draft") {
               const d = parseNoteDraft(b.draft);
-              if (d) upsertDraft(threadId, d.name, d.markdown, "ai");
+              if (d && !getDraft(threadId, d.name)) {
+                upsertDraft(threadId, d.name, d.markdown, "ai");
+              }
             }
           }
         }
