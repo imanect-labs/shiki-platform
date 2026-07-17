@@ -103,7 +103,8 @@ fn emitwf_ir(kind: &str) -> serde_json::Value {
 
 /// ドキュメント下書き/編集ツールの決定的駆動（issue #282 / Task 11.3 の e2e）。
 /// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（genui chart）、
-/// `saveslide:<name>` → save_slide（下書きスライド・固定 3 枚）。
+/// `saveslide:<name>` → save_slide（下書きスライド・固定 3 枚）、
+/// `savecsv:<name>` → save_csv（下書き CSV・固定 3 列×3 行）。
 fn note_tool_call(
     req: &GenerateRequest,
     user_text: &str,
@@ -125,6 +126,15 @@ fn note_tool_call(
         return call(
             "document.embed",
             serde_json::json!({ "node_id": id, "spec": genui_spec("chart") }),
+        );
+    }
+    if let Some(name) = user_text.strip_prefix("savecsv:").map(str::trim) {
+        return call(
+            "save_csv",
+            serde_json::json!({
+                "name": name,
+                "csv": "商品,数量,単価\nりんご,10,120\nみかん,24,80\nぶどう,3,540\n"
+            }),
         );
     }
     if let Some(name) = user_text.strip_prefix("saveslide:").map(str::trim) {

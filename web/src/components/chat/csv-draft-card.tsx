@@ -1,0 +1,40 @@
+"use client";
+
+/// AI が用意した未保存の下書き CSV のカード（Task 11.11・csv_draft ブロック）。
+///
+/// note_draft / slide_draft カードと同型だが対象は CSV。カードから下書き CSV 画面
+/// （`/csv/draft`）へ遷移し、グリッドで内容を詰めてから「ドライブに保存」で確定する。
+/// 下書き本文の真実源はクライアントの下書きストア（[`csvDraftStore`]）で、カードはその入口。
+
+import { ArrowRight, Table2 } from "lucide-react";
+import Link from "next/link";
+
+import { csvDraftHref, parseCsvDraft } from "@/lib/csv/draft";
+
+export function CsvDraftCard({ raw, threadId }: { raw: unknown; threadId: string }) {
+  const draft = parseCsvDraft(raw);
+  if (!draft) return null;
+  return (
+    <div
+      className="my-2 flex items-center gap-3 rounded-xl border border-dashed bg-card p-3"
+      data-testid="csv-draft-card"
+    >
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">
+        <Table2 className="size-4.5" aria-hidden />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="truncate text-sm font-medium">{draft.name}</span>
+        <span className="mt-0.5 block text-xs text-muted-foreground">
+          下書き CSV を用意しました。内容を確認・編集して「ドライブに保存」で確定します。
+        </span>
+      </span>
+      <Link
+        href={csvDraftHref(threadId, draft.name)}
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors duration-fast hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        下書きを開く
+        <ArrowRight className="size-3.5" aria-hidden />
+      </Link>
+    </div>
+  );
+}

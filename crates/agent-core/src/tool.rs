@@ -55,6 +55,17 @@ pub struct SlideDraft {
     pub content: String,
 }
 
+/// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。
+/// `csv` は CSV 本文（ヘッダ行＋データ行）を文字列で持つ（note_drafts の `{name, markdown}` と
+/// 同型のキー＝name 識別・chat 側で csv_draft ブロックへ写る）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CsvDraft {
+    /// 下書き名（`.csv` なし・会話内の識別キー兼表示名）。
+    pub name: String,
+    /// CSV 本文（ヘッダ行＋データ行）。
+    pub csv: String,
+}
+
 /// ツール実行結果。`content` はモデルへ返すテキスト、`citations` は UI 引用へ。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutcome {
@@ -83,6 +94,10 @@ pub struct ToolOutcome {
     /// **まだ StorageService へ作成していない**下書きスライドを入れる（chat 側で slide_draft
     /// ブロックへ写り、フロントが下書きスライド画面で詰めてから「ドライブに保存」で確定する）。
     pub slide_drafts: Vec<SlideDraft>,
+    /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。
+    /// **まだ StorageService へ作成していない**下書き CSV を入れる（chat 側で csv_draft
+    /// ブロックへ写り、フロントが下書き CSV 画面で詰めてから「ドライブに保存」で確定する）。
+    pub csv_drafts: Vec<CsvDraft>,
     /// 実行がエラーだったか（tool_result.is_error）。
     pub is_error: bool,
 }
@@ -99,6 +114,7 @@ impl ToolOutcome {
             note_refs: Vec::new(),
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
+            csv_drafts: Vec::new(),
             is_error: false,
         }
     }
@@ -114,6 +130,7 @@ impl ToolOutcome {
             note_refs: Vec::new(),
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
+            csv_drafts: Vec::new(),
             is_error: true,
         }
     }

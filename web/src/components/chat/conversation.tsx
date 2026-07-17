@@ -42,9 +42,11 @@ import { WorkflowRefCard } from "./workflow-ref-card";
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
 import { SlideDraftCard } from "./slide-draft-card";
+import { CsvDraftCard } from "./csv-draft-card";
 import { upsertDraft, parseNoteDraft } from "@/lib/notes/draft-store";
 import { draftHref } from "@/lib/notes/draft-nav";
 import { parseSlideDraft, slideDraftHref, slideDraftStore } from "@/lib/slides/draft";
+import { csvDraftHref, csvDraftStore, parseCsvDraft } from "@/lib/csv/draft";
 import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
@@ -68,6 +70,8 @@ type StreamState = {
   noteDrafts: unknown[];
   /// 未保存の下書きスライド（Task 11.3・save_slide の下書き確定型）。
   slideDrafts: unknown[];
+  /// 未保存の下書き CSV（Task 11.11・save_csv の下書き確定型）。
+  csvDrafts: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
   plan: PlanSubtask[];
   approval: ApprovalRequest | null;
@@ -87,6 +91,7 @@ const EMPTY_STREAM: StreamState = {
   noteRefs: [],
   noteDrafts: [],
   slideDrafts: [],
+  csvDrafts: [],
   plan: [],
   approval: null,
   budget: null,
@@ -99,6 +104,7 @@ export function Conversation({
   variant = "page",
   onNoteDraftOpened,
   onSlideDraftOpened,
+  onCsvDraftOpened,
 }: {
   threadId: string;
   /// "page"=/c/[id] 単独表示（統一ヘッダにタイトル/共有/設定を注入・幅は max-w-3xl 中央）。
@@ -109,6 +115,8 @@ export function Conversation({
   onNoteDraftOpened?: (name: string) => void;
   /// save_slide の下書き（slide_draft）を受けたときの導線（Task 11.3・note と同型）。
   onSlideDraftOpened?: (name: string) => void;
+  /// save_csv の下書き（csv_draft）を受けたときの導線（Task 11.11・note と同型）。
+  onCsvDraftOpened?: (name: string) => void;
 }) {
   const isPanel = variant === "panel";
   const router = useRouter();
@@ -197,6 +205,15 @@ export function Conversation({
         if (onSlideDraftOpened) onSlideDraftOpened(d.name);
         else router.push(slideDraftHref(threadId, d.name));
       },
+      onCsvDraft: (raw) => {
+        // note_draft と同型: ストリームに残しつつ下書きストアへ upsert（source=ai＝流し込み）。
+        updateStream((s) => (s ? { ...s, csvDrafts: [...s.csvDrafts, raw] } : s));
+        const d = parseCsvDraft(raw);
+        if (!d) return;
+        csvDraftStore.upsert(threadId, d.name, d.csv, "ai");
+        if (onCsvDraftOpened) onCsvDraftOpened(d.name);
+        else router.push(csvDraftHref(threadId, d.name));
+      },
       // --- 自律エージェント（Phase 5・Task 5.11） ---
       onRunId: (runId) => updateStream((s) => (s ? { ...s, runId } : s)),
       onPlan: (subtasks) =>
@@ -230,7 +247,15 @@ export function Conversation({
         cancelRef.current = null;
       },
     };
-  }, [flushStream, updateStream, threadId, onNoteDraftOpened, onSlideDraftOpened, router]);
+  }, [
+    flushStream,
+    updateStream,
+    threadId,
+    onNoteDraftOpened,
+    onSlideDraftOpened,
+    onCsvDraftOpened,
+    router,
+  ]);
 
   const send = React.useCallback(
     (
@@ -435,6 +460,8 @@ function finalizeStream(
   for (const draft of s.noteDrafts) blocks.push({ type: "note_draft", draft });
   // 未保存の下書きスライドカード（Task 11.3）。
   for (const draft of s.slideDrafts) blocks.push({ type: "slide_draft", draft });
+  // 未保存の下書き CSV カード（Task 11.11）。
+  for (const draft of s.csvDrafts) blocks.push({ type: "csv_draft", draft });
   if (blocks.length === 0) return;
   setMessages((prev) => [
     ...prev,
@@ -529,6 +556,9 @@ function AssistantRow({
   const slideDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "slide_draft" }> => b.type === "slide_draft",
   );
+  const csvDrafts = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "csv_draft" }> => b.type === "csv_draft",
+  );
 
   return (
     <Message className="group justify-start">
@@ -560,6 +590,9 @@ function AssistantRow({
         ))}
         {slideDrafts.map((b, i) => (
           <SlideDraftCard key={i} raw={b.draft} threadId={threadId} />
+        ))}
+        {csvDrafts.map((b, i) => (
+          <CsvDraftCard key={i} raw={b.draft} threadId={threadId} />
         ))}
         <ArtifactFiles files={files} />
         <Sources citations={citations} />
@@ -678,6 +711,9 @@ function StreamingRow({
         ))}
         {stream.slideDrafts.map((draft, i) => (
           <SlideDraftCard key={i} raw={draft} threadId={threadId} />
+        ))}
+        {stream.csvDrafts.map((draft, i) => (
+          <CsvDraftCard key={i} raw={draft} threadId={threadId} />
         ))}
         <ArtifactFiles files={stream.files} />
       </div>

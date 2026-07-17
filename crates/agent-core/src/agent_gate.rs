@@ -144,5 +144,11 @@ pub(crate) async fn emit_tool_events(
         })
         .await?;
     }
+    for draft in &outcome.csv_drafts {
+        sink.emit(AgentEvent::CsvDraft {
+            draft: serde_json::json!({ "name": draft.name, "csv": draft.csv }),
+        })
+        .await?;
+    }
     Ok(())
 }

@@ -241,6 +241,97 @@ impl Tool for CsvWriteTool {
     }
 }
 
+/// AI 生成 CSV を**下書き**として用意するツール（csv_draft カード化・Task 11.11）。
+///
+/// 「表を作って」等の依頼に対し、CSV 本文を**下書き**として返す（この時点では StorageService
+/// へは作らない）。フロントは下書き CSV 画面（グリッド）を開き、ユーザーがそこで内容を詰めて
+/// から「ドライブに保存」を押して初めて CSV を実体化する（save_note と同型の下書き確定型・
+/// issue #282 の状態機械を CSV へ展開）。
+///
+/// 下書きは**会話内で name をキーに識別**する: 同じ name で呼び直すと同じ下書きが更新され、
+/// 別 name なら別の下書きになる。ストレージ書込を伴わないため確認ゲートは不要（確定は UI の
+/// 保存ボタンが担う・保存時のパース/クォータは TabularService が最終防壁）。
+pub struct SaveCsvTool;
+
+impl SaveCsvTool {
+    pub fn new() -> Self {
+        SaveCsvTool
+    }
+}
+
+impl Default for SaveCsvTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SaveCsvInput {
+    /// CSV 名（`.csv` は自動付与）。下書きの識別キーも兼ねる。
+    name: String,
+    /// CSV 本文（ヘッダ行＋データ行）。
+    csv: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for SaveCsvTool {
+    fn name(&self) -> &str {
+        ToolName::SaveCsv.as_str()
+    }
+    fn description(&self) -> &'static str {
+        "会話で生成した表データを新しい CSV の下書きとして用意する。ユーザーが「〜の表を作って」\
+         「一覧表にして」等と依頼したときに使う。呼ぶと下書き CSV 画面（グリッド）が開き、ユーザー\
+         はそこで内容を確認・編集してから自分で「ドライブに保存」して確定する（このツールは保存\
+         しない）。内容を直す場合は**同じ name で呼び直す**と同じ下書きが更新される。別の表を\
+         同時に作る場合は別の name で呼ぶ。既存 CSV の編集は csv.patch を使うこと。"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "CSV 名（.csv は自動付与）。同じ name で呼び直すと同じ下書きを更新する" },
+                "csv": { "type": "string", "description": "CSV 本文（1 行目がヘッダ・RFC4180 のクォート）" }
+            },
+            "required": ["name", "csv"]
+        })
+    }
+    /// 下書きは StorageService へ書かない（確定は UI の保存ボタン）。承認ゲートは不要。
+    fn requires_confirmation(&self) -> bool {
+        false
+    }
+
+    async fn call(
+        &self,
+        _ctx: &AuthContext,
+        input: serde_json::Value,
+        _trace_id: Option<&str>,
+    ) -> Result<ToolOutcome, ToolError> {
+        let input: SaveCsvInput = serde_json::from_value(input)
+            .map_err(|e| ToolError::Invalid(format!("入力が不正です: {e}")))?;
+        let name = input.name.trim();
+        if name.is_empty() {
+            return Err(ToolError::Invalid("CSV 名を指定してください".into()));
+        }
+        if input.csv.trim().is_empty() {
+            return Err(ToolError::Invalid(
+                "csv が空です（ヘッダ行＋データ行を指定してください）".into(),
+            ));
+        }
+        // 表示名は .csv を落として持つ（下書きカード/画面のタイトル用）。保存時に付与する。
+        let display_name = name.strip_suffix(".csv").unwrap_or(name);
+        let rows = input.csv.lines().filter(|l| !l.trim().is_empty()).count();
+        let mut outcome = ToolOutcome::ok(format!(
+            "下書き CSV「{display_name}」を用意しました（{rows} 行・ヘッダ含む）。画面で内容を\
+             確認・編集し、「ドライブに保存」で確定してください。"
+        ));
+        outcome.csv_drafts.push(agent_core::CsvDraft {
+            name: display_name.to_string(),
+            csv: input.csv,
+        });
+        Ok(outcome)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! error 写像（`denied`）と結果整形（`format_table`）の純関数を検証する。
@@ -331,5 +422,47 @@ mod tests {
 
         let trunc = resp(vec![vec![Some("x".into()), Some("y".into())]], None, true);
         assert!(format_table(&trunc, 50).contains("一部のみ表示"));
+    }
+
+    /// save_csv: 下書きが csv_drafts に載り（保存はしない）、.csv は表示名から落ちる。
+    #[tokio::test]
+    async fn save_csv_returns_draft_without_saving() {
+        use agent_core::Tool as _;
+        let ctx = authz::AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "alice".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: None,
+            },
+            "acme".into(),
+            "default".into(),
+        );
+        let tool = super::SaveCsvTool::new();
+        assert!(!tool.requires_confirmation(), "下書きは確認ゲート不要");
+        let out = tool
+            .call(
+                &ctx,
+                serde_json::json!({ "name": "売上一覧.csv", "csv": "a,b\n1,2\n" }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.csv_drafts.len(), 1);
+        assert_eq!(out.csv_drafts[0].name, "売上一覧", ".csv は落とす");
+        assert_eq!(out.csv_drafts[0].csv, "a,b\n1,2\n");
+        assert!(out.content.contains("下書き CSV"));
+
+        // 空 csv / 空 name は Invalid で差し戻す（モデルの自己修正へ）。
+        assert!(tool
+            .call(&ctx, serde_json::json!({ "name": "x", "csv": "  " }), None)
+            .await
+            .is_err());
+        assert!(tool
+            .call(&ctx, serde_json::json!({ "name": " ", "csv": "a,b" }), None)
+            .await
+            .is_err());
     }
 }

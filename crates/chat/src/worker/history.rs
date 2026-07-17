@@ -83,6 +83,13 @@ pub(super) fn message_text(blocks: &[ContentBlock]) -> String {
                     clamp_chars(&slides, DRAFT_HISTORY_MAX_CHARS)
                 ));
             }
+            // 下書き CSV も同型（同名 save_csv で同じ下書きを更新・Task 11.11）。
+            ContentBlock::CsvDraft { draft } => {
+                let name = draft.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                parts.push(format!(
+                    "[作成中の下書き CSV: {name}（未保存。直すには同じ name「{name}」で save_csv）]"
+                ));
+            }
             _ => {}
         }
     }
@@ -144,6 +151,9 @@ mod tests {
                     "slides": [{ "html": "<h1>表紙</h1>" }]
                 }),
             },
+            ContentBlock::CsvDraft {
+                draft: serde_json::json!({ "name": "売上一覧", "csv": "a,b\n1,2\n" }),
+            },
         ];
         let out = message_text(&blocks);
         assert!(out.contains("本文"));
@@ -159,6 +169,11 @@ mod tests {
         assert!(
             out.contains("提案書") && out.contains("save_slide"),
             "下書きスライド名と誘導が載る: {out}"
+        );
+        // 下書き CSV も同型（同名 save_csv の誘導・Task 11.11）。
+        assert!(
+            out.contains("売上一覧") && out.contains("save_csv"),
+            "下書き CSV 名と誘導が載る: {out}"
         );
         // 部分修正（「2枚目だけ直して」）に必要な現在内容も載る（レビュー指摘対応）。
         assert!(out.contains("# 予算"), "ノート下書きの本文が載る: {out}");

@@ -214,6 +214,8 @@ impl ChatWorker {
         // 配線に依存させない（下書き生成フローを任意配線構成でも使えるようにする）。
         tools.push(Arc::new(crate::document_tool::SaveNoteTool::new()));
         tools.push(Arc::new(crate::slide_tool::SaveSlideTool::new()));
+        // 下書き CSV（csv_draft・下書き確定型・Task 11.11・storage 非依存・確定は UI 保存）。
+        tools.push(Arc::new(crate::csv_tool::SaveCsvTool::new()));
         let (Some(collab), Some(storage)) = (&self.collab, &self.storage) else {
             return;
         };
