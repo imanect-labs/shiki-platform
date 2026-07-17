@@ -53,12 +53,17 @@ function DraftCsvPageInner() {
   const [cells, setCells] = React.useState<string[][] | null>(null);
 
   // 対象の下書きを開く（下書きストアの CSV をパースしてグリッドへ流し込む）。手編集では呼ばない。
+  // AI 出力が不揃い（行ごとに列数が違う）でも、最大列数へ空セルでパディングして矩形にする。
   const openDraft = React.useCallback(
     (name: string) => {
       setActiveName(name);
       const csv = csvDraftStore.get(threadId, name)?.content ?? "";
       const parsed = parseCsv(csv);
-      setCells(parsed.length > 0 ? parsed : [[""]]);
+      const width = Math.max(1, ...parsed.map((r) => r.length));
+      const rect = parsed.map((r) =>
+        r.length === width ? r : [...r, ...Array.from({ length: width - r.length }, () => "")],
+      );
+      setCells(rect.length > 0 ? rect : [[""]]);
     },
     [threadId],
   );
