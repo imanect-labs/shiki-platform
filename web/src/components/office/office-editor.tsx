@@ -51,9 +51,20 @@ export const OfficeEditor = React.forwardRef<
         return;
       }
       if (msg.MessageId === "App_LoadingStatus") {
-        const values = msg.Values as { Status?: string } | undefined;
-        if (values?.Status === "Frame_Ready") {
+        const status = (msg.Values as { Status?: string } | undefined)?.Status;
+        if (status === "Frame_Ready") {
           postToFrame({ MessageId: "Host_PostmessageReady" });
+          // Document_Loaded が届かない構成の保険として、レンダリング後にも一度隠す
+          // （SidebarHide は冪等なので二重送信で問題ない）。
+          window.setTimeout(
+            () => postToFrame({ MessageId: "Send_UNO_Command", Values: { Command: ".uno:SidebarHide" } }),
+            2000,
+          );
+        } else if (status === "Document_Loaded") {
+          // 文書ロード完了後に右側サイドバー（スタイル/プロパティパネル）を隠す。
+          // 埋め込み表示では横幅を圧迫し見栄えを損ねるため既定オフにする（ユーザーは
+          // Collabora の「表示」メニューからいつでも再表示できる）。
+          postToFrame({ MessageId: "Send_UNO_Command", Values: { Command: ".uno:SidebarHide" } });
         }
       } else if (msg.MessageId === "UI_Close") {
         onClose();
