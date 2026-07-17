@@ -17,6 +17,9 @@ pub enum SelectionKind {
     CsvRange,
     /// スライドの要素選択。locator = `{ slide_id: string, element_index?: number }`。
     SlideSelection,
+    /// Office 文書（Collabora・docx/xlsx/pptx）の選択。excerpt は Action_Copy で取得した
+    /// 選択テキスト。locator は無し（Collabora 側の位置は WOPI ホストからは参照しない）。
+    OfficeSelection,
 }
 
 /// エディタの選択コンテキスト（クライアント由来＝信用しない・api 層で検証してから受理）。
