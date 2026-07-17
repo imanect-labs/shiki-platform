@@ -351,6 +351,11 @@ impl IntoResponse for WopiFailure {
                 tracing::error!(error = %e, "WOPI: DB エラー");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
+            // WOPI 経路では発生しない（AI 編集経路専用）が、網羅性のため 500 に写す。
+            OfficeError::Worker(e) => {
+                tracing::error!(error = %e, "WOPI: worker エラー");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
         }
     }
 }

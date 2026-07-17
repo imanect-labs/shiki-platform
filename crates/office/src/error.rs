@@ -25,9 +25,12 @@ pub enum OfficeError {
     /// Collabora discovery の取得・パース失敗（機能 off の fail-closed）。
     #[error("discovery の取得に失敗しました: {0}")]
     Discovery(String),
-    /// リクエスト不正（X-WOPI-Override 不明値等）。
+    /// リクエスト不正（X-WOPI-Override 不明値・非対応の編集 ops 等）。
     #[error("不正なリクエスト: {0}")]
     Invalid(String),
+    /// ingestion-worker `/edit` の一時エラー（接続不能・5xx 等。422 は Invalid に写す）。
+    #[error("編集 worker のエラー: {0}")]
+    Worker(String),
     #[error(transparent)]
     Storage(#[from] storage::StorageError),
     #[error(transparent)]

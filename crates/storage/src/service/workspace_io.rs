@@ -115,7 +115,7 @@ impl StorageService {
             // 既存 → 新版へ差し替え（finalize_content_update と同一の UPDATE）。
             let sql = format!(
                 "UPDATE node \
-                 SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = version + 1, \
+                 SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = {NEXT_CONTENT_VERSION}, \
                  updated_by = $7, updated_at = now() \
                  WHERE id = $4 AND org = $5 AND tenant_id = $6 AND kind = 'file' AND deleted_at IS NULL \
                  RETURNING {NODE_COLS}"

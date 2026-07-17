@@ -365,6 +365,17 @@ pub(crate) async fn wire_chat(
             collab: Some(Arc::clone(collab)),
             // CSV ツール（csv.query / csv.patch / csv.write・Task 11P.9）。
             tabular: Some(Arc::clone(tabular)),
+            // AI Office 編集（office.edit・Task 11.8）: office 有効時のみ配線する。
+            // 編集 worker は RAG と同じ ingestion-worker（/edit）を再利用する。
+            office: config.office.enabled.then(|| {
+                Arc::new(office::OfficeEditor::new(
+                    http.clone(),
+                    &config.rag.worker_base_url,
+                    Arc::clone(storage),
+                    Arc::clone(authz),
+                    db.clone(),
+                ))
+            }),
         },
         worker_config,
     );
