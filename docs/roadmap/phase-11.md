@@ -50,14 +50,16 @@
 
 ### Task 11.2: GrapesJS 砂箱エディタ＋Yjs 共同編集
 - **area**: frontend / **path**: `web/editor-sandbox/`, `crates/app-gateway`, `web/`
-- **仕様**: GrapesJS core（BSD-3）＋ブリッジを self-contained バンドルにビルドし、app-gateway 第3リスナから
-  content-address 付きで配信（`bundle_csp` 流用・`allow-same-origin` なし=opaque origin）。
+- **仕様**: GrapesJS core（BSD-3）＋ブリッジを self-contained バンドルにビルドし、app-gateway 第3リスナ
+  （apps オリジン＝アプリ本体と別オリジン）の `/builtin/` から配信。隔離は「**別オリジン＋通信全遮断 CSP**
+  （`default-src 'none'`・`builtin_csp`）」— GrapesJS はキャンバス iframe へ同一オリジンで触る必要があり
+  **opaque origin にはしない**（design §4.8.3 の確定判断。ユーザー供給の B1 バンドルは従来どおり opaque origin）。
   親が Yjs doc/CollabProvider を保持し MessagePort でスライド HTML の入出力のみ（zod 検証・PIT-23 同型）。
   エコー抑制は origin タグ＋デバウンス＋diff。viewer は読み取り専用。
 - **受け入れ条件**:
-  - [ ] 2ユーザーの同時編集が収束する（e2e 2コンテキスト）
-  - [ ] エディタ iframe が opaque origin であることが CSP golden テストで固定される
-  - [ ] viewer 権限では編集 UI が無効・書込が届かない
+  - [x] 2ユーザーの同時編集が収束する（e2e 2コンテキスト）
+  - [x] エディタが別オリジン＋通信全遮断であることが CSP golden テストで固定される（builtin_csp）
+  - [x] viewer 権限では編集 UI が無効・書込が届かない
 
 ### Task 11.3: AI スライド編集＋下書き＋テンプレート
 - **area**: ai / **path**: `crates/collab`, `crates/chat`, `crates/agent-core`, `web/`

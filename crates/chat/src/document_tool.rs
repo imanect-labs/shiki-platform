@@ -21,11 +21,12 @@ use uuid::Uuid;
 fn denied_outcome(err: &collab::CollabError) -> ToolOutcome {
     use collab::CollabError as CE;
     let msg = match err {
-        CE::Forbidden(_) | CE::Authz(_) | CE::Storage(storage::StorageError::Forbidden) => {
-            "このノートを編集する権限がありません（editor 権限が必要です）。"
-        }
-        CE::NotFound(_) | CE::Storage(storage::StorageError::NotFound) => {
-            "指定されたノートが見つかりません。"
+        // 権限なしと未検出は同一メッセージに畳む（存在秘匿・API 層の 404 統一と同じ契約）。
+        CE::Forbidden(_)
+        | CE::Authz(_)
+        | CE::NotFound(_)
+        | CE::Storage(storage::StorageError::Forbidden | storage::StorageError::NotFound) => {
+            "指定されたノートにアクセスできません（存在しないか、権限がありません）。"
         }
         _ => "ノート編集に失敗しました。",
     };
@@ -396,26 +397,19 @@ mod tests {
     use super::denied_outcome;
     use collab::CollabError as CE;
 
+    /// 権限なしと未検出が**同一メッセージ**であること（存在秘匿・API 層の 404 統一と同じ契約）。
     #[test]
-    fn forbidden_family_maps_to_permission_message() {
+    fn forbidden_and_not_found_are_indistinguishable() {
+        let expected = denied_outcome(&CE::Forbidden("x".into()));
+        assert!(expected.is_error);
+        assert!(expected.content.contains("アクセスできません"));
         for e in [
-            CE::Forbidden("x".into()),
             CE::Authz(authz::AuthzError::InvalidModel("m".into())),
             CE::Storage(storage::StorageError::Forbidden),
-        ] {
-            let o = denied_outcome(&e);
-            assert!(o.is_error);
-            assert!(o.content.contains("権限がありません"), "got: {}", o.content);
-        }
-    }
-
-    #[test]
-    fn not_found_family_maps_to_not_found_message() {
-        for e in [
             CE::NotFound("x".into()),
             CE::Storage(storage::StorageError::NotFound),
         ] {
-            assert!(denied_outcome(&e).content.contains("見つかりません"));
+            assert_eq!(denied_outcome(&e).content, expected.content);
         }
     }
 

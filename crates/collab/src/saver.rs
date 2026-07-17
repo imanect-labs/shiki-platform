@@ -88,8 +88,17 @@ pub async fn save_doc(
             Ok(Some(node.version))
         }
         Err(e) => {
-            // 失敗時は dirty に戻し、次の tick / アンロード時に再試行する。
+            // 失敗時は dirty に戻し、次の tick / アンロード時に再試行する。加えて
+            // pending_save を durable に立てる: このままアンロード→外部書込→再ロードと
+            // 進んでも、外部インポートが未保存の CRDT 編集を全置換で消さないようにする
+            // （CRDT 自体は collab_doc/collab_update に永続済み・レビュー指摘対応）。
             doc.mark_dirty(&ctx);
+            if let Err(mark_err) = store.set_pending_save(doc.node_id).await {
+                // DB まで落ちている場合はマーカーも書けない（collab 全体が停止している状況）。
+                // 保存エラー自体を返すことを優先し、ここは警告に留める。
+                tracing::warn!(node_id = %doc.node_id, error = %mark_err,
+                    "pending_save マーカーの記録に失敗");
+            }
             Err(CollabError::Storage(e))
         }
     }
@@ -99,6 +108,10 @@ pub async fn save_doc(
 ///
 /// `saved_node_version` が現在の `node_version` と異なる場合のみ、ファイル内容を
 /// Yjs へ全置換で取り込み、取り込み後の全状態を snapshot として即時永続化する。
+///
+/// 例外: `pending_save`（前セッションのファイル保存が失敗したまま）の間はインポートを
+/// **抑止**する。未保存の CRDT 編集が正であり、全置換すると消えるため。代わりに dirty を
+/// 立て、デバウンス保存が CRDT からファイルへ書き戻す（外部版はバージョン履歴に残る）。
 #[allow(clippy::too_many_arguments)] // ロード文脈の値を束ねず素で受ける（呼び出し元は 1 箇所＋テスト）。
 pub async fn import_if_stale(
     doc: &Arc<LiveDoc>,
@@ -108,9 +121,16 @@ pub async fn import_if_stale(
     node_id: Uuid,
     node_version: i64,
     saved_node_version: Option<i64>,
+    pending_save: bool,
     // ロード時点の最終 seq（= 既存 update 列の消し込み上限。呼び出し元が確定値で渡す）。
     upto_seq: i64,
 ) -> Result<(), CollabError> {
+    if pending_save {
+        // 保存の実行主体はロードした人（editor でなければ update_file_content_internal 側で
+        // 拒否され、次に editor が編集/ロードした時点で回収される — fail-closed）。
+        doc.mark_dirty(ctx);
+        return Ok(());
+    }
     if saved_node_version == Some(node_version) {
         return Ok(());
     }

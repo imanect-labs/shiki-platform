@@ -162,6 +162,7 @@ impl CollabHub {
                     node_id,
                     node.version,
                     persisted.saved_node_version,
+                    persisted.pending_save,
                     persisted.next_seq - 1,
                 )
                 .await?;

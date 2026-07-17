@@ -28,6 +28,9 @@ pub struct PersistedDoc {
     pub updates: Vec<Vec<u8>>,
     /// md シリアライズ保存で反映済みの node.version（Task 11P.2）。
     pub saved_node_version: Option<i64>,
+    /// ファイル保存が失敗したまま（durable マーカー）。true の間はロード時の外部インポートを
+    /// 抑止し、CRDT を正として保存を再試行する（migration 0050・レビュー指摘対応）。
+    pub pending_save: bool,
 }
 
 /// collab_doc / collab_update への永続化ゲートウェイ。
@@ -74,16 +77,16 @@ impl DocStore {
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             .execute(&mut *tx)
             .await?;
-        type DocRow = (Option<Vec<u8>>, i64, i64, Option<i64>);
+        type DocRow = (Option<Vec<u8>>, i64, i64, Option<i64>, bool);
         let row: Option<DocRow> = sqlx::query_as(
-            "SELECT snapshot, snapshot_seq, next_seq, saved_node_version
+            "SELECT snapshot, snapshot_seq, next_seq, saved_node_version, pending_save
              FROM collab_doc WHERE node_id = $1 AND tenant_id = $2",
         )
         .bind(node_id)
         .bind(tenant_id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((snapshot, snapshot_seq, next_seq, saved_node_version)) = row else {
+        let Some((snapshot, snapshot_seq, next_seq, saved_node_version, pending_save)) = row else {
             return Err(CollabError::NotFound(format!("collab_doc {node_id}")));
         };
         let updates: Vec<(Vec<u8>,)> = sqlx::query_as(
@@ -100,6 +103,7 @@ impl DocStore {
             next_seq,
             updates: updates.into_iter().map(|(p,)| p).collect(),
             saved_node_version,
+            pending_save,
         })
     }
 
@@ -189,16 +193,29 @@ impl DocStore {
     }
 
     /// md 保存済みの node.version を記録する（外部書込検出・Task 11P.2）。
+    /// 保存の成功を意味するため pending_save も同時に解除する（単一 UPDATE で原子的に）。
     pub async fn set_saved_node_version(
         &self,
         node_id: Uuid,
         version: i64,
     ) -> Result<(), CollabError> {
         sqlx::query(
-            "UPDATE collab_doc SET saved_node_version = $2, updated_at = now() WHERE node_id = $1",
+            "UPDATE collab_doc SET saved_node_version = $2, pending_save = false, \
+             updated_at = now() WHERE node_id = $1",
         )
         .bind(node_id)
         .bind(version)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// ファイル保存の失敗を durable に記録する（ロード時の外部インポート抑止・migration 0050）。
+    pub async fn set_pending_save(&self, node_id: Uuid) -> Result<(), CollabError> {
+        sqlx::query(
+            "UPDATE collab_doc SET pending_save = true, updated_at = now() WHERE node_id = $1",
+        )
+        .bind(node_id)
         .execute(&self.pool)
         .await?;
         Ok(())

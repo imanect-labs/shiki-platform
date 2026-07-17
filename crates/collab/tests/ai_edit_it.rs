@@ -260,6 +260,7 @@ fn empty_persisted() -> PersistedDoc {
         next_seq: 1,
         updates: vec![],
         saved_node_version: None,
+        pending_save: false,
     }
 }
 

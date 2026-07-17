@@ -49,8 +49,10 @@ fn builtin_file(name: &str) -> Option<&'static str> {
 ///   ユーザー供給の B1 バンドルは従来どおり opaque origin（[`crate::bundle_csp`]）。
 /// - エディタは通信を一切持たないため `connect-src` を許可しない（`default-src 'none'`）。
 pub fn builtin_csp(host_origin: &str) -> String {
+    // base-uri / form-action は default-src のフォールバック対象外のため明示的に遮断する
+    // （スライド HTML 由来の <form> 外部 POST や <base> 差し替えを「通信の全遮断」に含める）。
     format!(
-        "default-src 'none'; \
+        "default-src 'none'; base-uri 'none'; form-action 'none'; \
          script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
          img-src data: blob:; font-src data:; frame-src data: about:; \
          frame-ancestors {host_origin}"
@@ -110,14 +112,17 @@ mod tests {
         let csp = builtin_csp("http://host.example:3000");
         assert_eq!(
             csp,
-            "default-src 'none'; \
+            "default-src 'none'; base-uri 'none'; form-action 'none'; \
              script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
              img-src data: blob:; font-src data:; frame-src data: about:; \
              frame-ancestors http://host.example:3000"
         );
         // 変更検知の要点: connect-src が無い（default-src 'none' が通信を全遮断）・
+        // base-uri/form-action は default-src のフォールバック外のため明示遮断・
         // 埋め込み先はホストシェルのみ。
         assert!(!csp.contains("connect-src"));
+        assert!(csp.contains("form-action 'none'"));
+        assert!(csp.contains("base-uri 'none'"));
         assert!(csp.contains("frame-ancestors http://host.example:3000"));
     }
 

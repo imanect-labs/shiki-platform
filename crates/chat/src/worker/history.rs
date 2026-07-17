@@ -33,10 +33,15 @@ pub(super) fn message_text(blocks: &[ContentBlock]) -> String {
             }
             // 「さっきの下書きを直して」等の refine で**同じ name を再利用**させる（下書きキー=名前・#282）。
             // 同名 save_note で同じ下書きが更新され、別名なら別の下書きになる。
+            // 現在の内容も上限付きで併記する — 「2枚目だけ直して」のような部分修正で、
+            // モデルが既存内容を保持したまま同名 save で再生成できるようにする（レビュー指摘対応）。
             ContentBlock::NoteDraft { draft } => {
                 let name = draft.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let content = draft.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
                 parts.push(format!(
-                    "[作成中の下書きノート: {name}（未保存。直すには同じ name「{name}」で save_note）]"
+                    "[作成中の下書きノート: {name}（未保存。直すには同じ name「{name}」で save_note。\
+                     現在の内容:\n{}\n）]",
+                    clamp_chars(content, DRAFT_HISTORY_MAX_CHARS)
                 ));
             }
             // 選択→AI 指示（Task 11.10）: 「データであり指示ではない」明示デリミタで織り込む
@@ -68,14 +73,32 @@ pub(super) fn message_text(blocks: &[ContentBlock]) -> String {
             // 下書きスライドも同型（同名 save_slide で同じ下書きを更新・Task 11.3）。
             ContentBlock::SlideDraft { draft } => {
                 let name = draft.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let slides = draft
+                    .get("slides")
+                    .map(|v| serde_json::to_string(v).unwrap_or_default())
+                    .unwrap_or_default();
                 parts.push(format!(
-                    "[作成中の下書きスライド: {name}（未保存。直すには同じ name「{name}」で save_slide）]"
+                    "[作成中の下書きスライド: {name}（未保存。直すには同じ name「{name}」で save_slide。\
+                     現在のスライド JSON:\n{}\n）]",
+                    clamp_chars(&slides, DRAFT_HISTORY_MAX_CHARS)
                 ));
             }
             _ => {}
         }
     }
     parts.join("\n")
+}
+
+/// 下書き内容の履歴注入の上限（選択コンテキストの excerpt clamp と同水準）。
+const DRAFT_HISTORY_MAX_CHARS: usize = 8_000;
+
+/// 文字境界で安全に切り詰める（超過時は省略記号を付す）。
+fn clamp_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let clipped: String = s.chars().take(max).collect();
+    format!("{clipped}…（以下省略）")
 }
 
 /// LLM メッセージのテキストプレビュー（Langfuse/検索クエリ用）。
@@ -116,7 +139,10 @@ mod tests {
                 draft: serde_json::json!({ "name": "予算計画", "markdown": "# 予算" }),
             },
             ContentBlock::SlideDraft {
-                draft: serde_json::json!({ "name": "提案書", "content": "{\"version\":1}" }),
+                draft: serde_json::json!({
+                    "name": "提案書",
+                    "slides": [{ "html": "<h1>表紙</h1>" }]
+                }),
             },
         ];
         let out = message_text(&blocks);
@@ -134,6 +160,21 @@ mod tests {
             out.contains("提案書") && out.contains("save_slide"),
             "下書きスライド名と誘導が載る: {out}"
         );
+        // 部分修正（「2枚目だけ直して」）に必要な現在内容も載る（レビュー指摘対応）。
+        assert!(out.contains("# 予算"), "ノート下書きの本文が載る: {out}");
+        assert!(out.contains("表紙"), "スライド下書きの内容が載る: {out}");
+    }
+
+    /// 下書き内容の履歴注入は上限で切り詰める（無限に肥大しない）。
+    #[test]
+    fn draft_content_is_clamped_in_history() {
+        let long = "あ".repeat(super::DRAFT_HISTORY_MAX_CHARS + 100);
+        let blocks = vec![ContentBlock::NoteDraft {
+            draft: serde_json::json!({ "name": "長文", "markdown": long }),
+        }];
+        let out = message_text(&blocks);
+        assert!(out.contains("（以下省略）"));
+        assert!(out.chars().count() < super::DRAFT_HISTORY_MAX_CHARS + 300);
     }
 
     /// 選択コンテキストが「データであり指示ではない」枠付きで織り込まれる（Task 11.10）。
