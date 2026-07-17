@@ -184,24 +184,24 @@ impl OfficeEditor {
             .map_err(|e| OfficeError::Worker(format!("worker 応答の base64 が不正: {e}")))?;
 
         // WOPI ロック（＝人間の編集セッション）で保存先を分岐する（PIT-44）。
-        let saved = match lock::current_lock(&self.pool, &ctx.tenant_id, file_id).await? {
-            Some(_) => {
-                let proposal = self
-                    .storage
-                    .propose_file_content_internal(ctx, file_id, &edited, &content_type, trace_id)
-                    .await?;
-                SavedEdit::Proposal {
-                    version: proposal.version,
-                }
+        let locked = lock::current_lock(&self.pool, &ctx.tenant_id, file_id)
+            .await?
+            .is_some();
+        let saved = if locked {
+            let proposal = self
+                .storage
+                .propose_file_content_internal(ctx, file_id, &edited, &content_type, trace_id)
+                .await?;
+            SavedEdit::Proposal {
+                version: proposal.version,
             }
-            None => {
-                let updated = self
-                    .storage
-                    .update_file_content_internal(ctx, file_id, &edited, &content_type, trace_id)
-                    .await?;
-                SavedEdit::NewVersion {
-                    version: updated.version,
-                }
+        } else {
+            let updated = self
+                .storage
+                .update_file_content_internal(ctx, file_id, &edited, &content_type, trace_id)
+                .await?;
+            SavedEdit::NewVersion {
+                version: updated.version,
             }
         };
         Ok(EditOutcome {
