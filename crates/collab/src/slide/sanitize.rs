@@ -325,7 +325,7 @@ mod tests {
         // 同一文書内のグラデーション参照と色リテラルは保持する。
         let inline = r##"<svg><rect fill="url(#grad)" stroke="#333"/></svg>"##;
         let clean = sanitize_html(inline);
-        assert!(clean.contains(r##"fill="url(#grad)""##));
+        assert!(clean.contains(r#"fill="url(#grad)""#));
         assert!(clean.contains(r##"stroke="#333""##));
         // CSS エスケープ難読化（u\72l 相当）は fail-closed。
         let escaped = r#"<svg><rect fill="u\72l(https://evil)"/></svg>"#;
