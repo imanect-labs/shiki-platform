@@ -235,6 +235,9 @@ export function NoteBubbleMenu({
   return (
     <BubbleMenu
       editor={editor}
+      // 既定の上配置は文書先頭の選択で固定ツールバーと重なって両方読めなくなる（実測）。
+      // 下配置なら常設 UI と衝突しない（viewport 端では floating-ui が自動で反転する）。
+      options={{ placement: "bottom" }}
       // 画像やコードブロック内など、テキスト選択でない場合は出さない。
       shouldShow={({ editor: e, from, to }) =>
         from !== to && !e.isActive("codeBlock") && e.isEditable}
