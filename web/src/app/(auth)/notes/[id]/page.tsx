@@ -7,7 +7,8 @@
 ///   /collab/docs/{id}/access の表示用ヒントで editable を切り替える。
 /// - 11P.5 で本ページが「ノート×チャット分割ビュー」のホストになる。
 
-import { Loader2, MessageSquare, X } from "lucide-react";
+import { EditorLoading } from "@/components/shell/editor-loading";
+import { MessageSquare, X } from "lucide-react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import * as React from "react";
@@ -31,10 +32,7 @@ export default function NotePage() {
   return (
     <React.Suspense
       fallback={
-        <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" aria-hidden />
-          ノートを開いています…
-        </div>
+        <EditorLoading kind="doc" message="ノートを開いています…" />
       }
     >
       <NotePageInner />
@@ -99,10 +97,7 @@ function NotePageInner() {
 
   if (access === "loading" || me.loading) {
     return (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" aria-hidden />
-        ノートを開いています…
-      </div>
+      <EditorLoading kind="doc" message="ノートを開いています…" />
     );
   }
   if (access === "notfound" || access === null) {

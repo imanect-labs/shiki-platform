@@ -22,10 +22,13 @@ export function clampWidth(px: number): number {
 
 type SidebarContextValue = {
   isMobile: boolean;
-  /// デスクトップでレール（アイコンのみ）に畳んでいるか。
+  /// デスクトップでレール（アイコンのみ）に畳んでいるか（＝手動 pref ∪ ルート由来の没入）。
   collapsed: boolean;
   setCollapsed: (v: boolean) => void;
   toggleCollapsed: () => void;
+  /// 没入エディタ（ルート由来）の一時折りたたみを設定する。手動 pref（localStorage）は
+  /// 汚さない。エディタを離れると自動で手動 pref の状態へ戻る（AppShell が制御）。
+  setRouteImmersive: (on: boolean) => void;
   /// 展開時の幅（px）。モバイルやレール時は描画に使わない。
   width: number;
   setWidth: (px: number) => void;
@@ -51,7 +54,11 @@ export function useSidebar(): SidebarContextValue {
 
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const isMobile = useMediaQuery(SIDEBAR_MOBILE_QUERY);
-  const [collapsed, setCollapsedState] = useLocalStorage<boolean>(COLLAPSED_KEY, false);
+  // 手動 pref（永続）。実効 collapsed はこれとルート由来没入の論理和。
+  const [userCollapsed, setCollapsedState] = useLocalStorage<boolean>(COLLAPSED_KEY, false);
+  // ルート由来の一時折りたたみ（永続しない・エディタ滞在中のみ true）。
+  const [routeImmersive, setRouteImmersiveState] = React.useState(false);
+  const collapsed = userCollapsed || routeImmersive;
   const [storedWidth, setStoredWidth] = useLocalStorage<number>(
     WIDTH_KEY,
     SIDEBAR_DEFAULT_WIDTH,
@@ -73,13 +80,21 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     () => setStoredWidth(SIDEBAR_DEFAULT_WIDTH),
     [setStoredWidth],
   );
+  // 手動で開くときはルート由来の没入も解除する（エディタ内でも一時的にサイドバーを覗ける）。
   const setCollapsed = React.useCallback(
-    (v: boolean) => setCollapsedState(v),
+    (v: boolean) => {
+      setCollapsedState(v);
+      if (!v) setRouteImmersiveState(false);
+    },
     [setCollapsedState],
   );
   const toggleCollapsed = React.useCallback(
-    () => setCollapsedState((p) => !p),
-    [setCollapsedState],
+    () => setCollapsed(!(userCollapsed || routeImmersive)),
+    [setCollapsed, userCollapsed, routeImmersive],
+  );
+  const setRouteImmersive = React.useCallback(
+    (on: boolean) => setRouteImmersiveState(on),
+    [],
   );
 
   const width = clampWidth(storedWidth);
@@ -91,6 +106,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       collapsed,
       setCollapsed,
       toggleCollapsed,
+      setRouteImmersive,
       width,
       setWidth,
       resetWidth,
@@ -105,6 +121,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       collapsed,
       setCollapsed,
       toggleCollapsed,
+      setRouteImmersive,
       width,
       setWidth,
       resetWidth,

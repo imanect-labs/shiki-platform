@@ -9,12 +9,13 @@
 ///   コンテキストチップとしてアシスタントに添付する（office.edit がファイル単位で適用）。
 /// - Collabora 未配備（office profile 未起動）は 503 → 案内表示へフォールバック。
 
-import { FileWarning, MessageSquare, PlugZap, Sparkles, X, Loader2 } from "lucide-react";
+import { FileWarning, MessageSquare, PlugZap, Sparkles, X } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import * as React from "react";
 
 import { OfficeChatPanel } from "@/components/office/office-chat-panel";
 import { OfficeEditor, type OfficeEditorHandle } from "@/components/office/office-editor";
+import { EditorLoading } from "@/components/shell/editor-loading";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { FadeSlide } from "@/components/ui/motion-primitives";
@@ -79,12 +80,9 @@ export default function OfficePage() {
   }, [fileId]);
 
   if (state.phase === "loading") {
-    return (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" aria-hidden />
-        文書を開いています…
-      </div>
-    );
+    // 拡張子から表計算/文書を推定して骨格を出し分ける（初回は URL しか無いので doc 既定）。
+    const kind = /\.(xlsx|ods|csv)$/i.test(fileId) ? "sheet" : "doc";
+    return <EditorLoading kind={kind} message="文書を開いています…" />;
   }
   if (state.phase === "notfound") {
     return (

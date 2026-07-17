@@ -7,9 +7,9 @@
 /// `Action_Copy_Resp`（Values.content = 選択テキスト）で現在の選択を取得する。API 名は
 /// CODE 26.04 のバンドル実装で確認済み。取得できなければ null を返す（呼び出し側で案内）。
 
-import { Loader2 } from "lucide-react";
 import * as React from "react";
 
+import { EditorLoading } from "@/components/shell/editor-loading";
 import { buildOfficeFrameUrl, type OfficeSession } from "@/lib/office-api";
 
 export interface OfficeEditorHandle {
@@ -115,9 +115,8 @@ export const OfficeEditor = React.forwardRef<
         />
       </form>
       {!frameReady ? (
-        <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-background text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" aria-hidden />
-          エディタを起動しています…
+        <div className="absolute inset-0 z-10 bg-background">
+          <EditorLoading kind="doc" message="エディタを起動しています…" />
         </div>
       ) : null}
       <iframe

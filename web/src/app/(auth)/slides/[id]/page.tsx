@@ -6,7 +6,8 @@
 /// - 本 PR は閲覧ビューのみ。編集（GrapesJS 砂箱エディタ・Task 11.2）は本ページの
 ///   editable 分岐に載る。描画は SlideFrame（DOMPurify＋sandbox iframe・PIT-40）。
 
-import { Loader2, MessageSquare, X } from "lucide-react";
+import { EditorLoading } from "@/components/shell/editor-loading";
+import { MessageSquare, X } from "lucide-react";
 import { useParams } from "next/navigation";
 import * as React from "react";
 import * as Y from "yjs";
@@ -70,10 +71,7 @@ export default function SlidePage() {
 
   if (access === "loading") {
     return (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" aria-hidden />
-        スライドを開いています…
-      </div>
+      <EditorLoading kind="slide" message="スライドを開いています…" />
     );
   }
   if (access === "notfound" || access === null) {
@@ -118,10 +116,7 @@ export default function SlidePage() {
             />
           </div>
         ) : (
-          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            同期しています…
-          </div>
+          <EditorLoading kind="slide" message="同期しています…" />
         )}
         {/* アシスタントパネル（ノートページと同型の浮遊カード・meta active_thread_id 共用） */}
         {session && chatOpen ? (
