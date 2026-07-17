@@ -42,5 +42,7 @@ export class OfficeSessionError extends Error {
 export function buildOfficeFrameUrl(session: OfficeSession): string {
   const url = new URL(session.action_url);
   url.searchParams.set("WOPISrc", session.wopi_src);
+  // Collabora の UI 言語をブラウザに合わせる（既定は英語になってしまう）。
+  url.searchParams.set("lang", typeof navigator === "undefined" ? "ja" : navigator.language);
   return url.toString();
 }

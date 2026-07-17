@@ -45,6 +45,7 @@ import {
   deleteFile,
   deleteFolder,
   listChildren,
+  StorageApiError,
   triggerDownload,
   updateFile,
   updateFolder,
@@ -132,10 +133,19 @@ export function DriveBrowser() {
       const res = await fetch("/templates/blank.docx");
       if (!res.ok) throw new Error(`テンプレートの取得に失敗しました (${res.status})`);
       const blob = await res.blob();
-      const file = new File([blob], "無題のドキュメント.docx", {
-        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      });
-      const node = await uploadFile({ file, parentId: folderId ?? undefined });
+      const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      // 同名は finalize が 409 を返す（アップロードは新規ノード作成のため）。ノート/スライドの
+      // create_file_unique と同じ体験になるよう、連番を付けて空きを探す。
+      let node: NodeResponse | null = null;
+      for (let n = 1; n <= 20 && !node; n++) {
+        const name = n === 1 ? "無題のドキュメント.docx" : `無題のドキュメント ${n}.docx`;
+        try {
+          node = await uploadFile({ file: new File([blob], name, { type: mime }), parentId: folderId ?? undefined });
+        } catch (e) {
+          if (!(e instanceof StorageApiError) || e.status !== 409) throw e;
+        }
+      }
+      if (!node) throw new Error("同名のドキュメントが多すぎます。名前を変えて作成してください。");
       router.push(`/office/${node.id}`);
     } catch (e) {
       toast({

@@ -249,6 +249,8 @@ services:
       - --o:storage.wopi.host[0]=${COLLABORA_WOPI_HOST:-shiki-server}
       - --o:storage.wopi.host[0][@allow]=true
       - --o:server_name=${COLLABORA_PUBLIC_HOST:-localhost:9980}
+      # 初回のウェルカム/新機能ダイアログを出さない（shiki の UI に埋め込む前提・体験を邪魔しない）。
+      - --o:welcome.enable=false
     ports:
       # ブラウザが iframe で直接読むためローカル公開する（compose 網内は collabora:9980）。
       - "127.0.0.1:9980:9980"
