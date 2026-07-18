@@ -236,6 +236,7 @@ fn base_config() -> AppConfig {
         workflow: api::workflow_runtime::WorkflowConfig::default(),
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
+        office: api::config::OfficeConfig::default(),
     }
 }
 
@@ -363,6 +364,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         search: None,
         chat: None,
         rag_admin,
+        office: None,
     }
 }
 

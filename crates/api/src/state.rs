@@ -100,4 +100,20 @@ pub struct AppState {
     /// RAG のテナント消去（rag_chunk/jobq/Qdrant/Tantivy）。テナント削除フローから呼ぶ。
     /// RAG 無効構成でも DB 行の消去は行う（過去に有効だった残骸を残さない）。
     pub rag_admin: Arc<rag::RagAdmin>,
+    /// Office 統合（Task 11.5/11.6）。`office.enabled=false` では `None`
+    /// （/office/sessions も /wopi も配線されない・fail-closed）。
+    pub office: Option<OfficeRuntime>,
+}
+
+/// Office 統合の実行時依存（Task 11.5/11.6）。
+///
+/// `wopi` は WOPI ルータの共有状態（storage/authz チョークポイント＋トークン鍵）、
+/// `suite` は編集アクション URL の解決（Collabora discovery・OnlyOffice への差し替え退路）。
+/// `wopi_base_url` は **Collabora から見た** shiki-server のベース URL（起動時検証済み・
+/// 末尾スラッシュなし）。WOPISrc の組み立てに使う。
+#[derive(Clone)]
+pub struct OfficeRuntime {
+    pub suite: Arc<dyn office::OfficeSuite>,
+    pub wopi: office::WopiState,
+    pub wopi_base_url: String,
 }

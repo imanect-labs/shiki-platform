@@ -51,6 +51,7 @@ use utoipa::{
         crate::routes::tabular::post_query,
         crate::routes::tabular::post_patch,
         crate::routes::tabular::post_save,
+        crate::routes::office::create_office_session,
         crate::routes::chat_approval::submit_approval,
         crate::routes::chat::share_thread,
         crate::routes::chat::unshare_thread,
@@ -165,6 +166,8 @@ use utoipa::{
         crate::routes::directory::DirectoryRoleSearchResponse,
         crate::routes::admin::CreateTenantRequest,
         crate::routes::admin::CreateTenantResponse,
+        crate::routes::office::CreateOfficeSessionRequest,
+        crate::routes::office::OfficeSessionResponse,
         // チャット DTO/イベント型は chat 側の単一定義（フロント chat-api.ts と同型）。
         crate::routes::chat::CreateThreadRequest,
         crate::routes::chat_notes::SetOriginNoteRequest,

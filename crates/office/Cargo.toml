@@ -1,0 +1,47 @@
+[package]
+name = "shiki-office"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+
+[lib]
+name = "office"
+
+[dependencies]
+shiki-authz.workspace = true
+shiki-storage.workspace = true
+
+axum.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+chrono.workspace = true
+async-trait.workspace = true
+
+# Collabora discovery（/hosting/discovery XML）の取得。
+reqwest.workspace = true
+# discovery XML のパース（urlsrc 抽出）。
+quick-xml.workspace = true
+
+# WOPI access_token（HMAC-SHA256 署名の自己完結トークン）。
+hmac.workspace = true
+sha2.workspace = true
+base64.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+http-body-util = "0.1"
+
+# lib 名 authz/storage で参照するため machete（名前一致）が誤検出する。
+[package.metadata.cargo-machete]
+ignored = ["shiki-authz", "shiki-storage"]
+
+[lints]
+workspace = true

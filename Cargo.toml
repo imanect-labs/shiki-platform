@@ -58,6 +58,10 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 rand = "0.8"
 sha2 = "0.10"
+# WOPI access_token の署名（HMAC-SHA256・crates/office）。
+hmac = "0.12"
+# Collabora discovery XML のパース（crates/office）。
+quick-xml = "0.41"
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "rand_core"] }
 cron = "0.15"
 base64 = "0.22"
@@ -147,6 +151,7 @@ shiki-secrets = { path = "crates/secrets" }
 shiki-script-runtime = { path = "crates/script-runtime" }
 shiki-workflow-engine = { path = "crates/workflow-engine" }
 shiki-storage = { path = "crates/storage" }
+shiki-office = { path = "crates/office" }
 shiki-jobq = { path = "crates/jobq" }
 shiki-rag = { path = "crates/rag" }
 shiki-llm-gateway = { path = "crates/llm-gateway" }

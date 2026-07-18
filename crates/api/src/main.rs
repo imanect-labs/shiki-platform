@@ -209,6 +209,9 @@ async fn main() -> anyhow::Result<()> {
         workflow_launcher.as_ref(),
     )?;
 
+    // Office 統合（Task 11.5/11.6）: enabled のときのみ Collabora suite ＋ WOPI を配線する。
+    let office = wiring::wire_office(&config, &http, &db, &authz, &storage)?;
+
     let bind = format!("{}:{}", config.server.host, config.server.port);
     // ミニアプリの第2/第3リスナ（ゲートウェイ・B1 配信）と B2 トリガ（event/cron）を
     // 一括で組んで spawn する（Task 9.6/9.8/9.9/9.11/9.12・enabled 時のみ）。
@@ -263,6 +266,7 @@ async fn main() -> anyhow::Result<()> {
         search,
         chat,
         rag_admin,
+        office,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)

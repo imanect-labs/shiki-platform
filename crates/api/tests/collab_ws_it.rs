@@ -267,6 +267,7 @@ fn base_config(db_url: &str) -> AppConfig {
         workflow: api::workflow_runtime::WorkflowConfig::default(),
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
+        office: api::config::OfficeConfig::default(),
     }
 }
 
@@ -481,6 +482,7 @@ async fn setup() -> Option<Harness> {
         search: None,
         chat: None,
         rag_admin,
+        office: None,
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

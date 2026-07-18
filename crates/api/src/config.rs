@@ -49,6 +49,34 @@ pub struct AppConfig {
     /// 公開 API ゲートウェイ（第2リスナ・別オリジン・Task 9.6）。既定は無効。
     #[serde(default)]
     pub gateway: GatewayConfig,
+    /// Office 統合（Collabora＋WOPI ホスト・Task 11.5/11.6）。既定は無効。
+    #[serde(default)]
+    pub office: OfficeConfig,
+}
+
+/// Office 統合（Collabora＋WOPI ホスト）の設定（`SHIKI__OFFICE__*`）。
+///
+/// `enabled=false` なら `/wopi` も `/office/sessions` も配線しない（fail-closed）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OfficeConfig {
+    /// Office 統合を有効化するか（既定 false）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// Collabora のベース URL（例 `http://localhost:9980`）。enabled 時は必須。
+    #[serde(default)]
+    pub collabora_base_url: Option<String>,
+    /// **Collabora コンテナから見た** shiki-server のベース URL（例 `http://shiki-server:8080`）。
+    /// WOPISrc（`{wopi_base_url}/wopi/files/{file_id}`）の組み立てに使う。ブラウザ側では
+    /// 知り得ない値のためサーバが返す。enabled 時は必須（起動時検証・fail-closed）。
+    #[serde(default)]
+    pub wopi_base_url: Option<String>,
+    /// WOPI access_token の署名秘密鍵（32 バイト以上）。未設定なら起動時乱数生成
+    /// （再起動で編集セッション失効＝許容。複数レプリカでは設定注入が必須）。
+    #[serde(default)]
+    pub token_secret: Option<String>,
+    /// ブラウザから見た web の origin（CheckFileInfo の PostMessageOrigin）。
+    #[serde(default)]
+    pub web_origin: Option<String>,
 }
 
 /// 公開 API ゲートウェイ（ミニアプリ用・第2リスナ）の設定。

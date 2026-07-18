@@ -1,8 +1,10 @@
-//! チャット HTTP ルート（Task 3.6）の統合テスト。
+//! /office/sessions と WOPI マウントの HTTP 統合テスト（Task 11.6）。
 //!
-//! `STORAGE_TEST_DATABASE_URL` がある時のみ実行（DB 直の ChatStore を AppState に載せる）。
-//! セッション Cookie ＋ double-submit CSRF で認証を通し、/threads 系ハンドラの
-//! 作成・一覧・取得・送信(202)・共有・キャンセル・認可(401/404/503) を検証する。
+//! `STORAGE_TEST_DATABASE_URL` がある時のみ実行。検証:
+//! - セッション必須（401）・office 無効時はルート不在（404）
+//! - 正常系: viewer check → 編集 URL 解決 → トークン発行、そのトークンで
+//!   （Session ミドルウェアを通らない）/wopi/files/{id} が同一アプリルータから叩ける
+//! - 未対応拡張子・存在しないファイルは 404（存在秘匿）
 
 #![allow(
     clippy::unwrap_used,
@@ -23,8 +25,8 @@ use api::{
 };
 use async_trait::async_trait;
 use authz::{
-    AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal, ReadTupleKey, Relation,
-    Subject,
+    AuthContext, AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal,
+    ReadTupleKey, Relation, Subject,
 };
 use axum::{
     body::Body,
@@ -33,6 +35,7 @@ use axum::{
 use http_body_util::BodyExt;
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 struct AllowAll;
 
@@ -156,6 +159,22 @@ impl storage::object_store::ObjectStore for FakeStore {
     }
 }
 
+/// discovery を叩かない固定 suite（docx のみ対応）。
+struct FixedSuite;
+
+#[async_trait]
+impl office::OfficeSuite for FixedSuite {
+    fn name(&self) -> &'static str {
+        "fixed"
+    }
+    async fn editor_action_url(&self, ext: &str) -> Result<Option<String>, office::OfficeError> {
+        Ok((ext == "docx").then(|| "http://collabora.test/browser/x/cool.html?".to_string()))
+    }
+    fn supported_extensions(&self) -> &[&'static str] {
+        &["docx"]
+    }
+}
+
 fn base_config(db_url: &str) -> AppConfig {
     AppConfig {
         server: ServerConfig {
@@ -232,7 +251,7 @@ fn test_principal() -> Principal {
         id: "00000000-0000-0000-0000-000000000001".into(),
         email: Some("alice@acme.example".into()),
         groups: vec!["/acme".into()],
-        roles: vec!["engineering".into()],
+        roles: vec![],
         tenant_id: None,
     }
 }
@@ -250,8 +269,8 @@ fn session_record(csrf: &str) -> SessionRecord {
     }
 }
 
-/// 実 DB の AppState を組む（chat 有効／無効を選べる）。DB 未設定なら None。
-async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>)> {
+/// 実 DB の AppState を組む（office 有効／無効を選べる）。DB 未設定なら None。
+async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStore>)> {
     let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(4)
@@ -279,15 +298,6 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
     let directory = Arc::new(storage::DirectoryStore::new(pool.clone()));
     let tenants = Arc::new(storage::TenantStore::new(pool.clone()));
     let rag_admin = Arc::new(rag::RagAdmin::new(pool.clone(), None, None));
-    let chat = if with_chat {
-        Some(Arc::new(
-            chat::ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
-                .await
-                .expect("chat store"),
-        ))
-    } else {
-        None
-    };
     let sessions: Arc<dyn SessionStore> = Arc::new(MemorySessionStore::new());
     let artifacts = Arc::new(artifact::ArtifactStore::new(
         pool.clone(),
@@ -354,11 +364,23 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         Arc::new(AllowAll),
         Arc::clone(&storage),
     ));
-    let tabular_svc = std::sync::Arc::new(tabular::TabularService::new(
-        std::sync::Arc::clone(&storage),
-        tabular::RunnerConfig::new("shiki-tabular-runner", std::time::Duration::from_secs(5)),
+    let tabular_svc = Arc::new(tabular::TabularService::new(
+        Arc::clone(&storage),
+        tabular::RunnerConfig::new("shiki-tabular-runner", Duration::from_secs(5)),
         tabular::Quotas::default(),
     ));
+    let office_runtime = with_office.then(|| api::state::OfficeRuntime {
+        suite: Arc::new(FixedSuite),
+        wopi_base_url: "http://shiki-server:8080".into(),
+        wopi: office::WopiState {
+            storage: Arc::clone(&storage),
+            authz: Arc::new(AllowAll),
+            pool: pool.clone(),
+            token_key: office::OfficeTokenKey::random(),
+            web_origin: Some("http://localhost:3000".into()),
+            max_body_bytes: 64 * 1024 * 1024,
+        },
+    });
     let state = AppState {
         config: Arc::new(config),
         db: api::state::ReadinessProbe::new(pool),
@@ -392,9 +414,9 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         directory,
         tenants,
         search: None,
-        chat,
+        chat: None,
         rag_admin,
-        office: None,
+        office: office_runtime,
     };
     Some((state, sessions))
 }
@@ -422,222 +444,203 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
 }
 
+/// セッション主体と同一の AuthContext（テスト用のファイル作成に使う）。
+fn test_ctx() -> AuthContext {
+    AuthContext::new(test_principal(), "acme".into(), "default".into())
+}
+
+fn session_post(uri: &str, cookie: &str, csrf: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(COOKIE, cookie)
+        .header("x-csrf-token", csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 #[tokio::test]
-async fn chat_thread_lifecycle_over_http() {
+async fn office_session_issues_token_and_wopi_is_mounted() {
     let Some((state, sessions)) = build_state(true).await else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
-    let (cookie, csrf) = login(&sessions, "sid-chat-1").await;
+    let storage = Arc::clone(&state.storage);
     let app = build_router(state);
+    let (cookie, csrf) = login(&sessions, "sid-office-1").await;
 
-    // 作成（200）。
-    let resp = app
+    // 未認証は 401（Session ポリシー）。
+    let res = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/threads")
-                .header(COOKIE, &cookie)
-                .header("x-csrf-token", csrf)
+                .uri("/office/sessions")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"title":"e2e","agent_mode":false}"#))
+                .body(Body::from(
+                    serde_json::json!({"file_id": Uuid::new_v4()}).to_string(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let thread = body_json(resp).await;
-    let tid = thread["id"].as_str().unwrap().to_string();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
-    // 一覧（200・作成分を含む）。
-    let resp = app
+    // docx ファイルを作成 → セッション発行が成功する。
+    let ctx = test_ctx();
+    let name = format!("office-{}.docx", Uuid::new_v4());
+    let node = storage
+        .write_file_internal(
+            &ctx,
+            None,
+            &name,
+            format!("docx-bytes:{}", Uuid::new_v4()).as_bytes(),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            None,
+        )
+        .await
+        .expect("create docx");
+    let res = app
+        .clone()
+        .oneshot(session_post(
+            "/office/sessions",
+            &cookie,
+            csrf,
+            serde_json::json!({"file_id": node.id}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let session = body_json(res).await;
+    assert_eq!(
+        session["action_url"],
+        "http://collabora.test/browser/x/cool.html?"
+    );
+    // WOPISrc は「Collabora から見た shiki-server の URL」。web が iframe URL に付ける。
+    assert_eq!(
+        session["wopi_src"],
+        format!("http://shiki-server:8080/wopi/files/{}", node.id)
+    );
+    assert!(session["access_token_ttl_ms"].as_u64().unwrap() > 0);
+    let token = session["access_token"].as_str().unwrap().to_string();
+
+    // 発行されたトークンで（cookie 無しで）WOPI CheckFileInfo が同一ルータから叩ける
+    // ＝WOPI は Session ミドルウェアを通らない別認証面としてマウントされている。
+    let res = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/threads")
+                .method("GET")
+                .uri(format!("/wopi/files/{}?access_token={token}", node.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let info = body_json(res).await;
+    assert_eq!(info["BaseFileName"], name.as_str());
+    assert_eq!(info["UserCanWrite"], true);
+
+    // でたらめなトークンは 401（cookie セッションが有効でも WOPI では使えない）。
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/wopi/files/{}?access_token=bad.token", node.id))
                 .header(COOKIE, &cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let list = body_json(resp).await;
-    assert!(list["threads"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|t| t["id"] == tid.as_str()));
-
-    // 取得（200）。
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/threads/{tid}"))
-                .header(COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // 送信（202・接続非依存）。
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/threads/{tid}/messages"))
-                .header(COOKIE, &cookie)
-                .header("x-csrf-token", csrf)
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"text":"こんにちは"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::ACCEPTED);
-    let posted = body_json(resp).await;
-    let run_id = posted["run_id"].as_str().unwrap().to_string();
-
-    // メッセージ一覧（200・user+assistant プレースホルダ）。
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/threads/{tid}/messages"))
-                .header(COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let msgs = body_json(resp).await;
-    assert_eq!(msgs["messages"].as_array().unwrap().len(), 2);
-
-    // 共有（204）→ 一覧（200）→ 解除（204）。
-    let share_body = r#"{"target":{"type":"user","id":"bob"},"role":"viewer"}"#;
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/threads/{tid}/shares"))
-                .header(COOKIE, &cookie)
-                .header("x-csrf-token", csrf)
-                .header("content-type", "application/json")
-                .body(Body::from(share_body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/threads/{tid}/shares"))
-                .header(COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let shares = body_json(resp).await;
-    // 応答形状のみ検証（この統合テストの AllowAll モックはタプルを永続しないため件数は不問）。
-    assert!(shares["shares"].is_array());
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/threads/{tid}/shares"))
-                .header(COOKIE, &cookie)
-                .header("x-csrf-token", csrf)
-                .header("content-type", "application/json")
-                .body(Body::from(share_body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    // キャンセル（204）。
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/threads/{tid}/runs/{run_id}/cancel"))
-                .header(COOKIE, &cookie)
-                .header("x-csrf-token", csrf)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn chat_authz_and_availability_edges() {
-    // 未認証は 401。
+async fn office_session_rejects_unsupported_and_missing_files() {
     let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
-    let (cookie, _csrf) = login(&sessions, "sid-chat-2").await;
+    let storage = Arc::clone(&state.storage);
     let app = build_router(state);
+    let (cookie, csrf) = login(&sessions, "sid-office-2").await;
 
-    let resp = app
+    // 存在しないファイルは 404（存在秘匿）。
+    let res = app
+        .clone()
+        .oneshot(session_post(
+            "/office/sessions",
+            &cookie,
+            csrf,
+            serde_json::json!({"file_id": Uuid::new_v4()}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+    // 未対応拡張子（.txt）は 404（編集面が存在しない）。
+    let ctx = test_ctx();
+    let node = storage
+        .write_file_internal(
+            &ctx,
+            None,
+            &format!("plain-{}.txt", Uuid::new_v4()),
+            format!("text:{}", Uuid::new_v4()).as_bytes(),
+            "text/plain",
+            None,
+        )
+        .await
+        .expect("create txt");
+    let res = app
+        .clone()
+        .oneshot(session_post(
+            "/office/sessions",
+            &cookie,
+            csrf,
+            serde_json::json!({"file_id": node.id}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn office_disabled_routes_are_absent() {
+    let Some((state, sessions)) = build_state(false).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let app = build_router(state);
+    let (cookie, csrf) = login(&sessions, "sid-office-3").await;
+
+    // office 無効: /office/sessions は配線されず 404（セッションが有効でも）。
+    let res = app
+        .clone()
+        .oneshot(session_post(
+            "/office/sessions",
+            &cookie,
+            csrf,
+            serde_json::json!({"file_id": Uuid::new_v4()}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+    // /wopi もマウントされない。
+    let res = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/threads")
+                .method("GET")
+                .uri(format!("/wopi/files/{}?access_token=x.y", Uuid::new_v4()))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-
-    // 存在しないスレッドは 404。
-    let missing = uuid::Uuid::new_v4();
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/threads/{missing}"))
-                .header(COOKIE, &cookie)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-
-    // chat 無効なら 503。
-    let Some((state, sessions)) = build_state(false).await else {
-        return;
-    };
-    let (cookie, csrf) = login(&sessions, "sid-chat-3").await;
-    let app = build_router(state);
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/threads")
-                .header(COOKIE, &cookie)
-                .header("x-csrf-token", csrf)
-                .header("content-type", "application/json")
-                .body(Body::from("{}"))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }

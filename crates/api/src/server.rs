@@ -2,22 +2,23 @@
 //! （「エンドポイント→必要スコープ」の一律強制・architecture-invariants / #91 M-1）。
 //! 表に載せずにルートを増やすことはできず、非 Public エントリは OpenAPI 仕様との
 //! 整合テスト（`route_table_matches_openapi`）で宣言漏れを検出する。
-
-use std::time::Duration;
+//!
+//! 唯一の例外は WOPI（`/wopi/**`・トークン認証の別面・Task 11.6）。cookie セッションを
+//! 使わず WOPI 仕様の access_token クエリで認証するため表のポリシー語彙に載らず、
+//! `office.enabled` 時のみ `crates/office` のルータを merge する。認証＋毎呼び出し
+//! ReBAC はルータ内部の共通前段が一律に強制する（ハンドラ個別チェックではない）。
 
 use axum::{
-    http::{header, StatusCode},
-    middleware,
+    http::header,
     response::IntoResponse,
     routing::{delete, get, patch, post, put, MethodRouter},
-    Router,
 };
-use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
+mod build;
 mod http_util;
-use http_util::{cors_layer, make_request_span};
+pub use build::build_router;
 
-use crate::{health, middleware::require_session, openapi, routes, state::AppState, telemetry};
+use crate::{health, openapi, routes, state::AppState};
 
 /// エンドポイントのアクセスポリシー（必要スコープの宣言）。
 ///
@@ -406,86 +407,8 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::app_platform::app_platform_route_decls());
     table.extend(routes::app_install::app_install_route_decls());
     table.extend(routes::app_install::trusted_key_route_decls());
+    table.extend(routes::office::office_route_decls());
     table
-}
-
-/// アプリの axum ルータを構築する（テストからも利用）。
-///
-/// [`route_table`] をポリシー種別ごとに束ね、認証 middleware とタイムアウトを
-/// **グループ単位で一律適用**する（ハンドラ個別のチェックを持たない）。
-pub fn build_router(state: AppState) -> Router {
-    let session_layer = middleware::from_fn_with_state(state.clone(), require_session);
-    let standard_timeout =
-        || TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(30));
-    let long_timeout =
-        || TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_mins(5));
-
-    let mut public = Router::new();
-    let mut session_std = Router::new();
-    let mut session_long = Router::new();
-    let mut session_stream = Router::new();
-    let mut admin = Router::new();
-    // admin ルート（SAAS.2）: **config（provisioner 資格情報＋admin base）が揃っている時のみ
-    // 組み込む**（未設定なら 404 = fail-closed）。
-    let admin_enabled = state.config.auth.provisioner_credentials().is_some()
-        && state.config.auth.admin_base().is_some();
-    for decl in route_table() {
-        let method_router = (decl.handler)();
-        match decl.policy {
-            AccessPolicy::Public => public = public.route(decl.path, method_router),
-            AccessPolicy::Session => session_std = session_std.route(decl.path, method_router),
-            AccessPolicy::SessionLongRunning => {
-                session_long = session_long.route(decl.path, method_router);
-            }
-            AccessPolicy::SessionStreaming => {
-                session_stream = session_stream.route(decl.path, method_router);
-            }
-            AccessPolicy::Provisioner => {
-                if admin_enabled {
-                    admin = admin.route(decl.path, method_router);
-                }
-            }
-        }
-    }
-
-    let public = public.layer(standard_timeout());
-    let session_std = session_std
-        .route_layer(session_layer.clone())
-        .layer(standard_timeout());
-    let session_long = session_long
-        .route_layer(session_layer.clone())
-        .layer(long_timeout());
-    // SSE ストリーム: セッション必須だがタイムアウトレイヤは付けない（接続を長時間開く）。
-    let session_stream = session_stream.route_layer(session_layer);
-    let admin = if admin_enabled {
-        admin
-            .route_layer(middleware::from_fn_with_state(
-                state.clone(),
-                routes::admin::require_provisioner,
-            ))
-            .layer(long_timeout())
-    } else {
-        admin
-    };
-
-    let router = public
-        .merge(session_std)
-        .merge(session_long)
-        .merge(session_stream)
-        .merge(admin)
-        // observe は span 内で動く必要があるため TraceLayer より内側（先に追加）。
-        .layer(middleware::from_fn(telemetry::observe))
-        .layer(TraceLayer::new_for_http().make_span_with(make_request_span));
-
-    // CORS: 同一オリジン配信が既定（レイヤ無し）。別オリジン dev のみ、設定された
-    // オリジンに限定して credential 付きを許可する（permissive はセッション Cookie と
-    // 併用すると危険なので使わない）。
-    let router = match cors_layer(&state.config.server.cors_allowed_origins) {
-        Some(cors) => router.layer(cors),
-        None => router,
-    };
-
-    router.with_state(state)
 }
 
 async fn openapi_handler() -> impl IntoResponse {
