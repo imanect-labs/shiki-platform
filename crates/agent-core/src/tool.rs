@@ -44,6 +44,17 @@ pub struct ArtifactRef {
     pub name: String,
 }
 
+/// 未保存の下書きスライド（save_slide の下書き確定型・Task 11.3）。
+/// `content` は正規化スライド JSON（`{version, meta, slides}`）を文字列で持つ
+/// （note_drafts の `{name, markdown}` と同型のキー＝name 識別・chat 側で slide_draft ブロックへ写る）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlideDraft {
+    /// 下書き名（`.slide` なし・会話内の識別キー兼表示名）。
+    pub name: String,
+    /// 正規化スライド JSON 文字列（サニタイズ済みが正規形・PIT-40）。
+    pub content: String,
+}
+
 /// ツール実行結果。`content` はモデルへ返すテキスト、`citations` は UI 引用へ。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutcome {
@@ -68,6 +79,10 @@ pub struct ToolOutcome {
     /// `{name, markdown}` の JSON。**まだ StorageService へ作成していない**下書き本文を入れる
     /// （chat 側で note_draft ブロックへ写り、フロントが下書きノート画面で詰めてから確定保存する）。
     pub note_drafts: Vec<serde_json::Value>,
+    /// 未保存の下書きスライド（save_slide の下書き確定型・Task 11.3）。
+    /// **まだ StorageService へ作成していない**下書きスライドを入れる（chat 側で slide_draft
+    /// ブロックへ写り、フロントが下書きスライド画面で詰めてから「ドライブに保存」で確定する）。
+    pub slide_drafts: Vec<SlideDraft>,
     /// 実行がエラーだったか（tool_result.is_error）。
     pub is_error: bool,
 }
@@ -83,6 +98,7 @@ impl ToolOutcome {
             workflow_refs: Vec::new(),
             note_refs: Vec::new(),
             note_drafts: Vec::new(),
+            slide_drafts: Vec::new(),
             is_error: false,
         }
     }
@@ -97,6 +113,7 @@ impl ToolOutcome {
             workflow_refs: Vec::new(),
             note_refs: Vec::new(),
             note_drafts: Vec::new(),
+            slide_drafts: Vec::new(),
             is_error: true,
         }
     }

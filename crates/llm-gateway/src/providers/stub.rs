@@ -101,8 +101,9 @@ fn emitwf_ir(kind: &str) -> serde_json::Value {
     })
 }
 
-/// ノートツールの決定的駆動（issue #282 の e2e）。
-/// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（genui chart）。
+/// ドキュメント下書き/編集ツールの決定的駆動（issue #282 / Task 11.3 の e2e）。
+/// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（genui chart）、
+/// `saveslide:<name>` → save_slide（下書きスライド・固定 3 枚）。
 fn note_tool_call(
     req: &GenerateRequest,
     user_text: &str,
@@ -124,6 +125,20 @@ fn note_tool_call(
         return call(
             "document.embed",
             serde_json::json!({ "node_id": id, "spec": genui_spec("chart") }),
+        );
+    }
+    if let Some(name) = user_text.strip_prefix("saveslide:").map(str::trim) {
+        return call(
+            "save_slide",
+            serde_json::json!({
+                "name": name,
+                "theme_id": "plain",
+                "slides": [
+                    { "html": format!("<div style=\"padding:80px\"><h1>{name}</h1><p>AI が用意した下書きスライド</p></div>"), "notes": "表紙の挨拶" },
+                    { "html": "<div style=\"padding:64px\"><h2>アジェンダ</h2><ul><li>背景</li><li>提案</li><li>次の一歩</li></ul></div>" },
+                    { "html": "<div style=\"padding:64px\"><h2>まとめ</h2><p>ご清聴ありがとうございました。</p></div>" }
+                ]
+            }),
         );
     }
     None

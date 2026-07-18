@@ -68,18 +68,16 @@ function DraftNotePageInner() {
     (name: string) => {
       nonceRef.current += 1;
       setActiveName(name);
-      setSeed({ markdown: getDraft(threadId, name)?.markdown ?? "", nonce: nonceRef.current });
+      setSeed({ markdown: getDraft(threadId, name)?.content ?? "", nonce: nonceRef.current });
     },
     [threadId],
   );
 
-  // 下書きストアが空なら、会話履歴の note_draft ブロックから復元する（リロード/別端末・#282）。
+  // 会話履歴の note_draft ブロックから復元する（リロード/別端末・#282）。ローカルに一部だけ
+  // 残っている場合も履歴を常に取得し、**未登録の (threadId, name) のみ**追加する
+  // （ローカルのユーザー編集は上書きしない・スライド下書きと同型）。
   React.useEffect(() => {
     if (!threadId) {
-      setRecovered(true);
-      return;
-    }
-    if (listDrafts(threadId).length > 0) {
       setRecovered(true);
       return;
     }
@@ -91,7 +89,9 @@ function DraftNotePageInner() {
           for (const b of m.content) {
             if (b.type === "note_draft") {
               const d = parseNoteDraft(b.draft);
-              if (d) upsertDraft(threadId, d.name, d.markdown, "ai");
+              if (d && !getDraft(threadId, d.name)) {
+                upsertDraft(threadId, d.name, d.markdown, "ai");
+              }
             }
           }
         }
@@ -141,7 +141,7 @@ function DraftNotePageInner() {
       setSaving(true);
       const markdown = editorRef.current
         ? serializeFragment(editorRef.current.state.doc.content)
-        : (getDraft(threadId, activeName)?.markdown ?? "");
+        : (getDraft(threadId, activeName)?.content ?? "");
       createNote({ parentId: target.parentId, name: target.name, markdown })
         .then(async (node) => {
           // この会話をノートへ紐付けて「ノート由来」にする（best-effort・失敗しても保存は成立）。

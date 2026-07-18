@@ -65,6 +65,13 @@ pub(super) fn message_text(blocks: &[ContentBlock]) -> String {
                     context.locator, context.excerpt
                 ));
             }
+            // 下書きスライドも同型（同名 save_slide で同じ下書きを更新・Task 11.3）。
+            ContentBlock::SlideDraft { draft } => {
+                let name = draft.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                parts.push(format!(
+                    "[作成中の下書きスライド: {name}（未保存。直すには同じ name「{name}」で save_slide）]"
+                ));
+            }
             _ => {}
         }
     }
@@ -108,6 +115,9 @@ mod tests {
             ContentBlock::NoteDraft {
                 draft: serde_json::json!({ "name": "予算計画", "markdown": "# 予算" }),
             },
+            ContentBlock::SlideDraft {
+                draft: serde_json::json!({ "name": "提案書", "content": "{\"version\":1}" }),
+            },
         ];
         let out = message_text(&blocks);
         assert!(out.contains("本文"));
@@ -118,6 +128,11 @@ mod tests {
         assert!(
             out.contains("予算計画") && out.contains("save_note"),
             "下書き名と誘導が載る: {out}"
+        );
+        // 下書きスライドも同型（同名 save_slide の誘導・Task 11.3）。
+        assert!(
+            out.contains("提案書") && out.contains("save_slide"),
+            "下書きスライド名と誘導が載る: {out}"
         );
     }
 

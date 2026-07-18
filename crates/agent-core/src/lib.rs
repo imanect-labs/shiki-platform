@@ -45,7 +45,7 @@ pub use checkpoint::Checkpoint;
 pub use event::{AgentError, AgentEvent, EventSink, RecoveryAction};
 pub use plan::{Plan, Subtask, SubtaskStatus};
 pub use profile::{AgentOptions, AgentOutcome, AgentProfile};
-pub use tool::{ArtifactRef, ArtifactStore, Citation, Tool, ToolError, ToolOutcome};
+pub use tool::{ArtifactRef, ArtifactStore, Citation, SlideDraft, Tool, ToolError, ToolOutcome};
 pub use tools::{
     run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsDeleteTool, FsEditTool,
     FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool, WebFetchTool, WebSearchTool,

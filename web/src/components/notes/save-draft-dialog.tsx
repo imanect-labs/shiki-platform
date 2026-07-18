@@ -29,12 +29,18 @@ export function SaveDraftDialog({
   defaultName,
   saving,
   onConfirm,
+  entityLabel = "ノート",
+  description = "下書きをノートとして保存します。保存後はバージョン管理・共有・共同編集ができます。",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   defaultName: string;
   saving: boolean;
   onConfirm: (target: SaveTarget) => void;
+  /// 保存対象の呼称（ノート/スライド/CSV・名前欄のラベルに使う）。
+  entityLabel?: string;
+  /// ダイアログの説明文（対象種別ごとに差し替え）。
+  description?: string;
 }) {
   const [name, setName] = React.useState(defaultName);
   const [folder, setFolder] = React.useState<{ id: string; name: string } | null>(null);
@@ -60,18 +66,16 @@ export function SaveDraftDialog({
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>ドライブに保存</DialogTitle>
-            <DialogDescription>
-              下書きをノートとして保存します。保存後はバージョン管理・共有・共同編集ができます。
-            </DialogDescription>
+            <DialogDescription>{description}</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3">
             <label className="block space-y-1.5">
-              <span className="text-sm font-medium">ノート名</span>
+              <span className="text-sm font-medium">{entityLabel}名</span>
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="ノート名"
+                placeholder={`${entityLabel}名`}
                 data-testid="save-draft-name"
                 autoFocus
               />

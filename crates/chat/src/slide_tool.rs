@@ -5,14 +5,16 @@
 //! ドキュメントへ適用されて人間の並行編集と収束する（排他なし）。HTML 入力は
 //! collab 側適用時に必ずサニタイズされる（PIT-40 第1層）。
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
-use agent_core::{Tool, ToolError, ToolName, ToolOutcome};
+use agent_core::{SlideDraft, Tool, ToolError, ToolName, ToolOutcome};
 use authz::AuthContext;
 use collab::CollabHub;
 use serde::Deserialize;
 use storage::StorageService;
 use uuid::Uuid;
+
+use crate::slide_templates::{design_guidance, is_known_theme, THEMES};
 
 /// collab のエラーを**モデルが読む error 観測**へ写す（fail-closed・存在秘匿）。
 fn denied_outcome(err: &collab::CollabError) -> ToolOutcome {
@@ -119,12 +121,18 @@ impl Tool for SlideEditTool {
         ToolName::SlideEdit.as_str()
     }
     fn description(&self) -> &'static str {
-        "スライド（.slide ファイル）を共同編集参加者として編集する。人間が編集中でも安全に\
-         同時編集できる（CRDT で収束）。操作: append_slide（末尾に追加）/ insert_slide_after\
-         （指定 id の直後に挿入）/ replace_slide（本文 HTML 置換）/ remove_slide / set_notes\
-         （スピーカーノート）/ set_background（{\"color\":\"#rrggbb\"}）/ set_meta（title・\
-         theme_id 等）。本文 HTML は h1〜h3/p/ul/li/table/div(インライン style) 等の基本要素で\
-         構成する（script 等は自動除去される）。編集前に slide.read で構成と id を確認すること。"
+        // テーマカタログ＋デザイン指針を焼き込む（閉集合の語彙・design §4.8.3）。
+        static DESC: LazyLock<String> = LazyLock::new(|| {
+            format!(
+                "スライド（.slide ファイル）を共同編集参加者として編集する。人間が編集中でも安全に\
+                 同時編集できる（CRDT で収束）。操作: append_slide（末尾に追加）/ insert_slide_after\
+                 （指定 id の直後に挿入）/ replace_slide（本文 HTML 置換）/ remove_slide / set_notes\
+                 （スピーカーノート）/ set_background（{{\"color\":\"#rrggbb\"}}）/ set_meta（title・\
+                 theme_id 等）。編集前に slide.read で構成と id を確認すること。{}",
+                design_guidance()
+            )
+        });
+        DESC.as_str()
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -211,6 +219,158 @@ impl Tool for SlideEditTool {
     }
 }
 
+/// AI 生成スライドを**下書き**として用意するツール（slide_draft カード化・Task 11.3）。
+///
+/// 「パワポ/スライドを作って」等の依頼に対し、スライド一式を**下書き**として返す（この時点では
+/// StorageService へは作らない）。フロントは下書きスライド画面を開き、ユーザーがそこで AI と
+/// 内容を詰めてから「ドライブに保存」を押して初めてスライドを実体化する（save_note と同型の
+/// 下書き確定型・issue #282 の状態機械をスライドへ展開）。
+///
+/// 下書きは**会話内で name をキーに識別**する: 同じ name で呼び直すと同じ下書きが更新され、
+/// 別 name なら別の下書きになる。ストレージ書込を伴わないため確認ゲートは不要（確定は UI の
+/// 保存ボタンが担う・fail-closed はそちら）。HTML はこの時点でサニタイズし、「サニタイズ済みが
+/// 正規形」を下書きにも保証する（PIT-40 第1層）。
+pub struct SaveSlideTool;
+
+impl SaveSlideTool {
+    pub fn new() -> Self {
+        SaveSlideTool
+    }
+}
+
+impl Default for SaveSlideTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SaveSlideInput {
+    /// スライド名（`.slide` は自動付与）。下書きの識別キーも兼ねる。
+    name: String,
+    /// スライド列（先頭が表紙）。
+    slides: Vec<SaveSlideItem>,
+    /// テーマ（カタログの閉集合・省略可）。
+    #[serde(default)]
+    theme_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SaveSlideItem {
+    /// スライド本文 HTML（基本要素サブセット・サーバ側でサニタイズされる）。
+    html: String,
+    /// スピーカーノート（任意）。
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for SaveSlideTool {
+    fn name(&self) -> &str {
+        ToolName::SaveSlide.as_str()
+    }
+    fn description(&self) -> &'static str {
+        static DESC: LazyLock<String> = LazyLock::new(|| {
+            format!(
+                "会話で生成したスライド一式を新しいスライドの下書きとして用意する。ユーザーが\
+                 「パワポを作って」「スライドにして」等と依頼したときに使う。呼ぶと下書きスライド\
+                 画面が開き、ユーザーはそこで内容を確認・編集してから自分で「ドライブに保存」して\
+                 確定する（このツールは保存しない）。内容を直す場合は**同じ name で呼び直す**と\
+                 同じ下書きが更新される。別のスライドを同時に作る場合は別の name で呼ぶ。{}",
+                design_guidance()
+            )
+        });
+        DESC.as_str()
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        let theme_ids: Vec<&str> = THEMES.iter().map(|t| t.id).collect();
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "スライド名（.slide は自動付与）。同じ name で呼び直すと同じ下書きを更新する" },
+                "slides": {
+                    "type": "array",
+                    "description": "スライド列（先頭が表紙）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "html": { "type": "string", "description": "スライド本文 HTML（1280×720 前提・基本要素サブセット）" },
+                            "notes": { "type": "string", "description": "スピーカーノート（任意）" }
+                        },
+                        "required": ["html"]
+                    }
+                },
+                "theme_id": { "type": "string", "enum": theme_ids, "description": "テーマ（省略可・カタログの閉集合）" }
+            },
+            "required": ["name", "slides"]
+        })
+    }
+    /// 下書きは StorageService へ書かない（確定は UI の保存ボタン）。承認ゲートは不要。
+    fn requires_confirmation(&self) -> bool {
+        false
+    }
+
+    async fn call(
+        &self,
+        _ctx: &AuthContext,
+        input: serde_json::Value,
+        _trace_id: Option<&str>,
+    ) -> Result<ToolOutcome, ToolError> {
+        let input: SaveSlideInput = serde_json::from_value(input)
+            .map_err(|e| ToolError::Invalid(format!("入力が不正です: {e}")))?;
+        let name = input.name.trim();
+        if name.is_empty() {
+            return Err(ToolError::Invalid("スライド名を指定してください".into()));
+        }
+        if input.slides.is_empty() {
+            return Err(ToolError::Invalid(
+                "slides が空です（1 枚以上指定してください）".into(),
+            ));
+        }
+        // テーマは閉集合で照合する（未知はモデルへ差し戻して自己修正させる・fail-closed）。
+        if let Some(theme) = input.theme_id.as_deref() {
+            if !is_known_theme(theme) {
+                let ids: Vec<&str> = THEMES.iter().map(|t| t.id).collect();
+                return Err(ToolError::Invalid(format!(
+                    "未知の theme_id です: {theme}（利用可能: {}）",
+                    ids.join(", ")
+                )));
+            }
+        }
+        // 表示名は .slide を落として持つ（下書きカード/画面のタイトル用）。保存時に付与する。
+        let display_name = name.strip_suffix(".slide").unwrap_or(name);
+        // 下書き本文もサニタイズする（「サニタイズ済みが正規形」を下書きにも保証・PIT-40）。
+        let mut meta = collab::note::NoteMeta {
+            title: Some(display_name.to_string()),
+            ..Default::default()
+        };
+        if let Some(theme) = input.theme_id {
+            meta.extra.insert("theme_id".into(), theme);
+        }
+        let slides: Vec<collab::slide::Slide> = input
+            .slides
+            .into_iter()
+            .map(|s| collab::slide::Slide {
+                id: Uuid::new_v4().to_string(),
+                html: collab::slide::sanitize_html(&s.html),
+                notes: s.notes.unwrap_or_default(),
+                bg: None,
+            })
+            .collect();
+        let count = slides.len();
+        let content = collab::slide::SlideDoc { meta, slides }.to_json();
+        let mut outcome = ToolOutcome::ok(format!(
+            "下書きスライド「{display_name}」を用意しました（{count} 枚）。画面で内容を確認・\
+             編集し、「ドライブに保存」で確定してください。"
+        ));
+        outcome.slide_drafts.push(SlideDraft {
+            name: display_name.to_string(),
+            content,
+        });
+        Ok(outcome)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! error 写像（`denied_outcome`）と入力デシリアライズの純関数部分を検証する。
@@ -257,5 +417,83 @@ mod tests {
             input.ops[1],
             collab::slide::SlideEditOp::ReplaceSlide { .. }
         ));
+    }
+
+    fn ctx() -> authz::AuthContext {
+        authz::AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "alice".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: None,
+            },
+            "acme".into(),
+            "default".into(),
+        )
+    }
+
+    /// save_slide は保存せず下書き（slide_draft）を出す・確認ゲートは不要（Task 11.3）。
+    /// content は正規化スライド JSON で、HTML はサニタイズ済み・theme_id がメタに載る。
+    #[tokio::test]
+    async fn save_slideは書き込まず下書きを出しhtmlをサニタイズする() {
+        let tool = SaveSlideTool::new();
+        assert!(!tool.requires_confirmation(), "下書きは確認ゲート不要");
+        let out = tool
+            .call(
+                &ctx(),
+                serde_json::json!({
+                    "name": "提案書.slide",
+                    "theme_id": "warm",
+                    "slides": [
+                        { "html": "<h1>表紙</h1><script>alert(1)</script>", "notes": "挨拶" },
+                        { "html": "<h2>本題</h2>" }
+                    ]
+                }),
+                None,
+            )
+            .await
+            .expect("call");
+        assert!(!out.is_error);
+        assert!(out.artifacts.is_empty(), "保存はしない（成果物を出さない）");
+        assert_eq!(out.slide_drafts.len(), 1, "下書きを 1 件出す");
+        let draft = &out.slide_drafts[0];
+        assert_eq!(draft.name, "提案書", ".slide を落として持つ");
+        let doc = collab::slide::SlideDoc::from_json(&draft.content).expect("正規化 JSON");
+        assert_eq!(doc.slides.len(), 2);
+        assert!(!doc.slides[0].html.contains("script"), "サニタイズ済み");
+        assert!(doc.slides[0].html.contains("表紙"));
+        assert_eq!(doc.slides[0].notes, "挨拶");
+        assert_eq!(doc.meta.title.as_deref(), Some("提案書"));
+        assert_eq!(
+            doc.meta.extra.get("theme_id").map(String::as_str),
+            Some("warm")
+        );
+    }
+
+    /// 空名・空 slides・未知 theme_id は Invalid（モデルに自己修正を促す・fail-closed）。
+    #[tokio::test]
+    async fn save_slideは不正入力を拒否する() {
+        let tool = SaveSlideTool::new();
+        for input in [
+            serde_json::json!({ "name": " ", "slides": [{ "html": "<h1>x</h1>" }] }),
+            serde_json::json!({ "name": "a", "slides": [] }),
+            serde_json::json!({ "name": "a", "theme_id": "bogus", "slides": [{ "html": "<h1>x</h1>" }] }),
+        ] {
+            let err = tool.call(&ctx(), input, None).await;
+            assert!(matches!(err, Err(ToolError::Invalid(_))));
+        }
+    }
+
+    /// description にテーマカタログ（閉集合）とデザイン指針が焼き込まれる（design §4.8.3）。
+    #[test]
+    fn ツールdescriptionにテーマ語彙が載る() {
+        let save = SaveSlideTool::new();
+        for t in THEMES {
+            assert!(Tool::description(&save).contains(t.id));
+        }
+        assert!(Tool::description(&save).contains("1280×720"));
+        assert!(Tool::description(&save).contains("保存しない"));
     }
 }
