@@ -26,6 +26,7 @@ pub mod search;
 pub mod secrets;
 pub mod shares;
 pub mod skills;
+pub(crate) mod sse_util;
 pub mod tabular;
 pub mod ui_actions;
 pub mod ui_specs;
