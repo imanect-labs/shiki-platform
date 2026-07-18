@@ -150,5 +150,12 @@ pub(crate) async fn emit_tool_events(
         })
         .await?;
     }
+    for edit in &outcome.office_live_edits {
+        sink.emit(AgentEvent::OfficeLiveEdit {
+            node_id: edit.node_id.clone(),
+            html: edit.html.clone(),
+        })
+        .await?;
+    }
     Ok(())
 }

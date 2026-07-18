@@ -66,6 +66,18 @@ pub struct CsvDraft {
     pub csv: String,
 }
 
+/// 開いている Office 文書セッションへの AI ライブ編集（office.live_edit・#328）。
+/// ファイルは書き換えず、開いている Collabora セッションの**現在の選択範囲**を `html` で置換する
+/// よう指示する（フロントが Action_Paste を実行）。`node_id` は対象ファイルの storage node id、
+/// `html` は書込サニタイズ済み（PIT-40 準拠・ammonia）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfficeLiveEdit {
+    /// 対象 Office ファイルの storage node id。
+    pub node_id: String,
+    /// 現在の選択範囲を置き換えるサニタイズ済み HTML。
+    pub html: String,
+}
+
 /// ツール実行結果。`content` はモデルへ返すテキスト、`citations` は UI 引用へ。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutcome {
@@ -98,6 +110,10 @@ pub struct ToolOutcome {
     /// **まだ StorageService へ作成していない**下書き CSV を入れる（chat 側で csv_draft
     /// ブロックへ写り、フロントが下書き CSV 画面で詰めてから「ドライブに保存」で確定する）。
     pub csv_drafts: Vec<CsvDraft>,
+    /// 開いている Office セッションへの AI ライブ編集（office.live_edit のみ・他ツールは空・#328）。
+    /// **ファイルは書き換えない**（現在の選択範囲を置換する指示のみ）。ライブ専用イベントとして
+    /// SSE へ流れ、message.content へは projection しない（履歴再生で二重 paste しないため）。
+    pub office_live_edits: Vec<OfficeLiveEdit>,
     /// 実行がエラーだったか（tool_result.is_error）。
     pub is_error: bool,
 }
@@ -115,6 +131,7 @@ impl ToolOutcome {
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
+            office_live_edits: Vec::new(),
             is_error: false,
         }
     }
@@ -131,6 +148,7 @@ impl ToolOutcome {
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
+            office_live_edits: Vec::new(),
             is_error: true,
         }
     }

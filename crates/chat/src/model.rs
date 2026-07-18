@@ -250,6 +250,10 @@ pub enum StreamEventKind {
     SlideDraft { draft: serde_json::Value },
     /// 未保存の下書き CSV カード（save_csv の下書き確定型・Task 11.11）。
     CsvDraft { draft: serde_json::Value },
+    /// 開いている Office セッションへの AI ライブ編集指示（office.live_edit・#328）。
+    /// **ライブ専用**（content へ projection されない）。フロントは /office フレームで対象 node_id が
+    /// 一致するとき Collabora Action_Paste（現在の選択を置換）を実行する。
+    OfficeLiveEdit { node_id: String, html: String },
     /// 計画の改訂（自律エージェント・Task 5.2）。サブタスク列を丸ごと配信する。
     Plan { subtasks: Vec<PlanSubtask> },
     /// 予算上限への接近警告（Task 5.7）。
@@ -301,6 +305,7 @@ impl StreamEventKind {
             StreamEventKind::NoteDraft { .. } => "note_draft",
             StreamEventKind::SlideDraft { .. } => "slide_draft",
             StreamEventKind::CsvDraft { .. } => "csv_draft",
+            StreamEventKind::OfficeLiveEdit { .. } => "office_live_edit",
             StreamEventKind::Plan { .. } => "plan",
             StreamEventKind::BudgetWarning { .. } => "budget_warning",
             StreamEventKind::ApprovalRequested { .. } => "approval_requested",

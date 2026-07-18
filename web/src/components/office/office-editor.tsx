@@ -15,6 +15,9 @@ import { buildOfficeFrameUrl, type OfficeSession } from "@/lib/office-api";
 export interface OfficeEditorHandle {
   /// 現在の選択テキストを取得する（無選択・タイムアウトは null）。
   getSelectionText: () => Promise<string | null>;
+  /// AI ライブ編集: 現在の選択範囲を指定 HTML で置き換える（Collabora Action_Paste・#328）。
+  /// セッション内へ注入するため CoolWSD 協調プロトコル経由で全参加者へ即反映する。
+  applyLiveEdit: (html: string) => void;
 }
 
 /// 選択取得のタイムアウト（Collabora 応答なし＝無選択とみなす。初回コピーは LO kit の
@@ -98,6 +101,25 @@ export const OfficeEditor = React.forwardRef<
             }
           }, SELECTION_TIMEOUT_MS);
         }),
+      applyLiveEdit: (html: string) => {
+        // 現在の選択範囲を AI の内容で置き換える（セッション内注入・CoolWSD 経由で全参加者へ即反映・
+        // ファイル版競合を回避・#328）。Collabora への確実な注入は `.uno:InsertText`（選択があれば
+        // 置換・無選択ならカーソル位置へ挿入）。HTML はプレーンテキストへ落として渡す（書式は
+        // セッション内編集の対象外・リッチ変換は将来）。併せて Action_Paste（HTML 対応版がある構成）も
+        // 送り、いずれか有効な方で反映されるようにする。
+        const text = new DOMParser().parseFromString(html, "text/html").body.textContent ?? "";
+        postToFrame({
+          MessageId: "Send_UNO_Command",
+          Values: {
+            Command: ".uno:InsertText",
+            Values: { Text: { type: "string", value: text } },
+          },
+        });
+        postToFrame({
+          MessageId: "Action_Paste",
+          Values: { Mimetype: "text/html;charset=utf-8", Data: html },
+        });
+      },
     }),
     [postToFrame],
   );

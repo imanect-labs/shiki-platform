@@ -376,6 +376,8 @@ pub(crate) async fn wire_chat(
                     db.clone(),
                 ))
             }),
+            // office.live_edit の editor@file 再判定用（#328）。
+            authz: Some(Arc::clone(authz)),
         },
         worker_config,
     );

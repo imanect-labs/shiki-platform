@@ -46,7 +46,8 @@ pub use event::{AgentError, AgentEvent, EventSink, RecoveryAction};
 pub use plan::{Plan, Subtask, SubtaskStatus};
 pub use profile::{AgentOptions, AgentOutcome, AgentProfile};
 pub use tool::{
-    ArtifactRef, ArtifactStore, Citation, CsvDraft, SlideDraft, Tool, ToolError, ToolOutcome,
+    ArtifactRef, ArtifactStore, Citation, CsvDraft, OfficeLiveEdit, SlideDraft, Tool, ToolError,
+    ToolOutcome,
 };
 pub use tools::{
     run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsDeleteTool, FsEditTool,

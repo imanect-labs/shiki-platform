@@ -161,6 +161,7 @@ async fn worker_generates_streams_and_persists_projection() {
             collab: None,
             tabular: None,
             office: None,
+            authz: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
