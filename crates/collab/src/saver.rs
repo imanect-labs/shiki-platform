@@ -1,11 +1,14 @@
-//! ノートの保存（デバウンス）とインポート（Task 11P.2）。
+//! ドキュメントのファイル保存（デバウンス）とインポート（Task 11P.2/11.1・種別非依存）。
+//!
+//! シリアライズ形式（md / スライド JSON）は [`crate::doc_kind::DocKind`] が決め、
+//! 本モジュールは「いつ保存するか・どこへ書くか」だけを持つ:
 //!
 //! - **保存**: 編集がアイドル [`SAVE_IDLE`] 続く、または最初の未保存編集から
-//!   [`SAVE_MAX`] 経過したら、md へシリアライズして StorageService の新バージョンに
+//!   [`SAVE_MAX`] 経過したら、種別のシリアライズ形式で StorageService の新バージョンに
 //!   書く（→ 書込イベント → RAG 再索引が既存経路で動く）。保存の実行主体は
 //!   **最後に編集した人間/AI の AuthContext**（editor relation は書込側で再判定される）。
 //! - **インポート**: ロード時に `node.version` が前回保存版（saved_node_version）から
-//!   進んでいれば、ファイル側の外部書込があったとみなし md を Yjs へ全置換で取り込む。
+//!   進んでいれば、ファイル側の外部書込があったとみなし内容を Yjs へ全置換で取り込む。
 //!   セッション中の外部書込は取り込まない（Yjs が真実・外部版は履歴に残る）。
 
 use std::sync::Arc;
@@ -36,34 +39,44 @@ pub(crate) fn spawn(
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            if doc.note_should_save(SAVE_IDLE, SAVE_MAX) {
-                if let Err(e) = save_note(&doc, &store, &storage).await {
+            if doc.should_save(SAVE_IDLE, SAVE_MAX) {
+                if let Err(e) = save_doc(&doc, &store, &storage).await {
                     tracing::warn!(node_id = %doc.node_id, error = %e,
-                        "ノートの自動保存に失敗（次の tick で再試行）");
+                        "ドキュメントの自動保存に失敗（次の tick で再試行）");
                 }
             }
         }
     })
 }
 
-/// ノートを md へシリアライズして新バージョン保存する（dirty でなければ no-op）。
+/// ドキュメントを種別のシリアライズ形式で新バージョン保存する（dirty でなければ no-op）。
 ///
-/// 返り値は保存した場合の新しい node.version。
-pub async fn save_note(
+/// 返り値は保存した場合の新しい node.version。ファイル保存を持たない種別（kind 無し）は
+/// 常に no-op（誤って無関係ファイルを上書きしない・fail-closed）。
+pub async fn save_doc(
     doc: &Arc<LiveDoc>,
     store: &DocStore,
     storage: &Arc<StorageService>,
 ) -> Result<Option<i64>, CollabError> {
-    let Some(ctx) = doc.note_take_dirty() else {
+    let Some(kind) = doc.kind() else {
         return Ok(None);
     };
-    let markdown = doc.to_markdown()?;
+    let Some(ctx) = doc.take_dirty() else {
+        return Ok(None);
+    };
+    let content = match doc.serialize_content() {
+        Ok(content) => content,
+        Err(e) => {
+            doc.mark_dirty(&ctx);
+            return Err(e);
+        }
+    };
     match storage
         .update_file_content_internal(
             &ctx,
             doc.node_id,
-            markdown.as_bytes(),
-            "text/markdown",
+            content.as_bytes(),
+            kind.content_type(),
             None,
         )
         .await
@@ -76,7 +89,7 @@ pub async fn save_note(
         }
         Err(e) => {
             // 失敗時は dirty に戻し、次の tick / アンロード時に再試行する。
-            doc.note_mark_dirty(&ctx);
+            doc.mark_dirty(&ctx);
             Err(CollabError::Storage(e))
         }
     }
@@ -102,8 +115,8 @@ pub async fn import_if_stale(
         return Ok(());
     }
     let (_node, bytes) = storage.read_file_internal(ctx, node_id, None).await?;
-    let markdown = String::from_utf8_lossy(&bytes);
-    doc.import_markdown(&markdown)?;
+    let content = String::from_utf8_lossy(&bytes);
+    doc.import_content(&content)?;
     // インポート結果は update log を経ないため、snapshot として即時に正本へ落とす。
     // ロード時（共有前・並行 append 無し）なので upto_seq は確定値でよい。
     let snapshot = doc.full_state()?;

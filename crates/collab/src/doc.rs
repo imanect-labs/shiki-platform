@@ -15,6 +15,7 @@ use yrs::sync::{Awareness, AwarenessUpdate};
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
+use crate::doc_kind::DocKind;
 use crate::error::CollabError;
 use crate::store::{DocStore, PersistedDoc, COMPACT_EVERY};
 
@@ -32,6 +33,8 @@ const BROADCAST_CAPACITY: usize = 256;
 /// プロセス内で共有するライブドキュメント。
 pub struct LiveDoc {
     pub node_id: Uuid,
+    /// ドキュメント種（ファイル保存のシリアライズ形式を決める。None は保存を持たない）。
+    kind: Option<DocKind>,
     /// Doc を内包する Awareness。ロックは同期区間のみ（await を跨いで保持しない）。
     awareness: RwLock<Awareness>,
     tx: broadcast::Sender<Frame>,
@@ -44,13 +47,13 @@ pub struct LiveDoc {
     /// 進んでも、その新 seq を snapshot 外で削除して失う事故を防ぐ（`compact_latest` の
     /// `next_seq - 1` 再計算が起こしていたデータロスの修正）。
     last_persisted_seq: AtomicI64,
-    /// ノート保存（Task 11P.2）用の未保存状態。md 以外のドキュメントでは使われない。
-    note: NoteDirty,
+    /// ファイル保存（Task 11P.2/11.1）用の未保存状態。kind 無しのドキュメントでは使われない。
+    dirty: DirtyState,
 }
 
-/// ノートの未保存編集トラッキング（デバウンス保存の判定材料）。
+/// 未保存編集トラッキング（デバウンス保存の判定材料）。
 #[derive(Default)]
-struct NoteDirty {
+struct DirtyState {
     dirty: AtomicBool,
     /// 最後の編集時刻。
     last_edit: Mutex<Option<Instant>>,
@@ -62,7 +65,11 @@ struct NoteDirty {
 
 impl LiveDoc {
     /// 永続状態から復元する（snapshot → 残 update の順に適用）。
-    pub fn restore(node_id: Uuid, persisted: &PersistedDoc) -> Result<Self, CollabError> {
+    pub fn restore(
+        node_id: Uuid,
+        kind: Option<DocKind>,
+        persisted: &PersistedDoc,
+    ) -> Result<Self, CollabError> {
         let doc = Doc::new();
         {
             let mut txn = doc.transact_mut();
@@ -76,14 +83,20 @@ impl LiveDoc {
         let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         Ok(LiveDoc {
             node_id,
+            kind,
             awareness: RwLock::new(Awareness::new(doc)),
             tx,
             conns: AtomicUsize::new(0),
             appended_since_compact: AtomicUsize::new(persisted.updates.len()),
             // ロード時点の最終 seq（next_seq は「次に発番する」ので -1 が最後の実在 seq）。
             last_persisted_seq: AtomicI64::new(persisted.next_seq - 1),
-            note: NoteDirty::default(),
+            dirty: DirtyState::default(),
         })
+    }
+
+    /// ドキュメント種（ファイル保存を持たないセッションは None）。
+    pub fn kind(&self) -> Option<DocKind> {
+        self.kind
     }
 
     /// ブロードキャスト購読（接続ごと）。
@@ -197,7 +210,7 @@ impl LiveDoc {
         let author = ctx.principal.id.as_str();
         let seq = store.append_update(self.node_id, payload, author).await?;
         self.last_persisted_seq.store(seq, Ordering::SeqCst);
-        self.note_mark_dirty(ctx);
+        self.mark_dirty(ctx);
         let appended = self.appended_since_compact.fetch_add(1, Ordering::SeqCst) + 1;
         if appended as i64 >= COMPACT_EVERY {
             self.appended_since_compact.store(0, Ordering::SeqCst);
@@ -223,38 +236,38 @@ impl LiveDoc {
         store.compact(self.node_id, &snapshot, upto_seq).await
     }
 
-    // --- ノート保存トラッキング（Task 11P.2）---
+    // --- ファイル保存トラッキング（Task 11P.2/11.1）---
 
     /// 未保存編集をマークする（保存の実行主体を最後の編集者で更新）。
-    pub fn note_mark_dirty(&self, ctx: &AuthContext) {
+    pub fn mark_dirty(&self, ctx: &AuthContext) {
         let now = Instant::now();
-        if let Ok(mut last) = self.note.last_edit.lock() {
+        if let Ok(mut last) = self.dirty.last_edit.lock() {
             *last = Some(now);
         }
-        if let Ok(mut first) = self.note.first_dirty.lock() {
+        if let Ok(mut first) = self.dirty.first_dirty.lock() {
             first.get_or_insert(now);
         }
-        if let Ok(mut save_ctx) = self.note.save_ctx.lock() {
+        if let Ok(mut save_ctx) = self.dirty.save_ctx.lock() {
             *save_ctx = Some(ctx.clone());
         }
-        self.note.dirty.store(true, Ordering::SeqCst);
+        self.dirty.dirty.store(true, Ordering::SeqCst);
     }
 
     /// 保存条件（アイドル or 最大滞留）を満たしているか。
-    pub fn note_should_save(&self, idle: std::time::Duration, max: std::time::Duration) -> bool {
-        if !self.note.dirty.load(Ordering::SeqCst) {
+    pub fn should_save(&self, idle: std::time::Duration, max: std::time::Duration) -> bool {
+        if !self.dirty.dirty.load(Ordering::SeqCst) {
             return false;
         }
         let now = Instant::now();
         let idle_ok = self
-            .note
+            .dirty
             .last_edit
             .lock()
             .ok()
             .and_then(|g| *g)
             .is_some_and(|t| now.duration_since(t) >= idle);
         let max_ok = self
-            .note
+            .dirty
             .first_dirty
             .lock()
             .ok()
@@ -264,20 +277,47 @@ impl LiveDoc {
     }
 
     /// dirty を消費して保存主体を取り出す（dirty でなければ None）。
-    pub fn note_take_dirty(&self) -> Option<AuthContext> {
-        if !self.note.dirty.swap(false, Ordering::SeqCst) {
+    pub fn take_dirty(&self) -> Option<AuthContext> {
+        if !self.dirty.dirty.swap(false, Ordering::SeqCst) {
             return None;
         }
-        if let Ok(mut first) = self.note.first_dirty.lock() {
+        if let Ok(mut first) = self.dirty.first_dirty.lock() {
             *first = None;
         }
-        self.note.save_ctx.lock().ok().and_then(|g| g.clone())
+        self.dirty.save_ctx.lock().ok().and_then(|g| g.clone())
     }
 
     /// 現在の内容を正規化 md（frontmatter 付き）へシリアライズする。
     pub fn to_markdown(&self) -> Result<String, CollabError> {
         let awareness = self.read_awareness()?;
         Ok(crate::note::doc_to_markdown(awareness.doc()))
+    }
+
+    /// ドキュメント種に応じたファイル保存形式へシリアライズする（kind 無しは Err）。
+    pub fn serialize_content(&self) -> Result<String, CollabError> {
+        let awareness = self.read_awareness()?;
+        match self.kind {
+            Some(DocKind::Note) => Ok(crate::note::doc_to_markdown(awareness.doc())),
+            Some(DocKind::Slide) => Ok(crate::slide::doc_to_slide_json(awareness.doc())),
+            None => Err(CollabError::InvalidUpdate(
+                "このドキュメント種はファイル保存を持たない".into(),
+            )),
+        }
+    }
+
+    /// ファイル内容をドキュメント種に応じて**全置換**で取り込む（外部書込のインポート）。
+    pub fn import_content(&self, content: &str) -> Result<(), CollabError> {
+        let awareness = self.read_awareness()?;
+        match self.kind {
+            Some(DocKind::Note) => {
+                crate::note::import_markdown(awareness.doc(), content);
+                Ok(())
+            }
+            Some(DocKind::Slide) => crate::slide::import_slide_json(awareness.doc(), content),
+            None => Err(CollabError::InvalidUpdate(
+                "このドキュメント種はインポートを持たない".into(),
+            )),
+        }
     }
 
     /// AI 編集オペを共有ドキュメントに適用し、生成された update（差分）と適用結果を返す
@@ -312,7 +352,7 @@ impl LiveDoc {
         let author = format!("ai:{}", ctx.principal.id);
         let seq = store.append_update(self.node_id, update, &author).await?;
         self.last_persisted_seq.store(seq, Ordering::SeqCst);
-        self.note_mark_dirty(ctx);
+        self.mark_dirty(ctx);
         let appended = self.appended_since_compact.fetch_add(1, Ordering::SeqCst) + 1;
         if appended as i64 >= COMPACT_EVERY {
             self.appended_since_compact.store(0, Ordering::SeqCst);

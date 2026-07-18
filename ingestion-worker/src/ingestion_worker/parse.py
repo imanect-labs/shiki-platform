@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
+from html.parser import HTMLParser
 from io import BytesIO
 from typing import Any
 
@@ -33,6 +35,9 @@ _DOCLING_TYPES = {
     "text/csv",
 }
 _PLAIN_TEXT_TYPES = {"text/plain"}
+# shiki スライド（Task 11.1・design §4.8.3）。JSON からスライド順にテキストを抽出する
+# 軽量経路（Docling を経由しない）。page = スライド番号として引用位置を保つ。
+_SLIDE_TYPE = "application/vnd.shiki.slide+json"
 
 
 class _ConverterHolder:
@@ -110,6 +115,95 @@ def _plain_text_blocks(data: bytes) -> list[ParsedBlock]:
     return blocks
 
 
+class _HtmlTextExtractor(HTMLParser):
+    """スライド HTML からブロック単位のテキストを抽出する（タグは信頼しない・文字のみ拾う）。
+
+    script/style の中身は**テキストとして拾わない**: 直接アップロード等で正規化前の
+    `.slide` が来た場合に、実行コードや隠しペイロードを RAG の検索対象へ混入させない
+    （プロンプト注入面の縮小・レビュー指摘対応）。
+    """
+
+    _BLOCK_TAGS = {
+        "p", "div", "section", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
+        "blockquote", "figcaption", "br", "hr",
+    }
+    _SKIP_TAGS = {"script", "style", "template", "noscript"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._current: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if tag in self._BLOCK_TAGS:
+            self._flush()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
+        if tag in self._BLOCK_TAGS:
+            self._flush()
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth > 0:
+            return
+        self._current.append(data)
+
+    def _flush(self) -> None:
+        text = "".join(self._current).strip()
+        if text:
+            self.parts.append(text)
+        self._current = []
+
+    def close(self) -> None:  # noqa: D102 - HTMLParser の終端で残りを flush する。
+        super().close()
+        self._flush()
+
+
+def _html_text_parts(html: str) -> list[str]:
+    extractor = _HtmlTextExtractor()
+    extractor.feed(html)
+    extractor.close()
+    return extractor.parts
+
+
+def _slide_blocks(data: bytes) -> list[ParsedBlock]:
+    """`.slide`（正規化 JSON）をスライド順の見出し＋段落ブロックへ落とす。"""
+    try:
+        doc = json.loads(data.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError as exc:
+        raise _parse_error("parse_failed", f"不正なスライド JSON: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise _parse_error("parse_failed", "スライド JSON はオブジェクトである必要があります")
+
+    blocks: list[ParsedBlock] = []
+    meta = doc.get("meta") or {}
+    title = meta.get("title") if isinstance(meta, dict) else None
+    if isinstance(title, str) and title.strip():
+        blocks.append(ParsedBlock(type=BlockType.HEADING, level=1, text=title.strip()))
+
+    slides = doc.get("slides") or []
+    if not isinstance(slides, list):
+        slides = []
+    for page, slide in enumerate(slides, start=1):
+        if not isinstance(slide, dict):
+            continue
+        parts = _html_text_parts(str(slide.get("html") or ""))
+        heading = parts[0] if parts else f"スライド {page}"
+        blocks.append(ParsedBlock(type=BlockType.HEADING, level=2, text=heading, page=page))
+        for part in parts[1:]:
+            blocks.append(ParsedBlock(type=BlockType.PARAGRAPH, text=part, page=page))
+        notes = str(slide.get("notes") or "").strip()
+        if notes:
+            blocks.append(ParsedBlock(type=BlockType.PARAGRAPH, text=notes, page=page))
+    return blocks
+
+
 def _page_of(item: Any) -> int | None:
     prov = getattr(item, "prov", None)
     if prov:
@@ -161,6 +255,12 @@ async def parse(req: ParseRequest) -> ParseResponse:
 
     if content_type in _PLAIN_TEXT_TYPES:
         return ParseResponse(blocks=_plain_text_blocks(data), used_ocr=False)
+
+    if content_type == _SLIDE_TYPE:
+        blocks = _slide_blocks(data)
+        if not blocks:
+            raise _parse_error("empty_document", "抽出可能なテキストがありません")
+        return ParseResponse(blocks=blocks, used_ocr=False)
 
     if content_type not in _DOCLING_TYPES:
         raise _parse_error("unsupported_content_type", content_type)

@@ -124,6 +124,8 @@ proptest = "1"
 yrs = "0.27"
 # ノートの md シリアライズ往復（Task 11P.2・CommonMark+GFM テーブル/タスクリスト）
 pulldown-cmark = { version = "0.13", default-features = false }
+# スライド HTML の書込時サニタイズ（Task 11.1・PIT-40 第1層。MIT/Apache-2.0）
+ammonia = "4"
 # CSV クエリサービス（Task 11P.7）: SQL RO 検証（sqlparser）。DuckDB（重い C++）は
 # 隔離ランナー専用クレート `crates/tabular/runner`（workspace 除外）だけが依存する
 # ＝メイン workspace の --all-features clippy/build に DuckDB を混ぜない（CI 高速化・
