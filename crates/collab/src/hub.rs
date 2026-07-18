@@ -269,6 +269,57 @@ impl CollabHub {
         result
     }
 
+    /// スライド本文を正規化 JSON で読む（`slide.read`・Task 11.3）。viewer 以上で可。
+    pub async fn read_slide_json(
+        &self,
+        ctx: &AuthContext,
+        node: &Node,
+    ) -> Result<String, CollabError> {
+        if node.kind != NodeKind::File || DocKind::from_name(&node.name) != Some(DocKind::Slide) {
+            return Err(CollabError::NotFound(format!("slide {}", node.id)));
+        }
+        self.authorize(ctx, node.id).await?;
+        let doc = self.join(ctx, node).await?;
+        let json = doc.serialize_content();
+        self.leave(&doc).await;
+        json
+    }
+
+    /// AI（`slide.edit`）の編集を共有ドキュメントへ適用する（Task 11.3・apply_ai_edit と同型）。
+    ///
+    /// 権限は**実行主体の editor@file**（人間と同一経路・viewer は拒否）。HTML 入力は
+    /// 適用側（slide::ai_edit）が必ずサニタイズする（PIT-40 第1層）。
+    pub async fn apply_ai_slide_edit(
+        &self,
+        ctx: &AuthContext,
+        node: &Node,
+        ops: &[crate::slide::SlideEditOp],
+    ) -> Result<note::EditReport, CollabError> {
+        if node.kind != NodeKind::File || DocKind::from_name(&node.name) != Some(DocKind::Slide) {
+            return Err(CollabError::NotFound(format!("slide {}", node.id)));
+        }
+        match self.authorize(ctx, node.id).await? {
+            AccessMode::Editor => {}
+            AccessMode::Viewer => {
+                return Err(CollabError::Forbidden(format!(
+                    "editor 権限がありません: {}",
+                    node.id
+                )))
+            }
+        }
+        let doc = self.join(ctx, node).await?;
+        let result = async {
+            let (update, report) = doc.apply_ai_slide_edit(ops)?;
+            doc.persist_ai_update(&self.store, &update, ctx).await?;
+            doc.broadcast(0, ai_sync_update_frame(&update));
+            Ok(report)
+        }
+        .await;
+        // AI 編集は一過性の参加。leave が最終接続なら保存＋アンロードまで面倒を見る。
+        self.leave(&doc).await;
+        result
+    }
+
     /// join 済みドキュメントへ AI 編集を適用し、永続化＋ブロードキャストする。
     async fn apply_ai_edit_locked(
         &self,

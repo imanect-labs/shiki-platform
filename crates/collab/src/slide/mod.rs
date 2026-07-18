@@ -17,10 +17,12 @@
 //! 取り込む。**パース不能な JSON はエラー**（fail-closed）— 壊れたファイルを空ドキュメント
 //! として開いて上書き保存し、データを失う事故を防ぐ。
 
+pub mod ai_edit;
 pub mod model;
 pub mod sanitize;
 pub mod yjs_doc;
 
+pub use ai_edit::SlideEditOp;
 pub use model::{Slide, SlideDoc, SLIDE_DOC_VERSION};
 pub use sanitize::sanitize_html;
 

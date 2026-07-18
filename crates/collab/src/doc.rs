@@ -341,6 +341,24 @@ impl LiveDoc {
         Ok((update, report))
     }
 
+    /// AI 編集オペ（スライド版）を共有ドキュメントに適用する（Task 11.3・apply_ai_edit と同型）。
+    pub fn apply_ai_slide_edit(
+        &self,
+        ops: &[crate::slide::SlideEditOp],
+    ) -> Result<(Vec<u8>, crate::note::EditReport), CollabError> {
+        let awareness = self.read_awareness()?;
+        let doc = awareness.doc();
+        let slides = doc.get_or_insert_array(crate::slide::yjs_doc::SLIDES_ARRAY_NAME);
+        let meta = doc.get_or_insert_map(crate::note::yjs_map::META_MAP_NAME);
+        let before = doc.transact().state_vector();
+        let report = {
+            let mut txn = doc.transact_mut_with(crate::note::AI_ORIGIN);
+            crate::slide::ai_edit::apply_ops(&mut txn, &slides, &meta, ops)
+        };
+        let update = doc.transact().encode_state_as_update_v1(&before);
+        Ok((update, report))
+    }
+
     /// AI 由来の update を「追記（DB）→（しきい値で）圧縮」する（適用は済んでいる前提）。
     /// dirty マークも付け、デバウンス保存で md へ落ちるようにする。
     pub async fn persist_ai_update(
