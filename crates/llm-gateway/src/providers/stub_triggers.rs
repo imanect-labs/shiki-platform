@@ -101,6 +101,10 @@ const MOCK_SLIDE_EDIT_HTML: &str =
      <p>選択範囲を踏まえて要点を整理しました。</p><ul><li>結論を先頭に</li><li>数値の根拠を明示</li></ul></div>";
 
 /// 依頼テキストに編集意図のキーワードが含まれるか（要約・質問だけの依頼と区別する）。
+///
+/// 判定は**ユーザーの指示部分のみ**を対象にする。注入済み `<selection>…</selection>` の中身は
+/// データ（選択本文）であり指示ではないため、そこに含まれる「整理」「編集」等で誤起動しては
+/// ならない（選択した本文にたまたま編集語があり、ユーザーは質問だけ、というケースを弾く）。
 fn wants_edit(user_text: &str) -> bool {
     const KEYWORDS: &[&str] = &[
         "整えて",
@@ -113,7 +117,26 @@ fn wants_edit(user_text: &str) -> bool {
         "リライト",
         "まとめて",
     ];
-    KEYWORDS.iter().any(|k| user_text.contains(k))
+    let instruction = strip_selection_blocks(user_text);
+    KEYWORDS.iter().any(|k| instruction.contains(k))
+}
+
+/// `<selection …>…</selection>` ブロックを全て取り除き、ユーザーの指示部分だけを残す。
+fn strip_selection_blocks(text: &str) -> String {
+    const CLOSE: &str = "</selection>";
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<selection") {
+        out.push_str(&rest[..start]);
+        let Some(end) = rest[start..].find(CLOSE) else {
+            // 閉じタグが無い＝残りは全て選択ブロック内（指示ではない）とみなし捨てる。
+            rest = "";
+            break;
+        };
+        rest = &rest[start + end + CLOSE.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 注入された選択デリミタ `<selection kind="<kind>" node_id="UUID" ...>` から node_id を取る。
@@ -176,5 +199,19 @@ mod tests {
             locator={}>本文</selection>\nこれは何を意味しますか？";
         // 編集キーワードが無ければ document.edit を呼ばない（質問は編集しない）。
         assert!(!wants_edit(text));
+    }
+
+    #[test]
+    fn edit_keyword_inside_selection_does_not_trigger() {
+        // 選択本文（データ）に「整理」「編集」があっても、指示が質問だけなら編集を起動しない。
+        let text = "<selection kind=\"slide_selection\" \
+            node_id=\"11111111-2222-3333-4444-555555555555\" \
+            locator={\"slide_id\":\"abcdef01-2345-6789-abcd-ef0123456789\"}>\
+            この章では在庫の整理と編集の手順を説明します。</selection>\n\
+            この内容は正しいですか？";
+        assert!(!wants_edit(text), "選択本文内のキーワードでは起動しない");
+        // 指示側に編集語があれば起動する（対照）。
+        let with_intent = format!("{text}\nこのスライドを書き直して");
+        assert!(wants_edit(&with_intent));
     }
 }
