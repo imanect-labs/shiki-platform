@@ -61,28 +61,20 @@ test("文書内の選択が AI への依頼チップになる（Collabora Action
   await expect(page.getByTestId("message-selection-chip")).toBeVisible({ timeout: 20_000 });
 });
 
-test("選択→AI→承認で提案バージョンが作成される（編集セッション中・#328）", async ({ page }) => {
+test("ファイルレベル AI 編集→承認で提案バージョンが作成される（編集セッション中・#328）", async ({
+  page,
+}) => {
   await loginViaKeycloak(page);
   await openNewDocument(page);
+  // URL から fileId を取る（officeedit: プレフィックスで office.edit を明示駆動する）。
+  const fileId = page.url().match(/\/office\/([^/?#]+)/)?.[1];
+  expect(fileId).toBeTruthy();
 
-  // 文書を開いている＝Collabora が WOPI ロックを保持している状態。ここで AI 編集を通すと
-  // 上書きせず提案バージョンへ迂回する（PIT-44）ことを、本物のパイプラインで検証する。
-  const inner = page.frameLocator('[data-testid="office-frame"]');
-  await inner
-    .locator("#main-document-content, #document-container")
-    .first()
-    .click({ force: true, position: { x: 60, y: 40 } });
-  await page.keyboard.type("提案対象の本文サンプル", { delay: 40 });
-  await page.waitForTimeout(1200);
-  await page.keyboard.press("Control+a");
-  await page.waitForTimeout(1200);
-
+  // 文書を開いている＝Collabora が WOPI ロックを保持している状態。ここで**ファイルレベル**の
+  // AI 編集（office.edit）を通すと、上書きせず提案バージョンへ迂回する（PIT-44）ことを検証する。
   await page.getByTestId("office-ask-ai").click();
-  await expect(page.getByTestId("selection-chip")).toBeVisible({ timeout: 15_000 });
-
-  // 編集キーワードを含む依頼 → stub が office.edit（append_markdown）を呼ぶ。
   const input = page.getByTestId("office-chat-panel").getByPlaceholder(/尋ねて|メッセージ|指示/);
-  await input.fill("この内容を、要点を整理して追記して");
+  await input.fill(`officeedit:${fileId}`);
   await input.press("Enter");
 
   // 破壊系（ファイル内容を書き換える）ため承認カードが出る。承認して実行させる。
@@ -94,4 +86,39 @@ test("選択→AI→承認で提案バージョンが作成される（編集セ
   await expect(page.getByTestId("office-chat-panel").getByText(/提案バージョン/)).toBeVisible({
     timeout: 30_000,
   });
+});
+
+test("選択→AI→承認で開いているセッションへライブ反映される（Action_Paste・#328）", async ({
+  page,
+}) => {
+  await loginViaKeycloak(page);
+  await openNewDocument(page);
+
+  // 本文を打って全選択 → 選択→AI（office_selection）。開いているセッションなので、承認後は
+  // office.live_edit が Collabora の Action_Paste で現在の選択を置換し、その場でライブ反映される
+  // （ファイルレベルの版競合を回避）。
+  const inner = page.frameLocator('[data-testid="office-frame"]');
+  await inner
+    .locator("#main-document-content, #document-container")
+    .first()
+    .click({ force: true, position: { x: 60, y: 40 } });
+  await page.keyboard.type("差し替え対象の本文", { delay: 40 });
+  await page.waitForTimeout(1200);
+  await page.keyboard.press("Control+a");
+  await page.waitForTimeout(1200);
+
+  await page.getByTestId("office-ask-ai").click();
+  await expect(page.getByTestId("selection-chip")).toBeVisible({ timeout: 15_000 });
+
+  // 編集キーワードを含む依頼 → stub が office.live_edit を呼ぶ。
+  const input = page.getByTestId("office-chat-panel").getByPlaceholder(/尋ねて|メッセージ|指示/);
+  await input.fill("この選択範囲を、丁寧な文章に書き直して");
+  await input.press("Enter");
+
+  const approve = page.getByRole("button", { name: "承認して続行" });
+  await expect(approve).toBeVisible({ timeout: 25_000 });
+  await approve.click();
+
+  // 承認後、Collabora の編集画面（iframe 内）に AI が差し替えた本文がライブで現れる。
+  await expect(inner.getByText("AI が置き換えた本文です。")).toBeVisible({ timeout: 30_000 });
 });

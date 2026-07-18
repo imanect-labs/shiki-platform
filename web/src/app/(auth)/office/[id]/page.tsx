@@ -24,6 +24,7 @@ import {
   OfficeSessionError,
   type OfficeSession,
 } from "@/lib/office-api";
+import { subscribeOfficeLiveEdit } from "@/lib/office-live-edit";
 import { setPendingSelection } from "@/lib/selection-context";
 import { getNode } from "@/lib/storage";
 
@@ -94,6 +95,15 @@ export default function OfficePage() {
     const id = window.setInterval(() => void captureSelectionIntoChat(), 1000);
     return () => window.clearInterval(id);
   }, [chatOpen, captureSelectionIntoChat]);
+
+  // AI ライブ編集（office.live_edit・#328）: チャットが承認済みのライブ編集を publish したら、
+  // 対象がこの文書のときだけ Collabora の Action_Paste で現在の選択を置換する（セッション内注入・
+  // 全参加者へ即反映）。node_id 不一致は無視（別文書の編集を取り込まない）。
+  React.useEffect(() => {
+    return subscribeOfficeLiveEdit((edit) => {
+      if (edit.node_id === fileId) editorRef.current?.applyLiveEdit(edit.html);
+    });
+  }, [fileId]);
 
   if (state.phase === "loading") {
     // 拡張子から表計算/文書を推定して骨格を出し分ける（初回は URL しか無いので doc 既定）。

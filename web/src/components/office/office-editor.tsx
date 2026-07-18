@@ -15,6 +15,9 @@ import { buildOfficeFrameUrl, type OfficeSession } from "@/lib/office-api";
 export interface OfficeEditorHandle {
   /// 現在の選択テキストを取得する（無選択・タイムアウトは null）。
   getSelectionText: () => Promise<string | null>;
+  /// AI ライブ編集: 現在の選択範囲を指定 HTML で置き換える（Collabora Action_Paste・#328）。
+  /// セッション内へ注入するため CoolWSD 協調プロトコル経由で全参加者へ即反映する。
+  applyLiveEdit: (html: string) => void;
 }
 
 /// 選択取得のタイムアウト（Collabora 応答なし＝無選択とみなす。初回コピーは LO kit の
@@ -98,6 +101,14 @@ export const OfficeEditor = React.forwardRef<
             }
           }, SELECTION_TIMEOUT_MS);
         }),
+      applyLiveEdit: (html: string) => {
+        // Action_Paste は現在の選択範囲を Data で置き換える（無選択ならカーソル位置に挿入）。
+        // セッション内注入のため CoolWSD 経由で全参加者へ即反映する（ファイル版競合を回避・#328）。
+        postToFrame({
+          MessageId: "Action_Paste",
+          Values: { Mimetype: "text/html;charset=utf-8", Data: html },
+        });
+      },
     }),
     [postToFrame],
   );

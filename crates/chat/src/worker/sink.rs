@@ -130,11 +130,13 @@ impl WorkerSink {
             }
             // 自律プロファイルの構造化イベント（計画/サブタスク/予算/承認/失敗回復）は
             // content block へは projection しない（進捗の可視化はライブ SSE 側で扱う・W4 で結線）。
+            // Office ライブ編集も同様に projection しない（履歴再生で二重 paste しない・#328）。
             AgentEvent::PlanUpdated(_)
             | AgentEvent::SubtaskUpdated { .. }
             | AgentEvent::BudgetWarning { .. }
             | AgentEvent::ApprovalRequested { .. }
             | AgentEvent::ApprovalResolved { .. }
+            | AgentEvent::OfficeLiveEdit { .. }
             | AgentEvent::FailureRecovery { .. } => {}
         }
     }
@@ -178,6 +180,11 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         },
         AgentEvent::CsvDraft { draft } => StreamEventKind::CsvDraft {
             draft: draft.clone(),
+        },
+        // 開いている Office セッションへのライブ編集（#328）。ライブ SSE のみ（content 非 projection）。
+        AgentEvent::OfficeLiveEdit { node_id, html } => StreamEventKind::OfficeLiveEdit {
+            node_id: node_id.clone(),
+            html: html.clone(),
         },
         // 自律プロファイルの構造化イベント（Task 5.9 ライブ配信）。generation_event に append され
         // replay 可能（監査・5.10）だが message.content へは projection しない。
@@ -341,6 +348,23 @@ mod tests {
         };
         match to_stream_kind(&ev) {
             StreamEventKind::CsvDraft { draft: d } => assert_eq!(d, draft),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn office_live_edit_maps_to_sse() {
+        // AgentEvent::OfficeLiveEdit → SSE office_live_edit（ライブ配信）。content への
+        // projection は accumulate 側の no-op アームで抑止する（履歴再生で二重 paste しない・#328）。
+        let ev = AgentEvent::OfficeLiveEdit {
+            node_id: "file-1".into(),
+            html: "<p>置換</p>".into(),
+        };
+        match to_stream_kind(&ev) {
+            StreamEventKind::OfficeLiveEdit { node_id, html } => {
+                assert_eq!(node_id, "file-1");
+                assert_eq!(html, "<p>置換</p>");
+            }
             other => panic!("unexpected: {other:?}"),
         }
     }

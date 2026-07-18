@@ -113,6 +113,8 @@ pub struct WorkerDeps {
     /// AI Office 編集（office.edit・Task 11.8）。office 有効時のみ配線し、
     /// 未配線なら office.edit を提示しない。
     pub office: Option<Arc<office::OfficeEditor>>,
+    /// 認可クライアント（office.live_edit の editor@file 再判定・#328）。
+    pub authz: Option<Arc<dyn authz::AuthzClient>>,
 }
 
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
@@ -144,6 +146,8 @@ pub struct ChatWorker {
     tabular: Option<Arc<tabular::TabularService>>,
     /// AI Office 編集（office.edit・Task 11.8）。
     office: Option<Arc<office::OfficeEditor>>,
+    /// 認可クライアント（office.live_edit の editor@file 再判定・#328）。
+    authz: Option<Arc<dyn authz::AuthzClient>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -163,6 +167,7 @@ impl ChatWorker {
             collab,
             tabular,
             office,
+            authz,
         } = deps;
         ChatWorker {
             db,
@@ -180,6 +185,7 @@ impl ChatWorker {
             collab,
             tabular,
             office,
+            authz,
             config: Arc::new(config),
         }
     }

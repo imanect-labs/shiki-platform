@@ -78,6 +78,11 @@ pub enum AgentEvent {
     /// `{name, csv}`（csv=CSV 本文）。**まだ作成していない**下書き
     /// （chat 側で csv_draft へ写り、フロントが下書き CSV 画面で詰めてから確定する）。
     CsvDraft { draft: serde_json::Value },
+    /// 開いている Office 文書のセッションへ AI 編集をライブ注入する指示（office.live_edit・#328）。
+    /// **ライブ専用**（`generation_event` に append され replay 可能だが message.content へは
+    /// projection しない）。フロントは /office フレームで Collabora の Action_Paste（現在の選択を
+    /// 置換）を実行して全参加者へ即反映する。`html` は書込サニタイズ済み（PIT-40 準拠）。
+    OfficeLiveEdit { node_id: String, html: String },
     /// 計画が改訂された（全サブタスク列・revision 付き・Task 5.2）。
     PlanUpdated(Plan),
     /// 単一サブタスクの状態遷移（軽量更新・Task 5.2）。

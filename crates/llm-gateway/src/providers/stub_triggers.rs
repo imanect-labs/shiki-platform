@@ -89,17 +89,29 @@ pub(super) fn note_tool_call(
             );
         }
     }
-    // Office 文書の選択（office_selection・node_id 付き）＋編集キーワード → office.edit。
-    // docx を対象に append_markdown を 1 件適用し、承認 → worker `/edit` → 保存分岐
-    // （非ロック=新バージョン／ロック中=提案バージョン）を実パイプラインで叩く（#328・Task 11.8）。
-    // ops は content_type 依存のため e2e は docx を用いる（xlsx/pptx は別 op 集合）。
+    // Office 文書のファイルレベル編集（office.edit）: `officeedit:<node_id>` プレフィックスで
+    // 明示駆動する。docx を対象に append_markdown を 1 件適用し、承認 → worker `/edit` → 保存分岐
+    // （非ロック=新バージョン／ロック中=提案バージョン）を実パイプラインで叩く（Task 11.8）。
+    // 選択→AI（開いているセッション）は office.live_edit を使うため、明示プレフィックスで分離する。
+    if let Some(node_id) = user_text.strip_prefix("officeedit:").map(str::trim) {
+        return call(
+            "office.edit",
+            serde_json::json!({
+                "node_id": node_id,
+                "ops": [{ "op": "append_markdown", "markdown": MOCK_OFFICE_EDIT_MD }],
+            }),
+        );
+    }
+    // Office 文書の選択（office_selection・node_id 付き）＋編集キーワード → office.live_edit。
+    // 開いている Collabora セッションの現在の選択範囲を丸ごと置換し、Action_Paste による
+    // セッション内ライブ反映を実パイプライン（承認 → authz → emitter → /office フレーム）で叩く（#328）。
     if let Some(node_id) = selection_node_id(user_text, "office_selection") {
         if wants_edit(user_text) {
             return call(
-                "office.edit",
+                "office.live_edit",
                 serde_json::json!({
                     "node_id": node_id,
-                    "ops": [{ "op": "append_markdown", "markdown": MOCK_OFFICE_EDIT_MD }],
+                    "html": MOCK_OFFICE_LIVE_HTML,
                 }),
             );
         }
@@ -115,8 +127,11 @@ const MOCK_SLIDE_EDIT_HTML: &str =
     "<div style=\"padding:64px\" data-ai-edited=\"1\"><h2>AI が改訂したスライド</h2>\
      <p>選択範囲を踏まえて要点を整理しました。</p><ul><li>結論を先頭に</li><li>数値の根拠を明示</li></ul></div>";
 
-/// モック AI が Office 文書（docx）へ追記する決定的な Markdown。
+/// モック AI が Office 文書（docx）へ追記する決定的な Markdown（officeedit: プレフィックス）。
 const MOCK_OFFICE_EDIT_MD: &str = "## AI による追記\n\n選択範囲を踏まえて要点を整理しました。";
+
+/// モック AI が開いているセッションの選択範囲へライブ注入する決定的な HTML（e2e が本文で検出）。
+const MOCK_OFFICE_LIVE_HTML: &str = "<p>AI が置き換えた本文です。</p>";
 
 /// 依頼テキストに編集意図のキーワードが含まれるか（要約・質問だけの依頼と区別する）。
 ///

@@ -335,6 +335,10 @@ export type StreamHandlers = {
   onSlideDraft?: (draft: unknown) => void;
   /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。下書き画面を開く/流し込む。
   onCsvDraft?: (draft: unknown) => void;
+  /// 開いている Office セッションへの AI ライブ編集（office.live_edit・#328）。ライブ専用
+  /// （履歴 projection されない）。対象 node_id が開いている文書と一致するとき Collabora へ
+  /// Action_Paste で現在の選択を置換注入する。
+  onOfficeLiveEdit?: (edit: { node_id: string; html: string }) => void;
   onStatus?: (status: RunStatus) => void;
   // 自律エージェント（Phase 5）。
   onPlan?: (subtasks: PlanSubtask[]) => void;
@@ -362,6 +366,7 @@ type StreamEventKind =
   | { type: "note_draft"; draft: unknown }
   | { type: "slide_draft"; draft: unknown }
   | { type: "csv_draft"; draft: unknown }
+  | { type: "office_live_edit"; node_id: string; html: string }
   | { type: "plan"; subtasks: PlanSubtask[] }
   | { type: "budget_warning"; kind: string; used: number; limit: number }
   | ({ type: "approval_requested" } & ApprovalRequest)
@@ -431,6 +436,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "csv_draft":
         handlers.onCsvDraft?.(kind.draft);
+        break;
+      case "office_live_edit":
+        handlers.onOfficeLiveEdit?.({ node_id: kind.node_id, html: kind.html });
         break;
       case "plan":
         handlers.onPlan?.(kind.subtasks);
