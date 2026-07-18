@@ -35,6 +35,7 @@ import { toast } from "@/components/ui/use-toast";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
 import { useMe } from "@/hooks/use-me";
 import { createNote } from "@/lib/notes-api";
+import { createOfficeSession, OfficeSessionError } from "@/lib/office-api";
 import { createSlide } from "@/lib/slides-api";
 import { saveNewCsv } from "@/lib/tabular-api";
 import { useContentSearch, type ContentHit } from "@/lib/drive-search";
@@ -44,6 +45,7 @@ import {
   deleteFile,
   deleteFolder,
   listChildren,
+  StorageApiError,
   triggerDownload,
   updateFile,
   updateFolder,
@@ -70,6 +72,14 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "updated", label: "更新日時" },
   { field: "size", label: "サイズ" },
 ];
+
+/// Office 文書としてブラウザ編集できる拡張子（Collabora 対応・Task 11.7）。
+const OFFICE_EXTENSIONS = [".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"];
+
+function isOfficeFile(name: string): boolean {
+  const lower = name.toLowerCase();
+  return OFFICE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
 
 type ViewMode = "list" | "grid";
 
@@ -113,9 +123,63 @@ export function DriveBrowser() {
     }
   };
 
-  // 新規「ドキュメント」はまだダミー（Office 統合・Task 11.7 で実装予定）。
-  const createDocument = (label: string) =>
-    toast({ title: `${label}を作成`, description: "この機能は近日対応予定です。" });
+  // ドキュメント（docx・Office 統合 Task 11.7）: 同梱の最小テンプレをアップロードして
+  // Collabora エディタへ遷移する（Office 未配備なら /office 側が案内表示にフォールバック）。
+  const [creatingDocument, setCreatingDocument] = React.useState(false);
+  const createDocumentAndOpen = async () => {
+    if (creatingDocument) return;
+    setCreatingDocument(true);
+    try {
+      const res = await fetch("/templates/blank.docx");
+      if (!res.ok) throw new Error(`テンプレートの取得に失敗しました (${res.status})`);
+      const blob = await res.blob();
+      const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      // 同名は finalize が 409 を返す（アップロードは新規ノード作成のため）。ノート/スライドの
+      // create_file_unique と同じ体験になるよう、連番を付けて空きを探す。
+      let node: NodeResponse | null = null;
+      for (let n = 1; n <= 20 && !node; n++) {
+        const name = n === 1 ? "無題のドキュメント.docx" : `無題のドキュメント ${n}.docx`;
+        try {
+          node = await uploadFile({ file: new File([blob], name, { type: mime }), parentId: folderId ?? undefined });
+        } catch (e) {
+          if (!(e instanceof StorageApiError) || e.status !== 409) throw e;
+        }
+      }
+      if (!node) throw new Error("同名のドキュメントが多すぎます。名前を変えて作成してください。");
+      router.push(`/office/${node.id}`);
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "ドキュメントの作成に失敗しました",
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setCreatingDocument(false);
+    }
+  };
+
+  // Office 文書を開く。編集セッションが発行できればエディタへ、Office 未配備（503）・
+  // 未対応（404）はダウンロードへフォールバックする（開けないのに遷移して空画面を見せない）。
+  const openOffice = async (node: NodeResponse) => {
+    try {
+      await createOfficeSession(node.id);
+      router.push(`/office/${node.id}`);
+    } catch (e) {
+      if (e instanceof OfficeSessionError && e.kind === "unavailable") {
+        toast({
+          title: "Office 編集サービスが未起動です",
+          description: "ダウンロードで開きます。管理者に office profile の有効化を確認してください。",
+        });
+      }
+      triggerDownload(node.id).catch((err) =>
+        toast({
+          variant: "destructive",
+          title: "ダウンロードに失敗しました",
+          description: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
+  };
 
   // スライド（自前実装・Task 11.1）を作成してビューアへ遷移する。
   const [creatingSlide, setCreatingSlide] = React.useState(false);
@@ -322,11 +386,13 @@ export function DriveBrowser() {
     switch (action) {
       case "open":
         // フォルダは配下をブラウズ。ノート（.md）は共同編集エディタで開き（Task 11P.3）、
+        // Office 文書（docx/xlsx/pptx/odt/ods/odp）は Collabora エディタ（Task 11.7）、
         // その他ファイルはダウンロードで内容を取得する（インラインプレビューは未提供）。
         if (node.kind === "folder") navigateTo(node.id);
         else if (node.name.toLowerCase().endsWith(".md")) router.push(`/notes/${node.id}`);
         else if (node.name.toLowerCase().endsWith(".csv")) router.push(`/csv/${node.id}`);
         else if (node.name.toLowerCase().endsWith(".slide")) router.push(`/slides/${node.id}`);
+        else if (isOfficeFile(node.name)) void openOffice(node);
         else
           triggerDownload(node.id).catch((e) =>
             toast({
@@ -377,7 +443,10 @@ export function DriveBrowser() {
               <NotebookPen className="text-primary" aria-hidden />
               ノート
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => createDocument("ドキュメント")}>
+            <DropdownMenuItem
+              onSelect={() => void createDocumentAndOpen()}
+              data-testid="new-document"
+            >
               <FileText className="text-blue-600" aria-hidden />
               ドキュメント
             </DropdownMenuItem>

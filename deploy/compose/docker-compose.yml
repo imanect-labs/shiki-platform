@@ -5,6 +5,9 @@
 # 監視スタック（OTel collector/Tempo/Loki/Prometheus/Grafana）は `observability` profile に
 # 隔離してある（開発機の RAM 節約）。使う時:
 #   OTLP_ENDPOINT=http://otel-collector:4317 docker compose --profile observability up -d
+#
+# Office 編集（Collabora・Task 11.5/11.6）は `office` profile でオプトイン起動:
+#   SHIKI__OFFICE__ENABLED=true docker compose --profile office up -d
 
 name: shiki
 
@@ -227,6 +230,45 @@ services:
         limits:
           memory: 512m
 
+  # Office 文書（docx/xlsx/pptx）のブラウザ編集（Collabora Online・office profile でオプトイン）。
+  # 既定はソース自前ビルドイメージ（deploy/docker/collabora/・office-image.yml が GHCR へ push）。
+  # 開発と CI に限り COLLABORA_IMAGE=collabora/code:<pin> のフォールバック可（配布物は自前ビルド必須）。
+  collabora:
+    image: ${COLLABORA_IMAGE:-ghcr.io/syuya2036/shiki-collabora:cp-25.04.9-5}
+    profiles: ["office"]
+    # command で環境依存値を注入する（イメージの CMD を丸ごと置き換えるため基本引数も再掲）:
+    #   - storage.wopi.host: WOPI ホスト（shiki-server）以外からの文書取得を拒否（SSRF 抑止）。
+    #   - server_name: discovery の urlsrc に載る「ブラウザから見た Collabora」のホスト。
+    command:
+      - coolwsd
+      - --o:sys_template_path=/opt/cool/systemplate
+      - --o:child_root_path=/opt/cool/child-roots
+      - --o:lo_template_path=/opt/collaboraoffice
+      - --o:ssl.enable=false
+      - --o:ssl.termination=false
+      - --o:storage.wopi.host[0]=${COLLABORA_WOPI_HOST:-shiki-server}
+      - --o:storage.wopi.host[0][@allow]=true
+      - --o:server_name=${COLLABORA_PUBLIC_HOST:-localhost:9980}
+      # 初回のウェルカム/新機能ダイアログを出さない（shiki の UI に埋め込む前提・体験を邪魔しない）。
+      - --o:welcome.enable=false
+    ports:
+      # ブラウザが iframe で直接読むためローカル公開する（compose 網内は collabora:9980）。
+      - "127.0.0.1:9980:9980"
+    # ⚠️ no-new-privileges を付けないこと: coolforkit の file capability（chroot jail 生成）が
+    # 獲得できず起動しない（deploy/docker/collabora/README.md 参照）。
+    deploy:
+      resources:
+        limits:
+          # LibreOffice kit プロセスは文書ごとに増える。dev の同時編集数想定で 4g。
+          memory: 4g
+    healthcheck:
+      # イメージに curl を同梱していないため TCP で確認する。
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/9980' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
   # --- 監視スタック（observability profile・オプトイン起動） ---
   tempo:
     image: grafana/tempo:2.6.1
@@ -389,6 +431,20 @@ services:
       # （SANDBOX__GVISOR__ENABLED 等）。dev 既定は wasm。
       # ⚠️ native ティアは rootfs に numpy/pandas を同梱していること（既定 python:3.12-slim は numpy 非同梱）。
       SHIKI__CHAT__SANDBOX_BACKEND: ${SHIKI__CHAT__SANDBOX_BACKEND:-wasm}
+      # Office 統合（Collabora＋WOPI ホスト・Task 11.5/11.6・`--profile office` とセットで
+      # SHIKI__OFFICE__ENABLED=true にする）。無効時は /wopi も /office/sessions も配線されない。
+      SHIKI__OFFICE__ENABLED: ${SHIKI__OFFICE__ENABLED:-false}
+      # server→Collabora（discovery 取得）は compose 網内 URL。
+      SHIKI__OFFICE__COLLABORA_BASE_URL: ${SHIKI__OFFICE__COLLABORA_BASE_URL:-http://collabora:9980}
+      # Collabora から見た shiki-server（WOPISrc の組み立てに使う）。
+      SHIKI__OFFICE__WOPI_BASE_URL: ${SHIKI__OFFICE__WOPI_BASE_URL:-http://shiki-server:8080}
+      # WOPI access_token の署名鍵（32 バイト以上）。未設定は起動時乱数（再起動で編集セッション失効。
+      # 複数レプリカ構成では必ず注入する）。
+      SHIKI__OFFICE__TOKEN_SECRET: ${SHIKI__OFFICE__TOKEN_SECRET:-}
+      # ブラウザから見た web の origin（CheckFileInfo の PostMessageOrigin）。
+      SHIKI__OFFICE__WEB_ORIGIN: ${SHIKI__OFFICE__WEB_ORIGIN:-http://localhost:3000}
+      # スライドエディタ砂箱（第3リスナ /builtin/ 配信・Task 11.2）。イメージ同梱の dist を指す。
+      SHIKI__GATEWAY__BUILTIN_DIR: ${SHIKI__GATEWAY__BUILTIN_DIR:-/opt/shiki/builtin}
       # web 検索（Phase 4 web ツール）。dev 既定は stub（決定的）。本番は brave / searxng。
       SHIKI__WEBSEARCH__BACKEND: ${SHIKI__WEBSEARCH__BACKEND:-stub}
       SHIKI__WEBSEARCH__BRAVE_API_KEY: ${SHIKI__WEBSEARCH__BRAVE_API_KEY:-}

@@ -11,6 +11,8 @@ on:
       - "deploy/Dockerfile"
       - "deploy/Dockerfile.ci"
       - "deploy/docker/**"
+      # Collabora ソースビルドは数時間級のため PR CI では検証しない（office-image.yml が担う）。
+      - "!deploy/docker/collabora/**"
       - "deploy/compose/docker-compose*.yml"
 
 permissions:
