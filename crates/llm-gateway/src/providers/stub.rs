@@ -151,7 +151,56 @@ fn note_tool_call(
             }),
         );
     }
+    // ノートの選択（node_id 付き）＋編集の依頼キーワードがあれば document.edit を呼ぶ。
+    // モックの生成結果として整形テキストを末尾へ追記する（AI 編集パイプラインは本物を通す）。
+    if let Some(node_id) = selection_node_id(user_text, "note_selection") {
+        if wants_edit(user_text) {
+            return call(
+                "document.edit",
+                serde_json::json!({
+                    "node_id": node_id,
+                    "ops": [{ "op": "append", "markdown": MOCK_NOTE_EDIT_MD }],
+                }),
+            );
+        }
+    }
     None
+}
+
+/// モック AI が追記する整形テキスト（決定的）。
+const MOCK_NOTE_EDIT_MD: &str = "\n## サマリー\n\n- 全社売上は前年同期比 +18%。新規顧客の獲得が牽引。\n- 既存顧客の継続率も 92% → 95% へ改善。\n\n## 課題と次アクション\n\n- 西日本エリアが横ばい（競合の価格施策の影響）。\n- 来期は単価改善とチャネル戦略の見直しを実施する。\n";
+
+/// 依頼テキストに編集意図のキーワードが含まれるか（要約・質問だけの依頼と区別する）。
+fn wants_edit(user_text: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "整えて",
+        "整理",
+        "書き直",
+        "追記",
+        "追加",
+        "編集",
+        "直して",
+        "リライト",
+        "まとめて",
+    ];
+    KEYWORDS.iter().any(|k| user_text.contains(k))
+}
+
+/// 注入された選択デリミタ `<selection kind="<kind>" node_id="UUID" ...>` から node_id を取る。
+fn selection_node_id(user_text: &str, kind: &str) -> Option<String> {
+    let marker = format!("kind=\"{kind}\"");
+    let start = user_text.find(&marker)?;
+    let after = &user_text[start..];
+    let id_start = after.find("node_id=\"")? + "node_id=\"".len();
+    let id = &after[id_start..];
+    let end = id.find('"')?;
+    let candidate = &id[..end];
+    // UUID 形（36 文字・ハイフン 4 本）の緩い検証。
+    if candidate.len() == 36 && candidate.matches('-').count() == 4 {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
 }
 
 /// 単一ツール呼び出し（ToolUse で停止）のストリームを組む決定的ヘルパ。

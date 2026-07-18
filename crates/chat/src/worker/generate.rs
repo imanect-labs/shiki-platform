@@ -141,8 +141,20 @@ impl ChatWorker {
             app_id: None,
         };
 
+        // 承認者は自律/通常チャットの双方へ配線する。破壊系ツール（document.edit / slide.edit /
+        // csv.patch / csv.write 等・requires_confirmation）は、ノート/スライド/CSV の
+        // ドキュメントアシスタント（非自律）でも human-in-the-loop の承認カードを出して実行する。
+        // 承認 UI/API/DbApprover は種別非依存で、承認が無ければ実行しない（fail-safe・破壊系を
+        // 黙って走らせない）。これを配線しないと非自律チャットでは承認者不在により編集ツールが
+        // 常に "requires explicit confirmation" で拒否され、共同編集が機能しない。
+        let approver = crate::approver::DbApprover::new(
+            self.store.clone(),
+            run.run_id,
+            run.fencing_token,
+            cancel,
+        );
         // 自律プロファイル: フルツール（fs CRUD/grep/shell）＋予算＋計画＋承認ゲート（Task 5.1/5.4/5.6/5.7）。
-        let (opts, approver) = if run.autonomous {
+        let opts = if run.autonomous {
             if let Some(storage) = &self.storage {
                 let workspace = self.ensure_workspace(ctx, run.thread_id, storage).await?;
                 self.push_autonomous_tools(&mut tools, workspace);
@@ -157,21 +169,17 @@ impl ChatWorker {
                 // 版管理・復元可能な書込は自動承認、shell/削除はユーザー承認（スコープ限定事前許可）。
                 opts.approval =
                     ApprovalPolicy::auto(["fs_write".to_string(), "fs_edit".to_string()]);
-                let approver = crate::approver::DbApprover::new(
-                    self.store.clone(),
-                    run.run_id,
-                    run.fencing_token,
-                    cancel,
-                );
-                (opts, Some(approver))
+                opts
             } else {
                 // storage 未配線: 自律不能。制約版に落とす（黙って弱くしない・警告）。
                 tracing::warn!(run_id = %run.run_id, "autonomous run but storage unwired; falling back to chat profile");
-                (chat_opts(self), None)
+                chat_opts(self)
             }
         } else {
-            (chat_opts(self), None)
+            // 通常チャット: deny_all（既定）のまま。破壊系は都度ユーザー承認が要る（要確認ツールの設計意図）。
+            chat_opts(self)
         };
+        let approver = Some(approver);
 
         // skill を最後に適用する（system 追記・few-shot・モデル既定・提示ツールの縮小）。
         // ⚠️ opts.approval には触れない（破壊系の明示許可は skill で無効化できない・Task 6.9）。

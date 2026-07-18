@@ -341,9 +341,22 @@ pub async fn stream_thread(
             .boxed(),
         None => futures::stream::empty().boxed(),
     };
-    Ok(Sse::new(stream)
+    let mut response = Sse::new(stream)
         .keep_alive(KeepAlive::default())
-        .into_response())
+        .into_response();
+    // 逆プロキシ（Next の BFF rewrite・nginx 等）が SSE をバッファ/圧縮すると、run が開いたまま
+    // （承認待ち・自律進捗）のイベントが flush されず live で届かない。`no-transform` で中間層の
+    // 圧縮を止め、`X-Accel-Buffering: no` でバッファ無効化を明示する（接続非依存生成の live 配信）。
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-cache, no-transform"),
+    );
+    headers.insert(
+        axum::http::HeaderName::from_static("x-accel-buffering"),
+        axum::http::HeaderValue::from_static("no"),
+    );
+    Ok(response)
 }
 
 /// 生成をユーザー明示停止する（editor 認可）。ページ離脱はキャンセルしない。
