@@ -227,6 +227,20 @@ function boot() {
         editor.setComponents("");
         break;
       }
+      case "export:run": {
+        // pptx エクスポート（Task 11.4）。計測・変換は砂箱内で完結し、bytes だけ親へ返す。
+        try {
+          const { exportPptx } = await import("./export");
+          const { blob, report } = await exportPptx(msg.slides, msg.title, sanitizeForCanvas);
+          send({ type: "export:done", blob, report });
+        } catch (e) {
+          send({
+            type: "export:error",
+            message: e instanceof Error ? e.message : "エクスポートに失敗しました",
+          });
+        }
+        break;
+      }
       default:
     }
   }
