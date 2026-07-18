@@ -223,9 +223,19 @@ pub(crate) fn wire_b1(
         installations: app_gateway::AppInstallationStore::new(db.clone()),
         store: Arc::clone(object_store),
         gateway_origin,
-        host_origin,
+        host_origin: host_origin.clone(),
     };
-    Some(app_gateway::build_b1_router(state))
+    let mut router = app_gateway::build_b1_router(state);
+    // 組み込み砂箱バンドル（スライドエディタ・Task 11.2）は同じ apps オリジンに同居させる。
+    if let Some(dir) = &config.gateway.builtin_dir {
+        router = router.merge(app_gateway::build_builtin_router(
+            app_gateway::BuiltinState {
+                dir: std::path::PathBuf::from(dir),
+                host_origin,
+            },
+        ));
+    }
+    Some(router)
 }
 
 /// B2 関数実行（Task 9.12）の runner/port を組む（gateway 無効 or エンジン初期化失敗は None）。

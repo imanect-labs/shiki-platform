@@ -82,6 +82,10 @@ pub struct GatewayConfig {
     /// `auth.redirect_uri` のオリジンから導出。
     #[serde(default)]
     pub web_origin: Option<String>,
+    /// 組み込み砂箱バンドル（スライドエディタ等）の配置ディレクトリ（Task 11.2）。
+    /// 未設定なら組み込みバンドル配信は off（/builtin/* は 404）。
+    #[serde(default)]
+    pub builtin_dir: Option<String>,
 }
 
 fn default_gateway_port() -> u16 {
@@ -110,6 +114,7 @@ impl Default for GatewayConfig {
             b1_port: default_b1_port(),
             public_origin: None,
             web_origin: None,
+            builtin_dir: None,
         }
     }
 }
