@@ -152,6 +152,14 @@ function boot() {
   // コンポーネント/スタイルの全変更を 1 本のフックで拾う（rte:disable = テキスト編集の確定）。
   editor.on("component:add component:remove component:update style:change rte:disable", scheduleChange);
 
+  // 要素選択（選択→AI 指示・Task 11.10）。選択要素の HTML 抜粋を親へ通知する。
+  editor.on("component:selected", (cmp: { toHTML?: () => string }) => {
+    if (!currentId) return;
+    const html = typeof cmp?.toHTML === "function" ? cmp.toHTML() : "";
+    if (html) send({ type: "selection", id: currentId, html });
+  });
+  editor.on("component:deselected", () => send({ type: "selection:clear" }));
+
   /// 未確定の編集を確定して親へ送る（スライド切替時のデータ喪失防止）。
   /// RTE（テキスト編集中）はコンポーネントモデルへの反映が select 解除後の tick で
   /// 走るため、解除 → 1 tick 待ち → 読み出しの順にする（非同期）。

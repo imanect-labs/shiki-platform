@@ -10,6 +10,7 @@ import {
   Paperclip,
   Plus,
   Square,
+  TextSelect,
   Upload,
   X,
 } from "lucide-react";
@@ -17,6 +18,13 @@ import {
 import { cn } from "@/lib/utils";
 import { uploadFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, WorkspaceChoice } from "@/lib/chat-api";
+import {
+  clearPendingSelection,
+  selectionKindLabel,
+  takePendingSelection,
+  usePendingSelection,
+  type SelectionContext,
+} from "@/lib/selection-context";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
 import {
   PromptInput,
@@ -51,7 +59,12 @@ export function Composer({
   onWorkspaceChange,
   className,
 }: {
-  onSubmit: (text: string, attachments: Attachment[]) => void;
+  onSubmit: (
+    text: string,
+    attachments: Attachment[],
+    /// エディタの選択コンテキスト（選択→AI 指示・Task 11.10。無ければ undefined）。
+    context?: SelectionContext,
+  ) => void;
   /// 生成中に停止する（指定時は送信ボタンが停止ボタンに変わる）。
   onStop?: () => void;
   placeholder?: string;
@@ -79,12 +92,15 @@ export function Composer({
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
+  // エディタの選択コンテキスト（選択→AI 指示・Task 11.10）。チップ表示し送信時に消費する。
+  const selection = usePendingSelection();
+
   const canSend = value.trim().length > 0 && !disabled && !uploading && !streaming;
 
   const submit = () => {
     const text = value.trim();
     if (!text || disabled || uploading || streaming) return;
-    onSubmit(text, attachments);
+    onSubmit(text, attachments, takePendingSelection() ?? undefined);
     setValue("");
     setAttachments([]);
   };
@@ -116,6 +132,27 @@ export function Composer({
 
   return (
     <div className={cn("flex flex-col gap-2", className)}>
+      {/* 選択コンテキストチップ（選択→AI 指示・Task 11.10） */}
+      {selection ? (
+        <div
+          className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-1.5 text-xs"
+          data-testid="selection-chip"
+        >
+          <TextSelect className="size-3.5 shrink-0 text-primary" aria-hidden />
+          <span className="font-medium">{selectionKindLabel(selection.kind)}</span>
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">
+            {selection.excerpt.slice(0, 120)}
+          </span>
+          <button
+            type="button"
+            onClick={clearPendingSelection}
+            aria-label="選択コンテキストを外す"
+            className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-3.5" aria-hidden />
+          </button>
+        </div>
+      ) : null}
       {/* 添付チップ */}
       {(attachments.length > 0 || uploading) && (
         <div className="flex flex-wrap gap-1.5 px-1">

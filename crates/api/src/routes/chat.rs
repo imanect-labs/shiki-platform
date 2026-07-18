@@ -275,12 +275,17 @@ pub async fn post_message(
     Json(req): Json<PostMessageRequest>,
 ) -> Result<(StatusCode, Json<PostMessageResponse>), ApiError> {
     let attachments = req.attachments.unwrap_or_default();
+    // 選択コンテキストの受理検証（fail-closed・存在秘匿・chat_selection.rs 参照）。
+    let selection =
+        super::chat_selection::resolve_selection(&state, &ctx, req.context, trace.as_deref())
+            .await?;
     let r = chat_store(&state)?
         .post_message(
             &ctx,
             id,
             &req.text,
             &attachments,
+            selection,
             req.agent_mode,
             req.autonomous.unwrap_or(false),
             trace.as_deref(),

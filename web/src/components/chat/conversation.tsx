@@ -26,6 +26,7 @@ import { popPending } from "@/lib/pending-message";
 import { triggerDownload } from "@/lib/storage";
 import { linkifyCitations } from "@/lib/citation";
 import { newId } from "@/lib/chat-store";
+import { selectionKindLabel, type SelectionContext } from "@/lib/selection-context";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
 import { ChatGenUiProvider } from "@/components/genui/action-context";
 import { SpecRenderer } from "@/components/genui/spec-renderer";
@@ -214,12 +215,19 @@ export function Conversation({
   }, [flushStream, updateStream, threadId, onNoteDraftOpened, router]);
 
   const send = React.useCallback(
-    (text: string, attachments: Attachment[], autonomousOverride?: boolean) => {
+    (
+      text: string,
+      attachments: Attachment[],
+      autonomousOverride?: boolean,
+      // エディタの選択コンテキスト（選択→AI 指示・Task 11.10）。
+      context?: SelectionContext,
+    ) => {
       setError(null);
       // ホームからの初回メッセージは選択時点の値を明示指定する（state 初期化のタイミングに依存しない）。
       const runAutonomous = autonomousOverride ?? autonomous;
       // 楽観的にユーザーメッセージを表示。
       const userBlocks: ContentBlock[] = [
+        ...(context ? [{ type: "selection_context" as const, context }] : []),
         ...attachments.map((a) => ({ type: "file_ref" as const, node_id: a.node_id, name: a.name })),
         { type: "text" as const, text },
       ];
@@ -236,6 +244,7 @@ export function Conversation({
         makeHandlers(),
         runAutonomous,
         runAutonomous,
+        context,
       );
     },
     [threadId, makeHandlers, autonomous],
@@ -365,7 +374,7 @@ export function Conversation({
       <div className="bg-background">
         <div className={cn("mx-auto w-full px-4 py-4", isPanel ? "max-w-none pb-3" : "max-w-3xl")}>
           <Composer
-            onSubmit={send}
+            onSubmit={(text, attachments, context) => send(text, attachments, undefined, context)}
             onStop={stop}
             streaming={stream !== null}
             autonomous={autonomous}
@@ -421,9 +430,22 @@ function UserRow({ blocks }: { blocks: ContentBlock[] }) {
     .map((b) => b.text)
     .join("\n");
   const files = blocks.filter((b): b is Extract<ContentBlock, { type: "file_ref" }> => b.type === "file_ref");
+  const selections = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "selection_context" }> =>
+      b.type === "selection_context",
+  );
   return (
     <Message className="justify-end">
       <div className="flex max-w-[85%] flex-col items-end gap-1.5">
+        {selections.map((s, i) => (
+          <span
+            key={i}
+            data-testid="message-selection-chip"
+            className="inline-flex max-w-full items-center gap-1 truncate rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80"
+          >
+            {selectionKindLabel(s.context.kind)}: {s.context.excerpt.slice(0, 80)}
+          </span>
+        ))}
         {files.length > 0 ? (
           <div className="flex flex-wrap justify-end gap-1.5">
             {files.map((f) => (

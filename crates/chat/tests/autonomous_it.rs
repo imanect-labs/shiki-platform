@@ -206,7 +206,16 @@ async fn workspace_harness(pool: PgPool) -> (ChatStore, Arc<StorageService>) {
 /// 自律 run を投入し、fs_write の tool_call と Done を待つ（stub `fswrite:` プレフィックス）。
 async fn run_autonomous_fswrite(store: &ChatStore, c: &AuthContext, thread_id: uuid::Uuid) {
     let res = store
-        .post_message(c, thread_id, "fswrite: hello-e2e", &[], None, true, None)
+        .post_message(
+            c,
+            thread_id,
+            "fswrite: hello-e2e",
+            &[],
+            None,
+            None,
+            true,
+            None,
+        )
         .await
         .unwrap();
     let mut rx = store.event_stream(res.run_id, 0);
@@ -243,7 +252,16 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         .unwrap();
     // autonomous=true で投入 → stub が fs_write を呼ぶ（fswrite: プレフィックス・ApprovalPolicy=auto で承認不要）。
     let res = store
-        .post_message(&c, thread.id, "fswrite: hello-e2e", &[], None, true, None)
+        .post_message(
+            &c,
+            thread.id,
+            "fswrite: hello-e2e",
+            &[],
+            None,
+            None,
+            true,
+            None,
+        )
         .await
         .unwrap();
     let mut rx = store.event_stream(res.run_id, 0);

@@ -28,6 +28,8 @@ export type HostMessage =
 export type SandboxMessage =
   | { type: "ready" }
   | { type: "slide:changed"; id: string; html: string }
+  | { type: "selection"; id: string; html: string }
+  | { type: "selection:clear" }
   | { type: "export:done"; blob: Blob; report: ExportReport }
   | { type: "export:error"; message: string };
 
@@ -70,6 +72,21 @@ export function parseSandboxMessage(data: unknown): SandboxMessage | null {
       }
       return null;
     }
+    case "selection": {
+      const { id, html } = record;
+      if (
+        typeof id === "string" &&
+        id.length > 0 &&
+        id.length <= 128 &&
+        typeof html === "string" &&
+        html.length <= 32_000
+      ) {
+        return { type: "selection", id, html };
+      }
+      return null;
+    }
+    case "selection:clear":
+      return { type: "selection:clear" };
     case "export:done": {
       const { blob } = record;
       const report = parseReport(record.report);

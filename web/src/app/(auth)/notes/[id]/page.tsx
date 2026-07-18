@@ -22,6 +22,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import { useMe } from "@/hooks/use-me";
 import { CollabProvider, type CollabStatus } from "@/lib/collab";
+import { setPendingSelection } from "@/lib/selection-context";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
 import { cn } from "@/lib/utils";
 
@@ -162,6 +163,16 @@ function NotePageInner() {
                   editable={editable}
                   user={{ id: userId, name: userName }}
                   extraSlashItems={embedSlashItems}
+                  // 選択→AI 指示（Task 11.10）: 選択をチップ化してアシスタントを開く。
+                  onAskAi={({ text, headingPath }) => {
+                    setPendingSelection({
+                      kind: "note_selection",
+                      node_id: nodeId,
+                      excerpt: text,
+                      locator: { heading_path: headingPath },
+                    });
+                    setChatOpen(true);
+                  }}
                 />
               </div>
             </div>

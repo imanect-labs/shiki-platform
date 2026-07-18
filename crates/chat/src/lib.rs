@@ -30,6 +30,7 @@ pub mod document_tool;
 pub mod error;
 pub mod gui_actions;
 pub mod model;
+pub mod selection;
 pub(crate) mod skill;
 pub mod slide_tool;
 pub mod store;
@@ -44,8 +45,8 @@ pub use document_tool::{DocumentEditTool, DocumentEmbedTool, DocumentReadTool, S
 pub use error::ChatError;
 pub use gui_actions::ChatSubmitHandler;
 pub use model::{
-    Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunStatus, StreamEvent,
-    StreamEventKind, Thread, ThreadRole,
+    Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunStatus, SelectionContext,
+    SelectionKind, StreamEvent, StreamEventKind, Thread, ThreadRole,
 };
 pub use slide_tool::{SlideEditTool, SlideReadTool};
 pub use store::{ChatStore, ClaimedRun, PostResult, ThreadOrigin, CHAT_GENERATION_QUEUE};

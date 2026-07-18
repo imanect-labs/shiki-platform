@@ -16,6 +16,8 @@ export type HostMessage =
 export type SandboxMessage =
   | { type: "ready" }
   | { type: "slide:changed"; id: string; html: string }
+  | { type: "selection"; id: string; html: string }
+  | { type: "selection:clear" }
   | { type: "export:done"; blob: Blob; report: ExportReport }
   | { type: "export:error"; message: string };
 

@@ -7,7 +7,7 @@
 /// - SQL コンソール（RO・隔離 DuckDB 経由）を併設し、結果を「新規 CSV」として保存できる。
 
 import { Loader2 } from "lucide-react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import * as React from "react";
 
 import { CsvGrid, type CsvGridHandle } from "@/components/csv/csv-grid";
@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
+import { setPendingSelection } from "@/lib/selection-context";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
 import { applyPatch, getSchema, TabularConflict, type SchemaResponse } from "@/lib/tabular-api";
 
@@ -41,6 +42,7 @@ export default function CsvPage() {
   const [saving, setSaving] = React.useState(false);
   const [conflict, setConflict] = React.useState(false);
   const [tab, setTab] = React.useState<"grid" | "sql">("grid");
+  const router = useRouter();
   const gridRef = React.useRef<CsvGridHandle>(null);
 
   const load = React.useCallback(async () => {
@@ -148,6 +150,17 @@ export default function CsvPage() {
             totalRows={loaded.schema.total_rows ?? 0}
             editable={!!editable}
             onDirtyChange={setDirty}
+            // 選択→AI 指示（Task 11.10）: チップ化してチャットへ（CSV ページは
+            // アシスタントパネルを持たないため、ホームのチャットに引き継ぐ）。
+            onAskAi={({ excerpt, rows, cols }) => {
+              setPendingSelection({
+                kind: "csv_range",
+                node_id: nodeId,
+                excerpt,
+                locator: { rows, cols },
+              });
+              router.push("/");
+            }}
           />
         ) : (
           <SqlConsole nodeId={nodeId} parentId={null} />

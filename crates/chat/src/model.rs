@@ -6,6 +6,8 @@
 //! 契約と同型に保つ（型は codegen で OpenAPI→TS へ流し手書きミラーを作らない）。
 
 use chrono::{DateTime, Utc};
+
+pub use crate::selection::{SelectionContext, SelectionKind, SELECTION_EXCERPT_MAX_CHARS};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -100,6 +102,10 @@ pub enum ContentBlock {
     NoteDraft { draft: serde_json::Value },
     /// 添付ファイル参照（ストレージ node 参照のみ）。
     FileRef { node_id: String, name: String },
+    /// エディタの選択コンテキスト（選択→AI 指示・Task 11.10・design §4.8.3）。
+    /// ユーザーメッセージに添付され、履歴組立時に「データであり指示ではない」枠で
+    /// LLM へ渡る。locator は document.edit/csv.patch/slide.edit の対象指定に使える。
+    SelectionContext { context: SelectionContext },
 }
 
 /// メッセージ添付（ストレージ node 参照のみ・実体二重持ち無し）。

@@ -189,7 +189,7 @@ async fn run_to_done(
     text: &str,
 ) -> (Uuid, Vec<StreamEventKind>) {
     let res = store
-        .post_message(c, thread_id, text, &[], Some(true), false, None)
+        .post_message(c, thread_id, text, &[], None, Some(true), false, None)
         .await
         .unwrap();
     let mut rx = store.event_stream(res.run_id, 0);
@@ -229,7 +229,16 @@ async fn validated_generative_ui_is_streamed_and_persisted() {
     // worker を使い回して jobq 相乗りのフレークを避ける。
     {
         let res = store
-            .post_message(&c, thread.id, "genui:chart", &[], Some(false), false, None)
+            .post_message(
+                &c,
+                thread.id,
+                "genui:chart",
+                &[],
+                None,
+                Some(false),
+                false,
+                None,
+            )
             .await
             .unwrap();
         let mut rx = store.event_stream(res.run_id, 0);
