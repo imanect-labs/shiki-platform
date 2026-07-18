@@ -119,6 +119,20 @@ test("選択→AI→承認で開いているセッションへライブ反映さ
   await expect(approve).toBeVisible({ timeout: 25_000 });
   await approve.click();
 
-  // 承認後、Collabora の編集画面（iframe 内）に AI が差し替えた本文がライブで現れる。
-  await expect(inner.getByText("AI が置き換えた本文です。")).toBeVisible({ timeout: 30_000 });
+  // 承認後、office.live_edit → SSE → Action_Paste/.uno:InsertText でセッション内の選択が置換される。
+  // Collabora は canvas 描画のため DOM テキストでは検証できない。置換後に文書を全選択すると、
+  // アシスタントパネルの選択ポーリング（Action_Copy）が新しい本文を拾ってチップへ反映するので、
+  // そのチップ本文に AI の差し替え内容が含まれることでセッションへ反映されたことを裏取りする。
+  // （前提: Collabora の welcome オーバーレイが無効化された構成。有効だと文書が覆われ注入不可。）
+  await page.waitForTimeout(4000);
+  await page.keyboard.press("Escape");
+  await inner
+    .locator("#main-document-content, #document-container")
+    .first()
+    .click({ force: true, position: { x: 300, y: 200 } });
+  await page.waitForTimeout(500);
+  await page.keyboard.press("Control+a");
+  await expect(page.getByTestId("selection-chip")).toContainText("AI が置き換えた本文です。", {
+    timeout: 20_000,
+  });
 });
