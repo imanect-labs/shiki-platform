@@ -37,7 +37,7 @@ import { useMe } from "@/hooks/use-me";
 import { createNote } from "@/lib/notes-api";
 import { createOfficeSession, OfficeSessionError } from "@/lib/office-api";
 import { createSlide } from "@/lib/slides-api";
-import { saveNewCsv } from "@/lib/tabular-api";
+import { saveNewCsv, TabularConflict } from "@/lib/tabular-api";
 import { useContentSearch, type ContentHit } from "@/lib/drive-search";
 import {
   breadcrumb,
@@ -220,16 +220,27 @@ export function DriveBrowser() {
   };
 
   // CSV（グリッドエディタ・Task 11P.8）を作成してエディタへ遷移する。ヘッダのみの空 CSV。
+  // 同名は 409 のため、ドキュメント作成と同じく連番で空きを探す（2 回目以降の作成が黙って
+  // 失敗しない）。
   const [creatingCsv, setCreatingCsv] = React.useState(false);
   const createCsvAndOpen = async () => {
     if (creatingCsv) return;
     setCreatingCsv(true);
     try {
-      const saved = await saveNewCsv({
-        parentId: folderId ?? undefined,
-        name: "無題のスプレッドシート",
-        csv: "列1,列2,列3\n,,\n",
-      });
+      let saved: Awaited<ReturnType<typeof saveNewCsv>> | null = null;
+      for (let n = 1; n <= 20 && !saved; n++) {
+        const name = n === 1 ? "無題のスプレッドシート" : `無題のスプレッドシート ${n}`;
+        try {
+          saved = await saveNewCsv({
+            parentId: folderId ?? undefined,
+            name,
+            csv: "列1,列2,列3\n,,\n",
+          });
+        } catch (e) {
+          if (!(e instanceof TabularConflict)) throw e;
+        }
+      }
+      if (!saved) throw new Error("同名のスプレッドシートが多すぎます。名前を変えて作成してください。");
       router.push(`/csv/${saved.node_id}`);
     } catch (e) {
       toast({

@@ -59,6 +59,15 @@ export function isActivePath(href: string, pathname: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
+/// 没入エディタ（ノート/スライド/CSV/Office 文書）のルートか判定する。
+///
+/// これらのページは編集そのものが主役なので、シェル上部バーを隠しサイドバーを畳んで
+/// 全画面に近い集中モードにする（下書き /notes/draft 等も含む）。ドライブ一覧や
+/// チャットは対象外（ナビゲーションが主役）。
+export function isEditorRoute(pathname: string): boolean {
+  return /^\/(notes|slides|csv|office)\//.test(pathname);
+}
+
 /// パスからヘッダのページタイトルを解決する（現在地表示）。
 export function resolvePageTitle(pathname: string): string {
   if (pathname === "/") return "ホーム";

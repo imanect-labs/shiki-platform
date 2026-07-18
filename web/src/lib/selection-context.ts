@@ -9,7 +9,11 @@
 import * as React from "react";
 
 /// 選択種別（サーバの chat::SelectionKind と対・閉集合）。
-export type SelectionKind = "note_selection" | "csv_range" | "slide_selection";
+export type SelectionKind =
+  | "note_selection"
+  | "csv_range"
+  | "slide_selection"
+  | "office_selection";
 
 /// 選択コンテキスト（サーバの chat::SelectionContext と対）。
 export interface SelectionContext {
@@ -66,6 +70,8 @@ export function selectionKindLabel(kind: SelectionKind): string {
       return "CSV の選択範囲";
     case "slide_selection":
       return "スライドの選択要素";
+    case "office_selection":
+      return "文書の選択範囲";
     default:
       return "選択範囲";
   }

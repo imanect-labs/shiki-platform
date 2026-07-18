@@ -87,6 +87,8 @@ export async function saveNewCsv(input: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ parent_id: input.parentId ?? null, name: input.name, csv: input.csv }),
   });
+  // 同名ノードは 409（新規作成のため）。呼び出し側が連番リトライ等で扱えるよう区別する。
+  if (res.status === 409) throw new TabularConflict(0, 0);
   if (!res.ok) throw new Error(`CSV 保存に失敗しました (${res.status})`);
   return (await res.json()) as SaveResponse;
 }

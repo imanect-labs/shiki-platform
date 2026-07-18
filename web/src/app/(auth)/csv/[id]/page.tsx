@@ -6,7 +6,7 @@
 /// - 編集は明示保存（Cmd/Ctrl+S）で rev 付きパッチ→楽観ロック（409 は衝突ダイアログ）。
 /// - SQL コンソール（RO・隔離 DuckDB 経由）を併設し、結果を「新規 CSV」として保存できる。
 
-import { Loader2 } from "lucide-react";
+import { EditorLoading } from "@/components/shell/editor-loading";
 import { useParams, useRouter } from "next/navigation";
 import * as React from "react";
 
@@ -112,10 +112,7 @@ export default function CsvPage() {
 
   if (loaded === null) {
     return (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" aria-hidden />
-        CSV を開いています…
-      </div>
+      <EditorLoading kind="sheet" message="CSV を開いています…" />
     );
   }
   if (loaded === "notfound") {

@@ -80,6 +80,27 @@ const BLOCKS: { id: string; label: string; content: string }[] = [
 /// 編集結果の親への通知デバウンス（タイプ中の全キーで送らない）。
 const CHANGE_DEBOUNCE_MS = 300;
 
+/// GrapesJS の UI 文言（core に ja ロケールが無いため、露出する文言を自前で供給する）。
+const JA_MESSAGES = {
+  styleManager: { empty: "要素を選択するとスタイルを編集できます" },
+  traitManager: { empty: "要素を選択すると設定を編集できます", label: "コンポーネント設定" },
+  selectorManager: { label: "クラス", selected: "選択中", emptyState: "- 状態 -", states: { hover: "ホバー" } },
+  panels: {
+    buttons: {
+      titles: {
+        preview: "プレビュー",
+        fullscreen: "全画面",
+        "sw-visibility": "枠線を表示",
+        "export-template": "コードを表示",
+        "open-sm": "スタイル",
+        "open-tm": "設定",
+        "open-layers": "レイヤー",
+        "open-blocks": "ブロック",
+      },
+    },
+  },
+} as const;
+
 function boot() {
   const editor: Editor = grapesjs.init({
     container: "#gjs",
@@ -94,8 +115,18 @@ function boot() {
     canvas: { styles: [], scripts: [] },
     blockManager: { blocks: BLOCKS.map((b) => ({ ...b, select: true })) },
     deviceManager: { devices: [{ id: "slide", name: "スライド", width: "1280px", height: "720px" }] },
+    // detectLocale は "ja-JP" を拾って messages["ja"] にヒットしない（実測）ため固定する。
+    i18n: { locale: "ja", detectLocale: false, localeFallback: "en", messages: { ja: JA_MESSAGES } },
   });
   editor.setDevice("slide");
+
+  // スライドに不要な既定 UI を落とす（デバイス行=スライドで無意味・全画面=iframe 内で混乱・
+  // コード表示=英語ダイアログで体験を割る。エクスポート等は親ワークスペース側のツールバーが持つ）。
+  editor.on("load", () => {
+    editor.Panels.removePanel("devices-c");
+    editor.Panels.removeButton("options", "fullscreen");
+    editor.Panels.removeButton("options", "export-template");
+  });
 
   // キャンバス（スライド内）へ基本タイポグラフィを注入する。フレームは device 切替等で
   // 再生成され得るため、load 系イベントごとに冪等に差し込む。
@@ -109,16 +140,26 @@ function boot() {
   };
   editor.on("load canvas:frame:load", injectCanvasCss);
 
-  // キャンバスを表示領域へフィットさせる（1280×720 の論理キャンバスを等倍縮尺）。
+  // キャンバスを表示領域へフィットさせる（1280×720 の論理キャンバスを等倍縮尺＋中央寄せ）。
+  // パネルの増減で Canvas 要素の実寸が確定するのはレイアウト後のため、rAF で 1 拍置いてから
+  // 計測し、フレーム再生成（canvas:frame:load）でも取り直す。fitViewport がズームと座標を
+  // 一括調整する（手計算 setZoom だけでは水平位置が左に寄る）。
   const fitCanvas = () => {
-    const container = editor.Canvas.getElement();
-    if (!container) return;
-    const scale = Math.min(container.clientWidth / 1280, container.clientHeight / 720) * 0.96;
-    if (scale > 0 && Number.isFinite(scale)) {
-      editor.Canvas.setZoom(scale * 100);
-    }
+    requestAnimationFrame(() => {
+      const canvas = editor.Canvas;
+      if (typeof canvas.fitViewport === "function") {
+        canvas.fitViewport({ gap: 24 });
+      } else {
+        const container = canvas.getElement();
+        if (!container) return;
+        const scale = Math.min(container.clientWidth / 1280, container.clientHeight / 720) * 0.96;
+        if (scale > 0 && Number.isFinite(scale)) {
+          canvas.setZoom(scale * 100);
+        }
+      }
+    });
   };
-  editor.on("load", fitCanvas);
+  editor.on("load canvas:frame:load", fitCanvas);
   window.addEventListener("resize", fitCanvas);
 
   // デバッグ・e2e 用の限定フック（砂箱オリジン内のみ・親からは不可達）。

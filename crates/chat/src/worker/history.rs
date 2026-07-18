@@ -52,6 +52,7 @@ pub(super) fn message_text(blocks: &[ContentBlock]) -> String {
                     crate::model::SelectionKind::NoteSelection => "note_selection",
                     crate::model::SelectionKind::CsvRange => "csv_range",
                     crate::model::SelectionKind::SlideSelection => "slide_selection",
+                    crate::model::SelectionKind::OfficeSelection => "office_selection",
                 };
                 let target = context
                     .node_id

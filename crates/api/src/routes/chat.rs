@@ -341,9 +341,12 @@ pub async fn stream_thread(
             .boxed(),
         None => futures::stream::empty().boxed(),
     };
-    Ok(Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response())
+    // 逆プロキシのバッファ/圧縮で承認待ち・進捗イベントが live で止まるのを防ぐ（sse_util 参照）。
+    Ok(super::sse_util::no_buffer(
+        Sse::new(stream)
+            .keep_alive(KeepAlive::default())
+            .into_response(),
+    ))
 }
 
 /// 生成をユーザー明示停止する（editor 認可）。ページ離脱はキャンセルしない。

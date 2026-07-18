@@ -1,30 +1,35 @@
 "use client";
 
-/// Office 文書編集ページ（Task 11.7）。/office/[id] で docx/xlsx/pptx を Collabora
-/// iframe で開く。
+/// Office 文書編集ページ（Task 11.7 ＋ 11.10）。/office/[id] で docx/xlsx/pptx を Collabora
+/// で開き、右にアシスタントパネル（この文書についての AI 会話）を分割表示する。
 ///
-/// - `/office/sessions` で編集アクション URL＋WOPI access_token＋WOPISrc を取得し、
-///   **form POST** で iframe に注入する（WOPI 標準の起動手順。トークンを URL クエリに
-///   載せずボディで渡す＝アクセスログへの漏出を避ける）。
-/// - トークンは入場券にすぎず、権限は WOPI 側が毎呼び出しで ReBAC 再チェックする
-///   （共有解除は即時反映・PIT-11）。
-/// - Collabora 未配備（office profile 未起動）は 503 → 案内表示にフォールバックする。
+/// - `/office/sessions` の材料を [`OfficeEditor`] が form POST で iframe へ注入する
+///   （トークンは URL に載せない・WOPI 側が毎呼び出しで ReBAC 再チェック・PIT-11）。
+/// - 選択→AI（Task 11.10・Office 版）: エディタから postMessage で選択テキストを取得し、
+///   コンテキストチップとしてアシスタントに添付する（office.edit がファイル単位で適用）。
+/// - Collabora 未配備（office profile 未起動）は 503 → 案内表示へフォールバック。
 
-import { FileWarning, Loader2, PlugZap } from "lucide-react";
+import { FileWarning, MessageSquare, PlugZap, Sparkles, X } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import * as React from "react";
 
+import { OfficeChatPanel } from "@/components/office/office-chat-panel";
+import { OfficeEditor, type OfficeEditorHandle } from "@/components/office/office-editor";
+import { EditorLoading } from "@/components/shell/editor-loading";
+import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { FadeSlide } from "@/components/ui/motion-primitives";
 import {
-  buildOfficeFrameUrl,
   createOfficeSession,
   OfficeSessionError,
   type OfficeSession,
 } from "@/lib/office-api";
+import { setPendingSelection } from "@/lib/selection-context";
+import { getNode } from "@/lib/storage";
 
 type LoadState =
   | { phase: "loading" }
-  | { phase: "ready"; session: OfficeSession }
+  | { phase: "ready"; session: OfficeSession; fileName: string }
   | { phase: "notfound" }
   | { phase: "unavailable" }
   | { phase: "error"; message: string };
@@ -34,17 +39,18 @@ export default function OfficePage() {
   const fileId = params.id;
   const router = useRouter();
   const [state, setState] = React.useState<LoadState>({ phase: "loading" });
-  // Collabora の HTML が iframe に届くまでスピナーを重ねる（白画面のちらつきを見せない）。
-  // 解除は iframe の load（postMessage は PostMessageOrigin 不一致で届かない可能性が
-  // あるため、表示制御をそれに依存させない）。
-  const [frameReady, setFrameReady] = React.useState(false);
-  const iframeRef = React.useRef<HTMLIFrameElement>(null);
+  const [chatOpen, setChatOpen] = React.useState(false);
+  const editorRef = React.useRef<OfficeEditorHandle>(null);
 
   React.useEffect(() => {
     let cancelled = false;
-    createOfficeSession(fileId)
-      .then((session) => {
-        if (!cancelled) setState({ phase: "ready", session });
+    // 文書名（パネルの会話タイトル用）と編集セッションを並行取得する。
+    Promise.all([
+      createOfficeSession(fileId),
+      getNode(fileId).catch(() => null),
+    ])
+      .then(([session, node]) => {
+        if (!cancelled) setState({ phase: "ready", session, fileName: node?.name ?? "文書" });
       })
       .catch((e) => {
         if (cancelled) return;
@@ -59,52 +65,40 @@ export default function OfficePage() {
     };
   }, [fileId]);
 
-  // Collabora からの postMessage（CheckFileInfo の PostMessageOrigin 宛て）。
-  // Frame_Ready で handshake（Host_PostmessageReady）を返し、UI_Close でドライブへ戻る。
-  React.useEffect(() => {
-    if (state.phase !== "ready") return;
-    const collaboraOrigin = new URL(state.session.action_url).origin;
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== collaboraOrigin) return;
-      let msg: { MessageId?: string } & Record<string, unknown>;
-      try {
-        msg = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-      } catch {
-        return;
-      }
-      if (msg.MessageId === "App_LoadingStatus") {
-        const values = msg.Values as { Status?: string } | undefined;
-        if (values?.Status === "Frame_Ready") {
-          iframeRef.current?.contentWindow?.postMessage(
-            JSON.stringify({ MessageId: "Host_PostmessageReady" }),
-            collaboraOrigin,
-          );
-        }
-      } else if (msg.MessageId === "UI_Close") {
-        router.push("/drive");
-      }
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [state, router]);
+  // 直近で挿入した選択テキスト（ポーリングの重複挿入を避ける）。
+  const lastSelRef = React.useRef<string | null>(null);
 
-  // セッション取得後、非表示 form を iframe へ POST してエディタを起動する。
-  const formRef = React.useRef<HTMLFormElement>(null);
-  const formSubmittedRef = React.useRef(false);
-  React.useEffect(() => {
-    if (state.phase === "ready" && !formSubmittedRef.current) {
-      formSubmittedRef.current = true;
-      formRef.current?.submit();
+  const captureSelectionIntoChat = React.useCallback(async () => {
+    const text = await editorRef.current?.getSelectionText();
+    if (text && text !== lastSelRef.current) {
+      lastSelRef.current = text;
+      setPendingSelection({ kind: "office_selection", node_id: fileId, excerpt: text });
     }
-  }, [state]);
+  }, [fileId]);
+
+  // 「AI に依頼」= アシスタントパネルを開く（＋その時の選択があればチャットへ挿入）。
+  const openAssistant = React.useCallback(() => {
+    setChatOpen((open) => {
+      if (!open) void captureSelectionIntoChat();
+      return !open;
+    });
+  }, [captureSelectionIntoChat]);
+
+  // パネルを開いている間は選択を監視してチャットへ自動挿入する。Collabora は選択変更
+  // イベントを出さないため、軽いポーリングで現在の選択を拾う（変化時のみ挿入）。
+  React.useEffect(() => {
+    if (!chatOpen) {
+      lastSelRef.current = null;
+      return;
+    }
+    const id = window.setInterval(() => void captureSelectionIntoChat(), 1000);
+    return () => window.clearInterval(id);
+  }, [chatOpen, captureSelectionIntoChat]);
 
   if (state.phase === "loading") {
-    return (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" aria-hidden />
-        文書を開いています…
-      </div>
-    );
+    // 拡張子から表計算/文書を推定して骨格を出し分ける（初回は URL しか無いので doc 既定）。
+    const kind = /\.(xlsx|ods|csv)$/i.test(fileId) ? "sheet" : "doc";
+    return <EditorLoading kind={kind} message="文書を開いています…" />;
   }
   if (state.phase === "notfound") {
     return (
@@ -128,51 +122,62 @@ export default function OfficePage() {
     return <EmptyState icon={FileWarning} title="読み込みに失敗しました" description={state.message} />;
   }
 
-  const frameUrl = buildOfficeFrameUrl(state.session);
   return (
-    <div className="relative h-full min-h-0">
-      {/* WOPI 標準の起動: access_token を form POST で渡す（URL に載せない）。 */}
-      <form
-        ref={formRef}
-        action={frameUrl}
-        method="post"
-        target="office-frame"
-        className="hidden"
-        aria-hidden
-      >
-        <input name="access_token" value={state.session.access_token} type="hidden" readOnly />
-        <input
-          name="access_token_ttl"
-          value={String(Date.now() + state.session.access_token_ttl_ms)}
-          type="hidden"
-          readOnly
-        />
-      </form>
-      {!frameReady ? (
-        <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-background text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" aria-hidden />
-          エディタを起動しています…
+    <div className="flex h-full min-h-0 flex-col">
+      {/* ヘッダ: 選択→AI とアシスタント開閉。 */}
+      <div className="flex h-11 shrink-0 items-center gap-2 px-3 shiki-dash-bottom">
+        <span className="truncate text-sm font-medium">
+          {state.fileName.replace(/\.(docx|xlsx|pptx|odt|ods|odp)$/i, "")}
+        </span>
+        <span className="flex-1" />
+        <Button
+          type="button"
+          size="sm"
+          variant={chatOpen ? "secondary" : "ghost"}
+          onClick={openAssistant}
+          aria-pressed={chatOpen}
+          data-testid="office-ask-ai"
+          className="gap-1.5"
+        >
+          <Sparkles className="size-4" aria-hidden />
+          AI に依頼
+        </Button>
+      </div>
+
+      <div className="relative min-h-0 flex-1">
+        <div className={chatOpen ? "h-full lg:pr-[28rem]" : "h-full"}>
+          <OfficeEditor
+            ref={editorRef}
+            session={state.session}
+            onClose={() => router.push("/drive")}
+          />
         </div>
-      ) : null}
-      <iframe
-        ref={iframeRef}
-        name="office-frame"
-        title="Office 文書エディタ"
-        data-testid="office-frame"
-        className="h-full w-full border-0"
-        allow="clipboard-read; clipboard-write"
-        onLoad={() => {
-          // form POST の応答（Collabora 本体）が届いた時点でスピナーを外す。
-          // about:blank（挿入直後の初期 load）は同一オリジンで href が読める＝無視。
-          // Collabora 到着後はクロスオリジンで href 参照が throw する＝読み込み完了。
-          try {
-            if (iframeRef.current?.contentWindow?.location.href === "about:blank") return;
-          } catch {
-            /* クロスオリジン＝Collabora の応答が描画された */
-          }
-          setFrameReady(true);
-        }}
-      />
+
+        {chatOpen ? (
+          <FadeSlide
+            from="right"
+            role="complementary"
+            aria-label="文書のアシスタント"
+            className="absolute inset-y-3 right-3 z-20 flex w-[min(420px,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border bg-card shadow-lg"
+          >
+            <div className="flex h-11 shrink-0 items-center gap-2 px-3 shiki-dash-bottom">
+              <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
+              <span className="flex-1 text-sm font-medium">アシスタント</span>
+              <button
+                type="button"
+                onClick={() => setChatOpen(false)}
+                aria-label="チャットを閉じる"
+                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-90"
+              >
+                <X className="size-4" aria-hidden />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1">
+              <OfficeChatPanel fileId={fileId} fileName={state.fileName} />
+            </div>
+          </FadeSlide>
+        ) : null}
+      </div>
     </div>
   );
 }

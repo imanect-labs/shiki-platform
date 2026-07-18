@@ -13,10 +13,12 @@ use std::time::Duration;
 
 use axum::{
     extract::{Path, Query, State},
-    response::sse::{Event, KeepAlive, Sse},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
-use futures::stream::Stream;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -267,7 +269,7 @@ pub async fn stream_workflow_run_events(
     Path((id, run_id)): Path<(Uuid, Uuid)>,
     Query(q): Query<StreamQuery>,
     headers: axum::http::HeaderMap,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+) -> Result<Response, ApiError> {
     require_workflow_viewer(&state, &ctx, id, trace.as_deref()).await?;
     let runs = runs_or_503(&state)?.clone();
     // Last-Event-ID ヘッダ優先（EventSource の自動再接続）・無ければ query。
@@ -347,5 +349,10 @@ pub async fn stream_workflow_run_events(
         Some((futures::stream::iter(batch), st))
     })
     .flatten();
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    // 逆プロキシのバッファ/圧縮で進捗イベントが live で止まるのを防ぐ（sse_util 参照）。
+    Ok(super::super::sse_util::no_buffer(
+        Sse::new(stream)
+            .keep_alive(KeepAlive::default())
+            .into_response(),
+    ))
 }

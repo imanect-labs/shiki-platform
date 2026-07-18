@@ -28,7 +28,7 @@ import { ShikiEmbed } from "./embed/shiki-embed-node";
 import { LivePreview } from "./live-preview";
 import { MarkdownClipboard } from "./markdown-clipboard";
 import { createSlashCommand, type SlashItem } from "./slash-command";
-import { NoteBubbleMenu, NoteToolbar } from "./note-toolbar";
+import { NoteBubbleMenu, NoteToolbar, readNoteSelection } from "./note-toolbar";
 
 /// 参加者カーソルの配色（design token に寄せた識別しやすい 8 色）。
 export const PRESENCE_COLORS = [
@@ -55,8 +55,8 @@ export interface NoteEditorProps {
   user: { id: string; name: string };
   /// スラッシュメニューへ追加する項目（11P.5 の AI アクション・11P.6 の埋め込み）。
   extraSlashItems?: () => SlashItem[];
-  /// 選択→AI 指示（Task 11.10。未指定ならバブルメニューにボタンを出さない）。
-  onAskAi?: (selection: { text: string; headingPath: string[] }) => void;
+  /// 選択の変化（Task 11.10）。選択が空なら null。アシスタントパネルが選択を自動挿入する。
+  onSelectionChange?: (selection: { text: string; headingPath: string[] } | null) => void;
 }
 
 export function NoteEditor({
@@ -64,7 +64,7 @@ export function NoteEditor({
   editable,
   user,
   extraSlashItems,
-  onAskAi,
+  onSelectionChange,
 }: NoteEditorProps) {
   const extensions = React.useMemo(
     () => [
@@ -137,10 +137,20 @@ export function NoteEditor({
     };
   }, [editor]);
 
+  // 選択の変化を親へ通知する（アシスタントパネルが開いていれば選択を自動挿入する）。
+  React.useEffect(() => {
+    if (!editor || !onSelectionChange) return;
+    const emit = () => onSelectionChange(readNoteSelection(editor));
+    editor.on("selectionUpdate", emit);
+    return () => {
+      editor.off("selectionUpdate", emit);
+    };
+  }, [editor, onSelectionChange]);
+
   return (
     <div className="note-editor-root min-h-[50vh]">
       {editor && editable ? <NoteToolbar editor={editor} /> : null}
-      {editor && editable ? <NoteBubbleMenu editor={editor} onAskAi={onAskAi} /> : null}
+      {editor && editable ? <NoteBubbleMenu editor={editor} /> : null}
       {editor && editable && <SuggestionReviewBar editor={editor} />}
       <EditorContent editor={editor} />
     </div>

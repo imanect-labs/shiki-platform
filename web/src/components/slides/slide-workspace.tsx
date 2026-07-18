@@ -10,7 +10,7 @@ import {
   FileDown,
   Plus,
   Presentation,
-  Sparkles,
+
   Trash2,
 } from "lucide-react";
 import * as React from "react";
@@ -30,24 +30,25 @@ export function SlideWorkspace({
   doc,
   editable,
   name = "スライド",
-  onAskAi,
+  onSelectionChange,
 }: {
   doc: Y.Doc;
   editable: boolean;
   /// ファイル名（拡張子なし・pptx エクスポート名に使う）。
   name?: string;
-  /// 選択→AI 指示（Task 11.10。未指定ならボタンを出さない）。
-  onAskAi?: (selection: { slideId: string; html: string }) => void;
+  /// 要素選択の変化（Task 11.10）。アシスタントパネルが開いていれば自動挿入する。
+  onSelectionChange?: (selection: { slideId: string; html: string } | null) => void;
 }) {
   const slides = useSlides(doc);
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [presenting, setPresenting] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
-  // キャンバスの要素選択（選択→AI 指示・Task 11.10）。
-  const [canvasSelection, setCanvasSelection] = React.useState<{
-    slideId: string;
-    html: string;
-  } | null>(null);
+  // キャンバスの要素選択（選択→AI 指示・Task 11.10）。値は親（アシスタント）が扱うため
+  // ここでは保持せず通知だけする。
+  const setCanvasSelection = React.useCallback(
+    (sel: { slideId: string; html: string } | null) => onSelectionChange?.(sel),
+    [onSelectionChange],
+  );
   // エディタバンドル未配備（/builtin 404）時の閲覧フォールバック。
   const [editorUnavailable, setEditorUnavailable] = React.useState(false);
 
@@ -145,19 +146,6 @@ export function SlideWorkspace({
       {/* メイン領域 */}
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex items-center justify-end gap-2 px-4 pt-3">
-          {onAskAi && canvasSelection ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => onAskAi(canvasSelection)}
-              data-testid="slide-ask-ai"
-              className="text-primary"
-            >
-              <Sparkles className="mr-1.5 size-4" aria-hidden />
-              選択を AI に依頼
-            </Button>
-          ) : null}
           {editorUnavailable ? (
             <span className="mr-auto text-xs text-muted-foreground">
               エディタバンドルが未配備のため閲覧表示です（管理者に確認してください）

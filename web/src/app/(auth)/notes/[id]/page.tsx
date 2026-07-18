@@ -7,7 +7,8 @@
 ///   /collab/docs/{id}/access の表示用ヒントで editable を切り替える。
 /// - 11P.5 で本ページが「ノート×チャット分割ビュー」のホストになる。
 
-import { Loader2, MessageSquare, X } from "lucide-react";
+import { EditorLoading } from "@/components/shell/editor-loading";
+import { MessageSquare, X } from "lucide-react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import * as React from "react";
@@ -31,10 +32,7 @@ export default function NotePage() {
   return (
     <React.Suspense
       fallback={
-        <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" aria-hidden />
-          ノートを開いています…
-        </div>
+        <EditorLoading kind="doc" message="ノートを開いています…" />
       }
     >
       <NotePageInner />
@@ -56,8 +54,40 @@ function NotePageInner() {
   const [synced, setSynced] = React.useState(false);
   // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため）。
   const [chatOpen, setChatOpen] = React.useState(Boolean(initialThreadId));
-  // ヘッダスロットへ渡す安定参照（毎レンダーの再注入を避ける）。
-  const toggleChat = React.useCallback(() => setChatOpen((v) => !v), []);
+  // 直近の選択（ヘッダの「AI に依頼」で開いた瞬間に挿入する材料）。
+  const latestSelRef = React.useRef<{ text: string; headingPath: string[] } | null>(null);
+
+  const insertSelection = React.useCallback(
+    (sel: { text: string; headingPath: string[] }) => {
+      setPendingSelection({
+        kind: "note_selection",
+        node_id: nodeId,
+        excerpt: sel.text,
+        locator: { heading_path: sel.headingPath },
+      });
+    },
+    [nodeId],
+  );
+
+  // 選択の変化を受ける: パネルが開いていれば自動でチャットへ挿入する。
+  const handleSelectionChange = React.useCallback(
+    (sel: { text: string; headingPath: string[] } | null) => {
+      latestSelRef.current = sel;
+      setChatOpen((open) => {
+        if (open && sel) insertSelection(sel);
+        return open;
+      });
+    },
+    [insertSelection],
+  );
+
+  // 「AI に依頼」= アシスタントパネルを開く（＋その時の選択があればチャットへ挿入）。
+  const openAssistant = React.useCallback(() => {
+    setChatOpen((open) => {
+      if (!open && latestSelRef.current) insertSelection(latestSelRef.current);
+      return !open;
+    });
+  }, [insertSelection]);
 
   // Yjs ドキュメントとプロバイダ（ノート単位で 1 つ・アンマウントで破棄）。
   const [session, setSession] = React.useState<{
@@ -99,10 +129,7 @@ function NotePageInner() {
 
   if (access === "loading" || me.loading) {
     return (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" aria-hidden />
-        ノートを開いています…
-      </div>
+      <EditorLoading kind="doc" message="ノートを開いています…" />
     );
   }
   if (access === "notfound" || access === null) {
@@ -140,7 +167,7 @@ function NotePageInner() {
         status={status}
         synced={synced}
         chatOpen={chatOpen}
-        onToggleChat={toggleChat}
+        onToggleChat={openAssistant}
         provider={session?.provider ?? null}
       />
 
@@ -163,16 +190,8 @@ function NotePageInner() {
                   editable={editable}
                   user={{ id: userId, name: userName }}
                   extraSlashItems={embedSlashItems}
-                  // 選択→AI 指示（Task 11.10）: 選択をチップ化してアシスタントを開く。
-                  onAskAi={({ text, headingPath }) => {
-                    setPendingSelection({
-                      kind: "note_selection",
-                      node_id: nodeId,
-                      excerpt: text,
-                      locator: { heading_path: headingPath },
-                    });
-                    setChatOpen(true);
-                  }}
+                  // 選択→AI 指示（Task 11.10）: パネルが開いていれば選択を自動挿入する。
+                  onSelectionChange={handleSelectionChange}
                 />
               </div>
             </div>

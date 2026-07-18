@@ -64,7 +64,9 @@ test("下書き: チャット→下書き画面→ドライブに保存で会話
   );
 
   // この会話が「ノート由来」としてサイドバー履歴に出る（ノートへのリンク）。
+  // 没入エディタではサイドバーがレールに畳まれているため、まず開いてから確認する。
   const noteId = page.url().match(/\/notes\/([0-9a-f-]{36})/i)?.[1] ?? "";
+  await page.getByRole("button", { name: "サイドバーを開く" }).click();
   await expect(
     page.locator(`a[href^="/notes/${noteId}"]`).filter({ has: page.locator("svg") }).first(),
   ).toBeVisible({ timeout: 15_000 });
@@ -112,7 +114,7 @@ test("分割ビュー: 会話の切替と「新しい会話」（1:N・旧会話
   await openNote(page, nodeId);
 
   // アシスタントを開く → 会話が自動作成され、スイッチャが出る。
-  await page.getByTestId("note-chat-toggle").click();
+  await page.getByTestId("note-ask-ai").click();
   await expect(page.getByTestId("note-chat-panel").getByLabel("メッセージを入力")).toBeVisible({
     timeout: 20_000,
   });
@@ -133,7 +135,7 @@ test("genui 挿入: AI がグラフをノート本文へ自動挿入する（doc
   await loginViaKeycloak(page);
   const nodeId = await createNoteViaApi(page, uniqueName("embed-ai"));
   await openNote(page, nodeId);
-  await page.getByTestId("note-chat-toggle").click();
+  await page.getByTestId("note-ask-ai").click();
   const composer = page.getByTestId("note-chat-panel").getByLabel("メッセージを入力");
   await expect(composer).toBeVisible({ timeout: 20_000 });
 

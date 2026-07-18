@@ -3,7 +3,7 @@
 /// スライド詳細の統一ヘッダ注入（ノートの NoteSyncSlot と同型・Task 11.1）。
 /// 戻る/名前/閲覧のみ/プレゼンス/同期ピルを共通ヘッダへ寄せる。null を返すだけ。
 
-import { ArrowLeft, Eye, MessageSquare } from "lucide-react";
+import { ArrowLeft, Eye, Sparkles } from "lucide-react";
 import Link from "next/link";
 
 import { PresenceAvatars } from "@/components/notes/presence";
@@ -59,10 +59,10 @@ export function SlideHeaderSlot({
             size="sm"
             onClick={onToggleChat}
             aria-pressed={chatOpen}
-            data-testid="slide-chat-toggle"
+            data-testid="slide-ask-ai"
           >
-            <MessageSquare className="mr-1.5 size-4" aria-hidden />
-            アシスタント
+            <Sparkles className="mr-1.5 size-4" aria-hidden />
+            AI に依頼
           </Button>
         ) : null}
       </div>

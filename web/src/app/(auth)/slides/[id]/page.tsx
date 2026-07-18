@@ -6,7 +6,8 @@
 /// - 本 PR は閲覧ビューのみ。編集（GrapesJS 砂箱エディタ・Task 11.2）は本ページの
 ///   editable 分岐に載る。描画は SlideFrame（DOMPurify＋sandbox iframe・PIT-40）。
 
-import { Loader2, MessageSquare, X } from "lucide-react";
+import { EditorLoading } from "@/components/shell/editor-loading";
+import { MessageSquare, X } from "lucide-react";
 import { useParams } from "next/navigation";
 import * as React from "react";
 import * as Y from "yjs";
@@ -30,7 +31,40 @@ export default function SlidePage() {
   const [synced, setSynced] = React.useState(false);
   // アシスタントパネル（ノートと同じ分割ビュー・meta の active_thread_id を共用・Task 11.10）。
   const [chatOpen, setChatOpen] = React.useState(false);
-  const toggleChat = React.useCallback(() => setChatOpen((v) => !v), []);
+  // 直近の要素選択（ヘッダの「AI に依頼」で開いた瞬間に挿入する材料）。
+  const latestSelRef = React.useRef<{ slideId: string; html: string } | null>(null);
+
+  const insertSelection = React.useCallback(
+    (sel: { slideId: string; html: string }) => {
+      setPendingSelection({
+        kind: "slide_selection",
+        node_id: nodeId,
+        excerpt: sel.html,
+        locator: { slide_id: sel.slideId },
+      });
+    },
+    [nodeId],
+  );
+
+  // 選択の変化: パネルが開いていれば自動でチャットへ挿入する。
+  const handleSelectionChange = React.useCallback(
+    (sel: { slideId: string; html: string } | null) => {
+      latestSelRef.current = sel;
+      setChatOpen((open) => {
+        if (open && sel) insertSelection(sel);
+        return open;
+      });
+    },
+    [insertSelection],
+  );
+
+  // 「AI に依頼」= アシスタントパネルを開く（＋その時の選択があればチャットへ挿入）。
+  const openAssistant = React.useCallback(() => {
+    setChatOpen((open) => {
+      if (!open && latestSelRef.current) insertSelection(latestSelRef.current);
+      return !open;
+    });
+  }, [insertSelection]);
   const [session, setSession] = React.useState<{
     doc: Y.Doc;
     provider: CollabProvider;
@@ -70,10 +104,7 @@ export default function SlidePage() {
 
   if (access === "loading") {
     return (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" aria-hidden />
-        スライドを開いています…
-      </div>
+      <EditorLoading kind="slide" message="スライドを開いています…" />
     );
   }
   if (access === "notfound" || access === null) {
@@ -96,7 +127,7 @@ export default function SlidePage() {
         synced={synced}
         provider={session?.provider ?? null}
         chatOpen={chatOpen}
-        onToggleChat={toggleChat}
+        onToggleChat={openAssistant}
       />
       <div className="relative min-h-0 flex-1">
         {session && synced ? (
@@ -105,23 +136,12 @@ export default function SlidePage() {
               doc={session.doc}
               editable={editable}
               name={access.name.replace(/\.slide$/i, "")}
-              // 選択→AI 指示（Task 11.10）: 要素の HTML 抜粋をチップ化してアシスタントを開く。
-              onAskAi={({ slideId, html }) => {
-                setPendingSelection({
-                  kind: "slide_selection",
-                  node_id: nodeId,
-                  excerpt: html,
-                  locator: { slide_id: slideId },
-                });
-                setChatOpen(true);
-              }}
+              // 選択→AI 指示（Task 11.10）: パネルが開いていれば選択要素を自動挿入する。
+              onSelectionChange={handleSelectionChange}
             />
           </div>
         ) : (
-          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            同期しています…
-          </div>
+          <EditorLoading kind="slide" message="同期しています…" />
         )}
         {/* アシスタントパネル（ノートページと同型の浮遊カード・meta active_thread_id 共用） */}
         {session && chatOpen ? (
