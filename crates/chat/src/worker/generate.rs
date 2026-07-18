@@ -210,6 +210,10 @@ impl ChatWorker {
     /// collab ハブと storage が両方配線されている時のみ提示する。編集は共有 Yjs へ
     /// 適用され、権限は実行主体の editor@file（human と同一経路・昇格しない・排他なし）。
     fn push_collab_tools(&self, tools: &mut Vec<Arc<dyn Tool>>) {
+        // 下書きツールは保存も共同編集もしない（確定は UI 保存）ため、collab/storage の
+        // 配線に依存させない（下書き生成フローを任意配線構成でも使えるようにする）。
+        tools.push(Arc::new(crate::document_tool::SaveNoteTool::new()));
+        tools.push(Arc::new(crate::slide_tool::SaveSlideTool::new()));
         let (Some(collab), Some(storage)) = (&self.collab, &self.storage) else {
             return;
         };
@@ -225,8 +229,6 @@ impl ChatWorker {
             collab.clone(), // 本文への genui 埋め込み（非破壊 append・確認不要・#282）。
             storage.clone(),
         )));
-        // 下書きノートを用意（note_draft・下書き確定型・#282・storage 非依存・確定は UI 保存）。
-        tools.push(Arc::new(crate::document_tool::SaveNoteTool::new()));
         // AI スライド共同編集（slide.read / slide.edit・Task 11.3）: ノートと同じ
         // 共同編集参加者モデル（排他なし・editor@file・HTML はサーバ側サニタイズ）。
         tools.push(Arc::new(crate::slide_tool::SlideReadTool::new(
@@ -237,8 +239,6 @@ impl ChatWorker {
             collab.clone(),
             storage.clone(),
         )));
-        // 下書きスライドを用意（slide_draft・下書き確定型・Task 11.3・storage 非依存・確定は UI 保存）。
-        tools.push(Arc::new(crate::slide_tool::SaveSlideTool::new()));
     }
 
     fn push_autonomous_tools(

@@ -39,14 +39,22 @@ pub fn read_slides<T: ReadTxn>(txn: &T, array: &ArrayRef) -> Vec<Slide> {
 
 /// スライド列を Y.Array へ**全置換**で書く（インポート経路・Task 11.1 単方向規約）。
 ///
-/// ID が空のスライドには安定 ID を採番する（AI 編集・選択コンテキストの参照キー）。
+/// ID が空・重複のスライドには安定 ID を採番する（AI 編集・選択コンテキストの参照キー。
+/// パース境界の正規化に加えた書込側の最終防壁 — 重複 ID は「最初の一致だけ操作される」
+/// 曖昧編集の原因になるため、ここを通る限り一意を保証する）。
 pub fn write_slides(txn: &mut TransactionMut<'_>, array: &ArrayRef, slides: &[Slide]) {
     let existing = array.len(txn);
     if existing > 0 {
         array.remove_range(txn, 0, existing);
     }
+    let mut seen = std::collections::HashSet::with_capacity(slides.len());
     for slide in slides {
-        array.push_back(txn, slide_prelim(slide));
+        let mut slide = slide.clone();
+        if slide.id.is_empty() || !seen.insert(slide.id.clone()) {
+            slide.id = Uuid::new_v4().to_string();
+            seen.insert(slide.id.clone());
+        }
+        array.push_back(txn, slide_prelim(&slide));
     }
 }
 

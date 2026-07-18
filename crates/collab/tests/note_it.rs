@@ -231,6 +231,7 @@ fn empty_persisted() -> PersistedDoc {
         next_seq: 1,
         updates: vec![],
         saved_node_version: None,
+        pending_save: false,
     }
 }
 
@@ -366,6 +367,7 @@ async fn external_write_is_imported_on_load() {
         node.id,
         external.version,
         persisted.saved_node_version,
+        persisted.pending_save,
         persisted.next_seq - 1,
     )
     .await
@@ -395,6 +397,80 @@ async fn external_write_is_imported_on_load() {
         .expect("保存")
         .expect("保存される");
     assert_eq!(saved, external.version + 1);
+}
+
+/// 受け入れ条件: 保存失敗マーカー（pending_save）の間は外部インポートが未保存の
+/// CRDT 編集を全置換で消さない（migration 0050・レビュー指摘対応）。
+#[tokio::test]
+async fn pending_save_suppresses_external_import_on_load() {
+    let Some(env) = setup().await else { return };
+    let alice = ctx_for("alice");
+    let agent = ctx_for("agent-fs-write");
+
+    let name = format!("note-{}.md", Uuid::new_v4());
+    let node = env
+        .storage
+        .write_file_internal(&alice, None, &name, b"# v1\n", "text/markdown", None)
+        .await
+        .expect("作成");
+    env.store
+        .load_or_init(node.id, "acme", "default")
+        .await
+        .expect("init");
+
+    // CRDT に未保存の編集を作り（durable な update log には載る）、保存失敗を模して
+    // pending_save マーカーだけを立てる（Storage 停止で save_doc が失敗した状態と同じ）。
+    let persisted = env.store.load(node.id, "default").await.expect("load");
+    let live = Arc::new(
+        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &persisted).expect("restore"),
+    );
+    let unsaved_md = format!("# 未保存の編集 {}\n", Uuid::new_v4());
+    live.apply_and_persist(&env.store, &update_for_markdown(&unsaved_md), &alice)
+        .await
+        .expect("編集適用");
+    env.store.set_pending_save(node.id).await.expect("マーカー");
+
+    // アンロード後の外部書込（新バージョン）。
+    let external = env
+        .storage
+        .update_file_content_internal(&agent, node.id, b"# external\n", "text/markdown", None)
+        .await
+        .expect("外部書込");
+
+    // 再ロード: pending_save が立っている間はインポートせず、CRDT の未保存編集が残る。
+    let persisted = env.store.load(node.id, "default").await.expect("reload");
+    assert!(persisted.pending_save, "マーカーがロードに載ること");
+    let reloaded = Arc::new(
+        LiveDoc::restore(node.id, Some(collab::DocKind::Note), &persisted).expect("restore2"),
+    );
+    saver::import_if_stale(
+        &reloaded,
+        &env.store,
+        &env.storage,
+        &alice,
+        node.id,
+        external.version,
+        persisted.saved_node_version,
+        persisted.pending_save,
+        persisted.next_seq - 1,
+    )
+    .await
+    .expect("抑止時は成功");
+    assert_eq!(
+        reloaded.to_markdown().expect("md 化"),
+        unsaved_md,
+        "未保存の CRDT 編集が外部インポートで消えないこと"
+    );
+
+    // 抑止時は dirty が立ち、保存の再試行がファイルへ書き戻してマーカーを解除する。
+    let saved = saver::save_doc(&reloaded, &env.store, &env.storage)
+        .await
+        .expect("再保存")
+        .expect("保存される");
+    assert_eq!(saved, external.version + 1);
+    let after = env.store.load(node.id, "default").await.expect("load3");
+    assert!(!after.pending_save, "保存成功でマーカーが解除されること");
+    assert_eq!(after.saved_node_version, Some(saved));
 }
 
 /// 同一 node.version なら再ロードでインポートは走らない（Yjs 真実の維持）。
@@ -439,6 +515,7 @@ async fn import_is_skipped_when_version_matches() {
         node.id,
         node.version,
         Some(node.version),
+        false,
         // saved == version で早期 return するため upto_seq は未使用（0 でよい）。
         0,
     )

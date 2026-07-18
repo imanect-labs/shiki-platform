@@ -20,11 +20,12 @@ use crate::slide_templates::{design_guidance, is_known_theme, THEMES};
 fn denied_outcome(err: &collab::CollabError) -> ToolOutcome {
     use collab::CollabError as CE;
     let msg = match err {
-        CE::Forbidden(_) | CE::Authz(_) | CE::Storage(storage::StorageError::Forbidden) => {
-            "このスライドを編集する権限がありません（editor 権限が必要です）。"
-        }
-        CE::NotFound(_) | CE::Storage(storage::StorageError::NotFound) => {
-            "指定されたスライドが見つかりません。"
+        // 権限なしと未検出は同一メッセージに畳む（存在秘匿・API 層の 404 統一と同じ契約）。
+        CE::Forbidden(_)
+        | CE::Authz(_)
+        | CE::NotFound(_)
+        | CE::Storage(storage::StorageError::Forbidden | storage::StorageError::NotFound) => {
+            "指定されたスライドにアクセスできません（存在しないか、権限がありません）。"
         }
         _ => "スライド編集に失敗しました。",
     };
@@ -380,17 +381,16 @@ mod tests {
     #[test]
     fn denied_outcomeは権限と存在を秘匿して畳む() {
         use collab::CollabError as CE;
-        assert!(denied_outcome(&CE::Forbidden("x".into()))
-            .content
-            .contains("権限がありません"));
-        assert!(
-            denied_outcome(&CE::Storage(storage::StorageError::Forbidden))
-                .content
-                .contains("権限がありません")
+        // Forbidden と NotFound が**同一メッセージ**であること（応答文からスライドの
+        // 存在有無を判別させない・存在秘匿の契約）。
+        let forbidden = denied_outcome(&CE::Forbidden("x".into())).content;
+        let not_found = denied_outcome(&CE::NotFound("x".into())).content;
+        assert_eq!(forbidden, not_found);
+        assert_eq!(
+            denied_outcome(&CE::Storage(storage::StorageError::Forbidden)).content,
+            denied_outcome(&CE::Storage(storage::StorageError::NotFound)).content
         );
-        assert!(denied_outcome(&CE::NotFound("x".into()))
-            .content
-            .contains("見つかりません"));
+        assert!(forbidden.contains("アクセスできません"));
         assert!(denied_outcome(&CE::InvalidUpdate("x".into()))
             .content
             .contains("失敗しました"));

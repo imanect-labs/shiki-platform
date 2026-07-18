@@ -367,10 +367,26 @@ impl LiveDoc {
         update: &[u8],
         ctx: &AuthContext,
     ) -> Result<(), CollabError> {
-        let author = format!("ai:{}", ctx.principal.id);
-        let seq = store.append_update(self.node_id, update, &author).await?;
-        self.last_persisted_seq.store(seq, Ordering::SeqCst);
+        // 適用はメモリに済んでいるため、追記の成否に関わらず先に dirty を立てる
+        // （追記失敗時もデバウンス保存がファイルへ回収し、編集が黙って消えない）。
         self.mark_dirty(ctx);
+        let author = format!("ai:{}", ctx.principal.id);
+        let seq = match store.append_update(self.node_id, update, &author).await {
+            Ok(seq) => seq,
+            Err(e) => {
+                // update log に残せなかった編集は再ロードで消える（snapshot+log 再生に
+                // 含まれない）ため、全状態 snapshot への即時圧縮で durable に回収を試みる。
+                let upto = self.last_persisted_seq.load(Ordering::SeqCst);
+                let snapshot = self.full_state()?;
+                store
+                    .compact(self.node_id, &snapshot, upto)
+                    .await
+                    .map_err(|_| e)?;
+                self.appended_since_compact.store(0, Ordering::SeqCst);
+                return Ok(());
+            }
+        };
+        self.last_persisted_seq.store(seq, Ordering::SeqCst);
         let appended = self.appended_since_compact.fetch_add(1, Ordering::SeqCst) + 1;
         if appended as i64 >= COMPACT_EVERY {
             self.appended_since_compact.store(0, Ordering::SeqCst);

@@ -81,9 +81,20 @@ impl SlideDoc {
                 json.version
             )));
         }
+        // ID はスライド編集・選択コンテキストの参照キー。空・重複をここ（パース境界）で
+        // 一意に正規化し、「重複 ID の最初の一致だけが操作され別スライドが壊れる」事故を
+        // アーキテクチャ的に排除する（レビュー指摘対応）。
+        let mut slides = json.slides;
+        let mut seen = std::collections::HashSet::with_capacity(slides.len());
+        for slide in &mut slides {
+            if slide.id.is_empty() || !seen.insert(slide.id.clone()) {
+                slide.id = uuid::Uuid::new_v4().to_string();
+                seen.insert(slide.id.clone());
+            }
+        }
         Ok(SlideDoc {
             meta: meta_from_json(&json.meta),
-            slides: json.slides,
+            slides,
         })
     }
 }
@@ -140,6 +151,24 @@ fn meta_from_json(map: &serde_json::Map<String, serde_json::Value>) -> NoteMeta 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 空と重複のスライドidはパース境界で一意に正規化される() {
+        let src = r#"{"version":1,"slides":[
+            {"id":"a","html":"<p>1</p>"},
+            {"id":"a","html":"<p>2</p>"},
+            {"id":"","html":"<p>3</p>"}
+        ]}"#;
+        let doc = SlideDoc::from_json(src).unwrap();
+        assert_eq!(doc.slides.len(), 3);
+        // 先勝ちで既存 ID を保持し、衝突・空には新 ID を採番する。
+        assert_eq!(doc.slides[0].id, "a");
+        assert_ne!(doc.slides[1].id, "a");
+        assert!(!doc.slides[1].id.is_empty());
+        assert!(!doc.slides[2].id.is_empty());
+        let ids: std::collections::HashSet<_> = doc.slides.iter().map(|s| &s.id).collect();
+        assert_eq!(ids.len(), 3);
+    }
 
     #[test]
     fn json往復で正規形が安定する() {

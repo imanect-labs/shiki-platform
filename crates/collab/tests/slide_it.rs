@@ -233,6 +233,7 @@ fn empty_persisted() -> PersistedDoc {
         next_seq: 1,
         updates: vec![],
         saved_node_version: None,
+        pending_save: false,
     }
 }
 
@@ -389,6 +390,7 @@ async fn external_write_is_imported_on_load() {
         node.id,
         external.version,
         persisted.saved_node_version,
+        persisted.pending_save,
         persisted.next_seq - 1,
     )
     .await
@@ -441,6 +443,7 @@ async fn corrupt_external_json_fails_closed() {
         node.id,
         node.version,
         persisted.saved_node_version,
+        persisted.pending_save,
         persisted.next_seq - 1,
     )
     .await
@@ -462,6 +465,7 @@ async fn corrupt_external_json_fails_closed() {
         node.id,
         corrupt.version,
         persisted.saved_node_version,
+        persisted.pending_save,
         persisted.next_seq - 1,
     )
     .await;

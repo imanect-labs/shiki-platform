@@ -165,8 +165,38 @@ fn filter_attribute<'v>(element: &str, attribute: &str, value: &'v str) -> Optio
                 None
             }
         }
+        // SVG の paint 値（fill/stroke/stop-color）は `url(external.svg#id)` のような
+        // 外部 paint server 参照を取り得る。同一文書内参照 `url(#id)` と色リテラルのみ許可。
+        "fill" | "stroke" | "stop-color" => {
+            if svg_paint_is_safe(value) {
+                Some(Cow::Borrowed(value))
+            } else {
+                None
+            }
+        }
         _ => Some(Cow::Borrowed(value)),
     }
+}
+
+/// SVG paint 値の安全判定: `url(...)` は同一文書内のフラグメント参照（`#` 始まり）のみ許可。
+/// CSS エスケープ（`\`）を含む値は難読化の余地があるため fail-closed で全拒否する。
+fn svg_paint_is_safe(value: &str) -> bool {
+    let lower = value.to_lowercase();
+    if lower.contains('\\') {
+        return false;
+    }
+    let mut rest = lower.as_str();
+    while let Some(pos) = rest.find("url(") {
+        let inner = rest[pos + 4..]
+            .trim_start()
+            .trim_start_matches(['"', '\''])
+            .trim_start();
+        if !inner.starts_with('#') {
+            return false;
+        }
+        rest = &rest[pos + 4..];
+    }
+    true
 }
 
 /// インライン style の安全判定（`url()` は data: のみ・レガシー実行ベクタ拒否）。
@@ -281,6 +311,25 @@ mod tests {
         // :// を含む値は関数を問わず拒否。
         let smuggle = r#"<div style="--x:'https://evil'">x</div>"#;
         assert!(!sanitize_html(smuggle).contains("style="));
+    }
+
+    #[test]
+    fn svgのpaint外部参照を拒否しフラグメント参照は保持する() {
+        // 外部 paint server 参照（外部ロード経路）は属性ごと落とす。
+        let external =
+            r#"<svg><rect fill="url(https://evil/p.svg#g)" stroke="url('http://evil#s')"/></svg>"#;
+        let clean = sanitize_html(external);
+        assert!(!clean.contains("evil"));
+        assert!(!clean.contains("fill="));
+        assert!(!clean.contains("stroke="));
+        // 同一文書内のグラデーション参照と色リテラルは保持する。
+        let inline = r##"<svg><rect fill="url(#grad)" stroke="#333"/></svg>"##;
+        let clean = sanitize_html(inline);
+        assert!(clean.contains(r#"fill="url(#grad)""#));
+        assert!(clean.contains(r##"stroke="#333""##));
+        // CSS エスケープ難読化（u\72l 相当）は fail-closed。
+        let escaped = r#"<svg><rect fill="u\72l(https://evil)"/></svg>"#;
+        assert!(!sanitize_html(escaped).contains("evil"));
     }
 
     #[test]
