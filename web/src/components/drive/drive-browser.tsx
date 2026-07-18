@@ -35,6 +35,7 @@ import { toast } from "@/components/ui/use-toast";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
 import { useMe } from "@/hooks/use-me";
 import { createNote } from "@/lib/notes-api";
+import { createSlide } from "@/lib/slides-api";
 import { saveNewCsv } from "@/lib/tabular-api";
 import { useContentSearch, type ContentHit } from "@/lib/drive-search";
 import {
@@ -112,10 +113,28 @@ export function DriveBrowser() {
     }
   };
 
-  // 新規ドキュメント作成（ドキュメント/スライド/スプレッドシート）はまだダミー。
-  // バックエンド（生成・テンプレート）実装までは「準備中」を知らせる。
+  // 新規「ドキュメント」はまだダミー（Office 統合・Task 11.7 で実装予定）。
   const createDocument = (label: string) =>
     toast({ title: `${label}を作成`, description: "この機能は近日対応予定です。" });
+
+  // スライド（自前実装・Task 11.1）を作成してビューアへ遷移する。
+  const [creatingSlide, setCreatingSlide] = React.useState(false);
+  const createSlideAndOpen = async () => {
+    if (creatingSlide) return;
+    setCreatingSlide(true);
+    try {
+      const slide = await createSlide({ parentId: folderId ?? undefined, name: "無題のスライド" });
+      router.push(`/slides/${slide.id}`);
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "スライドの作成に失敗しました",
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setCreatingSlide(false);
+    }
+  };
 
   // ノート（md 共同編集・Task 11P.5）を作成してエディタへ遷移する。
   const [creatingNote, setCreatingNote] = React.useState(false);
@@ -307,6 +326,7 @@ export function DriveBrowser() {
         if (node.kind === "folder") navigateTo(node.id);
         else if (node.name.toLowerCase().endsWith(".md")) router.push(`/notes/${node.id}`);
         else if (node.name.toLowerCase().endsWith(".csv")) router.push(`/csv/${node.id}`);
+        else if (node.name.toLowerCase().endsWith(".slide")) router.push(`/slides/${node.id}`);
         else
           triggerDownload(node.id).catch((e) =>
             toast({
@@ -361,7 +381,10 @@ export function DriveBrowser() {
               <FileText className="text-blue-600" aria-hidden />
               ドキュメント
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => createDocument("スライド")}>
+            <DropdownMenuItem
+              onSelect={() => void createSlideAndOpen()}
+              data-testid="new-slide"
+            >
               <Presentation className="text-orange-500" aria-hidden />
               スライド
             </DropdownMenuItem>

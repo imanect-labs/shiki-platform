@@ -32,6 +32,7 @@ pub(crate) fn collab_route_decls() -> Vec<RouteDecl> {
             || get(collab_ws),
         ),
         r("/notes", &["POST"], Session, || post(create_note)),
+        r("/slides", &["POST"], Session, || post(create_slide)),
         r("/collab/docs/{node_id}/access", &["GET"], Session, || {
             get(get_access)
         }),
@@ -139,28 +140,115 @@ pub async fn create_note(
         .map(collab::note::normalize_markdown)
         .unwrap_or_default();
     // 同名衝突は Drive 風に連番でリネームして回避する（「新規作成」を連打しても成功する）。
-    let node = create_note_unique(
+    let node = create_file_unique(
         &state,
         &ctx,
         req.parent_id,
         &file_name,
         markdown.as_bytes(),
+        "text/markdown",
         trace.0.as_deref(),
     )
     .await?;
     Ok(Json(NodeResponse::from(node)))
 }
 
+/// スライド作成リクエスト（Task 11.1・「新規作成 > スライド」/ 下書き確定の共通経路）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateSlideRequest {
+    /// 配置先フォルダ（None は org ルート直下）。
+    pub parent_id: Option<Uuid>,
+    /// ファイル名（`.slide` は自動付与）。
+    pub name: String,
+    /// 初期内容（正規化スライド JSON のオブジェクト。省略時はタイトル 1 枚）。
+    /// 保存前にサーバ側でサニタイズ・正規化される（PIT-40 第1層）。
+    #[serde(default)]
+    pub content: Option<serde_json::Value>,
+}
+
+/// スライド（.slide ファイル）を作成する。
+///
+/// 実体は通常のドライブファイル（真実は Yjs・正規化 JSON はシリアライズ形式・design §4.8.3）。
+/// 初期内容はサーバ側で必ずサニタイズ・正規化してから保存する（生 HTML の流入をここで遮断）。
+#[utoipa::path(
+    post, path = "/slides", request_body = CreateSlideRequest,
+    responses(
+        (status = 200, description = "作成したスライドのノードメタ", body = NodeResponse),
+        (status = 400, description = "名前または初期内容が不正"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "配置先への作成権限が無い"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn create_slide(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Json(req): Json<CreateSlideRequest>,
+) -> Result<Json<NodeResponse>, ApiError> {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::BadRequest("スライド名を指定してください".into()));
+    }
+    let file_name = if collab::slide::is_slide_file(name) {
+        name.to_string()
+    } else {
+        format!("{name}.slide")
+    };
+    // 初期内容はサニタイズ・正規化してから保存する（全流入経路で「サニタイズ済みが正規形」）。
+    let raw = match &req.content {
+        Some(value) => value.to_string(),
+        None => default_slide_json(name),
+    };
+    let normalized = collab::slide::normalize_slide_json(&raw)
+        .map_err(|e| ApiError::BadRequest(format!("スライド内容が不正です: {e}")))?;
+    let node = create_file_unique(
+        &state,
+        &ctx,
+        req.parent_id,
+        &file_name,
+        normalized.as_bytes(),
+        collab::SLIDE_MIME,
+        trace.0.as_deref(),
+    )
+    .await?;
+    Ok(Json(NodeResponse::from(node)))
+}
+
+/// 新規スライドの初期内容（タイトル 1 枚）。
+fn default_slide_json(name: &str) -> String {
+    let title = name.trim_end_matches(".slide").trim_end_matches(".SLIDE");
+    serde_json::json!({
+        "version": 1,
+        "meta": { "title": title },
+        "slides": [{
+            "id": Uuid::new_v4().to_string(),
+            "html": format!("<h1>{}</h1>", html_escape(title)),
+            "notes": "",
+        }],
+    })
+    .to_string()
+}
+
+/// タイトル文字列の最小 HTML エスケープ（初期スライド生成用）。
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 /// 最大リネーム試行回数（`無題のノート (2).md` … を試す上限）。
 const MAX_NAME_ATTEMPTS: u32 = 50;
 
 /// 同名衝突時に ` (2)` `(3)` … を付けて作成をリトライする（fail-closed・上限あり）。
-async fn create_note_unique(
+#[allow(clippy::too_many_arguments)] // 作成文脈の値を束ねず素で受ける（呼び出し元は 2 箇所）。
+async fn create_file_unique(
     state: &AppState,
     ctx: &authz::AuthContext,
     parent_id: Option<Uuid>,
     file_name: &str,
     bytes: &[u8],
+    content_type: &str,
     trace_id: Option<&str>,
 ) -> Result<storage::Node, ApiError> {
     let (stem, ext) = file_name
@@ -176,7 +264,7 @@ async fn create_note_unique(
         };
         match state
             .storage
-            .write_file_internal(ctx, parent_id, &candidate, bytes, "text/markdown", trace_id)
+            .write_file_internal(ctx, parent_id, &candidate, bytes, content_type, trace_id)
             .await
         {
             Ok(node) => return Ok(node),

@@ -44,6 +44,7 @@ use utoipa::{
         crate::routes::chat::cancel_run,
         crate::routes::collab::collab_ws,
         crate::routes::collab::create_note,
+        crate::routes::collab::create_slide,
         crate::routes::collab::get_access,
         crate::routes::tabular::get_schema,
         crate::routes::tabular::get_rows,
