@@ -89,6 +89,21 @@ pub(super) fn note_tool_call(
             );
         }
     }
+    // Office 文書の選択（office_selection・node_id 付き）＋編集キーワード → office.edit。
+    // docx を対象に append_markdown を 1 件適用し、承認 → worker `/edit` → 保存分岐
+    // （非ロック=新バージョン／ロック中=提案バージョン）を実パイプラインで叩く（#328・Task 11.8）。
+    // ops は content_type 依存のため e2e は docx を用いる（xlsx/pptx は別 op 集合）。
+    if let Some(node_id) = selection_node_id(user_text, "office_selection") {
+        if wants_edit(user_text) {
+            return call(
+                "office.edit",
+                serde_json::json!({
+                    "node_id": node_id,
+                    "ops": [{ "op": "append_markdown", "markdown": MOCK_OFFICE_EDIT_MD }],
+                }),
+            );
+        }
+    }
     None
 }
 
@@ -99,6 +114,9 @@ const MOCK_NOTE_EDIT_MD: &str = "\n## サマリー\n\n- 全社売上は前年同
 const MOCK_SLIDE_EDIT_HTML: &str =
     "<div style=\"padding:64px\" data-ai-edited=\"1\"><h2>AI が改訂したスライド</h2>\
      <p>選択範囲を踏まえて要点を整理しました。</p><ul><li>結論を先頭に</li><li>数値の根拠を明示</li></ul></div>";
+
+/// モック AI が Office 文書（docx）へ追記する決定的な Markdown。
+const MOCK_OFFICE_EDIT_MD: &str = "## AI による追記\n\n選択範囲を踏まえて要点を整理しました。";
 
 /// 依頼テキストに編集意図のキーワードが含まれるか（要約・質問だけの依頼と区別する）。
 ///
@@ -188,6 +206,17 @@ mod tests {
         assert_eq!(
             selection_locator_field(text, "slide_selection", "slide_id").as_deref(),
             Some("abcdef01-2345-6789-abcd-ef0123456789")
+        );
+        assert!(wants_edit(text));
+    }
+
+    #[test]
+    fn office_selection_extracts_node_id() {
+        let text = "<selection kind=\"office_selection\" node_id=\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\" \
+            locator={}>選択本文</selection>\nこの部分を丁寧に書き直して";
+        assert_eq!(
+            selection_node_id(text, "office_selection").as_deref(),
+            Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         );
         assert!(wants_edit(text));
     }
