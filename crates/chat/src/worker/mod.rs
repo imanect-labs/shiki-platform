@@ -110,6 +110,9 @@ pub struct WorkerDeps {
     pub collab: Option<Arc<collab::CollabHub>>,
     /// CSV クエリ/パッチサービス（csv.query / csv.patch / csv.write・Task 11P.9）。
     pub tabular: Option<Arc<tabular::TabularService>>,
+    /// AI Office 編集（office.edit・Task 11.8）。office 有効時のみ配線し、
+    /// 未配線なら office.edit を提示しない。
+    pub office: Option<Arc<office::OfficeEditor>>,
 }
 
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
@@ -139,6 +142,8 @@ pub struct ChatWorker {
     collab: Option<Arc<collab::CollabHub>>,
     /// CSV クエリ/パッチサービス（Task 11P.9）。
     tabular: Option<Arc<tabular::TabularService>>,
+    /// AI Office 編集（office.edit・Task 11.8）。
+    office: Option<Arc<office::OfficeEditor>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -157,6 +162,7 @@ impl ChatWorker {
             workflow_catalog,
             collab,
             tabular,
+            office,
         } = deps;
         ChatWorker {
             db,
@@ -173,6 +179,7 @@ impl ChatWorker {
             workflow_catalog,
             collab,
             tabular,
+            office,
             config: Arc::new(config),
         }
     }

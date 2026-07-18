@@ -243,9 +243,11 @@ impl StorageService {
         .await?
         .ok_or(StorageError::NotFound)?;
         // 復元元の版の内容（blob/size/content_type）を取得する。
+        // 提案バージョン（is_proposal）は復元経路の対象外（採用は adopt_proposal_version 経由）。
         let src: Option<(String, i64, String)> = sqlx::query_as(
             "SELECT blob_sha256, size_bytes, content_type FROM node_version \
-             WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version = $4",
+             WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version = $4 \
+               AND NOT is_proposal",
         )
         .bind(file_id)
         .bind(&ctx.org)
@@ -268,7 +270,7 @@ impl StorageService {
         .await?;
         let sql = format!(
             "UPDATE node \
-             SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = version + 1, \
+             SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = {NEXT_CONTENT_VERSION}, \
              updated_by = $7, updated_at = now() \
              WHERE id = $4 AND org = $5 AND tenant_id = $6 AND kind = 'file' AND deleted_at IS NULL \
              RETURNING {NODE_COLS}"

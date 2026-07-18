@@ -16,6 +16,8 @@ shiki-storage.workspace = true
 shiki-collab.workspace = true
 # CSV エージェントツール csv.query / csv.patch / csv.write（Task 11P.9）。
 shiki-tabular.workspace = true
+# AI Office 編集ツール office.edit（Task 11.8）。
+shiki-office.workspace = true
 shiki-jobq.workspace = true
 shiki-rag.workspace = true
 shiki-llm-gateway.workspace = true
@@ -61,6 +63,7 @@ ignored = [
     "shiki-authz",
     "shiki-collab",
     "shiki-tabular",
+    "shiki-office",
     "shiki-storage",
     "shiki-jobq",
     "shiki-rag",

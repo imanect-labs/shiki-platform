@@ -76,6 +76,9 @@ vocab_enum! {
         SlideEdit => "slide.edit",
         /// スライド内容の読み取りツール（slide.edit の前提・正規化 JSON を得る・Task 11.3）。
         SlideRead => "slide.read",
+        /// Office ファイル（docx/xlsx/pptx）の AI 編集（非ロック時=新バージョン/
+        /// WOPI ロック中=提案バージョン・Task 11.8）。
+        OfficeEdit => "office.edit",
         /// CSV への読み取り専用 SQL クエリ（隔離 DuckDB 経由・Task 11P.9）。
         CsvQuery => "csv.query",
         /// CSV のパッチ編集→新バージョン（editor・Task 11P.9）。

@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     max_download_bytes: int = 50 * 1024 * 1024
     # 埋め込みのバッチサイズ（CPU 前提の控えめな既定）。
     embed_batch_size: int = 16
+    # /edit が受け付ける文書バイトの上限（デコード後）。Rust 側 office と対にする。
+    max_edit_bytes: int = 20 * 1024 * 1024
 
 
 @lru_cache

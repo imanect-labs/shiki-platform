@@ -247,6 +247,13 @@ export function restoreVersion(fileId: string, version: number): Promise<NodeRes
   );
 }
 
+/// AI 提案バージョンを採用して通常の新バージョンへ昇格する（Task 11.8・editor のみ）。
+export function adoptVersion(fileId: string, version: number): Promise<NodeResponse> {
+  return apiFetch(`/files/${fileId}/versions/${version}/adopt`, { method: "POST" }).then((r) =>
+    okJson<NodeResponse>(r),
+  );
+}
+
 // --- 共有 -----------------------------------------------------------------
 
 export function listShares(nodeId: string): Promise<ShareEntry[]> {

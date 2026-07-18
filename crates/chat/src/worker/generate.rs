@@ -110,6 +110,13 @@ impl ChatWorker {
         }
         // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）。
         self.push_collab_tools(&mut tools);
+        // AI Office 編集（office.edit・Task 11.8）: office 有効時のみ提示する。
+        // 非ロック時=新バージョン／WOPI ロック中=提案バージョン（PIT-44）。
+        if let Some(office) = &self.office {
+            tools.push(Arc::new(crate::office_tool::OfficeEditTool::new(
+                office.clone(),
+            )));
+        }
         // CSV ツール（csv.query / csv.patch / csv.write・Task 11P.9）: tabular 配線時のみ。
         // 認可は操作別のファイル ReBAC（TabularService が StorageService 経由で強制）。
         if let Some(tabular) = &self.tabular {

@@ -42,7 +42,8 @@ impl StorageService {
             None => None,
         };
         let rows: Vec<VersionRow> = sqlx::query_as(
-            "SELECT tenant_id, version, blob_sha256, size_bytes, content_type, author, created_at \
+            "SELECT tenant_id, version, blob_sha256, size_bytes, content_type, author, created_at, \
+                    is_proposal, proposed_by \
              FROM node_version \
              WHERE node_id = $1 AND org = $2 AND tenant_id = $3 \
                AND ($4::bigint IS NULL OR version < $4) \

@@ -712,6 +712,7 @@ async fn agent_mode_worker_runs_to_done() {
             workflow_catalog: None,
             collab: None,
             tabular: None,
+            office: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),

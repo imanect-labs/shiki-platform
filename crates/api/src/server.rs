@@ -374,19 +374,25 @@ pub fn route_table() -> Vec<RouteDecl> {
             post(routes::files::restore_file)
         }),
         r("/files/{id}/versions", &["GET"], SessionLongRunning, || {
-            get(routes::files::list_versions)
+            get(routes::file_versions::list_versions)
         }),
         r(
             "/files/{id}/versions/{version}/download-url",
             &["GET"],
             SessionLongRunning,
-            || get(routes::files::version_download_url),
+            || get(routes::file_versions::version_download_url),
         ),
         r(
             "/files/{id}/versions/{version}/restore",
             &["POST"],
             SessionLongRunning,
-            || post(routes::files::restore_version),
+            || post(routes::file_versions::restore_version),
+        ),
+        r(
+            "/files/{id}/versions/{version}/adopt",
+            &["POST"],
+            SessionLongRunning,
+            || post(routes::file_versions::adopt_version),
         ),
         // --- Provisioner（admin プレーン・SAAS.2。削除は Keycloak/FGA/オブジェクト走査で 300s） ---
         r("/admin/tenants", &["POST"], Provisioner, || {

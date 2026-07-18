@@ -6,7 +6,7 @@
 
 from fastapi import FastAPI
 
-from . import embed, parse, rerank
+from . import edit, embed, parse, rerank
 from .model_registry import get_registry
 from .settings import get_settings
 
@@ -14,6 +14,7 @@ from .settings import get_settings
 def create_app() -> FastAPI:
     app = FastAPI(title="shiki ingestion-worker", docs_url=None, redoc_url=None)
     app.include_router(parse.router)
+    app.include_router(edit.router)
     app.include_router(embed.router)
     app.include_router(rerank.router)
 

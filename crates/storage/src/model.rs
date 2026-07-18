@@ -68,6 +68,11 @@ pub struct FileVersion {
     /// この版を作成した subject。
     pub author: String,
     pub created_at: DateTime<Utc>,
+    /// AI 提案バージョンか（Task 11.8・PIT-44）。true の間は current を進めておらず、
+    /// RAG 索引にも乗らない。editor の「採用」で通常の新バージョンとして複製される。
+    pub is_proposal: bool,
+    /// 提案の実行主体（提案バージョンのみ Some・author と同じ subject 表現）。
+    pub proposed_by: Option<String>,
 }
 
 /// `begin_upload`（declare）の結果＝アップロード用 presigned チケット。

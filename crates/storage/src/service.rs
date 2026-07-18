@@ -36,6 +36,14 @@ const NODE_COLS: &str = "id, org, tenant_id, kind, name, parent_id, blob_sha256,
                          content_type, version, deleted_at, created_by, updated_by, created_at, \
                          updated_at";
 
+/// 内容版の採番式（migration 0049・提案バージョン対応）。
+///
+/// 提案バージョン（`node_version.is_proposal`）も PK `(node_id, version)` の番号空間を
+/// 共有するため、`node.version + 1` 固定では提案の版番号と衝突し得る。通常版の作成は
+/// 常に「current と履歴最大値の大きい方 + 1」で採番する（提案が無ければ `+ 1` と等価）。
+const NEXT_CONTENT_VERSION: &str = "GREATEST(version, COALESCE((SELECT MAX(v.version) \
+     FROM node_version v WHERE v.node_id = node.id), 0)) + 1";
+
 /// 単一チョークポイントの StorageService。
 pub struct StorageService {
     db: PgPool,
@@ -89,6 +97,8 @@ struct VersionRow {
     content_type: String,
     author: String,
     created_at: DateTime<Utc>,
+    is_proposal: bool,
+    proposed_by: Option<String>,
 }
 
 impl VersionRow {
@@ -101,6 +111,8 @@ impl VersionRow {
             content_type: self.content_type,
             author: self.author,
             created_at: self.created_at,
+            is_proposal: self.is_proposal,
+            proposed_by: self.proposed_by,
         }
     }
 }
@@ -133,6 +145,7 @@ mod finalize;
 mod folder;
 mod internal_io;
 mod move_rename;
+mod proposal;
 mod read;
 mod restore;
 mod sharing;
