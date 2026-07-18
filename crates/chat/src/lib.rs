@@ -42,7 +42,7 @@ pub mod workspace;
 
 pub use approver::DbApprover;
 pub use artifacts::StorageArtifactStore;
-pub use csv_tool::{CsvPatchTool, CsvQueryTool, CsvWriteTool};
+pub use csv_tool::{CsvPatchTool, CsvQueryTool, CsvWriteTool, SaveCsvTool};
 pub use document_tool::{DocumentEditTool, DocumentEmbedTool, DocumentReadTool, SaveNoteTool};
 pub use error::ChatError;
 pub use gui_actions::ChatSubmitHandler;

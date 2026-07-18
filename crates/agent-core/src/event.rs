@@ -74,6 +74,10 @@ pub enum AgentEvent {
     /// `{name, content}`（content=正規化スライド JSON 文字列）。**まだ作成していない**下書き
     /// （chat 側で slide_draft へ写り、フロントが下書きスライド画面で詰めてから確定する）。
     SlideDraft { draft: serde_json::Value },
+    /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。
+    /// `{name, csv}`（csv=CSV 本文）。**まだ作成していない**下書き
+    /// （chat 側で csv_draft へ写り、フロントが下書き CSV 画面で詰めてから確定する）。
+    CsvDraft { draft: serde_json::Value },
     /// 計画が改訂された（全サブタスク列・revision 付き・Task 5.2）。
     PlanUpdated(Plan),
     /// 単一サブタスクの状態遷移（軽量更新・Task 5.2）。

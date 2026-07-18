@@ -122,6 +122,12 @@ impl WorkerSink {
                     draft: draft.clone(),
                 });
             }
+            // 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。同型。
+            AgentEvent::CsvDraft { draft } => {
+                self.content.push(ContentBlock::CsvDraft {
+                    draft: draft.clone(),
+                });
+            }
             // 自律プロファイルの構造化イベント（計画/サブタスク/予算/承認/失敗回復）は
             // content block へは projection しない（進捗の可視化はライブ SSE 側で扱う・W4 で結線）。
             AgentEvent::PlanUpdated(_)
@@ -168,6 +174,9 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
             draft: draft.clone(),
         },
         AgentEvent::SlideDraft { draft } => StreamEventKind::SlideDraft {
+            draft: draft.clone(),
+        },
+        AgentEvent::CsvDraft { draft } => StreamEventKind::CsvDraft {
             draft: draft.clone(),
         },
         // 自律プロファイルの構造化イベント（Task 5.9 ライブ配信）。generation_event に append され
@@ -319,6 +328,19 @@ mod tests {
         };
         match to_stream_kind(&ev) {
             StreamEventKind::SlideDraft { draft: d } => assert_eq!(d, draft),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn csv_draft_event_maps_to_sse_and_projection() {
+        // AgentEvent::CsvDraft → SSE csv_draft（履歴 projection でも残る・Task 11.11）。
+        let draft = serde_json::json!({ "name": "売上一覧", "csv": "a,b\n1,2\n" });
+        let ev = AgentEvent::CsvDraft {
+            draft: draft.clone(),
+        };
+        match to_stream_kind(&ev) {
+            StreamEventKind::CsvDraft { draft: d } => assert_eq!(d, draft),
             other => panic!("unexpected: {other:?}"),
         }
     }
