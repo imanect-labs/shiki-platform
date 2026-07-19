@@ -49,6 +49,11 @@ async fn spawn_worker(mode: &'static str, seen: Arc<Mutex<Seen>>) -> String {
                         }))
                         .into_response()
                     }
+                    "noop" => Json(serde_json::json!({
+                        "data_base64": req["data_base64"].clone(),
+                        "report": { "applied_ops": 0, "results": [] },
+                    }))
+                    .into_response(),
                     "invalid" => (
                         StatusCode::UNPROCESSABLE_ENTITY,
                         Json(serde_json::json!({
@@ -121,5 +126,16 @@ async fn worker_5xx_maps_to_worker_error() {
     let base = spawn_worker("boom", Arc::new(Mutex::new(Seen::default()))).await;
     let composer = DocxComposer::new(reqwest::Client::new(), &base);
     let err = composer.compose("default", "x.docx", "本文").await;
+    assert!(matches!(err, Err(OfficeError::Worker(_))), "{err:?}");
+}
+
+/// applied_ops=0（本文未反映）は成功扱いにせず Worker エラーへ（黙って空文書を返さない）。
+#[tokio::test]
+async fn zero_applied_ops_is_worker_error() {
+    let base = spawn_worker("noop", Arc::new(Mutex::new(Seen::default()))).await;
+    let composer = DocxComposer::new(reqwest::Client::new(), &base);
+    let err = composer
+        .compose("default", "x.docx", "反映されない本文")
+        .await;
     assert!(matches!(err, Err(OfficeError::Worker(_))), "{err:?}");
 }

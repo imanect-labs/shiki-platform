@@ -65,6 +65,14 @@ impl DocxComposer {
             .json()
             .await
             .map_err(|e| OfficeError::Worker(format!("worker 応答の解釈に失敗: {e}")))?;
+        // 本文が 1 ブロックも反映されなかった（applied_ops=0）のに成功扱いにしない
+        // （空でない markdown を渡したのに未反映＝黙って空文書を返さない）。
+        if body.report.applied_ops == 0 {
+            return Err(OfficeError::Worker(
+                "本文が docx に反映されませんでした（worker が append_markdown を適用できず）"
+                    .into(),
+            ));
+        }
         base64::engine::general_purpose::STANDARD
             .decode(body.data_base64.as_bytes())
             .map_err(|e| OfficeError::Worker(format!("worker 応答の base64 が不正: {e}")))

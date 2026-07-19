@@ -74,8 +74,16 @@ impl Tool for SaveDocumentTool {
         if name.is_empty() {
             return Err(ToolError::Invalid("文書名を指定してください".into()));
         }
-        // 表示名は .docx を落として持つ（下書きカード/画面のタイトル用）。保存時に付与する。
-        let display_name = name.strip_suffix(".docx").unwrap_or(name);
+        // 表示名は .docx（大文字小文字問わず）を落として持つ（下書きカード/画面のタイトル用）。
+        // 拡張子だけの名前（".docx" 等）は空表示名になるためここで弾く（イベント/URL 破綻を防ぐ）。
+        let display_name = name
+            .strip_suffix(".docx")
+            .or_else(|| name.strip_suffix(".DOCX"))
+            .unwrap_or(name)
+            .trim();
+        if display_name.is_empty() {
+            return Err(ToolError::Invalid("文書名を指定してください".into()));
+        }
         // 下書き本文も正規化する（生 HTML はコードブロックへ縮退＝XSS 遮断・Task 11P.6）。
         let markdown = collab::note::normalize_markdown(&input.markdown);
         let mut outcome = ToolOutcome::ok(format!(
@@ -157,6 +165,24 @@ mod tests {
             )
             .await;
         assert!(matches!(err, Err(agent_core::ToolError::Invalid(_))));
+    }
+
+    /// 拡張子だけの名前（.docx / .DOCX）は空表示名になるため弾く。
+    #[tokio::test]
+    async fn save_document_rejects_extension_only_name() {
+        for name in [".docx", ".DOCX", "  .docx  "] {
+            let err = super::SaveDocumentTool::new()
+                .call(
+                    &ctx(),
+                    serde_json::json!({ "name": name, "markdown": "本文" }),
+                    None,
+                )
+                .await;
+            assert!(
+                matches!(err, Err(agent_core::ToolError::Invalid(_))),
+                "{name:?} は拒否されること"
+            );
+        }
     }
 
     /// 生 HTML はコードブロックへ縮退する（XSS 遮断・note と同じ正規化）。

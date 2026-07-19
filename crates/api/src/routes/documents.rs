@@ -75,6 +75,12 @@ pub async fn create_document(
         .as_deref()
         .map(collab::note::normalize_markdown)
         .unwrap_or_default();
+    // 変換（worker 呼び出し）の前に配置先の作成権限を確認する（未権限ユーザーに無駄な変換を
+    // させない・fail-fast）。認可の正本は write_file_internal 側にも残る（多層防御）。
+    state
+        .storage
+        .authorize_create(&ctx, req.parent_id, trace.0.as_deref())
+        .await?;
     let bytes = state
         .docx_composer
         .compose(&ctx.tenant_id, &file_name, &markdown)

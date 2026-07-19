@@ -83,14 +83,20 @@ function DraftDocumentPageInner() {
     getThreadMessages(threadId)
       .then(({ messages }) => {
         if (cancelled) return;
+        // 履歴は時系列。同名の下書きは**最後の再生成**が正なので、まず name→最新 markdown に
+        // 畳んでから、ローカル未登録の名前だけを流し込む（ローカルのユーザー編集は上書きしない）。
+        const latest = new Map<string, string>();
         for (const m of messages) {
           for (const b of m.content) {
             if (b.type === "document_draft") {
               const d = parseDocumentDraft(b.draft);
-              if (d && !documentDraftStore.get(threadId, d.name)) {
-                documentDraftStore.upsert(threadId, d.name, d.markdown, "ai");
-              }
+              if (d) latest.set(d.name, d.markdown);
             }
+          }
+        }
+        for (const [name, markdown] of latest) {
+          if (!documentDraftStore.get(threadId, name)) {
+            documentDraftStore.upsert(threadId, name, markdown, "ai");
           }
         }
       })
