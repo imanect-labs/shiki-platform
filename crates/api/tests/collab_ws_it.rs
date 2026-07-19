@@ -483,6 +483,10 @@ async fn setup() -> Option<Harness> {
         chat: None,
         rag_admin,
         office: None,
+        docx_composer: std::sync::Arc::new(office::DocxComposer::new(
+            reqwest::Client::new(),
+            "http://127.0.0.1:1",
+        )),
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

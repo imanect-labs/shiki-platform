@@ -373,6 +373,10 @@ async fn setup() -> Option<Env> {
         chat: None,
         rag_admin: Arc::new(rag::RagAdmin::new(pool.clone(), None, None)),
         office: None,
+        docx_composer: std::sync::Arc::new(office::DocxComposer::new(
+            reqwest::Client::new(),
+            "http://127.0.0.1:1",
+        )),
     };
     Some(Env {
         app: build_router(state),

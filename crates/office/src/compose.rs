@@ -80,7 +80,10 @@ mod tests {
     async fn blank_markdown_returns_template_without_worker() {
         // 到達不能な worker URL でも空 markdown なら成功する（呼ばない）ことを検証する。
         let composer = DocxComposer::new(reqwest::Client::new(), "http://127.0.0.1:1");
-        let bytes = composer.compose("default", "x.docx", "   \n").await.unwrap();
+        let bytes = composer
+            .compose("default", "x.docx", "   \n")
+            .await
+            .unwrap();
         assert_eq!(&bytes[..2], b"PK", "docx（zip）ヘッダで始まる");
         assert_eq!(bytes, BLANK_DOCX);
     }

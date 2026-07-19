@@ -361,6 +361,10 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         chat: None,
         rag_admin,
         office: None,
+        docx_composer: std::sync::Arc::new(office::DocxComposer::new(
+            reqwest::Client::new(),
+            "http://127.0.0.1:1",
+        )),
     }
 }
 

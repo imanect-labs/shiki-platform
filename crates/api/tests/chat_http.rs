@@ -395,6 +395,10 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         chat,
         rag_admin,
         office: None,
+        docx_composer: std::sync::Arc::new(office::DocxComposer::new(
+            reqwest::Client::new(),
+            "http://127.0.0.1:1",
+        )),
     };
     Some((state, sessions))
 }
