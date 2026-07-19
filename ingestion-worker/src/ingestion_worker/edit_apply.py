@@ -45,6 +45,9 @@ def _md_lines(markdown: str) -> list[tuple[str, str, int]]:
 # docx
 # ---------------------------------------------------------------------------
 
+# 見出し/リストのスタイル定義を持たない docx で平文へ縮退したときの警告。
+_DEGRADED_WARNING = "見出し/リストのスタイル未定義のため、一部ブロックを平文で追加しました"
+
 
 def _docx_all_paragraphs(doc: Any) -> list[Any]:
     """本文＋表セル内の段落を読み順で列挙する（置換対象の走査用）。"""
@@ -78,24 +81,49 @@ def _replace_in_paragraph(paragraph: Any, find: str, replace: str) -> tuple[int,
     return count + remaining, True
 
 
-def _docx_append_blocks(doc: Any, markdown: str, anchor: Any | None = None) -> int:
-    """Markdown ブロックを末尾へ追加、anchor 指定時はその直後へ移動する。"""
+def _docx_add_heading_safe(doc: Any, text: str, level: int) -> tuple[Any, bool]:
+    """見出し追加。Heading スタイル未定義の docx では太字段落へ縮退する（fail-soft）。"""
+    try:
+        return doc.add_heading(text, level=min(level, 9)), False
+    except KeyError:
+        paragraph = doc.add_paragraph()
+        paragraph.add_run(text).bold = True
+        return paragraph, True
+
+
+def _docx_add_list_safe(doc: Any, text: str, style: str, marker: str) -> tuple[Any, bool]:
+    """リスト項目追加。List スタイル未定義の docx では記号付き平文へ縮退する（fail-soft）。"""
+    try:
+        return doc.add_paragraph(text, style=style), False
+    except KeyError:
+        return doc.add_paragraph(f"{marker} {text}"), True
+
+
+def _docx_append_blocks(doc: Any, markdown: str, anchor: Any | None = None) -> tuple[int, bool]:
+    """Markdown ブロックを末尾へ追加、anchor 指定時はその直後へ移動する。
+
+    返り値: (追加ブロック数, スタイル縮退が起きたか)。スタイル定義を持たない docx
+    （最小テンプレ・他ツール生成物）でも失敗させず平文で追加する。
+    """
     created = []
+    degraded = False
     for kind, text, level in _md_lines(markdown):
         if kind == "heading":
-            created.append(doc.add_heading(text, level=min(level, 9)))
+            paragraph, fell_back = _docx_add_heading_safe(doc, text, level)
         elif kind == "bullet":
-            created.append(doc.add_paragraph(text, style="List Bullet"))
+            paragraph, fell_back = _docx_add_list_safe(doc, text, "List Bullet", "•")
         elif kind == "ordered":
-            created.append(doc.add_paragraph(text, style="List Number"))
+            paragraph, fell_back = _docx_add_list_safe(doc, text, "List Number", "-")
         else:
-            created.append(doc.add_paragraph(text))
+            paragraph, fell_back = doc.add_paragraph(text), False
+        created.append(paragraph)
+        degraded = degraded or fell_back
     if anchor is not None:
         ref = anchor._p  # noqa: SLF001 - python-docx の要素移動は lxml 層でのみ可能。
         for paragraph in created:
             ref.addnext(paragraph._p)  # noqa: SLF001
             ref = paragraph._p  # noqa: SLF001
-    return len(created)
+    return len(created), degraded
 
 
 def apply_docx(data: bytes, ops: list[Any]) -> tuple[bytes, list[OpTuple]]:
@@ -117,7 +145,8 @@ def apply_docx(data: bytes, ops: list[Any]) -> tuple[bytes, list[OpTuple]]:
                 warning = "run 跨ぎの一致があり、一部段落の文字書式を平坦化しました"
             results.append((op.op, total, warning))
         elif op.op == "append_markdown":
-            results.append((op.op, _docx_append_blocks(doc, op.markdown), None))
+            applied, degraded = _docx_append_blocks(doc, op.markdown)
+            results.append((op.op, applied, _DEGRADED_WARNING if degraded else None))
         elif op.op == "insert_after_heading":
             anchor = next(
                 (
@@ -130,7 +159,8 @@ def apply_docx(data: bytes, ops: list[Any]) -> tuple[bytes, list[OpTuple]]:
             if anchor is None:
                 results.append((op.op, 0, f"見出しが見つかりません: {op.heading!r}"))
             else:
-                results.append((op.op, _docx_append_blocks(doc, op.markdown, anchor), None))
+                applied, degraded = _docx_append_blocks(doc, op.markdown, anchor)
+                results.append((op.op, applied, _DEGRADED_WARNING if degraded else None))
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue(), results

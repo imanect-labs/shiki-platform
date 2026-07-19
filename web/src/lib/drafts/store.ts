@@ -14,7 +14,7 @@
 
 import * as React from "react";
 
-export type DraftKind = "note" | "slide" | "csv";
+export type DraftKind = "note" | "slide" | "csv" | "document";
 
 export type DraftSource = "ai" | "user";
 

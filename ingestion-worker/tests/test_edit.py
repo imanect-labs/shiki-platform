@@ -107,6 +107,48 @@ def test_docx_replace_insert_append_roundtrip(client: TestClient) -> None:
     assert heading.style.name.startswith("Heading")
 
 
+def test_docx_append_without_styles_degrades_to_plain_text(client: TestClient) -> None:
+    """Heading/List スタイル未定義の最小 docx でも append_markdown が失敗しない（fail-soft・#332）。
+
+    他ツール生成の最小 docx（styles.xml に Heading 1 等が無い）に対して、見出しは太字段落・
+    リストは記号付き平文へ縮退し、warning で縮退を報告する。
+    """
+    from docx import Document
+
+    # 最小 docx: 既定テンプレから Heading/List スタイル定義を落とす（lxml 層で除去）。
+    doc = Document()
+    styles_el = doc.styles.element
+    for style in list(styles_el):
+        name_el = style.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}name")
+        name = (
+            name_el.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val")
+            if name_el is not None
+            else ""
+        )
+        if name.startswith("Heading") or name in ("List Bullet", "List Number"):
+            styles_el.remove(style)
+    out = io.BytesIO()
+    doc.save(out)
+
+    body = _edit(
+        client,
+        DOCX,
+        out.getvalue(),
+        [{"op": "append_markdown", "markdown": "# 見出し\n- 項目\n1. 手順\n本文"}],
+    )
+    assert body["report"]["applied_ops"] == 1
+    result = body["report"]["results"][0]
+    assert result["applied"] == 4
+    assert "平文で追加しました" in result["warning"]
+
+    edited = Document(io.BytesIO(base64.b64decode(body["data_base64"])))
+    texts = [p.text for p in edited.paragraphs]
+    assert "見出し" in texts
+    assert "• 項目" in texts
+    assert "- 手順" in texts
+    assert "本文" in texts
+
+
 def test_docx_missing_heading_is_warning_not_error(client: TestClient) -> None:
     body = _edit(
         client,

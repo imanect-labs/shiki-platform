@@ -37,6 +37,7 @@ export type ContentBlock =
   | { type: "note_draft"; draft: unknown }
   | { type: "slide_draft"; draft: unknown }
   | { type: "csv_draft"; draft: unknown }
+  | { type: "document_draft"; draft: unknown }
   | { type: "file_ref"; node_id: string; name: string }
   | { type: "selection_context"; context: SelectionContext };
 
@@ -48,6 +49,9 @@ export type SlideDraft = { name: string; content: string };
 
 /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。csv=CSV 本文。
 export type CsvDraft = { name: string; csv: string };
+
+/// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。markdown=本文 md。
+export type DocumentDraft = { name: string; markdown: string };
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
 export type RunStatus = "queued" | "running" | "done" | "failed" | "cancelled";
@@ -335,6 +339,8 @@ export type StreamHandlers = {
   onSlideDraft?: (draft: unknown) => void;
   /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。下書き画面を開く/流し込む。
   onCsvDraft?: (draft: unknown) => void;
+  /// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。下書き画面を開く/流し込む。
+  onDocumentDraft?: (draft: unknown) => void;
   /// 開いている Office セッションへの AI ライブ編集（office.live_edit・#328）。ライブ専用
   /// （履歴 projection されない）。対象 node_id が開いている文書と一致するとき Collabora へ
   /// Action_Paste で現在の選択を置換注入する。
@@ -366,6 +372,7 @@ type StreamEventKind =
   | { type: "note_draft"; draft: unknown }
   | { type: "slide_draft"; draft: unknown }
   | { type: "csv_draft"; draft: unknown }
+  | { type: "document_draft"; draft: unknown }
   | { type: "office_live_edit"; node_id: string; html: string }
   | { type: "plan"; subtasks: PlanSubtask[] }
   | { type: "budget_warning"; kind: string; used: number; limit: number }
@@ -436,6 +443,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "csv_draft":
         handlers.onCsvDraft?.(kind.draft);
+        break;
+      case "document_draft":
+        handlers.onDocumentDraft?.(kind.draft);
         break;
       case "office_live_edit":
         handlers.onOfficeLiveEdit?.({ node_id: kind.node_id, html: kind.html });
