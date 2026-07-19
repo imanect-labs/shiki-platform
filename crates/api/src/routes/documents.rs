@@ -20,9 +20,13 @@ use crate::server::RouteDecl;
 use crate::state::AppState;
 
 /// documents のルート宣言（office フラグ非依存・無条件配線）。
+///
+/// md→docx 変換は worker 往復（最大 1 分）を含むため **SessionLongRunning（300s）** に置く。
+/// 既定の Session（30s）だと 30〜60s の変換が API 側タイムアウトで切られ、worker 完了前に
+/// 失敗する（compose の reqwest タイムアウトと矛盾しない・/files finalize と同じ扱い）。
 pub(crate) fn documents_route_decls() -> Vec<RouteDecl> {
-    use crate::server::AccessPolicy::Session;
-    vec![RouteDecl::new("/documents", &["POST"], Session, || {
+    use crate::server::AccessPolicy::SessionLongRunning;
+    vec![RouteDecl::new("/documents", &["POST"], SessionLongRunning, || {
         post(create_document)
     })]
 }
