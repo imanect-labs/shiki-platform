@@ -26,9 +26,12 @@ use crate::state::AppState;
 /// 失敗する（compose の reqwest タイムアウトと矛盾しない・/files finalize と同じ扱い）。
 pub(crate) fn documents_route_decls() -> Vec<RouteDecl> {
     use crate::server::AccessPolicy::SessionLongRunning;
-    vec![RouteDecl::new("/documents", &["POST"], SessionLongRunning, || {
-        post(create_document)
-    })]
+    vec![RouteDecl::new(
+        "/documents",
+        &["POST"],
+        SessionLongRunning,
+        || post(create_document),
+    )]
 }
 
 /// Word 文書作成リクエスト（#332・「新規作成 > ドキュメント」/ 下書き確定の共通経路）。
