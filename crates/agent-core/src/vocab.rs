@@ -78,6 +78,9 @@ vocab_enum! {
         /// AI 生成 CSV を**下書き**として用意するツール（csv_draft カード化・保存しない・
         /// 確認不要・save_note と同型の下書き確定型・Task 11.11）。
         SaveCsv => "save_csv",
+        /// AI 生成 Markdown を Word 文書（.docx）の**下書き**として用意するツール
+        /// （document_draft カード化・保存しない・確認不要・save_note と同型の下書き確定型・#332）。
+        SaveDocument => "save_document",
         /// スライド（.slide/Yjs）の共同編集ツール（AI が編集参加者・排他なし・Task 11.3）。
         SlideEdit => "slide.edit",
         /// スライド内容の読み取りツール（slide.edit の前提・正規化 JSON を得る・Task 11.3）。

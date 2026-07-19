@@ -211,6 +211,16 @@ async fn main() -> anyhow::Result<()> {
 
     // Office 統合（Task 11.5/11.6）: enabled のときのみ Collabora suite ＋ WOPI を配線する。
     let office = wiring::wire_office(&config, &http, &db, &authz, &storage)?;
+    // md→docx 合成（POST /documents・#332）: worker のみ必要なので office フラグに載せず常時配線。
+    // 共有クライアントは無期限のため、worker 遅延がハンドラを永久ブロックしないよう専用に切る。
+    let compose_http = reqwest::Client::builder()
+        .timeout(Duration::from_mins(1))
+        .build()
+        .context("docx compose 用 HTTP クライアントの構築に失敗")?;
+    let docx_composer = Arc::new(office::DocxComposer::new(
+        compose_http,
+        &config.rag.worker_base_url,
+    ));
 
     let bind = format!("{}:{}", config.server.host, config.server.port);
     // ミニアプリの第2/第3リスナ（ゲートウェイ・B1 配信）と B2 トリガ（event/cron）を
@@ -267,6 +277,7 @@ async fn main() -> anyhow::Result<()> {
         chat,
         rag_admin,
         office,
+        docx_composer,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)

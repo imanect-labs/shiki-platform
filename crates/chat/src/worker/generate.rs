@@ -7,8 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use agent_core::{
-    run_agent, AgentOptions, ApprovalPolicy, CodeInterpreterTool, DocSearchTool, FsDeleteTool,
-    FsEditTool, FsListTool, FsReadTool, FsWriteTool, GrepTool, RunContext, ShellTool, Tool,
+    run_agent, AgentOptions, ApprovalPolicy, CodeInterpreterTool, DocSearchTool, RunContext, Tool,
     WebFetchTool, WebSearchTool, WorkspaceStore,
 };
 use authz::AuthContext;
@@ -108,7 +107,7 @@ impl ChatWorker {
                 store.clone(),
             )));
         }
-        // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）。
+        // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系（worker/toolset.rs）。
         self.push_collab_tools(&mut tools);
         // AI Office 編集: office.edit（ファイル単位・非ロック=新版/ロック中=提案・PIT-44・Task 11.8）＋
         // office.live_edit（開いているセッションへ Action_Paste 注入・authz 必須・#328）。office 有効時のみ。
@@ -215,67 +214,6 @@ impl ChatWorker {
         .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
         let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理
         Ok(())
-    }
-
-    /// 自律ツール（file CRUD/grep/shell）を tools へ追加する。
-    /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。
-    ///
-    /// collab ハブと storage が両方配線されている時のみ提示する。編集は共有 Yjs へ
-    /// 適用され、権限は実行主体の editor@file（human と同一経路・昇格しない・排他なし）。
-    fn push_collab_tools(&self, tools: &mut Vec<Arc<dyn Tool>>) {
-        // 下書きツールは保存も共同編集もしない（確定は UI 保存）ため、collab/storage の
-        // 配線に依存させない（下書き生成フローを任意配線構成でも使えるようにする）。
-        tools.push(Arc::new(crate::document_tool::SaveNoteTool::new()));
-        tools.push(Arc::new(crate::slide_tool::SaveSlideTool::new()));
-        // 下書き CSV（csv_draft・下書き確定型・Task 11.11・storage 非依存・確定は UI 保存）。
-        tools.push(Arc::new(crate::csv_tool::SaveCsvTool::new()));
-        let (Some(collab), Some(storage)) = (&self.collab, &self.storage) else {
-            return;
-        };
-        tools.push(Arc::new(crate::document_tool::DocumentReadTool::new(
-            collab.clone(),
-            storage.clone(),
-        )));
-        tools.push(Arc::new(crate::document_tool::DocumentEditTool::new(
-            collab.clone(),
-            storage.clone(),
-        )));
-        tools.push(Arc::new(crate::document_tool::DocumentEmbedTool::new(
-            collab.clone(), // 本文への genui 埋め込み（非破壊 append・確認不要・#282）。
-            storage.clone(),
-        )));
-        // AI スライド共同編集（slide.read / slide.edit・Task 11.3）: ノートと同じ
-        // 共同編集参加者モデル（排他なし・editor@file・HTML はサーバ側サニタイズ）。
-        tools.push(Arc::new(crate::slide_tool::SlideReadTool::new(
-            collab.clone(),
-            storage.clone(),
-        )));
-        tools.push(Arc::new(crate::slide_tool::SlideEditTool::new(
-            collab.clone(),
-            storage.clone(),
-        )));
-    }
-
-    fn push_autonomous_tools(
-        &self,
-        tools: &mut Vec<Arc<dyn Tool>>,
-        workspace: Arc<dyn WorkspaceStore>,
-    ) {
-        tools.push(Arc::new(FsListTool::new(workspace.clone())));
-        tools.push(Arc::new(FsReadTool::new(workspace.clone())));
-        tools.push(Arc::new(GrepTool::new(workspace.clone())));
-        tools.push(Arc::new(FsWriteTool::new(workspace.clone())));
-        tools.push(Arc::new(FsEditTool::new(workspace.clone())));
-        tools.push(Arc::new(FsDeleteTool::new(workspace.clone())));
-        // shell はワークスペースを seed→sync する（sandbox 必須）。
-        if let Some(sandbox) = &self.sandbox {
-            tools.push(Arc::new(ShellTool::new(
-                sandbox.clone(),
-                workspace,
-                self.config.sandbox_software.clone(),
-                self.config.sandbox_backend,
-            )));
-        }
     }
 
     /// thread のワークスペースフォルダを解決 or 作成し、`WorkspaceStore` を返す（Durable Workspace）。

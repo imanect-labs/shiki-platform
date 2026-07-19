@@ -16,6 +16,7 @@ pub mod data_fsm;
 pub mod data_records;
 pub mod data_views;
 pub mod directory;
+pub mod documents;
 pub mod file_versions;
 pub mod files;
 pub mod folders;

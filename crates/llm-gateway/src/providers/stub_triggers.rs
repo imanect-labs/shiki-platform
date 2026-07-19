@@ -12,7 +12,8 @@ use crate::provider::DeltaStream;
 /// ドキュメント下書き/編集ツールの決定的駆動（issue #282 / Task 11.3 の e2e）。
 /// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（genui chart）、
 /// `saveslide:<name>` → save_slide（下書きスライド・固定 3 枚）、
-/// `savecsv:<name>` → save_csv（下書き CSV・固定 3 列×3 行）。
+/// `savecsv:<name>` → save_csv（下書き CSV・固定 3 列×3 行）、
+/// `savedoc:<name>` → save_document（下書き Word 文書・#332）。
 pub(super) fn note_tool_call(
     req: &GenerateRequest,
     user_text: &str,
@@ -34,6 +35,12 @@ pub(super) fn note_tool_call(
         return call(
             "document.embed",
             serde_json::json!({ "node_id": id, "spec": genui_spec("chart") }),
+        );
+    }
+    if let Some(name) = user_text.strip_prefix("savedoc:").map(str::trim) {
+        return call(
+            "save_document",
+            serde_json::json!({ "name": name, "markdown": format!("# {name}\n\nAI が用意した下書き本文。\n") }),
         );
     }
     if let Some(name) = user_text.strip_prefix("savecsv:").map(str::trim) {

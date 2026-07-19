@@ -13,11 +13,13 @@
 //! - WOPI ロックは 30 分 TTL の助言的ロック（lazy 解放）。編集排他ではなく
 //!   「AI を提案保存へ迂回させるシグナル」（PIT-44・Task 11.8 が `current_lock` で判定）。
 
+mod compose;
 mod edit;
 mod error;
 mod suite;
 pub mod wopi;
 
+pub use compose::{DocxComposer, DOCX_CONTENT_TYPE};
 pub use edit::{
     EditOpResult, EditOutcome, EditReport, OfficeEditor, SavedEdit, EDITABLE_CONTENT_TYPES,
 };

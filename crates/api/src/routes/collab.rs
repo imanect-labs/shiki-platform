@@ -241,8 +241,8 @@ fn html_escape(s: &str) -> String {
 const MAX_NAME_ATTEMPTS: u32 = 50;
 
 /// 同名衝突時に ` (2)` `(3)` … を付けて作成をリトライする（fail-closed・上限あり）。
-#[allow(clippy::too_many_arguments)] // 作成文脈の値を束ねず素で受ける（呼び出し元は 2 箇所）。
-async fn create_file_unique(
+#[allow(clippy::too_many_arguments)] // 作成文脈の値を束ねず素で受ける（呼び出し元は notes/slides/documents）。
+pub(crate) async fn create_file_unique(
     state: &AppState,
     ctx: &authz::AuthContext,
     parent_id: Option<Uuid>,
