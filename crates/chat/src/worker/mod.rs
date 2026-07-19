@@ -10,6 +10,7 @@
 mod generate;
 mod history;
 mod sink;
+mod toolset;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

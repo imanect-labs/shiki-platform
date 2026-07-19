@@ -103,6 +103,9 @@ pub struct AppState {
     /// Office 統合（Task 11.5/11.6）。`office.enabled=false` では `None`
     /// （/office/sessions も /wopi も配線されない・fail-closed）。
     pub office: Option<OfficeRuntime>,
+    /// Markdown → .docx 合成（POST /documents・#332）。ingestion-worker のみ必要で
+    /// Collabora（office.enabled）に依存しないため常時配線する（markdown 省略時は worker も不要）。
+    pub docx_composer: Arc<office::DocxComposer>,
 }
 
 /// Office 統合の実行時依存（Task 11.5/11.6）。

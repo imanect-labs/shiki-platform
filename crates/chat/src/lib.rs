@@ -30,6 +30,7 @@ pub mod document_tool;
 pub mod error;
 pub mod gui_actions;
 pub mod model;
+pub mod office_draft_tool;
 pub mod office_live_tool;
 pub mod office_tool;
 pub mod selection;

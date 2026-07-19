@@ -110,6 +110,11 @@ pub struct ToolOutcome {
     /// **まだ StorageService へ作成していない**下書き CSV を入れる（chat 側で csv_draft
     /// ブロックへ写り、フロントが下書き CSV 画面で詰めてから「ドライブに保存」で確定する）。
     pub csv_drafts: Vec<CsvDraft>,
+    /// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。
+    /// `{name, markdown}` の JSON（note_drafts と同表現）。**まだ .docx 化も保存もしていない**
+    /// 下書き本文を入れる（chat 側で document_draft ブロックへ写り、フロントが下書き画面で
+    /// 詰めてから「ドライブに保存」で .docx 化・確定保存する）。
+    pub document_drafts: Vec<serde_json::Value>,
     /// 開いている Office セッションへの AI ライブ編集（office.live_edit のみ・他ツールは空・#328）。
     /// **ファイルは書き換えない**（現在の選択範囲を置換する指示のみ）。ライブ専用イベントとして
     /// SSE へ流れ、message.content へは projection しない（履歴再生で二重 paste しないため）。
@@ -131,6 +136,7 @@ impl ToolOutcome {
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
+            document_drafts: Vec::new(),
             office_live_edits: Vec::new(),
             is_error: false,
         }
@@ -148,6 +154,7 @@ impl ToolOutcome {
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
+            document_drafts: Vec::new(),
             office_live_edits: Vec::new(),
             is_error: true,
         }

@@ -91,6 +91,16 @@ pub(super) fn message_text(blocks: &[ContentBlock]) -> String {
                     "[作成中の下書き CSV: {name}（未保存。直すには同じ name「{name}」で save_csv）]"
                 ));
             }
+            // 下書き Word 文書も同型（同名 save_document で同じ下書きを更新・#332）。
+            ContentBlock::DocumentDraft { draft } => {
+                let name = draft.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let content = draft.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+                parts.push(format!(
+                    "[作成中の下書き Word 文書: {name}（未保存。直すには同じ name「{name}」で \
+                     save_document。現在の内容:\n{}\n）]",
+                    clamp_chars(content, DRAFT_HISTORY_MAX_CHARS)
+                ));
+            }
             _ => {}
         }
     }

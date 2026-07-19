@@ -128,6 +128,12 @@ impl WorkerSink {
                     draft: draft.clone(),
                 });
             }
+            // 未保存の下書き Word 文書（save_document の下書き確定型・#332）。同型。
+            AgentEvent::DocumentDraft { draft } => {
+                self.content.push(ContentBlock::DocumentDraft {
+                    draft: draft.clone(),
+                });
+            }
             // 自律プロファイルの構造化イベント（計画/サブタスク/予算/承認/失敗回復）は
             // content block へは projection しない（進捗の可視化はライブ SSE 側で扱う・W4 で結線）。
             // Office ライブ編集も同様に projection しない（履歴再生で二重 paste しない・#328）。
@@ -179,6 +185,9 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
             draft: draft.clone(),
         },
         AgentEvent::CsvDraft { draft } => StreamEventKind::CsvDraft {
+            draft: draft.clone(),
+        },
+        AgentEvent::DocumentDraft { draft } => StreamEventKind::DocumentDraft {
             draft: draft.clone(),
         },
         // 開いている Office セッションへのライブ編集（#328）。ライブ SSE のみ（content 非 projection）。

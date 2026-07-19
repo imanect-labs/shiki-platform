@@ -97,32 +97,15 @@ impl StorageService {
         }
     }
 
-    /// 内部書込の中核。`idem=Some((key,digest))` なら effect_journal を同一 TX で予約/記録する。
-    // blob 昇格→ノード化→FGA tuple を finalize と同じ順序・同じ補償で行うため長め。
-    // 段階の不変条件を一望できるよう一体に保つ（finalize.rs と対称）。
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-    async fn write_file_core(
+    /// 配置先（親フォルダ or org ルート）への新規作成権限を確認する（書込チョークポイントの
+    /// 認可部のみ）。`write_file_core` が保存前に使うほか、重い前処理（例: docx 変換）を行う
+    /// ハンドラが**変換前に fail-fast** するためにも公開する（未権限ユーザーに無駄な計算をさせない）。
+    pub async fn authorize_create(
         &self,
         ctx: &AuthContext,
         parent_id: Option<Uuid>,
-        name: &str,
-        bytes: &[u8],
-        content_type: &str,
         trace_id: Option<&str>,
-        idem: Option<(&str, &str)>,
-    ) -> Result<WriteCoreOut, StorageError> {
-        validate_name(name)?;
-        let size = i64::try_from(bytes.len())
-            .map_err(|_| StorageError::Invalid("size が大きすぎます".into()))?;
-        // presigned 経路（declare）と同じ容量ガード（ストレージ枯渇防止）。
-        if size > self.max_upload_size {
-            return Err(StorageError::Invalid(format!(
-                "size が上限を超えています（最大 {} バイト）",
-                self.max_upload_size
-            )));
-        }
-
-        // 配置先の認可（finalize の新規作成経路と同一の要求）。
+    ) -> Result<(), StorageError> {
         match parent_id {
             Some(p) => {
                 self.require(
@@ -150,6 +133,36 @@ impl StorageService {
                 .await?;
             }
         }
+        Ok(())
+    }
+
+    /// 内部書込の中核。`idem=Some((key,digest))` なら effect_journal を同一 TX で予約/記録する。
+    // blob 昇格→ノード化→FGA tuple を finalize と同じ順序・同じ補償で行うため長め。
+    // 段階の不変条件を一望できるよう一体に保つ（finalize.rs と対称）。
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    async fn write_file_core(
+        &self,
+        ctx: &AuthContext,
+        parent_id: Option<Uuid>,
+        name: &str,
+        bytes: &[u8],
+        content_type: &str,
+        trace_id: Option<&str>,
+        idem: Option<(&str, &str)>,
+    ) -> Result<WriteCoreOut, StorageError> {
+        validate_name(name)?;
+        let size = i64::try_from(bytes.len())
+            .map_err(|_| StorageError::Invalid("size が大きすぎます".into()))?;
+        // presigned 経路（declare）と同じ容量ガード（ストレージ枯渇防止）。
+        if size > self.max_upload_size {
+            return Err(StorageError::Invalid(format!(
+                "size が上限を超えています（最大 {} バイト）",
+                self.max_upload_size
+            )));
+        }
+
+        // 配置先の認可（finalize の新規作成経路と同一の要求）。
+        self.authorize_create(ctx, parent_id, trace_id).await?;
 
         // content-addressing: バイトを所持しているのでメモリ上でハッシュし、新規 blob のみ書き込む。
         // 既存 blob があれば上書きしない（並行 finalize が参照する共有本体を壊さない・dedup）。

@@ -108,6 +108,10 @@ pub enum ContentBlock {
     /// `draft = {name, csv}`（csv=CSV 本文・StorageService 未作成）。
     /// フロントは下書き CSV 画面を開いて詰めてから「ドライブに保存」で確定する。
     CsvDraft { draft: serde_json::Value },
+    /// 未保存の下書き Word 文書カード（save_document の下書き確定型・#332）。
+    /// `draft = {name, markdown}`（まだ .docx 化も StorageService 作成もしていない）。
+    /// フロントは /office/draft を開いて詰めてから「ドライブに保存」で .docx 化・確定する。
+    DocumentDraft { draft: serde_json::Value },
     /// 添付ファイル参照（ストレージ node 参照のみ）。
     FileRef { node_id: String, name: String },
     /// エディタの選択コンテキスト（選択→AI 指示・Task 11.10・design §4.8.3）。
@@ -250,6 +254,8 @@ pub enum StreamEventKind {
     SlideDraft { draft: serde_json::Value },
     /// 未保存の下書き CSV カード（save_csv の下書き確定型・Task 11.11）。
     CsvDraft { draft: serde_json::Value },
+    /// 未保存の下書き Word 文書カード（save_document の下書き確定型・#332）。
+    DocumentDraft { draft: serde_json::Value },
     /// 開いている Office セッションへの AI ライブ編集指示（office.live_edit・#328）。
     /// **ライブ専用**（content へ projection されない）。フロントは /office フレームで対象 node_id が
     /// 一致するとき Collabora Action_Paste（現在の選択を置換）を実行する。
@@ -305,6 +311,7 @@ impl StreamEventKind {
             StreamEventKind::NoteDraft { .. } => "note_draft",
             StreamEventKind::SlideDraft { .. } => "slide_draft",
             StreamEventKind::CsvDraft { .. } => "csv_draft",
+            StreamEventKind::DocumentDraft { .. } => "document_draft",
             StreamEventKind::OfficeLiveEdit { .. } => "office_live_edit",
             StreamEventKind::Plan { .. } => "plan",
             StreamEventKind::BudgetWarning { .. } => "budget_warning",

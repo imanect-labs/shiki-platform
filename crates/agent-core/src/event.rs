@@ -78,6 +78,10 @@ pub enum AgentEvent {
     /// `{name, csv}`（csv=CSV 本文）。**まだ作成していない**下書き
     /// （chat 側で csv_draft へ写り、フロントが下書き CSV 画面で詰めてから確定する）。
     CsvDraft { draft: serde_json::Value },
+    /// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。
+    /// `{name, markdown}`。**まだ .docx 化も保存もしていない**下書き本文
+    /// （chat 側で document_draft へ写り、フロントが下書き画面で詰めてから確定する）。
+    DocumentDraft { draft: serde_json::Value },
     /// 開いている Office 文書のセッションへ AI 編集をライブ注入する指示（office.live_edit・#328）。
     /// **ライブ専用**（`generation_event` に append され replay 可能だが message.content へは
     /// projection しない）。フロントは /office フレームで Collabora の Action_Paste（現在の選択を

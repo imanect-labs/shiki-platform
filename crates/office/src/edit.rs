@@ -67,9 +67,9 @@ pub struct EditOutcome {
 }
 
 #[derive(Deserialize)]
-struct WorkerEditResponse {
-    data_base64: String,
-    report: EditReport,
+pub(crate) struct WorkerEditResponse {
+    pub(crate) data_base64: String,
+    pub(crate) report: EditReport,
 }
 
 /// worker の 422 構造化エラー（`{"detail": {"error", "detail"}}`・parse と同形）。
@@ -213,7 +213,7 @@ impl OfficeEditor {
 }
 
 /// worker のエラー応答を [`OfficeError`] に写す（422=恒久 → Invalid / その他 → Worker）。
-async fn map_worker_error(resp: reqwest::Response) -> OfficeError {
+pub(crate) async fn map_worker_error(resp: reqwest::Response) -> OfficeError {
     let status = resp.status();
     if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
         return match resp.json::<WorkerErrorBody>().await {

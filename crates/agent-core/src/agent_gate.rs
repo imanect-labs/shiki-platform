@@ -150,6 +150,12 @@ pub(crate) async fn emit_tool_events(
         })
         .await?;
     }
+    for draft in &outcome.document_drafts {
+        sink.emit(AgentEvent::DocumentDraft {
+            draft: draft.clone(),
+        })
+        .await?;
+    }
     for edit in &outcome.office_live_edits {
         sink.emit(AgentEvent::OfficeLiveEdit {
             node_id: edit.node_id.clone(),

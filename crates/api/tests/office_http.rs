@@ -417,6 +417,10 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
         chat: None,
         rag_admin,
         office: office_runtime,
+        docx_composer: Arc::new(office::DocxComposer::new(
+            reqwest::Client::new(),
+            "http://127.0.0.1:1",
+        )),
     };
     Some((state, sessions))
 }
