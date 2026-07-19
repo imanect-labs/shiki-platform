@@ -70,20 +70,45 @@ export async function buildDocxMarkdown(editor: Editor): Promise<string> {
     if (payload.kind === "genui") {
       const title = genuiTitle(payload.spec);
       const dataUrl = await snapshotEmbed(editor, pos);
-      if (dataUrl) {
-        parts.push(`![${escapeAlt(title)}](${dataUrl})`);
-      } else {
-        parts.push(`> 図「${title}」はエクスポートに含められませんでした。`);
-      }
-    } else if (payload.kind === "iframe") {
-      const label = payload.title ?? payload.src;
-      parts.push(`> 埋め込み「${label}」はエクスポートに含まれません（${payload.src}）。`);
+      parts.push(
+        dataUrl
+          ? `![${escapeAlt(title)}](${dataUrl})`
+          : `> 図「${title}」はエクスポートに含められませんでした。`,
+      );
     } else {
-      const label = payload.name ?? "ドライブのファイル";
-      parts.push(`> 埋め込みファイル「${label}」はエクスポートに含まれません。`);
+      parts.push(embedPlaceholder(payload));
     }
   }
-  return parts.filter((p) => p.length > 0).join("\n\n");
+  // トップレベル走査で拾えなかった入れ子（リスト/引用内）の埋め込みは serializeFragment が
+  // ```shiki-embed フェンスとして出す。worker はフェンスを解さないため、残ったフェンスを
+  // 静的なプレースホルダへ置換して**生の埋め込み JSON を docx に載せない**（Codex 指摘）。
+  return staticizeEmbedFences(parts.filter((p) => p.length > 0).join("\n\n"));
+}
+
+/// iframe/ドライブ埋め込みの静的プレースホルダ（リンク付き・生 JSON を出さない）。
+function embedPlaceholder(payload: NonNullable<ReturnType<typeof parseEmbedPayload>>): string {
+  if (payload.kind === "iframe") {
+    const label = payload.title ?? payload.src;
+    return `> 埋め込み「${label}」はエクスポートに含まれません（${payload.src}）。`;
+  }
+  if (payload.kind === "drive") {
+    const label = payload.name ?? "ドライブのファイル";
+    return `> 埋め込みファイル「${label}」はエクスポートに含まれません。`;
+  }
+  // genui（入れ子でスナップショット位置が取れないケース）はタイトルのみのプレースホルダ。
+  return `> 図「${genuiTitle(payload.spec)}」はエクスポートに含められませんでした。`;
+}
+
+/// 残存する ```shiki-embed フェンスをプレースホルダへ置換する（入れ子埋め込みの保険）。
+function staticizeEmbedFences(md: string): string {
+  // 3 個以上のバックティック＋`shiki-embed`、本文、同数のバックティックの閉じ。
+  const fence = /^(`{3,})shiki-embed[ \t]*\n([\s\S]*?)\n\1[ \t]*$/gm;
+  return md.replace(fence, (_all, _ticks: string, body: string) => {
+    const payload = parseEmbedPayload(body.trim());
+    return payload
+      ? embedPlaceholder(payload)
+      : "> 表示できない埋め込みはエクスポートに含まれません。";
+  });
 }
 
 /// docx をサーバ変換（POST /documents/export）してダウンロードする。

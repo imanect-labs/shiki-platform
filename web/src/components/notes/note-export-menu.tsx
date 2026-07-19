@@ -25,14 +25,19 @@ export function NoteExportMenu({
   editor,
   nodeId,
   name,
+  synced,
 }: {
   /// エクスポート対象のエディタ（未生成なら無効化）。
   editor: Editor | null;
   nodeId: string;
   /// 拡張子なしの表示名（ダウンロードファイル名の素）。
   name: string;
+  /// 初期同期が完了しているか。未同期のまま出力すると空/不完全な本文になるため無効化する。
+  synced: boolean;
 }) {
   const [busy, setBusy] = React.useState(false);
+  // エディタ未生成・出力中・初期同期未完了のいずれかでは無効化する（空 md/docx の出力を防ぐ）。
+  const disabled = !editor || busy || !synced;
 
   const onMd = () => {
     if (!editor) return;
@@ -64,8 +69,9 @@ export function NoteExportMenu({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          disabled={!editor || busy}
+          disabled={disabled}
           aria-label="エクスポート"
+          title={!synced ? "同期の完了後にエクスポートできます" : undefined}
           data-testid="note-export"
           className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
         >

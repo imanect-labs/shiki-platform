@@ -116,9 +116,7 @@ def _docx_add_list_safe(doc: Any, text: str, style: str, marker: str) -> tuple[A
         return doc.add_paragraph(f"{marker} {text}"), True
 
 
-def _docx_add_image_safe(
-    doc: Any, alt: str, b64: str, budget: list[int]
-) -> tuple[Any, bool]:
+def _docx_add_image_safe(doc: Any, alt: str, b64: str, budget: list[int]) -> tuple[Any, bool]:
     """data URL 画像を add_picture で埋め込む（#334・チャート静的化）。
 
     敵対的入力ガード（枚数/サイズ超過・不正 base64）に触れたら alt テキスト段落へ縮退する。
@@ -145,15 +143,24 @@ def _docx_add_image_safe(
         return doc.add_paragraph(alt or "（図を埋め込めませんでした）"), True
 
 
-def _docx_append_blocks(doc: Any, markdown: str, anchor: Any | None = None) -> tuple[int, bool]:
+def _docx_append_blocks(
+    doc: Any,
+    markdown: str,
+    anchor: Any | None = None,
+    image_budget: list[int] | None = None,
+) -> tuple[int, bool]:
     """Markdown ブロックを末尾へ追加、anchor 指定時はその直後へ移動する。
 
     返り値: (追加ブロック数, スタイル縮退が起きたか)。スタイル定義を持たない docx
     （最小テンプレ・他ツール生成物）でも失敗させず平文で追加する。
+
+    `image_budget` は**リクエスト（=1 回の /edit）全体で共有**する残り画像枚数。複数の
+    append_markdown op を跨いで同じ上限を効かせる（op ごとに 20 枚を再付与しない・PIT-23）。
     """
     created = []
     degraded = False
-    image_budget = [_MAX_IMAGES]  # 残り埋め込み可能枚数（_docx_add_image_safe が減算）。
+    if image_budget is None:
+        image_budget = [_MAX_IMAGES]
     for kind, text, level in _md_lines(markdown):
         if kind == "heading":
             paragraph, fell_back = _docx_add_heading_safe(doc, text, level)
@@ -181,6 +188,8 @@ def apply_docx(data: bytes, ops: list[Any]) -> tuple[bytes, list[OpTuple]]:
 
     doc = Document(io.BytesIO(data))
     results: list[OpTuple] = []
+    # 画像埋め込み枚数はリクエスト全体で共有する（複数 append_markdown op を跨いで上限を効かせる）。
+    image_budget = [_MAX_IMAGES]
     for op in ops:
         if op.op == "replace_text":
             total, flattened = 0, False
@@ -195,7 +204,7 @@ def apply_docx(data: bytes, ops: list[Any]) -> tuple[bytes, list[OpTuple]]:
                 warning = "run 跨ぎの一致があり、一部段落の文字書式を平坦化しました"
             results.append((op.op, total, warning))
         elif op.op == "append_markdown":
-            applied, degraded = _docx_append_blocks(doc, op.markdown)
+            applied, degraded = _docx_append_blocks(doc, op.markdown, image_budget=image_budget)
             results.append((op.op, applied, _DEGRADED_WARNING if degraded else None))
         elif op.op == "insert_after_heading":
             anchor = next(
@@ -209,7 +218,9 @@ def apply_docx(data: bytes, ops: list[Any]) -> tuple[bytes, list[OpTuple]]:
             if anchor is None:
                 results.append((op.op, 0, f"見出しが見つかりません: {op.heading!r}"))
             else:
-                applied, degraded = _docx_append_blocks(doc, op.markdown, anchor)
+                applied, degraded = _docx_append_blocks(
+                    doc, op.markdown, anchor, image_budget=image_budget
+                )
                 results.append((op.op, applied, _DEGRADED_WARNING if degraded else None))
     out = io.BytesIO()
     doc.save(out)

@@ -191,6 +191,23 @@ def test_docx_append_over_image_count_degrades_to_alt(client: TestClient) -> Non
     assert any(f"図{_MAX_IMAGES + 1}" in p.text for p in edited.paragraphs)
 
 
+def test_docx_image_budget_is_shared_across_ops(client: TestClient) -> None:
+    """画像上限はリクエスト全体で共有する（op ごとに 20 枚を再付与しない・#334）。"""
+    from docx import Document
+
+    from ingestion_worker.edit_apply import _MAX_IMAGES
+
+    url = _png_data_url()
+    # 2 つの append_markdown op に分けても、合計は _MAX_IMAGES 枚で頭打ちになる。
+    op1 = {"op": "append_markdown", "markdown": "\n\n".join(f"![a{i}]({url})" for i in range(15))}
+    op2 = {"op": "append_markdown", "markdown": "\n\n".join(f"![b{i}]({url})" for i in range(15))}
+    body = _edit(client, DOCX, _make_docx(), [op1, op2])
+
+    edited = Document(io.BytesIO(base64.b64decode(body["data_base64"])))
+    # op ごとに 20 枚なら 30 枚入るが、リクエスト共有なら 20 枚で頭打ち。
+    assert len(edited.inline_shapes) == _MAX_IMAGES
+
+
 def test_docx_append_invalid_data_url_degrades_to_alt(client: TestClient) -> None:
     """壊れた base64 の画像は alt テキストへ縮退し、失敗させない（fail-soft・#334）。"""
     from docx import Document

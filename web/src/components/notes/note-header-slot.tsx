@@ -63,7 +63,7 @@ export function NoteSyncSlot({
         ) : null}
         {provider ? <PresenceAvatars provider={provider} /> : null}
         <SyncPill status={status} synced={synced} />
-        <NoteExportMenu editor={editor} nodeId={nodeId} name={name} />
+        <NoteExportMenu editor={editor} nodeId={nodeId} name={name} synced={synced} />
         <Button
           type="button"
           variant="ghost"
