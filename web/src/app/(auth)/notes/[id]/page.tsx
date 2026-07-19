@@ -12,6 +12,7 @@ import { MessageSquare, X } from "lucide-react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import * as React from "react";
+import type { Editor } from "@tiptap/react";
 import * as Y from "yjs";
 
 import { embedSlashItems } from "@/components/notes/embed/embed-slash-items";
@@ -52,6 +53,8 @@ function NotePageInner() {
   );
   const [status, setStatus] = React.useState<CollabStatus>("connecting");
   const [synced, setSynced] = React.useState(false);
+  // 本文エディタ（エクスポートの md 直列化・genui スナップショットに使う・#334）。
+  const [editor, setEditor] = React.useState<Editor | null>(null);
   // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため）。
   const [chatOpen, setChatOpen] = React.useState(Boolean(initialThreadId));
   // 直近の選択（ヘッダの「AI に依頼」で開いた瞬間に挿入する材料）。
@@ -162,6 +165,7 @@ function NotePageInner() {
     <div className="flex h-full min-h-0 flex-col">
       {/* 統一ヘッダへ注入（横バー二重を解消・null を返すだけ） */}
       <NoteSyncSlot
+        nodeId={nodeId}
         name={access.name.replace(/\.md$/i, "")}
         editable={editable}
         status={status}
@@ -169,6 +173,7 @@ function NotePageInner() {
         chatOpen={chatOpen}
         onToggleChat={openAssistant}
         provider={session?.provider ?? null}
+        editor={editor}
       />
 
       {/* 分割ビュー: 本ページが一元ホスト（Conversation を再利用・実装は一箇所）。
@@ -192,6 +197,7 @@ function NotePageInner() {
                   extraSlashItems={embedSlashItems}
                   // 選択→AI 指示（Task 11.10）: パネルが開いていれば選択を自動挿入する。
                   onSelectionChange={handleSelectionChange}
+                  onEditorReady={setEditor}
                 />
               </div>
             </div>

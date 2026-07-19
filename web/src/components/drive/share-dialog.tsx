@@ -44,6 +44,10 @@ type Candidate = { id: string; primary: string; secondary: string };
 /// 共有ダイアログ。同テナントのメンバー / 部署・ロールを検索して閲覧/編集権限を付与する。
 /// 別テナントの相手は検索結果に出ない（サーバ側 tenant_id スコープ）。部署・ロールは
 /// そのメンバー（配下ロール込み）へ一括共有される（#76）。
+/// 共有対象の最小形（id/name のみ使用）。NodeResponse は構造的に適合するため既存の
+/// ドライブ呼び出しは無変更で、ノート/Office エディタは `{ id, name }` を直接渡せる。
+export type ShareTargetNode = Pick<NodeResponse, "id" | "name">;
+
 export function ShareDialog({
   open,
   onOpenChange,
@@ -51,7 +55,7 @@ export function ShareDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  node: NodeResponse | null;
+  node: ShareTargetNode | null;
 }) {
   const [kind, setKind] = React.useState<TargetKind>("user");
   const [query, setQuery] = React.useState("");

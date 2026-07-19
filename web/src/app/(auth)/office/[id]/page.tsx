@@ -9,10 +9,11 @@
 ///   コンテキストチップとしてアシスタントに添付する（office.edit がファイル単位で適用）。
 /// - Collabora 未配備（office profile 未起動）は 503 → 案内表示へフォールバック。
 
-import { FileWarning, MessageSquare, PlugZap, Sparkles, X } from "lucide-react";
+import { FileWarning, MessageSquare, PlugZap, Share2, Sparkles, X } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import * as React from "react";
 
+import { ShareDialog } from "@/components/drive/share-dialog";
 import { OfficeChatPanel } from "@/components/office/office-chat-panel";
 import { OfficeEditor, type OfficeEditorHandle } from "@/components/office/office-editor";
 import { EditorLoading } from "@/components/shell/editor-loading";
@@ -41,6 +42,7 @@ export default function OfficePage() {
   const router = useRouter();
   const [state, setState] = React.useState<LoadState>({ phase: "loading" });
   const [chatOpen, setChatOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
   const editorRef = React.useRef<OfficeEditorHandle>(null);
 
   React.useEffect(() => {
@@ -143,6 +145,17 @@ export default function OfficePage() {
         <Button
           type="button"
           size="sm"
+          variant="ghost"
+          onClick={() => setShareOpen(true)}
+          data-testid="office-share"
+          className="gap-1.5"
+        >
+          <Share2 className="size-4" aria-hidden />
+          共有
+        </Button>
+        <Button
+          type="button"
+          size="sm"
           variant={chatOpen ? "secondary" : "ghost"}
           onClick={openAssistant}
           aria-pressed={chatOpen}
@@ -153,6 +166,11 @@ export default function OfficePage() {
           AI に依頼
         </Button>
       </div>
+      <ShareDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        node={{ id: fileId, name: state.fileName }}
+      />
 
       <div className="relative min-h-0 flex-1">
         <div className={chatOpen ? "h-full lg:pr-[28rem]" : "h-full"}>

@@ -612,6 +612,98 @@ async fn office_session_rejects_unsupported_and_missing_files() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
+/// #332/#334: /documents（作成）と /documents/export（変換 DL）は office フラグ非依存で
+/// 常時配線される。空 markdown は ingestion-worker を呼ばず blank.docx テンプレを返すため、
+/// worker 未到達（127.0.0.1:1）でも作成/エクスポートが成立することを検証する。
+#[tokio::test]
+async fn documents_create_and_export_work_without_office_or_worker() {
+    let Some((state, sessions)) = build_state(false).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let app = build_router(state);
+    let (cookie, csrf) = login(&sessions, "sid-doc-1").await;
+
+    // 未認証は 401（Session ポリシー）。
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/documents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({"name": "x"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+    // 作成: 空本文 → .docx ノードが作られる（worker 非依存）。
+    let res = app
+        .clone()
+        .oneshot(session_post(
+            "/documents",
+            &cookie,
+            csrf,
+            serde_json::json!({"name": "議事録", "parent_id": null}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let node = body_json(res).await;
+    assert_eq!(node["name"], "議事録.docx");
+    assert_eq!(
+        node["content_type"],
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+
+    // エクスポート: 空 markdown → .docx バイナリを attachment で返す（worker 非依存）。
+    let res = app
+        .clone()
+        .oneshot(session_post(
+            "/documents/export",
+            &cookie,
+            csrf,
+            serde_json::json!({"name": "レポート", "markdown": ""}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let cd = res
+        .headers()
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(cd.contains("attachment"), "attachment 指定: {cd}");
+    assert!(cd.contains("filename*=UTF-8''"), "RFC 5987 名: {cd}");
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..2], b"PK", "docx（zip）ヘッダ");
+}
+
+/// エクスポートは名前空欄を 400 で弾く（変換前の入力検証）。
+#[tokio::test]
+async fn documents_export_rejects_empty_name() {
+    let Some((state, sessions)) = build_state(false).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let app = build_router(state);
+    let (cookie, csrf) = login(&sessions, "sid-doc-2").await;
+    let res = app
+        .clone()
+        .oneshot(session_post(
+            "/documents/export",
+            &cookie,
+            csrf,
+            serde_json::json!({"name": "  ", "markdown": "本文"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn office_disabled_routes_are_absent() {
     let Some((state, sessions)) = build_state(false).await else {
