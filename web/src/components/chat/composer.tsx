@@ -219,7 +219,9 @@ export function Composer({
               onOpenChange={setMenuOpen}
               onUploadLocal={() => fileInputRef.current?.click()}
               onOpenDrive={() => setPickerOpen(true)}
-              createParentId={workspace?.folderId ?? null}
+              // ワークスペース（作業フォルダ）はエージェントモード ON のときだけ意味を持つ。
+              // OFF のときは残存する workspace 選択を無視し、既定（マイドライブ直下）へ作成する。
+              createParentId={autonomous ? (workspace?.folderId ?? null) : null}
             />
             {onAutonomousChange ? (
               <button
