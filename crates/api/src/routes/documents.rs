@@ -6,8 +6,11 @@
 //! Collabora（office.enabled）には依存しない（worker のみ。markdown 省略なら worker も不要）。
 
 use axum::extract::State;
+use axum::http::header;
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Json;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Deserialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -26,12 +29,16 @@ use crate::state::AppState;
 /// 失敗する（compose の reqwest タイムアウトと矛盾しない・/files finalize と同じ扱い）。
 pub(crate) fn documents_route_decls() -> Vec<RouteDecl> {
     use crate::server::AccessPolicy::SessionLongRunning;
-    vec![RouteDecl::new(
-        "/documents",
-        &["POST"],
-        SessionLongRunning,
-        || post(create_document),
-    )]
+    let r = RouteDecl::new;
+    // 作成/エクスポートとも md→docx 変換（worker 往復・最大 1 分）を含むため 300s ポリシー。
+    vec![
+        r("/documents", &["POST"], SessionLongRunning, || {
+            post(create_document)
+        }),
+        r("/documents/export", &["POST"], SessionLongRunning, || {
+            post(export_document)
+        }),
+    ]
 }
 
 /// Word 文書作成リクエスト（#332・「新規作成 > ドキュメント」/ 下書き確定の共通経路）。
@@ -104,6 +111,60 @@ pub async fn create_document(
     )
     .await?;
     Ok(Json(NodeResponse::from(node)))
+}
+
+/// Word 文書エクスポートリクエスト（#334・ノートの docx エクスポート）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ExportDocumentRequest {
+    /// ダウンロードファイル名（`.docx` は自動付与・Content-Disposition に載る）。
+    pub name: String,
+    /// 本文の Markdown（チャート等は画像 data URL の image 行として埋め込み済み）。
+    pub markdown: String,
+}
+
+/// Markdown を .docx へ変換して bytes を返す（保存しない・#334）。
+///
+/// ノードへ一切アクセスしない純変換のため、認可はセッションのみ（confused-deputy 面なし）。
+/// 本文はクライアント（ノートエディタの表示内容）が持ち込む。
+#[utoipa::path(
+    post, path = "/documents/export", request_body = ExportDocumentRequest,
+    responses(
+        (status = 200, description = ".docx バイナリ（attachment）", content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        (status = 400, description = "内容が不正（worker が拒否）"),
+        (status = 401, description = "未認証"),
+        (status = 503, description = "文書変換サービス（worker）に接続できない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn export_document(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Json(req): Json<ExportDocumentRequest>,
+) -> Result<Response, ApiError> {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::BadRequest("ファイル名を指定してください".into()));
+    }
+    let file_name = if name.to_ascii_lowercase().ends_with(".docx") {
+        name.to_string()
+    } else {
+        format!("{name}.docx")
+    };
+    let bytes = state
+        .docx_composer
+        .compose(&ctx.tenant_id, &file_name, &req.markdown)
+        .await
+        .map_err(to_api_error)?;
+    // ファイル名は RFC 5987（filename*）で UTF-8 のままエンコードする（日本語名を壊さない）。
+    let encoded_name = utf8_percent_encode(&file_name, NON_ALPHANUMERIC).to_string();
+    let headers = [
+        (header::CONTENT_TYPE, office::DOCX_CONTENT_TYPE.to_string()),
+        (
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename*=UTF-8''{encoded_name}"),
+        ),
+    ];
+    Ok((headers, bytes).into_response())
 }
 
 /// compose のエラーを HTTP へ写す（422=入力不正→400 / worker 不達→503・理由は隠さない範囲で）。

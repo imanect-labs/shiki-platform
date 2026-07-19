@@ -4,11 +4,12 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, History, Play, Power, RotateCcw } from "lucide-react";
+import { AlertTriangle, History, Play, Power, RotateCcw, Share2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
 import { getRegistration, type Registration } from "@/lib/workflow-api";
 import type { EditorContext } from "@/components/workflow/editor/workflow-editor";
@@ -21,6 +22,7 @@ export function WorkflowHeaderActions({ ctx }: { ctx: EditorContext }) {
   const [enableOpen, setEnableOpen] = React.useState(false);
   const [runOpen, setRunOpen] = React.useState(false);
   const [versionsOpen, setVersionsOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
 
   const reload = React.useCallback(() => {
     getRegistration(ctx.workflowId)
@@ -72,6 +74,17 @@ export function WorkflowHeaderActions({ ctx }: { ctx: EditorContext }) {
       >
         <RotateCcw className="size-4" aria-hidden />
       </Button>
+      {/* 共有: ワークフローは artifact（kind=workflow）なので artifact ReBAC（viewer/editor）に
+          そのまま載る（新規 relation 不要・#334）。skills/apps と同じ ArtifactShareDialog を再利用。 */}
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label="共有"
+        onClick={() => setShareOpen(true)}
+        data-testid="workflow-share"
+      >
+        <Share2 className="size-4" aria-hidden />
+      </Button>
       {/* 有効化済み/再同意待ちの間はトリガを消した編集中でも設定（停止導線）を出し続ける */}
       {hasAutomaticTrigger || status === "enabled" || status === "suspended_reconsent" ? (
         <Button
@@ -117,6 +130,12 @@ export function WorkflowHeaderActions({ ctx }: { ctx: EditorContext }) {
         artifactId={ctx.workflowId}
         name={ctx.state.ir.display_name || ctx.state.ir.name}
         currentVersion={ctx.state.savedVersion}
+      />
+      <ArtifactShareDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        artifactId={ctx.workflowId}
+        name={ctx.state.ir.display_name || ctx.state.ir.name}
       />
     </>
   );

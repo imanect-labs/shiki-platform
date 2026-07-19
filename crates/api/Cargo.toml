@@ -51,6 +51,7 @@ sqlx.workspace = true
 figment.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+percent-encoding.workspace = true
 jsonwebtoken.workspace = true
 reqwest.workspace = true
 redis.workspace = true

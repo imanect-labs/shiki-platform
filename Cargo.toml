@@ -86,6 +86,8 @@ axum-tracing-opentelemetry = "0.29"
 # 共通
 anyhow = "1"
 thiserror = "2"
+# Content-Disposition filename*（RFC 5987）の UTF-8 エンコード（crates/api の DL 応答）。
+percent-encoding = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"

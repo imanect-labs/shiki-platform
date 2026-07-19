@@ -552,3 +552,35 @@
     @apply rounded-sm bg-primary/15 decoration-primary/50 underline decoration-dotted underline-offset-2;
   }
 }
+
+/* 印刷（PDF エクスポート・#334）: アプリシェルを隠し本文だけを紙面に載せる。
+   ノート印刷ビュー（/notes/[id]/print）は本文を全幅で描画し、チャート（SVG）は
+   ベクタのまま印刷される。iframe 埋め込みはプレースホルダへ差し替わる（embed-view）。 */
+@media print {
+  /* サイドバー/ヘッダ/浮遊パネル等のシェル chrome を除外する。 */
+  aside,
+  [role="banner"],
+  [role="complementary"] {
+    display: none !important;
+  }
+  /* スクロールコンテナの高さ制限を外し全文を流す。 */
+  main {
+    overflow: visible !important;
+    height: auto !important;
+  }
+  .note-print {
+    max-width: 100% !important;
+    padding: 0 !important;
+  }
+  /* 見出し直後の改ページを避ける（読みやすさ）。 */
+  .note-prose h1,
+  .note-prose h2,
+  .note-prose h3 {
+    break-after: avoid;
+  }
+  .note-prose img,
+  .note-prose svg,
+  .note-prose figure {
+    break-inside: avoid;
+  }
+}

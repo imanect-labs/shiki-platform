@@ -43,10 +43,15 @@ class ReplaceTextOp(BaseModel):
 
 
 class AppendMarkdownOp(BaseModel):
-    """docx: 文書末尾に Markdown（見出し/箇条書き/段落の最小集合）を追記する。"""
+    """docx: 文書末尾に Markdown（見出し/箇条書き/段落/data URL 画像）を追記する。
+
+    ノートの docx エクスポート（#334）はチャートを base64 画像として本文へ埋め込むため、
+    上限は画像数枚ぶんを許容する（1 枚/枚数の実上限は edit_apply の画像ガードが担う）。
+    デコード後の全体バイトは EditRequest.data_base64 と別に settings.max_edit_bytes で有界。
+    """
 
     op: Literal["append_markdown"]
-    markdown: str = Field(min_length=1, max_length=100_000)
+    markdown: str = Field(min_length=1, max_length=4_000_000)
 
 
 class InsertAfterHeadingOp(BaseModel):

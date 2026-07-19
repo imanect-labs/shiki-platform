@@ -46,6 +46,8 @@ function GenuiEmbed({ payload }: { payload: Extract<EmbedPayload, { kind: "genui
 function IframeEmbed({ payload }: { payload: Extract<EmbedPayload, { kind: "iframe" }> }) {
   return (
     <figure className="my-2 overflow-hidden rounded-lg border" data-testid="embed-iframe">
+      {/* 画面では実 iframe。印刷（PDF・#334）ではインタラクティブなため隠し、
+          プレースホルダ（下）へ差し替える（静的化不能な埋め込みで紙面が破綻しない）。 */}
       <iframe
         src={payload.src}
         title={payload.title ?? "埋め込みアプリ"}
@@ -53,9 +55,19 @@ function IframeEmbed({ payload }: { payload: Extract<EmbedPayload, { kind: "ifra
         sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
         referrerPolicy="no-referrer"
         loading="lazy"
-        className="h-[420px] w-full bg-background"
+        className="h-[420px] w-full bg-background print:hidden"
       />
-      <figcaption className="flex items-center gap-1.5 border-t px-3 py-1.5 text-xs text-muted-foreground">
+      <div
+        className="hidden items-center gap-2 px-3 py-4 text-sm text-muted-foreground print:flex"
+        data-testid="embed-iframe-print"
+      >
+        <ExternalLink className="size-4 shrink-0" aria-hidden />
+        <span>
+          この埋め込み（{payload.title ?? payload.src}）は印刷に含まれません:{" "}
+          {payload.src}
+        </span>
+      </div>
+      <figcaption className="flex items-center gap-1.5 border-t px-3 py-1.5 text-xs text-muted-foreground print:hidden">
         <ExternalLink className="size-3.5" aria-hidden />
         <span className="truncate">{payload.title ?? payload.src}</span>
       </figcaption>

@@ -4,16 +4,21 @@
 /// 描画すると、戻る/名前/閲覧のみ/プレゼンス/同期ピル/アシスタント切替を共通ヘッダへ寄せる。
 /// null を返すだけなのでレイアウトには影響しない。
 
-import { ArrowLeft, Eye, Sparkles } from "lucide-react";
+import { ArrowLeft, Eye, Share2, Sparkles } from "lucide-react";
 import Link from "next/link";
+import * as React from "react";
+import type { Editor } from "@tiptap/react";
 
 import { Button } from "@/components/ui/button";
+import { ShareDialog } from "@/components/drive/share-dialog";
+import { NoteExportMenu } from "@/components/notes/note-export-menu";
 import { PresenceAvatars } from "@/components/notes/presence";
 import { usePageHeader } from "@/components/shell/page-header-context";
 import type { CollabProvider, CollabStatus } from "@/lib/collab";
 import { SyncPill } from "./note-status";
 
 export function NoteSyncSlot({
+  nodeId,
   name,
   editable,
   status,
@@ -21,7 +26,10 @@ export function NoteSyncSlot({
   chatOpen,
   onToggleChat,
   provider,
+  editor,
 }: {
+  /// ノードの storage id（共有・エクスポート・印刷ビューの対象）。
+  nodeId: string;
   name: string;
   editable: boolean;
   status: CollabStatus;
@@ -29,7 +37,10 @@ export function NoteSyncSlot({
   chatOpen: boolean;
   onToggleChat: () => void;
   provider: CollabProvider | null;
+  /// 本文エディタ（エクスポートの md 直列化・genui スナップショットに使う・未生成は null）。
+  editor: Editor | null;
 }) {
+  const [shareOpen, setShareOpen] = React.useState(false);
   usePageHeader(
     () => (
       <div className="flex min-w-0 flex-1 items-center gap-2.5">
@@ -52,6 +63,17 @@ export function NoteSyncSlot({
         ) : null}
         {provider ? <PresenceAvatars provider={provider} /> : null}
         <SyncPill status={status} synced={synced} />
+        <NoteExportMenu editor={editor} nodeId={nodeId} name={name} />
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => setShareOpen(true)}
+          data-testid="note-share"
+        >
+          <Share2 className="mr-1.5 size-4" aria-hidden />
+          共有
+        </Button>
         <Button
           type="button"
           variant={chatOpen ? "secondary" : "ghost"}
@@ -65,7 +87,9 @@ export function NoteSyncSlot({
         </Button>
       </div>
     ),
-    [name, editable, status, synced, chatOpen, onToggleChat, provider],
+    [nodeId, name, editable, status, synced, chatOpen, onToggleChat, provider, editor],
   );
-  return null;
+  return (
+    <ShareDialog open={shareOpen} onOpenChange={setShareOpen} node={{ id: nodeId, name }} />
+  );
 }

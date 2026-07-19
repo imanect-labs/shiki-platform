@@ -57,6 +57,8 @@ export interface NoteEditorProps {
   extraSlashItems?: () => SlashItem[];
   /// 選択の変化（Task 11.10）。選択が空なら null。アシスタントパネルが選択を自動挿入する。
   onSelectionChange?: (selection: { text: string; headingPath: string[] } | null) => void;
+  /// エディタ生成/破棄の通知（#334・エクスポートで md 直列化と genui スナップショットに使う）。
+  onEditorReady?: (editor: Editor | null) => void;
 }
 
 export function NoteEditor({
@@ -65,6 +67,7 @@ export function NoteEditor({
   user,
   extraSlashItems,
   onSelectionChange,
+  onEditorReady,
 }: NoteEditorProps) {
   const extensions = React.useMemo(
     () => [
@@ -136,6 +139,12 @@ export function NoteEditor({
       delete (window as unknown as { __shikiNoteEditor?: Editor }).__shikiNoteEditor;
     };
   }, [editor]);
+
+  // エクスポート（#334）用にエディタインスタンスを親へ渡す（生成/破棄で通知）。
+  React.useEffect(() => {
+    onEditorReady?.(editor ?? null);
+    return () => onEditorReady?.(null);
+  }, [editor, onEditorReady]);
 
   // 選択の変化を親へ通知する（アシスタントパネルが開いていれば選択を自動挿入する）。
   React.useEffect(() => {

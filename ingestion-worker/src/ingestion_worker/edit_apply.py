@@ -5,6 +5,8 @@ python-docx / openpyxl / python-pptx（全て MIT）でバイト列を開き、o
 対象不一致は op 単位の warning に落として続行する（呼び出し元がレポートを返す）。
 """
 
+import base64
+import binascii
 import io
 import re
 from typing import Any
@@ -12,11 +14,20 @@ from typing import Any
 # 適用結果 = (op 名, 適用数, warning|None)。DTO（edit.OpResult）への詰め替えは edit.py 側。
 OpTuple = tuple[str, int, str | None]
 
+# 埋め込み画像の敵対的入力ガード（#334・チャート静的化）。認証済みユーザー入力だが、
+# サンドボックス由来入力と同様に上限を敷いて worker を守る（PIT-23 の原則）。
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024  # 1 枚 8MB
+_MAX_IMAGES = 20  # 1 回の append で 20 枚
+_IMAGE_WIDTH_INCHES = 6.0  # 本文幅に収める既定幅
+
 # Markdown インライン記法の最小除去（**bold** / *em* / `code` → 素のテキスト）。
 _INLINE_MD = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`")
 _HEADING_MD = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_MD = re.compile(r"^[-*]\s+(.*)$")
 _ORDERED_MD = re.compile(r"^\d+[.)]\s+(.*)$")
+# 単独行の data URL 画像（`![alt](data:image/png;base64,....)`・#334 のチャート静的化）。
+# 外部 URL の画像は取得しない（worker は egress しない契約）ため data URL のみ対応する。
+_IMAGE_MD = re.compile(r"^!\[([^\]]*)\]\(data:image/(png|jpeg);base64,([A-Za-z0-9+/=]+)\)$")
 
 
 def _strip_inline(text: str) -> str:
@@ -24,13 +35,19 @@ def _strip_inline(text: str) -> str:
 
 
 def _md_lines(markdown: str) -> list[tuple[str, str, int]]:
-    """Markdown を (種別, テキスト, レベル) の行列へ落とす。最小集合: 見出し/箇条書き/段落。"""
+    """Markdown を (種別, テキスト, レベル) の行列へ落とす。
+
+    最小集合: 見出し/箇条書き/段落＋単独行の data URL 画像（image 種別はテキスト欄に
+    `alt\\x00base64` を詰める。展開は docx 側のみ・他形式は alt テキストへ縮退）。
+    """
     lines: list[tuple[str, str, int]] = []
     for raw in markdown.splitlines():
         line = raw.strip()
         if not line:
             continue
-        if m := _HEADING_MD.match(line):
+        if m := _IMAGE_MD.match(line):
+            lines.append(("image", f"{_strip_inline(m.group(1).strip())}\x00{m.group(3)}", 0))
+        elif m := _HEADING_MD.match(line):
             lines.append(("heading", _strip_inline(m.group(2).strip()), len(m.group(1))))
         elif m := _BULLET_MD.match(line):
             lines.append(("bullet", _strip_inline(m.group(1).strip()), 0))
@@ -99,6 +116,35 @@ def _docx_add_list_safe(doc: Any, text: str, style: str, marker: str) -> tuple[A
         return doc.add_paragraph(f"{marker} {text}"), True
 
 
+def _docx_add_image_safe(
+    doc: Any, alt: str, b64: str, budget: list[int]
+) -> tuple[Any, bool]:
+    """data URL 画像を add_picture で埋め込む（#334・チャート静的化）。
+
+    敵対的入力ガード（枚数/サイズ超過・不正 base64）に触れたら alt テキスト段落へ縮退する。
+    `budget[0]` は残り枚数（呼び出し側で共有・破壊的に減算する）。
+    返り値: (段落, 縮退したか)。
+    """
+    from docx.shared import Inches
+
+    if budget[0] <= 0:
+        return doc.add_paragraph(alt or "（図は上限枚数を超えたため省略）"), True
+    try:
+        data = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        return doc.add_paragraph(alt or "（図を復元できませんでした）"), True
+    if not data or len(data) > _MAX_IMAGE_BYTES:
+        return doc.add_paragraph(alt or "（図はサイズ上限を超えたため省略）"), True
+    budget[0] -= 1
+    try:
+        paragraph = doc.add_paragraph()
+        run = paragraph.add_run()
+        run.add_picture(io.BytesIO(data), width=Inches(_IMAGE_WIDTH_INCHES))
+        return paragraph, False
+    except Exception:  # noqa: BLE001 - python-docx/Pillow の各種例外を alt へ縮退（fail-soft）。
+        return doc.add_paragraph(alt or "（図を埋め込めませんでした）"), True
+
+
 def _docx_append_blocks(doc: Any, markdown: str, anchor: Any | None = None) -> tuple[int, bool]:
     """Markdown ブロックを末尾へ追加、anchor 指定時はその直後へ移動する。
 
@@ -107,6 +153,7 @@ def _docx_append_blocks(doc: Any, markdown: str, anchor: Any | None = None) -> t
     """
     created = []
     degraded = False
+    image_budget = [_MAX_IMAGES]  # 残り埋め込み可能枚数（_docx_add_image_safe が減算）。
     for kind, text, level in _md_lines(markdown):
         if kind == "heading":
             paragraph, fell_back = _docx_add_heading_safe(doc, text, level)
@@ -114,6 +161,9 @@ def _docx_append_blocks(doc: Any, markdown: str, anchor: Any | None = None) -> t
             paragraph, fell_back = _docx_add_list_safe(doc, text, "List Bullet", "•")
         elif kind == "ordered":
             paragraph, fell_back = _docx_add_list_safe(doc, text, "List Number", "-")
+        elif kind == "image":
+            alt, _, b64 = text.partition("\x00")
+            paragraph, fell_back = _docx_add_image_safe(doc, alt, b64, image_budget)
         else:
             paragraph, fell_back = doc.add_paragraph(text), False
         created.append(paragraph)

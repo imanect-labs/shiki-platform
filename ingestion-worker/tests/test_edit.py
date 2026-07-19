@@ -149,6 +149,60 @@ def test_docx_append_without_styles_degrades_to_plain_text(client: TestClient) -
     assert "本文" in texts
 
 
+def _png_data_url(color: tuple[int, int, int] = (10, 120, 200)) -> str:
+    """テスト用の小さな PNG を base64 data URL 化する（#334 の画像埋め込み）。"""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (48, 32), color).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_docx_append_embeds_data_url_image(client: TestClient) -> None:
+    """単独行の data URL 画像を add_picture で埋め込む（#334・チャート静的化）。"""
+    from docx import Document
+
+    md = f"## 図表\n\n![売上チャート]({_png_data_url()})\n\n以上。"
+    body = _edit(client, DOCX, _make_docx(), [{"op": "append_markdown", "markdown": md}])
+    assert body["report"]["applied_ops"] == 1
+    # 縮退警告は出ない（画像は正常に埋め込まれる）。
+    assert body["report"]["results"][0]["warning"] is None
+
+    edited = Document(io.BytesIO(base64.b64decode(body["data_base64"])))
+    # 埋め込み画像（InlineShape）が 1 つ増える。
+    assert len(edited.inline_shapes) == 1
+
+
+def test_docx_append_over_image_count_degrades_to_alt(client: TestClient) -> None:
+    """埋め込み画像の枚数上限（20）を超えた分は alt テキストへ縮退する（fail-soft・#334）。"""
+    from docx import Document
+
+    from ingestion_worker.edit_apply import _MAX_IMAGES
+
+    url = _png_data_url()
+    md = "\n\n".join(f"![図{i}]({url})" for i in range(_MAX_IMAGES + 3))
+    body = _edit(client, DOCX, _make_docx(), [{"op": "append_markdown", "markdown": md}])
+    assert body["report"]["applied_ops"] == 1
+    assert "平文で追加しました" in body["report"]["results"][0]["warning"]
+
+    edited = Document(io.BytesIO(base64.b64decode(body["data_base64"])))
+    # 先頭 20 枚は画像、超過分は alt テキスト段落へ縮退する。
+    assert len(edited.inline_shapes) == _MAX_IMAGES
+    assert any(f"図{_MAX_IMAGES + 1}" in p.text for p in edited.paragraphs)
+
+
+def test_docx_append_invalid_data_url_degrades_to_alt(client: TestClient) -> None:
+    """壊れた base64 の画像は alt テキストへ縮退し、失敗させない（fail-soft・#334）。"""
+    from docx import Document
+
+    md = "![壊れた図](data:image/png;base64,@@@notbase64@@@)"
+    body = _edit(client, DOCX, _make_docx(), [{"op": "append_markdown", "markdown": md}])
+    # `@` は data URL 正規表現の base64 集合外なので画像行として認識されず段落になる。
+    edited = Document(io.BytesIO(base64.b64decode(body["data_base64"])))
+    assert len(edited.inline_shapes) == 0
+    assert any("壊れた図" in p.text for p in edited.paragraphs)
+
+
 def test_docx_missing_heading_is_warning_not_error(client: TestClient) -> None:
     body = _edit(
         client,
