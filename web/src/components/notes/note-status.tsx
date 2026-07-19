@@ -3,6 +3,10 @@
 /// ノートの同期状態インジケータ。色枠のピルは安っぽく見えるため、控えめな
 /// 「小さなドット＋muted テキスト」の上品な表示にする。色はドットにだけ乗せる。
 /// 同期済み=夏の新緑 / 同期中=プライマリ＋パルス / オフライン=破壊的（status-tokens 準拠）。
+///
+/// **同期済み状態は視覚表示しない**（プレゼンスアバターが「つながっている」ことを表すため
+/// 冗長・human 指示）。同期中/オフラインは注意を促すべきなので表示する。a11y/e2e 用に
+/// テキストは sr-only で残す（スクリーンリーダーは状態を読み上げ、テキスト検証も通る）。
 
 import { cn } from "@/lib/utils";
 import type { CollabStatus } from "@/lib/collab";
@@ -19,11 +23,16 @@ export function SyncPill({ status, synced }: { status: CollabStatus; synced: boo
 
   const label = state === "synced" ? "同期済み" : state === "syncing" ? "同期中…" : "オフライン";
   const dotColor =
-    state === "synced"
-      ? "var(--season-summer)"
-      : state === "syncing"
-        ? "var(--primary)"
-        : "var(--destructive)";
+    state === "syncing" ? "var(--primary)" : "var(--destructive)";
+
+  // 同期済みは視覚的に隠す（アバターで足りる）。状態テキストは sr-only で保持する。
+  if (state === "synced") {
+    return (
+      <span className="sr-only" data-testid="note-sync-status" data-state={state}>
+        {label}
+      </span>
+    );
+  }
 
   return (
     <span
