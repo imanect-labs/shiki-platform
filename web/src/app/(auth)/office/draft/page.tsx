@@ -100,6 +100,12 @@ function DraftDocumentPageInner() {
           }
         }
       })
+      .catch(() => {
+        // 履歴取得失敗はローカル下書きで続行する（fail-soft）。未処理 rejection は残さない。
+        if (!cancelled) {
+          toast({ description: "会話履歴の取得に失敗しました。ローカルの下書きを表示します。" });
+        }
+      })
       .finally(() => {
         if (!cancelled) setRecovered(true);
       });
