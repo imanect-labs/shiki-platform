@@ -33,11 +33,9 @@ import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
+import { useCreateContent } from "@/hooks/use-create-content";
 import { useMe } from "@/hooks/use-me";
-import { createNote } from "@/lib/notes-api";
 import { createOfficeSession, OfficeSessionError } from "@/lib/office-api";
-import { createSlide } from "@/lib/slides-api";
-import { saveNewCsv, TabularConflict } from "@/lib/tabular-api";
 import { useContentSearch, type ContentHit } from "@/lib/drive-search";
 import {
   breadcrumb,
@@ -45,7 +43,6 @@ import {
   deleteFile,
   deleteFolder,
   listChildren,
-  StorageApiError,
   triggerDownload,
   updateFile,
   updateFolder,
@@ -123,40 +120,10 @@ export function DriveBrowser() {
     }
   };
 
-  // ドキュメント（docx・Office 統合 Task 11.7）: 同梱の最小テンプレをアップロードして
-  // Collabora エディタへ遷移する（Office 未配備なら /office 側が案内表示にフォールバック）。
-  const [creatingDocument, setCreatingDocument] = React.useState(false);
-  const createDocumentAndOpen = async () => {
-    if (creatingDocument) return;
-    setCreatingDocument(true);
-    try {
-      const res = await fetch("/templates/blank.docx");
-      if (!res.ok) throw new Error(`テンプレートの取得に失敗しました (${res.status})`);
-      const blob = await res.blob();
-      const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-      // 同名は finalize が 409 を返す（アップロードは新規ノード作成のため）。ノート/スライドの
-      // create_file_unique と同じ体験になるよう、連番を付けて空きを探す。
-      let node: NodeResponse | null = null;
-      for (let n = 1; n <= 20 && !node; n++) {
-        const name = n === 1 ? "無題のドキュメント.docx" : `無題のドキュメント ${n}.docx`;
-        try {
-          node = await uploadFile({ file: new File([blob], name, { type: mime }), parentId: folderId ?? undefined });
-        } catch (e) {
-          if (!(e instanceof StorageApiError) || e.status !== 409) throw e;
-        }
-      }
-      if (!node) throw new Error("同名のドキュメントが多すぎます。名前を変えて作成してください。");
-      router.push(`/office/${node.id}`);
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "ドキュメントの作成に失敗しました",
-        description: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      setCreatingDocument(false);
-    }
-  };
+  // 新規作成（ノート/ドキュメント/スライド/CSV）→ エディタ遷移。チャット「+」の
+  // 「作成」サブメニューと共用の集約フック（#333）。保存先は現在フォルダ。
+  const { createNoteAndOpen, createDocumentAndOpen, createSlideAndOpen, createCsvAndOpen } =
+    useCreateContent({ parentId: folderId });
 
   // Office 文書を開く。編集セッションが発行できればエディタへ、Office 未配備（503）・
   // 未対応（404）はダウンロードへフォールバックする（開けないのに遷移して空画面を見せない）。
@@ -178,78 +145,6 @@ export function DriveBrowser() {
           description: err instanceof Error ? err.message : String(err),
         }),
       );
-    }
-  };
-
-  // スライド（自前実装・Task 11.1）を作成してビューアへ遷移する。
-  const [creatingSlide, setCreatingSlide] = React.useState(false);
-  const createSlideAndOpen = async () => {
-    if (creatingSlide) return;
-    setCreatingSlide(true);
-    try {
-      const slide = await createSlide({ parentId: folderId ?? undefined, name: "無題のスライド" });
-      router.push(`/slides/${slide.id}`);
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "スライドの作成に失敗しました",
-        description: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      setCreatingSlide(false);
-    }
-  };
-
-  // ノート（md 共同編集・Task 11P.5）を作成してエディタへ遷移する。
-  const [creatingNote, setCreatingNote] = React.useState(false);
-  const createNoteAndOpen = async () => {
-    if (creatingNote) return;
-    setCreatingNote(true);
-    try {
-      const note = await createNote({ parentId: folderId ?? undefined, name: "無題のノート" });
-      router.push(`/notes/${note.id}`);
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "ノートの作成に失敗しました",
-        description: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      setCreatingNote(false);
-    }
-  };
-
-  // CSV（グリッドエディタ・Task 11P.8）を作成してエディタへ遷移する。ヘッダのみの空 CSV。
-  // 同名は 409 のため、ドキュメント作成と同じく連番で空きを探す（2 回目以降の作成が黙って
-  // 失敗しない）。
-  const [creatingCsv, setCreatingCsv] = React.useState(false);
-  const createCsvAndOpen = async () => {
-    if (creatingCsv) return;
-    setCreatingCsv(true);
-    try {
-      let saved: Awaited<ReturnType<typeof saveNewCsv>> | null = null;
-      for (let n = 1; n <= 20 && !saved; n++) {
-        const name = n === 1 ? "無題のスプレッドシート" : `無題のスプレッドシート ${n}`;
-        try {
-          saved = await saveNewCsv({
-            parentId: folderId ?? undefined,
-            name,
-            csv: "列1,列2,列3\n,,\n",
-          });
-        } catch (e) {
-          if (!(e instanceof TabularConflict)) throw e;
-        }
-      }
-      if (!saved) throw new Error("同名のスプレッドシートが多すぎます。名前を変えて作成してください。");
-      router.push(`/csv/${saved.node_id}`);
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "CSV の作成に失敗しました",
-        description: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      setCreatingCsv(false);
     }
   };
 

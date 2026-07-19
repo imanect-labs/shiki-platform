@@ -3,12 +3,17 @@
 import * as React from "react";
 import {
   ArrowUp,
+  FilePlus2,
+  FileSpreadsheet,
+  FileText,
   Globe,
   Bot,
   Loader2,
   HardDrive,
+  NotebookPen,
   Paperclip,
   Plus,
+  Presentation,
   Square,
   TextSelect,
   Upload,
@@ -37,9 +42,13 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/use-toast";
+import { useCreateContent } from "@/hooks/use-create-content";
 import { DrivePicker } from "./drive-picker";
 
 type Uploading = { name: string; fraction: number };
@@ -210,6 +219,7 @@ export function Composer({
               onOpenChange={setMenuOpen}
               onUploadLocal={() => fileInputRef.current?.click()}
               onOpenDrive={() => setPickerOpen(true)}
+              createParentId={workspace?.folderId ?? null}
             />
             {onAutonomousChange ? (
               <button
@@ -308,7 +318,7 @@ export function Composer({
   );
 }
 
-/// 左下「+」の統合メニュー。添付（ローカル/ドライブ）を 1 つに集約する。
+/// 左下「+」の統合メニュー。添付（ローカル/ドライブ）と「作成」サブメニュー（#333）を集約する。
 /// Radix DropdownMenu でポータル描画＋衝突回避するため、画面中央のコンポーザ（ホーム）でも
 /// メニューがビューポート上端に食い込まず、収まらない高さは内部スクロールに落ちる。
 function PlusMenu({
@@ -316,19 +326,25 @@ function PlusMenu({
   onOpenChange,
   onUploadLocal,
   onOpenDrive,
+  createParentId = null,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onUploadLocal: () => void;
   onOpenDrive: () => void;
+  /// 「作成」の保存先フォルダ（エージェントモードのワークスペース選択時はそれ・既定はマイドライブ直下）。
+  createParentId?: string | null;
 }) {
+  // 作成ロジックはドライブの「新規作成」と共通（use-create-content・重複実装しない）。
+  const { createNoteAndOpen, createDocumentAndOpen, createSlideAndOpen, createCsvAndOpen } =
+    useCreateContent({ parentId: createParentId });
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
           aria-label="追加メニューを開く"
-          title="追加（添付）"
+          title="追加（添付・作成）"
           className={cn(
             "flex size-9 items-center justify-center rounded-full border transition-colors",
             open
@@ -357,6 +373,54 @@ function PlusMenu({
           <HardDrive className="text-muted-foreground" />
           ドライブから選択
         </DropdownMenuItem>
+
+        <DropdownMenuSeparator />
+
+        {/* 作成（ノート/ドキュメント/スライド/CSV・#333）。ドライブの「新規作成」と同じ
+            作成関数を共用し、作成後は対応エディタへ遷移する。 */}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger
+            className="gap-2.5 px-2.5 py-2"
+            data-testid="composer-create-menu"
+          >
+            <FilePlus2 className="text-muted-foreground" />
+            作成
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-56 p-1.5">
+            <DropdownMenuItem
+              className="gap-2.5 px-2.5 py-2"
+              onSelect={() => void createNoteAndOpen()}
+              data-testid="composer-create-note"
+            >
+              <NotebookPen className="text-primary" aria-hidden />
+              ノート
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="gap-2.5 px-2.5 py-2"
+              onSelect={() => void createDocumentAndOpen()}
+              data-testid="composer-create-document"
+            >
+              <FileText className="text-blue-600" aria-hidden />
+              ドキュメント（Word）
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="gap-2.5 px-2.5 py-2"
+              onSelect={() => void createSlideAndOpen()}
+              data-testid="composer-create-slide"
+            >
+              <Presentation className="text-orange-500" aria-hidden />
+              スライド
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="gap-2.5 px-2.5 py-2"
+              onSelect={() => void createCsvAndOpen()}
+              data-testid="composer-create-csv"
+            >
+              <FileSpreadsheet className="text-green-600" aria-hidden />
+              スプレッドシート（CSV）
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
 
         <DropdownMenuSeparator />
 
