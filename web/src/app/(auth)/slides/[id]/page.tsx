@@ -16,6 +16,7 @@ import { NoteChatPanel } from "@/components/notes/note-chat-panel";
 import { SlideHeaderSlot } from "@/components/slides/slide-header-slot";
 import { SlideWorkspace } from "@/components/slides/slide-workspace";
 import { EmptyState } from "@/components/ui/empty-state";
+import { GeneralAccessUnlock } from "@/components/share/general-access-unlock";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import { CollabProvider, type CollabStatus } from "@/lib/collab";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
@@ -70,19 +71,17 @@ export default function SlidePage() {
     provider: CollabProvider;
   } | null>(null);
 
-  React.useEffect(() => {
-    let cancelled = false;
+  // アクセス判定の取得（解錠後に再取得できるよう callback 化）。
+  const loadAccess = React.useCallback(() => {
+    setAccess("loading");
     getCollabAccess(nodeId)
-      .then((a) => {
-        if (!cancelled) setAccess(a ?? "notfound");
-      })
-      .catch(() => {
-        if (!cancelled) setAccess("notfound");
-      });
-    return () => {
-      cancelled = true;
-    };
+      .then((a) => setAccess(a ?? "notfound"))
+      .catch(() => setAccess("notfound"));
   }, [nodeId]);
+
+  React.useEffect(() => {
+    loadAccess();
+  }, [loadAccess]);
 
   React.useEffect(() => {
     if (typeof access === "string" || access === null) return;
@@ -109,10 +108,13 @@ export default function SlidePage() {
   }
   if (access === "notfound" || access === null) {
     return (
-      <EmptyState
-        title="スライドが見つかりません"
-        description="削除されたか、アクセス権がありません。"
-      />
+      <div className="flex h-full flex-col items-center justify-center gap-6 p-6">
+        <EmptyState
+          title="スライドが見つかりません"
+          description="削除されたか、アクセス権がありません。パスワード付き共有リンクの場合はパスワードで開けます。"
+        />
+        <GeneralAccessUnlock nodeId={nodeId} onUnlocked={loadAccess} autoFocus />
+      </div>
     );
   }
 

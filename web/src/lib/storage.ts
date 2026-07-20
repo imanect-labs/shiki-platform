@@ -15,6 +15,9 @@ export type FileVersionsResponse = components["schemas"]["FileVersionsResponse"]
 export type ShareEntry = components["schemas"]["ShareEntry"];
 export type ShareRole = components["schemas"]["ShareRole"];
 export type ShareTarget = components["schemas"]["ShareTarget"];
+export type GeneralAccess = components["schemas"]["GeneralAccess"];
+export type GeneralAccessLevel = components["schemas"]["GeneralAccessLevel"];
+export type SetGeneralAccessBody = components["schemas"]["SetGeneralAccessRequest"];
 export type DirectoryUserResponse = components["schemas"]["DirectoryUserResponse"];
 export type DirectorySearchResponse = components["schemas"]["DirectorySearchResponse"];
 export type DirectoryRoleResponse = components["schemas"]["DirectoryRoleResponse"];
@@ -274,6 +277,36 @@ export function unshareNode(nodeId: string, target: ShareTarget, role: ShareRole
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target, role }),
+  }).then(okEmpty);
+}
+
+// --- 一般アクセス（共有リンクの公開範囲・#338） --------------------------
+
+/// 一般アクセスの現在設定を取得する（owner のみ）。
+export function getGeneralAccess(nodeId: string): Promise<GeneralAccess> {
+  return apiFetch(`/nodes/${nodeId}/general-access`).then((r) => okJson<GeneralAccess>(r));
+}
+
+/// 一般アクセスを設定する（owner のみ・level=restricted は解除と同義）。
+export function setGeneralAccess(nodeId: string, body: SetGeneralAccessBody): Promise<void> {
+  return apiFetch(`/nodes/${nodeId}/general-access`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(okEmpty);
+}
+
+/// 一般アクセスを解除して restricted へ戻す（owner のみ）。
+export function clearGeneralAccess(nodeId: string): Promise<void> {
+  return apiFetch(`/nodes/${nodeId}/general-access`, { method: "DELETE" }).then(okEmpty);
+}
+
+/// パスワード付き一般アクセスを解錠する（認証済みなら誰でも・失敗は一律 403）。
+export function redeemGeneralAccess(nodeId: string, password: string): Promise<void> {
+  return apiFetch(`/nodes/${nodeId}/general-access/redeem`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
   }).then(okEmpty);
 }
 

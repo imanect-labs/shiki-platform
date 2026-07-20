@@ -141,7 +141,15 @@
                 "type": "user"
               },
               {
+                "type": "user",
+                "wildcard": {}
+              },
+              {
                 "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "organization",
                 "relation": "member"
               },
               {
@@ -155,7 +163,15 @@
                 "type": "user"
               },
               {
+                "type": "user",
+                "wildcard": {}
+              },
+              {
                 "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "organization",
                 "relation": "member"
               },
               {
@@ -249,7 +265,15 @@
                 "type": "user"
               },
               {
+                "type": "user",
+                "wildcard": {}
+              },
+              {
                 "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "organization",
                 "relation": "member"
               },
               {
@@ -263,7 +287,15 @@
                 "type": "user"
               },
               {
+                "type": "user",
+                "wildcard": {}
+              },
+              {
                 "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "organization",
                 "relation": "member"
               },
               {

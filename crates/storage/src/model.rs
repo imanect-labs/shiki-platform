@@ -209,6 +209,85 @@ impl ShareRole {
             _ => None,
         }
     }
+
+    /// DB 保存用の文字列表現（`viewer`/`editor`）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShareRole::Viewer => "viewer",
+            ShareRole::Editor => "editor",
+        }
+    }
+
+    /// DB 文字列から復元する（未知値は `None`）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "viewer" => Some(ShareRole::Viewer),
+            "editor" => Some(ShareRole::Editor),
+            _ => None,
+        }
+    }
+}
+
+/// 一般アクセスのレベル（#338・Google Drive の「一般アクセス」に相当）。
+///
+/// レベルは共有先（subject）に写る: `organization` → `organization:<tenant>|<org>#member`、
+/// `anyone` → `user:*`（type-bound public）。`restricted` は一般アクセスの不在（台帳行が無い）＝
+/// 現状の明示付与のみの ReBAC で、タプルは書かない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneralAccessLevel {
+    /// 既存アクセス者のみ（明示付与のみ）。
+    Restricted,
+    /// 組織内の全メンバー。
+    Organization,
+    /// すべての認証済みユーザー。
+    Anyone,
+}
+
+impl GeneralAccessLevel {
+    /// DB 保存用の文字列表現。`restricted` は行の不在で表すため DB には現れない。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GeneralAccessLevel::Restricted => "restricted",
+            GeneralAccessLevel::Organization => "organization",
+            GeneralAccessLevel::Anyone => "anyone",
+        }
+    }
+
+    /// DB 文字列から復元する（未知値は `None`）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "restricted" => Some(GeneralAccessLevel::Restricted),
+            "organization" => Some(GeneralAccessLevel::Organization),
+            "anyone" => Some(GeneralAccessLevel::Anyone),
+            _ => None,
+        }
+    }
+}
+
+/// 一般アクセスの現在設定（GET 応答・#338）。
+///
+/// パスワードは **`has_password` の真偽のみ**露出し、ハッシュ・平文は決して返さない。
+/// `level == Restricted` のとき role/expires_at/has_password は無意味（既定値）で、
+/// フロントは level で分岐する。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct GeneralAccess {
+    pub level: GeneralAccessLevel,
+    pub role: ShareRole,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub has_password: bool,
+}
+
+impl GeneralAccess {
+    /// 一般アクセス未設定（restricted）の既定値。
+    pub fn restricted() -> Self {
+        GeneralAccess {
+            level: GeneralAccessLevel::Restricted,
+            role: ShareRole::Viewer,
+            expires_at: None,
+            has_password: false,
+        }
+    }
 }
 
 /// 共有相手 1 件（誰に・どの役割で共有したか）。

@@ -28,6 +28,7 @@ pub mod content_address;
 pub mod directory;
 pub mod error;
 pub mod event;
+pub mod expiry_timer;
 pub mod indexing;
 pub mod model;
 pub mod object_store;
@@ -42,8 +43,8 @@ pub use error::StorageError;
 pub use event::{OutboxEvent, WriteOp};
 pub use indexing::{IndexerStorage, NodeSnapshot};
 pub use model::{
-    ChildPage, ChildSort, ChildSortKey, Crumb, DownloadTicket, FileVersion, Node, NodeKind,
-    ShareEntry, ShareRole, ShareTarget, UploadTicket,
+    ChildPage, ChildSort, ChildSortKey, Crumb, DownloadTicket, FileVersion, GeneralAccess,
+    GeneralAccessLevel, Node, NodeKind, ShareEntry, ShareRole, ShareTarget, UploadTicket,
 };
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
 pub use service::{StorageService, WriteAtOutcome};

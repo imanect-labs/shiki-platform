@@ -27,8 +27,8 @@ use authz::{
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::{
-    content_address::sha256_hex, object_store::S3Config, DirectoryStore, Node, NodeKind,
-    ObjectStore, S3ObjectStore, ShareRole, ShareTarget, StorageError, StorageService,
+    content_address::sha256_hex, object_store::S3Config, DirectoryStore, GeneralAccessLevel, Node,
+    NodeKind, ObjectStore, S3ObjectStore, ShareRole, ShareTarget, StorageError, StorageService,
 };
 use uuid::Uuid;
 
@@ -2249,4 +2249,355 @@ async fn write_file_at_versions_and_emits_outbox() {
         .await
         .expect("resolve after delete");
     assert!(after.is_none(), "削除後は解決不能");
+}
+
+// --- 一般アクセス（共有リンクの公開範囲・#338） -----------------------------
+
+/// restricted / organization / anyone の read ゲート、owner ゲート、
+/// および明示共有が clear で剥奪されないこと（redeem 台帳ベース剥奪の非破壊性）を実証する。
+#[tokio::test]
+async fn general_access_levels_end_to_end() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+
+    // member = 同 org のメンバー（organization レベルで通す）。
+    let member = format!("ituser{}", Uuid::new_v4().simple());
+    let mctx = make_ctx(&org, &member);
+    seed_org_member(&authz, &org, &member).await;
+    // nonmember = 同 org だが member タプル無し（organization では通らず anyone で通る）。
+    let nonmember = format!("ituser{}", Uuid::new_v4().simple());
+    let nmctx = make_ctx(&org, &nonmember);
+    // outsider = 別 org（DB org フィルタでそもそも load できない＝越境しない）。
+    let other_org = format!("itorg{}", Uuid::new_v4().simple());
+    let outsider = format!("ituser{}", Uuid::new_v4().simple());
+    let octx_out = make_ctx(&other_org, &outsider);
+    seed_org_member(&authz, &other_org, &outsider).await;
+
+    let file = upload(&service, &http, &octx, None, "ga.txt", b"general access")
+        .await
+        .expect("upload");
+
+    // restricted（既定・行無し）: member/nonmember とも読めない。
+    for c in [&mctx, &nmctx] {
+        assert!(
+            matches!(
+                service.get_metadata(c, file.id, None).await,
+                Err(StorageError::NotFound)
+            ),
+            "restricted では読めない"
+        );
+    }
+
+    // organization/viewer: member は読める、nonmember は読めない。
+    service
+        .set_general_access(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("set organization");
+    assert!(
+        service.get_metadata(&mctx, file.id, None).await.is_ok(),
+        "組織内メンバーは読める"
+    );
+    assert!(
+        matches!(
+            service.get_metadata(&nmctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "組織内でも非メンバーは organization レベルでは読めない"
+    );
+
+    // anyone/viewer: 同 org の非メンバーも読める。
+    service
+        .set_general_access(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Anyone,
+            ShareRole::Viewer,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("set anyone");
+    assert!(
+        service.get_metadata(&nmctx, file.id, None).await.is_ok(),
+        "anyone なら非メンバーも読める"
+    );
+    // 別 org のユーザーは DB org フィルタで到達不能（越境しない）。
+    assert!(
+        matches!(
+            service.get_metadata(&octx_out, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "anyone でも別 org へは越境しない（DB tenant/org スコープ）"
+    );
+
+    // 明示共有した相手は clear で剥奪されない（redeem 台帳ベース剥奪の非破壊性）。
+    let pinned = format!("ituser{}", Uuid::new_v4().simple());
+    let pctx = make_ctx(&org, &pinned);
+    seed_org_member(&authz, &org, &pinned).await;
+    service
+        .share_node(
+            &octx,
+            file.id,
+            &ShareTarget::User { id: pinned.clone() },
+            ShareRole::Viewer,
+            None,
+        )
+        .await
+        .expect("explicit share");
+    service
+        .clear_general_access(&octx, file.id, None)
+        .await
+        .expect("clear");
+    // clear 後: 一般アクセス由来（nonmember）は読めない、明示共有（pinned）は残る。
+    assert!(
+        matches!(
+            service.get_metadata(&nmctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "clear で一般アクセスは消える"
+    );
+    assert!(
+        service.get_metadata(&pctx, file.id, None).await.is_ok(),
+        "明示共有は clear で剥奪されない"
+    );
+
+    // owner でない者は set できない（Forbidden）。
+    assert!(
+        matches!(
+            service
+                .set_general_access(
+                    &mctx,
+                    file.id,
+                    GeneralAccessLevel::Anyone,
+                    ShareRole::Viewer,
+                    None,
+                    None,
+                    false,
+                    None
+                )
+                .await,
+            Err(StorageError::Forbidden)
+        ),
+        "owner でない者は一般アクセスを設定できない"
+    );
+}
+
+/// パスワード付き一般アクセス: broad タプルを書かず、redeem 検証後に per-user タプルを発行する。
+#[tokio::test]
+async fn general_access_password_redeem() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let member = format!("ituser{}", Uuid::new_v4().simple());
+    let mctx = make_ctx(&org, &member);
+    seed_org_member(&authz, &org, &member).await;
+    // 同 org 非メンバー（organization+password では redeem できない）。
+    let nonmember = format!("ituser{}", Uuid::new_v4().simple());
+    let nmctx = make_ctx(&org, &nonmember);
+
+    let file = upload(&service, &http, &octx, None, "secret.txt", b"pw protected")
+        .await
+        .expect("upload");
+
+    // anyone/editor + password: broad タプルは書かれない → 誰も読めない。
+    service
+        .set_general_access(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Anyone,
+            ShareRole::Editor,
+            None,
+            Some("s3cret-pass"),
+            false,
+            None,
+        )
+        .await
+        .expect("set anyone+password");
+    assert!(
+        matches!(
+            service.get_metadata(&mctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "パスワード付きは redeem 前は読めない（broad タプル無し）"
+    );
+
+    // 誤ったパスワードは Forbidden（オラクルにしない）。
+    assert!(
+        matches!(
+            service
+                .redeem_general_access(&mctx, file.id, "wrong", None)
+                .await,
+            Err(StorageError::Forbidden)
+        ),
+        "誤パスワードは Forbidden"
+    );
+    assert!(
+        matches!(
+            service.get_metadata(&mctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "誤 redeem 後も読めない"
+    );
+
+    // 正しいパスワードで redeem → per-user タプル発行 → 読める。
+    service
+        .redeem_general_access(&mctx, file.id, "s3cret-pass", None)
+        .await
+        .expect("redeem");
+    assert!(
+        service.get_metadata(&mctx, file.id, None).await.is_ok(),
+        "redeem 後は読める"
+    );
+
+    // organization + password: 非メンバーは正しいパスワードでも redeem 不可（メンバーシップ要求）。
+    service
+        .set_general_access(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            Some("p2-pass"),
+            false,
+            None,
+        )
+        .await
+        .expect("set organization+password");
+    assert!(
+        matches!(
+            service
+                .redeem_general_access(&nmctx, file.id, "p2-pass", None)
+                .await,
+            Err(StorageError::Forbidden)
+        ),
+        "organization レベルは非メンバーだと redeem できない"
+    );
+    // メンバーは redeem できる。
+    service
+        .redeem_general_access(&mctx, file.id, "p2-pass", None)
+        .await
+        .expect("member redeem");
+    assert!(
+        service.get_metadata(&mctx, file.id, None).await.is_ok(),
+        "メンバーは redeem 後読める"
+    );
+}
+
+/// 有効期限: セッション開始点の遅延失効と、イベント駆動タイマの明示剥奪、次回起床時刻。
+#[tokio::test]
+async fn general_access_expiry() {
+    use chrono::Utc;
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let member = format!("ituser{}", Uuid::new_v4().simple());
+    let mctx = make_ctx(&org, &member);
+    seed_org_member(&authz, &org, &member).await;
+
+    let file = upload(&service, &http, &octx, None, "exp.txt", b"expiring")
+        .await
+        .expect("upload");
+
+    // 未来の期限: member は読める。
+    let future = Utc::now() + chrono::Duration::hours(1);
+    service
+        .set_general_access(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            Some(future),
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("set future expiry");
+    assert!(
+        service.get_metadata(&mctx, file.id, None).await.is_ok(),
+        "期限内は読める"
+    );
+
+    // 次回失効時刻はこの期限を返す。
+    let next = service
+        .next_general_access_expiry()
+        .await
+        .expect("next expiry");
+    assert!(next.is_some(), "期限付き行があるので次回失効時刻がある");
+
+    // タイマが「未来+2h」時点を処理 → 剥奪されて読めなくなる。
+    let count = service
+        .revoke_expired_general_access(future + chrono::Duration::hours(1))
+        .await
+        .expect("revoke expired");
+    assert!(count >= 1, "期限切れを 1 件以上剥奪する");
+    assert!(
+        matches!(
+            service.get_metadata(&mctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "期限切れ剥奪後は読めない"
+    );
+
+    // 過去の期限を設定 → get_metadata の遅延失効で即座に不可（タイマを待たない）。
+    let past = Utc::now() - chrono::Duration::seconds(1);
+    service
+        .set_general_access(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            Some(past),
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("set past expiry");
+    assert!(
+        matches!(
+            service.get_metadata(&mctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "過去期限は遅延失効で即読めない"
+    );
 }

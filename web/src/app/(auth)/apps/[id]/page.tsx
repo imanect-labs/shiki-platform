@@ -86,6 +86,11 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
             onOpenChange={setShareOpen}
             artifactId={app.id}
             name={app.body.description}
+            shareUrl={
+              typeof window !== "undefined"
+                ? `${window.location.origin}/apps/${app.id}`
+                : undefined
+            }
           />
           <VersionsDialog
             open={versionsOpen}

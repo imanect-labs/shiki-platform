@@ -44,12 +44,16 @@ type role
 # 識別子名前空間化（role:<tenant>|<id>）で担保済み。editor/viewer に role#member を許すと
 # 「そのロールのメンバー（配下ロール込みの階層展開）」が編集/閲覧できる。owner は付与しない
 # （共有語彙は viewer/editor のみ・owner の横展開を防ぐ）。
+# 一般アクセス（#338）: editor/viewer は user:*（すべての認証済みユーザー＝type-bound public）と
+# organization#member（組織内）も受理する。owner が明示設定した時のみタプルが書かれる。
+# user:* は subject 側グローバルだが付与先オブジェクトが名前空間化（folder:<tenant>|<id>）
+# されているため実質「同一テナント内の任意ユーザー」に限定される（越境は構造的に不能）。
 type folder
   relations
     define parent: [folder]
     define owner: [user, workflow]
-    define editor: [user, role#member, workflow] or owner or editor from parent
-    define viewer: [user, role#member, workflow] or editor or viewer from parent
+    define editor: [user, user:*, role#member, organization#member, workflow] or owner or editor from parent
+    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent
 
 # ストレージ: ファイル（ツリーの葉・認可の最小オブジェクト）。
 # ルート直下のファイルは parent を持たず、作成者の owner タプルのみで到達する。
@@ -58,8 +62,8 @@ type file
   relations
     define parent: [folder]
     define owner: [user, workflow]
-    define editor: [user, role#member, workflow] or owner or editor from parent
-    define viewer: [user, role#member, workflow] or editor or viewer from parent
+    define editor: [user, user:*, role#member, organization#member, workflow] or owner or editor from parent
+    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent
 
 # チャット: スレッド（会話・#37）。ツリー継承は持たず、作成者 owner ＋明示共有のみ。
 # 共有語彙は viewer / commenter / editor（owner の横展開は防ぐため付与しない）。
