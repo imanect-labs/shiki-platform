@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { toast } from "@/components/ui/use-toast";
 import { CopyLinkButton } from "@/components/share/copy-link-button";
 import { GeneralAccessSection } from "@/components/share/general-access-section";
@@ -28,11 +29,10 @@ import {
   type ShareTarget,
 } from "@/lib/storage";
 import { resourceUrl } from "@/lib/resource-link";
-import { cn } from "@/lib/utils";
 
-const ROLES: { value: ShareRole; label: string }[] = [
-  { value: "viewer", label: "閲覧" },
-  { value: "editor", label: "編集" },
+const ROLE_OPTIONS: { value: ShareRole; label: string; testId: string }[] = [
+  { value: "viewer", label: "閲覧", testId: "share-role-viewer" },
+  { value: "editor", label: "編集", testId: "share-role-editor" },
 ];
 
 /// 共有先の種別（個人 / 部署・ロール）。
@@ -40,6 +40,10 @@ type TargetKind = ShareTarget["type"];
 const KINDS: { value: TargetKind; label: string; placeholder: string }[] = [
   { value: "user", label: "メンバー", placeholder: "名前・メールで検索" },
   { value: "role", label: "部署・ロール", placeholder: "部署・ロール名で検索" },
+];
+const KIND_OPTIONS = [
+  { value: "user", label: "メンバー", icon: UserPlus, testId: "share-kind-user" },
+  { value: "role", label: "部署・ロール", icon: Users, testId: "share-kind-role" },
 ];
 
 /// 検索結果を種別非依存に正規化した 1 候補。
@@ -192,55 +196,34 @@ export function ShareDialog({
         <DialogHeader>
           <DialogTitle>「{node.name}」を共有</DialogTitle>
           <DialogDescription>
-            同じ組織のメンバー・部署に権限を付与します。部署に共有するとそのメンバー全員に反映されます。
+            アクセスできる範囲を選び、必要なら特定のユーザー・部署を追加します。
           </DialogDescription>
         </DialogHeader>
 
-        {/* 共有先の種別 */}
-        <div className="inline-flex rounded-md border border-border p-0.5">
-          {KINDS.map((k) => (
-            <button
-              key={k.value}
-              type="button"
-              aria-pressed={kind === k.value}
-              onClick={() => setKind(k.value)}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors",
-                kind === k.value
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {k.value === "role" ? (
-                <Users className="size-3.5" aria-hidden />
-              ) : (
-                <UserPlus className="size-3.5" aria-hidden />
-              )}
-              {k.label}
-            </button>
-          ))}
-        </div>
+        {/* ① アクセスできる範囲（公開範囲・役割・有効期限・パスワード） */}
+        <GeneralAccessSection nodeId={node.id} onServerChange={onGaChange} />
 
-        {/* 役割の選択 */}
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">付与する権限</span>
-          <div className="inline-flex rounded-md border border-border p-0.5">
-            {ROLES.map((r) => (
-              <button
-                key={r.value}
-                type="button"
-                aria-pressed={role === r.value}
-                onClick={() => setRole(r.value)}
-                className={cn(
-                  "rounded px-3 py-1 text-sm transition-colors",
-                  role === r.value
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {r.label}
-              </button>
-            ))}
+        <div className="shiki-dash-x" />
+
+        {/* ② 特定のユーザー・部署を追加（個別付与） */}
+        <p className="text-sm font-medium">特定のユーザー・部署を追加</p>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <SegmentedControl
+            aria-label="共有先の種別"
+            size="sm"
+            options={KIND_OPTIONS}
+            value={kind}
+            onValueChange={(v) => setKind(v as TargetKind)}
+          />
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">権限</span>
+            <SegmentedControl
+              aria-label="付与する権限"
+              size="sm"
+              options={ROLE_OPTIONS}
+              value={role}
+              onValueChange={(v) => setRole(v as ShareRole)}
+            />
           </div>
         </div>
 
@@ -356,11 +339,9 @@ export function ShareDialog({
           )}
         </div>
 
-        {/* 区切り（和×モダンの破線）＋一般アクセス（公開範囲・リンク） */}
+        {/* 区切り＋リンクをコピー（ポインタ・押下時は通常の ReBAC チェック） */}
         <div className="shiki-dash-x" />
-        <GeneralAccessSection nodeId={node.id} onServerChange={onGaChange} />
-
-        <div className="flex justify-start pt-1">
+        <div className="flex justify-start">
           <CopyLinkButton
             url={() =>
               resourceUrl(

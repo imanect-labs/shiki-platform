@@ -69,7 +69,7 @@ test("共有ダイアログ: 部署・ロールへ共有", async ({ page }) => {
   await expect(share.getByText(`「${folder}」を共有`)).toBeVisible();
 
   // 「部署・ロール」へ切り替えて検索する。
-  await share.getByRole("button", { name: "部署・ロール" }).click();
+  await share.getByTestId("share-kind-role").click();
   const search = share.getByPlaceholder("部署・ロール名で検索");
   await search.fill("営業");
   const salesRow = share.locator("li", { hasText: "営業部" });

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Globe2, Loader2, Lock, Users } from "lucide-react";
+import { Globe2, Loader2, Lock, type LucideIcon, Users } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,10 +18,11 @@ import {
 } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
-const LEVELS: { value: GeneralAccessLevel; label: string; testId: string }[] = [
-  { value: "restricted", label: "制限付き", testId: "ga-level-restricted" },
-  { value: "organization", label: "組織内", testId: "ga-level-organization" },
-  { value: "anyone", label: "全員", testId: "ga-level-anyone" },
+/// 「アクセスできる範囲」の選択肢。ユーザーの語彙に合わせる（既存アクセス者のみ/組織内/全員）。
+const LEVELS: { value: GeneralAccessLevel; label: string; icon: LucideIcon; testId: string }[] = [
+  { value: "restricted", label: "既存のアクセス権のある人のみ", icon: Lock, testId: "ga-level-restricted" },
+  { value: "organization", label: "組織内のユーザー", icon: Users, testId: "ga-level-organization" },
+  { value: "anyone", label: "すべてのユーザー", icon: Globe2, testId: "ga-level-anyone" },
 ];
 
 const ROLES: { value: ShareRole; label: string; testId: string }[] = [
@@ -29,16 +30,16 @@ const ROLES: { value: ShareRole; label: string; testId: string }[] = [
   { value: "editor", label: "編集", testId: "ga-role-editor" },
 ];
 
-/// レベルのアイコンと説明文（現在の役割を織り込む）。
-function levelMeta(level: GeneralAccessLevel, role: ShareRole) {
+/// レベルの説明文（現在の役割を織り込む）。
+function levelDesc(level: GeneralAccessLevel, role: ShareRole): string {
   const verb = role === "editor" ? "編集" : "閲覧";
   switch (level) {
     case "restricted":
-      return { Icon: Lock, text: "権限を付与された人のみが開けます。" };
+      return "下で追加した特定のユーザー・部署だけが開けます。";
     case "organization":
-      return { Icon: Users, text: `組織内のユーザーはリンクから${verb}できます。` };
+      return `組織内のユーザーはリンクから${verb}できます。`;
     case "anyone":
-      return { Icon: Globe2, text: `リンクを知っている認証済みユーザー全員が${verb}できます。` };
+      return `リンクを知っている認証済みユーザー全員が${verb}できます。`;
   }
 }
 
@@ -56,14 +57,14 @@ function dateInputToIso(date: string): string {
   return new Date(`${date}T23:59:59`).toISOString();
 }
 
-/// 共有ダイアログの「一般アクセス」セクション（#338・Google Drive の一般アクセス相当）。
-/// owner だけが変更でき、公開範囲（制限付き/組織内/全員）・役割・有効期限・パスワードを扱う。
+/// 共有ダイアログの「アクセスできる範囲」セクション（#338）。owner だけが変更でき、
+/// 公開範囲（既存アクセス者のみ/組織内/全員）・役割・有効期限・パスワードを扱う。
 export function GeneralAccessSection({
   nodeId,
   onServerChange,
 }: {
   nodeId: string;
-  /// 現在の一般アクセス設定（未取得/権限なしは null）を親へ通知する（リンクの unlock ヒント用）。
+  /// 現在の設定（未取得/権限なしは null）を親へ通知する（リンクの unlock ヒント用）。
   onServerChange?: (ga: GeneralAccess | null) => void;
 }) {
   const [server, setServer] = React.useState<GeneralAccess | null>(null);
@@ -119,8 +120,7 @@ export function GeneralAccessSection({
           pwTouched)));
 
   // パスワード保護 ON なのに（新規で）パスワード未入力は保存不可。
-  const pwMissing =
-    level !== "restricted" && pwEnabled && !pwValue && !server?.has_password;
+  const pwMissing = level !== "restricted" && pwEnabled && !pwValue && !server?.has_password;
 
   const save = async () => {
     if (pwMissing) {
@@ -144,14 +144,13 @@ export function GeneralAccessSection({
           body.password = pwValue;
           body.keep_password = false;
         } else {
-          // 既存パスワードを引き継ぐ（level/期限だけ変更）。
-          body.keep_password = true;
+          body.keep_password = true; // 既存パスワードを引き継ぐ（level/期限だけ変更）。
         }
         await setGeneralAccess(nodeId, body);
       }
       const next = await getGeneralAccess(nodeId);
       hydrate(next);
-      toast({ description: "一般アクセスを更新しました。" });
+      toast({ description: "共有設定を更新しました。" });
     } catch (e) {
       toast({
         variant: "destructive",
@@ -166,45 +165,63 @@ export function GeneralAccessSection({
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="size-4 animate-spin" aria-hidden />
-        一般アクセスを読み込み中…
+        読み込み中…
       </div>
     );
   }
   // 権限が無い（owner でない）等で取得できなければセクション非表示。
   if (!server) return null;
 
-  const { Icon, text } = levelMeta(level, role);
-
   return (
-    <div className="flex flex-col gap-3">
-      <p className="text-sm font-medium">一般アクセス</p>
-      <div className="flex items-start gap-3">
-        <span
-          className={cn(
-            "flex size-9 shrink-0 items-center justify-center rounded-full",
-            level === "restricted"
-              ? "bg-secondary text-secondary-foreground"
-              : "bg-accent text-accent-foreground",
-          )}
-        >
-          <Icon className="size-4" aria-hidden />
-        </span>
-        <div className="min-w-0 flex-1 space-y-2">
-          <SegmentedControl
-            aria-label="一般アクセスの範囲"
-            size="sm"
-            options={LEVELS}
-            value={level}
-            onValueChange={(v) => setLevel(v as GeneralAccessLevel)}
-          />
-          <p className="text-xs text-muted-foreground">{text}</p>
-        </div>
+    <div className="flex flex-col gap-2.5">
+      <p className="text-sm font-medium">アクセスできる範囲</p>
+
+      {/* 範囲の選択（ラジオ・選択は塗り bg-accent／黒枠は使わない） */}
+      <div className="flex flex-col gap-1.5" role="radiogroup" aria-label="アクセスできる範囲">
+        {LEVELS.map((l) => {
+          const active = level === l.value;
+          const Icon = l.icon;
+          return (
+            <button
+              key={l.value}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              data-testid={l.testId}
+              onClick={() => setLevel(l.value)}
+              className={cn(
+                "flex items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                active
+                  ? "border-border bg-accent"
+                  : "border-border/60 hover:bg-accent/40",
+              )}
+            >
+              <span
+                className={cn(
+                  "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
+                  active ? "border-foreground/50" : "border-muted-foreground/40",
+                )}
+                aria-hidden
+              >
+                {active ? <span className="size-2 rounded-full bg-foreground" /> : null}
+              </span>
+              <Icon className="mt-px size-4 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium leading-tight">{l.label}</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  {levelDesc(l.value, role)}
+                </span>
+              </span>
+            </button>
+          );
+        })}
       </div>
 
+      {/* 範囲が restricted 以外なら 役割・有効期限・パスワードを出す（枠は border-border/60 + bg-card/40） */}
       {level !== "restricted" ? (
         <div className="space-y-3 rounded-lg border border-border/60 bg-card/40 p-3">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-sm text-muted-foreground">付与する権限</span>
+            <span className="text-sm text-muted-foreground">権限</span>
             <SegmentedControl
               aria-label="一般アクセスの権限"
               size="sm"
@@ -228,12 +245,7 @@ export function GeneralAccessSection({
                 className="h-8 w-40 text-sm"
               />
               {expiry ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setExpiry("")}
-                >
+                <Button type="button" variant="ghost" size="sm" onClick={() => setExpiry("")}>
                   なし
                 </Button>
               ) : null}
