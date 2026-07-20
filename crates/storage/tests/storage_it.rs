@@ -2601,3 +2601,79 @@ async fn general_access_expiry() {
         "過去期限は遅延失効で即読めない"
     );
 }
+
+/// #338(114): 明示共有を持つユーザーが redeem しても、その明示共有は失効/解除で誤剥奪されない。
+/// redeem は「実際に新規付与したタプル」だけを台帳に載せる（granted ゲート）ため、既存の
+/// 明示共有（write_tuple が no-op）は台帳に載らず、clear/失効の per-user 剥奪対象にならない。
+#[tokio::test]
+async fn general_access_redeem_preserves_explicit_share() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let member = format!("ituser{}", Uuid::new_v4().simple());
+    let mctx = make_ctx(&org, &member);
+    seed_org_member(&authz, &org, &member).await;
+
+    let file = upload(
+        &service,
+        &http,
+        &octx,
+        None,
+        "explicit.txt",
+        b"explicit + ga",
+    )
+    .await
+    .expect("upload");
+
+    // owner が member に明示 viewer 共有 → member は読める。
+    service
+        .share_node(
+            &octx,
+            file.id,
+            &ShareTarget::User { id: member.clone() },
+            ShareRole::Viewer,
+            None,
+        )
+        .await
+        .expect("explicit share");
+    assert!(service.get_metadata(&mctx, file.id, None).await.is_ok());
+
+    // owner が anyone/viewer + password を設定 → member が redeem（既に viewer を持つので no-op 付与）。
+    service
+        .set_general_access(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Anyone,
+            ShareRole::Viewer,
+            None,
+            Some("pw-x"),
+            false,
+            None,
+        )
+        .await
+        .expect("set anyone+password");
+    service
+        .redeem_general_access(&mctx, file.id, "pw-x", None)
+        .await
+        .expect("redeem (no-op grant)");
+    assert!(service.get_metadata(&mctx, file.id, None).await.is_ok());
+
+    // owner が一般アクセスを解除 → 明示 viewer は残る（redeem 台帳経由で誤剥奪されない）。
+    service
+        .clear_general_access(&octx, file.id, None)
+        .await
+        .expect("clear");
+    assert!(
+        service.get_metadata(&mctx, file.id, None).await.is_ok(),
+        "明示共有は redeem/clear を経ても残る（granted ゲートで台帳に載らないため）"
+    );
+}

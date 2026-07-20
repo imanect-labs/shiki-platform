@@ -13,7 +13,20 @@ use super::*;
 
 use crate::model::{GeneralAccess, GeneralAccessLevel};
 
-/// 新しく設定する一般アクセス（restricted 以外）。`None` は restricted（＝台帳行の削除）を表す。
+/// set で受け取った生の一般アクセス設定（**認可前**・パスワードは未ハッシュ）。
+/// owner 認可を通した後に [`NewPolicy`] へハッシュ化する（未認可で argon2 を走らせない・DoS 対策）。
+struct PolicyIntent {
+    level: GeneralAccessLevel,
+    role: ShareRole,
+    expires_at: Option<DateTime<Utc>>,
+    /// 生パスワード（空/None = 指定なし）。
+    password: Option<String>,
+    /// 既存パスワードを引き継ぐ（level/期限だけ変更する編集）。`password` があればそちらが優先。
+    keep_password: bool,
+}
+
+/// 認可後に確定した一般アクセス（restricted 以外・パスワードはハッシュ済み）。
+/// `None` は restricted（＝台帳行の削除）を表す。
 pub(super) struct NewPolicy {
     pub(super) level: GeneralAccessLevel,
     pub(super) role: ShareRole,
@@ -115,19 +128,22 @@ impl StorageService {
         if level == GeneralAccessLevel::Restricted {
             return self.clear_general_access(ctx, node_id, trace_id).await;
         }
-        let password_hash = match password {
-            Some(pw) if !pw.is_empty() => Some(hash_password(pw)?),
-            _ if keep_password => self.existing_password_hash(ctx, node_id).await?,
-            _ => None,
-        };
-        let new = NewPolicy {
+        // ハッシュ化は apply 側で owner 認可を通した後に行う（未認可で argon2 を走らせない）。
+        let intent = PolicyIntent {
             level,
             role,
             expires_at,
-            password_hash,
+            password: password.map(str::to_owned),
+            keep_password,
         };
-        self.apply_general_access(ctx, node_id, Some(new), "node.general_access.set", trace_id)
-            .await
+        self.apply_general_access(
+            ctx,
+            node_id,
+            Some(intent),
+            "node.general_access.set",
+            trace_id,
+        )
+        .await
     }
 
     /// 一般アクセスを解除して restricted へ戻す（owner 権限）。broad タプルと redeem 済み
@@ -168,15 +184,33 @@ impl StorageService {
         &self,
         ctx: &AuthContext,
         node_id: Uuid,
-        new: Option<NewPolicy>,
+        intent: Option<PolicyIntent>,
         action: &'static str,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
+        // ①owner 認可（パスワードハッシュ化より前に行う＝未認可の argon2 実行を防ぐ）。
         let obj = self
             .authorize_share_admin(ctx, node_id, action, trace_id)
             .await?;
         let kind = kind_of(&obj);
         let ns = ctx.ns();
+        // 認可後にパスワードをハッシュ化して確定ポリシーを作る。
+        let new: Option<NewPolicy> = match intent {
+            Some(it) => {
+                let password_hash = match it.password.as_deref() {
+                    Some(pw) if !pw.is_empty() => Some(hash_password(pw)?),
+                    _ if it.keep_password => self.existing_password_hash(ctx, node_id).await?,
+                    _ => None,
+                };
+                Some(NewPolicy {
+                    level: it.level,
+                    role: it.role,
+                    expires_at: it.expires_at,
+                    password_hash,
+                })
+            }
+            None => None,
+        };
 
         // ② 既存を読んで旧タプルを剥奪する。
         let existing: Option<PolicyRow> = sqlx::query_as(
