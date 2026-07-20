@@ -13,17 +13,21 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/use-toast";
+import { CopyLinkButton } from "@/components/share/copy-link-button";
+import { GeneralAccessSection } from "@/components/share/general-access-section";
 import {
   listShares,
   searchDirectory,
   searchRoles,
   shareNode,
   unshareNode,
+  type GeneralAccess,
   type NodeResponse,
   type ShareEntry,
   type ShareRole,
   type ShareTarget,
 } from "@/lib/storage";
+import { resourceUrl } from "@/lib/resource-link";
 import { cn } from "@/lib/utils";
 
 const ROLES: { value: ShareRole; label: string }[] = [
@@ -44,9 +48,10 @@ type Candidate = { id: string; primary: string; secondary: string };
 /// 共有ダイアログ。同テナントのメンバー / 部署・ロールを検索して閲覧/編集権限を付与する。
 /// 別テナントの相手は検索結果に出ない（サーバ側 tenant_id スコープ）。部署・ロールは
 /// そのメンバー（配下ロール込み）へ一括共有される（#76）。
-/// 共有対象の最小形（id/name のみ使用）。NodeResponse は構造的に適合するため既存の
-/// ドライブ呼び出しは無変更で、ノート/Office エディタは `{ id, name }` を直接渡せる。
-export type ShareTargetNode = Pick<NodeResponse, "id" | "name">;
+/// 共有対象の最小形。NodeResponse は構造的に適合するため既存のドライブ呼び出しは無変更で、
+/// ノート/Office エディタは `{ id, name }` を直接渡せる（kind/parent_id はリンク解決の任意情報）。
+export type ShareTargetNode = Pick<NodeResponse, "id" | "name"> &
+  Partial<Pick<NodeResponse, "kind" | "parent_id">>;
 
 export function ShareDialog({
   open,
@@ -67,6 +72,11 @@ export function ShareDialog({
   // 進行中の付与/解除を (type, id, role) 単位で識別する。user と role で id が衝突しても
   // 混ざらないよう type を含める。
   const [pendingKey, setPendingKey] = React.useState<string | null>(null);
+  // 一般アクセスにパスワードが設定されていればコピーリンクに解錠ヒント `?unlock=1` を付す。
+  const [gaHasPassword, setGaHasPassword] = React.useState(false);
+  const onGaChange = React.useCallback((ga: GeneralAccess | null) => {
+    setGaHasPassword(!!ga && ga.level !== "restricted" && ga.has_password);
+  }, []);
 
   // 開いたら状態リセット＋現在の共有相手を読む。
   React.useEffect(() => {
@@ -344,6 +354,21 @@ export function ShareDialog({
               })}
             </ul>
           )}
+        </div>
+
+        {/* 区切り（和×モダンの破線）＋一般アクセス（公開範囲・リンク） */}
+        <div className="shiki-dash-x" />
+        <GeneralAccessSection nodeId={node.id} onServerChange={onGaChange} />
+
+        <div className="flex justify-start pt-1">
+          <CopyLinkButton
+            url={() =>
+              resourceUrl(
+                { id: node.id, name: node.name, kind: node.kind, parent_id: node.parent_id },
+                { unlock: gaHasPassword },
+              )
+            }
+          />
         </div>
       </DialogContent>
     </Dialog>

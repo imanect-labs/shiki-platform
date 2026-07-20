@@ -136,6 +136,11 @@ export function WorkflowHeaderActions({ ctx }: { ctx: EditorContext }) {
         onOpenChange={setShareOpen}
         artifactId={ctx.workflowId}
         name={ctx.state.ir.display_name || ctx.state.ir.name}
+        shareUrl={
+          typeof window !== "undefined"
+            ? `${window.location.origin}/workflows/${ctx.workflowId}`
+            : undefined
+        }
       />
     </>
   );

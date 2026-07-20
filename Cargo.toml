@@ -58,6 +58,8 @@ redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 rand = "0.8"
 sha2 = "0.10"
+# 共有リンク一般アクセスのパスワードハッシュ（Argon2id・PHC 文字列・crates/storage・#338）。
+argon2 = "0.5"
 # WOPI access_token の署名（HMAC-SHA256・crates/office）。
 hmac = "0.12"
 # Collabora discovery XML のパース（crates/office）。

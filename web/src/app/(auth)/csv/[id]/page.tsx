@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
+import { GeneralAccessUnlock } from "@/components/share/general-access-unlock";
 import { toast } from "@/components/ui/use-toast";
 import { setPendingSelection } from "@/lib/selection-context";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
@@ -117,10 +118,13 @@ export default function CsvPage() {
   }
   if (loaded === "notfound") {
     return (
-      <EmptyState
-        title="CSV が見つかりません"
-        description="削除されたか、アクセス権がありません。"
-      />
+      <div className="flex h-full flex-col items-center justify-center gap-6 p-6">
+        <EmptyState
+          title="CSV が見つかりません"
+          description="削除されたか、アクセス権がありません。パスワード付き共有リンクの場合はパスワードで開けます。"
+        />
+        <GeneralAccessUnlock nodeId={nodeId} onUnlocked={() => void load()} autoFocus />
+      </div>
     );
   }
 

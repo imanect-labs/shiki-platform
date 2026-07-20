@@ -20,6 +20,7 @@ import { MetadataPanel } from "@/components/notes/metadata-panel";
 import { NoteChatPanel } from "@/components/notes/note-chat-panel";
 import { NoteEditor } from "@/components/notes/note-editor";
 import { NoteSyncSlot } from "@/components/notes/note-header-slot";
+import { GeneralAccessUnlock } from "@/components/share/general-access-unlock";
 import { EmptyState } from "@/components/ui/empty-state";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import { useMe } from "@/hooks/use-me";
@@ -98,19 +99,17 @@ function NotePageInner() {
     provider: CollabProvider;
   } | null>(null);
 
-  React.useEffect(() => {
-    let cancelled = false;
+  // アクセス判定の取得（解錠後に再取得できるよう callback 化）。
+  const loadAccess = React.useCallback(() => {
+    setAccess("loading");
     getCollabAccess(nodeId)
-      .then((a) => {
-        if (!cancelled) setAccess(a ?? "notfound");
-      })
-      .catch(() => {
-        if (!cancelled) setAccess("notfound");
-      });
-    return () => {
-      cancelled = true;
-    };
+      .then((a) => setAccess(a ?? "notfound"))
+      .catch(() => setAccess("notfound"));
   }, [nodeId]);
+
+  React.useEffect(() => {
+    loadAccess();
+  }, [loadAccess]);
 
   React.useEffect(() => {
     if (typeof access === "string" || access === null) return;
@@ -139,21 +138,25 @@ function NotePageInner() {
     // ノート由来履歴（?thread=）から来てノートが読めない（削除/権限剥奪）場合でも、会話自体が
     // 閲覧可能なら通常のチャットへ辿れるようにする（履歴からの導線を失わせない・#282）。
     return (
-      <EmptyState
-        title="ノートが見つかりません"
-        description="削除されたか、アクセス権がありません。"
-        action={
-          initialThreadId ? (
-            <Link
-              href={`/c/${initialThreadId}`}
-              className="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <MessageSquare className="size-4" aria-hidden />
-              この会話をチャットで開く
-            </Link>
-          ) : undefined
-        }
-      />
+      <div className="flex h-full flex-col items-center justify-center gap-6 p-6">
+        <EmptyState
+          title="ノートが見つかりません"
+          description="削除されたか、アクセス権がありません。パスワード付き共有リンクの場合はパスワードで開けます。"
+          action={
+            initialThreadId ? (
+              <Link
+                href={`/c/${initialThreadId}`}
+                className="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <MessageSquare className="size-4" aria-hidden />
+                この会話をチャットで開く
+              </Link>
+            ) : undefined
+          }
+        />
+        {/* パスワード付き一般アクセスの解錠（#338）。?unlock=1 なら自動フォーカス。 */}
+        <GeneralAccessUnlock nodeId={nodeId} onUnlocked={loadAccess} autoFocus />
+      </div>
     );
   }
 

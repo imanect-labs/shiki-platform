@@ -15,6 +15,7 @@ use authz::{
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::{
@@ -55,6 +56,9 @@ pub struct StorageService {
     /// 1 ファイルの最大アップロードサイズ（バイト）。declare の宣言サイズがこれを超えたら拒否し、
     /// 認証ユーザーによる無制限アップロードでのストレージ枯渇を防ぐ（容量ガード）。
     max_upload_size: i64,
+    /// 一般アクセス有効期限の失効タイマを起こす通知（#338）。`set_general_access` で今より早い
+    /// 期限を設定したら `notify_one()` し、タイマが次回起床時刻を再計算する（定期ポーリング回避）。
+    expiry_notify: Arc<Notify>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -135,7 +139,14 @@ impl StorageService {
             presign_get_ttl,
             presign_put_ttl,
             max_upload_size,
+            expiry_notify: Arc::new(Notify::new()),
         }
+    }
+
+    /// 一般アクセス失効タイマ用の通知ハンドル（#338）。タイマ spawner がこれを購読し、
+    /// `next_general_access_expiry()` まで sleep しつつ、新期限設定の `notify_one()` で起きる。
+    pub fn expiry_notify(&self) -> Arc<Notify> {
+        Arc::clone(&self.expiry_notify)
     }
 }
 
@@ -143,6 +154,8 @@ mod admin;
 mod content_update;
 mod finalize;
 mod folder;
+mod general_access;
+mod general_access_redeem;
 mod internal_io;
 mod move_rename;
 mod proposal;
