@@ -28,7 +28,7 @@ import {
   type ShareRole,
   type ShareTarget,
 } from "@/lib/storage";
-import { resourceUrl } from "@/lib/resource-link";
+import { resourcePath } from "@/lib/resource-link";
 
 const ROLE_OPTIONS: { value: ShareRole; label: string; testId: string }[] = [
   { value: "viewer", label: "閲覧", testId: "share-role-viewer" },
@@ -61,10 +61,14 @@ export function ShareDialog({
   open,
   onOpenChange,
   node,
+  shareUrl,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   node: ShareTargetNode | null;
+  /// コピーするリンクのパス（例 `/notes/{id}`）。エディタから開くとき、name から拡張子が
+  /// 落ちて種別を判定できないケースのために明示指定する。省略時は node から解決する。
+  shareUrl?: string;
 }) {
   const [kind, setKind] = React.useState<TargetKind>("user");
   const [query, setQuery] = React.useState("");
@@ -192,7 +196,7 @@ export function ShareDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
         <DialogHeader>
           <DialogTitle>「{node.name}」を共有</DialogTitle>
           <DialogDescription>
@@ -343,12 +347,21 @@ export function ShareDialog({
         <div className="shiki-dash-x" />
         <div className="flex justify-start">
           <CopyLinkButton
-            url={() =>
-              resourceUrl(
-                { id: node.id, name: node.name, kind: node.kind, parent_id: node.parent_id },
-                { unlock: gaHasPassword },
-              )
-            }
+            url={() => {
+              // エディタから渡された明示パス優先。無ければ node（拡張子/kind）から解決。
+              const path =
+                shareUrl ??
+                resourcePath({
+                  id: node.id,
+                  name: node.name,
+                  kind: node.kind,
+                  parent_id: node.parent_id,
+                });
+              const origin = typeof window !== "undefined" ? window.location.origin : "";
+              const sep = path.includes("?") ? "&" : "?";
+              // パスワード付き一般アクセスは解錠ヒント ?unlock=1 を付す（認可には非依存）。
+              return gaHasPassword ? `${origin}${path}${sep}unlock=1` : `${origin}${path}`;
+            }}
           />
         </div>
       </DialogContent>
