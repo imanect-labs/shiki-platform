@@ -39,20 +39,21 @@ test("一般アクセス（組織内）＋リンクコピー: 同組織の別ユ
   const nodeId = await createNoteViaApi(page, uniqueName("ga-org"));
   await openNoteSynced(page, nodeId);
 
-  // 共有ダイアログを開く。
+  // 共有ダイアログを開く → リンク設定（歯車の遷移先）を開く。
   await page.getByTestId("note-share").click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog).toContainText("アクセスできる範囲");
+  await dialog.getByTestId("link-settings-open").click();
+  await expect(dialog).toContainText("リンクの設定");
 
-  // 一般アクセスを「組織内」にして保存する。
+  // 範囲を「組織内」にして適用（→ メインへ戻る）。
   await dialog.getByTestId("ga-level-organization").click();
   await dialog.getByTestId("ga-save").click();
   // toast は aria-live 領域にも複製されるため first() で strict 違反を避ける。
-  await expect(page.getByText("共有設定を更新しました。").first()).toBeVisible({
+  await expect(page.getByText("リンク設定を更新しました。").first()).toBeVisible({
     timeout: 10_000,
   });
 
-  // 「リンクをコピー」でクリップボードへ入る（成功でボタンが「コピーしました」になる）。
+  // メインに戻ったら「リンクをコピー」（成功でボタンが「コピーしました」になる）。
   await dialog.getByTestId("copy-link").click();
   await expect(dialog.getByTestId("copy-link")).toContainText("コピーしました");
   // コピーされたのは当該ノートのディープリンクであること（拡張子欠落で /drive に落ちない回帰防止）。
@@ -87,15 +88,16 @@ test("パスワード付き一般アクセス: 未解錠は不可・解錠後に
   const nodeId = await createNoteViaApi(page, uniqueName("ga-pw"));
   await openNoteSynced(page, nodeId);
 
-  // 一般アクセス=全員 + パスワードを設定して保存する。
+  // リンク設定を開き、範囲=全員 + パスワードを設定して適用する。
   await page.getByTestId("note-share").click();
   const dialog = page.getByRole("dialog");
+  await dialog.getByTestId("link-settings-open").click();
   await dialog.getByTestId("ga-level-anyone").click();
   await dialog.getByTestId("ga-password-toggle").click();
   await dialog.getByTestId("ga-password").fill("s3cret-pass");
   await dialog.getByTestId("ga-save").click();
   // toast は aria-live 領域にも複製されるため first() で strict 違反を避ける。
-  await expect(page.getByText("共有設定を更新しました。").first()).toBeVisible({
+  await expect(page.getByText("リンク設定を更新しました。").first()).toBeVisible({
     timeout: 10_000,
   });
 

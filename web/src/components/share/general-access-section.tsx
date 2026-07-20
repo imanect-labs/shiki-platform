@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Globe2, Loader2, Lock, type LucideIcon, Users } from "lucide-react";
+import { Building2, Globe2, Loader2, Lock, type LucideIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,30 +18,41 @@ import {
 } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
-/// 「アクセスできる範囲」の選択肢。ユーザーの語彙に合わせる（既存アクセス者のみ/組織内/全員）。
-const LEVELS: { value: GeneralAccessLevel; label: string; icon: LucideIcon; testId: string }[] = [
-  { value: "restricted", label: "既存のアクセス権のある人のみ", icon: Lock, testId: "ga-level-restricted" },
-  { value: "organization", label: "組織内のユーザー", icon: Users, testId: "ga-level-organization" },
-  { value: "anyone", label: "すべてのユーザー", icon: Globe2, testId: "ga-level-anyone" },
+/// リンクを使えるユーザー（audience・OneDrive のリンク設定に倣う排他 1 択）。順序も OneDrive 準拠。
+const LEVELS: {
+  value: GeneralAccessLevel;
+  label: string;
+  desc: string;
+  icon: LucideIcon;
+  testId: string;
+}[] = [
+  {
+    value: "anyone",
+    label: "すべてのユーザー",
+    desc: "リンクを知っている認証済みユーザー全員が開けます。",
+    icon: Globe2,
+    testId: "ga-level-anyone",
+  },
+  {
+    value: "organization",
+    label: "組織内のユーザー",
+    desc: "組織内のユーザーがリンクから開けます。",
+    icon: Building2,
+    testId: "ga-level-organization",
+  },
+  {
+    value: "restricted",
+    label: "既存のアクセス権を持つユーザー専用",
+    desc: "すでにアクセス権のあるユーザーだけが開けます。",
+    icon: Lock,
+    testId: "ga-level-restricted",
+  },
 ];
 
 const ROLES: { value: ShareRole; label: string; testId: string }[] = [
-  { value: "viewer", label: "閲覧", testId: "ga-role-viewer" },
+  { value: "viewer", label: "閲覧" , testId: "ga-role-viewer" },
   { value: "editor", label: "編集", testId: "ga-role-editor" },
 ];
-
-/// レベルの説明文（現在の役割を織り込む）。
-function levelDesc(level: GeneralAccessLevel, role: ShareRole): string {
-  const verb = role === "editor" ? "編集" : "閲覧";
-  switch (level) {
-    case "restricted":
-      return "下で追加した特定のユーザー・部署だけが開けます。";
-    case "organization":
-      return `組織内のユーザーはリンクから${verb}できます。`;
-    case "anyone":
-      return `リンクを知っている認証済みユーザー全員が${verb}できます。`;
-  }
-}
 
 /// ISO 日時 → date input（YYYY-MM-DD・ローカル）。
 function isoToDateInput(iso: string | null | undefined): string {
@@ -57,15 +68,18 @@ function dateInputToIso(date: string): string {
   return new Date(`${date}T23:59:59`).toISOString();
 }
 
-/// 共有ダイアログの「アクセスできる範囲」セクション（#338）。owner だけが変更でき、
-/// 公開範囲（既存アクセス者のみ/組織内/全員）・役割・有効期限・パスワードを扱う。
+/// リンク設定（歯車）の中身。audience（アクセス範囲）と その他の設定（権限・有効期限・
+/// パスワード）を編集し「適用」で保存する（#338・OneDrive のリンク設定に倣う）。owner のみ。
 export function GeneralAccessSection({
   nodeId,
   onServerChange,
+  onSaved,
 }: {
   nodeId: string;
-  /// 現在の設定（未取得/権限なしは null）を親へ通知する（リンクの unlock ヒント用）。
+  /// 現在の設定（未取得/権限なしは null）を親へ通知する（リンクの unlock ヒント・現況表示用）。
   onServerChange?: (ga: GeneralAccess | null) => void;
+  /// 「適用」完了で親へ通知する（メイン画面へ戻す）。
+  onSaved?: () => void;
 }) {
   const [server, setServer] = React.useState<GeneralAccess | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -122,9 +136,13 @@ export function GeneralAccessSection({
   // パスワード保護 ON なのに（新規で）パスワード未入力は保存不可。
   const pwMissing = level !== "restricted" && pwEnabled && !pwValue && !server?.has_password;
 
-  const save = async () => {
+  const apply = async () => {
     if (pwMissing) {
       toast({ variant: "destructive", description: "パスワードを入力してください。" });
+      return;
+    }
+    if (!dirty) {
+      onSaved?.(); // 変更なしはそのまま戻る。
       return;
     }
     setSaving(true);
@@ -150,7 +168,8 @@ export function GeneralAccessSection({
       }
       const next = await getGeneralAccess(nodeId);
       hydrate(next);
-      toast({ description: "共有設定を更新しました。" });
+      toast({ description: "リンク設定を更新しました。" });
+      onSaved?.();
     } catch (e) {
       toast({
         variant: "destructive",
@@ -163,21 +182,19 @@ export function GeneralAccessSection({
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
         <Loader2 className="size-4 animate-spin" aria-hidden />
         読み込み中…
       </div>
     );
   }
-  // 権限が無い（owner でない）等で取得できなければセクション非表示。
+  // 権限が無い（owner でない）等で取得できなければ何も出さない。
   if (!server) return null;
 
   return (
-    <div className="flex flex-col gap-2.5">
-      <p className="text-sm font-medium">アクセスできる範囲</p>
-
-      {/* 範囲の選択（ラジオ・選択は塗り bg-accent／黒枠は使わない） */}
-      <div className="flex flex-col gap-1.5" role="radiogroup" aria-label="アクセスできる範囲">
+    <div className="flex flex-col gap-4">
+      {/* リンクを使えるユーザー（排他ラジオ・選択は塗り bg-accent／黒枠は使わない） */}
+      <div className="flex flex-col" role="radiogroup" aria-label="リンクを使えるユーザー">
         {LEVELS.map((l) => {
           const active = level === l.value;
           const Icon = l.icon;
@@ -190,47 +207,43 @@ export function GeneralAccessSection({
               data-testid={l.testId}
               onClick={() => setLevel(l.value)}
               className={cn(
-                "flex items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
-                active
-                  ? "border-border bg-accent"
-                  : "border-border/60 hover:bg-accent/40",
+                "flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                active ? "border-border bg-accent" : "border-transparent hover:bg-accent/40",
               )}
             >
+              <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium leading-tight">{l.label}</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">{l.desc}</span>
+              </span>
               <span
                 className={cn(
-                  "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
-                  active ? "border-foreground/50" : "border-muted-foreground/40",
+                  "flex size-4 shrink-0 items-center justify-center rounded-full border",
+                  active ? "border-foreground/60" : "border-muted-foreground/40",
                 )}
                 aria-hidden
               >
                 {active ? <span className="size-2 rounded-full bg-foreground" /> : null}
-              </span>
-              <Icon className="mt-px size-4 shrink-0 text-muted-foreground" aria-hidden />
-              <span className="min-w-0">
-                <span className="block text-sm font-medium leading-tight">{l.label}</span>
-                <span className="mt-0.5 block text-xs text-muted-foreground">
-                  {levelDesc(l.value, role)}
-                </span>
               </span>
             </button>
           );
         })}
       </div>
 
-      {/* 範囲が restricted 以外なら 役割・有効期限・パスワードを出す（枠は border-border/60 + bg-card/40） */}
+      {/* その他の設定（範囲が restricted 以外＝リンクで広く配るときのみ） */}
       {level !== "restricted" ? (
-        <div className="space-y-3 rounded-lg border border-border/60 bg-card/40 p-3">
+        <div className="space-y-3">
+          <p className="text-sm font-medium">その他の設定</p>
           <div className="flex items-center justify-between gap-2">
             <span className="text-sm text-muted-foreground">権限</span>
             <SegmentedControl
-              aria-label="一般アクセスの権限"
+              aria-label="リンクの権限"
               size="sm"
               options={ROLES}
               value={role}
               onValueChange={(v) => setRole(v as ShareRole)}
             />
           </div>
-
           <div className="flex items-center justify-between gap-2">
             <label htmlFor="ga-expiry" className="text-sm text-muted-foreground">
               有効期限
@@ -251,7 +264,6 @@ export function GeneralAccessSection({
               ) : null}
             </div>
           </div>
-
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
               <label htmlFor="ga-password-toggle" className="text-sm text-muted-foreground">
@@ -288,20 +300,18 @@ export function GeneralAccessSection({
         </div>
       ) : null}
 
-      {dirty ? (
-        <div className="flex justify-end">
-          <Button
-            type="button"
-            size="sm"
-            loading={saving}
-            disabled={pwMissing}
-            onClick={() => void save()}
-            data-testid="ga-save"
-          >
-            変更を保存
-          </Button>
-        </div>
-      ) : null}
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          size="sm"
+          loading={saving}
+          disabled={pwMissing}
+          onClick={() => void apply()}
+          data-testid="ga-save"
+        >
+          適用
+        </Button>
+      </div>
     </div>
   );
 }
