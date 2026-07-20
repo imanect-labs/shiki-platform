@@ -182,6 +182,7 @@ export default function OfficePage() {
         open={shareOpen}
         onOpenChange={setShareOpen}
         node={{ id: fileId, name: state.fileName }}
+        shareUrl={`/office/${fileId}`}
       />
 
       <div className="relative min-h-0 flex-1">

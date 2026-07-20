@@ -55,6 +55,9 @@ test("一般アクセス（組織内）＋リンクコピー: 同組織の別ユ
   // 「リンクをコピー」でクリップボードへ入る（成功でボタンが「コピーしました」になる）。
   await dialog.getByTestId("copy-link").click();
   await expect(dialog.getByTestId("copy-link")).toContainText("コピーしました");
+  // コピーされたのは当該ノートのディープリンクであること（拡張子欠落で /drive に落ちない回帰防止）。
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain(`/notes/${nodeId}`);
 
   // bob（同組織）がそのディープリンクで開ける。
   const bobCtx = await browser.newContext();
