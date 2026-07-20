@@ -118,6 +118,7 @@ impl StorageService {
                 role,
                 row.expires_at,
                 level,
+                granted,
                 trace_id,
             )
             .await;
@@ -137,6 +138,10 @@ impl StorageService {
     }
 
     /// redeem の台帳 upsert＋監査を 1 tx で。
+    ///
+    /// `record_grant` は「この redeem が実際にタプルを新規付与したか」（`write_tuple` の戻り）。
+    /// **付与していない（既に明示共有等でアクセス済み）なら台帳へ記録しない**。記録すると
+    /// 後の失効処理がその per-user タプル（＝ユーザーの明示共有）を誤って剥奪してしまうため。
     #[allow(clippy::too_many_arguments)]
     async fn persist_redeem(
         &self,
@@ -146,24 +151,27 @@ impl StorageService {
         role: ShareRole,
         expires_at: Option<DateTime<Utc>>,
         level: GeneralAccessLevel,
+        record_grant: bool,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
         let mut tx = self.db.begin().await?;
-        sqlx::query(
-            "INSERT INTO node_general_access_grant \
-               (node_id, user_id, tenant_id, kind, role, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
-             ON CONFLICT (node_id, user_id) DO UPDATE SET \
-               role = EXCLUDED.role, expires_at = EXCLUDED.expires_at, granted_at = now()",
-        )
-        .bind(node_id)
-        .bind(&ctx.principal.id)
-        .bind(&ctx.tenant_id)
-        .bind(kind.as_str())
-        .bind(role.as_str())
-        .bind(expires_at)
-        .execute(&mut *tx)
-        .await?;
+        if record_grant {
+            sqlx::query(
+                "INSERT INTO node_general_access_grant \
+                   (node_id, user_id, tenant_id, kind, role, expires_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6) \
+                 ON CONFLICT (node_id, user_id) DO UPDATE SET \
+                   role = EXCLUDED.role, expires_at = EXCLUDED.expires_at, granted_at = now()",
+            )
+            .bind(node_id)
+            .bind(&ctx.principal.id)
+            .bind(&ctx.tenant_id)
+            .bind(kind.as_str())
+            .bind(role.as_str())
+            .bind(expires_at)
+            .execute(&mut *tx)
+            .await?;
+        }
         audit::record_on(
             &mut tx,
             ctx,
@@ -207,16 +215,21 @@ impl StorageService {
         };
         let ns = ctx.ns();
         let obj = node_fga_object(&ns, kind, node_id);
-        if let (Some(level), Some(role)) =
-            (GeneralAccessLevel::parse(&level), ShareRole::parse(&role))
-        {
-            if let Some(subject) = broad_subject(&ns, level, &org) {
-                let _ = self
+        // broad タプル剥奪の成否を追う。**FGA 剥奪に失敗したら台帳行を消さない**
+        // （行が消えると orphan タプルでアクセスが残り続ける fail-open になるため・次回 open/タイマで再試行）。
+        let broad_revoked = match (GeneralAccessLevel::parse(&level), ShareRole::parse(&role)) {
+            (Some(level), Some(role)) => match broad_subject(&ns, level, &org) {
+                // パスワード付きは broad タプルが無い（剥奪不要＝成功扱い）。
+                None => true,
+                Some(subject) => self
                     .authz
                     .delete_tuple(&subject, role.relation(), &obj)
-                    .await;
-            }
-        }
+                    .await
+                    .is_ok(),
+            },
+            // パースできない破損行は削除せず残す（黙って消さない）。
+            _ => false,
+        };
         let grants: Vec<(String, String)> = sqlx::query_as(
             "SELECT user_id, role FROM node_general_access_grant \
              WHERE node_id = $1 AND tenant_id = $2",
@@ -226,23 +239,35 @@ impl StorageService {
         .fetch_all(&self.db)
         .await?;
         for (user_id, grole) in &grants {
-            if let Some(role) = ShareRole::parse(grole) {
-                let _ = self
+            let revoked = match ShareRole::parse(grole) {
+                Some(role) => self
                     .authz
                     .delete_tuple(&ns.user(user_id), role.relation(), &obj)
-                    .await;
+                    .await
+                    .is_ok(),
+                None => false,
+            };
+            // 剥奪に成功した台帳行だけ削除する（失敗行は残して再試行）。
+            if revoked {
+                sqlx::query(
+                    "DELETE FROM node_general_access_grant \
+                     WHERE node_id = $1 AND user_id = $2 AND tenant_id = $3",
+                )
+                .bind(node_id)
+                .bind(user_id)
+                .bind(&ctx.tenant_id)
+                .execute(&self.db)
+                .await?;
             }
         }
-        sqlx::query("DELETE FROM node_general_access WHERE node_id = $1 AND tenant_id = $2")
-            .bind(node_id)
-            .bind(&ctx.tenant_id)
-            .execute(&self.db)
-            .await?;
-        sqlx::query("DELETE FROM node_general_access_grant WHERE node_id = $1 AND tenant_id = $2")
-            .bind(node_id)
-            .bind(&ctx.tenant_id)
-            .execute(&self.db)
-            .await?;
+        // ポリシー行は broad タプル剥奪に成功したときだけ削除する。
+        if broad_revoked {
+            sqlx::query("DELETE FROM node_general_access WHERE node_id = $1 AND tenant_id = $2")
+                .bind(node_id)
+                .bind(&ctx.tenant_id)
+                .execute(&self.db)
+                .await?;
+        }
         Ok(())
     }
 
@@ -267,22 +292,27 @@ impl StorageService {
         .await?;
         for g in grants {
             let ns = Namespace::for_tenant(&g.tenant_id);
-            if let (Some(kind), Some(role)) = (NodeKind::parse(&g.kind), ShareRole::parse(&g.role))
-            {
-                let obj = node_fga_object(&ns, kind, g.node_id);
-                let _ = self
-                    .authz
-                    .delete_tuple(&ns.user(&g.user_id), role.relation(), &obj)
-                    .await;
+            // **FGA 剥奪に成功したときだけ**台帳行を消す（失敗行を消すと orphan タプルが残り fail-open）。
+            let revoked = match (NodeKind::parse(&g.kind), ShareRole::parse(&g.role)) {
+                (Some(kind), Some(role)) => {
+                    let obj = node_fga_object(&ns, kind, g.node_id);
+                    self.authz
+                        .delete_tuple(&ns.user(&g.user_id), role.relation(), &obj)
+                        .await
+                        .is_ok()
+                }
+                _ => false,
+            };
+            if revoked {
+                sqlx::query(
+                    "DELETE FROM node_general_access_grant WHERE node_id = $1 AND user_id = $2",
+                )
+                .bind(g.node_id)
+                .bind(&g.user_id)
+                .execute(&self.db)
+                .await?;
+                count += 1;
             }
-            sqlx::query(
-                "DELETE FROM node_general_access_grant WHERE node_id = $1 AND user_id = $2",
-            )
-            .bind(g.node_id)
-            .bind(&g.user_id)
-            .execute(&self.db)
-            .await?;
-            count += 1;
         }
 
         // ② 期限切れのポリシー（broad タプル剥奪＋行削除＋監査）。
@@ -295,19 +325,28 @@ impl StorageService {
         .await?;
         for p in policies {
             let ns = Namespace::for_tenant(&p.tenant_id);
-            if let (Some(kind), Some(level), Some(role)) = (
+            // broad タプル剥奪の成否を追い、**成功時だけ**ポリシー行を消す（fail-open 防止）。
+            let broad_revoked = match (
                 NodeKind::parse(&p.kind),
                 GeneralAccessLevel::parse(&p.level),
                 ShareRole::parse(&p.role),
             ) {
-                let obj = node_fga_object(&ns, kind, p.node_id);
-                // broad タプルはパスワード付きだと書かれていないが、delete は冪等 no-op で安全。
-                if let Some(subject) = broad_subject(&ns, level, &p.org) {
-                    let _ = self
-                        .authz
-                        .delete_tuple(&subject, role.relation(), &obj)
-                        .await;
+                (Some(kind), Some(level), Some(role)) => {
+                    let obj = node_fga_object(&ns, kind, p.node_id);
+                    match broad_subject(&ns, level, &p.org) {
+                        // パスワード付きは broad タプルが無い（剥奪不要＝成功扱い）。
+                        None => true,
+                        Some(subject) => self
+                            .authz
+                            .delete_tuple(&subject, role.relation(), &obj)
+                            .await
+                            .is_ok(),
+                    }
                 }
+                _ => false,
+            };
+            if !broad_revoked {
+                continue;
             }
             sqlx::query("DELETE FROM node_general_access WHERE node_id = $1")
                 .bind(p.node_id)
