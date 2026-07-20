@@ -47,7 +47,10 @@ test("一般アクセス（組織内）＋リンクコピー: 同組織の別ユ
   // 一般アクセスを「組織内」にして保存する。
   await dialog.getByTestId("ga-level-organization").click();
   await dialog.getByTestId("ga-save").click();
-  await expect(page.getByText("一般アクセスを更新しました。")).toBeVisible({ timeout: 10_000 });
+  // toast は aria-live 領域にも複製されるため first() で strict 違反を避ける。
+  await expect(page.getByText("一般アクセスを更新しました。").first()).toBeVisible({
+    timeout: 10_000,
+  });
 
   // 「リンクをコピー」でクリップボードへ入る（成功でボタンが「コピーしました」になる）。
   await dialog.getByTestId("copy-link").click();
@@ -88,7 +91,10 @@ test("パスワード付き一般アクセス: 未解錠は不可・解錠後に
   await dialog.getByTestId("ga-password-toggle").click();
   await dialog.getByTestId("ga-password").fill("s3cret-pass");
   await dialog.getByTestId("ga-save").click();
-  await expect(page.getByText("一般アクセスを更新しました。")).toBeVisible({ timeout: 10_000 });
+  // toast は aria-live 領域にも複製されるため first() で strict 違反を避ける。
+  await expect(page.getByText("一般アクセスを更新しました。").first()).toBeVisible({
+    timeout: 10_000,
+  });
 
   // bob が解錠 UI でパスワードを入れて開く。
   const bobCtx = await browser.newContext();
