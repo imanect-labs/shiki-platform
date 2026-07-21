@@ -19,6 +19,7 @@ import { OfficeEditor, type OfficeEditorHandle } from "@/components/office/offic
 import { EditorLoading } from "@/components/shell/editor-loading";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { GeneralAccessUnlock } from "@/components/share/general-access-unlock";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import {
   createOfficeSession,
@@ -43,10 +44,13 @@ export default function OfficePage() {
   const [state, setState] = React.useState<LoadState>({ phase: "loading" });
   const [chatOpen, setChatOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
+  // 解錠（redeem）後にセッション取得をやり直すためのリロードキー。
+  const [reloadKey, setReloadKey] = React.useState(0);
   const editorRef = React.useRef<OfficeEditorHandle>(null);
 
   React.useEffect(() => {
     let cancelled = false;
+    setState({ phase: "loading" });
     // 文書名（パネルの会話タイトル用）と編集セッションを並行取得する。
     Promise.all([
       createOfficeSession(fileId),
@@ -66,7 +70,7 @@ export default function OfficePage() {
     return () => {
       cancelled = true;
     };
-  }, [fileId]);
+  }, [fileId, reloadKey]);
 
   // 直近で挿入した選択テキスト（ポーリングの重複挿入を避ける）。
   const lastSelRef = React.useRef<string | null>(null);
@@ -114,11 +118,19 @@ export default function OfficePage() {
   }
   if (state.phase === "notfound") {
     return (
-      <EmptyState
-        icon={FileWarning}
-        title="この文書は開けません"
-        description="ファイルが存在しないか、開く権限がないか、ブラウザ編集に対応していない形式です。"
-      />
+      <div className="flex h-full flex-col items-center justify-center gap-6 p-6">
+        <EmptyState
+          icon={FileWarning}
+          title="この文書は開けません"
+          description="ファイルが存在しないか、開く権限がないか、ブラウザ編集に対応していない形式です。パスワード付き共有リンクの場合はパスワードで開けます。"
+        />
+        {/* パスワード付き一般アクセスの解錠（#338）。成功したらセッション取得をやり直す。 */}
+        <GeneralAccessUnlock
+          nodeId={fileId}
+          onUnlocked={() => setReloadKey((k) => k + 1)}
+          autoFocus
+        />
+      </div>
     );
   }
   if (state.phase === "unavailable") {
@@ -170,6 +182,7 @@ export default function OfficePage() {
         open={shareOpen}
         onOpenChange={setShareOpen}
         node={{ id: fileId, name: state.fileName }}
+        shareUrl={`/office/${fileId}`}
       />
 
       <div className="relative min-h-0 flex-1">

@@ -20,6 +20,7 @@ pub mod documents;
 pub mod file_versions;
 pub mod files;
 pub mod folders;
+pub mod general_access;
 pub mod me;
 pub mod mini_apps;
 pub mod office;

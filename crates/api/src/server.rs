@@ -142,6 +142,23 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/shares/shared-with-me", &["GET"], Session, || {
             get(routes::shares::shared_with_me)
         }),
+        // 一般アクセス（共有リンクの公開範囲・#338）。set/clear/get は owner ゲート、redeem は認証のみ。
+        r(
+            "/nodes/{id}/general-access",
+            &["GET", "PUT", "DELETE"],
+            Session,
+            || {
+                get(routes::general_access::get_general_access)
+                    .put(routes::general_access::set_general_access)
+                    .delete(routes::general_access::clear_general_access)
+            },
+        ),
+        r(
+            "/nodes/{id}/general-access/redeem",
+            &["POST"],
+            Session,
+            || post(routes::general_access::redeem_general_access),
+        ),
         r("/directory/users", &["GET"], Session, || {
             get(routes::directory::search_users)
         }),

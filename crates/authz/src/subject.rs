@@ -18,6 +18,17 @@ impl Subject {
         Subject(format!("{}:{}", ObjectType::User.as_str(), id))
     }
 
+    /// 型束縛パブリックワイルドカード subject `user:*`（type-bound public access）。
+    ///
+    /// 一般アクセス「すべての認証済みユーザー」を表す。**意図的に tenant 名前空間化しない**
+    /// （OpenFGA のワイルドカードは subject 側でグローバル）。テナント隔離は付与先の
+    /// **オブジェクトが名前空間化されている**こと（`file:<tenant>|<id>`）で担保する:
+    /// アクセス側は自テナントの識別子でしかオブジェクトを組めないため、`user:*` タプルは
+    /// 実質「同一テナント内の任意ユーザー」にしか効かない（越境は構造的に不能）。
+    pub fn public() -> Self {
+        Subject(format!("{}:*", ObjectType::User.as_str()))
+    }
+
     /// オブジェクトを subject として参照する（userset 親子の結線に使う）。
     ///
     /// 例: `file:<id>#parent@folder:<parent>` の右辺 `folder:<parent>`。
@@ -66,6 +77,12 @@ mod tests {
             Subject::object(&FgaObject::folder("f1")).as_str(),
             "folder:f1"
         );
+    }
+
+    #[test]
+    fn subject_public_is_user_wildcard() {
+        // Subject::public は type-bound public `user:*`（テナント名前空間化しない）。
+        assert_eq!(Subject::public().as_str(), "user:*");
     }
 
     #[test]

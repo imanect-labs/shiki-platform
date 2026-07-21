@@ -25,6 +25,7 @@ import {
   type ArtifactShareEntry,
   type ShareTarget,
 } from "@/lib/artifact-api";
+import { CopyLinkButton } from "@/components/share/copy-link-button";
 import { searchDirectory, searchRoles } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
@@ -46,11 +47,15 @@ export function ArtifactShareDialog({
   onOpenChange,
   artifactId,
   name,
+  shareUrl,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   artifactId: string | null;
   name: string;
+  /// コピーするリンク（そのアーティファクトのページ URL）。省略時はリンクコピーを出さない
+  /// （一覧ページから開いた場合に誤ったリンクを渡さないため）。
+  shareUrl?: string;
 }) {
   const [kind, setKind] = React.useState<TargetKind>("user");
   const [query, setQuery] = React.useState("");
@@ -317,6 +322,15 @@ export function ArtifactShareDialog({
             </ul>
           )}
         </div>
+
+        {shareUrl ? (
+          <>
+            <div className="shiki-dash-x" />
+            <div className="flex justify-start">
+              <CopyLinkButton url={shareUrl} />
+            </div>
+          </>
+        ) : null}
       </DialogContent>
     </Dialog>
   );

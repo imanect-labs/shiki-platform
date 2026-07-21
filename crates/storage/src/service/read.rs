@@ -15,6 +15,10 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
         let node = self.load_node(ctx, file_id, false).await?;
+        // 一般アクセスの遅延失効（#338・defense-in-depth）: 期限切れなら FGA タプルを先行剥奪して
+        // から viewer 判定する（新規 open が期限後のタプルで通らないようにする）。
+        self.enforce_general_access_expiry(ctx, file_id, node.kind)
+            .await?;
         self.require_read(
             ctx,
             &ctx.ns().file(&file_id.to_string()),
