@@ -20,7 +20,7 @@ import { MetadataPanel } from "@/components/notes/metadata-panel";
 import { NoteChatPanel } from "@/components/notes/note-chat-panel";
 import { NoteEditor } from "@/components/notes/note-editor";
 import { NoteSyncSlot } from "@/components/notes/note-header-slot";
-import { GeneralAccessUnlock } from "@/components/share/general-access-unlock";
+import { ShareLinkUnlock } from "@/components/share/share-link-unlock";
 import { EmptyState } from "@/components/ui/empty-state";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import { useMe } from "@/hooks/use-me";
@@ -154,8 +154,10 @@ function NotePageInner() {
             ) : undefined
           }
         />
-        {/* パスワード付き一般アクセスの解錠（#338）。?unlock=1 なら自動フォーカス。 */}
-        <GeneralAccessUnlock nodeId={nodeId} onUnlocked={loadAccess} autoFocus />
+        {/* パスワード付き共有リンクの解錠（#342）。?lt=<token> がある時のみ表示。 */}
+        {searchParams.get("lt") ? (
+          <ShareLinkUnlock token={searchParams.get("lt")!} onUnlocked={loadAccess} autoFocus />
+        ) : null}
       </div>
     );
   }

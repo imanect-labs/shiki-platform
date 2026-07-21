@@ -5,19 +5,27 @@ import { KeyRound, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { redeemGeneralAccess } from "@/lib/storage";
+import { redeemShareLink } from "@/lib/storage";
 
-/// パスワード付き一般アクセスの解錠フォーム（#338）。
+/// 現在の URL から共有リンクトークン（`?lt=`）を読む。Suspense 境界を要さないよう
+/// `useSearchParams` ではなく `window.location` から読む（クライアント専用）。
+export function unlockTokenFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get("lt");
+}
+
+/// パスワード付き共有リンクの解錠フォーム（#342）。
 ///
-/// リソースを開けなかったときに表示し、パスワードを入力して `redeem` する。成功したら
-/// `onUnlocked`（アクセス再取得/リロード）を呼ぶ。失敗理由はサーバ側で秘匿されるため、
-/// ここでも一律のメッセージだけ出す（オラクルにしない）。
-export function GeneralAccessUnlock({
-  nodeId,
+/// パスワード付きリンクの URL（`?lt=<token>&unlock=1`）で開いてアクセスできなかったときに表示し、
+/// パスワードを入力して token を `redeem` する。成功したら `onUnlocked`（アクセス再取得/リロード）を
+/// 呼ぶ。失敗理由はサーバ側で秘匿されるため、ここでも一律のメッセージだけ出す（オラクルにしない）。
+export function ShareLinkUnlock({
+  token,
   onUnlocked,
   autoFocus,
 }: {
-  nodeId: string;
+  /// URL `?lt=` のリンクトークン。
+  token: string;
   onUnlocked: () => void;
   autoFocus?: boolean;
 }) {
@@ -31,7 +39,7 @@ export function GeneralAccessUnlock({
     setBusy(true);
     setError(null);
     try {
-      await redeemGeneralAccess(nodeId, password);
+      await redeemShareLink(token, password);
       onUnlocked();
     } catch {
       setError("パスワードが正しくないか、リンクの有効期限が切れています。");
@@ -52,7 +60,7 @@ export function GeneralAccessUnlock({
         このリンクはパスワードで保護されています。共有者から受け取ったパスワードを入力してください。
       </p>
       <Input
-        data-testid="ga-unlock-password"
+        data-testid="link-unlock-password"
         type="password"
         autoComplete="off"
         autoFocus={autoFocus}
@@ -65,7 +73,7 @@ export function GeneralAccessUnlock({
           {error}
         </p>
       ) : null}
-      <Button type="submit" disabled={!password || busy} data-testid="ga-unlock-submit">
+      <Button type="submit" disabled={!password || busy} data-testid="link-unlock-submit">
         {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
         開く
       </Button>

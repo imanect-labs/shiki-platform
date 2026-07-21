@@ -23,7 +23,7 @@ use std::{sync::Arc, time::Duration};
 
 use authz::{
     client::{OpenFgaClient, OpenFgaConfig},
-    AuthContext, AuthzClient, Consistency, Principal, Relation,
+    AuthContext, AuthzClient, Consistency, ObjectType, Principal, Relation,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::{
@@ -2251,12 +2251,11 @@ async fn write_file_at_versions_and_emits_outbox() {
     assert!(after.is_none(), "削除後は解決不能");
 }
 
-// --- 一般アクセス（共有リンクの公開範囲・#338） -----------------------------
+// --- 共有リンク（複数発行・個別失効/延長・#342） ---------------------------
 
-/// restricted / organization / anyone の read ゲート、owner ゲート、
-/// および明示共有が clear で剥奪されないこと（redeem 台帳ベース剥奪の非破壊性）を実証する。
+/// organization / anyone リンクの read ゲート、owner ゲート、明示共有がリンク失効で剥奪されないこと。
 #[tokio::test]
-async fn general_access_levels_end_to_end() {
+async fn share_link_levels_end_to_end() {
     let Some(ctx) = setup().await else { return };
     let Ctx {
         service,
@@ -2270,48 +2269,45 @@ async fn general_access_levels_end_to_end() {
     let octx = make_ctx(&org, &owner);
     seed_org_member(&authz, &org, &owner).await;
 
-    // member = 同 org のメンバー（organization レベルで通す）。
     let member = format!("ituser{}", Uuid::new_v4().simple());
     let mctx = make_ctx(&org, &member);
     seed_org_member(&authz, &org, &member).await;
-    // nonmember = 同 org だが member タプル無し（organization では通らず anyone で通る）。
     let nonmember = format!("ituser{}", Uuid::new_v4().simple());
     let nmctx = make_ctx(&org, &nonmember);
-    // outsider = 別 org（DB org フィルタでそもそも load できない＝越境しない）。
     let other_org = format!("itorg{}", Uuid::new_v4().simple());
     let outsider = format!("ituser{}", Uuid::new_v4().simple());
     let octx_out = make_ctx(&other_org, &outsider);
     seed_org_member(&authz, &other_org, &outsider).await;
 
-    let file = upload(&service, &http, &octx, None, "ga.txt", b"general access")
+    let file = upload(&service, &http, &octx, None, "ga.txt", b"share link")
         .await
         .expect("upload");
 
-    // restricted（既定・行無し）: member/nonmember とも読めない。
+    // リンク未発行（restricted 相当）: member/nonmember とも読めない。
     for c in [&mctx, &nmctx] {
         assert!(
             matches!(
                 service.get_metadata(c, file.id, None).await,
                 Err(StorageError::NotFound)
             ),
-            "restricted では読めない"
+            "リンク未発行では読めない"
         );
     }
 
-    // organization/viewer: member は読める、nonmember は読めない。
-    service
-        .set_general_access(
+    // organization/viewer リンク: member は読める、nonmember は読めない。
+    let l_org = service
+        .create_share_link(
             &octx,
             file.id,
             GeneralAccessLevel::Organization,
             ShareRole::Viewer,
             None,
             None,
-            false,
+            None,
             None,
         )
         .await
-        .expect("set organization");
+        .expect("create org link");
     assert!(
         service.get_metadata(&mctx, file.id, None).await.is_ok(),
         "組織内メンバーは読める"
@@ -2321,37 +2317,36 @@ async fn general_access_levels_end_to_end() {
             service.get_metadata(&nmctx, file.id, None).await,
             Err(StorageError::NotFound)
         ),
-        "組織内でも非メンバーは organization レベルでは読めない"
+        "非メンバーは organization リンクでは読めない"
     );
 
-    // anyone/viewer: 同 org の非メンバーも読める。
+    // anyone/viewer リンク（別リンク）: 同 org 非メンバーも読める。
     service
-        .set_general_access(
+        .create_share_link(
             &octx,
             file.id,
             GeneralAccessLevel::Anyone,
             ShareRole::Viewer,
             None,
             None,
-            false,
+            None,
             None,
         )
         .await
-        .expect("set anyone");
+        .expect("create anyone link");
     assert!(
         service.get_metadata(&nmctx, file.id, None).await.is_ok(),
-        "anyone なら非メンバーも読める"
+        "anyone リンクなら非メンバーも読める"
     );
-    // 別 org のユーザーは DB org フィルタで到達不能（越境しない）。
     assert!(
         matches!(
             service.get_metadata(&octx_out, file.id, None).await,
             Err(StorageError::NotFound)
         ),
-        "anyone でも別 org へは越境しない（DB tenant/org スコープ）"
+        "別 org へは越境しない（DB tenant/org スコープ）"
     );
 
-    // 明示共有した相手は clear で剥奪されない（redeem 台帳ベース剥奪の非破壊性）。
+    // 明示共有した相手はリンク失効で剥奪されない。
     let pinned = format!("ituser{}", Uuid::new_v4().simple());
     let pctx = make_ctx(&org, &pinned);
     seed_org_member(&authz, &org, &pinned).await;
@@ -2365,47 +2360,56 @@ async fn general_access_levels_end_to_end() {
         )
         .await
         .expect("explicit share");
-    service
-        .clear_general_access(&octx, file.id, None)
+
+    // 発行済みリンクを全て失効する。
+    for l in service
+        .list_share_links(&octx, file.id, None)
         .await
-        .expect("clear");
-    // clear 後: 一般アクセス由来（nonmember）は読めない、明示共有（pinned）は残る。
+        .expect("list")
+    {
+        service
+            .revoke_share_link(&octx, l.link_id, None)
+            .await
+            .expect("revoke");
+    }
+    let _ = l_org;
+    // 失効後: リンク由来（nonmember）は読めない、明示共有（pinned）は残る。
     assert!(
         matches!(
             service.get_metadata(&nmctx, file.id, None).await,
             Err(StorageError::NotFound)
         ),
-        "clear で一般アクセスは消える"
+        "全失効でリンク由来アクセスは消える"
     );
     assert!(
         service.get_metadata(&pctx, file.id, None).await.is_ok(),
-        "明示共有は clear で剥奪されない"
+        "明示共有はリンク失効で剥奪されない"
     );
 
-    // owner でない者は set できない（Forbidden）。
+    // owner でない者は発行できない（Forbidden）。
     assert!(
         matches!(
             service
-                .set_general_access(
+                .create_share_link(
                     &mctx,
                     file.id,
                     GeneralAccessLevel::Anyone,
                     ShareRole::Viewer,
                     None,
                     None,
-                    false,
+                    None,
                     None
                 )
                 .await,
             Err(StorageError::Forbidden)
         ),
-        "owner でない者は一般アクセスを設定できない"
+        "owner でない者はリンクを発行できない"
     );
 }
 
-/// パスワード付き一般アクセス: broad タプルを書かず、redeem 検証後に per-user タプルを発行する。
+/// パスワード付きリンク: broad タプルを書かず、token+パスワード検証後に per-user タプルを発行する。
 #[tokio::test]
-async fn general_access_password_redeem() {
+async fn share_link_password_redeem() {
     let Some(ctx) = setup().await else { return };
     let Ctx {
         service,
@@ -2421,7 +2425,6 @@ async fn general_access_password_redeem() {
     let member = format!("ituser{}", Uuid::new_v4().simple());
     let mctx = make_ctx(&org, &member);
     seed_org_member(&authz, &org, &member).await;
-    // 同 org 非メンバー（organization+password では redeem できない）。
     let nonmember = format!("ituser{}", Uuid::new_v4().simple());
     let nmctx = make_ctx(&org, &nonmember);
 
@@ -2429,20 +2432,20 @@ async fn general_access_password_redeem() {
         .await
         .expect("upload");
 
-    // anyone/editor + password: broad タプルは書かれない → 誰も読めない。
-    service
-        .set_general_access(
+    // anyone/editor + password: broad タプル無し → member 読めない。
+    let l = service
+        .create_share_link(
             &octx,
             file.id,
             GeneralAccessLevel::Anyone,
             ShareRole::Editor,
             None,
             Some("s3cret-pass"),
-            false,
+            None,
             None,
         )
         .await
-        .expect("set anyone+password");
+        .expect("create anyone+password");
     assert!(
         matches!(
             service.get_metadata(&mctx, file.id, None).await,
@@ -2451,27 +2454,24 @@ async fn general_access_password_redeem() {
         "パスワード付きは redeem 前は読めない（broad タプル無し）"
     );
 
-    // 誤ったパスワードは Forbidden（オラクルにしない）。
+    // 誤パスワードは Forbidden（オラクルにしない）。
     assert!(
         matches!(
             service
-                .redeem_general_access(&mctx, file.id, "wrong", None)
+                .redeem_share_link(&mctx, &l.token, Some("wrong"), None)
                 .await,
             Err(StorageError::Forbidden)
         ),
         "誤パスワードは Forbidden"
     );
-    assert!(
-        matches!(
-            service.get_metadata(&mctx, file.id, None).await,
-            Err(StorageError::NotFound)
-        ),
-        "誤 redeem 後も読めない"
-    );
+    assert!(matches!(
+        service.get_metadata(&mctx, file.id, None).await,
+        Err(StorageError::NotFound)
+    ));
 
     // 正しいパスワードで redeem → per-user タプル発行 → 読める。
     service
-        .redeem_general_access(&mctx, file.id, "s3cret-pass", None)
+        .redeem_share_link(&mctx, &l.token, Some("s3cret-pass"), None)
         .await
         .expect("redeem");
     assert!(
@@ -2479,43 +2479,39 @@ async fn general_access_password_redeem() {
         "redeem 後は読める"
     );
 
-    // organization + password: 非メンバーは正しいパスワードでも redeem 不可（メンバーシップ要求）。
-    service
-        .set_general_access(
+    // organization + password リンク: 非メンバーは正パスワードでも redeem 不可。
+    let l2 = service
+        .create_share_link(
             &octx,
             file.id,
             GeneralAccessLevel::Organization,
             ShareRole::Viewer,
             None,
             Some("p2-pass"),
-            false,
+            None,
             None,
         )
         .await
-        .expect("set organization+password");
+        .expect("create organization+password");
     assert!(
         matches!(
             service
-                .redeem_general_access(&nmctx, file.id, "p2-pass", None)
+                .redeem_share_link(&nmctx, &l2.token, Some("p2-pass"), None)
                 .await,
             Err(StorageError::Forbidden)
         ),
-        "organization レベルは非メンバーだと redeem できない"
+        "organization リンクは非メンバーだと redeem できない"
     );
-    // メンバーは redeem できる。
     service
-        .redeem_general_access(&mctx, file.id, "p2-pass", None)
+        .redeem_share_link(&mctx, &l2.token, Some("p2-pass"), None)
         .await
         .expect("member redeem");
-    assert!(
-        service.get_metadata(&mctx, file.id, None).await.is_ok(),
-        "メンバーは redeem 後読める"
-    );
+    assert!(service.get_metadata(&mctx, file.id, None).await.is_ok());
 }
 
-/// 有効期限: セッション開始点の遅延失効と、イベント駆動タイマの明示剥奪、次回起床時刻。
+/// 有効期限: 遅延失効（get_metadata 前段）とイベント駆動タイマの明示剥奪、次回起床時刻。
 #[tokio::test]
-async fn general_access_expiry() {
+async fn share_link_expiry() {
     use chrono::Utc;
     let Some(ctx) = setup().await else { return };
     let Ctx {
@@ -2540,33 +2536,30 @@ async fn general_access_expiry() {
     // 未来の期限: member は読める。
     let future = Utc::now() + chrono::Duration::hours(1);
     service
-        .set_general_access(
+        .create_share_link(
             &octx,
             file.id,
             GeneralAccessLevel::Organization,
             ShareRole::Viewer,
             Some(future),
             None,
-            false,
+            None,
             None,
         )
         .await
-        .expect("set future expiry");
+        .expect("create future expiry");
     assert!(
         service.get_metadata(&mctx, file.id, None).await.is_ok(),
         "期限内は読める"
     );
 
     // 次回失効時刻はこの期限を返す。
-    let next = service
-        .next_general_access_expiry()
-        .await
-        .expect("next expiry");
-    assert!(next.is_some(), "期限付き行があるので次回失効時刻がある");
+    let next = service.next_share_link_expiry().await.expect("next expiry");
+    assert!(next.is_some(), "期限付きリンクがあるので次回失効時刻がある");
 
-    // タイマが「未来+2h」時点を処理 → 剥奪されて読めなくなる。
+    // タイマが「未来+1h」時点を処理 → 剥奪されて読めなくなる。
     let count = service
-        .revoke_expired_general_access(future + chrono::Duration::hours(1))
+        .revoke_expired_share_links(future + chrono::Duration::hours(1))
         .await
         .expect("revoke expired");
     assert!(count >= 1, "期限切れを 1 件以上剥奪する");
@@ -2581,18 +2574,18 @@ async fn general_access_expiry() {
     // 過去の期限を設定 → get_metadata の遅延失効で即座に不可（タイマを待たない）。
     let past = Utc::now() - chrono::Duration::seconds(1);
     service
-        .set_general_access(
+        .create_share_link(
             &octx,
             file.id,
             GeneralAccessLevel::Organization,
             ShareRole::Viewer,
             Some(past),
             None,
-            false,
+            None,
             None,
         )
         .await
-        .expect("set past expiry");
+        .expect("create past expiry");
     assert!(
         matches!(
             service.get_metadata(&mctx, file.id, None).await,
@@ -2602,11 +2595,9 @@ async fn general_access_expiry() {
     );
 }
 
-/// #338(114): 明示共有を持つユーザーが redeem しても、その明示共有は失効/解除で誤剥奪されない。
-/// redeem は「実際に新規付与したタプル」だけを台帳に載せる（granted ゲート）ため、既存の
-/// 明示共有（write_tuple が no-op）は台帳に載らず、clear/失効の per-user 剥奪対象にならない。
+/// 明示共有を持つユーザーが redeem しても、その明示共有はリンク失効で誤剥奪されない（台帳ゲート）。
 #[tokio::test]
-async fn general_access_redeem_preserves_explicit_share() {
+async fn share_link_preserves_explicit_share() {
     let Some(ctx) = setup().await else { return };
     let Ctx {
         service,
@@ -2629,7 +2620,7 @@ async fn general_access_redeem_preserves_explicit_share() {
         &octx,
         None,
         "explicit.txt",
-        b"explicit + ga",
+        b"explicit + link",
     )
     .await
     .expect("upload");
@@ -2647,33 +2638,234 @@ async fn general_access_redeem_preserves_explicit_share() {
         .expect("explicit share");
     assert!(service.get_metadata(&mctx, file.id, None).await.is_ok());
 
-    // owner が anyone/viewer + password を設定 → member が redeem（既に viewer を持つので no-op 付与）。
-    service
-        .set_general_access(
+    // anyone/viewer + password リンク → member が redeem（既に viewer なので no-op 付与）。
+    let l = service
+        .create_share_link(
             &octx,
             file.id,
             GeneralAccessLevel::Anyone,
             ShareRole::Viewer,
             None,
             Some("pw-x"),
-            false,
+            None,
             None,
         )
         .await
-        .expect("set anyone+password");
+        .expect("create anyone+password");
     service
-        .redeem_general_access(&mctx, file.id, "pw-x", None)
+        .redeem_share_link(&mctx, &l.token, Some("pw-x"), None)
         .await
         .expect("redeem (no-op grant)");
     assert!(service.get_metadata(&mctx, file.id, None).await.is_ok());
 
-    // owner が一般アクセスを解除 → 明示 viewer は残る（redeem 台帳経由で誤剥奪されない）。
+    // リンクを失効 → 明示 viewer は残る（redeem 台帳ゲートで誤剥奪されない）。
     service
-        .clear_general_access(&octx, file.id, None)
+        .revoke_share_link(&octx, l.link_id, None)
         .await
-        .expect("clear");
+        .expect("revoke");
     assert!(
         service.get_metadata(&mctx, file.id, None).await.is_ok(),
-        "明示共有は redeem/clear を経ても残る（granted ゲートで台帳に載らないため）"
+        "明示共有はリンク失効を経ても残る（granted ゲートで台帳に載らないため）"
+    );
+}
+
+/// 参照カウント: 同一 audience の 2 本のリンクが同じ FGA タプルを共有し、1 本失効しても
+/// 他が生存すればアクセスは維持され、両方失効で初めてタプルが消える。
+#[tokio::test]
+async fn share_link_ref_count_keeps_tuple() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let member = format!("ituser{}", Uuid::new_v4().simple());
+    let mctx = make_ctx(&org, &member);
+    seed_org_member(&authz, &org, &member).await;
+
+    let file = upload(&service, &http, &octx, None, "refcount.txt", b"ref count")
+        .await
+        .expect("upload");
+
+    // 同一 audience（organization/viewer）のリンクを 2 本発行。
+    let l1 = service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("l1");
+    let l2 = service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("l2");
+    assert!(
+        service.get_metadata(&mctx, file.id, None).await.is_ok(),
+        "2 本発行で読める"
+    );
+
+    // L1 失効 → L2 が同じ organization#member viewer タプルを保持 → まだ読める。
+    service
+        .revoke_share_link(&octx, l1.link_id, None)
+        .await
+        .expect("revoke l1");
+    assert!(
+        service.get_metadata(&mctx, file.id, None).await.is_ok(),
+        "同 audience の他リンクが生存 → 読める（参照カウント）"
+    );
+
+    // L2 も失効 → タプル消滅 → 読めない。
+    service
+        .revoke_share_link(&octx, l2.link_id, None)
+        .await
+        .expect("revoke l2");
+    assert!(
+        matches!(
+            service.get_metadata(&mctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "全失効でタプル消滅"
+    );
+}
+
+/// RAG completeness: broad/redeem 共有した file が `list_objects(Viewer, File)` に出る
+/// （pre-filter が `user:*` / `organization#member` を展開して取りこぼさないことを実証）。
+#[tokio::test]
+async fn share_link_list_objects_completeness() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let member = format!("ituser{}", Uuid::new_v4().simple());
+    let mctx = make_ctx(&org, &member);
+    seed_org_member(&authz, &org, &member).await;
+    let nonmember = format!("ituser{}", Uuid::new_v4().simple());
+    let nmctx = make_ctx(&org, &nonmember);
+
+    let file = upload(&service, &http, &octx, None, "rag.txt", b"rag")
+        .await
+        .expect("upload");
+    let file_obj = octx.ns().file(&file.id.to_string()).as_str().to_string();
+
+    // organization リンク → member の list_objects に出る、nonmember には出ない。
+    service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("org link");
+    let m_objs = authz
+        .list_objects(&mctx.subject(), Relation::Viewer, ObjectType::File)
+        .await
+        .expect("list member");
+    assert!(
+        m_objs.contains(&file_obj),
+        "organization リンクの file が member の list_objects に出る（RAG pre-filter 完全性）"
+    );
+    let nm_objs = authz
+        .list_objects(&nmctx.subject(), Relation::Viewer, ObjectType::File)
+        .await
+        .expect("list nonmember");
+    assert!(
+        !nm_objs.contains(&file_obj),
+        "非メンバーには organization リンクの file は出ない"
+    );
+
+    // anyone リンク → nonmember の list_objects にも出る（user:* 展開）。
+    service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Anyone,
+            ShareRole::Viewer,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("anyone link");
+    let nm_objs2 = authz
+        .list_objects(&nmctx.subject(), Relation::Viewer, ObjectType::File)
+        .await
+        .expect("list nonmember 2");
+    assert!(
+        nm_objs2.contains(&file_obj),
+        "anyone リンクの file は user:* 展開で非メンバーの list_objects に出る"
+    );
+
+    // パスワードリンク（別 file）: redeem 前は出ず、redeem 後に出る。
+    let file2 = upload(&service, &http, &octx, None, "rag2.txt", b"pw rag")
+        .await
+        .expect("upload2");
+    let file2_obj = octx.ns().file(&file2.id.to_string()).as_str().to_string();
+    let lp = service
+        .create_share_link(
+            &octx,
+            file2.id,
+            GeneralAccessLevel::Anyone,
+            ShareRole::Viewer,
+            None,
+            Some("rag-pw"),
+            None,
+            None,
+        )
+        .await
+        .expect("pw link");
+    let before = authz
+        .list_objects(&mctx.subject(), Relation::Viewer, ObjectType::File)
+        .await
+        .expect("before redeem");
+    assert!(
+        !before.contains(&file2_obj),
+        "パスワードリンクは redeem 前は list_objects に出ない"
+    );
+    service
+        .redeem_share_link(&mctx, &lp.token, Some("rag-pw"), None)
+        .await
+        .expect("redeem");
+    let after = authz
+        .list_objects(&mctx.subject(), Relation::Viewer, ObjectType::File)
+        .await
+        .expect("after redeem");
+    assert!(
+        after.contains(&file2_obj),
+        "redeem 後は list_objects に出る"
     );
 }

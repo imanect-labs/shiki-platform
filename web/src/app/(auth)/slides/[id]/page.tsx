@@ -16,7 +16,7 @@ import { NoteChatPanel } from "@/components/notes/note-chat-panel";
 import { SlideHeaderSlot } from "@/components/slides/slide-header-slot";
 import { SlideWorkspace } from "@/components/slides/slide-workspace";
 import { EmptyState } from "@/components/ui/empty-state";
-import { GeneralAccessUnlock } from "@/components/share/general-access-unlock";
+import { ShareLinkUnlock, unlockTokenFromUrl } from "@/components/share/share-link-unlock";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import { CollabProvider, type CollabStatus } from "@/lib/collab";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
@@ -113,7 +113,9 @@ export default function SlidePage() {
           title="スライドが見つかりません"
           description="削除されたか、アクセス権がありません。パスワード付き共有リンクの場合はパスワードで開けます。"
         />
-        <GeneralAccessUnlock nodeId={nodeId} onUnlocked={loadAccess} autoFocus />
+        {unlockTokenFromUrl() ? (
+          <ShareLinkUnlock token={unlockTokenFromUrl()!} onUnlocked={loadAccess} autoFocus />
+        ) : null}
       </div>
     );
   }

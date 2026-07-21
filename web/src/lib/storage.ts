@@ -15,9 +15,10 @@ export type FileVersionsResponse = components["schemas"]["FileVersionsResponse"]
 export type ShareEntry = components["schemas"]["ShareEntry"];
 export type ShareRole = components["schemas"]["ShareRole"];
 export type ShareTarget = components["schemas"]["ShareTarget"];
-export type GeneralAccess = components["schemas"]["GeneralAccess"];
+export type ShareLink = components["schemas"]["ShareLink"];
+/// リンクの公開範囲（audience）。restricted=既存アクセス者のみ / organization=組織内 / anyone=社内全員。
 export type GeneralAccessLevel = components["schemas"]["GeneralAccessLevel"];
-export type SetGeneralAccessBody = components["schemas"]["SetGeneralAccessRequest"];
+export type CreateShareLinkBody = components["schemas"]["CreateShareLinkRequest"];
 export type DirectoryUserResponse = components["schemas"]["DirectoryUserResponse"];
 export type DirectorySearchResponse = components["schemas"]["DirectorySearchResponse"];
 export type DirectoryRoleResponse = components["schemas"]["DirectoryRoleResponse"];
@@ -280,33 +281,42 @@ export function unshareNode(nodeId: string, target: ShareTarget, role: ShareRole
   }).then(okEmpty);
 }
 
-// --- 一般アクセス（共有リンクの公開範囲・#338） --------------------------
+// --- 共有リンク（複数発行・個別失効/延長・#342） --------------------------
 
-/// 一般アクセスの現在設定を取得する（owner のみ）。
-export function getGeneralAccess(nodeId: string): Promise<GeneralAccess> {
-  return apiFetch(`/nodes/${nodeId}/general-access`).then((r) => okJson<GeneralAccess>(r));
-}
-
-/// 一般アクセスを設定する（owner のみ・level=restricted は解除と同義）。
-export function setGeneralAccess(nodeId: string, body: SetGeneralAccessBody): Promise<void> {
-  return apiFetch(`/nodes/${nodeId}/general-access`, {
-    method: "PUT",
+/// 共有リンクを発行する（owner のみ）。発行結果（token 含む）を返す。
+export function createShareLink(nodeId: string, body: CreateShareLinkBody): Promise<ShareLink> {
+  return apiFetch(`/nodes/${nodeId}/share-links`, {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  }).then((r) => okJson<ShareLink>(r));
+}
+
+/// ノードの active な共有リンク一覧を取得する（owner のみ）。
+export function listShareLinks(nodeId: string): Promise<ShareLink[]> {
+  return apiFetch(`/nodes/${nodeId}/share-links`).then((r) => okJson<ShareLink[]>(r));
+}
+
+/// 共有リンクを失効する（owner のみ）。
+export function revokeShareLink(linkId: string): Promise<void> {
+  return apiFetch(`/share-links/${linkId}`, { method: "DELETE" }).then(okEmpty);
+}
+
+/// 共有リンクの有効期限を延長/変更する（owner のみ・null で無期限化）。
+export function extendShareLink(linkId: string, expiresAt: string | null): Promise<void> {
+  return apiFetch(`/share-links/${linkId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expires_at: expiresAt }),
   }).then(okEmpty);
 }
 
-/// 一般アクセスを解除して restricted へ戻す（owner のみ）。
-export function clearGeneralAccess(nodeId: string): Promise<void> {
-  return apiFetch(`/nodes/${nodeId}/general-access`, { method: "DELETE" }).then(okEmpty);
-}
-
-/// パスワード付き一般アクセスを解錠する（認証済みなら誰でも・失敗は一律 403）。
-export function redeemGeneralAccess(nodeId: string, password: string): Promise<void> {
-  return apiFetch(`/nodes/${nodeId}/general-access/redeem`, {
+/// パスワード付き共有リンクを token で解錠する（認証済みなら誰でも・失敗は一律 403）。
+export function redeemShareLink(token: string, password?: string): Promise<void> {
+  return apiFetch(`/share-links/redeem`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ token, password }),
   }).then(okEmpty);
 }
 

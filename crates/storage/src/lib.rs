@@ -43,8 +43,8 @@ pub use error::StorageError;
 pub use event::{OutboxEvent, WriteOp};
 pub use indexing::{IndexerStorage, NodeSnapshot};
 pub use model::{
-    ChildPage, ChildSort, ChildSortKey, Crumb, DownloadTicket, FileVersion, GeneralAccess,
-    GeneralAccessLevel, Node, NodeKind, ShareEntry, ShareRole, ShareTarget, UploadTicket,
+    ChildPage, ChildSort, ChildSortKey, Crumb, DownloadTicket, FileVersion, GeneralAccessLevel,
+    Node, NodeKind, ShareEntry, ShareLink, ShareRole, ShareTarget, UploadTicket,
 };
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
 pub use service::{StorageService, WriteAtOutcome};

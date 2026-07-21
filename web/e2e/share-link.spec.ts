@@ -2,11 +2,12 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 
-/// issue #338「共有リンク発行＋一般アクセス」の受け入れ条件を検証する（LLM=stub）:
-/// - 共有ダイアログに「一般アクセス」（制限付き/組織内/全員）＋「リンクをコピー」がある
-/// - 組織内アクセスにすると、同組織の別ユーザーがそのリンク（ディープリンク）で開ける
-/// - 制限付き（既定）のままなら未共有ユーザーは開けない
-/// - パスワード付き一般アクセスは、未解錠では開けず、正しいパスワードで解錠すると開ける
+/// issue #342「共有リンクの複数発行・個別失効/延長・2タブ化」の受け入れ条件を検証する（LLM=stub）:
+/// - 共有ダイアログの「リンク」タブで範囲を選んでリンクを発行でき、発行済み一覧に出る。
+/// - 発行した組織内リンクのディープリンクを、同組織の別ユーザーが開ける。
+/// - リンクを失効すると、その別ユーザーは開けなくなる。
+/// - リンク未発行なら未共有ユーザーは開けない。
+/// - パスワード付きリンクは、token 付き URL でも未解錠では開けず、正しいパスワードで開ける。
 ///
 /// alice / bob は同組織（a-corp）、charlie は別組織（b-corp）。
 
@@ -29,51 +30,49 @@ async function openNoteSynced(page: Page, nodeId: string) {
   await expect(page.getByTestId("note-sync-status")).toHaveText("同期済み", { timeout: 20_000 });
 }
 
-test("一般アクセス（組織内）＋リンクコピー: 同組織の別ユーザーが開ける", async ({
+test("組織内リンクを発行→別ユーザーが開ける→失効で開けなくなる", async ({
   page,
   context,
   browser,
 }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await loginViaKeycloak(page); // alice (a-corp)
-  const nodeId = await createNoteViaApi(page, uniqueName("ga-org"));
+  const nodeId = await createNoteViaApi(page, uniqueName("sl-org"));
   await openNoteSynced(page, nodeId);
 
-  // 共有ダイアログを開く → リンク設定（歯車の遷移先）を開く。
+  // 共有ダイアログ → リンクタブ → 組織内で発行。
   await page.getByTestId("note-share").click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByTestId("link-settings-open").click();
-  await expect(dialog).toContainText("リンクの設定");
+  await dialog.getByTestId("share-tab-links").click();
+  await dialog.getByTestId("link-audience-organization").click();
+  await dialog.getByTestId("link-create").click();
 
-  // 範囲を「組織内」にして適用（→ メインへ戻る）。
-  await dialog.getByTestId("ga-level-organization").click();
-  await dialog.getByTestId("ga-save").click();
-  // toast は aria-live 領域にも複製されるため first() で strict 違反を避ける。
-  await expect(page.getByText("リンク設定を更新しました。").first()).toBeVisible({
-    timeout: 10_000,
-  });
-
-  // メインに戻ったら「リンクをコピー」（成功でボタンが「コピーしました」になる）。
-  await dialog.getByTestId("copy-link").click();
-  await expect(dialog.getByTestId("copy-link")).toContainText("コピーしました");
-  // コピーされたのは当該ノートのディープリンクであること（拡張子欠落で /drive に落ちない回帰防止）。
+  // 発行済み一覧に出て、コピーされた URL が当該ノートのディープリンク。
+  await expect(dialog.getByTestId("link-item")).toHaveCount(1, { timeout: 10_000 });
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied).toContain(`/notes/${nodeId}`);
 
-  // bob（同組織）がそのディープリンクで開ける。
+  // bob（同組織）はそのディープリンクで開ける。
   const bobCtx = await browser.newContext();
   const bobPage = await bobCtx.newPage();
   await loginAs(bobPage, "bob");
   await openNoteSynced(bobPage, nodeId);
+
+  // alice がリンクを失効する。
+  await dialog.getByTestId("link-revoke").click();
+  await expect(dialog.getByTestId("link-item")).toHaveCount(0, { timeout: 10_000 });
+
+  // 失効後は bob は開けない（存在秘匿の「見つかりません」）。
+  await bobPage.goto(`/notes/${nodeId}`);
+  await expect(bobPage.getByText("ノートが見つかりません")).toBeVisible({ timeout: 15_000 });
   await bobCtx.close();
 });
 
-test("制限付き（既定）: 未共有ユーザーは開けない", async ({ page, browser }) => {
+test("リンク未発行: 未共有ユーザーは開けない", async ({ page, browser }) => {
   await loginViaKeycloak(page); // alice
-  const nodeId = await createNoteViaApi(page, uniqueName("ga-restricted"));
+  const nodeId = await createNoteViaApi(page, uniqueName("sl-none"));
   await openNoteSynced(page, nodeId); // 作成者は開ける
 
-  // 共有せず、bob（同組織だが未共有）がリンクで開こうとすると見つからない。
   const bobCtx = await browser.newContext();
   const bobPage = await bobCtx.newPage();
   await loginAs(bobPage, "bob");
@@ -83,42 +82,44 @@ test("制限付き（既定）: 未共有ユーザーは開けない", async ({ 
   await bobCtx.close();
 });
 
-test("パスワード付き一般アクセス: 未解錠は不可・解錠後に開ける", async ({ page, browser }) => {
+test("パスワード付きリンク: 未解錠は不可・token 解錠後に開ける", async ({ page, context, browser }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await loginViaKeycloak(page); // alice
-  const nodeId = await createNoteViaApi(page, uniqueName("ga-pw"));
+  const nodeId = await createNoteViaApi(page, uniqueName("sl-pw"));
   await openNoteSynced(page, nodeId);
 
-  // リンク設定を開き、範囲=全員 + パスワードを設定して適用する。
+  // リンクタブ → 社内全員 + パスワードで発行。
   await page.getByTestId("note-share").click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByTestId("link-settings-open").click();
-  await dialog.getByTestId("ga-level-anyone").click();
-  await dialog.getByTestId("ga-password-toggle").click();
-  await dialog.getByTestId("ga-password").fill("s3cret-pass");
-  await dialog.getByTestId("ga-save").click();
-  // toast は aria-live 領域にも複製されるため first() で strict 違反を避ける。
-  await expect(page.getByText("リンク設定を更新しました。").first()).toBeVisible({
-    timeout: 10_000,
-  });
+  await dialog.getByTestId("share-tab-links").click();
+  await dialog.getByTestId("link-audience-anyone").click();
+  await dialog.getByTestId("link-password-toggle").click();
+  await dialog.getByTestId("link-password").fill("s3cret-pass");
+  await dialog.getByTestId("link-create").click();
+  await expect(dialog.getByTestId("link-item")).toHaveCount(1, { timeout: 10_000 });
 
-  // bob が解錠 UI でパスワードを入れて開く。
+  // コピー URL は解錠ヒント付き（?lt=<token>&unlock=1）。
+  const url = await page.evaluate(() => navigator.clipboard.readText());
+  expect(url).toContain(`/notes/${nodeId}`);
+  expect(url).toContain("lt=");
+  expect(url).toContain("unlock=1");
+  const linkPath = url.slice(url.indexOf(`/notes/${nodeId}`));
+
+  // bob が token 付き URL で開く。未解錠では開けない（解錠フォームが出る）。
   const bobCtx = await browser.newContext();
   const bobPage = await bobCtx.newPage();
   await loginAs(bobPage, "bob");
-  await bobPage.goto(`/notes/${nodeId}?unlock=1`);
-  // 未解錠では開けない（解錠フォームが出る）。
-  await expect(bobPage.getByTestId("ga-unlock-password")).toBeVisible({ timeout: 15_000 });
+  await bobPage.goto(linkPath);
+  await expect(bobPage.getByTestId("link-unlock-password")).toBeVisible({ timeout: 15_000 });
 
   // 誤パスワードはエラー（オラクルにしない一律メッセージ）。
-  await bobPage.getByTestId("ga-unlock-password").fill("wrong");
-  await bobPage.getByTestId("ga-unlock-submit").click();
+  await bobPage.getByTestId("link-unlock-password").fill("wrong");
+  await bobPage.getByTestId("link-unlock-submit").click();
   await expect(bobPage.getByRole("alert")).toBeVisible({ timeout: 10_000 });
 
   // 正しいパスワードで解錠 → ノートが開く。
-  await bobPage.getByTestId("ga-unlock-password").fill("s3cret-pass");
-  await bobPage.getByTestId("ga-unlock-submit").click();
-  await expect(bobPage.getByTestId("note-sync-status")).toHaveText("同期済み", {
-    timeout: 20_000,
-  });
+  await bobPage.getByTestId("link-unlock-password").fill("s3cret-pass");
+  await bobPage.getByTestId("link-unlock-submit").click();
+  await expect(bobPage.getByTestId("note-sync-status")).toHaveText("同期済み", { timeout: 20_000 });
   await bobCtx.close();
 });

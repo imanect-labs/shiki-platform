@@ -185,9 +185,9 @@ impl StorageService {
             "node_version",
             "pending_upload",
             "storage_event_outbox",
-            // 一般アクセス台帳（#338）。node より先に消す（FK は張っていないが順序を明示）。
-            "node_general_access_grant",
-            "node_general_access",
+            // 共有リンク台帳（#342）。node より先に消す（FK は張っていないが順序を明示）。
+            "node_share_link_grant",
+            "node_share_link",
             "directory_user",
             "directory_role",
             "node",

@@ -19,7 +19,7 @@ import { OfficeEditor, type OfficeEditorHandle } from "@/components/office/offic
 import { EditorLoading } from "@/components/shell/editor-loading";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import { GeneralAccessUnlock } from "@/components/share/general-access-unlock";
+import { ShareLinkUnlock, unlockTokenFromUrl } from "@/components/share/share-link-unlock";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import {
   createOfficeSession,
@@ -124,12 +124,14 @@ export default function OfficePage() {
           title="この文書は開けません"
           description="ファイルが存在しないか、開く権限がないか、ブラウザ編集に対応していない形式です。パスワード付き共有リンクの場合はパスワードで開けます。"
         />
-        {/* パスワード付き一般アクセスの解錠（#338）。成功したらセッション取得をやり直す。 */}
-        <GeneralAccessUnlock
-          nodeId={fileId}
-          onUnlocked={() => setReloadKey((k) => k + 1)}
-          autoFocus
-        />
+        {/* パスワード付き共有リンクの解錠（#342）。?lt=<token> がある時のみ表示。 */}
+        {unlockTokenFromUrl() ? (
+          <ShareLinkUnlock
+            token={unlockTokenFromUrl()!}
+            onUnlocked={() => setReloadKey((k) => k + 1)}
+            autoFocus
+          />
+        ) : null}
       </div>
     );
   }

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowLeft, Loader2, Search, Settings2, UserPlus, Users, X } from "lucide-react";
+import { Loader2, Search, UserPlus, Users, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -13,17 +13,16 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "@/components/ui/use-toast";
 import { CopyLinkButton } from "@/components/share/copy-link-button";
-import { GeneralAccessSection } from "@/components/share/general-access-section";
+import { ShareLinksPanel } from "@/components/share/share-links-panel";
 import {
-  getGeneralAccess,
   listShares,
   searchDirectory,
   searchRoles,
   shareNode,
   unshareNode,
-  type GeneralAccess,
   type NodeResponse,
   type ShareEntry,
   type ShareRole,
@@ -50,14 +49,16 @@ const KIND_OPTIONS = [
 /// 検索結果を種別非依存に正規化した 1 候補。
 type Candidate = { id: string; primary: string; secondary: string };
 
-/// 共有ダイアログ。同テナントのメンバー / 部署・ロールを検索して閲覧/編集権限を付与する。
-/// 別テナントの相手は検索結果に出ない（サーバ側 tenant_id スコープ）。部署・ロールは
-/// そのメンバー（配下ロール込み）へ一括共有される（#76）。
 /// 共有対象の最小形。NodeResponse は構造的に適合するため既存のドライブ呼び出しは無変更で、
 /// ノート/Office エディタは `{ id, name }` を直接渡せる（kind/parent_id はリンク解決の任意情報）。
 export type ShareTargetNode = Pick<NodeResponse, "id" | "name"> &
   Partial<Pick<NodeResponse, "kind" | "parent_id">>;
 
+/// 共有ダイアログ（#342）。2 タブ構成:
+/// - **権限**: 特定のメンバー/部署・ロールへ直接共有（ReBAC 付与）＋既存の権限者へ渡すリンクコピー。
+/// - **リンク**: 共有リンクの発行（範囲/権限/期限/パスワード）＋発行済み一覧（コピー/延長/失効）。
+/// 別テナントの相手は検索結果に出ない（サーバ側 tenant_id スコープ）。部署・ロールはそのメンバー
+/// （配下ロール込み）へ一括共有される（#76）。
 export function ShareDialog({
   open,
   onOpenChange,
@@ -67,8 +68,8 @@ export function ShareDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   node: ShareTargetNode | null;
-  /// コピーするリンクのパス（例 `/notes/{id}`）。エディタから開くとき、name から拡張子が
-  /// 落ちて種別を判定できないケースのために明示指定する。省略時は node から解決する。
+  /// 共有リンクのパス（例 `/notes/{id}`）。エディタから開くとき name から拡張子が落ちて種別を
+  /// 判定できないケースのために明示指定する。省略時は node から解決する。
   shareUrl?: string;
 }) {
   const [kind, setKind] = React.useState<TargetKind>("user");
@@ -78,31 +79,20 @@ export function ShareDialog({
   const [role, setRole] = React.useState<ShareRole>("viewer");
   const [shares, setShares] = React.useState<ShareEntry[]>([]);
   const [loadingShares, setLoadingShares] = React.useState(false);
-  // 進行中の付与/解除を (type, id, role) 単位で識別する。user と role で id が衝突しても
-  // 混ざらないよう type を含める。
   const [pendingKey, setPendingKey] = React.useState<string | null>(null);
-  // 画面: メイン（相手を追加＋リンクをコピー）/ 設定（リンクの範囲・その他の設定）。
-  const [view, setView] = React.useState<"main" | "settings">("main");
-  // 現在のリンク設定（メインの現況表示＋コピーリンクの解錠ヒント用）。
-  const [ga, setGa] = React.useState<GeneralAccess | null>(null);
-  const gaHasPassword = !!ga && ga.level !== "restricted" && ga.has_password;
 
-  // 開いたら状態リセット＋現在の共有相手・リンク設定を読む。
+  // 開いたら状態リセット＋現在の共有相手を読む。
   React.useEffect(() => {
     if (!open || !node) return;
     setKind("user");
     setQuery("");
     setResults([]);
     setRole("viewer");
-    setView("main");
     setLoadingShares(true);
     listShares(node.id)
       .then(setShares)
       .catch(() => setShares([]))
       .finally(() => setLoadingShares(false));
-    getGeneralAccess(node.id)
-      .then(setGa)
-      .catch(() => setGa(null));
   }, [open, node]);
 
   // 種別を切り替えたら検索状態をリセットする（user↔role で結果の意味が変わるため）。
@@ -111,9 +101,8 @@ export function ShareDialog({
     setResults([]);
   }, [kind]);
 
-  // インクリメンタル検索（デバウンス。全件取得はせず先頭ページのみ）。
-  // active フラグで世代を守り、古いクエリ/古い種別の遅延レスポンスが新しい結果を
-  // 上書きしないようにする（そのまま「共有」を押すと誤った相手へ付与する事故を防ぐ）。
+  // インクリメンタル検索（デバウンス。全件取得はせず先頭ページのみ）。active フラグで世代を守り、
+  // 古いクエリ/種別の遅延レスポンスが新しい結果を上書きしないようにする。
   React.useEffect(() => {
     if (!open) return;
     let active = true;
@@ -145,6 +134,14 @@ export function ShareDialog({
   );
 
   if (!node) return null;
+
+  const linkPath =
+    shareUrl ??
+    resourcePath({ id: node.id, name: node.name, kind: node.kind, parent_id: node.parent_id });
+  const pointerUrl = () => {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    return `${origin}${linkPath}`;
+  };
 
   const grant = async (candidate: Candidate) => {
     const target = { type: kind, id: candidate.id } as ShareTarget;
@@ -199,54 +196,28 @@ export function ShareDialog({
 
   const placeholder = KINDS.find((k) => k.value === kind)!.placeholder;
 
-  const buildLinkUrl = () => {
-    // エディタから渡された明示パス優先。無ければ node（拡張子/kind）から解決。
-    const path =
-      shareUrl ??
-      resourcePath({ id: node.id, name: node.name, kind: node.kind, parent_id: node.parent_id });
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const sep = path.includes("?") ? "&" : "?";
-    // パスワード付きリンクは解錠ヒント ?unlock=1 を付す（認可には非依存）。
-    return gaHasPassword ? `${origin}${path}${sep}unlock=1` : `${origin}${path}`;
-  };
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
-        {view === "settings" ? (
-          /* ===== リンクの設定（歯車の遷移先） ===== */
-          <>
-            <DialogHeader>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setView("main")}
-                  aria-label="戻る"
-                  data-testid="link-settings-back"
-                  className="-ml-1 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                >
-                  <ArrowLeft className="size-4" aria-hidden />
-                </button>
-                <DialogTitle>リンクの設定</DialogTitle>
-              </div>
-              <DialogDescription>このリンクを開けるユーザーの範囲を設定します。</DialogDescription>
-            </DialogHeader>
-            <GeneralAccessSection
-              nodeId={node.id}
-              onServerChange={setGa}
-              onSaved={() => setView("main")}
-            />
-          </>
-        ) : (
-          /* ===== メイン（相手を追加＋リンクをコピー） ===== */
-          <>
-            <DialogHeader>
-              <DialogTitle>「{node.name}」を共有</DialogTitle>
-              <DialogDescription>
-                特定のユーザー・部署を追加するか、リンクをコピーして共有します。
-              </DialogDescription>
-            </DialogHeader>
+        <DialogHeader>
+          <DialogTitle>「{node.name}」を共有</DialogTitle>
+          <DialogDescription>
+            特定のユーザー・部署に権限を付与するか、共有リンクを発行します。
+          </DialogDescription>
+        </DialogHeader>
 
+        <Tabs defaultValue="permissions">
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="permissions" data-testid="share-tab-permissions">
+              権限
+            </TabsTrigger>
+            <TabsTrigger value="links" data-testid="share-tab-links">
+              リンク
+            </TabsTrigger>
+          </TabsList>
+
+          {/* ===== 権限タブ（直接共有＋既存権限者向けリンクコピー） ===== */}
+          <TabsContent value="permissions" className="flex flex-col gap-4">
             {/* 相手の種別＋権限 */}
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <SegmentedControl
@@ -275,7 +246,6 @@ export function ShareDialog({
                 aria-hidden
               />
               <Input
-                autoFocus
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder={placeholder}
@@ -376,22 +346,20 @@ export function ShareDialog({
 
             <div className="shiki-dash-x" />
 
-            {/* リンクをコピー＋リンクの設定（歯車・OneDrive の主画面に倣う） */}
-            <div className="flex items-center gap-2">
-              <CopyLinkButton url={buildLinkUrl} />
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                onClick={() => setView("settings")}
-                aria-label="リンクの設定"
-                data-testid="link-settings-open"
-              >
-                <Settings2 className="size-4" aria-hidden />
-              </Button>
+            {/* 既存の権限者に渡すリンク（付与ゼロの純ポインタ）。 */}
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">
+                アクセス権のある人へリンクを渡す
+              </span>
+              <CopyLinkButton url={pointerUrl} />
             </div>
-          </>
-        )}
+          </TabsContent>
+
+          {/* ===== リンクタブ（発行物・個別失効/延長） ===== */}
+          <TabsContent value="links">
+            <ShareLinksPanel nodeId={node.id} linkPath={linkPath} />
+          </TabsContent>
+        </Tabs>
       </DialogContent>
     </Dialog>
   );
