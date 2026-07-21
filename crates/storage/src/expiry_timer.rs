@@ -1,6 +1,6 @@
-//! 一般アクセス有効期限の失効タイマ（#338・イベント駆動・定期ポーリング無し）。
+//! 共有リンク有効期限の失効タイマ（#342・イベント駆動・定期ポーリング無し）。
 //!
-//! OpenFGA タプルに TTL が無いため、期限切れの一般アクセス（broad / redeem 済み per-user）を
+//! OpenFGA タプルに TTL が無いため、期限切れの共有リンク（broad / redeem 済み per-user）を
 //! バックグラウンドで剥奪する。**固定 interval ポーリングはしない**: 次に失効する時刻まで
 //! sleep し、その瞬間だけ起きて処理する。新しい（今より早い）期限が設定されたら
 //! [`StorageService::expiry_notify`] で起こされて次回起床時刻を再計算する。失効対象が無ければ
@@ -16,25 +16,23 @@ use crate::service::StorageService;
 /// 失効対象が無いときの最大 sleep（安全網。タイマ取りこぼしがあってもこの間隔で再チェックする）。
 const BACKSTOP: Duration = Duration::from_hours(1);
 
-/// 一般アクセス失効タイマをバックグラウンド起動する（shiki-server の起動フローから呼ぶ）。
+/// 共有リンク失効タイマをバックグラウンド起動する（shiki-server の起動フローから呼ぶ）。
 ///
 /// 返した `JoinHandle` は保持不要（プロセス生存中は動き続ける）。
-pub fn spawn_general_access_expiry_timer(
-    service: Arc<StorageService>,
-) -> tokio::task::JoinHandle<()> {
+pub fn spawn_share_link_expiry_timer(service: Arc<StorageService>) -> tokio::task::JoinHandle<()> {
     let notify = service.expiry_notify();
     tokio::spawn(async move {
         loop {
             // 1. 既に期限切れのものを剥奪する。
-            match service.revoke_expired_general_access(Utc::now()).await {
+            match service.revoke_expired_share_links(Utc::now()).await {
                 Ok(n) if n > 0 => {
-                    tracing::info!(count = n, "一般アクセスの期限切れを剥奪しました（#338）");
+                    tracing::info!(count = n, "共有リンクの期限切れを剥奪しました（#342）");
                 }
                 Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "一般アクセスの失効処理に失敗しました"),
+                Err(e) => tracing::warn!(error = %e, "共有リンクの失効処理に失敗しました"),
             }
             // 2. 次に失効する時刻まで待つ（無ければ backstop）。
-            let wait = match service.next_general_access_expiry().await {
+            let wait = match service.next_share_link_expiry().await {
                 Ok(Some(next)) => {
                     let ms = (next - Utc::now()).num_milliseconds();
                     if ms <= 0 {
