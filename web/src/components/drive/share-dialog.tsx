@@ -1,18 +1,7 @@
 "use client";
 
 import * as React from "react";
-import {
-  ArrowLeft,
-  Building2,
-  Globe2,
-  Loader2,
-  Lock,
-  Search,
-  Settings2,
-  UserPlus,
-  Users,
-  X,
-} from "lucide-react";
+import { ArrowLeft, Loader2, Search, Settings2, UserPlus, Users, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -35,20 +24,12 @@ import {
   shareNode,
   unshareNode,
   type GeneralAccess,
-  type GeneralAccessLevel,
   type NodeResponse,
   type ShareEntry,
   type ShareRole,
   type ShareTarget,
 } from "@/lib/storage";
 import { resourcePath } from "@/lib/resource-link";
-
-/// audience（アクセス範囲）の現況表示（メイン画面の 1 行・OneDrive 風）。
-const AUDIENCE: Record<GeneralAccessLevel, { label: string; icon: typeof Globe2 }> = {
-  anyone: { label: "すべてのユーザー", icon: Globe2 },
-  organization: { label: "組織内のユーザー", icon: Building2 },
-  restricted: { label: "既存のアクセス権を持つユーザー専用", icon: Lock },
-};
 
 const ROLE_OPTIONS: { value: ShareRole; label: string; testId: string }[] = [
   { value: "viewer", label: "閲覧", testId: "share-role-viewer" },
@@ -229,17 +210,6 @@ export function ShareDialog({
     return gaHasPassword ? `${origin}${path}${sep}unlock=1` : `${origin}${path}`;
   };
 
-  // メインの audience 現況（現在のリンク範囲）。
-  const audience = ga ? AUDIENCE[ga.level] : null;
-  const AudienceIcon = audience?.icon ?? Globe2;
-  const audienceSub = !ga
-    ? "読み込み中…"
-    : ga.level === "restricted"
-      ? "追加した相手だけがアクセスできます"
-      : `${ga.role === "editor" ? "編集" : "閲覧"}可能${ga.has_password ? "・パスワードあり" : ""}${
-          ga.expires_at ? "・期限あり" : ""
-        }`;
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
@@ -406,28 +376,19 @@ export function ShareDialog({
 
             <div className="shiki-dash-x" />
 
-            {/* リンクを使えるユーザー（現況・クリックでリンク設定へ） */}
-            <button
-              type="button"
-              onClick={() => setView("settings")}
-              data-testid="link-settings-open"
-              className="flex items-center gap-3 rounded-lg border border-border/60 bg-card/40 px-3 py-2.5 text-left transition-colors hover:bg-accent/40"
-            >
-              <AudienceIcon className="size-5 shrink-0 text-muted-foreground" aria-hidden />
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium leading-tight">
-                  {audience?.label ?? "リンクを使えるユーザー"}
-                </span>
-                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                  {audienceSub}
-                </span>
-              </span>
-              <Settings2 className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-            </button>
-
-            {/* リンクをコピー */}
-            <div className="flex justify-start">
+            {/* リンクをコピー＋リンクの設定（歯車・OneDrive の主画面に倣う） */}
+            <div className="flex items-center gap-2">
               <CopyLinkButton url={buildLinkUrl} />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => setView("settings")}
+                aria-label="リンクの設定"
+                data-testid="link-settings-open"
+              >
+                <Settings2 className="size-4" aria-hidden />
+              </Button>
             </div>
           </>
         )}
