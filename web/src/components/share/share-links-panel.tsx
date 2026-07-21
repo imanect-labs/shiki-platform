@@ -158,11 +158,14 @@ export function ShareLinksPanel({ nodeId, linkPath }: { nodeId: string; linkPath
     }
     setCreating(true);
     try {
+      // restricted（付与ゼロの純ポインタ）は期限/パスワードを持たない。UI で隠れていても
+      // 直前の別 audience の入力状態が残るため、送信前に確実に落とす（Codex P2）。
+      const scoped = audience !== "restricted";
       const link = await createShareLink(nodeId, {
         audience,
         role,
-        expires_at: expiry ? dateInputToIso(expiry) : null,
-        password: pwEnabled && pwValue ? pwValue : null,
+        expires_at: scoped && expiry ? dateInputToIso(expiry) : null,
+        password: scoped && pwEnabled && pwValue ? pwValue : null,
         label: null,
       });
       setLinks((prev) => [link, ...prev]);
