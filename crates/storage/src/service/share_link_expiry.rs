@@ -143,11 +143,16 @@ impl StorageService {
                 self.compensate_broad(obj, &added).await;
                 return Err(e);
             }
+            // 失効確定はロック保持下で期限を再確認する（SELECT〜ロック取得の間に owner が延長した
+            // 場合、reconcile_broad は延長リンクを active 扱いでタプルを残すため、ここで無条件に
+            // revoked_at を立てると「revoked なのに broad タプルが残る」不整合になる・Codex P1）。
             sqlx::query(
                 "UPDATE node_share_link SET revoked_at = now() \
-                 WHERE link_id = $1 AND revoked_at IS NULL",
+                 WHERE link_id = $1 AND revoked_at IS NULL \
+                   AND expires_at IS NOT NULL AND expires_at <= $2",
             )
             .bind(link_id)
+            .bind(now)
             .execute(&mut *tx)
             .await?;
         }
