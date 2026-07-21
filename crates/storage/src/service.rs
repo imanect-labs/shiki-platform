@@ -161,6 +161,7 @@ mod read;
 mod restore;
 mod share_link;
 mod share_link_expiry;
+mod share_link_reconcile;
 mod share_link_redeem;
 mod share_link_util;
 mod sharing;
