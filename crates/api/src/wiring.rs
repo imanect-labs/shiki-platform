@@ -53,7 +53,7 @@ pub(crate) async fn wire_storage(
         config.storage.max_upload_size_bytes,
     ));
     // 一般アクセス有効期限の失効タイマ（#338・イベント駆動・定期ポーリング無し）。
-    storage::expiry_timer::spawn_general_access_expiry_timer(Arc::clone(&service));
+    storage::expiry_timer::spawn_share_link_expiry_timer(Arc::clone(&service));
     Ok((object_store, service))
 }
 

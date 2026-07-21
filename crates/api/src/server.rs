@@ -142,23 +142,22 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/shares/shared-with-me", &["GET"], Session, || {
             get(routes::shares::shared_with_me)
         }),
-        // 一般アクセス（共有リンクの公開範囲・#338）。set/clear/get は owner ゲート、redeem は認証のみ。
+        // 共有リンク（#342）。発行/一覧/失効/延長は owner ゲート、redeem は認証のみ（失敗は一律 403）。
+        r("/nodes/{id}/share-links", &["GET", "POST"], Session, || {
+            get(routes::share_links::list_share_links).post(routes::share_links::create_share_link)
+        }),
         r(
-            "/nodes/{id}/general-access",
-            &["GET", "PUT", "DELETE"],
+            "/share-links/{link_id}",
+            &["DELETE", "PATCH"],
             Session,
             || {
-                get(routes::general_access::get_general_access)
-                    .put(routes::general_access::set_general_access)
-                    .delete(routes::general_access::clear_general_access)
+                delete(routes::share_links::revoke_share_link)
+                    .patch(routes::share_links::extend_share_link)
             },
         ),
-        r(
-            "/nodes/{id}/general-access/redeem",
-            &["POST"],
-            Session,
-            || post(routes::general_access::redeem_general_access),
-        ),
+        r("/share-links/redeem", &["POST"], Session, || {
+            post(routes::share_links::redeem_share_link)
+        }),
         r("/directory/users", &["GET"], Session, || {
             get(routes::directory::search_users)
         }),

@@ -56,7 +56,7 @@ pub struct StorageService {
     /// 1 ファイルの最大アップロードサイズ（バイト）。declare の宣言サイズがこれを超えたら拒否し、
     /// 認証ユーザーによる無制限アップロードでのストレージ枯渇を防ぐ（容量ガード）。
     max_upload_size: i64,
-    /// 一般アクセス有効期限の失効タイマを起こす通知（#338）。`set_general_access` で今より早い
+    /// 共有リンク有効期限の失効タイマを起こす通知（#342）。リンク発行/延長/redeem で今より早い
     /// 期限を設定したら `notify_one()` し、タイマが次回起床時刻を再計算する（定期ポーリング回避）。
     expiry_notify: Arc<Notify>,
 }
@@ -143,8 +143,8 @@ impl StorageService {
         }
     }
 
-    /// 一般アクセス失効タイマ用の通知ハンドル（#338）。タイマ spawner がこれを購読し、
-    /// `next_general_access_expiry()` まで sleep しつつ、新期限設定の `notify_one()` で起きる。
+    /// 共有リンク失効タイマ用の通知ハンドル（#342）。タイマ spawner がこれを購読し、
+    /// `next_share_link_expiry()` まで sleep しつつ、新期限設定の `notify_one()` で起きる。
     pub fn expiry_notify(&self) -> Arc<Notify> {
         Arc::clone(&self.expiry_notify)
     }
@@ -154,13 +154,15 @@ mod admin;
 mod content_update;
 mod finalize;
 mod folder;
-mod general_access;
-mod general_access_redeem;
 mod internal_io;
 mod move_rename;
 mod proposal;
 mod read;
 mod restore;
+mod share_link;
+mod share_link_expiry;
+mod share_link_redeem;
+mod share_link_util;
 mod sharing;
 mod trash;
 mod upload;

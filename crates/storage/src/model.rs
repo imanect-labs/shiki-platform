@@ -265,29 +265,22 @@ impl GeneralAccessLevel {
     }
 }
 
-/// 一般アクセスの現在設定（GET 応答・#338）。
+/// 共有リンク 1 件（作成の発行結果・一覧要素の両方に使う・#342）。
 ///
-/// パスワードは **`has_password` の真偽のみ**露出し、ハッシュ・平文は決して返さない。
-/// `level == Restricted` のとき role/expires_at/has_password は無意味（既定値）で、
-/// フロントは level で分岐する。
+/// `audience` は [`GeneralAccessLevel`] を再利用する（`restricted` = 既存アクセス者のみの
+/// 純ポインタ／`organization`／`anyone`）。パスワードは **`has_password` の真偽のみ**露出し、
+/// ハッシュ・平文は決して返さない。`token` はリンクの URL/redeem 起点で、発行 owner にのみ返す
+/// （URL 再表示のため一覧にも含める）。失効済み（`revoked_at` 有り）のリンクは一覧に含めない。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
-pub struct GeneralAccess {
-    pub level: GeneralAccessLevel,
+pub struct ShareLink {
+    pub link_id: Uuid,
+    pub token: String,
+    pub audience: GeneralAccessLevel,
     pub role: ShareRole,
     pub expires_at: Option<DateTime<Utc>>,
     pub has_password: bool,
-}
-
-impl GeneralAccess {
-    /// 一般アクセス未設定（restricted）の既定値。
-    pub fn restricted() -> Self {
-        GeneralAccess {
-            level: GeneralAccessLevel::Restricted,
-            role: ShareRole::Viewer,
-            expires_at: None,
-            has_password: false,
-        }
-    }
+    pub label: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 /// 共有相手 1 件（誰に・どの役割で共有したか）。
