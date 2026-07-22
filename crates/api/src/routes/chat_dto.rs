@@ -41,8 +41,12 @@ pub struct CreateThreadRequest {
     #[serde(default)]
     pub agent_mode: Option<bool>,
     /// 初期コンテキストに適用する skill（Task 6.7・version 込みでピンされる）。
+    /// `skills` の単数形（後方互換）。`skills` と併用時は `skills` が優先。
     #[serde(default)]
     pub skill: Option<ArtifactPinRequest>,
+    /// 最初からロード済みにする skill（複数可・順序付き・#344）。
+    #[serde(default)]
+    pub skills: Option<Vec<ArtifactPinRequest>>,
     /// ミニアプリ経由のセッション（Task 6.10・skill ピンはバンドルから解決される）。
     /// skill と併用した場合はミニアプリ側が優先。
     #[serde(default)]
@@ -117,6 +121,13 @@ pub struct ThreadShareEntry {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ThreadSharesResponse {
     pub shares: Vec<ThreadShareEntry>,
+}
+
+/// スレッドの skill ピン集合の置換リクエスト（途中変更・owner のみ・#344）。
+/// ミニアプリ経由のスレッドは 409 相当で拒否される（バンドル定義のピンが正）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetThreadSkillsRequest {
+    pub skills: Vec<ArtifactPinRequest>,
 }
 
 /// スレッドの由来ノート設定リクエスト（下書き確定→ノート実体化の紐付け・issue #282）。

@@ -13,6 +13,7 @@ import {
   Trash2,
   Files,
   ListChecks,
+  Sparkles,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -39,7 +40,15 @@ const TOOL_LABEL: Record<string, { label: string; icon: typeof Search }> = {
   grep: { label: "ファイルを検索", icon: Search },
   shell: { label: "コマンドを実行", icon: Terminal },
   plan: { label: "計画を更新", icon: ListChecks },
+  skill: { label: "スキルを読み込み", icon: Sparkles },
 };
+
+/// ツール入力から表示に添える対象名を取り出す（skill ならスキル名・#344）。
+function itemDetail(it: ToolActivityItem): string | null {
+  if (it.name !== "skill") return null;
+  const name = (it.input as { name?: unknown } | undefined)?.name;
+  return typeof name === "string" && name ? name : null;
+}
 
 /// エージェントのツール実行（Chain of Thought）を可視化する。検索中はスピナー、完了はチェック。
 export function ToolActivity({ items }: { items: ToolActivityItem[] }) {
@@ -49,6 +58,7 @@ export function ToolActivity({ items }: { items: ToolActivityItem[] }) {
       {items.map((it) => {
         const meta = TOOL_LABEL[it.name] ?? { label: it.name, icon: Search };
         const Icon = meta.icon;
+        const detail = itemDetail(it);
         return (
           <div
             key={it.id}
@@ -58,7 +68,12 @@ export function ToolActivity({ items }: { items: ToolActivityItem[] }) {
             )}
           >
             <Icon className="size-3.5 text-primary" aria-hidden />
-            <span>{meta.label}</span>
+            <span>
+              {meta.label}
+              {detail ? (
+                <span className="ml-1 font-medium text-foreground">「{detail}」</span>
+              ) : null}
+            </span>
             {it.running ? (
               <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-hidden />
             ) : (

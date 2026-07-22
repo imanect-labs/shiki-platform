@@ -314,6 +314,9 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/threads/{id}", &["GET", "PATCH"], Session, || {
             get(routes::chat::get_thread).patch(routes::chat_notes::set_thread_origin_note)
         }),
+        r("/threads/{id}/skills", &["PUT"], Session, || {
+            put(routes::chat_skills::set_thread_skills)
+        }),
         r("/threads/{id}/messages", &["GET", "POST"], Session, || {
             get(routes::chat::get_messages).post(routes::chat::post_message)
         }),
