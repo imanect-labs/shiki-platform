@@ -110,15 +110,16 @@ pub(super) fn note_tool_call(
         );
     }
     // Office 文書の選択（office_selection・node_id 付き）＋編集キーワード → office.live_edit。
-    // 開いている Collabora セッションの現在の選択範囲を丸ごと置換し、Action_Paste による
-    // セッション内ライブ反映を実パイプライン（承認 → authz → emitter → /office フレーム）で叩く（#328）。
+    // 選択本文をアンカー（replace_text.find）に使い、AI の headless 参加（CoolWSD 接続 →
+    // 自 view で検索・照合 → paste → save）を実パイプラインで叩く（issue #352）。
     if let Some(node_id) = selection_node_id(user_text, "office_selection") {
         if wants_edit(user_text) {
+            let find = selection_excerpt(user_text, "office_selection").unwrap_or_default();
             return call(
                 "office.live_edit",
                 serde_json::json!({
                     "node_id": node_id,
-                    "html": MOCK_OFFICE_LIVE_HTML,
+                    "ops": [{ "op": "replace_text", "find": find, "html": MOCK_OFFICE_LIVE_HTML }],
                 }),
             );
         }
@@ -180,6 +181,19 @@ fn strip_selection_blocks(text: &str) -> String {
 }
 
 /// 注入された選択デリミタ `<selection kind="<kind>" node_id="UUID" ...>` から node_id を取る。
+/// 選択デリミタの本文（excerpt）を取り出す（office.live_edit の replace_text.find 用）。
+///
+/// history.rs の織り込み形 `<selection kind="..." ...>\n{excerpt}\n</selection>` 前提。
+fn selection_excerpt(user_text: &str, kind: &str) -> Option<String> {
+    let marker = format!("kind=\"{kind}\"");
+    let start = user_text.find(&marker)?;
+    let after = &user_text[start..];
+    let body_start = after.find('>')? + 1;
+    let body = &after[body_start..];
+    let body_end = body.find("</selection>")?;
+    Some(body[..body_end].trim().to_string())
+}
+
 fn selection_node_id(user_text: &str, kind: &str) -> Option<String> {
     let marker = format!("kind=\"{kind}\"");
     let start = user_text.find(&marker)?;

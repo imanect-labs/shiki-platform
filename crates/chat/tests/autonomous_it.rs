@@ -189,7 +189,7 @@ async fn workspace_harness(pool: PgPool) -> (ChatStore, Arc<StorageService>) {
             collab: None,
             tabular: None,
             office: None,
-            authz: None,
+            office_live: None,
         },
         WorkerConfig {
             system_prompt: "あなたは自律アシスタントです。".into(),

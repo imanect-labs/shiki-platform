@@ -58,7 +58,10 @@ impl Tool for OfficeEditTool {
          add_sheet{name}、pptx = replace_text{find,replace} / add_slide{title,bullets:[..]} / \
          remove_slide{index}。人間が編集セッション中（WOPI ロック中）の場合は上書きせず\
          「提案バージョン」として保存され、editor がバージョン履歴から採用すると反映される。\
-         適用結果（各 op の適用数と warning）が返るので、0 件のときは対象指定を見直すこと。"
+         開いている編集画面へその場でライブ反映したい編集（選択箇所の書き換え・セル更新）は\
+         office.live_edit を優先すること（本ツールはシート/スライド追加などの構造編集・\
+         バッチ編集向け）。適用結果（各 op の適用数と warning）が返るので、0 件のときは\
+         対象指定を見直すこと。"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({

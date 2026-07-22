@@ -16,7 +16,11 @@
 mod client;
 mod error;
 mod protocol;
+mod session;
 
 pub use client::{CoolWsClient, CoolWsConfig, SaveAck, SearchOutcome};
 pub use error::LiveError;
 pub use protocol::{is_cell_ref, Loaded};
+pub use session::{
+    CellValue, LiveEditError, LiveEditReport, LiveEditor, LiveOp, LiveOpResult, LiveSaveResult,
+};

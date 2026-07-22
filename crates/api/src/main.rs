@@ -20,6 +20,7 @@ mod gateway_functions;
 mod miniapp_triggers;
 mod wiring;
 mod wiring_gateway;
+mod wiring_office;
 mod wiring_gui;
 // main はアプリ全体（ストレージ/RAG/チャット/ワークフロー/data/ゲートウェイ等）の配線点で
 // あり、各フェーズの依存を順に組み上げる性質上どうしても長くなる（各配線は wire_* ヘルパへ
@@ -159,6 +160,9 @@ async fn main() -> anyhow::Result<()> {
     // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
     // workflows/secrets は AI ワークフロー編集（emit_workflow・Task 10.13）のカタログ源。
     // collab は AI ノート共同編集（document.edit・Task 11P.4）。
+    // Office 統合（Task 11.5/11.6）: enabled のときのみ Collabora suite ＋ WOPI を配線する。
+    // office.live_edit（issue #352）がトークン鍵を共有するため wire_chat より先に組む。
+    let office = wiring_office::wire_office(&config, &http, &db, &authz, &storage)?;
     let chat = wiring::wire_chat(
         &config,
         &http,
@@ -172,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
         secrets.as_ref(),
         &collab,
         &tabular,
+        office.as_ref(),
     )
     .await?;
 
@@ -209,8 +214,6 @@ async fn main() -> anyhow::Result<()> {
         workflow_launcher.as_ref(),
     )?;
 
-    // Office 統合（Task 11.5/11.6）: enabled のときのみ Collabora suite ＋ WOPI を配線する。
-    let office = wiring::wire_office(&config, &http, &db, &authz, &storage)?;
     // md→docx 合成（POST /documents・#332）: worker のみ必要なので office フラグに載せず常時配線。
     // 共有クライアントは無期限のため、worker 遅延がハンドラを永久ブロックしないよう専用に切る。
     let compose_http = reqwest::Client::builder()
