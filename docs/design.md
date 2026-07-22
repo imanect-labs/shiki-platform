@@ -385,11 +385,25 @@ flowchart LR
   監査ハッシュチェーンが `tenant_id|org` で直列化・スコープする前例に倣う。金額クリティカル
   （[PIT-28](./design-caveats.md)）なので冪等キーを持たせ、テナント単位の集計をバイパス不能にする。
 
-### 4.6 サンドボックス（3ティア・wasm 既定）
+### 4.6 サンドボックス（3ティア・gVisor 既定）
 
-**2026-07 方針転換（#97）**: 既定バックエンドを **wasm** にする。`Sandbox` トレイトは維持し、
-バックエンドを用途別3ティアに再定義する。
+**2026-07 方針転換（#97）**: `Sandbox` トレイトは維持し、バックエンドを用途別3ティアに再定義する。
 設計原則4「隔離プリミティブは自作しない」は本件で**一部撤回**（Rust 製 in-process OS カーネルを自分たちが所有）。
+
+**2026-07 再転換（本項）**: #97 で定めた「既定＝wasm」は**撤回し、既定バックエンドを gVisor とする**。
+根拠は 3 ティア横断ベンチの実測（[bench](./sandbox/bench.md)）— wasm は create が桁違いに軽い（11ms・21MB）が、
+**Python 実行が exec ごとの Pyodide 初期化で ~6s** かかる。gVisor は create 132ms・104MB と重いものの
+**native CPython が 82ms（~75×速い）**。code_interpreter の実効体感は「create + 実行」の総時間で決まるため、
+create レイテンシだけを見て wasm を選んだ #97 の判断は誤りだった。wasm ティアは廃止せず、
+**web_fetch のような「egress を単一ホストへ固定する短命・読み取り専用実行」で引き続き使う**
+（wasm を選ぶ理由は速度ではなく egress モデル＝下記の ⚠️ 参照）。
+
+> ⚠️ **実装状態との差（2026-07 時点）**: 上記は**方針**であり、コード既定
+> （`crates/sandbox-client/src/spec.rs` の `SandboxBackend::default()`）は**まだ `Wasm` のまま**。
+> 切替の前提として ①native rootfs への numpy/pandas 同梱（既定 rootfs の `python:3.12-slim` は非同梱・
+> 下記「前提条件」参照）②compose/CI/オンプレ配布への runsc とアセットの同梱、が要る。
+> 未構成ティアは**静かに降格せず `Unimplemented` で fail する**設計のため、前提を満たさずに既定を
+> 動かすと code_interpreter が動かなくなる。前提工事は **#346** で対応し、完了時にコード既定を反転する。
 
 > **実装ノート（2026-07・Phase 4）**: [agentos](https://github.com/rivet-dev/agentos) はカーネルを含まず
 > TS SDK/ACP 層であり、カーネル実体はその依存 **[secure-exec](https://github.com/rivet-dev/secure-exec)**（Rust・
@@ -401,8 +415,8 @@ flowchart LR
 ```mermaid
 flowchart TB
   ORCH[sandbox-orchestrator] --> TIER{Sandbox トレイト<br/>3ティア}
-  TIER -->|既定・アルファはこれのみ| WASM["wasm: secure-exec フォーク<br/>vendor/secure-exec・per-sandbox 非特権 sidecar 子プロセス<br/>V8＋Pyodide・仮想FS/PTY/仮想net内蔵"]
-  TIER -->|フルLinux が要る時| GV[gVisor]
+  TIER -->|web_fetch 等・egress を単一ホストに固定する短命実行| WASM["wasm: secure-exec フォーク<br/>vendor/secure-exec・per-sandbox 非特権 sidecar 子プロセス<br/>V8＋Pyodide・仮想FS/PTY/仮想net内蔵"]
+  TIER -->|既定・フルLinux/native CPython| GV[gVisor]
   TIER -->|最強隔離/GPU 契約要件| FC[Firecracker microVM]
   WASM --> VFS["仮想FS → StorageService 直結<br/>（Stage B・Phase 5。アルファは成果物をサーバ回収）"]
   WASM --> NET2[仮想 net スタック → egress allowlist をホスト関数で強制]
@@ -412,8 +426,8 @@ flowchart TB
 
 | ティア | 用途 | 隔離保証（正直な主張） | アルファ |
 |--------|------|----------------------|---------|
-| **wasm（既定）** | エージェント実行・skill・code_interpreter（**Pyodide**: numpy/pandas。matplotlib 非同梱） | プロセス分離＋wasm 二層（ブラウザ級・VM級ではない） | ✅ これのみ |
-| gVisor | フル CPython（任意 pip）・ネイティブツールチェーン | ユーザー空間カーネル | ポストアルファ |
+| **gVisor（既定）** | エージェント実行・skill・code_interpreter（native CPython・任意 pip）・ネイティブツールチェーン | ユーザー空間カーネル（VM 級ではない・PIT-24） | ✅ |
+| wasm | web_fetch（egress を単一ホストに固定・短命・読み取り専用） | プロセス分離＋wasm 二層（ブラウザ級・VM級ではない） | ✅ |
 | Firecracker | 契約上 VM 級隔離が要件の顧客・GPU | VM 級（KVM 前提） | ポストアルファ |
 
 - **wasm ティアの構造**: agentos は仮想FS・プロセステーブル・PTY・仮想ネットワークスタックを自前に持ち
@@ -424,17 +438,24 @@ flowchart TB
   **カーネル FUSE が不要**（PIT-4 の syscall 粒度問題・PIT-22 の温機プール時間衝突が構造ごと消える。
   capability モデルは仮想FSバックエンドにそのまま適用）。FUSE は gVisor/FC ティア用として残す。
 - egress は wasm ティアでは仮想 net スタックのホスト関数分岐で allowlist を強制（PIT-25 の SNI プロキシは gVisor/FC 用）。
-- code_interpreter は wasm ティアの制約インスタンス（Pyodide・ネット遮断・短命）。
+- code_interpreter は選択ティアの制約インスタンス（ネット遮断・短命・実行後破棄）。**既定は gVisor**（native CPython）、
+  wasm ティアを選んだ場合は Pyodide になる。ティアによって Python の実体（native / Pyodide）と
+  利用可能ライブラリが変わる点は、上記「前提条件」の通り rootfs 側で揃える。
 - **ティア選択の導線（admin ポリシー）**: コード実行系（code_interpreter / agent shell / workflow の agent_invoke）の
-  隔離ティアは server 設定 `chat.sandbox_backend`（`wasm`（既定）/ `gvisor` / `firecracker`）で選ぶ。ユーザー/ノード設定には
+  隔離ティアは server 設定 `chat.sandbox_backend`（`gvisor`（方針上の既定・コード既定は #346 完了まで `wasm`）/ `wasm` /
+  `firecracker`）で選ぶ。ユーザー/ノード設定には
   出さない。gVisor/FC は orchestrator 側で当該ティアが構成済み（runsc/rootfs 等）であることが前提で、未構成なら create は
-  `Unimplemented` で fail する（静かに wasm へ降格しない・監査に残す）。GKE 前提では native Python が ~75x 速い gVisor を
-  既定にできる（[bench](./sandbox/bench.md)）。**web_fetch は egress 限定の短命 sandbox のため常に wasm**（この設定の対象外・
-  1 fetch の create 11ms/RSS 21MB がそのまま効き Pyodide を使わない）。
-  ⚠️ **前提条件**: code_interpreter は numpy/pandas を宣伝する。wasm は Pyodide 同梱でこれを満たすが、**native ティア
-  （gVisor/FC）へ切り替える場合、rootfs が numpy/pandas を同梱していること**が前提（既定 rootfs は `python:3.12-slim`＝numpy
-  非同梱・[bench](./sandbox/bench.md) 注記）。未同梱のまま opt-in すると宣伝と実体が食い違い `import numpy` が失敗する。
-  native rootfs への numpy/pandas 同梱は別途対応（rootfs アセットのスコープ）。
+  `Unimplemented` で fail する（静かに wasm へ降格しない・監査に残す）。native Python が ~75x 速いことが既定を
+  gVisor にした根拠（[bench](./sandbox/bench.md)）。**web_fetch は egress を単一ホストへ固定する短命 sandbox のため常に wasm**
+  （この設定の対象外・egress allowlist を wasm の仮想 net ホスト関数で実効化する）。
+  ⚠️ web_fetch は内部で urllib（Python）を実行する（`crates/agent-core/src/tools/web_fetch.rs`）ため、wasm でも exec ごとに
+  Pyodide 初期化コストを払う。**wasm を選ぶ理由は速度ではなく egress モデル**であり、fetch レイテンシの是正（native fetch 経路の
+  用意 or gVisor 化）は別途 issue で検討する（既知の課題）。
+  ⚠️ **前提条件（既定切替のブロッカー）**: code_interpreter は numpy/pandas を宣伝する。wasm は Pyodide 同梱でこれを満たすが、
+  **native ティア（gVisor/FC）では rootfs が numpy/pandas を同梱していること**が前提（既定 rootfs は `python:3.12-slim`＝numpy
+  非同梱・[bench](./sandbox/bench.md) 注記）。未同梱のまま既定にすると宣伝と実体が食い違い `import numpy` が失敗する。
+  **native rootfs への numpy/pandas 同梱と、compose/CI/オンプレ配布への runsc・アセット同梱が完了するまで、
+  コード既定は `Wasm` のまま据え置く**（rootfs アセットのスコープ・別途対応）。
 - ⚠️ 落とし穴: gVisor/FC 制御層は [PIT-22〜25](./design-caveats.md)、wasm ティア固有は [PIT-32〜33](./design-caveats.md)
   （フォーク保守・wasm 脱出時の blast radius・wasm コマンドパッケージのサプライチェーン）。
 

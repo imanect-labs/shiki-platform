@@ -44,17 +44,25 @@ gVisor=runsc systrap rootless＋`python:3.12-slim` rootfs。**Firecracker は `/
 
 ## 解釈（ティア選択の指針）
 
-- **wasm は起動が桁違いに軽い（~12ms・21MB）**。まっさら短命・ネット遮断の code_interpreter 既定として最適。
-  ただし **Python 実行は非常に重い（~6s）**: secure-exec は exec ごとに Pyodide/CPython-on-WASM を初期化するため、
-  計算そのものより初期化コストが支配的。数値/表を少量返す用途向き。
+- **wasm は起動が桁違いに軽い（~12ms・21MB）**が、**Python 実行は非常に重い（~6s）**: secure-exec は exec ごとに
+  Pyodide/CPython-on-WASM を初期化するため、計算そのものより初期化コストが支配的。
+  **Python を回さない短命実行（web_fetch 等）向き**。
 - **gVisor は起動が重め（~130ms・104MB）だが native CPython が ~75× 速い（82ms vs 6019ms）**。
   ファイル I/O も host bind で高速（0.8ms）。**重い Python・任意 pip・ネイティブツールを回す用途**はこのティア。
   KVM 不要で動く（PIT-24: ユーザ空間カーネルゆえ VM 級より隔離は一段弱い）。
 - **Firecracker は VM 級隔離（NFR-1）**。KVM 前提。契約上 VM 級が要る機密ワークロード向け。起動は FC の
   実測（~125–250ms級のboot＋agent Ready）を KVM ホストで別途取得する。
 
-要点: **軽量・低メモリの短命実行＝wasm、重い native 実行＝gVisor、最強隔離＝Firecracker** という住み分け。
-既定（code_interpreter）は wasm のままで正しい。gVisor は「フル CPython が要る」run で選ぶ。
+要点: **Python を回さない軽量短命＝wasm、Python/native 実行＝gVisor、最強隔離＝Firecracker** という住み分け。
+
+> **この表の当初の結論（「既定は wasm のままで正しい」）は撤回した（2026-07）。** create レイテンシだけを
+> 見て wasm を選んでいたが、code_interpreter の実効体感は **create + 実行の総時間**で決まる。
+> 同じ Python 実行で **wasm ≒ 11 + 6019 ms に対し gVisor ≒ 132 + 82 ms** であり、gVisor が一桁以上速い。
+> よって **code_interpreter の既定ティアは gVisor**（design §4.6）。wasm は **web_fetch**（egress を単一ホストへ
+> 固定する短命・読み取り専用実行。egress allowlist を wasm の仮想 net ホスト関数で実効化）に残す。
+> ⚠️ web_fetch は内部で urllib（Python）を実行するため wasm でも exec ごとに Pyodide 初期化コストを払う点は既知の課題
+> （wasm を選ぶ理由は速度ではなく egress モデル）。
+> ⚠️ 既定切替には native rootfs への numpy/pandas 同梱が前提（下記「注意」参照）。
 
 ## 注意
 

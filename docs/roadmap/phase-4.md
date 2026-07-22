@@ -3,7 +3,14 @@
 > 📝 **方針転換（2026-07-05・#97・design §4.6）**: 既定バックエンドを **wasm ティア（agentos フォーク・
 > `crates/sandbox-wasm`・非特権別プロセス）** に変更。**アルファは wasm ティアのみ**で、本ファイルの
 > Firecracker（4.3）/gVisor（4.4）/温機プール（4.5）/FUSE マウント（4.9）は **gVisor/FC ティア＝ポストアルファ**に
-> 後ろ倒しする。wasm ティアでは仮想FSを StorageService に直結（カーネル FUSE 不要・PIT-4/PIT-22 は該当せず）、
+> 後ろ倒しする。
+>
+> ⚠️ **この「既定＝wasm」は 2026-07 に撤回された（design §4.6「2026-07 再転換」）**。3 ティア横断ベンチ
+> （[bench](../sandbox/bench.md)）で wasm の Python 実行が exec ごとの Pyodide 初期化で ~6s、gVisor の native
+> CPython が 82ms と判明したため、**既定は gVisor** に移した。gVisor ティア（4.4）は当初ポストアルファ枠だったが、
+> §4.6 で既定へ前倒しし issue #113 として実装済み（design §4.6 のティア表では「アルファ ✅」＝この前倒しを反映）。
+> ただしコード既定の反転は #346（rootfs へ numpy/pandas 同梱・runsc 同梱）完了までは `Wasm` のまま据え置く。以下の記述のうち「アルファは wasm のみ」「code_interpreter は Pyodide」は
+> 当時の判断であり現行方針ではない（経緯として残す）。wasm ティアでは仮想FSを StorageService に直結（カーネル FUSE 不要・PIT-4/PIT-22 は該当せず）、
 > egress は仮想 net スタックのホスト関数で強制、code_interpreter は **Pyodide**（numpy/pandas/matplotlib）。
 > `Sandbox` トレイト（4.1）・orchestrator 骨格（4.2）・ツールRPC（4.7）・リソース制限（4.8）・
 > code_interpreter 統合（4.10/4.11）は wasm ティアを対象に実装する。
