@@ -28,6 +28,19 @@ pub struct NewArtifact {
     pub body: serde_json::Value,
 }
 
+/// skill カタログ用の要約 1 件（name + description のみ・本文は載せない・#344 Task 10.11）。
+///
+/// skill ツールの動的 description（モデルに見せる一覧）用。instructions 等の本文を
+/// 引かないための専用射影（全件取得→フィルタをしない）。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SkillSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub current_version: i64,
+    /// current_version の body `description`（保存時検証済み・最大 1024 字）。
+    pub description: String,
+}
+
 /// artifact 行。
 #[derive(sqlx::FromRow)]
 struct ArtifactRow {
@@ -247,6 +260,36 @@ impl ArtifactStore {
         .await
         .map_err(map_db)?;
         rows.into_iter().map(ArtifactRow::into_artifact).collect()
+    }
+
+    /// 自分が owner の skill の要約一覧（name + description のみ・skill ツールのカタログ用・#344）。
+    ///
+    /// 掲載範囲を「本人 owner」に限るのは description スクワッティング防御の一部
+    /// （共有されただけの skill を他人のカタログへ自動掲載しない。掲載＝明示的な人間の行為）。
+    pub async fn list_my_skill_summaries(
+        &self,
+        ctx: &AuthContext,
+        limit: i64,
+    ) -> Result<Vec<SkillSummary>, ArtifactError> {
+        let limit = limit.clamp(1, 200);
+        let rows: Vec<SkillSummary> = sqlx::query_as(
+            "SELECT a.id, a.name, a.current_version, \
+                    coalesce(v.body->>'description', '') AS description \
+             FROM artifact a \
+             JOIN artifact_version v \
+               ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id AND v.version = a.current_version \
+             WHERE a.tenant_id = $1 AND a.org = $2 AND a.owner = $3 \
+               AND a.kind = 'skill' AND a.deleted_at IS NULL \
+             ORDER BY a.name LIMIT $4",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(&ctx.principal.id)
+        .bind(limit)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(rows)
     }
 
     /// 論理削除する（owner 権限・バージョン履歴は保持・名前は再利用可能になる）。

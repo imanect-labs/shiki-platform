@@ -199,6 +199,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             storage: None,
             ui_validator: None,
             skill_artifacts: Some(artifacts),
+            skill_catalog: None,
             workflow_store: None,
             workflow_catalog: None,
             collab: None,
@@ -224,7 +225,16 @@ async fn skill_pin_applies_model_defaults_and_audits() {
         .await
         .unwrap();
     store
-        .set_thread_pins(&c, thread.id, Some((skill_id, 1)), None, None)
+        .set_thread_pins(
+            &c,
+            thread.id,
+            &[chat::SkillPin {
+                skill_id,
+                skill_version: 1,
+            }],
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -259,15 +269,16 @@ async fn skill_pin_applies_model_defaults_and_audits() {
     }
     assert!(done);
 
-    // run 行に skill ピンがコピーされている（thread → run・0029）。
-    let (run_skill, run_skill_v): (Option<Uuid>, Option<i64>) =
-        sqlx::query_as("SELECT skill_id, skill_version FROM generation_run WHERE run_id = $1")
+    // run 行に skill ピンが jsonb スナップショットでコピーされている（thread → run・0051）。
+    let pins: sqlx::types::Json<Vec<chat::SkillPin>> =
+        sqlx::query_scalar("SELECT skill_pins FROM generation_run WHERE run_id = $1")
             .bind(res.run_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(run_skill, Some(skill_id));
-    assert_eq!(run_skill_v, Some(1));
+    assert_eq!(pins.0.len(), 1);
+    assert_eq!(pins.0[0].skill_id, skill_id);
+    assert_eq!(pins.0[0].skill_version, 1);
 
     // モデル既定が適用され、会計が実効モデル（skill-model）で刻まれる（6.9 受け入れ条件②）。
     let models: Vec<String> =

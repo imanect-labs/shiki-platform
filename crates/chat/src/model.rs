@@ -127,6 +127,13 @@ pub struct Attachment {
     pub name: String,
 }
 
+/// skill のバージョンピン 1 件（thread の「最初からロード済み」スキル・#344 Task 10.11）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SkillPin {
+    pub skill_id: Uuid,
+    pub skill_version: i64,
+}
+
 /// スレッド（会話）。API DTO 兼ドメイン。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Thread {
@@ -134,11 +141,10 @@ pub struct Thread {
     pub title: String,
     /// thread 既定のエージェントモード（message 単位で上書き可）。
     pub agent_mode: bool,
-    /// 適用する skill のバージョンピン（Task 6.7・作成時に固定）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skill_id: Option<Uuid>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skill_version: Option<i64>,
+    /// 最初からロード済みにする skill のバージョンピン（順序付き・複数可・#344）。
+    /// ミニアプリ経由のセッションはバンドル定義のピンが正（個別変更不可）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_pins: Vec<SkillPin>,
     /// ミニアプリ経由のセッション（Task 6.10）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mini_app_id: Option<Uuid>,
@@ -260,6 +266,10 @@ pub enum StreamEventKind {
     /// **ライブ専用**（content へ projection されない）。フロントは /office フレームで対象 node_id が
     /// 一致するとき Collabora Action_Paste（現在の選択を置換）を実行する。
     OfficeLiveEdit { node_id: String, html: String },
+    /// skill ツールの発動記録（#344）。`skill = {skill_id, skill_version, name}`。
+    /// `generation_event` に append され replay 可能（監査・再現性）。content へは projection
+    /// しない（instructions は tool_result block として履歴に残る）。UI はチップ表示に使う。
+    SkillInvoked { skill: serde_json::Value },
     /// 計画の改訂（自律エージェント・Task 5.2）。サブタスク列を丸ごと配信する。
     Plan { subtasks: Vec<PlanSubtask> },
     /// 予算上限への接近警告（Task 5.7）。
@@ -313,6 +323,7 @@ impl StreamEventKind {
             StreamEventKind::CsvDraft { .. } => "csv_draft",
             StreamEventKind::DocumentDraft { .. } => "document_draft",
             StreamEventKind::OfficeLiveEdit { .. } => "office_live_edit",
+            StreamEventKind::SkillInvoked { .. } => "skill_invoked",
             StreamEventKind::Plan { .. } => "plan",
             StreamEventKind::BudgetWarning { .. } => "budget_warning",
             StreamEventKind::ApprovalRequested { .. } => "approval_requested",

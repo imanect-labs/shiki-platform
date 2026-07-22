@@ -25,6 +25,10 @@ pub(super) fn note_tool_call(
             .find(|t| t.name == tool)
             .map(|t| tool_call_stream(t.name.clone(), input, prompt_tokens))
     };
+    if let Some(name) = user_text.strip_prefix("useskill:").map(str::trim) {
+        // skill ツールのカタログ引き（#344）。カタログ掲載名を指定して instructions を読み込む。
+        return call("skill", serde_json::json!({ "name": name }));
+    }
     if let Some(name) = user_text.strip_prefix("savenote:").map(str::trim) {
         return call(
             "save_note",

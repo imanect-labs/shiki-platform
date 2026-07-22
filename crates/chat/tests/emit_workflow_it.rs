@@ -176,6 +176,7 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<WorkflowStore>) {
             storage: None,
             ui_validator: None,
             skill_artifacts: None,
+            skill_catalog: None,
             workflow_store: Some(Arc::clone(&workflows)),
             workflow_catalog: Some(Arc::new(TestCatalogSource)),
             collab: None,

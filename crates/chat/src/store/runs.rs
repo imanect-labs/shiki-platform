@@ -22,7 +22,7 @@ use serde_json::json;
 use sqlx::types::Json;
 use uuid::Uuid;
 
-use crate::model::{Attachment, ContentBlock, RunStatus, StreamEvent, StreamEventKind};
+use crate::model::{Attachment, ContentBlock, RunStatus, SkillPin, StreamEvent, StreamEventKind};
 
 /// チャット生成ジョブのキュー名（jobq・専用レーン）。
 pub const CHAT_GENERATION_QUEUE: &str = "chat_generation";
@@ -77,9 +77,9 @@ pub struct ClaimedRun {
     pub trace_id: Option<String>,
     /// 自律プロファイル（長ホライズン・フルツール・予算・計画・承認・Task 5.1）。
     pub autonomous: bool,
-    /// 適用する skill のバージョンピン（Task 6.7/6.9・thread から post 時にコピー）。
-    pub skill_id: Option<Uuid>,
-    pub skill_version: Option<i64>,
+    /// 適用する skill のバージョンピン（複数可・順序付き・post 時点の thread ピンの
+    /// jsonb スナップショット・#344。run 行が生成材料の単一ソース）。
+    pub skill_pins: Json<Vec<SkillPin>>,
     /// ミニアプリ経由のセッション（Task 6.10・skill はバンドル権限で読む）。
     pub mini_app_id: Option<Uuid>,
     pub mini_app_version: Option<i64>,
@@ -112,11 +112,17 @@ impl ChatStore {
         }
 
         // 実効エージェントモード（メッセージ上書き or スレッド既定）＋skill/ミニアプリのピン
-        // （thread 作成時に固定した版を run へコピーする・0027 の autonomous と同パターン）。
-        /// thread の生成材料（agent_mode 既定＋skill/mini_app のピン）。
-        type ThreadDefaults = (bool, Option<Uuid>, Option<i64>, Option<Uuid>, Option<i64>);
+        // （thread のピンを run へ **jsonb スナップショット**でコピーする・0027 の autonomous と
+        // 同パターン。run 行が生成材料の単一ソース＝claim が 1 行で完結する・#344）。
+        /// thread の生成材料（agent_mode 既定＋skill ピン集合＋mini_app のピン）。
+        type ThreadDefaults = (bool, Json<Vec<SkillPin>>, Option<Uuid>, Option<i64>);
         let thread_row: Option<ThreadDefaults> = sqlx::query_as(
-            "SELECT agent_mode, skill_id, skill_version, mini_app_id, mini_app_version \
+            "SELECT agent_mode, \
+                    (SELECT coalesce(jsonb_agg(jsonb_build_object( \
+                        'skill_id', p.skill_id, 'skill_version', p.skill_version) \
+                        ORDER BY p.position, p.skill_id), '[]'::jsonb) \
+                     FROM thread_skill_pin p WHERE p.thread_id = thread.id) AS skill_pins, \
+                    mini_app_id, mini_app_version \
              FROM thread WHERE id = $1 AND tenant_id = $2",
         )
         .bind(thread_id)
@@ -124,7 +130,7 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        let (thread_default, skill_id, skill_version, mini_app_id, mini_app_version) =
+        let (thread_default, skill_pins, mini_app_id, mini_app_version) =
             thread_row.ok_or(ChatError::NotFound)?;
         // 自律プロファイルはエージェントモードを含意する（ツールループが前提）。
         let agent_mode = agent_mode_override.unwrap_or(thread_default) || autonomous;
@@ -175,8 +181,8 @@ impl ChatStore {
 
         let run_id: Uuid = sqlx::query_scalar(
             "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, status, trace_id, autonomous, \
-                                         skill_id, skill_version, mini_app_id, mini_app_version) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11, $12) RETURNING run_id",
+                                         skill_pins, mini_app_id, mini_app_version) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11) RETURNING run_id",
         )
         .bind(asst_id)
         .bind(thread_id)
@@ -186,8 +192,7 @@ impl ChatStore {
         .bind(agent_mode)
         .bind(trace_id)
         .bind(autonomous)
-        .bind(skill_id)
-        .bind(skill_version)
+        .bind(&skill_pins)
         .bind(mini_app_id)
         .bind(mini_app_version)
         .fetch_one(&mut *tx)
@@ -242,7 +247,7 @@ impl ChatStore {
             lease_secs,
             "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
              fencing_token, cancel_requested, trace_id, autonomous, \
-             skill_id, skill_version, mini_app_id, mini_app_version",
+             skill_pins, mini_app_id, mini_app_version",
         )
         .await
         .map_err(map_db)
