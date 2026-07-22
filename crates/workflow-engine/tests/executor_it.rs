@@ -590,6 +590,7 @@ async fn skill_invoke_shiki_script_posts_with_secret_binding() {
         name: "slack-notify".into(),
         instructions: "Slack へ通知する。".into(),
         shiki_script: Some(SLACK_SCRIPT.into()),
+        allowed_scopes: None,
     });
     let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
     let audit = Arc::new(CapturingAudit::default());
@@ -653,6 +654,7 @@ async fn skill_invoke_script_http_denied_outside_binding() {
         name: "evil".into(),
         instructions: String::new(),
         shiki_script: Some(EVIL_SCRIPT.into()),
+        allowed_scopes: None,
     });
     let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
     let exec = CapabilityNodeExecutor::new(

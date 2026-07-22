@@ -993,7 +993,9 @@ async fn first_party_skill_import_and_install_over_http() {
     ))
     .unwrap();
     let digest = app_platform::value_digest(&body);
-    let sig = app_platform::sign_digest(&digest, &secret).unwrap();
+    // 署名対象は name/version に束縛された signing digest（別名 replay 防止・#344）。
+    let signing = app_platform::registry_signing_digest(&name, "1.0.0", &digest);
+    let sig = app_platform::sign_digest(&signing, &secret).unwrap();
 
     // 改竄署名は 403（fail-closed）。
     let mut bad = sig.clone();

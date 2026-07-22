@@ -6,10 +6,13 @@
 ## 配布経路（エアギャップと同一・マイグレーションに業務コンテンツを埋めない）
 
 1. 管理者が信頼鍵を登録する（`POST /admin/trusted-keys`・ミニアプリと同じ台帳）。
-2. `skill.json` の**正規化 JSON digest**（`app_platform::value_digest`）へ ed25519 で署名する
-   （秘密鍵はオフライン保持・サーバに置かない）。署名ヘルパ: `app_platform::sign_digest`。
+2. 署名対象は **name/version に束縛した signing digest** =
+   `app_platform::registry_signing_digest(name, version, app_platform::value_digest(body))` へ
+   ed25519 で署名する（秘密鍵はオフライン保持・サーバに置かない。署名ヘルパ: `app_platform::sign_digest`）。
+   body だけの署名だと別名で再 import して公式スキルをスプーフィングできてしまうため name/version を織り込む。
 3. `POST /skills/registry/import { name, version, body, signature_base64 }` —
-   登録済み信頼鍵で検証し、artifact 化 → **first-party** として publish される。
+   登録済み信頼鍵で **signing digest** を検証し、artifact 化 → **first-party** として publish される
+   （同一 name+version の再 import は 409・不変）。
 4. 各ユーザーは `POST /skills/installations { name }` で自分のカタログへ入れる
    （first-party は署名検証済みのため**個別共有・管理者の個別同意なしで利用可能**）。
 

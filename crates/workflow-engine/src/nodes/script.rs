@@ -332,15 +332,32 @@ impl HostBridge {
         };
 
         // 宛先束縛（secret 有り）または global allowlist（無し）で照合し、secret 有りは AND。
+        // 拒否は監査に残す（scripted egress の遮断も監査可能に・レビュー指摘）。
+        let audit_denied = |reason: &str, detail: &str| {
+            self.audit.record(
+                &self.ec.tenant_id,
+                "http.request",
+                false,
+                &json!({ "reason": reason, "detail": detail, "via": "script" }),
+            );
+        };
         let map_denied = |d: HttpDenied| match d {
             HttpDenied::HostNotAllowed(h) => {
+                audit_denied("host_not_allowed", &h);
                 PortError::forbidden(format!("宛先束縛外のホスト: {h}"))
             }
             HttpDenied::RedirectDenied => {
+                audit_denied("redirect_denied", "");
                 PortError::new("redirect_denied", "リダイレクト拒否", false)
             }
-            HttpDenied::BadUrl => PortError::invalid("URL が解析不能"),
-            HttpDenied::BadScheme => PortError::invalid("http/https のみ許可"),
+            HttpDenied::BadUrl => {
+                audit_denied("bad_url", "");
+                PortError::invalid("URL が解析不能")
+            }
+            HttpDenied::BadScheme => {
+                audit_denied("bad_scheme", "");
+                PortError::invalid("http/https のみ許可")
+            }
         };
         let primary = resolved
             .as_ref()
@@ -350,6 +367,7 @@ impl HostBridge {
         if resolved.is_some() && !self.http_allowlist.is_empty() {
             let global = DestinationBinding::new(self.http_allowlist.clone());
             if !global.allows(&host) {
+                audit_denied("egress_allowlist", &host);
                 return Err(PortError::forbidden(format!(
                     "egress allowlist 外のホスト: {host}"
                 )));
