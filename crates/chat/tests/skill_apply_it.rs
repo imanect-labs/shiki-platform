@@ -269,7 +269,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
     }
     assert!(done);
 
-    // run 行に skill ピンが jsonb スナップショットでコピーされている（thread → run・0051）。
+    // run 行に skill ピンが jsonb スナップショットでコピーされている（thread → run・0052）。
     let pins: sqlx::types::Json<Vec<chat::SkillPin>> =
         sqlx::query_scalar("SELECT skill_pins FROM generation_run WHERE run_id = $1")
             .bind(res.run_id)
