@@ -5281,8 +5281,10 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "futures",
  "hmac 0.12.1",
  "http-body-util",
+ "percent-encoding",
  "quick-xml",
  "rand 0.8.6",
  "reqwest 0.12.28",
@@ -5294,6 +5296,7 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tracing",
  "uuid",
@@ -6702,8 +6705,12 @@ checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
 dependencies = [
  "futures-util",
  "log",
+ "rustls 0.23.40",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls 0.26.4",
  "tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -7038,6 +7045,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.4",
+ "rustls 0.23.40",
+ "rustls-pki-types",
  "sha1 0.10.6",
  "thiserror 2.0.18",
 ]

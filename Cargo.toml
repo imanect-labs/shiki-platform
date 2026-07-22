@@ -126,6 +126,10 @@ tokio-stream = "0.1"
 # プロパティテスト（proto round-trip / validate.rs）
 proptest = "1"
 
+# CoolWSD headless クライアント（crates/office live）＋ collab WS 結合テスト（crates/api）。
+# rustls: collabora_base_url が https（=wss）構成でも接続できるようにする。
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+
 # ノート共同編集 CRDT（design §4.8.1・Yjs 互換の yrs。sync ワイヤプロトコル込み）
 yrs = "0.27"
 # ノートの md シリアライズ往復（Task 11P.2・CommonMark+GFM テーブル/タスクリスト）

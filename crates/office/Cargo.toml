@@ -29,6 +29,12 @@ reqwest.workspace = true
 # discovery XML のパース（urlsrc 抽出）。
 quick-xml.workspace = true
 
+# CoolWSD headless 参加者（live::CoolWsClient・issue #352）。
+tokio-tungstenite.workspace = true
+futures.workspace = true
+# WS URL の encodeURIComponent 相当（WOPISrc の焼き込み）。
+percent-encoding.workspace = true
+
 # WOPI access_token（HMAC-SHA256 署名の自己完結トークン）。
 hmac.workspace = true
 sha2.workspace = true
