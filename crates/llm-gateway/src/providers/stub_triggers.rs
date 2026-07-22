@@ -109,6 +109,27 @@ pub(super) fn note_tool_call(
             }),
         );
     }
+    // Office 表計算のライブセル編集（office.live_edit set_cells）: `officecells:<node_id>` で
+    // 明示駆動する。開いている xlsx セッションへ AI が headless 参加してセル矩形を貼り込む
+    // （文書を閉じていても実行でき、新バージョンとして保存される・issue #352）。
+    if let Some(node_id) = user_text.strip_prefix("officecells:").map(str::trim) {
+        return call(
+            "office.live_edit",
+            serde_json::json!({
+                "node_id": node_id,
+                "ops": [{
+                    "op": "set_cells",
+                    "anchor": "A1",
+                    "rows": [
+                        ["商品", "売上", "前年比"],
+                        ["りんご", 1280, "+18%"],
+                        ["みかん", 940, "+6%"],
+                        ["合計", 2220, "+12%"],
+                    ],
+                }],
+            }),
+        );
+    }
     // Office 文書の選択（office_selection・node_id 付き）＋編集キーワード → office.live_edit。
     // 選択本文をアンカー（replace_text.find）に使い、AI の headless 参加（CoolWSD 接続 →
     // 自 view で検索・照合 → paste → save）を実パイプラインで叩く（issue #352）。
@@ -140,6 +161,7 @@ const MOCK_OFFICE_EDIT_MD: &str = "## AI による追記\n\n選択範囲を踏�
 
 /// モック AI が開いているセッションの選択範囲へライブ注入する決定的な HTML（e2e が本文で検出）。
 const MOCK_OFFICE_LIVE_HTML: &str = "<p>AI が置き換えた本文です。</p>";
+
 
 /// 依頼テキストに編集意図のキーワードが含まれるか（要約・質問だけの依頼と区別する）。
 ///

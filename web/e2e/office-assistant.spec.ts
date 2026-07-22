@@ -120,16 +120,12 @@ test("選択→AI→承認で AI が参加者としてライブ編集する（he
   await expect(approve).toBeVisible({ timeout: 25_000 });
   await approve.click();
 
-  // ツール結果（適用件数＋保存状態）がパネルに観測される（バックエンド編集の一次証拠）。
-  await expect(
-    page.getByTestId("office-chat-panel").getByText(/1\/1 件適用/),
-  ).toBeVisible({ timeout: 60_000 });
-
-  // Collabora は canvas 描画のため DOM テキストでは検証できない。AI の編集は CoolWSD の
-  // 協調プロトコルで開いている view にも即時反映されるので、全選択→選択ポーリング
-  // （Action_Copy）のチップ本文に差し替え内容が現れることでライブ反映を裏取りする。
+  // 承認後、バックエンドの AI が CoolWSD セッションへ headless 参加 → 自 view で検索・照合 →
+  // paste → save（WOPI PutFile）まで実行する。Collabora は canvas 描画のため DOM テキストでは
+  // 検証できないので、編集完了を待ってから全選択→選択ポーリング（Action_Copy）のチップ本文に
+  // 差し替え内容が現れることでライブ反映を裏取りする（ツール結果テキストは UI 非描画）。
   // （前提: Collabora の welcome オーバーレイが無効化された構成。有効だと文書が覆われ検証不可。）
-  await page.waitForTimeout(4000);
+  await page.waitForTimeout(8000);
   await page.keyboard.press("Escape");
   await inner
     .locator("#main-document-content, #document-container")

@@ -7,7 +7,13 @@
 //!
 //! `STORAGE_TEST_DATABASE_URL` 未設定ならスキップ（wopi_it と同じ流儀）。
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr,
+    clippy::pedantic
+)]
 
 use std::sync::Arc;
 use std::time::Duration;
