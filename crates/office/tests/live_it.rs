@@ -5,7 +5,13 @@
 //! （load 失敗・途中 close・応答なしタイムアウト・searchnotfound）を検証する。
 //! ワイヤ形式そのものの単体テストは `live/protocol.rs` 側にある。
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    // accept_hdr_async のコールバック型（ErrorResponse）が大きいのは tungstenite の契約。
+    clippy::result_large_err
+)]
 
 use std::future::Future;
 use std::time::Duration;
@@ -30,7 +36,21 @@ where
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
-        let ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        // CoolWSD は Origin 無しの WS アップグレードを 403 で拒否する（実機で確認）。
+        // クライアントが必ず Origin を送ることを握手時に検証する（回帰防止）。
+        let ws = tokio_tungstenite::accept_hdr_async(
+            tcp,
+            |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+             res: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                assert!(
+                    req.headers().contains_key("origin"),
+                    "WS アップグレードに Origin ヘッダが必要"
+                );
+                Ok(res)
+            },
+        )
+        .await
+        .unwrap();
         script(ws).await;
     });
     (format!("ws://{addr}"), handle)

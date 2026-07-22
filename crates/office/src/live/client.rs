@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
@@ -99,8 +100,22 @@ impl CoolWsClient {
         lang: &str,
     ) -> Result<Self, LiveError> {
         let url = protocol::session_ws_url(&cfg.ws_base, wopi_src, access_token);
+        // CoolWSD は Origin 無しの WS アップグレードを拒否する（ClientRequestDispatcher の
+        // allowedOrigin: `http(s)://<Host>` と same-origin なら許可）。ブラウザの
+        // 同一オリジン接続と同じく Collabora 自身のオリジンを名乗る。
+        let origin = cfg.ws_base.replacen("ws", "http", 1);
+        let mut request = url
+            .as_str()
+            .into_client_request()
+            .map_err(|e| LiveError::Connect(format!("WS リクエスト構築に失敗: {e}")))?;
+        request.headers_mut().insert(
+            "Origin",
+            origin
+                .parse()
+                .map_err(|e| LiveError::Connect(format!("Origin ヘッダが不正: {e}")))?,
+        );
         let (mut stream, _response) =
-            tokio::time::timeout(cfg.connect_timeout, connect_async(url.as_str()))
+            tokio::time::timeout(cfg.connect_timeout, connect_async(request))
                 .await
                 .map_err(|_| LiveError::Timeout("connect"))?
                 .map_err(|e| LiveError::Connect(e.to_string()))?;
