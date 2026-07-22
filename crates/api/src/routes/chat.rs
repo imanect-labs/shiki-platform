@@ -241,15 +241,16 @@ pub async fn get_messages(
 ) -> Result<Json<MessagesResponse>, ApiError> {
     let store = chat_store(&state)?;
     let messages = store.get_messages(&ctx, id, trace.as_deref()).await?;
-    // 進行中（非端末）の run があれば id を返す（再訪時の承認送信・進捗復元に使う）。
-    let active_run_id = store
+    // 進行中（非端末）の run があれば id と自律フラグを返す（再訪時の承認送信・進捗復元・
+    // 自律 UI（モードセレクタ）の復元に使う・#350）。
+    let active = store
         .latest_run(id, &ctx.tenant_id)
         .await?
-        .filter(|(_, status)| !status.is_terminal())
-        .map(|(run_id, _)| run_id);
+        .filter(|(_, status, _)| !status.is_terminal());
     Ok(Json(MessagesResponse {
         messages,
-        active_run_id,
+        active_run_id: active.map(|(run_id, _, _)| run_id),
+        active_run_autonomous: active.map(|(_, _, autonomous)| autonomous),
     }))
 }
 
@@ -332,7 +333,7 @@ pub async fn stream_thread(
     let from_seq = last_event_id(&headers, &q);
     // 最新 run のイベントを購読する。run が無ければ即終了の空ストリーム。
     let stream: SseEventStream = match chat.latest_run(id, &ctx.tenant_id).await? {
-        Some((run_id, _status)) => chat
+        Some((run_id, _status, _autonomous)) => chat
             .event_stream(run_id, from_seq)
             .map(|ev| {
                 let data = serde_json::to_string(&ev.event).unwrap_or_else(|_| "{}".to_string());

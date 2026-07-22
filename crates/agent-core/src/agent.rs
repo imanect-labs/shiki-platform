@@ -127,11 +127,13 @@ pub async fn run_agent(
         .await?;
         // ステップ境界でループ検出器の状態をチェックポイントへ畳み込む（中断/再開に耐える）。
         state.loop_detector = detector.clone();
-        // ステップ境界で durable run へチェックポイントを永続化する（クラッシュ/takeover 時は
-        // ここから再開する・#351）。非永続シンクは no-op。
-        sink.save_checkpoint(&state).await?;
         match step_outcome {
-            StepOutcome::Continue => {}
+            // **継続する**ステップ境界のみ durable run へ永続化する（クラッシュ/takeover 時は
+            // ここから再開する・#351）。終端ステップ（自然終了・予算・ループ検出）では保存しない:
+            // finalize 前にクラッシュすると、最終応答を含むチェックポイントから再開して LLM を
+            // もう一度呼び、二重応答/余分なツール実行が起きるため（takeover は一つ前の境界から
+            // 終端ステップを再生成して収束する）。非永続シンクは no-op。
+            StepOutcome::Continue => sink.save_checkpoint(&state).await?,
             StepOutcome::Stop(stop) => break stop,
         }
     };

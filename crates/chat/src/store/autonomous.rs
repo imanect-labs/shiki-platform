@@ -134,4 +134,30 @@ impl ChatStore {
         .map_err(|e| map_db(&e))?;
         Ok(updated.rows_affected() == 1)
     }
+
+    /// takeover 時、チェックポイント境界より後に残る**破棄 attempt のイベント**を削除する（#351）。
+    ///
+    /// 境界より後の行はチェックポイントに含まれず当該ステップごと再生成されるため、残すと
+    /// SSE replay が部分出力と再生成分を二重に流す。fencing 一致（現リース保持者）時のみ削除する
+    /// （append-only の原則は「生き残った attempt の真実」を保つためのもので、これはその維持）。
+    pub async fn prune_events_after(
+        &self,
+        run_id: Uuid,
+        fencing_token: i64,
+        after_seq: i64,
+    ) -> Result<u64, ChatError> {
+        let deleted = sqlx::query(
+            "DELETE FROM generation_event \
+             WHERE run_id = $1 AND seq > $3 \
+               AND EXISTS (SELECT 1 FROM generation_run \
+                           WHERE run_id = $1 AND fencing_token = $2)",
+        )
+        .bind(run_id)
+        .bind(fencing_token)
+        .bind(after_seq)
+        .execute(&self.db)
+        .await
+        .map_err(|e| map_db(&e))?;
+        Ok(deleted.rows_affected())
+    }
 }

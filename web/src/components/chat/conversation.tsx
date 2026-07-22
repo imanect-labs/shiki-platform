@@ -149,18 +149,30 @@ export function Conversation({
   // null=未ロード（セレクタ非表示）。bypass の可否は org 管理者ポリシ。
   const [approvalMode, setApprovalModeState] = React.useState<AutonomousMode | null>(null);
   const [bypassAllowed, setBypassAllowed] = React.useState(true);
+  // PUT を直列化するチェーン（連打時の応答順逆転で危険な実効ポリシを誤表示しない）。
+  // 各成功応答のサーバ確定値で状態を上書きし、失敗時はサーバの真実を読み直して収束させる。
+  const modeRequestChain = React.useRef<Promise<unknown>>(Promise.resolve());
   const changeApprovalMode = React.useCallback(
     (mode: AutonomousMode) => {
-      const prev = approvalMode;
-      setApprovalModeState(mode); // 楽観更新（失敗時に戻す）
-      setAutonomousMode(threadId, mode)
-        .then((r) => setBypassAllowed(r.bypassAllowed))
-        .catch(() => {
-          setApprovalModeState(prev);
+      setApprovalModeState(mode); // 楽観更新（確定/失敗時にサーバ値で上書き）
+      modeRequestChain.current = modeRequestChain.current
+        .then(() => setAutonomousMode(threadId, mode))
+        .then((r) => {
+          setApprovalModeState(r.mode);
+          setBypassAllowed(r.bypassAllowed);
+        })
+        .catch(async () => {
           setError("承認モードの変更に失敗しました（組織ポリシで禁止されている可能性があります）");
+          try {
+            const r = await getAutonomousMode(threadId);
+            setApprovalModeState(r.mode);
+            setBypassAllowed(r.bypassAllowed);
+          } catch {
+            /* 読み直し失敗時は現状表示を維持（次の操作で再同期） */
+          }
         });
     },
-    [threadId, approvalMode],
+    [threadId],
   );
   const [shareOpen, setShareOpen] = React.useState(false);
   // ヘッダスロットへ渡すため安定した参照にする（streaming の毎レンダーで再注入しない）。
@@ -397,7 +409,7 @@ export function Conversation({
   React.useEffect(() => {
     let active = true;
     getThreadMessages(threadId)
-      .then(({ messages: msgs, activeRunId }) => {
+      .then(({ messages: msgs, activeRunId, activeRunAutonomous }) => {
         if (!active) return;
         // 末尾が空の assistant プレースホルダなら生成進行中（or クラッシュ）→ 復元購読する。
         const last = msgs[msgs.length - 1];
@@ -405,6 +417,9 @@ export function Conversation({
         setMessages(resuming ? msgs.slice(0, -1) : msgs);
         if (resuming) {
           // 進行中 run の id を復元し、承認待ちなら承認/却下を送れるようにする（Task 5.6）。
+          // 自律 run なら再訪時もエージェントモード UI（承認モードセレクタ含む）を復元する
+          // （承認待ちの run に対して実行中トグルを見えるようにする・#350）。
+          if (activeRunAutonomous) setAutonomous(true);
           streamRef.current = { ...EMPTY_STREAM, runId: activeRunId };
           setStream(streamRef.current);
           cancelRef.current = resumeMessage(threadId, makeHandlers());

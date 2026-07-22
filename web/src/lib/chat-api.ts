@@ -326,10 +326,14 @@ type ApiMessage = {
 
 export async function getThreadMessages(
   id: string,
-): Promise<{ messages: Message[]; activeRunId: string | null }> {
+): Promise<{ messages: Message[]; activeRunId: string | null; activeRunAutonomous: boolean }> {
   const res = await apiFetch(`/threads/${id}/messages`);
   if (res.status === 404 || res.status === 403) throw new ThreadNotFound();
-  const data = await ok<{ messages: ApiMessage[]; active_run_id?: string | null }>(res);
+  const data = await ok<{
+    messages: ApiMessage[];
+    active_run_id?: string | null;
+    active_run_autonomous?: boolean | null;
+  }>(res);
   return {
     messages: data.messages.map((m) => ({
       id: m.id,
@@ -339,6 +343,7 @@ export async function getThreadMessages(
       createdAt: m.created_at,
     })),
     activeRunId: data.active_run_id ?? null,
+    activeRunAutonomous: data.active_run_autonomous ?? false,
   };
 }
 

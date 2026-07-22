@@ -455,7 +455,7 @@ impl ChatWorker {
 ///
 /// 復元できない（旧形式等の）チェックポイントは警告して新規開始へフォールバックする
 /// （run を止めない・副作用の収束は版管理と冪等キーが担う）。
-fn restore_checkpoint(run: &ClaimedRun) -> Option<super::sink::CheckpointEnvelope> {
+pub(super) fn restore_checkpoint(run: &ClaimedRun) -> Option<super::sink::CheckpointEnvelope> {
     if !run.autonomous {
         return None;
     }

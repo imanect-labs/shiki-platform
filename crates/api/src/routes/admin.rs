@@ -271,6 +271,7 @@ pub struct TenantAutonomousPolicyRequest {
     request_body = TenantAutonomousPolicyRequest,
     responses(
         (status = 204, description = "ポリシを更新した"),
+        (status = 400, description = "tenant_id が不正"),
         (status = 401, description = "provisioner トークンが無効"),
         (status = 404, description = "active なテナントが存在しない"),
     ),

@@ -70,6 +70,9 @@ pub struct MessagesResponse {
     /// 進行中（非端末）の run id。再訪時に承認 API を叩けるよう UI へ渡す（Task 5.6）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_run_id: Option<Uuid>,
+    /// 進行中 run が自律プロファイルか（再訪時にエージェントモード UI・モードセレクタを復元する・#350）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run_autonomous: Option<bool>,
 }
 
 /// 発話送信リクエスト。

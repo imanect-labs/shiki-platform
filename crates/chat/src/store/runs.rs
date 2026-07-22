@@ -278,14 +278,15 @@ impl ChatStore {
         Ok(())
     }
 
-    /// このスレッドの最新 run（SSE 購読対象）を返す。
+    /// このスレッドの最新 run（SSE 購読対象）を返す。`autonomous` は再訪 UI の復元用
+    /// （自律 run 進行中ならモードセレクタ等を出す・#350）。
     pub async fn latest_run(
         &self,
         thread_id: Uuid,
         tenant_id: &str,
-    ) -> Result<Option<(Uuid, RunStatus)>, ChatError> {
-        let row: Option<(Uuid, String)> = sqlx::query_as(
-            "SELECT run_id, status FROM generation_run \
+    ) -> Result<Option<(Uuid, RunStatus, bool)>, ChatError> {
+        let row: Option<(Uuid, String, bool)> = sqlx::query_as(
+            "SELECT run_id, status, autonomous FROM generation_run \
              WHERE thread_id = $1 AND tenant_id = $2 ORDER BY created_at DESC, run_id DESC LIMIT 1",
         )
         .bind(thread_id)
@@ -293,7 +294,7 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        Ok(row.and_then(|(id, s)| RunStatus::parse(&s).map(|st| (id, st))))
+        Ok(row.and_then(|(id, s, autonomous)| RunStatus::parse(&s).map(|st| (id, st, autonomous))))
     }
 
     /// run の現在状態を引く（SSE の端末判定・crash safety）。

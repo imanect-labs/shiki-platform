@@ -294,6 +294,19 @@ impl ChatWorker {
             return Ok(());
         }
 
+        // resume する run は、チェックポイント境界より後に残る**破棄 attempt のイベント**を
+        // 先に削除する（SSE replay の二重表示防止・#351）。この後に積む Status(Running) 以降が
+        // 新 attempt の行になる。失敗は run を止めない（表示の二重は起きるが truth は保たれる）。
+        if let Some(envelope) = generate::restore_checkpoint(&run) {
+            if let Err(e) = self
+                .store
+                .prune_events_after(run_id, fencing, envelope.event_seq)
+                .await
+            {
+                tracing::warn!(run_id = %run_id, error = %e, "破棄イベントの削除に失敗（続行）");
+            }
+        }
+
         // ハートビート（リース延長＋cancel 検知）。共有フラグでキャンセルを伝える。
         let cancel = Arc::new(AtomicBool::new(false));
         let hb = spawn_heartbeat(

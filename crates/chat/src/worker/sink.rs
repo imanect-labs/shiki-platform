@@ -86,10 +86,14 @@ impl WorkerSink {
     /// ごと再生成されるため、混ぜると二重になる）。写像はライブ経路と同一の [`Self::accumulate`]。
     pub(crate) async fn seed_from_log(&mut self, up_to_seq: i64) -> Result<(), crate::ChatError> {
         for ev in self.store.replay_events(self.run_id, 0).await? {
-            if ev.seq <= up_to_seq {
-                self.accumulate(&ev.event);
+            if ev.seq > up_to_seq {
+                break; // replay は seq 昇順
             }
+            self.accumulate(&ev.event);
         }
+        // 境界 seq を引き継ぐ: 新規 append が 0 件のまま次の checkpoint 保存に至っても
+        // event_seq が 0 に退行しない（seed 上限の後退防止・#351）。
+        self.last_seq = self.last_seq.max(up_to_seq);
         Ok(())
     }
 
