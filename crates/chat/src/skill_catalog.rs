@@ -63,11 +63,19 @@ impl SkillCatalogSource for OwnedSkillCatalog {
         ctx: &AuthContext,
         _trace_id: Option<&str>,
     ) -> Result<Vec<SkillCatalogEntry>, ChatError> {
+        // 取得上限（200 = artifact 側 clamp 上限）。超過分はカタログにも closed-set マップにも
+        // 載らない（=呼べない）ため、上限到達時は warn で観測可能にする（silent cap にしない）。
         let summaries = self
             .artifacts
-            .list_my_skill_summaries(ctx, MAX_LISTED_ENTRIES as i64 * 2)
+            .list_my_skill_summaries(ctx, 200)
             .await
             .map_err(crate::skill::map_skill_err)?;
+        if summaries.len() >= 200 {
+            tracing::warn!(
+                principal = %ctx.principal.id,
+                "所有 skill が取得上限 200 に到達（超過分はカタログに載らない。ピンで利用可能）"
+            );
+        }
         Ok(summaries
             .into_iter()
             .map(|s| SkillCatalogEntry {
@@ -119,9 +127,12 @@ pub(crate) fn render_tool_description(entries: &[SkillCatalogEntry]) -> String {
     }
     if entries.len() > MAX_LISTED_ENTRIES {
         use std::fmt::Write as _;
+        // 一覧外でも by_name マップには載っている（構築時に同じ entries から作る）ため
+        // 名前指定で読み込める、は取得上限内でのみ真。上限超過は掲載も解決も不可なので
+        // 正直に「ピンで使える」誘導にする（silent cap にしない・#344 レビュー指摘）。
         let _ = writeln!(
             out,
-            "（他 {} 件。名前が分かれば一覧外でも読み込める）",
+            "（他 {} 件。名前が分かれば一覧外でも読み込める。見つからないスキルはスレッドへの             ピンで使える）",
             entries.len() - MAX_LISTED_ENTRIES
         );
     }

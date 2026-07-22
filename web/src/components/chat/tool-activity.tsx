@@ -47,7 +47,8 @@ const TOOL_LABEL: Record<string, { label: string; icon: typeof Search }> = {
 function itemDetail(it: ToolActivityItem): string | null {
   if (it.name !== "skill") return null;
   const name = (it.input as { name?: unknown } | undefined)?.name;
-  return typeof name === "string" && name ? name : null;
+  // バックエンド（SkillTool::call）は trim して解決するため、表示も同じ正規化を通す。
+  return typeof name === "string" ? name.trim() || null : null;
 }
 
 /// エージェントのツール実行（Chain of Thought）を可視化する。検索中はスピナー、完了はチェック。
