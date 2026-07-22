@@ -50,10 +50,9 @@ pub struct WorkerConfig {
     /// 自律 shell に同梱するゲストコマンドパッケージ（coreutils 等・Task 5.4）。
     pub sandbox_software: Vec<String>,
     /// コード実行系（code_interpreter / shell）の隔離ティア（admin ポリシー・design §4.6）。
-    /// 既定は wasm（deploy アセット不要）。native Python/フル Linux コマンドが要るなら gVisor 等を選ぶ。
+    /// 既定は gVisor（#346・native Python。rootfs は numpy/pandas 同梱がビルドで保証される）。
+    /// runsc の無い開発ホストは wasm へ明示退避する（自動降格はしない）。
     /// web_fetch は egress 限定の短命 sandbox なので常に wasm（この設定の対象外）。
-    /// ⚠️ native ティアは rootfs が numpy/pandas を同梱していることが前提（code_interpreter の宣伝依存・
-    /// 既定 rootfs は numpy 非同梱）。design §4.6 前提条件を参照。
     pub sandbox_backend: agent_core::SandboxBackend,
 }
 
@@ -72,8 +71,9 @@ impl Default for WorkerConfig {
             autonomous_max_tokens: 200_000,
             autonomous_max_cost_usd_micros: 1_000_000,
             sandbox_software: vec!["coreutils".to_string()],
-            // 既定は wasm（後方互換・deploy アセット前提の gVisor は admin が明示 opt-in）。
-            sandbox_backend: agent_core::SandboxBackend::Wasm,
+            // 既定ティアの単一ソースは enum の `#[default]`（gVisor・#346）。ここに別のリテラルを
+            // 持たない（「もう一つの正」を作らない）。
+            sandbox_backend: agent_core::SandboxBackend::default(),
         }
     }
 }

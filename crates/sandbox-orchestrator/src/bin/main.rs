@@ -44,6 +44,8 @@ struct GvisorConfig {
     runsc_bin: Option<String>,
     rootfs_dir: Option<String>,
     state_dir: Option<String>,
+    /// メモリ watchdog の監視間隔 ms（未指定 2000・0 で無効・#346）。
+    watchdog_interval_ms: Option<u64>,
 }
 
 /// Firecracker ティアの構成。`enabled` かつ bin/kernel/rootfs が揃えば実バックエンドを組む。
@@ -77,11 +79,16 @@ fn build_gvisor(cfg: &GvisorConfig, holder_bin: Option<PathBuf>) -> Option<Arc<d
         .state_dir
         .clone()
         .unwrap_or_else(|| "/run/sandbox/gvisor".to_string());
+    let watchdog = match cfg.watchdog_interval_ms.unwrap_or(2_000) {
+        0 => None,
+        ms => Some(std::time::Duration::from_millis(ms)),
+    };
     match GvisorBackend::new(
         runsc,
         PathBuf::from(rootfs),
         PathBuf::from(state),
         holder_bin,
+        watchdog,
     ) {
         Ok(b) => {
             tracing::info!("gVisor バックエンドを構成しました（runsc={runsc}）");

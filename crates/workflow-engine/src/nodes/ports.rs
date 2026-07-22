@@ -92,7 +92,7 @@ pub struct LlmInvokeReq {
 /// agent.invoke の要求（サンドボックス起動・**capability は縮小のみ**）。
 #[derive(Debug, Clone)]
 pub struct AgentInvokeReq {
-    /// 実行するコード/指示（Stage A: wasm ティア固定・制約ツールセット）。
+    /// 実行するコード/指示（ティアは admin ポリシー・既定 gVisor・#346・制約ツールセット）。
     pub code: String,
     /// 実行時間上限（ミリ秒）。
     pub timeout_ms: Option<u64>,
@@ -162,7 +162,7 @@ pub trait NodePorts: Send + Sync {
     /// llm.invoke（`LlmGateway.stream` ＋ `record_generation`・trace_id を記録）。
     async fn llm_invoke(&self, ctx: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError>;
 
-    /// agent.invoke（`Sandbox` トレイト・wasm ティア固定・capability 縮小のみ）。
+    /// agent.invoke（`Sandbox` トレイト・ティアは admin ポリシー既定・capability 縮小のみ）。
     async fn agent_invoke(&self, ctx: &ExecCtx, req: AgentInvokeReq) -> Result<Value, PortError>;
 
     /// http.request の外部送信（宛先束縛照合は executor 済み）。

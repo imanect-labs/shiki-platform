@@ -182,15 +182,16 @@ services:
       SANDBOX__LISTEN: 0.0.0.0:50000
       SECURE_EXEC_SIDECAR_BIN: /usr/local/bin/secure-exec-sidecar
       SANDBOX__COMMANDS_DIR: /opt/shiki/commands
-      # gVisor ティアを有効化（runsc/rootfs は下記ボリューム。未配置なら warn して wasm のみで起動）。
+      # gVisor ティア（既定・#346）。runsc/rootfs（numpy/pandas 同梱）はイメージに焼き込み済み
+      # （Dockerfile の native-assets/rootfs-src ステージ・実行時 DL 無し・PIT-33）。
       SANDBOX__GVISOR__ENABLED: "1"
     ports:
       # gRPC はローカルのみ公開（compose 網内は sandbox-orchestrator:50000 で到達）。
       - "127.0.0.1:50000:50000"
-    volumes:
-      # ネイティブティアのアセット（runsc・rootfs）。host 側で
-      # scripts/fetch-native-assets.sh＋build-sandbox-rootfs.sh により用意する（実行時 DL 無し・PIT-33）。
-      - ../sandbox-assets:/opt/shiki/sandbox-assets:ro
+    # アセットはイメージ同梱が既定（#346）。開発ホストで差し替える場合のみ
+    # `scripts/fetch-native-assets.sh`＋`scripts/build-sandbox-rootfs.sh` で用意して
+    # `../sandbox-assets:/opt/shiki/sandbox-assets:ro` をボリュームで上書きする
+    # （同梱ディレクトリを空ディレクトリで隠さないよう、既定ではマウントしない）。
     read_only: true
     tmpfs:
       - /tmp
@@ -427,10 +428,11 @@ services:
       SHIKI__RAG__ENABLED: ${SHIKI__RAG__ENABLED:-true}
       SHIKI__CHAT__SANDBOX_ENDPOINT: http://sandbox-orchestrator:50000
       # コード実行系（code_interpreter / shell / workflow agent_invoke）の隔離ティア（admin ポリシー）。
-      # wasm（既定）/ gvisor / firecracker。gvisor 等は orchestrator 側で当該ティアが構成済みなことが前提
-      # （SANDBOX__GVISOR__ENABLED 等）。dev 既定は wasm。
-      # ⚠️ native ティアは rootfs に numpy/pandas を同梱していること（既定 python:3.12-slim は numpy 非同梱）。
-      SHIKI__CHAT__SANDBOX_BACKEND: ${SHIKI__CHAT__SANDBOX_BACKEND:-wasm}
+      # gvisor（既定・#346。rootfs は numpy/pandas 同梱・orchestrator イメージに焼き込み済み）/
+      # wasm / firecracker。runsc の動かない環境（KVM 不要だが非特権 userns が必要）では
+      # `SHIKI__CHAT__SANDBOX_BACKEND=wasm` で明示的に退避する（自動降格はしない・design §4.6）。
+      # web_fetch は egress 限定の短命 sandbox なので常に wasm（この設定の対象外）。
+      SHIKI__CHAT__SANDBOX_BACKEND: ${SHIKI__CHAT__SANDBOX_BACKEND:-gvisor}
       # Office 統合（Collabora＋WOPI ホスト・Task 11.5/11.6・`--profile office` とセットで
       # SHIKI__OFFICE__ENABLED=true にする）。無効時は /wopi も /office/sessions も配線されない。
       SHIKI__OFFICE__ENABLED: ${SHIKI__OFFICE__ENABLED:-false}

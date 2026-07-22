@@ -36,7 +36,7 @@ pub struct ShellTool {
     workspace: Arc<dyn WorkspaceStore>,
     /// 有効化するゲストコマンドパッケージ（coreutils 等）。
     software: Vec<String>,
-    /// 隔離ティア（admin ポリシー・design §4.6）。フル Linux コマンドが動く gVisor 等を選べる。既定は wasm。
+    /// 隔離ティア（admin ポリシー・design §4.6）。既定は gVisor（フル Linux コマンド・#346）。
     backend: SandboxBackend,
 }
 

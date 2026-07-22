@@ -112,7 +112,7 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
 | 制御ノード | 分岐・並列・join・待機（時間/イベント） | ─ |
 | shiki script ノード | script-runtime で有界実行（§3） | ホスト関数経由＝能力ゲートウェイで通常認可 |
 | skill ノード | `skill:<name>@<version>` 参照（保存時に存在検証） | skill 宣言スコープ ∩ 実行主体 ReBAC |
-| `agent.invoke` ノード | サンドボックス（wasm ティア既定）で agent-core 起動 | ノード設定 ∩ 実行主体 ReBAC（下記） |
+| `agent.invoke` ノード | サンドボックス（gVisor ティア既定・#346）で agent-core 起動 | ノード設定 ∩ 実行主体 ReBAC（下記） |
 | `llm.invoke` ノード | llm-gateway 直行（サンドボックスなし） | モデルカタログ・予算ガードレール |
 | `http.request` ノード | 外部 HTTP（egress allowlist 適用） | シークレット宛先束縛（§5）＋allowlist の AND |
 
