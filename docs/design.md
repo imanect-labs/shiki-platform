@@ -507,14 +507,26 @@ flowchart TB
     ビルドは重いため別 CI ワークフローでレジストリへ push し、**開発/CI は暫定で upstream CODE イメージ pin 可**
     （配布物は必ず自前ビルド）。SaaS はテナント共有プール、オンプレ/エアギャップは同一イメージ同梱
     （実行時ダウンロードなし・PIT-33 と同型）。compose は `profiles: ["office"]` のオプトイン。
-  - **AI の読み書き（3段・「人間編集中は AI 編集不可」は Collabora 文書のみに限定）**:
+  - **AI の読み書き（3段・issue #352 でライブ参加を実装済み）**:
     ① read = Docling パース（構造保持）を正、convert-to は補助
-    ② edit（非セッション時）= ファイルレベル編集（ingestion-worker の編集系 `edit.py`・
-    python-docx/openpyxl/python-pptx）→ 新バージョン保存（セッション有無は WOPI ロックで判定）
-    ③ edit（セッション中）= **提案バージョンとして保存**（`node_version.is_proposal`・current を進めない・
-    RAG 索引除外・バージョン履歴 UI から editor が「採用」して初めて通常の新バージョン化。PIT-44）。
-    Collabora セッションへのライブ参加はポストアルファの研究課題（postMessage API 経由が候補）。
-    **ネイティブ 3 種（ノート/スライド/CSV）にはこの制限を適用しない**（AI は常時共同編集参加者）。
+    ② edit（ライブ・`office.live_edit`）= **AI が CoolWSD セッションの headless 参加者**
+    （`crates/office` の `live::LiveEditor`・独立 view・参加者リストに「Shiki AI」表示）として接続し、
+    **自 view の選択**でアンカー指定編集（`replace_text`=ExecuteSearch→選択照合→paste /
+    `append_html` / `set_cells`=GoToCell→表 paste）。ユーザーの選択に依存しない（TOCTOU なし）。
+    編集は CoolWSD の協調プロトコルで全 view へ即時反映され、保存は CoolWSD 自身の WOPI PutFile →
+    既存チョークポイント（版・監査・outbox→RAG 再索引）。文書が開かれていなくても実行できる
+    （AI 単独セッションが立ち、新バージョンとして保存）。WOPI トークンは `ai_actor` クレーム付きで発行し、
+    認可は常に実行を依頼した実ユーザーの editor@file（毎呼び出し HigherConsistency・PIT-11）。
+    ③ edit（ファイルレベル・`office.edit`）= ingestion-worker の編集系 `edit.py`
+    （python-docx/openpyxl/python-pptx）による構造編集・バッチ編集。非ロック時=新バージョン／
+    WOPI ロック中=**提案バージョン**（`node_version.is_proposal`・current を進めない・RAG 索引除外・
+    バージョン履歴 UI から editor が「採用」して通常の新バージョン化。PIT-44）。
+    **ネイティブ 3 種（ノート/スライド/CSV）と Collabora の別なく、AI は共同編集参加者**。
+  - **AI 同時編集の一貫性モデル（#352）**: 同一ファイルへ複数のサブエージェント／複数チャットから
+    並行 AI 編集が走るケースは面ごとに担保する。ノート/スライド=`LiveDoc` の原子適用＋Yjs CRDT 収束
+    ＋アンカー不一致の skipped 報告／CSV=`base_rev` 楽観ロック（RevConflict→再読込リトライ）／
+    Collabora=**ファイル単位の advisory lock で AI↔AI を直列化**（取得待ち超過は busy 観測・
+    人間↔AI は view 別選択の共同編集に委ねて制限しない）。
   - **スプレッドシート×GAS 相当**: シートのカスタム関数/マクロは shiki script（[miniapp-platform §3](./miniapp-platform.md)）。
     （Phase 11 完遂スコープ外・将来イシュー）
 

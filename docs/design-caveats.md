@@ -508,3 +508,26 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   （期限切れは次アクセスで掃除）③提案が current 化される際は最新版との衝突を再確認する。
 - **受け入れ条件**: ロック中の office.edit が上書きを起こさない negative IT・提案採用で書込イベントが
   流れる IT が CI にある。
+
+## 🟠 PIT-45: AI headless 参加は「もう一人の Collabora クライアント」を運用に持ち込む
+
+- **箇所**: design §4.8（`office.live_edit`・`crates/office` の `live::LiveEditor`・issue #352）。
+- **リスク**: AI が CoolWSD セッションの独立 view として接続する設計は、選択ずれ（TOCTOU）と
+  版競合を構造的に消す一方、「常駐しないヘッドレスクライアント」特有の落とし穴を持つ。
+  ①AI 単独接続は新規セッション＝WOPI ロックを生み、その窓の間 `office.edit` は提案版へ迂回する
+  ②paste は非冪等で、途中失敗後の安易な再実行は**二重貼付**という選択ずれ以上の事故になる
+  ③kit プロセスはドキュメントごとに立つため、AI セッションの同時多発は Collabora のメモリを直撃する
+  ④ワイヤ形式は coolclient プロトコル版（0.1）とブラウザ実装への追従であり、自前ビルドイメージ
+  （PIT-43）の更新時に黙って壊れ得る ⑤`replace_text` の find は先頭一致 1 件で、同文の別出現を
+  意図と取り違え得る。
+- **決めること**: ①ロック発生と提案版迂回は**正常動作として契約**（ドキュメント化・テストで固定）
+  ②ops 開始後は再接続・再送を禁止し、部分適用を op 単位で正直に報告する（`LiveEditReport`）
+  ③同時セッションは semaphore で制限し、**同一ファイルの AI↔AI はファイル単位 advisory lock で直列化**
+  （人間↔AI は view 別選択の共同編集に委ねて制限しない）④接続直後の `coolserver` 応答と `loaded:` を
+  検証し、想定外は Protocol エラーで明確に失敗させる（黙って続行しない）。イメージ更新時は
+  `office-assistant.spec.ts`（OFFICE_E2E=1）の実機通過を必須ゲートにする ⑤paste 前に
+  `gettextselection` で自 view の選択と find を照合し、不一致は不発（warning）として報告・
+  ツール description で「文書内で一意な文字列」を誘導する。
+- **受け入れ条件**: 偽 CoolWSD IT（handshake/検索/照合/paste/save/close・途中 close・timeout・
+  searchnotfound）と実機 e2e（選択→承認→編集画面へライブ反映）が CI/手動ゲートにある。
+  同一ファイル並行 `LiveEditor::apply` の直列化 IT がある。
