@@ -159,7 +159,10 @@ async fn check_file_info(
     // UserId を実ユーザーと変えることで CoolWSD が独立 view として扱い、
     // viewinfo で全参加者に「Shiki AI」が表示される（コワークの可視化）。
     let (user_id, user_friendly_name) = if auth.ai_actor {
-        (format!("shiki-ai:{}", auth.ctx.principal.id), AI_DISPLAY_NAME.to_string())
+        (
+            format!("shiki-ai:{}", auth.ctx.principal.id),
+            AI_DISPLAY_NAME.to_string(),
+        )
     } else {
         (auth.ctx.principal.id.clone(), auth.ctx.principal.id.clone())
     };

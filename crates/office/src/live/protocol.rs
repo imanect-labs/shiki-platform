@@ -92,7 +92,8 @@ pub(super) fn uno_go_to_cell(cell_ref: &str) -> String {
 pub(super) const UNO_GO_TO_END_OF_DOC: &str = "uno .uno:GoToEndOfDoc";
 
 /// 自 view の選択内容を要求する（応答は `textselectioncontent: <raw>`）。
-pub(super) const GET_TEXT_SELECTION_LINE: &str = "gettextselection mimetype=text/plain;charset=utf-8";
+pub(super) const GET_TEXT_SELECTION_LINE: &str =
+    "gettextselection mimetype=text/plain;charset=utf-8";
 
 /// UNO save ラッパ（編集セッション非終了・未変更ならスキップ）。
 pub(super) const SAVE_LINE: &str = "save dontTerminateEdit=1 dontSaveIfUnmodified=1";
@@ -190,7 +191,11 @@ pub(super) fn parse_unocommandresult(line: &str) -> Option<(String, bool)> {
 pub(super) fn parse_textselectioncontent(msg: &str) -> Option<&str> {
     let rest = msg.strip_prefix("textselectioncontent:")?;
     // 先頭の区切り（スペース 1 個 or 改行）だけ剥がし、内容の空白は保存する。
-    Some(rest.strip_prefix(' ').or_else(|| rest.strip_prefix('\n')).unwrap_or(rest))
+    Some(
+        rest.strip_prefix(' ')
+            .or_else(|| rest.strip_prefix('\n'))
+            .unwrap_or(rest),
+    )
 }
 
 /// `set_cells` のアンカーとして許すセル参照か（`A1`・`Sheet2.B3`・`A1:C4`）。
@@ -210,11 +215,7 @@ pub fn is_cell_ref(anchor: &str) -> bool {
     // 省略可能なシート接頭辞（最後の '.' で分ける）。
     let cell_part = match anchor.rsplit_once('.') {
         Some((sheet, rest)) => {
-            if sheet.is_empty()
-                || !sheet
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
-            {
+            if sheet.is_empty() || !sheet.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                 return false;
             }
             rest
@@ -324,7 +325,9 @@ mod tests {
         assert_eq!(parse_pasteresult("pasteresult: success"), Some(true));
         assert_eq!(parse_pasteresult("pasteresult: fallback"), Some(false));
         assert_eq!(
-            parse_unocommandresult(r#"unocommandresult: {"commandName":".uno:Save","success":true}"#),
+            parse_unocommandresult(
+                r#"unocommandresult: {"commandName":".uno:Save","success":true}"#
+            ),
             Some((".uno:Save".into(), true))
         );
         assert_eq!(
@@ -341,16 +344,39 @@ mod tests {
             parse_textselectioncontent("textselectioncontent: 一行目\n二行目"),
             Some("一行目\n二行目")
         );
-        assert_eq!(parse_textselectioncontent("textselectioncontent: "), Some(""));
+        assert_eq!(
+            parse_textselectioncontent("textselectioncontent: "),
+            Some("")
+        );
         assert_eq!(parse_textselectioncontent("complexselection:"), None);
     }
 
     #[test]
     fn cell_ref_validation() {
-        for ok in ["A1", "AZ99", "AAA1048576", "Sheet2.B3", "data_1.C4", "A1:C4", "Sheet1.A1:B2"] {
+        for ok in [
+            "A1",
+            "AZ99",
+            "AAA1048576",
+            "Sheet2.B3",
+            "data_1.C4",
+            "A1:C4",
+            "Sheet1.A1:B2",
+        ] {
             assert!(is_cell_ref(ok), "{ok} は許可されるべき");
         }
-        for bad in ["", "1A", "a1", "A", "12", "A1:", ":B2", "Sheet 1.A1", "'S'.A1", "A12345678", "=SUM(A1)"] {
+        for bad in [
+            "",
+            "1A",
+            "a1",
+            "A",
+            "12",
+            "A1:",
+            ":B2",
+            "Sheet 1.A1",
+            "'S'.A1",
+            "A12345678",
+            "=SUM(A1)",
+        ] {
             assert!(!is_cell_ref(bad), "{bad} は拒否されるべき");
         }
     }

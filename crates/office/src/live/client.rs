@@ -114,14 +114,19 @@ impl CoolWsClient {
             .map_err(|e| LiveError::Connect(e.to_string()))?;
 
         // `loaded:` を待つ（coolserver/lokitversion/progress 等は読み捨てる）。
-        let loaded = wait_matching(&mut stream, cfg.load_timeout, "load", protocol::parse_loaded)
-            .await
-            .map_err(|e| match e {
-                // load 中の失敗はすべて Load に写す（呼び出し側の分類を単純に保つ）。
-                LiveError::Server { cmd, kind } => LiveError::Load(format!("cmd={cmd} kind={kind}")),
-                LiveError::Closed(reason) => LiveError::Load(format!("close: {reason}")),
-                other => other,
-            })?;
+        let loaded = wait_matching(
+            &mut stream,
+            cfg.load_timeout,
+            "load",
+            protocol::parse_loaded,
+        )
+        .await
+        .map_err(|e| match e {
+            // load 中の失敗はすべて Load に写す（呼び出し側の分類を単純に保つ）。
+            LiveError::Server { cmd, kind } => LiveError::Load(format!("cmd={cmd} kind={kind}")),
+            LiveError::Closed(reason) => LiveError::Load(format!("close: {reason}")),
+            other => other,
+        })?;
         tracing::debug!(view_id = %loaded.view_id, views = loaded.views, "coolwsd loaded");
         Ok(Self {
             stream,
@@ -212,7 +217,13 @@ impl CoolWsClient {
             .await
             .map_err(|e| LiveError::Closed(e.to_string()))?;
         let timeout = self.phase_timeout(self.op_timeout)?;
-        wait_matching(&mut self.stream, timeout, "paste", protocol::parse_pasteresult).await
+        wait_matching(
+            &mut self.stream,
+            timeout,
+            "paste",
+            protocol::parse_pasteresult,
+        )
+        .await
     }
 
     /// 保存する（`save dontTerminateEdit=1 dontSaveIfUnmodified=1`）。

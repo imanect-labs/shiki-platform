@@ -48,7 +48,9 @@ async fn recv_text(ws: &mut ServerWs) -> String {
 }
 
 async fn send(ws: &mut ServerWs, line: &str) {
-    ws.send(Message::Text(line.to_string().into())).await.unwrap();
+    ws.send(Message::Text(line.to_string().into()))
+        .await
+        .unwrap();
 }
 
 /// `coolclient`→`load` を受けて `loaded:` まで返す（正常系ハンドシェイク）。
@@ -154,7 +156,10 @@ async fn happy_path_search_paste_save() {
         .unwrap());
     client.go_to_cell("Sheet2.B3").await.unwrap();
     assert!(client
-        .paste("text/html;charset=utf-8", b"<table><tr><td>1</td></tr></table>")
+        .paste(
+            "text/html;charset=utf-8",
+            b"<table><tr><td>1</td></tr></table>"
+        )
         .await
         .unwrap());
     assert_eq!(client.save().await.unwrap(), SaveAck::CoreSaved);
@@ -234,7 +239,10 @@ async fn mid_session_close_fails_fast() {
         .await
         .unwrap();
     let err = client.selection_text().await.unwrap_err();
-    assert!(matches!(&err, LiveError::Closed(r) if r == "recycling"), "{err:?}");
+    assert!(
+        matches!(&err, LiveError::Closed(r) if r == "recycling"),
+        "{err:?}"
+    );
     server.await.unwrap();
 }
 
@@ -251,7 +259,10 @@ async fn paste_timeout() {
     let mut client = CoolWsClient::connect(&fast_cfg(&url), WOPI_SRC, "tok", "ja")
         .await
         .unwrap();
-    let err = client.paste("text/html;charset=utf-8", b"<p>x</p>").await.unwrap_err();
+    let err = client
+        .paste("text/html;charset=utf-8", b"<p>x</p>")
+        .await
+        .unwrap_err();
     assert!(matches!(err, LiveError::Timeout("paste")), "{err:?}");
     client.close().await;
     server.await.unwrap();
@@ -270,7 +281,10 @@ async fn save_storage_error() {
         .await
         .unwrap();
     let err = client.save().await.unwrap_err();
-    assert!(matches!(&err, LiveError::SaveFailed(m) if m.contains("savefailed")), "{err:?}");
+    assert!(
+        matches!(&err, LiveError::SaveFailed(m) if m.contains("savefailed")),
+        "{err:?}"
+    );
     server.await.unwrap();
 }
 
