@@ -88,8 +88,8 @@ vocab_enum! {
         /// Office ファイル（docx/xlsx/pptx）の AI 編集（非ロック時=新バージョン/
         /// WOPI ロック中=提案バージョン・Task 11.8）。
         OfficeEdit => "office.edit",
-        /// 開いている Office セッションへの AI ライブ編集（現在の選択範囲を置換・
-        /// Collabora Action_Paste でセッション内へ即注入・全参加者へ反映・#328）。
+        /// Office 文書への AI ライブ編集（AI が CoolWSD セッションの headless 参加者
+        /// として接続し、自 view でアンカー指定編集・全参加者へ即反映・issue #352）。
         OfficeLiveEdit => "office.live_edit",
         /// CSV への読み取り専用 SQL クエリ（隔離 DuckDB 経由・Task 11P.9）。
         CsvQuery => "csv.query",

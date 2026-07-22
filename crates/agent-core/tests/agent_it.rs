@@ -129,7 +129,6 @@ impl Tool for MockSearchTool {
             slide_drafts: vec![],
             csv_drafts: vec![],
             document_drafts: vec![],
-            office_live_edits: vec![],
             is_error: false,
         })
     }
