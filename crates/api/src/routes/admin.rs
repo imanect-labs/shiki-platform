@@ -253,6 +253,46 @@ pub async fn delete_tenant(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// テナントの自律エージェントポリシ設定リクエスト（#350）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TenantAutonomousPolicyRequest {
+    /// 全自動（bypass）承認モードを許可するか（false で org 全体の利用を禁止する）。
+    pub allow_bypass: bool,
+}
+
+/// テナントの自律エージェントポリシを設定する（org 管理者キャップ・#350）。
+///
+/// `allow_bypass=false` で当該テナントの全自動（bypass）承認モードを禁止する。チャット API は
+/// 明示エラーで弾き、実行中に残っていた bypass は承認必須へクランプされる（黙って実行しない）。
+#[utoipa::path(
+    put,
+    path = "/admin/tenants/{tenant_id}/autonomous-policy",
+    params(("tenant_id" = String, Path, description = "テナント識別子")),
+    request_body = TenantAutonomousPolicyRequest,
+    responses(
+        (status = 204, description = "ポリシを更新した"),
+        (status = 401, description = "provisioner トークンが無効"),
+        (status = 404, description = "active なテナントが存在しない"),
+    ),
+    security(("provisioner_token" = [])),
+)]
+pub async fn set_tenant_autonomous_policy(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(req): Json<TenantAutonomousPolicyRequest>,
+) -> Result<StatusCode, ApiError> {
+    validate_tenant_id(&tenant_id)
+        .map_err(|_| ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into()))?;
+    let updated = state
+        .tenants
+        .set_autonomous_bypass(&tenant_id, req.allow_bypass)
+        .await?;
+    if !updated {
+        return Err(ApiError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// データ面の purge（FGA タプル → オブジェクト → DB 行）。
 ///
 /// storage（node/artifact/secret 等）→ RAG（chunk/jobq/Qdrant/Tantivy）→

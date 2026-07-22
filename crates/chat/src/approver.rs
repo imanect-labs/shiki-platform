@@ -9,9 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use agent_core::{ApprovalDecision, Approver};
+use agent_core::{ApprovalDecision, ApprovalPolicy, Approver};
 use uuid::Uuid;
 
+use crate::autonomous::AutonomousMode;
 use crate::model::RunStatus;
 use crate::store::ChatStore;
 
@@ -28,6 +29,18 @@ pub struct DbApprover {
     cancel: Arc<AtomicBool>,
     poll_interval: Duration,
     max_wait: Duration,
+    /// 自律 run の承認モード再評価コンテキスト（実行中トグル対応・#350）。非自律は `None`。
+    mode: Option<ModeContext>,
+}
+
+/// 実行中の承認モード再評価に必要な材料（thread の現在値と突き合わせる）。
+struct ModeContext {
+    thread_id: Uuid,
+    tenant_id: String,
+    /// run の実行主体（緩和はこの本人による設定のみ有効）。
+    actor: String,
+    /// メッセージ投入時点のモード（発話者が同意した水準）。
+    snapshot: AutonomousMode,
 }
 
 impl DbApprover {
@@ -45,6 +58,7 @@ impl DbApprover {
             cancel,
             poll_interval: POLL_INTERVAL,
             max_wait: MAX_WAIT,
+            mode: None,
         }
     }
 
@@ -54,6 +68,51 @@ impl DbApprover {
         self.poll_interval = poll_interval;
         self.max_wait = max_wait;
         self
+    }
+
+    /// 自律 run の承認モード再評価を有効化する（実行中トグル対応・#350）。
+    ///
+    /// 各破壊系呼び出しの直前と承認待ちポーリング中に thread の現在モードを読み直し、
+    /// [`crate::autonomous::effective_mode`]（厳格化は誰でも・緩和は actor 本人のみ・org キャップ）
+    /// で実効ポリシを決める。
+    #[must_use]
+    pub fn with_autonomous_mode(
+        mut self,
+        thread_id: Uuid,
+        tenant_id: String,
+        actor: String,
+        snapshot: AutonomousMode,
+    ) -> Self {
+        self.mode = Some(ModeContext {
+            thread_id,
+            tenant_id,
+            actor,
+            snapshot,
+        });
+        self
+    }
+
+    /// thread の現在モードから実効モードを再評価する（DB エラー時は `None`＝スナップショット継続）。
+    async fn refresh_effective_mode(&self) -> Option<AutonomousMode> {
+        let mc = self.mode.as_ref()?;
+        let (current, set_by) = self
+            .store
+            .thread_autonomous_mode(mc.thread_id, &mc.tenant_id)
+            .await
+            .ok()?;
+        let bypass_allowed = self
+            .store
+            .autonomous_bypass_allowed(&mc.tenant_id)
+            .await
+            .ok()?;
+        let (mode, _clamp) = crate::autonomous::effective_mode(
+            mc.snapshot,
+            current,
+            set_by.as_deref(),
+            &mc.actor,
+            bypass_allowed,
+        );
+        Some(mode)
     }
 
     /// 走行状態へ戻す（決定後の継続用・fencing 一致時のみ）。
@@ -67,10 +126,16 @@ impl DbApprover {
 
 #[async_trait::async_trait]
 impl Approver for DbApprover {
+    /// 実行中トグル（#350）: 承認ゲートは各破壊系呼び出しの直前にこれを参照する。
+    /// `None`（非自律 or 一時的 DB エラー）は run 開始時のスナップショットへフォールバック。
+    async fn current_policy(&self) -> Option<ApprovalPolicy> {
+        Some(self.refresh_effective_mode().await?.approval_policy())
+    }
+
     async fn decide(
         &self,
         tool_call_id: &str,
-        _name: &str,
+        name: &str,
         _input: &serde_json::Value,
     ) -> ApprovalDecision {
         // 承認待ちへ遷移（fencing 不一致なら no-op＝別ワーカーが takeover 済み）。
@@ -90,6 +155,14 @@ impl Approver for DbApprover {
             if self.cancel.load(Ordering::Relaxed) || db_cancel {
                 self.resume_running().await;
                 return ApprovalDecision::Cancelled;
+            }
+            // 承認待ち中にモードが緩和されたら自動承認する（実行中トグル・#350。緩和は run の
+            // actor 本人による設定のみ有効＝effective_mode が保証。承認カードは resolved で閉じる）。
+            if let Some(mode) = self.refresh_effective_mode().await {
+                if mode.approval_policy().is_pre_authorized(name) {
+                    self.resume_running().await;
+                    return ApprovalDecision::Approved;
+                }
             }
             // 決定が入っていれば適用する。
             if let Ok(Some(approved)) = self.store.poll_approval(self.run_id, tool_call_id).await {

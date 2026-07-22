@@ -245,6 +245,8 @@ mod tests {
             cancel_requested: false,
             trace_id: None,
             autonomous: false,
+            autonomous_mode: "require_approval".into(),
+            checkpoint: None,
             skill_id,
             skill_version: skill_id.map(|_| 1),
             mini_app_id: None,

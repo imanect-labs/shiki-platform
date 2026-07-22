@@ -25,6 +25,7 @@
 
 pub mod approver;
 pub mod artifacts;
+pub mod autonomous;
 pub mod csv_tool;
 pub mod document_tool;
 pub mod error;
@@ -44,6 +45,7 @@ pub mod workspace;
 
 pub use approver::DbApprover;
 pub use artifacts::StorageArtifactStore;
+pub use autonomous::{effective_mode, AutonomousMode, ModeClamp};
 pub use csv_tool::{CsvPatchTool, CsvQueryTool, CsvWriteTool, SaveCsvTool};
 pub use document_tool::{DocumentEditTool, DocumentEmbedTool, DocumentReadTool, SaveNoteTool};
 pub use error::ChatError;
