@@ -167,6 +167,20 @@ pub fn manifest_digest(manifest: &MiniAppManifest) -> Result<String, AppPlatform
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// レジストリ first-party 署名の対象 digest（name/version に束縛・#344）。
+///
+/// body digest だけを署名すると、正当に署名された body を**別名/別バージョンで再 publish**して
+/// 公式スキルをスプーフィング/スクワッティングできてしまう（レビュー指摘）。署名対象へ
+/// レジストリの `name`/`version` を織り込み、publish・import・install の全経路でこの digest を
+/// 検証する（replay 不可）。
+pub fn registry_signing_digest(name: &str, version: &str, body_digest: &str) -> String {
+    value_digest(&serde_json::json!({
+        "name": name,
+        "version": version,
+        "body_digest": body_digest,
+    }))
+}
+
 /// 任意の JSON 値の正準 digest（canonical JSON の sha256 hex・#344）。
 ///
 /// skill レジストリの publish/署名対象（skill body）で使う。マニフェストは

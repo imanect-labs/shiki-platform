@@ -26,6 +26,17 @@ use super::exec::CapabilityNodeExecutor;
 use super::ports::{ExecCtx, NodePorts, PortError, StorageWriteReq};
 use super::resolver::{as_bytes, ParamResolver};
 
+/// `run_script_source` の引数束（script.run と skill.invoke で共用・7 引数制限対応）。
+pub(super) struct ScriptRunReq<'a> {
+    pub source: &'a str,
+    pub audit_api: &'a str,
+    pub input: Value,
+    pub ctx: &'a NodeContext,
+    pub ec: &'a ExecCtx,
+    pub engine: Arc<script_runtime::engine::ScriptEngine>,
+    pub ceiling_override: Option<Vec<String>>,
+}
+
 impl CapabilityNodeExecutor {
     pub(super) async fn node_script_run(
         &self,
@@ -49,22 +60,39 @@ impl CapabilityNodeExecutor {
             .as_ref()
             .and_then(|e| resolve_value(e, &r))
             .unwrap_or_else(|| ctx.input.clone());
-        self.run_script_source(&source, "script.run", input, ctx, ec, engine)
-            .await
+        // script.run は node の scope_ceiling をそのまま使う（絞り込みなし）。
+        self.run_script_source(ScriptRunReq {
+            source: &source,
+            audit_api: "script.run",
+            input,
+            ctx,
+            ec,
+            engine,
+            ceiling_override: None,
+        })
+        .await
     }
 
     /// shiki script 本文を script-runtime で 1 回実行する（script.run と skill.invoke の共用・#344）。
     ///
     /// `Shiki.*` ホスト呼び出しは同じ能力ゲートウェイ（scope ceiling → journal → 監査）へ合流する。
+    ///
+    /// `req.ceiling_override` が Some のとき、その集合を scope ceiling として使う
+    /// （skill.invoke は「workflow ceiling ∩ skill 宣言スコープ」を渡し、広い workflow scope の
+    /// 下でも skill script が宣言外の `Shiki.*` を呼べないようにする・レビュー指摘）。
     pub(super) async fn run_script_source(
         &self,
-        source: &str,
-        audit_api: &str,
-        input: Value,
-        ctx: &NodeContext,
-        ec: &ExecCtx,
-        engine: Arc<script_runtime::engine::ScriptEngine>,
+        req: ScriptRunReq<'_>,
     ) -> Result<Value, PortError> {
+        let ScriptRunReq {
+            source,
+            audit_api,
+            input,
+            ctx,
+            ec,
+            engine,
+            ceiling_override,
+        } = req;
         let compiled = script_runtime::compile::compile(source)
             .map_err(|e| PortError::invalid(format!("script コンパイル失敗: {e}")))?;
 
@@ -77,7 +105,7 @@ impl CapabilityNodeExecutor {
             journal: self.journal.clone(),
             audit: Arc::clone(&self.audit),
             ec: ec.clone(),
-            ceiling: ctx.scope_ceiling.clone(),
+            ceiling: ceiling_override.unwrap_or_else(|| ctx.scope_ceiling.clone()),
             base_key: ctx.idempotency_key.clone(),
         };
         let handle = tokio::runtime::Handle::current();

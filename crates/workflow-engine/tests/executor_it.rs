@@ -52,8 +52,8 @@ struct FakePorts {
     csv_write_calls: Mutex<u32>,
     /// skill.invoke の解決結果（None は fail-closed・#344）。
     skill: Mutex<Option<workflow_engine::nodes::ResolvedSkillView>>,
-    /// agent_invoke へ渡った code（skill instructions の伝播検証用）。
-    last_agent_code: Mutex<Option<String>>,
+    /// llm_invoke へ渡った system（skill instructions の伝播検証用）。
+    last_llm_system: Mutex<Option<String>>,
 }
 impl FakePorts {
     fn with_http_status(status: u16) -> Self {
@@ -93,10 +93,10 @@ impl NodePorts for FakePorts {
         Ok(json!({ "results": [ { "file_name": "a" } ] }))
     }
     async fn llm_invoke(&self, _ctx: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError> {
+        *self.last_llm_system.lock().unwrap() = req.system.clone();
         Ok(json!({ "text": format!("echo:{}", req.prompt) }))
     }
-    async fn agent_invoke(&self, _ctx: &ExecCtx, req: AgentInvokeReq) -> Result<Value, PortError> {
-        *self.last_agent_code.lock().unwrap() = Some(req.code);
+    async fn agent_invoke(&self, _ctx: &ExecCtx, _req: AgentInvokeReq) -> Result<Value, PortError> {
         Ok(json!({ "stdout": "ok" }))
     }
     async fn http_send(&self, _ctx: &ExecCtx, req: HttpSendReq) -> Result<HttpSendResp, PortError> {
@@ -498,13 +498,15 @@ async fn llm_invoke_is_scope_free() {
 // --- skill.invoke（#344 Task 10.1b）---
 
 #[tokio::test]
-async fn skill_invoke_instructions_route_via_agent() {
-    // instructions のみの skill は agent.invoke 経路で実行される（新しい実行機構は作らない）。
+async fn skill_invoke_instructions_route_via_llm() {
+    // instructions のみの skill は llm.invoke 経路（instructions=system・入力=prompt）で実行される。
+    // agent_invoke ポート（サンドボックスのコード実行）へ自然言語を code として渡さない（レビュー指摘）。
     let ports = Arc::new(FakePorts::default());
     *ports.skill.lock().unwrap() = Some(workflow_engine::nodes::ResolvedSkillView {
         name: "expense".into(),
         instructions: "経費規程に従って確認する。".into(),
         shiki_script: None,
+        allowed_scopes: None,
     });
     let audit = Arc::new(CapturingAudit::default());
     let exec = executor(Arc::clone(&ports), Arc::clone(&audit));
@@ -516,16 +518,16 @@ async fn skill_invoke_instructions_route_via_agent() {
         )
         .await;
     assert!(res.ok, "{:?}", res.error);
-    assert_eq!(res.output, json!({ "stdout": "ok" }));
-    // instructions が agent の code に含まれる（入力込み）。
-    let code = ports.last_agent_code.lock().unwrap().clone().unwrap();
-    assert!(code.contains("経費規程に従って確認する。"));
-    assert!(code.contains("出張費"));
+    // fake llm は echo:<prompt> を返す（入力が prompt として伝播している）。
+    assert!(res.output["text"].as_str().unwrap().contains("出張費"));
+    // instructions は system として伝播する。
+    let system = ports.last_llm_system.lock().unwrap().clone().unwrap();
+    assert!(system.contains("経費規程に従って確認する。"));
     // 監査に skill.invoke が経路つきで残る。
     let records = audit.records.lock().unwrap();
     assert!(records
         .iter()
-        .any(|(api, ok, meta)| api == "skill.invoke" && *ok && meta["via"] == "agent"));
+        .any(|(api, ok, meta)| api == "skill.invoke" && *ok && meta["via"] == "llm"));
 }
 
 #[tokio::test]
@@ -554,6 +556,7 @@ async fn skill_invoke_shiki_script_requires_engine() {
         name: "notify".into(),
         instructions: "通知する。".into(),
         shiki_script: Some("function main(input){ return { ok: true }; }".into()),
+        allowed_scopes: None,
     });
     let exec = executor(ports, Arc::new(CapturingAudit::default()));
     let res = exec

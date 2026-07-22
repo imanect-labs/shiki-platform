@@ -129,11 +129,33 @@ impl SkillInstallService {
             .await
             .map_err(map_artifact)?;
         // 保存時検証を通っている body か防御的に確認（壊れた行をレジストリへ流さない）。
-        gui::validate_skill_body(&version.body)
+        let body = gui::validate_skill_body(&version.body)
             .map_err(|e| AppPlatformError::Invalid(format!("skill body が不正です: {e:?}")))?;
+        // `.shiki` script は publish 時にコンパイル検証する（skill.invoke が実行するため、
+        // 壊れた script を配布してから全 run で落とさない・レビュー指摘）。
+        compile_shiki_scripts(&body)?;
         let digest = value_digest(&version.body);
         let label = version_label.map_or_else(|| meta.current_version.to_string(), str::to_string);
-
+        // first-party は **publish 時にも**署名を要求・検証する（レジストリ一覧/ストアが
+        // 検証前のエントリを「公式」表示してしまうスプーフィングを防ぐ・レビュー指摘。
+        // install 時の再検証は維持＝二重）。署名対象は name/version に束縛する（別名 replay 不可）。
+        if trust_tier == "first_party" {
+            let Some(sig) = signature else {
+                return Err(AppPlatformError::Invalid(
+                    "first-party publish には署名が必要です".into(),
+                ));
+            };
+            let signing = crate::registry_signing_digest(&meta.name, &label, &digest);
+            let keys = self.keys.active_key_bytes(ctx).await?;
+            let ok = keys
+                .iter()
+                .any(|k| verify_digest_signature(&signing, sig, k).is_ok());
+            if !ok {
+                self.audit_deny(ctx, skill_id, "skill.publish.signature", trace_id)
+                    .await;
+                return Err(AppPlatformError::Forbidden);
+            }
+        }
         let entry = self
             .registry
             .publish(
@@ -193,10 +215,17 @@ impl SkillInstallService {
                             "first-party skill は署名付き publish が必要です".into(),
                         )
                     })?;
+                // entry の name/version/body-digest から署名対象を**再計算**して検証する
+                // （stored digest をそのまま信用せず、別名でのなりすましを弾く・レビュー指摘）。
+                let signing = crate::registry_signing_digest(
+                    &entry.name,
+                    &entry.version,
+                    &entry.manifest_digest,
+                );
                 let keys = self.keys.active_key_bytes(ctx).await?;
                 let ok = keys
                     .iter()
-                    .any(|k| verify_digest_signature(&entry.manifest_digest, &sig, k).is_ok());
+                    .any(|k| verify_digest_signature(&signing, &sig, k).is_ok());
                 if !ok {
                     self.audit_deny(ctx, entry.artifact_id, "skill.install.signature", trace_id)
                         .await;
@@ -326,6 +355,8 @@ impl SkillInstallService {
              JOIN artifact_version v \
                ON v.tenant_id = i.tenant_id AND v.artifact_id = i.skill_id \
               AND v.version = i.skill_version \
+             JOIN artifact a \
+               ON a.tenant_id = i.tenant_id AND a.id = i.skill_id AND a.deleted_at IS NULL \
              WHERE i.tenant_id = $1 AND i.user_id = $2 \
              ORDER BY (i.trust_tier <> 'first_party'), i.created_at DESC LIMIT 200",
         )
@@ -345,9 +376,13 @@ impl SkillInstallService {
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
         AppPlatformError,
     > {
+        // 削除済み skill artifact は除外する（保存できても実行時に必ず fail-closed になる
+        // IR を保存時に green-light しない・レビュー指摘）。
         let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT name, registry_version FROM skill_installation \
-             WHERE tenant_id = $1 AND user_id = $2",
+            "SELECT i.name, i.registry_version FROM skill_installation i \
+             JOIN artifact a \
+               ON a.tenant_id = i.tenant_id AND a.id = i.skill_id AND a.deleted_at IS NULL \
+             WHERE i.tenant_id = $1 AND i.user_id = $2",
         )
         .bind(&ctx.tenant_id)
         .bind(&ctx.principal.id)
@@ -402,6 +437,22 @@ impl SkillInstallService {
             tracing::warn!(error = %e, action, "skill レジストリの監査記録に失敗");
         }
     }
+}
+
+/// `.shiki` script のコンパイル検証（publish/import 時・skill.invoke の実行前提・#344）。
+pub(crate) fn compile_shiki_scripts(body: &gui::SkillBody) -> Result<(), AppPlatformError> {
+    for script in &body.scripts {
+        if script.kind != gui::ScriptKind::Shiki {
+            continue;
+        }
+        script_runtime::compile::compile(&script.source).map_err(|e| {
+            AppPlatformError::Invalid(format!(
+                "shiki script '{}' がコンパイルできません: {e}",
+                script.path
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 /// artifact 層のエラーを写す（NotFound/Forbidden は秘匿せずそのまま・fail-closed）。

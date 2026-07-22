@@ -17,7 +17,7 @@ use crate::run::NodeContext;
 
 use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{AgentInvokeReq, ExecCtx, PortError};
+use super::ports::{ExecCtx, LlmInvokeReq, PortError};
 use super::resolver::ParamResolver;
 
 impl CapabilityNodeExecutor {
@@ -51,22 +51,44 @@ impl CapabilityNodeExecutor {
                 .script_engine
                 .clone()
                 .ok_or_else(|| PortError::unavailable("script engine が未設定です"))?;
-            self.run_script_source(source, "skill.invoke", input, ctx, ec, engine)
-                .await?
+            // 実効 scope = workflow ceiling ∩ skill 宣言スコープ（宣言があるときのみ絞る・
+            // 広い workflow scope 下でも skill script が宣言外 API を呼べないように・レビュー指摘）。
+            let ceiling = skill.allowed_scopes.as_ref().map(|declared| {
+                let allow: std::collections::BTreeSet<&str> =
+                    declared.iter().map(String::as_str).collect();
+                ctx.scope_ceiling
+                    .iter()
+                    .filter(|s| allow.contains(s.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
+            self.run_script_source(super::script::ScriptRunReq {
+                source,
+                audit_api: "skill.invoke",
+                input,
+                ctx,
+                ec,
+                engine,
+                ceiling_override: ceiling,
+            })
+            .await?
         } else {
-            // instructions のみ: agent.invoke 経路（サンドボックス・外部通信なし）。
-            self.rate_check(ec, "agent.invoke").await?;
-            let code = format!(
-                "# Skill: {}\n\n{}\n\n## 入力\n{}",
-                skill.name, skill.instructions, input
-            );
+            // instructions のみ: llm.invoke 経路（instructions を system・入力を prompt に）。
+            // agent_invoke ポートはコードのサンドボックス実行（ExecRequest::Python）であり、
+            // 自然言語 instructions を code として渡すと Python として実行されてしまう
+            // （レビュー指摘）。エージェンティックなツールループが要るスキルはチャット側の
+            // skill ツール（PR #354）が担い、ワークフローの instructions-only skill は
+            // 「skill 指示付きの LLM 呼び出し」として実行する。
+            self.rate_check(ec, "llm.invoke").await?;
             self.ports
-                .agent_invoke(
+                .llm_invoke(
                     ec,
-                    AgentInvokeReq {
-                        code,
-                        timeout_ms: None,
-                        egress_allowlist: Vec::new(),
+                    LlmInvokeReq {
+                        model: None,
+                        system: Some(format!("# Skill: {}\n\n{}", skill.name, skill.instructions)),
+                        prompt: input.to_string(),
+                        max_tokens: None,
+                        idempotency_key: ctx.idempotency_key.clone(),
                     },
                 )
                 .await?
@@ -76,7 +98,7 @@ impl CapabilityNodeExecutor {
             &ec.tenant_id,
             "skill.invoke",
             true,
-            &json!({ "skill": p.skill, "via": if skill.shiki_script.is_some() { "script" } else { "agent" } }),
+            &json!({ "skill": p.skill, "via": if skill.shiki_script.is_some() { "script" } else { "llm" } }),
         );
         Ok(out)
     }

@@ -46,5 +46,12 @@ pub(super) async fn resolve_skill(
         name: name.to_string(),
         instructions: body.instructions,
         shiki_script,
+        // skill script は workflow の declared_scopes（scope ceiling）で束縛する（inline script.run
+        // と同じモデル。skill 参照はワークフロー作者が明示的に含めた「インライン script 相当」）。
+        // `allowed_tools` はチャットツール語彙（doc_search 等）であり `Shiki.*` API スコープ
+        // （storage.read/http.egress 等）とは別軸のため、交差材料にはしない（交差すると slack-notify の
+        // ように allowed_tools に http.request 相当が無い script skill が壊れる）。skill 単位の
+        // script スコープ宣言は SkillBody 拡張の follow-up。
+        allowed_scopes: None,
     })
 }

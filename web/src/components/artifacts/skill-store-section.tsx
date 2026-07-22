@@ -44,14 +44,22 @@ export function SkillStoreSection() {
     });
   }, [entries]);
 
-  const installedNames = React.useMemo(() => new Set(installed.map((i) => i.name)), [installed]);
+  const installedByName = React.useMemo(
+    () => new Map(installed.map((i) => [i.name, i])),
+    [installed],
+  );
 
   const toggle = async (entry: SkillRegistryEntry) => {
     setPending(entry.name);
     try {
-      if (installedNames.has(entry.name)) {
+      const current = installedByName.get(entry.name);
+      if (current && current.registryVersion === entry.version) {
         await uninstallSkill(entry.name);
         toast({ title: `「${entry.name}」を外しました` });
+      } else if (current) {
+        // 旧バージョンをインストール済み → 最新へ更新（アンインストールさせない・レビュー指摘）。
+        await installSkill(entry.name, entry.version);
+        toast({ title: `「${entry.name}」を v${entry.version} へ更新しました` });
       } else {
         await installSkill(entry.name);
         toast({ title: `「${entry.name}」をインストールしました`, description: "チャットのスキル一覧に載ります。" });
@@ -81,7 +89,9 @@ export function SkillStoreSection() {
       </div>
       <ul className="grid gap-2 sm:grid-cols-2">
         {latest.map((entry) => {
-          const isInstalled = installedNames.has(entry.name);
+          const current = installedByName.get(entry.name);
+          const isInstalled = current !== undefined;
+          const isOutdated = current !== undefined && current.registryVersion !== entry.version;
           return (
             <li
               key={entry.name}
@@ -104,18 +114,24 @@ export function SkillStoreSection() {
               </div>
               <Button
                 size="sm"
-                variant={isInstalled ? "ghost" : "secondary"}
+                variant={isInstalled && !isOutdated ? "ghost" : "secondary"}
                 onClick={() => void toggle(entry)}
                 disabled={pending === entry.name}
               >
                 {pending === entry.name ? (
                   <Loader2 className="size-4 animate-spin" aria-hidden />
+                ) : isOutdated ? (
+                  <Download className="size-4" aria-hidden />
                 ) : isInstalled ? (
                   <PackageCheck className="size-4" aria-hidden />
                 ) : (
                   <Download className="size-4" aria-hidden />
                 )}
-                {isInstalled ? "インストール済み" : "インストール"}
+                {isOutdated
+                  ? `v${entry.version} へ更新`
+                  : isInstalled
+                    ? "インストール済み"
+                    : "インストール"}
               </Button>
             </li>
           );

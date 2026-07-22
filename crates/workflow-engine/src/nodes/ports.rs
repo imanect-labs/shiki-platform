@@ -144,6 +144,10 @@ pub struct ResolvedSkillView {
     pub instructions: String,
     /// 先頭の `.shiki` script 本文（あれば script-runtime 経路で実行する）。
     pub shiki_script: Option<String>,
+    /// skill の宣言スコープ（`allowed_tools` を能力 API スコープへ写したもの・None は絞らない・#344）。
+    /// script 実行時に workflow の scope ceiling とこの集合の**積**を取り、skill 宣言外の
+    /// `Shiki.*` 呼び出しを弾く（実効 = workflow scope ∩ skill 宣言 ∩ 実行主体 ReBAC）。
+    pub allowed_scopes: Option<Vec<String>>,
 }
 
 /// 能力ノードが叩く既存チョークポイントの単一ポート（server 側で具象注入）。
