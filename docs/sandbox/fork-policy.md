@@ -51,7 +51,8 @@
   メモリ上限がソフト（`--total-memory`＋orchestrator watchdog による二重防御）。ハードなメモリ/VM 級隔離が
   要件なら Firecracker ティアを使う。
 - **wasm = `WasmProcess`**: V8＋wasm の仮想 FS/net。**既定ティアではない**（2026-07 に既定は gVisor へ移した・
-  design §4.6）。web_fetch のような Python を伴わない短命実行で使う。
+  design §4.6）。web_fetch のような egress を単一ホストへ固定する短命・読み取り専用実行で使う
+  （wasm を選ぶ理由は速度ではなく egress モデル。web_fetch 自体は urllib=Python を実行するため Pyodide 初期化は払う）。
 
 `validate::check_isolation()` は将来の機微度モデル導入時に、機微ワークロードで `UserspaceKernel` 要求を
 拒否/警告するポリシフック（現状は allow-all・隔離クラスは create 監査へ記録）。**NFR-1 は「KVM 前提」と

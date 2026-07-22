@@ -58,8 +58,10 @@ gVisor=runsc systrap rootless＋`python:3.12-slim` rootfs。**Firecracker は `/
 > **この表の当初の結論（「既定は wasm のままで正しい」）は撤回した（2026-07）。** create レイテンシだけを
 > 見て wasm を選んでいたが、code_interpreter の実効体感は **create + 実行の総時間**で決まる。
 > 同じ Python 実行で **wasm ≒ 11 + 6019 ms に対し gVisor ≒ 132 + 82 ms** であり、gVisor が一桁以上速い。
-> よって **code_interpreter の既定ティアは gVisor**（design §4.6）。wasm は **web_fetch**（Pyodide を使わず
-> create 11ms/RSS 21MB がそのまま効く）と、Python を伴わない軽量実行に残す。
+> よって **code_interpreter の既定ティアは gVisor**（design §4.6）。wasm は **web_fetch**（egress を単一ホストへ
+> 固定する短命・読み取り専用実行。egress allowlist を wasm の仮想 net ホスト関数で実効化）に残す。
+> ⚠️ web_fetch は内部で urllib（Python）を実行するため wasm でも exec ごとに Pyodide 初期化コストを払う点は既知の課題
+> （wasm を選ぶ理由は速度ではなく egress モデル）。
 > ⚠️ 既定切替には native rootfs への numpy/pandas 同梱が前提（下記「注意」参照）。
 
 ## 注意
