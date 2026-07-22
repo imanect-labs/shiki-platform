@@ -130,6 +130,7 @@ impl Tool for MockSearchTool {
             csv_drafts: vec![],
             document_drafts: vec![],
             office_live_edits: vec![],
+            skill_invocations: vec![],
             is_error: false,
         })
     }

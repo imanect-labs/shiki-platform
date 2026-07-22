@@ -119,6 +119,10 @@ pub struct ToolOutcome {
     /// **ファイルは書き換えない**（現在の選択範囲を置換する指示のみ）。ライブ専用イベントとして
     /// SSE へ流れ、message.content へは projection しない（履歴再生で二重 paste しないため）。
     pub office_live_edits: Vec<OfficeLiveEdit>,
+    /// skill ツールの発動記録（skill のみ・他ツールは空・#344 Task 10.11）。
+    /// `{skill_id, skill_version, name}` の JSON。**発話ユーザー権限で解決に成功した**発動のみ
+    /// を入れる（run イベントへ append され「何をいつ適用したか」の完全な列が残る＝監査・再現性）。
+    pub skill_invocations: Vec<serde_json::Value>,
     /// 実行がエラーだったか（tool_result.is_error）。
     pub is_error: bool,
 }
@@ -138,6 +142,7 @@ impl ToolOutcome {
             csv_drafts: Vec::new(),
             document_drafts: Vec::new(),
             office_live_edits: Vec::new(),
+            skill_invocations: Vec::new(),
             is_error: false,
         }
     }
@@ -156,6 +161,7 @@ impl ToolOutcome {
             csv_drafts: Vec::new(),
             document_drafts: Vec::new(),
             office_live_edits: Vec::new(),
+            skill_invocations: Vec::new(),
             is_error: true,
         }
     }
