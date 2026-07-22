@@ -18,6 +18,20 @@ pub fn verify_manifest_signature(
     signature: &[u8],
     public_key: &[u8],
 ) -> Result<(), AppPlatformError> {
+    let digest = manifest_digest(manifest)?;
+    verify_digest_signature(&digest, signature, public_key)
+}
+
+/// digest 文字列（sha256 hex）への署名を検証する（マニフェスト非依存の一般形・#344）。
+///
+/// skill レジストリ（署名対象 = skill body の正規化 JSON digest）等、マニフェスト以外の
+/// 成果物の first-party 署名検証で共用する。fail-closed 方針は
+/// [`verify_manifest_signature`] と同一（形式不正・不一致はすべて `Forbidden`）。
+pub fn verify_digest_signature(
+    digest: &str,
+    signature: &[u8],
+    public_key: &[u8],
+) -> Result<(), AppPlatformError> {
     let key_bytes: [u8; 32] = public_key
         .try_into()
         .map_err(|_| AppPlatformError::Forbidden)?;
@@ -26,9 +40,17 @@ pub fn verify_manifest_signature(
         .try_into()
         .map_err(|_| AppPlatformError::Forbidden)?;
     let sig = Signature::from_bytes(&sig_bytes);
-    let digest = manifest_digest(manifest)?;
     key.verify(digest.as_bytes(), &sig)
         .map_err(|_| AppPlatformError::Forbidden)
+}
+
+/// digest 文字列へ署名する（CLI/テスト用・秘密鍵 32 バイト raw・#344）。
+pub fn sign_digest(digest: &str, secret_key: &[u8]) -> Result<Vec<u8>, AppPlatformError> {
+    let key_bytes: [u8; 32] = secret_key
+        .try_into()
+        .map_err(|_| AppPlatformError::Invalid("秘密鍵は 32 バイトです".into()))?;
+    let key = SigningKey::from_bytes(&key_bytes);
+    Ok(key.sign(digest.as_bytes()).to_bytes().to_vec())
 }
 
 /// マニフェストへ署名する（CLI/テスト用・秘密鍵 32 バイト raw）。
@@ -36,12 +58,8 @@ pub fn sign_manifest(
     manifest: &MiniAppManifest,
     secret_key: &[u8],
 ) -> Result<Vec<u8>, AppPlatformError> {
-    let key_bytes: [u8; 32] = secret_key
-        .try_into()
-        .map_err(|_| AppPlatformError::Invalid("秘密鍵は 32 バイトです".into()))?;
-    let key = SigningKey::from_bytes(&key_bytes);
     let digest = manifest_digest(manifest)?;
-    Ok(key.sign(digest.as_bytes()).to_bytes().to_vec())
+    sign_digest(&digest, secret_key)
 }
 
 #[cfg(test)]

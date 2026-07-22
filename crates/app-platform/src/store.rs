@@ -167,6 +167,17 @@ pub fn manifest_digest(manifest: &MiniAppManifest) -> Result<String, AppPlatform
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// 任意の JSON 値の正準 digest（canonical JSON の sha256 hex・#344）。
+///
+/// skill レジストリの publish/署名対象（skill body）で使う。マニフェストは
+/// [`manifest_digest`] を使うこと（型付き経路を優先）。
+pub fn value_digest(value: &serde_json::Value) -> String {
+    let canonical = canonical_json(value);
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
 /// 正準 JSON（オブジェクトのキーを辞書順にソート・空白なし）。
 fn canonical_json(value: &serde_json::Value) -> String {
     match value {

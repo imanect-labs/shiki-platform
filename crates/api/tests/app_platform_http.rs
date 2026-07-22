@@ -299,6 +299,13 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         None,
         vec![],
     ));
+    let skill_installs = Arc::new(app_platform::SkillInstallService::new(
+        db.clone(),
+        app_platform::Registry::new(db.clone()),
+        app_platform::TrustedKeyStore::new(db.clone()),
+        Arc::clone(&artifacts),
+        Arc::new(AllowAll),
+    ));
     let bundles = Arc::new(app_platform::BundleStore::new(
         Arc::new(FakeStore),
         Arc::new(AllowAll),
@@ -341,6 +348,7 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         fsms,
         mini_app_code,
         installs,
+        skill_installs,
         bundles,
         app_usage,
         ui_specs,
@@ -751,4 +759,182 @@ async fn app_usage_endpoint_requires_owner() {
         serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert!(body["capabilities"].is_array());
     assert!(body["llm"].is_array());
+}
+
+/// skill の publish → 同意インストール → カタログ掲載 → V4 skill 照合（10.11/10.1b・#344）
+/// を HTTP 経由で一気通貫に検証する。
+#[tokio::test]
+async fn skill_publish_install_and_v4_over_http() {
+    let Some(pool) = setup().await else { return };
+    let sessions = Arc::new(MemorySessionStore::new());
+    sessions
+        .put(
+            "default",
+            "sid-skill",
+            &session_record("csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with(pool, sessions));
+    let cookie = "shiki_session=sid-skill.default; shiki_csrf=csrf";
+    let post = |uri: String, body: serde_json::Value| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, cookie)
+            .header("x-csrf-token", "csrf")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
+    };
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let name = format!("expense-{}", &suffix[..8]);
+
+    // skill を作成（保存時検証つき）。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/skills".into(),
+            serde_json::json!({
+                "name": name,
+                "body": {
+                    "description": "経費精算の規程に基づいて確認するスキル",
+                    "instructions": "あなたは経費規程の専門家です。",
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let skill_id = body["id"].as_str().unwrap().to_string();
+
+    // インストール前は V4 skill 照合で保存不可（10.1b 受け入れ条件③）。
+    let ir = serde_json::json!({
+        "ir_version": 1,
+        "name": format!("wf-{}", &suffix[..8]),
+        "nodes": [{ "id": "s", "type": "skill.invoke",
+            "params": { "skill": format!("skill:{name}@1.0.0") } }],
+        "edges": []
+    });
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/workflows/validate".into(),
+            serde_json::json!({ "ir": ir }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(
+        body["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["code"] == "ir.unknown_skill"),
+        "未インストール skill 参照は拒否: {body}"
+    );
+
+    // publish（in-house）→ 本人インストール。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            format!("/skills/{skill_id}/publish"),
+            serde_json::json!({ "version": "1.0.0", "trust_tier": "in_house" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // 同一バージョンの再 publish は 409（不変）。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            format!("/skills/{skill_id}/publish"),
+            serde_json::json!({ "version": "1.0.0", "trust_tier": "in_house" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/skills/installations".into(),
+            serde_json::json!({ "name": name }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // インストール済み一覧に載る。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/skills/installations")
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(body["installations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i["name"] == name.as_str()));
+
+    // インストール後は V4 skill 照合を通る。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/workflows/validate".into(),
+            serde_json::json!({ "ir": ir }),
+        ))
+        .await
+        .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(
+        body["errors"].as_array().unwrap().is_empty(),
+        "インストール済みなら保存可能: {body}"
+    );
+
+    // アンインストール → 再び保存不可（fail-closed の一段目）。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/skills/installations/{name}"))
+                .header(COOKIE, cookie)
+                .header("x-csrf-token", "csrf")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/workflows/validate".into(),
+            serde_json::json!({ "ir": ir }),
+        ))
+        .await
+        .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(body["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["code"] == "ir.unknown_skill"));
 }

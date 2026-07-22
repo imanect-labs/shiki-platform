@@ -34,7 +34,8 @@ pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};
 pub use nodes::{
     AgentInvokeReq, CapabilityNodeExecutor, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq,
-    HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+    HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView,
+    StorageWriteReq,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{

@@ -131,6 +131,21 @@ pub struct ResolvedSecretView {
     pub allowed_hosts: Vec<String>,
 }
 
+/// skill.invoke が実行に使う skill の解決結果（#344 Task 10.1b）。
+///
+/// ポート実装（server 側）が **実行主体の ReBAC** でレジストリ→artifact を解決する
+/// （fail-closed の実行時再検証・ir.md §8）。executor は中身に応じて script / agent 経路へ
+/// dispatch するだけ（workflow-engine は artifact クレートへ依存しない・トレイト境界）。
+#[derive(Debug, Clone)]
+pub struct ResolvedSkillView {
+    /// skill 名（監査表示用）。
+    pub name: String,
+    /// SKILL.md 本文（instructions）。
+    pub instructions: String,
+    /// 先頭の `.shiki` script 本文（あれば script-runtime 経路で実行する）。
+    pub shiki_script: Option<String>,
+}
+
 /// 能力ノードが叩く既存チョークポイントの単一ポート（server 側で具象注入）。
 ///
 /// 各メソッドは `ExecCtx` から `AuthContext` を組み、チョークポイント（OpenFGA 認可込み）を呼ぶ。
@@ -184,6 +199,15 @@ pub trait NodePorts: Send + Sync {
         name: &str,
         input: &Value,
     ) -> Result<Value, PortError>;
+
+    /// skill.invoke の skill 解決（レジストリ version 照合＋**実行主体 ReBAC** の artifact 読取・
+    /// fail-closed・#344）。アンインストール/剥奪済みは `Err(forbidden)`（黙って続行しない）。
+    async fn skill_resolve(
+        &self,
+        ctx: &ExecCtx,
+        name: &str,
+        version: &str,
+    ) -> Result<ResolvedSkillView, PortError>;
 
     /// csv.query（`TabularService.query`・隔離 DuckDB での RO SQL・viewer）。返り値は列＋行の要約。
     async fn csv_query(&self, ctx: &ExecCtx, file_id: Uuid, sql: &str) -> Result<Value, PortError>;

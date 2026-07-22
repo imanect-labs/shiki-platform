@@ -60,6 +60,8 @@ pub struct AppState {
     pub mini_app_code: Arc<app_platform::MiniAppCodeStore>,
     /// 同意インストール／プロビジョン／import（Task 9.13b）。
     pub installs: Arc<app_platform::InstallService>,
+    /// skill の publish / 同意インストール（Phase 9 レジストリ流用・ユーザー単位・#344）。
+    pub skill_installs: Arc<app_platform::SkillInstallService>,
     /// B1 フロントバンドル保管（Task 9.11・content-addressed）。
     pub bundles: Arc<app_platform::BundleStore>,
     /// アプリ利用量集計（Task 9.15・capability＋llm）。

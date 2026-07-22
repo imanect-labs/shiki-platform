@@ -43,15 +43,31 @@ impl CapabilityNodeExecutor {
         let source = p.source.inline.clone().ok_or_else(|| {
             PortError::invalid("script.run: source.inline がありません（artifact 参照は Stage B）")
         })?;
-        let compiled = script_runtime::compile::compile(&source)
-            .map_err(|e| PortError::invalid(format!("script コンパイル失敗: {e}")))?;
-
         let r = ParamResolver::new(ctx);
         let input = p
             .input
             .as_ref()
             .and_then(|e| resolve_value(e, &r))
             .unwrap_or_else(|| ctx.input.clone());
+        self.run_script_source(&source, "script.run", input, ctx, ec, engine)
+            .await
+    }
+
+    /// shiki script 本文を script-runtime で 1 回実行する（script.run と skill.invoke の共用・#344）。
+    ///
+    /// `Shiki.*` ホスト呼び出しは同じ能力ゲートウェイ（scope ceiling → journal → 監査）へ合流する。
+    pub(super) async fn run_script_source(
+        &self,
+        source: &str,
+        audit_api: &str,
+        input: Value,
+        ctx: &NodeContext,
+        ec: &ExecCtx,
+        engine: Arc<script_runtime::engine::ScriptEngine>,
+    ) -> Result<Value, PortError> {
+        let compiled = script_runtime::compile::compile(source)
+            .map_err(|e| PortError::invalid(format!("script コンパイル失敗: {e}")))?;
+
         let input_json = input.to_string();
         let limits = self.script_limits;
         let exec_id = format!("{}:{}", ctx.run_id.simple(), ctx.step_path);
@@ -76,7 +92,7 @@ impl CapabilityNodeExecutor {
 
         self.audit(
             &ec.tenant_id,
-            "script.run",
+            audit_api,
             outcome.ok,
             &json!({ "termination": format!("{:?}", outcome.termination) }),
         );

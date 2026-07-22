@@ -94,6 +94,17 @@ impl NodePorts for FakePorts {
             allowed_hosts: vec![],
         })
     }
+    async fn skill_resolve(
+        &self,
+        _ctx: &ExecCtx,
+        _name: &str,
+        _version: &str,
+    ) -> Result<workflow_engine::nodes::ResolvedSkillView, PortError> {
+        Err(PortError::forbidden(
+            "skill 未解決（テスト既定・fail-closed）",
+        ))
+    }
+
     async fn workflow_start(
         &self,
         _c: &ExecCtx,

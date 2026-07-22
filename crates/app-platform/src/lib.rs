@@ -13,6 +13,7 @@ mod install_ops;
 mod manifest;
 mod registry;
 mod sign;
+mod skill_install;
 mod store;
 mod trusted_key;
 mod usage;
@@ -28,8 +29,9 @@ pub use manifest::{
     Budget, CronEntry, FrontendBundle, ManifestTable, MiniAppManifest, ServerSpec, TrustTier,
 };
 pub use registry::{NewRegistryEntry, Registry, RegistryEntry};
-pub use sign::{sign_manifest, verify_manifest_signature};
-pub use store::{manifest_digest, MiniAppCodeStore};
+pub use sign::{sign_digest, sign_manifest, verify_digest_signature, verify_manifest_signature};
+pub use skill_install::{InstalledSkillSummary, SkillInstallService, SkillInstallation};
+pub use store::{manifest_digest, value_digest, MiniAppCodeStore};
 pub use trusted_key::{TrustedKey, TrustedKeyStore};
 pub use usage::{AppUsage, AppUsageStore};
 pub use validate::validate_manifest;

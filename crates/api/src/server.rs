@@ -202,6 +202,19 @@ pub fn route_table() -> Vec<RouteDecl> {
             || post(routes::ui_actions::invoke_chat_ui_action),
         ),
         // --- skill（Task 6.7・保存時検証つき。共有は /artifacts/{id}/shares を流用） ---
+        r("/skills/registry", &["GET"], Session, || {
+            get(routes::skills_registry::list_skill_registry)
+        }),
+        r("/skills/installations", &["GET", "POST"], Session, || {
+            get(routes::skills_registry::list_skill_installations)
+                .post(routes::skills_registry::install_skill)
+        }),
+        r("/skills/installations/{name}", &["DELETE"], Session, || {
+            axum::routing::delete(routes::skills_registry::uninstall_skill)
+        }),
+        r("/skills/{id}/publish", &["POST"], Session, || {
+            post(routes::skills_registry::publish_skill)
+        }),
         r("/skills", &["POST"], Session, || {
             post(routes::skills::create_skill)
         }),
