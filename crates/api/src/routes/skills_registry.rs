@@ -38,6 +38,18 @@ pub struct PublishSkillRequest {
     pub signature_base64: Option<String>,
 }
 
+/// first-party skill バンドルの import リクエスト（10.15・署名は信頼鍵で検証される）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ImportSkillRequest {
+    pub name: String,
+    pub version: String,
+    /// skill body（保存時検証を通る形・署名対象はこの正規化 JSON digest）。
+    #[schema(value_type = Object)]
+    pub body: serde_json::Value,
+    /// body digest への ed25519 署名（base64）。
+    pub signature_base64: String,
+}
+
 /// インストールリクエスト（version 未指定は最新の未 yank）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct InstallSkillRequest {
@@ -96,6 +108,38 @@ pub async fn publish_skill(
             req.version.as_deref(),
             req.trust_tier.as_deref().unwrap_or("in_house"),
             signature.as_deref(),
+            trace.as_deref(),
+        )
+        .await?;
+    Ok(Json(entry))
+}
+
+/// first-party skill バンドルを import する（署名検証 → artifact 化 → first-party publish・10.15）。
+#[utoipa::path(
+    post, path = "/skills/registry/import", request_body = ImportSkillRequest,
+    responses(
+        (status = 200, description = "publish 済みエントリ", body = RegistryEntry),
+        (status = 403, description = "署名が信頼鍵で検証できない（fail-closed）"),
+        (status = 409, description = "同一バージョンが publish 済み"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn import_skill(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Json(req): Json<ImportSkillRequest>,
+) -> Result<Json<RegistryEntry>, ApiError> {
+    let signature = base64::engine::general_purpose::STANDARD
+        .decode(&req.signature_base64)
+        .map_err(|_| ApiError::BadRequest("signature_base64 が不正です".into()))?;
+    let entry = service(&state)
+        .import(
+            &ctx,
+            &req.name,
+            &req.version,
+            &req.body,
+            &signature,
             trace.as_deref(),
         )
         .await?;

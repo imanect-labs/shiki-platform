@@ -205,6 +205,9 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/skills/registry", &["GET"], Session, || {
             get(routes::skills_registry::list_skill_registry)
         }),
+        r("/skills/registry/import", &["POST"], Session, || {
+            post(routes::skills_registry::import_skill)
+        }),
         r("/skills/installations", &["GET", "POST"], Session, || {
             get(routes::skills_registry::list_skill_installations)
                 .post(routes::skills_registry::install_skill)

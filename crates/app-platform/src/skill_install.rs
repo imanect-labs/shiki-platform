@@ -33,7 +33,7 @@ use crate::trusted_key::TrustedKeyStore;
 use crate::{map_db, AppPlatformError, NewRegistryEntry, Registry, RegistryEntry};
 
 /// レジストリ上の skill の artifact_kind（registry_entry.artifact_kind）。
-const SKILL_KIND: &str = "skill";
+pub(crate) const SKILL_KIND: &str = "skill";
 
 /// インストール済み skill 1 件（カタログ・一覧 API 用）。
 #[derive(Debug, Clone, Serialize, ToSchema, sqlx::FromRow)]
@@ -59,12 +59,12 @@ pub struct InstalledSkillSummary {
 /// skill の publish / 同意インストールのチョークポイント。
 #[derive(Clone)]
 pub struct SkillInstallService {
-    db: PgPool,
-    registry: Registry,
-    keys: TrustedKeyStore,
-    artifacts: Arc<artifact::ArtifactStore>,
-    authz: Arc<dyn AuthzClient>,
-    audit: AuditRecorder,
+    pub(crate) db: PgPool,
+    pub(crate) registry: Registry,
+    pub(crate) keys: TrustedKeyStore,
+    pub(crate) artifacts: Arc<artifact::ArtifactStore>,
+    pub(crate) authz: Arc<dyn AuthzClient>,
+    pub(crate) audit: AuditRecorder,
 }
 
 impl SkillInstallService {
@@ -397,7 +397,7 @@ impl SkillInstallService {
         Ok(out)
     }
 
-    async fn record(
+    pub(crate) async fn record(
         &self,
         ctx: &AuthContext,
         action: &'static str,
@@ -418,7 +418,7 @@ impl SkillInstallService {
         }
     }
 
-    async fn audit_deny(
+    pub(crate) async fn audit_deny(
         &self,
         ctx: &AuthContext,
         skill_id: Uuid,
@@ -457,7 +457,7 @@ pub(crate) fn compile_shiki_scripts(body: &gui::SkillBody) -> Result<(), AppPlat
 
 /// artifact 層のエラーを写す（NotFound/Forbidden は秘匿せずそのまま・fail-closed）。
 #[allow(clippy::needless_pass_by_value)]
-fn map_artifact(e: artifact::ArtifactError) -> AppPlatformError {
+pub(crate) fn map_artifact(e: artifact::ArtifactError) -> AppPlatformError {
     match e {
         artifact::ArtifactError::Forbidden => AppPlatformError::Forbidden,
         artifact::ArtifactError::NotFound => AppPlatformError::NotFound,
