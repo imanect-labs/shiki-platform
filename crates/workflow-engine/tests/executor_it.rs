@@ -50,6 +50,10 @@ struct FakePorts {
     /// csv.patch/csv.write の実際の適用回数（journal 冪等の検証用）。
     csv_patch_calls: Mutex<u32>,
     csv_write_calls: Mutex<u32>,
+    /// skill.invoke の解決結果（None は fail-closed・#344）。
+    skill: Mutex<Option<workflow_engine::nodes::ResolvedSkillView>>,
+    /// llm_invoke へ渡った system（skill instructions の伝播検証用）。
+    last_llm_system: Mutex<Option<String>>,
 }
 impl FakePorts {
     fn with_http_status(status: u16) -> Self {
@@ -89,6 +93,7 @@ impl NodePorts for FakePorts {
         Ok(json!({ "results": [ { "file_name": "a" } ] }))
     }
     async fn llm_invoke(&self, _ctx: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError> {
+        *self.last_llm_system.lock().unwrap() = req.system.clone();
         Ok(json!({ "text": format!("echo:{}", req.prompt) }))
     }
     async fn agent_invoke(&self, _ctx: &ExecCtx, _req: AgentInvokeReq) -> Result<Value, PortError> {
@@ -112,6 +117,19 @@ impl NodePorts for FakePorts {
             allowed_hosts: self.secret_hosts.lock().unwrap().clone(),
         })
     }
+    async fn skill_resolve(
+        &self,
+        _ctx: &ExecCtx,
+        _name: &str,
+        _version: &str,
+    ) -> Result<workflow_engine::nodes::ResolvedSkillView, PortError> {
+        self.skill
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| PortError::forbidden("skill 未解決（テスト既定・fail-closed）"))
+    }
+
     async fn workflow_start(
         &self,
         _ctx: &ExecCtx,
@@ -475,4 +493,79 @@ async fn llm_invoke_is_scope_free() {
         .await;
     assert!(res.ok, "{:?}", res.error);
     assert_eq!(res.output["text"], json!("echo:hi"));
+}
+
+// --- skill.invoke（#344 Task 10.1b）---
+
+#[tokio::test]
+async fn skill_invoke_instructions_route_via_llm() {
+    // instructions のみの skill は llm.invoke 経路（instructions=system・入力=prompt）で実行される。
+    // agent_invoke ポート（サンドボックスのコード実行）へ自然言語を code として渡さない（レビュー指摘）。
+    let ports = Arc::new(FakePorts::default());
+    *ports.skill.lock().unwrap() = Some(workflow_engine::nodes::ResolvedSkillView {
+        name: "expense".into(),
+        instructions: "経費規程に従って確認する。".into(),
+        shiki_script: None,
+        allowed_scopes: None,
+    });
+    let audit = Arc::new(CapturingAudit::default());
+    let exec = executor(Arc::clone(&ports), Arc::clone(&audit));
+    let res = exec
+        .execute(
+            "skill.invoke",
+            &json!({ "skill": "skill:expense@1" }),
+            &ctx(json!({ "q": "出張費" }), vec![]),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    // fake llm は echo:<prompt> を返す（入力が prompt として伝播している）。
+    assert!(res.output["text"].as_str().unwrap().contains("出張費"));
+    // instructions は system として伝播する。
+    let system = ports.last_llm_system.lock().unwrap().clone().unwrap();
+    assert!(system.contains("経費規程に従って確認する。"));
+    // 監査に skill.invoke が経路つきで残る。
+    let records = audit.records.lock().unwrap();
+    assert!(records
+        .iter()
+        .any(|(api, ok, meta)| api == "skill.invoke" && *ok && meta["via"] == "llm"));
+}
+
+#[tokio::test]
+async fn skill_invoke_fails_closed_when_unresolvable() {
+    // アンインストール/剥奪（解決不能）は fail-closed（黙って続行しない・ir.md §8）。
+    let exec = executor(
+        Arc::new(FakePorts::default()),
+        Arc::new(CapturingAudit::default()),
+    );
+    let res = exec
+        .execute(
+            "skill.invoke",
+            &json!({ "skill": "skill:gone@1" }),
+            &ctx(json!({}), vec![]),
+        )
+        .await;
+    assert!(!res.ok);
+    assert_eq!(res.error.as_ref().unwrap().code, "forbidden");
+}
+
+#[tokio::test]
+async fn skill_invoke_shiki_script_requires_engine() {
+    // `.shiki` script 持ちの skill は script-runtime 経路（engine 未設定なら unavailable で fail）。
+    let ports = Arc::new(FakePorts::default());
+    *ports.skill.lock().unwrap() = Some(workflow_engine::nodes::ResolvedSkillView {
+        name: "notify".into(),
+        instructions: "通知する。".into(),
+        shiki_script: Some("function main(input){ return { ok: true }; }".into()),
+        allowed_scopes: None,
+    });
+    let exec = executor(ports, Arc::new(CapturingAudit::default()));
+    let res = exec
+        .execute(
+            "skill.invoke",
+            &json!({ "skill": "skill:notify@1" }),
+            &ctx(json!({}), vec![]),
+        )
+        .await;
+    assert!(!res.ok);
+    assert_eq!(res.error.as_ref().unwrap().code, "unavailable");
 }

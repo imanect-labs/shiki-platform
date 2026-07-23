@@ -303,6 +303,13 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         None,
         vec![],
     ));
+    let skill_installs = Arc::new(app_platform::SkillInstallService::new(
+        db.clone(),
+        app_platform::Registry::new(db.clone()),
+        app_platform::TrustedKeyStore::new(db.clone()),
+        Arc::clone(&artifacts),
+        Arc::new(AllowAll),
+    ));
     let bundles = Arc::new(app_platform::BundleStore::new(
         Arc::new(FakeStore),
         Arc::new(AllowAll),
@@ -345,6 +352,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         fsms,
         mini_app_code,
         installs,
+        skill_installs,
         bundles,
         app_usage,
         ui_specs,

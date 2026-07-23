@@ -294,6 +294,7 @@ pub(crate) async fn wire_chat(
     secrets: Option<&Arc<secrets::SecretStore>>,
     collab: &Arc<collab::CollabHub>,
     tabular: &Arc<tabular::TabularService>,
+    skill_installs: &Arc<app_platform::SkillInstallService>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -352,16 +353,18 @@ pub(crate) async fn wire_chat(
             ui_validator: Some(Arc::clone(ui_validator)),
             // skill / ミニアプリのピン解決（Task 6.9・fail-closed）。
             skill_artifacts: Some(Arc::clone(skill_artifacts)),
-            // skill ツールのカタログ源（本人 owner。同意インストール導入時に差し替え・#344）。
-            skill_catalog: Some(Arc::new(chat::OwnedSkillCatalog::new(Arc::clone(
-                skill_artifacts,
-            )))),
+            // skill ツールのカタログ源（インストール済み ∪ 本人 owner・#344）。
+            skill_catalog: Some(Arc::new(api::skill_catalog::ApiSkillCatalogSource::new(
+                Arc::clone(skill_installs),
+                Arc::clone(skill_artifacts),
+            ))),
             // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）。
             // カタログ源は保存 API（build_catalog）と同一実装を注入する（検証乖離の禁止）。
             workflow_store: Some(Arc::clone(workflows)),
             workflow_catalog: Some(Arc::new(
                 api::workflow_catalog::ApiWorkflowCatalogSource::new(
                     secrets.cloned(),
+                    Some(Arc::clone(skill_installs)),
                     config.llm.models.iter().map(|m| m.id.clone()).collect(),
                 ),
             )),
@@ -410,6 +413,7 @@ pub(crate) async fn wire_workflow(
     search: Option<&Arc<rag::SearchService>>,
     secrets: Option<&Arc<secrets::SecretStore>>,
     tabular: &Arc<tabular::TabularService>,
+    artifacts: &Arc<artifact::ArtifactStore>,
 ) -> anyhow::Result<(
     Option<Arc<workflow_engine::WorkflowRunLauncher>>,
     Option<Arc<workflow_engine::RunStore>>,
@@ -436,6 +440,8 @@ pub(crate) async fn wire_workflow(
         sandbox_backend: config.chat.sandbox_backend.unwrap_or_default(),
         secrets: secrets.cloned(),
         tabular: Some(Arc::clone(tabular)),
+        // skill.invoke の実行時解決（実行主体 ReBAC・fail-closed・#344）。
+        skill_artifacts: Some(Arc::clone(artifacts)),
         http: http.clone(),
         redis_url: Some(config.session.redis_url.clone()),
         config: config.workflow.clone(),

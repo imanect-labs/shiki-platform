@@ -433,6 +433,13 @@ async fn setup() -> Option<Harness> {
         None,
         vec![],
     ));
+    let skill_installs = Arc::new(app_platform::SkillInstallService::new(
+        pool.clone(),
+        app_platform::Registry::new(pool.clone()),
+        app_platform::TrustedKeyStore::new(pool.clone()),
+        Arc::clone(&artifacts),
+        Arc::clone(&authz_dyn),
+    ));
     let bundles = Arc::new(app_platform::BundleStore::new(
         Arc::new(FakeStore),
         Arc::clone(&authz_dyn),
@@ -463,6 +470,7 @@ async fn setup() -> Option<Harness> {
         fsms,
         mini_app_code,
         installs,
+        skill_installs,
         bundles,
         app_usage,
         ui_specs,

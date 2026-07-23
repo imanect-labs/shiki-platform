@@ -160,6 +160,16 @@ async fn main() -> anyhow::Result<()> {
     // storage はツール成果物（code_interpreter）の保存先として渡す（Task 4.11）。
     // workflows/secrets は AI ワークフロー編集（emit_workflow・Task 10.13）のカタログ源。
     // collab は AI ノート共同編集（document.edit・Task 11P.4）。
+    // skill の publish / 同意インストール（Phase 9 レジストリ流用・ユーザー単位・#344）。
+    // chat の skill カタログ（インストール済み ∪ 本人）と V4 skill 照合の材料になる。
+    let skill_installs = Arc::new(app_platform::SkillInstallService::new(
+        db.clone(),
+        app_platform::Registry::new(db.clone()),
+        app_platform::TrustedKeyStore::new(db.clone()),
+        Arc::clone(&artifacts),
+        authz.clone(),
+    ));
+
     let chat = wiring::wire_chat(
         &config,
         &http,
@@ -173,6 +183,7 @@ async fn main() -> anyhow::Result<()> {
         secrets.as_ref(),
         &collab,
         &tabular,
+        &skill_installs,
     )
     .await?;
 
@@ -187,6 +198,7 @@ async fn main() -> anyhow::Result<()> {
         search.as_ref(),
         secrets.as_ref(),
         &tabular,
+        &artifacts,
     )
     .await?;
 
@@ -258,6 +270,7 @@ async fn main() -> anyhow::Result<()> {
         fsms,
         mini_app_code,
         installs,
+        skill_installs,
         bundles,
         app_usage,
         ui_specs: gui_stores.ui_specs,

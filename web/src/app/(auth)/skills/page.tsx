@@ -4,7 +4,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { History, Loader2, MessageSquareText, Pencil, Share2, Sparkles, Trash2 } from "lucide-react";
+import { History, Loader2, MessageSquareText, Pencil, Share2, Sparkles, Trash2, UploadCloud } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -20,6 +20,8 @@ import {
   type SkillVersion,
 } from "@/lib/artifact-api";
 import { createThread } from "@/lib/chat-api";
+import { publishSkill } from "@/lib/skill-registry-api";
+import { SkillStoreSection } from "@/components/artifacts/skill-store-section";
 
 type DialogState =
   | { kind: "closed" }
@@ -70,6 +72,25 @@ export default function SkillsPage() {
         title: "チャットを開始できませんでした",
         description: e instanceof Error ? e.message : String(e),
       });
+      setPending(null);
+    }
+  };
+
+  const publish = async (meta: ArtifactMeta) => {
+    setPending(meta.id);
+    try {
+      await publishSkill(meta.id, String(meta.currentVersion));
+      toast({
+        title: `「${meta.name}」を公開しました`,
+        description: "スキルストアからインストールできます。",
+      });
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "公開に失敗しました",
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
       setPending(null);
     }
   };
@@ -162,6 +183,17 @@ export default function SkillsPage() {
                 <Button
                   size="sm"
                   variant="ghost"
+                  aria-label={`${meta.name} をレジストリへ公開`}
+                  title="レジストリへ公開（スキルストアからインストール可能になる）"
+                  onClick={() => void publish(meta)}
+                  disabled={pending === meta.id}
+                >
+                  <UploadCloud className="size-4" aria-hidden />
+                  公開
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
                   aria-label={`${meta.name} のバージョン履歴`}
                   onClick={() => setDialog({ kind: "versions", meta })}
                 >
@@ -181,6 +213,8 @@ export default function SkillsPage() {
           ))}
         </ul>
       )}
+
+      <SkillStoreSection />
 
       <SkillEditorDialog
         open={dialog.kind === "create" || dialog.kind === "edit"}

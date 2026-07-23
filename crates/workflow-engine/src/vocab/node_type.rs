@@ -39,6 +39,7 @@ vocab_enum! {
         DataRecordUpdate => "data.record.update",
         DataTransition => "data.transition",
         NotifySend => "notify.send",
+        /// インストール済み skill の実行（`skill:<name>@<version>`・Stage A 昇格・#344）。
         SkillInvoke => "skill.invoke",
         // ---- 将来予約: 制御・デバッグ（issue #180）----
         /// 条件ループ（DAG にサイクルを持ち込まずエンジン側で展開）。
@@ -123,6 +124,7 @@ impl NodeType {
                 | NodeType::AgentInvoke
                 | NodeType::HttpRequest
                 | NodeType::ScriptRun
+                | NodeType::SkillInvoke
                 | NodeType::WorkflowStart
                 | NodeType::CsvQuery
                 | NodeType::CsvPatch
@@ -162,6 +164,7 @@ mod tests {
                 "csv.query",
                 "csv.patch",
                 "csv.write",
+                "skill.invoke",
             ]
         );
     }

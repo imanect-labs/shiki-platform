@@ -343,6 +343,13 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
         None,
         vec![],
     ));
+    let skill_installs = Arc::new(app_platform::SkillInstallService::new(
+        pool.clone(),
+        app_platform::Registry::new(pool.clone()),
+        app_platform::TrustedKeyStore::new(pool.clone()),
+        Arc::clone(&artifacts),
+        Arc::new(AllowAll),
+    ));
     let bundles = Arc::new(app_platform::BundleStore::new(
         Arc::new(FakeStore),
         Arc::new(AllowAll),
@@ -397,6 +404,7 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
         fsms,
         mini_app_code,
         installs,
+        skill_installs,
         bundles,
         app_usage,
         ui_specs,

@@ -65,7 +65,14 @@ pub(crate) async fn build_catalog(
         .iter()
         .map(|m| m.id.clone())
         .collect();
-    Ok(crate::workflow_catalog::build_catalog_from(state.secrets.as_deref(), &models, ctx).await?)
+    crate::workflow_catalog::build_catalog_from(
+        state.secrets.as_deref(),
+        Some(&state.skill_installs),
+        &models,
+        ctx,
+    )
+    .await
+    .map_err(ApiError::Internal)
 }
 
 /// 検証のみのリクエスト（保存しない・dnd のライブ検証用）。

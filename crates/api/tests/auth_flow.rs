@@ -420,6 +420,13 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         None,
         vec![],
     ));
+    let skill_installs = Arc::new(app_platform::SkillInstallService::new(
+        db.clone(),
+        app_platform::Registry::new(db.clone()),
+        app_platform::TrustedKeyStore::new(db.clone()),
+        Arc::clone(&artifacts),
+        Arc::new(AllowAll),
+    ));
     let bundles = Arc::new(app_platform::BundleStore::new(
         Arc::new(FakeStore),
         Arc::new(AllowAll),
@@ -462,6 +469,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         fsms,
         mini_app_code,
         installs,
+        skill_installs,
         bundles,
         app_usage,
         ui_specs,

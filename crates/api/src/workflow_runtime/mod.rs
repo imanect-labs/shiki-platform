@@ -5,7 +5,9 @@
 //! （outbox 配送台帳 `claim_undelivered("workflow")` → `match_event`）を detach タスクで走らせる。
 //! RAG の `spawn_pipeline` と同型（プロセス生存中 loop・エラーは小休止して再試行）。
 
+mod auth;
 mod ports;
+mod skill_port;
 
 use std::sync::Arc;
 
@@ -127,6 +129,8 @@ pub struct RuntimeDeps {
     pub secrets: Option<Arc<secrets::SecretStore>>,
     /// CSV 表データ（csv.query/patch/write ノード・Task 11P.9）。
     pub tabular: Option<Arc<tabular::TabularService>>,
+    /// skill.invoke の実行時解決（レジストリ→artifact を実行主体 ReBAC で読む・#344）。
+    pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
     pub http: reqwest::Client,
     pub redis_url: Option<String>,
     pub config: WorkflowConfig,
@@ -145,6 +149,7 @@ async fn build_prod_executor(
         sandbox_backend: deps.sandbox_backend,
         secrets: deps.secrets.clone(),
         tabular: deps.tabular.clone(),
+        skill_artifacts: deps.skill_artifacts.clone(),
         launcher: launcher.clone(),
         http: deps.http.clone(),
         db: deps.db.clone(),

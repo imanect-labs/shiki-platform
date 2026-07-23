@@ -312,6 +312,13 @@ async fn setup() -> Option<Env> {
         None,
         vec![],
     ));
+    let skill_installs = Arc::new(app_platform::SkillInstallService::new(
+        pool.clone(),
+        app_platform::Registry::new(pool.clone()),
+        app_platform::TrustedKeyStore::new(pool.clone()),
+        Arc::clone(&artifacts),
+        Arc::new(AllowAll),
+    ));
     let bundles = Arc::new(app_platform::BundleStore::new(
         Arc::new(NoopStore),
         Arc::new(AllowAll),
@@ -354,6 +361,7 @@ async fn setup() -> Option<Env> {
         fsms,
         mini_app_code,
         installs,
+        skill_installs,
         bundles,
         app_usage,
         secrets: None,

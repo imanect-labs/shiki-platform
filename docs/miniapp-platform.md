@@ -188,7 +188,11 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
   例外: **classic 経路（ツールループ無しの旧 RAG 注入・`classic_rag=true`）のみ**、全ピンが
   `doc_search` を宣言に含む場合に限り事前検索を行う（誘導が存在しない経路のため従来のゲート挙動を維持）。
 - **スキルストア = Phase 9 レジストリ設計（不変 publish・信頼ティア・同意インストール・署名バンドル）を
-  skill という artifact 種に適用するだけ**。新しい配布機構は作らない。
+  skill という artifact 種に適用するだけ**。新しい配布機構は作らない。インストールは
+  **ユーザー単位**（#344・human 決定）: カタログはパーソナルで、first-party（署名検証済み）は
+  本人操作のみでインストール可・in-house は本人が viewer で読める skill のみ（fail-closed）。
+  ワークフローの V4 skill 照合は保存ユーザーのインストール集合に対して行い、実行時は
+  実行主体の ReBAC で再検証する（ir.md §8）。
 - **script の実行は種別で分岐**: `.shiki`（shiki script）は script-runtime（§3.2・ms級起動・`Shiki.*`
   ホスト関数ブリッジ経由の通常認可）。`.sh`（shell script）は script-runtime では実行できない
   （fs/プロセス起動が無い§3.2の隔離モデルの守備範囲外）ため、**agent.invoke のサンドボックス内で

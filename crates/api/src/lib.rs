@@ -29,6 +29,7 @@ pub mod openapi;
 pub mod routes;
 pub mod server;
 pub mod session;
+pub mod skill_catalog;
 pub mod state;
 pub mod telemetry;
 pub mod workflow_catalog;
