@@ -4,8 +4,9 @@
 //! instructions の観測 → 発動イベント（skill_invoked）の generation_event 記録 →
 //! skill.invoke 監査** の実経路を走らせる。`STORAGE_TEST_DATABASE_URL` 設定時のみ実行。
 //!
-//! ⚠️ jobq の `chat_generation` キューはプロセス内で共有されるため、**本バイナリには
-//! ワーカー能力の異なるテストを同居させない**（skill_apply_it と同じ規約）。
+//! ⚠️ jobq の `chat_generation` キューはプロセス内（同一 DB）で共有されるため、**本バイナリは
+//! 1 テスト関数に直列化**する（並列に worker を複数起動すると coverage 計装下で claim 競合により
+//! flake する・skill_apply_it と同じ規約）。
 
 #![allow(
     clippy::pedantic,
@@ -287,58 +288,8 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
     .await
     .unwrap();
     assert!(invokes >= 1, "skill.invoke 監査が残ること");
-}
 
-/// 未知スキル名は閉集合照合で弾かれ、エラー観測（is_error）になる（fail-closed・実行はされない）。
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unknown_skill_name_is_observed_error() {
-    let Some(pool) = setup().await else { return };
-    let tenant = format!("t-{}", Uuid::new_v4());
-    let c = ctx(&tenant);
-    // カタログに 1 件だけ入れておく（候補提示の検証）。
-    seed_skill(&pool, &c, "expense-skill").await;
-
-    let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
-        .await
-        .unwrap();
-    let artifacts = Arc::new(artifact::ArtifactStore::new(
-        pool.clone(),
-        Arc::new(AllowAll),
-    ));
-    let worker = ChatWorker::new(
-        pool.clone(),
-        store.clone(),
-        chat::WorkerDeps {
-            gateway: stub_gateway(pool.clone()),
-            search: None,
-            sandbox: None,
-            artifacts: None,
-            web_search: None,
-            storage: None,
-            ui_validator: None,
-            skill_artifacts: Some(artifacts.clone()),
-            skill_catalog: Some(Arc::new(chat::OwnedSkillCatalog::new(artifacts))),
-            workflow_store: None,
-            workflow_catalog: None,
-            collab: None,
-            tabular: None,
-            office: None,
-            authz: None,
-        },
-        WorkerConfig {
-            system_prompt: "あなたはアシスタントです。".into(),
-            model: Some("m".into()),
-            lease_secs: 120,
-            max_steps: 4,
-            ..Default::default()
-        },
-    );
-    worker.spawn(1);
-
-    let thread = store
-        .create_thread(&c, "t", true, None, None)
-        .await
-        .unwrap();
+    // --- 未知スキル名（閉集合照合・fail-closed）も同じ worker/thread で直列に検証する ---
     let res = store
         .post_message(
             &c,
@@ -352,7 +303,6 @@ async fn unknown_skill_name_is_observed_error() {
         )
         .await
         .unwrap();
-
     let mut rx = store.event_stream(res.run_id, 0);
     let mut done = false;
     let mut saw_error_result = false;
