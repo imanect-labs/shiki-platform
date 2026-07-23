@@ -131,6 +131,8 @@ struct CheckFileInfo {
     size: i64,
     /// node.version の文字列表現（PutFile 応答の X-WOPI-ItemVersion と同系）。
     version: String,
+    /// 最終更新時刻（ISO8601）。CoolWSD が保存時の競合検知に使う。
+    last_modified_time: String,
     user_id: String,
     user_friendly_name: String,
     user_can_write: bool,
@@ -170,6 +172,7 @@ async fn check_file_info(
         base_file_name: node.name,
         size: node.size_bytes.unwrap_or(0),
         version: node.version.to_string(),
+        last_modified_time: node.updated_at.to_rfc3339(),
         user_id,
         user_friendly_name,
         user_can_write: auth.mode == AccessMode::Editor,
@@ -242,12 +245,17 @@ async fn put_file(
         .update_file_content_internal(ctx, file_id, &body, &content_type, None)
         .await
         .map_err(conceal)?;
+    // CoolWSD は 200 応答の JSON に LastModifiedTime を期待する（無いと
+    // 「Invalid or missing JSON in WOPI::PutFile」警告→競合検知が無効化される）。
     Ok((
         StatusCode::OK,
         [(
             header::HeaderName::from_static("x-wopi-itemversion"),
             updated.version.to_string(),
         )],
+        Json(serde_json::json!({
+            "LastModifiedTime": updated.updated_at.to_rfc3339(),
+        })),
     )
         .into_response())
 }

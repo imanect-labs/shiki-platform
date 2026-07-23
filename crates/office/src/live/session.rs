@@ -260,6 +260,11 @@ impl LiveEditor {
     }
 
     /// save → core ack → StorageService の版前進を確認する。
+    ///
+    /// core の `savefailed` は誤検知があり得る（例: Calc の GoToCell が出す jsdialog
+    /// 更新で background save が乱れて失敗報告→直後の PutFile 自体は成功する・実機で
+    /// 確認）。save は冪等（paste と違い再送安全）なので、失敗時も**版の前進を正**として
+    /// 検証し、進んでいなければ 1 回だけ save を再試行する。
     async fn save_and_verify(
         &self,
         ctx: &AuthContext,
@@ -267,33 +272,43 @@ impl LiveEditor {
         initial_version: i64,
         client: &mut CoolWsClient,
     ) -> LiveSaveResult {
-        let ack = match client.save().await {
-            Ok(ack) => ack,
-            Err(e) => return LiveSaveResult::Failed(e.to_string()),
-        };
-        // PutFile は shiki 自身に飛ぶため、版の前進が永続化の決定的な証拠になる。
-        let deadline = tokio::time::Instant::now() + SAVE_VERIFY_TIMEOUT;
-        loop {
-            match self.storage.get_metadata(ctx, file_id, None).await {
-                Ok(node) if node.version > initial_version => {
-                    return LiveSaveResult::Saved {
-                        version: node.version,
-                    };
-                }
-                Ok(_) => {}
+        let mut last_error: Option<String> = None;
+        for attempt in 0..2 {
+            let ack = match client.save().await {
+                Ok(ack) => Some(ack),
                 Err(e) => {
-                    tracing::warn!(error = %e, "保存検証の get_metadata に失敗");
+                    tracing::warn!(error = %e, attempt, "CoolWSD save が失敗を報告（版前進で再検証）");
+                    last_error = Some(e.to_string());
+                    None
                 }
+            };
+            // PutFile は shiki 自身に飛ぶため、版の前進が永続化の決定的な証拠になる。
+            let deadline = tokio::time::Instant::now() + SAVE_VERIFY_TIMEOUT;
+            loop {
+                match self.storage.get_metadata(ctx, file_id, None).await {
+                    Ok(node) if node.version > initial_version => {
+                        return LiveSaveResult::Saved {
+                            version: node.version,
+                        };
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "保存検証の get_metadata に失敗");
+                    }
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            if tokio::time::Instant::now() >= deadline {
-                break;
+            // ack 成功なのに版が進まない＝アップロード遅延。再試行せず未確認として返す。
+            if matches!(ack, Some(SaveAck::CoreSaved | SaveAck::Unverified)) {
+                return LiveSaveResult::Unverified;
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        match ack {
-            // core ack はあるが版が進んでいない＝アップロード遅延の可能性。
-            SaveAck::CoreSaved | SaveAck::Unverified => LiveSaveResult::Unverified,
-        }
+        LiveSaveResult::Failed(
+            last_error.unwrap_or_else(|| "保存に失敗しました（原因不明）".to_string()),
+        )
     }
 }
 

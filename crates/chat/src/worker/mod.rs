@@ -45,6 +45,9 @@ pub struct WorkerConfig {
     pub autonomous_max_steps: usize,
     /// 自律プロファイルの累積トークン上限（予算ガード・Task 5.7）。
     pub autonomous_max_tokens: u64,
+    /// 通常チャット 1 応答の最大トークン。reasoning 系は思考も消費するため、
+    /// 長文成果物・大きなツール引数に耐える値にする（旧 2048 は引数切れを起こした）。
+    pub max_tokens: u32,
     /// 自律プロファイルの累積コスト上限（マイクロ USD・Task 5.7）。
     pub autonomous_max_cost_usd_micros: i64,
     /// 自律 shell に同梱するゲストコマンドパッケージ（coreutils 等・Task 5.4）。
@@ -70,6 +73,7 @@ impl Default for WorkerConfig {
             autonomous_max_steps: 50,
             // 既定: 約 20 万トークン・1 USD 上限（テナント/skill で上書き可・Task 5.7）。
             autonomous_max_tokens: 200_000,
+            max_tokens: 8192,
             autonomous_max_cost_usd_micros: 1_000_000,
             sandbox_software: vec!["coreutils".to_string()],
             // 既定は wasm（後方互換・deploy アセット前提の gVisor は admin が明示 opt-in）。

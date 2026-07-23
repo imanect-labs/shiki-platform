@@ -263,6 +263,10 @@ pub(crate) async fn wire_chat(
         model: config.llm.default_model.clone(),
         lease_secs: config.chat.lease_secs,
         max_steps: config.chat.max_steps,
+        max_tokens: config
+            .chat
+            .max_tokens
+            .unwrap_or_else(|| chat::WorkerConfig::default().max_tokens),
         classic_rag: config.chat.classic_rag,
         // コード実行系の隔離ティア（admin ポリシー）。未指定は既定（wasm）。
         sandbox_backend: config

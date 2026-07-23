@@ -351,10 +351,10 @@ impl ChatWorker {
             match skill.as_ref().and_then(|s| s.body.model.as_ref()) {
                 Some(defaults) => (
                     defaults.model.clone().or_else(|| self.config.model.clone()),
-                    defaults.max_tokens.or(Some(2048)),
+                    defaults.max_tokens.or(Some(self.config.max_tokens)),
                     defaults.temperature,
                 ),
-                None => (self.config.model.clone(), Some(2048), None),
+                None => (self.config.model.clone(), Some(self.config.max_tokens), None),
             };
         let effective_model = model
             .clone()

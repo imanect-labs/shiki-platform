@@ -140,6 +140,11 @@ pub struct ChatConfig {
     /// エージェントモードの最大ステップ。
     #[serde(default = "default_max_steps")]
     pub max_steps: usize,
+    /// 1 応答の最大トークン（未指定は WorkerConfig 既定）。reasoning 系モデルは思考
+    /// トークンも消費するため、長い成果物（レポート執筆・大きなツール引数）には
+    /// 8192 以上が必要（2048 だとツール引数が途中で切れて空引数になる・実機で確認）。
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     /// 通常チャットで旧・無条件 RAG 注入経路を使う後方互換フォールバック（既定 false）。
     /// false ならモデル裁量ループ（issue #102）。明示的なエージェントモード run/自律 run には影響しない。
     #[serde(default)]
@@ -249,6 +254,7 @@ impl Default for ChatConfig {
             system_prompt: None,
             lease_secs: default_lease_secs(),
             max_steps: default_max_steps(),
+            max_tokens: None,
             classic_rag: false,
             sandbox_endpoint: None,
             sandbox_backend: None,
