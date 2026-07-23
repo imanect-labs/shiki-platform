@@ -8,6 +8,7 @@
 
 mod bundle;
 mod instance;
+mod watchdog;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -30,6 +31,8 @@ pub struct GvisorBackend {
     state_root: PathBuf,
     /// egress netns holder バイナリ（未設定なら egress 要求時に fail）。
     holder_bin: Option<PathBuf>,
+    /// メモリ watchdog の監視間隔（None で無効・#346。`--total-memory` と併せた二重防御）。
+    watchdog_interval: Option<Duration>,
 }
 
 impl GvisorBackend {
@@ -39,6 +42,7 @@ impl GvisorBackend {
         rootfs_dir: PathBuf,
         state_root: PathBuf,
         holder_bin: Option<PathBuf>,
+        watchdog_interval: Option<Duration>,
     ) -> Result<Self, SandboxError> {
         if !is_executable(Path::new(runsc_bin)) {
             return Err(SandboxError::Unavailable(format!(
@@ -63,6 +67,7 @@ impl GvisorBackend {
             rootfs_dir,
             state_root,
             holder_bin,
+            watchdog_interval,
         })
     }
 
@@ -190,6 +195,9 @@ impl Backend for GvisorBackend {
         let network = if egress.is_some() { "host" } else { "none" };
 
         // `runsc run` を常駐子として spawn（init=sleep infinity・kill_on_drop）。
+        // メモリ上限は OCI spec の `linux.resources.memory.limit`（bundle.rs・ゲスト可視の
+        // ソフト上限。現行 runsc に旧 `--total-memory` フラグは無い）＋ orchestrator 側
+        // watchdog（超過 kill）の二重防御（#346・cgroups 無し環境ではソフト強制・PIT-24）。
         let run_child = runsc_base(&self.runsc, &root_dir, netns_pid, network)
             .arg("run")
             .arg("--bundle")
@@ -205,6 +213,19 @@ impl Backend for GvisorBackend {
         // running を待つ（失敗時は run_child を drop で kill）。
         Self::wait_running(&self.runsc, &root_dir, netns_pid, network, &id).await?;
 
+        // メモリ watchdog（超過 kill・destroy 時に abort・#346）。
+        let watchdog = match (self.watchdog_interval, spec.limits.memory_mb) {
+            (Some(interval), mb) if mb > 0 => Some(watchdog::spawn(
+                Arc::clone(&self.runsc),
+                root_dir.clone(),
+                id.clone(),
+                spec.tenant_id.clone(),
+                mb.saturating_mul(1024 * 1024),
+                interval,
+            )),
+            _ => None,
+        };
+
         Ok(Arc::new(GvisorInstance::new(
             Arc::clone(&self.runsc),
             root_dir,
@@ -215,6 +236,7 @@ impl Backend for GvisorBackend {
             run_child,
             state_dir,
             &spec.limits,
+            watchdog,
         )))
     }
 }

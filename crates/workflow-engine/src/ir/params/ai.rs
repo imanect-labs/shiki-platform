@@ -30,7 +30,8 @@ pub struct LlmInvokeParams {
     pub max_tokens: Option<ValueExpr>,
 }
 
-/// `agent.invoke` — サンドボックスで agent-core を実行（best-effort・wasm ティア固定）。
+/// `agent.invoke` — サンドボックスで agent-core を実行（best-effort・ティアは admin ポリシー
+/// `chat.sandbox_backend`・既定 gVisor・#346）。
 ///
 /// サンドボックス設定は**縮小のみ**（実効 = 実行主体 ReBAC ∩ declared_scopes ∩ 本設定）。
 /// `mount_scope`/`allowed_tools`/`model`/`max_tokens` は Phase 5 フルツール構成との結線

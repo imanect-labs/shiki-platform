@@ -69,6 +69,8 @@ pub(super) struct GvisorInstance {
     wall_clock: Duration,
     max_output: usize,
     seq: AtomicU64,
+    /// メモリ watchdog タスク（#346・destroy で abort）。
+    watchdog: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl GvisorInstance {
@@ -83,6 +85,7 @@ impl GvisorInstance {
         run_child: Child,
         state_dir: PathBuf,
         limits: &sandbox_client::SandboxLimits,
+        watchdog: Option<tokio::task::JoinHandle<()>>,
     ) -> Self {
         GvisorInstance {
             runsc,
@@ -97,6 +100,7 @@ impl GvisorInstance {
             wall_clock: Duration::from_millis(limits.wall_clock_ms.max(1)),
             max_output: usize::try_from(limits.max_output_bytes).unwrap_or(usize::MAX),
             seq: AtomicU64::new(0),
+            watchdog: std::sync::Mutex::new(watchdog),
         }
     }
 
@@ -208,6 +212,12 @@ impl Instance for GvisorInstance {
     }
 
     async fn destroy(&self) -> Result<(), SandboxError> {
+        // watchdog を先に止める（kill 済みコンテナへの空監視・二重 kill を避ける）。
+        if let Ok(mut w) = self.watchdog.lock() {
+            if let Some(handle) = w.take() {
+                handle.abort();
+            }
+        }
         // kill→delete（冪等・失敗は無視）。
         let _ = self
             .base(self.network_mode())

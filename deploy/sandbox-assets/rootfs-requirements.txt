@@ -1,0 +1,22 @@
+# native rootfs（gVisor/Firecracker）へ同梱する Python パッケージ（#346・design §4.6 前提条件）。
+#
+# code_interpreter のツール description が numpy/pandas を宣伝しているため、既定ティアを
+# gVisor に反転する前提として rootfs に同梱する。再現性は二層で閉じる:
+#   1. ベースイメージの digest pin（scripts/build-sandbox-rootfs.sh の PIN_IMAGE）
+#   2. wheel の --hash 全固定（pip install --require-hashes --only-binary=:all:）
+#
+# 更新手順: PIN_IMAGE 内で `pip download <pkgs> --only-binary=:all: -d /wheels && pip hash /wheels/*.whl`
+# を実行し、本ファイルの version と hash を差し替える（Pyodide 側 vendor の numpy/pandas と
+# バージョン近傍を保つ・docs/sandbox/third-party-assets.md）。
+numpy==2.2.5 \
+    --hash=sha256:3a801fef99668f309b88640e28d261991bfad9617c27beda4a3aec4f217ea073
+pandas==2.3.3 \
+    --hash=sha256:b3d11d2fda7eb164ef27ffc14b4fcab16a80e1ce67e9f57e19ec0afaf715ba89
+python-dateutil==2.9.0.post0 \
+    --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
+pytz==2026.2 \
+    --hash=sha256:04156e608bee23d3792fd45c94ae47fae1036688e75032eea2e3bf0323d1f126
+six==1.17.0 \
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+tzdata==2026.3 \
+    --hash=sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931

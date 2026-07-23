@@ -39,8 +39,13 @@ gVisor=runsc systrap rootless＋`python:3.12-slim` rootfs。**Firecracker は `/
 | ティア | N | create→ready p50 / p95 (ms) | exec p50 (ms) | python p50 (ms) | put/get 1MiB p50 (ms) | destroy p50 (ms) | RSS p50 (MB) |
 |---|---|---|---|---|---|---|---|
 | wasm | 6 | 11.5 / 13.1 | 6469 | 6019 | 19.6 | 14.9 | 21 |
-| gvisor | 6 | 132.3 / 134.4 | 59.6 | 81.8 | 0.8 | 30.5 | 104 |
+| gvisor（2026-07-06・slim rootfs） | 6 | 132.3 / 134.4 | 59.6 | 81.8 | 0.8 | 30.5 | 104 |
+| **gvisor（2026-07-22・numpy/pandas 同梱 rootfs・#346）** | 6 | 131.3 / 133.4 | 47.2 | 68.8 | 0.8 | 31.0 | 103 |
 | firecracker | — | 未計測 | — | — | — | — | — |
+
+> **2026-07-22 再計測（#346）**: 既定反転の前提工事後（rootfs へ numpy/pandas 同梱・282MiB。
+> `deploy/sandbox-assets/rootfs-size.txt` にビルドごと記録）に gVisor を再取得。同梱による
+> create/exec への劣化は無し（誤差範囲）。wasm はコード経路が不変のため 2026-07-06 の値を保持する。
 
 ## 解釈（ティア選択の指針）
 
@@ -62,11 +67,12 @@ gVisor=runsc systrap rootless＋`python:3.12-slim` rootfs。**Firecracker は `/
 > 固定する短命・読み取り専用実行。egress allowlist を wasm の仮想 net ホスト関数で実効化）に残す。
 > ⚠️ web_fetch は内部で urllib（Python）を実行するため wasm でも exec ごとに Pyodide 初期化コストを払う点は既知の課題
 > （wasm を選ぶ理由は速度ではなく egress モデル）。
-> ⚠️ 既定切替には native rootfs への numpy/pandas 同梱が前提（下記「注意」参照）。
+> 既定切替の前提だった native rootfs への numpy/pandas 同梱は **#346 で充足済み**
+> （`rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定。コード既定も gVisor へ反転済み）。
 
 ## 注意
 
 - 数値は 1 ホストの相対比較であり絶対性能保証ではない。RSS は子孫 VmRSS の近似（cgroup 無し）。
-- wasm の Python は Pyodide 同梱 numpy/pandas を持つ（gVisor の slim rootfs は numpy 非同梱）。本ベンチは
-  公平性のため numpy 非依存の純 Python を使う。
+- wasm の Python は Pyodide 同梱 numpy/pandas を持ち、gVisor rootfs も numpy/pandas を同梱する（#346・
+  `deploy/sandbox-assets/rootfs-requirements.txt`）。本ベンチは公平性のため numpy 非依存の純 Python を使う。
 - Firecracker 行は KVM ホストでの再計測で埋める（本表は開発ホストの制約を正直に反映）。

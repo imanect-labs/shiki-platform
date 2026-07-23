@@ -80,6 +80,8 @@ fn discover() -> (Vec<Tier>, Vec<(String, String)>) {
                 PathBuf::from(rootfs),
                 std::env::temp_dir().join("bench-gvisor"),
                 env("NETNS_HOLDER_BIN").map(PathBuf::from),
+                // ベンチは watchdog 無効（計測ノイズを避ける・#346）。
+                None,
             ) {
                 Ok(b) => tiers.push(Tier {
                     name: "gvisor",

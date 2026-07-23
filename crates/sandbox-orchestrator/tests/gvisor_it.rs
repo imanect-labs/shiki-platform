@@ -65,8 +65,14 @@ async fn collect_stdout(inst: &Arc<dyn Instance>, req: ExecRequest) -> (String, 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gvisor_code_interpreter_and_files() {
     let Some(env) = gated() else { return };
-    let backend = GvisorBackend::new(&env.runsc, env.rootfs.clone(), env.state.clone(), None)
-        .expect("backend");
+    let backend = GvisorBackend::new(
+        &env.runsc,
+        env.rootfs.clone(),
+        env.state.clone(),
+        None,
+        None,
+    )
+    .expect("backend");
 
     let inst = backend.create(gvisor_spec()).await.expect("create");
 
@@ -126,8 +132,14 @@ async fn gvisor_code_interpreter_and_files() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gvisor_two_instances_isolated() {
     let Some(env) = gated() else { return };
-    let backend = GvisorBackend::new(&env.runsc, env.rootfs.clone(), env.state.clone(), None)
-        .expect("backend");
+    let backend = GvisorBackend::new(
+        &env.runsc,
+        env.rootfs.clone(),
+        env.state.clone(),
+        None,
+        None,
+    )
+    .expect("backend");
     let a = backend.create(gvisor_spec()).await.expect("a");
     let b = backend.create(gvisor_spec()).await.expect("b");
     assert_ne!(a.debug_id(), b.debug_id());
@@ -172,6 +184,7 @@ async fn gvisor_egress_allows_listed_blocks_others() {
         env.rootfs.clone(),
         env.state.clone(),
         Some(holder),
+        None,
     )
     .expect("backend");
 
@@ -214,5 +227,67 @@ async fn gvisor_egress_allows_listed_blocks_others() {
         "egress deny must block, out={out:?}"
     );
 
+    inst.destroy().await.expect("destroy");
+}
+
+/// 既定ティア反転の本丸（#346）: rootfs 同梱の numpy/pandas が native CPython で import できる
+/// （code_interpreter のツール description の宣伝と実体が一致すること）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gvisor_numpy_pandas_available() {
+    let Some(env) = gated() else { return };
+    let backend = GvisorBackend::new(
+        &env.runsc,
+        env.rootfs.clone(),
+        env.state.clone(),
+        None,
+        None,
+    )
+    .expect("backend");
+    let inst = backend.create(gvisor_spec()).await.expect("create");
+    let (out, code) = collect_stdout(
+        &inst,
+        ExecRequest::Python {
+            code: "import numpy, pandas\nprint(numpy.__version__, pandas.__version__)\nprint('df_sum=%s' % pandas.DataFrame({'a':[1,2]}).sum().iloc[0])".into(),
+            timeout_ms: Some(60_000),
+        },
+    )
+    .await;
+    assert_eq!(code, Some(0), "numpy/pandas import 失敗: {out:?}");
+    // バージョン番号との誤マッチを避けるため、専用センチネルで演算結果を検証する。
+    assert!(out.contains("df_sum=3"), "DataFrame 演算: {out:?}");
+    inst.destroy().await.expect("destroy");
+}
+
+/// メモリ watchdog（#346）: 上限を大きく超える確保で kill される（以後の exec は失敗）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gvisor_memory_watchdog_kills_over_limit() {
+    let Some(env) = gated() else { return };
+    let backend = GvisorBackend::new(
+        &env.runsc,
+        env.rootfs.clone(),
+        env.state.clone(),
+        None,
+        Some(std::time::Duration::from_millis(300)),
+    )
+    .expect("backend");
+    let mut spec = gvisor_spec();
+    spec.limits.memory_mb = 64;
+    let inst = backend.create(spec).await.expect("create");
+
+    // 64MiB 上限に対して ~256MiB を確保して保持し続ける。watchdog が kill するまで sleep。
+    let (out, code) = collect_stdout(
+        &inst,
+        ExecRequest::Python {
+            code: "import time\nbuf = bytearray(256 * 1024 * 1024)\nbuf[::4096] = b'x' * len(buf[::4096])\nprint('allocated', len(buf))\ntime.sleep(30)\nprint('survived')".into(),
+            timeout_ms: Some(60_000),
+        },
+    )
+    .await;
+    // kill が効けば 'survived' まで到達せず、非 0 終了を明示的に観測できる（実測は SIGKILL の 137）。
+    // `code != Some(0)` だとストリーム異常の `None` でも通ってしまうため Some(非0) を要求する。
+    assert!(
+        !out.contains("survived") && matches!(code, Some(c) if c != 0),
+        "watchdog がメモリ超過を kill すること: out={out:?} code={code:?}"
+    );
     inst.destroy().await.expect("destroy");
 }

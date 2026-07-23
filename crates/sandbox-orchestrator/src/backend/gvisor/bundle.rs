@@ -71,6 +71,10 @@ pub(super) fn build_config(
         "hostname": "sandbox",
         "mounts": mounts,
         "linux": {
+            // メモリ上限（#346）: sentry がゲストへ見せる/管理するメモリのソフト上限。
+            // `--ignore-cgroups`（rootless）ではホスト側ハード強制にならないため、
+            // orchestrator の watchdog（超過 kill）と併せた二重防御にする（PIT-24）。
+            "resources": {"memory": {"limit": limits.memory_mb.saturating_mul(1024 * 1024)}},
             "namespaces": [
                 {"type": "pid"},
                 {"type": "mount"},
@@ -144,6 +148,16 @@ mod tests {
             .unwrap()
             .iter()
             .any(|m| m["destination"] == json!("/etc/resolv.conf")));
+    }
+
+    #[test]
+    fn memory_limit_in_linux_resources() {
+        // メモリ上限は OCI resources.memory.limit（bytes）へ写る（#346）。
+        let c = cfg(None);
+        assert_eq!(
+            c["linux"]["resources"]["memory"]["limit"],
+            json!(SandboxLimits::constrained().memory_mb * 1024 * 1024)
+        );
     }
 
     #[test]

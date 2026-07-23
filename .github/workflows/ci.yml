@@ -184,6 +184,42 @@ jobs:
           path: crates/tabular/runner/target/release/shiki-tabular-runner
           if-no-files-found: error
 
+  # gVisor 既定ティア（#346）の gated IT。GHA ランナーで runsc（rootless・systrap・KVM 不要）を
+  # 実際に回し、rootfs 同梱の numpy/pandas import・shell・メモリ watchdog を検証する。
+  # ランナー環境（AppArmor の非特権 userns 制限等）に依存するため、安定を確認するまで
+  # **非ブロッキング**（continue-on-error）。required 化は安定後に外す。
+  sandbox-gvisor:
+    name: Sandbox gVisor IT (runsc・非ブロッキング)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    continue-on-error: true
+    steps:
+      # サードパーティ処理（runsc 取得・docker build・pip）を含むためトークンを残さない。
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: free disk space (不要プリインストール削除)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      # Ubuntu 24.04 は AppArmor が非特権 userns 生成を制限するため解除する（runsc --rootless 前提）。
+      - name: allow unprivileged userns (AppArmor)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: fetch runsc (manifest 検証・PIT-33)
+        run: bash scripts/fetch-native-assets.sh
+      - name: build rootfs (numpy/pandas 同梱・--require-hashes)
+        run: bash scripts/build-sandbox-rootfs.sh
+      - name: gvisor gated IT (create/exec/numpy/watchdog)
+        env:
+          SANDBOX_GVISOR_IT: "1"
+          RUNSC_BIN: ${{ github.workspace }}/deploy/sandbox-assets/bin/runsc
+          GVISOR_ROOTFS: ${{ github.workspace }}/deploy/sandbox-assets/rootfs
+        run: cargo test -p shiki-sandbox-orchestrator --test gvisor_it -- --test-threads=1
+
   python:
     name: Python (ingestion-worker ruff / pytest)
     runs-on: ubuntu-latest
