@@ -54,19 +54,18 @@ test.setTimeout(240_000);
 
 const beat = (p: Page, ms = 900) => p.waitForTimeout(ms);
 
-/// Collabora の「What's New」ダイアログを閉じて綺麗な編集結果を映す。タイピングは
-/// ダイアログ表示中でも文書に届くため、選択・依頼が済んだ**承認後**に閉じる
-/// （home_mode.enable は Navigation パネルが焦点を奪うため使わない）。出なければ無視。
-async function dismissWelcome(page: Page) {
-  // What's New は Collabora フレーム内の**ネスト iframe（iframe.iframe-welcome）**にあり、閉じる X は
-  // その中の #welcome-close（診断で確認）。isVisible ガードは false 判定で空振りするため、
-  // 直接 click（timeout 付き）して存在しなければ catch する。
-  const close = page
-    .frameLocator('[data-testid="office-frame"]')
-    .frameLocator("iframe.iframe-welcome")
-    .locator("#welcome-close");
-  await close.click({ timeout: 5000 }).catch(() => {});
-  await page.waitForTimeout(800);
+/// Collabora の「What's New」ダイアログをそもそも出さない。Collabora（別オリジンの
+/// iframe）は localStorage の `WSDWelcomeDisabled` を見るため、全フレームに適用される
+/// init script で先に立てておく（home_mode.enable は Navigation の焦点を奪うため使わない）。
+async function disableWelcome(context: import("@playwright/test").BrowserContext) {
+  await context.addInitScript(() => {
+    try {
+      window.localStorage.setItem("WSDWelcomeDisabled", "true");
+      window.localStorage.setItem("WSDWelcomeDisabledDate", new Date().toDateString());
+    } catch {
+      /* localStorage 不可の origin は無視 */
+    }
+  });
 }
 
 /// Drive から新規ドキュメント（docx）を作成して Collabora が落ち着くまで待つ。
@@ -85,10 +84,13 @@ async function openNewDocument(page: Page) {
 /// Collabora の編集領域へフォーカスして本文を打つ。
 async function typeIntoDocument(page: Page, text: string) {
   const inner = page.frameLocator('[data-testid="office-frame"]');
+  // welcome 非表示時は左に Navigator/検索パネル（~325px 幅）が開くことがあり、左上をクリックすると
+  // 入力がその検索欄へ逸れる。Escape で閉じ、キャンバス中央（パネルより右）をクリックして本文へ。
+  await page.keyboard.press("Escape").catch(() => {});
   await inner
     .locator("#main-document-content, #document-container")
     .first()
-    .click({ force: true, position: { x: 60, y: 40 } });
+    .click({ force: true, position: { x: 450, y: 220 } });
   await page.keyboard.type(text, { delay: 45 });
   await page.waitForTimeout(1200);
 }
@@ -111,6 +113,7 @@ async function askAndApprove(page: Page, request: string) {
 
 /// ① Word: 選択→AI→承認→「Shiki AI」が参加者として本文をライブ置換する。
 test("word-live-replace: AI が参加者として選択箇所を書き換える", async ({ page }) => {
+  await disableWelcome(page.context());
   await loginViaKeycloak(page);
   await openNewDocument(page);
   await typeIntoDocument(page, "差し替え対象の本文");
@@ -119,11 +122,9 @@ test("word-live-replace: AI が参加者として選択箇所を書き換える"
 
   await askAndApprove(page, "この選択範囲を、丁寧な文章に書き直して");
 
-  // AI が headless 参加 → 検索・照合 → paste → 保存（実 CoolWSD・PutFile）。承認後に What's New を
-  // 閉じ、編集後の綺麗な本文が canvas に映るまで待つ（正しさは office-assistant.spec の chip で担保）。
-  await beat(page, 4000);
-  await dismissWelcome(page);
-  await beat(page, 10000);
+  // AI が headless 参加 → 検索・照合 → paste → 保存（実 CoolWSD・PutFile）。編集後の本文が
+  // canvas に映るまで待つ（正しさは office-assistant.spec の chip 裏取りで担保）。
+  await beat(page, 14000);
 });
 
 /// ② コワーク（2 画面）: 別ウィンドウで同じ文書を開いている参加者の画面にも
@@ -140,6 +141,8 @@ test("word-cowork-two-windows: もう一人の画面にもライブ反映され�
     recordVideo: { dir: "test-results/cowork-editor-B", size: { width: 1280, height: 720 } },
   });
   try {
+    await disableWelcome(ctxA);
+    await disableWelcome(ctxB);
     const pageA = await ctxA.newPage();
     await loginViaKeycloak(pageA);
     await openNewDocument(pageA);
@@ -174,12 +177,9 @@ test("word-cowork-two-windows: もう一人の画面にもライブ反映され�
     await approveA.click();
 
     // B 側は何も操作していないのに本文が変わる（Collabora の view 同期・+「Shiki AI」参加が映る）。
-    // 両ウィンドウの What's New を閉じ、canvas に反映が現れるまで待つ（動画が主証拠）。
-    await pageA.waitForTimeout(4000);
-    await dismissWelcome(pageA);
-    await dismissWelcome(pageB);
-    await pageA.waitForTimeout(14000);
-    await pageB.waitForTimeout(2000);
+    // canvas に反映が現れるまで待つ（動画が主証拠）。
+    await pageA.waitForTimeout(16000);
+    await pageB.waitForTimeout(4000);
   } finally {
     await ctxA.close();
     await ctxB.close();
@@ -188,6 +188,7 @@ test("word-cowork-two-windows: もう一人の画面にもライブ反映され�
 
 /// ③ Excel: アップロードした xlsx を開き、AI がセル矩形（set_cells）をライブで貼り込む。
 test("excel-set-cells-live: 開いているシートへ AI がセルを書き込む", async ({ page }) => {
+  await disableWelcome(page.context());
   await loginViaKeycloak(page);
   const fileId = await uploadAndOpenXlsx(page, "excel-live");
   await page.waitForTimeout(8000);
@@ -204,16 +205,14 @@ test("excel-set-cells-live: 開いているシートへ AI がセルを書き込
   await beat(page, 2000);
   await approve.click();
 
-  // AI が headless 参加して A1 起点にセル矩形を貼り込む。What's New を閉じ、貼り込まれた表が
-  // canvas に現れるまで待つ（動画が主証拠）。
-  await beat(page, 4000);
-  await dismissWelcome(page);
-  await beat(page, 12000);
+  // AI が headless 参加して A1 起点にセル矩形を貼り込む。貼り込まれた表が canvas に現れるまで待つ。
+  await beat(page, 15000);
 });
 
 /// ④ 閉じた文書への編集: 文書を開いていなくても AI が単独セッションを立てて編集・保存し、
 /// 開き直すと新バージョンに反映されている。
 test("excel-closed-doc-edit: 閉じた文書も AI が編集して新バージョン保存", async ({ page }) => {
+  await disableWelcome(page.context());
   await loginViaKeycloak(page);
   // アップロード→一度開いて fileId を取り、Drive へ戻って閉じる（編集セッション無しの状態を作る）。
   const fileId = await uploadAndOpenXlsx(page, "excel-closed");
