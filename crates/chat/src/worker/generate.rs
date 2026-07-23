@@ -421,6 +421,9 @@ fn chat_opts(worker: &ChatWorker) -> AgentOptions {
     let mut opts = AgentOptions::chat(worker.config.max_steps);
     opts.system = Some(worker.config.system_prompt.clone());
     worker.config.model.clone_into(&mut opts.model);
+    // 1 応答の出力上限（プロファイル既定 2048 は reasoning モデルの思考で尽き、
+    // 長い成果物・大きなツール引数が途中で切れる。設定値で上書きする）。
+    opts.max_tokens = Some(worker.config.max_tokens);
     opts
 }
 
