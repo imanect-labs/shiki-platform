@@ -39,7 +39,9 @@ struct Config {
 /// gVisor（runsc）ティアの構成。`enabled` かつ runsc/rootfs が揃えば実バックエンドを組む。
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct GvisorConfig {
-    #[serde(default)]
+    /// figment の Env は `"1"` を整数に推論し bool 抽出が失敗するため、"1"/"true" 両受けにする
+    /// （env 経由の有効化フラグは慣習的にどちらも使われる・起動不能の設定事故を防ぐ）。
+    #[serde(default, deserialize_with = "figment::util::bool_from_str_or_int")]
     enabled: bool,
     runsc_bin: Option<String>,
     rootfs_dir: Option<String>,
@@ -51,7 +53,8 @@ struct GvisorConfig {
 /// Firecracker ティアの構成。`enabled` かつ bin/kernel/rootfs が揃えば実バックエンドを組む。
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct FirecrackerConfig {
-    #[serde(default)]
+    /// gVisor 側と同じく "1"/"true" 両受け（figment の Env 型推論対策）。
+    #[serde(default, deserialize_with = "figment::util::bool_from_str_or_int")]
     enabled: bool,
     bin: Option<String>,
     kernel: Option<String>,

@@ -77,7 +77,11 @@ COPY --from=commands-builder /opt/shiki/commands /opt/shiki/commands
 COPY --from=native-assets /app/deploy/sandbox-assets/bin/runsc /opt/shiki/sandbox-assets/bin/runsc
 COPY --from=rootfs-src / /opt/shiki/sandbox-assets/rootfs
 RUN mv /opt/shiki/sandbox-assets/rootfs/etc/resolv.conf.sandbox /opt/shiki/sandbox-assets/rootfs/etc/resolv.conf && \
-    mv /opt/shiki/sandbox-assets/rootfs/etc/hosts.sandbox /opt/shiki/sandbox-assets/rootfs/etc/hosts
+    mv /opt/shiki/sandbox-assets/rootfs/etc/hosts.sandbox /opt/shiki/sandbox-assets/rootfs/etc/hosts && \
+    # ネイティブティアの状態ディレクトリを sandbox ユーザーで作成可能に（compose は tmpfs を
+    # マウントするが、素の docker run でも起動時 create_dir_all が失敗しないように）。
+    mkdir -p /run/sandbox/gvisor /run/sandbox/firecracker && \
+    chown -R sandbox:sandbox /run/sandbox
 USER sandbox
 ENV SECURE_EXEC_SIDECAR_BIN=/usr/local/bin/secure-exec-sidecar
 ENV SANDBOX__LISTEN=0.0.0.0:50000

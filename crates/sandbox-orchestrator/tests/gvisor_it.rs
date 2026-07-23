@@ -247,13 +247,14 @@ async fn gvisor_numpy_pandas_available() {
     let (out, code) = collect_stdout(
         &inst,
         ExecRequest::Python {
-            code: "import numpy, pandas\nprint(numpy.__version__, pandas.__version__)\nprint(pandas.DataFrame({'a':[1,2]}).sum().iloc[0])".into(),
+            code: "import numpy, pandas\nprint(numpy.__version__, pandas.__version__)\nprint('df_sum=%s' % pandas.DataFrame({'a':[1,2]}).sum().iloc[0])".into(),
             timeout_ms: Some(60_000),
         },
     )
     .await;
     assert_eq!(code, Some(0), "numpy/pandas import 失敗: {out:?}");
-    assert!(out.contains('3'), "DataFrame 演算: {out:?}");
+    // バージョン番号との誤マッチを避けるため、専用センチネルで演算結果を検証する。
+    assert!(out.contains("df_sum=3"), "DataFrame 演算: {out:?}");
     inst.destroy().await.expect("destroy");
 }
 
@@ -282,9 +283,10 @@ async fn gvisor_memory_watchdog_kills_over_limit() {
         },
     )
     .await;
-    // kill が効けば 'survived' まで到達しない（exit 0 にならない）。
+    // kill が効けば 'survived' まで到達せず、非 0 終了を明示的に観測できる（実測は SIGKILL の 137）。
+    // `code != Some(0)` だとストリーム異常の `None` でも通ってしまうため Some(非0) を要求する。
     assert!(
-        !out.contains("survived") && code != Some(0),
+        !out.contains("survived") && matches!(code, Some(c) if c != 0),
         "watchdog がメモリ超過を kill すること: out={out:?} code={code:?}"
     );
     inst.destroy().await.expect("destroy");

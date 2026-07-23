@@ -194,7 +194,10 @@ jobs:
     timeout-minutes: 40
     continue-on-error: true
     steps:
+      # サードパーティ処理（runsc 取得・docker build・pip）を含むためトークンを残さない。
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: free disk space (不要プリインストール削除)
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL

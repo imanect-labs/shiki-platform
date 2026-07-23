@@ -184,7 +184,7 @@ services:
       SANDBOX__COMMANDS_DIR: /opt/shiki/commands
       # gVisor ティア（既定・#346）。runsc/rootfs（numpy/pandas 同梱）はイメージに焼き込み済み
       # （Dockerfile の native-assets/rootfs-src ステージ・実行時 DL 無し・PIT-33）。
-      SANDBOX__GVISOR__ENABLED: "1"
+      SANDBOX__GVISOR__ENABLED: "true"
     ports:
       # gRPC はローカルのみ公開（compose 網内は sandbox-orchestrator:50000 で到達）。
       - "127.0.0.1:50000:50000"
