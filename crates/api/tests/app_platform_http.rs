@@ -938,3 +938,138 @@ async fn skill_publish_install_and_v4_over_http() {
         .iter()
         .any(|e| e["code"] == "ir.unknown_skill"));
 }
+
+/// first-party skill の import → 個別同意なしインストール → カタログ掲載（10.15・#344）。
+#[tokio::test]
+async fn first_party_skill_import_and_install_over_http() {
+    let Some(pool) = setup().await else { return };
+    let sessions = Arc::new(MemorySessionStore::new());
+    sessions
+        .put(
+            "default",
+            "sid-fp",
+            &session_record("csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with(pool.clone(), sessions));
+    let cookie = "shiki_session=sid-fp.default; shiki_csrf=csrf";
+    let post = |uri: String, body: serde_json::Value| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, cookie)
+            .header("x-csrf-token", "csrf")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
+    };
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let name = format!("slack-notify-{}", &suffix[..8]);
+
+    // 信頼鍵を台帳へ登録し、リポジトリ同梱バンドル（sdk/first-party-skills）へ署名する。
+    let secret = [21u8; 32];
+    let public = {
+        use ed25519_dalek::SigningKey;
+        SigningKey::from_bytes(&secret).verifying_key().to_bytes()
+    };
+    let keys = app_platform::TrustedKeyStore::new(pool.clone());
+    let kctx = authz::AuthContext::new(
+        Principal {
+            kind: authz::PrincipalKind::User,
+            id: "provisioner".into(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: Some("default".into()),
+        },
+        "acme".into(),
+        "default".into(),
+    );
+    keys.add(&kctx, "skill-key", &public, None).await.unwrap();
+    let body: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../sdk/first-party-skills/slack-notify/skill.json"
+    ))
+    .unwrap();
+    let digest = app_platform::value_digest(&body);
+    // 署名対象は name/version に束縛された signing digest（別名 replay 防止・#344）。
+    let signing = app_platform::registry_signing_digest(&name, "1.0.0", &digest);
+    let sig = app_platform::sign_digest(&signing, &secret).unwrap();
+
+    // 改竄署名は 403（fail-closed）。
+    let mut bad = sig.clone();
+    bad[0] ^= 0xff;
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/skills/registry/import".into(),
+            serde_json::json!({
+                "name": name, "version": "1.0.0", "body": body,
+                "signature_base64": base64_encode(&bad),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // 正しい署名で import → first-party として publish される。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/skills/registry/import".into(),
+            serde_json::json!({
+                "name": name, "version": "1.0.0", "body": body,
+                "signature_base64": base64_encode(&sig),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let entry: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(entry["trust_tier"], "first_party");
+
+    // 個別共有・管理者の個別同意なしで本人がインストールできる（署名検証済みのため）。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/skills/installations".into(),
+            serde_json::json!({ "name": name }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let inst: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(inst["trust_tier"], "first_party");
+
+    // V4 skill 照合も通る（skill:name@1.0.0 参照のワークフローが保存可能）。
+    let ir = serde_json::json!({
+        "ir_version": 1,
+        "name": format!("notify-{}", &suffix[..8]),
+        "declared_scopes": ["http.egress"],
+        "nodes": [{ "id": "s", "type": "skill.invoke",
+            "params": { "skill": format!("skill:{name}@1.0.0") } }],
+        "edges": []
+    });
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/workflows/validate".into(),
+            serde_json::json!({ "ir": ir }),
+        ))
+        .await
+        .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(
+        body["errors"].as_array().unwrap().is_empty(),
+        "first-party skill 参照のワークフローが保存可能: {body}"
+    );
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
