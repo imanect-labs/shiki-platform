@@ -206,7 +206,14 @@ async fn workspace_harness(pool: PgPool) -> (ChatStore, Arc<StorageService>) {
 }
 
 /// 自律 run を投入し、fs_write の tool_call と Done を待つ（stub `fswrite:` プレフィックス）。
+///
+/// 既定モードは承認必須（#350）のため、投入前に**本人が**オートへ切り替える（fs_write を
+/// 自動承認し、承認カード待ちでテストが止まらないようにする）。
 async fn run_autonomous_fswrite(store: &ChatStore, c: &AuthContext, thread_id: uuid::Uuid) {
+    store
+        .set_autonomous_mode(c, thread_id, chat::AutonomousMode::Auto, None)
+        .await
+        .unwrap();
     let res = store
         .post_message(
             c,
@@ -252,7 +259,12 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         .create_thread(&c, "自律", false, None, None)
         .await
         .unwrap();
-    // autonomous=true で投入 → stub が fs_write を呼ぶ（fswrite: プレフィックス・ApprovalPolicy=auto で承認不要）。
+    // 既定は承認必須（#350）→ 本人がオートへ切り替えてから投入（fs_write は自動承認）。
+    store
+        .set_autonomous_mode(&c, thread.id, chat::AutonomousMode::Auto, None)
+        .await
+        .unwrap();
+    // autonomous=true で投入 → stub が fs_write を呼ぶ（fswrite: プレフィックス・オートで承認不要）。
     let res = store
         .post_message(
             &c,

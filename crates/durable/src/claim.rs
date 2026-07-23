@@ -42,16 +42,21 @@ where
     if let Some(u) = spec.updated_at_column {
         let _ = write!(sets, ", {u} = now()");
     }
+    // takeover 可能な実行系ステータス = running ＋ ドメイン指定の resumable（承認待ち等）。
+    // これらはリース失効時のみ奪える。SQL 定数はすべて `'static`＋`validate()` 済み。
+    let mut active = format!("'{}'", spec.running_status);
+    for s in spec.resumable_statuses {
+        let _ = write!(active, ", '{s}'");
+    }
     let sql = format!(
         "UPDATE {table} SET {sets} \
          WHERE {pred} \
-           AND ({status} = '{queued}' OR ({status} = '{running}' AND {lease} < now())) \
+           AND ({status} = '{queued}' OR ({status} IN ({active}) AND {lease} < now())) \
          RETURNING {returning}",
         table = spec.table,
         pred = key.predicate(),
         status = spec.status_column,
         queued = spec.queued_status,
-        running = spec.running_status,
         lease = spec.lease_column,
     );
     bind_key!(sqlx::query_as::<_, T>(&sql), key)
@@ -167,6 +172,7 @@ mod tests {
         updated_at_column: Some("updated_at"),
         queued_status: "queued",
         running_status: "running",
+        resumable_statuses: &["waiting_approval"],
     };
 
     /// SQL 形状が chat の先行実装（crates/chat/src/store/runs.rs）と同値であることの回帰。

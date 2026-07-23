@@ -18,11 +18,10 @@ use super::*;
 
 use authz::{AuthContext, Relation};
 use durable::{EventTableSpec, Key, KeyValue, RunTableSpec};
-use serde_json::json;
 use sqlx::types::Json;
 use uuid::Uuid;
 
-use crate::model::{Attachment, ContentBlock, RunStatus, StreamEvent, StreamEventKind};
+use crate::model::{ContentBlock, RunStatus, StreamEvent, StreamEventKind};
 
 /// チャット生成ジョブのキュー名（jobq・専用レーン）。
 pub const CHAT_GENERATION_QUEUE: &str = "chat_generation";
@@ -38,6 +37,9 @@ pub(super) const RUN_SPEC: RunTableSpec = RunTableSpec {
     updated_at_column: Some("updated_at"),
     queued_status: "queued",
     running_status: "running",
+    // 承認待ち中にワーカーが死んでも、リース失効後に別ワーカーが checkpoint から resume できる
+    // ようにする（#351）。これが無いと承認待ちで孤児化した run が恒久的に停止する。
+    resumable_statuses: &["waiting_approval"],
 };
 
 /// `generation_event` の durable テーブル記述子。
@@ -50,15 +52,6 @@ pub(super) const EVENT_SPEC: EventTableSpec = EventTableSpec {
 
 /// run 行のキーカラム（chat は run_id 単独キー。workflow は tenant 複合キーで同じ形に乗る）。
 pub(super) const RUN_KEY_COLUMNS: &[&str] = &["run_id"];
-
-/// `post_message` の結果（202 で返す）。
-#[derive(Debug, Clone)]
-pub struct PostResult {
-    pub run_id: Uuid,
-    pub user_message_id: Uuid,
-    pub assistant_message_id: Uuid,
-    pub agent_mode: bool,
-}
 
 /// ワーカーが claim した run（生成に必要な材料一式）。
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -77,6 +70,10 @@ pub struct ClaimedRun {
     pub trace_id: Option<String>,
     /// 自律プロファイル（長ホライズン・フルツール・予算・計画・承認・Task 5.1）。
     pub autonomous: bool,
+    /// メッセージ投入時点の承認モードのスナップショット（#350・実効判定は autonomous.rs）。
+    pub autonomous_mode: String,
+    /// 再開用チェックポイント（ステップ境界で保存・takeover/リトライ時に resume へ渡す・#351）。
+    pub checkpoint: Option<Json<serde_json::Value>>,
     /// 適用する skill のバージョンピン（Task 6.7/6.9・thread から post 時にコピー）。
     pub skill_id: Option<Uuid>,
     pub skill_version: Option<i64>,
@@ -85,145 +82,9 @@ pub struct ClaimedRun {
     pub mini_app_version: Option<i64>,
 }
 
+// `post_message`（Transactional Outbox）は [`super::post`] に分離（500 行規約）。
+
 impl ChatStore {
-    /// ユーザー発話を投入する（**単一 TX**で user/assistant message 保存＋run 行＋jobq enqueue）。
-    ///
-    /// editor 権限を要求する（viewer は投稿不可）。同期実行はせず run_id を返す（202・Task 3.5）。
-    #[allow(clippy::too_many_arguments)] // ctx＋thread/text/attachments/agent_mode/autonomous/trace は本質的。
-    #[allow(clippy::too_many_arguments)] // 発話の全構成要素（呼び出し元は api 1 箇所＋UI アクション）。
-    pub async fn post_message(
-        &self,
-        ctx: &AuthContext,
-        thread_id: Uuid,
-        text: &str,
-        attachments: &[Attachment],
-        // エディタの選択コンテキスト（Task 11.10）。node_id の可読性検証は api 層の責務
-        // （storage.get_metadata の viewer 判定・監査つき）。ここでは上限の切り詰めのみ行う。
-        selection: Option<crate::model::SelectionContext>,
-        agent_mode_override: Option<bool>,
-        autonomous: bool,
-        trace_id: Option<&str>,
-    ) -> Result<PostResult, ChatError> {
-        self.require_thread(ctx, thread_id, Relation::Editor, "thread.post", trace_id)
-            .await?;
-        let text = text.trim();
-        if text.is_empty() && attachments.is_empty() {
-            return Err(ChatError::Invalid("empty message".into()));
-        }
-
-        // 実効エージェントモード（メッセージ上書き or スレッド既定）＋skill/ミニアプリのピン
-        // （thread 作成時に固定した版を run へコピーする・0027 の autonomous と同パターン）。
-        /// thread の生成材料（agent_mode 既定＋skill/mini_app のピン）。
-        type ThreadDefaults = (bool, Option<Uuid>, Option<i64>, Option<Uuid>, Option<i64>);
-        let thread_row: Option<ThreadDefaults> = sqlx::query_as(
-            "SELECT agent_mode, skill_id, skill_version, mini_app_id, mini_app_version \
-             FROM thread WHERE id = $1 AND tenant_id = $2",
-        )
-        .bind(thread_id)
-        .bind(&ctx.tenant_id)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(map_db)?;
-        let (thread_default, skill_id, skill_version, mini_app_id, mini_app_version) =
-            thread_row.ok_or(ChatError::NotFound)?;
-        // 自律プロファイルはエージェントモードを含意する（ツールループが前提）。
-        let agent_mode = agent_mode_override.unwrap_or(thread_default) || autonomous;
-
-        // user メッセージ content: 選択コンテキスト＋添付（file_ref）＋text。
-        let mut user_content: Vec<ContentBlock> = Vec::new();
-        if let Some(selection) = selection {
-            user_content.push(ContentBlock::SelectionContext {
-                context: selection.clamped(),
-            });
-        }
-        user_content.extend(attachments.iter().map(|a| ContentBlock::FileRef {
-            node_id: a.node_id.clone(),
-            name: a.name.clone(),
-        }));
-        if !text.is_empty() {
-            user_content.push(ContentBlock::Text {
-                text: text.to_string(),
-            });
-        }
-
-        let mut tx = self.db.begin().await.map_err(map_db)?;
-        let user_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode) \
-             VALUES ($1, $2, $3, 'user', $4, $5) RETURNING id",
-        )
-        .bind(thread_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
-        .bind(Json(&user_content))
-        .bind(agent_mode)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_db)?;
-
-        let asst_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode, parent_id) \
-             VALUES ($1, $2, $3, 'assistant', '[]'::jsonb, $4, $5) RETURNING id",
-        )
-        .bind(thread_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
-        .bind(agent_mode)
-        .bind(user_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_db)?;
-
-        let run_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, status, trace_id, autonomous, \
-                                         skill_id, skill_version, mini_app_id, mini_app_version) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11, $12) RETURNING run_id",
-        )
-        .bind(asst_id)
-        .bind(thread_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
-        .bind(agent_mode)
-        .bind(trace_id)
-        .bind(autonomous)
-        .bind(skill_id)
-        .bind(skill_version)
-        .bind(mini_app_id)
-        .bind(mini_app_version)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_db)?;
-
-        sqlx::query("UPDATE thread SET updated_at = now() WHERE id = $1 AND tenant_id = $2")
-            .bind(thread_id)
-            .bind(&ctx.tenant_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db)?;
-
-        // outbox: 同一 TX で jobq へ生成ジョブを enqueue（run_id を payload）。
-        jobq::enqueue_on(
-            &mut tx,
-            jobq::NewJob {
-                queue: CHAT_GENERATION_QUEUE,
-                tenant_id: &ctx.tenant_id,
-                payload: &json!({ "run_id": run_id }),
-                trace_id,
-                max_attempts: 3,
-            },
-        )
-        .await
-        .map_err(|e| ChatError::Internal(format!("enqueue: {e}")))?;
-
-        tx.commit().await.map_err(map_db)?;
-        Ok(PostResult {
-            run_id,
-            user_message_id: user_id,
-            assistant_message_id: asst_id,
-            agent_mode,
-        })
-    }
-
     /// run を claim する（queued かリース失効 running を running へ・fencing_token +1）。
     ///
     /// 既に done/cancelled、または有効リースを他ワーカーが保持中なら `None`。
@@ -241,7 +102,7 @@ impl ChatStore {
             worker_id,
             lease_secs,
             "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
-             fencing_token, cancel_requested, trace_id, autonomous, \
+             fencing_token, cancel_requested, trace_id, autonomous, autonomous_mode, checkpoint, \
              skill_id, skill_version, mini_app_id, mini_app_version",
         )
         .await
@@ -352,6 +213,12 @@ impl ChatStore {
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;
+        // 端末確定でチェックポイントを落とす（再開対象でなくなった run の履歴 JSON を残さない・#351）。
+        sqlx::query("UPDATE generation_run SET checkpoint = NULL WHERE run_id = $1")
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db)?;
         // 終端イベントも同一 TX で追記し、publish は commit 後（DB=truth・Redis=起床通知）。
         let mut appended: Option<StreamEvent> = None;
         if let Some(event) = terminal_event {
@@ -414,14 +281,15 @@ impl ChatStore {
         Ok(())
     }
 
-    /// このスレッドの最新 run（SSE 購読対象）を返す。
+    /// このスレッドの最新 run（SSE 購読対象）を返す。`autonomous` は再訪 UI の復元用
+    /// （自律 run 進行中ならモードセレクタ等を出す・#350）。
     pub async fn latest_run(
         &self,
         thread_id: Uuid,
         tenant_id: &str,
-    ) -> Result<Option<(Uuid, RunStatus)>, ChatError> {
-        let row: Option<(Uuid, String)> = sqlx::query_as(
-            "SELECT run_id, status FROM generation_run \
+    ) -> Result<Option<(Uuid, RunStatus, bool)>, ChatError> {
+        let row: Option<(Uuid, String, bool)> = sqlx::query_as(
+            "SELECT run_id, status, autonomous FROM generation_run \
              WHERE thread_id = $1 AND tenant_id = $2 ORDER BY created_at DESC, run_id DESC LIMIT 1",
         )
         .bind(thread_id)
@@ -429,7 +297,7 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        Ok(row.and_then(|(id, s)| RunStatus::parse(&s).map(|st| (id, st))))
+        Ok(row.and_then(|(id, s, autonomous)| RunStatus::parse(&s).map(|st| (id, st, autonomous))))
     }
 
     /// run の現在状態を引く（SSE の端末判定・crash safety）。

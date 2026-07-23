@@ -294,6 +294,22 @@ impl ChatWorker {
             return Ok(());
         }
 
+        // resume する run は、チェックポイント境界より後に残る**破棄 attempt のイベント**を
+        // 先に削除する（SSE replay の二重表示防止・#351）。この後に積む Status(Running) 以降が
+        // 新 attempt の行になる。削除に失敗したまま続行すると、以後の checkpoint の event_seq が
+        // 破棄行を包含し、次の takeover の seed（projection 再構築）へ部分出力が混入して
+        // message.content の真実まで壊れるため、**続行せず Err で job retry へ回す**。
+        if let Some(envelope) = generate::restore_checkpoint(&run) {
+            if let Err(e) = self
+                .store
+                .prune_events_after(run_id, fencing, envelope.event_seq)
+                .await
+            {
+                tracing::warn!(run_id = %run_id, error = %e, "破棄イベントの削除に失敗（retry へ）");
+                return Err(e);
+            }
+        }
+
         // ハートビート（リース延長＋cancel 検知）。共有フラグでキャンセルを伝える。
         let cancel = Arc::new(AtomicBool::new(false));
         let hb = spawn_heartbeat(
@@ -319,7 +335,9 @@ impl ChatWorker {
         let history = self
             .build_history(&ctx, run.thread_id, run.message_id)
             .await?;
-        let mut worker_sink = WorkerSink::new(self.store.clone(), run_id, fencing, cancel.clone());
+        // 自律 run はステップ境界のチェックポイントを durable run 行へ永続化する（resume・#351）。
+        let mut worker_sink = WorkerSink::new(self.store.clone(), run_id, fencing, cancel.clone())
+            .with_checkpoints(run.autonomous);
 
         // 既定では非自律チャットも agent-core ループ（Chat プロファイル）を通す＝モデルが
         // ツール発火を裁量する（挨拶等は検索しない・generative UI も通常チャットで出る。issue #102）。

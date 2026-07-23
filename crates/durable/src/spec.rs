@@ -28,6 +28,11 @@ pub struct RunTableSpec {
     pub queued_status: &'static str,
     /// 実行中ステータス値（例: `running`）。
     pub running_status: &'static str,
+    /// `running` 以外で「リース失効時に takeover 可能」な非端末ステータス（例: chat の
+    /// `waiting_approval`）。プロセスが承認待ち中にクラッシュしても、リース失効後に別ワーカーが
+    /// checkpoint から resume できるようにする（#351）。これを持たないと承認待ちで死んだ run が
+    /// 恒久的に孤児化する。takeover 時は `running_status` へ戻す。持たないドメインは `&[]`。
+    pub resumable_statuses: &'static [&'static str],
 }
 
 /// append-only イベントログテーブルの記述子。
@@ -61,6 +66,9 @@ impl RunTableSpec {
         }
         assert_ident(self.queued_status);
         assert_ident(self.running_status);
+        for s in self.resumable_statuses {
+            assert_ident(s);
+        }
     }
 }
 

@@ -26,6 +26,8 @@ struct Store {
 struct ListStoresResponse {
     #[serde(default)]
     stores: Vec<Store>,
+    #[serde(default)]
+    continuation_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,18 +116,29 @@ impl FgaHttp {
 
     /// 指定名の store の id を返す（無ければ `None`）。
     ///
-    /// ListStores の `name` クエリで完全一致絞り込みを行う（OpenFGA v1.4+）。
-    /// 全件ページングに頼らないため、store 数が 1 ページを超えても取りこぼさない。
+    /// ListStores の `name` クエリで完全一致絞り込みを試みつつ（OpenFGA v1.8+）、
+    /// フィルタ未対応版が全 store を返す場合に備えて continuation_token で全ページを
+    /// 走査する。1 ページ目だけ見て「無い」と誤判定すると **起動のたびに同名 store を
+    /// 新規作成**し、既存 tuple（権限）を全て置き去りにする事故になる。
     pub async fn find_store(&self, name: &str) -> Result<Option<String>, AuthzError> {
         let url = format!("{}/stores", self.base_url);
-        let resp = self.http.get(&url).query(&[("name", name)]).send().await?;
-        let resp = ensure_ok(resp).await?;
-        let parsed: ListStoresResponse = resp.json().await?;
-        Ok(parsed
-            .stores
-            .into_iter()
-            .find(|s| s.name == name)
-            .map(|s| s.id))
+        let mut continuation = String::new();
+        loop {
+            let mut query: Vec<(&str, &str)> = vec![("name", name), ("page_size", "100")];
+            if !continuation.is_empty() {
+                query.push(("continuation_token", &continuation));
+            }
+            let resp = self.http.get(&url).query(&query).send().await?;
+            let resp = ensure_ok(resp).await?;
+            let parsed: ListStoresResponse = resp.json().await?;
+            if let Some(store) = parsed.stores.into_iter().find(|s| s.name == name) {
+                return Ok(Some(store.id));
+            }
+            if parsed.continuation_token.is_empty() {
+                return Ok(None);
+            }
+            continuation = parsed.continuation_token;
+        }
     }
 
     pub async fn create_store(&self, name: &str) -> Result<String, AuthzError> {

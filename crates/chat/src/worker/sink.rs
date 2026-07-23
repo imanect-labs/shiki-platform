@@ -7,11 +7,24 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use agent_core::{AgentError, AgentEvent, Citation as AgentCitation, EventSink};
+use agent_core::{AgentError, AgentEvent, Checkpoint, Citation as AgentCitation, EventSink};
 use uuid::Uuid;
 
 use crate::model::{Citation, ContentBlock, PlanSubtask, StreamEventKind};
 use crate::store::ChatStore;
+
+/// durable 保存するチェックポイントの封筒（#351）。
+///
+/// agent-core の [`Checkpoint`]（ステップ境界の状態）に、**その境界までに追記済みの
+/// `generation_event` の最大 seq** を添える。resume 時の projection 再構築（seed）はこの seq
+/// までに限定する — 中断ステップの途中イベント（部分テキスト・実行済みツール呼出）は
+/// チェックポイントに含まれず当該ステップごと再生成されるため、seed に混ぜると二重になる。
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CheckpointEnvelope {
+    /// projection seed の上限 seq（この境界までのイベントだけが確定済み）。
+    pub(crate) event_seq: i64,
+    pub(crate) checkpoint: Checkpoint,
+}
 
 /// 生成イベントの受け口（1 run 分）。
 pub(crate) struct WorkerSink {
@@ -23,6 +36,10 @@ pub(crate) struct WorkerSink {
     content: Vec<ContentBlock>,
     /// リース喪失（fencing 不一致）を検知したか。
     lost_lease: bool,
+    /// ステップ境界のチェックポイントを durable run 行へ永続化するか（自律 run のみ・#351）。
+    persist_checkpoints: bool,
+    /// この sink が追記した最新の `generation_event` seq（チェックポイント封筒の境界）。
+    last_seq: i64,
 }
 
 impl WorkerSink {
@@ -39,7 +56,16 @@ impl WorkerSink {
             cancel,
             content: Vec::new(),
             lost_lease: false,
+            persist_checkpoints: false,
+            last_seq: 0,
         }
+    }
+
+    /// チェックポイント永続化を有効化する（自律 run・#351）。
+    #[must_use]
+    pub(crate) fn with_checkpoints(mut self, enabled: bool) -> Self {
+        self.persist_checkpoints = enabled;
+        self
     }
 
     /// projection として確定した content を取り出す。
@@ -52,27 +78,50 @@ impl WorkerSink {
         self.lost_lease
     }
 
-    /// AgentEvent を content projection へ畳み込む（テキスト/思考は連続分を結合）。
-    fn accumulate(&mut self, event: &AgentEvent) {
-        match event {
-            AgentEvent::Text(t) => match self.content.last_mut() {
-                Some(ContentBlock::Text { text }) => text.push_str(t),
-                _ => self.content.push(ContentBlock::Text { text: t.clone() }),
+    /// チェックポイント再開の前に、既存イベントログから content projection を再構築する（#351）。
+    ///
+    /// takeover した run はチェックポイント（ステップ境界）から**続きだけ**を生成するため、
+    /// これ無しでは finalize の projection が takeover 前のテキスト/ツール結果を失う。
+    /// `up_to_seq`＝チェックポイント境界までに限定する（中断ステップの途中イベントは当該ステップ
+    /// ごと再生成されるため、混ぜると二重になる）。写像はライブ経路と同一の [`Self::accumulate`]。
+    pub(crate) async fn seed_from_log(&mut self, up_to_seq: i64) -> Result<(), crate::ChatError> {
+        for ev in self.store.replay_events(self.run_id, 0).await? {
+            if ev.seq > up_to_seq {
+                break; // replay は seq 昇順
+            }
+            self.accumulate(&ev.event);
+        }
+        // 境界 seq を引き継ぐ: 新規 append が 0 件のまま次の checkpoint 保存に至っても
+        // event_seq が 0 に退行しない（seed 上限の後退防止・#351）。
+        self.last_seq = self.last_seq.max(up_to_seq);
+        Ok(())
+    }
+
+    /// SSE イベントを content projection へ畳み込む（テキスト/思考は連続分を結合）。
+    ///
+    /// ライブ生成（emit）と replay 再構築（seed_from_log）が同じ写像を通る（二重実装しない）。
+    /// projection しない種別（plan/予算/承認/office ライブ編集/status 等）はここで落とす
+    /// （進捗はライブ SSE 側・履歴再生で二重 paste しない・#328）。
+    fn accumulate(&mut self, kind: &StreamEventKind) {
+        match kind {
+            StreamEventKind::Token { text } => match self.content.last_mut() {
+                Some(ContentBlock::Text { text: acc }) => acc.push_str(text),
+                _ => self.content.push(ContentBlock::Text { text: text.clone() }),
             },
-            AgentEvent::Thinking(t) => match self.content.last_mut() {
-                Some(ContentBlock::Thinking { text }) => text.push_str(t),
+            StreamEventKind::Thinking { text } => match self.content.last_mut() {
+                Some(ContentBlock::Thinking { text: acc }) => acc.push_str(text),
                 _ => self
                     .content
-                    .push(ContentBlock::Thinking { text: t.clone() }),
+                    .push(ContentBlock::Thinking { text: text.clone() }),
             },
-            AgentEvent::ToolCall { id, name, input } => {
+            StreamEventKind::ToolCall { id, name, input } => {
                 self.content.push(ContentBlock::ToolCall {
                     id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
                 });
             }
-            AgentEvent::ToolResult {
+            StreamEventKind::ToolResult {
                 tool_call_id,
                 content,
                 ..
@@ -82,68 +131,64 @@ impl WorkerSink {
                     content: content.clone(),
                 });
             }
-            AgentEvent::Citation(c) => {
-                self.content.push(ContentBlock::Citation(to_citation(c)));
+            StreamEventKind::Citation(c) => {
+                self.content.push(ContentBlock::Citation(c.clone()));
             }
-            AgentEvent::Artifact { artifact, .. } => {
+            // code_interpreter の保存済み成果物（Task 4.11）。
+            StreamEventKind::FileRef { node_id, name } => {
                 self.content.push(ContentBlock::FileRef {
-                    node_id: artifact.node_id.clone(),
-                    name: artifact.name.clone(),
+                    node_id: node_id.clone(),
+                    name: name.clone(),
                 });
             }
             // 検証済みスペックのみが emit_ui から届く（Task 6.4・検証は gui 側の信頼境界）。
-            AgentEvent::GenerativeUi { spec } => {
+            StreamEventKind::GenerativeUi { spec } => {
                 self.content
                     .push(ContentBlock::GenerativeUi { spec: spec.clone() });
             }
             // 保存パイプライン通過済みの参照のみが emit_workflow から届く（Task 10.13）。
-            AgentEvent::WorkflowRef { workflow } => {
+            StreamEventKind::WorkflowRef { workflow } => {
                 self.content.push(ContentBlock::WorkflowRef {
                     workflow: workflow.clone(),
                 });
             }
             // StorageService へ作成済みのノート参照のみが save_note から届く（Task 11P.5）。
-            AgentEvent::NoteRef { note } => {
+            StreamEventKind::NoteRef { note } => {
                 self.content
                     .push(ContentBlock::NoteRef { note: note.clone() });
             }
-            // 未保存の下書きノート（save_note の下書き確定型・issue #282）。履歴からも下書きへ
-            // 辿れるよう content block に残す（本文は client 下書きストアの真実源ではなく、
-            // 開き直しの seed。確定は「ドライブに保存」）。
-            AgentEvent::NoteDraft { draft } => {
+            // 未保存の下書き（ノート/スライド/CSV/Word・下書き確定型）。履歴からも下書きへ
+            // 辿れるよう content block に残す（開き直しの seed・確定は UI 保存・#282/#332）。
+            StreamEventKind::NoteDraft { draft } => {
                 self.content.push(ContentBlock::NoteDraft {
                     draft: draft.clone(),
                 });
             }
-            // 未保存の下書きスライド（save_slide の下書き確定型・Task 11.3）。note_draft と同じく
-            // 履歴からも下書きへ辿れるよう content block に残す（開き直しの seed・確定は UI 保存）。
-            AgentEvent::SlideDraft { draft } => {
+            StreamEventKind::SlideDraft { draft } => {
                 self.content.push(ContentBlock::SlideDraft {
                     draft: draft.clone(),
                 });
             }
-            // 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。同型。
-            AgentEvent::CsvDraft { draft } => {
+            StreamEventKind::CsvDraft { draft } => {
                 self.content.push(ContentBlock::CsvDraft {
                     draft: draft.clone(),
                 });
             }
-            // 未保存の下書き Word 文書（save_document の下書き確定型・#332）。同型。
-            AgentEvent::DocumentDraft { draft } => {
+            StreamEventKind::DocumentDraft { draft } => {
                 self.content.push(ContentBlock::DocumentDraft {
                     draft: draft.clone(),
                 });
             }
-            // 自律プロファイルの構造化イベント（計画/サブタスク/予算/承認/失敗回復）は
-            // content block へは projection しない（進捗の可視化はライブ SSE 側で扱う・W4 で結線）。
-            // Office ライブ編集も同様に projection しない（履歴再生で二重 paste しない・#328）。
-            AgentEvent::PlanUpdated(_)
-            | AgentEvent::SubtaskUpdated { .. }
-            | AgentEvent::BudgetWarning { .. }
-            | AgentEvent::ApprovalRequested { .. }
-            | AgentEvent::ApprovalResolved { .. }
-            | AgentEvent::OfficeLiveEdit { .. }
-            | AgentEvent::FailureRecovery { .. } => {}
+            // ライブ専用/進捗/端末イベントは projection しない。
+            StreamEventKind::OfficeLiveEdit { .. }
+            | StreamEventKind::Plan { .. }
+            | StreamEventKind::BudgetWarning { .. }
+            | StreamEventKind::ApprovalRequested { .. }
+            | StreamEventKind::ApprovalResolved { .. }
+            | StreamEventKind::FailureRecovery { .. }
+            | StreamEventKind::Status { .. }
+            | StreamEventKind::Error { .. }
+            | StreamEventKind::Done { .. } => {}
         }
     }
 }
@@ -278,7 +323,7 @@ impl EventSink for WorkerSink {
             .append_stream_event(self.run_id, self.fencing_token, &kind)
             .await
         {
-            Ok(Some(_)) => {}
+            Ok(Some(seq)) => self.last_seq = seq,
             Ok(None) => {
                 // fencing 不一致＝リース喪失（別ワーカーが takeover）。ゾンビ書込を止める。
                 self.lost_lease = true;
@@ -286,12 +331,43 @@ impl EventSink for WorkerSink {
             }
             Err(e) => return Err(AgentError::Sink(e.to_string())),
         }
-        self.accumulate(&event);
+        self.accumulate(&kind);
         Ok(())
     }
 
     fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// ステップ境界のチェックポイントを durable run 行へ保存する（自律 run のみ・#351）。
+    ///
+    /// fencing 不一致はリース喪失としてループを止める（ゾンビ書込防止）。一時的な DB エラーは
+    /// warn のみで続行する（best-effort: 次の境界で再保存され、resume は一つ前の境界へ戻るだけ。
+    /// 副作用の収束は版管理と冪等キーが担う）。
+    async fn save_checkpoint(&mut self, checkpoint: &Checkpoint) -> Result<(), AgentError> {
+        if !self.persist_checkpoints {
+            return Ok(());
+        }
+        // 封筒に「この境界までの event seq」を添える（resume 時の projection seed の上限・#351）。
+        let value = serde_json::json!({
+            "event_seq": self.last_seq,
+            "checkpoint": checkpoint,
+        });
+        match self
+            .store
+            .save_checkpoint(self.run_id, self.fencing_token, &value)
+            .await
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                self.lost_lease = true;
+                Err(AgentError::Sink("lease lost (fencing mismatch)".into()))
+            }
+            Err(e) => {
+                tracing::warn!(run_id = %self.run_id, error = %e, "checkpoint 保存に失敗（次の境界で再試行）");
+                Ok(())
+            }
+        }
     }
 }
 

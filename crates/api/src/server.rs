@@ -333,6 +333,16 @@ pub fn route_table() -> Vec<RouteDecl> {
             Session,
             || post(routes::chat_approval::submit_approval),
         ),
+        // 自律 run の承認 3 モード（承認必須/オート/全自動・実行中トグル可・#350）。
+        r(
+            "/threads/{id}/autonomous-mode",
+            &["GET", "PUT"],
+            Session,
+            || {
+                get(routes::chat_autonomous::get_autonomous_mode)
+                    .put(routes::chat_autonomous::set_autonomous_mode)
+            },
+        ),
         r(
             "/threads/{id}/shares",
             &["POST", "DELETE", "GET"],
@@ -403,6 +413,13 @@ pub fn route_table() -> Vec<RouteDecl> {
             &["DELETE"],
             Provisioner,
             || delete(routes::admin::delete_tenant),
+        ),
+        // org 管理者キャップ: 全自動（bypass）承認モードの許可/禁止（#350）。
+        r(
+            "/admin/tenants/{tenant_id}/autonomous-policy",
+            &["PUT"],
+            Provisioner,
+            || put(routes::admin::set_tenant_autonomous_policy),
         ),
     ];
     table.extend(routes::collab::collab_route_decls());

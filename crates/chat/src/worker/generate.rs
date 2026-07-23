@@ -7,8 +7,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use agent_core::{
-    run_agent, AgentOptions, ApprovalPolicy, CodeInterpreterTool, DocSearchTool, RunContext, Tool,
-    WebFetchTool, WebSearchTool, WorkspaceStore,
+    run_agent, AgentOptions, CodeInterpreterTool, DocSearchTool, RunContext, Tool, WebFetchTool,
+    WebSearchTool, WorkspaceStore,
 };
 use authz::AuthContext;
 use futures::stream::StreamExt;
@@ -20,7 +20,8 @@ use uuid::Uuid;
 use super::history::{message_preview, message_text};
 use super::sink::WorkerSink;
 use super::ChatWorker;
-use crate::model::Role;
+use crate::autonomous::AutonomousMode;
+use crate::model::{Role, StreamEventKind};
 use crate::store::ClaimedRun;
 use crate::ChatError;
 
@@ -107,33 +108,10 @@ impl ChatWorker {
                 store.clone(),
             )));
         }
-        // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系（worker/toolset.rs）。
+        // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋
+        // Office 編集/CSV ツール（worker/toolset.rs に集約）。
         self.push_collab_tools(&mut tools);
-        // AI Office 編集: office.edit（ファイル単位・非ロック=新版/ロック中=提案・PIT-44・Task 11.8）＋
-        // office.live_edit（開いているセッションへ Action_Paste 注入・authz 必須・#328）。office 有効時のみ。
-        if let Some(office) = &self.office {
-            tools.push(Arc::new(crate::office_tool::OfficeEditTool::new(
-                office.clone(),
-            )));
-            if let Some(authz) = &self.authz {
-                tools.push(Arc::new(crate::office_live_tool::OfficeLiveEditTool::new(
-                    authz.clone(),
-                )));
-            }
-        }
-        // CSV ツール（csv.query / csv.patch / csv.write・Task 11P.9）: tabular 配線時のみ。
-        // 認可は操作別のファイル ReBAC（TabularService が StorageService 経由で強制）。
-        if let Some(tabular) = &self.tabular {
-            tools.push(Arc::new(crate::csv_tool::CsvQueryTool::new(
-                tabular.clone(),
-            )));
-            tools.push(Arc::new(crate::csv_tool::CsvPatchTool::new(
-                tabular.clone(),
-            )));
-            tools.push(Arc::new(crate::csv_tool::CsvWriteTool::new(
-                tabular.clone(),
-            )));
-        }
+        self.push_office_and_csv_tools(&mut tools);
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {
@@ -151,7 +129,7 @@ impl ChatWorker {
         // 承認 UI/API/DbApprover は種別非依存で、承認が無ければ実行しない（fail-safe・破壊系を
         // 黙って走らせない）。これを配線しないと非自律チャットでは承認者不在により編集ツールが
         // 常に "requires explicit confirmation" で拒否され、共同編集が機能しない。
-        let approver = crate::approver::DbApprover::new(
+        let mut approver = crate::approver::DbApprover::new(
             self.store.clone(),
             run.run_id,
             run.fencing_token,
@@ -170,9 +148,16 @@ impl ChatWorker {
                 );
                 opts.system = Some(autonomous_system_prompt(&self.config.system_prompt));
                 self.config.model.clone_into(&mut opts.model);
-                // 版管理・復元可能な書込は自動承認、shell/削除はユーザー承認（スコープ限定事前許可）。
-                opts.approval =
-                    ApprovalPolicy::auto(["fs_write".to_string(), "fs_edit".to_string()]);
+                // 承認 3 モード（#350・既定は承認必須）。実行中のトグルは approver の
+                // current_policy が各破壊系呼び出しの直前に反映する。
+                let snapshot;
+                (snapshot, opts.approval) = self.autonomous_approval(ctx, run).await?;
+                approver = approver.with_autonomous_mode(
+                    run.thread_id,
+                    ctx.tenant_id.clone(),
+                    ctx.principal.id.clone(),
+                    snapshot,
+                );
                 opts
             } else {
                 // storage 未配線: 自律不能。制約版に落とす（黙って弱くしない・警告）。
@@ -199,6 +184,18 @@ impl ChatWorker {
             skill.audit_apply(&self.db, ctx, run).await;
         }
 
+        // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する。
+        let resume = match restore_checkpoint(run) {
+            Some(envelope) => {
+                // takeover 前のイベントログ（チェックポイント境界まで）から content projection を
+                // 再構築する（続きだけを生成するため、これ無しでは finalize 時に前半のテキスト/
+                // ツール結果が消える。境界より後＝中断ステップの途中イベントは再生成されるので除く）。
+                sink.seed_from_log(envelope.event_seq).await?;
+                Some(envelope.checkpoint)
+            }
+            None => None,
+        };
+
         let approver_ref = approver.as_ref().map(|a| a as &dyn agent_core::Approver);
         let outcome = run_agent(
             &self.gateway,
@@ -206,7 +203,7 @@ impl ChatWorker {
             history,
             &run_ctx,
             &opts,
-            None,
+            resume,
             approver_ref,
             sink,
         )
@@ -214,6 +211,44 @@ impl ChatWorker {
         .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
         let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理
         Ok(())
+    }
+
+    /// 自律 run の実効承認ポリシを決める（#350）: run スナップショット×thread の現在モード×
+    /// org キャップ（写像と実効判定は autonomous.rs に集約）。クランプ時は SSE で明示する
+    /// （黙って降格しない・generation_event として replay/監査にも残る）。
+    /// 戻り値は（スナップショットモード, 実効ポリシ）。
+    async fn autonomous_approval(
+        &self,
+        ctx: &AuthContext,
+        run: &ClaimedRun,
+    ) -> Result<(AutonomousMode, agent_core::ApprovalPolicy), ChatError> {
+        let snapshot = AutonomousMode::parse(&run.autonomous_mode).unwrap_or_default();
+        let (current, set_by) = self
+            .store
+            .thread_autonomous_mode(run.thread_id, &ctx.tenant_id)
+            .await?;
+        let bypass_allowed = self.store.autonomous_bypass_allowed(&ctx.tenant_id).await?;
+        let (effective, clamp) = crate::autonomous::effective_mode(
+            snapshot,
+            current,
+            set_by.as_deref(),
+            &ctx.principal.id,
+            bypass_allowed,
+        );
+        if let Some(clamp) = clamp {
+            let _ = self
+                .store
+                .append_stream_event(
+                    run.run_id,
+                    run.fencing_token,
+                    &StreamEventKind::FailureRecovery {
+                        detail: clamp.detail().to_string(),
+                        action: "mode_clamped".to_string(),
+                    },
+                )
+                .await;
+        }
+        Ok((snapshot, effective.approval_policy()))
     }
 
     /// thread のワークスペースフォルダを解決 or 作成し、`WorkspaceStore` を返す（Durable Workspace）。
@@ -414,6 +449,26 @@ impl ChatWorker {
             .await;
         Ok(())
     }
+}
+
+/// 保存済みチェックポイント封筒を復元する（#351・自律 run のみ）。
+///
+/// 復元できない（旧形式等の）チェックポイントは警告して新規開始へフォールバックする
+/// （run を止めない・副作用の収束は版管理と冪等キーが担う）。
+pub(super) fn restore_checkpoint(run: &ClaimedRun) -> Option<super::sink::CheckpointEnvelope> {
+    if !run.autonomous {
+        return None;
+    }
+    run.checkpoint
+        .as_ref()
+        .and_then(|j| match serde_json::from_value(j.0.clone()) {
+            Ok(envelope) => Some(envelope),
+            Err(e) => {
+                tracing::warn!(run_id = %run.run_id, error = %e,
+                    "checkpoint の復元に失敗（新規開始へフォールバック）");
+                None
+            }
+        })
 }
 
 /// Chat プロファイルの実行オプション（制約版・現行挙動）。

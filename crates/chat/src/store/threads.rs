@@ -10,7 +10,7 @@ use sqlx::types::Json;
 use storage::audit::{AuditEntry, Decision};
 use uuid::Uuid;
 
-use crate::model::{ContentBlock, Message, Role, Thread};
+use crate::model::{AutonomousMode, ContentBlock, Message, Role, Thread};
 
 /// thread 行。
 #[derive(sqlx::FromRow)]
@@ -18,6 +18,7 @@ struct ThreadRow {
     id: Uuid,
     title: String,
     agent_mode: bool,
+    autonomous_mode: String,
     skill_id: Option<Uuid>,
     skill_version: Option<i64>,
     mini_app_id: Option<Uuid>,
@@ -34,6 +35,8 @@ impl ThreadRow {
             id: self.id,
             title: self.title,
             agent_mode: self.agent_mode,
+            // CHECK 制約で閉じている（乖離時は既定＝承認必須へ・fail-closed）。
+            autonomous_mode: AutonomousMode::parse(&self.autonomous_mode).unwrap_or_default(),
             skill_id: self.skill_id,
             skill_version: self.skill_version,
             mini_app_id: self.mini_app_id,
@@ -90,7 +93,7 @@ impl ChatStore {
         let row: ThreadRow = sqlx::query_as(
             "INSERT INTO thread (id, org, tenant_id, owner, title, agent_mode, origin_note_id, origin_note_name) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-             RETURNING id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at",
+             RETURNING id, title, agent_mode, autonomous_mode, skill_id, skill_version, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at",
         )
         .bind(id)
         .bind(&ctx.org)
@@ -252,7 +255,7 @@ impl ChatStore {
     ) -> Result<Vec<Thread>, ChatError> {
         let limit = limit.clamp(1, 100);
         let rows: Vec<ThreadRow> = sqlx::query_as(
-            "SELECT id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at FROM thread \
+            "SELECT id, title, agent_mode, autonomous_mode, skill_id, skill_version, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at FROM thread \
              WHERE tenant_id = $1 AND org = $2 AND owner = $3 AND deleted_at IS NULL \
                AND ($4::timestamptz IS NULL OR (updated_at, id) < ($4::timestamptz, $5)) \
                AND ($7::uuid IS NULL OR origin_note_id = $7) \
@@ -281,7 +284,7 @@ impl ChatStore {
         self.require_thread(ctx, thread_id, Relation::Viewer, "thread.get", trace_id)
             .await?;
         let row: Option<ThreadRow> = sqlx::query_as(
-            "SELECT id, title, agent_mode, skill_id, skill_version, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at FROM thread \
+            "SELECT id, title, agent_mode, autonomous_mode, skill_id, skill_version, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at FROM thread \
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
         )
         .bind(thread_id)

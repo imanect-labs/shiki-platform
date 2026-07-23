@@ -56,10 +56,16 @@ export type DocumentDraft = { name: string; markdown: string };
 export type ChatRole = "user" | "assistant" | "system" | "tool";
 export type RunStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
+/// 自律 run の承認モード（backend chat::AutonomousMode と一致・#350）。
+/// require_approval=承認必須（既定）/ auto=版管理で復元可能な書込のみ自動 / bypass=全自動（危険）。
+export type AutonomousMode = "require_approval" | "auto" | "bypass";
+
 export type Thread = {
   id: string;
   title: string;
   agentMode: boolean;
+  /// 自律 run の承認モード（#350・実行中トグル可）。
+  autonomousMode: AutonomousMode;
   /// 適用中の skill / ミニアプリ（作成時に version 込みでピン・Phase 6）。
   skillId?: string | null;
   skillVersion?: number | null;
@@ -178,6 +184,7 @@ type ApiThread = {
   id: string;
   title: string;
   agent_mode: boolean;
+  autonomous_mode?: AutonomousMode;
   skill_id?: string | null;
   skill_version?: number | null;
   mini_app_id?: string | null;
@@ -193,6 +200,7 @@ function toThread(t: ApiThread): Thread {
     id: t.id,
     title: t.title,
     agentMode: t.agent_mode,
+    autonomousMode: t.autonomous_mode ?? "require_approval",
     skillId: t.skill_id ?? null,
     skillVersion: t.skill_version ?? null,
     miniAppId: t.mini_app_id ?? null,
@@ -269,6 +277,32 @@ export async function setThreadOriginNote(threadId: string, noteId: string): Pro
   notifyThreadsChanged();
 }
 
+/// スレッドの承認モードを取得する（bypass の org 許可も返す・#350）。
+export async function getAutonomousMode(
+  threadId: string,
+): Promise<{ mode: AutonomousMode; bypassAllowed: boolean }> {
+  const data = await ok<{ mode: AutonomousMode; bypass_allowed: boolean }>(
+    await apiFetch(`/threads/${threadId}/autonomous-mode`),
+  );
+  return { mode: data.mode, bypassAllowed: data.bypass_allowed };
+}
+
+/// スレッドの承認モードを設定する（editor・実行中トグル可・#350）。
+/// bypass が org ポリシで禁止されている場合は 400（明示エラー）。
+export async function setAutonomousMode(
+  threadId: string,
+  mode: AutonomousMode,
+): Promise<{ mode: AutonomousMode; bypassAllowed: boolean }> {
+  const data = await ok<{ mode: AutonomousMode; bypass_allowed: boolean }>(
+    await apiFetch(`/threads/${threadId}/autonomous-mode`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    }),
+  );
+  return { mode: data.mode, bypassAllowed: data.bypass_allowed };
+}
+
 export class ThreadNotFound extends Error {
   constructor() {
     super("スレッドが見つかりません");
@@ -292,10 +326,14 @@ type ApiMessage = {
 
 export async function getThreadMessages(
   id: string,
-): Promise<{ messages: Message[]; activeRunId: string | null }> {
+): Promise<{ messages: Message[]; activeRunId: string | null; activeRunAutonomous: boolean }> {
   const res = await apiFetch(`/threads/${id}/messages`);
   if (res.status === 404 || res.status === 403) throw new ThreadNotFound();
-  const data = await ok<{ messages: ApiMessage[]; active_run_id?: string | null }>(res);
+  const data = await ok<{
+    messages: ApiMessage[];
+    active_run_id?: string | null;
+    active_run_autonomous?: boolean | null;
+  }>(res);
   return {
     messages: data.messages.map((m) => ({
       id: m.id,
@@ -305,6 +343,7 @@ export async function getThreadMessages(
       createdAt: m.created_at,
     })),
     activeRunId: data.active_run_id ?? null,
+    activeRunAutonomous: data.active_run_autonomous ?? false,
   };
 }
 

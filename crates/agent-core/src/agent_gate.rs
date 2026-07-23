@@ -47,7 +47,14 @@ pub(crate) async fn authorize(
         .get(call.name.as_str())
         .is_some_and(|t| t.requires_confirmation())
         || (opts.profile.is_autonomous() && is_egress);
-    if !needs_confirm || opts.approval.is_pre_authorized(&call.name) {
+    // 実行中モードトグル（#350）: approver が現在ポリシを返すなら、run 開始時のスナップショット
+    // （opts.approval）ではなくそれで判定する（各呼び出し直前に問い直す＝緩和も厳格化も即時反映）。
+    let refreshed = match approver {
+        Some(a) if needs_confirm => a.current_policy().await,
+        _ => None,
+    };
+    let policy = refreshed.as_ref().unwrap_or(&opts.approval);
+    if !needs_confirm || policy.is_pre_authorized(&call.name) {
         return Ok(Authz::Proceed);
     }
     let Some(approver) = approver else {
