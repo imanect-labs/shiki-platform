@@ -52,7 +52,12 @@ impl ToolNameMap {
             let mut wire = sanitize_wire_name(&local);
             let mut n = 2;
             while to_local.contains_key(&wire) {
-                wire = format!("{}_{n}", sanitize_wire_name(&local));
+                // 接尾辞を足しても 64 文字制約を守る（ベース側を切り詰める）。
+                // sanitize 済みなので ASCII のみ＝バイト位置での切り詰めが安全。
+                let suffix = format!("_{n}");
+                let base = sanitize_wire_name(&local);
+                let keep = base.len().min(64usize.saturating_sub(suffix.len()));
+                wire = format!("{}{suffix}", &base[..keep]);
                 n += 1;
             }
             to_local.insert(wire.clone(), local.clone());
@@ -281,7 +286,16 @@ impl LlmProvider for OpenAiProvider {
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/chat/completions", self.base_url);
-        let names = ToolNameMap::new(req.tools.iter().map(|t| &t.name));
+        // 現在のツール集合に加えて**履歴中の ToolUse 名**も同じ写像に通す（resume 等で
+        // 履歴のツールが現在の tools に無い場合でも、fallback サニタイズによる衝突を防ぐ）。
+        let names = ToolNameMap::new(req.tools.iter().map(|t| t.name.as_str()).chain(
+            req.messages.iter().flat_map(|m| {
+                m.content.iter().filter_map(|b| match b {
+                    Block::ToolUse { name, .. } => Some(name.as_str()),
+                    _ => None,
+                })
+            }),
+        ));
         let body = self.build_body(req, &names);
         let mut builder = self
             .http
@@ -455,6 +469,23 @@ mod tests {
         assert_ne!(w1, w2);
         assert_eq!(names.local(&w1), "a.b");
         assert_eq!(names.local(&w2), "a_b");
+    }
+
+    #[test]
+    fn collision_suffix_respects_64_char_limit() {
+        // 64 文字ちょうどで衝突する名前でも、接尾辞込みで 64 文字以内に収まる。
+        let long_dot = format!("{}.x", "a".repeat(62)); // sanitize 後 64 文字
+        let long_us = format!("{}_x", "a".repeat(62)); // 既に 64 文字・同じ wire 名に写る
+        let names = ToolNameMap::new([long_dot.as_str(), long_us.as_str()].into_iter());
+        let w1 = names.wire(&long_dot);
+        let w2 = names.wire(&long_us);
+        assert_ne!(w1, w2, "衝突が解消される");
+        assert!(
+            w1.len() <= 64 && w2.len() <= 64,
+            "64 文字制約を維持: {w1} / {w2}"
+        );
+        assert_eq!(names.local(&w1), long_dot);
+        assert_eq!(names.local(&w2), long_us);
     }
 
     #[test]
