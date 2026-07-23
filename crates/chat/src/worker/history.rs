@@ -14,7 +14,12 @@ pub(super) fn message_text(blocks: &[ContentBlock]) -> String {
     for b in blocks {
         match b {
             ContentBlock::Text { text } => parts.push(text.clone()),
-            ContentBlock::FileRef { name, .. } => parts.push(format!("[添付: {name}]")),
+            // node_id を含める: 添付は「AI に読ませたい参照」であり、document.read /
+            // office.live_edit / csv.query 等の対象指定にそのまま使える（認可は各ツールが
+            // 実行主体の ReBAC で毎回強制するため、id の開示は権限を広げない）。
+            ContentBlock::FileRef { node_id, name } => {
+                parts.push(format!("[添付ファイル: {name}（node_id: {node_id}）]"));
+            }
             // 「さっきのワークフローを直して」等の追編集に id/version が要る（Task 10.13）。
             ContentBlock::WorkflowRef { workflow } => {
                 let id = workflow.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -168,7 +173,7 @@ mod tests {
         ];
         let out = message_text(&blocks);
         assert!(out.contains("本文"));
-        assert!(out.contains("[添付: a.pdf]"));
+        assert!(out.contains("[添付ファイル: a.pdf（node_id: n）]"));
         assert!(out.contains("workflow_id: w1") && out.contains("v2"));
         assert!(out.contains("node_id: no1"));
         // refine で同名再利用を誘導するため、下書き名が観測テキストに載ること（#282）。
