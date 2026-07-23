@@ -8,8 +8,12 @@
 use std::collections::HashMap;
 
 /// OpenAI の function.name 制約へ写した wire 名（単体では衝突を解決しない）。
+///
+/// 空文字は制約の下限（1 文字）を満たさないため、決定的なフォールバック名 `tool` へ写す
+/// （複数あっても [`ToolNameMap`] の衝突解決で `tool_2` 等に一意化され、往復は写像が保つ）。
 fn sanitize_wire_name(name: &str) -> String {
-    name.chars()
+    let wire: String = name
+        .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
                 c
@@ -18,7 +22,12 @@ fn sanitize_wire_name(name: &str) -> String {
             }
         })
         .take(64)
-        .collect()
+        .collect();
+    if wire.is_empty() {
+        "tool".to_string()
+    } else {
+        wire
+    }
 }
 
 /// ツール名の双方向写像（ローカル名 ⇄ wire 名）。リクエストの tools ＋履歴中の ToolUse 名から
@@ -92,6 +101,18 @@ mod tests {
         assert_ne!(w1, w2);
         assert_eq!(names.local(&w1), "a.b");
         assert_eq!(names.local(&w2), "a_b");
+    }
+
+    #[test]
+    fn empty_name_gets_nonempty_wire_and_round_trips() {
+        // 空名でも wire 名は必ず 1 文字以上（`{1,64}` の下限）になり、往復可能。
+        let names = ToolNameMap::new(["", "tool"].into_iter());
+        let w1 = names.wire("");
+        let w2 = names.wire("tool");
+        assert!(!w1.is_empty() && w1.len() <= 64);
+        assert_ne!(w1, w2, "既存の `tool` と衝突しない");
+        assert_eq!(names.local(&w1), "");
+        assert_eq!(names.local(&w2), "tool");
     }
 
     #[test]
