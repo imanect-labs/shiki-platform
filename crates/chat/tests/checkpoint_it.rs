@@ -202,3 +202,67 @@ async fn checkpoint_survives_takeover_and_clears_on_finalize() {
             .unwrap();
     assert!(cleared.is_none(), "finalize で checkpoint がクリアされる");
 }
+
+/// 承認待ち（waiting_approval）中にワーカーが死んでも、リース失効後に別ワーカーが
+/// takeover して resume できる（#351 の durability 穴の回帰）。
+///
+/// これが無いと `claim_run` は running/queued のみを奪うため、承認待ちで孤児化した run が
+/// jobq 再配信で re-claim されても None を返して ack され、恒久的に停止する。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn waiting_approval_run_can_be_taken_over_after_lease_expiry() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
+        .await
+        .unwrap();
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "resume-approval", false, None, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(&c, thread.id, "goal", &[], None, None, true, None)
+        .await
+        .unwrap();
+
+    // worker-a が短いリースで claim し、承認待ちへ遷移（checkpoint も保存）。
+    let a = store
+        .claim_run(res.run_id, "worker-a", 1)
+        .await
+        .unwrap()
+        .expect("claim できる");
+    let cp = serde_json::json!({ "event_seq": 3, "checkpoint": { "step": 1 } });
+    store
+        .save_checkpoint(res.run_id, a.fencing_token, &cp)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .set_run_status_fenced(res.run_id, a.fencing_token, RunStatus::WaitingApproval)
+            .await
+            .unwrap(),
+        "承認待ちへ遷移できる"
+    );
+
+    // worker-a が死んだ想定（heartbeat 停止）。リース失効を待つ。
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // worker-b が takeover: waiting_approval でも running へ奪い返して checkpoint を受け取る。
+    let b = store
+        .claim_run(res.run_id, "worker-b", 30)
+        .await
+        .unwrap()
+        .expect("承認待ちで孤児化した run を takeover できる（#351 修正）");
+    assert_eq!(b.fencing_token, a.fencing_token + 1, "fencing が進む");
+    assert_eq!(
+        b.checkpoint.as_ref().map(|j| j.0.clone()),
+        Some(cp),
+        "takeover した run は checkpoint を受け取り resume できる"
+    );
+    let status: String = sqlx::query_scalar("SELECT status FROM generation_run WHERE run_id = $1")
+        .bind(res.run_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "running", "takeover で running へ戻る");
+}

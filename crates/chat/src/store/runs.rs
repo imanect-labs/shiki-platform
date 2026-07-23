@@ -37,6 +37,9 @@ pub(super) const RUN_SPEC: RunTableSpec = RunTableSpec {
     updated_at_column: Some("updated_at"),
     queued_status: "queued",
     running_status: "running",
+    // 承認待ち中にワーカーが死んでも、リース失効後に別ワーカーが checkpoint から resume できる
+    // ようにする（#351）。これが無いと承認待ちで孤児化した run が恒久的に停止する。
+    resumable_statuses: &["waiting_approval"],
 };
 
 /// `generation_event` の durable テーブル記述子。
