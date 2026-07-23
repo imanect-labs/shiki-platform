@@ -5,81 +5,16 @@
 //! 逐次ストリーミングは Phase 3 では不要のため、各ツール呼び出しは累積して完了時に
 //! [`StreamDelta::ToolUseStop`]（完全な入力 JSON）を 1 回出す。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
+use super::openai_names::ToolNameMap;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
-
-/// OpenAI の function.name 制約（`^[a-zA-Z0-9_-]{1,64}$`）へ写した wire 名。
-///
-/// このリポジトリのツール名にはドット入り（`document.edit` 等）があり、寛容なプロバイダは
-/// 通すが DeepSeek 等は 400 で拒否する。送信時に許容外文字を `_` へ写し 64 文字へ切り詰め、
-/// 受信時は [`ToolNameMap`] で元の名前へ逆写しする。
-fn sanitize_wire_name(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(64)
-        .collect()
-}
-
-/// ツール名の 双方向写像（ローカル名 ⇄ wire 名）。リクエストの tools から構築し、
-/// サニタイズ衝突（`a.b` と `a_b` の併存等）は接尾辞で一意化して往復可能に保つ。
-struct ToolNameMap {
-    to_wire: HashMap<String, String>,
-    to_local: HashMap<String, String>,
-}
-
-impl ToolNameMap {
-    fn new(names: impl Iterator<Item = impl AsRef<str>>) -> Self {
-        let mut to_wire = HashMap::new();
-        let mut to_local: HashMap<String, String> = HashMap::new();
-        for name in names {
-            let local = name.as_ref().to_string();
-            if to_wire.contains_key(&local) {
-                continue;
-            }
-            let mut wire = sanitize_wire_name(&local);
-            let mut n = 2;
-            while to_local.contains_key(&wire) {
-                // 接尾辞を足しても 64 文字制約を守る（ベース側を切り詰める）。
-                // sanitize 済みなので ASCII のみ＝バイト位置での切り詰めが安全。
-                let suffix = format!("_{n}");
-                let base = sanitize_wire_name(&local);
-                let keep = base.len().min(64usize.saturating_sub(suffix.len()));
-                wire = format!("{}{suffix}", &base[..keep]);
-                n += 1;
-            }
-            to_local.insert(wire.clone(), local.clone());
-            to_wire.insert(local, wire);
-        }
-        ToolNameMap { to_wire, to_local }
-    }
-
-    fn wire(&self, local: &str) -> String {
-        self.to_wire
-            .get(local)
-            .cloned()
-            .unwrap_or_else(|| sanitize_wire_name(local))
-    }
-
-    fn local(&self, wire: &str) -> String {
-        self.to_local
-            .get(wire)
-            .cloned()
-            .unwrap_or_else(|| wire.to_string())
-    }
-}
 
 /// OpenAI 互換アダプタ。
 pub struct OpenAiProvider {
@@ -437,17 +372,12 @@ mod tests {
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "doc_search");
     }
 
+    // 写像そのもの（サニタイズ・衝突回避・64 文字制約）の単体テストは
+    // `openai_names.rs` 側にある。ここでは messages への適用のみ検証する。
     #[test]
-    fn dotted_tool_names_are_sanitized_and_round_trip() {
-        // ドット入り名は wire では `_` へ写り、履歴の tool_calls も同じ wire 名になる。
-        let names = ToolNameMap::new(["document.edit", "csv.write", "fs_write"].into_iter());
-        assert_eq!(names.wire("document.edit"), "document_edit");
-        assert_eq!(names.wire("csv.write"), "csv_write");
-        assert_eq!(names.wire("fs_write"), "fs_write");
-        // 逆写しは wire → ローカルを厳密に復元する。
-        assert_eq!(names.local("document_edit"), "document.edit");
-        assert_eq!(names.local("csv_write"), "csv.write");
-        // 履歴メッセージのツール名も wire 名で送られる。
+    fn dotted_tool_names_map_in_history_tool_calls() {
+        // 履歴メッセージのツール名も wire 名（ドット→`_`）で送られる。
+        let names = ToolNameMap::new(["document.edit"].into_iter());
         let m = Message {
             role: Role::Assistant,
             content: vec![Block::ToolUse {
@@ -458,34 +388,6 @@ mod tests {
         };
         let out = to_openai_messages(&m, &names);
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "document_edit");
-    }
-
-    #[test]
-    fn sanitize_collision_is_disambiguated() {
-        // `a.b` と `a_b` が併存してもサニタイズ後に衝突せず往復可能。
-        let names = ToolNameMap::new(["a.b", "a_b"].into_iter());
-        let w1 = names.wire("a.b");
-        let w2 = names.wire("a_b");
-        assert_ne!(w1, w2);
-        assert_eq!(names.local(&w1), "a.b");
-        assert_eq!(names.local(&w2), "a_b");
-    }
-
-    #[test]
-    fn collision_suffix_respects_64_char_limit() {
-        // 64 文字ちょうどで衝突する名前でも、接尾辞込みで 64 文字以内に収まる。
-        let long_dot = format!("{}.x", "a".repeat(62)); // sanitize 後 64 文字
-        let long_us = format!("{}_x", "a".repeat(62)); // 既に 64 文字・同じ wire 名に写る
-        let names = ToolNameMap::new([long_dot.as_str(), long_us.as_str()].into_iter());
-        let w1 = names.wire(&long_dot);
-        let w2 = names.wire(&long_us);
-        assert_ne!(w1, w2, "衝突が解消される");
-        assert!(
-            w1.len() <= 64 && w2.len() <= 64,
-            "64 文字制約を維持: {w1} / {w2}"
-        );
-        assert_eq!(names.local(&w1), long_dot);
-        assert_eq!(names.local(&w2), long_us);
     }
 
     #[test]
