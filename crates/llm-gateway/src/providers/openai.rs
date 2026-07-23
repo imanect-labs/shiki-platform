@@ -5,7 +5,7 @@
 //! 逐次ストリーミングは Phase 3 では不要のため、各ツール呼び出しは累積して完了時に
 //! [`StreamDelta::ToolUseStop`]（完全な入力 JSON）を 1 回出す。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use futures::channel::mpsc;
@@ -14,6 +14,67 @@ use serde_json::{json, Value};
 
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
+
+/// OpenAI の function.name 制約（`^[a-zA-Z0-9_-]{1,64}$`）へ写した wire 名。
+///
+/// このリポジトリのツール名にはドット入り（`document.edit` 等）があり、寛容なプロバイダは
+/// 通すが DeepSeek 等は 400 で拒否する。送信時に許容外文字を `_` へ写し 64 文字へ切り詰め、
+/// 受信時は [`ToolNameMap`] で元の名前へ逆写しする。
+fn sanitize_wire_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect()
+}
+
+/// ツール名の 双方向写像（ローカル名 ⇄ wire 名）。リクエストの tools から構築し、
+/// サニタイズ衝突（`a.b` と `a_b` の併存等）は接尾辞で一意化して往復可能に保つ。
+struct ToolNameMap {
+    to_wire: HashMap<String, String>,
+    to_local: HashMap<String, String>,
+}
+
+impl ToolNameMap {
+    fn new(names: impl Iterator<Item = impl AsRef<str>>) -> Self {
+        let mut to_wire = HashMap::new();
+        let mut to_local: HashMap<String, String> = HashMap::new();
+        for name in names {
+            let local = name.as_ref().to_string();
+            if to_wire.contains_key(&local) {
+                continue;
+            }
+            let mut wire = sanitize_wire_name(&local);
+            let mut n = 2;
+            while to_local.contains_key(&wire) {
+                wire = format!("{}_{n}", sanitize_wire_name(&local));
+                n += 1;
+            }
+            to_local.insert(wire.clone(), local.clone());
+            to_wire.insert(local, wire);
+        }
+        ToolNameMap { to_wire, to_local }
+    }
+
+    fn wire(&self, local: &str) -> String {
+        self.to_wire
+            .get(local)
+            .cloned()
+            .unwrap_or_else(|| sanitize_wire_name(local))
+    }
+
+    fn local(&self, wire: &str) -> String {
+        self.to_local
+            .get(wire)
+            .cloned()
+            .unwrap_or_else(|| wire.to_string())
+    }
+}
 
 /// OpenAI 互換アダプタ。
 pub struct OpenAiProvider {
@@ -39,7 +100,7 @@ impl OpenAiProvider {
         }
     }
 
-    fn build_body(&self, req: &GenerateRequest) -> Value {
+    fn build_body(&self, req: &GenerateRequest, names: &ToolNameMap) -> Value {
         let model = req
             .model
             .clone()
@@ -49,7 +110,7 @@ impl OpenAiProvider {
             messages.push(json!({ "role": "system", "content": sys }));
         }
         for m in &req.messages {
-            messages.extend(to_openai_messages(m));
+            messages.extend(to_openai_messages(m, names));
         }
         let mut body = json!({
             "model": model,
@@ -70,7 +131,7 @@ impl OpenAiProvider {
                 .map(|t| json!({
                     "type": "function",
                     "function": {
-                        "name": t.name,
+                        "name": names.wire(&t.name),
                         "description": t.description,
                         "parameters": t.input_schema,
                     }
@@ -82,7 +143,8 @@ impl OpenAiProvider {
 }
 
 /// 中立メッセージ 1 件を OpenAI messages（複数になり得る）へ写す。
-fn to_openai_messages(m: &Message) -> Vec<Value> {
+/// 履歴中のツール名も wire 名へ写す（厳格プロバイダは履歴の tool_calls 名も検証する）。
+fn to_openai_messages(m: &Message, names: &ToolNameMap) -> Vec<Value> {
     match m.role {
         Role::Tool => m
             .content
@@ -117,7 +179,7 @@ fn to_openai_messages(m: &Message) -> Vec<Value> {
                     Block::ToolUse { id, name, input } => Some(json!({
                         "id": id,
                         "type": "function",
-                        "function": { "name": name, "arguments": input.to_string() },
+                        "function": { "name": names.wire(name), "arguments": input.to_string() },
                     })),
                     _ => None,
                 })
@@ -219,7 +281,8 @@ impl LlmProvider for OpenAiProvider {
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/chat/completions", self.base_url);
-        let body = self.build_body(req);
+        let names = ToolNameMap::new(req.tools.iter().map(|t| &t.name));
+        let body = self.build_body(req, &names);
         let mut builder = self
             .http
             .post(&url)
@@ -307,10 +370,14 @@ impl LlmProvider for OpenAiProvider {
                         if let Some(tc) = delta.get("tool_calls") {
                             acc.ingest(tc);
                             // 新規に name/id が確定したツールへ Start を 1 回出す。
+                            // wire 名（サニタイズ済み）を元のローカル名へ逆写しして返す。
                             for s in acc.starts() {
-                                if let StreamDelta::ToolUseStart { id, .. } = &s {
+                                if let StreamDelta::ToolUseStart { id, name } = s {
                                     if started.insert(id.clone()) {
-                                        let _ = tx.unbounded_send(Ok(s));
+                                        let _ = tx.unbounded_send(Ok(StreamDelta::ToolUseStart {
+                                            id,
+                                            name: names.local(&name),
+                                        }));
                                     }
                                 }
                             }
@@ -349,10 +416,45 @@ mod tests {
                 input: json!({"query": "x"}),
             }],
         };
-        let out = to_openai_messages(&m);
+        let names = ToolNameMap::new(["doc_search"].into_iter());
+        let out = to_openai_messages(&m, &names);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["tool_calls"][0]["id"], "t1");
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "doc_search");
+    }
+
+    #[test]
+    fn dotted_tool_names_are_sanitized_and_round_trip() {
+        // ドット入り名は wire では `_` へ写り、履歴の tool_calls も同じ wire 名になる。
+        let names = ToolNameMap::new(["document.edit", "csv.write", "fs_write"].into_iter());
+        assert_eq!(names.wire("document.edit"), "document_edit");
+        assert_eq!(names.wire("csv.write"), "csv_write");
+        assert_eq!(names.wire("fs_write"), "fs_write");
+        // 逆写しは wire → ローカルを厳密に復元する。
+        assert_eq!(names.local("document_edit"), "document.edit");
+        assert_eq!(names.local("csv_write"), "csv.write");
+        // 履歴メッセージのツール名も wire 名で送られる。
+        let m = Message {
+            role: Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: "t9".into(),
+                name: "document.edit".into(),
+                input: json!({"path": "a.md"}),
+            }],
+        };
+        let out = to_openai_messages(&m, &names);
+        assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "document_edit");
+    }
+
+    #[test]
+    fn sanitize_collision_is_disambiguated() {
+        // `a.b` と `a_b` が併存してもサニタイズ後に衝突せず往復可能。
+        let names = ToolNameMap::new(["a.b", "a_b"].into_iter());
+        let w1 = names.wire("a.b");
+        let w2 = names.wire("a_b");
+        assert_ne!(w1, w2);
+        assert_eq!(names.local(&w1), "a.b");
+        assert_eq!(names.local(&w2), "a_b");
     }
 
     #[test]
@@ -365,7 +467,8 @@ mod tests {
                 is_error: false,
             }],
         };
-        let out = to_openai_messages(&m);
+        let names = ToolNameMap::new(std::iter::empty::<&str>());
+        let out = to_openai_messages(&m, &names);
         assert_eq!(out[0]["role"], "tool");
         assert_eq!(out[0]["tool_call_id"], "t1");
     }
