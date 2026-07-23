@@ -231,8 +231,11 @@ async fn run_to_done(
     (res.assistant_message_id, events)
 }
 
+/// 有効/不正 IR を **1 テストに直列化**して検証する（同一プロセスの jobq `chat_generation`
+/// キューを複数 worker が奪い合うと coverage 計装下で claim/イベント待ちが flake するため・
+/// skill_apply_it / skill_tool_it と同じ規約）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn valid_ir_is_saved_and_workflow_ref_streamed_and_persisted() {
+async fn valid_ir_is_saved_and_invalid_ir_is_rejected() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let (store, workflows) = spawn_worker(&pool).await;
@@ -279,18 +282,8 @@ async fn valid_ir_is_saved_and_workflow_ref_streamed_and_persisted() {
     assert!(events
         .iter()
         .any(|e| matches!(e, StreamEventKind::ToolResult { ok: true, .. })));
-}
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn invalid_ir_is_rejected_with_all_errors_and_not_saved() {
-    let Some(pool) = setup().await else { return };
-    let tenant = format!("t-{}", Uuid::new_v4());
-    let (store, _workflows) = spawn_worker(&pool).await;
-    let c = ctx(&tenant);
-    let thread = store
-        .create_thread(&c, "t", true, None, None)
-        .await
-        .unwrap();
+    // --- 不正 IR（全件エラー収集・非保存）も同じ worker で直列に検証する ---
 
     let name = format!("emitwf-bad-{}", Uuid::new_v4().simple());
     let (asst_id, events) = run_to_done(&store, &c, thread.id, &format!("emitwf:bad {name}")).await;
