@@ -182,7 +182,13 @@ impl Tool for OfficeLiveEditTool {
                             "anchor": { "type": "string", "description": "set_cells: 起点セル（例 \"A1\"・\"Sheet2.B3\"）" },
                             "rows": {
                                 "type": "array",
-                                "items": { "type": "array", "items": { "type": ["string", "number", "boolean"] } },
+                                // セル値は文字列/数値/真偽のいずれか。union の "type" 配列は一部
+                                // プロバイダ（DeepSeek 等）の function 検証が 400 で拒否するため、
+                                // スキーマ上は any にして説明で制約する（サーバ側 serde が最終検証）。
+                                "items": {
+                                    "type": "array",
+                                    "items": { "description": "セル値（文字列・数値・真偽値のいずれか）" }
+                                },
                                 "description": "set_cells: 貼り込む値の矩形（行の配列）"
                             }
                         },

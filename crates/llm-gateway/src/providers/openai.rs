@@ -15,6 +15,68 @@ use serde_json::{json, Value};
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 
+/// OpenAI 互換の function 名制約（`^[a-zA-Z0-9_-]{1,64}$`）への写像。
+///
+/// shiki のツール名は `office.live_edit` のようにドットを含むが、DeepSeek 等の厳格な
+/// プロバイダは違反名を 400 で拒否する。送信時にワイヤ名へ写し、応答のツール呼び出しで
+/// 元名へ逆写しする（アプリ側の語彙は一切変えない）。
+struct ToolNameMap {
+    to_wire: BTreeMap<String, String>,
+    from_wire: BTreeMap<String, String>,
+}
+
+impl ToolNameMap {
+    fn new<'a>(names: impl Iterator<Item = &'a str>) -> Self {
+        let mut to_wire = BTreeMap::new();
+        let mut from_wire: BTreeMap<String, String> = BTreeMap::new();
+        for name in names {
+            let mut wire = sanitize_tool_name(name);
+            // 衝突（別名が同一ワイヤ名へ潰れた場合）は接尾辞で一意化する。
+            let mut n = 2;
+            while from_wire.get(&wire).is_some_and(|orig| orig != name) {
+                wire = format!("{}_{n}", sanitize_tool_name(name));
+                wire.truncate(64);
+                n += 1;
+            }
+            from_wire.insert(wire.clone(), name.to_string());
+            to_wire.insert(name.to_string(), wire);
+        }
+        ToolNameMap { to_wire, from_wire }
+    }
+
+    /// 元名 → ワイヤ名（未登録＝履歴にだけ現れる過去ツール等はその場でサニタイズ）。
+    fn wire(&self, original: &str) -> String {
+        self.to_wire
+            .get(original)
+            .cloned()
+            .unwrap_or_else(|| sanitize_tool_name(original))
+    }
+
+    /// ワイヤ名 → 元名（未登録はそのまま返す＝素通し）。
+    fn original(&self, wire: &str) -> String {
+        self.from_wire
+            .get(wire)
+            .cloned()
+            .unwrap_or_else(|| wire.to_string())
+    }
+}
+
+/// 許可外の文字を `_` に置換し 64 文字へ丸める。
+fn sanitize_tool_name(name: &str) -> String {
+    let mut s: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    s.truncate(64);
+    s
+}
+
 /// OpenAI 互換アダプタ。
 pub struct OpenAiProvider {
     http: reqwest::Client,
@@ -39,7 +101,7 @@ impl OpenAiProvider {
         }
     }
 
-    fn build_body(&self, req: &GenerateRequest) -> Value {
+    fn build_body(&self, req: &GenerateRequest, names: &ToolNameMap) -> Value {
         let model = req
             .model
             .clone()
@@ -49,7 +111,7 @@ impl OpenAiProvider {
             messages.push(json!({ "role": "system", "content": sys }));
         }
         for m in &req.messages {
-            messages.extend(to_openai_messages(m));
+            messages.extend(to_openai_messages(m, names));
         }
         let mut body = json!({
             "model": model,
@@ -70,7 +132,8 @@ impl OpenAiProvider {
                 .map(|t| json!({
                     "type": "function",
                     "function": {
-                        "name": t.name,
+                        // ドット等の許可外文字はワイヤ名へ写像（応答側で逆写し）。
+                        "name": names.wire(&t.name),
                         "description": t.description,
                         "parameters": t.input_schema,
                     }
@@ -82,7 +145,7 @@ impl OpenAiProvider {
 }
 
 /// 中立メッセージ 1 件を OpenAI messages（複数になり得る）へ写す。
-fn to_openai_messages(m: &Message) -> Vec<Value> {
+fn to_openai_messages(m: &Message, names: &ToolNameMap) -> Vec<Value> {
     match m.role {
         Role::Tool => m
             .content
@@ -117,7 +180,8 @@ fn to_openai_messages(m: &Message) -> Vec<Value> {
                     Block::ToolUse { id, name, input } => Some(json!({
                         "id": id,
                         "type": "function",
-                        "function": { "name": name, "arguments": input.to_string() },
+                        // 履歴中のツール名も送信時はワイヤ名（プロバイダの検証対象）。
+                        "function": { "name": names.wire(name), "arguments": input.to_string() },
                     })),
                     _ => None,
                 })
@@ -190,13 +254,14 @@ impl ToolAcc {
             .collect()
     }
 
-    fn starts(&self) -> Vec<StreamDelta> {
+    fn starts(&self, names: &ToolNameMap) -> Vec<StreamDelta> {
         self.calls
             .values()
             .filter(|(id, name, _)| !id.is_empty() && !name.is_empty())
             .map(|(id, name, _)| StreamDelta::ToolUseStart {
                 id: id.clone(),
-                name: name.clone(),
+                // プロバイダはワイヤ名で返す → アプリの元名（office.live_edit 等）へ逆写し。
+                name: names.original(name),
             })
             .collect()
     }
@@ -219,7 +284,8 @@ impl LlmProvider for OpenAiProvider {
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/chat/completions", self.base_url);
-        let body = self.build_body(req);
+        let names = ToolNameMap::new(req.tools.iter().map(|t| t.name.as_str()));
+        let body = self.build_body(req, &names);
         let mut builder = self
             .http
             .post(&url)
@@ -243,6 +309,7 @@ impl LlmProvider for OpenAiProvider {
 
         let (tx, rx) = mpsc::unbounded::<Result<StreamDelta, LlmError>>();
         tokio::spawn(async move {
+            let names = names;
             let mut byte_stream = resp.bytes_stream();
             let mut buf: Vec<u8> = Vec::new();
             let mut acc = ToolAcc::default();
@@ -307,7 +374,7 @@ impl LlmProvider for OpenAiProvider {
                         if let Some(tc) = delta.get("tool_calls") {
                             acc.ingest(tc);
                             // 新規に name/id が確定したツールへ Start を 1 回出す。
-                            for s in acc.starts() {
+                            for s in acc.starts(&names) {
                                 if let StreamDelta::ToolUseStart { id, .. } = &s {
                                     if started.insert(id.clone()) {
                                         let _ = tx.unbounded_send(Ok(s));
@@ -341,6 +408,7 @@ mod tests {
 
     #[test]
     fn assistant_tool_use_maps_to_openai_tool_calls() {
+        let names = ToolNameMap::new(["doc_search"].into_iter());
         let m = Message {
             role: Role::Assistant,
             content: vec![Block::ToolUse {
@@ -349,10 +417,45 @@ mod tests {
                 input: json!({"query": "x"}),
             }],
         };
-        let out = to_openai_messages(&m);
+        let out = to_openai_messages(&m, &names);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["tool_calls"][0]["id"], "t1");
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "doc_search");
+    }
+
+    #[test]
+    fn tool_names_with_dots_are_sanitized_and_reversed() {
+        // DeepSeek 等は `^[a-zA-Z0-9_-]{1,64}$` 違反の function 名を 400 で拒否する。
+        let names = ToolNameMap::new(["office.live_edit", "csv.query", "doc_search"].into_iter());
+        assert_eq!(names.wire("office.live_edit"), "office_live_edit");
+        assert_eq!(names.wire("doc_search"), "doc_search");
+        assert_eq!(names.original("office_live_edit"), "office.live_edit");
+        assert_eq!(names.original("csv_query"), "csv.query");
+        // 未登録名は素通し（過去ツール・未知名で壊れない）。
+        assert_eq!(names.original("unknown"), "unknown");
+
+        // 履歴中の ToolUse もワイヤ名で送られる。
+        let m = Message {
+            role: Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "office.live_edit".into(),
+                input: json!({}),
+            }],
+        };
+        let out = to_openai_messages(&m, &names);
+        assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "office_live_edit");
+    }
+
+    #[test]
+    fn colliding_sanitized_names_get_unique_suffix() {
+        let names = ToolNameMap::new(["a.b", "a_b"].into_iter());
+        // 先着が a_b を取り、後発は接尾辞で一意化される（逆写しはどちらも正しい）。
+        let wire1 = names.wire("a.b");
+        let wire2 = names.wire("a_b");
+        assert_ne!(wire1, wire2);
+        assert_eq!(names.original(&wire1), "a.b");
+        assert_eq!(names.original(&wire2), "a_b");
     }
 
     #[test]
@@ -365,7 +468,7 @@ mod tests {
                 is_error: false,
             }],
         };
-        let out = to_openai_messages(&m);
+        let out = to_openai_messages(&m, &ToolNameMap::new(std::iter::empty()));
         assert_eq!(out[0]["role"], "tool");
         assert_eq!(out[0]["tool_call_id"], "t1");
     }
