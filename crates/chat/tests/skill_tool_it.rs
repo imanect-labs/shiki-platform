@@ -1,13 +1,12 @@
-//! skill のチャット適用の結合テスト（Task 6.7/6.9 受け入れ条件）。
+//! skill ツール（カタログ引き）の結合テスト（#344 Task 10.11 受け入れ条件）。
 //!
-//! stub LLM で **thread ピン → run コピー → ワーカー適用（system/few-shot/モデル既定）** の
-//! 実経路を走らせる。`STORAGE_TEST_DATABASE_URL` が設定されている時のみ実行。
-//! - skill を選んでチャットを開始すると system/モデル既定が適用される（llm_usage の実効モデルで観測）
-//! - skill.apply が監査に残る（Task 6.12）
+//! stub LLM の `useskill:<name>` 駆動で **カタログ掲載 → skill ツール呼び出し →
+//! instructions の観測 → 発動イベント（skill_invoked）の generation_event 記録 →
+//! skill.invoke 監査** の実経路を走らせる。`STORAGE_TEST_DATABASE_URL` 設定時のみ実行。
 //!
-//! ⚠️ jobq の `chat_generation` キューはプロセス内で共有されるため、**本バイナリには
-//! ワーカー能力の異なるテストを同居させない**（未配線ワーカーが他テストの run を
-//! 横取りすると偽陽性になる）。fail-closed は `crate::skill` の unit で担保する。
+//! ⚠️ jobq の `chat_generation` キューはプロセス内（同一 DB）で共有されるため、**本バイナリは
+//! 1 テスト関数に直列化**する（並列に worker を複数起動すると coverage 計装下で claim 競合により
+//! flake する・skill_apply_it と同じ規約）。
 
 #![allow(
     clippy::pedantic,
@@ -132,20 +131,12 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
         },
         catalog: ModelCatalog {
             default_model: "m".into(),
-            models: vec![
-                ModelEntry {
-                    id: "m".into(),
-                    real_id: None,
-                    prompt_price_micros_per_mtok: 0,
-                    completion_price_micros_per_mtok: 0,
-                },
-                ModelEntry {
-                    id: "skill-model".into(),
-                    real_id: None,
-                    prompt_price_micros_per_mtok: 0,
-                    completion_price_micros_per_mtok: 0,
-                },
-            ],
+            models: vec![ModelEntry {
+                id: "m".into(),
+                real_id: None,
+                prompt_price_micros_per_mtok: 0,
+                completion_price_micros_per_mtok: 0,
+            }],
         },
         langfuse: None,
     };
@@ -153,32 +144,28 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
 }
 
 /// skill artifact を直接作る（body は gui の保存時検証を通る形）。
-async fn seed_skill(pool: &PgPool, c: &AuthContext) -> Uuid {
+async fn seed_skill(pool: &PgPool, c: &AuthContext, name: &str) -> Uuid {
     let artifacts = Arc::new(artifact::ArtifactStore::new(
         pool.clone(),
         Arc::new(AllowAll),
     ));
     let skills = gui::SkillStore::new(artifacts);
     let body = json!({
-        "description": "経費精算アシスタント",
+        "description": "経費精算の規程に基づいて確認・回答するスキル",
         "instructions": "あなたは経費規程の専門家です。",
-        "allowed_tools": ["doc_search"],
-        "model": { "model": "skill-model", "temperature": 0.1, "max_tokens": 512 },
-        "few_shot": [ { "user": "こんにちは", "assistant": "経費のご質問をどうぞ。" } ]
+        "allowed_tools": ["doc_search"]
     });
-    let (id, _) = skills
-        .create(c, "expense-skill", &body, None)
-        .await
-        .expect("skill");
+    let (id, _) = skills.create(c, name, &body, None).await.expect("skill");
     id
 }
 
+/// カタログ引き（未ピン・本人 owner の skill をツールで途中読み込み）の一連の流れ。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn skill_pin_applies_model_defaults_and_audits() {
+async fn skill_tool_loads_instructions_and_records_invocation() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let c = ctx(&tenant);
-    let skill_id = seed_skill(&pool, &c).await;
+    let skill_id = seed_skill(&pool, &c, "expense-skill").await;
 
     let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
         .await
@@ -198,8 +185,8 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             web_search: None,
             storage: None,
             ui_validator: None,
-            skill_artifacts: Some(artifacts),
-            skill_catalog: None,
+            skill_artifacts: Some(artifacts.clone()),
+            skill_catalog: Some(Arc::new(chat::OwnedSkillCatalog::new(artifacts))),
             workflow_store: None,
             workflow_catalog: None,
             collab: None,
@@ -210,8 +197,6 @@ async fn skill_pin_applies_model_defaults_and_audits() {
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
             model: Some("m".into()),
-            // Coverage（cargo-llvm-cov）は計装＋全テスト並列で 1 step が大きく遅くなる。
-            // 30s では worker のリース失効で run が orphan 化して flake るため余裕を持たせる。
             lease_secs: 120,
             max_steps: 4,
             ..Default::default()
@@ -219,46 +204,40 @@ async fn skill_pin_applies_model_defaults_and_audits() {
     );
     worker.spawn(1);
 
-    // skill をピンした thread（通常チャット＝classic 経路にも適用される）。
+    // ピン無しの thread（skill はカタログ＝本人 owner から引く）。
     let thread = store
-        .create_thread(&c, "t", false, None, None)
+        .create_thread(&c, "t", true, None, None)
         .await
         .unwrap();
-    store
-        .set_thread_pins(
-            &c,
-            thread.id,
-            &[chat::SkillPin {
-                skill_id,
-                skill_version: 1,
-            }],
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
     let res = store
         .post_message(
             &c,
             thread.id,
-            "出張費は？",
+            "useskill:expense-skill",
             &[],
             None,
-            Some(false),
+            Some(true),
             false,
             None,
         )
         .await
         .unwrap();
+
     let mut rx = store.event_stream(res.run_id, 0);
     let mut done = false;
+    let mut invoked: Option<serde_json::Value> = None;
+    let mut tool_result_content = String::new();
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(180), rx.next())
             .await
             .expect("イベント待ちがタイムアウト");
         let Some(ev) = next else { break };
         match ev.event {
+            StreamEventKind::SkillInvoked { skill } => invoked = Some(skill),
+            StreamEventKind::ToolResult { content, ok, .. } => {
+                assert!(ok, "skill ツールが成功すること: {content}");
+                tool_result_content = content;
+            }
             StreamEventKind::Done { .. } => {
                 done = true;
                 break;
@@ -269,38 +248,89 @@ async fn skill_pin_applies_model_defaults_and_audits() {
     }
     assert!(done);
 
-    // run 行に skill ピンが jsonb スナップショットでコピーされている（thread → run・0052）。
-    let pins: sqlx::types::Json<Vec<chat::SkillPin>> =
-        sqlx::query_scalar("SELECT skill_pins FROM generation_run WHERE run_id = $1")
-            .bind(res.run_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(pins.0.len(), 1);
-    assert_eq!(pins.0[0].skill_id, skill_id);
-    assert_eq!(pins.0[0].skill_version, 1);
-
-    // モデル既定が適用され、会計が実効モデル（skill-model）で刻まれる（6.9 受け入れ条件②）。
-    let models: Vec<String> =
-        sqlx::query_scalar("SELECT model FROM llm_usage WHERE tenant_id = $1")
-            .bind(&tenant)
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+    // instructions がツール結果としてモデルに観測される（本文はカタログに載らず必要時に引く）。
     assert!(
-        models.iter().any(|m| m == "skill-model"),
-        "skill のモデル既定が実効モデルとして会計に載ること: {models:?}"
+        tool_result_content.contains("経費規程の専門家"),
+        "instructions が観測に載ること: {tool_result_content}"
+    );
+    // 発動記録（skill_invoked イベント）が (skill_id, version) 付きで流れる。
+    let invoked = invoked.expect("skill_invoked イベントが流れること");
+    assert_eq!(
+        invoked.get("skill_id").and_then(|v| v.as_str()),
+        Some(skill_id.to_string().as_str())
+    );
+    assert_eq!(
+        invoked.get("skill_version").and_then(|v| v.as_i64()),
+        Some(1)
     );
 
-    // skill.apply が監査に残り、run の trace 系列と突合できる（6.12）。
-    let applies: i64 = sqlx::query_scalar(
+    // 真実のソース（generation_event）にも append されている（replay 可能・再現性）。
+    let recorded: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM generation_event WHERE run_id = $1 AND type = 'skill_invoked'",
+    )
+    .bind(res.run_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        recorded >= 1,
+        "generation_event に skill_invoked が残ること"
+    );
+
+    // skill.invoke 監査が残る。
+    let invokes: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log \
-         WHERE tenant_id = $1 AND action = 'skill.apply' AND object_id = $2",
+         WHERE tenant_id = $1 AND action = 'skill.invoke' AND object_id = $2",
     )
     .bind(&tenant)
     .bind(skill_id.to_string())
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(applies >= 1, "skill.apply 監査が残ること");
+    assert!(invokes >= 1, "skill.invoke 監査が残ること");
+
+    // --- 未知スキル名（閉集合照合・fail-closed）も同じ worker/thread で直列に検証する ---
+    let res = store
+        .post_message(
+            &c,
+            thread.id,
+            "useskill:no-such-skill",
+            &[],
+            None,
+            Some(true),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    let mut rx = store.event_stream(res.run_id, 0);
+    let mut done = false;
+    let mut saw_error_result = false;
+    let mut saw_invoked = false;
+    for _ in 0..500 {
+        let next = tokio::time::timeout(Duration::from_secs(180), rx.next())
+            .await
+            .expect("イベント待ちがタイムアウト");
+        let Some(ev) = next else { break };
+        match ev.event {
+            StreamEventKind::SkillInvoked { .. } => saw_invoked = true,
+            StreamEventKind::ToolResult { content, ok, .. } => {
+                assert!(!ok, "未知スキルはエラー観測になること");
+                assert!(
+                    content.contains("expense-skill"),
+                    "候補が提示されること: {content}"
+                );
+                saw_error_result = true;
+            }
+            StreamEventKind::Done { .. } => {
+                done = true;
+                break;
+            }
+            StreamEventKind::Error { message } => panic!("生成失敗: {message}"),
+            _ => {}
+        }
+    }
+    assert!(done);
+    assert!(saw_error_result, "エラー観測がイベントとして流れること");
+    assert!(!saw_invoked, "未知スキルで発動記録が残らないこと");
 }

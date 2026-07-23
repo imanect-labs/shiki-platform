@@ -101,6 +101,9 @@ pub struct WorkerDeps {
     /// skill / ミニアプリのピン解決（Task 6.7/6.9/6.10）。未配線でピンがある run は失敗する
     /// （fail-closed・skill 無しで黙って生成しない）。
     pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
+    /// skill カタログ源（skill ツールの動的 description・#344 Task 10.11）。
+    /// skill_artifacts と両方揃った時のみ skill ツールを提示する。
+    pub skill_catalog: Option<Arc<dyn crate::skill_catalog::SkillCatalogSource>>,
     /// ワークフロー IR ストア（emit_workflow / read_workflow・Task 10.13）。
     /// カタログ源と両方揃った時のみツールを提示する。
     pub workflow_store: Option<Arc<workflow_engine::WorkflowStore>>,
@@ -137,6 +140,8 @@ pub struct ChatWorker {
     ui_validator: Option<Arc<gui::SpecValidator>>,
     /// skill / ミニアプリのピン解決（Task 6.9）。
     skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
+    /// skill カタログ源（skill ツール・#344）。
+    skill_catalog: Option<Arc<dyn crate::skill_catalog::SkillCatalogSource>>,
     /// ワークフロー IR ストア（emit_workflow / read_workflow・Task 10.13）。
     workflow_store: Option<Arc<workflow_engine::WorkflowStore>>,
     /// カタログ源（保存 API と同一実装を注入・Task 10.13）。
@@ -163,6 +168,7 @@ impl ChatWorker {
             storage,
             ui_validator,
             skill_artifacts,
+            skill_catalog,
             workflow_store,
             workflow_catalog,
             collab,
@@ -181,6 +187,7 @@ impl ChatWorker {
             storage,
             ui_validator,
             skill_artifacts,
+            skill_catalog,
             workflow_store,
             workflow_catalog,
             collab,

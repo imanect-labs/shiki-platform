@@ -163,5 +163,11 @@ pub(crate) async fn emit_tool_events(
         })
         .await?;
     }
+    for skill in &outcome.skill_invocations {
+        sink.emit(AgentEvent::SkillInvoked {
+            skill: skill.clone(),
+        })
+        .await?;
+    }
     Ok(())
 }

@@ -61,8 +61,8 @@ impl ChatWorker {
         cancel: Arc<AtomicBool>,
         sink: &mut WorkerSink,
     ) -> Result<(), ChatError> {
-        // skill のピン解決（Task 6.9・fail-closed: 読めないピンは run を失敗させる）。
-        let skill = crate::skill::AppliedSkill::load(
+        // skill のピン解決（複数可・Task 6.9/#344・fail-closed: 読めないピンは run を失敗させる）。
+        let skills = crate::skill::AppliedSkill::load_pins(
             ctx,
             self.skill_artifacts.as_ref(),
             run,
@@ -73,12 +73,13 @@ impl ChatWorker {
         // 共通ツール（doc_search / code_interpreter / web）。
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         if let Some(search) = &self.search {
-            // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ）。
-            let scope = skill
-                .as_ref()
-                .and_then(crate::skill::AppliedSkill::search_scope);
+            // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ・
+            // 複数ピンは全ピンが scope を持つ時のみ union・#344）。
+            let scope = crate::skill::combined_scope(&skills);
             tools.push(Arc::new(DocSearchTool::with_scope(search.clone(), scope)));
         }
+        // skill ツール（カタログ引き・#344 Task 10.11）。
+        self.push_skill_tool(&mut tools, ctx, run, &skills).await;
         if let Some(sandbox) = &self.sandbox {
             tools.push(Arc::new(CodeInterpreterTool::new(
                 sandbox.clone(),
@@ -185,18 +186,25 @@ impl ChatWorker {
         };
         let approver = Some(approver);
 
-        // skill を最後に適用する（system 追記・few-shot・モデル既定・提示ツールの縮小）。
+        // skill を最後に適用する（system 追記・few-shot・モデル既定。ピン順・モデル既定は
+        // 指定フィールドのみ後勝ち・#344）。`allowed_tools` は誘導テキスト（apply_system 内）で
+        // あり提示ツールは縮小しない（#344 の再定義。決定性はツール実装＋認可＋承認ゲート）。
         // ⚠️ opts.approval には触れない（破壊系の明示許可は skill で無効化できない・Task 6.9）。
         let (mut opts, mut history) = (opts, history);
-        if let Some(skill) = &skill {
-            let base = opts.system.take().unwrap_or_default();
-            let mut system = base;
-            skill.apply_system(&mut system);
+        if !skills.is_empty() {
+            let mut system = opts.system.take().unwrap_or_default();
+            for skill in &skills {
+                skill.apply_system(&mut system);
+                skill.apply_model_defaults(&mut opts);
+            }
             opts.system = Some(system);
-            skill.apply_model_defaults(&mut opts);
-            skill.apply_few_shot(&mut history);
-            skill.filter_tools(&mut tools);
-            skill.audit_apply(&self.db, ctx, run).await;
+            // few-shot は「ピン順に前から並ぶ」よう逆順で先頭 splice する。
+            for skill in skills.iter().rev() {
+                skill.apply_few_shot(&mut history);
+            }
+            for skill in &skills {
+                skill.audit_apply(&self.db, ctx, run).await;
+            }
         }
 
         let approver_ref = approver.as_ref().map(|a| a as &dyn agent_core::Approver);
@@ -214,6 +222,49 @@ impl ChatWorker {
         .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
         let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理
         Ok(())
+    }
+
+    /// skill ツール（カタログ引き・#344 Task 10.11）を提示ツールに加える。
+    ///
+    /// artifact ストアとカタログ源が配線されている時のみ。カタログはピン済み ∪ 本人 owner
+    /// （PR2 でインストール済みを追加）。掲載一覧の取得失敗は run を落とさない
+    /// （ピンの fail-closed とは別・warn してツールを出さない）。
+    async fn push_skill_tool(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        ctx: &AuthContext,
+        run: &ClaimedRun,
+        skills: &[crate::skill::AppliedSkill],
+    ) {
+        let (Some(artifacts), Some(catalog)) = (&self.skill_artifacts, &self.skill_catalog) else {
+            return;
+        };
+        match catalog.entries(ctx, run.trace_id.as_deref()).await {
+            Ok(entries) => {
+                let pinned = skills
+                    .iter()
+                    .map(|s| crate::skill_catalog::SkillCatalogEntry {
+                        id: s.id,
+                        version: s.version,
+                        name: s.name.clone(),
+                        description: s.body.description.clone(),
+                        pinned: true,
+                    })
+                    .collect();
+                if let Some(tool) = crate::skill_tool::SkillTool::build(
+                    artifacts.clone(),
+                    self.db.clone(),
+                    run,
+                    pinned,
+                    entries,
+                ) {
+                    tools.push(Arc::new(tool));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, run_id = %run.run_id, "skill カタログ取得に失敗（skill ツールを提示しない）");
+            }
+        }
     }
 
     /// thread のワークスペースフォルダを解決 or 作成し、`WorkspaceStore` を返す（Durable Workspace）。
@@ -286,32 +337,33 @@ impl ChatWorker {
     ) -> Result<(), ChatError> {
         use agent_core::{run_doc_search, AgentEvent, EventSink};
 
-        // skill のピン解決（通常チャットにも適用する・fail-closed・Task 6.9）。
-        let skill = crate::skill::AppliedSkill::load(
+        // skill のピン解決（通常チャットにも適用する・複数可・fail-closed・Task 6.9/#344）。
+        let skills = crate::skill::AppliedSkill::load_pins(
             ctx,
             self.skill_artifacts.as_ref(),
             run,
             run.trace_id.as_deref(),
         )
         .await?;
-        let scope = skill
-            .as_ref()
-            .and_then(crate::skill::AppliedSkill::search_scope);
+        let scope = crate::skill::combined_scope(&skills);
         let mut history = history;
 
         // 直近ユーザー発話で事前検索し、文脈注入＋引用イベント。
         let query = history.last().map(message_preview).unwrap_or_default();
         let mut system = self.config.system_prompt.clone();
-        if let Some(skill) = &skill {
+        for skill in &skills {
             skill.apply_system(&mut system);
-            skill.apply_few_shot(&mut history);
             skill.audit_apply(&self.db, ctx, run).await;
         }
-        // skill が doc_search を許可していなければ古典事前検索も行わない（Task 6.9 の
-        // セッション級ツール制限は agent/classic 両モードで一貫させる）。
-        let search_allowed = skill
-            .as_ref()
-            .is_none_or(|s| s.allows(agent_core::ToolName::DocSearch.as_str()));
+        // few-shot は「ピン順に前から並ぶ」よう逆順で先頭 splice する。
+        for skill in skills.iter().rev() {
+            skill.apply_few_shot(&mut history);
+        }
+        // 全ピンが doc_search を宣言に含む時のみ古典事前検索を行う（Task 6.9 の意味を
+        // classic では維持する。ツールループが無い classic に「誘導」は存在しないため）。
+        let search_allowed = skills
+            .iter()
+            .all(|s| s.allows(agent_core::ToolName::DocSearch.as_str()));
         if let (Some(search), true) = (&self.search, search_allowed) {
             match run_doc_search(
                 search,
@@ -346,16 +398,16 @@ impl ChatWorker {
             }
         }
 
-        // skill のモデル既定（Task 6.9・指定があるものだけ上書き）。
-        let (model, max_tokens, temperature) =
-            match skill.as_ref().and_then(|s| s.body.model.as_ref()) {
-                Some(defaults) => (
-                    defaults.model.clone().or_else(|| self.config.model.clone()),
-                    defaults.max_tokens.or(Some(2048)),
-                    defaults.temperature,
-                ),
-                None => (self.config.model.clone(), Some(2048), None),
-            };
+        // skill のモデル既定（Task 6.9・指定があるものだけ上書き・複数ピンは後勝ち・#344）。
+        let (model, max_tokens, temperature) = match crate::skill::combined_model_defaults(&skills)
+        {
+            Some(defaults) => (
+                defaults.model.clone().or_else(|| self.config.model.clone()),
+                defaults.max_tokens.or(Some(2048)),
+                defaults.temperature,
+            ),
+            None => (self.config.model.clone(), Some(2048), None),
+        };
         let effective_model = model
             .clone()
             .unwrap_or_else(|| self.gateway.default_model().to_string());

@@ -7,7 +7,7 @@ use anyhow::Context;
 use authz::AuthzClient;
 use storage::{IndexerStorage, ObjectStore};
 
-use api::config::{AppConfig, LlmBackend, VectorStoreBackend, WebSearchBackend};
+use api::config::{AppConfig, LlmBackend, VectorStoreBackend};
 
 /// RAG 配線の結果（検索サービスはオプション・テナント消去は常設）。
 pub(crate) type RagWiring = (Option<Arc<rag::SearchService>>, Arc<rag::RagAdmin>);
@@ -336,7 +336,7 @@ pub(crate) async fn wire_chat(
     let artifacts: Option<Arc<dyn agent_core::ArtifactStore>> = sandbox
         .as_ref()
         .map(|_| Arc::new(chat::StorageArtifactStore::new(Arc::clone(storage))) as _);
-    let web_search = wire_websearch(config, http)?;
+    let web_search = crate::wiring_websearch::wire_websearch(config, http)?;
     let worker = chat::ChatWorker::new(
         db.clone(),
         store.clone(),
@@ -352,6 +352,10 @@ pub(crate) async fn wire_chat(
             ui_validator: Some(Arc::clone(ui_validator)),
             // skill / ミニアプリのピン解決（Task 6.9・fail-closed）。
             skill_artifacts: Some(Arc::clone(skill_artifacts)),
+            // skill ツールのカタログ源（本人 owner。同意インストール導入時に差し替え・#344）。
+            skill_catalog: Some(Arc::new(chat::OwnedSkillCatalog::new(Arc::clone(
+                skill_artifacts,
+            )))),
             // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）。
             // カタログ源は保存 API（build_catalog）と同一実装を注入する（検証乖離の禁止）。
             workflow_store: Some(Arc::clone(workflows)),
@@ -389,63 +393,6 @@ pub(crate) async fn wire_chat(
         "チャット生成ワーカーを起動しました"
     );
     Ok(Some(Arc::new(store)))
-}
-
-/// web 検索プロバイダ（Phase 4 web ツール）の配線。`websearch.backend` 未指定なら `None`。
-///
-/// クラウド/オンプレ差は `SearchProvider` トレイト裏で吸収する（Brave=SaaS / SearXNG=オンプレ /
-/// Stub=テスト・エアギャップ）。
-pub(crate) fn wire_websearch(
-    config: &AppConfig,
-    http: &reqwest::Client,
-) -> anyhow::Result<Option<Arc<dyn websearch::SearchProvider>>> {
-    let Some(backend) = config.websearch.backend else {
-        return Ok(None);
-    };
-    // 検索は対話パスで呼ばれるため、共有クライアント（無期限）ではなく短いタイムアウトを敷く。
-    let _ = http;
-    let search_http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .context("web 検索用 HTTP クライアントの構築に失敗")?;
-    let provider: Arc<dyn websearch::SearchProvider> = match backend {
-        WebSearchBackend::Brave => {
-            // compose の `${VAR:-}` は空文字を渡し得るため、空も未設定として扱い fail-fast する。
-            let api_key = config
-                .websearch
-                .brave_api_key
-                .clone()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("websearch.backend=brave には brave_api_key が必要です")
-                })?;
-            Arc::new(websearch::BraveSearchProvider::new(
-                search_http,
-                api_key,
-                None,
-            ))
-        }
-        WebSearchBackend::Searxng => {
-            let base_url = config
-                .websearch
-                .searxng_base_url
-                .clone()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("websearch.backend=searxng には searxng_base_url が必要です")
-                })?;
-            Arc::new(websearch::SearxngSearchProvider::new(
-                search_http,
-                &base_url,
-            ))
-        }
-        WebSearchBackend::Stub => Arc::new(websearch::StubSearchProvider::new()),
-    };
-    tracing::info!(
-        provider = provider.name(),
-        "web 検索プロバイダを配線しました"
-    );
-    Ok(Some(provider))
 }
 
 /// ワークフロー実行時（run ワーカー/スケジューラ/イベント relay）を配線する（Stage A W3）。

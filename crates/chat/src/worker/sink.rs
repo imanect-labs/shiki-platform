@@ -137,12 +137,15 @@ impl WorkerSink {
             // 自律プロファイルの構造化イベント（計画/サブタスク/予算/承認/失敗回復）は
             // content block へは projection しない（進捗の可視化はライブ SSE 側で扱う・W4 で結線）。
             // Office ライブ編集も同様に projection しない（履歴再生で二重 paste しない・#328）。
+            // skill 発動記録（#344）も projection しない（instructions は tool_result block として
+            // 既に履歴に残る。generation_event 側の完全な列が監査・再現性を担う）。
             AgentEvent::PlanUpdated(_)
             | AgentEvent::SubtaskUpdated { .. }
             | AgentEvent::BudgetWarning { .. }
             | AgentEvent::ApprovalRequested { .. }
             | AgentEvent::ApprovalResolved { .. }
             | AgentEvent::OfficeLiveEdit { .. }
+            | AgentEvent::SkillInvoked { .. }
             | AgentEvent::FailureRecovery { .. } => {}
         }
     }
@@ -194,6 +197,10 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         AgentEvent::OfficeLiveEdit { node_id, html } => StreamEventKind::OfficeLiveEdit {
             node_id: node_id.clone(),
             html: html.clone(),
+        },
+        // skill 発動記録（#344）。generation_event に残り replay 可能（UI はチップ表示）。
+        AgentEvent::SkillInvoked { skill } => StreamEventKind::SkillInvoked {
+            skill: skill.clone(),
         },
         // 自律プロファイルの構造化イベント（Task 5.9 ライブ配信）。generation_event に append され
         // replay 可能（監査・5.10）だが message.content へは projection しない。
