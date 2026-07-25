@@ -310,9 +310,14 @@ impl ChatStore {
             trace_id,
         )
         .await?;
+        // 並び順の tie-break に **因果（parent_id）** を使う。ユーザ発話とアシスタント枠は
+        // `post_message` の同一トランザクションで作られ、`now()` はトランザクション開始時刻を
+        // 返すため両者の `created_at` は必ず同値になる。ここを id（ランダム UUID）で崩すと
+        // 返信がユーザ発話より前に描画される（順序が実質ランダムになる）。返信は必ず親の後。
         let rows: Vec<MessageRow> = sqlx::query_as(
             "SELECT id, role, content, agent_mode, parent_id, created_at FROM message \
-             WHERE thread_id = $1 AND tenant_id = $2 ORDER BY created_at, id",
+             WHERE thread_id = $1 AND tenant_id = $2 \
+             ORDER BY created_at, (parent_id IS NOT NULL), id",
         )
         .bind(thread_id)
         .bind(&ctx.tenant_id)
