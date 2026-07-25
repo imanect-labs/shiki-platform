@@ -471,3 +471,143 @@
   - [ ] 分岐点でブランチを前後に切り替えられる
   - [ ] 編集/再生成で生まれた枝が UI から辿れる
   - [ ] 既定は線形表示でブランチが邪魔をしない
+
+---
+
+## トラックLR — LLM コストルーティング（接頭辞 LR.x）
+
+> 詳細設計の正本は [docs/llm/model-router.md](../llm/model-router.md)（design §4.5.1 の詳細）。
+> ⚠️ 着手前に [設計上の落とし穴](../design-caveats.md) の **PIT-28**（利用量＝金額クリティカル）・
+> **PIT-45**（ルータの差し替えが会計から見えない）・**PIT-46**（自動降格の3方向の黙った破壊）を確認すること。
+
+- **目的**: **コストカット**。「遂行すべきタスクを満たす最も安いモデル」を決定的なルールで選び、
+  安価で通らなかったときだけ高いモデルに払う。学習型ルータに要る選好データが無い段階の現実解であり、
+  同時に**将来の学習型ルータの教師データを運用そのものが生む**構造を作る（LR.6・LR.7）。
+- **効果測定が先**: 既定は `shadow`（実行は従来どおり・決定と想定額だけ記録）。
+  削減率・降格分布・昇格見込みを実データで確認してから `on` にする。品質退行リスクゼロで導入できる順序にしてある。
+- **タイミング**: **3.2（llm-gateway）以降ならいつでも**。Phase の直線に乗らない独立トラック。
+  LR.1〜LR.2 は前提工事（カタログのメタデータ化・複数プロバイダ）で、単体でも
+  Task 12.1（モデルカタログ管理）の素地になるため先行着手の価値がある。
+- **不変条件**: ルータは候補集合の中から選ぶだけで、**認可境界もレジデンシ境界も広げない**。
+  明示選択（ユーザー / skill / ノード / アプリ）は上書きしない。ルータ自身は LLM を呼ばない。
+
+### タスク一覧
+
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| LR.1 | モデルカタログのメタデータ化（tier/能力/context窓/residency/routable） | agent | 3.2 |
+| LR.2 | 複数プロバイダ対応（`providers[]` ＋ `ModelEntry.provider`・単数設定の後方互換） | agent | 3.2 |
+| LR.3 | `Router` トレイト＋`RuleRouter`（候補フィルタ・ルール表・決定的評価） | agent | LR.1, LR.2 |
+| LR.4 | `RouteHint` 配線（agent-core / chat / workflow llm ノード / app-gateway） | agent | LR.3 |
+| LR.5 | 実効モデルの会計貫通（`stream()` 戻り値・`llm_usage` 列追加・予算ガード） | agent | LR.3 |
+| LR.6 | shadow モード＋削減レポート（baseline 差分集計・Langfuse metadata） | obs | LR.5 |
+| LR.7 | 昇格（escalation）: 失敗シグナル→1段上げて再生成（上限・粘着） | agent | LR.4, LR.5 |
+| LR.8 | 管理 UI: ルータ mode／ルール表／tier 編集（Task 12.1 に同居） | frontend | 12.1, LR.6 |
+
+---
+
+### Task LR.1: モデルカタログのメタデータ化
+- **area**: agent / **path**: `crates/llm-gateway`, `crates/api`
+- **依存**: 3.2
+- **仕様**:
+  - `ModelEntry` に `tier`（`small`/`standard`/`large`）・`context_window`・`max_output_tokens`・
+    `capabilities { tools, vision, thinking, json_schema }`・`residency`（`domestic`/`overseas`）・
+    `routable` を足す（[model-router.md](../llm/model-router.md) §3.1）。
+  - `residency` はカタログの国外処理バッジ（design §4.12）と**同一語彙**を使う（表示とルーティング制約の二用途）。
+  - **`tier` 未設定のモデルはルータ候補から外す**（fail-closed）。単価順からの自動導出はしない（PIT-46）。
+- **受け入れ条件**:
+  - [ ] 既存の設定ファイル（メタデータ無し）が無改修で読め、明示選択の挙動が変わらない
+  - [ ] `tier` 未設定モデルが候補集合に現れない単体テストがある
+  - [ ] `capabilities`/`context_window` を満たさない候補が機械的に落ちる単体テストがある
+
+### Task LR.2: 複数プロバイダ対応
+- **area**: agent / **path**: `crates/llm-gateway`, `crates/api`, `deploy/`
+- **依存**: 3.2
+- **仕様**:
+  - `providers[]`（`name` 付き）へ拡張し、gateway は `HashMap<String, Arc<dyn LlmProvider>>` を保持する。
+    `ModelEntry.provider` でモデルを provider に紐づける（省略時は既定 provider）。
+  - **後方互換**: 単数 `provider` 設定は `name="default"` の 1 要素として読む。
+  - 構成されていない provider に属するモデルは起動時のカタログ検証で候補から外す（**NFR-2 エアギャップ無傷**）。
+- **受け入れ条件**:
+  - [ ] 単数 provider 設定の既存構成・テストが無改修で通る
+  - [ ] vLLM と外部 API を同時に構成し、モデル指定で送出先が切り替わる IT がある
+  - [ ] 未構成 provider のモデルが候補にも既定にも選ばれない（起動時に検出され warn が出る）
+
+### Task LR.3: `Router` トレイト＋`RuleRouter`
+- **area**: agent / **path**: `crates/llm-gateway`
+- **依存**: LR.1, LR.2
+- **仕様**:
+  - `Router` トレイト（`route(&RouteHint, &Catalog) -> RouteDecision`）と、その最初の実装 `RuleRouter`。
+  - 決定手続きは [model-router.md](../llm/model-router.md) §5 の順序が正本
+    （明示選択 → 候補集合 → ルール表 → 必要 tier → 同 tier 内で推定コスト最小 → 候補空なら既定へ warn 付き縮退）。
+  - ルール表は**設定で編集可能**（宣言順・最初の一致が勝つ・`rule_id` を決定に載せる）。
+  - **ルータは純関数**（LLM を呼ばない・状態を持たない・I/O をしない）。
+- **受け入れ条件**:
+  - [ ] 明示モデル指定時にルータが動かない単体テストがある
+  - [ ] 同一入力に対し決定が完全に再現する（決定的である）単体テストがある
+  - [ ] 必要 tier 以上のうち推定コスト最小が選ばれる単体テストがある
+  - [ ] 候補が空のとき既定モデルへ縮退し理由がログに残る単体テストがある
+
+### Task LR.4: `RouteHint` 配線
+- **area**: agent / **path**: `crates/agent-core`, `crates/chat`, `crates/workflow-engine`, `crates/app-gateway`
+- **依存**: LR.3
+- **仕様**:
+  - 4 呼出点が `TaskKind`・`step`・`tools_offered`・`requires_vision`・`effort`・`input_tokens_est` を宣言する
+    （[model-router.md](../llm/model-router.md) §4）。トークン概算は agent-core の `estimate_tokens` を再利用する。
+  - **同一 run 内の tier は単調非減少（粘着）**。降格判断は run 開始時と履歴剪定直後に限る（PIT-46・
+    プレフィックスキャッシュ喪失の回避）。
+- **受け入れ条件**:
+  - [ ] 4 呼出点すべてが hint を渡す（hint 無しの経路が残っていない）
+  - [ ] 同一 run 内で tier が下がらない IT がある
+  - [ ] ツール提示ありの run が tools 非対応モデルへ降格しない negative IT がある
+
+### Task LR.5: 実効モデルの会計貫通
+- **area**: agent / **path**: `crates/llm-gateway`, `crates/agent-core`, `crates/chat`, `crates/api`, `migrations/`
+- **依存**: LR.3
+- **仕様**（**金額クリティカル・PIT-45**）:
+  - `stream()` の戻り値を `RoutedStream { stream, decision }` にし、4 呼出点は `decision.model` を会計に使う。
+  - `llm_usage` に `routed` / `route_rule` / `route_mode` / `requested_model` /
+    `baseline_cost_usd_micros` / `escalation` を追加するマイグレーション。
+  - 予算ガード（agent-core `Budget`）は実効モデル単価で積む。Langfuse metadata に決定を載せる。
+- **受け入れ条件**:
+  - [ ] 実効モデル≠要求モデルのとき `llm_usage.model` が実効側で記録される IT がある
+  - [ ] `baseline_cost_usd_micros − cost_usd_micros` で削減額が集計できる IT がある
+  - [ ] 予算ガードが実効モデル単価で発火する単体テストがある
+
+### Task LR.6: shadow モード＋削減レポート
+- **area**: obs / **path**: `crates/llm-gateway`, `crates/api`
+- **依存**: LR.5
+- **仕様**:
+  - `router.mode = off | shadow | on`（**既定 `shadow`**）。テナント単位で上書き可。
+  - `shadow` は**実行を一切変えず**、決定と想定額のみ記録する。
+  - 集計 API/クエリ: 削減率・TaskKind 別分布・候補落ち率（カタログ設定の穴）・語彙ルール発火率・昇格兆候の発生率。
+- **受け入れ条件**:
+  - [ ] `shadow` で実行モデルが一切変わらない IT がある（PIT-45）
+  - [ ] 削減率レポートが期間指定で取得できる
+  - [ ] `off` で `llm_usage` のルータ列が付かず既存挙動と完全一致する
+
+### Task LR.7: 昇格（escalation）
+- **area**: agent / **path**: `crates/agent-core`, `crates/llm-gateway`
+- **依存**: LR.4, LR.5
+- **仕様**:
+  - 失敗の兆候（ツール引数 JSON パース不能・空応答・`MaxTokens` 未完・ループ検出・ツールエラー N 回連続）で
+    tier を 1 段上げて同ステップを再生成する（[model-router.md](../llm/model-router.md) §6）。
+  - 上限: 1 run あたり K 回（初期値 2）・同一ステップ 1 回まで・昇格は単調。
+  - **判断は agent-core（ステップ境界を持つ層）**が行い、ルータは段数を受け取って tier 下限を上げるだけ。
+  - 再生成は別冪等キー（`:e{n}`）で刻む（計上漏れにしない・PIT-45）。
+- **受け入れ条件**:
+  - [ ] JSON 破損応答で 1 段昇格して再生成し、成功する IT がある
+  - [ ] 昇格上限を超えない（無限に上がらない）IT がある
+  - [ ] 昇格 1 回の run で生成回数分の `llm_usage` 行が残る IT がある
+
+### Task LR.8: 管理 UI（ルータ設定）
+- **area**: frontend / **path**: `web/`, `crates/api`
+- **依存**: 12.1, LR.6
+- **仕様**:
+  - Task 12.1 のモデルカタログ管理画面に同居させる: `mode` の切替（off/shadow/on）・ルール表の編集・
+    モデルごとの `tier`/`routable`/`residency` 編集・**削減額レポートの可視化**。
+  - shadow の実測（削減率・降格分布）を同じ画面で見せ、**管理者が根拠を持って `on` に切り替えられる**導線にする。
+- **受け入れ条件**:
+  - [ ] 管理者が mode を切り替えられ、即座に次の呼び出しから反映される
+  - [ ] ルール変更が保存でき、変更が監査に残る
+  - [ ] shadow 期間の削減見込み額が期間指定で表示される
