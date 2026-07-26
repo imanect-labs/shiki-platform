@@ -12,9 +12,10 @@ pub mod http;
 pub mod ports;
 pub mod resolver;
 pub mod script;
+pub mod skill;
 
 pub use exec::CapabilityNodeExecutor;
 pub use ports::{
     AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
-    NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+    NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
 };

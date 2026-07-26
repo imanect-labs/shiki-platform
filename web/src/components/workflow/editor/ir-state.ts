@@ -97,6 +97,8 @@ export function defaultParams(nodeType: string): unknown {
       return { url: "https://" };
     case "script.run":
       return { source: { inline: "function main(input) {\n  return input;\n}" } };
+    case "skill.invoke":
+      return { skill: "" };
     case "workflow.start":
       return { name: "" };
     default:

@@ -405,6 +405,13 @@ fn build_app(
         None,
         vec![],
     ));
+    let skill_installs = Arc::new(app_platform::SkillInstallService::new(
+        pool.clone(),
+        app_platform::Registry::new(pool.clone()),
+        app_platform::TrustedKeyStore::new(pool.clone()),
+        Arc::clone(&artifacts),
+        Arc::clone(authz),
+    ));
     let bundles = Arc::new(app_platform::BundleStore::new(
         Arc::new(NoopStore),
         Arc::clone(authz),
@@ -440,6 +447,7 @@ fn build_app(
         )),
         mini_app_code: Arc::clone(&mini_app_code),
         installs,
+        skill_installs,
         bundles,
         app_usage,
         ui_specs: Arc::new(gui::UiSpecStore::new(Arc::clone(&artifacts), ui_validator)),

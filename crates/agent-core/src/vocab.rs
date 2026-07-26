@@ -47,6 +47,9 @@ vocab_enum! {
     /// 新ツールはここへ variant を足し、`Tool::name()` は `as_str()` を返す。
     /// skill の許可ツール・UI アクションの tool 束縛はこの語彙へ照合して未知名を弾く。
     pub enum ToolName {
+        /// スキルのカタログ引き（name+description 一覧から必要時に instructions を読み込む・
+        /// 発話ユーザー権限で解決・発動は run イベントに記録・#344 Task 10.11）。
+        Skill => "skill",
         DocSearch => "doc_search",
         WebSearch => "web_search",
         WebFetch => "web_fetch",

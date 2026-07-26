@@ -48,7 +48,7 @@
   ある環境に限る**（`/dev/kvm` 必須）。KVM 非搭載環境では Firecracker ティアは利用不可。
 - **gVisor = `UserspaceKernel`**: ユーザ空間カーネル。KVM 無しで動くフォールバックだが VM 級より一段弱く、
   脱出 CVE 実績がある。**NFR-1 を厳密には満たさない**。加えて cgroups が使えないデプロイでは
-  メモリ上限がソフト（`--total-memory`＋orchestrator watchdog による二重防御）。ハードなメモリ/VM 級隔離が
+  メモリ上限がソフト（OCI `resources.memory.limit`＋orchestrator watchdog による二重防御・#346）。ハードなメモリ/VM 級隔離が
   要件なら Firecracker ティアを使う。
 - **wasm = `WasmProcess`**: V8＋wasm の仮想 FS/net。**既定ティアではない**（2026-07 に既定は gVisor へ移した・
   design §4.6）。web_fetch のような egress を単一ホストへ固定する短命・読み取り専用実行で使う

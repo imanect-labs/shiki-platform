@@ -103,6 +103,10 @@ pub struct ToolOutcome {
     /// 下書き本文を入れる（chat 側で document_draft ブロックへ写り、フロントが下書き画面で
     /// 詰めてから「ドライブに保存」で .docx 化・確定保存する）。
     pub document_drafts: Vec<serde_json::Value>,
+    /// skill ツールの発動記録（skill のみ・他ツールは空・#344 Task 10.11）。
+    /// `{skill_id, skill_version, name}` の JSON。**発話ユーザー権限で解決に成功した**発動のみ
+    /// を入れる（run イベントへ append され「何をいつ適用したか」の完全な列が残る＝監査・再現性）。
+    pub skill_invocations: Vec<serde_json::Value>,
     /// 実行がエラーだったか（tool_result.is_error）。
     pub is_error: bool,
 }
@@ -121,6 +125,7 @@ impl ToolOutcome {
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
             document_drafts: Vec::new(),
+            skill_invocations: Vec::new(),
             is_error: false,
         }
     }
@@ -138,6 +143,7 @@ impl ToolOutcome {
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
             document_drafts: Vec::new(),
+            skill_invocations: Vec::new(),
             is_error: true,
         }
     }

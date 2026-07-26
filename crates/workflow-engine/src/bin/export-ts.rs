@@ -16,8 +16,8 @@ use workflow_engine::ir::params::{
     AgentInvokeParams, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams, HttpMethod,
     HttpRequestParams, HttpSecretRef, JoinMode, JoinParams, LlmInvokeParams, MapItemError,
     MapParams, RagSearchParams, RedirectPolicy, ScriptRunParams, ScriptSourceSpec, SecretAttach,
-    SecretAttachKind, StorageListParams, StorageReadParams, StorageWriteParams, SwitchCase,
-    SwitchParams, WaitKind, WaitParams, WaitTimeout, WorkflowStartParams,
+    SecretAttachKind, SkillInvokeParams, StorageListParams, StorageReadParams, StorageWriteParams,
+    SwitchCase, SwitchParams, WaitKind, WaitParams, WaitTimeout, WorkflowStartParams,
 };
 use workflow_engine::ir::trigger::{
     Catchup, EventTrigger, InteractiveTrigger, ScheduleTrigger, Trigger, TriggerKind,
@@ -44,6 +44,7 @@ const PARAMS_BY_TYPE: &[(NodeType, &str)] = &[
     (NodeType::AgentInvoke, "AgentInvokeParams"),
     (NodeType::HttpRequest, "HttpRequestParams"),
     (NodeType::ScriptRun, "ScriptRunParams"),
+    (NodeType::SkillInvoke, "SkillInvokeParams"),
     (NodeType::WorkflowStart, "WorkflowStartParams"),
     (NodeType::CsvQuery, "CsvQueryParams"),
     (NodeType::CsvPatch, "CsvPatchParams"),
@@ -115,6 +116,7 @@ fn main() {
         HttpRequestParams,
         ScriptSourceSpec,
         ScriptRunParams,
+        SkillInvokeParams,
         WorkflowStartParams,
         CsvQueryParams,
         CsvPatchParams,

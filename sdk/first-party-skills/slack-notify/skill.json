@@ -1,0 +1,11 @@
+{
+  "description": "Slack チャンネルへ通知を送る公式スキル。シークレット slack-bot-token（宛先束縛: slack.com）で chat.postMessage を呼ぶ。入力: { channel, text }。",
+  "instructions": "Slack へ通知を送るスキルです。ワークフローの skill ノード（skill:slack-notify@<version>）として使うと、入力 { channel, text } を Slack の chat.postMessage へ送信します。前提: シークレット `slack-bot-token`（Bot User OAuth Token・宛先束縛 slack.com）が登録され、実行主体に can_use が付与されていること。チャットから使う場合は、このスキルを含むワークフローを起動してください（チャット本文から直接トークンに触れることはできません）。",
+  "scripts": [
+    {
+      "path": "scripts/notify.shiki",
+      "kind": "shiki",
+      "source": "function main(input) {\n  // Slack Web API（chat.postMessage）。トークンはシークレット参照で、平文は script に渡らない。\n  // 宛先束縛（slack.com）× egress allowlist はホスト側が URL ホスト部リテラルで照合する。\n  const res = Shiki.http.request({\n    method: \"POST\",\n    url: \"https://slack.com/api/chat.postMessage\",\n    secret: { name: \"slack-bot-token\" },\n    body: { channel: input.channel, text: input.text },\n  });\n  // Slack は失敗も HTTP 200 + { ok:false, error } で返す（missing_scope / not_in_channel /\n  // rate_limited 等）。ステップ/run を誤って成功扱いにしないよう、ok!==true は明示的に throw する。\n  if (res.status < 200 || res.status >= 300 || !res.body || res.body.ok !== true) {\n    const err = res.body && res.body.error ? res.body.error : (\"http_\" + res.status);\n    throw new Error(\"slack chat.postMessage failed: \" + err);\n  }\n  return { ok: true, channel: res.body.channel, ts: res.body.ts };\n}\n"
+    }
+  ]
+}

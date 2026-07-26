@@ -92,7 +92,7 @@ pub struct LlmInvokeReq {
 /// agent.invoke の要求（サンドボックス起動・**capability は縮小のみ**）。
 #[derive(Debug, Clone)]
 pub struct AgentInvokeReq {
-    /// 実行するコード/指示（Stage A: wasm ティア固定・制約ツールセット）。
+    /// 実行するコード/指示（ティアは admin ポリシー・既定 gVisor・#346・制約ツールセット）。
     pub code: String,
     /// 実行時間上限（ミリ秒）。
     pub timeout_ms: Option<u64>,
@@ -131,6 +131,25 @@ pub struct ResolvedSecretView {
     pub allowed_hosts: Vec<String>,
 }
 
+/// skill.invoke が実行に使う skill の解決結果（#344 Task 10.1b）。
+///
+/// ポート実装（server 側）が **実行主体の ReBAC** でレジストリ→artifact を解決する
+/// （fail-closed の実行時再検証・ir.md §8）。executor は中身に応じて script / agent 経路へ
+/// dispatch するだけ（workflow-engine は artifact クレートへ依存しない・トレイト境界）。
+#[derive(Debug, Clone)]
+pub struct ResolvedSkillView {
+    /// skill 名（監査表示用）。
+    pub name: String,
+    /// SKILL.md 本文（instructions）。
+    pub instructions: String,
+    /// 先頭の `.shiki` script 本文（あれば script-runtime 経路で実行する）。
+    pub shiki_script: Option<String>,
+    /// skill の宣言スコープ（`allowed_tools` を能力 API スコープへ写したもの・None は絞らない・#344）。
+    /// script 実行時に workflow の scope ceiling とこの集合の**積**を取り、skill 宣言外の
+    /// `Shiki.*` 呼び出しを弾く（実効 = workflow scope ∩ skill 宣言 ∩ 実行主体 ReBAC）。
+    pub allowed_scopes: Option<Vec<String>>,
+}
+
 /// 能力ノードが叩く既存チョークポイントの単一ポート（server 側で具象注入）。
 ///
 /// 各メソッドは `ExecCtx` から `AuthContext` を組み、チョークポイント（OpenFGA 認可込み）を呼ぶ。
@@ -162,7 +181,7 @@ pub trait NodePorts: Send + Sync {
     /// llm.invoke（`LlmGateway.stream` ＋ `record_generation`・trace_id を記録）。
     async fn llm_invoke(&self, ctx: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError>;
 
-    /// agent.invoke（`Sandbox` トレイト・wasm ティア固定・capability 縮小のみ）。
+    /// agent.invoke（`Sandbox` トレイト・ティアは admin ポリシー既定・capability 縮小のみ）。
     async fn agent_invoke(&self, ctx: &ExecCtx, req: AgentInvokeReq) -> Result<Value, PortError>;
 
     /// http.request の外部送信（宛先束縛照合は executor 済み）。
@@ -184,6 +203,15 @@ pub trait NodePorts: Send + Sync {
         name: &str,
         input: &Value,
     ) -> Result<Value, PortError>;
+
+    /// skill.invoke の skill 解決（レジストリ version 照合＋**実行主体 ReBAC** の artifact 読取・
+    /// fail-closed・#344）。アンインストール/剥奪済みは `Err(forbidden)`（黙って続行しない）。
+    async fn skill_resolve(
+        &self,
+        ctx: &ExecCtx,
+        name: &str,
+        version: &str,
+    ) -> Result<ResolvedSkillView, PortError>;
 
     /// csv.query（`TabularService.query`・隔離 DuckDB での RO SQL・viewer）。返り値は列＋行の要約。
     async fn csv_query(&self, ctx: &ExecCtx, file_id: Uuid, sql: &str) -> Result<Value, PortError>;

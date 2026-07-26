@@ -1,4 +1,4 @@
-//! AI ノード（llm.invoke / agent.invoke）の params 契約（ir.md §7.3/§7.4）。
+//! AI ノード（llm.invoke / agent.invoke / skill.invoke）の params 契約（ir.md §7.3/§7.4/§7.7）。
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -30,7 +30,8 @@ pub struct LlmInvokeParams {
     pub max_tokens: Option<ValueExpr>,
 }
 
-/// `agent.invoke` — サンドボックスで agent-core を実行（best-effort・wasm ティア固定）。
+/// `agent.invoke` — サンドボックスで agent-core を実行（best-effort・ティアは admin ポリシー
+/// `chat.sandbox_backend`・既定 gVisor・#346）。
 ///
 /// サンドボックス設定は**縮小のみ**（実効 = 実行主体 ReBAC ∩ declared_scopes ∩ 本設定）。
 /// `mount_scope`/`allowed_tools`/`model`/`max_tokens` は Phase 5 フルツール構成との結線
@@ -48,4 +49,22 @@ pub struct AgentInvokeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub max_duration_sec: Option<ValueExpr>,
+}
+
+/// `skill.invoke` — インストール済み skill の実行（ir.md §7.7・#344 Task 10.1b）。
+///
+/// `skill` は `skill:<name>@<version>` のリテラル参照（保存時にレジストリ＋保存ユーザーの
+/// インストール集合へ照合＝V4・実行時に実行主体 ReBAC で再検証＝fail-closed）。
+/// skill が `.shiki` script を持てば script-runtime で実行し、instructions のみなら
+/// agent.invoke 経路（サンドボックス）で実行する（新しい実行機構は作らない）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct SkillInvokeParams {
+    /// `skill:<name>@<version>` のリテラル参照（$from 不可・照合可能性のため）。
+    pub skill: String,
+    /// skill への入力（省略時はノード入力をそのまま渡す）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub input: Option<ValueExpr>,
 }

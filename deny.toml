@@ -21,6 +21,9 @@ ignore = [
     { id = "RUSTSEC-2026-0098", reason = "aws-sdk-s3 推移依存の rustls-webpki 0.101.7。上流更新待ち・内部MinIO/正規AWS証明書のみで低リスク。" },
     { id = "RUSTSEC-2026-0099", reason = "同上（wildcard name の name constraint 迂回）。" },
     { id = "RUSTSEC-2026-0104", reason = "同上（CRL パースの reachable panic）。" },
+    # smallstr は yrs（共同編集 CRDT）の推移依存。unmaintained 通知であり既知脆弱性は無い。
+    # yrs 上流が置換（compact_str 等）するまで解消不可。上流更新で外す（要追跡）。
+    { id = "RUSTSEC-2026-0215", reason = "yrs 推移依存の smallstr unmaintained 通知。脆弱性ではなく yrs 上流の置換待ち。" },
 ]
 
 [licenses]

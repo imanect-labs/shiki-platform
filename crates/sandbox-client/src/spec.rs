@@ -8,15 +8,18 @@ use futures::stream::BoxStream;
 
 use crate::error::SandboxError;
 
-/// 隔離バックエンド種別。既定は `Wasm`。gVisor はフル Linux（KVM 不要）、Firecracker は VM 級隔離。
+/// 隔離バックエンド種別。既定は `Gvisor`（#346・design §4.6「2026-07 再転換」。コード実行の
+/// 実効体感は create＋実行の総時間で決まり、native CPython の gVisor が wasm/Pyodide より
+/// 一桁以上速い）。gVisor はフル Linux（KVM 不要）、Firecracker は VM 級隔離。
+/// `web_fetch` は Pyodide を使わない短命 egress のため常に wasm（[`SandboxSpec::web_fetch`]）。
 ///
 /// serde 表現は snake_case（`wasm` / `gvisor` / `firecracker`）。admin ポリシー（server 設定）から
 /// backend ティアを選ぶ導線で用いる。proto へのワイヤ変換は `convert.rs`（`pb::Backend`）で別途行う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxBackend {
-    #[default]
     Wasm,
+    #[default]
     Gvisor,
     Firecracker,
 }
@@ -125,7 +128,7 @@ pub struct SandboxSpec {
 impl SandboxSpec {
     /// code_interpreter 用（ネット遮断・まっさら・短命・Python 実行に必要な最小 software）。
     ///
-    /// `backend` は admin ポリシーで選ぶ隔離ティア（wasm 既定／native Python が速い gVisor 等・design §4.6）。
+    /// `backend` は admin ポリシーで選ぶ隔離ティア（gVisor 既定＝native Python・#346・design §4.6）。
     pub fn code_interpreter(
         backend: SandboxBackend,
         tenant_id: String,
@@ -278,6 +281,21 @@ pub trait Sandbox: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 既定は gVisor（#346）だが、**web_fetch は既定が何であれ常に wasm**（この例外を消さない）。
+    /// Pyodide を使わない短命 egress で wasm の create 11ms がそのまま効くため（design §4.6）。
+    #[test]
+    fn web_fetch_is_always_wasm_regardless_of_default() {
+        assert_eq!(SandboxBackend::default(), SandboxBackend::Gvisor);
+        let spec = SandboxSpec::web_fetch(
+            "t".into(),
+            "o".into(),
+            "alice".into(),
+            "example.com".into(),
+            443,
+        );
+        assert_eq!(spec.backend, SandboxBackend::Wasm);
+    }
 
     #[test]
     fn isolation_class_per_backend() {

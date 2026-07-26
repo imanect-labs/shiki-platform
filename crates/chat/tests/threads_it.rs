@@ -708,6 +708,7 @@ async fn agent_mode_worker_runs_to_done() {
             storage: None,
             ui_validator: None,
             skill_artifacts: None,
+            skill_catalog: None,
             workflow_store: None,
             workflow_catalog: None,
             collab: None,

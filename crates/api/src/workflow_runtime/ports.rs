@@ -8,7 +8,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use authz::{AuthContext, Principal, PrincipalKind};
 use futures::StreamExt;
 use llm_gateway::{
     GenerateRequest, GenerationRecord, LlmGateway, Message, Role, StreamDelta, Usage,
@@ -18,11 +17,13 @@ use secrets::SecretStore;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use storage::model::ChildSort;
+
+use super::auth::auth_ctx;
 use storage::StorageService;
 use uuid::Uuid;
 use workflow_engine::{
     CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts,
-    PortError, ResolvedSecretView, StorageWriteReq, WorkflowRunLauncher,
+    PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq, WorkflowRunLauncher,
 };
 
 /// 本番ポート（AppState のチョークポイント参照を保持）。
@@ -36,31 +37,13 @@ pub struct ProdNodePorts {
     pub secrets: Option<Arc<SecretStore>>,
     /// CSV 表データ（csv.query/patch/write・隔離 DuckDB 経由の Task 11P.9）。
     pub tabular: Option<Arc<tabular::TabularService>>,
+    /// skill.invoke の実行時解決（レジストリ→artifact を実行主体 ReBAC で読む・#344）。
+    pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
     pub launcher: WorkflowRunLauncher,
     /// http.request の外部送信クライアント（リダイレクト非追従の別クライアントも内部で使う）。
     pub http: reqwest::Client,
     /// workflow.start の名前解決に使う（artifact 名 → workflow_id）。
     pub db: PgPool,
-}
-
-/// `ExecCtx` から実行主体の `AuthContext` を組む（種別で subject を分ける）。
-fn auth_ctx(ec: &ExecCtx) -> AuthContext {
-    if ec.principal_kind == "workflow" {
-        AuthContext::for_workflow(ec.tenant_id.clone(), ec.org.clone(), &ec.principal)
-    } else {
-        AuthContext::new(
-            Principal {
-                kind: PrincipalKind::User,
-                id: ec.principal.clone(),
-                email: None,
-                groups: vec![],
-                roles: vec![],
-                tenant_id: Some(ec.tenant_id.clone()),
-            },
-            ec.org.clone(),
-            ec.tenant_id.clone(),
-        )
-    }
 }
 
 fn map_storage(e: storage::StorageError) -> PortError {
@@ -372,6 +355,27 @@ impl NodePorts for ProdNodePorts {
             plaintext: resolved.plaintext,
             allowed_hosts: resolved.binding.hosts().to_vec(),
         })
+    }
+
+    async fn skill_resolve(
+        &self,
+        ec: &ExecCtx,
+        name: &str,
+        version: &str,
+    ) -> Result<ResolvedSkillView, PortError> {
+        let Some(artifacts) = &self.skill_artifacts else {
+            return Err(PortError::unavailable("skill 解決が未配線です"));
+        };
+        let ctx = auth_ctx(ec);
+        super::skill_port::resolve_skill(
+            &self.db,
+            artifacts,
+            &ctx,
+            name,
+            version,
+            ec.trace_id.as_deref(),
+        )
+        .await
     }
 
     async fn workflow_start(

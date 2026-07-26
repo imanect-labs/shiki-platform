@@ -7,8 +7,9 @@ import { expect, test, type Page } from "@playwright/test";
 import { loginViaKeycloak } from "./helpers";
 
 /// **フルツール・複雑タスク**のデモ動画（AI_FULL=1）。実 LLM＋実 SearXNG（web_search）＋
-/// web_fetch（隔離サンドボックス）＋csv.query（隔離 DuckDB）＋ドキュメント編集ツールを
-/// 一つのタスクで横断させる。
+/// code_interpreter（gVisor・numpy/pandas 同梱）＋csv.query（隔離 DuckDB）＋
+/// ドキュメント編集ツールを一つのタスクで横断させる。
+/// （web_fetch は wasm 固定＋Pyodide pin ドリフト #362 のため本 spec では使わない）
 /// 前提: `scripts/e2e-deep-host.env` の構成で api を起動（SearXNG :8099・sandbox :50000・
 /// Langfuse :3002）。トレースは Langfuse UI（http://localhost:3002）で確認できる。
 test.skip(process.env.AI_FULL !== "1", "フルツール複雑タスク動画（AI_FULL=1）");
@@ -77,7 +78,7 @@ async function approveLoop(page: Page, firstTimeoutMs: number, rounds = 8) {
   }
 }
 
-/// ① 競合調査レポート: web_search（実 SearXNG）→ web_fetch → csv.query（DuckDB）→
+/// ① 競合調査レポート: web_search（実 SearXNG）→ csv.query → code_interpreter（gVisor）→
 /// 開いているノートへ document.edit でライブ執筆。参照物として社内の CSV 実績も渡す。
 test("full-market-research: 検索→取得→SQL集計→ノートへレポート", async ({ page }) => {
   await loginViaKeycloak(page);
@@ -126,17 +127,17 @@ test("full-market-research: 検索→取得→SQL集計→ノートへレポー�
   await page.keyboard.type(
     "次の調査レポートを、いま開いているこのノートに執筆してください（新規作成ではなくこのノートを編集）。" +
       "手順: (1) web_search で「SaaS churn rate benchmark 2026」と「SaaS NPS benchmark B2B」を検索し、" +
-      "(2) 有用そうなページを web_fetch で実際に読み、(3) 添付の社内実績 CSV に対し csv.query で " +
-      "月次の MRR 合計・プラン別チャーン率（churned/new_customers）・NPS 推移を SQL 集計し、" +
+      "(2) 検索結果のタイトル・スニペットから業界水準を読み取り、(3) 添付の社内実績 CSV を csv.query で読み出し、" +
+      "その結果を code_interpreter（pandas 利用可）で月次 MRR 成長率・プラン別チャーン率・NPS 推移まで計算し、" +
       "(4) 外部ベンチマークと自社実績を比較する「市場ベンチマーク比較」「自社実績の分析（計算結果の表）」" +
       "「プラン別の課題」「打ち手の提案5点」「出典リンク一覧」の構成でレポートを書いてください。" +
-      "数値は必ず csv.query の集計結果を使い、外部の主張は web_fetch で読んだページの出典 URL を併記してください。",
+      "数値は必ず csv.query / code_interpreter の実行結果を使い、外部の主張は検索結果の出典 URL を併記してください。",
     { delay: 8 },
   );
   await beat(page, 800);
   await input.press("Enter");
 
-  // web_search / web_fetch / code_interpreter は承認不要、document.edit は承認が要る。
+  // web_search / csv.query / code_interpreter は承認不要、document.edit は承認が要る。
   await approveLoop(page, 900_000);
 
   // レポートがノートへライブ反映される（見出しの出現を確認して全体を流す）。
@@ -152,7 +153,7 @@ test("full-market-research: 検索→取得→SQL集計→ノートへレポー�
   await beat(page, 3000);
 });
 
-/// ② 財務ダッシュボード: CSV を csv.query で集計 → Excel へライブ書込
+/// ② 財務ダッシュボード: CSV を csv.query＋code_interpreter で集計 → Excel へライブ書込
 /// （複数 op）→ Word 下書きに経営サマリー。1 タスクで 3 種の成果物を作る。
 test("full-financial-dashboard: SQL集計→Excel複数表→Word要約", async ({ page }) => {
   await disableWelcome(page.context());
@@ -200,13 +201,13 @@ test("full-financial-dashboard: SQL集計→Excel複数表→Word要約", async 
   const input = page.getByLabel("メッセージを入力");
   await input.click();
   await page.keyboard.type(
-    "添付の取引明細 CSV を csv.query（SQL）で集計し、次の3つを作ってください。" +
+    "添付の取引明細 CSV を csv.query（SQL）と code_interpreter（pandas）で集計し、次の3つを作ってください。" +
       "(1) 四半期別サマリー: 受注額合計・受注件数・勝率・平均クローズ日数を計算し、" +
       `添付の Excel（${xlsxName}）の A1 起点に表として書き込む。` +
       "(2) 同じ Excel の A8 起点に、地域×業種の受注額クロス集計表も書き込む。" +
       "(3) 経営会議向けの説明資料を Word 文書の下書きとして作成する" +
       "（ハイライト、四半期トレンドの考察、勝率が低いセグメントの特定と仮説、次四半期の重点3点）。" +
-      "数値は必ず csv.query の集計結果を使ってください。勝率は won/(won+lost) で計算します。",
+      "数値は必ず csv.query / code_interpreter の実行結果を使ってください。勝率は won/(won+lost) です。",
     { delay: 8 },
   );
   await beat(page, 800);

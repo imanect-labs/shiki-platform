@@ -20,6 +20,7 @@ import {
   AgentInvokeForm,
   LlmInvokeForm,
   RagSearchForm,
+  SkillInvokeForm,
   StorageListForm,
   StorageReadForm,
   StorageWriteForm,
@@ -46,6 +47,7 @@ const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "control.join": JoinForm,
   "http.request": HttpRequestForm,
   "script.run": ScriptRunForm,
+  "skill.invoke": SkillInvokeForm,
 };
 
 /// 祖先ノード（`$from nodes.<id>.output` の参照候補）を逆辺 BFS で求める。

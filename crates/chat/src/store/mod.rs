@@ -12,6 +12,7 @@ mod reaper;
 mod runs;
 mod sharing;
 mod stream;
+mod thread_pins;
 mod threads;
 
 pub use runs::{ClaimedRun, PostResult, CHAT_GENERATION_QUEUE};

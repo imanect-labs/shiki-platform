@@ -229,3 +229,66 @@ export function WorkflowStartForm({ node, dispatch, refCandidates, inMapRegion, 
     </div>
   );
 }
+
+/// skill.invoke — インストール済みスキルの実行（#344）。
+/// 参照はリテラル `skill:<name>@<version>`（保存時にインストール集合へ照合＝V4）。
+export function SkillInvokeForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
+  const p = paramsOf<NodeParamsByType["skill.invoke"]>(node);
+  const [installed, setInstalled] = React.useState<
+    { name: string; registryVersion: string }[] | null
+  >(null);
+  React.useEffect(() => {
+    void import("@/lib/skill-registry-api").then((m) =>
+      m
+        .listSkillInstallations()
+        .then((list) =>
+          setInstalled(list.map((i) => ({ name: i.name, registryVersion: i.registryVersion }))),
+        )
+        .catch(() => setInstalled([])),
+    );
+  }, []);
+  const current = (p.skill as string | undefined) ?? "";
+  return (
+    <div className="space-y-3">
+      <Field
+        label="実行するスキル"
+        hint="インストール済みスキルから選ぶ（スキルページのストアで追加できる）"
+        error={fieldErrors.get("skill")}
+      >
+        {installed && installed.length > 0 ? (
+          <select
+            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+            value={current}
+            onChange={(e) => patchParams(dispatch, node, { skill: e.target.value })}
+          >
+            <option value="">選択してください</option>
+            {installed.map((i) => {
+              const v = `skill:${i.name}@${i.registryVersion}`;
+              return (
+                <option key={v} value={v}>
+                  {i.name}（v{i.registryVersion}）
+                </option>
+              );
+            })}
+            {current && !installed.some((i) => `skill:${i.name}@${i.registryVersion}` === current) ? (
+              <option value={current}>{current}（未インストール）</option>
+            ) : null}
+          </select>
+        ) : (
+          <Input
+            value={current}
+            placeholder="skill:<name>@<version>"
+            onChange={(e) => patchParams(dispatch, node, { skill: e.target.value })}
+          />
+        )}
+      </Field>
+      <ValueExprInput
+        label="渡す入力（省略可）"
+        value={p.input as ValueExpr | undefined}
+        onChange={(v) => patchParams(dispatch, node, { input: v })}
+        refCandidates={refCandidates}
+        inMapRegion={inMapRegion}
+      />
+    </div>
+  );
+}

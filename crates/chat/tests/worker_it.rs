@@ -156,6 +156,7 @@ async fn worker_generates_streams_and_persists_projection() {
             storage: None,
             ui_validator: None,
             skill_artifacts: None,
+            skill_catalog: None,
             workflow_store: None,
             workflow_catalog: None,
             collab: None,

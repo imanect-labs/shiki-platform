@@ -128,7 +128,7 @@ impl Tool for MockSearchTool {
             note_drafts: vec![],
             slide_drafts: vec![],
             csv_drafts: vec![],
-            document_drafts: vec![],
+            document_drafts: vec![],            skill_invocations: vec![],
             is_error: false,
         })
     }
