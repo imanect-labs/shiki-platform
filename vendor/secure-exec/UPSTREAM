@@ -21,7 +21,11 @@ vendor しなかったもの（上流にあるが不要）:
   packages/*, website, playground, registry/agent, registry/tool（TS モノレポ）
 
 ローカルパッチ:
-  patches/ 以下に番号付き .patch で管理（現状なし。最初のパッチは egress 判定イベント発火）。
+  patches/ 以下に番号付き .patch で管理。
+  0001-pyodide-heap-snapshot.patch
+    Pyodide ヒープスナップショット高速起動（crates/execution: python.rs /
+    node_import_cache.rs / assets/runners/python-runner.mjs / tests/python_snapshot.rs）。
+    設計と実測: docs/sandbox/wasm-exec-optimization.md（shiki リポジトリ側）。
 
 再 vendor 手順:
   scripts/update-secure-exec.sh を参照。

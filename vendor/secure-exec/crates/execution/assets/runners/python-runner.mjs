@@ -1,4 +1,4 @@
-import { closeSync, createReadStream, mkdirSync, readFileSync, readSync, writeSync } from 'node:fs';
+import { closeSync, createReadStream, mkdirSync, readFileSync, readSync, writeFileSync, writeSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import * as moduleBuiltin from 'node:module';
 import { performance as realPerformance } from 'node:perf_hooks';
@@ -19,6 +19,13 @@ const PYTHON_MODULE_ENV = 'AGENTOS_PYTHON_MODULE';
 const PYTHON_STDIN_PROGRAM_ENV = 'AGENTOS_PYTHON_STDIN_PROGRAM';
 const PYTHON_INTERACTIVE_ENV = 'AGENTOS_PYTHON_INTERACTIVE';
 const PYTHON_PREWARM_ONLY_ENV = 'AGENTOS_PYTHON_PREWARM_ONLY';
+const PYTHON_SNAPSHOT_DIR_ENV = 'AGENTOS_PYTHON_SNAPSHOT_DIR';
+const PYTHON_SNAPSHOT_CREATE_DIR_ENV = 'AGENTOS_PYTHON_SNAPSHOT_CREATE_DIR';
+const PYTHON_SNAPSHOT_META_FILE = 'meta.json';
+// Chunk files stay well below the Python sync-RPC data cap (20 MiB) even after
+// the base64 framing overhead of the fs bridge (~4/3x).
+const PYTHON_SNAPSHOT_CHUNK_BYTES = 8 * 1024 * 1024;
+const PYTHON_SNAPSHOT_FORMAT_VERSION = 1;
 const PYTHON_WARMUP_DEBUG_ENV = 'AGENTOS_PYTHON_WARMUP_DEBUG';
 const PYTHON_WARMUP_METRICS_PREFIX = '__AGENTOS_PYTHON_WARMUP_METRICS__:';
 const PYTHON_PRELOAD_PACKAGES_ENV = 'AGENTOS_PYTHON_PRELOAD_PACKAGES';
@@ -335,6 +342,125 @@ function resolvePyodidePackageCacheDir() {
   return PYODIDE_PACKAGE_CACHE_GUEST_ROOT;
 }
 
+function snapshotChunkFileName(index) {
+  return `chunk-${String(index).padStart(3, '0')}.bin`;
+}
+
+// Reads a chunked Pyodide heap snapshot written by `writeHeapSnapshot()`.
+// Returns `null` on any validation failure so callers fall back to a fresh
+// `loadPyodide()` boot instead of failing the execution.
+function readHeapSnapshot(snapshotDir) {
+  let meta;
+  try {
+    meta = JSON.parse(readFileSync(path.join(snapshotDir, PYTHON_SNAPSHOT_META_FILE), 'utf8'));
+  } catch {
+    return null;
+  }
+  const { formatVersion, totalBytes, chunkBytes, chunks } = meta ?? {};
+  if (
+    formatVersion !== PYTHON_SNAPSHOT_FORMAT_VERSION ||
+    !Number.isSafeInteger(totalBytes) ||
+    !Number.isSafeInteger(chunkBytes) ||
+    !Number.isSafeInteger(chunks) ||
+    totalBytes <= 0 ||
+    chunkBytes <= 0 ||
+    chunks !== Math.ceil(totalBytes / chunkBytes)
+  ) {
+    return null;
+  }
+
+  const snapshot = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (let index = 0; index < chunks; index += 1) {
+    let chunk;
+    try {
+      chunk = readFileSync(path.join(snapshotDir, snapshotChunkFileName(index)));
+    } catch {
+      return null;
+    }
+    const view = ArrayBuffer.isView(chunk)
+      ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+      : new Uint8Array(chunk);
+    if (offset + view.byteLength > totalBytes) {
+      return null;
+    }
+    snapshot.set(view, offset);
+    offset += view.byteLength;
+  }
+  return offset === totalBytes ? snapshot : null;
+}
+
+// Writes the snapshot as fixed-size chunk files plus a trailing meta.json. The
+// meta file is written last so a partially-written directory never validates.
+function writeHeapSnapshot(snapshotDir, snapshot) {
+  mkdirSync(snapshotDir, { recursive: true });
+  let chunks = 0;
+  for (let offset = 0; offset < snapshot.byteLength; offset += PYTHON_SNAPSHOT_CHUNK_BYTES) {
+    const slice = snapshot.subarray(
+      offset,
+      Math.min(offset + PYTHON_SNAPSHOT_CHUNK_BYTES, snapshot.byteLength),
+    );
+    writeFileSync(path.join(snapshotDir, snapshotChunkFileName(chunks)), Buffer.from(slice));
+    chunks += 1;
+  }
+  writeFileSync(
+    path.join(snapshotDir, PYTHON_SNAPSHOT_META_FILE),
+    JSON.stringify({
+      formatVersion: PYTHON_SNAPSHOT_FORMAT_VERSION,
+      totalBytes: snapshot.byteLength,
+      chunkBytes: PYTHON_SNAPSHOT_CHUNK_BYTES,
+      chunks,
+    }),
+  );
+}
+
+// Prewarm-only path: boots Pyodide with `_makeSnapshot` and persists the heap
+// snapshot into `createDir` (a guest path under the writable Pyodide package
+// cache root). Returns a status string for the prewarm metrics line; snapshot
+// creation failures degrade to plain (snapshot-less) execution, they never
+// fail the prewarm.
+async function createPrewarmHeapSnapshot({
+  loadPyodide,
+  indexPath,
+  lockFileContents,
+  bundledPackageBaseUrl,
+  packageCacheDir,
+  createDir,
+}) {
+  let pyodide;
+  try {
+    mkdirSync(packageCacheDir, { recursive: true });
+    pyodide = await loadPyodide({
+      indexURL: indexPath,
+      lockFileContents,
+      packageBaseUrl: bundledPackageBaseUrl,
+      packageCacheDir,
+      env: buildPythonRuntimeEnv(),
+      stdout: writePyodideStdout,
+      stderr: (message) => writeStream(process.stderr, message),
+      _makeSnapshot: true,
+    });
+  } catch (error) {
+    emitWarmupStage(`snapshot-create-boot-failed:${formatError(error)}`);
+    return 'boot-failed';
+  }
+
+  if (typeof pyodide?.makeMemorySnapshot !== 'function') {
+    emitWarmupStage('snapshot-create-unsupported');
+    return 'unsupported';
+  }
+
+  try {
+    const snapshot = pyodide.makeMemorySnapshot();
+    writeHeapSnapshot(createDir, snapshot);
+    emitWarmupStage(`snapshot-created:${snapshot.byteLength}`);
+    return 'created';
+  } catch (error) {
+    emitWarmupStage(`snapshot-create-failed:${formatError(error)}`);
+    return 'failed';
+  }
+}
+
 function emitWarmupStage(stage) {
   if (readRunnerEnv(PYTHON_WARMUP_DEBUG_ENV) !== '1') {
     return;
@@ -415,6 +541,8 @@ function emitPythonStartupMetrics({
   packageLoadMs,
   packageCount,
   source,
+  snapshot,
+  snapshotMs,
 }) {
   if (readRunnerEnv(PYTHON_WARMUP_DEBUG_ENV) !== '1') {
     return;
@@ -430,6 +558,8 @@ function emitPythonStartupMetrics({
       packageLoadMs,
       packageCount,
       source,
+      snapshot: snapshot ?? 'off',
+      snapshotMs: snapshotMs ?? 0,
     })}`,
   );
 }
@@ -2416,6 +2546,21 @@ try {
     const wasmResource = resolvePyodideResource(indexPath, indexUrl, 'pyodide.asm.wasm');
     await readFile(stdlibResource.path);
     await readFile(wasmResource.path);
+    const snapshotCreateDir = readRunnerEnv(PYTHON_SNAPSHOT_CREATE_DIR_ENV);
+    let snapshotState;
+    let snapshotMs = 0;
+    if (snapshotCreateDir != null && snapshotCreateDir.trim() !== '') {
+      const snapshotStarted = realPerformance.now();
+      snapshotState = await createPrewarmHeapSnapshot({
+        loadPyodide,
+        indexPath,
+        lockFileContents,
+        bundledPackageBaseUrl,
+        packageCacheDir,
+        createDir: snapshotCreateDir,
+      });
+      snapshotMs = realPerformance.now() - snapshotStarted;
+    }
     restorePyodideShellCompat();
     emitWarmupStage('prewarm-assets-ready');
     emitPythonStartupMetrics({
@@ -2425,6 +2570,8 @@ try {
       packageLoadMs: 0,
       packageCount: 0,
       source: 'prewarm',
+      snapshot: snapshotState,
+      snapshotMs,
     });
     process.exitCode = 0;
   } else {
@@ -2432,8 +2579,21 @@ try {
   installPythonGuestPreloadHardening(pythonVfsRpcBridge);
   mkdirSync(packageCacheDir, { recursive: true });
   emitWarmupStage('before-load-pyodide');
+  // Heap-snapshot restore: when the host advertises a snapshot directory,
+  // assemble the snapshot and boot Pyodide from it instead of running the full
+  // CPython bootstrap. Any read/restore failure falls back to a fresh boot.
+  const snapshotDir = readRunnerEnv(PYTHON_SNAPSHOT_DIR_ENV);
+  let snapshotState = snapshotDir != null && snapshotDir.trim() !== '' ? 'missing' : 'off';
+  let snapshotMs = 0;
+  let snapshotBytes = null;
+  if (snapshotState !== 'off') {
+    const snapshotReadStarted = realPerformance.now();
+    snapshotBytes = readHeapSnapshot(snapshotDir);
+    snapshotMs = realPerformance.now() - snapshotReadStarted;
+    emitWarmupStage(`snapshot-read:${snapshotBytes ? snapshotBytes.byteLength : 'invalid'}`);
+  }
   const loadPyodideStarted = realPerformance.now();
-  const pyodide = await loadPyodide({
+  const loadPyodideOptions = {
     indexURL: indexPath,
     lockFileContents,
     packageBaseUrl: bundledPackageBaseUrl,
@@ -2441,20 +2601,41 @@ try {
     env: buildPythonRuntimeEnv(),
     stdout: writePyodideStdout,
     stderr: (message) => writeStream(process.stderr, message),
-  }).catch((error) => {
-    throw wrapPythonStartupError(
-      'Pyodide bootstrap',
-      {
-        indexPath,
-        indexUrl,
-        packageBaseUrl,
-        bundledPackageBaseUrl,
-        packageCacheDir,
-        pyodideModuleUrl,
-      },
-      error,
-    );
-  });
+  };
+  let pyodide = null;
+  if (snapshotBytes != null) {
+    try {
+      pyodide = await loadPyodide({ ...loadPyodideOptions, _loadSnapshot: snapshotBytes });
+      // The restore path can lose the lockfile-relative package resolution the
+      // fresh bootstrap computes, falling back to the loader's public CDN base.
+      // Pin the package CDN back to the bundled asset root so
+      // `loadPackage()` stays offline (network policy is enforced elsewhere).
+      if (typeof pyodide?._api?.setCdnUrl === 'function') {
+        pyodide._api.setCdnUrl(bundledPackageBaseUrl);
+      }
+      snapshotState = 'restored';
+    } catch (error) {
+      emitWarmupStage(`snapshot-restore-failed:${formatError(error)}`);
+      snapshotState = 'restore-failed';
+    }
+    snapshotBytes = null;
+  }
+  if (pyodide == null) {
+    pyodide = await loadPyodide(loadPyodideOptions).catch((error) => {
+      throw wrapPythonStartupError(
+        'Pyodide bootstrap',
+        {
+          indexPath,
+          indexUrl,
+          packageBaseUrl,
+          bundledPackageBaseUrl,
+          packageCacheDir,
+          pyodideModuleUrl,
+        },
+        error,
+      );
+    });
+  }
   restorePyodideShellCompat();
   emitWarmupStage('after-load-pyodide');
   const loadPyodideMs = realPerformance.now() - loadPyodideStarted;
@@ -2513,6 +2694,8 @@ try {
     packageLoadMs,
     packageCount: preloadPackages.length,
     source,
+    snapshot: snapshotState,
+    snapshotMs,
   });
   if (moduleName === 'pip') {
     await runPythonPip(pyodide);

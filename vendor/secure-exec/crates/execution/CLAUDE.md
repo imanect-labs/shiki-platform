@@ -218,6 +218,7 @@ ESM loader hooks (`loader.mjs`) and CJS `Module._load` patches (`runner.mjs`) ar
 
 ## Python Execution
 
+- Pyodide boots via the heap-snapshot fast path by default: the first execution's prewarm creates a memory snapshot (`_makeSnapshot` / `makeMemorySnapshot()`), the host promotes it into a cross-process store keyed by asset-content fingerprint, and later executions restore with `_loadSnapshot` instead of a full CPython bootstrap. Restore/creation failures must stay fail-open (fresh boot); snapshot signal env vars (`AGENTOS_PYTHON_SNAPSHOT_DIR` / `_CREATE_DIR`) are host-decided and must never be inherited from caller env. Store entries are only trusted when owned by the process euid (shared-temp poisoning defense). After a snapshot restore, re-pin the package CDN base to the bundled asset root (`_api.setCdnUrl`) — the restore path loses the lockfile-relative resolution and would otherwise fetch wheels from the public CDN. Parity coverage lives in `crates/execution/tests/python_snapshot.rs` (`SECURE_EXEC_TEST_PYODIDE_DIST` points the suite at an alternate self-consistent dist on hosts without the pinned bundle).
 - Python execution in `python.rs` should keep `poll_event()` blocked until a real guest-visible event arrives or the caller timeout expires; filtered stderr/control messages are internal noise.
 - `wait(None)` should still enforce the per-run `AGENTOS_PYTHON_EXECUTION_TIMEOUT_MS` cap.
 - `wait()` should bound accumulated stdout/stderr via the hidden `AGENTOS_PYTHON_OUTPUT_BUFFER_MAX_BYTES` env knob rather than growing buffers without limit.

@@ -1,4 +1,4 @@
-use crate::common::{encode_json_string, frozen_time_ms};
+use crate::common::{encode_json_string, frozen_time_ms, stable_hash64};
 use crate::javascript::{
     CreateJavascriptContextRequest, GuestRuntimeConfig, JavascriptExecution,
     JavascriptExecutionEngine, JavascriptExecutionError, JavascriptExecutionEvent,
@@ -16,9 +16,10 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 const NODE_ALLOW_PROCESS_BINDINGS_ENV: &str = "AGENTOS_ALLOW_PROCESS_BINDINGS";
@@ -42,6 +43,22 @@ const DEFAULT_PYTHON_VFS_RPC_TIMEOUT_MS: u64 = 30_000;
 const PYTHON_SYNC_RPC_DATA_BYTES: usize = 20 * 1024 * 1024;
 const PYTHON_SYNC_RPC_WAIT_TIMEOUT_MS: u64 = 120_000;
 const PYTHON_PREWARM_TIMEOUT: Duration = Duration::from_secs(120);
+/// Heap-snapshot control (host-side): `AGENTOS_PYTHON_SNAPSHOT=0|false|off` on
+/// the execution request (or host process env) disables the mechanism; the
+/// snapshot store location can be overridden with `AGENTOS_PYTHON_SNAPSHOT_STORE`
+/// (host process env). The remaining two env names are engine-internal signals
+/// to the Pyodide runner and are never taken from caller env.
+const PYTHON_SNAPSHOT_ENV: &str = "AGENTOS_PYTHON_SNAPSHOT";
+const PYTHON_SNAPSHOT_STORE_ENV: &str = "AGENTOS_PYTHON_SNAPSHOT_STORE";
+const PYTHON_SNAPSHOT_DIR_ENV: &str = "AGENTOS_PYTHON_SNAPSHOT_DIR";
+const PYTHON_SNAPSHOT_CREATE_DIR_ENV: &str = "AGENTOS_PYTHON_SNAPSHOT_CREATE_DIR";
+/// Bump when the on-disk snapshot layout or restore contract changes.
+const PYTHON_SNAPSHOT_VERSION: &str = "1";
+const PYTHON_SNAPSHOT_META_FILE: &str = "meta.json";
+const PYTHON_SNAPSHOT_BUILD_SUBDIR: &str = "heap-snapshot-build";
+const PYTHON_SNAPSHOT_GUEST_SUBDIR: &str = "heap-snapshot";
+
+static NEXT_PYTHON_SNAPSHOT_BUILD_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PythonVfsRpcMethod {
@@ -923,19 +940,39 @@ impl PythonExecutionEngine {
         let javascript_context_id = javascript_context.context_id.clone();
         self.javascript_context_ids
             .insert(context.context_id.clone(), javascript_context_id.clone());
-        let warmup_metrics = {
+        let (warmup_metrics, snapshot_restore_guest_dir) = {
             let import_cache = self.import_caches.entry(context.vm_id.clone()).or_default();
             import_cache
                 .ensure_materialized()
                 .map_err(PythonExecutionError::PrepareRuntime)?;
-            prewarm_python_path(
+            let snapshot_plan = plan_python_heap_snapshot(import_cache, &context, &request);
+            let warmup_metrics = prewarm_python_path(
                 import_cache,
                 &mut self.javascript_engine,
                 &javascript_context_id,
                 &context,
                 &request,
                 frozen_time_ms,
-            )?
+                snapshot_plan
+                    .as_ref()
+                    .and_then(|plan| plan.create_nonce_guest.as_deref()),
+            )?;
+            let created = snapshot_plan
+                .as_ref()
+                .is_some_and(|plan| plan.create_nonce_host.is_some());
+            let snapshot_restore_guest_dir = snapshot_plan.and_then(|plan| {
+                finalize_python_snapshot_creation(&plan);
+                let pyodide_dist_path =
+                    resolved_pyodide_dist_path(&context.pyodide_dist_path, &request.cwd);
+                expose_python_snapshot_to_guest(&plan.entry_dir, &pyodide_dist_path)
+            });
+            let warmup_metrics = append_snapshot_metrics_line(
+                warmup_metrics,
+                &request,
+                created,
+                snapshot_restore_guest_dir.is_some(),
+            );
+            (warmup_metrics, snapshot_restore_guest_dir)
         };
 
         self.next_execution_id += 1;
@@ -956,6 +993,8 @@ impl PythonExecutionEngine {
                 frozen_time_ms,
                 prewarm_only: false,
                 warmup_metrics: warmup_metrics.as_deref(),
+                snapshot_restore_dir: snapshot_restore_guest_dir.as_deref(),
+                snapshot_create_dir: None,
             },
         )?;
         let pending_vfs_rpc = Arc::new(Mutex::new(None));
@@ -1033,6 +1072,10 @@ struct PythonJavascriptExecutionOptions<'a> {
     frozen_time_ms: u128,
     prewarm_only: bool,
     warmup_metrics: Option<&'a [u8]>,
+    /// Guest path of a validated heap snapshot the runner should restore from.
+    snapshot_restore_dir: Option<&'a str>,
+    /// Guest path where a prewarm launch should create a heap snapshot.
+    snapshot_create_dir: Option<&'a str>,
 }
 
 fn start_python_javascript_execution(
@@ -1043,13 +1086,7 @@ fn start_python_javascript_execution(
     request: &StartPythonExecutionRequest,
     options: PythonJavascriptExecutionOptions<'_>,
 ) -> Result<JavascriptExecution, PythonExecutionError> {
-    let internal_env = build_python_internal_env(
-        import_cache,
-        context,
-        request,
-        options.frozen_time_ms,
-        options.prewarm_only,
-    );
+    let internal_env = build_python_internal_env(import_cache, context, request, &options);
     let inline_code =
         build_python_runner_module_source(import_cache, &internal_env, options.warmup_metrics)?;
     let mut env = request.env.clone();
@@ -1086,9 +1123,10 @@ fn build_python_internal_env(
     import_cache: &NodeImportCache,
     context: &PythonContext,
     request: &StartPythonExecutionRequest,
-    frozen_time_ms: u128,
-    prewarm_only: bool,
+    options: &PythonJavascriptExecutionOptions<'_>,
 ) -> BTreeMap<String, String> {
+    let frozen_time_ms = options.frozen_time_ms;
+    let prewarm_only = options.prewarm_only;
     let mut internal_env = request
         .env
         .iter()
@@ -1137,6 +1175,24 @@ fn build_python_internal_env(
     // env knobs, which the JS engine no longer reads.
     internal_env.insert(PYTHON_CODE_ENV.to_string(), request.code.clone());
     internal_env.insert(NODE_FROZEN_TIME_ENV.to_string(), frozen_time_ms.to_string());
+    // Snapshot signals are host-decided: never inherit caller-provided values
+    // from the request env pass-through above.
+    match options.snapshot_restore_dir {
+        Some(dir) => {
+            internal_env.insert(PYTHON_SNAPSHOT_DIR_ENV.to_string(), dir.to_owned());
+        }
+        None => {
+            internal_env.remove(PYTHON_SNAPSHOT_DIR_ENV);
+        }
+    }
+    match options.snapshot_create_dir {
+        Some(dir) => {
+            internal_env.insert(PYTHON_SNAPSHOT_CREATE_DIR_ENV.to_string(), dir.to_owned());
+        }
+        None => {
+            internal_env.remove(PYTHON_SNAPSHOT_CREATE_DIR_ENV);
+        }
+    }
     if prewarm_only {
         internal_env.insert(PYTHON_PREWARM_ONLY_ENV.to_string(), String::from("1"));
     } else {
@@ -1414,6 +1470,261 @@ fn resolved_pyodide_dist_path(path: &Path, cwd: &Path) -> PathBuf {
     resolve_execution_path(path, cwd)
 }
 
+/// Host-side plan for the Pyodide heap-snapshot fast path of one execution.
+///
+/// The snapshot itself is created by the prewarm runner (guest side of the
+/// engine, still trusted host-authored code) inside a per-attempt build
+/// directory under the writable Pyodide package cache root, then promoted by
+/// the host into a cross-process store keyed by an asset-content fingerprint.
+/// Executions restore from a hard-linked copy under the package cache root so
+/// the guest-visible read surface stays confined to the existing managed roots.
+struct PythonSnapshotPlan {
+    /// `<store>/<fingerprint>` — the cross-process home of the snapshot.
+    entry_dir: PathBuf,
+    /// Host/guest paths of the per-attempt build dir (`Some` only when this
+    /// execution should create the missing snapshot during prewarm).
+    create_nonce_host: Option<PathBuf>,
+    create_nonce_guest: Option<String>,
+}
+
+/// Effective UID learned via a probe file (std has no direct euid accessor and
+/// this crate deliberately avoids a libc dependency for it).
+fn process_euid() -> Option<u32> {
+    static EUID: OnceLock<Option<u32>> = OnceLock::new();
+    *EUID.get_or_init(|| {
+        let probe = std::env::temp_dir().join(format!(
+            "agentos-python-snapshot-euid-probe-{}",
+            std::process::id()
+        ));
+        let euid = fs::write(&probe, b"")
+            .ok()
+            .and_then(|()| fs::metadata(&probe).ok())
+            .map(|metadata| metadata.uid());
+        let _ = fs::remove_file(&probe);
+        euid
+    })
+}
+
+fn python_snapshot_enabled(request: &StartPythonExecutionRequest) -> bool {
+    let value = request
+        .env
+        .get(PYTHON_SNAPSHOT_ENV)
+        .cloned()
+        .or_else(|| std::env::var(PYTHON_SNAPSHOT_ENV).ok());
+    !matches!(
+        value.as_deref().map(str::trim),
+        Some("0") | Some("false") | Some("off")
+    )
+}
+
+fn python_snapshot_store_root() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os(PYTHON_SNAPSHOT_STORE_ENV) {
+        if value.is_empty() {
+            return None;
+        }
+        return Some(PathBuf::from(value));
+    }
+    let euid = process_euid()?;
+    Some(std::env::temp_dir().join(format!(
+        "agentos-pyodide-heap-snapshots-v{PYTHON_SNAPSHOT_VERSION}-uid{euid}"
+    )))
+}
+
+/// Snapshot cache key. Bundled assets are identified by their compile-time
+/// content hash (materialized copies get fresh inodes/mtimes per process);
+/// custom dists fall back to per-file `file_fingerprint` (stable on one host
+/// as long as the dist files are unchanged, which is exactly the validity
+/// condition for reusing a snapshot).
+fn python_snapshot_fingerprint(
+    import_cache: &NodeImportCache,
+    pyodide_dist_path: &Path,
+) -> String {
+    let identity = if pyodide_dist_path == import_cache.pyodide_dist_path() {
+        format!(
+            "bundled:{:016x}",
+            crate::node_import_cache::bundled_pyodide_content_hash()
+        )
+    } else {
+        let file_ids = [
+            "pyodide.mjs",
+            "pyodide-lock.json",
+            "pyodide.asm.js",
+            "pyodide.asm.wasm",
+            "python_stdlib.zip",
+        ]
+        .map(|name| file_fingerprint(&pyodide_dist_path.join(name)))
+        .join("|");
+        format!("dist:{}:{}", pyodide_dist_path.display(), file_ids)
+    };
+    let contents = [
+        env!("CARGO_PKG_VERSION"),
+        PYTHON_SNAPSHOT_VERSION,
+        identity.as_str(),
+    ]
+    .join("\n");
+    format!("{:016x}", stable_hash64(contents.as_bytes()))
+}
+
+fn snapshot_path_owned_by_process(path: &Path) -> bool {
+    let Some(euid) = process_euid() else {
+        return false;
+    };
+    fs::metadata(path)
+        .map(|metadata| metadata.uid() == euid)
+        .unwrap_or(false)
+}
+
+/// A store entry is usable only when its meta file exists and both the entry
+/// directory and the meta file are owned by this process's euid — a foreign-
+/// owned entry in a shared temp dir is treated as absent (poisoning defense).
+fn python_snapshot_entry_ready(entry_dir: &Path) -> bool {
+    entry_dir.join(PYTHON_SNAPSHOT_META_FILE).exists()
+        && snapshot_path_owned_by_process(entry_dir)
+        && snapshot_path_owned_by_process(&entry_dir.join(PYTHON_SNAPSHOT_META_FILE))
+}
+
+fn python_snapshot_unsupported_marker(entry_dir: &Path) -> Option<PathBuf> {
+    let name = entry_dir.file_name()?.to_str()?;
+    Some(entry_dir.with_file_name(format!("{name}.unsupported")))
+}
+
+fn plan_python_heap_snapshot(
+    import_cache: &NodeImportCache,
+    context: &PythonContext,
+    request: &StartPythonExecutionRequest,
+) -> Option<PythonSnapshotPlan> {
+    if !python_snapshot_enabled(request) {
+        return None;
+    }
+    let store_root = python_snapshot_store_root()?;
+    let pyodide_dist_path = resolved_pyodide_dist_path(&context.pyodide_dist_path, &request.cwd);
+    let fingerprint = python_snapshot_fingerprint(import_cache, &pyodide_dist_path);
+    let entry_dir = store_root.join(&fingerprint);
+
+    if python_snapshot_entry_ready(&entry_dir) {
+        return Some(PythonSnapshotPlan {
+            entry_dir,
+            create_nonce_host: None,
+            create_nonce_guest: None,
+        });
+    }
+
+    // A prior creation attempt on this asset set failed (e.g. a Pyodide build
+    // without the snapshot API): don't pay a full boot on every execution.
+    if let Some(marker) = python_snapshot_unsupported_marker(&entry_dir) {
+        if marker.exists() && snapshot_path_owned_by_process(&marker) {
+            return None;
+        }
+    }
+
+    let nonce = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT_PYTHON_SNAPSHOT_BUILD_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let cache_root = pyodide_cache_path(&pyodide_dist_path);
+    Some(PythonSnapshotPlan {
+        entry_dir,
+        create_nonce_host: Some(
+            cache_root
+                .join(PYTHON_SNAPSHOT_BUILD_SUBDIR)
+                .join(&nonce),
+        ),
+        create_nonce_guest: Some(format!(
+            "{PYODIDE_CACHE_GUEST_ROOT}/{PYTHON_SNAPSHOT_BUILD_SUBDIR}/{nonce}"
+        )),
+    })
+}
+
+fn ensure_python_snapshot_store_root(store_root: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(store_root)?;
+    // Best-effort: keep the store private to this uid. Foreign-owned roots are
+    // rejected later by the per-entry ownership checks.
+    let _ = fs::set_permissions(store_root, fs::Permissions::from_mode(0o700));
+    Ok(())
+}
+
+/// Promotes a prewarm-built snapshot from its per-attempt build dir into the
+/// cross-process store. Losing a concurrent-creation race is fine: the winner's
+/// entry is revalidated by `python_snapshot_entry_ready` before use.
+fn finalize_python_snapshot_creation(plan: &PythonSnapshotPlan) {
+    let Some(nonce_host) = plan.create_nonce_host.as_deref() else {
+        return;
+    };
+    let Some(store_root) = plan.entry_dir.parent() else {
+        let _ = fs::remove_dir_all(nonce_host);
+        return;
+    };
+
+    if !nonce_host.join(PYTHON_SNAPSHOT_META_FILE).exists() {
+        // The runner could not produce a snapshot (unsupported Pyodide build or
+        // creation failure). Remember that so later executions skip the retry.
+        if ensure_python_snapshot_store_root(store_root).is_ok() {
+            if let Some(marker) = python_snapshot_unsupported_marker(&plan.entry_dir) {
+                let _ = fs::write(marker, b"");
+            }
+        }
+        let _ = fs::remove_dir_all(nonce_host);
+        return;
+    }
+
+    if ensure_python_snapshot_store_root(store_root).is_err() {
+        let _ = fs::remove_dir_all(nonce_host);
+        return;
+    }
+    if fs::rename(nonce_host, &plan.entry_dir).is_err() {
+        // Concurrent winner (entry already present) or cross-device store:
+        // drop this attempt; the entry is revalidated before use either way.
+        let _ = fs::remove_dir_all(nonce_host);
+    }
+}
+
+fn link_or_copy_snapshot_file(source: &Path, target: &Path) -> std::io::Result<()> {
+    if target.exists() {
+        return Ok(());
+    }
+    fs::hard_link(source, target).or_else(|_| fs::copy(source, target).map(|_| ()))
+}
+
+/// Hard-links (or copies) the store entry under the per-process Pyodide package
+/// cache root so the runner can read it through the existing managed guest
+/// root, and returns the guest path to advertise to the runner.
+fn expose_python_snapshot_to_guest(
+    entry_dir: &Path,
+    pyodide_dist_path: &Path,
+) -> Option<String> {
+    if !python_snapshot_entry_ready(entry_dir) {
+        return None;
+    }
+    let fingerprint = entry_dir.file_name()?.to_str()?.to_owned();
+    let target_dir = pyodide_cache_path(pyodide_dist_path)
+        .join(PYTHON_SNAPSHOT_GUEST_SUBDIR)
+        .join(&fingerprint);
+
+    if !target_dir.join(PYTHON_SNAPSHOT_META_FILE).exists() {
+        fs::create_dir_all(&target_dir).ok()?;
+        for entry in fs::read_dir(entry_dir).ok()? {
+            let entry = entry.ok()?;
+            let name = entry.file_name();
+            if name == PYTHON_SNAPSHOT_META_FILE {
+                continue;
+            }
+            link_or_copy_snapshot_file(&entry.path(), &target_dir.join(&name)).ok()?;
+        }
+        // The meta file is linked last so readers never see a partially
+        // populated snapshot directory as valid.
+        link_or_copy_snapshot_file(
+            &entry_dir.join(PYTHON_SNAPSHOT_META_FILE),
+            &target_dir.join(PYTHON_SNAPSHOT_META_FILE),
+        )
+        .ok()?;
+    }
+
+    Some(format!(
+        "{PYODIDE_CACHE_GUEST_ROOT}/{PYTHON_SNAPSHOT_GUEST_SUBDIR}/{fingerprint}"
+    ))
+}
+
 fn prewarm_python_path(
     import_cache: &NodeImportCache,
     javascript_engine: &mut JavascriptExecutionEngine,
@@ -1421,6 +1732,7 @@ fn prewarm_python_path(
     context: &PythonContext,
     request: &StartPythonExecutionRequest,
     frozen_time_ms: u128,
+    snapshot_create_dir: Option<&str>,
 ) -> Result<Option<Vec<u8>>, PythonExecutionError> {
     let debug_enabled = python_warmup_metrics_enabled(request);
     let marker_contents = warmup_marker_contents(import_cache, context, request);
@@ -1443,6 +1755,8 @@ fn prewarm_python_path(
             frozen_time_ms,
             prewarm_only: true,
             warmup_metrics: None,
+            snapshot_restore_dir: None,
+            snapshot_create_dir,
         },
     )?;
     let mut stdout = Vec::new();
@@ -2038,6 +2352,32 @@ fn warmup_marker_contents(
 
 fn python_warmup_metrics_enabled(request: &StartPythonExecutionRequest) -> bool {
     env_flag_enabled(&request.env, PYTHON_WARMUP_DEBUG_ENV)
+}
+
+/// Appends a host-side `phase:"snapshot"` metrics line describing the outcome
+/// of the heap-snapshot plan for this execution (debug metrics only).
+fn append_snapshot_metrics_line(
+    warmup_metrics: Option<Vec<u8>>,
+    request: &StartPythonExecutionRequest,
+    created: bool,
+    available: bool,
+) -> Option<Vec<u8>> {
+    if !python_warmup_metrics_enabled(request) {
+        return warmup_metrics;
+    }
+    let state = match (python_snapshot_enabled(request), created, available) {
+        (false, ..) => "disabled",
+        (true, true, true) => "created",
+        (true, false, true) => "reused",
+        (true, ..) => "unavailable",
+    };
+    let line = format!(
+        "{PYTHON_WARMUP_METRICS_PREFIX}{{\"phase\":\"snapshot\",\"state\":{}}}\n",
+        encode_json_string(state)
+    );
+    let mut bytes = warmup_metrics.unwrap_or_default();
+    bytes.extend_from_slice(line.as_bytes());
+    Some(bytes)
 }
 
 fn warmup_metrics_line(

@@ -15,7 +15,7 @@ const NODE_IMPORT_CACHE_PATH_ENV: &str = "AGENTOS_NODE_IMPORT_CACHE_PATH";
 const NODE_IMPORT_CACHE_LOADER_PATH_ENV: &str = "AGENTOS_NODE_IMPORT_CACHE_LOADER_PATH";
 const NODE_IMPORT_CACHE_SCHEMA_VERSION: &str = "1";
 const NODE_IMPORT_CACHE_LOADER_VERSION: &str = "8";
-const NODE_IMPORT_CACHE_ASSET_VERSION: &str = "85";
+const NODE_IMPORT_CACHE_ASSET_VERSION: &str = "86";
 const NODE_IMPORT_CACHE_DIR_PREFIX: &str = "agentos-node-import-cache";
 const DEFAULT_NODE_IMPORT_CACHE_MATERIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 const PYODIDE_DIST_DIR: &str = "pyodide-dist";
@@ -51,6 +51,26 @@ const BUNDLED_CLICK_WHL: &[u8] = include_bytes!("../assets/pyodide/click-8.3.1-p
 const NODE_PYTHON_RUNNER_SOURCE: &str = include_str!("../assets/runners/python-runner.mjs");
 
 static CLEANED_NODE_IMPORT_CACHE_ROOTS: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
+
+/// Content hash of the bundled Pyodide runtime assets that determine heap
+/// snapshot compatibility. Materialized copies of these assets get fresh
+/// inodes/mtimes per process, so cross-process snapshot cache keys must be
+/// derived from the bundled bytes themselves, not from `file_fingerprint`.
+pub(crate) fn bundled_pyodide_content_hash() -> u64 {
+    static HASH: OnceLock<u64> = OnceLock::new();
+    *HASH.get_or_init(|| {
+        let per_asset = [
+            crate::common::stable_hash64(BUNDLED_PYODIDE_MJS),
+            crate::common::stable_hash64(BUNDLED_PYODIDE_LOCK),
+            crate::common::stable_hash64(BUNDLED_PYODIDE_ASM_JS),
+            crate::common::stable_hash64(BUNDLED_PYODIDE_ASM_WASM),
+            crate::common::stable_hash64(BUNDLED_PYTHON_STDLIB_ZIP),
+        ]
+        .map(|hash| format!("{hash:016x}"))
+        .join(":");
+        crate::common::stable_hash64(per_asset.as_bytes())
+    })
+}
 #[cfg(test)]
 static NODE_IMPORT_CACHE_TEST_MATERIALIZE_DELAY_MS: AtomicU64 = AtomicU64::new(0);
 

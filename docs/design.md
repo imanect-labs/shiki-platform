@@ -444,6 +444,9 @@ flowchart TB
   ⚠️ web_fetch は内部で urllib（Python）を実行する（`crates/agent-core/src/tools/web_fetch.rs`）ため、wasm でも exec ごとに
   Pyodide 初期化コストを払う。**wasm を選ぶ理由は速度ではなく egress モデル**であり、fetch レイテンシの是正（native fetch 経路の
   用意 or gVisor 化）は別途 issue で検討する（既知の課題）。
+  **2026-07-26**: この初期化コストは Pyodide ヒープスナップショット（作成 1 回・以後は復元でブート回避・
+  [sandbox/wasm-exec-optimization.md](./sandbox/wasm-exec-optimization.md)）で ~4.6× 短縮済み。既定有効・
+  `AGENTOS_PYTHON_SNAPSHOT=0` で無効化。ティア選択指針の見直しは bench 再計測後。
   **前提条件（#346 で充足済み）**: code_interpreter が宣伝する numpy/pandas は、native rootfs へビルド時に同梱する
   （`deploy/sandbox-assets/rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定 `--require-hashes` の二層で再現）。
   runsc・rootfs は orchestrator イメージへ焼き込み（`deploy/docker/sandbox-orchestrator.Dockerfile`・実行時 DL 無し＝PIT-33）。
