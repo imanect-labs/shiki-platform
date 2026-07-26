@@ -52,6 +52,47 @@ impl ChatWorker {
         Ok(out)
     }
 
+    /// この run のスレッドに紐づく「開いているドキュメント」（ノート/Office）を返す。
+    ///
+    /// ドキュメントアシスタント（`/notes/:id`・`/office/:id` のパネル）から作られた会話は
+    /// `thread.origin_note_id` を持つ。編集対象の解決に使う（無ければ `None`）。
+    async fn origin_document(&self, run: &ClaimedRun) -> Option<(Uuid, Option<String>)> {
+        let row: Option<(Option<Uuid>, Option<String>)> = sqlx::query_as(
+            "SELECT origin_note_id, origin_note_name FROM thread WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(run.thread_id)
+        .bind(&run.tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, "origin_note の取得に失敗"))
+        .ok()
+        .flatten();
+        match row {
+            Some((Some(id), name)) => Some((id, name)),
+            _ => None,
+        }
+    }
+
+    /// system プロンプトへ「開いているドキュメント」の node_id を足す。
+    ///
+    /// これが無いと「この文書に書いて」に対し対象 id が分からず、モデルは新規下書き
+    /// （save_note / save_document）へ逃げてしまう（実 LLM 検証で確認）。
+    async fn system_with_origin_document(&self, run: &ClaimedRun, base: Option<String>) -> String {
+        let base = base.unwrap_or_else(|| self.config.system_prompt.clone());
+        match self.origin_document(run).await {
+            Some((node_id, name)) => {
+                let named = name.map(|n| format!("・名前: {n}")).unwrap_or_default();
+                format!(
+                    "{base}\n\nこの会話は開いているドキュメントに紐づいています\
+                     （node_id: {node_id}{named}）。ユーザーが「この文書」「開いているノート」\
+                     「このシート」等と言う場合は、新規作成や下書きではなく**この node_id を対象**に\
+                     編集ツール（document.edit / office.live_edit / csv.patch 等）を使ってください。"
+                )
+            }
+            None => base,
+        }
+    }
+
     /// エージェントモード（agent-core ループ）。`run.autonomous` で Chat/Autonomous を切り替える。
     pub(super) async fn run_agent_mode(
         &self,
@@ -181,7 +222,9 @@ impl ChatWorker {
             }
         } else {
             // 通常チャット: deny_all（既定）のまま。破壊系は都度ユーザー承認が要る（要確認ツールの設計意図）。
-            chat_opts(self)
+            let mut opts = chat_opts(self);
+            opts.system = Some(self.system_with_origin_document(run, opts.system).await);
+            opts
         };
         let approver = Some(approver);
 
@@ -354,7 +397,11 @@ impl ChatWorker {
                     defaults.max_tokens.or(Some(self.config.max_tokens)),
                     defaults.temperature,
                 ),
-                None => (self.config.model.clone(), Some(self.config.max_tokens), None),
+                None => (
+                    self.config.model.clone(),
+                    Some(self.config.max_tokens),
+                    None,
+                ),
             };
         let effective_model = model
             .clone()

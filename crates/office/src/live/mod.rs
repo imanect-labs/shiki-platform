@@ -15,6 +15,7 @@
 
 mod client;
 mod error;
+mod ops;
 mod protocol;
 mod session;
 

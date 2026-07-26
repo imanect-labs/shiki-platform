@@ -11,7 +11,6 @@
 //! 返す（paste 非冪等・再送禁止・PIT-45）。保存は core ack 後に StorageService の
 //! 版前進で検証する（shiki 自身が WOPI ホストなので観測できる）。
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,14 +21,11 @@ use sqlx::{Connection, PgPool};
 use storage::{NodeKind, StorageError, StorageService};
 use uuid::Uuid;
 
-use super::client::{CoolWsClient, CoolWsConfig, SaveAck, SearchOutcome};
+use super::client::{CoolWsClient, CoolWsConfig, SaveAck};
 use super::error::LiveError;
-use super::protocol::is_cell_ref;
+use super::ops::apply_op;
 use crate::edit::EDITABLE_CONTENT_TYPES;
 use crate::wopi::token::{self, OfficeTokenKey};
-
-/// paste に使う HTML の mimetype。
-const HTML_MIME: &str = "text/html;charset=utf-8";
 
 /// 同時 AI セッションの既定上限（kit プロセスはドキュメントごとに立つ＝メモリ保護）。
 const DEFAULT_MAX_SESSIONS: usize = 4;
@@ -312,112 +308,6 @@ impl LiveEditor {
     }
 }
 
-/// 1 op をセッションへ適用する。Err は「セッションが継続不能」（abort）を意味し、
-/// 対象不一致などの安全な不発は `applied=false`＋warning で返す。
-async fn apply_op(
-    client: &mut CoolWsClient,
-    content_type: &str,
-    op: &LiveOp,
-) -> Result<LiveOpResult, LiveError> {
-    let label = op.label();
-    let unapplied = |warning: &str| LiveOpResult {
-        op: label,
-        applied: false,
-        warning: Some(warning.to_string()),
-    };
-    match op {
-        LiveOp::ReplaceText { find, html } => {
-            if find.trim().is_empty() {
-                return Ok(unapplied("find が空です"));
-            }
-            if client.execute_search(find).await? == SearchOutcome::NotFound {
-                return Ok(unapplied("検索文字列が見つかりません"));
-            }
-            // 自 view の選択を照合してから置換する（同文異所の誤置換を防ぐ最終ゲート）。
-            let selection = client.selection_text().await?;
-            if normalize_for_match(&selection) != normalize_for_match(find) {
-                return Ok(unapplied(
-                    "選択の照合が一致しませんでした（検索文字列を文書内で一意な文字列にしてください）",
-                ));
-            }
-            let pasted = client.paste(HTML_MIME, html.as_bytes()).await?;
-            Ok(LiveOpResult {
-                op: label,
-                applied: pasted,
-                warning: (!pasted).then(|| "core が HTML を貼り付けられませんでした".to_string()),
-            })
-        }
-        LiveOp::AppendHtml { html } => {
-            if !content_type.contains("wordprocessingml") {
-                return Ok(unapplied("append_html は docx のみ対応です"));
-            }
-            client.go_to_end_of_doc().await?;
-            let pasted = client.paste(HTML_MIME, html.as_bytes()).await?;
-            Ok(LiveOpResult {
-                op: label,
-                applied: pasted,
-                warning: (!pasted).then(|| "core が HTML を貼り付けられませんでした".to_string()),
-            })
-        }
-        LiveOp::SetCells { anchor, rows } => {
-            if !content_type.contains("spreadsheetml") {
-                return Ok(unapplied("set_cells は xlsx のみ対応です"));
-            }
-            if !is_cell_ref(anchor) {
-                return Ok(unapplied("anchor が不正です（例: \"A1\"・\"Sheet2.B3\"）"));
-            }
-            if rows.is_empty() || rows.iter().all(Vec::is_empty) {
-                return Ok(unapplied("rows が空です"));
-            }
-            client.go_to_cell(anchor).await?;
-            let table = rows_to_html_table(rows);
-            let pasted = client.paste(HTML_MIME, table.as_bytes()).await?;
-            Ok(LiveOpResult {
-                op: label,
-                applied: pasted,
-                warning: (!pasted).then(|| "core がテーブルを貼り付けられませんでした".to_string()),
-            })
-        }
-    }
-}
-
-/// 照合用の正規化（空白run→1 個・前後 trim）。LibreOffice は選択テキストの改行・
-/// 空白を厳密には保存しないため、意味を変えない範囲で吸収する。
-fn normalize_for_match(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// rows を Calc に貼れる HTML テーブルへ組む。値は**データ**として全て
-/// エスケープする（set_cells 経由の HTML/数式注入を構造的に不能化）。
-fn rows_to_html_table(rows: &[Vec<CellValue>]) -> String {
-    let mut html = String::from("<table>");
-    for row in rows {
-        html.push_str("<tr>");
-        for cell in row {
-            match cell {
-                CellValue::Text(text) => {
-                    let _ = write!(html, "<td>{}</td>", escape_html(text));
-                }
-                CellValue::Number(n) => {
-                    let _ = write!(html, "<td>{n}</td>");
-                }
-                CellValue::Bool(b) => {
-                    let _ = write!(html, "<td>{b}</td>");
-                }
-            }
-        }
-        html.push_str("</tr>");
-    }
-    html.push_str("</table>");
-    html
-}
-
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
 /// ファイル単位の AI 直列化（Postgres advisory lock・issue #352）。
 ///
 /// 専用接続（pool から detach）で `pg_try_advisory_lock` をポーリング取得する。
@@ -496,23 +386,7 @@ mod tests {
         .is_err());
     }
 
-    #[test]
-    fn table_escapes_cell_values() {
-        let html = rows_to_html_table(&[
-            vec![CellValue::Text("<b>x</b>&y".into()), CellValue::Number(2.5)],
-            vec![CellValue::Bool(true)],
-        ]);
-        assert_eq!(
-            html,
-            "<table><tr><td>&lt;b&gt;x&lt;/b&gt;&amp;y</td><td>2.5</td></tr><tr><td>true</td></tr></table>"
-        );
-    }
 
-    #[test]
-    fn normalize_collapses_whitespace() {
-        assert_eq!(normalize_for_match("  a\n b\tc "), "a b c");
-        assert_ne!(normalize_for_match("ab"), normalize_for_match("a b"));
-    }
 
     #[test]
     fn advisory_key_is_stable_and_tenant_scoped() {
