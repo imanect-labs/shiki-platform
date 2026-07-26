@@ -2,6 +2,7 @@
 
 pub mod anthropic;
 pub mod openai;
+mod openai_names;
 pub mod stub;
 mod stub_fixtures;
 mod stub_triggers;

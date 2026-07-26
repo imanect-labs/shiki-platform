@@ -27,6 +27,7 @@ const RUN_SPEC: RunTableSpec = RunTableSpec {
     updated_at_column: None,
     queued_status: "queued",
     running_status: "running",
+    resumable_statuses: &[],
 };
 
 const EVENT_SPEC: EventTableSpec = EventTableSpec {

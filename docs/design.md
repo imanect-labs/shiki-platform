@@ -332,6 +332,17 @@ flowchart LR
   - 自律 = フルツール（shell/任意コマンド/CRUD）＋長ホライズン＋FUSEストレージ。
 - 共通化: llm-gateway、Langfuseトレース、監査、トークン会計、権限境界。
 - **ツール選択**: デフォルト全提示・モデル自動選択。権限/破壊/コスト系のみ明示許可。
+- **自律の承認 3 モード（#350・thread 単位・実行中トグル可）**: 承認必須（既定・全破壊系が承認カードで停止）/
+  オート（版管理で復元可能な書込のみ自動・fs_delete/shell 等の不可逆は承認維持）/ 全自動（危険・明示オプトイン・
+  `tenant.allow_autonomous_bypass=false` の org キャップで禁止可・違反は明示エラー/警告でクランプ）。
+  モード→`ApprovalPolicy` の写像は `crates/chat/src/autonomous.rs` に集約。read-only（web_search/web_fetch/
+  doc_search）はどのモードでも止まらない。**skill はモードを緩められない**（Task 6.9 不変条件維持）。
+  実行中の緩和は **run の actor 本人による設定のみ有効**（共有スレッドの別編集者が他人の権限の run の承認を
+  緩められない・confused-deputy 防御）。
+- **ワークスペース封じ込め（#350 で明示化）**: 自律 fs ツールは thread の起動フォルダ（`root_folder_id`）配下限定。
+  名前解決は root 直下の SQL 完全一致のみ（パス解釈なし）・全操作は発話ユーザーの AuthContext（昇格しない）。
+  フォルダ未指定は `agent-workspace-<thread>` を自動生成（「未指定なら Drive 全体」は採らない）。
+  不変条件テスト: `crates/chat/tests/workspace_containment_it.rs`。
 - **web ツール**: 新トレイト `SearchProvider`（SaaS=Brave Search API / オンプレ=SearXNG / エアギャップ=機能無効）。
   **ページ取得は検索と別ポリシー**: allowlist に検索プロバイダだけ載せると検索結果 URL が開けないため、
   web ツール有効時は「検索結果由来のホストへの**時限的な動的 allowlist**（当該 run 限定・宛先を監査記録・
@@ -360,7 +371,9 @@ flowchart LR
   どのインスタンスでも Redis 経由で受信。
 - **整合性の不変条件**: ①単一ライタ（リース保持ワーカーのみ）＋ `(run_id, seq)` unique で追記 exactly-once
   ②クラッシュ回復はステップ境界から（完了済みツール結果はチェックポイント復元、**生成途中の LLM ストリームは破棄して
-  当該ステップのみ再生成**。「途中から続き生成」は採らない）③キャンセルは status=`cancelling`＋pub/sub 通知で
+  当該ステップのみ再生成**。「途中から続き生成」は採らない。#351 で配線済み: 自律 run はステップ境界ごとに
+  Checkpoint（計画・消費・剪定後履歴・ループ検出器）を `generation_run.checkpoint` へ fenced 保存し、
+  claim/takeover 時に resume へ渡す・端末確定でクリア・projection はイベント replay で再構築）③キャンセルは status=`cancelling`＋pub/sub 通知で
   ステップ境界・ストリーム読取ループが検知（サンドボックス実行中ツールへ kill 伝播）
   ④課金は attempt 単位で実消費を記録（表示は run 単位に集約）。
 

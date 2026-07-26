@@ -4,6 +4,23 @@
 //! へ配線する。ワークスペースは **thread ごとの Drive フォルダ**（`root_folder_id`）で、全操作は
 //! **発話ユーザーの `AuthContext`** で実行し昇格しない（confused-deputy 回避）。名前空間はフラット
 //! （サブディレクトリ非対応・アルファ）。書込/削除は書込イベント→自動再索引に乗る（PIT-5 と経路分離）。
+//!
+//! # 封じ込め不変条件（#350 で明示化・テストは `tests/workspace_containment_it.rs`）
+//!
+//! 自律エージェントの fs ツールは**起動フォルダ（`root_folder_id`）配下から出られない**:
+//!
+//! 1. **名前解決は root の直下限定**: read/delete は `resolve_child_file(root, name)`、list は
+//!    `list_children(root)`、write は `write_file_at(root, name)` のみを呼ぶ。名前は SQL の
+//!    `(parent_id, name)` 完全一致で解決され、パスとして解釈されない（`..`・`/` 入り名は
+//!    `validate_name` が拒否し、拒否をすり抜けても他フォルダの行に一致しようがない）。
+//! 2. **node_id を受け付けない**: ツール入力は名前のみ。他フォルダのファイルは同名でも root 配下に
+//!    無ければ「見つからない」になる（存在秘匿）。
+//! 3. **権限は本人のまま**: 全操作は発話ユーザーの `AuthContext` で StorageService の認可
+//!    （folder viewer/editor）を通る。エージェントだから読める/書けるものは何一つ増えない。
+//!
+//! フォルダ未指定の thread は `agent-workspace-<thread>` を自動生成して root にする（既存ファイルに
+//! 触れない安全既定）。「このフォルダで作業」を明示選択した場合のみ当該フォルダが root になる
+//! （worker/generate.rs `ensure_workspace`）。「未指定なら Drive 全体」は採らない（#350 決定）。
 
 use std::sync::Arc;
 

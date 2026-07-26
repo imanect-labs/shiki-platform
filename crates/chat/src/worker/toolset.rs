@@ -52,6 +52,36 @@ impl ChatWorker {
         )));
     }
 
+    /// AI Office 編集＋CSV ツールの配線。
+    ///
+    /// office.edit（ファイル単位・非ロック=新版/ロック中=提案・PIT-44・Task 11.8）＋
+    /// office.live_edit（開いているセッションへ Action_Paste 注入・authz 必須・#328）は office
+    /// 有効時のみ。CSV（csv.query / csv.patch / csv.write・Task 11P.9）は tabular 配線時のみで、
+    /// 認可は操作別のファイル ReBAC（TabularService が StorageService 経由で強制）。
+    pub(super) fn push_office_and_csv_tools(&self, tools: &mut Vec<Arc<dyn Tool>>) {
+        if let Some(office) = &self.office {
+            tools.push(Arc::new(crate::office_tool::OfficeEditTool::new(
+                office.clone(),
+            )));
+            if let Some(authz) = &self.authz {
+                tools.push(Arc::new(crate::office_live_tool::OfficeLiveEditTool::new(
+                    authz.clone(),
+                )));
+            }
+        }
+        if let Some(tabular) = &self.tabular {
+            tools.push(Arc::new(crate::csv_tool::CsvQueryTool::new(
+                tabular.clone(),
+            )));
+            tools.push(Arc::new(crate::csv_tool::CsvPatchTool::new(
+                tabular.clone(),
+            )));
+            tools.push(Arc::new(crate::csv_tool::CsvWriteTool::new(
+                tabular.clone(),
+            )));
+        }
+    }
+
     /// 自律ツール（file CRUD/grep/shell）を tools へ追加する。
     pub(super) fn push_autonomous_tools(
         &self,

@@ -6,14 +6,17 @@ import { useRouter } from "next/navigation";
 import { FileDown, LayoutGrid, Sparkles } from "lucide-react";
 
 import {
+  getAutonomousMode,
   getThreadMessages,
   isEmptyContent,
   notifyThreadsChanged,
   resumeMessage,
+  setAutonomousMode,
   streamMessage,
   submitApproval,
   ThreadNotFound,
   type ApprovalRequest,
+  type AutonomousMode,
   type Attachment,
   type Citation,
   type ContentBlock,
@@ -137,9 +140,40 @@ export function Conversation({
   const [stream, setStream] = React.useState<StreamState | null>(null);
   const [notFound, setNotFound] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // 実行への注意喚起（承認モードのクランプ等・#350）。エラーではないが黙らせない。
+  const [notice, setNotice] = React.useState<string | null>(null);
   // エージェントモード（＝Autonomous・ワークスペース＋計画＋承認）。通常チャットでもツールは
   // モデル裁量で自動発火する（issue #102）ため、旧「自動」トグルは廃止した。
   const [autonomous, setAutonomous] = React.useState(false);
+  // 承認モード（承認必須/オート/全自動・#350）。thread から復元し、実行中も切替可。
+  // null=未ロード（セレクタ非表示）。bypass の可否は org 管理者ポリシ。
+  const [approvalMode, setApprovalModeState] = React.useState<AutonomousMode | null>(null);
+  const [bypassAllowed, setBypassAllowed] = React.useState(true);
+  // PUT を直列化するチェーン（連打時の応答順逆転で危険な実効ポリシを誤表示しない）。
+  // 各成功応答のサーバ確定値で状態を上書きし、失敗時はサーバの真実を読み直して収束させる。
+  const modeRequestChain = React.useRef<Promise<unknown>>(Promise.resolve());
+  const changeApprovalMode = React.useCallback(
+    (mode: AutonomousMode) => {
+      setApprovalModeState(mode); // 楽観更新（確定/失敗時にサーバ値で上書き）
+      modeRequestChain.current = modeRequestChain.current
+        .then(() => setAutonomousMode(threadId, mode))
+        .then((r) => {
+          setApprovalModeState(r.mode);
+          setBypassAllowed(r.bypassAllowed);
+        })
+        .catch(async () => {
+          setError("承認モードの変更に失敗しました（組織ポリシで禁止されている可能性があります）");
+          try {
+            const r = await getAutonomousMode(threadId);
+            setApprovalModeState(r.mode);
+            setBypassAllowed(r.bypassAllowed);
+          } catch {
+            /* 読み直し失敗時は現状表示を維持（次の操作で再同期） */
+          }
+        });
+    },
+    [threadId],
+  );
   const [shareOpen, setShareOpen] = React.useState(false);
   // ヘッダスロットへ渡すため安定した参照にする（streaming の毎レンダーで再注入しない）。
   const openShare = React.useCallback(() => setShareOpen(true), []);
@@ -254,6 +288,10 @@ export function Conversation({
             ? { ...s, approval: null, approvalPending: false }
             : s,
         ),
+      // 承認モードのクランプ（org 禁止・他人による緩和）は明示的に知らせる（黙って降格しない・#350）。
+      onFailureRecovery: (r) => {
+        if (r.action === "mode_clamped") setNotice(r.detail);
+      },
       onStatus: (status: RunStatus) => {
         if (status === "cancelled") setError("生成をキャンセルしました。");
         if (status === "failed") setError("生成に失敗しました。");
@@ -294,6 +332,7 @@ export function Conversation({
       context?: SelectionContext,
     ) => {
       setError(null);
+      setNotice(null);
       // ホームからの初回メッセージは選択時点の値を明示指定する（state 初期化のタイミングに依存しない）。
       const runAutonomous = autonomousOverride ?? autonomous;
       // 楽観的にユーザーメッセージを表示。
@@ -350,10 +389,27 @@ export function Conversation({
   // トグルで作られたスレッドは agent_mode=true でも自律ではないため、復元すると誤って自律へ
   // 昇格してしまう（agent_mode と autonomous は別物・Codex 指摘）。既定 OFF で始め、ホーム由来の
   // 初回メッセージのみ pending の値で送る。
+  // 承認モードの復元（#350）。メッセージ取得と独立に引く（失敗してもチャットは使える）。
+  React.useEffect(() => {
+    let active = true;
+    getAutonomousMode(threadId)
+      .then((r) => {
+        if (!active) return;
+        setApprovalModeState(r.mode);
+        setBypassAllowed(r.bypassAllowed);
+      })
+      .catch(() => {
+        /* セレクタ非表示のまま（chat 無効・権限なし等） */
+      });
+    return () => {
+      active = false;
+    };
+  }, [threadId]);
+
   React.useEffect(() => {
     let active = true;
     getThreadMessages(threadId)
-      .then(({ messages: msgs, activeRunId }) => {
+      .then(({ messages: msgs, activeRunId, activeRunAutonomous }) => {
         if (!active) return;
         // 末尾が空の assistant プレースホルダなら生成進行中（or クラッシュ）→ 復元購読する。
         const last = msgs[msgs.length - 1];
@@ -361,6 +417,9 @@ export function Conversation({
         setMessages(resuming ? msgs.slice(0, -1) : msgs);
         if (resuming) {
           // 進行中 run の id を復元し、承認待ちなら承認/却下を送れるようにする（Task 5.6）。
+          // 自律 run なら再訪時もエージェントモード UI（承認モードセレクタ含む）を復元する
+          // （承認待ちの run に対して実行中トグルを見えるようにする・#350）。
+          if (activeRunAutonomous) setAutonomous(true);
           streamRef.current = { ...EMPTY_STREAM, runId: activeRunId };
           setStream(streamRef.current);
           cancelRef.current = resumeMessage(threadId, makeHandlers());
@@ -449,6 +508,14 @@ export function Conversation({
           {stream ? (
             <StreamingRow stream={stream} onApproval={decideApproval} threadId={threadId} />
           ) : null}
+          {notice ? (
+            <div
+              className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
+              data-testid="mode-clamp-notice"
+            >
+              {notice}
+            </div>
+          ) : null}
           {error ? (
             <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
               {error}
@@ -466,6 +533,9 @@ export function Conversation({
             streaming={stream !== null}
             autonomous={autonomous}
             onAutonomousChange={setAutonomous}
+            approvalMode={approvalMode}
+            onApprovalModeChange={changeApprovalMode}
+            bypassAllowed={bypassAllowed}
             autoFocus
           />
           <p className="mt-2 text-center text-xs text-muted-foreground">

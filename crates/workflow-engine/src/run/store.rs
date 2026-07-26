@@ -36,6 +36,7 @@ const STEP_SPEC: RunTableSpec = RunTableSpec {
     updated_at_column: Some("updated_at"),
     queued_status: "ready",
     running_status: "running",
+    resumable_statuses: &[],
 };
 
 const STEP_KEY: &[&str] = &["tenant_id", "run_id", "step_path"];

@@ -402,20 +402,27 @@ async fn get_messages_returns_ordered_roles_and_content() {
         .unwrap();
 
     let msgs = store.get_messages(&c, thread.id, None).await.unwrap();
-    // 各 post が user+assistant を作るため 4 メッセージ（user 2・assistant 2）。
-    // 同一 post 内の user/assistant は created_at が同値（TX 時刻）で id タイブレークのため
-    // 位置は固定できない。role の内訳と user 本文の並び順で検証する。
+    // 各 post が user+assistant を作るため 4 メッセージ。同一 post 内の user/assistant は
+    // `created_at` が同値（`now()`＝TX 開始時刻）になるため、**返信が発話より前に並ばない**
+    // ことを厳密に固定する（tie-break が id＝ランダム UUID だと約半数で逆転し、UI 上で
+    // アシスタントの返答がユーザ発話より上に描画される）。
     assert_eq!(msgs.len(), 4, "user+assistant を 2 往復");
+    let roles: Vec<Role> = msgs.iter().map(|m| m.role).collect();
     assert_eq!(
-        msgs.iter().filter(|m| m.role == Role::User).count(),
-        2,
-        "user メッセージが 2 件"
+        roles,
+        vec![Role::User, Role::Assistant, Role::User, Role::Assistant],
+        "user → assistant の因果順で並ぶ（返信が先に来ない）"
     );
-    assert_eq!(
-        msgs.iter().filter(|m| m.role == Role::Assistant).count(),
-        2,
-        "assistant メッセージが 2 件"
-    );
+    // 返信は自分の親（直前の user 発話）の後ろに来る。
+    for (i, m) in msgs.iter().enumerate() {
+        if let Some(parent) = m.parent_id {
+            let parent_pos = msgs
+                .iter()
+                .position(|p| p.id == parent)
+                .expect("親メッセージが同一スレッドに存在する");
+            assert!(parent_pos < i, "親は返信より前に並ぶ（{parent_pos} < {i}）");
+        }
+    }
 
     // user メッセージ本文が投稿順（post ごとに created_at が異なる）に並ぶ。
     let user_texts: Vec<String> = msgs
