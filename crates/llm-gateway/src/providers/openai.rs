@@ -444,7 +444,10 @@ mod tests {
             }],
         };
         let out = to_openai_messages(&m, &names);
-        assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "office_live_edit");
+        assert_eq!(
+            out[0]["tool_calls"][0]["function"]["name"],
+            "office_live_edit"
+        );
     }
 
     #[test]

@@ -12,7 +12,8 @@
 > 3エディタで選択→AI 指示ができる。Collabora で Office 文書を共同編集でき、保存が WOPI→StorageService→
 > バージョニング→RAG 再索引に流れる。
 > **スコープ外**: 11.9（スプレッドシート×shiki script）は本フェーズ完遂の対象外（将来イシュー）。
-> Collabora セッションへの AI ライブ参加もポストアルファ（issue 起票のみ）。
+> Collabora セッションへの AI ライブ参加は**ポストアルファから前倒しで実装済み**
+> （#328 → issue #352・`office.live_edit`／AI が CoolWSD の headless 参加者・design §4.8）。
 > ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-11（WOPI トークンと共有解除の即時性）・
 > PIT-40〜44（スライド XSS/並行編集/pptx 忠実度/Collabora サプライチェーン/提案保存）を確認すること。**
 
@@ -121,7 +122,8 @@
   （ingestion-worker `edit.py`・python-docx/openpyxl/python-pptx・ステートレス bytes 入出力）→新バージョン。
   **ロック中は「提案バージョン」**（`node_version.is_proposal`・current を進めない・RAG 索引除外・
   履歴 UI で editor が採用→通常新バージョン化・PIT-44）。ツール=`office.read`/`office.edit`（要確認）。
-  Collabora へのライブ参加はスコープ外（ポストアルファ issue）。
+  Collabora へのライブ参加は本タスクのスコープ外だったが、issue #352 で実装済み
+  （`office.live_edit`＝AI が CoolWSD セッションの headless 参加者としてアンカー指定編集）。
 - **受け入れ条件**:
   - [ ] AI が pptx/docx/xlsx を読み・編集し新バージョンとして保存できる
   - [ ] 編集セッション中の AI 編集要求が上書きせず提案保存に落ちる（negative テスト）

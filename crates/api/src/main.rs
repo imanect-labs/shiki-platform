@@ -20,8 +20,8 @@ mod gateway_functions;
 mod miniapp_triggers;
 mod wiring;
 mod wiring_gateway;
-mod wiring_office;
 mod wiring_gui;
+mod wiring_office;
 // main はアプリ全体（ストレージ/RAG/チャット/ワークフロー/data/ゲートウェイ等）の配線点で
 // あり、各フェーズの依存を順に組み上げる性質上どうしても長くなる（各配線は wire_* ヘルパへ
 // 分離済み）。分割で可読性を落とすより配線列挙として素直に保つ。
