@@ -386,8 +386,6 @@ mod tests {
         .is_err());
     }
 
-
-
     #[test]
     fn advisory_key_is_stable_and_tenant_scoped() {
         let file = Uuid::new_v4();

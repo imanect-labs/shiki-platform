@@ -268,8 +268,13 @@ pub(crate) async fn wire_chat(
             .chat
             .max_tokens
             .unwrap_or_else(|| chat::WorkerConfig::default().max_tokens),
+        parallel_read_tools: config
+            .chat
+            .parallel_read_tools
+            .unwrap_or_else(|| chat::WorkerConfig::default().parallel_read_tools)
+            .max(1),
         classic_rag: config.chat.classic_rag,
-        // コード実行系の隔離ティア（admin ポリシー）。未指定は既定（wasm）。
+        // コード実行系の隔離ティア（admin ポリシー）。未指定は既定（gVisor・#346）。
         sandbox_backend: config
             .chat
             .sandbox_backend
@@ -277,7 +282,7 @@ pub(crate) async fn wire_chat(
         // 自律プロファイルの既定（予算/ステップ/software）は WorkerConfig::default を踏襲する。
         ..chat::WorkerConfig::default()
     };
-    // サンドボックス（code_interpreter / web_fetch）: エンドポイント設定時のみ配線する。
+    // サンドボックス（code_interpreter / shell）: エンドポイント設定時のみ配線する。
     // 成果物保存（StorageService 裏・発話ユーザー権限）もサンドボックスとセットで配線する。
     let sandbox: Option<Arc<dyn agent_core::Sandbox>> = build_sandbox(config)?;
     let artifacts: Option<Arc<dyn agent_core::ArtifactStore>> = sandbox

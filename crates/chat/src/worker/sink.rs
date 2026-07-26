@@ -143,7 +143,8 @@ impl WorkerSink {
             | AgentEvent::SubtaskUpdated { .. }
             | AgentEvent::BudgetWarning { .. }
             | AgentEvent::ApprovalRequested { .. }
-            | AgentEvent::ApprovalResolved { .. }            | AgentEvent::SkillInvoked { .. }
+            | AgentEvent::ApprovalResolved { .. }
+            | AgentEvent::SkillInvoked { .. }
             | AgentEvent::FailureRecovery { .. } => {}
         }
     }

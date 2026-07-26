@@ -183,6 +183,16 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// **冪等・副作用なしの read** なら true（issue #349）。
+    ///
+    /// true のツールだけが同一ステップ内で**有界並列**に実行される（deep research の
+    /// 検索→複数取得のファンアウトが直列にならない）。既定は false の**オプトイン**:
+    /// 「確認不要 ＝ 並列にしてよい」ではない（承認不要でも副作用を持つツールはある）ため、
+    /// 並列化の可否は各ツールが自分で表明する。
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
     /// 呼び出しユーザーの権限（`ctx`）で実行する。confused-deputy を避けるため、
     /// ツールは常に発話ユーザーの `AuthContext` で権限判定する（昇格しない）。
     async fn call(

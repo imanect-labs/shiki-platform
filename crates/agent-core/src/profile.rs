@@ -53,7 +53,15 @@ pub struct AgentOptions {
     pub context_soft_limit_tokens: usize,
     /// 剪定時に無傷で残す直近メッセージ数（自律版のみ）。
     pub context_keep_recent: usize,
+    /// 同一ステップ内で並列実行する冪等 read ツールの上限（issue #349・0/1 は逐次と等価）。
+    ///
+    /// deep research の `web_search`→複数 `web_fetch` ファンアウトを直列にしないための有界並列度。
+    /// 同一ホストへの `web_fetch` は本値によらず互いに直列化される（礼儀）。
+    pub parallel_read_tools: usize,
 }
+
+/// 冪等 read ツールの既定並列度（#349）。検索 API/取得先への負荷と体感速度の折衷。
+pub const DEFAULT_PARALLEL_READ_TOOLS: usize = 4;
 
 impl AgentOptions {
     /// チャット制約版の既定（現行挙動と互換・max_steps=8・token/cost 無制限・剪定/計画/ループ検出なし）。
@@ -70,6 +78,7 @@ impl AgentOptions {
             budget: Budget::chat(max_steps),
             context_soft_limit_tokens: 0,
             context_keep_recent: 0,
+            parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
         }
     }
 
@@ -94,6 +103,7 @@ impl AgentOptions {
             // 既定: 約 24k トークンで古いツール出力を畳み、直近 6 メッセージは残す。
             context_soft_limit_tokens: 24_000,
             context_keep_recent: 6,
+            parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
         }
     }
 }

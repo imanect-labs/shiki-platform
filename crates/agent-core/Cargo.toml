@@ -23,6 +23,8 @@ async-trait.workspace = true
 futures.workspace = true
 url.workspace = true
 uuid.workspace = true
+# web_fetch のホストネイティブ取得（#348）。宛先は解決後 IP 検証＋アドレス固定で縛る。
+reqwest.workspace = true
 # ツール名語彙（vocab.rs）を TS へ生成する（codegen が正・workflow-engine と同型）。
 ts-rs = { workspace = true }
 

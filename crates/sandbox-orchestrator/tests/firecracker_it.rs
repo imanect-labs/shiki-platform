@@ -157,14 +157,16 @@ async fn firecracker_rejects_egress() {
     )
     .expect("backend");
     let mut spec = fc_spec();
-    spec.egress = sandbox_client::SandboxSpec::web_fetch(
-        "t".into(),
-        "o".into(),
-        "u:1".into(),
-        "example.com".into(),
-        443,
-    )
-    .egress;
+    // 動的許可 1 件だけの egress（default-deny＋当該ホストのみ）。
+    spec.egress = sandbox_client::Egress {
+        static_allow: Vec::new(),
+        dynamic_allow: vec![sandbox_client::EgressRule {
+            host_pattern: "example.com".into(),
+            port: 443,
+        }],
+        deny_overlay: Vec::new(),
+        secret_attach: false,
+    };
     // FC は egress 非対応（post-alpha）→ Unimplemented。
     assert!(matches!(
         backend.create(spec).await,

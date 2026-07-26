@@ -11,7 +11,6 @@ use crate::error::SandboxError;
 /// 隔離バックエンド種別。既定は `Gvisor`（#346・design §4.6「2026-07 再転換」。コード実行の
 /// 実効体感は create＋実行の総時間で決まり、native CPython の gVisor が wasm/Pyodide より
 /// 一桁以上速い）。gVisor はフル Linux（KVM 不要）、Firecracker は VM 級隔離。
-/// `web_fetch` は Pyodide を使わない短命 egress のため常に wasm（[`SandboxSpec::web_fetch`]）。
 ///
 /// serde 表現は snake_case（`wasm` / `gvisor` / `firecracker`）。admin ポリシー（server 設定）から
 /// backend ティアを選ぶ導線で用いる。proto へのワイヤ変換は `convert.rs`（`pb::Backend`）で別途行う。
@@ -171,41 +170,6 @@ impl SandboxSpec {
             lifetime: SandboxLifetime::Ephemeral { ttl_ms: 60_000 },
         }
     }
-
-    /// web_fetch 用（**当該 run 限定の dynamic_allow に取得先ホストのみ**を載せる・design §4.4）。
-    ///
-    /// 静的 allowlist は空＝取得先以外は全遮断。シークレット添付は不可（`secret_attach=false` 固定）。
-    /// 管理者 `deny_overlay` は orchestrator 側で重なる。
-    ///
-    /// backend は wasm 固定: 1 fetch ごとの短命 sandbox で Pyodide を使わず egress allowlist の適用だけが仕事。
-    /// wasm の create 11ms/RSS 21MB がそのまま効くため gVisor へ上げる意味がない（コード実行系とは別扱い）。
-    pub fn web_fetch(
-        tenant_id: String,
-        org: String,
-        principal: String,
-        host: String,
-        port: u16,
-    ) -> Self {
-        SandboxSpec {
-            backend: SandboxBackend::Wasm,
-            tenant_id,
-            org,
-            principal,
-            limits: SandboxLimits::constrained(),
-            egress: Egress {
-                static_allow: Vec::new(),
-                dynamic_allow: vec![EgressRule {
-                    host_pattern: host,
-                    port,
-                }],
-                deny_overlay: Vec::new(),
-                secret_attach: false,
-            },
-            software: Vec::new(),
-            mounts_allowed: false,
-            lifetime: SandboxLifetime::Ephemeral { ttl_ms: 60_000 },
-        }
-    }
 }
 
 /// 生成済みサンドボックスのハンドル。
@@ -282,19 +246,10 @@ pub trait Sandbox: Send + Sync {
 mod tests {
     use super::*;
 
-    /// 既定は gVisor（#346）だが、**web_fetch は既定が何であれ常に wasm**（この例外を消さない）。
-    /// Pyodide を使わない短命 egress で wasm の create 11ms がそのまま効くため（design §4.6）。
+    /// 既定は gVisor（#346・design §4.6「2026-07 再転換」）。wasm は明示指定の退避先。
     #[test]
-    fn web_fetch_is_always_wasm_regardless_of_default() {
+    fn default_backend_is_gvisor() {
         assert_eq!(SandboxBackend::default(), SandboxBackend::Gvisor);
-        let spec = SandboxSpec::web_fetch(
-            "t".into(),
-            "o".into(),
-            "alice".into(),
-            "example.com".into(),
-            443,
-        );
-        assert_eq!(spec.backend, SandboxBackend::Wasm);
     }
 
     #[test]

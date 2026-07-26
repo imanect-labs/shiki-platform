@@ -334,8 +334,15 @@ flowchart LR
 - **ツール選択**: デフォルト全提示・モデル自動選択。権限/破壊/コスト系のみ明示許可。
 - **web ツール**: 新トレイト `SearchProvider`（SaaS=Brave Search API / オンプレ=SearXNG / エアギャップ=機能無効）。
   **ページ取得は検索と別ポリシー**: allowlist に検索プロバイダだけ載せると検索結果 URL が開けないため、
-  web ツール有効時は「検索結果由来のホストへの**時限的な動的 allowlist**（当該 run 限定・宛先を監査記録・
-  シークレット添付は不可）」をサンドボックスの egress 制御に追加する。管理者ポリシーでドメイン拒否リストを重ねられる。
+  web ツール有効時、取得はサンドボックスを介さずホスト側で行い（#348・§4.6）、**宛先は解決後 IP の検証＋
+  接続アドレス固定**で公開ホストに限定する（シークレット添付なし・リダイレクト非追従）。
+  管理者ポリシーのドメイン拒否リストを重ねられる。
+- **冪等 read はステップ内で並列実行する（#349）**: 1 ステップでモデルが出した呼び出しのうち、
+  `Tool::is_read_only()` を表明したもの（`web_search` / `web_fetch` / `doc_search`）だけを有界並列
+  （既定 4・`chat.parallel_read_tools`）で走らせる。承認要・破壊系は従来どおり逐次で `Approver` を待ち、
+  read はその待ちと並行して進む。**観測（`ToolResult`）とイベントは常に呼び出し順**に整列してから積む
+  （再現性・監査）。同一ホストへの `web_fetch` はレーンを分けて直列化する（相手先への礼儀）。
+  deep research の「検索 → 複数ページ取得」ファンアウトが直列にならないための土台（PIT-47）。
 - **deepresearch = agent-core のプリセット**（専用エンジンを作らない）: 「長ホライズン＋web.search/rag.search/
   document.write＋サンドボックス」構成の first-party skill（FR-7 の枠）。成果物はストレージ保存→自動 RAG 対象化。
 - **会話履歴は tenant スコープのスキーマで新設（SAAS.1 / #91）**: thread/message テーブルは既存規約を踏襲し
@@ -395,8 +402,8 @@ flowchart LR
 **Python 実行が exec ごとの Pyodide 初期化で ~6s** かかる。gVisor は create 132ms・104MB と重いものの
 **native CPython が 82ms（~75×速い）**。code_interpreter の実効体感は「create + 実行」の総時間で決まるため、
 create レイテンシだけを見て wasm を選んだ #97 の判断は誤りだった。wasm ティアは廃止せず、
-**web_fetch のような「egress を単一ホストへ固定する短命・読み取り専用実行」で引き続き使う**
-（wasm を選ぶ理由は速度ではなく egress モデル＝下記の ⚠️ 参照）。
+**runsc の動かない環境（開発ホスト等）でコード実行を退避させる明示指定のティア**として残す。
+なお web_fetch は 2026-07（#348）に**サンドボックスを使わないホストネイティブ取得へ移した**（下記）。
 
 > **実装ノート（2026-07・Phase 4）**: [agentos](https://github.com/rivet-dev/agentos) はカーネルを含まず
 > TS SDK/ACP 層であり、カーネル実体はその依存 **[secure-exec](https://github.com/rivet-dev/secure-exec)**（Rust・
@@ -408,7 +415,7 @@ create レイテンシだけを見て wasm を選んだ #97 の判断は誤り�
 ```mermaid
 flowchart TB
   ORCH[sandbox-orchestrator] --> TIER{Sandbox トレイト<br/>3ティア}
-  TIER -->|web_fetch 等・egress を単一ホストに固定する短命実行| WASM["wasm: secure-exec フォーク<br/>vendor/secure-exec・per-sandbox 非特権 sidecar 子プロセス<br/>V8＋Pyodide・仮想FS/PTY/仮想net内蔵"]
+  TIER -->|runsc 不在ホストの退避先（明示指定）| WASM["wasm: secure-exec フォーク<br/>vendor/secure-exec・per-sandbox 非特権 sidecar 子プロセス<br/>V8＋Pyodide・仮想FS/PTY/仮想net内蔵"]
   TIER -->|既定・フルLinux/native CPython| GV[gVisor]
   TIER -->|最強隔離/GPU 契約要件| FC[Firecracker microVM]
   WASM --> VFS["仮想FS → StorageService 直結<br/>（Stage B・Phase 5。アルファは成果物をサーバ回収）"]
@@ -420,7 +427,7 @@ flowchart TB
 | ティア | 用途 | 隔離保証（正直な主張） | アルファ |
 |--------|------|----------------------|---------|
 | **gVisor（既定）** | エージェント実行・skill・code_interpreter（native CPython・任意 pip）・ネイティブツールチェーン | ユーザー空間カーネル（VM 級ではない・PIT-24） | ✅ |
-| wasm | web_fetch（egress を単一ホストに固定・短命・読み取り専用） | プロセス分離＋wasm 二層（ブラウザ級・VM級ではない） | ✅ |
+| wasm | runsc 不在ホストでの code_interpreter 退避（明示指定・Pyodide） | プロセス分離＋wasm 二層（ブラウザ級・VM級ではない） | ✅ |
 | Firecracker | 契約上 VM 級隔離が要件の顧客・GPU | VM 級（KVM 前提） | ポストアルファ |
 
 - **wasm ティアの構造**: agentos は仮想FS・プロセステーブル・PTY・仮想ネットワークスタックを自前に持ち
@@ -439,11 +446,17 @@ flowchart TB
   `firecracker`）で選ぶ。ユーザー/ノード設定には
   出さない。gVisor/FC は orchestrator 側で当該ティアが構成済み（runsc/rootfs 等）であることが前提で、未構成なら create は
   `Unimplemented` で fail する（静かに wasm へ降格しない・監査に残す）。native Python が ~75x 速いことが既定を
-  gVisor にした根拠（[bench](./sandbox/bench.md)）。**web_fetch は egress を単一ホストへ固定する短命 sandbox のため常に wasm**
-  （この設定の対象外・egress allowlist を wasm の仮想 net ホスト関数で実効化する）。
-  ⚠️ web_fetch は内部で urllib（Python）を実行する（`crates/agent-core/src/tools/web_fetch.rs`）ため、wasm でも exec ごとに
-  Pyodide 初期化コストを払う。**wasm を選ぶ理由は速度ではなく egress モデル**であり、fetch レイテンシの是正（native fetch 経路の
-  用意 or gVisor 化）は別途 issue で検討する（既知の課題）。
+  gVisor にした根拠（[bench](./sandbox/bench.md)）。
+
+- **web_fetch はサンドボックスを使わない（2026-07・#348）**: 以前は「egress を単一ホストへ固定する短命 wasm sandbox」
+  として実装していたが、GET 1 回のために exec ごと Pyodide 初期化（~6s）を払う構造で、隔離が守っていたのは
+  **宛先の限定だけ**だった（実行するコードは我々が書いた固定の urllib 呼び出しで、untrusted コードではない）。
+  現在は `crates/agent-core/src/tools/web_fetch.rs` がホスト側の reqwest で取得し、**封じ込めはポリシ層で等価に維持**する:
+  ① アプリ層の URL 検証（http/https のみ・userinfo 不可・IP リテラル/単一ラベル/内部ドメイン拒否）、
+  ② **解決後 IP の再検証**（全解決先が公開 IP であること・`sandbox_client::net_guard`）、
+  ③ **検証済みアドレスへの接続固定**（`resolve_to_addrs`。接続時に再解決させない＝DNS リバインディング遮断）、
+  ④ リダイレクト非追従（PIT-36）、⑤ シークレット非添付・プロキシ非経由、⑥ 本文 256KiB 上限・テキストのみ。
+  IP 分類は **net_guard が単一の正**で、egress プロキシ（gVisor/FC ティア）とミニアプリ HTTP（app-platform）も同じ表を使う。
   **前提条件（#346 で充足済み）**: code_interpreter が宣伝する numpy/pandas は、native rootfs へビルド時に同梱する
   （`deploy/sandbox-assets/rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定 `--require-hashes` の二層で再現）。
   runsc・rootfs は orchestrator イメージへ焼き込み（`deploy/docker/sandbox-orchestrator.Dockerfile`・実行時 DL 無し＝PIT-33）。

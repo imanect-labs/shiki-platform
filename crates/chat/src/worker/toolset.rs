@@ -9,7 +9,10 @@ use agent_core::{
     WorkspaceStore,
 };
 
+use authz::AuthContext;
+
 use super::ChatWorker;
+use crate::store::ClaimedRun;
 
 impl ChatWorker {
     /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。
@@ -72,6 +75,49 @@ impl ChatWorker {
                 self.config.sandbox_software.clone(),
                 self.config.sandbox_backend,
             )));
+        }
+    }
+
+    /// skill ツール（カタログ引き・#344 Task 10.11）を提示ツールに加える。
+    ///
+    /// artifact ストアとカタログ源が配線されている時のみ。カタログはピン済み ∪ 本人 owner
+    /// （PR2 でインストール済みを追加）。掲載一覧の取得失敗は run を落とさない
+    /// （ピンの fail-closed とは別・warn してツールを出さない）。
+    pub(super) async fn push_skill_tool(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        ctx: &AuthContext,
+        run: &ClaimedRun,
+        skills: &[crate::skill::AppliedSkill],
+    ) {
+        let (Some(artifacts), Some(catalog)) = (&self.skill_artifacts, &self.skill_catalog) else {
+            return;
+        };
+        match catalog.entries(ctx, run.trace_id.as_deref()).await {
+            Ok(entries) => {
+                let pinned = skills
+                    .iter()
+                    .map(|s| crate::skill_catalog::SkillCatalogEntry {
+                        id: s.id,
+                        version: s.version,
+                        name: s.name.clone(),
+                        description: s.body.description.clone(),
+                        pinned: true,
+                    })
+                    .collect();
+                if let Some(tool) = crate::skill_tool::SkillTool::build(
+                    artifacts.clone(),
+                    self.db.clone(),
+                    run,
+                    pinned,
+                    entries,
+                ) {
+                    tools.push(Arc::new(tool));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, run_id = %run.run_id, "skill カタログ取得に失敗（skill ツールを提示しない）");
+            }
         }
     }
 }

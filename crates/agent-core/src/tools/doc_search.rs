@@ -142,6 +142,11 @@ impl Tool for DocSearchTool {
         false
     }
 
+    // 冪等な read（副作用なし）。同一ステップ内で他の read と並列実行してよい（#349）。
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     async fn call(
         &self,
         ctx: &AuthContext,

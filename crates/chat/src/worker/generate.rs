@@ -130,9 +130,8 @@ impl ChatWorker {
         }
         if let Some(provider) = &self.web_search {
             tools.push(Arc::new(WebSearchTool::new(provider.clone())));
-            if let Some(sandbox) = &self.sandbox {
-                tools.push(Arc::new(WebFetchTool::new(sandbox.clone())));
-            }
+            // web_fetch はホスト側で取得する（#348）。sandbox 配線の有無に依存しない。
+            tools.push(Arc::new(WebFetchTool::new()));
         }
         // generative UI（emit_ui・Task 6.4）: 検証層が配線されている時のみ提示する。
         if let Some(validator) = &self.ui_validator {
@@ -215,6 +214,7 @@ impl ChatWorker {
                 // 版管理・復元可能な書込は自動承認、shell/削除はユーザー承認（スコープ限定事前許可）。
                 opts.approval =
                     ApprovalPolicy::auto(["fs_write".to_string(), "fs_edit".to_string()]);
+                opts.parallel_read_tools = self.config.parallel_read_tools;
                 opts
             } else {
                 // storage 未配線: 自律不能。制約版に落とす（黙って弱くしない・警告）。
@@ -265,49 +265,6 @@ impl ChatWorker {
         .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
         let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理
         Ok(())
-    }
-
-    /// skill ツール（カタログ引き・#344 Task 10.11）を提示ツールに加える。
-    ///
-    /// artifact ストアとカタログ源が配線されている時のみ。カタログはピン済み ∪ 本人 owner
-    /// （PR2 でインストール済みを追加）。掲載一覧の取得失敗は run を落とさない
-    /// （ピンの fail-closed とは別・warn してツールを出さない）。
-    async fn push_skill_tool(
-        &self,
-        tools: &mut Vec<Arc<dyn Tool>>,
-        ctx: &AuthContext,
-        run: &ClaimedRun,
-        skills: &[crate::skill::AppliedSkill],
-    ) {
-        let (Some(artifacts), Some(catalog)) = (&self.skill_artifacts, &self.skill_catalog) else {
-            return;
-        };
-        match catalog.entries(ctx, run.trace_id.as_deref()).await {
-            Ok(entries) => {
-                let pinned = skills
-                    .iter()
-                    .map(|s| crate::skill_catalog::SkillCatalogEntry {
-                        id: s.id,
-                        version: s.version,
-                        name: s.name.clone(),
-                        description: s.body.description.clone(),
-                        pinned: true,
-                    })
-                    .collect();
-                if let Some(tool) = crate::skill_tool::SkillTool::build(
-                    artifacts.clone(),
-                    self.db.clone(),
-                    run,
-                    pinned,
-                    entries,
-                ) {
-                    tools.push(Arc::new(tool));
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, run_id = %run.run_id, "skill カタログ取得に失敗（skill ツールを提示しない）");
-            }
-        }
     }
 
     /// thread のワークスペースフォルダを解決 or 作成し、`WorkspaceStore` を返す（Durable Workspace）。
@@ -524,6 +481,7 @@ fn chat_opts(worker: &ChatWorker) -> AgentOptions {
     // 1 応答の出力上限（プロファイル既定 2048 は reasoning モデルの思考で尽き、
     // 長い成果物・大きなツール引数が途中で切れる。設定値で上書きする）。
     opts.max_tokens = Some(worker.config.max_tokens);
+    opts.parallel_read_tools = worker.config.parallel_read_tools;
     opts
 }
 

@@ -36,18 +36,7 @@ pub(crate) async fn authorize(
     approver: Option<&dyn Approver>,
     sink: &mut dyn EventSink,
 ) -> Result<Authz, AgentError> {
-    // 未知ツールは execute_tool 側で unknown エラーにするため素通し。
-    // egress（ネットワーク）ツールは requires_confirmation=false だが、**自律版では承認ゲート対象**
-    // にする（Task 5.6「egress は承認ゲート」）。Chat 版は従来どおり素通し（承認者が無いため）。
-    let is_egress = matches!(
-        crate::vocab::ToolName::parse(&call.name),
-        Some(crate::vocab::ToolName::WebFetch | crate::vocab::ToolName::WebSearch)
-    );
-    let needs_confirm = tool_map
-        .get(call.name.as_str())
-        .is_some_and(|t| t.requires_confirmation())
-        || (opts.profile.is_autonomous() && is_egress);
-    if !needs_confirm || opts.approval.is_pre_authorized(&call.name) {
+    if !needs_confirmation(tool_map, call, opts) {
         return Ok(Authz::Proceed);
     }
     let Some(approver) = approver else {
@@ -78,6 +67,27 @@ pub(crate) async fn authorize(
         )),
         ApprovalDecision::Cancelled => Authz::Cancel,
     })
+}
+
+/// この呼び出しが承認ゲートに掛かるか（await なしで判定できる・並列化の可否判断にも使う・#349）。
+///
+/// 未知ツールは `execute_tool` 側で unknown エラーにするため素通し。
+/// egress（ネットワーク）ツールは `requires_confirmation=false` だが、**自律版では承認ゲート対象**
+/// にする（Task 5.6「egress は承認ゲート」）。Chat 版は従来どおり素通し（承認者が無いため）。
+pub(crate) fn needs_confirmation(
+    tool_map: &HashMap<&str, &Arc<dyn Tool>>,
+    call: &PendingCall,
+    opts: &AgentOptions,
+) -> bool {
+    let is_egress = matches!(
+        crate::vocab::ToolName::parse(&call.name),
+        Some(crate::vocab::ToolName::WebFetch | crate::vocab::ToolName::WebSearch)
+    );
+    let gated = tool_map
+        .get(call.name.as_str())
+        .is_some_and(|t| t.requires_confirmation())
+        || (opts.profile.is_autonomous() && is_egress);
+    gated && !opts.approval.is_pre_authorized(&call.name)
 }
 
 /// 1 ツール呼び出しを実行する（未知は観測エラーへ・確認は [`authorize`] 済み前提）。

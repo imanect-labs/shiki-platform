@@ -19,12 +19,37 @@ if [ ! -f "$MANIFEST" ]; then
   exit 1
 fi
 
+LOCK="vendor/secure-exec/crates/execution/assets/pyodide/pyodide-lock.json"
+
 verify() { # <path> <expected_sha>
   [ -f "$1" ] || return 1
   local got
   got="$(sha256sum "$1" | awk '{print $1}')"
   [ "$got" = "$2" ]
 }
+
+# --- pin の整合検査（#362 の再発防止）---------------------------------------
+# 症状: lock は 0.29.2 なのに URL は v0.28.0 を指し、どの sha とも一致せず取得が全滅した。
+# lock・loader・wheel は「同じ dist の束」でしか動かないので、束が割れていないかを先に見る。
+versions="$(awk '!/^#/ && NF {print $3}' "$MANIFEST" |
+  sed -n 's|.*/pyodide/v\([0-9][0-9.]*\)/.*|\1|p' | sort -u)"
+if [ "$(printf '%s\n' "$versions" | grep -c .)" -gt 1 ]; then
+  echo "❌ manifest の dist バージョンが混在しています: $(printf '%s ' $versions)" >&2
+  echo "   → 全アセットを同一 dist から取ること（lock/loader/wheel は束で一致が要る）。" >&2
+  exit 1
+fi
+if [ -f "$LOCK" ]; then
+  while read -r sha rel _url; do
+    case "$sha" in ''|'#'*) continue ;; esac
+    case "$rel" in *.whl) ;; *) continue ;; esac
+    if ! grep -q "\"$sha\"" "$LOCK"; then
+      echo "❌ wheel の pin が pyodide-lock.json と一致しません: $(basename "$rel")" >&2
+      echo "   期待（manifest）: $sha" >&2
+      echo "   → lock は Pyodide ${versions} 由来か確認すること（両者は同一 dist であること）。" >&2
+      exit 1
+    fi
+  done < "$MANIFEST"
+fi
 
 fetched=0 skipped=0
 while read -r sha rel url; do

@@ -7,9 +7,9 @@ import { expect, test, type Page } from "@playwright/test";
 import { loginViaKeycloak } from "./helpers";
 
 /// **フルツール・複雑タスク**のデモ動画（AI_FULL=1）。実 LLM＋実 SearXNG（web_search）＋
-/// code_interpreter（gVisor・numpy/pandas 同梱）＋csv.query（隔離 DuckDB）＋
-/// ドキュメント編集ツールを一つのタスクで横断させる。
-/// （web_fetch は wasm 固定＋Pyodide pin ドリフト #362 のため本 spec では使わない）
+/// web_fetch（ホストネイティブ取得・#348）＋code_interpreter（gVisor・numpy/pandas 同梱）＋
+/// csv.query（隔離 DuckDB）＋ドキュメント編集ツールを一つのタスクで横断させる。
+/// 冪等 read（web_search/web_fetch/doc_search）は同一ステップ内で並列実行される（#349）。
 /// 前提: `scripts/e2e-deep-host.env` の構成で api を起動（SearXNG :8099・sandbox :50000・
 /// Langfuse :3002）。トレースは Langfuse UI（http://localhost:3002）で確認できる。
 test.skip(process.env.AI_FULL !== "1", "フルツール複雑タスク動画（AI_FULL=1）");
@@ -127,7 +127,8 @@ test("full-market-research: 検索→取得→SQL集計→ノートへレポー�
   await page.keyboard.type(
     "次の調査レポートを、いま開いているこのノートに執筆してください（新規作成ではなくこのノートを編集）。" +
       "手順: (1) web_search で「SaaS churn rate benchmark 2026」と「SaaS NPS benchmark B2B」を検索し、" +
-      "(2) 検索結果のタイトル・スニペットから業界水準を読み取り、(3) 添付の社内実績 CSV を csv.query で読み出し、" +
+      "(2) 有望な記事を web_fetch で 3〜4 本まとめて取得して業界水準の具体的な数値を読み取り、" +
+      "(3) 添付の社内実績 CSV を csv.query で読み出し、" +
       "その結果を code_interpreter（pandas 利用可）で月次 MRR 成長率・プラン別チャーン率・NPS 推移まで計算し、" +
       "(4) 外部ベンチマークと自社実績を比較する「市場ベンチマーク比較」「自社実績の分析（計算結果の表）」" +
       "「プラン別の課題」「打ち手の提案5点」「出典リンク一覧」の構成でレポートを書いてください。" +

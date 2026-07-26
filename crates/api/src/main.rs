@@ -174,7 +174,6 @@ async fn main() -> anyhow::Result<()> {
         authz.clone(),
     ));
 
-
     let chat = wiring::wire_chat(
         &config,
         &http,

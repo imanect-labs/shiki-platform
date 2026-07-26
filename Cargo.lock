@@ -5080,6 +5080,7 @@ dependencies = [
  "shiki-data",
  "shiki-gui",
  "shiki-llm-gateway",
+ "shiki-sandbox-client",
  "shiki-script-runtime",
  "shiki-secrets",
  "shiki-storage",
