@@ -162,6 +162,7 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<gui::SpecValidator>) {
             storage: None,
             ui_validator: Some(Arc::clone(&validator)),
             skill_artifacts: None,
+            skill_catalog: None,
             workflow_store: None,
             workflow_catalog: None,
             collab: None,

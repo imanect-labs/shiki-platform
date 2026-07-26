@@ -42,6 +42,26 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       echo "BUILD_COMMANDS=0: ゲストコマンド同梱をスキップ"; \
     fi
 
+# native ティア用アセット（runsc・#346）: manifest 検証付きでビルド時に取得する
+# （実行時 DL 無し・PIT-33・wasm 側 fetch-sandbox-assets.sh と対称）。
+FROM debian:bookworm-slim AS native-assets
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY scripts/fetch-native-assets.sh scripts/
+COPY deploy/sandbox-assets/native-manifest.sha256 deploy/sandbox-assets/
+RUN bash scripts/fetch-native-assets.sh
+
+# native rootfs（gVisor 用・numpy/pandas 同梱・#346）: docker export を使わず、pin イメージへ
+# --require-hashes で焼いた層をそのまま最終ステージへ COPY する（digest pin × wheel ハッシュの二層）。
+FROM python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf AS rootfs-src
+COPY deploy/sandbox-assets/rootfs-requirements.txt /tmp/rootfs-requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: \
+        -r /tmp/rootfs-requirements.txt \
+    && rm /tmp/rootfs-requirements.txt \
+    && printf 'nameserver 169.254.0.1\n' > /etc/resolv.conf.sandbox \
+    && printf '127.0.0.1 localhost\n' > /etc/hosts.sandbox
+
 FROM debian:bookworm-slim
 # iproute2: egress netns holder が `ip` でゲートウェイ IF を構成する。
 # e2fsprogs: Firecracker ワークスペース ext4 の非特権生成（PR3）。
@@ -53,13 +73,22 @@ COPY --from=builder /usr/local/bin/shiki-sandbox-orchestrator /usr/local/bin/
 COPY --from=builder /usr/local/bin/shiki-netns-holder /usr/local/bin/
 COPY --from=builder /usr/local/bin/secure-exec-sidecar /usr/local/bin/
 COPY --from=commands-builder /opt/shiki/commands /opt/shiki/commands
+# gVisor 既定ティアの前提アセットをイメージへ同梱する（#346・ボリューム上書きも可）。
+COPY --from=native-assets /app/deploy/sandbox-assets/bin/runsc /opt/shiki/sandbox-assets/bin/runsc
+COPY --from=rootfs-src / /opt/shiki/sandbox-assets/rootfs
+RUN mv /opt/shiki/sandbox-assets/rootfs/etc/resolv.conf.sandbox /opt/shiki/sandbox-assets/rootfs/etc/resolv.conf && \
+    mv /opt/shiki/sandbox-assets/rootfs/etc/hosts.sandbox /opt/shiki/sandbox-assets/rootfs/etc/hosts && \
+    # ネイティブティアの状態ディレクトリを sandbox ユーザーで作成可能に（compose は tmpfs を
+    # マウントするが、素の docker run でも起動時 create_dir_all が失敗しないように）。
+    mkdir -p /run/sandbox/gvisor /run/sandbox/firecracker && \
+    chown -R sandbox:sandbox /run/sandbox
 USER sandbox
 ENV SECURE_EXEC_SIDECAR_BIN=/usr/local/bin/secure-exec-sidecar
 ENV SANDBOX__LISTEN=0.0.0.0:50000
 ENV SANDBOX__COMMANDS_DIR=/opt/shiki/commands
 ENV SANDBOX__NETNS_HOLDER_BIN=/usr/local/bin/shiki-netns-holder
-# gVisor（runsc）/rootfs は deploy/sandbox-assets をボリュームで渡す（実行時 DL 無し・PIT-33）。
-# アセットが無ければ GvisorBackend 構成は warn して無効化され、wasm のみで起動する。
+# gVisor（runsc）/rootfs はイメージ同梱（#346・実行時 DL 無し・PIT-33）。開発ホストで
+# 差し替えたい場合のみ deploy/sandbox-assets のボリュームで上書きする。
 ENV SANDBOX__GVISOR__RUNSC_BIN=/opt/shiki/sandbox-assets/bin/runsc
 ENV SANDBOX__GVISOR__ROOTFS_DIR=/opt/shiki/sandbox-assets/rootfs
 ENV SANDBOX__GVISOR__STATE_DIR=/run/sandbox/gvisor

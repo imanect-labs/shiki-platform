@@ -18,7 +18,7 @@ mod store;
 mod versions;
 
 pub use model::{Artifact, ArtifactKind, ArtifactRole, ArtifactVersion, VersionMeta};
-pub use store::{ArtifactStore, NewArtifact};
+pub use store::{ArtifactStore, NewArtifact, SkillSummary};
 
 /// アーティファクト操作のエラー。
 #[derive(Debug, thiserror::Error)]

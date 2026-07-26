@@ -108,8 +108,9 @@ pub fn check_code(code: &str) -> Result<(), ValidateError> {
 /// PIT-24: 機微度の高いワークロードで弱い隔離（gVisor＝ユーザ空間カーネル）を拒否するためのポリシフック。
 ///
 /// 現状 `SandboxSpec` に機微度フィールドが無いため常に許可する（隔離クラスは create 監査へ記録する）。
-/// 機微度モデル導入時に、`spec.backend.isolation_class()` が `UserspaceKernel` の要求を
-/// 機微ワークロードで拒否/警告する判定をここに実装する。
+/// **既定ティアが gVisor（#346）になったため、既定経路の隔離クラスは `UserspaceKernel`**（VM 級では
+/// ない）。機微度モデル導入時に、機微ワークロードで `UserspaceKernel` の要求を拒否/警告し
+/// VM 級（Firecracker）を要求する判定をここに実装する（NFR-1 の VM 級主張は FC opt-in で満たす）。
 pub fn check_isolation(_spec: &sandbox_client::SandboxSpec) -> Result<(), ValidateError> {
     Ok(())
 }

@@ -18,7 +18,7 @@ mod external;
 mod storage;
 mod tabular;
 
-pub use ai::{AgentInvokeParams, LlmInvokeParams};
+pub use ai::{AgentInvokeParams, LlmInvokeParams, SkillInvokeParams};
 pub use control::{
     BranchParams, JoinMode, JoinParams, MapItemError, MapParams, SwitchCase, SwitchParams,
     WaitKind, WaitParams, WaitTimeout,
@@ -130,6 +130,7 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
             }
             Ok(())
         }
+        NodeType::SkillInvoke => check_as::<SkillInvokeParams>(raw),
         NodeType::WorkflowStart => check_as::<WorkflowStartParams>(raw),
         NodeType::CsvQuery => check_as::<CsvQueryParams>(raw),
         NodeType::CsvPatch => check_as::<CsvPatchParams>(raw),
@@ -252,6 +253,10 @@ mod tests {
             (
                 NodeType::WorkflowStart,
                 json!({ "name": "child-flow", "input": { "a": 1 } }),
+            ),
+            (
+                NodeType::SkillInvoke,
+                json!({ "skill": "skill:expense@1", "input": { "$from": "input" } }),
             ),
         ];
         for (nt, raw) in cases {

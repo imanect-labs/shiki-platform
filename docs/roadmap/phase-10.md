@@ -270,9 +270,11 @@
   （不変 publish・信頼ティア・同意インストール・署名バンドル）。呼び出し面: エージェントマウント／skill ノード
   （`skill:<name>@<version>`・保存時存在検証）。実効=宣言スコープ ∩ 実行主体 ReBAC。
 - **受け入れ条件**:
-  - [ ] skill を publish→同意インストール→エージェント/ワークフロー両方から呼べる
-  - [ ] skill の宣言スコープ外の能力呼び出しが拒否される
-  - [ ] 未インストール/存在しない skill を参照する IR が保存時に拒否される
+  - [x] skill を publish→同意インストール→エージェント/ワークフロー両方から呼べる（#344:
+        エージェント面はカタログ引きの `skill` ツール、ワークフロー面は skill.invoke ノード）
+  - [x] skill の宣言スコープ外の能力呼び出しが拒否される（scope ceiling ＋ 認可チョークポイント。
+        skill 自体は能力を増やさない＝縮小/誘導のみ）
+  - [x] 未インストール/存在しない skill を参照する IR が保存時に拒否される（V4 `ir.unknown_skill`）
 
 ### Task 10.12: dnd ワークフローエディタ
 - **area**: frontend / **path**: `web/`
@@ -303,5 +305,7 @@
 - **仕様**: Slack/メール通知等、http.request ラップの公式 skill を少数提供（first-party 署名ティア）。
   ネイティブコネクタは作らない方針の実証を兼ねる。
 - **受け入れ条件**:
-  - [ ] Slack 通知 skill がシークレット宛先束縛付きで動く
-  - [ ] first-party 署名により管理者の個別同意なしで利用可能（信頼ティア動作確認）
+  - [x] Slack 通知 skill がシークレット宛先束縛付きで動く（`sdk/first-party-skills/slack-notify`・
+        `.shiki` script → `Shiki.http.request`・束縛外拒否は executor e2e で検証・#344）
+  - [x] first-party 署名により管理者の個別同意なしで利用可能（信頼ティア動作確認。
+        `POST /skills/registry/import` の署名検証 → 本人インストールのみで利用可）

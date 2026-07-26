@@ -18,7 +18,7 @@ pub struct CodeInterpreterTool {
     sandbox: Arc<dyn Sandbox>,
     /// 成果物の保存先（発話ユーザー権限で保存）。未配線なら成果物は回収しない。
     artifacts: Option<Arc<dyn ArtifactStore>>,
-    /// 隔離ティア（admin ポリシー・design §4.6）。native Python が速い gVisor 等を選べる。既定は wasm。
+    /// 隔離ティア（admin ポリシー・design §4.6）。既定は gVisor（native CPython・#346）。
     backend: SandboxBackend,
 }
 

@@ -149,13 +149,11 @@ pub struct ChatConfig {
     #[serde(default)]
     pub sandbox_endpoint: Option<String>,
     /// コード実行系（code_interpreter / shell）の隔離ティア（admin ポリシー・design §4.6）。
-    /// `wasm`（既定）/ `gvisor` / `firecracker`。未指定は wasm。gVisor/FC は orchestrator 側で
-    /// 当該ティアが構成済みであることが前提（未構成なら create は Unimplemented で fail する）。
+    /// `gvisor`（既定・#346）/ `wasm` / `firecracker`。未指定は既定（gVisor）。各ティアは
+    /// orchestrator 側で構成済みであることが前提（未構成なら create は Unimplemented で fail する
+    /// ＝黙って降格しない）。runsc の動かない環境は `wasm` を明示指定して退避する。
     /// web_fetch は egress 限定の短命 sandbox なので常に wasm（この設定の対象外）。
-    ///
-    /// ⚠️ native ティアへ切り替える場合、rootfs が numpy/pandas を同梱していること（code_interpreter が
-    /// 宣伝する依存）。既定 rootfs（python:3.12-slim）は numpy 非同梱で、未対応のまま opt-in すると
-    /// `import numpy` が失敗する（design §4.6 前提条件）。
+    /// rootfs の numpy/pandas 同梱はビルド（rootfs-requirements.txt・--require-hashes）が保証する。
     #[serde(default)]
     pub sandbox_backend: Option<sandbox_client::SandboxBackend>,
 }

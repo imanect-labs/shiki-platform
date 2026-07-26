@@ -60,15 +60,17 @@ export type RunStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 /// require_approval=承認必須（既定）/ auto=版管理で復元可能な書込のみ自動 / bypass=全自動（危険）。
 export type AutonomousMode = "require_approval" | "auto" | "bypass";
 
+/// skill のバージョンピン 1 件（thread の「最初からロード済み」スキル・#344）。
+export type SkillPin = { skillId: string; skillVersion: number };
+
 export type Thread = {
   id: string;
   title: string;
   agentMode: boolean;
   /// 自律 run の承認モード（#350・実行中トグル可）。
   autonomousMode: AutonomousMode;
-  /// 適用中の skill / ミニアプリ（作成時に version 込みでピン・Phase 6）。
-  skillId?: string | null;
-  skillVersion?: number | null;
+  /// 最初からロード済みにする skill のピン（順序付き・複数可・#344）。
+  skillPins: SkillPin[];
   miniAppId?: string | null;
   miniAppVersion?: number | null;
   /// 由来ノート（ノートの分割ビューから作られたスレッド・issue #282）。通常チャットは null。
@@ -185,8 +187,7 @@ type ApiThread = {
   title: string;
   agent_mode: boolean;
   autonomous_mode?: AutonomousMode;
-  skill_id?: string | null;
-  skill_version?: number | null;
+  skill_pins?: { skill_id: string; skill_version: number }[];
   mini_app_id?: string | null;
   mini_app_version?: number | null;
   origin_note_id?: string | null;
@@ -201,8 +202,10 @@ function toThread(t: ApiThread): Thread {
     title: t.title,
     agentMode: t.agent_mode,
     autonomousMode: t.autonomous_mode ?? "require_approval",
-    skillId: t.skill_id ?? null,
-    skillVersion: t.skill_version ?? null,
+    skillPins: (t.skill_pins ?? []).map((p) => ({
+      skillId: p.skill_id,
+      skillVersion: p.skill_version,
+    })),
     miniAppId: t.mini_app_id ?? null,
     miniAppVersion: t.mini_app_version ?? null,
     originNoteId: t.origin_note_id ?? null,
@@ -236,6 +239,8 @@ export async function createThread(
   agentMode = false,
   pins?: {
     skill?: ArtifactPin;
+    /// 複数 skill（順序付き・#344）。`skill` と併用時はこちらが優先。
+    skills?: ArtifactPin[];
     miniApp?: ArtifactPin;
     workspace?: WorkspaceChoice;
     /// 由来ノート（ノートの分割ビューから作るスレッド・issue #282）。
@@ -247,6 +252,7 @@ export async function createThread(
   const workspace = pins?.workspace
     ? { mode: pins.workspace.mode, folder_id: pins.workspace.folderId }
     : undefined;
+  const skills = pins?.skills?.length ? pins.skills.map((p) => toPin(p)) : undefined;
   const data = await ok<ApiThread>(
     await apiFetch("/threads", {
       method: "POST",
@@ -255,6 +261,7 @@ export async function createThread(
         title: title?.trim() || undefined,
         agent_mode: agentMode,
         skill: toPin(pins?.skill),
+        skills,
         mini_app: toPin(pins?.miniApp),
         workspace,
         origin_note_id: pins?.originNoteId,
@@ -263,6 +270,20 @@ export async function createThread(
   );
   notifyThreadsChanged();
   return toThread(data);
+}
+
+/// スレッドの skill ピン集合を置き換える（owner のみ・途中変更・#344）。
+/// ミニアプリ経由のスレッドはバンドル定義のピンが正のため 400 になる。
+export async function setThreadSkills(threadId: string, skills: ArtifactPin[]): Promise<void> {
+  const res = await apiFetch(`/threads/${threadId}/skills`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      skills: skills.map((p) => ({ artifact_id: p.artifactId, version: p.version ?? undefined })),
+    }),
+  });
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  notifyThreadsChanged();
 }
 
 /// スレッドの由来ノートを設定する（下書き確定→ノート実体化の紐付け・issue #282）。
@@ -352,6 +373,13 @@ export async function getThreadMessages(
 /// 計画のサブタスク（自律エージェント・Task 5.2）。
 export type PlanSubtask = { id: string; title: string; status: string };
 
+/// skill ツールの発動記録 1 件（skill_invoked イベント・#344）。
+export type SkillInvocation = {
+  skill_id: string;
+  skill_version: number;
+  name: string;
+};
+
 /// 承認要求（破壊系/egress/高コスト・Task 5.6）。
 export type ApprovalRequest = {
   tool_call_id: string;
@@ -384,6 +412,8 @@ export type StreamHandlers = {
   /// （履歴 projection されない）。対象 node_id が開いている文書と一致するとき Collabora へ
   /// Action_Paste で現在の選択を置換注入する。
   onOfficeLiveEdit?: (edit: { node_id: string; html: string }) => void;
+  /// skill ツールの発動記録（#344）。会話中に読み込んだスキルのチップ表示に使う。
+  onSkillInvoked?: (skill: SkillInvocation) => void;
   onStatus?: (status: RunStatus) => void;
   // 自律エージェント（Phase 5）。
   onPlan?: (subtasks: PlanSubtask[]) => void;
@@ -413,6 +443,7 @@ type StreamEventKind =
   | { type: "csv_draft"; draft: unknown }
   | { type: "document_draft"; draft: unknown }
   | { type: "office_live_edit"; node_id: string; html: string }
+  | { type: "skill_invoked"; skill: SkillInvocation }
   | { type: "plan"; subtasks: PlanSubtask[] }
   | { type: "budget_warning"; kind: string; used: number; limit: number }
   | ({ type: "approval_requested" } & ApprovalRequest)
@@ -488,6 +519,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "office_live_edit":
         handlers.onOfficeLiveEdit?.({ node_id: kind.node_id, html: kind.html });
+        break;
+      case "skill_invoked":
+        handlers.onSkillInvoked?.(kind.skill);
         break;
       case "plan":
         handlers.onPlan?.(kind.subtasks);

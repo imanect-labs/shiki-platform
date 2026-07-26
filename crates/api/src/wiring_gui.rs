@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use api::config::AppConfig;
 
-use crate::wiring::wire_websearch;
+use crate::wiring_websearch::wire_websearch;
 
 /// generative UI／skill／ミニアプリのストア束（Phase 6 の配線結果）。
 pub(crate) struct GuiWiring {

@@ -24,9 +24,58 @@ pub(super) fn required_scope_for(nt: NodeType) -> Option<&'static str> {
     crate::vocab::required_scope(nt).map(crate::vocab::Scope::as_str)
 }
 
-/// V4: 参照存在（Stage A は secret のみ・宛先束縛の事前チェック）。
+/// `skill:<name>@<version>` 参照をパースする（形式不正は None・#344）。
+pub(crate) fn parse_skill_ref(s: &str) -> Option<(&str, &str)> {
+    let rest = s.strip_prefix("skill:")?;
+    let (name, version) = rest.split_once('@')?;
+    if name.is_empty() || version.is_empty() {
+        return None;
+    }
+    Some((name, version))
+}
+
+/// V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344）。
 pub(super) fn v4_refs(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError>) {
     for node in &ir.nodes {
+        // skill.invoke: `skill:<name>@<version>` を保存ユーザーのインストール集合へ照合する
+        // （10.1b。未インストール/存在しない skill を参照する IR は保存時に拒否）。
+        if node.node_type == NodeType::SkillInvoke.as_str() {
+            let Some(skill_ref) = node.params.get("skill").and_then(|v| v.as_str()) else {
+                continue; // params 型は V1b が検証済み（欠落はそちらで拒否）。
+            };
+            match parse_skill_ref(skill_ref) {
+                None => {
+                    errors.push(
+                        ValidationError::new(
+                            "ir.bad_ref",
+                            format!("skill 参照は skill:<name>@<version> 形式です: {skill_ref}"),
+                        )
+                        .at_node(&node.id)
+                        .at_path("/params/skill"),
+                    );
+                }
+                Some((name, version)) => {
+                    let known = catalog
+                        .skills
+                        .get(name)
+                        .is_some_and(|versions| versions.contains(version));
+                    if !known {
+                        errors.push(
+                            ValidationError::new(
+                                "ir.unknown_skill",
+                                format!(
+                                    "skill {name}@{version} はインストールされていません\
+                                     （レジストリからインストールしてください）"
+                                ),
+                            )
+                            .at_node(&node.id)
+                            .at_path("/params/skill"),
+                        );
+                    }
+                }
+            }
+            continue;
+        }
         if node.node_type != NodeType::HttpRequest.as_str() {
             continue;
         }

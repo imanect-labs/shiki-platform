@@ -63,9 +63,9 @@ pub async fn create_thread(
     trace: TraceIdExt,
     Json(req): Json<CreateThreadRequest>,
 ) -> Result<Json<Thread>, ApiError> {
-    // skill / ミニアプリの選択を**作成者の権限**で解決し、version 込みでピンする（Task 6.7/6.10）。
-    // ミニアプリ指定時は skill ピンをバンドル定義から引く（skill 指定より優先）。
-    let mut skill_pin: Option<(Uuid, i64)> = None;
+    // skill / ミニアプリの選択を**作成者の権限**で解決し、version 込みでピンする（Task 6.7/6.10・
+    // #344 で複数化）。ミニアプリ指定時は skill ピンをバンドル定義から引く（個別指定より優先）。
+    let skill_pins: Vec<chat::SkillPin>;
     let mut mini_app_pin: Option<(Uuid, i64)> = None;
     if let Some(pin) = req.mini_app {
         let resolved = state
@@ -74,24 +74,26 @@ pub async fn create_thread(
             .await
             .map_err(super::ui_specs::map_gui_err)?;
         mini_app_pin = Some((resolved.id, resolved.version));
-        skill_pin = resolved.body.skill.map(|p| (p.artifact_id, p.version));
-    } else if let Some(pin) = req.skill {
-        let (version, _body, _raw) = match pin.version {
-            Some(v) => {
-                state
-                    .skills
-                    .get_version(&ctx, pin.artifact_id, v, trace.as_deref())
-                    .await
-            }
-            None => {
-                state
-                    .skills
-                    .get_latest(&ctx, pin.artifact_id, trace.as_deref())
-                    .await
-            }
-        }
-        .map_err(super::ui_specs::map_gui_err)?;
-        skill_pin = Some((pin.artifact_id, version));
+        skill_pins = resolved
+            .body
+            .skill
+            .map(|p| {
+                vec![chat::SkillPin {
+                    skill_id: p.artifact_id,
+                    skill_version: p.version,
+                }]
+            })
+            .unwrap_or_default();
+    } else {
+        // `skills`（複数）が正・`skill`（単数）は後方互換の別名（併用時は skills 優先）。
+        let requested = match (&req.skills, req.skill) {
+            (Some(list), _) => list.clone(),
+            (None, Some(single)) => vec![single],
+            (None, None) => Vec::new(),
+        };
+        skill_pins =
+            super::chat_skills::resolve_skill_pins(&state, &ctx, &requested, trace.as_deref())
+                .await?;
     }
 
     // ワークスペース場所は **thread 作成前に**認可検証する（不正なら孤児 thread を残さない）。
@@ -140,12 +142,11 @@ pub async fn create_thread(
             trace.as_deref(),
         )
         .await?;
-    if skill_pin.is_some() || mini_app_pin.is_some() {
+    if !skill_pins.is_empty() || mini_app_pin.is_some() {
         store
-            .set_thread_pins(&ctx, thread.id, skill_pin, mini_app_pin, trace.as_deref())
+            .set_thread_pins(&ctx, thread.id, &skill_pins, mini_app_pin, trace.as_deref())
             .await?;
-        thread.skill_id = skill_pin.map(|(id, _)| id);
-        thread.skill_version = skill_pin.map(|(_, v)| v);
+        thread.skill_pins = skill_pins;
         thread.mini_app_id = mini_app_pin.map(|(id, _)| id);
         thread.mini_app_version = mini_app_pin.map(|(_, v)| v);
     }

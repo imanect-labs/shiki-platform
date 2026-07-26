@@ -7,6 +7,7 @@
 //! - **AuthContext 伝播**: run に保存した発話ユーザーで生成し昇格しない（confused-deputy 防御）。
 //! - **協調キャンセル**: ユーザー明示停止（cancel_requested）のみ。ページ離脱はキャンセルしない。
 
+mod approval_policy;
 mod generate;
 mod history;
 mod sink;
@@ -50,10 +51,9 @@ pub struct WorkerConfig {
     /// 自律 shell に同梱するゲストコマンドパッケージ（coreutils 等・Task 5.4）。
     pub sandbox_software: Vec<String>,
     /// コード実行系（code_interpreter / shell）の隔離ティア（admin ポリシー・design §4.6）。
-    /// 既定は wasm（deploy アセット不要）。native Python/フル Linux コマンドが要るなら gVisor 等を選ぶ。
+    /// 既定は gVisor（#346・native Python。rootfs は numpy/pandas 同梱がビルドで保証される）。
+    /// runsc の無い開発ホストは wasm へ明示退避する（自動降格はしない）。
     /// web_fetch は egress 限定の短命 sandbox なので常に wasm（この設定の対象外）。
-    /// ⚠️ native ティアは rootfs が numpy/pandas を同梱していることが前提（code_interpreter の宣伝依存・
-    /// 既定 rootfs は numpy 非同梱）。design §4.6 前提条件を参照。
     pub sandbox_backend: agent_core::SandboxBackend,
 }
 
@@ -72,8 +72,9 @@ impl Default for WorkerConfig {
             autonomous_max_tokens: 200_000,
             autonomous_max_cost_usd_micros: 1_000_000,
             sandbox_software: vec!["coreutils".to_string()],
-            // 既定は wasm（後方互換・deploy アセット前提の gVisor は admin が明示 opt-in）。
-            sandbox_backend: agent_core::SandboxBackend::Wasm,
+            // 既定ティアの単一ソースは enum の `#[default]`（gVisor・#346）。ここに別のリテラルを
+            // 持たない（「もう一つの正」を作らない）。
+            sandbox_backend: agent_core::SandboxBackend::default(),
         }
     }
 }
@@ -101,6 +102,9 @@ pub struct WorkerDeps {
     /// skill / ミニアプリのピン解決（Task 6.7/6.9/6.10）。未配線でピンがある run は失敗する
     /// （fail-closed・skill 無しで黙って生成しない）。
     pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
+    /// skill カタログ源（skill ツールの動的 description・#344 Task 10.11）。
+    /// skill_artifacts と両方揃った時のみ skill ツールを提示する。
+    pub skill_catalog: Option<Arc<dyn crate::skill_catalog::SkillCatalogSource>>,
     /// ワークフロー IR ストア（emit_workflow / read_workflow・Task 10.13）。
     /// カタログ源と両方揃った時のみツールを提示する。
     pub workflow_store: Option<Arc<workflow_engine::WorkflowStore>>,
@@ -137,6 +141,8 @@ pub struct ChatWorker {
     ui_validator: Option<Arc<gui::SpecValidator>>,
     /// skill / ミニアプリのピン解決（Task 6.9）。
     skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
+    /// skill カタログ源（skill ツール・#344）。
+    skill_catalog: Option<Arc<dyn crate::skill_catalog::SkillCatalogSource>>,
     /// ワークフロー IR ストア（emit_workflow / read_workflow・Task 10.13）。
     workflow_store: Option<Arc<workflow_engine::WorkflowStore>>,
     /// カタログ源（保存 API と同一実装を注入・Task 10.13）。
@@ -163,6 +169,7 @@ impl ChatWorker {
             storage,
             ui_validator,
             skill_artifacts,
+            skill_catalog,
             workflow_store,
             workflow_catalog,
             collab,
@@ -181,6 +188,7 @@ impl ChatWorker {
             storage,
             ui_validator,
             skill_artifacts,
+            skill_catalog,
             workflow_store,
             workflow_catalog,
             collab,
@@ -299,7 +307,7 @@ impl ChatWorker {
         // 新 attempt の行になる。削除に失敗したまま続行すると、以後の checkpoint の event_seq が
         // 破棄行を包含し、次の takeover の seed（projection 再構築）へ部分出力が混入して
         // message.content の真実まで壊れるため、**続行せず Err で job retry へ回す**。
-        if let Some(envelope) = generate::restore_checkpoint(&run) {
+        if let Some(envelope) = approval_policy::restore_checkpoint(&run) {
             if let Err(e) = self
                 .store
                 .prune_events_after(run_id, fencing, envelope.event_seq)

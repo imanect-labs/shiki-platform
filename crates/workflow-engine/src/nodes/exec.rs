@@ -338,6 +338,7 @@ impl NodeExecutor for CapabilityNodeExecutor {
             NodeType::AgentInvoke => self.node_agent_invoke(params, ctx, &ec, &r).await,
             NodeType::HttpRequest => self.node_http_request(params, ctx, &ec, &r).await,
             NodeType::ScriptRun => self.node_script_run(params, ctx, &ec).await,
+            NodeType::SkillInvoke => self.node_skill_invoke(params, ctx, &ec, &r).await,
             NodeType::WorkflowStart => self.node_workflow_start(params, ctx, &ec, &r).await,
             NodeType::CsvQuery => self.node_csv_query(params, ctx, &ec, &r).await,
             NodeType::CsvPatch => self.node_csv_patch(params, ctx, &ec, &r).await,

@@ -180,7 +180,11 @@ impl WorkerSink {
                 });
             }
             // ライブ専用/進捗/端末イベントは projection しない。
+            // Office ライブ編集は履歴再生で二重 paste しないため（#328）、skill 発動記録は
+            // instructions が tool_result block として既に履歴に残るため（#344・完全な列は
+            // generation_event 側が監査・再現性を担う）除外する。
             StreamEventKind::OfficeLiveEdit { .. }
+            | StreamEventKind::SkillInvoked { .. }
             | StreamEventKind::Plan { .. }
             | StreamEventKind::BudgetWarning { .. }
             | StreamEventKind::ApprovalRequested { .. }
@@ -239,6 +243,10 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         AgentEvent::OfficeLiveEdit { node_id, html } => StreamEventKind::OfficeLiveEdit {
             node_id: node_id.clone(),
             html: html.clone(),
+        },
+        // skill 発動記録（#344）。generation_event に残り replay 可能（UI はチップ表示）。
+        AgentEvent::SkillInvoked { skill } => StreamEventKind::SkillInvoked {
+            skill: skill.clone(),
         },
         // 自律プロファイルの構造化イベント（Task 5.9 ライブ配信）。generation_event に append され
         // replay 可能（監査・5.10）だが message.content へは projection しない。

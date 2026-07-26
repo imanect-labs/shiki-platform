@@ -36,6 +36,8 @@ pub mod office_live_tool;
 pub mod office_tool;
 pub mod selection;
 pub(crate) mod skill;
+pub mod skill_catalog;
+pub(crate) mod skill_tool;
 pub mod slide_templates;
 pub mod slide_tool;
 pub mod store;
@@ -52,8 +54,9 @@ pub use error::ChatError;
 pub use gui_actions::ChatSubmitHandler;
 pub use model::{
     Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunStatus, SelectionContext,
-    SelectionKind, StreamEvent, StreamEventKind, Thread, ThreadRole,
+    SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,
 };
+pub use skill_catalog::{OwnedSkillCatalog, SkillCatalogEntry, SkillCatalogSource};
 pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
 pub use store::{ChatStore, ClaimedRun, PostResult, ThreadOrigin, CHAT_GENERATION_QUEUE};
 pub use worker::{ChatWorker, WorkerConfig, WorkerDeps};

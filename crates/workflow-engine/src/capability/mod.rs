@@ -64,6 +64,10 @@ const SCOPE_FREE_APIS: &[&str] = &[
     "llm.invoke",
     "agent.invoke",
     "script.run",
+    // skill.invoke 自体は専用スコープを持たない（内部推論・vocab/scope.rs:41）。skill が
+    // `.shiki` script / agent 経由で行う能力呼び出しは、その API のスコープが個別に効く
+    // （script の Shiki.* は HostBridge が、agent は agent.invoke 経路がゲートする・#344）。
+    "skill.invoke",
 ];
 
 /// 能力 API に必要なスコープが実効スコープに含まれるか判定する（scope 天井）。

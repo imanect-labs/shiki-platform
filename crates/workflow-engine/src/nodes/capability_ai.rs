@@ -21,7 +21,7 @@ use super::ports::{AgentInvokeReq, ExecCtx, HttpSendReq, LlmInvokeReq, PortError
 use super::resolver::{as_bytes, as_string, as_u32, ParamResolver};
 
 /// レスポンス本文を JSON（不能ならテキスト）に整形する（1MB 上限）。
-fn parse_body(bytes: &[u8]) -> Value {
+pub(super) fn parse_body(bytes: &[u8]) -> Value {
     const CAP: usize = 1024 * 1024;
     let slice: &[u8] = if bytes.len() > CAP {
         &bytes[..CAP]
@@ -249,7 +249,7 @@ impl CapabilityNodeExecutor {
 }
 
 /// secret 添付方式からヘッダ名/値を決める（`bearer` → Authorization: Bearer、`header` → 指定ヘッダ）。
-fn attach_secret(attach: Option<&SecretAttach>, value: &str) -> (String, String) {
+pub(super) fn attach_secret(attach: Option<&SecretAttach>, value: &str) -> (String, String) {
     match attach.map_or(SecretAttachKind::Bearer, |a| a.kind) {
         SecretAttachKind::Header => {
             let name = attach

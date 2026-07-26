@@ -1,10 +1,10 @@
 //! 保存時検証パイプライン V1〜V7（ir.md §8・固定順・全件エラー収集）。
 //!
 //! AI 編集も dnd 保存も同一パイプラインを通す。最初の 1 件で止めず全エラーを配列で返す
-//! （dnd がノード上に表示）。Stage A の対象は V1/V2/V3/V5/V6/V7 と V4 の secret 照合のみ
-//! （skill 照合は Stage B）。
+//! （dnd がノード上に表示）。V4 は secret 照合＋skill 照合（10.1b・#344）。
 
 mod refs;
+pub(crate) use refs::parse_skill_ref;
 mod v2_graph;
 mod v3_vocab;
 mod v5_dataflow;
@@ -71,6 +71,10 @@ pub struct Catalog {
     pub secrets: BTreeMap<String, Vec<String>>,
     /// テナントのモデルカタログ（llm.invoke の model 照合・空なら照合スキップ）。
     pub models: Vec<String>,
+    /// 保存ユーザーのインストール済み skill（name → レジストリ version 集合・V4 skill 照合・
+    /// #344 Task 10.1b）。インストールはユーザー単位のため保存者基準で照合し、実行時は
+    /// 実行主体の ReBAC で再検証する（fail-closed が最終防衛線・ir.md §8）。
+    pub skills: BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
 /// IR の JSON を V1〜V7 で検証する。エラーが 1 件でもあれば `Err(全件)`。
@@ -128,7 +132,7 @@ pub fn validate(
     v2_graph::check(&ir, &mut errors);
     // V3: 語彙照合（node type・scope・event source・model）。
     v3_vocab::v3_vocab(&ir, catalog, &mut errors);
-    // V4: 参照存在（Stage A は secret のみ・宛先束縛の事前チェック）。
+    // V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344）。
     refs::v4_refs(&ir, catalog, &mut errors);
     // V5: データフロー（$from 祖先性・default 要否・条件木型整合・regex）。
     v5_dataflow::check(&ir, &mut errors);
@@ -356,6 +360,50 @@ mod tests {
         });
         let errs2 = validate(&ir2, &cat).unwrap_err();
         assert!(errs2.iter().any(|e| e.code == "ir.binding_denied"));
+    }
+
+    #[test]
+    fn v4_skill_installed_check() {
+        // 未インストール skill 参照は保存時拒否（10.1b・受け入れ条件③）。
+        let ir = json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [{ "id": "s", "type": "skill.invoke",
+                "params": { "skill": "skill:expense@1" } }],
+            "edges": []
+        });
+        let errs = validate(&ir, &catalog()).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.code == "ir.unknown_skill"),
+            "{errs:?}"
+        );
+
+        // インストール済みなら通る。
+        let mut cat = Catalog::default();
+        cat.skills
+            .entry("expense".into())
+            .or_default()
+            .insert("1".into());
+        assert!(validate(&ir, &cat).is_ok());
+
+        // バージョン違いは拒否（version 固定・再現性）。
+        let ir2 = json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [{ "id": "s", "type": "skill.invoke",
+                "params": { "skill": "skill:expense@2" } }],
+            "edges": []
+        });
+        let errs2 = validate(&ir2, &cat).unwrap_err();
+        assert!(errs2.iter().any(|e| e.code == "ir.unknown_skill"));
+
+        // 形式不正は ir.bad_ref。
+        let ir3 = json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [{ "id": "s", "type": "skill.invoke",
+                "params": { "skill": "expense" } }],
+            "edges": []
+        });
+        let errs3 = validate(&ir3, &cat).unwrap_err();
+        assert!(errs3.iter().any(|e| e.code == "ir.bad_ref"));
     }
 
     #[test]

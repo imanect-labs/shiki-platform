@@ -112,7 +112,7 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
 | 制御ノード | 分岐・並列・join・待機（時間/イベント） | ─ |
 | shiki script ノード | script-runtime で有界実行（§3） | ホスト関数経由＝能力ゲートウェイで通常認可 |
 | skill ノード | `skill:<name>@<version>` 参照（保存時に存在検証） | skill 宣言スコープ ∩ 実行主体 ReBAC |
-| `agent.invoke` ノード | サンドボックス（wasm ティア既定）で agent-core 起動 | ノード設定 ∩ 実行主体 ReBAC（下記） |
+| `agent.invoke` ノード | サンドボックス（gVisor ティア既定・#346）で agent-core 起動 | ノード設定 ∩ 実行主体 ReBAC（下記） |
 | `llm.invoke` ノード | llm-gateway 直行（サンドボックスなし） | モデルカタログ・予算ガードレール |
 | `http.request` ノード | 外部 HTTP（egress allowlist 適用） | シークレット宛先束縛（§5）＋allowlist の AND |
 
@@ -171,13 +171,28 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
   **script は shiki script（`.shiki`）と shell script（`.sh`）のどちらも、また両方を同時に含められる**
   （1 skill が複数 script ファイルを持てる）。
   知識スコープで絞っても最終可読性は常に実行主体個人の ReBAC で再チェックする。
-- 呼び出し面は 3 つで中身は同一:
-  1. **チャットから**: セッション開始時の初期コンテキストとして適用（システムプロンプト・知識スコープ・許可ツール・
-     モデル既定・few-shot を一括適用。Phase 6・FR-7）
-  2. **エージェントから**: agent.invoke 時にツールとしてマウント（実効 = skill 宣言スコープ ∩ 実行主体 ReBAC）
-  3. **ワークフローから**: skill ノード（IR 上は `skill:<name>@<version>`。保存時に存在検証）
+- **呼び出し機構は 1 つ（#344 で統合）**: エージェントループ上の `skill` ツールによる**カタログ引き**。
+  ツール定義の description にカタログ（**name + description のみ**・本文は載せない）が動的に載り、
+  モデルが必要時に名前指定で instructions を読み込む（発話ユーザー権限で解決・fail-closed・
+  発動のたびに `(skill_id, version)` を run イベント `skill_invoked` と監査 `skill.invoke` に記録）。
+  カタログ掲載は「明示的な人間の行為」（本人 owner／ピン／同意インストール）に限る
+  （description スクワッティング防御。共有されただけでは他人のカタログに載らない）。
+  - **スレッドのピン**（複数可・順序付き・version 固定）は「最初からロード済み」の特殊ケース
+    （システムプロンプト・知識スコープ・モデル既定・few-shot を run 開始時に一括適用）。
+  - **ワークフローの skill ノード**（IR 上は `skill:<name>@<version>`・保存時に存在検証）は
+    「ここで確実に引く」の特殊ケース（Stage B・10.1b）。
+- **`allowed_tools` は「そのスキルが使うツールの宣言＝モデルへの誘導」**（#344 で再定義。
+  旧: 提示ツールの縮小。途中発動では過去ターンに遡及できないため一本化した）。決定性は
+  ツール実装＋認可＋承認ゲートが担い、skill は承認ポリシ（破壊系の明示許可）に一切触れない。
+  厳密なツール隔離が要るスキルはサブエージェント実行（将来 issue）。
+  例外: **classic 経路（ツールループ無しの旧 RAG 注入・`classic_rag=true`）のみ**、全ピンが
+  `doc_search` を宣言に含む場合に限り事前検索を行う（誘導が存在しない経路のため従来のゲート挙動を維持）。
 - **スキルストア = Phase 9 レジストリ設計（不変 publish・信頼ティア・同意インストール・署名バンドル）を
-  skill という artifact 種に適用するだけ**。新しい配布機構は作らない。
+  skill という artifact 種に適用するだけ**。新しい配布機構は作らない。インストールは
+  **ユーザー単位**（#344・human 決定）: カタログはパーソナルで、first-party（署名検証済み）は
+  本人操作のみでインストール可・in-house は本人が viewer で読める skill のみ（fail-closed）。
+  ワークフローの V4 skill 照合は保存ユーザーのインストール集合に対して行い、実行時は
+  実行主体の ReBAC で再検証する（ir.md §8）。
 - **script の実行は種別で分岐**: `.shiki`（shiki script）は script-runtime（§3.2・ms級起動・`Shiki.*`
   ホスト関数ブリッジ経由の通常認可）。`.sh`（shell script）は script-runtime では実行できない
   （fs/プロセス起動が無い§3.2の隔離モデルの守備範囲外）ため、**agent.invoke のサンドボックス内で

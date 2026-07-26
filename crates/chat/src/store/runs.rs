@@ -21,7 +21,7 @@ use durable::{EventTableSpec, Key, KeyValue, RunTableSpec};
 use sqlx::types::Json;
 use uuid::Uuid;
 
-use crate::model::{ContentBlock, RunStatus, StreamEvent, StreamEventKind};
+use crate::model::{ContentBlock, RunStatus, SkillPin, StreamEvent, StreamEventKind};
 
 /// チャット生成ジョブのキュー名（jobq・専用レーン）。
 pub const CHAT_GENERATION_QUEUE: &str = "chat_generation";
@@ -74,9 +74,9 @@ pub struct ClaimedRun {
     pub autonomous_mode: String,
     /// 再開用チェックポイント（ステップ境界で保存・takeover/リトライ時に resume へ渡す・#351）。
     pub checkpoint: Option<Json<serde_json::Value>>,
-    /// 適用する skill のバージョンピン（Task 6.7/6.9・thread から post 時にコピー）。
-    pub skill_id: Option<Uuid>,
-    pub skill_version: Option<i64>,
+    /// 適用する skill のバージョンピン（複数可・順序付き・post 時点の thread ピンの
+    /// jsonb スナップショット・#344。run 行が生成材料の単一ソース）。
+    pub skill_pins: Json<Vec<SkillPin>>,
     /// ミニアプリ経由のセッション（Task 6.10・skill はバンドル権限で読む）。
     pub mini_app_id: Option<Uuid>,
     pub mini_app_version: Option<i64>,
@@ -103,7 +103,7 @@ impl ChatStore {
             lease_secs,
             "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
              fencing_token, cancel_requested, trace_id, autonomous, autonomous_mode, checkpoint, \
-             skill_id, skill_version, mini_app_id, mini_app_version",
+             skill_pins, mini_app_id, mini_app_version",
         )
         .await
         .map_err(map_db)

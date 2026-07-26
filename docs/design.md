@@ -411,13 +411,6 @@ create レイテンシだけを見て wasm を選んだ #97 の判断は誤り�
 **web_fetch のような「egress を単一ホストへ固定する短命・読み取り専用実行」で引き続き使う**
 （wasm を選ぶ理由は速度ではなく egress モデル＝下記の ⚠️ 参照）。
 
-> ⚠️ **実装状態との差（2026-07 時点）**: 上記は**方針**であり、コード既定
-> （`crates/sandbox-client/src/spec.rs` の `SandboxBackend::default()`）は**まだ `Wasm` のまま**。
-> 切替の前提として ①native rootfs への numpy/pandas 同梱（既定 rootfs の `python:3.12-slim` は非同梱・
-> 下記「前提条件」参照）②compose/CI/オンプレ配布への runsc とアセットの同梱、が要る。
-> 未構成ティアは**静かに降格せず `Unimplemented` で fail する**設計のため、前提を満たさずに既定を
-> 動かすと code_interpreter が動かなくなる。前提工事は **#346** で対応し、完了時にコード既定を反転する。
-
 > **実装ノート（2026-07・Phase 4）**: [agentos](https://github.com/rivet-dev/agentos) はカーネルを含まず
 > TS SDK/ACP 層であり、カーネル実体はその依存 **[secure-exec](https://github.com/rivet-dev/secure-exec)**（Rust・
 > Apache-2.0）にある。よって我々が **フォークして所有するのは secure-exec** で、`vendor/secure-exec/` に取り込む
@@ -455,7 +448,7 @@ flowchart TB
   wasm ティアを選んだ場合は Pyodide になる。ティアによって Python の実体（native / Pyodide）と
   利用可能ライブラリが変わる点は、上記「前提条件」の通り rootfs 側で揃える。
 - **ティア選択の導線（admin ポリシー）**: コード実行系（code_interpreter / agent shell / workflow の agent_invoke）の
-  隔離ティアは server 設定 `chat.sandbox_backend`（`gvisor`（方針上の既定・コード既定は #346 完了まで `wasm`）/ `wasm` /
+  隔離ティアは server 設定 `chat.sandbox_backend`（`gvisor`（既定・#346 で反転済み）/ `wasm` /
   `firecracker`）で選ぶ。ユーザー/ノード設定には
   出さない。gVisor/FC は orchestrator 側で当該ティアが構成済み（runsc/rootfs 等）であることが前提で、未構成なら create は
   `Unimplemented` で fail する（静かに wasm へ降格しない・監査に残す）。native Python が ~75x 速いことが既定を
@@ -464,11 +457,13 @@ flowchart TB
   ⚠️ web_fetch は内部で urllib（Python）を実行する（`crates/agent-core/src/tools/web_fetch.rs`）ため、wasm でも exec ごとに
   Pyodide 初期化コストを払う。**wasm を選ぶ理由は速度ではなく egress モデル**であり、fetch レイテンシの是正（native fetch 経路の
   用意 or gVisor 化）は別途 issue で検討する（既知の課題）。
-  ⚠️ **前提条件（既定切替のブロッカー）**: code_interpreter は numpy/pandas を宣伝する。wasm は Pyodide 同梱でこれを満たすが、
-  **native ティア（gVisor/FC）では rootfs が numpy/pandas を同梱していること**が前提（既定 rootfs は `python:3.12-slim`＝numpy
-  非同梱・[bench](./sandbox/bench.md) 注記）。未同梱のまま既定にすると宣伝と実体が食い違い `import numpy` が失敗する。
-  **native rootfs への numpy/pandas 同梱と、compose/CI/オンプレ配布への runsc・アセット同梱が完了するまで、
-  コード既定は `Wasm` のまま据え置く**（rootfs アセットのスコープ・別途対応）。
+  **前提条件（#346 で充足済み）**: code_interpreter が宣伝する numpy/pandas は、native rootfs へビルド時に同梱する
+  （`deploy/sandbox-assets/rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定 `--require-hashes` の二層で再現）。
+  runsc・rootfs は orchestrator イメージへ焼き込み（`deploy/docker/sandbox-orchestrator.Dockerfile`・実行時 DL 無し＝PIT-33）。
+  gVisor のメモリ上限は OCI spec の `linux.resources.memory.limit`（sentry が解釈するゲスト側上限。
+  現行 runsc に旧 `--total-memory` フラグは無い）＋orchestrator 側メモリ watchdog
+  （`runsc events --stats` 周期監視・超過 kill）の二重防御で、cgroups の使えない rootless 環境でもソフト強制が効く
+  （ハード強制は cgroups が使える環境の cgroup 上限・PIT-24）。
 - ⚠️ 落とし穴: gVisor/FC 制御層は [PIT-22〜25](./design-caveats.md)、wasm ティア固有は [PIT-32〜33](./design-caveats.md)
   （フォーク保守・wasm 脱出時の blast radius・wasm コマンドパッケージのサプライチェーン）。
 

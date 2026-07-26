@@ -14,6 +14,7 @@ mod reaper;
 mod runs;
 mod sharing;
 mod stream;
+mod thread_pins;
 mod threads;
 
 pub use post::PostResult;

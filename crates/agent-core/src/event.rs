@@ -82,6 +82,11 @@ pub enum AgentEvent {
     /// `{name, markdown}`。**まだ .docx 化も保存もしていない**下書き本文
     /// （chat 側で document_draft へ写り、フロントが下書き画面で詰めてから確定する）。
     DocumentDraft { draft: serde_json::Value },
+    /// skill ツールの発動記録（#344 Task 10.11）。`skill = {skill_id, skill_version, name}`。
+    /// **発話ユーザー権限で解決に成功した**発動のみが乗る（`generation_event` に append され
+    /// replay 可能＝「何をいつ適用したか」の完全な列。message.content へは projection しない —
+    /// instructions は ToolResult block として既に履歴に残る）。
+    SkillInvoked { skill: serde_json::Value },
     /// 開いている Office 文書のセッションへ AI 編集をライブ注入する指示（office.live_edit・#328）。
     /// **ライブ専用**（`generation_event` に append され replay 可能だが message.content へは
     /// projection しない）。フロントは /office フレームで Collabora の Action_Paste（現在の選択を
