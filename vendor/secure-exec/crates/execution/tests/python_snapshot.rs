@@ -148,6 +148,14 @@ fn python_snapshot_restores_after_first_execution() {
         "second execution should reuse the stored snapshot: {second_stderr}"
     );
     assert_eq!(second_startup["snapshot"], "restored");
+    assert_eq!(
+        second_startup["snapshotTransport"], "typed",
+        "snapshot payload should arrive over the typed binary channel: {second_stderr}"
+    );
+    assert!(
+        second_startup["stages"]["micropipMs"].is_null(),
+        "micropip should come from the snapshot, not a per-exec loadPackage: {second_stderr}"
+    );
 
     let first_prewarm = parse_metrics(&first_stderr, "prewarm");
     println!(
@@ -158,6 +166,7 @@ fn python_snapshot_restores_after_first_execution() {
         second_startup["loadPyodideMs"],
         second_startup["snapshotMs"],
     );
+    println!("restored startup metrics: {second_startup}");
 }
 
 fn python_snapshot_disable_env_keeps_fresh_boot() {
@@ -189,6 +198,7 @@ fn python_snapshot_disable_env_keeps_fresh_boot() {
         "fresh-boot timings: loadPyodide={}ms",
         startup["loadPyodideMs"]
     );
+    println!("fresh startup metrics: {startup}");
 }
 
 /// Restored interpreters must be indistinguishable from fresh boots for guest

@@ -52,6 +52,10 @@ const PYTHON_SNAPSHOT_ENV: &str = "AGENTOS_PYTHON_SNAPSHOT";
 const PYTHON_SNAPSHOT_STORE_ENV: &str = "AGENTOS_PYTHON_SNAPSHOT_STORE";
 const PYTHON_SNAPSHOT_DIR_ENV: &str = "AGENTOS_PYTHON_SNAPSHOT_DIR";
 const PYTHON_SNAPSHOT_CREATE_DIR_ENV: &str = "AGENTOS_PYTHON_SNAPSHOT_CREATE_DIR";
+const PYTHON_SNAPSHOT_META_ENV: &str = "AGENTOS_PYTHON_SNAPSHOT_META";
+/// Upper bound for a trusted snapshot payload (defense against a corrupted
+/// store entry allocating unbounded memory).
+const PYTHON_SNAPSHOT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 /// Bump when the on-disk snapshot layout or restore contract changes.
 const PYTHON_SNAPSHOT_VERSION: &str = "1";
 const PYTHON_SNAPSHOT_META_FILE: &str = "meta.json";
@@ -940,7 +944,7 @@ impl PythonExecutionEngine {
         let javascript_context_id = javascript_context.context_id.clone();
         self.javascript_context_ids
             .insert(context.context_id.clone(), javascript_context_id.clone());
-        let (warmup_metrics, snapshot_restore_guest_dir) = {
+        let (warmup_metrics, snapshot_restore_guest_dir, snapshot_bytes, snapshot_meta_json) = {
             let import_cache = self.import_caches.entry(context.vm_id.clone()).or_default();
             import_cache
                 .ensure_materialized()
@@ -960,19 +964,36 @@ impl PythonExecutionEngine {
             let created = snapshot_plan
                 .as_ref()
                 .is_some_and(|plan| plan.create_nonce_host.is_some());
-            let snapshot_restore_guest_dir = snapshot_plan.and_then(|plan| {
+            let mut snapshot_restore_guest_dir = None;
+            let mut snapshot_bytes = None;
+            let mut snapshot_meta_json = None;
+            if let Some(plan) = snapshot_plan {
                 finalize_python_snapshot_creation(&plan);
                 let pyodide_dist_path =
                     resolved_pyodide_dist_path(&context.pyodide_dist_path, &request.cwd);
-                expose_python_snapshot_to_guest(&plan.entry_dir, &pyodide_dist_path)
-            });
+                snapshot_restore_guest_dir =
+                    expose_python_snapshot_to_guest(&plan.entry_dir, &pyodide_dist_path);
+                if snapshot_restore_guest_dir.is_some() {
+                    if let Some((payload, meta_json)) =
+                        load_python_snapshot_payload(&plan.entry_dir)
+                    {
+                        snapshot_bytes = Some(Arc::new(payload));
+                        snapshot_meta_json = Some(meta_json);
+                    }
+                }
+            }
             let warmup_metrics = append_snapshot_metrics_line(
                 warmup_metrics,
                 &request,
                 created,
                 snapshot_restore_guest_dir.is_some(),
             );
-            (warmup_metrics, snapshot_restore_guest_dir)
+            (
+                warmup_metrics,
+                snapshot_restore_guest_dir,
+                snapshot_bytes,
+                snapshot_meta_json,
+            )
         };
 
         self.next_execution_id += 1;
@@ -995,6 +1016,8 @@ impl PythonExecutionEngine {
                 warmup_metrics: warmup_metrics.as_deref(),
                 snapshot_restore_dir: snapshot_restore_guest_dir.as_deref(),
                 snapshot_create_dir: None,
+                snapshot_bytes,
+                snapshot_meta_json: snapshot_meta_json.as_deref(),
             },
         )?;
         let pending_vfs_rpc = Arc::new(Mutex::new(None));
@@ -1076,6 +1099,10 @@ struct PythonJavascriptExecutionOptions<'a> {
     snapshot_restore_dir: Option<&'a str>,
     /// Guest path where a prewarm launch should create a heap snapshot.
     snapshot_create_dir: Option<&'a str>,
+    /// Snapshot payload for the typed binary channel into the isolate.
+    snapshot_bytes: Option<Arc<Vec<u8>>>,
+    /// Raw snapshot meta JSON matching `snapshot_bytes`.
+    snapshot_meta_json: Option<&'a str>,
 }
 
 fn start_python_javascript_execution(
@@ -1113,7 +1140,10 @@ fn start_python_javascript_execution(
             // Forward the guest-runtime identity so the runner's shim sets
             // process.* from typed config rather than env.
             guest_runtime: request.guest_runtime.clone(),
-            wasm_module_bytes: None,
+            // For Python launches this channel carries the heap-snapshot
+            // payload (surfaced in the isolate as `__agentOSWasmModuleBytes`);
+            // WASM-runner launches never go through this path.
+            wasm_module_bytes: options.snapshot_bytes.clone(),
             inline_code: Some(inline_code),
         })
         .map_err(map_javascript_error)
@@ -1191,6 +1221,14 @@ fn build_python_internal_env(
         }
         None => {
             internal_env.remove(PYTHON_SNAPSHOT_CREATE_DIR_ENV);
+        }
+    }
+    match options.snapshot_meta_json {
+        Some(meta) => {
+            internal_env.insert(PYTHON_SNAPSHOT_META_ENV.to_string(), meta.to_owned());
+        }
+        None => {
+            internal_env.remove(PYTHON_SNAPSHOT_META_ENV);
         }
     }
     if prewarm_only {
@@ -1679,6 +1717,44 @@ fn finalize_python_snapshot_creation(plan: &PythonSnapshotPlan) {
     }
 }
 
+/// On-disk snapshot meta contract shared with the runner (`meta.json`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PythonSnapshotMeta {
+    format_version: u32,
+    total_bytes: u64,
+    chunk_bytes: u64,
+    chunks: u64,
+}
+
+/// Loads and validates the snapshot payload from a ready store entry so it can
+/// ride the typed binary channel into the isolate (no base64 sync-RPC framing).
+/// Returns the assembled bytes plus the raw meta JSON to advertise to the
+/// runner. Any inconsistency yields `None`; the runner then falls back to the
+/// chunked-file read (which fail-opens to a fresh boot).
+fn load_python_snapshot_payload(entry_dir: &Path) -> Option<(Vec<u8>, String)> {
+    let meta_json = fs::read_to_string(entry_dir.join(PYTHON_SNAPSHOT_META_FILE)).ok()?;
+    let meta: PythonSnapshotMeta = serde_json::from_str(&meta_json).ok()?;
+    if meta.format_version != 1
+        || meta.total_bytes == 0
+        || meta.total_bytes > PYTHON_SNAPSHOT_MAX_BYTES
+        || meta.chunk_bytes == 0
+        || meta.chunks != meta.total_bytes.div_ceil(meta.chunk_bytes)
+    {
+        return None;
+    }
+
+    let mut payload = Vec::with_capacity(meta.total_bytes as usize);
+    for index in 0..meta.chunks {
+        let chunk = fs::read(entry_dir.join(format!("chunk-{index:03}.bin"))).ok()?;
+        payload.extend_from_slice(&chunk);
+        if payload.len() as u64 > meta.total_bytes {
+            return None;
+        }
+    }
+    (payload.len() as u64 == meta.total_bytes).then_some((payload, meta_json))
+}
+
 fn link_or_copy_snapshot_file(source: &Path, target: &Path) -> std::io::Result<()> {
     if target.exists() {
         return Ok(());
@@ -1757,6 +1833,8 @@ fn prewarm_python_path(
             warmup_metrics: None,
             snapshot_restore_dir: None,
             snapshot_create_dir,
+            snapshot_bytes: None,
+            snapshot_meta_json: None,
         },
     )?;
     let mut stdout = Vec::new();
@@ -1848,6 +1926,13 @@ fn prewarm_python_path(
         }
     };
     let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+    if debug_enabled && snapshot_create_dir.is_some() {
+        eprintln!(
+            "python prewarm snapshot-create stderr:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
 
     if result.exit_code != 0 {
         return Err(PythonExecutionError::WarmupFailed {
