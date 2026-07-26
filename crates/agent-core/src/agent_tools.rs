@@ -96,15 +96,14 @@ pub(crate) async fn run_tool_calls(
         let at = p.index;
         slots[at] = Some(p);
     }
-    if seq.cancelled {
-        return Ok(ToolPhaseOutcome::Cancelled);
-    }
-
     // --- 4. 呼び出し順にイベント発火・ループ検出・観測ブロック積み。 ---
+    //
+    // キャンセル時も**実際に走った分の観測は外部化する**（read は承認待ちと並行して
+    // 完了し得るため、黙って捨てると「実行したのに UI/監査に何も残らない」穴になる）。
     let mut blocks: Vec<Block> = Vec::with_capacity(calls.len());
     let mut looping = false;
     for (call, slot) in calls.into_iter().zip(slots) {
-        // キャンセル以外で欠けることはない（分類が全呼び出しを覆う）。
+        // キャンセルで未処理のまま残った呼び出しは飛ばす。
         let Some(p) = slot else { continue };
         emit_tool_events(sink, &call, &p.outcome).await?;
         if phase.opts.profile.is_autonomous() && p.disposition != Disposition::Plan {
@@ -125,6 +124,9 @@ pub(crate) async fn run_tool_calls(
             content: p.outcome.content,
             is_error: p.outcome.is_error,
         });
+    }
+    if seq.cancelled {
+        return Ok(ToolPhaseOutcome::Cancelled);
     }
     Ok(ToolPhaseOutcome::Executed { blocks, looping })
 }

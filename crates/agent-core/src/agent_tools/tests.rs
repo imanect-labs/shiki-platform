@@ -386,3 +386,54 @@ async fn pre_authorized_write_runs_without_approver() {
     };
     assert_eq!(contents(&blocks), vec!["done:w"]);
 }
+
+/// キャンセル時でも、**実際に走った read の観測は外部化**する（UI/監査に穴を空けない）。
+#[tokio::test]
+async fn cancellation_still_reports_completed_reads() {
+    struct CancelApprover;
+
+    #[async_trait::async_trait]
+    impl Approver for CancelApprover {
+        async fn decide(
+            &self,
+            _id: &str,
+            _name: &str,
+            _input: &serde_json::Value,
+        ) -> ApprovalDecision {
+            ApprovalDecision::Cancelled
+        }
+    }
+
+    let mut writer = ProbeTool::new("fs_write", false);
+    writer.confirm = true;
+    let tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(ProbeTool::new("doc_search", true)),
+        Arc::new(writer),
+    ];
+    let map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
+    let opts = AgentOptions::chat(8);
+    let approver = CancelApprover;
+    let phase = ToolPhase {
+        tool_map: &map,
+        ctx: &ctx(),
+        trace_id: None,
+        opts: &opts,
+        approver: Some(&approver),
+    };
+    let calls = vec![call("1", "doc_search", "a"), call("2", "fs_write", "w")];
+    let mut sink = NullSink { events: Vec::new() };
+    let mut plan = Plan::default();
+    let mut detector = LoopDetector::default();
+    let out = run_tool_calls(&phase, calls, &mut plan, &mut sink, &mut detector)
+        .await
+        .unwrap();
+    assert!(matches!(out, ToolPhaseOutcome::Cancelled));
+    // 完了した read の結果はイベントとして出ている（実行したのに無かったことにしない）。
+    assert!(
+        sink.events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolResult { content, .. } if content.contains("done:a")
+        )),
+        "完了した read の ToolResult が出ていない"
+    );
+}
