@@ -12,6 +12,8 @@ import {
   type LucideIcon,
   ShieldOff,
   Trash2,
+  UserRound,
+  Users,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -22,10 +24,13 @@ import { toast } from "@/components/ui/use-toast";
 import {
   createShareLink,
   extendShareLink,
+  listShareLinkGrants,
   listShareLinks,
   revokeShareLink,
+  revokeShareLinkGrant,
   type GeneralAccessLevel,
   type ShareLink,
+  type ShareLinkGrant,
   type ShareRole,
 } from "@/lib/storage";
 import { cn } from "@/lib/utils";
@@ -127,6 +132,12 @@ export function ShareLinksPanel({
   const [copiedId, setCopiedId] = React.useState<string | null>(null);
   const [editingId, setEditingId] = React.useState<string | null>(null);
   const [editExpiry, setEditExpiry] = React.useState("");
+
+  // C-3（#369）: 解錠済み user の可視化・個別取り消し。開いているリンク・取得済み一覧・取消中 user。
+  const [grantsOpenId, setGrantsOpenId] = React.useState<string | null>(null);
+  const [grantsMap, setGrantsMap] = React.useState<Record<string, ShareLinkGrant[]>>({});
+  const [grantsLoadingId, setGrantsLoadingId] = React.useState<string | null>(null);
+  const [revokingUser, setRevokingUser] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     let active = true;
@@ -268,6 +279,57 @@ export function ShareLinksPanel({
       });
     } finally {
       setPendingId(null);
+    }
+  };
+
+  // C-3: 解錠済み user 一覧を開閉する（開くとき未取得なら遅延ロード）。
+  const toggleGrants = async (link: ShareLink) => {
+    if (grantsOpenId === link.link_id) {
+      setGrantsOpenId(null);
+      return;
+    }
+    setGrantsOpenId(link.link_id);
+    if (grantsMap[link.link_id]) return;
+    setGrantsLoadingId(link.link_id);
+    try {
+      const grants = await listShareLinkGrants(link.link_id);
+      setGrantsMap((prev) => ({ ...prev, [link.link_id]: grants }));
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        description: e instanceof Error ? e.message : "解錠済みユーザーの取得に失敗しました。",
+      });
+      setGrantsOpenId((id) => (id === link.link_id ? null : id));
+    } finally {
+      setGrantsLoadingId(null);
+    }
+  };
+
+  // C-3: 特定 user の redeem を個別に取り消す。一覧から除去し redeem_count を減らす。
+  const revokeGrant = async (link: ShareLink, grant: ShareLinkGrant) => {
+    const key = `${link.link_id}:${grant.user_id}`;
+    setRevokingUser(key);
+    try {
+      await revokeShareLinkGrant(link.link_id, grant.user_id);
+      setGrantsMap((prev) => ({
+        ...prev,
+        [link.link_id]: (prev[link.link_id] ?? []).filter((g) => g.user_id !== grant.user_id),
+      }));
+      setLinks((prev) =>
+        prev.map((l) =>
+          l.link_id === link.link_id
+            ? { ...l, redeem_count: Math.max(0, l.redeem_count - 1) }
+            : l,
+        ),
+      );
+      toast({ description: `${grant.display_name ?? grant.user_id} のアクセスを取り消しました。` });
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        description: e instanceof Error ? e.message : "取り消しに失敗しました。",
+      });
+    } finally {
+      setRevokingUser(null);
     }
   };
 
@@ -511,6 +573,64 @@ export function ShareLinksPanel({
                     >
                       適用
                     </Button>
+                  </div>
+                ) : null}
+                {/* C-3（#369）: パスワードリンクを解錠した user の可視化・個別取り消し。 */}
+                {link.has_password && link.redeem_count > 0 ? (
+                  <div className="flex flex-col gap-1.5 border-t border-border/40 pt-2">
+                    <button
+                      type="button"
+                      data-testid="link-grants-toggle"
+                      onClick={() => void toggleGrants(link)}
+                      className="flex items-center gap-1.5 self-start text-xs text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      <Users className="size-3.5" aria-hidden />
+                      {link.redeem_count} 人が解錠済み
+                    </button>
+                    {grantsOpenId === link.link_id ? (
+                      grantsLoadingId === link.link_id ? (
+                        <p className="flex items-center gap-1 pl-1 text-xs text-muted-foreground">
+                          <Loader2 className="size-3 animate-spin" aria-hidden />
+                          読み込み中…
+                        </p>
+                      ) : (
+                        <ul className="flex flex-col gap-1" data-testid="link-grant-list">
+                          {(grantsMap[link.link_id] ?? []).map((g) => {
+                            const key = `${link.link_id}:${g.user_id}`;
+                            return (
+                              <li
+                                key={g.user_id}
+                                data-testid="link-grant-item"
+                                className="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1"
+                              >
+                                <UserRound
+                                  className="size-3.5 shrink-0 text-muted-foreground"
+                                  aria-hidden
+                                />
+                                <span className="min-w-0 flex-1 truncate text-xs">
+                                  {g.display_name ?? g.user_id}
+                                </span>
+                                <button
+                                  type="button"
+                                  aria-label="このユーザーのアクセスを取り消す"
+                                  title="このユーザーのアクセスを取り消す"
+                                  data-testid="link-grant-revoke"
+                                  disabled={revokingUser === key}
+                                  onClick={() => void revokeGrant(link, g)}
+                                  className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                                >
+                                  {revokingUser === key ? (
+                                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                                  ) : (
+                                    <Trash2 className="size-3.5" aria-hidden />
+                                  )}
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )
+                    ) : null}
                   </div>
                 ) : null}
               </li>

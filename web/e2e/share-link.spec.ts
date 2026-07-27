@@ -145,3 +145,55 @@ test("パスワード付きリンク: 未解錠は不可・token 解錠後に開
   await expect(bobPage.getByTestId("note-sync-status")).toHaveText("同期済み", { timeout: 20_000 });
   await bobCtx.close();
 });
+
+test("パスワードリンク: owner が解錠済みユーザーを個別に取り消せる（C-3）", async ({
+  page,
+  context,
+  browser,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await loginViaKeycloak(page); // alice
+  const nodeId = await createNoteViaApi(page, uniqueName("sl-c3"));
+  await openNoteSynced(page, nodeId);
+
+  // alice: パスワード付きリンクを発行。
+  await page.getByTestId("note-share").click();
+  let dialog = page.getByRole("dialog");
+  await dialog.getByTestId("share-tab-links").click();
+  await dialog.getByTestId("link-audience-organization").click();
+  await dialog.getByTestId("link-password-toggle").click();
+  await dialog.getByTestId("link-password").fill("s3cret-pass");
+  await dialog.getByTestId("link-create").click();
+  await expect(dialog.getByTestId("link-item")).toHaveCount(1, { timeout: 10_000 });
+  const url = await page.evaluate(() => navigator.clipboard.readText());
+  const linkPath = url.slice(url.indexOf(`/notes/${nodeId}`));
+
+  // bob が解錠して開く。
+  const bobCtx = await browser.newContext();
+  const bobPage = await bobCtx.newPage();
+  await loginAs(bobPage, "bob");
+  await bobPage.goto(linkPath);
+  await bobPage.getByTestId("link-unlock-password").fill("s3cret-pass");
+  await bobPage.getByTestId("link-unlock-submit").click();
+  await expect(bobPage.getByTestId("note-sync-status")).toHaveText("同期済み", { timeout: 20_000 });
+
+  // alice: 再読込して共有ダイアログを開き直すと「1 人が解錠済み」が見える。
+  await page.reload();
+  await expect(page.getByTestId("note-sync-status")).toHaveText("同期済み", { timeout: 20_000 });
+  await page.getByTestId("note-share").click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByTestId("share-tab-links").click();
+  await expect(dialog.getByTestId("link-grants-toggle")).toBeVisible({ timeout: 10_000 });
+
+  // 展開して bob の redeem を個別取り消し。
+  await dialog.getByTestId("link-grants-toggle").click();
+  await expect(dialog.getByTestId("link-grant-item")).toHaveCount(1, { timeout: 10_000 });
+  await dialog.getByTestId("link-grant-revoke").click();
+  // 取り消すと redeem_count が 0 になり、解錠済み表示は消える。
+  await expect(dialog.getByTestId("link-grants-toggle")).toHaveCount(0, { timeout: 10_000 });
+
+  // bob は再読込でアクセスできなくなる（存在秘匿）。
+  await bobPage.goto(`/notes/${nodeId}`);
+  await expect(bobPage.getByText("ノートが見つかりません")).toBeVisible({ timeout: 15_000 });
+  await bobCtx.close();
+});

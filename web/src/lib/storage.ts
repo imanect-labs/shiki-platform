@@ -16,6 +16,7 @@ export type ShareEntry = components["schemas"]["ShareEntry"];
 export type ShareRole = components["schemas"]["ShareRole"];
 export type ShareTarget = components["schemas"]["ShareTarget"];
 export type ShareLink = components["schemas"]["ShareLink"];
+export type ShareLinkGrant = components["schemas"]["ShareLinkGrant"];
 /// リンクの公開範囲（audience）。restricted=既存アクセス者のみ / organization=組織内 / anyone=社内全員。
 export type GeneralAccessLevel = components["schemas"]["GeneralAccessLevel"];
 export type CreateShareLinkBody = components["schemas"]["CreateShareLinkRequest"];
@@ -317,6 +318,18 @@ export function redeemShareLink(token: string, password?: string): Promise<void>
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token, password }),
+  }).then(okEmpty);
+}
+
+/// リンクを redeem（解錠）した user 一覧を取得する（owner のみ・#369 C-3）。
+export function listShareLinkGrants(linkId: string): Promise<ShareLinkGrant[]> {
+  return apiFetch(`/share-links/${linkId}/grants`).then((r) => okJson<ShareLinkGrant[]>(r));
+}
+
+/// 特定 user の redeem を個別に取り消す（owner のみ・#369 C-3）。
+export function revokeShareLinkGrant(linkId: string, userId: string): Promise<void> {
+  return apiFetch(`/share-links/${linkId}/grants/${encodeURIComponent(userId)}`, {
+    method: "DELETE",
   }).then(okEmpty);
 }
 

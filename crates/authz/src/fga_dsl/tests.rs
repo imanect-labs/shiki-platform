@@ -33,13 +33,14 @@ fn parses_known_folder_relations() {
             condition: None,
         }]))
     );
-    // editor: [user, role#member] or owner or editor from parent（union の 3 子）。
+    // editor: [user, role#member, ...] or owner or editor from parent or editor_via_link（union の 4 子・#366）。
     let editor = folder.get("editor").expect("folder.editor");
     let Userset::Union(children) = editor else {
         panic!("editor は union: {editor:?}");
     };
-    assert_eq!(children.len(), 3);
+    assert_eq!(children.len(), 4);
     assert!(children.contains(&Userset::Computed("owner".into())));
+    assert!(children.contains(&Userset::Computed("editor_via_link".into())));
     assert!(children.contains(&Userset::Ttu {
         tupleset: "parent".into(),
         computed: "editor".into(),

@@ -56,8 +56,13 @@ type folder
   relations
     define parent: [folder]
     define owner: [user, workflow]
-    define editor: [user, role#member, organization#member, workflow] or owner or editor from parent
-    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent
+    # 共有リンク（パスワード redeem）由来の per-user 付与専用 relation（#366）。明示共有の
+    # viewer/editor とタプルの出自を分け、リンク失効時の reconcile が明示共有を誤剥奪しない。
+    # 付与は redeem 経路でのみ書かれ、editor/viewer へ union して含意させる。
+    define editor_via_link: [user]
+    define viewer_via_link: [user]
+    define editor: [user, role#member, organization#member, workflow] or owner or editor from parent or editor_via_link
+    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent or viewer_via_link
 
 # ストレージ: ファイル（ツリーの葉・認可の最小オブジェクト）。
 # ルート直下のファイルは parent を持たず、作成者の owner タプルのみで到達する。
@@ -66,8 +71,11 @@ type file
   relations
     define parent: [folder]
     define owner: [user, workflow]
-    define editor: [user, role#member, organization#member, workflow] or owner or editor from parent
-    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent
+    # 共有リンク（パスワード redeem）由来の per-user 付与専用 relation（#366・folder と同一ポリシ）。
+    define editor_via_link: [user]
+    define viewer_via_link: [user]
+    define editor: [user, role#member, organization#member, workflow] or owner or editor from parent or editor_via_link
+    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent or viewer_via_link
 
 # チャット: スレッド（会話・#37）。ツリー継承は持たず、作成者 owner ＋明示共有のみ。
 # 共有語彙は viewer / commenter / editor（owner の横展開は防ぐため付与しない）。

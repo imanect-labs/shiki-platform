@@ -193,11 +193,21 @@ pub enum ShareRole {
 }
 
 impl ShareRole {
-    /// OpenFGA relation へ写す。
+    /// OpenFGA relation へ写す（明示共有と同じ直接 relation・broad reconcile で使う）。
     pub fn relation(self) -> Relation {
         match self {
             ShareRole::Viewer => Relation::Viewer,
             ShareRole::Editor => Relation::Editor,
+        }
+    }
+
+    /// 共有リンク redeem 由来の per-user relation へ写す（#366）。`viewer`/`editor` を含意する
+    /// 専用 relation で、明示共有（`viewer`/`editor`）とタプルの出自を分ける。リンク失効時の
+    /// per-user reconcile はこの relation のみを剥奪するため、既存の明示共有を誤って消さない。
+    pub fn relation_via_link(self) -> Relation {
+        match self {
+            ShareRole::Viewer => Relation::ViewerViaLink,
+            ShareRole::Editor => Relation::EditorViaLink,
         }
     }
 
@@ -284,6 +294,19 @@ pub struct ShareLink {
     pub has_password: bool,
     pub label: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// このリンクを redeem（解錠）した人数（#369 C-3）。パスワード付きリンクのみ増える
+    /// （broad リンクは台帳を持たないため常に 0）。owner が「誰が使ったか」を把握する手がかり。
+    pub redeem_count: i64,
+}
+
+/// 共有リンクを redeem（解錠）した 1 ユーザー（owner 向け可視化・個別取り消し・#369 C-3）。
+///
+/// `display_name` は `directory_user` から解決（無ければ `None`＝UI は user_id 表示にフォールバック）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ShareLinkGrant {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub granted_at: DateTime<Utc>,
 }
 
 /// 共有相手 1 件（誰に・どの役割で共有したか）。

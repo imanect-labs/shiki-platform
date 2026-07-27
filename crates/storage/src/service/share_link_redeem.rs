@@ -67,13 +67,15 @@ impl StorageService {
         .bind(v.role.as_str())
         .fetch_one(&self.db)
         .await?;
+        // redeem 由来は **via_link 専用 relation**（viewer_via_link / editor_via_link）で発行する（#366）。
+        // 明示共有（viewer / editor）とはタプルの出自が分かれるため、リンク失効時の per-user reconcile が
+        // 明示共有を誤剥奪しない（B-2 根治）。granted は「この user に via_link タプルを新規に張ったか」。
         let granted = self
             .authz
-            .write_tuple(&subject, v.role.relation(), &obj)
+            .write_tuple(&subject, v.role.relation_via_link(), &obj)
             .await?;
-        // 台帳記録は `granted OR prior` のときだけ（＝redeem 由来の付与のみ台帳に載せ、既存の
-        // 明示共有を台帳に載せない＝後の失効で明示共有を誤剥奪しない）。複数リンクが同一 (node,
-        // user,role) を redeem し得るので、先行 redeem 済み（prior）なら本リンク分も必ず記録する。
+        // 台帳は via_link タプルの **参照カウント**（複数リンクが同一 (node,user,role) を redeem し得る）。
+        // granted（新規付与）または prior（別リンク経由で先行 redeem 済み）なら本リンク分を記録する。
         let record = granted || prior;
         let persisted = self
             .persist_redeem(
@@ -92,7 +94,7 @@ impl StorageService {
             if granted {
                 let _ = self
                     .authz
-                    .delete_tuple(&subject, v.role.relation(), &obj)
+                    .delete_tuple(&subject, v.role.relation_via_link(), &obj)
                     .await;
             }
             return Err(e);
@@ -311,9 +313,10 @@ impl StorageService {
             .fetch_one(&mut **tx)
             .await?;
             if remaining == 0 {
-                // 最後の active grant → FGA タプルを剥奪（失敗は ? 伝播で tx 巻き戻し＝fail-closed）。
+                // 最後の active grant → via_link タプルを剥奪（#366・失敗は ? 伝播で tx 巻き戻し＝
+                // fail-closed）。明示共有の viewer/editor は別 relation なので決して触れない。
                 self.authz
-                    .delete_tuple(&ns.user(user_id), role.relation(), obj)
+                    .delete_tuple(&ns.user(user_id), role.relation_via_link(), obj)
                     .await?;
             }
             // どちらの場合も当該リンクの grant 行は落とす（タプルは他 active リンクが保持）。

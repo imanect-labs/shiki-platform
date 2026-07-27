@@ -27,6 +27,12 @@ pub enum Relation {
     Commenter,
     /// 閲覧権限（読み取り）。editor と親からの継承を含意する。
     Viewer,
+    /// 共有リンク（パスワード redeem）由来の閲覧権限（per-user・#366）。`viewer` が含意する。
+    /// 明示共有の `viewer` とタプルの出自を分け、リンク失効時の reconcile が明示共有を誤剥奪しない
+    /// ようにするための専用 relation（editor_via_link と対）。付与は redeem 経路でのみ書かれる。
+    ViewerViaLink,
+    /// 共有リンク（パスワード redeem）由来の編集権限（per-user・#366）。`editor` が含意する。
+    EditorViaLink,
     /// シークレットの利用権限（解決して使える・平文の読み返しではない・Task 10.9）。owner が含意する。
     CanUse,
 }
@@ -41,6 +47,8 @@ impl Relation {
             Relation::Editor => "editor",
             Relation::Commenter => "commenter",
             Relation::Viewer => "viewer",
+            Relation::ViewerViaLink => "viewer_via_link",
+            Relation::EditorViaLink => "editor_via_link",
             Relation::CanUse => "can_use",
         }
     }
@@ -57,6 +65,8 @@ impl Relation {
             "editor" => Some(Relation::Editor),
             "commenter" => Some(Relation::Commenter),
             "viewer" => Some(Relation::Viewer),
+            "viewer_via_link" => Some(Relation::ViewerViaLink),
+            "editor_via_link" => Some(Relation::EditorViaLink),
             "can_use" => Some(Relation::CanUse),
             _ => None,
         }
