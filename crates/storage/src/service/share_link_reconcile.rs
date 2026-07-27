@@ -18,6 +18,8 @@ struct ActiveLink {
     audience: String,
     role: String,
     password_hash: Option<String>,
+    /// リンク行が持つ org（B-4: broad_subject の基準は呼び出し側 ctx.org ではなく**行の org**）。
+    org: String,
 }
 
 impl StorageService {
@@ -43,7 +45,7 @@ impl StorageService {
         now: DateTime<Utc>,
     ) -> Result<Vec<(Subject, Relation)>, StorageError> {
         let links: Vec<ActiveLink> = sqlx::query_as(
-            "SELECT audience, role, password_hash FROM node_share_link \
+            "SELECT audience, role, password_hash, org FROM node_share_link \
              WHERE node_id = $1 AND tenant_id = $2 \
                AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > $3) \
              FOR UPDATE",
@@ -53,6 +55,12 @@ impl StorageService {
         .bind(now)
         .fetch_all(&mut **tx)
         .await?;
+
+        // reconcile の基準 org は**行の org**（B-4）。呼び出し側 ctx.org / n.org は経路で食い違い得る
+        // （owner 操作は ctx.org、タイマは行の org）。1 node のリンクは同じ node に属し org は一意なので、
+        // active 行があればその org を、無ければ（全リンク失効で desired 空）フォールバックに呼び出し側
+        // org を使う（node の org は不変なので broad タプル削除の基準として一致する）。
+        let node_org = links.first().map_or(org, |l| l.org.as_str());
 
         // desired: active・非パスワード・broad なリンクの (subject, relation) 和集合。
         let mut desired: Vec<(Subject, Relation)> = Vec::new();
@@ -67,7 +75,7 @@ impl StorageService {
             ) else {
                 continue; // 破損行は無視（reconcile で消し込みも足しもしない）。
             };
-            if let Some(subject) = broad_subject(ns, level, org) {
+            if let Some(subject) = broad_subject(ns, level, &l.org) {
                 let rel = role.relation();
                 if desired_keys.insert((subject.as_str().to_string(), rel)) {
                     desired.push((subject, rel));
@@ -75,9 +83,9 @@ impl StorageService {
             }
         }
 
-        // current: FGA 上の general-access 由来 broad タプルだけを射影（直接共有は載せない）。
+        // current: FGA 上の共有リンク由来 broad タプルだけを射影（直接共有は載せない）。
         let public = Subject::public();
-        let org_member = ns.organization_member(org);
+        let org_member = ns.organization_member(node_org);
         let tuples = self.authz.read_tuples(obj, None).await?;
         let mut current: HashSet<(String, Relation)> = HashSet::new();
         for t in &tuples {
@@ -115,7 +123,7 @@ impl StorageService {
             let subject = if sub_str == public.as_str() {
                 Subject::public()
             } else {
-                ns.organization_member(org)
+                ns.organization_member(node_org)
             };
             if let Err(e) = self.authz.delete_tuple(&subject, rel, obj).await {
                 self.compensate_broad(obj, &added).await;

@@ -64,9 +64,12 @@ impl StorageService {
         &self,
         now: DateTime<Utc>,
     ) -> Result<u64, StorageError> {
+        // 毒行（未知 kind＝FgaObject を再構成できない破損行）は sweep 対象から外す。残すと
+        // next_share_link_expiry が過去時刻を返し続け、タイマが全速ループに入る（B-1）。
         let nodes: Vec<ExpiredNode> = sqlx::query_as(
             "SELECT DISTINCT node_id, tenant_id, org, kind FROM node_share_link \
              WHERE revoked_at IS NULL AND expires_at IS NOT NULL AND expires_at <= $1 \
+               AND kind IN ('file', 'folder') \
              LIMIT 500",
         )
         .bind(now)
@@ -74,13 +77,16 @@ impl StorageService {
         .await?;
 
         let mut count: u64 = 0;
+        let mut failures: u32 = 0;
         for n in nodes {
             let Some(kind) = NodeKind::parse(&n.kind) else {
-                continue;
+                continue; // kind IN (...) で弾いているが二重の防御。
             };
             let ns = Namespace::for_tenant(&n.tenant_id);
             let obj = node_fga_object(&ns, kind, n.node_id);
-            let expired: Vec<Uuid> = sqlx::query_scalar(
+            // 1 node の失敗で sweep 全体を止めない（head-of-line blocking の解消・B-1）。DB/FGA
+            // 障害中は当該 node をスキップして次へ進み、タイマ側が backoff で再試行する。
+            let expired: Vec<Uuid> = match sqlx::query_scalar(
                 "SELECT link_id FROM node_share_link \
                  WHERE node_id = $1 AND tenant_id = $2 \
                    AND revoked_at IS NULL AND expires_at IS NOT NULL AND expires_at <= $3",
@@ -89,15 +95,29 @@ impl StorageService {
             .bind(&n.tenant_id)
             .bind(now)
             .fetch_all(&self.db)
-            .await?;
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, node_id = %n.node_id, "期限切れリンクの取得に失敗（次ノードへ）");
+                    failures += 1;
+                    continue;
+                }
+            };
             if expired.is_empty() {
                 continue;
             }
-            self.expire_node_links(&ns, &obj, n.node_id, &n.tenant_id, &n.org, &expired, now)
-                .await?;
+            if let Err(e) = self
+                .expire_node_links(&ns, &obj, n.node_id, &n.tenant_id, &n.org, &expired, now)
+                .await
+            {
+                tracing::warn!(error = %e, node_id = %n.node_id, "node の共有リンク失効に失敗（次ノードへ）");
+                failures += 1;
+                continue;
+            }
             // 失効の監査（system ctx・非チェーン。create/redeem はチェーン監査済み）。
             let sctx = system_ctx(&n.tenant_id, &n.org, "system");
-            let _ = self
+            if let Err(e) = self
                 .audit
                 .record(
                     &sctx,
@@ -110,8 +130,18 @@ impl StorageService {
                         metadata: json!({ "count": expired.len() }),
                     },
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(error = %e, node_id = %n.node_id, "共有リンク失効の監査記録に失敗");
+            }
             count += expired.len() as u64;
+        }
+        if failures > 0 {
+            tracing::warn!(
+                failures,
+                revoked = count,
+                "共有リンク失効 sweep で一部ノードが失敗しました（#342 B-1）"
+            );
         }
         Ok(count)
     }
@@ -168,7 +198,8 @@ impl StorageService {
     pub async fn next_share_link_expiry(&self) -> Result<Option<DateTime<Utc>>, StorageError> {
         let row: (Option<DateTime<Utc>>,) = sqlx::query_as(
             "SELECT MIN(expires_at) FROM node_share_link \
-             WHERE revoked_at IS NULL AND expires_at IS NOT NULL",
+             WHERE revoked_at IS NULL AND expires_at IS NOT NULL \
+               AND kind IN ('file', 'folder')",
         )
         .fetch_one(&self.db)
         .await?;

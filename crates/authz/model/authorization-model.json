@@ -141,10 +141,6 @@
                 "type": "user"
               },
               {
-                "type": "user",
-                "wildcard": {}
-              },
-              {
                 "type": "role",
                 "relation": "member"
               },
@@ -263,10 +259,6 @@
             "directly_related_user_types": [
               {
                 "type": "user"
-              },
-              {
-                "type": "user",
-                "wildcard": {}
               },
               {
                 "type": "role",

@@ -59,6 +59,9 @@ pub struct StorageService {
     /// 共有リンク有効期限の失効タイマを起こす通知（#342）。リンク発行/延長/redeem で今より早い
     /// 期限を設定したら `notify_one()` し、タイマが次回起床時刻を再計算する（定期ポーリング回避）。
     expiry_notify: Arc<Notify>,
+    /// redeem の総当たり/Argon2 CPU DoS を抑える固定窓レート制限（#342 レビュー B-3・プロセス内）。
+    /// principal / token を prefix 付き鍵で同じ器に載せる。
+    redeem_limiter: share_link_ratelimit::RedeemRateLimiter,
 }
 
 #[derive(sqlx::FromRow)]
@@ -140,6 +143,7 @@ impl StorageService {
             presign_put_ttl,
             max_upload_size,
             expiry_notify: Arc::new(Notify::new()),
+            redeem_limiter: share_link_ratelimit::RedeemRateLimiter::default(),
         }
     }
 
@@ -161,6 +165,7 @@ mod read;
 mod restore;
 mod share_link;
 mod share_link_expiry;
+mod share_link_ratelimit;
 mod share_link_reconcile;
 mod share_link_redeem;
 mod share_link_util;

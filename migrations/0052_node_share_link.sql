@@ -1,10 +1,17 @@
--- 共有リンク（複数発行・個別失効/延長・#342）。#338/#339 の一般アクセス（1 node 1 ポリシー）を
--- 作り替え、1 リソースに複数のリンクをぶら下げる台帳にする。Google/MS 式の共有リンクに相当。
+-- 共有リンク（複数発行・個別失効/延長・#342）。#338/#339 の一般アクセス（1 node 1 ポリシー・
+-- migration 0051 の node_general_access）を作り替え、1 リソースに複数のリンクをぶら下げる台帳にする。
+-- Google/MS 式の共有リンクに相当。
 --
--- 認可の正本は OpenFGA タプル（file/folder の viewer/editor に organization#member / user:*）。
--- ここはリンクの**台帳**で、FGA の broad タプル集合は「active な全リンクの (subject,relation) 和集合」の
--- 射影として reconcile される。password 付きリンクは broad タプルを張らず redeem 経由で per-user
--- タプルを発行する。audience='existing'（既存アクセス者のみ）は付与ゼロの純ポインタ。owner のみ発行できる。
+-- **なぜ 0051 を書き替えず 0052 を切るか（Codex/レビュー P1）**: 0051 は base ブランチで既に
+-- version 51 として適用され得る（dev DB / 永続化 CI）。適用済みの版を別内容へ差し替えると
+-- sqlx の checksum 検証で `VersionMismatch` になり起動時に落ちる。よって 0051（node_general_access）は
+-- そのまま残し、この 0052 で「新テーブル作成 → 旧テーブルがあれば移行 → 旧 drop」を行う。
+-- fresh DB では 0051 が旧テーブルを作り、この 0052 が即移行して落とす（無害・冪等）。
+--
+-- 認可の正本は OpenFGA タプル（file/folder の viewer/editor に organization#member）。ここはリンクの
+-- **台帳**で、FGA の broad タプル集合は「active な全リンクの (subject,relation) 和集合」の射影として
+-- reconcile される。password 付きリンクは broad タプルを張らず redeem 経由で per-user タプルを発行する。
+-- audience='restricted'（既存アクセス者のみ）は付与ゼロの純ポインタ。owner のみが発行できる。
 --
 -- 有効期限は OpenFGA にネイティブ TTL が無いため、① セッション開始時の遅延失効（reconcile で
 -- 不要 broad タプルを先行剥奪）と ② イベント駆動タイマ（expires_at の瞬間に reconcile）で
@@ -20,9 +27,10 @@ create table node_share_link (
     org           text        not null,
     -- 'file' | 'folder'（タプル剥奪時に FgaObject を再構成するため保持・node JOIN 不要）。
     kind          text        not null,
-    -- 'organization'（組織内） | 'anyone'（社内＝テナント全員） | 'restricted'（既存アクセス者のみ・付与ゼロ）。
-    -- GeneralAccessLevel を再利用（broad_subject: organization→organization#member、anyone→user:*、
-    -- restricted→None＝付与ゼロの純ポインタ）。
+    -- 'organization'（社内＝現テナント/組織内） | 'anyone'（legacy・organization と同義に縮退） |
+    -- 'restricted'（既存アクセス者のみ・付与ゼロ）。broad_subject: organization/anyone→organization#member、
+    -- restricted→None＝付与ゼロの純ポインタ。user:* は将来の 'authenticated'（テナント跨ぎ閲覧・#341
+    -- 系）専用に空けてある（#342 レビュー A-2）。
     audience      text        not null,
     -- 'viewer' | 'editor'。付与する権限。
     role          text        not null,
@@ -88,3 +96,34 @@ create index node_share_link_grant_node_user_idx
     on node_share_link_grant (node_id, user_id);
 create index node_share_link_grant_tenant_idx
     on node_share_link_grant (tenant_id);
+
+-- 旧一般アクセス（node_general_access・0051）があれば共有リンク台帳へ移行して drop する。
+-- fresh DB には 0051 が直前に作った空テーブルが存在するので、この DO ブロックは常に走り得る
+-- （空なら何も移行せず drop するだけ）。適用済み dev/CI では実データを 1 node 1 リンクへ変換する。
+do $migrate$
+begin
+    if exists (
+        select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'node_general_access'
+    ) then
+        -- 1 node 1 ポリシー → 1 リンク。link_id/token を採番（token は 64 hex＝uuid 2 本連結）。
+        insert into node_share_link
+            (link_id, node_id, tenant_id, org, kind, audience, role, token,
+             expires_at, password_hash, revoked_at, label, created_by, updated_by, created_at, updated_at)
+        select gen_random_uuid(), g.node_id, g.tenant_id, g.org, g.kind, g.level, g.role,
+               replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''),
+               g.expires_at, g.password_hash, null, null, g.created_by, g.updated_by, g.created_at, g.updated_at
+        from node_general_access g;
+
+        -- redeem 台帳: 旧は 1 node 1 policy なので node→link は一意に定まる。
+        insert into node_share_link_grant
+            (link_id, node_id, user_id, tenant_id, kind, role, expires_at, granted_at)
+        select l.link_id, gg.node_id, gg.user_id, gg.tenant_id, gg.kind, gg.role, gg.expires_at, gg.granted_at
+        from node_general_access_grant gg
+        join node_share_link l on l.node_id = gg.node_id;
+
+        drop table node_general_access_grant;
+        drop table node_general_access;
+    end if;
+end
+$migrate$;

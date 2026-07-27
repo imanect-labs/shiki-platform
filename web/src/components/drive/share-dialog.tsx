@@ -355,9 +355,15 @@ export function ShareDialog({
             </div>
           </TabsContent>
 
-          {/* ===== リンクタブ（発行物・個別失効/延長） ===== */}
+          {/* ===== リンクタブ（発行物・失効/延長） ===== */}
           <TabsContent value="links">
-            <ShareLinksPanel nodeId={node.id} linkPath={linkPath} />
+            <ShareLinksPanel
+              nodeId={node.id}
+              linkPath={linkPath}
+              // パスワード付きリンクは解錠画面のあるページ（ノート/Office/スライド/CSV）でしか開けない。
+              // フォルダ・非プレビューファイルは drive へ解決されるため、パスワード発行を無効化する（C-1）。
+              passwordSupported={!linkPath.startsWith("/drive")}
+            />
           </TabsContent>
         </Tabs>
       </DialogContent>

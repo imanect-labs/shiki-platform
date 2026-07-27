@@ -6,11 +6,11 @@ import {
   Check,
   Clock,
   Copy,
-  Globe2,
   Link2,
   Loader2,
   Lock,
   type LucideIcon,
+  ShieldOff,
   Trash2,
 } from "lucide-react";
 
@@ -30,7 +30,8 @@ import {
 } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
-/// audience（リンクの公開範囲）。OneDrive/Google 風の入れ子。①匿名は #341 で対応（disabled）。
+/// audience（リンクの公開範囲）。#342 レビュー A-2 で「社内全員」「組織内」を **broad 1 つ**へ統合した
+/// （到達集合が organization#member で同一になるため・区別は誤解を生む）。①匿名は #341 で対応（disabled）。
 const AUDIENCES: {
   value: GeneralAccessLevel | "anonymous";
   label: string;
@@ -48,16 +49,9 @@ const AUDIENCES: {
     testId: "link-audience-anonymous",
   },
   {
-    value: "anyone",
-    label: "社内全員",
-    desc: "社内（テナント）の全員がリンクから開けます。",
-    icon: Globe2,
-    testId: "link-audience-anyone",
-  },
-  {
     value: "organization",
-    label: "組織内",
-    desc: "自分の組織のメンバーがリンクから開けます。",
+    label: "社内の全員",
+    desc: "社内（テナント）の全員がリンクから開けます。",
     icon: Building2,
     testId: "link-audience-organization",
   },
@@ -89,20 +83,40 @@ function dateInputToIso(date: string): string {
   return new Date(`${date}T23:59:59`).toISOString();
 }
 
+/// 今日（ローカル）の YYYY-MM-DD。date input の min に使い、過去日を選ばせない（B-5・UI 側）。
+function todayInput(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/// 一覧表示用ラベル。`anyone`（legacy）は `organization` と同義に縮退（A-2）。
 const AUDIENCE_LABEL: Record<GeneralAccessLevel, string> = {
-  anyone: "社内全員",
-  organization: "組織内",
+  anyone: "社内の全員",
+  organization: "社内の全員",
   restricted: "既存の権限者のみ",
 };
 
-/// リンクタブ本体（#342）: 発行フォーム＋発行済み一覧（コピー/延長/失効）。owner のみ表示。
-export function ShareLinksPanel({ nodeId, linkPath }: { nodeId: string; linkPath: string }) {
+/// リンクタブ本体（#342）: 発行フォーム＋発行済み一覧。owner のみ操作できる。
+///
+/// `passwordSupported`: パスワード付きリンクは解錠画面のあるページ（ノート/Office/スライド/CSV）でしか
+/// 開けない。フォルダ・非プレビューファイル（drive 解決）では発行させない（#342 レビュー C-1）。
+export function ShareLinksPanel({
+  nodeId,
+  linkPath,
+  passwordSupported,
+}: {
+  nodeId: string;
+  linkPath: string;
+  passwordSupported: boolean;
+}) {
   const [links, setLinks] = React.useState<ShareLink[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [forbidden, setForbidden] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
 
-  // 発行フォームの状態。
-  const [audience, setAudience] = React.useState<GeneralAccessLevel>("anyone");
+  // 発行フォームの状態。broad は organization に統合（A-2）。
+  const [audience, setAudience] = React.useState<GeneralAccessLevel>("organization");
   const [role, setRole] = React.useState<ShareRole>("viewer");
   const [expiry, setExpiry] = React.useState("");
   const [pwEnabled, setPwEnabled] = React.useState(false);
@@ -117,9 +131,17 @@ export function ShareLinksPanel({ nodeId, linkPath }: { nodeId: string; linkPath
   React.useEffect(() => {
     let active = true;
     setLoading(true);
+    setForbidden(false);
     listShareLinks(nodeId)
       .then((ls) => active && setLinks(ls))
-      .catch(() => active && setLinks([]))
+      .catch((e: unknown) => {
+        if (!active) return;
+        setLinks([]);
+        // 非 owner は 403。空フォームを見せず「権限なし」状態にする（#342 レビュー C-2）。
+        const status = (e as { status?: number } | null)?.status;
+        const msg = e instanceof Error ? e.message : String(e);
+        if (status === 403 || /403|forbidden|権限/i.test(msg)) setForbidden(true);
+      })
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
@@ -149,23 +171,39 @@ export function ShareLinksPanel({ nodeId, linkPath }: { nodeId: string; linkPath
     }
   };
 
-  const pwMissing = pwEnabled && !pwValue;
+  const pwOn = passwordSupported && pwEnabled;
+  const pwMissing = pwOn && !pwValue;
 
   const create = async () => {
     if (pwMissing) {
       toast({ variant: "destructive", description: "パスワードを入力してください。" });
       return;
     }
+    // A-1: 非パスワードの broad/restricted リンクは URL が同一で区別できない。同一 (audience, role) が
+    // 既にあれば発行させない（サーバも 409 で弾くが、UI 側で先に止めて既存へ誘導する）。
+    if (!pwOn) {
+      const dup = links.some(
+        (l) => !l.has_password && l.audience === audience && l.role === role,
+      );
+      if (dup) {
+        toast({
+          variant: "destructive",
+          description:
+            "同じ公開範囲のリンクが既にあります。既存のリンクをコピーして共有してください。",
+        });
+        return;
+      }
+    }
     setCreating(true);
     try {
-      // restricted（付与ゼロの純ポインタ）は期限/パスワードを持たない。UI で隠れていても
-      // 直前の別 audience の入力状態が残るため、送信前に確実に落とす（Codex P2）。
+      // restricted（付与ゼロの純ポインタ）は期限/パスワードを持たない。UI で隠れていても直前の別
+      // audience の入力状態が残るため、送信前に確実に落とす。
       const scoped = audience !== "restricted";
       const link = await createShareLink(nodeId, {
         audience,
         role,
         expires_at: scoped && expiry ? dateInputToIso(expiry) : null,
-        password: scoped && pwEnabled && pwValue ? pwValue : null,
+        password: scoped && pwOn && pwValue ? pwValue : null,
         label: null,
       });
       setLinks((prev) => [link, ...prev]);
@@ -176,9 +214,15 @@ export function ShareLinksPanel({ nodeId, linkPath }: { nodeId: string; linkPath
       setPwEnabled(false);
       setPwValue("");
     } catch (e) {
+      const status = (e as { status?: number } | null)?.status;
+      const conflict = status === 409 || /409|conflict/i.test(e instanceof Error ? e.message : "");
       toast({
         variant: "destructive",
-        description: e instanceof Error ? e.message : "リンクの発行に失敗しました。",
+        description: conflict
+          ? "同じ公開範囲のリンクが既にあります。"
+          : e instanceof Error
+            ? e.message
+            : "リンクの発行に失敗しました。",
       });
     } finally {
       setCreating(false);
@@ -190,11 +234,17 @@ export function ShareLinksPanel({ nodeId, linkPath }: { nodeId: string; linkPath
     try {
       await revokeShareLink(link.link_id);
       setLinks((prev) => prev.filter((l) => l.link_id !== link.link_id));
-      toast({ description: "リンクを失効しました。" });
+      // broad リンクの失効は「公開範囲の解除」（誰か 1 人ではなく全員のアクセスが切れる）。
+      // パスワードリンクだけが per-user capability として真に個別失効できる（A-1）。
+      toast({
+        description: link.has_password
+          ? "パスワードリンクを失効しました。"
+          : `${AUDIENCE_LABEL[link.audience]}への公開を解除しました。`,
+      });
     } catch (e) {
       toast({
         variant: "destructive",
-        description: e instanceof Error ? e.message : "失効に失敗しました。",
+        description: e instanceof Error ? e.message : "解除に失敗しました。",
       });
     } finally {
       setPendingId(null);
@@ -220,6 +270,19 @@ export function ShareLinksPanel({ nodeId, linkPath }: { nodeId: string; linkPath
       setPendingId(null);
     }
   };
+
+  // 非 owner にはフォームを見せない（C-2）。
+  if (forbidden) {
+    return (
+      <div className="flex flex-col items-center gap-2 py-8 text-center text-sm text-muted-foreground">
+        <ShieldOff className="size-6" aria-hidden />
+        <p>共有リンクを管理する権限がありません。</p>
+        <p className="text-xs">オーナーに発行を依頼してください。</p>
+      </div>
+    );
+  }
+
+  const minDate = todayInput();
 
   return (
     <div className="flex flex-col gap-4">
@@ -286,6 +349,7 @@ export function ShareLinksPanel({ nodeId, linkPath }: { nodeId: string; linkPath
                   id="link-expiry"
                   data-testid="link-expiry"
                   type="date"
+                  min={minDate}
                   value={expiry}
                   onChange={(e) => setExpiry(e.target.value)}
                   className="h-8 w-40 text-sm"
@@ -302,17 +366,21 @@ export function ShareLinksPanel({ nodeId, linkPath }: { nodeId: string; linkPath
                 <label htmlFor="link-password-toggle" className="text-sm text-muted-foreground">
                   パスワード保護
                 </label>
-                <Switch
-                  id="link-password-toggle"
-                  data-testid="link-password-toggle"
-                  checked={pwEnabled}
-                  onCheckedChange={(v) => {
-                    setPwEnabled(v);
-                    if (!v) setPwValue("");
-                  }}
-                />
+                {passwordSupported ? (
+                  <Switch
+                    id="link-password-toggle"
+                    data-testid="link-password-toggle"
+                    checked={pwEnabled}
+                    onCheckedChange={(v) => {
+                      setPwEnabled(v);
+                      if (!v) setPwValue("");
+                    }}
+                  />
+                ) : (
+                  <span className="text-xs text-muted-foreground">この種別では未対応</span>
+                )}
               </div>
-              {pwEnabled ? (
+              {pwOn ? (
                 <Input
                   data-testid="link-password"
                   type="password"
@@ -409,7 +477,8 @@ export function ShareLinksPanel({ nodeId, linkPath }: { nodeId: string; linkPath
                   </Button>
                   <button
                     type="button"
-                    aria-label="リンクを失効"
+                    aria-label={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
+                    title={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
                     data-testid="link-revoke"
                     disabled={pendingId === link.link_id}
                     onClick={() => void revoke(link)}
@@ -426,6 +495,7 @@ export function ShareLinksPanel({ nodeId, linkPath }: { nodeId: string; linkPath
                   <div className="flex items-center gap-1.5">
                     <Input
                       type="date"
+                      min={minDate}
                       value={editExpiry}
                       onChange={(e) => setEditExpiry(e.target.value)}
                       className="h-8 w-40 text-sm"

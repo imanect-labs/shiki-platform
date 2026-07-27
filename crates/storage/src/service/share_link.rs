@@ -55,6 +55,19 @@ impl ShareLinkRow {
 /// active（未失効・未期限切れ）リンクを絞る SQL 述語（プレースホルダは呼び出し側 bind に依存しない）。
 const ACTIVE_PREDICATE: &str = "revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())";
 
+/// 有効期限が過去でないことを検証する（B-5）。`None`（無期限）は許可。過去日は「作れたように見えて
+/// タプルが張られない」死んだリンクになるため 400 で弾く。
+fn reject_past_expiry(expires_at: Option<DateTime<Utc>>) -> Result<(), StorageError> {
+    if let Some(exp) = expires_at {
+        if exp <= Utc::now() {
+            return Err(StorageError::Invalid(
+                "有効期限は現在より後の日時にしてください".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl StorageService {
     /// 共有リンクを発行する（owner 権限）。発行結果（token 含む）を返す。
     ///
@@ -76,6 +89,9 @@ impl StorageService {
         let obj = self
             .authorize_share_admin(ctx, node_id, "node.share_link.create", trace_id)
             .await?;
+        // B-5: 過去の期限は「作れたように見えて動かない」リンクになるため拒否する（400）。認可通過後に
+        // 検証する（未認可に内部状態を晒さない）。
+        reject_past_expiry(expires_at)?;
         let kind = kind_of(&obj);
         let ns = ctx.ns();
         let password_hash = match password {
@@ -88,6 +104,27 @@ impl StorageService {
 
         let mut tx = self.db.begin().await?;
         self.lock_node(&mut tx, node_id).await?;
+        // A-1: 同一 (audience, role) の**非パスワード**リンクは受け手から区別できない（broad は
+        // コピーされる URL が同一・restricted は bare ポインタ）。重複発行を 409 で弾き、UI が
+        // 「1 本ずつ個別失効できる」という誤った mental model を売らないようにする。パスワード付き
+        // リンクは per-user capability として本当に個別失効できるので重複を許す（redeem 台帳で分離）。
+        // 発行は node の advisory lock 下なので、この存在チェックと INSERT は並行 create と競合しない。
+        if password_hash.is_none() {
+            let dup: bool = sqlx::query_scalar(&format!(
+                "SELECT EXISTS(SELECT 1 FROM node_share_link \
+                 WHERE node_id = $1 AND tenant_id = $2 AND audience = $3 AND role = $4 \
+                   AND password_hash IS NULL AND {ACTIVE_PREDICATE})",
+            ))
+            .bind(node_id)
+            .bind(&ctx.tenant_id)
+            .bind(audience.as_str())
+            .bind(role.as_str())
+            .fetch_one(&mut *tx)
+            .await?;
+            if dup {
+                return Err(StorageError::Conflict);
+            }
+        }
         sqlx::query(
             "INSERT INTO node_share_link \
                (link_id, node_id, tenant_id, org, kind, audience, role, token, expires_at, password_hash, label, created_by, updated_by) \
@@ -272,6 +309,8 @@ impl StorageService {
         else {
             return Err(StorageError::Forbidden);
         };
+        // B-5: 延長で過去日を設定させない（無期限化＝None は許可）。
+        reject_past_expiry(expires_at)?;
         let ns = ctx.ns();
 
         let mut tx = self.db.begin().await?;

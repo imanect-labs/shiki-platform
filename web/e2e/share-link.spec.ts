@@ -68,6 +68,28 @@ test("組織内リンクを発行→別ユーザーが開ける→失効で開�
   await bobCtx.close();
 });
 
+test("同一(公開範囲・権限)の非パスワードリンクは重複発行できない（A-1）", async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await loginViaKeycloak(page); // alice
+  const nodeId = await createNoteViaApi(page, uniqueName("sl-dup"));
+  await openNoteSynced(page, nodeId);
+
+  await page.getByTestId("note-share").click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByTestId("share-tab-links").click();
+  await dialog.getByTestId("link-audience-organization").click();
+  await dialog.getByTestId("link-create").click();
+  await expect(dialog.getByTestId("link-item")).toHaveCount(1, { timeout: 10_000 });
+
+  // 同じ (社内の全員・閲覧) をもう一度発行しようとすると弾かれ、一覧は 1 本のまま。
+  await dialog.getByTestId("link-create").click();
+  await expect(page.getByText("同じ公開範囲のリンクが既にあります")).toBeVisible({ timeout: 10_000 });
+  await expect(dialog.getByTestId("link-item")).toHaveCount(1);
+});
+
 test("リンク未発行: 未共有ユーザーは開けない", async ({ page, browser }) => {
   await loginViaKeycloak(page); // alice
   const nodeId = await createNoteViaApi(page, uniqueName("sl-none"));
@@ -88,11 +110,11 @@ test("パスワード付きリンク: 未解錠は不可・token 解錠後に開
   const nodeId = await createNoteViaApi(page, uniqueName("sl-pw"));
   await openNoteSynced(page, nodeId);
 
-  // リンクタブ → 社内全員 + パスワードで発行。
+  // リンクタブ → 社内の全員 + パスワードで発行。
   await page.getByTestId("note-share").click();
   const dialog = page.getByRole("dialog");
   await dialog.getByTestId("share-tab-links").click();
-  await dialog.getByTestId("link-audience-anyone").click();
+  await dialog.getByTestId("link-audience-organization").click();
   await dialog.getByTestId("link-password-toggle").click();
   await dialog.getByTestId("link-password").fill("s3cret-pass");
   await dialog.getByTestId("link-create").click();

@@ -27,6 +27,16 @@ struct RedeemRow {
     password_hash: Option<String>,
 }
 
+/// verify_redeem が返す、per-user 付与に必要な検証済み項目。
+struct VerifiedRedeem {
+    link_id: Uuid,
+    node_id: Uuid,
+    kind: NodeKind,
+    role: ShareRole,
+    level: GeneralAccessLevel,
+    expires_at: Option<DateTime<Utc>>,
+}
+
 impl StorageService {
     /// パスワード付き共有リンクを解錠し、呼び出しユーザーへ per-user タプルを発行する（#342）。
     ///
@@ -40,36 +50,116 @@ impl StorageService {
         password: Option<&str>,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
+        // レート制限・token 引き・audience/パスワード検証は verify_redeem に分離（clippy 行数・可読性）。
+        let v = self.verify_redeem(ctx, token, password, trace_id).await?;
+
+        // per-user タプルを発行し、redeem 台帳へ記録する。
+        let ns = ctx.ns();
+        let obj = node_fga_object(&ns, v.kind, v.node_id);
+        let subject = ns.user(&ctx.principal.id);
+        // この (node,user,role) が既に redeem 台帳に載っているか（別リンク経由の先行 redeem）。
+        let prior: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM node_share_link_grant \
+             WHERE node_id = $1 AND user_id = $2 AND role = $3)",
+        )
+        .bind(v.node_id)
+        .bind(&ctx.principal.id)
+        .bind(v.role.as_str())
+        .fetch_one(&self.db)
+        .await?;
+        let granted = self
+            .authz
+            .write_tuple(&subject, v.role.relation(), &obj)
+            .await?;
+        // 台帳記録は `granted OR prior` のときだけ（＝redeem 由来の付与のみ台帳に載せ、既存の
+        // 明示共有を台帳に載せない＝後の失効で明示共有を誤剥奪しない）。複数リンクが同一 (node,
+        // user,role) を redeem し得るので、先行 redeem 済み（prior）なら本リンク分も必ず記録する。
+        let record = granted || prior;
+        let persisted = self
+            .persist_redeem(
+                ctx,
+                v.link_id,
+                v.node_id,
+                v.kind,
+                v.role,
+                v.expires_at,
+                v.level,
+                record,
+                trace_id,
+            )
+            .await;
+        if let Err(e) = persisted {
+            if granted {
+                let _ = self
+                    .authz
+                    .delete_tuple(&subject, v.role.relation(), &obj)
+                    .await;
+            }
+            return Err(e);
+        }
+        if v.expires_at.is_some() {
+            self.expiry_notify.notify_one();
+        }
+        Ok(())
+    }
+
+    /// redeem のレート制限・token 引き（テナント/org スコープ）・audience メンバーシップ・パスワードを
+    /// 検証し、付与に必要な項目を返す（#342）。失敗は一律 `Forbidden`＋deny 監査（オラクル防止）。
+    async fn verify_redeem(
+        &self,
+        ctx: &AuthContext,
+        token: &str,
+        password: Option<&str>,
+        trace_id: Option<&str>,
+    ) -> Result<VerifiedRedeem, StorageError> {
+        // レート制限（総当たり・Argon2 CPU DoS の抑止・B-3）。principal と token の双方で数え、
+        // どちらか超過なら Argon2 も DB 参照もせず即 deny する（DoS の芽を先に断つ）。
+        let now = Utc::now();
+        let principal_key = format!("p:{}|{}", ctx.tenant_id, ctx.principal.id);
+        let token_key = format!("t:{token}");
+        if !self.redeem_limiter.check(&principal_key, now)
+            || !self.redeem_limiter.check(&token_key, now)
+        {
+            return Err(self
+                .deny_redeem(ctx, "rate_limited", "node", "-", None, trace_id)
+                .await);
+        }
+
+        // token は自テナント **かつ自 org** の active・パスワード付きリンクのみ一致する（Codex P1/B-4:
+        // `anyone` でも org を跨がせない。org は storage の隔離境界＝load_node が絞る）。
         let row: Option<RedeemRow> = sqlx::query_as(
             "SELECT link_id, node_id, org, kind, audience, role, expires_at, password_hash \
              FROM node_share_link \
-             WHERE token = $1 AND tenant_id = $2 \
+             WHERE token = $1 AND tenant_id = $2 AND org = $3 \
                AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())",
         )
         .bind(token)
         .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
         .fetch_optional(&self.db)
         .await?;
-        // 存在秘匿: 見つからないトークンは一律 Forbidden。
         let Some(row) = row else {
-            return Err(StorageError::Forbidden);
+            return Err(self
+                .deny_redeem(ctx, "token_not_found", "node", "-", None, trace_id)
+                .await);
         };
+        let node = row.node_id.to_string();
+        let deny = |reason: &'static str| self.deny_redeem(ctx, reason, &row.kind, &node, Some(row.link_id), trace_id);
         // redeem はパスワード付きリンク専用（broad リンクは通常 ReBAC で開く）。
         let Some(hash) = row.password_hash.as_deref() else {
-            return Err(StorageError::Forbidden);
+            return Err(deny("not_password_link").await);
         };
         let (Some(level), Some(role), Some(kind)) = (
             GeneralAccessLevel::parse(&row.audience),
             ShareRole::parse(&row.role),
             NodeKind::parse(&row.kind),
         ) else {
-            return Err(StorageError::Forbidden);
+            return Err(deny("corrupt_row").await);
         };
-        // audience 該当性: organization は当該組織のメンバーのみ、anyone は認証済みなら誰でも、
-        // restricted（付与ゼロのポインタ）は redeem 不可。
+        // audience 該当性: organization / anyone（A-2 で organization へ縮退）は当該組織のメンバーの
+        // み、restricted（付与ゼロのポインタ）は redeem 不可。
         match level {
-            GeneralAccessLevel::Anyone => {}
-            GeneralAccessLevel::Organization => {
+            GeneralAccessLevel::Anyone | GeneralAccessLevel::Organization => {
                 let member = self
                     .authz
                     .check(
@@ -80,64 +170,49 @@ impl StorageService {
                     )
                     .await?;
                 if !member {
-                    return Err(StorageError::Forbidden);
+                    return Err(deny("not_org_member").await);
                 }
             }
-            GeneralAccessLevel::Restricted => return Err(StorageError::Forbidden),
+            GeneralAccessLevel::Restricted => return Err(deny("restricted_link").await),
         }
-        // パスワード検証（Argon2id・定数時間）。不一致/未指定は generic Forbidden。
+        // パスワード検証（Argon2id・定数時間）。不一致/未指定は generic Forbidden＋deny 監査。
         if !verify_password(password.unwrap_or(""), hash) {
-            return Err(StorageError::Forbidden);
+            return Err(deny("bad_password").await);
         }
+        Ok(VerifiedRedeem {
+            link_id: row.link_id,
+            node_id: row.node_id,
+            kind,
+            role,
+            level,
+            expires_at: row.expires_at,
+        })
+    }
 
-        // per-user タプルを発行し、redeem 台帳へ記録する。
-        let ns = ctx.ns();
-        let obj = node_fga_object(&ns, kind, row.node_id);
-        let subject = ns.user(&ctx.principal.id);
-        // この (node,user,role) が既に redeem 台帳に載っているか（別リンク経由の先行 redeem）。
-        let prior: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM node_share_link_grant \
-             WHERE node_id = $1 AND user_id = $2 AND role = $3)",
-        )
-        .bind(row.node_id)
-        .bind(&ctx.principal.id)
-        .bind(role.as_str())
-        .fetch_one(&self.db)
-        .await?;
-        let granted = self
-            .authz
-            .write_tuple(&subject, role.relation(), &obj)
-            .await?;
-        // 台帳記録は `granted OR prior` のときだけ（＝redeem 由来の付与のみ台帳に載せ、既存の
-        // 明示共有を台帳に載せない＝後の失効で明示共有を誤剥奪しない）。複数リンクが同一 (node,
-        // user,role) を redeem し得るので、先行 redeem 済み（prior）なら本リンク分も必ず記録する。
-        let record = granted || prior;
-        let persisted = self
-            .persist_redeem(
-                ctx,
-                row.link_id,
-                row.node_id,
-                kind,
-                role,
-                row.expires_at,
-                level,
-                record,
-                trace_id,
-            )
-            .await;
-        if let Err(e) = persisted {
-            if granted {
-                let _ = self
-                    .authz
-                    .delete_tuple(&subject, role.relation(), &obj)
-                    .await;
-            }
-            return Err(e);
+    /// redeem の deny を監査（`Decision::Deny`・非チェーン）し、`Forbidden` を返す（#342 レビュー
+    /// B-3）。理由は `metadata.reason` にのみ残し、呼び出し側の応答は一律 403（オラクル防止）。
+    /// 監査記録の失敗で redeem 応答は変えない（既に deny・fail する意味が無い）。ログには残す。
+    async fn deny_redeem(
+        &self,
+        ctx: &AuthContext,
+        reason: &'static str,
+        object_type: &str,
+        object_id: &str,
+        link_id: Option<Uuid>,
+        trace_id: Option<&str>,
+    ) -> StorageError {
+        let entry = AuditEntry {
+            action: "node.share_link.redeem",
+            object_type,
+            object_id,
+            decision: Decision::Deny,
+            trace_id,
+            metadata: json!({ "reason": reason, "link_id": link_id }),
+        };
+        if let Err(e) = self.audit.record(ctx, entry).await {
+            tracing::warn!(error = %e, reason, "redeem deny の監査記録に失敗しました（#342）");
         }
-        if row.expires_at.is_some() {
-            self.expiry_notify.notify_one();
-        }
-        Ok(())
+        StorageError::Forbidden
     }
 
     /// redeem の台帳 upsert＋監査を 1 tx で。`record_grant == false` なら台帳へ記録しない（既に

@@ -228,19 +228,22 @@ impl ShareRole {
     }
 }
 
-/// 一般アクセスのレベル（#338・Google Drive の「一般アクセス」に相当）。
+/// 共有リンクの公開範囲（audience・#342。旧 #338 の一般アクセスレベルを流用）。
 ///
-/// レベルは共有先（subject）に写る: `organization` → `organization:<tenant>|<org>#member`、
-/// `anyone` → `user:*`（type-bound public）。`restricted` は一般アクセスの不在（台帳行が無い）＝
-/// 現状の明示付与のみの ReBAC で、タプルは書かない。
+/// broad な audience は共有先（subject）に写る: `organization` / `anyone` ともに
+/// `organization:<tenant>|<org>#member`（社内＝現テナント）。#342 レビュー A-2 で `anyone`→`user:*`
+/// を廃し、両者を organization#member に寄せた（`user:*` は将来の viewer 限定・跨ぎ閲覧 `authenticated`
+/// 専用に予約）。`anyone` は互換のため列挙に残すが `organization` と同義に縮退している。
+/// `restricted` は付与ゼロ（台帳ポインタのみ・タプルを書かない）。詳細は
+/// [`crate::service::share_link_util::broad_subject`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GeneralAccessLevel {
-    /// 既存アクセス者のみ（明示付与のみ）。
+    /// 既存アクセス者のみ（付与ゼロの純ポインタ）。
     Restricted,
-    /// 組織内の全メンバー。
+    /// 社内（現テナント/組織内）の全メンバー。
     Organization,
-    /// すべての認証済みユーザー。
+    /// 互換のための旧「すべての認証済みユーザー」。現在は `Organization` と同義に縮退（A-2）。
     Anyone,
 }
 

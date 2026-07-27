@@ -8,15 +8,22 @@ use super::*;
 use crate::model::GeneralAccessLevel;
 
 /// audience に対応する broad な共有先 subject（restricted は `None`＝付与ゼロの純ポインタ）。
-/// `organization` → `organization:<tenant>|<org>#member`、`anyone` → `user:*`。
+///
+/// `organization` / `anyone` → `organization:<tenant>|<org>#member`（社内＝現テナント/組織内）。
+/// #342 レビュー A-2 で `anyone`→`user:*` を廃した: `user:*` は「その日から越境を許すタプル」で、
+/// 跨ぎ閲覧公開（`authenticated`）を実装した瞬間に過去の「社内全員」リンクが owner の同意なく
+/// 全テナント公開へ遡って昇格してしまう。意味が違うものは違うタプルにするため、broad リンクは
+/// すべて `organization#member`（現テナント内）へ寄せ、`user:*` は将来の viewer 限定 `authenticated`
+/// 専用に空けてある。`restricted` は付与ゼロ（台帳ポインタのみ）。
 pub(super) fn broad_subject(
     ns: &Namespace<'_>,
     level: GeneralAccessLevel,
     org: &str,
 ) -> Option<Subject> {
     match level {
-        GeneralAccessLevel::Organization => Some(ns.organization_member(org)),
-        GeneralAccessLevel::Anyone => Some(Subject::public()),
+        GeneralAccessLevel::Organization | GeneralAccessLevel::Anyone => {
+            Some(ns.organization_member(org))
+        }
         GeneralAccessLevel::Restricted => None,
     }
 }
