@@ -9,7 +9,7 @@
 //! - paste ack: `pasteresult: success|fallback`
 //! - 保存 ack: `unocommandresult:`（`.uno:Save` は notify 対象）
 //!
-//! ops 開始後は再接続・再送しない（paste 非冪等・PIT-45）。
+//! ops 開始後は再接続・再送しない（paste 非冪等・PIT-47）。
 
 use std::time::Duration;
 

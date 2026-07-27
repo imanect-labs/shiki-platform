@@ -8,7 +8,7 @@
 //! ④ AI トークン（`token::issue_ai`）で CoolWSD へ接続 → ops 適用 → save → close
 //!
 //! ops 適用中の失敗は Err ではなく**部分適用の報告**（`LiveEditReport.aborted`）で
-//! 返す（paste 非冪等・再送禁止・PIT-45）。保存は core ack 後に StorageService の
+//! 返す（paste 非冪等・再送禁止・PIT-47）。保存は core ack 後に StorageService の
 //! 版前進で検証する（shiki 自身が WOPI ホストなので観測できる）。
 
 use std::sync::Arc;
@@ -211,7 +211,7 @@ impl LiveEditor {
         {
             Ok(client) => client,
             Err(LiveError::Connect(first)) => {
-                // load 前の接続失敗のみ 1 回だけ再接続する（冪等・PIT-45）。
+                // load 前の接続失敗のみ 1 回だけ再接続する（冪等・PIT-47）。
                 tracing::warn!(error = %first, "CoolWSD 接続失敗・再試行します");
                 CoolWsClient::connect(&self.ws, &wopi_src, &access_token, "ja").await?
             }

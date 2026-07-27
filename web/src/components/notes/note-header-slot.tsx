@@ -90,6 +90,11 @@ export function NoteSyncSlot({
     [nodeId, name, editable, status, synced, chatOpen, onToggleChat, provider, editor],
   );
   return (
-    <ShareDialog open={shareOpen} onOpenChange={setShareOpen} node={{ id: nodeId, name }} />
+    <ShareDialog
+      open={shareOpen}
+      onOpenChange={setShareOpen}
+      node={{ id: nodeId, name }}
+      shareUrl={`/notes/${nodeId}`}
+    />
   );
 }

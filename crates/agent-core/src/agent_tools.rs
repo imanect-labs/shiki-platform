@@ -20,7 +20,7 @@ use futures::stream::StreamExt;
 use llm_gateway::Block;
 
 use crate::agent::{PendingCall, PLAN_TOOL};
-use crate::agent_gate::{authorize, emit_tool_events, execute_tool, needs_confirmation, Authz};
+use crate::agent_gate::{authorize, emit_tool_events, execute_tool, is_gated, Authz};
 use crate::approval::Approver;
 use crate::event::{AgentError, AgentEvent, EventSink, RecoveryAction};
 use crate::loop_detect::LoopDetector;
@@ -134,7 +134,8 @@ pub(crate) async fn run_tool_calls(
 /// 同一ステップ内で並列に回してよい呼び出しか。
 ///
 /// 「確認不要 ＝ 並列にしてよい」ではない。副作用の無さを**ツール自身が表明**していること
-/// （[`Tool::is_read_only`]）と、承認ゲートに掛からないことの両方を要求する。
+/// （[`Tool::is_read_only`]）と、承認ゲートの**対象ですらない**ことの両方を要求する。
+/// 事前許可で通るだけの呼び出しは並列にしない（ポリシは実行中に変わり得るため・#350）。
 fn is_parallel_read(phase: &ToolPhase<'_>, call: &PendingCall) -> bool {
     if phase.opts.profile.is_autonomous() && call.name == PLAN_TOOL {
         return false;
@@ -143,7 +144,7 @@ fn is_parallel_read(phase: &ToolPhase<'_>, call: &PendingCall) -> bool {
         .tool_map
         .get(call.name.as_str())
         .is_some_and(|t| t.is_read_only())
-        && !needs_confirmation(phase.tool_map, call, phase.opts)
+        && !is_gated(phase.tool_map, call, phase.opts)
 }
 
 /// 冪等 read を有界並列で実行する（同一ホストへの `web_fetch` は互いに直列）。

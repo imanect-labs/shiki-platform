@@ -157,6 +157,26 @@ impl TenantStore {
         Ok(())
     }
 
+    /// org 管理者キャップ: 自律エージェントの全自動（bypass）承認モードの許可/禁止を設定する（#350）。
+    ///
+    /// `false` にすると当該テナントでは bypass を選べない（チャット API が明示エラーで弾き、
+    /// 実行中の残存 bypass は承認必須へクランプされる）。戻り `false` = active なテナントが無い。
+    pub async fn set_autonomous_bypass(
+        &self,
+        tenant_id: &str,
+        allow: bool,
+    ) -> Result<bool, StorageError> {
+        let updated = sqlx::query(
+            "UPDATE tenant SET allow_autonomous_bypass = $2, updated_at = now() \
+             WHERE tenant_id = $1 AND status = 'active'",
+        )
+        .bind(tenant_id)
+        .bind(allow)
+        .execute(&self.db)
+        .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
     /// 同じ org slug を使う**他の未削除テナント**が存在するか（Keycloak group の共有判定）。
     ///
     /// テナント削除時、org group を消すと同 org slug を使う他テナントの `groups` claim が

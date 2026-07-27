@@ -51,10 +51,10 @@
 >   ホストネイティブ取得へ変更**した（GET 1 回のために Pyodide 初期化 ~6s を払う割に、隔離が守るのは
 >   宛先限定だけだったため）。封じ込めはポリシ層で維持: 解決後 IP の再検証＋**検証済みアドレスへの接続固定**
 >   （DNS リバインディング遮断・`sandbox_client::net_guard` が IP 分類の単一の正）・リダイレクト非追従
->   （PIT-36）・IP/内部ホスト拒否・シークレット非添付・サイズ上限（design §4.6・PIT-46）。
+>   （PIT-36）・IP/内部ホスト拒否・シークレット非添付・サイズ上限（design §4.6・PIT-48）。
 > - **冪等 read のステップ内並列（#349）**: `web_search`/`web_fetch`/`doc_search` は `Tool::is_read_only()`
 >   を表明し、1 ステップ内で有界並列（既定 4・`chat.parallel_read_tools`）に走る。承認要・破壊系は逐次のまま
->   `Approver` を待ち、read はその待ちと並行して進む。観測とイベントは**常に呼び出し順**（PIT-47）。
+>   `Approver` を待ち、read はその待ちと並行して進む。観測とイベントは**常に呼び出し順**（PIT-49）。
 >   deep research の「検索 → 複数ページ取得」ファンアウトが直列にならないための土台。
 > - ゲストコマンドスイート（4.12 software）: `scripts/build-sandbox-commands.sh` が registry/native を
 >   nightly+wasm32-wasip1 でビルドしフラットなコマンドディレクトリにステージ（Docker `commands-builder`

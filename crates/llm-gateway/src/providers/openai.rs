@@ -12,10 +12,9 @@ use futures::channel::mpsc;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
+use super::openai_names::ToolNameMap;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
-
-use super::tool_names::ToolNameMap;
 
 /// OpenAI 互換アダプタ。
 pub struct OpenAiProvider {
@@ -72,7 +71,6 @@ impl OpenAiProvider {
                 .map(|t| json!({
                     "type": "function",
                     "function": {
-                        // ドット等の許可外文字はワイヤ名へ写像（応答側で逆写し）。
                         "name": names.wire(&t.name),
                         "description": t.description,
                         "parameters": t.input_schema,
@@ -85,6 +83,7 @@ impl OpenAiProvider {
 }
 
 /// 中立メッセージ 1 件を OpenAI messages（複数になり得る）へ写す。
+/// 履歴中のツール名も wire 名へ写す（厳格プロバイダは履歴の tool_calls 名も検証する）。
 fn to_openai_messages(m: &Message, names: &ToolNameMap) -> Vec<Value> {
     match m.role {
         Role::Tool => m
@@ -120,7 +119,6 @@ fn to_openai_messages(m: &Message, names: &ToolNameMap) -> Vec<Value> {
                     Block::ToolUse { id, name, input } => Some(json!({
                         "id": id,
                         "type": "function",
-                        // 履歴中のツール名も送信時はワイヤ名（プロバイダの検証対象）。
                         "function": { "name": names.wire(name), "arguments": input.to_string() },
                     })),
                     _ => None,
@@ -194,14 +192,13 @@ impl ToolAcc {
             .collect()
     }
 
-    fn starts(&self, names: &ToolNameMap) -> Vec<StreamDelta> {
+    fn starts(&self) -> Vec<StreamDelta> {
         self.calls
             .values()
             .filter(|(id, name, _)| !id.is_empty() && !name.is_empty())
             .map(|(id, name, _)| StreamDelta::ToolUseStart {
                 id: id.clone(),
-                // プロバイダはワイヤ名で返す → アプリの元名（office.live_edit 等）へ逆写し。
-                name: names.original(name),
+                name: name.clone(),
             })
             .collect()
     }
@@ -224,7 +221,16 @@ impl LlmProvider for OpenAiProvider {
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/chat/completions", self.base_url);
-        let names = ToolNameMap::new(req.tools.iter().map(|t| t.name.as_str()));
+        // 現在のツール集合に加えて**履歴中の ToolUse 名**も同じ写像に通す（resume 等で
+        // 履歴のツールが現在の tools に無い場合でも、fallback サニタイズによる衝突を防ぐ）。
+        let names = ToolNameMap::new(req.tools.iter().map(|t| t.name.as_str()).chain(
+            req.messages.iter().flat_map(|m| {
+                m.content.iter().filter_map(|b| match b {
+                    Block::ToolUse { name, .. } => Some(name.as_str()),
+                    _ => None,
+                })
+            }),
+        ));
         let body = self.build_body(req, &names);
         let mut builder = self
             .http
@@ -249,7 +255,6 @@ impl LlmProvider for OpenAiProvider {
 
         let (tx, rx) = mpsc::unbounded::<Result<StreamDelta, LlmError>>();
         tokio::spawn(async move {
-            let names = names;
             let mut byte_stream = resp.bytes_stream();
             let mut buf: Vec<u8> = Vec::new();
             let mut acc = ToolAcc::default();
@@ -314,10 +319,14 @@ impl LlmProvider for OpenAiProvider {
                         if let Some(tc) = delta.get("tool_calls") {
                             acc.ingest(tc);
                             // 新規に name/id が確定したツールへ Start を 1 回出す。
-                            for s in acc.starts(&names) {
-                                if let StreamDelta::ToolUseStart { id, .. } = &s {
+                            // wire 名（サニタイズ済み）を元のローカル名へ逆写しして返す。
+                            for s in acc.starts() {
+                                if let StreamDelta::ToolUseStart { id, name } = s {
                                     if started.insert(id.clone()) {
-                                        let _ = tx.unbounded_send(Ok(s));
+                                        let _ = tx.unbounded_send(Ok(StreamDelta::ToolUseStart {
+                                            id,
+                                            name: names.local(&name),
+                                        }));
                                     }
                                 }
                             }
@@ -344,38 +353,10 @@ impl LlmProvider for OpenAiProvider {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn tool_names_with_dots_are_sanitized_and_reversed() {
-        // DeepSeek 等は `^[a-zA-Z0-9_-]{1,64}$` 違反の function 名を 400 で拒否する。
-        let names = ToolNameMap::new(["office.live_edit", "csv.query", "doc_search"].into_iter());
-        assert_eq!(names.wire("office.live_edit"), "office_live_edit");
-        assert_eq!(names.wire("doc_search"), "doc_search");
-        assert_eq!(names.original("office_live_edit"), "office.live_edit");
-        assert_eq!(names.original("csv_query"), "csv.query");
-        // 未登録名は素通し（過去ツール・未知名で壊れない）。
-        assert_eq!(names.original("unknown"), "unknown");
-
-        // 履歴中の ToolUse もワイヤ名で送られる。
-        let m = Message {
-            role: Role::Assistant,
-            content: vec![Block::ToolUse {
-                id: "t1".into(),
-                name: "office.live_edit".into(),
-                input: json!({}),
-            }],
-        };
-        let out = to_openai_messages(&m, &names);
-        assert_eq!(
-            out[0]["tool_calls"][0]["function"]["name"],
-            "office_live_edit"
-        );
-    }
-
     use super::*;
 
     #[test]
     fn assistant_tool_use_maps_to_openai_tool_calls() {
-        let names = ToolNameMap::new(["doc_search"].into_iter());
         let m = Message {
             role: Role::Assistant,
             content: vec![Block::ToolUse {
@@ -384,10 +365,29 @@ mod tests {
                 input: json!({"query": "x"}),
             }],
         };
+        let names = ToolNameMap::new(["doc_search"].into_iter());
         let out = to_openai_messages(&m, &names);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["tool_calls"][0]["id"], "t1");
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "doc_search");
+    }
+
+    // 写像そのもの（サニタイズ・衝突回避・64 文字制約）の単体テストは
+    // `openai_names.rs` 側にある。ここでは messages への適用のみ検証する。
+    #[test]
+    fn dotted_tool_names_map_in_history_tool_calls() {
+        // 履歴メッセージのツール名も wire 名（ドット→`_`）で送られる。
+        let names = ToolNameMap::new(["document.edit"].into_iter());
+        let m = Message {
+            role: Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: "t9".into(),
+                name: "document.edit".into(),
+                input: json!({"path": "a.md"}),
+            }],
+        };
+        let out = to_openai_messages(&m, &names);
+        assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "document_edit");
     }
 
     #[test]
@@ -400,7 +400,8 @@ mod tests {
                 is_error: false,
             }],
         };
-        let out = to_openai_messages(&m, &ToolNameMap::new(std::iter::empty()));
+        let names = ToolNameMap::new(std::iter::empty::<&str>());
+        let out = to_openai_messages(&m, &names);
         assert_eq!(out[0]["role"], "tool");
         assert_eq!(out[0]["tool_call_id"], "t1");
     }

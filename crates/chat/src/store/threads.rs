@@ -10,10 +10,11 @@ use sqlx::types::Json;
 use storage::audit::{AuditEntry, Decision};
 use uuid::Uuid;
 
-use crate::model::{ContentBlock, Message, Role, SkillPin, Thread};
+use crate::model::{AutonomousMode, ContentBlock, Message, Role, SkillPin, Thread};
 
-/// thread の SELECT 列（skill ピンは正規化テーブルから jsonb で集約・#344）。
-const THREAD_COLUMNS: &str = "id, title, agent_mode, \
+/// thread の SELECT 列（skill ピンは正規化テーブルから jsonb で集約・#344。
+/// 承認モードは thread 列・#350）。
+const THREAD_COLUMNS: &str = "id, title, agent_mode, autonomous_mode, \
     (SELECT coalesce(jsonb_agg(jsonb_build_object( \
         'skill_id', p.skill_id, 'skill_version', p.skill_version) \
         ORDER BY p.position, p.skill_id), '[]'::jsonb) \
@@ -26,6 +27,7 @@ struct ThreadRow {
     id: Uuid,
     title: String,
     agent_mode: bool,
+    autonomous_mode: String,
     skill_pins: Json<Vec<SkillPin>>,
     mini_app_id: Option<Uuid>,
     mini_app_version: Option<i64>,
@@ -41,6 +43,8 @@ impl ThreadRow {
             id: self.id,
             title: self.title,
             agent_mode: self.agent_mode,
+            // CHECK 制約で閉じている（乖離時は既定＝承認必須へ・fail-closed）。
+            autonomous_mode: AutonomousMode::parse(&self.autonomous_mode).unwrap_or_default(),
             skill_pins: self.skill_pins.0,
             mini_app_id: self.mini_app_id,
             mini_app_version: self.mini_app_version,
@@ -97,7 +101,7 @@ impl ChatStore {
             // 作成直後のピンは常に空（set_thread_pins が後から入れる）。
             "INSERT INTO thread (id, org, tenant_id, owner, title, agent_mode, origin_note_id, origin_note_name) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-             RETURNING id, title, agent_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at",
+             RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, created_at, updated_at",
         )
         .bind(id)
         .bind(&ctx.org)
@@ -263,9 +267,14 @@ impl ChatStore {
             trace_id,
         )
         .await?;
+        // 並び順の tie-break に **因果（parent_id）** を使う。ユーザ発話とアシスタント枠は
+        // `post_message` の同一トランザクションで作られ、`now()` はトランザクション開始時刻を
+        // 返すため両者の `created_at` は必ず同値になる。ここを id（ランダム UUID）で崩すと
+        // 返信がユーザ発話より前に描画される（順序が実質ランダムになる）。返信は必ず親の後。
         let rows: Vec<MessageRow> = sqlx::query_as(
             "SELECT id, role, content, agent_mode, parent_id, created_at FROM message \
-             WHERE thread_id = $1 AND tenant_id = $2 ORDER BY created_at, id",
+             WHERE thread_id = $1 AND tenant_id = $2 \
+             ORDER BY created_at, (parent_id IS NOT NULL), id",
         )
         .bind(thread_id)
         .bind(&ctx.tenant_id)

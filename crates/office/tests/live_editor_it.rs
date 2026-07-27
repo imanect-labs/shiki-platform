@@ -1,6 +1,6 @@
 //! `LiveEditor` の結合テスト（偽 CoolWSD＋実 Postgres・issue #352）。
 //!
-//! 検証（PIT-45 受け入れ条件）:
+//! 検証（PIT-47 受け入れ条件）:
 //! - 同一ファイルへの並行 `apply` は advisory lock で**直列化**される（AI↔AI）
 //! - 別ファイルへの並行 `apply` は並行に進む（直列化はファイル単位）
 //! - 存在秘匿（editor なし→Denied）・非対応種別（Unsupported）

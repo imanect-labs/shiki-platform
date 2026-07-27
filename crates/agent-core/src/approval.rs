@@ -80,6 +80,15 @@ pub trait Approver: Send + Sync {
         name: &str,
         input: &serde_json::Value,
     ) -> ApprovalDecision;
+
+    /// **現在の**実効承認ポリシを返す（実行中のモードトグル対応・#350）。
+    ///
+    /// `Some` を返すと承認ゲートは `opts.approval`（run 開始時のスナップショット）ではなく
+    /// この値で事前許可を判定する（各破壊系呼び出しの直前に問い直すため、緩和/厳格化の両方向が
+    /// 実行中に効く）。既定 `None` = スナップショットのまま（既存実装・テストは無変更）。
+    async fn current_policy(&self) -> Option<ApprovalPolicy> {
+        None
+    }
 }
 
 #[cfg(test)]

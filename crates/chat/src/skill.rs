@@ -307,6 +307,8 @@ mod tests {
             cancel_requested: false,
             trace_id: None,
             autonomous: false,
+            autonomous_mode: "require_approval".into(),
+            checkpoint: None,
             skill_pins: Json(pins),
             mini_app_id: None,
             mini_app_version: None,

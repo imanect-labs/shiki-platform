@@ -25,6 +25,11 @@ uuid.workspace = true
 chrono.workspace = true
 sha2.workspace = true
 hex.workspace = true
+# 失効タイマの進捗/失敗ログ（#338）。
+tracing.workspace = true
+# 一般アクセスのパスワードハッシュ（Argon2id・PHC 文字列・#338）。
+# ソルト生成の OsRng は argon2::password_hash::rand_core を再利用する（直接 rand 依存はしない）。
+argon2.workspace = true
 
 # S3 互換オブジェクトストア（MinIO）。presigned URL 発行・server-side copy 等に使う。
 aws-sdk-s3.workspace = true
@@ -32,6 +37,8 @@ aws-sdk-s3.workspace = true
 [dev-dependencies]
 tokio = { workspace = true }
 reqwest.workspace = true
+# 一般アクセス有効期限（DateTime<Utc>）を組む結合テスト用（#338）。
+chrono.workspace = true
 
 # shiki-authz は lib 名 `authz` で参照するため cargo-machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]

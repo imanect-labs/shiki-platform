@@ -36,7 +36,18 @@ pub(crate) async fn authorize(
     approver: Option<&dyn Approver>,
     sink: &mut dyn EventSink,
 ) -> Result<Authz, AgentError> {
-    if !needs_confirmation(tool_map, call, opts) {
+    // 承認ゲートに掛かるか（ツール属性）と、現在ポリシで事前許可されているかを分けて見る。
+    if !is_gated(tool_map, call, opts) {
+        return Ok(Authz::Proceed);
+    }
+    // 実行中モードトグル（#350）: approver が現在ポリシを返すなら、run 開始時のスナップショット
+    // （opts.approval）ではなくそれで判定する（各呼び出し直前に問い直す＝緩和も厳格化も即時反映）。
+    let refreshed = match approver {
+        Some(a) => a.current_policy().await,
+        None => None,
+    };
+    let policy = refreshed.as_ref().unwrap_or(&opts.approval);
+    if policy.is_pre_authorized(&call.name) {
         return Ok(Authz::Proceed);
     }
     let Some(approver) = approver else {
@@ -69,12 +80,16 @@ pub(crate) async fn authorize(
     })
 }
 
-/// この呼び出しが承認ゲートに掛かるか（await なしで判定できる・並列化の可否判断にも使う・#349）。
+/// この呼び出しが**承認ゲートの対象か**（ツール属性だけで決まる・await 不要・#349）。
 ///
 /// 未知ツールは `execute_tool` 側で unknown エラーにするため素通し。
 /// egress（ネットワーク）ツールは `requires_confirmation=false` だが、**自律版では承認ゲート対象**
 /// にする（Task 5.6「egress は承認ゲート」）。Chat 版は従来どおり素通し（承認者が無いため）。
-pub(crate) fn needs_confirmation(
+///
+/// **事前許可（ApprovalPolicy）は見ない。** ポリシは実行中に変わり得る（#350 のモードトグル）ため、
+/// 並列化の可否をポリシで決めると「判定時は許可・実行時は要承認」のすり抜けが生まれる。
+/// 並列に回してよいのは「**どのポリシでもゲートに掛からない**」呼び出しだけに限る。
+pub(crate) fn is_gated(
     tool_map: &HashMap<&str, &Arc<dyn Tool>>,
     call: &PendingCall,
     opts: &AgentOptions,
@@ -83,11 +98,10 @@ pub(crate) fn needs_confirmation(
         crate::vocab::ToolName::parse(&call.name),
         Some(crate::vocab::ToolName::WebFetch | crate::vocab::ToolName::WebSearch)
     );
-    let gated = tool_map
+    tool_map
         .get(call.name.as_str())
         .is_some_and(|t| t.requires_confirmation())
-        || (opts.profile.is_autonomous() && is_egress);
-    gated && !opts.approval.is_pre_authorized(&call.name)
+        || (opts.profile.is_autonomous() && is_egress)
 }
 
 /// 1 ツール呼び出しを実行する（未知は観測エラーへ・確認は [`authorize`] 済み前提）。

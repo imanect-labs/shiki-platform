@@ -3,7 +3,7 @@
 //! リトライ可否の判断単位で分ける:
 //! - [`LiveError::Connect`] のみ再接続 1 回を許す（load 前＝冪等）。
 //! - ops 開始後は**いかなる失敗でも再送しない**（paste は非冪等・二重貼付は
-//!   選択ずれ以上の事故）。fail fast で部分適用を正直に報告する（PIT-45）。
+//!   選択ずれ以上の事故）。fail fast で部分適用を正直に報告する（PIT-47）。
 
 /// headless セッション（`live::CoolWsClient` / `live::LiveEditor`）のエラー。
 #[derive(Debug, thiserror::Error)]

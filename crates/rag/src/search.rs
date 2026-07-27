@@ -278,6 +278,10 @@ impl SearchService {
 
     /// rag_chunk × node のハイドレーション。**`deleted_at is null` を強制**し、
     /// 索引除去が追いつく前でも削除済みファイルが結果に出ない（第三の防壁）。
+    ///
+    /// org 境界（#371・PIT-45）: `storage::load_node` は `org = ctx.org AND tenant_id` で絞るため、
+    /// org は tenant 内のもう一段の隔離境界。hydrate も `n.org = ctx.org` を課し、マルチ org テナントで
+    /// 他 org 文書のチャンクが回答に混入しない（storage の直接オープンと同じ境界へ揃える）。
     async fn hydrate(
         &self,
         ctx: &AuthContext,
@@ -292,10 +296,11 @@ impl SearchService {
                     n.name as file_name, n.parent_id as folder_id \
              from rag_chunk c \
              join node n on n.id = c.node_id and n.tenant_id = c.tenant_id \
-             where c.tenant_id = $1 and c.id = any($2) and n.deleted_at is null",
+             where c.tenant_id = $1 and c.id = any($2) and n.org = $3 and n.deleted_at is null",
         )
         .bind(&ctx.tenant_id)
         .bind(&ids)
+        .bind(&ctx.org)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|r| (r.id, r)).collect())
@@ -345,11 +350,16 @@ impl SearchService {
         let parents: HashMap<Uuid, String> = if parent_ids.is_empty() {
             HashMap::new()
         } else {
+            // 親本文も node.org で絞る（#371・CodeRabbit）。親子は同一 node（同 org）だが、
+            // hydrate と同じ org 境界を明示適用して parent_content 経由の他 org 混入を構造的に断つ。
             let rows: Vec<(Uuid, String)> = sqlx::query_as(
-                "select id, content from rag_chunk where tenant_id = $1 and id = any($2)",
+                "select c.id, c.content from rag_chunk c \
+                 join node n on n.id = c.node_id and n.tenant_id = c.tenant_id \
+                 where c.tenant_id = $1 and c.id = any($2) and n.org = $3",
             )
             .bind(&ctx.tenant_id)
             .bind(&parent_ids)
+            .bind(&ctx.org)
             .fetch_all(&self.pool)
             .await?;
             rows.into_iter().collect()

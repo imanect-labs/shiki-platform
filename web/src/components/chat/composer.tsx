@@ -22,7 +22,8 @@ import {
 
 import { cn } from "@/lib/utils";
 import { uploadFile, type NodeResponse } from "@/lib/storage";
-import type { Attachment, WorkspaceChoice } from "@/lib/chat-api";
+import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
+import { ApprovalModeSelect } from "./approval-mode-select";
 import {
   clearPendingSelection,
   selectionKindLabel,
@@ -66,6 +67,9 @@ export function Composer({
   onAutonomousChange,
   workspace = null,
   onWorkspaceChange,
+  approvalMode = null,
+  onApprovalModeChange,
+  bypassAllowed = true,
   className,
 }: {
   onSubmit: (
@@ -91,6 +95,12 @@ export function Composer({
   workspace?: WorkspaceChoice | null;
   /// ワークスペース選択のハンドラ（未指定ならチップを出さない）。
   onWorkspaceChange?: (w: WorkspaceChoice | null) => void;
+  /// 自律 run の承認モード（承認必須/オート/全自動・#350）。null は未ロード（セレクタ非表示）。
+  approvalMode?: AutonomousMode | null;
+  /// 承認モード変更のハンドラ（未指定ならセレクタを出さない）。生成中も切替可（実行中トグル）。
+  onApprovalModeChange?: (m: AutonomousMode) => void;
+  /// org 管理者ポリシで bypass（全自動）を選べるか（false なら選択肢を無効化・#350）。
+  bypassAllowed?: boolean;
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
@@ -260,6 +270,15 @@ export function Composer({
                   {workspace ? workspace.folderName : "マイドライブ"}
                 </span>
               </button>
+            ) : null}
+            {/* エージェントモード ON 時のみ: 承認モード（承認必須/オート/全自動・#350）。
+                生成中も切替可（承認待ちカードはモード緩和で自動解決される）。 */}
+            {autonomous && approvalMode && onApprovalModeChange ? (
+              <ApprovalModeSelect
+                mode={approvalMode}
+                onChange={onApprovalModeChange}
+                bypassAllowed={bypassAllowed}
+              />
             ) : null}
           </div>
 

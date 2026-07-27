@@ -150,6 +150,12 @@ flowchart LR
 - フォルダは親→子へ、ロールは**配下ロール→親ロールへメンバーシップを継承**（上方向ロールアップ。
   親ロールは配下ロールのメンバーを含む。例: 営業部ロール ⊇ 営業1課ロール）。**可読性判定は単一の authz クエリ**に帰着し、
   ファイル共有も permission-aware RAG も同じ問いを使う。
+- **共有リンクの有効期限は eventual（best-effort・#342/#368）**: OpenFGA にネイティブ TTL が無いため、期限は
+  ① セッション開始点の遅延失効（`get_metadata`／`list_children` の親フォルダで reconcile 先行剥奪）と
+  ② イベント駆動タイマ（全レプリカが各自 spawn・リーダー選出なし・指数バックオフ）で強制する。**check 時点評価ではない**ため、
+  タイマ停止中や遅延失効を通していない経路（download/versions/collab WS/WOPI・list_children の子ごと判定）では
+  期限直後にごく短時間アクセスが残り得る。UI の「〜まで」表示は公称であり厳密な瞬間失効ではない。
+  中期的には FGA conditions / contextual tuples で check 時点評価へ寄せる（#368）。
 - **認可コンテキスト**: 全データアクセスは `principal + org + tenant_id` を持つコンテキスト経由（SaaS マルチテナントを day-1 前提・後付けで隔離境界を壊さない）。
 - **authz のテナント分離（SAAS.1 / #84）**: OpenFGA は **全テナント共有の単一ストア＋識別子名前空間化**（フルプール）で分離する。
   FGA 識別子を `<type>:<tenant_id>|<local_id>` へ名前空間化し（区切り `|` = `authz::TENANT_SEP`。AD group パスの `/` と衝突しない）、
@@ -332,6 +338,17 @@ flowchart LR
   - 自律 = フルツール（shell/任意コマンド/CRUD）＋長ホライズン＋FUSEストレージ。
 - 共通化: llm-gateway、Langfuseトレース、監査、トークン会計、権限境界。
 - **ツール選択**: デフォルト全提示・モデル自動選択。権限/破壊/コスト系のみ明示許可。
+- **自律の承認 3 モード（#350・thread 単位・実行中トグル可）**: 承認必須（既定・全破壊系が承認カードで停止）/
+  オート（版管理で復元可能な書込のみ自動・fs_delete/shell 等の不可逆は承認維持）/ 全自動（危険・明示オプトイン・
+  `tenant.allow_autonomous_bypass=false` の org キャップで禁止可・違反は明示エラー/警告でクランプ）。
+  モード→`ApprovalPolicy` の写像は `crates/chat/src/autonomous.rs` に集約。read-only（web_search/web_fetch/
+  doc_search）はどのモードでも止まらない。**skill はモードを緩められない**（Task 6.9 不変条件維持）。
+  実行中の緩和は **run の actor 本人による設定のみ有効**（共有スレッドの別編集者が他人の権限の run の承認を
+  緩められない・confused-deputy 防御）。
+- **ワークスペース封じ込め（#350 で明示化）**: 自律 fs ツールは thread の起動フォルダ（`root_folder_id`）配下限定。
+  名前解決は root 直下の SQL 完全一致のみ（パス解釈なし）・全操作は発話ユーザーの AuthContext（昇格しない）。
+  フォルダ未指定は `agent-workspace-<thread>` を自動生成（「未指定なら Drive 全体」は採らない）。
+  不変条件テスト: `crates/chat/tests/workspace_containment_it.rs`。
 - **web ツール**: 新トレイト `SearchProvider`（SaaS=Brave Search API / オンプレ=SearXNG / エアギャップ=機能無効）。
   **ページ取得は検索と別ポリシー**: allowlist に検索プロバイダだけ載せると検索結果 URL が開けないため、
   web ツール有効時、取得はサンドボックスを介さずホスト側で行い（#348・§4.6）、**宛先は解決後 IP の検証＋
@@ -342,7 +359,7 @@ flowchart LR
   （既定 4・`chat.parallel_read_tools`）で走らせる。承認要・破壊系は従来どおり逐次で `Approver` を待ち、
   read はその待ちと並行して進む。**観測（`ToolResult`）とイベントは常に呼び出し順**に整列してから積む
   （再現性・監査）。同一ホストへの `web_fetch` はレーンを分けて直列化する（相手先への礼儀）。
-  deep research の「検索 → 複数ページ取得」ファンアウトが直列にならないための土台（PIT-47）。
+  deep research の「検索 → 複数ページ取得」ファンアウトが直列にならないための土台（PIT-49）。
 - **deepresearch = agent-core のプリセット**（専用エンジンを作らない）: 「長ホライズン＋web.search/rag.search/
   document.write＋サンドボックス」構成の first-party skill（FR-7 の枠）。成果物はストレージ保存→自動 RAG 対象化。
 - **会話履歴は tenant スコープのスキーマで新設（SAAS.1 / #91）**: thread/message テーブルは既存規約を踏襲し
@@ -367,7 +384,9 @@ flowchart LR
   どのインスタンスでも Redis 経由で受信。
 - **整合性の不変条件**: ①単一ライタ（リース保持ワーカーのみ）＋ `(run_id, seq)` unique で追記 exactly-once
   ②クラッシュ回復はステップ境界から（完了済みツール結果はチェックポイント復元、**生成途中の LLM ストリームは破棄して
-  当該ステップのみ再生成**。「途中から続き生成」は採らない）③キャンセルは status=`cancelling`＋pub/sub 通知で
+  当該ステップのみ再生成**。「途中から続き生成」は採らない。#351 で配線済み: 自律 run はステップ境界ごとに
+  Checkpoint（計画・消費・剪定後履歴・ループ検出器）を `generation_run.checkpoint` へ fenced 保存し、
+  claim/takeover 時に resume へ渡す・端末確定でクリア・projection はイベント replay で再構築）③キャンセルは status=`cancelling`＋pub/sub 通知で
   ステップ境界・ストリーム読取ループが検知（サンドボックス実行中ツールへ kill 伝播）
   ④課金は attempt 単位で実消費を記録（表示は run 単位に集約）。
 

@@ -2,8 +2,7 @@
 
 pub mod anthropic;
 pub mod openai;
+mod openai_names;
 pub mod stub;
 mod stub_fixtures;
 mod stub_triggers;
-/// OpenAI 互換 function 名の写像（openai.rs から分割）。
-mod tool_names;

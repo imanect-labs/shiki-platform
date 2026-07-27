@@ -141,4 +141,17 @@ pub trait EventSink: Send {
 
     /// キャンセル要求が来ているか（協調キャンセル）。
     fn is_cancelled(&self) -> bool;
+
+    /// ステップ境界のチェックポイントを durable run へ永続化する（resume 配線・#351）。
+    ///
+    /// ループはステップを完了するたびに呼ぶ。永続化しないシンク（テスト・短ホライズンの
+    /// Chat プロファイル）は既定の no-op のまま。fencing 不一致（リース喪失）を検知した実装は
+    /// `Err(AgentError::Sink)` を返してループを止めること（ゾンビ書込防止）。
+    async fn save_checkpoint(
+        &mut self,
+        checkpoint: &crate::checkpoint::Checkpoint,
+    ) -> Result<(), AgentError> {
+        let _ = checkpoint;
+        Ok(())
+    }
 }

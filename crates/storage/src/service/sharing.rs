@@ -207,7 +207,8 @@ impl StorageService {
     }
 
     /// 共有管理（share/unshare/list）の前段: ノードの存在確認＋owner 認可。FGA object を返す。
-    async fn authorize_share_admin(
+    /// 一般アクセス（#338）の set/clear/get も同じ owner ゲートを再利用する（confused-deputy 防御）。
+    pub(crate) async fn authorize_share_admin(
         &self,
         ctx: &AuthContext,
         node_id: Uuid,

@@ -7,6 +7,7 @@
 
 use chrono::{DateTime, Utc};
 
+pub use crate::autonomous::AutonomousMode;
 pub use crate::selection::{SelectionContext, SelectionKind, SELECTION_EXCERPT_MAX_CHARS};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -141,6 +142,9 @@ pub struct Thread {
     pub title: String,
     /// thread 既定のエージェントモード（message 単位で上書き可）。
     pub agent_mode: bool,
+    /// 自律 run の承認モード（承認必須/オート/全自動・実行中トグル可・#350）。
+    #[serde(default)]
+    pub autonomous_mode: AutonomousMode,
     /// 最初からロード済みにする skill のバージョンピン（順序付き・複数可・#344）。
     /// ミニアプリ経由のセッションはバンドル定義のピンが正（個別変更不可）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -217,6 +217,12 @@ impl<'a> Namespace<'a> {
         Subject::userset(&self.role(id), Relation::Member)
     }
 
+    /// 組織メンバー userset `organization:<tenant>|<org>#member`（一般アクセス「組織内」の共有先）。
+    /// その組織のメンバー全員へ viewer/editor を付与する（`role_member` と対称）。
+    pub fn organization_member(&self, org: &str) -> Subject {
+        Subject::userset(&self.organization(org), Relation::Member)
+    }
+
     /// FGA が返す object id 部（`<tenant>|<local>`）から local id を取り出す。
     ///
     /// tenant が一致しなければ `None`（他テナントのオブジェクトを防御的に除外する）。

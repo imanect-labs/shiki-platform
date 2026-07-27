@@ -509,7 +509,52 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
 - **受け入れ条件**: ロック中の office.edit が上書きを起こさない negative IT・提案採用で書込イベントが
   流れる IT が CI にある。
 
-## 🟠 PIT-45: AI headless 参加は「もう一人の Collabora クライアント」を運用に持ち込む
+# 共有リンク・org 境界（#342 / 2026-07 追加）
+
+## 🟠 PIT-45: org は storage では隔離境界だが RAG hydration では境界になっていない（サブシステム間で不整合）
+
+- **箇所**: `crates/storage/src/service/read.rs`（`load_node` は `WHERE org = ctx.org AND tenant_id = $3`）／
+  `crates/rag/src/search.rs` の `hydrate`（`c.tenant_id = $1` と `n.tenant_id = c.tenant_id` のみ・**org で絞らない**）。
+- **リスク**: 1 テナントに複数 org がある構成では、**storage 経由の直接オープンは org を跨げないのに、
+  RAG 回答のチャンク hydration は org を跨いで他 org の文書を引用し得る**。現状は post-filter が
+  `ctx.ns().file()` で FGA object を組み直すため、共有リンクが無ければ fail-closed で落ちる（実害は
+  共有リンクで broad 公開した文書に限定）。#342 で `anyone`→`organization#member` に寄せて redeem/
+  reconcile の org を厳密化したので storage 側は塞がったが、**RAG hydration の org 欠落は独立の既存
+  ギャップ**として残る（1 テナント 1 org のデモでは顕在化しない・latent）。
+- **決定（#371・2026-07）**: **org はテナント内のもう一段の隔離境界**と確定した（storage の `load_node`
+  に揃える）。`hydrate` の JOIN/WHERE に `n.org = ctx.org` を追加し、マルチ org テナントで他 org 文書の
+  チャンクが RAG 回答へ混入しないようにした（fail-closed・over-fetch は post-filter と併せ二重防壁）。
+  「テナント跨ぎ閲覧共有（authenticated audience）」は org 境界を**意図的に緩める独立作業**として
+  [PIT-46](#-pit-46-テナント跨ぎ閲覧共有authenticated-audienceの安全包絡340-系) に設計を分離した。
+- **単一定義**: 「org＝テナント内の隔離境界」を org 境界ポリシーの単一定義とする。新しいデータ経路
+  （直接オープン／RAG／構造化データ／エクスポート）は必ず `org = ctx.org AND tenant_id` で絞る。
+- **受け入れ条件（充足）**: `rag::search_authz_it::hydrate_drops_cross_org_chunk`（別 org の直接 viewer を
+  持つユーザーが pre/post-filter を通っても hydrate の org 述語で 0 件になることを実 OpenFGA で検証）。
+- **既知の限界（follow-up）**: org は pre-filter（`readable_set` のタグ／VectorStore の索引）ではなく
+  hydrate の SQL 述語で絞る。**マルチ org テナントで、あるユーザーが別 org の file にも直接 viewer を持つ
+  稀なケース**では、別 org の高スコアチャンクが pool を埋めてから hydrate で捨てられるため、要求 `top_k`
+  より少ない（最悪 0 件）結果になり得る（漏洩はしない・fail-closed）。厳密な完全性が要るなら org を索引
+  pre-filter に含めるか hydrate 後にバックフィルする（#371 follow-up・Codex 指摘）。現状は単一 org テナント
+  では発生せず、跨ぎ viewer は例外的なため許容。
+
+## 🟠 PIT-46: テナント跨ぎ閲覧共有（authenticated audience）の安全包絡（#340 系）
+
+- **背景**: 共有リンクの broad は #342 で `organization#member`（社内＝現テナント/org）へ寄せ、`user:*`
+  （type-bound public）は将来の「テナント跨ぎ閲覧・authenticated audience」用に **viewer 限定**で予約した
+  （FGA editor からは除去済み・#342 レビュー A-2）。この audience は「audience を 1 つ足す」では終わらない。
+- **設計で同時に解く 4 点**（実装前に human 承認・viewer 固定/editor 禁止・管理者トグル既定 OFF は #341 準拠）:
+  1. **org 境界の緩和**: `load_node`・`hydrate` は `org = ctx.org` で絞る（[PIT-45](#-pit-45-org-は-storage-では隔離境界だが-rag-hydration-では境界になっていないサブシステム間で不整合)）。
+     跨ぎ公開は node をテナント非依存に解決する**別経路**の新設になる（既存の org 絞りは緩めない）。
+  2. **監査の帰属**: 監査チェーンは `(tenant_id, org)` 単位で直列化。閲覧者を**所有テナント側が追える**よう
+     両側（閲覧者テナント／所有テナント）へ監査を書くか要検討（confused-deputy を残さない）。
+  3. **blob presign**: オブジェクトキーは `{tenant_id}/{org}/...`。閲覧は**所有側 org で presign を組み直す**
+     経路が要る（閲覧者テナントのキー空間には存在しない）。
+  4. **RAG 混入**: `readable_set` はテナントフィルタせず tags 化し post-filter の ns 組み直しで fail-closed。
+     跨ぎを開くと「別テナント文書が回答に出てよいか」が live な問いになる（PIT-45 と連動・跨ぎは viewer のみ）。
+- **安全包絡**: viewer 固定（editor/owner 禁止）・パスワード必須または明示リンク・期限必須・全アクセス監査・
+  管理者トグル既定 OFF。**現状は未実装**（`user:*` を viewer に予約しているだけで broad_subject は張らない）。
+
+## 🟠 PIT-47: AI headless 参加は「もう一人の Collabora クライアント」を運用に持ち込む
 
 - **箇所**: design §4.8（`office.live_edit`・`crates/office` の `live::LiveEditor`・issue #352）。
 - **リスク**: AI が CoolWSD セッションの独立 view として接続する設計は、選択ずれ（TOCTOU）と
@@ -532,7 +577,7 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   searchnotfound）と実機 e2e（選択→承認→編集画面へライブ反映）が CI/手動ゲートにある。
   同一ファイル並行 `LiveEditor::apply` の直列化 IT がある。
 
-## 🔴 PIT-46: web_fetch のサンドボックス撤去は「DNS を二度引かない」ことでしか成立しない
+## 🔴 PIT-48: web_fetch のサンドボックス撤去は「DNS を二度引かない」ことでしか成立しない
 
 - **箇所**: design §4.6（`crates/agent-core/src/tools/web_fetch.rs`・`crates/sandbox-client/src/net_guard.rs`・issue #348）。
 - **リスク**: 取得を wasm sandbox からホストへ移すと、egress を強制していた層（仮想 net の
@@ -553,7 +598,7 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   「**解決不能なホスト名**でも検証済みアドレスへ接続できる（＝DNS を見ていない証明）」
   「3xx を追従しない」「サイズ上限で打ち切る」「非テキストを本文として返さない」の単体テストがある。
 
-## 🟠 PIT-47: ツールのステップ内並列は「順序」と「承認」を壊しやすい
+## 🟠 PIT-49: ツールのステップ内並列は「順序」と「承認」を壊しやすい
 
 - **箇所**: design §4.4（`crates/agent-core/src/agent_tools.rs`・issue #349）。
 - **リスク**: 1 ステップの複数ツール呼び出しを並列化すると、**完了順**で観測を積んでしまいがちで、

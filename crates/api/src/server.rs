@@ -142,6 +142,26 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/shares/shared-with-me", &["GET"], Session, || {
             get(routes::shares::shared_with_me)
         }),
+        // 共有リンク（#342）。発行/一覧/失効/延長は owner ゲート、redeem は認証のみ（失敗は一律 403）。
+        r("/nodes/{id}/share-links", &["GET", "POST"], Session, || {
+            get(routes::share_links::list_share_links).post(routes::share_links::create_share_link)
+        }),
+        r(
+            "/share-links/{link_id}",
+            &["DELETE", "PATCH"],
+            Session,
+            || {
+                delete(routes::share_links::revoke_share_link)
+                    .patch(routes::share_links::extend_share_link)
+            },
+        ),
+        r("/share-links/redeem", &["POST"], Session, || {
+            post(routes::share_links::redeem_share_link)
+        }),
+        // redeem 済み user の可視化（owner ゲート・#369 C-3・可視化専用）。
+        r("/share-links/{link_id}/grants", &["GET"], Session, || {
+            get(routes::share_links::list_share_link_grants)
+        }),
         r("/directory/users", &["GET"], Session, || {
             get(routes::directory::search_users)
         }),
@@ -352,6 +372,16 @@ pub fn route_table() -> Vec<RouteDecl> {
             Session,
             || post(routes::chat_approval::submit_approval),
         ),
+        // 自律 run の承認 3 モード（承認必須/オート/全自動・実行中トグル可・#350）。
+        r(
+            "/threads/{id}/autonomous-mode",
+            &["GET", "PUT"],
+            Session,
+            || {
+                get(routes::chat_autonomous::get_autonomous_mode)
+                    .put(routes::chat_autonomous::set_autonomous_mode)
+            },
+        ),
         r(
             "/threads/{id}/shares",
             &["POST", "DELETE", "GET"],
@@ -422,6 +452,13 @@ pub fn route_table() -> Vec<RouteDecl> {
             &["DELETE"],
             Provisioner,
             || delete(routes::admin::delete_tenant),
+        ),
+        // org 管理者キャップ: 全自動（bypass）承認モードの許可/禁止（#350）。
+        r(
+            "/admin/tenants/{tenant_id}/autonomous-policy",
+            &["PUT"],
+            Provisioner,
+            || put(routes::admin::set_tenant_autonomous_policy),
         ),
     ];
     table.extend(routes::collab::collab_route_decls());
