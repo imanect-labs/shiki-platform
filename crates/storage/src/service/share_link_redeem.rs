@@ -144,7 +144,9 @@ impl StorageService {
                 .await);
         };
         let node = row.node_id.to_string();
-        let deny = |reason: &'static str| self.deny_redeem(ctx, reason, &row.kind, &node, Some(row.link_id), trace_id);
+        let deny = |reason: &'static str| {
+            self.deny_redeem(ctx, reason, &row.kind, &node, Some(row.link_id), trace_id)
+        };
         // redeem はパスワード付きリンク専用（broad リンクは通常 ReBAC で開く）。
         let Some(hash) = row.password_hash.as_deref() else {
             return Err(deny("not_password_link").await);
