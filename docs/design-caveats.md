@@ -521,9 +521,29 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   共有リンクで broad 公開した文書に限定）。#342 で `anyone`→`organization#member` に寄せて redeem/
   reconcile の org を厳密化したので storage 側は塞がったが、**RAG hydration の org 欠落は独立の既存
   ギャップ**として残る（1 テナント 1 org のデモでは顕在化しない・latent）。
-- **決めること**: ①`hydrate` の JOIN/WHERE に org 述語を足すか、②「org はテナント内の隔離境界か、
-  単なるグルーピングか」をサブシステム横断で 1 つに決める（storage は前者・RAG は後者で食い違っている）。
-  「テナント跨ぎ閲覧共有（authenticated audience・#342 レビュー A-2 末尾）」を実装する際は、この org
-  境界と監査帰属・blob presign の 3 点を同時に設計する。
-- **受け入れ条件**: マルチ org テナントで、別 org の broad 共有文書が RAG 回答に混入しない（あるいは
-  意図的に許すなら監査に残る）ことを示す IT。単一定義の org 境界ポリシーが docs に明文化される。
+- **決定（#371・2026-07）**: **org はテナント内のもう一段の隔離境界**と確定した（storage の `load_node`
+  に揃える）。`hydrate` の JOIN/WHERE に `n.org = ctx.org` を追加し、マルチ org テナントで他 org 文書の
+  チャンクが RAG 回答へ混入しないようにした（fail-closed・over-fetch は post-filter と併せ二重防壁）。
+  「テナント跨ぎ閲覧共有（authenticated audience）」は org 境界を**意図的に緩める独立作業**として
+  [PIT-46](#-pit-46-テナント跨ぎ閲覧共有authenticated-audienceの安全包絡340-系) に設計を分離した。
+- **単一定義**: 「org＝テナント内の隔離境界」を org 境界ポリシーの単一定義とする。新しいデータ経路
+  （直接オープン／RAG／構造化データ／エクスポート）は必ず `org = ctx.org AND tenant_id` で絞る。
+- **受け入れ条件（充足）**: `rag::search_authz_it::hydrate_drops_cross_org_chunk`（別 org の直接 viewer を
+  持つユーザーが pre/post-filter を通っても hydrate の org 述語で 0 件になることを実 OpenFGA で検証）。
+
+## 🟠 PIT-46: テナント跨ぎ閲覧共有（authenticated audience）の安全包絡（#340 系）
+
+- **背景**: 共有リンクの broad は #342 で `organization#member`（社内＝現テナント/org）へ寄せ、`user:*`
+  （type-bound public）は将来の「テナント跨ぎ閲覧・authenticated audience」用に **viewer 限定**で予約した
+  （FGA editor からは除去済み・#342 レビュー A-2）。この audience は「audience を 1 つ足す」では終わらない。
+- **設計で同時に解く 4 点**（実装前に human 承認・viewer 固定/editor 禁止・管理者トグル既定 OFF は #341 準拠）:
+  1. **org 境界の緩和**: `load_node`・`hydrate` は `org = ctx.org` で絞る（[PIT-45](#-pit-45-org-は-storage-では隔離境界だが-rag-hydration-では境界になっていないサブシステム間で不整合)）。
+     跨ぎ公開は node をテナント非依存に解決する**別経路**の新設になる（既存の org 絞りは緩めない）。
+  2. **監査の帰属**: 監査チェーンは `(tenant_id, org)` 単位で直列化。閲覧者を**所有テナント側が追える**よう
+     両側（閲覧者テナント／所有テナント）へ監査を書くか要検討（confused-deputy を残さない）。
+  3. **blob presign**: オブジェクトキーは `{tenant_id}/{org}/...`。閲覧は**所有側 org で presign を組み直す**
+     経路が要る（閲覧者テナントのキー空間には存在しない）。
+  4. **RAG 混入**: `readable_set` はテナントフィルタせず tags 化し post-filter の ns 組み直しで fail-closed。
+     跨ぎを開くと「別テナント文書が回答に出てよいか」が live な問いになる（PIT-45 と連動・跨ぎは viewer のみ）。
+- **安全包絡**: viewer 固定（editor/owner 禁止）・パスワード必須または明示リンク・期限必須・全アクセス監査・
+  管理者トグル既定 OFF。**現状は未実装**（`user:*` を viewer に予約しているだけで broad_subject は張らない）。
