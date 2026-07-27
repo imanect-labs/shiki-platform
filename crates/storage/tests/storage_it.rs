@@ -3174,10 +3174,10 @@ async fn share_link_explicit_share_after_redeem_survives() {
     );
 }
 
-/// C-3（#369）: redeem 済み user の一覧・redeem_count 集計と、per-user 個別取り消し。
-/// 1 人を取り消しても他 redeem 済み user のアクセスは残る（via_link の参照カウント）。
+/// C-3（#369・可視化専用）: redeem 済み user の一覧と `redeem_count` 集計。owner ゲートを検証する。
+/// per-user の個別取り消しは durable な deny 台帳を要するため別 issue（本テストは可視化のみ）。
 #[tokio::test]
-async fn share_link_grant_list_and_per_user_revoke() {
+async fn share_link_grant_list_and_count() {
     let Some(ctx) = setup().await else { return };
     let Ctx {
         service,
@@ -3230,6 +3230,12 @@ async fn share_link_grant_list_and_per_user_revoke() {
         .await
         .expect("list grants");
     assert_eq!(grants.len(), 2, "2 人が解錠済み");
+    let mut listed: Vec<&str> = grants.iter().map(|g| g.user_id.as_str()).collect();
+    listed.sort_unstable();
+    let mut want = [m1.as_str(), m2.as_str()];
+    want.sort_unstable();
+    assert_eq!(listed, want, "解錠した 2 人が一覧に出る");
+
     let links = service
         .list_share_links(&octx, file.id, None)
         .await
@@ -3243,12 +3249,8 @@ async fn share_link_grant_list_and_per_user_revoke() {
         2,
         "redeem_count が 2"
     );
-    assert!(
-        service.get_metadata(&m1ctx, file.id, None).await.is_ok(),
-        "m1 は解錠でアクセスできる"
-    );
 
-    // 非 owner は grant を一覧/取消できない（owner ゲート）。
+    // 非 owner は grant 一覧を取得できない（owner ゲート）。
     assert!(
         matches!(
             service
@@ -3258,44 +3260,6 @@ async fn share_link_grant_list_and_per_user_revoke() {
         ),
         "非 owner の grant 一覧は Forbidden"
     );
-    assert!(
-        matches!(
-            service
-                .revoke_share_link_grant(&m1ctx, l.link_id, &m2, None)
-                .await,
-            Err(StorageError::Forbidden)
-        ),
-        "非 owner の grant 取消は Forbidden"
-    );
-
-    // owner が m1 の redeem を個別取り消し → m1 は不可・m2 は残る。
-    service
-        .revoke_share_link_grant(&octx, l.link_id, &m1, None)
-        .await
-        .expect("revoke m1 grant");
-    assert!(
-        matches!(
-            service.get_metadata(&m1ctx, file.id, None).await,
-            Err(StorageError::NotFound)
-        ),
-        "取り消した m1 はアクセス不可"
-    );
-    assert!(
-        service.get_metadata(&m2ctx, file.id, None).await.is_ok(),
-        "m2 の redeem は m1 取消の影響を受けない（via_link 参照カウント）"
-    );
-    let grants = service
-        .list_share_link_grants(&octx, l.link_id, None)
-        .await
-        .expect("list grants after revoke");
-    assert_eq!(grants.len(), 1, "残り 1 人");
-    assert_eq!(grants[0].user_id, m2, "残ったのは m2");
-
-    // 冪等: 既に取り消した user を再度取り消しても成功する。
-    service
-        .revoke_share_link_grant(&octx, l.link_id, &m1, None)
-        .await
-        .expect("idempotent revoke");
 }
 
 /// B-1: 毒行（未知 kind＝FgaObject を再構成できない破損/将来種別）は sweep 対象から外れる。残すと

@@ -27,7 +27,6 @@ import {
   listShareLinkGrants,
   listShareLinks,
   revokeShareLink,
-  revokeShareLinkGrant,
   type GeneralAccessLevel,
   type ShareLink,
   type ShareLinkGrant,
@@ -137,7 +136,6 @@ export function ShareLinksPanel({
   const [grantsOpenId, setGrantsOpenId] = React.useState<string | null>(null);
   const [grantsMap, setGrantsMap] = React.useState<Record<string, ShareLinkGrant[]>>({});
   const [grantsLoadingId, setGrantsLoadingId] = React.useState<string | null>(null);
-  const [revokingUser, setRevokingUser] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     let active = true;
@@ -302,34 +300,6 @@ export function ShareLinksPanel({
       setGrantsOpenId((id) => (id === link.link_id ? null : id));
     } finally {
       setGrantsLoadingId(null);
-    }
-  };
-
-  // C-3: 特定 user の redeem を個別に取り消す。一覧から除去し redeem_count を減らす。
-  const revokeGrant = async (link: ShareLink, grant: ShareLinkGrant) => {
-    const key = `${link.link_id}:${grant.user_id}`;
-    setRevokingUser(key);
-    try {
-      await revokeShareLinkGrant(link.link_id, grant.user_id);
-      setGrantsMap((prev) => ({
-        ...prev,
-        [link.link_id]: (prev[link.link_id] ?? []).filter((g) => g.user_id !== grant.user_id),
-      }));
-      setLinks((prev) =>
-        prev.map((l) =>
-          l.link_id === link.link_id
-            ? { ...l, redeem_count: Math.max(0, l.redeem_count - 1) }
-            : l,
-        ),
-      );
-      toast({ description: `${grant.display_name ?? grant.user_id} のアクセスを取り消しました。` });
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        description: e instanceof Error ? e.message : "取り消しに失敗しました。",
-      });
-    } finally {
-      setRevokingUser(null);
     }
   };
 
@@ -595,39 +565,24 @@ export function ShareLinksPanel({
                         </p>
                       ) : (
                         <ul className="flex flex-col gap-1" data-testid="link-grant-list">
-                          {(grantsMap[link.link_id] ?? []).map((g) => {
-                            const key = `${link.link_id}:${g.user_id}`;
-                            return (
-                              <li
-                                key={g.user_id}
-                                data-testid="link-grant-item"
-                                className="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1"
-                              >
-                                <UserRound
-                                  className="size-3.5 shrink-0 text-muted-foreground"
-                                  aria-hidden
-                                />
-                                <span className="min-w-0 flex-1 truncate text-xs">
-                                  {g.display_name ?? g.user_id}
-                                </span>
-                                <button
-                                  type="button"
-                                  aria-label="このユーザーのアクセスを取り消す"
-                                  title="このユーザーのアクセスを取り消す"
-                                  data-testid="link-grant-revoke"
-                                  disabled={revokingUser === key}
-                                  onClick={() => void revokeGrant(link, g)}
-                                  className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                                >
-                                  {revokingUser === key ? (
-                                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                                  ) : (
-                                    <Trash2 className="size-3.5" aria-hidden />
-                                  )}
-                                </button>
-                              </li>
-                            );
-                          })}
+                          {(grantsMap[link.link_id] ?? []).map((g) => (
+                            <li
+                              key={g.user_id}
+                              data-testid="link-grant-item"
+                              className="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1"
+                            >
+                              <UserRound
+                                className="size-3.5 shrink-0 text-muted-foreground"
+                                aria-hidden
+                              />
+                              <span className="min-w-0 flex-1 truncate text-xs">
+                                {g.display_name ?? g.user_id}
+                              </span>
+                              <span className="shrink-0 text-[11px] text-muted-foreground">
+                                {isoToDateInput(g.granted_at)}
+                              </span>
+                            </li>
+                          ))}
                         </ul>
                       )
                     ) : null}

@@ -5,15 +5,15 @@
 //! - [`StorageService::reconcile_user_grants_for_link`] — リンク失効/期限失効時に、そのリンクの
 //!   redeem 済み per-user タプルを **(node,user,role) 単位で参照カウント**して剥奪する（他 active
 //!   リンクが同じ付与を保持していれば FGA タプルは消さない）。
-//! - [`StorageService::list_share_link_grants`] / [`StorageService::revoke_share_link_grant`] —
-//!   redeem 済み user の owner 向け可視化と per-user 個別取り消し（#369 C-3）。
+//! - [`StorageService::list_share_link_grants`] — redeem 済み user の owner 向け可視化（#369 C-3・
+//!   可視化専用。durable な per-user 取り消しは follow-up issue）。
 //!
 //! 共有ヘルパ（`broad_subject`/`verify_password`）は [`super::share_link`] に定義している。
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-use super::share_link_util::{kind_of, verify_password};
+use super::share_link_util::verify_password;
 use crate::model::{GeneralAccessLevel, ShareLinkGrant};
 
 /// token で引く redeem 対象リンク 1 行。
@@ -340,9 +340,18 @@ struct GrantRow {
     granted_at: DateTime<Utc>,
 }
 
+/// 一覧の上限。無期限リンクで redeem 済みユーザーが増え続けても DB/メモリ/転送を抑える
+/// （真の人数は `ShareLink.redeem_count` が持つ・上限超過分のページングは #369 follow-up）。
+const SHARE_LINK_GRANTS_LIMIT: i64 = 500;
+
 impl StorageService {
-    /// リンクを redeem した user 一覧を返す（owner 権限・#369 C-3）。表示名は `directory_user` から
-    /// 解決する（無ければ `None`）。broad リンクは台帳を持たないため常に空。
+    /// リンクを redeem した user 一覧を返す（owner 権限・#369 C-3・**可視化専用**）。表示名は
+    /// **同一 org** の `directory_user` から解決する（無ければ `None`）。broad リンクは台帳を持たない
+    /// ため常に空。
+    ///
+    /// per-user の個別取り消しは、リンクが active なままだと対象ユーザーが URL＋パスワードで再 redeem
+    /// して復元できてしまうため、durable な deny 台帳（grant のソフト失効＋redeem 拒否）を要する。
+    /// これは redeem 経路の変更＋migration を伴う設計なので別 issue（#369 follow-up）に切り出す。
     pub async fn list_share_link_grants(
         &self,
         ctx: &AuthContext,
@@ -356,16 +365,21 @@ impl StorageService {
         {
             return Err(StorageError::Forbidden);
         }
+        // 表示名解決は同一 org の directory_user に限定する（テナント内 org 越境で別 org の表示名を
+        // 返さない・org は隔離境界・#371）。LEFT JOIN なので該当なしは user_id 表示へフォールバック。
         let rows: Vec<GrantRow> = sqlx::query_as(
             "SELECT g.user_id, d.display_name, g.granted_at \
              FROM node_share_link_grant g \
              LEFT JOIN directory_user d \
-               ON d.user_id = g.user_id AND d.tenant_id = g.tenant_id \
+               ON d.user_id = g.user_id AND d.tenant_id = g.tenant_id AND d.org = $3 \
              WHERE g.link_id = $1 AND g.tenant_id = $2 \
-             ORDER BY g.granted_at DESC",
+             ORDER BY g.granted_at DESC \
+             LIMIT $4",
         )
         .bind(link_id)
         .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(SHARE_LINK_GRANTS_LIMIT)
         .fetch_all(&self.db)
         .await?;
         Ok(rows
@@ -376,82 +390,5 @@ impl StorageService {
                 granted_at: r.granted_at,
             })
             .collect())
-    }
-
-    /// 特定 user の redeem を個別に取り消す（owner 権限・#369 C-3）。当該リンクの grant 行を落とし、
-    /// 同 (node,user,role) を保持する他 active リンクが無ければ via_link タプルを剥奪する（参照カウント）。
-    /// 明示共有（viewer/editor）は別 relation なので決して剥奪されない。存在しない grant は冪等成功。
-    pub async fn revoke_share_link_grant(
-        &self,
-        ctx: &AuthContext,
-        link_id: Uuid,
-        user_id: &str,
-        trace_id: Option<&str>,
-    ) -> Result<(), StorageError> {
-        let Some((node_id, obj)) = self
-            .authorize_link_owner(ctx, link_id, "node.share_link.grant.revoke", trace_id)
-            .await?
-        else {
-            return Err(StorageError::Forbidden);
-        };
-        let ns = ctx.ns();
-        let now = Utc::now();
-
-        let mut tx = self.db.begin().await?;
-        self.lock_node(&mut tx, node_id).await?;
-        // 対象 grant の role を引く（無ければ冪等成功＝既に取り消し済み）。
-        let grole: Option<String> = sqlx::query_scalar(
-            "SELECT role FROM node_share_link_grant \
-             WHERE link_id = $1 AND user_id = $2 AND tenant_id = $3",
-        )
-        .bind(link_id)
-        .bind(user_id)
-        .bind(&ctx.tenant_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some(grole) = grole else {
-            return Ok(());
-        };
-        let Some(role) = ShareRole::parse(&grole) else {
-            return Err(StorageError::Integrity(format!(
-                "共有リンク grant の role が不正: {grole}"
-            )));
-        };
-        // 当該リンク分の grant 行を落とす。
-        sqlx::query("DELETE FROM node_share_link_grant WHERE link_id = $1 AND user_id = $2")
-            .bind(link_id)
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await?;
-        // 同 (node,user,role) を保持する他 active リンク由来の grant が無ければ via_link を剥奪。
-        let remaining: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM node_share_link_grant g \
-             JOIN node_share_link l ON l.link_id = g.link_id \
-             WHERE g.node_id = $1 AND g.user_id = $2 AND g.role = $3 AND g.tenant_id = $4 \
-               AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at > $5)",
-        )
-        .bind(node_id)
-        .bind(user_id)
-        .bind(&grole)
-        .bind(&ctx.tenant_id)
-        .bind(now)
-        .fetch_one(&mut *tx)
-        .await?;
-        if remaining == 0 {
-            // 最後の active grant → via_link タプルを剥奪（失敗は ? 伝播で tx 巻き戻し＝fail-closed）。
-            self.authz
-                .delete_tuple(&ns.user(user_id), role.relation_via_link(), &obj)
-                .await?;
-        }
-        self.finalize_share_link_tx(
-            tx,
-            ctx,
-            node_id,
-            kind_of(&obj),
-            "node.share_link.grant.revoke",
-            json!({ "link_id": link_id, "user_id": user_id, "role": role }),
-            trace_id,
-        )
-        .await
     }
 }

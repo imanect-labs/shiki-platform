@@ -38,7 +38,6 @@ use utoipa::{
         crate::routes::share_links::extend_share_link,
         crate::routes::share_links::redeem_share_link,
         crate::routes::share_links::list_share_link_grants,
-        crate::routes::share_links::revoke_share_link_grant,
         crate::routes::directory::search_users,
         crate::routes::directory::search_roles,
         crate::routes::search::search,

@@ -222,31 +222,3 @@ pub async fn list_share_link_grants(
         .await?;
     Ok(Json(grants))
 }
-
-/// 特定 user の redeem を個別に取り消す（owner 権限・#369 C-3）。存在しない付与は冪等成功（204）。
-#[utoipa::path(
-    delete,
-    path = "/share-links/{link_id}/grants/{user_id}",
-    params(
-        ("link_id" = Uuid, Path, description = "共有リンク ID"),
-        ("user_id" = String, Path, description = "取り消す user のローカル ID"),
-    ),
-    responses(
-        (status = 204, description = "取り消した（冪等）"),
-        (status = 401, description = "未認証"),
-        (status = 403, description = "認可されていない（owner でない/リンクが無い）"),
-    ),
-    security(("session" = [])),
-)]
-pub async fn revoke_share_link_grant(
-    State(state): State<AppState>,
-    AuthContextExt(ctx): AuthContextExt,
-    trace: TraceIdExt,
-    Path((link_id, user_id)): Path<(Uuid, String)>,
-) -> Result<StatusCode, ApiError> {
-    state
-        .storage
-        .revoke_share_link_grant(&ctx, link_id, &user_id, trace.as_deref())
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}

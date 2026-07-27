@@ -321,16 +321,9 @@ export function redeemShareLink(token: string, password?: string): Promise<void>
   }).then(okEmpty);
 }
 
-/// リンクを redeem（解錠）した user 一覧を取得する（owner のみ・#369 C-3）。
+/// リンクを redeem（解錠）した user 一覧を取得する（owner のみ・#369 C-3・可視化専用）。
 export function listShareLinkGrants(linkId: string): Promise<ShareLinkGrant[]> {
   return apiFetch(`/share-links/${linkId}/grants`).then((r) => okJson<ShareLinkGrant[]>(r));
-}
-
-/// 特定 user の redeem を個別に取り消す（owner のみ・#369 C-3）。
-export function revokeShareLinkGrant(linkId: string, userId: string): Promise<void> {
-  return apiFetch(`/share-links/${linkId}/grants/${encodeURIComponent(userId)}`, {
-    method: "DELETE",
-  }).then(okEmpty);
 }
 
 /// 自分に共有されたノード一覧（keyset ページング）。
