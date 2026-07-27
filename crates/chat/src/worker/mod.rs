@@ -9,6 +9,8 @@
 
 mod generate;
 mod history;
+/// 実行オプション/system プロンプト（generate.rs から分割）。
+mod opts;
 mod sink;
 mod toolset;
 

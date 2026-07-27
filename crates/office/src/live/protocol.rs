@@ -31,11 +31,29 @@ fn encode_uri_component(s: &str) -> String {
     utf8_percent_encode(s, URI_COMPONENT).to_string()
 }
 
+/// `ws_base` から WS アップグレード用の Origin（**スキーム＋オーソリティのみ**）を作る。
+///
+/// `ws://host:9980/sub/path` のようにパス付きでも `http://host:9980` になる。CoolWSD の
+/// allowedOrigin は `http(s)://<Host>` と照合するため、パスが混ざると弾かれる。
+#[must_use]
+pub(super) fn http_origin(ws_base: &str) -> Option<String> {
+    let (scheme, rest) = match ws_base.split_once("://") {
+        Some(("ws" | "http", rest)) => ("http", rest),
+        Some(("wss" | "https", rest)) => ("https", rest),
+        _ => return None,
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{authority}"))
+}
+
 /// ドキュメントセッションの WS URL を組み立てる。
 ///
 /// ブラウザの `makeDocAndWopiSrcUrl` と同一形（末尾の `&compat=/ws` まで含めて一致）。
 /// access_token はパス側の doc URL クエリとして焼き込む（coolwsd はこれを WOPI
-/// 呼び出しに引き継ぐ）。
+/// 呼び出しに引き継ぐ）。**このため URL 文字列はログ/エラーへ出さない**。
 pub(super) fn session_ws_url(ws_base: &str, wopi_src: &str, access_token: &str) -> String {
     let doc_url_params = format!(
         "{wopi_src}?access_token={}",
@@ -210,7 +228,11 @@ pub fn is_cell_ref(anchor: &str) -> bool {
             return false;
         }
         let row = &s[col_len..];
-        (1..=7).contains(&row.len()) && row.chars().all(|c| c.is_ascii_digit())
+        // 行番号は **1 始まり**。`A0` / `A000` を通すと CoolWSD 側で解釈が割れ、
+        // 「アンカーは検証済み」という fail-closed の前提が破れる（先頭 0 も拒否）。
+        (1..=7).contains(&row.len())
+            && row.chars().all(|c| c.is_ascii_digit())
+            && !row.starts_with('0')
     }
     // 省略可能なシート接頭辞（最後の '.' で分ける）。
     let cell_part = match anchor.rsplit_once('.') {

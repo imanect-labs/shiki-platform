@@ -18,6 +18,7 @@ use llm_gateway::{
 use uuid::Uuid;
 
 use super::history::{message_preview, message_text};
+use super::opts::{autonomous_system_prompt, chat_opts, sanitize_for_prompt};
 use super::sink::WorkerSink;
 use super::ChatWorker;
 use crate::model::Role;
@@ -81,7 +82,12 @@ impl ChatWorker {
         let base = base.unwrap_or_else(|| self.config.system_prompt.clone());
         match self.origin_document(run).await {
             Some((node_id, name)) => {
-                let named = name.map(|n| format!("・名前: {n}")).unwrap_or_default();
+                // ドキュメント名はユーザーが自由に付けられる文字列。system プロンプトへ
+                // 無加工で連結すると「以降の指示を無視せよ」等を**システム発話として**
+                // 注入できてしまうため、改行を潰して長さを切り、引用で括る。
+                let named = name
+                    .map(|n| format!("・名前: 「{}」", sanitize_for_prompt(&n)))
+                    .unwrap_or_default();
                 format!(
                     "{base}\n\nこの会話は開いているドキュメントに紐づいています\
                      （node_id: {node_id}{named}）。ユーザーが「この文書」「開いているノート」\
@@ -471,29 +477,4 @@ impl ChatWorker {
             .await;
         Ok(())
     }
-}
-
-/// Chat プロファイルの実行オプション（制約版・現行挙動）。
-fn chat_opts(worker: &ChatWorker) -> AgentOptions {
-    let mut opts = AgentOptions::chat(worker.config.max_steps);
-    opts.system = Some(worker.config.system_prompt.clone());
-    worker.config.model.clone_into(&mut opts.model);
-    // 1 応答の出力上限（プロファイル既定 2048 は reasoning モデルの思考で尽き、
-    // 長い成果物・大きなツール引数が途中で切れる。設定値で上書きする）。
-    opts.max_tokens = Some(worker.config.max_tokens);
-    opts.parallel_read_tools = worker.config.parallel_read_tools;
-    opts
-}
-
-/// 自律プロファイルの system プロンプト（計画・ワークスペース・承認の作法を足す）。
-fn autonomous_system_prompt(base: &str) -> String {
-    format!(
-        "{base}\n\n\
-         あなたは自律エージェントです。与えられた目標を達成するため、次の作法で進めてください:\n\
-         - まず `plan` ツールで目標を数個のサブタスクに分解し、進捗に応じて計画を更新する。\n\
-         - 作業ディレクトリ（ワークスペース）のファイルは fs_list/fs_read/grep で調べ、fs_write/fs_edit で編集する。\n\
-         - コマンド実行が必要なら shell を使う（1 コマンドずつ・ネットワークは遮断）。\n\
-         - 破壊的な操作（shell・削除）は承認が必要な場合がある。承認待ちで停止したら結果を待つ。\n\
-         - 目標を達成したら簡潔に要約して終了する。"
-    )
 }

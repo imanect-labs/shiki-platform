@@ -28,8 +28,10 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
                 || o[0] >= 240) // 予約 240/4
         }
         IpAddr::V6(v6) => {
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return is_public_ip(IpAddr::V4(mapped));
+            // v6 に **埋め込まれた v4** は v4 の表で判定する（そうしないと `::ffff:169.254.169.254`
+            // 系の変種が素通りする）。mapped だけでなく compatible/6to4/NAT64 も同じ穴になる。
+            if let Some(v4) = embedded_ipv4(v6) {
+                return is_public_ip(IpAddr::V4(v4));
             }
             let s = v6.segments();
             !(v6.is_loopback()
@@ -37,9 +39,41 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
                 || v6.is_multicast()
                 || (s[0] & 0xfe00) == 0xfc00 // ULA fc00::/7
                 || (s[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || (s[0] & 0xffc0) == 0xfec0 // site-local fec0::/10（廃止済みだが安全側で拒否）
                 || (s[0] == 0x2001 && s[1] == 0x0db8)) // ドキュメント 2001:db8::/32
         }
     }
+}
+
+/// IPv6 アドレスに埋め込まれた IPv4 を取り出す（無ければ `None`）。
+///
+/// 対象: IPv4-mapped `::ffff:a.b.c.d` / IPv4-compatible `::a.b.c.d` /
+/// 6to4 `2002:AABB:CCDD::/48`（上位 32bit が v4）/ NAT64 well-known prefix `64:ff9b::/96`。
+/// いずれも「v6 の顔をした v4 宛先」であり、v4 側の内部レンジ判定を通さないと防御が抜ける。
+fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    if let Some(mapped) = v6.to_ipv4_mapped() {
+        return Some(mapped);
+    }
+    let s = v6.segments();
+    // 6to4: 2002:<v4 上位16>:<v4 下位16>::/48
+    if s[0] == 0x2002 {
+        return Some(std::net::Ipv4Addr::from(
+            (u32::from(s[1]) << 16) | u32::from(s[2]),
+        ));
+    }
+    // NAT64 well-known prefix: 64:ff9b::/96（末尾 32bit が v4）
+    if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
+        return Some(std::net::Ipv4Addr::from(
+            (u32::from(s[6]) << 16) | u32::from(s[7]),
+        ));
+    }
+    // IPv4-compatible `::a.b.c.d`（`::` と `::1` は上の loopback/unspecified で扱う）
+    if s[..6] == [0, 0, 0, 0, 0, 0] && (u32::from(s[6]) << 16 | u32::from(s[7])) > 1 {
+        return Some(std::net::Ipv4Addr::from(
+            (u32::from(s[6]) << 16) | u32::from(s[7]),
+        ));
+    }
+    None
 }
 
 /// 解決結果を検証する（**1 つでも内部 IP を含めば全体を拒否**）。
@@ -122,6 +156,39 @@ mod tests {
         assert!(is_public_ip(IpAddr::V6(Ipv6Addr::new(
             0x2606, 0x4700, 0, 0, 0, 0, 0, 1
         ))));
+    }
+
+    /// **v6 の顔をした v4** は v4 の表で弾く（mapped 以外の埋め込みも塞ぐ）。
+    #[test]
+    fn embedded_ipv4_forms_are_classified_by_v4_table() {
+        for internal in [
+            "::ffff:169.254.169.254", // IPv4-mapped（メタデータ）
+            "::ffff:127.0.0.1",
+            "2002:a9fe:a9fe::1",  // 6to4 → 169.254.169.254
+            "2002:7f00:0001::1",  // 6to4 → 127.0.0.1
+            "64:ff9b::a9fe:a9fe", // NAT64 → 169.254.169.254
+            "64:ff9b::a00:1",     // NAT64 → 10.0.0.1
+            "::10.0.0.1",         // IPv4-compatible
+        ] {
+            let ip: Ipv6Addr = internal.parse().unwrap();
+            assert!(!is_public_ip(IpAddr::V6(ip)), "{internal} は内部扱い");
+        }
+        // 埋め込み先が公開 IP なら通す（過剰拒否しない）。
+        for public in ["::ffff:8.8.8.8", "2002:0808:0808::1", "64:ff9b::808:808"] {
+            let ip: Ipv6Addr = public.parse().unwrap();
+            assert!(is_public_ip(IpAddr::V6(ip)), "{public} は公開扱い");
+        }
+    }
+
+    /// site-local fec0::/10 は廃止済みだが、内部網で使われ得るので拒否する。
+    #[test]
+    fn site_local_v6_is_rejected() {
+        assert!(!is_public_ip(IpAddr::V6(
+            "fec0::1".parse::<Ipv6Addr>().unwrap()
+        )));
+        assert!(!is_public_ip(IpAddr::V6(
+            "feff::1".parse::<Ipv6Addr>().unwrap()
+        )));
     }
 
     #[tokio::test]

@@ -205,6 +205,29 @@ async fn does_not_follow_redirects() {
     assert!(out.content.contains("追従しません"));
 }
 
+/// 200 応答に付いた `Location` はリダイレクト扱いしない（本文を捨てない）。
+#[tokio::test]
+async fn location_on_non_redirect_is_not_treated_as_redirect() {
+    let (addr, _) = stub_server(http_response(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nLocation: /elsewhere",
+        "<html>本文はここ</html>",
+    ))
+    .await;
+    let (mut tool, _) = tool_with(vec![addr]);
+    tool.skip_addr_guard = true;
+    let out = tool
+        .call(
+            &ctx(),
+            serde_json::json!({"url": format!("http://loc200.example.invalid:{}/", addr.port())}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("本文はここ"), "{}", out.content);
+    assert!(!out.content.contains("追従しません"));
+}
+
 /// 巨大な本文は 256KiB で打ち切る（読み切らない）。
 #[tokio::test]
 async fn caps_body_size() {

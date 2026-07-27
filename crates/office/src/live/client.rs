@@ -20,6 +20,19 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 use super::error::LiveError;
+
+/// WS 接続エラーから **URL を落として種別だけ**残す（URL にはクエリの access_token が乗る）。
+fn redact_ws_error(err: &tokio_tungstenite::tungstenite::Error) -> String {
+    use tokio_tungstenite::tungstenite::Error as E;
+    match err {
+        E::Http(response) => format!("HTTP {}", response.status()),
+        E::Url(_) => "URL が不正です".to_string(),
+        E::Io(e) => format!("IO エラー: {}", e.kind()),
+        E::Tls(_) => "TLS エラー".to_string(),
+        E::Protocol(e) => format!("プロトコルエラー: {e}"),
+        _ => "接続に失敗しました".to_string(),
+    }
+}
 use super::protocol::{self, Loaded};
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -103,7 +116,9 @@ impl CoolWsClient {
         // CoolWSD は Origin 無しの WS アップグレードを拒否する（ClientRequestDispatcher の
         // allowedOrigin: `http(s)://<Host>` と same-origin なら許可）。ブラウザの
         // 同一オリジン接続と同じく Collabora 自身のオリジンを名乗る。
-        let origin = cfg.ws_base.replacen("ws", "http", 1);
+        // Origin は **スキーム＋オーソリティのみ**（ws_base にパスが含まれていても付けない）。
+        let origin = protocol::http_origin(&cfg.ws_base)
+            .ok_or_else(|| LiveError::Connect("ws_base から Origin を作れません".to_string()))?;
         let mut request = url
             .as_str()
             .into_client_request()
@@ -114,11 +129,13 @@ impl CoolWsClient {
                 .parse()
                 .map_err(|e| LiveError::Connect(format!("Origin ヘッダが不正: {e}")))?,
         );
+        // 失敗メッセージに URL（＝クエリの access_token）を載せない。tungstenite の Error は
+        // Http/Url 種別で URL 全体を含むことがあるため、**種別だけ**を残す（PIT-23 の秘匿）。
         let (mut stream, _response) =
             tokio::time::timeout(cfg.connect_timeout, connect_async(request))
                 .await
                 .map_err(|_| LiveError::Timeout("connect"))?
-                .map_err(|e| LiveError::Connect(e.to_string()))?;
+                .map_err(|e| LiveError::Connect(redact_ws_error(&e)))?;
 
         let hello = protocol::coolclient_line(chrono::Utc::now().timestamp_millis());
         send_text(&mut stream, hello)

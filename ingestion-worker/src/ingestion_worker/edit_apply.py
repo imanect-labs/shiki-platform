@@ -62,11 +62,18 @@ def _md_lines(markdown: str) -> list[tuple[str, str, int]]:
             _TABLE_ROW_MD.match(line)
             and i + 1 < len(raw_lines)
             and _TABLE_SEP_MD.match(raw_lines[i + 1])
+            # GFM はヘッダと区切り行の**列数一致**を要求する。揃わないものは表ではない
+            # （不正な GFM を表へ誤変換して本文を作り替えない）。
+            and len(_table_cells(line)) == len(_table_cells(raw_lines[i + 1]))
         ):
-            rows = [_table_cells(line)]
+            header = _table_cells(line)
+            rows = [header]
             i += 2
             while i < len(raw_lines) and _TABLE_ROW_MD.match(raw_lines[i]):
-                rows.append(_table_cells(raw_lines[i]))
+                # 本文行はヘッダ列数へ揃える（GFM 準拠: 余りは捨て、不足は空セル）。
+                cells = _table_cells(raw_lines[i])[: len(header)]
+                cells += [""] * (len(header) - len(cells))
+                rows.append(cells)
                 i += 1
             lines.append(("table", _ROW_SEP.join(_CELL_SEP.join(r) for r in rows), 0))
             continue

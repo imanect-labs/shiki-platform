@@ -38,6 +38,10 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// 接続確立の上限（到達不能な宛先で 20 秒待たない）。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// 名前解決の上限。reqwest の timeout は client 構築後にしか効かないため、
+/// **解決フェーズにも独立して期限を掛ける**（応答しない DNS で張り付かせない）。
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+
 const USER_AGENT: &str = "shiki-web-fetch/1.0";
 
 /// `web_fetch` ツール（ホストネイティブ取得・宛先は解決後 IP 検証＋アドレス固定）。
@@ -206,11 +210,17 @@ impl Tool for WebFetchTool {
         let target = validate_url(url_input)?;
 
         // 名前解決 → 解決後 IP の検証。以降の接続は「この検証済みアドレス」に固定する。
-        let resolved = self
-            .resolver
-            .lookup(&target.host, target.port)
-            .await
-            .map_err(|e| ToolError::Invalid(format!("URL が不正です: {e}")))?;
+        //
+        // 解決にも**期限を掛ける**（reqwest の timeout は client 構築後にしか効かないため、
+        // 応答しない DNS で無期限に張り付くのを防ぐ）。
+        let resolved = tokio::time::timeout(
+            RESOLVE_TIMEOUT,
+            self.resolver.lookup(&target.host, target.port),
+        )
+        .await
+        .map_err(|_| ToolError::Invalid("URL が不正です: 名前解決がタイムアウトしました".into()))?
+        .map_err(|e| ToolError::Invalid(format!("URL が不正です: {e}")))?;
+
         let addrs = self
             .guard(resolved)
             .map_err(|e| ToolError::Invalid(format!("取得先が拒否されました: {e}")))?;
@@ -240,8 +250,8 @@ impl Tool for WebFetchTool {
         if let Some(ct) = &content_type {
             let _ = write!(head, "\nContent-Type: {ct}");
         }
-        // 3xx は本文を読まずに Location だけ返す（追従しない・モデルが再検証付きで取り直す）。
-        if let Some(loc) = location {
+        // **3xx のときだけ**リダイレクト扱いにする（201/200 等が付ける Location で本文を捨てない）。
+        if let (true, Some(loc)) = (status.is_redirection(), location) {
             let _ = write!(
                 head,
                 "\nLocation: {loc}\n（リダイレクトは追従しません。必要なら上の URL を web_fetch し直してください）"

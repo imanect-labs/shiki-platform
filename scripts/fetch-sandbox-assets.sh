@@ -38,7 +38,12 @@ if [ "$(printf '%s\n' "$versions" | grep -c .)" -gt 1 ]; then
   echo "   → 全アセットを同一 dist から取ること（lock/loader/wheel は束で一致が要る）。" >&2
   exit 1
 fi
-if [ -f "$LOCK" ]; then
+if [ ! -f "$LOCK" ]; then
+  echo "❌ pyodide-lock.json が見つかりません: $LOCK" >&2
+  echo "   → lock は wheel pin の照合相手。欠けたまま取得すると束の不一致を検出できない。" >&2
+  exit 1
+fi
+{
   while read -r sha rel _url; do
     case "$sha" in ''|'#'*) continue ;; esac
     case "$rel" in *.whl) ;; *) continue ;; esac
@@ -49,7 +54,7 @@ if [ -f "$LOCK" ]; then
       exit 1
     fi
   done < "$MANIFEST"
-fi
+}
 
 fetched=0 skipped=0
 while read -r sha rel url; do
