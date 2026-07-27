@@ -530,6 +530,12 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   （直接オープン／RAG／構造化データ／エクスポート）は必ず `org = ctx.org AND tenant_id` で絞る。
 - **受け入れ条件（充足）**: `rag::search_authz_it::hydrate_drops_cross_org_chunk`（別 org の直接 viewer を
   持つユーザーが pre/post-filter を通っても hydrate の org 述語で 0 件になることを実 OpenFGA で検証）。
+- **既知の限界（follow-up）**: org は pre-filter（`readable_set` のタグ／VectorStore の索引）ではなく
+  hydrate の SQL 述語で絞る。**マルチ org テナントで、あるユーザーが別 org の file にも直接 viewer を持つ
+  稀なケース**では、別 org の高スコアチャンクが pool を埋めてから hydrate で捨てられるため、要求 `top_k`
+  より少ない（最悪 0 件）結果になり得る（漏洩はしない・fail-closed）。厳密な完全性が要るなら org を索引
+  pre-filter に含めるか hydrate 後にバックフィルする（#371 follow-up・Codex 指摘）。現状は単一 org テナント
+  では発生せず、跨ぎ viewer は例外的なため許容。
 
 ## 🟠 PIT-46: テナント跨ぎ閲覧共有（authenticated audience）の安全包絡（#340 系）
 

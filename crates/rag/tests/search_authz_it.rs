@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use authz::client::{OpenFgaClient, OpenFgaConfig};
-use authz::{AuthContext, AuthzClient, Relation, Subject};
+use authz::{AuthContext, AuthzClient, Consistency, Relation, Subject};
 use common::{
     test_ctx, test_ctx_org, FakeEmbedder, FakeObjectStore, FakeReranker, FakeVectorStore,
 };
@@ -482,10 +482,27 @@ async fn hydrate_drops_cross_org_chunk() {
 
     // alice（org acme）には見える。
     assert_eq!(hit_files(&env, &env.alice, "売上").await, vec![file]);
-    // carol（org other-corp）は viewer を持つが org 境界で 0 件（org を絞らないと混入する）。
+    // carol は OpenFGA 上 viewer を **Allow** される（＝pre/post-filter は通過する）ことを先に固定。
+    // これで「認可で最初から拒否された」ケースと区別でき、0 件は hydrate の org 境界に起因すると言える。
+    let carol_allowed = env
+        .authz
+        .check(
+            &carol.subject(),
+            Relation::Viewer,
+            &file_obj,
+            Consistency::HigherConsistency,
+        )
+        .await
+        .unwrap();
+    assert!(
+        carol_allowed,
+        "carol は file の viewer として認可されている（前提）"
+    );
+
+    // 認可は通るのに、carol（org other-corp）は org 境界で 0 件（org を絞らないと混入する）。
     assert!(
         hit_files(&env, &carol, "売上").await.is_empty(),
-        "他 org のチャンクは hydrate の org 述語で落ちる（#371）"
+        "認可は許可されるが org 境界の hydrate で除外される（#371）"
     );
 }
 

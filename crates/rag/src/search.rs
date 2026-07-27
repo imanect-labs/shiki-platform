@@ -350,11 +350,16 @@ impl SearchService {
         let parents: HashMap<Uuid, String> = if parent_ids.is_empty() {
             HashMap::new()
         } else {
+            // 親本文も node.org で絞る（#371・CodeRabbit）。親子は同一 node（同 org）だが、
+            // hydrate と同じ org 境界を明示適用して parent_content 経由の他 org 混入を構造的に断つ。
             let rows: Vec<(Uuid, String)> = sqlx::query_as(
-                "select id, content from rag_chunk where tenant_id = $1 and id = any($2)",
+                "select c.id, c.content from rag_chunk c \
+                 join node n on n.id = c.node_id and n.tenant_id = c.tenant_id \
+                 where c.tenant_id = $1 and c.id = any($2) and n.org = $3",
             )
             .bind(&ctx.tenant_id)
             .bind(&parent_ids)
+            .bind(&ctx.org)
             .fetch_all(&self.pool)
             .await?;
             rows.into_iter().collect()
