@@ -90,7 +90,7 @@ flowchart LR
     INF1[vLLM/埋め込み/reranker/OCR<br/>ローカルGPU]
   end
 
-  subgraph Cloud["クラウド (GCP) — 顧客ごと隔離インスタンス"]
+  subgraph Cloud["クラウド (GCP) — 全テナント共有プール (tenant_id 論理分離)"]
     S2[shiki-server]
     O2[sandbox-orchestrator]
     I2[ingestion-worker]
@@ -183,9 +183,9 @@ flowchart TB
     KC[Keycloak<br/>User=統一]
     ORGB[Org・Member・サービスアクセス権<br/>＋請求＋管理ダッシュボード=統一]
   end
-  subgraph SHIKI["shiki データプレーン (顧客ごと隔離セル)"]
-    SAUTHZ[ReBAC/ロール/設定=分離]
-    SMETER[LLM利用量計測=分離]
+  subgraph SHIKI["shiki データプレーン (全テナント共有=フルプール / tenant_id 論理分離)"]
+    SAUTHZ[ReBAC/ロール/設定=サービス間で分離]
+    SMETER[LLM利用量計測=サービス間で分離]
   end
   subgraph SKILLEX["skillex データプレーン"]
     KAUTHZ[訓練/DLC権限/設定=分離]
@@ -198,6 +198,11 @@ flowchart TB
   SMETER -->|集約使用量のみ| ORGB
   KMETER -->|集約使用量のみ| ORGB
 ```
+
+> 📌 **「分離」の意味に注意（2026-07 正本化）**: 本節の「データプレーン=分離」は **shiki と skillex という
+> サービス間の分離**であって、**顧客ごとの物理分離ではない**。shiki のデータプレーンは全テナントが共有する
+> フルプールであり、テナント隔離は `tenant_id` の論理分離＋識別子名前空間化で担保する（§4.1 SAAS.1）。
+> 顧客ごと専用ストア（cell）は将来オプション。スケール戦略の全体像は [data-platform.md §12](./data-platform.md)。
 
 - **3層境界**: ①User=統一 ②サービスへの入場券＋管理者バッジ=統一 ③館内ルール（細かい認可/設定）=分離。
 - **サービスロール付与**は `利用可否＋サービス管理者か` の粗い粒度のみ。細かい権限は各サービス内。
@@ -675,10 +680,16 @@ flowchart TB
 - **認可（FR-11最重要）**: ユーザー委譲OAuth2(PKCE)。実効権限 = アプリスコープ ∩ ユーザーReBAC。
   内部APIは晒さずゲートウェイが能力面を再公開。B2はtoken-exchangeでユーザー代理を維持、自動化のみ所有データ限定サービスidentity。
 - **能力カタログ**: storage/data/rag/ai/identity/events。`能力.操作`＋リソース束縛、実認可OpenFGA、アプリ所有リソースあり。
-- **構造化データ**（`crates/data`）: `record(table_id,id,data JSONB,rev)` ＋ `table_schema`、宣言フィールドに式インデックス（ランタイムDDLなし）。
+- **構造化データ**（`crates/data`）: `record(table_id,id,data JSONB,rev)` ＋ `table_schema`。
   フィールド型に user/dept/file/record 参照。
   **行認可 = テーブルReBAC（OpenFGA・有界）＋クエリ時述語（ABAC・WHERE強制付与・集計にも適用・バイパス不可）＋フィールドマスク＋個別共有のみスパースtuple**。
   宣言的クエリ/保存ビュー（生SQL非公開）、リビジョン履歴、`rev`で楽観ロック。
+  **正本は [data-platform.md](./data-platform.md)**（Teable/Lists 級への再設計・Phase 13）。要点:
+  索引はフィールドごとの式インデックスではなく**型付き pivot 索引テーブル**（Salesforce `MT_Indexes` /
+  SharePoint `NameValuePair` と同型）に載せ、**物理オブジェクト数をテナント数・テーブル数から独立させる**
+  （フルプール §4.1 が課す制約。ランタイム DDL は完全にゼロになる）。
+  フィールド識別子は id/key/display_name の 3 層、クエリは条件木＋keyset、
+  計算列のマテリアライズ可否は参照先の authz 不変性で決める。
 - **ワークフロー（2026-07 全面改訂・#97）**: 旧「軽量FSMエンジン」は廃止し、
   **workflow-engine（自作 Durable Execution・n8n/Power Automate 相当）を唯一の実行エンジン**に格上げ。
   FSM は data サービスの宣言的ガード（status フィールド＋遷移認可=行述語の再利用・可視性駆動）に縮退し、
@@ -714,19 +725,27 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
   使用量（org/ユーザー/アプリ/ワークフロー別）・監査ビューア＋エクスポート・**同意/委譲の一覧/棚卸し/失効**
   （ワークフロー委譲・skill インストール・secret 利用）・プラン/請求（Stripe ポータル）・組織ポリシー。
   ②**ベンダーコンソール**（共有コントロールプレーンの新モジュール・Imanect 専用）: テナントライフサイクル
-  （cell プロビジョニング/停止/解約）・プラン/サブスク・テナント別機能フラグ・全テナント横断の**集約**使用量/SLO/ヘルス
-  （顧客データ本文には構造的に到達不能）。
+  （テナントプロビジョニング/停止/解約・専用ストア契約時は cell 払い出し）・プラン/サブスク・テナント別機能フラグ・
+  全テナント横断の**集約**使用量/SLO/ヘルス（顧客データ本文には構造的に到達不能）。
   サポートアクセスは **break-glass 方式のみ**: 顧客管理者の明示許可→時限→全操作監査→顧客画面にバナー。
   **サイレントアクセスの経路は作らない**。
-- **テナント消去機構**: 解約・APPI/GDPR 削除要求に応える「cell 完全消去＋バックアップからの期限付き消滅証明」。
+- **テナント消去機構**: 解約・APPI/GDPR 削除要求に応える「**テナント論理消去**＋バックアップからの期限付き消滅証明」。
   blob・ベクタ・FGA タプル・監査・Langfuse・バックアップまでの消去経路を設計に含める（DPA の前提。
-  `StorageService::purge_tenant` を全ストアへ拡張）。
+  `StorageService::purge_tenant` / `DataStore::purge_tenant` を全ストアへ拡張）。
+  **フルプールでは「ストアごと捨てる」ができないため、消去の網羅性を機械的に保証する仕組みが要る**:
+  tenant スコープを持つ全テーブル/全ストアの台帳を単一定義から生成し、消去経路の抜けを CI で検出する
+  （テーブル追加時に purge 実装を強制）。専用ストア（cell）契約時のみ物理消去が使える。
 - **バックアップ/DR**: テナント単位バックアップ・復元手順・RPO/RTO 宣言。Postgres・blob・Qdrant・FGA の
   **整合スナップショット**（バラバラ復元は FGA タプルとファイルがズレて権限事故 → PIT-38）。
+  **フルプールの弱点**: 「A 社だけ 3 日前に戻す」は共有ストアでは自明でない（全体復旧か論理エクスポート/
+  インポートかの二択になる）。テナント単位 PITR は未解決課題として明示し、論理エクスポートによる
+  部分復旧手順を用意する（Phase 12・[data-platform.md §12](./data-platform.md)）。
 - **データレジデンシ**: 東京リージョン固定を明示。外部 LLM 使用時の越境はモデルカタログの「国外処理」バッジで顧客に明示。
-- **IaC**: `deploy/` に **OpenTofu** で GCP を記述。**cell=モジュールのインスタンス化**。
-  「契約→ベンダーコンソールから cell プロビジョニング（CI 経由 tofu apply）→ Keycloak realm・DNS・初期管理者招待」
-  まで自動化（リリースブロッカー扱い）。オンプレは compose/k8s のまま。
+- **IaC**: `deploy/` に **OpenTofu** で GCP を記述。**環境（プール）＝モジュールのインスタンス化**。
+  フルプールなので**テナント追加はインフラ操作ではなく論理プロビジョニング**（tenant レジストリ登録・
+  Keycloak group/realm・DNS サブドメイン・初期管理者招待）であり、「契約→ベンダーコンソールから
+  テナントプロビジョニング→初期管理者ログイン」まで自動化する（リリースブロッカー扱い）。
+  専用ストア（cell）契約時のみ `tofu apply` でプール実体を追加する。オンプレは compose/k8s のまま。
 - **API レート制限**: テナント単位。workflow-engine のトークンバケット（Redis）を API 面にも適用。
 
 ## 5. リポジトリ構成（モノレポ・Rustワークスペース）
