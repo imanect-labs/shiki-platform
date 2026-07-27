@@ -211,9 +211,25 @@ create table data_link (
     dst_record uuid not null,
     is_reverse bool not null default false, -- 監査・再構築用（クエリでは使わない）
     -- カーディナリティ強制用。この行の src 側が単一値しか持てないとき true。
-    single_valued bool not null default false,
+    -- 書込側が自由に指定できてはならないため、下の FK でスキーマ宣言値に固定する。
+    single_valued bool not null,
     primary key (tenant_int, table_int, field_id, src_record, ord)
 ) partition by hash (table_int);
+
+-- リンク列ごとの宣言メタデータ。スキーマ改訂時にのみ書き換わる（レコード書込では触らない）。
+create table data_link_field (
+    tenant_int int not null, table_int bigint not null, field_id smallint not null,
+    single_valued bool not null,          -- LinkDef.cardinality から決まる
+    primary key (tenant_int, table_int, field_id),
+    unique (tenant_int, table_int, field_id, single_valued)   -- ↓の FK 参照先
+);
+
+-- 【重要】single_valued を宣言値に固定する。書込側が false を指定しても、
+-- 宣言が true なら参照先の組が存在せず FK 違反で落ちる（＝制約を迂回できない）。
+alter table data_link add constraint data_link_cardinality_fk
+    foreign key (tenant_int, table_int, field_id, single_valued)
+    references data_link_field (tenant_int, table_int, field_id, single_valued);
+
 -- 宣言したカーディナリティを DB で強制する（部分一意インデックス 1 本）。
 -- 2 行方式なので「dst 側の一意」も逆方向行に対する同じ制約として表現できる。
 create unique index on data_link (tenant_int, table_int, field_id, src_record)
@@ -275,9 +291,26 @@ N:N の主要経路がテーブル数に比例して劣化する。そこで**1 
 - 完全値順が業務要件になる列は、`MAX_INDEX_KEY_BYTES` 以内に収まる正規化列
   （読み仮名列・コード列など）を別に持ち、そちらでソートする
 
+**ページ取得の途中で行が変わったときの契約**（keyset が決定的なのは「静的な集合に対して」であり、
+ライブデータではソートキーの更新・削除で行が前後に移動して重複・欠落が起きる）:
+
+| モード | 保証 | 用途 |
+|---|---|---|
+| **ライブページング**（既定） | **ページ間の重複・欠落は保証しない。** ページ内は決定的 | グリッド閲覧。SSE の差分配信（§9）が同一セッションで補正するため、実用上の破綻にならない |
+| **スナップショット読取** | **基準 `snapshot_seq` にカーソルを束縛**し、その時点の集合に対して重複・欠落なし | エクスポート・集計・ワークフローの一括処理など、一貫性が要件になる経路 |
+
+- スナップショット読取は、カーソルに `snapshot_seq`（§9.2 の配信位置）を含め、
+  **それ以降に発生した変更を読取結果から除外**する（`data_record.updated_at` ではなく配信位置で判定し、
+  SSE と同じ時間軸に揃える）
+- 保持期間を超えた `snapshot_seq` を指定されたら `410 Gone` を返し、再取得させる
+- **ライブページングでは「途中で行が消えた／二重に出た」をクライアントが検知できるよう、
+  各ページに `snapshot_seq` を添えて返す**。グリッドはこれと SSE の `delivery_seq` を突き合わせて
+  自前で整合を取る（再読込を強制しない）
+
 **索引の総本数はパーティションあたり 10 本の定数**（PK 6 本＝各テーブル 1 本ずつ、
 値索引 2 本＝`text`/`num`、GIN 1 本＝`search`、リンクのカーディナリティ強制用の部分一意 1 本。
-`link` は 2 行方式にしたため逆引き専用索引は不要）。
+`link` は 2 行方式にしたため逆引き専用索引は不要）。`data_link_field` は
+**リンク列ごとに 1 行**の小さなメタデータ表で、レコード数には比例しない。
 **テナントが何社増えても、テーブルが何個増えても、列が何本増えても変わらない。**
 （v1 は「テナント数 × テーブル数 × 索引列数」本が単一 relation に載る。10³ 社 × 10² テーブル × 5 列で 5×10⁵ 本。）
 
@@ -711,6 +744,11 @@ pub enum LinkCardinality {
 
   片方向リンク（`symmetric_field = None`）で dst 側一意が要る場合は、逆方向行を
   「制約専用行」として書く（`is_reverse = true` かつクエリからは参照しない）。
+- **`single_valued` はレコード書込側が決めてはならない。** 部分一意インデックスの述語にフラグを使う以上、
+  書込時に `false` を渡せば制約を迂回できてしまう。`data_link_field`（スキーマ改訂時にのみ書き換わる
+  宣言メタデータ）への**複合外部キーで宣言値に固定する**（§3.3）。宣言が `true` のフィールドに
+  `single_valued = false` の行を挿そうとすると参照先の組が存在せず FK 違反になる。
+  カーディナリティを変更できるのは**スキーマ改訂経路のみ**で、そのとき既存行の再検証を行う。
 - **対称フィールド**があれば、逆方向行を**同一トランザクションで同時に書く**（§3.3 の 2 行方式）。
   順方向だけを更新して逆方向が古いままになる状態は、同一 Tx なので発生しない。
 - 参照整合性は書込時にサーバが検証（v1 の `validate.rs` を継承）
@@ -884,10 +922,25 @@ doc コメントが明示するとおり **「id 順・コミット順に依存�
 そこで次を追加する。
 
 ```sql
--- 配信台帳に単調な配信位置を持たせる（リレーが mark_delivered 時に採番する）。
-alter table outbox_delivery add column delivery_seq bigserial;
+-- 配信台帳に単調な配信位置を持たせる。
+-- 【重要】グローバルな bigserial にはしない。共有採番だと他購読者のイベントで番号に穴が空き、
+-- 「連続確認済み」が定義できなくなる（穴を未確認とみなせば止まり、無視すれば取りこぼす）。
+-- そこで consumer ごとの連番を払い出す。
+create table outbox_delivery_seq (
+    consumer text primary key,
+    next_seq bigint not null default 1
+);
+alter table outbox_delivery add column delivery_seq bigint;
 create unique index on outbox_delivery (consumer, delivery_seq);
 ```
+
+`mark_delivered` は当該 consumer の採番行を `UPDATE ... RETURNING` で取り、
+掴んだ件数分をまとめて払い出す。
+
+- **この行ロックが並行リレー間の排他も兼ねる**（同一 consumer への配信は直列化され、
+  別 consumer とは競合しない）
+- 結果として `delivery_seq` は**購読者内で穴のない連番**になり、low-water mark が自明に定義できる
+- 採番は `mark_delivered` と同一トランザクションなので、番号を払い出して配信に失敗した穴は残らない
 
 - **`Last-Event-ID = delivery_seq`**（リレーが採番した単調位置）。`?since=<delivery_seq>` で再開する
 - outbox の payload に **`(table_int, record_id, rev)`** を載せ、配信位置と revision を永続的に対応付ける
@@ -903,7 +956,8 @@ create unique index on outbox_delivery (consumer, delivery_seq);
 - **リレーは 1 購読者への送信を `delivery_seq` 昇順で行う**（採番→送信を同一バッチ内で昇順に揃え、
   バッチをまたいでも単調にする）
 - 加えて安全側として、**再開カーソルは「連続して確認済みの位置（low-water mark）」だけを進める**。
-  飛び番を受け取った時点ではカーソルを進めず、間が埋まってから進む
+  飛び番を受け取った時点ではカーソルを進めず、間が埋まってから進む。
+  **購読者ごとの連番なので「連続」は `prev + 1` で判定でき、他購読者の採番に影響されない**
 - クライアントに返す `Last-Event-ID` はこの low-water mark であり、
   **受信済みの最大値ではない**（最大値を返すと上記の欠落が再現する）
 
