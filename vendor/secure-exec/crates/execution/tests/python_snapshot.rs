@@ -141,6 +141,10 @@ fn python_snapshot_restores_after_first_execution() {
     assert_eq!(second_exit, 0, "stderr: {second_stderr}");
     assert_eq!(second_stdout, "snap-second\n");
 
+    assert!(
+        second_stderr.contains("wasm-compile-cache:hit"),
+        "second execution in the same process should reuse the compiled pyodide.asm.wasm: {second_stderr}"
+    );
     let second_snapshot = parse_metrics(&second_stderr, "snapshot");
     let second_startup = parse_metrics(&second_stderr, "startup");
     assert_eq!(

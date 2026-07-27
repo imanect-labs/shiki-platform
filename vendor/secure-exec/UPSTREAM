@@ -23,8 +23,11 @@ vendor しなかったもの（上流にあるが不要）:
 ローカルパッチ:
   patches/ 以下に番号付き .patch で管理。
   0001-pyodide-heap-snapshot.patch
-    Pyodide ヒープスナップショット高速起動（crates/execution: python.rs /
-    node_import_cache.rs / assets/runners/python-runner.mjs / tests/python_snapshot.rs）。
+    Python exec 高速化一式: Pyodide ヒープスナップショット（作成/復元/typed 搬送/
+    micropip・stdlib pre-import 同梱）＋プロセス内 wasm コンパイル共有。
+    対象: crates/execution: python.rs / node_import_cache.rs /
+    assets/runners/python-runner.mjs / tests/python_snapshot.rs、
+    crates/v8-runtime: src/session.rs。
     設計と実測: docs/sandbox/wasm-exec-optimization.md（shiki リポジトリ側）。
 
 再 vendor 手順:

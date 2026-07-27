@@ -1,5 +1,5 @@
 diff --git a/vendor/secure-exec/crates/execution/assets/runners/python-runner.mjs b/vendor/secure-exec/crates/execution/assets/runners/python-runner.mjs
-index cbc835b..dcd428a 100644
+index cbc835b..637d4c4 100644
 --- a/vendor/secure-exec/crates/execution/assets/runners/python-runner.mjs
 +++ b/vendor/secure-exec/crates/execution/assets/runners/python-runner.mjs
 @@ -1,4 +1,4 @@
@@ -29,7 +29,67 @@ index cbc835b..dcd428a 100644
  const PYTHON_WARMUP_DEBUG_ENV = 'AGENTOS_PYTHON_WARMUP_DEBUG';
  const PYTHON_WARMUP_METRICS_PREFIX = '__AGENTOS_PYTHON_WARMUP_METRICS__:';
  const PYTHON_PRELOAD_PACKAGES_ENV = 'AGENTOS_PYTHON_PRELOAD_PACKAGES';
-@@ -335,6 +349,192 @@ function resolvePyodidePackageCacheDir() {
+@@ -279,6 +293,59 @@ function installPyodideShellCompat() {
+   };
+ }
+ 
++// In-process wasm compile cache: the host installs `__agentOSShareCompiledWasm`
++// / `__agentOSGetCompiledWasm` for trusted runner launches. Wrapping
++// `WebAssembly.instantiate` during Pyodide boot lets repeated boots in the same
++// process (same VM) reuse the compiled pyodide.asm.wasm instead of recompiling
++// ~8.6MB per execution. Small modules are ignored so guest-facing behavior is
++// untouched, and the wrapper is removed right after boot.
++function installPyodideWasmCompileCache() {
++  const share = globalThis.__agentOSShareCompiledWasm;
++  const get = globalThis.__agentOSGetCompiledWasm;
++  delete globalThis.__agentOSShareCompiledWasm;
++  delete globalThis.__agentOSGetCompiledWasm;
++  if (typeof share !== 'function' || typeof get !== 'function') {
++    return () => {};
++  }
++  const wasmNamespace = globalThis.WebAssembly;
++  const originalInstantiate = wasmNamespace?.instantiate;
++  if (typeof originalInstantiate !== 'function') {
++    return () => {};
++  }
++
++  const MIN_CACHED_MODULE_BYTES = 4 * 1024 * 1024;
++  wasmNamespace.instantiate = function agentOSCachedInstantiate(source, imports) {
++    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
++    if (!isBytes || source.byteLength < MIN_CACHED_MODULE_BYTES) {
++      return originalInstantiate.call(wasmNamespace, source, imports);
++    }
++    const view =
++      source instanceof ArrayBuffer
++        ? new Uint8Array(source)
++        : new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
++    const cachedModule = get(view);
++    if (cachedModule instanceof wasmNamespace.Module) {
++      emitWarmupStage('wasm-compile-cache:hit');
++      return originalInstantiate
++        .call(wasmNamespace, cachedModule, imports)
++        .then((instance) => ({ instance, module: cachedModule }));
++    }
++    return originalInstantiate.call(wasmNamespace, source, imports).then((result) => {
++      try {
++        share(result.module);
++        emitWarmupStage('wasm-compile-cache:stored');
++      } catch {
++        // Cache registration is best-effort.
++      }
++      return result;
++    });
++  };
++
++  return () => {
++    wasmNamespace.instantiate = originalInstantiate;
++  };
++}
++
+ function resolvePyodideResource(indexPath, indexUrl, resourceName) {
+   if (typeof indexPath === 'string' && path.isAbsolute(indexPath)) {
+     const resourcePath = path.join(indexPath, resourceName);
+@@ -335,6 +402,192 @@ function resolvePyodidePackageCacheDir() {
    return PYODIDE_PACKAGE_CACHE_GUEST_ROOT;
  }
  
@@ -222,7 +282,7 @@ index cbc835b..dcd428a 100644
  function emitWarmupStage(stage) {
    if (readRunnerEnv(PYTHON_WARMUP_DEBUG_ENV) !== '1') {
      return;
-@@ -415,6 +615,9 @@ function emitPythonStartupMetrics({
+@@ -415,6 +668,9 @@ function emitPythonStartupMetrics({
    packageLoadMs,
    packageCount,
    source,
@@ -232,7 +292,7 @@ index cbc835b..dcd428a 100644
  }) {
    if (readRunnerEnv(PYTHON_WARMUP_DEBUG_ENV) !== '1') {
      return;
-@@ -430,10 +633,27 @@ function emitPythonStartupMetrics({
+@@ -430,10 +686,27 @@ function emitPythonStartupMetrics({
        packageLoadMs,
        packageCount,
        source,
@@ -260,7 +320,7 @@ index cbc835b..dcd428a 100644
  function parsePreloadPackages(value) {
    if (value == null || value.trim() === '') {
      return [];
-@@ -2396,13 +2616,17 @@ try {
+@@ -2396,13 +2669,18 @@ try {
    emitWarmupStage(`package-cache-dir:${packageCacheDir}`);
    const prewarmOnly = readRunnerEnv(PYTHON_PREWARM_ONLY_ENV) === '1';
    const preloadPackages = parsePreloadPackages(readRunnerEnv(PYTHON_PRELOAD_PACKAGES_ENV));
@@ -274,13 +334,14 @@ index cbc835b..dcd428a 100644
    const { url: pyodideModuleUrl } = resolvePyodideResource(indexPath, indexUrl, 'pyodide.mjs');
    const restorePyodideShellCompat = installPyodideShellCompat();
 -  const { loadPyodide } = await import(pyodideModuleUrl).catch((error) => {
++  const restoreWasmCompileCache = installPyodideWasmCompileCache();
 +  const { loadPyodide } = await timeStage('moduleImportMs', () =>
 +    import(pyodideModuleUrl),
 +  ).catch((error) => {
      throw wrapPythonStartupError('module import', { indexPath, indexUrl, pyodideModuleUrl }, error);
    });
    emitWarmupStage('module-imported');
-@@ -2416,6 +2640,22 @@ try {
+@@ -2416,6 +2694,23 @@ try {
      const wasmResource = resolvePyodideResource(indexPath, indexUrl, 'pyodide.asm.wasm');
      await readFile(stdlibResource.path);
      await readFile(wasmResource.path);
@@ -300,10 +361,11 @@ index cbc835b..dcd428a 100644
 +      });
 +      snapshotMs = realPerformance.now() - snapshotStarted;
 +    }
++    restoreWasmCompileCache();
      restorePyodideShellCompat();
      emitWarmupStage('prewarm-assets-ready');
      emitPythonStartupMetrics({
-@@ -2425,6 +2665,8 @@ try {
+@@ -2425,6 +2720,8 @@ try {
        packageLoadMs: 0,
        packageCount: 0,
        source: 'prewarm',
@@ -312,7 +374,7 @@ index cbc835b..dcd428a 100644
      });
      process.exitCode = 0;
    } else {
-@@ -2432,8 +2674,47 @@ try {
+@@ -2432,8 +2729,47 @@ try {
    installPythonGuestPreloadHardening(pythonVfsRpcBridge);
    mkdirSync(packageCacheDir, { recursive: true });
    emitWarmupStage('before-load-pyodide');
@@ -361,7 +423,7 @@ index cbc835b..dcd428a 100644
      indexURL: indexPath,
      lockFileContents,
      packageBaseUrl: bundledPackageBaseUrl,
-@@ -2441,29 +2722,52 @@ try {
+@@ -2441,29 +2777,53 @@ try {
      env: buildPythonRuntimeEnv(),
      stdout: writePyodideStdout,
      stderr: (message) => writeStream(process.stderr, message),
@@ -414,6 +476,7 @@ index cbc835b..dcd428a 100644
 +      );
 +    });
 +  }
++  restoreWasmCompileCache();
    restorePyodideShellCompat();
    emitWarmupStage('after-load-pyodide');
    const loadPyodideMs = realPerformance.now() - loadPyodideStarted;
@@ -432,7 +495,7 @@ index cbc835b..dcd428a 100644
    if (pyodide?._api?.config) {
      pyodide._api.config.packageBaseUrl = bundledPackageBaseUrl;
      emitWarmupStage(`pyodide-package-base:${pyodide._api.config.packageBaseUrl}`);
-@@ -2474,7 +2778,12 @@ try {
+@@ -2474,7 +2834,12 @@ try {
    }
    if (canLoadPackages) {
      emitWarmupStage('before-load-micropip');
@@ -446,7 +509,7 @@ index cbc835b..dcd428a 100644
      emitWarmupStage('after-load-micropip');
      if (preloadPackages.length > 0) {
        emitWarmupStage('before-load-preload-packages');
-@@ -2488,12 +2797,14 @@ try {
+@@ -2488,12 +2853,14 @@ try {
      pyodide._api.config.packageBaseUrl = packageBaseUrl;
      emitWarmupStage(`micropip-package-base:${pyodide._api.config.packageBaseUrl}`);
    }
@@ -467,7 +530,7 @@ index cbc835b..dcd428a 100644
    const moduleName = readRunnerEnv(PYTHON_MODULE_ENV);
    const stdinProgram = readRunnerEnv(PYTHON_STDIN_PROGRAM_ENV) === '1';
    const interactive = readRunnerEnv(PYTHON_INTERACTIVE_ENV) === '1';
-@@ -2513,6 +2824,9 @@ try {
+@@ -2513,6 +2880,9 @@ try {
      packageLoadMs,
      packageCount: preloadPackages.length,
      source,
@@ -1094,10 +1157,10 @@ index b25a135..e708062 100644
      executed: bool,
 diff --git a/vendor/secure-exec/crates/execution/tests/python_snapshot.rs b/vendor/secure-exec/crates/execution/tests/python_snapshot.rs
 new file mode 100644
-index 0000000..d5496c6
+index 0000000..091484b
 --- /dev/null
 +++ b/vendor/secure-exec/crates/execution/tests/python_snapshot.rs
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,293 @@
 +//! Pyodide heap-snapshot fast-path coverage.
 +//!
 +//! The first execution's prewarm boots Pyodide with `_makeSnapshot`, persists
@@ -1241,6 +1304,10 @@ index 0000000..d5496c6
 +    assert_eq!(second_exit, 0, "stderr: {second_stderr}");
 +    assert_eq!(second_stdout, "snap-second\n");
 +
++    assert!(
++        second_stderr.contains("wasm-compile-cache:hit"),
++        "second execution in the same process should reuse the compiled pyodide.asm.wasm: {second_stderr}"
++    );
 +    let second_snapshot = parse_metrics(&second_stderr, "snapshot");
 +    let second_startup = parse_metrics(&second_stderr, "startup");
 +    assert_eq!(
@@ -1387,3 +1454,140 @@ index 0000000..d5496c6
 +        python_snapshot_restore_matches_fresh_runtime_state,
 +    );
 +}
+diff --git a/vendor/secure-exec/crates/v8-runtime/src/session.rs b/vendor/secure-exec/crates/v8-runtime/src/session.rs
+index 1219aee..350a172 100644
+--- a/vendor/secure-exec/crates/v8-runtime/src/session.rs
++++ b/vendor/secure-exec/crates/v8-runtime/src/session.rs
+@@ -1170,6 +1170,121 @@ fn defer_session_command_before_slot(
+     false
+ }
+ 
++/// Process-wide cache of compiled wasm modules shared by trusted runner
++/// sessions, so repeated boots of the same large module (e.g. Pyodide's
++/// pyodide.asm.wasm) in one process skip recompilation. Entries are keyed by a
++/// sampled content hash of the module wire bytes computed host-side from the
++/// shared module itself, so a caller can only ever map a module's own bytes to
++/// that same module. The cache globals are installed only for executions that
++/// carry `wasm_module_bytes` (host-authored runner launches) — plain guest
++/// JavaScript executions never see them.
++#[cfg(not(test))]
++static SHARED_COMPILED_WASM_MODULES: std::sync::OnceLock<
++    Mutex<Vec<(u64, v8::CompiledWasmModule)>>,
++> = std::sync::OnceLock::new();
++#[cfg(not(test))]
++const SHARED_COMPILED_WASM_CAP: usize = 4;
++
++/// Content identity for shared wasm modules: length mixed with FNV-1a over
++/// head/middle/tail windows. Not cryptographic — callers are trusted runner
++/// code and a module can only be registered under the hash of its own bytes.
++#[cfg(not(test))]
++fn sampled_wasm_bytes_key(bytes: &[u8]) -> u64 {
++    const WINDOW: usize = 64 * 1024;
++    let mut hash = 0xcbf2_9ce4_8422_2325u64 ^ (bytes.len() as u64);
++    let mut mix = |chunk: &[u8]| {
++        for &byte in chunk {
++            hash = (hash ^ u64::from(byte)).wrapping_mul(0x1_0000_0000_01b3);
++        }
++    };
++    if bytes.len() <= 3 * WINDOW {
++        mix(bytes);
++    } else {
++        let middle = bytes.len() / 2;
++        mix(&bytes[..WINDOW]);
++        mix(&bytes[middle - WINDOW / 2..middle + WINDOW / 2]);
++        mix(&bytes[bytes.len() - WINDOW..]);
++    }
++    hash
++}
++
++/// `__agentOSShareCompiledWasm(module)`: registers a compiled module in the
++/// process-wide cache. Returns whether the argument was a wasm module.
++#[cfg(not(test))]
++fn share_compiled_wasm_callback(
++    _scope: &mut v8::HandleScope,
++    args: v8::FunctionCallbackArguments,
++    mut rv: v8::ReturnValue,
++) {
++    let Ok(module) = v8::Local::<v8::WasmModuleObject>::try_from(args.get(0)) else {
++        rv.set_bool(false);
++        return;
++    };
++    let compiled = module.get_compiled_module();
++    let key = sampled_wasm_bytes_key(compiled.get_wire_bytes_ref());
++    let store = SHARED_COMPILED_WASM_MODULES.get_or_init(Default::default);
++    if let Ok(mut entries) = store.lock() {
++        if !entries.iter().any(|(existing, _)| *existing == key) {
++            if entries.len() >= SHARED_COMPILED_WASM_CAP {
++                entries.remove(0);
++            }
++            entries.push((key, compiled));
++        }
++    }
++    rv.set_bool(true);
++}
++
++/// `__agentOSGetCompiledWasm(bytes)`: returns a `WebAssembly.Module` for the
++/// given wire bytes when a matching compiled module is cached in this process,
++/// otherwise `undefined`.
++#[cfg(not(test))]
++fn get_compiled_wasm_callback(
++    scope: &mut v8::HandleScope,
++    args: v8::FunctionCallbackArguments,
++    mut rv: v8::ReturnValue,
++) {
++    let Ok(view) = v8::Local::<v8::ArrayBufferView>::try_from(args.get(0)) else {
++        return;
++    };
++    let mut bytes = vec![0u8; view.byte_length()];
++    if view.copy_contents(&mut bytes) != bytes.len() {
++        return;
++    }
++    let key = sampled_wasm_bytes_key(&bytes);
++    let store = SHARED_COMPILED_WASM_MODULES.get_or_init(Default::default);
++    if let Ok(entries) = store.lock() {
++        if let Some((_, compiled)) = entries.iter().find(|(existing, _)| *existing == key) {
++            if let Some(module) = v8::WasmModuleObject::from_compiled_module(scope, compiled) {
++                rv.set(module.into());
++            }
++        }
++    }
++}
++
++#[cfg(not(test))]
++fn install_wasm_compile_cache_globals(scope: &mut v8::HandleScope<'_>) -> bool {
++    let global = scope.get_current_context().global(scope);
++    let Some(share_key) = v8::String::new(scope, "__agentOSShareCompiledWasm") else {
++        return false;
++    };
++    let Some(share_fn) = v8::Function::new(scope, share_compiled_wasm_callback) else {
++        return false;
++    };
++    if global.set(scope, share_key.into(), share_fn.into()).is_none() {
++        return false;
++    }
++    let Some(get_key) = v8::String::new(scope, "__agentOSGetCompiledWasm") else {
++        return false;
++    };
++    let Some(get_fn) = v8::Function::new(scope, get_compiled_wasm_callback) else {
++        return false;
++    };
++    if global.set(scope, get_key.into(), get_fn.into()).is_none() {
++        return false;
++    }
++    true
++}
++
+ #[cfg(not(test))]
+ fn install_wasm_module_bytes_global<'s>(scope: &mut v8::HandleScope<'s>, bytes: &[u8]) -> bool {
+     let global = scope.get_current_context().global(scope);
+@@ -1645,6 +1760,10 @@ fn session_thread(
+                             let scope = &mut v8::HandleScope::new(iso);
+                             let ctx = v8::Local::new(scope, &exec_context);
+                             let scope = &mut v8::ContextScope::new(scope, ctx);
++                            // Best-effort: runner code feature-detects these
++                            // globals, so an install failure only disables the
++                            // in-process wasm compile cache.
++                            let _ = install_wasm_compile_cache_globals(scope);
+                             if !install_wasm_module_bytes_global(scope, wasm_module_bytes) {
+                                 let result_frame = RuntimeEvent::ExecutionResult {
+                                     session_id,

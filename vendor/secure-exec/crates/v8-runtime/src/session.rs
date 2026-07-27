@@ -1170,6 +1170,121 @@ fn defer_session_command_before_slot(
     false
 }
 
+/// Process-wide cache of compiled wasm modules shared by trusted runner
+/// sessions, so repeated boots of the same large module (e.g. Pyodide's
+/// pyodide.asm.wasm) in one process skip recompilation. Entries are keyed by a
+/// sampled content hash of the module wire bytes computed host-side from the
+/// shared module itself, so a caller can only ever map a module's own bytes to
+/// that same module. The cache globals are installed only for executions that
+/// carry `wasm_module_bytes` (host-authored runner launches) — plain guest
+/// JavaScript executions never see them.
+#[cfg(not(test))]
+static SHARED_COMPILED_WASM_MODULES: std::sync::OnceLock<
+    Mutex<Vec<(u64, v8::CompiledWasmModule)>>,
+> = std::sync::OnceLock::new();
+#[cfg(not(test))]
+const SHARED_COMPILED_WASM_CAP: usize = 4;
+
+/// Content identity for shared wasm modules: length mixed with FNV-1a over
+/// head/middle/tail windows. Not cryptographic — callers are trusted runner
+/// code and a module can only be registered under the hash of its own bytes.
+#[cfg(not(test))]
+fn sampled_wasm_bytes_key(bytes: &[u8]) -> u64 {
+    const WINDOW: usize = 64 * 1024;
+    let mut hash = 0xcbf2_9ce4_8422_2325u64 ^ (bytes.len() as u64);
+    let mut mix = |chunk: &[u8]| {
+        for &byte in chunk {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x1_0000_0000_01b3);
+        }
+    };
+    if bytes.len() <= 3 * WINDOW {
+        mix(bytes);
+    } else {
+        let middle = bytes.len() / 2;
+        mix(&bytes[..WINDOW]);
+        mix(&bytes[middle - WINDOW / 2..middle + WINDOW / 2]);
+        mix(&bytes[bytes.len() - WINDOW..]);
+    }
+    hash
+}
+
+/// `__agentOSShareCompiledWasm(module)`: registers a compiled module in the
+/// process-wide cache. Returns whether the argument was a wasm module.
+#[cfg(not(test))]
+fn share_compiled_wasm_callback(
+    _scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Ok(module) = v8::Local::<v8::WasmModuleObject>::try_from(args.get(0)) else {
+        rv.set_bool(false);
+        return;
+    };
+    let compiled = module.get_compiled_module();
+    let key = sampled_wasm_bytes_key(compiled.get_wire_bytes_ref());
+    let store = SHARED_COMPILED_WASM_MODULES.get_or_init(Default::default);
+    if let Ok(mut entries) = store.lock() {
+        if !entries.iter().any(|(existing, _)| *existing == key) {
+            if entries.len() >= SHARED_COMPILED_WASM_CAP {
+                entries.remove(0);
+            }
+            entries.push((key, compiled));
+        }
+    }
+    rv.set_bool(true);
+}
+
+/// `__agentOSGetCompiledWasm(bytes)`: returns a `WebAssembly.Module` for the
+/// given wire bytes when a matching compiled module is cached in this process,
+/// otherwise `undefined`.
+#[cfg(not(test))]
+fn get_compiled_wasm_callback(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Ok(view) = v8::Local::<v8::ArrayBufferView>::try_from(args.get(0)) else {
+        return;
+    };
+    let mut bytes = vec![0u8; view.byte_length()];
+    if view.copy_contents(&mut bytes) != bytes.len() {
+        return;
+    }
+    let key = sampled_wasm_bytes_key(&bytes);
+    let store = SHARED_COMPILED_WASM_MODULES.get_or_init(Default::default);
+    if let Ok(entries) = store.lock() {
+        if let Some((_, compiled)) = entries.iter().find(|(existing, _)| *existing == key) {
+            if let Some(module) = v8::WasmModuleObject::from_compiled_module(scope, compiled) {
+                rv.set(module.into());
+            }
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn install_wasm_compile_cache_globals(scope: &mut v8::HandleScope<'_>) -> bool {
+    let global = scope.get_current_context().global(scope);
+    let Some(share_key) = v8::String::new(scope, "__agentOSShareCompiledWasm") else {
+        return false;
+    };
+    let Some(share_fn) = v8::Function::new(scope, share_compiled_wasm_callback) else {
+        return false;
+    };
+    if global.set(scope, share_key.into(), share_fn.into()).is_none() {
+        return false;
+    }
+    let Some(get_key) = v8::String::new(scope, "__agentOSGetCompiledWasm") else {
+        return false;
+    };
+    let Some(get_fn) = v8::Function::new(scope, get_compiled_wasm_callback) else {
+        return false;
+    };
+    if global.set(scope, get_key.into(), get_fn.into()).is_none() {
+        return false;
+    }
+    true
+}
+
 #[cfg(not(test))]
 fn install_wasm_module_bytes_global<'s>(scope: &mut v8::HandleScope<'s>, bytes: &[u8]) -> bool {
     let global = scope.get_current_context().global(scope);
@@ -1645,6 +1760,10 @@ fn session_thread(
                             let scope = &mut v8::HandleScope::new(iso);
                             let ctx = v8::Local::new(scope, &exec_context);
                             let scope = &mut v8::ContextScope::new(scope, ctx);
+                            // Best-effort: runner code feature-detects these
+                            // globals, so an install failure only disables the
+                            // in-process wasm compile cache.
+                            let _ = install_wasm_compile_cache_globals(scope);
                             if !install_wasm_module_bytes_global(scope, wasm_module_bytes) {
                                 let result_frame = RuntimeEvent::ExecutionResult {
                                     session_id,

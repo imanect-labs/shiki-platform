@@ -68,8 +68,9 @@ gVisor=runsc systrap rootless＋`python:3.12-slim` rootfs。**Firecracker は `/
 > ⚠️ web_fetch は内部で urllib（Python）を実行するため wasm でも exec ごとに Pyodide 初期化コストを払う点は既知の課題
 > （wasm を選ぶ理由は速度ではなく egress モデル）。
 > **2026-07-26 追記**: この初期化税を潰す **Pyodide ヒープスナップショット機構**を secure-exec フォークへ実装した
-> （[wasm-exec-optimization](./wasm-exec-optimization.md)）。typed 搬送・micropip/stdlib pre-import 同梱まで
-> 込みで、開発コンテナ実測の Python 起動全体は **~2.34s → ~0.56s（~4.2×）**。
+> （[wasm-exec-optimization](./wasm-exec-optimization.md)）。typed 搬送・micropip/stdlib pre-import 同梱・
+> プロセス内 wasm コンパイル共有まで込みで、開発コンテナ実測の Python 起動全体は
+> **~2.34s → 初回 ~0.5s / 同一プロセス2回目以降 ~0.40s**。
 > 本表の wasm exec 値はスナップショット無効時のものであり、**dev ホストでの再計測で行を更新すること**。
 > 既定切替の前提だった native rootfs への numpy/pandas 同梱は **#346 で充足済み**
 > （`rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定。コード既定も gVisor へ反転済み）。

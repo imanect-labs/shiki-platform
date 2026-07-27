@@ -75,6 +75,23 @@ create が軽いのは V8 アイソレート生成が軽いから。重いのは
    stdlib（urllib.request / socket / subprocess / json / base64 等）を作成時に import して
    `sys.modules` ごと焼く（純 Python のみ・FFI 不使用）。**pySetupMs ~342ms → ~107ms**。
 
+## 第3段最適化（同日実装）: プロセス内 wasm コンパイル共有
+
+復元時 `loadPyodide` ~436ms の主部（pyodide.asm.wasm 8.6MB の V8 コンパイル）を、
+**プロセス内 `CompiledWasmModule` 共有**で同一 VM の 2 回目以降の exec から除去した:
+
+- session.rs が信頼済みランナー実行（`wasm_module_bytes` を伴う起動＝ホスト作成コードのみ。
+  ゲスト JS 実行には決して公開されない）に `__agentOSShareCompiledWasm` / `__agentOSGetCompiledWasm`
+  を注入。キーは**ホスト側で共有モジュール自身の wire bytes から計算**した内容ハッシュ
+  （呼び出し側は「自分のバイト列→自分のモジュール」以外を登録できない）。
+- python-runner が boot 中だけ `WebAssembly.instantiate` をラップ（≥4MiB のみ対象・boot 後に復元）。
+  初回 boot でモジュールを登録し、以後の boot はコンパイル済みモジュールで instantiate。
+- 実測: 2 回目以降の exec は `loadPyodide` ~338ms・**startup 全体 ~400ms**（コンパイル分 ~90-100ms 削減）。
+
+**負の結果（記録）**: V8 `--wasm-lazy-compilation` は試して**撤回**した。復元時 436→489ms・fresh も悪化。
+Python の boot/restore は大量の wasm 関数を実際に呼ぶため、関数単位の遅延コンパイルはオーバーヘッドが上回る。
+V8 の並列 Liftoff が既に速く、コンパイル自体は ~100ms 程度しかない（残りはヒープ復元・emscripten glue 実行等）。
+
 ## 実測（2026-07-26・開発コンテナ・release・公開 0.28.0 dist）
 
 pin 済み dev ビルドのアセットは本環境から取得不能のため、自己完結の公開 v0.28.0 dist を
@@ -83,33 +100,37 @@ pin 済み dev ビルドのアセットは本環境から取得不能のため�
 | 経路 | Python ランタイム起動全体（startupMs） | 内訳 |
 |---|---|---|
 | フルブート（従来） | **~2,340ms** | loadPyodide ~1,830 + micropip ~178 + shim ~316 |
-| スナップショット復元（第2段後） | **~562ms（~4.2×）** | loadPyodide ~436 + shim ~107 + 搬送 ~1 + fsShim ~9 |
-| スナップショット作成 | ~4,200ms | アセット指紋ごとに 1 回だけ（prewarm 内） |
+| スナップショット復元（プロセス初回 exec） | **~500-560ms（~4.2×）** | loadPyodide ~425-460 + shim ~50-107 + 搬送 ~1 |
+| スナップショット復元（同一プロセス 2 回目以降） | **~400ms（~5.8×）** | loadPyodide ~338（compile cache hit）+ shim ~50 |
+| スナップショット作成 | ~4,000ms | アセット指紋ごとに 1 回だけ（prewarm 内） |
 
 スナップショットサイズ ~21MB（micropip・pre-import 込み）。残る支配項は復元時 `loadPyodide` の
-~436ms（≒ pyodide.asm.wasm 8.6MB の V8 コンパイル＋ヒープ復元 memcpy）。bench.md の exec ~6.5s
-環境なら支配項がこの比率で縮む見込み。**正式な 3 ティア比較は dev ホストで `SANDBOX_BENCH=1` の
-再計測で更新すること**。
+~340ms（≒ ヒープ復元 memcpy＋emscripten glue 実行＋instantiate。コンパイルは共有済み）。
+bench.md の exec ~6.5s 環境なら支配項がこの比率で縮む見込み。**正式な 3 ティア比較は dev ホストで
+`SANDBOX_BENCH=1` の再計測で更新すること**。
 
 検証: `crates/execution/tests/python_snapshot.rs`（作成→復元→再利用、typed 搬送、micropip スキップ、
 無効化フォールバック、**復元後のランタイム状態パリティ**＝cwd/env/argv/version/例外挙動がフルブートと一致）。
 
 ## ロードマップ（次の削り代）
 
-1. **pyodide.asm.wasm の V8 コンパイル共有**（残 ~436ms の主部）: rusty_v8 130 の
-   `CompiledWasmModule`（Send+Sync）＋`WasmModuleObject::from_compiled_module` は
-   **同一プロセス内の isolate 間共有のみ**で、ディスク直列化 API は公開されていない（調査済み）。
-   per-sandbox=per-sidecar プロセスの現構成では同一 VM の 2 回目以降にしか効かないため、
-   効かせるには (a) session.rs にプロセス共有モジュール注入を実装（同一 VM 連続 exec 向け）、
-   (b) rusty_v8 への serialize パッチ（クロスプロセス・上流 PR 要検討）のいずれか。
-2. **preload パッケージ（numpy/pandas）込みスナップショット**: ネイティブ拡張（dylink の
+1. **温機プール（web_fetch の本命）**: 現構成（web_fetch=1 exec/sandbox/プロセス）では上記の
+   プロセス内最適化は初回 exec に効かないため、桁を落とすには orchestrator 側プールが必要。
+   設計素案: sidecar に「駐機 exec」（stdin-program モードで boot 済み・コード待ち）を追加し、
+   orchestrator が復元済み VM を N 台先行 create → web_fetch の create は払い出しのみ（数 ms）、
+   exec はコード書き込みだけ（体感 = 実行時間のみ）。**前提の設計判断が 2 つ残る**:
+   (a) PIT-22 の時間衝突 — 駐機 boot 時に焼いた frozen time が実行時にずれる。再同期プロトコル要設計。
+   (b) 駐機 exec と実 exec の env/cwd/limits 整合 — 不一致時は捨てて通常経路へフォールバック。
+   sidecar service 層の変更を伴うため、着手前に human と設計合意すること。
+2. **wasm コンパイルのクロスプロセス共有**: rusty_v8 130 の `CompiledWasmModule` はプロセス内
+   共有のみでディスク直列化 API 非公開（調査済み）。効果も ~100ms と判明したため優先度低。
+   やるなら rusty_v8 への serialize パッチ＋上流 PR。
+3. **preload パッケージ（numpy/pandas）込みスナップショット**: ネイティブ拡張（dylink の
    WebAssembly.Instance）は線形メモリ外の JS 状態を持つため現行 API では焼けない。
    preload 構成をキーに含めた多段指紋＋dylink 対応が必要（Cloudflare の package snapshot 相当）。
-3. **web_fetch の native 経路**: urllib(Python) を経ない fetch 実装（design §4.6 の既知課題）。
-   スナップショットで Python 経路自体が ~0.6s 級まで縮んだため優先度は下がるが、egress モデルは
+4. **web_fetch の native 経路**: urllib(Python) を経ない fetch 実装（design §4.6 の既知課題）。
+   スナップショットで Python 経路自体が ~0.5s 級まで縮んだため優先度は下がるが、egress モデルは
    不変のままさらに桁を落とせる。
-4. **温機プール**: orchestrator 側で復元済み VM をプールすれば体感 create+exec を数十 ms 級へ。
-   PIT-22（時間衝突）の再評価が前提。
 
 ## 運用ノート
 

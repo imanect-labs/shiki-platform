@@ -293,6 +293,59 @@ function installPyodideShellCompat() {
   };
 }
 
+// In-process wasm compile cache: the host installs `__agentOSShareCompiledWasm`
+// / `__agentOSGetCompiledWasm` for trusted runner launches. Wrapping
+// `WebAssembly.instantiate` during Pyodide boot lets repeated boots in the same
+// process (same VM) reuse the compiled pyodide.asm.wasm instead of recompiling
+// ~8.6MB per execution. Small modules are ignored so guest-facing behavior is
+// untouched, and the wrapper is removed right after boot.
+function installPyodideWasmCompileCache() {
+  const share = globalThis.__agentOSShareCompiledWasm;
+  const get = globalThis.__agentOSGetCompiledWasm;
+  delete globalThis.__agentOSShareCompiledWasm;
+  delete globalThis.__agentOSGetCompiledWasm;
+  if (typeof share !== 'function' || typeof get !== 'function') {
+    return () => {};
+  }
+  const wasmNamespace = globalThis.WebAssembly;
+  const originalInstantiate = wasmNamespace?.instantiate;
+  if (typeof originalInstantiate !== 'function') {
+    return () => {};
+  }
+
+  const MIN_CACHED_MODULE_BYTES = 4 * 1024 * 1024;
+  wasmNamespace.instantiate = function agentOSCachedInstantiate(source, imports) {
+    const isBytes = source instanceof ArrayBuffer || ArrayBuffer.isView(source);
+    if (!isBytes || source.byteLength < MIN_CACHED_MODULE_BYTES) {
+      return originalInstantiate.call(wasmNamespace, source, imports);
+    }
+    const view =
+      source instanceof ArrayBuffer
+        ? new Uint8Array(source)
+        : new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+    const cachedModule = get(view);
+    if (cachedModule instanceof wasmNamespace.Module) {
+      emitWarmupStage('wasm-compile-cache:hit');
+      return originalInstantiate
+        .call(wasmNamespace, cachedModule, imports)
+        .then((instance) => ({ instance, module: cachedModule }));
+    }
+    return originalInstantiate.call(wasmNamespace, source, imports).then((result) => {
+      try {
+        share(result.module);
+        emitWarmupStage('wasm-compile-cache:stored');
+      } catch {
+        // Cache registration is best-effort.
+      }
+      return result;
+    });
+  };
+
+  return () => {
+    wasmNamespace.instantiate = originalInstantiate;
+  };
+}
+
 function resolvePyodideResource(indexPath, indexUrl, resourceName) {
   if (typeof indexPath === 'string' && path.isAbsolute(indexPath)) {
     const resourcePath = path.join(indexPath, resourceName);
@@ -2624,6 +2677,7 @@ try {
   emitWarmupStage('lock-file-ready');
   const { url: pyodideModuleUrl } = resolvePyodideResource(indexPath, indexUrl, 'pyodide.mjs');
   const restorePyodideShellCompat = installPyodideShellCompat();
+  const restoreWasmCompileCache = installPyodideWasmCompileCache();
   const { loadPyodide } = await timeStage('moduleImportMs', () =>
     import(pyodideModuleUrl),
   ).catch((error) => {
@@ -2656,6 +2710,7 @@ try {
       });
       snapshotMs = realPerformance.now() - snapshotStarted;
     }
+    restoreWasmCompileCache();
     restorePyodideShellCompat();
     emitWarmupStage('prewarm-assets-ready');
     emitPythonStartupMetrics({
@@ -2757,6 +2812,7 @@ try {
       );
     });
   }
+  restoreWasmCompileCache();
   restorePyodideShellCompat();
   emitWarmupStage('after-load-pyodide');
   const loadPyodideMs = realPerformance.now() - loadPyodideStarted;
