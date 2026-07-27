@@ -564,26 +564,38 @@ export function ShareLinksPanel({
                           読み込み中…
                         </p>
                       ) : (
-                        <ul className="flex flex-col gap-1" data-testid="link-grant-list">
-                          {(grantsMap[link.link_id] ?? []).map((g) => (
-                            <li
-                              key={g.user_id}
-                              data-testid="link-grant-item"
-                              className="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1"
+                        <>
+                          <ul className="flex flex-col gap-1" data-testid="link-grant-list">
+                            {(grantsMap[link.link_id] ?? []).map((g) => (
+                              <li
+                                key={g.user_id}
+                                data-testid="link-grant-item"
+                                className="flex items-center gap-2 rounded-md bg-muted/40 px-2 py-1"
+                              >
+                                <UserRound
+                                  className="size-3.5 shrink-0 text-muted-foreground"
+                                  aria-hidden
+                                />
+                                <span className="min-w-0 flex-1 truncate text-xs">
+                                  {g.display_name ?? g.user_id}
+                                </span>
+                                <span className="shrink-0 text-[11px] text-muted-foreground">
+                                  {isoToDateInput(g.granted_at)}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                          {/* 一覧は上限 500 件で打ち切られる。総数（redeem_count）より少なければ明示する。 */}
+                          {(grantsMap[link.link_id]?.length ?? 0) < link.redeem_count ? (
+                            <p
+                              data-testid="link-grants-truncated"
+                              className="pl-1 text-[11px] text-muted-foreground"
                             >
-                              <UserRound
-                                className="size-3.5 shrink-0 text-muted-foreground"
-                                aria-hidden
-                              />
-                              <span className="min-w-0 flex-1 truncate text-xs">
-                                {g.display_name ?? g.user_id}
-                              </span>
-                              <span className="shrink-0 text-[11px] text-muted-foreground">
-                                {isoToDateInput(g.granted_at)}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
+                              ほか {link.redeem_count - (grantsMap[link.link_id]?.length ?? 0)}{" "}
+                              人（一覧は上限まで表示）
+                            </p>
+                          ) : null}
+                        </>
                       )
                     ) : null}
                   </div>
