@@ -145,6 +145,10 @@
                 "relation": "member"
               },
               {
+                "type": "organization",
+                "relation": "member"
+              },
+              {
                 "type": "workflow"
               }
             ]
@@ -155,7 +159,15 @@
                 "type": "user"
               },
               {
+                "type": "user",
+                "wildcard": {}
+              },
+              {
                 "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "organization",
                 "relation": "member"
               },
               {
@@ -253,6 +265,10 @@
                 "relation": "member"
               },
               {
+                "type": "organization",
+                "relation": "member"
+              },
+              {
                 "type": "workflow"
               }
             ]
@@ -263,7 +279,15 @@
                 "type": "user"
               },
               {
+                "type": "user",
+                "wildcard": {}
+              },
+              {
                 "type": "role",
+                "relation": "member"
+              },
+              {
+                "type": "organization",
                 "relation": "member"
               },
               {

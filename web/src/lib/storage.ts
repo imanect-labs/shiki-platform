@@ -15,6 +15,10 @@ export type FileVersionsResponse = components["schemas"]["FileVersionsResponse"]
 export type ShareEntry = components["schemas"]["ShareEntry"];
 export type ShareRole = components["schemas"]["ShareRole"];
 export type ShareTarget = components["schemas"]["ShareTarget"];
+export type ShareLink = components["schemas"]["ShareLink"];
+/// リンクの公開範囲（audience）。restricted=既存アクセス者のみ / organization=組織内 / anyone=社内全員。
+export type GeneralAccessLevel = components["schemas"]["GeneralAccessLevel"];
+export type CreateShareLinkBody = components["schemas"]["CreateShareLinkRequest"];
 export type DirectoryUserResponse = components["schemas"]["DirectoryUserResponse"];
 export type DirectorySearchResponse = components["schemas"]["DirectorySearchResponse"];
 export type DirectoryRoleResponse = components["schemas"]["DirectoryRoleResponse"];
@@ -274,6 +278,45 @@ export function unshareNode(nodeId: string, target: ShareTarget, role: ShareRole
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target, role }),
+  }).then(okEmpty);
+}
+
+// --- 共有リンク（複数発行・個別失効/延長・#342） --------------------------
+
+/// 共有リンクを発行する（owner のみ）。発行結果（token 含む）を返す。
+export function createShareLink(nodeId: string, body: CreateShareLinkBody): Promise<ShareLink> {
+  return apiFetch(`/nodes/${nodeId}/share-links`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => okJson<ShareLink>(r));
+}
+
+/// ノードの active な共有リンク一覧を取得する（owner のみ）。
+export function listShareLinks(nodeId: string): Promise<ShareLink[]> {
+  return apiFetch(`/nodes/${nodeId}/share-links`).then((r) => okJson<ShareLink[]>(r));
+}
+
+/// 共有リンクを失効する（owner のみ）。
+export function revokeShareLink(linkId: string): Promise<void> {
+  return apiFetch(`/share-links/${linkId}`, { method: "DELETE" }).then(okEmpty);
+}
+
+/// 共有リンクの有効期限を延長/変更する（owner のみ・null で無期限化）。
+export function extendShareLink(linkId: string, expiresAt: string | null): Promise<void> {
+  return apiFetch(`/share-links/${linkId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expires_at: expiresAt }),
+  }).then(okEmpty);
+}
+
+/// パスワード付き共有リンクを token で解錠する（認証済みなら誰でも・失敗は一律 403）。
+export function redeemShareLink(token: string, password?: string): Promise<void> {
+  return apiFetch(`/share-links/redeem`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, password }),
   }).then(okEmpty);
 }
 

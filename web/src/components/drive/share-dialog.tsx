@@ -12,7 +12,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { SegmentedControl } from "@/components/ui/segmented-control";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "@/components/ui/use-toast";
+import { CopyLinkButton } from "@/components/share/copy-link-button";
+import { ShareLinksPanel } from "@/components/share/share-links-panel";
 import {
   listShares,
   searchDirectory,
@@ -24,11 +28,11 @@ import {
   type ShareRole,
   type ShareTarget,
 } from "@/lib/storage";
-import { cn } from "@/lib/utils";
+import { resourcePath } from "@/lib/resource-link";
 
-const ROLES: { value: ShareRole; label: string }[] = [
-  { value: "viewer", label: "閲覧" },
-  { value: "editor", label: "編集" },
+const ROLE_OPTIONS: { value: ShareRole; label: string; testId: string }[] = [
+  { value: "viewer", label: "閲覧", testId: "share-role-viewer" },
+  { value: "editor", label: "編集", testId: "share-role-editor" },
 ];
 
 /// 共有先の種別（個人 / 部署・ロール）。
@@ -37,25 +41,36 @@ const KINDS: { value: TargetKind; label: string; placeholder: string }[] = [
   { value: "user", label: "メンバー", placeholder: "名前・メールで検索" },
   { value: "role", label: "部署・ロール", placeholder: "部署・ロール名で検索" },
 ];
+const KIND_OPTIONS = [
+  { value: "user", label: "メンバー", icon: UserPlus, testId: "share-kind-user" },
+  { value: "role", label: "部署・ロール", icon: Users, testId: "share-kind-role" },
+];
 
 /// 検索結果を種別非依存に正規化した 1 候補。
 type Candidate = { id: string; primary: string; secondary: string };
 
-/// 共有ダイアログ。同テナントのメンバー / 部署・ロールを検索して閲覧/編集権限を付与する。
-/// 別テナントの相手は検索結果に出ない（サーバ側 tenant_id スコープ）。部署・ロールは
-/// そのメンバー（配下ロール込み）へ一括共有される（#76）。
-/// 共有対象の最小形（id/name のみ使用）。NodeResponse は構造的に適合するため既存の
-/// ドライブ呼び出しは無変更で、ノート/Office エディタは `{ id, name }` を直接渡せる。
-export type ShareTargetNode = Pick<NodeResponse, "id" | "name">;
+/// 共有対象の最小形。NodeResponse は構造的に適合するため既存のドライブ呼び出しは無変更で、
+/// ノート/Office エディタは `{ id, name }` を直接渡せる（kind/parent_id はリンク解決の任意情報）。
+export type ShareTargetNode = Pick<NodeResponse, "id" | "name"> &
+  Partial<Pick<NodeResponse, "kind" | "parent_id">>;
 
+/// 共有ダイアログ（#342）。2 タブ構成:
+/// - **権限**: 特定のメンバー/部署・ロールへ直接共有（ReBAC 付与）＋既存の権限者へ渡すリンクコピー。
+/// - **リンク**: 共有リンクの発行（範囲/権限/期限/パスワード）＋発行済み一覧（コピー/延長/失効）。
+/// 別テナントの相手は検索結果に出ない（サーバ側 tenant_id スコープ）。部署・ロールはそのメンバー
+/// （配下ロール込み）へ一括共有される（#76）。
 export function ShareDialog({
   open,
   onOpenChange,
   node,
+  shareUrl,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   node: ShareTargetNode | null;
+  /// 共有リンクのパス（例 `/notes/{id}`）。エディタから開くとき name から拡張子が落ちて種別を
+  /// 判定できないケースのために明示指定する。省略時は node から解決する。
+  shareUrl?: string;
 }) {
   const [kind, setKind] = React.useState<TargetKind>("user");
   const [query, setQuery] = React.useState("");
@@ -64,8 +79,6 @@ export function ShareDialog({
   const [role, setRole] = React.useState<ShareRole>("viewer");
   const [shares, setShares] = React.useState<ShareEntry[]>([]);
   const [loadingShares, setLoadingShares] = React.useState(false);
-  // 進行中の付与/解除を (type, id, role) 単位で識別する。user と role で id が衝突しても
-  // 混ざらないよう type を含める。
   const [pendingKey, setPendingKey] = React.useState<string | null>(null);
 
   // 開いたら状態リセット＋現在の共有相手を読む。
@@ -88,9 +101,8 @@ export function ShareDialog({
     setResults([]);
   }, [kind]);
 
-  // インクリメンタル検索（デバウンス。全件取得はせず先頭ページのみ）。
-  // active フラグで世代を守り、古いクエリ/古い種別の遅延レスポンスが新しい結果を
-  // 上書きしないようにする（そのまま「共有」を押すと誤った相手へ付与する事故を防ぐ）。
+  // インクリメンタル検索（デバウンス。全件取得はせず先頭ページのみ）。active フラグで世代を守り、
+  // 古いクエリ/種別の遅延レスポンスが新しい結果を上書きしないようにする。
   React.useEffect(() => {
     if (!open) return;
     let active = true;
@@ -122,6 +134,14 @@ export function ShareDialog({
   );
 
   if (!node) return null;
+
+  const linkPath =
+    shareUrl ??
+    resourcePath({ id: node.id, name: node.name, kind: node.kind, parent_id: node.parent_id });
+  const pointerUrl = () => {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    return `${origin}${linkPath}`;
+  };
 
   const grant = async (candidate: Candidate) => {
     const target = { type: kind, id: candidate.id } as ShareTarget;
@@ -178,173 +198,174 @@ export function ShareDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
         <DialogHeader>
           <DialogTitle>「{node.name}」を共有</DialogTitle>
           <DialogDescription>
-            同じ組織のメンバー・部署に権限を付与します。部署に共有するとそのメンバー全員に反映されます。
+            特定のユーザー・部署に権限を付与するか、共有リンクを発行します。
           </DialogDescription>
         </DialogHeader>
 
-        {/* 共有先の種別 */}
-        <div className="inline-flex rounded-md border border-border p-0.5">
-          {KINDS.map((k) => (
-            <button
-              key={k.value}
-              type="button"
-              aria-pressed={kind === k.value}
-              onClick={() => setKind(k.value)}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors",
-                kind === k.value
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {k.value === "role" ? (
-                <Users className="size-3.5" aria-hidden />
+        <Tabs defaultValue="permissions">
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="permissions" data-testid="share-tab-permissions">
+              権限
+            </TabsTrigger>
+            <TabsTrigger value="links" data-testid="share-tab-links">
+              リンク
+            </TabsTrigger>
+          </TabsList>
+
+          {/* ===== 権限タブ（直接共有＋既存権限者向けリンクコピー） ===== */}
+          <TabsContent value="permissions" className="flex flex-col gap-4">
+            {/* 相手の種別＋権限 */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <SegmentedControl
+                aria-label="共有先の種別"
+                size="sm"
+                options={KIND_OPTIONS}
+                value={kind}
+                onValueChange={(v) => setKind(v as TargetKind)}
+              />
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">権限</span>
+                <SegmentedControl
+                  aria-label="付与する権限"
+                  size="sm"
+                  options={ROLE_OPTIONS}
+                  value={role}
+                  onValueChange={(v) => setRole(v as ShareRole)}
+                />
+              </div>
+            </div>
+
+            {/* 検索 */}
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={placeholder}
+                className="pl-9"
+              />
+            </div>
+
+            {/* 検索結果 */}
+            <div className="max-h-40 overflow-y-auto rounded-lg border border-border">
+              {searching ? (
+                <div className="flex items-center justify-center gap-2 py-5 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" aria-hidden />
+                  検索中…
+                </div>
+              ) : results.length === 0 ? (
+                <p className="px-3 py-5 text-center text-sm text-muted-foreground">
+                  {kind === "user"
+                    ? "該当するメンバーがいません"
+                    : "該当する部署・ロールがありません"}
+                </p>
               ) : (
-                <UserPlus className="size-3.5" aria-hidden />
+                <ul className="divide-y divide-border">
+                  {results.map((c) => {
+                    const key = `${kind}:${c.id}:${role}`;
+                    const already = sharedKeys.has(key);
+                    return (
+                      <li key={c.id} className="flex items-center gap-3 px-3 py-2">
+                        {kind === "role" ? (
+                          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary text-secondary-foreground">
+                            <Users className="size-4" aria-hidden />
+                          </span>
+                        ) : null}
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">{c.primary}</p>
+                          <p className="truncate text-xs text-muted-foreground">{c.secondary}</p>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={already ? "ghost" : "outline"}
+                          disabled={already || pendingKey === key}
+                          onClick={() => void grant(c)}
+                        >
+                          {pendingKey === key ? (
+                            <Loader2 className="size-4 animate-spin" aria-hidden />
+                          ) : (
+                            <UserPlus className="size-4" aria-hidden />
+                          )}
+                          {already ? "共有済み" : "共有"}
+                        </Button>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
-              {k.label}
-            </button>
-          ))}
-        </div>
-
-        {/* 役割の選択 */}
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">付与する権限</span>
-          <div className="inline-flex rounded-md border border-border p-0.5">
-            {ROLES.map((r) => (
-              <button
-                key={r.value}
-                type="button"
-                aria-pressed={role === r.value}
-                onClick={() => setRole(r.value)}
-                className={cn(
-                  "rounded px-3 py-1 text-sm transition-colors",
-                  role === r.value
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* 検索 */}
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-          <Input
-            autoFocus
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={placeholder}
-            className="pl-9"
-          />
-        </div>
-
-        {/* 検索結果 */}
-        <div className="max-h-48 overflow-y-auto rounded-lg border border-border">
-          {searching ? (
-            <div className="flex items-center justify-center gap-2 py-5 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" aria-hidden />
-              検索中…
             </div>
-          ) : results.length === 0 ? (
-            <p className="px-3 py-5 text-center text-sm text-muted-foreground">
-              {kind === "user" ? "該当するメンバーがいません" : "該当する部署・ロールがありません"}
-            </p>
-          ) : (
-            <ul className="divide-y divide-border">
-              {results.map((c) => {
-                // 選択中の役割で既に共有済みかどうか（別役割なら付与＝昇格を許可）。
-                const key = `${kind}:${c.id}:${role}`;
-                const already = sharedKeys.has(key);
-                return (
-                  <li key={c.id} className="flex items-center gap-3 px-3 py-2">
-                    {kind === "role" ? (
-                      <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary text-secondary-foreground">
-                        <Users className="size-4" aria-hidden />
-                      </span>
-                    ) : null}
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{c.primary}</p>
-                      <p className="truncate text-xs text-muted-foreground">{c.secondary}</p>
-                    </div>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={already ? "ghost" : "outline"}
-                      disabled={already || pendingKey === key}
-                      onClick={() => void grant(c)}
+
+            {/* 共有中の相手 */}
+            {loadingShares ? null : shares.length === 0 ? null : (
+              <ul className="flex flex-col gap-1">
+                {shares.map((s) => {
+                  const key = `${s.target.type}:${s.target.id}:${s.role}`;
+                  return (
+                    <li
+                      key={key}
+                      className="flex items-center gap-2 rounded-md border border-border px-3 py-2"
                     >
-                      {pendingKey === key ? (
-                        <Loader2 className="size-4 animate-spin" aria-hidden />
-                      ) : (
-                        <UserPlus className="size-4" aria-hidden />
-                      )}
-                      {already ? "共有済み" : "共有"}
-                    </Button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-
-        {/* 現在の共有相手 */}
-        <div>
-          <p className="mb-2 text-sm font-medium">共有中の相手</p>
-          {loadingShares ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" aria-hidden />
-              読み込み中…
-            </div>
-          ) : shares.length === 0 ? (
-            <p className="text-sm text-muted-foreground">まだ誰にも共有していません。</p>
-          ) : (
-            <ul className="flex flex-col gap-1">
-              {shares.map((s) => {
-                const key = `${s.target.type}:${s.target.id}:${s.role}`;
-                return (
-                  <li
-                    key={key}
-                    className="flex items-center gap-2 rounded-md border border-border px-3 py-2"
-                  >
-                    {s.target.type === "role" ? (
-                      <Users className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                    ) : null}
-                    <span className="min-w-0 flex-1 truncate text-sm">{s.target.id}</span>
-                    {s.target.type === "role" ? (
+                      {s.target.type === "role" ? (
+                        <Users className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                      ) : null}
+                      <span className="min-w-0 flex-1 truncate text-sm">{s.target.id}</span>
+                      {s.target.type === "role" ? (
+                        <span className="rounded bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
+                          部署・ロール
+                        </span>
+                      ) : null}
                       <span className="rounded bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
-                        部署・ロール
+                        {s.role === "editor" ? "編集" : "閲覧"}
                       </span>
-                    ) : null}
-                    <span className="rounded bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
-                      {s.role === "editor" ? "編集" : "閲覧"}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label="共有を解除"
-                      disabled={pendingKey === key}
-                      onClick={() => void revoke(s)}
-                      className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      {pendingKey === key ? (
-                        <Loader2 className="size-4 animate-spin" aria-hidden />
-                      ) : (
-                        <X className="size-4" aria-hidden />
-                      )}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
+                      <button
+                        type="button"
+                        aria-label="共有を解除"
+                        disabled={pendingKey === key}
+                        onClick={() => void revoke(s)}
+                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        {pendingKey === key ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden />
+                        ) : (
+                          <X className="size-4" aria-hidden />
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            <div className="shiki-dash-x" />
+
+            {/* 既存の権限者に渡すリンク（付与ゼロの純ポインタ）。 */}
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">
+                アクセス権のある人へリンクを渡す
+              </span>
+              <CopyLinkButton url={pointerUrl} />
+            </div>
+          </TabsContent>
+
+          {/* ===== リンクタブ（発行物・失効/延長） ===== */}
+          <TabsContent value="links">
+            <ShareLinksPanel
+              nodeId={node.id}
+              linkPath={linkPath}
+              // パスワード付きリンクは解錠画面のあるページ（ノート/Office/スライド/CSV）でしか開けない。
+              // フォルダ・非プレビューファイルは drive へ解決されるため、パスワード発行を無効化する（C-1）。
+              passwordSupported={!linkPath.startsWith("/drive")}
+            />
+          </TabsContent>
+        </Tabs>
       </DialogContent>
     </Dialog>
   );

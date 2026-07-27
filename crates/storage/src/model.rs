@@ -209,6 +209,81 @@ impl ShareRole {
             _ => None,
         }
     }
+
+    /// DB 保存用の文字列表現（`viewer`/`editor`）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShareRole::Viewer => "viewer",
+            ShareRole::Editor => "editor",
+        }
+    }
+
+    /// DB 文字列から復元する（未知値は `None`）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "viewer" => Some(ShareRole::Viewer),
+            "editor" => Some(ShareRole::Editor),
+            _ => None,
+        }
+    }
+}
+
+/// 共有リンクの公開範囲（audience・#342。旧 #338 の一般アクセスレベルを流用）。
+///
+/// broad な audience は共有先（subject）に写る: `organization` / `anyone` ともに
+/// `organization:<tenant>|<org>#member`（社内＝現テナント）。#342 レビュー A-2 で `anyone`→`user:*`
+/// を廃し、両者を organization#member に寄せた（`user:*` は将来の viewer 限定・跨ぎ閲覧 `authenticated`
+/// 専用に予約）。`anyone` は互換のため列挙に残すが `organization` と同義に縮退している。
+/// `restricted` は付与ゼロ（台帳ポインタのみ・タプルを書かない）。詳細は
+/// [`crate::service::share_link_util::broad_subject`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneralAccessLevel {
+    /// 既存アクセス者のみ（付与ゼロの純ポインタ）。
+    Restricted,
+    /// 社内（現テナント/組織内）の全メンバー。
+    Organization,
+    /// 互換のための旧「すべての認証済みユーザー」。現在は `Organization` と同義に縮退（A-2）。
+    Anyone,
+}
+
+impl GeneralAccessLevel {
+    /// DB 保存用の文字列表現。`restricted` は行の不在で表すため DB には現れない。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GeneralAccessLevel::Restricted => "restricted",
+            GeneralAccessLevel::Organization => "organization",
+            GeneralAccessLevel::Anyone => "anyone",
+        }
+    }
+
+    /// DB 文字列から復元する（未知値は `None`）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "restricted" => Some(GeneralAccessLevel::Restricted),
+            "organization" => Some(GeneralAccessLevel::Organization),
+            "anyone" => Some(GeneralAccessLevel::Anyone),
+            _ => None,
+        }
+    }
+}
+
+/// 共有リンク 1 件（作成の発行結果・一覧要素の両方に使う・#342）。
+///
+/// `audience` は [`GeneralAccessLevel`] を再利用する（`restricted` = 既存アクセス者のみの
+/// 純ポインタ／`organization`／`anyone`）。パスワードは **`has_password` の真偽のみ**露出し、
+/// ハッシュ・平文は決して返さない。`token` はリンクの URL/redeem 起点で、発行 owner にのみ返す
+/// （URL 再表示のため一覧にも含める）。失効済み（`revoked_at` 有り）のリンクは一覧に含めない。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ShareLink {
+    pub link_id: Uuid,
+    pub token: String,
+    pub audience: GeneralAccessLevel,
+    pub role: ShareRole,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub has_password: bool,
+    pub label: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 /// 共有相手 1 件（誰に・どの役割で共有したか）。

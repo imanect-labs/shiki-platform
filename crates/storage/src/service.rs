@@ -15,6 +15,7 @@ use authz::{
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::{
@@ -55,6 +56,12 @@ pub struct StorageService {
     /// 1 ファイルの最大アップロードサイズ（バイト）。declare の宣言サイズがこれを超えたら拒否し、
     /// 認証ユーザーによる無制限アップロードでのストレージ枯渇を防ぐ（容量ガード）。
     max_upload_size: i64,
+    /// 共有リンク有効期限の失効タイマを起こす通知（#342）。リンク発行/延長/redeem で今より早い
+    /// 期限を設定したら `notify_one()` し、タイマが次回起床時刻を再計算する（定期ポーリング回避）。
+    expiry_notify: Arc<Notify>,
+    /// redeem の総当たり/Argon2 CPU DoS を抑える固定窓レート制限（#342 レビュー B-3・プロセス内）。
+    /// principal / token を prefix 付き鍵で同じ器に載せる。
+    redeem_limiter: share_link_ratelimit::RedeemRateLimiter,
 }
 
 #[derive(sqlx::FromRow)]
@@ -135,7 +142,15 @@ impl StorageService {
             presign_get_ttl,
             presign_put_ttl,
             max_upload_size,
+            expiry_notify: Arc::new(Notify::new()),
+            redeem_limiter: share_link_ratelimit::RedeemRateLimiter::default(),
         }
+    }
+
+    /// 共有リンク失効タイマ用の通知ハンドル（#342）。タイマ spawner がこれを購読し、
+    /// `next_share_link_expiry()` まで sleep しつつ、新期限設定の `notify_one()` で起きる。
+    pub fn expiry_notify(&self) -> Arc<Notify> {
+        Arc::clone(&self.expiry_notify)
     }
 }
 
@@ -148,6 +163,12 @@ mod move_rename;
 mod proposal;
 mod read;
 mod restore;
+mod share_link;
+mod share_link_expiry;
+mod share_link_ratelimit;
+mod share_link_reconcile;
+mod share_link_redeem;
+mod share_link_util;
 mod sharing;
 mod trash;
 mod upload;

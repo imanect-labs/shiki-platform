@@ -142,6 +142,22 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/shares/shared-with-me", &["GET"], Session, || {
             get(routes::shares::shared_with_me)
         }),
+        // 共有リンク（#342）。発行/一覧/失効/延長は owner ゲート、redeem は認証のみ（失敗は一律 403）。
+        r("/nodes/{id}/share-links", &["GET", "POST"], Session, || {
+            get(routes::share_links::list_share_links).post(routes::share_links::create_share_link)
+        }),
+        r(
+            "/share-links/{link_id}",
+            &["DELETE", "PATCH"],
+            Session,
+            || {
+                delete(routes::share_links::revoke_share_link)
+                    .patch(routes::share_links::extend_share_link)
+            },
+        ),
+        r("/share-links/redeem", &["POST"], Session, || {
+            post(routes::share_links::redeem_share_link)
+        }),
         r("/directory/users", &["GET"], Session, || {
             get(routes::directory::search_users)
         }),

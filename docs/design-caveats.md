@@ -508,3 +508,22 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   （期限切れは次アクセスで掃除）③提案が current 化される際は最新版との衝突を再確認する。
 - **受け入れ条件**: ロック中の office.edit が上書きを起こさない negative IT・提案採用で書込イベントが
   流れる IT が CI にある。
+
+# 共有リンク・org 境界（#342 / 2026-07 追加）
+
+## 🟠 PIT-45: org は storage では隔離境界だが RAG hydration では境界になっていない（サブシステム間で不整合）
+
+- **箇所**: `crates/storage/src/service/read.rs`（`load_node` は `WHERE org = ctx.org AND tenant_id = $3`）／
+  `crates/rag/src/search.rs` の `hydrate`（`c.tenant_id = $1` と `n.tenant_id = c.tenant_id` のみ・**org で絞らない**）。
+- **リスク**: 1 テナントに複数 org がある構成では、**storage 経由の直接オープンは org を跨げないのに、
+  RAG 回答のチャンク hydration は org を跨いで他 org の文書を引用し得る**。現状は post-filter が
+  `ctx.ns().file()` で FGA object を組み直すため、共有リンクが無ければ fail-closed で落ちる（実害は
+  共有リンクで broad 公開した文書に限定）。#342 で `anyone`→`organization#member` に寄せて redeem/
+  reconcile の org を厳密化したので storage 側は塞がったが、**RAG hydration の org 欠落は独立の既存
+  ギャップ**として残る（1 テナント 1 org のデモでは顕在化しない・latent）。
+- **決めること**: ①`hydrate` の JOIN/WHERE に org 述語を足すか、②「org はテナント内の隔離境界か、
+  単なるグルーピングか」をサブシステム横断で 1 つに決める（storage は前者・RAG は後者で食い違っている）。
+  「テナント跨ぎ閲覧共有（authenticated audience・#342 レビュー A-2 末尾）」を実装する際は、この org
+  境界と監査帰属・blob presign の 3 点を同時に設計する。
+- **受け入れ条件**: マルチ org テナントで、別 org の broad 共有文書が RAG 回答に混入しない（あるいは
+  意図的に許すなら監査に残る）ことを示す IT。単一定義の org 境界ポリシーが docs に明文化される。

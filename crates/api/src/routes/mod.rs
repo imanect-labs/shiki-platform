@@ -27,6 +27,7 @@ pub mod mini_apps;
 pub mod office;
 pub mod search;
 pub mod secrets;
+pub mod share_links;
 pub mod shares;
 pub mod skills;
 pub mod skills_registry;
