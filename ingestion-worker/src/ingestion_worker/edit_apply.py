@@ -44,8 +44,10 @@ def _strip_inline(text: str) -> str:
 def _md_lines(markdown: str) -> list[tuple[str, str, int]]:
     """Markdown を (種別, テキスト, レベル) の行列へ落とす。
 
-    最小集合: 見出し/箇条書き/段落＋単独行の data URL 画像（image 種別はテキスト欄に
-    `alt\\x00base64` を詰める。展開は docx 側のみ・他形式は alt テキストへ縮退）。
+    対応記法: 見出し/箇条書き/番号付き/段落／**GFM テーブル**（ヘッダ行＋区切り行が揃うときのみ・
+    docx では実表になる）／単独行の data URL 画像（image 種別はテキスト欄に `alt\\x00base64` を
+    詰める。展開は docx 側のみ・他形式は alt テキストへ縮退）。
+    table 種別のテキスト欄は行を `_ROW_SEP`・セルを `_CELL_SEP` で連結した 1 文字列。
     """
     lines: list[tuple[str, str, int]] = []
     raw_lines = [raw.strip() for raw in markdown.splitlines()]
