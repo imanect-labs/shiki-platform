@@ -25,6 +25,13 @@ _INLINE_MD = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`")
 _HEADING_MD = re.compile(r"^(#{1,6})\s+(.*)$")
 _BULLET_MD = re.compile(r"^[-*]\s+(.*)$")
 _ORDERED_MD = re.compile(r"^\d+[.)]\s+(.*)$")
+# GFM のテーブル（`| a | b |` ＋ 区切り行 `| --- | :--: |`）。ヘッダ行＋区切り行が
+# 揃って初めてテーブルとして扱う（`|` を含むだけの段落を誤変換しない）。
+_TABLE_ROW_MD = re.compile(r"^\|(.+)\|$")
+_TABLE_SEP_MD = re.compile(r"^\|(\s*:?-{1,}:?\s*\|)+$")
+# テーブルを (種別, テキスト, レベル) の 1 タプルへ詰めるための区切り（本文に現れない制御文字）。
+_ROW_SEP = "\x1e"
+_CELL_SEP = "\x1f"
 # 単独行の data URL 画像（`![alt](data:image/png;base64,....)`・#334 のチャート静的化）。
 # 外部 URL の画像は取得しない（worker は egress しない契約）ため data URL のみ対応する。
 _IMAGE_MD = re.compile(r"^!\[([^\]]*)\]\(data:image/(png|jpeg);base64,([A-Za-z0-9+/=]+)\)$")
@@ -41,9 +48,25 @@ def _md_lines(markdown: str) -> list[tuple[str, str, int]]:
     `alt\\x00base64` を詰める。展開は docx 側のみ・他形式は alt テキストへ縮退）。
     """
     lines: list[tuple[str, str, int]] = []
-    for raw in markdown.splitlines():
-        line = raw.strip()
+    raw_lines = [raw.strip() for raw in markdown.splitlines()]
+    i = 0
+    while i < len(raw_lines):
+        line = raw_lines[i]
         if not line:
+            i += 1
+            continue
+        # テーブルは複数行を 1 ブロックとして消費する（ヘッダ＋区切り行が揃うときだけ）。
+        if (
+            _TABLE_ROW_MD.match(line)
+            and i + 1 < len(raw_lines)
+            and _TABLE_SEP_MD.match(raw_lines[i + 1])
+        ):
+            rows = [_table_cells(line)]
+            i += 2
+            while i < len(raw_lines) and _TABLE_ROW_MD.match(raw_lines[i]):
+                rows.append(_table_cells(raw_lines[i]))
+                i += 1
+            lines.append(("table", _ROW_SEP.join(_CELL_SEP.join(r) for r in rows), 0))
             continue
         if m := _IMAGE_MD.match(line):
             lines.append(("image", f"{_strip_inline(m.group(1).strip())}\x00{m.group(3)}", 0))
@@ -55,7 +78,14 @@ def _md_lines(markdown: str) -> list[tuple[str, str, int]]:
             lines.append(("ordered", _strip_inline(m.group(1).strip()), 0))
         else:
             lines.append(("paragraph", _strip_inline(line), 0))
+        i += 1
     return lines
+
+
+def _table_cells(line: str) -> list[str]:
+    """`| a | b |` の 1 行をセル列へ（前後の空セルを落とし、インライン記法を除去）。"""
+    inner = line.strip().strip("|")
+    return [_strip_inline(c.strip()) for c in inner.split("|")]
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +146,32 @@ def _docx_add_list_safe(doc: Any, text: str, style: str, marker: str) -> tuple[A
         return doc.add_paragraph(f"{marker} {text}"), True
 
 
+def _docx_add_table_safe(doc: Any, encoded: str) -> tuple[list[Any], bool]:
+    """Markdown テーブルを **docx の表**として追加する（ヘッダ行は太字）。
+
+    返り値: (追加した要素列, スタイル縮退が起きたか)。表スタイルを持たない docx では
+    罫線なしの素の表へ縮退する（表そのものは必ず作る＝生のパイプ文字列を残さない）。
+    表の直後には空段落を置く（連続する表が Word 上で 1 つに融合するのを防ぐ）。
+    """
+    rows = [r.split(_CELL_SEP) for r in encoded.split(_ROW_SEP)]
+    width = max(len(r) for r in rows)
+    table = doc.add_table(rows=len(rows), cols=width)
+    degraded = False
+    try:
+        table.style = "Table Grid"
+    except KeyError:
+        degraded = True
+    for r, cells in enumerate(rows):
+        for c in range(width):
+            cell = table.cell(r, c)
+            text = cells[c] if c < len(cells) else ""
+            paragraph = cell.paragraphs[0]
+            run = paragraph.add_run(text)
+            if r == 0:
+                run.bold = True  # ヘッダ行（GFM は 1 行目がヘッダ）
+    return [table, doc.add_paragraph()], degraded
+
+
 def _docx_add_image_safe(doc: Any, alt: str, b64: str, budget: list[int]) -> tuple[Any, bool]:
     """data URL 画像を add_picture で埋め込む（#334・チャート静的化）。
 
@@ -158,10 +214,18 @@ def _docx_append_blocks(
     append_markdown op を跨いで同じ上限を効かせる（op ごとに 20 枚を再付与しない・PIT-23）。
     """
     created = []
+    blocks = 0
     degraded = False
     if image_budget is None:
         image_budget = [_MAX_IMAGES]
     for kind, text, level in _md_lines(markdown):
+        if kind == "table":
+            # 表は複数要素（表＋後続の空段落）を返す。件数は「表 1 件」で数える。
+            elements, fell_back = _docx_add_table_safe(doc, text)
+            created.extend(elements)
+            blocks += 1
+            degraded = degraded or fell_back
+            continue
         if kind == "heading":
             paragraph, fell_back = _docx_add_heading_safe(doc, text, level)
         elif kind == "bullet":
@@ -174,13 +238,16 @@ def _docx_append_blocks(
         else:
             paragraph, fell_back = doc.add_paragraph(text), False
         created.append(paragraph)
+        blocks += 1
         degraded = degraded or fell_back
     if anchor is not None:
         ref = anchor._p  # noqa: SLF001 - python-docx の要素移動は lxml 層でのみ可能。
-        for paragraph in created:
-            ref.addnext(paragraph._p)  # noqa: SLF001
-            ref = paragraph._p  # noqa: SLF001
-    return len(created), degraded
+        for element in created:
+            # 段落は `_p`、表は `_tbl` が本体要素（どちらも body の直下に並ぶ）。
+            node = getattr(element, "_p", None) if hasattr(element, "_p") else element._tbl  # noqa: SLF001
+            ref.addnext(node)
+            ref = node
+    return blocks, degraded
 
 
 def apply_docx(data: bytes, ops: list[Any]) -> tuple[bytes, list[OpTuple]]:
