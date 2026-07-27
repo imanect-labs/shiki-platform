@@ -21,7 +21,7 @@
 | 12.7 | ヘルプ基盤（help/ 1ソース→ヘルプ UI＋shiki-help RAG スコープ同梱） | frontend | 2.x |
 | 12.8 | IaC: OpenTofu 化＋テナントプロビジョニング自動化（コンソール→論理登録／プール追加は CI→apply） | infra | SAAS.2, 12.4 |
 | 12.9 | テナント消去機構（全ストア消去＋消去経路の網羅性 CI ゲート＋バックアップ期限消滅証明） | infra | SAAS.2 |
-| 12.10 | バックアップ/DR（テナント単位・整合スナップショット・RPO/RTO） | infra | – |
+| 12.10 | バックアップ/DR（プール全体 PITR＋テナント論理復旧・整合スナップショット・RPO/RTO） | infra | – |
 | 12.11 | API レート制限（テナント単位・トークンバケット再利用） | api | 10.5 |
 | 12.12 | 法令チェックリスト＋DPA 前提資料（エンジニアリング対応の突合） | infra | 12.9 |
 
@@ -94,8 +94,10 @@
 ### Task 12.8: IaC・テナントプロビジョニング自動化
 - **area**: infra / **path**: `deploy/tofu/`, CI
 - **仕様**: **既定はフルプール**（design §4.1）なので、テナント追加は**論理プロビジョニング**:
-  ベンダーコンソール→tenant レジストリ登録・Keycloak group/realm・DNS・OpenFGA 名前空間・初期管理者招待
-  （SAAS.2 の admin API と結線・インフラ変更なし・冪等）。
+  ベンダーコンソール→tenant レジストリ登録・**共有 identity pool（単一 realm）内への tenant group 作成**・
+  DNS・OpenFGA 名前空間・初期管理者招待（SAAS.2 の admin API と結線・インフラ変更なし・冪等）。
+  **realm を新規作成するのは専用ストア（cell）契約時のみ**——既定のフルプール経路では Phase 0 で定義した
+  共有 identity pool の realm を使い、テナント境界は group で表す。
   GCP は OpenTofu で記述し **環境（プール）＝モジュールのインスタンス化**とする。プール増設および
   専用ストア（cell）契約時のみ CI パイプライン→`tofu apply` を走らせる。冪等・dry-run。
 - **受け入れ条件**:

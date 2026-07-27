@@ -251,7 +251,7 @@
 | SAAS.2 | テナント・オンボーディング（プロビジョニング自動化） | infra | SAAS.1 |
 | SAAS.3 | 課金・使用量メータリング | infra | SAAS.1 |
 | SAAS.4 | プラン制限・クォータ enforcement | infra | SAAS.3 |
-| SAAS.5 | データプレーン完全相乗り（フルプール最適化・将来） | infra | SAAS.1 |
+| SAAS.5 | データプレーン完全相乗り（フルプール）— ✅ 達成済み・**既定トポロジ** | infra | SAAS.1 |
 
 > ⚠️ 旧 SAAS.1「認可コンテキストへ `tenant_id` 追加」は **Phase 0 Task 0.5 に前倒し（day-1 で `AuthContext { principal, org, tenant_id }`）**。本トラックは tenant_id 継ぎ目の*実装*ではなく、その上の分離強制・運用・課金を扱う。
 

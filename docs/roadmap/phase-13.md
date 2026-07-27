@@ -32,11 +32,12 @@
 - **Phase 6**（generative UI の `ActionBinding` / `ActionDispatcher`）
 - **Phase 11-pre**（グリッド UI の前例 `web/src/components/csv/csv-grid.tsx`・glide-data-grid）
 
-> ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-45〜48 を確認すること。**
+> ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-45〜49 を確認すること。**
 > v1 の PIT-17〜21（集計からの特定・述語材料の量・マスク列での並べ替え・テーブル間の権限素通り・
 > WHERE 強制注入の限界）は**そのまま生き続ける**。v2 はこれに加えて、
-> pivot 索引のプランナ統計欠如（PIT-45）・SSE の権限材料鮮度（PIT-46）・
-> 計算列の材料化残留（PIT-47）・書込増幅と肥大化（PIT-48）を持ち込む。
+> pivot 索引のプランナ統計欠如と駆動索引の不在（PIT-45）・SSE の権限材料鮮度と述語グループ化の破綻（PIT-46）・
+> 計算列の材料化残留（PIT-47）・書込増幅と肥大化とバックフィル競合（PIT-48）・
+> 可視性を失った行の配信漏れ（PIT-49）を持ち込む。
 
 | ID | タイトル | area | 依存 |
 |----|---------|------|------|
@@ -97,10 +98,24 @@
 - **依存**: 13.1
 - **仕様**:
   - 索引テーブル群を追加（data-platform.md §3.3。すべて `PARTITION BY HASH (table_int)` 64 分割）:
-    `data_index_text`（text/select/multi_select/date/datetime/*_ref/status＋owner 擬似列）/
-    `data_index_num`（number・`numeric`）/ `data_link`（record_ref・逆引き索引つき）/
-    `data_unique`（unique 制約を PK 1 本で賄う）/ `data_index_search`（部分一致・trigram GIN を 1 本だけ張る隔離先）。
-  - **索引の総本数はパーティションあたり 10 本の定数**とし、テナント数・テーブル数・列数に依存させない。
+    `data_index_text`（text/select/multi_select/date/datetime/*_ref/status＋システム擬似列）/
+    `data_index_num`（number・`numeric`）/ `data_link`（record_ref）/
+    `data_unique`（unique 制約を PK 1 本で賄う）/ `data_index_search`（部分一致・trigram GIN の隔離先）。
+  - **索引の総本数はパーティションあたり 9 本の定数**とし、テナント数・テーブル数・列数に依存させない。
+  - **システム擬似列を `field_id` の予約枠に置く**（`0`=owner / `1`=created_at / `2`=updated_at、
+    ユーザー列は `16..`）。全レコードに必ず 1 行あるため、**null 落ちしない全件駆動索引**として使える
+    （任意列ソートで行が消える問題と、フィルタなし初期グリッドの両方がこれで解ける・§3.5）。
+  - **リンクは 1 エッジにつき順方向行と逆方向行の 2 行**として持つ（同一 Tx で書く）。逆引きを
+    `dst_table_int` 条件の専用索引で賄うと**逆引きだけ 64 パーティションを横断**し、N:N の主要経路が
+    テーブル数に比例して劣化するため。両方向とも自分側の `table_int` に載るので枝刈りが効く。
+  - **btree キー長の上限に対処する**。PostgreSQL はキーがページの 1/3（約 2,704B）を超えると
+    `index row size exceeds maximum` で **INSERT 自体が落ちる**。現行の `MAX_TEXT_LEN = 10_000`
+    （`crates/data/src/validate.rs`）はこれを超え得るので、索引テーブルには
+    `MAX_INDEX_KEY_BYTES = 2_000` のプレフィクスのみ格納し `truncated` フラグを立て、
+    等値・`StartsWith` は候補を本体で再確認する。`data_unique` は長値をハッシュ付き正規化キーにする。
+  - **部分一致 GIN はスコープ列を索引自体に含める**（`btree_gin` で
+    `(tenant_int, table_int, field_id, val gin_trgm_ops)`）。含めないと 1 テナントの検索でも
+    プール全体の posting list を読み、ノイジーネイバーが p95 を壊す。
   - `data_record` も `PARTITION BY HASH (table_int)` へ移行し、PK を `(tenant_int, table_int, id)` にする。
   - **二重書込**: 書込トランザクションで旧 partial index と新索引テーブルの両方を更新する（切戻し可能に保つ）。
     索引更新は**変更のあったフィールドのみ**（v1 の `FieldPatch` を使う）。
@@ -114,6 +129,10 @@
   - [ ] 書込パスで変更のないフィールドの索引行が更新されない（差分更新の確認）
   - [ ] 多値要素数の上限超過が 422 で拒否される
   - [ ] `data_record` のパーティション枝刈りが効く（`EXPLAIN` で 1 パーティションのみ走査）
+  - [ ] **リンクの順引き・逆引きがいずれも 1 パーティションに枝刈りされる**（`EXPLAIN`）
+  - [ ] **`MAX_TEXT_LEN` 上限（10,000B）の値を持つレコードが `indexed` 列でも書き込める**
+        （btree キー超過で落ちない）／切り詰め値の等値検索が本体再確認で正しく効く
+  - [ ] 部分一致検索が他テナントのデータ量に影響されない（GIN スコープの確認）
 
 ### Task 13.3: クエリコンパイラ v2 ＋読取切替＋旧方式撤去
 - **area**: data / **path**: `crates/data/src/query/`, `crates/data/src/policy/compile.rs`
@@ -129,8 +148,13 @@
   - **駆動索引の選択をコンパイラが行う**。フィールド単位の粗いカーディナリティ統計をレジストリに持ち、
     背景ジョブで更新する。プランナ任せにしない（PIT-45）。
   - 索引到達可能性の強制（§5.2）: filter/sort/group_by/aggregate は `indexed || unique` 宣言済みのみ、
-    マスク列は 403、`Contains`/`EndsWith` は `searchable` 宣言済みのみ、条件木に索引可能な述語を最低 1 つ、
-    `statement_timeout`。
+    マスク列は 403、`Contains`/`EndsWith` は `searchable` 宣言済みのみ、`statement_timeout`。
+    条件は「**駆動索引が 1 つ以上決まること**」とし、「条件木に索引可能な述語を最低 1 つ」という
+    強い形にはしない（`filter = None` の初期グリッド＝13.5 の要件が常に拒否されるため）。
+    システム擬似列は常に駆動になれるので初期グリッドは成立する。
+  - **複数ソートの最悪ケースを設計に含める**。pivot 索引はフィールドごとに別行なので複合順序の btree が
+    存在せず、第 1 キー同値群が大きいと第 2 キー以降の再ソートが要る。既定は同値群をページサイズの
+    K 倍（既定 8）まで先読みしてページ内ソート、超過時は複合索引をオンデマンド材料化する。
   - 件数は**上限付き正確カウント**（`Exact(n)` / `AtLeast(10_000)`）。上限はテナント設定で変更可能。
   - **機能フラグで読取経路を切替**。切替前に ①同一クエリの新旧結果 parity 検証
     ②`policy_threat_it.rs`（781 行）が**両実装で通る**ことを必須にする。
@@ -141,7 +165,10 @@
   - [ ] 100 万行のテーブルでグリッド 1 ページ（100 行）が p95 < 100ms
   - [ ] `policy_threat_it.rs` が新旧両実装で通る／parity 検証が全代表クエリで一致
   - [ ] **EXPLAIN 回帰テストが CI にある**（選択的フィルタ×非選択的ソート／その逆／多条件 AND／OR 木／
-        keyset 継続の各パターンで駆動索引と実測行数をアサート・PIT-45）
+        keyset 継続／**任意列ソート**／**第 1 キーが偏った複数ソート**の各パターンで駆動索引と実測行数を
+        アサート・PIT-45）
+  - [ ] **任意列（null あり）でソートしても可視行が欠落しない**（未設定レコードが結果から消えない）
+  - [ ] `filter = None` の初期グリッド（フィルタなし 100 行）が拒否されず p95 < 100ms で返る
   - [ ] `row_policy` が未索引フィールドを参照するスキーマが 422 で拒否される
   - [ ] マスク列を filter/sort/group_by/aggregate/search に指定すると 403（PIT-19 継承）
   - [ ] 集計のスモールセル抑制と集計クエリ監査が v1 と同じ挙動（PIT-17 継承）
@@ -156,19 +183,33 @@
     実体は同じ行を逆から読む（**二重書込をしない＝不整合が構造的に発生しない**）。
   - **ロールアップ**（count/sum/avg/min/max/concat）と**数式**を追加。数式は**閉じた AST ＋ Rust インタプリタ**
     （自由文字列を SQL にしない）。算術は `numeric`。**依存 DAG をスキーマ保存時に構築し循環を 422 で拒否**。
-  - **`Materialization { Invariant, PerViewer }` を導入する**（data-platform.md §7.4）:
-    参照先に `row_policy` も `field_policy` も無ければ全閲覧者で同値なので書込時に材料化・索引可。
-    どちらかがあれば閲覧者ごとに値が変わるので**読取時計算のみ・キャッシュ禁止・索引/ソート/フィルタ不可**。
-    判定は**参照先を推移的に辿り、1 つでも policy があれば `PerViewer`** に倒す。
-  - **スキーマ改訂時に参照元へ伝播して再判定し、`Invariant → PerViewer` へ降格した列の材料化データを
-    同一トランザクションで破棄する**（索引行も削除）。これを忘れると漏洩が残留する（PIT-47）。
+  - **`Materialization { Invariant, PerViewer, Volatile }` を導入する**（data-platform.md §7.4）:
+    `Invariant`（全閲覧者・全時刻で同値と証明できる）だけが書込時材料化・索引可。
+    `PerViewer` / `Volatile` は**読取時計算のみ・キャッシュ禁止・索引/ソート/フィルタ不可**。
+  - **`Invariant` の判定には 4 階層すべてを見る**（1 つでも閲覧者依存なら `PerViewer`）:
+    ①参照先テーブルの **ReBAC viewer 集合が参照元を包含すると証明できるか**（できないのが既定）
+    ②参照先の `row_policy` ③参照先の `field_policy` ④参照先の**レコード個別共有タプルの存在**。
+    多段参照は推移的に辿る。`Now` を含む式は `Volatile`。
+  - **降格トリガは 4 階層すべての変化**（policy 追加・ReBAC 変更・個別共有の発生）。降格時は
+    材料化データと索引行を**同一トランザクションで破棄**する。これを忘れると漏洩が残留する（PIT-47）。
+  - **参照先レコードの変更でも材料化値は陳腐化する**（金額更新・行の作成/削除・リンク付け替え）。
+    依存 DAG を**実データの逆依存追跡**にも使い、参照先の変更 Tx から影響する参照元を特定して
+    同一 Tx で再計算するか世代付きジョブへ enqueue し、**再計算完了まで当該列をクエリ対象外にする**。
+  - **リンクのカーディナリティをスキーマで宣言する**（`LinkDef { ref_table, cardinality, symmetric_field }`）。
+    値表現は常に配列。`OneToOne` / `OneToMany` の一意性は `data_unique` 相当で強制する
+    （v1 の `record_ref` は単一 UUID 文字列しか受け付けず N:N を作れなかった）。
   - lookup / rollup / 数式のすべてで**参照先テーブルの行ポリシーを閲覧者本人の権限で透過適用**する
     （PIT-20 の全面解決）。ロールアップのスモールセル抑制は参照先の `aggregate_min_rows` を継承。
 - **受け入れ条件**:
-  - [ ] N:N リンクの両方向が引け、片側の更新がもう片側に即座に反映される（二重書込なし）
-  - [ ] `PerViewer` 列への `indexed`/`unique` 宣言が 422 で拒否される
-  - [ ] **材料化済みテーブルの参照先に `row_policy` を後付けすると、材料化データが破棄され値が読めなくなる**
-        （`policy_threat_it.rs` に追加・PIT-47）
+  - [ ] N:N リンクの両方向が引け、**両方向とも 1 パーティションに枝刈りされる**（EXPLAIN で確認）
+  - [ ] `OneToOne` / `OneToMany` の一意性違反が 422 で拒否される
+  - [ ] `PerViewer` / `Volatile` 列への `indexed`/`unique` 宣言が 422 で拒否される
+  - [ ] **参照先テーブルの viewer 権限を持たないユーザーに、参照先の全件から計算したロールアップが
+        見えない**（テーブル ReBAC 迂回の negative IT・PIT-47）
+  - [ ] **材料化済みテーブルの参照先に `row_policy` を後付け／個別共有を 1 件作成／ReBAC を変更**した
+        いずれの場合も、材料化データが破棄され値が読めなくなる（`policy_threat_it.rs` に追加・PIT-47）
+  - [ ] 参照先レコードの金額を更新すると、参照元の材料化ロールアップが再計算される
+        （再計算完了までは当該列がクエリ対象外になる）
   - [ ] 見えない参照先の lookup/rollup 値が null / 抑制される（PIT-20）
   - [ ] 数式の循環参照が 422 で拒否される
   - [ ] 金額の四則演算・集計が `numeric` で正確（浮動小数点誤差が出ない）
@@ -201,30 +242,49 @@
 - **依存**: 13.3
 - **仕様**:
   - `create_record` / `update_record` / `delete_record` に **outbox 書込**を追加する
-    （現状 outbox を出すのは FSM 遷移のみ）。**既存の per-consumer fan-out リレー
-    （`crates/storage/src/event.rs`）を再利用**し、リレーがコミット順に排出して配信シーケンスを採番する
-    （DB シーケンス直参照だと「seq=5 が seq=7 より後にコミット」で取りこぼす）。
-  - `GET /data/tables/{id}/stream?since=<seq>`（SSE・`Last-Event-ID` リプレイは `data_record_revision` から）。
+    （現状 outbox を出すのは FSM 遷移のみ）。既存の per-consumer fan-out リレー
+    （`crates/storage/src/event.rs`）を土台にする。
+  - **配信シーケンスを新設する**。現行の `claim_undelivered` は `NOT EXISTS` の anti-join で、
+    doc コメントどおり**意図的に単調な配信位置を持たない**（「id 順・コミット順に依存せず」）。
+    `data_record_revision` の主キーもレコードごとの `rev` でストリーム位置ではない。このままでは
+    `Last-Event-ID` と revision を対応付けられず、並行コミットや再接続で欠落・重複する。
+    → **`outbox_delivery` に `delivery_seq bigserial` を追加**し `mark_delivered` 時に採番する。
+    outbox payload に `(table_int, record_id, rev)` を載せて配信位置と revision を永続的に対応付ける。
+    保持期間外の `since` には `stream.reset` を返す（黙って欠落させない）。
+  - `GET /data/tables/{id}/stream?since=<delivery_seq>`（SSE）。
     **購読者ごとに行述語とフィールドマスクを再評価してから配信**する（見えない行・列は流れない）。
-  - ファンアウト最適化: **250ms 窓でバッチ**＋**購読者を畳み込み後の述語 SQL＋バインド値のハッシュでグループ化**
-    し、グループごとに 1 回だけ評価する。
+  - **可視性を失った行にも必ずイベントを送る**。更新後の値だけで判定すると、可視→不可視に変わった
+    購読者には何も届かず**ブラウザが以前の機密値を表示し続ける**。before/after 双方で可視性を判定し、
+    可視→不可視・削除では **`record.removed`（record_id のみ・値を含まない）** を送る。
+    before 判定に要る旧値（旧 owner・旧述語参照列）は outbox payload に載せる。
+  - ファンアウト最適化: **250ms 窓でバッチ**＋**述語をロール共通部とユーザー固有部に分解**してから
+    グループ化する。素朴に SQL＋バインドのハッシュで束ねると、`IsOwner` は principal id が、
+    個別共有は `shared_ids` がバインドに入るため**購読者数だけグループができて削減が効かない**。
+    ロール共通部のみ SQL 評価をグループ共有し、ユーザー固有部はイベント側の `owner`／共有 id と
+    購読者が持つ集合を突き合わせる O(1) 判定で済ませる。
   - **権限材料の TTL**: SSE 購読中のみ TTL（既定 5 秒）付き再解決を許し、
     **「権限剥奪の配信反映は最大 TTL 分遅れる」を製品の約束として文書化**する。
     REST 読取経路は従来どおり毎回解決（例外を SSE に閉じる）。ロール変更・共有解除・権限剥奪イベントを
     検知した購読は TTL を待たず即時無効化する（PIT-46）。
   - **索引の自動昇格**: 未索引列でのフィルタ/ソート要求を 403 で終わらせず、
     小さいテーブルは即座にバックフィルして透過的に有効化、大きいテーブルは jobq で
-    進捗表示つきバックフィル。**進行中の半端な索引はクエリに使わせない**。
-    テーブルあたりの索引列数に上限を設け、超過時は明示承認を要求する（PIT-48）。
+    進捗表示つきバックフィル。テーブルあたりの索引列数に上限を設け、超過時は明示承認を要求する（PIT-48）。
+  - **索引状態を `absent` / `building` / `active` の 3 値にし、`building` 中は write-through する**。
+    「進行中はクエリに使わない」だけでは競合を防げない——走査済み領域のレコードが有効化前に更新されると、
+    その変更は**完成後の索引から永久に欠落する**。`building` に遷移した時点から新規書込を索引へ二重反映し、
+    スナップショット走査と差分が収束してから原子的に `active` へ切り替える。
   - CRDT（Yjs）は**採らない**。行・列単位で可視性が異なり authz モデルと衝突するため
     （`crates/collab` はノート/スライド用途に留める）。編集はサーバ権威＋`rev` 楽観ロック。
     他ユーザーのカーソル/選択範囲は awareness チャネル（データを含まない）で配信。
 - **受け入れ条件**:
   - [ ] 他ユーザーの編集が 1 秒以内にグリッドへ反映される
   - [ ] **見えない行・マスク列が SSE に流れない**（negative IT）
+  - [ ] **可視→不可視に変わった購読者へ `record.removed` が届き、以後その行が表示されない**（negative IT）
+  - [ ] 再接続時に `Last-Event-ID` から欠落・重複なく再開できる（並行コミットを含むシナリオ）／
+        保持期間外は `stream.reset` が返る
   - [ ] 権限剥奪後 TTL 以内に配信が止まる／TTL を超えて配信が続かない／REST 経路は TTL の影響を受けない（PIT-46）
-  - [ ] 1 テーブル 100 購読者で述語グループ化により評価回数がロール種類数に比例する（計測）
-  - [ ] バックフィル進行中の列がクエリ対象にならない（結果欠落の防止）
+  - [ ] **`IsOwner` ＋ 個別共有を含む行ポリシーで、購読者 1,000 人・ロール 3 種のとき述語評価が 3 回**（計測）
+  - [ ] バックフィル進行中の列がクエリ対象にならない／**`building` 中の書込が完成後の索引に反映される**
 
 ### Task 13.7: 各面公開（workflow / shiki script / generative UI / chat）
 - **area**: api / **path**: `crates/workflow-engine`, `crates/script-runtime`, `crates/gui`, `crates/chat`
@@ -266,6 +326,11 @@
   - **post-filter** は「候補 `record_id` を可視集合に絞るクエリ 1 本」で済む。
     **OpenFGA のタプルを 1 本も増やさずに行レベルの permission-aware 検索が成立する**
     （`crates/rag/src/authz_filter.rs` の file 粒度 post-filter を多型化する）。
+  - **行の post-filter だけでは足りない**。チャンクは書込時に静的生成されるため、投影テンプレートに
+    フィールドマスク対象列を含めると、行が見えるユーザーには**マスク列の内容まで回答・引用に流れる**
+    （全社員に見える人事レコードの給与列を隠しても RAG 経由で出る）。v1 は fail-closed に倒し、
+    **投影テンプレートにマスク対象列を含められない**ようスキーマ検証で拒否する。
+    対象テーブルに `field_policy` が後から付いたら索引を破棄して再構築する。
   - 増分索引は 13.6 の outbox に相乗り。`SearchResult` の多型化（file 前提を崩す）が必要。
   - **本タスクは設計スパイクまで**。実装はポストアルファ可。
 - **受け入れ条件**:
@@ -277,7 +342,7 @@
 ## 参照
 
 - 設計正本: [data-platform.md](../data-platform.md)
-- 落とし穴: [design-caveats.md](../design-caveats.md) PIT-17〜21（v1 から継承）・**PIT-45〜48**（v2 が持ち込む）
+- 落とし穴: [design-caveats.md](../design-caveats.md) PIT-17〜21（v1 から継承）・**PIT-45〜49**（v2 が持ち込む）
 - v1 の実装: [phase-9.md](./phase-9.md) Task 9.2〜9.5・9.10
 - ワークフロー連携: [phase-10.md](./phase-10.md)（Stage B の data 系ノード）
 - テナンシー前提: [design.md](../design.md) §4.1（フルプール）

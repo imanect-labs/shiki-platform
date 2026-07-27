@@ -41,9 +41,12 @@ flowchart LR
   P10A -.->|csvワークフロー公開 11P.9| P11P
   P11P --> P11["Phase 11<br/>スライド自前＋Office統合<br/>GrapesJS/Yjs・Collabora"]
   P8 --> P12["Phase 12<br/>SaaSアルファ運用<br/>管理2枚/フィードバック/IaC"]
-  P9 --> P13["Phase 13<br/>構造化データ基盤 v2<br/>Teable/Lists 級<br/>pivot索引/クエリIR/ビュー"]
-  P10 --> P13
-  P13 -->|13.1-13.3 再基盤化は必須| ALPHA["★プライベートアルファ"]
+  P9 --> P13A["Phase 13.1-13.3<br/>構造化データ再基盤化<br/>pivot索引/識別子/クエリIR"]
+  P13A --> P13B["Phase 13.4-13.8<br/>Teable/Lists 級の表体験<br/>リンク・数式/ビュー/SSE/各面公開"]
+  P10 --> P13B
+  P6 --> P13B
+  P11P --> P13B
+  P13A -->|アルファ前必須| ALPHA["★プライベートアルファ"]
   P10 --> ALPHA
   P11 --> ALPHA
   P12 --> ALPHA
