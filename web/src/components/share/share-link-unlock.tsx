@@ -14,6 +14,18 @@ export function unlockTokenFromUrl(): string | null {
   return new URLSearchParams(window.location.search).get("lt");
 }
 
+/// 解錠成功後にアドレスバーから共有リンクトークン（`?lt` / `?unlock`）を除去する（C-4/#369）。
+/// トークンが URL に残ると、アドレスバーからのコピー転送でパスワードを知らない相手へ実効的な
+/// 閲覧権が漏れる。`history.replaceState` で履歴を汚さずに現在エントリを置換する。
+function stripUnlockParams(): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has("lt") && !url.searchParams.has("unlock")) return;
+  url.searchParams.delete("lt");
+  url.searchParams.delete("unlock");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 /// パスワード付き共有リンクの解錠フォーム（#342）。
 ///
 /// パスワード付きリンクの URL（`?lt=<token>&unlock=1`）で開いてアクセスできなかったときに表示し、
@@ -40,6 +52,8 @@ export function ShareLinkUnlock({
     setError(null);
     try {
       await redeemShareLink(token, password);
+      // C-4（#369）: 解錠できたらアドレスバーから token を除去してから再取得する。
+      stripUnlockParams();
       onUnlocked();
     } catch {
       setError("パスワードが正しくないか、リンクの有効期限が切れています。");

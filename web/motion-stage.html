@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<style>
+  :root{
+    --bg:#fbfbfd; --ink:#15151c; --muted:#71717f; --line:#e9e9f0;
+    --rose: oklch(0.62 0.18 18);
+    --green: oklch(0.58 0.12 162);
+    --amber: oklch(0.68 0.13 62);
+    --blue: oklch(0.60 0.12 250);
+    --primary: oklch(0.42 0.10 264);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{background:#000;}
+  #stage{position:relative;width:1920px;height:1080px;overflow:hidden;background:var(--bg);
+    font-family:"Noto Sans CJK JP",sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased;}
+  .fill{position:absolute;inset:0;}
+  /* background */
+  .glow{position:absolute;border-radius:50%;filter:blur(90px);opacity:.5;will-change:transform,opacity;}
+  #g1{width:900px;height:900px;background:radial-gradient(circle at 50% 50%, oklch(0.75 0.16 18 / .5), transparent 62%);}
+  #g2{width:820px;height:820px;background:radial-gradient(circle at 50% 50%, oklch(0.72 0.13 62 / .5), transparent 62%);}
+  #g3{width:820px;height:820px;background:radial-gradient(circle at 50% 50%, oklch(0.70 0.12 162 / .45), transparent 62%);}
+  #g4{width:860px;height:860px;background:radial-gradient(circle at 50% 50%, oklch(0.70 0.13 250 / .45), transparent 62%);}
+  #grid{position:absolute;inset:-2px;background-image:radial-gradient(circle, rgba(21,21,28,.06) 1.4px, transparent 1.6px);
+    background-size:34px 34px;opacity:.5;
+    -webkit-mask-image:radial-gradient(ellipse 75% 65% at 50% 46%, #000 55%, transparent 100%);
+            mask-image:radial-gradient(ellipse 75% 65% at 50% 46%, #000 55%, transparent 100%);}
+  #vign{position:absolute;inset:0;box-shadow:inset 0 0 340px rgba(21,21,28,.10);pointer-events:none;}
+  #grain{position:absolute;inset:0;opacity:.05;mix-blend-mode:multiply;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");}
+
+  .center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;}
+  .kicker{font-weight:700;letter-spacing:.42em;font-size:20px;color:var(--muted);text-transform:uppercase;}
+  .willc{will-change:transform,opacity;}
+
+  /* intro */
+  #intro .mark{font-weight:700;font-size:130px;line-height:1;letter-spacing:-.02em;display:flex;align-items:center;gap:26px;}
+  #intro .kanji{font-size:96px;color:#fff;background:linear-gradient(150deg,var(--rose),var(--amber));width:150px;height:150px;border-radius:34px;display:flex;align-items:center;justify-content:center;box-shadow:0 30px 70px oklch(0.62 0.18 18 / .34);}
+  #intro .tag{margin-top:30px;font-size:27px;color:var(--muted);font-weight:400;letter-spacing:.02em;}
+  #intro .kick2{margin-top:22px;}
+
+  /* headline */
+  #head .h{font-weight:700;font-size:104px;line-height:1.16;letter-spacing:-.03em;}
+  #head .accent{position:relative;}
+  #head .accent .u{position:absolute;left:-2px;right:-2px;bottom:6px;height:16px;border-radius:8px;background:linear-gradient(90deg,var(--rose),var(--amber));opacity:.28;transform-origin:left center;}
+  #head .sub{margin-top:40px;font-size:30px;color:var(--muted);font-weight:400;}
+
+  /* product window */
+  #prod{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;}
+  .win{position:relative;width:1500px;height:940px;border-radius:20px;background:#fff;border:1px solid var(--line);
+    box-shadow:0 60px 130px -30px rgba(21,21,28,.32),0 20px 50px -20px rgba(21,21,28,.20);overflow:hidden;will-change:transform,opacity;}
+  .chrome{height:52px;display:flex;align-items:center;gap:9px;padding:0 20px;border-bottom:1px solid var(--line);background:#fcfcfe;}
+  .dot{width:13px;height:13px;border-radius:50%;}
+  .dot.r{background:#ff6058;}.dot.y{background:#ffbd2e;}.dot.g{background:#28c840;}
+  .urlpill{margin-left:18px;height:30px;flex:1;max-width:520px;border-radius:8px;background:#f1f1f5;border:1px solid var(--line);display:flex;align-items:center;gap:9px;padding:0 14px;color:#9a9aa6;font-size:15px;}
+  .win-inner{position:absolute;left:0;right:0;top:52px;bottom:0;overflow:hidden;background:#fff;}
+  .frame{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform,opacity;}
+  .frame img{width:100%;height:100%;display:block;}
+  .chips{position:absolute;inset:0;}
+  .chip{position:absolute;transform:translate(-50%,-138%);will-change:opacity;}
+  .chip .pill{display:flex;align-items:center;gap:11px;background:#fff;border:1px solid var(--line);box-shadow:0 16px 38px -10px rgba(21,21,28,.30);border-radius:999px;padding:13px 24px 13px 18px;white-space:nowrap;font-size:27px;font-weight:700;color:var(--ink);}
+  .chip .cdot{width:17px;height:17px;border-radius:50%;box-shadow:0 0 0 6px var(--halo);}
+
+  /* captions */
+  #caps{position:absolute;left:118px;top:50%;width:540px;height:0;}
+  .cap{position:absolute;left:0;top:0;width:540px;will-change:transform,opacity;}
+  .cap .tag{display:inline-flex;align-items:center;gap:10px;font-size:19px;font-weight:700;letter-spacing:.06em;color:#fff;padding:8px 16px;border-radius:999px;margin-bottom:22px;}
+  .cap .t{font-size:52px;font-weight:700;letter-spacing:-.02em;line-height:1.16;}
+  .cap .s{margin-top:18px;font-size:24px;color:var(--muted);font-weight:400;line-height:1.55;}
+
+  /* value */
+  #value .row{display:flex;gap:30px;flex-wrap:wrap;justify-content:center;max-width:1500px;}
+  #value .w{font-weight:700;font-size:72px;letter-spacing:-.02em;color:var(--ink);will-change:transform,opacity;}
+  #value .sep{color:var(--rose);font-weight:700;font-size:60px;align-self:center;}
+
+  /* outro */
+  #outro .mark{font-weight:700;font-size:112px;line-height:1;letter-spacing:-.02em;display:flex;align-items:center;gap:24px;}
+  #outro .kanji{font-size:82px;color:#fff;background:linear-gradient(150deg,var(--rose),var(--amber));width:128px;height:128px;border-radius:30px;display:flex;align-items:center;justify-content:center;box-shadow:0 26px 60px oklch(0.62 0.18 18 / .32);}
+  #outro .cta{margin-top:34px;font-size:38px;font-weight:700;letter-spacing:-.01em;}
+  #outro .url{margin-top:26px;font-size:22px;color:var(--muted);letter-spacing:.08em;}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="fill" id="bgwrap">
+    <div class="glow" id="g1"></div><div class="glow" id="g2"></div><div class="glow" id="g3"></div><div class="glow" id="g4"></div>
+    <div id="grid"></div>
+  </div>
+
+  <div id="prod">
+    <div class="win" id="win">
+      <div class="chrome">
+        <div class="dot r"></div><div class="dot y"></div><div class="dot g"></div>
+        <div class="urlpill"><span>🔒</span><span>app.shiki.ai / workflows / 問い合わせ自動トリアージ</span></div>
+      </div>
+      <div class="win-inner">
+        <div class="frame" id="f-hero"><img src="assets2/overview.png" /><div class="chips" id="chips"></div></div>
+        <div class="frame" id="f-palette" style="opacity:0"><img src="assets2/palette.png" /></div>
+        <div class="frame" id="f-config" style="opacity:0"><img src="assets2/config.png" /></div>
+        <div class="frame" id="f-combo" style="opacity:0"><img src="assets2/combo.png" /></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="caps">
+    <div class="cap" data-cap="palette">
+      <div class="tag" style="background:linear-gradient(90deg,var(--rose),var(--amber))">BLOCKS</div>
+      <div class="t">40+ のブロックを、<br>ドラッグ&ドロップ</div>
+      <div class="s">AI・社内検索・ファイル・外部API・CSV・制御。<br>必要な部品を並べるだけ。</div>
+    </div>
+    <div class="cap" data-cap="config">
+      <div class="tag" style="background:linear-gradient(90deg,var(--amber),var(--green))">CONFIGURE</div>
+      <div class="t">ノーコードで、<br>細かく設定</div>
+      <div class="s">条件分岐・リトライ・タイムアウト・失敗時の分岐まで、<br>画面から指定。</div>
+    </div>
+    <div class="cap" data-cap="combo">
+      <div class="tag" style="background:linear-gradient(90deg,var(--green),var(--blue))">BUILD</div>
+      <div class="t">見たまま組んで、<br>すぐ実行</div>
+      <div class="s">ライブ検証で、その場で間違いに気づける。<br>スケジュール／イベント／手動で起動。</div>
+    </div>
+  </div>
+
+  <div class="center" id="intro">
+    <div class="mark willc"><div class="kanji">式</div><div class="word">Shiki</div></div>
+    <div class="tag willc">エンタープライズ AI プラットフォーム</div>
+    <div class="kicker kick2 willc">WORKFLOW STUDIO</div>
+  </div>
+
+  <div class="center" id="head">
+    <div class="h">
+      <div class="willc" data-h="1">ワークフローを、</div>
+      <div class="willc" data-h="2"><span class="accent">ブロック<span class="u" data-u></span></span>で組む。</div>
+    </div>
+    <div class="sub willc">コードを書かずに、社内の業務を自動化。</div>
+  </div>
+
+  <div class="center" id="value">
+    <div class="kicker willc" data-v="k" style="margin-bottom:44px">ONE CANVAS, EVERY FLOW</div>
+    <div class="row">
+      <span class="w" data-v="0">分岐</span><span class="sep" data-v="s0">/</span>
+      <span class="w" data-v="1">合流</span><span class="sep" data-v="s1">/</span>
+      <span class="w" data-v="2">繰り返し</span><span class="sep" data-v="s2">/</span>
+      <span class="w" data-v="3">待機</span><span class="sep" data-v="s3">/</span>
+      <span class="w" data-v="4">スケジュール実行</span>
+    </div>
+  </div>
+
+  <div class="center" id="outro">
+    <div class="mark willc"><div class="kanji">式</div><div class="word">Shiki</div></div>
+    <div class="cta willc">業務の自動化を、はじめよう。</div>
+    <div class="url willc">app.shiki.ai</div>
+  </div>
+
+  <div id="vign"></div>
+  <div id="grain"></div>
+</div>
+
+<script>
+const S=(id)=>document.getElementById(id), Q=(s)=>document.querySelector(s);
+const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x));
+const mix=(a,b,p)=>a+(b-a)*p;
+const easeOutCubic=x=>1-Math.pow(1-x,3);
+const easeInCubic=x=>x*x*x;
+const easeInOut=x=>x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;
+const easeInOutSine=x=>-(Math.cos(Math.PI*x)-1)/2;
+const easeOutExpo=x=>x>=1?1:1-Math.pow(2,-10*x);
+const easeOutBack=x=>{const c1=1.70158,c3=c1+1;return 1+c3*Math.pow(x-1,3)+c1*Math.pow(x-1,2);};
+const seg=(t,a,b,ease=easeInOut)=>{if(b<=a)return t>=b?1:0;return ease(clamp((t-a)/(b-a)));};
+const pulse=(t,a,b,fi=0.5,fo=0.5)=>clamp(Math.min(seg(t,a,a+fi,easeOutCubic),1-seg(t,b-fo,b,easeInCubic)));
+function at(t,keys,ease=easeInOutSine){
+  if(t<=keys[0][0])return keys[0][1];const n=keys.length;if(t>=keys[n-1][0])return keys[n-1][1];
+  for(let i=0;i<n-1;i++){const[t0,v0]=keys[i],[t1,v1]=keys[i+1];if(t>=t0&&t<=t1)return mix(v0,v1,ease((t-t0)/(t1-t0)));}
+  return keys[n-1][1];
+}
+
+// window-inner content box (CSS px)
+const Wc=1500, Hc=888, AR=1.6;
+// place a frame so image fraction (fx,fy) sits at window center, with display width Wd
+function place(frame,fx,fy,Wd){
+  const H=Wd/AR, tx=Wc/2-fx*Wd, ty=Hc/2-fy*H;
+  frame.style.width=Wd+'px'; frame.style.height=H+'px';
+  frame.style.transform=`translate(${tx.toFixed(2)}px,${ty.toFixed(2)}px)`;
+}
+
+// overview node fractions (from overview.json)
+const N={trigger:{x:0.1277,y:0.4877},classify:{x:0.2581,y:0.5259},kb:{x:0.3885,y:0.5259},
+  branch:{x:0.5189,y:0.5449},merge:{x:0.7797,y:0.5259},save:{x:0.9100,y:0.5259}};
+const CHIPS=[
+  {n:'classify',t:'AIで判定・分類',c:'var(--rose)',h:'oklch(0.62 0.18 18 / .18)'},
+  {n:'kb',t:'社内ナレッジ検索 (RAG)',c:'var(--green)',h:'oklch(0.58 0.12 162 / .18)'},
+  {n:'branch',t:'条件で分岐',c:'var(--amber)',h:'oklch(0.68 0.13 62 / .20)'},
+  {n:'save',t:'自動で保存',c:'var(--blue)',h:'oklch(0.60 0.12 250 / .18)'},
+];
+const chipsWrap=S('chips');
+CHIPS.forEach((c)=>{const d=document.createElement('div');d.className='chip';const p=N[c.n];
+  d.style.left=(p.x*100)+'%';d.style.top=(p.y*100)+'%';
+  d.innerHTML=`<div class="pill" style="--halo:${c.h}"><span class="cdot" style="background:${c.c}"></span>${c.t}</div>`;
+  chipsWrap.appendChild(d);});
+
+const TOTAL=33.0;
+const HW=2765; // hero display width (nodes big, dSF3 source stays crisp)
+
+function SEEK(t){
+  // background drift
+  const bd=(x,y,ph)=>`translate(${(-450+x+Math.sin(t*0.20+ph)*46).toFixed(1)}px,${(-450+y+Math.cos(t*0.17+ph)*40).toFixed(1)}px)`;
+  S('g1').style.transform=bd(430,360,0); S('g1').style.opacity=0.5+0.06*Math.sin(t*0.5);
+  S('g2').style.transform=bd(1520,300,2); S('g2').style.opacity=0.46+0.06*Math.sin(t*0.4+1);
+  S('g3').style.transform=bd(360,760,4); S('g3').style.opacity=0.42+0.06*Math.sin(t*0.45+2);
+  S('g4').style.transform=bd(1560,780,6); S('g4').style.opacity=0.42+0.06*Math.sin(t*0.42+3);
+
+  // INTRO
+  const introOn=pulse(t,0.0,3.2,0.7,0.6); S('intro').style.opacity=introOn;
+  const ir=seg(t,0.15,1.2,easeOutBack);
+  Q('#intro .mark').style.transform=`scale(${mix(0.86,1,ir)}) translateY(${mix(24,0,ir)}px)`;
+  Q('#intro .kanji').style.transform=`rotate(${mix(-8,0,seg(t,0.15,1.3,easeOutCubic))}deg)`;
+  Q('#intro .tag').style.opacity=seg(t,0.7,1.5,easeOutCubic);
+  Q('#intro .tag').style.transform=`translateY(${mix(16,0,seg(t,0.7,1.6,easeOutCubic))}px)`;
+  Q('#intro .kick2').style.opacity=seg(t,1.1,1.9,easeOutCubic)*0.9;
+
+  // HEADLINE
+  S('head').style.opacity=pulse(t,3.0,6.5,0.01,0.5);
+  const r1=seg(t,3.15,3.95,easeOutCubic),r2=seg(t,3.45,4.35,easeOutCubic);
+  Q('#head [data-h="1"]').style.transform=`translateY(${mix(40,0,r1)}px)`; Q('#head [data-h="1"]').style.opacity=r1;
+  Q('#head [data-h="2"]').style.transform=`translateY(${mix(46,0,r2)}px)`; Q('#head [data-h="2"]').style.opacity=r2;
+  Q('#head [data-u]').style.transform=`scaleX(${seg(t,4.3,5.2,easeOutExpo)})`;
+  Q('#head .sub').style.transform=`translateY(${mix(22,0,seg(t,4.4,5.2,easeOutCubic))}px)`; Q('#head .sub').style.opacity=seg(t,4.4,5.2,easeOutCubic);
+
+  // WINDOW lifecycle
+  const winIn=seg(t,6.0,7.1,easeOutCubic);
+  const winOut=seg(t,26.9,27.5,easeInCubic);
+  const winOp=clamp(winIn-winOut);
+  const floaty=Math.sin(t*0.6)*4;
+  const dock=clamp(seg(t,16.5,17.4,easeInOut)-seg(t,26.9,27.4,easeInOut));
+  const winTX=300*dock;
+  const winScale=mix(0.92,1,winIn)*mix(1,0.88,dock)*mix(1,0.96,winOut);
+  S('win').style.transform=`translate(${winTX}px,${(mix(40,0,winIn)+floaty-winOut*30).toFixed(1)}px) scale(${winScale.toFixed(3)})`;
+  S('win').style.opacity=winOp;
+  S('win').style.filter=`blur(${mix(8,0,winIn)}px)`;
+
+  // HERO pan (overview, continuous)
+  const fx=at(t,[[7.1,0.235],[8.4,N.classify.x],[9.0,N.classify.x],[9.8,N.kb.x],[10.6,N.kb.x],
+                 [11.4,N.branch.x],[12.4,N.branch.x],[13.2,0.66],[14.0,0.66],[14.8,N.save.x],[16.4,N.save.x]]);
+  place(S('f-hero'),fx,0.523,HW);
+  const heroOp=clamp(winIn-seg(t,16.4,17.0,easeInOut));
+  S('f-hero').style.opacity=heroOp;
+  const chipWin=[[7.7,9.2],[9.9,11.0],[11.5,12.9],[14.6,16.3]];
+  CHIPS.forEach((c,i)=>{const el=chipsWrap.children[i];const[a,b]=chipWin[i];el.style.opacity=pulse(t,a,b,0.35,0.35)*heroOp;});
+
+  // FEATURE frames (explicit width, focus panel)
+  const palOp=pulse(t,16.7,20.8,0.5,0.5)*winOp;
+  const cfgOp=pulse(t,20.4,24.2,0.5,0.5)*winOp;
+  const comOp=pulse(t,23.8,26.9,0.5,0.5)*winOp;
+  place(S('f-palette'),0.135,0.47,mix(2450,2340,seg(t,16.7,21.0))); S('f-palette').style.opacity=palOp;
+  place(S('f-config'),0.845,0.50,mix(2450,2330,seg(t,20.4,24.2))); S('f-config').style.opacity=cfgOp;
+  place(S('f-combo'),0.42,0.50,mix(2150,2050,seg(t,23.8,26.9))); S('f-combo').style.opacity=comOp;
+
+  // captions
+  function capBlock(sel,a,b){const el=Q(`#caps [data-cap="${sel}"]`);
+    el.style.opacity=pulse(t,a,b,0.5,0.45);
+    el.style.transform=`translateY(calc(-50% + ${mix(34,0,seg(t,a,a+0.7,easeOutCubic)).toFixed(1)}px))`;}
+  capBlock('palette',17.1,20.7); capBlock('config',20.7,24.1); capBlock('combo',24.1,26.7);
+
+  // VALUE
+  S('value').style.opacity=pulse(t,27.0,29.8,0.35,0.5);
+  Q('#value [data-v="k"]').style.opacity=seg(t,27.1,27.8,easeOutCubic)*0.9;
+  for(let i=0;i<5;i++){const w=Q(`#value [data-v="${i}"]`);const a=27.3+i*0.16;const r=seg(t,a,a+0.5,easeOutCubic);
+    w.style.opacity=r;w.style.transform=`translateY(${mix(28,0,r)}px)`;}
+  for(let i=0;i<4;i++){Q(`#value [data-v="s${i}"]`).style.opacity=seg(t,27.5+i*0.16,27.9+i*0.16,easeOutCubic);}
+
+  // OUTRO
+  S('outro').style.opacity=pulse(t,29.7,33.0,0.6,0.9);
+  const orr=seg(t,29.8,30.8,easeOutBack);
+  Q('#outro .mark').style.transform=`scale(${mix(0.9,1,orr)}) translateY(${mix(20,0,orr)}px)`;
+  Q('#outro .cta').style.opacity=seg(t,30.4,31.2,easeOutCubic);
+  Q('#outro .cta').style.transform=`translateY(${mix(18,0,seg(t,30.4,31.2,easeOutCubic))}px)`;
+  Q('#outro .url').style.opacity=seg(t,30.9,31.6,easeOutCubic)*0.9;
+}
+window.SEEK=SEEK; window.TOTAL=TOTAL; SEEK(0);
+</script>
+</body>
+</html>
