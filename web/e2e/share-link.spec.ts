@@ -143,5 +143,12 @@ test("パスワード付きリンク: 未解錠は不可・token 解錠後に開
   await bobPage.getByTestId("link-unlock-password").fill("s3cret-pass");
   await bobPage.getByTestId("link-unlock-submit").click();
   await expect(bobPage.getByTestId("note-sync-status")).toHaveText("同期済み", { timeout: 20_000 });
+
+  // C-4（#369）: 解錠成功後はアドレスバーから token（?lt / ?unlock）が除去される。
+  // URL コピー転送でのトークン流出を防ぐ（history.replaceState）。
+  await expect
+    .poll(() => bobPage.url(), { timeout: 10_000 })
+    .not.toContain("lt=");
+  expect(bobPage.url()).not.toContain("unlock=");
   await bobCtx.close();
 });

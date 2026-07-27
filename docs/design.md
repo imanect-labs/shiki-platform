@@ -150,6 +150,12 @@ flowchart LR
 - フォルダは親→子へ、ロールは**配下ロール→親ロールへメンバーシップを継承**（上方向ロールアップ。
   親ロールは配下ロールのメンバーを含む。例: 営業部ロール ⊇ 営業1課ロール）。**可読性判定は単一の authz クエリ**に帰着し、
   ファイル共有も permission-aware RAG も同じ問いを使う。
+- **共有リンクの有効期限は eventual（best-effort・#342/#368）**: OpenFGA にネイティブ TTL が無いため、期限は
+  ① セッション開始点の遅延失効（`get_metadata`／`list_children` の親フォルダで reconcile 先行剥奪）と
+  ② イベント駆動タイマ（全レプリカが各自 spawn・リーダー選出なし・指数バックオフ）で強制する。**check 時点評価ではない**ため、
+  タイマ停止中や遅延失効を通していない経路（download/versions/collab WS/WOPI・list_children の子ごと判定）では
+  期限直後にごく短時間アクセスが残り得る。UI の「〜まで」表示は公称であり厳密な瞬間失効ではない。
+  中期的には FGA conditions / contextual tuples で check 時点評価へ寄せる（#368）。
 - **認可コンテキスト**: 全データアクセスは `principal + org + tenant_id` を持つコンテキスト経由（SaaS マルチテナントを day-1 前提・後付けで隔離境界を壊さない）。
 - **authz のテナント分離（SAAS.1 / #84）**: OpenFGA は **全テナント共有の単一ストア＋識別子名前空間化**（フルプール）で分離する。
   FGA 識別子を `<type>:<tenant_id>|<local_id>` へ名前空間化し（区切り `|` = `authz::TENANT_SEP`。AD group パスの `/` と衝突しない）、

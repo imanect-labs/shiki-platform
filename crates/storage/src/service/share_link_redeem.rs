@@ -77,15 +77,7 @@ impl StorageService {
         let record = granted || prior;
         let persisted = self
             .persist_redeem(
-                ctx,
-                v.link_id,
-                v.node_id,
-                v.kind,
-                v.role,
-                v.expires_at,
-                v.level,
-                record,
-                trace_id,
+                ctx, v.link_id, v.node_id, v.kind, v.role, v.level, record, trace_id,
             )
             .await;
         if let Err(e) = persisted {
@@ -227,7 +219,6 @@ impl StorageService {
         node_id: Uuid,
         kind: NodeKind,
         role: ShareRole,
-        expires_at: Option<DateTime<Utc>>,
         level: GeneralAccessLevel,
         record_grant: bool,
         trace_id: Option<&str>,
@@ -236,10 +227,10 @@ impl StorageService {
         if record_grant {
             sqlx::query(
                 "INSERT INTO node_share_link_grant \
-                   (link_id, node_id, user_id, tenant_id, kind, role, expires_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                   (link_id, node_id, user_id, tenant_id, kind, role) \
+                 VALUES ($1, $2, $3, $4, $5, $6) \
                  ON CONFLICT (link_id, user_id) DO UPDATE SET \
-                   role = EXCLUDED.role, expires_at = EXCLUDED.expires_at, granted_at = now()",
+                   role = EXCLUDED.role, granted_at = now()",
             )
             .bind(link_id)
             .bind(node_id)
@@ -247,7 +238,6 @@ impl StorageService {
             .bind(&ctx.tenant_id)
             .bind(kind.as_str())
             .bind(role.as_str())
-            .bind(expires_at)
             .execute(&mut *tx)
             .await?;
         }

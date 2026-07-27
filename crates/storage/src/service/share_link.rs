@@ -329,12 +329,6 @@ impl StorageService {
         if updated.rows_affected() == 0 {
             return Err(StorageError::Forbidden);
         }
-        // 台帳の per-user 期限スナップショットも追随させる（タイマ sweep の基準を一致させる）。
-        sqlx::query("UPDATE node_share_link_grant SET expires_at = $2 WHERE link_id = $1")
-            .bind(link_id)
-            .bind(expires_at)
-            .execute(&mut *tx)
-            .await?;
         // 期限切れ→未来へ延ばした場合に broad タプルを復活（active に戻る）。
         let added = self
             .reconcile_broad(
