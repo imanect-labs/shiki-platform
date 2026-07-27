@@ -137,6 +137,11 @@ PostgreSQL は 1 行の INSERT で当該 relation の**全索引を open し、p
 | `table_id uuid` | `table_int` | `int8` | `data_table` 作成時にグローバル連番。**パーティションキー** |
 | `field.name text` | `field_id` | `int2` | テーブル内で採番・不変・再利用しない。`0..15` はシステム擬似列に予約 |
 
+> **`field_id` の値域**: PostgreSQL に unsigned 整数は無く `int2` は `-32768..32767`。一方 `FieldDef.id` は
+> `u16`（`0..65535`）なので**そのままでは 32768 以上が保存できない**。索引エントリの幅を優先して
+> `int2` を維持し、**`FieldId` の上限を `32_767` とする**（`MAX_FIELD_ID = 32_767`・採番時とスキーマ検証で強制）。
+> 1 テーブルに 3 万列は非現実的なので実用上の制約にならない。負値は採番しない。
+
 **システム擬似列（`field_id` 予約枠）**——全レコードに必ず 1 行存在することが、null ソートと
 初期グリッドの駆動索引として効く（§3.5）。
 
@@ -205,8 +210,14 @@ create table data_link (
     dst_table_int bigint not null,    -- 相手側
     dst_record uuid not null,
     is_reverse bool not null default false, -- 監査・再構築用（クエリでは使わない）
+    -- カーディナリティ強制用。この行の src 側が単一値しか持てないとき true。
+    single_valued bool not null default false,
     primary key (tenant_int, table_int, field_id, src_record, ord)
 ) partition by hash (table_int);
+-- 宣言したカーディナリティを DB で強制する（部分一意インデックス 1 本）。
+-- 2 行方式なので「dst 側の一意」も逆方向行に対する同じ制約として表現できる。
+create unique index on data_link (tenant_int, table_int, field_id, src_record)
+    where single_valued;
 
 -- ⑤ unique 制約。1 本の PK で全テーブル・全フィールドの一意性を賄う。
 create table data_unique (
@@ -217,6 +228,11 @@ create table data_unique (
 ) partition by hash (table_int);
 
 -- ⑥ 部分一致検索（オプトイン列のみ）。trigram GIN を「1 本だけ」張るための隔離先。
+-- gin_trgm_ops は pg_trgm の operator class、スコープ列の GIN 格納には btree_gin が要る。
+-- 両方を先に有効化しないと初回マイグレーションが失敗する。
+-- （マネージド PostgreSQL では拡張の利用可否が制限されることがあるため、
+--   プロビジョニングの前提条件として明記する。Cloud SQL / AlloyDB はいずれも利用可能。）
+create extension if not exists pg_trgm;
 create extension if not exists btree_gin;
 create table data_index_search (
     tenant_int int not null, table_int bigint not null, field_id smallint not null,
@@ -242,13 +258,26 @@ N:N の主要経路がテーブル数に比例して劣化する。そこで**1 
 （`crates/data/src/validate.rs`）はこれを超え得るため、索引テーブルには
 **`MAX_INDEX_KEY_BYTES = 2_000` バイトのプレフィクスのみを格納**し、切り詰めた行は `truncated = true` にする。
 
-- ソート: プレフィクス順で走査する（同一プレフィクス群の中の順序は保証しない。ビュー設定で明示）
 - 等値・`StartsWith`: プレフィクスで候補を絞り、`truncated = true` の候補のみ**本体で再確認**する
 - `data_unique`: 長い値は `val_norm = <先頭 2,000B> || ':' || sha256(全体)` として一意性を保つ
 - 全文の部分一致は `data_index_search`（trigram）が担当する（btree キー長の制約を受けない）
 
-**索引の総本数はパーティションあたり 9 本の定数**（PK 6 本＝各テーブル 1 本ずつ、
-値索引 2 本＝`text`/`num`、GIN 1 本＝`search`。`link` は 2 行方式にしたため PK のみで逆引きも賄える）。
+**切り詰め値でのソートと keyset の契約**（曖昧にすると重複・欠落が出るので明文化する）:
+
+- ソートは**プレフィクス順で走査する**。同一プレフィクス群の中の順序は**完全値順を保証しない**
+- ただし **keyset は `(val_prefix, record_id)` のタプル比較で進む**ため、
+  **ページ間の重複・欠落は発生しない**（順序が「完全値順ではない」だけで、全順序としては決定的）。
+  `record_id` が常にタイブレーカに入ることがこの保証の根拠
+- カーソルに載せるのは**索引に格納されているプレフィクス値**であり、完全値ではない
+  （完全値を載せると索引の走査位置と一致せず、そこで初めて欠落が起きる）
+- 切り詰めが発生し得る列をソートキーに指定した場合、**API は応答に
+  `sort_precision: "prefix"` を含めて呼び出し側へ明示**し、ビュー設定 UI でも警告を出す
+- 完全値順が業務要件になる列は、`MAX_INDEX_KEY_BYTES` 以内に収まる正規化列
+  （読み仮名列・コード列など）を別に持ち、そちらでソートする
+
+**索引の総本数はパーティションあたり 10 本の定数**（PK 6 本＝各テーブル 1 本ずつ、
+値索引 2 本＝`text`/`num`、GIN 1 本＝`search`、リンクのカーディナリティ強制用の部分一意 1 本。
+`link` は 2 行方式にしたため逆引き専用索引は不要）。
 **テナントが何社増えても、テーブルが何個増えても、列が何本増えても変わらない。**
 （v1 は「テナント数 × テーブル数 × 索引列数」本が単一 relation に載る。10³ 社 × 10² テーブル × 5 列で 5×10⁵ 本。）
 
@@ -637,8 +666,14 @@ v1 の原則を維持する。
 `data_link` の 1 テーブルで両方向を賄う（§3.3 の逆引き索引）。
 
 ```text
-「proj_A の顧客は？」  → PK で (table=案件, field=f9, src=proj_A) → dst=cust_001
-「cust_001 の案件は？」→ 逆引き索引で (dst_table=顧客, dst=cust_001) → proj_A, proj_B
+順方向行: (table_int=案件, field_id=f9,  src_record=proj_A,   dst_table_int=顧客, dst_record=cust_001)
+逆方向行: (table_int=顧客, field_id=f9', src_record=cust_001, dst_table_int=案件, dst_record=proj_A)
+          ↑ f9' は顧客テーブル側の対称列（symmetric_field）
+
+「proj_A の顧客は？」  → PK で (table_int=案件, field_id=f9,  src_record=proj_A)   → cust_001
+「cust_001 の案件は？」→ PK で (table_int=顧客, field_id=f9', src_record=cust_001) → proj_A, proj_B
+
+どちらも「自分側の table_int」で引くので、両方向とも 1 パーティションに枝刈りされる。
 ```
 
 **逆参照のために別の索引を用意する必要がない。** これが双方向リンク（1:1 / 1:N / N:N）を
@@ -664,9 +699,18 @@ pub enum LinkCardinality {
 
 - 値の表現は**常に配列**（`OneToOne` / `OneToMany` の片側は要素数 1 に制限）。
   v1 の単一 UUID 文字列からの移行は M1 で行う。
-- 一意性の強制はカーディナリティで分岐する:
-  `OneToOne` は src 側・dst 側の双方に `data_unique` 相当の一意制約、
-  `OneToMany` は dst 側のみ、`ManyToMany` は制約なし（`ord` の多値上限のみ）。
+- **一意性は宣言だけでなく DB 制約で強制する**（`data_unique` はスカラー値用でリンク先をキーにしないため
+  流用できない）。§3.3 の部分一意インデックス `(tenant_int, table_int, field_id, src_record) WHERE single_valued`
+  1 本で両側を賄う。**2 行方式なので「dst 側の一意」は逆方向行に対する同じ制約になる**。
+
+  | カーディナリティ | 順方向行の `single_valued` | 逆方向行の `single_valued` | 意味 |
+  |---|---|---|---|
+  | `OneToOne` | `true` | `true` | 双方 1 件まで |
+  | `OneToMany`（src=one 側） | `false` | `true` | src は複数持てるが、各 dst は 1 つの src からのみ指される |
+  | `ManyToMany` | `false` | `false` | 制約なし（`ord` の要素数上限のみ） |
+
+  片方向リンク（`symmetric_field = None`）で dst 側一意が要る場合は、逆方向行を
+  「制約専用行」として書く（`is_reverse = true` かつクエリからは参照しない）。
 - **対称フィールド**があれば、逆方向行を**同一トランザクションで同時に書く**（§3.3 の 2 行方式）。
   順方向だけを更新して逆方向が古いままになる状態は、同一 Tx なので発生しない。
 - 参照整合性は書込時にサーバが検証（v1 の `validate.rs` を継承）
@@ -852,6 +896,17 @@ create unique index on outbox_delivery (consumer, delivery_seq);
 - 保持期間を過ぎた `delivery_seq` を要求されたら **`stream.reset` を返してクライアントに再取得させる**
   （黙って欠落させない）
 
+**採番だけでは足りない — 購読者ごとの送信順序も契約にする。**
+`claim_undelivered` は順序非依存の実装なので、リレーが `delivery_seq = 10` を先に送り、
+後から `9` を送る可能性がある。クライアントが 10 を受けて切断すると、`since=10` の再開で **9 が永久に欠落する**。
+
+- **リレーは 1 購読者への送信を `delivery_seq` 昇順で行う**（採番→送信を同一バッチ内で昇順に揃え、
+  バッチをまたいでも単調にする）
+- 加えて安全側として、**再開カーソルは「連続して確認済みの位置（low-water mark）」だけを進める**。
+  飛び番を受け取った時点ではカーソルを進めず、間が埋まってから進む
+- クライアントに返す `Last-Event-ID` はこの low-water mark であり、
+  **受信済みの最大値ではない**（最大値を返すと上記の欠落が再現する）
+
 ### 9.3 配信
 
 ```text
@@ -948,7 +1003,7 @@ Lists / Teable の UX は「どの列でも絞り込める」だが、本方式�
   → 大きいテーブルは jobq でバックフィル（進捗表示・中断再開可）→ 完了後に有効化
 ```
 
-#### 索引状態は 3 値にし、building 中は write-through する
+### 索引状態は 3 値にし、building 中は write-through する
 
 「進行中はクエリに使わない」だけでは**競合を防げない**。バックフィルがあるレコードを走査した**後**、
 その列が有効化される**前**に同じレコードが更新・作成されると、書込経路が building 中の索引へ

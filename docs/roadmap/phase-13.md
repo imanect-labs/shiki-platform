@@ -101,7 +101,7 @@
     `data_index_text`（text/select/multi_select/date/datetime/*_ref/status＋システム擬似列）/
     `data_index_num`（number・`numeric`）/ `data_link`（record_ref）/
     `data_unique`（unique 制約を PK 1 本で賄う）/ `data_index_search`（部分一致・trigram GIN の隔離先）。
-  - **索引の総本数はパーティションあたり 9 本の定数**とし、テナント数・テーブル数・列数に依存させない。
+  - **索引の総本数はパーティションあたり 10 本の定数**とし、テナント数・テーブル数・列数に依存させない。
   - **システム擬似列を `field_id` の予約枠に置く**（`0`=owner / `1`=created_at / `2`=updated_at、
     ユーザー列は `16..`）。全レコードに必ず 1 行あるため、**null 落ちしない全件駆動索引**として使える
     （任意列ソートで行が消える問題と、フィルタなし初期グリッドの両方がこれで解ける・§3.5）。
@@ -116,6 +116,15 @@
   - **部分一致 GIN はスコープ列を索引自体に含める**（`btree_gin` で
     `(tenant_int, table_int, field_id, val gin_trgm_ops)`）。含めないと 1 テナントの検索でも
     プール全体の posting list を読み、ノイジーネイバーが p95 を壊す。
+    **`pg_trgm`（`gin_trgm_ops` の提供元）と `btree_gin` の両方を先に `CREATE EXTENSION` する**
+    （欠けると初回マイグレーションが失敗する）。マネージド PostgreSQL での拡張利用可否を
+    プロビジョニングの前提条件に加える。
+  - **`FieldId` の上限を `32_767` にする**（`MAX_FIELD_ID`）。`field_id` は索引エントリ幅のため `int2` で持つが、
+    PostgreSQL に unsigned は無く `u16` の上位半分が保存できないため、採番時とスキーマ検証で強制する。
+  - **リンクのカーディナリティを DB 制約で強制する**。`data_link` に `single_valued bool` を持たせ、
+    部分一意インデックス `(tenant_int, table_int, field_id, src_record) WHERE single_valued` 1 本で
+    両側を賄う（2 行方式なので「dst 側の一意」は逆方向行に対する同じ制約になる）。
+    宣言だけでは DB が強制できず同一リンクに複数要素を書けてしまう。
   - `data_record` も `PARTITION BY HASH (table_int)` へ移行し、PK を `(tenant_int, table_int, id)` にする。
   - **二重書込**: 書込トランザクションで旧 partial index と新索引テーブルの両方を更新する（切戻し可能に保つ）。
     索引更新は**変更のあったフィールドのみ**（v1 の `FieldPatch` を使う）。
@@ -133,6 +142,11 @@
   - [ ] **`MAX_TEXT_LEN` 上限（10,000B）の値を持つレコードが `indexed` 列でも書き込める**
         （btree キー超過で落ちない）／切り詰め値の等値検索が本体再確認で正しく効く
   - [ ] 部分一致検索が他テナントのデータ量に影響されない（GIN スコープの確認）
+  - [ ] **拡張が無い環境で初回マイグレーションが明示的に失敗する**（`pg_trgm` / `btree_gin` の事前確認）
+  - [ ] **`OneToOne` / `OneToMany` の一意性違反が DB 制約で弾かれる**（アプリ検証を迂回しても書けない）
+  - [ ] `FieldId` が 32,767 を超える採番要求が 422 で拒否される
+  - [ ] **切り詰めが起きる列でのソートが keyset で重複・欠落しない**
+        （`(val_prefix, record_id)` のタプル比較が決定的であることを、同一プレフィクス多数のデータで確認）
 
 ### Task 13.3: クエリコンパイラ v2 ＋読取切替＋旧方式撤去
 - **area**: data / **path**: `crates/data/src/query/`, `crates/data/src/policy/compile.rs`
@@ -251,6 +265,11 @@
     → **`outbox_delivery` に `delivery_seq bigserial` を追加**し `mark_delivered` 時に採番する。
     outbox payload に `(table_int, record_id, rev)` を載せて配信位置と revision を永続的に対応付ける。
     保持期間外の `since` には `stream.reset` を返す（黙って欠落させない）。
+  - **採番だけでは足りず、購読者ごとの送信順序も契約にする**。`claim_undelivered` は順序非依存なので
+    リレーが `delivery_seq=10` を先に送り `9` を後に送り得る。10 で切断されると `since=10` の再開で
+    **9 が永久に欠落する**。①リレーは 1 購読者への送信を `delivery_seq` 昇順に揃える
+    ②再開カーソルは**連続確認済みの low-water mark** だけを進め、飛び番では進めない
+    ③クライアントへ返す `Last-Event-ID` はこの low-water mark であり受信済み最大値ではない。
   - `GET /data/tables/{id}/stream?since=<delivery_seq>`（SSE）。
     **購読者ごとに行述語とフィールドマスクを再評価してから配信**する（見えない行・列は流れない）。
   - **可視性を失った行にも必ずイベントを送る**。更新後の値だけで判定すると、可視→不可視に変わった
@@ -282,6 +301,8 @@
   - [ ] **可視→不可視に変わった購読者へ `record.removed` が届き、以後その行が表示されない**（negative IT）
   - [ ] 再接続時に `Last-Event-ID` から欠落・重複なく再開できる（並行コミットを含むシナリオ）／
         保持期間外は `stream.reset` が返る
+  - [ ] **飛び番を受信した直後に切断しても、間の `delivery_seq` が再開後に配信される**
+        （low-water mark 方式の確認・順序非依存リレーとの組み合わせで欠落しない）
   - [ ] 権限剥奪後 TTL 以内に配信が止まる／TTL を超えて配信が続かない／REST 経路は TTL の影響を受けない（PIT-46）
   - [ ] **`IsOwner` ＋ 個別共有を含む行ポリシーで、購読者 1,000 人・ロール 3 種のとき述語評価が 3 回**（計測）
   - [ ] バックフィル進行中の列がクエリ対象にならない／**`building` 中の書込が完成後の索引に反映される**
