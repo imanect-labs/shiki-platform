@@ -44,7 +44,7 @@ pub use event::{OutboxEvent, WriteOp};
 pub use indexing::{IndexerStorage, NodeSnapshot};
 pub use model::{
     ChildPage, ChildSort, ChildSortKey, Crumb, DownloadTicket, FileVersion, GeneralAccessLevel,
-    Node, NodeKind, ShareEntry, ShareLink, ShareRole, ShareTarget, UploadTicket,
+    Node, NodeKind, ShareEntry, ShareLink, ShareLinkGrant, ShareRole, ShareTarget, UploadTicket,
 };
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
 pub use service::{StorageService, WriteAtOutcome};

@@ -15,7 +15,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use storage::{GeneralAccessLevel, ShareLink, ShareRole};
+use storage::{GeneralAccessLevel, ShareLink, ShareLinkGrant, ShareRole};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -196,4 +196,29 @@ pub async fn redeem_share_link(
         .redeem_share_link(&ctx, &req.token, req.password.as_deref(), trace.as_deref())
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// リンクを redeem（解錠）した user 一覧を返す（owner 権限・#369 C-3）。
+#[utoipa::path(
+    get,
+    path = "/share-links/{link_id}/grants",
+    params(("link_id" = Uuid, Path, description = "共有リンク ID")),
+    responses(
+        (status = 200, description = "redeem 済み user 一覧", body = [ShareLinkGrant]),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "認可されていない（owner でない/リンクが無い）"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn list_share_link_grants(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(link_id): Path<Uuid>,
+) -> Result<Json<Vec<ShareLinkGrant>>, ApiError> {
+    let grants = state
+        .storage
+        .list_share_link_grants(&ctx, link_id, trace.as_deref())
+        .await?;
+    Ok(Json(grants))
 }

@@ -26,6 +26,7 @@ struct ShareLinkRow {
     has_password: bool,
     label: Option<String>,
     created_at: DateTime<Utc>,
+    redeem_count: i64,
 }
 
 impl ShareLinkRow {
@@ -48,6 +49,7 @@ impl ShareLinkRow {
             has_password: self.has_password,
             label: self.label,
             created_at: self.created_at,
+            redeem_count: self.redeem_count,
         })
     }
 }
@@ -190,6 +192,7 @@ impl StorageService {
             has_password: password_hash.is_some(),
             label: label.map(str::to_owned),
             created_at,
+            redeem_count: 0, // 発行直後は未 redeem。
         })
     }
 
@@ -203,11 +206,12 @@ impl StorageService {
         self.authorize_share_admin(ctx, node_id, "node.share_link.list", trace_id)
             .await?;
         let rows: Vec<ShareLinkRow> = sqlx::query_as(&format!(
-            "SELECT link_id, token, audience, role, expires_at, \
-                    (password_hash IS NOT NULL) AS has_password, label, created_at \
-             FROM node_share_link \
-             WHERE node_id = $1 AND tenant_id = $2 AND {ACTIVE_PREDICATE} \
-             ORDER BY created_at DESC",
+            "SELECT l.link_id, l.token, l.audience, l.role, l.expires_at, \
+                    (l.password_hash IS NOT NULL) AS has_password, l.label, l.created_at, \
+                    (SELECT COUNT(*) FROM node_share_link_grant g WHERE g.link_id = l.link_id) AS redeem_count \
+             FROM node_share_link l \
+             WHERE l.node_id = $1 AND l.tenant_id = $2 AND {ACTIVE_PREDICATE} \
+             ORDER BY l.created_at DESC",
         ))
         .bind(node_id)
         .bind(&ctx.tenant_id)
@@ -362,7 +366,7 @@ impl StorageService {
 
     /// link_id からリンク所有 node を解決し、その node の owner 認可を通す（二段認可）。
     /// 見つからない/別テナントのリンクは `Ok(None)`（存在秘匿・呼び出し側で Forbidden）。
-    async fn authorize_link_owner(
+    pub(super) async fn authorize_link_owner(
         &self,
         ctx: &AuthContext,
         link_id: Uuid,
@@ -400,7 +404,7 @@ impl StorageService {
 
     /// 監査記録＋コミットをまとめる（失敗時は呼び出し側が broad 補償剥奪する）。
     #[allow(clippy::too_many_arguments)]
-    async fn finalize_share_link_tx(
+    pub(super) async fn finalize_share_link_tx(
         &self,
         mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
         ctx: &AuthContext,

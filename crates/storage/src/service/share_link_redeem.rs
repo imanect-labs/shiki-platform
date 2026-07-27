@@ -5,6 +5,8 @@
 //! - [`StorageService::reconcile_user_grants_for_link`] — リンク失効/期限失効時に、そのリンクの
 //!   redeem 済み per-user タプルを **(node,user,role) 単位で参照カウント**して剥奪する（他 active
 //!   リンクが同じ付与を保持していれば FGA タプルは消さない）。
+//! - [`StorageService::list_share_link_grants`] — redeem 済み user の owner 向け可視化（#369 C-3・
+//!   可視化専用。durable な per-user 取り消しは follow-up issue）。
 //!
 //! 共有ヘルパ（`broad_subject`/`verify_password`）は [`super::share_link`] に定義している。
 
@@ -12,7 +14,7 @@
 use super::*;
 
 use super::share_link_util::verify_password;
-use crate::model::GeneralAccessLevel;
+use crate::model::{GeneralAccessLevel, ShareLinkGrant};
 
 /// token で引く redeem 対象リンク 1 行。
 #[derive(sqlx::FromRow)]
@@ -67,13 +69,15 @@ impl StorageService {
         .bind(v.role.as_str())
         .fetch_one(&self.db)
         .await?;
+        // redeem 由来は **via_link 専用 relation**（viewer_via_link / editor_via_link）で発行する（#366）。
+        // 明示共有（viewer / editor）とはタプルの出自が分かれるため、リンク失効時の per-user reconcile が
+        // 明示共有を誤剥奪しない（B-2 根治）。granted は「この user に via_link タプルを新規に張ったか」。
         let granted = self
             .authz
-            .write_tuple(&subject, v.role.relation(), &obj)
+            .write_tuple(&subject, v.role.relation_via_link(), &obj)
             .await?;
-        // 台帳記録は `granted OR prior` のときだけ（＝redeem 由来の付与のみ台帳に載せ、既存の
-        // 明示共有を台帳に載せない＝後の失効で明示共有を誤剥奪しない）。複数リンクが同一 (node,
-        // user,role) を redeem し得るので、先行 redeem 済み（prior）なら本リンク分も必ず記録する。
+        // 台帳は via_link タプルの **参照カウント**（複数リンクが同一 (node,user,role) を redeem し得る）。
+        // granted（新規付与）または prior（別リンク経由で先行 redeem 済み）なら本リンク分を記録する。
         let record = granted || prior;
         let persisted = self
             .persist_redeem(
@@ -84,7 +88,7 @@ impl StorageService {
             if granted {
                 let _ = self
                     .authz
-                    .delete_tuple(&subject, v.role.relation(), &obj)
+                    .delete_tuple(&subject, v.role.relation_via_link(), &obj)
                     .await;
             }
             return Err(e);
@@ -301,9 +305,10 @@ impl StorageService {
             .fetch_one(&mut **tx)
             .await?;
             if remaining == 0 {
-                // 最後の active grant → FGA タプルを剥奪（失敗は ? 伝播で tx 巻き戻し＝fail-closed）。
+                // 最後の active grant → via_link タプルを剥奪（#366・失敗は ? 伝播で tx 巻き戻し＝
+                // fail-closed）。明示共有の viewer/editor は別 relation なので決して触れない。
                 self.authz
-                    .delete_tuple(&ns.user(user_id), role.relation(), obj)
+                    .delete_tuple(&ns.user(user_id), role.relation_via_link(), obj)
                     .await?;
             }
             // どちらの場合も当該リンクの grant 行は落とす（タプルは他 active リンクが保持）。
@@ -314,5 +319,66 @@ impl StorageService {
                 .await?;
         }
         Ok(())
+    }
+}
+
+/// grant 1 行（user_id・表示名・付与時刻）。owner 向け可視化に使う（#369 C-3）。
+#[derive(sqlx::FromRow)]
+struct GrantRow {
+    user_id: String,
+    display_name: Option<String>,
+    granted_at: DateTime<Utc>,
+}
+
+/// 一覧の上限。無期限リンクで redeem 済みユーザーが増え続けても DB/メモリ/転送を抑える
+/// （真の人数は `ShareLink.redeem_count` が持つ・上限超過分のページングは #369 follow-up）。
+const SHARE_LINK_GRANTS_LIMIT: i64 = 500;
+
+impl StorageService {
+    /// リンクを redeem した user 一覧を返す（owner 権限・#369 C-3・**可視化専用**）。表示名は
+    /// **同一 org** の `directory_user` から解決する（無ければ `None`）。broad リンクは台帳を持たない
+    /// ため常に空。
+    ///
+    /// per-user の個別取り消しは、リンクが active なままだと対象ユーザーが URL＋パスワードで再 redeem
+    /// して復元できてしまうため、durable な deny 台帳（grant のソフト失効＋redeem 拒否）を要する。
+    /// これは redeem 経路の変更＋migration を伴う設計なので別 issue（#369 follow-up）に切り出す。
+    pub async fn list_share_link_grants(
+        &self,
+        ctx: &AuthContext,
+        link_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<Vec<ShareLinkGrant>, StorageError> {
+        if self
+            .authorize_link_owner(ctx, link_id, "node.share_link.grants.list", trace_id)
+            .await?
+            .is_none()
+        {
+            return Err(StorageError::Forbidden);
+        }
+        // 表示名解決は同一 org の directory_user に限定する（テナント内 org 越境で別 org の表示名を
+        // 返さない・org は隔離境界・#371）。LEFT JOIN なので該当なしは user_id 表示へフォールバック。
+        let rows: Vec<GrantRow> = sqlx::query_as(
+            "SELECT g.user_id, d.display_name, g.granted_at \
+             FROM node_share_link_grant g \
+             LEFT JOIN directory_user d \
+               ON d.user_id = g.user_id AND d.tenant_id = g.tenant_id AND d.org = $3 \
+             WHERE g.link_id = $1 AND g.tenant_id = $2 \
+             ORDER BY g.granted_at DESC \
+             LIMIT $4",
+        )
+        .bind(link_id)
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(SHARE_LINK_GRANTS_LIMIT)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| ShareLinkGrant {
+                user_id: r.user_id,
+                display_name: r.display_name,
+                granted_at: r.granted_at,
+            })
+            .collect())
     }
 }
