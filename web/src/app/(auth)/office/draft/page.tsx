@@ -313,6 +313,8 @@ function DraftDocumentPageInner() {
         defaultName={activeName}
         saving={saving}
         onConfirm={doSave}
+        entityLabel="Word 文書"
+        description="下書きを Word 文書（.docx）として保存します。保存後は Word エディタで編集・バージョン管理・共有ができます。"
       />
     </div>
   );

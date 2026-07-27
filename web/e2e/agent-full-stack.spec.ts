@@ -59,22 +59,35 @@ async function attachFromDrive(page: Page, name: string) {
   await beat(page, 400);
 }
 
-/// 承認カードが出るたびに承認する（多段タスクでは複数回出る）。
-/// 最初の 1 枚は長めに待ち、以降は間隔をあけて拾い続ける。
-async function approveLoop(page: Page, firstTimeoutMs: number, rounds = 8) {
-  const approve = page.getByRole("button", { name: "承認して続行" }).first();
-  await expect(approve).toBeVisible({ timeout: firstTimeoutMs });
-  await beat(page, 2500);
-  await approve.click();
-  for (let i = 0; i < rounds; i++) {
-    const again = page.getByRole("button", { name: "承認して続行" }).first();
-    const appeared = await again
-      .waitFor({ state: "visible", timeout: 180_000 })
-      .then(() => true)
-      .catch(() => false);
-    if (!appeared) break;
+/// 承認カードが出るたびに承認し、**成果物が現れたら即座に抜ける**（多段タスクでは複数回出る）。
+///
+/// 「カードを一定時間待って出なければ終わり」だけだと、最後の承認の後も空待ちを繰り返して
+/// テスト時間を食い潰す。完了条件（`done`）との競争にして、先に決着した方で進む。
+/// カードは押す直前に消えることがある（run が終わった瞬間）ので、click 失敗は無視する。
+async function approveLoop(
+  page: Page,
+  done: import("@playwright/test").Locator,
+  firstTimeoutMs: number,
+  rounds = 12,
+) {
+  const deadline = Date.now() + firstTimeoutMs;
+  for (let i = 0; i < rounds && Date.now() < deadline; i++) {
+    const approve = page.getByRole("button", { name: "承認して続行" }).first();
+    const winner = await Promise.race([
+      approve
+        .waitFor({ state: "visible", timeout: 120_000 })
+        .then(() => "approve" as const)
+        .catch(() => "none" as const),
+      done
+        .waitFor({ state: "visible", timeout: 120_000 })
+        .then(() => "done" as const)
+        .catch(() => "none" as const),
+    ]);
+    if (winner === "done") return;
+    if (winner === "none") continue;
     await beat(page, 1800);
-    await again.click();
+    // 押す前に消えた（＝承認不要になった/run 終了）場合は素通りする。
+    await approve.click({ timeout: 15_000 }).catch(() => {});
   }
 }
 
@@ -138,14 +151,15 @@ test("full-market-research: 検索→取得→SQL集計→ノートへレポー�
   await beat(page, 800);
   await input.press("Enter");
 
-  // web_search / csv.query / code_interpreter は承認不要、document.edit は承認が要る。
-  await approveLoop(page, 900_000);
+  // web_search / web_fetch / csv.query / code_interpreter は承認不要、document.edit は承認が要る。
+  const editor = page.locator(".tiptap").first();
+  const written = editor
+    .getByRole("heading", { name: /ベンチマーク|自社実績|打ち手|分析/ })
+    .first();
+  await approveLoop(page, written, 900_000);
 
   // レポートがノートへライブ反映される（見出しの出現を確認して全体を流す）。
-  const editor = page.locator(".tiptap").first();
-  await expect(
-    editor.getByRole("heading", { name: /ベンチマーク|自社実績|打ち手|分析/ }).first(),
-  ).toBeVisible({ timeout: 420_000 });
+  await expect(written).toBeVisible({ timeout: 420_000 });
   await beat(page, 4000);
   for (let i = 0; i < 6; i++) {
     await page.keyboard.press("PageDown");
@@ -215,16 +229,36 @@ test("full-financial-dashboard: SQL集計→Excel複数表→Word要約", async 
   await input.press("Enter");
   await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 30_000 });
 
-  await approveLoop(page, 900_000);
+  // --- 成果物 3: Word 下書き → 確定保存で **実体の .docx** まで通す ---
+  // save_document を受けると会話は自動で下書き画面へ遷移する（conversation.tsx の主線）。
+  // カードはその場に留まらないので、遷移先の「下書き（未保存）」バッジを完了条件にする。
+  const draftBadge = page.getByTestId("draft-badge");
+  await approveLoop(page, draftBadge, 900_000);
 
-  // Word 下書きカード（成果物 3）を確認。
-  await expect(page.getByTestId("document-draft-card").first()).toBeVisible({
-    timeout: 420_000,
-  });
+  await page.waitForURL(/\/office\/draft/, { timeout: 420_000 });
+  await expect(draftBadge).toBeVisible({ timeout: 60_000 });
   await beat(page, 4000);
 
-  // Excel を開いて 2 つの表（成果物 1・2）を映す。
+  const docxName = `経営会議レビュー-${Date.now().toString(36)}`;
+  await page.getByTestId("draft-save-button").click();
+  const saveDialog = page.getByRole("dialog");
+  await expect(saveDialog).toContainText("Word 文書");
+  await page.getByTestId("save-draft-name").fill(docxName);
+  await beat(page, 1200);
+  await page.getByTestId("save-draft-confirm").click();
+
+  // 保存後は Collabora（Writer）へ遷移する＝**ノートではなく .docx** が実体化した証拠。
+  await page.waitForURL(/\/office\/[0-9a-f-]+/i, { timeout: 60_000 });
+  await expect(page.getByText("エディタを起動しています…")).toBeHidden({ timeout: 90_000 });
+  await page.waitForTimeout(9000);
+  await beat(page, 5000);
+
+  // ドライブに .docx として並ぶことを確認。
   await page.goto("/drive");
+  await expect(page.getByText(`${docxName}.docx`).first()).toBeVisible({ timeout: 30_000 });
+  await beat(page, 2500);
+
+  // Excel を開いて 2 つの表（成果物 1・2）を映す。
   await page.getByText(xlsxName).first().dblclick();
   await page.waitForURL(/\/office\//, { timeout: 30_000 });
   await expect(page.getByText("エディタを起動しています…")).toBeHidden({ timeout: 60_000 });
