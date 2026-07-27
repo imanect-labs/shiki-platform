@@ -31,8 +31,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use authz::client::{OpenFgaClient, OpenFgaConfig};
-use authz::{AuthContext, AuthzClient, Relation, Subject};
-use common::{test_ctx, FakeEmbedder, FakeObjectStore, FakeReranker, FakeVectorStore};
+use authz::{AuthContext, AuthzClient, Consistency, Relation, Subject};
+use common::{
+    test_ctx, test_ctx_org, FakeEmbedder, FakeObjectStore, FakeReranker, FakeVectorStore,
+};
 use rag::pipeline::{consumer, relay, PipelineDeps};
 use rag::types::{BlockType, ParsedBlock, ParsedDocument};
 use rag::{
@@ -458,6 +460,50 @@ async fn other_tenant_never_sees_anything() {
     // 別テナントの charlie は何をしても 0 件（index-per-tenant ＋ tenant 無条件 AND）。
     let charlie = test_ctx(&format!("b-{}", Uuid::new_v4().simple()), "charlie");
     assert!(hit_files(&env, &charlie, "売上").await.is_empty());
+}
+
+/// #371/PIT-45: 同一テナント・別 org のユーザーが直接 viewer を持ち pre/post-filter を通っても、
+/// hydrate の org 述語（`n.org = ctx.org`）で他 org のチャンクは回答に混入しない（storage の
+/// load_node と同じ org 境界へ揃える）。
+#[tokio::test]
+async fn hydrate_drops_cross_org_chunk() {
+    let Some(env) = setup().await else { return };
+    let folder = create_folder(&env, "org-a").await;
+    let file = index_file(&env, folder, "org-a-secret").await; // org = "acme"（alice）。
+
+    // 同一テナント・別 org の carol に file への直接 viewer を付与（FGA は tenant で名前空間化されるため
+    // org を跨いでタプルは書ける）。list_objects/check は通るが hydrate の org 境界で落ちる。
+    let carol = test_ctx_org(&env.alice.tenant_id, "carol", "other-corp");
+    let file_obj = env.alice.ns().file(&file.to_string());
+    env.authz
+        .write_tuple(&carol.subject(), Relation::Viewer, &file_obj)
+        .await
+        .unwrap();
+
+    // alice（org acme）には見える。
+    assert_eq!(hit_files(&env, &env.alice, "売上").await, vec![file]);
+    // carol は OpenFGA 上 viewer を **Allow** される（＝pre/post-filter は通過する）ことを先に固定。
+    // これで「認可で最初から拒否された」ケースと区別でき、0 件は hydrate の org 境界に起因すると言える。
+    let carol_allowed = env
+        .authz
+        .check(
+            &carol.subject(),
+            Relation::Viewer,
+            &file_obj,
+            Consistency::HigherConsistency,
+        )
+        .await
+        .unwrap();
+    assert!(
+        carol_allowed,
+        "carol は file の viewer として認可されている（前提）"
+    );
+
+    // 認可は通るのに、carol（org other-corp）は org 境界で 0 件（org を絞らないと混入する）。
+    assert!(
+        hit_files(&env, &carol, "売上").await.is_empty(),
+        "認可は許可されるが org 境界の hydrate で除外される（#371）"
+    );
 }
 
 #[tokio::test]

@@ -29,6 +29,11 @@ use uuid::Uuid;
 
 /// テスト用 AuthContext（tenant 固定）。
 pub fn test_ctx(tenant: &str, user: &str) -> AuthContext {
+    test_ctx_org(tenant, user, "acme")
+}
+
+/// 指定 org の `AuthContext`（同一テナント内の org 境界テスト用・#371/PIT-45）。
+pub fn test_ctx_org(tenant: &str, user: &str, org: &str) -> AuthContext {
     AuthContext::new(
         Principal {
             kind: authz::PrincipalKind::User,
@@ -38,7 +43,7 @@ pub fn test_ctx(tenant: &str, user: &str) -> AuthContext {
             roles: vec![],
             tenant_id: Some(tenant.into()),
         },
-        "acme".into(),
+        org.into(),
         tenant.into(),
     )
 }
