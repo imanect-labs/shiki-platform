@@ -255,4 +255,4 @@ crates/
 - ✅ IR＋dnd＋AI 編集・script ノード・skill・スケジュール/イベント/対話トリガ・委譲モデル・
   リトライ/fan-out/concurrency/rate limit・実行履歴 UI・シークレット（宛先束縛込み）
 - 後送り: code view（IR→script）・外部 webhook 受信の公開エンドポイント硬化・skill marketplace（第三者公開）・
-  ワークフローの cell 間移行ツール
+  ワークフローのテナント間／プール間移行ツール（データプレーンはフルプールが既定・design §4.1）

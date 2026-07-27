@@ -9,7 +9,8 @@
 > [Phase 3](./roadmap/phase-3.md) ・ [Phase 4](./roadmap/phase-4.md) ・ [Phase 5](./roadmap/phase-5.md) ・
 > [Phase 6](./roadmap/phase-6.md) ・ [Phase 7](./roadmap/phase-7.md) ・ [Phase 8](./roadmap/phase-8.md) ・
 > [Phase 9](./roadmap/phase-9.md) ・ [Phase 10](./roadmap/phase-10.md) ・ [Phase 11-pre](./roadmap/phase-11-pre.md) ・
-> [Phase 11](./roadmap/phase-11.md) ・ [Phase 12](./roadmap/phase-12.md) ・ [並行/将来トラック](./roadmap/parallel-tracks.md)
+> [Phase 11](./roadmap/phase-11.md) ・ [Phase 12](./roadmap/phase-12.md) ・ [Phase 13](./roadmap/phase-13.md) ・
+> [並行/将来トラック](./roadmap/parallel-tracks.md)
 >
 > 各タスクは1つのGitHub Issueに対応（area:* ラベル）。
 
@@ -40,14 +41,19 @@ flowchart LR
   P10A -.->|csvワークフロー公開 11P.9| P11P
   P11P --> P11["Phase 11<br/>スライド自前＋Office統合<br/>GrapesJS/Yjs・Collabora"]
   P8 --> P12["Phase 12<br/>SaaSアルファ運用<br/>管理2枚/フィードバック/IaC"]
-  P10 --> ALPHA["★プライベートアルファ"]
+  P9 --> P13["Phase 13<br/>構造化データ基盤 v2<br/>Teable/Lists 級<br/>pivot索引/クエリIR/ビュー"]
+  P10 --> P13
+  P13 -->|13.1-13.3 再基盤化は必須| ALPHA["★プライベートアルファ"]
+  P10 --> ALPHA
   P11 --> ALPHA
   P12 --> ALPHA
   P0 -.->|並行| SK["skillex 認証統合"]
-  P8 -.->|将来| FULLPOOL["データプレーン完全相乗り<br/>（フルプール最適化）"]
+  P8 -.->|将来オプション| CELL["専用ストア cell<br/>専用環境契約向け"]
 ```
 
-> **SaaS を優先ターゲットとする**（requirements §1.1）。**SaaS トポロジ（共有コントロールプレーン＋顧客ごと隔離 cell データプレーン・design §4.1.1）と `tenant_id` を Phase 0 の歩く骨格から前提**にし、クラウド向けトレイト実装（GCS/Cloud SQL/Vertex 等）は各フェーズで該当機能を作る都度に実装する（旧 Phase 8「クラウド対応」を解体し各フェーズへ溶かした）。オンプレ版は同一コードベースをトレイト差し替え＋デプロイ構成で吸収する従ターゲット。「データプレーン完全相乗り（フルプール）」だけが将来最適化として残る。
+> **SaaS を優先ターゲットとする**（requirements §1.1）。**SaaS トポロジ（共有コントロールプレーン＋フルプールのデータプレーン・design §4.1）と `tenant_id` を Phase 0 の歩く骨格から前提**にし、クラウド向けトレイト実装（GCS/Cloud SQL/Vertex 等）は各フェーズで該当機能を作る都度に実装する（旧 Phase 8「クラウド対応」を解体し各フェーズへ溶かした）。オンプレ版は同一コードベースをトレイト差し替え＋デプロイ構成で吸収する従ターゲット。
+>
+> 📌 **テナンシー方式の正本化（2026-07）**: データプレーンは**フルプール（全テナント共有ストア＋`tenant_id` 論理分離）が既定**であり、**顧客ごと専用ストア（cell）は専用環境契約向けの将来オプション**へ降格した。実装（全テーブル `tenant_id`・FGA 識別子名前空間化・Qdrant 単一 collection・プール型 Redis）は当初からフルプールで、requirements/roadmap 側の「cell 隔離が正」という記述が実装と乖離していたため本改訂で統一した。**この前提は「テナント数に比例して物理オブジェクト（索引・テーブル）が増える設計を禁じる」という制約を全フェーズに課す**（→ Phase 13）。スケール戦略は [data-platform.md §12](./data-platform.md)。
 
 ---
 
@@ -56,7 +62,7 @@ flowchart LR
 - モノレポ／Rustワークスペース、axum、Postgres、Next.js。
 - Keycloak（OIDCログイン）、OpenFGA（authz）配線、認証付きエンドポイント1本をE2E。
 - **認証は BFF + オパークセッション Cookie**（Redis セッションストア。Task 0.11/#55）。ブラウザにトークンを置かない。
-- **SaaS トポロジを前提**: 共有コントロールプレーン（Keycloak/Org）＋顧客ごと隔離 cell データプレーン（design §4.1.1）。ローカル開発は compose、優先デプロイ先はクラウド（GCP）。
+- **SaaS トポロジを前提**: 共有コントロールプレーン（Keycloak/Org）＋**フルプールのデータプレーン**（全テナント共有ストア＋`tenant_id` 論理分離・design §4.1）。ローカル開発は compose、優先デプロイ先はクラウド（GCP）。
 - OTel計装の土台、`docker compose` 一発起動。
 - 認可コンテキスト（**principal + org + `tenant_id`**）を最初から導入（SaaS マルチテナントを day-1 前提・後付けで隔離境界を壊さない）。
 - **成果物**: ログインして認可された空のアプリが起動する（SaaS トポロジで `tenant_id` スコープが通っている）。
@@ -118,7 +124,7 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 - 監査ダッシュボード、アカウント/管理画面、監視整備。
 - **オンプレ版の硬化**: 同一コードベースのトレイト差し替え（MinIO/vLLM 等）＋ k8s 化、受注用 HW サイジング表、エアギャップ縮退（PIT-29）の検証。
   ※ **クラウド向けトレイト実装（GCS/Cloud SQL/Vertex）は本フェーズに集約せず、各フェーズで該当機能を作る都度に実装する**（SaaS が優先ターゲットのため）。
-- **成果物**: SaaS（顧客ごと隔離 cell）が本番運用可能で、オンプレ版も同一成果物として運用可能。
+- **成果物**: SaaS（フルプール＋テナント論理プロビジョニング）が本番運用可能で、オンプレ版も同一成果物として運用可能。
 
 ## Phase 9 — ミニアプリ／業務アプリ基盤
 **依存**: Phase 6（A=宣言的）。
@@ -173,9 +179,34 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 - IaC（OpenTofu・cell プロビジョニング自動化）・テナント消去機構・バックアップ/DR（整合スナップショット）・API レート制限。
 - **成果物**: プライベートアルファを顧客に配れる運用体制（契約→プロビジョニング→サポート→解約消去が回る）。
 
+## Phase 13 — 構造化データ基盤 v2（Teable / Microsoft Lists 級）
+**依存**: Phase 9（data v1）・Phase 10（IR 語彙・ノードカタログ）・Phase 6（genUI 束縛）・Phase 11-pre（グリッド UI 前例）。
+詳細: [phase-13.md](./roadmap/phase-13.md) ／ 設計正本: [data-platform.md](./data-platform.md)
+
+> 🔴 **13.1〜13.3（再基盤化）はアルファ前必須**。v1 は索引宣言フィールドごとに `data_record` へ partial 式インデックスを張るため、
+> 索引本数が **テナント数 × テーブル数 × 索引列数** で増え、1 行の INSERT で全索引を open する構造になっている。
+> **フルプール前提では顧客 20〜50 社で劣化し数百社で停止する**（リリースブロッカー）。
+> かつ移行はレコード数に比例するため、**データが小さい今が最安の時機**。13.4 以降はアルファと並走可。
+
+- **物理設計の作り直し**: フィールドごとの式インデックス →**型付き pivot 索引テーブル**
+  （Salesforce `MT_Indexes` ／ SharePoint `NameValuePair` と同型）。**索引の物理本数をテナント数・テーブル数から独立させ**、
+  ランタイム DDL を完全にゼロにする。`HASH(table_int)` パーティション。
+- **識別子 3 層**（id / key / display_name）で**日本語の列名**とゼロコストのリネームを可能にする。
+- **クエリ IR 刷新**: AND/OR/NOT 条件木（workflow IR の `Condition` と同語彙）・複数ソート・keyset ページング（OFFSET 廃止）・
+  上限付き件数・駆動索引をコンパイラが選択（＋EXPLAIN 回帰の CI ゲート）。
+- **リンク／ロールアップ／数式**（閉じた AST＋依存 DAG）。計算列の材料化は**参照先の authz 不変性**で決める
+  （`Invariant` のみ材料化可。PIT-20 の全面解決）。
+- **型付き ViewSpec**（grid/kanban/calendar/gallery）＋フロント一式、**サーバ権威の SSE 差分配信**（CRDT は不採用）、
+  **索引の自動昇格**（オンラインバックフィル）。
+- **全面公開**: workflow の `data.*` ノード・shiki script の `Shiki.data.*`・generative UI の束縛・chat ツール。
+  **単一の `DataQuery` / `ViewSpec` を全面が共有**する。
+- **成果物**: 権限を厳密に守ったまま Teable / Microsoft Lists 相当の表体験が動き、同じテーブルを
+  ワークフロー・スクリプト・生成 UI・チャットから呼び出しユーザーの権限で操作できる。
+
 ---
 
-> **プライベートアルファ = Phase 0〜12 ＋ SAAS.1〜4 の完成形**（requirements §1.1 のリリース定義）。
+> **プライベートアルファ = Phase 0〜12 ＋ Phase 13.1〜13.3 ＋ SAAS.1〜4 の完成形**（requirements §1.1 のリリース定義）。
+> Phase 13.4 以降はアルファ後の継続開発。
 
 ---
 
@@ -186,7 +217,7 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 | **Phase 10 Stage A（WF エンジン核心 前倒し）** | **完了（2026-07-10・#203〜）**。dnd/AI 編集/実行履歴 UI も完了し、残りは Phase 9 依存分（skill/data 系）のみ | 6.1 先行＋既存基盤のみで Phase 5〜9 と並走。Stage 分割は [phase-10.md](./roadmap/phase-10.md) |
 | **skillex 認証統合** | Phase 0 の認証が安定したら**並行**（skillexは並行進行中） | 共有プール、DLC/LLM利用トークン発行を Phase 0 設計に織り込む |
 | ~~資料作成 v2（ブラウザ内編集）~~ | **Phase 11 に昇格**（2026-07） | V2 トラックは Phase 11（Collabora）へ統合 |
-| データプレーン完全相乗り（フルプール） | 需要が出たら | **SaaS（共有コントロールプレーン＋cell隔離データプレーン）は優先ターゲット**（design §4.1.1）。本項は cell 隔離をやめ全テナント共有プールへ寄せる更なる最適化＝tenant_id 行分離の全面適用 |
+| 専用ストア（cell 隔離）＋テナント単位プール分割 | 専用環境契約 or 数千社規模になったら | **既定はフルプール**（design §4.1・2026-07 正本化で本項と旧「フルプール最適化」項が反転）。数十〜数百社の一次目標は単一プールで充足するため、Phase 13 では**プール解決の継ぎ目とシャード安全の禁止事項の明文化のみ**を行い、実分割・テナント引越ツールは需要発生時に着手する（[data-platform.md §12](./data-platform.md)） |
 | ミニアプリ marketplace（第三者公開） | Phase 9 安定後 | 信頼ティアに審査付き第三者枠を追加 |
 | 会話ブランチUI | 任意 | データ構造は Phase 3 で用意済み |
 
@@ -199,4 +230,8 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 - **M5（Phase 9）**: ★コードベース業務アプリ基盤（構造化データ＋ワークフロー＋セキュア内部API＋AI）。
 - **M6（Phase 10–11）**: ★ワークフロー基盤（n8n 相当）＋エディタ（ノート/CSV=11-pre）＋Office 統合 = 業務自動化と文書作成の完成形
   （エンジン核心 Stage A は 2026-07 前倒しで M3 以降と並走・#121）。
-- **M7（Phase 12）**: ★★プライベートアルファ・リリース（運用体制込み）。
+- **M6.5（Phase 13.1–13.3）**: 🔴 構造化データの**再基盤化**（pivot 索引・識別子・クエリ IR）。
+  フルプールで顧客を載せる前提条件であり、アルファのブロッカー。データが小さいうちに実施する。
+- **M7（Phase 12 ＋ Phase 13.1–13.3）**: ★★プライベートアルファ・リリース（運用体制込み）。
+- **M8（Phase 13.4–13.8）**: Teable / Microsoft Lists 級の表体験（リンク・数式・ビュー・リアルタイム・全面公開）。
+  アルファと並走。
