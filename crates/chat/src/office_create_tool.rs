@@ -165,13 +165,20 @@ fn outcome_for(
     outcome
 }
 
-/// `OfficeError` をモデルが行動できる観測へ写す（権限なし/未検出は畳む・#326）。
+/// `OfficeError` をモデルが行動できる観測へ写す。
+///
+/// 保存先フォルダの権限なし/未検出は**同一メッセージへ畳む**（存在秘匿・#326。「権限が無い」と
+/// 返すと会話越しにフォルダの実在が漏れる）。連番の枯渇はモデルが名前を変えて再試行できる文言にする。
 fn create_error(kind: OfficeKind, e: OfficeError) -> ToolOutcome {
+    use storage::StorageError as SE;
     match e {
-        OfficeError::Forbidden | OfficeError::NotFound => {
-            ToolOutcome::error(format!("{}を作成する権限がありません。", kind.label()))
-        }
-        OfficeError::Storage(storage::StorageError::Conflict) => ToolOutcome::error(format!(
+        OfficeError::Forbidden
+        | OfficeError::NotFound
+        | OfficeError::Storage(SE::Forbidden | SE::NotFound) => ToolOutcome::error(format!(
+            "{}を作成できません（保存先が存在しないか、作成する権限がありません）。",
+            kind.label()
+        )),
+        OfficeError::Storage(SE::Conflict) => ToolOutcome::error(format!(
             "同名の{}が多すぎます。別の名前で作成してください。",
             kind.label()
         )),

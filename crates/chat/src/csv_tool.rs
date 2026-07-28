@@ -252,11 +252,14 @@ impl Tool for CsvWriteTool {
                     "CSV「{}」を保存しました（node_id: {}）。",
                     s.name, s.node_id
                 ));
-                outcome.document_refs.push(crate::document_ref::payload(
-                    s.node_id,
-                    &s.name,
-                    Some(s.version),
-                ));
+                // 新規作成なのでカードは「作成しました」と名乗る（created=true）。
+                outcome
+                    .document_refs
+                    .push(crate::document_ref::created_payload(
+                        s.node_id,
+                        &s.name,
+                        Some(s.version),
+                    ));
                 Ok(outcome)
             }
             Err(e) => Ok(denied(&e)),

@@ -34,8 +34,9 @@ export function parseDocumentRef(raw: unknown): DocumentRef | null {
   };
 }
 
-/// 種別ごとの遷移先。未知種別はドライブのプレビューへ落とす（リンク切れを作らない）。
-export function documentRefHref(doc: DocumentRef): string {
+/// 種別ごとの遷移先。**専用エディタを持たない種別は `null`**（リンクを出さない）。
+/// 「開く」を押したのに何も開かない／関係ない画面に飛ぶ、を作らないため。
+export function documentRefHref(doc: DocumentRef): string | null {
   switch (doc.kind) {
     case "office":
       return `/office/${doc.id}`;
@@ -46,7 +47,7 @@ export function documentRefHref(doc: DocumentRef): string {
     case "csv":
       return `/csv/${doc.id}`;
     default:
-      return `/drive?preview=${encodeURIComponent(doc.id)}`;
+      return null;
   }
 }
 
@@ -65,6 +66,7 @@ export function DocumentRefCard({ raw }: { raw: unknown }) {
   if (!doc) return null;
   const action = doc.created ? "作成しました" : "編集しました";
   const version = doc.version === null ? "" : `（v${doc.version}）`;
+  const href = documentRefHref(doc);
   return (
     <div
       className="my-2 flex items-center gap-3 rounded-xl border bg-card p-3"
@@ -80,13 +82,15 @@ export function DocumentRefCard({ raw }: { raw: unknown }) {
           {version}
         </span>
       </span>
-      <Link
-        href={documentRefHref(doc)}
-        className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors duration-fast hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        開く
-        <ArrowRight className="size-3.5" aria-hidden />
-      </Link>
+      {href ? (
+        <Link
+          href={href}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors duration-fast hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          開く
+          <ArrowRight className="size-3.5" aria-hidden />
+        </Link>
+      ) : null}
     </div>
   );
 }

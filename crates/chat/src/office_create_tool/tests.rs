@@ -271,5 +271,9 @@ async fn creation_denied_is_observed_without_card() {
         .unwrap();
     assert!(out.is_error);
     assert!(out.document_refs.is_empty());
-    assert!(out.content.contains("権限がありません"), "{}", out.content);
+    assert!(
+        out.content.contains("作成する権限がありません"),
+        "{}",
+        out.content
+    );
 }

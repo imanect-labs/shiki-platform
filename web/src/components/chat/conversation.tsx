@@ -263,6 +263,7 @@ export function Conversation({
         // 画面外へ連れて行くことになる）。作成は承認済み＝ユーザーが意図した操作。
         if (!doc || !doc.created) return;
         const href = documentRefHref(doc);
+        if (!href) return; // 専用エディタが無い種別（カードのみ）。
         if (onDocumentCreated) onDocumentCreated(href);
         else router.push(href);
       },
