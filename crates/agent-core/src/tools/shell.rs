@@ -8,9 +8,7 @@
 //! sync-back は 2 系統で漏れなく拾う: ①`list_dir` に現れる**新規**ファイル ②seed 済み名の `get_file` を
 //! 取り直しハッシュ比較した**変更**ファイル（実 sidecar は put_file 済みを readdir に出さない quirk があるため）。
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use authz::AuthContext;
@@ -18,6 +16,7 @@ use sandbox_client::{
     ExecRequest, Sandbox, SandboxBackend, SandboxError, SandboxHandle, SandboxSpec,
 };
 
+use super::artifacts::hash_bytes;
 use super::mime::content_type_for;
 use super::sandbox_exec::{collect_output, truncate};
 use crate::tool::{ArtifactRef, Tool, ToolError, ToolOutcome};
@@ -242,12 +241,6 @@ impl ShellTool {
 /// ワークスペースのファイル名を guest の絶対パスへ。
 fn guest_path(name: &str) -> String {
     format!("{WORKSPACE_DIR}/{name}")
-}
-
-fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut h = DefaultHasher::new();
-    bytes.hash(&mut h);
-    h.finish()
 }
 
 /// stdout/stderr/exit ＋ 保存ファイルを tool_result へ整形する。
