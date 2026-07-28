@@ -2,6 +2,7 @@
 //! fs_*・grep＝ワークスペース CRUD / shell＝任意コマンド実行）。
 
 mod artifacts;
+mod attachments;
 pub mod code_interpreter;
 pub mod doc_search;
 pub mod fs;

@@ -14,18 +14,22 @@
 //!   「AI を提案保存へ迂回させるシグナル」（PIT-44・Task 11.8 が `current_lock` で判定）。
 
 mod compose;
+mod create;
 mod edit;
 mod error;
 pub mod live;
 mod suite;
+mod templates;
 pub mod wopi;
 
-pub use compose::{DocxComposer, DOCX_CONTENT_TYPE};
+pub use compose::DocxComposer;
+pub use create::{CreatedOffice, OfficeCreator};
 pub use edit::{
     EditOpResult, EditOutcome, EditReport, OfficeEditor, SavedEdit, EDITABLE_CONTENT_TYPES,
 };
 pub use error::OfficeError;
 pub use suite::{CollaboraSuite, OfficeSuite, SUPPORTED_EXTENSIONS};
+pub use templates::{blank_template, OfficeKind, DOCX_CONTENT_TYPE, XLSX_CONTENT_TYPE};
 pub use wopi::lock::{current_lock, LockInfo};
 pub use wopi::routes::{build_wopi_router, WopiState};
 pub use wopi::token::{OfficeTokenKey, WopiClaims, TOKEN_TTL};

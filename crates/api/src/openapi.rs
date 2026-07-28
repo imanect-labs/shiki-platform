@@ -61,6 +61,7 @@ use utoipa::{
         crate::routes::collab::create_slide,
         crate::routes::collab::get_access,
         crate::routes::documents::create_document,
+        crate::routes::documents::create_sheet,
         crate::routes::documents::export_document,
         crate::routes::tabular::get_schema,
         crate::routes::tabular::get_rows,
@@ -189,6 +190,7 @@ use utoipa::{
         crate::routes::office::CreateOfficeSessionRequest,
         crate::routes::office::OfficeSessionResponse,
         crate::routes::documents::CreateDocumentRequest,
+        crate::routes::documents::CreateSheetRequest,
         crate::routes::documents::ExportDocumentRequest,
         // チャット DTO/イベント型は chat 側の単一定義（フロント chat-api.ts と同型）。
         crate::routes::chat::CreateThreadRequest,

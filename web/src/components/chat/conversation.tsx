@@ -46,16 +46,11 @@ import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
 import { SlideDraftCard } from "./slide-draft-card";
 import { CsvDraftCard } from "./csv-draft-card";
-import { DocumentDraftCard } from "./document-draft-card";
+import { DocumentRefCard, LegacyDocumentDraftCard, parseDocumentRef, documentRefHref } from "./document-ref-card";
 import { upsertDraft, parseNoteDraft } from "@/lib/notes/draft-store";
 import { draftHref } from "@/lib/notes/draft-nav";
 import { parseSlideDraft, slideDraftHref, slideDraftStore } from "@/lib/slides/draft";
 import { csvDraftHref, csvDraftStore, parseCsvDraft } from "@/lib/csv/draft";
-import {
-  documentDraftHref,
-  documentDraftStore,
-  parseDocumentDraft,
-} from "@/lib/documents/draft";
 import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
@@ -81,8 +76,8 @@ type StreamState = {
   slideDrafts: unknown[];
   /// 未保存の下書き CSV（Task 11.11・save_csv の下書き確定型）。
   csvDrafts: unknown[];
-  /// 未保存の下書き Word 文書（#332・save_document の下書き確定型）。
-  documentDrafts: unknown[];
+  /// AI が作成/編集した文書の参照（#381・save_document / save_sheet / 各編集ツール）。
+  documentRefs: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
   plan: PlanSubtask[];
   approval: ApprovalRequest | null;
@@ -103,7 +98,7 @@ const EMPTY_STREAM: StreamState = {
   noteDrafts: [],
   slideDrafts: [],
   csvDrafts: [],
-  documentDrafts: [],
+  documentRefs: [],
   plan: [],
   approval: null,
   budget: null,
@@ -117,7 +112,7 @@ export function Conversation({
   onNoteDraftOpened,
   onSlideDraftOpened,
   onCsvDraftOpened,
-  onDocumentDraftOpened,
+  onDocumentCreated,
 }: {
   threadId: string;
   /// "page"=/c/[id] 単独表示（統一ヘッダにタイトル/共有/設定を注入・幅は max-w-3xl 中央）。
@@ -130,8 +125,9 @@ export function Conversation({
   onSlideDraftOpened?: (name: string) => void;
   /// save_csv の下書き（csv_draft）を受けたときの導線（Task 11.11・note と同型）。
   onCsvDraftOpened?: (name: string) => void;
-  /// save_document の下書き（document_draft）を受けたときの導線（#332・note と同型）。
-  onDocumentDraftOpened?: (name: string) => void;
+  /// AI が Office 文書を**新規作成**したときの導線（#381）。渡されない場合は
+  /// 作成された文書（Collabora）へ遷移する（主線）。編集の参照では発火しない。
+  onDocumentCreated?: (href: string) => void;
 }) {
   const isPanel = variant === "panel";
   const router = useRouter();
@@ -260,15 +256,15 @@ export function Conversation({
         if (onCsvDraftOpened) onCsvDraftOpened(d.name);
         else router.push(csvDraftHref(threadId, d.name));
       },
-      onDocumentDraft: (raw) => {
-        // note_draft と同型: ストリームに残しつつ下書きストアへ upsert（source=ai＝流し込み）。
-        // 主線は下書き文書画面（/office/draft）へ遷移。下書き画面自身はアクティブ切替のみ。
-        updateStream((s) => (s ? { ...s, documentDrafts: [...s.documentDrafts, raw] } : s));
-        const d = parseDocumentDraft(raw);
-        if (!d) return;
-        documentDraftStore.upsert(threadId, d.name, d.markdown, "ai");
-        if (onDocumentDraftOpened) onDocumentDraftOpened(d.name);
-        else router.push(documentDraftHref(threadId, d.name));
+      onDocumentRef: (raw) => {
+        updateStream((s) => (s ? { ...s, documentRefs: [...s.documentRefs, raw] } : s));
+        const doc = parseDocumentRef(raw);
+        // 遷移するのは**新規作成**のときだけ（編集で遷移すると会話中のユーザーを勝手に
+        // 画面外へ連れて行くことになる）。作成は承認済み＝ユーザーが意図した操作。
+        if (!doc || !doc.created) return;
+        const href = documentRefHref(doc);
+        if (onDocumentCreated) onDocumentCreated(href);
+        else router.push(href);
       },
       // --- 自律エージェント（Phase 5・Task 5.11） ---
       onRunId: (runId) => updateStream((s) => (s ? { ...s, runId } : s)),
@@ -314,7 +310,7 @@ export function Conversation({
     onNoteDraftOpened,
     onSlideDraftOpened,
     onCsvDraftOpened,
-    onDocumentDraftOpened,
+    onDocumentCreated,
     router,
   ]);
 
@@ -571,8 +567,8 @@ function finalizeStream(
   for (const draft of s.slideDrafts) blocks.push({ type: "slide_draft", draft });
   // 未保存の下書き CSV カード（Task 11.11）。
   for (const draft of s.csvDrafts) blocks.push({ type: "csv_draft", draft });
-  // 未保存の下書き Word 文書カード（#332）。
-  for (const draft of s.documentDrafts) blocks.push({ type: "document_draft", draft });
+  // AI が作成/編集した文書への参照カード（#381）。
+  for (const document of s.documentRefs) blocks.push({ type: "document_ref", document });
   if (blocks.length === 0) return;
   setMessages((prev) => [
     ...prev,
@@ -670,7 +666,11 @@ function AssistantRow({
   const csvDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "csv_draft" }> => b.type === "csv_draft",
   );
-  const documentDrafts = blocks.filter(
+  const documentRefs = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "document_ref" }> => b.type === "document_ref",
+  );
+  // レガシー下書き（#381 で廃止）。過去スレッドを黙って空にしないため読み取り専用で残す。
+  const legacyDocumentDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "document_draft" }> => b.type === "document_draft",
   );
 
@@ -708,8 +708,11 @@ function AssistantRow({
         {csvDrafts.map((b, i) => (
           <CsvDraftCard key={i} raw={b.draft} threadId={threadId} />
         ))}
-        {documentDrafts.map((b, i) => (
-          <DocumentDraftCard key={i} raw={b.draft} threadId={threadId} />
+        {documentRefs.map((b, i) => (
+          <DocumentRefCard key={i} raw={b.document} />
+        ))}
+        {legacyDocumentDrafts.map((b, i) => (
+          <LegacyDocumentDraftCard key={i} raw={b.draft} />
         ))}
         <ArtifactFiles files={files} />
         <Sources citations={citations} />
@@ -832,8 +835,8 @@ function StreamingRow({
         {stream.csvDrafts.map((draft, i) => (
           <CsvDraftCard key={i} raw={draft} threadId={threadId} />
         ))}
-        {stream.documentDrafts.map((draft, i) => (
-          <DocumentDraftCard key={i} raw={draft} threadId={threadId} />
+        {stream.documentRefs.map((document, i) => (
+          <DocumentRefCard key={i} raw={document} />
         ))}
         <ArtifactFiles files={stream.files} />
       </div>

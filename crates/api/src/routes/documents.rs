@@ -1,9 +1,13 @@
-//! Word 文書（.docx）の作成 API（#332・下書き確定型の「ドライブに保存」/ 新規作成の共通経路）。
+//! Office ファイル（.docx / .xlsx）の作成 API（#332・#381）。
 //!
-//! `/notes`・`/slides` と同格の作成エンドポイント。本文 Markdown は blank.docx テンプレ＋
-//! ingestion-worker `append_markdown`（`office.edit` と同経路・[`office::DocxComposer`]）で
-//! .docx 化し、StorageService の内部書込（認可・監査・書込イベント→RAG 再索引つき）で保存する。
-//! Collabora（office.enabled）には依存しない（worker のみ。markdown 省略なら worker も不要）。
+//! `/notes`・`/slides` と同格の作成エンドポイント。保存は StorageService の内部書込
+//! （認可・監査・書込イベント→RAG 再索引つき）で行う。
+//!
+//! - `POST /documents`: Word 文書。本文 Markdown は blank.docx テンプレ＋ingestion-worker
+//!   `append_markdown`（[`office::DocxComposer`]）で .docx 化する。markdown 省略なら
+//!   テンプレそのまま（worker も Collabora も不要）。
+//! - `POST /sheets`: Excel ブック。空テンプレ（blank.xlsx）をそのまま実体化する（#381）。
+//!   本文を持つ作成は AI の `save_sheet`（Collabora へ paste）が担うため、ここは空のみ。
 
 use axum::extract::State;
 use axum::http::header;
@@ -38,7 +42,58 @@ pub(crate) fn documents_route_decls() -> Vec<RouteDecl> {
         r("/documents/export", &["POST"], SessionLongRunning, || {
             post(export_document)
         }),
+        // Excel は空テンプレを書くだけ（変換なし）だが、Office 作成の入口として同じ扱いにする。
+        r("/sheets", &["POST"], SessionLongRunning, || {
+            post(create_sheet)
+        }),
     ]
+}
+
+/// Excel ブック作成リクエスト（#381・「新規作成 > スプレッドシート（Excel）」）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateSheetRequest {
+    /// 配置先フォルダ（None は org ルート直下）。
+    pub parent_id: Option<Uuid>,
+    /// ファイル名（`.xlsx` は自動付与）。
+    pub name: String,
+}
+
+/// Excel ブック（.xlsx）を空テンプレから作成する（#381）。
+///
+/// 認可は StorageService の内部書込に集約する（単一チョークポイント）。同名衝突は
+/// Drive 風の連番リネーム。変換を伴わないため worker にも Collabora にも依存しない。
+#[utoipa::path(
+    post, path = "/sheets", request_body = CreateSheetRequest,
+    responses(
+        (status = 200, description = "作成した Excel ブックのノードメタ", body = NodeResponse),
+        (status = 400, description = "名前が不正"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "配置先への作成権限が無い"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn create_sheet(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Json(req): Json<CreateSheetRequest>,
+) -> Result<Json<NodeResponse>, ApiError> {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::BadRequest("ファイル名を指定してください".into()));
+    }
+    let kind = office::OfficeKind::Spreadsheet;
+    let node = create_file_unique(
+        &state,
+        &ctx,
+        req.parent_id,
+        &kind.file_name(name),
+        office::blank_template(kind),
+        kind.content_type(),
+        trace.0.as_deref(),
+    )
+    .await?;
+    Ok(Json(NodeResponse::from(node)))
 }
 
 /// Word 文書作成リクエスト（#332・「新規作成 > ドキュメント」/ 下書き確定の共通経路）。

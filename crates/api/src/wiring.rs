@@ -339,6 +339,14 @@ pub(crate) async fn wire_chat(
             // AI ライブ編集（office.live_edit・CoolWSD headless 参加・issue #352）。
             // wire_office が構築した LiveEditor（WOPI と同一トークン鍵）を共有する。
             office_live: office_runtime.map(|o| Arc::clone(&o.live)),
+            // Office の新規作成（save_document / save_sheet・#381）: 空テンプレを
+            // StorageService へ実体化してから同じ LiveEditor で本文を paste する。
+            office_creator: office_runtime.map(|o| {
+                Arc::new(office::OfficeCreator::new(
+                    Arc::clone(storage),
+                    Arc::clone(&o.live),
+                ))
+            }),
         },
         worker_config,
     );

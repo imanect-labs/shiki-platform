@@ -32,3 +32,20 @@ export async function createDocument(input: {
   }
   return (await res.json()) as NodeResponse;
 }
+
+/// Excel ブック（.xlsx）を空テンプレから作成する（#381）。
+/// 変換を伴わないため worker にも Collabora にも依存しない（開くのは Collabora Calc）。
+export async function createSheet(input: {
+  parentId?: string | null;
+  name: string;
+}): Promise<NodeResponse> {
+  const res = await apiFetch("/sheets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parent_id: input.parentId ?? null, name: input.name }),
+  });
+  if (!res.ok) {
+    throw new Error(`Excel ブックの作成に失敗しました (${res.status})`);
+  }
+  return (await res.json()) as NodeResponse;
+}

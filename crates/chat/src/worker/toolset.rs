@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use agent_core::{
-    FsDeleteTool, FsEditTool, FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool, Tool,
+    AttachmentRef, CodeInterpreterTool, DocSearchTool, FsDeleteTool, FsEditTool, FsListTool,
+    FsReadTool, FsWriteTool, GrepTool, ShellTool, Tool, WebFetchTool, WebSearchTool,
     WorkspaceStore,
 };
 
@@ -15,6 +16,61 @@ use super::ChatWorker;
 use crate::store::ClaimedRun;
 
 impl ChatWorker {
+    /// 全プロファイル共通のツール（検索・コード実行・web・generative UI・ワークフロー）。
+    ///
+    /// `attachments` は会話の添付で、`code_interpreter` が実行前に `/workspace` へ置く（#379）。
+    pub(super) fn push_core_tools(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        skills: &[crate::skill::AppliedSkill],
+        attachments: Vec<AttachmentRef>,
+    ) {
+        if let Some(search) = &self.search {
+            // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ・
+            // 複数ピンは全ピンが scope を持つ時のみ union・#344）。
+            let scope = crate::skill::combined_scope(skills);
+            tools.push(Arc::new(DocSearchTool::with_scope(search.clone(), scope)));
+        }
+        if let Some(sandbox) = &self.sandbox {
+            let mut code = CodeInterpreterTool::new(
+                sandbox.clone(),
+                self.artifacts.clone(),
+                self.config.sandbox_backend,
+            );
+            // 会話の添付を実行前に /workspace へ置く（#379）。storage が無い構成では
+            // 従来どおり seed しない（description の注記どおり結果に理由が付く）。
+            if let (Some(storage), false) = (&self.storage, attachments.is_empty()) {
+                code = code.with_attachments(
+                    Arc::new(crate::attachments::StorageAttachmentStore::new(
+                        storage.clone(),
+                    )),
+                    attachments,
+                );
+            }
+            tools.push(Arc::new(code));
+        }
+        if let Some(provider) = &self.web_search {
+            tools.push(Arc::new(WebSearchTool::new(provider.clone())));
+            // web_fetch はホスト側で取得する（#348）。sandbox 配線の有無に依存しない。
+            tools.push(Arc::new(WebFetchTool::new()));
+        }
+        // generative UI（emit_ui・Task 6.4）: 検証層が配線されている時のみ提示する。
+        if let Some(validator) = &self.ui_validator {
+            tools.push(Arc::new(gui::EmitUiTool::new(validator.clone())));
+        }
+        // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）:
+        // ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。
+        if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
+            tools.push(Arc::new(crate::workflow_tool::EmitWorkflowTool::new(
+                store.clone(),
+                catalog.clone(),
+            )));
+            tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
+                store.clone(),
+            )));
+        }
+    }
+
     /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。
     ///
     /// collab ハブと storage が両方配線されている時のみ提示する。編集は共有 Yjs へ
@@ -26,8 +82,6 @@ impl ChatWorker {
         tools.push(Arc::new(crate::slide_tool::SaveSlideTool::new()));
         // 下書き CSV（csv_draft・下書き確定型・Task 11.11・storage 非依存・確定は UI 保存）。
         tools.push(Arc::new(crate::csv_tool::SaveCsvTool::new()));
-        // 下書き Word 文書（document_draft・下書き確定型・#332・storage 非依存・確定は UI 保存）。
-        tools.push(Arc::new(crate::office_draft_tool::SaveDocumentTool::new()));
         let (Some(collab), Some(storage)) = (&self.collab, &self.storage) else {
             return;
         };
@@ -72,6 +126,17 @@ impl ChatWorker {
         if let Some(live) = &self.office_live {
             tools.push(Arc::new(crate::office_live_tool::OfficeLiveEditTool::new(
                 live.clone(),
+            )));
+        }
+        // Office の**新規作成**（save_document / save_sheet・#381）。実体は「空テンプレを
+        // 作成 → Collabora へ paste」なので Collabora が要る＝office_creator 配線時のみ提示する
+        // （md 下書き画面は廃止。Collabora 無しで「Word を作る」導線だけ残す方が嘘になる）。
+        if let Some(creator) = &self.office_creator {
+            tools.push(Arc::new(crate::office_create_tool::SaveDocumentTool::new(
+                creator.clone(),
+            )));
+            tools.push(Arc::new(crate::office_create_tool::SaveSheetTool::new(
+                creator.clone(),
             )));
         }
         if let Some(tabular) = &self.tabular {

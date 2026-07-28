@@ -24,6 +24,7 @@
 pub mod ai_edit;
 pub mod ast;
 pub mod frontmatter;
+pub mod md_html;
 pub mod md_parse;
 pub mod yjs_map;
 pub mod yjs_meta;

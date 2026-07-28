@@ -25,13 +25,15 @@
 
 pub mod approver;
 pub mod artifacts;
+pub mod attachments;
 pub mod autonomous;
 pub mod csv_tool;
+pub mod document_ref;
 pub mod document_tool;
 pub mod error;
 pub mod gui_actions;
 pub mod model;
-pub mod office_draft_tool;
+pub mod office_create_tool;
 pub mod office_live_tool;
 pub mod office_tool;
 pub mod selection;

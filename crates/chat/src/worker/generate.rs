@@ -6,15 +6,9 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use agent_core::{
-    run_agent, AgentOptions, CodeInterpreterTool, DocSearchTool, RunContext, Tool, WebFetchTool,
-    WebSearchTool, WorkspaceStore,
-};
+use agent_core::{run_agent, AgentOptions, RunContext, Tool, WorkspaceStore};
 use authz::AuthContext;
-use futures::stream::StreamExt;
-use llm_gateway::{
-    GenerateRequest, GenerationRecord, Message as LlmMessage, Role as LlmRole, StreamDelta,
-};
+use llm_gateway::{Message as LlmMessage, Role as LlmRole};
 use uuid::Uuid;
 
 use super::approval_policy::restore_checkpoint;
@@ -26,6 +20,16 @@ use crate::model::Role;
 use crate::store::ClaimedRun;
 use crate::ChatError;
 
+/// 履歴 1 回の読み出しから取れるもの（LLM メッセージ＋会話の添付）。
+///
+/// 添付は `code_interpreter` の `/workspace` seed に使う（#379）。同じ `get_messages` から
+/// 取るのは、別途取り直すと DB 往復が二重になるため。
+pub(super) struct ThreadHistory {
+    pub messages: Vec<LlmMessage>,
+    /// 会話に添付されたファイル（古い順・同名は新しい方が残る）。
+    pub attachments: Vec<agent_core::AttachmentRef>,
+}
+
 impl ChatWorker {
     /// 直前までのメッセージを LLM 履歴へ写す（テキストのみ・短ホライズン）。
     pub(super) async fn build_history(
@@ -33,12 +37,26 @@ impl ChatWorker {
         ctx: &AuthContext,
         thread_id: Uuid,
         assistant_message_id: Uuid,
-    ) -> Result<Vec<LlmMessage>, ChatError> {
+    ) -> Result<ThreadHistory, ChatError> {
         let msgs = self.store.get_messages(ctx, thread_id, None).await?;
         let mut out = Vec::new();
+        let mut attachments: Vec<agent_core::AttachmentRef> = Vec::new();
         for m in msgs {
             if m.id == assistant_message_id {
                 continue; // 生成対象のプレースホルダは履歴に含めない
+            }
+            // 添付はプレースホルダ以外の全メッセージから拾う（role で絞らない）。assistant 側の
+            // FileRef＝code_interpreter が保存した成果物も含む: 前ターンで作った CSV を次の
+            // ターンで読み直せる方が自然で、上限は seed 側が持つ（#379）。
+            for block in &m.content {
+                if let crate::model::ContentBlock::FileRef { node_id, name } = block {
+                    // 同名の添付は**新しい方**を残す（guest のファイル名が衝突するため）。
+                    attachments.retain(|a: &agent_core::AttachmentRef| a.name != *name);
+                    attachments.push(agent_core::AttachmentRef {
+                        node_id: node_id.clone(),
+                        name: name.clone(),
+                    });
+                }
             }
             let role = match m.role {
                 Role::User => LlmRole::User,
@@ -51,7 +69,10 @@ impl ChatWorker {
             }
             out.push(LlmMessage::text(role, text));
         }
-        Ok(out)
+        Ok(ThreadHistory {
+            messages: out,
+            attachments,
+        })
     }
 
     /// この run のスレッドに紐づく「開いているドキュメント」（ノート/Office）を返す。
@@ -105,10 +126,14 @@ impl ChatWorker {
         &self,
         ctx: &AuthContext,
         run: &ClaimedRun,
-        history: Vec<LlmMessage>,
+        thread_history: ThreadHistory,
         cancel: Arc<AtomicBool>,
         sink: &mut WorkerSink,
     ) -> Result<(), ChatError> {
+        let ThreadHistory {
+            messages: history,
+            attachments,
+        } = thread_history;
         // skill のピン解決（複数可・Task 6.9/#344・fail-closed: 読めないピンは run を失敗させる）。
         let skills = crate::skill::AppliedSkill::load_pins(
             ctx,
@@ -118,43 +143,11 @@ impl ChatWorker {
         )
         .await?;
 
-        // 共通ツール（doc_search / code_interpreter / web）。
+        // 提示ツール一式（共通＋ドキュメント/Office/CSV）は worker/toolset.rs に集約する。
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        if let Some(search) = &self.search {
-            // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ・
-            // 複数ピンは全ピンが scope を持つ時のみ union・#344）。
-            let scope = crate::skill::combined_scope(&skills);
-            tools.push(Arc::new(DocSearchTool::with_scope(search.clone(), scope)));
-        }
+        self.push_core_tools(&mut tools, &skills, attachments);
         // skill ツール（カタログ引き・#344 Task 10.11）。
         self.push_skill_tool(&mut tools, ctx, run, &skills).await;
-        if let Some(sandbox) = &self.sandbox {
-            tools.push(Arc::new(CodeInterpreterTool::new(
-                sandbox.clone(),
-                self.artifacts.clone(),
-                self.config.sandbox_backend,
-            )));
-        }
-        if let Some(provider) = &self.web_search {
-            tools.push(Arc::new(WebSearchTool::new(provider.clone())));
-            // web_fetch はホスト側で取得する（#348）。sandbox 配線の有無に依存しない。
-            tools.push(Arc::new(WebFetchTool::new()));
-        }
-        // generative UI（emit_ui・Task 6.4）: 検証層が配線されている時のみ提示する。
-        if let Some(validator) = &self.ui_validator {
-            tools.push(Arc::new(gui::EmitUiTool::new(validator.clone())));
-        }
-        // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）:
-        // ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。
-        if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
-            tools.push(Arc::new(crate::workflow_tool::EmitWorkflowTool::new(
-                store.clone(),
-                catalog.clone(),
-            )));
-            tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
-                store.clone(),
-            )));
-        }
         // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋
         // Office 編集/CSV ツール（worker/toolset.rs に集約）。
         self.push_collab_tools(&mut tools);
@@ -328,150 +321,5 @@ impl ChatWorker {
             storage.clone(),
             folder_id,
         )))
-    }
-
-    /// 通常チャット（OFF）。古典 RAG 注入＋llm-gateway 直叩き（ツールループ無し）。
-    pub(super) async fn run_classic_mode(
-        &self,
-        ctx: &AuthContext,
-        run: &ClaimedRun,
-        history: Vec<LlmMessage>,
-        sink: &mut WorkerSink,
-    ) -> Result<(), ChatError> {
-        use agent_core::{run_doc_search, AgentEvent, EventSink};
-
-        // skill のピン解決（通常チャットにも適用する・複数可・fail-closed・Task 6.9/#344）。
-        let skills = crate::skill::AppliedSkill::load_pins(
-            ctx,
-            self.skill_artifacts.as_ref(),
-            run,
-            run.trace_id.as_deref(),
-        )
-        .await?;
-        let scope = crate::skill::combined_scope(&skills);
-        let mut history = history;
-
-        // 直近ユーザー発話で事前検索し、文脈注入＋引用イベント。
-        let query = history.last().map(message_preview).unwrap_or_default();
-        let mut system = self.config.system_prompt.clone();
-        for skill in &skills {
-            skill.apply_system(&mut system);
-            skill.audit_apply(&self.db, ctx, run).await;
-        }
-        // few-shot は「ピン順に前から並ぶ」よう逆順で先頭 splice する。
-        for skill in skills.iter().rev() {
-            skill.apply_few_shot(&mut history);
-        }
-        // 全ピンが doc_search を宣言に含む時のみ古典事前検索を行う（Task 6.9 の意味を
-        // classic では維持する。ツールループが無い classic に「誘導」は存在しないため）。
-        let search_allowed = skills
-            .iter()
-            .all(|s| s.allows(agent_core::ToolName::DocSearch.as_str()));
-        if let (Some(search), true) = (&self.search, search_allowed) {
-            match run_doc_search(
-                search,
-                ctx,
-                &query,
-                None,
-                scope.as_ref(),
-                run.trace_id.as_deref(),
-            )
-            .await
-            {
-                Ok(result) => {
-                    system.push_str("\n\n# 参考（社内文書検索の結果）\n");
-                    system.push_str(&result.context_text);
-                    for c in result.citations {
-                        // 古典注入でも引用を UI/監査へ流す（post-filter は検索内で済み）。
-                        sink.emit(AgentEvent::Citation(agent_core::Citation {
-                            node_id: c.node_id,
-                            chunk_id: c.chunk_id,
-                            snippet: c.snippet,
-                            page: c.page,
-                            heading_path: c.heading_path,
-                            score: c.score,
-                        }))
-                        .await
-                        .map_err(|e| ChatError::Internal(e.to_string()))?;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "classic doc_search failed; continuing without");
-                }
-            }
-        }
-
-        // skill のモデル既定（Task 6.9・指定があるものだけ上書き・複数ピンは後勝ち・#344）。
-        // 未指定時の上限はチャット設定（reasoning モデルの思考で 2048 では足りない・#352）。
-        let (model, max_tokens, temperature) = match crate::skill::combined_model_defaults(&skills)
-        {
-            Some(defaults) => (
-                defaults.model.clone().or_else(|| self.config.model.clone()),
-                defaults.max_tokens.or(Some(self.config.max_tokens)),
-                defaults.temperature,
-            ),
-            None => (
-                self.config.model.clone(),
-                Some(self.config.max_tokens),
-                None,
-            ),
-        };
-        let effective_model = model
-            .clone()
-            .unwrap_or_else(|| self.gateway.default_model().to_string());
-        let req = GenerateRequest {
-            model,
-            system: Some(system),
-            messages: history,
-            tools: Vec::new(),
-            effort: None,
-            max_tokens,
-            temperature,
-        };
-        let mut stream = self
-            .gateway
-            .stream(req)
-            .await
-            .map_err(|e| ChatError::Unavailable(format!("llm: {e}")))?;
-
-        let mut text_acc = String::new();
-        let mut usage = llm_gateway::Usage::default();
-        while let Some(delta) = stream.next().await {
-            if sink.is_cancelled() {
-                break;
-            }
-            match delta.map_err(|e| ChatError::Unavailable(e.to_string()))? {
-                StreamDelta::TextDelta { text } => {
-                    text_acc.push_str(&text);
-                    sink.emit(AgentEvent::Text(text))
-                        .await
-                        .map_err(|e| ChatError::Internal(e.to_string()))?;
-                }
-                StreamDelta::ThinkingDelta { text } => {
-                    sink.emit(AgentEvent::Thinking(text))
-                        .await
-                        .map_err(|e| ChatError::Internal(e.to_string()))?;
-                }
-                StreamDelta::Done { usage: u, .. } => usage = u,
-                _ => {} // 通常チャットはツールを使わない
-            }
-        }
-
-        self.gateway
-            .record_generation(
-                ctx,
-                &GenerationRecord {
-                    idempotency_key: format!("{}:{}:0", run.run_id, run.fencing_token),
-                    // 会計は実効モデル（skill 既定の上書き込み）で刻む。
-                    model: effective_model,
-                    usage,
-                    trace_id: run.trace_id.clone(),
-                    input_preview: query,
-                    output_preview: text_acc.chars().take(2000).collect(),
-                    app_id: None,
-                },
-            )
-            .await;
-        Ok(())
     }
 }

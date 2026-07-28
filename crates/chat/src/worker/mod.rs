@@ -8,6 +8,8 @@
 //! - **協調キャンセル**: ユーザー明示停止（cancel_requested）のみ。ページ離脱はキャンセルしない。
 
 mod approval_policy;
+/// 古典 RAG 注入経路（generate.rs から分割）。
+mod classic;
 mod generate;
 mod history;
 /// 実行オプション/system プロンプト（generate.rs から分割）。
@@ -132,6 +134,9 @@ pub struct WorkerDeps {
     /// AI ライブ編集（office.live_edit・CoolWSD headless 参加・issue #352）。
     /// office 有効時のみ配線し、未配線なら office.live_edit を提示しない。
     pub office_live: Option<Arc<office::live::LiveEditor>>,
+    /// Office の新規作成（save_document / save_sheet・#381）。空テンプレ実体化＋
+    /// Collabora への paste を束ねる。未配線なら作成ツールを提示しない。
+    pub office_creator: Option<Arc<office::OfficeCreator>>,
 }
 
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
@@ -167,6 +172,8 @@ pub struct ChatWorker {
     office: Option<Arc<office::OfficeEditor>>,
     /// AI ライブ編集（office.live_edit・CoolWSD headless 参加・issue #352）。
     office_live: Option<Arc<office::live::LiveEditor>>,
+    /// Office の新規作成（save_document / save_sheet・#381）。
+    office_creator: Option<Arc<office::OfficeCreator>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -188,6 +195,7 @@ impl ChatWorker {
             tabular,
             office,
             office_live,
+            office_creator,
         } = deps;
         ChatWorker {
             db,
@@ -207,6 +215,7 @@ impl ChatWorker {
             tabular,
             office,
             office_live,
+            office_creator,
             config: Arc::new(config),
         }
     }
@@ -366,7 +375,8 @@ impl ChatWorker {
         // （classic_rag はあくまで「未指定の通常チャット」の既定を旧挙動に戻すだけ）。
         let use_classic = self.config.classic_rag && !run.autonomous && !run.agent_mode;
         let gen_result = if use_classic {
-            self.run_classic_mode(&ctx, &run, history, &mut worker_sink)
+            // 古典経路はツールを持たない＝添付 seed の対象外（messages だけ渡す）。
+            self.run_classic_mode(&ctx, &run, history.messages, &mut worker_sink)
                 .await
         } else {
             self.run_agent_mode(&ctx, &run, history, cancel.clone(), &mut worker_sink)

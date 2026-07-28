@@ -109,9 +109,13 @@ pub enum ContentBlock {
     /// `draft = {name, csv}`（csv=CSV 本文・StorageService 未作成）。
     /// フロントは下書き CSV 画面を開いて詰めてから「ドライブに保存」で確定する。
     CsvDraft { draft: serde_json::Value },
-    /// 未保存の下書き Word 文書カード（save_document の下書き確定型・#332）。
-    /// `draft = {name, markdown}`（まだ .docx 化も StorageService 作成もしていない）。
-    /// フロントは /office/draft を開いて詰めてから「ドライブに保存」で .docx 化・確定する。
+    /// AI が作成/編集した文書への参照カード（#381）。
+    /// `document = {id, name, kind, version}`（kind=office/note/csv/slide・実在ノードのみ）。
+    /// フロントは kind に応じて /office/{id}・/notes/{id}・/csv/{id}・/slides/{id} へ導線を出す。
+    DocumentRef { document: serde_json::Value },
+    /// **レガシー**: 未保存の下書き Word 文書カード（#332・#381 で廃止）。
+    /// 新規に生成されることは無い。**過去履歴の読み込み互換のためだけ**に残す
+    /// （variant を消すと `document_draft` を含む既存メッセージが復号できず会話が開けなくなる）。
     DocumentDraft { draft: serde_json::Value },
     /// 添付ファイル参照（ストレージ node 参照のみ）。
     FileRef { node_id: String, name: String },
@@ -264,7 +268,10 @@ pub enum StreamEventKind {
     SlideDraft { draft: serde_json::Value },
     /// 未保存の下書き CSV カード（save_csv の下書き確定型・Task 11.11）。
     CsvDraft { draft: serde_json::Value },
-    /// 未保存の下書き Word 文書カード（save_document の下書き確定型・#332）。
+    /// AI が作成/編集した文書への参照カード（#381）。`document = {id, name, kind, version}`。
+    DocumentRef { document: serde_json::Value },
+    /// **レガシー**: 未保存の下書き Word 文書カード（#332・#381 で廃止）。
+    /// 新規に発火しない。`generation_event` の replay 互換のためだけに残す。
     DocumentDraft { draft: serde_json::Value },
     /// skill ツールの発動記録（#344）。`skill = {skill_id, skill_version, name}`。
     /// `generation_event` に append され replay 可能（監査・再現性）。content へは projection
@@ -321,6 +328,7 @@ impl StreamEventKind {
             StreamEventKind::NoteDraft { .. } => "note_draft",
             StreamEventKind::SlideDraft { .. } => "slide_draft",
             StreamEventKind::CsvDraft { .. } => "csv_draft",
+            StreamEventKind::DocumentRef { .. } => "document_ref",
             StreamEventKind::DocumentDraft { .. } => "document_draft",
             StreamEventKind::SkillInvoked { .. } => "skill_invoked",
             StreamEventKind::Plan { .. } => "plan",

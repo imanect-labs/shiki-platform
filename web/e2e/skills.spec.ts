@@ -34,8 +34,12 @@ test.describe("skill（作成・共有・チャット適用）", () => {
 
     // バージョン履歴が開く。
     await card.getByRole("button", { name: `${name} のバージョン履歴` }).click();
-    await expect(page.getByRole("dialog")).toContainText("バージョン履歴");
-    await expect(page.getByRole("dialog").getByText("v1")).toBeVisible();
+    // 行は data-testid で数える（#380）。`getByText("v1")` は部分一致のため行コンテナと
+    // ラベル span の両方に当たり得て strict mode 違反になる（たまたま通っていた）。
+    const versionsDialog = page.getByRole("dialog").filter({ hasText: "のバージョン履歴" });
+    const versionRows = versionsDialog.getByTestId("version-row");
+    await expect(versionRows).toHaveCount(1);
+    await expect(versionRows.first().getByTestId("version-label")).toHaveText("v1");
     await page.keyboard.press("Escape");
 
     // このスキルでチャット → skill ピン付きスレッドが作られ、生成が通る（適用経路の疎通）。

@@ -81,9 +81,12 @@ vocab_enum! {
         /// AI 生成 CSV を**下書き**として用意するツール（csv_draft カード化・保存しない・
         /// 確認不要・save_note と同型の下書き確定型・Task 11.11）。
         SaveCsv => "save_csv",
-        /// AI 生成 Markdown を Word 文書（.docx）の**下書き**として用意するツール
-        /// （document_draft カード化・保存しない・確認不要・save_note と同型の下書き確定型・#332）。
+        /// 新規 Word 文書（.docx）を作成するツール（#381）。空テンプレを実体化してから
+        /// Collabora へ本文を paste する（md エディタ下書きは廃止・承認ゲート対象）。
         SaveDocument => "save_document",
+        /// 新規 Excel ブック（.xlsx）を作成するツール（#381）。空テンプレを実体化してから
+        /// Collabora Calc へ値の矩形を貼り込む（承認ゲート対象）。
+        SaveSheet => "save_sheet",
         /// スライド（.slide/Yjs）の共同編集ツール（AI が編集参加者・排他なし・Task 11.3）。
         SlideEdit => "slide.edit",
         /// スライド内容の読み取りツール（slide.edit の前提・正規化 JSON を得る・Task 11.3）。

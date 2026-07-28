@@ -232,11 +232,26 @@ impl Tool for OfficeLiveEditTool {
         match self.live.apply(ctx, input.node_id, &ops).await {
             Ok(report) => {
                 let (content, is_error) = format_report(&report);
-                Ok(if is_error {
+                let mut outcome = if is_error {
                     ToolOutcome::error(content)
                 } else {
                     ToolOutcome::ok(content)
-                })
+                };
+                // 編集結果をチャットに残す（#381）。適用 0 件（is_error）ならカードを出さない
+                // ——「編集しました」と示して実際は何も変わっていない、を作らない。
+                if !is_error {
+                    // 版は確認できたときだけ載せる（Unverified で作成時の版を名乗らない）。
+                    let version = match &report.save {
+                        LiveSaveResult::Saved { version } => Some(*version),
+                        _ => None,
+                    };
+                    outcome.document_refs.push(crate::document_ref::payload(
+                        input.node_id,
+                        &report.file_name,
+                        version,
+                    ));
+                }
+                Ok(outcome)
             }
             // 権限なし/未検出は同一メッセージに畳む（存在秘匿・#326・API 404 統一と同契約）。
             Err(LiveEditError::Denied) => Ok(ToolOutcome::error(

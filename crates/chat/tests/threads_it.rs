@@ -722,6 +722,7 @@ async fn agent_mode_worker_runs_to_done() {
             tabular: None,
             office: None,
             office_live: None,
+            office_creator: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),
