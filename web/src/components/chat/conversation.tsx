@@ -291,6 +291,8 @@ export function Conversation({
       onStatus: (status: RunStatus) => {
         if (status === "cancelled") setError("生成をキャンセルしました。");
         if (status === "failed") setError("生成に失敗しました。");
+        // 中断した run の保留遷移は捨てる（次の run の完了時に横取りされないように）。
+        if (status === "cancelled" || status === "failed") pendingOpenRef.current = null;
       },
       onDone: () => {
         // generative UI を含む応答はサーバ確定の message id が要る（UI アクションの照合先）
