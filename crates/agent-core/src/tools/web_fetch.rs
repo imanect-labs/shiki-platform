@@ -1,37 +1,99 @@
-//! `web_fetch` ツール（Phase 4 web ツール・sandbox egress の実消費者）。
+//! `web_fetch` ツール（Phase 4 web ツール・ホストネイティブ取得・issue #348）。
 //!
-//! 入力 URL のホストだけを **当該 run 限定の dynamic_allow** に載せた短命サンドボックスを立て、
-//! guest の Python（urllib）でページを取得する（design §4.4）。セキュリティ境界:
-//! - **リダイレクト非追従**（PIT-36）: allowlist 外ホストへの誘導を遮断。
-//! - **シークレット添付不可**: spec の `secret_attach=false` 固定。
-//! - **内部ホスト拒否**（SSRF）: IP リテラル・単一ラベル名・localhost/.local/.internal 等を
-//!   クライアント側で拒否し、egress allowlist（kernel default-deny）と二重防御にする。
-//! - 宛先は spec（egress ポリシ全文）として orchestrator 側で監査記録される。
+//! HTTP GET はサンドボックスを介さずホスト側の reqwest で撃つ（Pyodide 初期化 ~6s の
+//! オーバーヘッドを外す）。**egress の封じ込めはポリシ層で等価に維持する**:
+//! - **アプリ層の一次防壁**: [`validate_url`] が http/https 以外・userinfo 付き・IP リテラル・
+//!   単一ラベル名・localhost/.local/.internal 等を拒否（SSRF の素地を断つ）。
+//! - **解決後 IP の再検証＋アドレス固定**（DNS リバインディング対策）: 名前解決の結果が
+//!   全て公開 IP であることを確認し（[`net_guard::ensure_all_public`]）、**その検証済み
+//!   アドレスへ接続を固定する**（接続時に再解決させない）。検証と接続で解決結果が変わる
+//!   攻撃はここでしか塞げない。
+//! - **リダイレクト非追従**（PIT-36）: 検証を迂回する誘導を遮断する。3xx は Location を
+//!   観測として返し、モデルが改めて（＝再検証を通して）取得できるようにする。
+//! - **シークレット非添付・プロキシ非経由**: 資格情報を載せず、環境プロキシで
+//!   アドレス固定を迂回されない（`no_proxy`）。
+//! - 応答は untrusted（PIT-23）。**テキストとして読むだけ**でサイズ上限を課し、実行経路は作らない。
 
+use std::fmt::Write as _;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use authz::AuthContext;
-use sandbox_client::{ExecRequest, Sandbox, SandboxSpec};
+use sandbox_client::net_guard::{self, HostResolver, SystemResolver};
 use url::{Host, Url};
 
-use super::sandbox_exec::{collect_output, truncate};
+use super::sandbox_exec::truncate;
 use crate::tool::{Tool, ToolError, ToolOutcome};
 
-/// 取得本文の guest 側読み取り上限（モデル向け整形上限は別途 truncate が掛かる）。
+#[cfg(test)]
+mod tests;
+
+/// 取得本文の読み取り上限（モデル向け整形上限は別途 [`truncate`] が掛かる）。
 const FETCH_BODY_CAP: usize = 256 * 1024;
 
-/// `web_fetch` ツール。サンドボックスに `Sandbox` トレイト裏でアクセスする。
+/// 1 リクエストの上限（接続〜読み切りまで）。
+const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// 接続確立の上限（到達不能な宛先で 20 秒待たない）。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 名前解決の上限。reqwest の timeout は client 構築後にしか効かないため、
+/// **解決フェーズにも独立して期限を掛ける**（応答しない DNS で張り付かせない）。
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+const USER_AGENT: &str = "shiki-web-fetch/1.0";
+
+/// `web_fetch` ツール（ホストネイティブ取得・宛先は解決後 IP 検証＋アドレス固定）。
 pub struct WebFetchTool {
-    sandbox: Arc<dyn Sandbox>,
+    resolver: Arc<dyn HostResolver>,
+    /// **テスト専用**の解決後 IP 検証スキップ（ループバックのスタブサーバへ繋ぐため）。
+    /// `cfg(test)` 限定なのでリリースビルドにはこのフィールド自体が存在しない。
+    #[cfg(test)]
+    skip_addr_guard: bool,
 }
 
 impl WebFetchTool {
-    pub fn new(sandbox: Arc<dyn Sandbox>) -> Self {
-        WebFetchTool { sandbox }
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_resolver(Arc::new(SystemResolver))
+    }
+
+    /// リゾルバを差し替える（既定は OS の DNS）。
+    #[must_use]
+    pub fn with_resolver(resolver: Arc<dyn HostResolver>) -> Self {
+        WebFetchTool {
+            resolver,
+            #[cfg(test)]
+            skip_addr_guard: false,
+        }
+    }
+
+    /// 解決結果を検証する（**接続先を確定させる唯一の関門**）。
+    ///
+    /// テスト版（下）だけが `self` を読むが、呼び出し側を分岐させないためシグネチャを揃える。
+    #[cfg(not(test))]
+    #[allow(clippy::unused_self)]
+    fn guard(&self, addrs: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, &'static str> {
+        net_guard::ensure_all_public(addrs)
+    }
+
+    #[cfg(test)]
+    fn guard(&self, addrs: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, &'static str> {
+        if self.skip_addr_guard {
+            return Ok(addrs);
+        }
+        net_guard::ensure_all_public(addrs)
     }
 }
 
-/// 検証済みの取得先（egress allowlist へ載せる host/port と正規化済み URL）。
+impl Default for WebFetchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 検証済みの取得先（接続を固定する host/port と正規化済み URL）。
 struct FetchTarget {
     url: Url,
     host: String,
@@ -44,7 +106,7 @@ struct FetchTarget {
 /// - userinfo（`user:pass@`）付きは拒否（ホスト偽装・資格情報混入の防止）。
 /// - ホストは **ドットを含む公開 FQDN のみ**: IP リテラル（v4/v6）・単一ラベル名
 ///   （compose のサービス名 `minio` 等）・localhost/.local/.internal/.lan/.home.arpa を拒否。
-///   DNS 解決後の宛先制御は sandbox egress（default-deny＋当該ホストのみ allow）が担う。
+///   名前が公開 IP に解決されるかは、この後の [`net_guard::ensure_all_public`] が判定する。
 fn validate_url(input: &str) -> Result<FetchTarget, ToolError> {
     let invalid = |msg: &str| ToolError::Invalid(format!("URL が不正です: {msg}"));
     let url = Url::parse(input.trim()).map_err(|e| invalid(&e.to_string()))?;
@@ -75,35 +137,30 @@ fn validate_url(input: &str) -> Result<FetchTarget, ToolError> {
     Ok(FetchTarget { url, host, port })
 }
 
-/// guest で実行する Python 取得コード（リダイレクト非追従・読み取り上限つき）。
-fn fetch_code(url: &Url) -> String {
-    // URL は JSON 文字列リテラルとして埋める（JSON のエスケープは Python 文字列と互換）。
-    let url_literal = serde_json::Value::String(url.to_string()).to_string();
-    format!(
-        r#"import urllib.request, urllib.error, sys
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None  # リダイレクトは追従しない（PIT-36）
-
-opener = urllib.request.build_opener(NoRedirect)
-req = urllib.request.Request({url_literal}, headers={{"User-Agent": "shiki-web-fetch/1.0"}})
-try:
-    resp = opener.open(req, timeout=20)
-    print("HTTP", resp.status)
-    print(resp.read({FETCH_BODY_CAP}).decode("utf-8", "replace"))
-except urllib.error.HTTPError as e:
-    # 3xx（非追従）・4xx・5xx はステータスと本文冒頭を観測として返す。
-    print("HTTP", e.code)
-    location = e.headers.get("Location")
-    if location:
-        print("Location:", location)
-    print(e.read(65536).decode("utf-8", "replace"))
-except Exception as e:
-    print("fetch error:", e, file=sys.stderr)
-    sys.exit(1)
-"#
-    )
+/// モデルが読めるテキストか（バイナリを本文として渡さない）。
+///
+/// Content-Type 無しは許可する（省略するサーバが実在し、本文は lossy UTF-8 で読むため害がない）。
+fn is_textual(content_type: Option<&str>) -> bool {
+    let Some(ct) = content_type else { return true };
+    let ct = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    ct.starts_with("text/")
+        || ct.ends_with("+json")
+        || ct.ends_with("+xml")
+        || matches!(
+            ct.as_str(),
+            "application/json"
+                | "application/xml"
+                | "application/javascript"
+                | "application/ecmascript"
+                | "application/x-ndjson"
+                | "application/graphql"
+                | ""
+        )
 }
 
 #[async_trait::async_trait]
@@ -116,7 +173,7 @@ impl Tool for WebFetchTool {
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
         "URL のページを取得して本文を返す（リダイレクトは追従しない）。web_search で得た URL の\
-         内容を読むときに使う。取得は隔離サンドボックス経由で、その URL のホストにしか通信できない。"
+         内容を読むときに使う。取得できるのは公開ホストの http/https のみで、内部ネットワークへは通信しない。"
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -130,14 +187,19 @@ impl Tool for WebFetchTool {
         })
     }
 
-    // 読み取りのみ・シークレット非添付・宛先は run 限定 allowlist。確認不要。
+    // 読み取りのみ・シークレット非添付・宛先は公開ホストに限定。確認不要。
     fn requires_confirmation(&self) -> bool {
         false
     }
 
+    // 冪等な read（副作用なし）。同一ステップ内で他の read と並列実行してよい（#349）。
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     async fn call(
         &self,
-        ctx: &AuthContext,
+        _ctx: &AuthContext,
         input: serde_json::Value,
         _trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
@@ -147,170 +209,96 @@ impl Tool for WebFetchTool {
             .ok_or_else(|| ToolError::Invalid("missing 'url'".into()))?;
         let target = validate_url(url_input)?;
 
-        let spec = SandboxSpec::web_fetch(
-            ctx.tenant_id.clone(),
-            ctx.org.clone(),
-            ctx.principal.id.clone(),
-            target.host.clone(),
-            target.port,
-        );
-        let handle = self
-            .sandbox
-            .create(spec)
-            .await
-            .map_err(|e| ToolError::Unavailable(format!("sandbox create: {e}")))?;
+        // 名前解決 → 解決後 IP の検証。以降の接続は「この検証済みアドレス」に固定する。
+        //
+        // 解決にも**期限を掛ける**（reqwest の timeout は client 構築後にしか効かないため、
+        // 応答しない DNS で無期限に張り付くのを防ぐ）。
+        let resolved = tokio::time::timeout(
+            RESOLVE_TIMEOUT,
+            self.resolver.lookup(&target.host, target.port),
+        )
+        .await
+        .map_err(|_| ToolError::Invalid("URL が不正です: 名前解決がタイムアウトしました".into()))?
+        .map_err(|e| ToolError::Invalid(format!("URL が不正です: {e}")))?;
 
-        let exec_result = self
-            .sandbox
-            .exec(
-                &handle,
-                ExecRequest::Python {
-                    code: fetch_code(&target.url),
-                    timeout_ms: None,
-                },
-            )
-            .await;
-        // `?` で早期 return すると destroy がスキップされるため、必ず destroy を通す形にする。
-        let outcome = match exec_result {
-            Ok(stream) => collect_output(stream)
-                .await
-                .map(|(stdout, stderr, exit, limit)| match (exit, limit) {
-                    (_, Some(l)) => ToolOutcome::error(format!("{}\n{l}", truncate(&stdout))),
-                    (Some(0), None) => ToolOutcome::ok(truncate(&stdout)),
-                    (_, None) => ToolOutcome::error(format!(
-                        "取得に失敗しました（宛先が egress 許可外の可能性）:\n{}",
-                        truncate(&stderr)
-                    )),
-                }),
-            Err(e) => Err(ToolError::Unavailable(format!("sandbox exec: {e}"))),
+        let addrs = self
+            .guard(resolved)
+            .map_err(|e| ToolError::Invalid(format!("取得先が拒否されました: {e}")))?;
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none()) // PIT-36
+            .no_proxy() // 環境プロキシでアドレス固定を迂回させない
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(FETCH_TIMEOUT)
+            .user_agent(USER_AGENT)
+            .resolve_to_addrs(&target.host, &addrs) // ← DNS を引き直させない
+            .build()
+            .map_err(|e| ToolError::Unavailable(format!("http client: {e}")))?;
+
+        let response = match client.get(target.url.clone()).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(ToolOutcome::error(format!("取得に失敗しました: {e}")));
+            }
         };
-        let _ = self.sandbox.destroy(&handle).await;
-        outcome
+
+        let status = response.status();
+        let content_type = header(&response, reqwest::header::CONTENT_TYPE);
+        let location = header(&response, reqwest::header::LOCATION);
+
+        let mut head = format!("HTTP {}", status.as_u16());
+        if let Some(ct) = &content_type {
+            let _ = write!(head, "\nContent-Type: {ct}");
+        }
+        // **3xx のときだけ**リダイレクト扱いにする（201/200 等が付ける Location で本文を捨てない）。
+        if let (true, Some(loc)) = (status.is_redirection(), location) {
+            let _ = write!(
+                head,
+                "\nLocation: {loc}\n（リダイレクトは追従しません。必要なら上の URL を web_fetch し直してください）"
+            );
+            return Ok(ToolOutcome::ok(truncate(&head)));
+        }
+        if !is_textual(content_type.as_deref()) {
+            return Ok(ToolOutcome::error(format!(
+                "{head}\nテキストではないため本文を返しません"
+            )));
+        }
+
+        let (body, capped) = match read_capped(response).await {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(ToolOutcome::error(format!(
+                    "{head}\n本文の読み取りに失敗: {e}"
+                )))
+            }
+        };
+        if capped {
+            head.push_str("\n（本文は 256KiB で打ち切り済み）");
+        }
+        let text = String::from_utf8_lossy(&body);
+        Ok(ToolOutcome::ok(truncate(&format!("{head}\n\n{text}"))))
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-    use sandbox_client::{FakeExecResult, FakeSandbox};
+/// 応答ヘッダを文字列で取り出す（非 ASCII 等で読めなければ無視する）。
+fn header(response: &reqwest::Response, name: reqwest::header::HeaderName) -> Option<String> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
 
-    fn ctx() -> AuthContext {
-        AuthContext::new(
-            authz::Principal {
-                kind: authz::PrincipalKind::User,
-                id: "u1".into(),
-                email: None,
-                groups: vec![],
-                roles: vec![],
-                tenant_id: Some("t1".into()),
-            },
-            "org1".into(),
-            "t1".into(),
-        )
-    }
-
-    #[test]
-    fn validate_url_accepts_public_fqdn() {
-        let t = validate_url("https://example.com/page?q=1").unwrap();
-        assert_eq!(t.host, "example.com");
-        assert_eq!(t.port, 443);
-        let t = validate_url("http://sub.example.co.jp:8080/").unwrap();
-        assert_eq!(t.port, 8080);
-    }
-
-    #[test]
-    fn validate_url_rejects_dangerous_inputs() {
-        // スキーム・userinfo・IP リテラル・内部/ローカル名（SSRF/PIT-36 系）を全部弾く。
-        for bad in [
-            "file:///etc/passwd",
-            "gopher://example.com/",
-            "https://user:pass@example.com/",
-            "http://127.0.0.1/",
-            "http://[::1]/",
-            "http://10.0.0.5/",
-            "http://minio/", // 単一ラベル（compose サービス名）
-            "http://localhost/",
-            "http://foo.local/",
-            "http://metadata.google.internal/computeMetadata/v1/",
-            "http://router.lan/",
-            "not a url",
-        ] {
-            assert!(validate_url(bad).is_err(), "should reject {bad:?}");
+/// 本文を [`FETCH_BODY_CAP`] まで読む（上限に達したら以降は受け取らない）。
+async fn read_capped(mut response: reqwest::Response) -> Result<(Vec<u8>, bool), reqwest::Error> {
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let remaining = FETCH_BODY_CAP - body.len();
+        if chunk.len() >= remaining {
+            body.extend_from_slice(&chunk[..remaining]);
+            return Ok((body, true));
         }
+        body.extend_from_slice(&chunk);
     }
-
-    #[test]
-    fn fetch_code_embeds_url_safely() {
-        // 引用符を含む URL でも Python 文字列リテラルとして安全に埋まる（JSON エスケープ）。
-        let t = validate_url("https://example.com/a?b=\"c\"").unwrap();
-        let code = fetch_code(&t.url);
-        assert!(code.contains(r#"https://example.com/a?b=%22c%22"#) || code.contains("\\\""));
-        assert!(code.contains("NoRedirect"));
-    }
-
-    #[tokio::test]
-    async fn creates_sandbox_with_run_scoped_egress() {
-        let sandbox = Arc::new(
-            FakeSandbox::new().with_exec(FakeExecResult::stdout("HTTP 200\n<html>ok</html>\n")),
-        );
-        let tool = WebFetchTool::new(sandbox.clone());
-        let out = tool
-            .call(
-                &ctx(),
-                serde_json::json!({"url": "https://example.com/"}),
-                None,
-            )
-            .await
-            .expect("ok");
-        assert!(!out.is_error);
-        assert!(out.content.contains("HTTP 200"));
-        // 当該ホストのみが run 限定 dynamic_allow に載る（静的 allow は空・シークレット非添付）。
-        let specs = sandbox.created_specs();
-        assert_eq!(specs.len(), 1);
-        assert!(specs[0].egress.static_allow.is_empty());
-        assert_eq!(specs[0].egress.dynamic_allow.len(), 1);
-        assert_eq!(specs[0].egress.dynamic_allow[0].host_pattern, "example.com");
-        assert_eq!(specs[0].egress.dynamic_allow[0].port, 443);
-        assert!(!specs[0].egress.secret_attach);
-        // 実行後に破棄される。
-        assert_eq!(sandbox.destroyed().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn nonzero_exit_is_error() {
-        let sandbox = Arc::new(FakeSandbox::new().with_exec(FakeExecResult {
-            stdout: Vec::new(),
-            stderr: b"fetch error: denied".to_vec(),
-            exit_code: 1,
-            artifacts: Vec::new(),
-        }));
-        let tool = WebFetchTool::new(sandbox);
-        let out = tool
-            .call(
-                &ctx(),
-                serde_json::json!({"url": "https://example.com/"}),
-                None,
-            )
-            .await
-            .expect("ok");
-        assert!(out.is_error);
-        assert!(out.content.contains("denied"));
-    }
-
-    #[tokio::test]
-    async fn invalid_url_never_creates_sandbox() {
-        let sandbox = Arc::new(FakeSandbox::new());
-        let tool = WebFetchTool::new(sandbox.clone());
-        let err = tool
-            .call(
-                &ctx(),
-                serde_json::json!({"url": "http://127.0.0.1/"}),
-                None,
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(err, ToolError::Invalid(_)));
-        assert!(sandbox.created_specs().is_empty());
-    }
+    Ok((body, false))
 }

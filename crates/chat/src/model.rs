@@ -266,10 +266,6 @@ pub enum StreamEventKind {
     CsvDraft { draft: serde_json::Value },
     /// 未保存の下書き Word 文書カード（save_document の下書き確定型・#332）。
     DocumentDraft { draft: serde_json::Value },
-    /// 開いている Office セッションへの AI ライブ編集指示（office.live_edit・#328）。
-    /// **ライブ専用**（content へ projection されない）。フロントは /office フレームで対象 node_id が
-    /// 一致するとき Collabora Action_Paste（現在の選択を置換）を実行する。
-    OfficeLiveEdit { node_id: String, html: String },
     /// skill ツールの発動記録（#344）。`skill = {skill_id, skill_version, name}`。
     /// `generation_event` に append され replay 可能（監査・再現性）。content へは projection
     /// しない（instructions は tool_result block として履歴に残る）。UI はチップ表示に使う。
@@ -326,7 +322,6 @@ impl StreamEventKind {
             StreamEventKind::SlideDraft { .. } => "slide_draft",
             StreamEventKind::CsvDraft { .. } => "csv_draft",
             StreamEventKind::DocumentDraft { .. } => "document_draft",
-            StreamEventKind::OfficeLiveEdit { .. } => "office_live_edit",
             StreamEventKind::SkillInvoked { .. } => "skill_invoked",
             StreamEventKind::Plan { .. } => "plan",
             StreamEventKind::BudgetWarning { .. } => "budget_warning",

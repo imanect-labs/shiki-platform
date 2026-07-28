@@ -179,12 +179,11 @@ impl WorkerSink {
                     draft: draft.clone(),
                 });
             }
-            // ライブ専用/進捗/端末イベントは projection しない。
-            // Office ライブ編集は履歴再生で二重 paste しないため（#328）、skill 発動記録は
-            // instructions が tool_result block として既に履歴に残るため（#344・完全な列は
-            // generation_event 側が監査・再現性を担う）除外する。
-            StreamEventKind::OfficeLiveEdit { .. }
-            | StreamEventKind::SkillInvoked { .. }
+            // 進捗/端末イベントは projection しない。skill 発動記録は instructions が
+            // tool_result block として既に履歴に残るため（#344・完全な列は generation_event
+            // 側が監査・再現性を担う）除外する。
+            // （旧 office_live_edit の SSE 注入イベントは #352 で廃止＝この列から消えた）
+            StreamEventKind::SkillInvoked { .. }
             | StreamEventKind::Plan { .. }
             | StreamEventKind::BudgetWarning { .. }
             | StreamEventKind::ApprovalRequested { .. }
@@ -238,11 +237,6 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         },
         AgentEvent::DocumentDraft { draft } => StreamEventKind::DocumentDraft {
             draft: draft.clone(),
-        },
-        // 開いている Office セッションへのライブ編集（#328）。ライブ SSE のみ（content 非 projection）。
-        AgentEvent::OfficeLiveEdit { node_id, html } => StreamEventKind::OfficeLiveEdit {
-            node_id: node_id.clone(),
-            html: html.clone(),
         },
         // skill 発動記録（#344）。generation_event に残り replay 可能（UI はチップ表示）。
         AgentEvent::SkillInvoked { skill } => StreamEventKind::SkillInvoked {
@@ -441,23 +435,6 @@ mod tests {
         };
         match to_stream_kind(&ev) {
             StreamEventKind::CsvDraft { draft: d } => assert_eq!(d, draft),
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn office_live_edit_maps_to_sse() {
-        // AgentEvent::OfficeLiveEdit → SSE office_live_edit（ライブ配信）。content への
-        // projection は accumulate 側の no-op アームで抑止する（履歴再生で二重 paste しない・#328）。
-        let ev = AgentEvent::OfficeLiveEdit {
-            node_id: "file-1".into(),
-            html: "<p>置換</p>".into(),
-        };
-        match to_stream_kind(&ev) {
-            StreamEventKind::OfficeLiveEdit { node_id, html } => {
-                assert_eq!(node_id, "file-1");
-                assert_eq!(html, "<p>置換</p>");
-            }
             other => panic!("unexpected: {other:?}"),
         }
     }

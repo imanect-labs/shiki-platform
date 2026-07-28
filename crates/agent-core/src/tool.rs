@@ -66,18 +66,6 @@ pub struct CsvDraft {
     pub csv: String,
 }
 
-/// 開いている Office 文書セッションへの AI ライブ編集（office.live_edit・#328）。
-/// ファイルは書き換えず、開いている Collabora セッションの**現在の選択範囲**を `html` で置換する
-/// よう指示する（フロントが Action_Paste を実行）。`node_id` は対象ファイルの storage node id、
-/// `html` は書込サニタイズ済み（PIT-40 準拠・ammonia）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OfficeLiveEdit {
-    /// 対象 Office ファイルの storage node id。
-    pub node_id: String,
-    /// 現在の選択範囲を置き換えるサニタイズ済み HTML。
-    pub html: String,
-}
-
 /// ツール実行結果。`content` はモデルへ返すテキスト、`citations` は UI 引用へ。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutcome {
@@ -115,10 +103,6 @@ pub struct ToolOutcome {
     /// 下書き本文を入れる（chat 側で document_draft ブロックへ写り、フロントが下書き画面で
     /// 詰めてから「ドライブに保存」で .docx 化・確定保存する）。
     pub document_drafts: Vec<serde_json::Value>,
-    /// 開いている Office セッションへの AI ライブ編集（office.live_edit のみ・他ツールは空・#328）。
-    /// **ファイルは書き換えない**（現在の選択範囲を置換する指示のみ）。ライブ専用イベントとして
-    /// SSE へ流れ、message.content へは projection しない（履歴再生で二重 paste しないため）。
-    pub office_live_edits: Vec<OfficeLiveEdit>,
     /// skill ツールの発動記録（skill のみ・他ツールは空・#344 Task 10.11）。
     /// `{skill_id, skill_version, name}` の JSON。**発話ユーザー権限で解決に成功した**発動のみ
     /// を入れる（run イベントへ append され「何をいつ適用したか」の完全な列が残る＝監査・再現性）。
@@ -141,7 +125,6 @@ impl ToolOutcome {
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
             document_drafts: Vec::new(),
-            office_live_edits: Vec::new(),
             skill_invocations: Vec::new(),
             is_error: false,
         }
@@ -160,7 +143,6 @@ impl ToolOutcome {
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
             document_drafts: Vec::new(),
-            office_live_edits: Vec::new(),
             skill_invocations: Vec::new(),
             is_error: true,
         }
@@ -198,6 +180,16 @@ pub trait Tool: Send + Sync {
     /// **破壊的/権限/高コスト系**なら true（明示許可が要る・Task 3.9）。
     /// 既定は false（doc_search 等の安全なツール）。true のツールは確認なしに実行されない。
     fn requires_confirmation(&self) -> bool {
+        false
+    }
+
+    /// **冪等・副作用なしの read** なら true（issue #349）。
+    ///
+    /// true のツールだけが同一ステップ内で**有界並列**に実行される（deep research の
+    /// 検索→複数取得のファンアウトが直列にならない）。既定は false の**オプトイン**:
+    /// 「確認不要 ＝ 並列にしてよい」ではない（承認不要でも副作用を持つツールはある）ため、
+    /// 並列化の可否は各ツールが自分で表明する。
+    fn is_read_only(&self) -> bool {
         false
     }
 

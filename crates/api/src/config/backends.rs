@@ -140,6 +140,15 @@ pub struct ChatConfig {
     /// エージェントモードの最大ステップ。
     #[serde(default = "default_max_steps")]
     pub max_steps: usize,
+    /// 1 応答の最大トークン（未指定は WorkerConfig 既定）。reasoning 系モデルは思考
+    /// トークンも消費するため、長い成果物（レポート執筆・大きなツール引数）には
+    /// 8192 以上が必要（2048 だとツール引数が途中で切れて空引数になる・実機で確認）。
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    /// 同一ステップ内で並列実行する冪等 read ツールの上限（未指定は WorkerConfig 既定 4・#349）。
+    /// 検索プロバイダの rate limit がきつい環境では 1〜2 に絞る（1 で従来どおりの逐次）。
+    #[serde(default)]
+    pub parallel_read_tools: Option<usize>,
     /// 通常チャットで旧・無条件 RAG 注入経路を使う後方互換フォールバック（既定 false）。
     /// false ならモデル裁量ループ（issue #102）。明示的なエージェントモード run/自律 run には影響しない。
     #[serde(default)]
@@ -152,7 +161,6 @@ pub struct ChatConfig {
     /// `gvisor`（既定・#346）/ `wasm` / `firecracker`。未指定は既定（gVisor）。各ティアは
     /// orchestrator 側で構成済みであることが前提（未構成なら create は Unimplemented で fail する
     /// ＝黙って降格しない）。runsc の動かない環境は `wasm` を明示指定して退避する。
-    /// web_fetch は egress 限定の短命 sandbox なので常に wasm（この設定の対象外）。
     /// rootfs の numpy/pandas 同梱はビルド（rootfs-requirements.txt・--require-hashes）が保証する。
     #[serde(default)]
     pub sandbox_backend: Option<sandbox_client::SandboxBackend>,
@@ -247,6 +255,8 @@ impl Default for ChatConfig {
             system_prompt: None,
             lease_secs: default_lease_secs(),
             max_steps: default_max_steps(),
+            max_tokens: None,
+            parallel_read_tools: None,
             classic_rag: false,
             sandbox_endpoint: None,
             sandbox_backend: None,

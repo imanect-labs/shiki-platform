@@ -16,6 +16,7 @@
 mod compose;
 mod edit;
 mod error;
+pub mod live;
 mod suite;
 pub mod wopi;
 

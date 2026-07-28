@@ -9,7 +9,10 @@ use agent_core::{
     WorkspaceStore,
 };
 
+use authz::AuthContext;
+
 use super::ChatWorker;
+use crate::store::ClaimedRun;
 
 impl ChatWorker {
     /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。
@@ -54,20 +57,22 @@ impl ChatWorker {
 
     /// AI Office 編集＋CSV ツールの配線。
     ///
-    /// office.edit（ファイル単位・非ロック=新版/ロック中=提案・PIT-44・Task 11.8）＋
-    /// office.live_edit（開いているセッションへ Action_Paste 注入・authz 必須・#328）は office
-    /// 有効時のみ。CSV（csv.query / csv.patch / csv.write・Task 11P.9）は tabular 配線時のみで、
+    /// office.edit（ファイル単位・非ロック=新版/ロック中=提案・PIT-44・Task 11.8）は office
+    /// 有効時のみ。office.live_edit（CoolWSD headless 参加・#352）は LiveEditor 配線時のみ。
+    /// CSV（csv.query / csv.patch / csv.write・Task 11P.9）は tabular 配線時のみで、
     /// 認可は操作別のファイル ReBAC（TabularService が StorageService 経由で強制）。
     pub(super) fn push_office_and_csv_tools(&self, tools: &mut Vec<Arc<dyn Tool>>) {
         if let Some(office) = &self.office {
             tools.push(Arc::new(crate::office_tool::OfficeEditTool::new(
                 office.clone(),
             )));
-            if let Some(authz) = &self.authz {
-                tools.push(Arc::new(crate::office_live_tool::OfficeLiveEditTool::new(
-                    authz.clone(),
-                )));
-            }
+        }
+        // office.live_edit は CoolWSD の headless 参加者として編集する（#352）。authz は
+        // LiveEditor が内部で持つ（ツール側は昇格経路を持たない）。
+        if let Some(live) = &self.office_live {
+            tools.push(Arc::new(crate::office_live_tool::OfficeLiveEditTool::new(
+                live.clone(),
+            )));
         }
         if let Some(tabular) = &self.tabular {
             tools.push(Arc::new(crate::csv_tool::CsvQueryTool::new(
@@ -102,6 +107,49 @@ impl ChatWorker {
                 self.config.sandbox_software.clone(),
                 self.config.sandbox_backend,
             )));
+        }
+    }
+
+    /// skill ツール（カタログ引き・#344 Task 10.11）を提示ツールに加える。
+    ///
+    /// artifact ストアとカタログ源が配線されている時のみ。カタログはピン済み ∪ 本人 owner
+    /// （PR2 でインストール済みを追加）。掲載一覧の取得失敗は run を落とさない
+    /// （ピンの fail-closed とは別・warn してツールを出さない）。
+    pub(super) async fn push_skill_tool(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        ctx: &AuthContext,
+        run: &ClaimedRun,
+        skills: &[crate::skill::AppliedSkill],
+    ) {
+        let (Some(artifacts), Some(catalog)) = (&self.skill_artifacts, &self.skill_catalog) else {
+            return;
+        };
+        match catalog.entries(ctx, run.trace_id.as_deref()).await {
+            Ok(entries) => {
+                let pinned = skills
+                    .iter()
+                    .map(|s| crate::skill_catalog::SkillCatalogEntry {
+                        id: s.id,
+                        version: s.version,
+                        name: s.name.clone(),
+                        description: s.body.description.clone(),
+                        pinned: true,
+                    })
+                    .collect();
+                if let Some(tool) = crate::skill_tool::SkillTool::build(
+                    artifacts.clone(),
+                    self.db.clone(),
+                    run,
+                    pinned,
+                    entries,
+                ) {
+                    tools.push(Arc::new(tool));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, run_id = %run.run_id, "skill カタログ取得に失敗（skill ツールを提示しない）");
+            }
         }
     }
 }

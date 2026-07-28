@@ -121,4 +121,7 @@ pub struct OfficeRuntime {
     pub suite: Arc<dyn office::OfficeSuite>,
     pub wopi: office::WopiState,
     pub wopi_base_url: String,
+    /// AI ライブ編集（office.live_edit・CoolWSD headless 参加・issue #352）。
+    /// WOPI と同一のトークン鍵を共有する（wire_office で一括構築）。
+    pub live: Arc<office::live::LiveEditor>,
 }

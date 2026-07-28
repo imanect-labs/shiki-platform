@@ -25,6 +25,7 @@
 
 pub mod agent;
 pub(crate) mod agent_gate;
+pub(crate) mod agent_tools;
 pub mod approval;
 pub mod budget;
 pub mod checkpoint;
@@ -44,10 +45,9 @@ pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
 pub use checkpoint::Checkpoint;
 pub use event::{AgentError, AgentEvent, EventSink, RecoveryAction};
 pub use plan::{Plan, Subtask, SubtaskStatus};
-pub use profile::{AgentOptions, AgentOutcome, AgentProfile};
+pub use profile::{AgentOptions, AgentOutcome, AgentProfile, DEFAULT_PARALLEL_READ_TOOLS};
 pub use tool::{
-    ArtifactRef, ArtifactStore, Citation, CsvDraft, OfficeLiveEdit, SlideDraft, Tool, ToolError,
-    ToolOutcome,
+    ArtifactRef, ArtifactStore, Citation, CsvDraft, SlideDraft, Tool, ToolError, ToolOutcome,
 };
 pub use tools::{
     run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsDeleteTool, FsEditTool,

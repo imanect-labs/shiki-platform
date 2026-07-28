@@ -76,6 +76,9 @@ fn rule_patterns(rule: &EgressRule) -> Vec<String> {
     }
 }
 
+/// permission rule の operations ワイルドカード（sidecar は空配列を拒否する）。
+const OPERATION_WILDCARD: &str = "*";
+
 /// egress ポリシを network permission scope に落とす。allowlist 空＝default Deny 全遮断。
 pub fn map_egress(egress: &Egress) -> PatternPermissionScope {
     let mut rules: Vec<PatternPermissionRule> = Vec::new();
@@ -85,7 +88,9 @@ pub fn map_egress(egress: &Egress) -> PatternPermissionScope {
         let patterns = egress.deny_overlay.iter().flat_map(rule_patterns).collect();
         rules.push(PatternPermissionRule {
             mode: PermissionMode::Deny,
-            operations: Vec::new(),
+            // 空配列は sidecar のポリシ検証が拒否する（`use ["*"] for wildcard`）。
+            // ネットワークの全操作（connect 等）を対象にするワイルドカードを明示する。
+            operations: vec![OPERATION_WILDCARD.to_string()],
             patterns,
         });
     }
@@ -100,7 +105,7 @@ pub fn map_egress(egress: &Egress) -> PatternPermissionScope {
     if !allow_patterns.is_empty() {
         rules.push(PatternPermissionRule {
             mode: PermissionMode::Allow,
-            operations: Vec::new(),
+            operations: vec![OPERATION_WILDCARD.to_string()],
             patterns: allow_patterns,
         });
     }
@@ -187,6 +192,10 @@ mod tests {
             .find(|r| r.mode == PermissionMode::Allow)
             .expect("allow rule");
         assert!(allow.patterns.contains(&"api.example.com:443".to_string()));
+        // sidecar は operations 空配列を拒否する（`must not be empty; use ["*"]`）。
+        // ワイルドカードを必ず載せる（web_fetch の sandbox create が invalid_state で
+        // 落ちる回帰の防止）。
+        assert_eq!(allow.operations, vec!["*".to_string()]);
     }
 
     #[test]

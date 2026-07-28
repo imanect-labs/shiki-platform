@@ -214,7 +214,9 @@ services:
   # web 検索（オンプレ向け SearXNG・websearch profile でオプトイン起動）。
   # SaaS は Brave（SHIKI__WEBSEARCH__BRAVE_API_KEY）、テストは stub を使う。
   searxng:
-    image: searxng/searxng:2025.6.20-f45eb1eec
+    # SearXNG は rolling tag で古いタグが GC される（2025.6.20 は upstream から消滅・
+    # `--profile websearch` が pull 不能になっていた）。digest 併記で再現性を担保する。
+    image: searxng/searxng:2026.7.24-4f64d9501@sha256:f68e460a549631cd0c09f943fc9d7befc4c0ff8c75e38accd734c7ac9f0b537c
     profiles: ["websearch"]
     environment:
       # JSON format を有効化した設定を読み込む（web_search プロバイダの応答形式）。
@@ -223,7 +225,8 @@ services:
       - ../searxng/settings.yml:/etc/searxng/settings.yml:ro
     ports:
       # ローカル確認用のみ公開（compose 網内は searxng:8080 で到達）。
-      - "127.0.0.1:8081:8080"
+      # 8081 は keycloak が使うため 8099 を割り当てる（衝突回避）。
+      - "127.0.0.1:8099:8080"
     security_opt:
       - no-new-privileges:true
     deploy:
@@ -421,6 +424,9 @@ services:
       # チャット（Phase 3）。生成ワーカーを有効化（接続非依存生成）。
       SHIKI__CHAT__ENABLED: ${SHIKI__CHAT__ENABLED:-true}
       SHIKI__CHAT__WORKER_CONCURRENCY: ${SHIKI__CHAT__WORKER_CONCURRENCY:-4}
+      # 1 応答の最大トークン（既定 8192）。reasoning 系モデルは思考トークンも消費するため、
+      # 長い成果物（レポート執筆・大きなツール引数）を作らせる場合はさらに引き上げる。
+      SHIKI__CHAT__MAX_TOKENS: ${SHIKI__CHAT__MAX_TOKENS:-8192}
       # ワークフロー実行時（Phase 10）。launcher/worker/scheduler を有効化（エディタからの実行・
       # スケジュール発火・実行履歴 SSE が動く）。
       SHIKI__WORKFLOW__ENABLED: ${SHIKI__WORKFLOW__ENABLED:-true}

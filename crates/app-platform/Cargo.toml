@@ -15,6 +15,8 @@ shiki-artifact.workspace = true
 shiki-storage.workspace = true
 shiki-data.workspace = true
 shiki-agent-core.workspace = true
+# egress の SSRF 判定（net_guard・IP 分類の単一の正）。
+shiki-sandbox-client.workspace = true
 shiki-gui.workspace = true
 shiki-app-gateway.workspace = true
 shiki-script-runtime.workspace = true
@@ -44,7 +46,7 @@ axum.workspace = true
 tokio.workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-artifact", "shiki-storage", "shiki-data", "shiki-agent-core", "shiki-gui", "shiki-app-gateway", "shiki-script-runtime", "shiki-secrets", "shiki-llm-gateway"]
+ignored = ["shiki-authz", "shiki-artifact", "shiki-storage", "shiki-data", "shiki-agent-core", "shiki-gui", "shiki-app-gateway", "shiki-script-runtime", "shiki-secrets", "shiki-llm-gateway", "shiki-sandbox-client"]
 
 [lints]
 workspace = true

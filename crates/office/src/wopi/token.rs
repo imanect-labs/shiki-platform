@@ -73,6 +73,13 @@ pub struct WopiClaims {
     pub org: String,
     pub tenant_id: String,
     pub file_id: Uuid,
+    /// AI headless 参加者（`live::LiveEditor`）のトークンか（issue #352）。
+    ///
+    /// CheckFileInfo の**表示 identity**（「Shiki AI」・別 view としての UserId）の
+    /// 切替にのみ使う。**認可の根拠にはしない** — アクセス可否は常に
+    /// `principal_id`（実行を依頼した実ユーザー）の editor@file で決まる
+    /// （confused-deputy 回避・毎呼び出し ReBAC は `routes::authenticate` が担う）。
+    pub ai_actor: bool,
     /// 失効時刻（unix 秒）。
     pub exp: i64,
 }
@@ -105,7 +112,20 @@ pub fn issue(
     file_id: Uuid,
 ) -> Result<String, OfficeError> {
     let exp = chrono::Utc::now().timestamp() + i64::try_from(TOKEN_TTL.as_secs()).unwrap_or(3600);
-    issue_at(key, ctx, file_id, exp)
+    issue_at(key, ctx, file_id, false, exp)
+}
+
+/// AI headless 参加者用の access_token を発行する（issue #352）。
+///
+/// principal は**実行を依頼した実ユーザーのまま**（認可は常にそのユーザーの
+/// editor@file・ai_actor は表示 identity の切替のみ）。TTL・鍵は通常発行と同一。
+pub fn issue_ai(
+    key: &OfficeTokenKey,
+    ctx: &AuthContext,
+    file_id: Uuid,
+) -> Result<String, OfficeError> {
+    let exp = chrono::Utc::now().timestamp() + i64::try_from(TOKEN_TTL.as_secs()).unwrap_or(3600);
+    issue_at(key, ctx, file_id, true, exp)
 }
 
 /// 失効時刻を指定して発行する（テストで期限切れを作るための内部口）。
@@ -113,6 +133,7 @@ fn issue_at(
     key: &OfficeTokenKey,
     ctx: &AuthContext,
     file_id: Uuid,
+    ai_actor: bool,
     exp: i64,
 ) -> Result<String, OfficeError> {
     let claims = WopiClaims {
@@ -121,6 +142,7 @@ fn issue_at(
         org: ctx.org.clone(),
         tenant_id: ctx.tenant_id.clone(),
         file_id,
+        ai_actor,
         exp,
     };
     let payload = serde_json::to_vec(&claims).map_err(|_| OfficeError::Unauthorized)?;
@@ -204,6 +226,7 @@ mod tests {
         assert_eq!(claims.tenant_id, "default");
         assert_eq!(claims.org, "acme");
         assert_eq!(claims.file_id, file_id);
+        assert!(!claims.ai_actor);
         // AuthContext 再構成（tenant/org 焼き込み・IdP メタは持ち越さない）。
         let rebuilt = claims.to_auth_context();
         assert_eq!(rebuilt.tenant_id, "default");
@@ -242,7 +265,8 @@ mod tests {
         // 別テナントを主張する payload に元の署名を付け替える。
         let evil = serde_json::json!({
             "principal_id": "alice", "principal_kind": "user", "org": "acme",
-            "tenant_id": "other-tenant", "file_id": file_id, "exp": i64::MAX,
+            "tenant_id": "other-tenant", "file_id": file_id, "ai_actor": false,
+            "exp": i64::MAX,
         });
         let evil_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&evil).unwrap());
         assert!(matches!(
@@ -256,13 +280,13 @@ mod tests {
         let key = OfficeTokenKey::random();
         let file_id = Uuid::new_v4();
         let now = chrono::Utc::now().timestamp();
-        let token = issue_at(&key, &ctx(), file_id, now - 1).unwrap();
+        let token = issue_at(&key, &ctx(), file_id, false, now - 1).unwrap();
         assert!(matches!(
             verify_at(&key, &token, file_id, now),
             Err(OfficeError::Unauthorized)
         ));
         // ちょうど exp == now も失効扱い（fail-closed）。
-        let token = issue_at(&key, &ctx(), file_id, now).unwrap();
+        let token = issue_at(&key, &ctx(), file_id, false, now).unwrap();
         assert!(matches!(
             verify_at(&key, &token, file_id, now),
             Err(OfficeError::Unauthorized)
@@ -299,6 +323,36 @@ mod tests {
         // 区切り無し・空文字も拒否。
         assert!(verify(&key, "", file_id).is_err());
         assert!(verify(&key, "abc", file_id).is_err());
+    }
+
+    #[test]
+    fn issue_ai_marks_ai_actor_with_same_principal() {
+        let key = OfficeTokenKey::random();
+        let file_id = Uuid::new_v4();
+        let claims = verify(&key, &issue_ai(&key, &ctx(), file_id).unwrap(), file_id).unwrap();
+        assert!(claims.ai_actor);
+        // principal は実ユーザーのまま（認可は常に実ユーザーの editor@file）。
+        assert_eq!(claims.principal_id, "alice");
+        assert_eq!(claims.to_auth_context().principal.id, "alice");
+    }
+
+    #[test]
+    fn rejects_missing_ai_actor_claim() {
+        // ai_actor を欠いた（正しく署名された）旧形式トークンは fail-closed で拒否。
+        let key = OfficeTokenKey::random();
+        let file_id = Uuid::new_v4();
+        let payload = serde_json::json!({
+            "principal_id": "alice", "principal_kind": "user", "org": "acme",
+            "tenant_id": "default", "file_id": file_id, "exp": i64::MAX,
+        });
+        let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let mut mac = key.mac().unwrap();
+        mac.update(payload_b64.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+        assert!(matches!(
+            verify(&key, &format!("{payload_b64}.{sig_b64}"), file_id),
+            Err(OfficeError::Unauthorized)
+        ));
     }
 
     #[test]

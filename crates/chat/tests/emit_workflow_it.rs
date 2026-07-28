@@ -182,7 +182,7 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<WorkflowStore>) {
             collab: None,
             tabular: None,
             office: None,
-            authz: None,
+            office_live: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),

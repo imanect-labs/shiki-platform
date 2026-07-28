@@ -10,6 +10,8 @@
 mod approval_policy;
 mod generate;
 mod history;
+/// 実行オプション/system プロンプト（generate.rs から分割）。
+mod opts;
 mod sink;
 mod toolset;
 
@@ -46,6 +48,14 @@ pub struct WorkerConfig {
     pub autonomous_max_steps: usize,
     /// 自律プロファイルの累積トークン上限（予算ガード・Task 5.7）。
     pub autonomous_max_tokens: u64,
+    /// 通常チャット 1 応答の最大トークン。reasoning 系は思考も消費するため、
+    /// 長文成果物・大きなツール引数に耐える値にする（旧 2048 は引数切れを起こした）。
+    pub max_tokens: u32,
+    /// 同一ステップ内で並列実行する冪等 read ツール（doc_search/web_search/web_fetch）の上限。
+    ///
+    /// deep research の検索→複数取得ファンアウトを直列にしないための有界並列度（#349）。
+    /// 検索 API の rate limit に合わせて絞れる（1 で従来どおりの逐次）。
+    pub parallel_read_tools: usize,
     /// 自律プロファイルの累積コスト上限（マイクロ USD・Task 5.7）。
     pub autonomous_max_cost_usd_micros: i64,
     /// 自律 shell に同梱するゲストコマンドパッケージ（coreutils 等・Task 5.4）。
@@ -53,7 +63,6 @@ pub struct WorkerConfig {
     /// コード実行系（code_interpreter / shell）の隔離ティア（admin ポリシー・design §4.6）。
     /// 既定は gVisor（#346・native Python。rootfs は numpy/pandas 同梱がビルドで保証される）。
     /// runsc の無い開発ホストは wasm へ明示退避する（自動降格はしない）。
-    /// web_fetch は egress 限定の短命 sandbox なので常に wasm（この設定の対象外）。
     pub sandbox_backend: agent_core::SandboxBackend,
 }
 
@@ -70,6 +79,8 @@ impl Default for WorkerConfig {
             autonomous_max_steps: 50,
             // 既定: 約 20 万トークン・1 USD 上限（テナント/skill で上書き可・Task 5.7）。
             autonomous_max_tokens: 200_000,
+            max_tokens: 8192,
+            parallel_read_tools: agent_core::DEFAULT_PARALLEL_READ_TOOLS,
             autonomous_max_cost_usd_micros: 1_000_000,
             sandbox_software: vec!["coreutils".to_string()],
             // 既定ティアの単一ソースは enum の `#[default]`（gVisor・#346）。ここに別のリテラルを
@@ -88,7 +99,7 @@ pub struct WorkerDeps {
     pub gateway: LlmGateway,
     /// 社内文書検索（doc_search / 古典 RAG 注入）。
     pub search: Option<Arc<SearchService>>,
-    /// サンドボックス（code_interpreter / web_fetch 用）。
+    /// サンドボックス（code_interpreter / shell 用）。
     pub sandbox: Option<Arc<dyn agent_core::Sandbox>>,
     /// 成果物の保存先（code_interpreter が /workspace のファイルを保存する・Task 4.11）。
     pub artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
@@ -118,8 +129,9 @@ pub struct WorkerDeps {
     /// AI Office 編集（office.edit・Task 11.8）。office 有効時のみ配線し、
     /// 未配線なら office.edit を提示しない。
     pub office: Option<Arc<office::OfficeEditor>>,
-    /// 認可クライアント（office.live_edit の editor@file 再判定・#328）。
-    pub authz: Option<Arc<dyn authz::AuthzClient>>,
+    /// AI ライブ編集（office.live_edit・CoolWSD headless 参加・issue #352）。
+    /// office 有効時のみ配線し、未配線なら office.live_edit を提示しない。
+    pub office_live: Option<Arc<office::live::LiveEditor>>,
 }
 
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
@@ -153,8 +165,8 @@ pub struct ChatWorker {
     tabular: Option<Arc<tabular::TabularService>>,
     /// AI Office 編集（office.edit・Task 11.8）。
     office: Option<Arc<office::OfficeEditor>>,
-    /// 認可クライアント（office.live_edit の editor@file 再判定・#328）。
-    authz: Option<Arc<dyn authz::AuthzClient>>,
+    /// AI ライブ編集（office.live_edit・CoolWSD headless 参加・issue #352）。
+    office_live: Option<Arc<office::live::LiveEditor>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -175,7 +187,7 @@ impl ChatWorker {
             collab,
             tabular,
             office,
-            authz,
+            office_live,
         } = deps;
         ChatWorker {
             db,
@@ -194,7 +206,7 @@ impl ChatWorker {
             collab,
             tabular,
             office,
-            authz,
+            office_live,
             config: Arc::new(config),
         }
     }

@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use super::approval_policy::restore_checkpoint;
 use super::history::{message_preview, message_text};
+use super::opts::{autonomous_system_prompt, chat_opts, sanitize_for_prompt};
 use super::sink::WorkerSink;
 use super::ChatWorker;
 use crate::model::Role;
@@ -51,6 +52,52 @@ impl ChatWorker {
             out.push(LlmMessage::text(role, text));
         }
         Ok(out)
+    }
+
+    /// この run のスレッドに紐づく「開いているドキュメント」（ノート/Office）を返す。
+    ///
+    /// ドキュメントアシスタント（`/notes/:id`・`/office/:id` のパネル）から作られた会話は
+    /// `thread.origin_note_id` を持つ。編集対象の解決に使う（無ければ `None`）。
+    async fn origin_document(&self, run: &ClaimedRun) -> Option<(Uuid, Option<String>)> {
+        let row: Option<(Option<Uuid>, Option<String>)> = sqlx::query_as(
+            "SELECT origin_note_id, origin_note_name FROM thread WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(run.thread_id)
+        .bind(&run.tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, "origin_note の取得に失敗"))
+        .ok()
+        .flatten();
+        match row {
+            Some((Some(id), name)) => Some((id, name)),
+            _ => None,
+        }
+    }
+
+    /// system プロンプトへ「開いているドキュメント」の node_id を足す。
+    ///
+    /// これが無いと「この文書に書いて」に対し対象 id が分からず、モデルは新規下書き
+    /// （save_note / save_document）へ逃げてしまう（実 LLM 検証で確認）。
+    async fn system_with_origin_document(&self, run: &ClaimedRun, base: Option<String>) -> String {
+        let base = base.unwrap_or_else(|| self.config.system_prompt.clone());
+        match self.origin_document(run).await {
+            Some((node_id, name)) => {
+                // ドキュメント名はユーザーが自由に付けられる文字列。system プロンプトへ
+                // 無加工で連結すると「以降の指示を無視せよ」等を**システム発話として**
+                // 注入できてしまうため、改行を潰して長さを切り、引用で括る。
+                let named = name
+                    .map(|n| format!("・名前: 「{}」", sanitize_for_prompt(&n)))
+                    .unwrap_or_default();
+                format!(
+                    "{base}\n\nこの会話は開いているドキュメントに紐づいています\
+                     （node_id: {node_id}{named}）。ユーザーが「この文書」「開いているノート」\
+                     「このシート」等と言う場合は、新規作成や下書きではなく**この node_id を対象**に\
+                     編集ツール（document.edit / office.live_edit / csv.patch 等）を使ってください。"
+                )
+            }
+            None => base,
+        }
     }
 
     /// エージェントモード（agent-core ループ）。`run.autonomous` で Chat/Autonomous を切り替える。
@@ -90,9 +137,8 @@ impl ChatWorker {
         }
         if let Some(provider) = &self.web_search {
             tools.push(Arc::new(WebSearchTool::new(provider.clone())));
-            if let Some(sandbox) = &self.sandbox {
-                tools.push(Arc::new(WebFetchTool::new(sandbox.clone())));
-            }
+            // web_fetch はホスト側で取得する（#348）。sandbox 配線の有無に依存しない。
+            tools.push(Arc::new(WebFetchTool::new()));
         }
         // generative UI（emit_ui・Task 6.4）: 検証層が配線されている時のみ提示する。
         if let Some(validator) = &self.ui_validator {
@@ -159,6 +205,7 @@ impl ChatWorker {
                     ctx.principal.id.clone(),
                     snapshot,
                 );
+                opts.parallel_read_tools = self.config.parallel_read_tools;
                 opts
             } else {
                 // storage 未配線: 自律不能。制約版に落とす（黙って弱くしない・警告）。
@@ -167,7 +214,9 @@ impl ChatWorker {
             }
         } else {
             // 通常チャット: deny_all（既定）のまま。破壊系は都度ユーザー承認が要る（要確認ツールの設計意図）。
-            chat_opts(self)
+            let mut opts = chat_opts(self);
+            opts.system = Some(self.system_with_origin_document(run, opts.system).await);
+            opts
         };
         let approver = Some(approver);
 
@@ -219,49 +268,6 @@ impl ChatWorker {
         .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
         let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理
         Ok(())
-    }
-
-    /// skill ツール（カタログ引き・#344 Task 10.11）を提示ツールに加える。
-    ///
-    /// artifact ストアとカタログ源が配線されている時のみ。カタログはピン済み ∪ 本人 owner
-    /// （PR2 でインストール済みを追加）。掲載一覧の取得失敗は run を落とさない
-    /// （ピンの fail-closed とは別・warn してツールを出さない）。
-    async fn push_skill_tool(
-        &self,
-        tools: &mut Vec<Arc<dyn Tool>>,
-        ctx: &AuthContext,
-        run: &ClaimedRun,
-        skills: &[crate::skill::AppliedSkill],
-    ) {
-        let (Some(artifacts), Some(catalog)) = (&self.skill_artifacts, &self.skill_catalog) else {
-            return;
-        };
-        match catalog.entries(ctx, run.trace_id.as_deref()).await {
-            Ok(entries) => {
-                let pinned = skills
-                    .iter()
-                    .map(|s| crate::skill_catalog::SkillCatalogEntry {
-                        id: s.id,
-                        version: s.version,
-                        name: s.name.clone(),
-                        description: s.body.description.clone(),
-                        pinned: true,
-                    })
-                    .collect();
-                if let Some(tool) = crate::skill_tool::SkillTool::build(
-                    artifacts.clone(),
-                    self.db.clone(),
-                    run,
-                    pinned,
-                    entries,
-                ) {
-                    tools.push(Arc::new(tool));
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, run_id = %run.run_id, "skill カタログ取得に失敗（skill ツールを提示しない）");
-            }
-        }
     }
 
     /// thread のワークスペースフォルダを解決 or 作成し、`WorkspaceStore` を返す（Durable Workspace）。
@@ -396,14 +402,19 @@ impl ChatWorker {
         }
 
         // skill のモデル既定（Task 6.9・指定があるものだけ上書き・複数ピンは後勝ち・#344）。
+        // 未指定時の上限はチャット設定（reasoning モデルの思考で 2048 では足りない・#352）。
         let (model, max_tokens, temperature) = match crate::skill::combined_model_defaults(&skills)
         {
             Some(defaults) => (
                 defaults.model.clone().or_else(|| self.config.model.clone()),
-                defaults.max_tokens.or(Some(2048)),
+                defaults.max_tokens.or(Some(self.config.max_tokens)),
                 defaults.temperature,
             ),
-            None => (self.config.model.clone(), Some(2048), None),
+            None => (
+                self.config.model.clone(),
+                Some(self.config.max_tokens),
+                None,
+            ),
         };
         let effective_model = model
             .clone()
@@ -463,25 +474,4 @@ impl ChatWorker {
             .await;
         Ok(())
     }
-}
-
-/// Chat プロファイルの実行オプション（制約版・現行挙動）。
-fn chat_opts(worker: &ChatWorker) -> AgentOptions {
-    let mut opts = AgentOptions::chat(worker.config.max_steps);
-    opts.system = Some(worker.config.system_prompt.clone());
-    worker.config.model.clone_into(&mut opts.model);
-    opts
-}
-
-/// 自律プロファイルの system プロンプト（計画・ワークスペース・承認の作法を足す）。
-fn autonomous_system_prompt(base: &str) -> String {
-    format!(
-        "{base}\n\n\
-         あなたは自律エージェントです。与えられた目標を達成するため、次の作法で進めてください:\n\
-         - まず `plan` ツールで目標を数個のサブタスクに分解し、進捗に応じて計画を更新する。\n\
-         - 作業ディレクトリ（ワークスペース）のファイルは fs_list/fs_read/grep で調べ、fs_write/fs_edit で編集する。\n\
-         - コマンド実行が必要なら shell を使う（1 コマンドずつ・ネットワークは遮断）。\n\
-         - 破壊的な操作（shell・削除）は承認が必要な場合がある。承認待ちで停止したら結果を待つ。\n\
-         - 目標を達成したら簡潔に要約して終了する。"
-    )
 }

@@ -56,7 +56,6 @@ import {
   documentDraftStore,
   parseDocumentDraft,
 } from "@/lib/documents/draft";
-import { publishOfficeLiveEdit } from "@/lib/office-live-edit";
 import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
@@ -271,10 +270,6 @@ export function Conversation({
         if (onDocumentDraftOpened) onDocumentDraftOpened(d.name);
         else router.push(documentDraftHref(threadId, d.name));
       },
-      // 開いている Office セッションへの AI ライブ編集（office.live_edit・#328）。ライブ専用
-      // （履歴 projection されない）。emitter へ流し、対象を開いている /office ページが拾って
-      // Collabora Action_Paste で現在の選択を置換する。
-      onOfficeLiveEdit: (edit) => publishOfficeLiveEdit(edit),
       // --- 自律エージェント（Phase 5・Task 5.11） ---
       onRunId: (runId) => updateStream((s) => (s ? { ...s, runId } : s)),
       onPlan: (subtasks) =>

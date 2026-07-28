@@ -29,3 +29,6 @@ __pycache__/
 # CI がビルド済み shiki-server バイナリを配置する場所（docker-compose.ci.yml が焼く）
 deploy/compose/prebuilt/
 crates/tabular/runner/target/
+
+# Playwright の実行結果（リポジトリ直下で流したとき用・web/ 側は web/.gitignore が担当）
+/test-results/

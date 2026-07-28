@@ -376,17 +376,29 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
         tabular::RunnerConfig::new("shiki-tabular-runner", Duration::from_secs(5)),
         tabular::Quotas::default(),
     ));
-    let office_runtime = with_office.then(|| api::state::OfficeRuntime {
-        suite: Arc::new(FixedSuite),
-        wopi_base_url: "http://shiki-server:8080".into(),
-        wopi: office::WopiState {
-            storage: Arc::clone(&storage),
-            authz: Arc::new(AllowAll),
-            pool: pool.clone(),
-            token_key: office::OfficeTokenKey::random(),
-            web_origin: Some("http://localhost:3000".into()),
-            max_body_bytes: 64 * 1024 * 1024,
-        },
+    let office_runtime = with_office.then(|| {
+        let token_key = office::OfficeTokenKey::random();
+        api::state::OfficeRuntime {
+            suite: Arc::new(FixedSuite),
+            wopi_base_url: "http://shiki-server:8080".into(),
+            wopi: office::WopiState {
+                storage: Arc::clone(&storage),
+                authz: Arc::new(AllowAll),
+                pool: pool.clone(),
+                token_key: token_key.clone(),
+                web_origin: Some("http://localhost:3000".into()),
+                max_body_bytes: 64 * 1024 * 1024,
+            },
+            // HTTP テストでは CoolWSD へ接続しない（配線形だけ揃える）。
+            live: Arc::new(office::live::LiveEditor::new(
+                Arc::clone(&storage),
+                Arc::new(AllowAll),
+                pool.clone(),
+                token_key,
+                "http://shiki-server:8080",
+                office::live::CoolWsConfig::new("ws://collabora:9980"),
+            )),
+        }
     });
     let state = AppState {
         config: Arc::new(config),

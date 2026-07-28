@@ -19,18 +19,17 @@ use llm_gateway::{
     StopReason, StreamDelta, ToolDef, Usage,
 };
 
-use crate::agent_gate::{authorize, emit_tool_events, execute_tool, Authz};
 use crate::approval::Approver;
 use crate::budget::BudgetCheck;
 use crate::checkpoint::Checkpoint;
 use crate::event::{AgentError, AgentEvent, EventSink, RecoveryAction};
 use crate::loop_detect::LoopDetector;
-use crate::plan::{self, Plan};
+use crate::plan;
 use crate::profile::{AgentOptions, AgentOutcome, AgentProfile};
 use crate::tool::Tool;
 
 /// 計画メタツールの名前（自律版のみ提示・ループが横取りしてツールへは dispatch しない）。
-const PLAN_TOOL: &str = "plan";
+pub(crate) const PLAN_TOOL: &str = "plan";
 
 /// ループの停止理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,66 +275,23 @@ async fn run_step(
         return Ok(StepOutcome::Stop(AgentStop::Completed));
     }
 
-    // ツール実行 → 観測を履歴へ。plan メタツールはループが横取りする（5.2）。
-    let mut result_blocks: Vec<Block> = Vec::new();
-    let mut looping = false;
-    for c in calls {
-        let content = if opts.profile.is_autonomous() && c.name == PLAN_TOOL {
-            handle_plan_tool(&c, &mut state.plan, sink).await?
-        } else {
-            // 承認ゲート（Task 5.6）: 破壊系は事前許可 or ユーザー承認まで実行しない。
-            match authorize(tool_map, &c, opts, approver, sink).await? {
-                Authz::Cancel => return Ok(StepOutcome::Stop(AgentStop::Cancelled)),
-                Authz::Reject(msg) => {
-                    // 却下も観測イベントとして外部化する（UI が結果を表示できるように）。
-                    sink.emit(AgentEvent::ToolResult {
-                        tool_call_id: c.id.clone(),
-                        ok: false,
-                        content: msg.clone(),
-                    })
-                    .await?;
-                    // 却下も失敗としてループ検出へ流す（同じ却下操作の反復を安全停止する）。
-                    if opts.profile.is_autonomous() && detector.observe(&c.name, &c.input, true) {
-                        looping = true;
-                    }
-                    ToolResultParts {
-                        content: msg,
-                        is_error: true,
-                    }
-                }
-                Authz::Proceed => {
-                    let outcome =
-                        execute_tool(tool_map, run.ctx, &c, run.trace_id.as_deref()).await;
-                    emit_tool_events(sink, &c, &outcome).await?;
-                    // 失敗ループ検出（自律版のみ・5.5）。
-                    if opts.profile.is_autonomous() {
-                        if outcome.is_error {
-                            sink.emit(AgentEvent::FailureRecovery {
-                                detail: format!(
-                                    "tool '{}' failed; retrying with observation",
-                                    c.name
-                                ),
-                                action: RecoveryAction::Retry,
-                            })
-                            .await?;
-                        }
-                        if detector.observe(&c.name, &c.input, outcome.is_error) {
-                            looping = true;
-                        }
-                    }
-                    ToolResultParts {
-                        content: outcome.content,
-                        is_error: outcome.is_error,
-                    }
-                }
+    // ツール実行 → 観測を履歴へ。冪等 read は有界並列・それ以外は逐次（#349・agent_tools）。
+    let phase = crate::agent_tools::ToolPhase {
+        tool_map,
+        ctx: run.ctx,
+        trace_id: run.trace_id.as_deref(),
+        opts,
+        approver,
+    };
+    let (result_blocks, looping) =
+        match crate::agent_tools::run_tool_calls(&phase, calls, &mut state.plan, sink, detector)
+            .await?
+        {
+            crate::agent_tools::ToolPhaseOutcome::Cancelled => {
+                return Ok(StepOutcome::Stop(AgentStop::Cancelled))
             }
+            crate::agent_tools::ToolPhaseOutcome::Executed { blocks, looping } => (blocks, looping),
         };
-        result_blocks.push(Block::ToolResult {
-            tool_use_id: c.id,
-            content: content.content,
-            is_error: content.is_error,
-        });
-    }
     state.messages.push(LlmMessage {
         role: LlmRole::Tool,
         content: result_blocks,
@@ -350,12 +306,6 @@ async fn run_step(
         return Ok(StepOutcome::Stop(AgentStop::LoopDetected));
     }
     Ok(StepOutcome::Continue)
-}
-
-/// ツール結果の本文＋エラー有無（plan/通常ツールの合流点）。
-struct ToolResultParts {
-    content: String,
-    is_error: bool,
 }
 
 /// 提示するツール定義を組み立てる（自律版は `plan` メタツールを足す）。
@@ -380,36 +330,6 @@ fn build_tool_defs(tools: &[Arc<dyn Tool>], profile: AgentProfile) -> Vec<ToolDe
         });
     }
     defs
-}
-
-/// `plan` メタツールを処理する（計画を改訂し、変化を [`AgentEvent::PlanUpdated`] で外部化）。
-async fn handle_plan_tool(
-    call: &PendingCall,
-    current: &mut Plan,
-    sink: &mut dyn EventSink,
-) -> Result<ToolResultParts, AgentError> {
-    let inputs = plan::parse_plan_input(&call.input);
-    // 空入力（不正 JSON・subtasks 欠落）で既存の計画を消さない（誤消去防止）。空なら現状維持。
-    let content = if inputs.is_empty() && !current.subtasks.is_empty() {
-        "計画の更新入力が空だったため、現在の計画を維持しました。".to_string()
-    } else {
-        if current.revise(inputs) {
-            sink.emit(AgentEvent::PlanUpdated(current.clone())).await?;
-        }
-        let (done, total) = current.progress();
-        format!("計画を更新しました（{done}/{total} 完了）。")
-    };
-    // plan メタツールの結果もツール結果イベントとして外部化する（UI のツール表示を閉じる）。
-    sink.emit(AgentEvent::ToolResult {
-        tool_call_id: call.id.clone(),
-        ok: true,
-        content: content.clone(),
-    })
-    .await?;
-    Ok(ToolResultParts {
-        content,
-        is_error: false,
-    })
 }
 
 /// Langfuse 表示用に長文を切り詰める。
