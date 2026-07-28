@@ -117,7 +117,7 @@ impl Tool for CodeInterpreterTool {
             .map_err(|e| ToolError::Unavailable(format!("sandbox create: {e}")))?;
 
         // 会話の添付を実行前に置く（#379）。失敗は実行を止めず注記としてモデルへ観測させる。
-        let seed_notes = match &self.attachment_store {
+        let seed = match &self.attachment_store {
             Some(store) => {
                 seed_attachments(
                     self.sandbox.as_ref(),
@@ -129,7 +129,7 @@ impl Tool for CodeInterpreterTool {
                 )
                 .await
             }
-            None => Vec::new(),
+            None => super::attachments::SeedResult::default(),
         };
 
         // 実行後は必ず破棄する（短命・まっさら）。
@@ -150,7 +150,7 @@ impl Tool for CodeInterpreterTool {
                     let mut out = render_outcome(&stdout, &stderr, exit, limit.as_deref());
                     // 添付の配置結果は成否によらず観測へ載せる（失敗時こそ「node_id で
                     // csv.query を使え」という次の一手が要る・#379 受け入れ条件）。
-                    for note in &seed_notes {
+                    for note in &seed.notes {
                         out.content.push('\n');
                         out.content.push_str(note);
                     }
@@ -162,6 +162,7 @@ impl Tool for CodeInterpreterTool {
                                 ctx,
                                 &handle,
                                 store.as_ref(),
+                                &seed.seeded,
                                 &mut out,
                                 trace_id,
                             )

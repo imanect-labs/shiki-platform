@@ -51,6 +51,13 @@ impl AttachmentStore for StorageAttachmentStore {
             .read_file_internal(ctx, id, trace_id)
             .await
             .map_err(map_err)?;
+        // メタデータ確認と読み出しの間に新版が入ると、上限を超える blob をそのまま返してしまう。
+        // 実バイト数で再判定する（先の確認は「大きすぎるものを読まない」ための最適化に格下げ）。
+        if bytes.len() as u64 > max_bytes {
+            return Err(ToolError::Invalid(format!(
+                "サイズ上限（{max_bytes} バイト）を超えています"
+            )));
+        }
         Ok(bytes)
     }
 }

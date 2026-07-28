@@ -6,8 +6,17 @@
 /// チップだけになり、成果物への導線がどこにも無い（#358 の実害）。note_ref カードと同型で、
 /// 遷移先は**サーバが決めた kind**（拡張子判定はサーバ側 1 箇所）に従う。
 
-import { ArrowRight, FileSpreadsheet, FileText, NotebookPen, Presentation } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  Copy,
+  FileSpreadsheet,
+  FileText,
+  NotebookPen,
+  Presentation,
+} from "lucide-react";
 import Link from "next/link";
+import * as React from "react";
 
 export type DocumentRef = {
   id: string;
@@ -18,6 +27,9 @@ export type DocumentRef = {
   version: number | null;
   /// 新規作成なら true（フロントはこのときだけ自動遷移する）。
   created: boolean;
+  /// 提案バージョン（WOPI ロック中の office.edit・PIT-44）なら true。
+  /// current には**まだ入っていない**ので「編集しました」と言い切らない。
+  proposal: boolean;
 };
 
 /// 参照 JSON を防御的にパースする（形が崩れていたら描画しない）。
@@ -31,6 +43,7 @@ export function parseDocumentRef(raw: unknown): DocumentRef | null {
     kind: typeof r.kind === "string" ? r.kind : "file",
     version: typeof r.version === "number" ? r.version : null,
     created: r.created === true,
+    proposal: r.proposal === true,
   };
 }
 
@@ -64,7 +77,12 @@ function KindIcon({ kind, name }: { kind: string; name: string }) {
 export function DocumentRefCard({ raw }: { raw: unknown }) {
   const doc = parseDocumentRef(raw);
   if (!doc) return null;
-  const action = doc.created ? "作成しました" : "編集しました";
+  // 提案版は current に反映されていない。「編集しました」と言うとカードが嘘になる（PIT-44）。
+  const action = doc.proposal
+    ? "提案として保存しました（バージョン履歴から採用すると反映されます）"
+    : doc.created
+      ? "作成しました"
+      : "編集しました";
   const version = doc.version === null ? "" : `（v${doc.version}）`;
   const href = documentRefHref(doc);
   return (
@@ -78,8 +96,7 @@ export function DocumentRefCard({ raw }: { raw: unknown }) {
       <span className="min-w-0 flex-1">
         <span className="truncate text-sm font-medium">{doc.name}</span>
         <span className="mt-0.5 block text-xs text-muted-foreground">
-          {action}
-          {version}
+          {doc.proposal ? `${version}${action}` : `${action}${version}`}
         </span>
       </span>
       {href ? (
@@ -98,27 +115,59 @@ export function DocumentRefCard({ raw }: { raw: unknown }) {
 /// **レガシー**: 廃止した下書き Word 文書カード（#332 → #381 で撤去）。
 ///
 /// 過去スレッドに残る `document_draft` ブロックを黙って消さないための読み取り専用表示。
-/// 遷移先（`/office/draft`）も下書きストアも既に無いため、リンクは出さない。
+/// 遷移先（`/office/draft`）も下書きストアも既に無いが、**本文はブロックに残っている**ため、
+/// 展開して読める＋コピーできるようにする（アップグレード時点の未保存下書きを取り戻せなくしない）。
 export function LegacyDocumentDraftCard({ raw }: { raw: unknown }) {
-  const name =
-    typeof raw === "object" && raw !== null && typeof (raw as { name?: unknown }).name === "string"
-      ? (raw as { name: string }).name
+  const draft =
+    typeof raw === "object" && raw !== null
+      ? (raw as { name?: unknown; markdown?: unknown })
       : null;
+  const name = typeof draft?.name === "string" ? draft.name : null;
+  const markdown = typeof draft?.markdown === "string" ? draft.markdown : "";
+  const [copied, setCopied] = React.useState(false);
   if (!name) return null;
   return (
     <div
-      className="my-2 flex items-center gap-3 rounded-xl border border-dashed bg-muted/30 p-3"
+      className="my-2 rounded-xl border border-dashed bg-muted/30 p-3"
       data-testid="legacy-document-draft-card"
     >
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-        <FileText className="size-4.5" aria-hidden />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="truncate text-sm font-medium text-muted-foreground">{name}</span>
-        <span className="mt-0.5 block text-xs text-muted-foreground">
-          この下書き機能は廃止されました。Word 文書は作成時にそのまま .docx になります。
+      <div className="flex items-center gap-3">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+          <FileText className="size-4.5" aria-hidden />
         </span>
-      </span>
+        <span className="min-w-0 flex-1">
+          <span className="truncate text-sm font-medium text-muted-foreground">{name}</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">
+            この下書き機能は廃止されました（Word は作成時にそのまま .docx になります）。本文は
+            下に残っています。
+          </span>
+        </span>
+        {markdown ? (
+          <button
+            type="button"
+            onClick={() => {
+              void navigator.clipboard.writeText(markdown).then(() => {
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1500);
+              });
+            }}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors duration-fast hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+            {copied ? "コピーしました" : "本文をコピー"}
+          </button>
+        ) : null}
+      </div>
+      {markdown ? (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+            本文を表示
+          </summary>
+          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-background p-2.5 text-xs">
+            {markdown}
+          </pre>
+        </details>
+      ) : null}
     </div>
   );
 }

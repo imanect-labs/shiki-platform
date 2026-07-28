@@ -134,6 +134,10 @@ export function Conversation({
   const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
   const [stream, setStream] = React.useState<StreamState | null>(null);
   const [notFound, setNotFound] = React.useState(false);
+  // 作成した文書の遷移先。**run 完了後**に遷移する（#381）: document_ref はツール結果直後に
+  // 届くため、その場で router.push すると Conversation がアンマウントされて SSE 購読が閉じ、
+  // 複合依頼の後続ツールの承認カードが出せず run が承認待ちで止まる。
+  const pendingOpenRef = React.useRef<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   // 実行への注意喚起（承認モードのクランプ等・#350）。エラーではないが黙らせない。
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -264,8 +268,8 @@ export function Conversation({
         if (!doc || !doc.created) return;
         const href = documentRefHref(doc);
         if (!href) return; // 専用エディタが無い種別（カードのみ）。
-        if (onDocumentCreated) onDocumentCreated(href);
-        else router.push(href);
+        // 最後に作られたものを開く（複数作った場合の直観に合わせる）。
+        pendingOpenRef.current = href;
       },
       // --- 自律エージェント（Phase 5・Task 5.11） ---
       onRunId: (runId) => updateStream((s) => (s ? { ...s, runId } : s)),
@@ -296,9 +300,17 @@ export function Conversation({
         cancelRef.current = null;
         notifyThreadsChanged();
         if (hadUi) setReloadKey((k) => k + 1);
+        // 作成した文書は run が終わってから開く（途中で遷移すると SSE が切れる・#381）。
+        const href = pendingOpenRef.current;
+        pendingOpenRef.current = null;
+        if (!href) return;
+        if (onDocumentCreated) onDocumentCreated(href);
+        else router.push(href);
       },
       onError: (msg) => {
         setError(msg);
+        // 失敗した run の途中成果物へ勝手に飛ばさない（会話に留めてユーザーに判断させる）。
+        pendingOpenRef.current = null;
         streamRef.current = null;
         setStream(null);
         cancelRef.current = null;

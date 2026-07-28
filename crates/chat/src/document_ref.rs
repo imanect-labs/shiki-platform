@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// - `note`: md → `/notes/{id}`
 /// - `slide`: .slide → `/slides/{id}`
 /// - `csv`: csv → `/csv/{id}`
-/// - `file`: それ以外（ドライブのプレビューへ落とす）
+/// - `file`: それ以外（専用エディタが無い＝カードにリンクを出さない）
 pub fn kind_for(name: &str) -> &'static str {
     let ext = std::path::Path::new(name)
         .extension()
@@ -43,7 +43,19 @@ pub fn payload(node_id: Uuid, name: &str, version: Option<i64>) -> serde_json::V
         "kind": kind_for(name),
         "version": version,
         "created": false,
+        "proposal": false,
     })
+}
+
+/// **提案バージョン**として保存した編集の参照（`proposal: true`・PIT-44）。
+///
+/// WOPI ロック中の `office.edit` は current を進めない未採用版を作る。これを通常の
+/// 「編集しました（vN）」として出すと、カードから開いた current には**提案が入っていない**
+/// （＝嘘のカード）。採用が要ることをカード自身に言わせる。
+pub fn proposal_payload(node_id: Uuid, name: &str, version: i64) -> serde_json::Value {
+    let mut v = payload(node_id, name, Some(version));
+    v["proposal"] = serde_json::Value::Bool(true);
+    v
 }
 
 /// **新規作成**した文書の参照（`created: true`）。
@@ -90,5 +102,16 @@ mod tests {
         let id = Uuid::nil();
         assert_eq!(payload(id, "報告.docx", None)["created"], false);
         assert_eq!(created_payload(id, "報告.docx", None)["created"], true);
+    }
+
+    /// 提案バージョンは通常の編集と区別できる（採用前＝current に入っていない・PIT-44）。
+    #[test]
+    fn proposal_is_distinguishable_from_normal_edit() {
+        let id = Uuid::nil();
+        assert_eq!(payload(id, "報告.docx", Some(3))["proposal"], false);
+        let p = proposal_payload(id, "報告.docx", 4);
+        assert_eq!(p["proposal"], true);
+        assert_eq!(p["version"], 4);
+        assert_eq!(p["created"], false);
     }
 }
