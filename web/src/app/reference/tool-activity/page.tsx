@@ -34,6 +34,7 @@ function Cell({
 /// 実行中（ローリング）: 5 件のうち直近 3 件だけが見える。
 const RUNNING: ToolActivityItem[] = [
   {
+    key: "r1",
     id: "r1",
     name: "web_search",
     running: false,
@@ -43,6 +44,7 @@ const RUNNING: ToolActivityItem[] = [
     result: "web 検索結果 8 件",
   },
   {
+    key: "r2",
     id: "r2",
     name: "doc_search",
     running: false,
@@ -52,6 +54,7 @@ const RUNNING: ToolActivityItem[] = [
     result: "社内文書 3 件",
   },
   {
+    key: "r3",
     id: "r3",
     name: "web_fetch",
     running: true,
@@ -59,6 +62,7 @@ const RUNNING: ToolActivityItem[] = [
     input: { url: "https://www.nikkei.com/article/DGXZQOUC1234567890" },
   },
   {
+    key: "r4",
     id: "r4",
     name: "web_fetch",
     running: true,
@@ -66,6 +70,7 @@ const RUNNING: ToolActivityItem[] = [
     input: { url: "https://www.itmedia.co.jp/news/articles/2607/29/news001.html" },
   },
   {
+    key: "r5",
     id: "r5",
     name: "web_fetch",
     running: true,
@@ -77,6 +82,7 @@ const RUNNING: ToolActivityItem[] = [
 /// 完了（成功・失敗混在・並行あり）。展開すると step 境界でグループ化される。
 const DONE: ToolActivityItem[] = [
   {
+    key: "d1",
     id: "d1",
     name: "web_search",
     running: false,
@@ -86,6 +92,7 @@ const DONE: ToolActivityItem[] = [
     result: "web 検索結果 8 件:\n[1] 国内 SaaS 市場は 2026 年に 1.6 兆円へ …",
   },
   {
+    key: "d2",
     id: "d2",
     name: "web_fetch",
     running: false,
@@ -95,6 +102,7 @@ const DONE: ToolActivityItem[] = [
     result: "HTTP 200\nContent-Type: text/html\n\n国内 SaaS 市場は 2026 年度に …",
   },
   {
+    key: "d3",
     id: "d3",
     name: "web_fetch",
     running: false,
@@ -104,6 +112,7 @@ const DONE: ToolActivityItem[] = [
     result: "取得に失敗しました: 名前解決に失敗",
   },
   {
+    key: "d4",
     id: "d4",
     name: "fs_write",
     running: false,
@@ -113,6 +122,7 @@ const DONE: ToolActivityItem[] = [
     result: "notes.md を保存しました（3.2 KB）",
   },
   {
+    key: "d5",
     id: "d5",
     name: "office.edit",
     running: false,
@@ -156,7 +166,7 @@ const ALL_VOCAB: ToolActivityItem[] = [
   { name: "csv.patch", input: {} },
   { name: "csv.write", input: { name: "集計結果" } },
   { name: "plan", input: {} },
-].map((t, i) => ({ ...t, id: `v${i}`, running: false, ok: true, step: i }));
+].map((t, i) => ({ ...t, key: `v${i}`, id: `v${i}`, running: false, ok: true, step: i }));
 
 /// ローリングの「動き」を確認するための再生デモ。
 /// 実 LLM が無いとツールが 1 件ずつ増える様子を見られない（stub は一瞬で終わる）ため、
@@ -200,14 +210,22 @@ function RollingDemo() {
 
 /// 再生デモで 1 件ずつ増えていくツール列（実際の deep research の進み方に寄せる）。
 const DEMO_STEPS: ToolActivityItem[] = [
-  { id: "s1", name: "web_search", running: false, step: 0, input: { query: "2026 国内 SaaS 市場規模" } },
-  { id: "s2", name: "web_fetch", running: false, step: 1, input: { url: "https://www.nikkei.com/article/DGXZQOUC12" } },
-  { id: "s3", name: "web_fetch", running: false, step: 1, input: { url: "https://www.itmedia.co.jp/news/articles/2607" } },
-  { id: "s4", name: "doc_search", running: false, step: 2, input: { query: "中期経営計画 SaaS" } },
-  { id: "s5", name: "fs_write", running: false, step: 3, input: { name: "notes.md" } },
-  { id: "s6", name: "web_search", running: false, step: 4, input: { query: "SaaS 解約率 ベンチマーク" } },
-  { id: "s7", name: "web_fetch", running: false, step: 5, input: { url: "https://www.meti.go.jp/policy/it_policy" } },
-  { id: "s8", name: "fs_edit", running: false, step: 6, input: { name: "outline.md" } },
+  { key: "s1",
+    id: "s1", name: "web_search", running: false, step: 0, input: { query: "2026 国内 SaaS 市場規模" } },
+  { key: "s2",
+    id: "s2", name: "web_fetch", running: false, step: 1, input: { url: "https://www.nikkei.com/article/DGXZQOUC12" } },
+  { key: "s3",
+    id: "s3", name: "web_fetch", running: false, step: 1, input: { url: "https://www.itmedia.co.jp/news/articles/2607" } },
+  { key: "s4",
+    id: "s4", name: "doc_search", running: false, step: 2, input: { query: "中期経営計画 SaaS" } },
+  { key: "s5",
+    id: "s5", name: "fs_write", running: false, step: 3, input: { name: "notes.md" } },
+  { key: "s6",
+    id: "s6", name: "web_search", running: false, step: 4, input: { query: "SaaS 解約率 ベンチマーク" } },
+  { key: "s7",
+    id: "s7", name: "web_fetch", running: false, step: 5, input: { url: "https://www.meti.go.jp/policy/it_policy" } },
+  { key: "s8",
+    id: "s8", name: "fs_edit", running: false, step: 6, input: { name: "outline.md" } },
 ];
 
 export default function ToolActivityGalleryPage() {

@@ -34,6 +34,13 @@ import {
 } from "@/lib/tool-display";
 
 export type ToolActivityItem = {
+  /// 描画上の一意キー。**呼び出し ID はループで再利用され得る**（stub の `loop:` は毎ステップ
+  /// `stubtool_1` を出す）ため、生成時に採番した「この出現」のキーを使う。
+  ///
+  /// 配列 index をキーにしてはいけない: ローリングは `slice(-3)` で窓を切るので、
+  /// 新着のたびに同じ項目の index がずれ、AnimatePresence が別要素とみなして
+  /// 再マウントする（古い行がスライドして抜ける動きが壊れる）。
+  key: string;
   id: string;
   name: string;
   running: boolean;
@@ -156,10 +163,9 @@ function RollingList({
   return (
     <div className="shiki-dash-top px-3 pb-2 pt-1.5">
       <AnimatePresence initial={false}>
-        {items.map((it, i) => (
+        {items.map((it) => (
           <motion.div
-            // 呼び出し ID はループで再利用され得る（stub の `loop:`）。位置を混ぜて一意化する。
-            key={`${it.id}-${i}`}
+            key={it.key}
             layout
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -186,14 +192,14 @@ function ExpandedTimeline({
   return (
     <div className="shiki-dash-top px-3 pb-2.5 pt-1.5" data-testid="tool-activity-expanded">
       {groups.map((group, gi) => (
-        <div key={`${group[0].id}-${gi}`} className={cn(gi > 0 && "shiki-dash-top mt-1.5 pt-1.5")}>
+        <div key={group[0].key} className={cn(gi > 0 && "shiki-dash-top mt-1.5 pt-1.5")}>
           {group.length > 1 ? (
             <div className="mb-0.5 text-[11px] font-medium uppercase tracking-[0.06em] text-muted-foreground/70">
               並行して {group.length} 件
             </div>
           ) : null}
-          {group.map((it, i) => (
-            <ActivityLine key={`${it.id}-${i}`} item={it} nodeNames={nodeNames} showResult />
+          {group.map((it) => (
+            <ActivityLine key={it.key} item={it} nodeNames={nodeNames} showResult />
           ))}
         </div>
       ))}

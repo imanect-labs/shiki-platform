@@ -216,6 +216,8 @@ export function Conversation({
                 tools: [
                   ...s.tools,
                   {
+                    // この出現の一意キー（呼び出し ID はループで再利用され得る）。
+                    key: newId(),
                     id: call.id,
                     name: call.name,
                     running: true,
@@ -240,21 +242,23 @@ export function Conversation({
           return { ...s, tools };
         }),
       // skill ツールの発動記録（#344）。対応する skill 呼び出しへ版を添えて「どの版を読んだか」を出す。
-      // 名前で突き合わせる（skill_invoked に tool_call_id が無いため）。イベントは projection 対象外
-      // なのでライブ限定の付加情報であり、再読込後はツール呼び出しのスキル名のみが残る。
+      // skill_invoked に tool_call_id が無いため名前で突き合わせるが、**同じスキルを複数回
+      // 読み込み得る**ので全件更新はしない（後の版が過去行にも付く）。まだ版が付いていない
+      // 最初の 1 件へ FIFO で対応付ける。イベントは projection 対象外＝ライブ限定の付加情報。
       onSkillInvoked: (skill) =>
-        updateStream((s) =>
-          s
-            ? {
-                ...s,
-                tools: s.tools.map((t) =>
-                  t.name === "skill" && skillNameOf(t.input) === skill.name
-                    ? { ...t, skillVersion: skill.skill_version }
-                    : t,
-                ),
-              }
-            : s,
-        ),
+        updateStream((s) => {
+          if (!s) return s;
+          const i = s.tools.findIndex(
+            (t) =>
+              t.name === "skill" &&
+              t.skillVersion === undefined &&
+              skillNameOf(t.input) === skill.name,
+          );
+          if (i < 0) return s;
+          const tools = s.tools.slice();
+          tools[i] = { ...tools[i], skillVersion: skill.skill_version };
+          return { ...s, tools };
+        }),
       onCitation: (c) => updateStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
       onFileRef: (f) => updateStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
       onGenerativeUi: (spec) =>
@@ -708,9 +712,11 @@ function AssistantRow({
   }
   const tools: ToolActivityItem[] = blocks
     .filter((b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call")
-    .map((b) => {
+    .map((b, i) => {
       const res = toolResults.get(b.id)?.shift();
       return {
+        // 確定メッセージ内での出現位置は安定（再レンダーで並びが変わらない）。
+        key: `${b.id}-${i}`,
         id: b.id,
         name: b.name,
         running: false,
