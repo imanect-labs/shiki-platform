@@ -122,8 +122,11 @@ pub(super) async fn seed_attachments(
 /// サンドボックス側にも正規化はあるが、`..` や絶対パスを**渡さない**のはホスト側の責務
 /// （PIT-23: サンドボックス境界をまたぐ入力は敵対的として扱う）。
 ///
-/// 実行コード本体（`main.py`）と同名の添付は**改名する**: そのまま置くと実行直前に
-/// コードで上書きされ、モデルは添付ではなく自分のコードを読むことになる（黙って壊れる）。
+/// 実行コード本体（`main.py`）と同名の添付は**改名する**。wasm ティアはコードを
+/// `/workspace/main.py` に書く（`backend/wasm/instance.rs`）ため、そのまま置くと実行直前に
+/// 上書きされ、モデルは添付ではなく自分のコードを読むことになる（黙って壊れる）。
+/// gVisor ティアは `/__exec` の RO bind へ書くので衝突しないが、**ティアは admin ポリシーで
+/// 切り替わる**（design §4.6）ので、どちらでも壊れないよう常に改名する。
 fn safe_guest_name(name: &str) -> Option<String> {
     let base = name.rsplit(['/', '\\']).next()?.trim();
     if base.is_empty() || base == "." || base == ".." || base.contains('\0') {
