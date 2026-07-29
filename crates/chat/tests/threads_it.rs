@@ -909,7 +909,16 @@ async fn tool_result_bodies_are_hidden_from_other_viewers() {
         .await
         .unwrap();
     let posted = store
-        .post_message(&owner, thread.id, "社内文書を調べて", &[], None, None, false, None)
+        .post_message(
+            &owner,
+            thread.id,
+            "社内文書を調べて",
+            &[],
+            None,
+            None,
+            false,
+            None,
+        )
         .await
         .unwrap();
 
