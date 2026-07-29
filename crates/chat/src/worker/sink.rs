@@ -225,7 +225,8 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
             id: id.clone(),
             name: name.clone(),
             input: input.clone(),
-            step: *step,
+            // ライブ生成では常に既知（None は過去 run の replay だけ）。
+            step: Some(*step),
         },
         AgentEvent::ToolResult {
             tool_call_id,

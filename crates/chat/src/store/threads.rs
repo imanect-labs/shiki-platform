@@ -300,6 +300,12 @@ impl ChatStore {
         // 「他人の引用をそのまま見せない」）。閲覧者が読めない引用チャンクは落とす
         // （所有者は自分の引用を全て読めるため実質そのまま）。
         self.filter_citations_for_viewer(ctx, &mut messages).await?;
+        // ツール結果の観測本文は**実行主体本人にだけ**見せる（#386 でチャットに描画するようにした）。
+        // 引用と違い tool_result は node に紐づかないため個別に再認可できず、doc_search の
+        // スニペット・document.read の本文・csv.query の行・shell の出力などが、共有スレッドの
+        // 閲覧者（元ファイルの閲覧権限なし）へそのまま渡り得る。
+        self.redact_tool_results_for_viewer(ctx, &mut messages)
+            .await?;
         Ok(messages)
     }
 
@@ -362,6 +368,54 @@ impl ChatStore {
                 ContentBlock::Citation(c) => *decisions.get(&c.node_id).unwrap_or(&false),
                 _ => true,
             });
+        }
+        Ok(())
+    }
+
+    /// ツール結果の本文を、実行主体本人以外には落とす（成否は残す）。
+    ///
+    /// tool_result は node に紐づかないため citation のような個別再認可ができない。
+    /// 一方で本文には読取権限に依存する内容（社内文書のスニペット・ファイル本文・SQL 結果・
+    /// コマンド出力）が入り得る。**認可の再評価ができない本文は出さない**方に倒す。
+    /// 本人は自分の実行結果を全て見られるので、通常の会話では何も変わらない。
+    async fn redact_tool_results_for_viewer(
+        &self,
+        ctx: &AuthContext,
+        messages: &mut [Message],
+    ) -> Result<(), ChatError> {
+        let ids: Vec<Uuid> = messages
+            .iter()
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+            })
+            .map(|m| m.id)
+            .collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        // そのメッセージを生成した run の actor（generation_run.message_id は assistant 側）。
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT message_id, actor FROM generation_run \
+             WHERE message_id = ANY($1) AND tenant_id = $2",
+        )
+        .bind(&ids)
+        .bind(&ctx.tenant_id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        let actors: std::collections::HashMap<Uuid, String> = rows.into_iter().collect();
+        for m in messages.iter_mut() {
+            // actor が引けないメッセージ（run 行が消えた等）は保守的に落とす。
+            if actors.get(&m.id).is_some_and(|a| *a == ctx.principal.id) {
+                continue;
+            }
+            for b in &mut m.content {
+                if let ContentBlock::ToolResult { content, .. } = b {
+                    content.clear();
+                }
+            }
         }
         Ok(())
     }

@@ -15,8 +15,12 @@ import * as React from "react";
 
 import { getNode } from "@/lib/storage";
 
-/// 解決済み（null = 解決不能として確定）。
-const resolved = new Map<string, string | null>();
+/// 解決の有効期間。共有解除・権限失効の後も名前を返し続けないための上限。
+/// `getNode` は毎回サーバで認可されるため、失効の反映が遅れる窓をこの長さに限る。
+const TTL_MS = 60_000;
+
+/// 解決済み（value=null は解決不能として確定）。`at` は解決時刻（TTL 判定）。
+const resolved = new Map<string, { name: string | null; at: number }>();
 /// 進行中のリクエスト（同一 id の重複発行を防ぐ）。
 const inflight = new Map<string, Promise<string | null>>();
 
@@ -26,12 +30,12 @@ function fetchName(id: string): Promise<string | null> {
   const p = getNode(id)
     .then((node) => {
       const name = typeof node?.name === "string" && node.name.trim() ? node.name.trim() : null;
-      resolved.set(id, name);
+      resolved.set(id, { name, at: Date.now() });
       return name;
     })
     .catch(() => {
-      // 404/403 も含めて「解決不能」として確定させる（再試行しない）。
-      resolved.set(id, null);
+      // 404/403 も含めて「解決不能」として確定させる（TTL 内は再試行しない）。
+      resolved.set(id, { name: null, at: Date.now() });
       return null;
     })
     .finally(() => {
@@ -52,7 +56,7 @@ export function useNodeNames(ids: readonly string[]): Record<string, string> {
   React.useEffect(() => {
     if (!key) return;
     let active = true;
-    const pending = key.split(",").filter((id) => id && !resolved.has(id));
+    const pending = key.split(",").filter((id) => id && isStale(id));
     if (pending.length === 0) return;
     void Promise.all(pending.map(fetchName)).then(() => {
       // 解決後に一度だけ再描画する（1 件ごとに揺らさない）。
@@ -66,13 +70,20 @@ export function useNodeNames(ids: readonly string[]): Record<string, string> {
   return React.useMemo(() => {
     const out: Record<string, string> = {};
     for (const id of key ? key.split(",") : []) {
-      const name = resolved.get(id);
-      if (name) out[id] = name;
+      const hit = resolved.get(id);
+      // TTL 切れの値は返さない（権限失効後にファイル名と存在を開示し続けない）。
+      if (hit?.name && Date.now() - hit.at < TTL_MS) out[id] = hit.name;
     }
     return out;
     // key が変わるか、解決完了で force() が走ったときだけ作り直す。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, resolved.size]);
+}
+
+/// TTL 切れ・未解決なら再取得が要る。
+function isStale(id: string): boolean {
+  const hit = resolved.get(id);
+  return !hit || Date.now() - hit.at >= TTL_MS;
 }
 
 /// テスト用: キャッシュを空にする。

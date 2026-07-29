@@ -227,17 +227,18 @@ export function Conversation({
             : s,
         ),
       // 成否と観測テキストを保持する（失敗を成功と同じ見た目にしない・#358/#386）。
+      // **同じ id が複数ステップで再利用され得る**（stub の `loop:` は毎ステップ
+      // `stubtool_1` を出す）。全件更新すると過去行の成否まで上書きされるため、
+      // 同一 id の中で**まだ実行中の最初の 1 件**にだけ結果を対応付ける。
       onToolResult: (res) =>
-        updateStream((s) =>
-          s
-            ? {
-                ...s,
-                tools: s.tools.map((t) =>
-                  t.id === res.id ? { ...t, running: false, ok: res.ok, result: res.content } : t,
-                ),
-              }
-            : s,
-        ),
+        updateStream((s) => {
+          if (!s) return s;
+          const i = s.tools.findIndex((t) => t.id === res.id && t.running);
+          if (i < 0) return s;
+          const tools = s.tools.slice();
+          tools[i] = { ...tools[i], running: false, ok: res.ok, result: res.content };
+          return { ...s, tools };
+        }),
       // skill ツールの発動記録（#344）。対応する skill 呼び出しへ版を添えて「どの版を読んだか」を出す。
       // 名前で突き合わせる（skill_invoked に tool_call_id が無いため）。イベントは projection 対象外
       // なのでライブ限定の付加情報であり、再読込後はツール呼び出しのスキル名のみが残る。
@@ -695,22 +696,27 @@ function AssistantRow({
     .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
     .map((b) => b.text)
     .join("");
-  // ツール結果（成否＋観測テキスト）を tool_call_id で引けるようにしてから履歴を組む（#358/#386）。
-  const toolResults = new Map(
-    blocks
-      .filter((b): b is Extract<ContentBlock, { type: "tool_result" }> => b.type === "tool_result")
-      .map((b) => [b.tool_call_id, b]),
-  );
+  // ツール結果を tool_call_id で引く（#358/#386）。**同じ id が複数回現れ得る**ため
+  // （ループで再利用される呼び出し ID）、id ごとに出現順のキューとして持ち、
+  // 呼び出しへ順番に対応付ける（最後の結果を全行へ適用しない）。
+  const toolResults = new Map<string, Extract<ContentBlock, { type: "tool_result" }>[]>();
+  for (const b of blocks) {
+    if (b.type !== "tool_result") continue;
+    const q = toolResults.get(b.tool_call_id);
+    if (q) q.push(b);
+    else toolResults.set(b.tool_call_id, [b]);
+  }
   const tools: ToolActivityItem[] = blocks
     .filter((b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call")
     .map((b) => {
-      const res = toolResults.get(b.id);
+      const res = toolResults.get(b.id)?.shift();
       return {
         id: b.id,
         name: b.name,
         running: false,
         input: b.input,
-        step: b.step,
+        // 生成型は Option<u32> を `number | null` にする。UI は「不明」を undefined で扱う。
+        step: b.step ?? undefined,
         ok: res?.ok ?? undefined,
         result: res?.content,
       };

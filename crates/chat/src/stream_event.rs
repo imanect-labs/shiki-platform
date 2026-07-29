@@ -27,13 +27,15 @@ pub enum StreamEventKind {
     ///
     /// `step` は同一ループステップで出た呼び出しに共通の通し番号（0 始まり）。
     /// UI は これで「並行して N 件」を判定する（到達順から推測しない）。
-    /// 旧イベントの replay では欠落し得るため、デシリアライズ時は 0 を既定にする。
+    ///
+    /// **`None` は「不明」**（フィールド追加前の run を replay した場合）。0 で埋めると
+    /// 逐次実行だった過去のツール群が並行実行に見えてしまう。
     ToolCall {
         id: String,
         name: String,
         input: serde_json::Value,
-        #[serde(default)]
-        step: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<u32>,
     },
     /// ツール結果。
     ToolResult {

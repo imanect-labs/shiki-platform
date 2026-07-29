@@ -84,13 +84,16 @@ pub enum ContentBlock {
     /// ツール呼び出し（エージェントモード）。
     ///
     /// `step` は同一ループステップの通し番号。ライブ表示と同じ「並行して N 件」の
-    /// グルーピングを履歴でも再現するために残す（旧行では欠落し得るので既定 0）。
+    /// グルーピングを履歴でも再現するために残す。
+    ///
+    /// **`None` は「不明」であって 0 ではない**（フィールド追加前の行）。既定 0 にすると、
+    /// 逐次実行だった過去の応答が再訪時に「並行して N 件」と誤表示される。
     ToolCall {
         id: String,
         name: String,
         input: serde_json::Value,
-        #[serde(default)]
-        step: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<u32>,
     },
     /// ツール結果。
     ///
@@ -357,7 +360,7 @@ mod tests {
             id: "t1".into(),
             name: "web_fetch".into(),
             input: serde_json::json!({"url": "https://example.com/"}),
-            step: 2,
+            step: Some(2),
         };
         let json = serde_json::to_value(&call).unwrap();
         assert_eq!(json["step"], 2);
@@ -372,12 +375,13 @@ mod tests {
     #[test]
     fn legacy_blocks_without_step_or_ok_still_deserialize() {
         // 既存メッセージ（フィールド追加前の永続 content）を壊さない。
-        // step は 0、ok は成功として読む — 過去履歴が「全部失敗」に見えてはならない。
+        // step は **None（不明）**、ok は成功として読む。0 で埋めると逐次実行だった
+        // 過去の応答が「並行して N 件」に化け、ok を false にすると全部失敗に見える。
         let call: ContentBlock = serde_json::from_value(serde_json::json!({
             "type": "tool_call", "id": "t1", "name": "doc_search", "input": {"query": "x"}
         }))
         .unwrap();
-        assert!(matches!(call, ContentBlock::ToolCall { step: 0, .. }));
+        assert!(matches!(call, ContentBlock::ToolCall { step: None, .. }));
         let result: ContentBlock = serde_json::from_value(serde_json::json!({
             "type": "tool_result", "tool_call_id": "t1", "content": "ok"
         }))
@@ -392,7 +396,7 @@ mod tests {
             "type": "tool_call", "id": "t1", "name": "web_search", "input": {"query": "x"}
         }))
         .unwrap();
-        assert!(matches!(ev, StreamEventKind::ToolCall { step: 0, .. }));
+        assert!(matches!(ev, StreamEventKind::ToolCall { step: None, .. }));
     }
 
     #[test]

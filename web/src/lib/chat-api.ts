@@ -12,36 +12,16 @@
 import * as React from "react";
 
 import { apiFetch } from "@/lib/api";
+import type { components } from "@/generated/api";
 import { newId } from "@/lib/chat-store";
 import type { SelectionContext } from "@/lib/selection-context";
 
-// ── content-block（backend chat::ContentBlock と一致）───────────────────
+// ── content-block / SSE イベント（backend の単一定義から生成）───────────────
 
-export type ContentBlock =
-  | { type: "text"; text: string }
-  | { type: "thinking"; text: string }
-  | { type: "tool_call"; id: string; name: string; input: unknown; step?: number }
-  | { type: "tool_result"; tool_call_id: string; content: string; ok?: boolean }
-  | {
-      type: "citation";
-      node_id: string;
-      chunk_id: string;
-      snippet: string;
-      page?: number | null;
-      heading_path?: string[];
-      score: number;
-    }
-  | { type: "generative_ui"; spec: unknown }
-  | { type: "workflow_ref"; workflow: unknown }
-  | { type: "note_ref"; note: unknown }
-  | { type: "note_draft"; draft: unknown }
-  | { type: "slide_draft"; draft: unknown }
-  | { type: "csv_draft"; draft: unknown }
-  | { type: "document_ref"; document: unknown }
-  /// レガシー（#332 → #381 で廃止）。過去スレッドの読み込み互換のみ。新規には来ない。
-  | { type: "document_draft"; draft: unknown }
-  | { type: "file_ref"; node_id: string; name: string }
-  | { type: "selection_context"; context: SelectionContext };
+/// メッセージ本文の構造化ブロック。**`crates/chat` の `ContentBlock` から生成**した型を使う
+/// （utoipa `ToSchema` → OpenAPI → openapi-typescript）。手書きのミラーは作らない —
+/// CLAUDE.md の「codegen が正」に従い、Rust 側にフィールドを足したらここは自動で追随する。
+export type ContentBlock = components["schemas"]["ContentBlock"];
 
 /// 未保存の下書きノート（save_note の下書き確定型・issue #282）。
 export type NoteDraft = { name: string; markdown: string };
@@ -62,7 +42,9 @@ export type DocumentRefPayload = {
 };
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
-export type RunStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+/// 生成 run の状態（backend の `RunStatus` から生成）。手書きミラーには
+/// `waiting_approval`（承認待ち・#350）が欠落していた。
+export type RunStatus = components["schemas"]["RunStatus"];
 
 /// 自律 run の承認モード（backend chat::AutonomousMode と一致・#350）。
 /// require_approval=承認必須（既定）/ auto=版管理で復元可能な書込のみ自動 / bypass=全自動（危険）。
@@ -388,6 +370,15 @@ export type SkillInvocation = {
   name: string;
 };
 
+/// `skill_invoked` の payload を検査する（生成型では `unknown`）。
+function parseSkillInvocation(raw: unknown): SkillInvocation | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.skill_id !== "string" || typeof o.name !== "string") return null;
+  if (typeof o.skill_version !== "number") return null;
+  return { skill_id: o.skill_id, skill_version: o.skill_version, name: o.name };
+}
+
 /// 承認要求（破壊系/egress/高コスト・Task 5.6）。
 export type ApprovalRequest = {
   tool_call_id: string;
@@ -399,7 +390,7 @@ export type ApprovalRequest = {
 export type StreamHandlers = {
   onToken?: (text: string) => void;
   onThinking?: (text: string) => void;
-  onToolCall?: (call: { id: string; name: string; input: unknown; step: number }) => void;
+  onToolCall?: (call: { id: string; name: string; input: unknown; step?: number }) => void;
   /// ツール結果。`content` は観測テキスト（成功要約 or エラー）。UI は成否と要約を出す（#358/#386）。
   onToolResult?: (res: { id: string; ok: boolean; content: string }) => void;
   onCitation?: (c: Citation) => void;
@@ -432,33 +423,9 @@ export type StreamHandlers = {
   onError?: (message: string) => void;
 };
 
-/// 生成イベント種別（backend chat::StreamEventKind と一致・内部タグ `type`）。
-type StreamEventKind =
-  | { type: "token"; text: string }
-  | { type: "thinking"; text: string }
-  /// `step` は同一ループステップの通し番号（並行実行の判定に使う）。旧イベントの replay では欠落する。
-  | { type: "tool_call"; id: string; name: string; input: unknown; step?: number }
-  | { type: "tool_result"; tool_call_id: string; ok: boolean; content: string }
-  | ({ type: "citation" } & Omit<Citation, "type">)
-  | { type: "file_ref"; node_id: string; name: string }
-  | { type: "generative_ui"; spec: unknown }
-  | { type: "workflow_ref"; workflow: unknown }
-  | { type: "note_ref"; note: unknown }
-  | { type: "note_draft"; draft: unknown }
-  | { type: "slide_draft"; draft: unknown }
-  | { type: "csv_draft"; draft: unknown }
-  | { type: "document_ref"; document: unknown }
-  /// レガシー（#332 → #381 で廃止）。過去 run の replay でのみ来る（未処理で握りつぶす）。
-  | { type: "document_draft"; draft: unknown }
-  | { type: "skill_invoked"; skill: SkillInvocation }
-  | { type: "plan"; subtasks: PlanSubtask[] }
-  | { type: "budget_warning"; kind: string; used: number; limit: number }
-  | ({ type: "approval_requested" } & ApprovalRequest)
-  | { type: "approval_resolved"; tool_call_id: string; approved: boolean }
-  | { type: "failure_recovery"; detail: string; action: string }
-  | { type: "status"; status: RunStatus }
-  | { type: "error"; message: string }
-  | { type: "done"; message_id: string };
+/// 生成イベント種別。**`crates/chat` の `StreamEventKind` から生成**した型を使う（同上）。
+/// 追加 variant を握りつぶすのは `subscribe` の `default` 分岐が担う。
+type StreamEventKind = components["schemas"]["StreamEventKind"];
 
 /// SSE 購読を開始し、イベントを handlers へ振り分ける。返り値でストリームを閉じる。
 function subscribe(threadId: string, handlers: StreamHandlers): () => void {
@@ -488,8 +455,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
           id: kind.id,
           name: kind.name,
           input: kind.input,
-          // 旧イベントの replay では step が無い（backend も #[serde(default)]）。
-          step: kind.step ?? 0,
+          // 旧 run の replay では step が無い。**0 で埋めない**（逐次実行だった過去の
+          // ツール群が「並行して N 件」に化ける）。不明は undefined のまま流す。
+          step: kind.step ?? undefined,
         });
         break;
       case "tool_result":
@@ -534,9 +502,12 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
       case "document_ref":
         handlers.onDocumentRef?.(kind.document);
         break;
-      case "skill_invoked":
-        handlers.onSkillInvoked?.(kind.skill);
+      case "skill_invoked": {
+        // payload は serde_json::Value（生成型では unknown）。形を検査してから渡す。
+        const skill = parseSkillInvocation(kind.skill);
+        if (skill) handlers.onSkillInvoked?.(skill);
         break;
+      }
       case "plan":
         handlers.onPlan?.(kind.subtasks);
         break;

@@ -59,7 +59,9 @@ function groupBySteps(items: ToolActivityItem[]): ToolActivityItem[][] {
   const groups: ToolActivityItem[][] = [];
   for (const it of items) {
     const last = groups[groups.length - 1];
-    if (last && last[0].step !== undefined && last[0].step === it.step) last.push(it);
+    // step 不明（フィールド追加前の履歴）は必ず単独グループ＝逐次実行として扱う。
+    if (last && last[0].step !== undefined && it.step !== undefined && last[0].step === it.step)
+      last.push(it);
     else groups.push([it]);
   }
   return groups;
@@ -154,9 +156,10 @@ function RollingList({
   return (
     <div className="shiki-dash-top px-3 pb-2 pt-1.5">
       <AnimatePresence initial={false}>
-        {items.map((it) => (
+        {items.map((it, i) => (
           <motion.div
-            key={it.id}
+            // 呼び出し ID はループで再利用され得る（stub の `loop:`）。位置を混ぜて一意化する。
+            key={`${it.id}-${i}`}
             layout
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -189,8 +192,8 @@ function ExpandedTimeline({
               並行して {group.length} 件
             </div>
           ) : null}
-          {group.map((it) => (
-            <ActivityLine key={it.id} item={it} nodeNames={nodeNames} showResult />
+          {group.map((it, i) => (
+            <ActivityLine key={`${it.id}-${i}`} item={it} nodeNames={nodeNames} showResult />
           ))}
         </div>
       ))}
