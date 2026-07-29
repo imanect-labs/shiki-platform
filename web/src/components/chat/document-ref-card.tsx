@@ -14,6 +14,7 @@ import {
   FileText,
   NotebookPen,
   Presentation,
+  TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
@@ -102,6 +103,9 @@ export function DocumentRefCard({ raw }: { raw: unknown }) {
       {href ? (
         <Link
           href={href}
+          // 会話には複数のカードが並ぶ。リンク名が全部「開く」だと
+          // スクリーンリーダーのリンク一覧でどの文書か区別できない。
+          aria-label={`${doc.name}を開く`}
           className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors duration-fast hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           開く
@@ -124,7 +128,9 @@ export function LegacyDocumentDraftCard({ raw }: { raw: unknown }) {
       : null;
   const name = typeof draft?.name === "string" ? draft.name : null;
   const markdown = typeof draft?.markdown === "string" ? draft.markdown : "";
-  const [copied, setCopied] = React.useState(false);
+  // コピーは「廃止した下書きを取り戻す」唯一のワンクリック導線なので、
+  // 失敗（非セキュアオリジン・権限拒否）を黙って捨てない。
+  const [copyStatus, setCopyStatus] = React.useState<"idle" | "copied" | "failed">("idle");
   if (!name) return null;
   return (
     <div
@@ -146,18 +152,45 @@ export function LegacyDocumentDraftCard({ raw }: { raw: unknown }) {
           <button
             type="button"
             onClick={() => {
-              void navigator.clipboard.writeText(markdown).then(() => {
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1500);
-              });
+              // 成功表示だけ自動で戻す。失敗表示は下の代替導線とセットで残す。
+              const settle = (status: "copied" | "failed") => {
+                setCopyStatus(status);
+                if (status === "copied") {
+                  window.setTimeout(() => setCopyStatus("idle"), 1500);
+                }
+              };
+              const clipboard = navigator.clipboard;
+              if (!clipboard) {
+                settle("failed");
+                return;
+              }
+              void clipboard.writeText(markdown).then(
+                () => settle("copied"),
+                () => settle("failed"),
+              );
             }}
             className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors duration-fast hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
-            {copied ? "コピーしました" : "本文をコピー"}
+            {copyStatus === "copied" ? (
+              <Check className="size-3.5" aria-hidden />
+            ) : copyStatus === "failed" ? (
+              <TriangleAlert className="size-3.5" aria-hidden />
+            ) : (
+              <Copy className="size-3.5" aria-hidden />
+            )}
+            {copyStatus === "copied"
+              ? "コピーしました"
+              : copyStatus === "failed"
+                ? "コピーできません"
+                : "本文をコピー"}
           </button>
         ) : null}
       </div>
+      {copyStatus === "failed" ? (
+        <p role="status" className="mt-2 text-xs text-muted-foreground">
+          クリップボードが使えませんでした。下の「本文を表示」から選択してコピーしてください。
+        </p>
+      ) : null}
       {markdown ? (
         <details className="mt-2">
           <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
