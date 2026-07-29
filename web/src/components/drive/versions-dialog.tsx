@@ -140,10 +140,14 @@ export function VersionsDialog({
                     (x) => !x.is_proposal && x.version > v.version && x.blob_sha256 === v.blob_sha256,
                   );
                 return (
-                  <li key={v.version} className="flex items-center gap-3 px-3 py-2.5">
+                  <li
+                    key={v.version}
+                    className="flex items-center gap-3 px-3 py-2.5"
+                    data-testid="version-row"
+                  >
                     <div className="min-w-0 flex-1">
                       <p className="flex items-center gap-2 text-sm font-medium">
-                        バージョン {v.version}
+                        <span data-testid="version-label">バージョン {v.version}</span>
                         {latest ? (
                           <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">最新</span>
                         ) : null}

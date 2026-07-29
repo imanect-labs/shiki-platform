@@ -37,6 +37,8 @@ export type ContentBlock =
   | { type: "note_draft"; draft: unknown }
   | { type: "slide_draft"; draft: unknown }
   | { type: "csv_draft"; draft: unknown }
+  | { type: "document_ref"; document: unknown }
+  /// レガシー（#332 → #381 で廃止）。過去スレッドの読み込み互換のみ。新規には来ない。
   | { type: "document_draft"; draft: unknown }
   | { type: "file_ref"; node_id: string; name: string }
   | { type: "selection_context"; context: SelectionContext };
@@ -50,8 +52,14 @@ export type SlideDraft = { name: string; content: string };
 /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。csv=CSV 本文。
 export type CsvDraft = { name: string; csv: string };
 
-/// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。markdown=本文 md。
-export type DocumentDraft = { name: string; markdown: string };
+/// AI が作成/編集した文書への参照（#381）。kind=office/note/slide/csv/file。
+export type DocumentRefPayload = {
+  id: string;
+  name: string;
+  kind: string;
+  version: number | null;
+  created: boolean;
+};
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
 export type RunStatus = "queued" | "running" | "done" | "failed" | "cancelled";
@@ -406,8 +414,8 @@ export type StreamHandlers = {
   onSlideDraft?: (draft: unknown) => void;
   /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。下書き画面を開く/流し込む。
   onCsvDraft?: (draft: unknown) => void;
-  /// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。下書き画面を開く/流し込む。
-  onDocumentDraft?: (draft: unknown) => void;
+  /// AI が作成/編集した文書への参照（#381）。カード化し、新規作成ならエディタへ遷移する。
+  onDocumentRef?: (document: unknown) => void;
   /// skill ツールの発動記録（#344）。会話中に読み込んだスキルのチップ表示に使う。
   onSkillInvoked?: (skill: SkillInvocation) => void;
   onStatus?: (status: RunStatus) => void;
@@ -437,7 +445,7 @@ type StreamEventKind =
   | { type: "note_draft"; draft: unknown }
   | { type: "slide_draft"; draft: unknown }
   | { type: "csv_draft"; draft: unknown }
-  | { type: "document_draft"; draft: unknown }
+  | { type: "document_ref"; document: unknown }
   | { type: "skill_invoked"; skill: SkillInvocation }
   | { type: "plan"; subtasks: PlanSubtask[] }
   | { type: "budget_warning"; kind: string; used: number; limit: number }
@@ -509,8 +517,8 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
       case "csv_draft":
         handlers.onCsvDraft?.(kind.draft);
         break;
-      case "document_draft":
-        handlers.onDocumentDraft?.(kind.draft);
+      case "document_ref":
+        handlers.onDocumentRef?.(kind.document);
         break;
       case "skill_invoked":
         handlers.onSkillInvoked?.(kind.skill);

@@ -98,11 +98,11 @@ pub struct ToolOutcome {
     /// **まだ StorageService へ作成していない**下書き CSV を入れる（chat 側で csv_draft
     /// ブロックへ写り、フロントが下書き CSV 画面で詰めてから「ドライブに保存」で確定する）。
     pub csv_drafts: Vec<CsvDraft>,
-    /// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。
-    /// `{name, markdown}` の JSON（note_drafts と同表現）。**まだ .docx 化も保存もしていない**
-    /// 下書き本文を入れる（chat 側で document_draft ブロックへ写り、フロントが下書き画面で
-    /// 詰めてから「ドライブに保存」で .docx 化・確定保存する）。
-    pub document_drafts: Vec<serde_json::Value>,
+    /// AI が作成/編集した文書への参照（#381）。
+    /// `{id, name, kind, version}` の JSON。**StorageService へ作成済み/編集済みのノードのみ**
+    /// を入れる（chat 側で document_ref ブロックへ写り、成果物への導線カードになる）。
+    /// 作成系（save_document / save_sheet）と編集系（office.* / document.edit / csv.patch）が共有する。
+    pub document_refs: Vec<serde_json::Value>,
     /// skill ツールの発動記録（skill のみ・他ツールは空・#344 Task 10.11）。
     /// `{skill_id, skill_version, name}` の JSON。**発話ユーザー権限で解決に成功した**発動のみ
     /// を入れる（run イベントへ append され「何をいつ適用したか」の完全な列が残る＝監査・再現性）。
@@ -124,7 +124,7 @@ impl ToolOutcome {
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
-            document_drafts: Vec::new(),
+            document_refs: Vec::new(),
             skill_invocations: Vec::new(),
             is_error: false,
         }
@@ -142,7 +142,7 @@ impl ToolOutcome {
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
-            document_drafts: Vec::new(),
+            document_refs: Vec::new(),
             skill_invocations: Vec::new(),
             is_error: true,
         }
@@ -165,6 +165,35 @@ pub trait ArtifactStore: Send + Sync {
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<ArtifactRef, ToolError>;
+}
+
+/// 会話に添付されたファイル 1 件（storage node 参照のみ・実体二重持ち無し）。
+///
+/// chat の `ContentBlock::FileRef` と同型。`code_interpreter` はこれを guest の
+/// `/workspace/<name>` へ seed する（#379）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentRef {
+    /// storage node id。
+    pub node_id: String,
+    /// 表示ファイル名（guest 上のファイル名にもなる）。
+    pub name: String,
+}
+
+/// 添付ファイルの実体取得（差し替え点・#379）。
+///
+/// 実装は shiki-server 側で `StorageService`（認可・監査の単一チョークポイント）へ配線する。
+/// 読み取りは**発話ユーザーの `AuthContext`** で行い昇格しない（confused-deputy 回避）。
+#[async_trait::async_trait]
+pub trait AttachmentStore: Send + Sync {
+    /// 添付の実体を読む。`max_bytes` を超えるものは [`ToolError::Invalid`] で断る
+    /// （サンドボックスへの巨大コピーを実体取得**前**に構造的に防ぐ）。
+    async fn read(
+        &self,
+        ctx: &AuthContext,
+        node_id: &str,
+        max_bytes: u64,
+        trace_id: Option<&str>,
+    ) -> Result<Vec<u8>, ToolError>;
 }
 
 /// ツール（LLM に提示し、モデルが自律的に呼ぶ）。

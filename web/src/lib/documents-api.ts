@@ -5,30 +5,37 @@ import type { components } from "@/generated/api";
 
 export type NodeResponse = components["schemas"]["NodeResponse"];
 
-/// Word 文書（.docx）を作成する。markdown 省略時は空ドキュメント（blank.docx）。
-/// 本文ありの場合はサーバ側で blank.docx + append_markdown（office.edit と同経路）により
-/// .docx 化される。worker 不達は 503。
+/// Word 文書（.docx）を空テンプレ（blank.docx）から作成する。
+/// 本文入りの作成は AI の save_document（Collabora へ paste）に一本化した（#381）ため、
+/// この API は本文を受けない＝変換サービス（worker）にも Collabora にも依存しない。
 export async function createDocument(input: {
   parentId?: string | null;
   name: string;
-  markdown?: string | null;
 }): Promise<NodeResponse> {
   const res = await apiFetch("/documents", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      parent_id: input.parentId ?? null,
-      name: input.name,
-      markdown: input.markdown ?? null,
-    }),
+    body: JSON.stringify({ parent_id: input.parentId ?? null, name: input.name }),
   });
-  if (res.status === 503) {
-    throw new Error(
-      "文書変換サービスに接続できません。時間をおいて再試行してください (503)",
-    );
-  }
   if (!res.ok) {
     throw new Error(`Word 文書の作成に失敗しました (${res.status})`);
+  }
+  return (await res.json()) as NodeResponse;
+}
+
+/// Excel ブック（.xlsx）を空テンプレから作成する（#381）。
+/// 変換を伴わないため worker にも Collabora にも依存しない（開くのは Collabora Calc）。
+export async function createSheet(input: {
+  parentId?: string | null;
+  name: string;
+}): Promise<NodeResponse> {
+  const res = await apiFetch("/sheets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ parent_id: input.parentId ?? null, name: input.name }),
+  });
+  if (!res.ok) {
+    throw new Error(`Excel ブックの作成に失敗しました (${res.status})`);
   }
   return (await res.json()) as NodeResponse;
 }

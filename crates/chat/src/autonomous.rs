@@ -76,7 +76,9 @@ impl AutonomousMode {
         const READ_ONLY: [ToolName; 2] = [ToolName::WebSearch, ToolName::WebFetch];
         /// オートで自動承認する「版管理で復元可能な書込」。不可逆・高影響（fs_delete / shell /
         /// office.live_edit=開いているセッションへの即時注入）は含めない。
-        const VERSIONED_WRITES: [ToolName; 7] = [
+        /// 新規作成（csv.write / save_document / save_sheet・#381）は既存データを壊さず
+        /// 削除で戻せるため、csv.write と同じ扱いにする。
+        const VERSIONED_WRITES: [ToolName; 9] = [
             ToolName::FsWrite,
             ToolName::FsEdit,
             ToolName::DocumentEdit,
@@ -84,6 +86,8 @@ impl AutonomousMode {
             ToolName::CsvPatch,
             ToolName::CsvWrite,
             ToolName::OfficeEdit,
+            ToolName::SaveDocument,
+            ToolName::SaveSheet,
         ];
         match self {
             AutonomousMode::RequireApproval => {
@@ -187,6 +191,8 @@ mod tests {
             "csv.write",
             "office.edit",
             "office.live_edit",
+            "save_document",
+            "save_sheet",
         ] {
             assert!(!p.is_pre_authorized(tool), "{tool} は承認必須で止まること");
         }
@@ -206,6 +212,8 @@ mod tests {
             "csv.patch",
             "csv.write",
             "office.edit",
+            "save_document",
+            "save_sheet",
         ] {
             assert!(p.is_pre_authorized(tool), "{tool} はオートで自動承認");
         }

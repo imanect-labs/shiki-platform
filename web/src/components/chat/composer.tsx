@@ -357,7 +357,13 @@ function PlusMenu({
   createParentId?: string | null;
 }) {
   // 作成ロジックはドライブの「新規作成」と共通（use-create-content・重複実装しない）。
-  const { createNoteAndOpen, createDocumentAndOpen, createSlideAndOpen, createCsvAndOpen } =
+  const {
+    createNoteAndOpen,
+    createDocumentAndOpen,
+    createSheetAndOpen,
+    createSlideAndOpen,
+    createCsvAndOpen,
+  } =
     useCreateContent({ parentId: createParentId });
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
@@ -426,6 +432,14 @@ function PlusMenu({
             </DropdownMenuItem>
             <DropdownMenuItem
               className="gap-2.5 px-2.5 py-2"
+              onSelect={() => void createSheetAndOpen()}
+              data-testid="composer-create-sheet"
+            >
+              <FileSpreadsheet className="text-emerald-600" aria-hidden />
+              スプレッドシート（Excel）
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="gap-2.5 px-2.5 py-2"
               onSelect={() => void createSlideAndOpen()}
               data-testid="composer-create-slide"
             >
@@ -438,7 +452,7 @@ function PlusMenu({
               data-testid="composer-create-csv"
             >
               <FileSpreadsheet className="text-green-600" aria-hidden />
-              スプレッドシート（CSV）
+              CSV（表・SQL 分析）
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>

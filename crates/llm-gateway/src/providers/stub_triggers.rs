@@ -13,7 +13,8 @@ use crate::provider::DeltaStream;
 /// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（genui chart）、
 /// `saveslide:<name>` → save_slide（下書きスライド・固定 3 枚）、
 /// `savecsv:<name>` → save_csv（下書き CSV・固定 3 列×3 行）、
-/// `savedoc:<name>` → save_document（下書き Word 文書・#332）。
+/// `savedoc:<name>` → save_document（新規 Word 文書・承認ゲート＋Collabora 必須・#381）、
+/// `savesheet:<name>` → save_sheet（新規 Excel ブック・承認ゲート＋Collabora 必須・#381）。
 pub(super) fn note_tool_call(
     req: &GenerateRequest,
     user_text: &str,
@@ -42,9 +43,25 @@ pub(super) fn note_tool_call(
         );
     }
     if let Some(name) = user_text.strip_prefix("savedoc:").map(str::trim) {
+        // 太字/リンク/ネスト箇条書きを含める（Collabora 側で Word 書式になることの e2e 素材）。
         return call(
             "save_document",
-            serde_json::json!({ "name": name, "markdown": format!("# {name}\n\nAI が用意した下書き本文。\n") }),
+            serde_json::json!({
+                "name": name,
+                "markdown": format!(
+                    "# {name}\n\n**重要**な提案です。詳細は[こちら](https://example.com)。\n\n\
+                     - 背景\n  - 補足\n- 提案\n"
+                ),
+            }),
+        );
+    }
+    if let Some(name) = user_text.strip_prefix("savesheet:").map(str::trim) {
+        return call(
+            "save_sheet",
+            serde_json::json!({
+                "name": name,
+                "rows": [["商品", "数量", "単価"], ["りんご", 10, 120], ["みかん", 24, 80]]
+            }),
         );
     }
     if let Some(name) = user_text.strip_prefix("savecsv:").map(str::trim) {
@@ -124,11 +141,14 @@ pub(super) fn note_tool_call(
                 "ops": [{
                     "op": "set_cells",
                     "anchor": "A1",
+                    // 売上は**桁区切りが要る大きさ**にしてある（#385）。既定の列幅のままだと
+                    // Calc が指数表記へ縮退する値なので、貼り込み後の書式・列幅調整が
+                    // 効いているかを e2e/デモでそのまま目視できる。
                     "rows": [
                         ["商品", "売上", "前年比"],
-                        ["りんご", 1280, "+18%"],
-                        ["みかん", 940, "+6%"],
-                        ["合計", 2220, "+12%"],
+                        ["りんご", 12_800_000, "+18%"],
+                        ["みかん", 9_400_000, "+6%"],
+                        ["合計", 22_200_000, "+12%"],
                     ],
                 }],
             }),

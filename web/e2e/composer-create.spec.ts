@@ -3,12 +3,13 @@ import { expect, test, type Page } from "@playwright/test";
 import { loginViaKeycloak } from "./helpers";
 
 /// issue #333「チャット入力の + → 作成」の受け入れ条件を検証する:
-/// - 「+」→「作成」→ ノート / ドキュメント(Word) / スライド / スプレッドシート(CSV) が選べる
+/// - 「+」→「作成」→ ノート / ドキュメント(Word) / スプレッドシート(Excel) / スライド / CSV が選べる
 /// - 選択すると当該が作成され、対応エディタへ遷移する
 /// - 添付（ローカル/ドライブ）は従来どおり同じ「+」内に共存する（区切り表示）
 ///
-/// ドキュメントは POST /documents（markdown 無し）なので ingestion-worker 非稼働の既定 CI
-/// でも作成できる。Collabora 起動の確認は office.spec 側（OFFICE_E2E ゲート）に委ねる。
+/// ドキュメント/Excel は空テンプレを書くだけ（POST /documents・POST /sheets）なので
+/// ingestion-worker も Collabora も無い既定 CI で作成できる。Collabora 起動の確認は
+/// office.spec 側（OFFICE_E2E ゲート）に委ねる。
 
 async function openCreateMenu(page: Page) {
   await page.goto("/");
@@ -43,6 +44,21 @@ test("+→作成→ドキュメント: .docx が作成され /office へ遷移�
   expect(node.content_type ?? "").toContain("wordprocessingml.document");
 });
 
+test("+→作成→スプレッドシート(Excel): .xlsx が作成され /office へ遷移する", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await openCreateMenu(page);
+  await page.getByTestId("composer-create-sheet").click();
+  await page.waitForURL(/\/office\/[0-9a-f-]{36}/i, { timeout: 25_000 });
+  const nodeId = page.url().match(/\/office\/([0-9a-f-]{36})/i)?.[1] ?? "";
+  const node = await page.evaluate(async (id) => {
+    const res = await fetch(`/api/files/${id}`, { credentials: "include" });
+    if (!res.ok) throw new Error(`get_file: ${res.status}`);
+    return (await res.json()) as { name: string; content_type: string | null };
+  }, nodeId);
+  expect(node.name).toMatch(/^無題のブック( \(\d+\))?\.xlsx$/);
+  expect(node.content_type ?? "").toContain("spreadsheetml.sheet");
+});
+
 test("+→作成→スライド: 作成されエディタが開く", async ({ page }) => {
   await loginViaKeycloak(page);
   await openCreateMenu(page);
@@ -50,7 +66,7 @@ test("+→作成→スライド: 作成されエディタが開く", async ({ pa
   await page.waitForURL(/\/slides\/[0-9a-f-]{36}/i, { timeout: 25_000 });
 });
 
-test("+→作成→スプレッドシート: 作成されエディタが開く", async ({ page }) => {
+test("+→作成→CSV: 作成されエディタが開く", async ({ page }) => {
   await loginViaKeycloak(page);
   await openCreateMenu(page);
   await page.getByTestId("composer-create-csv").click();

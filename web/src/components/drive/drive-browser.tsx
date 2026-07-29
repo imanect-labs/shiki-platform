@@ -122,7 +122,13 @@ export function DriveBrowser() {
 
   // 新規作成（ノート/ドキュメント/スライド/CSV）→ エディタ遷移。チャット「+」の
   // 「作成」サブメニューと共用の集約フック（#333）。保存先は現在フォルダ。
-  const { createNoteAndOpen, createDocumentAndOpen, createSlideAndOpen, createCsvAndOpen } =
+  const {
+    createNoteAndOpen,
+    createDocumentAndOpen,
+    createSheetAndOpen,
+    createSlideAndOpen,
+    createCsvAndOpen,
+  } =
     useCreateContent({ parentId: folderId });
 
   // Office 文書を開く。編集セッションが発行できればエディタへ、Office 未配備（503）・
@@ -357,6 +363,13 @@ export function DriveBrowser() {
               ドキュメント
             </DropdownMenuItem>
             <DropdownMenuItem
+              onSelect={() => void createSheetAndOpen()}
+              data-testid="new-sheet"
+            >
+              <FileSpreadsheet className="text-emerald-600" aria-hidden />
+              スプレッドシート（Excel）
+            </DropdownMenuItem>
+            <DropdownMenuItem
               onSelect={() => void createSlideAndOpen()}
               data-testid="new-slide"
             >
@@ -368,7 +381,7 @@ export function DriveBrowser() {
               data-testid="new-csv"
             >
               <FileSpreadsheet className="text-green-600" aria-hidden />
-              CSV（表）
+              CSV（表・SQL 分析）
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

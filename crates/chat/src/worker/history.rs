@@ -96,14 +96,23 @@ pub(super) fn message_text(blocks: &[ContentBlock]) -> String {
                     "[作成中の下書き CSV: {name}（未保存。直すには同じ name「{name}」で save_csv）]"
                 ));
             }
-            // 下書き Word 文書も同型（同名 save_document で同じ下書きを更新・#332）。
+            // 「さっき編集した Excel をもう一度直して」を node_id 解決できるようにする（#381）。
+            // 作成系（save_document / save_sheet）と編集系（office.* / document.edit / csv.patch）
+            // が共有する参照ブロック。version も載せて「どの版まで進んだか」を観測させる。
+            ContentBlock::DocumentRef { document } => {
+                let id = document.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let name = document.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let version = document.get("version").and_then(serde_json::Value::as_i64);
+                let version = version.map(|v| format!(", v{v}")).unwrap_or_default();
+                parts.push(format!("[編集済み文書: {name}（node_id: {id}{version}）]"));
+            }
+            // レガシー下書き Word（#381 で廃止）。過去履歴では名前だけ観測させる
+            // （下書きストアも画面も無いため「直すには同名で save_document」は誤誘導になる）。
             ContentBlock::DocumentDraft { draft } => {
                 let name = draft.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let content = draft.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
                 parts.push(format!(
-                    "[作成中の下書き Word 文書: {name}（未保存。直すには同じ name「{name}」で \
-                     save_document。現在の内容:\n{}\n）]",
-                    clamp_chars(content, DRAFT_HISTORY_MAX_CHARS)
+                    "[過去の下書き Word 文書: {name}（この下書き機能は廃止済み。作り直すには \
+                     save_document で新規作成する）]"
                 ));
             }
             _ => {}

@@ -239,6 +239,15 @@ impl CoolWsClient {
         self.send(protocol::UNO_GO_TO_END_OF_DOC.to_string()).await
     }
 
+    /// 選択中の列幅を内容に合わせる（Calc・#385）。ack なし（notify 対象外）。
+    ///
+    /// 引数を取らないコマンドなのでダイアログは開かず、後続の `.uno:Save` ack を
+    /// 塞がない。効果の確認手段は無い＝呼び出し側は best-effort として扱うこと。
+    pub async fn set_optimal_column_width(&mut self) -> Result<(), LiveError> {
+        self.send(protocol::UNO_SET_OPTIMAL_COLUMN_WIDTH.to_string())
+            .await
+    }
+
     /// 自 view の現在選択（無選択ならカーソル位置）へ貼り付ける。
     ///
     /// 戻り値は `pasteresult:` の成否（`fallback` は core が処理できなかった形式）。

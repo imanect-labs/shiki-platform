@@ -237,10 +237,10 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// 最大リネーム試行回数（`無題のノート (2).md` … を試す上限）。
-const MAX_NAME_ATTEMPTS: u32 = 50;
-
 /// 同名衝突時に ` (2)` `(3)` … を付けて作成をリトライする（fail-closed・上限あり）。
+///
+/// 連番規則の正本は `StorageService::write_file_unique_internal`（チョークポイント側・#381）。
+/// AI の Office 作成ツールも同じ規則で作るため、ここでは HTTP エラーへの写像だけを担う。
 #[allow(clippy::too_many_arguments)] // 作成文脈の値を束ねず素で受ける（呼び出し元は notes/slides/documents）。
 pub(crate) async fn create_file_unique(
     state: &AppState,
@@ -251,29 +251,11 @@ pub(crate) async fn create_file_unique(
     content_type: &str,
     trace_id: Option<&str>,
 ) -> Result<storage::Node, ApiError> {
-    let (stem, ext) = file_name
-        .rsplit_once('.')
-        .map_or((file_name, ""), |(s, e)| (s, e));
-    for attempt in 1..=MAX_NAME_ATTEMPTS {
-        let candidate = if attempt == 1 {
-            file_name.to_string()
-        } else if ext.is_empty() {
-            format!("{stem} ({attempt})")
-        } else {
-            format!("{stem} ({attempt}).{ext}")
-        };
-        match state
-            .storage
-            .write_file_internal(ctx, parent_id, &candidate, bytes, content_type, trace_id)
-            .await
-        {
-            Ok(node) => return Ok(node),
-            // 名前衝突は次候補（連番付き）へ。それ以外の失敗はそのまま返す。
-            Err(storage::StorageError::Conflict) => {}
-            Err(e) => return Err(ApiError::from(e)),
-        }
-    }
-    Err(ApiError::Conflict)
+    state
+        .storage
+        .write_file_unique_internal(ctx, parent_id, file_name, bytes, content_type, trace_id)
+        .await
+        .map_err(ApiError::from)
 }
 
 /// collab のエラーを HTTP エラーへ写す（fail-closed: 判定不能は 403 に倒す）。

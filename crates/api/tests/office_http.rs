@@ -632,9 +632,9 @@ async fn office_session_rejects_unsupported_and_missing_files() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
-/// #332/#334: /documents（作成）と /documents/export（変換 DL）は office フラグ非依存で
-/// 常時配線される。空 markdown は ingestion-worker を呼ばず blank.docx テンプレを返すため、
-/// worker 未到達（127.0.0.1:1）でも作成/エクスポートが成立することを検証する。
+/// #332/#334/#381: /documents・/sheets（作成）と /documents/export（変換 DL）は office フラグ
+/// 非依存で常時配線される。作成は空テンプレ（blank.docx / blank.xlsx）をそのまま書くだけで、
+/// export の空 markdown も worker を呼ばないため、worker 未到達（127.0.0.1:1）でも成立する。
 #[tokio::test]
 async fn documents_create_and_export_work_without_office_or_worker() {
     let Some((state, sessions)) = build_state(false).await else {
@@ -676,6 +676,25 @@ async fn documents_create_and_export_work_without_office_or_worker() {
     assert_eq!(
         node["content_type"],
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+
+    // 作成（Excel・#381）: 空テンプレから .xlsx ノードが作られる（worker/Collabora 非依存）。
+    let res = app
+        .clone()
+        .oneshot(session_post(
+            "/sheets",
+            &cookie,
+            csrf,
+            serde_json::json!({"name": "売上", "parent_id": null}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let node = body_json(res).await;
+    assert_eq!(node["name"], "売上.xlsx");
+    assert_eq!(
+        node["content_type"],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
 
     // エクスポート: 空 markdown → .docx バイナリを attachment で返す（worker 非依存）。

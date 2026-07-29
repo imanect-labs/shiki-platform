@@ -10,8 +10,9 @@ use authz::AuthContext;
 use sandbox_client::{ExecRequest, Sandbox, SandboxBackend, SandboxSpec};
 
 use super::artifacts::collect_artifacts;
+use super::attachments::seed_attachments;
 use super::sandbox_exec::{collect_output, truncate};
-use crate::tool::{ArtifactStore, Tool, ToolError, ToolOutcome};
+use crate::tool::{ArtifactStore, AttachmentRef, AttachmentStore, Tool, ToolError, ToolOutcome};
 
 /// `code_interpreter` ツール。サンドボックスに `Sandbox` トレイト裏でアクセスする。
 pub struct CodeInterpreterTool {
@@ -20,6 +21,12 @@ pub struct CodeInterpreterTool {
     artifacts: Option<Arc<dyn ArtifactStore>>,
     /// 隔離ティア（admin ポリシー・design §4.6）。既定は gVisor（native CPython・#346）。
     backend: SandboxBackend,
+    /// ティアで使えるライブラリが違うため、description は構築時に確定させる（#384）。
+    description: String,
+    /// この会話の添付（実行前に `/workspace/<name>` へ置く・#379）。空なら seed しない。
+    attachments: Vec<AttachmentRef>,
+    /// 添付の実体取得（未配線なら seed しない）。
+    attachment_store: Option<Arc<dyn AttachmentStore>>,
 }
 
 impl CodeInterpreterTool {
@@ -32,8 +39,49 @@ impl CodeInterpreterTool {
             sandbox,
             artifacts,
             backend,
+            description: describe(backend),
+            attachments: Vec::new(),
+            attachment_store: None,
         }
     }
+
+    /// 会話の添付を実行前に `/workspace` へ配置する（#379）。
+    ///
+    /// 添付は履歴に名前しか現れず、モデルは `/workspace/<name>` を読もうとして毎回
+    /// `FileNotFoundError` で 1 ステップを空費していた。実体を置いて直観と一致させる。
+    #[must_use]
+    pub fn with_attachments(
+        mut self,
+        store: Arc<dyn AttachmentStore>,
+        attachments: Vec<AttachmentRef>,
+    ) -> Self {
+        self.attachment_store = Some(store);
+        self.attachments = attachments;
+        self
+    }
+}
+
+/// ティア別のツール説明（宣伝と実体を一致させる・#384）。
+///
+/// native ティア（gVisor/Firecracker）は rootfs 同梱の numpy/pandas/openpyxl が使え、
+/// 添付 xlsx を `pandas.read_excel` でそのまま読める（`rootfs-requirements.txt`）。
+/// wasm ティア（Pyodide）の同梱 wheel に openpyxl は無い（`vendor/secure-exec/crates/
+/// execution/assets/pyodide/pyodide-lock.json`）ので**宣伝しない**。宣伝と実体がずれると、
+/// モデルは `ModuleNotFoundError` で 1〜2 ステップ空費してから代替へ回ることになる。
+fn describe(backend: SandboxBackend) -> String {
+    let libraries = match backend {
+        SandboxBackend::Gvisor | SandboxBackend::Firecracker => {
+            "numpy・pandas・openpyxl が使え、添付の .xlsx も pandas.read_excel でそのまま読める"
+        }
+        SandboxBackend::Wasm => "numpy・pandas が使える（.xlsx は読めない）",
+    };
+    format!(
+        "隔離サンドボックスで Python コードを実行し、標準出力/エラーを返す。{libraries}。\
+         計算・データ処理・整形に使う（ネットワークは遮断）。**会話に添付されたファイルは \
+         /workspace/<ファイル名> に配置済み**なのでそのまま読める（置けなかった場合は結果に\
+         注記が付く）。/workspace に書いたファイルは実行後に自動保存され会話に添付される。\
+         グラフ描画は行わず、結果の数値/表を返すこと。"
+    )
 }
 
 #[async_trait::async_trait]
@@ -43,11 +91,8 @@ impl Tool for CodeInterpreterTool {
         crate::vocab::ToolName::CodeInterpreter.as_str()
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
-        "隔離サンドボックスで Python コードを実行し、標準出力/エラーを返す。numpy・pandas が使える。\
-         計算・データ処理・整形に使う（ネットワークは遮断）。/workspace に書いたファイルは実行後に\
-         自動保存され会話に添付される。グラフ描画は行わず、結果の数値/表を返すこと。"
+        &self.description
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -92,6 +137,22 @@ impl Tool for CodeInterpreterTool {
             .await
             .map_err(|e| ToolError::Unavailable(format!("sandbox create: {e}")))?;
 
+        // 会話の添付を実行前に置く（#379）。失敗は実行を止めず注記としてモデルへ観測させる。
+        let seed = match &self.attachment_store {
+            Some(store) => {
+                seed_attachments(
+                    self.sandbox.as_ref(),
+                    ctx,
+                    &handle,
+                    store.as_ref(),
+                    &self.attachments,
+                    trace_id,
+                )
+                .await
+            }
+            None => super::attachments::SeedResult::default(),
+        };
+
         // 実行後は必ず破棄する（短命・まっさら）。
         let exec_result = self
             .sandbox
@@ -108,6 +169,12 @@ impl Tool for CodeInterpreterTool {
             Ok(stream) => match collect_output(stream).await {
                 Ok((stdout, stderr, exit, limit)) => {
                     let mut out = render_outcome(&stdout, &stderr, exit, limit.as_deref());
+                    // 添付の配置結果は成否によらず観測へ載せる（失敗時こそ「node_id で
+                    // csv.query を使え」という次の一手が要る・#379 受け入れ条件）。
+                    for note in &seed.notes {
+                        out.content.push('\n');
+                        out.content.push_str(note);
+                    }
                     // 成果物の回収は実行成功時のみ（失敗実行の中途ファイルは保存しない）。
                     if !out.is_error {
                         if let Some(store) = &self.artifacts {
@@ -116,6 +183,7 @@ impl Tool for CodeInterpreterTool {
                                 ctx,
                                 &handle,
                                 store.as_ref(),
+                                &seed.seeded,
                                 &mut out,
                                 trace_id,
                             )
@@ -183,6 +251,19 @@ mod tests {
     use crate::tool::ArtifactRef;
     use sandbox_client::{FakeExecResult, FakeSandbox};
     use std::sync::Mutex;
+
+    /// #384: openpyxl を宣伝するのは rootfs に同梱している native ティアだけ。
+    #[test]
+    fn description_advertises_openpyxl_only_on_native_tiers() {
+        for native in [SandboxBackend::Gvisor, SandboxBackend::Firecracker] {
+            let text = describe(native);
+            assert!(text.contains("openpyxl"), "{native:?}: {text}");
+            assert!(text.contains("read_excel"), "{native:?}: {text}");
+        }
+        let wasm = describe(SandboxBackend::Wasm);
+        assert!(!wasm.contains("openpyxl"), "{wasm}");
+        assert!(wasm.contains(".xlsx は読めない"), "{wasm}");
+    }
 
     fn ctx() -> AuthContext {
         AuthContext::new(

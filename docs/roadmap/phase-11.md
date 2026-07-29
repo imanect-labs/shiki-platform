@@ -124,10 +124,15 @@
   履歴 UI で editor が採用→通常新バージョン化・PIT-44）。ツール=`office.read`/`office.edit`（要確認）。
   Collabora へのライブ参加は本タスクのスコープ外だったが、issue #352 で実装済み
   （`office.live_edit`＝AI が CoolWSD セッションの headless 参加者としてアンカー指定編集）。
+  **新規作成**（`save_document` / `save_sheet`）は issue #381 で Collabora へ一本化した
+  （空テンプレ実体化→HTML/セル paste。md 下書き画面 `/office/draft` は廃止・design §4.8・PIT-50）。
+  作成/編集の結果は `document_ref` カードとしてチャットに残る（#358 の実害を解消）。
 - **受け入れ条件**:
   - [ ] AI が pptx/docx/xlsx を読み・編集し新バージョンとして保存できる
   - [ ] 編集セッション中の AI 編集要求が上書きせず提案保存に落ちる（negative テスト）
   - [ ] 提案の採用で通常バージョンに昇格し書込イベントが流れる
+  - [ ] 「Word/Excel で作って」→ 承認 → Collabora Writer/Calc が開く（md エディタを経由しない・#381）
+  - [ ] AI が承認なしにドライブへファイルを作らない（#381）
 
 ### Task 11.9: スプレッドシート×shiki script（スコープ外・据え置き）
 - **area**: data / **path**: `crates/office`, `crates/script-runtime`

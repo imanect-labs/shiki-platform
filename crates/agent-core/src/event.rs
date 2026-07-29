@@ -78,10 +78,10 @@ pub enum AgentEvent {
     /// `{name, csv}`（csv=CSV 本文）。**まだ作成していない**下書き
     /// （chat 側で csv_draft へ写り、フロントが下書き CSV 画面で詰めてから確定する）。
     CsvDraft { draft: serde_json::Value },
-    /// 未保存の下書き Word 文書（save_document の下書き確定型・#332）。
-    /// `{name, markdown}`。**まだ .docx 化も保存もしていない**下書き本文
-    /// （chat 側で document_draft へ写り、フロントが下書き画面で詰めてから確定する）。
-    DocumentDraft { draft: serde_json::Value },
+    /// AI が作成/編集した文書への参照（#381）。`{id, name, kind, version}`。
+    /// **StorageService 上に実在するノードのみ**がここへ乗る（chat 側で document_ref へ写り、
+    /// 「〜を編集しました（v3）→ 開く」カードになる）。作成系と編集系が共有する。
+    DocumentRef { document: serde_json::Value },
     /// skill ツールの発動記録（#344 Task 10.11）。`skill = {skill_id, skill_version, name}`。
     /// **発話ユーザー権限で解決に成功した**発動のみが乗る（`generation_event` に append され
     /// replay 可能＝「何をいつ適用したか」の完全な列。message.content へは projection しない —

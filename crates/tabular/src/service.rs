@@ -58,6 +58,8 @@ pub struct SavedCsv {
 #[derive(Debug)]
 pub struct PatchApplied {
     pub node_id: Uuid,
+    /// 適用後のファイル名（チャットの document_ref カード表示に使う・#381）。
+    pub name: String,
     /// 適用後の新しい版（次回 base_rev に使う）。
     pub version: i64,
     pub rows: usize,
@@ -155,6 +157,7 @@ impl TabularService {
             .await?;
         Ok(PatchApplied {
             node_id: updated.id,
+            name: updated.name.clone(),
             version: updated.version,
             rows: result.rows,
             cols: result.cols,

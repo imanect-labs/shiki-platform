@@ -174,6 +174,13 @@ impl WorkerSink {
                     draft: draft.clone(),
                 });
             }
+            // AI が作成/編集した文書への参照（#381）。成果物への導線として履歴に残す。
+            StreamEventKind::DocumentRef { document } => {
+                self.content.push(ContentBlock::DocumentRef {
+                    document: document.clone(),
+                });
+            }
+            // レガシー（#381 で廃止）。新規発火は無いが replay 経路の網羅性のため残す。
             StreamEventKind::DocumentDraft { draft } => {
                 self.content.push(ContentBlock::DocumentDraft {
                     draft: draft.clone(),
@@ -235,8 +242,8 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         AgentEvent::CsvDraft { draft } => StreamEventKind::CsvDraft {
             draft: draft.clone(),
         },
-        AgentEvent::DocumentDraft { draft } => StreamEventKind::DocumentDraft {
-            draft: draft.clone(),
+        AgentEvent::DocumentRef { document } => StreamEventKind::DocumentRef {
+            document: document.clone(),
         },
         // skill 発動記録（#344）。generation_event に残り replay 可能（UI はチップ表示）。
         AgentEvent::SkillInvoked { skill } => StreamEventKind::SkillInvoked {

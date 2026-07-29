@@ -220,7 +220,7 @@ test("full-financial-dashboard: SQL集計→Excel複数表→Word要約", async 
       "(1) 四半期別サマリー: 受注額合計・受注件数・勝率・平均クローズ日数を計算し、" +
       `添付の Excel（${xlsxName}）の A1 起点に表として書き込む。` +
       "(2) 同じ Excel の A8 起点に、地域×業種の受注額クロス集計表も書き込む。" +
-      "(3) 経営会議向けの説明資料を Word 文書の下書きとして作成する" +
+      "(3) 経営会議向けの説明資料を Word 文書として新規作成する" +
       "（ハイライト、四半期トレンドの考察、勝率が低いセグメントの特定と仮説、次四半期の重点3点）。" +
       "数値は必ず csv.query / code_interpreter の実行結果を使ってください。勝率は won/(won+lost) です。",
     { delay: 8 },
@@ -229,34 +229,37 @@ test("full-financial-dashboard: SQL集計→Excel複数表→Word要約", async 
   await input.press("Enter");
   await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 30_000 });
 
-  // --- 成果物 3: Word 下書き → 確定保存で **実体の .docx** まで通す ---
-  // save_document を受けると会話は自動で下書き画面へ遷移する（conversation.tsx の主線）。
-  // カードはその場に留まらないので、遷移先の「下書き（未保存）」バッジを完了条件にする。
-  const draftBadge = page.getByTestId("draft-badge");
-  await approveLoop(page, draftBadge, 900_000);
+  // --- 成果物 3: Word を **その場で .docx として実体化** する（#381）---
+  // save_document は承認ゲート対象で、承認後は Collabora Writer へ自動遷移する
+  // （md 下書き画面は廃止）。完了条件は Collabora の iframe が立ち上がること。
+  const officeFrame = page.getByTestId("office-frame");
+  await approveLoop(page, officeFrame, 900_000);
 
-  await page.waitForURL(/\/office\/draft/, { timeout: 420_000 });
-  await expect(draftBadge).toBeVisible({ timeout: 60_000 });
-  await beat(page, 4000);
-
-  const docxName = `経営会議レビュー-${Date.now().toString(36)}`;
-  await page.getByTestId("draft-save-button").click();
-  const saveDialog = page.getByRole("dialog");
-  await expect(saveDialog).toContainText("Word 文書");
-  await page.getByTestId("save-draft-name").fill(docxName);
-  await beat(page, 1200);
-  await page.getByTestId("save-draft-confirm").click();
-
-  // 保存後は Collabora（Writer）へ遷移する＝**ノートではなく .docx** が実体化した証拠。
-  await page.waitForURL(/\/office\/[0-9a-f-]+/i, { timeout: 60_000 });
+  await page.waitForURL(/\/office\/[0-9a-f-]{36}/i, { timeout: 420_000 });
   await expect(page.getByText("エディタを起動しています…")).toBeHidden({ timeout: 90_000 });
   await page.waitForTimeout(9000);
+  // Writer の本文（見出し・太字・箇条書き）をスクロールして映す。
+  await page.mouse.move(640, 400);
+  for (let i = 0; i < 3; i++) {
+    await page.mouse.wheel(0, 320);
+    await beat(page, 1200);
+  }
+  await beat(page, 3000);
+
+  // --- 会話へ戻り、成果物カード（document_ref）を映す（#381 その 2・#358 の実害の解消）---
+  // Excel を 2 回編集して版が進んだこと・Word を作成したことが、畳まれたツールチップでは
+  // なく「開く」導線つきのカードとして会話に残っている。
+  await page.goBack();
+  await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 30_000 });
+  const cards = page.getByTestId("document-ref-card");
+  await expect(cards.first()).toBeVisible({ timeout: 30_000 });
+  await cards.last().scrollIntoViewIfNeeded();
   await beat(page, 5000);
 
-  // ドライブに .docx として並ぶことを確認。
+  // ドライブに .docx として並ぶ（＝ノートではなく本物の Word が実体化した証拠）。
   await page.goto("/drive");
-  await expect(page.getByText(`${docxName}.docx`).first()).toBeVisible({ timeout: 30_000 });
-  await beat(page, 2500);
+  await expect(page.getByText(/\.docx$/).first()).toBeVisible({ timeout: 30_000 });
+  await beat(page, 3000);
 
   // Excel を開いて 2 つの表（成果物 1・2）を映す。
   await page.getByText(xlsxName).first().dblclick();

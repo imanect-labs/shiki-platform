@@ -1,19 +1,33 @@
 # サンドボックス同梱物の第三者ライセンス・帰属
 
-サンドボックス（wasm ティア・`vendor/secure-exec/`）が guest に提供する実行アセット・コマンド群の帰属。
+サンドボックスが guest に提供する実行アセット・コマンド群の帰属。ティアごとに同梱物が違うので
+節を分ける（wasm ティア = `vendor/secure-exec/`・native ティア = `deploy/sandbox-assets/`）。
 `cargo deny` は Rust 依存グラフを検査するが、以下の**バイナリ/wheel アセットは検査対象外**のため手動管理する。
 
 ## secure-exec フォーク本体
 
 - **secure-exec** — Apache-2.0（`vendor/secure-exec/LICENSE`・Copyright 2025 Rivet Gaming, Inc.）。
 
-## Python ランタイム（code_interpreter）
+## Python ランタイム（code_interpreter・wasm ティア）
 
-- **Pyodide 0.28.0**（`asset-manifest.sha256` で pin・非コミット）— Mozilla Public License 2.0。
+- **Pyodide 0.29.2**（`asset-manifest.sha256` で pin・非コミット）— Mozilla Public License 2.0。
 - **CPython 3.13**（Pyodide 同梱・`python_stdlib.zip`）— Python Software Foundation License。
 - **numpy 2.2.5** — BSD-3-Clause。
 - **pandas 2.3.3** — BSD-3-Clause。
 - matplotlib は同梱しない（可視化は generative UI・design §4.7）。
+- openpyxl は Pyodide 0.29.2 の lock に無いため**同梱しない**。ツール description も
+  このティアでは xlsx を宣伝しない（`agent-core/src/tools/code_interpreter.rs` の `describe`・#384）。
+
+## Python ランタイム（code_interpreter・native ティア = gVisor/Firecracker）
+
+`deploy/sandbox-assets/rootfs-requirements.txt` で version＋wheel ハッシュを固定し、
+`scripts/build-sandbox-rootfs.sh` がビルド時のみ `pip install` する（実行時 DL 無し・PIT-33）。
+
+- **CPython 3.12**（`python:3.12-slim` digest pin）— Python Software Foundation License。
+- **numpy 2.2.5** — BSD-3-Clause。
+- **pandas 2.3.3**（＋ python-dateutil Apache-2.0/BSD-3-Clause デュアル / pytz MIT / six MIT /
+  tzdata Apache-2.0）— BSD-3-Clause。
+- **openpyxl 3.1.5**（＋ et-xmlfile 2.0.0）— MIT。添付 xlsx を `pandas.read_excel` で読むため（#384）。
 
 ## ゲストコマンドスイート（`registry/native` から wasm32-wasip1 ビルド）
 

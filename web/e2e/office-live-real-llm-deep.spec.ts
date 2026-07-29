@@ -164,7 +164,7 @@ test("deep-monthly-exec-report: 3つの参照ノート→経営会議レポー�
 });
 
 /// ② データノート（参照）＋ xlsx を渡し、集計表を Excel に書き込ませ、
-/// さらに分析レポートを Word 下書きとして作らせる（2 つの成果物）。
+/// さらに分析レポートを Word（.docx）として新規作成させる（2 つの成果物・#381）。
 test("deep-sales-analysis: データノート→Excel集計＋Word分析レポート", async ({ page }) => {
   await disableWelcome(page.context());
   await loginViaKeycloak(page);
@@ -202,7 +202,7 @@ test("deep-sales-analysis: データノート→Excel集計＋Word分析レポ�
     "添付の「11月 週次売上データ」ノートを読み込んで集計し、次の2つを作ってください。" +
       `①添付のExcel（${xlsxName}）のA1を起点に「商品別サマリー」表を書き込む` +
       "（列: 商品/杯数合計/売上合計(円)/売上構成比。最終行に総合計）。" +
-      "②経営向けの分析レポートをWord文書の下書きとして作成する" +
+      "②経営向けの分析レポートをWord文書として新規作成する" +
       "（週次トレンド、商品別の考察、キャンペーン効果の評価、来月の提案3点）。",
     { delay: 12 },
   );
@@ -210,13 +210,13 @@ test("deep-sales-analysis: データノート→Excel集計＋Word分析レポ�
   await input.press("Enter");
   await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
 
-  // read（承認不要）→ office.live_edit set_cells（承認）→ save_document（下書き）。
+  // read（承認不要）→ office.live_edit set_cells（承認）→ save_document（承認・#381）。
   await approveAll(page, 420_000);
 
-  // Word 下書きカードが現れる（大きな成果物その1）。
-  await expect(page.getByTestId("document-draft-card").first()).toBeVisible({
-    timeout: 300_000,
-  });
+  // 作成した Word（.docx）が Collabora Writer で開く（大きな成果物その1）。
+  await page.waitForURL(/\/office\/[0-9a-f-]{36}/i, { timeout: 300_000 });
+  await expect(page.getByText("エディタを起動しています…")).toBeHidden({ timeout: 90_000 });
+  await page.waitForTimeout(8000);
   await beat(page, 4000);
 
   // Excel を開いて集計表（成果物その2）を映す。

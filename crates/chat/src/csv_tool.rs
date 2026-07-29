@@ -166,10 +166,19 @@ impl Tool for CsvPatchTool {
             .patch(ctx, input.node_id, input.base_rev, &input.ops, trace_id)
             .await
         {
-            Ok(a) => Ok(ToolOutcome::ok(format!(
-                "CSV を更新しました（v{}・{} 行 × {} 列）。",
-                a.version, a.rows, a.cols
-            ))),
+            Ok(a) => {
+                let mut outcome = ToolOutcome::ok(format!(
+                    "CSV「{}」を更新しました（v{}・{} 行 × {} 列）。",
+                    a.name, a.version, a.rows, a.cols
+                ));
+                // 編集結果をチャットに残す（#381・成果物への導線）。
+                outcome.document_refs.push(crate::document_ref::payload(
+                    a.node_id,
+                    &a.name,
+                    Some(a.version),
+                ));
+                Ok(outcome)
+            }
             Err(e) => Ok(denied(&e)),
         }
     }
@@ -238,10 +247,21 @@ impl Tool for CsvWriteTool {
             )
             .await
         {
-            Ok(s) => Ok(ToolOutcome::ok(format!(
-                "CSV「{}」を保存しました（node_id: {}）。",
-                s.name, s.node_id
-            ))),
+            Ok(s) => {
+                let mut outcome = ToolOutcome::ok(format!(
+                    "CSV「{}」を保存しました（node_id: {}）。",
+                    s.name, s.node_id
+                ));
+                // 新規作成なのでカードは「作成しました」と名乗る（created=true）。
+                outcome
+                    .document_refs
+                    .push(crate::document_ref::created_payload(
+                        s.node_id,
+                        &s.name,
+                        Some(s.version),
+                    ));
+                Ok(outcome)
+            }
             Err(e) => Ok(denied(&e)),
         }
     }

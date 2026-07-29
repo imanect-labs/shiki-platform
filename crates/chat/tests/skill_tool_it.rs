@@ -194,6 +194,7 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
             office: None,
             // office.live_edit の authz は office::live::LiveEditor 側が持つ（#352）。
             office_live: None,
+            office_creator: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),

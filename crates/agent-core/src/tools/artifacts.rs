@@ -5,6 +5,10 @@
 //! ストレージ側（`validate_name`）が単一チョークポイントとして行う。回収失敗はツール全体を
 //! 失敗させず、観測テキストに注記してモデルに回復させる。
 
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+
 use authz::AuthContext;
 use sandbox_client::{Sandbox, SandboxHandle};
 
@@ -15,14 +19,26 @@ const ARTIFACT_MAX_COUNT: usize = 20;
 /// 成果物 1 個のサイズ上限（orchestrator 側の 8MiB と同値・二重防御）。
 const ARTIFACT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// 実行コードを書き込む guest パス（orchestrator の Python 実行が置く・成果物から除外）。
-const ENTRYPOINT_NAME: &str = "main.py";
+pub(super) const ENTRYPOINT_NAME: &str = "main.py";
+
+/// 内容の同一性判定用ハッシュ（`shell` の sync-back と同じ用途・暗号強度は不要）。
+pub(super) fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// `/workspace` の成果物を回収して保存し、`out` に参照と注記を書き足す。
+///
+/// `seeded`（会話の添付として**こちらが置いた**ファイル・#379）は、内容が変わっていなければ
+/// 成果物として保存しない。これが無いと添付を読むだけの実行でも元添付が別ノードへ複製され、
+/// 会話にも再添付され、上限を食い潰して本当の生成物が回収されなくなる。
 pub(super) async fn collect_artifacts(
     sandbox: &dyn Sandbox,
     ctx: &AuthContext,
     handle: &SandboxHandle,
     store: &dyn ArtifactStore,
+    seeded: &HashMap<String, u64>,
     out: &mut ToolOutcome,
     trace_id: Option<&str>,
 ) {
@@ -64,6 +80,10 @@ pub(super) async fn collect_artifacts(
                 continue;
             }
         };
+        // seed した添付が未変更なら成果物ではない（元ファイルをドライブへ複製しない・#379）。
+        if seeded.get(&entry.name) == Some(&hash_bytes(&bytes)) {
+            continue;
+        }
         match store
             .save(
                 ctx,

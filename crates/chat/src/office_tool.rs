@@ -143,7 +143,25 @@ impl Tool for OfficeEditTool {
         if outcome.saved.is_none() {
             return Ok(ToolOutcome::error(content));
         }
-        Ok(ToolOutcome::ok(content))
+        // 編集結果をチャットに残す（#381）。これが無いと「AI が編集した文書」への導線が
+        // 畳まれたツールチップだけになり、成果物へ辿り着けない（#358 の実害）。
+        // 提案バージョン（PIT-44）は current に入っていないため、カード側で区別させる。
+        let mut result = ToolOutcome::ok(content);
+        let card = match &outcome.saved {
+            Some(SavedEdit::NewVersion { version }) => Some(crate::document_ref::payload(
+                input.node_id,
+                &outcome.file_name,
+                Some(*version),
+            )),
+            Some(SavedEdit::Proposal { version }) => Some(crate::document_ref::proposal_payload(
+                input.node_id,
+                &outcome.file_name,
+                *version,
+            )),
+            None => None,
+        };
+        result.document_refs.extend(card);
+        Ok(result)
     }
 }
 

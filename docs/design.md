@@ -478,6 +478,8 @@ flowchart TB
   IP 分類は **net_guard が単一の正**で、egress プロキシ（gVisor/FC ティア）とミニアプリ HTTP（app-platform）も同じ表を使う。
   **前提条件（#346 で充足済み）**: code_interpreter が宣伝する numpy/pandas は、native rootfs へビルド時に同梱する
   （`deploy/sandbox-assets/rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定 `--require-hashes` の二層で再現）。
+  同梱物はティアで異なる（native のみ openpyxl・#384）ため、**ツール description はティアから導出**して
+  宣伝と実体を一致させる（`agent-core/src/tools/code_interpreter.rs` の `describe`・PIT-51）。
   runsc・rootfs は orchestrator イメージへ焼き込み（`deploy/docker/sandbox-orchestrator.Dockerfile`・実行時 DL 無し＝PIT-33）。
   gVisor のメモリ上限は OCI spec の `linux.resources.memory.limit`（sentry が解釈するゲスト側上限。
   現行 runsc に旧 `--total-memory` フラグは無い）＋orchestrator 側メモリ watchdog
@@ -539,7 +541,10 @@ flowchart TB
     ② edit（ライブ・`office.live_edit`）= **AI が CoolWSD セッションの headless 参加者**
     （`crates/office` の `live::LiveEditor`・独立 view・参加者リストに「Shiki AI」表示）として接続し、
     **自 view の選択**でアンカー指定編集（`replace_text`=ExecuteSearch→選択照合→paste /
-    `append_html` / `set_cells`=GoToCell→表 paste）。ユーザーの選択に依存しない（TOCTOU なし）。
+    `append_html` / `set_cells`=GoToCell→表 paste→貼った矩形の列幅自動調整）。
+    ユーザーの選択に依存しない（TOCTOU なし）。`set_cells` は値を数値のまま入れて**表示だけ**を整える
+    （桁区切りは `sdval`/`sdnum`・見出し行は `<th>`・列幅は `.uno:SetOptimalColumnWidthDirect`。
+    幅調整の失敗は不発扱いにしない・#385/PIT-52）。
     編集は CoolWSD の協調プロトコルで全 view へ即時反映され、保存は CoolWSD 自身の WOPI PutFile →
     既存チョークポイント（版・監査・outbox→RAG 再索引）。文書が開かれていなくても実行できる
     （AI 単独セッションが立ち、新バージョンとして保存）。WOPI トークンは `ai_actor` クレーム付きで発行し、
@@ -549,6 +554,20 @@ flowchart TB
     WOPI ロック中=**提案バージョン**（`node_version.is_proposal`・current を進めない・RAG 索引除外・
     バージョン履歴 UI から editor が「採用」して通常の新バージョン化。PIT-44）。
     **ネイティブ 3 種（ノート/スライド/CSV）と Collabora の別なく、AI は共同編集参加者**。
+  - **新規作成も Collabora へ一本化（#381・2026-07 確定）**: Word/Excel の**新規作成**は
+    「**空テンプレ（`crates/office/templates/blank.docx` / `blank.xlsx`）を StorageService へ実体化
+    → 同じ HTML paste で本文を流し込む**」の 2 段（`office::OfficeCreator`）。md 下書き画面は廃止した。
+    理由は 2 つ: ①同じ「Word 文書」なのに新規作成だけ md エディタになり編集体験が割れる
+    ②md→docx の自前サブセット（`append_markdown`）は太字/リンク/ネスト箇条書き/引用が落ち、
+    **対応記法を足し続けるいたちごっこ**になる。本物のエンジン（LibreOffice の HTML インポート）に
+    docx 化させる方が忠実度が高い。AI 側は `save_document` / `save_sheet`（いずれも**承認ゲート対象**＝
+    AI が黙ってドライブへファイルを作らない）で、Collabora 未配備の構成では**ツール自体を提示しない**。
+    `append_markdown` は `office.edit`（非ライブのファイル単位編集）が使うため残るが、新規作成経路からは外れた。
+  - **編集結果の可視化（#381）**: 作成/編集ツールは `ToolOutcome.document_refs`（`{id, name, kind, version}`）を
+    返し、`AgentEvent::DocumentRef` → `StreamEventKind::DocumentRef` → `ContentBlock::DocumentRef` を通って
+    チャットに成果物カードとして残る（`note_ref` と同型）。遷移先を決める `kind` の判定は**サーバ側 1 箇所**
+    （`chat::document_ref::kind_for`）。履歴にも `[編集済み文書: name（node_id: id）]` として載せ、
+    「さっき編集した Excel をもう一度直して」が node_id 解決できるようにする。
   - **AI 同時編集の一貫性モデル（#352）**: 同一ファイルへ複数のサブエージェント／複数チャットから
     並行 AI 編集が走るケースは面ごとに担保する。ノート/スライド=`LiveDoc` の原子適用＋Yjs CRDT 収束
     ＋アンカー不一致の skipped 報告／CSV=`base_rev` 楽観ロック（RevConflict→再読込リトライ）／

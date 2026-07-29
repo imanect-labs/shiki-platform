@@ -300,11 +300,15 @@ impl Tool for DocumentEditTool {
                 report.skipped.join(", ")
             );
         }
-        let outcome = if report.applied == 0 {
-            ToolOutcome::error(content)
-        } else {
-            ToolOutcome::ok(content)
-        };
+        if report.applied == 0 {
+            return Ok(ToolOutcome::error(content));
+        }
+        // 編集結果をチャットに残す（#381）。Yjs へ適用した時点で共有ドキュメントは変わって
+        // いるが、版はセッションの保存契機で進むためここでは載せない（嘘の版を出さない）。
+        let mut outcome = ToolOutcome::ok(content);
+        outcome
+            .document_refs
+            .push(crate::document_ref::payload(node.id, &node.name, None));
         Ok(outcome)
     }
 }

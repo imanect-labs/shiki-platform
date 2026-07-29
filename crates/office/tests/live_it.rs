@@ -99,7 +99,7 @@ fn fast_cfg(ws_base: &str) -> CoolWsConfig {
 
 const WOPI_SRC: &str = "http://shiki-server:8080/wopi/files/00000000-0000-0000-0000-000000000001";
 
-/// 正常系: 検索→選択照合→paste（Writer）→GoToCell→paste（Calc）→save→close。
+/// 正常系: 検索→選択照合→paste（Writer）→GoToCell→paste→列幅調整（Calc）→save→close。
 #[tokio::test]
 async fn happy_path_search_paste_save() {
     let (url, server) = spawn_server(|mut ws| async move {
@@ -140,6 +140,15 @@ async fn happy_path_search_paste_save() {
             other => panic!("バイナリフレームを期待: {other:?}"),
         }
         send(&mut ws, "pasteresult: success").await;
+        // #385: 貼り込んだ矩形を選び直して列幅を内容に合わせる。**引数なし**の Direct 版で
+        // 幅指定ダイアログを開かない（開くと後続の save ack が返らなくなる）。
+        let goto_range = recv_text(&mut ws).await;
+        assert!(goto_range.contains("Sheet2.B3:C4"), "{goto_range}");
+        send(&mut ws, "celladdress: B3").await;
+        assert_eq!(
+            recv_text(&mut ws).await,
+            "uno .uno:SetOptimalColumnWidthDirect"
+        );
         // save → core ack。
         assert_eq!(
             recv_text(&mut ws).await,
@@ -182,6 +191,8 @@ async fn happy_path_search_paste_save() {
         )
         .await
         .unwrap());
+    client.go_to_cell("Sheet2.B3:C4").await.unwrap();
+    client.set_optimal_column_width().await.unwrap();
     assert_eq!(client.save().await.unwrap(), SaveAck::CoreSaved);
     client.close().await;
     server.await.unwrap();
