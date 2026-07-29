@@ -109,6 +109,14 @@ pub(super) fn uno_go_to_cell(cell_ref: &str) -> String {
 /// 文書末尾へカーソルを移す（Writer・append 用）。
 pub(super) const UNO_GO_TO_END_OF_DOC: &str = "uno .uno:GoToEndOfDoc";
 
+/// 選択中の列幅を内容に合わせる（Calc・#385）。
+///
+/// `Direct` 版は**引数を取らず幅指定ダイアログを開かない**（ブラウザの Ctrl+Shift+3 と
+/// 同一経路。実機 coolwsd の `browser/dist/bundle.js` で
+/// `app.socket.sendMessage("uno .uno:SetOptimalColumnWidthDirect")` を確認）。
+/// 引数付きの `.uno:SetOptimalColumnWidth` はダイアログ経路のため使わない。
+pub(super) const UNO_SET_OPTIMAL_COLUMN_WIDTH: &str = "uno .uno:SetOptimalColumnWidthDirect";
+
 /// 自 view の選択内容を要求する（応答は `textselectioncontent: <raw>`）。
 pub(super) const GET_TEXT_SELECTION_LINE: &str =
     "gettextselection mimetype=text/plain;charset=utf-8";

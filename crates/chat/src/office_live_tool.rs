@@ -158,7 +158,9 @@ impl Tool for OfficeLiveEditTool {
          「Shiki AI」が表示される。開いていなくても実行でき、新バージョンとして保存される。\
          ops: replace_text{find,html}（find を検索して HTML で置換。**文書内で一意な文字列**を\
          指定すること・段落をまたぐ文字列は不可）/ append_html{html}（docx 末尾へ追記）/ \
-         set_cells{anchor,rows}（xlsx・anchor 例 \"A1\"・\"Sheet2.B3\" を起点に値の矩形を貼り込む）。\
+         set_cells{anchor,rows}（xlsx・anchor 例 \"A1\"・\"Sheet2.B3\" を起点に値の矩形を貼り込む。\
+         **数値は文字列でなく数値のまま**渡すこと＝桁区切りの書式と列幅は自動で整う。\
+         先頭行を文字列だけにすると見出し行として太字になる）。\
          html は段落・箇条書き・見出し・表・強調など最小の書式のみ（script 等は自動除去）。\
          シート/スライドの追加・削除など構造的なファイル編集は office.edit を使うこと。\
          適用結果（op ごとの適用/不発と保存状態）が返るので、不発時はアンカー指定を見直すこと。"
