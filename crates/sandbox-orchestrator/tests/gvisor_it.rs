@@ -230,10 +230,12 @@ async fn gvisor_egress_allows_listed_blocks_others() {
     inst.destroy().await.expect("destroy");
 }
 
-/// 既定ティア反転の本丸（#346）: rootfs 同梱の numpy/pandas が native CPython で import できる
-/// （code_interpreter のツール description の宣伝と実体が一致すること）。
+/// 既定ティア反転の本丸（#346）: rootfs 同梱の numpy/pandas/openpyxl が native CPython で
+/// import できる（code_interpreter のツール description の宣伝と実体が一致すること）。
+///
+/// openpyxl は #384: 添付 xlsx を `pandas.read_excel` で 1 回目から読めることが受け入れ条件。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn gvisor_numpy_pandas_available() {
+async fn gvisor_numpy_pandas_openpyxl_available() {
     let Some(env) = gated() else { return };
     let backend = GvisorBackend::new(
         &env.runsc,
@@ -247,14 +249,19 @@ async fn gvisor_numpy_pandas_available() {
     let (out, code) = collect_stdout(
         &inst,
         ExecRequest::Python {
-            code: "import numpy, pandas\nprint(numpy.__version__, pandas.__version__)\nprint('df_sum=%s' % pandas.DataFrame({'a':[1,2]}).sum().iloc[0])".into(),
+            code: "import numpy, pandas, openpyxl\nprint(numpy.__version__, pandas.__version__, openpyxl.__version__)\nprint('df_sum=%s' % pandas.DataFrame({'a':[1,2]}).sum().iloc[0])\n\
+                   df = pandas.DataFrame({'受注額': [24000000, 28500000]})\n\
+                   df.to_excel('/workspace/book.xlsx', index=False)\n\
+                   print('xlsx_sum=%s' % pandas.read_excel('/workspace/book.xlsx')['受注額'].sum())".into(),
             timeout_ms: Some(60_000),
         },
     )
     .await;
-    assert_eq!(code, Some(0), "numpy/pandas import 失敗: {out:?}");
+    assert_eq!(code, Some(0), "numpy/pandas/openpyxl import 失敗: {out:?}");
     // バージョン番号との誤マッチを避けるため、専用センチネルで演算結果を検証する。
     assert!(out.contains("df_sum=3"), "DataFrame 演算: {out:?}");
+    // openpyxl 経由の xlsx 書き出し→読み戻し（#384 の受け入れ条件）。
+    assert!(out.contains("xlsx_sum=52500000"), "xlsx 読み書き: {out:?}");
     inst.destroy().await.expect("destroy");
 }
 

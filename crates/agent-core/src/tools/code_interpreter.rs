@@ -21,6 +21,8 @@ pub struct CodeInterpreterTool {
     artifacts: Option<Arc<dyn ArtifactStore>>,
     /// 隔離ティア（admin ポリシー・design §4.6）。既定は gVisor（native CPython・#346）。
     backend: SandboxBackend,
+    /// ティアで使えるライブラリが違うため、description は構築時に確定させる（#384）。
+    description: String,
     /// この会話の添付（実行前に `/workspace/<name>` へ置く・#379）。空なら seed しない。
     attachments: Vec<AttachmentRef>,
     /// 添付の実体取得（未配線なら seed しない）。
@@ -37,6 +39,7 @@ impl CodeInterpreterTool {
             sandbox,
             artifacts,
             backend,
+            description: describe(backend),
             attachments: Vec::new(),
             attachment_store: None,
         }
@@ -58,6 +61,29 @@ impl CodeInterpreterTool {
     }
 }
 
+/// ティア別のツール説明（宣伝と実体を一致させる・#384）。
+///
+/// native ティア（gVisor/Firecracker）は rootfs 同梱の numpy/pandas/openpyxl が使え、
+/// 添付 xlsx を `pandas.read_excel` でそのまま読める（`rootfs-requirements.txt`）。
+/// wasm ティア（Pyodide）の同梱 wheel に openpyxl は無い（`vendor/secure-exec/crates/
+/// execution/assets/pyodide/pyodide-lock.json`）ので**宣伝しない**。宣伝と実体がずれると、
+/// モデルは `ModuleNotFoundError` で 1〜2 ステップ空費してから代替へ回ることになる。
+fn describe(backend: SandboxBackend) -> String {
+    let libraries = match backend {
+        SandboxBackend::Gvisor | SandboxBackend::Firecracker => {
+            "numpy・pandas・openpyxl が使え、添付の .xlsx も pandas.read_excel でそのまま読める"
+        }
+        SandboxBackend::Wasm => "numpy・pandas が使える（.xlsx は読めない）",
+    };
+    format!(
+        "隔離サンドボックスで Python コードを実行し、標準出力/エラーを返す。{libraries}。\
+         計算・データ処理・整形に使う（ネットワークは遮断）。**会話に添付されたファイルは \
+         /workspace/<ファイル名> に配置済み**なのでそのまま読める（置けなかった場合は結果に\
+         注記が付く）。/workspace に書いたファイルは実行後に自動保存され会話に添付される。\
+         グラフ描画は行わず、結果の数値/表を返すこと。"
+    )
+}
+
 #[async_trait::async_trait]
 impl Tool for CodeInterpreterTool {
     #[allow(clippy::unnecessary_literal_bound)]
@@ -65,13 +91,8 @@ impl Tool for CodeInterpreterTool {
         crate::vocab::ToolName::CodeInterpreter.as_str()
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
-        "隔離サンドボックスで Python コードを実行し、標準出力/エラーを返す。numpy・pandas が使える。\
-         計算・データ処理・整形に使う（ネットワークは遮断）。**会話に添付されたファイルは \
-         /workspace/<ファイル名> に配置済み**なのでそのまま読める（置けなかった場合は結果に\
-         注記が付く）。/workspace に書いたファイルは実行後に自動保存され会話に添付される。\
-         グラフ描画は行わず、結果の数値/表を返すこと。"
+        &self.description
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -230,6 +251,19 @@ mod tests {
     use crate::tool::ArtifactRef;
     use sandbox_client::{FakeExecResult, FakeSandbox};
     use std::sync::Mutex;
+
+    /// #384: openpyxl を宣伝するのは rootfs に同梱している native ティアだけ。
+    #[test]
+    fn description_advertises_openpyxl_only_on_native_tiers() {
+        for native in [SandboxBackend::Gvisor, SandboxBackend::Firecracker] {
+            let text = describe(native);
+            assert!(text.contains("openpyxl"), "{native:?}: {text}");
+            assert!(text.contains("read_excel"), "{native:?}: {text}");
+        }
+        let wasm = describe(SandboxBackend::Wasm);
+        assert!(!wasm.contains("openpyxl"), "{wasm}");
+        assert!(wasm.contains(".xlsx は読めない"), "{wasm}");
+    }
 
     fn ctx() -> AuthContext {
         AuthContext::new(
