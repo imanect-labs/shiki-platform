@@ -43,6 +43,8 @@ pub(crate) mod skill_tool;
 pub mod slide_templates;
 pub mod slide_tool;
 pub mod store;
+/// SSE の生成イベント（ワイヤ形式）。`model` から再エクスポートしている。
+pub mod stream_event;
 pub mod worker;
 pub mod workflow_tool;
 pub mod workspace;

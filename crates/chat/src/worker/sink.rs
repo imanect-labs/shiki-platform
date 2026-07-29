@@ -114,21 +114,28 @@ impl WorkerSink {
                     .content
                     .push(ContentBlock::Thinking { text: text.clone() }),
             },
-            StreamEventKind::ToolCall { id, name, input } => {
+            StreamEventKind::ToolCall {
+                id,
+                name,
+                input,
+                step,
+            } => {
                 self.content.push(ContentBlock::ToolCall {
                     id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
+                    step: *step,
                 });
             }
             StreamEventKind::ToolResult {
                 tool_call_id,
                 content,
-                ..
+                ok,
             } => {
                 self.content.push(ContentBlock::ToolResult {
                     tool_call_id: tool_call_id.clone(),
                     content: content.clone(),
+                    ok: *ok,
                 });
             }
             StreamEventKind::Citation(c) => {
@@ -209,10 +216,16 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
     match event {
         AgentEvent::Text(t) => StreamEventKind::Token { text: t.clone() },
         AgentEvent::Thinking(t) => StreamEventKind::Thinking { text: t.clone() },
-        AgentEvent::ToolCall { id, name, input } => StreamEventKind::ToolCall {
+        AgentEvent::ToolCall {
+            id,
+            name,
+            input,
+            step,
+        } => StreamEventKind::ToolCall {
             id: id.clone(),
             name: name.clone(),
             input: input.clone(),
+            step: *step,
         },
         AgentEvent::ToolResult {
             tool_call_id,

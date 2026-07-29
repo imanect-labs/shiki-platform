@@ -20,8 +20,8 @@ import type { SelectionContext } from "@/lib/selection-context";
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
-  | { type: "tool_call"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; tool_call_id: string; content: string }
+  | { type: "tool_call"; id: string; name: string; input: unknown; step?: number }
+  | { type: "tool_result"; tool_call_id: string; content: string; ok?: boolean }
   | {
       type: "citation";
       node_id: string;
@@ -399,8 +399,9 @@ export type ApprovalRequest = {
 export type StreamHandlers = {
   onToken?: (text: string) => void;
   onThinking?: (text: string) => void;
-  onToolCall?: (call: { id: string; name: string; input: unknown }) => void;
-  onToolResult?: (res: { id: string; ok: boolean }) => void;
+  onToolCall?: (call: { id: string; name: string; input: unknown; step: number }) => void;
+  /// ツール結果。`content` は観測テキスト（成功要約 or エラー）。UI は成否と要約を出す（#358/#386）。
+  onToolResult?: (res: { id: string; ok: boolean; content: string }) => void;
   onCitation?: (c: Citation) => void;
   onFileRef?: (f: Attachment) => void;
   /// 検証済み generative UI スペック（Phase 6・emit_ui）。
@@ -435,7 +436,8 @@ export type StreamHandlers = {
 type StreamEventKind =
   | { type: "token"; text: string }
   | { type: "thinking"; text: string }
-  | { type: "tool_call"; id: string; name: string; input: unknown }
+  /// `step` は同一ループステップの通し番号（並行実行の判定に使う）。旧イベントの replay では欠落する。
+  | { type: "tool_call"; id: string; name: string; input: unknown; step?: number }
   | { type: "tool_result"; tool_call_id: string; ok: boolean; content: string }
   | ({ type: "citation" } & Omit<Citation, "type">)
   | { type: "file_ref"; node_id: string; name: string }
@@ -446,6 +448,8 @@ type StreamEventKind =
   | { type: "slide_draft"; draft: unknown }
   | { type: "csv_draft"; draft: unknown }
   | { type: "document_ref"; document: unknown }
+  /// レガシー（#332 → #381 で廃止）。過去 run の replay でのみ来る（未処理で握りつぶす）。
+  | { type: "document_draft"; draft: unknown }
   | { type: "skill_invoked"; skill: SkillInvocation }
   | { type: "plan"; subtasks: PlanSubtask[] }
   | { type: "budget_warning"; kind: string; used: number; limit: number }
@@ -480,10 +484,20 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         handlers.onThinking?.(kind.text);
         break;
       case "tool_call":
-        handlers.onToolCall?.({ id: kind.id, name: kind.name, input: kind.input });
+        handlers.onToolCall?.({
+          id: kind.id,
+          name: kind.name,
+          input: kind.input,
+          // 旧イベントの replay では step が無い（backend も #[serde(default)]）。
+          step: kind.step ?? 0,
+        });
         break;
       case "tool_result":
-        handlers.onToolResult?.({ id: kind.tool_call_id, ok: kind.ok });
+        handlers.onToolResult?.({
+          id: kind.tool_call_id,
+          ok: kind.ok,
+          content: kind.content,
+        });
         break;
       case "citation":
         handlers.onCitation?.({

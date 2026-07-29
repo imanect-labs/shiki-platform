@@ -213,13 +213,46 @@ export function Conversation({
           s
             ? {
                 ...s,
-                tools: [...s.tools, { id: call.id, name: call.name, running: true, input: call.input }],
+                tools: [
+                  ...s.tools,
+                  {
+                    id: call.id,
+                    name: call.name,
+                    running: true,
+                    input: call.input,
+                    step: call.step,
+                  },
+                ],
               }
             : s,
         ),
+      // 成否と観測テキストを保持する（失敗を成功と同じ見た目にしない・#358/#386）。
       onToolResult: (res) =>
         updateStream((s) =>
-          s ? { ...s, tools: s.tools.map((t) => (t.id === res.id ? { ...t, running: false } : t)) } : s,
+          s
+            ? {
+                ...s,
+                tools: s.tools.map((t) =>
+                  t.id === res.id ? { ...t, running: false, ok: res.ok, result: res.content } : t,
+                ),
+              }
+            : s,
+        ),
+      // skill ツールの発動記録（#344）。対応する skill 呼び出しへ版を添えて「どの版を読んだか」を出す。
+      // 名前で突き合わせる（skill_invoked に tool_call_id が無いため）。イベントは projection 対象外
+      // なのでライブ限定の付加情報であり、再読込後はツール呼び出しのスキル名のみが残る。
+      onSkillInvoked: (skill) =>
+        updateStream((s) =>
+          s
+            ? {
+                ...s,
+                tools: s.tools.map((t) =>
+                  t.name === "skill" && skillNameOf(t.input) === skill.name
+                    ? { ...t, skillVersion: skill.skill_version }
+                    : t,
+                ),
+              }
+            : s,
         ),
       onCitation: (c) => updateStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
       onFileRef: (f) => updateStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
@@ -565,7 +598,13 @@ function finalizeStream(
   if (s.thinking.trim()) blocks.push({ type: "thinking", text: s.thinking });
   // ツール実行履歴（検索など）も確定メッセージへ残す。AssistantRow / ChainOfThought は
   // tool_call ブロックから履歴を描画するため、これが無いと done 後に履歴が消える。
-  for (const t of s.tools) blocks.push({ type: "tool_call", id: t.id, name: t.name, input: t.input });
+  for (const t of s.tools) {
+    blocks.push({ type: "tool_call", id: t.id, name: t.name, input: t.input, step: t.step });
+    // 成否と観測テキストも残す（履歴でも失敗と結果要約が見えるようにする・#358/#386）。
+    if (t.ok !== undefined) {
+      blocks.push({ type: "tool_result", tool_call_id: t.id, content: t.result ?? "", ok: t.ok });
+    }
+  }
   if (s.text.trim()) blocks.push({ type: "text", text: s.text });
   for (const c of s.citations) blocks.push(c);
   // ツール成果物（保存済みファイル）も確定メッセージへ残す。
@@ -656,9 +695,26 @@ function AssistantRow({
     .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
     .map((b) => b.text)
     .join("");
+  // ツール結果（成否＋観測テキスト）を tool_call_id で引けるようにしてから履歴を組む（#358/#386）。
+  const toolResults = new Map(
+    blocks
+      .filter((b): b is Extract<ContentBlock, { type: "tool_result" }> => b.type === "tool_result")
+      .map((b) => [b.tool_call_id, b]),
+  );
   const tools: ToolActivityItem[] = blocks
     .filter((b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call")
-    .map((b) => ({ id: b.id, name: b.name, running: false, input: b.input }));
+    .map((b) => {
+      const res = toolResults.get(b.id);
+      return {
+        id: b.id,
+        name: b.name,
+        running: false,
+        input: b.input,
+        step: b.step,
+        ok: res?.ok ?? undefined,
+        result: res?.content,
+      };
+    });
   const citations = blocks.filter((b): b is Citation => b.type === "citation");
   const files = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "file_ref" }> => b.type === "file_ref",
@@ -808,11 +864,15 @@ function StreamingRow({
     <Message className="justify-start">
       <div className="w-full min-w-0 space-y-2">
         {stream.plan.length > 0 ? <PlanPanel subtasks={stream.plan} /> : null}
+        {/* streaming は「生成中か」であって「本文が出ていないか」ではない。旧実装は
+            `!stream.text` を渡していたため、本文が 1 文字出た瞬間にツール表示が畳まれ、
+            その後に走るツール（本文 → ツール → 本文の往復）が見えなくなっていた（#386）。 */}
         <ChainOfThought
           thinking={stream.thinking}
           tools={stream.tools}
           citations={stream.citations}
-          streaming={!stream.text}
+          streaming
+          phase={runningSubtask(stream.plan)}
         />
         {stream.budget ? <BudgetBanner {...stream.budget} /> : null}
         {stream.approval ? (
@@ -857,6 +917,20 @@ function StreamingRow({
       </div>
     </Message>
   );
+}
+
+/// skill ツール入力からスキル名を取り出す（バックエンドと同じく trim して突き合わせる）。
+function skillNameOf(input: unknown): string | null {
+  const name = (input as { name?: unknown } | undefined)?.name;
+  return typeof name === "string" ? name.trim() || null : null;
+}
+
+/// 実行中のサブタスク名（自律 run の計画）。ツール実行のフェーズ行に使う。
+/// 計画があるときは「検索しています」より「市場規模を調べています」の方が情報量が多い。
+function runningSubtask(plan: PlanSubtask[]): string | null {
+  const doing = plan.find((s) => s.status === "doing");
+  const title = doing?.title.trim();
+  return title ? `${title}` : null;
 }
 
 /// 計画イベントを蓄積する。フル計画（全 title 非空）は置換、単一の空 title は id で status 更新。

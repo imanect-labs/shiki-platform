@@ -63,9 +63,14 @@ fn to_ai_event(ev: &AgentEvent) -> AiEvent {
             event: "thinking".into(),
             data: json!({ "text": t }),
         },
-        AgentEvent::ToolCall { id, name, input } => AiEvent {
+        AgentEvent::ToolCall {
+            id,
+            name,
+            input,
+            step,
+        } => AiEvent {
             event: "tool_call".into(),
-            data: json!({ "id": id, "name": name, "input": input }),
+            data: json!({ "id": id, "name": name, "input": input, "step": step }),
         },
         AgentEvent::ToolResult {
             tool_call_id,
