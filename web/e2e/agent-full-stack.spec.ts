@@ -238,12 +238,28 @@ test("full-financial-dashboard: SQL集計→Excel複数表→Word要約", async 
   await page.waitForURL(/\/office\/[0-9a-f-]{36}/i, { timeout: 420_000 });
   await expect(page.getByText("エディタを起動しています…")).toBeHidden({ timeout: 90_000 });
   await page.waitForTimeout(9000);
+  // Writer の本文（見出し・太字・箇条書き）をスクロールして映す。
+  await page.mouse.move(640, 400);
+  for (let i = 0; i < 3; i++) {
+    await page.mouse.wheel(0, 320);
+    await beat(page, 1200);
+  }
+  await beat(page, 3000);
+
+  // --- 会話へ戻り、成果物カード（document_ref）を映す（#381 その 2・#358 の実害の解消）---
+  // Excel を 2 回編集して版が進んだこと・Word を作成したことが、畳まれたツールチップでは
+  // なく「開く」導線つきのカードとして会話に残っている。
+  await page.goBack();
+  await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 30_000 });
+  const cards = page.getByTestId("document-ref-card");
+  await expect(cards.first()).toBeVisible({ timeout: 30_000 });
+  await cards.last().scrollIntoViewIfNeeded();
   await beat(page, 5000);
 
   // ドライブに .docx として並ぶ（＝ノートではなく本物の Word が実体化した証拠）。
   await page.goto("/drive");
   await expect(page.getByText(/\.docx$/).first()).toBeVisible({ timeout: 30_000 });
-  await beat(page, 2500);
+  await beat(page, 3000);
 
   // Excel を開いて 2 つの表（成果物 1・2）を映す。
   await page.getByText(xlsxName).first().dblclick();
