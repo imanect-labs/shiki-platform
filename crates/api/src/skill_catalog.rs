@@ -11,6 +11,14 @@ use std::sync::Arc;
 use authz::AuthContext;
 use chat::{ChatError, SkillCatalogEntry, SkillCatalogSource};
 
+/// body の `command` JSON を宣言型へ読む（壊れていれば None）。
+///
+/// 保存時に [`gui::validate_skill_body`] を通っている前提だが、署名 import された
+/// バンドルなど経路が複数あるため、ここは**読めなければ落とす**（カタログ全体を失敗させない）。
+fn parse_command(raw: Option<serde_json::Value>) -> Option<gui::SkillCommand> {
+    serde_json::from_value(raw?).ok()
+}
+
 /// インストール済み ∪ 本人 owner のカタログ源。
 pub struct ApiSkillCatalogSource {
     installs: Arc<app_platform::SkillInstallService>,
@@ -53,6 +61,9 @@ impl SkillCatalogSource for ApiSkillCatalogSource {
                 name: s.name,
                 description: s.description,
                 pinned: false,
+                // 宣言が壊れていても（手書き JSON の import 等）カタログ全体を落とさない。
+                // 読めないものはコマンド無しとして扱う（fail-soft: 起動導線が 1 つ減るだけ）。
+                command: parse_command(s.command),
             });
         }
         // 本人 owner（未インストールの自作 skill・名前順）。
@@ -71,6 +82,9 @@ impl SkillCatalogSource for ApiSkillCatalogSource {
                 name: s.name,
                 description: s.description,
                 pinned: false,
+                // 宣言が壊れていても（手書き JSON の import 等）カタログ全体を落とさない。
+                // 読めないものはコマンド無しとして扱う（fail-soft: 起動導線が 1 つ減るだけ）。
+                command: parse_command(s.command),
             });
         }
         Ok(out)

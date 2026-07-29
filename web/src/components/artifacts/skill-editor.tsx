@@ -53,6 +53,9 @@ type Draft = {
   maxTokens: string;
   fewShot: { user: string; assistant: string }[];
   scripts: { path: string; kind: ScriptKind; source: string }[];
+  /// スラッシュコマンド宣言（#387）。エディタ UI では編集しないが、既存値を保存で失わない
+  /// （first-party バンドルの宣言をこの画面の再保存で消さないため）。
+  command: SkillBody["command"];
 };
 
 const EMPTY_DRAFT: Draft = {
@@ -67,6 +70,7 @@ const EMPTY_DRAFT: Draft = {
   maxTokens: "",
   fewShot: [],
   scripts: [],
+  command: null,
 };
 
 function draftFrom(skill: SkillVersion | null, name: string): Draft {
@@ -85,6 +89,7 @@ function draftFrom(skill: SkillVersion | null, name: string): Draft {
     maxTokens: b.model?.max_tokens != null ? String(b.model.max_tokens) : "",
     fewShot: (b.few_shot ?? []).map((f) => ({ user: f.user, assistant: f.assistant })),
     scripts: (b.scripts ?? []).map((s) => ({ path: s.path, kind: s.kind, source: s.source })),
+    command: b.command ?? null,
   };
 }
 
@@ -109,6 +114,7 @@ function toBody(d: Draft): SkillBody {
     few_shot: d.fewShot.filter((f) => f.user.trim() && f.assistant.trim()),
     scripts: d.scripts.filter((s) => s.path.trim()),
     references: [],
+    command: d.command,
   };
 }
 

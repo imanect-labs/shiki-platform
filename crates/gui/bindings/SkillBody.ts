@@ -2,6 +2,7 @@
 import type { FewShotExample } from "./FewShotExample";
 import type { KnowledgeScope } from "./KnowledgeScope";
 import type { ModelDefaults } from "./ModelDefaults";
+import type { SkillCommand } from "./SkillCommand";
 import type { SkillScript } from "./SkillScript";
 import type { ToolName } from "./ToolName";
 
@@ -41,4 +42,9 @@ scripts: Array<SkillScript>,
 /**
  * 参照資料（storage node 参照のみ・実体二重持ちなし）。
  */
-references: Array<string>, };
+references: Array<string>, 
+/**
+ * スラッシュコマンド宣言（コンポーザの `/` 補完に載る・#387）。
+ * 宣言しないスキルはコマンドを持たない（カタログには載るがコマンドでは呼べない）。
+ */
+command: SkillCommand | null, };

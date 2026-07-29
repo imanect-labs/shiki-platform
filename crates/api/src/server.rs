@@ -222,6 +222,9 @@ pub fn route_table() -> Vec<RouteDecl> {
             || post(routes::ui_actions::invoke_chat_ui_action),
         ),
         // --- skill（Task 6.7・保存時検証つき。共有は /artifacts/{id}/shares を流用） ---
+        r("/skills/catalog", &["GET"], Session, || {
+            get(routes::skills_catalog::list_skill_catalog)
+        }),
         r("/skills/registry", &["GET"], Session, || {
             get(routes::skills_registry::list_skill_registry)
         }),

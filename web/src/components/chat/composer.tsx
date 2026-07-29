@@ -6,7 +6,6 @@ import {
   FilePlus2,
   FileSpreadsheet,
   FileText,
-  Globe,
   Bot,
   Loader2,
   HardDrive,
@@ -14,6 +13,7 @@ import {
   Paperclip,
   Plus,
   Presentation,
+  Sparkles,
   Square,
   TextSelect,
   Upload,
@@ -37,6 +37,15 @@ import {
   PromptInputActions,
   PromptInputTextarea,
 } from "@/components/prompt-kit/prompt-input";
+import { SlashCommandMenu, SlashCommandPill } from "./slash-command-menu";
+import {
+  composeText,
+  fetchSkillCatalog,
+  matchSuggestions,
+  toSuggestions,
+  type ActiveCommand,
+  type SlashSuggestion,
+} from "@/lib/slash-command";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -77,6 +86,8 @@ export function Composer({
     attachments: Attachment[],
     /// エディタの選択コンテキスト（選択→AI 指示・Task 11.10。無ければ undefined）。
     context?: SelectionContext,
+    /// 確定中のスラッシュコマンド（#387）。呼び出し側が skill のピンとモードを整える。
+    command?: ActiveCommand,
   ) => void;
   /// 生成中に停止する（指定時は送信ボタンが停止ボタンに変わる）。
   onStop?: () => void;
@@ -111,17 +122,86 @@ export function Composer({
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
+  // スラッシュコマンド（#387）。候補はカタログ（モデルが見ているものと同一）由来。
+  const [suggestions, setSuggestions] = React.useState<SlashSuggestion[]>([]);
+  const [command, setCommand] = React.useState<ActiveCommand | null>(null);
+  const [slashIndex, setSlashIndex] = React.useState(0);
+  const [slashDismissed, setSlashDismissed] = React.useState(false);
+
+  React.useEffect(() => {
+    let active = true;
+    // カタログが引けない環境（chat 無効等）でもコンポーザは壊さない＝候補ゼロで動く。
+    fetchSkillCatalog()
+      .then((items) => active && setSuggestions(toSuggestions(items)))
+      .catch(() => active && setSuggestions([]));
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // 確定済みコマンドがある間は補完を出さない（ピルが既に状態を示している）。
+  const slashHits = command || slashDismissed ? null : matchSuggestions(value, suggestions);
+  const slashOpen = (slashHits?.length ?? 0) > 0;
+  const activeSlash = slashOpen ? slashHits![Math.min(slashIndex, slashHits!.length - 1)] : null;
+
   // エディタの選択コンテキスト（選択→AI 指示・Task 11.10）。チップ表示し送信時に消費する。
   const selection = usePendingSelection();
 
-  const canSend = value.trim().length > 0 && !disabled && !uploading && !streaming;
+  // コマンド確定後は本文が空でも送れる（コマンド自体が指示になる）。
+  const canSend = (value.trim().length > 0 || command !== null) && !disabled && !uploading && !streaming;
+
+  const pickSuggestion = (s: SlashSuggestion) => {
+    setCommand({
+      token: s.token,
+      command: s.command,
+      args: s.args,
+      skillName: s.skillName,
+      skillId: s.skillId,
+      skillVersion: s.skillVersion,
+      hint: s.hint,
+    });
+    // コマンド部分は入力欄から取り除き、以降はピルが持つ（本文だけを打てる状態にする）。
+    setValue("");
+    setSlashIndex(0);
+  };
 
   const submit = () => {
-    const text = value.trim();
-    if (!text || disabled || uploading || streaming) return;
-    onSubmit(text, attachments, takePendingSelection() ?? undefined);
+    if (disabled || uploading || streaming) return;
+    const text = composeText(command, value);
+    if (!text) return;
+    onSubmit(text, attachments, takePendingSelection() ?? undefined, command ?? undefined);
     setValue("");
     setAttachments([]);
+    setCommand(null);
+    setSlashDismissed(false);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // キャレット先頭での Backspace はピルを外す（ChatGPT と同じ操作感）。
+    if (e.key === "Backspace" && command && value.length === 0) {
+      e.preventDefault();
+      setCommand(null);
+      return;
+    }
+    if (!slashOpen) {
+      // `/` を打ち直したら再び候補を出す。
+      if (e.key !== "Escape") setSlashDismissed(false);
+      return;
+    }
+    const len = slashHits!.length;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSlashIndex((i) => (i + 1) % len);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSlashIndex((i) => (i - 1 + len) % len);
+    } else if ((e.key === "Enter" && !e.nativeEvent.isComposing) || e.key === "Tab") {
+      e.preventDefault();
+      if (activeSlash) pickSuggestion(activeSlash);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setSlashDismissed(true);
+    }
   };
 
   const addAttachment = (node: NodeResponse) => {
@@ -210,16 +290,31 @@ export function Composer({
         isLoading={streaming}
         maxHeight={200}
         className={cn(
-          "rounded-[26px] border-border bg-card shadow-sm transition-shadow",
+          "relative rounded-[26px] border-border bg-card shadow-sm transition-shadow",
           "focus-within:border-ring/25 focus-within:shadow-md focus-within:ring-4 focus-within:ring-ring/10",
         )}
       >
-        <PromptInputTextarea
-          placeholder={placeholder}
-          autoFocus={autoFocus}
-          aria-label="メッセージを入力"
-          className="px-3 pt-2 pb-1 text-[15px] leading-relaxed placeholder:text-muted-foreground/70"
-        />
+        {slashOpen ? (
+          <SlashCommandMenu
+            suggestions={slashHits!}
+            activeIndex={Math.min(slashIndex, slashHits!.length - 1)}
+            onPick={pickSuggestion}
+            onHover={setSlashIndex}
+          />
+        ) : null}
+        {/* 確定したコマンドはピルで示す（入力欄からは消え、以降は本文だけを打つ）。 */}
+        <div className="flex items-start gap-2 px-3 pt-2">
+          {command ? (
+            <SlashCommandPill label={command.token} onClear={() => setCommand(null)} />
+          ) : null}
+          <PromptInputTextarea
+            placeholder={command?.hint ?? placeholder}
+            autoFocus={autoFocus}
+            aria-label="メッセージを入力"
+            onKeyDown={onKeyDown}
+            className="min-w-0 flex-1 px-0 pt-0 pb-1 text-[15px] leading-relaxed placeholder:text-muted-foreground/70"
+          />
+        </div>
 
         <PromptInputActions className="justify-between px-1 pb-1">
           {/* 左下: 「+」一つに集約（添付）。狭い列でも潰れない。 */}
@@ -229,6 +324,8 @@ export function Composer({
               onOpenChange={setMenuOpen}
               onUploadLocal={() => fileInputRef.current?.click()}
               onOpenDrive={() => setPickerOpen(true)}
+              skills={suggestions}
+              onPickSkill={pickSuggestion}
               // ワークスペース（作業フォルダ）はエージェントモード ON のときだけ意味を持つ。
               // OFF のときは残存する workspace 選択を無視し、既定（マイドライブ直下）へ作成する。
               createParentId={autonomous ? (workspace?.folderId ?? null) : null}
@@ -348,6 +445,8 @@ function PlusMenu({
   onUploadLocal,
   onOpenDrive,
   createParentId = null,
+  skills = [],
+  onPickSkill,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -355,6 +454,9 @@ function PlusMenu({
   onOpenDrive: () => void;
   /// 「作成」の保存先フォルダ（エージェントモードのワークスペース選択時はそれ・既定はマイドライブ直下）。
   createParentId?: string | null;
+  /// スラッシュコマンドを持つスキル（#387）。選ぶと入力欄へコマンドが打ち込まれる。
+  skills?: SlashSuggestion[];
+  onPickSkill?: (s: SlashSuggestion) => void;
 }) {
   // 作成ロジックはドライブの「新規作成」と共通（use-create-content・重複実装しない）。
   const {
@@ -457,13 +559,30 @@ function PlusMenu({
           </DropdownMenuSubContent>
         </DropdownMenuSub>
 
-        <DropdownMenuSeparator />
-
-        {/* Web 検索（近日対応） */}
-        <DropdownMenuItem disabled className="gap-2.5 px-2.5 py-2">
-          <Globe className="text-muted-foreground" />
-          Web 検索（近日対応）
-        </DropdownMenuItem>
+        {/* スキル（#387）。選ぶと入力欄へスラッシュコマンドが打ち込まれる
+            （打鍵で呼べることを学べるよう、実行ではなくコマンド確定にする）。 */}
+        {skills.length > 0 && onPickSkill ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="uppercase tracking-wide">スキル</DropdownMenuLabel>
+            {skills.map((s) => (
+              <DropdownMenuItem
+                key={s.key}
+                className="gap-2.5 px-2.5 py-2"
+                data-testid="composer-skill-command"
+                onSelect={() => onPickSkill(s)}
+              >
+                <Sparkles className="text-primary" aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm">/{s.token}</span>
+                  <span className="mt-0.5 block truncate text-[12px] text-muted-foreground">
+                    {s.summary}
+                  </span>
+                </span>
+              </DropdownMenuItem>
+            ))}
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

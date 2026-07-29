@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { Leaf } from "lucide-react";
 
 import { useMe } from "@/hooks/use-me";
-import { createThread, type Attachment } from "@/lib/chat-api";
+import { createThread, setAutonomousMode, type Attachment } from "@/lib/chat-api";
+import type { ActiveCommand } from "@/lib/slash-command";
 import { stashPending } from "@/lib/pending-message";
 import { titleFrom } from "@/lib/chat-store";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
@@ -33,16 +34,34 @@ export default function HomePage() {
   // 表示名はメールのローカル部から導出する（表示名フィールドはサーバ側実装が入る後続 PR で対応）。
   const name = data?.email?.split("@")[0] ?? null;
 
-  const startChat = async (text: string, attachments: Attachment[]) => {
+  const startChat = async (
+    text: string,
+    attachments: Attachment[],
+    _context?: unknown,
+    command?: ActiveCommand,
+  ) => {
     if (starting || !text.trim()) return;
     setStarting(true);
     try {
-      const thread = await createThread(titleFrom(text), autonomous, {
+      // スラッシュコマンドは skill を確実にピンし、長ホライズン（エージェントモード）で開始する。
+      // 通常チャットは max_steps=6 で、質問→計画→調査のような多段の作法が途中で切れるため。
+      const commanded = command != null;
+      const asAutonomous = autonomous || commanded;
+      const thread = await createThread(titleFrom(text), asAutonomous, {
         // 選択時点の現行版をピンする（開始までに新版が保存されても選んだ版で適用）。
-        skill: skill ? { artifactId: skill.id, version: skill.currentVersion } : undefined,
-        workspace: autonomous ? workspace ?? undefined : undefined,
+        skills: command
+          ? [{ artifactId: command.skillId, version: command.skillVersion }]
+          : undefined,
+        skill:
+          !command && skill ? { artifactId: skill.id, version: skill.currentVersion } : undefined,
+        workspace: asAutonomous ? workspace ?? undefined : undefined,
       });
-      stashPending(thread.id, { text, attachments, autonomous });
+      // 調査ノート等の版管理された書込を毎回承認させない（「オート」は不可逆操作を除いて
+      // 事前許可する既定設計）。セレクタに見える状態なのでユーザーは戻せる。
+      if (commanded) {
+        await setAutonomousMode(thread.id, "auto").catch(() => undefined);
+      }
+      stashPending(thread.id, { text, attachments, autonomous: asAutonomous });
       router.push(`/c/${thread.id}`);
     } catch {
       toast({ description: "チャットを開始できませんでした。ログイン状態をご確認ください。" });

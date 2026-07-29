@@ -45,6 +45,7 @@ use utoipa::{
         crate::routes::chat::list_threads,
         crate::routes::chat::get_thread,
         crate::routes::chat_skills::set_thread_skills,
+        crate::routes::skills_catalog::list_skill_catalog,
         crate::routes::skills_registry::publish_skill,
         crate::routes::skills_registry::import_skill,
         crate::routes::skills_registry::list_skill_registry,

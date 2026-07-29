@@ -12,6 +12,7 @@ import {
   notifyThreadsChanged,
   resumeMessage,
   setAutonomousMode,
+  setThreadSkills,
   streamMessage,
   submitApproval,
   ThreadNotFound,
@@ -30,6 +31,7 @@ import { triggerDownload } from "@/lib/storage";
 import { linkifyCitations } from "@/lib/citation";
 import { newId } from "@/lib/chat-store";
 import { selectionKindLabel, type SelectionContext } from "@/lib/selection-context";
+import type { ActiveCommand } from "@/lib/slash-command";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
 import { ChatGenUiProvider } from "@/components/genui/action-context";
 import { SpecRenderer } from "@/components/genui/spec-renderer";
@@ -404,6 +406,38 @@ export function Conversation({
     [threadId, makeHandlers, autonomous],
   );
 
+  /// コンポーザからの送信。スラッシュコマンド確定時は skill をピンし、
+  /// 長ホライズン（エージェントモード）＋「オート」承認で走らせてから送る（#387）。
+  ///
+  /// 通常チャットは `max_steps=6` なので、質問→計画→調査のような多段の作法が途中で切れる。
+  /// ピンに失敗しても送信は続ける（モデルは `skill` ツールで自力で引ける＝縮退して動く）。
+  const submitFromComposer = React.useCallback(
+    async (
+      text: string,
+      attachments: Attachment[],
+      context?: SelectionContext,
+      command?: ActiveCommand,
+    ) => {
+      if (!command) {
+        send(text, attachments, undefined, context);
+        return;
+      }
+      try {
+        await setThreadSkills(threadId, [
+          { artifactId: command.skillId, version: command.skillVersion },
+        ]);
+      } catch {
+        setNotice("スキルを固定できませんでした（共有スレッドでは所有者のみ設定できます）");
+      }
+      if (!autonomous) setAutonomous(true);
+      // 版管理された書込を毎回承認させない。セレクタに見える状態なのでユーザーは戻せる。
+      if (approvalMode === "require_approval") changeApprovalMode("auto");
+      send(text, attachments, true, context);
+    },
+    [threadId, autonomous, approvalMode, changeApprovalMode, send],
+  );
+
+
   // 承認/却下を送る（自律エージェントのブロックを解く・Task 5.6）。
   const decideApproval = React.useCallback(
     (approved: boolean) => {
@@ -572,7 +606,9 @@ export function Conversation({
       <div className="bg-background">
         <div className={cn("mx-auto w-full px-4 py-4", isPanel ? "max-w-none pb-3" : "max-w-3xl")}>
           <Composer
-            onSubmit={(text, attachments, context) => send(text, attachments, undefined, context)}
+            onSubmit={(text, attachments, context, command) =>
+              void submitFromComposer(text, attachments, context, command)
+            }
             onStop={stop}
             streaming={stream !== null}
             autonomous={autonomous}

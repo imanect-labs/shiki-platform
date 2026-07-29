@@ -30,6 +30,7 @@ pub mod secrets;
 pub mod share_links;
 pub mod shares;
 pub mod skills;
+pub mod skills_catalog;
 pub mod skills_registry;
 pub(crate) mod sse_util;
 pub mod tabular;

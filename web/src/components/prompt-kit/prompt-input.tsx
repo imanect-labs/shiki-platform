@@ -160,12 +160,15 @@ function PromptInputTextarea({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // 呼び出し側に先に処理させる（スラッシュコマンド補完が Enter で候補を確定する等・#387）。
+    // 先に送信してしまうと補完の Enter が握れない。`preventDefault()` した場合は送信しない。
+    onKeyDown?.(e);
+    if (e.defaultPrevented) return;
     // IME 変換確定中（日本語入力）の Enter は送信せず確定に使わせる。
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       onSubmit?.();
     }
-    onKeyDown?.(e);
   };
 
   return (
