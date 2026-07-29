@@ -635,3 +635,39 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
 - **受け入れ条件**: 「作成系ツールが `requires_confirmation=true`（承認なしにドライブへ作らない）」
   「md の太字/リンク/ネストが paste する HTML に残る」「生 HTML がタグとして paste されない」
   「作成拒否時にカード（document_ref）を出さない」の単体テストがある。
+
+## 🟠 PIT-51: ツール description の「使えるライブラリ」はティアで変わる — 宣伝と実体がずれると黙って空費する
+
+- **箇所**: design §4.6（`crates/agent-core/src/tools/code_interpreter.rs` の `describe`・
+  `deploy/sandbox-assets/rootfs-requirements.txt`・`vendor/secure-exec/.../pyodide-lock.json`・issue #384）。
+- **リスク**: 隔離ティア（gVisor/Firecracker = native CPython・wasm = Pyodide）は**同梱物が別集合**なのに、
+  ツール description は 1 本しかない。ここに「numpy・pandas が使える」と固定文で書くと、片方のティアでだけ
+  真になる宣伝が生まれる。モデルは description を信じて `import` し、`ModuleNotFoundError` で 1〜2 ステップを
+  空費してから代替へ回る（ユーザーからは「なぜか遅い」だけに見え、ログを見るまで気づけない）。
+  #379 で添付を `/workspace` へ置いた結果、モデルは**添付の種別に応じたライブラリ**を要求するようになり、
+  この歪みが表に出た（添付 xlsx → `openpyxl` 無し）。
+- **決めること**: ①description は**ティアから導出**する（`SandboxBackend` を受けて組み立てる。固定文にしない）
+  ②同梱ライブラリを増やすときは、そのティアの pin ファイル（rootfs は `--require-hashes` の wheel、
+  wasm は `pyodide-lock.json`）・`third-party-assets.md` の帰属・description の 3 点を**同じ PR で**動かす
+  ③片方のティアに入れられない依存は**宣伝しない**（「使える」と言わず、代替手段も嘘にならない範囲で書く）
+  ④rootfs の増分はサイズ記録（`rootfs-size.txt`）で追跡する。
+- **受け入れ条件**: 「native ティアの description だけが openpyxl を宣伝する」単体テストと、
+  実 runsc で `pandas.read_excel` が通る gated IT（`gvisor_it.rs`）がある。
+
+## 🟠 PIT-52: paste した表は「値は正しいが読めない」で終わる — 既定書式のままの成果物は未完成
+
+- **箇所**: design §4.8（`crates/office/src/live/ops.rs`・issue #385）。
+- **リスク**: `set_cells` は HTML テーブルを Calc へ paste する。値は正しく入るが、**列幅は既定のまま**なので
+  桁数の多い数値は `2.4E+07`（General）や `###`（書式付き）へ縮退し、人が手で列幅を広げるまで読めない。
+  「適用 1 件・保存 v2」と成功で報告されるため、レポート上は完璧に見えて成果物だけが使い物にならない。
+  逆に、読みやすさのために値を `"24,000,000"` と**文字列で**書き込むと、今度は数式・集計が壊れる。
+- **決めること**: ①値は数値のまま入れ、**表示だけ**を整える（LibreOffice の HTML クリップボード拡張属性
+  `sdval`（値）＋`sdnum`（書式）で桁区切りを与える。桁が少ない値・比率には付けない＝丸めない）
+  ②列幅は貼り込み後に**貼った矩形を選び直して** `.uno:SetOptimalColumnWidthDirect`（引数なし＝ダイアログを
+  開かない版。引数付きの `.uno:SetOptimalColumnWidth` はダイアログ経路で、開くと後続の `.uno:Save` ack が
+  返らなくなる）③**幅調整の失敗は不発扱いにしない**（値は入っているので `applied=true` のまま warning ログ。
+  paste は非冪等・PIT-47 なので再送もしない）④UNO コマンド名・引数は実機 coolwsd の
+  `browser/dist/bundle.js` で裏を取る（ブラウザが実際に送る形が唯一の正）。
+- **受け入れ条件**: 「8 桁の数値に `#,##0` が付き、見出し行が `<th>` になる」単体テスト、
+  「貼った矩形の範囲を正しく組む（シート接頭辞・上限超え）」単体テスト、
+  「paste 後に Direct 版の列幅調整が飛ぶ」偽 CoolWSD の結合テストがある。

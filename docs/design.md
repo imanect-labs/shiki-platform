@@ -478,6 +478,8 @@ flowchart TB
   IP 分類は **net_guard が単一の正**で、egress プロキシ（gVisor/FC ティア）とミニアプリ HTTP（app-platform）も同じ表を使う。
   **前提条件（#346 で充足済み）**: code_interpreter が宣伝する numpy/pandas は、native rootfs へビルド時に同梱する
   （`deploy/sandbox-assets/rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定 `--require-hashes` の二層で再現）。
+  同梱物はティアで異なる（native のみ openpyxl・#384）ため、**ツール description はティアから導出**して
+  宣伝と実体を一致させる（`agent-core/src/tools/code_interpreter.rs` の `describe`・PIT-51）。
   runsc・rootfs は orchestrator イメージへ焼き込み（`deploy/docker/sandbox-orchestrator.Dockerfile`・実行時 DL 無し＝PIT-33）。
   gVisor のメモリ上限は OCI spec の `linux.resources.memory.limit`（sentry が解釈するゲスト側上限。
   現行 runsc に旧 `--total-memory` フラグは無い）＋orchestrator 側メモリ watchdog
@@ -539,7 +541,10 @@ flowchart TB
     ② edit（ライブ・`office.live_edit`）= **AI が CoolWSD セッションの headless 参加者**
     （`crates/office` の `live::LiveEditor`・独立 view・参加者リストに「Shiki AI」表示）として接続し、
     **自 view の選択**でアンカー指定編集（`replace_text`=ExecuteSearch→選択照合→paste /
-    `append_html` / `set_cells`=GoToCell→表 paste）。ユーザーの選択に依存しない（TOCTOU なし）。
+    `append_html` / `set_cells`=GoToCell→表 paste→貼った矩形の列幅自動調整）。
+    ユーザーの選択に依存しない（TOCTOU なし）。`set_cells` は値を数値のまま入れて**表示だけ**を整える
+    （桁区切りは `sdval`/`sdnum`・見出し行は `<th>`・列幅は `.uno:SetOptimalColumnWidthDirect`。
+    幅調整の失敗は不発扱いにしない・#385/PIT-52）。
     編集は CoolWSD の協調プロトコルで全 view へ即時反映され、保存は CoolWSD 自身の WOPI PutFile →
     既存チョークポイント（版・監査・outbox→RAG 再索引）。文書が開かれていなくても実行できる
     （AI 単独セッションが立ち、新バージョンとして保存）。WOPI トークンは `ai_actor` クレーム付きで発行し、
