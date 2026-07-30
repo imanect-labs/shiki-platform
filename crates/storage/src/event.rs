@@ -304,10 +304,12 @@ pub async fn peek_app_events_after(
     limit: i64,
 ) -> Result<Vec<OutboxEvent>, StorageError> {
     let rows: Vec<OutboxRow> = sqlx::query_as(
-        "SELECT id, org, tenant_id, node_id, version, op, actor, trace_id, payload, created_at \
-         FROM storage_event_outbox \
-         WHERE tenant_id = $1 AND id > $2 AND payload ? 'event_type' \
-         ORDER BY id LIMIT $3",
+        "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
+                o.payload, o.created_at, coalesce(n.system, false) AS system \
+         FROM storage_event_outbox o \
+         LEFT JOIN node n ON n.id = o.node_id \
+         WHERE o.tenant_id = $1 AND o.id > $2 AND o.payload ? 'event_type' \
+         ORDER BY o.id LIMIT $3",
     )
     .bind(tenant_id)
     .bind(after_id)
@@ -329,6 +331,12 @@ struct OutboxRow {
     trace_id: Option<String>,
     payload: Value,
     created_at: DateTime<Utc>,
+    /// `#[sqlx(default)]`: **この行構造体は 3 つのクエリで共有される**。列を足し忘れた
+    /// クエリがあると `query_as` は実行時に失敗し、その経路の機能が丸ごと止まる
+    /// （app-gateway の SSE が無音になる形で実際に踏んだ）。既定 false へ落とすことで、
+    /// 最悪でも「system 判定が付かない＝従来どおり索引する」に留める。
+    /// 判定を必要とする経路（rag の relay）が読むクエリには必ず列を入れること。
+    #[sqlx(default)]
     system: bool,
 }
 
