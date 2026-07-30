@@ -104,7 +104,11 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
         .connect(&config.database.url)
         .await
         .context("Postgres へ接続できません")?;
-    let http = reqwest::Client::new();
+    // timeout は必須（#376。理由は main.rs の同等箇所を参照）。
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .context("HTTP クライアントの初期化に失敗")?;
     let fga = OpenFgaClient::connect(
         http,
         &OpenFgaConfig {

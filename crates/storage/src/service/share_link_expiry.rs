@@ -161,22 +161,16 @@ impl StorageService {
     ) -> Result<Vec<(Subject, Relation)>, StorageError> {
         let mut tx = self.db.begin().await?;
         self.lock_node(&mut tx, node_id).await?;
-        // 期限切れリンクは now 基準で非 active → reconcile で broad タプルが落ちる。
-        let added = self
-            .reconcile_broad(&mut tx, ns, obj, node_id, tenant_id, org, now)
-            .await?;
+        // ① 失効確定を **先に**、ロック保持下で期限を再確認しながら行う（SELECT〜ロック取得の間に
+        // owner が延長した場合、reconcile_broad は延長リンクを active 扱いでタプルを残すため、無条件に
+        // revoked_at を立てると「revoked なのに broad タプルが残る」不整合になる・Codex P1）。
+        //
+        // ⚠️ per-user 剥奪より **前**でなければならない（#375）。台帳行はソフト失効させる（deny 台帳）
+        // ため、延長されたリンクの grant に触ると「まだ active なリンクの解錠者が全員 deny 台帳に載り、
+        // 二度と再 redeem できない」という永久追放になる。0 行だったリンクには一切触れない。
+        let mut revoked: Vec<Uuid> = Vec::with_capacity(expired.len());
         for link_id in expired {
-            if let Err(e) = self
-                .reconcile_user_grants_for_link(&mut tx, ns, obj, *link_id, node_id, tenant_id, now)
-                .await
-            {
-                self.compensate_broad(obj, &added).await;
-                return Err(e);
-            }
-            // 失効確定はロック保持下で期限を再確認する（SELECT〜ロック取得の間に owner が延長した
-            // 場合、reconcile_broad は延長リンクを active 扱いでタプルを残すため、ここで無条件に
-            // revoked_at を立てると「revoked なのに broad タプルが残る」不整合になる・Codex P1）。
-            sqlx::query(
+            let updated = sqlx::query(
                 "UPDATE node_share_link SET revoked_at = now() \
                  WHERE link_id = $1 AND revoked_at IS NULL \
                    AND expires_at IS NOT NULL AND expires_at <= $2",
@@ -185,6 +179,23 @@ impl StorageService {
             .bind(now)
             .execute(&mut *tx)
             .await?;
+            if updated.rows_affected() > 0 {
+                revoked.push(*link_id);
+            }
+        }
+        // ② broad タプルを reconcile（①で確定した active 集合を反映する）。
+        let added = self
+            .reconcile_broad(&mut tx, ns, obj, node_id, tenant_id, org, now)
+            .await?;
+        // ③ 実際に失効したリンクの per-user タプルだけを参照カウントして剥奪する。
+        for link_id in &revoked {
+            if let Err(e) = self
+                .reconcile_user_grants_for_link(&mut tx, ns, obj, *link_id, node_id, tenant_id, now)
+                .await
+            {
+                self.compensate_broad(obj, &added).await;
+                return Err(e);
+            }
         }
         if let Err(e) = tx.commit().await {
             self.compensate_broad(obj, &added).await;

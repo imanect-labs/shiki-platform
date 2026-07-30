@@ -165,6 +165,7 @@ mod read;
 mod restore;
 mod share_link;
 mod share_link_expiry;
+mod share_link_grant;
 mod share_link_ratelimit;
 mod share_link_reconcile;
 mod share_link_redeem;
@@ -197,28 +198,6 @@ fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
-}
-
-/// 共有先 subject の検証。subject 識別子（`user:<tenant>|<id>` / `role:<tenant>|<id>#member`）を
-/// 壊す/曖昧化する id を弾く。文字ポリシーの正本は [`authz::validate_local_id`]
-/// （`:`/`#`＝型/userset 区切り・`|`＝tenant 名前空間区切り・制御文字・空を拒否。単一定義・#91 M-3）。
-/// 前後空白の拒否（trim で往復が変わる混乱の防止）だけは共有 API 固有のルールとしてここで足す。
-///
-/// role の**存在**（当該テナントに実在するロールか）はここでは強制しない: 全メンバーのログイン前でも
-/// 部署（AD group 由来 role）へ共有できるようにするため（dangling grant 回避は共有ダイアログの
-/// `directory_role` オートコンプリートで担保し、厳格な存在ゲートは IdP フル同期後に足す）。
-fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
-    let id = match target {
-        ShareTarget::User { id } | ShareTarget::Role { id } => id,
-    };
-    if id != id.trim() {
-        return Err(StorageError::Invalid(
-            "共有先 id の前後に空白は使えません".into(),
-        ));
-    }
-    authz::validate_local_id(id)
-        .map_err(|violation| StorageError::Invalid(format!("共有先 id が不正です: {violation}")))?;
-    Ok(())
 }
 
 /// admin プレーン操作（テナント・プロビジョニング/撤去）用の合成コンテキスト。
@@ -457,29 +436,6 @@ mod tests {
         raw.extend(std::iter::repeat_n(b'a', 35));
         raw.extend_from_slice("あ".as_bytes()); // 3 バイト → uuid 境界が文字途中
         assert!(decode_child_cursor(sort, &hex::encode(raw)).is_err());
-    }
-
-    #[test]
-    fn validate_share_target_rejects_bad_ids() {
-        use crate::model::ShareTarget;
-        // user / role とも同一ルール。正常系（role は AD group 由来の `/` を含んでも可）。
-        assert!(validate_share_target(&ShareTarget::User { id: "alice".into() }).is_ok());
-        assert!(validate_share_target(&ShareTarget::Role { id: "sales".into() }).is_ok());
-        assert!(validate_share_target(&ShareTarget::Role {
-            id: "sales/team-1".into()
-        })
-        .is_ok());
-        // 異常系（`|`＝tenant 区切りも拒否）。
-        for bad in ["", " alice", "alice ", "a:b", "a#member", "a|b", "bad\nid"] {
-            assert!(
-                validate_share_target(&ShareTarget::User { id: bad.into() }).is_err(),
-                "user should reject {bad:?}"
-            );
-            assert!(
-                validate_share_target(&ShareTarget::Role { id: bad.into() }).is_err(),
-                "role should reject {bad:?}"
-            );
-        }
     }
 
     #[test]

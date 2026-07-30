@@ -156,6 +156,18 @@ flowchart LR
   タイマ停止中や遅延失効を通していない経路（download/versions/collab WS/WOPI・list_children の子ごと判定）では
   期限直後にごく短時間アクセスが残り得る。UI の「〜まで」表示は公称であり厳密な瞬間失効ではない。
   中期的には FGA conditions / contextual tuples で check 時点評価へ寄せる（#368）。
+- **共有リンクの per-user 取消は deny 台帳で durable（#375/#376）**: パスワードリンクの解錠（redeem）は
+  `node_share_link_grant` に台帳行を作り、`viewer_via_link`/`editor_via_link` タプルを張る。取消は行を
+  **DELETE せずソフト失効**（`revoked_at`）させ、`revoked_at IS NULL ⇔ その (link,user) の付与が live`
+  を唯一の不変条件にする。台帳を読む全クエリ（参照カウント・一覧・`redeem_count`）はこの述語で絞る。
+  redeem 側は条件付き upsert（`ON CONFLICT … WHERE revoked_at IS NULL`）で revoked 行を復活させないため、
+  **リンクが active なままでも取り消したユーザーは同じ URL＋パスワードで再解錠できない**。
+  redeem は `lock_node`（node 単位 advisory lock）配下の単一 tx で失効/期限失効と直列化する（Argon2id と
+  レート制限はロック外＝誤パスワード連打で owner の共有操作を止められないようにする）。
+  **deny のスコープは per-(link,user)**: 「このリンクはこの人向けではない」の表明であり、node 単位の
+  否定 ACL ではない（OpenFGA に否定は無く、明示共有は別 relation なので触らない）。再度渡すなら新規発行。
+  per-user 付与の回収契機は ①リンク失効/期限失効 ②owner の個別取消 ③テナント撤去 の 3 つで、
+  org/テナントのメンバーシップ変化は**含まれない**（[PIT-53](design-caveats.md) の follow-up）。
 - **認可コンテキスト**: 全データアクセスは `principal + org + tenant_id` を持つコンテキスト経由（SaaS マルチテナントを day-1 前提・後付けで隔離境界を壊さない）。
 - **authz のテナント分離（SAAS.1 / #84）**: OpenFGA は **全テナント共有の単一ストア＋識別子名前空間化**（フルプール）で分離する。
   FGA 識別子を `<type>:<tenant_id>|<local_id>` へ名前空間化し（区切り `|` = `authz::TENANT_SEP`。AD group パスの `/` と衝突しない）、

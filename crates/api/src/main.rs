@@ -49,7 +49,15 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("DB マイグレーション適用完了");
 
     // JWKS 取得・OpenFGA で共用する HTTP クライアント。
-    let http = reqwest::Client::new();
+    //
+    // timeout は必須（#376）。共有リンクの reconcile / redeem は `pg_advisory_xact_lock` 保持下で
+    // OpenFGA を叩くが、advisory lock にはタイムアウトが無い。FGA が hang するとノードロックと PG
+    // コネクションが張り付き、そのノードの共有操作すべてが止まる。上限を明示して fail-fast させる
+    // （HTTP ハンドラのタイムアウトに救われるのは偶然の性質であって設計された保証ではない）。
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("HTTP クライアントの初期化に失敗")?;
 
     // OpenFGA（store/model を冪等にロード）。
     let fga_config = OpenFgaConfig {
