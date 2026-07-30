@@ -91,7 +91,8 @@ impl Default for WorkerConfig {
             max_tokens: 8192,
             parallel_read_tools: agent_core::DEFAULT_PARALLEL_READ_TOOLS,
             autonomous_max_cost_usd_micros: 3_000_000,
-            // 既定は「同時 4 体（parallel_read_tools と同値）・1 体 8 ステップ・1 run 12 体まで」。
+            // 既定は「同時 4 体（parallel_read_tools と同値）・1 体 6 ステップ・1 run 8 体まで」
+            // （実 LLM 検証で 8 ステップ/12 体では 1 体が完走できなかったため絞った・#391）。
             subagent: agent_core::SubagentLimits::default(),
             sandbox_software: vec!["coreutils".to_string()],
             // 既定ティアの単一ソースは enum の `#[default]`（gVisor・#346）。ここに別のリテラルを

@@ -284,8 +284,22 @@ impl Tool for SubagentTool {
             None,
             &mut sink,
         )
-        .await
-        .map_err(|e| ToolError::Unavailable(format!("サブエージェントの実行に失敗: {e}")))?;
+        .await;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            // 失敗しても**そこまでの消費は親へ計上する**（無料で作り直せてしまうと予算が意味を失う）。
+            Err(e) => {
+                let mut out = ToolOutcome::error(format!(
+                    "サブエージェントの実行に失敗しました（{e}）。委譲をやり直すか自分で調べ、\
+                     **レポートは必ず書くこと**。"
+                ));
+                out.usage = Some(ToolUsage {
+                    tokens: sink.spent.tokens,
+                    cost_usd_micros: sink.spent.cost_usd_micros,
+                });
+                return Ok(out);
+            }
+        };
 
         let spent = outcome.checkpoint.spent;
         let findings = sink.text.trim().to_string();
@@ -325,6 +339,13 @@ struct CollectingSink {
     text: String,
     citations: Vec<Citation>,
     tool_calls: Vec<String>,
+    /// ステップ境界で観測した消費（`save_checkpoint` 経由）。
+    ///
+    /// `run_agent` が `Err`（LLM 障害等）で抜けると `AgentOutcome` に到達せず、**途中まで
+    /// 消費したトークンが親の予算に計上されない**（＝予算の抜け穴・レビュー指摘 Critical）。
+    /// ループはステップを完了するたびにチェックポイントを渡してくるので、その `spent` を控えて
+    /// エラー経路でも計上する。取りこぼすのは失敗したステップ自身の分だけ。
+    spent: crate::budget::Spent,
     cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -334,6 +355,7 @@ impl CollectingSink {
             text: String::new(),
             citations: Vec::new(),
             tool_calls: Vec::new(),
+            spent: crate::budget::Spent::default(),
             cancel,
         }
     }
@@ -359,6 +381,15 @@ impl EventSink for CollectingSink {
 
     fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// ステップ境界の消費を控える（エラー経路でも親へ計上するため）。永続化はしない。
+    async fn save_checkpoint(
+        &mut self,
+        checkpoint: &crate::checkpoint::Checkpoint,
+    ) -> Result<(), AgentError> {
+        self.spent = checkpoint.spent;
+        Ok(())
     }
 }
 

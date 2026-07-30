@@ -289,8 +289,12 @@ async fn run_step(
         match crate::agent_tools::run_tool_calls(&phase, calls, &mut state.plan, sink, detector)
             .await?
         {
-            crate::agent_tools::ToolPhaseOutcome::Cancelled => {
-                return Ok(StepOutcome::Stop(AgentStop::Cancelled))
+            crate::agent_tools::ToolPhaseOutcome::Cancelled { external } => {
+                // キャンセルでも走った分は計上してから止める（「止めれば無料」を作らない）。
+                state
+                    .spent
+                    .add_external(external.tokens, external.cost_usd_micros);
+                return Ok(StepOutcome::Stop(AgentStop::Cancelled));
             }
             crate::agent_tools::ToolPhaseOutcome::Executed {
                 blocks,

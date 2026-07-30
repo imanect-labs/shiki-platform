@@ -40,7 +40,10 @@ pub(crate) struct ToolPhase<'a> {
 /// ツール実行フェーズの結果。
 pub(crate) enum ToolPhaseOutcome {
     /// 承認待ち中にキャンセルされた（run を停止する）。
-    Cancelled,
+    ///
+    /// キャンセルでも**実際に走った分の消費は親へ計上する**（read は承認待ちと並行して完了し得る。
+    /// 捨てると「止めれば無料」になり予算が意味を失う・レビュー指摘）。
+    Cancelled { external: crate::tool::ToolUsage },
     /// 全呼び出しを処理した（観測ブロックは呼び出し順）。
     Executed {
         blocks: Vec<Block>,
@@ -134,7 +137,7 @@ pub(crate) async fn run_tool_calls(
         });
     }
     if seq.cancelled {
-        return Ok(ToolPhaseOutcome::Cancelled);
+        return Ok(ToolPhaseOutcome::Cancelled { external });
     }
     Ok(ToolPhaseOutcome::Executed {
         blocks,
