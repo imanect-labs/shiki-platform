@@ -209,6 +209,8 @@ async fn run_step(
                     id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
+                    // 同一ステップの呼び出しは同じ番号になる（UI の並行表示のグルーピング根拠）。
+                    step: u32::try_from(step).unwrap_or(u32::MAX),
                 })
                 .await?;
                 calls.push(PendingCall { id, name, input });

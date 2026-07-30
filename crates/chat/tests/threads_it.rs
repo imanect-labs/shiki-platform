@@ -891,3 +891,80 @@ async fn db_approver_cancelled_by_flag() {
         .unwrap();
     assert_eq!(decision, agent_core::ApprovalDecision::Cancelled);
 }
+
+/// ツール結果の観測本文は**実行主体本人にだけ**返す（#386 のレビュー指摘・P1）。
+///
+/// 引用（citation）は node_id で個別に再認可できるが、tool_result は node に紐づかず
+/// 再認可できない。共有スレッドの閲覧者（元ファイルの閲覧権限なし）に doc_search の
+/// スニペットや document.read の本文が渡らないよう、本人以外には本文を落とす。
+#[tokio::test]
+async fn tool_result_bodies_are_hidden_from_other_viewers() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let owner = ctx(&tenant);
+
+    let thread = store
+        .create_thread(&owner, "共有スレッド", false, None, None)
+        .await
+        .unwrap();
+    let posted = store
+        .post_message(
+            &owner,
+            thread.id,
+            "社内文書を調べて",
+            &[],
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // ワーカーが確定させる content を模して、ツール呼び出しと結果を直接書き込む。
+    let content = vec![
+        ContentBlock::ToolCall {
+            id: "t1".into(),
+            name: "doc_search".into(),
+            input: serde_json::json!({ "query": "就業規則" }),
+            step: Some(0),
+        },
+        ContentBlock::ToolResult {
+            tool_call_id: "t1".into(),
+            content: "社外秘: 給与テーブルの抜粋".into(),
+            ok: true,
+        },
+    ];
+    sqlx::query("UPDATE message SET content = $2 WHERE id = $1")
+        .bind(posted.assistant_message_id)
+        .bind(sqlx::types::Json(&content))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 本人（run の actor）は本文を見られる。
+    let mine = store.get_messages(&owner, thread.id, None).await.unwrap();
+    assert!(
+        mine.iter().any(|m| m.content.iter().any(|b| matches!(
+            b,
+            ContentBlock::ToolResult { content, .. } if content.contains("社外秘")
+        ))),
+        "実行主体本人には観測本文が見える"
+    );
+
+    // 別ユーザー（共有された閲覧者）には本文を返さない。ブロック自体と成否は残す。
+    let mut other = ctx(&tenant);
+    other.principal.id = "bob".into();
+    let theirs = store.get_messages(&other, thread.id, None).await.unwrap();
+    let results: Vec<&ContentBlock> = theirs
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter(|b| matches!(b, ContentBlock::ToolResult { .. }))
+        .collect();
+    assert_eq!(results.len(), 1, "ブロック自体は残す（成否は見せる）");
+    assert!(
+        matches!(results[0], ContentBlock::ToolResult { content, .. } if content.is_empty()),
+        "他人には観測本文を返さない: {results:?}"
+    );
+}

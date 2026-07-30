@@ -32,14 +32,14 @@ test.describe("agent tools (web_search / code_interpreter)", () => {
     return input;
   }
 
-  /// Chain of Thought のツール動作ラベルを確認する（ストリーミング中は自動展開・
-  /// 完了後は折りたたまれるため、必要なら「思考プロセス」トグルを開いてから確認する）。
+  /// ツール実行表示のラベルを確認する（#386）。実行中はローリングに出るが、完了後は
+  /// 1 行要約に畳まれるため、見えなければパネルを開いてから確認する。
   async function expectToolVerb(page: Page, verbPattern: RegExp) {
+    const panel = page.getByTestId("tool-activity").first();
+    await expect(panel).toBeVisible({ timeout: 30_000 });
     const verb = page.getByText(verbPattern).first();
-    const cotToggle = page.getByRole("button", { name: /思考プロセス/ }).first();
-    await expect(verb.or(cotToggle)).toBeVisible({ timeout: 30_000 });
     if (!(await verb.isVisible())) {
-      await cotToggle.click();
+      await panel.getByRole("button").first().click();
     }
     await expect(verb).toBeVisible({ timeout: 10_000 });
   }
@@ -51,12 +51,12 @@ test.describe("agent tools (web_search / code_interpreter)", () => {
     await input.fill("websearch: rust 最新情報");
     await page.getByRole("button", { name: "送信" }).click();
 
-    // Chain of Thought に「web を検索」動作が出る（tool_call の可視化・Task 4.11）。
-    await expectToolVerb(page, /web を検索(していま|しました)/);
+    // ツール実行表示に検索クエリ込みの具体ラベルが出る（tool_call の input を使う・#386）。
+    await expectToolVerb(page, /「rust 最新情報」を web で検索(中|しました)/);
 
     // 再訪してもツール履歴が残る（generation_event の projection）。
     await page.reload();
-    await expectToolVerb(page, /web を検索/);
+    await expectToolVerb(page, /「rust 最新情報」を web で検索/);
   });
 
   test("code_interpreter: コード実行が可視化される", async ({ page }) => {
@@ -69,7 +69,7 @@ test.describe("agent tools (web_search / code_interpreter)", () => {
     await page.getByRole("button", { name: "送信" }).click();
 
     // 「コードを実行」動作が出る。
-    await expectToolVerb(page, /コードを実行(していま|しました)/);
+    await expectToolVerb(page, /コードを実行(中|しました)/);
     // 実行結果（42）を含む観測が返る。
     await expect(page.getByText(/42/)).toBeVisible({ timeout: 30_000 });
   });

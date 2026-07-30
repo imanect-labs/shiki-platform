@@ -213,14 +213,52 @@ export function Conversation({
           s
             ? {
                 ...s,
-                tools: [...s.tools, { id: call.id, name: call.name, running: true, input: call.input }],
+                tools: [
+                  ...s.tools,
+                  {
+                    // この出現の一意キー（呼び出し ID はループで再利用され得る）。
+                    key: newId(),
+                    id: call.id,
+                    name: call.name,
+                    running: true,
+                    input: call.input,
+                    step: call.step,
+                  },
+                ],
               }
             : s,
         ),
+      // 成否と観測テキストを保持する（失敗を成功と同じ見た目にしない・#358/#386）。
+      // **同じ id が複数ステップで再利用され得る**（stub の `loop:` は毎ステップ
+      // `stubtool_1` を出す）。全件更新すると過去行の成否まで上書きされるため、
+      // 同一 id の中で**まだ実行中の最初の 1 件**にだけ結果を対応付ける。
       onToolResult: (res) =>
-        updateStream((s) =>
-          s ? { ...s, tools: s.tools.map((t) => (t.id === res.id ? { ...t, running: false } : t)) } : s,
-        ),
+        updateStream((s) => {
+          if (!s) return s;
+          const i = s.tools.findIndex((t) => t.id === res.id && t.running);
+          if (i < 0) return s;
+          const tools = s.tools.slice();
+          tools[i] = { ...tools[i], running: false, ok: res.ok, result: res.content };
+          return { ...s, tools };
+        }),
+      // skill ツールの発動記録（#344）。対応する skill 呼び出しへ版を添えて「どの版を読んだか」を出す。
+      // skill_invoked に tool_call_id が無いため名前で突き合わせるが、**同じスキルを複数回
+      // 読み込み得る**ので全件更新はしない（後の版が過去行にも付く）。まだ版が付いていない
+      // 最初の 1 件へ FIFO で対応付ける。イベントは projection 対象外＝ライブ限定の付加情報。
+      onSkillInvoked: (skill) =>
+        updateStream((s) => {
+          if (!s) return s;
+          const i = s.tools.findIndex(
+            (t) =>
+              t.name === "skill" &&
+              t.skillVersion === undefined &&
+              skillNameOf(t.input) === skill.name,
+          );
+          if (i < 0) return s;
+          const tools = s.tools.slice();
+          tools[i] = { ...tools[i], skillVersion: skill.skill_version };
+          return { ...s, tools };
+        }),
       onCitation: (c) => updateStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
       onFileRef: (f) => updateStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
       onGenerativeUi: (spec) =>
@@ -565,7 +603,13 @@ function finalizeStream(
   if (s.thinking.trim()) blocks.push({ type: "thinking", text: s.thinking });
   // ツール実行履歴（検索など）も確定メッセージへ残す。AssistantRow / ChainOfThought は
   // tool_call ブロックから履歴を描画するため、これが無いと done 後に履歴が消える。
-  for (const t of s.tools) blocks.push({ type: "tool_call", id: t.id, name: t.name, input: t.input });
+  for (const t of s.tools) {
+    blocks.push({ type: "tool_call", id: t.id, name: t.name, input: t.input, step: t.step });
+    // 成否と観測テキストも残す（履歴でも失敗と結果要約が見えるようにする・#358/#386）。
+    if (t.ok !== undefined) {
+      blocks.push({ type: "tool_result", tool_call_id: t.id, content: t.result ?? "", ok: t.ok });
+    }
+  }
   if (s.text.trim()) blocks.push({ type: "text", text: s.text });
   for (const c of s.citations) blocks.push(c);
   // ツール成果物（保存済みファイル）も確定メッセージへ残す。
@@ -656,9 +700,33 @@ function AssistantRow({
     .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
     .map((b) => b.text)
     .join("");
+  // ツール結果を tool_call_id で引く（#358/#386）。**同じ id が複数回現れ得る**ため
+  // （ループで再利用される呼び出し ID）、id ごとに出現順のキューとして持ち、
+  // 呼び出しへ順番に対応付ける（最後の結果を全行へ適用しない）。
+  const toolResults = new Map<string, Extract<ContentBlock, { type: "tool_result" }>[]>();
+  for (const b of blocks) {
+    if (b.type !== "tool_result") continue;
+    const q = toolResults.get(b.tool_call_id);
+    if (q) q.push(b);
+    else toolResults.set(b.tool_call_id, [b]);
+  }
   const tools: ToolActivityItem[] = blocks
     .filter((b): b is Extract<ContentBlock, { type: "tool_call" }> => b.type === "tool_call")
-    .map((b) => ({ id: b.id, name: b.name, running: false, input: b.input }));
+    .map((b, i) => {
+      const res = toolResults.get(b.id)?.shift();
+      return {
+        // 確定メッセージ内での出現位置は安定（再レンダーで並びが変わらない）。
+        key: `${b.id}-${i}`,
+        id: b.id,
+        name: b.name,
+        running: false,
+        input: b.input,
+        // 生成型は Option<u32> を `number | null` にする。UI は「不明」を undefined で扱う。
+        step: b.step ?? undefined,
+        ok: res?.ok ?? undefined,
+        result: res?.content,
+      };
+    });
   const citations = blocks.filter((b): b is Citation => b.type === "citation");
   const files = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "file_ref" }> => b.type === "file_ref",
@@ -808,11 +876,15 @@ function StreamingRow({
     <Message className="justify-start">
       <div className="w-full min-w-0 space-y-2">
         {stream.plan.length > 0 ? <PlanPanel subtasks={stream.plan} /> : null}
+        {/* streaming は「生成中か」であって「本文が出ていないか」ではない。旧実装は
+            `!stream.text` を渡していたため、本文が 1 文字出た瞬間にツール表示が畳まれ、
+            その後に走るツール（本文 → ツール → 本文の往復）が見えなくなっていた（#386）。 */}
         <ChainOfThought
           thinking={stream.thinking}
           tools={stream.tools}
           citations={stream.citations}
-          streaming={!stream.text}
+          streaming
+          phase={runningSubtask(stream.plan)}
         />
         {stream.budget ? <BudgetBanner {...stream.budget} /> : null}
         {stream.approval ? (
@@ -857,6 +929,20 @@ function StreamingRow({
       </div>
     </Message>
   );
+}
+
+/// skill ツール入力からスキル名を取り出す（バックエンドと同じく trim して突き合わせる）。
+function skillNameOf(input: unknown): string | null {
+  const name = (input as { name?: unknown } | undefined)?.name;
+  return typeof name === "string" ? name.trim() || null : null;
+}
+
+/// 実行中のサブタスク名（自律 run の計画）。ツール実行のフェーズ行に使う。
+/// 計画があるときは「検索しています」より「市場規模を調べています」の方が情報量が多い。
+function runningSubtask(plan: PlanSubtask[]): string | null {
+  const doing = plan.find((s) => s.status === "doing");
+  const title = doing?.title.trim();
+  return title ? `${title}` : null;
 }
 
 /// 計画イベントを蓄積する。フル計画（全 title 非空）は置換、単一の空 title は id で status 更新。

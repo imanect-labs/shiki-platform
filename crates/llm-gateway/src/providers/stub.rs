@@ -108,21 +108,61 @@ pub(super) fn tool_call_stream(
     input: serde_json::Value,
     prompt_tokens: u64,
 ) -> DeltaStream {
-    let id = "stubtool_1".to_string();
-    let events = vec![
-        Ok(StreamDelta::ToolUseStart {
+    tool_calls_stream(vec![(name, input)], prompt_tokens)
+}
+
+/// `parallel:<クエリ>` — 1 ステップで `web_search` ＋ **別ホスト**の `web_fetch` ×3 を呼ぶ。
+///
+/// agent-core の有界並列（#349・同一ホストは politeness_key で直列化される）と、
+/// UI の「並行して N 件」表示・step グルーピング（#386）を決定的に再現する唯一の入口。
+/// 提示ツールに web 系が無ければ `None`（呼び出し側が通常経路へ落ちる）。
+fn parallel_read_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let query = user_text.strip_prefix("parallel:")?.trim();
+    let mut calls: Vec<(String, serde_json::Value)> = Vec::new();
+    if let Some(t) = req.tools.iter().find(|t| t.name == "web_search") {
+        calls.push((t.name.clone(), serde_json::json!({ "query": query })));
+    }
+    if let Some(t) = req.tools.iter().find(|t| t.name == "web_fetch") {
+        // ホストを分けないと同一レーンへ入り、並列にならない。
+        for url in [
+            "https://example.com/stub-1",
+            "https://example.org/stub-2",
+            "https://example.net/stub-3",
+        ] {
+            calls.push((t.name.clone(), serde_json::json!({ "url": url })));
+        }
+    }
+    (!calls.is_empty()).then(|| tool_calls_stream(calls, prompt_tokens))
+}
+
+/// **1 ステップで複数ツール**を呼ぶストリーム（同一ステップ＝並行実行の決定的駆動）。
+///
+/// 冪等 read（web_search / web_fetch / doc_search）を複数返すと agent-core が有界並列で
+/// 走らせる（#349）。UI の「並行して N 件」表示や step グルーピングはこれでしか再現できない。
+pub(super) fn tool_calls_stream(
+    calls: Vec<(String, serde_json::Value)>,
+    prompt_tokens: u64,
+) -> DeltaStream {
+    let mut events = Vec::with_capacity(calls.len() * 2 + 1);
+    for (i, (name, input)) in calls.into_iter().enumerate() {
+        let id = format!("stubtool_{}", i + 1);
+        events.push(Ok(StreamDelta::ToolUseStart {
             id: id.clone(),
             name,
-        }),
-        Ok(StreamDelta::ToolUseStop { id, input }),
-        Ok(StreamDelta::Done {
-            stop_reason: StopReason::ToolUse,
-            usage: Usage {
-                prompt_tokens,
-                completion_tokens: 0,
-            },
-        }),
-    ];
+        }));
+        events.push(Ok(StreamDelta::ToolUseStop { id, input }));
+    }
+    events.push(Ok(StreamDelta::Done {
+        stop_reason: StopReason::ToolUse,
+        usage: Usage {
+            prompt_tokens,
+            completion_tokens: 0,
+        },
+    }));
     stream::iter(events).boxed()
 }
 
@@ -151,6 +191,12 @@ impl LlmProvider for StubProvider {
                 serde_json::json!({}),
                 prompt_tokens,
             ));
+        }
+        // --- 並行 read 駆動 `parallel:`（#386）。 ---
+        if !has_tool_result(req) {
+            if let Some(s) = parallel_read_call(req, &user_text, prompt_tokens) {
+                return Ok(s);
+            }
         }
         // --- 自律駆動 `fswrite:`: 1 ターン目に fs_write を固定名で呼ぶ（ワークスペース書込の e2e）。 ---
         if !has_tool_result(req) {

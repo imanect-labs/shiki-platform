@@ -39,10 +39,16 @@ pub enum AgentEvent {
     /// 思考テキストの差分。
     Thinking(String),
     /// ツール呼び出し（id/name/入力確定）。
+    ///
+    /// `step` は**そのループステップの通し番号**（0 始まり）。1 ステップで LLM が出した呼び出しは
+    /// すべて同じ値を持つため、UI 側は「同一ステップ＝並行実行」をイベントだけで判別できる
+    /// （`tool_call` の到達順から推測しない）。結果はステップ内の全ツール完了後に呼び出し順で
+    /// まとめて流れる（`agent_tools` の観測順の決定性）。
     ToolCall {
         id: String,
         name: String,
         input: serde_json::Value,
+        step: u32,
     },
     /// ツール結果。
     ToolResult {
