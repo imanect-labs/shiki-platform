@@ -156,14 +156,36 @@ impl StorageService {
         let ns = ctx.ns();
         let obj = node_fga_object(&ns, l.kind, c.node_id);
         let subject = ns.user(&ctx.principal.id);
-        let granted = self
+        let write = self
             .authz
             .write_tuple(&subject, l.role.relation_via_link(), &obj)
-            .await?;
+            .await;
+
+        // **書き込み結果が不確定なエラーでも補償する**（Codex P1）。timeout や接続切断では
+        // 「FGA はタプルを適用したが応答だけ失われた」が起こり得る。ここで tx をロールバックすると
+        // 台帳行が無いままタプルが残り、per-user 取消もリンク失効も台帳から対象を見つけられないため
+        // **恒久 fail-open** になる。delete_tuple は冪等（未存在は成功扱い）なので、適用されていなくても
+        // 無害。ロック保持下で消すので、この間に別経路がタプルを張り直すこともない。
+        let granted = match write {
+            Ok(granted) => granted,
+            Err(e) => {
+                let _ = self
+                    .authz
+                    .delete_tuple(&subject, l.role.relation_via_link(), &obj)
+                    .await;
+                tx.rollback().await?;
+                return Err(e.into());
+            }
+        };
 
         if let Err(e) = tx.commit().await {
-            // 補償は best-effort。取りこぼしても、次回 redeem が台帳行を必ず書き直す（下記のとおり
-            // 記録は無条件）ので孤児タプルは自己修復する。
+            // 補償は best-effort。取りこぼしても、次回 redeem が台帳行を必ず書き直す（記録は無条件）
+            // ので孤児タプルは自己修復する。
+            //
+            // 参照カウントを見ずに消してよい理由（CodeRabbit）: `granted == true` は
+            // 「この呼び出しで**新規に**張った」＝直前までタプルが存在しなかったことを意味するので、
+            // 同じ (node,user,role) を他リンクの live grant が頼っていることはあり得ない。
+            // 既存タプルなら write_tuple は false を返し、ここには入らない。
             if granted {
                 let _ = self
                     .authz

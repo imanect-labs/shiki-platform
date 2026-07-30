@@ -357,7 +357,14 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
 
             // IdP（Keycloak）の tenant 属性を追従更新する（残すと次ログインが旧 tenant claim で
             // 旧名前空間の空セッションになる）。provisioner 設定が無ければ手動対応を促す。
-            match KeycloakAdmin::from_config(&reqwest::Client::new(), &config.auth) {
+            // timeout を必ず付ける（CodeRabbit）。無期限クライアントだと Keycloak が hang した
+            // ときに `retenant --execute` が終了せず、DB は更新済み・IdP は未追従の中途状態で
+            // 張り付く。1 リクエストあたりの上限なので、ユーザー数が多くても打ち切られない。
+            let kc_http = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .context("Keycloak 用 HTTP クライアントの初期化に失敗")?;
+            match KeycloakAdmin::from_config(&kc_http, &config.auth) {
                 Ok(kc) => match kc.find_users_by_tenant(f).await {
                     Ok(users) => {
                         let mut updated = 0usize;

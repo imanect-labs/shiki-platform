@@ -48,23 +48,29 @@ async fn main() -> anyhow::Result<()> {
         .context("DB マイグレーションの適用に失敗")?;
     tracing::info!("DB マイグレーション適用完了");
 
-    // JWKS 取得・OpenFGA で共用する HTTP クライアント。
+    // 汎用 HTTP クライアント（LLM gateway・Office editor・その他 AppState 経由の外部呼び出し）。
+    // **timeout を付けない**: LLM のストリーミングや Office の編集は正常系で数十秒〜かかるため、
+    // 短い上限を被せると正当な処理を殺す（各利用側が用途に応じた上限を持つ・Codex P1）。
+    let http = reqwest::Client::new();
+
+    // OpenFGA / JWKS 専用クライアント（**timeout 必須**・#376）。
     //
-    // timeout は必須（#376）。共有リンクの reconcile / redeem は `pg_advisory_xact_lock` 保持下で
-    // OpenFGA を叩くが、advisory lock にはタイムアウトが無い。FGA が hang するとノードロックと PG
-    // コネクションが張り付き、そのノードの共有操作すべてが止まる。上限を明示して fail-fast させる
+    // 共有リンクの reconcile / redeem は `pg_advisory_xact_lock` 保持下で OpenFGA を叩くが、
+    // advisory lock にはタイムアウトが無い。FGA が hang するとノードロックと PG コネクションが
+    // 張り付き、そのノードの共有操作すべてが止まる。上限を明示して fail-fast させる
     // （HTTP ハンドラのタイムアウトに救われるのは偶然の性質であって設計された保証ではない）。
-    let http = reqwest::Client::builder()
+    // authz/JWKS は「短時間で答えるべき問い合わせ」なので、汎用クライアントとは分ける。
+    let authz_http = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
-        .context("HTTP クライアントの初期化に失敗")?;
+        .context("authz/JWKS 用 HTTP クライアントの初期化に失敗")?;
 
     // OpenFGA（store/model を冪等にロード）。
     let fga_config = OpenFgaConfig {
         base_url: config.authz.base_url.clone(),
         store_name: config.authz.store_name.clone(),
     };
-    let fga = OpenFgaClient::connect(http.clone(), &fga_config, &model::default_model())
+    let fga = OpenFgaClient::connect(authz_http.clone(), &fga_config, &model::default_model())
         .await
         .context("OpenFGA への接続に失敗")?;
     // ユーザーディレクトリ（共有相手検索。storage と同じ db プールを共有）。dev_seed で使う。
@@ -79,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
     let (object_store, storage) = wiring::wire_storage(&config, &db, &authz).await?;
 
     let jwks = Arc::new(JwksCache::new(
-        http.clone(),
+        authz_http,
         config.auth.effective_jwks_uri(),
         Duration::from_secs(config.auth.jwks_ttl_secs),
     ));

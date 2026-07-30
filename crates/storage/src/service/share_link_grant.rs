@@ -6,11 +6,15 @@
 //!
 //! **中核の不変条件（#375）**:
 //! ```text
-//! node_share_link_grant.revoked_at IS NULL  ⇔  その (link,user) の付与が live
-//! via_link タプルが存在する                 ⇒  それを参照する live な台帳行が存在する
+//! node_share_link_grant の行が存在し revoked_at IS NULL  ⇔  その (link,user) の付与が live
+//! via_link タプルが存在する                              ⇒  それを参照する live な台帳行が存在する
 //! ```
-//! per-user 取消もリンクごとの失効も、行を **DELETE せずソフト失効**させる。だから台帳を読む
-//! クエリはすべて `revoked_at IS NULL` で絞る必要がある（漏らすと剥奪漏れ＝fail-open）。
+//! 台帳を読むクエリはすべて `revoked_at IS NULL` で絞る（漏らすと剥奪漏れ＝fail-open）。
+//!
+//! **行を残す（ソフト失効）のは「リンクが active なまま特定 user を止める」個別取消だけ**。
+//! これは再 redeem を拒否する deny 台帳として必要。リンク自体が失効/期限失効した場合は再 redeem が
+//! 構造的に不可能（token 引きが active 述語を要求し、`extend_share_link` は失効リンクを戻せない）
+//! なので deny 行は無意味 —— 行ごと削除して墓石を溜めない（Codex P2）。
 //!
 //! **deny のスコープは per-(link,user)**（per-(node,user) ではない）。owner がゴミ箱を押した意図は
 //! 「このリンクはこの人向けではない」であって「この人をこの文書からブロックせよ」ではない。後者は
@@ -131,13 +135,16 @@ impl StorageService {
     /// あるリンクの redeem 済み per-user タプルを参照カウントして剥奪する（失効/期限失効時）。
     ///
     /// (node,user,role) について**他に live な grant × active リンクが残っていれば FGA タプルは
-    /// 消さず**、当該リンクの grant 行だけをソフト失効させる。最後の 1 本なら FGA タプルを剥奪する。
-    /// FGA 剥奪に失敗したら `?` 伝播で tx を巻き戻す（fail-closed・失効を確定しない）。tx 内で呼ぶこと。
+    /// 消さず**、最後の 1 本なら剥奪する。FGA 剥奪に失敗したら `?` 伝播で tx を巻き戻す
+    /// （fail-closed・失効を確定しない）。tx 内・`lock_node` 保持下で呼ぶこと。
     ///
-    /// 行を **DELETE せずソフト失効**させるのは、**期限切れリンクが active に戻り得る**ため
-    /// （`extend_share_link` は `expires_at` を見ないので、未 sweep の期限切れリンクを未来へ延長すると
-    /// 復活する）。行を消すと deny 台帳がこの経路で蒸発し #375 の durability が壊れる。
-    /// 振る舞いは従来と互換: 一覧も `redeem_count` も `revoked_at IS NULL` で絞るので失効後は空 / 0。
+    /// **このリンクの grant 行は（deny 行も含めて）削除する**。呼び出し規約として、呼び出し側は
+    /// **同一 tx でリンクの `revoked_at` を確定させた後**に呼ぶ（`revoke_share_link` /
+    /// `expire_node_links`）。失効したリンクは `extend_share_link` が `revoked_at IS NULL` しか
+    /// 更新しないため二度と active に戻れず、token 引きも active 述語を要求するので**再 redeem が
+    /// 構造的に不可能**。よって deny 台帳を残す意味が無く、残すと墓石が purge まで溜まる（Codex P2）。
+    /// deny 台帳が要るのは「**リンクは active なまま**特定 user だけを止める」
+    /// [`Self::revoke_share_link_grant`] の経路だけ。
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn reconcile_user_grants_for_link(
         &self,
@@ -149,53 +156,61 @@ impl StorageService {
         tenant_id: &str,
         now: DateTime<Utc>,
     ) -> Result<(), StorageError> {
-        // live な行だけが対象（既に取消済みの行を再処理すると無駄な FGA 呼び出しと冗長 UPDATE を生む）。
-        let grants: Vec<(String, String)> = sqlx::query_as(
+        // 剥奪候補: このリンクの live grant（既に個別取消済みの行はタプルを手放しているので対象外）。
+        let targets: Vec<(String, String)> = sqlx::query_as(
             "SELECT user_id, role FROM node_share_link_grant \
-             WHERE link_id = $1 AND revoked_at IS NULL",
+             WHERE link_id = $1 AND tenant_id = $2 AND revoked_at IS NULL",
         )
         .bind(link_id)
+        .bind(tenant_id)
         .fetch_all(&mut **tx)
         .await?;
-        for (user_id, grole) in &grants {
+        if targets.is_empty() {
+            return Ok(());
+        }
+
+        // 他 active リンクがまだ保持している (user, role) の集合を **1 クエリで**引く
+        // （旧実装は候補ごとに COUNT を撃つ N+1 で、advisory lock 保持時間が解錠者数に比例した）。
+        // ⚠️ `g.revoked_at IS NULL` は必須。落とすと他リンクで個別取消済みの行を「保持している」と
+        // 数えてしまい、全リンク失効後も via_link タプルが残る（fail-open・#375 で最も危険な取り違え）。
+        let held: Vec<(String, String)> = sqlx::query_as(
+            "SELECT g.user_id, g.role FROM node_share_link_grant g \
+             JOIN node_share_link l ON l.link_id = g.link_id \
+             WHERE g.node_id = $1 AND g.tenant_id = $2 AND g.link_id <> $3 \
+               AND g.revoked_at IS NULL \
+               AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at > $4) \
+             GROUP BY g.user_id, g.role",
+        )
+        .bind(node_id)
+        .bind(tenant_id)
+        .bind(link_id)
+        .bind(now)
+        .fetch_all(&mut **tx)
+        .await?;
+        let held: std::collections::HashSet<(&str, &str)> =
+            held.iter().map(|(u, r)| (u.as_str(), r.as_str())).collect();
+
+        for (user_id, grole) in &targets {
             let Some(role) = ShareRole::parse(grole) else {
                 continue; // 破損行は残す（黙って消さない）。
             };
-            // 同一 (node,user,role) を保持する他 active リンク由来の **live な** grant 数。
-            // ⚠️ g.revoked_at IS NULL を落とすと、他リンクで個別取消済みの行を数えて remaining = 1 に
-            // なり、全リンク失効後も via_link タプルが残る（fail-open・#375 で最も危険な取り違え）。
-            let remaining: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM node_share_link_grant g \
-                 JOIN node_share_link l ON l.link_id = g.link_id \
-                 WHERE g.node_id = $1 AND g.user_id = $2 AND g.role = $3 \
-                   AND g.link_id <> $4 AND g.tenant_id = $5 AND g.revoked_at IS NULL \
-                   AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at > $6)",
-            )
-            .bind(node_id)
-            .bind(user_id)
-            .bind(grole)
+            if held.contains(&(user_id.as_str(), grole.as_str())) {
+                continue; // 他 active リンクが保持 → タプルは消さない（参照カウント）。
+            }
+            // 最後の live grant → via_link タプルを剥奪（#366・失敗は ? 伝播で tx 巻き戻し＝
+            // fail-closed）。明示共有の viewer/editor は別 relation なので決して触れない。
+            // FGA 呼び出しはタプル単位のまま（AuthzClient は単発 delete のみ公開）。
+            self.authz
+                .delete_tuple(&ns.user(user_id), role.relation_via_link(), obj)
+                .await?;
+        }
+
+        // このリンクの台帳行を一括削除（上記の呼び出し規約によりリンクは恒久失効済み）。
+        sqlx::query("DELETE FROM node_share_link_grant WHERE link_id = $1 AND tenant_id = $2")
             .bind(link_id)
             .bind(tenant_id)
-            .bind(now)
-            .fetch_one(&mut **tx)
-            .await?;
-            if remaining == 0 {
-                // 最後の live grant → via_link タプルを剥奪（#366・失敗は ? 伝播で tx 巻き戻し＝
-                // fail-closed）。明示共有の viewer/editor は別 relation なので決して触れない。
-                self.authz
-                    .delete_tuple(&ns.user(user_id), role.relation_via_link(), obj)
-                    .await?;
-            }
-            // どちらの場合も当該リンクの grant 行はソフト失効させる（タプルは他 active リンクが保持）。
-            sqlx::query(
-                "UPDATE node_share_link_grant SET revoked_at = now() \
-                 WHERE link_id = $1 AND user_id = $2 AND revoked_at IS NULL",
-            )
-            .bind(link_id)
-            .bind(user_id)
             .execute(&mut **tx)
             .await?;
-        }
         Ok(())
     }
 

@@ -3622,9 +3622,108 @@ async fn share_link_grant_revoke_scope_is_per_link() {
     );
 }
 
-/// リンクごとの失効も grant 行を **DELETE せずソフト失効**させる（deny 台帳の永続化）。
-/// 期限切れリンクは延長で active に戻り得るため、行を消すと deny が蒸発する。
-/// 外形的な振る舞い（一覧・redeem_count）は従来の DELETE と互換であることも確認する。
+/// リンクごとの失効では台帳行を**削除**し（再 redeem が構造的に不可能なので deny 行が無意味・
+/// 墓石を溜めない）、**active な別リンクの deny 行は残す**（そちらは再 redeem を拒否するために必要）。
+/// 墓石掃除と durability の両立が壊れていないことを 1 本で押さえる（Codex P2）。
+#[tokio::test]
+async fn share_link_revoke_clears_grants_but_keeps_deny_on_active_link() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+
+    let file = upload(&service, &http, &octx, None, "tomb.txt", b"t")
+        .await
+        .expect("upload");
+    let mut links = Vec::new();
+    for pw in ["pw-t1", "pw-t2"] {
+        links.push(
+            service
+                .create_share_link(
+                    &octx,
+                    file.id,
+                    GeneralAccessLevel::Organization,
+                    ShareRole::Viewer,
+                    None,
+                    Some(pw),
+                    None,
+                    None,
+                )
+                .await
+                .expect("create"),
+        );
+    }
+    let (a, b) = (links[0].clone(), links[1].clone());
+    service
+        .redeem_share_link(&bctx, &a.token, Some("pw-t1"), None)
+        .await
+        .expect("redeem a");
+    service
+        .redeem_share_link(&bctx, &b.token, Some("pw-t2"), None)
+        .await
+        .expect("redeem b");
+
+    // A は **active のまま** bob を個別取消 → deny 行が残る（durability に必要）。
+    service
+        .revoke_share_link_grant(&octx, a.link_id, &bob, None)
+        .await
+        .expect("revoke grant on a");
+    assert!(
+        matches!(
+            grant_revoked_at(&pool, a.link_id, &bob).await,
+            Some(Some(_))
+        ),
+        "active リンクの個別取消は deny 行を残す"
+    );
+
+    // B はリンクごと失効 → 台帳行は削除される（墓石を残さない）。
+    service
+        .revoke_share_link(&octx, b.link_id, None)
+        .await
+        .expect("revoke link b");
+    assert!(
+        grant_revoked_at(&pool, b.link_id, &bob).await.is_none(),
+        "失効したリンクの台帳行は削除される（再 redeem が構造的に不可能なので deny 行は不要）"
+    );
+    // A の deny 行は無傷で、A からの再解錠は依然として拒否される。
+    assert!(
+        matches!(
+            grant_revoked_at(&pool, a.link_id, &bob).await,
+            Some(Some(_))
+        ),
+        "B の失効掃除が A の deny 行を巻き込まない"
+    );
+    assert!(
+        matches!(
+            service
+                .redeem_share_link(&bctx, &a.token, Some("pw-t1"), None)
+                .await,
+            Err(StorageError::Forbidden)
+        ),
+        "A の個別取消は durable なまま"
+    );
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "両経路でアクセスを失う"
+    );
+}
+
+/// リンク失効時に台帳行が削除され、外形的な振る舞い（一覧・アクセス）が保たれる。
 #[tokio::test]
 async fn share_link_revoke_soft_marks_grants() {
     let Some(ctx) = setup().await else { return };
@@ -3674,11 +3773,8 @@ async fn share_link_revoke_soft_marks_grants() {
         .await
         .expect("revoke link");
     assert!(
-        matches!(
-            grant_revoked_at(&pool, l.link_id, &bob).await,
-            Some(Some(_))
-        ),
-        "リンク失効でも台帳行は残りソフト失効する（deny 台帳が蒸発しない）"
+        grant_revoked_at(&pool, l.link_id, &bob).await.is_none(),
+        "リンク失効で台帳行は削除される（墓石を溜めない）"
     );
     assert!(
         matches!(
@@ -3687,14 +3783,24 @@ async fn share_link_revoke_soft_marks_grants() {
         ),
         "リンク失効でアクセスを失う"
     );
-    // 失効リンクは owner の一覧から消えるので、可視化 API 側の互換は grant 一覧で確認する。
+    // 失効リンクは owner の一覧から消えるので、可視化 API 側の見え方は grant 一覧で確認する。
     assert!(
         service
             .list_share_link_grants(&octx, l.link_id, None)
             .await
             .expect("list grants")
             .is_empty(),
-        "失効後の解錠済み一覧は空（DELETE 時代と同じ見え方）"
+        "失効後の解錠済み一覧は空"
+    );
+    // 失効済みリンクは token 引きの active 述語で弾かれる（再 redeem は構造的に不可能）。
+    assert!(
+        matches!(
+            service
+                .redeem_share_link(&bctx, &l.token, Some("pw-soft"), None)
+                .await,
+            Err(StorageError::Forbidden)
+        ),
+        "失効リンクは deny 行が無くても再 redeem できない"
     );
 }
 
