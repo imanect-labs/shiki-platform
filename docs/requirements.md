@@ -271,6 +271,25 @@ FR-6 の generative UI を土台に、「社内業務アプリが自然増殖す
   エンジニアリング対応は**テナント消去機構・データレジデンシ・監査エクスポート**（FR-9）に集約。
   ISMS/SOC2 は認証取得の別トラック（アルファ後・営業上早期着手）。
 
+### FR-18 テーブル基盤（Teable / Microsoft Lists 相当）
+> 設計正本: [table-platform.md](./table-platform.md)（2026-07 追加・アルファ後の最初の大型トラック。
+> workflow data ノード／`Shiki.data.*` の配線のみアルファ内＝Phase 10 Stage B 残タスク）
+
+- FR-11 の構造化データサービス（`crates/data`）を、**ユーザーが直接作成・共有・編集できる
+  第一級の「テーブル」プロダクト**へ昇格させる。将来 PaaS（AI 製アプリのデプロイ基盤）のデータ層を兼ねる。
+- **保存モデルは JSONB 共有テーブルを維持**（Teable 式のランタイム CREATE TABLE は採らない）。
+  性能は式インデックス・keyset ページング・非索引フィルタガード・クォータで担保（性能包絡を宣言）。
+- フィールド: 安定キー（key/label 分離・rename 可能）・型カタログ拡張（checkbox/url/email/rating/
+  percent/currency/auto_number/attachment/formula/rollup 等の閉集合）。formula は閉じた型付き式 AST・
+  read-time 評価。rollup/lookup は参照先の行ポリシーを閲覧者本人で透過適用。
+- ビュー: grid / kanban / gallery / calendar / **form（作成専用・submitter relation）** の閉集合。
+  ビュー共有はテーブル可読性を付与しない（実行は常に閲覧者権限で再評価）。
+- 消費面: グリッド UI・チャット（data_* ツール＋承認ゲート）・generative UI（table/record_form）・
+  ワークフロー（data ノード）・shiki script（`Shiki.data.*`）・ミニアプリ（既存 capability ＋
+  `table_refs` による既存テーブル参照の同意束縛）が**全て同一チョークポイント・同一権限式**を通る。
+- ライブ更新（粗い変化通知＋再フェッチ・存在オラクルなし）・バッチ書込（冪等キー）・
+  インポート/エクスポート（CSV/xlsx・監査付き）・スキーマ進化（安全変換行列＋backfill ジョブ）。
+
 ## 4. 非機能要件（NFR）
 
 | ID | 区分 | 要件 |

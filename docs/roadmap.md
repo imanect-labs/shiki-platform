@@ -9,7 +9,7 @@
 > [Phase 3](./roadmap/phase-3.md) ・ [Phase 4](./roadmap/phase-4.md) ・ [Phase 5](./roadmap/phase-5.md) ・
 > [Phase 6](./roadmap/phase-6.md) ・ [Phase 7](./roadmap/phase-7.md) ・ [Phase 8](./roadmap/phase-8.md) ・
 > [Phase 9](./roadmap/phase-9.md) ・ [Phase 10](./roadmap/phase-10.md) ・ [Phase 11-pre](./roadmap/phase-11-pre.md) ・
-> [Phase 11](./roadmap/phase-11.md) ・ [Phase 12](./roadmap/phase-12.md) ・ [並行/将来トラック](./roadmap/parallel-tracks.md)
+> [Phase 11](./roadmap/phase-11.md) ・ [Phase 12](./roadmap/phase-12.md) ・ [Phase 13](./roadmap/phase-13.md) ・ [並行/将来トラック](./roadmap/parallel-tracks.md)
 >
 > 各タスクは1つのGitHub Issueに対応（area:* ラベル）。
 
@@ -43,6 +43,9 @@ flowchart LR
   P10 --> ALPHA["★プライベートアルファ"]
   P11 --> ALPHA
   P12 --> ALPHA
+  P9 --> P13["Phase 13<br/>テーブル基盤<br/>Teable/Lists級（アルファ後）"]
+  P10 --> P13
+  ALPHA -.-> P13
   P0 -.->|並行| SK["skillex 認証統合"]
   P8 -.->|将来| FULLPOOL["データプレーン完全相乗り<br/>（フルプール最適化）"]
 ```
@@ -173,9 +176,22 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 - IaC（OpenTofu・cell プロビジョニング自動化）・テナント消去機構・バックアップ/DR（整合スナップショット）・API レート制限。
 - **成果物**: プライベートアルファを顧客に配れる運用体制（契約→プロビジョニング→サポート→解約消去が回る）。
 
+## Phase 13 — テーブル基盤（Teable / Microsoft Lists 級）
+**依存**: Phase 9（実装済み）・Phase 10 Stage B（data ノード＝Task 13.0 として先行・アルファ内）・
+Phase 6（genui）・Phase 11-pre（CSV グリッド実装共有）。詳細: [phase-13.md](./roadmap/phase-13.md)／設計正本: [table-platform.md](./table-platform.md)（FR-18）
+- `crates/data` を第一級「テーブル」プロダクトへ昇格: フィールド安定キー・型カタログ拡張
+  （formula/rollup/attachment 等）・ビュー（grid/kanban/gallery/calendar/form）・グリッド UI・
+  ライブ更新（存在オラクルなしの粗通知）・インポート/エクスポート・スキーマ進化。
+- 全消費面（チャット data_* ツール・genui table/record_form・workflow data ノード・`Shiki.data.*`・
+  ミニアプリ table_refs）を同一チョークポイント・同一権限式で接続。
+- 将来 PaaS（AI 製アプリのデプロイ）のデータ層。保存モデルは JSONB 維持（ランタイム CREATE TABLE は採らない）。
+- **成果物**: 非エンジニアがテーブル＋ビュー＋フォーム＋承認フローを UI だけで組め、
+  同じテーブルを AI・ワークフロー・script・ミニアプリが権限厳密に読み書きできる。
+
 ---
 
 > **プライベートアルファ = Phase 0〜12 ＋ SAAS.1〜4 の完成形**（requirements §1.1 のリリース定義）。
+> Phase 13 はアルファ後の最初の大型トラック（Task 13.0 のみアルファ内＝Phase 10 Stage B 残）。
 
 ---
 

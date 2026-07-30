@@ -727,6 +727,9 @@ flowchart TB
 - **能力カタログ**: storage/data/rag/ai/identity/events。`能力.操作`＋リソース束縛、実認可OpenFGA、アプリ所有リソースあり。
 - **構造化データ**（`crates/data`）: `record(table_id,id,data JSONB,rev)` ＋ `table_schema`、宣言フィールドに式インデックス（ランタイムDDLなし）。
   フィールド型に user/dept/file/record 参照。
+  📝 **2026-07 拡張（FR-18）**: 本サービスを第一級の「テーブル」プロダクト（Teable / Microsoft Lists 相当・
+  グリッド UI・ビュー・formula/rollup・全消費面からの参照）へ昇格させる設計正本は
+  **[table-platform.md](./table-platform.md)**（保存モデル=JSONB 維持の決定・PIT-53〜57 込み）。
   **行認可 = テーブルReBAC（OpenFGA・有界）＋クエリ時述語（ABAC・WHERE強制付与・集計にも適用・バイパス不可）＋フィールドマスク＋個別共有のみスパースtuple**。
   宣言的クエリ/保存ビュー（生SQL非公開）、リビジョン履歴、`rev`で楽観ロック。
 - **ワークフロー（2026-07 全面改訂・#97）**: 旧「軽量FSMエンジン」は廃止し、
