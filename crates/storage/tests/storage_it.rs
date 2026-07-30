@@ -4344,10 +4344,12 @@ async fn system_area_hides_from_user_surfaces_and_append_accumulates() {
     seed_org_member(&c.authz, &org, "alice").await;
 
     // 通常フォルダ（対照＝ドライブ一覧に出ることの確認用）とシステム領域フォルダ。
-    c.service
+    let visible_folder = c
+        .service
         .create_folder(&ctx, None, "資料", None)
         .await
-        .expect("通常フォルダ");
+        .expect("通常フォルダ")
+        .id;
     let workspace = c
         .service
         .create_system_folder(&ctx, None, "agent-workspace-t1", None)
@@ -4479,6 +4481,37 @@ async fn system_area_hides_from_user_surfaces_and_append_accumulates() {
         !names(&trash).contains(&"notes.md".to_string()),
         "システム領域はゴミ箱一覧に出ない"
     );
+
+    // ---- 移動でシステム属性が引き直される（隠し領域の外へ出したら見える・#392）。 ----
+    let moved = c
+        .service
+        .append_file_at(&ctx, workspace.id, "draft.md", b"x", "text/markdown", None)
+        .await
+        .expect("2 つ目のファイル");
+    c.service
+        .move_file(&ctx, moved.node_id, Some(visible_folder), None)
+        .await
+        .expect("可視フォルダへ移動");
+    let after_move: bool = sqlx::query_scalar("SELECT system FROM node WHERE id = $1")
+        .bind(moved.node_id)
+        .fetch_one(&c.pool)
+        .await
+        .unwrap();
+    assert!(
+        !after_move,
+        "システム領域の外へ移したら可視に戻る（作成時継承だけだと食い違う）"
+    );
+    // 逆向き（可視 → システム領域）でも引き直される。
+    c.service
+        .move_file(&ctx, moved.node_id, Some(workspace.id), None)
+        .await
+        .expect("システム領域へ戻す");
+    let back: bool = sqlx::query_scalar("SELECT system FROM node WHERE id = $1")
+        .bind(moved.node_id)
+        .fetch_one(&c.pool)
+        .await
+        .unwrap();
+    assert!(back, "システム領域へ入れたら隠れる");
 
     // ---- outbox は忠実に残り、system フラグが乗る（relay がこれで索引をスキップする）。 ----
     let mut tx = c.pool.begin().await.unwrap();

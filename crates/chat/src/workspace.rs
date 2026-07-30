@@ -20,7 +20,8 @@
 //!
 //! フォルダ未指定の thread は `agent-workspace-<thread>` を自動生成して root にする（既存ファイルに
 //! 触れない安全既定）。「このフォルダで作業」を明示選択した場合はその配下に作る
-//! （worker/generate.rs `ensure_workspace`）。「未指定なら Drive 全体」は採らない（#350 決定）。
+//! （生成は [`LazyWorkspace::ensure_folder`]・呼び出しは worker/generate.rs `lazy_workspace`）。
+//! 「未指定なら Drive 全体」は採らない（#350 決定）。
 //!
 //! # 生成は遅延（#392）
 //!

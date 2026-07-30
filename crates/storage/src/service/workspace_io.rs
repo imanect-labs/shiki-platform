@@ -50,7 +50,11 @@ impl StorageService {
         // 全文置換は既存内容を読む必要が無いので、txn の**外**で put まで済ませる（ロックを短く保つ）。
         let sha256 = sha256_hex(bytes);
         let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha256);
-        if !self.blob_exists(&sha256, ctx).await? {
+        // txn の外なのでプールから 1 本借りて確認する（占有を跨がない）。
+        let mut probe = self.db.acquire().await?;
+        let known = Self::blob_exists(&mut probe, &sha256, ctx).await?;
+        drop(probe);
+        if !known {
             self.store
                 .put_object(&final_key, bytes.to_vec(), content_type)
                 .await?;
@@ -117,7 +121,7 @@ impl StorageService {
         // 追記は「既存を読んでから」ハッシュが決まるため、put は txn 内になる（ロックを跨ぐ）。
         // rollback すると参照されない blob オブジェクトが残るが、content-addressed なので
         // 同一内容の再試行で再利用され、実害は容量のみ（blob 行は commit されない）。
-        if !self.blob_exists(&sha256, ctx).await? {
+        if !Self::blob_exists(&mut tx, &sha256, ctx).await? {
             self.store
                 .put_object(&final_key, content, content_type)
                 .await?;
@@ -177,14 +181,23 @@ impl StorageService {
     }
 
     /// 同一内容の blob が既にあるか（あれば put を省く）。
-    async fn blob_exists(&self, sha256: &str, ctx: &AuthContext) -> Result<bool, StorageError> {
+    ///
+    /// **接続は呼び出し側が渡す**。追記経路はトランザクション（＝1 コネクション占有）を
+    /// 保持したまま呼ぶため、プールから別コネクションを取ると
+    /// 「全コネクションが tx を持ったまま互いに待つ」枯渇/デッドロックになり得る
+    /// （レビュー指摘・CodeRabbit Critical / Codex P1）。
+    async fn blob_exists(
+        conn: &mut PgConnection,
+        sha256: &str,
+        ctx: &AuthContext,
+    ) -> Result<bool, StorageError> {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = $3)",
         )
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(sha256)
-        .fetch_one(&self.db)
+        .fetch_one(conn)
         .await?;
         Ok(exists)
     }
