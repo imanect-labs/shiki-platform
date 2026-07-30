@@ -82,7 +82,7 @@ pub struct ClaimedRun {
     pub mini_app_version: Option<i64>,
 }
 
-// `post_message`（Transactional Outbox）は [`super::post`] に分離（500 行規約）。
+// `post_message`（Transactional Outbox）は [`super::post`] に分離（行数規約）。
 
 impl ChatStore {
     /// run を claim する（queued かリース失効 running を running へ・fencing_token +1）。

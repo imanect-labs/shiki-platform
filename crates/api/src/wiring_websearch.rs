@@ -1,4 +1,4 @@
-//! web 検索プロバイダの配線（`wiring.rs` から分割・500 行規約）。
+//! web 検索プロバイダの配線（`wiring.rs` から分割・行数規約）。
 
 use std::sync::Arc;
 use std::time::Duration;

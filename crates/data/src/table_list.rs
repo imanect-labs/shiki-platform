@@ -1,4 +1,4 @@
-//! テーブル一覧（Task 9.2/9.8）。`store.rs` から分離（1 ファイル 500 行規約）。
+//! テーブル一覧（Task 9.2/9.8）。`store.rs` から分離（1 ファイル行数規約）。
 //!
 //! FGA viewer 実効集合 → DB 突合の二段。app-gateway の所有束縛（`list_app_tables`）は
 //! `app_id` の絞り込みを LIMIT より前に SQL で行う（上限超過時の欠落を防ぐ）。

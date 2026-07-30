@@ -1,6 +1,6 @@
 //! 制御ノード純関数（branch/switch/wait/map）の評価を検証する。
 //! これらは `self` を取らない関連関数で能力を呼ばないため、DB/ポート無しで直接叩ける。
-//! （exec.rs の 500 行上限を守るため別ファイルへ分離し `#[path]` で結線する。）
+//! （exec.rs の行数上限を守るため別ファイルへ分離し `#[path]` で結線する。）
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::CapabilityNodeExecutor as Exec;

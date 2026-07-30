@@ -1,5 +1,5 @@
 //! Office 統合（Collabora・WOPI・AI ライブ編集）の配線（Task 11.5/11.6・issue #352）。
-//! main の起動フローから切り出す（1 ファイル 500 行規約・wiring_gui/wiring_gateway と同じ流儀）。
+//! main の起動フローから切り出す（1 ファイル行数規約・wiring_gui/wiring_gateway と同じ流儀）。
 
 use std::sync::Arc;
 

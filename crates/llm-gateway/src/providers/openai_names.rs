@@ -1,4 +1,4 @@
-//! OpenAI 互換 wire へのツール名写像（`openai.rs` から分割・500 行規約）。
+//! OpenAI 互換 wire へのツール名写像（`openai.rs` から分割・行数規約）。
 //!
 //! OpenAI の function.name 制約は `^[a-zA-Z0-9_-]{1,64}$`。このリポジトリのツール名には
 //! ドット入り（`document.edit` 等）があり、寛容なプロバイダは通すが DeepSeek 等は 400 で

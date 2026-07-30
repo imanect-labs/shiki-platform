@@ -1,5 +1,5 @@
 //! data スキーマ検証（validate_table_schema / validate_field / validate_schema_update）の
-//! 検証マトリクス。schema.rs の 500 行上限を守るため #[path] で分離する（純粋・DB 不要）。
+//! 検証マトリクス。schema.rs の行数上限を守るため #[path] で分離する（純粋・DB 不要）。
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

@@ -1,6 +1,6 @@
 //! SSE で配信する生成イベント（`generation_event.payload` と同型）。
 //!
-//! [`crate::model`] から切り出した（1 ファイル 500 行のゲート）。ドメイン型（`ContentBlock` 等）と
+//! [`crate::model`] から切り出した（1 ファイル行数ゲート）。ドメイン型（`ContentBlock` 等）と
 //! 違い、こちらは**ワイヤ形式**であり、`generation_event` に append されて replay される。
 //! そのため**フィールド追加は必ず後方互換**（`#[serde(default)]`）にすること — 過去 run の
 //! payload をデシリアライズできなくなると、再訪時に会話が壊れる。

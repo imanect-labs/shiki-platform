@@ -246,7 +246,7 @@ impl RunStatus {
     }
 }
 
-// SSE の生成イベント（ワイヤ形式）は `stream_event` へ切り出した（1 ファイル 500 行のゲート）。
+// SSE の生成イベント（ワイヤ形式）は `stream_event` へ切り出した（1 ファイル行数ゲート）。
 // 利用側の `chat::model::StreamEventKind` などのパスは変えない。
 pub use crate::stream_event::{PlanSubtask, StreamEvent, StreamEventKind};
 
