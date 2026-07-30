@@ -81,7 +81,13 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
   // ── フェーズ 1: 計画カード（開始ボタンで承認を取る） ──
   const planStart = page.getByTestId("genui-plan-start");
   await expect(planStart).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByTestId("genui-plan-steps").locator("li")).toHaveCount(4);
+  // 計画は**この依頼固有の問い**が並ぶ（手順を並べない）。件数と、方法論の語が出ていないことを見る。
+  await expect(page.getByTestId("genui-plan-steps").locator("li")).toHaveCount(6);
+  const plan = page.getByTestId("genui-plan-steps");
+  await expect(plan).toContainText("2026 年の実数はいくらか");
+  for (const method of ["証拠台帳", "節ごとに執筆", "視点を分けて"]) {
+    await expect(plan.getByText(method, { exact: false })).toHaveCount(0);
+  }
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/deep-research-plan.png`, fullPage: true });
   await planStart.click();
 
