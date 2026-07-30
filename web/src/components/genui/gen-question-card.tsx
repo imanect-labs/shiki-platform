@@ -259,7 +259,16 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
             回答を送信しました
           </span>
         ) : isLast ? (
-          <Button type="button" size="sm" onClick={onSubmit} disabled={busy} className={PRESSABLE}>
+          <Button
+            type="button"
+            size="sm"
+            onClick={onSubmit}
+            disabled={busy}
+            className={PRESSABLE}
+            // ラベルは AI が `submit_label` で自由に決める（「この条件で進める」等）。
+            // e2e が文言に依存しないよう testid で掴む（計画カードの genui-plan-start と対）。
+            data-testid="genui-question-submit"
+          >
             {card.submit_label || "回答する"}
           </Button>
         ) : (

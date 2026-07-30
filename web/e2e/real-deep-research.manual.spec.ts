@@ -77,17 +77,15 @@ test("実 LLM: /deep-research が出典つきレポートまで完走する", as
     const options = page.getByTestId("genui-question-option");
     await expect(options.first()).toBeVisible({ timeout: 5 * 60 * 1000 });
     await page.screenshot({ path: `${SHOTS}/real-dr-question.png`, fullPage: true });
-    // 各問の先頭選択肢を選び、最後の問いで送信する。
-    for (let step = 0; step < 4; step++) {
+    // 各問の先頭選択肢を選び、最後の問いで送信する。問い数も submit のラベルも AI が決めるので
+    // 「次へ」が出ている限り送り、消えたら testid で送信する（文言に依存しない）。
+    const next = page.getByRole("button", { name: "次へ" });
+    for (let step = 0; step < 6; step++) {
       await options.first().click();
-      const next = page.getByRole("button", { name: "次へ" });
-      if (await next.isVisible().catch(() => false)) {
-        await next.click();
-        continue;
-      }
-      break;
+      if (!(await next.isVisible().catch(() => false))) break;
+      await next.click();
     }
-    await page.getByRole("button", { name: /この条件|回答/ }).first().click();
+    await page.getByTestId("genui-question-submit").click();
 
     // ── フェーズ 1: 計画カード（この依頼固有の問いが並ぶこと） ──
     const planStart = page.getByTestId("genui-plan-start");
