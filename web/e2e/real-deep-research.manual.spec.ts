@@ -26,11 +26,12 @@ const TOPIC =
 const FLOW = process.env.FLOW ?? "auto";
 
 test.use({
-  deviceScaleFactor: 2,
+  // 録画時は等倍・小さめ（webm が数十 MB になるため）。スクショだけなら 2x で撮る。
+  deviceScaleFactor: process.env.RECORD === "1" ? 1 : 2,
   locale: "ja-JP",
-  viewport: { width: 1280, height: 1200 },
-  // 動画は 1 テストにつき 1 本（webm）。等倍サイズで撮る（deviceScaleFactor は効かない）。
-  video: process.env.RECORD === "1" ? { mode: "on", size: { width: 1280, height: 1200 } } : "off",
+  viewport: { width: 1200, height: 900 },
+  // 動画は 1 テストにつき 1 本（webm）。size はビューポートに合わせる。
+  video: process.env.RECORD === "1" ? { mode: "on", size: { width: 1200, height: 900 } } : "off",
 });
 test.setTimeout(30 * 60 * 1000);
 test.skip(process.env.REAL_LLM !== "1", "実 LLM 検証は手動（REAL_LLM=1 で実行）");
