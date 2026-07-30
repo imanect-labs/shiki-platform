@@ -102,7 +102,10 @@ export function ToolActivity({
   if (items.length === 0) return null;
 
   const running = streaming && items.some((it) => it.running);
-  const open = manualOpen ?? !running;
+  // **常に開いたまま**。実行状態から開閉を導くと、`running` がステップ境界で false↔true に
+  // 振れる（次のツールが始まるまでの一瞬、実行中の項目がゼロになる）たびに開閉が起き、
+  // 走行中ずっとパカパカする。開閉はユーザーの操作だけで変わる。
+  const open = manualOpen ?? true;
   const rolling = items.slice(-ROLLING_WINDOW);
   const lastCategory = describeTool(items[items.length - 1]).category;
   const season = seasonVar(seasonIndexFor(lastCategory, running));
