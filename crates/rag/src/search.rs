@@ -5,9 +5,10 @@
 //! 2. クエリ埋め込み → dense（Qdrant）/ keyword（Tantivy）並列取得（over-fetch）
 //! 3. RRF 融合・重複排除
 //! 4. **post-filter（OpenFGA file 粒度・HigherConsistency）を reranker の前に**（PIT-2）
-//! 5. 不足時バックフィル（fetch_k 倍増・最大 3 ラウンド・候補が尽きるまで top_k を保証）
-//! 6. rerank（認可済み候補の上位 rerank_pool 件のみ）
-//! 7. ハイドレーション（node JOIN・`deleted_at is null` 強制・親チャンク展開）
+//! 5. ハイドレーション（node JOIN・org 境界と `deleted_at is null` を強制）— **ループ内**。
+//!    ここで落ちた候補は最終結果に出せないので、採択せずバックフィルの対象にする（#377）
+//! 6. 不足時バックフィル（fetch_k 倍増・最大 3 ラウンド・候補が尽きるまで top_k を保証）
+//! 7. rerank（認可済み・生存候補の上位 rerank_pool 件のみ）＋親チャンク展開
 //! 8. 引用監査（chunk_id 群＋file 粒度の認可判定を audit_log へ・trace_id 付き）
 
 use std::collections::{HashMap, HashSet};
@@ -135,14 +136,24 @@ impl SearchService {
         };
         timings.embed_ms = t.elapsed().as_millis() as u64;
 
-        // 3〜5. 取得 → RRF → post-filter → バックフィル。
+        // 3〜5. 取得 → RRF → post-filter → **hydrate** → バックフィル。
+        //
+        // hydrate をループ**内**に置くのが #377 の要点。hydrate は org 境界（`n.org = ctx.org`・
+        // PIT-45）と `deleted_at is null` を課すので、ここで行が引けない候補は最終結果に出ない。
+        // ループ後に 1 回だけ hydrate していた頃は、それらが pool を埋めたまま黙って落ちるため、
+        // マルチ org テナントで別 org の file に直接 viewer を持つユーザーだと、別 org の高スコア
+        // チャンクが枠を食って要求 `top_k` より少ない（最悪 0 件）結果になり得た（漏洩はしない）。
+        // 「行が引けたか」を採択条件にすると、既存の `exclude`／`fetch_k` 倍化機構がそのまま
+        // 埋め直しに働く（索引側の変更＝再インデックスを要さない）。
         let pool_target = top_k.max(self.config.rerank_pool);
         let mut fetch_k = (pool_target * over_fetch.max(1)).min(MAX_FETCH_K);
         let mut allowed: Vec<ScoredChunk> = Vec::new();
+        let mut rows: HashMap<Uuid, HydratedChunk> = HashMap::new();
         let mut seen: HashSet<Uuid> = HashSet::new();
         let mut file_decisions: HashMap<Uuid, bool> = HashMap::new();
         let t_retrieve = Instant::now();
         let mut post_filter_ms = 0u64;
+        let mut hydrate_ms = 0u64;
         loop {
             debug.backfill_rounds += 1;
             let exclude: Vec<Uuid> = seen.iter().copied().collect();
@@ -180,7 +191,20 @@ impl SearchService {
             debug.authz_denied_chunks += denied_chunks as u32;
             debug.authz_denied_files += denied_files as u32;
             file_decisions.extend(decisions);
-            allowed.extend(round_allowed);
+
+            // このラウンドの許可候補を hydrate し、**行が引けたものだけ**採択する（#377）。
+            // 落ちた分（他 org / 削除済み）は `seen` に入っているので再取得されず、次ラウンドが
+            // fetch_k を倍にして同 org の生存チャンクで枠を埋め直す。
+            let t_h = Instant::now();
+            let round_rows = self.hydrate(ctx, &round_allowed).await?;
+            hydrate_ms += t_h.elapsed().as_millis() as u64;
+            debug.hydrate_dropped += (round_allowed.len() - round_rows.len()) as u32;
+            allowed.extend(
+                round_allowed
+                    .into_iter()
+                    .filter(|c| round_rows.contains_key(&c.chunk_id)),
+            );
+            rows.extend(round_rows);
 
             if allowed.len() >= pool_target
                 || exhausted
@@ -190,8 +214,9 @@ impl SearchService {
             }
             fetch_k = (fetch_k * 2).min(MAX_FETCH_K);
         }
-        timings.retrieve_ms = t_retrieve.elapsed().as_millis() as u64 - post_filter_ms;
+        timings.retrieve_ms = t_retrieve.elapsed().as_millis() as u64 - post_filter_ms - hydrate_ms;
         timings.post_filter_ms = post_filter_ms;
+        timings.hydrate_ms = hydrate_ms;
 
         // 融合スコア順で rerank プールへ。
         allowed.sort_by(|a, b| {
@@ -200,11 +225,9 @@ impl SearchService {
                 .then_with(|| a.chunk_id.cmp(&b.chunk_id))
         });
         allowed.truncate(self.config.rerank_pool.max(top_k));
-
-        // 7(前半). ハイドレーション（rerank は本文が必要なので先に読む）。
-        let t = Instant::now();
-        let rows = self.hydrate(ctx, &allowed).await?;
-        timings.hydrate_ms = t.elapsed().as_millis() as u64;
+        // プール外の本文は捨てる（バックフィルで採択した分がプールを超えることがある）。
+        let pool: HashSet<Uuid> = allowed.iter().map(|c| c.chunk_id).collect();
+        rows.retain(|id, _| pool.contains(id));
 
         // 6. rerank（認可済み・生存チャンクのみ）。
         let t = Instant::now();
@@ -282,6 +305,10 @@ impl SearchService {
     /// org 境界（#371・PIT-45）: `storage::load_node` は `org = ctx.org AND tenant_id` で絞るため、
     /// org は tenant 内のもう一段の隔離境界。hydrate も `n.org = ctx.org` を課し、マルチ org テナントで
     /// 他 org 文書のチャンクが回答に混入しない（storage の直接オープンと同じ境界へ揃える）。
+    ///
+    /// **バックフィルループ内から呼ぶ**（#377）。ここで行が引けないことは「この候補は最終結果に
+    /// 出せない」と同義なので、呼び出し側は採択条件として使い、落ちた分を次ラウンドで埋め直す。
+    /// ループ外で 1 回だけ呼ぶと、落ちた候補が pool を占めたまま結果が `top_k` に足りなくなる。
     async fn hydrate(
         &self,
         ctx: &AuthContext,

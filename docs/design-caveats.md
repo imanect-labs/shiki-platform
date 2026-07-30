@@ -530,12 +530,19 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   （直接オープン／RAG／構造化データ／エクスポート）は必ず `org = ctx.org AND tenant_id` で絞る。
 - **受け入れ条件（充足）**: `rag::search_authz_it::hydrate_drops_cross_org_chunk`（別 org の直接 viewer を
   持つユーザーが pre/post-filter を通っても hydrate の org 述語で 0 件になることを実 OpenFGA で検証）。
-- **既知の限界（follow-up）**: org は pre-filter（`readable_set` のタグ／VectorStore の索引）ではなく
-  hydrate の SQL 述語で絞る。**マルチ org テナントで、あるユーザーが別 org の file にも直接 viewer を持つ
-  稀なケース**では、別 org の高スコアチャンクが pool を埋めてから hydrate で捨てられるため、要求 `top_k`
-  より少ない（最悪 0 件）結果になり得る（漏洩はしない・fail-closed）。厳密な完全性が要るなら org を索引
-  pre-filter に含めるか hydrate 後にバックフィルする（#371 follow-up・Codex 指摘）。現状は単一 org テナント
-  では発生せず、跨ぎ viewer は例外的なため許容。
+- **完全性（#377・解消済み）**: org は依然として pre-filter（`readable_set` のタグ／VectorStore の索引）
+  ではなく hydrate の SQL 述語で絞る。以前は hydrate がバックフィルループの**外**で 1 回だけ走ったため、
+  **マルチ org テナントで別 org の file にも直接 viewer を持つ稀なケース**では、別 org の高スコアチャンクが
+  pool を埋めてから hydrate で捨てられ、要求 `top_k` より少ない（最悪 0 件）結果になり得た（漏洩はしない
+  ・fail-closed）。**hydrate をループ内へ移し「行が引けたか」を採択条件にした**ことで、落ちた分は既存の
+  `exclude`／`fetch_k` 倍化機構がそのまま同 org 候補で埋め直す。同じ原因で潜在していた
+  `deleted_at`（索引より先に削除された node）由来の取りこぼしも同時に解消した。
+  - **索引 pre-filter に org を入れる案は採らなかった**: Qdrant payload への追加は容易だが、Tantivy は
+    スキーマ変更で既存の全テナント index が `SchemaError` になり検索も取り込みも停止する。かつ再インデックス
+    基盤が無い（`RagAdmin` は `purge_tenant` のみ）。索引を触らず既存データに即日効く後者を選んだ。
+  - **受け入れ条件（充足）**: `rag::search_scripted_it::backfill_recovers_top_k_when_cross_org_chunks_outrank`
+    （別 org の高スコア 3 件が上位を占めても top_k=3 が自 org 文書で埋まる）。落ちた件数は
+    `SearchDebug.hydrate_dropped` で可観測（恒常的に大きいなら索引が実体とずれている合図）。
 
 ## 🟠 PIT-46: テナント跨ぎ閲覧共有（authenticated audience）の安全包絡（#340 系）
 
