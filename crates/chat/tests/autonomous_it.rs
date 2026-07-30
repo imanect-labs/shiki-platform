@@ -433,17 +433,24 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         .await
         .unwrap();
     let mut rx3 = store.event_stream(res3.run_id, 0);
+    let mut t3_done = false;
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(20), rx3.next())
             .await
             .expect("イベント待ちタイムアウト");
         let Some(ev) = next else { break };
         match ev.event {
-            StreamEventKind::Done { .. } => break,
+            StreamEventKind::Done { .. } => {
+                t3_done = true;
+                break;
+            }
             StreamEventKind::Error { message } => panic!("生成失敗: {message}"),
             _ => {}
         }
     }
+    // **完了を確かめてから**フォルダ未作成を見る。未完了のまま assert すると
+    // 「まだ作っていないだけ」を「作らない」と誤判定する（偽陽性・レビュー指摘）。
+    assert!(t3_done, "fs を使わない自律 run も完了する");
     assert!(
         store
             .workspace_folder_id(t3.id, &c.tenant_id)

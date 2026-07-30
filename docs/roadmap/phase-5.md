@@ -3,7 +3,12 @@
 > ✅ **実装済み（2026-07-08・#156〜#165 / 6 本 stacked PR）**。以下の確定事項で 5.1〜5.11 を実装:
 > - **Durable Workspace モデル**（human 承認済み・ライブ FUSE/永続サンドボックスは post-alpha のため不採用）:
 >   ワークスペース = thread ごとの StorageService フォルダ（`thread.workspace_folder_id`・durable・版管理・監査・
->   書込→outbox→自動再索引）。**FUSE マウントの読み替え先**はこれ。file CRUD（`fs_list`/`fs_read`/`grep`/`fs_write`/
+>   書込→outbox）。**FUSE マウントの読み替え先**はこれ。
+>   **⚠️ #392 で更新**: 自動生成のワークスペースは**システム領域**（`node.system`）になり、
+>   ドライブ一覧・名前検索・ゴミ箱に出さず、**書込イベントを RAG へ relay しない**（使い捨ての
+>   作業メモを社内検索に載せない）。フォルダは fs ツールの初回呼び出しで**遅延生成**する。
+>   「このフォルダで作業」を明示選択した run は**従来どおり可視・索引**（Task 5.8 の性質が効く）。
+>   成果物をドライブへ出すのは `save_note` の下書き確定（＝ユーザーの保存操作）。file CRUD（`fs_list`/`fs_read`/`grep`/`fs_write`/
 >   `fs_edit`/`fs_delete`）は StorageService 直読み/直書き（read-after-write 成立＝**PIT-5 の「ワークスペース直読み経路」**を
 >   具現化・RAG 非同期索引とは経路分離）。`shell` のみ ephemeral sandbox に seed→exec→sync-back。
 > - 同一 `agent-core` を `AgentProfile{Chat,Autonomous}` で切替（5.1）。計画（`plan` メタツール・5.2）・コンテキスト剪定（5.3）・
@@ -165,6 +170,9 @@
   - [ ] エージェントが作成した成果物が自動で索引され検索/引用できる
   - [ ] エージェントによる削除/移動が索引に正しく反映される
   - [ ] エージェント書込が版管理され、過去版に戻せる
+- **⚠️ #392 での範囲変更**: 上記が成立するのは**明示選択したワークスペース**（可視領域）。
+  自動生成のシステム領域は relay 時点で除外され索引されない（版管理・監査・read-after-write は
+  そのまま効く）。成果物をユーザーへ渡す経路は `save_note` の下書き確定に一本化した。
 
 ### Task 5.9: 進捗の可観測化（計画・ステップ・ツールのライブ可視化＋Langfuse）
 - **area**: obs / **path**: `crates/agent-core`, `crates/api`, `crates/llm-gateway`

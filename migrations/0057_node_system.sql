@@ -13,17 +13,30 @@
 
 alter table node add column system boolean not null default false;
 
--- 既存の自律ワークスペース（thread ごとの agent-workspace-<uuid>）とその配下を system 化する。
--- node_closure で子孫を引く（ワークスペースはフラットだが、将来のサブフォルダにも効かせる）。
+-- 既存の自律ワークスペースとその配下を system 化する。
+--
+-- 判定は「**その thread が自動生成した**フォルダ」だけに絞る。条件は 2 つの AND:
+--   ① `thread.workspace_folder_id` がそのフォルダを指している
+--   ② 名前が `agent-workspace-<その thread の id>` と完全一致する（生成規則そのもの）
+--
+-- `name like 'agent-workspace-%'` だけで拾うと、利用者が自分で作った同名フォルダを勝手に
+-- 隠してしまう（この命名は予約されていない・レビュー指摘 Codex P1）。逆に
+-- `workspace_folder_id` だけで拾うと、「既存フォルダをそのままワークスペースにする」で
+-- 利用者が**選んだ可視フォルダ**まで隠してしまう。名前に thread id が入っている＝
+-- ensure_workspace が作ったもの、という事実で両方を排除する。
+with auto_workspace as (
+    select n.id
+    from thread t
+    join node n on n.id = t.workspace_folder_id
+    where n.kind = 'folder'
+      and n.name = 'agent-workspace-' || t.id::text
+)
 update node set system = true
-where kind = 'folder' and deleted_at is null and name like 'agent-workspace-%';
-
-update node set system = true
-where id in (
-    select c.descendant from node_closure c
-    join node f on f.id = c.ancestor
-    where f.kind = 'folder' and f.name like 'agent-workspace-%'
-);
+where id in (select id from auto_workspace)
+   or id in (
+        select c.descendant from node_closure c
+        where c.ancestor in (select id from auto_workspace)
+   );
 
 -- 一覧クエリは「隠さない側」（system = false）が既定の絞り込みなので、そちらに部分索引を張る。
 -- 既存の node_parent_idx（parent 単位）と併用され、system 領域が増えても一覧が劣化しない。

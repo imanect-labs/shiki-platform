@@ -1053,13 +1053,15 @@ async fn system_area_writes_are_not_indexed() {
         "システム領域は rag_ingest へ流れない"
     );
 
-    // ack はされる（未処理のまま溜め続けない＝毎回スキャンし直さない）。
-    let unprocessed: i64 = sqlx::query_scalar(
-        "select count(*) from storage_event_outbox where node_id = $1 and processed_at is null",
+    // ack はされるが**行は消さない**（outbox は忠実なログとして残す／他 consumer が読む）。
+    let (total, unprocessed): (i64, i64) = sqlx::query_as(
+        "select count(*), count(*) filter (where processed_at is null) \
+         from storage_event_outbox where node_id = $1",
     )
     .bind(hidden)
     .fetch_one(&env.pool)
     .await
     .unwrap();
+    assert_eq!(total, 1, "スキップしても outbox 行は残る（削除しない）");
     assert_eq!(unprocessed, 0, "relay がスキップした行も processed になる");
 }

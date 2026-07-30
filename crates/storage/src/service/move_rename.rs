@@ -239,6 +239,20 @@ impl StorageService {
                 .execute(&mut *tx)
                 .await?;
             }
+            // system 属性（#392）を新しい親から**サブツリー全体へ引き直す**。
+            //
+            // 作成時の継承だけだと、移動でシステム領域へ入った/出たノードの可視性が食い違う
+            // （隠し領域の中に見えるファイルができる／出したのに検索に出てこない・
+            // レビュー指摘 Codex P2）。closure を張り直した直後に、移動ノード自身と子孫へ
+            // 新親の値を書く（新親なし＝ルート直下は false＝可視）。
+            sqlx::query(
+                "UPDATE node SET system = coalesce(                      (SELECT p.system FROM node p WHERE p.id = $2), false)                  WHERE tenant_id = $3                    AND id IN (SELECT descendant FROM node_closure                               WHERE tenant_id = $3 AND ancestor = $1)",
+            )
+            .bind(node_id)
+            .bind(final_parent)
+            .bind(&ctx.tenant_id)
+            .execute(&mut *tx)
+            .await?;
         }
         audit::record_on(
             &mut tx,
