@@ -51,12 +51,19 @@ pub struct SubagentLimits {
 }
 
 impl Default for SubagentLimits {
+    /// 実 LLM ＋ 実 web で 1 体が**完走できる**ことを基準にした既定（#391）。
+    ///
+    /// `Spent.tokens` は各ステップの prompt＋completion の**累積**で、prompt には伸び続ける履歴が
+    /// 毎回含まれる（≒二次で増える）。取得本文が入る調査エージェントでは、6 ステップでも
+    /// 累積 10 万トークン級になる。当初 60k で切っていたところ、実検証で**3 体すべてが
+    /// `Budget(Tokens)` で findings を返せず**、親がレポートを書かずに終わった。
+    /// ステップを絞って（8→6）トークン枠を現実的な値へ上げ、体数上限は代わりに下げている。
     fn default() -> Self {
         SubagentLimits {
-            max_steps: 8,
-            max_tokens: 60_000,
-            max_cost_usd_micros: 200_000,
-            max_per_run: 12,
+            max_steps: 6,
+            max_tokens: 120_000,
+            max_cost_usd_micros: 400_000,
+            max_per_run: 8,
             parallel_read_tools: 2,
         }
     }
@@ -285,7 +292,8 @@ impl Tool for SubagentTool {
         let mut out = if findings.is_empty() {
             ToolOutcome::error(format!(
                 "サブエージェントは findings を返しませんでした（停止理由: {:?}）。\
-                 委譲せず自分で調べてください。",
+                 委譲をやり直すなら boundary をもっと狭く切ること。やり直さない場合は\
+                 自分で web_search / web_fetch を使って調べ、**レポートは必ず書くこと**。",
                 outcome.stop
             ))
         } else {

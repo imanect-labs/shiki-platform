@@ -49,6 +49,9 @@ pub struct WorkerConfig {
     /// 自律プロファイルの最大ステップ（長ホライズン）。
     pub autonomous_max_steps: usize,
     /// 自律プロファイルの累積トークン上限（予算ガード・Task 5.7）。
+    ///
+    /// 委譲（#391）は子の消費が親へ積まれるため 1 run の累計が**単一エージェントの 10 倍規模**に
+    /// なる。絞る deployment はここと `subagent.max_per_run` を一緒に下げる。
     pub autonomous_max_tokens: u64,
     /// 通常チャット 1 応答の最大トークン。reasoning 系は思考も消費するため、
     /// 長文成果物・大きなツール引数に耐える値にする（旧 2048 は引数切れを起こした）。
@@ -60,11 +63,8 @@ pub struct WorkerConfig {
     pub parallel_read_tools: usize,
     /// 自律プロファイルの累積コスト上限（マイクロ USD・Task 5.7）。
     pub autonomous_max_cost_usd_micros: i64,
-    /// サブエージェント委譲（`subagent`・#391）の上限。
-    ///
-    /// トークンが単一エージェント比で十数倍になり得る機構なので、①1 体あたりのステップ/
-    /// トークン/コスト ②1 run の累計体数 ③子の中の並列度 の三重で縛る。子の消費は親の
-    /// `Spent` へ積まれるため、最終的な安全弁は `autonomous_max_tokens` / `..._cost_usd_micros`。
+    /// サブエージェント委譲（`subagent`・#391）の上限。①1 体あたりのステップ/トークン/コスト
+    /// ②1 run の累計体数 ③子の中の並列度 の三重で縛る（最終的な安全弁は上の累計上限）。
     pub subagent: agent_core::SubagentLimits,
     /// 自律 shell に同梱するゲストコマンドパッケージ（coreutils 等・Task 5.4）。
     pub sandbox_software: Vec<String>,
@@ -85,11 +85,12 @@ impl Default for WorkerConfig {
             max_steps: 6,
             classic_rag: false,
             autonomous_max_steps: 50,
-            // 既定: 約 20 万トークン・1 USD 上限（テナント/skill で上書き可・Task 5.7）。
-            autonomous_max_tokens: 200_000,
+            // 既定: 約 100 万トークン・3 USD（委譲込みの調査 1 本が収まる値。20 万では子 1 体すら
+            // 完走できず #391 の実 LLM 検証で 3 体全滅した）。テナント/skill で上書き可。
+            autonomous_max_tokens: 1_000_000,
             max_tokens: 8192,
             parallel_read_tools: agent_core::DEFAULT_PARALLEL_READ_TOOLS,
-            autonomous_max_cost_usd_micros: 1_000_000,
+            autonomous_max_cost_usd_micros: 3_000_000,
             // 既定は「同時 4 体（parallel_read_tools と同値）・1 体 8 ステップ・1 run 12 体まで」。
             subagent: agent_core::SubagentLimits::default(),
             sandbox_software: vec!["coreutils".to_string()],
