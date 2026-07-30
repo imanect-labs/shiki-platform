@@ -232,6 +232,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             &[chat::SkillPin {
                 skill_id,
                 skill_version: 1,
+                command_args: None,
             }],
             None,
             None,

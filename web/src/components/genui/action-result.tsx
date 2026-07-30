@@ -2,7 +2,7 @@
 
 /// アクション実行結果の小さな表示部品（フォーム/ボタン共用）。
 
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, Loader2 } from "lucide-react";
 
 import type { UiActionResult } from "@/lib/artifact-api";
 
@@ -37,4 +37,19 @@ export function ActionResultNote({ error, note }: { error?: string | null; note?
     return <p className="whitespace-pre-wrap text-xs text-muted-foreground">{note}</p>;
   }
   return null;
+}
+
+/// 生成が続いている間の「まだ答えられない」表示。
+///
+/// カードは AI が本文を書き終える前に出るため、押せても実行できない時間帯がある。
+/// 以前はここを**押してからエラーで知らせて**いたが、生成が終わるとカードは確定メッセージ側で
+/// 作り直されるため、それまでに入れた回答が丸ごと消えていた。触れないことを先に見せる。
+export function NotReadyNote({ ready, done }: { ready: boolean; done?: unknown }) {
+  if (ready || done) return null;
+  return (
+    <p className="flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="genui-not-ready">
+      <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden />
+      AI が書き終えると回答できます
+    </p>
+  );
 }

@@ -9,7 +9,7 @@
 //! ここでは「その run で何を提示するか」を状態から決め、承認前は調査系ツールを**渡さない**。
 //! モデルは物理的に調査できないので、カードを出す以外に進みようがない。
 //!
-//! 段階（`skill` の `command.variants[].phase = plan_first` を宣言した variant のみ）:
+//! 段階（run のピンに `phase = plan_first` が焼かれているときのみ・[`crate::SkillPin`]）:
 //!
 //! | スレッドの状態 | 段階 | 提示するツール |
 //! |---|---|---|
@@ -128,6 +128,26 @@ impl GateStage {
     }
 }
 
+/// このピンが焼いた起動 variant を、解決済み skill body から引き直してフェーズ宣言を返す。
+///
+/// 引けない組み合わせ（コマンド起動でないピン・body から消えた variant・別バージョン）は
+/// すべて `None`＝門を掛けない。skill は途中で版が変わり得るので**閉じる方向へ倒す**
+/// （宣言が読めないのに調査ツールを取り上げると、ユーザーは何も進められなくなる）。
+fn declared_phase(
+    pin: &crate::SkillPin,
+    skills: &[crate::skill::AppliedSkill],
+) -> Option<gui::CommandPhase> {
+    let args = pin.command_args.as_deref()?;
+    skills
+        .iter()
+        .find(|s| s.id == pin.skill_id)?
+        .body
+        .command
+        .as_ref()?
+        .variant_by_args(args)?
+        .phase
+}
+
 /// スレッドに出ている genui カードの有無から段階を決める（#400）。
 ///
 /// `has_question` / `has_plan` は「そのカードを**出した**か」。押されたかは見ない:
@@ -144,18 +164,29 @@ pub(super) fn stage_from_cards(has_question: bool, has_plan: bool) -> GateStage 
 impl super::ChatWorker {
     /// この run の実行前フェーズ段階を決める（#400）。
     ///
-    /// `plan_first` を宣言した variant で起動された run だけが門の対象。判定材料:
-    /// ①ピンされた skill の `command.variants[].phase` ②その variant の `args` が発話の
-    /// コマンド部分と一致するか ③スレッドに出ているカード。**ハードコードしない**
+    /// 判定材料は ①run のピンに焼かれた**起動 variant**（[`crate::SkillPin::command_args`]）が
+    /// 解決済み body で宣言している `phase` ②スレッドに出ているカード。**ハードコードしない**
     /// （どの skill が確認フェーズを要るかは skill 自身が宣言する）。
+    ///
+    /// 焼くのは variant の identity だけで、**意味はここで body から引き直す**。導出値
+    /// （`phase`）を焼くと variant に宣言を足すたび同じ経路で落ちる。
+    ///
+    /// フェーズを**毎ターン発話本文から引き直さない**のが要点。カード回答・計画承認は
+    /// `chat.submit` 由来でコマンドリテラルを持たないので、本文照合では 2 ターン目以降が
+    /// 必ず素通りになる（#402 の実害。実測では 1 run で `emit_ui` が 6 回走り、質問と計画が
+    /// 同じターンに出た）。
     pub(super) async fn plan_gate_stage(
         &self,
         ctx: &authz::AuthContext,
         run: &crate::store::ClaimedRun,
         skills: &[crate::skill::AppliedSkill],
     ) -> Result<GateStage, crate::ChatError> {
-        let text = self.run_message_text(run).await;
-        if !skills.iter().any(|s| declares_plan_first(s, &text)) {
+        if !run
+            .skill_pins
+            .0
+            .iter()
+            .any(|pin| declared_phase(pin, skills) == Some(gui::CommandPhase::PlanFirst))
+        {
             return Ok(GateStage::Execute);
         }
         let (has_question, has_plan) = self
@@ -164,56 +195,64 @@ impl super::ChatWorker {
             .await?;
         Ok(stage_from_cards(has_question, has_plan))
     }
-
-    /// この run を起こしたユーザー発話の本文（コマンド判定に使う）。
-    async fn run_message_text(&self, run: &crate::store::ClaimedRun) -> String {
-        sqlx::query_scalar::<_, Option<String>>(
-            "SELECT string_agg(b->>'text', '') FROM message m, \
-                    jsonb_array_elements(m.content) b \
-             WHERE m.id = (SELECT message_id FROM generation_run WHERE run_id = $1) \
-               AND b->>'type' = 'text'",
-        )
-        .bind(run.run_id)
-        .fetch_optional(&self.db)
-        .await
-        .ok()
-        .flatten()
-        .flatten()
-        .unwrap_or_default()
-    }
-}
-
-/// この skill が、発話で使われた variant に対して `plan_first` を宣言しているか。
-///
-/// 発話は `/<command> [<args>] <依頼>` のリテラル（#387）。`args` の長い順に見て最長一致を
-/// 採る（`""` と `"auto"` が両方あるとき `auto` を先に当てる）。
-fn declares_plan_first(skill: &crate::skill::AppliedSkill, text: &str) -> bool {
-    let Some(command) = &skill.body.command else {
-        return false;
-    };
-    let rest = match text
-        .trim_start()
-        .strip_prefix(&format!("/{}", command.name))
-    {
-        Some(rest) => rest.trim_start(),
-        None => return false,
-    };
-    let mut variants: Vec<_> = command.variants.iter().collect();
-    variants.sort_by_key(|v| std::cmp::Reverse(v.args.len()));
-    variants
-        .into_iter()
-        .find(|v| {
-            v.args.is_empty()
-                || rest
-                    .strip_prefix(&v.args)
-                    .is_some_and(|r| r.is_empty() || r.starts_with(char::is_whitespace))
-        })
-        .is_some_and(|v| v.phase == Some(gui::CommandPhase::PlanFirst))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `plan_first` を宣言した既定 variant を持つ skill 1 件。
+    fn applied(id: uuid::Uuid) -> crate::skill::AppliedSkill {
+        crate::skill::AppliedSkill {
+            id,
+            version: 1,
+            name: "deep-research".into(),
+            body: serde_json::from_value(serde_json::json!({
+                "description": "d",
+                "instructions": "i",
+                "command": {
+                    "name": "deep-research",
+                    "variants": [
+                        { "args": "", "summary": "s", "phase": "plan_first" },
+                        { "args": "auto", "summary": "s" }
+                    ]
+                }
+            }))
+            .unwrap(),
+        }
+    }
+
+    fn pin(id: uuid::Uuid, command_args: Option<&str>) -> crate::SkillPin {
+        crate::SkillPin {
+            skill_id: id,
+            skill_version: 1,
+            command_args: command_args.map(str::to_string),
+        }
+    }
+
+    /// 焼かれた variant の identity から、解決済み body の宣言を引き直す（#402）。
+    #[test]
+    fn phase_comes_from_the_body_via_the_pinned_variant() {
+        let id = uuid::Uuid::new_v4();
+        let skills = [applied(id)];
+        assert_eq!(
+            declared_phase(&pin(id, Some("")), &skills),
+            Some(gui::CommandPhase::PlanFirst),
+            "既定 variant は確認フェーズを宣言している"
+        );
+        assert_eq!(
+            declared_phase(&pin(id, Some("auto")), &skills),
+            None,
+            "auto は宣言なし＝門を掛けない"
+        );
+        // コマンド起動でないピン（thread の常設ピン）・別 skill・消えた variant は素通し。
+        assert_eq!(declared_phase(&pin(id, None), &skills), None);
+        assert_eq!(
+            declared_phase(&pin(uuid::Uuid::new_v4(), Some("")), &skills),
+            None
+        );
+        assert_eq!(declared_phase(&pin(id, Some("legacy")), &skills), None);
+    }
 
     #[test]
     fn stage_advances_with_cards() {

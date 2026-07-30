@@ -47,16 +47,18 @@ impl ActionHandler for ChatSubmitHandler {
         if text.is_empty() {
             return Err(ActionError::Invalid("フォーム値が空です".into()));
         }
-        // **カードを出した run のモードを継ぐ**（#387）。質問カード/計画カードは自律 run の
-        // 途中で出るため、ここで非自律に落とすと続きが max_steps=6・plan ツール無しの制約版に
-        // なり「質問 → 計画 → 実行」が途中で別物になる。引けない（run 消失等）ときは
-        // 従来どおり非自律で投稿する（能力を勝手に増やさない方向のフォールバック）。
-        let autonomous = self
+        // **カードを出した run の生成材料を継ぐ**（#387・#402）。質問カード/計画カードは
+        // 自律 run の途中で出るため、ここで非自律に落とすと続きが max_steps=6・plan ツール無しの
+        // 制約版になり「質問 → 計画 → 実行」が途中で別物になる。skill ピンも同じで、落とすと
+        // スラッシュコマンド起動の手順書とフェーズ宣言が 2 ターン目から消える。
+        // 引けない（run 消失等）ときは従来どおり非自律・ピン無しで投稿する
+        // （能力を勝手に増やさない方向のフォールバック）。
+        let (autonomous, skill_pins) = self
             .store
-            .message_run_autonomous(ctx, *thread_id, *message_id, trace_id)
+            .message_run_context(ctx, *thread_id, *message_id, trace_id)
             .await
             .map_err(map_chat_err)?
-            .unwrap_or(false);
+            .unwrap_or_default();
         let result = self
             .store
             .post_message(
@@ -67,9 +69,9 @@ impl ActionHandler for ChatSubmitHandler {
                 None,
                 None,
                 autonomous,
-                // カードからの回答は「そのカードを出した run の続き」であって新しい
-                // コマンド起動ではない。run 単位 skill は thread ピン経由で継がれる。
-                &[],
+                // カードからの回答は「そのカードを出した run の続き」。run 単位 skill
+                // （スラッシュコマンド起動）は thread ピンに無いので、ここで明示的に継ぐ。
+                &skill_pins,
                 trace_id,
             )
             .await

@@ -81,6 +81,8 @@ pub async fn create_thread(
                 vec![chat::SkillPin {
                     skill_id: p.artifact_id,
                     skill_version: p.version,
+                    // バンドル同梱の skill はコマンド起動ではない。
+                    command_args: None,
                 }]
             })
             .unwrap_or_default();
@@ -91,9 +93,15 @@ pub async fn create_thread(
             (None, Some(single)) => vec![single],
             (None, None) => Vec::new(),
         };
-        skill_pins =
-            super::chat_skills::resolve_skill_pins(&state, &ctx, &requested, trace.as_deref())
-                .await?;
+        // スレッド作成時のピンは「最初からロード済み」の宣言であり起動ではない（`None`）。
+        skill_pins = super::chat_skills::resolve_skill_pins(
+            &state,
+            &ctx,
+            &requested,
+            None,
+            trace.as_deref(),
+        )
+        .await?;
     }
 
     // ワークスペース場所は **thread 作成前に**認可検証する（不正なら孤児 thread を残さない）。
@@ -285,7 +293,14 @@ pub async fn post_message(
     // 読めなければここで落ちる（fail-closed）。thread のピンは変えない＝次の発話へ持ち越さない。
     let once_skills = match &req.skills {
         Some(pins) if !pins.is_empty() => {
-            super::chat_skills::resolve_skill_pins(&state, &ctx, pins, trace.as_deref()).await?
+            super::chat_skills::resolve_skill_pins(
+                &state,
+                &ctx,
+                pins,
+                Some(req.text.as_str()),
+                trace.as_deref(),
+            )
+            .await?
         }
         _ => Vec::new(),
     };

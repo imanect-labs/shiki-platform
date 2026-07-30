@@ -34,7 +34,9 @@ export function PlanStepRow({
     <li className="flex items-start gap-2 text-[13px]">
       <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", meta.dot)} aria-hidden />
       <span className="min-w-0 flex-1">
-        <span className={meta.text}>{title}</span>
+        <span className={meta.text} data-testid="plan-step-title">
+          {title}
+        </span>
         {description ? (
           <span className="mt-0.5 block text-[12px] leading-relaxed text-muted-foreground">
             {description}

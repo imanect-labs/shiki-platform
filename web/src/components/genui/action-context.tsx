@@ -18,6 +18,14 @@ export type GenUiDispatch = (actionId: string, params: unknown) => Promise<UiAct
 
 type GenUiActionContextValue = {
   dispatch: GenUiDispatch;
+  /// いまアクションを実行できるか。ストリーミング中のカードは **まだ実行できない**
+  /// （アクションの照合は確定メッセージに保存された spec に対して行われるため）。
+  ///
+  /// これを**押してから知らせる**のではなく**押す前に見せる**ために公開している。
+  /// 以前は押下時に「生成が完了してから実行できます」と投げていたが、生成が終わると
+  /// カードは確定メッセージ側へ作り直され、**入力済みの回答がすべて消えていた**
+  /// （実 LLM 検証で、3 問答えてから押した回答が丸ごと失われた）。
+  ready: boolean;
   /// アクション成功後のフック（chat.submit 後の会話リフレッシュ等）。
   onActionCompleted?: (result: UiActionResult) => void;
 };
@@ -30,7 +38,7 @@ const noopDispatch: GenUiDispatch = async () => {
 };
 
 export function useGenUiAction(): GenUiActionContextValue {
-  return React.useContext(GenUiActionContext) ?? { dispatch: noopDispatch };
+  return React.useContext(GenUiActionContext) ?? { dispatch: noopDispatch, ready: false };
 }
 
 /// チャットメッセージ内の generative_ui ブロック用 Provider。
@@ -52,6 +60,7 @@ export function ChatGenUiProvider({
         if (!messageId) throw new Error("生成が完了してから実行できます");
         return invokeChatUiAction(threadId, messageId, actionId, params);
       },
+      ready: messageId !== null,
       onActionCompleted,
     }),
     [threadId, messageId, onActionCompleted],
@@ -74,6 +83,8 @@ export function MiniAppGenUiProvider({
   const value = React.useMemo<GenUiActionContextValue>(
     () => ({
       dispatch: (actionId, params) => invokeMiniAppUiAction(appId, version, actionId, params),
+      // ミニアプリは解決済みの版に対して実行するので、常に実行できる。
+      ready: true,
       onActionCompleted,
     }),
     [appId, version, onActionCompleted],
