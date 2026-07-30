@@ -530,19 +530,29 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   （直接オープン／RAG／構造化データ／エクスポート）は必ず `org = ctx.org AND tenant_id` で絞る。
 - **受け入れ条件（充足）**: `rag::search_authz_it::hydrate_drops_cross_org_chunk`（別 org の直接 viewer を
   持つユーザーが pre/post-filter を通っても hydrate の org 述語で 0 件になることを実 OpenFGA で検証）。
-- **完全性（#377・解消済み）**: org は依然として pre-filter（`readable_set` のタグ／VectorStore の索引）
-  ではなく hydrate の SQL 述語で絞る。以前は hydrate がバックフィルループの**外**で 1 回だけ走ったため、
+- **完全性（#377・大幅緩和／完全解消ではない）**: org は依然として pre-filter（`readable_set` のタグ／
+  VectorStore の索引）ではなく hydrate の SQL 述語で絞る。以前は判定がバックフィルループの**外**で 1 回だけ走ったため、
   **マルチ org テナントで別 org の file にも直接 viewer を持つ稀なケース**では、別 org の高スコアチャンクが
-  pool を埋めてから hydrate で捨てられ、要求 `top_k` より少ない（最悪 0 件）結果になり得た（漏洩はしない
-  ・fail-closed）。**hydrate をループ内へ移し「行が引けたか」を採択条件にした**ことで、落ちた分は既存の
-  `exclude`／`fetch_k` 倍化機構がそのまま同 org 候補で埋め直す。同じ原因で潜在していた
-  `deleted_at`（索引より先に削除された node）由来の取りこぼしも同時に解消した。
+  pool を埋めてから捨てられ、要求 `top_k` より少ない（最悪 0 件）結果になり得た（漏洩はしない
+  ・fail-closed）。**採択判定をループ内へ移し「org＋生存の述語で行が引けたか」を採択条件にした**ことで、
+  落ちた分は既存の `exclude`／`fetch_k` 倍化機構がそのまま同 org 候補で埋め直す。同じ原因で潜在していた
+  `deleted_at`（索引より先に削除された node）由来の取りこぼしも同時に緩和した。
+  - **残る限界（有界バックフィル・Codex 指摘）**: `MAX_BACKFILL_ROUNDS = 3` と `MAX_FETCH_K = 256` は
+    そのまま残る。既定（tags・over_fetch=3）では 96＋192＋256 件を超えて別 org／削除済み候補が上位を
+    占め続ける場合、同 org の生存候補がその先に存在してもループは打ち切られ、**依然として `top_k` 未満に
+    なり得る**。これは PIT-2（post-filter deny のバックフィル）と共通の構造的上限であり、org 固有の話では
+    ない。無制限に掘るのはレイテンシと FGA 呼び出し量が非有界になるため意図的に採らない。
   - **索引 pre-filter に org を入れる案は採らなかった**: Qdrant payload への追加は容易だが、Tantivy は
     スキーマ変更で既存の全テナント index が `SchemaError` になり検索も取り込みも停止する。かつ再インデックス
     基盤が無い（`RagAdmin` は `purge_tenant` のみ）。索引を触らず既存データに即日効く後者を選んだ。
+    上記の残る限界を本当に無くしたいなら、この索引 pre-filter 化が本筋（再インデックス基盤とセット）。
+  - **本文転送量は増やさない**: 採択判定は `live_chunk_ids`（id だけを引く軽量クエリ）で行い、本文の
+    hydration は**プール確定後に 1 回だけ**走らせる。両者は同じ述語を持たねばならず（食い違うと欠員が
+    復活する）、`crates/rag/src/search/hydrate.rs` に対で置いてコメントで縛っている。
   - **受け入れ条件（充足）**: `rag::search_scripted_it::backfill_recovers_top_k_when_cross_org_chunks_outrank`
     （別 org の高スコア 3 件が上位を占めても top_k=3 が自 org 文書で埋まる）。落ちた件数は
-    `SearchDebug.hydrate_dropped` で可観測（恒常的に大きいなら索引が実体とずれている合図）。
+    `SearchDebug.hydrate_dropped` で可観測（検索デバッグパネルのファネルに表示・恒常的に大きいなら
+    索引が実体とずれている合図）。
 
 ## 🟠 PIT-46: テナント跨ぎ閲覧共有（authenticated audience）の安全包絡（#340 系）
 

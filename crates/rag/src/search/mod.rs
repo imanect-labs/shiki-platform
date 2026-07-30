@@ -27,9 +27,11 @@ use crate::embedding::{EmbedInput, EmbeddingProvider};
 use crate::error::RagError;
 use crate::fulltext::FulltextIndex;
 use crate::fusion::{rrf_fuse, RRF_K};
-use crate::rerank::{RerankPassage, Reranker};
+use crate::rerank::Reranker;
 use crate::search_types::{SearchDebug, SearchMode, SearchResult, SearchScope, StageTimings};
 use crate::vector_store::{PreFilter, ScoredChunk, VectorSearch, VectorStore};
+
+mod hydrate;
 
 /// バックフィルの上限（PIT-2: 候補が尽きるまで最終件数が top_k を下回らない）。
 const MAX_BACKFILL_ROUNDS: u32 = 3;
@@ -148,12 +150,11 @@ impl SearchService {
         let pool_target = top_k.max(self.config.rerank_pool);
         let mut fetch_k = (pool_target * over_fetch.max(1)).min(MAX_FETCH_K);
         let mut allowed: Vec<ScoredChunk> = Vec::new();
-        let mut rows: HashMap<Uuid, HydratedChunk> = HashMap::new();
         let mut seen: HashSet<Uuid> = HashSet::new();
         let mut file_decisions: HashMap<Uuid, bool> = HashMap::new();
         let t_retrieve = Instant::now();
         let mut post_filter_ms = 0u64;
-        let mut hydrate_ms = 0u64;
+        let mut liveness_ms = 0u64;
         loop {
             debug.backfill_rounds += 1;
             let exclude: Vec<Uuid> = seen.iter().copied().collect();
@@ -192,19 +193,21 @@ impl SearchService {
             debug.authz_denied_files += denied_files as u32;
             file_decisions.extend(decisions);
 
-            // このラウンドの許可候補を hydrate し、**行が引けたものだけ**採択する（#377）。
+            // このラウンドの許可候補のうち、**最終結果に出せるものだけ**を採択する（#377）。
+            // 判定は id だけを引く軽量クエリで行う（本文は truncate 後にまとめて読む・Codex P2:
+            // ここで content を引くと fetch_k 件ぶんの本文転送が毎ラウンド走り、従来の
+            // 「最終プール 32 件だけ hydrate」より DB 負荷が大幅に増える）。
             // 落ちた分（他 org / 削除済み）は `seen` に入っているので再取得されず、次ラウンドが
             // fetch_k を倍にして同 org の生存チャンクで枠を埋め直す。
             let t_h = Instant::now();
-            let round_rows = self.hydrate(ctx, &round_allowed).await?;
-            hydrate_ms += t_h.elapsed().as_millis() as u64;
-            debug.hydrate_dropped += (round_allowed.len() - round_rows.len()) as u32;
+            let live = self.live_chunk_ids(ctx, &round_allowed).await?;
+            liveness_ms += t_h.elapsed().as_millis() as u64;
+            debug.hydrate_dropped += (round_allowed.len().saturating_sub(live.len())) as u32;
             allowed.extend(
                 round_allowed
                     .into_iter()
-                    .filter(|c| round_rows.contains_key(&c.chunk_id)),
+                    .filter(|c| live.contains(&c.chunk_id)),
             );
-            rows.extend(round_rows);
 
             if allowed.len() >= pool_target
                 || exhausted
@@ -214,9 +217,9 @@ impl SearchService {
             }
             fetch_k = (fetch_k * 2).min(MAX_FETCH_K);
         }
-        timings.retrieve_ms = t_retrieve.elapsed().as_millis() as u64 - post_filter_ms - hydrate_ms;
+        timings.retrieve_ms =
+            t_retrieve.elapsed().as_millis() as u64 - post_filter_ms - liveness_ms;
         timings.post_filter_ms = post_filter_ms;
-        timings.hydrate_ms = hydrate_ms;
 
         // 融合スコア順で rerank プールへ。
         allowed.sort_by(|a, b| {
@@ -225,9 +228,15 @@ impl SearchService {
                 .then_with(|| a.chunk_id.cmp(&b.chunk_id))
         });
         allowed.truncate(self.config.rerank_pool.max(top_k));
-        // プール外の本文は捨てる（バックフィルで採択した分がプールを超えることがある）。
-        let pool: HashSet<Uuid> = allowed.iter().map(|c| c.chunk_id).collect();
-        rows.retain(|id, _| pool.contains(id));
+
+        // 本文の hydration は**プール確定後に 1 回だけ**（従来どおりの転送量）。ここでも org /
+        // deleted_at の述語が再評価されるので、ループ中に soft-delete された node の本文が
+        // 早いラウンドのスナップショット経由で結果に残ることもない（Codex P2）。
+        let t = Instant::now();
+        let rows = self.hydrate(ctx, &allowed).await?;
+        timings.hydrate_ms = t.elapsed().as_millis() as u64 + liveness_ms;
+        // 最終 hydration で落ちた分も採択から外す（rerank/build_results の filter_map と揃える）。
+        allowed.retain(|c| rows.contains_key(&c.chunk_id));
 
         // 6. rerank（認可済み・生存チャンクのみ）。
         let t = Instant::now();
@@ -299,124 +308,6 @@ impl SearchService {
         futures::try_join!(dense_fut, keyword_fut)
     }
 
-    /// rag_chunk × node のハイドレーション。**`deleted_at is null` を強制**し、
-    /// 索引除去が追いつく前でも削除済みファイルが結果に出ない（第三の防壁）。
-    ///
-    /// org 境界（#371・PIT-45）: `storage::load_node` は `org = ctx.org AND tenant_id` で絞るため、
-    /// org は tenant 内のもう一段の隔離境界。hydrate も `n.org = ctx.org` を課し、マルチ org テナントで
-    /// 他 org 文書のチャンクが回答に混入しない（storage の直接オープンと同じ境界へ揃える）。
-    ///
-    /// **バックフィルループ内から呼ぶ**（#377）。ここで行が引けないことは「この候補は最終結果に
-    /// 出せない」と同義なので、呼び出し側は採択条件として使い、落ちた分を次ラウンドで埋め直す。
-    /// ループ外で 1 回だけ呼ぶと、落ちた候補が pool を占めたまま結果が `top_k` に足りなくなる。
-    async fn hydrate(
-        &self,
-        ctx: &AuthContext,
-        chunks: &[ScoredChunk],
-    ) -> Result<HashMap<Uuid, HydratedChunk>, RagError> {
-        if chunks.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let ids: Vec<Uuid> = chunks.iter().map(|c| c.chunk_id).collect();
-        let rows: Vec<HydratedChunk> = sqlx::query_as(
-            "select c.id, c.node_id, c.version, c.parent_id, c.page, c.heading_path, c.content, \
-                    n.name as file_name, n.parent_id as folder_id \
-             from rag_chunk c \
-             join node n on n.id = c.node_id and n.tenant_id = c.tenant_id \
-             where c.tenant_id = $1 and c.id = any($2) and n.org = $3 and n.deleted_at is null",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(&ids)
-        .bind(&ctx.org)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(|r| (r.id, r)).collect())
-    }
-
-    /// reranker で並べ替えた chunk_id 列を返す（本文が引けない chunk は落ちる）。
-    async fn rerank(
-        &self,
-        ctx: &AuthContext,
-        query: &str,
-        allowed: &[ScoredChunk],
-        rows: &HashMap<Uuid, HydratedChunk>,
-    ) -> Result<Vec<Uuid>, RagError> {
-        let passages: Vec<RerankPassage> = allowed
-            .iter()
-            .filter_map(|c| rows.get(&c.chunk_id))
-            .map(|row| RerankPassage {
-                id: row.id.to_string(),
-                text: row.content.clone(),
-            })
-            .collect();
-        if passages.len() <= 1 {
-            return Ok(passages
-                .iter()
-                .filter_map(|p| Uuid::parse_str(&p.id).ok())
-                .collect());
-        }
-        let mut scores = self.reranker.rerank(ctx, query, &passages).await?;
-        scores.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
-        Ok(scores
-            .into_iter()
-            .filter_map(|s| Uuid::parse_str(&s.id).ok())
-            .collect())
-    }
-
-    /// 最終結果の組み立て（親チャンク本文の展開・親の重複はそのまま許容）。
-    async fn build_results(
-        &self,
-        ctx: &AuthContext,
-        final_ids: &[Uuid],
-        rows: &HashMap<Uuid, HydratedChunk>,
-    ) -> Result<Vec<SearchResult>, RagError> {
-        let parent_ids: Vec<Uuid> = final_ids
-            .iter()
-            .filter_map(|id| rows.get(id).and_then(|r| r.parent_id))
-            .collect();
-        let parents: HashMap<Uuid, String> = if parent_ids.is_empty() {
-            HashMap::new()
-        } else {
-            // 親本文も node.org で絞る（#371・CodeRabbit）。親子は同一 node（同 org）だが、
-            // hydrate と同じ org 境界を明示適用して parent_content 経由の他 org 混入を構造的に断つ。
-            let rows: Vec<(Uuid, String)> = sqlx::query_as(
-                "select c.id, c.content from rag_chunk c \
-                 join node n on n.id = c.node_id and n.tenant_id = c.tenant_id \
-                 where c.tenant_id = $1 and c.id = any($2) and n.org = $3",
-            )
-            .bind(&ctx.tenant_id)
-            .bind(&parent_ids)
-            .bind(&ctx.org)
-            .fetch_all(&self.pool)
-            .await?;
-            rows.into_iter().collect()
-        };
-
-        Ok(final_ids
-            .iter()
-            .enumerate()
-            .filter_map(|(rank, id)| rows.get(id).map(|r| (rank, r)))
-            .map(|(rank, row)| {
-                // rank は top_k（≦max_top_k=50）に有界で f32 の精度内。
-                #[allow(clippy::cast_precision_loss)]
-                let score = 1.0 / (rank as f32 + 1.0);
-                SearchResult {
-                    chunk_id: row.id,
-                    file_id: row.node_id,
-                    file_name: row.file_name.clone(),
-                    folder_id: row.folder_id,
-                    page: row.page,
-                    heading_path: row.heading_path.clone(),
-                    content: row.content.clone(),
-                    parent_content: row.parent_id.and_then(|p| parents.get(&p).cloned()),
-                    // rerank 後の順位ベースのスコア（表示用に単調減少へ正規化）。
-                    score,
-                    version: row.version,
-                }
-            })
-            .collect())
-    }
-
     /// 引用監査: LLM/UI に出す chunk_id 群とその時の file 粒度認可判定を記録する。
     #[allow(clippy::too_many_arguments)] // 監査に載せる文脈の束（呼び出しは search 内の 1 箇所）。
     async fn audit_citations(
@@ -481,18 +372,4 @@ fn hex_sha256(text: &str) -> String {
         let _ = write!(s, "{b:02x}");
         s
     })
-}
-
-/// ハイドレーション結果の 1 行。
-#[derive(Debug, Clone, sqlx::FromRow)]
-struct HydratedChunk {
-    id: Uuid,
-    node_id: Uuid,
-    version: i64,
-    parent_id: Option<Uuid>,
-    page: Option<i32>,
-    heading_path: Vec<String>,
-    content: String,
-    file_name: String,
-    folder_id: Option<Uuid>,
 }
