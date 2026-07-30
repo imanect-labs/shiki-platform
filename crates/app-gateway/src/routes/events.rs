@@ -133,6 +133,7 @@ mod tests {
             trace_id: None,
             payload,
             created_at: Utc::now(),
+            system: false,
         }
     }
 

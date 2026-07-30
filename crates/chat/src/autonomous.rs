@@ -104,6 +104,27 @@ impl AutonomousMode {
     }
 }
 
+/// **システム領域ワークスペース**（#392）で事前許可する書込ツール。
+///
+/// 自動生成の `agent-workspace-<thread>` はドライブに見えず RAG にも載らない使い捨ての作業領域で、
+/// `WorkspaceStore` が構造的にその直下へ封じ込めている（ユーザーの既存文書へは到達できない）。
+/// 「作業メモを書くたびに人間の同意を取る」対象ではないため、モードに関係なく事前許可する
+/// （`save_note`/`save_slide`/`save_csv` の下書きが確認ゲート不要なのと同じ扱い）。
+///
+/// **`fs_delete` は含めない**（証拠の消去は不可逆側）。明示的にフォルダを選んだ run では
+/// この事前許可を**足さない**（可視・索引される場所なので従来どおり承認カードで止める）。
+const SYSTEM_WORKSPACE_WRITES: [ToolName; 3] =
+    [ToolName::FsWrite, ToolName::FsAppend, ToolName::FsEdit];
+
+/// システム領域ワークスペースで事前許可するツール名（[`SYSTEM_WORKSPACE_WRITES`]）。
+#[must_use]
+pub fn system_workspace_writes() -> Vec<String> {
+    SYSTEM_WORKSPACE_WRITES
+        .iter()
+        .map(|t| t.as_str().to_string())
+        .collect()
+}
+
 /// 実効モードのクランプ理由（黙って降格せず、警告イベント/エラーで明示する・#350）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModeClamp {
@@ -175,6 +196,38 @@ mod tests {
         assert_eq!(AutonomousMode::parse("bogus"), None);
         // 既定は承認必須（#350 の決定・オート固定からの転換）。
         assert_eq!(AutonomousMode::default(), AutonomousMode::RequireApproval);
+    }
+
+    /// システム領域ワークスペースの事前許可（#392）は「使い捨ての作業メモの書込」だけを開ける。
+    ///
+    /// 承認必須モードに足しても `fs_delete` / `shell` / `office.live_edit` は止まったままであること
+    /// （緩めた範囲が広がっていないことの回帰）。
+    #[test]
+    fn system_workspace_pre_authorization_is_limited_to_workspace_writes() {
+        let extra = system_workspace_writes();
+        assert_eq!(extra.len(), 3, "fs_write / fs_append / fs_edit のみ");
+        for tool in ["fs_write", "fs_append", "fs_edit"] {
+            assert!(extra.contains(&tool.to_string()), "{tool} は事前許可に含む");
+        }
+        for tool in ["fs_delete", "shell", "office.live_edit", "csv.patch"] {
+            assert!(
+                !extra.contains(&tool.to_string()),
+                "{tool} は事前許可に含めない"
+            );
+        }
+
+        // 承認必須モードへ合成しても、不可逆・高影響は止まる。
+        let mut policy = AutonomousMode::RequireApproval.approval_policy();
+        policy.auto_approve.extend(extra);
+        assert!(policy.is_pre_authorized("fs_write"));
+        assert!(policy.is_pre_authorized("fs_append"));
+        assert!(policy.is_pre_authorized("fs_edit"));
+        for tool in ["fs_delete", "shell", "office.live_edit", "document.edit"] {
+            assert!(
+                !policy.is_pre_authorized(tool),
+                "{tool} はシステム領域でも承認必須のまま"
+            );
+        }
     }
 
     #[test]

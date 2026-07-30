@@ -58,6 +58,8 @@ vocab_enum! {
         FsRead => "fs_read",
         Grep => "grep",
         FsWrite => "fs_write",
+        /// ファイル末尾への追記（証拠台帳のような append-only メモを全文再送なしに伸ばす・#392）。
+        FsAppend => "fs_append",
         FsEdit => "fs_edit",
         FsDelete => "fs_delete",
         Shell => "shell",

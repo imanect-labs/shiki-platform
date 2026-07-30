@@ -83,6 +83,8 @@ pub(crate) async fn list_children(
             ChildSort::default(),
             q.cursor.as_deref(),
             q.limit.unwrap_or(50).min(200),
+            // ミニアプリへもシステム領域は見せない（#392）。
+            false,
             None,
         )
         .await?;
