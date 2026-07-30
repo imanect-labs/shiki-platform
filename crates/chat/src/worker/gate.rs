@@ -54,18 +54,49 @@ impl GateStage {
         match self {
             // 明確化では質問カードを出すこと以外にできることを持たせない。
             GateStage::Clarify => tool == ToolName::EmitUi,
-            // 計画では作業ファイルと UI のみ（調査は承認後）。
-            GateStage::Plan => !RESEARCH_TOOLS.contains(&tool),
+            // 計画では作業ファイル・UI に加えて `subagent` を通す（#402）。委譲そのものは
+            // 調査だが、**計画ロール**の子はツールを 1 つも持たず調べない（手順書を知らない
+            // 文脈で「何を確かめるべきか」だけを立てる）。研究ロールで呼んでも子に調査ツールは
+            // 渡るため、ここは「計画を子に書かせる」導線として開ける。
+            GateStage::Plan => tool == ToolName::Subagent || !RESEARCH_TOOLS.contains(&tool),
             GateStage::Execute => true,
         }
     }
 
-    /// 段階に応じて提示ツールを絞る（`Execute` は素通し）。
-    pub(super) fn filter(self, tools: &mut Vec<Arc<dyn Tool>>) {
+    /// 段階に応じて提示ツールを絞り、`emit_ui` の出せる形も限定する（`Execute` は素通し）。
+    ///
+    /// ツールを落とすだけでは足りない: 明確化で `emit_ui` しか渡していないのに、その
+    /// `emit_ui` で計画カードを出されて質問フェーズが飛ばされた（#402）。この段階で
+    /// 出せるカードそのものを指定する。
+    pub(super) fn filter(
+        self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        ui_validator: Option<&Arc<gui::SpecValidator>>,
+    ) {
         if self == GateStage::Execute {
             return;
         }
         tools.retain(|t| self.allows(t.name()));
+        let Some(allowed) = self.allowed_cards() else {
+            return;
+        };
+        let Some(validator) = ui_validator else {
+            return;
+        };
+        // 制限つきの emit_ui へ差し替える（提示ツールの最終形に対して効かせる）。
+        tools.retain(|t| t.name() != ToolName::EmitUi.as_str());
+        tools.push(Arc::new(
+            gui::EmitUiTool::new(validator.clone()).with_allowed_root(allowed),
+        ));
+    }
+
+    /// この段階で `emit_ui` のルートに出せるカード（`None` は制限なし）。
+    fn allowed_cards(self) -> Option<Vec<gui::ComponentKind>> {
+        match self {
+            GateStage::Clarify => Some(vec![gui::ComponentKind::QuestionCard]),
+            GateStage::Plan => Some(vec![gui::ComponentKind::PlanCard]),
+            GateStage::Execute => None,
+        }
     }
 
     /// system プロンプトへ足す、この段階でやることの明示。
@@ -86,14 +117,11 @@ impl GateStage {
                  `emit_ui` の `plan_card` を出してターンを終えてください。ユーザーが\
                  「この計画で開始」を押すと、次のターンで調査ツールが使えるようになります。\n\
                  \n\
-                 計画の `steps` は **5〜7 個すべてを問いの形**にすること（`title` が「〜か」\
-                 「〜はどこから来るか」「〜はどの条件で成り立つか」で終わる）。\
-                 **「〜の検索」「〜の調査」「〜の収集」「〜の整理」「レポート作成」は禁止**\
-                 — これは作業工程であって問いではなく、依頼が変わっても同じ文面になるため\
-                 ユーザーは何も直せない。`description` には**何を根拠に決着させるか**\
-                 （見る指標・当たる情報源・比較の軸）を書く。\
-                 `intro` は定型文を書かず、1 文目「〈依頼〉に〈切り口〉で答えます」／\
-                 2 文目「〈これ〉は対象外です」の型にすること。",
+                 計画の中身は**自分で書かず** `subagent` に `role: \"plan\"` で書かせること。\
+                 `objective` にはユーザーの依頼（と質問カードの回答）だけを渡す。\
+                 手順書を知っているあなたが書くと「brief を書く」「証拠台帳を作る」のような\
+                 **自分の作業**が計画に混ざる。返ってきた JSON の `title` / `intro` / `steps` は\
+                 **書き換えずそのまま** `plan_card` に載せる。",
             ),
             GateStage::Execute => None,
         }
@@ -217,7 +245,11 @@ mod tests {
         for allowed in ["emit_ui", "fs_write", "fs_append", "fs_read", "save_note"] {
             assert!(s.allows(allowed), "{allowed} は計画段階でも使う");
         }
-        for denied in ["web_search", "web_fetch", "doc_search", "subagent"] {
+        assert!(
+            s.allows("subagent"),
+            "計画を子に書かせる導線は開ける（#402）"
+        );
+        for denied in ["web_search", "web_fetch", "doc_search"] {
             assert!(!s.allows(denied), "{denied} は承認後にだけ渡す");
         }
     }

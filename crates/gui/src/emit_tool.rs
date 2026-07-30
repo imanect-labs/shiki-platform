@@ -15,11 +15,27 @@ use crate::validator::SpecValidator;
 /// UI スペック発話ツール。
 pub struct EmitUiTool {
     validator: Arc<SpecValidator>,
+    /// 出してよいルートコンポーネント（`None` はカタログ全体）。
+    ///
+    /// 実行前フェーズ（#402）のように「このターンではこの形しか出させない」を表現する。
+    /// ツールの有無だけでは、同じ `emit_ui` の中でどの形を出すかを縛れない
+    /// （明確化フェーズで `emit_ui` しか渡していないのに計画カードを出され、質問が飛ばされた）。
+    allowed_root: Option<Vec<crate::vocab::ComponentKind>>,
 }
 
 impl EmitUiTool {
     pub fn new(validator: Arc<SpecValidator>) -> Self {
-        EmitUiTool { validator }
+        EmitUiTool {
+            validator,
+            allowed_root: None,
+        }
+    }
+
+    /// ルートに出せるコンポーネントを限定する（#402）。
+    #[must_use]
+    pub fn with_allowed_root(mut self, kinds: Vec<crate::vocab::ComponentKind>) -> Self {
+        self.allowed_root = Some(kinds);
+        self
     }
 }
 
@@ -95,6 +111,23 @@ impl Tool for EmitUiTool {
                 "spec がありません。{ \"spec\": { \"version\": 1, \"root\": ... } } を渡してください。",
             ));
         };
+        // フェーズ制限（#402）: 検証を通す前に形だけ先に見る（拒否理由を具体的に返す）。
+        if let Some(allowed) = &self.allowed_root {
+            let root = spec
+                .get("root")
+                .and_then(|r| r.get("component"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if !allowed.iter().any(|k| k.as_str() == root) {
+                let names: Vec<&str> = allowed.iter().map(|k| k.as_str()).collect();
+                return Ok(ToolOutcome::error(format!(
+                    "このターンで出せるのは {} だけです（'{}' は出せません）。\
+                     指定された形のカードを出してターンを終えてください。",
+                    names.join(" / "),
+                    root
+                )));
+            }
+        }
         match self.validator.validate(ctx, spec, "emit", trace_id).await {
             Ok(resolved) => {
                 let mut outcome = ToolOutcome::ok("UI を表示しました。");

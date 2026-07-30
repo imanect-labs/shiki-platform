@@ -87,6 +87,24 @@ pub struct SubagentTool {
     cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// 計画ロールの system プロンプト（#402）。
+///
+/// **この子には手順書（skill の instructions）もワークスペースも渡さない。** 親が計画を書くと
+/// 「brief を書く」「証拠台帳を作る」「節ごとに執筆する」といった**自分のこれからの作業**が
+/// step に混入する（実 LLM で 3 回とも起きた）。知らない文脈で立てさせれば、原理的に入らない。
+const PLAN_SYSTEM: &str = r#"あなたは調査の計画だけを立てる担当です。依頼だけを見て、
+**その問いに答えるために何を確かめる必要があるか**を 5〜7 個に分けてください。
+
+守ること:
+- 1 項目 = 1 つの問い。「〜か」「〜はどこから来るか」「〜はどの条件で成り立つか」の形で書く。
+- 各項目に「何を根拠に決着させるか」（見る指標・当たる情報源の種類・比較の軸）を 1〜2 文添える。
+- 項目どうしが重複しないように割る（時期・地域・主体・観点のどれかで切る）。
+- 賛否が割れる依頼なら、割れている理由そのもの（測り方・対象・条件の違い）を項目にする。
+- **調べない**。いま手元にある知識だけで、確かめるべきことを列挙する。
+
+出力は次の JSON だけ（前後に説明を書かない）:
+{"title": "調査タイトル", "intro": "何にどう答えるか。対象外も書く", "steps": [{"title": "問い", "description": "何を根拠に決着させるか"}]}"#;
+
 /// 子の既定 system プロンプト。**findings のみを返す**ことを強く縛る。
 const DEFAULT_SYSTEM: &str = "あなたは調査専門のサブエージェントです。与えられた objective を\
  boundary の範囲内だけ調べ、**合成済みの findings** を返します。\n\
@@ -128,9 +146,15 @@ impl SubagentTool {
         self
     }
 
-    /// 子の実行オプション。
-    fn child_options(&self) -> AgentOptions {
-        child_options(&self.limits, &self.system, self.model.as_deref())
+    /// 子の実行オプション（`plan_role` は計画専用の system と小さな予算）。
+    fn child_options(&self, plan_role: bool) -> AgentOptions {
+        let system = if plan_role { PLAN_SYSTEM } else { &self.system };
+        let mut opts = child_options(&self.limits, system, self.model.as_deref());
+        if plan_role {
+            // 計画は 1 ターンで返る（ツールが無いのでループしない）。
+            opts.budget = crate::budget::Budget::autonomous(2, None, 20_000, 50_000);
+        }
+        opts
     }
 }
 
@@ -217,6 +241,12 @@ impl Tool for SubagentTool {
                 "sources_hint": {
                     "type": "string",
                     "description": "当たるべき情報源のヒント（例: 官公庁統計・IR 資料・社内規程）"
+                },
+                "role": {
+                    "type": "string",
+                    "enum": ["research", "plan"],
+                    "description": "research=調べて findings を返す（既定）。plan=調べずに\
+                                    「何を確かめるべきか」の計画 JSON だけを返す（計画フェーズ用）"
                 }
             },
             "required": ["objective", "boundary"],
@@ -236,7 +266,13 @@ impl Tool for SubagentTool {
         trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
         let objective = required(&input, "objective")?;
-        let boundary = required(&input, "boundary")?;
+        // 計画ロールは**依頼だけ**を見る（担当範囲という概念が無い）。
+        let plan_role = optional(&input, "role").as_deref() == Some("plan");
+        let boundary = if plan_role {
+            String::new()
+        } else {
+            required(&input, "boundary")?
+        };
 
         // 体数上限。超過は**モデルが観測できる失敗**として返す（run は落とさない）。
         let index = self.spawned.fetch_add(1, Ordering::SeqCst);
@@ -250,7 +286,11 @@ impl Tool for SubagentTool {
 
         // 依頼（objective）を**先頭**に置く。見出しを先に書くと、モデルによっては前置きの
         // 体裁を真似して本題が薄くなる（決定的テストでも先頭一致のトリガが効かない）。
-        let mut prompt = format!("{objective}\n\n# 担当範囲（この外は調べない）\n{boundary}\n");
+        let mut prompt = if plan_role {
+            format!("{objective}\n")
+        } else {
+            format!("{objective}\n\n# 担当範囲（この外は調べない）\n{boundary}\n")
+        };
         for (heading, value) in [
             ("返す形", optional(&input, "output_format")),
             ("当たるべき情報源", optional(&input, "sources_hint")),
@@ -265,6 +305,9 @@ impl Tool for SubagentTool {
         }
 
         let mut sink = CollectingSink::new(Arc::clone(&self.cancel));
+        // 計画ロールにはツールを一切渡さない（調べさせない・#402）。手元の知識だけで
+        // 「何を確かめるべきか」を出させる。調べてから計画すると、承認前に調査するのと変わらない。
+        let child_tools: &[Arc<dyn Tool>] = if plan_role { &[] } else { &self.tools };
         let run = RunContext {
             ctx,
             // 親と衝突しない冪等キー（会計・Langfuse の相関に使われる）。
@@ -275,10 +318,10 @@ impl Tool for SubagentTool {
         };
         let outcome = run_agent(
             &self.gateway,
-            &self.tools,
+            child_tools,
             vec![LlmMessage::text(LlmRole::User, prompt)],
             &run,
-            &self.child_options(),
+            &self.child_options(plan_role),
             None,
             // 破壊系を渡していないので承認者は不要（居ないこと自体が fail-closed 側）。
             None,
@@ -319,6 +362,7 @@ impl Tool for SubagentTool {
         out.subagent_runs = vec![serde_json::json!({
             "objective": objective,
             "boundary": boundary,
+            "role": if plan_role { "plan" } else { "research" },
             "steps": spent.steps,
             "tool_calls": sink.tool_calls,
             "tokens": spent.tokens,

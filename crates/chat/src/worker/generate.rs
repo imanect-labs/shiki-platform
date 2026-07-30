@@ -192,7 +192,7 @@ impl ChatWorker {
                 // 起動された run は、計画が承認されるまで**調査系ツールを提示しない**。
                 // ツールを積み終えた後に絞る（提示の最終形に対して効かせる）。
                 gate_stage = self.plan_gate_stage(ctx, run, &skills).await?;
-                gate_stage.filter(&mut tools);
+                gate_stage.filter(&mut tools, self.ui_validator.as_ref());
                 let mut opts = AgentOptions::autonomous(
                     self.config.autonomous_max_steps,
                     None,
