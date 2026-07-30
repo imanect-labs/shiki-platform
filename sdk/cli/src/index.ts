@@ -283,8 +283,14 @@ async function cmdSkillImportFirstParty(
   // 配布用のセッションからは叩けない（勝手に登録しようとして黙って失敗する方が悪い）。
   if (!keyHex) {
     const pair = await generateKeypair();
+    // **秘密鍵は stdout に出さない**（端末履歴・CI ログ・スクロールバックに残る）。
+    // 0600 のファイルへ書き、パスだけ知らせる（レビュー指摘）。
+    const keyPath = join(process.env.HOME ?? ".", ".config", "shiki", "signing-key");
+    await mkdir(join(keyPath, ".."), { recursive: true });
+    await writeFile(keyPath, `${pair.privateHex}\n`, { mode: 0o600 });
     console.log("[skill] 署名鍵がありません。鍵ペアを生成しました:");
-    console.log(`  秘密鍵（オフライン保管・次回から --key か SHIKI_SIGNING_KEY へ）: ${pair.privateHex}`);
+    console.log(`  秘密鍵を書き出しました（chmod 600・オフライン保管）: ${keyPath}`);
+    console.log(`  次回は SHIKI_SIGNING_KEY="$(cat ${keyPath})" を渡してください`);
     console.log(`  公開鍵: ${pair.publicHex}`);
     console.log("[skill] 管理者が信頼鍵を登録してから再実行してください:");
     console.log(
@@ -308,6 +314,8 @@ async function cmdSkillImportFirstParty(
     .sort();
   if (names.length === 0) throw new Error(`${root} にバンドルがありません`);
 
+  // 「ディレクトリはあるが skill.json が無い」で静かに 0 件終了しない（レビュー指摘）。
+  let imported = 0;
   for (const name of names) {
     const manifestPath = join(root, name, "skill.json");
     if (!existsSync(manifestPath)) continue;
@@ -322,15 +330,20 @@ async function cmdSkillImportFirstParty(
         signature_base64: hexToBase64(signatureHex),
       });
       console.log(`[skill] import 完了: ${name}@${version}`);
+      imported += 1;
     } catch (e) {
       // 同一 name+version の再 import は 409（不変・publish 済み）。運用上は成功扱いでよい。
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("HTTP 409")) {
         console.log(`[skill] 既に publish 済み（skip）: ${name}@${version}`);
+        imported += 1;
         continue;
       }
       throw e;
     }
+  }
+  if (imported === 0) {
+    throw new Error(`${root} 配下に skill.json を持つバンドルが 1 件もありません`);
   }
 }
 

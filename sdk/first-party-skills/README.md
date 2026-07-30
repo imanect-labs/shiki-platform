@@ -5,7 +5,8 @@
 
 ## 掲載（#387）
 
-**first-party は署名 publish された時点で org 全員のカタログに載る（インストール不要）。**
+**first-party は署名 publish された時点で、同一 tenant・同一 org のメンバー全員のカタログに載る
+（インストール不要）。** 掲載も読取も **tenant ＋ org** の境界に閉じている（org は隔離境界・#371）。
 `/deep-research` のような公式スキルが「最初から在る」ようにするため。
 
 - 読める根拠は publish 時に張られる `organization#member → viewer`（`artifact` の viewer は

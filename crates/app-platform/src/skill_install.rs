@@ -158,22 +158,6 @@ impl SkillInstallService {
                     .await;
                 return Err(AppPlatformError::Forbidden);
             }
-            // 署名検証済みの公式スキルは **org 全員が読める**（#387）。これが無いと
-            // 「first-party は個別共有・管理者の個別同意なしで利用可能」（sdk/first-party-skills
-            // /README.md）が実際には成立せず、カタログへ自動掲載しても実行時に
-            // `AppliedSkill::resolve` が fail-closed で落ちる。
-            //
-            // 付与は viewer のみ（editor には広げない＝公式部品を org 全員が書き換えられない）。
-            // 冪等（同一タプルの再書き込みは no-op）。**署名検証の後**に置くこと。
-            let obj = ctx.ns().artifact(&skill_id.to_string());
-            self.authz
-                .write_tuple(
-                    &Subject::userset(&ctx.ns().organization(&ctx.org), Relation::Member),
-                    Relation::Viewer,
-                    &obj,
-                )
-                .await
-                .map_err(|e| AppPlatformError::Internal(format!("org viewer tuple: {e}")))?;
         }
         let entry = self
             .registry
@@ -191,6 +175,25 @@ impl SkillInstallService {
                 },
             )
             .await?;
+        // 署名検証済みの公式スキルは **org 全員が読める**（#387）。これが無いと
+        // 「first-party は個別共有・管理者の個別同意なしで利用可能」（sdk/first-party-skills
+        // /README.md）が実際には成立せず、カタログへ自動掲載しても実行時に
+        // `AppliedSkill::resolve` が fail-closed で落ちる。
+        //
+        // **publish が成功した後**に張る（レビュー指摘）。同一 name+version の再 publish は 409 で
+        // 落ちるので、先に張ると「レジストリに載っていないのに org 全員が読める」状態が残る。
+        // 付与は viewer のみ（editor には広げない＝公式部品を org 全員が書き換えられない）。冪等。
+        if trust_tier == "first_party" {
+            let obj = ctx.ns().artifact(&skill_id.to_string());
+            self.authz
+                .write_tuple(
+                    &Subject::userset(&ctx.ns().organization(&ctx.org), Relation::Member),
+                    Relation::Viewer,
+                    &obj,
+                )
+                .await
+                .map_err(|e| AppPlatformError::Internal(format!("org viewer tuple: {e}")))?;
+        }
         self.record(
             ctx,
             "skill.publish",
