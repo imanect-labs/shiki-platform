@@ -175,6 +175,8 @@ impl ChatWorker {
             run.fencing_token,
             cancel.clone(),
         );
+        // 実行前フェーズ（#400）。非自律は常に Execute（門は自律の調査フローだけの概念）。
+        let mut gate_stage = super::gate::GateStage::Execute;
         // 自律プロファイル: フルツール（fs CRUD/grep/shell）＋予算＋計画＋承認ゲート（Task 5.1/5.4/5.6/5.7）。
         let opts = if run.autonomous {
             if let Some(storage) = &self.storage {
@@ -186,6 +188,11 @@ impl ChatWorker {
                 // ここまでに積んだツールから拾うため、必ず他のツールを積んだ後に呼ぶ。
                 // cancel を共有して run 停止で子も止める。
                 self.push_subagent_tool(&mut tools, run, cancel.clone());
+                // 実行前フェーズの門（#400）: skill が `plan_first` を宣言した variant で
+                // 起動された run は、計画が承認されるまで**調査系ツールを提示しない**。
+                // ツールを積み終えた後に絞る（提示の最終形に対して効かせる）。
+                gate_stage = self.plan_gate_stage(ctx, run, &skills).await?;
+                gate_stage.filter(&mut tools);
                 let mut opts = AgentOptions::autonomous(
                     self.config.autonomous_max_steps,
                     None,
@@ -246,6 +253,14 @@ impl ChatWorker {
             for skill in &skills {
                 skill.audit_apply(&self.db, ctx, run).await;
             }
+        }
+
+        // 門の段階を system へ明示する（ツールが無い理由と、次へ進む条件・#400）。
+        // skill の instructions より**後ろ**に置く（手順書の記述に上書きされないように）。
+        if let Some(note) = gate_stage.system_note() {
+            let mut system = opts.system.take().unwrap_or_default();
+            system.push_str(note);
+            opts.system = Some(system);
         }
 
         // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する。

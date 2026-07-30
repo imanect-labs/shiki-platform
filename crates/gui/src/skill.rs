@@ -107,6 +107,23 @@ pub struct SkillCommandVariant {
     pub args: String,
     /// 補完候補に出す説明。
     pub summary: String,
+    /// この variant で起動したとき、実行前に**確認フェーズを通す**か（#400）。
+    ///
+    /// `None` は従来どおり（最初から全ツール）。`PlanFirst` は「質問カード → 計画カード →
+    /// 承認 → 実行」を**ツール提示で保証する**（instructions の門は実測で確率的にしか効かず、
+    /// 同じ指示で止まる run と素通りする run が出た）。判定は chat 側の
+    /// `crate::worker::gate` にあり、ここは skill が意図を宣言する場所。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<CommandPhase>,
+}
+
+/// コマンド variant の実行前フェーズ（閉じた集合・#400）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum CommandPhase {
+    /// 計画の承認を取ってから実行する（承認までは調査系ツールを提示しない）。
+    PlanFirst,
 }
 
 /// 知識スコープ（folders は配下全体・files は個別）。両方空の Some は保存時に拒否。

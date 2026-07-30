@@ -52,8 +52,8 @@ pub use miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_store::{MiniAppStore, ResolvedMiniApp};
 pub use plan_card::{PlanCardProps, PlanCardStep};
 pub use skill::{
-    validate_skill_body, FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody,
-    SkillCommand, SkillCommandVariant, SkillScript,
+    validate_skill_body, CommandPhase, FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind,
+    SkillBody, SkillCommand, SkillCommandVariant, SkillScript,
 };
 pub use skill_store::SkillStore;
 pub use spec::{ActionRef, UiNode, UiSpecDoc};

@@ -10,6 +10,7 @@
 mod approval_policy;
 /// 古典 RAG 注入経路（generate.rs から分割）。
 mod classic;
+mod gate;
 mod generate;
 mod history;
 /// 実行オプション/system プロンプト（generate.rs から分割）。
@@ -63,8 +64,7 @@ pub struct WorkerConfig {
     pub parallel_read_tools: usize,
     /// 自律プロファイルの累積コスト上限（マイクロ USD・Task 5.7）。
     pub autonomous_max_cost_usd_micros: i64,
-    /// サブエージェント委譲（`subagent`・#391）の上限。①1 体あたりのステップ/トークン/コスト
-    /// ②1 run の累計体数 ③子の中の並列度 の三重で縛る（最終的な安全弁は上の累計上限）。
+    /// サブエージェント委譲（#391）の上限。1 体の予算・1 run の体数・子の並列度の三重で縛る。
     pub subagent: agent_core::SubagentLimits,
     /// 自律 shell に同梱するゲストコマンドパッケージ（coreutils 等・Task 5.4）。
     pub sandbox_software: Vec<String>,
@@ -91,8 +91,8 @@ impl Default for WorkerConfig {
             max_tokens: 8192,
             parallel_read_tools: agent_core::DEFAULT_PARALLEL_READ_TOOLS,
             autonomous_max_cost_usd_micros: 3_000_000,
-            // 既定は「同時 4 体（parallel_read_tools と同値）・1 体 6 ステップ・1 run 8 体まで」
-            // （実 LLM 検証で 8 ステップ/12 体では 1 体が完走できなかったため絞った・#391）。
+            // 既定は同時 4 体・1 体 6 ステップ・1 run 8 体（8 ステップ/12 体では実 LLM で
+            // 1 体も完走できなかった・#391）。
             subagent: agent_core::SubagentLimits::default(),
             sandbox_software: vec!["coreutils".to_string()],
             // 既定ティアの単一ソースは enum の `#[default]`（gVisor・#346）。ここに別のリテラルを
