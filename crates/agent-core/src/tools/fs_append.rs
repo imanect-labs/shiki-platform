@@ -73,7 +73,7 @@ impl Tool for FsAppendTool {
             .workspace
             .append(ctx, &name, content, ct, trace_id)
             .await?;
-        Ok(write_outcome(w))
+        Ok(write_outcome(w, self.workspace.is_system()))
     }
 }
 
@@ -89,6 +89,55 @@ mod tests {
         content: Mutex<Option<String>>,
         /// append に渡された content_type（拡張子から決まることの確認用）。
         last_content_type: Mutex<Option<String>>,
+    }
+
+    /// システム領域（#392）を名乗るフェイク（成果物チップを出さない側の検証用）。
+    #[derive(Default)]
+    struct SystemWorkspace(AppendOnlyWorkspace);
+
+    #[async_trait::async_trait]
+    impl WorkspaceStore for SystemWorkspace {
+        fn is_system(&self) -> bool {
+            true
+        }
+        async fn list(
+            &self,
+            c: &AuthContext,
+            t: Option<&str>,
+        ) -> Result<Vec<WorkspaceEntry>, ToolError> {
+            self.0.list(c, t).await
+        }
+        async fn read(
+            &self,
+            c: &AuthContext,
+            n: &str,
+            t: Option<&str>,
+        ) -> Result<Vec<u8>, ToolError> {
+            self.0.read(c, n, t).await
+        }
+        async fn write(
+            &self,
+            c: &AuthContext,
+            n: &str,
+            b: Vec<u8>,
+            ct: &str,
+            t: Option<&str>,
+        ) -> Result<WorkspaceWrite, ToolError> {
+            self.0.write(c, n, b, ct, t).await
+        }
+        async fn append(
+            &self,
+            c: &AuthContext,
+            n: &str,
+            suffix: &str,
+            ct: &str,
+            t: Option<&str>,
+        ) -> Result<WorkspaceWrite, ToolError> {
+            self.0.append(c, n, suffix, ct, t).await
+        }
+        async fn delete(&self, c: &AuthContext, n: &str, t: Option<&str>) -> Result<(), ToolError> {
+            self.0.delete(c, n, t).await
+        }
     }
 
     #[async_trait::async_trait]
@@ -219,5 +268,25 @@ mod tests {
                 .await,
             Err(ToolError::Invalid(_))
         ));
+    }
+
+    /// システム領域では成果物参照を出さない（隠した場所への「開く」導線を会話に置かない・#392）。
+    #[tokio::test]
+    async fn system_workspace_writes_do_not_advertise_artifacts() {
+        let tool = FsAppendTool::new(Arc::new(SystemWorkspace::default()));
+        let out = tool
+            .call(
+                &ctx(),
+                serde_json::json!({ "name": "notes.md", "content": "E1\n" }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(out.artifacts.is_empty(), "チップを出さない");
+        assert!(
+            out.content.contains("notes.md"),
+            "何を書いたかは観測テキストに残る: {}",
+            out.content
+        );
     }
 }

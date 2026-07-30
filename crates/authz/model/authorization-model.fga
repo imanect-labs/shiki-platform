@@ -93,11 +93,15 @@ type thread
 # thread と同型の非階層共有（作成者 owner ＋明示共有・共有語彙は viewer/editor のみ）。
 # viewer/editor は workflow プリンシパル subject を受理する（Task 10.4a・実装済み）
 # （schedule/event run が IR/script artifact を読む委譲経路・engine.md §6.6）。
+# viewer は organization#member（社内＝現テナント）も受理する（#387）。**署名検証済みの
+# first-party skill を publish した時だけ**その 1 本が書かれ、公式スキルを個別共有なしで
+# org 全員のカタログへ載せる（folder/file が #342 で同じ subject 型を受理している前例に揃える）。
+# editor には入れない（公式部品を org 全員が書き換えられるようにはしない）。
 type artifact
   relations
     define owner: [user]
     define editor: [user, role#member, workflow] or owner
-    define viewer: [user, role#member, workflow] or editor
+    define viewer: [user, role#member, organization#member, workflow] or editor
 
 # シークレット（Task 10.9）。write-only/use-only。
 # can_use は「解決して使える」であり平文の読み返しではない（owner が含意）。
