@@ -18,6 +18,7 @@
 
 use futures::stream::{self, StreamExt};
 
+use super::stub_deep_research::deep_research_call;
 use super::stub_fixtures::genui_spec;
 use super::stub_triggers::note_tool_call;
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
@@ -166,6 +167,29 @@ pub(super) fn tool_calls_stream(
     stream::iter(events).boxed()
 }
 
+/// 本文だけを流して自然終了するストリーム（`EndTurn`）。
+///
+/// 語単位で TextDelta に割る（実プロバイダのストリーミングと同じ形で UI の逐次描画を通す）。
+pub(super) fn text_stream(reply: &str, prompt_tokens: u64) -> DeltaStream {
+    let words: Vec<String> = reply
+        .split_inclusive(char::is_whitespace)
+        .map(str::to_string)
+        .collect();
+    let completion_tokens = words.len() as u64;
+    let mut events: Vec<Result<StreamDelta, LlmError>> = words
+        .into_iter()
+        .map(|w| Ok(StreamDelta::TextDelta { text: w }))
+        .collect();
+    events.push(Ok(StreamDelta::Done {
+        stop_reason: StopReason::EndTurn,
+        usage: Usage {
+            prompt_tokens,
+            completion_tokens,
+        },
+    }));
+    stream::iter(events).boxed()
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for StubProvider {
     fn name(&self) -> &'static str {
@@ -184,6 +208,12 @@ impl LlmProvider for StubProvider {
             })
             .sum::<u64>();
 
+        // --- deep research（#387）: `/deep-research` 起動はフェーズを跨いで進むため最初に見る。 ---
+        if !req.tools.is_empty() {
+            if let Some(s) = deep_research_call(req, prompt_tokens) {
+                return Ok(s);
+            }
+        }
         // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
         if !req.tools.is_empty() && user_text.starts_with("loop:") {
             return Ok(tool_call_stream(
@@ -302,23 +332,7 @@ impl LlmProvider for StubProvider {
         } else {
             format!("回答: {user_text}")
         };
-        let words: Vec<String> = reply
-            .split_inclusive(char::is_whitespace)
-            .map(str::to_string)
-            .collect();
-        let completion_tokens = words.len() as u64;
-        let mut events: Vec<Result<StreamDelta, LlmError>> = words
-            .into_iter()
-            .map(|w| Ok(StreamDelta::TextDelta { text: w }))
-            .collect();
-        events.push(Ok(StreamDelta::Done {
-            stop_reason: StopReason::EndTurn,
-            usage: Usage {
-                prompt_tokens,
-                completion_tokens,
-            },
-        }));
-        Ok(stream::iter(events).boxed())
+        Ok(text_stream(&reply, prompt_tokens))
     }
 }
 

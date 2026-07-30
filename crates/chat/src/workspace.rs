@@ -56,13 +56,16 @@ pub struct StorageWorkspaceStore {
     storage: Arc<StorageService>,
     /// thread ごとのワークスペースフォルダ（Drive 上の実フォルダ）。
     root_folder_id: Uuid,
+    /// システム領域（ドライブ非表示・RAG 非索引）か（#392）。
+    system: bool,
 }
 
 impl StorageWorkspaceStore {
-    pub fn new(storage: Arc<StorageService>, root_folder_id: Uuid) -> Self {
+    pub fn new(storage: Arc<StorageService>, root_folder_id: Uuid, system: bool) -> Self {
         StorageWorkspaceStore {
             storage,
             root_folder_id,
+            system,
         }
     }
 }
@@ -113,7 +116,11 @@ impl LazyWorkspace {
                     tracing::warn!(thread_id = %self.thread_id, error = %e,
                         "workspace メンバー同期に失敗（次回再試行）");
                 }
-                Ok(StorageWorkspaceStore::new(self.storage.clone(), folder_id))
+                Ok(StorageWorkspaceStore::new(
+                    self.storage.clone(),
+                    folder_id,
+                    self.system,
+                ))
             })
             .await
     }
@@ -179,6 +186,10 @@ impl LazyWorkspace {
 
 #[async_trait::async_trait]
 impl WorkspaceStore for LazyWorkspace {
+    fn is_system(&self) -> bool {
+        self.system
+    }
+
     async fn list(
         &self,
         ctx: &AuthContext,
@@ -245,6 +256,10 @@ fn map_err(e: StorageError, what: &str) -> ToolError {
 
 #[async_trait::async_trait]
 impl WorkspaceStore for StorageWorkspaceStore {
+    fn is_system(&self) -> bool {
+        self.system
+    }
+
     async fn list(
         &self,
         ctx: &AuthContext,

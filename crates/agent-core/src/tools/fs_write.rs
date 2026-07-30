@@ -20,16 +20,21 @@ use crate::tool::{ArtifactRef, Tool, ToolError, ToolOutcome};
 use crate::workspace::{WorkspaceStore, WorkspaceWrite};
 
 /// 書込結果を tool_result（＋成果物）へ整形する共通ヘルパ（`fs_append` も使う）。
-pub(super) fn write_outcome(w: WorkspaceWrite) -> ToolOutcome {
+///
+/// `system`（#392）なワークスペースでは**成果物参照を出さない**。ドライブから隠した領域への
+/// 「開く」チップを会話に置くと、開いた先から戻れない行き止まりになる。
+pub(super) fn write_outcome(w: WorkspaceWrite, system: bool) -> ToolOutcome {
     let verb = if w.created { "作成" } else { "更新" };
     let mut out = ToolOutcome::ok(format!(
         "{}を{}しました（version {}, node_id: {}）。",
         w.name, verb, w.version, w.node_id
     ));
-    out.artifacts = vec![ArtifactRef {
-        node_id: w.node_id,
-        name: w.name,
-    }];
+    if !system {
+        out.artifacts = vec![ArtifactRef {
+            node_id: w.node_id,
+            name: w.name,
+        }];
+    }
     out
 }
 
@@ -86,7 +91,7 @@ impl Tool for FsWriteTool {
             .workspace
             .write(ctx, &name, content.as_bytes().to_vec(), ct, trace_id)
             .await?;
-        Ok(write_outcome(w))
+        Ok(write_outcome(w, self.workspace.is_system()))
     }
 }
 
@@ -161,7 +166,7 @@ impl Tool for FsEditTool {
             .workspace
             .write(ctx, &name, updated.into_bytes(), ct, trace_id)
             .await?;
-        Ok(write_outcome(w))
+        Ok(write_outcome(w, self.workspace.is_system()))
     }
 }
 
