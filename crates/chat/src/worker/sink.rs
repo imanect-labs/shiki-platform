@@ -198,6 +198,7 @@ impl WorkerSink {
             // 側が監査・再現性を担う）除外する。
             // （旧 office_live_edit の SSE 注入イベントは #352 で廃止＝この列から消えた）
             StreamEventKind::SkillInvoked { .. }
+            | StreamEventKind::SubagentRun { .. }
             | StreamEventKind::Plan { .. }
             | StreamEventKind::BudgetWarning { .. }
             | StreamEventKind::ApprovalRequested { .. }
@@ -262,6 +263,10 @@ fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         // skill 発動記録（#344）。generation_event に残り replay 可能（UI はチップ表示）。
         AgentEvent::SkillInvoked { skill } => StreamEventKind::SkillInvoked {
             skill: skill.clone(),
+        },
+        // サブエージェント委譲の記録（#391）。子の生イベントは親へ流れない（要約のみ）。
+        AgentEvent::SubagentRun { subagent } => StreamEventKind::SubagentRun {
+            subagent: subagent.clone(),
         },
         // 自律プロファイルの構造化イベント（Task 5.9 ライブ配信）。generation_event に append され
         // replay 可能（監査・5.10）だが message.content へは projection しない。

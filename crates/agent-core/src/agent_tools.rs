@@ -46,6 +46,9 @@ pub(crate) enum ToolPhaseOutcome {
         blocks: Vec<Block>,
         /// 失敗ループを検出した（自律版のみ・5.5）。
         looping: bool,
+        /// ツールの内側で起きた LLM 消費の合計（`subagent`・#391）。
+        /// 呼び出し側が親の `Spent` へ `add_external` で積む（子の消費で親の予算が止まる）。
+        external: crate::tool::ToolUsage,
     },
 }
 
@@ -102,9 +105,14 @@ pub(crate) async fn run_tool_calls(
     // 完了し得るため、黙って捨てると「実行したのに UI/監査に何も残らない」穴になる）。
     let mut blocks: Vec<Block> = Vec::with_capacity(calls.len());
     let mut looping = false;
+    let mut external = crate::tool::ToolUsage::default();
     for (call, slot) in calls.into_iter().zip(slots) {
         // キャンセルで未処理のまま残った呼び出しは飛ばす。
         let Some(p) = slot else { continue };
+        if let Some(u) = p.outcome.usage {
+            external.tokens = external.tokens.saturating_add(u.tokens);
+            external.cost_usd_micros = external.cost_usd_micros.saturating_add(u.cost_usd_micros);
+        }
         emit_tool_events(sink, &call, &p.outcome).await?;
         if phase.opts.profile.is_autonomous() && p.disposition != Disposition::Plan {
             if p.outcome.is_error && p.disposition == Disposition::Executed {
@@ -128,7 +136,11 @@ pub(crate) async fn run_tool_calls(
     if seq.cancelled {
         return Ok(ToolPhaseOutcome::Cancelled);
     }
-    Ok(ToolPhaseOutcome::Executed { blocks, looping })
+    Ok(ToolPhaseOutcome::Executed {
+        blocks,
+        looping,
+        external,
+    })
 }
 
 /// 同一ステップ内で並列に回してよい呼び出しか。

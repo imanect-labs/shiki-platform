@@ -48,6 +48,20 @@ test.describe("ツール実行表示ギャラリー", () => {
     if (SHOTS) await done.screenshot({ path: `${SHOTS}/tool-activity-expanded.png` });
   });
 
+  test("委譲は同一ステップの並行としてまとまり、展開で担当範囲を出す", async ({ page }) => {
+    const delegation = page.getByTestId("tool-activity-delegation");
+    await expect(delegation.getByText("3 件の操作")).toBeVisible();
+    await delegation.getByRole("button").first().click();
+    // 同一ステップの 3 体＝並行（子の生イベントは親へ流れないので、詳細はこの要約だけ）。
+    await expect(delegation.getByText("並行して 3 件")).toBeVisible();
+    await expect(delegation.getByText(/「.*国内 SaaS 市場規模.*」を調査しました/)).toBeVisible();
+    await expect(delegation.getByText(/担当範囲: 北米・欧州・2024〜2026/)).toBeVisible();
+    await expect(delegation.getByText(/5 ステップ・ツール 7 回/)).toBeVisible();
+    // 予算で止まった体は失敗として区別する（完了形にしない）。
+    await expect(delegation.getByText(/を調査できませんでした/)).toBeVisible();
+    if (SHOTS) await delegation.screenshot({ path: `${SHOTS}/tool-activity-delegation.png` });
+  });
+
   test("全ツール語彙に日本語ラベルがある（生の英識別子を出さない）", async ({ page }) => {
     const vocab = page.getByTestId("tool-activity-vocab");
     await vocab.getByRole("button").first().click();

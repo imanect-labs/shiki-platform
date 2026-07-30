@@ -32,6 +32,7 @@ import {
   Table2,
   Terminal,
   Trash2,
+  Users,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -140,6 +141,16 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     verb: "読み込み",
     failed: "読み込めませんでした",
     target: named(),
+  },
+  subagent: {
+    // 委譲は「調査の一種」として phase 行に集約する（category を増やすと季節色が増える）。
+    icon: Users,
+    category: "search",
+    lead: (t) => (t ? `${t}を` : "サブエージェントに"),
+    verb: "調査",
+    suru: true,
+    failed: "調査できませんでした",
+    target: quoted("objective", 34),
   },
   doc_search: {
     icon: Search,

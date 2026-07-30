@@ -133,9 +133,48 @@ const DONE: ToolActivityItem[] = [
   },
 ];
 
+/// 委譲（#391）: 同一ステップの複数サブエージェント＝「並行して N 件」。
+/// 展開すると担当範囲とステップ数が出る（子の生イベントは親へ流れないため、これが唯一の詳細）。
+const DELEGATION: ToolActivityItem[] = [
+  {
+    key: "g1",
+    id: "g1",
+    name: "subagent",
+    running: false,
+    ok: true,
+    step: 0,
+    input: { objective: "2024〜2026 の国内 SaaS 市場規模の実数", boundary: "国内・2024〜2026" },
+    subagent: { boundary: "国内・2024〜2026", steps: 6, toolCalls: 9 },
+    result: "国内市場は 2026 年に 1.2 兆円（総務省 2026-07・一次）。前年比 +14%（出典 1 系統）。",
+  },
+  {
+    key: "g2",
+    id: "g2",
+    name: "subagent",
+    running: false,
+    ok: true,
+    step: 0,
+    input: { objective: "同期間の海外市場との比較", boundary: "北米・欧州・2024〜2026" },
+    subagent: { boundary: "北米・欧州・2024〜2026", steps: 5, toolCalls: 7 },
+    result: "北米は同期間 +9%、欧州 +11%（Gartner 2026-05・二次）。国内が上振れ。",
+  },
+  {
+    key: "g3",
+    id: "g3",
+    name: "subagent",
+    running: false,
+    ok: false,
+    step: 0,
+    input: { objective: "規制・政策の動き", boundary: "国内・法改正のみ" },
+    subagent: { boundary: "国内・法改正のみ", steps: 8, toolCalls: 12 },
+    result: "サブエージェントは findings を返しませんでした（停止理由: Budget(Steps)）。",
+  },
+];
+
 /// 全 30 語彙のラベル確認（対象あり）。日本語が壊れていないかを一覧で見る。
 const ALL_VOCAB: ToolActivityItem[] = [
   { name: "skill", input: { name: "deep-research" } },
+  { name: "subagent", input: { objective: "2026 年の国内 SaaS 市場規模", boundary: "国内のみ" } },
   { name: "doc_search", input: { query: "就業規則" } },
   { name: "web_search", input: { query: "決算 2026" } },
   { name: "web_fetch", input: { url: "https://example.com/ir/2026/q1" } },
@@ -253,6 +292,10 @@ export default function ToolActivityGalleryPage() {
 
       <Cell id="done" title="完了（折りたたみ 1 行要約。クリックで展開）">
         <ToolActivity items={DONE} />
+      </Cell>
+
+      <Cell id="delegation" title="委譲（同一ステップ 3 体＝並行。展開で担当範囲とステップ数）">
+        <ToolActivity items={DELEGATION} />
       </Cell>
 
       <Cell id="vocab" title="全ツール語彙のラベル（展開して確認する）">

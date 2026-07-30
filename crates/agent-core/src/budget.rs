@@ -46,6 +46,17 @@ impl Spent {
         self.tokens = self.tokens.saturating_add(tokens);
         self.cost_usd_micros = self.cost_usd_micros.saturating_add(cost_usd_micros);
     }
+
+    /// ツールの中で起きた LLM 消費を足し込む（**step は増やさない**・#391）。
+    ///
+    /// サブエージェント委譲（`subagent`）は 1 ツール呼び出しの内側で子ループを回すため、その
+    /// トークン/コストは親の会計に現れない。ここで積むことで**親の `Budget` が子の消費込みで
+    /// 止まる**（トークンが十数倍になり得る機構の唯一の安全弁）。steps は親のループ回数を表す
+    /// 指標なので触らない。
+    pub fn add_external(&mut self, tokens: u64, cost_usd_micros: i64) {
+        self.tokens = self.tokens.saturating_add(tokens);
+        self.cost_usd_micros = self.cost_usd_micros.saturating_add(cost_usd_micros);
+    }
 }
 
 /// 予算上限。`None` は当該軸を無制限にする（Chat プロファイルは token/cost を付けない）。

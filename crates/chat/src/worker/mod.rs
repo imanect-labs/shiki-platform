@@ -60,6 +60,12 @@ pub struct WorkerConfig {
     pub parallel_read_tools: usize,
     /// 自律プロファイルの累積コスト上限（マイクロ USD・Task 5.7）。
     pub autonomous_max_cost_usd_micros: i64,
+    /// サブエージェント委譲（`subagent`・#391）の上限。
+    ///
+    /// トークンが単一エージェント比で十数倍になり得る機構なので、①1 体あたりのステップ/
+    /// トークン/コスト ②1 run の累計体数 ③子の中の並列度 の三重で縛る。子の消費は親の
+    /// `Spent` へ積まれるため、最終的な安全弁は `autonomous_max_tokens` / `..._cost_usd_micros`。
+    pub subagent: agent_core::SubagentLimits,
     /// 自律 shell に同梱するゲストコマンドパッケージ（coreutils 等・Task 5.4）。
     pub sandbox_software: Vec<String>,
     /// コード実行系（code_interpreter / shell）の隔離ティア（admin ポリシー・design §4.6）。
@@ -84,6 +90,8 @@ impl Default for WorkerConfig {
             max_tokens: 8192,
             parallel_read_tools: agent_core::DEFAULT_PARALLEL_READ_TOOLS,
             autonomous_max_cost_usd_micros: 1_000_000,
+            // 既定は「同時 4 体（parallel_read_tools と同値）・1 体 8 ステップ・1 run 12 体まで」。
+            subagent: agent_core::SubagentLimits::default(),
             sandbox_software: vec!["coreutils".to_string()],
             // 既定ティアの単一ソースは enum の `#[default]`（gVisor・#346）。ここに別のリテラルを
             // 持たない（「もう一つの正」を作らない）。

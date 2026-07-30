@@ -68,6 +68,12 @@ pub enum StreamEventKind {
     /// `generation_event` に append され replay 可能（監査・再現性）。content へは projection
     /// しない（instructions は tool_result block として履歴に残る）。UI はチップ表示に使う。
     SkillInvoked { skill: serde_json::Value },
+    /// サブエージェント委譲の記録（#391）。
+    /// `subagent = {objective, boundary, steps, tool_calls, tokens}`。
+    /// `SkillInvoked` と同型で `generation_event` に append され replay 可能（監査・再現性）。
+    /// content へは projection しない（findings は tool_result block として履歴に残る）。
+    /// UI はツール実行表示の展開で担当範囲とステップ数を出すのに使う。
+    SubagentRun { subagent: serde_json::Value },
     /// 計画の改訂（自律エージェント・Task 5.2）。サブタスク列を丸ごと配信する。
     Plan { subtasks: Vec<PlanSubtask> },
     /// 予算上限への接近警告（Task 5.7）。
@@ -122,6 +128,7 @@ impl StreamEventKind {
             StreamEventKind::DocumentRef { .. } => "document_ref",
             StreamEventKind::DocumentDraft { .. } => "document_draft",
             StreamEventKind::SkillInvoked { .. } => "skill_invoked",
+            StreamEventKind::SubagentRun { .. } => "subagent_run",
             StreamEventKind::Plan { .. } => "plan",
             StreamEventKind::BudgetWarning { .. } => "budget_warning",
             StreamEventKind::ApprovalRequested { .. } => "approval_requested",

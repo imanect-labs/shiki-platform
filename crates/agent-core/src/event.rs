@@ -93,6 +93,13 @@ pub enum AgentEvent {
     /// replay 可能＝「何をいつ適用したか」の完全な列。message.content へは projection しない —
     /// instructions は ToolResult block として既に履歴に残る）。
     SkillInvoked { skill: serde_json::Value },
+    /// サブエージェント委譲の記録（#391）。
+    /// `subagent = {objective, boundary, steps, tool_calls, tokens}`。
+    ///
+    /// **`SkillInvoked` と同型**: `generation_event` へ append して replay/監査に残すが、
+    /// `message.content` へは projection しない（親のコンテキストも履歴も汚さない）。子の生の
+    /// イベント（取得本文・思考）は親へ一切流れない。
+    SubagentRun { subagent: serde_json::Value },
     /// 計画が改訂された（全サブタスク列・revision 付き・Task 5.2）。
     PlanUpdated(Plan),
     /// 単一サブタスクの状態遷移（軽量更新・Task 5.2）。

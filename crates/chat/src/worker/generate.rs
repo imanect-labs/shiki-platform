@@ -173,7 +173,7 @@ impl ChatWorker {
             self.store.clone(),
             run.run_id,
             run.fencing_token,
-            cancel,
+            cancel.clone(),
         );
         // 自律プロファイル: フルツール（fs CRUD/grep/shell）＋予算＋計画＋承認ゲート（Task 5.1/5.4/5.6/5.7）。
         let opts = if run.autonomous {
@@ -182,6 +182,10 @@ impl ChatWorker {
                 let (workspace, system_workspace) =
                     self.lazy_workspace(ctx, run.thread_id, storage).await?;
                 self.push_autonomous_tools(&mut tools, workspace);
+                // 委譲（#391）は**自律プロファイルのみ**。子へ渡す read-only の allowlist は
+                // ここまでに積んだツールから拾うため、必ず他のツールを積んだ後に呼ぶ。
+                // cancel を共有して run 停止で子も止める。
+                self.push_subagent_tool(&mut tools, run, cancel.clone());
                 let mut opts = AgentOptions::autonomous(
                     self.config.autonomous_max_steps,
                     None,

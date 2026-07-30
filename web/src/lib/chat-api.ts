@@ -379,6 +379,32 @@ function parseSkillInvocation(raw: unknown): SkillInvocation | null {
   return { skill_id: o.skill_id, skill_version: o.skill_version, name: o.name };
 }
 
+/// サブエージェント委譲の記録 1 件（subagent_run イベント・#391）。
+///
+/// 子の生イベント（取得本文・思考）は親へ流れない。UI が出せるのは**この要約だけ**で、
+/// 「どの範囲を担当し、何ステップ・何回のツール呼び出しで調べたか」を展開時に見せる。
+export type SubagentRun = {
+  tool_call_id: string;
+  objective: string;
+  boundary: string;
+  steps: number;
+  tool_calls: string[];
+};
+
+/// `subagent_run` の payload を検査する（生成型では `unknown`）。
+function parseSubagentRun(raw: unknown): SubagentRun | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.tool_call_id !== "string" || typeof o.boundary !== "string") return null;
+  return {
+    tool_call_id: o.tool_call_id,
+    objective: typeof o.objective === "string" ? o.objective : "",
+    boundary: o.boundary,
+    steps: typeof o.steps === "number" ? o.steps : 0,
+    tool_calls: Array.isArray(o.tool_calls) ? o.tool_calls.filter((t) => typeof t === "string") : [],
+  };
+}
+
 /// 承認要求（破壊系/egress/高コスト・Task 5.6）。
 export type ApprovalRequest = {
   tool_call_id: string;
@@ -410,6 +436,8 @@ export type StreamHandlers = {
   onDocumentRef?: (document: unknown) => void;
   /// skill ツールの発動記録（#344）。会話中に読み込んだスキルのチップ表示に使う。
   onSkillInvoked?: (skill: SkillInvocation) => void;
+  /// サブエージェント委譲の記録（#391）。担当範囲とステップ数を展開表示に足す。
+  onSubagentRun?: (run: SubagentRun) => void;
   onStatus?: (status: RunStatus) => void;
   // 自律エージェント（Phase 5）。
   onPlan?: (subtasks: PlanSubtask[]) => void;
@@ -502,6 +530,12 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
       case "document_ref":
         handlers.onDocumentRef?.(kind.document);
         break;
+      case "subagent_run": {
+        // payload は serde_json::Value（生成型では unknown）。形を検査してから渡す。
+        const run = parseSubagentRun(kind.subagent);
+        if (run) handlers.onSubagentRun?.(run);
+        break;
+      }
       case "skill_invoked": {
         // payload は serde_json::Value（生成型では unknown）。形を検査してから渡す。
         const skill = parseSkillInvocation(kind.skill);

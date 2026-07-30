@@ -25,7 +25,7 @@ use crate::checkpoint::Checkpoint;
 use crate::event::{AgentError, AgentEvent, EventSink, RecoveryAction};
 use crate::loop_detect::LoopDetector;
 use crate::plan;
-use crate::profile::{AgentOptions, AgentOutcome, AgentProfile};
+use crate::profile::{AgentOptions, AgentOutcome};
 use crate::tool::Tool;
 
 /// 計画メタツールの名前（自律版のみ提示・ループが横取りしてツールへは dispatch しない）。
@@ -79,7 +79,7 @@ pub async fn run_agent(
     sink: &mut dyn EventSink,
 ) -> Result<AgentOutcome, AgentError> {
     let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
-    let tool_defs = build_tool_defs(tools, opts.profile);
+    let tool_defs = build_tool_defs(tools, opts);
 
     // 再開 or 新規開始の状態。ループ検出器はチェックポイントから復元する（resume で失敗履歴を失わない）。
     let mut state = resume.unwrap_or_else(|| Checkpoint::start(messages));
@@ -285,15 +285,27 @@ async fn run_step(
         opts,
         approver,
     };
-    let (result_blocks, looping) =
+    let (result_blocks, looping, external) =
         match crate::agent_tools::run_tool_calls(&phase, calls, &mut state.plan, sink, detector)
             .await?
         {
             crate::agent_tools::ToolPhaseOutcome::Cancelled => {
                 return Ok(StepOutcome::Stop(AgentStop::Cancelled))
             }
-            crate::agent_tools::ToolPhaseOutcome::Executed { blocks, looping } => (blocks, looping),
+            crate::agent_tools::ToolPhaseOutcome::Executed {
+                blocks,
+                looping,
+                external,
+            } => (blocks, looping, external),
         };
+    // ツールの内側で起きた LLM 消費（サブエージェント委譲・#391）を親の会計へ積む。
+    // steps は増やさない（親のループ回数の指標を保つ）。次のステップ境界の `Budget::check` が
+    // 子の消費込みで判定するため、**トークン/コスト上限で確実に止まる**。
+    if external.tokens > 0 || external.cost_usd_micros > 0 {
+        state
+            .spent
+            .add_external(external.tokens, external.cost_usd_micros);
+    }
     state.messages.push(LlmMessage {
         role: LlmRole::Tool,
         content: result_blocks,
@@ -311,7 +323,7 @@ async fn run_step(
 }
 
 /// 提示するツール定義を組み立てる（自律版は `plan` メタツールを足す）。
-fn build_tool_defs(tools: &[Arc<dyn Tool>], profile: AgentProfile) -> Vec<ToolDef> {
+fn build_tool_defs(tools: &[Arc<dyn Tool>], opts: &AgentOptions) -> Vec<ToolDef> {
     let mut defs: Vec<ToolDef> = tools
         .iter()
         .map(|t| ToolDef {
@@ -320,7 +332,7 @@ fn build_tool_defs(tools: &[Arc<dyn Tool>], profile: AgentProfile) -> Vec<ToolDe
             input_schema: t.input_schema(),
         })
         .collect();
-    if profile.is_autonomous() {
+    if opts.profile.is_autonomous() && opts.offer_plan_tool {
         defs.push(ToolDef {
             name: PLAN_TOOL.to_string(),
             description:

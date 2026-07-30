@@ -112,6 +112,36 @@ pub(super) fn tool_call_stream(
     tool_calls_stream(vec![(name, input)], prompt_tokens)
 }
 
+/// `subagent:<テーマ>` — 1 ステップで `subagent` を**3 体**呼ぶ（境界を重複なく割った形）。
+///
+/// 委譲の並列（#391）と UI の「並行して N 件」表示を決定的に再現する唯一の入口。提示ツールに
+/// `subagent` が無ければ `None`（呼び出し側が通常経路へ落ちる）。
+fn subagent_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let topic = user_text.strip_prefix("subagent:")?.trim();
+    let tool = req.tools.iter().find(|t| t.name == "subagent")?;
+    let calls = [
+        ("国内・直近 3 年の実数", "国内"),
+        ("同期間の海外比較", "北米・欧州"),
+        ("規制・政策の動き", "法改正のみ"),
+    ]
+    .into_iter()
+    .map(|(objective, boundary)| {
+        (
+            tool.name.clone(),
+            serde_json::json!({
+                "objective": format!("{topic}: {objective}"),
+                "boundary": boundary,
+            }),
+        )
+    })
+    .collect();
+    Some(tool_calls_stream(calls, prompt_tokens))
+}
+
 /// `parallel:<クエリ>` — 1 ステップで `web_search` ＋ **別ホスト**の `web_fetch` ×3 を呼ぶ。
 ///
 /// agent-core の有界並列（#349・同一ホストは politeness_key で直列化される）と、
@@ -225,6 +255,12 @@ impl LlmProvider for StubProvider {
         // --- 並行 read 駆動 `parallel:`（#386）。 ---
         if !has_tool_result(req) {
             if let Some(s) = parallel_read_call(req, &user_text, prompt_tokens) {
+                return Ok(s);
+            }
+        }
+        // --- 委譲の並列駆動 `subagent:`（#391）。 ---
+        if !has_tool_result(req) {
+            if let Some(s) = subagent_call(req, &user_text, prompt_tokens) {
                 return Ok(s);
             }
         }

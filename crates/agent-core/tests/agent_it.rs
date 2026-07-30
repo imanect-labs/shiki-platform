@@ -130,6 +130,8 @@ impl Tool for MockSearchTool {
             csv_drafts: vec![],
             document_refs: vec![],
             skill_invocations: vec![],
+            subagent_runs: vec![],
+            usage: None,
             is_error: false,
         })
     }

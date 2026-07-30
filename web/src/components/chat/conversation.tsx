@@ -260,6 +260,24 @@ export function Conversation({
           tools[i] = { ...tools[i], skillVersion: skill.skill_version };
           return { ...s, tools };
         }),
+      // サブエージェント委譲の要約（#391）。`tool_call_id` で一意に突き合わせる
+      // （skill_invoked と違い id が載るので FIFO 推測が要らない）。
+      onSubagentRun: (run) =>
+        updateStream((s) => {
+          if (!s) return s;
+          const i = s.tools.findIndex((t) => t.id === run.tool_call_id);
+          if (i < 0) return s;
+          const tools = s.tools.slice();
+          tools[i] = {
+            ...tools[i],
+            subagent: {
+              boundary: run.boundary,
+              steps: run.steps,
+              toolCalls: run.tool_calls.length,
+            },
+          };
+          return { ...s, tools };
+        }),
       onCitation: (c) => updateStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
       onFileRef: (f) => updateStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
       onGenerativeUi: (spec) =>

@@ -54,6 +54,9 @@ export type ToolActivityItem = {
   step?: number;
   /// skill ツールで実際に読み込まれた版（skill_invoked イベント・#344）。ライブ限定の付加情報。
   skillVersion?: number;
+  /// 委譲の要約（subagent_run イベント・#391）。担当範囲とステップ数を展開時に出す。
+  /// 子の生イベントは親へ流れないため、UI が出せるのはこの要約だけ。ライブ限定の付加情報。
+  subagent?: { boundary: string; steps: number; toolCalls: number };
 };
 
 /// ローリング表示に同時に見せる件数（human 指定: 縦に 3 つずつ）。
@@ -238,6 +241,14 @@ function ActivityLine({
             </span>
           ) : null}
         </span>
+        {showResult && item.subagent ? (
+          <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
+            担当範囲: {item.subagent.boundary}
+            <span className="ml-1.5 tabular-nums">
+              （{item.subagent.steps} ステップ・ツール {item.subagent.toolCalls} 回）
+            </span>
+          </p>
+        ) : null}
         {result ? (
           <p className="mt-0.5 line-clamp-2 whitespace-pre-wrap text-[12px] leading-relaxed text-muted-foreground">
             {result}

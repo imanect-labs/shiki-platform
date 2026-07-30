@@ -177,6 +177,49 @@ impl ChatWorker {
         }
     }
 
+    /// 委譲ツール（`subagent`・#391）を提示ツールに加える（自律プロファイルのみ）。
+    ///
+    /// 子へ渡すのは**明示 allowlist の read-only ツールだけ**を、いま提示している中から拾う
+    /// （配線されていないツールは子にも無い）。`subagent` 自身は渡さない＝**入れ子の入れ子が
+    /// 構造的に起きない**。破壊系を渡さないので入れ子の承認問題も生じない。
+    pub(super) fn push_subagent_tool(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        run: &ClaimedRun,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        /// 子が使えるツール（調査に必要な読み取りだけ）。ここに破壊系を足さないこと。
+        const CHILD_TOOLS: [agent_core::ToolName; 6] = [
+            agent_core::ToolName::WebSearch,
+            agent_core::ToolName::WebFetch,
+            agent_core::ToolName::DocSearch,
+            agent_core::ToolName::FsRead,
+            agent_core::ToolName::Grep,
+            agent_core::ToolName::FsList,
+        ];
+        let child: Vec<Arc<dyn Tool>> = tools
+            .iter()
+            .filter(|t| {
+                agent_core::ToolName::parse(t.name()).is_some_and(|n| CHILD_TOOLS.contains(&n))
+            })
+            .map(Arc::clone)
+            .collect();
+        // 調査できる道具が 1 つも無ければ委譲は無意味（提示しない）。
+        if child.is_empty() {
+            return;
+        }
+        tools.push(Arc::new(
+            agent_core::SubagentTool::new(
+                self.gateway.clone(),
+                child,
+                self.config.subagent,
+                format!("{}:{}", run.run_id, run.fencing_token),
+                cancel,
+            )
+            .with_model(self.config.model.clone()),
+        ));
+    }
+
     /// skill ツール（カタログ引き・#344 Task 10.11）を提示ツールに加える。
     ///
     /// artifact ストアとカタログ源が配線されている時のみ。カタログはピン済み ∪ 本人 owner
