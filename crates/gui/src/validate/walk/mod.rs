@@ -236,6 +236,7 @@ impl<'a> Walk<'a> {
                 self.opt_label(p.language.as_deref(), &format!("{path}.language"));
             }
             UiNode::QuestionCard(p) => self.question_card(p, path),
+            UiNode::PlanCard(p) => self.plan_card(p, path),
             UiNode::SourceCard(p) => self.source_card(p, path),
             UiNode::Itinerary(p) => self.itinerary(p, path),
             UiNode::Weather(p) => self.weather(p, path),

@@ -23,9 +23,11 @@ use gui::layout::{
 };
 use gui::map::{GeoBounds, GeoPoint, MapMarker, MapProps, MapRoute, MarkerKind, RouteMode};
 use gui::miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
+use gui::plan_card::{PlanCardProps, PlanCardStep};
 use gui::question::{QuestionCardProps, QuestionItem, QuestionOption};
 use gui::skill::{
-    FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody, SkillScript,
+    FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody, SkillCommand,
+    SkillCommandVariant, SkillScript,
 };
 use gui::spec::{
     ActionRef, ButtonProps, ButtonVariant, CellAlign, CellValue, ContainerProps, FormField,
@@ -98,6 +100,8 @@ fn main() {
         KeyValueItem,
         CodeBlockProps,
         QuestionCardProps,
+        PlanCardProps,
+        PlanCardStep,
         QuestionItem,
         QuestionOption,
         MapProps,
@@ -133,6 +137,8 @@ fn main() {
         FewShotExample,
         SkillScript,
         ScriptKind,
+        SkillCommand,
+        SkillCommandVariant,
         MiniAppBody,
         ComponentPin,
         NamedComponentPin,

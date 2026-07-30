@@ -281,6 +281,14 @@ pub async fn post_message(
     let selection =
         super::chat_selection::resolve_selection(&state, &ctx, req.context, trace.as_deref())
             .await?;
+    // この発話にだけ適用する skill（スラッシュコマンド起動・#387）。**発話者の権限で解決**し、
+    // 読めなければここで落ちる（fail-closed）。thread のピンは変えない＝次の発話へ持ち越さない。
+    let once_skills = match &req.skills {
+        Some(pins) if !pins.is_empty() => {
+            super::chat_skills::resolve_skill_pins(&state, &ctx, pins, trace.as_deref()).await?
+        }
+        _ => Vec::new(),
+    };
     let r = chat_store(&state)?
         .post_message(
             &ctx,
@@ -290,6 +298,7 @@ pub async fn post_message(
             selection,
             req.agent_mode,
             req.autonomous.unwrap_or(false),
+            &once_skills,
             trace.as_deref(),
         )
         .await?;
@@ -376,87 +385,6 @@ pub async fn cancel_run(
         .request_cancel(&ctx, id, run_id, trace.as_deref())
         .await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// スレッドを共有する（owner 権限）。
-#[utoipa::path(
-    post, path = "/threads/{id}/shares",
-    params(("id" = Uuid, Path, description = "スレッド ID")),
-    request_body = ShareThreadRequest,
-    responses(
-        (status = 204, description = "共有を付与"),
-        (status = 403, description = "owner でない"),
-        (status = 404, description = "存在しない"),
-        (status = 503, description = "chat 無効"),
-    ),
-    security(("session" = [])),
-)]
-pub async fn share_thread(
-    State(state): State<AppState>,
-    AuthContextExt(ctx): AuthContextExt,
-    trace: TraceIdExt,
-    Path(id): Path<Uuid>,
-    Json(req): Json<ShareThreadRequest>,
-) -> Result<StatusCode, ApiError> {
-    chat_store(&state)?
-        .share_thread(&ctx, id, &req.target, req.role, trace.as_deref())
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-/// 共有を解除する（owner 権限・冪等）。
-#[utoipa::path(
-    delete, path = "/threads/{id}/shares",
-    params(("id" = Uuid, Path, description = "スレッド ID")),
-    request_body = ShareThreadRequest,
-    responses(
-        (status = 204, description = "共有を解除"),
-        (status = 403, description = "owner でない"),
-        (status = 404, description = "存在しない"),
-        (status = 503, description = "chat 無効"),
-    ),
-    security(("session" = [])),
-)]
-pub async fn unshare_thread(
-    State(state): State<AppState>,
-    AuthContextExt(ctx): AuthContextExt,
-    trace: TraceIdExt,
-    Path(id): Path<Uuid>,
-    Json(req): Json<ShareThreadRequest>,
-) -> Result<StatusCode, ApiError> {
-    chat_store(&state)?
-        .unshare_thread(&ctx, id, &req.target, req.role, trace.as_deref())
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-/// 共有相手一覧（owner 権限）。
-#[utoipa::path(
-    get, path = "/threads/{id}/shares",
-    params(("id" = Uuid, Path, description = "スレッド ID")),
-    responses(
-        (status = 200, description = "共有相手一覧", body = ThreadSharesResponse),
-        (status = 403, description = "owner でない"),
-        (status = 404, description = "存在しない"),
-        (status = 503, description = "chat 無効"),
-    ),
-    security(("session" = [])),
-)]
-pub async fn list_thread_shares(
-    State(state): State<AppState>,
-    AuthContextExt(ctx): AuthContextExt,
-    trace: TraceIdExt,
-    Path(id): Path<Uuid>,
-) -> Result<Json<ThreadSharesResponse>, ApiError> {
-    let entries = chat_store(&state)?
-        .list_thread_shares(&ctx, id, trace.as_deref())
-        .await?;
-    Ok(Json(ThreadSharesResponse {
-        shares: entries
-            .into_iter()
-            .map(|(target, role)| ThreadShareEntry { target, role })
-            .collect(),
-    }))
 }
 
 // ── ヘルパ ───────────────────────────────────────────────────────────

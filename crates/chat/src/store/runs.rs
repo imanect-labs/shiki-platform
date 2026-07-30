@@ -300,6 +300,37 @@ impl ChatStore {
         Ok(row.and_then(|(id, s, autonomous)| RunStatus::parse(&s).map(|st| (id, st, autonomous))))
     }
 
+    /// そのメッセージを生成した run が自律だったかを引く（#387）。
+    ///
+    /// genui のカード（質問カード・計画カード）は自律 run の途中で出る。回答を投稿する
+    /// `chat.submit` が非自律で run を起こすと、続きが `max_steps=6`・`plan` ツール無しの
+    /// 制約版になり「質問 → 計画 → 実行」が成立しない。**カードを出した run のモードを継ぐ**
+    /// ための問い合わせ。
+    ///
+    /// **認可はこのメソッド内で先に取る**（呼び出し側の後段 `post_message` に委ねると、
+    /// 未認可の読み取りが先に走り、単独利用で confused deputy になる）。
+    pub async fn message_run_autonomous(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        message_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<Option<bool>, ChatError> {
+        self.require_thread(ctx, thread_id, Relation::Editor, "thread.run.get", trace_id)
+            .await?;
+        sqlx::query_scalar(
+            "SELECT autonomous FROM generation_run \
+             WHERE message_id = $1 AND thread_id = $2 AND tenant_id = $3 \
+             ORDER BY created_at DESC, run_id DESC LIMIT 1",
+        )
+        .bind(message_id)
+        .bind(thread_id)
+        .bind(&ctx.tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)
+    }
+
     /// run の現在状態を引く（SSE の端末判定・crash safety）。
     pub async fn run_status(&self, run_id: Uuid) -> Result<Option<RunStatus>, ChatError> {
         let s: Option<String> =

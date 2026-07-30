@@ -61,6 +61,7 @@ pub enum UiNode {
     CodeBlock(crate::layout::CodeBlockProps),
     // ---- 対話（PR4・回答は宣言済みアクションへ送信） ----
     QuestionCard(crate::question::QuestionCardProps),
+    PlanCard(crate::plan_card::PlanCardProps),
     // ---- ドメインカード（PR6・表示専用・props は crate::domain） ----
     SourceCard(crate::domain::SourceCardProps),
     Itinerary(crate::domain::ItineraryProps),
@@ -93,6 +94,7 @@ impl UiNode {
             UiNode::KeyValue(_) => ComponentKind::KeyValue,
             UiNode::CodeBlock(_) => ComponentKind::CodeBlock,
             UiNode::QuestionCard(_) => ComponentKind::QuestionCard,
+            UiNode::PlanCard(_) => ComponentKind::PlanCard,
             UiNode::SourceCard(_) => ComponentKind::SourceCard,
             UiNode::Itinerary(_) => ComponentKind::Itinerary,
             UiNode::Weather(_) => ComponentKind::Weather,
@@ -425,6 +427,17 @@ mod tests {
                 },
                 questions: vec![],
                 submit_label: None,
+            }),
+            UiNode::PlanCard(crate::plan_card::PlanCardProps {
+                id: String::new(),
+                title: None,
+                intro: None,
+                steps: vec![],
+                submit: ActionRef {
+                    action: String::new(),
+                },
+                submit_label: None,
+                allow_revise: true,
             }),
             UiNode::SourceCard(crate::domain::SourceCardProps {
                 title: None,

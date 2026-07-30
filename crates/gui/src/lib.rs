@@ -34,6 +34,7 @@ pub mod layout;
 pub mod map;
 pub mod miniapp;
 pub mod miniapp_store;
+pub mod plan_card;
 pub mod question;
 pub mod skill;
 pub mod skill_store;
@@ -49,9 +50,10 @@ pub use dispatch::{ActionDispatcher, ActionError, ActionHandler, ActionSource, W
 pub use emit_tool::EmitUiTool;
 pub use miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_store::{MiniAppStore, ResolvedMiniApp};
+pub use plan_card::{PlanCardProps, PlanCardStep};
 pub use skill::{
     validate_skill_body, FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody,
-    SkillScript,
+    SkillCommand, SkillCommandVariant, SkillScript,
 };
 pub use skill_store::SkillStore;
 pub use spec::{ActionRef, UiNode, UiSpecDoc};

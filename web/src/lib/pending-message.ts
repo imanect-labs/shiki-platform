@@ -10,6 +10,8 @@ export type PendingMessage = {
   attachments: Attachment[];
   /// ホームで選んだエージェントモード（初回メッセージへ確実に反映する・state の初期化タイミングに依存しない）。
   autonomous?: boolean;
+  /// **この発話にだけ**適用する skill（スラッシュコマンド起動・#387）。ピンではない。
+  skills?: { artifactId: string; version?: number | null }[];
 };
 
 export function stashPending(threadId: string, msg: PendingMessage): void {

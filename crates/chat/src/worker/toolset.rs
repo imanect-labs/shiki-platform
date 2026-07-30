@@ -200,6 +200,7 @@ impl ChatWorker {
                         name: s.name.clone(),
                         description: s.body.description.clone(),
                         pinned: true,
+                        command: s.body.command.clone(),
                     })
                     .collect();
                 if let Some(tool) = crate::skill_tool::SkillTool::build(

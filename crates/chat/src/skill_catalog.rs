@@ -21,6 +21,10 @@ pub(crate) const MAX_ENTRY_DESCRIPTION_CHARS: usize = 200;
 pub(crate) const MAX_LISTED_ENTRIES: usize = 50;
 
 /// カタログの 1 エントリ（name + description のみ）。
+///
+/// `command` はモデルへは渡さない（ツール定義に載るのは name + description だけ）。
+/// コンポーザのスラッシュコマンド補完（#387）だけが使う付加情報で、
+/// UI とモデルが**同一のカタログ源**を見るために同じ struct へ載せている。
 #[derive(Debug, Clone)]
 pub struct SkillCatalogEntry {
     pub id: Uuid,
@@ -29,6 +33,8 @@ pub struct SkillCatalogEntry {
     pub description: String,
     /// thread にピン済み（=既にロード済みで開始・一覧の先頭に出す）。
     pub pinned: bool,
+    /// スラッシュコマンド宣言（`SkillBody.command`・宣言が無ければ None）。
+    pub command: Option<gui::SkillCommand>,
 }
 
 /// カタログの取得元（実行主体から見えるスキル集合）。
@@ -84,6 +90,9 @@ impl SkillCatalogSource for OwnedSkillCatalog {
                 name: s.name,
                 description: s.description,
                 pinned: false,
+                // 本 PR1 実装（本人 owner 源）は body を読まないため command は載せない。
+                // API 側の源（ApiSkillCatalogSource）が body 由来の宣言を載せる。
+                command: None,
             })
             .collect())
     }
@@ -93,7 +102,10 @@ impl SkillCatalogSource for OwnedSkillCatalog {
 ///
 /// 並び順: ピン → その他（源の順序＝name 順を維持）。ピンの version が源の latest と
 /// 異なる場合もピン版が正（再現性はピンが担う）。
-pub(crate) fn merge_entries(
+///
+/// ワーカー（`push_skill_tool`）と UI カタログ API（`GET /skills/catalog?thread_id=`）の
+/// **両方がこれを通る**。片方で別の統合をすると「モデルに見えるのに補完に出ない」ずれが出る。
+pub fn merge_entries(
     pinned: Vec<SkillCatalogEntry>,
     source: Vec<SkillCatalogEntry>,
 ) -> Vec<SkillCatalogEntry> {
@@ -150,6 +162,7 @@ mod tests {
             name: name.into(),
             description: format!("{name} の説明"),
             pinned,
+            command: None,
         }
     }
 

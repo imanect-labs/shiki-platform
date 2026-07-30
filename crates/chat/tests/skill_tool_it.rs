@@ -220,6 +220,7 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
             None,
             Some(true),
             false,
+            &[],
             None,
         )
         .await
@@ -301,6 +302,7 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
             None,
             Some(true),
             false,
+            &[],
             None,
         )
         .await

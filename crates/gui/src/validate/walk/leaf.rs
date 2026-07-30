@@ -13,6 +13,55 @@ impl Walk<'_> {
         self.form_fields(&p.fields, path, "fields");
     }
 
+    /// 計画カード（#387）。**実行前の計画提示＋開始ボタン**。質問カードと同じ送信フロー
+    /// （chat.submit のみ）で、押下が次ターンの発話になる。
+    pub(super) fn plan_card(&mut self, p: &crate::plan_card::PlanCardProps, path: &str) {
+        use crate::plan_card::plan_card_limits;
+        self.register_form_id(&p.id, path);
+        self.opt_label(p.title.as_deref(), &format!("{path}.title"));
+        if let Some(intro) = &p.intro {
+            self.text(intro, limits::MAX_TEXT_CHARS, &format!("{path}.intro"));
+        }
+        self.opt_label(p.submit_label.as_deref(), &format!("{path}.submit_label"));
+        self.action_ref(&p.submit, &format!("{path}.submit"));
+        // tool / workflow への誤配送を禁じる（質問カードと同じ規則）。
+        self.require_chat_submit(&p.submit.action, path);
+        // 空の計画カードは「開始」だけが出て何を承認するのか分からない（保存前に拒否）。
+        if p.steps.is_empty() {
+            self.errors.push(
+                GuiValidationError::new("gui.empty_plan_card", "steps は 1 件以上必要です")
+                    .at(path),
+            );
+        }
+        if p.steps.len() > plan_card_limits::MAX_STEPS {
+            self.errors.push(
+                GuiValidationError::new(
+                    "gui.too_many_steps",
+                    format!(
+                        "ステップが多すぎます（最大 {}）",
+                        plan_card_limits::MAX_STEPS
+                    ),
+                )
+                .at(path),
+            );
+        }
+        for (i, step) in p.steps.iter().enumerate() {
+            let spath = format!("{path}.steps[{i}]");
+            self.text(
+                &step.title,
+                plan_card_limits::MAX_TEXT_CHARS,
+                &format!("{spath}.title"),
+            );
+            if let Some(d) = &step.description {
+                self.text(
+                    d,
+                    plan_card_limits::MAX_TEXT_CHARS,
+                    &format!("{spath}.description"),
+                );
+            }
+        }
+    }
+
     /// 質問カード（PR4）。フォームと同じ送信フロー（chat.submit）を使う。
     /// 各問は独自型 [`QuestionItem`](crate::question::QuestionItem)（選択肢はラベル＋説明）。
     pub(super) fn question_card(&mut self, p: &crate::question::QuestionCardProps, path: &str) {

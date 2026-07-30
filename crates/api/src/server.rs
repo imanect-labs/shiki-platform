@@ -222,6 +222,9 @@ pub fn route_table() -> Vec<RouteDecl> {
             || post(routes::ui_actions::invoke_chat_ui_action),
         ),
         // --- skill（Task 6.7・保存時検証つき。共有は /artifacts/{id}/shares を流用） ---
+        r("/skills/catalog", &["GET"], Session, || {
+            get(routes::skills_catalog::list_skill_catalog)
+        }),
         r("/skills/registry", &["GET"], Session, || {
             get(routes::skills_registry::list_skill_registry)
         }),
@@ -387,9 +390,9 @@ pub fn route_table() -> Vec<RouteDecl> {
             &["POST", "DELETE", "GET"],
             Session,
             || {
-                post(routes::chat::share_thread)
-                    .delete(routes::chat::unshare_thread)
-                    .get(routes::chat::list_thread_shares)
+                post(routes::chat_sharing::share_thread)
+                    .delete(routes::chat_sharing::unshare_thread)
+                    .get(routes::chat_sharing::list_thread_shares)
             },
         ),
         // --- SessionLongRunning（300s。finalize は staging のサーバ側ハッシュ＋コピーが

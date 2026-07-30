@@ -30,6 +30,7 @@ import { triggerDownload } from "@/lib/storage";
 import { linkifyCitations } from "@/lib/citation";
 import { newId } from "@/lib/chat-store";
 import { selectionKindLabel, type SelectionContext } from "@/lib/selection-context";
+import type { ActiveCommand } from "@/lib/slash-command";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
 import { ChatGenUiProvider } from "@/components/genui/action-context";
 import { SpecRenderer } from "@/components/genui/spec-renderer";
@@ -374,6 +375,8 @@ export function Conversation({
       autonomousOverride?: boolean,
       // エディタの選択コンテキスト（選択→AI 指示・Task 11.10）。
       context?: SelectionContext,
+      // この発話にだけ適用する skill（スラッシュコマンド・#387）。
+      onceSkills?: { artifactId: string; version?: number | null }[],
     ) => {
       setError(null);
       setNotice(null);
@@ -399,10 +402,36 @@ export function Conversation({
         runAutonomous,
         runAutonomous,
         context,
+        onceSkills,
       );
     },
     [threadId, makeHandlers, autonomous],
   );
+
+  /// コンポーザからの送信。スラッシュコマンド確定時は **その発話にだけ** skill を適用し、
+  /// 長ホライズン（エージェントモード）で送る（#387）。
+  ///
+  /// ピンはしない: ピンは「最初からロード済み」の永続設定で、コマンドのたびに積み上がると
+  /// instructions がコンテキストを食い、指示同士が矛盾する（human 判断・2026-07-29）。
+  /// 通常チャットは `max_steps=6` なので、質問→計画→調査のような多段の作法は自律で走らせる。
+  const submitFromComposer = React.useCallback(
+    (
+      text: string,
+      attachments: Attachment[],
+      context?: SelectionContext,
+      command?: ActiveCommand,
+    ) => {
+      if (!command) {
+        send(text, attachments, undefined, context);
+        return;
+      }
+      send(text, attachments, true, context, [
+        { artifactId: command.skillId, version: command.skillVersion },
+      ]);
+    },
+    [send],
+  );
+
 
   // 承認/却下を送る（自律エージェントのブロックを解く・Task 5.6）。
   const decideApproval = React.useCallback(
@@ -476,7 +505,13 @@ export function Conversation({
           if (pending && msgs.length === 0) {
             // ホームで選んだエージェントモードを初回メッセージへ反映し、トグル表示も合わせる。
             if (pending.autonomous) setAutonomous(true);
-            send(pending.text, pending.attachments, pending.autonomous ?? false);
+            send(
+              pending.text,
+              pending.attachments,
+              pending.autonomous ?? false,
+              undefined,
+              pending.skills,
+            );
           }
         }
       })
@@ -572,7 +607,9 @@ export function Conversation({
       <div className="bg-background">
         <div className={cn("mx-auto w-full px-4 py-4", isPanel ? "max-w-none pb-3" : "max-w-3xl")}>
           <Composer
-            onSubmit={(text, attachments, context) => send(text, attachments, undefined, context)}
+            onSubmit={(text, attachments, context, command) =>
+              void submitFromComposer(text, attachments, context, command)
+            }
             onStop={stop}
             streaming={stream !== null}
             autonomous={autonomous}
@@ -580,6 +617,7 @@ export function Conversation({
             approvalMode={approvalMode}
             onApprovalModeChange={changeApprovalMode}
             bypassAllowed={bypassAllowed}
+            threadId={threadId}
             autoFocus
           />
           <p className="mt-2 text-center text-xs text-muted-foreground">

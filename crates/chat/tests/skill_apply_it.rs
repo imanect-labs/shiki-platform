@@ -248,6 +248,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             None,
             Some(false),
             false,
+            &[],
             None,
         )
         .await

@@ -54,6 +54,9 @@ pub struct InstalledSkillSummary {
     pub skill_version: i64,
     pub description: String,
     pub trust_tier: String,
+    /// インストール版 body の `command`（スラッシュコマンド宣言・#387）。
+    /// **インストールしたその版**の宣言が正（後から publish された版の宣言は効かない）。
+    pub command: Option<serde_json::Value>,
 }
 
 /// skill の publish / 同意インストールのチョークポイント。
@@ -350,7 +353,8 @@ impl SkillInstallService {
     ) -> Result<Vec<InstalledSkillSummary>, AppPlatformError> {
         let rows: Vec<InstalledSkillSummary> = sqlx::query_as(
             "SELECT i.name, i.skill_id, i.skill_version, i.trust_tier, \
-                    coalesce(v.body->>'description', '') AS description \
+                    coalesce(v.body->>'description', '') AS description, \
+                    v.body->'command' AS command \
              FROM skill_installation i \
              JOIN artifact_version v \
                ON v.tenant_id = i.tenant_id AND v.artifact_id = i.skill_id \

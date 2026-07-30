@@ -39,6 +39,10 @@ impl ChatStore {
         selection: Option<crate::model::SelectionContext>,
         agent_mode_override: Option<bool>,
         autonomous: bool,
+        // `once_skills`: **この run にだけ**適用する skill（スラッシュコマンド起動・#387）。
+        // thread のピン（＝「最初からロード済み」）とは別で、次の発話には持ち越さない
+        // （積み上がる「専門家モード」ではなく「1 発の指示」という体験にするため）。
+        once_skills: &[SkillPin],
         trace_id: Option<&str>,
     ) -> Result<PostResult, ChatError> {
         self.require_thread(ctx, thread_id, Relation::Editor, "thread.post", trace_id)
@@ -67,8 +71,25 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        let (thread_default, autonomous_mode, skill_pins, mini_app_id, mini_app_version) =
+        let (thread_default, autonomous_mode, mut skill_pins, mini_app_id, mini_app_version) =
             thread_row.ok_or(ChatError::NotFound)?;
+        // run 単位の skill を**スナップショットへ追記**する（thread のピンは変えない）。
+        // run 行が生成材料の単一ソースなので、ここに載れば claim 1 行で解決でき、
+        // 適用の認可・fail-closed も既存のピン経路（AppliedSkill::load_pins）がそのまま効く。
+        for once in once_skills {
+            // 同一 skill が thread に古い version でピン済みでも、**発話単位の指定を優先**する
+            // （そうしないと「version 指定」「省略なら current」という要求が run へ届かない）。
+            // thread の永続ピンそのものは変更しない。
+            if let Some(existing) = skill_pins
+                .0
+                .iter_mut()
+                .find(|p| p.skill_id == once.skill_id)
+            {
+                *existing = *once;
+            } else {
+                skill_pins.0.push(*once);
+            }
+        }
         // 自律プロファイルはエージェントモードを含意する（ツールループが前提）。
         let agent_mode = agent_mode_override.unwrap_or(thread_default) || autonomous;
 

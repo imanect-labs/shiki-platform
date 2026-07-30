@@ -718,3 +718,64 @@ fn rejects_stat_with_too_many_trend_points() {
     }));
     assert_rejected_with(spec, "gui.too_many_points");
 }
+
+// ── 計画カード（#387）────────────────────────────────────────────
+
+#[test]
+fn accepts_plan_card_with_steps_and_revise() {
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "a", "handler": "chat.submit" } ],
+        "root": {
+            "component": "plan_card", "id": "p",
+            "title": "調査計画", "intro": "この順で調べます。",
+            "submit": { "action": "a" },
+            "submit_label": "この計画で開始",
+            "allow_revise": true,
+            "steps": [
+                { "title": "市場規模と成長率の把握", "description": "官公庁統計と主要 IR" },
+                { "title": "主要プレイヤーのシェア" }
+            ]
+        }
+    });
+    assert!(validate_spec(&spec).is_ok(), "{:?}", error_codes(spec));
+}
+
+#[test]
+fn rejects_empty_plan_card() {
+    // 「開始」だけが出て何を承認するのか分からないカードは保存前に拒否する。
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "a", "handler": "chat.submit" } ],
+        "root": { "component": "plan_card", "id": "p", "submit": { "action": "a" }, "steps": [] }
+    });
+    assert_rejected_with(spec, "gui.empty_plan_card");
+}
+
+#[test]
+fn plan_card_submit_must_be_chat_submit() {
+    // 計画の承認が tool / workflow へ配送されないことを構造で担保する（質問カードと同じ規則）。
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "tool", "id": "a", "tool": "doc_search" } ],
+        "root": {
+            "component": "plan_card", "id": "p", "submit": { "action": "a" },
+            "steps": [ { "title": "調べる" } ]
+        }
+    });
+    // 既存の質問カードと同じコードを使う（送信先の制約は同一規則）。
+    assert_rejected_with(spec, "gui.question_submit_not_chat");
+}
+
+#[test]
+fn rejects_plan_card_with_too_many_steps() {
+    let steps: Vec<serde_json::Value> = (0..25)
+        .map(|i| json!({ "title": format!("s{i}") }))
+        .collect();
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "a", "handler": "chat.submit" } ],
+        "root": { "component": "plan_card", "id": "p", "submit": { "action": "a" }, "steps": steps }
+    });
+    assert_rejected_with(spec, "gui.too_many_steps");
+}

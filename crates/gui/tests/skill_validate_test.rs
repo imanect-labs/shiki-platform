@@ -179,3 +179,108 @@ fn too_many_references_rejected() {
     raw["references"] = json!(refs);
     assert_rejected_with(raw, "skill.too_many_refs");
 }
+
+// ── スラッシュコマンド宣言（#387）──────────────────────────────
+
+/// コマンド宣言つきの body（バリアント 2 種）。
+fn with_command(command: Value) -> Value {
+    let mut raw = minimal();
+    raw["command"] = command;
+    raw
+}
+
+#[test]
+fn command_declaration_passes_and_round_trips() {
+    let body = validate_skill_body(&with_command(json!({
+        "name": "deep-research",
+        "hint": "調べたいことを入力",
+        "variants": [
+            { "args": "", "summary": "質問→計画→実行" },
+            { "args": "auto", "summary": "質問と計画確認を省略して即実行" }
+        ]
+    })))
+    .expect("コマンド宣言は妥当");
+    let command = body.command.expect("command が読める");
+    assert_eq!(command.name, "deep-research");
+    assert_eq!(command.variants.len(), 2);
+}
+
+#[test]
+fn command_is_optional_and_absent_by_default() {
+    // 既存 body（command 無し）はそのまま通り、コマンドを持たない。
+    assert!(validate_skill_body(&minimal()).unwrap().command.is_none());
+}
+
+#[test]
+fn command_name_must_be_a_slug() {
+    // 大文字・空白・記号・`/` は拒否する（コンポーザのパースが曖昧になり、
+    // 補完一覧で他コマンドへの視覚的な詐称も招く）。
+    for bad in [
+        "Deep-Research",
+        "deep research",
+        "deep/research",
+        "-lead",
+        "",
+        "深掘り",
+    ] {
+        assert_rejected_with(
+            with_command(json!({ "name": bad, "variants": [] })),
+            "skill.invalid_command_name",
+        );
+    }
+}
+
+#[test]
+fn command_variant_args_reject_surrounding_whitespace() {
+    // `"auto "` と `"auto"` が別コマンドに見え、本文連結でも崩れる。
+    for bad in [" auto", "auto ", "auto\t"] {
+        assert_rejected_with(
+            with_command(json!({
+                "name": "x",
+                "variants": [{ "args": bad, "summary": "s" }]
+            })),
+            "skill.invalid_command_args",
+        );
+    }
+}
+
+#[test]
+fn command_variant_args_reject_newlines() {
+    // args は発話本文へ連結されるため、改行が入ると発話が壊れる。
+    assert_rejected_with(
+        with_command(json!({
+            "name": "x",
+            "variants": [{ "args": "auto\nrm -rf", "summary": "s" }]
+        })),
+        "skill.invalid_command_args",
+    );
+}
+
+#[test]
+fn command_variants_reject_duplicates_and_empty_summary() {
+    assert_rejected_with(
+        with_command(json!({
+            "name": "x",
+            "variants": [
+                { "args": "auto", "summary": "a" },
+                { "args": "auto", "summary": "b" }
+            ]
+        })),
+        "skill.duplicate_command_variant",
+    );
+    assert_rejected_with(
+        with_command(json!({ "name": "x", "variants": [{ "args": "", "summary": "  " }] })),
+        "skill.invalid_command_summary",
+    );
+}
+
+#[test]
+fn command_variants_are_capped() {
+    let variants: Vec<Value> = (0..9)
+        .map(|i| json!({ "args": format!("v{i}"), "summary": "s" }))
+        .collect();
+    assert_rejected_with(
+        with_command(json!({ "name": "x", "variants": variants })),
+        "skill.too_many_command_variants",
+    );
+}

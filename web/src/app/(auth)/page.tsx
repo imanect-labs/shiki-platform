@@ -6,6 +6,7 @@ import { Leaf } from "lucide-react";
 
 import { useMe } from "@/hooks/use-me";
 import { createThread, type Attachment } from "@/lib/chat-api";
+import type { ActiveCommand } from "@/lib/slash-command";
 import { stashPending } from "@/lib/pending-message";
 import { titleFrom } from "@/lib/chat-store";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
@@ -33,16 +34,36 @@ export default function HomePage() {
   // 表示名はメールのローカル部から導出する（表示名フィールドはサーバ側実装が入る後続 PR で対応）。
   const name = data?.email?.split("@")[0] ?? null;
 
-  const startChat = async (text: string, attachments: Attachment[]) => {
+  const startChat = async (
+    text: string,
+    attachments: Attachment[],
+    _context?: unknown,
+    command?: ActiveCommand,
+  ) => {
     if (starting || !text.trim()) return;
     setStarting(true);
     try {
-      const thread = await createThread(titleFrom(text), autonomous, {
-        // 選択時点の現行版をピンする（開始までに新版が保存されても選んだ版で適用）。
+      // スラッシュコマンドは skill を確実にピンし、長ホライズン（エージェントモード）で開始する。
+      // 通常チャットは max_steps=6 で、質問→計画→調査のような多段の作法が途中で切れるため。
+      const commanded = command != null;
+      const asAutonomous = autonomous || commanded;
+      // スキルピッカーの選択は**ピン**（このスレッドで最初からロード済み）。
+      // コマンドは**その発話だけ**の適用なので、ピンにはせず送信時に渡す（#387）。
+      const thread = await createThread(titleFrom(text), asAutonomous, {
         skill: skill ? { artifactId: skill.id, version: skill.currentVersion } : undefined,
-        workspace: autonomous ? workspace ?? undefined : undefined,
+        workspace: asAutonomous ? workspace ?? undefined : undefined,
       });
-      stashPending(thread.id, { text, attachments, autonomous });
+      // ⚠️ 承認モードはここで触らない（Codex P1）。コマンドを選ぶ行為は「長ホライズンで
+      // 実行してよい」の同意であって「事前許可の範囲を広げてよい」の同意ではない。
+      // 承認モードは thread に永続する設定なので、緩和は明示操作に限る。
+      stashPending(thread.id, {
+        text,
+        attachments,
+        autonomous: asAutonomous,
+        skills: command
+          ? [{ artifactId: command.skillId, version: command.skillVersion }]
+          : undefined,
+      });
       router.push(`/c/${thread.id}`);
     } catch {
       toast({ description: "チャットを開始できませんでした。ログイン状態をご確認ください。" });

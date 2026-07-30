@@ -193,7 +193,7 @@ async fn run_to_done(
     text: &str,
 ) -> (Uuid, Vec<StreamEventKind>) {
     let res = store
-        .post_message(c, thread_id, text, &[], None, Some(true), false, None)
+        .post_message(c, thread_id, text, &[], None, Some(true), false, &[], None)
         .await
         .unwrap();
     let mut rx = store.event_stream(res.run_id, 0);
@@ -241,6 +241,7 @@ async fn validated_generative_ui_is_streamed_and_persisted() {
                 None,
                 Some(false),
                 false,
+                &[],
                 None,
             )
             .await
