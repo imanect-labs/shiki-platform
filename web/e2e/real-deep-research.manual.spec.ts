@@ -73,19 +73,26 @@ test("実 LLM: /deep-research が出典つきレポートまで完走する", as
   await page.getByRole("button", { name: "送信" }).click();
 
   if (FLOW !== "auto") {
-    // ── フェーズ 0: 質問カード（モデルが立てた問いに答える） ──
+    // ── フェーズ 0: 質問カード（**条件付き**: 曖昧さが成果物を変える時だけ出る） ──
+    // 出ない場合はそのまま計画カードを待つ（出さない判断も仕様どおり）。
     const options = page.getByTestId("genui-question-option");
-    await expect(options.first()).toBeVisible({ timeout: 5 * 60 * 1000 });
-    await page.screenshot({ path: `${SHOTS}/real-dr-question.png`, fullPage: true });
+    const asked = await options
+      .first()
+      .waitFor({ state: "visible", timeout: 4 * 60 * 1000 })
+      .then(() => true)
+      .catch(() => false);
+    if (asked) {
+      await page.screenshot({ path: `${SHOTS}/real-dr-question.png`, fullPage: true });
     // 各問の先頭選択肢を選び、最後の問いで送信する。問い数も submit のラベルも AI が決めるので
     // 「次へ」が出ている限り送り、消えたら testid で送信する（文言に依存しない）。
-    const next = page.getByRole("button", { name: "次へ" });
-    for (let step = 0; step < 6; step++) {
-      await options.first().click();
-      if (!(await next.isVisible().catch(() => false))) break;
-      await next.click();
+      const next = page.getByRole("button", { name: "次へ" });
+      for (let step = 0; step < 6; step++) {
+        await options.first().click();
+        if (!(await next.isVisible().catch(() => false))) break;
+        await next.click();
+      }
+      await page.getByTestId("genui-question-submit").click();
     }
-    await page.getByTestId("genui-question-submit").click();
 
     // ── フェーズ 1: 計画カード（この依頼固有の問いが並ぶこと） ──
     const planStart = page.getByTestId("genui-plan-start");
@@ -95,8 +102,8 @@ test("実 LLM: /deep-research が出典つきレポートまで完走する", as
     console.log(`=== PLAN (${count} steps) ===`);
     console.log(await page.getByTestId("genui-plan-steps").innerText());
     await page.screenshot({ path: `${SHOTS}/real-dr-plan.png`, fullPage: true });
-    // 手順（方法論）が並んでいたら計画として失敗（ユーザーの判断材料にならない）。
-    for (const method of ["証拠台帳", "節ごとに執筆", "視点を分けて"]) {
+    // 作業工程が並んでいたら計画として失敗（ユーザーの判断材料にならない）。
+    for (const method of ["証拠台帳", "節ごとに執筆", "視点を分けて", "の収集", "レポートの作成"]) {
       expect(
         await page.getByTestId("genui-plan-steps").getByText(method, { exact: false }).count(),
         `計画に手順「${method}」が出ている（依頼固有の問いを並べること）`,
