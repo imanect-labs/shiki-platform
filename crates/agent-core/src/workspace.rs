@@ -63,6 +63,20 @@ pub trait WorkspaceStore: Send + Sync {
         trace_id: Option<&str>,
     ) -> Result<WorkspaceWrite, ToolError>;
 
+    /// ファイル末尾へ追記する（無ければ作成・#392）。
+    ///
+    /// `write` との違いは「既存内容を呼び出し側が持たなくてよい」こと。証拠台帳のような
+    /// append-only のメモで、毎回全文を LLM に出し直させる（トークンが二次で増える）のを避ける。
+    /// 実装は既存内容の読み出しを**書込ロック下で**行うこと（並行追記で片方が消えないように）。
+    async fn append(
+        &self,
+        ctx: &AuthContext,
+        name: &str,
+        suffix: &str,
+        content_type: &str,
+        trace_id: Option<&str>,
+    ) -> Result<WorkspaceWrite, ToolError>;
+
     /// ファイルを削除する（soft delete・存在しなければ `ToolError::Invalid`）。
     async fn delete(
         &self,

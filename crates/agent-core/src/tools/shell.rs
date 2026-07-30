@@ -364,6 +364,26 @@ mod tests {
                 created,
             })
         }
+        async fn append(
+            &self,
+            _c: &AuthContext,
+            name: &str,
+            suffix: &str,
+            _ct: &str,
+            _t: Option<&str>,
+        ) -> Result<WorkspaceWrite, ToolError> {
+            let mut files = self.files.lock().unwrap();
+            files
+                .entry(name.to_string())
+                .or_default()
+                .extend_from_slice(suffix.as_bytes());
+            Ok(WorkspaceWrite {
+                node_id: format!("node-{name}"),
+                name: name.to_string(),
+                version: 1,
+                created: false,
+            })
+        }
         async fn delete(
             &self,
             _c: &AuthContext,

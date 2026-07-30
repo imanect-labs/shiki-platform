@@ -46,20 +46,81 @@ impl StorageService {
         .await
     }
 
+    /// このノードが**システム領域**（#392・`node.system`）かを返す。
+    ///
+    /// 「見せない/索引しない」属性そのものであり、権限判断には使わない（認可は system でも同一）。
+    /// 呼び出し側は「自律エージェントの使い捨てワークスペースか」の判定に使う。
+    /// 読み取り認可は当該ノードの `viewer`（存在秘匿のため読めなければ `NotFound`）。
+    pub async fn is_system_node(
+        &self,
+        ctx: &AuthContext,
+        node_id: Uuid,
+    ) -> Result<bool, StorageError> {
+        self.require_read(
+            ctx,
+            &ctx.ns().folder(&node_id.to_string()),
+            "node.system.get",
+            "folder",
+            &node_id.to_string(),
+            None,
+        )
+        .await?;
+        let system: Option<bool> = sqlx::query_scalar(
+            "SELECT system FROM node \
+             WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL",
+        )
+        .bind(node_id)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .fetch_optional(&self.db)
+        .await?;
+        system.ok_or(StorageError::NotFound)
+    }
+
     /// フォルダを作成する（親フォルダ配下 or org ルート直下）。
     ///
     /// 認可は upload と対称: フォルダ配下は `editor@parent`、ルートは `member@org`。
     /// closure（親継承 ＋ self depth0）を張り、FGA に owner（＋folder 配下なら parent）
     /// タプルを書く。DB と FGA は 2PC できないため、tuple は **commit 前**に書き、
     /// parent 失敗・commit 失敗のどちらでも書けた tuple を revoke して不整合を残さない。
-    // DB↔FGA の 2PC 不能を補償する commit 前 tuple 書き込み＋失敗時 revoke の一連を
-    // 一体で追えるようにするため長め。分割せずグランドファーザ許容する。
-    #[allow(clippy::too_many_lines)]
     pub async fn create_folder(
         &self,
         ctx: &AuthContext,
         parent_id: Option<Uuid>,
         name: &str,
+        trace_id: Option<&str>,
+    ) -> Result<Node, StorageError> {
+        self.create_folder_inner(ctx, parent_id, name, false, trace_id)
+            .await
+    }
+
+    /// **システム領域**のフォルダを作成する（issue #392・migration 0057）。
+    ///
+    /// 自律エージェントのワークスペースのような「使い捨ての作業領域」用。ドライブ一覧・名前検索・
+    /// ゴミ箱一覧に出さず、書込イベントを RAG へ relay しない（配下は `system` を継承する）。
+    /// 認可・監査・版管理は通常フォルダと**完全に同一**（隠すことを権限の代わりにしない）。
+    pub async fn create_system_folder(
+        &self,
+        ctx: &AuthContext,
+        parent_id: Option<Uuid>,
+        name: &str,
+        trace_id: Option<&str>,
+    ) -> Result<Node, StorageError> {
+        self.create_folder_inner(ctx, parent_id, name, true, trace_id)
+            .await
+    }
+
+    /// `create_folder` / `create_system_folder` の実体。`force_system` は「この 1 段を
+    /// システム領域の起点にする」指定で、親が既に system なら継承で自動的に true になる。
+    // DB↔FGA の 2PC 不能を補償する commit 前 tuple 書き込み＋失敗時 revoke の一連を
+    // 一体で追えるようにするため長め。分割せずグランドファーザ許容する。
+    #[allow(clippy::too_many_lines)]
+    async fn create_folder_inner(
+        &self,
+        ctx: &AuthContext,
+        parent_id: Option<Uuid>,
+        name: &str,
+        force_system: bool,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
         validate_name(name)?;
@@ -114,9 +175,13 @@ impl StorageService {
                     None => return Err(StorageError::NotFound),
                 }
             }
+            // system は**親から継承**する（#392）。親が system なら配下も一律 system になり、
+            // 「隠し領域の中に見えるフォルダ」という食い違いが構造的に起きない。
             let sql = format!(
-                "INSERT INTO node (org, tenant_id, kind, name, parent_id, created_by, updated_by) \
-                 VALUES ($1, $2, 'folder', $3, $4, $5, $5) RETURNING {NODE_COLS}"
+                "INSERT INTO node (org, tenant_id, kind, name, parent_id, created_by, updated_by, system) \
+                 VALUES ($1, $2, 'folder', $3, $4, $5, $5, \
+                         $6 OR coalesce((SELECT n.system FROM node n WHERE n.id = $4), false)) \
+                 RETURNING {NODE_COLS}"
             );
             let row: NodeRow = sqlx::query_as(&sql)
                 .bind(&ctx.org)
@@ -124,6 +189,7 @@ impl StorageService {
                 .bind(name)
                 .bind(parent_id)
                 .bind(&ctx.principal.id)
+                .bind(force_system)
                 .fetch_one(&mut *tx)
                 .await?;
             let folder_id = row.id;

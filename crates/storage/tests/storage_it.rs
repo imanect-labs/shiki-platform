@@ -783,7 +783,7 @@ async fn folder_hierarchy_end_to_end() {
 
     // C は root の何も読めない（owner でも共有先でもない）→ 空ページ。
     let page_c = service
-        .list_children(&cctx, None, Default::default(), None, 50, None)
+        .list_children(&cctx, None, Default::default(), None, 50, false, None)
         .await
         .expect("C list root");
     assert!(page_c.items.is_empty(), "C は読めるルート子が無い");
@@ -800,7 +800,7 @@ async fn folder_hierarchy_end_to_end() {
         .await
         .expect("share folderA to C");
     let page_c2 = service
-        .list_children(&cctx, None, Default::default(), None, 50, None)
+        .list_children(&cctx, None, Default::default(), None, 50, false, None)
         .await
         .expect("C list root after share");
     let ids: Vec<Uuid> = page_c2.items.iter().map(|n| n.id).collect();
@@ -808,7 +808,7 @@ async fn folder_hierarchy_end_to_end() {
 
     // --- ページング（uid のルート子＝folderA/folderB を limit 1 で 2 ページ） ---
     let p1 = service
-        .list_children(&actx, None, Default::default(), None, 1, None)
+        .list_children(&actx, None, Default::default(), None, 1, false, None)
         .await
         .expect("page1");
     assert_eq!(p1.items.len(), 1, "1 ページ目は 1 件");
@@ -820,6 +820,7 @@ async fn folder_hierarchy_end_to_end() {
             Default::default(),
             p1.next_cursor.as_deref(),
             1,
+            false,
             None,
         )
         .await
@@ -1852,7 +1853,15 @@ async fn trash_lists_roots_and_folder_restore_roundtrips() {
     // 配下（子フォルダ・ファイル）も生存し、一覧で見える。
     let children = cx
         .service
-        .list_children(&ctx, Some(parent.id), Default::default(), None, 50, None)
+        .list_children(
+            &ctx,
+            Some(parent.id),
+            Default::default(),
+            None,
+            50,
+            false,
+            None,
+        )
         .await
         .expect("子一覧");
     let cids: Vec<Uuid> = children.items.iter().map(|n| n.id).collect();
@@ -4320,4 +4329,168 @@ async fn share_link_sweep_ignores_poison_kind() {
         alive,
         "毒行は sweep 対象外＝失効されず、かつホットループの燃料にもならない（B-1）"
     );
+}
+
+/// システム領域（#392）と追記（`append_file_at`）の end-to-end。
+///
+/// 自律エージェントの使い捨てワークスペースは「ドライブに出さない・名前検索に出さない・
+/// ゴミ箱に出さない・RAG へ relay しない」。認可は通常フォルダと完全に同一で、
+/// エージェント自身（`include_system=true`）からは普通に列挙できる。
+#[tokio::test]
+async fn system_area_hides_from_user_surfaces_and_append_accumulates() {
+    let Some(c) = setup().await else { return };
+    let org = format!("sysarea-{}", Uuid::new_v4().simple());
+    let ctx = make_ctx(&org, "alice");
+    seed_org_member(&c.authz, &org, "alice").await;
+
+    // 通常フォルダ（対照＝ドライブ一覧に出ることの確認用）とシステム領域フォルダ。
+    c.service
+        .create_folder(&ctx, None, "資料", None)
+        .await
+        .expect("通常フォルダ");
+    let workspace = c
+        .service
+        .create_system_folder(&ctx, None, "agent-workspace-t1", None)
+        .await
+        .expect("システム領域フォルダ");
+
+    // ---- 追記: 無ければ作成、あれば末尾へ足して新版になる。 ----
+    let first = c
+        .service
+        .append_file_at(
+            &ctx,
+            workspace.id,
+            "notes.md",
+            b"E1 | src-a\n",
+            "text/markdown",
+            None,
+        )
+        .await
+        .expect("初回 append は作成");
+    assert!(first.created, "無ければ作成する");
+    let second = c
+        .service
+        .append_file_at(
+            &ctx,
+            workspace.id,
+            "notes.md",
+            b"E2 | src-b\n",
+            "text/markdown",
+            None,
+        )
+        .await
+        .expect("2 回目 append");
+    assert!(!second.created, "既存なら新版");
+    assert!(second.version > first.version, "版が進む");
+    let (_, bytes) = c
+        .service
+        .read_file_internal(&ctx, second.node_id, None)
+        .await
+        .expect("読み戻し");
+    assert_eq!(
+        String::from_utf8(bytes).unwrap(),
+        "E1 | src-a\nE2 | src-b\n",
+        "追記は既存内容の末尾へ積む（全文再送なし）"
+    );
+    // 過去版も残る（証拠台帳の履歴が辿れる）。
+    assert!(node_version_count(&c.pool, second.node_id).await >= 2);
+
+    // ---- 継承: システム領域配下に作ったファイルも system。 ----
+    let child_system: bool = sqlx::query_scalar("SELECT system FROM node WHERE id = $1")
+        .bind(second.node_id)
+        .fetch_one(&c.pool)
+        .await
+        .unwrap();
+    assert!(child_system, "親の system を継承する");
+
+    // ---- ドライブ一覧: root では隠れ、include_system で見える。 ----
+    let names = |page: &storage::ChildPage| -> Vec<String> {
+        page.items.iter().map(|n| n.name.clone()).collect()
+    };
+    let root_visible = c
+        .service
+        .list_children(&ctx, None, Default::default(), None, 50, false, None)
+        .await
+        .expect("root 一覧");
+    assert!(names(&root_visible).contains(&"資料".to_string()));
+    assert!(
+        !names(&root_visible).contains(&"agent-workspace-t1".to_string()),
+        "システム領域はドライブ一覧に出ない"
+    );
+    let root_all = c
+        .service
+        .list_children(&ctx, None, Default::default(), None, 50, true, None)
+        .await
+        .expect("root 一覧（system 込み）");
+    assert!(names(&root_all).contains(&"agent-workspace-t1".to_string()));
+
+    // ---- ワークスペース配下: エージェント（include_system=true）だけが列挙できる。 ----
+    let inside_hidden = c
+        .service
+        .list_children(
+            &ctx,
+            Some(workspace.id),
+            Default::default(),
+            None,
+            50,
+            false,
+            None,
+        )
+        .await
+        .expect("配下一覧");
+    assert!(inside_hidden.items.is_empty(), "配下も隠れる");
+    let inside_agent = c
+        .service
+        .list_children(
+            &ctx,
+            Some(workspace.id),
+            Default::default(),
+            None,
+            50,
+            true,
+            None,
+        )
+        .await
+        .expect("配下一覧（エージェント）");
+    assert_eq!(names(&inside_agent), vec!["notes.md".to_string()]);
+
+    // ---- 名前検索には出ない（ユーザー向け導線のみ）。 ----
+    let hit = c
+        .service
+        .search_nodes_by_name(&ctx, "notes", Default::default(), None, 50, None)
+        .await
+        .expect("名前検索");
+    assert!(
+        hit.items.is_empty(),
+        "システム領域のファイルは名前検索に出ない"
+    );
+
+    // ---- ゴミ箱にも出ない（隠したものが削除後に現れない）。 ----
+    c.service
+        .soft_delete_file(&ctx, second.node_id, None)
+        .await
+        .expect("削除");
+    let trash = c
+        .service
+        .list_trash(&ctx, None, 50, None)
+        .await
+        .expect("ゴミ箱");
+    assert!(
+        !names(&trash).contains(&"notes.md".to_string()),
+        "システム領域はゴミ箱一覧に出ない"
+    );
+
+    // ---- outbox は忠実に残り、system フラグが乗る（relay がこれで索引をスキップする）。 ----
+    let mut tx = c.pool.begin().await.unwrap();
+    let claimed = storage::event::claim(&mut tx, 200).await.expect("claim");
+    let ours: Vec<_> = claimed
+        .iter()
+        .filter(|e| e.node_id == second.node_id)
+        .collect();
+    assert!(!ours.is_empty(), "書込イベント自体は発行される");
+    assert!(
+        ours.iter().all(|e| e.system),
+        "system フラグが claim 結果に乗る（relay の唯一の判定材料）"
+    );
+    tx.rollback().await.unwrap();
 }

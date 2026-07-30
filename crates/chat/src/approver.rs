@@ -5,6 +5,7 @@
 //! 待機中もハートビート（別タスク）がリースを延長するため、リースは失効しない。決定/キャンセルで
 //! 走行状態へ戻して継続する。**タイムアウトは既定 deny**（承認なしに破壊系を実行しない・fail-safe）。
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -33,6 +34,12 @@ pub struct DbApprover {
     mode: Option<ModeContext>,
     /// 実行中クランプ通知の dedup（同じ理由を毎回再送せず**遷移時のみ** SSE へ出す・#350）。
     last_clamp: Mutex<Option<ModeClamp>>,
+    /// モードに依らず事前許可するツール（システム領域ワークスペースの書込・#392）。
+    ///
+    /// ⚠️ [`Approver::current_policy`] は run 開始時の `opts.approval` を**上書き**するため、
+    /// 生成側で `opts.approval` に足すだけでは実行中モードトグルの再評価で消える。
+    /// ここにも同じ集合を渡し、両方の経路で同じ実効ポリシになるようにしている。
+    extra_pre_authorized: HashSet<String>,
 }
 
 /// 実行中の承認モード再評価に必要な材料（thread の現在値と突き合わせる）。
@@ -62,7 +69,23 @@ impl DbApprover {
             max_wait: MAX_WAIT,
             mode: None,
             last_clamp: Mutex::new(None),
+            extra_pre_authorized: HashSet::new(),
         }
+    }
+
+    /// モードに依らず事前許可するツールを足す（システム領域ワークスペースの書込・#392）。
+    #[must_use]
+    pub fn with_pre_authorized(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.extra_pre_authorized.extend(names);
+        self
+    }
+
+    /// 実効ポリシへ [`Self::extra_pre_authorized`] を合成する。
+    fn with_extra(&self, mut policy: ApprovalPolicy) -> ApprovalPolicy {
+        policy
+            .auto_approve
+            .extend(self.extra_pre_authorized.iter().cloned());
+        policy
     }
 
     /// テスト用に間隔/上限を差し替える。
@@ -168,7 +191,10 @@ impl Approver for DbApprover {
     /// 実行中トグル（#350）: 承認ゲートは各破壊系呼び出しの直前にこれを参照する。
     /// `None`（非自律 or 一時的 DB エラー）は run 開始時のスナップショットへフォールバック。
     async fn current_policy(&self) -> Option<ApprovalPolicy> {
-        Some(self.refresh_effective_mode().await?.approval_policy())
+        // `None`（非自律 or 一時的 DB エラー）は run 開始時のスナップショット（`opts.approval`）へ
+        // フォールバックする。そちらにも同じ追加分が入っているため実効ポリシは一致する。
+        let mode = self.refresh_effective_mode().await?;
+        Some(self.with_extra(mode.approval_policy()))
     }
 
     async fn decide(
@@ -198,7 +224,10 @@ impl Approver for DbApprover {
             // 承認待ち中にモードが緩和されたら自動承認する（実行中トグル・#350。緩和は run の
             // actor 本人による設定のみ有効＝effective_mode が保証。承認カードは resolved で閉じる）。
             if let Some(mode) = self.refresh_effective_mode().await {
-                if mode.approval_policy().is_pre_authorized(name) {
+                if self
+                    .with_extra(mode.approval_policy())
+                    .is_pre_authorized(name)
+                {
                     self.resume_running().await;
                     return ApprovalDecision::Approved;
                 }

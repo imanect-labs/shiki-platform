@@ -170,7 +170,8 @@ impl StorageService {
     /// 「削除の根」＝ `deleted_at` があり、かつ親が生存（または無い）ノード。フォルダ削除では
     /// サブツリーが丸ごと消えるが、ゴミ箱にはその根（フォルダ）だけを 1 件として見せる。
     /// 復元できる（editor）ものだけを post-filter で返す。keyset `(deleted_at, id)` 降順で
-    /// ページングし、全件取得はしない。
+    /// ページングし、全件取得はしない。**システム領域（#392）は出さない** — ドライブに
+    /// 見えなかったものがゴミ箱から現れると「隠す」意味が崩れるため。
     pub async fn list_trash(
         &self,
         ctx: &AuthContext,
@@ -207,6 +208,7 @@ impl StorageService {
             let sql = format!(
                 "SELECT {NODE_COLS} FROM node n \
                  WHERE n.org = $1 AND n.tenant_id = $2 AND n.deleted_at IS NOT NULL \
+                   AND n.system = false \
                    AND NOT EXISTS ( \
                      SELECT 1 FROM node p WHERE p.id = n.parent_id AND p.deleted_at IS NOT NULL) \
                    AND ($3::text IS NULL OR (n.deleted_at, n.id) < ($3::timestamptz, $4)) \

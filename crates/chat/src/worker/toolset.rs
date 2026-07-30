@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use agent_core::{
-    AttachmentRef, CodeInterpreterTool, DocSearchTool, FsDeleteTool, FsEditTool, FsListTool,
-    FsReadTool, FsWriteTool, GrepTool, ShellTool, Tool, WebFetchTool, WebSearchTool,
+    AttachmentRef, CodeInterpreterTool, DocSearchTool, FsAppendTool, FsDeleteTool, FsEditTool,
+    FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool, Tool, WebFetchTool, WebSearchTool,
     WorkspaceStore,
 };
 
@@ -162,6 +162,8 @@ impl ChatWorker {
         tools.push(Arc::new(FsReadTool::new(workspace.clone())));
         tools.push(Arc::new(GrepTool::new(workspace.clone())));
         tools.push(Arc::new(FsWriteTool::new(workspace.clone())));
+        // 追記（#392）: 証拠台帳のような append-only メモを全文再送なしに伸ばす。
+        tools.push(Arc::new(FsAppendTool::new(workspace.clone())));
         tools.push(Arc::new(FsEditTool::new(workspace.clone())));
         tools.push(Arc::new(FsDeleteTool::new(workspace.clone())));
         // shell はワークスペースを seed→sync する（sandbox 必須）。

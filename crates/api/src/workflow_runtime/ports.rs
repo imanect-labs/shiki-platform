@@ -131,6 +131,8 @@ impl NodePorts for ProdNodePorts {
                 ChildSort::default(),
                 None,
                 100,
+                // ワークフローの ls もユーザー向けの列挙（システム領域は出さない・#392）。
+                false,
                 ec.trace_id.as_deref(),
             )
             .await
