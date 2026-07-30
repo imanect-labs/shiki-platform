@@ -21,13 +21,13 @@ shiki-platform = 権限考慮RAG・自律エージェント・ミニアプリ基
 - 言語/基盤: Rust(axum / cargo workspace)・Next.js + TypeScript(pnpm)・Python(ingestion-worker / Docling)
 - ステートフル依存: Postgres・Qdrant・Tantivy(+Lindera)・OpenFGA(ReBAC)・Keycloak(OIDC)・MinIO/GCS
 - 隔離/推論/監視: gVisor（既定・native CPython／コード既定の反転は rootfs 前提工事待ち）・wasm（secure-exec フォーク・`vendor/secure-exec/`・web_fetch 等）・Firecracker（ポストアルファ）・vLLM/外部API・OTel(Tempo/Loki/Prometheus)・Langfuse
-  - `vendor/` は所有フォーク。品質ゲート（500行/カバレッジ/clippy）除外・[fork-policy](docs/sandbox/fork-policy.md) 準拠。サンドボックス由来入力は敵対的として扱う（PIT-23）。
+  - `vendor/` は所有フォーク。品質ゲート（1000行/カバレッジ/clippy）除外・[fork-policy](docs/sandbox/fork-policy.md) 準拠。サンドボックス由来入力は敵対的として扱う（PIT-23）。
 - リポジトリ構成（モノレポ）は docs/design.md §5 を参照。
 
 ## コマンド（CI の正）
 
 - Rust: cargo fmt --check / cargo clippy -- -D warnings / cargo test（単体は cargo test <name>） / cargo build
-- 品質ゲート: bash scripts/check-file-size.sh（1ファイル500行）/ cargo machete（未使用依存）/ cargo deny check（脆弱性・ライセンス・出所）
+- 品質ゲート: bash scripts/check-file-size.sh（1ファイル1000行）/ cargo machete（未使用依存）/ cargo deny check（脆弱性・ライセンス・出所）
 - Web: pnpm install / pnpm dev / pnpm build / pnpm lint / 型生成 pnpm gen:api（utoipa → openapi-typescript）
 - 全体: docker compose up（smoke: /healthz・/me）
 
