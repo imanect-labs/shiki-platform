@@ -75,7 +75,7 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
   await page.getByRole("button", { name: "次へ" }).click();
   await expect(options.first()).toBeVisible();
   await options.first().click();
-  await page.getByRole("button", { name: "この条件で進める" }).click();
+  await page.getByTestId("genui-question-submit").click();
   await expect(page.getByText("回答を送信しました")).toBeVisible();
 
   // ── フェーズ 1: 計画カード（開始ボタンで承認を取る） ──
