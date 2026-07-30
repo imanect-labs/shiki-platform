@@ -146,11 +146,24 @@ export function composeText(command: ActiveCommand | null, body: string): string
 }
 
 /// 本文の先頭にあるコマンドリテラルを取り出す（トランスクリプトのチップ表示用）。
-/// 候補の照合はしない（過去の発話は当時のカタログに依存するため）。
-export function splitLeadingCommand(text: string): { token: string; rest: string } | null {
+///
+/// `variants[].args` は**空白を含み得る**ため、正規表現で「コマンド名＋1 語」を取ると
+/// 引数の残りが本文へ漏れる。既知の token（現在のカタログ）で最長一致を取り、
+/// 一致しなければコマンド名だけをチップにする（過去の発話は当時のカタログに依存するので、
+/// 名前だけは常に復元できる形に留める）。
+export function splitLeadingCommand(
+  text: string,
+  suggestions: SlashSuggestion[] = [],
+): { token: string; rest: string } | null {
   if (!text.startsWith("/")) return null;
-  const firstLine = text.split("\n", 1)[0];
-  const m = /^\/([a-z0-9][a-z0-9-]*(?: [^\s]+)?)/.exec(firstLine);
+  const resolved = resolveTypedCommand(text.split("\n", 1)[0], suggestions);
+  if (resolved) {
+    return {
+      token: resolved.suggestion.token,
+      rest: text.slice(1 + resolved.suggestion.token.length).trimStart(),
+    };
+  }
+  const m = /^\/([a-z0-9][a-z0-9-]*)/.exec(text.split("\n", 1)[0]);
   if (!m) return null;
   return { token: m[1], rest: text.slice(m[0].length).trimStart() };
 }

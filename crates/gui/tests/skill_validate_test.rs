@@ -231,6 +231,20 @@ fn command_name_must_be_a_slug() {
 }
 
 #[test]
+fn command_variant_args_reject_surrounding_whitespace() {
+    // `"auto "` と `"auto"` が別コマンドに見え、本文連結でも崩れる。
+    for bad in [" auto", "auto ", "auto\t"] {
+        assert_rejected_with(
+            with_command(json!({
+                "name": "x",
+                "variants": [{ "args": bad, "summary": "s" }]
+            })),
+            "skill.invalid_command_args",
+        );
+    }
+}
+
+#[test]
 fn command_variant_args_reject_newlines() {
     // args は発話本文へ連結されるため、改行が入ると発話が壊れる。
     assert_rejected_with(

@@ -321,7 +321,10 @@ pub fn validate_skill_body(raw: &serde_json::Value) -> Result<SkillBody, Vec<Gui
 /// 記号を許すと補完一覧での視覚的な詐称（他コマンドへの偽装）を招く。
 /// 長さ上限も同じ理由（一覧を占有させない）。
 fn validate_command(command: &SkillCommand, errors: &mut Vec<GuiValidationError>) {
-    let name = command.name.trim();
+    // **trim しない生値**を検証する。カタログへ載り本文へ連結されるのは生値であり、
+    // trim 後に判定すると前後の空白/改行を含む値が通ってしまう（この関数が防ごうとしている
+    // 「視覚的な詐称」「発話が壊れる」をすり抜ける）。
+    let name = command.name.as_str();
     let valid_slug = !name.is_empty()
         && name.len() <= skill_limits::MAX_COMMAND_NAME_CHARS
         && name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
@@ -364,9 +367,11 @@ fn validate_command(command: &SkillCommand, errors: &mut Vec<GuiValidationError>
     }
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (i, v) in command.variants.iter().enumerate() {
-        let args = v.args.trim();
+        let args = v.args.as_str();
         // 引数は本文へそのまま連結されるため、改行を許すと発話が壊れる。
+        // 前後の空白も拒否する（`"auto "` と `"auto"` が別コマンドに見え、連結でも崩れる）。
         if args.contains(['\n', '\r'])
+            || args != args.trim()
             || args.chars().count() > skill_limits::MAX_COMMAND_TEXT_CHARS
         {
             errors.push(

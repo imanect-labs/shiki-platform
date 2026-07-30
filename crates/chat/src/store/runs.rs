@@ -305,14 +305,19 @@ impl ChatStore {
     /// genui のカード（質問カード・計画カード）は自律 run の途中で出る。回答を投稿する
     /// `chat.submit` が非自律で run を起こすと、続きが `max_steps=6`・`plan` ツール無しの
     /// 制約版になり「質問 → 計画 → 実行」が成立しない。**カードを出した run のモードを継ぐ**
-    /// ための問い合わせ。認可はハンドラ側の `post_message`（editor 要求）が担う（ここは
-    /// thread_id で束縛した読み取りのみ）。
+    /// ための問い合わせ。
+    ///
+    /// **認可はこのメソッド内で先に取る**（呼び出し側の後段 `post_message` に委ねると、
+    /// 未認可の読み取りが先に走り、単独利用で confused deputy になる）。
     pub async fn message_run_autonomous(
         &self,
+        ctx: &AuthContext,
         thread_id: Uuid,
         message_id: Uuid,
-        tenant_id: &str,
+        trace_id: Option<&str>,
     ) -> Result<Option<bool>, ChatError> {
+        self.require_thread(ctx, thread_id, Relation::Editor, "thread.run.get", trace_id)
+            .await?;
         sqlx::query_scalar(
             "SELECT autonomous FROM generation_run \
              WHERE message_id = $1 AND thread_id = $2 AND tenant_id = $3 \
@@ -320,7 +325,7 @@ impl ChatStore {
         )
         .bind(message_id)
         .bind(thread_id)
-        .bind(tenant_id)
+        .bind(&ctx.tenant_id)
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)

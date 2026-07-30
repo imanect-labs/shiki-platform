@@ -51,6 +51,7 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
     return { status: res.status, text: await res.text() };
   }, { skillName: name, cmdName: cmd });
   expect(created.status, `skill 作成: ${created.status} ${created.text}`).toBeLessThan(300);
+  const skillId = (JSON.parse(created.text) as { id: string }).id;
 
   await page.reload();
   const input = page.getByLabel("メッセージを入力");
@@ -91,8 +92,24 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
   await expect(pillFromMenu).toContainText(token);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/slash-command-pill-auto.png` });
 
-  // 補完で確定しなくても、直接打ち切ったコマンドは送信時に解決される（#387・Codex P2）。
+  // 補完で確定しなくても、直接打ち切ったコマンドは**送信時に解決される**（#387・Codex P2）。
+  // 候補が閉じることだけでなく、POST に対象 skill が載ることまで見る（skills を落とす回帰を防ぐ）。
   await pillFromMenu.getByRole("button", { name: "コマンドを外す" }).click();
+  const posted = page.waitForRequest(
+    (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(r.url()),
+  );
   await input.fill(`/${cmd} auto 市場規模を調べて`);
   await expect(page.getByTestId("slash-command-menu")).toHaveCount(0);
+  await page.getByRole("button", { name: "送信" }).click();
+  const body = JSON.parse((await posted).postData() ?? "{}") as {
+    text?: string;
+    skills?: { artifact_id: string }[];
+    autonomous?: boolean;
+  };
+  expect(body.skills?.length, `skills が載っていない: ${JSON.stringify(body)}`).toBe(1);
+  expect(body.skills?.[0].artifact_id).toBe(skillId);
+  // コマンドはリテラルとして本文の先頭に残る（意味づけは skill の instructions が持つ）。
+  expect(body.text).toBe(`/${cmd} auto 市場規模を調べて`);
+  // コマンド起動は長ホライズン（通常チャットの max_steps=6 では多段の作法が切れる）。
+  expect(body.autonomous).toBe(true);
 });

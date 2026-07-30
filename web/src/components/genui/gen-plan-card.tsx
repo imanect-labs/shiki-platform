@@ -82,7 +82,8 @@ export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
         ))}
       </ol>
 
-      {revising ? (
+      {/* 送信後は編集欄を残さない（再送信できないのに入力だけできてしまう）。 */}
+      {revising && !done ? (
         <div className="mt-3">
           <textarea
             value={revision}

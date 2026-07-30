@@ -53,7 +53,7 @@ impl ActionHandler for ChatSubmitHandler {
         // 従来どおり非自律で投稿する（能力を勝手に増やさない方向のフォールバック）。
         let autonomous = self
             .store
-            .message_run_autonomous(*thread_id, *message_id, &ctx.tenant_id)
+            .message_run_autonomous(ctx, *thread_id, *message_id, trace_id)
             .await
             .map_err(map_chat_err)?
             .unwrap_or(false);

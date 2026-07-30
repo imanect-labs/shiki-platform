@@ -77,7 +77,16 @@ impl ChatStore {
         // run 行が生成材料の単一ソースなので、ここに載れば claim 1 行で解決でき、
         // 適用の認可・fail-closed も既存のピン経路（AppliedSkill::load_pins）がそのまま効く。
         for once in once_skills {
-            if !skill_pins.0.iter().any(|p| p.skill_id == once.skill_id) {
+            // 同一 skill が thread に古い version でピン済みでも、**発話単位の指定を優先**する
+            // （そうしないと「version 指定」「省略なら current」という要求が run へ届かない）。
+            // thread の永続ピンそのものは変更しない。
+            if let Some(existing) = skill_pins
+                .0
+                .iter_mut()
+                .find(|p| p.skill_id == once.skill_id)
+            {
+                *existing = *once;
+            } else {
                 skill_pins.0.push(*once);
             }
         }
