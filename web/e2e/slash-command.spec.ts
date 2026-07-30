@@ -76,11 +76,23 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
   await input.press("Backspace");
   await expect(pill).toHaveCount(0);
 
-  // 「+」メニューからも打ち込める。
+  // 「+」メニューからも打ち込める。**どのスキルが上位に来るかは順序依存**（メニューは
+  // 件数を絞る・#390）なので、特定のコマンドではなく「先頭の項目を選ぶとピルになる」ことを見る。
   await page.getByRole("button", { name: "追加メニューを開く" }).click();
-  await expect(page.getByTestId("composer-skill-command").filter({ hasText: `/${cmd}` }).first()).toBeVisible();
+  const menuItem = page.getByTestId("composer-skill-command").first();
+  await expect(menuItem).toBeVisible();
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/slash-command-plus-menu.png` });
-  await page.getByTestId("composer-skill-command").filter({ hasText: `/${cmd} auto` }).click();
-  await expect(page.getByTestId("slash-command-pill")).toContainText(`/${cmd} auto`);
+  // 項目の 1 行目が `/<token>`。それがそのままピルになる。
+  const token = ((await menuItem.locator("span.block").first().textContent()) ?? "").trim();
+  expect(token.startsWith("/")).toBe(true);
+  await menuItem.click();
+  const pillFromMenu = page.getByTestId("slash-command-pill");
+  await expect(pillFromMenu).toBeVisible();
+  await expect(pillFromMenu).toContainText(token);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/slash-command-pill-auto.png` });
+
+  // 補完で確定しなくても、直接打ち切ったコマンドは送信時に解決される（#387・Codex P2）。
+  await pillFromMenu.getByRole("button", { name: "コマンドを外す" }).click();
+  await input.fill(`/${cmd} auto 市場規模を調べて`);
+  await expect(page.getByTestId("slash-command-menu")).toHaveCount(0);
 });

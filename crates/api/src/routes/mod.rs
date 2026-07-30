@@ -11,6 +11,7 @@ pub mod chat_autonomous;
 pub mod chat_dto;
 pub mod chat_notes;
 pub(crate) mod chat_selection;
+pub mod chat_sharing;
 pub mod chat_skills;
 pub mod collab;
 pub mod data;

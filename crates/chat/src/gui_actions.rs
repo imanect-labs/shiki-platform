@@ -67,6 +67,9 @@ impl ActionHandler for ChatSubmitHandler {
                 None,
                 None,
                 autonomous,
+                // カードからの回答は「そのカードを出した run の続き」であって新しい
+                // コマンド起動ではない。run 単位 skill は thread ピン経由で継がれる。
+                &[],
                 trace_id,
             )
             .await

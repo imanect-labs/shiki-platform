@@ -95,6 +95,12 @@ pub struct PostMessageRequest {
     /// 自律プロファイルで実行するか（長ホライズン・フルツール・予算・承認・Task 5.1）。
     #[serde(default)]
     pub autonomous: Option<bool>,
+    /// **この発話にだけ**適用する skill（スラッシュコマンド起動・#387）。
+    ///
+    /// thread のピン（「最初からロード済み」）とは別で、次の発話には持ち越さない。
+    /// version 省略は current を解決する。読めない skill は 403/404（fail-closed）。
+    #[serde(default)]
+    pub skills: Option<Vec<ArtifactPinRequest>>,
 }
 
 /// 発話送信レスポンス（202・生成は接続非依存ジョブで継続）。

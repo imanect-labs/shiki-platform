@@ -49,7 +49,12 @@ impl Tool for EmitUiTool {
          options?[各 {label, description?} の選択肢カード], multi_select?, allow_other?, \
          placeholder?}。options を空にすると自由記述（テキストエリア・長文可）になる。回答は \
          chat.submit へまとめて送信され次ターンの発話になる。選択肢に説明を添え、数値は選択肢か \
-         自由記述で問う（スライダーは使わない）。地図は map で描ける（旅行/出張のルート提示など）。\
+         自由記述で問う（スライダーは使わない）。**実行前に計画を承認させたいとき**は \
+         plan_card を使う（id・title?・intro?・steps[{title,description?}]・submit・\
+         submit_label?・allow_revise?）。表示専用の stepper と違い開始ボタンがあり、押下が \
+         chat.submit で次ターンの発話になる。長い調査や複数手順の作業は、まず plan_card で \
+         合意を取ってから着手する（allow_revise=true なら「修正する」の自由記述も出る）。\
+         地図は map で描ける（旅行/出張のルート提示など）。\
          center{lat,lng}・zoom?・markers[{lat,lng,label?,description?,kind?:place/start/end/stop/\
          lodging/food/sight}]・route?{waypoints[{lat,lng}](2 点以上・順に線で結ぶ),mode?:driving/\
          walking/transit/flight}・bounds?{south,west,north,east}・title? を渡す。緯度経度は \

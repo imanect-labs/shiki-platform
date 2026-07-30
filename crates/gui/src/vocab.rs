@@ -85,6 +85,8 @@ vocab_enum! {
         CodeBlock => "code_block",
         /// 質問カード（AI がユーザーへ複数質問・回答は chat.submit へ・PR4）。
         QuestionCard => "question_card",
+        /// 実行前の計画提示＋開始/修正（#387）。
+        PlanCard => "plan_card",
         // ---- ドメインカード（PR6・表示専用） ----
         /// RAG 引用元カード（タイトル＋抜粋＋スコア＋出典リンク）。
         SourceCard => "source_card",

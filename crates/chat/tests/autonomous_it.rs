@@ -225,6 +225,7 @@ async fn run_autonomous_fswrite(store: &ChatStore, c: &AuthContext, thread_id: u
             None,
             None,
             true,
+            &[],
             None,
         )
         .await
@@ -276,6 +277,7 @@ async fn autonomous_run_writes_workspace_file_e2e() {
             None,
             None,
             true,
+            &[],
             None,
         )
         .await

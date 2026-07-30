@@ -102,7 +102,10 @@ impl SkillCatalogSource for OwnedSkillCatalog {
 ///
 /// 並び順: ピン → その他（源の順序＝name 順を維持）。ピンの version が源の latest と
 /// 異なる場合もピン版が正（再現性はピンが担う）。
-pub(crate) fn merge_entries(
+///
+/// ワーカー（`push_skill_tool`）と UI カタログ API（`GET /skills/catalog?thread_id=`）の
+/// **両方がこれを通る**。片方で別の統合をすると「モデルに見えるのに補完に出ない」ずれが出る。
+pub fn merge_entries(
     pinned: Vec<SkillCatalogEntry>,
     source: Vec<SkillCatalogEntry>,
 ) -> Vec<SkillCatalogEntry> {

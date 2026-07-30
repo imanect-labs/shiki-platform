@@ -390,9 +390,9 @@ pub fn route_table() -> Vec<RouteDecl> {
             &["POST", "DELETE", "GET"],
             Session,
             || {
-                post(routes::chat::share_thread)
-                    .delete(routes::chat::unshare_thread)
-                    .get(routes::chat::list_thread_shares)
+                post(routes::chat_sharing::share_thread)
+                    .delete(routes::chat_sharing::unshare_thread)
+                    .get(routes::chat_sharing::list_thread_shares)
             },
         ),
         // --- SessionLongRunning（300s。finalize は staging のサーバ側ハッシュ＋コピーが

@@ -12,7 +12,6 @@ import {
   notifyThreadsChanged,
   resumeMessage,
   setAutonomousMode,
-  setThreadSkills,
   streamMessage,
   submitApproval,
   ThreadNotFound,
@@ -376,6 +375,8 @@ export function Conversation({
       autonomousOverride?: boolean,
       // エディタの選択コンテキスト（選択→AI 指示・Task 11.10）。
       context?: SelectionContext,
+      // この発話にだけ適用する skill（スラッシュコマンド・#387）。
+      onceSkills?: { artifactId: string; version?: number | null }[],
     ) => {
       setError(null);
       setNotice(null);
@@ -401,18 +402,20 @@ export function Conversation({
         runAutonomous,
         runAutonomous,
         context,
+        onceSkills,
       );
     },
     [threadId, makeHandlers, autonomous],
   );
 
-  /// コンポーザからの送信。スラッシュコマンド確定時は skill をピンし、
-  /// 長ホライズン（エージェントモード）＋「オート」承認で走らせてから送る（#387）。
+  /// コンポーザからの送信。スラッシュコマンド確定時は **その発話にだけ** skill を適用し、
+  /// 長ホライズン（エージェントモード）で送る（#387）。
   ///
-  /// 通常チャットは `max_steps=6` なので、質問→計画→調査のような多段の作法が途中で切れる。
-  /// ピンに失敗しても送信は続ける（モデルは `skill` ツールで自力で引ける＝縮退して動く）。
+  /// ピンはしない: ピンは「最初からロード済み」の永続設定で、コマンドのたびに積み上がると
+  /// instructions がコンテキストを食い、指示同士が矛盾する（human 判断・2026-07-29）。
+  /// 通常チャットは `max_steps=6` なので、質問→計画→調査のような多段の作法は自律で走らせる。
   const submitFromComposer = React.useCallback(
-    async (
+    (
       text: string,
       attachments: Attachment[],
       context?: SelectionContext,
@@ -422,19 +425,11 @@ export function Conversation({
         send(text, attachments, undefined, context);
         return;
       }
-      try {
-        await setThreadSkills(threadId, [
-          { artifactId: command.skillId, version: command.skillVersion },
-        ]);
-      } catch {
-        setNotice("スキルを固定できませんでした（共有スレッドでは所有者のみ設定できます）");
-      }
-      if (!autonomous) setAutonomous(true);
-      // 版管理された書込を毎回承認させない。セレクタに見える状態なのでユーザーは戻せる。
-      if (approvalMode === "require_approval") changeApprovalMode("auto");
-      send(text, attachments, true, context);
+      send(text, attachments, true, context, [
+        { artifactId: command.skillId, version: command.skillVersion },
+      ]);
     },
-    [threadId, autonomous, approvalMode, changeApprovalMode, send],
+    [send],
   );
 
 
@@ -510,7 +505,13 @@ export function Conversation({
           if (pending && msgs.length === 0) {
             // ホームで選んだエージェントモードを初回メッセージへ反映し、トグル表示も合わせる。
             if (pending.autonomous) setAutonomous(true);
-            send(pending.text, pending.attachments, pending.autonomous ?? false);
+            send(
+              pending.text,
+              pending.attachments,
+              pending.autonomous ?? false,
+              undefined,
+              pending.skills,
+            );
           }
         }
       })
@@ -616,6 +617,7 @@ export function Conversation({
             approvalMode={approvalMode}
             onApprovalModeChange={changeApprovalMode}
             bypassAllowed={bypassAllowed}
+            threadId={threadId}
             autoFocus
           />
           <p className="mt-2 text-center text-xs text-muted-foreground">

@@ -60,7 +60,10 @@ pub use model::{
     Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunStatus, SelectionContext,
     SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,
 };
-pub use skill_catalog::{OwnedSkillCatalog, SkillCatalogEntry, SkillCatalogSource};
+pub use skill_catalog::{
+    merge_entries as merge_skill_catalog_entries, OwnedSkillCatalog, SkillCatalogEntry,
+    SkillCatalogSource,
+};
 pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
 pub use store::{ChatStore, ClaimedRun, PostResult, ThreadOrigin, CHAT_GENERATION_QUEUE};
 pub use worker::{ChatWorker, WorkerConfig, WorkerDeps};

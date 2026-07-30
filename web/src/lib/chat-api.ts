@@ -570,6 +570,9 @@ export function streamMessage(
   autonomous?: boolean,
   // エディタの選択コンテキスト（選択→AI 指示・Task 11.10）。
   context?: SelectionContext,
+  /// **この発話にだけ**適用する skill（スラッシュコマンド起動・#387）。
+  /// thread のピンは変えない＝次の発話へ持ち越さない。
+  skills?: ArtifactPin[],
 ): (opts?: { cancelServer?: boolean }) => void {
   let unsub: (() => void) | null = null;
   let runId: string | null = null;
@@ -578,7 +581,14 @@ export function streamMessage(
   apiFetch(`/threads/${threadId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, attachments, context: context ?? null, agent_mode: agentMode, autonomous }),
+    body: JSON.stringify({
+      text,
+      attachments,
+      context: context ?? null,
+      agent_mode: agentMode,
+      autonomous,
+      skills: skills?.map((p) => ({ artifact_id: p.artifactId, version: p.version ?? undefined })),
+    }),
   })
     .then(async (res) => {
       if (!res.ok) throw new Error(`送信に失敗しました (${res.status})`);

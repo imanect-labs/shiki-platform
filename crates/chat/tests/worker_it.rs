@@ -192,6 +192,7 @@ async fn worker_generates_streams_and_persists_projection() {
             None,
             Some(false),
             false,
+            &[],
             None,
         )
         .await

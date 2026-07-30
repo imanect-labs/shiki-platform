@@ -9,16 +9,11 @@
 /// （フロントに指示文を書かない＝ skill が唯一の正）。
 
 import { apiFetch } from "@/lib/api";
-import type { SkillCommand } from "@/generated/gui-spec";
+import type { components } from "@/generated/api";
 
-/// カタログ 1 件（`GET /skills/catalog`）。
-export type SkillCatalogItem = {
-  id: string;
-  version: number;
-  name: string;
-  description: string;
-  command?: SkillCommand | null;
-};
+/// カタログ 1 件（`GET /skills/catalog`）。**Rust → OpenAPI → TS の生成型**を使う
+/// （手書き DTO を置くと optional/null の変更が型検査に出ない）。
+export type SkillCatalogItem = components["schemas"]["SkillCatalogItem"];
 
 /// 補完候補 1 件（コマンド × 引数プリセットの直積）。
 ///
@@ -54,10 +49,16 @@ export type ActiveCommand = {
   hint: string | null;
 };
 
-export async function fetchSkillCatalog(): Promise<SkillCatalogItem[]> {
-  const res = await apiFetch("/skills/catalog");
+/// 実行主体から見える skill カタログ（モデルが `skill` ツールで見ているものと同一の源）。
+///
+/// `threadId` を渡すと、そのスレッドの**ピン済み skill もマージ**して返る。共有で読めて
+/// ピンされているが本人が所有/インストールしていない skill は、モデルには適用済みなのに
+/// 個人カタログには出ない — スレッド内のコンポーザではこれを渡さないと候補がずれる。
+export async function fetchSkillCatalog(threadId?: string): Promise<SkillCatalogItem[]> {
+  const qs = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
+  const res = await apiFetch(`/skills/catalog${qs}`);
   if (!res.ok) throw new Error(`API ${res.status}`);
-  const data = (await res.json()) as { skills?: SkillCatalogItem[] };
+  const data = (await res.json()) as components["schemas"]["SkillCatalogResponse"];
   return data.skills ?? [];
 }
 
@@ -69,7 +70,8 @@ export function toSuggestions(items: SkillCatalogItem[]): SlashSuggestion[] {
     const cmd = item.command;
     if (!cmd?.name) continue;
     // variants が空なら「引数なし」の 1 候補として扱う。
-    const variants = cmd.variants.length > 0 ? cmd.variants : [{ args: "", summary: item.description }];
+    const variants =
+      cmd.variants.length > 0 ? cmd.variants : [{ args: "", summary: item.description }];
     for (const v of variants) {
       const args = v.args.trim();
       out.push({
@@ -104,6 +106,35 @@ export function matchSuggestions(
   const hits = suggestions.filter((s) => s.token.toLowerCase().startsWith(lower));
   // 完全一致 1 件だけになっても候補は出し続ける（Enter で確定できることを示す）。
   return hits;
+}
+
+/// 入力欄に**直接打ち切られた/貼られた**コマンドを解決する（Codex P2）。
+///
+/// `matchSuggestions` は入力全体を token の prefix として比較するため、
+/// `/research auto 調査対象` のように本文まで続けて打つと候補が 0 件になり、確定されない。
+/// そのまま送ると skill のピン処理を通らないただのテキストになるので、送信時にもう一度
+/// 「既知の token ＋ 続く本文」に分解して拾う。最長一致を採る（`x` と `x auto` の両方が
+/// あるとき、`/x auto …` は `x auto` として解決したい）。
+export function resolveTypedCommand(
+  value: string,
+  suggestions: SlashSuggestion[],
+): { suggestion: SlashSuggestion; rest: string } | null {
+  if (!value.startsWith("/")) return null;
+  const head = value.slice(1);
+  let best: { suggestion: SlashSuggestion; rest: string } | null = null;
+  for (const s of suggestions) {
+    if (head === s.token) {
+      if (!best || s.token.length > best.suggestion.token.length) best = { suggestion: s, rest: "" };
+      continue;
+    }
+    // token の直後は区切り（空白か改行）でなければならない（`/x` が `/xyz` に当たらないように）。
+    if (head.startsWith(`${s.token} `) || head.startsWith(`${s.token}\n`)) {
+      if (!best || s.token.length > best.suggestion.token.length) {
+        best = { suggestion: s, rest: head.slice(s.token.length).trimStart() };
+      }
+    }
+  }
+  return best;
 }
 
 /// 送信本文を組み立てる。コマンドはリテラルとして本文の先頭に置く

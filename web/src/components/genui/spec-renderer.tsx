@@ -20,6 +20,7 @@ import { GenUiTable } from "./gen-table";
 import { GenUiChart } from "./gen-chart";
 import { GenUiStat } from "./gen-stat";
 import { GenUiQuestionCard } from "./gen-question-card";
+import { GenUiPlanCard } from "./gen-plan-card";
 import {
   GenUiComparison,
   GenUiItinerary,
@@ -151,6 +152,8 @@ export function NodeView({ node, depth }: { node: UiNode; depth: number }) {
       return <GenUiCodeBlock codeBlock={node} />;
     case "question_card":
       return <GenUiQuestionCard card={node} />;
+    case "plan_card":
+      return <GenUiPlanCard card={node} />;
     case "map":
       return <GenUiMap map={node} />;
     case "source_card":

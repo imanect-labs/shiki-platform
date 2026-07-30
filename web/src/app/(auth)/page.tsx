@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Leaf } from "lucide-react";
 
 import { useMe } from "@/hooks/use-me";
-import { createThread, setAutonomousMode, type Attachment } from "@/lib/chat-api";
+import { createThread, type Attachment } from "@/lib/chat-api";
 import type { ActiveCommand } from "@/lib/slash-command";
 import { stashPending } from "@/lib/pending-message";
 import { titleFrom } from "@/lib/chat-store";
@@ -47,21 +47,23 @@ export default function HomePage() {
       // 通常チャットは max_steps=6 で、質問→計画→調査のような多段の作法が途中で切れるため。
       const commanded = command != null;
       const asAutonomous = autonomous || commanded;
+      // スキルピッカーの選択は**ピン**（このスレッドで最初からロード済み）。
+      // コマンドは**その発話だけ**の適用なので、ピンにはせず送信時に渡す（#387）。
       const thread = await createThread(titleFrom(text), asAutonomous, {
-        // 選択時点の現行版をピンする（開始までに新版が保存されても選んだ版で適用）。
+        skill: skill ? { artifactId: skill.id, version: skill.currentVersion } : undefined,
+        workspace: asAutonomous ? workspace ?? undefined : undefined,
+      });
+      // ⚠️ 承認モードはここで触らない（Codex P1）。コマンドを選ぶ行為は「長ホライズンで
+      // 実行してよい」の同意であって「事前許可の範囲を広げてよい」の同意ではない。
+      // 承認モードは thread に永続する設定なので、緩和は明示操作に限る。
+      stashPending(thread.id, {
+        text,
+        attachments,
+        autonomous: asAutonomous,
         skills: command
           ? [{ artifactId: command.skillId, version: command.skillVersion }]
           : undefined,
-        skill:
-          !command && skill ? { artifactId: skill.id, version: skill.currentVersion } : undefined,
-        workspace: asAutonomous ? workspace ?? undefined : undefined,
       });
-      // 調査ノート等の版管理された書込を毎回承認させない（「オート」は不可逆操作を除いて
-      // 事前許可する既定設計）。セレクタに見える状態なのでユーザーは戻せる。
-      if (commanded) {
-        await setAutonomousMode(thread.id, "auto").catch(() => undefined);
-      }
-      stashPending(thread.id, { text, attachments, autonomous: asAutonomous });
       router.push(`/c/${thread.id}`);
     } catch {
       toast({ description: "チャットを開始できませんでした。ログイン状態をご確認ください。" });

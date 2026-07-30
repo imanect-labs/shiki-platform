@@ -18,6 +18,33 @@ const STATUS_META: Record<string, { label: string; dot: string; text: string }> 
   blocked: { label: "保留", dot: "bg-amber-500", text: "text-amber-600 dark:text-amber-400" },
 };
 
+/// 計画ステップの 1 行（ライブの計画パネルと genui の計画カードで**表示を共有**する）。
+/// プラン UI を二重化しないための共有点（#387）。
+export function PlanStepRow({
+  title,
+  status = "todo",
+  description,
+}: {
+  title: string;
+  status?: string;
+  description?: string | null;
+}) {
+  const meta = STATUS_META[status] ?? STATUS_META.todo;
+  return (
+    <li className="flex items-start gap-2 text-[13px]">
+      <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", meta.dot)} aria-hidden />
+      <span className="min-w-0 flex-1">
+        <span className={meta.text}>{title}</span>
+        {description ? (
+          <span className="mt-0.5 block text-[12px] leading-relaxed text-muted-foreground">
+            {description}
+          </span>
+        ) : null}
+      </span>
+    </li>
+  );
+}
+
 /** 計画（サブタスク列）のチェックリスト。 */
 export function PlanPanel({ subtasks }: { subtasks: PlanSubtask[] }) {
   if (subtasks.length === 0) return null;
@@ -31,15 +58,9 @@ export function PlanPanel({ subtasks }: { subtasks: PlanSubtask[] }) {
         </span>
       </div>
       <ol className="space-y-1.5">
-        {subtasks.map((s) => {
-          const meta = STATUS_META[s.status] ?? STATUS_META.todo;
-          return (
-            <li key={s.id} className="flex items-start gap-2 text-[13px]">
-              <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", meta.dot)} aria-hidden />
-              <span className={meta.text}>{s.title}</span>
-            </li>
-          );
-        })}
+        {subtasks.map((s) => (
+          <PlanStepRow key={s.id} title={s.title} status={s.status} />
+        ))}
       </ol>
     </div>
   );

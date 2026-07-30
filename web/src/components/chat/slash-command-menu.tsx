@@ -16,6 +16,12 @@ import { Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { SlashSuggestion } from "@/lib/slash-command";
 
+/// listbox / option の DOM id（textarea の aria-controls / aria-activedescendant と対にする）。
+export const SLASH_LISTBOX_ID = "slash-command-listbox";
+export function slashOptionId(index: number): string {
+  return `slash-command-option-${index}`;
+}
+
 export function SlashCommandMenu({
   suggestions,
   activeIndex,
@@ -40,6 +46,7 @@ export function SlashCommandMenu({
   return (
     <div
       ref={listRef}
+      id={SLASH_LISTBOX_ID}
       role="listbox"
       aria-label="スキルコマンド"
       data-testid="slash-command-menu"
@@ -51,6 +58,7 @@ export function SlashCommandMenu({
       {suggestions.map((s, i) => (
         <button
           key={s.key}
+          id={slashOptionId(i)}
           type="button"
           role="option"
           aria-selected={i === activeIndex}

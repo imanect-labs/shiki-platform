@@ -37,11 +37,17 @@ import {
   PromptInputActions,
   PromptInputTextarea,
 } from "@/components/prompt-kit/prompt-input";
-import { SlashCommandMenu, SlashCommandPill } from "./slash-command-menu";
+import {
+  SlashCommandMenu,
+  SlashCommandPill,
+  slashOptionId,
+  SLASH_LISTBOX_ID,
+} from "./slash-command-menu";
 import {
   composeText,
   fetchSkillCatalog,
   matchSuggestions,
+  resolveTypedCommand,
   toSuggestions,
   type ActiveCommand,
   type SlashSuggestion,
@@ -63,6 +69,23 @@ import { DrivePicker } from "./drive-picker";
 
 type Uploading = { name: string; fraction: number };
 
+/// 補完候補を確定済みコマンドへ写す。
+function toActiveCommand(s: SlashSuggestion): ActiveCommand {
+  return {
+    token: s.token,
+    command: s.command,
+    args: s.args,
+    skillName: s.skillName,
+    skillId: s.skillId,
+    skillVersion: s.skillVersion,
+    hint: s.hint,
+  };
+}
+
+/// 「+」メニューに出すスキルコマンドの最大件数（応急処置・#390 で出し方を再設計する）。
+/// 絞り込み手段が無いメニューに全件を並べると、本来の「添付」「作成」が押し出される。
+const MAX_MENU_SKILLS = 5;
+
 /// チャット入力。ローカル/ドライブからの添付、送信を担う。
 /// 添付ファイルはアップロード後に自動でベクトル化され、doc_search の対象になる。
 export function Composer({
@@ -79,6 +102,7 @@ export function Composer({
   approvalMode = null,
   onApprovalModeChange,
   bypassAllowed = true,
+  threadId,
   className,
 }: {
   onSubmit: (
@@ -112,6 +136,9 @@ export function Composer({
   onApprovalModeChange?: (m: AutonomousMode) => void;
   /// org 管理者ポリシで bypass（全自動）を選べるか（false なら選択肢を無効化・#350）。
   bypassAllowed?: boolean;
+  /// スレッド内のコンポーザなら thread id。カタログにスレッドのピンを統合するのに使う
+  /// （モデルが見ている集合と補完候補を一致させる・#387）。ホームでは未指定。
+  threadId?: string;
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
@@ -131,13 +158,13 @@ export function Composer({
   React.useEffect(() => {
     let active = true;
     // カタログが引けない環境（chat 無効等）でもコンポーザは壊さない＝候補ゼロで動く。
-    fetchSkillCatalog()
+    fetchSkillCatalog(threadId)
       .then((items) => active && setSuggestions(toSuggestions(items)))
       .catch(() => active && setSuggestions([]));
     return () => {
       active = false;
     };
-  }, []);
+  }, [threadId]);
 
   // 確定済みコマンドがある間は補完を出さない（ピルが既に状態を示している）。
   const slashHits = command || slashDismissed ? null : matchSuggestions(value, suggestions);
@@ -151,15 +178,7 @@ export function Composer({
   const canSend = (value.trim().length > 0 || command !== null) && !disabled && !uploading && !streaming;
 
   const pickSuggestion = (s: SlashSuggestion) => {
-    setCommand({
-      token: s.token,
-      command: s.command,
-      args: s.args,
-      skillName: s.skillName,
-      skillId: s.skillId,
-      skillVersion: s.skillVersion,
-      hint: s.hint,
-    });
+    setCommand(toActiveCommand(s));
     // コマンド部分は入力欄から取り除き、以降はピルが持つ（本文だけを打てる状態にする）。
     setValue("");
     setSlashIndex(0);
@@ -167,9 +186,14 @@ export function Composer({
 
   const submit = () => {
     if (disabled || uploading || streaming) return;
-    const text = composeText(command, value);
+    // 補完で確定していなくても、既知のコマンドが直接打たれていれば拾う（#387・Codex P2）。
+    // 拾わないと skill のピン処理を通らず、コマンドがただのテキストとして流れる。
+    const typed = command ? null : resolveTypedCommand(value, suggestions);
+    const active = command ?? (typed ? toActiveCommand(typed.suggestion) : null);
+    const body = typed ? typed.rest : value;
+    const text = composeText(active, body);
     if (!text) return;
-    onSubmit(text, attachments, takePendingSelection() ?? undefined, command ?? undefined);
+    onSubmit(text, attachments, takePendingSelection() ?? undefined, active ?? undefined);
     setValue("");
     setAttachments([]);
     setCommand(null);
@@ -307,10 +331,19 @@ export function Composer({
           {command ? (
             <SlashCommandPill label={command.token} onClear={() => setCommand(null)} />
           ) : null}
+          {/* 補完中は combobox として関連付ける（Codex P2）。フォーカスは textarea に
+              残るため、aria-activedescendant が無いとスクリーンリーダーへ選択が伝わらない。 */}
           <PromptInputTextarea
             placeholder={command?.hint ?? placeholder}
             autoFocus={autoFocus}
             aria-label="メッセージを入力"
+            role={slashOpen ? "combobox" : undefined}
+            aria-expanded={slashOpen || undefined}
+            aria-controls={slashOpen ? SLASH_LISTBOX_ID : undefined}
+            aria-autocomplete={slashOpen ? "list" : undefined}
+            aria-activedescendant={
+              slashOpen ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1)) : undefined
+            }
             onKeyDown={onKeyDown}
             className="min-w-0 flex-1 px-0 pt-0 pb-1 text-[15px] leading-relaxed placeholder:text-muted-foreground/70"
           />
@@ -560,12 +593,16 @@ function PlusMenu({
         </DropdownMenuSub>
 
         {/* スキル（#387）。選ぶと入力欄へスラッシュコマンドが打ち込まれる
-            （打鍵で呼べることを学べるよう、実行ではなくコマンド確定にする）。 */}
+            （打鍵で呼べることを学べるよう、実行ではなくコマンド確定にする）。
+
+            ⚠️ 応急処置: スキルは多数ある前提の基盤なので、全件フラット列挙は破綻する
+            （「添付」「作成」という本来の主目的が押し出される）。出し方の再設計は #390。
+            ここでは先頭 N 件に絞り、溢れは件数を明記する（silent truncation にしない）。 */}
         {skills.length > 0 && onPickSkill ? (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="uppercase tracking-wide">スキル</DropdownMenuLabel>
-            {skills.map((s) => (
+            {skills.slice(0, MAX_MENU_SKILLS).map((s) => (
               <DropdownMenuItem
                 key={s.key}
                 className="gap-2.5 px-2.5 py-2"
@@ -581,6 +618,11 @@ function PlusMenu({
                 </span>
               </DropdownMenuItem>
             ))}
+            {skills.length > MAX_MENU_SKILLS ? (
+              <div className="px-2.5 py-1.5 text-[12px] text-muted-foreground">
+                ほか {skills.length - MAX_MENU_SKILLS} 件（入力欄で「/」を打つと絞り込めます）
+              </div>
+            ) : null}
           </>
         ) : null}
       </DropdownMenuContent>
