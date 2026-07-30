@@ -319,3 +319,56 @@ async fn register_consumer_is_one_time_only() {
         "再起動後も未配送イベントを取りこぼさない"
     );
 }
+
+/// `OutboxRow` を共有する **3 つのクエリすべて**が同じ列集合で読めることを固定する（#392）。
+///
+/// `claim` / `claim_undelivered` / `peek_app_events_after` は 1 つの行構造体を共有しており、
+/// フィールドを足したのに列を足し忘れたクエリがあると `query_as` が**実行時に**失敗して
+/// その経路が丸ごと無音になる（app-gateway の SSE ライブテールで実際に踏んだ）。
+/// ここで 3 経路すべてを 1 度は通しておく。
+#[tokio::test]
+async fn all_outbox_read_paths_map_the_same_row_shape() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let node = Uuid::new_v4();
+
+    // app 向けドメインイベント（`payload.event_type` 付き）を 1 件。
+    let id: i64 = sqlx::query(
+        "INSERT INTO storage_event_outbox (org, tenant_id, node_id, version, op, actor, payload) \
+         VALUES ('acme', $1, $2, 1, 'create', 'tester', \
+                 '{\"event_type\": \"data.record.created\"}'::jsonb) RETURNING id",
+    )
+    .bind(&tenant)
+    .bind(node)
+    .fetch_one(&pool)
+    .await
+    .expect("insert app event")
+    .get::<i64, _>("id");
+
+    // ① ライブテール（app-gateway の SSE）。
+    let peeked = storage::event::peek_app_events_after(&pool, &tenant, 0, 100)
+        .await
+        .expect("peek は列不足で落ちない");
+    let hit = peeked
+        .iter()
+        .find(|e| e.id == id)
+        .expect("投入したイベントが読める");
+    assert!(!hit.system, "node 行が無いイベントは system=false 扱い");
+
+    // ② per-consumer 配送台帳／③ 破壊的消費（rag relay）。
+    //
+    // ここで見るのは**列集合が合っていること**だけなので、自分の行が返ることは要求しない
+    // （同一バイナリの他テストと outbox を共有しており、`SKIP LOCKED` で取り合いになる）。
+    // 取り合いを最小にするため limit も小さくし、ロックは rollback で即返す。
+    let mut tx = pool.begin().await.expect("tx");
+    claim_undelivered(&mut tx, "shape-test", 5)
+        .await
+        .expect("claim_undelivered は列不足で落ちない");
+    tx.rollback().await.expect("rollback");
+
+    let mut tx = pool.begin().await.expect("tx");
+    storage::event::claim(&mut tx, 5)
+        .await
+        .expect("claim は列不足で落ちない（system フラグはここで使われる）");
+    tx.rollback().await.expect("rollback");
+}
