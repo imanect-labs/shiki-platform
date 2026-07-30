@@ -209,6 +209,11 @@ async fn outbox_count(pool: &PgPool, node_id: Uuid, op: &str) -> i64 {
 
 /// org メンバーとして seed する（ルート作成の認可に必要）。
 /// 識別子は実行時と同じ `AuthContext::ns()` 経由で tenant 名前空間化する（SAAS.1）。
+///
+/// 書き込み後、**`MinimizeLatency` で可視化されるまで待つ**。OpenFGA は書き込み直後の
+/// 低整合性 read に未反映を返し得るのに対し、redeem の audience 検査（`verify_redeem`）は
+/// 意図的に `MinimizeLatency` を使う（高頻度公開経路のレイテンシ優先）。待たないと
+/// 「seed 済みなのに not_org_member で Forbidden」という CI 限定のフレークになる。
 async fn seed_org_member(authz: &Arc<dyn AuthzClient>, org: &str, uid: &str) {
     let ctx = make_ctx(org, uid);
     authz
@@ -219,6 +224,22 @@ async fn seed_org_member(authz: &Arc<dyn AuthzClient>, org: &str, uid: &str) {
         )
         .await
         .expect("member tuple seed");
+    for _ in 0..200 {
+        if authz
+            .check(
+                &ctx.subject(),
+                Relation::Member,
+                &ctx.ns().organization(org),
+                Consistency::MinimizeLatency,
+            )
+            .await
+            .expect("member check")
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("seed した org member タプルが MinimizeLatency で可視化されませんでした（org={org} uid={uid}）");
 }
 
 /// closure の depth を引く（無ければ None）。
@@ -274,8 +295,11 @@ async fn share_link_lock_key(pool: &PgPool, node_id: Uuid) -> i64 {
 ///
 /// `classid = key >> 32` / `objid = key & 0xFFFFFFFF` / `objsubid = 1` は
 /// `pg_advisory_xact_lock(bigint)` の `pg_locks` 表現。キーで絞るので他テストと並行しても誤検知しない。
+/// 待ち時間の上限は CI を見て広く取る。`revoke_expired_share_links` は**全 node を走る**
+/// グローバル sweep なので、共有 DB に他テストの期限切れリンクが溜まっていると自分の node へ
+/// 到達するまで時間がかかる（ローカルの綺麗な DB では即座に来る）。
 async fn await_advisory_wait(pool: &PgPool, key: i64) {
-    for _ in 0..200 {
+    for _ in 0..600 {
         let waiting: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM pg_locks \
              WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1 \
