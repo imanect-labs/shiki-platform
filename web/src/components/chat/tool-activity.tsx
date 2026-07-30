@@ -87,7 +87,10 @@ export function ToolActivity({
   streaming?: boolean;
   phaseOverride?: string | null;
 }) {
-  const [open, setOpen] = React.useState(false);
+  // 開閉は**自動で閉じない**（#386 の当初実装は完了時に 1 行へ畳んでいたが、見ている最中に
+  // 勝手に閉じるのが不快だった）。既定は「実行中はローリング／完了したら全件を開いたまま」で、
+  // ユーザーが 1 度でも操作したらその選択を最後まで尊重する（null = 未操作）。
+  const [manualOpen, setManualOpen] = React.useState<boolean | null>(null);
 
   // node_id しか持たないツール（office/document/slide/csv）のファイル名を解決する。
   const nodeIds = React.useMemo(
@@ -99,6 +102,7 @@ export function ToolActivity({
   if (items.length === 0) return null;
 
   const running = streaming && items.some((it) => it.running);
+  const open = manualOpen ?? !running;
   const rolling = items.slice(-ROLLING_WINDOW);
   const lastCategory = describeTool(items[items.length - 1]).category;
   const season = seasonVar(seasonIndexFor(lastCategory, running));
@@ -119,7 +123,7 @@ export function ToolActivity({
     >
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setManualOpen(!open)}
         aria-expanded={open}
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] transition-colors hover:bg-accent/40"
       >
