@@ -213,7 +213,7 @@ impl WorkerSink {
 
 /// AgentEvent → SSE イベント種別。全 AgentEvent が SSE 種別へ写る（`generation_event` に append され
 /// replay 可能）。message.content への projection 有無は [`WorkerSink::accumulate`] が別に決める。
-fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
+pub(super) fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
     match event {
         AgentEvent::Text(t) => StreamEventKind::Token { text: t.clone() },
         AgentEvent::Thinking(t) => StreamEventKind::Thinking { text: t.clone() },

@@ -12,6 +12,8 @@ mod mime;
 mod sandbox_exec;
 pub mod shell;
 pub mod subagent;
+/// サブエージェントの system プロンプト（subagent.rs から分割）。
+mod subagent_prompts;
 pub mod web_fetch;
 pub mod web_search;
 

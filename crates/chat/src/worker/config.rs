@@ -60,14 +60,19 @@ impl Default for WorkerConfig {
             max_steps: 6,
             classic_rag: false,
             autonomous_max_steps: 50,
-            // 既定: 約 100 万トークン・3 USD（委譲込みの調査 1 本が収まる値。20 万では子 1 体すら
-            // 完走できず #391 の実 LLM 検証で 3 体全滅した）。テナント/skill で上書き可。
-            autonomous_max_tokens: 1_000_000,
+            // 既定: 約 400 万トークン・8 USD。**委譲込みの累計**であることに注意（子の消費は
+            // 親へ積まれる）。調査の本体を 12〜16 体へ委譲して 100 件規模の情報源に当たると、
+            // 子だけで 200k × 16 ≒ 320 万に届く。1M では途中で予算切れになり、レポートを
+            // 書く前に止まる。テナント/skill で上書き可。
+            autonomous_max_tokens: 4_000_000,
             max_tokens: 8192,
-            parallel_read_tools: agent_core::DEFAULT_PARALLEL_READ_TOOLS,
-            autonomous_max_cost_usd_micros: 3_000_000,
-            // 既定は同時 4 体・1 体 6 ステップ・1 run 8 体（8 ステップ/12 体では実 LLM で
-            // 1 体も完走できなかった・#391）。
+            // 委譲を既定にしたので、この並列度は**同時に走るサブエージェント数**を決める。
+            // 子はそれぞれ 4 並列で取得するため、同時取得は最大 24 件になる（別ホスト前提。
+            // 同一ホストは `politeness_key` が直列化する）。画面のロールが実際に速く流れる。
+            parallel_read_tools: 6,
+            autonomous_max_cost_usd_micros: 8_000_000,
+            // 既定は `SubagentLimits::default()`（1 体 8 ステップ・20 万トークン・1 run 16 体）。
+            // 同時実行数は `parallel_read_tools`（親側 4）が決める。
             subagent: agent_core::SubagentLimits::default(),
             sandbox_software: vec!["coreutils".to_string()],
             // 既定ティアの単一ソースは enum の `#[default]`（gVisor・#346）。ここに別のリテラルを

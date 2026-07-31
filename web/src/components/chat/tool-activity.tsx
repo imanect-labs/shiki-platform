@@ -61,8 +61,10 @@ export type ToolActivityItem = {
 
 /// ローリング表示に同時に見せる件数（human 指定: 縦に 3 つずつ）。
 const ROLLING_WINDOW = 3;
-/// 展開時に出す結果要約の最大文字数。
+/// 展開時に出す結果要約の最大文字数。1 行に収まる範囲へ切る。
 const RESULT_CLIP = 160;
+/// 詳細行の固定高さ（1 行ぶん）。結果の有無で行数が変わらないようにするための予約。
+const DETAIL_LINE = "h-[1.4rem]";
 
 /// 同一ステップでまとめる（step が無い古いイベントは単独グループに落とす）。
 function groupBySteps(items: ToolActivityItem[]): ToolActivityItem[][] {
@@ -231,6 +233,13 @@ function ActivityLine({
   const Icon = described.icon;
   const failed = item.ok === false;
   const result = showResult && item.result ? item.result.trim().slice(0, RESULT_CLIP) : null;
+  const subagent = showResult ? item.subagent : undefined;
+  // 詳細行は**行数を固定**する（`DETAIL_LINE`）。結果が返った瞬間に行が生えると、
+  // 走行中ずっと下の行が押し下げられてリストがガクガク動く（並列 fetch では数行が同時に動く）。
+  // 高さは最初から確保し、埋まるのを待つ間はスケルトンを置く。
+  const detail = subagent
+    ? `担当範囲: ${subagent.boundary}（${subagent.steps} ステップ・ツール ${subagent.toolCalls} 回）`
+    : result;
   return (
     <div className="flex items-start gap-2 py-0.5 text-[13px]">
       <StatusIcon running={item.running} failed={failed} />
@@ -248,18 +257,18 @@ function ActivityLine({
             </span>
           ) : null}
         </span>
-        {showResult && item.subagent ? (
-          <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
-            担当範囲: {item.subagent.boundary}
-            <span className="ml-1.5 tabular-nums">
-              （{item.subagent.steps} ステップ・ツール {item.subagent.toolCalls} 回）
-            </span>
-          </p>
-        ) : null}
-        {result ? (
-          <p className="mt-0.5 line-clamp-2 whitespace-pre-wrap text-[12px] leading-relaxed text-muted-foreground">
-            {result}
-          </p>
+        {showResult ? (
+          <div className={cn("mt-0.5 overflow-hidden", DETAIL_LINE)}>
+            {detail ? (
+              <p className="truncate text-[12px] leading-[1.4rem] text-muted-foreground">{detail}</p>
+            ) : (
+              // 結果待ち。中身が来る場所を先に見せる（幅は固定＝進捗を偽装しない）。
+              <span
+                className="block h-2 w-40 max-w-full animate-pulse rounded-full bg-muted-foreground/15"
+                aria-hidden
+              />
+            )}
+          </div>
         ) : null}
       </div>
     </div>

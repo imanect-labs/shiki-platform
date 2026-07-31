@@ -51,23 +51,29 @@ pub struct SubagentLimits {
 }
 
 impl Default for SubagentLimits {
-    /// 実 LLM ＋ 実 web で 1 体が**完走できる**ことを基準にした既定（#391）。
+    /// **調査の本体を委譲で回す**ことを前提にした既定（#391・#404）。
     ///
-    /// `Spent.tokens` は各ステップの prompt＋completion の**累積**で、prompt には伸び続ける履歴が
-    /// 毎回含まれる（≒二次で増える）。取得本文が入る調査エージェントでは、6 ステップでも
-    /// 累積 10 万トークン級になる。当初 60k で切っていたところ、実検証で**3 体すべてが
-    /// `Budget(Tokens)` で findings を返せず**、親がレポートを書かずに終わった。
-    /// ステップを絞って（8→6）トークン枠を現実的な値へ上げ、体数上限は代わりに下げている。
+    /// 親は計画・分割・統合だけを持ち、取得は子が行う。1 本の調査で 100 件規模の情報源に
+    /// 当たるには、子 1 体が 8〜10 件を取り、それを 12〜16 体並べる必要がある。
+    ///
+    /// `Spent.tokens` は各ステップの prompt＋completion の**累積**で、prompt には伸び続ける
+    /// 履歴が毎回含まれる（≒二次で増える）。取得本文が入る調査エージェントでは 8 ステップで
+    /// 累積 20 万トークン級になる。当初 60k → 120k と上げてもなお実 LLM で
+    /// **`Budget(Tokens)` により findings を返せない**体が出続けたため、実測に合わせて
+    /// 20 万まで引く。体数は 8 → 16（親のコンテキストには findings しか戻らないので、
+    /// 体数を増やしても親は太らない）。
     fn default() -> Self {
         SubagentLimits {
-            max_steps: 6,
-            max_tokens: 120_000,
-            max_cost_usd_micros: 400_000,
-            max_per_run: 8,
-            parallel_read_tools: 2,
+            max_steps: 8,
+            max_tokens: 200_000,
+            max_cost_usd_micros: 600_000,
+            max_per_run: 16,
+            parallel_read_tools: 4,
         }
     }
 }
+
+use super::subagent_prompts::{DEFAULT_SYSTEM, PLAN_SYSTEM};
 
 /// 委譲ツール。1 run につき 1 インスタンス（体数カウンタを共有する）。
 pub struct SubagentTool {
@@ -85,37 +91,16 @@ pub struct SubagentTool {
     spawned: AtomicUsize,
     /// 親と共有するキャンセルフラグ（run 停止で子も止める）。
     cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// **子のツール実行を UI へ中継する**送り口（#391 の続き）。
+    ///
+    /// 調査の本体を委譲すると、親の画面には `subagent` の行しか出ない。100 件の情報源に
+    /// 当たっていても「委譲しました」が数行流れるだけで、何が起きているか見えない。
+    /// ツール実行イベントだけを親の**イベント経路**（generation_event）へ中継する。
+    ///
+    /// **LLM コンテキストへは入れない**（隔離の不変条件はそのまま）。`Citation` を UI へ
+    /// 伝播させているのと同じ扱いで、親が読むのは合成済み findings だけ。
+    tool_events: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
 }
-
-/// 計画ロールの system プロンプト（#402）。
-///
-/// **この子には手順書（skill の instructions）もワークスペースも渡さない。** 親が計画を書くと
-/// 「brief を書く」「証拠台帳を作る」「節ごとに執筆する」といった**自分のこれからの作業**が
-/// step に混入する（実 LLM で 3 回とも起きた）。知らない文脈で立てさせれば、原理的に入らない。
-const PLAN_SYSTEM: &str = r#"あなたは調査の計画だけを立てる担当です。依頼だけを見て、
-**その問いに答えるために何を確かめる必要があるか**を 5〜7 個に分けてください。
-
-守ること:
-- 1 項目 = 1 つの問い。「〜か」「〜はどこから来るか」「〜はどの条件で成り立つか」の形で書く。
-- 各項目に「何を根拠に決着させるか」（見る指標・当たる情報源の種類・比較の軸）を 1〜2 文添える。
-- 項目どうしが重複しないように割る（時期・地域・主体・観点のどれかで切る）。
-- 賛否が割れる依頼なら、割れている理由そのもの（測り方・対象・条件の違い）を項目にする。
-- **調べない**。いま手元にある知識だけで、確かめるべきことを列挙する。
-
-出力は次の JSON だけ（前後に説明を書かない）:
-{"title": "調査タイトル", "intro": "何にどう答えるか。対象外も書く", "steps": [{"title": "問い", "description": "何を根拠に決着させるか"}]}"#;
-
-/// 子の既定 system プロンプト。**findings のみを返す**ことを強く縛る。
-const DEFAULT_SYSTEM: &str = "あなたは調査専門のサブエージェントです。与えられた objective を\
- boundary の範囲内だけ調べ、**合成済みの findings** を返します。\n\
- \n\
- 守ること:\n\
- - boundary の外は調べない（他のサブエージェントが担当している）。\n\
- - 取得した本文をそのまま貼らない。事実・数値・出典 URL・日付に要約する。\n\
- - 主張には必ず出典 URL（または社内文書名）を添える。裏が取れないものは「未確認」と書く。\n\
- - 見つからなかったことは「見つからなかった」と明示する（推測で埋めない）。\n\
- - 矛盾する情報があれば両方を、日付と出所つきで残す。\n\
- - 最後の応答が成果物です。前置き・謝辞・次の提案は書かない。";
 
 impl SubagentTool {
     /// 委譲ツールを作る。`tools` は**子に渡す read-only ツール**（`subagent` を含めない）。
@@ -136,7 +121,15 @@ impl SubagentTool {
             idempotency_prefix,
             spawned: AtomicUsize::new(0),
             cancel,
+            tool_events: None,
         }
+    }
+
+    /// 子のツール実行イベントを中継する送り口を設定する（UI 表示専用）。
+    #[must_use]
+    pub fn with_tool_events(mut self, tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>) -> Self {
+        self.tool_events = Some(tx);
+        self
     }
 
     /// 論理モデル名を指定する（未指定は gateway 既定）。
@@ -304,7 +297,7 @@ impl Tool for SubagentTool {
             }
         }
 
-        let mut sink = CollectingSink::new(Arc::clone(&self.cancel));
+        let mut sink = CollectingSink::new(Arc::clone(&self.cancel), self.tool_events.clone());
         // 計画ロールにはツールを一切渡さない（調べさせない・#402）。手元の知識だけで
         // 「何を確かめるべきか」を出させる。調べてから計画すると、承認前に調査するのと変わらない。
         let child_tools: &[Arc<dyn Tool>] = if plan_role { &[] } else { &self.tools };
@@ -366,6 +359,9 @@ impl Tool for SubagentTool {
             "steps": spent.steps,
             "tool_calls": sink.tool_calls,
             "tokens": spent.tokens,
+            // 停止理由（完了か・予算/ステップ上限か・キャンセルか）。予算で切れた委譲は
+            // 「静かに何も返さない」形で現れるため、監査と UI に必ず残す（#404）。
+            "stop": format!("{:?}", outcome.stop),
         })];
         out.usage = Some(ToolUsage {
             tokens: spent.tokens,
@@ -380,6 +376,8 @@ impl Tool for SubagentTool {
 /// 親の `generation_event` に子の生イベントを混ぜると SSE と projection が壊れる。ここで
 /// ①最終本文（findings）②`Citation`③ツール名の列（監査用）だけを取り、他は捨てる。
 struct CollectingSink {
+    /// 子のツール実行を親の UI へ中継する送り口（LLM コンテキストへは入れない）。
+    tool_events: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
     text: String,
     citations: Vec<Citation>,
     tool_calls: Vec<String>,
@@ -394,8 +392,12 @@ struct CollectingSink {
 }
 
 impl CollectingSink {
-    fn new(cancel: Arc<std::sync::atomic::AtomicBool>) -> Self {
+    fn new(
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+        tool_events: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
+    ) -> Self {
         CollectingSink {
+            tool_events,
             text: String::new(),
             citations: Vec::new(),
             tool_calls: Vec::new(),
@@ -408,6 +410,17 @@ impl CollectingSink {
 #[async_trait::async_trait]
 impl EventSink for CollectingSink {
     async fn emit(&mut self, event: AgentEvent) -> Result<(), AgentError> {
+        // ツールの実行だけは**親の UI へ**中継する（何を調べているかが見えないと、委譲した
+        // 瞬間に画面が止まって見える）。中継先は generation_event＝イベント経路であり、
+        // 親の LLM コンテキストにも履歴にも入らない。送り先が閉じていても無視する。
+        if let Some(tx) = &self.tool_events {
+            if matches!(
+                event,
+                AgentEvent::ToolCall { .. } | AgentEvent::ToolResult { .. }
+            ) {
+                let _ = tx.send(event.clone());
+            }
+        }
         match event {
             AgentEvent::Text(t) => self.text.push_str(&t),
             AgentEvent::Citation(c) => self.citations.push(c),
@@ -417,7 +430,7 @@ impl EventSink for CollectingSink {
                 // **ツールを呼ばずに終わった最後のステップ**の本文なので、ここで捨てる。
                 self.text.clear();
             }
-            // Thinking / ToolResult / 予算警告などは親へ出さない（生の観測を漏らさない）。
+            // Thinking / ToolResult / 予算警告などは親の**文脈**へは出さない（生の観測を漏らさない）。
             _ => {}
         }
         Ok(())
@@ -460,9 +473,13 @@ mod tests {
                 "{gated} を子が通せてはいけない"
             );
         }
+        // 同時取得は 親の並列度 × 子の並列度 で積算する。委譲を既定にした結果ここは
+        // 「絞る」ではなく「積算の上限を意識して決める」値になった（親 6 × 子 4 = 24）。
+        // 1 だと子の中が逐次になり、100 件規模の調査が終わらない。
         assert!(
-            opts.parallel_read_tools < crate::profile::DEFAULT_PARALLEL_READ_TOOLS,
-            "親×子で同時取得が積算しないよう絞る"
+            (2..=crate::profile::DEFAULT_PARALLEL_READ_TOOLS).contains(&opts.parallel_read_tools),
+            "子の並列度は 2〜{} の範囲に収める（積算が効くため青天井にしない）",
+            crate::profile::DEFAULT_PARALLEL_READ_TOOLS
         );
         assert_eq!(opts.model.as_deref(), Some("m"));
     }
