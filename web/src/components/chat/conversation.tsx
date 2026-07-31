@@ -247,6 +247,9 @@ export function Conversation({
           s
             ? {
                 ...s,
+                // ステップの区切りで段落を落とす。ツールを挟んだ発話は別の思考なので、
+                // 繋げて書くと「〜します。〜しました。〜します。」が 1 段落に連なって読めない。
+                text: paragraphBreak(s.text),
                 tools: [
                   ...s.tools,
                   {
@@ -784,6 +787,12 @@ export function Conversation({
   );
 }
 
+/// ツール実行を挟んだところで段落を切る（末尾が既に空行なら何もしない）。
+function paragraphBreak(text: string): string {
+  if (!text.trim()) return text;
+  return text.endsWith("\n\n") ? text : `${text.replace(/\s+$/, "")}\n\n`;
+}
+
 /// ストリーミング完了時に蓄積を確定メッセージへ変換して追加する。
 function finalizeStream(
   s: StreamState,
@@ -929,10 +938,14 @@ function AssistantRow({
     .filter((b): b is Extract<ContentBlock, { type: "thinking" }> => b.type === "thinking")
     .map((b) => b.text)
     .join("");
+  // text ブロックは**ツールを挟むたびに切れる**（間に tool_call ブロックが入る）。
+  // 連結ではなく段落として繋ぐ（ライブ表示と揃える）。ベタ連結だと
+  // 「〜します。〜しました。〜します。」が 1 段落に連なって読めない。
   const text = blocks
     .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
-    .map((b) => b.text)
-    .join("");
+    .map((b) => b.text.trim())
+    .filter(Boolean)
+    .join("\n\n");
   // ツール結果を tool_call_id で引く（#358/#386）。**同じ id が複数回現れ得る**ため
   // （ループで再利用される呼び出し ID）、id ごとに出現順のキューとして持ち、
   // 呼び出しへ順番に対応付ける（最後の結果を全行へ適用しない）。

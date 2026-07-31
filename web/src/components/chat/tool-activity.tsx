@@ -6,10 +6,10 @@
 /// URL やファイル名は一切出ていなかった。ここでは 3 段階に丸めて見せる:
 ///
 ///   1. **フェーズ行**  … いま何をしているか（検索 / 閲覧 / 書き込み …）
-///   2. **走行中の窓**  … 直近 `LIVE_WINDOW` 件だけを出す（委譲込みの調査は 200 件を超えるので、
-///                          全件を出すと会話が実況で埋まる）。上に「ほか N 件」を残す。
-///   3. **完了後の全件** … ステップ境界で区切ったタイムライン。同一ステップ 2 件以上は
-///                          「並行して N 件」。成否・結果要約つき。
+///   2. **ローリング**  … 直近 3 件（＝いま走っているステップ）だけを出す。委譲込みの調査は
+///                          200 件を超えるので、全件を出すとツールの実況が画面を占領する。
+///   3. **展開**       … ヘッダを押すと全件のタイムライン。ステップ境界で区切り、同一ステップ
+///                          2 件以上は「並行して N 件」。成否・結果要約つき。
 ///
 /// 生成が終わったら 1 行要約（「12 件の操作 ・ web 8 ・ 社内 3」）に畳む。
 ///
@@ -18,10 +18,12 @@
 
 import * as React from "react";
 
+import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, Check, ChevronDown, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
+import { DURATION_NORMAL, EASE_STANDARD } from "@/components/ui/motion-primitives";
 import { useNodeNames } from "@/lib/node-name-cache";
 import {
   describeTool,
@@ -58,20 +60,18 @@ export type ToolActivityItem = {
   subagent?: { boundary: string; steps: number; toolCalls: number };
 };
 
-/// 走行中に見せる件数の上限。**いま走っているステップだけ**を出すのが基本で、これはその
-/// 保険（並列度を上げた時に窓が伸びすぎないように切る）。
-///
-/// 件数で窓を切ると並列バッチが途中で割れ、「並行して 6 件」と言いながら 3 件しか出ない、
-/// 過去ステップの残骸が混ざる、で読めなくなる。ステップ境界で切ると、窓の中身は常に
-/// 「いま同時に走っているもの」だけになる。
-const LIVE_MAX = 6;
+/// 走行中にロールさせる件数（human 指定: 縦に 3 つ）。全件を出すとツールの実況が
+/// 画面を占領して、肝心の応答が読めなくなる。全部見たい時はヘッダを押して展開する。
+const LIVE_MAX = 3;
 /// 展開時に出す結果要約の最大文字数。1 行に収まる範囲へ切る。
 const RESULT_CLIP = 160;
 /// 詳細行の固定高さ（1 行ぶん）。結果の有無で行数が変わらないようにするための予約。
 const DETAIL_LINE = "h-[1.4rem]";
 
-/// 走行中に見せる範囲＝**最後のステップに属するものだけ**（最大 [`LIVE_MAX`] 件）。
+/// ロールに出す範囲＝**最後のステップに属するもの**（最大 [`LIVE_MAX`] 件）。
 ///
+/// 単純な末尾 N 件だと並列バッチが途中で割れ、「並行して 6 件」と言いながら 3 件しか
+/// 出ない。ステップ境界で切れば、中身は常に「いま同時に走っているもの」になる。
 /// step が無い履歴（フィールド追加前）は境界が分からないので末尾から件数で切る。
 function liveWindow(items: ToolActivityItem[]): ToolActivityItem[] {
   const last = items[items.length - 1];
@@ -121,11 +121,11 @@ export function ToolActivity({
   // **常に開いたまま**。実行状態から開閉を導くと、`running` がステップ境界で false↔true に
   // 振れる（次のツールが始まるまでの一瞬、実行中の項目がゼロになる）たびに開閉が起き、
   // 走行中ずっとパカパカする。開閉はユーザーの操作だけで変わる。
-  const open = manualOpen ?? true;
-  // 走行中は**最後のステップ**だけ（完了したら全件）。開閉ではなく中身で絞るので、
-  // 実行状態が変わってもパネルが開いたり閉じたりしない。
-  const shown = running ? liveWindow(items) : items;
-  const hidden = items.length - shown.length;
+  // 既定は**畳んだまま**（直近 3 件がロールするだけ）。展開すると全件のタイムラインになる。
+  // **実行状態から開閉を導かない**のが要点で、`running` はステップ境界で false↔true に振れる
+  // ため、そこから導くと走行中ずっとパカパカする。開閉はユーザーの操作だけで変わる。
+  const open = manualOpen ?? false;
+  const rolling = liveWindow(items);
   const lastCategory = describeTool(items[items.length - 1]).category;
   const season = seasonVar(seasonIndexFor(lastCategory, running));
   const summary = summarizeTools(items);
@@ -173,8 +173,39 @@ export function ToolActivity({
       </button>
 
       {open ? (
-        <ExpandedTimeline items={shown} nodeNames={nodeNames} hidden={hidden} />
+        <ExpandedTimeline items={items} nodeNames={nodeNames} />
+      ) : running ? (
+        <RollingList items={rolling} nodeNames={nodeNames} />
       ) : null}
+    </div>
+  );
+}
+
+/// 展開時: ステップ境界で区切った全件タイムライン。
+/// 走行中のロール表示。新着は下から入り、押し出された行は上へ抜ける。
+function RollingList({
+  items,
+  nodeNames,
+}: {
+  items: ToolActivityItem[];
+  nodeNames: Record<string, string>;
+}) {
+  return (
+    <div className="shiki-dash-top px-3 pb-2 pt-1.5" data-testid="tool-activity-rolling">
+      <AnimatePresence initial={false}>
+        {items.map((it) => (
+          <motion.div
+            key={it.key}
+            layout
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: DURATION_NORMAL, ease: EASE_STANDARD }}
+          >
+            <ActivityLine item={it} nodeNames={nodeNames} />
+          </motion.div>
+        ))}
+      </AnimatePresence>
     </div>
   );
 }
@@ -183,21 +214,13 @@ export function ToolActivity({
 function ExpandedTimeline({
   items,
   nodeNames,
-  hidden = 0,
 }: {
   items: ToolActivityItem[];
   nodeNames: Record<string, string>;
-  /// 窓から外れて表示していない件数（走行中のみ）。
-  hidden?: number;
 }) {
   const groups = groupBySteps(items);
   return (
     <div className="shiki-dash-top px-3 pb-2.5 pt-1.5" data-testid="tool-activity-expanded">
-      {hidden > 0 ? (
-        <p className="mb-1 text-[11px] tabular-nums text-muted-foreground/70">
-          ほか {hidden} 件（完了後にすべて表示します）
-        </p>
-      ) : null}
       {groups.map((group, gi) => (
         <div key={group[0].key} className={cn(gi > 0 && "shiki-dash-top mt-1.5 pt-1.5")}>
           {group.length > 1 ? (
