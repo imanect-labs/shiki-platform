@@ -251,7 +251,7 @@ async fn run_step(
         .await;
     state
         .spent
-        .add_step(usage.prompt_tokens + usage.completion_tokens, cost);
+        .add_step(usage.prompt_tokens, usage.completion_tokens, cost);
     // チェックポイントの step を消費ステップ数に追従させる（再開時の起点・監査の整合）。
     state.step = state.spent.steps;
 
@@ -291,9 +291,11 @@ async fn run_step(
         {
             crate::agent_tools::ToolPhaseOutcome::Cancelled { external } => {
                 // キャンセルでも走った分は計上してから止める（「止めれば無料」を作らない）。
-                state
-                    .spent
-                    .add_external(external.tokens, external.cost_usd_micros);
+                state.spent.add_external(
+                    external.tokens,
+                    external.fresh_tokens,
+                    external.cost_usd_micros,
+                );
                 return Ok(StepOutcome::Stop(AgentStop::Cancelled));
             }
             crate::agent_tools::ToolPhaseOutcome::Executed {
@@ -306,9 +308,11 @@ async fn run_step(
     // steps は増やさない（親のループ回数の指標を保つ）。次のステップ境界の `Budget::check` が
     // 子の消費込みで判定するため、**トークン/コスト上限で確実に止まる**。
     if external.tokens > 0 || external.cost_usd_micros > 0 {
-        state
-            .spent
-            .add_external(external.tokens, external.cost_usd_micros);
+        state.spent.add_external(
+            external.tokens,
+            external.fresh_tokens,
+            external.cost_usd_micros,
+        );
     }
     state.messages.push(LlmMessage {
         role: LlmRole::Tool,

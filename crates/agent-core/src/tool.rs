@@ -121,7 +121,10 @@ pub struct ToolOutcome {
 /// ツール内部で起きた LLM 消費（親の予算へ積む・#391）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ToolUsage {
+    /// 課金の累計（親のコスト会計へ積む）。
     pub tokens: u64,
+    /// 新規ぶんの累計（親の**上限判定**へ積む・`Spent::fresh_tokens`）。
+    pub fresh_tokens: u64,
     pub cost_usd_micros: i64,
 }
 

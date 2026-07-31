@@ -35,15 +35,39 @@ impl BudgetKind {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Spent {
     pub steps: usize,
+    /// **課金の累計**。各ステップの prompt＋completion をそのまま足す。prompt には毎回
+    /// 履歴全体が含まれるので、実際の請求と同じくステップ数に対して ≒二次で伸びる。
+    /// コスト会計・Langfuse に出すのはこちら。
     pub tokens: u64,
+    /// **仕事量の累計**（上限判定に使う）。そのステップで**新しく生まれたトークン**だけを
+    /// 足す ＝ completion ＋ 前ステップから増えた prompt 分（＝新しいツール結果）。
+    ///
+    /// 上限を `tokens` で見ると、履歴の再送を「消費」として何度も数えるため、上限値が
+    /// 「何件調べられるか」と桁でずれる。実 LLM では 1 体 12 万でも 20 万でも調査
+    /// サブエージェントが毎回上限で死に、委譲機構が使われないままだった（#404）。
+    /// 請求は `tokens`、できる仕事の量は `fresh_tokens`、と役割を分ける。
+    pub fresh_tokens: u64,
+    /// 直前ステップの prompt トークン（`fresh_tokens` の差分計算に使う内部状態）。
+    prev_prompt_tokens: u64,
     pub cost_usd_micros: i64,
 }
 
 impl Spent {
     /// 1 ステップ分の消費を足し込む（step は +1）。
-    pub fn add_step(&mut self, tokens: u64, cost_usd_micros: i64) {
+    ///
+    /// `prompt_tokens` を分けて受けるのは `fresh_tokens`（新規ぶん）を出すため。prompt は
+    /// 履歴全体なので単調増加し、その**増分**がそのステップで新しく積まれた内容
+    /// （直前の completion ＋ ツール結果）にあたる。剪定で縮んだときは 0 とみなす。
+    pub fn add_step(&mut self, prompt_tokens: u64, completion_tokens: u64, cost_usd_micros: i64) {
         self.steps = self.steps.saturating_add(1);
-        self.tokens = self.tokens.saturating_add(tokens);
+        self.tokens = self
+            .tokens
+            .saturating_add(prompt_tokens.saturating_add(completion_tokens));
+        let grew = prompt_tokens.saturating_sub(self.prev_prompt_tokens);
+        self.prev_prompt_tokens = prompt_tokens;
+        self.fresh_tokens = self
+            .fresh_tokens
+            .saturating_add(grew.saturating_add(completion_tokens));
         self.cost_usd_micros = self.cost_usd_micros.saturating_add(cost_usd_micros);
     }
 
@@ -53,8 +77,9 @@ impl Spent {
     /// トークン/コストは親の会計に現れない。ここで積むことで**親の `Budget` が子の消費込みで
     /// 止まる**（トークンが十数倍になり得る機構の唯一の安全弁）。steps は親のループ回数を表す
     /// 指標なので触らない。
-    pub fn add_external(&mut self, tokens: u64, cost_usd_micros: i64) {
+    pub fn add_external(&mut self, tokens: u64, fresh_tokens: u64, cost_usd_micros: i64) {
         self.tokens = self.tokens.saturating_add(tokens);
+        self.fresh_tokens = self.fresh_tokens.saturating_add(fresh_tokens);
         self.cost_usd_micros = self.cost_usd_micros.saturating_add(cost_usd_micros);
     }
 }
@@ -125,7 +150,8 @@ impl Budget {
             return BudgetCheck::Exceeded(BudgetKind::Time);
         }
         if let Some(max) = self.max_tokens {
-            if spent.tokens >= max {
+            // 上限は**新規ぶん**で見る（履歴の再送を仕事量として二重計上しない・#404）。
+            if spent.fresh_tokens >= max {
                 return BudgetCheck::Exceeded(BudgetKind::Tokens);
             }
         }
@@ -148,8 +174,8 @@ impl Budget {
             }
         }
         if let Some(max) = self.max_tokens {
-            if fraction_reached(spent.tokens, max, frac) {
-                return BudgetCheck::Warn(BudgetKind::Tokens, spent.tokens, max);
+            if fraction_reached(spent.fresh_tokens, max, frac) {
+                return BudgetCheck::Warn(BudgetKind::Tokens, spent.fresh_tokens, max);
             }
         }
         if let Some(max) = self.max_cost_usd_micros {
@@ -191,12 +217,38 @@ mod tests {
     use proptest::prelude::*;
     use std::time::Duration;
 
+    /// 上限判定は新規ぶん（`fresh_tokens`）で行うため、テストの `tokens` はそこへ入れる
+    /// （課金累計は判定に効かない）。
     fn spent(steps: usize, tokens: u64, cost: i64) -> Spent {
         Spent {
             steps,
             tokens,
+            fresh_tokens: tokens,
+            prev_prompt_tokens: 0,
             cost_usd_micros: cost,
         }
+    }
+
+    /// 履歴の再送は**仕事量として二重計上しない**（#404）。
+    ///
+    /// prompt が 1000 → 3000 → 6000 と伸びる 3 ステップで、課金累計は 10800 になるが、
+    /// 新規ぶんは「増えた prompt ＋ completion」＝ 6600 に留まる。上限をこの値で見ないと、
+    /// 「20 万トークン」が実際には数ステップぶんの仕事しか許さない値になる。
+    #[test]
+    fn fresh_tokens_count_only_new_content() {
+        let mut s = Spent::default();
+        s.add_step(1000, 200, 0);
+        s.add_step(3000, 200, 0);
+        s.add_step(6000, 200, 0);
+        assert_eq!(s.tokens, 1200 + 3200 + 6200, "課金は毎回の prompt を含む");
+        assert_eq!(
+            s.fresh_tokens,
+            6000 + 600,
+            "新規は最終 prompt ＋ completion 合計"
+        );
+        // 剪定で prompt が縮んでも新規ぶんは減らない（負にしない）。
+        s.add_step(2000, 100, 0);
+        assert_eq!(s.fresh_tokens, 6700);
     }
 
     #[test]

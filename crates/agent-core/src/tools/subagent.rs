@@ -56,16 +56,15 @@ impl Default for SubagentLimits {
     /// 親は計画・分割・統合だけを持ち、取得は子が行う。1 本の調査で 100 件規模の情報源に
     /// 当たるには、子 1 体が 8〜10 件を取り、それを 12〜16 体並べる必要がある。
     ///
-    /// `Spent.tokens` は各ステップの prompt＋completion の**累積**で、prompt には伸び続ける
-    /// 履歴が毎回含まれる（≒二次で増える）。取得本文が入る調査エージェントでは 8 ステップで
-    /// 累積 20 万トークン級になる。当初 60k → 120k と上げてもなお実 LLM で
-    /// **`Budget(Tokens)` により findings を返せない**体が出続けたため、実測に合わせて
-    /// 20 万まで引く。体数は 8 → 16（親のコンテキストには findings しか戻らないので、
-    /// 体数を増やしても親は太らない）。
+    /// 上限は **`Spent::fresh_tokens`（新規ぶん）** で判定する（#404）。履歴の再送を
+    /// 仕事量として数えないので、ここの値はそのまま「1 体が読み書きできる分量」を表す。
+    /// 8 ステップで 8〜10 件の本文を取り込み、findings を書いて返すのに 12 万あれば足りる
+    /// （課金累計はこの数倍になるが、それは `max_cost_usd_micros` が見る）。
+    /// 体数は 16（親のコンテキストには findings しか戻らないので、増やしても親は太らない）。
     fn default() -> Self {
         SubagentLimits {
             max_steps: 8,
-            max_tokens: 200_000,
+            max_tokens: 120_000,
             max_cost_usd_micros: 600_000,
             max_per_run: 16,
             parallel_read_tools: 4,
@@ -331,6 +330,7 @@ impl Tool for SubagentTool {
                 ));
                 out.usage = Some(ToolUsage {
                     tokens: sink.spent.tokens,
+                    fresh_tokens: sink.spent.fresh_tokens,
                     cost_usd_micros: sink.spent.cost_usd_micros,
                 });
                 return Ok(out);
@@ -365,6 +365,7 @@ impl Tool for SubagentTool {
         })];
         out.usage = Some(ToolUsage {
             tokens: spent.tokens,
+            fresh_tokens: spent.fresh_tokens,
             cost_usd_micros: spent.cost_usd_micros,
         });
         Ok(out)
