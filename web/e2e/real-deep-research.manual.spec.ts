@@ -41,9 +41,13 @@ test.use({
   // 録画時は等倍・小さめ（webm が数十 MB になるため）。スクショだけなら 2x で撮る。
   deviceScaleFactor: process.env.RECORD === "1" ? 1 : 2,
   locale: "ja-JP",
-  viewport: { width: 1200, height: 900 },
+  // 録画は**広く撮る**。委譲込みの調査はツール実行が長く流れるので、狭いビューポートだと
+  // 実況しか映らず、レポートや計画カードとの関係が追えない。
+  viewport:
+    process.env.RECORD === "1" ? { width: 1680, height: 1150 } : { width: 1200, height: 900 },
   // 動画は 1 テストにつき 1 本（webm）。size はビューポートに合わせる。
-  video: process.env.RECORD === "1" ? { mode: "on", size: { width: 1200, height: 900 } } : "off",
+  video:
+    process.env.RECORD === "1" ? { mode: "on", size: { width: 1680, height: 1150 } } : "off",
 });
 test.setTimeout(30 * 60 * 1000);
 test.skip(process.env.REAL_LLM !== "1", "実 LLM 検証は手動（REAL_LLM=1 で実行）");

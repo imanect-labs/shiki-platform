@@ -258,9 +258,9 @@ pub async fn get_messages(
         .filter(|r| !r.status.is_terminal());
     // 順番待ちの発話（生成が始まっていない run の発話）。認可は上の get_messages が済ませている。
     // 進行中 run が無ければ順番待ちも存在し得ない（先頭が走り出しているはず）ので引かない。
-    let queued_runs = if active.is_some() {
+    let queued_runs = if let Some(current) = active {
         store
-            .queued_user_messages(id, &ctx.tenant_id)
+            .queued_user_messages(id, &ctx.tenant_id, current.run_id)
             .await?
             .into_iter()
             .map(|(user_message_id, run_id)| super::chat_dto::QueuedRun {

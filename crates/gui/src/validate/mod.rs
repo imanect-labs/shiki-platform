@@ -98,6 +98,25 @@ pub mod limits {
     pub const MAX_ID_CHARS: usize = 64;
 }
 
+/// serde の生メッセージへ**直し方**を足す（#403）。
+///
+/// `invalid type: string "submit", expected struct ActionRef` は「何が違うか」しか言っておらず、
+/// 「どう書けばいいか」を含まない。実 LLM ではこの 1 点で毎 run 2〜3 回やり直しており、
+/// 確認フェーズの短い run では無視できない予算を捨てていた。頻出の破れにだけ 1 文を添える
+/// （網羅はしない。網羅しようとすると本文が肥大してかえって読まれない）。
+fn repair_hint(msg: &str) -> &'static str {
+    if msg.contains("expected struct ActionRef") {
+        return "。アクション参照は文字列ではなくオブジェクトで書きます: {\"action\": \"<actions[] で宣言した id>\"}";
+    }
+    if msg.contains("unknown field `name`") || msg.contains("unknown field `$ref`") {
+        return "。actions[] の要素は {\"type\": \"handler\", \"id\": \"submit\", \"handler\": \"chat.submit\"} の形です（name / $ref というキーはありません）";
+    }
+    if msg.contains("unknown variant") {
+        return "。使えるコンポーネントはツール説明に列挙したものだけです（カタログ外は表現できません）";
+    }
+    ""
+}
+
 /// 生 JSON を検証し、型付きの [`UiSpecDoc`] を返す（同期・純粋）。
 ///
 /// ワークフロー参照の解決（存在・権限・バージョンピン）は含まない —
@@ -147,7 +166,7 @@ pub fn validate_spec(raw: &serde_json::Value) -> Result<UiSpecDoc, Vec<GuiValida
             } else {
                 "gui.schema_violation"
             };
-            let err = GuiValidationError::new(code, msg);
+            let err = GuiValidationError::new(code, format!("{msg}{}", repair_hint(&msg)));
             return Err(vec![if path.is_empty() || path == "." {
                 err
             } else {
@@ -295,4 +314,24 @@ fn raw_depth(v: &serde_json::Value) -> usize {
         }
     }
     max
+}
+
+#[cfg(test)]
+mod tests {
+    /// 頻出の破れには**直し方**が付く（#403）。文言ではなく「直せる情報があるか」を見る。
+    #[test]
+    fn repair_hints_cover_the_action_ref_mistakes() {
+        // 実 LLM が毎 run 踏んだ 3 パターン（deep research の実測ログより）。
+        for msg in [
+            r#"invalid type: string "submit", expected struct ActionRef"#,
+            "unknown field `name`, expected `id` or `handler`",
+            "unknown field `$ref`, expected `action`",
+        ] {
+            assert!(
+                !super::repair_hint(msg).is_empty(),
+                "直し方が付くこと: {msg}"
+            );
+        }
+        assert!(super::repair_hint("something else entirely").is_empty());
+    }
 }

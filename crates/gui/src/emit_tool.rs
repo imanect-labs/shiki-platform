@@ -83,8 +83,13 @@ impl Tool for EmitUiTool {
          は比較表（columns[列見出し]・rows[{label,values[列と同数]}]・highlight?[推し列 index]）、\
          timeline は時系列イベント（events[{time?,title,description?,tone?}]）。フォーム送信やボタンは \
          spec.actions に宣言した束縛（type: handler の chat.submit、type: tool の doc_search / \
-         web_search、type: workflow の name 参照）だけを action id で参照できる。検証に失敗した \
-         場合はエラーを直して再試行するか、通常のテキストで回答する。"
+         web_search、type: workflow の name 参照）だけを action id で参照できる。\
+         **アクション参照は文字列ではなくオブジェクト**（`{\"action\": \"<宣言した id>\"}`）。\
+         最小の骨組みはこの形:\n\
+         {\"version\":1,\"actions\":[{\"type\":\"handler\",\"id\":\"submit\",\"handler\":\"chat.submit\"}],\
+         \"root\":{\"component\":\"question_card\",\"id\":\"q\",\"title\":\"…\",\
+         \"submit\":{\"action\":\"submit\"},\"questions\":[…]}}\n\
+         検証に失敗した場合はエラーを直して再試行するか、通常のテキストで回答する。"
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -93,7 +98,10 @@ impl Tool for EmitUiTool {
             "properties": {
                 "spec": {
                     "type": "object",
-                    "description": "UI スペック。{ version: 1, actions: [...], root: { component: ... } }"
+                    "description": "UI スペック。{ version: 1, actions: [{type, id, ...}], root: {component, ...} }。\
+                     root の submit / on_click などのアクション参照は **{\"action\": \"<id>\"} のオブジェクト**で、\
+                     id の文字列を直接置いてはいけない。actions[] の要素は id（参照名）と type ごとの束縛先\
+                     （handler なら handler: \"chat.submit\"）を持つ（name/$ref というキーは無い）。"
                 }
             },
             "required": ["spec"]

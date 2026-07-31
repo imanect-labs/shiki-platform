@@ -6,9 +6,10 @@
 /// URL やファイル名は一切出ていなかった。ここでは 3 段階に丸めて見せる:
 ///
 ///   1. **フェーズ行**  … いま何をしているか（検索 / 閲覧 / 書き込み …）
-///   2. **ローリング**  … 直近 3 件の具体的な操作（新着が下から入り、古い行が上へ抜ける）
-///   3. **インライン展開** … 全件のタイムライン。ステップ境界で区切り、
-///                          同一ステップ 2 件以上は「並行して N 件」。所要時間・成否・結果要約つき。
+///   2. **走行中の窓**  … 直近 `LIVE_WINDOW` 件だけを出す（委譲込みの調査は 200 件を超えるので、
+///                          全件を出すと会話が実況で埋まる）。上に「ほか N 件」を残す。
+///   3. **完了後の全件** … ステップ境界で区切ったタイムライン。同一ステップ 2 件以上は
+///                          「並行して N 件」。成否・結果要約つき。
 ///
 /// 生成が終わったら 1 行要約（「12 件の操作 ・ web 8 ・ 社内 3」）に畳む。
 ///
@@ -17,12 +18,10 @@
 
 import * as React from "react";
 
-import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle, Check, ChevronDown, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
-import { DURATION_NORMAL, EASE_STANDARD } from "@/components/ui/motion-primitives";
 import { useNodeNames } from "@/lib/node-name-cache";
 import {
   describeTool,
@@ -59,8 +58,9 @@ export type ToolActivityItem = {
   subagent?: { boundary: string; steps: number; toolCalls: number };
 };
 
-/// ローリング表示に同時に見せる件数（human 指定: 縦に 3 つずつ）。
-const ROLLING_WINDOW = 3;
+/// 走行中に見せる件数。全件出すと、委譲込みの調査（200 件超）で会話が実況に埋まる。
+/// 少なすぎると何をしているか掴めないので、並列 1 ステップ（最大 6 件）＋直前の数ステップ。
+const LIVE_WINDOW = 12;
 /// 展開時に出す結果要約の最大文字数。1 行に収まる範囲へ切る。
 const RESULT_CLIP = 160;
 /// 詳細行の固定高さ（1 行ぶん）。結果の有無で行数が変わらないようにするための予約。
@@ -108,7 +108,10 @@ export function ToolActivity({
   // 振れる（次のツールが始まるまでの一瞬、実行中の項目がゼロになる）たびに開閉が起き、
   // 走行中ずっとパカパカする。開閉はユーザーの操作だけで変わる。
   const open = manualOpen ?? true;
-  const rolling = items.slice(-ROLLING_WINDOW);
+  // 走行中は末尾の窓だけ（完了したら全件）。開閉ではなく**件数**で絞るので、
+  // 実行状態が変わってもパネルが開いたり閉じたりしない。
+  const shown = running ? items.slice(-LIVE_WINDOW) : items;
+  const hidden = items.length - shown.length;
   const lastCategory = describeTool(items[items.length - 1]).category;
   const season = seasonVar(seasonIndexFor(lastCategory, running));
   const summary = summarizeTools(items);
@@ -156,38 +159,8 @@ export function ToolActivity({
       </button>
 
       {open ? (
-        <ExpandedTimeline items={items} nodeNames={nodeNames} />
-      ) : running ? (
-        <RollingList items={rolling} nodeNames={nodeNames} />
+        <ExpandedTimeline items={shown} nodeNames={nodeNames} hidden={hidden} />
       ) : null}
-    </div>
-  );
-}
-
-/// 直近 N 件のローリング。新着は下から入り、押し出された行は上へ抜ける。
-function RollingList({
-  items,
-  nodeNames,
-}: {
-  items: ToolActivityItem[];
-  nodeNames: Record<string, string>;
-}) {
-  return (
-    <div className="shiki-dash-top px-3 pb-2 pt-1.5">
-      <AnimatePresence initial={false}>
-        {items.map((it) => (
-          <motion.div
-            key={it.key}
-            layout
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: DURATION_NORMAL, ease: EASE_STANDARD }}
-          >
-            <ActivityLine item={it} nodeNames={nodeNames} />
-          </motion.div>
-        ))}
-      </AnimatePresence>
     </div>
   );
 }
@@ -196,13 +169,21 @@ function RollingList({
 function ExpandedTimeline({
   items,
   nodeNames,
+  hidden = 0,
 }: {
   items: ToolActivityItem[];
   nodeNames: Record<string, string>;
+  /// 窓から外れて表示していない件数（走行中のみ）。
+  hidden?: number;
 }) {
   const groups = groupBySteps(items);
   return (
     <div className="shiki-dash-top px-3 pb-2.5 pt-1.5" data-testid="tool-activity-expanded">
+      {hidden > 0 ? (
+        <p className="mb-1 text-[11px] tabular-nums text-muted-foreground/70">
+          ほか {hidden} 件（完了後にすべて表示します）
+        </p>
+      ) : null}
       {groups.map((group, gi) => (
         <div key={group[0].key} className={cn(gi > 0 && "shiki-dash-top mt-1.5 pt-1.5")}>
           {group.length > 1 ? (

@@ -359,19 +359,27 @@ impl ChatStore {
     /// 再訪時に「送ったが順番待ち」を復元し、取り消せるようにするための材料。`queued` は
     /// claim 前の run＝1 件も生成イベントが出ていない run で、`running` は既に進行中なので
     /// 含めない。
+    ///
+    /// **いま映している run（`current_run_id`）は必ず除く。** ワーカーが claim する前は
+    /// 「最も古い未完了 run」と「queued な run」が同じものを指すため、除かないと*これから
+    /// 流れてくる発話*が順番待ちとして扱われる。実際、計画を承認した発話が調査の実況の下に
+    /// 「順番待ち」で居座り、承認したのに送られていないように見えていた。
     pub async fn queued_user_messages(
         &self,
         thread_id: Uuid,
         tenant_id: &str,
+        current_run_id: Uuid,
     ) -> Result<Vec<(Uuid, Uuid)>, ChatError> {
         sqlx::query_as::<_, (Uuid, Uuid)>(
             "SELECT m.parent_id, r.run_id FROM generation_run r JOIN message m ON m.id = r.message_id \
              WHERE r.thread_id = $1 AND r.tenant_id = $2 AND r.status = 'queued' \
+               AND r.run_id <> $3 \
                AND m.parent_id IS NOT NULL \
              ORDER BY r.created_at, r.run_id",
         )
         .bind(thread_id)
         .bind(tenant_id)
+        .bind(current_run_id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)
