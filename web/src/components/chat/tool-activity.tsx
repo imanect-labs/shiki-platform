@@ -58,13 +58,27 @@ export type ToolActivityItem = {
   subagent?: { boundary: string; steps: number; toolCalls: number };
 };
 
-/// 走行中に見せる件数。全件出すと、委譲込みの調査（200 件超）で会話が実況に埋まる。
-/// 少なすぎると何をしているか掴めないので、並列 1 ステップ（最大 6 件）＋直前の数ステップ。
-const LIVE_WINDOW = 12;
+/// 走行中に見せる件数の上限。**いま走っているステップだけ**を出すのが基本で、これはその
+/// 保険（並列度を上げた時に窓が伸びすぎないように切る）。
+///
+/// 件数で窓を切ると並列バッチが途中で割れ、「並行して 6 件」と言いながら 3 件しか出ない、
+/// 過去ステップの残骸が混ざる、で読めなくなる。ステップ境界で切ると、窓の中身は常に
+/// 「いま同時に走っているもの」だけになる。
+const LIVE_MAX = 6;
 /// 展開時に出す結果要約の最大文字数。1 行に収まる範囲へ切る。
 const RESULT_CLIP = 160;
 /// 詳細行の固定高さ（1 行ぶん）。結果の有無で行数が変わらないようにするための予約。
 const DETAIL_LINE = "h-[1.4rem]";
+
+/// 走行中に見せる範囲＝**最後のステップに属するものだけ**（最大 [`LIVE_MAX`] 件）。
+///
+/// step が無い履歴（フィールド追加前）は境界が分からないので末尾から件数で切る。
+function liveWindow(items: ToolActivityItem[]): ToolActivityItem[] {
+  const last = items[items.length - 1];
+  if (last?.step === undefined) return items.slice(-LIVE_MAX);
+  const sameStep = items.filter((it) => it.step === last.step);
+  return sameStep.slice(-LIVE_MAX);
+}
 
 /// 同一ステップでまとめる（step が無い古いイベントは単独グループに落とす）。
 function groupBySteps(items: ToolActivityItem[]): ToolActivityItem[][] {
@@ -108,9 +122,9 @@ export function ToolActivity({
   // 振れる（次のツールが始まるまでの一瞬、実行中の項目がゼロになる）たびに開閉が起き、
   // 走行中ずっとパカパカする。開閉はユーザーの操作だけで変わる。
   const open = manualOpen ?? true;
-  // 走行中は末尾の窓だけ（完了したら全件）。開閉ではなく**件数**で絞るので、
+  // 走行中は**最後のステップ**だけ（完了したら全件）。開閉ではなく中身で絞るので、
   // 実行状態が変わってもパネルが開いたり閉じたりしない。
-  const shown = running ? items.slice(-LIVE_WINDOW) : items;
+  const shown = running ? liveWindow(items) : items;
   const hidden = items.length - shown.length;
   const lastCategory = describeTool(items[items.length - 1]).category;
   const season = seasonVar(seasonIndexFor(lastCategory, running));
