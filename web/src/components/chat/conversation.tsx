@@ -260,6 +260,7 @@ export function Conversation({
                     running: true,
                     input: call.input,
                     step: call.step,
+                    viaSubagent: call.viaSubagent,
                   },
                 ],
               }

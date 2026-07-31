@@ -30,12 +30,19 @@ pub enum StreamEventKind {
     ///
     /// **`None` は「不明」**（フィールド追加前の run を replay した場合）。0 で埋めると
     /// 逐次実行だった過去のツール群が並行実行に見えてしまう。
+    ///
+    /// `via_subagent` はサブエージェントが親の UI へ中継した呼び出し（#391）。**子は自分の
+    /// ループ番号で `step` を数える**ため、そのまま流すと親の step と衝突し「並行して N 件」が
+    /// 実態とずれる（実測: 子の `web_fetch` が step 5 として親の step 5 に混ざった）。中継側で
+    /// `step` を落とし、この印だけを立てる。
     ToolCall {
         id: String,
         name: String,
         input: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         step: Option<u32>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        via_subagent: bool,
     },
     /// ツール結果。
     ToolResult {

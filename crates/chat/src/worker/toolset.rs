@@ -221,7 +221,7 @@ impl ChatWorker {
         let (run_id, fencing) = (run.run_id, run.fencing_token);
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                let kind = super::sink::to_stream_kind(&event);
+                let kind = super::stream_map::to_child_stream_kind(&event);
                 if store
                     .append_stream_event(run_id, fencing, &kind)
                     .await

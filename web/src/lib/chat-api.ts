@@ -431,7 +431,14 @@ export type ApprovalRequest = {
 export type StreamHandlers = {
   onToken?: (text: string) => void;
   onThinking?: (text: string) => void;
-  onToolCall?: (call: { id: string; name: string; input: unknown; step?: number }) => void;
+  onToolCall?: (call: {
+    id: string;
+    name: string;
+    input: unknown;
+    step?: number;
+    /// サブエージェントが中継した呼び出し（#391）。親の step 空間には属さない。
+    viaSubagent?: boolean;
+  }) => void;
   /// ツール結果。`content` は観測テキスト（成功要約 or エラー）。UI は成否と要約を出す（#358/#386）。
   onToolResult?: (res: { id: string; ok: boolean; content: string }) => void;
   onCitation?: (c: Citation) => void;
@@ -504,6 +511,7 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
           // 旧 run の replay では step が無い。**0 で埋めない**（逐次実行だった過去の
           // ツール群が「並行して N 件」に化ける）。不明は undefined のまま流す。
           step: kind.step ?? undefined,
+          viaSubagent: kind.via_subagent ?? false,
         });
         break;
       case "tool_result":
