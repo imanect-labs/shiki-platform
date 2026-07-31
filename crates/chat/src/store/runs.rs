@@ -82,6 +82,17 @@ pub struct ClaimedRun {
     pub mini_app_version: Option<i64>,
 }
 
+/// いま UI が映すべき run（[`ChatStore::current_run`]）。
+#[derive(Debug, Clone, Copy)]
+pub struct CurrentRun {
+    pub run_id: Uuid,
+    /// 生成先の assistant メッセージ id。この run が出す genui カードのアクション照合先。
+    pub message_id: Uuid,
+    pub status: RunStatus,
+    /// 自律プロファイルか（再訪時の UI 復元・#350）。
+    pub autonomous: bool,
+}
+
 // `post_message`（Transactional Outbox）は [`super::post`] に分離（500 行規約）。
 
 impl ChatStore {
@@ -281,23 +292,89 @@ impl ChatStore {
         Ok(())
     }
 
-    /// このスレッドの最新 run（SSE 購読対象）を返す。`autonomous` は再訪 UI の復元用
-    /// （自律 run 進行中ならモードセレクタ等を出す・#350）。
-    pub async fn latest_run(
+    /// このスレッドで**いま UI が映すべき run**（SSE 購読対象）を返す。
+    ///
+    /// 非端末の run があれば**その最も古いもの**。生成は 1 スレッド 1 本ずつ直列に走るので
+    /// （[`Self::blocked_by_earlier_run`]）、これが「いま動いている run」であり、後ろに
+    /// 積まれた run は順番待ち。**最新**を返すと、生成中に届いた発話へ購読が飛び移り、
+    /// 進行中の応答が画面から消える。
+    ///
+    /// 非端末が無ければ最新（＝直前に終わった run）を返す。再訪時のリプレイ先。
+    /// `autonomous` は再訪 UI の復元用（自律 run 進行中ならモードセレクタ等を出す・#350）。
+    pub async fn current_run(
         &self,
         thread_id: Uuid,
         tenant_id: &str,
-    ) -> Result<Option<(Uuid, RunStatus, bool)>, ChatError> {
-        let row: Option<(Uuid, String, bool)> = sqlx::query_as(
-            "SELECT run_id, status, autonomous FROM generation_run \
-             WHERE thread_id = $1 AND tenant_id = $2 ORDER BY created_at DESC, run_id DESC LIMIT 1",
+    ) -> Result<Option<CurrentRun>, ChatError> {
+        let row: Option<(Uuid, Uuid, String, bool)> = sqlx::query_as(
+            "SELECT run_id, message_id, status, autonomous FROM generation_run \
+             WHERE thread_id = $1 AND tenant_id = $2 \
+             ORDER BY (status IN ('queued', 'running')) DESC, \
+                      CASE WHEN status IN ('queued', 'running') THEN created_at END ASC, \
+                      created_at DESC, run_id DESC \
+             LIMIT 1",
         )
         .bind(thread_id)
         .bind(tenant_id)
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        Ok(row.and_then(|(id, s, autonomous)| RunStatus::parse(&s).map(|st| (id, st, autonomous))))
+        Ok(row.and_then(|(run_id, message_id, s, autonomous)| {
+            RunStatus::parse(&s).map(|status| CurrentRun {
+                run_id,
+                message_id,
+                status,
+                autonomous,
+            })
+        }))
+    }
+
+    /// この run より**先に投入された未完了 run**が同じスレッドにあるか（＝順番待ちか）。
+    ///
+    /// 1 スレッドの生成を直列化するための唯一の判定。並行に走らせると、後の run が前の run の
+    /// 出力を含まない履歴で生成し（発話順と応答が食い違う）、同じワークスペースへ同時に書き、
+    /// 承認カードが 2 本同時に出る。
+    ///
+    /// 待ちは有限時間で解ける: 先行 run は必ず done/failed/cancelled へ到達する
+    /// （完走・明示キャンセル・リース失効の takeover・jobq の DLQ 移送時の `force_fail_run`）。
+    pub async fn blocked_by_earlier_run(&self, run_id: Uuid) -> Result<bool, ChatError> {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM generation_run earlier, generation_run me \
+                 WHERE me.run_id = $1 \
+                   AND earlier.thread_id = me.thread_id \
+                   AND earlier.tenant_id = me.tenant_id \
+                   AND earlier.status IN ('queued', 'running') \
+                   AND (earlier.created_at, earlier.run_id) < (me.created_at, me.run_id) \
+             )",
+        )
+        .bind(run_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(map_db)
+    }
+
+    /// 生成がまだ始まっていない発話（＝順番待ち）の `(user メッセージ id, run id)`。
+    ///
+    /// 再訪時に「送ったが順番待ち」を復元し、取り消せるようにするための材料。`queued` は
+    /// claim 前の run＝1 件も生成イベントが出ていない run で、`running` は既に進行中なので
+    /// 含めない。
+    pub async fn queued_user_messages(
+        &self,
+        thread_id: Uuid,
+        tenant_id: &str,
+    ) -> Result<Vec<(Uuid, Uuid)>, ChatError> {
+        sqlx::query_as::<_, (Uuid, Uuid)>(
+            "SELECT m.parent_id, r.run_id FROM generation_run r JOIN message m ON m.id = r.message_id \
+             WHERE r.thread_id = $1 AND r.tenant_id = $2 AND r.status = 'queued' \
+               AND m.parent_id IS NOT NULL \
+             ORDER BY r.created_at, r.run_id",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)
     }
 
     /// そのメッセージを生成した run の**生成材料**（自律か・適用中の skill ピン）を引く（#387）。

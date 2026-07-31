@@ -21,7 +21,7 @@ import { PlanStepRow } from "@/components/chat/agent-progress";
 import { currentSeasonIndex, seasonAccentStyle } from "@/lib/season";
 import { cn } from "@/lib/utils";
 import { useGenUiAction } from "./action-context";
-import { ActionResultNote, describeActionError, NotReadyNote } from "./action-result";
+import { ActionResultNote, describeActionError, QueuedActionNote } from "./action-result";
 
 export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
   const { dispatch, ready, onActionCompleted } = useGenUiAction();
@@ -91,7 +91,7 @@ export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
             placeholder="足したい視点や、外したい論点を書いてください"
             aria-label="計画の修正指示"
             rows={3}
-            disabled={busy || !ready}
+            disabled={busy}
             className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm leading-relaxed text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           />
         </div>
@@ -107,7 +107,7 @@ export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
             <Button
               type="button"
               size="sm"
-              disabled={busy || !ready || !revision.trim()}
+              disabled={busy || !revision.trim()}
               onClick={() => void submit({ 計画の修正: revision.trim() }, "revised")}
               className={PRESSABLE}
             >
@@ -130,7 +130,7 @@ export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
             <Button
               type="button"
               size="sm"
-              disabled={busy || !ready}
+              disabled={busy}
               data-testid="genui-plan-start"
               onClick={() => void submit({ 計画の確認: card.submit_label || "この計画で開始" }, "started")}
               className={PRESSABLE}
@@ -155,7 +155,7 @@ export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
           </>
         )}
       </div>
-      <NotReadyNote ready={ready} done={done} />
+      <QueuedActionNote ready={ready} submitted={Boolean(done)} />
       <ActionResultNote error={error} />
     </div>
   );

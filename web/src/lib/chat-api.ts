@@ -337,13 +337,23 @@ type ApiMessage = {
 
 export async function getThreadMessages(
   id: string,
-): Promise<{ messages: Message[]; activeRunId: string | null; activeRunAutonomous: boolean }> {
+): Promise<{
+  messages: Message[];
+  activeRunId: string | null;
+  activeRunAutonomous: boolean;
+  /// 進行中 run の生成先 assistant メッセージ id（genui アクションの照合先）。
+  activeAssistantMessageId: string | null;
+  /// まだ生成が始まっていない発話（順番待ち・投入順）。
+  queuedRuns: { userMessageId: string; runId: string }[];
+}> {
   const res = await apiFetch(`/threads/${id}/messages`);
   if (res.status === 404 || res.status === 403) throw new ThreadNotFound();
   const data = await ok<{
     messages: ApiMessage[];
     active_run_id?: string | null;
     active_run_autonomous?: boolean | null;
+    active_assistant_message_id?: string | null;
+    queued_runs?: { user_message_id: string; run_id: string }[] | null;
   }>(res);
   return {
     messages: data.messages.map((m) => ({
@@ -355,6 +365,11 @@ export async function getThreadMessages(
     })),
     activeRunId: data.active_run_id ?? null,
     activeRunAutonomous: data.active_run_autonomous ?? false,
+    activeAssistantMessageId: data.active_assistant_message_id ?? null,
+    queuedRuns: (data.queued_runs ?? []).map((q) => ({
+      userMessageId: q.user_message_id,
+      runId: q.run_id,
+    })),
   };
 }
 
@@ -447,6 +462,9 @@ export type StreamHandlers = {
   onFailureRecovery?: (r: { detail: string; action: string }) => void;
   /// 生成 run_id（承認 API 呼び出しに使う）。
   onRunId?: (runId: string) => void;
+  /// 生成先の assistant メッセージ id。**まだ本文は保存されていない**が、この run で出る
+  /// genui カードのアクション照合先はこの id になる（run 完了後に有効になる）。
+  onAssistantMessageId?: (messageId: string) => void;
   onDone?: () => void;
   onError?: (message: string) => void;
 };
@@ -612,24 +630,12 @@ export function streamMessage(
   let runId: string | null = null;
   let stopped = false;
 
-  apiFetch(`/threads/${threadId}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      text,
-      attachments,
-      context: context ?? null,
-      agent_mode: agentMode,
-      autonomous,
-      skills: skills?.map((p) => ({ artifact_id: p.artifactId, version: p.version ?? undefined })),
-    }),
-  })
-    .then(async (res) => {
-      if (!res.ok) throw new Error(`送信に失敗しました (${res.status})`);
-      const body = (await res.json()) as { run_id: string };
-      runId = body.run_id;
+  postMessage(threadId, text, attachments, { agentMode, autonomous, context, skills })
+    .then((posted) => {
+      runId = posted.runId;
       // 承認 API 呼び出しのため run_id を UI へ渡す（自律プロファイル・Task 5.6）。
       handlers.onRunId?.(runId);
+      handlers.onAssistantMessageId?.(posted.assistantMessageId);
       if (stopped) return;
       unsub = subscribe(threadId, handlers);
     })
@@ -639,6 +645,50 @@ export function streamMessage(
     stopped = true;
     unsub?.();
     if (opts?.cancelServer && runId) void cancelRun(threadId, runId);
+  };
+}
+
+/// 発話を投入する（**購読しない**）。
+///
+/// 生成中に送った発話は「順番待ち」としてサーバが受理し、先行 run が終わってから走る
+/// （直列化はワーカー側・`blocked_by_earlier_run`）。購読対象はスレッドで 1 本なので、
+/// 積むだけのときは SSE を開かず、先行 run の完了後に張り直す。
+export async function postMessage(
+  threadId: string,
+  text: string,
+  attachments: Attachment[],
+  opts: {
+    agentMode?: boolean;
+    autonomous?: boolean;
+    context?: SelectionContext;
+    skills?: ArtifactPin[];
+  } = {},
+): Promise<{ runId: string; userMessageId: string; assistantMessageId: string }> {
+  const res = await apiFetch(`/threads/${threadId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      attachments,
+      context: opts.context ?? null,
+      agent_mode: opts.agentMode,
+      autonomous: opts.autonomous,
+      skills: opts.skills?.map((p) => ({
+        artifact_id: p.artifactId,
+        version: p.version ?? undefined,
+      })),
+    }),
+  });
+  if (!res.ok) throw new Error(`送信に失敗しました (${res.status})`);
+  const body = (await res.json()) as {
+    run_id: string;
+    user_message_id: string;
+    assistant_message_id: string;
+  };
+  return {
+    runId: body.run_id,
+    userMessageId: body.user_message_id,
+    assistantMessageId: body.assistant_message_id,
   };
 }
 

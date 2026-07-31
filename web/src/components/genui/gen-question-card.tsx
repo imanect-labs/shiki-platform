@@ -19,7 +19,7 @@ import { DURATION_NORMAL, EASE_STANDARD, PRESSABLE } from "@/components/ui/motio
 import { currentSeasonIndex, seasonAccentStyle } from "@/lib/season";
 import { cn } from "@/lib/utils";
 import { useGenUiAction } from "./action-context";
-import { ActionResultNote, describeActionError, NotReadyNote } from "./action-result";
+import { ActionResultNote, describeActionError, QueuedActionNote } from "./action-result";
 
 /// 1 問の回答状態。options 質問は選択ラベル集合＋「その他」（専用フラグ・自由記述）、
 /// 自由記述質問は text。`otherSelected` を選択集合と分けることで、選択肢ラベルが
@@ -195,7 +195,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
                     description={opt.description ?? null}
                     multi={q.multi_select}
                     selected={a.selected.includes(opt.label)}
-                    disabled={busy || done || !ready}
+                    disabled={busy || done}
                     onSelect={() => toggle(opt.label)}
                   />
                 ))}
@@ -206,7 +206,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
                     icon={<PencilLine className="size-4" />}
                     multi={q.multi_select}
                     selected={a.otherSelected}
-                    disabled={busy || done || !ready}
+                    disabled={busy || done}
                     onSelect={toggleOther}
                   />
                 ) : null}
@@ -217,7 +217,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
                     placeholder={q.placeholder ?? "自由に入力してください"}
                     aria-label="その他の回答"
                     rows={2}
-                    disabled={busy || done || !ready}
+                    disabled={busy || done}
                     className="mt-0.5 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                   />
                 ) : null}
@@ -229,7 +229,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
                 placeholder={q.placeholder ?? "回答を入力してください"}
                 aria-labelledby={`genui-q-${card.id}-${q.id}`}
                 rows={4}
-                disabled={busy || done || !ready}
+                disabled={busy || done}
                 className="mt-3 w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
               />
             )}
@@ -242,7 +242,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
         <button
           type="button"
           onClick={() => go(step - 1)}
-          disabled={step === 0 || busy || done || !ready}
+          disabled={step === 0 || busy || done}
           className={cn(
             "inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-muted-foreground",
             "transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40",
@@ -256,14 +256,14 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
         {done ? (
           <span className="inline-flex items-center gap-1 text-xs text-primary">
             <Check className="size-3.5" aria-hidden />
-            回答を送信しました
+            {ready ? "回答を送信しました" : "回答を受け付けました"}
           </span>
         ) : isLast ? (
           <Button
             type="button"
             size="sm"
             onClick={onSubmit}
-            disabled={busy || !ready}
+            disabled={busy}
             className={PRESSABLE}
             // ラベルは AI が `submit_label` で自由に決める（「この条件で進める」等）。
             // e2e が文言に依存しないよう testid で掴む（計画カードの genui-plan-start と対）。
@@ -276,7 +276,6 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
             type="button"
             size="sm"
             onClick={() => go(step + 1)}
-            disabled={!ready}
             className={PRESSABLE}
           >
             次へ
@@ -284,7 +283,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
           </Button>
         )}
       </div>
-      <NotReadyNote ready={ready} done={done} />
+      <QueuedActionNote ready={ready} submitted={Boolean(done)} />
       <ActionResultNote error={error} />
     </div>
   );

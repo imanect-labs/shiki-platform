@@ -20,8 +20,20 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// `RECORD=1` で**動画**（webm）も残す。`FLOW=default` にすると質問カード → 計画カード →
 /// 実行の全経路を通す（`auto` は確認を省略した 1 ターン）。
 const SHOTS = process.env.SHOTS_DIR ?? "/tmp";
+/// 既定のテーマは**このリポジトリで実際に判断が割れている論点**にする（#391 の受入条件・
+/// #404）。賛否が公開情報で真っ向から割れており（Anthropic は multi-agent research system で
+/// 有効性を主張・Cognition と LangChain は「マルチエージェントを作るな」と撤回）、一次情報が
+/// web にあり、結論がそのまま `SubagentLimits` の判断材料になる。
+///
+/// 他に使える論点（`TOPIC=` で差し替え）:
+///   - エージェント隔離の gVisor / Firecracker / WASM をどう使い分けるべきか（#346）
+///   - 日本語 RAG でハイブリッド検索とリランカーはどれだけ効くか
+///   - Zanzibar 系 ReBAC の実運用レイテンシと、RBAC/ABAC との使い分け
 const TOPIC =
-  process.env.TOPIC ?? "リモートワークは従業員の生産性を上げるのか下げるのか、根拠つきで";
+  process.env.TOPIC ??
+  "LLM エージェントの調査タスクで、サブエージェントへの並列委譲は" +
+    "単一エージェントに対してトークン増分に見合う品質向上をもたらすのか。" +
+    "どの条件で有効でどの条件で有害か、実測と失敗事例の根拠つきで";
 /// `default` = 質問 → 計画 → 実行（計画カードの中身まで見える）／`auto` = 即実行。
 const FLOW = process.env.FLOW ?? "auto";
 

@@ -7,7 +7,7 @@
 //! genui カードの押下は `chat.submit` で**別 run** になるため、状態は履歴から復元する:
 //! ターン数＝user メッセージ数、run 内の進行＝tool メッセージ数。
 
-use super::stub::{text_stream, tool_call_stream, tool_calls_stream};
+use super::stub_stream::{text_stream, tool_call_stream, tool_calls_stream};
 use crate::model::{Block, GenerateRequest, Role};
 use crate::provider::DeltaStream;
 

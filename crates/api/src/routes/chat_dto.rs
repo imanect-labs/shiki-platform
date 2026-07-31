@@ -77,6 +77,23 @@ pub struct MessagesResponse {
     /// 進行中 run が自律プロファイルか（再訪時にエージェントモード UI・モードセレクタを復元する・#350）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_run_autonomous: Option<bool>,
+    /// 進行中 run の生成先 assistant メッセージ id。この run が出す genui カードの
+    /// アクション照合先であり、**run 完了後に**実行できるようになる（それまでは順番待ち）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_assistant_message_id: Option<Uuid>,
+    /// **順番待ち**の発話（投入順）。生成中でも発話は受け付けてサーバ側で直列化するため、
+    /// 再訪時に「送ったがまだ生成が始まっていない」を復元して取り消せるようにする。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued_runs: Vec<QueuedRun>,
+}
+
+/// 順番待ちの発話 1 件。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct QueuedRun {
+    /// 発話（user メッセージ）の id。トランスクリプト上の並べ替えに使う。
+    pub user_message_id: Uuid,
+    /// 取り消し用の run id。
+    pub run_id: Uuid,
 }
 
 /// 発話送信リクエスト。

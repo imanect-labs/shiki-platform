@@ -3,11 +3,13 @@
 import * as React from "react";
 
 import { useRouter } from "next/navigation";
-import { FileDown, LayoutGrid, Sparkles } from "lucide-react";
+import { AlertTriangle, Clock3, FileDown, LayoutGrid, Sparkles } from "lucide-react";
 
 import {
+  cancelRun,
   getAutonomousMode,
   getThreadMessages,
+  postMessage,
   isEmptyContent,
   notifyThreadsChanged,
   resumeMessage,
@@ -33,6 +35,7 @@ import { selectionKindLabel, type SelectionContext } from "@/lib/selection-conte
 import type { ActiveCommand } from "@/lib/slash-command";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
 import { ChatGenUiProvider } from "@/components/genui/action-context";
+import { invokeChatUiAction } from "@/lib/artifact-api";
 import { SpecRenderer } from "@/components/genui/spec-renderer";
 import { SaveAsAppDialog, specHasChatOnlyAction } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
@@ -84,7 +87,24 @@ type StreamState = {
   approval: ApprovalRequest | null;
   budget: { kind: string; used: number; limit: number } | null;
   runId: string | null;
+  /// 生成先の assistant メッセージ id（genui アクションの照合先）。run 完了までは
+  /// **保存されていない**ので実行はできないが、id は POST 応答で分かっている。
+  assistantMessageId: string | null;
   approvalPending: boolean;
+};
+
+/// 順番待ちの発話（サーバは受理済み・生成がまだ始まっていない）。
+///
+/// 生成中でも発話は投入でき、サーバが 1 スレッド 1 本ずつ直列化する。ここに積まれる間も
+/// **メッセージはサーバに存在する**ので、ページを離れても消えない（再訪で復元される）。
+type QueuedMessage = {
+  /// 描画キー（サーバの user メッセージ id。POST 前の楽観表示中は仮 id）。
+  key: string;
+  blocks: ContentBlock[];
+  /// 取り消し用（投入前は null）。
+  runId: string | null;
+  /// 投入自体に失敗したとき（この行だけ赤くして再送を促す）。
+  error: string | null;
 };
 
 const EMPTY_STREAM: StreamState = {
@@ -103,6 +123,7 @@ const EMPTY_STREAM: StreamState = {
   plan: [],
   approval: null,
   budget: null,
+  assistantMessageId: null,
   runId: null,
   approvalPending: false,
 };
@@ -179,6 +200,18 @@ export function Conversation({
   const openShare = React.useCallback(() => setShareOpen(true), []);
   // UI アクション（chat.submit 等）成功後に会話を再読込するためのキー。
   const [reloadKey, setReloadKey] = React.useState(0);
+  // 順番待ちの発話（サーバ受理済み・生成未開始）。ストリーム行の下に並べる。
+  const [queued, setQueued] = React.useState<QueuedMessage[]>([]);
+  // 生成中に押された genui アクション（質問カードの回答・計画の承認）。生成が終わって
+  // assistant メッセージが保存された瞬間に、押された順で実行する。
+  const queuedActionsRef = React.useRef<
+    { messageId: string; actionId: string; params: unknown }[]
+  >([]);
+  // onDone は makeHandlers の中で閉じ込められるため、最新の件数を ref で見る。
+  const queuedCountRef = React.useRef(0);
+  React.useEffect(() => {
+    queuedCountRef.current = queued.length;
+  }, [queued]);
   const bottomRef = React.useRef<HTMLDivElement | null>(null);
   // 停止関数。`cancelServer` でサーバ側もキャンセル（明示停止）。離脱は継続（呼ばない）。
   const cancelRef = React.useRef<((opts?: { cancelServer?: boolean }) => void) | null>(null);
@@ -330,6 +363,8 @@ export function Conversation({
       },
       // --- 自律エージェント（Phase 5・Task 5.11） ---
       onRunId: (runId) => updateStream((s) => (s ? { ...s, runId } : s)),
+      onAssistantMessageId: (assistantMessageId) =>
+        updateStream((s) => (s ? { ...s, assistantMessageId } : s)),
       onPlan: (subtasks) =>
         updateStream((s) => (s ? { ...s, plan: mergePlan(s.plan, subtasks) } : s)),
       onBudgetWarning: (b) => updateStream((s) => (s ? { ...s, budget: b } : s)),
@@ -358,7 +393,24 @@ export function Conversation({
         flushStream();
         cancelRef.current = null;
         notifyThreadsChanged();
-        if (hadUi) setReloadKey((k) => k + 1);
+        // 生成中に押されたカード操作を、保存済みになった今この瞬間に流す（押した順）。
+        const actions = queuedActionsRef.current.splice(0);
+        if (actions.length > 0) {
+          void (async () => {
+            for (const a of actions) {
+              try {
+                await invokeChatUiAction(threadId, a.messageId, a.actionId, a.params);
+              } catch (e) {
+                setError(e instanceof Error ? e.message : "回答の送信に失敗しました");
+              }
+            }
+            setReloadKey((k) => k + 1);
+          })();
+          return;
+        }
+        // 順番待ちがあるなら読み直す: サーバは次の run を「いま映すべき run」として返すので、
+        // 再ロードがそのまま次への購読の張り直しになる（クライアントで順序を持たない）。
+        if (hadUi || queuedCountRef.current > 0) setReloadKey((k) => k + 1);
         // 作成した文書は run が終わってから開く（途中で遷移すると SSE が切れる・#381）。
         const href = pendingOpenRef.current;
         pendingOpenRef.current = null;
@@ -406,6 +458,33 @@ export function Conversation({
         ...attachments.map((a) => ({ type: "file_ref" as const, node_id: a.node_id, name: a.name })),
         { type: "text" as const, text },
       ];
+      // 生成中でも送れる（サーバが直列化する）。購読はスレッドで 1 本なので、走っている run が
+      // ある間は SSE を張らずに「順番待ち」へ積み、その run が終わってから張り直す。
+      if (streamRef.current) {
+        const key = newId();
+        setQueued((prev) => [...prev, { key, blocks: userBlocks, runId: null, error: null }]);
+        void postMessage(threadId, text, attachments, {
+          agentMode: runAutonomous,
+          autonomous: runAutonomous,
+          context,
+          skills: onceSkills,
+        })
+          .then((posted) =>
+            setQueued((prev) =>
+              prev.map((q) => (q.key === key ? { ...q, runId: posted.runId } : q)),
+            ),
+          )
+          .catch((e) =>
+            setQueued((prev) =>
+              prev.map((q) =>
+                q.key === key
+                  ? { ...q, error: e instanceof Error ? e.message : "送信に失敗しました" }
+                  : q,
+              ),
+            ),
+          );
+        return;
+      }
       setMessages((prev) => [
         ...prev,
         { id: newId(), role: "user", content: userBlocks, createdAt: new Date().toISOString() },
@@ -424,6 +503,28 @@ export function Conversation({
       );
     },
     [threadId, makeHandlers, autonomous],
+  );
+
+  /// 生成中に押された genui アクションを積む（生成完了時に onDone が流す）。
+  ///
+  /// 送り先は**この run の生成先 assistant メッセージ**。ストリーム中に id が分かっている
+  /// （POST 応答 or 再訪時の active_assistant_message_id）ので、確定を待つのは保存だけ。
+  const onQueueUiAction = React.useCallback((actionId: string, params: unknown) => {
+    const messageId = streamRef.current?.assistantMessageId;
+    if (!messageId) {
+      setError("いまは回答を受け付けられませんでした。生成が終わってからもう一度お試しください。");
+      return;
+    }
+    queuedActionsRef.current.push({ messageId, actionId, params });
+  }, []);
+
+  /// 順番待ちを取り消す（サーバの run もキャンセルする＝離脱後に走り出さない）。
+  const cancelQueued = React.useCallback(
+    (item: QueuedMessage) => {
+      setQueued((prev) => prev.filter((q) => q.key !== item.key));
+      if (item.runId) void cancelRun(threadId, item.runId);
+    },
+    [threadId],
   );
 
   /// コンポーザからの送信。スラッシュコマンド確定時は **その発話にだけ** skill を適用し、
@@ -500,18 +601,43 @@ export function Conversation({
   React.useEffect(() => {
     let active = true;
     getThreadMessages(threadId)
-      .then(({ messages: msgs, activeRunId, activeRunAutonomous }) => {
+      .then(
+        ({
+          messages: msgs,
+          activeRunId,
+          activeRunAutonomous,
+          activeAssistantMessageId,
+          queuedRuns,
+        }) => {
         if (!active) return;
-        // 末尾が空の assistant プレースホルダなら生成進行中（or クラッシュ）→ 復元購読する。
-        const last = msgs[msgs.length - 1];
-        const resuming = last?.role === "assistant" && isEmptyContent(last.content);
-        setMessages(resuming ? msgs.slice(0, -1) : msgs);
+        // 空の assistant は**生成先のプレースホルダ**（進行中・順番待ち・中断のいずれか）。
+        // 描画するものが無く、順番待ちがあると末尾以外にも現れるので一律に落とす。
+        const shown = msgs.filter((m) => !(m.role === "assistant" && isEmptyContent(m.content)));
+        // 順番待ちの発話はストリーム行の下へ回す（会話の並びとして「AI が答えている最中に
+        // 積んだ次の発話」が後ろに来るのが自然）。
+        const queuedRunOf = new Map(queuedRuns.map((q) => [q.userMessageId, q.runId]));
+        setQueued(
+          shown
+            .filter((m) => queuedRunOf.has(m.id))
+            .map((m) => ({
+              key: m.id,
+              blocks: m.content,
+              runId: queuedRunOf.get(m.id) ?? null,
+              error: null,
+            })),
+        );
+        setMessages(shown.filter((m) => !queuedRunOf.has(m.id)));
+        const resuming = activeRunId !== null;
         if (resuming) {
           // 進行中 run の id を復元し、承認待ちなら承認/却下を送れるようにする（Task 5.6）。
           // 自律 run なら再訪時もエージェントモード UI（承認モードセレクタ含む）を復元する
           // （承認待ちの run に対して実行中トグルを見えるようにする・#350）。
           if (activeRunAutonomous) setAutonomous(true);
-          streamRef.current = { ...EMPTY_STREAM, runId: activeRunId };
+          streamRef.current = {
+            ...EMPTY_STREAM,
+            runId: activeRunId,
+            assistantMessageId: activeAssistantMessageId,
+          };
           setStream(streamRef.current);
           cancelRef.current = resumeMessage(threadId, makeHandlers());
           return;
@@ -603,8 +729,17 @@ export function Conversation({
             ),
           )}
           {stream ? (
-            <StreamingRow stream={stream} onApproval={decideApproval} threadId={threadId} />
+            <StreamingRow
+              stream={stream}
+              onApproval={decideApproval}
+              threadId={threadId}
+              onQueueUiAction={onQueueUiAction}
+            />
           ) : null}
+          {/* 順番待ちは「AI が答えている最中に積んだ次の発話」なので応答の後ろに置く。 */}
+          {queued.map((q) => (
+            <QueuedRow key={q.key} item={q} onCancel={() => cancelQueued(q)} />
+          ))}
           {notice ? (
             <div
               className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
@@ -693,7 +828,7 @@ function finalizeStream(
 
 // ── 行レンダリング ───────────────────────────────────────────────────
 
-function UserRow({ blocks }: { blocks: ContentBlock[] }) {
+function UserRow({ blocks, footer }: { blocks: ContentBlock[]; footer?: React.ReactNode }) {
   const text = blocks
     .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
     .map((b) => b.text)
@@ -732,8 +867,50 @@ function UserRow({ blocks }: { blocks: ContentBlock[] }) {
             {text}
           </MessageContent>
         ) : null}
+        {footer}
       </div>
     </Message>
+  );
+}
+
+/// 順番待ちの発話 1 件。吹き出しは送信済みと同じで、下に控えめな状態と取り消しだけ添える
+/// （サーバは受理済み＝本当に送れているので、見た目を弱めて「未送信」に見せない）。
+function QueuedRow({ item, onCancel }: { item: QueuedMessage; onCancel: () => void }) {
+  return (
+    <UserRow
+      blocks={item.blocks}
+      footer={
+        <span
+          data-testid="queued-message-note"
+          className={cn(
+            "inline-flex items-center gap-1.5 text-[11px]",
+            item.error ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {item.error ? (
+            <>
+              <AlertTriangle className="size-3 shrink-0" aria-hidden />
+              {item.error}
+            </>
+          ) : (
+            <>
+              <Clock3 className="size-3 shrink-0" aria-hidden />
+              順番待ち
+              <span aria-hidden className="text-muted-foreground/40">
+                ・
+              </span>
+              <button
+                type="button"
+                onClick={onCancel}
+                className="rounded underline-offset-2 transition-colors hover:text-foreground hover:underline"
+              >
+                取り消す
+              </button>
+            </>
+          )}
+        </span>
+      }
+    />
   );
 }
 
@@ -917,10 +1094,13 @@ function StreamingRow({
   stream,
   onApproval,
   threadId,
+  onQueueUiAction,
 }: {
   stream: StreamState;
   onApproval: (approved: boolean) => void;
   threadId: string;
+  /// 生成中に押されたカード操作の受け皿（生成完了後に実行する）。
+  onQueueUiAction: (actionId: string, params: unknown) => void;
 }) {
   const showLoader =
     !stream.text &&
@@ -960,7 +1140,9 @@ function StreamingRow({
           </div>
         ) : null}
         {stream.uiSpecs.length > 0 ? (
-          <ChatGenUiProvider threadId="" messageId={null}>
+          // messageId は null（＝まだ保存されていないので即時実行できない）。押された操作は
+          // onQueue で受け取り、生成完了時に確定した assistant メッセージへ流す。
+          <ChatGenUiProvider threadId={threadId} messageId={null} onQueue={onQueueUiAction}>
             {stream.uiSpecs.map((spec, i) => (
               <SpecRenderer key={i} spec={spec} />
             ))}
