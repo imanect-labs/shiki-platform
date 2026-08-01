@@ -116,7 +116,8 @@ fn map_chat_err(e: ChatError) -> ActionError {
         ChatError::NotFound => ActionError::NotFound,
         ChatError::Forbidden => ActionError::Forbidden,
         ChatError::Invalid(m) => ActionError::Invalid(m),
-        ChatError::Unavailable(m) => ActionError::Unavailable(m),
+        // 利用枠超過も「待てば通る」＝一時障害として扱う（文言はそのまま出す）。
+        ChatError::Unavailable(m) | ChatError::RateLimited(m) => ActionError::Unavailable(m),
         ChatError::Internal(m) => ActionError::Internal(m),
     }
 }

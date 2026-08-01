@@ -114,6 +114,8 @@ impl From<chat::ChatError> for ApiError {
             CE::Forbidden => ApiError::Forbidden,
             CE::Invalid(msg) => ApiError::BadRequest(msg),
             CE::Unavailable(msg) => ApiError::ServiceUnavailable(format!("chat: {msg}")),
+            // 整形済みの文言をそのまま返す（`chat:` を前置しない・会話に表示されるため）。
+            CE::RateLimited(msg) => ApiError::ServiceUnavailable(msg),
             CE::Internal(msg) => ApiError::Internal(format!("chat: {msg}")),
         }
     }
@@ -183,6 +185,9 @@ impl From<llm_gateway::LlmError> for ApiError {
         use llm_gateway::LlmError as LE;
         match err {
             LE::Unavailable(msg) => ApiError::ServiceUnavailable(format!("llm: {msg}")),
+            // 上限超過は**そのまま出せる文言**（provider.rs で整形済み）。`llm:` 等の接頭辞を
+            // 付けない — この文字列は会話にそのまま表示される。
+            LE::RateLimited(msg) => ApiError::ServiceUnavailable(msg),
             LE::BadRequest(msg) => ApiError::BadRequest(msg),
             LE::Config(msg) | LE::Internal(msg) => ApiError::Internal(format!("llm: {msg}")),
         }

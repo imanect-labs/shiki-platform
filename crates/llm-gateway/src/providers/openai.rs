@@ -247,6 +247,14 @@ impl LlmProvider for OpenAiProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
+            // 429 は 4xx だが**こちらの組み立てが悪いわけではない**（プロバイダ側の枠）。
+            // BadRequest に落とすと「直せば通る」と誤解され、リトライ方針も表示も間違える。
+            // `LlmError::Unavailable` の doc どおり一時障害として扱う。
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(LlmError::RateLimited(crate::provider::rate_limit_message(
+                    &text,
+                )));
+            }
             if status.is_client_error() {
                 return Err(LlmError::BadRequest(format!("openai {status}: {text}")));
             }

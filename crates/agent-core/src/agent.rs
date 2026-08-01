@@ -149,6 +149,17 @@ enum StepOutcome {
     Stop(AgentStop),
 }
 
+/// LLM エラーをループのエラーへ写す。
+///
+/// **利用枠超過だけは種別を保つ**。文字列に潰すと「LLM が壊れた」と「枠を使い切った」の
+/// 区別が消え、ユーザーにはプロバイダの生 JSON が出る（実測でその状態だった）。
+fn map_llm_error(e: llm_gateway::LlmError) -> AgentError {
+    match e {
+        llm_gateway::LlmError::RateLimited(msg) => AgentError::RateLimited(msg),
+        other => AgentError::Llm(other.to_string()),
+    }
+}
+
 /// 1 ステップ（1 LLM 生成＋そのツール実行）を回し、状態を進める。
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // ストリーム分岐＋ツール実行で伸びる。
 async fn run_step(
@@ -173,10 +184,7 @@ async fn run_step(
         // skill のモデル既定（Task 6.9）。None は provider 既定。
         temperature: opts.temperature,
     };
-    let mut stream = gateway
-        .stream(req)
-        .await
-        .map_err(|e| AgentError::Llm(e.to_string()))?;
+    let mut stream = gateway.stream(req).await.map_err(map_llm_error)?;
 
     let mut text_acc = String::new();
     let mut pending_names: HashMap<String, String> = HashMap::new();
@@ -188,7 +196,7 @@ async fn run_step(
         if sink.is_cancelled() {
             return Ok(StepOutcome::Stop(AgentStop::Cancelled));
         }
-        match delta.map_err(|e| AgentError::Llm(e.to_string()))? {
+        match delta.map_err(map_llm_error)? {
             StreamDelta::TextDelta { text } => {
                 text_acc.push_str(&text);
                 sink.emit(AgentEvent::Text(text)).await?;

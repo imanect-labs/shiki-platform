@@ -15,6 +15,10 @@ pub enum ChatError {
     /// LLM プロバイダ等の一時障害（再試行可能・503 相当）。
     #[error("service unavailable: {0}")]
     Unavailable(String),
+    /// プロバイダの利用枠超過（429）。**この文字列はそのまま会話へ表示される**ので、
+    /// Display に内部語の接頭辞を付けない（`llm-gateway` が整形済みの 1 行を渡す）。
+    #[error("{0}")]
+    RateLimited(String),
     /// 内部エラー（DB/authz/シリアライズ等）。
     #[error("internal error: {0}")]
     Internal(String),

@@ -287,7 +287,12 @@ impl ChatWorker {
             sink,
         )
         .await
-        .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
+        .map_err(|e| match e {
+            // 利用枠超過は**そのまま会話に出す文言**（llm-gateway で整形済み）。`agent:` を
+            // 前置すると、ユーザーには読めない内部語が残る。
+            agent_core::AgentError::RateLimited(msg) => ChatError::RateLimited(msg),
+            other => ChatError::Unavailable(format!("agent: {other}")),
+        })?;
         let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理
         Ok(())
     }

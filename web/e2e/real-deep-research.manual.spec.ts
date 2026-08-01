@@ -135,7 +135,9 @@ test("実 LLM: /deep-research が出典つきレポートまで完走する", as
     await planStart.click();
   }
 
-  // 完走の合図: 「生成を停止」が出てから消える＝run 終了。
+  // run が終わる（＝停止ボタンが出てから消える）。**これは完走の証明ではない**: 異常終了でも
+  // 同じように消える。実測で、プロバイダの 429（利用枠超過）で落ちた run がここまでを満たし、
+  // レポートが 1 行も無いまま緑で報告された。成果物の assert は下で別に行う。
   await expect(page.getByRole("button", { name: "生成を停止" })).toBeVisible({ timeout: 120_000 });
   await expect(page.getByRole("button", { name: "生成を停止" })).toHaveCount(0, {
     timeout: 25 * 60 * 1000,
@@ -147,5 +149,23 @@ test("実 LLM: /deep-research が出典つきレポートまで完走する", as
   if (process.env.RECORD === "1") {
     console.log(`=== VIDEO === ${await page.video()?.path()}`);
   }
+
+  // ── 完走の証明: 成果物が出ていること ──
+  // エラー表示が出ていたら、それを理由として落とす（「タイムアウトしていない」だけでは
+  // 異常終了を見逃す）。文言は会話にそのまま出る 1 行なので、失敗メッセージにも載せる。
+  const errorBanner = page.getByTestId("conversation-error");
+  if (await errorBanner.isVisible().catch(() => false)) {
+    expect(await errorBanner.innerText(), "run がエラーで終了した").toBe("");
+  }
+  // deep research の DoD は「出典つきレポート」。出典カードと下書きカードの両方を要求する
+  // （本文だけなら途中で切れていても通ってしまう）。
+  await expect(
+    page.getByTestId("genui-source-card").first(),
+    "出典カードが出ること（P4 検証まで到達した証明）",
+  ).toBeVisible({ timeout: 60_000 });
+  await expect(
+    page.getByTestId("note-draft-card").first(),
+    "レポートの下書きカードが出ること（save_note まで到達した証明）",
+  ).toBeVisible({ timeout: 60_000 });
   expect(testInfo.status).not.toBe("timedOut");
 });

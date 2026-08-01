@@ -136,6 +136,10 @@ pub enum AgentError {
     /// LLM ゲートウェイ側の障害。
     #[error("llm error: {0}")]
     Llm(String),
+    /// プロバイダの利用枠超過（429）。**文言はそのままユーザーへ出せる**ものが入る
+    /// （`llm-gateway` が整形済み）ので、Display に接頭辞を付けない。
+    #[error("{0}")]
+    RateLimited(String),
     /// イベント永続化（sink）側の障害。
     #[error("sink error: {0}")]
     Sink(String),

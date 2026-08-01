@@ -753,7 +753,13 @@ export function Conversation({
             </div>
           ) : null}
           {error ? (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+            <div
+              // e2e が「異常終了なのに緑」を見逃さないための足がかり（実測で 429 の run が
+              // 完走扱いになっていた）。role="alert" は読み上げにも要る。
+              data-testid="conversation-error"
+              role="alert"
+              className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+            >
               {error}
             </div>
           ) : null}

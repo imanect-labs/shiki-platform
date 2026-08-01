@@ -30,9 +30,9 @@ use llm_gateway::{LlmGateway, Message as LlmMessage, Role as LlmRole};
 
 use crate::agent::{run_agent, RunContext};
 use crate::approval::ApprovalPolicy;
-use crate::event::{AgentError, AgentEvent, EventSink};
+use crate::event::{AgentError, AgentEvent};
 use crate::profile::AgentOptions;
-use crate::tool::{Citation, Tool, ToolError, ToolOutcome, ToolUsage};
+use crate::tool::{Tool, ToolError, ToolOutcome, ToolUsage};
 use crate::vocab::ToolName;
 
 /// サブエージェント 1 体の上限と全体の体数上限（#391）。
@@ -73,6 +73,7 @@ impl Default for SubagentLimits {
 }
 
 use super::subagent_prompts::{DEFAULT_SYSTEM, PLAN_SYSTEM};
+use super::subagent_sink::CollectingSink;
 
 /// 委譲ツール。1 run につき 1 インスタンス（体数カウンタを共有する）。
 pub struct SubagentTool {
@@ -324,10 +325,20 @@ impl Tool for SubagentTool {
             Ok(outcome) => outcome,
             // 失敗しても**そこまでの消費は親へ計上する**（無料で作り直せてしまうと予算が意味を失う）。
             Err(e) => {
-                let mut out = ToolOutcome::error(format!(
-                    "サブエージェントの実行に失敗しました（{e}）。委譲をやり直すか自分で調べ、\
-                     **レポートは必ず書くこと**。"
-                ));
+                // 利用枠超過は「やり直せば通る」ものではない。実測（#404 の検証 run）では
+                // 429 を食った委譲を 6 回リトライして残りの枠を焼き切り、レポートに到達せず
+                // run ごと落ちた。**やり直させず、手元の材料で書かせる**。
+                let msg = match &e {
+                    AgentError::RateLimited(m) => format!(
+                        "{m} 委譲はこれ以上やり直さないこと。ここまでに集めた材料で\
+                         **レポートを書き切ること**。"
+                    ),
+                    other => format!(
+                        "サブエージェントの実行に失敗しました（{other}）。委譲をやり直すか\
+                         自分で調べ、**レポートは必ず書くこと**。"
+                    ),
+                };
+                let mut out = ToolOutcome::error(msg);
                 out.usage = Some(ToolUsage {
                     tokens: sink.spent.tokens,
                     fresh_tokens: sink.spent.fresh_tokens,
@@ -369,85 +380,6 @@ impl Tool for SubagentTool {
             cost_usd_micros: spent.cost_usd_micros,
         });
         Ok(out)
-    }
-}
-
-/// 子のイベントを**親へ流さず**集める内部シンク（#391）。
-///
-/// 親の `generation_event` に子の生イベントを混ぜると SSE と projection が壊れる。ここで
-/// ①最終本文（findings）②`Citation`③ツール名の列（監査用）だけを取り、他は捨てる。
-struct CollectingSink {
-    /// 子のツール実行を親の UI へ中継する送り口（LLM コンテキストへは入れない）。
-    tool_events: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
-    text: String,
-    citations: Vec<Citation>,
-    tool_calls: Vec<String>,
-    /// ステップ境界で観測した消費（`save_checkpoint` 経由）。
-    ///
-    /// `run_agent` が `Err`（LLM 障害等）で抜けると `AgentOutcome` に到達せず、**途中まで
-    /// 消費したトークンが親の予算に計上されない**（＝予算の抜け穴・レビュー指摘 Critical）。
-    /// ループはステップを完了するたびにチェックポイントを渡してくるので、その `spent` を控えて
-    /// エラー経路でも計上する。取りこぼすのは失敗したステップ自身の分だけ。
-    spent: crate::budget::Spent,
-    cancel: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl CollectingSink {
-    fn new(
-        cancel: Arc<std::sync::atomic::AtomicBool>,
-        tool_events: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
-    ) -> Self {
-        CollectingSink {
-            tool_events,
-            text: String::new(),
-            citations: Vec::new(),
-            tool_calls: Vec::new(),
-            spent: crate::budget::Spent::default(),
-            cancel,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl EventSink for CollectingSink {
-    async fn emit(&mut self, event: AgentEvent) -> Result<(), AgentError> {
-        // ツールの実行だけは**親の UI へ**中継する（何を調べているかが見えないと、委譲した
-        // 瞬間に画面が止まって見える）。中継先は generation_event＝イベント経路であり、
-        // 親の LLM コンテキストにも履歴にも入らない。送り先が閉じていても無視する。
-        if let Some(tx) = &self.tool_events {
-            if matches!(
-                event,
-                AgentEvent::ToolCall { .. } | AgentEvent::ToolResult { .. }
-            ) {
-                let _ = tx.send(event.clone());
-            }
-        }
-        match event {
-            AgentEvent::Text(t) => self.text.push_str(&t),
-            AgentEvent::Citation(c) => self.citations.push(c),
-            AgentEvent::ToolCall { name, .. } => {
-                self.tool_calls.push(name);
-                // ツール呼び出しの前に出た本文は「これから調べます」の前置き。findings は
-                // **ツールを呼ばずに終わった最後のステップ**の本文なので、ここで捨てる。
-                self.text.clear();
-            }
-            // Thinking / ToolResult / 予算警告などは親の**文脈**へは出さない（生の観測を漏らさない）。
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn is_cancelled(&self) -> bool {
-        self.cancel.load(Ordering::Relaxed)
-    }
-
-    /// ステップ境界の消費を控える（エラー経路でも親へ計上するため）。永続化はしない。
-    async fn save_checkpoint(
-        &mut self,
-        checkpoint: &crate::checkpoint::Checkpoint,
-    ) -> Result<(), AgentError> {
-        self.spent = checkpoint.spent;
-        Ok(())
     }
 }
 
