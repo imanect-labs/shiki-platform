@@ -1,7 +1,7 @@
 //! deep research（#387）の決定的駆動。
 //!
 //! `/deep-research` / `/deep-research auto` を**本番と同じ発話**で入口にし、
-//! 質問カード → 計画カード → 調査 → レポート → 検証委譲 → 出典カード → 下書きノートの各フェーズを
+//! 質問カード → 計画カード → 調査 → レポート → 検証委譲 → 指摘の反映 → 出典カード → 下書きの各フェーズを
 //! 実 LLM 無しで再現する（e2e とローカルのデモ用）。
 //!
 //! genui カードの押下は `chat.submit` で**別 run** になるため、状態は履歴から復元する:
@@ -21,8 +21,8 @@ use crate::provider::DeltaStream;
 ///
 /// | 経路 | ターン 1 | ターン 2 | ターン 3 |
 /// |---|---|---|---|
-/// | 既定 | 質問カード | 計画カード | 調査 → レポート → 検証委譲 → 出典カード → 下書き |
-/// | `auto` | 調査 → レポート → 検証委譲 → 出典カード → 下書き | – | – |
+/// | 既定 | 質問カード | 計画カード | 調査 → レポート → 検証委譲 → 反映 → 出典カード → 下書き |
+/// | `auto` | 調査 → レポート → 検証委譲 → 反映 → 出典カード → 下書き | – | – |
 ///
 /// ターン数は履歴の user メッセージ数、run 内の進行は tool メッセージ数で数える
 /// （genui カードは `chat.submit` で**別 run** になるため、run を跨いでも状態が復元できる）。
@@ -128,22 +128,35 @@ pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> O
                 }),
             )],
         ),
-        // ⑤ 出典一覧（web 出典の唯一の構造化表示）。
+        // ⑤ 検証の**指摘を反映**する（fs_edit）。ここを飛ばすと「独立検証済み」を装いながら
+        // 指摘を無視するレポートが提出されてしまう（検証を回した意味が消える）。
         4 => tools_of(
+            req,
+            &[(
+                "fs_edit",
+                serde_json::json!({
+                    "name": "report.md",
+                    "old_text": DEEP_RESEARCH_UNVERIFIED,
+                    "new_text": DEEP_RESEARCH_VERIFIED
+                }),
+            )],
+        ),
+        // ⑥ 出典一覧（web 出典の唯一の構造化表示）。
+        5 => tools_of(
             req,
             &[(
                 "emit_ui",
                 serde_json::json!({ "spec": deep_research_source_spec() }),
             )],
         ),
-        // ⑥ レポート全文を下書きノート化（本文の下に保存ボタンが出る）。
-        5 => tools_of(
+        // ⑦ レポート全文を下書きノート化（本文の下に保存ボタンが出る）。
+        6 => tools_of(
             req,
             &[(
                 "save_note",
                 serde_json::json!({
                     "name": "2026年 国内SaaS市場の調査",
-                    "markdown": DEEP_RESEARCH_REPORT
+                    "markdown": deep_research_final()
                 }),
             )],
         ),
@@ -176,6 +189,20 @@ const DEEP_RESEARCH_COMMAND: &str = "/deep-research";
 
 /// 決定的なレポート本文（出典つき・両論併記・未確認の明示を含む最小形）。
 const DEEP_RESEARCH_REPORT: &str = "## 結論と確度\n\n国内 SaaS 市場は 2026 年時点で 1.2 兆円規模とみられる（独立 2 系統が一致）。\n成長率は出典 1 系統のみで、確度は低い。\n\n## 市場規模\n\n2026 年の国内市場規模は 1 兆 2000 億円と公表されている（https://example.com/stub-1）。\n一方、3 月時点の別集計では 9800 億円とされ、集計範囲の違いが残る（https://example.org/stub-2）。\n\n## 見つからなかったこと\n\n地域別の内訳は公表資料では確認できなかった。\n";
+
+/// 検証者が突く**過剰な一般化**（証拠は E1 の 1 系統しか無いのに「独立 2 系統が一致」と断定）。
+const DEEP_RESEARCH_UNVERIFIED: &str = "1.2 兆円規模とみられる（独立 2 系統が一致）";
+
+/// 指摘を反映した表現（出典が 1 系統であることを明示する）。
+const DEEP_RESEARCH_VERIFIED: &str = "1.2 兆円規模とみられる（出典 1 系統・別集計とは不一致）";
+
+/// 提出される最終レポート（**検証の指摘を反映した後**の本文）。
+///
+/// スタブが検証前の本文をそのまま提出すると、「独立検証済み」を装いながら指摘を無視する
+/// 回帰を e2e が見逃す。反映後を提出させ、e2e は断定が消えたことまで見る。
+fn deep_research_final() -> String {
+    DEEP_RESEARCH_REPORT.replace(DEEP_RESEARCH_UNVERIFIED, DEEP_RESEARCH_VERIFIED)
+}
 
 #[cfg(test)]
 mod tests {
@@ -256,6 +283,7 @@ mod tests {
         "emit_ui",
         "fs_write",
         "fs_append",
+        "fs_edit",
         "save_note",
         "subagent",
     ];
@@ -356,10 +384,11 @@ mod tests {
             "証拠台帳は fs_append（全文置換ではない）"
         );
 
-        // ③〜⑥ レポート保存 → 検証委譲 → 出典カード → 下書きノート（この順に固定）。
+        // ③〜⑦ レポート保存 → 検証委譲 → **指摘の反映** → 出典カード → 下書きノート。
         for (tool, expect) in [
             ("fs_write", "report.md"),
             ("subagent", "verify"),
+            ("fs_edit", "出典 1 系統"),
             ("emit_ui", "source_card"),
             ("save_note", "2026年 国内SaaS市場の調査"),
         ] {

@@ -253,7 +253,11 @@ impl Tool for SubagentTool {
                                     objective にレポートと台帳のパスを書くこと"
                 }
             },
-            "required": ["objective", "boundary"],
+            // `boundary` は **role=research のときだけ必須**。JSON Schema では条件付き必須を
+            // 素直に書けないので `required` からは外し、実行時に検証する（欠けていれば
+            // `missing 'boundary'` がモデルの観測として返る）。ここに入れたままだと、
+            // 説明どおりの verify 呼び出し（boundary なし）がスキーマ違反になる。
+            "required": ["objective"],
             "additionalProperties": false
         })
     }
@@ -339,13 +343,12 @@ impl Tool for SubagentTool {
                 // 429 を食った委譲を 6 回リトライして残りの枠を焼き切り、レポートに到達せず
                 // run ごと落ちた。**やり直させず、手元の材料で書かせる**。
                 let msg = match &e {
-                    AgentError::RateLimited(m) => format!(
-                        "{m} 委譲はこれ以上やり直さないこと。ここまでに集めた材料で\
-                         **レポートを書き切ること**。"
-                    ),
+                    AgentError::RateLimited(m) => {
+                        format!("{m} 委譲はこれ以上やり直さないこと。{}", role.fallback())
+                    }
                     other => format!(
-                        "サブエージェントの実行に失敗しました（{other}）。委譲をやり直すか\
-                         自分で調べ、**レポートは必ず書くこと**。"
+                        "サブエージェントの実行に失敗しました（{other}）。{}",
+                        role.fallback()
                     ),
                 };
                 let mut out = ToolOutcome::error(msg);
@@ -366,22 +369,18 @@ impl Tool for SubagentTool {
             // やり直すべきか自分でやるべきかが判断できない（実測でモデルが迷った）。
             let why = match outcome.stop {
                 crate::agent::AgentStop::Truncated => {
-                    "本文を書き出す前に 1 応答の出力上限に達しました（思考が長すぎた）。\
-                     範囲を半分に切って再依頼するか、自分で確かめてください。"
+                    "本文を書き出す前に 1 応答の出力上限に達しました（思考が長すぎた）。"
                 }
-                crate::agent::AgentStop::Budget(_) => {
-                    "上限に達して途中で切られました。boundary をもっと狭く切って再依頼するか、\
-                     自分で調べてください。"
-                }
-                _ => {
-                    "何も返しませんでした。委譲をやり直すなら boundary をもっと狭く切ること。\
-                     やり直さない場合は自分で調べてください。"
-                }
+                crate::agent::AgentStop::Budget(_) => "上限に達して途中で切られました。",
+                _ => "何も返しませんでした。",
             };
+            // **やり直し方はロールで違う**。検証が失敗した時点でレポートは既に書き上がって
+            // いるので、「boundary を狭くして調べ直せ」は誤った誘導になる（実測: 検証委譲が
+            // 空を返した run で、親が調査のやり直しへ行きかけた）。
             ToolOutcome::error(format!(
-                "サブエージェントは成果物を返しませんでした（停止理由: {:?}）。{why}\
-                 どの経路でも**最後の成果物は必ず作ること**。",
-                outcome.stop
+                "サブエージェントは成果物を返しませんでした（停止理由: {:?}）。{why}{}",
+                outcome.stop,
+                role.fallback()
             ))
         } else {
             ToolOutcome::ok(findings)

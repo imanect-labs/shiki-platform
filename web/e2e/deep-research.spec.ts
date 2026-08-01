@@ -105,8 +105,10 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
   const expanded = page.getByTestId("tool-activity-expanded").last();
   await expect(expanded).toContainText("example.com/stub-1");
   await expect(expanded).toContainText("notes.md");
-  // 裏取りは独立した検証者へ委譲する（#407。書いた本人に自己検証させない）。
+  // 裏取りは独立した検証者へ委譲し、**その指摘を反映してから**提出する（#407）。
+  // 委譲した事実だけを見ると、指摘を無視する回帰を見逃す。
   await expect(expanded).toContainText("未確認・誤引用・過剰な一般化");
+  await expect(expanded).toContainText("report.md");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/deep-research-activity.png`, fullPage: true });
 
   // 出典カード（web 出典の唯一の構造化表示）と保存ボタン（下書きノート）。
@@ -115,6 +117,11 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
   const draft = page.getByTestId("note-draft-card").first();
   await expect(draft).toBeVisible();
   await expect(draft).toContainText("2026年 国内SaaS市場の調査");
+  // 提出されるのは**検証の指摘を反映した後**の本文（証拠 1 系統なのに「独立 2 系統」と
+  // 断定していた箇所が直っている）。
+  await draft.click();
+  await expect(page.getByText("出典 1 系統・別集計とは不一致").first()).toBeVisible();
+  await expect(page.getByText("独立 2 系統が一致")).toHaveCount(0);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/deep-research-report.png`, fullPage: true });
 
   // 承認カードは出ない（作業メモはシステム領域＝事前許可・#392）。
