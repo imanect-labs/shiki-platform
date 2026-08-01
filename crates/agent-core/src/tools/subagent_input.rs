@@ -110,6 +110,14 @@ mod tests {
         assert!(system.contains("独立した検証者"), "{system}");
         assert!(system.contains("書いた本人ではありません"), "{system}");
         assert!(system.contains("書き直さない"), "{system}");
+        // 上限で切られると指摘が何も残らない。着地指示は**調査と検証の両方**に要る
+        // （実測: verify が 8 ステップ使い切って空で返し、親が自分で突き合わせ直す羽目になった）。
+        for (role, prompt) in [
+            ("verify", VERIFY_SYSTEM),
+            ("research", crate::tools::subagent_prompts::DEFAULT_SYSTEM),
+        ] {
+            assert!(prompt.contains("[予算]"), "{role} に着地指示が無い");
+        }
         // 逐語引用を原典と突き合わせる必要があるのでツールを渡す（計画だけが渡さない）。
         assert!(Role::Verify.uses_tools());
         assert!(Role::Research.uses_tools());
