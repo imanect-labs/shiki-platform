@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import threading
@@ -102,6 +104,33 @@ async def _download(url: str) -> bytes:
                 return b"".join(chunks)
     except httpx.HTTPError as exc:
         raise _parse_error("source_fetch_failed", str(exc)) from exc
+
+
+def _decode_inline(content_base64: str) -> bytes:
+    """インラインバイト列を取り出す（呼び出し側が取得済み・worker は取りに行かない）。
+
+    上限はダウンロード経路と同じ値を使う（経路で緩まないようにする）。
+    """
+    limit = get_settings().max_download_bytes
+    # base64 は 4/3 に膨らむ。デコード前に弾いてメモリを踏まない。
+    if len(content_base64) > limit // 3 * 4 + 4:
+        raise _parse_error("source_too_large", f"blob が上限 {limit} bytes を超えています")
+    try:
+        data = base64.b64decode(content_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise _parse_error("invalid_content", f"content_base64 が不正です: {exc}") from exc
+    if len(data) > limit:
+        raise _parse_error("source_too_large", f"blob が上限 {limit} bytes を超えています")
+    return data
+
+
+async def _load(req: ParseRequest) -> bytes:
+    """要求からバイト列を得る。URL 指定のときだけ worker がダウンロードする。"""
+    if req.content_base64 is not None:
+        return _decode_inline(req.content_base64)
+    # スキーマの検証で片方は必ず入っている。
+    assert req.source_url is not None
+    return await _download(req.source_url)
 
 
 def _plain_text_blocks(data: bytes) -> list[ParsedBlock]:
@@ -251,7 +280,7 @@ def _docling_blocks(document: Any) -> list[ParsedBlock]:
 @router.post("/parse")
 async def parse(req: ParseRequest) -> ParseResponse:
     content_type = req.content_type.split(";")[0].strip().lower()
-    data = await _download(req.source_url)
+    data = await _load(req)
 
     if content_type in _PLAIN_TEXT_TYPES:
         return ParseResponse(blocks=_plain_text_blocks(data), used_ocr=False)

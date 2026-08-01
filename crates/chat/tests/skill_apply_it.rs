@@ -196,6 +196,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            parser: None,
             storage: None,
             ui_validator: None,
             skill_artifacts: Some(artifacts),

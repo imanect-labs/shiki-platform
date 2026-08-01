@@ -2,10 +2,11 @@
 
 use async_trait::async_trait;
 use authz::AuthContext;
+use base64::Engine as _;
 use serde::Deserialize;
 
 use crate::error::RagError;
-use crate::parser::{DocumentParser, ParseRequest};
+use crate::parser::{DocumentParser, ParseRequest, ParseSource};
 use crate::types::ParsedDocument;
 
 pub struct HttpDocumentParser {
@@ -63,15 +64,26 @@ impl DocumentParser for HttpDocumentParser {
         ctx: &AuthContext,
         req: ParseRequest<'_>,
     ) -> Result<ParsedDocument, RagError> {
+        let mut body = serde_json::json!({
+            "tenant_id": ctx.tenant_id,
+            "content_type": req.content_type,
+            "file_name": req.file_name,
+        });
+        // worker 側は source_url / content_base64 の**排他**を検証する（両方/どちらも無しは 422）。
+        let (key, value) = match req.source {
+            ParseSource::Url(url) => ("source_url", url.to_string()),
+            ParseSource::Bytes(bytes) => (
+                "content_base64",
+                base64::engine::general_purpose::STANDARD.encode(bytes),
+            ),
+        };
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert(key.to_string(), serde_json::Value::String(value));
+        }
         let resp = self
             .http
             .post(format!("{}/parse", self.base_url))
-            .json(&serde_json::json!({
-                "tenant_id": ctx.tenant_id,
-                "source_url": req.source_url,
-                "content_type": req.content_type,
-                "file_name": req.file_name,
-            }))
+            .json(&body)
             .send()
             .await?;
         if !resp.status().is_success() {

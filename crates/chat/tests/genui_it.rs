@@ -159,6 +159,7 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<gui::SpecValidator>) {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            parser: None,
             storage: None,
             ui_validator: Some(Arc::clone(&validator)),
             skill_artifacts: None,

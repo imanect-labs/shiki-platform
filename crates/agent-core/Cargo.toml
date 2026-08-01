@@ -26,7 +26,16 @@ uuid.workspace = true
 # web_fetch のホストネイティブ取得（#348）。宛先は解決後 IP 検証＋アドレス固定で縛る。
 reqwest.workspace = true
 # 名前解決フェーズの期限（reqwest の timeout は client 構築後にしか効かない）。
-tokio = { workspace = true, features = ["time"] }
+# 抽出は CPU バウンド（DOM 構築）なので spawn_blocking へ逃がす＝rt も要る。
+tokio = { workspace = true, features = ["time", "rt"] }
+# web_fetch の HTML 本文抽出（#405）: 本文特定 → Markdown 化 → 文字コード判定。
+dom_smoothie.workspace = true
+dom_query.workspace = true
+htmd.workspace = true
+encoding_rs.workspace = true
+chardetng.workspace = true
+# 抽出の削減率・フォールバック率を観測する（回帰検知）。
+tracing.workspace = true
 # ツール名語彙（vocab.rs）を TS へ生成する（codegen が正・workflow-engine と同型）。
 ts-rs = { workspace = true }
 

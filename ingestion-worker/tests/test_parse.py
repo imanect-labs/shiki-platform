@@ -5,6 +5,7 @@
   （CI 既定は除外、`pytest -m slow` またはローカル/コンテナ検証で実行）。
 """
 
+import base64
 import os
 from pathlib import Path
 
@@ -230,3 +231,84 @@ def test_parse_matrix_preserves_structure(
     tables = [b for b in blocks if b["type"] == "table"]
     assert tables, f"{name}: 表が表ブロックとして抽出される"
     assert any(table_text in t["text"] for t in tables), f"{name}: 表セルが保持される"
+
+
+def test_parse_accepts_inline_bytes_without_downloading(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """content_base64 経路は worker が一切ダウンロードしない（#405）。
+
+    web_fetch の PDF はガード済み経路で取得済みのバイト列として届く。ここで worker が
+    URL を引きに行けるままだと、宛先制限を迂回する confused deputy になる。
+    """
+
+    async def forbidden_download(_url: str) -> bytes:
+        raise AssertionError("content_base64 経路でダウンロードしてはいけない")
+
+    monkeypatch.setattr(parse_mod, "_download", forbidden_download)
+    payload = base64.b64encode("本文の段落。\n\n次の段落。".encode()).decode()
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "content_base64": payload,
+            "content_type": "text/plain",
+            "file_name": "fetched.txt",
+        },
+    )
+    assert resp.status_code == 200
+    assert [b["text"] for b in resp.json()["blocks"]] == ["本文の段落。", "次の段落。"]
+
+
+def test_parse_rejects_both_or_neither_source(client: TestClient) -> None:
+    """source_url と content_base64 は排他（どちらも／両方は 422）。"""
+    both = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "source_url": "http://minio:9000/blob",
+            "content_base64": base64.b64encode(b"x").decode(),
+            "content_type": "text/plain",
+            "file_name": "a.txt",
+        },
+    )
+    assert both.status_code == 422
+    neither = client.post(
+        "/parse",
+        json={"tenant_id": "a-corp", "content_type": "text/plain", "file_name": "a.txt"},
+    )
+    assert neither.status_code == 422
+
+
+def test_parse_rejects_invalid_base64(client: TestClient) -> None:
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "content_base64": "これはbase64ではない!!!",
+            "content_type": "text/plain",
+            "file_name": "a.txt",
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "invalid_content"
+
+
+def test_parse_rejects_oversized_inline_bytes(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """インライン経路も上限はダウンロード経路と同じ（経路で緩まない）。"""
+    from ingestion_worker.settings import Settings
+
+    monkeypatch.setattr(parse_mod, "get_settings", lambda: Settings(max_download_bytes=64))
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "content_base64": base64.b64encode(b"x" * 4096).decode(),
+            "content_type": "text/plain",
+            "file_name": "a.txt",
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "source_too_large"

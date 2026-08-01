@@ -183,6 +183,7 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            parser: None,
             storage: None,
             ui_validator: None,
             skill_artifacts: Some(artifacts.clone()),

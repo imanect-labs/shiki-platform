@@ -153,6 +153,7 @@ async fn worker_generates_streams_and_persists_projection() {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            parser: None,
             storage: None,
             ui_validator: None,
             skill_artifacts: None,

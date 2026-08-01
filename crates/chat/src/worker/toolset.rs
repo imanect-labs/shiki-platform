@@ -52,7 +52,13 @@ impl ChatWorker {
         if let Some(provider) = &self.web_search {
             tools.push(Arc::new(WebSearchTool::new(provider.clone())));
             // web_fetch はホスト側で取得する（#348）。sandbox 配線の有無に依存しない。
-            tools.push(Arc::new(WebFetchTool::new()));
+            // parser があれば PDF/Office も読める（#405）。取得は web_fetch のガード済み経路が行い、
+            // worker へはバイト列だけ渡す（URL を渡すと宛先制限を迂回される）。
+            let mut fetch = WebFetchTool::new();
+            if let Some(parser) = &self.parser {
+                fetch = fetch.with_parser(parser.clone());
+            }
+            tools.push(Arc::new(fetch));
         }
         // generative UI（emit_ui・Task 6.4）: 検証層が配線されている時のみ提示する。
         if let Some(validator) = &self.ui_validator {
