@@ -154,11 +154,14 @@ impl SubagentTool {
     }
 }
 
-/// 検証ロールに足すステップ（1 ステップに並列取得を詰められない分の埋め合わせ）。
-const VERIFY_EXTRA_STEPS: usize = 6;
-
-/// 検証ロールのコンテキスト猶予。既定（24k）だと、読み込んだレポートと証拠台帳が
-/// 剪定で畳まれ、同じファイルを読み直してステップを溶かす（実測でその形になっていた）。
+/// 検証ロールのコンテキスト猶予。
+///
+/// 検証の入力は**レポートと証拠台帳そのもの**（合わせて 2 万字規模）で、既定の 24k では
+/// 読み込んだ端から剪定で畳まれる ——「材料を保てない子に突き合わせをさせる」形になる。
+/// 調査の子と違い、畳まれた分を web から取り直すこともできない。
+///
+/// ステップ数は**広げない**。上限に当たっていたのは着地指示を `VERIFY_SYSTEM` に
+/// 入れ忘れていた間の話で、入れた後の run は 8 ステップ中 7 で自分から畳んで指摘を返した。
 const VERIFY_CONTEXT_TOKENS: usize = 64_000;
 
 /// 子の実行オプション（read-only の事前許可 ＋ `plan` 非提示 ＋ 小さめの予算）。
@@ -193,19 +196,9 @@ fn child_options(
     match role {
         // 計画は 1 ターンで返る（ツールが無いのでループしない）。
         Role::Plan => opts.budget = crate::budget::Budget::autonomous(2, None, 20_000, 50_000),
-        // 検証は**調査と形が違う**。調査は 1 ステップに複数取得を詰められるが、検証は
-        // 「読む → grep → grep」と直列に伸びる（実測: 8 ステップを読みと grep で使い切り、
-        // 指摘ゼロで終わったのが 2 run 連続）。ステップを広げ、あわせて剪定の猶予も広げる
-        // ——**レポートと証拠台帳の両方が畳まれると、検証に要る材料そのものが消える**。
-        Role::Verify => {
-            opts.budget = crate::budget::Budget::autonomous(
-                limits.max_steps + VERIFY_EXTRA_STEPS,
-                None,
-                limits.max_tokens,
-                limits.max_cost_usd_micros,
-            );
-            opts.context_soft_limit_tokens = VERIFY_CONTEXT_TOKENS;
-        }
+        // 検証の入力は**レポートと証拠台帳そのもの**なので、剪定の猶予だけ広げる
+        // （畳まれると突き合わせる材料が消え、同じファイルを読み直してステップを溶かす）。
+        Role::Verify => opts.context_soft_limit_tokens = VERIFY_CONTEXT_TOKENS,
         Role::Research => {}
     }
     opts
@@ -465,21 +458,19 @@ mod tests {
         assert_eq!(opts.model.as_deref(), Some("m"));
     }
 
-    /// 検証は調査より**直列に伸びる**ので、ステップと剪定の猶予を広げる（#407 の実測）。
+    /// 検証は入力（レポート＋証拠台帳）を保てないと成立しないので、剪定の猶予だけ広げる。
     #[test]
-    fn verify_gets_more_room_than_research() {
+    fn verify_keeps_its_input_from_being_pruned() {
         let limits = SubagentLimits::default();
         let research = child_options(&limits, Role::Research, "sys", None);
         let verify = child_options(&limits, Role::Verify, "sys", None);
         assert!(
-            verify.budget.max_steps > research.budget.max_steps,
-            "検証のステップが調査以下だと、読みと grep で使い切って指摘ゼロになる"
-        );
-        assert!(
             verify.context_soft_limit_tokens > research.context_soft_limit_tokens,
-            "レポートと証拠台帳が剪定で畳まれると、検証に要る材料そのものが消える"
+            "レポートと証拠台帳が剪定で畳まれると、突き合わせる材料そのものが消える"
         );
-        // 計画は逆に小さい（ツールが無く 1 ターンで返る）。
+        // ステップは調査と同じ（着地指示が入っていれば上限前に畳める・#407 の実測）。
+        assert_eq!(verify.budget.max_steps, research.budget.max_steps);
+        // 計画だけは小さい（ツールが無く 1 ターンで返る）。
         let plan = child_options(&limits, Role::Plan, "sys", None);
         assert!(plan.budget.max_steps < research.budget.max_steps);
     }
