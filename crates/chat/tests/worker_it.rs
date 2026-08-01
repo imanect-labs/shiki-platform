@@ -314,8 +314,11 @@ async fn messages_sent_during_generation_are_queued_and_run_in_order() {
     // 全部終わるまで待つ。**この間ずっと同時実行は 1 本まで**（直列化の本体）。
     // 「先行が走っている間、後続が queued のまま」という瞬間の観測は標本抽出になるため、
     // 決定的な検証は `earlier_unfinished_run_blocks_later_ones_until_it_ends` が持つ。
+    // 待ちは**計装ビルド基準**で取る。素のビルドなら 1 秒で終わるが、Coverage ジョブ
+    // （cargo-llvm-cov）では同じ 3 本が桁で遅くなり、60 秒だと `slow:3` の 1 本目を待つ間に
+    // 尽きて落ちる（実測でそうなった）。ここが見ているのは順序と直列性であって速度ではない。
     let mut completed = false;
-    for _ in 0..600 {
+    for _ in 0..1_800 {
         let running: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM generation_run WHERE thread_id = $1 AND status = 'running'",
         )
