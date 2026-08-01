@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 /// workflow ステップ相当の記述子: 複合キー・attempt は claim で増やさない（engine.md §9.5）。
 const RUN_SPEC: RunTableSpec = RunTableSpec {
+    event_seq_column: Some("event_seq"),
     table: "durable_test_run",
     status_column: "status",
     fencing_column: "fencing_token",
@@ -45,7 +46,7 @@ async fn setup() -> Option<PgPool> {
         return None;
     };
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(24)
         .connect(&db_url)
         .await
         .expect("Postgres へ接続できること");
@@ -63,6 +64,7 @@ async fn setup() -> Option<PgPool> {
             worker_id text,
             lease_until timestamptz,
             fencing_token bigint NOT NULL DEFAULT 0,
+            event_seq bigint NOT NULL DEFAULT 0,
             attempt int NOT NULL DEFAULT 0,
             last_error text,
             cancel_requested boolean NOT NULL DEFAULT false,
@@ -72,6 +74,13 @@ async fn setup() -> Option<PgPool> {
     .execute(&mut *tx)
     .await
     .expect("scratch run table");
+    // 既に古い形で作られている環境（CREATE TABLE IF NOT EXISTS は列を足さない）でも通す。
+    sqlx::query(
+        "ALTER TABLE durable_test_run ADD COLUMN IF NOT EXISTS event_seq bigint NOT NULL DEFAULT 0",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("scratch run table の event_seq");
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS durable_test_event (
             tenant_id text NOT NULL,
@@ -375,4 +384,60 @@ async fn pubsub_publish_and_subscribe_roundtrip() {
         .expect("message");
     let payload: String = msg.get_payload().expect("payload");
     assert_eq!(payload, "hello");
+}
+
+/// **並行追記で seq が衝突しない**こと（実 LLM run で `generation_event_pkey` 違反として出た）。
+///
+/// 子エージェントのツールイベント中継と親のトークン列は、同じ run へ**同時に**追記する。
+/// `max(seq)` を非相関の副問い合わせで読むと、Postgres はそれを `FOR UPDATE` の前に一度だけ
+/// 評価してよいため、両者が同じ seq を得て主キー違反で片方が落ちる（run ごと失敗する）。
+///
+/// ここでは 16 本を同時にぶつけ、①1 本も失敗しないこと ②seq が 1..N の抜けも重複もない
+/// 連番になることを見る。修正前のクエリではこのテストは PK 違反で落ちる。
+#[tokio::test]
+async fn concurrent_appends_never_collide_on_seq() {
+    let Some(pool) = setup().await else { return };
+    let tenant = "t-append-race";
+    let run_id = Uuid::new_v4();
+    insert_queued(&pool, tenant, run_id).await;
+    let claimed = claim(&pool, tenant, run_id, "w1").await.expect("claim");
+
+    const WRITERS: usize = 16;
+    const PER_WRITER: usize = 8;
+    let mut handles = Vec::new();
+    for w in 0..WRITERS {
+        let pool = pool.clone();
+        let fencing = claimed.fencing_token;
+        handles.push(tokio::spawn(async move {
+            for i in 0..PER_WRITER {
+                let kv = [KeyValue::Text(tenant), KeyValue::Uuid(run_id)];
+                durable::append_event(
+                    &pool,
+                    &RUN_SPEC,
+                    &EVENT_SPEC,
+                    &Key::new(KEY_COLUMNS, &kv),
+                    "tick",
+                    &serde_json::json!({ "w": w, "i": i }),
+                    fencing,
+                )
+                .await
+                .expect("並行追記が PK 衝突で落ちないこと")
+                .expect("fencing 一致なので seq が返ること");
+            }
+        }));
+    }
+    for h in handles {
+        h.await.expect("writer task");
+    }
+
+    let seqs: Vec<i64> = sqlx::query_scalar(
+        "SELECT seq FROM durable_test_event WHERE tenant_id = $1 AND run_id = $2 ORDER BY seq",
+    )
+    .bind(tenant)
+    .bind(run_id)
+    .fetch_all(&pool)
+    .await
+    .expect("seq 一覧");
+    let expected: Vec<i64> = (1..=(WRITERS * PER_WRITER) as i64).collect();
+    assert_eq!(seqs, expected, "seq は 1..N の連番（抜けも重複も無い）こと");
 }

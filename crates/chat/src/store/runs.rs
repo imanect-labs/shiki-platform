@@ -28,6 +28,7 @@ pub const CHAT_GENERATION_QUEUE: &str = "chat_generation";
 
 /// `generation_run` の durable テーブル記述子（migrations/0012_chat.sql の列に対応）。
 pub(super) const RUN_SPEC: RunTableSpec = RunTableSpec {
+    event_seq_column: Some("event_seq"),
     table: "generation_run",
     status_column: "status",
     fencing_column: "fencing_token",
