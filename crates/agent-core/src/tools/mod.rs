@@ -12,6 +12,8 @@ mod mime;
 mod sandbox_exec;
 pub mod shell;
 pub mod subagent;
+/// 委譲の入力解釈（ロール・必須項目）。
+mod subagent_input;
 /// サブエージェントの system プロンプト（subagent.rs から分割）。
 mod subagent_prompts;
 mod subagent_sink;

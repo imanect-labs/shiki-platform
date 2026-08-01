@@ -114,6 +114,9 @@ pub(crate) async fn run_tool_calls(
         let Some(p) = slot else { continue };
         if let Some(u) = p.outcome.usage {
             external.tokens = external.tokens.saturating_add(u.tokens);
+            // **上限判定に使う軸**（#404）。ここを積み忘れると、親のトークン上限が委譲を
+            // 一切見なくなる（子が何十万トークン焼いても `Budget::check` は素通しする）。
+            external.fresh_tokens = external.fresh_tokens.saturating_add(u.fresh_tokens);
             external.cost_usd_micros = external.cost_usd_micros.saturating_add(u.cost_usd_micros);
         }
         emit_tool_events(sink, &call, &p.outcome).await?;

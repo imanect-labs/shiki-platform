@@ -160,6 +160,29 @@ fn map_llm_error(e: llm_gateway::LlmError) -> AgentError {
     }
 }
 
+/// 残り予算を**最後のツール結果へ書き足す**（#407）。
+///
+/// 独立した user メッセージにはできない: Anthropic は user メッセージの連続を受け付けず、
+/// OpenAI 互換は `Role::Tool` の Text ブロックを捨てる。両プロバイダに確実に届くのは
+/// ツール結果の `content` だけ。**その step の新規ぶんに乗る**ので、system プロンプトへ
+/// 埋める案と違いプロンプトキャッシュの前置きを壊さない。
+///
+/// ツール結果が 1 つも無いステップは終端（ループが抜ける）なので、添える先も要らない。
+fn append_budget_observation(
+    blocks: &mut [Block],
+    budget: &crate::budget::Budget,
+    spent: &crate::budget::Spent,
+) {
+    let last = blocks
+        .iter_mut()
+        .rev()
+        .find(|b| matches!(b, Block::ToolResult { .. }));
+    if let Some(Block::ToolResult { content, .. }) = last {
+        content.push_str("\n\n");
+        content.push_str(&budget.remaining(spent, Instant::now()).observation());
+    }
+}
+
 /// 1 ステップ（1 LLM 生成＋そのツール実行）を回し、状態を進める。
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // ストリーム分岐＋ツール実行で伸びる。
 async fn run_step(
@@ -293,7 +316,7 @@ async fn run_step(
         opts,
         approver,
     };
-    let (result_blocks, looping, external) =
+    let (mut result_blocks, looping, external) =
         match crate::agent_tools::run_tool_calls(&phase, calls, &mut state.plan, sink, detector)
             .await?
         {
@@ -321,6 +344,11 @@ async fn run_step(
             external.fresh_tokens,
             external.cost_usd_micros,
         );
+    }
+    // 残り予算を**観測として**添える（#407）。`BudgetWarning` は sink 専用でモデルに届かず、
+    // エージェントは残量を知らないまま上限で切られていた（実測: 委譲 7 体中 6 体が Budget(Steps)）。
+    if opts.profile.is_autonomous() {
+        append_budget_observation(&mut result_blocks, &opts.budget, &state.spent);
     }
     state.messages.push(LlmMessage {
         role: LlmRole::Tool,
@@ -373,4 +401,55 @@ fn preview(s: &str) -> String {
         end -= 1;
     }
     format!("{}…", &s[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::budget::{Budget, Spent};
+
+    fn result(id: &str, content: &str) -> Block {
+        Block::ToolResult {
+            tool_use_id: id.into(),
+            content: content.into(),
+            is_error: false,
+        }
+    }
+
+    /// 残量は**最後のツール結果**に 1 度だけ乗る（両プロバイダに確実に届く唯一の場所）。
+    #[test]
+    fn budget_observation_rides_on_the_last_tool_result() {
+        let mut blocks = vec![result("a", "1 件"), result("b", "2 件")];
+        let mut spent = Spent::default();
+        spent.add_step(100, 50, 0);
+        append_budget_observation(
+            &mut blocks,
+            &Budget::autonomous(8, None, 120_000, 1),
+            &spent,
+        );
+        let Block::ToolResult { content: first, .. } = &blocks[0] else {
+            panic!("形が違う");
+        };
+        let Block::ToolResult { content: last, .. } = &blocks[1] else {
+            panic!("形が違う");
+        };
+        assert_eq!(first, "1 件", "先頭には付けない（1 ステップ 1 回）");
+        assert!(last.starts_with("2 件"), "{last}");
+        assert!(last.contains("[予算] 残り 7 ステップ"), "{last}");
+    }
+
+    /// ツール結果が無いステップ（終端）では何もしない。
+    #[test]
+    fn budget_observation_needs_a_tool_result_to_ride_on() {
+        let mut blocks = vec![Block::Text {
+            text: "本文".into(),
+        }];
+        append_budget_observation(
+            &mut blocks,
+            &Budget::autonomous(8, None, 120_000, 1),
+            &Spent::default(),
+        );
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], Block::Text { text } if text == "本文"));
+    }
 }

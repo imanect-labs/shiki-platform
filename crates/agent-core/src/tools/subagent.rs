@@ -72,7 +72,8 @@ impl Default for SubagentLimits {
     }
 }
 
-use super::subagent_prompts::{DEFAULT_SYSTEM, PLAN_SYSTEM};
+use super::subagent_input::{optional, required, Role};
+use super::subagent_prompts::DEFAULT_SYSTEM;
 use super::subagent_sink::CollectingSink;
 
 /// 委譲ツール。1 run につき 1 インスタンス（体数カウンタを共有する）。
@@ -139,11 +140,14 @@ impl SubagentTool {
         self
     }
 
-    /// 子の実行オプション（`plan_role` は計画専用の system と小さな予算）。
-    fn child_options(&self, plan_role: bool) -> AgentOptions {
-        let system = if plan_role { PLAN_SYSTEM } else { &self.system };
-        let mut opts = child_options(&self.limits, system, self.model.as_deref());
-        if plan_role {
+    /// 子の実行オプション（ロールごとに system と予算を変える）。
+    fn child_options(&self, role: Role) -> AgentOptions {
+        let mut opts = child_options(
+            &self.limits,
+            role.system(&self.system),
+            self.model.as_deref(),
+        );
+        if role == Role::Plan {
             // 計画は 1 ターンで返る（ツールが無いのでループしない）。
             opts.budget = crate::budget::Budget::autonomous(2, None, 20_000, 50_000);
         }
@@ -176,29 +180,6 @@ fn child_options(limits: &SubagentLimits, system: &str, model: Option<&str>) -> 
     opts
 }
 
-/// 入力の必須文字列を取り出す（空白のみは欠落として扱う）。
-fn required(input: &serde_json::Value, key: &str) -> Result<String, ToolError> {
-    let raw = input
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if raw.is_empty() {
-        return Err(ToolError::Invalid(format!("missing '{key}'")));
-    }
-    Ok(raw.to_string())
-}
-
-/// 任意の文字列（空はなし扱い）。
-fn optional(input: &serde_json::Value, key: &str) -> Option<String> {
-    let raw = input
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    (!raw.is_empty()).then(|| raw.to_string())
-}
-
 #[async_trait::async_trait]
 impl Tool for SubagentTool {
     #[allow(clippy::unnecessary_literal_bound)]
@@ -212,7 +193,9 @@ impl Tool for SubagentTool {
          web/社内文書を調べ、**要約済みの findings（出典つき）だけ**を返す（生の本文は返らない）。\
          同一ステップで複数呼ぶと並列に走る。boundary（担当範囲）は必須で、複数体に委譲するときは\
          時期・地域・観点で重複なく割ること。単純な質問は委譲せず自分で調べる方が速い。\
-         執筆・編集は委譲できない（調査専用）。"
+         **執筆・編集は委譲できない**（書かせない）。書き上がったレポートの裏取りは \
+         role=\"verify\" で独立した検証者に回せる（自分で自分の主張を検証すると確証バイアスが\
+         そのまま残るため）。返るのは指摘のリストだけで、直すのは自分。"
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -225,7 +208,8 @@ impl Tool for SubagentTool {
                 },
                 "boundary": {
                     "type": "string",
-                    "description": "担当範囲。時期・地域・観点で他の委譲と重複しないよう明示する"
+                    "description": "担当範囲。時期・地域・観点で他の委譲と重複しないよう明示する\
+                                    （role=research では必須。verify では節を割るときだけ指定）"
                 },
                 "output_format": {
                     "type": "string",
@@ -237,9 +221,12 @@ impl Tool for SubagentTool {
                 },
                 "role": {
                     "type": "string",
-                    "enum": ["research", "plan"],
+                    "enum": ["research", "plan", "verify"],
                     "description": "research=調べて findings を返す（既定）。plan=調べずに\
-                                    「何を確かめるべきか」の計画 JSON だけを返す（計画フェーズ用）"
+                                    「何を確かめるべきか」の計画 JSON だけを返す（計画フェーズ用）。\
+                                    verify=書き上がったレポートと証拠台帳を突き合わせ、証拠に\
+                                    紐づかない主張・誤引用の**指摘リストだけ**を返す（書き直さない）。\
+                                    objective にレポートと台帳のパスを書くこと"
                 }
             },
             "required": ["objective", "boundary"],
@@ -259,12 +246,11 @@ impl Tool for SubagentTool {
         trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
         let objective = required(&input, "objective")?;
-        // 計画ロールは**依頼だけ**を見る（担当範囲という概念が無い）。
-        let plan_role = optional(&input, "role").as_deref() == Some("plan");
-        let boundary = if plan_role {
-            String::new()
-        } else {
+        let role = Role::parse(optional(&input, "role").as_deref());
+        let boundary = if role.needs_boundary() {
             required(&input, "boundary")?
+        } else {
+            optional(&input, "boundary").unwrap_or_default()
         };
 
         // 体数上限。超過は**モデルが観測できる失敗**として返す（run は落とさない）。
@@ -279,10 +265,10 @@ impl Tool for SubagentTool {
 
         // 依頼（objective）を**先頭**に置く。見出しを先に書くと、モデルによっては前置きの
         // 体裁を真似して本題が薄くなる（決定的テストでも先頭一致のトリガが効かない）。
-        let mut prompt = if plan_role {
-            format!("{objective}\n")
-        } else {
-            format!("{objective}\n\n# 担当範囲（この外は調べない）\n{boundary}\n")
+        let mut prompt = match (role, boundary.as_str()) {
+            (Role::Research, b) => format!("{objective}\n\n# 担当範囲（この外は調べない）\n{b}\n"),
+            (_, "") => format!("{objective}\n"),
+            (_, b) => format!("{objective}\n\n# 対象範囲\n{b}\n"),
         };
         for (heading, value) in [
             ("返す形", optional(&input, "output_format")),
@@ -300,7 +286,7 @@ impl Tool for SubagentTool {
         let mut sink = CollectingSink::new(Arc::clone(&self.cancel), self.tool_events.clone());
         // 計画ロールにはツールを一切渡さない（調べさせない・#402）。手元の知識だけで
         // 「何を確かめるべきか」を出させる。調べてから計画すると、承認前に調査するのと変わらない。
-        let child_tools: &[Arc<dyn Tool>] = if plan_role { &[] } else { &self.tools };
+        let child_tools: &[Arc<dyn Tool>] = if role.uses_tools() { &self.tools } else { &[] };
         let run = RunContext {
             ctx,
             // 親と衝突しない冪等キー（会計・Langfuse の相関に使われる）。
@@ -314,7 +300,7 @@ impl Tool for SubagentTool {
             child_tools,
             vec![LlmMessage::text(LlmRole::User, prompt)],
             &run,
-            &self.child_options(plan_role),
+            &self.child_options(role),
             None,
             // 破壊系を渡していないので承認者は不要（居ないこと自体が fail-closed 側）。
             None,
@@ -350,6 +336,7 @@ impl Tool for SubagentTool {
 
         let spent = outcome.checkpoint.spent;
         let findings = sink.text.trim().to_string();
+        let findings_chars = findings.chars().count();
         let mut out = if findings.is_empty() {
             ToolOutcome::error(format!(
                 "サブエージェントは findings を返しませんでした（停止理由: {:?}）。\
@@ -366,12 +353,20 @@ impl Tool for SubagentTool {
         out.subagent_runs = vec![serde_json::json!({
             "objective": objective,
             "boundary": boundary,
-            "role": if plan_role { "plan" } else { "research" },
+            "role": role.as_str(),
             "steps": spent.steps,
             "tool_calls": sink.tool_calls,
             "tokens": spent.tokens,
+            // 上限判定に使う軸（新規ぶん）。`tokens`（課金累計）は履歴の再送を含むため、
+            // 「上限が実際に効いたのか」はこちらでしか判断できない（#404）。
+            "fresh_tokens": spent.fresh_tokens,
+            // findings が空で終わった委譲を数えられるようにする（#407 の収束計測）。
+            "findings_chars": findings_chars,
             // 停止理由（完了か・予算/ステップ上限か・キャンセルか）。予算で切れた委譲は
             // 「静かに何も返さない」形で現れるため、監査と UI に必ず残す（#404）。
+            //
+            // **収束の計測はこの分布で行う**（#407）。「調べ切って終わった（Completed）」と
+            // 「上限で切られた（Budget）」の比が、上限値が妥当かどうかの唯一の根拠になる。
             "stop": format!("{:?}", outcome.stop),
         })];
         out.usage = Some(ToolUsage {
@@ -415,17 +410,5 @@ mod tests {
             crate::profile::DEFAULT_PARALLEL_READ_TOOLS
         );
         assert_eq!(opts.model.as_deref(), Some("m"));
-    }
-
-    #[test]
-    fn required_and_optional_treat_blank_as_missing() {
-        let input = serde_json::json!({ "objective": " 調べる ", "boundary": "  ", "hint": "" });
-        assert_eq!(required(&input, "objective").unwrap(), "調べる");
-        assert!(matches!(
-            required(&input, "boundary"),
-            Err(ToolError::Invalid(_))
-        ));
-        assert!(optional(&input, "hint").is_none());
-        assert!(optional(&input, "missing").is_none());
     }
 }

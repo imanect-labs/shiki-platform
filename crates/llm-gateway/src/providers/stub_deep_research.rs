@@ -1,12 +1,15 @@
 //! deep research（#387）の決定的駆動。
 //!
 //! `/deep-research` / `/deep-research auto` を**本番と同じ発話**で入口にし、
-//! 質問カード → 計画カード → 調査 → レポート → 出典カード → 下書きノートの各フェーズを
+//! 質問カード → 計画カード → 調査 → レポート → 検証委譲 → 出典カード → 下書きノートの各フェーズを
 //! 実 LLM 無しで再現する（e2e とローカルのデモ用）。
 //!
 //! genui カードの押下は `chat.submit` で**別 run** になるため、状態は履歴から復元する:
 //! ターン数＝user メッセージ数、run 内の進行＝tool メッセージ数。
 
+use super::stub_deep_research_specs::{
+    deep_research_plan_spec, deep_research_question_spec, deep_research_source_spec,
+};
 use super::stub_stream::{text_stream, tool_call_stream, tool_calls_stream};
 use crate::model::{Block, GenerateRequest, Role};
 use crate::provider::DeltaStream;
@@ -18,8 +21,8 @@ use crate::provider::DeltaStream;
 ///
 /// | 経路 | ターン 1 | ターン 2 | ターン 3 |
 /// |---|---|---|---|
-/// | 既定 | 質問カード | 計画カード | 調査 → レポート → 出典カード → 下書き |
-/// | `auto` | 調査 → レポート → 出典カード → 下書き | – | – |
+/// | 既定 | 質問カード | 計画カード | 調査 → レポート → 検証委譲 → 出典カード → 下書き |
+/// | `auto` | 調査 → レポート → 検証委譲 → 出典カード → 下書き | – | – |
 ///
 /// ターン数は履歴の user メッセージ数、run 内の進行は tool メッセージ数で数える
 /// （genui カードは `chat.submit` で**別 run** になるため、run を跨いでも状態が復元できる）。
@@ -113,16 +116,28 @@ pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> O
                 serde_json::json!({ "name": "report.md", "content": DEEP_RESEARCH_REPORT }),
             )],
         ),
-        // ④ 出典一覧（web 出典の唯一の構造化表示）。
+        // ④ 裏取りを**独立した検証者**へ委譲する（#407。書いた本人に検証させない）。
         3 => tools_of(
+            req,
+            &[(
+                "subagent",
+                serde_json::json!({
+                    "role": "verify",
+                    "objective": "report.md の実質的な主張が notes.md の証拠に紐づいているか検証し、\
+                                  未確認・誤引用・過剰な一般化を指摘してください"
+                }),
+            )],
+        ),
+        // ⑤ 出典一覧（web 出典の唯一の構造化表示）。
+        4 => tools_of(
             req,
             &[(
                 "emit_ui",
                 serde_json::json!({ "spec": deep_research_source_spec() }),
             )],
         ),
-        // ⑤ レポート全文を下書きノート化（本文の下に保存ボタンが出る）。
-        4 => tools_of(
+        // ⑥ レポート全文を下書きノート化（本文の下に保存ボタンが出る）。
+        5 => tools_of(
             req,
             &[(
                 "save_note",
@@ -161,118 +176,6 @@ const DEEP_RESEARCH_COMMAND: &str = "/deep-research";
 
 /// 決定的なレポート本文（出典つき・両論併記・未確認の明示を含む最小形）。
 const DEEP_RESEARCH_REPORT: &str = "## 結論と確度\n\n国内 SaaS 市場は 2026 年時点で 1.2 兆円規模とみられる（独立 2 系統が一致）。\n成長率は出典 1 系統のみで、確度は低い。\n\n## 市場規模\n\n2026 年の国内市場規模は 1 兆 2000 億円と公表されている（https://example.com/stub-1）。\n一方、3 月時点の別集計では 9800 億円とされ、集計範囲の違いが残る（https://example.org/stub-2）。\n\n## 見つからなかったこと\n\n地域別の内訳は公表資料では確認できなかった。\n";
-
-/// 質問カード（最大 3 問・1 ターン・自由記述あり）。
-fn deep_research_question_spec() -> serde_json::Value {
-    serde_json::json!({
-        "version": 1,
-        "actions": [{ "type": "handler", "id": "answer", "handler": "chat.submit" }],
-        "root": {
-            "component": "question_card",
-            "id": "dr-clarify",
-            "title": "調査の前に確認させてください",
-            "intro": "答えが変わる軸だけ伺います（すべて任意）。",
-            "submit": { "action": "answer" },
-            "submit_label": "この条件で進める",
-            "questions": [
-                {
-                    "id": "scope",
-                    "header": "対象範囲",
-                    "question": "どの範囲を対象にしますか？",
-                    "options": [
-                        { "label": "国内のみ", "description": "日本市場に絞る" },
-                        { "label": "国内＋海外", "description": "海外の比較も含める" },
-                        { "label": "特に希望なし", "description": "こちらで判断する" }
-                    ],
-                    "allow_other": true
-                },
-                {
-                    "id": "depth",
-                    "header": "深さ",
-                    "question": "どこまで踏み込みますか？",
-                    "options": [
-                        { "label": "概観", "description": "全体像がつかめれば十分" },
-                        { "label": "意思決定用", "description": "数値の出所と反対意見まで" },
-                        { "label": "特に希望なし", "description": "こちらで判断する" }
-                    ],
-                    "allow_other": true
-                }
-            ]
-        }
-    })
-}
-
-/// 計画カード（開始ボタンで承認を取る）。
-///
-/// **中身は「この依頼固有の問い」**にする。手順（視点を分ける・証拠台帳を作る・節ごとに執筆）は
-/// どの調査でも同じでユーザーの判断材料にならないため、見本にも置かない
-/// （instructions の「悪い例」と同じものをスタブが出していては回帰点にならない）。
-fn deep_research_plan_spec() -> serde_json::Value {
-    serde_json::json!({
-        "version": 1,
-        "actions": [{ "type": "handler", "id": "start", "handler": "chat.submit" }],
-        "root": {
-            "component": "plan_card",
-            "id": "dr-plan",
-            "title": "2026 年の国内 SaaS 市場規模と成長率の検証",
-            "intro": "「いくらか」だけでなく、公表値がなぜ食い違うのかまで押さえて幅で答えます。                      海外市場と 2027 年以降の予測は対象外です（必要なら書き足してください）。",
-            "submit": { "action": "start" },
-            "submit_label": "この計画で開始",
-            "allow_revise": true,
-            "steps": [
-                {
-                    "title": "市場規模の「定義」を揃える",
-                    "description": "調査会社ごとに SaaS の範囲（PaaS・受託開発の扱い）が違う。主要 3 社の定義差を先に押さえ、比較可能な数字だけを採用する"
-                },
-                {
-                    "title": "2026 年の実数はいくらか",
-                    "description": "総務省の通信利用動向調査と主要ベンダの決算（開示ベース）を突き合わせ、公表値の幅（下限〜上限）として出す"
-                },
-                {
-                    "title": "成長率は鈍化しているか",
-                    "description": "2022〜2026 の前年比を並べ、伸びが価格転嫁か新規需要かを ARPU と契約社数の内訳で切り分ける"
-                },
-                {
-                    "title": "国内固有の要因は何か",
-                    "description": "SI 経由の商流・オンプレ回帰の議論・為替が価格に与える影響を、日本語一次資料で確認する"
-                },
-                {
-                    "title": "強気な予測の根拠は妥当か",
-                    "description": "予測値を出している主体と前提条件を並べ、過去予測の的中度で信頼度を評価する"
-                },
-                {
-                    "title": "社内資料と食い違わないか",
-                    "description": "過去の市場調査・事業計画の前提と突き合わせ、差分があれば明示する"
-                }
-            ]
-        }
-    })
-}
-
-/// 出典カード（本文で引用したものだけ・一次を上に）。
-fn deep_research_source_spec() -> serde_json::Value {
-    serde_json::json!({
-        "version": 1,
-        "root": {
-            "component": "source_card",
-            "title": "出典",
-            "sources": [
-                {
-                    "title": "国内 SaaS 市場調査（2026 年版）",
-                    "snippet": "市場規模は 1 兆 2000 億円に達した",
-                    "url": "https://example.com/stub-1",
-                    "label": "一次"
-                },
-                {
-                    "title": "別集計（2026 年 3 月時点）",
-                    "snippet": "9800 億円と推計",
-                    "url": "https://example.org/stub-2",
-                    "label": "二次"
-                }
-            ]
-        }
-    })
-}
 
 #[cfg(test)]
 mod tests {
@@ -354,6 +257,7 @@ mod tests {
         "fs_write",
         "fs_append",
         "save_note",
+        "subagent",
     ];
 
     /// 非 deep-research の発話には一切反応しない（他のトリガを奪わない）。
@@ -452,9 +356,10 @@ mod tests {
             "証拠台帳は fs_append（全文置換ではない）"
         );
 
-        // ③〜⑤ レポート保存 → 出典カード → 下書きノート（この順に固定）。
+        // ③〜⑥ レポート保存 → 検証委譲 → 出典カード → 下書きノート（この順に固定）。
         for (tool, expect) in [
             ("fs_write", "report.md"),
+            ("subagent", "verify"),
             ("emit_ui", "source_card"),
             ("save_note", "2026年 国内SaaS市場の調査"),
         ] {

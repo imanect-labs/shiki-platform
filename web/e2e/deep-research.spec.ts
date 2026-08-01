@@ -104,6 +104,8 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
   const expanded = page.getByTestId("tool-activity-expanded").last();
   await expect(expanded).toContainText("example.com/stub-1");
   await expect(expanded).toContainText("notes.md");
+  // 裏取りは独立した検証者へ委譲する（#407。書いた本人に自己検証させない）。
+  await expect(expanded).toContainText("未確認・誤引用・過剰な一般化");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/deep-research-activity.png`, fullPage: true });
 
   // 出典カード（web 出典の唯一の構造化表示）と保存ボタン（下書きノート）。
