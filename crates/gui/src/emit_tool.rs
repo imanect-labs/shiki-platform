@@ -76,7 +76,9 @@ impl Tool for EmitUiTool {
          walking/transit/flight}・bounds?{south,west,north,east}・title? を渡す。緯度経度は \
          lat∈[-90,90]・lng∈[-180,180] の構造化データのみ（タイル URL はサーバ設定で注入されるため \
          指定しない）。ドメインカード（表示専用）: source_card は RAG 引用元 \
-         （title?・sources[{title,snippet?,url?(https),score?,label?}]）、itinerary は旅程 \
+         （title?・compact?・sources[{title,snippet?,url?(https),score?,label?}]。件数が多い \
+         web 出典の一覧は compact:true でドメインのチップだけに畳む＝snippet は表示されない）、\
+         itinerary は旅程 \
          （title?・days[{label?,date?,items[{time?,title,description?,location?,kind?:activity/\
          travel/food/lodging/sight}]}]）、weather は天気（location・days[{label,condition:sunny/\
          partly_cloudy/cloudy/rain/storm/snow/fog,high?,low?,precipitation?(0-100)}]）、comparison \
