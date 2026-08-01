@@ -97,6 +97,9 @@ pub struct WorkerDeps {
     pub artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
     /// web 検索プロバイダ（web_search 用・Brave/SearXNG/Stub）。
     pub web_search: Option<Arc<dyn websearch::SearchProvider>>,
+    /// 文書パーサ（web_fetch が取得した PDF/Office を Docling で読む・#405）。
+    /// RAG と同一インスタンスを共有する。未配線なら web_fetch は文書を拒否する。
+    pub parser: Option<Arc<dyn rag::DocumentParser>>,
     /// StorageService（自律プロファイルの file CRUD/shell ワークスペース・Task 5.4）。
     /// 未配線なら自律ツール（fs_*/grep/shell）を提示しない。
     pub storage: Option<Arc<storage::StorageService>>,

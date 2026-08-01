@@ -1,7 +1,11 @@
-//! [`super`]（web_fetch・#348）の単体テスト。
+//! [`super`]（web_fetch・#348 / #405）の単体テスト。
 //!
 //! SSRF/DNS リバインディング防御は「拒否できること」と「検証済みアドレスへ固定できること」
 //! の両方を見る。後者はループバックのスタブサーバへ **解決不能なホスト名**で到達させて示す。
+//!
+//! コンテキスト効率（#405）側のテストは [`super::tests_efficiency`] にある（500 行規約）。
+//! 共有ヘルパ（スタブサーバ・リゾルバ・AuthContext）はここに置き、あちらから `super::tests::*`
+//! で使う。
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -11,7 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
 
-fn ctx() -> AuthContext {
+pub(super) fn ctx() -> AuthContext {
     AuthContext::new(
         authz::Principal {
             kind: authz::PrincipalKind::User,
@@ -40,7 +44,7 @@ impl HostResolver for StubResolver {
     }
 }
 
-fn tool_with(addrs: Vec<SocketAddr>) -> (WebFetchTool, Arc<AtomicUsize>) {
+pub(super) fn tool_with(addrs: Vec<SocketAddr>) -> (WebFetchTool, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let tool = WebFetchTool::with_resolver(Arc::new(StubResolver {
         addrs,
@@ -50,7 +54,9 @@ fn tool_with(addrs: Vec<SocketAddr>) -> (WebFetchTool, Arc<AtomicUsize>) {
 }
 
 /// ループバックのスタブ HTTP サーバ。固定レスポンスを返し、受け取った Host ヘッダを晒す。
-async fn stub_server(response: Vec<u8>) -> (SocketAddr, Arc<tokio::sync::Mutex<String>>) {
+pub(super) async fn stub_server(
+    response: Vec<u8>,
+) -> (SocketAddr, Arc<tokio::sync::Mutex<String>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let seen = Arc::new(tokio::sync::Mutex::new(String::new()));
@@ -67,7 +73,7 @@ async fn stub_server(response: Vec<u8>) -> (SocketAddr, Arc<tokio::sync::Mutex<S
     (addr, seen)
 }
 
-fn http_response(head: &str, body: &str) -> Vec<u8> {
+pub(super) fn http_response(head: &str, body: &str) -> Vec<u8> {
     format!(
         "{head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -247,7 +253,7 @@ async fn caps_body_size() {
         )
         .await
         .unwrap();
-    assert!(out.content.contains("256KiB で打ち切り"), "{}", out.content);
+    assert!(out.content.contains("取得上限 256KiB"), "{}", out.content);
 }
 
 /// バイナリは本文を返さない（モデルへ渡す意味がなく、トークンを焼くだけ）。

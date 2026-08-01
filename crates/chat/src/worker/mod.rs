@@ -54,6 +54,8 @@ pub struct ChatWorker {
     artifacts: Option<Arc<dyn agent_core::ArtifactStore>>,
     /// web 検索プロバイダ。未配線なら web_search / web_fetch ツールを提示しない。
     web_search: Option<Arc<dyn websearch::SearchProvider>>,
+    /// 文書パーサ（web_fetch の PDF/Office 経路・#405）。
+    parser: Option<Arc<dyn rag::DocumentParser>>,
     /// StorageService（自律プロファイルのワークスペース）。
     storage: Option<Arc<storage::StorageService>>,
     /// UI スペック検証（emit_ui ツール・Task 6.4）。
@@ -87,6 +89,7 @@ impl ChatWorker {
             sandbox,
             artifacts,
             web_search,
+            parser,
             storage,
             ui_validator,
             skill_artifacts,
@@ -107,6 +110,7 @@ impl ChatWorker {
             sandbox,
             artifacts,
             web_search,
+            parser,
             storage,
             ui_validator,
             skill_artifacts,

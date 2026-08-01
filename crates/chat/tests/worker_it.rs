@@ -144,6 +144,7 @@ fn test_deps(gateway: LlmGateway) -> chat::WorkerDeps {
         sandbox: None,
         artifacts: None,
         web_search: None,
+        parser: None,
         storage: None,
         ui_validator: None,
         skill_artifacts: None,
