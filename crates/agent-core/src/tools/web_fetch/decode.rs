@@ -42,21 +42,18 @@ pub(super) fn decode(body: &[u8], content_type: Option<&str>) -> Decoded {
 }
 
 /// `text/html; charset=shift_jis` の charset を引く。
+///
+/// **全パラメータを最後まで走査する**。charset より前に別パラメータを置くサーバ
+/// （`text/html; version=1; Charset=Shift_JIS`）や、`Charset=` / `charset = ` のような
+/// 綴りが実在する。先頭パラメータだけ見て打ち切ると宣言を取りこぼし、推定へ落ちて
+/// 短いページが文字化けする。
 fn from_content_type(content_type: Option<&str>) -> Option<&'static Encoding> {
-    let ct = content_type?;
-    let label = ct
+    content_type?
         .split(';')
         .skip(1)
-        .find_map(|p| p.trim().strip_prefix("charset="))
-        .or_else(|| {
-            // `charset = "utf-8"` のような緩い記法も拾う（実在する）。
-            ct.split(';')
-                .skip(1)
-                .find_map(|p| p.split_once('='))
-                .filter(|(k, _)| k.trim().eq_ignore_ascii_case("charset"))
-                .map(|(_, v)| v)
-        })?;
-    Encoding::for_label(trim_label(label).as_bytes())
+        .filter_map(|param| param.split_once('='))
+        .filter(|(key, _)| key.trim().eq_ignore_ascii_case("charset"))
+        .find_map(|(_, value)| Encoding::for_label(trim_label(value).as_bytes()))
 }
 
 /// 先頭 [`META_SCAN_BYTES`] から `<meta>` の charset 宣言を引く。
@@ -180,6 +177,24 @@ mod tests {
     fn ignores_charset_like_text_outside_meta() {
         let body = "<html><body>charset=shift_jis という文字列は本文です</body></html>";
         assert_eq!(decode(body.as_bytes(), None).encoding, "UTF-8");
+    }
+
+    /// charset より前に別パラメータがあり、綴りが大文字でも宣言を見つける。
+    #[test]
+    fn scans_every_content_type_parameter() {
+        let (bytes, _, _) = encoding_rs::SHIFT_JIS.encode("日本語のページ");
+        let d = decode(&bytes, Some("text/html; version=1; Charset=Shift_JIS"));
+        assert_eq!(d.encoding, "Shift_JIS");
+        assert_eq!(d.text, "日本語のページ");
+    }
+
+    /// 空白を挟む緩い記法（`charset = "euc-jp"`）も拾う。
+    #[test]
+    fn accepts_loose_charset_spelling() {
+        let (bytes, _, _) = encoding_rs::EUC_JP.encode("本文です");
+        let d = decode(&bytes, Some("text/html; charset = \"euc-jp\""));
+        assert_eq!(d.encoding, "EUC-JP");
+        assert_eq!(d.text, "本文です");
     }
 
     /// `charset` を含むが宣言ではない meta が**先に**あっても、後続の本物を見つける。

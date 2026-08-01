@@ -97,6 +97,32 @@ pub(super) fn is_html(content_type: Option<&str>) -> bool {
     )
 }
 
+/// 先頭を見て HTML か判定する範囲（文字）。HTML5 の sniffing に倣う。
+const SNIFF_CHARS: usize = 1024;
+
+/// **Content-Type を返さない**応答が HTML か。
+///
+/// `is_textual(None)` は取得を許可する（省略するサーバが実在するため）が、`is_html(None)` は
+/// false なので、判定をここで足さないと**生 HTML がそのままモデルへ流れる**。本 PR の中心である
+/// 「生 HTML を渡さない」保証が、許可済みの応答で破れてしまう。
+///
+/// タグで始まらないもの（JSON・プレーンテキスト）は対象外にする（誤って抽出へ回さない）。
+pub(super) fn sniff_html(text: &str) -> bool {
+    let head = text.trim_start();
+    if !head.starts_with('<') {
+        return false;
+    }
+    let head: String = head
+        .chars()
+        .take(SNIFF_CHARS)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    head.starts_with("<!doctype html")
+        || head.contains("<html")
+        || head.contains("<head")
+        || head.contains("<body")
+}
+
 /// 入力から検証済みのオプションを取り出す。
 pub(super) struct Options {
     pub query: Option<String>,

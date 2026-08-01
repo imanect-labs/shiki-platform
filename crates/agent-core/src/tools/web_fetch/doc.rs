@@ -17,6 +17,9 @@ use std::time::Duration;
 use authz::AuthContext;
 use rag::types::{BlockType, ParsedDocument};
 use rag::{DocumentParser, ParseRequest, ParseSource};
+use url::Url;
+
+use super::input::base_type;
 
 /// Docling へ回すバイナリ文書の MIME（worker の `_DOCLING_TYPES` のうち非テキスト）。
 const DOCUMENT_TYPES: &[&str] = &[
@@ -26,22 +29,75 @@ const DOCUMENT_TYPES: &[&str] = &[
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ];
 
+/// 拡張子 → MIME。**Content-Type が当てにならない配信**への保険。
+const DOCUMENT_EXTENSIONS: &[(&str, &str)] = &[
+    ("pdf", "application/pdf"),
+    (
+        "docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
+    (
+        "pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ),
+    (
+        "xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
+];
+
+/// 「中身を見ないと形式が分からない」汎用バイナリ MIME（ダウンロード配信でよく付く）。
+const OPAQUE_TYPES: &[&str] = &[
+    "application/octet-stream",
+    "binary/octet-stream",
+    "application/download",
+    "application/x-download",
+    "application/force-download",
+];
+
 /// パース待ちの上限。Docling は OCR 込みで数十秒かかる（大きなスキャン PDF は分単位）。
 /// 対話ツールとしてはここで諦め、モデルに次の手を打たせる方が良い。
+///
+/// **諦めても worker 側の解析は止まらない**（同期処理でキャンセルできない）。ここを
+/// 「先に諦めてよい」根拠にしているのは、worker 側が同時解析数を有界にして
+/// 取り残しがスレッドプールを食い潰さないようにしているため（`ingestion-worker` の
+/// `ParseSlots`。上限到達時は待たせず 503）。片方だけでは成立しない対で運用する。
 pub(super) const PARSE_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// この Content-Type は Docling 経路で読めるか。
-pub(super) fn is_document(content_type: Option<&str>) -> bool {
-    let Some(ct) = content_type else {
-        return false;
-    };
-    let base = ct
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    DOCUMENT_TYPES.contains(&base.as_str())
+/// この応答を Docling 経路で読むか。読むなら **worker へ申告する MIME** を返す。
+///
+/// Content-Type だけを信じない。官公庁の配信や CDN のダウンロードエンドポイントは PDF を
+/// `application/octet-stream` で返すことがあり、宣言だけ見ると「テキストではない」と
+/// 門前払いになる（宣伝している PDF 対応が、相手のサーバ設定次第で消える）。
+pub(super) fn classify(content_type: Option<&str>, url: &Url) -> Option<&'static str> {
+    let base = base_type(content_type);
+    if let Some(mime) = DOCUMENT_TYPES.iter().copied().find(|m| *m == base) {
+        return Some(mime);
+    }
+    // 拡張子を根拠にするのは**宣言が無い／汎用バイナリのときだけ**。
+    // `text/html` を拡張子で覆すと、PDF ビューアの HTML ページを Docling へ回してしまう。
+    if content_type.is_none() || OPAQUE_TYPES.contains(&base.as_str()) {
+        return extension_type(url);
+    }
+    None
+}
+
+/// URL の末尾セグメントの拡張子から MIME を引く。
+fn extension_type(url: &Url) -> Option<&'static str> {
+    let last = url.path().rsplit('/').next()?;
+    let ext = last.rsplit_once('.')?.1.to_ascii_lowercase();
+    DOCUMENT_EXTENSIONS
+        .iter()
+        .find(|(e, _)| *e == ext)
+        .map(|(_, mime)| *mime)
+}
+
+/// 取得済みバイト列の先頭から形式を見分ける（宣言も拡張子も外れる配信の最後の砦）。
+///
+/// OOXML は ZIP なので先頭バイトだけでは docx/pptx/xlsx を割れない。ここは **PDF に限る**
+/// （国内の一次ソースは PDF が主。曖昧な推測で Docling を誤爆させる方が高くつく）。
+pub(super) fn sniff(bytes: &[u8]) -> Option<&'static str> {
+    bytes.starts_with(b"%PDF-").then_some("application/pdf")
 }
 
 /// 取得済みバイト列を Docling でパースし、Markdown へ落とす。
@@ -141,13 +197,57 @@ mod tests {
         }
     }
 
+    fn url(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
+
     #[test]
     fn recognizes_document_types() {
-        assert!(is_document(Some("application/pdf")));
-        assert!(is_document(Some("APPLICATION/PDF; charset=binary")));
-        assert!(!is_document(Some("text/html")));
-        assert!(!is_document(Some("image/png")));
-        assert!(!is_document(None));
+        let plain = url("https://example.com/a");
+        assert_eq!(
+            classify(Some("application/pdf"), &plain),
+            Some("application/pdf")
+        );
+        assert_eq!(
+            classify(Some("APPLICATION/PDF; charset=binary"), &plain),
+            Some("application/pdf")
+        );
+        assert_eq!(classify(Some("text/html"), &plain), None);
+        assert_eq!(classify(Some("image/png"), &plain), None);
+        assert_eq!(classify(None, &plain), None);
+    }
+
+    /// 官公庁の配信は PDF を `application/octet-stream` で返すことがある。
+    #[test]
+    fn falls_back_to_the_url_extension_for_opaque_types() {
+        let pdf = url("https://www.meti.go.jp/report/data/2026_report.pdf?dl=1");
+        assert_eq!(
+            classify(Some("application/octet-stream"), &pdf),
+            Some("application/pdf")
+        );
+        assert_eq!(classify(None, &pdf), Some("application/pdf"));
+        let docx = url("https://example.com/files/資料.docx");
+        assert!(classify(Some("binary/octet-stream"), &docx)
+            .is_some_and(|m| m.ends_with("wordprocessingml.document")));
+        // 拡張子が無ければ従来どおり非文書。
+        assert_eq!(
+            classify(Some("application/octet-stream"), &pdf.join("x").unwrap()),
+            None
+        );
+    }
+
+    /// 宣言が正しいときは拡張子で覆さない（PDF ビューアの HTML を Docling へ回さない）。
+    #[test]
+    fn declared_html_is_never_overridden_by_the_extension() {
+        let viewer = url("https://example.com/viewer/report.pdf");
+        assert_eq!(classify(Some("text/html; charset=utf-8"), &viewer), None);
+    }
+
+    #[test]
+    fn sniffs_pdf_magic_bytes() {
+        assert_eq!(sniff(b"%PDF-1.7\n%..."), Some("application/pdf"));
+        assert_eq!(sniff(b"<!doctype html>"), None);
+        assert_eq!(sniff(b""), None);
     }
 
     #[test]
