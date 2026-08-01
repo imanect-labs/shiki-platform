@@ -25,6 +25,8 @@
 
 pub mod agent;
 pub(crate) mod agent_gate;
+/// ステップ境界でモデルへ渡す観測（残り予算・空応答の催促）の組み立て。
+mod agent_observation;
 pub(crate) mod agent_tools;
 pub mod approval;
 pub mod budget;

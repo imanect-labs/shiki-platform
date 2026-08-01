@@ -19,6 +19,7 @@ use llm_gateway::{
     StopReason, StreamDelta, ToolDef, Usage,
 };
 
+use crate::agent_observation::{append_budget_observation, nudge_empty_response};
 use crate::approval::Approver;
 use crate::budget::BudgetCheck;
 use crate::checkpoint::Checkpoint;
@@ -36,6 +37,13 @@ pub(crate) const PLAN_TOOL: &str = "plan";
 pub enum AgentStop {
     /// モデルが自然終了した。
     Completed,
+    /// **1 応答の出力上限**（`max_tokens`）で切れた。完了ではない。
+    ///
+    /// `Completed` に潰すと、空の成果物が「正常終了」として報告される。実測（#407 の検証委譲）
+    /// では、検証ロールの子が思考で 1 応答の枠を使い切って本文ゼロで終わり、親には
+    /// 「停止理由: Completed なのに findings が無い」と届いた（親のログに「which is odd」と
+    /// 残っている）。原因が言えないと、やり直すべきか自分でやるべきかも判断できない。
+    Truncated,
     /// 最大ステップ/時間/トークン/コストの予算に達した（安全停止・Task 5.7）。
     Budget(crate::budget::BudgetKind),
     /// 同一失敗のループを検出して安全停止した（Task 5.5）。
@@ -160,29 +168,6 @@ fn map_llm_error(e: llm_gateway::LlmError) -> AgentError {
     }
 }
 
-/// 残り予算を**最後のツール結果へ書き足す**（#407）。
-///
-/// 独立した user メッセージにはできない: Anthropic は user メッセージの連続を受け付けず、
-/// OpenAI 互換は `Role::Tool` の Text ブロックを捨てる。両プロバイダに確実に届くのは
-/// ツール結果の `content` だけ。**その step の新規ぶんに乗る**ので、system プロンプトへ
-/// 埋める案と違いプロンプトキャッシュの前置きを壊さない。
-///
-/// ツール結果が 1 つも無いステップは終端（ループが抜ける）なので、添える先も要らない。
-fn append_budget_observation(
-    blocks: &mut [Block],
-    budget: &crate::budget::Budget,
-    spent: &crate::budget::Spent,
-) {
-    let last = blocks
-        .iter_mut()
-        .rev()
-        .find(|b| matches!(b, Block::ToolResult { .. }));
-    if let Some(Block::ToolResult { content, .. }) = last {
-        content.push_str("\n\n");
-        content.push_str(&budget.remaining(spent, Instant::now()).observation());
-    }
-}
-
 /// 1 ステップ（1 LLM 生成＋そのツール実行）を回し、状態を進める。
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // ストリーム分岐＋ツール実行で伸びる。
 async fn run_step(
@@ -286,6 +271,14 @@ async fn run_step(
     // チェックポイントの step を消費ステップ数に追従させる（再開時の起点・監査の整合）。
     state.step = state.spent.steps;
 
+    // **本文もツール呼び出しも無い応答は「完了」ではない**。思考にだけ書いて content を空で
+    // 返すプロバイダが実在する（実測: 委譲の子が 8 体中 3 体、本文ゼロで「正常終了」した）。
+    // そのまま畳むと成果物が消えるので、**1 度だけ**書き直させる。空の assistant メッセージは
+    // 積まない（content が空のメッセージを拒否するプロバイダがある）。
+    if text_acc.is_empty() && calls.is_empty() && nudge_empty_response(&mut state.messages) {
+        return Ok(StepOutcome::Continue);
+    }
+
     // assistant メッセージを履歴へ。
     let mut assistant_blocks: Vec<Block> = Vec::new();
     if !text_acc.is_empty() {
@@ -303,9 +296,13 @@ async fn run_step(
         content: assistant_blocks,
     });
 
-    // 終了判定: ツール呼び出しが無ければ完了。
+    // 終了判定: ツール呼び出しが無ければ終わり。ただし **max_tokens で切れたのは完了ではない**。
     if final_stop != StopReason::ToolUse || calls.is_empty() {
-        return Ok(StepOutcome::Stop(AgentStop::Completed));
+        return Ok(StepOutcome::Stop(if final_stop == StopReason::MaxTokens {
+            AgentStop::Truncated
+        } else {
+            AgentStop::Completed
+        }));
     }
 
     // ツール実行 → 観測を履歴へ。冪等 read は有界並列・それ以外は逐次（#349・agent_tools）。
@@ -401,55 +398,4 @@ fn preview(s: &str) -> String {
         end -= 1;
     }
     format!("{}…", &s[..end])
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::budget::{Budget, Spent};
-
-    fn result(id: &str, content: &str) -> Block {
-        Block::ToolResult {
-            tool_use_id: id.into(),
-            content: content.into(),
-            is_error: false,
-        }
-    }
-
-    /// 残量は**最後のツール結果**に 1 度だけ乗る（両プロバイダに確実に届く唯一の場所）。
-    #[test]
-    fn budget_observation_rides_on_the_last_tool_result() {
-        let mut blocks = vec![result("a", "1 件"), result("b", "2 件")];
-        let mut spent = Spent::default();
-        spent.add_step(100, 50, 0);
-        append_budget_observation(
-            &mut blocks,
-            &Budget::autonomous(8, None, 120_000, 1),
-            &spent,
-        );
-        let Block::ToolResult { content: first, .. } = &blocks[0] else {
-            panic!("形が違う");
-        };
-        let Block::ToolResult { content: last, .. } = &blocks[1] else {
-            panic!("形が違う");
-        };
-        assert_eq!(first, "1 件", "先頭には付けない（1 ステップ 1 回）");
-        assert!(last.starts_with("2 件"), "{last}");
-        assert!(last.contains("[予算] 残り 7 ステップ"), "{last}");
-    }
-
-    /// ツール結果が無いステップ（終端）では何もしない。
-    #[test]
-    fn budget_observation_needs_a_tool_result_to_ride_on() {
-        let mut blocks = vec![Block::Text {
-            text: "本文".into(),
-        }];
-        append_budget_observation(
-            &mut blocks,
-            &Budget::autonomous(8, None, 120_000, 1),
-            &Spent::default(),
-        );
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(&blocks[0], Block::Text { text } if text == "本文"));
-    }
 }

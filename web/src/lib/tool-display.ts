@@ -152,7 +152,8 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     // （「〈レポート〉を調査中」と出ると、何をしているのか読み手に伝わらない）。
     verb: (input) => (input.role === "verify" ? "検証" : "調査"),
     suru: true,
-    failed: "実行できませんでした",
+    // `failed` は既定（`<verb>できませんでした`）に任せる。役割で動詞が変わるため、
+    // ここに固定文字列を置くと「検証」なのに「調査できませんでした」と出る。
     target: quoted("objective", 34),
   },
   doc_search: {

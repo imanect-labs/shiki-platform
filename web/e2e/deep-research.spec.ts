@@ -98,9 +98,10 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
 
   // ツール実行表示（#386）に取得した URL が具体的に出る。展開して全件を見る。
   // **最後の run** のものを見る（先行 run＝質問/計画カードにも tool-activity が出る）。
-  // 完了後は**開いたまま**なのでクリック不要（自動折りたたみを廃止した）。
+  // 完了後は 1 行要約に畳まれているので、ヘッダを押して全件のタイムラインを出す。
   const activity = page.getByTestId("tool-activity").last();
   await expect(activity).toBeVisible();
+  await activity.getByRole("button").first().click();
   const expanded = page.getByTestId("tool-activity-expanded").last();
   await expect(expanded).toContainText("example.com/stub-1");
   await expect(expanded).toContainText("notes.md");

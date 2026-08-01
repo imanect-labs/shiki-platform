@@ -48,6 +48,13 @@ pub struct SubagentLimits {
     pub max_per_run: usize,
     /// 子の中での冪等 read 並列度（親×子で同時取得が積算するため小さくする）。
     pub parallel_read_tools: usize,
+    /// **1 応答**の出力上限（累積上限の `max_tokens` とは別概念）。
+    ///
+    /// 子の成果物は findings（数千字）そのもので、reasoning 系はその前に思考でトークンを使う。
+    /// プロファイル既定（4096）だと**本文を書き出す前に枠が尽きて空で終わる**（実測: 検証ロールが
+    /// 2 ステップで本文ゼロ・親には「Completed」とだけ届いた）。親が既に同じ理由で 8192 へ
+    /// 上げているので、子も揃える。
+    pub max_response_tokens: u32,
 }
 
 impl Default for SubagentLimits {
@@ -68,6 +75,7 @@ impl Default for SubagentLimits {
             max_cost_usd_micros: 600_000,
             max_per_run: 16,
             parallel_read_tools: 4,
+            max_response_tokens: 8192,
         }
     }
 }
@@ -168,6 +176,8 @@ fn child_options(limits: &SubagentLimits, system: &str, model: Option<&str>) -> 
     );
     opts.system = Some(system.to_string());
     opts.model = model.map(str::to_string);
+    // 1 応答の出力上限。既定（4096）だと findings を書き出す前に枠が尽きる（`max_response_tokens`）。
+    opts.max_tokens = Some(limits.max_response_tokens);
     opts.offer_plan_tool = false;
     opts.parallel_read_tools = limits.parallel_read_tools;
     // 自律版は egress（web_search / web_fetch）を承認ゲート対象にする。子に approver は
@@ -338,10 +348,25 @@ impl Tool for SubagentTool {
         let findings = sink.text.trim().to_string();
         let findings_chars = findings.chars().count();
         let mut out = if findings.is_empty() {
+            // 停止理由ごとに**次の手**を言い分ける。「Completed なのに空」とだけ返すと、
+            // やり直すべきか自分でやるべきかが判断できない（実測でモデルが迷った）。
+            let why = match outcome.stop {
+                crate::agent::AgentStop::Truncated => {
+                    "本文を書き出す前に 1 応答の出力上限に達しました（思考が長すぎた）。\
+                     範囲を半分に切って再依頼するか、自分で確かめてください。"
+                }
+                crate::agent::AgentStop::Budget(_) => {
+                    "上限に達して途中で切られました。boundary をもっと狭く切って再依頼するか、\
+                     自分で調べてください。"
+                }
+                _ => {
+                    "何も返しませんでした。委譲をやり直すなら boundary をもっと狭く切ること。\
+                     やり直さない場合は自分で調べてください。"
+                }
+            };
             ToolOutcome::error(format!(
-                "サブエージェントは findings を返しませんでした（停止理由: {:?}）。\
-                 委譲をやり直すなら boundary をもっと狭く切ること。やり直さない場合は\
-                 自分で web_search / web_fetch を使って調べ、**レポートは必ず書くこと**。",
+                "サブエージェントは成果物を返しませんでした（停止理由: {:?}）。{why}\
+                 どの経路でも**最後の成果物は必ず作ること**。",
                 outcome.stop
             ))
         } else {
@@ -401,6 +426,13 @@ mod tests {
                 "{gated} を子が通せてはいけない"
             );
         }
+        // 1 応答の出力上限は**プロファイル既定より広げる**。成果物（findings・指摘リスト）は
+        // 子の最終応答そのもので、reasoning 系はその前に思考で枠を使う。既定のままだと
+        // 本文を書き出す前に切れて空で終わる（#407 の実測）。
+        assert!(
+            opts.max_tokens.is_some_and(|m| m >= 8192),
+            "子の 1 応答上限が狭いと成果物が空で返る"
+        );
         // 同時取得は 親の並列度 × 子の並列度 で積算する。委譲を既定にした結果ここは
         // 「絞る」ではなく「積算の上限を意識して決める」値になった（親 6 × 子 4 = 24）。
         // 1 だと子の中が逐次になり、100 件規模の調査が終わらない。
