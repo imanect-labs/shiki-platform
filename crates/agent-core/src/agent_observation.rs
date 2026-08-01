@@ -40,21 +40,45 @@ pub(crate) fn append_budget_observation(blocks: &mut [Block], budget: &Budget, s
 const EMPTY_RESPONSE_NUDGE: &str = "\n\n[注意] 直前の応答は本文が空でした。\
      思考の中ではなく**応答の本文として**、ここまでに得た内容で成果物を書いてください。";
 
+/// 予算超過で畳む直前に入れる**最後の指示**（ツールを外した 1 ターンで書かせる）。
+const FINAL_ANSWER_INSTRUCTION: &str = "\n\n[予算] 上限に達しました。\
+     **これ以上ツールは使えません。**ここまでに集めた内容だけで、依頼された成果物を\
+     いま書いてください。足りない点は「確認できなかった」と明示すれば十分です。\
+     次の応答が最後になります。";
+
+/// 予算超過の「最後に書かせる」指示を仕込む。添える先が無ければ `false`。
+///
+/// 既に催促済みかは見ない（着地は 1 回しか呼ばれない＝ループを抜ける直前）。
+pub(crate) fn demand_final_answer(messages: &mut [LlmMessage]) -> bool {
+    append_to_last_tool_result(messages, FINAL_ANSWER_INSTRUCTION)
+}
+
 /// 空応答の催促を仕込む。既に催促済み、または添える先が無ければ `false`（＝諦めて畳む）。
 pub(crate) fn nudge_empty_response(messages: &mut [LlmMessage]) -> bool {
-    let last = messages
+    let already = last_tool_result(messages).is_some_and(|c| c.contains(EMPTY_RESPONSE_NUDGE));
+    // 2 度目は打ち切る（空応答で無限に回さない）。
+    !already && append_to_last_tool_result(messages, EMPTY_RESPONSE_NUDGE)
+}
+
+/// 履歴の**最後のツール結果**へ書き足す（無ければ `false`）。
+fn append_to_last_tool_result(messages: &mut [LlmMessage], note: &str) -> bool {
+    let Some(content) = last_tool_result(messages) else {
+        return false;
+    };
+    content.push_str(note);
+    true
+}
+
+/// 履歴の最後のツール結果の本文（可変参照）。
+fn last_tool_result(messages: &mut [LlmMessage]) -> Option<&mut String> {
+    messages
         .iter_mut()
         .rev()
         .flat_map(|m| m.content.iter_mut().rev())
-        .find(|b| matches!(b, Block::ToolResult { .. }));
-    let Some(Block::ToolResult { content, .. }) = last else {
-        return false;
-    };
-    if content.contains(EMPTY_RESPONSE_NUDGE) {
-        return false; // 2 度目は打ち切る（空応答で無限に回さない）。
-    }
-    content.push_str(EMPTY_RESPONSE_NUDGE);
-    true
+        .find_map(|b| match b {
+            Block::ToolResult { content, .. } => Some(content),
+            _ => None,
+        })
 }
 
 #[cfg(test)]
@@ -114,6 +138,25 @@ mod tests {
     fn nothing_to_nudge_without_a_tool_result() {
         let mut messages = vec![LlmMessage::text(LlmRole::User, "調べて")];
         assert!(!nudge_empty_response(&mut messages));
+    }
+
+    /// 予算超過の着地指示は「ツールはもう使えない・いま書け」と伝える。
+    #[test]
+    fn final_answer_demand_forbids_more_tools() {
+        let mut messages = vec![LlmMessage {
+            role: LlmRole::Tool,
+            content: vec![result("a", "12 件")],
+        }];
+        assert!(demand_final_answer(&mut messages));
+        let Block::ToolResult { content, .. } = &messages[0].content[0] else {
+            panic!("形が違う");
+        };
+        assert!(content.starts_with("12 件"), "{content}");
+        assert!(content.contains("これ以上ツールは使えません"), "{content}");
+        assert!(content.contains("確認できなかった"), "{content}");
+        // 1 手も実行していない run には添える先が無い（書かせる材料も無い）。
+        let mut bare = vec![LlmMessage::text(LlmRole::User, "調べて")];
+        assert!(!demand_final_answer(&mut bare));
     }
 
     /// ツール結果が無いステップ（終端）では何もしない。

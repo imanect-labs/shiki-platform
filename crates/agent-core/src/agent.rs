@@ -19,7 +19,9 @@ use llm_gateway::{
     StopReason, StreamDelta, ToolDef, Usage,
 };
 
-use crate::agent_observation::{append_budget_observation, nudge_empty_response};
+use crate::agent_observation::{
+    append_budget_observation, demand_final_answer, nudge_empty_response,
+};
 use crate::approval::Approver;
 use crate::budget::BudgetCheck;
 use crate::checkpoint::Checkpoint;
@@ -101,7 +103,11 @@ pub async fn run_agent(
         }
         // --- 予算ガード（ステップに入る前に判定・Task 5.7）。 ---
         match opts.budget.check(&state.spent, Instant::now()) {
-            BudgetCheck::Exceeded(kind) => break AgentStop::Budget(kind),
+            // 上限で畳む前に、**ツールを外した 1 ターンだけ**回して成果物を書かせる。
+            BudgetCheck::Exceeded(kind) => {
+                land_on_budget(gateway, run, opts, &mut state, sink).await?;
+                break AgentStop::Budget(kind);
+            }
             BudgetCheck::Warn(kind, used, limit) => {
                 if warned.insert(kind) {
                     sink.emit(AgentEvent::BudgetWarning { kind, used, limit })
@@ -166,6 +172,97 @@ fn map_llm_error(e: llm_gateway::LlmError) -> AgentError {
         llm_gateway::LlmError::RateLimited(msg) => AgentError::RateLimited(msg),
         other => AgentError::Llm(other.to_string()),
     }
+}
+
+/// 予算超過でループを畳む直前に、**ツールを外した 1 ターン**だけ回して成果物を書かせる。
+///
+/// 残量を観測に載せる（`[予算]`）だけでは取りこぼす。実測では、着地指示を読んでいるはずの
+/// 調査サブエージェントの 1/3 が最後までツールを呼び続け、**findings ゼロのまま上限で切られた**
+/// ——トークンを使って何も返らない、純粋な損失になる。ここで機械的に保証する。
+///
+/// - **ツールを渡さない**ので、追加の取得は起こり得ない（上限を超えて調べ続けない）。
+/// - コストは 1 生成ぶん。「それまでの仕事が丸ごと消える」方がはるかに高くつく。
+///   トークン/コスト上限で切れた場合も同じ理由で書かせる（超過は 1 生成ぶんに留まる）。
+/// - **キャンセル時は書かせない**（ユーザーが止めたのだから、そこで止める）。
+/// - 添える先（ツール結果）が無い＝1 手も実行していないので、書かせる材料も無い。
+async fn land_on_budget(
+    gateway: &LlmGateway,
+    run: &RunContext<'_>,
+    opts: &AgentOptions,
+    state: &mut Checkpoint,
+    sink: &mut dyn EventSink,
+) -> Result<(), AgentError> {
+    if sink.is_cancelled() || !demand_final_answer(&mut state.messages) {
+        return Ok(());
+    }
+    let step = state.spent.steps;
+    let mut stream = gateway
+        .stream(GenerateRequest {
+            model: opts.model.clone(),
+            system: opts.system.clone(),
+            messages: state.messages.clone(),
+            tools: Vec::new(), // ← 追加の取得を構造的に不可能にする
+            effort: opts.effort,
+            max_tokens: opts.max_tokens,
+            temperature: opts.temperature,
+        })
+        .await
+        .map_err(map_llm_error)?;
+
+    let mut text_acc = String::new();
+    let mut usage = Usage::default();
+    while let Some(delta) = stream.next().await {
+        match delta.map_err(map_llm_error)? {
+            StreamDelta::TextDelta { text } => {
+                text_acc.push_str(&text);
+                sink.emit(AgentEvent::Text(text)).await?;
+            }
+            StreamDelta::ThinkingDelta { text } => sink.emit(AgentEvent::Thinking(text)).await?,
+            StreamDelta::Done { usage: u, .. } => usage = u,
+            _ => {}
+        }
+    }
+
+    // 会計は通常ステップと同じ扱い（実際に 1 回呼んでいるので、隠さず積む）。
+    let cost = gateway.estimate_cost_usd_micros(
+        opts.model
+            .as_deref()
+            .unwrap_or_else(|| gateway.default_model()),
+        usage,
+    );
+    gateway
+        .record_generation(
+            run.ctx,
+            &GenerationRecord {
+                idempotency_key: format!("{}:{step}:land", run.idempotency_prefix),
+                model: opts
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| gateway.default_model().to_string()),
+                usage,
+                trace_id: run.trace_id.clone(),
+                input_preview: run.input_preview.clone(),
+                output_preview: preview(&text_acc),
+                app_id: run.app_id,
+            },
+        )
+        .await;
+    // **ステップは進めない**（`add_external`）。`spent.steps` はループの回数であり予算の軸で、
+    // 着地は予算を使い切った**外側**で起こる。ここで +1 すると `steps > max_steps` になり、
+    // チェックポイントから再開したときに「最初から予算超過」の状態が復元される。
+    // トークンとコストは実際に使ったぶんを隠さず積む。
+    state.spent.add_external(
+        usage.prompt_tokens.saturating_add(usage.completion_tokens),
+        usage.completion_tokens,
+        cost,
+    );
+    if !text_acc.is_empty() {
+        state.messages.push(LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![Block::Text { text: text_acc }],
+        });
+    }
+    Ok(())
 }
 
 /// 1 ステップ（1 LLM 生成＋そのツール実行）を回し、状態を進める。
