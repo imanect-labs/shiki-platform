@@ -150,31 +150,34 @@ impl SubagentTool {
 
     /// 子の実行オプション（ロールごとに system と予算を変える）。
     fn child_options(&self, role: Role) -> AgentOptions {
-        let mut opts = child_options(
-            &self.limits,
-            role.system(&self.system),
-            self.model.as_deref(),
-        );
-        if role == Role::Plan {
-            // 計画は 1 ターンで返る（ツールが無いのでループしない）。
-            opts.budget = crate::budget::Budget::autonomous(2, None, 20_000, 50_000);
-        }
-        opts
+        child_options(&self.limits, role, &self.system, self.model.as_deref())
     }
 }
+
+/// 検証ロールに足すステップ（1 ステップに並列取得を詰められない分の埋め合わせ）。
+const VERIFY_EXTRA_STEPS: usize = 6;
+
+/// 検証ロールのコンテキスト猶予。既定（24k）だと、読み込んだレポートと証拠台帳が
+/// 剪定で畳まれ、同じファイルを読み直してステップを溶かす（実測でその形になっていた）。
+const VERIFY_CONTEXT_TOKENS: usize = 64_000;
 
 /// 子の実行オプション（read-only の事前許可 ＋ `plan` 非提示 ＋ 小さめの予算）。
 ///
 /// 自由関数にしてあるのは、隔離の条件（承認の狭さ・plan 非提示・並列度）を gateway 無しで
 /// 単体検証できるようにするため。
-fn child_options(limits: &SubagentLimits, system: &str, model: Option<&str>) -> AgentOptions {
+fn child_options(
+    limits: &SubagentLimits,
+    role: Role,
+    research_system: &str,
+    model: Option<&str>,
+) -> AgentOptions {
     let mut opts = AgentOptions::autonomous(
         limits.max_steps,
         None,
         limits.max_tokens,
         limits.max_cost_usd_micros,
     );
-    opts.system = Some(system.to_string());
+    opts.system = Some(role.system(research_system).to_string());
     opts.model = model.map(str::to_string);
     // 1 応答の出力上限。既定（4096）だと findings を書き出す前に枠が尽きる（`max_response_tokens`）。
     opts.max_tokens = Some(limits.max_response_tokens);
@@ -187,6 +190,24 @@ fn child_options(limits: &SubagentLimits, system: &str, model: Option<&str>) -> 
         ToolName::WebSearch.as_str().to_string(),
         ToolName::WebFetch.as_str().to_string(),
     ]);
+    match role {
+        // 計画は 1 ターンで返る（ツールが無いのでループしない）。
+        Role::Plan => opts.budget = crate::budget::Budget::autonomous(2, None, 20_000, 50_000),
+        // 検証は**調査と形が違う**。調査は 1 ステップに複数取得を詰められるが、検証は
+        // 「読む → grep → grep」と直列に伸びる（実測: 8 ステップを読みと grep で使い切り、
+        // 指摘ゼロで終わったのが 2 run 連続）。ステップを広げ、あわせて剪定の猶予も広げる
+        // ——**レポートと証拠台帳の両方が畳まれると、検証に要る材料そのものが消える**。
+        Role::Verify => {
+            opts.budget = crate::budget::Budget::autonomous(
+                limits.max_steps + VERIFY_EXTRA_STEPS,
+                None,
+                limits.max_tokens,
+                limits.max_cost_usd_micros,
+            );
+            opts.context_soft_limit_tokens = VERIFY_CONTEXT_TOKENS;
+        }
+        Role::Research => {}
+    }
     opts
 }
 
@@ -411,7 +432,7 @@ mod tests {
     #[test]
     fn child_options_are_isolated_and_read_only() {
         let limits = SubagentLimits::default();
-        let opts = child_options(&limits, "sys", Some("m"));
+        let opts = child_options(&limits, Role::Research, "sys", Some("m"));
         assert!(
             !opts.offer_plan_tool,
             "plan は提示しない（限られたステップを使わせない）"
@@ -442,5 +463,24 @@ mod tests {
             crate::profile::DEFAULT_PARALLEL_READ_TOOLS
         );
         assert_eq!(opts.model.as_deref(), Some("m"));
+    }
+
+    /// 検証は調査より**直列に伸びる**ので、ステップと剪定の猶予を広げる（#407 の実測）。
+    #[test]
+    fn verify_gets_more_room_than_research() {
+        let limits = SubagentLimits::default();
+        let research = child_options(&limits, Role::Research, "sys", None);
+        let verify = child_options(&limits, Role::Verify, "sys", None);
+        assert!(
+            verify.budget.max_steps > research.budget.max_steps,
+            "検証のステップが調査以下だと、読みと grep で使い切って指摘ゼロになる"
+        );
+        assert!(
+            verify.context_soft_limit_tokens > research.context_soft_limit_tokens,
+            "レポートと証拠台帳が剪定で畳まれると、検証に要る材料そのものが消える"
+        );
+        // 計画は逆に小さい（ツールが無く 1 ターンで返る）。
+        let plan = child_options(&limits, Role::Plan, "sys", None);
+        assert!(plan.budget.max_steps < research.budget.max_steps);
     }
 }
