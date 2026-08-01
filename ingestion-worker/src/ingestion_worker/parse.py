@@ -82,6 +82,48 @@ def get_converter_holder() -> _ConverterHolder:
     return _holder
 
 
+class ParseSlots:
+    """同時に走る Docling 解析の有界カウンタ（スレッド安全）。
+
+    Docling の `convert` は同期で**キャンセルできない**。`asyncio.to_thread` は待つのを
+    やめるだけなので、呼び出し側（web_fetch は 90 秒）が諦めても解析スレッドは走り続ける。
+    モデルが失敗後に別の文書を試すと、応答済みの解析がスレッドに残り続けて CPU と
+    スレッドプールを食い潰す。よって**同時に走る解析数そのものを有界にする**。
+
+    - 上限に達している間の要求は**待たせずに 503**（キューに積むと、既に諦められた
+      クライアントぶんの仕事が延々と積み上がる＝有界にした意味が消える）。
+    - 解放は**スレッド側の finally** で行う。ハンドラ側の finally だと、切断で await が
+      中断された瞬間に「空いた」と誤認し、走り続けているスレッドを数え落とす。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = 0
+
+    def try_acquire(self, limit: int) -> bool:
+        with self._lock:
+            if self._active >= limit:
+                return False
+            self._active += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            self._active = max(0, self._active - 1)
+
+    @property
+    def active(self) -> int:
+        with self._lock:
+            return self._active
+
+
+_slots = ParseSlots()
+
+
+def get_parse_slots() -> ParseSlots:
+    return _slots
+
+
 def _parse_error(error: str, detail: str) -> HTTPException:
     return HTTPException(status_code=422, detail={"error": error, "detail": detail})
 
@@ -294,18 +336,54 @@ async def parse(req: ParseRequest) -> ParseResponse:
     if content_type not in _DOCLING_TYPES:
         raise _parse_error("unsupported_content_type", content_type)
 
+    # 重い準備（モデルのロード）に入る前に枠を取る。取れなければ即 503。
+    slots = get_parse_slots()
+    limit = get_settings().max_concurrent_parses
+    if not slots.try_acquire(limit):
+        busy = f"解析の同時実行が上限 {limit} に達しています。時間を置いて再試行してください"
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "parser_busy", "detail": busy},
+            headers={"Retry-After": "30"},
+        )
+    started = threading.Event()
+    try:
+        return await _docling_parse(req, data, content_type, started, slots)
+    finally:
+        # スレッドが起動していれば、解放は**スレッド側**（走り切った時点）で行う。
+        # 起動前に失敗・切断した場合だけここで戻す（二重解放しない）。
+        if not started.is_set():
+            slots.release()
+
+
+async def _docling_parse(
+    req: ParseRequest,
+    data: bytes,
+    content_type: str,
+    started: threading.Event,
+    slots: ParseSlots,
+) -> ParseResponse:
+    """Docling 本体。枠（`slots`）は呼び出し側が取得済みで、解放はスレッド側で行う。"""
     from docling.datamodel.base_models import ConversionStatus, DocumentStream
 
     logger.info("parse tenant=%s file=%s type=%s", req.tenant_id, req.file_name, content_type)
     converter = get_converter_holder().get()
+
+    def _convert() -> Any:
+        started.set()
+        try:
+            return converter.convert(
+                DocumentStream(name=req.file_name, stream=BytesIO(data)),
+                raises_on_error=False,
+            )
+        finally:
+            # 走り切った時点で解放する（呼び出し側が既に諦めていても同じ）。
+            slots.release()
+
     try:
         # Docling（OCR・表構造解析）は重い同期処理。イベントループをブロックすると
         # /healthz 含む全リクエストが止まるため、スレッドプールへ逃がす。
-        result = await asyncio.to_thread(
-            converter.convert,
-            DocumentStream(name=req.file_name, stream=BytesIO(data)),
-            raises_on_error=False,
-        )
+        result = await asyncio.to_thread(_convert)
     except Exception as exc:  # Docling 内部の予期しない失敗も 422 に正規化する。
         raise _parse_error("parse_failed", str(exc)) from exc
 

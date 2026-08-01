@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     embed_batch_size: int = 16
     # /edit が受け付ける文書バイトの上限（デコード後）。Rust 側 office と対にする。
     max_edit_bytes: int = 20 * 1024 * 1024
+    # 同時に走らせる Docling 解析の上限。Docling は同期でキャンセルできないため、
+    # 呼び出し側が諦めても解析スレッドは走り続ける。上限を超える要求は待たせずに
+    # 503 で返し、取り残しがスレッドプールと CPU を食い潰さないようにする（#405）。
+    max_concurrent_parses: int = 2
 
 
 @lru_cache

@@ -23,7 +23,7 @@
 //! 1. [`decode`] — Content-Type / meta / BOM から文字コードを決める（Shift_JIS の国内サイト対策）
 //! 2. [`extract`] — ノイズ除去 → 本文特定（Readability 相当）→ Markdown 化
 //! 3. [`doc`] — PDF/Office は ingestion-worker（Docling）へ回す。**URL ではなくバイト列を渡す**
-//! 4. [`render`] — 自己要約ヘッダ ＋ query 絞り込み ／ offset 続き読み ＋ 外部データ封筒
+//! 4. [`render`] — 自己要約ヘッダ ＋ query 絞り込み ／ offset 続き読み（境界は [`envelope`]）
 
 use std::fmt::Write as _;
 use std::net::SocketAddr;
@@ -38,17 +38,20 @@ use crate::tool::{Tool, ToolError, ToolOutcome};
 
 mod decode;
 mod doc;
+mod envelope;
 mod extract;
 mod input;
 mod render;
 mod sections;
 
 use input::{
-    base_type, file_name_of, is_html, is_textual, parse_options, validate_url, FetchTarget,
+    file_name_of, is_html, is_textual, parse_options, sniff_html, validate_url, FetchTarget,
 };
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_documents;
 #[cfg(test)]
 mod tests_efficiency;
 
@@ -271,8 +274,8 @@ impl Tool for WebFetchTool {
             return Ok(ToolOutcome::ok(head));
         }
 
-        let as_document = doc::is_document(content_type.as_deref());
-        if !is_textual(content_type.as_deref()) && !as_document {
+        let declared_doc = doc::classify(content_type.as_deref(), &target.url);
+        if !is_textual(content_type.as_deref()) && declared_doc.is_none() {
             return Ok(ToolOutcome::error(format!(
                 "HTTP {} | {} | {}\nテキストではないため本文を返しません",
                 status.as_u16(),
@@ -280,7 +283,7 @@ impl Tool for WebFetchTool {
                 target.url
             )));
         }
-        if as_document && self.parser.is_none() {
+        if declared_doc.is_some() && self.parser.is_none() {
             return Ok(ToolOutcome::error(format!(
                 "HTTP {} | {} | {}\n文書解析（Docling）が未配線のため本文を返せません",
                 status.as_u16(),
@@ -289,7 +292,7 @@ impl Tool for WebFetchTool {
             )));
         }
 
-        let cap = if as_document {
+        let cap = if declared_doc.is_some() {
             FETCH_DOC_CAP
         } else {
             FETCH_BODY_CAP
@@ -305,26 +308,37 @@ impl Tool for WebFetchTool {
             }
         };
 
+        // 宣言も拡張子も外れる配信（Content-Type 無しで PDF を返す等）への最後の砦。
+        let doc_type =
+            declared_doc.or_else(|| self.parser.is_some().then(|| doc::sniff(&body)).flatten());
         let bytes_in = body.len();
-        let page = if as_document {
-            // `parser` は上の分岐で配線済みを確認済み。
-            let Some(parser) = self.parser.as_ref() else {
-                return Ok(ToolOutcome::error(
-                    "文書解析（Docling）が未配線です".to_string(),
-                ));
-            };
-            match document_page(parser, ctx, &body, &target, content_type.as_deref()).await {
-                Ok(page) => page,
-                Err(message) => {
+        let page = match (doc_type, self.parser.as_ref()) {
+            (Some(mime), Some(parser)) => {
+                // **切れたバイト列をパーサへ渡さない**。PDF の相互参照表も OOXML の
+                // セントラルディレクトリも末尾にあるため、上限で切れた文書は必ず解析に失敗する。
+                // 「解析失敗」ではなく「大きすぎる」と返す方が、モデルは次の手を打てる。
+                if source_capped {
                     return Ok(ToolOutcome::error(format!(
-                        "HTTP {} | {}\n{message}",
+                        "HTTP {} | {}\n文書が取得上限 {} で切れているため解析しません\
+                         （PDF/Office は末尾の索引が欠けると必ず失敗します）。\
+                         分割された版か HTML 版を探してください。",
                         status.as_u16(),
-                        target.url
-                    )))
+                        target.url,
+                        human_cap(cap)
+                    )));
+                }
+                match document_page(parser, ctx, &body, &target, mime).await {
+                    Ok(page) => page,
+                    Err(message) => {
+                        return Ok(ToolOutcome::error(format!(
+                            "HTTP {} | {}\n{message}",
+                            status.as_u16(),
+                            target.url
+                        )))
+                    }
                 }
             }
-        } else {
-            text_page(body, content_type.as_deref(), &target).await?
+            _ => text_page(body, content_type.as_deref(), &target).await?,
         };
 
         let rendered = render::render(
@@ -365,11 +379,10 @@ async fn document_page(
     ctx: &AuthContext,
     body: &[u8],
     target: &FetchTarget,
-    content_type: Option<&str>,
+    content_type: &str,
 ) -> Result<render::Page, String> {
-    let content_type = base_type(content_type);
     let file_name = file_name_of(&target.url);
-    let parsed = doc::parse_to_markdown(parser, ctx, body, &content_type, &file_name).await?;
+    let parsed = doc::parse_to_markdown(parser, ctx, body, content_type, &file_name).await?;
     Ok(render::Page {
         title: parsed.title,
         byline: None,
@@ -397,7 +410,9 @@ async fn text_page(
 ) -> Result<render::Page, ToolError> {
     let decoded = decode::decode(&body, content_type);
     let encoding = decoded.encoding.to_string();
-    if !is_html(content_type) {
+    // Content-Type を返さないサーバでも HTML なら抽出へ回す（そうしないと生 HTML が流れる）。
+    let as_html = is_html(content_type) || (content_type.is_none() && sniff_html(&decoded.text));
+    if !as_html {
         return Ok(render::Page {
             title: None,
             byline: None,
@@ -425,6 +440,15 @@ async fn text_page(
         extractor: article.extractor,
         encoding,
     })
+}
+
+/// 取得上限を人が読む単位で表す（エラー文言用）。
+fn human_cap(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{} MiB", bytes / (1024 * 1024))
+    } else {
+        format!("{} KiB", bytes / 1024)
+    }
 }
 
 /// 応答ヘッダを文字列で取り出す（非 ASCII 等で読めなければ無視する）。

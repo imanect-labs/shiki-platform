@@ -294,6 +294,55 @@ def test_parse_rejects_invalid_base64(client: TestClient) -> None:
     assert resp.json()["detail"]["error"] == "invalid_content"
 
 
+def test_parse_slots_are_bounded_and_released() -> None:
+    """枠は上限で頭打ちになり、解放すると戻る。"""
+    slots = parse_mod.ParseSlots()
+    assert slots.try_acquire(2)
+    assert slots.try_acquire(2)
+    assert not slots.try_acquire(2)
+    assert slots.active == 2
+    slots.release()
+    assert slots.try_acquire(2)
+    assert slots.active == 2
+    slots.release()
+    slots.release()
+    # 過剰な解放でも負にならない（負になると上限が事実上無くなる）。
+    slots.release()
+    assert slots.active == 0
+
+
+def test_parse_returns_503_when_all_slots_are_busy(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同時解析が上限に達していたら、待たせずに 503 で断る（#405 レビュー指摘）。
+
+    Docling はキャンセルできないので、呼び出し側が諦めた解析はスレッドに残り続ける。
+    キューに積むと取り残しが積み上がって有界にした意味が消えるため、即座に断る。
+    """
+    from ingestion_worker.settings import Settings
+
+    monkeypatch.setattr(parse_mod, "get_settings", lambda: Settings(max_concurrent_parses=1))
+    slots = parse_mod.get_parse_slots()
+    assert slots.try_acquire(1)
+    try:
+        resp = client.post(
+            "/parse",
+            json={
+                "tenant_id": "a-corp",
+                "content_base64": base64.b64encode(b"%PDF-1.7\n").decode(),
+                "content_type": "application/pdf",
+                "file_name": "a.pdf",
+            },
+        )
+    finally:
+        slots.release()
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "parser_busy"
+    assert resp.headers["Retry-After"] == "30"
+    # 断った要求は枠を消費しない。
+    assert slots.active == 0
+
+
 def test_parse_rejects_oversized_inline_bytes(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
