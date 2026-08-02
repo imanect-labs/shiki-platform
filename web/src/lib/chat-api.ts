@@ -330,14 +330,10 @@ export async function getThread(id: string): Promise<Thread> {
   return toThread(await ok<ApiThread>(res));
 }
 
-type ApiMessage = {
-  id: string;
-  role: ChatRole;
-  content: ContentBlock[];
-  agent_mode?: boolean;
-  invoked_actions?: string[];
-  created_at: string;
-};
+/// メッセージのワイヤ型は **Rust の `chat::Message`（utoipa）から生成**したものを使う
+/// （手書きミラーを増やさない・codegen が正）。フィールドの必須性・名前・要素型が変われば
+/// ここが型エラーになる。
+type ApiMessage = components["schemas"]["Message"];
 
 export async function getThreadMessages(
   id: string,

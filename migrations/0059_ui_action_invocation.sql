@@ -25,9 +25,19 @@ create table ui_action_invocation (
     -- 実行したユーザー（principal.id）。共有スレッドで「誰が押したか」を残す。
     invoked_by text        not null,
     invoked_at timestamptz not null default now(),
+    -- 実行が**完了**した時刻（null = 確保しただけ）。確保はハンドラ実行の前に取るため、
+    -- 確保とハンドラ完了の間でプロセスが落ちると「発話も run も無いのに送信済み」の行が
+    -- 残る。UI へ「送信済み」と見せるのはここが埋まった行だけにし、埋まらないまま古く
+    -- なった確保は次の押下で**引き継げる**ようにして、詰まりを自己回復させる。
+    completed_at timestamptz,
     -- 実行で生まれた run（chat.submit の生成 run 等）。監査・調査との突合用。
     run_id     uuid,
     -- 二重送信の抑止はこの主キーそのもの（insert ... on conflict do nothing で確保する）。
     -- 先頭 2 列がスレッド単位の一覧（メッセージ取得時の同梱）にもそのまま効く。
     primary key (tenant_id, thread_id, message_id, action_id)
 );
+
+-- 参照側の外部キー列の索引。主キーは tenant_id 始まりなので、`on delete cascade` が使う
+-- 「thread_id = ?」「message_id = ?」の検索には効かない（スレッド/メッセージ削除が全表走査になる）。
+create index ui_action_invocation_thread_idx on ui_action_invocation (thread_id);
+create index ui_action_invocation_message_idx on ui_action_invocation (message_id);

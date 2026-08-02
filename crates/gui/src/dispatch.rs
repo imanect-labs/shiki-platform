@@ -128,13 +128,16 @@ pub trait ActionLedger: Send + Sync {
     /// 実行に失敗したときに確保を解く（押し直せる状態へ戻す・best-effort）。
     async fn release(&self, ctx: &AuthContext, source: &ActionSource, action_id: &str);
 
-    /// 実行で生まれた run を記録へ紐づける（best-effort・監査との突合用）。
-    async fn attach_run(
+    /// **実行が完了した**ことを記録する（`run_id` があれば紐づける・best-effort）。
+    ///
+    /// 確保はハンドラ実行の前に取るので、確保と完了は別の事実として持つ。UI へ
+    /// 「送信済み」と見せてよいのは完了した方だけ。
+    async fn complete(
         &self,
         ctx: &AuthContext,
         source: &ActionSource,
         action_id: &str,
-        run_id: Uuid,
+        run_id: Option<Uuid>,
     );
 }
 
@@ -217,12 +220,29 @@ impl ActionDispatcher {
 
         // 1 回だけの束縛は**実行前に確保**する。表示だけ直しても押せてしまうので、
         // 二重送信はここで潰す（#410）。確保できなければ実行そのものを行わない。
-        let ledger = self.single_use_ledger(binding)?;
-        if let Some(ledger) = ledger {
-            if !ledger.claim(ctx, source, action_id).await? {
-                self.deny(ctx, source, action_id, "already_invoked", trace_id)
+        // 台帳側の失敗（未配線・DB エラー）も実行を止める側なので Deny として残す
+        // — 公開 API で操作が拒否された事実は理由込みで追えるようにする。
+        let ledger = match self.single_use_ledger(binding) {
+            Ok(ledger) => ledger,
+            Err(e) => {
+                self.deny(ctx, source, action_id, "ledger_unavailable", trace_id)
                     .await;
-                return Err(ActionError::AlreadyInvoked);
+                return Err(e);
+            }
+        };
+        if let Some(ledger) = ledger {
+            match ledger.claim(ctx, source, action_id).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.deny(ctx, source, action_id, "already_invoked", trace_id)
+                        .await;
+                    return Err(ActionError::AlreadyInvoked);
+                }
+                Err(e) => {
+                    self.deny(ctx, source, action_id, "claim_failed", trace_id)
+                        .await;
+                    return Err(e);
+                }
             }
         }
 
@@ -235,10 +255,10 @@ impl ActionDispatcher {
                     .or_else(|| output.get("result").and_then(|r| r.get("run_id")))
                     .cloned()
                     .unwrap_or(json!(null));
+                // ここで初めて「実行された」ことが確定する（確保だけの行は UI に出さない）。
                 if let Some(ledger) = ledger {
-                    if let Some(id) = run_id.as_str().and_then(|s| Uuid::parse_str(s).ok()) {
-                        ledger.attach_run(ctx, source, action_id, id).await;
-                    }
+                    let id = run_id.as_str().and_then(|s| Uuid::parse_str(s).ok());
+                    ledger.complete(ctx, source, action_id, id).await;
                 }
                 self.record(
                     ctx,

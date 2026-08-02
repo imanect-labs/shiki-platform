@@ -72,22 +72,24 @@ impl ActionLedger for ChatActionLedger {
         }
     }
 
-    async fn attach_run(
+    async fn complete(
         &self,
         ctx: &authz::AuthContext,
         source: &ActionSource,
         action_id: &str,
-        run_id: Uuid,
+        run_id: Option<Uuid>,
     ) {
         let Some((thread_id, message_id)) = Self::chat_source(source) else {
             return;
         };
         if let Err(e) = self
             .store
-            .attach_ui_action_run(ctx, thread_id, message_id, action_id, run_id)
+            .complete_ui_action(ctx, thread_id, message_id, action_id, run_id)
             .await
         {
-            tracing::warn!(error = %e, action_id, "UI アクション実行台帳への run 紐づけに失敗");
+            // 完了を書けないと、実行されたのにカードが未送信のまま残る（押し直すと 409）。
+            // 実行そのものは成功しているので会話は進む。人が追えるようにログへ残す。
+            tracing::warn!(error = %e, action_id, "UI アクション実行台帳の完了記録に失敗");
         }
     }
 }

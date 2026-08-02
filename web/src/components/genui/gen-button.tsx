@@ -17,9 +17,12 @@ export function GenUiButton({ button }: { button: GenButtonProps }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [note, setNote] = React.useState<string | null>(null);
+  // サーバが 409 を返した経路（別タブで先に実行された等）はここで覚える。この経路は
+  // 会話の再読込を起こさないので、`invoked` だけに頼るとボタンが有効なまま残る。
+  const [alreadyInvoked, setAlreadyInvoked] = React.useState(false);
   // 1 回だけ実行できる束縛（chat.submit）は実行済みなら押せない（#410）。繰り返せる
   // 束縛はサーバが記録しないので常に false ＝何度でも押せる（従来どおり）。
-  const spent = invoked.has(button.on_click.action);
+  const spent = alreadyInvoked || invoked.has(button.on_click.action);
 
   const onClick = async () => {
     if (busy || spent) return;
@@ -31,8 +34,8 @@ export function GenUiButton({ button }: { button: GenButtonProps }) {
       setNote(describeActionResult(result));
       onActionCompleted?.(result);
     } catch (err) {
-      // 既に送信済みは失敗ではない（表示が追いつく前の二度押し）。
-      if (err instanceof UiActionAlreadyInvoked) setNote("送信済みです");
+      // 既に送信済みは失敗ではない（表示が追いつく前の二度押し）。押せない状態へ倒す。
+      if (err instanceof UiActionAlreadyInvoked) setAlreadyInvoked(true);
       else setError(describeActionError(err));
     } finally {
       setBusy(false);

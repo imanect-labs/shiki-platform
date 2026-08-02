@@ -461,6 +461,63 @@ async fn chat_submit_action_posts_message_and_undeclared_is_denied() {
     assert_eq!(invoked_by, "alice");
     assert!(run_id.is_some(), "生まれた run が紐づくこと");
 
+    // 確保だけ残って完了しなかった行は、猶予を過ぎたら引き継げる（確保直後にプロセスが
+    // 落ちても押し直せる＝詰まりの自己回復）。完了済みは古くても引き継がせない。
+    let age = |secs: i64| {
+        let pool = pool.clone();
+        let tenant = tenant.clone();
+        async move {
+            sqlx::query(
+                "UPDATE ui_action_invocation SET invoked_at = now() - make_interval(secs => $2) \
+                 WHERE tenant_id = $1 AND action_id = 'stuck'",
+            )
+            .bind(&tenant)
+            .bind(secs as f64)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    assert!(store
+        .claim_ui_action(&c, thread.id, asst_id, "stuck")
+        .await
+        .unwrap());
+    assert!(
+        !store
+            .claim_ui_action(&c, thread.id, asst_id, "stuck")
+            .await
+            .unwrap(),
+        "確保直後は引き継げない（同時押しは弾く）"
+    );
+    // 確保しただけの行は「送信済み」にしない（発話も run も無いのにカードが死なない）。
+    let msgs_pending = store.get_messages(&c, thread.id, None).await.unwrap();
+    assert!(
+        msgs_pending
+            .iter()
+            .all(|m| !m.invoked_actions.iter().any(|a| a == "stuck")),
+        "完了していない確保は UI へ送信済みとして出さないこと"
+    );
+    age(600).await;
+    assert!(
+        store
+            .claim_ui_action(&c, thread.id, asst_id, "stuck")
+            .await
+            .unwrap(),
+        "完了しないまま古くなった確保は引き継げること"
+    );
+    store
+        .complete_ui_action(&c, thread.id, asst_id, "stuck", None)
+        .await
+        .unwrap();
+    age(600).await;
+    assert!(
+        !store
+            .claim_ui_action(&c, thread.id, asst_id, "stuck")
+            .await
+            .unwrap(),
+        "完了済みは古くても引き継がせないこと"
+    );
+
     // 台帳が未配線なら**実行しない**（二重送信を抑止できない状態で run を作らない）。
     let mut no_ledger =
         gui::ActionDispatcher::new(storage::audit::AuditRecorder::new(pool.clone()));

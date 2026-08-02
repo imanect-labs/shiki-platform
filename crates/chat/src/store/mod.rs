@@ -9,6 +9,7 @@
 
 mod approval;
 mod autonomous;
+mod message_view;
 mod post;
 mod reaper;
 mod runs;
