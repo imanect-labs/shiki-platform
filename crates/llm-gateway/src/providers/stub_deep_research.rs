@@ -163,7 +163,9 @@ pub(super) fn deep_research_call(req: &GenerateRequest, prompt_tokens: u64) -> O
         _ => Vec::new(),
     };
     if calls.is_empty() {
-        return Some(text_stream(DEEP_RESEARCH_REPORT, prompt_tokens));
+        // 最後の発話も**反映後**の本文にする。検証で直した箇所を会話で言い直したら、
+        // ユーザーが受け取るものとして直っていないのと同じ。
+        return Some(text_stream(&deep_research_final(), prompt_tokens));
     }
     Some(tool_calls_stream(calls, prompt_tokens))
 }

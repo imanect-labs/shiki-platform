@@ -117,8 +117,10 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
   const draft = page.getByTestId("note-draft-card").first();
   await expect(draft).toBeVisible();
   await expect(draft).toContainText("2026年 国内SaaS市場の調査");
-  // 提出されるのは**検証の指摘を反映した後**の本文（証拠 1 系統なのに「独立 2 系統」と
-  // 断定していた箇所が直っている）。
+  // 提出されるのは**検証の指摘を反映した後**の本文。証拠は E1 の 1 系統しか無いのに
+  // 「独立 2 系統が一致」と断定していた箇所が、検証者の指摘で直っている。
+  // ユーザーが受け取る面（会話・下書き）のどこにも断定が残っていないことを見る
+  // ——委譲した事実だけを見ると、指摘を無視する回帰を通してしまう。
   await draft.click();
   await expect(page.getByText("出典 1 系統・別集計とは不一致").first()).toBeVisible();
   await expect(page.getByText("独立 2 系統が一致")).toHaveCount(0);
