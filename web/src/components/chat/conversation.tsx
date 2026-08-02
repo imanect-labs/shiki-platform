@@ -35,7 +35,7 @@ import { selectionKindLabel, type SelectionContext } from "@/lib/selection-conte
 import type { ActiveCommand } from "@/lib/slash-command";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
 import { ChatGenUiProvider } from "@/components/genui/action-context";
-import { invokeChatUiAction } from "@/lib/artifact-api";
+import { invokeChatUiAction, UiActionAlreadyInvoked } from "@/lib/artifact-api";
 import { SpecRenderer } from "@/components/genui/spec-renderer";
 import { SaveAsAppDialog, specHasChatOnlyAction } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
@@ -405,6 +405,9 @@ export function Conversation({
               try {
                 await invokeChatUiAction(threadId, a.messageId, a.actionId, a.params);
               } catch (e) {
+                // 既に送信済み（二重に積まれた・別タブから押した）はエラーにしない。
+                // 再読込でカードが送信済み表示になるので、それが答えになる（#410）。
+                if (e instanceof UiActionAlreadyInvoked) continue;
                 setError(e instanceof Error ? e.message : "回答の送信に失敗しました");
               }
             }
@@ -728,6 +731,7 @@ export function Conversation({
                 threadId={threadId}
                 messageId={m.id}
                 blocks={m.content}
+                invokedActions={m.invokedActions}
                 onUiAction={() => setReloadKey((k) => k + 1)}
               />
             ),
@@ -934,11 +938,14 @@ function AssistantRow({
   threadId,
   messageId,
   blocks,
+  invokedActions,
   onUiAction,
 }: {
   threadId: string;
   messageId: string;
   blocks: ContentBlock[];
+  /// このメッセージで実行済みの単発 UI アクション（サーバ記録・#410）。
+  invokedActions?: readonly string[];
   onUiAction: () => void;
 }) {
   const thinking = blocks
@@ -1019,6 +1026,7 @@ function AssistantRow({
           <ChatGenUiProvider
             threadId={threadId}
             messageId={messageId}
+            invokedActions={invokedActions}
             onActionCompleted={(result) => {
               // chat.submit は新しい発話と生成を作るため会話を再読込する。
               if (result.result.kind === "handler") onUiAction();

@@ -130,6 +130,85 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
   await expect(page.getByText("承認が必要です")).toHaveCount(0);
 });
 
+/// 回答済み・開始済みのカードが未操作へ巻き戻り、二度送信できてしまう回帰（#410）。
+///
+/// 見た目だけの話ではない。計画カードの「開始」を二度押せると**調査がまるごと二重に走る**
+/// （実測で 1 本あたり 253 ツール操作・十数分・実費）。表示の根拠（サーバ記録）と
+/// サーバ側の拒否は**対で**確かめる — 片方だけでは押せてしまう / 押せないのに未操作に見える。
+test("回答済み・開始済みのカードは巻き戻らず、二度送信もできない（#410）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await page.goto("/");
+  await createDeepResearchSkill(page);
+  await page.reload();
+
+  const input = page.getByLabel("メッセージを入力");
+  await input.fill(`/${COMMAND}`);
+  await expect(page.getByTestId("slash-command-menu")).toBeVisible({ timeout: 10_000 });
+  await input.press("Enter");
+  await input.fill("2026 年の国内 SaaS 市場規模を調べて");
+  await page.getByRole("button", { name: "送信" }).click();
+  await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
+
+  // 質問カードに回答する。
+  const options = page.getByTestId("genui-question-option");
+  await expect(options.first()).toBeVisible({ timeout: 60_000 });
+  await options.first().click();
+  await page.getByRole("button", { name: "次へ" }).click();
+  await expect(options.first()).toBeVisible();
+  await options.first().click();
+  await page.getByTestId("genui-question-submit").click();
+  await expect(page.getByText("回答を送信しました")).toBeVisible();
+
+  // リロードしても未回答へ戻らない（送信済みはローカル state ではなくサーバ記録が正）。
+  await page.reload();
+  await expect(page.getByTestId("genui-question-answered")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("genui-question-submit")).toHaveCount(0);
+  await expect(page.getByText("回答を送信しました")).toBeVisible();
+
+  // サーバも二度目を拒否する（409）。拒否された送信は発話も生成も作らない。
+  const retry = await page.evaluate(async () => {
+    const threadId = location.pathname.split("/").pop();
+    const csrf = document.cookie.match(/(?:^|;\s*)shiki_csrf=([^;]+)/);
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (csrf) headers["X-CSRF-Token"] = decodeURIComponent(csrf[1]);
+    const list = async () =>
+      (await (
+        await fetch(`/api/threads/${threadId}/messages`, { credentials: "include" })
+      ).json()) as { messages: { id: string; invoked_actions?: string[] }[] };
+    const before = await list();
+    const card = before.messages.find((m) => (m.invoked_actions ?? []).length > 0);
+    if (!card) return { status: 0, actionId: null, before: 0, after: 0 };
+    const res = await fetch(`/api/threads/${threadId}/messages/${card.id}/ui-actions`, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: JSON.stringify({ action_id: card.invoked_actions?.[0], params: { 再送: "だめ" } }),
+    });
+    const after = await list();
+    return {
+      status: res.status,
+      actionId: card.invoked_actions?.[0] ?? null,
+      before: before.messages.length,
+      after: after.messages.length,
+    };
+  });
+  expect(retry.actionId, "実行済み action がメッセージと一緒に返ること").not.toBeNull();
+  expect(retry.status, "二度目は 409").toBe(409);
+  expect(retry.after, "拒否された送信は発話を作らない").toBe(retry.before);
+
+  // 計画カードも同じ（こちらの二度押しが調査の二重実行になる）。
+  const planStart = page.getByTestId("genui-plan-start");
+  await expect(planStart).toBeVisible({ timeout: 60_000 });
+  await planStart.click();
+  await expect(page.getByTestId("genui-plan-submitted")).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("genui-plan-submitted")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("genui-plan-start")).toHaveCount(0);
+  if (SHOTS) {
+    await page.screenshot({ path: `${SHOTS}/deep-research-invoked.png`, fullPage: true });
+  }
+});
+
 test("deep research auto: 確認を省略して 1 ターンで完走する", async ({ page }) => {
   await loginViaKeycloak(page);
   await page.goto("/");

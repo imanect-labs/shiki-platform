@@ -211,6 +211,12 @@ pub struct Message {
     /// ブランチ構造の親（UI は線形取得）。
     #[serde(default)]
     pub parent_id: Option<Uuid>,
+    /// このメッセージで**実行済み**の単発 UI アクション id（#410）。
+    ///
+    /// 質問カード・計画カードの「送信済み」はこれを根拠に描く。ローカル state だけだと
+    /// 会話の再描画・リロードで未回答へ巻き戻り、同じカードから二度送信できてしまう。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invoked_actions: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 

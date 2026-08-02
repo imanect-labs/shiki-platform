@@ -16,6 +16,7 @@ mod sharing;
 mod stream;
 mod thread_pins;
 mod threads;
+mod ui_actions;
 
 pub use post::PostResult;
 pub use runs::{ClaimedRun, CurrentRun, CHAT_GENERATION_QUEUE};

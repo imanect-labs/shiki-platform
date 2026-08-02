@@ -47,7 +47,9 @@ pub mod vocab;
 
 pub use action::{ActionBinding, HandlerBinding, ToolBinding, WorkflowBinding, WorkflowPin};
 pub use chart::{ChartPoint, ChartSpec};
-pub use dispatch::{ActionDispatcher, ActionError, ActionHandler, ActionSource, WorkflowStarter};
+pub use dispatch::{
+    ActionDispatcher, ActionError, ActionHandler, ActionLedger, ActionSource, WorkflowStarter,
+};
 pub use emit_tool::EmitUiTool;
 pub use miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_store::{MiniAppStore, ResolvedMiniApp};

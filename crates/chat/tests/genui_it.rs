@@ -370,6 +370,8 @@ async fn chat_submit_action_posts_message_and_undeclared_is_denied() {
     let mut dispatcher =
         gui::ActionDispatcher::new(storage::audit::AuditRecorder::new(pool.clone()));
     dispatcher.register_handler(Arc::new(chat::ChatSubmitHandler::new(store.clone())));
+    // 単発アクションの実行台帳（#410）。本番の配線（wiring_gui）と同じ対で持たせる。
+    dispatcher.set_ledger(Arc::new(chat::ChatActionLedger::new(store.clone())));
     let source = gui::ActionSource::ChatMessage {
         thread_id: thread.id,
         message_id: asst_id,
@@ -396,6 +398,62 @@ async fn chat_submit_action_posts_message_and_undeclared_is_denied() {
         .content
         .iter()
         .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("とても良い")))));
+
+    // 同じカードの同じアクションは**二度実行できない**（#410）。表示だけ直しても押せて
+    // しまうので、二重送信は入口で潰す。計画カードならここが調査 run の二重起動になる。
+    let err = dispatcher
+        .dispatch(
+            &c,
+            &source,
+            &doc,
+            "submit",
+            serde_json::json!({ "comment": "もう一度" }),
+            None,
+        )
+        .await
+        .expect_err("二度目は拒否される");
+    assert!(matches!(err, gui::ActionError::AlreadyInvoked), "{err:?}");
+    let after_retry = store.get_messages(&c, thread.id, None).await.unwrap();
+    assert_eq!(
+        after_retry.len(),
+        msgs.len(),
+        "拒否された二度目は発話も生成も作らないこと"
+    );
+    // 実行済みは**メッセージと一緒に返る**（カードの「送信済み」表示の根拠）。
+    let card_message = after_retry
+        .iter()
+        .find(|m| m.id == asst_id)
+        .expect("カードを出したメッセージ");
+    assert_eq!(card_message.invoked_actions, vec!["submit".to_string()]);
+    assert!(
+        after_retry
+            .iter()
+            .filter(|m| m.id != asst_id)
+            .all(|m| m.invoked_actions.is_empty()),
+        "実行していないメッセージには付かないこと"
+    );
+    // 台帳には誰が押したか・生まれた run が残る（監査との突合用）。
+    let (invoked_by, run_id): (String, Option<Uuid>) = sqlx::query_as(
+        "SELECT invoked_by, run_id FROM ui_action_invocation \
+         WHERE tenant_id = $1 AND message_id = $2 AND action_id = 'submit'",
+    )
+    .bind(&tenant)
+    .bind(asst_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(invoked_by, "alice");
+    assert!(run_id.is_some(), "生まれた run が紐づくこと");
+
+    // 台帳が未配線なら**実行しない**（二重送信を抑止できない状態で run を作らない）。
+    let mut no_ledger =
+        gui::ActionDispatcher::new(storage::audit::AuditRecorder::new(pool.clone()));
+    no_ledger.register_handler(Arc::new(chat::ChatSubmitHandler::new(store.clone())));
+    let err = no_ledger
+        .dispatch(&c, &source, &doc, "submit", serde_json::json!({}), None)
+        .await
+        .expect_err("台帳が無ければ単発アクションは実行しない");
+    assert!(matches!(err, gui::ActionError::Unavailable(_)), "{err:?}");
 
     // 宣言済みアクションのみ実行できる（未宣言 id は NotFound＋Deny 監査・6.5）。
     let err = dispatcher

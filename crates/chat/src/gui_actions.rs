@@ -4,10 +4,93 @@
 //! [`ChatStore::post_message`]（editor 要求＋監査）の既存チョークポイントに委ねる
 //! （このハンドラ自身は権限を持たない・昇格しない）。
 
-use gui::{ActionError, ActionHandler, ActionSource, HandlerKind};
+use gui::{ActionError, ActionHandler, ActionLedger, ActionSource, HandlerKind};
+use uuid::Uuid;
 
 use crate::store::ChatStore;
 use crate::ChatError;
+
+/// 単発 UI アクションの実行台帳（#410・`ui_action_invocation`）。
+///
+/// 「押した」という事実をチャット側の一級の状態として持ち、二重送信の拒否とカードの
+/// 「送信済み」表示の両方をここから引く。ミニアプリ由来（[`ActionSource::MiniApp`]）は
+/// 何度でも実行できる UI なので対象外（そもそも単発束縛の `chat.submit` が使えない）。
+pub struct ChatActionLedger {
+    store: ChatStore,
+}
+
+impl ChatActionLedger {
+    pub fn new(store: ChatStore) -> Self {
+        ChatActionLedger { store }
+    }
+
+    /// チャット由来の発生源だけを取り出す（ミニアプリ由来は台帳を持たない）。
+    fn chat_source(source: &ActionSource) -> Option<(Uuid, Uuid)> {
+        match source {
+            ActionSource::ChatMessage {
+                thread_id,
+                message_id,
+            } => Some((*thread_id, *message_id)),
+            ActionSource::MiniApp { .. } => None,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ActionLedger for ChatActionLedger {
+    async fn claim(
+        &self,
+        ctx: &authz::AuthContext,
+        source: &ActionSource,
+        action_id: &str,
+    ) -> Result<bool, ActionError> {
+        // 単発束縛（chat.submit）はチャット内 UI からしか意味を持たない。想定外の
+        // 発生源で「確保できた」ことにせず、実行前に落とす（fail-closed）。
+        let Some((thread_id, message_id)) = Self::chat_source(source) else {
+            return Err(ActionError::Invalid(
+                "この操作はチャット内 UI からのみ実行できます".into(),
+            ));
+        };
+        self.store
+            .claim_ui_action(ctx, thread_id, message_id, action_id)
+            .await
+            .map_err(map_chat_err)
+    }
+
+    async fn release(&self, ctx: &authz::AuthContext, source: &ActionSource, action_id: &str) {
+        let Some((thread_id, message_id)) = Self::chat_source(source) else {
+            return;
+        };
+        if let Err(e) = self
+            .store
+            .release_ui_action(ctx, thread_id, message_id, action_id)
+            .await
+        {
+            // 解放できないと押し直せないままになるが、実行自体は失敗しているので
+            // 会話は壊れない。人が追えるようにログだけ残す。
+            tracing::warn!(error = %e, action_id, "UI アクションの確保解除に失敗");
+        }
+    }
+
+    async fn attach_run(
+        &self,
+        ctx: &authz::AuthContext,
+        source: &ActionSource,
+        action_id: &str,
+        run_id: Uuid,
+    ) {
+        let Some((thread_id, message_id)) = Self::chat_source(source) else {
+            return;
+        };
+        if let Err(e) = self
+            .store
+            .attach_ui_action_run(ctx, thread_id, message_id, action_id, run_id)
+            .await
+        {
+            tracing::warn!(error = %e, action_id, "UI アクション実行台帳への run 紐づけに失敗");
+        }
+    }
+}
 
 /// フォーム送信をスレッド投稿へ写すハンドラ。
 pub struct ChatSubmitHandler {

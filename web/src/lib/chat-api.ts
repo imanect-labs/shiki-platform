@@ -87,6 +87,9 @@ export type Message = {
   role: ChatRole;
   content: ContentBlock[];
   agentMode?: boolean;
+  /// このメッセージで実行済みの単発 UI アクション id（#410）。
+  /// 質問カード・計画カードの「送信済み」表示の根拠（ローカル state では再描画で消える）。
+  invokedActions?: string[];
   createdAt: string;
 };
 
@@ -332,6 +335,7 @@ type ApiMessage = {
   role: ChatRole;
   content: ContentBlock[];
   agent_mode?: boolean;
+  invoked_actions?: string[];
   created_at: string;
 };
 
@@ -361,6 +365,7 @@ export async function getThreadMessages(
       role: m.role,
       content: m.content,
       agentMode: m.agent_mode,
+      invokedActions: m.invoked_actions ?? [],
       createdAt: m.created_at,
     })),
     activeRunId: data.active_run_id ?? null,

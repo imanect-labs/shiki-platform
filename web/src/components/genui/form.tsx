@@ -13,6 +13,7 @@ import type { FormField, FormProps } from "@/generated/gui-spec";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { UiActionAlreadyInvoked } from "@/lib/artifact-api";
 import { useGenUiAction } from "./action-context";
 import { ActionResultNote, describeActionError } from "./action-result";
 import {
@@ -25,7 +26,7 @@ import {
 } from "./form-fields";
 
 export function GenUiForm({ form }: { form: FormProps }) {
-  const { dispatch, onActionCompleted } = useGenUiAction();
+  const { dispatch, invoked, onActionCompleted } = useGenUiAction();
   const [values, setValues] = React.useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
     // text_input のみ親が値を持つ（他フィールドは自前で状態管理し onChange で反映）。
@@ -37,12 +38,15 @@ export function GenUiForm({ form }: { form: FormProps }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [doneNote, setDoneNote] = React.useState<string | null>(null);
+  // 1 回だけ実行できる束縛（chat.submit）は、実行済みなら押せないようにする（#410）。
+  // 検索のように繰り返せる束縛はサーバが記録しないので、ここは常に false ＝従来どおり。
+  const spent = invoked.has(form.submit.action);
 
   const setValue = (id: string, v: string) => setValues((prev) => ({ ...prev, [id]: v }));
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (busy) return;
+    if (busy || spent) return;
     setBusy(true);
     setError(null);
     setDoneNote(null);
@@ -51,7 +55,9 @@ export function GenUiForm({ form }: { form: FormProps }) {
       setDoneNote("送信しました");
       onActionCompleted?.(result);
     } catch (err) {
-      setError(describeActionError(err));
+      // 既に送信済みは失敗ではない（表示が追いつく前の二度押し）。
+      if (err instanceof UiActionAlreadyInvoked) setDoneNote("送信済みです");
+      else setError(describeActionError(err));
     } finally {
       setBusy(false);
     }
@@ -68,18 +74,18 @@ export function GenUiForm({ form }: { form: FormProps }) {
           field={field}
           value={values[field.id] ?? ""}
           onChange={(v) => setValue(field.id, v)}
-          disabled={busy}
+          disabled={busy || spent}
         />
       ))}
       <div className="flex items-center gap-3 pt-1">
-        <Button type="submit" size="sm" disabled={busy}>
+        <Button type="submit" size="sm" disabled={busy || spent}>
           {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
           {form.submit_label || "送信"}
         </Button>
-        {doneNote ? (
+        {doneNote || spent ? (
           <span className="inline-flex items-center gap-1 text-xs text-primary">
             <CheckCircle2 className="size-3.5" aria-hidden />
-            {doneNote}
+            {doneNote ?? "送信済みです"}
           </span>
         ) : null}
       </div>

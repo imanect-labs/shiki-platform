@@ -41,6 +41,9 @@ pub struct UiActionResponse {
 pub(crate) fn map_action_err(e: ActionError) -> ApiError {
     match e {
         ActionError::NotFound => ApiError::NotFound,
+        // 二重送信（同じカードの同じ操作を二度実行しようとした）。クライアントは 409 を
+        // 「既に送信済み」として扱い、カードを送信済み表示へ倒す（#410）。
+        ActionError::AlreadyInvoked => ApiError::Conflict,
         ActionError::Forbidden => ApiError::Forbidden,
         ActionError::Invalid(m) => ApiError::BadRequest(m),
         ActionError::Unavailable(m) => ApiError::ServiceUnavailable(m),
@@ -63,6 +66,7 @@ pub(crate) fn map_action_err(e: ActionError) -> ApiError {
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "対象が見つからない（未宣言アクション含む）"),
+        (status = 409, description = "この操作は送信済み（単発アクションの二重送信）"),
         (status = 503, description = "チャットまたは束縛先が無効"),
     ),
     security(("session" = [])),

@@ -74,6 +74,22 @@ struct MessageRow {
     created_at: DateTime<Utc>,
 }
 
+impl MessageRow {
+    /// 行を DTO へ写す（`invoked_actions` は行に無いので呼び出し側が後から埋める・#410）。
+    fn into_message(self) -> Result<Message, ChatError> {
+        Ok(Message {
+            id: self.id,
+            role: Role::parse(&self.role)
+                .ok_or_else(|| ChatError::Internal(format!("bad role: {}", self.role)))?,
+            content: self.content.0,
+            agent_mode: self.agent_mode,
+            parent_id: self.parent_id,
+            invoked_actions: Vec::new(),
+            created_at: self.created_at,
+        })
+    }
+}
+
 impl ChatStore {
     /// スレッドを新規作成する（作成者を owner タプルで付与）。
     pub async fn create_thread(
@@ -283,18 +299,18 @@ impl ChatStore {
         .map_err(map_db)?;
         let mut messages: Vec<Message> = rows
             .into_iter()
-            .map(|r| {
-                Ok(Message {
-                    id: r.id,
-                    role: Role::parse(&r.role)
-                        .ok_or_else(|| ChatError::Internal(format!("bad role: {}", r.role)))?,
-                    content: r.content.0,
-                    agent_mode: r.agent_mode,
-                    parent_id: r.parent_id,
-                    created_at: r.created_at,
-                })
-            })
+            .map(MessageRow::into_message)
             .collect::<Result<_, ChatError>>()?;
+
+        // 実行済みの単発 UI アクションを同梱する（#410）。カードの「送信済み」はローカル
+        // state ではなくこれを根拠に描く（再描画・リロードで未回答へ戻さない）。
+        // スレッド 1 件につき主キー先頭 2 列で引ける 1 クエリ（メッセージ数に比例させない）。
+        let mut invoked = self.invoked_ui_actions(ctx, thread_id).await?;
+        for m in &mut messages {
+            if let Some(ids) = invoked.remove(&m.id) {
+                m.invoked_actions = ids;
+            }
+        }
 
         // 共有されたスレッドの閲覧は**閲覧者自身の権限で引用を再評価**する（#37・
         // 「他人の引用をそのまま見せない」）。閲覧者が読めない引用チャンクは落とす
@@ -329,16 +345,9 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        let r = row.ok_or(ChatError::NotFound)?;
-        Ok(Message {
-            id: r.id,
-            role: Role::parse(&r.role)
-                .ok_or_else(|| ChatError::Internal(format!("bad role: {}", r.role)))?,
-            content: r.content.0,
-            agent_mode: r.agent_mode,
-            parent_id: r.parent_id,
-            created_at: r.created_at,
-        })
+        // 束縛の照合が用途なので `invoked_actions` は埋めない（二重送信の判定は台帳の
+        // 確保そのもので行う・#410）。一覧取得（`get_messages`）だけが UI へ同梱する。
+        row.ok_or(ChatError::NotFound)?.into_message()
     }
 
     /// 各メッセージの citation ブロックを閲覧者の viewer 権限で再評価し、読めない引用を落とす。

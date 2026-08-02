@@ -207,18 +207,29 @@ export async function resolveMiniApp(id: string, version?: number): Promise<Reso
 
 export type UiActionResult = { result: Record<string, unknown> };
 
+/// 同じカードの同じ操作が既に実行済み（サーバが二重送信を拒否した・#410）。
+///
+/// 表示の遅れ（別タブ・戻る操作・再送）で二度押しても事故にならないよう、UI はこれを
+/// 失敗ではなく「送信済み」として扱い、カードを送信済み表示へ倒す。
+export class UiActionAlreadyInvoked extends Error {
+  constructor() {
+    super("この操作は送信済みです");
+    this.name = "UiActionAlreadyInvoked";
+  }
+}
+
 export async function invokeChatUiAction(
   threadId: string,
   messageId: string,
   actionId: string,
   params: unknown,
 ): Promise<UiActionResult> {
-  return ok<UiActionResult>(
-    await apiFetch(
-      `/threads/${threadId}/messages/${messageId}/ui-actions`,
-      json({ action_id: actionId, params }),
-    ),
+  const res = await apiFetch(
+    `/threads/${threadId}/messages/${messageId}/ui-actions`,
+    json({ action_id: actionId, params }),
   );
+  if (res.status === 409) throw new UiActionAlreadyInvoked();
+  return ok<UiActionResult>(res);
 }
 
 export async function invokeMiniAppUiAction(

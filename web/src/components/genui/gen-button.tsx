@@ -8,17 +8,21 @@ import { CheckCircle2, Loader2 } from "lucide-react";
 
 import type { ButtonProps as GenButtonProps } from "@/generated/gui-spec";
 import { Button } from "@/components/ui/button";
+import { UiActionAlreadyInvoked } from "@/lib/artifact-api";
 import { useGenUiAction } from "./action-context";
 import { ActionResultNote, describeActionError, describeActionResult } from "./action-result";
 
 export function GenUiButton({ button }: { button: GenButtonProps }) {
-  const { dispatch, onActionCompleted } = useGenUiAction();
+  const { dispatch, invoked, onActionCompleted } = useGenUiAction();
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [note, setNote] = React.useState<string | null>(null);
+  // 1 回だけ実行できる束縛（chat.submit）は実行済みなら押せない（#410）。繰り返せる
+  // 束縛はサーバが記録しないので常に false ＝何度でも押せる（従来どおり）。
+  const spent = invoked.has(button.on_click.action);
 
   const onClick = async () => {
-    if (busy) return;
+    if (busy || spent) return;
     setBusy(true);
     setError(null);
     setNote(null);
@@ -27,7 +31,9 @@ export function GenUiButton({ button }: { button: GenButtonProps }) {
       setNote(describeActionResult(result));
       onActionCompleted?.(result);
     } catch (err) {
-      setError(describeActionError(err));
+      // 既に送信済みは失敗ではない（表示が追いつく前の二度押し）。
+      if (err instanceof UiActionAlreadyInvoked) setNote("送信済みです");
+      else setError(describeActionError(err));
     } finally {
       setBusy(false);
     }
@@ -41,15 +47,15 @@ export function GenUiButton({ button }: { button: GenButtonProps }) {
           size="sm"
           variant={button.variant === "secondary" ? "secondary" : "default"}
           onClick={() => void onClick()}
-          disabled={busy}
+          disabled={busy || spent}
         >
           {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
           {button.label}
         </Button>
-        {note && !error ? (
+        {(note || spent) && !error ? (
           <span className="inline-flex items-center gap-1 text-xs text-primary">
             <CheckCircle2 className="size-3.5" aria-hidden />
-            完了
+            {spent && !note ? "送信済みです" : "完了"}
           </span>
         ) : null}
       </div>

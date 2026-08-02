@@ -50,6 +50,24 @@ impl ActionBinding {
             ActionBinding::Workflow(_) => "workflow",
         }
     }
+
+    /// **1 メッセージにつき 1 回だけ**実行できる束縛か（#410）。
+    ///
+    /// true の束縛は [`ActionLedger`](crate::ActionLedger) で実行前に確保され、二度目は
+    /// [`ActionError::AlreadyInvoked`](crate::ActionError::AlreadyInvoked) で拒否される。
+    /// 閉語彙の網羅 match にしてあるので、束縛を足すときに必ずここで判断を迫られる。
+    pub fn single_use(&self) -> bool {
+        match self {
+            // chat.submit は**発話と生成 run をまるごと作る**。質問カードの回答も計画カードの
+            // 「開始」もこれで、二度押しは会話の二重化・調査の二重実行（実費）に直結する。
+            ActionBinding::Handler(b) => match b.handler {
+                HandlerKind::ChatSubmit => true,
+            },
+            // ツール束縛（検索）は同じフォームで条件を変えて何度でも引ける。ワークフロー起動も
+            // 「もう一度回す」があり得るので抑止しない（起動の冪等性は workflow-engine の関心事）。
+            ActionBinding::Tool(_) | ActionBinding::Workflow(_) => false,
+        }
+    }
 }
 
 /// ツール束縛。
@@ -134,6 +152,29 @@ mod tests {
             "type": "http", "id": "x", "url": "https://evil.example"
         }))
         .is_err());
+    }
+
+    /// 1 回だけ実行できる束縛（#410）。`chat.submit` は発話と生成 run を作るので単発、
+    /// 検索・ワークフロー起動は繰り返して当然なので抑止しない。
+    #[test]
+    fn only_chat_submit_is_single_use() {
+        let handler: ActionBinding = serde_json::from_value(serde_json::json!({
+            "type": "handler", "id": "submit", "handler": "chat.submit"
+        }))
+        .unwrap();
+        assert!(handler.single_use());
+
+        let tool: ActionBinding = serde_json::from_value(serde_json::json!({
+            "type": "tool", "id": "search", "tool": "doc_search"
+        }))
+        .unwrap();
+        assert!(!tool.single_use());
+
+        let workflow: ActionBinding = serde_json::from_value(serde_json::json!({
+            "type": "workflow", "id": "run", "workflow": { "name": "wf-1" }
+        }))
+        .unwrap();
+        assert!(!workflow.single_use());
     }
 
     #[test]
