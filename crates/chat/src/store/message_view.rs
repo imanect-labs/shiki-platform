@@ -79,10 +79,30 @@ impl ChatStore {
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
-        let actors: std::collections::HashMap<Uuid, String> = rows.into_iter().collect();
+        // `generation_run.message_id` は UNIQUE ではないので、1 メッセージに複数の run が
+        // 紐づき得る。actor が食い違う行が混ざったら**行順に依存して勝者が決まる**ので、
+        // 一意に定まらない場合は「本人と確定できない」として落とす（fail-closed）。
+        let mut actors: std::collections::HashMap<Uuid, Option<String>> =
+            std::collections::HashMap::new();
+        for (message_id, actor) in rows {
+            match actors.entry(message_id) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(Some(actor));
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if e.get().as_deref() != Some(actor.as_str()) {
+                        e.insert(None);
+                    }
+                }
+            }
+        }
         for m in messages.iter_mut() {
-            // actor が引けないメッセージ（run 行が消えた等）は保守的に落とす。
-            if actors.get(&m.id).is_some_and(|a| *a == ctx.principal.id) {
+            // actor が引けないメッセージ（run 行が消えた・複数 actor で確定しない）は落とす。
+            if actors
+                .get(&m.id)
+                .and_then(Option::as_deref)
+                .is_some_and(|a| a == ctx.principal.id)
+            {
                 continue;
             }
             for b in &mut m.content {

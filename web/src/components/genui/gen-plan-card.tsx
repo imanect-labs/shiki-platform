@@ -115,8 +115,10 @@ export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
 
       <div className="mt-3 flex items-center gap-2">
         {done ? (
+          // 生成中に押した操作はまだ送られていない（順番待ち）。「開始しました」と書くと、
+          // 直下の「AI が書き終えたら送信します」と食い違う（質問カードと同じ作法）。
           <span className="text-xs text-primary" data-testid="genui-plan-submitted">
-            {SUBMITTED_LABEL[done]}
+            {ready ? SUBMITTED_LABEL[done] : "受け付けました"}
           </span>
         ) : revising ? (
           <>

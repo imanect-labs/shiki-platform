@@ -43,6 +43,7 @@ impl ActionLedger for ChatActionLedger {
         ctx: &authz::AuthContext,
         source: &ActionSource,
         action_id: &str,
+        trace_id: Option<&str>,
     ) -> Result<bool, ActionError> {
         // 単発束縛（chat.submit）はチャット内 UI からしか意味を持たない。想定外の
         // 発生源で「確保できた」ことにせず、実行前に落とす（fail-closed）。
@@ -52,7 +53,7 @@ impl ActionLedger for ChatActionLedger {
             ));
         };
         self.store
-            .claim_ui_action(ctx, thread_id, message_id, action_id)
+            .claim_ui_action(ctx, thread_id, message_id, action_id, trace_id)
             .await
             .map_err(map_chat_err)
     }
@@ -87,9 +88,10 @@ impl ActionLedger for ChatActionLedger {
             .complete_ui_action(ctx, thread_id, message_id, action_id, run_id)
             .await
         {
-            // 完了を書けないと、実行されたのにカードが未送信のまま残る（押し直すと 409）。
-            // 実行そのものは成功しているので会話は進む。人が追えるようにログへ残す。
-            tracing::warn!(error = %e, action_id, "UI アクション実行台帳の完了記録に失敗");
+            // 実行は成功しているので会話は進み、確保も残るのでカードは押せないまま
+            // （二度実行はされない）。残るのは `completed_at IS NULL` の行だけなので、
+            // 運用から見えるよう error で残す。
+            tracing::error!(error = %e, action_id, "UI アクション実行台帳の完了記録に失敗");
         }
     }
 }

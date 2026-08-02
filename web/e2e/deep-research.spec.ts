@@ -201,6 +201,9 @@ test("回答済み・開始済みのカードは巻き戻らず、二度送信�
   await expect(planStart).toBeVisible({ timeout: 60_000 });
   await planStart.click();
   await expect(page.getByTestId("genui-plan-submitted")).toBeVisible();
+  // 生成中に押したときはクライアント側で順番待ちになり、まだサーバへ行っていない。
+  // その状態でリロードすると積んだ操作ごと消えるので、送られるまで待ってから見る。
+  await expect(page.getByTestId("genui-queued")).toHaveCount(0, { timeout: 60_000 });
   await page.reload();
   await expect(page.getByTestId("genui-plan-submitted")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("genui-plan-start")).toHaveCount(0);

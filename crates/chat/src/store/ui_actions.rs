@@ -5,43 +5,65 @@
 //!   ② メッセージ取得時に同梱してカードの「送信済み」表示の根拠にする
 //!      （[`ChatStore::invoked_ui_actions`]）
 //!
-//! 確保（claim）と完了（complete）は分けてある。確保はハンドラ実行の**前**に取るため、
-//! その間にプロセスが落ちると「発話も run も無いのに送信済み」の行が残る。UI へ送信済みと
-//! 見せるのは完了した行だけにし、完了しないまま古くなった確保は次の押下で引き継げるように
-//! して、詰まりを自己回復させる（人手の掃除を要らなくする）。
+//! 確保（claim）と完了（complete）は分けてある。確保はハンドラ実行の**前**に取るので、
+//! 「確保はしたが実行が終わっていない」中間状態が存在する。**確保は決して奪わない**
+//! （後述）ので、行が 1 つでもあれば UI は送信済みとして扱う。
+//!
+//! ### 完了しない確保を引き継がない理由
+//!
+//! `chat.submit` は非冪等（実行のたびに発話と生成 run が増える）。確保を「古いから」と
+//! 引き継ぐと、**post_message がコミットした直後に落ちた**ケースで副作用が二度走る
+//! ——この台帳が防ぐはずのものそのものになる。副作用が起きたかどうかを外から確実に
+//! 見分ける方法は無いので、詰まりの自己回復は諦め、**二度実行しない**方を取る。
+//!
+//! 確保だけ残って完了しなかった行の実害は「そのカードが押せないまま残る」ことに限られ、
+//! 発話や run が壊れることはない（ユーザーは普通に発話すれば会話を続けられる）。
+//! 完了できなかった事実は error ログに残し、`completed_at IS NULL` の古い行として
+//! 運用側から見えるようにしてある（回復は当該行の削除）。
 //!
 //! 同じ事実は監査（`ui_action.invoke` の Allow）にも残るが、あれは追記専用の台帳で保持期間も
 //! アクセス経路も別物なので、UI の描画根拠にはしない。
 
 use std::collections::HashMap;
 
-use authz::AuthContext;
+use authz::{AuthContext, Relation};
 use uuid::Uuid;
 
 use super::ChatStore;
 use crate::ChatError;
 
-/// 完了しない確保を引き継げるようになるまでの猶予。
+/// 完了記録の再試行回数（1 回目を含む）。
 ///
-/// 確保からハンドラ完了までは通常 1 秒未満（`chat.submit` は 1 トランザクションの投稿）。
-/// ネットワークの詰まりや遅い実行を巻き込まないよう十分長く、押し直せないまま放置される
-/// 時間としては許容できる長さに取る。
-const CLAIM_TAKEOVER_SECS: f64 = 300.0;
+/// ここを落とすと「実行されたのに未完了の行」が残る。実害は運用上の見え方だけだが、
+/// 一過性の DB エラーで残すのはもったいないので数回粘る。
+const COMPLETE_ATTEMPTS: u32 = 3;
 
 impl ChatStore {
-    /// 単発アクションを実行前に確保する。既に実行済みなら `false`（実行してはいけない）。
+    /// 単発アクションを実行前に確保する。既に確保されていれば `false`（実行してはいけない）。
     ///
-    /// 競合は主キーで潰す（`on conflict`）ため、同時押し・二重 POST でも実行に進めるのは
-    /// 高々 1 つ。**完了しないまま [`CLAIM_TAKEOVER_SECS`] を過ぎた確保だけ**は引き継ぐ
-    /// （確保直後にワーカーが落ちたケースの自己回復）。呼び出し元（`ActionDispatcher`）は
-    /// 対象メッセージを thread viewer 認可つきで引いた後にここへ来る。
+    /// 競合は主キーで潰す（`on conflict do nothing`）ため、同時押し・二重 POST でも実行に
+    /// 進めるのは高々 1 つ。**一度取られた確保は奪わない**（モジュール冒頭の理由）。
+    ///
+    /// 認可は **thread editor** を要求する。単発束縛は `chat.submit`＝発話であり、実行時に
+    /// `post_message` が editor を要求する。そこまで待つと**閲覧者でも確保だけは取れて**
+    /// しまい、正規の編集者が 409 で弾かれる（実行が失敗して解放されるまでの間、共有相手が
+    /// カードを塞げる）。副作用の無い認可はここで先に通す。
     pub async fn claim_ui_action(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
         message_id: Uuid,
         action_id: &str,
+        trace_id: Option<&str>,
     ) -> Result<bool, ChatError> {
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Editor,
+            "thread.ui_action",
+            trace_id,
+        )
+        .await?;
         // メッセージの実在（＋テナント一致）を insert 側で確かめる。存在しない id で
         // 台帳だけ作らせない（FK 違反ではなく 0 行として静かに落とす）。
         let claimed = sqlx::query(
@@ -50,10 +72,7 @@ impl ChatStore {
              SELECT $1, $2, $3, $4, $5, $6 \
              FROM message m \
              WHERE m.id = $3 AND m.thread_id = $2 AND m.tenant_id = $1 \
-             ON CONFLICT (tenant_id, thread_id, message_id, action_id) DO UPDATE \
-                 SET invoked_by = excluded.invoked_by, invoked_at = now() \
-                 WHERE ui_action_invocation.completed_at IS NULL \
-                   AND ui_action_invocation.invoked_at < now() - make_interval(secs => $7)",
+             ON CONFLICT DO NOTHING",
         )
         .bind(&ctx.tenant_id)
         .bind(thread_id)
@@ -61,7 +80,6 @@ impl ChatStore {
         .bind(action_id)
         .bind(&ctx.org)
         .bind(&ctx.principal.id)
-        .bind(CLAIM_TAKEOVER_SECS)
         .execute(&self.db)
         .await
         .map_err(|e| ChatError::Internal(format!("ui_action claim: {e}")))?;
@@ -70,8 +88,33 @@ impl ChatStore {
 
     /// 実行が完了したことを記録する（`run_id` があれば紐づける）。
     ///
-    /// ここが埋まった行だけが UI の「送信済み」になる。
+    /// 一過性の DB エラーで未完了の行を残さないよう数回まで再試行する。
     pub async fn complete_ui_action(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        message_id: Uuid,
+        action_id: &str,
+        run_id: Option<Uuid>,
+    ) -> Result<(), ChatError> {
+        let mut last = None;
+        for attempt in 1..=COMPLETE_ATTEMPTS {
+            match self
+                .mark_ui_action_complete(ctx, thread_id, message_id, action_id, run_id)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    tracing::warn!(error = %e, action_id, attempt, "UI アクションの完了記録に失敗（再試行）");
+                    last = Some(e);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50 * u64::from(attempt))).await;
+        }
+        Err(last.unwrap_or_else(|| ChatError::Internal("ui_action complete".into())))
+    }
+
+    async fn mark_ui_action_complete(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
@@ -118,7 +161,11 @@ impl ChatStore {
         Ok(())
     }
 
-    /// スレッド内の**完了した** action を message ごとに引く（主キー先頭 2 列でそのまま効く）。
+    /// スレッド内の確保済み action を message ごとに引く（主キー先頭 2 列でそのまま効く）。
+    ///
+    /// 完了前の行も含める。確保は奪われないので、行があるカードは**もう押せない**——
+    /// そこで「未送信」と描くと、押せないのに押せそうに見える（＝直そうとしている症状に
+    /// 戻る）。実行中の数百 ms も送信済みに見えるが、それは事実として正しい。
     pub(super) async fn invoked_ui_actions(
         &self,
         ctx: &AuthContext,
@@ -126,7 +173,7 @@ impl ChatStore {
     ) -> Result<HashMap<Uuid, Vec<String>>, ChatError> {
         let rows: Vec<(Uuid, String)> = sqlx::query_as(
             "SELECT message_id, action_id FROM ui_action_invocation \
-             WHERE tenant_id = $1 AND thread_id = $2 AND completed_at IS NOT NULL \
+             WHERE tenant_id = $1 AND thread_id = $2 \
              ORDER BY message_id, action_id",
         )
         .bind(&ctx.tenant_id)

@@ -117,12 +117,16 @@ pub trait WorkflowStarter: Send + Sync {
 /// （chat の `ChatActionLedger`）に置き、`AuthContext` のテナントで必ず絞る。
 #[async_trait::async_trait]
 pub trait ActionLedger: Send + Sync {
-    /// **実行前に**確保する。既に実行済みなら `Ok(false)`（実行してはいけない）。
+    /// **実行前に**確保する。既に確保されていれば `Ok(false)`（実行してはいけない）。
+    ///
+    /// 実装は**副作用の無い認可**（chat なら thread editor）をここで済ませること。実行時の
+    /// 認可まで待つと、権限の無い相手でも確保だけは取れてしまう。
     async fn claim(
         &self,
         ctx: &AuthContext,
         source: &ActionSource,
         action_id: &str,
+        trace_id: Option<&str>,
     ) -> Result<bool, ActionError>;
 
     /// 実行に失敗したときに確保を解く（押し直せる状態へ戻す・best-effort）。
@@ -130,8 +134,8 @@ pub trait ActionLedger: Send + Sync {
 
     /// **実行が完了した**ことを記録する（`run_id` があれば紐づける・best-effort）。
     ///
-    /// 確保はハンドラ実行の前に取るので、確保と完了は別の事実として持つ。UI へ
-    /// 「送信済み」と見せてよいのは完了した方だけ。
+    /// 確保はハンドラ実行の前に取るので、確保と完了は別の事実として持つ。完了できなくても
+    /// 実行は成功しているため、確保はそのまま残す（奪わせない）。
     async fn complete(
         &self,
         ctx: &AuthContext,
@@ -231,7 +235,7 @@ impl ActionDispatcher {
             }
         };
         if let Some(ledger) = ledger {
-            match ledger.claim(ctx, source, action_id).await {
+            match ledger.claim(ctx, source, action_id, trace_id).await {
                 Ok(true) => {}
                 Ok(false) => {
                     self.deny(ctx, source, action_id, "already_invoked", trace_id)
