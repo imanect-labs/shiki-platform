@@ -44,7 +44,10 @@ const BASE_CSS = `
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; width: ${SLIDE_WIDTH}px; height: ${SLIDE_HEIGHT}px; overflow: hidden; }
   body {
-    font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", system-ui, sans-serif;
+    /* 末尾の絵文字フォントは字形が無いコードポイントだけの受け皿（globals.css と同じ作法）。
+       スライドは srcdoc の独立文書なので、アプリ側の --font-sans が効かない。 */
+    font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", system-ui, sans-serif,
+      "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
     color: #1a1a1a; background: #ffffff;
     display: flex; flex-direction: column; justify-content: center;
     padding: 72px 96px; line-height: 1.5;

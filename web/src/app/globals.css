@@ -178,11 +178,15 @@
   --shadow-lg: var(--elevation-lg);
 
   /* 日本語 first-class（NFR-5）。OS 標準の日本語フォントを優先し、ビルド時に
-     外部フォント取得へ依存しない（重い JP webfont の配信も避ける）。 */
+     外部フォント取得へ依存しない（重い JP webfont の配信も避ける）。
+     末尾の絵文字フォントは**字形が無いコードポイントだけ**が落ちてくる受け皿
+     （generic family は不足グリフでカスケードを止めない）。AI の成果物は見出しの
+     マーカーなどで絵文字を使うことがあり、宣言が無いと Linux クライアントで
+     豆腐（□）になる。本文の字形が絵文字フォントから来ないよう sans-serif の後ろに置く。 */
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, "Hiragino Sans",
     "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", "YuGothic",
-    "Meiryo", sans-serif;
+    "Meiryo", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
 
   --ease-standard: var(--ease-standard);
 
