@@ -377,6 +377,22 @@ async fn chat_submit_action_posts_message_and_undeclared_is_denied() {
         message_id: asst_id,
     };
     let before = store.get_messages(&c, thread.id, None).await.unwrap().len();
+
+    // 実行に**失敗した**送信は確保を解放して押し直せる（#410）。空フォームはハンドラが弾く。
+    let err = dispatcher
+        .dispatch(
+            &c,
+            &source,
+            &doc,
+            "submit",
+            serde_json::json!({ "comment": "   " }),
+            None,
+        )
+        .await
+        .expect_err("空フォームは拒否される");
+    assert!(matches!(err, gui::ActionError::Invalid(_)), "{err:?}");
+
+    // 直前の失敗で確保が残っていればここが 409 になる（＝解放できていることの検査）。
     let result = dispatcher
         .dispatch(
             &c,
