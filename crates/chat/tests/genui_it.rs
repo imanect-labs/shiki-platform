@@ -140,8 +140,32 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
 
+/// このファイルのワーカーを**同時に走らせない**ための直列化ロック。
+///
+/// 生成の待ち行列は DB 単位で 1 本なので、同じ DB に対して複数テストのワーカーが立つと、
+/// **別のテストのワーカーが run を掴んだまま**そのテストのランタイムごと消える。掴まれた
+/// run はリース失効まで進まず、待っている側は 3 分待って落ちる（実測: CI Coverage の
+/// `chat_submit_action_posts_message_and_undeclared_is_denied` が 180 秒でタイムアウト）。
+/// ワーカーを使うテストは、その間このロックを保持する。
+static WORKER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// ワーカー＋検証層＋ストア一式を組む（emit_ui は agent_mode でのみ提示される）。
-async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<gui::SpecValidator>) {
+///
+/// 戻り値のガードを**テストの最後まで**持つこと（落とすと他テストのワーカーが動き出す）。
+async fn spawn_worker(
+    pool: &PgPool,
+) -> (
+    ChatStore,
+    Arc<gui::SpecValidator>,
+    tokio::sync::MutexGuard<'static, ()>,
+) {
+    let guard = WORKER_LOCK.lock().await;
+    let (store, validator) = build_worker(pool).await;
+    (store, validator, guard)
+}
+
+/// 組み立てだけ（直列化は呼び出し側の [`spawn_worker`] が持つ）。
+async fn build_worker(pool: &PgPool) -> (ChatStore, Arc<gui::SpecValidator>) {
     let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
         .await
         .unwrap();
@@ -220,7 +244,7 @@ async fn run_to_done(
 async fn validated_generative_ui_is_streamed_and_persisted() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
-    let (store, _validator) = spawn_worker(&pool).await;
+    let (store, _validator, _worker) = spawn_worker(&pool).await;
     let c = ctx(&tenant);
     let thread = store
         .create_thread(&c, "t", true, None, None)
@@ -292,7 +316,7 @@ async fn validated_generative_ui_is_streamed_and_persisted() {
 async fn invalid_spec_falls_back_to_text_and_is_audited() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
-    let (store, _validator) = spawn_worker(&pool).await;
+    let (store, _validator, _worker) = spawn_worker(&pool).await;
     let c = ctx(&tenant);
     let thread = store
         .create_thread(&c, "t", true, None, None)
@@ -342,7 +366,7 @@ async fn invalid_spec_falls_back_to_text_and_is_audited() {
 async fn chat_submit_action_posts_message_and_undeclared_is_denied() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
-    let (store, _validator) = spawn_worker(&pool).await;
+    let (store, _validator, _worker) = spawn_worker(&pool).await;
     let c = ctx(&tenant);
     let thread = store
         .create_thread(&c, "t", true, None, None)
@@ -574,7 +598,7 @@ async fn card_submit_carries_run_skill_pins_and_variant() {
 
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
-    let (store, _validator) = spawn_worker(&pool).await;
+    let (store, _validator, _worker) = spawn_worker(&pool).await;
     let c = ctx(&tenant);
     let thread = store
         .create_thread(&c, "t", true, None, None)
