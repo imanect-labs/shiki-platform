@@ -32,7 +32,7 @@
 - **Phase 6**（generative UI の `ActionBinding` / `ActionDispatcher`）
 - **Phase 11-pre**（グリッド UI の前例 `web/src/components/csv/csv-grid.tsx`・glide-data-grid）
 
-> ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-45〜49 を確認すること。**
+> ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-45〜50 を確認すること。**
 > v1 の PIT-17〜21（集計からの特定・述語材料の量・マスク列での並べ替え・テーブル間の権限素通り・
 > WHERE 強制注入の限界）は**そのまま生き続ける**。v2 はこれに加えて、
 > pivot 索引のプランナ統計欠如と駆動索引の不在（PIT-45）・SSE の権限材料鮮度と述語グループ化の破綻（PIT-46）・
@@ -50,6 +50,9 @@
 | 13.6 | レコード変更 outbox ＋ SSE 差分配信 ＋ 索引の自動昇格 | data | 13.3 |
 | 13.7 | 各面公開: workflow data ノード／shiki script／generative UI 束縛／chat ツール | api | 13.3, 13.4 |
 | 13.8 | RAG 統合スパイク（構造化データの permission-aware 検索） | rag | 13.3 |
+| 13.9 | 性能: 認可材料のリクエストスコープ memo＋BatchCheck＋スキーマキャッシュ | data | 13.3 |
+| 13.10 | 性能: SQL 互換インターフェース（parse→IR）＋最適化層＋プランキャッシュ | data | 13.3 |
+| 13.11 | 性能: 一括書込パス（COPY・チャンク Tx・索引遅延構築） | data | 13.2 |
 
 ---
 
@@ -378,7 +381,61 @@
 ## 参照
 
 - 設計正本: [data-platform.md](../data-platform.md)
-- 落とし穴: [design-caveats.md](../design-caveats.md) PIT-17〜21（v1 から継承）・**PIT-45〜49**（v2 が持ち込む）
+- 落とし穴: [design-caveats.md](../design-caveats.md) PIT-17〜21（v1 から継承）・**PIT-45〜50**（v2 が持ち込む）
 - v1 の実装: [phase-9.md](./phase-9.md) Task 9.2〜9.5・9.10
 - ワークフロー連携: [phase-10.md](./phase-10.md)（Stage B の data 系ノード）
 - テナンシー前提: [design.md](../design.md) §4.1（フルプール）
+
+### Task 13.9: 認可材料のリクエストスコープ memo ＋ BatchCheck ＋ スキーマキャッシュ
+- **area**: data / **path**: `crates/data/src/policy/material.rs`, `crates/authz/src/client.rs`
+- **依存**: 13.3
+- **仕様**（data-platform.md §16.4・§16.6）:
+  - グリッド 1 ページの読取で OpenFGA へ 2 往復（`list_objects(Role)` ＋ `list_objects(DataRecord)`）。
+    ページ＋件数＋lookup 解決を合わせると **1 画面で 6 往復以上**になり、p95 < 100ms を食い潰す。
+  - **PIT-18 の「キャッシュ禁止」はリクエストを跨いだキャッシュの話**であり、
+    同一リクエスト内のメモ化は安全（処理中に権限が変わる前提を置く必要がない）。
+    リクエストスコープの memo を入れる。**プロセス内・リクエスト跨ぎのキャッシュは引き続き禁止**。
+  - `AuthzClient` に **`batch_check`** を追加する（現状 post-filter は `try_join_all` で個別 check）。
+  - `data_table.schema` は全クエリで引かれる。**`schema_version` をキーにしたプロセス内キャッシュ**を置く
+    （スキーマは権限ではないのでキャッシュ禁止の対象外）。
+- **受け入れ条件**:
+  - [ ] グリッド 1 画面の読取で OpenFGA 往復が 2 回以下（計測）
+  - [ ] **リクエストを跨いだ材料の再利用が無いことをテストで固定**（権限剥奪が次リクエストで即反映・PIT-18）
+  - [ ] スキーマ改訂後の最初のクエリが新スキーマで動く（`schema_version` 無効化の確認）
+
+### Task 13.10: SQL 互換インターフェース ＋ 最適化層 ＋ プランキャッシュ
+- **area**: data / **path**: `crates/data/src/sql/`, `crates/data/src/query/`
+- **依存**: 13.3
+- **仕様**（data-platform.md §16.1〜§16.3）:
+  - **SQL を前段言語として受ける**。`sqlparser`（既にワークスペース依存）でパースし、
+    閉じた部分集合に照合してから **`DataQuery` IR へ変換**する。
+    **不変条件: 呼び出し側の SQL テキストを 1 文字もデータベースへ届けない**（IR が全経路の合流点）。
+    前例は Salesforce SOQL（pivot ストア上の SQL 面）と `crates/tabular/src/sql_guard.rs`。
+  - 受け付ける部分集合: `SELECT`（`*` 禁止）/ `FROM` / **宣言済みリンク列経由の `JOIN` のみ** /
+    `WHERE`（IR の閉集合）/ `GROUP BY` / `HAVING` / `ORDER BY` / `LIMIT`（`OFFSET` 禁止）。
+    拒否: DML・DDL・CTE・ウィンドウ関数・相関サブクエリ・`UNION`・任意関数・`pg_*`。
+    **JOIN を制限する理由は authz**——任意結合だと参照先の行ポリシー伝播が破綻する。
+  - 拒否理由を構造化して返し、LLM が自己修正できるようにする（`EmitUiTool` と同じ流儀）。
+  - **最適化層**: 述語の並べ替え・射影刈り込み・JOIN 除去・恒真恒偽の畳み込み。
+  - **プランキャッシュ**: クエリ**形状**（条件木構造・ソートキー・射影集合・畳み込み後の述語構造）を
+    キーにし、**同一形状は必ずバイト同一の SQL テキストを生成**する。現在の `format!` 15 箇所は
+    テキストが変動し、Postgres の parse/plan も sqlx の prepared statement キャッシュも効かない。
+- **受け入れ条件**:
+  - [ ] **SQL テキストがデータベースへ渡らないことをテストで固定**（IR 経由が必須・negative test）
+  - [ ] 部分集合外の SQL（DML・CTE・任意関数・`pg_*`）が 422 で拒否され、理由が構造化されて返る
+  - [ ] 行述語・フィールドマスク・集計抑制が SQL 経路でも同一に効く（`policy_threat_it.rs` を SQL 面でも実行）
+  - [ ] 同一形状のクエリが同一の SQL テキストを生成する（prepared statement が再利用される計測）
+  - [ ] チャットの `data_query` ツールが SQL で入力を受け、生成成功率が IR 直書きより高いこと（評価）
+
+### Task 13.11: 一括書込パス
+- **area**: data / **path**: `crates/data/src/bulk.rs`, `crates/jobq`
+- **依存**: 13.2
+- **仕様**（data-platform.md §16.7）:
+  - 10 万行インポートは本体 10 万行 ＋ 索引 80 万行。1 行ずつ INSERT では成立しない。
+  - **COPY ベースのバルクパス**（索引テーブルへも COPY）・**チャンク分割トランザクション**
+    （1 Tx で全件を抱えずロック保持時間を切る）・**索引の遅延構築**（§10 の `building` 状態を流用）。
+  - **Phase 13.2 のバックフィル自体がこの経路を要求する**ため、13.2 と同時か先行して着手する。
+- **受け入れ条件**:
+  - [ ] 10 万行のインポートが所定時間内に完了し、途中で他テナントの p95 を悪化させない
+  - [ ] 中断・再開でき、再実行が冪等
+  - [ ] 一括経路でも型検証・行数上限・多値要素数上限が効く（検証を迂回しない）
