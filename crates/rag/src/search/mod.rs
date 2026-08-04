@@ -236,7 +236,11 @@ impl SearchService {
         let rows = self.hydrate(ctx, &allowed).await?;
         timings.hydrate_ms = t.elapsed().as_millis() as u64 + liveness_ms;
         // 最終 hydration で落ちた分も採択から外す（rerank/build_results の filter_map と揃える）。
+        // ラウンド判定〜ここまでの間に org 不一致・削除が判明した分も `hydrate_dropped` に含める
+        // （除外件数を 1 つの指標で一貫して説明できるようにする・CodeRabbit）。
+        let before_final_hydrate = allowed.len();
         allowed.retain(|c| rows.contains_key(&c.chunk_id));
+        debug.hydrate_dropped += before_final_hydrate.saturating_sub(allowed.len()) as u32;
 
         // 6. rerank（認可済み・生存チャンクのみ）。
         let t = Instant::now();

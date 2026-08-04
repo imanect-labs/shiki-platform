@@ -93,7 +93,8 @@ export function DebugPanel({ debug }: { debug: SearchDebug }) {
       {debug.hydrate_dropped > 0 ? (
         <p className="mt-1 text-muted-foreground">
           別 org または削除済みのため {debug.hydrate_dropped} チャンクが除外されました（不足分は
-          バックフィルで補われます・#377）。
+          バックフィルで埋め直しますが、ラウンド上限や候補枯渇に達した場合は結果が要求件数に
+          満たないことがあります・#377）。
         </p>
       ) : null}
 

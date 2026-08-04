@@ -70,9 +70,11 @@ impl SearchService {
     /// org は tenant 内のもう一段の隔離境界。hydrate も `n.org = ctx.org` を課し、マルチ org テナントで
     /// 他 org 文書のチャンクが回答に混入しない（storage の直接オープンと同じ境界へ揃える）。
     ///
-    /// **バックフィルループ内から呼ぶ**（#377）。ここで行が引けないことは「この候補は最終結果に
-    /// 出せない」と同義なので、呼び出し側は採択条件として使い、落ちた分を次ラウンドで埋め直す。
-    /// ループ外で 1 回だけ呼ぶと、落ちた候補が pool を占めたまま結果が `top_k` に足りなくなる。
+    /// **プール確定後に 1 回だけ呼ぶ**（#377・CodeRabbit）。バックフィル各ラウンドでの採択判定は
+    /// 本メソッドではなく [`Self::live_chunk_ids`]（id だけを引く軽量クエリ）が担う —— ここで毎
+    /// ラウンド本文を引くと `fetch_k` 件ぶんの転送が繰り返され、従来より DB 負荷が大幅に増える。
+    /// ここでの本文取得は最終結果の組み立てと rerank のためで、落ちた chunk は呼び出し側の
+    /// `retain` で `allowed` から外れる（判定〜最終取得の間に削除された node がここで消える）。
     pub(super) async fn hydrate(
         &self,
         ctx: &AuthContext,
@@ -141,12 +143,15 @@ impl SearchService {
         let parents: HashMap<Uuid, String> = if parent_ids.is_empty() {
             HashMap::new()
         } else {
-            // 親本文も node.org で絞る（#371・CodeRabbit）。親子は同一 node（同 org）だが、
-            // hydrate と同じ org 境界を明示適用して parent_content 経由の他 org 混入を構造的に断つ。
+            // 親本文も node.org と deleted_at で絞る（#371・CodeRabbit）。親子は同一 node（同 org）
+            // だが、hydrate / live_chunk_ids と**同じ述語**を明示適用して parent_content 経由の
+            // 他 org 混入と削除済みノードの本文流出を構造的に断つ（子の hydrate とこの呼び出しの
+            // 間に soft-delete され得るため、org だけでは第三の防壁に穴が残る）。
             let rows: Vec<(Uuid, String)> = sqlx::query_as(
                 "select c.id, c.content from rag_chunk c \
                  join node n on n.id = c.node_id and n.tenant_id = c.tenant_id \
-                 where c.tenant_id = $1 and c.id = any($2) and n.org = $3",
+                 where c.tenant_id = $1 and c.id = any($2) and n.org = $3 \
+                   and n.deleted_at is null",
             )
             .bind(&ctx.tenant_id)
             .bind(&parent_ids)
