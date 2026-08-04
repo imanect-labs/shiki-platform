@@ -144,7 +144,8 @@ impl StorageService {
     /// 更新しないため二度と active に戻れず、token 引きも active 述語を要求するので**再 redeem が
     /// 構造的に不可能**。よって deny 台帳を残す意味が無く、残すと墓石が purge まで溜まる（Codex P2）。
     /// deny 台帳が要るのは「**リンクは active なまま**特定 user だけを止める」
-    /// [`Self::revoke_share_link_grant`] の経路だけ。
+    /// [`Self::revoke_share_link_grant`] の経路だけ。**例外は role が壊れてタプルを剥奪できなかった
+    /// 行**で、これだけは削除せず残す（消すと孤児タプルが追跡不能になる・下記コメント参照）。
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn reconcile_user_grants_for_link(
         &self,
@@ -190,9 +191,17 @@ impl StorageService {
         let held: std::collections::HashSet<(&str, &str)> =
             held.iter().map(|(u, r)| (u.as_str(), r.as_str())).collect();
 
+        // role が壊れていてタプルを剥奪できなかった行（下の一括 DELETE から除外する）。
+        let mut kept: Vec<&str> = Vec::new();
         for (user_id, grole) in &targets {
             let Some(role) = ShareRole::parse(grole) else {
-                continue; // 破損行は残す（黙って消さない）。
+                // 破損行は台帳に残す。消すと「剥奪されていない via_link タプル」を指す行が
+                // 失われ、どこからも参照できない孤児タプル＝恒久 fail-open になる（このリンクは
+                // 二度と active に戻らないので再 redeem による自己修復も起きない・CodeRabbit）。
+                // ここで Integrity にして tx を巻き戻さないのは、1 行の破損でリンク失効そのものが
+                // 永久に失敗し、他の解錠者のアクセスを剥奪できなくなる方が危険なため。
+                kept.push(user_id.as_str());
+                continue;
             };
             if held.contains(&(user_id.as_str(), grole.as_str())) {
                 continue; // 他 active リンクが保持 → タプルは消さない（参照カウント）。
@@ -206,11 +215,16 @@ impl StorageService {
         }
 
         // このリンクの台帳行を一括削除（上記の呼び出し規約によりリンクは恒久失効済み）。
-        sqlx::query("DELETE FROM node_share_link_grant WHERE link_id = $1 AND tenant_id = $2")
-            .bind(link_id)
-            .bind(tenant_id)
-            .execute(&mut **tx)
-            .await?;
+        // 破損行だけは残す（`<> ALL` は空配列に対して真なので、通常系は全削除のまま）。
+        sqlx::query(
+            "DELETE FROM node_share_link_grant \
+             WHERE link_id = $1 AND tenant_id = $2 AND user_id <> ALL($3)",
+        )
+        .bind(link_id)
+        .bind(tenant_id)
+        .bind(&kept)
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 

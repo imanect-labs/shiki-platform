@@ -4185,6 +4185,73 @@ async fn share_link_grant_revoke_rejects_corrupt_role() {
     );
 }
 
+/// リンク失効時、role が壊れて **タプルを剥奪できなかった行は台帳に残す**（CodeRabbit）。
+/// 一括削除に巻き込むと「剥奪されていない via_link タプル」を指す行が消え、どこからも参照できない
+/// 孤児タプル＝恒久 fail-open になる（失効済みリンクは再 redeem されないので自己修復もしない）。
+/// 同時に、1 行の破損でリンク失効そのものが失敗しないことも確かめる。
+#[tokio::test]
+async fn share_link_revoke_keeps_corrupt_grant_row() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+
+    let file = upload(&service, &http, &octx, None, "corrupt-sweep.txt", b"x")
+        .await
+        .expect("upload");
+    let l = service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            Some("pw-corrupt2"),
+            None,
+            None,
+        )
+        .await
+        .expect("create");
+    service
+        .redeem_share_link(&bctx, &l.token, Some("pw-corrupt2"), None)
+        .await
+        .expect("redeem");
+    sqlx::query("UPDATE node_share_link_grant SET role = 'bogus' WHERE link_id = $1")
+        .bind(l.link_id)
+        .execute(&pool)
+        .await
+        .expect("corrupt role");
+
+    // 破損行があってもリンク失効は成功する（fail-closed 方向を優先して tx を落とさない）。
+    service
+        .revoke_share_link(&octx, l.link_id, None)
+        .await
+        .expect("破損行があってもリンク失効は成功する");
+
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM node_share_link_grant WHERE link_id = $1")
+            .bind(l.link_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+    assert_eq!(
+        remaining, 1,
+        "剥奪できなかった破損行は台帳に残す（消すと孤児タプルが追跡不能になる）"
+    );
+}
+
 /// B-1: 毒行（未知 kind＝FgaObject を再構成できない破損/将来種別）は sweep 対象から外れる。残すと
 /// next_expiry が過去時刻を返し続け、タイマが全速ループに入るため（kind IN ('file','folder') 除外）。
 #[tokio::test]

@@ -65,6 +65,15 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .context("authz/JWKS 用 HTTP クライアントの初期化に失敗")?;
 
+    // Keycloak admin（同意インストール時の client 登録）専用クライアント（CodeRabbit）。
+    // 汎用 `http` を渡すと Keycloak の hang でインストール要求が永久に返らない。authz より緩い
+    // 上限にするのは、稀に走る provisioning の書き込み（token 取得＋client 登録）であって
+    // ホットパスの認可問い合わせではないため。
+    let keycloak_http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("Keycloak admin 用 HTTP クライアントの初期化に失敗")?;
+
     // OpenFGA（store/model を冪等にロード）。
     let fga_config = OpenFgaConfig {
         base_url: config.authz.base_url.clone(),
@@ -142,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
     // 同意インストール（Task 9.13b）: Keycloak admin（provisioner）があれば client 登録も行う。
     let installs = Arc::new(wiring_gateway::wire_installs(
         &config,
-        &http,
+        &keycloak_http,
         &db,
         &authz,
         &mini_app_code,
