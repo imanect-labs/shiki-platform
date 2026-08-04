@@ -779,3 +779,45 @@ fn rejects_plan_card_with_too_many_steps() {
     });
     assert_rejected_with(spec, "gui.too_many_steps");
 }
+
+#[test]
+fn rejects_single_use_binding_shared_by_two_components() {
+    // chat.submit は 1 メッセージ 1 回だけ実行できる（実行台帳の主キーが (message, action_id)・
+    // #410）。2 つの送信部品が同じ束縛を共有すると、片方を送った時点でもう片方も送信済みに
+    // なり、まだ答えていないカードが操作不能になる。保存時に潰す。
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "handler", "id": "submit", "handler": "chat.submit" } ],
+        "root": {
+            "component": "container",
+            "children": [
+                { "component": "question_card", "id": "q1", "submit": { "action": "submit" },
+                  "questions": [ { "id": "a", "question": "?", "options": [ { "label": "x" } ] } ] },
+                { "component": "question_card", "id": "q2", "submit": { "action": "submit" },
+                  "questions": [ { "id": "b", "question": "?", "options": [ { "label": "y" } ] } ] }
+            ]
+        }
+    });
+    assert_rejected_with(spec, "gui.action_shared_by_components");
+}
+
+#[test]
+fn allows_repeatable_binding_shared_by_two_components() {
+    // 繰り返せる束縛（検索）は共有してよい。台帳に載らないので取り合いにならない。
+    let spec = json!({
+        "version": 1,
+        "actions": [ { "type": "tool", "id": "search", "tool": "doc_search" } ],
+        "root": {
+            "component": "container",
+            "children": [
+                { "component": "button", "label": "検索", "on_click": { "action": "search" } },
+                { "component": "button", "label": "再検索", "on_click": { "action": "search" } }
+            ]
+        }
+    });
+    assert!(
+        validate_spec(&spec).is_ok(),
+        "{:?}",
+        validate_spec(&spec).err()
+    );
+}

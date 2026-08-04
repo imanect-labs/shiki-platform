@@ -259,7 +259,9 @@ impl ActionDispatcher {
                     .or_else(|| output.get("result").and_then(|r| r.get("run_id")))
                     .cloned()
                     .unwrap_or(json!(null));
-                // ここで初めて「実行された」ことが確定する（確保だけの行は UI に出さない）。
+                // ここで初めて「実行された」ことが確定する。確保だけの行も UI へは送信済みと
+                // して出る（確保は奪わないので、そのカードはもう押せない）。この記録は監査との
+                // 突合と、詰まりの発見（未完了のまま古くなった行）に使う。
                 if let Some(ledger) = ledger {
                     let id = run_id.as_str().and_then(|s| Uuid::parse_str(s).ok());
                     ledger.complete(ctx, source, action_id, id).await;

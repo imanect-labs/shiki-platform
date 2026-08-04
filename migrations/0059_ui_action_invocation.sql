@@ -46,3 +46,43 @@ create table ui_action_invocation (
 -- 「thread_id = ?」「message_id = ?」の検索には効かない（スレッド/メッセージ削除が全表走査になる）。
 create index ui_action_invocation_thread_idx on ui_action_invocation (thread_id);
 create index ui_action_invocation_message_idx on ui_action_invocation (message_id);
+
+-- 既に実行済みのカードを埋め戻す。
+--
+-- この表を空で作ると、0059 適用前に回答/開始したカードは `invoked_actions` に出ず、
+-- デプロイ後の再読込で**未送信の顔に戻って再度押せる**——まさにこの issue が塞ぐ事故が、
+-- 過去の会話にだけ残ってしまう。
+--
+-- 出所は `ui_action.invoke` の Allow 監査。**実行時の描画根拠に監査を使わない**方針は
+-- 変えない（保持ポリシに引きずられる）。ここは一度きりの移行で、その時点の事実を
+-- 一級の状態へ写し取るだけ。取り込むのは「チャット由来の handler 束縛」＝単発の
+-- `chat.submit` に限る（tool/workflow は繰り返せるので台帳に載せない）。
+-- 監査が消えていた分は埋まらないが、その場合も**空で作るより厳密に良い**。
+insert into ui_action_invocation
+    (tenant_id, thread_id, message_id, action_id, org, invoked_by, invoked_at, completed_at, run_id)
+select distinct on (a.tenant_id, thread_id, message_id, a.object_id)
+       a.tenant_id,
+       (a.metadata -> 'source' ->> 'thread_id')::uuid  as thread_id,
+       (a.metadata -> 'source' ->> 'message_id')::uuid as message_id,
+       a.object_id,
+       a.org,
+       a.actor,
+       a.created_at,
+       -- 監査に残っている＝実行は完了している（Allow は実行後に書かれる）。
+       a.created_at,
+       case when a.metadata ->> 'run_id' ~ '^[0-9a-fA-F-]{36}$'
+            then (a.metadata ->> 'run_id')::uuid end
+from audit_log a
+where a.action = 'ui_action.invoke'
+  and a.decision = 'allow'
+  and a.metadata -> 'source' ->> 'kind' = 'chat_message'
+  and a.metadata ->> 'binding' = 'handler'
+  -- 消えたスレッド/メッセージは外部キーで弾かれるので、存在するものだけに絞る。
+  and exists (
+      select 1 from message m
+      where m.id = (a.metadata -> 'source' ->> 'message_id')::uuid
+        and m.thread_id = (a.metadata -> 'source' ->> 'thread_id')::uuid
+        and m.tenant_id = a.tenant_id
+  )
+order by a.tenant_id, thread_id, message_id, a.object_id, a.created_at
+on conflict do nothing;

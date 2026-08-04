@@ -135,6 +135,20 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
 /// 見た目だけの話ではない。計画カードの「開始」を二度押せると**調査がまるごと二重に走る**
 /// （実測で 1 本あたり 253 ツール操作・十数分・実費）。表示の根拠（サーバ記録）と
 /// サーバ側の拒否は**対で**確かめる — 片方だけでは押せてしまう / 押せないのに未操作に見える。
+/// 押下がサーバの実行台帳へ届いた件数（`invoked_actions` を持つメッセージ数）。
+///
+/// UI の表示は待ちの根拠にならない。生成中に押した操作はクライアント側の順番待ちに積まれる
+/// だけで、確定メッセージへの差し替えで「順番待ち」の札は**送信前に**消え得る。その状態で
+/// リロードすると積んだ操作ごと消えるので、サーバの記録そのものを見る。
+async function invokedCount(page: import("@playwright/test").Page): Promise<number> {
+  return page.evaluate(async () => {
+    const threadId = location.pathname.split("/").filter(Boolean).pop();
+    const res = await fetch(`/api/threads/${threadId}/messages`, { credentials: "include" });
+    const data = (await res.json()) as { messages: { invoked_actions?: string[] }[] };
+    return data.messages.filter((m) => (m.invoked_actions ?? []).length > 0).length;
+  });
+}
+
 test("回答済み・開始済みのカードは巻き戻らず、二度送信もできない（#410）", async ({ page }) => {
   await loginViaKeycloak(page);
   await page.goto("/");
@@ -157,6 +171,12 @@ test("回答済み・開始済みのカードは巻き戻らず、二度送信�
   await expect(options.first()).toBeVisible();
   await options.first().click();
   await page.getByTestId("genui-question-submit").click();
+  await expect
+    .poll(() => invokedCount(page), {
+      timeout: 60_000,
+      message: "質問カードの回答がサーバへ記録されること",
+    })
+    .toBeGreaterThanOrEqual(1);
   await expect(page.getByText("回答を送信しました")).toBeVisible();
 
   // リロードしても未回答へ戻らない（送信済みはローカル state ではなくサーバ記録が正）。
@@ -201,21 +221,11 @@ test("回答済み・開始済みのカードは巻き戻らず、二度送信�
   await expect(planStart).toBeVisible({ timeout: 60_000 });
   await planStart.click();
   await expect(page.getByTestId("genui-plan-submitted")).toBeVisible();
-  // 生成中に押したときはクライアント側で順番待ちになり、まだサーバへ行っていない。その状態で
-  // リロードすると積んだ操作ごと消える。UI の表示（順番待ちの札）は確定メッセージへの
-  // 差し替えで先に消え得るので、**サーバの記録そのもの**が 2 件になるまで待つ
-  // （質問カード＋計画カード）。
   await expect
-    .poll(
-      async () =>
-        page.evaluate(async () => {
-          const threadId = location.pathname.split("/").filter(Boolean).pop();
-          const res = await fetch(`/api/threads/${threadId}/messages`, { credentials: "include" });
-          const data = (await res.json()) as { messages: { invoked_actions?: string[] }[] };
-          return data.messages.filter((m) => (m.invoked_actions ?? []).length > 0).length;
-        }),
-      { timeout: 60_000, message: "計画カードの押下がサーバへ記録されること" },
-    )
+    .poll(() => invokedCount(page), {
+      timeout: 60_000,
+      message: "計画カードの押下がサーバへ記録されること",
+    })
     .toBeGreaterThanOrEqual(2);
   await page.reload();
   await expect(page.getByTestId("genui-plan-submitted")).toBeVisible({ timeout: 30_000 });

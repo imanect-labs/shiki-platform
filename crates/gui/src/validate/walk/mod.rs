@@ -20,6 +20,8 @@ pub(super) struct Walk<'a> {
     form_ids: Vec<String>,
     /// フォーム部品 id（文書全体で一意・レンダラの DOM id 衝突を防ぐ）。
     field_ids: Vec<String>,
+    /// 既に参照された単発束縛（chat.submit）の id。2 つ目の参照は拒否する（#410）。
+    single_use_refs: Vec<String>,
 }
 
 impl<'a> Walk<'a> {
@@ -36,6 +38,7 @@ impl<'a> Walk<'a> {
             node_overflow: false,
             form_ids: Vec::new(),
             field_ids: Vec::new(),
+            single_use_refs: Vec::new(),
         }
     }
 
