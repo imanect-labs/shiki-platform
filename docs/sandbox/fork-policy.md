@@ -53,6 +53,12 @@
 - **wasm = `WasmProcess`**: V8＋wasm の仮想 FS/net。**既定ティアではない**（2026-07 に既定は gVisor へ移した・
   design §4.6）。web_fetch のような egress を単一ホストへ固定する短命・読み取り専用実行で使う
   （wasm を選ぶ理由は速度ではなく egress モデル。web_fetch 自体は urllib=Python を実行するため Pyodide 初期化は払う）。
+  **保守コストの注記（2026-08）**: 既定ではないティアのために wasmtime の脆弱性追従を負い続けている
+  （RUSTSEC-2026-0222/0223 = エンジン間の型インデックス混同・バルク操作中のプリエンプションによる
+  VM 内部状態の破壊。46.0.2 で解消）。既定が gVisor に移った以上、**wasm ティアは将来の廃止を検討する**
+  ——残す判断をするなら「egress を単一ホストへ固定する」という wasm 固有の価値を gVisor＋SNI プロキシ
+  （PIT-25）で代替できないことの再確認が要る。廃止すれば wasmtime・rusty_v8・Pyodide 一式の
+  追従（PIT-33 のアセット pin 含む）がまとめて不要になる。
 
 `validate::check_isolation()` は将来の機微度モデル導入時に、機微ワークロードで `UserspaceKernel` 要求を
 拒否/警告するポリシフック（現状は allow-all・隔離クラスは create 監査へ記録）。**NFR-1 は「KVM 前提」と
