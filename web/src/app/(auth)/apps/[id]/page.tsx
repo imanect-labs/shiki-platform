@@ -73,7 +73,7 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
             appId={app.id}
             version={app.version}
             onActionCompleted={(result) => {
-              if (result.result.kind === "workflow") {
+              if (result?.result.kind === "workflow") {
                 toast({ title: "ワークフローを起動しました" });
               }
             }}

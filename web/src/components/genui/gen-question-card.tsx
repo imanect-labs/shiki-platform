@@ -111,8 +111,10 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
       setSubmitted(true);
       onActionCompleted?.(result);
     } catch (err) {
-      // 既に送信済みならエラーではない（別タブ・戻る操作・再送）。送信済み表示へ倒す。
-      if (err instanceof UiActionAlreadyInvoked) setSubmitted(true);
+      // 既に確保済みならエラーではない（別タブ・戻る操作・再送）。ただし「実行中」かも
+      // しれないので、ローカルで固定せずサーバの記録に判断を戻す（実行が失敗すれば
+      // 確保は解放され、押し直せる状態に戻る）。
+      if (err instanceof UiActionAlreadyInvoked) onActionCompleted?.();
       else setError(describeActionError(err));
     } finally {
       setBusy(false);

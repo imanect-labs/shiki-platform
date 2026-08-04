@@ -1029,7 +1029,8 @@ function AssistantRow({
             invokedActions={invokedActions}
             onActionCompleted={(result) => {
               // chat.submit は新しい発話と生成を作るため会話を再読込する。
-              if (result.result.kind === "handler") onUiAction();
+              // 結果なし（409 を受けた）も再読込する＝送信済みかどうかはサーバに聞き直す。
+              if (!result || result.result.kind === "handler") onUiAction();
             }}
           >
             {uiSpecs.map((b, i) => (

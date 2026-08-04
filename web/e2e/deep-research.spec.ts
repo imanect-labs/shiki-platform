@@ -201,9 +201,22 @@ test("回答済み・開始済みのカードは巻き戻らず、二度送信�
   await expect(planStart).toBeVisible({ timeout: 60_000 });
   await planStart.click();
   await expect(page.getByTestId("genui-plan-submitted")).toBeVisible();
-  // 生成中に押したときはクライアント側で順番待ちになり、まだサーバへ行っていない。
-  // その状態でリロードすると積んだ操作ごと消えるので、送られるまで待ってから見る。
-  await expect(page.getByTestId("genui-queued")).toHaveCount(0, { timeout: 60_000 });
+  // 生成中に押したときはクライアント側で順番待ちになり、まだサーバへ行っていない。その状態で
+  // リロードすると積んだ操作ごと消える。UI の表示（順番待ちの札）は確定メッセージへの
+  // 差し替えで先に消え得るので、**サーバの記録そのもの**が 2 件になるまで待つ
+  // （質問カード＋計画カード）。
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(async () => {
+          const threadId = location.pathname.split("/").filter(Boolean).pop();
+          const res = await fetch(`/api/threads/${threadId}/messages`, { credentials: "include" });
+          const data = (await res.json()) as { messages: { invoked_actions?: string[] }[] };
+          return data.messages.filter((m) => (m.invoked_actions ?? []).length > 0).length;
+        }),
+      { timeout: 60_000, message: "計画カードの押下がサーバへ記録されること" },
+    )
+    .toBeGreaterThanOrEqual(2);
   await page.reload();
   await expect(page.getByTestId("genui-plan-submitted")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("genui-plan-start")).toHaveCount(0);

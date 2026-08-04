@@ -38,12 +38,11 @@ export function GenUiForm({ form }: { form: FormProps }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [doneNote, setDoneNote] = React.useState<string | null>(null);
-  // サーバが 409 を返した経路（別タブで先に実行された等）はここで覚える。この経路は
-  // 会話の再読込を起こさないので、`invoked` だけに頼ると送信ボタンが有効なまま残る。
-  const [alreadyInvoked, setAlreadyInvoked] = React.useState(false);
-  // 1 回だけ実行できる束縛（chat.submit）は、実行済みなら押せないようにする（#410）。
+  // 1 回だけ実行できる束縛（chat.submit）は、確保済みなら押せないようにする（#410）。
   // 検索のように繰り返せる束縛はサーバが記録しないので、ここは常に false ＝従来どおり。
-  const spent = alreadyInvoked || invoked.has(form.submit.action);
+  // **ローカルに送信済みフラグを持たない**: 確保は「実行中」かもしれず、その実行が失敗
+  // すれば解放されて押し直せる。押せるかどうかはサーバの記録だけに従わせる。
+  const spent = invoked.has(form.submit.action);
 
   const setValue = (id: string, v: string) => setValues((prev) => ({ ...prev, [id]: v }));
 
@@ -58,8 +57,9 @@ export function GenUiForm({ form }: { form: FormProps }) {
       setDoneNote("送信しました");
       onActionCompleted?.(result);
     } catch (err) {
-      // 既に送信済みは失敗ではない（表示が追いつく前の二度押し）。押せない状態へ倒す。
-      if (err instanceof UiActionAlreadyInvoked) setAlreadyInvoked(true);
+      // 既に確保済みは失敗ではない（表示が追いつく前の二度押し）。実行中の可能性が
+      // あるので、サーバの記録を読み直して判断を戻す。
+      if (err instanceof UiActionAlreadyInvoked) onActionCompleted?.();
       else setError(describeActionError(err));
     } finally {
       setBusy(false);

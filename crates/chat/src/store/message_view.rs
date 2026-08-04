@@ -115,6 +115,10 @@ impl ChatStore {
     }
 
     /// 閲覧者が該当ファイルを閲覧できるか（citation 再評価用・失敗時は保守的に false）。
+    ///
+    /// 引用は**文書の本文**（抜粋）を含むので、共有解除の反映が遅れると読めないはずの中身が
+    /// 見えたままになる。thread の認可（`require_thread`）と同じ理由で HigherConsistency を使う
+    /// （剥奪の即時反映を、キャッシュ由来の古い許可より優先する）。
     async fn can_view_file(&self, ctx: &AuthContext, node_id: &str) -> bool {
         let obj = ctx.ns().file(node_id);
         self.authz
@@ -122,7 +126,7 @@ impl ChatStore {
                 &ctx.subject(),
                 Relation::Viewer,
                 &obj,
-                Consistency::MinimizeLatency,
+                Consistency::HigherConsistency,
             )
             .await
             .unwrap_or(false)
