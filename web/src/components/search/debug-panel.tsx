@@ -17,6 +17,13 @@ export function DebugPanel({ debug }: { debug: SearchDebug }) {
       value: debug.authz_denied_chunks,
       accent: "denied" as const,
     },
+    // 他 org / 削除済みで本文が引けず落ちた分（#377）。これが無いと fused → rerank の減り方が
+    // 説明できない（権限 deny だけでは足りない）。
+    {
+      label: "org/削除 除外",
+      value: debug.hydrate_dropped,
+      accent: "denied" as const,
+    },
     { label: "rerank", value: debug.reranked },
   ];
   const stages = [
@@ -81,6 +88,13 @@ export function DebugPanel({ debug }: { debug: SearchDebug }) {
         <p className="mt-2 text-destructive/90">
           権限フィルタで {debug.authz_denied_files} ファイル（{debug.authz_denied_chunks}{" "}
           チャンク）が除外されました。
+        </p>
+      ) : null}
+      {debug.hydrate_dropped > 0 ? (
+        <p className="mt-1 text-muted-foreground">
+          別 org または削除済みのため {debug.hydrate_dropped} チャンクが除外されました（不足分は
+          バックフィルで埋め直しますが、ラウンド上限や候補枯渇に達した場合は結果が要求件数に
+          満たないことがあります・#377）。
         </p>
       ) : null}
 

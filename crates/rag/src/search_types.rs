@@ -94,6 +94,9 @@ pub struct SearchDebug {
     pub authz_denied_files: u32,
     /// バックフィル（over-fetch 再取得）の回数。
     pub backfill_rounds: u32,
+    /// post-filter は通ったが hydrate で落ちた chunk 数（他 org＝PIT-45 / 索引より先に削除済み）。
+    /// バックフィルが埋め直すので結果は欠けないが、恒常的に大きいなら索引が実体とずれている合図。
+    pub hydrate_dropped: u32,
     /// reranker に渡した候補数。
     pub reranked: u32,
     pub stage_ms: StageTimings,
