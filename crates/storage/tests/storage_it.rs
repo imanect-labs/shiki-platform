@@ -324,12 +324,15 @@ async fn grant_revoked_at(
     pool: &PgPool,
     link_id: Uuid,
     user_id: &str,
+    tenant_id: &str,
 ) -> Option<Option<chrono::DateTime<chrono::Utc>>> {
     sqlx::query_scalar(
-        "SELECT revoked_at FROM node_share_link_grant WHERE link_id = $1 AND user_id = $2",
+        "SELECT revoked_at FROM node_share_link_grant \
+         WHERE link_id = $1 AND user_id = $2 AND tenant_id = $3",
     )
     .bind(link_id)
     .bind(user_id)
+    .bind(tenant_id)
     .fetch_optional(pool)
     .await
     .expect("grant revoked_at")
@@ -3431,7 +3434,7 @@ async fn share_link_grant_revoke_is_durable() {
     // 台帳行は残り、ソフト失効している（deny 台帳の実体）。
     assert!(
         matches!(
-            grant_revoked_at(&pool, l.link_id, &bob).await,
+            grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
             Some(Some(_))
         ),
         "grant 行は消さずソフト失効させる"
@@ -3706,7 +3709,7 @@ async fn share_link_revoke_clears_grants_but_keeps_deny_on_active_link() {
         .expect("revoke grant on a");
     assert!(
         matches!(
-            grant_revoked_at(&pool, a.link_id, &bob).await,
+            grant_revoked_at(&pool, a.link_id, &bob, &octx.tenant_id).await,
             Some(Some(_))
         ),
         "active リンクの個別取消は deny 行を残す"
@@ -3718,13 +3721,15 @@ async fn share_link_revoke_clears_grants_but_keeps_deny_on_active_link() {
         .await
         .expect("revoke link b");
     assert!(
-        grant_revoked_at(&pool, b.link_id, &bob).await.is_none(),
+        grant_revoked_at(&pool, b.link_id, &bob, &octx.tenant_id)
+            .await
+            .is_none(),
         "失効したリンクの台帳行は削除される（再 redeem が構造的に不可能なので deny 行は不要）"
     );
     // A の deny 行は無傷で、A からの再解錠は依然として拒否される。
     assert!(
         matches!(
-            grant_revoked_at(&pool, a.link_id, &bob).await,
+            grant_revoked_at(&pool, a.link_id, &bob, &octx.tenant_id).await,
             Some(Some(_))
         ),
         "B の失効掃除が A の deny 行を巻き込まない"
@@ -3749,7 +3754,7 @@ async fn share_link_revoke_clears_grants_but_keeps_deny_on_active_link() {
 
 /// リンク失効時に台帳行が削除され、外形的な振る舞い（一覧・アクセス）が保たれる。
 #[tokio::test]
-async fn share_link_revoke_soft_marks_grants() {
+async fn share_link_revoke_deletes_grants() {
     let Some(ctx) = setup().await else { return };
     let Ctx {
         service,
@@ -3788,7 +3793,7 @@ async fn share_link_revoke_soft_marks_grants() {
         .await
         .expect("redeem");
     assert!(matches!(
-        grant_revoked_at(&pool, l.link_id, &bob).await,
+        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
         Some(None)
     ));
 
@@ -3797,7 +3802,9 @@ async fn share_link_revoke_soft_marks_grants() {
         .await
         .expect("revoke link");
     assert!(
-        grant_revoked_at(&pool, l.link_id, &bob).await.is_none(),
+        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id)
+            .await
+            .is_none(),
         "リンク失効で台帳行は削除される（墓石を溜めない）"
     );
     assert!(
@@ -3888,11 +3895,14 @@ async fn share_link_redeem_denied_after_concurrent_revoke() {
     // redeem が検証を終えてロック待ちに入るまで待つ（決定的な同期点）。
     await_advisory_wait(&pool, key).await;
     // ロック保持下でリンクを失効させ、コミットしてロックを解放する。
-    sqlx::query("UPDATE node_share_link SET revoked_at = now() WHERE link_id = $1")
-        .bind(l.link_id)
-        .execute(&mut *hold)
-        .await
-        .expect("revoke while holding lock");
+    sqlx::query(
+        "UPDATE node_share_link SET revoked_at = now() WHERE link_id = $1 AND tenant_id = $2",
+    )
+    .bind(l.link_id)
+    .bind(&octx.tenant_id)
+    .execute(&mut *hold)
+    .await
+    .expect("revoke while holding lock");
     hold.commit().await.expect("commit hold");
 
     assert!(
@@ -3923,7 +3933,9 @@ async fn share_link_redeem_denied_after_concurrent_revoke() {
         "孤児 via_link タプルが残っていない"
     );
     assert!(
-        grant_revoked_at(&pool, l.link_id, &bob).await.is_none(),
+        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id)
+            .await
+            .is_none(),
         "拒否された redeem は台帳行を作らない"
     );
 }
@@ -3996,10 +4008,11 @@ async fn share_link_concurrent_redeem_two_links_refcount() {
     // リンクごとに live な台帳行が 1 本ずつある（どちらの順序でも同じ）。
     let live: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM node_share_link_grant \
-         WHERE node_id = $1 AND user_id = $2 AND revoked_at IS NULL",
+         WHERE node_id = $1 AND user_id = $2 AND tenant_id = $3 AND revoked_at IS NULL",
     )
     .bind(file.id)
     .bind(&bob)
+    .bind(&octx.tenant_id)
     .fetch_one(&pool)
     .await
     .expect("count live grants");
@@ -4093,9 +4106,10 @@ async fn share_link_expire_race_with_extend_keeps_grants() {
     // sweep が期限切れリンクを拾ってロック待ちに入るまで待つ。
     await_advisory_wait(&pool, key).await;
     // ロック保持下で延長（sweep が見た期限はもう古い）。
-    sqlx::query("UPDATE node_share_link SET expires_at = $2 WHERE link_id = $1")
+    sqlx::query("UPDATE node_share_link SET expires_at = $2 WHERE link_id = $1 AND tenant_id = $3")
         .bind(l.link_id)
         .bind(sweep_now + chrono::Duration::hours(1))
+        .bind(&octx.tenant_id)
         .execute(&mut *hold)
         .await
         .expect("extend while holding lock");
@@ -4116,7 +4130,10 @@ async fn share_link_expire_race_with_extend_keeps_grants() {
         "延長されたリンクの解錠者はアクセスを保つ"
     );
     assert!(
-        matches!(grant_revoked_at(&pool, l.link_id, &bob).await, Some(None)),
+        matches!(
+            grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
+            Some(None)
+        ),
         "延長されたリンクの grant は deny 台帳へ載らない（永久追放を作らない）"
     );
     assert!(
@@ -4168,11 +4185,15 @@ async fn share_link_grant_revoke_rejects_corrupt_role() {
         .redeem_share_link(&bctx, &l.token, Some("pw-corrupt"), None)
         .await
         .expect("redeem");
-    sqlx::query("UPDATE node_share_link_grant SET role = 'bogus' WHERE link_id = $1")
-        .bind(l.link_id)
-        .execute(&pool)
-        .await
-        .expect("corrupt role");
+    sqlx::query(
+        "UPDATE node_share_link_grant SET role = 'bogus' \
+         WHERE link_id = $1 AND tenant_id = $2",
+    )
+    .bind(l.link_id)
+    .bind(&octx.tenant_id)
+    .execute(&pool)
+    .await
+    .expect("corrupt role");
 
     assert!(
         matches!(
@@ -4228,11 +4249,15 @@ async fn share_link_revoke_keeps_corrupt_grant_row() {
         .redeem_share_link(&bctx, &l.token, Some("pw-corrupt2"), None)
         .await
         .expect("redeem");
-    sqlx::query("UPDATE node_share_link_grant SET role = 'bogus' WHERE link_id = $1")
-        .bind(l.link_id)
-        .execute(&pool)
-        .await
-        .expect("corrupt role");
+    sqlx::query(
+        "UPDATE node_share_link_grant SET role = 'bogus' \
+         WHERE link_id = $1 AND tenant_id = $2",
+    )
+    .bind(l.link_id)
+    .bind(&octx.tenant_id)
+    .execute(&pool)
+    .await
+    .expect("corrupt role");
 
     // 破損行があってもリンク失効は成功する（fail-closed 方向を優先して tx を落とさない）。
     service
@@ -4240,12 +4265,14 @@ async fn share_link_revoke_keeps_corrupt_grant_row() {
         .await
         .expect("破損行があってもリンク失効は成功する");
 
-    let remaining: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM node_share_link_grant WHERE link_id = $1")
-            .bind(l.link_id)
-            .fetch_one(&pool)
-            .await
-            .expect("count");
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM node_share_link_grant WHERE link_id = $1 AND tenant_id = $2",
+    )
+    .bind(l.link_id)
+    .bind(&octx.tenant_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count");
     assert_eq!(
         remaining, 1,
         "剥奪できなかった破損行は台帳に残す（消すと孤児タプルが追跡不能になる）"
