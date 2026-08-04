@@ -158,10 +158,16 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/share-links/redeem", &["POST"], Session, || {
             post(routes::share_links::redeem_share_link)
         }),
-        // redeem 済み user の可視化（owner ゲート・#369 C-3・可視化専用）。
+        // redeem 済み user の可視化と per-user 個別取消（owner ゲート・#369 C-3 / #375）。
         r("/share-links/{link_id}/grants", &["GET"], Session, || {
             get(routes::share_links::list_share_link_grants)
         }),
+        r(
+            "/share-links/{link_id}/grants/{user_id}",
+            &["DELETE"],
+            Session,
+            || delete(routes::share_links::revoke_share_link_grant),
+        ),
         r("/directory/users", &["GET"], Session, || {
             get(routes::directory::search_users)
         }),

@@ -209,6 +209,11 @@ async fn outbox_count(pool: &PgPool, node_id: Uuid, op: &str) -> i64 {
 
 /// org メンバーとして seed する（ルート作成の認可に必要）。
 /// 識別子は実行時と同じ `AuthContext::ns()` 経由で tenant 名前空間化する（SAAS.1）。
+///
+/// 書き込み後、**`MinimizeLatency` で可視化されるまで待つ**。OpenFGA は書き込み直後の
+/// 低整合性 read に未反映を返し得るのに対し、redeem の audience 検査（`verify_redeem`）は
+/// 意図的に `MinimizeLatency` を使う（高頻度公開経路のレイテンシ優先）。待たないと
+/// 「seed 済みなのに not_org_member で Forbidden」という CI 限定のフレークになる。
 async fn seed_org_member(authz: &Arc<dyn AuthzClient>, org: &str, uid: &str) {
     let ctx = make_ctx(org, uid);
     authz
@@ -219,6 +224,22 @@ async fn seed_org_member(authz: &Arc<dyn AuthzClient>, org: &str, uid: &str) {
         )
         .await
         .expect("member tuple seed");
+    for _ in 0..200 {
+        if authz
+            .check(
+                &ctx.subject(),
+                Relation::Member,
+                &ctx.ns().organization(org),
+                Consistency::MinimizeLatency,
+            )
+            .await
+            .expect("member check")
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("seed した org member タプルが MinimizeLatency で可視化されませんでした（org={org} uid={uid}）");
 }
 
 /// closure の depth を引く（無ければ None）。
@@ -253,6 +274,68 @@ async fn audit_count(pool: &PgPool, org: &str, action: &str, decision: &str) -> 
     .fetch_one(pool)
     .await
     .expect("audit count")
+}
+
+/// 共有リンクの node 直列化 advisory lock のキー。**`share_link.rs::lock_node` と同じ式**
+/// （変えたら両方を直す）。レーステストが別コネクションから同じロックを掴むために使う。
+async fn share_link_lock_key(pool: &PgPool, node_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT hashtextextended('share_link:' || $1, 0)")
+        .bind(node_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("advisory lock key")
+}
+
+/// 指定キーの advisory lock を**待たされている**セッションが現れるまで待つ。
+///
+/// これがレーステストの決定的な同期点。sleep で「たぶん進んだだろう」に賭けず、対象の処理が
+/// 検証を終えてロック取得でブロックしたことを `pg_locks` で確認してから次の操作へ進む。
+/// 現れなければ panic するので、直列化が入っていないコード（ロックを取らない redeem）では
+/// **確実に落ちる**（false-pass しない）。
+///
+/// `classid = key >> 32` / `objid = key & 0xFFFFFFFF` / `objsubid = 1` は
+/// `pg_advisory_xact_lock(bigint)` の `pg_locks` 表現。キーで絞るので他テストと並行しても誤検知しない。
+/// 待ち時間の上限は CI を見て広く取る。`revoke_expired_share_links` は**全 node を走る**
+/// グローバル sweep なので、共有 DB に他テストの期限切れリンクが溜まっていると自分の node へ
+/// 到達するまで時間がかかる（ローカルの綺麗な DB では即座に来る）。
+async fn await_advisory_wait(pool: &PgPool, key: i64) {
+    for _ in 0..600 {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_locks \
+             WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1 \
+               AND classid = (($1::bigint >> 32) & 4294967295)::oid \
+               AND objid = ($1::bigint & 4294967295)::oid)",
+        )
+        .bind(key)
+        .fetch_one(pool)
+        .await
+        .expect("pg_locks query");
+        if waiting {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("advisory lock でブロックしているセッションが現れませんでした（node 単位の直列化が効いていない・#376）");
+}
+
+/// grant 行の `revoked_at` を引く。`None` = 行が無い / `Some(None)` = live / `Some(Some(_))` = 取消済み。
+#[allow(clippy::option_option)]
+async fn grant_revoked_at(
+    pool: &PgPool,
+    link_id: Uuid,
+    user_id: &str,
+    tenant_id: &str,
+) -> Option<Option<chrono::DateTime<chrono::Utc>>> {
+    sqlx::query_scalar(
+        "SELECT revoked_at FROM node_share_link_grant \
+         WHERE link_id = $1 AND user_id = $2 AND tenant_id = $3",
+    )
+    .bind(link_id)
+    .bind(user_id)
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await
+    .expect("grant revoked_at")
 }
 
 #[tokio::test]
@@ -3259,6 +3342,940 @@ async fn share_link_grant_list_and_count() {
             Err(StorageError::Forbidden)
         ),
         "非 owner の grant 一覧は Forbidden"
+    );
+}
+
+/// #375 の本丸: per-user 個別取消が **durable**（同じ URL＋パスワードで再解錠できない）。
+/// PR #373 はここが担保できず（リンクが active なままだと再 redeem で復元できた）取消を撤去した。
+#[tokio::test]
+async fn share_link_grant_revoke_is_durable() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+
+    let file = upload(&service, &http, &octx, None, "durable.txt", b"d")
+        .await
+        .expect("upload");
+    let l = service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            Some("pw-durable"),
+            None,
+            None,
+        )
+        .await
+        .expect("create");
+    service
+        .redeem_share_link(&bctx, &l.token, Some("pw-durable"), None)
+        .await
+        .expect("redeem");
+    assert!(
+        service.get_metadata(&bctx, file.id, None).await.is_ok(),
+        "解錠すると読める"
+    );
+
+    // 非 owner は他人の付与を取り消せない（owner ゲート）。
+    assert!(
+        matches!(
+            service
+                .revoke_share_link_grant(&bctx, l.link_id, &bob, None)
+                .await,
+            Err(StorageError::Forbidden)
+        ),
+        "非 owner の個別取消は Forbidden"
+    );
+
+    service
+        .revoke_share_link_grant(&octx, l.link_id, &bob, None)
+        .await
+        .expect("revoke grant");
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "取消でアクセスを失う（存在秘匿）"
+    );
+
+    // ★ #375 の核心: リンクは active なまま。同じ token＋同じパスワードでも再解錠できない。
+    assert!(
+        matches!(
+            service
+                .redeem_share_link(&bctx, &l.token, Some("pw-durable"), None)
+                .await,
+            Err(StorageError::Forbidden)
+        ),
+        "取消済み user は同じ URL＋パスワードで再 redeem できない（deny 台帳）"
+    );
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "拒否された再 redeem は via_link タプルを張っていない"
+    );
+    // 台帳行は残り、ソフト失効している（deny 台帳の実体）。
+    assert!(
+        matches!(
+            grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
+            Some(Some(_))
+        ),
+        "grant 行は消さずソフト失効させる"
+    );
+
+    // owner から見た可視化にも出ない（取消の成否が読み取れる）。
+    assert!(
+        service
+            .list_share_link_grants(&octx, l.link_id, None)
+            .await
+            .expect("list grants")
+            .is_empty(),
+        "取消済みは解錠済み一覧に出ない"
+    );
+    let links = service
+        .list_share_links(&octx, file.id, None)
+        .await
+        .expect("list links");
+    assert_eq!(
+        links
+            .iter()
+            .find(|x| x.link_id == l.link_id)
+            .expect("link is still active")
+            .redeem_count,
+        0,
+        "redeem_count が減る（owner が取消の成否を知る唯一のフィードバック）"
+    );
+
+    // 2 度目の取消は冪等成功（監査は増やさない）。
+    service
+        .revoke_share_link_grant(&octx, l.link_id, &bob, None)
+        .await
+        .expect("idempotent revoke");
+    assert_eq!(
+        audit_count(&pool, &org, "node.share_link.grant.revoke", "allow").await,
+        1,
+        "冪等な no-op は監査を増やさない"
+    );
+    assert!(
+        audit_count(&pool, &org, "node.share_link.redeem", "deny").await >= 1,
+        "拒否した再 redeem は deny 監査に残る"
+    );
+}
+
+/// 個別取消は対象ユーザーだけを落とし、同じリンクの他の解錠者には影響しない。
+#[tokio::test]
+async fn share_link_grant_revoke_keeps_other_users() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let m1 = format!("ituser{}", Uuid::new_v4().simple());
+    let m1ctx = make_ctx(&org, &m1);
+    seed_org_member(&authz, &org, &m1).await;
+    let m2 = format!("ituser{}", Uuid::new_v4().simple());
+    let m2ctx = make_ctx(&org, &m2);
+    seed_org_member(&authz, &org, &m2).await;
+
+    let file = upload(&service, &http, &octx, None, "keep.txt", b"k")
+        .await
+        .expect("upload");
+    let l = service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            Some("pw-keep"),
+            None,
+            None,
+        )
+        .await
+        .expect("create");
+    for c in [&m1ctx, &m2ctx] {
+        service
+            .redeem_share_link(c, &l.token, Some("pw-keep"), None)
+            .await
+            .expect("redeem");
+    }
+
+    service
+        .revoke_share_link_grant(&octx, l.link_id, &m1, None)
+        .await
+        .expect("revoke m1");
+    assert!(
+        matches!(
+            service.get_metadata(&m1ctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "取消した m1 は読めない"
+    );
+    assert!(
+        service.get_metadata(&m2ctx, file.id, None).await.is_ok(),
+        "m2 のアクセスは無傷（per-user 剥奪が他人を巻き込まない）"
+    );
+    let grants = service
+        .list_share_link_grants(&octx, l.link_id, None)
+        .await
+        .expect("list grants");
+    assert_eq!(grants.len(), 1, "一覧は m2 のみ");
+    assert_eq!(grants[0].user_id, m2);
+    let links = service
+        .list_share_links(&octx, file.id, None)
+        .await
+        .expect("list links");
+    assert_eq!(
+        links
+            .iter()
+            .find(|x| x.link_id == l.link_id)
+            .expect("link")
+            .redeem_count,
+        1,
+        "redeem_count は 1"
+    );
+}
+
+/// deny のスコープは **per-(link,user)**。あるリンクで取り消しても別リンクの付与は生き、
+/// 逆に別リンク経由でアクセスがあっても取消したリンクからは再解錠できない。
+///
+/// これは参照カウントに `g.revoked_at IS NULL` を課すことの直接の回帰テスト。述語を落とすと、
+/// リンク A の revoked 行を数えて `remaining = 1` になり、B 失効後も via_link タプルが残る（fail-open）。
+#[tokio::test]
+async fn share_link_grant_revoke_scope_is_per_link() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+
+    let file = upload(&service, &http, &octx, None, "perlink.txt", b"p")
+        .await
+        .expect("upload");
+    // パスワード付きリンクは per-user capability なので同一 (audience, role) の複数発行を許す（A-1）。
+    let mut links = Vec::new();
+    for pw in ["pw-a", "pw-b"] {
+        links.push(
+            service
+                .create_share_link(
+                    &octx,
+                    file.id,
+                    GeneralAccessLevel::Organization,
+                    ShareRole::Viewer,
+                    None,
+                    Some(pw),
+                    None,
+                    None,
+                )
+                .await
+                .expect("create"),
+        );
+    }
+    let (a, b) = (&links[0], &links[1]);
+    service
+        .redeem_share_link(&bctx, &a.token, Some("pw-a"), None)
+        .await
+        .expect("redeem a");
+    service
+        .redeem_share_link(&bctx, &b.token, Some("pw-b"), None)
+        .await
+        .expect("redeem b");
+
+    // A の付与を取消 → B が同じ (node,user,role) を保持しているのでタプルは残る（参照カウント）。
+    service
+        .revoke_share_link_grant(&octx, a.link_id, &bob, None)
+        .await
+        .expect("revoke grant on a");
+    assert!(
+        service.get_metadata(&bctx, file.id, None).await.is_ok(),
+        "B の付与が生きているので読める（参照カウント）"
+    );
+    // ただし A からは再解錠できない（deny は per-link・別リンクのアクセス有無に依らない）。
+    assert!(
+        matches!(
+            service
+                .redeem_share_link(&bctx, &a.token, Some("pw-a"), None)
+                .await,
+            Err(StorageError::Forbidden)
+        ),
+        "A の deny は B 経由のアクセスがあっても効く（per-link）"
+    );
+
+    // B も取消 → 最後の live grant が消えるのでタプルが剥奪される。
+    service
+        .revoke_share_link_grant(&octx, b.link_id, &bob, None)
+        .await
+        .expect("revoke grant on b");
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "全 live grant が消えて via_link タプルが剥奪される（revoked 行を数えていない証拠）"
+    );
+}
+
+/// リンクごとの失効では台帳行を**削除**し（再 redeem が構造的に不可能なので deny 行が無意味・
+/// 墓石を溜めない）、**active な別リンクの deny 行は残す**（そちらは再 redeem を拒否するために必要）。
+/// 墓石掃除と durability の両立が壊れていないことを 1 本で押さえる（Codex P2）。
+#[tokio::test]
+async fn share_link_revoke_clears_grants_but_keeps_deny_on_active_link() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+
+    let file = upload(&service, &http, &octx, None, "tomb.txt", b"t")
+        .await
+        .expect("upload");
+    let mut links = Vec::new();
+    for pw in ["pw-t1", "pw-t2"] {
+        links.push(
+            service
+                .create_share_link(
+                    &octx,
+                    file.id,
+                    GeneralAccessLevel::Organization,
+                    ShareRole::Viewer,
+                    None,
+                    Some(pw),
+                    None,
+                    None,
+                )
+                .await
+                .expect("create"),
+        );
+    }
+    let (a, b) = (links[0].clone(), links[1].clone());
+    service
+        .redeem_share_link(&bctx, &a.token, Some("pw-t1"), None)
+        .await
+        .expect("redeem a");
+    service
+        .redeem_share_link(&bctx, &b.token, Some("pw-t2"), None)
+        .await
+        .expect("redeem b");
+
+    // A は **active のまま** bob を個別取消 → deny 行が残る（durability に必要）。
+    service
+        .revoke_share_link_grant(&octx, a.link_id, &bob, None)
+        .await
+        .expect("revoke grant on a");
+    assert!(
+        matches!(
+            grant_revoked_at(&pool, a.link_id, &bob, &octx.tenant_id).await,
+            Some(Some(_))
+        ),
+        "active リンクの個別取消は deny 行を残す"
+    );
+
+    // B はリンクごと失効 → 台帳行は削除される（墓石を残さない）。
+    service
+        .revoke_share_link(&octx, b.link_id, None)
+        .await
+        .expect("revoke link b");
+    assert!(
+        grant_revoked_at(&pool, b.link_id, &bob, &octx.tenant_id)
+            .await
+            .is_none(),
+        "失効したリンクの台帳行は削除される（再 redeem が構造的に不可能なので deny 行は不要）"
+    );
+    // A の deny 行は無傷で、A からの再解錠は依然として拒否される。
+    assert!(
+        matches!(
+            grant_revoked_at(&pool, a.link_id, &bob, &octx.tenant_id).await,
+            Some(Some(_))
+        ),
+        "B の失効掃除が A の deny 行を巻き込まない"
+    );
+    assert!(
+        matches!(
+            service
+                .redeem_share_link(&bctx, &a.token, Some("pw-t1"), None)
+                .await,
+            Err(StorageError::Forbidden)
+        ),
+        "A の個別取消は durable なまま"
+    );
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "両経路でアクセスを失う"
+    );
+}
+
+/// リンク失効時に台帳行が削除され、外形的な振る舞い（一覧・アクセス）が保たれる。
+#[tokio::test]
+async fn share_link_revoke_deletes_grants() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+
+    let file = upload(&service, &http, &octx, None, "soft.txt", b"s")
+        .await
+        .expect("upload");
+    let l = service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            Some("pw-soft"),
+            None,
+            None,
+        )
+        .await
+        .expect("create");
+    service
+        .redeem_share_link(&bctx, &l.token, Some("pw-soft"), None)
+        .await
+        .expect("redeem");
+    assert!(matches!(
+        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
+        Some(None)
+    ));
+
+    service
+        .revoke_share_link(&octx, l.link_id, None)
+        .await
+        .expect("revoke link");
+    assert!(
+        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id)
+            .await
+            .is_none(),
+        "リンク失効で台帳行は削除される（墓石を溜めない）"
+    );
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "リンク失効でアクセスを失う"
+    );
+    // 失効リンクは owner の一覧から消えるので、可視化 API 側の見え方は grant 一覧で確認する。
+    assert!(
+        service
+            .list_share_link_grants(&octx, l.link_id, None)
+            .await
+            .expect("list grants")
+            .is_empty(),
+        "失効後の解錠済み一覧は空"
+    );
+    // 失効済みリンクは token 引きの active 述語で弾かれる（再 redeem は構造的に不可能）。
+    assert!(
+        matches!(
+            service
+                .redeem_share_link(&bctx, &l.token, Some("pw-soft"), None)
+                .await,
+            Err(StorageError::Forbidden)
+        ),
+        "失効リンクは deny 行が無くても再 redeem できない"
+    );
+}
+
+/// #376 の決定的レーステスト: redeem が「失効の後」に入った場合、必ず拒否される。
+///
+/// 別コネクションで node の advisory lock を掴んでから redeem を走らせ、`pg_locks` で
+/// **ロック待ちに入ったこと**（＝検証を通過して付与直前まで来たこと）を確認してから失効を確定する。
+/// 直列化が無いコードでは redeem がロックを取らないので `await_advisory_wait` が panic して落ちる。
+#[tokio::test]
+async fn share_link_redeem_denied_after_concurrent_revoke() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+
+    let file = upload(&service, &http, &octx, None, "race.txt", b"r")
+        .await
+        .expect("upload");
+    let l = service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            Some("pw-race"),
+            None,
+            None,
+        )
+        .await
+        .expect("create");
+
+    let key = share_link_lock_key(&pool, file.id).await;
+    let mut hold = pool.begin().await.expect("hold tx");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(key)
+        .execute(&mut *hold)
+        .await
+        .expect("take advisory lock");
+
+    let service = Arc::new(service);
+    let task = tokio::spawn({
+        let s = Arc::clone(&service);
+        let c = bctx.clone();
+        let token = l.token.clone();
+        async move { s.redeem_share_link(&c, &token, Some("pw-race"), None).await }
+    });
+
+    // redeem が検証を終えてロック待ちに入るまで待つ（決定的な同期点）。
+    await_advisory_wait(&pool, key).await;
+    // ロック保持下でリンクを失効させ、コミットしてロックを解放する。
+    sqlx::query(
+        "UPDATE node_share_link SET revoked_at = now() WHERE link_id = $1 AND tenant_id = $2",
+    )
+    .bind(l.link_id)
+    .bind(&octx.tenant_id)
+    .execute(&mut *hold)
+    .await
+    .expect("revoke while holding lock");
+    hold.commit().await.expect("commit hold");
+
+    assert!(
+        matches!(
+            task.await.expect("join redeem"),
+            Err(StorageError::Forbidden)
+        ),
+        "失効後にロックを取れた redeem は拒否される（TOCTOU が閉じている）"
+    );
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "失効済みリンクからアクセスが残らない"
+    );
+    // 孤児タプル（台帳から参照されない via_link）が無いことを FGA に直接問う。
+    assert!(
+        !authz
+            .check(
+                &bctx.subject(),
+                Relation::Viewer,
+                &bctx.ns().file(&file.id.to_string()),
+                Consistency::HigherConsistency,
+            )
+            .await
+            .expect("fga check"),
+        "孤児 via_link タプルが残っていない"
+    );
+    assert!(
+        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id)
+            .await
+            .is_none(),
+        "拒否された redeem は台帳行を作らない"
+    );
+}
+
+/// 同一ユーザーが 2 本のリンクを**同時に** redeem しても参照カウントが壊れない（#376）。
+///
+/// 順序をこじ開けず、advisory lock による直列化のおかげで**どちらの順序でも成立する不変条件**を
+/// 検証する（だから flaky にならない）。直列化前は `prior` の読みが tx 外だったため、両者が
+/// 「行なし」を観測して片方の台帳行が落ち、片方のリンク失効でアクセスを失い得た。
+#[tokio::test]
+async fn share_link_concurrent_redeem_two_links_refcount() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+
+    let file = upload(&service, &http, &octx, None, "conc.txt", b"c")
+        .await
+        .expect("upload");
+    let mut links = Vec::new();
+    for pw in ["pw-c1", "pw-c2"] {
+        links.push(
+            service
+                .create_share_link(
+                    &octx,
+                    file.id,
+                    GeneralAccessLevel::Organization,
+                    ShareRole::Viewer,
+                    None,
+                    Some(pw),
+                    None,
+                    None,
+                )
+                .await
+                .expect("create"),
+        );
+    }
+    let (a, b) = (links[0].clone(), links[1].clone());
+
+    let service = Arc::new(service);
+    let (ra, rb) = tokio::join!(
+        {
+            let s = Arc::clone(&service);
+            let c = bctx.clone();
+            let token = a.token.clone();
+            async move { s.redeem_share_link(&c, &token, Some("pw-c1"), None).await }
+        },
+        {
+            let s = Arc::clone(&service);
+            let c = bctx.clone();
+            let token = b.token.clone();
+            async move { s.redeem_share_link(&c, &token, Some("pw-c2"), None).await }
+        }
+    );
+    ra.expect("redeem a");
+    rb.expect("redeem b");
+
+    // リンクごとに live な台帳行が 1 本ずつある（どちらの順序でも同じ）。
+    let live: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM node_share_link_grant \
+         WHERE node_id = $1 AND user_id = $2 AND tenant_id = $3 AND revoked_at IS NULL",
+    )
+    .bind(file.id)
+    .bind(&bob)
+    .bind(&octx.tenant_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count live grants");
+    assert_eq!(live, 2, "同時 redeem でもリンクごとに台帳行が残る");
+
+    assert!(service.get_metadata(&bctx, file.id, None).await.is_ok());
+    service
+        .revoke_share_link(&octx, a.link_id, None)
+        .await
+        .expect("revoke a");
+    assert!(
+        service.get_metadata(&bctx, file.id, None).await.is_ok(),
+        "A 失効でも B の付与が保持（参照カウント）"
+    );
+    service
+        .revoke_share_link(&octx, b.link_id, None)
+        .await
+        .expect("revoke b");
+    assert!(
+        matches!(
+            service.get_metadata(&bctx, file.id, None).await,
+            Err(StorageError::NotFound)
+        ),
+        "両方失効でタプル消滅"
+    );
+}
+
+/// 期限失効 sweep とリンク延長が競合したとき、延長されたリンクの解錠者を deny 台帳へ載せない。
+///
+/// grant をソフト失効させる（#375）ようになったため、sweep が「延長で active に戻ったリンク」の
+/// grant に触ると、その全員が**二度と再 redeem できない**永久追放になる。sweep は期限の再確認
+/// UPDATE を per-user 剥奪より先に行い、0 行だったリンクには触れてはならない。
+#[tokio::test]
+async fn share_link_expire_race_with_extend_keeps_grants() {
+    use chrono::Utc;
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+
+    let file = upload(&service, &http, &octx, None, "exprace.txt", b"e")
+        .await
+        .expect("upload");
+    let expires = Utc::now() + chrono::Duration::hours(1);
+    let l = service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            Some(expires),
+            Some("pw-exprace"),
+            None,
+            None,
+        )
+        .await
+        .expect("create");
+    service
+        .redeem_share_link(&bctx, &l.token, Some("pw-exprace"), None)
+        .await
+        .expect("redeem");
+
+    // sweep から見て期限切れに見える論理時刻。
+    let sweep_now = expires + chrono::Duration::hours(1);
+    let key = share_link_lock_key(&pool, file.id).await;
+    let mut hold = pool.begin().await.expect("hold tx");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(key)
+        .execute(&mut *hold)
+        .await
+        .expect("take advisory lock");
+
+    let service = Arc::new(service);
+    let task = tokio::spawn({
+        let s = Arc::clone(&service);
+        async move { s.revoke_expired_share_links(sweep_now).await }
+    });
+
+    // sweep が期限切れリンクを拾ってロック待ちに入るまで待つ。
+    await_advisory_wait(&pool, key).await;
+    // ロック保持下で延長（sweep が見た期限はもう古い）。
+    sqlx::query("UPDATE node_share_link SET expires_at = $2 WHERE link_id = $1 AND tenant_id = $3")
+        .bind(l.link_id)
+        .bind(sweep_now + chrono::Duration::hours(1))
+        .bind(&octx.tenant_id)
+        .execute(&mut *hold)
+        .await
+        .expect("extend while holding lock");
+    hold.commit().await.expect("commit hold");
+    task.await.expect("join sweep").expect("sweep ok");
+
+    // 延長されたリンクは active のまま・解錠者のアクセスと台帳は無傷。
+    let links = service
+        .list_share_links(&octx, file.id, None)
+        .await
+        .expect("list links");
+    assert!(
+        links.iter().any(|x| x.link_id == l.link_id),
+        "延長されたリンクは失効していない"
+    );
+    assert!(
+        service.get_metadata(&bctx, file.id, None).await.is_ok(),
+        "延長されたリンクの解錠者はアクセスを保つ"
+    );
+    assert!(
+        matches!(
+            grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
+            Some(None)
+        ),
+        "延長されたリンクの grant は deny 台帳へ載らない（永久追放を作らない）"
+    );
+    assert!(
+        service
+            .redeem_share_link(&bctx, &l.token, Some("pw-exprace"), None)
+            .await
+            .is_ok(),
+        "再 redeem も通る（deny 台帳に載っていない）"
+    );
+}
+
+/// 破損した role の grant を個別取消すると `Integrity` で落ちる（黙ってタプルを残さない）。
+#[tokio::test]
+async fn share_link_grant_revoke_rejects_corrupt_role() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+
+    let file = upload(&service, &http, &octx, None, "corrupt.txt", b"x")
+        .await
+        .expect("upload");
+    let l = service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            Some("pw-corrupt"),
+            None,
+            None,
+        )
+        .await
+        .expect("create");
+    service
+        .redeem_share_link(&bctx, &l.token, Some("pw-corrupt"), None)
+        .await
+        .expect("redeem");
+    sqlx::query(
+        "UPDATE node_share_link_grant SET role = 'bogus' \
+         WHERE link_id = $1 AND tenant_id = $2",
+    )
+    .bind(l.link_id)
+    .bind(&octx.tenant_id)
+    .execute(&pool)
+    .await
+    .expect("corrupt role");
+
+    assert!(
+        matches!(
+            service
+                .revoke_share_link_grant(&octx, l.link_id, &bob, None)
+                .await,
+            Err(StorageError::Integrity(_))
+        ),
+        "破損 role は Integrity で落ちる"
+    );
+}
+
+/// リンク失効時、role が壊れて **タプルを剥奪できなかった行は台帳に残す**（CodeRabbit）。
+/// 一括削除に巻き込むと「剥奪されていない via_link タプル」を指す行が消え、どこからも参照できない
+/// 孤児タプル＝恒久 fail-open になる（失効済みリンクは再 redeem されないので自己修復もしない）。
+/// 同時に、1 行の破損でリンク失効そのものが失敗しないことも確かめる。
+#[tokio::test]
+async fn share_link_revoke_keeps_corrupt_grant_row() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = format!("ituser{}", Uuid::new_v4().simple());
+    let octx = make_ctx(&org, &owner);
+    seed_org_member(&authz, &org, &owner).await;
+    let bob = format!("ituser{}", Uuid::new_v4().simple());
+    let bctx = make_ctx(&org, &bob);
+    seed_org_member(&authz, &org, &bob).await;
+
+    let file = upload(&service, &http, &octx, None, "corrupt-sweep.txt", b"x")
+        .await
+        .expect("upload");
+    let l = service
+        .create_share_link(
+            &octx,
+            file.id,
+            GeneralAccessLevel::Organization,
+            ShareRole::Viewer,
+            None,
+            Some("pw-corrupt2"),
+            None,
+            None,
+        )
+        .await
+        .expect("create");
+    service
+        .redeem_share_link(&bctx, &l.token, Some("pw-corrupt2"), None)
+        .await
+        .expect("redeem");
+    sqlx::query(
+        "UPDATE node_share_link_grant SET role = 'bogus' \
+         WHERE link_id = $1 AND tenant_id = $2",
+    )
+    .bind(l.link_id)
+    .bind(&octx.tenant_id)
+    .execute(&pool)
+    .await
+    .expect("corrupt role");
+
+    // 破損行があってもリンク失効は成功する（fail-closed 方向を優先して tx を落とさない）。
+    service
+        .revoke_share_link(&octx, l.link_id, None)
+        .await
+        .expect("破損行があってもリンク失効は成功する");
+
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM node_share_link_grant WHERE link_id = $1 AND tenant_id = $2",
+    )
+    .bind(l.link_id)
+    .bind(&octx.tenant_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    assert_eq!(
+        remaining, 1,
+        "剥奪できなかった破損行は台帳に残す（消すと孤児タプルが追跡不能になる）"
     );
 }
 

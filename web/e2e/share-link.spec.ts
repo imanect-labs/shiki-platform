@@ -153,7 +153,7 @@ test("パスワード付きリンク: 未解錠は不可・token 解錠後に開
   await bobCtx.close();
 });
 
-test("パスワードリンク: owner に解錠済みユーザーが可視化される（C-3・可視化）", async ({
+test("パスワードリンク: owner が解錠済みユーザーを個別に取り消せる（#375・durable）", async ({
   page,
   context,
   browser,
@@ -183,7 +183,6 @@ test("パスワードリンク: owner に解錠済みユーザーが可視化さ
   await bobPage.getByTestId("link-unlock-password").fill("s3cret-pass");
   await bobPage.getByTestId("link-unlock-submit").click();
   await expect(bobPage.getByTestId("note-sync-status")).toHaveText("同期済み", { timeout: 20_000 });
-  await bobCtx.close();
 
   // alice: 再読込して共有ダイアログを開き直すと「1 人が解錠済み」が見え、展開すると bob が一覧に出る。
   await page.reload();
@@ -192,8 +191,24 @@ test("パスワードリンク: owner に解錠済みユーザーが可視化さ
   dialog = page.getByRole("dialog");
   await dialog.getByTestId("share-tab-links").click();
   await expect(dialog.getByTestId("link-grants-toggle")).toBeVisible({ timeout: 10_000 });
-
-  // 展開すると解錠済みユーザー（bob）が 1 人表示される（可視化専用・個別取り消しは follow-up）。
   await dialog.getByTestId("link-grants-toggle").click();
   await expect(dialog.getByTestId("link-grant-item")).toHaveCount(1, { timeout: 10_000 });
+
+  // 個別取消（#375）。不可逆なので確認ダイアログを挟む。
+  await dialog.getByTestId("link-grant-revoke").click();
+  await page.getByRole("button", { name: "取り消す" }).click();
+  // 取り消すと redeem_count が 0 になり、解錠済み表示ごと消える。
+  await expect(dialog.getByTestId("link-grants-toggle")).toHaveCount(0, { timeout: 10_000 });
+
+  // bob は再読込でアクセスできなくなる（存在秘匿）。
+  await bobPage.goto(`/notes/${nodeId}`);
+  await expect(bobPage.getByText("ノートが見つかりません")).toBeVisible({ timeout: 15_000 });
+
+  // ★ #375 の本質: リンクは active なまま。**同じ URL＋同じパスワードで再解錠できない**（deny 台帳）。
+  await bobPage.goto(linkPath);
+  await bobPage.getByTestId("link-unlock-password").fill("s3cret-pass");
+  await bobPage.getByTestId("link-unlock-submit").click();
+  await expect(bobPage.getByRole("alert")).toBeVisible({ timeout: 10_000 });
+  await expect(bobPage.getByTestId("note-sync-status")).toHaveCount(0);
+  await bobCtx.close();
 });

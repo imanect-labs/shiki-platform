@@ -6,6 +6,28 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+/// 共有先 subject の検証。subject 識別子（`user:<tenant>|<id>` / `role:<tenant>|<id>#member`）を
+/// 壊す/曖昧化する id を弾く。文字ポリシーの正本は [`authz::validate_local_id`]
+/// （`:`/`#`＝型/userset 区切り・`|`＝tenant 名前空間区切り・制御文字・空を拒否。単一定義・#91 M-3）。
+/// 前後空白の拒否（trim で往復が変わる混乱の防止）だけは共有 API 固有のルールとしてここで足す。
+///
+/// role の**存在**（当該テナントに実在するロールか）はここでは強制しない: 全メンバーのログイン前でも
+/// 部署（AD group 由来 role）へ共有できるようにするため（dangling grant 回避は共有ダイアログの
+/// `directory_role` オートコンプリートで担保し、厳格な存在ゲートは IdP フル同期後に足す）。
+fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
+    let id = match target {
+        ShareTarget::User { id } | ShareTarget::Role { id } => id,
+    };
+    if id != id.trim() {
+        return Err(StorageError::Invalid(
+            "共有先 id の前後に空白は使えません".into(),
+        ));
+    }
+    authz::validate_local_id(id)
+        .map_err(|violation| StorageError::Invalid(format!("共有先 id が不正です: {violation}")))?;
+    Ok(())
+}
+
 impl StorageService {
     /// ファイル/フォルダを **user** へ viewer/editor で共有する（role 共有は #76 で defer）。
     ///
@@ -270,4 +292,32 @@ impl StorageService {
     }
 
     // --- テナント・プロビジョニング/撤去（SAAS.2 / #87・admin プレーン） ---
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_share_target;
+    use crate::model::ShareTarget;
+
+    #[test]
+    fn validate_share_target_rejects_bad_ids() {
+        // user / role とも同一ルール。正常系（role は AD group 由来の `/` を含んでも可）。
+        assert!(validate_share_target(&ShareTarget::User { id: "alice".into() }).is_ok());
+        assert!(validate_share_target(&ShareTarget::Role { id: "sales".into() }).is_ok());
+        assert!(validate_share_target(&ShareTarget::Role {
+            id: "sales/team-1".into()
+        })
+        .is_ok());
+        // 異常系（`|`＝tenant 区切りも拒否）。
+        for bad in ["", " alice", "alice ", "a:b", "a#member", "a|b", "bad\nid"] {
+            assert!(
+                validate_share_target(&ShareTarget::User { id: bad.into() }).is_err(),
+                "user should reject {bad:?}"
+            );
+            assert!(
+                validate_share_target(&ShareTarget::Role { id: bad.into() }).is_err(),
+                "role should reject {bad:?}"
+            );
+        }
+    }
 }

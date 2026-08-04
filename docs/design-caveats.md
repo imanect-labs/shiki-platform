@@ -688,3 +688,30 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
 - **受け入れ条件**: 「8 桁の数値に `#,##0` が付き、見出し行が `<th>` になる」単体テスト、
   「貼った矩形の範囲を正しく組む（シート接頭辞・上限超え）」単体テスト、
   「paste 後に Direct 版の列幅調整が飛ぶ」偽 CoolWSD の結合テストがある。
+
+## 🟠 PIT-53: redeem の org メンバーシップ検査は「解錠の瞬間」限りで、org 離脱後も via_link タプルが残る
+
+- **箇所**: `crates/storage/src/service/share_link_redeem.rs`（`verify_redeem` が `Relation::Member` を
+  **redeem 時に一度だけ** `check` し、張るタプルは `user:<tenant>|<id>` の
+  `viewer_via_link`/`editor_via_link`）／`crates/storage/src/service/share_link_reconcile.rs`
+  （`reconcile_broad` は `user:*` / `organization#member` のみを射影する）。
+- **リスク**: broad リンク（`organization#member` 由来）は、ユーザーが org を抜ければ FGA の
+  membership 解決で**自動的に**アクセスを失う。ところが password リンクの per-user 付与は
+  **解錠時点のメンバーシップを根拠に user 直接タプルを焼き込む**ため、離脱後もタプルが残り、
+  `reconcile_broad` の射影対象外（broad ではない）なので回収もされない。結果として
+  「org を抜けた元メンバーが、当時解錠した文書だけ読み続けられる」状態が残り得る。
+  リンクを失効させれば `reconcile_user_grants_for_link` が剥奪するので、恒久的な穴ではなく
+  **「離脱を検知して剥奪する経路が無い」**という欠落。
+- **なぜ #376 で塞がないか**: redeem をノードロック下で直列化した（#376）が、これは
+  リンクの失効との TOCTOU を閉じるためで、メンバーシップの経年変化は別問題。ロック内で
+  membership を再 `check` しても窓が数 ms 縮むだけで本質は変わらず、advisory lock 保持中に
+  FGA HTTP 往復を増やすぶんスループットを落とすだけになる（付与は必ず「ある時点の判断」で、
+  その後の変化は別の回収経路で扱うのが正しい）。
+- **単一定義**: 「per-user 付与の回収契機」は ①リンクの失効/期限失効 ②owner の個別取消（#375）
+  ③テナント撤去（`purge_tenant`）の 3 つ。**org/テナントのメンバーシップ変化は現状この一覧に無い**。
+  新しい付与経路を足すときは、必ずこの一覧のどれで回収されるかを決める。
+- **対応方針（follow-up）**: ディレクトリ同期（`directory_user` の更新）を契機に、離脱ユーザーの
+  `*_via_link` タプルと `node_share_link_grant` の live 行を掃除するスイープを足す。
+  ソフト失効（#375）の deny 台帳と同じ経路に乗せられる（行を消さず `revoked_at` を立てる）。
+- **暫定の運用**: 退職者・異動者が居るテナントでは、当該ノードの共有リンクを失効させるか
+  個別取消（#375）を使う。owner は「解錠済みユーザー一覧」（#369 C-3）で誰が保持しているかを見られる。

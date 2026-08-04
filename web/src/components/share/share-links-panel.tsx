@@ -16,6 +16,7 @@ import {
   Users,
 } from "lucide-react";
 
+import { ConfirmDialog } from "@/components/drive/dialogs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -27,6 +28,7 @@ import {
   listShareLinkGrants,
   listShareLinks,
   revokeShareLink,
+  revokeShareLinkGrant,
   type GeneralAccessLevel,
   type ShareLink,
   type ShareLinkGrant,
@@ -132,10 +134,15 @@ export function ShareLinksPanel({
   const [editingId, setEditingId] = React.useState<string | null>(null);
   const [editExpiry, setEditExpiry] = React.useState("");
 
-  // C-3（#369）: 解錠済み user の可視化・個別取り消し。開いているリンク・取得済み一覧・取消中 user。
+  // C-3（#369）: 解錠済み user の可視化。開いているリンク・取得済み一覧・読み込み中リンク。
   const [grantsOpenId, setGrantsOpenId] = React.useState<string | null>(null);
   const [grantsMap, setGrantsMap] = React.useState<Record<string, ShareLinkGrant[]>>({});
   const [grantsLoadingId, setGrantsLoadingId] = React.useState<string | null>(null);
+  // #375: per-user 個別取消。不可逆（このリンクからは再解錠できない）なので確認を挟む。
+  const [revokeTarget, setRevokeTarget] = React.useState<{
+    link: ShareLink;
+    grant: ShareLinkGrant;
+  } | null>(null);
 
   React.useEffect(() => {
     let active = true;
@@ -301,6 +308,22 @@ export function ShareLinksPanel({
     } finally {
       setGrantsLoadingId(null);
     }
+  };
+
+  // #375: 特定 user の redeem を個別に取り消す。一覧から除き redeem_count を減らす。
+  // 取消は durable（deny 台帳）なので、対象ユーザーはこのリンクからは再解錠できない。
+  const revokeGrant = async (link: ShareLink, grant: ShareLinkGrant) => {
+    await revokeShareLinkGrant(link.link_id, grant.user_id);
+    setGrantsMap((prev) => ({
+      ...prev,
+      [link.link_id]: (prev[link.link_id] ?? []).filter((g) => g.user_id !== grant.user_id),
+    }));
+    setLinks((prev) =>
+      prev.map((l) =>
+        l.link_id === link.link_id ? { ...l, redeem_count: Math.max(0, l.redeem_count - 1) } : l,
+      ),
+    );
+    toast({ description: `${grant.display_name ?? grant.user_id} のアクセスを取り消しました。` });
   };
 
   // 非 owner にはフォームを見せない（C-2）。
@@ -582,6 +605,16 @@ export function ShareLinksPanel({
                                 <span className="shrink-0 text-[11px] text-muted-foreground">
                                   {isoToDateInput(g.granted_at)}
                                 </span>
+                                <button
+                                  type="button"
+                                  aria-label="このユーザーのアクセスを取り消す"
+                                  title="このユーザーのアクセスを取り消す（このリンクからは再解錠できなくなります）"
+                                  data-testid="link-grant-revoke"
+                                  onClick={() => setRevokeTarget({ link, grant: g })}
+                                  className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                                >
+                                  <Trash2 className="size-3.5" aria-hidden />
+                                </button>
                               </li>
                             ))}
                           </ul>
@@ -605,6 +638,23 @@ export function ShareLinksPanel({
           </ul>
         )}
       </div>
+      {/* #375: 個別取消は不可逆（un-revoke は無い）。リンクごとの失効は再発行で復元できるので
+          確認を挟まないが、こちらは「二度と解錠できない」ため必ず確認する。 */}
+      <ConfirmDialog
+        open={revokeTarget !== null}
+        onOpenChange={(open) => !open && setRevokeTarget(null)}
+        title="このユーザーのアクセスを取り消しますか？"
+        description={
+          revokeTarget
+            ? `${revokeTarget.grant.display_name ?? revokeTarget.grant.user_id} は、このリンクからは二度と解錠できなくなります（同じ URL とパスワードを渡しても復元されません）。もう一度渡す場合は新しいリンクを発行してください。`
+            : undefined
+        }
+        confirmLabel="取り消す"
+        destructive
+        onConfirm={async () => {
+          if (revokeTarget) await revokeGrant(revokeTarget.link, revokeTarget.grant);
+        }}
+      />
     </div>
   );
 }

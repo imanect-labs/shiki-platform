@@ -197,6 +197,10 @@ impl StorageService {
     }
 
     /// ノードの active な共有リンク一覧を返す（owner 権限）。失効/期限切れは含めない。
+    ///
+    /// `redeem_count` は **live な grant のみ**（`revoked_at IS NULL`）を数える。個別取消（#375）は
+    /// 台帳行をソフト失効させるので、ここで絞らないと「N 人が解錠済み」が取消後も減らず、owner が
+    /// 取消の成否を判断する唯一のフィードバックが壊れる（一覧の「ほか N 人」表示も嘘になる）。
     pub async fn list_share_links(
         &self,
         ctx: &AuthContext,
@@ -208,7 +212,8 @@ impl StorageService {
         let rows: Vec<ShareLinkRow> = sqlx::query_as(&format!(
             "SELECT l.link_id, l.token, l.audience, l.role, l.expires_at, \
                     (l.password_hash IS NOT NULL) AS has_password, l.label, l.created_at, \
-                    (SELECT COUNT(*) FROM node_share_link_grant g WHERE g.link_id = l.link_id) AS redeem_count \
+                    (SELECT COUNT(*) FROM node_share_link_grant g \
+                       WHERE g.link_id = l.link_id AND g.revoked_at IS NULL) AS redeem_count \
              FROM node_share_link l \
              WHERE l.node_id = $1 AND l.tenant_id = $2 AND {ACTIVE_PREDICATE} \
              ORDER BY l.created_at DESC",
