@@ -53,12 +53,19 @@
 - **wasm = `WasmProcess`**: V8＋wasm の仮想 FS/net。**既定ティアではない**（2026-07 に既定は gVisor へ移した・
   design §4.6）。web_fetch のような egress を単一ホストへ固定する短命・読み取り専用実行で使う
   （wasm を選ぶ理由は速度ではなく egress モデル。web_fetch 自体は urllib=Python を実行するため Pyodide 初期化は払う）。
-  **保守コストの注記（2026-08）**: 既定ではないティアのために wasmtime の脆弱性追従を負い続けている
-  （RUSTSEC-2026-0222/0223 = エンジン間の型インデックス混同・バルク操作中のプリエンプションによる
-  VM 内部状態の破壊。46.0.2 で解消）。既定が gVisor に移った以上、**wasm ティアは将来の廃止を検討する**
-  ——残す判断をするなら「egress を単一ホストへ固定する」という wasm 固有の価値を gVisor＋SNI プロキシ
-  （PIT-25）で代替できないことの再確認が要る。廃止すれば wasmtime・rusty_v8・Pyodide 一式の
-  追従（PIT-33 のアセット pin 含む）がまとめて不要になる。
+  **保守コストの注記（2026-08）**: 既定が gVisor へ移った後も、既定でないこのティアのために
+  rusty_v8・Pyodide 一式の追従（PIT-33 のアセット pin 含む）を負い続けている。**将来の廃止は検討に
+  値する**が、現時点の正本は [design.md](../design.md) §4.6 で「**wasm ティアは廃止せず、runsc の
+  動かない環境（開発ホスト等）でコード実行を退避させる明示指定のティアとして残す**」と決めている。
+  廃止を検討するなら、この退避先を失う問題（runsc 不在ホストでコード実行が一切できなくなる）を先に
+  解く必要があり、egress モデルを gVisor＋SNI プロキシ（PIT-25）で代替できるかだけでは判断できない。
+
+  ⚠️ **wasmtime の脆弱性追従はこのティアの廃止では消えない**（Codex）。サンドボックス wasm ティアは
+  **secure-exec フォーク＝V8 ベース**であり、`crates/script-runtime`（shiki script）の
+  **wasmtime＋QuickJS** とは**エンジンが別系統**（[workflow/script.md](../workflow/script.md) §4.1）。
+  RUSTSEC-2026-0222/0223（エンジン間の型インデックス混同・バルク操作中のプリエンプションによる VM
+  内部状態の破壊・46.0.2 で解消）は **script-runtime 側の依存**に対するもので、wasm ティアを畳んでも
+  `wasmtime = "46"` の追従義務は残る。両者を混同しないこと。
 
 `validate::check_isolation()` は将来の機微度モデル導入時に、機微ワークロードで `UserspaceKernel` 要求を
 拒否/警告するポリシフック（現状は allow-all・隔離クラスは create 監査へ記録）。**NFR-1 は「KVM 前提」と
