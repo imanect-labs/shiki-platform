@@ -1,6 +1,12 @@
 import { test, expect } from "@playwright/test";
 
+import type { components } from "@/generated/api";
 import { loginViaKeycloak, uniqueName } from "./helpers";
+
+/// メッセージ一覧の応答型は **Rust の `chat::Message`（utoipa）から生成**したものを使う
+/// （手書きミラーを増やさない・codegen が正）。`invoked_actions` の必須性・名前・要素型が
+/// 変われば型検査で落ちる。型注釈は消えるので Playwright の実行には影響しない。
+type MessagesResponse = { messages: components["schemas"]["Message"][] };
 
 /// deep research（issue #387）の E2E: `/deep-research` の**質問 → 計画 → 実行**を通す。
 ///
@@ -144,7 +150,7 @@ async function invokedCount(page: import("@playwright/test").Page): Promise<numb
   return page.evaluate(async () => {
     const threadId = location.pathname.split("/").filter(Boolean).pop();
     const res = await fetch(`/api/threads/${threadId}/messages`, { credentials: "include" });
-    const data = (await res.json()) as { messages: { invoked_actions?: string[] }[] };
+    const data = (await res.json()) as MessagesResponse;
     return data.messages.filter((m) => (m.invoked_actions ?? []).length > 0).length;
   });
 }
@@ -194,7 +200,7 @@ test("回答済み・開始済みのカードは巻き戻らず、二度送信�
     const list = async () =>
       (await (
         await fetch(`/api/threads/${threadId}/messages`, { credentials: "include" })
-      ).json()) as { messages: { id: string; invoked_actions?: string[] }[] };
+      ).json()) as MessagesResponse;
     const before = await list();
     const card = before.messages.find((m) => (m.invoked_actions ?? []).length > 0);
     if (!card) return { status: 0, actionId: null, before: 0, after: 0 };
