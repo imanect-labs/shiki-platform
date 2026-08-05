@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use authz::{AuthContext, AuthzClient, Relation};
+use authz::{AuthContext, AuthzClient, Relation, Subject};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::json;
@@ -175,6 +175,25 @@ impl SkillInstallService {
                 },
             )
             .await?;
+        // 署名検証済みの公式スキルは **org 全員が読める**（#387）。これが無いと
+        // 「first-party は個別共有・管理者の個別同意なしで利用可能」（sdk/first-party-skills
+        // /README.md）が実際には成立せず、カタログへ自動掲載しても実行時に
+        // `AppliedSkill::resolve` が fail-closed で落ちる。
+        //
+        // **publish が成功した後**に張る（レビュー指摘）。同一 name+version の再 publish は 409 で
+        // 落ちるので、先に張ると「レジストリに載っていないのに org 全員が読める」状態が残る。
+        // 付与は viewer のみ（editor には広げない＝公式部品を org 全員が書き換えられない）。冪等。
+        if trust_tier == "first_party" {
+            let obj = ctx.ns().artifact(&skill_id.to_string());
+            self.authz
+                .write_tuple(
+                    &Subject::userset(&ctx.ns().organization(&ctx.org), Relation::Member),
+                    Relation::Viewer,
+                    &obj,
+                )
+                .await
+                .map_err(|e| AppPlatformError::Internal(format!("org viewer tuple: {e}")))?;
+        }
         self.record(
             ctx,
             "skill.publish",
@@ -335,34 +354,6 @@ impl SkillInstallService {
              FROM skill_installation \
              WHERE tenant_id = $1 AND user_id = $2 \
              ORDER BY created_at DESC LIMIT 200",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
-        .fetch_all(&self.db)
-        .await
-        .map_err(map_db)?;
-        Ok(rows)
-    }
-
-    /// 本人のインストール済み要約（skill ツールのカタログ用・description 込み・単一クエリ）。
-    ///
-    /// 並び順は first-party → in-house → 新しい順（信頼ティアを既定表示へ反映・#344）。
-    pub async fn list_installed_summaries(
-        &self,
-        ctx: &AuthContext,
-    ) -> Result<Vec<InstalledSkillSummary>, AppPlatformError> {
-        let rows: Vec<InstalledSkillSummary> = sqlx::query_as(
-            "SELECT i.name, i.skill_id, i.skill_version, i.trust_tier, \
-                    coalesce(v.body->>'description', '') AS description, \
-                    v.body->'command' AS command \
-             FROM skill_installation i \
-             JOIN artifact_version v \
-               ON v.tenant_id = i.tenant_id AND v.artifact_id = i.skill_id \
-              AND v.version = i.skill_version \
-             JOIN artifact a \
-               ON a.tenant_id = i.tenant_id AND a.id = i.skill_id AND a.deleted_at IS NULL \
-             WHERE i.tenant_id = $1 AND i.user_id = $2 \
-             ORDER BY (i.trust_tier <> 'first_party'), i.created_at DESC LIMIT 200",
         )
         .bind(&ctx.tenant_id)
         .bind(&ctx.principal.id)

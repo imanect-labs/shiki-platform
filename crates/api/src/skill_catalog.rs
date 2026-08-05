@@ -1,9 +1,18 @@
-//! skill ツールのカタログ源（インストール済み ∪ 本人 owner・#344 Task 10.11）。
+//! skill ツールのカタログ源（first-party 掲載 ∪ インストール済み ∪ 本人 owner・#344 / #387）。
 //!
 //! chat の [`chat::SkillCatalogSource`] へ注入する実装。並び順は
 //! **first-party → in-house（インストール済み）→ 本人 owner** で、信頼ティアを
-//! 既定表示へ反映する（description スクワッティング防御の一部）。掲載は
-//! 「明示的な人間の行為」（インストール／所有）に限る。
+//! 既定表示へ反映する（description スクワッティング防御の一部）。
+//!
+//! # first-party は install 不要（#387）
+//!
+//! 署名 publish 済み（＝信頼鍵で検証済み）の first_party skill は、明示的なインストールを
+//! 待たず全ユーザーのカタログへ載せる。`/deep-research` のような公式スキルが「最初から在る」
+//! ためにこれが要る。読める根拠は publish 時に書かれる `organization#member → viewer`
+//! タプル（`app_platform::SkillInstallService::publish`）で、認可は artifact
+//! チョークポイントのまま（掲載を権限の代わりにしない）。
+//!
+//! in-house / marketplace の掲載は従来どおり「明示的な人間の行為」（インストール／所有）に限る。
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -45,15 +54,27 @@ impl SkillCatalogSource for ApiSkillCatalogSource {
         ctx: &AuthContext,
         _trace_id: Option<&str>,
     ) -> Result<Vec<SkillCatalogEntry>, ChatError> {
-        // インストール済み（first-party → in-house・インストール順）。
+        // first-party 掲載（install 不要・#387）→ インストール済み → 本人 owner の順に積む。
+        // 先頭に置くことで、同名/同 id が後段に現れても dedup で公式版が残る。
+        let first_party = self
+            .installs
+            .list_first_party_summaries(ctx)
+            .await
+            .map_err(|e| ChatError::Internal(format!("skill カタログ: {e}")))?;
         let installed = self
             .installs
             .list_installed_summaries(ctx)
             .await
             .map_err(|e| ChatError::Internal(format!("skill カタログ: {e}")))?;
         let mut seen: HashSet<uuid::Uuid> = HashSet::new();
-        let mut out: Vec<SkillCatalogEntry> = Vec::with_capacity(installed.len());
-        for s in installed {
+        let mut out: Vec<SkillCatalogEntry> =
+            Vec::with_capacity(first_party.len() + installed.len());
+        for s in first_party.into_iter().chain(installed) {
+            // 自動掲載と install 済みが重なるケース（公式を明示 install したユーザー）で
+            // 二重に出さない。
+            if seen.contains(&s.skill_id) {
+                continue;
+            }
             seen.insert(s.skill_id);
             out.push(SkillCatalogEntry {
                 id: s.skill_id,

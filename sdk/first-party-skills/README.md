@@ -3,6 +3,19 @@
 公式提供の skill（外部連携は **http.request ラップの skill** として配布し、ネイティブコネクタは
 作らない方針の実証・[miniapp-platform.md](../../docs/miniapp-platform.md) §2.4/§4）。
 
+## 掲載（#387）
+
+**first-party は署名 publish された時点で、同一 tenant・同一 org のメンバー全員のカタログに載る
+（インストール不要）。** 掲載も読取も **tenant ＋ org** の境界に閉じている（org は隔離境界・#371）。
+`/deep-research` のような公式スキルが「最初から在る」ようにするため。
+
+- 読める根拠は publish 時に張られる `organization#member → viewer`（`artifact` の viewer は
+  `organization#member` を受理する・`crates/authz/model/authorization-model.fga`）。掲載は
+  `SkillInstallService::list_first_party_summaries`（tenant ＋ **org** で絞る）。
+- **in_house は従来どおり明示インストールが必要**（掲載＝「明示的な人間の行為」の原則を維持）。
+- yank すると掲載から外れる（新規利用を止める意味を掲載側にも効かせる）。
+- 認可は artifact チョークポイントのまま。掲載は権限の代わりにならない。
+
 ## 配布経路（エアギャップと同一・マイグレーションに業務コンテンツを埋めない）
 
 1. 管理者が信頼鍵を登録する（`POST /admin/trusted-keys`・ミニアプリと同じ台帳）。
@@ -13,8 +26,33 @@
 3. `POST /skills/registry/import { name, version, body, signature_base64 }` —
    登録済み信頼鍵で **signing digest** を検証し、artifact 化 → **first-party** として publish される
    （同一 name+version の再 import は 409・不変）。
-4. 各ユーザーは `POST /skills/installations { name }` で自分のカタログへ入れる
-   （first-party は署名検証済みのため**個別共有・管理者の個別同意なしで利用可能**）。
+4. first-party は**この時点で全ユーザーのカタログに載る**（上記「掲載」）。
+   `POST /skills/installations { name }` は in_house 用（バージョンを固定したい場合は
+   first-party でも使える）。
+
+### CLI（手順 2〜3 の実行）
+
+```bash
+# 署名鍵が無ければ鍵ペアを生成し、信頼鍵の登録コマンドを表示して終了する
+node sdk/cli/src/index.ts skill import-first-party --api http://localhost:8080 --tenant default
+# 管理者が公開鍵を登録したら、秘密鍵を渡して import（同一 name+version の再実行は skip）
+SHIKI_SIGNING_KEY=<hex> node sdk/cli/src/index.ts skill import-first-party --api http://localhost:8080
+```
+
+`SHIKI_COOKIE` にセッション Cookie（`shiki_session=...; shiki_csrf=...`）が必要。
+
+## deep-research
+
+- 実体: instructions（手順書）が本体。専用エンジンは作らない（design §4.4 / FR-4）。
+  自律プロファイル（長ホライズン・作業ファイル・予算ガード）に載る。
+- 起動: `/deep-research <依頼>`（質問→計画→実行）／`/deep-research auto <依頼>`（確認を省略）。
+  スラッシュコマンドは `command` 宣言から生成される（`SkillBody.command`・#387）。
+- 作業ファイル（brief / outline / notes / report）は**システム領域**へ書かれる
+  （ドライブ非表示・RAG 非索引・#392）。ユーザーに渡るのは本文のレポートと
+  `save_note` の保存ボタンだけ。
+- 品質の要点は instructions 内に数値で埋めてある（クエリ 3 分類の予算表・最低ツールコール数・
+  停止条件 4 層・証拠 ID に紐づかない主張の掃除）。変更時は
+  `crates/gui/tests/first_party_skills.rs` が上限と宣言を守る。
 
 ## slack-notify
 

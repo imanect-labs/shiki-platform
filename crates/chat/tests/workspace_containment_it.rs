@@ -173,7 +173,7 @@ async fn workspace_cannot_escape_root_folder() {
         .await
         .unwrap();
 
-    let ws = StorageWorkspaceStore::new(storage.clone(), root.id);
+    let ws = StorageWorkspaceStore::new(storage.clone(), root.id, false);
 
     // ── root 外は名前解決されない（read / delete / list の全経路） ──
     let read = ws.read(&c, "secret.txt", None).await;
