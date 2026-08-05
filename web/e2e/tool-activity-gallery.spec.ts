@@ -28,17 +28,16 @@ test.describe("ツール実行表示ギャラリー", () => {
     await expect(withPlan.getByText("市場規模と成長率を調べています")).toBeVisible();
   });
 
-  test("完了後は開いたままで全件・並行・成否・結果要約を出す", async ({ page }) => {
+  test("完了後は 1 行要約に畳み、押すと全件・並行・成否・結果要約を出す", async ({ page }) => {
     const done = page.getByTestId("tool-activity-done");
-    // ヘッダには件数と内訳。**完了しても自動で畳まない**（見ている最中に閉じない）。
+    // 完了後は**畳んだ 1 行要約**（件数と内訳）。走行中のロールは終わっているので、
+    // ここで全件を出しっぱなしにすると会話が縦に伸びる（#386 の作り直しで畳む側へ寄せた）。
     await expect(done.getByText("5 件の操作")).toBeVisible();
     await expect(done.getByText(/web 3/)).toBeVisible();
-    await expect(done.getByText("並行して 2 件")).toBeVisible();
+    await expect(done.getByText("並行して 2 件")).toHaveCount(0);
     if (SHOTS) await done.screenshot({ path: `${SHOTS}/tool-activity-open.png` });
 
-    // ヘッダを押すと畳める（ユーザーの操作は最後まで尊重される）。
-    await done.getByRole("button").first().click();
-    await expect(done.getByText("並行して 2 件")).toHaveCount(0);
+    // ヘッダを押すと全件のタイムラインになる（**自動では開閉しない**）。
     await done.getByRole("button").first().click();
     // 同一ステップの並列実行がまとまって見える（backend の tool_call.step 由来）。
     await expect(done.getByText("並行して 2 件")).toBeVisible();
@@ -55,6 +54,7 @@ test.describe("ツール実行表示ギャラリー", () => {
   test("委譲は同一ステップの並行としてまとまり、展開で担当範囲を出す", async ({ page }) => {
     const delegation = page.getByTestId("tool-activity-delegation");
     await expect(delegation.getByText("3 件の操作")).toBeVisible();
+    await delegation.getByRole("button").first().click();
     // 同一ステップの 3 体＝並行（子の生イベントは親へ流れないので、詳細はこの要約だけ）。
     await expect(delegation.getByText("並行して 3 件")).toBeVisible();
     await expect(delegation.getByText(/「.*国内 SaaS 市場規模.*」を調査しました/)).toBeVisible();
@@ -67,6 +67,7 @@ test.describe("ツール実行表示ギャラリー", () => {
 
   test("全ツール語彙に日本語ラベルがある（生の英識別子を出さない）", async ({ page }) => {
     const vocab = page.getByTestId("tool-activity-vocab");
+    await vocab.getByRole("button").first().click();
     // 語彙の網羅自体は Record<ToolName, …> が型で保証する。ここでは
     // 「ツール名がそのまま出ていない」ことを代表例で確認する。
     for (const raw of ["office.live_edit", "save_document", "csv.query", "doc_search"]) {

@@ -57,6 +57,23 @@ fn last_user_text(req: &GenerateRequest) -> String {
         .unwrap_or_default()
 }
 
+/// 履歴の語数を prompt トークンとみなす。**ツール結果も数える**（実プロバイダと同じく観測は
+/// prompt に載る）。本文だけにすると、ツールを回し続けるループで prompt が伸びず、
+/// `Spent::fresh_tokens`（#404 で上限判定に使う軸）が永久に増えないため、トークン予算が
+/// 「ステップ上限で先に止まる」ことでしか終われなくなる。
+fn prompt_tokens(req: &GenerateRequest) -> u64 {
+    req.messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::Text { text } | Block::ToolResult { content: text, .. } => {
+                Some(text.split_whitespace().count() as u64)
+            }
+            _ => None,
+        })
+        .sum()
+}
+
 /// これまでにツール結果があるか（＝2 ターン目以降）。
 fn has_tool_result(req: &GenerateRequest) -> bool {
     req.messages.iter().any(|m| {
@@ -173,15 +190,7 @@ impl LlmProvider for StubProvider {
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let user_text = last_user_text(req);
-        let prompt_tokens = req
-            .messages
-            .iter()
-            .flat_map(|m| &m.content)
-            .filter_map(|b| match b {
-                Block::Text { text } => Some(text.split_whitespace().count() as u64),
-                _ => None,
-            })
-            .sum::<u64>();
+        let prompt_tokens = prompt_tokens(req);
 
         // --- deep research（#387）: `/deep-research` 起動はフェーズを跨いで進むため最初に見る。 ---
         if !req.tools.is_empty() {

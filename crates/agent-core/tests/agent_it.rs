@@ -416,6 +416,12 @@ async fn run_agent_stops_on_max_steps() {
         1,
         "上限内で 1 回はツールを呼ぶ"
     );
+    // **上限で切るときも成果物は書かせる**（#407）。ツールを外した 1 ターンを回すので、
+    // 「トークンを使ったのに何も返らない」で終わらない。
+    assert!(
+        sink.count(|e| matches!(e, AgentEvent::Text(_))) > 0,
+        "予算で畳む前に着地ターンの本文が流れる"
+    );
 }
 
 /// 自律プロファイル: `plan:` 駆動で plan メタツールを呼び、計画分解イベントが流れて完了する（5.2）。
@@ -514,8 +520,10 @@ async fn autonomous_token_budget_stops_safely() {
         &tools,
         user_msg("loop: keep going"),
         &run_context(&c, "loop"),
-        // 発話は 3 トークン/ターンで累積。上限 10（80%=8 で警告→超過）。
-        &AgentOptions::autonomous(1000, None, 10, 1_000_000_000),
+        // 上限判定は **`fresh_tokens`（新規ぶん）** で行う（#404）。スタブは履歴の語数を
+        // prompt とみなすので、ツール結果が 1 つ積まれるたびに 10 前後ずつ伸びる。
+        // 上限 100（80%=80 で警告 → 超過）なら、警告の帯（80〜99）に必ず 1 回入る。
+        &AgentOptions::autonomous(1000, None, 100, 1_000_000_000),
         None,
         None,
         &mut sink,

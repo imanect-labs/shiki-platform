@@ -374,6 +374,14 @@ flowchart LR
   deep research の「検索 → 複数ページ取得」ファンアウトが直列にならないための土台（PIT-49）。
 - **deepresearch = agent-core のプリセット**（専用エンジンを作らない）: 「長ホライズン＋web.search/rag.search/
   document.write＋サンドボックス」構成の first-party skill（FR-7 の枠）。成果物はストレージ保存→自動 RAG 対象化。
+- **委譲（`subagent`）はロールで役割を分ける（#391・#402・#407）**: 子は**新しい履歴**で回し、親へ返すのは
+  合成済みの成果だけ（生の取得本文は返さない）。`AuthContext` は親と同一・ツールは read-only の明示
+  allowlist・`subagent` 自身は渡さない（入れ子の入れ子が構造的に不可能）。ロールは 3 つ:
+  **research**（調べて findings。`boundary` 必須で重複なく割る）/ **plan**（ツールを渡さず、手元の知識だけで
+  「何を確かめるべきか」を返す）/ **verify**（書き上がったレポートと証拠台帳を突き合わせ、**指摘リストだけ**を
+  返す。書き直しはさせない）。**執筆は委譲しない**が、**検証は執筆ではないので委譲する** — 書いた本人が
+  同じコンテキストで自分の主張を確かめると確証バイアスがそのまま残るため（#407）。子の消費は
+  `Spent::add_external` で親へ積み、親の予算で止まる（トークンが十数倍になり得る機構の唯一の安全弁）。
 - **会話履歴は tenant スコープのスキーマで新設（SAAS.1 / #91）**: thread/message テーブルは既存規約を踏襲し
   全行 `tenant_id text not null`＋複合 PK/unique に `tenant_id` を含める（例: `node` の
   `(org, tenant_id, parent_id, name)`）。thread の OpenFGA オブジェクトも `thread:<tenant>|<id>` になるよう

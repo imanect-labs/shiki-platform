@@ -98,12 +98,17 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
 
   // ツール実行表示（#386）に取得した URL が具体的に出る。展開して全件を見る。
   // **最後の run** のものを見る（先行 run＝質問/計画カードにも tool-activity が出る）。
-  // 完了後は**開いたまま**なのでクリック不要（自動折りたたみを廃止した）。
+  // 完了後は 1 行要約に畳まれているので、ヘッダを押して全件のタイムラインを出す。
   const activity = page.getByTestId("tool-activity").last();
   await expect(activity).toBeVisible();
+  await activity.getByRole("button").first().click();
   const expanded = page.getByTestId("tool-activity-expanded").last();
   await expect(expanded).toContainText("example.com/stub-1");
   await expect(expanded).toContainText("notes.md");
+  // 裏取りは独立した検証者へ委譲し、**その指摘を反映してから**提出する（#407）。
+  // 委譲した事実だけを見ると、指摘を無視する回帰を見逃す。
+  await expect(expanded).toContainText("未確認・誤引用・過剰な一般化");
+  await expect(expanded).toContainText("report.md");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/deep-research-activity.png`, fullPage: true });
 
   // 出典カード（web 出典の唯一の構造化表示）と保存ボタン（下書きノート）。
@@ -112,6 +117,13 @@ test("deep research: 質問カード → 計画カード → 調査 → レポ�
   const draft = page.getByTestId("note-draft-card").first();
   await expect(draft).toBeVisible();
   await expect(draft).toContainText("2026年 国内SaaS市場の調査");
+  // 提出されるのは**検証の指摘を反映した後**の本文。証拠は E1 の 1 系統しか無いのに
+  // 「独立 2 系統が一致」と断定していた箇所が、検証者の指摘で直っている。
+  // ユーザーが受け取る面（会話・下書き）のどこにも断定が残っていないことを見る
+  // ——委譲した事実だけを見ると、指摘を無視する回帰を通してしまう。
+  await draft.click();
+  await expect(page.getByText("出典 1 系統・別集計とは不一致").first()).toBeVisible();
+  await expect(page.getByText("独立 2 系統が一致")).toHaveCount(0);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/deep-research-report.png`, fullPage: true });
 
   // 承認カードは出ない（作業メモはシステム領域＝事前許可・#392）。

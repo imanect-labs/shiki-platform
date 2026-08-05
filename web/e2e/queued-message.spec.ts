@@ -40,7 +40,9 @@ test.describe("生成中の発話（順番待ち）", () => {
 
     // **ページを離れても消えない**（サーバが持っているため）。
     await page.reload();
-    await expect(page.getByText(second, { exact: false })).toBeVisible({ timeout: 20_000 });
+    // 応答が既に届いていると同じ文字列が複数箇所（吹き出し＋回答）に出る。
+    // strict mode 違反で落ちるので `.first()` で「どこかに残っている」ことだけを見る。
+    await expect(page.getByText(second, { exact: false }).first()).toBeVisible({ timeout: 20_000 });
 
     // 1 通目が終わると自動で 2 通目の生成が始まり、両方に応答が付く。
     await expect(page.getByTestId("queued-message-note")).toHaveCount(0, { timeout: 60_000 });
