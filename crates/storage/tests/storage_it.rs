@@ -2199,8 +2199,13 @@ async fn tenant_scoped_tables_covers_every_table_with_tenant_id() {
 
     // FK 依存順: 子が親より先に来る（この順で DELETE すれば FK 違反にならない）。
     let edges: Vec<(String, String)> = sqlx::query_as(
-        "SELECT c.conrelid::regclass::text, c.confrelid::regclass::text \
-         FROM pg_constraint c WHERE c.contype = 'f' AND c.conrelid <> c.confrelid \
+        // 実装と同じく pg_class.relname を使う。regclass::text だと search_path 次第で
+        // スキーマ修飾され、辺が全て捨てられて**この検査自体が素通り**する（CodeRabbit）。
+        "SELECT child.relname::text, parent.relname::text \
+         FROM pg_constraint c \
+         JOIN pg_class child ON child.oid = c.conrelid \
+         JOIN pg_class parent ON parent.oid = c.confrelid \
+         WHERE c.contype = 'f' AND c.conrelid <> c.confrelid \
            AND c.connamespace = 'public'::regnamespace",
     )
     .fetch_all(&pool)

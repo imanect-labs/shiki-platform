@@ -181,6 +181,10 @@ impl StorageService {
         let tables = crate::tenant_scope::tenant_scoped_tables(&self.db).await?;
         let mut tx = self.db.begin().await?;
         let mut rows_deleted: u64 = 0;
+        // 実際に消したテーブル数はループで数える（CodeRabbit）。`tables.len() - RETAINED.len()` は
+        // 「保持対象が必ず導出集合に含まれる」前提に依存し、改名や保持対象の追加で usize が
+        // アンダーフローする（debug は panic・DELETE 後 監査前なので撤去が中断する）。
+        let mut tables_purged: usize = 0;
         for table in &tables {
             if crate::tenant_scope::PURGE_RETAINED
                 .iter()
@@ -188,11 +192,13 @@ impl StorageService {
             {
                 continue;
             }
-            rows_deleted += sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
-                .bind(tenant_id)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
+            tables_purged += 1;
+            rows_deleted +=
+                sqlx::query(&format!("DELETE FROM public.{table} WHERE tenant_id = $1"))
+                    .bind(tenant_id)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected();
         }
         // 撤去の監査（ハッシュチェーン連結・削除証跡）。
         audit::record_on(
@@ -209,7 +215,7 @@ impl StorageService {
                     "objects_deleted": objects_deleted,
                     "roles": role_ids.len(),
                     // 撤去範囲の証跡（#420）: 何テーブル・何行消したかを削除証明として残す。
-                    "tables_purged": tables.len() - crate::tenant_scope::PURGE_RETAINED.len(),
+                    "tables_purged": tables_purged,
                     "rows_deleted": rows_deleted,
                 }),
             },

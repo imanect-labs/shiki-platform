@@ -296,15 +296,21 @@ pub async fn set_tenant_autonomous_policy(
 
 /// データ面の purge（FGA タプル → オブジェクト → DB 行）。
 ///
-/// storage（node/artifact/secret 等）→ RAG（chunk/jobq/Qdrant/Tantivy）→
-/// 構造化データ（data_table CASCADE・式インデックス・FGA タプル・Task 9.2）の順に撤去する。
+/// RAG（chunk/jobq/Qdrant/Tantivy）→ 構造化データ（式インデックス・FGA タプル・Task 9.2）→
+/// storage（FGA タプル・オブジェクト・**tenant_id を持つ全 DB 行**）の順に撤去する。
+/// サブシステムが自分の副産物を回収してから、storage の汎用掃き出しで残row 0 を保証する（#420）。
 async fn purge_tenant_data(
     state: &AppState,
     tenant_id: &str,
     org: &str,
     actor: &str,
 ) -> Result<(), ApiError> {
-    state.storage.purge_tenant(tenant_id, org, actor).await?;
+    // ⚠️ 順序が重要（Codex P1・#420）: **サブシステムの purge を先に**回す。
+    // `storage.purge_tenant` は tenant_id を持つ全テーブルを一掃するようになったため、これを先に
+    // 走らせると `data.purge_tenant` が `data_table` を列挙できず、**data_table の FGA タプルと
+    // 物理インデックスが撤去されないまま残る**（行だけ消えて副産物が孤児化する）。
+    // 各サブシステムが自分の副産物（FGA タプル・物理索引・ベクタ/全文索引）を回収してから、
+    // storage の汎用掃き出しを最後に走らせて「DB 行が 1 行も残らない」ことを保証する。
     state
         .rag_admin
         .purge_tenant(tenant_id)
@@ -318,6 +324,7 @@ async fn purge_tenant_data(
     if data_tables > 0 {
         tracing::info!(%tenant_id, data_tables, "tenant purge: 構造化データを撤去");
     }
+    state.storage.purge_tenant(tenant_id, org, actor).await?;
     Ok(())
 }
 

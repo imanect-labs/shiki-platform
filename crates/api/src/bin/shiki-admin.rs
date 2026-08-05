@@ -29,6 +29,10 @@ use sqlx::postgres::PgPoolOptions;
 use storage::{ObjectStore, S3ObjectStore};
 use uuid::Uuid;
 
+#[path = "shiki_admin/keys.rs"]
+mod keys;
+use keys::{pre_migration_object_key, renamespace_object_key};
+
 // 移行対象テーブルは `storage::tenant_scope` が information_schema から導出する（#420）。
 // 手で列挙していた頃は tenant_id を持つ 51 テーブル中 11 しか移行せず、チャット履歴・RAG 本文・
 // 構造化データ・ワークフロー履歴・利用量が旧テナントに取り残されていた。
@@ -221,24 +225,29 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
     println!("objects: copied={objects_moved} skipped={objects_skipped}（blob 行 {blob_rows}）");
 
     // --- 3. DB の書き換え（1 txn） ---
-    // 対象は information_schema から導出する（#420・手書き列挙は必ず新テーブルを取りこぼす）。
+    // 対象は information_schema から導出し、dry-run でも全テーブルの件数を出す（#420。詳細は
+    // storage::tenant_scope の doc）。legacy は object_key のみ書き換えるのでラベルを分ける。
     let tables = storage::tenant_scope::tenant_scoped_tables(&db)
         .await
         .context("テナント境界テーブルの導出に失敗")?;
-    // dry-run でも「どのテーブルの何行が動くか」を必ず出す。件数を伏せると、移行しないテーブルが
-    // あっても運用者は「全件移行できた」と読み違える（旧実装のサイレント取りこぼし）。
     let counts = storage::tenant_scope::count_tenant_rows(&db, &tables, &db_tenant)
         .await
         .context("移行対象の行数集計に失敗")?;
-    let nonempty: Vec<&(String, i64)> = counts.iter().filter(|(_, n)| *n > 0).collect();
-    let total: i64 = counts.iter().map(|(_, n)| *n).sum();
+    let rename = matches!(from, FromNs::Tenant(_));
+    let label = if rename {
+        "移行対象"
+    } else {
+        "参考: legacy は object_key のみ・tenant_id は不変"
+    };
     println!(
-        "DB: 対象 {} テーブル中 {} テーブルに行あり（計 {total} 行）",
-        tables.len(),
-        nonempty.len()
+        "{}",
+        storage::tenant_scope::format_row_report(&counts, label)
     );
-    for (table, n) in nonempty {
-        println!("  {table}: {n}");
+    // 副産物を移送できないサブシステムに行があれば dry-run でも実行でも拒否する（fail-closed）。
+    if rename {
+        if let Some(reason) = storage::tenant_scope::sidecar_migration_blocker(&counts) {
+            bail!(reason);
+        }
     }
     if execute {
         let mut tx = db.begin().await?;
@@ -400,99 +409,4 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
         println!("DRY-RUN のため書き換えなし。--execute で実行します。");
     }
     Ok(())
-}
-
-/// blob.object_key を移行先名前空間へ写す。
-/// legacy: `{org}/...` → `{to}/{org}/...`。「移行済み」判定は `{to}/{org}/` **完全一致**で行う
-/// （`{to}/` だけだと org == to の legacy キー `{to}/{sha}` を誤って移行済み扱いする）。
-/// rename: `{from}/...` → `{to}/...`。移行対象でなければ `None`。
-fn renamespace_object_key(old_key: &str, org: &str, from: &FromNs, to: &str) -> Option<String> {
-    match from {
-        FromNs::Legacy => {
-            let migrated_prefix = format!("{to}/{org}/");
-            (!old_key.starts_with(&migrated_prefix)).then(|| format!("{to}/{old_key}"))
-        }
-        FromNs::Tenant(f) => old_key
-            .strip_prefix(&format!("{f}/"))
-            .map(|rest| format!("{to}/{rest}")),
-    }
-}
-
-/// [`renamespace_object_key`] の逆: **commit 済みの新キー**から移行元の旧キーを導出する
-/// （手順4 の旧キー掃除用・#91 M-5）。
-/// legacy: `{to}/{org}/{sha}` → `{org}/{sha}`（`{to}/` を剥がす）。
-/// rename: `{to}/{rest}` → `{from}/{rest}`。
-/// 新形式（`{to}/` 始まり）でないキーは `None`（触らない）。移行を経ていない行から
-/// 導出された旧キーはオブジェクトストアに存在しないため、exists 確認後の削除は安全。
-fn pre_migration_object_key(new_key: &str, from: &FromNs, to: &str) -> Option<String> {
-    let rest = new_key.strip_prefix(&format!("{to}/"))?;
-    match from {
-        FromNs::Legacy => Some(rest.to_string()),
-        FromNs::Tenant(f) => Some(format!("{f}/{rest}")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn object_key_renamespace() {
-        // legacy: org 直下キーへ tenant を前置。「移行済み」は {to}/{org}/ 完全一致で判定。
-        let legacy = FromNs::Legacy;
-        assert_eq!(
-            renamespace_object_key("acme/deadbeef", "acme", &legacy, "t1").as_deref(),
-            Some("t1/acme/deadbeef")
-        );
-        assert_eq!(
-            renamespace_object_key("t1/acme/deadbeef", "acme", &legacy, "t1"),
-            None
-        );
-        // org == to（legacy キー "acme/sha" を tenant acme へ移行）でも誤スキップしない。
-        assert_eq!(
-            renamespace_object_key("acme/deadbeef", "acme", &legacy, "acme").as_deref(),
-            Some("acme/acme/deadbeef")
-        );
-        assert_eq!(
-            renamespace_object_key("acme/acme/deadbeef", "acme", &legacy, "acme"),
-            None
-        );
-        // rename: prefix 差し替え。他テナントは対象外。
-        let rename = FromNs::Tenant("default".into());
-        assert_eq!(
-            renamespace_object_key("default/acme/deadbeef", "acme", &rename, "t1").as_deref(),
-            Some("t1/acme/deadbeef")
-        );
-        assert_eq!(
-            renamespace_object_key("other/acme/x", "acme", &rename, "t1"),
-            None
-        );
-    }
-
-    #[test]
-    fn pre_migration_key_inverts_renamespace() {
-        // 手順4（commit 後の旧キー掃除）: renamespace の往復が成立すること（#91 M-5）。
-        let legacy = FromNs::Legacy;
-        assert_eq!(
-            pre_migration_object_key("t1/acme/deadbeef", &legacy, "t1").as_deref(),
-            Some("acme/deadbeef")
-        );
-        let rename = FromNs::Tenant("default".into());
-        assert_eq!(
-            pre_migration_object_key("t1/acme/deadbeef", &rename, "t1").as_deref(),
-            Some("default/acme/deadbeef")
-        );
-        // 新形式（{to}/ 始まり）でないキーは触らない。
-        assert_eq!(
-            pre_migration_object_key("other/acme/x", &rename, "t1"),
-            None
-        );
-        // 往復: renamespace → pre_migration で元に戻る。
-        let new_key =
-            renamespace_object_key("default/acme/deadbeef", "acme", &rename, "t1").unwrap();
-        assert_eq!(
-            pre_migration_object_key(&new_key, &rename, "t1").as_deref(),
-            Some("default/acme/deadbeef")
-        );
-    }
 }
