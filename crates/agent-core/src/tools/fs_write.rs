@@ -1,8 +1,14 @@
 //! ワークスペースの**書込系**ツール（Task 5.4/5.8）: `fs_write` / `fs_edit` / `fs_delete`。
+//! 追記（`fs_append`・#392）は [`super::fs_append`] にある。
 //!
-//! いずれも [`WorkspaceStore`] 経由で StorageService を叩き、権限・監査・書込イベント（→自動再索引）を
-//! 必ず通す。**破壊的**（作成/上書き/削除）なので `requires_confirmation=true`（承認ゲート/事前許可対象・5.6）。
+//! いずれも [`WorkspaceStore`] 経由で StorageService を叩き、権限・監査・書込イベントを必ず通す。
+//! **破壊的**（作成/上書き/削除）なので `requires_confirmation=true`（承認ゲート/事前許可対象・5.6）。
 //! 書込結果は [`ArtifactRef`] として外部化し、UI がワークスペース上のファイルを開けるようにする。
+//!
+//! ワークスペースが**システム領域**（#392・自動生成の `agent-workspace-*`）の場合、chat 側が
+//! `fs_write`/`fs_append`/`fs_edit` を事前許可へ足す（ドライブに見えず索引もされない使い捨ての
+//! 作業領域なので、人間の同意を毎回取る対象ではない）。判断はポリシ層にあり、ここは
+//! 「破壊的である」という自己申告を正直に保つ。`fs_delete` は常に承認対象のまま。
 
 use std::sync::Arc;
 
@@ -13,8 +19,8 @@ use super::mime::content_type_for;
 use crate::tool::{ArtifactRef, Tool, ToolError, ToolOutcome};
 use crate::workspace::{WorkspaceStore, WorkspaceWrite};
 
-/// 書込結果を tool_result（＋成果物）へ整形する共通ヘルパ。
-fn write_outcome(w: WorkspaceWrite) -> ToolOutcome {
+/// 書込結果を tool_result（＋成果物）へ整形する共通ヘルパ（`fs_append` も使う）。
+pub(super) fn write_outcome(w: WorkspaceWrite) -> ToolOutcome {
     let verb = if w.created { "作成" } else { "更新" };
     let mut out = ToolOutcome::ok(format!(
         "{}を{}しました（version {}, node_id: {}）。",
@@ -269,6 +275,25 @@ mod tests {
                 .unwrap()
                 .insert(name.to_string(), bytes)
                 .is_none();
+            Ok(WorkspaceWrite {
+                node_id: format!("node-{name}"),
+                name: name.to_string(),
+                version: if created { 1 } else { 2 },
+                created,
+            })
+        }
+        async fn append(
+            &self,
+            _ctx: &AuthContext,
+            name: &str,
+            suffix: &str,
+            _ct: &str,
+            _t: Option<&str>,
+        ) -> Result<WorkspaceWrite, ToolError> {
+            let mut files = self.files.lock().unwrap();
+            let entry = files.entry(name.to_string());
+            let created = matches!(entry, std::collections::hash_map::Entry::Vacant(_));
+            entry.or_default().extend_from_slice(suffix.as_bytes());
             Ok(WorkspaceWrite {
                 node_id: format!("node-{name}"),
                 name: name.to_string(),

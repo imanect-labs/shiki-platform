@@ -199,6 +199,15 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     failed: "書き込めませんでした",
     target: named(),
   },
+  fs_append: {
+    icon: FilePlus,
+    category: "write",
+    lead: (t) => (t ? `${t} に` : "ファイルに"),
+    verb: "追記",
+    suru: true,
+    failed: "追記できませんでした",
+    target: named(),
+  },
   fs_edit: {
     icon: FilePen,
     category: "write",

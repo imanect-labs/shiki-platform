@@ -95,6 +95,12 @@ pub struct OutboxEvent {
     pub trace_id: Option<String>,
     pub payload: Value,
     pub created_at: DateTime<Utc>,
+    /// 対象ノードが**システム領域**か（#392・`node.system`）。
+    ///
+    /// 索引消費者（`shiki_rag` の relay）はこれが true のイベントを **rag_ingest へ流さない**
+    /// （使い捨ての作業メモを社内検索に載せない）。outbox 自体は忠実なログのままにしておき、
+    /// 「索引すべきか」の判断は索引側に置く（他の consumer の挙動を変えない）。
+    pub system: bool,
 }
 
 /// 未処理イベントを FIFO で `limit` 件まで取り出す（**呼び出し側の txn 上で**）。
@@ -104,11 +110,13 @@ pub struct OutboxEvent {
 /// **未処理のまま再配信**される（at-least-once）。
 pub async fn claim(conn: &mut PgConnection, limit: i64) -> Result<Vec<OutboxEvent>, StorageError> {
     let rows: Vec<OutboxRow> = sqlx::query_as(
-        "SELECT id, org, tenant_id, node_id, version, op, actor, trace_id, payload, created_at \
-         FROM storage_event_outbox \
-         WHERE processed_at IS NULL \
-         ORDER BY id \
-         FOR UPDATE SKIP LOCKED \
+        "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
+                o.payload, o.created_at, coalesce(n.system, false) AS system \
+         FROM storage_event_outbox o \
+         LEFT JOIN node n ON n.id = o.node_id \
+         WHERE o.processed_at IS NULL \
+         ORDER BY o.id \
+         FOR UPDATE OF o SKIP LOCKED \
          LIMIT $1",
     )
     .bind(limit)
@@ -152,8 +160,9 @@ pub async fn claim_undelivered(
 ) -> Result<Vec<OutboxEvent>, StorageError> {
     let rows: Vec<OutboxRow> = sqlx::query_as(
         "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
-                o.payload, o.created_at \
+                o.payload, o.created_at, coalesce(n.system, false) AS system \
          FROM storage_event_outbox o \
+         LEFT JOIN node n ON n.id = o.node_id \
          WHERE NOT EXISTS ( \
              SELECT 1 FROM outbox_delivery d \
              WHERE d.consumer = $1 AND d.event_id = o.id \
@@ -295,10 +304,12 @@ pub async fn peek_app_events_after(
     limit: i64,
 ) -> Result<Vec<OutboxEvent>, StorageError> {
     let rows: Vec<OutboxRow> = sqlx::query_as(
-        "SELECT id, org, tenant_id, node_id, version, op, actor, trace_id, payload, created_at \
-         FROM storage_event_outbox \
-         WHERE tenant_id = $1 AND id > $2 AND payload ? 'event_type' \
-         ORDER BY id LIMIT $3",
+        "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
+                o.payload, o.created_at, coalesce(n.system, false) AS system \
+         FROM storage_event_outbox o \
+         LEFT JOIN node n ON n.id = o.node_id \
+         WHERE o.tenant_id = $1 AND o.id > $2 AND o.payload ? 'event_type' \
+         ORDER BY o.id LIMIT $3",
     )
     .bind(tenant_id)
     .bind(after_id)
@@ -320,6 +331,13 @@ struct OutboxRow {
     trace_id: Option<String>,
     payload: Value,
     created_at: DateTime<Utc>,
+    /// `#[sqlx(default)]`: **この行構造体は 3 つのクエリで共有される**。列を足し忘れた
+    /// クエリがあると `query_as` は実行時に失敗し、その経路の機能が丸ごと止まる
+    /// （app-gateway の SSE が無音になる形で実際に踏んだ）。既定 false へ落とすことで、
+    /// 最悪でも「system 判定が付かない＝従来どおり索引する」に留める。
+    /// 判定を必要とする経路（rag の relay）が読むクエリには必ず列を入れること。
+    #[sqlx(default)]
+    system: bool,
 }
 
 impl OutboxRow {
@@ -335,6 +353,7 @@ impl OutboxRow {
             trace_id: self.trace_id,
             payload: self.payload,
             created_at: self.created_at,
+            system: self.system,
         }
     }
 }

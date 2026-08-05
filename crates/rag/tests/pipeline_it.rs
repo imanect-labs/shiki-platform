@@ -1008,3 +1008,60 @@ async fn headings_only_document_succeeds_without_vectors() {
         .unwrap();
     assert_eq!(queued, 0, "リトライ/DLQ に落ちない");
 }
+
+/// システム領域（`node.system`・#392）の書込は `rag_ingest` へ relay されない。
+///
+/// 自律エージェントの使い捨て作業メモ（brief / outline / notes）を社内検索に載せないための
+/// 唯一の関門。outbox 行は忠実に残り（他 consumer は従来どおり読める）、relay が
+/// **enqueue せず ack だけする**ことを固定する。
+#[tokio::test]
+async fn system_area_writes_are_not_indexed() {
+    let Some(env) = setup(FakeParser::ok()).await else {
+        return;
+    };
+    let visible = create_file_with_event(&env, None, "report.md").await;
+    let hidden = create_file_with_event(&env, None, "notes.md").await;
+    sqlx::query("update node set system = true where id = $1")
+        .bind(hidden)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+
+    relay::relay_once(&env.pool, &env.deps.config)
+        .await
+        .unwrap();
+
+    // system ノードのジョブは作られない（可視ノードのジョブは作られる）。
+    async fn queued_for(pool: &sqlx::PgPool, node: Uuid) -> i64 {
+        sqlx::query_scalar(
+            "select count(*) from job_queue where queue = $1 and payload->>'node_id' = $2",
+        )
+        .bind(RAG_INGEST_QUEUE)
+        .bind(node.to_string())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+    assert_eq!(
+        queued_for(&env.pool, visible).await,
+        1,
+        "通常ノードは索引される"
+    );
+    assert_eq!(
+        queued_for(&env.pool, hidden).await,
+        0,
+        "システム領域は rag_ingest へ流れない"
+    );
+
+    // ack はされるが**行は消さない**（outbox は忠実なログとして残す／他 consumer が読む）。
+    let (total, unprocessed): (i64, i64) = sqlx::query_as(
+        "select count(*), count(*) filter (where processed_at is null) \
+         from storage_event_outbox where node_id = $1",
+    )
+    .bind(hidden)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(total, 1, "スキップしても outbox 行は残る（削除しない）");
+    assert_eq!(unprocessed, 0, "relay がスキップした行も processed になる");
+}

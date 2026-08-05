@@ -178,7 +178,9 @@ impl ChatWorker {
         // 自律プロファイル: フルツール（fs CRUD/grep/shell）＋予算＋計画＋承認ゲート（Task 5.1/5.4/5.6/5.7）。
         let opts = if run.autonomous {
             if let Some(storage) = &self.storage {
-                let workspace = self.ensure_workspace(ctx, run.thread_id, storage).await?;
+                // ワークスペースは遅延生成（使わない run で空フォルダを作らない・#392）。
+                let (workspace, system_workspace) =
+                    self.lazy_workspace(ctx, run.thread_id, storage).await?;
                 self.push_autonomous_tools(&mut tools, workspace);
                 let mut opts = AgentOptions::autonomous(
                     self.config.autonomous_max_steps,
@@ -198,6 +200,14 @@ impl ChatWorker {
                     ctx.principal.id.clone(),
                     snapshot,
                 );
+                // システム領域（自動生成の使い捨てワークスペース）への書込は承認カードを出さない
+                // （#392）。**opts.approval と approver の両方**へ足す: current_policy が
+                // opts.approval を上書きするため、片方だけでは run 中盤で書込が止まる。
+                if system_workspace {
+                    let extra = crate::autonomous::system_workspace_writes();
+                    opts.approval.auto_approve.extend(extra.iter().cloned());
+                    approver = approver.with_pre_authorized(extra);
+                }
                 opts.parallel_read_tools = self.config.parallel_read_tools;
                 opts
             } else {
@@ -263,63 +273,45 @@ impl ChatWorker {
         Ok(())
     }
 
-    /// thread のワークスペースフォルダを解決 or 作成し、`WorkspaceStore` を返す（Durable Workspace）。
-    async fn ensure_workspace(
+    /// thread のワークスペース（Durable Workspace）を**遅延生成**で束ねる（#392）。
+    ///
+    /// フォルダは fs ツールが実際に呼ばれた時に初めて作られる（使わない run で空フォルダを
+    /// 増やさない）。戻り値の `system` は「システム領域か」で、承認の事前許可判断に使う:
+    ///
+    /// - 既にフォルダがある → **その実際の `system` 属性**（過去 run の設定を勝手に変えない）
+    /// - まだ無い → 「このフォルダで作業」の明示選択が**無ければ** system（自動生成の使い捨て領域）
+    async fn lazy_workspace(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
         storage: &Arc<storage::StorageService>,
-    ) -> Result<Arc<dyn WorkspaceStore>, ChatError> {
-        let folder_id = if let Some(id) = self
+    ) -> Result<(Arc<dyn WorkspaceStore>, bool), ChatError> {
+        let system = match self
             .store
             .workspace_folder_id(thread_id, &ctx.tenant_id)
             .await?
         {
-            id
-        } else {
-            // 初回自律 run: ワークスペースフォルダを作り thread に紐づける。作成先の親は
-            // 利用者が選んだ workspace_parent_folder_id（無ければ Drive 直下＝None）。親フォルダの
-            // editor は create_folder 内で本人 ctx により検証される（confused-deputy 防止）。
-            // **thread ごとに一意な名前**にする（`node` の (parent,name) unique・別 thread と衝突しない）。
-            let parent = self
+            Some(folder_id) => storage
+                .is_system_node(ctx, folder_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!(thread_id = %thread_id, error = %e,
+                        "workspace の system 属性を読めなかった（可視領域として扱う）");
+                })
+                // 読めないときは**可視領域として扱う**（＝承認を緩めない安全側）。
+                .unwrap_or(false),
+            None => self
                 .store
                 .workspace_parent_folder_id(thread_id, &ctx.tenant_id)
-                .await?;
-            let name = format!("agent-workspace-{thread_id}");
-            match storage.create_folder(ctx, parent, &name, None).await {
-                Ok(node) => {
-                    self.store
-                        .set_workspace_folder_if_absent(thread_id, &ctx.tenant_id, node.id)
-                        .await?
-                }
-                // 作成失敗は 2 種を区別する: ①同一 thread の並行 run が先に作った（unique 衝突）
-                // なら workspace_folder_id が既に埋まっている → それを使う。②親フォルダが選択後に
-                // 削除された/editor が剥奪された等の**実失敗**なら未設定のまま → 元エラーを伝播して
-                // run を失敗させる（黙って別の場所に作らない・fail-closed）。
-                Err(e) => match self
-                    .store
-                    .workspace_folder_id(thread_id, &ctx.tenant_id)
-                    .await?
-                {
-                    Some(id) => id,
-                    None => {
-                        return Err(match e {
-                            storage::StorageError::Forbidden => ChatError::Forbidden,
-                            storage::StorageError::NotFound => ChatError::NotFound,
-                            other => ChatError::Internal(format!("workspace 作成に失敗: {other}")),
-                        });
-                    }
-                },
-            }
+                .await?
+                .is_none(),
         };
-        // 共有中の thread editor/owner にワークスペースフォルダの editor を行き渡らせる（Task 5.6(a)・冪等）。
-        // 失敗は run を止めない（本人の書込には影響せず、次 run で再同期される）。
-        if let Err(e) = self.store.grant_workspace_to_members(ctx, thread_id).await {
-            tracing::warn!(thread_id = %thread_id, error = %e, "workspace メンバー同期に失敗（次 run で再試行）");
-        }
-        Ok(Arc::new(crate::workspace::StorageWorkspaceStore::new(
+        let workspace = Arc::new(crate::workspace::LazyWorkspace::new(
+            self.store.clone(),
             storage.clone(),
-            folder_id,
-        )))
+            thread_id,
+            system,
+        ));
+        Ok((workspace, system))
     }
 }

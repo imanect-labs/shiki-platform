@@ -23,7 +23,17 @@ pub async fn relay_once(pool: &PgPool, config: &RagConfig) -> Result<usize, RagE
     }
 
     let mut ids = Vec::with_capacity(events.len());
+    let mut skipped_system = 0usize;
     for event in &events {
+        // システム領域（#392・`node.system`）は索引しない。自律エージェントの使い捨ての作業メモ
+        // （brief / outline / notes 等）を社内検索に載せないため、**enqueue せず ack だけする**
+        // （ジョブを作ってから捨てるより安い・op を問わず一律に効く）。outbox 自体は忠実な
+        // ログのままなので、他の consumer（miniapp-functions / workflow）には影響しない。
+        if event.system {
+            ids.push(event.id);
+            skipped_system += 1;
+            continue;
+        }
         let message = IngestMessage {
             tenant_id: event.tenant_id.clone(),
             org: event.org.clone(),
@@ -47,6 +57,10 @@ pub async fn relay_once(pool: &PgPool, config: &RagConfig) -> Result<usize, RagE
     }
     storage::event::mark_processed(&mut tx, &ids).await?;
     tx.commit().await?;
-    tracing::debug!(count = ids.len(), "outbox → rag_ingest へ relay");
+    tracing::debug!(
+        count = ids.len(),
+        skipped_system,
+        "outbox → rag_ingest へ relay"
+    );
     Ok(ids.len())
 }

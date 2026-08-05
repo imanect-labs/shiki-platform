@@ -51,8 +51,9 @@ pub use tool::{
     Tool, ToolError, ToolOutcome,
 };
 pub use tools::{
-    run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsDeleteTool, FsEditTool,
-    FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool, WebFetchTool, WebSearchTool,
+    run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsAppendTool,
+    FsDeleteTool, FsEditTool, FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool,
+    WebFetchTool, WebSearchTool,
 };
 pub use vocab::ToolName;
 pub use workspace::{WorkspaceEntry, WorkspaceStore, WorkspaceWrite};

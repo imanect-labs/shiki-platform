@@ -257,17 +257,15 @@ async fn autonomous_run_writes_workspace_file_e2e() {
     let (store, storage) = workspace_harness(pool.clone()).await;
     let c = ctx(&tenant);
 
-    // ── ① 既定（場所未指定）: Drive 直下に lazy 作成され、fs_write がそこへ書く ──
+    // ── ① 既定（場所未指定）: Drive 直下にシステム領域が lazy 作成され、fs_write がそこへ書く ──
     let thread = store
         .create_thread(&c, "自律", false, None, None)
         .await
         .unwrap();
-    // 既定は承認必須（#350）→ 本人がオートへ切り替えてから投入（fs_write は自動承認）。
-    store
-        .set_autonomous_mode(&c, thread.id, chat::AutonomousMode::Auto, None)
-        .await
-        .unwrap();
-    // autonomous=true で投入 → stub が fs_write を呼ぶ（fswrite: プレフィックス・オートで承認不要）。
+    // **モードは既定（承認必須）のまま**投入する（#392）。自動生成のワークスペースは
+    // ドライブに見えず RAG にも載らない使い捨て領域なので、書込は事前許可され承認カードで
+    // 止まらない。ここで Auto へ切り替えないことがこのテストの主眼。
+    // autonomous=true で投入 → stub が fs_write を呼ぶ（fswrite: プレフィックス）。
     let res = store
         .post_message(
             &c,
@@ -311,13 +309,27 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         .await
         .unwrap()
         .expect("ワークスペースフォルダが作成される");
-    let default_parent: Option<uuid::Uuid> =
-        sqlx::query_scalar("SELECT parent_id FROM node WHERE id = $1")
+    let (default_parent, folder_system): (Option<uuid::Uuid>, bool) =
+        sqlx::query_as("SELECT parent_id, system FROM node WHERE id = $1")
             .bind(folder)
             .fetch_one(&pool)
             .await
             .unwrap();
     assert_eq!(default_parent, None, "未指定は Drive 直下（親なし）");
+    assert!(
+        folder_system,
+        "自動生成のワークスペースはシステム領域（ドライブ非表示・RAG 非索引・#392）"
+    );
+    // 承認モードは run 前後で変わらない（skill も自動処理もポリシに触れない・#392）。
+    let (mode_after, _) = store
+        .thread_autonomous_mode(thread.id, &c.tenant_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        mode_after,
+        chat::AutonomousMode::RequireApproval,
+        "承認モードを勝手に緩めない（事前許可はシステム領域の書込に限る）"
+    );
     let node = storage
         .resolve_child_file(&c, folder, "agent-note.txt", None)
         .await
@@ -365,6 +377,15 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         Some(parent.id),
         "new_under は選んだ親フォルダの配下にワークスペースを作る"
     );
+    let ws1_system: bool = sqlx::query_scalar("SELECT system FROM node WHERE id = $1")
+        .bind(ws1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(
+        !ws1_system,
+        "場所を明示選択した run のワークスペースは可視・索引のまま（#392）"
+    );
 
     // ── ③ existing: 既存フォルダをそのままワークスペースにする（新規作成しない） ──
     let existing = storage
@@ -392,7 +413,54 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         .unwrap()
         .expect("選んだフォルダ直下に書き込まれる");
 
-    // ── ④ ソフト削除済みフォルダの選択は拒否される（FGA タプルは残るため DB 存在も確かめる）──
+    // ── ④ 遅延生成: fs_* を使わない自律 run では Drive にフォルダを作らない（#392）──
+    let t3 = store
+        .create_thread(&c, "fs を使わない", false, None, None)
+        .await
+        .unwrap();
+    let res3 = store
+        .post_message(
+            &c,
+            t3.id,
+            "plan: 調査だけ",
+            &[],
+            None,
+            None,
+            true,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    let mut rx3 = store.event_stream(res3.run_id, 0);
+    let mut t3_done = false;
+    for _ in 0..500 {
+        let next = tokio::time::timeout(Duration::from_secs(20), rx3.next())
+            .await
+            .expect("イベント待ちタイムアウト");
+        let Some(ev) = next else { break };
+        match ev.event {
+            StreamEventKind::Done { .. } => {
+                t3_done = true;
+                break;
+            }
+            StreamEventKind::Error { message } => panic!("生成失敗: {message}"),
+            _ => {}
+        }
+    }
+    // **完了を確かめてから**フォルダ未作成を見る。未完了のまま assert すると
+    // 「まだ作っていないだけ」を「作らない」と誤判定する（偽陽性・レビュー指摘）。
+    assert!(t3_done, "fs を使わない自律 run も完了する");
+    assert!(
+        store
+            .workspace_folder_id(t3.id, &c.tenant_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "fs ツールを使わない run では空のワークスペースフォルダを作らない（遅延生成）"
+    );
+
+    // ── ⑤ ソフト削除済みフォルダの選択は拒否される（FGA タプルは残るため DB 存在も確かめる）──
     let doomed = storage
         .create_folder(&c, None, "消したフォルダ", None)
         .await
