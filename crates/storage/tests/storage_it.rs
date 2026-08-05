@@ -2048,6 +2048,175 @@ async fn purge_tenant_end_to_end() {
     assert_eq!(objects2, 0, "再実行で削除対象なし");
 }
 
+/// #420: purge_tenant は `tenant_id` を持つ**全テーブル**を撤去する（保持対象を除く）。
+///
+/// 旧実装はテーブル名を手で列挙しており、51 テーブル中 13 しか消していなかった。チャット履歴・
+/// RAG の本文・利用量などが「削除しました」の後も残り、SAAS.2 の完全削除を満たしていなかった。
+/// ここでは実際に取り残されていたテーブルへ行を仕込み、**総称的に**「保持対象以外は 0 行」を
+/// 検査する（新しいテーブルが増えても、導出さえ効いていれば自動で守られる）。
+#[tokio::test]
+async fn purge_tenant_leaves_no_tenant_rows_anywhere() {
+    let Some(cx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = cx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let ta = format!("ta{}", Uuid::new_v4().simple());
+    let ua = format!("ituser{}", Uuid::new_v4().simple());
+    let ctx_a = make_ctx_tenant(&org, &ta, &ua);
+    authz
+        .write_tuple(
+            &ctx_a.subject(),
+            Relation::Member,
+            &ctx_a.ns().organization(&org),
+        )
+        .await
+        .expect("org member seed");
+    let file = upload(&service, &http, &ctx_a, None, "purge-all.txt", b"x")
+        .await
+        .expect("upload");
+
+    // 旧実装が取りこぼしていた代表テーブルへ行を仕込む（チャット・RAG 本文・利用量）。
+    let thread_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO thread (id, org, tenant_id, owner, title) VALUES ($1, $2, $3, $4, 'T')",
+    )
+    .bind(thread_id)
+    .bind(&org)
+    .bind(&ta)
+    .bind(&ua)
+    .execute(&pool)
+    .await
+    .expect("thread seed");
+    sqlx::query(
+        "INSERT INTO message (id, thread_id, org, tenant_id, role, content) \
+         VALUES ($1, $2, $3, $4, 'user', '{}'::jsonb)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(thread_id)
+    .bind(&org)
+    .bind(&ta)
+    .execute(&pool)
+    .await
+    .expect("message seed");
+    sqlx::query(
+        "INSERT INTO rag_chunk \
+           (id, tenant_id, org, node_id, version, kind, ordinal, content, char_count, authz_tags) \
+         VALUES ($1, $2, $3, $4, 1, 'leaf', 0, '機密の本文', 6, ARRAY[]::text[])",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&ta)
+    .bind(&org)
+    .bind(file.id)
+    .execute(&pool)
+    .await
+    .expect("rag_chunk seed");
+    sqlx::query(
+        "INSERT INTO llm_usage (tenant_id, org, idempotency_key, provider, model) \
+         VALUES ($1, $2, $3, 'stub', 'stub')",
+    )
+    .bind(&ta)
+    .bind(&org)
+    .bind(Uuid::new_v4().to_string())
+    .execute(&pool)
+    .await
+    .expect("llm_usage seed");
+
+    service
+        .purge_tenant(&ta, &org, "provisioner:test")
+        .await
+        .expect("purge");
+
+    // 総称検査: 保持対象（audit_log = 削除証跡 / tenant = tombstone）以外に 1 行も残らない。
+    let tables = storage::tenant_scope::tenant_scoped_tables(&pool)
+        .await
+        .expect("テナント境界テーブルの導出");
+    let counts = storage::tenant_scope::count_tenant_rows(&pool, &tables, &ta)
+        .await
+        .expect("行数集計");
+    let mut leaked: Vec<String> = Vec::new();
+    for (table, n) in &counts {
+        let retained = storage::tenant_scope::PURGE_RETAINED
+            .iter()
+            .any(|(r, _)| r == table);
+        if !retained && *n > 0 {
+            leaked.push(format!("{table}={n}"));
+        }
+    }
+    assert!(
+        leaked.is_empty(),
+        "撤去後もテナントの行が残っている（SAAS.2 完全削除の未達）: {leaked:?}"
+    );
+
+    // 保持対象は「消し忘れ」ではなく意図的に残る（削除証跡）。
+    let audits: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE tenant_id = $1")
+        .bind(&ta)
+        .fetch_one(&pool)
+        .await
+        .expect("audit count");
+    assert!(audits > 0, "audit_log は削除証跡として残す");
+}
+
+/// #420: テナント境界テーブルの導出が「手書き列挙」に戻っていないことの回帰。
+/// 導出集合が `information_schema` の実測と一致し、FK 依存順（子が親より先）になっていること。
+#[tokio::test]
+async fn tenant_scoped_tables_covers_every_table_with_tenant_id() {
+    let Some(cx) = setup().await else { return };
+    let Ctx { pool, .. } = cx;
+
+    let derived = storage::tenant_scope::tenant_scoped_tables(&pool)
+        .await
+        .expect("導出");
+    let expected: Vec<String> = sqlx::query_scalar(
+        "SELECT c.table_name FROM information_schema.columns c \
+         JOIN information_schema.tables t \
+           ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
+         WHERE c.column_name = 'tenant_id' AND c.table_schema = 'public' \
+           AND t.table_type = 'BASE TABLE' ORDER BY c.table_name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("実測");
+    let mut sorted = derived.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted, expected,
+        "tenant_id を持つ全テーブルが撤去/移行の対象になっていること"
+    );
+
+    // 保持対象が実在するテーブルを指していること（改名で腐ると黙って全削除に化ける）。
+    for (retained, _) in storage::tenant_scope::PURGE_RETAINED {
+        assert!(
+            derived.iter().any(|t| t == retained),
+            "PURGE_RETAINED の {retained} が実在しない（改名/削除された？）"
+        );
+    }
+
+    // FK 依存順: 子が親より先に来る（この順で DELETE すれば FK 違反にならない）。
+    let edges: Vec<(String, String)> = sqlx::query_as(
+        "SELECT c.conrelid::regclass::text, c.confrelid::regclass::text \
+         FROM pg_constraint c WHERE c.contype = 'f' AND c.conrelid <> c.confrelid \
+           AND c.connamespace = 'public'::regnamespace",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("FK 一覧");
+    let pos = |name: &str| derived.iter().position(|t| t == name);
+    for (child, parent) in &edges {
+        if let (Some(c), Some(p)) = (pos(child), pos(parent)) {
+            assert!(
+                c < p,
+                "{child} は親 {parent} より先に削除される順であること"
+            );
+        }
+    }
+}
+
 /// 内部バイト直書き/読み戻し（Task 4.12 Stage A・サンドボックス成果物経路）。
 ///
 /// presigned 経路と同一不変条件（content-addressing・dedup・監査・書込イベント・viewer 認可）を
@@ -4526,4 +4695,118 @@ async fn system_area_hides_from_user_surfaces_and_append_accumulates() {
         "system フラグが claim 結果に乗る（relay の唯一の判定材料）"
     );
     tx.rollback().await.unwrap();
+}
+
+/// #420: テナント移行（`shiki-admin retenant` の DB 書き換え部）が `tenant_id` を持つ
+/// **全テーブル**の行を移すこと。参照列に tenant_id を含む FK は途中状態で必ず違反するため、
+/// `SET CONSTRAINTS ALL DEFERRED`（migration 0008/0061）が効いていないとここで落ちる。
+#[tokio::test]
+async fn rename_tenant_rows_moves_every_table() {
+    let Some(cx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = cx;
+
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let from = format!("tf{}", Uuid::new_v4().simple());
+    let to = format!("tt{}", Uuid::new_v4().simple());
+    let user = format!("ituser{}", Uuid::new_v4().simple());
+    let ctx_f = make_ctx_tenant(&org, &from, &user);
+    authz
+        .write_tuple(
+            &ctx_f.subject(),
+            Relation::Member,
+            &ctx_f.ns().organization(&org),
+        )
+        .await
+        .expect("org member seed");
+    let file = upload(&service, &http, &ctx_f, None, "move.txt", b"x")
+        .await
+        .expect("upload");
+
+    // FK が tenant_id を参照する関係（親子）を含めて仕込む: workflow_run → step_execution。
+    let run_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO workflow_run \
+           (tenant_id, run_id, org, workflow_id, version, trigger_kind, principal) \
+         VALUES ($1, $2, $3, $4, 1, 'interactive', $5)",
+    )
+    .bind(&from)
+    .bind(run_id)
+    .bind(&org)
+    .bind(Uuid::new_v4())
+    .bind(&user)
+    .execute(&pool)
+    .await
+    .expect("workflow_run seed");
+    sqlx::query(
+        "INSERT INTO step_execution \
+           (tenant_id, run_id, step_path, node_id, idempotency_key) \
+         VALUES ($1, $2, 's1', 'n1', $3)",
+    )
+    .bind(&from)
+    .bind(run_id)
+    .bind(Uuid::new_v4().to_string())
+    .execute(&pool)
+    .await
+    .expect("step_execution seed");
+
+    let tables = storage::tenant_scope::tenant_scoped_tables(&pool)
+        .await
+        .expect("導出");
+    let before = storage::tenant_scope::count_tenant_rows(&pool, &tables, &from)
+        .await
+        .expect("移行前の集計");
+    let seeded: Vec<&String> = before
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(t, _)| t)
+        .collect();
+    assert!(
+        seeded.len() >= 4,
+        "検査対象が薄すぎる（仕込みが効いていない）: {seeded:?}"
+    );
+
+    let mut tx = pool.begin().await.expect("begin");
+    storage::tenant_scope::rename_tenant_rows(&mut tx, &tables, &from, &to)
+        .await
+        .expect("FK 遅延が効いていれば移行できる");
+    tx.commit().await.expect("commit");
+
+    // 旧テナントに 1 行も残らず、新テナント側へ移っている。
+    let after_from = storage::tenant_scope::count_tenant_rows(&pool, &tables, &from)
+        .await
+        .expect("移行後の集計（旧）");
+    let leftover: Vec<String> = after_from
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(t, n)| format!("{t}={n}"))
+        .collect();
+    assert!(
+        leftover.is_empty(),
+        "旧テナントに取り残しがある: {leftover:?}"
+    );
+    let after_to = storage::tenant_scope::count_tenant_rows(&pool, &tables, &to)
+        .await
+        .expect("移行後の集計（新）");
+    for (table, n) in &before {
+        let moved = after_to
+            .iter()
+            .find(|(t, _)| t == table)
+            .map_or(0, |(_, m)| *m);
+        assert_eq!(moved, *n, "{table} の行数が移行前後で一致すること");
+    }
+    // node が生きている（FK が壊れていない）ことを実クエリで確認する。
+    let node_org: Option<String> =
+        sqlx::query_scalar("SELECT org FROM node WHERE id = $1 AND tenant_id = $2")
+            .bind(file.id)
+            .bind(&to)
+            .fetch_optional(&pool)
+            .await
+            .expect("node 再取得");
+    assert_eq!(node_org.as_deref(), Some(org.as_str()));
 }

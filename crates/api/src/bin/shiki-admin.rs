@@ -29,20 +29,9 @@ use sqlx::postgres::PgPoolOptions;
 use storage::{ObjectStore, S3ObjectStore};
 use uuid::Uuid;
 
-/// tenant_id 列で移行対象になるテーブル（リネームモード）。FK 順は不要（同一 txn 内 UPDATE）。
-const TENANT_TABLES: &[&str] = &[
-    "node",
-    "node_closure",
-    "node_version",
-    "pending_upload",
-    "storage_event_outbox",
-    "outbox_delivery",
-    "directory_user",
-    "directory_role",
-    "audit_log",
-    "blob",
-    "tenant",
-];
+// 移行対象テーブルは `storage::tenant_scope` が information_schema から導出する（#420）。
+// 手で列挙していた頃は tenant_id を持つ 51 テーブル中 11 しか移行せず、チャット履歴・RAG 本文・
+// 構造化データ・ワークフロー履歴・利用量が旧テナントに取り残されていた。
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -232,6 +221,25 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
     println!("objects: copied={objects_moved} skipped={objects_skipped}（blob 行 {blob_rows}）");
 
     // --- 3. DB の書き換え（1 txn） ---
+    // 対象は information_schema から導出する（#420・手書き列挙は必ず新テーブルを取りこぼす）。
+    let tables = storage::tenant_scope::tenant_scoped_tables(&db)
+        .await
+        .context("テナント境界テーブルの導出に失敗")?;
+    // dry-run でも「どのテーブルの何行が動くか」を必ず出す。件数を伏せると、移行しないテーブルが
+    // あっても運用者は「全件移行できた」と読み違える（旧実装のサイレント取りこぼし）。
+    let counts = storage::tenant_scope::count_tenant_rows(&db, &tables, &db_tenant)
+        .await
+        .context("移行対象の行数集計に失敗")?;
+    let nonempty: Vec<&(String, i64)> = counts.iter().filter(|(_, n)| *n > 0).collect();
+    let total: i64 = counts.iter().map(|(_, n)| *n).sum();
+    println!(
+        "DB: 対象 {} テーブル中 {} テーブルに行あり（計 {total} 行）",
+        tables.len(),
+        nonempty.len()
+    );
+    for (table, n) in nonempty {
+        println!("  {table}: {n}");
+    }
     if execute {
         let mut tx = db.begin().await?;
         match &from {
@@ -246,12 +254,6 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                 .await?;
             }
             FromNs::Tenant(f) => {
-                // node/node_version → blob の FK は同一 txn 内で tenant_id を順に書き換える
-                // 途中状態で違反するため、commit 時検査へ遅延させる（migration 0008 で
-                // DEFERRABLE 化済み）。
-                sqlx::query("SET CONSTRAINTS node_blob_fk, node_version_blob_fk DEFERRED")
-                    .execute(&mut *tx)
-                    .await?;
                 // object_key の prefix 差し替え → 各テーブルの tenant_id リネーム。
                 sqlx::query(
                     "UPDATE blob SET object_key = $2 || substring(object_key FROM length($1) + 1) \
@@ -261,15 +263,12 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                 .bind(&to)
                 .execute(&mut *tx)
                 .await?;
-                for table in TENANT_TABLES {
-                    sqlx::query(&format!(
-                        "UPDATE {table} SET tenant_id = $2 WHERE tenant_id = $1"
-                    ))
-                    .bind(f)
-                    .bind(&to)
-                    .execute(&mut *tx)
-                    .await?;
-                }
+                // 参照列に tenant_id を含む FK は commit 時検査へ遅延する（migration 0008/0061）。
+                let moved = storage::tenant_scope::rename_tenant_rows(&mut tx, &tables, f, &to)
+                    .await
+                    .context("tenant_id のリネームに失敗")?;
+                let total: u64 = moved.iter().map(|(_, n)| *n).sum();
+                println!("DB: {} テーブル / {total} 行を移行", moved.len());
             }
         }
         tx.commit().await?;

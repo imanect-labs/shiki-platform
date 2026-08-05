@@ -174,33 +174,25 @@ impl StorageService {
             }
         }
 
-        // 3. DB 行を 1 txn・FK 依存順で物理削除（audit_log は保持）。
+        // 3. DB 行を 1 txn で物理削除。対象は `tenant_id` を持つ**全テーブル**を
+        //    `information_schema` から導出し（FK 依存の子→親順）、保持するものだけを除く（#420）。
+        //    手で列挙していた頃は 51 テーブル中 13 しか消しておらず、チャット履歴・RAG 本文・
+        //    構造化データ・ワークフロー履歴が撤去後も残っていた（SAAS.2「完全削除」の未達）。
+        let tables = crate::tenant_scope::tenant_scoped_tables(&self.db).await?;
         let mut tx = self.db.begin().await?;
-        // node_closure は tenant_id を直接持つ（#91 L-1）ため node JOIN 不要。
-        sqlx::query("DELETE FROM node_closure WHERE tenant_id = $1")
-            .bind(tenant_id)
-            .execute(&mut *tx)
-            .await?;
-        for table in [
-            "node_version",
-            "pending_upload",
-            "storage_event_outbox",
-            // 共有リンク台帳（#342）。node より先に消す（FK は張っていないが順序を明示）。
-            "node_share_link_grant",
-            "node_share_link",
-            "directory_user",
-            "directory_role",
-            "node",
-            "blob",
-            // artifact 本文（artifact_version は FK cascade で連鎖削除・SAAS.2 完全削除）。
-            "artifact",
-            // 暗号化済みシークレット（SAAS.2 完全削除）。
-            "secret",
-        ] {
-            sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+        let mut rows_deleted: u64 = 0;
+        for table in &tables {
+            if crate::tenant_scope::PURGE_RETAINED
+                .iter()
+                .any(|(retained, _)| retained == table)
+            {
+                continue;
+            }
+            rows_deleted += sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
                 .bind(tenant_id)
                 .execute(&mut *tx)
-                .await?;
+                .await?
+                .rows_affected();
         }
         // 撤去の監査（ハッシュチェーン連結・削除証跡）。
         audit::record_on(
@@ -216,6 +208,9 @@ impl StorageService {
                     "tuples_deleted": tuples_deleted,
                     "objects_deleted": objects_deleted,
                     "roles": role_ids.len(),
+                    // 撤去範囲の証跡（#420）: 何テーブル・何行消したかを削除証明として残す。
+                    "tables_purged": tables.len() - crate::tenant_scope::PURGE_RETAINED.len(),
+                    "rows_deleted": rows_deleted,
                 }),
             },
             Chain::Yes,
