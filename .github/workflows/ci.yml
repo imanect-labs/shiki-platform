@@ -31,9 +31,9 @@ env:
   # （CARGO_NET_RETRY では救えない）。HTTP/1.1 に固定する定番回避策。ダウンロードは
   # rust-cache が効くため直列化の影響は小さい。
   CARGO_HTTP_MULTIPLEXING: "false"
-  # CI 高速化: デバッグ情報を行テーブルのみに削る（panic の行番号は保つ）。フル debuginfo
-  # の生成・リンクは debug/test/coverage ビルドの大きなコストで、CI では不要。
-  CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+  # debuginfo の削減（行テーブルのみ・依存は 0）は Cargo.toml の [profile.dev] へ移した。
+  # ここに env で置くと CI にしか効かず、ローカルだけフル debuginfo で target/ が
+  # 100GB 超に膨らんでいた（#419）。設定はマニフェスト側の 1 箇所に集約する。
   # 増分コンパイルは CI（毎回クリーン相当・rust-cache 復元）では利得がなくオーバーヘッド。
   CARGO_INCREMENTAL: "0"
 
