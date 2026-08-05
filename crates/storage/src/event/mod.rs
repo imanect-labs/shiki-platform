@@ -22,7 +22,8 @@ mod delivery;
 mod gc;
 
 pub use delivery::{
-    claim_undelivered, mark_delivered, register_consumer, registered_consumers, unregister_consumer,
+    claim_undelivered, mark_delivered, register_consumer, register_consumer_on_pool,
+    registered_consumers, unregister_consumer,
 };
 pub use gc::{
     gc_delivered, gc_delivered_registered, outbox_backlog, ConsumerLag, OutboxBacklog,

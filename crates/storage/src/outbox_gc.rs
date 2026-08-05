@@ -51,6 +51,11 @@ const MAX_BACKOFF: Duration = Duration::from_mins(10);
 /// 返した `JoinHandle` は保持不要（プロセス生存中は動き続ける）。
 pub fn spawn_outbox_gc(pool: sqlx::PgPool) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // 起動直後は動かない。`wire_storage`（ここ）は `spawn_workflow_runtime` / gateway 配線より
+        // **先**に走るので、コンシューマの `register_consumer`（初回 fast-forward）はこの後に来る。
+        // GC と fast-forward は advisory lock で排他済みだが、そもそも startup で競らせない方が
+        // 素直で、配線順が壊れても壊れない（GC は遅れて困る処理ではない）。
+        tokio::time::sleep(GC_INTERVAL).await;
         let mut backoff = MIN_BACKOFF;
         loop {
             match gc_cycle(&pool).await {
@@ -76,13 +81,19 @@ pub fn spawn_outbox_gc(pool: sqlx::PgPool) -> tokio::task::JoinHandle<()> {
 }
 
 /// 1 周期分の GC。バッチが埋まらなくなる（＝消せる行が尽きた）か上限バッチ数まで刻む。
+///
+/// バッチごとに**明示トランザクション**を張る。`gc_delivered` が `register_consumer` との相互排除に
+/// 使う advisory lock は **txn 単位**であり、`acquire()` の autocommit では文の終わりで解放されて
+/// 排他にならない（＝相手を FK 違反で落とす）。1 バッチ = 1 txn なので長時間トランザクションにも
+/// ならない。
 async fn gc_cycle(pool: &sqlx::PgPool) -> Result<u64, crate::error::StorageError> {
     let mut total = 0u64;
     for _ in 0..MAX_BATCHES_PER_CYCLE {
-        let mut conn = pool.acquire().await?;
-        let deleted = gc_delivered_registered(&mut conn, DEFAULT_GC_BATCH).await?;
+        let mut tx = pool.begin().await?;
+        let deleted = gc_delivered_registered(&mut tx, DEFAULT_GC_BATCH).await?;
+        tx.commit().await?;
         total = total.saturating_add(deleted);
-        // バッチが埋まらなかった＝これ以上消せる行は無い。
+        // バッチが埋まらなかった＝これ以上消せる行は無い（fast-forward 中で lock が取れず 0 の場合も含む）。
         if deleted < u64::try_from(DEFAULT_GC_BATCH).unwrap_or(u64::MAX) {
             break;
         }

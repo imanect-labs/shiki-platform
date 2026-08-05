@@ -93,6 +93,14 @@ pub async fn mark_delivered(
 ///
 /// `outbox_consumer` 台帳に consumer 名を一度だけ記録し、初回だけ現バックログを配送済みに刻む。
 /// 2 回目以降（再起動）は no-op ＝ **停止中に到着した未配送イベントを取りこぼさない**。返り値は刻んだ件数。
+///
+/// ⚠️ **必ずトランザクション上で呼ぶこと**（`pool.begin()`）。理由が 2 つある:
+/// 1. 「登録の記録」と「バックログの fast-forward」が**原子的でないと壊れる**。autocommit で呼ぶと
+///    登録だけ先にコミットされ、fast-forward が失敗した場合に**登録済みなのにバックログが
+///    配送済みになっていない**状態が残る → relay がバックログ全件を拾い一斉発火する。
+/// 2. GC との相互排除に使う advisory lock が **txn 単位**（autocommit では文の終わりで解放される）。
+///
+/// pool しか手元に無い呼び出し側は [`register_consumer_on_pool`] を使うこと（自前で txn を張る）。
 pub async fn register_consumer(
     conn: &mut PgConnection,
     consumer: &str,
@@ -109,6 +117,11 @@ pub async fn register_consumer(
         // 既登録: fast-forward しない（未配送を温存）。
         return Ok(0);
     }
+    // 下の fast-forward は **WHERE 無しで全 outbox 行**を台帳へ写すため、並行 GC の DELETE と
+    // レースすると FK 違反で落ちる（→ この txn がロールバックし `outbox_consumer` の登録も消え、
+    // 未登録のまま relay がバックログ全件を拾って一斉発火する）。GC と相互排除する。
+    // 詳細は `super::gc::GC_LOCK_KEY` の doc を参照。
+    super::gc::lock_for_fast_forward(&mut *conn).await?;
     let done = sqlx::query(
         "INSERT INTO outbox_delivery (consumer, event_id, tenant_id) \
          SELECT $1, o.id, o.tenant_id FROM storage_event_outbox o \
@@ -118,6 +131,21 @@ pub async fn register_consumer(
     .execute(conn)
     .await?;
     Ok(done.rows_affected())
+}
+
+/// [`register_consumer`] を**自前のトランザクション**で実行する（pool しか無い呼び出し側向け）。
+///
+/// 起動時 wiring はコネクションを `acquire()` して渡しがちだが、それは autocommit であり
+/// [`register_consumer`] の前提（登録と fast-forward の原子性・txn 単位 advisory lock）を破る。
+/// 正しい使い方を既定にするためのラッパ。
+pub async fn register_consumer_on_pool(
+    pool: &sqlx::PgPool,
+    consumer: &str,
+) -> Result<u64, StorageError> {
+    let mut tx = pool.begin().await?;
+    let marked = register_consumer(&mut tx, consumer).await?;
+    tx.commit().await?;
+    Ok(marked)
 }
 
 /// コンシューマを**恒久的に廃止**する（登録を消し、その台帳行も消す）。廃止できたら `true`。

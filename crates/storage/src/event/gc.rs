@@ -17,6 +17,53 @@ use crate::error::StorageError;
 /// 1 回の GC で削除する最大行数（既定）。大きな `DELETE` を 1 文で撃たず刻む。
 pub const DEFAULT_GC_BATCH: i64 = 1_000;
 
+/// GC と `register_consumer` の fast-forward を相互排除する advisory lock キー。
+///
+/// **なぜ必要か**: `register_consumer` の fast-forward は
+/// `INSERT INTO outbox_delivery SELECT ... FROM storage_event_outbox`（**WHERE 無し＝全行**）で、
+/// GC の `DELETE` と並行すると **FK 違反で落ちる**:
+///
+/// ```text
+/// insert or update on table "outbox_delivery" violates foreign key constraint
+/// Key (event_id)=(190) is not present in table "storage_event_outbox".
+/// ```
+///
+/// READ COMMITTED では INSERT...SELECT のスナップショットに見えていた行を、FK 検査（より新しい
+/// crosscheck スナップショット）の時点で GC が消し終えていると起こる。実際にテストで 15 回中 2 回再現した。
+///
+/// 落ちると **`outbox_consumer` への登録も同一 txn なのでロールバックし、コンシューマが未登録のまま
+/// relay が走り出す**。その relay は**バックログ全件を未配送として拾う**＝fast-forward が防ぐはずだった
+/// 「履歴イベントでの一斉発火」をそのまま引き起こす。したがってこれは性能問題ではなく正当性の問題。
+///
+/// 排他の向き:
+/// - `register_consumer` は**ブロッキング**で取る（必ず成功させたい・生涯 1 回だけの処理）。
+/// - GC は **try**で取り、取れなければその周期は何もしない（60 秒後に再試行すれば十分）。
+///
+/// キーは他の advisory lock（RAG relay リーダー・miniapp cron）と衝突しない値にする。
+const GC_LOCK_KEY: i64 = 0x5348_494B_4F42_4743; // "SHIKI-OBGC"
+
+/// [`GC_LOCK_KEY`] を **try** で取る（GC 側）。取れなければ `false`。
+///
+/// txn 単位の advisory lock なので、commit/rollback で自動解放される。
+async fn try_lock_gc(conn: &mut PgConnection) -> Result<bool, StorageError> {
+    let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(GC_LOCK_KEY)
+        .fetch_one(conn)
+        .await?;
+    Ok(acquired)
+}
+
+/// [`GC_LOCK_KEY`] を**ブロッキング**で取る（`register_consumer` 側）。
+///
+/// `super::delivery` から使う。txn 単位なので commit/rollback で自動解放される。
+pub(super) async fn lock_for_fast_forward(conn: &mut PgConnection) -> Result<(), StorageError> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(GC_LOCK_KEY)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 /// 全コンシューマへ配送済み **かつ** RAG（`processed_at`）ack 済みの outbox 行を最大 `batch` 件 GC する
 /// （配送台帳は `ON DELETE CASCADE` で同時に消える）。
 ///
@@ -26,6 +73,9 @@ pub const DEFAULT_GC_BATCH: i64 = 1_000;
 ///
 /// 削除対象は `FOR UPDATE SKIP LOCKED` で確保するので、**全レプリカで同時に呼んでも安全**
 /// （互いをブロックせず、同じ行を二重に掴まない）。返り値は削除件数。
+///
+/// `register_consumer` の fast-forward 実行中は [`GC_LOCK_KEY`] が取れず **0 件で戻る**
+/// （同キーの doc 参照。並行させると相手を FK 違反で落とすため）。
 ///
 /// ⚠️ `SKIP LOCKED` の帰結として、**消費者が claim 中（`FOR UPDATE` 保持中）の行はその回スキップ
 /// される**。GC は「消せるものを取りこぼさない」より「hot path をブロックしない」を優先する
@@ -39,6 +89,10 @@ pub async fn gc_delivered(
     ledger_consumers: &[&str],
     batch: i64,
 ) -> Result<u64, StorageError> {
+    // fast-forward 中なら手を出さない（相手を FK 違反で落とすため・[`GC_LOCK_KEY`] 参照）。
+    if !try_lock_gc(&mut *conn).await? {
+        return Ok(0);
+    }
     let consumers: Vec<String> = ledger_consumers.iter().map(|s| (*s).to_string()).collect();
     let expected = i64::try_from(consumers.len())
         .map_err(|_| StorageError::Invalid("consumer 数が多すぎます".into()))?;
