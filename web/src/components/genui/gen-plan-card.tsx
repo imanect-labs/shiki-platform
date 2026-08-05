@@ -20,16 +20,30 @@ import { PRESSABLE } from "@/components/ui/motion-primitives";
 import { PlanStepRow } from "@/components/chat/agent-progress";
 import { currentSeasonIndex, seasonAccentStyle } from "@/lib/season";
 import { cn } from "@/lib/utils";
+import { UiActionAlreadyInvoked } from "@/lib/artifact-api";
 import { useGenUiAction } from "./action-context";
 import { ActionResultNote, describeActionError, QueuedActionNote } from "./action-result";
 
+/// 送信後の表示。押した直後は「どちらを押したか」まで分かるが、会話を読み直したときは
+/// サーバの記録（実行済み action id）しか無いので、そこは「送信済み」とだけ言う。
+type Submitted = "started" | "revised" | "sent";
+
+const SUBMITTED_LABEL: Record<Submitted, string> = {
+  started: "調査を開始しました",
+  revised: "修正を送りました",
+  sent: "送信済みです",
+};
+
 export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
-  const { dispatch, ready, onActionCompleted } = useGenUiAction();
+  const { dispatch, ready, invoked, onActionCompleted } = useGenUiAction();
   const [revising, setRevising] = React.useState(false);
   const [revision, setRevision] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const [done, setDone] = React.useState<"started" | "revised" | null>(null);
+  const [submitted, setSubmitted] = React.useState<Submitted | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  // 送信済みかは**サーバの記録が正**（#410）。ローカル state だけだと会話の再描画・
+  // リロードで「この計画で開始」が復活し、**調査 run がまるごと二重に走る**（実費）。
+  const done: Submitted | null = submitted ?? (invoked.has(card.submit.action) ? "sent" : null);
 
   const steps = card.steps ?? [];
   if (steps.length === 0) return null;
@@ -40,10 +54,13 @@ export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
     setError(null);
     try {
       const result = await dispatch(card.submit.action, payload);
-      setDone(kind);
+      setSubmitted(kind);
       onActionCompleted?.(result);
     } catch (err) {
-      setError(describeActionError(err));
+      // 既に確保済みならエラーではない（別タブ・戻る操作・再送）。ただし「実行中」かも
+      // しれないので、ローカルで固定せずサーバの記録に判断を戻す。
+      if (err instanceof UiActionAlreadyInvoked) onActionCompleted?.();
+      else setError(describeActionError(err));
     } finally {
       setBusy(false);
     }
@@ -99,8 +116,10 @@ export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
 
       <div className="mt-3 flex items-center gap-2">
         {done ? (
-          <span className="text-xs text-primary">
-            {done === "started" ? "調査を開始しました" : "修正を送りました"}
+          // 生成中に押した操作はまだ送られていない（順番待ち）。「開始しました」と書くと、
+          // 直下の「AI が書き終えたら送信します」と食い違う（質問カードと同じ作法）。
+          <span className="text-xs text-primary" data-testid="genui-plan-submitted">
+            {ready ? SUBMITTED_LABEL[done] : "受け付けました"}
           </span>
         ) : revising ? (
           <>

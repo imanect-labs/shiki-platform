@@ -55,7 +55,7 @@ pub use autonomous::{effective_mode, AutonomousMode, ModeClamp};
 pub use csv_tool::{CsvPatchTool, CsvQueryTool, CsvWriteTool, SaveCsvTool};
 pub use document_tool::{DocumentEditTool, DocumentEmbedTool, DocumentReadTool, SaveNoteTool};
 pub use error::ChatError;
-pub use gui_actions::ChatSubmitHandler;
+pub use gui_actions::{ChatActionLedger, ChatSubmitHandler};
 pub use model::{
     Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunStatus, SelectionContext,
     SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,

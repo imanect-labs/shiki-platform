@@ -93,6 +93,9 @@ pub(crate) fn wire_ui_actions(
     let mut dispatcher = gui::ActionDispatcher::new(storage::audit::AuditRecorder::new(db.clone()));
     if let Some(chat) = chat {
         dispatcher.register_handler(Arc::new(chat::ChatSubmitHandler::new((**chat).clone())));
+        // 単発アクション（chat.submit）の実行台帳。ハンドラと**必ず対で**配線する
+        // （台帳が無いと二重送信を抑止できないので、その場合は実行しない・#410）。
+        dispatcher.set_ledger(Arc::new(chat::ChatActionLedger::new((**chat).clone())));
     }
     if let Some(search) = search {
         dispatcher.register_tool(
