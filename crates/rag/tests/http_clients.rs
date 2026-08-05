@@ -16,7 +16,7 @@ use axum::extract::Json;
 use axum::routing::post;
 use axum::Router;
 use rag::embedding::EmbeddingProvider;
-use rag::parser::{DocumentParser, ParseRequest};
+use rag::parser::{DocumentParser, ParseRequest, ParseSource};
 use rag::rerank::{RerankPassage, Reranker};
 use rag::types::BlockType;
 use rag::{EmbedInput, HttpDocumentParser, HttpEmbeddingProvider, HttpReranker, RagError};
@@ -69,7 +69,7 @@ async fn parser_maps_blocks_and_sends_tenant() {
         .parse(
             &ctx(),
             ParseRequest {
-                source_url: "http://minio:9000/blob",
+                source: ParseSource::Url("http://minio:9000/blob"),
                 content_type: "application/pdf",
                 file_name: "report.pdf",
             },
@@ -101,7 +101,7 @@ async fn parser_maps_422_to_permanent_parse_error() {
         .parse(
             &ctx(),
             ParseRequest {
-                source_url: "http://minio:9000/blob",
+                source: ParseSource::Url("http://minio:9000/blob"),
                 content_type: "application/pdf",
                 file_name: "broken.pdf",
             },
@@ -130,7 +130,7 @@ async fn parser_maps_5xx_to_transient_worker_error() {
         .parse(
             &ctx(),
             ParseRequest {
-                source_url: "http://minio:9000/blob",
+                source: ParseSource::Url("http://minio:9000/blob"),
                 content_type: "application/pdf",
                 file_name: "a.pdf",
             },

@@ -147,6 +147,12 @@ impl LlmProvider for AnthropicProvider {
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             if status.is_client_error() {
+                // 429 は「直せば通る」ものではない（openai 側と同じ理由・provider.rs 参照）。
+                if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    return Err(LlmError::RateLimited(crate::provider::rate_limit_message(
+                        &text,
+                    )));
+                }
                 return Err(LlmError::BadRequest(format!("anthropic {status}: {text}")));
             }
             return Err(LlmError::Unavailable(format!("anthropic {status}: {text}")));

@@ -337,6 +337,7 @@ mod tests {
         let pin = SkillPin {
             skill_id: Uuid::new_v4(),
             skill_version: 1,
+            command_args: None,
         };
         let err = AppliedSkill::load_pins(&ctx, None, &run_with_pins(vec![pin]), None)
             .await

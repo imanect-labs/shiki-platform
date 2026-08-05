@@ -18,8 +18,9 @@ import { Button } from "@/components/ui/button";
 import { DURATION_NORMAL, EASE_STANDARD, PRESSABLE } from "@/components/ui/motion-primitives";
 import { currentSeasonIndex, seasonAccentStyle } from "@/lib/season";
 import { cn } from "@/lib/utils";
+import { UiActionAlreadyInvoked } from "@/lib/artifact-api";
 import { useGenUiAction } from "./action-context";
-import { ActionResultNote, describeActionError } from "./action-result";
+import { ActionResultNote, describeActionError, QueuedActionNote } from "./action-result";
 
 /// 1 問の回答状態。options 質問は選択ラベル集合＋「その他」（専用フラグ・自由記述）、
 /// 自由記述質問は text。`otherSelected` を選択集合と分けることで、選択肢ラベルが
@@ -44,7 +45,7 @@ function answerValue(q: QuestionItem, a: Answer): string {
 }
 
 export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
-  const { dispatch, onActionCompleted } = useGenUiAction();
+  const { dispatch, ready, invoked, onActionCompleted } = useGenUiAction();
   const questions = React.useMemo(() => card.questions ?? [], [card.questions]);
   const total = questions.length;
 
@@ -53,7 +54,11 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
   const [dir, setDir] = React.useState(1); // 進む=1 / 戻る=-1（トランジション方向）
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [done, setDone] = React.useState(false);
+  const [submitted, setSubmitted] = React.useState(false);
+  // 送信済みかは**サーバの記録が正**（#410）。ローカル state だけだと、生成完了時のカード
+  // 作り直し・会話の再読込・リロードで未回答へ巻き戻り、同じカードから二度送信できた。
+  // ローカルの `submitted` は押下直後の即時反映（記録が返ってくるまでの数百 ms）用。
+  const done = submitted || invoked.has(card.submit.action);
 
   if (total === 0) return null;
   const q = questions[Math.min(step, total - 1)];
@@ -103,10 +108,14 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
     }
     try {
       const result = await dispatch(card.submit.action, payload);
-      setDone(true);
+      setSubmitted(true);
       onActionCompleted?.(result);
     } catch (err) {
-      setError(describeActionError(err));
+      // 既に確保済みならエラーではない（別タブ・戻る操作・再送）。ただし「実行中」かも
+      // しれないので、ローカルで固定せずサーバの記録に判断を戻す（実行が失敗すれば
+      // 確保は解放され、押し直せる状態に戻る）。
+      if (err instanceof UiActionAlreadyInvoked) onActionCompleted?.();
+      else setError(describeActionError(err));
     } finally {
       setBusy(false);
     }
@@ -133,151 +142,185 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
             {card.title || "AI からの質問"}
           </h3>
         </div>
-        <span className="shrink-0 text-[11px] font-medium tabular-nums text-muted-foreground">
-          {step + 1}
-          <span className="text-muted-foreground/50"> / {total}</span>
-        </span>
-      </div>
-
-      {/* 進捗バー（season 色・幅をトークン持続でトゥイーン）。 */}
-      <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-secondary">
-        <div
-          className="h-full rounded-full transition-[width] duration-[var(--duration-normal)] ease-[var(--ease-standard)]"
-          style={{ width: `${((step + 1) / total) * 100}%`, backgroundColor: "var(--season)" }}
-        />
-      </div>
-
-      {card.intro && step === 0 ? (
-        <p className="mt-3 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground">
-          {card.intro}
-        </p>
-      ) : null}
-
-      {/* 質問本体（1 問ずつ・左右スライドで切り替え）。 */}
-      <div className="relative mt-3 overflow-hidden">
-        <AnimatePresence mode="wait" custom={dir} initial={false}>
-          <motion.div
-            key={q.id}
-            custom={dir}
-            initial={{ opacity: 0, x: dir * 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: dir * -20 }}
-            transition={{ duration: DURATION_NORMAL, ease: EASE_STANDARD }}
-          >
-            {q.header ? (
-              <span
-                className="mb-2 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium"
-                style={{
-                  backgroundColor: "color-mix(in oklab, var(--season) 14%, transparent)",
-                  color: "var(--season)",
-                }}
-              >
-                {q.header}
-              </span>
-            ) : null}
-            <p
-              id={`genui-q-${card.id}-${q.id}`}
-              className="text-[15px] font-semibold leading-relaxed tracking-tight text-foreground"
-            >
-              {q.question}
-            </p>
-
-            {options.length > 0 ? (
-              <div
-                className="mt-3.5 flex flex-col gap-2"
-                role={q.multi_select ? "group" : "radiogroup"}
-                aria-labelledby={`genui-q-${card.id}-${q.id}`}
-              >
-                {options.map((opt) => (
-                  <OptionCard
-                    key={opt.label}
-                    label={opt.label}
-                    description={opt.description ?? null}
-                    multi={q.multi_select}
-                    selected={a.selected.includes(opt.label)}
-                    disabled={busy || done}
-                    onSelect={() => toggle(opt.label)}
-                  />
-                ))}
-                {q.allow_other ? (
-                  <OptionCard
-                    label="その他"
-                    description="選択肢にない場合は自由に入力してください"
-                    icon={<PencilLine className="size-4" />}
-                    multi={q.multi_select}
-                    selected={a.otherSelected}
-                    disabled={busy || done}
-                    onSelect={toggleOther}
-                  />
-                ) : null}
-                {q.allow_other && a.otherSelected ? (
-                  <textarea
-                    value={a.other}
-                    onChange={(e) => update({ other: e.target.value })}
-                    placeholder={q.placeholder ?? "自由に入力してください"}
-                    aria-label="その他の回答"
-                    rows={2}
-                    disabled={busy || done}
-                    className="mt-0.5 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-                  />
-                ) : null}
-              </div>
-            ) : (
-              <textarea
-                value={a.text}
-                onChange={(e) => update({ text: e.target.value })}
-                placeholder={q.placeholder ?? "回答を入力してください"}
-                aria-labelledby={`genui-q-${card.id}-${q.id}`}
-                rows={4}
-                disabled={busy || done}
-                className="mt-3 w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-              />
-            )}
-          </motion.div>
-        </AnimatePresence>
-      </div>
-
-      {/* フッタ: 戻る / 次へ・回答する。 */}
-      <div className="mt-4 flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() => go(step - 1)}
-          disabled={step === 0 || busy || done}
-          className={cn(
-            "inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-muted-foreground",
-            "transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40",
-            PRESSABLE,
-          )}
-        >
-          <ArrowLeft className="size-3.5" aria-hidden />
-          戻る
-        </button>
-        <div className="flex-1" />
-        {done ? (
-          <span className="inline-flex items-center gap-1 text-xs text-primary">
-            <Check className="size-3.5" aria-hidden />
-            回答を送信しました
+        {done ? null : (
+          <span className="shrink-0 text-[11px] font-medium tabular-nums text-muted-foreground">
+            {step + 1}
+            <span className="text-muted-foreground/50"> / {total}</span>
           </span>
-        ) : isLast ? (
-          <Button
-            type="button"
-            size="sm"
-            onClick={onSubmit}
-            disabled={busy}
-            className={PRESSABLE}
-            // ラベルは AI が `submit_label` で自由に決める（「この条件で進める」等）。
-            // e2e が文言に依存しないよう testid で掴む（計画カードの genui-plan-start と対）。
-            data-testid="genui-question-submit"
-          >
-            {card.submit_label || "回答する"}
-          </Button>
-        ) : (
-          <Button type="button" size="sm" onClick={() => go(step + 1)} className={PRESSABLE}>
-            次へ
-            <ArrowRight className="size-3.5" aria-hidden />
-          </Button>
         )}
       </div>
+
+      {/* 送信後は「何を聞かれて、答え終わったか」だけを残す。ステッパーを死んだまま
+          置いておくと、1 問目・未選択の未回答の顔で会話に残り続ける（#410）。
+          答えた内容は直下のユーザー発話に出ているので、ここでは繰り返さない。 */}
+      {done ? (
+        <ul className="mt-3 space-y-1.5" data-testid="genui-question-answered">
+          {questions.map((q) => (
+            <li
+              key={q.id}
+              className="flex items-start gap-2 text-[13px] leading-relaxed text-muted-foreground"
+            >
+              <Check
+                className="mt-[3px] size-3.5 shrink-0"
+                style={{ color: "var(--season)" }}
+                strokeWidth={2.5}
+                aria-hidden
+              />
+              <span className="min-w-0 flex-1">{q.header?.trim() || q.question}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <>
+        {/* 進捗バー（season 色・幅をトークン持続でトゥイーン）。 */}
+        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-secondary">
+          <div
+            className="h-full rounded-full transition-[width] duration-[var(--duration-normal)] ease-[var(--ease-standard)]"
+            style={{ width: `${((step + 1) / total) * 100}%`, backgroundColor: "var(--season)" }}
+          />
+        </div>
+
+        {card.intro && step === 0 ? (
+          <p className="mt-3 whitespace-pre-wrap text-[13px] leading-relaxed text-muted-foreground">
+            {card.intro}
+          </p>
+        ) : null}
+
+        {/* 質問本体（1 問ずつ・左右スライドで切り替え）。 */}
+        <div className="relative mt-3 overflow-hidden">
+          <AnimatePresence mode="wait" custom={dir} initial={false}>
+            <motion.div
+              key={q.id}
+              custom={dir}
+              initial={{ opacity: 0, x: dir * 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: dir * -20 }}
+              transition={{ duration: DURATION_NORMAL, ease: EASE_STANDARD }}
+            >
+              {q.header ? (
+                <span
+                  className="mb-2 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium"
+                  style={{
+                    backgroundColor: "color-mix(in oklab, var(--season) 14%, transparent)",
+                    color: "var(--season)",
+                  }}
+                >
+                  {q.header}
+                </span>
+              ) : null}
+              <p
+                id={`genui-q-${card.id}-${q.id}`}
+                className="text-[15px] font-semibold leading-relaxed tracking-tight text-foreground"
+              >
+                {q.question}
+              </p>
+
+              {options.length > 0 ? (
+                <div
+                  className="mt-3.5 flex flex-col gap-2"
+                  role={q.multi_select ? "group" : "radiogroup"}
+                  aria-labelledby={`genui-q-${card.id}-${q.id}`}
+                >
+                  {options.map((opt) => (
+                    <OptionCard
+                      key={opt.label}
+                      label={opt.label}
+                      description={opt.description ?? null}
+                      multi={q.multi_select}
+                      selected={a.selected.includes(opt.label)}
+                      disabled={busy}
+                      onSelect={() => toggle(opt.label)}
+                    />
+                  ))}
+                  {q.allow_other ? (
+                    <OptionCard
+                      label="その他"
+                      description="選択肢にない場合は自由に入力してください"
+                      icon={<PencilLine className="size-4" />}
+                      multi={q.multi_select}
+                      selected={a.otherSelected}
+                      disabled={busy}
+                      onSelect={toggleOther}
+                    />
+                  ) : null}
+                  {q.allow_other && a.otherSelected ? (
+                    <textarea
+                      value={a.other}
+                      onChange={(e) => update({ other: e.target.value })}
+                      placeholder={q.placeholder ?? "自由に入力してください"}
+                      aria-label="その他の回答"
+                      rows={2}
+                      disabled={busy}
+                      className="mt-0.5 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                    />
+                  ) : null}
+                </div>
+              ) : (
+                <textarea
+                  value={a.text}
+                  onChange={(e) => update({ text: e.target.value })}
+                  placeholder={q.placeholder ?? "回答を入力してください"}
+                  aria-labelledby={`genui-q-${card.id}-${q.id}`}
+                  rows={4}
+                  disabled={busy}
+                  className="mt-3 w-full resize-y rounded-lg border border-input bg-background px-3 py-2.5 text-sm leading-relaxed text-foreground shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                />
+              )}
+            </motion.div>
+          </AnimatePresence>
+        </div>
+
+        {/* フッタ: 戻る / 次へ・回答する。 */}
+        <div className="mt-4 flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => go(step - 1)}
+            disabled={step === 0 || busy}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-muted-foreground",
+              "transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40",
+              PRESSABLE,
+            )}
+          >
+            <ArrowLeft className="size-3.5" aria-hidden />
+            戻る
+          </button>
+          <div className="flex-1" />
+          {isLast ? (
+            <Button
+              type="button"
+              size="sm"
+              onClick={onSubmit}
+              disabled={busy}
+              className={PRESSABLE}
+              // ラベルは AI が `submit_label` で自由に決める（「この条件で進める」等）。
+              // e2e が文言に依存しないよう testid で掴む（計画カードの genui-plan-start と対）。
+              data-testid="genui-question-submit"
+            >
+              {card.submit_label || "回答する"}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => go(step + 1)}
+              className={PRESSABLE}
+            >
+              次へ
+              <ArrowRight className="size-3.5" aria-hidden />
+            </Button>
+          )}
+        </div>
+        </>
+      )}
+      {done ? (
+        /* チェックの列は上の質問リストと縦に揃える（gap も同じ 2）。 */
+        <p className="mt-3 inline-flex items-center gap-2 text-xs text-primary">
+          <Check className="size-3.5 shrink-0" aria-hidden />
+          {ready ? "回答を送信しました" : "回答を受け付けました"}
+        </p>
+      ) : null}
+      <QueuedActionNote ready={ready} submitted={done} />
       <ActionResultNote error={error} />
     </div>
   );

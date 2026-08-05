@@ -107,8 +107,25 @@ pub struct ToolOutcome {
     /// `{skill_id, skill_version, name}` の JSON。**発話ユーザー権限で解決に成功した**発動のみ
     /// を入れる（run イベントへ append され「何をいつ適用したか」の完全な列が残る＝監査・再現性）。
     pub skill_invocations: Vec<serde_json::Value>,
+    /// サブエージェント委譲の記録（`subagent` のみ・他ツールは空・#391）。
+    /// `{objective, boundary, steps, tool_calls, tokens}` の JSON。**監査と再現性のため**に
+    /// run イベントへ append される（`message.content` へは projection しない＝親の履歴を汚さない）。
+    pub subagent_runs: Vec<serde_json::Value>,
+    /// ツールの内側で起きた LLM 消費（`subagent` のみ・#391）。
+    /// ループが親の [`Spent`](crate::budget::Spent) へ `add_external` で積む。
+    pub usage: Option<ToolUsage>,
     /// 実行がエラーだったか（tool_result.is_error）。
     pub is_error: bool,
+}
+
+/// ツール内部で起きた LLM 消費（親の予算へ積む・#391）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ToolUsage {
+    /// 課金の累計（親のコスト会計へ積む）。
+    pub tokens: u64,
+    /// 新規ぶんの累計（親の**上限判定**へ積む・`Spent::fresh_tokens`）。
+    pub fresh_tokens: u64,
+    pub cost_usd_micros: i64,
 }
 
 impl ToolOutcome {
@@ -126,6 +143,8 @@ impl ToolOutcome {
             csv_drafts: Vec::new(),
             document_refs: Vec::new(),
             skill_invocations: Vec::new(),
+            subagent_runs: Vec::new(),
+            usage: None,
             is_error: false,
         }
     }
@@ -144,6 +163,8 @@ impl ToolOutcome {
             csv_drafts: Vec::new(),
             document_refs: Vec::new(),
             skill_invocations: Vec::new(),
+            subagent_runs: Vec::new(),
+            usage: None,
             is_error: true,
         }
     }

@@ -35,15 +35,51 @@ impl BudgetKind {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Spent {
     pub steps: usize,
+    /// **課金の累計**。各ステップの prompt＋completion をそのまま足す。prompt には毎回
+    /// 履歴全体が含まれるので、実際の請求と同じくステップ数に対して ≒二次で伸びる。
+    /// コスト会計・Langfuse に出すのはこちら。
     pub tokens: u64,
+    /// **仕事量の累計**（上限判定に使う）。そのステップで**新しく生まれたトークン**だけを
+    /// 足す ＝ completion ＋ 前ステップから増えた prompt 分（＝新しいツール結果）。
+    ///
+    /// 上限を `tokens` で見ると、履歴の再送を「消費」として何度も数えるため、上限値が
+    /// 「何件調べられるか」と桁でずれる。実 LLM では 1 体 12 万でも 20 万でも調査
+    /// サブエージェントが毎回上限で死に、委譲機構が使われないままだった（#404）。
+    /// 請求は `tokens`、できる仕事の量は `fresh_tokens`、と役割を分ける。
+    pub fresh_tokens: u64,
+    /// 直前ステップの prompt トークン（`fresh_tokens` の差分計算に使う内部状態）。
+    prev_prompt_tokens: u64,
     pub cost_usd_micros: i64,
 }
 
 impl Spent {
     /// 1 ステップ分の消費を足し込む（step は +1）。
-    pub fn add_step(&mut self, tokens: u64, cost_usd_micros: i64) {
+    ///
+    /// `prompt_tokens` を分けて受けるのは `fresh_tokens`（新規ぶん）を出すため。prompt は
+    /// 履歴全体なので単調増加し、その**増分**がそのステップで新しく積まれた内容
+    /// （直前の completion ＋ ツール結果）にあたる。剪定で縮んだときは 0 とみなす。
+    pub fn add_step(&mut self, prompt_tokens: u64, completion_tokens: u64, cost_usd_micros: i64) {
         self.steps = self.steps.saturating_add(1);
+        self.tokens = self
+            .tokens
+            .saturating_add(prompt_tokens.saturating_add(completion_tokens));
+        let grew = prompt_tokens.saturating_sub(self.prev_prompt_tokens);
+        self.prev_prompt_tokens = prompt_tokens;
+        self.fresh_tokens = self
+            .fresh_tokens
+            .saturating_add(grew.saturating_add(completion_tokens));
+        self.cost_usd_micros = self.cost_usd_micros.saturating_add(cost_usd_micros);
+    }
+
+    /// ツールの中で起きた LLM 消費を足し込む（**step は増やさない**・#391）。
+    ///
+    /// サブエージェント委譲（`subagent`）は 1 ツール呼び出しの内側で子ループを回すため、その
+    /// トークン/コストは親の会計に現れない。ここで積むことで**親の `Budget` が子の消費込みで
+    /// 止まる**（トークンが十数倍になり得る機構の唯一の安全弁）。steps は親のループ回数を表す
+    /// 指標なので触らない。
+    pub fn add_external(&mut self, tokens: u64, fresh_tokens: u64, cost_usd_micros: i64) {
         self.tokens = self.tokens.saturating_add(tokens);
+        self.fresh_tokens = self.fresh_tokens.saturating_add(fresh_tokens);
         self.cost_usd_micros = self.cost_usd_micros.saturating_add(cost_usd_micros);
     }
 }
@@ -114,7 +150,8 @@ impl Budget {
             return BudgetCheck::Exceeded(BudgetKind::Time);
         }
         if let Some(max) = self.max_tokens {
-            if spent.tokens >= max {
+            // 上限は**新規ぶん**で見る（履歴の再送を仕事量として二重計上しない・#404）。
+            if spent.fresh_tokens >= max {
                 return BudgetCheck::Exceeded(BudgetKind::Tokens);
             }
         }
@@ -137,8 +174,8 @@ impl Budget {
             }
         }
         if let Some(max) = self.max_tokens {
-            if fraction_reached(spent.tokens, max, frac) {
-                return BudgetCheck::Warn(BudgetKind::Tokens, spent.tokens, max);
+            if fraction_reached(spent.fresh_tokens, max, frac) {
+                return BudgetCheck::Warn(BudgetKind::Tokens, spent.fresh_tokens, max);
             }
         }
         if let Some(max) = self.max_cost_usd_micros {
@@ -148,6 +185,38 @@ impl Budget {
             }
         }
         BudgetCheck::Ok
+    }
+
+    /// 残り予算を出す（**モデルへ見せる**ための値・#407）。
+    ///
+    /// 上限判定と同じ軸（ステップ・`fresh_tokens`・deadline）で数える。判定と表示がずれると
+    /// 「まだ余裕がある」と言った直後に切られることになるため、`check` と同じ値を使う。
+    // cost は表示に使わない（モデルに単価の判断材料が無く、行動が変わらないため）。
+    #[allow(clippy::cast_precision_loss)]
+    #[must_use]
+    pub fn remaining(&self, spent: &Spent, now: Instant) -> Remaining {
+        let steps = self.max_steps.saturating_sub(spent.steps);
+        let tokens = self
+            .max_tokens
+            .map(|m| m.saturating_sub(spent.fresh_tokens));
+        let seconds = self
+            .deadline
+            .map(|d| d.saturating_duration_since(now).as_secs());
+        let tight = |left: u64, max: u64| max > 0 && (left as f64) < max as f64 * LANDING_FRACTION;
+        let landing = steps <= LANDING_STEPS
+            || tokens.is_some_and(|t| tight(t, self.max_tokens.unwrap_or(0)))
+            || match (seconds, self.started_at, self.deadline) {
+                (Some(left), Some(start), Some(deadline)) => {
+                    tight(left, deadline.saturating_duration_since(start).as_secs())
+                }
+                _ => false,
+            };
+        Remaining {
+            steps,
+            tokens,
+            seconds,
+            landing,
+        }
     }
 }
 
@@ -161,6 +230,60 @@ fn fraction_reached(used: u64, limit: u64, frac: f64) -> bool {
     // 整数で threshold = ceil(limit * frac) 相当。浮動小数は割合換算にのみ使う。
     let threshold = (limit as f64 * frac).ceil();
     used as f64 >= threshold
+}
+
+/// 「そろそろ畳め」と伝えるしきい値（残りステップ）。
+///
+/// サブエージェントの既定は 8 ステップ。実測（#407 の起票元 run）では 7 体中 6 体が
+/// `Budget(Steps)` で**強制的に**切られており、そのうち何体かは findings を返せずに終わった。
+/// 「残り 1〜2 ステップ」を明示できれば、最後の 1 手を「まとめて返す」に使える。
+const LANDING_STEPS: usize = 2;
+
+/// トークン/時間の残りがこの割合を切ったら着地させる。
+const LANDING_FRACTION: f64 = 0.15;
+
+/// 残り予算（**モデルへ見せる**観測）。
+///
+/// `None` の軸は「上限なし」。数値は次のステップに入る前の値で、ステップごとに更新される。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Remaining {
+    pub steps: usize,
+    /// 残りトークン（`fresh_tokens` 基準＝上限判定と同じ軸）。
+    pub tokens: Option<u64>,
+    /// 残り秒（`deadline` があるときだけ）。
+    pub seconds: Option<u64>,
+    /// 上限が近い（＝新しい調査を始めず畳むべき）か。
+    pub landing: bool,
+}
+
+impl Remaining {
+    /// モデルへ渡す 1 行の観測。
+    ///
+    /// **なぜ観測として渡すか**: `BudgetWarning` は sink（イベントログ／UI）にしか流れず、
+    /// エージェント自身は自分があと何ステップ使えるかを知らないまま上限に当たって切られていた。
+    /// 研究側（BAGEN 2026）でも「フロンティアモデルは自分のリソース消費を予測できない・楽観
+    /// バイアスがある」と報告されており、**残量を明示して初めて畳む判断ができる**。
+    /// system プロンプトへ埋めないのは、静的だと更新されないうえプロンプトキャッシュの
+    /// 前置きを毎ステップ壊すため（観測なら新規ぶんに乗る）。
+    #[must_use]
+    pub fn observation(&self) -> String {
+        let mut parts = vec![format!("残り {} ステップ", self.steps)];
+        if let Some(tokens) = self.tokens {
+            parts.push(format!("トークン 約 {}k", tokens / 1000));
+        }
+        if let Some(seconds) = self.seconds {
+            parts.push(format!("時間 約 {} 分", seconds / 60));
+        }
+        let head = format!("[予算] {}", parts.join(" / "));
+        if self.landing {
+            format!(
+                "{head}\n**新しい調査を始めないこと。**いま手元にある材料だけで結論を書き、\
+                 この次の応答で終えること（上限に達すると途中で強制終了し、成果物は残らない）。"
+            )
+        } else {
+            head
+        }
+    }
 }
 
 /// 予算判定の結果。
@@ -180,12 +303,80 @@ mod tests {
     use proptest::prelude::*;
     use std::time::Duration;
 
+    /// 上限判定は新規ぶん（`fresh_tokens`）で行うため、テストの `tokens` はそこへ入れる
+    /// （課金累計は判定に効かない）。
     fn spent(steps: usize, tokens: u64, cost: i64) -> Spent {
         Spent {
             steps,
             tokens,
+            fresh_tokens: tokens,
+            prev_prompt_tokens: 0,
             cost_usd_micros: cost,
         }
+    }
+
+    /// 履歴の再送は**仕事量として二重計上しない**（#404）。
+    ///
+    /// prompt が 1000 → 3000 → 6000 と伸びる 3 ステップで、課金累計は 10800 になるが、
+    /// 新規ぶんは「増えた prompt ＋ completion」＝ 6600 に留まる。上限をこの値で見ないと、
+    /// 「20 万トークン」が実際には数ステップぶんの仕事しか許さない値になる。
+    #[test]
+    fn fresh_tokens_count_only_new_content() {
+        let mut s = Spent::default();
+        s.add_step(1000, 200, 0);
+        s.add_step(3000, 200, 0);
+        s.add_step(6000, 200, 0);
+        assert_eq!(s.tokens, 1200 + 3200 + 6200, "課金は毎回の prompt を含む");
+        assert_eq!(
+            s.fresh_tokens,
+            6000 + 600,
+            "新規は最終 prompt ＋ completion 合計"
+        );
+        // 剪定で prompt が縮んでも新規ぶんは減らない（負にしない）。
+        s.add_step(2000, 100, 0);
+        assert_eq!(s.fresh_tokens, 6700);
+    }
+
+    /// 残量はモデルへ見せる値。**判定と同じ軸**（steps / fresh_tokens）で数える（#407）。
+    #[test]
+    fn remaining_matches_the_axes_used_for_stopping() {
+        let b = Budget::autonomous(8, None, 120_000, 600_000);
+        let r = b.remaining(&spent(3, 20_000, 0), Instant::now());
+        assert_eq!(r.steps, 5);
+        assert_eq!(r.tokens, Some(100_000));
+        assert!(!r.landing);
+        let text = r.observation();
+        assert!(text.contains("残り 5 ステップ"), "{text}");
+        assert!(text.contains("100k"), "{text}");
+        assert!(!text.contains("新しい調査"), "{text}");
+    }
+
+    /// 上限が近いと**着地指示**が出る（残りステップ・トークンのどちらでも）。
+    ///
+    /// 起票元の実測では委譲 7 体中 6 体が `Budget(Steps)` で切られ、findings を返せずに
+    /// 終わった体もあった。残量が見えていれば最後の 1 手を「まとめて返す」に使える。
+    #[test]
+    fn landing_is_announced_before_the_cap() {
+        let b = Budget::autonomous(8, None, 120_000, 600_000);
+        let by_steps = b.remaining(&spent(6, 0, 0), Instant::now());
+        assert!(by_steps.landing);
+        assert!(
+            by_steps.observation().contains("新しい調査を始めないこと"),
+            "{}",
+            by_steps.observation()
+        );
+        // ステップに余裕があってもトークンが残り 15% を切れば着地させる。
+        let by_tokens = b.remaining(&spent(1, 110_000, 0), Instant::now());
+        assert!(by_tokens.landing, "{by_tokens:?}");
+    }
+
+    /// 上限の無い軸は表示しない（`None` を「0」と誤読させない）。
+    #[test]
+    fn unlimited_axes_are_omitted() {
+        let r = Budget::chat(8).remaining(&spent(1, 0, 0), Instant::now());
+        assert_eq!(r.tokens, None);
+        assert_eq!(r.seconds, None);
+        assert_eq!(r.observation(), "[予算] 残り 7 ステップ");
     }
 
     #[test]

@@ -52,6 +52,11 @@
 >   宛先限定だけだったため）。封じ込めはポリシ層で維持: 解決後 IP の再検証＋**検証済みアドレスへの接続固定**
 >   （DNS リバインディング遮断・`sandbox_client::net_guard` が IP 分類の単一の正）・リダイレクト非追従
 >   （PIT-36）・IP/内部ホスト拒否・シークレット非添付・サイズ上限（design §4.6・PIT-48）。
+>   さらに **2026-08（#405）に本文抽出を入れた**: 生 HTML の先頭切りでは本文が 1 文字も入らず
+>   トークンだけ焼けていたため、文字コード判定（chardetng）→ ノイズ除去 → Readability 相当の本文特定
+>   （dom_smoothie）→ Markdown 化（htmd）→ 自己要約ヘッダ＋`query` 絞り込み／`offset` 続き読みへ変更。
+>   PDF/Office は ingestion-worker（Docling）で読むが、**URL ではなくバイト列**を渡す
+>   （worker に取りに行かせると宛先制限を迂回する confused deputy になる・PIT-54/PIT-55）。
 > - **冪等 read のステップ内並列（#349）**: `web_search`/`web_fetch`/`doc_search` は `Tool::is_read_only()`
 >   を表明し、1 ステップ内で有界並列（既定 4・`chat.parallel_read_tools`）に走る。承認要・破壊系は逐次のまま
 >   `Approver` を待ち、read はその待ちと並行して進む。観測とイベントは**常に呼び出し順**（PIT-49）。

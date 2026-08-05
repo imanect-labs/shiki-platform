@@ -32,6 +32,7 @@ import {
   Table2,
   Terminal,
   Trash2,
+  Users,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -51,7 +52,8 @@ type ToolDisplay = {
   /// 対象込みの前置き（助詞まで）。対象が取れないときは汎用名詞で埋める。
   lead: (target: string | null) => string;
   /// 動詞（連用形 or サ変名詞）。時制は withTense が付ける。
-  verb: string;
+  /// 同じツールでも入力で役割が変わるもの（`subagent` の role）は関数で返す。
+  verb: string | ((input: Record<string, unknown>) => string);
   /// サ変（「検索する」型）なら true。false は和語連用形（「読み込む」型）。
   suru?: boolean;
   /// 失敗時の述語。省略時はサ変が「<verb>できませんでした」。
@@ -140,6 +142,19 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     verb: "読み込み",
     failed: "読み込めませんでした",
     target: named(),
+  },
+  subagent: {
+    // 委譲は「調査の一種」として phase 行に集約する（category を増やすと季節色が増える）。
+    icon: Users,
+    category: "search",
+    lead: (t) => (t ? `${t}を` : "サブエージェントに"),
+    // role で役割が変わる（#407）。verify は「調査」ではなく引用の裏取りなので言い分ける
+    // （「〈レポート〉を調査中」と出ると、何をしているのか読み手に伝わらない）。
+    verb: (input) => (input.role === "verify" ? "検証" : "調査"),
+    suru: true,
+    // `failed` は既定（`<verb>できませんでした`）に任せる。役割で動詞が変わるため、
+    // ここに固定文字列を置くと「検証」なのに「調査できませんでした」と出る。
+    target: quoted("objective", 34),
   },
   doc_search: {
     icon: Search,
@@ -445,14 +460,15 @@ export function describeTool(item: ToolDescribable, nodeName?: string | null): T
   const input = asRecord(item.input);
   const target = nodeName ?? (input && meta.target ? meta.target(input) : null);
   const suru = meta.suru === true;
+  const verb = typeof meta.verb === "function" ? meta.verb(input ?? {}) : meta.verb;
   return {
     icon: meta.icon,
     category: meta.category,
     lead: meta.lead(target),
-    verb: meta.verb,
+    verb,
     suru,
     // サ変の既定は「<動詞>できませんでした」。和語は可能形が不規則なので辞書側で明示する。
-    failed: meta.failed ?? `${meta.verb}できませんでした`,
+    failed: meta.failed ?? `${verb}できませんでした`,
   };
 }
 

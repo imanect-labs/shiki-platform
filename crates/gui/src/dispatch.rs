@@ -53,6 +53,9 @@ impl ActionSource {
 pub enum ActionError {
     #[error("対象が見つかりません")]
     NotFound,
+    /// 1 回だけ実行できるアクションが既に実行済み（#410・API 層は 409）。
+    #[error("この操作は送信済みです")]
+    AlreadyInvoked,
     #[error("権限がありません")]
     Forbidden,
     #[error("不正なリクエスト: {0}")]
@@ -107,11 +110,47 @@ pub trait WorkflowStarter: Send + Sync {
     ) -> Result<Option<Uuid>, ActionError>;
 }
 
+/// 1 回だけ実行できるアクション（[`ActionBinding::single_use`]）の実行台帳（#410）。
+///
+/// 「どのメッセージのどの action が実行されたか」は**UI の状態そのもの**であり、
+/// 監査ログ（追記専用・保持ポリシ別）とは別に一級の状態として持つ。実装は所有ドメイン側
+/// （chat の `ChatActionLedger`）に置き、`AuthContext` のテナントで必ず絞る。
+#[async_trait::async_trait]
+pub trait ActionLedger: Send + Sync {
+    /// **実行前に**確保する。既に確保されていれば `Ok(false)`（実行してはいけない）。
+    ///
+    /// 実装は**副作用の無い認可**（chat なら thread editor）をここで済ませること。実行時の
+    /// 認可まで待つと、権限の無い相手でも確保だけは取れてしまう。
+    async fn claim(
+        &self,
+        ctx: &AuthContext,
+        source: &ActionSource,
+        action_id: &str,
+        trace_id: Option<&str>,
+    ) -> Result<bool, ActionError>;
+
+    /// 実行に失敗したときに確保を解く（押し直せる状態へ戻す・best-effort）。
+    async fn release(&self, ctx: &AuthContext, source: &ActionSource, action_id: &str);
+
+    /// **実行が完了した**ことを記録する（`run_id` があれば紐づける・best-effort）。
+    ///
+    /// 確保はハンドラ実行の前に取るので、確保と完了は別の事実として持つ。完了できなくても
+    /// 実行は成功しているため、確保はそのまま残す（奪わせない）。
+    async fn complete(
+        &self,
+        ctx: &AuthContext,
+        source: &ActionSource,
+        action_id: &str,
+        run_id: Option<Uuid>,
+    );
+}
+
 /// アクション実行の合流点（照合・認可・監査の単一チョークポイント）。
 pub struct ActionDispatcher {
     handlers: HashMap<HandlerKind, Arc<dyn ActionHandler>>,
     tools: HashMap<&'static str, Arc<dyn Tool>>,
     workflows: Option<Arc<dyn WorkflowStarter>>,
+    ledger: Option<Arc<dyn ActionLedger>>,
     audit: AuditRecorder,
 }
 
@@ -121,6 +160,7 @@ impl ActionDispatcher {
             handlers: HashMap::new(),
             tools: HashMap::new(),
             workflows: None,
+            ledger: None,
             audit,
         }
     }
@@ -149,6 +189,15 @@ impl ActionDispatcher {
         self.workflows = Some(starter);
     }
 
+    /// 単発アクションの実行台帳を配線する（#410）。
+    ///
+    /// 未配線のまま単発束縛が来たら**実行せず 503**にする（二重送信の抑止が無い状態で
+    /// 発話と run を作らせない・fail-closed）。台帳と `chat.submit` ハンドラは同じ
+    /// `chat` 由来なので、配線は必ず対で行う。
+    pub fn set_ledger(&mut self, ledger: Arc<dyn ActionLedger>) {
+        self.ledger = Some(ledger);
+    }
+
     /// 宣言済み束縛（検証済み文書）から `action_id` を照合し、本人権限で実行する。
     ///
     /// 未宣言 id・認可失敗・実行失敗は全て Deny として監査に残す。
@@ -173,6 +222,34 @@ impl ActionDispatcher {
         }
         let params_digest = format!("{:x}", Sha256::digest(params.to_string().as_bytes()));
 
+        // 1 回だけの束縛は**実行前に確保**する。表示だけ直しても押せてしまうので、
+        // 二重送信はここで潰す（#410）。確保できなければ実行そのものを行わない。
+        // 台帳側の失敗（未配線・DB エラー）も実行を止める側なので Deny として残す
+        // — 公開 API で操作が拒否された事実は理由込みで追えるようにする。
+        let ledger = match self.single_use_ledger(binding) {
+            Ok(ledger) => ledger,
+            Err(e) => {
+                self.deny(ctx, source, action_id, "ledger_unavailable", trace_id)
+                    .await;
+                return Err(e);
+            }
+        };
+        if let Some(ledger) = ledger {
+            match ledger.claim(ctx, source, action_id, trace_id).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.deny(ctx, source, action_id, "already_invoked", trace_id)
+                        .await;
+                    return Err(ActionError::AlreadyInvoked);
+                }
+                Err(e) => {
+                    self.deny(ctx, source, action_id, "claim_failed", trace_id)
+                        .await;
+                    return Err(e);
+                }
+            }
+        }
+
         let result = self.execute(ctx, source, binding, params, trace_id).await;
         match &result {
             Ok(output) => {
@@ -182,6 +259,13 @@ impl ActionDispatcher {
                     .or_else(|| output.get("result").and_then(|r| r.get("run_id")))
                     .cloned()
                     .unwrap_or(json!(null));
+                // ここで初めて「実行された」ことが確定する。確保だけの行も UI へは送信済みと
+                // して出る（確保は奪わないので、そのカードはもう押せない）。この記録は監査との
+                // 突合と、詰まりの発見（未完了のまま古くなった行）に使う。
+                if let Some(ledger) = ledger {
+                    let id = run_id.as_str().and_then(|s| Uuid::parse_str(s).ok());
+                    ledger.complete(ctx, source, action_id, id).await;
+                }
                 self.record(
                     ctx,
                     action_id,
@@ -197,6 +281,10 @@ impl ActionDispatcher {
                 .await;
             }
             Err(e) => {
+                // 実行できなかったものを「送信済み」にしたままにしない（押し直せる）。
+                if let Some(ledger) = ledger {
+                    ledger.release(ctx, source, action_id).await;
+                }
                 self.record(
                     ctx,
                     action_id,
@@ -213,6 +301,26 @@ impl ActionDispatcher {
             }
         }
         result
+    }
+
+    /// 単発束縛なら台帳を返す（未配線は fail-closed で 503）。繰り返せる束縛は `None`。
+    fn single_use_ledger(
+        &self,
+        binding: &ActionBinding,
+    ) -> Result<Option<&Arc<dyn ActionLedger>>, ActionError> {
+        if !binding.single_use() {
+            return Ok(None);
+        }
+        let Some(ledger) = self.ledger.as_ref() else {
+            tracing::error!(
+                binding = binding.kind_str(),
+                "単発アクションの実行台帳が未配線（二重送信を抑止できないため実行しない）"
+            );
+            return Err(ActionError::Unavailable(
+                "この操作はいま実行できません".into(),
+            ));
+        };
+        Ok(Some(ledger))
     }
 
     /// 束縛照合前の拒否（未宣言 id 等）を監査に残す（API 層からも利用できる）。

@@ -25,10 +25,16 @@ pub use super::chat_dto::SetThreadSkillsRequest;
 const MAX_THREAD_SKILL_PINS: usize = 8;
 
 /// skill ピン要求を**設定者の権限**で version 込みに解決する（重複排除・上限・fail-closed）。
+///
+/// `command_text` はこのピンを伴う発話本文（スラッシュコマンド起動のとき）。渡されると、
+/// skill の `command.variants` と突き合わせて**どの variant で起動したか**をピンへ焼き込む
+/// （#400）。焼くのは identity（`args`）だけで、意味（`phase` など）はワーカーが解決済みの
+/// body から引く。thread の永続ピン設定は起動ではないので `None`。
 pub(super) async fn resolve_skill_pins(
     state: &AppState,
     ctx: &authz::AuthContext,
     pins: &[ArtifactPinRequest],
+    command_text: Option<&str>,
     trace_id: Option<&str>,
 ) -> Result<Vec<chat::SkillPin>, ApiError> {
     if pins.len() > MAX_THREAD_SKILL_PINS {
@@ -41,7 +47,7 @@ pub(super) async fn resolve_skill_pins(
         if out.iter().any(|p| p.skill_id == pin.artifact_id) {
             continue; // 同一 skill の重複指定は先勝ちで無視（エラーにしない）
         }
-        let (version, _body, _raw) = match pin.version {
+        let (version, body, _raw) = match pin.version {
             Some(v) => {
                 state
                     .skills
@@ -59,6 +65,10 @@ pub(super) async fn resolve_skill_pins(
         out.push(chat::SkillPin {
             skill_id: pin.artifact_id,
             skill_version: version,
+            command_args: command_text
+                .zip(body.command.as_ref())
+                .and_then(|(text, command)| command.variant_for_invocation(text))
+                .map(|v| v.args.clone()),
         });
     }
     Ok(out)
@@ -84,7 +94,7 @@ pub async fn set_thread_skills(
     Path(id): Path<Uuid>,
     Json(req): Json<SetThreadSkillsRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let pins = resolve_skill_pins(&state, &ctx, &req.skills, trace.as_deref()).await?;
+    let pins = resolve_skill_pins(&state, &ctx, &req.skills, None, trace.as_deref()).await?;
     chat_store(&state)?
         .set_thread_skills(&ctx, id, &pins, trace.as_deref())
         .await?;

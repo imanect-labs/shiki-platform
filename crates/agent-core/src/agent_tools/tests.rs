@@ -25,6 +25,8 @@ struct ProbeTool {
     live: Arc<AtomicUsize>,
     /// 開始順（呼び出し順とは限らない）。
     started: Arc<Mutex<Vec<String>>>,
+    /// ツール内で起きた LLM 消費（委譲の代役）。
+    usage: Option<crate::tool::ToolUsage>,
 }
 
 impl ProbeTool {
@@ -37,6 +39,7 @@ impl ProbeTool {
             peak: Arc::new(AtomicUsize::new(0)),
             live: Arc::new(AtomicUsize::new(0)),
             started: Arc::new(Mutex::new(Vec::new())),
+            usage: None,
         }
     }
     fn shared(mut self, peak: &Arc<AtomicUsize>, live: &Arc<AtomicUsize>) -> Self {
@@ -79,7 +82,9 @@ impl Tool for ProbeTool {
         self.peak.fetch_max(live, Ordering::SeqCst);
         tokio::time::sleep(self.delay).await;
         self.live.fetch_sub(1, Ordering::SeqCst);
-        Ok(ToolOutcome::ok(format!("done:{tag}")))
+        let mut out = ToolOutcome::ok(format!("done:{tag}"));
+        out.usage = self.usage;
+        Ok(out)
     }
 }
 
@@ -140,6 +145,45 @@ fn contents(blocks: &[Block]) -> Vec<String> {
             _ => String::new(),
         })
         .collect()
+}
+
+/// ツール内で起きた LLM 消費は**3 軸とも**親へ返る。
+///
+/// `fresh_tokens` は親の**トークン上限判定に使う軸**（#404）。ここを落とすと、子が何十万
+/// トークン焼いても `Budget::check` が素通しし、委譲がトークン予算から見えなくなる
+/// （課金累計とコストだけ積まれて、止めるための軸が 0 のままだった実バグ・#407）。
+#[tokio::test]
+async fn tool_internal_usage_is_reported_on_every_axis() {
+    let mut probe = ProbeTool::new("subagent", true);
+    probe.delay = Duration::from_millis(1);
+    probe.usage = Some(crate::tool::ToolUsage {
+        tokens: 1_000,
+        fresh_tokens: 400,
+        cost_usd_micros: 7,
+    });
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(probe)];
+    let map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
+    let opts = AgentOptions::autonomous(8, None, 120_000, 600_000);
+    let phase = ToolPhase {
+        tool_map: &map,
+        ctx: &ctx(),
+        trace_id: None,
+        opts: &opts,
+        approver: None,
+    };
+    let calls = vec![call("1", "subagent", "a"), call("2", "subagent", "b")];
+    let mut sink = NullSink { events: Vec::new() };
+    let mut plan = Plan::default();
+    let mut detector = LoopDetector::default();
+    let out = run_tool_calls(&phase, calls, &mut plan, &mut sink, &mut detector)
+        .await
+        .unwrap();
+    let ToolPhaseOutcome::Executed { external, .. } = out else {
+        panic!("cancelled")
+    };
+    assert_eq!(external.tokens, 2_000, "課金累計");
+    assert_eq!(external.fresh_tokens, 800, "上限判定に使う軸");
+    assert_eq!(external.cost_usd_micros, 14);
 }
 
 /// 冪等 read は並列に走り（壁時計が直列和にならない）、観測順は呼び出し順のまま。
@@ -427,7 +471,7 @@ async fn cancellation_still_reports_completed_reads() {
     let out = run_tool_calls(&phase, calls, &mut plan, &mut sink, &mut detector)
         .await
         .unwrap();
-    assert!(matches!(out, ToolPhaseOutcome::Cancelled));
+    assert!(matches!(out, ToolPhaseOutcome::Cancelled { .. }));
     // 完了した read の結果はイベントとして出ている（実行したのに無かったことにしない）。
     assert!(
         sink.events.iter().any(|e| matches!(

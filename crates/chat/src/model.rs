@@ -151,10 +151,24 @@ pub struct Attachment {
 }
 
 /// skill のバージョンピン 1 件（thread の「最初からロード済み」スキル・#344 Task 10.11）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SkillPin {
     pub skill_id: Uuid,
     pub skill_version: i64,
+    /// この発話が起動したコマンド variant の `args`（`/deep-research auto …` なら `"auto"`、
+    /// 引数なしの既定 variant なら `""`）。コマンド起動でなければ `None`。
+    ///
+    /// **variant の同一性だけを焼き、意味は skill body から引く。** 発話は
+    /// `/deep-research <依頼>` というリテラルだが、続くターン（質問カードの回答・計画の承認）は
+    /// `chat.submit` から来るのでリテラルを持たない。毎ターン本文から引き直す実装は 2 ターン目
+    /// 以降が必ず素通りになる（#402 の実害）。
+    ///
+    /// ここで `phase` のような**導出値**を焼くと、variant に足す宣言が増えるたびに同じ理由で
+    /// 落ちる。識別子を焼いておけば、ワーカーは解決済み body から
+    /// [`gui::SkillCommand::variant_by_args`] でその variant 全体を引ける。
+    /// thread の永続ピンはコマンド起動ではないので `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_args: Option<String>,
 }
 
 /// スレッド（会話）。API DTO 兼ドメイン。
@@ -197,6 +211,12 @@ pub struct Message {
     /// ブランチ構造の親（UI は線形取得）。
     #[serde(default)]
     pub parent_id: Option<Uuid>,
+    /// このメッセージで**実行済み**の単発 UI アクション id（#410）。
+    ///
+    /// 質問カード・計画カードの「送信済み」はこれを根拠に描く。ローカル state だけだと
+    /// 会話の再描画・リロードで未回答へ巻き戻り、同じカードから二度送信できてしまう。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invoked_actions: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 

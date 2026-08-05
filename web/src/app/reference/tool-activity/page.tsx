@@ -133,9 +133,48 @@ const DONE: ToolActivityItem[] = [
   },
 ];
 
+/// 委譲（#391）: 同一ステップの複数サブエージェント＝「並行して N 件」。
+/// 展開すると担当範囲とステップ数が出る（子の生イベントは親へ流れないため、これが唯一の詳細）。
+const DELEGATION: ToolActivityItem[] = [
+  {
+    key: "g1",
+    id: "g1",
+    name: "subagent",
+    running: false,
+    ok: true,
+    step: 0,
+    input: { objective: "2024〜2026 の国内 SaaS 市場規模の実数", boundary: "国内・2024〜2026" },
+    subagent: { boundary: "国内・2024〜2026", steps: 6, toolCalls: 9 },
+    result: "国内市場は 2026 年に 1.2 兆円（総務省 2026-07・一次）。前年比 +14%（出典 1 系統）。",
+  },
+  {
+    key: "g2",
+    id: "g2",
+    name: "subagent",
+    running: false,
+    ok: true,
+    step: 0,
+    input: { objective: "同期間の海外市場との比較", boundary: "北米・欧州・2024〜2026" },
+    subagent: { boundary: "北米・欧州・2024〜2026", steps: 5, toolCalls: 7 },
+    result: "北米は同期間 +9%、欧州 +11%（Gartner 2026-05・二次）。国内が上振れ。",
+  },
+  {
+    key: "g3",
+    id: "g3",
+    name: "subagent",
+    running: false,
+    ok: false,
+    step: 0,
+    input: { objective: "規制・政策の動き", boundary: "国内・法改正のみ" },
+    subagent: { boundary: "国内・法改正のみ", steps: 8, toolCalls: 12 },
+    result: "サブエージェントは findings を返しませんでした（停止理由: Budget(Steps)）。",
+  },
+];
+
 /// 全 30 語彙のラベル確認（対象あり）。日本語が壊れていないかを一覧で見る。
 const ALL_VOCAB: ToolActivityItem[] = [
   { name: "skill", input: { name: "deep-research" } },
+  { name: "subagent", input: { objective: "2026 年の国内 SaaS 市場規模", boundary: "国内のみ" } },
   { name: "doc_search", input: { query: "就業規則" } },
   { name: "web_search", input: { query: "決算 2026" } },
   { name: "web_fetch", input: { url: "https://example.com/ir/2026/q1" } },
@@ -211,19 +250,27 @@ function RollingDemo() {
 /// 再生デモで 1 件ずつ増えていくツール列（実際の deep research の進み方に寄せる）。
 const DEMO_STEPS: ToolActivityItem[] = [
   { key: "s1",
-    id: "s1", name: "web_search", running: false, step: 0, input: { query: "2026 国内 SaaS 市場規模" } },
+    id: "s1", name: "web_search", running: false, step: 0, input: { query: "2026 国内 SaaS 市場規模" },
+    result: "web 検索結果 8 件:\n[1] 国内SaaS市場調査\nhttps://www.itr.co.jp/report/saas-2026\n…\n[2] 市場規模の推移\nhttps://www.fuji-keizai.co.jp/press/2026\n…\n[3] 解説\nhttps://www.nikkei.com/article/DGXZQOUC12\n…" },
   { key: "s2",
-    id: "s2", name: "web_fetch", running: false, step: 1, input: { url: "https://www.nikkei.com/article/DGXZQOUC12" } },
+    id: "s2", name: "web_fetch", running: false, step: 1, input: { url: "https://www.nikkei.com/article/DGXZQOUC12" },
+    result: "国内 SaaS 市場は 2026 年に 1.8 兆円規模へ。前年比 17% 増と試算。" },
   { key: "s3",
-    id: "s3", name: "web_fetch", running: false, step: 1, input: { url: "https://www.itmedia.co.jp/news/articles/2607" } },
+    id: "s3", name: "web_fetch", running: false, step: 1, input: { url: "https://www.itmedia.co.jp/news/articles/2607" },
+    result: "中堅企業の導入率が伸長。垂直特化型の伸びが全体を牽引した。" },
   { key: "s4",
-    id: "s4", name: "doc_search", running: false, step: 2, input: { query: "中期経営計画 SaaS" } },
+    id: "s4", name: "doc_search", running: false, step: 2, input: { query: "中期経営計画 SaaS" },
+    result: "社内文書 3 件:\n[1] 中期経営計画 2026\n[2] 事業部レビュー\n[3] 競合分析" },
   { key: "s5",
     id: "s5", name: "fs_write", running: false, step: 3, input: { name: "notes.md" } },
   { key: "s6",
-    id: "s6", name: "web_search", running: false, step: 4, input: { query: "SaaS 解約率 ベンチマーク" } },
+    id: "s6", name: "web_search", running: false, step: 4, input: { query: "SaaS 解約率 ベンチマーク" },
+    viaSubagent: true,
+    result: "web 検索結果 12 件:\n[1] SaaS churn benchmarks\nhttps://openviewpartners.com/benchmarks\n…\n[2] 解約率の目安\nhttps://www.saastr.com/churn\n…" },
   { key: "s7",
-    id: "s7", name: "web_fetch", running: false, step: 5, input: { url: "https://www.meti.go.jp/policy/it_policy" } },
+    id: "s7", name: "web_fetch", running: false, step: 5, input: { url: "https://www.meti.go.jp/policy/it_policy" },
+    viaSubagent: true,
+    result: "IT 政策の方針。SaaS 利用の中小企業比率は 38%。" },
   { key: "s8",
     id: "s8", name: "fs_edit", running: false, step: 6, input: { name: "outline.md" } },
 ];
@@ -253,6 +300,10 @@ export default function ToolActivityGalleryPage() {
 
       <Cell id="done" title="完了（折りたたみ 1 行要約。クリックで展開）">
         <ToolActivity items={DONE} />
+      </Cell>
+
+      <Cell id="delegation" title="委譲（同一ステップ 3 体＝並行。展開で担当範囲とステップ数）">
+        <ToolActivity items={DELEGATION} />
       </Cell>
 
       <Cell id="vocab" title="全ツール語彙のラベル（展開して確認する）">

@@ -17,6 +17,14 @@ pub struct SourceCardProps {
     /// 見出し（省略時はフロントが「出典」を表示）。
     #[serde(default)]
     pub title: Option<String>,
+    /// **ドメインのチップだけ**に畳んで出す（既定 false）。
+    ///
+    /// RAG の引用（数件・抜粋が意味を持つ）と、web 調査の出典一覧（十数件・どこを見たかが
+    /// 分かれば足りる）では要る密度が違う。後者を既定の縦積みで出すと、説明文つきの行が
+    /// 12 件並んで会話の末尾を占領する（実測でその状態になった）。詳しい出典はレポート本文の
+    /// 引用に付いているので、会話側は「どのドメインを見たか」だけでよい。
+    #[serde(default)]
+    pub compact: bool,
     pub sources: Vec<SourceItem>,
 }
 
@@ -203,6 +211,7 @@ mod tests {
     fn domain_props_roundtrip() {
         let nodes = vec![
             serde_json::to_value(SourceCardProps {
+                compact: false,
                 title: Some("出典".into()),
                 sources: vec![SourceItem {
                     title: "設計ドキュメント".into(),

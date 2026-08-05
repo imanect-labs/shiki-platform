@@ -56,7 +56,7 @@ mod tests {
             title: "step 1".into(),
             status: Some("doing".into()),
         }]);
-        cp.spent.add_step(120, 300);
+        cp.spent.add_step(100, 20, 300);
         cp.step = 3;
         // ループ検出器の失敗履歴も載せる（resume で失われないこと）。
         cp.loop_detector

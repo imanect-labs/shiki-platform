@@ -107,7 +107,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // RAG（Phase 2）: enabled のときのみインジェスト・パイプラインと検索を配線する。
-    let (search, rag_admin) = wiring::wire_rag(&config, &http, &db, &object_store, &authz)?;
+    // parser は web_fetch の PDF/Office 経路にも渡す（同一インスタンス共有・#405）。
+    let (search, rag_admin, doc_parser) =
+        wiring::wire_rag(&config, &http, &db, &object_store, &authz)?;
 
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
@@ -203,6 +205,7 @@ async fn main() -> anyhow::Result<()> {
         &db,
         &authz,
         search.as_ref(),
+        doc_parser.as_ref(),
         &storage,
         &gui_stores.validator,
         &artifacts,

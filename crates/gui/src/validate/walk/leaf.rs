@@ -421,7 +421,13 @@ impl Walk<'_> {
         }
     }
 
-    /// アクション参照が宣言済み束縛を指すこと（Task 6.3 受け入れ条件）。
+    /// アクション参照が宣言済み束縛を指すこと（Task 6.3 受け入れ条件）と、
+    /// **単発束縛を複数の部品が共有しないこと**（#410）。
+    ///
+    /// `chat.submit` は 1 メッセージにつき 1 回だけ実行できる（実行台帳の主キーが
+    /// `(message, action_id)`）。同じ束縛を 2 つの送信部品が参照すると、片方を送った時点で
+    /// もう片方も送信済み扱いになり、**まだ答えていないカードが操作不能**になる。
+    /// 部品ごとに別の束縛を宣言させる（保存時に潰しておけば実行時に曖昧さが残らない）。
     pub(super) fn action_ref(&mut self, r: &ActionRef, path: &str) {
         if !self.action_ids.contains(&r.action.as_str()) {
             self.errors.push(
@@ -431,6 +437,25 @@ impl Walk<'_> {
                 )
                 .at(path),
             );
+            return;
+        }
+        if !self.chat_submit_ids.contains(&r.action.as_str()) {
+            return; // 繰り返せる束縛（検索・WF 起動）は共有してよい
+        }
+        if self.single_use_refs.iter().any(|a| a == &r.action) {
+            self.errors.push(
+                GuiValidationError::new(
+                    "gui.action_shared_by_components",
+                    format!(
+                        "chat.submit 束縛 '{}' が複数の送信部品から参照されています\
+                         （送信部品ごとに別の束縛を宣言してください）",
+                        r.action
+                    ),
+                )
+                .at(path),
+            );
+        } else {
+            self.single_use_refs.push(r.action.clone());
         }
     }
 

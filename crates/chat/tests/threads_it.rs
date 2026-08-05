@@ -724,6 +724,7 @@ async fn agent_mode_worker_runs_to_done() {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            parser: None,
             storage: None,
             ui_validator: None,
             skill_artifacts: None,

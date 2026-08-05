@@ -15,11 +15,27 @@ use crate::validator::SpecValidator;
 /// UI スペック発話ツール。
 pub struct EmitUiTool {
     validator: Arc<SpecValidator>,
+    /// 出してよいルートコンポーネント（`None` はカタログ全体）。
+    ///
+    /// 実行前フェーズ（#402）のように「このターンではこの形しか出させない」を表現する。
+    /// ツールの有無だけでは、同じ `emit_ui` の中でどの形を出すかを縛れない
+    /// （明確化フェーズで `emit_ui` しか渡していないのに計画カードを出され、質問が飛ばされた）。
+    allowed_root: Option<Vec<crate::vocab::ComponentKind>>,
 }
 
 impl EmitUiTool {
     pub fn new(validator: Arc<SpecValidator>) -> Self {
-        EmitUiTool { validator }
+        EmitUiTool {
+            validator,
+            allowed_root: None,
+        }
+    }
+
+    /// ルートに出せるコンポーネントを限定する（#402）。
+    #[must_use]
+    pub fn with_allowed_root(mut self, kinds: Vec<crate::vocab::ComponentKind>) -> Self {
+        self.allowed_root = Some(kinds);
+        self
     }
 }
 
@@ -60,15 +76,22 @@ impl Tool for EmitUiTool {
          walking/transit/flight}・bounds?{south,west,north,east}・title? を渡す。緯度経度は \
          lat∈[-90,90]・lng∈[-180,180] の構造化データのみ（タイル URL はサーバ設定で注入されるため \
          指定しない）。ドメインカード（表示専用）: source_card は RAG 引用元 \
-         （title?・sources[{title,snippet?,url?(https),score?,label?}]）、itinerary は旅程 \
+         （title?・compact?・sources[{title,snippet?,url?(https),score?,label?}]。件数が多い \
+         web 出典の一覧は compact:true でドメインのチップだけに畳む＝snippet は表示されない）、\
+         itinerary は旅程 \
          （title?・days[{label?,date?,items[{time?,title,description?,location?,kind?:activity/\
          travel/food/lodging/sight}]}]）、weather は天気（location・days[{label,condition:sunny/\
          partly_cloudy/cloudy/rain/storm/snow/fog,high?,low?,precipitation?(0-100)}]）、comparison \
          は比較表（columns[列見出し]・rows[{label,values[列と同数]}]・highlight?[推し列 index]）、\
          timeline は時系列イベント（events[{time?,title,description?,tone?}]）。フォーム送信やボタンは \
          spec.actions に宣言した束縛（type: handler の chat.submit、type: tool の doc_search / \
-         web_search、type: workflow の name 参照）だけを action id で参照できる。検証に失敗した \
-         場合はエラーを直して再試行するか、通常のテキストで回答する。"
+         web_search、type: workflow の name 参照）だけを action id で参照できる。\
+         **アクション参照は文字列ではなくオブジェクト**（`{\"action\": \"<宣言した id>\"}`）。\
+         最小の骨組みはこの形:\n\
+         {\"version\":1,\"actions\":[{\"type\":\"handler\",\"id\":\"submit\",\"handler\":\"chat.submit\"}],\
+         \"root\":{\"component\":\"question_card\",\"id\":\"q\",\"title\":\"…\",\
+         \"submit\":{\"action\":\"submit\"},\"questions\":[…]}}\n\
+         検証に失敗した場合はエラーを直して再試行するか、通常のテキストで回答する。"
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -77,7 +100,10 @@ impl Tool for EmitUiTool {
             "properties": {
                 "spec": {
                     "type": "object",
-                    "description": "UI スペック。{ version: 1, actions: [...], root: { component: ... } }"
+                    "description": "UI スペック。{ version: 1, actions: [{type, id, ...}], root: {component, ...} }。\
+                     root の submit / on_click などのアクション参照は **{\"action\": \"<id>\"} のオブジェクト**で、\
+                     id の文字列を直接置いてはいけない。actions[] の要素は id（参照名）と type ごとの束縛先\
+                     （handler なら handler: \"chat.submit\"）を持つ（name/$ref というキーは無い）。"
                 }
             },
             "required": ["spec"]
@@ -95,6 +121,23 @@ impl Tool for EmitUiTool {
                 "spec がありません。{ \"spec\": { \"version\": 1, \"root\": ... } } を渡してください。",
             ));
         };
+        // フェーズ制限（#402）: 検証を通す前に形だけ先に見る（拒否理由を具体的に返す）。
+        if let Some(allowed) = &self.allowed_root {
+            let root = spec
+                .get("root")
+                .and_then(|r| r.get("component"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if !allowed.iter().any(|k| k.as_str() == root) {
+                let names: Vec<&str> = allowed.iter().map(|k| k.as_str()).collect();
+                return Ok(ToolOutcome::error(format!(
+                    "このターンで出せるのは {} だけです（'{}' は出せません）。\
+                     指定された形のカードを出してターンを終えてください。",
+                    names.join(" / "),
+                    root
+                )));
+            }
+        }
         match self.validator.validate(ctx, spec, "emit", trace_id).await {
             Ok(resolved) => {
                 let mut outcome = ToolOutcome::ok("UI を表示しました。");

@@ -35,7 +35,7 @@ pub use embedding::{EmbedInput, EmbeddingProvider, HttpEmbeddingProvider};
 pub use error::RagError;
 pub use fulltext::{FulltextDoc, FulltextIndex};
 pub use fulltext_tantivy::TantivyFulltext;
-pub use parser::{DocumentParser, ParseRequest};
+pub use parser::{DocumentParser, ParseRequest, ParseSource};
 pub use parser_http::HttpDocumentParser;
 pub use pipeline::{spawn_pipeline, IngestMessage, PipelineDeps, RAG_INGEST_QUEUE};
 pub use rerank::{HttpReranker, Reranker};

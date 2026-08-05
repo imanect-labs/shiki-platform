@@ -26,9 +26,9 @@ use gui::miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
 use gui::plan_card::{PlanCardProps, PlanCardStep};
 use gui::question::{QuestionCardProps, QuestionItem, QuestionOption};
 use gui::skill::{
-    FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody, SkillCommand,
-    SkillCommandVariant, SkillScript,
+    FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody, SkillScript,
 };
+use gui::skill_command::{CommandPhase, SkillCommand, SkillCommandVariant};
 use gui::spec::{
     ActionRef, ButtonProps, ButtonVariant, CellAlign, CellValue, ContainerProps, FormField,
     FormProps, Layout, LinkProps, ReservedProps, SelectOption, SelectProps, StatProps, TableColumn,
@@ -139,6 +139,7 @@ fn main() {
         ScriptKind,
         SkillCommand,
         SkillCommandVariant,
+        CommandPhase,
         MiniAppBody,
         ComponentPin,
         NamedComponentPin,

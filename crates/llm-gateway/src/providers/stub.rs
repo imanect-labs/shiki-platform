@@ -3,6 +3,7 @@
 //! 実 LLM を持たない環境（CI・オフライン）でパイプライン全体（chat run・SSE・会計・
 //! agent-core ループ）をエンドツーエンドで検証するための決定的アダプタ。挙動:
 //! - 直近 user メッセージ本文を語単位でストリーミングして返す。
+//! - `slow:<秒> <本文>` は本文を出したあと指定秒だけ生成を続ける（生成中の UI＝順番待ち・停止の検証用）。
 //! - リクエストにツールがあり、かつ最初のターン（tool_result がまだ無い）で本文が
 //!   既知のプレフィックス（`search:` / `python:` / `websearch:` / `webfetch:`）で始まるとき、
 //!   対応するツールを 1 回だけ呼び出す（agent ループ・各ツールの決定的検証）。プレフィックス
@@ -16,10 +17,13 @@
 //!   - `loop:` … tool_result の有無に関わらず**毎ターン** tools[0] を空入力で呼び続ける
 //!     （ループ検出・ステップ/予算上限・長ホライズンの決定的駆動）。
 
+use std::time::Duration;
+
 use futures::stream::{self, StreamExt};
 
 use super::stub_deep_research::deep_research_call;
 use super::stub_fixtures::genui_spec;
+use super::stub_stream::{slow_text_stream, text_stream, tool_call_stream, tool_calls_stream};
 use super::stub_triggers::note_tool_call;
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
@@ -51,6 +55,23 @@ fn last_user_text(req: &GenerateRequest) -> String {
                 .join(" ")
         })
         .unwrap_or_default()
+}
+
+/// 履歴の語数を prompt トークンとみなす。**ツール結果も数える**（実プロバイダと同じく観測は
+/// prompt に載る）。本文だけにすると、ツールを回し続けるループで prompt が伸びず、
+/// `Spent::fresh_tokens`（#404 で上限判定に使う軸）が永久に増えないため、トークン予算が
+/// 「ステップ上限で先に止まる」ことでしか終われなくなる。
+fn prompt_tokens(req: &GenerateRequest) -> u64 {
+    req.messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::Text { text } | Block::ToolResult { content: text, .. } => {
+                Some(text.split_whitespace().count() as u64)
+            }
+            _ => None,
+        })
+        .sum()
 }
 
 /// これまでにツール結果があるか（＝2 ターン目以降）。
@@ -103,13 +124,34 @@ fn emitwf_ir(kind: &str) -> serde_json::Value {
     })
 }
 
-/// 単一ツール呼び出し（ToolUse で停止）のストリームを組む決定的ヘルパ。
-pub(super) fn tool_call_stream(
-    name: String,
-    input: serde_json::Value,
+/// `subagent:<テーマ>` — 1 ステップで `subagent` を**3 体**呼ぶ（境界を重複なく割った形）。
+///
+/// 委譲の並列（#391）と UI の「並行して N 件」表示を決定的に再現する唯一の入口。提示ツールに
+/// `subagent` が無ければ `None`（呼び出し側が通常経路へ落ちる）。
+fn subagent_call(
+    req: &GenerateRequest,
+    user_text: &str,
     prompt_tokens: u64,
-) -> DeltaStream {
-    tool_calls_stream(vec![(name, input)], prompt_tokens)
+) -> Option<DeltaStream> {
+    let topic = user_text.strip_prefix("subagent:")?.trim();
+    let tool = req.tools.iter().find(|t| t.name == "subagent")?;
+    let calls = [
+        ("国内・直近 3 年の実数", "国内"),
+        ("同期間の海外比較", "北米・欧州"),
+        ("規制・政策の動き", "法改正のみ"),
+    ]
+    .into_iter()
+    .map(|(objective, boundary)| {
+        (
+            tool.name.clone(),
+            serde_json::json!({
+                "objective": format!("{topic}: {objective}"),
+                "boundary": boundary,
+            }),
+        )
+    })
+    .collect();
+    Some(tool_calls_stream(calls, prompt_tokens))
 }
 
 /// `parallel:<クエリ>` — 1 ステップで `web_search` ＋ **別ホスト**の `web_fetch` ×3 を呼ぶ。
@@ -140,56 +182,6 @@ fn parallel_read_call(
     (!calls.is_empty()).then(|| tool_calls_stream(calls, prompt_tokens))
 }
 
-/// **1 ステップで複数ツール**を呼ぶストリーム（同一ステップ＝並行実行の決定的駆動）。
-///
-/// 冪等 read（web_search / web_fetch / doc_search）を複数返すと agent-core が有界並列で
-/// 走らせる（#349）。UI の「並行して N 件」表示や step グルーピングはこれでしか再現できない。
-pub(super) fn tool_calls_stream(
-    calls: Vec<(String, serde_json::Value)>,
-    prompt_tokens: u64,
-) -> DeltaStream {
-    let mut events = Vec::with_capacity(calls.len() * 2 + 1);
-    for (i, (name, input)) in calls.into_iter().enumerate() {
-        let id = format!("stubtool_{}", i + 1);
-        events.push(Ok(StreamDelta::ToolUseStart {
-            id: id.clone(),
-            name,
-        }));
-        events.push(Ok(StreamDelta::ToolUseStop { id, input }));
-    }
-    events.push(Ok(StreamDelta::Done {
-        stop_reason: StopReason::ToolUse,
-        usage: Usage {
-            prompt_tokens,
-            completion_tokens: 0,
-        },
-    }));
-    stream::iter(events).boxed()
-}
-
-/// 本文だけを流して自然終了するストリーム（`EndTurn`）。
-///
-/// 語単位で TextDelta に割る（実プロバイダのストリーミングと同じ形で UI の逐次描画を通す）。
-pub(super) fn text_stream(reply: &str, prompt_tokens: u64) -> DeltaStream {
-    let words: Vec<String> = reply
-        .split_inclusive(char::is_whitespace)
-        .map(str::to_string)
-        .collect();
-    let completion_tokens = words.len() as u64;
-    let mut events: Vec<Result<StreamDelta, LlmError>> = words
-        .into_iter()
-        .map(|w| Ok(StreamDelta::TextDelta { text: w }))
-        .collect();
-    events.push(Ok(StreamDelta::Done {
-        stop_reason: StopReason::EndTurn,
-        usage: Usage {
-            prompt_tokens,
-            completion_tokens,
-        },
-    }));
-    stream::iter(events).boxed()
-}
-
 #[async_trait::async_trait]
 impl LlmProvider for StubProvider {
     fn name(&self) -> &'static str {
@@ -198,21 +190,23 @@ impl LlmProvider for StubProvider {
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let user_text = last_user_text(req);
-        let prompt_tokens = req
-            .messages
-            .iter()
-            .flat_map(|m| &m.content)
-            .filter_map(|b| match b {
-                Block::Text { text } => Some(text.split_whitespace().count() as u64),
-                _ => None,
-            })
-            .sum::<u64>();
+        let prompt_tokens = prompt_tokens(req);
 
         // --- deep research（#387）: `/deep-research` 起動はフェーズを跨いで進むため最初に見る。 ---
         if !req.tools.is_empty() {
             if let Some(s) = deep_research_call(req, prompt_tokens) {
                 return Ok(s);
             }
+        }
+        // --- 遅い生成 `slow:<秒> <本文>`: 生成中の挙動（順番待ち・停止）を決定的に試す。 ---
+        if let Some(rest) = user_text.strip_prefix("slow:") {
+            let (secs, body) = rest.split_once(' ').unwrap_or((rest, ""));
+            let secs: u64 = secs.trim().parse().unwrap_or(3);
+            return Ok(slow_text_stream(
+                &format!("回答: {}", body.trim()),
+                prompt_tokens,
+                Duration::from_secs(secs),
+            ));
         }
         // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
         if !req.tools.is_empty() && user_text.starts_with("loop:") {
@@ -225,6 +219,12 @@ impl LlmProvider for StubProvider {
         // --- 並行 read 駆動 `parallel:`（#386）。 ---
         if !has_tool_result(req) {
             if let Some(s) = parallel_read_call(req, &user_text, prompt_tokens) {
+                return Ok(s);
+            }
+        }
+        // --- 委譲の並列駆動 `subagent:`（#391）。 ---
+        if !has_tool_result(req) {
+            if let Some(s) = subagent_call(req, &user_text, prompt_tokens) {
                 return Ok(s);
             }
         }

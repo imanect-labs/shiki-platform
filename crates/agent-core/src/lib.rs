@@ -25,6 +25,8 @@
 
 pub mod agent;
 pub(crate) mod agent_gate;
+/// ステップ境界でモデルへ渡す観測（残り予算・空応答の催促）の組み立て。
+mod agent_observation;
 pub(crate) mod agent_tools;
 pub mod approval;
 pub mod budget;
@@ -48,12 +50,12 @@ pub use plan::{Plan, Subtask, SubtaskStatus};
 pub use profile::{AgentOptions, AgentOutcome, AgentProfile, DEFAULT_PARALLEL_READ_TOOLS};
 pub use tool::{
     ArtifactRef, ArtifactStore, AttachmentRef, AttachmentStore, Citation, CsvDraft, SlideDraft,
-    Tool, ToolError, ToolOutcome,
+    Tool, ToolError, ToolOutcome, ToolUsage,
 };
 pub use tools::{
     run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsAppendTool,
     FsDeleteTool, FsEditTool, FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool,
-    WebFetchTool, WebSearchTool,
+    SubagentLimits, SubagentTool, WebFetchTool, WebSearchTool,
 };
 pub use vocab::ToolName;
 pub use workspace::{WorkspaceEntry, WorkspaceStore, WorkspaceWrite};

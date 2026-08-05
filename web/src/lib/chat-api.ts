@@ -87,6 +87,9 @@ export type Message = {
   role: ChatRole;
   content: ContentBlock[];
   agentMode?: boolean;
+  /// このメッセージで実行済みの単発 UI アクション id（#410）。
+  /// 質問カード・計画カードの「送信済み」表示の根拠（ローカル state では再描画で消える）。
+  invokedActions?: string[];
   createdAt: string;
 };
 
@@ -327,23 +330,30 @@ export async function getThread(id: string): Promise<Thread> {
   return toThread(await ok<ApiThread>(res));
 }
 
-type ApiMessage = {
-  id: string;
-  role: ChatRole;
-  content: ContentBlock[];
-  agent_mode?: boolean;
-  created_at: string;
-};
+/// メッセージのワイヤ型は **Rust の `chat::Message`（utoipa）から生成**したものを使う
+/// （手書きミラーを増やさない・codegen が正）。フィールドの必須性・名前・要素型が変われば
+/// ここが型エラーになる。
+type ApiMessage = components["schemas"]["Message"];
 
 export async function getThreadMessages(
   id: string,
-): Promise<{ messages: Message[]; activeRunId: string | null; activeRunAutonomous: boolean }> {
+): Promise<{
+  messages: Message[];
+  activeRunId: string | null;
+  activeRunAutonomous: boolean;
+  /// 進行中 run の生成先 assistant メッセージ id（genui アクションの照合先）。
+  activeAssistantMessageId: string | null;
+  /// まだ生成が始まっていない発話（順番待ち・投入順）。
+  queuedRuns: { userMessageId: string; runId: string }[];
+}> {
   const res = await apiFetch(`/threads/${id}/messages`);
   if (res.status === 404 || res.status === 403) throw new ThreadNotFound();
   const data = await ok<{
     messages: ApiMessage[];
     active_run_id?: string | null;
     active_run_autonomous?: boolean | null;
+    active_assistant_message_id?: string | null;
+    queued_runs?: { user_message_id: string; run_id: string }[] | null;
   }>(res);
   return {
     messages: data.messages.map((m) => ({
@@ -351,10 +361,16 @@ export async function getThreadMessages(
       role: m.role,
       content: m.content,
       agentMode: m.agent_mode,
+      invokedActions: m.invoked_actions ?? [],
       createdAt: m.created_at,
     })),
     activeRunId: data.active_run_id ?? null,
     activeRunAutonomous: data.active_run_autonomous ?? false,
+    activeAssistantMessageId: data.active_assistant_message_id ?? null,
+    queuedRuns: (data.queued_runs ?? []).map((q) => ({
+      userMessageId: q.user_message_id,
+      runId: q.run_id,
+    })),
   };
 }
 
@@ -379,6 +395,32 @@ function parseSkillInvocation(raw: unknown): SkillInvocation | null {
   return { skill_id: o.skill_id, skill_version: o.skill_version, name: o.name };
 }
 
+/// サブエージェント委譲の記録 1 件（subagent_run イベント・#391）。
+///
+/// 子の生イベント（取得本文・思考）は親へ流れない。UI が出せるのは**この要約だけ**で、
+/// 「どの範囲を担当し、何ステップ・何回のツール呼び出しで調べたか」を展開時に見せる。
+export type SubagentRun = {
+  tool_call_id: string;
+  objective: string;
+  boundary: string;
+  steps: number;
+  tool_calls: string[];
+};
+
+/// `subagent_run` の payload を検査する（生成型では `unknown`）。
+function parseSubagentRun(raw: unknown): SubagentRun | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.tool_call_id !== "string" || typeof o.boundary !== "string") return null;
+  return {
+    tool_call_id: o.tool_call_id,
+    objective: typeof o.objective === "string" ? o.objective : "",
+    boundary: o.boundary,
+    steps: typeof o.steps === "number" ? o.steps : 0,
+    tool_calls: Array.isArray(o.tool_calls) ? o.tool_calls.filter((t) => typeof t === "string") : [],
+  };
+}
+
 /// 承認要求（破壊系/egress/高コスト・Task 5.6）。
 export type ApprovalRequest = {
   tool_call_id: string;
@@ -390,7 +432,14 @@ export type ApprovalRequest = {
 export type StreamHandlers = {
   onToken?: (text: string) => void;
   onThinking?: (text: string) => void;
-  onToolCall?: (call: { id: string; name: string; input: unknown; step?: number }) => void;
+  onToolCall?: (call: {
+    id: string;
+    name: string;
+    input: unknown;
+    step?: number;
+    /// サブエージェントが中継した呼び出し（#391）。親の step 空間には属さない。
+    viaSubagent?: boolean;
+  }) => void;
   /// ツール結果。`content` は観測テキスト（成功要約 or エラー）。UI は成否と要約を出す（#358/#386）。
   onToolResult?: (res: { id: string; ok: boolean; content: string }) => void;
   onCitation?: (c: Citation) => void;
@@ -410,6 +459,8 @@ export type StreamHandlers = {
   onDocumentRef?: (document: unknown) => void;
   /// skill ツールの発動記録（#344）。会話中に読み込んだスキルのチップ表示に使う。
   onSkillInvoked?: (skill: SkillInvocation) => void;
+  /// サブエージェント委譲の記録（#391）。担当範囲とステップ数を展開表示に足す。
+  onSubagentRun?: (run: SubagentRun) => void;
   onStatus?: (status: RunStatus) => void;
   // 自律エージェント（Phase 5）。
   onPlan?: (subtasks: PlanSubtask[]) => void;
@@ -419,6 +470,9 @@ export type StreamHandlers = {
   onFailureRecovery?: (r: { detail: string; action: string }) => void;
   /// 生成 run_id（承認 API 呼び出しに使う）。
   onRunId?: (runId: string) => void;
+  /// 生成先の assistant メッセージ id。**まだ本文は保存されていない**が、この run で出る
+  /// genui カードのアクション照合先はこの id になる（run 完了後に有効になる）。
+  onAssistantMessageId?: (messageId: string) => void;
   onDone?: () => void;
   onError?: (message: string) => void;
 };
@@ -458,6 +512,7 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
           // 旧 run の replay では step が無い。**0 で埋めない**（逐次実行だった過去の
           // ツール群が「並行して N 件」に化ける）。不明は undefined のまま流す。
           step: kind.step ?? undefined,
+          viaSubagent: kind.via_subagent ?? false,
         });
         break;
       case "tool_result":
@@ -502,6 +557,12 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
       case "document_ref":
         handlers.onDocumentRef?.(kind.document);
         break;
+      case "subagent_run": {
+        // payload は serde_json::Value（生成型では unknown）。形を検査してから渡す。
+        const run = parseSubagentRun(kind.subagent);
+        if (run) handlers.onSubagentRun?.(run);
+        break;
+      }
       case "skill_invoked": {
         // payload は serde_json::Value（生成型では unknown）。形を検査してから渡す。
         const skill = parseSkillInvocation(kind.skill);
@@ -578,24 +639,12 @@ export function streamMessage(
   let runId: string | null = null;
   let stopped = false;
 
-  apiFetch(`/threads/${threadId}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      text,
-      attachments,
-      context: context ?? null,
-      agent_mode: agentMode,
-      autonomous,
-      skills: skills?.map((p) => ({ artifact_id: p.artifactId, version: p.version ?? undefined })),
-    }),
-  })
-    .then(async (res) => {
-      if (!res.ok) throw new Error(`送信に失敗しました (${res.status})`);
-      const body = (await res.json()) as { run_id: string };
-      runId = body.run_id;
+  postMessage(threadId, text, attachments, { agentMode, autonomous, context, skills })
+    .then((posted) => {
+      runId = posted.runId;
       // 承認 API 呼び出しのため run_id を UI へ渡す（自律プロファイル・Task 5.6）。
       handlers.onRunId?.(runId);
+      handlers.onAssistantMessageId?.(posted.assistantMessageId);
       if (stopped) return;
       unsub = subscribe(threadId, handlers);
     })
@@ -605,6 +654,50 @@ export function streamMessage(
     stopped = true;
     unsub?.();
     if (opts?.cancelServer && runId) void cancelRun(threadId, runId);
+  };
+}
+
+/// 発話を投入する（**購読しない**）。
+///
+/// 生成中に送った発話は「順番待ち」としてサーバが受理し、先行 run が終わってから走る
+/// （直列化はワーカー側・`blocked_by_earlier_run`）。購読対象はスレッドで 1 本なので、
+/// 積むだけのときは SSE を開かず、先行 run の完了後に張り直す。
+export async function postMessage(
+  threadId: string,
+  text: string,
+  attachments: Attachment[],
+  opts: {
+    agentMode?: boolean;
+    autonomous?: boolean;
+    context?: SelectionContext;
+    skills?: ArtifactPin[];
+  } = {},
+): Promise<{ runId: string; userMessageId: string; assistantMessageId: string }> {
+  const res = await apiFetch(`/threads/${threadId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      attachments,
+      context: opts.context ?? null,
+      agent_mode: opts.agentMode,
+      autonomous: opts.autonomous,
+      skills: opts.skills?.map((p) => ({
+        artifact_id: p.artifactId,
+        version: p.version ?? undefined,
+      })),
+    }),
+  });
+  if (!res.ok) throw new Error(`送信に失敗しました (${res.status})`);
+  const body = (await res.json()) as {
+    run_id: string;
+    user_message_id: string;
+    assistant_message_id: string;
+  };
+  return {
+    runId: body.run_id,
+    userMessageId: body.user_message_id,
+    assistantMessageId: body.assistant_message_id,
   };
 }
 

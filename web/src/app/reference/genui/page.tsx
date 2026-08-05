@@ -452,6 +452,24 @@ const DOMAIN: { id: string; title: string; spec: unknown }[] = [
     }),
   },
   {
+    id: "source_card_compact",
+    title: "source_card（compact — web 調査の出典一覧）",
+    spec: node({
+      component: "source_card",
+      title: "出典",
+      // 件数が多い web 出典はドメインのチップだけに畳む（説明文つきで縦に積むと
+      // 会話の末尾を 12 行占領する）。詳しい出典はレポート本文の引用に付く。
+      compact: true,
+      sources: [
+        { title: "Multi-Agent Research System", url: "https://www.anthropic.com/engineering/multi-agent-research-system" },
+        { title: "Don't Build Multi-Agents", url: "https://cognition.ai/blog/dont-build-multi-agents" },
+        { title: "Task-Architecture Fit", url: "https://arxiv.org/abs/2506.01234" },
+        { title: "MAST: Failure Taxonomy", url: "https://arxiv.org/abs/2503.13657" },
+        { title: "Multi-Agent Debate Analysis", url: "https://openreview.net/forum?id=abc" },
+      ],
+    }),
+  },
+  {
     id: "itinerary",
     title: "itinerary（旅程）",
     spec: node({

@@ -440,6 +440,7 @@ mod tests {
                 allow_revise: true,
             }),
             UiNode::SourceCard(crate::domain::SourceCardProps {
+                compact: false,
                 title: None,
                 sources: vec![],
             }),

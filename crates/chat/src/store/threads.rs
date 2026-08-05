@@ -74,6 +74,22 @@ struct MessageRow {
     created_at: DateTime<Utc>,
 }
 
+impl MessageRow {
+    /// 行を DTO へ写す（`invoked_actions` は行に無いので呼び出し側が後から埋める・#410）。
+    fn into_message(self) -> Result<Message, ChatError> {
+        Ok(Message {
+            id: self.id,
+            role: Role::parse(&self.role)
+                .ok_or_else(|| ChatError::Internal(format!("bad role: {}", self.role)))?,
+            content: self.content.0,
+            agent_mode: self.agent_mode,
+            parent_id: self.parent_id,
+            invoked_actions: Vec::new(),
+            created_at: self.created_at,
+        })
+    }
+}
+
 impl ChatStore {
     /// スレッドを新規作成する（作成者を owner タプルで付与）。
     pub async fn create_thread(
@@ -283,18 +299,27 @@ impl ChatStore {
         .map_err(map_db)?;
         let mut messages: Vec<Message> = rows
             .into_iter()
-            .map(|r| {
-                Ok(Message {
-                    id: r.id,
-                    role: Role::parse(&r.role)
-                        .ok_or_else(|| ChatError::Internal(format!("bad role: {}", r.role)))?,
-                    content: r.content.0,
-                    agent_mode: r.agent_mode,
-                    parent_id: r.parent_id,
-                    created_at: r.created_at,
-                })
-            })
+            .map(MessageRow::into_message)
             .collect::<Result<_, ChatError>>()?;
+
+        // 実行済みの単発 UI アクションを同梱する（#410）。カードの「送信済み」はローカル
+        // state ではなくこれを根拠に描く（再描画・リロードで未回答へ戻さない）。
+        // スレッド 1 件につき主キー先頭 2 列で引ける 1 クエリ（メッセージ数に比例させない）。
+        // アクションを宣言できるのは generative_ui ブロックだけなので、無ければ引かない
+        // （生成ワーカーの履歴組み立てを含め、大半のスレッドで往復が 1 回減る）。
+        let has_ui = messages.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::GenerativeUi { .. }))
+        });
+        if has_ui {
+            let mut invoked = self.invoked_ui_actions(ctx, thread_id).await?;
+            for m in &mut messages {
+                if let Some(ids) = invoked.remove(&m.id) {
+                    m.invoked_actions = ids;
+                }
+            }
+        }
 
         // 共有されたスレッドの閲覧は**閲覧者自身の権限で引用を再評価**する（#37・
         // 「他人の引用をそのまま見せない」）。閲覧者が読めない引用チャンクは落とす
@@ -329,109 +354,9 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        let r = row.ok_or(ChatError::NotFound)?;
-        Ok(Message {
-            id: r.id,
-            role: Role::parse(&r.role)
-                .ok_or_else(|| ChatError::Internal(format!("bad role: {}", r.role)))?,
-            content: r.content.0,
-            agent_mode: r.agent_mode,
-            parent_id: r.parent_id,
-            created_at: r.created_at,
-        })
-    }
-
-    /// 各メッセージの citation ブロックを閲覧者の viewer 権限で再評価し、読めない引用を落とす。
-    async fn filter_citations_for_viewer(
-        &self,
-        ctx: &AuthContext,
-        messages: &mut [Message],
-    ) -> Result<(), ChatError> {
-        use std::collections::HashMap;
-        // 引用対象ファイルの重複を除いて一括判定（同一ファイルの複数引用を一度に）。
-        let mut decisions: HashMap<String, bool> = HashMap::new();
-        for m in messages.iter() {
-            for b in &m.content {
-                if let ContentBlock::Citation(c) = b {
-                    if !decisions.contains_key(&c.node_id) {
-                        let allowed = self.can_view_file(ctx, &c.node_id).await;
-                        decisions.insert(c.node_id.clone(), allowed);
-                    }
-                }
-            }
-        }
-        if decisions.values().all(|v| *v) {
-            return Ok(()); // 全て閲覧可（所有者/十分な権限）なら何もしない
-        }
-        for m in messages.iter_mut() {
-            m.content.retain(|b| match b {
-                ContentBlock::Citation(c) => *decisions.get(&c.node_id).unwrap_or(&false),
-                _ => true,
-            });
-        }
-        Ok(())
-    }
-
-    /// ツール結果の本文を、実行主体本人以外には落とす（成否は残す）。
-    ///
-    /// tool_result は node に紐づかないため citation のような個別再認可ができない。
-    /// 一方で本文には読取権限に依存する内容（社内文書のスニペット・ファイル本文・SQL 結果・
-    /// コマンド出力）が入り得る。**認可の再評価ができない本文は出さない**方に倒す。
-    /// 本人は自分の実行結果を全て見られるので、通常の会話では何も変わらない。
-    async fn redact_tool_results_for_viewer(
-        &self,
-        ctx: &AuthContext,
-        messages: &mut [Message],
-    ) -> Result<(), ChatError> {
-        let ids: Vec<Uuid> = messages
-            .iter()
-            .filter(|m| {
-                m.content
-                    .iter()
-                    .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
-            })
-            .map(|m| m.id)
-            .collect();
-        if ids.is_empty() {
-            return Ok(());
-        }
-        // そのメッセージを生成した run の actor（generation_run.message_id は assistant 側）。
-        let rows: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT message_id, actor FROM generation_run \
-             WHERE message_id = ANY($1) AND tenant_id = $2",
-        )
-        .bind(&ids)
-        .bind(&ctx.tenant_id)
-        .fetch_all(&self.db)
-        .await
-        .map_err(map_db)?;
-        let actors: std::collections::HashMap<Uuid, String> = rows.into_iter().collect();
-        for m in messages.iter_mut() {
-            // actor が引けないメッセージ（run 行が消えた等）は保守的に落とす。
-            if actors.get(&m.id).is_some_and(|a| *a == ctx.principal.id) {
-                continue;
-            }
-            for b in &mut m.content {
-                if let ContentBlock::ToolResult { content, .. } = b {
-                    content.clear();
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// 閲覧者が該当ファイルを閲覧できるか（citation 再評価用・失敗時は保守的に false）。
-    async fn can_view_file(&self, ctx: &AuthContext, node_id: &str) -> bool {
-        let obj = ctx.ns().file(node_id);
-        self.authz
-            .check(
-                &ctx.subject(),
-                Relation::Viewer,
-                &obj,
-                Consistency::MinimizeLatency,
-            )
-            .await
-            .unwrap_or(false)
+        // 束縛の照合が用途なので `invoked_actions` は埋めない（二重送信の判定は台帳の
+        // 確保そのもので行う・#410）。一覧取得（`get_messages`）だけが UI へ同梱する。
+        row.ok_or(ChatError::NotFound)?.into_message()
     }
 
     /// スレッドへの relation を要求し、FGA object を返す（不足は監査 deny＋Forbidden）。
@@ -476,7 +401,7 @@ impl ChatStore {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn map_db(e: sqlx::Error) -> ChatError {
+pub(super) fn map_db(e: sqlx::Error) -> ChatError {
     ChatError::Internal(format!("db: {e}"))
 }
 
