@@ -156,10 +156,10 @@ pub async fn mark_processed(conn: &mut PgConnection, ids: &[i64]) -> Result<(), 
 }
 
 // ---------------------------------------------------------------------------
-// 読み取り専用の覗き見（app-gateway `events.subscribe`・Task 9.8）。
+// 読み取り専用の覚を見（app-gateway `events.subscribe`・Task 9.8）。
 //
 // 配送状態（processed_at / outbox_delivery）に一切触れない**ライブテール**用。SSE 購読者は
-// 接続時点のカーソル（[`latest_event_id`]）から [`peek_app_events_after`] をポーリングする。
+// 接続時のカーソル（[`latest_event_id`]）から [`peek_app_events_after`] をポーリングする。
 // 耐久配送ではない（GC 済みイベントは見えない）——B2 関数トリガの at-least-once 消費は
 // [`claim_undelivered`]（配送台帳）を使うこと。
 // ---------------------------------------------------------------------------
@@ -175,7 +175,7 @@ pub async fn latest_event_id(pool: &sqlx::PgPool, tenant_id: &str) -> Result<i64
     Ok(id)
 }
 
-/// `after_id` より後の**アプリ向けドメインイベント**（`payload.event_type` 付き）を id 順に返す。
+/// `after_id` より後の**アプリ向けドメインイベント**（`payload.event_type` 付き）を id 順で返す。
 ///
 /// storage の生の書込イベント（file create 等・event_type なし）は含めない（ノード可視性の
 /// 再検証なしにアプリへ流さない）。呼び出し側がテーブル束縛等の追加フィルタを行う。
