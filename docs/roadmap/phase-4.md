@@ -56,7 +56,7 @@
 >   トークンだけ焼けていたため、文字コード判定（chardetng）→ ノイズ除去 → Readability 相当の本文特定
 >   （dom_smoothie）→ Markdown 化（htmd）→ 自己要約ヘッダ＋`query` 絞り込み／`offset` 続き読みへ変更。
 >   PDF/Office は ingestion-worker（Docling）で読むが、**URL ではなくバイト列**を渡す
->   （worker に取りに行かせると宛先制限を迂回する confused deputy になる・PIT-53/PIT-54）。
+>   （worker に取りに行かせると宛先制限を迂回する confused deputy になる・PIT-54/PIT-55）。
 > - **冪等 read のステップ内並列（#349）**: `web_search`/`web_fetch`/`doc_search` は `Tool::is_read_only()`
 >   を表明し、1 ステップ内で有界並列（既定 4・`chat.parallel_read_tools`）に走る。承認要・破壊系は逐次のまま
 >   `Approver` を待ち、read はその待ちと並行して進む。観測とイベントは**常に呼び出し順**（PIT-49）。

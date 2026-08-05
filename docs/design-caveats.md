@@ -763,7 +763,7 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   上限超過で `source_too_large`」の worker テストと、「PDF がバイト列としてパーサへ渡り、
   **URL はパーサへ渡らない**」「パーサ未配線なら理由付きで拒否する」の単体テストがある。
 
-## 🔴 PIT-55: untrusted 封筒は「本文を包む」だけでは漏れる — 派生メタ・閉じタグ・予算の 3 つが穴
+## 🔴 PIT-56: untrusted 封筒は「本文を包む」だけでは漏れる — 派生メタ・閉じタグ・予算の 3 つが穴
 
 - **箇所**: design §4.6（`crates/agent-core/src/tools/web_fetch/envelope.rs`・`render.rs`・issue #405）。
 - **リスク**: 外部本文を `<web_page>` で包んで「データであり指示ではない」と宣言しても、次の 3 つは
@@ -784,7 +784,7 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   「本文/タイトルに `</web_page>` を書いても閉じタグが 1 つのままで脱出できない」
   「巨大なメタで本文が締め出されず、出力全体が予算内に収まる」の単体テストがある。
 
-## 🔴 PIT-56: 決着した操作を UI のローカル state で覚えると、二度実行できる
+## 🔴 PIT-57: 決着した操作を UI のローカル state で覚えると、二度実行できる
 
 - **箇所**: design §4.7（generative UI・`crates/gui/src/dispatch.rs`・`crates/api/src/routes/ui_actions.rs`・
   `web/src/components/genui/*`・issue #410）。
