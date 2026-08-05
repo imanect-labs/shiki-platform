@@ -10,7 +10,24 @@
 //! DLQ・リトライは消費者がいる Phase 2（Task 2.8）で配線する。FUSE 経由の書込（Phase 4）も
 //! StorageService を通るため、この経路に自動で乗る。
 //!
+//! **モジュール構成**:
+//! - 本モジュール: 発行（[`emit_on`]）・`processed_at` 経路の消費（[`claim`]/[`mark_processed`]）・
+//!   読み取り専用のライブテール（[`latest_event_id`]/[`peek_app_events_after`]）。
+//! - [`delivery`]: per-consumer 配送台帳（P10-A0）。
+//! - [`gc`]: GC と滞留観測（#413）。バックグラウンド実行は [`crate::outbox_gc`]。
+//!
 //! [`StorageService`]: crate::service::StorageService
+
+mod delivery;
+mod gc;
+
+pub use delivery::{
+    claim_undelivered, mark_delivered, register_consumer, registered_consumers, unregister_consumer,
+};
+pub use gc::{
+    gc_delivered, gc_delivered_registered, outbox_backlog, ConsumerLag, OutboxBacklog,
+    DEFAULT_GC_BATCH,
+};
 
 use authz::AuthContext;
 use chrono::{DateTime, Utc};
@@ -138,142 +155,6 @@ pub async fn mark_processed(conn: &mut PgConnection, ids: &[i64]) -> Result<(), 
 }
 
 // ---------------------------------------------------------------------------
-// per-consumer fan-out（P10-A0・配送台帳 `outbox_delivery`）。
-//
-// 既存 [`claim`]/[`mark_processed`]（RAG relay 専用・`processed_at` 経路）はそのまま温存し、
-// **追加コンシューマ**（workflow の event matcher 等）はこちらの配送台帳ベースの API を使う。
-// これにより「片方の消費が他方を消す」取りこぼしを避けつつ、生成側（[`emit_on`]）は不変＝
-// outbox が真の fan-out 点として機能する（roadmap/phase-10.md P10-A0）。
-// ---------------------------------------------------------------------------
-
-/// 指定コンシューマがまだ配送していない未処理イベントを FIFO で `limit` 件まで取り出す。
-///
-/// [`claim`] と同じく `FOR UPDATE SKIP LOCKED` で同時実行の二重取得を防ぐが、判定を
-/// `processed_at` 破壊的消費ではなく **`NOT EXISTS(outbox_delivery for consumer)`** で行う。
-/// 存在性ベースの anti-join なので id 順・コミット順に依存せず、**後からコミットした小さい id の
-/// 行も次スキャンで拾える**（単純 last_seq カーソルの「未コミット飛び越し」問題を回避）。
-/// 掴んだ行は同一 txn 内で処理 → [`mark_delivered`] → commit する（at-least-once）。
-pub async fn claim_undelivered(
-    conn: &mut PgConnection,
-    consumer: &str,
-    limit: i64,
-) -> Result<Vec<OutboxEvent>, StorageError> {
-    let rows: Vec<OutboxRow> = sqlx::query_as(
-        "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
-                o.payload, o.created_at, coalesce(n.system, false) AS system \
-         FROM storage_event_outbox o \
-         LEFT JOIN node n ON n.id = o.node_id \
-         WHERE NOT EXISTS ( \
-             SELECT 1 FROM outbox_delivery d \
-             WHERE d.consumer = $1 AND d.event_id = o.id \
-         ) \
-         ORDER BY o.id \
-         FOR UPDATE OF o SKIP LOCKED \
-         LIMIT $2",
-    )
-    .bind(consumer)
-    .bind(limit)
-    .fetch_all(conn)
-    .await?;
-    Ok(rows.into_iter().map(OutboxRow::into_event).collect())
-}
-
-/// 指定コンシューマへの配送を台帳に記録する（[`claim_undelivered`] と同一 txn 内で呼ぶ）。
-///
-/// `(consumer, event_id)` 主キーで冪等（再配信で同じ行を掴んでも二重記録にならない）。
-pub async fn mark_delivered(
-    conn: &mut PgConnection,
-    consumer: &str,
-    ids: &[i64],
-) -> Result<(), StorageError> {
-    if ids.is_empty() {
-        return Ok(());
-    }
-    // tenant_id は outbox 行から写す（台帳の絞り込み・監査用）。
-    sqlx::query(
-        "INSERT INTO outbox_delivery (consumer, event_id, tenant_id) \
-         SELECT $1, o.id, o.tenant_id \
-         FROM storage_event_outbox o \
-         WHERE o.id = ANY($2) \
-         ON CONFLICT (consumer, event_id) DO NOTHING",
-    )
-    .bind(consumer)
-    .bind(ids)
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
-/// 新規追加コンシューマを **現時点のバックログを飛ばして** 登録する（初回配送の暴発防止）。
-///
-/// 台帳ベースの [`claim_undelivered`] は「自分の delivery が無い行」を全て返すため、コンシューマを
-/// 初めて有効化すると **過去の全 storage.write を再配送**してしまう（新規 workflow matcher が
-/// 履歴イベントで一斉発火する）。これを避けるため、登録時に**現スナップショットで可視な**（＝コミット
-/// 済みの）outbox 行を全て「配送済み」として台帳に刻む。**未コミットの in-flight イベントはこの
-/// スナップショットに映らない**ため delivery が付かず、コミット後に正しく配送される（＝有効化以降の
-/// イベントのみ処理・未コミット飛び越しも起こさない）。冪等（`ON CONFLICT DO NOTHING`）。
-///
-/// 起動時 wiring から consumer 有効化のたびに呼べる（**初回登録時のみ** fast-forward）。
-///
-/// `outbox_consumer` 台帳に consumer 名を一度だけ記録し、初回だけ現バックログを配送済みに刻む。
-/// 2 回目以降（再起動）は no-op ＝ **停止中に到着した未配送イベントを取りこぼさない**。返り値は刻んだ件数。
-pub async fn register_consumer(
-    conn: &mut PgConnection,
-    consumer: &str,
-) -> Result<u64, StorageError> {
-    // 初回登録か判定（RETURNING で挿入できたら初回）。
-    let first: Option<String> = sqlx::query_scalar(
-        "INSERT INTO outbox_consumer (name) VALUES ($1) \
-         ON CONFLICT (name) DO NOTHING RETURNING name",
-    )
-    .bind(consumer)
-    .fetch_optional(&mut *conn)
-    .await?;
-    if first.is_none() {
-        // 既登録: fast-forward しない（未配送を温存）。
-        return Ok(0);
-    }
-    let done = sqlx::query(
-        "INSERT INTO outbox_delivery (consumer, event_id, tenant_id) \
-         SELECT $1, o.id, o.tenant_id FROM storage_event_outbox o \
-         ON CONFLICT (consumer, event_id) DO NOTHING",
-    )
-    .bind(consumer)
-    .execute(conn)
-    .await?;
-    Ok(done.rows_affected())
-}
-
-/// 全コンシューマへ配送済み **かつ** RAG（`processed_at`）ack 済みの outbox 行を GC する
-/// （配送台帳は ON DELETE CASCADE で同時に消える）。
-///
-/// **未 ack の行は決して削除しない**（retention による time-based バイパスは持たない・遅い/停止中の
-/// コンシューマがイベントを失わない）。`ledger_consumers` は「現在有効な台帳コンシューマ集合」を
-/// 呼び出し側（起動時 wiring）が渡す。生成側は関与しない。空配列なら processed_at のみで判定する。
-/// 返り値は削除件数。
-pub async fn gc_delivered(
-    conn: &mut PgConnection,
-    ledger_consumers: &[&str],
-) -> Result<u64, StorageError> {
-    let consumers: Vec<String> = ledger_consumers.iter().map(|s| (*s).to_string()).collect();
-    let expected = i64::try_from(consumers.len())
-        .map_err(|_| StorageError::Invalid("consumer 数が多すぎます".into()))?;
-    let deleted = sqlx::query(
-        "DELETE FROM storage_event_outbox o \
-         WHERE o.processed_at IS NOT NULL \
-           AND ( \
-               SELECT count(*) FROM outbox_delivery d \
-               WHERE d.event_id = o.id AND d.consumer = ANY($1) \
-           ) >= $2",
-    )
-    .bind(&consumers)
-    .bind(expected)
-    .execute(conn)
-    .await?;
-    Ok(deleted.rows_affected())
-}
-
-// ---------------------------------------------------------------------------
 // 読み取り専用の覗き見（app-gateway `events.subscribe`・Task 9.8）。
 //
 // 配送状態（processed_at / outbox_delivery）に一切触れない**ライブテール**用。SSE 購読者は
@@ -331,10 +212,11 @@ struct OutboxRow {
     trace_id: Option<String>,
     payload: Value,
     created_at: DateTime<Utc>,
-    /// `#[sqlx(default)]`: **この行構造体は 3 つのクエリで共有される**。列を足し忘れた
-    /// クエリがあると `query_as` は実行時に失敗し、その経路の機能が丸ごと止まる
-    /// （app-gateway の SSE が無音になる形で実際に踏んだ）。既定 false へ落とすことで、
-    /// 最悪でも「system 判定が付かない＝従来どおり索引する」に留める。
+    /// `#[sqlx(default)]`: **この行構造体は 3 つのクエリで共有される**
+    /// （本モジュールの [`claim`]・[`peek_app_events_after`]、および
+    /// [`delivery::claim_undelivered`]）。列を足し忘れたクエリがあると `query_as` は実行時に
+    /// 失敗し、その経路の機能が丸ごと止まる（app-gateway の SSE が無音になる形で実際に踏んだ）。
+    /// 既定 false へ落とすことで、最悪でも「system 判定が付かない＝従来どおり索引する」に留める。
     /// 判定を必要とする経路（rag の relay）が読むクエリには必ず列を入れること。
     #[sqlx(default)]
     system: bool,

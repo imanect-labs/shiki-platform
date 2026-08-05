@@ -1,11 +1,13 @@
 # イベント/キュー基盤の再評価 — Apache Iggy 導入検討（ADR）
 
-- **ステータス**: 検討中・**human 判断待ち**。本書の結論は **Apache Iggy は現時点では見送り（条件付きで再評価）**、
-  ただし**「Postgres で無理やり」の課題感は実在し、うち 1 件は実バグ**（§2.1）なので別途対処を推奨する。
+- **ステータス**: **Apache Iggy は見送り（条件付きで再評価）** — 2026-08-05 に human 合意。
+  併せて「将来ブローカを入れる場合の第一候補は Iggy ではなく **NATS JetStream**」も合意（§4・§6）。
+  「Postgres で無理やり」の課題感は実在し、うち 1 件は実バグだったため別 issue で対処する
+  （§2.1 → **F1 = #413 実装済み**・§5）。
 - **日付**: 2026-08-05
 - **関連**: design.md §4.3（ジョブキュー/outbox の採用根拠）・requirements.md NFR-2/4/9/10・
   roadmap/phase-10.md Task P10-A0・docs/workflow/engine.md §5.5
-- **対象コード**: `crates/jobq`・`crates/storage/src/event.rs`・`crates/rag/src/pipeline/`・
+- **対象コード**: `crates/jobq`・`crates/storage/src/event/`・`crates/storage/src/outbox_gc.rs`・`crates/rag/src/pipeline/`・
   `crates/api/src/workflow_runtime/`・`crates/api/src/miniapp_triggers.rs`・
   `crates/app-gateway/src/routes/events.rs`・`crates/chat/src/store/stream.rs`
 - **正本との関係**: 設計を変えるのは design.md。本書は比較検討と実測の記録として残す。
@@ -26,7 +28,7 @@
 | # | 機構 | テーブル | 消費方式 | 起床 | 用途 | 所在 |
 |---|------|---------|---------|------|------|------|
 | 1 | outbox（破壊的 ack） | `storage_event_outbox.processed_at` | `FOR UPDATE SKIP LOCKED` ＋ `processed_at` 更新 | 500ms poll | RAG 増分索引 relay | `rag/src/pipeline/relay.rs` |
-| 2 | outbox（配送台帳） | `storage_event_outbox` ＋ `outbox_delivery` | `NOT EXISTS(delivery for me)` anti-join ＋ SKIP LOCKED | 5s poll | workflow イベントトリガ／miniapp B2 関数 | `storage/src/event.rs::claim_undelivered` |
+| 2 | outbox（配送台帳） | `storage_event_outbox` ＋ `outbox_delivery` | `NOT EXISTS(delivery for me)` anti-join ＋ SKIP LOCKED | 5s poll | workflow イベントトリガ／miniapp B2 関数 | `storage/src/event/delivery.rs::claim_undelivered` |
 | 3 | ジョブキュー | `job_queue` / `job_queue_dead` | `visible_at` ＋ vt ＋ attempts ＋ DLQ | 300〜500ms poll | RAG ingest・chat run | `crates/jobq` |
 | 4 | ライブテール（SSE） | `storage_event_outbox`（読み取り専用） | `id > cursor` ＋ `payload ? 'event_type'` | **接続ごと 1s poll** | ミニアプリ `events.subscribe` | `app-gateway/src/routes/events.rs` |
 | 5 | run イベント | `generation_event` ＋ Redis pub/sub | seq replay（DB＝正・pubsub＝起床） | Redis 起床＋700ms 保険 poll | chat SSE ストリーム | `chat/src/store/stream.rs` |
@@ -52,6 +54,9 @@ $ rg gc_delivered --type rust
 crates/storage/src/event.rs:254:pub async fn gc_delivered(      # 定義
 crates/storage/tests/outbox_fanout_it.rs:213,259               # テストのみ
 ```
+
+（上記は F1 修正前の状態。F1 で `event.rs` は `event/{mod,delivery,gc}.rs` に分割し、
+バックグラウンド実行は `outbox_gc.rs` に置いた。）
 
 呼び出し元は結合テストだけで、`crates/api` の wiring にも定期ジョブにも存在しない
 （`register_consumer` は `workflow_runtime/mod.rs:253` と `miniapp_triggers.rs:38` から呼ばれているのに、
@@ -113,8 +118,15 @@ P10-A0（phase-10.md Task P10-A0）で台帳方式を追加したが、**既存 
   **2 つの独立した進行度が揃うまで消せない**（片方が遅れると全体が溜まる）。
 - 新コンシューマの追加ごとに `register_consumer` の fast-forward 手当てが必要
   （＝過去イベントで一斉発火する既定の危険を、都度の作法で避けている）。
-- コンシューマ集合が**呼び出し側 wiring の引数**（`gc_delivered(&[&str])`）として渡され、
-  台帳とコードの二重管理になる。追加忘れ＝GC が過剰に消す/消せない。
+- コンシューマ集合が**呼び出し側 wiring の引数**（`gc_delivered(&[&str])`）として渡されていた。
+  これは単なる二重管理ではなく**危険**である（#413 の実装中に判明）:
+  台帳コンシューマは**独立したフィーチャフラグの背後**で起動する（`workflow` は
+  `workflow.enabled`・`wiring.rs:383` ／ `miniapp-functions` は `gateway.enabled`・
+  `wiring_gateway.rs:301`）。「このプロセスが spawn した集合」を GC に渡すと、
+  `workflow.enabled=false` のレプリカが `["miniapp-functions"]` だけを見て
+  **workflow が未配送のイベントを削除する＝イベント喪失**になる。
+  永続化された登録台帳（`outbox_consumer`）だけが「この配備で配送を待つべきコンシューマ」の正本。
+  → F1 でこれを正した（`gc_delivered_registered`）。
 
 これは**ログ＋per-consumer offset なら本質的に不要**になる部分で、Iggy の主張が最も刺さる箇所ではある（§3.2）。
 
@@ -244,7 +256,7 @@ fast-forward するしかない。「イベントを再処理して索引を作�
 
 | ID | 内容 | 効果 | 規模 |
 |---|---|---|---|
-| **F1** | `gc_delivered` を本番 wiring へ配線（リーダー tick に定期実行）。台帳コンシューマ集合を wiring 引数ではなく `outbox_consumer` 表から読む（二重管理の解消） | §2.1 を解消（実測 **26x**） | 小 |
+| **F1** ✅ | **実装済み（#413）**。`storage::outbox_gc::spawn_outbox_gc` を wiring から起動（60 秒周期・`SKIP LOCKED` でバッチ刻み＝全レプリカ同時実行安全・リーダー選出不要）。コンシューマ集合は `outbox_consumer` 表から読む（後述の安全性の要請）。廃止用 `unregister_consumer` と滞留観測 `outbox_backlog` を追加 | §2.1 を解消（実測 **26x**） | 小 |
 | **F2** | 消費経路の一本化：RAG relay も台帳コンシューマ（`consumer='rag'`）へ寄せ、`processed_at` 経路を廃止。GC 条件を台帳 AND のみに単純化 | §2.2 解消・GC 条件が 1 軸に | 中 |
 | **F3** | `claim_undelivered` に**遅延ウォーターマーク**で走査窓を限定（未コミット飛び越しを起こさない安全余裕付き。実測 3.8x）。F1 と併用 | §2.1 の二重の安全網 | 小 |
 | **F4** | SSE を**単一 tailer ＋ `tokio::sync::broadcast`** に変更（接続数に依らず 1 QPS）。`(tenant_id, id)` 索引と `payload ? 'event_type'` 部分索引を追加 | §2.3 解消 | 中 |
@@ -271,16 +283,30 @@ F1〜F6 を入れた後の姿は「1 系統の outbox（パーティション・
 
 ---
 
-## 7. human への確認事項
+## 7. 決定事項と残タスク
 
-1. **F1（GC 配線）は不具合修正として即着手して良いか。** issue 化して単独 PR にするのが妥当と考える。
-2. **F2（消費経路の一本化）** は RAG relay の挙動を変える（既存テストに影響）。
+### 決定済み（2026-08-05）
+
+- ✅ **Iggy は見送り**（§3.4）。再評価条件は §6。
+- ✅ **将来ブローカを入れる場合の第一候補は NATS JetStream**（§4 C）。Iggy はクラスタリングが
+  production-ready になった時点で再検討対象に戻すが、キュー意味論を持たない以上、
+  `jobq` を畳める NATS の方が本製品への適合度が高い。
+- ✅ **F1（GC 配線）は不具合として即修正**（#413・実装済み）。
+
+### 残タスク（human 確認事項）
+
+1. **F2（消費経路の一本化）** は RAG relay の挙動を変える（既存テストに影響）。
    P10-A0 が「挙動不変」を優先して意図的に温存した箇所なので、方針変更の合意が要る。
-3. **Iggy 見送りの結論に同意いただけるか。** もし「それでも PoC を見たい」なら、
-   `EventLog` トレイト（F7）を先に切ってから背後実装として試すのが最小コスト。
-4. **将来ブローカを入れる場合の第一候補を Iggy ではなく NATS JetStream に置き換えて良いか**（§4 C）。
-5. 本書の結論が固まったら **design.md §4.3 に 1 段落追記**（「ブローカ非採用の再確認と再評価条件」）し、
+2. **F3〜F7 の優先順位と実施タイミング。** F4（SSE の単一 tailer 化）は接続数比例の
+   ポーリングを消すので、ミニアプリの同時利用が増える前に入れたい。
+3. 本書の結論を **design.md §4.3 に 1 段落追記**（「ブローカ非採用の再確認と再評価条件」）し、
    本書を背景記録として参照させたい。
+4. **別件（本 ADR の範囲外・要判断）**: `migrations/` に **version 57 が重複**している
+   （`0057_node_system.sql`（#396）と `0057_share_link_grant_revoke.sql`（#393）が別 PR から
+   同番で入った）。**新規 DB は `sqlx::migrate!` が `VersionMismatch(57)` で失敗し、マイグレート
+   できない**（既存 DB は増分適用済みなので露見しない。#413 のテストを回す際に踏んだ）。
+   新規 cell プロビジョニング（NFR-11）と新規開発環境に効く。既存 DB の適用履歴を壊さない
+   リナンバー手順が必要なので、別 issue で方針を決めたい。
 
 ---
 

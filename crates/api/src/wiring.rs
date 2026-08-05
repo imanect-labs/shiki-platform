@@ -54,6 +54,12 @@ pub(crate) async fn wire_storage(
     ));
     // 一般アクセス有効期限の失効タイマ（#338・イベント駆動・定期ポーリング無し）。
     storage::expiry_timer::spawn_share_link_expiry_timer(Arc::clone(&service));
+    // outbox GC（#413）。`storage_event_outbox` は書込チョークポイントの真下にあり、GC が回らないと
+    // 永久成長して claim_undelivered の anti-join が累積イベント数に線形劣化する（＝イベント経路の
+    // 性能前提）。全レプリカで同時に走っても安全（SKIP LOCKED で刻む）ためリーダー選出はしない。
+    // 配送を待つべきコンシューマ集合は outbox_consumer 表から読むので、workflow/gateway の
+    // フィーチャフラグの状態に依らず「他コンシューマ宛の未配送イベントを消す」事故が起きない。
+    storage::outbox_gc::spawn_outbox_gc(db.clone());
     Ok((object_store, service))
 }
 

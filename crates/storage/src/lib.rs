@@ -32,6 +32,7 @@ pub mod expiry_timer;
 pub mod indexing;
 pub mod model;
 pub mod object_store;
+pub mod outbox_gc;
 pub mod service;
 pub mod tenant;
 
