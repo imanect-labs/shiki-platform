@@ -20,17 +20,34 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// `RECORD=1` で**動画**（webm）も残す。`FLOW=default` にすると質問カード → 計画カード →
 /// 実行の全経路を通す（`auto` は確認を省略した 1 ターン）。
 const SHOTS = process.env.SHOTS_DIR ?? "/tmp";
+/// 既定のテーマは**このリポジトリで実際に判断が割れている論点**にする（#391 の受入条件・
+/// #404）。賛否が公開情報で真っ向から割れており（Anthropic は multi-agent research system で
+/// 有効性を主張・Cognition と LangChain は「マルチエージェントを作るな」と撤回）、一次情報が
+/// web にあり、結論がそのまま `SubagentLimits` の判断材料になる。
+///
+/// 他に使える論点（`TOPIC=` で差し替え）:
+///   - エージェント隔離の gVisor / Firecracker / WASM をどう使い分けるべきか（#346）
+///   - 日本語 RAG でハイブリッド検索とリランカーはどれだけ効くか
+///   - Zanzibar 系 ReBAC の実運用レイテンシと、RBAC/ABAC との使い分け
 const TOPIC =
-  process.env.TOPIC ?? "リモートワークは従業員の生産性を上げるのか下げるのか、根拠つきで";
+  process.env.TOPIC ??
+  "LLM エージェントの調査タスクで、サブエージェントへの並列委譲は" +
+    "単一エージェントに対してトークン増分に見合う品質向上をもたらすのか。" +
+    "どの条件で有効でどの条件で有害か、実測と失敗事例の根拠つきで";
 /// `default` = 質問 → 計画 → 実行（計画カードの中身まで見える）／`auto` = 即実行。
 const FLOW = process.env.FLOW ?? "auto";
 
 test.use({
-  deviceScaleFactor: 2,
+  // 録画時は等倍・小さめ（webm が数十 MB になるため）。スクショだけなら 2x で撮る。
+  deviceScaleFactor: process.env.RECORD === "1" ? 1 : 2,
   locale: "ja-JP",
-  viewport: { width: 1280, height: 1200 },
-  // 動画は 1 テストにつき 1 本（webm）。等倍サイズで撮る（deviceScaleFactor は効かない）。
-  video: process.env.RECORD === "1" ? { mode: "on", size: { width: 1280, height: 1200 } } : "off",
+  // 録画は**広く撮る**。委譲込みの調査はツール実行が長く流れるので、狭いビューポートだと
+  // 実況しか映らず、レポートや計画カードとの関係が追えない。
+  viewport:
+    process.env.RECORD === "1" ? { width: 1680, height: 1150 } : { width: 1200, height: 900 },
+  // 動画は 1 テストにつき 1 本（webm）。size はビューポートに合わせる。
+  video:
+    process.env.RECORD === "1" ? { mode: "on", size: { width: 1680, height: 1150 } } : "off",
 });
 test.setTimeout(30 * 60 * 1000);
 test.skip(process.env.REAL_LLM !== "1", "実 LLM 検証は手動（REAL_LLM=1 で実行）");
@@ -43,6 +60,7 @@ test("実 LLM: /deep-research が出典つきレポートまで完走する", as
   const bundle = JSON.parse(
     readFileSync("../sdk/first-party-skills/deep-research/skill.json", "utf8"),
   ) as Record<string, unknown>;
+  const skillName = uniqueName("deep-research-real");
   const created = await page.evaluate(
     async ({ skillName, body }) => {
       const csrf = document.cookie.match(/(?:^|;\s*)shiki_csrf=([^;]+)/);
@@ -57,7 +75,7 @@ test("実 LLM: /deep-research が出典つきレポートまで完走する", as
       });
       return { status: res.status, text: await res.text() };
     },
-    { skillName: uniqueName("deep-research-real"), body: bundle },
+    { skillName, body: bundle },
   );
   expect(created.status, created.text).toBeLessThan(300);
 
@@ -65,54 +83,61 @@ test("実 LLM: /deep-research が出典つきレポートまで完走する", as
   const input = page.getByLabel("メッセージを入力");
   await input.fill("/deep-research");
   await expect(page.getByTestId("slash-command-menu")).toBeVisible({ timeout: 15_000 });
-  if (FLOW === "auto") {
-    await input.press("ArrowDown"); // auto variant
-  }
-  await input.press("Enter");
+  // **いま作った skill の候補を選ぶ**。同じ dev DB を使い回すと `/deep-research` を名乗る
+  // 過去の skill が何十件も候補に並び、先頭を取ると古い body（＝古い宣言）でピンされる。
+  const mine = page.getByTestId("slash-command-option").filter({ hasText: skillName });
+  // 候補は variant の宣言順（`""` → `"auto"`）で並ぶ。バンドルはこのテストが投入した
+  // ものなので順序は既知。
+  await expect(mine, `候補に ${skillName} の 2 variant が出ること`).toHaveCount(2, {
+    timeout: 15_000,
+  });
+  await mine.nth(FLOW === "auto" ? 1 : 0).click();
   await input.fill(TOPIC);
   await page.getByRole("button", { name: "送信" }).click();
 
   if (FLOW !== "auto") {
-    // ── フェーズ 0: 質問カード（**条件付き**: 曖昧さが成果物を変える時だけ出る） ──
-    // 出ない場合はそのまま計画カードを待つ（出さない判断も仕様どおり）。
+    // ── フェーズ 0: 質問カード ──
+    // `plan_first` の variant では**必ず**出る（明確化の run には `question_card` を出す
+    // `emit_ui` しか提示されない・#400）。出ないなら門が効いていないので落とす。
     const options = page.getByTestId("genui-question-option");
-    const asked = await options
-      .first()
-      .waitFor({ state: "visible", timeout: 4 * 60 * 1000 })
-      .then(() => true)
-      .catch(() => false);
-    if (asked) {
-      await page.screenshot({ path: `${SHOTS}/real-dr-question.png`, fullPage: true });
+    await expect(options.first()).toBeVisible({ timeout: 4 * 60 * 1000 });
+    await page.screenshot({ path: `${SHOTS}/real-dr-question.png`, fullPage: true });
     // 各問の先頭選択肢を選び、最後の問いで送信する。問い数も submit のラベルも AI が決めるので
     // 「次へ」が出ている限り送り、消えたら testid で送信する（文言に依存しない）。
-      const next = page.getByRole("button", { name: "次へ" });
-      for (let step = 0; step < 6; step++) {
-        await options.first().click();
-        if (!(await next.isVisible().catch(() => false))) break;
-        await next.click();
-      }
-      await page.getByTestId("genui-question-submit").click();
+    const next = page.getByRole("button", { name: "次へ" });
+    for (let step = 0; step < 6; step++) {
+      await options.first().click();
+      if (!(await next.isVisible().catch(() => false))) break;
+      await next.click();
     }
+    await page.getByTestId("genui-question-submit").click();
 
     // ── フェーズ 1: 計画カード（この依頼固有の問いが並ぶこと） ──
     const planStart = page.getByTestId("genui-plan-start");
     await expect(planStart).toBeVisible({ timeout: 5 * 60 * 1000 });
-    const steps = page.getByTestId("genui-plan-steps").locator("li");
-    const count = await steps.count();
-    console.log(`=== PLAN (${count} steps) ===`);
+    const titles = await page
+      .getByTestId("genui-plan-steps")
+      .getByTestId("plan-step-title")
+      .allInnerTexts();
+    console.log(`=== PLAN (${titles.length} steps) ===`);
     console.log(await page.getByTestId("genui-plan-steps").innerText());
     await page.screenshot({ path: `${SHOTS}/real-dr-plan.png`, fullPage: true });
-    // 作業工程が並んでいたら計画として失敗（ユーザーの判断材料にならない）。
-    for (const method of ["証拠台帳", "節ごとに執筆", "視点を分けて", "の収集", "レポートの作成"]) {
-      expect(
-        await page.getByTestId("genui-plan-steps").getByText(method, { exact: false }).count(),
-        `計画に手順「${method}」が出ている（依頼固有の問いを並べること）`,
-      ).toBe(0);
-    }
+    // 計画は**問いの一覧**であること（禁止語の列挙ではなく形式で判定する。工程を並べる語彙は
+    // 無限にあり、列挙は必ず漏れる。「問いの形か」なら 1 つの規則で全部を捕まえられる）。
+    // 許すのは「〜か」「〜か？」「〜？」「〜のはなぜか」等の疑問形。
+    const asQuestion = /(か|？|\?)$/;
+    const notQuestions = titles.map((t) => t.trim()).filter((t) => !asQuestion.test(t));
+    expect(
+      notQuestions,
+      "計画の各項目は問いの形であること（工程を並べるとユーザーの判断材料にならない）",
+    ).toEqual([]);
+    expect(titles.length, "問いは 5〜7 個").toBeGreaterThanOrEqual(4);
     await planStart.click();
   }
 
-  // 完走の合図: 「生成を停止」が出てから消える＝run 終了。
+  // run が終わる（＝停止ボタンが出てから消える）。**これは完走の証明ではない**: 異常終了でも
+  // 同じように消える。実測で、プロバイダの 429（利用枠超過）で落ちた run がここまでを満たし、
+  // レポートが 1 行も無いまま緑で報告された。成果物の assert は下で別に行う。
   await expect(page.getByRole("button", { name: "生成を停止" })).toBeVisible({ timeout: 120_000 });
   await expect(page.getByRole("button", { name: "生成を停止" })).toHaveCount(0, {
     timeout: 25 * 60 * 1000,
@@ -124,5 +149,23 @@ test("実 LLM: /deep-research が出典つきレポートまで完走する", as
   if (process.env.RECORD === "1") {
     console.log(`=== VIDEO === ${await page.video()?.path()}`);
   }
+
+  // ── 完走の証明: 成果物が出ていること ──
+  // エラー表示が出ていたら、それを理由として落とす（「タイムアウトしていない」だけでは
+  // 異常終了を見逃す）。文言は会話にそのまま出る 1 行なので、失敗メッセージにも載せる。
+  const errorBanner = page.getByTestId("conversation-error");
+  if (await errorBanner.isVisible().catch(() => false)) {
+    expect(await errorBanner.innerText(), "run がエラーで終了した").toBe("");
+  }
+  // deep research の DoD は「出典つきレポート」。出典カードと下書きカードの両方を要求する
+  // （本文だけなら途中で切れていても通ってしまう）。
+  await expect(
+    page.getByTestId("genui-source-card").first(),
+    "出典カードが出ること（P4 検証まで到達した証明）",
+  ).toBeVisible({ timeout: 60_000 });
+  await expect(
+    page.getByTestId("note-draft-card").first(),
+    "レポートの下書きカードが出ること（save_note まで到達した証明）",
+  ).toBeVisible({ timeout: 60_000 });
   expect(testInfo.status).not.toBe("timedOut");
 });

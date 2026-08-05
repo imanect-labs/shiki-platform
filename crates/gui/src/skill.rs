@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::skill_command::{validate_command, SkillCommand};
 use crate::validate::GuiValidationError;
 use crate::vocab::vocab_enum;
 
@@ -77,36 +78,6 @@ pub struct SkillBody {
     /// 宣言しないスキルはコマンドを持たない（カタログには載るがコマンドでは呼べない）。
     #[serde(default)]
     pub command: Option<SkillCommand>,
-}
-
-/// スキルをコンポーザから `/<name>` で起動するための宣言（#387）。
-///
-/// **フロントにコマンド定義をハードコードしない**ための宣言。補完候補・引数のプリセットは
-/// すべてここから来る（`GET /skills/catalog` で配る）。コマンドは能力を増やさない —
-/// 起動の入口を作るだけで、実効権限は従来どおり「セッション配線 ∩ 実行主体 ReBAC ∩ skill 宣言」。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-#[ts(export)]
-pub struct SkillCommand {
-    /// コマンド名（`/` は含めない）。`^[a-z0-9][a-z0-9-]*$`。
-    pub name: String,
-    /// 入力欄のプレースホルダ（「調べたいことを入力」など）。
-    #[serde(default)]
-    pub hint: Option<String>,
-    /// 引数プリセット（`/deep-research auto` の `auto`）。空文字は引数なしの既定。
-    #[serde(default)]
-    pub variants: Vec<SkillCommandVariant>,
-}
-
-/// コマンドの引数プリセット 1 件。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-#[ts(export)]
-pub struct SkillCommandVariant {
-    /// コマンド名の後ろに置く引数（空文字＝引数なし）。
-    pub args: String,
-    /// 補完候補に出す説明。
-    pub summary: String,
 }
 
 /// 知識スコープ（folders は配下全体・files は個別）。両方空の Some は保存時に拒否。
@@ -312,96 +283,6 @@ pub fn validate_skill_body(raw: &serde_json::Value) -> Result<SkillBody, Vec<Gui
         Ok(body)
     } else {
         Err(errors)
-    }
-}
-
-/// スラッシュコマンド宣言の検証（#387）。
-///
-/// 名前は**スラグに限定**する。空白や `/` を許すとコンポーザのパースが曖昧になり、
-/// 記号を許すと補完一覧での視覚的な詐称（他コマンドへの偽装）を招く。
-/// 長さ上限も同じ理由（一覧を占有させない）。
-fn validate_command(command: &SkillCommand, errors: &mut Vec<GuiValidationError>) {
-    // **trim しない生値**を検証する。カタログへ載り本文へ連結されるのは生値であり、
-    // trim 後に判定すると前後の空白/改行を含む値が通ってしまう（この関数が防ごうとしている
-    // 「視覚的な詐称」「発話が壊れる」をすり抜ける）。
-    let name = command.name.as_str();
-    let valid_slug = !name.is_empty()
-        && name.len() <= skill_limits::MAX_COMMAND_NAME_CHARS
-        && name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-    if !valid_slug {
-        errors.push(
-            GuiValidationError::new(
-                "skill.invalid_command_name",
-                format!(
-                    "command.name は英小文字・数字・ハイフンのみ（先頭は英数字・最大 {} 文字）",
-                    skill_limits::MAX_COMMAND_NAME_CHARS
-                ),
-            )
-            .at("command.name"),
-        );
-    }
-    if command
-        .hint
-        .as_ref()
-        .is_some_and(|h| h.chars().count() > skill_limits::MAX_COMMAND_TEXT_CHARS)
-    {
-        errors.push(
-            GuiValidationError::new("skill.too_long", "command.hint が長すぎます")
-                .at("command.hint"),
-        );
-    }
-    if command.variants.len() > skill_limits::MAX_COMMAND_VARIANTS {
-        errors.push(
-            GuiValidationError::new(
-                "skill.too_many_command_variants",
-                format!(
-                    "command.variants は最大 {} 件",
-                    skill_limits::MAX_COMMAND_VARIANTS
-                ),
-            )
-            .at("command.variants"),
-        );
-    }
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for (i, v) in command.variants.iter().enumerate() {
-        let args = v.args.as_str();
-        // 引数は本文へそのまま連結されるため、改行を許すと発話が壊れる。
-        // 前後の空白も拒否する（`"auto "` と `"auto"` が別コマンドに見え、連結でも崩れる）。
-        if args.contains(['\n', '\r'])
-            || args != args.trim()
-            || args.chars().count() > skill_limits::MAX_COMMAND_TEXT_CHARS
-        {
-            errors.push(
-                GuiValidationError::new(
-                    "skill.invalid_command_args",
-                    "command.variants[].args が不正です",
-                )
-                .at(format!("command.variants[{i}].args")),
-            );
-        }
-        if v.summary.trim().is_empty()
-            || v.summary.chars().count() > skill_limits::MAX_COMMAND_TEXT_CHARS
-        {
-            errors.push(
-                GuiValidationError::new(
-                    "skill.invalid_command_summary",
-                    "command.variants[].summary は必須（長すぎないこと）",
-                )
-                .at(format!("command.variants[{i}].summary")),
-            );
-        }
-        if !seen.insert(args) {
-            errors.push(
-                GuiValidationError::new(
-                    "skill.duplicate_command_variant",
-                    "command.variants の args が重複しています",
-                )
-                .at(format!("command.variants[{i}].args")),
-            );
-        }
     }
 }
 

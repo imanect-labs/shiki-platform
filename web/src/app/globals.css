@@ -308,6 +308,31 @@
     background-position: center;
     background-size: 100% 1.5px;
   }
+
+  /* 実行中の見出し文字を「光が舐める」。長い調査では画面が数十秒まったく動かない時間が
+     あり（子が長い取得を回している間、親には出す新着が無い）、静止した文字列は
+     「止まった」と読まれる。動かすのは background-position だけ＝再レイアウトを起こさない。
+     reduced-motion は globals 末尾の @media が一括で止める。 */
+  .shiki-text-shimmer {
+    background-image: linear-gradient(
+      100deg,
+      var(--muted-foreground) 0%, var(--muted-foreground) 42%,
+      var(--foreground) 50%,
+      var(--muted-foreground) 58%, var(--muted-foreground) 100%
+    );
+    background-size: 200% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+    animation: shimmer 2.4s linear infinite;
+  }
+
+  /* 横に溢れる出典チップ列。右端を溶かして「まだ続く」ことを示す（参照 UI と同じ作法）。
+     スクロールバーを出さないのは、実況は読むもので操作するものではないため。 */
+  .shiki-fade-r {
+    mask-image: linear-gradient(to right, #000 0, #000 82%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to right, #000 0, #000 82%, transparent 100%);
+  }
   .shiki-dash-top {
     background-image: repeating-linear-gradient(
       to right,

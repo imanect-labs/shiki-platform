@@ -196,6 +196,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            parser: None,
             storage: None,
             ui_validator: None,
             skill_artifacts: Some(artifacts),
@@ -232,6 +233,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             &[chat::SkillPin {
                 skill_id,
                 skill_version: 1,
+                command_args: None,
             }],
             None,
             None,

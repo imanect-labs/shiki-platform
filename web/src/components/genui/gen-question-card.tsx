@@ -19,7 +19,7 @@ import { DURATION_NORMAL, EASE_STANDARD, PRESSABLE } from "@/components/ui/motio
 import { currentSeasonIndex, seasonAccentStyle } from "@/lib/season";
 import { cn } from "@/lib/utils";
 import { useGenUiAction } from "./action-context";
-import { ActionResultNote, describeActionError } from "./action-result";
+import { ActionResultNote, describeActionError, QueuedActionNote } from "./action-result";
 
 /// 1 問の回答状態。options 質問は選択ラベル集合＋「その他」（専用フラグ・自由記述）、
 /// 自由記述質問は text。`otherSelected` を選択集合と分けることで、選択肢ラベルが
@@ -44,7 +44,7 @@ function answerValue(q: QuestionItem, a: Answer): string {
 }
 
 export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
-  const { dispatch, onActionCompleted } = useGenUiAction();
+  const { dispatch, ready, onActionCompleted } = useGenUiAction();
   const questions = React.useMemo(() => card.questions ?? [], [card.questions]);
   const total = questions.length;
 
@@ -256,7 +256,7 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
         {done ? (
           <span className="inline-flex items-center gap-1 text-xs text-primary">
             <Check className="size-3.5" aria-hidden />
-            回答を送信しました
+            {ready ? "回答を送信しました" : "回答を受け付けました"}
           </span>
         ) : isLast ? (
           <Button
@@ -272,12 +272,18 @@ export function GenUiQuestionCard({ card }: { card: QuestionCardProps }) {
             {card.submit_label || "回答する"}
           </Button>
         ) : (
-          <Button type="button" size="sm" onClick={() => go(step + 1)} className={PRESSABLE}>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => go(step + 1)}
+            className={PRESSABLE}
+          >
             次へ
             <ArrowRight className="size-3.5" aria-hidden />
           </Button>
         )}
       </div>
+      <QueuedActionNote ready={ready} submitted={Boolean(done)} />
       <ActionResultNote error={error} />
     </div>
   );

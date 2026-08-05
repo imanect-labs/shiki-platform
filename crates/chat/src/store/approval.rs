@@ -244,3 +244,29 @@ impl ChatStore {
         Ok(c.unwrap_or(false))
     }
 }
+
+impl ChatStore {
+    /// スレッドに出ている genui カードの有無（実行前フェーズの門・#400）。
+    ///
+    /// 戻り値は `(質問カードを出したか, 計画カードを出したか)`。`message.content` の
+    /// `generative_ui` ブロックを走査するのではなく **jsonb で絞る**（全件取得→フィルタをしない）。
+    pub async fn emitted_cards(
+        &self,
+        thread_id: uuid::Uuid,
+        tenant_id: &str,
+    ) -> Result<(bool, bool), crate::ChatError> {
+        let row: (bool, bool) = sqlx::query_as(
+            "SELECT \
+               coalesce(bool_or(b->'spec'->'root'->>'component' = 'question_card'), false), \
+               coalesce(bool_or(b->'spec'->'root'->>'component' = 'plan_card'), false) \
+             FROM message m, jsonb_array_elements(m.content) b \
+             WHERE m.thread_id = $1 AND m.tenant_id = $2 AND b->>'type' = 'generative_ui'",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(|e| crate::ChatError::Internal(format!("カード有無の取得に失敗: {e}")))?;
+        Ok(row)
+    }
+}

@@ -186,5 +186,19 @@ pub(crate) async fn emit_tool_events(
         })
         .await?;
     }
+    // サブエージェント委譲の記録（#391）。監査・再現性のため run イベントへ残す
+    // （SkillInvoked と同じく message.content へは projection しない）。
+    // **`tool_call_id` はここで足す**: ツール自身は自分の呼び出し id を知らないが、UI は
+    // どの委譲行の詳細かを一意に決めたい（名前での FIFO 突き合わせにしない）。
+    for subagent in &outcome.subagent_runs {
+        let mut subagent = subagent.clone();
+        if let Some(obj) = subagent.as_object_mut() {
+            obj.insert(
+                "tool_call_id".to_string(),
+                serde_json::Value::String(call.id.clone()),
+            );
+        }
+        sink.emit(AgentEvent::SubagentRun { subagent }).await?;
+    }
     Ok(())
 }

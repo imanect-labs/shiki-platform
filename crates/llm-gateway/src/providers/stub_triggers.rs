@@ -4,8 +4,8 @@
 //! 応じて 1 回だけツールを呼ぶロジック。実 LLM 無しで chat run・承認ゲート・Yjs 反映まで
 //! パイプライン全体を決定的に叩くための入口（issue #282 / #328 / Task 11.3・11.10）。
 
-use super::stub::tool_call_stream;
 use super::stub_fixtures::genui_spec;
+use super::stub_stream::tool_call_stream;
 use crate::model::GenerateRequest;
 use crate::provider::DeltaStream;
 

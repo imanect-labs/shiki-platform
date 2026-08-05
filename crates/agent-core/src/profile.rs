@@ -53,6 +53,11 @@ pub struct AgentOptions {
     pub context_soft_limit_tokens: usize,
     /// 剪定時に無傷で残す直近メッセージ数（自律版のみ）。
     pub context_keep_recent: usize,
+    /// `plan` メタツールを提示するか（自律版の既定 true・#391）。
+    ///
+    /// サブエージェントは 1 つの `objective` を調べて findings を返すだけなので計画は要らない。
+    /// 提示すると限られたステップ予算を計画更新に使ってしまうため、委譲側で false にする。
+    pub offer_plan_tool: bool,
     /// 同一ステップ内で並列実行する冪等 read ツールの上限（issue #349・0/1 は逐次と等価）。
     ///
     /// deep research の `web_search`→複数 `web_fetch` ファンアウトを直列にしないための有界並列度。
@@ -78,6 +83,7 @@ impl AgentOptions {
             budget: Budget::chat(max_steps),
             context_soft_limit_tokens: 0,
             context_keep_recent: 0,
+            offer_plan_tool: true,
             parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
         }
     }
@@ -103,6 +109,7 @@ impl AgentOptions {
             // 既定: 約 24k トークンで古いツール出力を畳み、直近 6 メッセージは残す。
             context_soft_limit_tokens: 24_000,
             context_keep_recent: 6,
+            offer_plan_tool: true,
             parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
         }
     }

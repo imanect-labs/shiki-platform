@@ -175,7 +175,9 @@ export function Composer({
   const selection = usePendingSelection();
 
   // コマンド確定後は本文が空でも送れる（コマンド自体が指示になる）。
-  const canSend = (value.trim().length > 0 || command !== null) && !disabled && !uploading && !streaming;
+  // 生成中でも送信できる（サーバが 1 スレッド 1 本ずつ直列化し、順番待ちとして受け付ける）。
+  // 「返答を待たないと次を書けない」体験を作らないための土台。
+  const canSend = (value.trim().length > 0 || command !== null) && !disabled && !uploading;
 
   const pickSuggestion = (s: SlashSuggestion) => {
     setCommand(toActiveCommand(s));
@@ -185,7 +187,7 @@ export function Composer({
   };
 
   const submit = () => {
-    if (disabled || uploading || streaming) return;
+    if (disabled || uploading) return;
     // 補完で確定していなくても、既知のコマンドが直接打たれていれば拾う（#387・Codex P2）。
     // 拾わないと skill のピン処理を通らず、コマンドがただのテキストとして流れる。
     const typed = command ? null : resolveTypedCommand(value, suggestions);
@@ -412,6 +414,8 @@ export function Composer({
             ) : null}
           </div>
 
+          {/* 生成中は停止を出し、書きかけがあれば送信（＝順番待ちへ積む）も並べる。
+              書きかけが無いのに無効な送信ボタンを置くと、押せないボタンが常駐して邪魔になる。 */}
           <div className="flex items-center gap-1.5">
             {streaming ? (
               <button
@@ -426,12 +430,14 @@ export function Composer({
               >
                 <Square className="size-3.5 fill-current" aria-hidden />
               </button>
-            ) : (
+            ) : null}
+            {!streaming || canSend ? (
               <button
                 type="button"
                 onClick={submit}
                 disabled={!canSend}
-                aria-label="送信"
+                aria-label={streaming ? "順番待ちに追加" : "送信"}
+                title={streaming ? "生成が終わったら自動で送信します" : undefined}
                 className={cn(
                   "flex size-9 items-center justify-center rounded-full transition-colors",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
@@ -442,7 +448,7 @@ export function Composer({
               >
                 <ArrowUp className="size-[18px]" aria-hidden />
               </button>
-            )}
+            ) : null}
           </div>
         </PromptInputActions>
       </PromptInput>

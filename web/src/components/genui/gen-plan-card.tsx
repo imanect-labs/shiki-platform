@@ -21,10 +21,10 @@ import { PlanStepRow } from "@/components/chat/agent-progress";
 import { currentSeasonIndex, seasonAccentStyle } from "@/lib/season";
 import { cn } from "@/lib/utils";
 import { useGenUiAction } from "./action-context";
-import { ActionResultNote, describeActionError } from "./action-result";
+import { ActionResultNote, describeActionError, QueuedActionNote } from "./action-result";
 
 export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
-  const { dispatch, onActionCompleted } = useGenUiAction();
+  const { dispatch, ready, onActionCompleted } = useGenUiAction();
   const [revising, setRevising] = React.useState(false);
   const [revision, setRevision] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -155,6 +155,7 @@ export function GenUiPlanCard({ card }: { card: PlanCardProps }) {
           </>
         )}
       </div>
+      <QueuedActionNote ready={ready} submitted={Boolean(done)} />
       <ActionResultNote error={error} />
     </div>
   );

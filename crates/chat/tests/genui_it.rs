@@ -159,6 +159,7 @@ async fn spawn_worker(pool: &PgPool) -> (ChatStore, Arc<gui::SpecValidator>) {
             sandbox: None,
             artifacts: None,
             web_search: None,
+            parser: None,
             storage: None,
             ui_validator: Some(Arc::clone(&validator)),
             skill_artifacts: None,
@@ -429,4 +430,88 @@ async fn chat_submit_action_posts_message_and_undeclared_is_denied() {
     .await
     .unwrap();
     assert!(allows >= 1, "ui_action.invoke の Allow 監査が残ること");
+}
+
+/// カード回答（`chat.submit`）が**カードを出した run の skill ピンを継ぐ**こと（#402）。
+///
+/// スラッシュコマンド起動の skill は run 単位ピン（thread ピンではない）。ここが落ちると
+/// 手順書もフェーズ宣言（`plan_first`）も 2 ターン目から消え、「質問 → 計画 → 実行」は
+/// 最初の 1 手だけ守られて残りが素通りになる。実 LLM 検証で実際にそうなった。
+#[tokio::test]
+async fn card_submit_carries_run_skill_pins_and_variant() {
+    use gui::ActionHandler;
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (store, _validator) = spawn_worker(&pool).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "t", true, None, None)
+        .await
+        .unwrap();
+
+    // スラッシュコマンド起動を模す: 発話単位の skill ピンに実行前フェーズが焼かれている。
+    let pin = chat::SkillPin {
+        skill_id: Uuid::new_v4(),
+        skill_version: 1,
+        command_args: Some(String::new()),
+    };
+    let posted = store
+        .post_message(
+            &c,
+            thread.id,
+            "/deep-research リモートワークの生産性",
+            &[],
+            None,
+            Some(true),
+            true,
+            std::slice::from_ref(&pin),
+            None,
+        )
+        .await
+        .unwrap();
+    let pins_of = |run_id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, serde_json::Value>(
+                "SELECT skill_pins FROM generation_run WHERE run_id = $1",
+            )
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        pins_of(posted.run_id).await[0]["command_args"],
+        serde_json::json!(""),
+        "発話時に起動 variant がピンへ焼かれること"
+    );
+
+    // カードからの回答（コマンドリテラルを持たない発話）。
+    let handler = chat::ChatSubmitHandler::new(store.clone());
+    let result = handler
+        .invoke(
+            &c,
+            &gui::ActionSource::ChatMessage {
+                thread_id: thread.id,
+                message_id: posted.assistant_message_id,
+            },
+            serde_json::json!({ "対象期間": "2020 年以降" }),
+            None,
+        )
+        .await
+        .expect("chat.submit 実行");
+    let next_run: Uuid = result["run_id"].as_str().unwrap().parse().unwrap();
+    let carried = pins_of(next_run).await;
+    assert_eq!(
+        carried[0]["skill_id"].as_str().unwrap(),
+        pin.skill_id.to_string(),
+        "カード回答でも skill ピンが継がれること"
+    );
+    assert_eq!(
+        carried[0]["command_args"],
+        serde_json::json!(""),
+        "起動 variant も継がれること（ここが落ちると 2 ターン目から門が効かない）"
+    );
 }

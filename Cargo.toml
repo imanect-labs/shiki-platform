@@ -138,6 +138,18 @@ yrs = "0.27"
 pulldown-cmark = { version = "0.13", default-features = false }
 # スライド HTML の書込時サニタイズ（Task 11.1・PIT-40 第1層。MIT/Apache-2.0）
 ammonia = "4"
+# web_fetch の HTML 本文抽出（#405）。生 HTML をそのままモデルへ流すとコンテキストの
+# 大半がマークアップになる（先頭 16KiB に本文が 1 文字も入らない）。
+# Readability 相当の本文特定（dom_smoothie）→ 構造保持 Markdown 化（htmd）の 2 段。
+dom_smoothie = { version = "0.18", default-features = false }
+htmd = "0.5"
+# 抽出前のノイズ除去（隠し要素・script/style・ナビ）。dom_smoothie の DOM と同一実装を使い、
+# 「掃除した DOM をそのまま本文特定へ渡す」ことで二重パースを避ける。
+dom_query = "0.28"
+# web_fetch の文字コード判定（Shift_JIS/EUC-JP の国内サイトが from_utf8_lossy で全滅するため）。
+# chardetng は encoding_rs と同作者の推定器（Firefox 実績）。宣言が無い/嘘のページの最後の砦。
+encoding_rs = "0.8"
+chardetng = "0.1"
 # CSV クエリサービス（Task 11P.7）: SQL RO 検証（sqlparser）。DuckDB（重い C++）は
 # 隔離ランナー専用クレート `crates/tabular/runner`（workspace 除外）だけが依存する
 # ＝メイン workspace の --all-features clippy/build に DuckDB を混ぜない（CI 高速化・

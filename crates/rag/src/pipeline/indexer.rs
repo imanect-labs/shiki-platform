@@ -23,7 +23,7 @@ use crate::chunker::{chunk_document, ChunkParams};
 use crate::embedding::EmbedInput;
 use crate::error::RagError;
 use crate::fulltext::FulltextDoc;
-use crate::parser::ParseRequest;
+use crate::parser::{ParseRequest, ParseSource};
 use crate::store;
 use crate::types::ChunkKind;
 use crate::vector_store::ChunkPoint;
@@ -188,7 +188,7 @@ async fn index_node(
         .parse(
             ctx,
             ParseRequest {
-                source_url: &source_url,
+                source: ParseSource::Url(&source_url),
                 content_type: &base_type,
                 file_name: &snapshot.name,
             },

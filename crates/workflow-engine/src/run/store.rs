@@ -27,6 +27,7 @@ pub use ops::{CancelOutcome, ResumeOutcome};
 
 /// step の durable テーブル記述子（複合キー・attempt は claim で増やさない・engine.md §9.5）。
 const STEP_SPEC: RunTableSpec = RunTableSpec {
+    event_seq_column: None,
     table: "step_execution",
     status_column: "status",
     fencing_column: "fencing_token",

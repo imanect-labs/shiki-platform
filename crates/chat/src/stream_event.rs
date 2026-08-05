@@ -30,12 +30,19 @@ pub enum StreamEventKind {
     ///
     /// **`None` は「不明」**（フィールド追加前の run を replay した場合）。0 で埋めると
     /// 逐次実行だった過去のツール群が並行実行に見えてしまう。
+    ///
+    /// `via_subagent` はサブエージェントが親の UI へ中継した呼び出し（#391）。**子は自分の
+    /// ループ番号で `step` を数える**ため、そのまま流すと親の step と衝突し「並行して N 件」が
+    /// 実態とずれる（実測: 子の `web_fetch` が step 5 として親の step 5 に混ざった）。中継側で
+    /// `step` を落とし、この印だけを立てる。
     ToolCall {
         id: String,
         name: String,
         input: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         step: Option<u32>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        via_subagent: bool,
     },
     /// ツール結果。
     ToolResult {
@@ -68,6 +75,12 @@ pub enum StreamEventKind {
     /// `generation_event` に append され replay 可能（監査・再現性）。content へは projection
     /// しない（instructions は tool_result block として履歴に残る）。UI はチップ表示に使う。
     SkillInvoked { skill: serde_json::Value },
+    /// サブエージェント委譲の記録（#391）。
+    /// `subagent = {objective, boundary, steps, tool_calls, tokens}`。
+    /// `SkillInvoked` と同型で `generation_event` に append され replay 可能（監査・再現性）。
+    /// content へは projection しない（findings は tool_result block として履歴に残る）。
+    /// UI はツール実行表示の展開で担当範囲とステップ数を出すのに使う。
+    SubagentRun { subagent: serde_json::Value },
     /// 計画の改訂（自律エージェント・Task 5.2）。サブタスク列を丸ごと配信する。
     Plan { subtasks: Vec<PlanSubtask> },
     /// 予算上限への接近警告（Task 5.7）。
@@ -122,6 +135,7 @@ impl StreamEventKind {
             StreamEventKind::DocumentRef { .. } => "document_ref",
             StreamEventKind::DocumentDraft { .. } => "document_draft",
             StreamEventKind::SkillInvoked { .. } => "skill_invoked",
+            StreamEventKind::SubagentRun { .. } => "subagent_run",
             StreamEventKind::Plan { .. } => "plan",
             StreamEventKind::BudgetWarning { .. } => "budget_warning",
             StreamEventKind::ApprovalRequested { .. } => "approval_requested",

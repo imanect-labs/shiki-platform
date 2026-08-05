@@ -11,6 +11,10 @@ pub mod fs_write;
 mod mime;
 mod sandbox_exec;
 pub mod shell;
+pub mod subagent;
+/// サブエージェントの system プロンプト（subagent.rs から分割）。
+mod subagent_prompts;
+mod subagent_sink;
 pub mod web_fetch;
 pub mod web_search;
 
@@ -20,5 +24,6 @@ pub use fs::{FsListTool, FsReadTool, GrepTool};
 pub use fs_append::FsAppendTool;
 pub use fs_write::{FsDeleteTool, FsEditTool, FsWriteTool};
 pub use shell::ShellTool;
+pub use subagent::{SubagentLimits, SubagentTool};
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;

@@ -427,7 +427,7 @@ async fn cancellation_still_reports_completed_reads() {
     let out = run_tool_calls(&phase, calls, &mut plan, &mut sink, &mut detector)
         .await
         .unwrap();
-    assert!(matches!(out, ToolPhaseOutcome::Cancelled));
+    assert!(matches!(out, ToolPhaseOutcome::Cancelled { .. }));
     // 完了した read の結果はイベントとして出ている（実行したのに無かったことにしない）。
     assert!(
         sink.events.iter().any(|e| matches!(

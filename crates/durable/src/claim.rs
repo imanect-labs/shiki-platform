@@ -163,6 +163,7 @@ mod tests {
     use uuid::Uuid;
 
     pub(crate) const RUN_SPEC: RunTableSpec = RunTableSpec {
+        event_seq_column: None,
         table: "generation_run",
         status_column: "status",
         fencing_column: "fencing_token",

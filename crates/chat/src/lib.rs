@@ -65,7 +65,9 @@ pub use skill_catalog::{
     SkillCatalogSource,
 };
 pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
-pub use store::{ChatStore, ClaimedRun, PostResult, ThreadOrigin, CHAT_GENERATION_QUEUE};
+pub use store::{
+    ChatStore, ClaimedRun, CurrentRun, PostResult, ThreadOrigin, CHAT_GENERATION_QUEUE,
+};
 pub use worker::{ChatWorker, WorkerConfig, WorkerDeps};
 pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};
 pub use workspace::StorageWorkspaceStore;

@@ -81,6 +81,8 @@ pub async fn create_thread(
                 vec![chat::SkillPin {
                     skill_id: p.artifact_id,
                     skill_version: p.version,
+                    // バンドル同梱の skill はコマンド起動ではない。
+                    command_args: None,
                 }]
             })
             .unwrap_or_default();
@@ -91,9 +93,15 @@ pub async fn create_thread(
             (None, Some(single)) => vec![single],
             (None, None) => Vec::new(),
         };
-        skill_pins =
-            super::chat_skills::resolve_skill_pins(&state, &ctx, &requested, trace.as_deref())
-                .await?;
+        // スレッド作成時のピンは「最初からロード済み」の宣言であり起動ではない（`None`）。
+        skill_pins = super::chat_skills::resolve_skill_pins(
+            &state,
+            &ctx,
+            &requested,
+            None,
+            trace.as_deref(),
+        )
+        .await?;
     }
 
     // ワークスペース場所は **thread 作成前に**認可検証する（不正なら孤児 thread を残さない）。
@@ -245,13 +253,30 @@ pub async fn get_messages(
     // 進行中（非端末）の run があれば id と自律フラグを返す（再訪時の承認送信・進捗復元・
     // 自律 UI（モードセレクタ）の復元に使う・#350）。
     let active = store
-        .latest_run(id, &ctx.tenant_id)
+        .current_run(id, &ctx.tenant_id)
         .await?
-        .filter(|(_, status, _)| !status.is_terminal());
+        .filter(|r| !r.status.is_terminal());
+    // 順番待ちの発話（生成が始まっていない run の発話）。認可は上の get_messages が済ませている。
+    // 進行中 run が無ければ順番待ちも存在し得ない（先頭が走り出しているはず）ので引かない。
+    let queued_runs = if let Some(current) = active {
+        store
+            .queued_user_messages(id, &ctx.tenant_id, current.run_id)
+            .await?
+            .into_iter()
+            .map(|(user_message_id, run_id)| super::chat_dto::QueuedRun {
+                user_message_id,
+                run_id,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(Json(MessagesResponse {
         messages,
-        active_run_id: active.map(|(run_id, _, _)| run_id),
-        active_run_autonomous: active.map(|(_, _, autonomous)| autonomous),
+        active_run_id: active.map(|r| r.run_id),
+        active_run_autonomous: active.map(|r| r.autonomous),
+        active_assistant_message_id: active.map(|r| r.message_id),
+        queued_runs,
     }))
 }
 
@@ -285,7 +310,14 @@ pub async fn post_message(
     // 読めなければここで落ちる（fail-closed）。thread のピンは変えない＝次の発話へ持ち越さない。
     let once_skills = match &req.skills {
         Some(pins) if !pins.is_empty() => {
-            super::chat_skills::resolve_skill_pins(&state, &ctx, pins, trace.as_deref()).await?
+            super::chat_skills::resolve_skill_pins(
+                &state,
+                &ctx,
+                pins,
+                Some(req.text.as_str()),
+                trace.as_deref(),
+            )
+            .await?
         }
         _ => Vec::new(),
     };
@@ -341,10 +373,11 @@ pub async fn stream_thread(
     chat.get_thread(&ctx, id, trace.as_deref()).await?;
 
     let from_seq = last_event_id(&headers, &q);
-    // 最新 run のイベントを購読する。run が無ければ即終了の空ストリーム。
-    let stream: SseEventStream = match chat.latest_run(id, &ctx.tenant_id).await? {
-        Some((run_id, _status, _autonomous)) => chat
-            .event_stream(run_id, from_seq)
+    // いま映すべき run（＝最も古い未完了 run）を購読する。run が無ければ即終了の空ストリーム。
+    // 順番待ちの run を購読した場合はイベント 0 件で待機し、ワーカーが着手した時点で流れ出す。
+    let stream: SseEventStream = match chat.current_run(id, &ctx.tenant_id).await? {
+        Some(current) => chat
+            .event_stream(current.run_id, from_seq)
             .map(|ev| {
                 let data = serde_json::to_string(&ev.event).unwrap_or_else(|_| "{}".to_string());
                 Ok(Event::default().id(ev.seq.to_string()).data(data))

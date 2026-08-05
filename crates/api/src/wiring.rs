@@ -9,8 +9,15 @@ use storage::{IndexerStorage, ObjectStore};
 
 use api::config::{AppConfig, LlmBackend, VectorStoreBackend};
 
-/// RAG 配線の結果（検索サービスはオプション・テナント消去は常設）。
-pub(crate) type RagWiring = (Option<Arc<rag::SearchService>>, Arc<rag::RagAdmin>);
+/// RAG 配線の成果物: 検索サービス（オプション）・テナント消去（常設）・文書パーサ。
+///
+/// パーサはインジェストだけでなく `web_fetch` の PDF/Office 経路でも使う（#405）。
+/// **同一インスタンスを共有する**（worker のエンドポイント・タイムアウト設定を二重定義しない）。
+pub(crate) type RagWiring = (
+    Option<Arc<rag::SearchService>>,
+    Arc<rag::RagAdmin>,
+    Option<Arc<dyn rag::DocumentParser>>,
+);
 
 /// オブジェクトストア＋StorageService を構築する（main の起動フローから切り出し）。
 ///
@@ -71,7 +78,11 @@ pub(crate) fn wire_rag(
     if !config.rag.enabled {
         tracing::info!("rag.enabled=false: インジェスト・検索は無効（/search は 503）");
         // テナント消去の DB 行掃除は RAG 無効でも行う（過去に有効だった残骸対策）。
-        return Ok((None, Arc::new(rag::RagAdmin::new(db.clone(), None, None))));
+        return Ok((
+            None,
+            Arc::new(rag::RagAdmin::new(db.clone(), None, None)),
+            None,
+        ));
     }
     if config.vector.backend != VectorStoreBackend::Qdrant {
         anyhow::bail!("vector.backend=pgvector は未実装です（Phase 2 は qdrant のみ）");
@@ -113,7 +124,7 @@ pub(crate) fn wire_rag(
     rag::spawn_pipeline(rag::PipelineDeps {
         pool: db.clone(),
         config: rag_cfg.clone(),
-        parser,
+        parser: Arc::clone(&parser),
         embedder: Arc::clone(&embedder),
         vector: Arc::clone(&vector),
         fulltext: Arc::clone(&fulltext),
@@ -140,6 +151,7 @@ pub(crate) fn wire_rag(
             storage::audit::AuditRecorder::new(db.clone()),
         ))),
         rag_admin,
+        Some(parser),
     ))
 }
 
@@ -230,6 +242,8 @@ pub(crate) async fn wire_chat(
     db: &sqlx::PgPool,
     authz: &Arc<dyn AuthzClient>,
     search: Option<&Arc<rag::SearchService>>,
+    // parser: 文書パーサ（web_fetch の PDF/Office 経路・#405）。RAG 配線と同一インスタンス。
+    parser: Option<&Arc<dyn rag::DocumentParser>>,
     storage: &Arc<storage::StorageService>,
     ui_validator: &Arc<gui::SpecValidator>,
     skill_artifacts: &Arc<artifact::ArtifactStore>,
@@ -300,6 +314,8 @@ pub(crate) async fn wire_chat(
             sandbox,
             artifacts,
             web_search,
+            // web_fetch の PDF/Office 経路（#405）。RAG 無効なら None＝従来どおり拒否。
+            parser: parser.cloned(),
             // 自律プロファイルのワークスペース（file CRUD/shell・Task 5.4）。
             storage: Some(Arc::clone(storage)),
             // generative UI（emit_ui・Task 6.4）。

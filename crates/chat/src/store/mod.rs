@@ -18,7 +18,7 @@ mod thread_pins;
 mod threads;
 
 pub use post::PostResult;
-pub use runs::{ClaimedRun, CHAT_GENERATION_QUEUE};
+pub use runs::{ClaimedRun, CurrentRun, CHAT_GENERATION_QUEUE};
 pub use threads::ThreadOrigin;
 
 use std::sync::Arc;

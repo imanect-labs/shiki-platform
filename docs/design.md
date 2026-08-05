@@ -497,8 +497,29 @@ flowchart TB
   現行 runsc に旧 `--total-memory` フラグは無い）＋orchestrator 側メモリ watchdog
   （`runsc events --stats` 周期監視・超過 kill）の二重防御で、cgroups の使えない rootless 環境でもソフト強制が効く
   （ハード強制は cgroups が使える環境の cgroup 上限・PIT-24）。
+- **web_fetch は生 HTML をモデルへ渡さない（2026-08・#405）**: 取得したバイト列は 4 段で本文へ落とす
+  （`crates/agent-core/src/tools/web_fetch/`）。① `decode` — Content-Type / `<meta charset>` / BOM、
+  最後に chardetng で文字コードを決める（Shift_JIS・EUC-JP の国内サイトが `from_utf8_lossy` で全滅するため）
+  ② `extract` — ノイズ除去（script/style/nav/隠し要素）→ Readability 相当の本文特定（`dom_smoothie`）→
+  構造保持 Markdown 化（`htmd`）。**掃除した DOM をそのまま本文特定へ渡す**（`dom_query` を共有＝二重パースしない）
+  ③ `doc` — PDF/Office は ingestion-worker（Docling）へ回す。**URL ではなくバイト列**を渡す（PIT-54）。
+  文書かどうかは Content-Type だけで決めない（官公庁の配信は PDF を `application/octet-stream` で返す）。
+  宣言 → URL の拡張子 → 取得後の magic bytes の順に判定し、**上限で切れたバイト列はパーサへ渡さない**
+  （末尾の索引が欠けた PDF/OOXML は必ず解析に失敗するため、「大きすぎる」と返す）。Docling は同期で
+  キャンセルできないので、クライアント側の 90 秒期限は worker 側の**同時解析数の上限**（超過は即 503）と
+  対で運用する（諦めた解析がスレッドプールを食い潰さないようにする）
+  ④ `render` / `envelope` — 自己要約ヘッダ（タイトル/節一覧/出典/日付）＋ `query` による節の絞り込み ／
+  `offset` の続き読み ＋ untrusted 封筒。上限は**バイトではなく文字**（既定 12,000 字）で数える
+  （日本語が英語の 1/3 しか読めない歪みを消す）。**ページ由来の値は 1 つ残らず封筒の内側**に置き
+  （タイトル・著者・節一覧を含む）、封筒タグは中和し、ヘッダも予算の内に収める（PIT-55）。
+  DOM 構築は CPU バウンドなので `spawn_blocking` へ逃がす（敵対的な巨大 DOM で全 run を止めない・PIT-23）。
+  削減率・抽出器・文字コードは `web_fetch` ターゲットの構造化ログで観測する
+  （抽出が壊れても静かにトークンだけ焼けるため・PIT-53）。パーサは RAG 配線と**同一インスタンスを共有**し、
+  RAG 無効時は `None`＝バイナリ文書を従来どおり拒否する（宣伝と実体を description で一致させる・PIT-51）。
 - ⚠️ 落とし穴: gVisor/FC 制御層は [PIT-22〜25](./design-caveats.md)、wasm ティア固有は [PIT-32〜33](./design-caveats.md)
   （フォーク保守・wasm 脱出時の blast radius・wasm コマンドパッケージのサプライチェーン）。
+  web_fetch のコンテキスト効率・文書パーサへの委譲・封筒の境界は
+  [PIT-53・PIT-54・PIT-55](./design-caveats.md)。
 
 ### 4.7 generative UI / ミニアプリ / skill
 

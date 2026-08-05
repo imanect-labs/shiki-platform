@@ -63,6 +63,9 @@ vocab_enum! {
         FsEdit => "fs_edit",
         FsDelete => "fs_delete",
         Shell => "shell",
+        /// 調査の**委譲**（隔離コンテキストのサブエージェントを 1 体走らせる・#391）。
+        /// 子は新しい履歴・read-only ツールのみで走り、**合成済み findings だけ**を返す。
+        Subagent => "subagent",
         /// generative UI スペックの発話ツール（Phase 6 Task 6.4）。
         EmitUi => "emit_ui",
         /// ワークフロー IR の生成/更新ツール（保存パイプライン検証・Task 10.13）。

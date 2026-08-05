@@ -37,6 +37,7 @@ pub mod miniapp_store;
 pub mod plan_card;
 pub mod question;
 pub mod skill;
+pub mod skill_command;
 pub mod skill_store;
 pub mod spec;
 pub mod store;
@@ -53,8 +54,9 @@ pub use miniapp_store::{MiniAppStore, ResolvedMiniApp};
 pub use plan_card::{PlanCardProps, PlanCardStep};
 pub use skill::{
     validate_skill_body, FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody,
-    SkillCommand, SkillCommandVariant, SkillScript,
+    SkillScript,
 };
+pub use skill_command::{CommandPhase, SkillCommand, SkillCommandVariant};
 pub use skill_store::SkillStore;
 pub use spec::{ActionRef, UiNode, UiSpecDoc};
 pub use store::{GuiError, UiSpecStore};

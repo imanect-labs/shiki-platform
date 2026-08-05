@@ -52,7 +52,13 @@ impl ChatWorker {
         if let Some(provider) = &self.web_search {
             tools.push(Arc::new(WebSearchTool::new(provider.clone())));
             // web_fetch はホスト側で取得する（#348）。sandbox 配線の有無に依存しない。
-            tools.push(Arc::new(WebFetchTool::new()));
+            // parser があれば PDF/Office も読める（#405）。取得は web_fetch のガード済み経路が行い、
+            // worker へはバイト列だけ渡す（URL を渡すと宛先制限を迂回される）。
+            let mut fetch = WebFetchTool::new();
+            if let Some(parser) = &self.parser {
+                fetch = fetch.with_parser(parser.clone());
+            }
+            tools.push(Arc::new(fetch));
         }
         // generative UI（emit_ui・Task 6.4）: 検証層が配線されている時のみ提示する。
         if let Some(validator) = &self.ui_validator {
@@ -175,6 +181,73 @@ impl ChatWorker {
                 self.config.sandbox_backend,
             )));
         }
+    }
+
+    /// 委譲ツール（`subagent`・#391）を提示ツールに加える（自律プロファイルのみ）。
+    ///
+    /// 子へ渡すのは**明示 allowlist の read-only ツールだけ**を、いま提示している中から拾う
+    /// （配線されていないツールは子にも無い）。`subagent` 自身は渡さない＝**入れ子の入れ子が
+    /// 構造的に起きない**。破壊系を渡さないので入れ子の承認問題も生じない。
+    /// 委譲ツールを提示し、**子のツール実行を親の run のイベント列へ中継する**タスクを起こす。
+    ///
+    /// 中継しないと、調査を委譲した瞬間に画面から「何を調べているか」が消える（`subagent` の
+    /// 行が数本出るだけになる）。中継先は `generation_event`＝イベント経路で、親の LLM
+    /// コンテキストにも確定メッセージにも入らない（`SkillInvoked` と同じ扱い）。
+    pub(super) fn push_subagent_tool(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        run: &ClaimedRun,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        /// 子が使えるツール（調査に必要な読み取りだけ）。ここに破壊系を足さないこと。
+        const CHILD_TOOLS: [agent_core::ToolName; 6] = [
+            agent_core::ToolName::WebSearch,
+            agent_core::ToolName::WebFetch,
+            agent_core::ToolName::DocSearch,
+            agent_core::ToolName::FsRead,
+            agent_core::ToolName::Grep,
+            agent_core::ToolName::FsList,
+        ];
+        let child: Vec<Arc<dyn Tool>> = tools
+            .iter()
+            .filter(|t| {
+                agent_core::ToolName::parse(t.name()).is_some_and(|n| CHILD_TOOLS.contains(&n))
+            })
+            .map(Arc::clone)
+            .collect();
+        // 調査できる道具が 1 つも無ければ委譲は無意味（提示しない）。
+        if child.is_empty() {
+            return;
+        }
+        // 子のツール実行を UI へ中継する。イベント列への追記は `append_stream_event` が
+        // 単調 seq で原子的に行うので、親の sink と並行に書いても順序は壊れない。
+        // fencing 不一致（リース喪失）は Ok(None) が返るだけ＝ゾンビ書込にならない。
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<agent_core::AgentEvent>();
+        let store = self.store.clone();
+        let (run_id, fencing) = (run.run_id, run.fencing_token);
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let kind = super::stream_map::to_child_stream_kind(&event);
+                if store
+                    .append_stream_event(run_id, fencing, &kind)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        tools.push(Arc::new(
+            agent_core::SubagentTool::new(
+                self.gateway.clone(),
+                child,
+                self.config.subagent,
+                format!("{}:{}", run.run_id, run.fencing_token),
+                cancel,
+            )
+            .with_model(self.config.model.clone())
+            .with_tool_events(tx),
+        ));
     }
 
     /// skill ツール（カタログ引き・#344 Task 10.11）を提示ツールに加える。

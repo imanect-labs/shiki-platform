@@ -59,7 +59,13 @@ impl DocumentParser for FetchingParser {
         _ctx: &AuthContext,
         req: ParseRequest<'_>,
     ) -> Result<ParsedDocument, RagError> {
-        let resp = self.http.get(req.source_url).send().await?;
+        // インジェスト経路は presigned URL を渡す（ParseSource::Url が正）。
+        let rag::ParseSource::Url(source_url) = req.source else {
+            return Err(RagError::Worker(
+                "インジェストは presigned URL で渡すこと".into(),
+            ));
+        };
+        let resp = self.http.get(source_url).send().await?;
         if !resp.status().is_success() {
             return Err(RagError::Worker(format!(
                 "presigned GET が失敗: {}",

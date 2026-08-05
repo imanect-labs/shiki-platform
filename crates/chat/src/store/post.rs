@@ -85,9 +85,9 @@ impl ChatStore {
                 .iter_mut()
                 .find(|p| p.skill_id == once.skill_id)
             {
-                *existing = *once;
+                *existing = once.clone();
             } else {
-                skill_pins.0.push(*once);
+                skill_pins.0.push(once.clone());
             }
         }
         // 自律プロファイルはエージェントモードを含意する（ツールループが前提）。

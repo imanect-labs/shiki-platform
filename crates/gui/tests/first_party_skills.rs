@@ -90,6 +90,8 @@ fn deep_research_declares_both_command_variants() {
         "web_search",
         "web_fetch",
         "doc_search",
+        // 委譲（#391）。抜けるとモデルが「調査を分けて並列に走らせる」選択肢を見失う。
+        "subagent",
         "emit_ui",
         "fs_append",
         "save_note",

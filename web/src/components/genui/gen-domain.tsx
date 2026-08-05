@@ -90,6 +90,9 @@ function DomainCard({
 /// RAG 引用元カード。
 export function GenUiSourceCard({ card }: { card: SourceCardProps }) {
   const sources = card.sources ?? [];
+  // `compact` は web 調査の出典一覧（十数件）向け。説明文つきで縦に積むと会話の末尾を
+  // 占領するので、ドメインのチップだけに畳む。詳しい出典はレポート本文の引用に付いている。
+  if (card.compact) return <CompactSources card={card} sources={sources} />;
   return (
     <DomainCard icon={<Quote className="size-4" />} title={card.title || "出典"} testId="genui-source-card">
       <ul>
@@ -143,6 +146,64 @@ export function GenUiSourceCard({ card }: { card: SourceCardProps }) {
       </ul>
     </DomainCard>
   );
+}
+
+/// 畳んだ出典表示: 「出典 N 件」＋ドメインのチップ列。
+///
+/// カードの器を使わない（枠を持つと、畳んだ意味が薄れて結局場所を取る）。リンクは
+/// https のみ（未検証 payload 経由でも `javascript:` を踏ませない・通常表示と同じ防御）。
+function CompactSources({
+  card,
+  sources,
+}: {
+  card: SourceCardProps;
+  sources: SourceCardProps["sources"];
+}) {
+  // 同じドメインは 1 つに畳む（同一サイトの複数ページを並べても情報が増えない）。
+  const seen = new Map<string, string | undefined>();
+  for (const s of sources) {
+    const url = s.url?.startsWith("https://") ? s.url : undefined;
+    const host = hostLabel(url) ?? s.title;
+    if (!seen.has(host)) seen.set(host, url);
+  }
+  return (
+    <div className="my-2 flex flex-wrap items-center gap-1.5" data-testid="genui-source-card">
+      <span className="inline-flex items-center gap-1 text-[12px] text-muted-foreground">
+        <Quote className="size-3" aria-hidden />
+        {card.title || "出典"} {sources.length} 件
+      </span>
+      {[...seen].map(([host, url]) =>
+        url ? (
+          <a
+            key={host}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full bg-muted px-2 py-[2px] text-[11px] text-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {host}
+          </a>
+        ) : (
+          <span
+            key={host}
+            className="max-w-[16rem] truncate rounded-full bg-muted px-2 py-[2px] text-[11px] text-foreground/70"
+          >
+            {host}
+          </span>
+        ),
+      )}
+    </div>
+  );
+}
+
+/// URL からドメインだけを取り出す（`www.` は落とす）。壊れた URL は null。
+function hostLabel(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.replace(/^www\./, "") || null;
+  } catch {
+    return null;
+  }
 }
 
 /// 旅程の予定種別 → アイコン＋差し色。

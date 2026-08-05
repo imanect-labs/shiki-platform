@@ -6,4 +6,6 @@ mod openai_names;
 pub mod stub;
 mod stub_deep_research;
 mod stub_fixtures;
+/// stub のストリーム生成ヘルパ（stub.rs から分割）。
+mod stub_stream;
 mod stub_triggers;
