@@ -35,28 +35,22 @@ pub const DEFAULT_GC_BATCH: i64 = 1_000;
 /// relay が走り出す**。その relay は**バックログ全件を未配送として拾う**＝fast-forward が防ぐはずだった
 /// 「履歴イベントでの一斉発火」をそのまま引き起こす。したがってこれは性能問題ではなく正当性の問題。
 ///
-/// 排他の向き:
-/// - `register_consumer` は**ブロッキング**で取る（必ず成功させたい・生涯 1 回だけの処理）。
-/// - GC は **try**で取り、取れなければその周期は何もしない（60 秒後に再試行すれば十分）。
+/// 両者とも**ブロッキング**で取る。GC 側を `pg_try_advisory_xact_lock` にして「取れなければ 0 件で
+/// 戻る」設計も試したが、`gc_delivered` の戻り値が「消せる行が無い」と「ロックが取れなかった」の
+/// どちらなのか呼び出し側から区別できず、**戻り値の意味が壊れる**（実際に結合テストが不定期に
+/// 落ちた）。GC は 60 秒周期のバックグラウンド処理なので、fast-forward（生涯 1 回・短時間）を
+/// 待つコストは無視できる。待つ方が意味が正しい。
+///
+/// デッドロックしない: どちらも「advisory lock → 行ロック」の順で取る（逆順が無い）。
+/// `claim_undelivered` は行ロックのみで advisory を取らないため循環しない。
 ///
 /// キーは他の advisory lock（RAG relay リーダー・miniapp cron）と衝突しない値にする。
 const GC_LOCK_KEY: i64 = 0x5348_494B_4F42_4743; // "SHIKI-OBGC"
 
-/// [`GC_LOCK_KEY`] を **try** で取る（GC 側）。取れなければ `false`。
+/// [`GC_LOCK_KEY`] をブロッキングで取る。txn 単位なので commit/rollback で自動解放される。
 ///
-/// txn 単位の advisory lock なので、commit/rollback で自動解放される。
-async fn try_lock_gc(conn: &mut PgConnection) -> Result<bool, StorageError> {
-    let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
-        .bind(GC_LOCK_KEY)
-        .fetch_one(conn)
-        .await?;
-    Ok(acquired)
-}
-
-/// [`GC_LOCK_KEY`] を**ブロッキング**で取る（`register_consumer` 側）。
-///
-/// `super::delivery` から使う。txn 単位なので commit/rollback で自動解放される。
-pub(super) async fn lock_for_fast_forward(conn: &mut PgConnection) -> Result<(), StorageError> {
+/// `super::delivery`（fast-forward 側）からも使う。
+pub(super) async fn lock_outbox_gc(conn: &mut PgConnection) -> Result<(), StorageError> {
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(GC_LOCK_KEY)
         .execute(conn)
@@ -74,8 +68,9 @@ pub(super) async fn lock_for_fast_forward(conn: &mut PgConnection) -> Result<(),
 /// 削除対象は `FOR UPDATE SKIP LOCKED` で確保するので、**全レプリカで同時に呼んでも安全**
 /// （互いをブロックせず、同じ行を二重に掴まない）。返り値は削除件数。
 ///
-/// `register_consumer` の fast-forward 実行中は [`GC_LOCK_KEY`] が取れず **0 件で戻る**
-/// （同キーの doc 参照。並行させると相手を FK 違反で落とすため）。
+/// `register_consumer` の fast-forward と [`GC_LOCK_KEY`] で相互排除する（並行させると相手を
+/// FK 違反で落とすため。同キーの doc 参照）。実行中なら**待つ**ので、戻り値 0 は常に
+/// 「この回で消せる行が無かった」を意味する。
 ///
 /// ⚠️ `SKIP LOCKED` の帰結として、**消費者が claim 中（`FOR UPDATE` 保持中）の行はその回スキップ
 /// される**。GC は「消せるものを取りこぼさない」より「hot path をブロックしない」を優先する
@@ -89,10 +84,8 @@ pub async fn gc_delivered(
     ledger_consumers: &[&str],
     batch: i64,
 ) -> Result<u64, StorageError> {
-    // fast-forward 中なら手を出さない（相手を FK 違反で落とすため・[`GC_LOCK_KEY`] 参照）。
-    if !try_lock_gc(&mut *conn).await? {
-        return Ok(0);
-    }
+    // fast-forward と相互排除する（並行させると相手を FK 違反で落とす・[`GC_LOCK_KEY`] 参照）。
+    lock_outbox_gc(&mut *conn).await?;
     let consumers: Vec<String> = ledger_consumers.iter().map(|s| (*s).to_string()).collect();
     let expected = i64::try_from(consumers.len())
         .map_err(|_| StorageError::Invalid("consumer 数が多すぎます".into()))?;

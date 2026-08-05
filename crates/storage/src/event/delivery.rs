@@ -121,7 +121,7 @@ pub async fn register_consumer(
     // レースすると FK 違反で落ちる（→ この txn がロールバックし `outbox_consumer` の登録も消え、
     // 未登録のまま relay がバックログ全件を拾って一斉発火する）。GC と相互排除する。
     // 詳細は `super::gc::GC_LOCK_KEY` の doc を参照。
-    super::gc::lock_for_fast_forward(&mut *conn).await?;
+    super::gc::lock_outbox_gc(&mut *conn).await?;
     let done = sqlx::query(
         "INSERT INTO outbox_delivery (consumer, event_id, tenant_id) \
          SELECT $1, o.id, o.tenant_id FROM storage_event_outbox o \

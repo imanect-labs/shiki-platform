@@ -93,7 +93,7 @@ async fn gc_cycle(pool: &sqlx::PgPool) -> Result<u64, crate::error::StorageError
         let deleted = gc_delivered_registered(&mut tx, DEFAULT_GC_BATCH).await?;
         tx.commit().await?;
         total = total.saturating_add(deleted);
-        // バッチが埋まらなかった＝これ以上消せる行は無い（fast-forward 中で lock が取れず 0 の場合も含む）。
+        // バッチが埋まらなかった＝これ以上消せる行は無い。
         if deleted < u64::try_from(DEFAULT_GC_BATCH).unwrap_or(u64::MAX) {
             break;
         }
