@@ -54,6 +54,29 @@ SHIKI_SIGNING_KEY=<hex> node sdk/cli/src/index.ts skill import-first-party --api
   停止条件 4 層・証拠 ID に紐づかない主張の掃除）。変更時は
   `crates/gui/tests/first_party_skills.rs` が上限と宣言を守る。
 
+## grilling
+
+- 実体: instructions（手順書）が本体。計画・決定・アイデアを**設計ツリー**として開き、
+  前提が片付いた決定＝**フロンティア**を 1 ラウンドずつ質問カードで聞き、回答で木を組み替えて
+  次のフロンティアを聞く、を木が尽きるまで繰り返す面接プリミティブ。
+- 起動: `/grill <お題>`（フロンティアが空になるまで回す）／`/grill quick <お題>`（1 ラウンドで
+  切り上げ、埋めた仮定を計画カードに明記する）。
+- 出し方はこのプラットフォームの機構に合わせてある: 質問は `emit_ui` の `question_card`
+  （推奨案を先頭の選択肢にして「（推奨）」を付け、`description` には帰結を書く・`allow_other` 必須）、
+  事実の調べ物は `subagent` へ委譲、決定と理由は作業ファイル `tree.md` へ `fs_append`、
+  最後に `plan_card` で共通理解を確認してから実行へ移る。
+- **`command.variants` に `phase` は宣言しない**（＝ゲートは掛からない）。`plan_first` は
+  「質問カード 1 回 → 計画カード → 実行」の単調な段階遷移で、最初の質問カードが出た時点で
+  スレッドが `Plan` へ移り `emit_ui` が `plan_card` しか通さなくなる
+  （`crates/chat/src/worker/gate.rs` の `stage_from_cards` / `allowed_cards`）。
+  多ラウンドの面接はそこで詰むため、宣言しないのが正しい。
+  「承認まで実行ツールを渡さない」機械的保証は持たず、手順書で回している。
+- 破壊系（`fs_delete` / `shell` / `office.live_edit`）は `allowed_tools` に宣言しない。
+  宣言と上限は `crates/gui/tests/first_party_skills.rs` が守る。
+- 出典: [mattpocock/skills](https://github.com/mattpocock/skills) の
+  `skills/productivity/grilling` に由来する派生物（MIT・Copyright (c) 2026 Matt Pocock）。
+  帰属とライセンス全文は [`grilling/NOTICE`](grilling/NOTICE)。
+
 ## slack-notify
 
 - 実体: `.shiki` script が `Shiki.http.request` で Slack Web API（`chat.postMessage`）を呼ぶ。
