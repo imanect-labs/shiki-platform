@@ -23,6 +23,26 @@ rust-version = "1.96"
 license = "UNLICENSED"
 publish = false
 
+# dev ビルドの debuginfo。ローカルの target/ 肥大（実測: ワークツリー 1 本で 125GB）対策。
+#
+# 本リポジトリは統合テストが 1 ファイル = 1 実行バイナリで 102 本あり、依存 785 crate の
+# デバッグ情報が各バイナリへ静的リンクで焼き込まれる。cargo 既定の debug = 2 では
+# `cargo build -p shiki-api --tests` だけで target/ が 13GB（実行バイナリ 68 本 = 8.3GB）に達し、
+# worktree を 3 本並行させると容量が保たない。書き込み量も同じ比率で SSD を削る。
+#
+# 同等の設定は ci.yml の CARGO_PROFILE_DEV_DEBUG に入っていたがローカルには効かない。
+# 設定をここへ集約し、ローカルと CI を一致させる（env は manifest より優先されるため、
+# 一時的に戻したいときは CARGO_PROFILE_DEV_DEBUG=2 を渡せばよい）。
+[profile.dev]
+# panic / backtrace の file:line は保つ。デバッガでの変数 inspect は落ちるが、
+# 必要な場面は限られ、そのときだけ上記 env で戻せる。
+debug = "line-tables-only"
+
+# 依存クレートの debuginfo は捨てる。容量の支配項はこちら側（tantivy・lindera-ipadic・
+# sqlx・axum・wasmtime）で、自作コードを追うのに依存の行番号は要らない。
+[profile.dev.package."*"]
+debug = 0
+
 [workspace.dependencies]
 # async ランタイム / HTTP サーバ
 tokio = { version = "1", features = ["full"] }
