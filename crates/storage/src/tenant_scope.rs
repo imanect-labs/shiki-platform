@@ -100,13 +100,18 @@ pub fn sidecar_migration_blocker(counts: &[(String, i64)]) -> Option<String> {
 /// この順で `DELETE` すれば FK 違反を起こさない（子を先に消す）。`UPDATE`（移行）では
 /// [`rename_tenant_rows`] が制約を commit 時検査へ遅延させるため順序は問わない。
 pub async fn tenant_scoped_tables(pool: &PgPool) -> Result<Vec<String>, StorageError> {
+    // ⚠️ `information_schema` は使わない（fable5 レビュー）。あちらは**現在ロールに権限がある列
+    // しか返さない**（`has_column_privilege` で絞られる）ため、テーブル所有者以外の制限ロールで
+    // 動かすと導出集合が黙って縮み、purge/retenant がそのテーブルを無言でスキップする
+    // ——本モジュールが潰したはずの「消し忘れ」が無音で再発する。pg_catalog は権限で絞られない。
+    // 辺の取得も pg_catalog なので、取得元がこれで揃う。
     let tables: Vec<String> = sqlx::query_scalar(
-        "SELECT c.table_name FROM information_schema.columns c \
-         JOIN information_schema.tables t \
-           ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
-         WHERE c.column_name = 'tenant_id' AND c.table_schema = 'public' \
-           AND t.table_type = 'BASE TABLE' \
-         ORDER BY c.table_name",
+        "SELECT c.relname::text FROM pg_class c \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         JOIN pg_attribute a ON a.attrelid = c.oid \
+         WHERE n.nspname = 'public' AND c.relkind = 'r' \
+           AND a.attname = 'tenant_id' AND a.attnum > 0 AND NOT a.attisdropped \
+         ORDER BY c.relname",
     )
     .fetch_all(pool)
     .await?;

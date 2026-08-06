@@ -44,11 +44,15 @@ impl StorageService {
     /// テナントの全データを撤去する（SAAS.2 テナント削除・admin プレーン）。
     ///
     /// 撤去順（fail-safe・全段冪等＝途中失敗は再実行で収束）:
-    /// 1. **FGA タプル**: DB からオブジェクトを列挙（node / role / org）し、各オブジェクトの
-    ///    直接タプルを一括剥奪する。識別子は tenant 名前空間経由なので他テナントに触れない。
-    /// 2. **オブジェクトストア**: `{tenant_id}/` prefix 配下をページ列挙しバッチ削除する。
-    /// 3. **DB 行**: 1 txn で FK 依存順に物理削除する（closure → version → pending →
-    ///    outbox → directory → node → blob）。**audit_log は削除証跡として保持**する。
+    /// 1. **FGA タプル**: DB からオブジェクトを列挙（node / role / org / artifact / secret /
+    ///    thread）し、各オブジェクトの直接タプルを一括剥奪する。**行を消す前に回収する**
+    ///    （行が列挙元なので、先に消すと到達不能な孤児タプルになる）。識別子は tenant
+    ///    名前空間経由なので他テナントに触れない。
+    /// 2. **オブジェクトストア**: テナントに属する全 prefix（`{tenant_id}/` と
+    ///    `miniapp-bundle/{tenant_id}/`）をページ列挙しバッチ削除する。
+    /// 3. **DB 行**: `tenant_id` を持つ全テーブルを `information_schema` ではなく pg_catalog から
+    ///    導出し、1 txn で FK 依存の子→親順に物理削除する（[`crate::tenant_scope`]）。
+    ///    **audit_log は削除証跡、tenant は tombstone として保持**する。
     ///
     /// 返り値は `(剥奪タプル数, 削除オブジェクト数)`（ログ/レスポンス用の概数）。
     // テナント配下の全リソース種（node/role/org/artifact/secret＋各テーブル）を順に撤去する
@@ -155,22 +159,59 @@ impl StorageService {
             }
         }
 
-        // 2. オブジェクトストア: `{tenant_id}/` prefix 配下を全削除。
-        let mut objects_deleted: u64 = 0;
-        let prefix = format!("{tenant_id}/");
-        let mut continuation: Option<String> = None;
-        loop {
-            let (keys, next) = self
-                .store
-                .list_prefix(&prefix, continuation.as_deref())
+        // 1f. thread のタプル（owner／共有）。チャットは thread:<tenant>|<id> にタプルを張るが
+        //     （chat/store/threads.rs・sharing.rs）、これを剥奪する経路が purge に無かった。
+        //     本 PR で thread 行が撤去されるようになったため、ここで回収しないとタプルの列挙元が
+        //     失われ **恒久的に残る孤児タプル**になる（fable5 レビュー）。
+        {
+            let mut last: Option<Uuid> = None;
+            loop {
+                let ids: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM thread WHERE tenant_id = $1 \
+                     AND ($2::uuid IS NULL OR id > $2) ORDER BY id LIMIT 500",
+                )
+                .bind(tenant_id)
+                .bind(last)
+                .fetch_all(&self.db)
                 .await?;
-            if !keys.is_empty() {
-                objects_deleted += keys.len() as u64;
-                self.store.delete_batch(&keys).await?;
+                if ids.is_empty() {
+                    break;
+                }
+                last = ids.last().copied();
+                for id in &ids {
+                    tuples_deleted += u64::from(
+                        self.authz
+                            .delete_object_tuples(&ns.thread(&id.to_string()))
+                            .await?,
+                    );
+                }
             }
-            match next {
-                Some(token) => continuation = Some(token),
-                None => break,
+        }
+
+        // 2. オブジェクトストア: テナントに属する **全 prefix** を削除する。
+        //    `{tenant_id}/` の外に置かれる種別があるので prefix を列挙する（fable5 レビュー）:
+        //    ミニアプリのバンドル実体は `miniapp-bundle/{tenant_id}/{sha}`（content_address.rs）で、
+        //    `{tenant_id}/` 走査では拾えず、顧客のアプリコードが撤去後も残っていた。
+        //    新しいキー種別を足すときは content_address.rs とここを対で更新する。
+        let mut objects_deleted: u64 = 0;
+        for prefix in [
+            format!("{tenant_id}/"),
+            format!("miniapp-bundle/{tenant_id}/"),
+        ] {
+            let mut continuation: Option<String> = None;
+            loop {
+                let (keys, next) = self
+                    .store
+                    .list_prefix(&prefix, continuation.as_deref())
+                    .await?;
+                if !keys.is_empty() {
+                    objects_deleted += keys.len() as u64;
+                    self.store.delete_batch(&keys).await?;
+                }
+                match next {
+                    Some(token) => continuation = Some(token),
+                    None => break,
+                }
             }
         }
 

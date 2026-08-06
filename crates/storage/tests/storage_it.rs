@@ -2062,7 +2062,7 @@ async fn purge_tenant_leaves_no_tenant_rows_anywhere() {
         pool,
         authz,
         http,
-        ..
+        store,
     } = cx;
 
     let org = format!("itorg{}", Uuid::new_v4().simple());
@@ -2126,6 +2126,19 @@ async fn purge_tenant_leaves_no_tenant_rows_anywhere() {
     .execute(&pool)
     .await
     .expect("llm_usage seed");
+    // thread の FGA タプル（chat が張るもの）。これを剥奪する経路が purge に無く、
+    // thread 行だけ消えると列挙元を失って恒久的な孤児タプルになる。
+    let thread_obj = ctx_a.ns().thread(&thread_id.to_string());
+    authz
+        .write_tuple(&ctx_a.subject(), Relation::Owner, &thread_obj)
+        .await
+        .expect("thread owner tuple seed");
+    // ミニアプリのバンドル実体は `{tenant}/` の外（`miniapp-bundle/{tenant}/{sha}`）に置かれる。
+    let bundle_key = format!("miniapp-bundle/{ta}/deadbeef");
+    store
+        .put_object(&bundle_key, b"bundle".to_vec(), "application/octet-stream")
+        .await
+        .expect("bundle seed");
 
     service
         .purge_tenant(&ta, &org, "provisioner:test")
@@ -2160,6 +2173,25 @@ async fn purge_tenant_leaves_no_tenant_rows_anywhere() {
         .await
         .expect("audit count");
     assert!(audits > 0, "audit_log は削除証跡として残す");
+
+    // thread の FGA タプルが剥奪されている（行だけ消えて孤児タプルが残らない）。
+    assert!(
+        !authz
+            .check(
+                &ctx_a.subject(),
+                Relation::Owner,
+                &thread_obj,
+                Consistency::HigherConsistency,
+            )
+            .await
+            .expect("thread owner check"),
+        "thread の FGA タプルも撤去される（行の列挙元が消える前に回収する）"
+    );
+    // `{tenant}/` の外にあるバンドル実体も撤去されている。
+    assert!(
+        !store.exists(&bundle_key).await.expect("bundle exists"),
+        "miniapp-bundle/{{tenant}}/ 配下も撤去される（顧客のアプリコードを残さない）"
+    );
 }
 
 /// #420: テナント境界テーブルの導出が「手書き列挙」に戻っていないことの回帰。
@@ -2172,6 +2204,8 @@ async fn tenant_scoped_tables_covers_every_table_with_tenant_id() {
     let derived = storage::tenant_scope::tenant_scoped_tables(&pool)
         .await
         .expect("導出");
+    // 期待値は **実装と別のソース**（information_schema）から引く。実装は pg_catalog を使うので、
+    // 導出クエリ自体を間違えたときにここで食い違う（実装のコピーでは検出できない・fable5 レビュー）。
     let expected: Vec<String> = sqlx::query_scalar(
         "SELECT c.table_name FROM information_schema.columns c \
          JOIN information_schema.tables t \
