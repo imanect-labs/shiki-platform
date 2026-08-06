@@ -216,7 +216,9 @@ impl StorageService {
                     "roles": role_ids.len(),
                     // 撤去範囲の証跡（#420）: 何テーブル・何行消したかを削除証明として残す。
                     "tables_purged": tables_purged,
-                    "rows_deleted": rows_deleted,
+                    // 各 DELETE が**直接**消した行数。tenant_id を持たず親から ON DELETE CASCADE される
+                    // 従属行（generation_event / collab_update 等）は含まない（Codex P2）。
+                    "rows_deleted_direct": rows_deleted,
                 }),
             },
             Chain::Yes,
