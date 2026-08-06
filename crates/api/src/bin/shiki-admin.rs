@@ -1,7 +1,7 @@
 //! shiki-admin — テナント運用 CLI（#89）。
 //!
 //! ```text
-//! shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--execute]
+//! shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]
 //! ```
 //!
 //! - `--legacy`: SAAS.1（#84）以前の**旧無印 FGA 識別子/オブジェクトキー**を tenant 名前空間形式へ
@@ -9,6 +9,7 @@
 //! - `--from <tenant>`: cell→pool 移行（SAAS.5）。tenant_id のリネーム＝DB 全テーブル・FGA タプル・
 //!   オブジェクトキー・セッションを一括で移す。
 //! - 既定は **dry-run**（件数レポートのみ）。`--execute` で実行。全段冪等（再実行で収束）。
+//! - `--actor <id>`: 監査に刻む実行者（省略時は `$SUDO_USER` → `$USER` → `unknown`）。
 //!
 //! 設定は shiki-server と同じ（env / TOML）。データプレーンの静止（メンテナンスウィンドウ）中の
 //! 実行を前提とする（オンライン移行の整合は保証しない）。
@@ -45,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
         retenant(&args[1..]).await
     } else {
         eprintln!(
-            "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--execute]"
+            "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]"
         );
         bail!("不明なサブコマンド");
     }
@@ -59,6 +60,7 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
     let mut from: Option<FromNs> = None;
     let mut to: Option<String> = None;
     let mut execute = false;
+    let mut actor: Option<String> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -68,6 +70,7 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                 from = Some(FromNs::Tenant(t.clone()));
             }
             "--to" => to = Some(it.next().context("--to に値が必要です")?.clone()),
+            "--actor" => actor = Some(it.next().context("--actor に値が必要です")?.clone()),
             "--execute" => execute = true,
             other => bail!("不明な引数: {other}"),
         }
@@ -87,6 +90,14 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
             bail!("--from と --to が同一です");
         }
     }
+    // 監査 actor。CLI に OpenFGA 認可を課しても境界にならない（実行者は DB/FGA/S3 の資格情報を
+    // 直接持つ）が、**誰が実行したかは追えるべき**なので actor を必須の証跡として残す
+    // （purge_tenant が provisioner:<azp> を刻むのと対・CodeRabbit）。
+    let actor = actor
+        .or_else(|| std::env::var("SUDO_USER").ok())
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_else(|| "unknown".into());
+    let actor = format!("cli:{actor}");
     let mode = if execute { "EXECUTE" } else { "DRY-RUN" };
     println!("== shiki-admin retenant [{mode}] from={from:?} to={to} ==");
 
@@ -251,6 +262,9 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
     }
     if execute {
         let mut tx = db.begin().await?;
+        // 監査メタデータ用（移行範囲の証跡）。legacy は tenant_id を動かさないので 0 のまま。
+        let mut db_moved: Vec<(String, u64)> = Vec::new();
+        let mut db_rows: u64 = 0;
         match &from {
             FromNs::Legacy => {
                 // 行は既に tenant_id=to。object_key だけ新形式へ。
@@ -273,11 +287,11 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                 .execute(&mut *tx)
                 .await?;
                 // 参照列に tenant_id を含む FK は commit 時検査へ遅延する（migration 0008/0061）。
-                let moved = storage::tenant_scope::rename_tenant_rows(&mut tx, &tables, f, &to)
+                db_moved = storage::tenant_scope::rename_tenant_rows(&mut tx, &tables, f, &to)
                     .await
                     .context("tenant_id のリネームに失敗")?;
-                let total: u64 = moved.iter().map(|(_, n)| *n).sum();
-                println!("DB: {} テーブル / {total} 行を移行", moved.len());
+                db_rows = db_moved.iter().map(|(_, n)| *n).sum();
+                println!("DB: {} テーブル / {db_rows} 行を移行", db_moved.len());
             }
         }
         tx.commit().await?;
@@ -331,7 +345,7 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
             let ctx = AuthContext::new(
                 Principal {
                     kind: authz::PrincipalKind::User,
-                    id: "system".into(),
+                    id: actor.clone(),
                     email: None,
                     groups: vec![],
                     roles: vec![],
@@ -353,6 +367,8 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                     metadata: serde_json::json!({
                         "from": f, "to": to,
                         "fga_tuples": fga_moved, "objects": objects_moved,
+                        // 移行範囲の証跡（#420）: 何テーブル・何行動かしたか。
+                        "tables": db_moved.len(), "rows": db_rows,
                     }),
                 },
                 storage::audit::Chain::Yes,
