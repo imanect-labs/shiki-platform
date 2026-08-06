@@ -57,10 +57,16 @@ fn all_first_party_bundles_pass_validation() {
 
 /// grilling は**質問ラウンドを何度も回す**のが本体なので、それを可能にする宣言を固定する（#428）。
 ///
-/// `phase` を宣言すると実行前フェーズの門が掛かり（`crates/chat/src/worker/gate.rs`）、段階は
-/// 「スレッドに出ているカードの有無」だけで単調に進む。最初の質問カードが出た時点で `Plan` へ移り、
-/// 以降 `emit_ui` は `plan_card` しか通さない。**多ラウンドの面接は 2 ラウンド目で詰む**ため、
-/// ここでは宣言しないことが仕様。うっかり `phase` を足すと壊れるので、その不在を固定する。
+/// `phase` を宣言すると実行前フェーズの門が掛かり（`crates/chat/src/worker/gate.rs`）、
+/// grilling とは 2 箇所で噛み合わない。
+///
+/// - **調べられない**: `Clarify` 段階で渡るツールは `emit_ui` だけ（`allows`）。`subagent` も
+///   `doc_search` も無いので、1 ラウンド目は調べずに質問を書くしかなくなる。
+/// - **質問できない**: 最初の質問カードでスレッドは `Plan` へ移り（`stage_from_cards`）、以降
+///   `emit_ui` は `plan_card` しか通さない（`allowed_cards`）。2 ラウンド目が出せない。
+///
+/// 「調べられるようになった頃には質問カードが出せない」順序になるため、宣言しないことが仕様。
+/// うっかり `phase` を足すと静かに壊れるので、その不在を固定する。
 #[test]
 fn grilling_keeps_rounds_open_and_declares_safe_tools() {
     let (_, body) = bundles()

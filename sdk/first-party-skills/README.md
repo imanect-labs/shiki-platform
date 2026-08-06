@@ -66,11 +66,17 @@ SHIKI_SIGNING_KEY=<hex> node sdk/cli/src/index.ts skill import-first-party --api
   事実の調べ物は `subagent` へ委譲、決定と理由は作業ファイル `tree.md` へ `fs_append`、
   最後に `plan_card` で共通理解を確認してから実行へ移る。
 - **`command.variants` に `phase` は宣言しない**（＝ゲートは掛からない）。`plan_first` は
-  「質問カード 1 回 → 計画カード → 実行」の単調な段階遷移で、最初の質問カードが出た時点で
-  スレッドが `Plan` へ移り `emit_ui` が `plan_card` しか通さなくなる
-  （`crates/chat/src/worker/gate.rs` の `stage_from_cards` / `allowed_cards`）。
-  多ラウンドの面接はそこで詰むため、宣言しないのが正しい。
-  「承認まで実行ツールを渡さない」機械的保証は持たず、手順書で回している。
+  「質問カード 1 回 → 計画カード → 実行」を想定した段階遷移で、grilling とは 2 箇所で噛み合わない
+  （`crates/chat/src/worker/gate.rs`）。
+  - **調べられない**: `Clarify` 段階で渡るツールは `emit_ui` **だけ**（`allows`）。`subagent` も
+    `doc_search` も `grep` も無い。grilling の鉄則「環境を見れば分かることをユーザーに聞かない」を
+    1 ラウンド目から守れず、調べずに書いた質問しか出せなくなる。
+  - **質問できない**: 最初の質問カードが出た時点でスレッドは `Plan` へ移り（`stage_from_cards`）、
+    以降 `emit_ui` は `plan_card` しか通さない（`allowed_cards`）。2 ラウンド目が出せない。
+
+  「調べられるようになった頃には、もう質問カードが出せない」という順序になるため、宣言しないのが正しい。
+  代償として「承認まで実行ツールを渡さない」機械的保証は持たず、手順書で回している
+  （多ラウンド面接向けの段階が要るなら別途 `Interview` 相当を設計する）。
 - 破壊系（`fs_delete` / `shell` / `office.live_edit`）は `allowed_tools` に宣言しない。
   宣言と上限は `crates/gui/tests/first_party_skills.rs` が守る。
 - 出典: [mattpocock/skills](https://github.com/mattpocock/skills) の
