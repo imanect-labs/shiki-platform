@@ -90,14 +90,20 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
             bail!("--from と --to が同一です");
         }
     }
-    // 監査 actor。CLI に OpenFGA 認可を課しても境界にならない（実行者は DB/FGA/S3 の資格情報を
-    // 直接持つ）が、**誰が実行したかは追えるべき**なので actor を必須の証跡として残す
-    // （purge_tenant が provisioner:<azp> を刻むのと対・CodeRabbit）。
-    let actor = actor
-        .or_else(|| std::env::var("SUDO_USER").ok())
-        .or_else(|| std::env::var("USER").ok())
-        .unwrap_or_else(|| "unknown".into());
-    let actor = format!("cli:{actor}");
+    // 監査の実行者。`--actor` も $USER も **認証された識別子ではない**（自己申告・偽装可能）ため、
+    // 監査 subject には据えない（CodeRabbit）。subject は「CLI 経由の管理操作」を表す固定値とし、
+    // 申告値は出所つきで metadata に残す。CLI に OpenFGA 認可を課しても境界にはならない
+    // （実行者は DB/FGA/S3 の資格情報を直接持ち生 SQL で同じことができる）が、**誰が実行したと
+    // 主張したか**は追えるようにする。
+    let (actor_claimed, actor_source) = actor.map_or_else(
+        || {
+            std::env::var("SUDO_USER")
+                .map(|v| (v, "sudo_user"))
+                .or_else(|_| std::env::var("USER").map(|v| (v, "user")))
+                .unwrap_or_else(|_| ("unknown".to_string(), "none"))
+        },
+        |a| (a, "flag"),
+    );
     let mode = if execute { "EXECUTE" } else { "DRY-RUN" };
     println!("== shiki-admin retenant [{mode}] from={from:?} to={to} ==");
 
@@ -136,6 +142,35 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
         FromNs::Legacy => to.clone(),
         FromNs::Tenant(f) => f.clone(),
     };
+
+    // --- 0. 事前検査（**外部副作用より前**・CodeRabbit） ---
+    // 対象テーブルの導出・行数集計・副産物ガードは FGA タプル移送や S3 コピーの**前**に行う。
+    // 後ろに置くと --execute で bail した時点で外部状態（FGA / S3）が書き換わっており、
+    // DB txn のロールバックでは戻せない＝fail-closed が成立しない。
+    // 対象は information_schema から導出し、dry-run でも全テーブルの件数を出す（#420。詳細は
+    // storage::tenant_scope の doc）。legacy は object_key のみ書き換えるのでラベルを分ける。
+    let tables = storage::tenant_scope::tenant_scoped_tables(&db)
+        .await
+        .context("テナント境界テーブルの導出に失敗")?;
+    let counts = storage::tenant_scope::count_tenant_rows(&db, &tables, &db_tenant)
+        .await
+        .context("移行対象の行数集計に失敗")?;
+    let rename = matches!(from, FromNs::Tenant(_));
+    let label = if rename {
+        "移行対象"
+    } else {
+        "参考: legacy は object_key のみ・tenant_id は不変"
+    };
+    println!(
+        "{}",
+        storage::tenant_scope::format_row_report(&counts, label)
+    );
+    // 副産物を移送できないサブシステムに行があれば dry-run でも実行でも拒否する（fail-closed）。
+    if rename {
+        if let Some(reason) = storage::tenant_scope::sidecar_migration_blocker(&counts) {
+            bail!(reason);
+        }
+    }
 
     // --- 1. FGA タプルの移行 ---
     let mut fga_moved: u32 = 0;
@@ -236,30 +271,6 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
     println!("objects: copied={objects_moved} skipped={objects_skipped}（blob 行 {blob_rows}）");
 
     // --- 3. DB の書き換え（1 txn） ---
-    // 対象は information_schema から導出し、dry-run でも全テーブルの件数を出す（#420。詳細は
-    // storage::tenant_scope の doc）。legacy は object_key のみ書き換えるのでラベルを分ける。
-    let tables = storage::tenant_scope::tenant_scoped_tables(&db)
-        .await
-        .context("テナント境界テーブルの導出に失敗")?;
-    let counts = storage::tenant_scope::count_tenant_rows(&db, &tables, &db_tenant)
-        .await
-        .context("移行対象の行数集計に失敗")?;
-    let rename = matches!(from, FromNs::Tenant(_));
-    let label = if rename {
-        "移行対象"
-    } else {
-        "参考: legacy は object_key のみ・tenant_id は不変"
-    };
-    println!(
-        "{}",
-        storage::tenant_scope::format_row_report(&counts, label)
-    );
-    // 副産物を移送できないサブシステムに行があれば dry-run でも実行でも拒否する（fail-closed）。
-    if rename {
-        if let Some(reason) = storage::tenant_scope::sidecar_migration_blocker(&counts) {
-            bail!(reason);
-        }
-    }
     if execute {
         let mut tx = db.begin().await?;
         // 監査メタデータ用（移行範囲の証跡）。legacy は tenant_id を動かさないので 0 のまま。
@@ -345,7 +356,7 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
             let ctx = AuthContext::new(
                 Principal {
                     kind: authz::PrincipalKind::User,
-                    id: actor.clone(),
+                    id: "cli".into(),
                     email: None,
                     groups: vec![],
                     roles: vec![],
@@ -369,6 +380,8 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                         "fga_tuples": fga_moved, "objects": objects_moved,
                         // 移行範囲の証跡（#420）: 何テーブル・何行動かしたか。
                         "tables": db_moved.len(), "rows": db_rows,
+                        // 実行者の**申告値**（認証されていない・出所つき）。
+                        "actor_claimed": actor_claimed, "actor_source": actor_source,
                     }),
                 },
                 storage::audit::Chain::Yes,
