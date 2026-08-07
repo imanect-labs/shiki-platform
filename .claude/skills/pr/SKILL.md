@@ -138,10 +138,15 @@ PR を緑にする過程で、**プロジェクトの使い方・要件の変更
 
 `review-status.sh` が `0` で exit するまで繰り返す。**3反復**で打ち切り（Phase 5 参照）。
 
-1. **ゲートが確定するまで待ち**、読む:
+1. **ゲートが確定するまで待ち**、読む。CI が起動しない PR（差分が `docs/**`・`**.md`・`.claude/**` のみ＝冒頭 2. の `paths-ignore`）では `gh pr checks --watch` を実行しない。待つべきチェックが 1 つも無く、空振りするだけだからである:
 
    ```bash
-   gh pr checks --watch --interval 30      # チェックが終わる（or 失敗）までブロック
+   # 差分が全て paths-ignore 対象なら CI は起動しない → チェック監視をスキップする。
+   BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@'); BASE=${BASE:-main}
+   if git diff --name-only "origin/$BASE...HEAD" \
+        | grep -qvE '^(docs/|\.claude/)|\.md$'; then
+     gh pr checks --watch --interval 30    # CI 対象の差分あり: 終わる（or 失敗）までブロック
+   fi
    .claude/skills/pr/scripts/review-status.sh
    ```
 
