@@ -839,7 +839,7 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   フィールドは form が公開宣言したサブセットに限る（未宣言フィールドは拒否・`crates/data` のスキーマ検証を再利用）
   ③受付ルートは**メイン API の `route_table()` に足さず sites リスナ側に置く**
   （`AccessPolicy::Public` を増やすと、認証があるはずの面に匿名穴が開く。WOPI が別の認証面として
-  切られているのと同じ扱い）④匿名 principal は `PrincipalKind` の新種別として型で表し、
+  分離されているのと同じ扱い）④匿名 principal は `PrincipalKind` の新種別として型で表し、
   `tenant_id` は form 由来の値で構築する（`PrincipalKind::Workflow` を後から足した migration 0022 と同型）
   ⑤レート制限は IP と form_id の**双方**で掛け、冪等キー台帳（`ui_action_invocation` と同型）で再送を潰す
   ⑥監査は必ず残し、actor は form に紐づく合成 principal とする（誰かは分からないが、どの入口かは分かる）
@@ -852,7 +852,7 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   ingress の背後ではソケットの peer IP が 1 アドレスに潰れ、`X-Forwarded-For` を無条件に信じれば偽装で回避できる。
   ingress がヘッダを上書きし、設定済みの proxy hop からのみ実 IP を採る契約を構成として持つ
   ⑩**計測ビーコンも同じ面**として扱う。`site_event` への書き込みも AuthContext のない公開面からの DB 書き込みで、
-  `unique(tenant_id, idempotency_key)` は同じ鍵の再送しか止めない（鍵を作り変え続ける相手には効かない）。
+  `unique(tenant_id, site_id, idempotency_key)` は同じ鍵の再送しか止めない（鍵を作り変え続ける相手には効かない）。
   宛先束縛・サイズ上限・分散レート制限・クォータ・監査を同じ境界で適用する。
 - **no-JS と冪等性は両立しない（意図した縮退）**: 静的 publication に焼かれた生 HTML フォームは、
   JS も cookie も動的レンダリングも使わないので**閲覧ごとに一意な冪等キーを埋め込めない** —
@@ -931,13 +931,20 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   **unpublish が温まった CDN に届かない**（「止める操作は unpublish」という③の保証が空文になる）。
   HTML と active マニフェストは再検証可能（`no-cache` ＋ 現行 publication の ETag）とし、
   `immutable` は URL に sha を含めたアセットにのみ与える。
+- **同じ穴が「定義」でも開く**: 参照を断つべきなのはバイト列だけではない。`form` は可変メタなので、
+  不変 HTML が「現在のフォーム定義」を id で引くと、**再 publish なしに過去ページの宛先・スキーマ・既定値が変わる**
+  （公開済みの問い合わせフォームの送信先が、ページを触らずに別テーブルへ差し替わり得る）。
+  publication が**フォーム定義の版をピン留め**し、受付は送信が属する publication からその版を解決して検証する。
+  署名済み送信トークンと冪等キーも同じ版に束縛し、定義変更には再 publish を要求する
+  （ミニアプリが同意時に `frontend_bundle` の sha を焼くのと同型）。**「不変スナップショット」を名乗る以上、
+  publication から辿れるものはすべて版で固定されていなければならない**。
 - **受け入れ条件**: 「publish 後にドライブ上の元画像を削除しても公開ページが壊れない」
   「publish 後に元画像を差し替えても公開ページは変わらない」「読めないアセットを含むページの publish が
   理由付きで失敗する」「別 org のファイルを参照するページの publish が拒否される」
   「unpublish で配信が止まる」「HTML レスポンスに `immutable` が付かず、ロールバック直後の再取得で
   新しい publication が返る」「sha 付きアセット URL にだけ `immutable` が付く」の結合テストがある。
 
-## 🟠 PIT-61: noindex を meta タグだけで守ると、HTML 以外と過去の publication から漏れる
+## 🟠 PIT-61: noindex を meta タグだけで守ると、HTML 以外や過去の publication から漏れる
 
 - **箇所**: design §4.13（sites リスナのレスポンスヘッダ・`robots.txt`・publication の `indexable`）。
 - **リスク**: 「検索に載せない」を `<meta name="robots">` だけで実装すると、①HTML 以外（PDF・画像・CSV）を
