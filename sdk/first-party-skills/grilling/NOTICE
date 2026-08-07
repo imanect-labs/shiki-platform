@@ -12,6 +12,11 @@
 本リポジトリ本体のライセンス（BSL 1.1・ルートの LICENSE）とは別に、上流由来部分には
 以下の MIT ライセンスが適用されます。
 
+なお配布経路（`POST /skills/registry/import`）が artifact 化するのは `skill.json` の body だけで、
+このファイルは同行しません。MIT が求める「複製・実質的部分への著作権表示と許諾文の同梱」を
+満たすため、**同じ表示と許諾文を `skill.json` の instructions 末尾にも入れてあります**
+（配布物そのものが帰属を持ち歩く）。片方だけ直さないこと。
+
 ---
 
 MIT License

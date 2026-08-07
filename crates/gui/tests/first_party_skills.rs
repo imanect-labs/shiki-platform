@@ -109,6 +109,20 @@ fn grilling_keeps_rounds_open_and_declares_safe_tools() {
             "{forbidden} を宣言してはいけない"
         );
     }
+
+    // 上流（mattpocock/skills・MIT）の派生物なので、**配布物そのもの**が帰属を持ち歩く必要がある。
+    // import が artifact 化するのは body だけで隣の NOTICE は同行しないため、instructions 末尾の
+    // 表示が唯一の同梱経路になる（消すとライセンス条件を満たさなくなる）。
+    for required in [
+        "MIT License",
+        "Copyright (c) 2026 Matt Pocock",
+        "https://github.com/mattpocock/skills",
+    ] {
+        assert!(
+            skill.instructions.contains(required),
+            "instructions に上流の帰属表示（{required}）が無い"
+        );
+    }
 }
 
 /// deep-research は**コマンド起動が本体**なので、宣言の中身まで固定する（#387）。

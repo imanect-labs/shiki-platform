@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 
+import type { components } from "@/generated/api";
+
 import { loginViaKeycloak } from "./helpers";
 
 /// first-party skill `grilling`（#428）の起動導線を実機で確認する。
@@ -30,7 +32,7 @@ test("インストールなしで /grill が補完に出て確定できる", asy
   const listed = await page.evaluate(async () => {
     const res = await fetch("/api/skills/catalog", { credentials: "include" });
     if (!res.ok) return false;
-    const body = (await res.json()) as { skills: { name: string }[] };
+    const body = (await res.json()) as components["schemas"]["SkillCatalogResponse"];
     return body.skills.some((s) => s.name === "grilling");
   });
   test.skip(!listed, "grilling が未 import（sdk/cli の import-first-party を先に通すこと）");
