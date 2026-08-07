@@ -997,6 +997,8 @@ flowchart LR
   **計測も既定 OFF**。集計は jobq 経由の非同期だが、`jobq` は at-least-once（PIT-31）なので
   **一意制約が守るのは受信行の重複だけで、集計値の二重加算は防がない** — 集計は `site_event` を真実として
   導出するか、増分を持つなら集計更新と「集計済みの印」を同一トランザクションで行う。
+  未投入（行は残ったが enqueue 前に落ちた）は at-least-once では回復しないので、
+  `jobq::enqueue_on` を `site_event` の挿入と**同一トランザクション**で呼ぶ（`crates/jobq` の本質価値）。
   **ビーコンもフォームと同じ匿名書き込み面**なので、PIT-58 の境界（Host/publication からの site/tenant/org 束縛・
   サイズ上限・分散レート制限・クォータ・監査）を**そのまま適用する**。`unique(tenant_id, site_id, idempotency_key)` は
   同じキーの再送しか止めず、鍵を作り変え続ける相手には `site_event` と jobq を埋められる。
