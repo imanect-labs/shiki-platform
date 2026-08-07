@@ -242,17 +242,11 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     let tick_concurrency = concurrency_store;
 
     // event consumer を登録し、現バックログ（有効化前の storage.write）を飛ばす。
-    {
-        let mut conn = match relay_db.acquire().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(error = %e, "workflow consumer 登録用接続に失敗");
-                return;
-            }
-        };
-        if let Err(e) = storage::event::register_consumer(&mut conn, "workflow").await {
-            tracing::error!(error = %e, "workflow consumer 登録に失敗");
-        }
+    // 登録と「バックログの fast-forward」は原子的でなければならない（autocommit で呼ぶと登録だけ
+    // 先にコミットされ、fast-forward 失敗時に relay がバックログ全件を拾って一斉発火する）。
+    // pool 版が自前で txn を張る。
+    if let Err(e) = storage::event::register_consumer_on_pool(&relay_db, "workflow").await {
+        tracing::error!(error = %e, "workflow consumer 登録に失敗");
     }
 
     tokio::spawn(async move {

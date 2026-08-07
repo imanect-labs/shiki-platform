@@ -189,6 +189,9 @@ async fn register_consumer_skips_backlog_but_delivers_new_events() {
     let claimed = claim_mine_eventually(&pool, &consumer, &tenant).await;
     assert!(!claimed.contains(&backlog), "バックログは再配送しない");
     assert!(claimed.contains(&fresh), "有効化以降のイベントは配送する");
+
+    // `outbox_consumer` はテスト間共有なので片付ける（残すと GC 検証が他テストに引きずられる）。
+    unregister(&pool, &consumer).await;
 }
 
 #[tokio::test]
@@ -210,7 +213,9 @@ async fn gc_never_deletes_unacked_events() {
 
     {
         let mut tx = pool.begin().await.unwrap();
-        gc_delivered(&mut tx, &[consumer.as_str()]).await.unwrap();
+        gc_delivered(&mut tx, &[consumer.as_str()], 1_000)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
     }
     let exists: bool =
@@ -254,13 +259,12 @@ async fn gc_removes_only_fully_delivered_events() {
     }
 
     // GC は配送済み＋processed_at ack のみ削除（未 ack は決して消さない）。
-    let deleted = {
-        let mut tx = pool.begin().await.unwrap();
-        let n = gc_delivered(&mut tx, &[consumer.as_str()]).await.unwrap();
-        tx.commit().await.unwrap();
-        n
-    };
-    assert!(deleted >= 1, "全配送済みの done は GC される");
+    // GC は `FOR UPDATE SKIP LOCKED` なので、他テストが同じ行をロック中だとその回は
+    // スキップされる（本番では次周期で回収される正しい挙動）。消えるまで回して判定する。
+    assert!(
+        gc_until_gone(&pool, &[consumer.as_str()], done).await,
+        "全配送済みの done は GC される"
+    );
 
     let exists = |id: i64| {
         let pool = pool.clone();
@@ -318,6 +322,8 @@ async fn register_consumer_is_one_time_only() {
             .contains(&pending),
         "再起動後も未配送イベントを取りこぼさない"
     );
+
+    unregister(&pool, &consumer).await;
 }
 
 /// `OutboxRow` を共有する **3 つのクエリすべて**が同じ列集合で読めることを固定する（#392）。
@@ -371,4 +377,326 @@ async fn all_outbox_read_paths_map_the_same_row_shape() {
         .await
         .expect("claim は列不足で落ちない（system フラグはここで使われる）");
     tx.rollback().await.expect("rollback");
+}
+
+// ---------------------------------------------------------------------------
+// #413: GC の本番配線に伴う追加検証。
+//
+// GC 判定のコンシューマ集合は `outbox_consumer`（登録台帳）が正本である。台帳コンシューマは
+// それぞれ独立したフィーチャフラグの背後で起動するため、「このプロセスが spawn した集合」を
+// 渡すと片方のフラグが off のレプリカが他方宛の未配送イベントを消してしまう（イベント喪失）。
+//
+// ⚠️ テスト設計上の注意: `outbox_consumer` は**全テストで共有される**グローバル状態なので、
+// `gc_delivered_registered` の「消える」方向をアサートすると他テストの登録に左右されて不安定に
+// なる（余計な登録が 1 つあれば消えない）。したがって:
+//   * 「消える／消えない」の判定ロジックは明示集合の `gc_delivered` で決定的に検証する。
+//   * `gc_delivered_registered` は**登録集合を読んでいること**を、安全側（＝未配送があれば
+//     消さない）の方向だけで検証する（他テストの登録が増えても結論が反転しない）。
+// ---------------------------------------------------------------------------
+
+/// GC は渡されたコンシューマ**全員**の配送が揃うまで削除しない（片方停止中は消さない）。
+#[tokio::test]
+async fn gc_waits_for_every_ledger_consumer() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let node = Uuid::new_v4();
+    // 別フラグ背後の 2 コンシューマ（workflow / miniapp-functions 相当）。
+    let live = format!("wf-live-{}", Uuid::new_v4().simple());
+    let stopped = format!("wf-stopped-{}", Uuid::new_v4().simple());
+    let both = [live.as_str(), stopped.as_str()];
+
+    let event = insert_event(&pool, &tenant, node).await;
+    // 稼働側のみ配送 ＋ RAG ack 済み。停止側は未配送のまま。
+    {
+        let mut tx = pool.begin().await.unwrap();
+        mark_delivered(&mut tx, &live, &[event]).await.unwrap();
+        mark_processed(&mut tx, &[event]).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    {
+        let mut tx = pool.begin().await.unwrap();
+        gc_delivered(&mut tx, &both, 1_000).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert!(
+        event_exists(&pool, event).await,
+        "停止中コンシューマが未配送のイベントを GC してはいけない（イベント喪失）"
+    );
+
+    // 停止側も配送すれば GC 対象になる。
+    {
+        let mut tx = pool.begin().await.unwrap();
+        mark_delivered(&mut tx, &stopped, &[event]).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert!(
+        gc_until_gone(&pool, &both, event).await,
+        "全台帳コンシューマ配送済みなら GC される"
+    );
+}
+
+/// `gc_delivered_registered` は登録台帳（`outbox_consumer`）を判定に使う。
+///
+/// 登録済みかつ未配送のコンシューマが居る限り削除しない（安全側の方向のみ検証。
+/// 他テストの登録が増えても結論は反転しない）。
+#[tokio::test]
+async fn registered_gc_reads_consumer_registry() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let node = Uuid::new_v4();
+    let consumer = format!("wf-registry-{}", Uuid::new_v4().simple());
+
+    {
+        let mut tx = pool.begin().await.unwrap();
+        register_consumer(&mut tx, &consumer).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    // 登録が台帳から読めること（GC が参照する正本）。
+    let names = {
+        let mut conn = pool.acquire().await.unwrap();
+        storage::event::registered_consumers(&mut conn)
+            .await
+            .unwrap()
+    };
+    assert!(names.contains(&consumer), "登録が台帳から読める");
+
+    // 登録後の新規イベント（fast-forward 対象外＝このコンシューマには未配送）を ack 済みにする。
+    let event = insert_event(&pool, &tenant, node).await;
+    {
+        let mut tx = pool.begin().await.unwrap();
+        mark_processed(&mut tx, &[event]).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    {
+        let mut tx = pool.begin().await.unwrap();
+        storage::event::gc_delivered_registered(&mut tx, 1_000)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert!(
+        event_exists(&pool, event).await,
+        "登録済みコンシューマが未配送なら GC しない（登録台帳を見ている証拠）"
+    );
+
+    // 後片付け（登録台帳はテスト間で共有されるため必ず外す）。
+    unregister(&pool, &consumer).await;
+}
+
+/// コンシューマを恒久廃止すると登録が消え、GC がその分を待たなくなる。
+///
+/// これが無いと「コードからコンシューマを消しただけ」で GC が永久停止する。
+#[tokio::test]
+async fn unregister_consumer_unblocks_gc() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let node = Uuid::new_v4();
+    let retired = format!("wf-retired-{}", Uuid::new_v4().simple());
+    // keeper = 廃止しない側。retired が集合から抜けたら GC が進むことを見るために置く
+    // （空集合 `&[]` を使わない理由は下記コメント参照）。
+    let keeper = format!("wf-keeper-{}", Uuid::new_v4().simple());
+
+    for c in [&retired, &keeper] {
+        let mut tx = pool.begin().await.unwrap();
+        register_consumer(&mut tx, c).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    let event = insert_event(&pool, &tenant, node).await;
+    {
+        let mut tx = pool.begin().await.unwrap();
+        mark_delivered(&mut tx, &keeper, &[event]).await.unwrap();
+        mark_processed(&mut tx, &[event]).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // 廃止コンシューマが未配送のうちは、その集合を渡した GC は待つ。
+    {
+        let mut tx = pool.begin().await.unwrap();
+        gc_delivered(&mut tx, &[retired.as_str(), keeper.as_str()], 1_000)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert!(
+        event_exists(&pool, event).await,
+        "登録が残っている間は GC が待つ"
+    );
+
+    // 廃止 → 登録台帳から消える。
+    let removed = {
+        let mut tx = pool.begin().await.unwrap();
+        let r = storage::event::unregister_consumer(&mut tx, &retired)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        r
+    };
+    assert!(removed, "登録済みコンシューマは廃止できる");
+    let names = {
+        let mut conn = pool.acquire().await.unwrap();
+        storage::event::registered_consumers(&mut conn)
+            .await
+            .unwrap()
+    };
+    assert!(
+        !names.contains(&retired),
+        "廃止したコンシューマは登録台帳から消える＝GC が待たなくなる"
+    );
+
+    // 廃止後の集合（= 登録台帳から retired が抜けた状態）では GC が進む。
+    //
+    // ⚠️ ここで空集合 `&[]` を渡してはいけない。「待つべきコンシューマ無し」は
+    // **`processed_at` ack 済みの全行**が対象になる総ざらいで、共有テスト DB では並行して
+    // 走る他テストの行まで消してしまう（実際に他テストを落とした）。
+    assert!(
+        gc_until_gone(&pool, &[keeper.as_str()], event).await,
+        "廃止後は GC が進む（永久停止しない）"
+    );
+
+    // 二重廃止は false（冪等に扱える）。
+    let again = {
+        let mut tx = pool.begin().await.unwrap();
+        let r = storage::event::unregister_consumer(&mut tx, &retired)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        r
+    };
+    assert!(!again, "未登録の廃止は false");
+}
+
+/// `batch` 上限を超えて削除しない（大きな DELETE を 1 文で撃たない刻み）。
+#[tokio::test]
+async fn gc_respects_batch_limit() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let node = Uuid::new_v4();
+    let consumer = format!("wf-batch-{}", Uuid::new_v4().simple());
+
+    // 3 件を「配送済み＋ack 済み」にする。
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(insert_event(&pool, &tenant, node).await);
+    }
+    {
+        let mut tx = pool.begin().await.unwrap();
+        mark_delivered(&mut tx, &consumer, &ids).await.unwrap();
+        mark_processed(&mut tx, &ids).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // batch=2 なら 1 回で 2 件までしか消えない。
+    let deleted = {
+        let mut tx = pool.begin().await.unwrap();
+        let n = gc_delivered(&mut tx, &[consumer.as_str()], 2)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        n
+    };
+    assert!(deleted <= 2, "batch 上限を超えて削除しない: {deleted}");
+
+    // 残りは次バッチで消える（刻んでも最終的に全部消える）。
+    for id in ids {
+        assert!(
+            gc_until_gone(&pool, &[consumer.as_str()], id).await,
+            "刻んでも最終的に全て GC される"
+        );
+    }
+}
+
+/// 滞留観測は登録コンシューマの lag を返す（GC が進まない原因の切り分け用）。
+#[tokio::test]
+async fn outbox_backlog_reports_consumer_lag() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let node = Uuid::new_v4();
+    let consumer = format!("wf-lag-{}", Uuid::new_v4().simple());
+
+    {
+        let mut tx = pool.begin().await.unwrap();
+        register_consumer(&mut tx, &consumer).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    // 登録後に 1 件積む（このコンシューマには未配送＝lag が立つ）。
+    let event = insert_event(&pool, &tenant, node).await;
+
+    let backlog = {
+        let mut conn = pool.acquire().await.unwrap();
+        storage::event::outbox_backlog(&mut conn).await.unwrap()
+    };
+    assert!(
+        backlog.latest_event_id >= event,
+        "最大 event id は投入済みイベントを含む"
+    );
+    let mine = backlog
+        .consumers
+        .iter()
+        .find(|c| c.consumer == consumer)
+        .expect("登録コンシューマが列挙される");
+    assert!(mine.lag > 0, "未配送イベントがあれば lag が立つ");
+    assert!(backlog.max_lag() >= mine.lag);
+
+    // 配送すると配送済み最大 id が進む。
+    {
+        let mut tx = pool.begin().await.unwrap();
+        mark_delivered(&mut tx, &consumer, &[event]).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+    let after = {
+        let mut conn = pool.acquire().await.unwrap();
+        storage::event::outbox_backlog(&mut conn).await.unwrap()
+    };
+    let mine_after = after
+        .consumers
+        .iter()
+        .find(|c| c.consumer == consumer)
+        .expect("登録コンシューマが列挙される");
+    assert!(
+        mine_after.delivered_upto >= event,
+        "配送済み最大 id が進む: {} < {event}",
+        mine_after.delivered_upto
+    );
+
+    unregister(&pool, &consumer).await;
+}
+
+/// 指定イベントが GC されるまで GC を回す（消えたら `true`、上限まで残れば `false`）。
+///
+/// GC は `FOR UPDATE SKIP LOCKED` なので、**他の並行テストが同じ行をロックしていればその回は
+/// スキップされる**（本番では次の GC 周期で回収される＝意図した挙動）。共有テスト DB では
+/// これが偽陰性になるため、消えるまで数回試す。
+async fn gc_until_gone(pool: &PgPool, consumers: &[&str], id: i64) -> bool {
+    for _ in 0..20 {
+        if !event_exists(pool, id).await {
+            return true;
+        }
+        {
+            let mut tx = pool.begin().await.unwrap();
+            gc_delivered(&mut tx, consumers, 1_000).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    !event_exists(pool, id).await
+}
+
+/// outbox 行の存在確認。
+async fn event_exists(pool: &PgPool, id: i64) -> bool {
+    sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM storage_event_outbox WHERE id = $1)")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .expect("exists")
+}
+
+/// テスト用の登録解除（`outbox_consumer` はテスト間共有なので必ず片付ける）。
+async fn unregister(pool: &PgPool, consumer: &str) {
+    let mut tx = pool.begin().await.unwrap();
+    storage::event::unregister_consumer(&mut tx, consumer)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
 }

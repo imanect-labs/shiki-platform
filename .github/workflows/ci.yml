@@ -101,7 +101,7 @@ jobs:
           retention-days: 1
 
   quality:
-    name: Quality gates (file-size / cargo-machete)
+    name: Quality gates (file-size / migration-version / cargo-machete)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -112,6 +112,11 @@ jobs:
       # 巨大ファイル gate は toolchain 不要（bash+git のみ）。最速で fail-fast させる。
       - name: file-size gate (1 ファイル 500 行以内)
         run: bash scripts/check-file-size.sh
+      # migration の番号衝突は並行 PR のマージ順で構造的に起こり、**新規 DB でだけ**壊れる
+      # （既存 DB は増分適用済みで露見しない）。結合テストは DB env 未設定でスキップされるため
+      # CI で拾えなかった実績があるので、ファイル名だけで判定できるここで止める（#413）。
+      - name: migration version gate (バージョン番号の重複禁止)
+        run: bash scripts/check-migration-versions.sh
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
