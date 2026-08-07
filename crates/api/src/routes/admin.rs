@@ -296,20 +296,23 @@ pub async fn set_tenant_autonomous_policy(
 
 /// データ面の purge（FGA タプル → オブジェクト → DB 行）。
 ///
-/// storage（node/artifact/secret 等）→ RAG（chunk/jobq/Qdrant/Tantivy）→
-/// 構造化データ（data_table CASCADE・式インデックス・FGA タプル・Task 9.2）の順に撤去する。
+/// 構造化データ（式インデックス・FGA タプル・Task 9.2）→ storage（FGA タプル・オブジェクト・
+/// **tenant_id を持つ全 DB 行**）→ RAG（Qdrant/Tantivy）の順に撤去する（#420）。
+/// 前後の理由は本体のコメント参照（列挙が必要なものは前、索引の再生成入力を断つものは後）。
 async fn purge_tenant_data(
     state: &AppState,
     tenant_id: &str,
     org: &str,
     actor: &str,
 ) -> Result<(), ApiError> {
-    state.storage.purge_tenant(tenant_id, org, actor).await?;
-    state
-        .rag_admin
-        .purge_tenant(tenant_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("rag purge: {e}")))?;
+    // ⚠️ 順序が重要（Codex P1・#420）: **サブシステムの purge を先に**回す。
+    // `storage.purge_tenant` は tenant_id を持つ全テーブルを一掃するようになったため、これを先に
+    // 走らせると `data.purge_tenant` が `data_table` を列挙できず、**data_table の FGA タプルと
+    // 物理インデックスが撤去されないまま残る**（行だけ消えて副産物が孤児化する）。
+    // 各サブシステムが自分の副産物（FGA タプル・物理索引・ベクタ/全文索引）を回収してから、
+    // storage の汎用掃き出しを最後に走らせて「DB 行が 1 行も残らない」ことを保証する。
+    // ① 構造化データを**先に**（Codex P1・#420）: storage の汎用掃き出しが data_table を消すと、
+    //    DataStore が列挙できず FGA タプルと物理インデックスが孤児化する。
     let data_tables = state
         .data
         .purge_tenant(tenant_id)
@@ -318,6 +321,18 @@ async fn purge_tenant_data(
     if data_tables > 0 {
         tracing::info!(%tenant_id, data_tables, "tenant purge: 構造化データを撤去");
     }
+    // ② storage: FGA タプル・オブジェクト・tenant_id を持つ全 DB 行（outbox / ジョブ含む）。
+    state.storage.purge_tenant(tenant_id, org, actor).await?;
+    // ③ RAG を**最後に**（Codex P1・#420）: RAG を先に消すと、まだ残っている
+    //    `storage_event_outbox` のイベントや claim 済みジョブがその後に処理され、Qdrant/Tantivy の
+    //    索引が**再作成**される。storage が outbox とジョブ行を消した後に走らせれば、索引を
+    //    再生成する入力が残らない。rag_chunk 行は既に消えているが purge は冪等で、
+    //    ベクタ/全文索引は tenant_id 指定で消すため行の有無に依存しない。
+    state
+        .rag_admin
+        .purge_tenant(tenant_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("rag purge: {e}")))?;
     Ok(())
 }
 

@@ -35,6 +35,7 @@ pub mod object_store;
 pub mod outbox_gc;
 pub mod service;
 pub mod tenant;
+pub mod tenant_scope;
 
 pub use directory::{
     DirectoryPage, DirectoryRole, DirectoryRolePage, DirectoryStore, DirectoryUser,

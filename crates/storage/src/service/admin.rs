@@ -44,11 +44,15 @@ impl StorageService {
     /// テナントの全データを撤去する（SAAS.2 テナント削除・admin プレーン）。
     ///
     /// 撤去順（fail-safe・全段冪等＝途中失敗は再実行で収束）:
-    /// 1. **FGA タプル**: DB からオブジェクトを列挙（node / role / org）し、各オブジェクトの
-    ///    直接タプルを一括剥奪する。識別子は tenant 名前空間経由なので他テナントに触れない。
-    /// 2. **オブジェクトストア**: `{tenant_id}/` prefix 配下をページ列挙しバッチ削除する。
-    /// 3. **DB 行**: 1 txn で FK 依存順に物理削除する（closure → version → pending →
-    ///    outbox → directory → node → blob）。**audit_log は削除証跡として保持**する。
+    /// 1. **FGA タプル**: DB からオブジェクトを列挙（node / role / org / artifact / secret /
+    ///    thread）し、各オブジェクトの直接タプルを一括剥奪する。**行を消す前に回収する**
+    ///    （行が列挙元なので、先に消すと到達不能な孤児タプルになる）。識別子は tenant
+    ///    名前空間経由なので他テナントに触れない。
+    /// 2. **オブジェクトストア**: テナントに属する全 prefix（`{tenant_id}/` と
+    ///    `miniapp-bundle/{tenant_id}/`）をページ列挙しバッチ削除する。
+    /// 3. **DB 行**: `tenant_id` を持つ全テーブルを `information_schema` ではなく pg_catalog から
+    ///    導出し、1 txn で FK 依存の子→親順に物理削除する（[`crate::tenant_scope`]）。
+    ///    **audit_log は削除証跡、tenant は tombstone として保持**する。
     ///
     /// 返り値は `(剥奪タプル数, 削除オブジェクト数)`（ログ/レスポンス用の概数）。
     // テナント配下の全リソース種（node/role/org/artifact/secret＋各テーブル）を順に撤去する
@@ -155,52 +159,87 @@ impl StorageService {
             }
         }
 
-        // 2. オブジェクトストア: `{tenant_id}/` prefix 配下を全削除。
-        let mut objects_deleted: u64 = 0;
-        let prefix = format!("{tenant_id}/");
-        let mut continuation: Option<String> = None;
-        loop {
-            let (keys, next) = self
-                .store
-                .list_prefix(&prefix, continuation.as_deref())
+        // 1f. thread のタプル（owner／共有）。チャットは thread:<tenant>|<id> にタプルを張るが
+        //     （chat/store/threads.rs・sharing.rs）、これを剥奪する経路が purge に無かった。
+        //     本 PR で thread 行が撤去されるようになったため、ここで回収しないとタプルの列挙元が
+        //     失われ **恒久的に残る孤児タプル**になる（fable5 レビュー）。
+        {
+            let mut last: Option<Uuid> = None;
+            loop {
+                let ids: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT id FROM thread WHERE tenant_id = $1 \
+                     AND ($2::uuid IS NULL OR id > $2) ORDER BY id LIMIT 500",
+                )
+                .bind(tenant_id)
+                .bind(last)
+                .fetch_all(&self.db)
                 .await?;
-            if !keys.is_empty() {
-                objects_deleted += keys.len() as u64;
-                self.store.delete_batch(&keys).await?;
-            }
-            match next {
-                Some(token) => continuation = Some(token),
-                None => break,
+                if ids.is_empty() {
+                    break;
+                }
+                last = ids.last().copied();
+                for id in &ids {
+                    tuples_deleted += u64::from(
+                        self.authz
+                            .delete_object_tuples(&ns.thread(&id.to_string()))
+                            .await?,
+                    );
+                }
             }
         }
 
-        // 3. DB 行を 1 txn・FK 依存順で物理削除（audit_log は保持）。
-        let mut tx = self.db.begin().await?;
-        // node_closure は tenant_id を直接持つ（#91 L-1）ため node JOIN 不要。
-        sqlx::query("DELETE FROM node_closure WHERE tenant_id = $1")
-            .bind(tenant_id)
-            .execute(&mut *tx)
-            .await?;
-        for table in [
-            "node_version",
-            "pending_upload",
-            "storage_event_outbox",
-            // 共有リンク台帳（#342）。node より先に消す（FK は張っていないが順序を明示）。
-            "node_share_link_grant",
-            "node_share_link",
-            "directory_user",
-            "directory_role",
-            "node",
-            "blob",
-            // artifact 本文（artifact_version は FK cascade で連鎖削除・SAAS.2 完全削除）。
-            "artifact",
-            // 暗号化済みシークレット（SAAS.2 完全削除）。
-            "secret",
+        // 2. オブジェクトストア: テナントに属する **全 prefix** を削除する。
+        //    `{tenant_id}/` の外に置かれる種別があるので prefix を列挙する（fable5 レビュー）:
+        //    ミニアプリのバンドル実体は `miniapp-bundle/{tenant_id}/{sha}`（content_address.rs）で、
+        //    `{tenant_id}/` 走査では拾えず、顧客のアプリコードが撤去後も残っていた。
+        //    新しいキー種別を足すときは content_address.rs とここを対で更新する。
+        let mut objects_deleted: u64 = 0;
+        for prefix in [
+            format!("{tenant_id}/"),
+            format!("miniapp-bundle/{tenant_id}/"),
         ] {
-            sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
-                .bind(tenant_id)
-                .execute(&mut *tx)
-                .await?;
+            let mut continuation: Option<String> = None;
+            loop {
+                let (keys, next) = self
+                    .store
+                    .list_prefix(&prefix, continuation.as_deref())
+                    .await?;
+                if !keys.is_empty() {
+                    objects_deleted += keys.len() as u64;
+                    self.store.delete_batch(&keys).await?;
+                }
+                match next {
+                    Some(token) => continuation = Some(token),
+                    None => break,
+                }
+            }
+        }
+
+        // 3. DB 行を 1 txn で物理削除。対象は `tenant_id` を持つ**全テーブル**を
+        //    `information_schema` から導出し（FK 依存の子→親順）、保持するものだけを除く（#420）。
+        //    手で列挙していた頃は 51 テーブル中 13 しか消しておらず、チャット履歴・RAG 本文・
+        //    構造化データ・ワークフロー履歴が撤去後も残っていた（SAAS.2「完全削除」の未達）。
+        let tables = crate::tenant_scope::tenant_scoped_tables(&self.db).await?;
+        let mut tx = self.db.begin().await?;
+        let mut rows_deleted: u64 = 0;
+        // 実際に消したテーブル数はループで数える（CodeRabbit）。`tables.len() - RETAINED.len()` は
+        // 「保持対象が必ず導出集合に含まれる」前提に依存し、改名や保持対象の追加で usize が
+        // アンダーフローする（debug は panic・DELETE 後 監査前なので撤去が中断する）。
+        let mut tables_purged: usize = 0;
+        for table in &tables {
+            if crate::tenant_scope::PURGE_RETAINED
+                .iter()
+                .any(|(retained, _)| retained == table)
+            {
+                continue;
+            }
+            tables_purged += 1;
+            rows_deleted +=
+                sqlx::query(&format!("DELETE FROM public.{table} WHERE tenant_id = $1"))
+                    .bind(tenant_id)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected();
         }
         // 撤去の監査（ハッシュチェーン連結・削除証跡）。
         audit::record_on(
@@ -216,6 +255,11 @@ impl StorageService {
                     "tuples_deleted": tuples_deleted,
                     "objects_deleted": objects_deleted,
                     "roles": role_ids.len(),
+                    // 撤去範囲の証跡（#420）: 何テーブル・何行消したかを削除証明として残す。
+                    "tables_purged": tables_purged,
+                    // 各 DELETE が**直接**消した行数。tenant_id を持たず親から ON DELETE CASCADE される
+                    // 従属行（generation_event / collab_update 等）は含まない（Codex P2）。
+                    "rows_deleted_direct": rows_deleted,
                 }),
             },
             Chain::Yes,
