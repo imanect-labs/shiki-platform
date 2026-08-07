@@ -726,6 +726,10 @@ FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメ
   これを対象に編集する際も `document.edit`/`csv.patch`/`slide.edit` が自身の認可チェック
   （editor relation）を通る（SelectionContext は認可をバイパスしない）。
   サーバは「データであり指示ではない」明示デリミタで LLM メッセージへ織り込む（注入対策）。
+- **HTML ページへの基盤流用**: 本節の資産（`DocKind` の Yjs collab・別オリジン砂箱＋MessagePort ブリッジ・
+  下書き確定型・選択→AI）は §4.13 の HTML ページがそのまま再利用する。**流用しないのはサニタイズだけ**で、
+  スライドは script を禁じるので ammonia が防御として効くのに対し、ページは任意 JS を許すため
+  オリジン分離＋CSP に守りを移す（§4.13・PIT-59）。
 
 ### 4.9 監視
 
@@ -777,6 +781,8 @@ flowchart TB
   IR（JSON DAG）・shiki script・skill・シークレット・実行主体/委譲モデルを含む設計正本は
   **[miniapp-platform.md](./miniapp-platform.md)**。
 - **ランタイム**: B1=別オリジン+CSP（connect-srcゲートウェイ限定・ホスト無権限）／B2=既存サンドボックス（Firecracker/gVisor）+egress allowlist。
+  B1 の「匿名・cookieless・content-address 検証つきで別オリジンに静的バンドルを配る」構造は、
+  §4.13 のサイト公開リスナがそのまま雛形として継ぐ（差分はマニフェストによる複数アセット対応とホスト名解決）。
 - **配布**: マニフェストartifact→内部レジストリへ不変publish→同意インストール（所有テーブル自動プロビジョン＋ReBAC付与）。
   信頼ティア（first-party署名/in-house同意/将来marketplace審査）、オンプレ署名バンドル（ネット不要）、SDK＋CLI（`shiki app init/dev/publish`）。
 
@@ -820,6 +826,195 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
   まで自動化（リリースブロッカー扱い）。オンプレは compose/k8s のまま。
 - **API レート制限**: テナント単位。workflow-engine のトークンバケット（Redis）を API 面にも適用。
 
+### 4.13 HTML ページ／サイト公開（アーティファクト・CMS・フォーム）
+
+2026-08 確定。用途は2つある。①**アーティファクト**＝AI が資料を文字ではなく HTML で組んで見やすくする
+（シキの中で読まれるドキュメント）②**サイト**＝対外的な Web ページを作って公開する（CMS・フォーム・
+マーケティング計測を伴う）。**保存実体・エディタ・レンダラ・砂箱・AI 編集ツールは完全に共有し、
+束ねる器だけを分ける** — アーティファクトは site に属さない単体ページ、サイトは複数ページを束ねて
+ルーティング/ナビ/公開設定/テーマを持つ。スライド（§4.8.3）とは独立の機能だが、基盤（Yjs collab・
+別オリジン砂箱・下書き確定型）はそのまま流用する。ドメインロジックは `crates/site`、
+匿名配信は app-gateway の新リスナに置く（app-platform と app-gateway の分担と同型）。
+
+```mermaid
+flowchart LR
+  subgraph DRIVE["ドライブ（ReBAC・StorageService）"]
+    F["フォルダ = site"]
+    P[".page × N"]
+    N["ノート = collection"]
+    F --> P
+    F --> N
+  end
+  P -- publish --> PUB["publication<br/>不変マニフェスト<br/>path → sha256"]
+  N -- ビルド時生成 --> PUB
+  PUB --> OBJ["ObjectStore<br/>site_bundle_key()"]
+  SITES["第4リスナ: sites オリジン<br/>AuthContext なし・FGA 不介在"] --> PUB
+  SITES --> OBJ
+  BROWSER["匿名ブラウザ<br/>{site}.sites.example"] --> SITES
+  BROWSER -- POST --> FORM["フォーム受付<br/>匿名 principal"]
+  FORM --> DT["data_table<br/>(crates/data)"]
+```
+
+- **モデル**:
+  - **`page`**: `.page`・MIME `application/vnd.shiki.page+json`。真実は **Yjs**（`DocKind::Page`・§4.8.1 の
+    collab 基盤を共有）。`Map "meta"` はノート/スライドと同一マップ名/型を共用（メタデータパネル・
+    アシスタントパネルの実装を共通化するため）。人間の GrapesJS 編集と AI の op 編集が
+    **同一 Yjs ドキュメントへ収束する**ことが Yjs を選ぶ理由で、明示保存＋楽観ロックでは両者が `rev` 衝突で戦う。
+    ただし**収束は HTML の構文健全性を保証しない** — 本文を単一の `Y.Text` に持つ以上、CodeMirror・GrapesJS・AI が
+    同じタグの周辺を並行編集すると文字粒度のマージでタグが割れる。スライドが PIT-41 で採った防御
+    （取り込み時の DOMParser parse→serialize 正規化・編集中プレゼンス・収束後の well-formed 検査）を
+    **そのまま適用する**。
+  - **`site`**: **ドライブのフォルダ node ＋ それを指す `site` メタ**（slug・ドメイン・テーマ・公開設定）。
+    フォルダを器にすることで権限・移動・削除・共有・全文検索・ゴミ箱・版が ReBAC の folder→file 継承で
+    そのまま効き、StorageService の単一チョークポイントを迂回しない。
+  - **`publication`**: **不変の公開スナップショット**（マニフェスト `path → {sha256, content_type}`・
+    `indexable`・**そのページが参照するフォーム定義の版**）。公開読み取りが FGA を通さずに引く唯一の表なので、
+    node とは別テーブルに切る。
+  - **`form`**: `data_table` を指すメタ（公開するフィールドのサブセット・既定値）。1 テーブルに複数フォームから
+    入る（問い合わせとセミナー申込が同じ顧客テーブル）ため、`data_table` 直結にはしない。
+    **定義は版を持ち、publication がその版をピン留めする** — `form` は可変メタなので、不変 HTML が
+    「現在の定義」を参照すると、**再 publish なしに過去ページの宛先・スキーマ・既定値が変わる**
+    （バンドルから外部参照を断った PIT-60 と同じ穴が、アセットではなく定義で開く）。受付は送信が属する
+    publication からピン留め版を解決して検証し、署名済み送信トークンと冪等キーも同じ版に束縛する。
+    定義を変えたら**再 publish を要求する**（ミニアプリが同意時に `frontend_bundle` を焼くのと同型）。
+  - **`collection`**: site フォルダ配下のノート群（`posts/` 等）を記事集合として登録したもの。
+- **配信は2経路**（本節の最重要判断）: 一般公開は性能とコストの理由で **FGA を通さない**。
+  - **匿名公開** = app-gateway に**第4リスナ（sites オリジン）**を新設し、B1（§4.10）と同型に
+    **`AuthContext` を作らない**。ゲートは「host → site → active publication → マニフェスト」の 1 引きと
+    sha256 照合だけで、認証コードがそもそも存在しないという B1 の保証を継ぐ。
+  - **限定共有** = 既存の Session＋FGA 経路（共有リンク・§4.1）。下書きを関係者に見せるのはこちら。
+  - **Next 側 SSR は採らない**: 「生 HTML をアプリオリジンでレンダリングしない」不変条件（§4.8.3・PIT-40）に
+    反し、任意 JS 可と組み合わせるとセッションを取られる。
+  - **FGA を通さないことと、チョークポイントを持たないことは別**: 配信リスナは DB と ObjectStore を
+    直接触らず、`crates/site` の **`PublicSiteService`（公開読み取りの単一チョークポイント）**だけを呼ぶ。
+    Host からの site/tenant/org 解決・publication 引き・blob 取得・監査・バックエンド差し替えを
+    ここ 1 箇所に閉じ、リスナには HTTP の作法しか置かない。FGA を参照しないのは
+    **publication が publish 時点で認可済みの不変スナップショットだから**であって、
+    認可判断を各リスナへ散らしてよいという意味ではない。なお `AuthContext` に匿名 principal を足すことは
+    しない（PIT-58 の「やってはいけない代替」）— 公開読み取りが運ぶのは Host 由来の
+    `PublicSiteContext {site_id, tenant_id, org}` であり、これは認可の根拠ではなく監査と多テナント絞り込みの帰属情報である。
+- **バンドル**: publish はページ HTML と参照アセット（CSS/JS/画像）を **content-address でバンドルへ取り込む**
+  （ドライブ参照を残さない理由は PIT-60）。キーは `content_address.rs` に `site_bundle_key()` として単一定義
+  （書込側/配信側の drift 防止・B1 と同じ理由）。配信時に sha256 を再計算して照合する。
+  **ロールバックは active ポインタの差し替え**で済む（スナップショットが不変なので再ビルド不要）。
+  - **キャッシュは URL の性質で二分する**（B1 をそのまま真似ない）。B1 の URL は `/a/{app_id}/{sha256}` で
+    内容が URL に含まれるため `immutable` が正当だが、サイトの公開 URL は Host と通常のパスから
+    **active publication を引く安定 URL** なので同じ扱いにできない。`immutable` を付けると共有キャッシュが
+    最長 1 年古い HTML を配り続け、publish もロールバックも、とりわけ **unpublish が温まった CDN に届かない**。
+    したがって **HTML と active マニフェストは再検証可能**（`no-cache` ＋ 現行 publication の ETag。
+    切り替えは ETag が変わるので次の要求で反映される）とし、**`immutable` は URL に sha を含めたアセットにのみ**
+    与える（publish 時にアセット URL を sha 付きへ書き換える）。
+  - **A/B を有効にしたページは、既定では共有キャッシュに置けない**。割当をサーバ側で決めても、安定 URL の
+    キャッシュキーはバリアント間で同一なので、共有キャッシュが A の HTML を B の訪問者へ配り、
+    publication 単位の ETag ではバリアント差を表せないため**日次ソルトを切り替えても 304 で古い方が返る**。
+    したがって既定は `private, no-store`（CDN キャッシュを捨てるのが対価）。
+    **バリアントとソルト世代をキャッシュキーと ETag の両方に含める構成が取れる場合に限り、共有キャッシュを許す** —
+    どちらか一方だけでは足りない（キーだけだと 304 で古い方が返り、ETag だけだと別バリアントに当たる）。
+- **オリジンと URL**: `{site}.sites.<domain>`。**サイトごとに独立したオリジン**にするのは任意 JS を許すための
+  前提条件で、パスベース相乗りではサイト A の JS がサイト B の localStorage に届く（PIT-59）。
+  名前は **publish 時に発番する不透明 ID が既定**で、望むテナントだけ vanity を申請する
+  （グローバル先着・予約語リスト）。既定が不透明なら 404/403 の差から他テナントのサイト名を推測できない。
+  ワイルドカード証明書を 1 階層で済ませるためテナント名はホストに出さない。独自ドメインは
+  ACME on-demand ＋ CNAME 所有確認で後段。**ホスト名でのルーティングは本節が初出**であり、
+  セッション cookie は従来どおりテナントを値に埋め込む（`crates/api/src/session`）— 匿名面は cookie を読まない。
+- **CSP とサニタイズ**: `site_csp()` を `bundle_csp()`/`builtin_csp()` と同型の純粋関数＋golden テストで固定する。
+  許可は self ＋ シキ CDN のみ、`connect-src` はフォーム受付と計測ビーコンの 2 宛先だけ、
+  **外部 CDN と外部 fetch は全面禁止**。**`default-src` が届かない 3 つを明示する**（PIT-62）—
+  `form-action` はシキの受付先のみ（`connect-src` は fetch/XHR/beacon にしか効かず、`<form>` の送信を止めない。
+  `builtin_csp()` が同じ理由で `form-action 'none'` を明示している）、`base-uri` は自オリジン固定
+  （`<base>` で相対 action を外部へ向けられる）、`worker-src 'none'`
+  （Service Worker は publication 切替後も生き残り、ロールバックと unpublish を無効化する）。
+  **サニタイズはしない** — ammonia は `<script>` を落とすことが防御の本体
+  なので、script を許した時点で防御力を失い、正当な HTML を理由も告げず壊すだけの機構が残る
+  （§4.8.3 のスライドは script を禁じているので ammonia が効く。前提が違う）。守りはオリジン分離と CSP に
+  集約し、構造的上限（バンドル合計サイズ・ファイル数・1 ファイルサイズ）だけ B1 と同型に置く。
+- **インデックス制御（既定 noindex）**: 四重で守る。①配信レスポンスの `X-Robots-Tag: noindex, nofollow`
+  ②配信オリジンの `robots.txt` 既定 `Disallow: /` ③publication の `indexable`（既定 false）
+  ④`sitemap.xml` は indexable なページからのみ生成。`indexable=true` にできるのは「公開範囲＝匿名」かつ
+  「テナント管理者がテナント設定で許可（既定 OFF）」の**二重ゲート**（PIT-61）。
+- **エディタ**: 1 ページ＝1 HTML ドキュメントで、タブは**プレビュー／ビジュアル／コード**の 3 つ。
+  アセットは同じドライブフォルダの普通のファイルとして置き publish 時に集める（マルチファイル IDE は作らない）。
+  ビジュアルは §4.8.3 の GrapesJS 砂箱を一般化して再利用し、コードは **CodeMirror 6**
+  （`y-codemirror.next` で Yjs 直結・TipTap＋y-prosemirror と同型）。プレビューは opaque origin iframe を既定とし、
+  実機同等の確認が要るときだけ sites オリジンの短命プレビュー URL を使う
+  （未公開ページを推測不能 URL で常時配るのは採らない）。共通シェル（`usePageHeader`・没入モード・
+  新規作成フック）は既存 3 エディタと共用する。
+- **AI 生成とデザイン規範**: 生成は `save_page` の**下書き確定型**（`save_slide` と同型: 下書きカード→下書き画面→
+  「ドライブに保存」）、編集は `page.edit` が Yjs トランザクションを発行する共同編集参加者
+  （§4.8.3 と同一原則・排他なし）。デザイン規範は**アーティファクト＝シキのデザイン言語**
+  （`globals.css` のトークン。§4.7 の genui を既存画面へ合わせるのと同じ理由）、**サイト＝site テーマ**
+  （色・フォント・角丸・余白・アニメの強さ）。テーマ値は CSS カスタムプロパティとプロンプトの
+  **両方へ 1 箇所から注入**する（人間が見るものと AI が知るものを分けない）。
+- **フォーム**: 正本は**生 HTML の `<form>`**（`action` が受付エンドポイント・JS 無効でも動く）で、
+  ノーコード用に `<div data-shiki-form="...">` の埋込タグを併設する（自前 CDN の JS が §4.7 の Form を描画）。
+  送信フィールド名は自己申告なので信用せず、`form` 定義に照らして検証する（`crates/data` のスキーマ検証を再利用）。
+  **蓄積先は `data_table`。CSV は使わない** — CSV は「ファイルが真実」（§4.8.2）で 1 送信ごとに全読み全書きの
+  新バージョンになり、同時送信が `base_rev` 409 で落ちる。CSV は `csv.write` によるエクスポート先に留める。
+  受付は**メイン API ではなく sites リスナ側**に置く（匿名 principal・レート制限・冪等台帳・監査の要件は PIT-58）。
+  送信は `data.record.created` を outbox へ出してワークフロー（§4.10）のトリガにする。
+  - **冪等性は 2 段構えにする**。静的 publication に焼かれた生 HTML は、JS も cookie も動的レンダリングも
+    使わないので**閲覧ごとに一意な冪等キーを埋め込めない**（publish 時に焼けば全訪問者が同じ値になり、
+    省けば再送を識別できない）。したがって、JS がある経路（埋込タグ・生 HTML＋任意 JS）は
+    **受付が発行する短命の署名済み送信トークン**を冪等キーとして使い、**no-JS 経路は
+    `(publication_id, form_id, フォーム定義版, 正規化ペイロードのハッシュ, クライアント IP ハッシュ)` を鍵に短い時間窓で重複排除する**という
+    縮退した冪等性に留める。後者は「同じ内容の正当な再送信が窓の間だけ落ちる」ことを意図した縮退として受け入れる
+    （窓は分単位）。**全経路で一様な冪等性が成り立つ、とは書かない**。
+  - **レート制限は分散でなければ意味がない**。`share_link_redeem` の limiter は自ら
+    「プロセス内 best-effort（各レプリカ独立）」と宣言しているので、匿名フォームに流用すると
+    許容量がレプリカ数だけ増え、再起動で消える。**workflow-engine の Redis トークンバケット**
+    （Lua でアトミック・キーは自由形式）を基盤として流用するが、**キー契約は新たに定義する** —
+    既存の呼び出し側は能力呼び出し向けに `tenant_id:capability` を使い、名前空間も `wf:ratelimit:` なので、
+    sites リスナ用の契約はまだ存在しない。決めるのは ①バケットキー（`tenant_id` ＋ 制限対象の種別
+    （IP / `form_id`）＋ 正規化した値）②IP 単位・`form_id` 単位・テナント全体の 3 段の上限と**適用順序**
+    ③実クライアント IP の入力契約（trusted-proxy 境界から得た値のみ）④sites 用の名前空間。
+    既存 API で表現できなければ、キー生成と適用を sites 側の薄い API として足す。流用するのは
+    `share_link_redeem` の**構造**（ロック外での重い検証・advisory lock による直列化・deny 台帳・
+    理由を区別しない失敗）であって、limiter の実装ではない。
+  - **クライアント IP は信頼境界を決めてから使う**。sites リスナは ingress の背後に置かれるため、
+    ソケットの peer IP では全訪問者が 1 アドレスに潰れ、`X-Forwarded-For` を無条件に信じれば
+    値を偽って制限を回避できる。**ingress がヘッダを上書きし、設定済みの proxy hop からのみ実 IP を採る**契約を
+    構成として持つ（リポジトリに前例が無いので本節が初出）。
+- **CMS**: コンテンツ本体は**ノート**（§4.8.1）。frontmatter に `status`/`date`/`slug`/`category` を持たせ
+  （`NoteMeta` の任意 kv をそのまま使う）、site フォルダ配下のコレクションとして登録する。publish 時に
+  テンプレート `.page` を当てて記事 HTML と一覧を**ビルド時に生成**する。publish がバンドル生成である以上、
+  動的レンダリングを持たない静的サイトジェネレータ型が「FGA を通さない配信」と整合する。
+  一覧・ページネーション・カテゴリ絞り込みはビルド時、サイト内検索は静的 index JSON。
+  構造化コンテンツ（商品カタログ等）を `data_table` から生成するのは後段。
+- **アニメーション**: 外部 CDN を塞ぐため、シキ製の薄い CSS ライブラリを**自前 CDN**（`builtin` 配信の一般化）に
+  置き、クラス付与だけで効く形にする。スクロール連動は小さな IntersectionObserver フォールバックを同梱し、
+  URL にバージョンを焼いて不変配信する。`prefers-reduced-motion` での一括停止は `globals.css` と同型で必ず入れる
+  （「JS は見せ場だけ」という既存方針を公開ページにも適用する）。
+- **A/B テストと計測**: 割当は配信リスナ側で行うが **cookie は焼かない** — 日次ソルト付きハッシュ（IP＋UA）で
+  決定的に算出する。これが避けるのは **ePrivacy が要求する「端末への保存/読み出し」への同意**であって、
+  **IP と UA の処理そのものが不要になるわけではない** — ソルト付きハッシュは匿名化ではなく仮名化なので、
+  法的根拠・利用目的・保持期間・ソルト（または HMAC 鍵）の保護方法・オプトアウト手段を定める必要がある。
+  **同意バナーの要否は法務確認事項として残し、設計側で「同意不要」と断定しない**。A/B の既定有効化は
+  この確認が済むまで行わない。計測は**専用テーブル `site_event`**
+  （`llm_usage` と同型だが、一意制約は **`unique(tenant_id, site_id, idempotency_key)`** —
+  `tenant_id` だけで括ると、同一テナントの別サイトが同じ鍵を使ったイベントまで重複排除され、
+  片方のサイトの計測が黙って落ちる）を新設する。outbox は `node_id not null` かつ
+  配送後に GC されるため分析ストアにならない。生の IP/UA は保存せず日次ソルト付きハッシュのみ、
+  **計測も既定 OFF**。集計は jobq 経由の非同期だが、`jobq` は at-least-once（PIT-31）なので
+  **一意制約が守るのは受信行の重複だけで、集計値の二重加算は防がない** — 集計は `site_event` を真実として
+  導出するか、増分を持つなら集計更新と「集計済みの印」を同一トランザクションで行う。
+  未投入（行は残ったが enqueue 前に落ちた）は at-least-once では回復しないので、
+  `jobq::enqueue_on` を `site_event` の挿入と**同一トランザクション**で呼ぶ（`crates/jobq` の本質価値）。
+  **ビーコンもフォームと同じ匿名書き込み面**なので、PIT-58 の境界（Host/publication からの site/tenant/org 束縛・
+  サイズ上限・分散レート制限・クォータ・監査）を**そのまま適用する**。`unique(tenant_id, site_id, idempotency_key)` は
+  同じキーの再送しか止めず、鍵を作り変え続ける相手には `site_event` と jobq を埋められる。
+- **オンプレの縮退**: サイト公開はワイルドカード DNS ＋ ワイルドカード証明書 ＋ ingress が構成されている場合に
+  のみ有効化する。未構成なら**機能フラグ OFF** でアーティファクト（シキ内閲覧＋共有リンク）だけが使える。
+  パスベースへのフォールバックは採らない — オリジン分離という前提条件が崩れ、オンプレだけサイト間 XSS が
+  成立する。コードは同一で、構成による無効化に留める。
+- **公開範囲の現段階**: 匿名公開の解禁自体は PIT-46（テナント跨ぎ閲覧共有の安全包絡）と同じ包絡に属し、
+  human 承認を要する。**「同一テナント内に閉じた公開」の意味を取り違えない** — 匿名リスナは閲覧者の
+  テナントを持たないので、これは「閲覧者が同じテナントに属することを検査する」という意味ではない。
+  本設計の境界は**所有テナント基準**で、`Host → site → publication` で解決した所有テナント/org に対して
+  publish 時に検査し、以後は不変 publication を匿名へ配る。**閲覧者テナントによる制限が要件なら、
+  匿名配信ではなく Session＋FGA 経路（共有リンク）を使う**。したがって現段階の縮退は「匿名到達を既定 OFF に
+  したまま、限定共有だけで配る」ことであり、**将来のパブリック公開を前提に境界（別オリジン・noindex 既定・
+  匿名 principal の束縛・参照断ち・定義の版ピン）を先に敷く**。
+
 ## 5. リポジトリ構成（モノレポ・Rustワークスペース）
 
 ```
@@ -836,14 +1031,15 @@ crates/
   sandbox-wasm/    # agentos フォーク（wasm ティア・非特権別プロセス）
   fuse/            # StorageService の FUSE 表現（gVisor/FC ティア用）
   data/            # 構造化データサービス・record/schema・行authz述語・FSMガード
-  app-gateway/     # 公開APIゲートウェイ(BFF)・OAuth2/スコープ・能力面
+  app-gateway/     # 公開APIゲートウェイ(BFF)・OAuth2/スコープ・能力面・B1配信・sites 匿名配信リスナ
   app-platform/    # ミニアプリ artifact・マニフェスト・レジストリ・skill
   workflow-engine/ # ワークフロー IR・Durable Execution・スケジューラ・トリガ
   script-runtime/  # shiki script 実行（swc＋wasmtime/QuickJS・非特権別プロセス）
   secrets/         # シークレット管理・KeyProvider
   office/          # OfficeSuite トレイト・WOPI ホスト（Collabora）
-  collab/          # Yjs(yrs) 共同編集同期サーバ・DocKind（ノート md／スライド）シリアライズ
+  collab/          # Yjs(yrs) 共同編集同期サーバ・DocKind（ノート md／スライド／HTML ページ）シリアライズ
   tabular/         # CSV クエリ/パッチ単一チョークポイント（DuckDB は非特権別プロセスに隔離）
+  site/            # サイト/ページ/publication・publish パイプライン・マニフェスト・フォーム定義
 ingestion-worker/  # Python: Docling パース・docx/pptx 生成/編集
 web/               # Next.js / TypeScript（generative UIレンダラ・ミニアプリB1配信・dnd/TipTap エディタ・
                    # editor-sandbox=GrapesJS スライドエディタの別オリジン砂箱バンドル）
