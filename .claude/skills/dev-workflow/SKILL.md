@@ -23,7 +23,7 @@ shiki-platform の開発タスクを進める標準手順。docs/roadmap.md の�
 ## 3. 完了時
 
 - ローカル/CI のチェックを通す: cargo fmt --check / cargo clippy -- -D warnings / cargo test、web は pnpm lint / pnpm build、compose smoke。
-- PR を作成する（/pull-request スキルが利用可能ならそれを使う）。PR 本文には目的・対応 Issue・検証方法を書く。
+- PR を作成する（/pr スキルが利用可能ならそれを使う）。PR 本文には目的・対応 Issue・検証方法を書く。
 - 対応する Issue に close コメントを付けてクローズする（PR 説明に Closes #<n> を含める）。
 
 ## 注意
