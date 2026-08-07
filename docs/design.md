@@ -860,11 +860,15 @@ flowchart LR
     collab 基盤を共有）。`Map "meta"` はノート/スライドと同一マップ名/型を共用（メタデータパネル・
     アシスタントパネルの実装を共通化するため）。人間の GrapesJS 編集と AI の op 編集が
     **同一 Yjs ドキュメントへ収束する**ことが Yjs を選ぶ理由で、明示保存＋楽観ロックでは両者が `rev` 衝突で戦う。
+    ただし**収束は HTML の構文健全性を保証しない** — 本文を単一の `Y.Text` に持つ以上、CodeMirror・GrapesJS・AI が
+    同じタグの周辺を並行編集すると文字粒度のマージでタグが割れる。スライドが PIT-41 で採った防御
+    （取り込み時の DOMParser parse→serialize 正規化・編集中プレゼンス・収束後の well-formed 検査）を
+    **そのまま適用する**。
   - **`site`**: **ドライブのフォルダ node ＋ それを指す `site` メタ**（slug・ドメイン・テーマ・公開設定）。
     フォルダを器にすることで権限・移動・削除・共有・全文検索・ゴミ箱・版が ReBAC の folder→file 継承で
     そのまま効き、StorageService の単一チョークポイントを迂回しない。
   - **`publication`**: **不変の公開スナップショット**（マニフェスト `path → {sha256, content_type}`）。
-    配信リスナが FGA も StorageService も通さずに引く唯一の表なので、node とは別テーブルに切る。
+    公開読み取りが FGA を通さずに引く唯一の表なので、node とは別テーブルに切る。
   - **`form`**: `data_table` を指すメタ（公開するフィールドのサブセット・既定値）。1 テーブルに複数フォームから
     入る（問い合わせとセミナー申込が同じ顧客テーブル）ため、`data_table` 直結にはしない。
   - **`collection`**: site フォルダ配下のノート群（`posts/` 等）を記事集合として登録したもの。
@@ -875,11 +879,25 @@ flowchart LR
   - **限定共有** = 既存の Session＋FGA 経路（共有リンク・§4.1）。下書きを関係者に見せるのはこちら。
   - **Next 側 SSR は採らない**: 「生 HTML をアプリオリジンでレンダリングしない」不変条件（§4.8.3・PIT-40）に
     反し、任意 JS 可と組み合わせるとセッションを取られる。
+  - **FGA を通さないことと、チョークポイントを持たないことは別**: 配信リスナは DB と ObjectStore を
+    直接触らず、`crates/site` の **`PublicSiteService`（公開読み取りの単一チョークポイント）**だけを呼ぶ。
+    Host からの site/tenant/org 解決・publication 引き・blob 取得・監査・バックエンド差し替えを
+    ここ 1 箇所に閉じ、リスナには HTTP の作法しか置かない。FGA を参照しないのは
+    **publication が publish 時点で認可済みの不変スナップショットだから**であって、
+    認可判断を各リスナへ散らしてよいという意味ではない。なお `AuthContext` に匿名 principal を足すことは
+    しない（PIT-58 の「やってはいけない代替」）— 公開読み取りが運ぶのは Host 由来の
+    `PublicSiteContext {site_id, tenant_id, org}` であり、これは認可の根拠ではなく監査と多テナント絞り込みの帰属情報である。
 - **バンドル**: publish はページ HTML と参照アセット（CSS/JS/画像）を **content-address でバンドルへ取り込む**
   （ドライブ参照を残さない理由は PIT-60）。キーは `content_address.rs` に `site_bundle_key()` として単一定義
-  （書込側/配信側の drift 防止・B1 と同じ理由）。配信時に sha256 を再計算して照合し、
-  `Cache-Control: public, max-age=31536000, immutable`。**ロールバックは active ポインタの差し替え**で済む
-  （スナップショットが不変なので再ビルド不要）。
+  （書込側/配信側の drift 防止・B1 と同じ理由）。配信時に sha256 を再計算して照合する。
+  **ロールバックは active ポインタの差し替え**で済む（スナップショットが不変なので再ビルド不要）。
+  - **キャッシュは URL の性質で二分する**（B1 をそのまま真似ない）。B1 の URL は `/a/{app_id}/{sha256}` で
+    内容が URL に含まれるため `immutable` が正当だが、サイトの公開 URL は Host と通常のパスから
+    **active publication を引く安定 URL** なので同じ扱いにできない。`immutable` を付けると共有キャッシュが
+    最長 1 年古い HTML を配り続け、publish もロールバックも、とりわけ **unpublish が温まった CDN に届かない**。
+    したがって **HTML と active マニフェストは再検証可能**（`no-cache` ＋ 現行 publication の ETag。
+    切り替えは ETag が変わるので次の要求で反映される）とし、**`immutable` は URL に sha を含めたアセットにのみ**
+    与える（publish 時にアセット URL を sha 付きへ書き換える）。
 - **オリジンと URL**: `{site}.sites.<domain>`。**サイトごとに独立したオリジン**にするのは任意 JS を許すための
   前提条件で、パスベース相乗りではサイト A の JS がサイト B の localStorage に届く（PIT-59）。
   名前は **publish 時に発番する不透明 ID が既定**で、望むテナントだけ vanity を申請する
@@ -889,7 +907,12 @@ flowchart LR
   セッション cookie は従来どおりテナントを値に埋め込む（`crates/api/src/session`）— 匿名面は cookie を読まない。
 - **CSP とサニタイズ**: `site_csp()` を `bundle_csp()`/`builtin_csp()` と同型の純粋関数＋golden テストで固定する。
   許可は self ＋ シキ CDN のみ、`connect-src` はフォーム受付と計測ビーコンの 2 宛先だけ、
-  **外部 CDN と外部 fetch は全面禁止**。**サニタイズはしない** — ammonia は `<script>` を落とすことが防御の本体
+  **外部 CDN と外部 fetch は全面禁止**。**`default-src` が届かない 3 つを明示する**（PIT-62）—
+  `form-action` はシキの受付先のみ（`connect-src` は fetch/XHR/beacon にしか効かず、`<form>` の送信を止めない。
+  `builtin_csp()` が同じ理由で `form-action 'none'` を明示している）、`base-uri` は自オリジン固定
+  （`<base>` で相対 action を外部へ向けられる）、`worker-src 'none'`
+  （Service Worker は publication 切替後も生き残り、ロールバックと unpublish を無効化する）。
+  **サニタイズはしない** — ammonia は `<script>` を落とすことが防御の本体
   なので、script を許した時点で防御力を失い、正当な HTML を理由も告げず壊すだけの機構が残る
   （§4.8.3 のスライドは script を禁じているので ammonia が効く。前提が違う）。守りはオリジン分離と CSP に
   集約し、構造的上限（バンドル合計サイズ・ファイル数・1 ファイルサイズ）だけ B1 と同型に置く。
@@ -917,6 +940,23 @@ flowchart LR
   新バージョンになり、同時送信が `base_rev` 409 で落ちる。CSV は `csv.write` によるエクスポート先に留める。
   受付は**メイン API ではなく sites リスナ側**に置く（匿名 principal・レート制限・冪等台帳・監査の要件は PIT-58）。
   送信は `data.record.created` を outbox へ出してワークフロー（§4.10）のトリガにする。
+  - **冪等性は 2 段構えにする**。静的 publication に焼かれた生 HTML は、JS も cookie も動的レンダリングも
+    使わないので**閲覧ごとに一意な冪等キーを埋め込めない**（publish 時に焼けば全訪問者が同じ値になり、
+    省けば再送を識別できない）。したがって、JS がある経路（埋込タグ・生 HTML＋任意 JS）は
+    **受付が発行する短命の署名済み送信トークン**を冪等キーとして使い、**no-JS 経路は
+    `(form_id, 正規化ペイロードのハッシュ, クライアント IP ハッシュ)` を鍵に短い時間窓で重複排除する**という
+    縮退した冪等性に留める。後者は「同じ内容の正当な再送信が窓の間だけ落ちる」ことを意図した縮退として受け入れる
+    （窓は分単位）。**全経路で一様な冪等性が成り立つ、とは書かない**。
+  - **レート制限は分散でなければ意味がない**。`share_link_redeem` の limiter は自ら
+    「プロセス内 best-effort（各レプリカ独立）」と宣言しているので、匿名フォームに流用すると
+    許容量がレプリカ数だけ増え、再起動で消える。**workflow-engine が持つ共有トークンバケット
+    （§4.12 で API 面へ適用済み）を IP と form_id の双方に使う**。流用するのは
+    `share_link_redeem` の**構造**（ロック外での重い検証・advisory lock による直列化・deny 台帳・
+    理由を区別しない失敗）であって、limiter の実装ではない。
+  - **クライアント IP は信頼境界を決めてから使う**。sites リスナは ingress の背後に置かれるため、
+    ソケットの peer IP では全訪問者が 1 アドレスに潰れ、`X-Forwarded-For` を無条件に信じれば
+    値を偽って制限を回避できる。**ingress がヘッダを上書きし、設定済みの proxy hop からのみ実 IP を採る**契約を
+    構成として持つ（リポジトリに前例が無いので本節が初出）。
 - **CMS**: コンテンツ本体は**ノート**（§4.8.1）。frontmatter に `status`/`date`/`slug`/`category` を持たせ
   （`NoteMeta` の任意 kv をそのまま使う）、site フォルダ配下のコレクションとして登録する。publish 時に
   テンプレート `.page` を当てて記事 HTML と一覧を**ビルド時に生成**する。publish がバンドル生成である以上、
@@ -932,6 +972,9 @@ flowchart LR
   （`llm_usage` と同型の `unique(tenant_id, idempotency_key)`）を新設する。outbox は `node_id not null` かつ
   配送後に GC されるため分析ストアにならない。生の IP/UA は保存せず日次ソルト付きハッシュのみ、
   **計測も既定 OFF**。集計は jobq 経由の非同期。
+  **ビーコンもフォームと同じ匿名書き込み面**なので、PIT-58 の境界（Host/publication からの site/tenant/org 束縛・
+  サイズ上限・分散レート制限・クォータ・監査）を**そのまま適用する**。`unique(tenant_id, idempotency_key)` は
+  同じキーの再送しか止めず、鍵を作り変え続ける相手には `site_event` と jobq を埋められる。
 - **オンプレの縮退**: サイト公開はワイルドカード DNS ＋ ワイルドカード証明書 ＋ ingress が構成されている場合に
   のみ有効化する。未構成なら**機能フラグ OFF** でアーティファクト（シキ内閲覧＋共有リンク）だけが使える。
   パスベースへのフォールバックは採らない — オリジン分離という前提条件が崩れ、オンプレだけサイト間 XSS が

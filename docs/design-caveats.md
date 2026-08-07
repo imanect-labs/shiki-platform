@@ -843,7 +843,24 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   `tenant_id` は form 由来の値で構築する（`PrincipalKind::Workflow` を後から足した migration 0022 と同型）
   ⑤レート制限は IP と form_id の**双方**で掛け、冪等キー台帳（`ui_action_invocation` と同型）で再送を潰す
   ⑥監査は必ず残し、actor は form に紐づく合成 principal とする（誰かは分からないが、どの入口かは分かる）
-  ⑦ハニーポットフィールドと最小滞在時間で自動投稿を落とす（CAPTCHA は後段）。
+  ⑦ハニーポットフィールドと最小滞在時間で自動投稿を落とす（CAPTCHA は後段）
+  ⑧**レート制限は分散でなければ意味がない**。`share_link_ratelimit.rs` は自ら「プロセス内 best-effort
+  （各レプリカ独立）」と宣言しており、匿名フォームに流用すると許容量がレプリカ数だけ増え、再起動で消える。
+  workflow-engine の共有トークンバケット（design §4.12 で API 面へ適用済み）を IP と form_id の双方に使う。
+  `share_link_redeem` から流用するのは**構造**（ロック外での重い検証・advisory lock・deny 台帳・
+  理由を区別しない失敗）であって limiter の実装ではない ⑨**クライアント IP の信頼境界を先に決める**。
+  ingress の背後ではソケットの peer IP が 1 アドレスに潰れ、`X-Forwarded-For` を無条件に信じれば偽装で回避できる。
+  ingress がヘッダを上書きし、設定済みの proxy hop からのみ実 IP を採る契約を構成として持つ
+  ⑩**計測ビーコンも同じ面**として扱う。`site_event` への書き込みも AuthContext のない公開面からの DB 書き込みで、
+  `unique(tenant_id, idempotency_key)` は同じ鍵の再送しか止めない（鍵を作り変え続ける相手には効かない）。
+  宛先束縛・サイズ上限・分散レート制限・クォータ・監査を同じ境界で適用する。
+- **no-JS と冪等性は両立しない（意図した縮退）**: 静的 publication に焼かれた生 HTML フォームは、
+  JS も cookie も動的レンダリングも使わないので**閲覧ごとに一意な冪等キーを埋め込めない** —
+  publish 時に焼けば全訪問者が同じ値になり、省けば再送を識別できない。したがって冪等性は 2 段構えにする。
+  JS がある経路は**受付が発行する短命の署名済み送信トークン**を鍵にし、**no-JS 経路は
+  `(form_id, 正規化ペイロードのハッシュ, クライアント IP ハッシュ)` を鍵に分単位の時間窓で重複排除する**。
+  後者では「同じ内容の正当な再送信が窓の間だけ落ちる」ことを受け入れる。
+  **全経路で一様な冪等性が成り立つ、とは書かない** — 書くと受け入れ条件が実装不能になる。
 - **やってはいけない代替**: ①`AuthContext` に「匿名ユーザー」を足して既存サービスをそのまま呼ぶ。
   各サービスは呼び出し主体が認証済みであることを前提に書かれているので、匿名が到達できる範囲が
   コード全体へ広がる ②配信リスナに固定のサービスアカウントを持たせて内部 API を叩く。
@@ -853,7 +870,9 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
 - **受け入れ条件**: 「ボディやヘッダで別テナント/別テーブルを指定しても form 定義の宛先にしか入らない」
   「form が公開宣言していないフィールドが拒否される」「同一冪等キーの二度目が行を増やさない」
   「レート制限超過が理由を区別せず 429」「送信ごとに監査が 1 件残る」
-  「メイン API の `route_table()` に新しい `Public` ルートが増えていない」の結合テストがある。
+  「メイン API の `route_table()` に新しい `Public` ルートが増えていない」「`X-Forwarded-For` を偽装しても
+  レート制限を回避できない」「JS 無効の同一内容再送が窓の中で 1 件に潰れ、窓を越えれば通る」
+  の結合テストがある。
 
 ## 🔴 PIT-59: サイトを同一オリジンに相乗りさせると、任意 JS 許可の前提が崩れる
 
@@ -873,6 +892,13 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   （`Tenancy::Single` の固定値が空なら設定ミスとして拒否するのと同型）④`connect-src` はフォーム受付と
   計測ビーコンの 2 宛先に限り、外部 CDN と外部 fetch を全面禁止する（自前 CDN を持つのはこの制約の裏返しであり、
   外部を開けるなら自前 CDN の存在意義も消える）。
+- **FGA を通さないことと、チョークポイントを持たないことは別**: 「配信で FGA を引かない」は性能上の判断であって、
+  配信リスナが DB と ObjectStore を直に触ってよいという意味ではない。直に触らせると、Host からの
+  tenant/org 導出・監査・バックエンド差し替えが個々のリスナへ散り、`StorageService` と並ぶ**第二のデータ経路**が
+  審査の外にできる。公開読み取りも `crates/site` の `PublicSiteService` を単一チョークポイントとして通し、
+  リスナには HTTP の作法だけを置く。ただし `AuthContext` に匿名 principal を足すことはしない（PIT-58）—
+  公開読み取りが運ぶ `PublicSiteContext {site_id, tenant_id, org}` は**認可の根拠ではなく、監査と
+  多テナント絞り込みの帰属情報**である。
 - **PIT-45（org＝テナント内の隔離境界）との関係**: 匿名配信には `ctx.org` が存在しないため、
   「新しいデータ経路は必ず `org = ctx.org AND tenant_id` で絞る」という契約を**そのままの形では満たせない**。
   代わりに org は publication 行が保持し、境界の判定を **publish の一点へ前倒し**する
@@ -898,11 +924,18 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
   ③**公開後にドライブ側を削除・権限剥奪しても公開は止まらない**ことを UI と文書で明示する。
   止める操作は unpublish であって、ドライブの権限操作ではない ④参照が別 org のファイルなら publish を拒否する
   （org を跨ぐ公開は PIT-46 の包絡で別途決める）⑤外部 URL の参照は配信時に CSP で落ちるので、
-  publish 時に検出して警告する（公開してから気付く形にしない）。
+  publish 時に検出して警告する（公開してから気付く形にしない）⑥**キャッシュヘッダを B1 から写経しない**。
+  B1 の URL は `/a/{app_id}/{sha256}` で内容が URL に含まれるので `public, max-age=31536000, immutable` が正当だが、
+  サイトの公開 URL は Host と通常のパスから active publication を引く**安定 URL** なので、同じヘッダを付けると
+  共有キャッシュが最長 1 年古い HTML を配り続ける。publish もロールバックも、とりわけ
+  **unpublish が温まった CDN に届かない**（「止める操作は unpublish」という③の保証が空文になる）。
+  HTML と active マニフェストは再検証可能（`no-cache` ＋ 現行 publication の ETag）とし、
+  `immutable` は URL に sha を含めたアセットにのみ与える。
 - **受け入れ条件**: 「publish 後にドライブ上の元画像を削除しても公開ページが壊れない」
   「publish 後に元画像を差し替えても公開ページは変わらない」「読めないアセットを含むページの publish が
   理由付きで失敗する」「別 org のファイルを参照するページの publish が拒否される」
-  「unpublish で配信が止まる」の結合テストがある。
+  「unpublish で配信が止まる」「HTML レスポンスに `immutable` が付かず、ロールバック直後の再取得で
+  新しい publication が返る」「sha 付きアセット URL にだけ `immutable` が付く」の結合テストがある。
 
 ## 🟠 PIT-61: noindex を meta タグだけで守ると、HTML 以外と過去の publication から漏れる
 
@@ -922,4 +955,28 @@ skillex 境界（§4.1.1, PIT-26〜29）を対象にした。残る未精査領�
 - **受け入れ条件**: 「既定で publish したページに `X-Robots-Tag: noindex` が付く」
   「`robots.txt` が既定で全 Disallow」「テナント設定が OFF のまま `indexable=true` にできない」
   「公開範囲が匿名でない publication は `indexable=true` にできない」「sitemap に noindex のページが載らない」
-  の結合テストがある。
+  に加えて、**許可側の e2e**（二重ゲートを満たした publication では noindex ヘッダが外れ、`robots.txt` が許可し、
+  sitemap に載る）がある。否定条件だけを並べると、**常に noindex を返す実装が全条件を通ってしまい**、
+  インデックス許可機能が一度も動かないまま緑になる。
+
+## 🔴 PIT-62: 公開オリジンでは `default-src` が届かない 3 つが、publication の不変性を破る
+
+- **箇所**: design §4.13（`site_csp()`・app-gateway の sites リスナ）。
+- **リスク**: サイトは**安定した専用オリジンで任意 JS と同一オリジンの JS アセットを許す**ため、
+  B1（opaque origin ＋ `sandbox` ＋ `connect-src` 限定）の CSP をそのまま持ってくると 3 つ穴が開く。
+  ①**`form-action`**: `connect-src` は fetch/XHR/beacon にしか効かず、`<form>` の送信を止めない。
+  侵害されたページが外部の `action` へ自動 POST すれば、訪問者が入力した内容がそのまま持ち出される。
+  ②**`base-uri`**: `<base>` を差し込めば相対 `action`・相対リンクの解決先を丸ごと外部へ向けられる（①の迂回路）。
+  ③**`worker-src`**: publication に含まれたスクリプトが `/sw.js` を Service Worker として登録できる。
+  worker は**publication の切り替え後も生き残り**、同一オリジンのナビゲーションとフォーム要求を横取りするので、
+  ロールバックでも unpublish でも侵害されたコードを排除できない
+  （「止める操作は unpublish」という PIT-60 の保証が、この 1 点で崩れる）。
+  3 つとも `default-src 'none'` のフォールバック対象**外**なので、書き忘れても CSP は何も言わない。
+  既存の `builtin_csp()` が `base-uri 'none'; form-action 'none'` を明示しているのは同じ理由である。
+- **決めること**: ①`form-action` は**シキの受付先のみ**（外部 POST を構造的に不可能にする。
+  フォームの正本が生 HTML の `<form>` である以上、ここが実質の唯一の防壁）②`base-uri` は自オリジンに固定する
+  ③**`worker-src 'none'`** を固定し、publication が Service Worker を登録できないようにする
+  ④これらを `site_csp()` の golden テストに含め、値の変更が差分として見えるようにする。
+- **受け入れ条件**: 「`site_csp()` の golden テストに `form-action`・`base-uri`・`worker-src` が含まれる」
+  「外部 `action` を持つ `<form>` の送信が CSP で落ちる」「`<base>` による外部への付け替えが効かない」
+  「publication 内のスクリプトが Service Worker を登録できない」の negative テストがある。

@@ -16,12 +16,19 @@
 > `data_table` からの構造化コンテンツ生成。いずれも publication とバンドルの形を変えずに後から足せる。
 >
 > ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-58（匿名の書き込み面）・PIT-59（オリジン隔離）・
-> PIT-60（公開スナップショットの参照断ち）・PIT-61（noindex の既定）を確認すること。**
+> PIT-60（公開スナップショットの参照断ち・キャッシュ）・PIT-61（noindex の既定）・
+> PIT-62（`form-action`／`base-uri`／`worker-src`）を確認すること。**
 > 併せて PIT-45（org＝テナント内の隔離境界）・PIT-46（匿名/テナント跨ぎ共有の安全包絡）・
-> PIT-40（生 HTML をアプリオリジンでレンダリングしない）も前提になる。
+> PIT-40（生 HTML をアプリオリジンでレンダリングしない）・PIT-41（Y.Text 文字マージによる HTML 構文破壊）も前提になる。
 >
-> 🔒 **human 承認が要るタスク**: 13.12（匿名 `PrincipalKind` の新設と匿名面での DB 書き込み）は PIT-46 と同じ包絡に属する。
-> 13.6（ワイルドカード DNS／証明書／ingress）はリポジトリ外インフラの新規整備であり、Phase 8 Task 8.8 と調整が要る。
+> 🔒 **human 承認が要るタスク**:
+> - **13.8 の「匿名公開の有効化」** — design §4.13 は匿名公開の解禁自体を PIT-46 と同じ包絡に置き、
+>   現段階は同一テナント内限定としている。**リスナの実装は既定 OFF で進めてよいが、匿名到達を有効化する構成変更は承認事項**。
+>   13.8 が 13.12 より先に来るため、これを分けないと Stage 2 と DoD を進めるだけで未承認の匿名閲覧が解禁されてしまう。
+> - **13.12**（匿名 `PrincipalKind` の新設と匿名面での DB 書き込み）— 同じく PIT-46 の包絡。
+> - **13.6**（ワイルドカード DNS／証明書／ingress）— リポジトリ外インフラの新規整備であり、Phase 8 Task 8.8 と調整が要る。
+>
+> DoD の「匿名閲覧」も上記の承認を前提とする（承認前は既定 OFF のまま、限定共有経路で同じ内容を確認する）。
 
 | ID | タイトル | area | 依存 |
 |----|---------|------|------|
@@ -34,7 +41,7 @@
 | **Stage 2 — 公開基盤（初めてインフラに手を入れる）** | | | |
 | 13.6 | インフラ: ワイルドカード DNS／証明書／ingress＋機能フラグ 🔒 | infra | 8.8 |
 | 13.7 | `crates/site`: site/publication モデル＋publish パイプライン（参照断ち） | storage | 13.1 |
-| 13.8 | sites 配信リスナ（第4リスナ・`AuthContext` なし・ホスト名解決・sha 照合） | api | 13.7, 13.6 |
+| 13.8 | sites 配信リスナ（第4リスナ・`AuthContext` なし・ホスト名解決・sha 照合）＋既定 OFF 🔒 | api | 13.7, 13.6 |
 | 13.9 | `site_csp()`＋`X-Robots-Tag`＋`robots.txt`＋`sitemap.xml`＋OGP/favicon | api | 13.8 |
 | 13.10 | 不透明 ID 発番＋vanity 申請＋インデックス許可の二重ゲート | api/frontend | 13.8 |
 | 13.11 | `/sites` 管理面（公開状態・ロールバック・プレビュー URL） | frontend | 13.8 |
@@ -46,7 +53,7 @@
 | 13.16 | シキ製アニメ CSS ライブラリ＋バージョン付き自前 CDN 配信 | frontend | 13.8 |
 | **Stage 4 — マーケティング** | | | |
 | 13.17 | A/B テスト（cookie なし割当・キャッシュ戦略） | api | 13.8 |
-| 13.18 | `site_event` 計測＋ビーコン＋jobq 集計＋ダッシュボード（既定 OFF） | api/frontend | 13.8 |
+| 13.18 | `site_event` 計測＋ビーコン＋jobq 集計＋ダッシュボード（既定 OFF） | api/frontend | **13.12**, 13.8 |
 | 13.19 | 送信データの CSV エクスポート | data | 13.13 |
 | 13.20 | 独自ドメイン（ACME on-demand＋CNAME 所有確認） | infra | 13.6, 13.10 |
 
@@ -62,10 +69,13 @@
   **スライドと違いサニタイズは掛けない**（任意 JS を許すため。守りはオリジン分離と CSP・PIT-59）が、
   サイズ上限は掛ける。`parse.py` に `.page` ハンドラ（既存 html パスへ）。
   閲覧は `/pages/{id}` ＋ **別オリジン iframe**（アプリオリジンで生 HTML をレンダリングしない・PIT-40）。
+  **PIT-41 と同型の HTML 整合性防御を入れる**: 本文が単一 `Y.Text` である以上、文字粒度マージでタグが割れるので、
+  取り込み時に DOMParser で parse→serialize 正規化して自己修復させる（収束するだけでは構文健全性は保証されない）。
 - **受け入れ条件**:
   - [ ] `.page` の Yjs 編集が保存で新バージョンになり、RAG 検索に本文が乗る
   - [ ] serialize 往復（JSON⇄Yjs）が壊れない
   - [ ] `<script>` 入りの `.page` を直接アップロードしても、アプリオリジンでは一切実行されない（e2e negative）
+  - [ ] タグ境界をまたぐ並行編集を与えても、収束後の本文が**常にパース可能**（PIT-41 同型の adversarial テスト）
 
 ### Task 13.2: 3タブエディタ
 - **area**: frontend / **path**: `web/`, `web/editor-sandbox/`, `crates/app-gateway`
@@ -77,7 +87,8 @@
   共通シェル（`usePageHeader`・没入モード・`EditorLoading`）と選択→AI（`SelectionContext`）は既存を再利用。
 - **受け入れ条件**:
   - [ ] 3タブ間の往復で HTML が壊れない（ビジュアル編集→コード→ビジュアル）
-  - [ ] 2 ユーザーの同時編集が収束する（e2e 2 コンテキスト）
+  - [ ] 2 ユーザーの同時編集が収束し、**収束後の本文が常にパース可能**（e2e 2 コンテキスト・PIT-41 同型）
+  - [ ] CodeMirror・GrapesJS・AI が同じタグ周辺を同時に触っても構文が壊れない（編集中プレゼンスで衝突を可視化）
   - [ ] viewer 権限では編集 UI が無効で、書込が届かない
   - [ ] プレビューがアプリオリジンではない（CSP/オリジンの golden テスト）
 
@@ -118,10 +129,15 @@
   整備する。リポジトリには現状リバースプロキシ/ingress/TLS の構成が存在しないため、Phase 8 Task 8.8（IaC）と
   調整して置き場所を決める。**構成が揃わない環境ではサイト公開を機能フラグで無効化**し、
   パスベースへ縮退させない（PIT-59）。開発環境のパスベースは dev 専用として、本番構成では選べない形にする。
+  **併せてクライアント IP の信頼境界を定義する**: sites リスナは ingress の背後に置かれるため、
+  ソケットの peer IP では全訪問者が 1 アドレスに潰れ、`X-Forwarded-For` を無条件に信じれば偽装で回避される。
+  ingress がヘッダを上書きし、設定済みの proxy hop からのみ実クライアント IP を採る契約を構成として持つ
+  （リポジトリに trusted-proxy 抽出の前例が無いので本タスクが初出。13.12/13.18 のレート制限がこれに依存する）。
 - **受け入れ条件**:
   - [ ] `{site}.sites.<domain>` が TLS で解決し、sites リスナへ到達する
   - [ ] ワイルドカード未構成の構成でサイト公開 API が機能無効として拒否される
   - [ ] dev のパスベース設定が本番プロファイルで選択できない
+  - [ ] 信頼済み hop 以外から来た `X-Forwarded-For` が採用されない（spoofing negative テスト）
 
 ### Task 13.7: `crates/site` とパブリッシュパイプライン
 - **area**: storage / **path**: `crates/site`, `crates/storage`, `migrations/`
@@ -138,28 +154,40 @@
   - [ ] ロールバックで直前の publication が active になる
   - [ ] unpublish で配信が止まる
 
-### Task 13.8: sites 配信リスナ（第4リスナ）
-- **area**: api / **path**: `crates/app-gateway`, `crates/api/src/wiring_gateway.rs`
+### Task 13.8: sites 配信リスナ（第4リスナ）🔒
+- **area**: api / **path**: `crates/app-gateway`, `crates/site`, `crates/api/src/wiring_gateway.rs`
 - **仕様**: `b1.rs` と同型に**認証抽出を一切持たない**リスナを新設する。処理は
-  「Host → site 解決 → active publication → マニフェスト引き → ObjectStore 取得 → sha256 再計算照合 → 返却」だけ。
-  `Cache-Control: public, max-age=31536000, immutable`・`X-Content-Type-Options: nosniff`。
+  「Host → site 解決 → active publication → マニフェスト引き → blob 取得 → sha256 再計算照合 → 返却」だけ。
+  **リスナは DB と ObjectStore を直接触らず、`crates/site` の `PublicSiteService` だけを呼ぶ**
+  （FGA を引かないことと、チョークポイントを持たないことは別・PIT-59）。`X-Content-Type-Options: nosniff`。
+  **キャッシュは URL の性質で二分する**（PIT-60）: HTML と active マニフェストは `no-cache` ＋ publication の ETag、
+  `immutable` は URL に sha を含めたアセットのみ。B1 のヘッダをそのまま写経すると unpublish が CDN に届かない。
   存在しない/未公開のサイトは存在を秘匿して 404。**ホスト名でのルーティングはリポジトリで初出**なので、
   Host パースと site 解決を単一関数に閉じ、cookie は読まない（セッションはテナントを cookie 値に埋め込む方式のまま）。
+  🔒 **匿名到達は既定 OFF**で実装する。有効化する構成変更は human 承認事項（PIT-46 の包絡）。
 - **受け入れ条件**:
   - [ ] リスナのコードに認証抽出・cookie 参照が存在しない（構造テスト）
+  - [ ] リスナが sqlx / ObjectStore を直接呼ばず `PublicSiteService` 経由である（構造テスト）
   - [ ] 2 つのサイトが別オリジンで配信され、片方の JS がもう片方の storage に到達できない（e2e negative）
   - [ ] マニフェストと実体の sha が食い違うと配信されない
   - [ ] 未公開・存在しないサイトが 404 で、存在の有無を区別できない
+  - [ ] HTML に `immutable` が付かず、ロールバック直後の再取得で新しい publication が返る
+  - [ ] 既定構成では匿名到達が無効（有効化には明示的な構成が要る）
 
 ### Task 13.9: CSP・robots・sitemap・OGP
 - **area**: api / **path**: `crates/app-gateway`, `crates/site`
 - **仕様**: `site_csp()` を `bundle_csp()`/`builtin_csp()` と同型の純粋関数として実装し golden テストで固定
   （self ＋ シキ CDN のみ、`connect-src` はフォーム受付と計測ビーコンの 2 宛先、外部 CDN と外部 fetch は禁止）。
+  **`default-src` のフォールバック対象外の 3 つを明示する**（PIT-62）: `form-action` はシキの受付先のみ
+  （`connect-src` は `<form>` 送信を止めない）、`base-uri` は自オリジン固定、`worker-src 'none'`
+  （Service Worker は publication 切替後も生き残り、ロールバックと unpublish を無効化する）。
   `X-Robots-Tag: noindex, nofollow` を既定付与、`robots.txt` は既定 `Disallow: /`、
   `sitemap.xml` は indexable なページからのみ生成。OGP/favicon は `site` とページのメタから生成する。
 - **受け入れ条件**:
-  - [ ] `site_csp()` の golden テストがある
+  - [ ] `site_csp()` の golden テストがあり、`form-action`・`base-uri`・`worker-src` を含む
   - [ ] 外部ホストへの fetch と外部 CDN の読み込みが CSP で落ちる
+  - [ ] 外部 `action` を持つ `<form>` の送信が落ち、`<base>` による外部への付け替えも効かない（negative）
+  - [ ] publication 内のスクリプトが Service Worker を登録できない（negative）
   - [ ] 既定で publish したページに `X-Robots-Tag: noindex` が付き、`robots.txt` が全 Disallow
   - [ ] sitemap に noindex のページが載らない
 
@@ -174,6 +202,8 @@
   - [ ] 公開範囲が匿名でない publication は `indexable=true` にできない
   - [ ] 既定値を後から変えても過去の publication の `indexable` が変わらない
   - [ ] 予約語と既存 vanity の重複が拒否される
+  - [ ] **許可側の e2e**: 二重ゲートを満たした publication では noindex ヘッダが外れ、`robots.txt` が許可し、
+        sitemap に載る（否定条件だけだと「常に noindex を返す実装」が全条件を通ってしまう・PIT-61）
 
 ### Task 13.11: `/sites` 管理面
 - **area**: frontend / **path**: `web/`
@@ -189,13 +219,22 @@
 - **仕様**: `PrincipalKind` に匿名種別を追加し（`PrincipalKind::Workflow` を足した migration 0022 と同型）、
   **tenant/org/table は `form` 定義からのみ解決**する（リクエスト由来の値は 1 つも採用しない）。
   受付ルートは**メイン API の `route_table()` に足さず sites リスナ側**に置く。
-  レート制限は IP と form_id の双方、冪等キー台帳（`ui_action_invocation` と同型）で再送を潰し、
   監査は form に紐づく合成 actor で必ず残す。ハニーポットと最小滞在時間で自動投稿を落とす。
-  レート制限＋advisory lock＋deny 台帳の実装は `share_link_redeem.rs` の型を流用する。**PIT-58 を必読**。
+  `share_link_redeem.rs` から流用するのは**構造**（ロック外での重い検証・advisory lock による直列化・deny 台帳・
+  理由を区別しない失敗）であって limiter の実装ではない — `share_link_ratelimit.rs` は自ら
+  「プロセス内 best-effort（各レプリカ独立）」と宣言しており、匿名面に流用すると許容量がレプリカ数だけ増える。
+  **レート制限は workflow-engine の共有トークンバケット**（design §4.12 で API 面へ適用済み）を
+  IP と form_id の双方に使い、**実クライアント IP は 13.6 の trusted-proxy 境界から採る**。
+  **冪等性は 2 段構え**（PIT-58）: JS がある経路は受付が発行する短命の署名済み送信トークン、
+  no-JS 経路は `(form_id, 正規化ペイロードのハッシュ, クライアント IP ハッシュ)` を鍵に分単位の窓で重複排除する
+  （静的 publication に焼かれた HTML は閲覧ごとに一意な鍵を埋め込めないため）。**PIT-58 を必読**。
 - **受け入れ条件**:
   - [ ] ボディやヘッダで別テナント/別テーブルを指定しても form 定義の宛先にしか入らない
   - [ ] 同一冪等キーの二度目が行を増やさない
+  - [ ] JS 無効の同一内容再送が窓の中で 1 件に潰れ、窓を越えれば通る
   - [ ] レート制限超過が理由を区別せず 429
+  - [ ] レプリカを増やしても合計の許容量が増えない（分散 limiter の結合テスト）
+  - [ ] 信頼済み hop 以外から来た `X-Forwarded-For` でレート制限を回避できない
   - [ ] 送信ごとに監査が 1 件残る
   - [ ] メイン API の `route_table()` に新しい `Public` ルートが増えていない（構造テスト）
 
@@ -209,7 +248,8 @@
   - [ ] 生 HTML の `<form>` から送信した行が `data_table` に入る（e2e）
   - [ ] `form` が公開宣言していないフィールドが拒否される
   - [ ] 埋込タグが同じ `form` 定義から描画され、同じ検証を通る
-  - [ ] JS を無効にしても生 HTML のフォームが送信できる
+  - [ ] JS を無効にしても生 HTML のフォームが送信でき、**その経路の冪等性が 13.12 の縮退仕様どおり**
+        （窓内の同一内容再送は 1 件・窓外は通る）に振る舞う
 
 ### Task 13.14: フォーム→ワークフロー
 - **area**: api / **path**: `crates/data`, `crates/workflow-engine`, `crates/api`
@@ -260,10 +300,16 @@
   配送後に GC されるため分析ストアにならない）。受信は sites リスナのビーコン、集計は jobq 経由の非同期。
   生の IP/UA は保存せず日次ソルト付きハッシュのみ。**計測は既定 OFF**で、集計表示には
   `crates/data` と同型の K 未満セル抑制（PIT-17）を掛ける。
+  **ビーコンはフォームと同じ匿名書き込み面**なので 13.12 の境界に載せる（本タスクが 13.12 に依存する理由）:
+  site/tenant/org は Host と publication から束縛し、サイズ上限・分散レート制限・クォータ・監査を同じ形で適用する。
+  `unique(tenant_id, idempotency_key)` は同じ鍵の再送しか止めないため、
+  **鍵を作り変え続ける相手には `site_event` と jobq を埋められる** — 一意制約を防御と数えない。
 - **受け入れ条件**:
   - [ ] 既定で計測が無効
   - [ ] 生の IP/UA がテーブルに保存されない
   - [ ] 同一冪等キーの二重計上が起きない
+  - [ ] 鍵を変え続ける大量送信がレート制限とクォータで止まり、他サイトの計測に波及しない
+  - [ ] Host と一致しない site を指定したビーコンが拒否される
   - [ ] 集計表示で K 未満のセルが抑制される
 
 ### Task 13.19: 送信データのエクスポート
