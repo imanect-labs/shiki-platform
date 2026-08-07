@@ -9,7 +9,8 @@
 > [Phase 3](./roadmap/phase-3.md) ・ [Phase 4](./roadmap/phase-4.md) ・ [Phase 5](./roadmap/phase-5.md) ・
 > [Phase 6](./roadmap/phase-6.md) ・ [Phase 7](./roadmap/phase-7.md) ・ [Phase 8](./roadmap/phase-8.md) ・
 > [Phase 9](./roadmap/phase-9.md) ・ [Phase 10](./roadmap/phase-10.md) ・ [Phase 11-pre](./roadmap/phase-11-pre.md) ・
-> [Phase 11](./roadmap/phase-11.md) ・ [Phase 12](./roadmap/phase-12.md) ・ [並行/将来トラック](./roadmap/parallel-tracks.md)
+> [Phase 11](./roadmap/phase-11.md) ・ [Phase 12](./roadmap/phase-12.md) ・ [Phase 13](./roadmap/phase-13.md) ・
+> [並行/将来トラック](./roadmap/parallel-tracks.md)
 >
 > 各タスクは1つのGitHub Issueに対応（area:* ラベル）。
 
@@ -43,6 +44,9 @@ flowchart LR
   P10 --> ALPHA["★プライベートアルファ"]
   P11 --> ALPHA
   P12 --> ALPHA
+  ALPHA --> P13["Phase 13<br/>HTMLページ/サイト公開<br/>アーティファクト/CMS/フォーム"]
+  P11 -.->|collab/砂箱の流用| P13
+  P9 -.->|B1匿名配信の型| P13
   P0 -.->|並行| SK["skillex 認証統合"]
   P8 -.->|将来| FULLPOOL["データプレーン完全相乗り<br/>（フルプール最適化）"]
 ```
@@ -176,6 +180,20 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 ---
 
 > **プライベートアルファ = Phase 0〜12 ＋ SAAS.1〜4 の完成形**（requirements §1.1 のリリース定義）。
+> Phase 13 以降はポストアルファ。
+
+---
+
+## Phase 13 — HTML ページ／サイト公開（ポストアルファ）
+**依存**: Phase 11（collab 基盤・GrapesJS 砂箱・下書き確定型）・Phase 9（B1 匿名配信の型）・
+Phase 10（ワークフロートリガ）・Phase 8/12（インフラ・IaC）。詳細: [phase-13.md](./roadmap/phase-13.md)
+- **アーティファクト**（AI が資料を HTML で組む・`.page` ＝ Yjs collab ドキュメント・3タブエディタ・design §4.13）。
+- **サイト公開**: 匿名配信は app-gateway 第4リスナで **`AuthContext` を作らず FGA を通さない**。
+  サイトごとのサブドメインでオリジンを分離し、**インデックスは既定 noindex**（二重ゲート）。
+- **フォーム**（生 HTML の `<form>`＋埋込タグ・蓄積は `data_table`・送信でワークフロー起動）と
+  **CMS**（ノートコレクション→テンプレート適用→ビルド時生成）。
+- 自前 CDN のアニメーション CSS ライブラリ、A/B テスト（cookie なし割当）、`site_event` 計測、独自ドメイン。
+- **成果物**: 資料を HTML で作って社内に配れ、対外サイトを公開してフォームの反響が業務データとして溜まる。
 
 ---
 
