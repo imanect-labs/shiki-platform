@@ -7,10 +7,12 @@ description: 作業ツリーの変更を merge-ready な Pull Request にし、C
 
 現在の変更を、このリポジトリの自動品質ゲートを通る Pull Request にし、レビュー指摘を緑になるまでループで直すエンドツーエンド手順。緑になったらブログ価値のある変更を提案する（Phase 6）。
 
-このリポジトリの品質ゲートは（GitHub Actions がまだ無いため）次の2つ:
+このリポジトリの品質ゲートは次の3つ:
 
 1. **ローカルゲート**（push 前に自分で回す）: `cargo fmt` / `cargo clippy` / `cargo build` / `cargo test`、web 差分があれば `pnpm lint` / `pnpm build`。
-2. **AI レビュアー**（PR のステータスチェック＆レビュースレッド）:
+2. **CI**（`.github/workflows/ci.yml`）: Rust（fmt/clippy/test/build）・Quality gates（file-size / migration-version / cargo-machete）・cargo-deny・tabular-runner・sandbox-gvisor 等。
+   - `paths-ignore` に `docs/**`・`**.md`・`.claude/**` があるため、**ドキュメント/skill のみの変更では CI は 1 つも起動しない**。その場合 `gh pr checks` は空になるので `--watch` で待たず、AI レビュアーのみをゲートとして扱う。
+3. **AI レビュアー**（PR のステータスチェック＆レビュースレッド）:
    - `CodeRabbit`（`coderabbitai[bot]`）
    - `Codex`（`chatgpt-codex-connector[bot]`）
 
