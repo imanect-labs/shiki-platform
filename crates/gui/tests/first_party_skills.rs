@@ -113,14 +113,20 @@ fn grilling_keeps_rounds_open_and_declares_safe_tools() {
     // 上流（mattpocock/skills・MIT）の派生物なので、**配布物そのもの**が帰属を持ち歩く必要がある。
     // import が artifact 化するのは body だけで隣の NOTICE は同行しないため、instructions 末尾の
     // 表示が唯一の同梱経路になる（消すとライセンス条件を満たさなくなる）。
+    //
+    // MIT が要求するのは「著作権表示**と許諾文**の同梱」なので、見出しと著作権行だけでなく
+    // **許諾・再配布条件・無保証条項の実文**まで固定する（本文だけ削られても落ちるように）。
     for required in [
         "MIT License",
         "Copyright (c) 2026 Matt Pocock",
         "https://github.com/mattpocock/skills",
+        "Permission is hereby granted, free of charge",
+        "shall be included in all copies or\nsubstantial portions of the Software",
+        "WITHOUT WARRANTY OF ANY KIND",
     ] {
         assert!(
             skill.instructions.contains(required),
-            "instructions に上流の帰属表示（{required}）が無い"
+            "instructions に上流のライセンス条項（{required:?}）が無い"
         );
     }
 }
