@@ -41,10 +41,35 @@ export async function manifestDigest(manifest: unknown): Promise<string> {
   return sha256Hex(new TextEncoder().encode(canonicalize(manifest)));
 }
 
-/// digest（hex 文字列）へ ed25519 署名し hex を返す（秘密鍵は 32 バイト raw）。
+/// 32 バイトの ed25519 seed を PKCS#8（RFC 8410 の PrivateKeyInfo）へ包む。
+///
+/// WebCrypto の `raw` 形式は ed25519 では**公開鍵専用**で、秘密鍵の import は `pkcs8` しか
+/// 受け付けない（`raw` + `["sign"]` は `Unsupported key usage for a Ed25519 key` で落ちる）。
+/// 鍵は `SHIKI_SIGNING_KEY` として 32 バイト hex で持ち回るので、署名の直前でここで包む。
+///
+/// 前置き 16 バイトは固定: SEQUENCE(46) / INTEGER 0 / AlgorithmIdentifier(OID 1.3.101.112) /
+/// OCTET STRING(34) → OCTET STRING(32)。
+function seedToPkcs8(seed: Uint8Array): Uint8Array {
+  if (seed.length !== 32) throw new Error(`ed25519 秘密鍵は 32 バイト（受領: ${seed.length}）`);
+  const prefix = Uint8Array.from([
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+  ]);
+  const out = new Uint8Array(prefix.length + seed.length);
+  out.set(prefix, 0);
+  out.set(seed, prefix.length);
+  return out;
+}
+
+/// digest（hex 文字列）へ ed25519 署名し hex を返す（秘密鍵は 32 バイト raw seed）。
 export async function signManifest(manifest: unknown, secretKeyRaw: Uint8Array): Promise<string> {
   const digest = await manifestDigest(manifest);
-  const key = await subtle.importKey("raw", secretKeyRaw, { name: "Ed25519" }, false, ["sign"]);
+  const key = await subtle.importKey(
+    "pkcs8",
+    seedToPkcs8(secretKeyRaw),
+    { name: "Ed25519" },
+    false,
+    ["sign"],
+  );
   const sig = await subtle.sign("Ed25519", key, new TextEncoder().encode(digest));
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }

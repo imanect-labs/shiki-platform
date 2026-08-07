@@ -55,6 +55,82 @@ fn all_first_party_bundles_pass_validation() {
     }
 }
 
+/// grilling は**質問ラウンドを何度も回す**のが本体なので、それを可能にする宣言を固定する（#428）。
+///
+/// `phase` を宣言すると実行前フェーズの門が掛かり（`crates/chat/src/worker/gate.rs`）、
+/// grilling とは 2 箇所で噛み合わない。
+///
+/// - **調べられない**: `Clarify` 段階で渡るツールは `emit_ui` だけ（`allows`）。`subagent` も
+///   `doc_search` も無いので、1 ラウンド目は調べずに質問を書くしかなくなる。
+/// - **質問できない**: 最初の質問カードでスレッドは `Plan` へ移り（`stage_from_cards`）、以降
+///   `emit_ui` は `plan_card` しか通さない（`allowed_cards`）。2 ラウンド目が出せない。
+///
+/// 「調べられるようになった頃には質問カードが出せない」順序になるため、宣言しないことが仕様。
+/// うっかり `phase` を足すと静かに壊れるので、その不在を固定する。
+#[test]
+fn grilling_keeps_rounds_open_and_declares_safe_tools() {
+    let (_, body) = bundles()
+        .into_iter()
+        .find(|(name, _)| name == "grilling")
+        .expect("grilling バンドルがあること");
+    let skill = gui::validate_skill_body(&body).expect("検証を通る");
+
+    let command = skill.command.expect("command 宣言がある");
+    assert_eq!(command.name, "grill");
+    let args: Vec<&str> = command.variants.iter().map(|v| v.args.as_str()).collect();
+    assert_eq!(
+        args,
+        vec!["", "quick"],
+        "既定（詰め切る）と quick（1 ラウンドで切り上げ）の 2 経路"
+    );
+    for variant in &command.variants {
+        assert!(
+            variant.phase.is_none(),
+            "{}: phase を宣言すると 2 ラウンド目の質問カードが出せなくなる",
+            variant.args
+        );
+    }
+
+    // 面接に要る宣言: 質問/計画カード・事実調べの委譲・台帳への追記・共通理解の保存。
+    let tools: Vec<&str> = skill
+        .allowed_tools
+        .as_ref()
+        .expect("allowed_tools を宣言する")
+        .iter()
+        .map(|t| t.as_str())
+        .collect();
+    for expected in ["emit_ui", "subagent", "fs_append", "fs_read", "save_note"] {
+        assert!(tools.contains(&expected), "{expected} が宣言に無い");
+    }
+    // 破壊系は宣言しない（deep-research と同じ禁止則）。
+    for forbidden in ["fs_delete", "shell", "office.live_edit"] {
+        assert!(
+            !tools.contains(&forbidden),
+            "{forbidden} を宣言してはいけない"
+        );
+    }
+
+    // 上流（mattpocock/skills・MIT）の派生物なので、**配布物そのもの**が帰属を持ち歩く必要がある。
+    // import が artifact 化するのは body だけで隣の NOTICE は同行しないため、instructions 末尾の
+    // 表示が唯一の同梱経路になる（消すとライセンス条件を満たさなくなる）。
+    //
+    // MIT が要求するのは「著作権表示**と許諾文**の同梱」なので、見出しと著作権行だけでなく
+    // **許諾・再配布条件・無保証条項の実文**まで固定する（本文だけ削られても落ちるように）。
+    for required in [
+        "MIT License",
+        "Copyright (c) 2026 Matt Pocock",
+        "https://github.com/mattpocock/skills",
+        "Permission is hereby granted, free of charge",
+        "shall be included in all copies or\nsubstantial portions of the Software",
+        "WITHOUT WARRANTY OF ANY KIND",
+    ] {
+        assert!(
+            skill.instructions.contains(required),
+            "instructions に上流のライセンス条項（{required:?}）が無い"
+        );
+    }
+}
+
 /// deep-research は**コマンド起動が本体**なので、宣言の中身まで固定する（#387）。
 ///
 /// `/deep-research` と `/deep-research auto` の 2 経路はスラッシュコマンド UI の

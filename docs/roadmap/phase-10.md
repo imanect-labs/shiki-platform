@@ -309,3 +309,6 @@
         `.shiki` script → `Shiki.http.request`・束縛外拒否は executor e2e で検証・#344）
   - [x] first-party 署名により管理者の個別同意なしで利用可能（信頼ティア動作確認。
         `POST /skills/registry/import` の署名検証 → 本人インストールのみで利用可）
+  - [x] 対話系の公式 skill も同じ経路で配れる（`sdk/first-party-skills/grilling`・
+        設計ツリーを質問カードのラウンドで詰め切る面接プリミティブ・`/grill`・#428。
+        上流 [mattpocock/skills](https://github.com/mattpocock/skills) の MIT 派生）
