@@ -38,27 +38,53 @@ NAME="${repo#*/}"
 
 blocked=0
 
+STDERR_FILE=$(mktemp)
+trap 'rm -f "$STDERR_FILE"' EXIT
+
 # --- CI チェック ---
 echo "== CI チェック (PR #$PR_NUM) =="
-checks_json=$(gh pr checks "$PR_NUM" --json name,state 2>/dev/null || echo '[]')
-if [ "$(printf '%s' "$checks_json" | jq 'length')" -eq 0 ]; then
+# gh pr checks は pending でも exit 8 で JSON を stdout に出す。`|| echo '[]'` だと
+# JSON と '[]' が連結し、jq が2値（例 "1\n0"）を返して数値比較が壊れ、
+# pending を緑と誤判定する。終了コードと stdout/stderr を分離して扱う。
+set +e
+checks_json=$(gh pr checks "$PR_NUM" --json name,state 2>"$STDERR_FILE")
+checks_rc=$?
+set -e
+
+if printf '%s' "$checks_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  if [ "$(printf '%s' "$checks_json" | jq 'length')" -eq 0 ]; then
+    echo "  （チェックなし）"
+  else
+    printf '%s' "$checks_json" | jq -r '.[] | "  [\(.state)] \(.name)"'
+    # SUCCESS / SKIPPED / NEUTRAL 以外が1つでもあればブロック。
+    fail=$(printf '%s' "$checks_json" \
+      | jq '[.[] | select(.state | ascii_upcase | (. != "SUCCESS" and . != "SKIPPED" and . != "NEUTRAL"))] | length')
+    if [ "$fail" -gt 0 ]; then blocked=1; fi
+  fi
+  # exit 8 = pending。JSON 上は pass に見えても未確定なのでブロックする。
+  if [ "$checks_rc" -eq 8 ]; then
+    echo "  （pending: チェック実行中）"
+    blocked=1
+  fi
+elif grep -qi 'no checks reported' "$STDERR_FILE"; then
+  # CI 未起動（paths-ignore 等）。取得は成功しているのでブロックしない。
   echo "  （チェックなし）"
 else
-  printf '%s' "$checks_json" | jq -r '.[] | "  [\(.state)] \(.name)"'
-  # SUCCESS / SKIPPED / NEUTRAL 以外が1つでもあればブロック。
-  fail=$(printf '%s' "$checks_json" \
-    | jq '[.[] | select(.state | ascii_upcase | (. != "SUCCESS" and . != "SKIPPED" and . != "NEUTRAL"))] | length')
-  [ "$fail" -gt 0 ] && blocked=1
+  # 取得・解析の失敗を「チェックなし」に化かさない（緑の誤判定を防ぐ）。
+  err "CI チェックを取得できません（gh exit=$checks_rc）: $(tr '\n' ' ' <"$STDERR_FILE")"
+  exit 2
 fi
 
 # --- 未解消 AI レビュースレッド ---
 echo "== 未解消 AI レビュースレッド =="
 # GraphQL で reviewThreads を取得し、isResolved=false かつ対象 bot のものを抽出。
+set +e
 threads=$(gh api graphql -F owner="$OWNER" -F name="$NAME" -F pr="$PR_NUM" -f query='
   query($owner:String!, $name:String!, $pr:Int!) {
     repository(owner:$owner, name:$name) {
       pullRequest(number:$pr) {
         reviewThreads(first:100) {
+          pageInfo { hasNextPage }
           nodes {
             isResolved
             comments(first:1) {
@@ -68,17 +94,44 @@ threads=$(gh api graphql -F owner="$OWNER" -F name="$NAME" -F pr="$PR_NUM" -f qu
         }
       }
     }
-  }' 2>/dev/null || echo '{}')
+  }' 2>"$STDERR_FILE")
+threads_rc=$?
+set -e
+
+# 取得失敗を '{}' に化かすと「未解消なし」＝緑になる。失敗は取得エラーとして落とす。
+if [ "$threads_rc" -ne 0 ]; then
+  err "レビュースレッドを取得できません（gh exit=$threads_rc）: $(tr '\n' ' ' <"$STDERR_FILE")"
+  exit 2
+fi
+# GraphQL は HTTP 200 でも errors を返す。部分結果を緑と誤認しない。
+if printf '%s' "$threads" | jq -e '(.errors? | length // 0) > 0' >/dev/null 2>&1; then
+  err "GraphQL がエラーを返しました: $(printf '%s' "$threads" | jq -c '.errors')"
+  exit 2
+fi
+# 100 件を超えるスレッドは取得できていない。黙って切り捨てず未確定として扱う。
+if [ "$(printf '%s' "$threads" \
+    | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')" = "true" ]; then
+  err "レビュースレッドが 100 件を超えています。全件を判定できないためブロックします。"
+  exit 2
+fi
 
 bots_json=$(printf '%s' "$PR_REVIEW_BOTS" | jq -R 'split(" ") | map(select(length>0))')
 
+set +e
 unresolved=$(printf '%s' "$threads" | jq -r --argjson bots "$bots_json" '
   [ .data.repository.pullRequest.reviewThreads.nodes[]?
     | select(.isResolved == false)
     | .comments.nodes[0] as $c
     | select($c.author.login as $a | $bots | index($a))
     | "  [\($c.author.login)] \($c.path // "-"): \(($c.body // "") | gsub("\n"; " ") | .[0:160])"
-  ] | .[]' 2>/dev/null || true)
+  ] | .[]')
+jq_rc=$?
+set -e
+# jq の失敗を `|| true` で握り潰すと空＝緑になる。解析失敗は取得エラーとして落とす。
+if [ "$jq_rc" -ne 0 ]; then
+  err "レビュースレッドの解析に失敗しました（jq exit=$jq_rc）。"
+  exit 2
+fi
 
 if [ -n "$unresolved" ]; then
   printf '%s\n' "$unresolved"

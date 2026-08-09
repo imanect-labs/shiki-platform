@@ -38,13 +38,29 @@ HAS_API=0; { [ -d crates/api ] || [ -d ingestion-worker ]; } && HAS_API=1
 if [ "$TARGET" = "auto" ]; then
   BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@') || true
   BASE=${BASE:-main}
-  CHANGED=$(git diff --name-only "$BASE"...HEAD 2>/dev/null || git diff --name-only)
+  # ローカルの $BASE は古いことがある（merge-base が遡り無関係な差分を拾う）ため
+  # origin/$BASE を優先し、無い場合だけローカルへフォールバックする。
+  BASE_REF="origin/$BASE"
+  git rev-parse --verify --quiet "$BASE_REF" >/dev/null 2>&1 || BASE_REF="$BASE"
+  # Phase 2 はコミット前に実行される。コミット済みだけでなく index・作業ツリー・
+  # 未追跡も見ないと、未コミットの変更が判定から漏れる。
+  CHANGED=$(
+    {
+      git diff --name-only "$BASE_REF"...HEAD 2>/dev/null || true
+      git diff --cached --name-only 2>/dev/null || true
+      git diff --name-only 2>/dev/null || true
+      git ls-files --others --exclude-standard 2>/dev/null || true
+    } | sort -u
+  )
   HIT_WEB=0; printf '%s\n' "$CHANGED" | grep -q '^web/' && HIT_WEB=1
   HIT_API=0; printf '%s\n' "$CHANGED" | grep -Eq '^(crates/|ingestion-worker/)' && HIT_API=1
   if [ "$HIT_WEB" = 1 ] && [ "$HIT_API" = 1 ]; then TARGET=both
   elif [ "$HIT_API" = 1 ]; then TARGET=api
   elif [ "$HIT_WEB" = 1 ]; then TARGET=web
-  else TARGET=${HAS_WEB:+web}; TARGET=${TARGET:-api}  # 既定: web があれば web
+  # 既定: web があれば web。HAS_WEB は 0/1 で "0" も非空のため ${HAS_WEB:+web} は
+  # 常に web になる（api 専用構成で何も起動しない）。値で明示比較する。
+  elif [ "$HAS_WEB" = 1 ]; then TARGET=web
+  else TARGET=api
   fi
   echo "自動判定 target: $TARGET（base=$BASE）"
 fi
@@ -64,12 +80,20 @@ start_api() {
 
 start_web() {
   local port="$1"
+  local api_port="${2:-}"
   if [ "$HAS_WEB" != 1 ]; then
     echo "（web 未実装のため起動スキップ）"
     return 0
   fi
   echo "Next.js を起動: http://0.0.0.0:$port"
-  ( cd web && pnpm exec next dev -H 0.0.0.0 -p "$port" )
+  # both で API を PORT+1 に起動した場合、BACKEND_ORIGIN を渡さないと
+  # web/next.config.mjs の既定 http://localhost:8080 へ /api/* と /auth/* が流れる。
+  if [ -n "$api_port" ]; then
+    echo "  BACKEND_ORIGIN=http://127.0.0.1:$api_port"
+    ( cd web && BACKEND_ORIGIN="http://127.0.0.1:$api_port" pnpm exec next dev -H 0.0.0.0 -p "$port" )
+  else
+    ( cd web && pnpm exec next dev -H 0.0.0.0 -p "$port" )
+  fi
 }
 
 if [ "$HAS_WEB" != 1 ] && [ "$HAS_API" != 1 ]; then
@@ -86,7 +110,13 @@ case "$TARGET" in
     start_api "$((PORT+1))" &
     API_PID=$!
     trap 'kill "$API_PID" 2>/dev/null || true' EXIT INT TERM
-    start_web "$PORT"
+    # api を実際に起動した場合だけ web のプロキシ先を差し替える
+    # （api 未実装なら start_api はスキップし、死んだポートを指すのを避ける）。
+    if [ "$HAS_API" = 1 ]; then
+      start_web "$PORT" "$((PORT+1))"
+    else
+      start_web "$PORT"
+    fi
     ;;
   *) err "未知の target: $TARGET（web|api|both）"; exit 2 ;;
 esac
