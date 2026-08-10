@@ -32,6 +32,11 @@ services:
       - auto_explain.log_min_duration=200ms
       - -c
       - auto_explain.log_analyze=on
+      # **バインドパラメータの値をログに出さない。** PG16 の既定 -1 は値を無制限に出力するため、
+      # 遅いクエリのメールアドレス・トークン・文書本文が Postgres のログへ流れ、
+      # `docker compose logs postgres` や集約ログから読めてしまう。計画の形が見たいだけなので値は要らない。
+      - -c
+      - auto_explain.log_parameter_max_length=0
       # log_timing はノード単位の計時で、それ自体が重い。log_analyze と併用する際に off にするのが定石。
       - -c
       - auto_explain.log_timing=off

@@ -73,13 +73,24 @@ SELECT relname, n_live_tup, n_dead_tup,
 
 `migrations/0063` の閾値はすべて初期値なので、ここを見ながら調整する。**アラートを張るならこの指標。**
 
-使われていない index も同じビュー系で分かる。書き込みを遅くしているだけなので削除候補:
+使われていない index も同じビュー系で探せる。ただし **`idx_scan = 0` だけで削除候補にしてはいけない。**
+
+- **制約検査のための index scan は `idx_scan` に加算されない。** 主キー・UNIQUE 制約を支える index は、実際に使われていても 0 のままになり得る（`pg_constraint.conindid` で除外する）。
+- **統計はリセットからの累積値**。`pg_stat_database.stats_reset` を見て、十分に長い実運用期間を含んでいることを確認してから判断する。月次バッチしか使わない index は数日の観測では 0 に見える（`stats_reset` が NULL ならクラスタ作成以降リセットされていない）。
 
 ```sql
-SELECT relname, indexrelname, idx_scan
-  FROM pg_stat_user_indexes
- WHERE idx_scan = 0
- ORDER BY relname;
+SELECT stats_reset, now() - stats_reset AS observed_for
+  FROM pg_stat_database WHERE datname = current_database();
+
+SELECT ui.relname, ui.indexrelname, ui.idx_scan,
+       pg_size_pretty(pg_relation_size(ui.indexrelid)) AS size
+  FROM pg_stat_user_indexes ui
+  JOIN pg_index i ON i.indexrelid = ui.indexrelid
+ WHERE ui.idx_scan = 0
+   AND NOT i.indisunique                                    -- UNIQUE/PK を支える index を除く
+   AND NOT EXISTS (SELECT 1 FROM pg_constraint c            -- 制約が依存する index を除く
+                    WHERE c.conindid = ui.indexrelid)
+ ORDER BY pg_relation_size(ui.indexrelid) DESC;
 ```
 
 ## 4. 今この瞬間 DB を詰まらせているのは誰か

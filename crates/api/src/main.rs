@@ -38,7 +38,8 @@ async fn main() -> anyhow::Result<()> {
     //
     // application_name を必ず載せる。これが無いと `pg_stat_activity` の接続が全て空欄で並び、
     // 「今 DB を詰まらせているのは誰か」を障害時に切り分けられない（shiki-admin の retenant や
-    // ingestion 系と区別が付かない）。接続 URL 側の指定があればそれを尊重する。
+    // ingestion 系と区別が付かない）。**`application_name` は `shiki-server` に固定**する
+    // （sqlx の setter は URL 側の指定を上書きする）。それ以外の接続 URL のオプションは維持される。
     let db_options: sqlx::postgres::PgConnectOptions = config
         .database
         .url
