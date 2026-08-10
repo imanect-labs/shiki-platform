@@ -89,6 +89,7 @@ docker exec -i pg-test psql -U postgres -d shiki -c \
 set -e                      # build 失敗を後続の cleanup 成功で握り潰さない
 BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null); BASE=${BASE:-origin/main}
 TMP=$(mktemp -d)
+LOGD=$(mktemp -d)          # ログも実行ごとに分ける（固定パスだと並行実行で上書きし合う）
 cleanup() {
   git worktree remove "$TMP/base" --force 2>/dev/null || true
   git worktree remove "$TMP/head" --force 2>/dev/null || true
@@ -97,10 +98,11 @@ trap cleanup EXIT           # 失敗しても worktree を残さない
 git worktree add "$TMP/base" "$BASE"
 git worktree add "$TMP/head" HEAD
 for side in base head; do
-  (cd "$TMP/$side/web" && pnpm install --frozen-lockfile && pnpm build) > "/tmp/$side-build.txt" 2>&1 \
-    || { echo "$side の build に失敗: tail -30 /tmp/$side-build.txt"; exit 1; }
+  (cd "$TMP/$side/web" && pnpm install --frozen-lockfile && pnpm build) > "$LOGD/$side-build.txt" 2>&1 \
+    || { echo "$side の build に失敗: tail -30 $LOGD/$side-build.txt"; exit 1; }
 done
-diff <(grep -E '[○ƒλ●]' /tmp/base-build.txt) <(grep -E '[○ƒλ●]' /tmp/head-build.txt)
+diff <(grep -E '[○ƒλ●]' "$LOGD/base-build.txt") <(grep -E '[○ƒλ●]' "$LOGD/head-build.txt")
+echo "ビルドログ: $LOGD"    # 失敗調査のため残す（不要なら rm -rf "$LOGD"）
 ```
 
 未コミットの変更も測りたいなら、先にコミットするか `git stash` ではなく

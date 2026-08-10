@@ -123,15 +123,24 @@ if [ "$FAST" = 0 ] && touches '^crates/tabular/'; then
     'cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check && cargo clippy --manifest-path crates/tabular/runner/Cargo.toml --release -- -D warnings'
   # fmt/clippy だけでは、外部参照拒否・DML/DDL 拒否・クォータ（PIT-39）を壊しても通ってしまう。
   # CI の tabular-runner ジョブと同じく release ビルド ＋ adversarial テストまで回す。
+  # ランナーのパスは固定で書かない。CARGO_TARGET_DIR を設定していると出力先が変わり、
+  # 固定パスではテストが必ず失敗する。cargo metadata の target_directory から解決する。
   run_gate "tabular runner build + adversarial" sh_c \
-    'cargo build --manifest-path crates/tabular/runner/Cargo.toml --release && SHIKI_TABULAR_RUNNER=crates/tabular/runner/target/release/shiki-tabular-runner cargo test -p shiki-tabular --test runner_adversarial_it'
+    'set -e
+     M=crates/tabular/runner/Cargo.toml
+     cargo build --manifest-path "$M" --release
+     TD=$(cargo metadata --manifest-path "$M" --format-version 1 --no-deps | jq -r .target_directory)
+     SHIKI_TABULAR_RUNNER="$TD/release/shiki-tabular-runner" \
+       cargo test -p shiki-tabular --test runner_adversarial_it'
 fi
 
 # ---------- Web ----------
-# CI の web ジョブは非 docs PR なら無条件に gen:api → lint → build を回す。web/ の差分だけを
-# 条件にすると、Rust 側の OpenAPI/route/DTO だけを変えた PR で codegen 後の型崩れを見逃す
-# （Rust テストは通るが web が壊れる）。型の生成元になる Rust 差分も条件に含める。
-if touches '^web/' || touches '^crates/'; then
+# CI の web ジョブは paths-ignore（docs/** ・ **.md ・ .claude/**）に当たらない PR なら
+# **無条件に** gen:api → lint → build を回す。ここも同じ述語にする。
+# `web/` だけを条件にすると Rust 側の OpenAPI/route/DTO 変更で型崩れを見逃し、
+# `web/|crates/` に広げても deploy/ や scripts/ だけの PR で CI と食い違う。
+non_docs_change() { grep -qvE '^(docs/|\.claude/)|\.md$' <<<"$CHANGED"; }
+if non_docs_change; then
   run_gate "pnpm install" sh_c 'cd web && pnpm install --frozen-lockfile'
   run_gate "pnpm gen:api (codegen が正)" sh_c 'cd web && pnpm gen:api'
   run_gate "pnpm lint" sh_c 'cd web && pnpm lint'
