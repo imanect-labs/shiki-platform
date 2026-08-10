@@ -174,7 +174,7 @@
     - clippy 厳格化（`[workspace.lints]`）: 安全系（`unwrap_used`/`expect_used`/`panic`/
       `dbg_macro`/`print_*` 等）は deny、`pedantic` は本番コードに適用（テスト/CLI bin は
       方針に沿ってスコープ許容）。しきい値は `clippy.toml`。
-    - **ファイルサイズ gate**: `scripts/check-file-size.sh`（src の 1 ファイル 500 行以内）。
+    - **ファイルサイズ gate**: `scripts/check-file-size.sh`（src の 1 ファイル 1000 行以内）。
     - **cargo-machete**: 未使用依存の検出。
     - **cargo-deny**: 脆弱性(RUSTSEC)/ライセンス/出所/wildcard 依存を `deny.toml` で検査。
 - **受け入れ条件**:

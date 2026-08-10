@@ -1,6 +1,6 @@
 //! `AgentEvent` → SSE イベント種別（[`StreamEventKind`]）への写像。
 //!
-//! [`super::sink`] から切り出した（1 ファイル 500 行のゲート）。ここは**ワイヤ形式への変換だけ**を
+//! [`super::sink`] から切り出した（1 ファイル行数ゲート）。ここは**ワイヤ形式への変換だけ**を
 //! 担う純関数の集まりで、DB も状態も触らない。projection（message.content へ残すか）は
 //! [`super::sink::WorkerSink::accumulate`] が別に決める。
 

@@ -1,4 +1,4 @@
-//! スレッドの skill ピン系ルート（#344 Task 10.11・`routes/chat.rs` から分割・500 行規約）。
+//! スレッドの skill ピン系ルート（#344 Task 10.11・`routes/chat.rs` から分割・行数規約）。
 //!
 //! ピンは**設定者の権限**で version 込みに解決してから保存する（存在・kind・viewer 検証は
 //! SkillStore が担う・fail-closed）。ピンの意味は「最初からロード済みのスキル」であり、

@@ -2,7 +2,7 @@
 //!
 //! 「宣言・拡張子・magic bytes のどれで文書と判定するか」と「worker へ何を渡すか」を見る。
 //! HTML 抽出の効率は [`super::tests_efficiency`]、取得経路の防御は [`super::tests`]
-//! （500 行規約でファイルを分けている）。
+//! （行数規約でファイルを分けている）。
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

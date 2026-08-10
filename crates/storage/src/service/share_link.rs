@@ -7,7 +7,7 @@
 //! 共有する参照カウントを正しく扱う）。
 //!
 //! redeem（パスワード解錠・per-user 参照カウント）は [`super::share_link_redeem`]、失効処理
-//! （遅延失効・イベント駆動タイマ）は [`super::share_link_expiry`] に分割している（500 行ガード）。
+//! （遅延失効・イベント駆動タイマ）は [`super::share_link_expiry`] に分割している（行数ガード）。
 
 #[allow(clippy::wildcard_imports)]
 use super::*;

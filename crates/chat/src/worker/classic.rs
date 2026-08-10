@@ -2,7 +2,7 @@
 //!
 //! ツールループを持たず、直近発話で事前検索した文脈を system へ注入して gateway を直叩きする。
 //! 既定は agent-core ループ（[`super::generate`]）であり、こちらは運用で明示的に選んだ場合のみ。
-//! `generate.rs` から切り出した（1 ファイル 500 行規約）。
+//! `generate.rs` から切り出した（1 ファイル行数規約）。
 
 use authz::AuthContext;
 use futures::stream::StreamExt;

@@ -1,6 +1,6 @@
 //! 検索の後段: 採択判定（軽量）・本文ハイドレーション・rerank・最終結果の組み立て。
 //!
-//! `search.rs`（親）の `SearchService` に対する impl ブロックを分割したもの（500 行ガード）。
+//! `search.rs`（親）の `SearchService` に対する impl ブロックを分割したもの（行数ガード）。
 //! 子モジュールなので親の private フィールド（`pool` 等）へそのまま触れる。
 //!
 //! **org 境界（#371・PIT-45）と `deleted_at is null` を課すのはこのモジュールの責務**。

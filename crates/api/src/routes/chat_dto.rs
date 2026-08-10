@@ -1,4 +1,4 @@
-//! チャット API の DTO（`routes/chat.rs` から分割・500 行規約）。
+//! チャット API の DTO（`routes/chat.rs` から分割・行数規約）。
 //!
 //! 型は chat 側のドメイン型をそのまま OpenAPI へ流し、フロント `chat-api.ts` と同型に保つ
 //! （手書きミラー禁止・codegen が正）。

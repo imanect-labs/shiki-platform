@@ -1,5 +1,5 @@
 //! script-runtime の線形メモリ受け渡し・トラップ分類・結果エンベロープ処理。
-//! [`engine`](crate::engine) の実装詳細を切り出したもの（500 行ゲート対応）。
+//! [`engine`](crate::engine) の実装詳細を切り出したもの（行数ゲート対応）。
 
 use serde_json::Value;
 use wasmtime::{Caller, Instance, Memory, Store};

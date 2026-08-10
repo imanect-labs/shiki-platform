@@ -1,6 +1,6 @@
 //! ライブ編集 op の適用（`apply_op`）とセル値 → HTML テーブル変換（issue #352）。
 //!
-//! `session.rs` から切り出した純ロジック寄りの層（1 ファイル 500 行規約）。
+//! `session.rs` から切り出した純ロジック寄りの層（1 ファイル行数規約）。
 //! 「セッション継続不能」は `Err`、対象不一致などの安全な不発は `applied=false`＋warning。
 
 use std::fmt::Write as _;

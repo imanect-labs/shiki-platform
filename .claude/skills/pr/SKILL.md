@@ -1,6 +1,6 @@
 ---
-name: pull-request
-description: 作業ツリーの変更を merge-ready な Pull Request にし、CI チェックと AI レビュアー（CodeRabbit / Codex）が全て緑になるまで回す。ローカル品質ゲート実行 → PR 作成/更新（このリポジトリの PR 規約準拠）→ レビュー解消ループ。UI 変更は 0.0.0.0:{10000+issue番号} で起動して動作検証する。「PR を出す」「ship する」「レビューを通す」「レビュー指摘を直す」時に /pull-request で使う。
+name: pr
+description: 作業ツリーの変更を merge-ready な Pull Request にし、CI チェックと AI レビュアー（CodeRabbit / Codex）が全て緑になるまで回す。ローカル品質ゲート実行 → PR 作成/更新（このリポジトリの PR 規約準拠）→ レビュー解消ループ。UI 変更は 0.0.0.0:{10000+issue番号} で起動して動作検証する。「PR を出す」「ship する」「レビューを通す」「レビュー指摘を直す」時に /pr で使う。
 ---
 
 # Pull request: 作成・検証・レビュー通過
@@ -66,8 +66,8 @@ description: 作業ツリーの変更を merge-ready な Pull Request にし、C
 
 ```bash
 # issue 番号から PORT=10000+issue を計算し、変更箇所に応じて web/api/both を自動起動する。
-.claude/skills/pull-request/scripts/launch-app.sh <issue番号>            # 自動判定
-.claude/skills/pull-request/scripts/launch-app.sh <issue番号> web       # 明示指定も可
+.claude/skills/pr/scripts/launch-app.sh <issue番号>            # 自動判定
+.claude/skills/pr/scripts/launch-app.sh <issue番号> web       # 明示指定も可
 ```
 
 - target を省略すると `git diff --name-only <base>...HEAD` から判定する（`web/` → web、`crates/`・`ingestion-worker/` → api、両方 → both）。
@@ -140,7 +140,7 @@ PR を緑にする過程で、**プロジェクトの使い方・要件の変更
 
    ```bash
    gh pr checks --watch --interval 30      # チェックが終わる（or 失敗）までブロック
-   .claude/skills/pull-request/scripts/review-status.sh
+   .claude/skills/pr/scripts/review-status.sh
    ```
 
    - exit `0` → 緑。「完了」へ。
@@ -186,9 +186,9 @@ PR が緑で報告済み（Phase 5「緑」）になったら、その変更が�
 | --- | --- |
 | 現在のブランチ | `git rev-parse --abbrev-ref HEAD` |
 | ローカルゲート | `cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo build && cargo test`（web は `pnpm lint && pnpm build`） |
-| アプリ起動（検証） | `.claude/skills/pull-request/scripts/launch-app.sh <issue番号> [web\|api\|both]` |
+| アプリ起動（検証） | `.claude/skills/pr/scripts/launch-app.sh <issue番号> [web\|api\|both]` |
 | チェック監視 | `gh pr checks --watch --interval 30` |
-| ゲート判定 | `.claude/skills/pull-request/scripts/review-status.sh [PR#]` |
+| ゲート判定 | `.claude/skills/pr/scripts/review-status.sh [PR#]` |
 | PR レビュースレッド（生） | `gh api repos/{owner}/{repo}/pulls/{n}/comments` |
 
 **ゲート扱いの AI レビュアー bot**: `coderabbitai[bot]`、`chatgpt-codex-connector[bot]`。bot 集合が変わる場合は `PR_REVIEW_BOTS` 環境変数（空白区切り）で上書きする。**注意: これらの bot はインラインのレビューコメント（提案）を「解決済みスレッド」として扱わないことがある。マージ前に `gh api repos/{owner}/{repo}/pulls/{n}/comments` で各 bot の実コメントを必ず一読すること（チェックの pass＝指摘無しではない）。**

@@ -1,4 +1,4 @@
-//! IR 検証の補助チェック（V4 参照・スコープ天井整合・名前形式・V6 script）。500 行ゲート対応で分離。
+//! IR 検証の補助チェック（V4 参照・スコープ天井整合・名前形式・V6 script）。行数ゲート対応で分離。
 
 use super::{Catalog, ValidationError};
 use crate::ir::WorkflowIr;
