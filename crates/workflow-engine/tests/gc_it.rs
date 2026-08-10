@@ -142,7 +142,7 @@ async fn expired_terminal_run_is_purged_with_children() {
     assert!(count_children(&pool, "run_event", &tenant, run_id).await > 0);
 
     finish_run_days_ago(&pool, &tenant, run_id, 91, "succeeded").await;
-    let report = store.purge_expired_history().await.unwrap();
+    let report = store.purge_expired_history(Some(&tenant)).await.unwrap();
     assert!(report.runs_deleted >= 1);
     assert!(!report.truncated);
 
@@ -181,7 +181,7 @@ async fn running_run_survives_regardless_of_age() {
     let expired = create_run(&store, &tenant).await;
     finish_run_days_ago(&pool, &tenant, expired, 2, "failed").await;
 
-    store.purge_expired_history().await.unwrap();
+    store.purge_expired_history(Some(&tenant)).await.unwrap();
 
     assert!(
         run_exists(&pool, &tenant, running).await,
@@ -206,7 +206,8 @@ async fn retention_is_per_tenant_and_respects_the_window() {
     let fresh = create_run(&store, &short).await;
     finish_run_days_ago(&pool, &short, fresh, 1, "succeeded").await;
 
-    store.purge_expired_history().await.unwrap();
+    store.purge_expired_history(Some(&short)).await.unwrap();
+    store.purge_expired_history(Some(&long)).await.unwrap();
 
     assert!(
         !run_exists(&pool, &short, short_run).await,
@@ -219,25 +220,44 @@ async fn retention_is_per_tenant_and_respects_the_window() {
     assert!(run_exists(&pool, &short, fresh).await, "保持期間内は残る");
 }
 
+/// effect_journal は「期限切れ かつ 所有 run が消えている」ものだけ消す。
+///
+/// 保持期間は run の生存期間より短く設定できるため、`created_at` だけで消すと**実行中の run の
+/// 副作用記録が先に消え**、その step が再開したときに二重実行される（PIT-31 違反・#445）。
 #[tokio::test]
-async fn effect_journal_is_purged_by_ttl() {
+async fn effect_journal_survives_while_its_run_is_alive() {
     let Some(pool) = setup().await else { return };
     let store = RunStore::new(pool.clone());
-    let tenant = create_tenant(&pool, 30).await;
-    for (key, days) in [("old", 31), ("new", 1)] {
+    // 保持 1 日。run はまだ実行中で、その副作用記録は 10 日前のもの。
+    let tenant = create_tenant(&pool, 1).await;
+    let alive = create_run(&store, &tenant).await;
+    let expired = create_run(&store, &tenant).await;
+    finish_run_days_ago(&pool, &tenant, expired, 10, "succeeded").await;
+
+    let key_of = |run: Uuid| format!("wf:{tenant}:{run}:a");
+    for run in [alive, expired] {
         sqlx::query(
             "INSERT INTO effect_journal (tenant_id, idempotency_key, op_digest, created_at) \
-             VALUES ($1, $2, 'digest', now() - make_interval(days => $3))",
+             VALUES ($1, $2, 'digest', now() - interval '10 days')",
         )
         .bind(&tenant)
-        .bind(key)
-        .bind(days)
+        .bind(key_of(run))
         .execute(&pool)
         .await
         .unwrap();
     }
+    // script の `#cN` 連番付きキーも同じ run に属する（step_path 側に付く）。
+    sqlx::query(
+        "INSERT INTO effect_journal (tenant_id, idempotency_key, op_digest, created_at) \
+         VALUES ($1, $2, 'digest', now() - interval '10 days')",
+    )
+    .bind(&tenant)
+    .bind(format!("wf:{tenant}:{alive}:a#c1"))
+    .execute(&pool)
+    .await
+    .unwrap();
 
-    store.purge_expired_history().await.unwrap();
+    store.purge_expired_history(Some(&tenant)).await.unwrap();
 
     let left: Vec<String> = sqlx::query_scalar(
         "SELECT idempotency_key FROM effect_journal WHERE tenant_id = $1 ORDER BY 1",
@@ -246,7 +266,11 @@ async fn effect_journal_is_purged_by_ttl() {
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(left, vec!["new".to_string()], "TTL 超過だけが消える");
+    assert_eq!(
+        left,
+        vec![key_of(alive), format!("wf:{tenant}:{alive}:a#c1")],
+        "実行中 run の journal は期限を過ぎても残す（#cN 連番も同じ run に属する）"
+    );
 }
 
 #[tokio::test]

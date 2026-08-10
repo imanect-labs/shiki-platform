@@ -12,16 +12,18 @@ alter table tenant
     add column if not exists workflow_retention_days int not null default 90
         check (workflow_retention_days > 0);
 
--- GC 対象の走査。terminal かつ finished_at 順に古いものから拾う。
--- 述語に status を畳み込んであるので、実行中/待機中の run は index に載らない
--- （＝走査が「消してよい候補」だけを見る）。
+-- GC 対象の走査。**tenant_id 先頭**にするのは、GC がテナントごとに保持期間を変えて走るため
+-- （全テナントを 1 クエリで舐めると、保持期間が最短のテナントに引きずられて長期保持テナントの
+-- 履歴まで毎日走査することになる）。述語に status を畳み込んであるので、実行中/待機中の run は
+-- index に載らない＝走査が「消してよい候補」だけを見る。
 create index if not exists workflow_run_gc_idx
-    on workflow_run (finished_at)
+    on workflow_run (tenant_id, finished_at)
     where status in ('succeeded', 'failed', 'cancelled');
 
 -- effect_journal は run に FK で紐づかない（キーは (tenant_id, idempotency_key)・script 内の
--- `#cN` 連番も入る）ので、run 削除では消えない。§7.3 のとおり run 保持期間と同じ TTL で消す。
-create index if not exists effect_journal_gc_idx on effect_journal (created_at);
+-- `#cN` 連番も入る）ので、run 削除では消えない。§7.3 のとおり run 保持期間と同じ TTL で、かつ
+-- 所有 run が消えているものだけを消す。走査は run 側と同じくテナント単位。
+create index if not exists effect_journal_gc_idx on effect_journal (tenant_id, created_at);
 
 -- wait_subscription は (tenant_id, run_id, step_path) を持ちながら **FK が無かった**。
 -- step_execution / run_event は ON DELETE CASCADE を持つのに、ここだけ抜けている。

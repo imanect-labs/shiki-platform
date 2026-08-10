@@ -34,10 +34,17 @@ use sqlx::PgPool;
 use super::{map_db, RunStore, RunStoreError};
 
 /// 1 バッチで消す run の数。行ロックと WAL を短く保つための粒度。
-const RUN_BATCH: i64 = 200;
-/// 1 回の GC で回すバッチ数の上限（暴走時の歯止め・既定で 20 万 run/回）。
-/// 使い切った場合は消し残しがある状態で正常終了し、次回の日次ジョブが続きを消す。
-const MAX_BATCHES: usize = 1000;
+///
+/// 1 run に連なる `step_execution` / `run_event` は CASCADE で道連れになるので、実削除行数は
+/// これより桁で大きくなり得る（IR は最大 200 ノード・map は最大 1000 要素まで展開する）。
+/// 「親 200 件」でも極端な run が混ざれば 1 TX が重くなるため、小さめに取る。
+const RUN_BATCH: i64 = 50;
+/// 1 バッチで消す effect_journal の行数。run より 1 桁以上多く増えるので大きく取る
+/// （こちらは CASCADE を持たない単純削除なので 1 行あたりのコストが軽い）。
+const JOURNAL_BATCH: i64 = 2_000;
+/// 1 系列あたりのバッチ数上限（暴走時の歯止め）。使い切った場合は消し残しがある状態で
+/// 正常終了し、次回の日次ジョブが続きを消す。
+const MAX_BATCHES: usize = 1_000;
 
 /// GC の結果（ジョブのログ・テストの検証点）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,39 +57,60 @@ pub struct GcReport {
     pub truncated: bool,
 }
 
-/// 保持期間を過ぎた terminal run を消す 1 バッチ分の SQL。
+/// 保持期間を過ぎた terminal run を 1 バッチ消す。`$1`=tenant_id・`$2`=保持日数・`$3`=件数。
 ///
-/// `finished_at` の index レンジで先に絞ってから、テナントごとの保持期間で正確に判定する。
-/// レンジ条件（全テナントの最小保持期間）を噛ませないと、消すものが無いときに terminal run を
-/// 全件走査して 0 件を返すことになる——日次で回すジョブとしては最悪の形になる。
+/// **テナントごとに呼ぶ。** 全テナントを 1 クエリで舐めると、保持期間が最も短いテナントに
+/// 引きずられて長期保持テナントの履歴まで毎日走査することになる（`(tenant_id, finished_at)`
+/// の index レンジがテナント境界で切れないため）。
+///
+/// **候補は `FOR UPDATE SKIP LOCKED` で固定する。** ロックしないと、候補を読んでから DELETE する
+/// までの間に `resume_failed` が同じ run を `running` / `finished_at = NULL` へ戻せてしまい、
+/// 外側の条件は tenant/run_id しか見ないため**再開済みの run とその step/event を消す**
+/// （Codex P1・#445）。ロックを取れなかった行は次回に回す。
 const PURGE_RUNS_SQL: &str = "\
     WITH victim AS ( \
         SELECT r.tenant_id, r.run_id \
           FROM workflow_run r \
-          JOIN tenant t ON t.tenant_id = r.tenant_id \
-         WHERE r.status IN ('succeeded', 'failed', 'cancelled') \
+         WHERE r.tenant_id = $1 \
+           AND r.status IN ('succeeded', 'failed', 'cancelled') \
            AND r.finished_at IS NOT NULL \
-           AND r.finished_at < now() - make_interval(days => \
-                 (SELECT min(workflow_retention_days) FROM tenant)) \
-           AND r.finished_at < now() - make_interval(days => t.workflow_retention_days) \
+           AND r.finished_at < now() - make_interval(days => $2) \
          ORDER BY r.finished_at \
-         LIMIT $1 \
+         LIMIT $3 \
+         FOR UPDATE SKIP LOCKED \
     ) \
     DELETE FROM workflow_run w \
      USING victim v \
      WHERE w.tenant_id = v.tenant_id AND w.run_id = v.run_id";
 
-/// effect_journal の TTL 削除（run 保持期間と同じ・§7.3）。
+/// effect_journal の TTL 削除（run 保持期間と同じ・§7.3）。`$1`=tenant_id・`$2`=保持日数・`$3`=件数。
+///
+/// **所有 run が残っている journal は消さない。** 保持期間を run の生存期間より短く設定できる以上
+/// （`> 0` しか制約が無い）、`created_at` だけで消すと**実行中/待機中の run の副作用記録が先に消え**、
+/// その step が再開したときに `EffectJournal::check` が `Proceed` を返して外部副作用を二重実行する
+/// （PIT-31 違反・Codex P1・#445）。run 行の有無で判定すれば、run 側の削除条件（terminal かつ
+/// 期限切れ）がそのまま journal の削除条件になる。
+///
+/// 冪等キーは `wf:{tenant_id}:{run_id}:{step_path}`（script の `#cN` は step_path 側に付く）なので、
+/// 3 番目のフィールドが run_id。tenant_id は `: | # @` と空白を禁止済み（API 層の validate）なので
+/// `split_part` の位置がずれることはない。`MATERIALIZED` で正規表現の絞り込みを先に確定させ、
+/// 形式外のキーを `::uuid` キャストに流さない。
 const PURGE_JOURNAL_SQL: &str = "\
-    WITH victim AS ( \
-        SELECT j.tenant_id, j.idempotency_key \
+    WITH candidate AS MATERIALIZED ( \
+        SELECT j.tenant_id, j.idempotency_key, \
+               split_part(j.idempotency_key, ':', 3) AS run_text \
           FROM effect_journal j \
-          JOIN tenant t ON t.tenant_id = j.tenant_id \
-         WHERE j.created_at < now() - make_interval(days => \
-                 (SELECT min(workflow_retention_days) FROM tenant)) \
-           AND j.created_at < now() - make_interval(days => t.workflow_retention_days) \
+         WHERE j.tenant_id = $1 \
+           AND j.created_at < now() - make_interval(days => $2) \
+           AND j.idempotency_key ~ \
+               '^wf:[^:]+:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:' \
          ORDER BY j.created_at \
-         LIMIT $1 \
+         LIMIT $3 \
+    ), victim AS ( \
+        SELECT c.tenant_id, c.idempotency_key FROM candidate c \
+         WHERE NOT EXISTS ( \
+             SELECT 1 FROM workflow_run r \
+              WHERE r.tenant_id = c.tenant_id AND r.run_id = c.run_text::uuid) \
     ) \
     DELETE FROM effect_journal e \
      USING victim v \
@@ -91,33 +119,69 @@ const PURGE_JOURNAL_SQL: &str = "\
 impl RunStore {
     /// 保持期間を過ぎた実行履歴を消す（jobq ジョブの本体・engine.md §12.2）。
     ///
-    /// バッチごとにコミットし、消えなくなるか [`MAX_BATCHES`] に達するまで繰り返す。
-    /// 途中で失敗しても消えた分はコミット済みで、次回が続きから再開する（冪等）。
-    pub async fn purge_expired_history(&self) -> Result<GcReport, RunStoreError> {
+    /// **内部運用経路であり `AuthContext` を持たない全テナント横断処理。** 呼ぶのは
+    /// `spawn_workflow_runtime` が起動する [`HistoryGcWorker`] だけで、公開 API から呼んではいけない。
+    ///
+    /// テナントごとに、バッチごとにコミットしながら消す。途中で失敗しても消えた分はコミット済みで、
+    /// 次回が続きから再開する（冪等）。
+    /// `tenant_scope` を渡すとそのテナントだけを対象にする（テスト分離。他の `RunStore` の
+    /// 走査系と同じ規約）。ワーカーは `None`（全テナント横断）で呼ぶ。
+    pub async fn purge_expired_history(
+        &self,
+        tenant_scope: Option<&str>,
+    ) -> Result<GcReport, RunStoreError> {
+        let tenants: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT tenant_id, workflow_retention_days FROM tenant \
+              WHERE status <> 'deleted' AND (($1::text IS NULL) OR tenant_id = $1)",
+        )
+        .bind(tenant_scope)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+
         let mut report = GcReport::default();
-        for batch in 0..MAX_BATCHES {
-            let runs = sqlx::query(PURGE_RUNS_SQL)
-                .bind(RUN_BATCH)
-                .execute(&self.db)
-                .await
-                .map_err(map_db)?
-                .rows_affected();
-            let journal = sqlx::query(PURGE_JOURNAL_SQL)
-                .bind(RUN_BATCH)
-                .execute(&self.db)
-                .await
-                .map_err(map_db)?
-                .rows_affected();
+        for (tenant_id, days) in tenants {
+            // run を先に消す。journal はその結果（run 行の消滅）を見て消せるようになる。
+            let (runs, runs_left) = self
+                .purge_in_batches(PURGE_RUNS_SQL, &tenant_id, days, RUN_BATCH)
+                .await?;
+            let (journal, journal_left) = self
+                .purge_in_batches(PURGE_JOURNAL_SQL, &tenant_id, days, JOURNAL_BATCH)
+                .await?;
             report.runs_deleted += runs;
             report.journal_deleted += journal;
-            if runs == 0 && journal == 0 {
-                return Ok(report);
-            }
-            if batch + 1 == MAX_BATCHES {
-                report.truncated = true;
-            }
+            report.truncated |= runs_left || journal_left;
         }
         Ok(report)
+    }
+
+    /// 1 テナント分を「消えなくなるまで」バッチ削除する。戻り値は (削除数, 消し残しの有無)。
+    ///
+    /// 削除行数が `limit` 未満になった時点で打ち切る。ちょうど消し切ったときに余分な空振りクエリを
+    /// 出さず、`truncated` も誤検知しない。
+    async fn purge_in_batches(
+        &self,
+        sql: &str,
+        tenant_id: &str,
+        retention_days: i32,
+        limit: i64,
+    ) -> Result<(u64, bool), RunStoreError> {
+        let mut total = 0u64;
+        for _ in 0..MAX_BATCHES {
+            let deleted = sqlx::query(sql)
+                .bind(tenant_id)
+                .bind(retention_days)
+                .bind(limit)
+                .execute(&self.db)
+                .await
+                .map_err(map_db)?
+                .rows_affected();
+            total += deleted;
+            if deleted < u64::try_from(limit).unwrap_or(u64::MAX) {
+                return Ok((total, false));
+            }
+        }
+        Ok((total, true))
     }
 }
 
@@ -205,7 +269,13 @@ impl RunStore {
         let Some(job) = jobs.pop() else {
             return Ok(None);
         };
-        match self.purge_expired_history().await {
+        // **削除の前にコネクションを返す。** 保持したまま purge を呼ぶと、purge が self.db から
+        // 別のコネクションを取りに行くため、プールが 1 本の構成で永久待機する。長時間 GC の間
+        // 1 本を無用に占有しないためでもある（Codex P2・#445）。
+        drop(conn);
+        let outcome = self.purge_expired_history(None).await;
+        let mut conn = self.db.acquire().await.map_err(map_db)?;
+        match outcome {
             Ok(report) => {
                 jobq::ack(&mut conn, job.id)
                     .await
