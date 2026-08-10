@@ -30,7 +30,7 @@ shiki-platform の開発タスクを進める標準手順。docs/roadmap.md の�
 ## 3. 完了時
 
 - 変更したレイヤの検証コマンドを実際に流して通す（コマンド一覧は AGENTS.md「検証コマンド」。CI の正は .github/workflows/ci.yml）。
-- PR を作成する（/pull-request スキルが利用可能ならそれを使う）。PR 本文には目的・対応 Issue・検証方法を書く。
+- PR を作成する（/pr スキルが利用可能ならそれを使う）。PR 本文には目的・対応 Issue・検証方法を書く。
 - 対応する Issue に close コメントを付けてクローズする（PR 説明に Closes #<n> を含める）。
 
 ## 注意
