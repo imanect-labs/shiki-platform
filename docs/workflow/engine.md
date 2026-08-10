@@ -767,6 +767,7 @@ queue 滞留・step 実行時間・リトライ率・リース失効率・スケ
 - `≤256KB` は `step_execution.output` に JSONB インライン。
 - 超過は ObjectStore（`workflow-io/{tenant}/{run_id}/{step_path}`）へ spill し、参照を保存する。
 - 上限 `32MB`（超過は step 失敗）。
+- **spill は未実装**（#444 時点）。実装する際は §12.2 の GC への blob 削除追加を**同時に行う**こと。DB だけ消して blob が残ると、参照する行が無い＝発見手段の無い孤児が永久に溜まる。
 - run の `input` も同型（≤256KB インライン・超過 blob 参照・§2.2）。
 
 ### 12.2 run 履歴の保持
@@ -774,5 +775,8 @@ queue 滞留・step 実行時間・リトライ率・リース失効率・スケ
 - 保持期間はテナント設定（初期値 90 日）。
 - GC ジョブが `workflow_run`・`run_event`・`effect_journal`・spill blob を **同時に**消す（§7.3 の journal TTL は run 保持期間と同じ）。
 
-- **GC の実行主体**: 専用の jobq ジョブとし、スケジューラリーダーが日次で enqueue する（tick ループに重い削除を同居させない）。
+- **GC の実行主体**: 専用の jobq ジョブ（キュー `workflow_gc`）とし、スケジューラリーダーが日次で enqueue する（tick ループに重い削除を同居させない）。投入状態は `maintenance_schedule` に持ち、判定・投入・台帳更新を同一 TX ＋ `FOR UPDATE` で行って二重投入を潰す。消費は専用の `HistoryGcWorker`（step 実行のプールとは別タスク）。
+- **削除は必ずバッチ**（1 バッチ 200 run ごとにコミット）。数百万行を 1 TX で消すと長時間のロックと巨大な WAL で本番が止まる。途中失敗しても消えた分は確定済みで、次回が続きから再開する（冪等）。
+- **候補の走査には全テナントの最小保持期間をレンジ条件として噛ませる**。テナントごとの保持期間だけで判定すると、消すものが無いときに terminal run を全件走査して 0 件を返すことになる。
+- `wait_subscription` は `(tenant_id, run_id)` の FK（`ON DELETE CASCADE`）で道連れにする。FK が無いと run 削除のたびに確実に孤児が残る。
 - **保持期間の起算は run の terminal 時刻**。terminal でない run は保持期間を跨いでも GC 対象外（`run_timeout_sec` 最大 30 日 < 保持初期値 90 日のため実質的に衝突しない）。

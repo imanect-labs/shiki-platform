@@ -20,6 +20,8 @@ shiki-artifact.workspace = true
 shiki-script-runtime.workspace = true
 # V4（宛先束縛の事前照合）で secrets の host_allowed を共用する。
 shiki-secrets.workspace = true
+# 保持期間 GC を日次ジョブとして回す（engine.md §12.2・重い削除を tick に同居させない）。
+shiki-jobq.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true

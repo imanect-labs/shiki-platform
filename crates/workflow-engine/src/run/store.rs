@@ -16,12 +16,14 @@ use crate::vocab::RunEventKind;
 
 mod advance;
 mod backoff;
+mod gc;
 mod history;
 mod limits;
 mod map_region;
 mod ops;
 mod wait;
 
+pub use gc::{GcReport, HistoryGcWorker, WORKFLOW_GC_QUEUE};
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 pub use ops::{CancelOutcome, ResumeOutcome};
 
