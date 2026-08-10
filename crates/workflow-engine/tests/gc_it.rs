@@ -316,3 +316,57 @@ async fn daily_enqueue_is_not_duplicated() {
     assert_eq!(left, 0);
     assert!(store.consume_history_gc_once().await.unwrap().is_none());
 }
+
+/// 生存 run の journal が 1 バッチ分を埋めても、その先の削除可能な journal に到達する。
+///
+/// 所有 run の条件を `LIMIT` の後段で適用すると、先頭 N 件がすべて生存 run のものだった場合に
+/// 削除 0 件となり「消し切った」と誤判定して**その先へ二度と到達しない**（#445 レビュー指摘）。
+#[tokio::test]
+async fn journal_purge_reaches_past_a_full_batch_of_live_runs() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone());
+    let tenant = create_tenant(&pool, 1).await;
+    // 実行中の run（journal は消せない）と、期限切れ terminal の run（先に消える → journal も消せる）。
+    let alive = create_run(&store, &tenant).await;
+    let expired = create_run(&store, &tenant).await;
+    finish_run_days_ago(&pool, &tenant, expired, 10, "succeeded").await;
+
+    // 生存 run に紐づく journal を 1 バッチ（2000）より多く、しかも**より古い**時刻で積む。
+    // created_at 昇順なので、後段で絞る実装ではこれらだけで LIMIT が埋まる。
+    sqlx::query(
+        "INSERT INTO effect_journal (tenant_id, idempotency_key, op_digest, created_at) \
+         SELECT $1, 'wf:' || $1 || ':' || $2::text || ':n' || i, 'digest', \
+                now() - interval '30 days' + make_interval(secs => i) \
+           FROM generate_series(1, 2500) i",
+    )
+    .bind(&tenant)
+    .bind(alive)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // 削除可能な孤児はそれより新しい時刻に置く（＝走査順で後ろ）。
+    sqlx::query(
+        "INSERT INTO effect_journal (tenant_id, idempotency_key, op_digest, created_at) \
+         VALUES ($1, $2, 'digest', now() - interval '5 days')",
+    )
+    .bind(&tenant)
+    .bind(format!("wf:{tenant}:{expired}:n1"))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let report = store.purge_expired_history(Some(&tenant)).await.unwrap();
+    assert_eq!(
+        report.journal_deleted, 1,
+        "生存 run の journal に阻まれず、その先の孤児へ到達する"
+    );
+    let alive_left: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM effect_journal WHERE tenant_id = $1 AND idempotency_key LIKE $2",
+    )
+    .bind(&tenant)
+    .bind(format!("wf:{tenant}:{alive}:%"))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(alive_left, 2500, "生存 run の journal は 1 件も消さない");
+}

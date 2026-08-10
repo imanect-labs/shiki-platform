@@ -85,32 +85,37 @@ const PURGE_RUNS_SQL: &str = "\
 
 /// effect_journal の TTL 削除（run 保持期間と同じ・§7.3）。`$1`=tenant_id・`$2`=保持日数・`$3`=件数。
 ///
-/// **所有 run が残っている journal は消さない。** 保持期間を run の生存期間より短く設定できる以上
+/// **所有 run が残っている journal は消さない。** 保持期間は run の生存期間より短く設定できる以上
 /// （`> 0` しか制約が無い）、`created_at` だけで消すと**実行中/待機中の run の副作用記録が先に消え**、
 /// その step が再開したときに `EffectJournal::check` が `Proceed` を返して外部副作用を二重実行する
 /// （PIT-31 違反・Codex P1・#445）。run 行の有無で判定すれば、run 側の削除条件（terminal かつ
 /// 期限切れ）がそのまま journal の削除条件になる。
 ///
+/// **所有 run の条件は `LIMIT` より前に置く。** 後段で絞ると、先頭 N 件がすべて生存 run のもの
+/// だった場合に削除 0 件となり、呼び出し側が「消し切った」と判断して**その先にある削除可能な
+/// journal へ二度と到達しない**（毎日同じ N 件で止まる・CodeRabbit 指摘）。前に置けば index 順に
+/// 流しながら「消せるもの」だけを N 件集めて止まる。
+///
 /// 冪等キーは `wf:{tenant_id}:{run_id}:{step_path}`（script の `#cN` は step_path 側に付く）なので、
 /// 3 番目のフィールドが run_id。tenant_id は `: | # @` と空白を禁止済み（API 層の validate）なので
-/// `split_part` の位置がずれることはない。`MATERIALIZED` で正規表現の絞り込みを先に確定させ、
-/// 形式外のキーを `::uuid` キャストに流さない。
+/// `split_part` の位置がずれることはない。`CASE` は**キャスト安全のためのガード**で、形式外のキーを
+/// `::uuid` に流さない（実際の絞り込みは外側の正規表現が行う）。
 const PURGE_JOURNAL_SQL: &str = "\
-    WITH candidate AS MATERIALIZED ( \
-        SELECT j.tenant_id, j.idempotency_key, \
-               split_part(j.idempotency_key, ':', 3) AS run_text \
+    WITH victim AS ( \
+        SELECT j.tenant_id, j.idempotency_key \
           FROM effect_journal j \
          WHERE j.tenant_id = $1 \
            AND j.created_at < now() - make_interval(days => $2) \
            AND j.idempotency_key ~ \
                '^wf:[^:]+:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:' \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM workflow_run r \
+                WHERE r.tenant_id = j.tenant_id \
+                  AND r.run_id = (CASE WHEN j.idempotency_key ~ \
+                        '^wf:[^:]+:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:' \
+                      THEN split_part(j.idempotency_key, ':', 3) END)::uuid) \
          ORDER BY j.created_at \
          LIMIT $3 \
-    ), victim AS ( \
-        SELECT c.tenant_id, c.idempotency_key FROM candidate c \
-         WHERE NOT EXISTS ( \
-             SELECT 1 FROM workflow_run r \
-              WHERE r.tenant_id = c.tenant_id AND r.run_id = c.run_text::uuid) \
     ) \
     DELETE FROM effect_journal e \
      USING victim v \
