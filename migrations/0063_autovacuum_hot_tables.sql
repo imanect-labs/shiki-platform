@@ -32,6 +32,12 @@
 --       下の表のうち HOT が成立するのは concurrency_counter と scheduler_lease だけ（後述）。
 --   (3) cost_delay = 0: 数ページのテーブルの vacuum は全速で走らせても I/O 負荷にならない。
 --       大きいテーブルには設定せず既定の抑制を残す。
+--   (4) vacuum_index_cleanup = on: **index 清掃のバイパスを止める。** PG14 以降の既定 AUTO は、
+--       dead item が少ない（目安 2%）と判断すると vacuum が **index の清掃を丸ごと省略**する。
+--       ここで狙っているのは partial index に溜まる古いエントリの回収なので、数百万行の表に対して
+--       閾値 2,000 という「相対的にごく少量」の設定と AUTO を組み合わせると、autovacuum は毎回
+--       起動するのに index が掃除されない、という最悪の組み合わせになる（Codex 指摘）。
+--       下の実測は 20 万行に対し 18 万件の churn だったためこの条件を再現できていない。
 --
 -- 数値はすべて初期値であり、pg_stat_user_tables.n_dead_tup を見ながら運用で調整する
 -- （engine.md の「本書の数値はすべて初期値」と同じ扱い）。
@@ -45,6 +51,7 @@
 -- step_execution: 1 step の生涯で pending→ready→running→terminal ＋ リース heartbeat と、
 -- 更新回数が最も多い。ready/lease の partial index が劣化すると claim に直撃する（#438）。
 alter table step_execution set (
+    vacuum_index_cleanup           = on,
     autovacuum_vacuum_scale_factor = 0,
     autovacuum_vacuum_threshold    = 2000,
     autovacuum_analyze_scale_factor = 0,
@@ -53,6 +60,7 @@ alter table step_execution set (
 
 -- workflow_run: status 遷移・promote・timeout 回収。step_execution と同型で更新頻度は 1 桁低い。
 alter table workflow_run set (
+    vacuum_index_cleanup           = on,
     autovacuum_vacuum_scale_factor = 0,
     autovacuum_vacuum_threshold    = 1000,
     autovacuum_analyze_scale_factor = 0,
@@ -62,6 +70,7 @@ alter table workflow_run set (
 -- generation_run: chat 側の同型（claim/リース/heartbeat・crates/durable の共有パターン）。
 -- 同じ機序で劣化するため同じ扱いにする。
 alter table generation_run set (
+    vacuum_index_cleanup           = on,
     autovacuum_vacuum_scale_factor = 0,
     autovacuum_vacuum_threshold    = 1000,
     autovacuum_analyze_scale_factor = 0,
@@ -71,6 +80,7 @@ alter table generation_run set (
 -- job_queue: claim が visible_at を進め ack が DELETE する。1 ジョブ 1 サイクルで必ずゴミが出る。
 -- visible_at は job_queue_claim_idx の対象列なので HOT にはならない。
 alter table job_queue set (
+    vacuum_index_cleanup           = on,
     autovacuum_vacuum_scale_factor = 0,
     autovacuum_vacuum_threshold    = 500,
     autovacuum_analyze_scale_factor = 0,
@@ -101,3 +111,19 @@ alter table scheduler_lease set (
     autovacuum_vacuum_threshold    = 50,
     autovacuum_vacuum_cost_delay   = 0
 );
+
+-- ---------------------------------------------------------------------------
+-- 既存データへ fillfactor を効かせる（運用手順・この migration ではやらない）
+-- ---------------------------------------------------------------------------
+--
+-- `ALTER TABLE ... SET (fillfactor = ...)` は**既存のヒープページを書き換えない**。新しい余白は
+-- 以降の INSERT/UPDATE で作られるページにしか効かないので、既に満杯のページに載っている行は
+-- しばらく HOT update にならない（該当は上の 2 テーブル）。
+--
+-- 既に稼働中の DB で即座に効かせたい場合は、**別途**次を実行する。どちらも ACCESS EXCLUSIVE を
+-- 取るため migration（トランザクション内）には置けない。対象はいずれも数ページなので一瞬で終わる。
+--
+--   VACUUM FULL concurrency_counter;
+--   VACUUM FULL scheduler_lease;
+--
+-- 新規 DB では最初から新しい fillfactor でページが作られるので何もしなくてよい。
