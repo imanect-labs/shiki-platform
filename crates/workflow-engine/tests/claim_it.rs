@@ -193,10 +193,32 @@ async fn sweeper_reclaims_expired_lease_without_consuming_attempt() {
         attempt_db, 0,
         "クラッシュした実行は試行として数えない（claim の +1 を打ち消す）"
     );
-    assert_eq!(
-        fencing_after, fencing_first,
-        "sweeper は fencing を進めない"
+    assert!(
+        fencing_after > fencing_first,
+        "sweeper は回収と同時に fencing を進める（旧ワーカーを即座に失効させる）"
     );
+
+    // **回収した瞬間に旧ワーカーは書けなくなる。** ここを次の claim まで遅らせると、リースが
+    // 切れただけで生きている旧ワーカーが checkpoint を通し、-1 済みの attempt のまま再試行されて
+    // max_attempts を超える（Codex P1・#439）。
+    let graph =
+        RunGraph::build(&workflow_engine::WorkflowIr::from_json(&single_node_ir()).unwrap());
+    let zombie_advanced = store
+        .checkpoint_and_advance(
+            &first,
+            &NodeResult::ok(json!({})),
+            &graph,
+            3,
+            workflow_engine::ir::OnError::FailRun,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !zombie_advanced,
+        "回収済みの旧ワーカーは checkpoint を通せない"
+    );
+    let (_, _, status) = step_row(&pool, &tenant, run_id).await;
+    assert_eq!(status, "ready", "ゾンビの書込で terminal 化しない");
 
     // 別ワーカーが拾い直しても「1 回目の実行」のまま（クラッシュで試行を減らさない）。
     let second = store
@@ -206,8 +228,8 @@ async fn sweeper_reclaims_expired_lease_without_consuming_attempt() {
         .expect("再 claim");
     assert_eq!(second.attempt, 1, "takeover は試行を消費しない（§9.5）");
     assert!(
-        second.fencing_token > first.fencing_token,
-        "再 claim は fencing を進めてゾンビ書込を無効化する"
+        second.fencing_token > fencing_after,
+        "再 claim も fencing を進める"
     );
 }
 

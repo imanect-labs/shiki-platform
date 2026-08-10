@@ -87,13 +87,24 @@ const CLAIM_READY_SCOPED: &str = claim_ready_sql!(" AND s2.tenant_id = $3 ");
 /// `attempt` を **ready へ戻すのと同一 UPDATE で -1 する**のが §9.5 の要件（ワーカーが
 /// クラッシュしただけで試行を消費させない）。claim の +1 とこの -1 が対になっているため、
 /// 「ready な step の attempt = 数え済みの試行回数」「running な step の attempt = 今回が何回目か」が
-/// 常に成り立つ。`fencing_token` は触らない——次の claim が +1 して旧ワーカーの書込を無効化する。
+/// 常に成り立つ。
+///
+/// **`fencing_token` も同時に +1 する。** 回収を「次の claim が fencing を進めるまで」待たせては
+/// いけない。回収から次の claim までの窓では旧ワーカーの token が依然一致するため、リースが切れた
+/// だけで生きている旧ワーカーが `checkpoint_and_advance` の fencing 検証を通過してしまう。その結果、
+/// retryable な結果なら **-1 済みの attempt のまま再試行されて `max_attempts` を超え**、terminal な
+/// 結果なら実行済み step が 1 つ少ない attempt で記録される。回収した時点で旧 token を失効させれば、
+/// 窓そのものが無くなる（Codex P1・#439）。
+///
+/// fencing は「現在の保持者だけが書ける」ことだけを表す単調増加値なので、claim 以外が進めても
+/// 不変条件は壊れない（`heartbeat` / `append_event` / `fenced_finalize` はいずれも一致検査のみ）。
 macro_rules! reclaim_leases_sql {
     ($tenant_pred:literal) => {
         concat!(
             "UPDATE step_execution s SET status = 'ready', lease_owner = NULL, \
                  lease_expires_at = NULL, next_retry_at = now(), \
-                 attempt = greatest(s.attempt - 1, 0), updated_at = now() \
+                 attempt = greatest(s.attempt - 1, 0), \
+                 fencing_token = s.fencing_token + 1, updated_at = now() \
              FROM ( \
                  SELECT s2.tenant_id, s2.run_id, s2.step_path \
                    FROM step_execution s2 \

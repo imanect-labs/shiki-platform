@@ -277,7 +277,9 @@ async fn zombie_recheckpoint_does_not_reexecute() {
         .await
         .unwrap()
         .expect("reclaim a");
-    assert_eq!(claimed2.fencing_token, claimed.fencing_token + 1);
+    // 回収と再 claim がそれぞれ fencing を進めるので、旧 token より必ず大きい
+    //（sweeper が回収時点で旧ワーカーを失効させる・#439）。
+    assert!(claimed2.fencing_token > claimed.fencing_token);
 
     let graph = RunGraph::build(&workflow_engine::WorkflowIr::from_json(&linear_ir()).unwrap());
     // 旧ワーカー（fencing 1）の checkpoint は no-op（ゾンビ）。

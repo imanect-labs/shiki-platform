@@ -12,10 +12,39 @@
 --
 -- 実測（step_execution 100 万行・ready 500 件）:
 --   OR 込み cross-tenant claim   : 2,539 バッファ / 7.43 ms（O(ready 件数)）
---   ready 専用＋本 index         :    23 バッファ / 0.58 ms（O(1)）
+--   ready 専用＋本 index         :    22 バッファ / 0.58 ms（O(1)）
 --
 -- リース失効 running の回収は scheduler tick の sweeper（reclaim_expired_leases）へ移した。
 -- そちらは既存の step_lease_idx を使う（running は「ワーカー数 × 並列数」で上限が決まる有界集合）。
+--
+-- ## 大規模な既存 DB への適用（CONCURRENTLY をここに書かない理由）
+--
+-- 通常の `CREATE INDEX` はビルド中その表への INSERT/UPDATE/DELETE をブロックする。100 万行規模の
+-- step_execution では、起動時 migration（crates/api/src/main.rs）の実行中に claim・heartbeat・
+-- checkpoint が止まり、リースを失効させ得る。
+--
+-- ではなぜ `CREATE INDEX CONCURRENTLY` にしないのか——**この migration 経路では deadlock するから**。
+-- sqlx の migrator は**セッションレベルの advisory lock** を保持したまま migration を適用する。
+-- 一方 CONCURRENTLY は完了前に「実行中の全トランザクションの終了」を待つ。複数インスタンスが
+-- 同時起動すると、advisory lock 待ちのインスタンスが持つ仮想トランザクションを CONCURRENTLY が
+-- 待ち、そのインスタンスは advisory lock を待つ、という循環になる。実測（4 並列）:
+--
+--   40P01 deadlock detected
+--     Process A waits for ExclusiveLock on advisory lock; blocked by B.
+--     Process B waits for ShareLock on virtual transaction 6/46; blocked by C.
+--     Process C waits for ExclusiveLock on advisory lock; blocked by A.
+--
+-- つまり CONCURRENTLY をここに置くと「短い書込ブロック」が「起動時デッドロック」に化ける。
+--
+-- **大規模な既存 DB では、デプロイ前に手で先に作ること。** 下の文は `IF NOT EXISTS` なので
+-- その場合 no-op になる（新規 DB とテストはこの migration がそのまま作る）:
+--
+--   -- アプリを止めずに事前作成する（psql から・単独セッションで実行）
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS step_ready_global_idx
+--       ON step_execution (next_retry_at) WHERE status = 'ready';
+--   -- 途中で失敗すると無効な index が残る。その場合は落としてからやり直す:
+--   SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;
+--   DROP INDEX CONCURRENTLY step_ready_global_idx;
 
 create index if not exists step_ready_global_idx
     on step_execution (next_retry_at)
