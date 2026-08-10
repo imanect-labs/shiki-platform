@@ -16,6 +16,7 @@ use crate::vocab::RunEventKind;
 
 mod advance;
 mod backoff;
+mod claim;
 mod history;
 mod limits;
 mod map_region;
@@ -25,7 +26,11 @@ mod wait;
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 pub use ops::{CancelOutcome, ResumeOutcome};
 
-/// step の durable テーブル記述子（複合キー・attempt は claim で増やさない・engine.md §9.5）。
+/// step の durable テーブル記述子（複合キー・engine.md §9.5）。
+///
+/// `attempt_column: None` は「`durable::claim` の無条件 +1 に乗らない」という意味。workflow は
+/// クラッシュ takeover で試行を消費しない（§9.5）ため、+1 と、それを打ち消す -1 を対で持つ独自の
+/// 会計が要る。規則は `claim` モジュールのドキュメントが正（#438）。
 const STEP_SPEC: RunTableSpec = RunTableSpec {
     event_seq_column: None,
     table: "step_execution",
@@ -218,50 +223,6 @@ impl RunStore {
         }
         tx.commit().await.map_err(map_db)?;
         Ok(Some(run_id))
-    }
-
-    /// ready な step を 1 つ claim する（`FOR UPDATE SKIP LOCKED`・fencing +1・lease）。
-    ///
-    /// `tenant_scope` を渡すとそのテナントの step のみ claim する（ワーカーの tenant シャーディング・
-    /// テスト分離）。`None` は全テナント横断（既定のワーカー動作）。
-    pub async fn claim_ready_step(
-        &self,
-        worker_id: &str,
-        lease_secs: i64,
-        tenant_scope: Option<&str>,
-    ) -> Result<Option<ClaimedStep>, RunStoreError> {
-        // ready（次実行時刻到来）か、リース失効した running（takeover）を 1 件 claim する
-        // （SKIP LOCKED・at-least-once）。takeover でも attempt は増やさない
-        // （engine.md §9.5・冪等キーは attempt 非依存）。
-        let claimed: Option<ClaimedStep> = sqlx::query_as(
-            "UPDATE step_execution s SET status = 'running', lease_owner = $1, \
-                 lease_expires_at = now() + ($2 || ' seconds')::interval, \
-                 fencing_token = s.fencing_token + 1, \
-                 attempt = s.attempt + (CASE WHEN s.status = 'ready' THEN 1 ELSE 0 END), \
-                 updated_at = now() \
-             FROM ( \
-                 SELECT s2.tenant_id, s2.run_id, s2.step_path FROM step_execution s2 \
-                 JOIN workflow_run r2 ON r2.tenant_id = s2.tenant_id AND r2.run_id = s2.run_id \
-                 WHERE (($3::text IS NULL) OR (s2.tenant_id = $3)) \
-                   AND NOT r2.cancel_requested \
-                   AND ((s2.status = 'ready' AND s2.next_retry_at <= now()) \
-                        OR (s2.status = 'running' AND s2.lease_expires_at < now())) \
-                 ORDER BY s2.next_retry_at FOR UPDATE OF s2 SKIP LOCKED LIMIT 1 \
-             ) picked \
-             JOIN workflow_run r ON r.tenant_id = picked.tenant_id AND r.run_id = picked.run_id \
-             WHERE s.tenant_id = picked.tenant_id AND s.run_id = picked.run_id \
-               AND s.step_path = picked.step_path \
-             RETURNING s.run_id, r.workflow_id, s.step_path, s.node_id, s.tenant_id, r.org, \
-                       r.principal, r.principal_kind, s.attempt, s.fencing_token, \
-                       s.idempotency_key, r.input, s.input AS step_input, r.ir_snapshot",
-        )
-        .bind(worker_id)
-        .bind(lease_secs)
-        .bind(tenant_scope)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(map_db)?;
-        Ok(claimed)
     }
 
     /// step のリースを延長し cancel_requested を返す（heartbeat）。

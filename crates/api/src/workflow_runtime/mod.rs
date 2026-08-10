@@ -280,6 +280,14 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                     if let Err(e) = tick_runs.expire_run_timeouts(now, None).await {
                         tracing::warn!(error = %e, "run timeout 回収でエラー");
                     }
+                    // リース失効 step の回収（engine.md §9.5）。claim を ready 専用にした分の
+                    // takeover はここが担う（#438）。並行カウンタの減分リークは直後の reconcile が
+                    // running の実数から再計算して回収するため、**reconcile より前**に呼ぶ。
+                    match tick_runs.reclaim_expired_leases(None).await {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!(reclaimed = n, "リース失効 step を回収しました"),
+                        Err(e) => tracing::warn!(error = %e, "リース失効回収でエラー"),
+                    }
                     if let Err(e) = tick_concurrency.reconcile().await {
                         tracing::warn!(error = %e, "並行カウンタ reconcile でエラー");
                     }
