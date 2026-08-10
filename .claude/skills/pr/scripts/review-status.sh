@@ -127,7 +127,12 @@ else
   ACK_MARKERS='<review_comment_addressed>|<review_comment_withdrawn>'
   # コメント一覧は 1 回だけ取得して使い回す（--paginate は PR あたり複数リクエストになるため、
   # 同じ内容を 2 度引かない）。
-  comments_json=$(gh api --paginate "repos/$OWNER/$NAME/pulls/$PR_NUM/comments" 2>/dev/null || echo '[]')
+  # 取得失敗を空配列に化けさせない。失敗を「コメントなし」と扱うと、取りこぼし検出が
+  # 動いていない状態のまま「緑」を返してしまう（レート制限・権限不足・一時障害で起きる）。
+  if ! comments_json=$(gh api --paginate "repos/$OWNER/$NAME/pulls/$PR_NUM/comments" 2>/dev/null); then
+    err "レビューコメントの取得に失敗しました（レート制限 / 権限 / 一時障害）。判定できません。"
+    exit 2
+  fi
 
   late_inline=$(printf '%s' "$comments_json" \
     | jq -r --argjson bots "$bots_json" --arg t "$last_commit" --arg ack "$ACK_MARKERS" '
@@ -145,7 +150,11 @@ else
              | select((.body // "") | test($ack)) ] | length' 2>/dev/null || echo 0)
 
   # レビュー本体（サマリ本文）。
-  late_reviews=$(gh api --paginate "repos/$OWNER/$NAME/pulls/$PR_NUM/reviews" 2>/dev/null \
+  if ! reviews_json=$(gh api --paginate "repos/$OWNER/$NAME/pulls/$PR_NUM/reviews" 2>/dev/null); then
+    err "レビュー一覧の取得に失敗しました。判定できません。"
+    exit 2
+  fi
+  late_reviews=$(printf '%s' "$reviews_json" \
     | jq -r --argjson bots "$bots_json" --arg t "$last_commit" '
       [ .[]
         | select(.user.login as $a | $bots | index($a))
@@ -154,10 +163,21 @@ else
         | "  [\(.submitted_at)] [\(.user.login)] review(\(.state))\n      \((.body // "") | gsub("\n"; " ") | .[0:200])"
       ] | .[]' 2>/dev/null || true)
 
-  if [ -n "$late_inline" ] || [ -n "$late_reviews" ]; then
+  # サマリレビューのうちブロックすべきなのは CHANGES_REQUESTED だけ。COMMENTED の
+  # サマリ（「指摘なし」を含む）で止めると、再 push で再レビューされるたびにサマリが
+  # 最終コミットより後になり、完了条件に永久に到達できない。
+  blocking_reviews=$(printf '%s' "$reviews_json" \
+    | jq -r --argjson bots "$bots_json" --arg t "$last_commit" '
+      [ .[]
+        | select(.user.login as $a | $bots | index($a))
+        | select((.submitted_at // "") > $t)
+        | select(.state == "CHANGES_REQUESTED")
+      ] | length' 2>/dev/null || echo 0)
+
+  [ -n "$late_reviews" ] && { printf '%s\n' "$late_reviews"; echo "  （↑ サマリ。ブロック対象はインライン指摘と CHANGES_REQUESTED のみ）"; }
+  if [ -n "$late_inline" ] || [ "${blocking_reviews:-0}" -gt 0 ]; then
     [ -n "$late_inline" ] && printf '%s\n' "$late_inline"
-    [ -n "$late_reviews" ] && printf '%s\n' "$late_reviews"
-    echo "  ⚠️  最終コミットより後のレビューです。未対応の可能性が高い。"
+    echo "  ⚠️  最終コミットより後の指摘です。未対応の可能性が高い。"
     echo "     返信: gh api repos/$OWNER/$NAME/pulls/$PR_NUM/comments/<id>/replies -f body=\"...\""
     echo "     （単体取得は /repos/$OWNER/$NAME/pulls/comments/<id> — /pulls/$PR_NUM/comments/<id> は 404）"
     blocked=1

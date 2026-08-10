@@ -55,6 +55,16 @@ cd "$ROOT"
 # Collabora はコンテナから shiki-server の WOPI を取りに来る。native では server が
 # ホスト側にいて、compose に extra_hosts(host-gateway) も無いため到達できない。
 # 中途半端に起動して「なぜか動かない」を作らず、ここで止める。
+# compose では ingestion-worker が 127.0.0.1:8090:8000、shiki-server が 8090:8090 を
+# publish しており、同時起動するとホスト :8090 が衝突してどちらかが必ず bind に失敗する
+# （compose 定義側の既存問題）。native + --rag なら第2リスナを 18090 に逃がすので成立する。
+if [ "$WITH_RAG" = 1 ] && [ "$MODE" = compose ]; then
+  err "--compose と --rag は併用できません（compose 定義で ingestion-worker と shiki-server が"
+  err "  どちらもホスト :8090 を publish しており、同時起動すると bind に失敗します）。"
+  err "  RAG を検証するなら native を使ってください: $0 --rag"
+  exit 2
+fi
+
 if [ "$WITH_OFFICE" = 1 ] && [ "$MODE" != compose ]; then
   err "--office は --compose と併用してください（native では Collabora がホストの shiki-server に到達できません）。"
   err "  例: $0 --compose --office"
@@ -64,7 +74,9 @@ fi
 command -v docker >/dev/null 2>&1 || { err "docker が見つかりません。"; exit 2; }
 command -v curl >/dev/null 2>&1 || { err "curl が見つかりません。"; exit 2; }
 
-RUNDIR="${TMPDIR:-/tmp}/shiki-dev-up-$(id -u)"
+# worktree ごとに分ける。UID だけで共有すると、別 worktree の --down が
+# こちらの PID ファイルを読んで無関係なプロセスを止めてしまう。
+RUNDIR="${TMPDIR:-/tmp}/shiki-dev-up-$(id -u)-$(printf '%s' "$ROOT" | cksum | cut -d' ' -f1)"
 mkdir -p "$RUNDIR"
 SERVER_LOG="$RUNDIR/shiki-server.log"
 WEB_LOG="$RUNDIR/web.log"
@@ -91,6 +103,37 @@ check_status() {
   [ "$api" = "200" ] && { [ "$web" = "200" ] || [ "$web" = "302" ] || [ "$web" = "307" ]; }
 }
 
+# :PORT のリスナが「自分のもの」か判定して止める。所有者を見ずに fuser -k すると、
+# 別 worktree の next dev や無関係なローカルサービスを突然停止してしまう。
+# 期待する実行ファイル名（部分一致）を渡す。
+kill_port_if_ours() {  # kill_port_if_ours <port> <exe に含まれるべき文字列>
+  command -v fuser >/dev/null 2>&1 || return 0
+  local pids exe matched=0
+  pids=$(fuser "$1/tcp" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' || true)
+  [ -n "$pids" ] || return 0
+  for pid in $pids; do
+    exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || echo "")
+    # next dev は node なので、実行ファイルではなく cwd で worktree を判定する。
+    cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || echo "")
+    case "$exe$cwd" in
+      *"$2"*) kill -TERM "$pid" 2>/dev/null || true; matched=1 ;;
+    esac
+  done
+  if [ "$matched" = 0 ]; then
+    err ":$1 を別のプロセスが使用しています（この worktree のものではありません）。停止してから再実行してください。"
+    fuser -v "$1/tcp" >&2 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+# 砂箱の成果物が無い、またはソース/ビルドスクリプトより古いなら再ビルドが要る。
+sandbox_needs_build() {
+  local out=web/editor-sandbox/dist/slide-editor.html
+  [ -f "$out" ] || return 0
+  [ -n "$(find web/editor-sandbox/src web/editor-sandbox/build.mjs -newer "$out" 2>/dev/null | head -1)" ]
+}
+
 # --- 停止 ---
 stop_all() {
   # native 起動時のみ SERVER_PID を書いている（compose 起動なら :8080 は docker-proxy）。
@@ -109,7 +152,7 @@ stop_all() {
   # setsid 経由の $! はプロセスグループ ID と一致しないことがあるため、ポート指定でも落とす。
   # pkill -f は自分のコマンド行にもマッチして自爆する（exit 144 の連鎖）ので使わない。
   if command -v fuser >/dev/null 2>&1; then
-    fuser -k 3000/tcp >/dev/null 2>&1 || true
+    kill_port_if_ours 3000 "$ROOT" || true
     # :8080 は「今そこにいるのが自分の native バイナリの時だけ」落とす。
     # PID ファイルの有無で判断すると、native がクラッシュして PID ファイルだけ残った後に
     # compose を起動した場合に、compose の :8080 を publish している docker-proxy を
@@ -174,8 +217,12 @@ fi
 # 作り直してよいが、破壊操作なので必ず明示フラグでのみ行う。
 reset_dev_db() {
   err "⚠️  compose の dev DB 'shiki' を DROP して作り直します（データは失われます）。"
+  # compose の .env が POSTGRES_USER を上書きしている場合があるので固定値にしない。
+  local pguser
+  pguser=$(grep -E '^POSTGRES_USER=' deploy/compose/.env 2>/dev/null | tail -1 | cut -d= -f2-)
+  pguser=${pguser:-postgres}
   docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
-    psql -U postgres -c "DROP DATABASE IF EXISTS shiki WITH (FORCE);" -c "CREATE DATABASE shiki;"
+    psql -U "$pguser" -c "DROP DATABASE IF EXISTS shiki WITH (FORCE);" -c "CREATE DATABASE shiki;"
   say "   [ok] dev DB をリセットしました（SHIKI_DEV_SEED=true が再投入します）"
 }
 [ "$RESET_DB" = 1 ] && reset_dev_db
@@ -235,7 +282,9 @@ else
 
   # /builtin/slide-editor の配信元。未ビルドだと 404 → スライドエディタが閲覧
   # フォールバックに落ち、変更が反映されない画面をスクショすることになる。
-  if [ ! -f web/editor-sandbox/dist/slide-editor.html ]; then
+  # 成果物がソースより古ければ作り直す。存在チェックだけだと、砂箱のソースを変更しても
+  # 古い成果物が /builtin から配信され続け、変更前の UI をスクショして成功扱いにしてしまう。
+  if sandbox_needs_build; then
     if [ -d web/node_modules ]; then
       say "   スライドエディタ砂箱をビルドします（/builtin 配信用）…"
       ( cd web && pnpm build:editor-sandbox ) || err "   ⚠️  砂箱のビルドに失敗（/builtin は 404 のまま）"
@@ -410,14 +459,15 @@ if [ ! -f web/src/generated/api.d.ts ]; then
 fi
 # node_modules が無くて step 2 でスキップした場合はここで砂箱を建てる。
 # ServeDir はリクエスト時にディスクを読むので、サーバの再起動は要らない。
-if [ "$MODE" != compose ] && [ ! -f web/editor-sandbox/dist/slide-editor.html ]; then
+if [ "$MODE" != compose ] && sandbox_needs_build; then
   say "   スライドエディタ砂箱をビルドします（/builtin 配信用）…"
   ( cd web && pnpm build:editor-sandbox ) || err "   ⚠️  砂箱のビルドに失敗（/builtin は 404 のまま）"
 fi
 
 # 稼働中の next dev と同じ worktree で build すると .next を壊すため、
 # 既存の :3000 を先に落としてから起動する。
-command -v fuser >/dev/null 2>&1 && { fuser -k 3000/tcp >/dev/null 2>&1 || true; sleep 1; }
+kill_port_if_ours 3000 "$ROOT" || exit 1
+sleep 1
 
 cat > "$RUNDIR/run-web.sh" <<EOF
 #!/usr/bin/env bash

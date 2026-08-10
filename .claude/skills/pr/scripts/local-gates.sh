@@ -67,6 +67,7 @@ fi
 
 RESULTS=""
 FAILED=0
+SKIPPED=0
 
 run_gate() {
   local name="$1"; shift
@@ -120,10 +121,17 @@ fi
 if [ "$FAST" = 0 ] && touches '^crates/tabular/'; then
   run_gate "tabular runner fmt/clippy" sh_c \
     'cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check && cargo clippy --manifest-path crates/tabular/runner/Cargo.toml --release -- -D warnings'
+  # fmt/clippy だけでは、外部参照拒否・DML/DDL 拒否・クォータ（PIT-39）を壊しても通ってしまう。
+  # CI の tabular-runner ジョブと同じく release ビルド ＋ adversarial テストまで回す。
+  run_gate "tabular runner build + adversarial" sh_c \
+    'cargo build --manifest-path crates/tabular/runner/Cargo.toml --release && SHIKI_TABULAR_RUNNER=crates/tabular/runner/target/release/shiki-tabular-runner cargo test -p shiki-tabular --test runner_adversarial_it'
 fi
 
 # ---------- Web ----------
-if touches '^web/'; then
+# CI の web ジョブは非 docs PR なら無条件に gen:api → lint → build を回す。web/ の差分だけを
+# 条件にすると、Rust 側の OpenAPI/route/DTO だけを変えた PR で codegen 後の型崩れを見逃す
+# （Rust テストは通るが web が壊れる）。型の生成元になる Rust 差分も条件に含める。
+if touches '^web/' || touches '^crates/'; then
   run_gate "pnpm install" sh_c 'cd web && pnpm install --frozen-lockfile'
   run_gate "pnpm gen:api (codegen が正)" sh_c 'cd web && pnpm gen:api'
   run_gate "pnpm lint" sh_c 'cd web && pnpm lint'
@@ -132,7 +140,8 @@ if touches '^web/'; then
     if curl -fsS --max-time 2 -o /dev/null http://localhost:3000/ 2>/dev/null; then
       echo "   ⚠️  :3000 で dev サーバが稼働中。pnpm build は .next を壊すためスキップします。"
       echo "      （dev を止めてから改めて回すか、別 worktree でビルドしてください）"
-      RESULTS="${RESULTS}⏭️  pnpm build（:3000 稼働中のためスキップ）\n"
+      RESULTS="${RESULTS}⚠️  next build 未実行（:3000 稼働中のためスキップ）\n"
+      SKIPPED=1
     else
       # `pnpm build` は package.json の prebuild フックで gen:api を再実行する。直前に
       # 明示実行しているので、ここでは next build を直接呼んで codegen の二重実行を避ける
@@ -168,6 +177,13 @@ echo
 echo "================================"
 printf '%b' "$RESULTS"
 echo "================================"
+if [ "$FAILED" -eq 0 ] && [ "$SKIPPED" -eq 1 ]; then
+  # 必須ゲートを飛ばしたまま「全ゲート通過」と言わない（production build でしか出ない
+  # エラーを抱えたまま push させてしまう）。
+  echo "⚠️  未実行のゲートがあります。上記を実行してから push してください。"
+  echo "   （:3000 の dev サーバを止める、または別 worktree で next build する）"
+  exit 1
+fi
 if [ "$FAILED" -eq 0 ]; then
   [ "$FAST" = 1 ] && echo "--fast で通過。push 前にフル（--fast なし）で回すこと。" || echo "全ゲート通過。"
   exit 0

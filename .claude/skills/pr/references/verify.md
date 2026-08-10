@@ -8,7 +8,7 @@ UI/挙動が変わる変更では、**実装して終わりにしない**。起�
 .claude/skills/pr/scripts/dev-up.sh                  # 既定（native）
 .claude/skills/pr/scripts/dev-up.sh --rag            # 検索/RAG も使う（qdrant + ingestion-worker）
 .claude/skills/pr/scripts/dev-up.sh --sandbox        # コード実行を使う（sandbox-orchestrator）
-.claude/skills/pr/scripts/dev-up.sh --office         # Word/Excel を使う（collabora）
+.claude/skills/pr/scripts/dev-up.sh --compose --office   # Word/Excel を使う（collabora・compose 必須）
 .claude/skills/pr/scripts/dev-up.sh --compose        # shiki-server も compose（CI と同一構成）
 .claude/skills/pr/scripts/dev-up.sh --status         # 生存確認だけ
 .claude/skills/pr/scripts/dev-up.sh --down           # 停止
@@ -116,6 +116,9 @@ cd web && E2E_BASE_URL=http://localhost:3000 pnpm exec playwright test e2e/<対�
 **spec 名の一覧をここに書き写さない**（追加・改名で即座に嘘になる）。毎回リポジトリから導出する。
 
 ```bash
+# 0. base を導出する（remote-tracking ref。ローカル main は古いことが多い）
+BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null); BASE=${BASE:-origin/main}
+
 # 1. 変更した web の領域を出す
 git diff --name-only "$BASE"...HEAD -- web/src \
   | sed -E 's|web/src/components/([^/]+)/.*|\1|;t;d' | sort -u

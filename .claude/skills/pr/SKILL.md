@@ -7,7 +7,7 @@ description: 作業ツリーの変更を merge-ready な Pull Request にする�
 
 現在の変更を、CI の全ゲートと AI レビュアーを通る Pull Request にするエンドツーエンド手順。
 
-```
+```text
 Phase 1  ローカルゲート      CI と同一のコマンドを push 前に回す
 Phase 2  動作確認            compose + web(:3000) + スクショ/動画 + 該当 E2E
 Phase 3  自己点検            パフォーマンス評価 ＋ ドキュメント/実装 整合
@@ -78,7 +78,7 @@ Phase 7  完了 / エスカレート   （＋ブログ価値の提案）
 .claude/skills/pr/scripts/dev-up.sh    # compose 依存 → shiki-server(:8080) → web(:3000)
 ```
 
-RAG・サンドボックス・Office は既定でオフ。該当機能を触るなら `--rag` / `--sandbox` / `--office` を付ける（オフのまま検証して「動かない」と誤診しない）。初回の native ビルドは十数分かかる。
+RAG・サンドボックス・Office は既定でオフ。該当機能を触るなら `--rag` / `--sandbox` / `--compose --office` を付ける（オフのまま検証して「動かない」と誤診しない）。Office は compose 必須、RAG は native 必須（いずれもポート/到達性の制約・`verify.md` 参照）。初回の native ビルドは十数分かかる。
 
 1. 起動して生存確認する（`curl -fsS localhost:8080/healthz`、`http://localhost:3000`）。
 2. **スクリーンショットを撮って自分の目で見る** — `deviceScaleFactor: 2`、ライト/ダーク両テーマ、狭幅、パネル開閉。動きのある UI（遷移・共同編集・ドラッグ）は `video: 'on'` で録画する。
@@ -127,8 +127,18 @@ A・B で見つけた劣化はこの PR で直す。C で見つけた**既存の
    ```bash
    # base は必ず remote-tracking ref。ローカルの main は古いことが多く、
    # `main...HEAD` は無関係な数千ファイルを差分に含めてしまう。
-   BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null); BASE=${BASE:-origin/main}
-   git diff "$BASE"...HEAD > "$SCRATCH/pr-diff.patch"
+   BASE_REF=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null); BASE_REF=${BASE_REF:-origin/main}
+   git rev-parse --verify --quiet "$BASE_REF" >/dev/null \
+     || { echo "base ref が見つかりません: $BASE_REF（git fetch origin）"; exit 1; }
+
+   # この Phase はコミット前なので、**コミット済み差分だけでは実装が丸ごと抜ける**。
+   # staged / unstaged / 未追跡も含めないと、空の diff を渡して「指摘なし」で通ってしまう。
+   git add -A                                   # 未追跡ファイルも diff に載せる
+   { git diff "$BASE_REF"...HEAD; git diff --cached; } > "$SCRATCH/pr-diff.patch"
+
+   # 空でないことを必ず確認する（空なら base か add が誤っている）
+   [ -s "$SCRATCH/pr-diff.patch" ] || { echo "diff が空。base と作業ツリーを確認"; exit 1; }
+   wc -l "$SCRATCH/pr-diff.patch"
    ```
 
 2. **観点別の finder を並列起動する**（4 観点・1 メッセージで同時に投げる）: 不変条件/認可・パフォーマンス・ドキュメント整合・正確性/エッジケース。プロンプトには **diff のパスと読むべき正本ドキュメントのパス、観点、出力形式だけ**を書く。**変更の意図・issue の背景・自分の設計理由は渡さない**（渡した時点で独立性が失われる）。
@@ -152,7 +162,11 @@ A・B で見つけた劣化はこの PR で直す。C で見つけた**既存の
 3. base は「前提」で決めたもの。スタックなら親ブランチを指定する。
 4. 本文テンプレ:
 
+   `--base` には**ブランチ名**を渡す。Phase 4 の `$BASE_REF`（`origin/main`）をそのまま使うと、
+   その名前のブランチは GitHub 側に存在しないため PR 作成に失敗する。
+
    ```bash
+   BASE=${BASE_REF#origin/}       # origin/main → main
    gh pr create --base "$BASE" --title "<タイトル>" --body "$(cat <<'EOF'
    <何を・なぜ変えたか>
 
