@@ -35,10 +35,18 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(service = %config.telemetry.service_name, "shiki-server 起動中");
 
     // Postgres は lazy 接続（compose の起動順に耐性を持たせ、/readyz で疎通を表現）。
+    //
+    // application_name を必ず載せる。これが無いと `pg_stat_activity` の接続が全て空欄で並び、
+    // 「今 DB を詰まらせているのは誰か」を障害時に切り分けられない（shiki-admin の retenant や
+    // ingestion 系と区別が付かない）。接続 URL 側の指定があればそれを尊重する。
+    let db_options: sqlx::postgres::PgConnectOptions = config
+        .database
+        .url
+        .parse()
+        .context("DATABASE_URL の解析に失敗")?;
     let db = PgPoolOptions::new()
         .max_connections(config.database.max_connections)
-        .connect_lazy(&config.database.url)
-        .context("Postgres プールの初期化に失敗")?;
+        .connect_lazy_with(db_options.application_name("shiki-server"));
 
     // スキーマ・マイグレーションを適用（起動時 fail-fast）。
     // ここで初めて実接続が張られる。compose は depends_on で postgres healthy を待つ。

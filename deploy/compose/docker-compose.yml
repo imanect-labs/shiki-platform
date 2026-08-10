@@ -14,6 +14,31 @@ name: shiki
 services:
   postgres:
     image: postgres:16-alpine
+    # クエリ性能の観測手段を最初から載せる（docs/guides/db-observability.md が使い方の正）。
+    # pg_stat_statements / auto_explain はどちらも shared_preload_libraries 経由でしか有効化
+    # できず、後付けには再起動が要る。商用 APM も中身はこの 2 つを読んでいるだけなので、
+    # SaaS を足す前にここを土台にする（オンプレ/エアギャップでも動く）。
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements,auto_explain
+      # 正規化したクエリごとの累積統計。追跡するのはトップレベル文のみ（関数内部まで数えない）。
+      - -c
+      - pg_stat_statements.max=10000
+      - -c
+      - pg_stat_statements.track=top
+      # 遅かった瞬間の実行計画をログへ残す。「本番では遅いのに後から再現しない」を潰すため。
+      - -c
+      - auto_explain.log_min_duration=200ms
+      - -c
+      - auto_explain.log_analyze=on
+      # log_timing はノード単位の計時で、それ自体が重い。log_analyze と併用する際に off にするのが定石。
+      - -c
+      - auto_explain.log_timing=off
+      - -c
+      - auto_explain.log_buffers=on
+      - -c
+      - auto_explain.log_nested_statements=on
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -299,6 +324,28 @@ services:
       - ../otel/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
+
+  # Postgres のメトリクスを既存の Prometheus/Grafana へ流す。SaaS（pganalyze 等）を足さないのは
+  # オンプレ/エアギャップ配布が前提で、テナントのクエリ形状を外へ出せないため（design.md §4.9・
+  # 「新規ステートフル依存ゼロ」）。中身は pg_stat_* を読んでいるだけなのでここで完結する。
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
+    profiles: ["observability"]
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/shiki?sslmode=disable"
+      # 既定のコレクタに加えて、本プロジェクトで見たいものを明示的に足す。
+      #   stat_statements   … クエリ別の累積時間（総時間で見る・平均では高頻度クエリが埋もれる）
+      #   stat_user_tables  … n_dead_tup / last_autovacuum（#440 の設定が効いているかの観測点）
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "false"
+    command:
+      - --collector.stat_statements
+      - --collector.stat_user_tables
+      - --collector.stat_activity_autovacuum
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.115.1
