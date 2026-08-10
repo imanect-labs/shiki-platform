@@ -185,6 +185,26 @@ else
     echo "  （なし）"
   fi
   [ "${ack_count:-0}" -gt 0 ] && echo "  （うち $ack_count 件は bot の「対応済み/取り下げ」返信のため除外）"
+
+  # --- 3.5 bot が「最新コミットを見たか」を確認する ---
+  # 「最終コミット後のコメントが無い」には 2 つの意味がある:
+  #   (a) 指摘が全て対応済み → 緑
+  #   (b) bot がまだ最新コミットをレビューしていない → 緑ではない（見ていないだけ）
+  # 時刻比較だけでは (b) を緑と誤判定する。bot が実際にどの commit をレビューしたかで判別する。
+  head_sha=$(gh api --paginate "repos/$OWNER/$NAME/pulls/$PR_NUM/commits" --jq '.[-1].sha' 2>/dev/null || true)
+  if [ -n "$head_sha" ]; then
+    pending_bots=""
+    for bot in $PR_REVIEW_BOTS; do
+      reviewed=$(printf '%s' "$reviews_json" | jq -r --arg b "$bot" --arg sha "$head_sha" \
+        '[ .[] | select(.user.login == $b) | select((.commit_id // "") == $sha) ] | length' 2>/dev/null || echo 0)
+      [ "${reviewed:-0}" -eq 0 ] && pending_bots="$pending_bots $bot"
+    done
+    if [ -n "$pending_bots" ]; then
+      echo "  ⏳ 最新コミット（${head_sha:0:8}）を**まだレビューしていない** bot:$pending_bots"
+      echo "     「指摘なし」ではなく「未レビュー」です。完了を待ってから再実行してください。"
+      blocked=1
+    fi
+  fi
 fi
 
 # --- 4. スタック PR の警告 ---
