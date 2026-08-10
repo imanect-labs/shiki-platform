@@ -1,4 +1,4 @@
-//! スレッドの ReBAC 共有 API（#37・500 行規約で `chat.rs` から分離）。
+//! スレッドの ReBAC 共有 API（#37・行数規約で `chat.rs` から分離）。
 //!
 //! 認可は `ChatStore`（owner 要求＋監査）の既存チョークポイントに委ねる。共有役割は
 //! viewer/commenter/editor の閉集合（owner の横展開を防ぐ）。editor 共有は自律 run の

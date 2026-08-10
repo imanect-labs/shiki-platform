@@ -1,6 +1,6 @@
 //! `shiki-admin retenant` のオブジェクトキー写像（`blob.object_key` の名前空間差し替え）。
 //!
-//! 本体（`shiki-admin.rs`）が 500 行ゲートに張り付いていたため、純粋関数とその単体テストを
+//! 本体（`shiki-admin.rs`）が行数ゲートに張り付いていたため、純粋関数とその単体テストを
 //! ここへ分離した（#420）。移行手順そのものは本体側にある。
 
 use authz::migrate::FromNs;

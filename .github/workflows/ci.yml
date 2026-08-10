@@ -110,7 +110,7 @@ jobs:
           # GITHUB_TOKEN を .git/config に残さない（後続サードパーティ処理からの窃取防止）。
           persist-credentials: false
       # 巨大ファイル gate は toolchain 不要（bash+git のみ）。最速で fail-fast させる。
-      - name: file-size gate (1 ファイル 500 行以内)
+      - name: file-size gate (1 ファイル 1000 行以内)
         run: bash scripts/check-file-size.sh
       # migration の番号衝突は並行 PR のマージ順で構造的に起こり、**新規 DB でだけ**壊れる
       # （既存 DB は増分適用済みで露見しない）。結合テストは DB env 未設定でスキップされるため

@@ -1,4 +1,4 @@
-//! deep research スタブが出す genui スペック（`stub_deep_research.rs` から分割・500 行規約）。
+//! deep research スタブが出す genui スペック（`stub_deep_research.rs` から分割・行数規約）。
 //!
 //! 質問カード・計画カード・出典カードの固定データだけを持つ。フェーズの進み方は
 //! `stub_deep_research.rs` が決める。

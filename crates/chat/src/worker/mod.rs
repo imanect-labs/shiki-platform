@@ -10,7 +10,7 @@
 mod approval_policy;
 /// 古典 RAG 注入経路（generate.rs から分割）。
 mod classic;
-/// ワーカーの設定と依存束（mod.rs から分割・500 行規約）。
+/// ワーカーの設定と依存束（mod.rs から分割・行数規約）。
 mod config;
 mod gate;
 mod generate;

@@ -1,7 +1,7 @@
 //! `web_fetch` のコンテキスト効率（#405）のテスト。
 //!
 //! 「生 HTML を渡さない」ことを **削減率**と**ボイラープレートの不在**で示す。
-//! 取得経路・SSRF 防御そのものは [`super::tests`] が見る（500 行規約でファイルを分けている）。
+//! 取得経路・SSRF 防御そのものは [`super::tests`] が見る（行数規約でファイルを分けている）。
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
