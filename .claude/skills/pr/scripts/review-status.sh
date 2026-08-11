@@ -32,12 +32,16 @@ command -v jq >/dev/null 2>&1 || { err "jq が見つかりません。jq をイ�
 gh auth status >/dev/null 2>&1 || { err "gh が未認証です。'gh auth login' を実行してください。"; exit 2; }
 
 PR="${1:-}"
-if ! meta=$(gh pr view ${PR:+"$PR"} --json number,baseRefName,url 2>/dev/null); then
+if ! meta=$(gh pr view ${PR:+"$PR"} --json number,baseRefName,url,headRefOid 2>/dev/null); then
   err "PR が見つかりません（番号指定か、PR のあるブランチで実行してください）。"
   exit 2
 fi
 PR_NUM=$(printf '%s' "$meta" | jq -r '.number')
 BASE_REF=$(printf '%s' "$meta" | jq -r '.baseRefName')
+# HEAD の SHA は PR オブジェクトから取る。`gh api --paginate .../commits --jq '.[-1].sha'` は
+# jq を**ページごとに**適用するため、コミットが 31 件以上あると SHA が複数行になり、
+# 単一の commit_id と永久に一致せず「レビュー済みの bot も未レビュー」と誤判定する。
+HEAD_SHA=$(printf '%s' "$meta" | jq -r '.headRefOid // ""')
 
 if ! repo=$(gh repo view --json owner,name,defaultBranchRef -q '.owner.login + "/" + .name + " " + .defaultBranchRef.name' 2>/dev/null); then
   err "リポジトリ情報を取得できません。"
@@ -191,7 +195,7 @@ else
   #   (a) 指摘が全て対応済み → 緑
   #   (b) bot がまだ最新コミットをレビューしていない → 緑ではない（見ていないだけ）
   # 時刻比較だけでは (b) を緑と誤判定する。bot が実際にどの commit をレビューしたかで判別する。
-  head_sha=$(gh api --paginate "repos/$OWNER/$NAME/pulls/$PR_NUM/commits" --jq '.[-1].sha' 2>/dev/null || true)
+  head_sha="$HEAD_SHA"
   if [ -n "$head_sha" ]; then
     pending_bots=""
     for bot in $PR_REVIEW_BOTS; do
