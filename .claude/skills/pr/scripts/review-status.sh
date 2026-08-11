@@ -193,20 +193,37 @@ else
   # --- 3.5 bot が「最新コミットを見たか」を確認する ---
   # 「最終コミット後のコメントが無い」には 2 つの意味がある:
   #   (a) 指摘が全て対応済み → 緑
-  #   (b) bot がまだ最新コミットをレビューしていない → 緑ではない（見ていないだけ）
-  # 時刻比較だけでは (b) を緑と誤判定する。bot が実際にどの commit をレビューしたかで判別する。
-  head_sha="$HEAD_SHA"
-  if [ -n "$head_sha" ]; then
-    pending_bots=""
-    for bot in $PR_REVIEW_BOTS; do
-      reviewed=$(printf '%s' "$reviews_json" | jq -r --arg b "$bot" --arg sha "$head_sha" \
-        '[ .[] | select(.user.login == $b) | select((.commit_id // "") == $sha) ] | length' 2>/dev/null || echo 0)
-      [ "${reviewed:-0}" -eq 0 ] && pending_bots="$pending_bots $bot"
-    done
-    if [ -n "$pending_bots" ]; then
-      echo "  ⏳ 最新コミット（${head_sha:0:8}）を**まだレビューしていない** bot:$pending_bots"
-      echo "     「指摘なし」ではなく「未レビュー」です。完了を待ってから再実行してください。"
+  #   (b) bot がまだ最新コミットを見ていない → 緑ではない（見ていないだけ）
+  # 時刻比較だけでは (b) を緑と誤判定する。
+  #
+  # ただし「review オブジェクトが無い＝未レビュー」ではない:
+  #   - CodeRabbit は指摘ゼロだと review を作らず、commit status（context="CodeRabbit"）だけ出す。
+  #   - Codex は push ごとの再レビューをしない（初回のみのことがある）。
+  # したがって review の有無だけでブロックすると、恒久的に緑にならなくなる。
+  # ブロックするのは「レビューが実行中（pending）」＝結果が未確定の時だけにして、
+  # 「そもそも見ていない」は警告に留める（判断材料は出すが停止させない）。
+  if [ -n "$HEAD_SHA" ]; then
+    # HEAD に対する pending なチェック/ステータスがあるか（レビュー実行中）。
+    head_pending=$(gh api "repos/$OWNER/$NAME/commits/$HEAD_SHA/status" \
+      --jq '[.statuses[]? | select(.state == "pending")] | length' 2>/dev/null || echo 0)
+    head_pending_runs=$(gh api "repos/$OWNER/$NAME/commits/$HEAD_SHA/check-runs" \
+      --jq '[.check_runs[]? | select(.status != "completed")] | length' 2>/dev/null || echo 0)
+    if [ "${head_pending:-0}" -gt 0 ] || [ "${head_pending_runs:-0}" -gt 0 ]; then
+      echo "  ⏳ 最新コミット（${HEAD_SHA:0:8}）のレビュー/チェックが実行中です。結果は未確定。"
       blocked=1
+    fi
+
+    # 参考情報: HEAD に対して review も status も残していない bot を挙げる。
+    silent_bots=""
+    for bot in $PR_REVIEW_BOTS; do
+      reviewed=$(printf '%s' "$reviews_json" | jq -r --arg b "$bot" --arg sha "$HEAD_SHA" \
+        '[ .[] | select(.user.login == $b) | select((.commit_id // "") == $sha) ] | length' 2>/dev/null || echo 0)
+      [ "${reviewed:-0}" -eq 0 ] && silent_bots="$silent_bots $bot"
+    done
+    if [ -n "$silent_bots" ]; then
+      echo "  ℹ️  最新コミット（${HEAD_SHA:0:8}）に review を残していない bot:$silent_bots"
+      echo "     指摘ゼロで review を作らない場合と、再レビューしていない場合がある。"
+      echo "     判断に使うなら PR ページで最終レビュー対象コミットを確認すること（ブロックはしない）。"
     fi
   fi
 fi
