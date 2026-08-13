@@ -70,8 +70,11 @@ pub struct RagConfig {
     pub job_max_attempts: i32,
 }
 
+/// compose の `ingestion-worker` はホスト側も 8000（コンテナと同じ）に publish する。
+/// 8090 は `SHIKI__GATEWAY__PORT` の既定値＝自分自身の第2リスナなので、ここを 8090 に
+/// すると native 起動時に server が自分へ /parse を投げることになる（#453）。
 fn default_worker_base_url() -> String {
-    "http://localhost:8090".into()
+    "http://localhost:8000".into()
 }
 fn default_qdrant_url() -> String {
     "http://localhost:6333".into()

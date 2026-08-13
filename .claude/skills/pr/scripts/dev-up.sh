@@ -55,16 +55,6 @@ cd "$ROOT"
 # Collabora はコンテナから shiki-server の WOPI を取りに来る。native では server が
 # ホスト側にいて、compose に extra_hosts(host-gateway) も無いため到達できない。
 # 中途半端に起動して「なぜか動かない」を作らず、ここで止める。
-# compose では ingestion-worker が 127.0.0.1:8090:8000、shiki-server が 8090:8090 を
-# publish しており、同時起動するとホスト :8090 が衝突してどちらかが必ず bind に失敗する
-# （compose 定義側の既存問題）。native + --rag なら第2リスナを 18090 に逃がすので成立する。
-if [ "$WITH_RAG" = 1 ] && [ "$MODE" = compose ]; then
-  err "--compose と --rag は併用できません（compose 定義で ingestion-worker と shiki-server が"
-  err "  どちらもホスト :8090 を publish しており、同時起動すると bind に失敗します）。"
-  err "  RAG を検証するなら native を使ってください: $0 --rag"
-  exit 2
-fi
-
 if [ "$WITH_OFFICE" = 1 ] && [ "$MODE" != compose ]; then
   err "--office は --compose と併用してください（native では Collabora がホストの shiki-server に到達できません）。"
   err "  例: $0 --compose --office"
@@ -274,7 +264,8 @@ else
   WORKER_PORT=$(host_port ingestion-worker 8000 8000)
   SANDBOX_PORT=$(host_port sandbox-orchestrator 50000 50000)
   COLLABORA_PORT=$(host_port collabora 9980 9980)
-  # native 専用のゲートウェイポート（compose の publish と衝突させない）。
+  # native 専用のゲートウェイポート。8090/8091 は compose の shiki-server が publish する
+  # ため、別 worktree で compose 版が動いていると衝突する。native は常に 18090/18091 に逃がす。
   GW_PORT=18090
   B1_PORT=18091
   GW_ORIGIN=http://localhost:$GW_PORT
@@ -327,9 +318,9 @@ export SHIKI__STORAGE__S3__BUCKET=shiki-blobs
 export SHIKI__STORAGE__S3__ACCESS_KEY=minioadmin
 export SHIKI__STORAGE__S3__SECRET_KEY=minioadmin
 export SHIKI__GATEWAY__ENABLED=true
-# compose の ingestion-worker が 127.0.0.1:8090 を publish するため、native の第2/第3
-# リスナは 8090/8091 を避ける（--rag 併用時に EADDRINUSE で起動できなくなる）。
-# web 側には NEXT_PUBLIC_GATEWAY_ORIGIN / NEXT_PUBLIC_B1_ORIGIN で同じ値を渡す。
+# native の第2/第3リスナは compose の shiki-server（8090/8091 を publish）と衝突しない
+# 18090/18091 を使う。web 側には NEXT_PUBLIC_GATEWAY_ORIGIN / NEXT_PUBLIC_B1_ORIGIN で
+# 同じ値を渡す。
 export SHIKI__GATEWAY__PORT=${GW_PORT}
 export SHIKI__GATEWAY__B1_PORT=${B1_PORT}
 export SHIKI__GATEWAY__PUBLIC_ORIGIN=http://localhost:${GW_PORT}
