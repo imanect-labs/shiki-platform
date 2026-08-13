@@ -96,8 +96,9 @@ cargo llvm-cov report --summary-only --ignore-filename-regex '<ci.yml と同じ 
   何千件も誤検出する（実測: ローカル `main` 基準 2427 件 / `origin/main` 基準 1 件）。
   これはゲート選択・カバレッジ注意喚起・Phase 4 の独立レビューに渡す diff の全てを狂わせる。
   精度が要るときは先に `git fetch origin` する。
-- **`cargo ... | tail` はパイプ終端の exit code を返す** = clippy/test の失敗が exit 0 に化ける。
-  `cmd > log 2>&1 && echo OK || echo FAIL` で明示判定し、`grep -nE '^error|could not compile' log` で実エラーを見る。
+- **`cmd | tail` はパイプ終端の exit code を返す** = 失敗が exit 0 に化ける。
+  `cargo` だけでなく **`gh pr checks --watch | tail` でも起きる**（CI が赤なのに「緑」と読む。実際に踏んだ）。
+  合否を見たいコマンドはパイプにつながない。`cmd > log 2>&1; rc=$?` で受けてから log を読む。
 - **`check-file-size.sh` は git-tracked ファイルのみ数える**（`*.rs` 対象。上限は同スクリプトの `MAX_LINES`・ここに数値を書かない）。新規ファイルは `git add` 前だとローカル検査をすり抜け、CI で落ちる。
 - **migration 番号は並行 PR と衝突する。** 着手時に `gh pr list --json number -q '.[].number' | xargs -I{} gh pr diff {} --name-only | grep migrations` 相当で番号を予約する。
 - **`vendor/` は品質ゲート除外**（所有フォーク・行数上限/カバレッジ/clippy 対象外）。`cargo machete` も `crates` のみ対象。
