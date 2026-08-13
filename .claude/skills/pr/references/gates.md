@@ -98,9 +98,17 @@ cargo llvm-cov report --summary-only --ignore-filename-regex '<ci.yml と同じ 
   精度が要るときは先に `git fetch origin` する。
 - **`cargo ... | tail` はパイプ終端の exit code を返す** = clippy/test の失敗が exit 0 に化ける。
   `cmd > log 2>&1 && echo OK || echo FAIL` で明示判定し、`grep -nE '^error|could not compile' log` で実エラーを見る。
-- **`check-file-size.sh` は git-tracked ファイルのみ数える**（1 ファイル 500 行・`*.rs` 対象）。新規ファイルは `git add` 前だとローカル検査をすり抜け、CI で落ちる。
+- **`check-file-size.sh` は git-tracked ファイルのみ数える**（`*.rs` 対象。上限は同スクリプトの `MAX_LINES`・ここに数値を書かない）。新規ファイルは `git add` 前だとローカル検査をすり抜け、CI で落ちる。
 - **migration 番号は並行 PR と衝突する。** 着手時に `gh pr list --json number -q '.[].number' | xargs -I{} gh pr diff {} --name-only | grep migrations` 相当で番号を予約する。
-- **`vendor/` は品質ゲート除外**（所有フォーク・500 行/カバレッジ/clippy 対象外）。`cargo machete` も `crates` のみ対象。
+- **`vendor/` は品質ゲート除外**（所有フォーク・行数上限/カバレッジ/clippy 対象外）。`cargo machete` も `crates` のみ対象。
 - **ディスク逼迫で linker が Bus error / No space / exit 144 になる。** 順に `rm -rf target/debug/incremental` → `docker builder prune -f`（20GB 級）→ 不要 worktree の `target/` 削除 → `cargo clean`。
 - **ts-rs が `TS_RS_LARGE_INT` に対応していない**（バージョンは `Cargo.toml` を見る）。`i64` を TS の `number` にしたいフィールドは `#[ts(type = "number")]`、`Option<i64>` は `#[ts(type = "number | null")]` を付ける。bump したら対応状況を確認して本項を消す。
 - **手書き型を作らない。** 型は Rust → OpenAPI → TS（`pnpm gen:api`）、SSE は ts-rs/typeshare。`web/` に手で型を足したら codegen 側を直す。
+- **ゲートを回すと追跡済みの生成物が書き換わる。`git add -A` を無条件に使わない。**
+  ts-rs のバインディング出力（`crates/*/bindings/*.ts`）はテスト実行時に生成されるため、
+  `cargo nextest run --workspace --all-features`（＝ CI と同じコマンド）を回すと
+  リポジトリにコミット済みのファイルが書き換わる。`--all-features` が ts-rs の追加 feature を
+  有効にし、`import ... from "./X"` が `"./X.js"` になるため。
+  この状態で `git add -A` すると**無関係な生成物が数十件コミットに混入する**（実際に 82 件混入した）。
+  CI も同じコマンドを使う＝ CI 側でも同じ差分が出るだけなので、**CI はこの混入を検出できない**。
+  → ゲート実行後は必ず `git status` / `git diff --stat` を見てから、**パスを明示して add する**。

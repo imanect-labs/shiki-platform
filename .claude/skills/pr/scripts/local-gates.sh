@@ -91,7 +91,7 @@ echo "変更ファイル: $(printf '%s\n' "$CHANGED" | grep -c . ) 件"
 echo "ログ: $LOGDIR"
 
 # ---------- 常に回す（CI の quality ジョブと同一） ----------
-run_gate "file-size (1ファイル500行)" bash scripts/check-file-size.sh
+run_gate "file-size (1ファイルの行数上限)" bash scripts/check-file-size.sh
 # migration 番号の重複は新規 DB でしか壊れない＝ローカルの既存 DB では気づけないため、
 # CI に任せず必ずここで検出する。
 run_gate "migration version (番号重複)" bash scripts/check-migration-versions.sh
