@@ -242,9 +242,21 @@ A・B で見つけた劣化はこの PR で直す。C で見つけた**既存の
 1. チェックが確定するまで待ち、状態を読む:
 
    ```bash
+   # ⚠️ `gh pr checks --watch` を push 直後にそのまま実行しない。
+   #    チェックが 1 件も無いと "no checks reported" を出して **exit 0 で即終了**する。
+   #    push 直後は必ずこの状態なので、「緑になった」と誤読する（実際に踏んだ）。
+   #    まず checks が生成されるのを待つ。
+   for _ in $(seq 1 20); do
+     [ "$(gh pr checks 2>/dev/null | grep -c .)" -gt 1 ] && break
+     sleep 15
+   done
    gh pr checks --watch --interval 30
    .claude/skills/pr/scripts/review-status.sh
    ```
+
+   20 回待っても 1 件も出ないなら、**CI が回っていない**。`paths-ignore` 対象のみの変更か、
+   **PR がコンフリクトしている**（`mergeable: CONFLICTING` だと GitHub はマージ ref を作れず
+   `pull_request` の run を生成しない）。`gh pr view --json mergeable` で確かめる。
 
    - exit `0` → 緑。Phase 7 へ。
    - exit `1` → ブロック。出力に失敗チェック・未解消スレッド・**最終コミット後に付いた bot コメント**が並ぶ。

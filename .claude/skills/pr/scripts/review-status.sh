@@ -32,7 +32,7 @@ command -v jq >/dev/null 2>&1 || { err "jq が見つかりません。jq をイ�
 gh auth status >/dev/null 2>&1 || { err "gh が未認証です。'gh auth login' を実行してください。"; exit 2; }
 
 PR="${1:-}"
-if ! meta=$(gh pr view ${PR:+"$PR"} --json number,baseRefName,url,headRefOid 2>/dev/null); then
+if ! meta=$(gh pr view ${PR:+"$PR"} --json number,baseRefName,url,headRefOid,mergeable 2>/dev/null); then
   err "PR が見つかりません（番号指定か、PR のあるブランチで実行してください）。"
   exit 2
 fi
@@ -42,6 +42,11 @@ BASE_REF=$(printf '%s' "$meta" | jq -r '.baseRefName')
 # jq を**ページごとに**適用するため、コミットが 31 件以上あると SHA が複数行になり、
 # 単一の commit_id と永久に一致せず「レビュー済みの bot も未レビュー」と誤判定する。
 HEAD_SHA=$(printf '%s' "$meta" | jq -r '.headRefOid // ""')
+# CONFLICTING の間、GitHub はマージ ref を作れず **`pull_request` の run を一切生成しない**。
+# この状態は「チェックが 0 件」として現れるため、paths-ignore による 0 件と区別が付かない。
+# 区別しないと「docs のみだからチェック無しで正常」と読んでしまい、CI が一度も走っていない
+# PR を緑と報告する（実際に踏んだ）。待っても解消しないので、待機ではなく rebase を促す。
+MERGEABLE=$(printf '%s' "$meta" | jq -r '.mergeable // "UNKNOWN"')
 
 if ! repo=$(gh repo view --json owner,name,defaultBranchRef -q '.owner.login + "/" + .name + " " + .defaultBranchRef.name' 2>/dev/null); then
   err "リポジトリ情報を取得できません。"
@@ -55,16 +60,32 @@ DEFAULT_BRANCH="${rest##* }"
 bots_json=$(printf '%s' "$PR_REVIEW_BOTS" | jq -R 'split(" ") | map(select(length>0))')
 blocked=0
 
+# --- 0. マージ可能性 ---
+# チェックより先に見る。CONFLICTING なら CI がそもそも走らないため、
+# チェックの読み方（0 件の意味）が変わる。
+if [ "$MERGEABLE" = "CONFLICTING" ]; then
+  echo "== マージ可能性 =="
+  echo "  ❌ base ($BASE_REF) とコンフリクトしています。"
+  echo "     この状態では GitHub がマージ ref を作れず、pull_request の CI は起動しません。"
+  echo "     待っても解消しません。rebase してから再実行してください:"
+  echo "       git fetch origin && git rebase origin/$BASE_REF"
+  echo
+  blocked=1
+fi
+
 # --- 1. CI チェック ---
 echo "== CI チェック (PR #$PR_NUM) =="
 checks_json=$(gh pr checks "$PR_NUM" --json name,state 2>/dev/null || echo '[]')
 if [ "$(printf '%s' "$checks_json" | jq 'length')" -eq 0 ]; then
-  # 「チェックが 1 件も無い」には 2 つの意味がある:
+  # 「チェックが 1 件も無い」には 3 つの意味がある:
   #   (a) paths-ignore（docs/**・**.md・.claude/**）のみの変更 → 正常
   #   (b) CI がまだ check run を登録していない / ワークフローが起動していない → 緑ではない
-  # 両者を「チェックなし」で一括りにすると (b) を緑と誤判定するので、変更ファイルで判別する。
+  #   (c) PR がコンフリクトしていて run が生成されない → 緑ではない（上の 0. で検出済み）
+  # 一括りにすると (b)(c) を緑と誤判定するので、変更ファイルとマージ可能性で判別する。
   changed=$(gh pr diff "$PR_NUM" --name-only 2>/dev/null || true)
-  if [ -z "$changed" ]; then
+  if [ "$MERGEABLE" = "CONFLICTING" ]; then
+    echo "  （チェックなし — 上記のコンフリクトにより CI が起動していません）"
+  elif [ -z "$changed" ]; then
     echo "  ⚠️  チェックが 1 件も無く、変更ファイルも取得できません。CI の起動を確認してください。"
     blocked=1
   elif printf '%s\n' "$changed" | grep -qvE '^(docs/|\.claude/)|\.md$'; then
