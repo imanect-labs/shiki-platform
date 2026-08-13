@@ -95,6 +95,8 @@ run_gate "file-size (1ファイル500行)" bash scripts/check-file-size.sh
 # migration 番号の重複は新規 DB でしか壊れない＝ローカルの既存 DB では気づけないため、
 # CI に任せず必ずここで検出する。
 run_gate "migration version (番号重複)" bash scripts/check-migration-versions.sh
+# ホストポートの二重 publish も同種（CI は全サービスを同時起動しないため構造的に拾えない）。
+run_gate "compose port (二重 publish)" bash scripts/check-compose-ports.sh
 
 # ---------- Rust ----------
 if touches '^(crates/|Cargo\.(toml|lock)$)'; then

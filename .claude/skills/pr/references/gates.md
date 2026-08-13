@@ -25,7 +25,7 @@ sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E
 | --- | --- | --- |
 | Rust (fmt/clippy/test) | `cargo fmt --all --check`<br>`cargo clippy --all-targets --all-features -- -D warnings`<br>`cargo nextest run --workspace --all-features` | `crates/` 差分 |
 | Build shiki-server | （ローカルでは不要。compose 系ジョブへ release バイナリを artifact 共有するための CI 専用ジョブ） | — |
-| Quality gates | `bash scripts/check-file-size.sh`<br>`bash scripts/check-migration-versions.sh`<br>`cargo machete crates` | 常に（`.rs` 追加・依存追加・migration 追加時は必須） |
+| Quality gates | `bash scripts/check-file-size.sh`<br>`bash scripts/check-migration-versions.sh`<br>`bash scripts/check-compose-ports.sh`<br>`cargo machete crates` | 常に（`.rs` 追加・依存追加・migration 追加時は必須） |
 | cargo-deny | `cargo deny --all-features check` | `Cargo.toml` / `Cargo.lock` 差分 |
 | Coverage (gate 80%) | 下記「カバレッジ」節 | `.rs` の**新規追加**時 |
 | Web | `pnpm install --frozen-lockfile`<br>`pnpm gen:api`<br>`pnpm lint`<br>`pnpm build` | `web/` 差分 |
