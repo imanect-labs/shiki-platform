@@ -24,6 +24,10 @@ ignore = [
     # smallstr は yrs（共同編集 CRDT）の推移依存。unmaintained 通知であり既知脆弱性は無い。
     # yrs 上流が置換（compact_str 等）するまで解消不可。上流更新で外す（要追跡）。
     { id = "RUSTSEC-2026-0215", reason = "yrs 推移依存の smallstr unmaintained 通知。脆弱性ではなく yrs 上流の置換待ち。" },
+    # smartstring は swc_ecma_parser（shiki script の TS/JS パーサ）の推移依存。
+    # smallstr と同型の unmaintained 通知で、既知脆弱性は無い。swc 上流が置換するまで
+    # cargo update では到達できない。上流更新で外す（要追跡）。
+    { id = "RUSTSEC-2026-0249", reason = "swc_ecma_parser 推移依存の smartstring unmaintained 通知。脆弱性ではなく swc 上流の置換待ち。" },
 ]
 
 [licenses]
