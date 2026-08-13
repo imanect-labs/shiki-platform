@@ -117,6 +117,11 @@ jobs:
       # CI で拾えなかった実績があるので、ファイル名だけで判定できるここで止める（#413）。
       - name: migration version gate (バージョン番号の重複禁止)
         run: bash scripts/check-migration-versions.sh
+      # 同じく CI で拾えない構造的バグ（#453）。CI は全サービスをまとめて起動せず必要な
+      # ものだけ名指しで起動するため、ホストポートの二重 publish が衝突する組み合わせは
+      # 一度も同時に立ち上がらない。ローカルの `docker compose up` だけが壊れる。
+      - name: compose port gate (ホストポートの二重 publish 禁止)
+        run: bash scripts/check-compose-ports.sh
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"

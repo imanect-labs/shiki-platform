@@ -151,7 +151,11 @@ services:
     ports:
       # /parse は任意 URL を fetch する内部サービスのため、ホスト公開はローカルに限定する
       # （共有ホストでの SSRF/計算資源の踏み台化を防ぐ。コンテナ間は compose 網内で到達可能）。
-      - "127.0.0.1:8090:8000"
+      #
+      # ホスト側もコンテナと同じ 8000 に揃える。8090 は shiki-server の公開 API ゲートウェイ
+      # （第2リスナ）が publish しており、両サービスを同時起動すると
+      # `Bind for 0.0.0.0:8090 failed: port is already allocated` で必ず衝突する（#453）。
+      - "127.0.0.1:8000:8000"
     deploy:
       resources:
         limits:
