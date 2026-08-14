@@ -32,8 +32,8 @@ Phase 7  完了 / エスカレート   （＋ブログ価値の提案）
 
 ヘルパースクリプト:
 
-- `scripts/local-gates.sh [--fast]` — 差分から必要なゲートだけ選んで回し、失敗を一覧する。**先頭で ci.yml のドリフトを強制検出する。**
-- `scripts/ci-snapshot.sh [--check|--update]` — ci.yml の「ローカルで追随すべき部分」を正規化して `ci-jobs.snapshot` と突き合わせる。
+- `scripts/local-gates.sh [--fast]` — 差分から必要なゲートだけ選んで回し、失敗を一覧する。**先頭でワークフローのドリフトを強制検出する。**
+- `scripts/ci-snapshot.sh [--check|--update]` — `.github/workflows/*.yml` を YAML として解析・正規化し `ci-jobs.snapshot` と突き合わせる。
 - `scripts/dev-up.sh` — compose 依存 ＋ shiki-server(:8080) ＋ web(:3000) を検証可能な状態で起動する。
 - `scripts/review-status.sh [PR#]` — CI checks ＋ 未解消スレッド ＋ **最終コミット後に付いた bot コメント**を表示。緑 `0` / ブロック `1` / エラー `2`。
 
@@ -74,6 +74,11 @@ Phase 7  完了 / エスカレート   （＋ブログ価値の提案）
 - 既存のレビュー指摘に対応し、チェックが通るまで push したいとき。
 - ユーザ可視（UI）の変更を、見た目の裏取りと共に出したいとき。
 
+**`/pr` と明示的に言われたかどうかで適用有無を変えない。** 成果物が PR になる作業なら、
+「〜を実装して」という依頼から入った場合でもこの手順を適用する。特に **Phase 4（独立レビュー）を
+依頼の文言で省かない**。実際に、機能実装の依頼から作った PR で Phase 4 が抜け、
+自己レビューだけで実欠陥 4 件が残る状態になったことがある（#456）。
+
 ## 前提（仮定せず確認する）
 
 - `gh auth status` がログイン済み。未ログインなら止めて `gh auth login` を依頼する。
@@ -92,9 +97,10 @@ Phase 7  完了 / エスカレート   （＋ブログ価値の提案）
 .claude/skills/pr/scripts/local-gates.sh --fast   # 重いもの（deny / build / pytest）を省く
 ```
 
-**ci.yml ドリフトで落ちたら、他のゲートより先にそれを解消する。** ローカルのゲート集合が CI を
-網羅していない状態なので、他が全部緑でも意味がない。順序は「`gates.md` と `local-gates.sh` を
-差分に追随させる → `ci-snapshot.sh --update`」。逆順にすると検出した意味が無くなる。
+**ワークフローのドリフトで落ちたら、他のゲートより先にそれを解消する。** ローカルのゲート集合が CI を
+網羅していない状態なので、他が全部緑でも意味がない。順序は「`gates.md`・`local-gates.sh`・
+`AGENTS.md` の検証コマンド表を差分に追随させる → `ci-snapshot.sh --update`」。
+逆順にすると検出した意味が無くなる。
 
 自分でコマンドを組む場合の必須 4 点（`gates.md` に全量と条件がある）:
 

@@ -1,90 +1,101 @@
-on.pull_request.paths-ignore:
-  - "**.md"
-  - ".claude/**"
-  - "docs/**"
-on.push.paths-ignore:
-  - "**.md"
-  - ".claude/**"
-  - "docs/**"
-
-job: rust
-  job.name: Rust (fmt / clippy / test / build)
-  step.name: free disk space (不要プリインストール削除)
-  run: |
-    sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-    df -h /
-  run: cargo fmt --all --check
-  run: cargo clippy --all-targets --all-features -- -D warnings
-  run: cargo nextest run --workspace --all-features
-
-job: build-server
-  job.name: Build shiki-server (release・compose ジョブ共有)
-  step.name: free disk space (不要プリインストール削除)
-  run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-  run: cargo build --release --bin shiki-server
-
-job: quality
-  job.name: Quality gates (file-size / migration-version / cargo-machete)
-  step.name: file-size gate (1 ファイル 1000 行以内)
-  run: bash scripts/check-file-size.sh
-  step.name: migration version gate (バージョン番号の重複禁止)
-  run: bash scripts/check-migration-versions.sh
-  step.name: compose port gate (ホストポートの二重 publish 禁止)
-  run: bash scripts/check-compose-ports.sh
-  step.name: cargo machete (未使用依存の検出)
-  run: cargo machete crates
-
-job: cargo-deny
-  job.name: cargo-deny (advisories / licenses / bans / sources)
-  step.name: cargo deny check (advisories / licenses / bans / sources)
-  run: cargo deny --all-features check
-
-job: tabular-runner
-  job.name: Tabular runner (隔離 DuckDB・PIT-39 adversarial)
-  step.name: free disk space (不要プリインストール削除)
-  run: |
-    sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-    df -h /
-  step.name: fmt / clippy (runner)
-  run: |
-    cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check
-    cargo clippy --manifest-path crates/tabular/runner/Cargo.toml --release -- -D warnings
-  step.name: build isolated runner (bundled DuckDB)
-  run: cargo build --manifest-path crates/tabular/runner/Cargo.toml --release
-  step.name: adversarial tests (外部参照/DML/DDL/クォータ超過の拒否)
-  run: cargo test -p shiki-tabular --test runner_adversarial_it
-  step.name: upload runner binary (web-e2e 用)
-
-job: sandbox-gvisor
-  job.name: Sandbox gVisor IT (runsc・非ブロッキング)
-  step.name: free disk space (不要プリインストール削除)
-  run: |
-    sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-    df -h /
-  step.name: allow unprivileged userns (AppArmor)
-  run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-  step.name: fetch runsc (manifest 検証・PIT-33)
-  run: bash scripts/fetch-native-assets.sh
-  step.name: build rootfs (numpy/pandas 同梱・--require-hashes)
-  run: bash scripts/build-sandbox-rootfs.sh
-  step.name: gvisor gated IT (create/exec/numpy/watchdog)
-  run: cargo test -p shiki-sandbox-orchestrator --test gvisor_it -- --test-threads=1
-
-job: python
-  job.name: Python (ingestion-worker ruff / pytest)
-  step.name: uv sync
-  run: uv sync --frozen
-  step.name: ruff
-  run: uv run ruff check .
-  step.name: pytest (fast)
-  run: uv run pytest -m "not slow" -q
-
-job: coverage
-  job.name: Coverage (cargo-llvm-cov, gate 80%)
-  step.name: free disk space (不要プリインストール削除)
-  run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-  step.name: compose up (postgres + minio + openfga + redis + qdrant → healthy 待ち)
-  run: |
+### ci.yml
+ci.yml.env.CARGO_HTTP_MULTIPLEXING = false
+ci.yml.env.CARGO_INCREMENTAL = 0
+ci.yml.env.CARGO_NET_RETRY = 10
+ci.yml.jobs.build-server.name = Build shiki-server (release・compose ジョブ共有)
+ci.yml.jobs.build-server.steps[00].uses = actions/checkout
+ci.yml.jobs.build-server.steps[00].with.persist-credentials = false
+ci.yml.jobs.build-server.steps[01].name = free disk space (不要プリインストール削除)
+ci.yml.jobs.build-server.steps[01].run = sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+ci.yml.jobs.build-server.steps[02].uses = dtolnay/rust-toolchain
+ci.yml.jobs.build-server.steps[02].with.toolchain = 1.96.0
+ci.yml.jobs.build-server.steps[03].uses = Swatinem/rust-cache
+ci.yml.jobs.build-server.steps[03].with.shared-key = release-server
+ci.yml.jobs.build-server.steps[04].env.CARGO_PROFILE_RELEASE_CODEGEN_UNITS = 256
+ci.yml.jobs.build-server.steps[04].env.CARGO_PROFILE_RELEASE_OPT_LEVEL = 2
+ci.yml.jobs.build-server.steps[04].run = cargo build --release --bin shiki-server
+ci.yml.jobs.build-server.steps[05].uses = actions/upload-artifact
+ci.yml.jobs.build-server.steps[05].with.if-no-files-found = error
+ci.yml.jobs.build-server.steps[05].with.name = shiki-server-bin
+ci.yml.jobs.build-server.steps[05].with.path = target/release/shiki-server
+ci.yml.jobs.build-server.steps[05].with.retention-days = 1
+ci.yml.jobs.cargo-deny.name = cargo-deny (advisories / licenses / bans / sources)
+ci.yml.jobs.cargo-deny.steps[00].uses = actions/checkout
+ci.yml.jobs.cargo-deny.steps[00].with.persist-credentials = false
+ci.yml.jobs.cargo-deny.steps[01].uses = dtolnay/rust-toolchain
+ci.yml.jobs.cargo-deny.steps[01].with.toolchain = 1.96.0
+ci.yml.jobs.cargo-deny.steps[02].uses = Swatinem/rust-cache
+ci.yml.jobs.cargo-deny.steps[03].uses = taiki-e/install-action
+ci.yml.jobs.cargo-deny.steps[04].name = cargo deny check (advisories / licenses / bans / sources)
+ci.yml.jobs.cargo-deny.steps[04].run = cargo deny --all-features check
+ci.yml.jobs.compose-smoke.env.COMPOSE_FILE = docker-compose.yml:docker-compose.ci.yml
+ci.yml.jobs.compose-smoke.name = compose smoke (/healthz, /me, skillex)
+ci.yml.jobs.compose-smoke.needs[00] = build-server
+ci.yml.jobs.compose-smoke.needs[01] = tabular-runner
+ci.yml.jobs.compose-smoke.steps[00].uses = actions/checkout
+ci.yml.jobs.compose-smoke.steps[01].uses = dtolnay/rust-toolchain
+ci.yml.jobs.compose-smoke.steps[01].with.toolchain = 1.96.0
+ci.yml.jobs.compose-smoke.steps[02].uses = Swatinem/rust-cache
+ci.yml.jobs.compose-smoke.steps[03].name = download shiki-server binary (build-server の成果物)
+ci.yml.jobs.compose-smoke.steps[03].uses = actions/download-artifact
+ci.yml.jobs.compose-smoke.steps[03].with.name = shiki-server-bin
+ci.yml.jobs.compose-smoke.steps[03].with.path = deploy/compose/prebuilt
+ci.yml.jobs.compose-smoke.steps[04].name = download tabular runner binary (tabular-runner の成果物)
+ci.yml.jobs.compose-smoke.steps[04].uses = actions/download-artifact
+ci.yml.jobs.compose-smoke.steps[04].with.name = shiki-tabular-runner-bin
+ci.yml.jobs.compose-smoke.steps[04].with.path = deploy/compose/prebuilt
+ci.yml.jobs.compose-smoke.steps[05].background = true
+ci.yml.jobs.compose-smoke.steps[05].env.SHIKI__RAG__ENABLED = false
+ci.yml.jobs.compose-smoke.steps[05].id = compose-up
+ci.yml.jobs.compose-smoke.steps[05].name = compose up (依存 + shiki-server → healthy 待ち)
+ci.yml.jobs.compose-smoke.steps[05].run |
+    cp .env.example .env
+    docker compose up -d --build shiki-server
+    for i in $(seq 1 60); do
+    s=$(docker compose ps shiki-server --format '{{.Health}}' || true)
+    echo "attempt $i: health=$s"
+    [ "$s" = "healthy" ] && exit 0
+    sleep 5
+    done
+    echo "shiki-server が healthy になりませんでした"; exit 1
+ci.yml.jobs.compose-smoke.steps[05].working-directory = deploy/compose
+ci.yml.jobs.compose-smoke.steps[06].name = authz 結合テストを先にコンパイル（compose 起動と並列）
+ci.yml.jobs.compose-smoke.steps[06].run = cargo test -p shiki-authz --test check --no-run
+ci.yml.jobs.compose-smoke.steps[07].name = wait for shiki-server healthy
+ci.yml.jobs.compose-smoke.steps[07].wait = compose-up
+ci.yml.jobs.compose-smoke.steps[08].name = smoke test (BFF code フロー)
+ci.yml.jobs.compose-smoke.steps[08].run = bash smoke-bff.sh
+ci.yml.jobs.compose-smoke.steps[08].working-directory = deploy/compose
+ci.yml.jobs.compose-smoke.steps[09].name = smoke test (skillex)
+ci.yml.jobs.compose-smoke.steps[09].run |
+    set -euo pipefail
+    echo "--- skillex client_credentials (aud=shiki-llm) ---"
+    SK=$(curl -s -X POST http://localhost:8081/realms/shiki/protocol/openid-connect/token \
+    -d grant_type=client_credentials -d client_id=skillex -d client_secret=skillex-dev-secret \
+    | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+    echo "$SK" | cut -d. -f2 | python3 -c "import sys,base64,json; p=sys.stdin.read().strip(); p+='='*(-len(p)%4); c=json.loads(base64.urlsafe_b64decode(p)); a=c.get('aud'); a=a if isinstance(a,list) else [a]; assert 'shiki-llm' in a, a; print('skillex aud OK:', a, 'azp=', c.get('azp'))"
+ci.yml.jobs.compose-smoke.steps[09].working-directory = deploy/compose
+ci.yml.jobs.compose-smoke.steps[10].env.OPENFGA_TEST_URL = http://localhost:8082
+ci.yml.jobs.compose-smoke.steps[10].name = authz 結合テスト（live OpenFGA で allow/deny 検証）
+ci.yml.jobs.compose-smoke.steps[10].run = cargo test -p shiki-authz --test check -- --nocapture
+ci.yml.jobs.compose-smoke.steps[11].if = failure()
+ci.yml.jobs.compose-smoke.steps[11].name = dump logs on failure
+ci.yml.jobs.compose-smoke.steps[11].run = docker compose logs --no-color | tail -200
+ci.yml.jobs.compose-smoke.steps[11].working-directory = deploy/compose
+ci.yml.jobs.coverage.name = Coverage (cargo-llvm-cov, gate 80%)
+ci.yml.jobs.coverage.steps[00].uses = actions/checkout
+ci.yml.jobs.coverage.steps[01].name = free disk space (不要プリインストール削除)
+ci.yml.jobs.coverage.steps[01].run = sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+ci.yml.jobs.coverage.steps[02].uses = dtolnay/rust-toolchain
+ci.yml.jobs.coverage.steps[02].with.components = llvm-tools-preview
+ci.yml.jobs.coverage.steps[02].with.toolchain = 1.96.0
+ci.yml.jobs.coverage.steps[03].uses = Swatinem/rust-cache
+ci.yml.jobs.coverage.steps[03].with.cache-on-failure = true
+ci.yml.jobs.coverage.steps[04].uses = taiki-e/install-action
+ci.yml.jobs.coverage.steps[05].background = true
+ci.yml.jobs.coverage.steps[05].id = compose-up
+ci.yml.jobs.coverage.steps[05].name = compose up (postgres + minio + openfga + redis + qdrant → healthy 待ち)
+ci.yml.jobs.coverage.steps[05].run |
     cp .env.example .env
     docker compose up -d postgres minio openfga redis qdrant
     for svc in postgres minio openfga redis qdrant; do
@@ -97,14 +108,22 @@ job: coverage
     done
     [ -n "$ok" ] || { echo "$svc が healthy になりませんでした"; exit 1; }
     done
-  step.name: clean stale coverage artifacts
-  run: cargo llvm-cov clean --workspace
-  step.name: wait for services healthy
-  step.name: test + coverage (cargo-llvm-cov)
-  run: cargo llvm-cov --all --no-report
-  step.name: coverage report (lcov + summary + job summary)
-  run: |
+ci.yml.jobs.coverage.steps[05].working-directory = deploy/compose
+ci.yml.jobs.coverage.steps[06].name = clean stale coverage artifacts
+ci.yml.jobs.coverage.steps[06].run = cargo llvm-cov clean --workspace
+ci.yml.jobs.coverage.steps[07].name = wait for services healthy
+ci.yml.jobs.coverage.steps[07].wait = compose-up
+ci.yml.jobs.coverage.steps[08].env.OPENFGA_TEST_URL = http://localhost:8082
+ci.yml.jobs.coverage.steps[08].env.RAG_TEST_QDRANT_URL = http://localhost:6333
+ci.yml.jobs.coverage.steps[08].env.REDIS_TEST_URL = redis://localhost:6379
+ci.yml.jobs.coverage.steps[08].env.STORAGE_TEST_DATABASE_URL = postgres://postgres:postgres@localhost:5432/shiki
+ci.yml.jobs.coverage.steps[08].env.STORAGE_TEST_S3_ENDPOINT = http://localhost:9000
+ci.yml.jobs.coverage.steps[08].name = test + coverage (cargo-llvm-cov)
+ci.yml.jobs.coverage.steps[08].run = cargo llvm-cov --all --no-report
+ci.yml.jobs.coverage.steps[09].name = coverage report (lcov + summary + job summary)
+ci.yml.jobs.coverage.steps[09].run |
     cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
+    # サマリ表を再利用するためファイルに保存（Job Summary と PR コメントの両方で使う）。
     cargo llvm-cov report --summary-only --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs' | tee coverage-summary.txt
     {
     echo '### Rust test coverage'
@@ -112,9 +131,11 @@ job: coverage
     cat coverage-summary.txt
     echo '```'
     } >> "$GITHUB_STEP_SUMMARY"
-  step.name: comment coverage table on PR
-  step.if: ${{ always() && github.event_name == 'pull_request' }}
-  run: |
+ci.yml.jobs.coverage.steps[10].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+ci.yml.jobs.coverage.steps[10].env.PR = ${{ github.event.pull_request.number }}
+ci.yml.jobs.coverage.steps[10].if = ${{ always() && github.event_name == 'pull_request' }}
+ci.yml.jobs.coverage.steps[10].name = comment coverage table on PR
+ci.yml.jobs.coverage.steps[10].run |
     [ -f coverage-summary.txt ] || { echo "サマリ未生成のためスキップ"; exit 0; }
     marker='<!-- coverage-report -->'
     total_line=$(grep '^TOTAL' coverage-summary.txt || true)
@@ -146,30 +167,159 @@ job: coverage
     gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -f body="$body" >/dev/null
     echo "新規コメントを作成"
     fi
-  step.name: coverage gate (fail under 80% lines)
-  run: cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
-  step.name: upload coverage (lcov)
-  step.name: dump compose logs on failure
-  step.if: failure()
-  run: docker compose logs --no-color | tail -200
-
-job: web
-  job.name: Web (gen:api / lint / build)
-  step.name: install
-  run: pnpm install --frozen-lockfile
-  step.name: gen:api (Rust 定義から型生成)
-  run: pnpm gen:api
-  step.name: lint
-  run: pnpm lint
-  step.name: build
-  run: pnpm build
-
-job: compose-smoke
-  job.name: compose smoke (/healthz, /me, skillex)
-  step.name: download shiki-server binary (build-server の成果物)
-  step.name: download tabular runner binary (tabular-runner の成果物)
-  step.name: compose up (依存 + shiki-server → healthy 待ち)
-  run: |
+ci.yml.jobs.coverage.steps[11].name = coverage gate (fail under 80% lines)
+ci.yml.jobs.coverage.steps[11].run = cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
+ci.yml.jobs.coverage.steps[12].name = upload coverage (lcov)
+ci.yml.jobs.coverage.steps[12].uses = actions/upload-artifact
+ci.yml.jobs.coverage.steps[12].with.if-no-files-found = error
+ci.yml.jobs.coverage.steps[12].with.name = coverage-lcov
+ci.yml.jobs.coverage.steps[12].with.path = lcov.info
+ci.yml.jobs.coverage.steps[13].if = failure()
+ci.yml.jobs.coverage.steps[13].name = dump compose logs on failure
+ci.yml.jobs.coverage.steps[13].run = docker compose logs --no-color | tail -200
+ci.yml.jobs.coverage.steps[13].working-directory = deploy/compose
+ci.yml.jobs.python.defaults.run.working-directory = ingestion-worker
+ci.yml.jobs.python.name = Python (ingestion-worker ruff / pytest)
+ci.yml.jobs.python.steps[00].uses = actions/checkout
+ci.yml.jobs.python.steps[00].with.persist-credentials = false
+ci.yml.jobs.python.steps[01].uses = astral-sh/setup-uv
+ci.yml.jobs.python.steps[01].with.cache-dependency-glob = ingestion-worker/uv.lock
+ci.yml.jobs.python.steps[01].with.enable-cache = true
+ci.yml.jobs.python.steps[02].name = uv sync
+ci.yml.jobs.python.steps[02].run = uv sync --frozen
+ci.yml.jobs.python.steps[03].name = ruff
+ci.yml.jobs.python.steps[03].run = uv run ruff check .
+ci.yml.jobs.python.steps[04].name = pytest (fast)
+ci.yml.jobs.python.steps[04].run = uv run pytest -m "not slow" -q
+ci.yml.jobs.quality.name = Quality gates (file-size / migration-version / cargo-machete)
+ci.yml.jobs.quality.steps[00].uses = actions/checkout
+ci.yml.jobs.quality.steps[00].with.persist-credentials = false
+ci.yml.jobs.quality.steps[01].name = file-size gate (1 ファイル 1000 行以内)
+ci.yml.jobs.quality.steps[01].run = bash scripts/check-file-size.sh
+ci.yml.jobs.quality.steps[02].name = migration version gate (バージョン番号の重複禁止)
+ci.yml.jobs.quality.steps[02].run = bash scripts/check-migration-versions.sh
+ci.yml.jobs.quality.steps[03].name = compose port gate (ホストポートの二重 publish 禁止)
+ci.yml.jobs.quality.steps[03].run = bash scripts/check-compose-ports.sh
+ci.yml.jobs.quality.steps[04].uses = dtolnay/rust-toolchain
+ci.yml.jobs.quality.steps[04].with.toolchain = 1.96.0
+ci.yml.jobs.quality.steps[05].uses = Swatinem/rust-cache
+ci.yml.jobs.quality.steps[06].uses = taiki-e/install-action
+ci.yml.jobs.quality.steps[07].name = cargo machete (未使用依存の検出)
+ci.yml.jobs.quality.steps[07].run = cargo machete crates
+ci.yml.jobs.rust.name = Rust (fmt / clippy / test / build)
+ci.yml.jobs.rust.steps[00].uses = actions/checkout
+ci.yml.jobs.rust.steps[01].name = free disk space (不要プリインストール削除)
+ci.yml.jobs.rust.steps[01].run |
+    sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+    df -h /
+ci.yml.jobs.rust.steps[02].uses = dtolnay/rust-toolchain
+ci.yml.jobs.rust.steps[02].with.components = rustfmt, clippy
+ci.yml.jobs.rust.steps[02].with.toolchain = 1.96.0
+ci.yml.jobs.rust.steps[03].uses = Swatinem/rust-cache
+ci.yml.jobs.rust.steps[04].uses = taiki-e/install-action
+ci.yml.jobs.rust.steps[05].run = cargo fmt --all --check
+ci.yml.jobs.rust.steps[06].run = cargo clippy --all-targets --all-features -- -D warnings
+ci.yml.jobs.rust.steps[07].run = cargo nextest run --workspace --all-features
+ci.yml.jobs.sandbox-gvisor.continue-on-error = true
+ci.yml.jobs.sandbox-gvisor.name = Sandbox gVisor IT (runsc・非ブロッキング)
+ci.yml.jobs.sandbox-gvisor.steps[00].uses = actions/checkout
+ci.yml.jobs.sandbox-gvisor.steps[00].with.persist-credentials = false
+ci.yml.jobs.sandbox-gvisor.steps[01].name = free disk space (不要プリインストール削除)
+ci.yml.jobs.sandbox-gvisor.steps[01].run |
+    sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+    df -h /
+ci.yml.jobs.sandbox-gvisor.steps[02].name = allow unprivileged userns (AppArmor)
+ci.yml.jobs.sandbox-gvisor.steps[02].run = sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+ci.yml.jobs.sandbox-gvisor.steps[03].uses = dtolnay/rust-toolchain
+ci.yml.jobs.sandbox-gvisor.steps[03].with.toolchain = 1.96.0
+ci.yml.jobs.sandbox-gvisor.steps[04].uses = Swatinem/rust-cache
+ci.yml.jobs.sandbox-gvisor.steps[05].name = fetch runsc (manifest 検証・PIT-33)
+ci.yml.jobs.sandbox-gvisor.steps[05].run = bash scripts/fetch-native-assets.sh
+ci.yml.jobs.sandbox-gvisor.steps[06].name = build rootfs (numpy/pandas 同梱・--require-hashes)
+ci.yml.jobs.sandbox-gvisor.steps[06].run = bash scripts/build-sandbox-rootfs.sh
+ci.yml.jobs.sandbox-gvisor.steps[07].env.GVISOR_ROOTFS = ${{ github.workspace }}/deploy/sandbox-assets/rootfs
+ci.yml.jobs.sandbox-gvisor.steps[07].env.RUNSC_BIN = ${{ github.workspace }}/deploy/sandbox-assets/bin/runsc
+ci.yml.jobs.sandbox-gvisor.steps[07].env.SANDBOX_GVISOR_IT = 1
+ci.yml.jobs.sandbox-gvisor.steps[07].name = gvisor gated IT (create/exec/numpy/watchdog)
+ci.yml.jobs.sandbox-gvisor.steps[07].run = cargo test -p shiki-sandbox-orchestrator --test gvisor_it -- --test-threads=1
+ci.yml.jobs.tabular-runner.name = Tabular runner (隔離 DuckDB・PIT-39 adversarial)
+ci.yml.jobs.tabular-runner.steps[00].uses = actions/checkout
+ci.yml.jobs.tabular-runner.steps[01].name = free disk space (不要プリインストール削除)
+ci.yml.jobs.tabular-runner.steps[01].run |
+    sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+    df -h /
+ci.yml.jobs.tabular-runner.steps[02].uses = dtolnay/rust-toolchain
+ci.yml.jobs.tabular-runner.steps[02].with.toolchain = 1.96.0
+ci.yml.jobs.tabular-runner.steps[03].uses = Swatinem/rust-cache
+ci.yml.jobs.tabular-runner.steps[03].with.workspaces |
+    .
+    crates/tabular/runner
+ci.yml.jobs.tabular-runner.steps[04].name = fmt / clippy (runner)
+ci.yml.jobs.tabular-runner.steps[04].run |
+    cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check
+    cargo clippy --manifest-path crates/tabular/runner/Cargo.toml --release -- -D warnings
+ci.yml.jobs.tabular-runner.steps[05].name = build isolated runner (bundled DuckDB)
+ci.yml.jobs.tabular-runner.steps[05].run = cargo build --manifest-path crates/tabular/runner/Cargo.toml --release
+ci.yml.jobs.tabular-runner.steps[06].env.SHIKI_TABULAR_RUNNER = crates/tabular/runner/target/release/shiki-tabular-runner
+ci.yml.jobs.tabular-runner.steps[06].name = adversarial tests (外部参照/DML/DDL/クォータ超過の拒否)
+ci.yml.jobs.tabular-runner.steps[06].run = cargo test -p shiki-tabular --test runner_adversarial_it
+ci.yml.jobs.tabular-runner.steps[07].name = upload runner binary (web-e2e 用)
+ci.yml.jobs.tabular-runner.steps[07].uses = actions/upload-artifact
+ci.yml.jobs.tabular-runner.steps[07].with.if-no-files-found = error
+ci.yml.jobs.tabular-runner.steps[07].with.name = shiki-tabular-runner-bin
+ci.yml.jobs.tabular-runner.steps[07].with.path = crates/tabular/runner/target/release/shiki-tabular-runner
+ci.yml.jobs.web.name = Web (gen:api / lint / build)
+ci.yml.jobs.web.steps[00].uses = actions/checkout
+ci.yml.jobs.web.steps[01].uses = dtolnay/rust-toolchain
+ci.yml.jobs.web.steps[01].with.toolchain = 1.96.0
+ci.yml.jobs.web.steps[02].uses = Swatinem/rust-cache
+ci.yml.jobs.web.steps[03].uses = pnpm/action-setup
+ci.yml.jobs.web.steps[03].with.version = 9
+ci.yml.jobs.web.steps[04].uses = actions/setup-node
+ci.yml.jobs.web.steps[04].with.cache = pnpm
+ci.yml.jobs.web.steps[04].with.cache-dependency-path = web/pnpm-lock.yaml
+ci.yml.jobs.web.steps[04].with.node-version = 22
+ci.yml.jobs.web.steps[05].name = install
+ci.yml.jobs.web.steps[05].run = pnpm install --frozen-lockfile
+ci.yml.jobs.web.steps[05].working-directory = web
+ci.yml.jobs.web.steps[06].name = gen:api (Rust 定義から型生成)
+ci.yml.jobs.web.steps[06].run = pnpm gen:api
+ci.yml.jobs.web.steps[06].working-directory = web
+ci.yml.jobs.web.steps[07].name = lint
+ci.yml.jobs.web.steps[07].run = pnpm lint
+ci.yml.jobs.web.steps[07].working-directory = web
+ci.yml.jobs.web.steps[08].name = build
+ci.yml.jobs.web.steps[08].run = pnpm build
+ci.yml.jobs.web.steps[08].working-directory = web
+ci.yml.jobs.web-e2e.env.COMPOSE_FILE = docker-compose.yml:docker-compose.ci.yml
+ci.yml.jobs.web-e2e.name = Web E2E (Playwright: ログイン→保護ページ→ログアウト)
+ci.yml.jobs.web-e2e.needs[00] = build-server
+ci.yml.jobs.web-e2e.needs[01] = tabular-runner
+ci.yml.jobs.web-e2e.steps[00].uses = actions/checkout
+ci.yml.jobs.web-e2e.steps[01].uses = dtolnay/rust-toolchain
+ci.yml.jobs.web-e2e.steps[01].with.toolchain = 1.96.0
+ci.yml.jobs.web-e2e.steps[02].uses = Swatinem/rust-cache
+ci.yml.jobs.web-e2e.steps[03].name = download shiki-server binary (build-server の成果物)
+ci.yml.jobs.web-e2e.steps[03].uses = actions/download-artifact
+ci.yml.jobs.web-e2e.steps[03].with.name = shiki-server-bin
+ci.yml.jobs.web-e2e.steps[03].with.path = deploy/compose/prebuilt
+ci.yml.jobs.web-e2e.steps[04].name = download tabular runner binary (tabular-runner の成果物)
+ci.yml.jobs.web-e2e.steps[04].uses = actions/download-artifact
+ci.yml.jobs.web-e2e.steps[04].with.name = shiki-tabular-runner-bin
+ci.yml.jobs.web-e2e.steps[04].with.path = deploy/compose/prebuilt
+ci.yml.jobs.web-e2e.steps[05].uses = pnpm/action-setup
+ci.yml.jobs.web-e2e.steps[05].with.version = 9
+ci.yml.jobs.web-e2e.steps[06].uses = actions/setup-node
+ci.yml.jobs.web-e2e.steps[06].with.cache = pnpm
+ci.yml.jobs.web-e2e.steps[06].with.cache-dependency-path = web/pnpm-lock.yaml
+ci.yml.jobs.web-e2e.steps[06].with.node-version = 22
+ci.yml.jobs.web-e2e.steps[07].background = true
+ci.yml.jobs.web-e2e.steps[07].env.SHIKI__AUTH__POST_LOGOUT_REDIRECT_URI = http://localhost:3000/
+ci.yml.jobs.web-e2e.steps[07].env.SHIKI__AUTH__REDIRECT_URI = http://localhost:3000/auth/callback
+ci.yml.jobs.web-e2e.steps[07].env.SHIKI__RAG__ENABLED = false
+ci.yml.jobs.web-e2e.steps[07].id = compose-up
+ci.yml.jobs.web-e2e.steps[07].name = compose up (keycloak + shiki-server → healthy 待ち)
+ci.yml.jobs.web-e2e.steps[07].run |
     cp .env.example .env
     docker compose up -d --build shiki-server
     for i in $(seq 1 60); do
@@ -179,53 +329,117 @@ job: compose-smoke
     sleep 5
     done
     echo "shiki-server が healthy になりませんでした"; exit 1
-  step.name: authz 結合テストを先にコンパイル（compose 起動と並列）
-  run: cargo test -p shiki-authz --test check --no-run
-  step.name: wait for shiki-server healthy
-  step.name: smoke test (BFF code フロー)
-  run: bash smoke-bff.sh
-  step.name: smoke test (skillex)
-  run: |
+ci.yml.jobs.web-e2e.steps[07].working-directory = deploy/compose
+ci.yml.jobs.web-e2e.steps[08].name = install (web)
+ci.yml.jobs.web-e2e.steps[08].run = pnpm install --frozen-lockfile
+ci.yml.jobs.web-e2e.steps[08].working-directory = web
+ci.yml.jobs.web-e2e.steps[09].name = gen:api (Rust 定義から型生成)
+ci.yml.jobs.web-e2e.steps[09].run = pnpm gen:api
+ci.yml.jobs.web-e2e.steps[09].working-directory = web
+ci.yml.jobs.web-e2e.steps[10].name = build (web)
+ci.yml.jobs.web-e2e.steps[10].run = pnpm build
+ci.yml.jobs.web-e2e.steps[10].working-directory = web
+ci.yml.jobs.web-e2e.steps[11].name = install Playwright browser
+ci.yml.jobs.web-e2e.steps[11].run = pnpm exec playwright install --with-deps chromium
+ci.yml.jobs.web-e2e.steps[11].working-directory = web
+ci.yml.jobs.web-e2e.steps[12].name = wait for shiki-server healthy
+ci.yml.jobs.web-e2e.steps[12].wait = compose-up
+ci.yml.jobs.web-e2e.steps[13].env.BACKEND_ORIGIN = http://localhost:8080
+ci.yml.jobs.web-e2e.steps[13].env.CI = true
+ci.yml.jobs.web-e2e.steps[13].name = run E2E (BFF + Keycloak 実フロー)
+ci.yml.jobs.web-e2e.steps[13].run = pnpm e2e
+ci.yml.jobs.web-e2e.steps[13].working-directory = web
+ci.yml.jobs.web-e2e.steps[14].if = failure()
+ci.yml.jobs.web-e2e.steps[14].name = upload Playwright report on failure
+ci.yml.jobs.web-e2e.steps[14].uses = actions/upload-artifact
+ci.yml.jobs.web-e2e.steps[14].with.if-no-files-found = ignore
+ci.yml.jobs.web-e2e.steps[14].with.name = playwright-report
+ci.yml.jobs.web-e2e.steps[14].with.path = web/playwright-report
+ci.yml.jobs.web-e2e.steps[15].if = failure()
+ci.yml.jobs.web-e2e.steps[15].name = dump compose logs on failure
+ci.yml.jobs.web-e2e.steps[15].run = docker compose logs --no-color | tail -200
+ci.yml.jobs.web-e2e.steps[15].working-directory = deploy/compose
+ci.yml.name = CI
+ci.yml.on.pull_request.paths-ignore[00] = docs/**
+ci.yml.on.pull_request.paths-ignore[01] = **.md
+ci.yml.on.pull_request.paths-ignore[02] = .claude/**
+ci.yml.on.push.branches[00] = main
+ci.yml.on.push.paths-ignore[00] = docs/**
+ci.yml.on.push.paths-ignore[01] = **.md
+ci.yml.on.push.paths-ignore[02] = .claude/**
+
+### docker-image.yml
+docker-image.yml.jobs.build-prod-image.name = prod イメージビルド検証 (deploy/Dockerfile)
+docker-image.yml.jobs.build-prod-image.steps[00].uses = actions/checkout
+docker-image.yml.jobs.build-prod-image.steps[00].with.persist-credentials = false
+docker-image.yml.jobs.build-prod-image.steps[01].name = free disk space (不要プリインストール削除)
+docker-image.yml.jobs.build-prod-image.steps[01].run = sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+docker-image.yml.jobs.build-prod-image.steps[02].name = docker build (shiki-server 本番イメージ)
+docker-image.yml.jobs.build-prod-image.steps[02].run = docker build -f deploy/Dockerfile .
+docker-image.yml.name = docker-image
+docker-image.yml.on.pull_request.paths[00] = deploy/Dockerfile
+docker-image.yml.on.pull_request.paths[01] = deploy/Dockerfile.ci
+docker-image.yml.on.pull_request.paths[02] = deploy/docker/**
+docker-image.yml.on.pull_request.paths[03] = !deploy/docker/collabora/**
+docker-image.yml.on.pull_request.paths[04] = deploy/compose/docker-compose*.yml
+
+### office-image.yml
+office-image.yml.jobs.build-and-push.name = Collabora ソースビルド → GHCR push
+office-image.yml.jobs.build-and-push.steps[00].uses = actions/checkout
+office-image.yml.jobs.build-and-push.steps[00].with.persist-credentials = false
+office-image.yml.jobs.build-and-push.steps[01].name = free disk space (不要プリインストール削除)
+office-image.yml.jobs.build-and-push.steps[01].run = sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+office-image.yml.jobs.build-and-push.steps[02].name = manifest 読み込み（タグ＋コミットの二重ピンが正）
+office-image.yml.jobs.build-and-push.steps[02].run |
     set -euo pipefail
-    echo "--- skillex client_credentials (aud=shiki-llm) ---"
-    SK=$(curl -s -X POST http://localhost:8081/realms/shiki/protocol/openid-connect/token \
-    -d grant_type=client_credentials -d client_id=skillex -d client_secret=skillex-dev-secret \
-    | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
-    echo "$SK" | cut -d. -f2 | python3 -c "import sys,base64,json; p=sys.stdin.read().strip(); p+='='*(-len(p)%4); c=json.loads(base64.urlsafe_b64decode(p)); a=c.get('aud'); a=a if isinstance(a,list) else [a]; assert 'shiki-llm' in a, a; print('skillex aud OK:', a, 'azp=', c.get('azp'))"
-  step.name: authz 結合テスト（live OpenFGA で allow/deny 検証）
-  run: cargo test -p shiki-authz --test check -- --nocapture
-  step.name: dump logs on failure
-  step.if: failure()
-  run: docker compose logs --no-color | tail -200
-
-job: web-e2e
-  job.name: "Web E2E (Playwright: ログイン→保護ページ→ログアウト)"
-  step.name: download shiki-server binary (build-server の成果物)
-  step.name: download tabular runner binary (tabular-runner の成果物)
-  step.name: compose up (keycloak + shiki-server → healthy 待ち)
-  run: |
-    cp .env.example .env
-    docker compose up -d --build shiki-server
-    for i in $(seq 1 60); do
-    s=$(docker compose ps shiki-server --format '{{.Health}}' || true)
-    echo "attempt $i: health=$s"
-    [ "$s" = "healthy" ] && exit 0
-    sleep 5
+    source deploy/docker/collabora/office-manifest.env
+    for v in CORE_REPO CORE_REF CORE_COMMIT ONLINE_REPO ONLINE_REF ONLINE_COMMIT; do
+    [ -n "${!v}" ] || { echo "manifest に $v が無い"; exit 1; }
+    echo "$v=${!v}" >> "$GITHUB_ENV"
     done
-    echo "shiki-server が healthy になりませんでした"; exit 1
-  step.name: install (web)
-  run: pnpm install --frozen-lockfile
-  step.name: gen:api (Rust 定義から型生成)
-  run: pnpm gen:api
-  step.name: build (web)
-  run: pnpm build
-  step.name: install Playwright browser
-  run: pnpm exec playwright install --with-deps chromium
-  step.name: wait for shiki-server healthy
-  step.name: run E2E (BFF + Keycloak 実フロー)
-  run: pnpm e2e
-  step.name: upload Playwright report on failure
-  step.if: failure()
-  step.name: dump compose logs on failure
-  step.if: failure()
-  run: docker compose logs --no-color | tail -200
+office-image.yml.jobs.build-and-push.steps[03].uses = docker/setup-buildx-action
+office-image.yml.jobs.build-and-push.steps[04].uses = docker/login-action
+office-image.yml.jobs.build-and-push.steps[04].with.password = ${{ secrets.GITHUB_TOKEN }}
+office-image.yml.jobs.build-and-push.steps[04].with.registry = ghcr.io
+office-image.yml.jobs.build-and-push.steps[04].with.username = ${{ github.actor }}
+office-image.yml.jobs.build-and-push.steps[05].name = build & push
+office-image.yml.jobs.build-and-push.steps[05].uses = docker/build-push-action
+office-image.yml.jobs.build-and-push.steps[05].with.build-args |
+    CORE_REPO=${{ env.CORE_REPO }}
+    CORE_REF=${{ env.CORE_REF }}
+    CORE_COMMIT=${{ env.CORE_COMMIT }}
+    ONLINE_REPO=${{ env.ONLINE_REPO }}
+    ONLINE_REF=${{ env.ONLINE_REF }}
+    ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+office-image.yml.jobs.build-and-push.steps[05].with.context = deploy/docker/collabora
+office-image.yml.jobs.build-and-push.steps[05].with.labels |
+    org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+    org.opencontainers.image.licenses=MPL-2.0
+    io.shiki.collabora.core=${{ env.CORE_REF }}@${{ env.CORE_COMMIT }}
+    io.shiki.collabora.online=${{ env.ONLINE_REF }}@${{ env.ONLINE_COMMIT }}
+office-image.yml.jobs.build-and-push.steps[05].with.push = true
+office-image.yml.jobs.build-and-push.steps[05].with.tags |
+    ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}
+    ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest
+office-image.yml.jobs.build-and-push.steps[06].name = smoke（discovery が取れること）
+office-image.yml.jobs.build-and-push.steps[06].run |
+    set -euo pipefail
+    docker run -d --rm --name collabora-smoke -p 127.0.0.1:19980:9980 \
+    "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
+    coolwsd --o:sys_template_path=/opt/cool/systemplate \
+    --o:child_root_path=/opt/cool/child-roots \
+    --o:lo_template_path=/opt/collaboraoffice \
+    --o:ssl.enable=false --o:ssl.termination=false
+    for i in $(seq 1 60); do
+    if curl -fsS http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
+    echo "discovery OK"; docker stop collabora-smoke; exit 0
+    fi
+    sleep 2
+    done
+    echo "discovery が 120 秒で応答しない"; docker logs collabora-smoke; exit 1
+office-image.yml.name = office-image
+office-image.yml.on.push.branches[00] = main
+office-image.yml.on.push.paths[00] = deploy/docker/collabora/**
+office-image.yml.on.push.paths[01] = .github/workflows/office-image.yml
+office-image.yml.on.schedule[00].cron = 0 18 * * 1
+office-image.yml.on.workflow_dispatch = ~
