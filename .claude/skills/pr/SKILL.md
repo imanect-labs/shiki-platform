@@ -32,7 +32,8 @@ Phase 7  完了 / エスカレート   （＋ブログ価値の提案）
 
 ヘルパースクリプト:
 
-- `scripts/local-gates.sh [--fast]` — 差分から必要なゲートだけ選んで回し、失敗を一覧する。
+- `scripts/local-gates.sh [--fast]` — 差分から必要なゲートだけ選んで回し、失敗を一覧する。**先頭で ci.yml のドリフトを強制検出する。**
+- `scripts/ci-snapshot.sh [--check|--update]` — ci.yml の「ローカルで追随すべき部分」を正規化して `ci-jobs.snapshot` と突き合わせる。
 - `scripts/dev-up.sh` — compose 依存 ＋ shiki-server(:8080) ＋ web(:3000) を検証可能な状態で起動する。
 - `scripts/review-status.sh [PR#]` — CI checks ＋ 未解消スレッド ＋ **最終コミット後に付いた bot コメント**を表示。緑 `0` / ブロック `1` / エラー `2`。
 
@@ -91,10 +92,14 @@ Phase 7  完了 / エスカレート   （＋ブログ価値の提案）
 .claude/skills/pr/scripts/local-gates.sh --fast   # 重いもの（deny / build / pytest）を省く
 ```
 
+**ci.yml ドリフトで落ちたら、他のゲートより先にそれを解消する。** ローカルのゲート集合が CI を
+網羅していない状態なので、他が全部緑でも意味がない。順序は「`gates.md` と `local-gates.sh` を
+差分に追随させる → `ci-snapshot.sh --update`」。逆順にすると検出した意味が無くなる。
+
 自分でコマンドを組む場合の必須 4 点（`gates.md` に全量と条件がある）:
 
 1. **新規ファイルは先に `git add`** する。`check-file-size.sh` は git-tracked のみ数えるため、未追加ファイルはローカルをすり抜けて CI で落ちる。
-2. **`cargo ... | tail` を使わない。** パイプ終端の exit code を返すので失敗が exit 0 に化ける。`cmd > log 2>&1 && echo OK || echo FAIL` で明示判定する。
+2. **合否を見たいコマンドをパイプにつながない。** パイプ終端の exit code を返すので失敗が exit 0 に化ける（`cargo ... | tail` も `gh pr checks --watch | tail` も同じ）。`cmd > log 2>&1; rc=$?` で受ける。
 3. **新規 `.rs` ファイルを足したらカバレッジ 80% ゲートを意識する。** 総計行カバレッジのため、テストの無い新規ルートファイルは総計を 80% 未満へ引きずり落とす。
 4. リポジトリ規約（CLAUDE.md / `architecture-invariants`）を守る: `unwrap()`/panic 禁止、fallible な呼び出しの `let _ =` 握り潰し禁止、`?` で伝播。不変条件（単一チョークポイント / AuthContext / 二段 authz / トレイト境界 / codegen が正）を破らない。
 

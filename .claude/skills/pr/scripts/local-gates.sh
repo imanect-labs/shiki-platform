@@ -26,6 +26,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# cd する前に解決する。`$0` は起動時の cwd 基準の相対パスになり得るので、`cd "$ROOT"` の後に
+# 解決するとサブディレクトリから相対パスで起動された時に別の場所を指す。
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "git リポジトリ内で実行してください。" >&2; exit 2; }
 cd "$ROOT"
 
@@ -89,6 +93,25 @@ sh_c() { bash -c "$1"; }
 echo "base: $BASE"
 echo "変更ファイル: $(printf '%s\n' "$CHANGED" | grep -c . ) 件"
 echo "ログ: $LOGDIR"
+
+# ---------- ci.yml ドリフト検出（最初に見る） ----------
+# このスクリプトと references/gates.md は ci.yml の引き写しなので、ci.yml が変わると黙って腐る。
+# 「突き合わせを思い出す」に頼ると取りこぼしが出る（実例 #455: ci.yml にステップを足した本人が
+# 同じセッション内でこのスクリプトへの追随を忘れた）。機構で必ず止める。
+printf '\n=== ci.yml ドリフト ===\n'
+if drift=$("$SCRIPT_DIR/ci-snapshot.sh" --check 2>&1); then
+  printf '   ✅ ci.yml ドリフトなし\n'
+  RESULTS="${RESULTS}✅ ci.yml ドリフトなし\n"
+else
+  printf '   ❌ ci.yml がスナップショットと食い違っています\n'
+  printf '%s\n' "$drift" | sed 's/^/      /'
+  echo
+  echo "   → まず local-gates.sh と references/gates.md をこの差分に追随させること。"
+  echo "     そのうえで: .claude/skills/pr/scripts/ci-snapshot.sh --update"
+  echo "   ⚠️  追随前は、下のゲート一覧が CI を網羅していない可能性があります。"
+  RESULTS="${RESULTS}❌ ci.yml ドリフト（gates.md / local-gates.sh の追随が必要）\n"
+  FAILED=1
+fi
 
 # ---------- 常に回す（CI の quality ジョブと同一） ----------
 run_gate "file-size (1ファイルの行数上限)" bash scripts/check-file-size.sh

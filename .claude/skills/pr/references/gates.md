@@ -3,19 +3,29 @@
 **正本は `.github/workflows/ci.yml`。** 下の表はそれを引き写したものなので、CI が変われば腐る。
 食い違いを見つけたら **ci.yml が正**として扱い、**この表と `local-gates.sh` を同じ PR で直す**（Phase 3-b のドキュメント整合点検は `.claude/skills/*` も対象）。
 
-その場で突き合わせるには:
+## ドリフト検出は自動（思い出さなくてよい）
+
+突き合わせは `local-gates.sh` が**毎回強制的に**行う。`ci.yml` のうちローカルで追随すべき部分
+（`paths-ignore` / ジョブ ID・名前 / `if` 条件 / ステップの `name`・`run`）を正規化して
+`.claude/skills/pr/ci-jobs.snapshot` に記録してあり、差があればゲートが落ちて差分が出る。
 
 ```bash
-# jobs: 以降に限定する（限定しないと on: の push: を拾って偽陽性になる）
-sed -n '/^jobs:/,$p' .github/workflows/ci.yml | grep -E '^  [a-z-]+:$'
+.claude/skills/pr/scripts/ci-snapshot.sh --check    # 差があれば diff を出して exit 1
+.claude/skills/pr/scripts/ci-snapshot.sh --update   # 追随を済ませてから更新する
 ```
 
-表に無いジョブがあれば、それがドリフトしている。**各ジョブが実行する `run:` も突き合わせる**
-（ジョブ名が同じでもステップが増えていることがある）:
+**差分が出たときの順序を守る**（逆にすると検出した意味が無い）:
 
-```bash
-sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E '^\s+(- name|run):'
-```
+1. 差分を読み、**この gates.md の対応表**と **`local-gates.sh`** を追随させる。
+2. そのうえで `ci-snapshot.sh --update` を実行し、スナップショットも同じコミットに含める。
+
+`uses:` / `with:` / `env:` / `timeout-minutes` / `runs-on` は意図的に対象外
+（変更頻度の割にローカルコマンドへ写らず、churn だけが増える）。
+アクションのバージョン bump ではドリフトにならない。
+
+**なぜ機構にしたか**: 以前はここに突き合わせ用のワンライナーを置いていたが、
+「実行しようと思い出す」必要があった。実際に `ci.yml` へステップを足した本人が、
+同じセッション内で `local-gates.sh` への追随を忘れている（#455）。
 
 **`docs/**` / `**.md` / `.claude/**` のみの変更では CI が丸ごとスキップされる**（`paths-ignore`）ため、docs のみの PR で「チェックなし」は正常。
 

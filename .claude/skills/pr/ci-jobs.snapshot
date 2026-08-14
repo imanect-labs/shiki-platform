@@ -1,0 +1,231 @@
+on.pull_request.paths-ignore:
+  - "**.md"
+  - ".claude/**"
+  - "docs/**"
+on.push.paths-ignore:
+  - "**.md"
+  - ".claude/**"
+  - "docs/**"
+
+job: rust
+  job.name: Rust (fmt / clippy / test / build)
+  step.name: free disk space (不要プリインストール削除)
+  run: |
+    sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+    df -h /
+  run: cargo fmt --all --check
+  run: cargo clippy --all-targets --all-features -- -D warnings
+  run: cargo nextest run --workspace --all-features
+
+job: build-server
+  job.name: Build shiki-server (release・compose ジョブ共有)
+  step.name: free disk space (不要プリインストール削除)
+  run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+  run: cargo build --release --bin shiki-server
+
+job: quality
+  job.name: Quality gates (file-size / migration-version / cargo-machete)
+  step.name: file-size gate (1 ファイル 1000 行以内)
+  run: bash scripts/check-file-size.sh
+  step.name: migration version gate (バージョン番号の重複禁止)
+  run: bash scripts/check-migration-versions.sh
+  step.name: compose port gate (ホストポートの二重 publish 禁止)
+  run: bash scripts/check-compose-ports.sh
+  step.name: cargo machete (未使用依存の検出)
+  run: cargo machete crates
+
+job: cargo-deny
+  job.name: cargo-deny (advisories / licenses / bans / sources)
+  step.name: cargo deny check (advisories / licenses / bans / sources)
+  run: cargo deny --all-features check
+
+job: tabular-runner
+  job.name: Tabular runner (隔離 DuckDB・PIT-39 adversarial)
+  step.name: free disk space (不要プリインストール削除)
+  run: |
+    sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+    df -h /
+  step.name: fmt / clippy (runner)
+  run: |
+    cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check
+    cargo clippy --manifest-path crates/tabular/runner/Cargo.toml --release -- -D warnings
+  step.name: build isolated runner (bundled DuckDB)
+  run: cargo build --manifest-path crates/tabular/runner/Cargo.toml --release
+  step.name: adversarial tests (外部参照/DML/DDL/クォータ超過の拒否)
+  run: cargo test -p shiki-tabular --test runner_adversarial_it
+  step.name: upload runner binary (web-e2e 用)
+
+job: sandbox-gvisor
+  job.name: Sandbox gVisor IT (runsc・非ブロッキング)
+  step.name: free disk space (不要プリインストール削除)
+  run: |
+    sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+    df -h /
+  step.name: allow unprivileged userns (AppArmor)
+  run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+  step.name: fetch runsc (manifest 検証・PIT-33)
+  run: bash scripts/fetch-native-assets.sh
+  step.name: build rootfs (numpy/pandas 同梱・--require-hashes)
+  run: bash scripts/build-sandbox-rootfs.sh
+  step.name: gvisor gated IT (create/exec/numpy/watchdog)
+  run: cargo test -p shiki-sandbox-orchestrator --test gvisor_it -- --test-threads=1
+
+job: python
+  job.name: Python (ingestion-worker ruff / pytest)
+  step.name: uv sync
+  run: uv sync --frozen
+  step.name: ruff
+  run: uv run ruff check .
+  step.name: pytest (fast)
+  run: uv run pytest -m "not slow" -q
+
+job: coverage
+  job.name: Coverage (cargo-llvm-cov, gate 80%)
+  step.name: free disk space (不要プリインストール削除)
+  run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+  step.name: compose up (postgres + minio + openfga + redis + qdrant → healthy 待ち)
+  run: |
+    cp .env.example .env
+    docker compose up -d postgres minio openfga redis qdrant
+    for svc in postgres minio openfga redis qdrant; do
+    ok=""
+    for i in $(seq 1 60); do
+    s=$(docker compose ps "$svc" --format '{{.Health}}' || true)
+    echo "[$svc] attempt $i: health=$s"
+    [ "$s" = "healthy" ] && { ok=1; break; }
+    sleep 5
+    done
+    [ -n "$ok" ] || { echo "$svc が healthy になりませんでした"; exit 1; }
+    done
+  step.name: clean stale coverage artifacts
+  run: cargo llvm-cov clean --workspace
+  step.name: wait for services healthy
+  step.name: test + coverage (cargo-llvm-cov)
+  run: cargo llvm-cov --all --no-report
+  step.name: coverage report (lcov + summary + job summary)
+  run: |
+    cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
+    cargo llvm-cov report --summary-only --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs' | tee coverage-summary.txt
+    {
+    echo '### Rust test coverage'
+    echo '```'
+    cat coverage-summary.txt
+    echo '```'
+    } >> "$GITHUB_STEP_SUMMARY"
+  step.name: comment coverage table on PR
+  step.if: ${{ always() && github.event_name == 'pull_request' }}
+  run: |
+    [ -f coverage-summary.txt ] || { echo "サマリ未生成のためスキップ"; exit 0; }
+    marker='<!-- coverage-report -->'
+    total_line=$(grep '^TOTAL' coverage-summary.txt || true)
+    {
+    echo "$marker"
+    echo '## 📊 Rust test coverage'
+    echo "閾値ゲート: 行 **80%** 以上（\`cargo llvm-cov --fail-under-lines 80\`）"
+    echo
+    if [ -n "$total_line" ]; then
+    echo '```'
+    echo "$total_line"
+    echo '```'
+    fi
+    echo '<details>'
+    echo '<summary>ファイル別内訳を表示</summary>'
+    echo
+    echo '```'
+    cat coverage-summary.txt
+    echo '```'
+    echo '</details>'
+    } > body.md
+    body="$(cat body.md)"
+    existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+    --jq "[.[] | select(.user.login==\"github-actions[bot]\" and (.body | startswith(\"${marker}\")))] | last | .id")
+    if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+    gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -X PATCH -f body="$body" >/dev/null
+    echo "既存コメントを更新: $existing"
+    else
+    gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -f body="$body" >/dev/null
+    echo "新規コメントを作成"
+    fi
+  step.name: coverage gate (fail under 80% lines)
+  run: cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
+  step.name: upload coverage (lcov)
+  step.name: dump compose logs on failure
+  step.if: failure()
+  run: docker compose logs --no-color | tail -200
+
+job: web
+  job.name: Web (gen:api / lint / build)
+  step.name: install
+  run: pnpm install --frozen-lockfile
+  step.name: gen:api (Rust 定義から型生成)
+  run: pnpm gen:api
+  step.name: lint
+  run: pnpm lint
+  step.name: build
+  run: pnpm build
+
+job: compose-smoke
+  job.name: compose smoke (/healthz, /me, skillex)
+  step.name: download shiki-server binary (build-server の成果物)
+  step.name: download tabular runner binary (tabular-runner の成果物)
+  step.name: compose up (依存 + shiki-server → healthy 待ち)
+  run: |
+    cp .env.example .env
+    docker compose up -d --build shiki-server
+    for i in $(seq 1 60); do
+    s=$(docker compose ps shiki-server --format '{{.Health}}' || true)
+    echo "attempt $i: health=$s"
+    [ "$s" = "healthy" ] && exit 0
+    sleep 5
+    done
+    echo "shiki-server が healthy になりませんでした"; exit 1
+  step.name: authz 結合テストを先にコンパイル（compose 起動と並列）
+  run: cargo test -p shiki-authz --test check --no-run
+  step.name: wait for shiki-server healthy
+  step.name: smoke test (BFF code フロー)
+  run: bash smoke-bff.sh
+  step.name: smoke test (skillex)
+  run: |
+    set -euo pipefail
+    echo "--- skillex client_credentials (aud=shiki-llm) ---"
+    SK=$(curl -s -X POST http://localhost:8081/realms/shiki/protocol/openid-connect/token \
+    -d grant_type=client_credentials -d client_id=skillex -d client_secret=skillex-dev-secret \
+    | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+    echo "$SK" | cut -d. -f2 | python3 -c "import sys,base64,json; p=sys.stdin.read().strip(); p+='='*(-len(p)%4); c=json.loads(base64.urlsafe_b64decode(p)); a=c.get('aud'); a=a if isinstance(a,list) else [a]; assert 'shiki-llm' in a, a; print('skillex aud OK:', a, 'azp=', c.get('azp'))"
+  step.name: authz 結合テスト（live OpenFGA で allow/deny 検証）
+  run: cargo test -p shiki-authz --test check -- --nocapture
+  step.name: dump logs on failure
+  step.if: failure()
+  run: docker compose logs --no-color | tail -200
+
+job: web-e2e
+  job.name: "Web E2E (Playwright: ログイン→保護ページ→ログアウト)"
+  step.name: download shiki-server binary (build-server の成果物)
+  step.name: download tabular runner binary (tabular-runner の成果物)
+  step.name: compose up (keycloak + shiki-server → healthy 待ち)
+  run: |
+    cp .env.example .env
+    docker compose up -d --build shiki-server
+    for i in $(seq 1 60); do
+    s=$(docker compose ps shiki-server --format '{{.Health}}' || true)
+    echo "attempt $i: health=$s"
+    [ "$s" = "healthy" ] && exit 0
+    sleep 5
+    done
+    echo "shiki-server が healthy になりませんでした"; exit 1
+  step.name: install (web)
+  run: pnpm install --frozen-lockfile
+  step.name: gen:api (Rust 定義から型生成)
+  run: pnpm gen:api
+  step.name: build (web)
+  run: pnpm build
+  step.name: install Playwright browser
+  run: pnpm exec playwright install --with-deps chromium
+  step.name: wait for shiki-server healthy
+  step.name: run E2E (BFF + Keycloak 実フロー)
+  run: pnpm e2e
+  step.name: upload Playwright report on failure
+  step.if: failure()
+  step.name: dump compose logs on failure
+  step.if: failure()
+  run: docker compose logs --no-color | tail -200
