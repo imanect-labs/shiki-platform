@@ -16,6 +16,9 @@ alter table tenant
 -- （全テナントを 1 クエリで舐めると、保持期間が最短のテナントに引きずられて長期保持テナントの
 -- 履歴まで毎日走査することになる）。述語に status を畳み込んであるので、実行中/待機中の run は
 -- index に載らない＝走査が「消してよい候補」だけを見る。
+-- 大規模な既存 DB では、この 2 本を **デプロイ前に手で先に作る**（下は IF NOT EXISTS なので
+-- その場合 no-op になる）。手順と CONCURRENTLY を migration に書けない理由は
+-- docs/guides/db-maintenance.md §1 に集約してある。
 create index if not exists workflow_run_gc_idx
     on workflow_run (tenant_id, finished_at)
     where status in ('succeeded', 'failed', 'cancelled');
@@ -48,8 +51,12 @@ alter table wait_subscription
         on delete cascade
         deferrable initially immediate;
 
--- 日次ジョブの投入状態。スケジューラリーダーの tick が「前回投入から 24h 経ったか」を見て
--- jobq へ 1 件だけ積む（重い削除を tick ループに同居させない・§12.2）。
+-- 日次ジョブの投入状態。HistoryGcWorker が「前回投入から 24h 経ったか」を見て jobq へ 1 件だけ
+-- 積む（重い削除をワーカーのポーリングに同居させない・§12.2）。
+--
+-- **二重投入を防ぐのはリーダー選出ではなく、この表の行を同一 TX ＋ FOR UPDATE で押さえること。**
+-- 全レプリカが無条件に呼んでよい設計にしてあるので、リーダー選出側を変えても多重投入ガードは
+-- 壊れない（逆に、この表のロックを外すと壊れる）。
 --
 -- job_name をキーにした汎用の台帳にしてあるのは、日次で回したいメンテナンスが今後増えるため
 -- （outbox GC・統計の再計算など）。単一行テーブルを都度足さない。
