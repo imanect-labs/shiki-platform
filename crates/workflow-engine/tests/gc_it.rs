@@ -6,6 +6,12 @@
 //! - 保持期間はテナントごとに効く
 //! - effect_journal が TTL で消える
 //! - 日次投入が二重に積まれない
+//!
+//! **削除の検証は `GcReport` の件数ではなく DB の事実で行う。** `daily_enqueue_is_not_duplicated`
+//! が全テナント横断 GC（`purge_expired_history(None)`）を回すため、同一バイナリで並行実行すると
+//! 他テストの期限切れ fixture を先に消し得る。件数で見ると 0 になって落ちるが、「消えるべきものが
+//! 消えている」不変条件は変わらない。DB を見る形なら回帰検出力も落ちない（バグがあれば横断 GC も
+//! 同じ理由で消せないため、行は残る）。
 
 #![allow(
     unreachable_pub,
@@ -143,8 +149,10 @@ async fn expired_terminal_run_is_purged_with_children() {
 
     finish_run_days_ago(&pool, &tenant, run_id, 91, "succeeded").await;
     let report = store.purge_expired_history(Some(&tenant)).await.unwrap();
-    assert!(report.runs_deleted >= 1);
-    assert!(!report.truncated);
+    assert!(!report.truncated, "この規模ではバッチ上限に当たらない");
+    // 削除の検証は **report の件数ではなく DB の事実**で行う（下の run_exists / count_children）。
+    // 同一バイナリの `daily_enqueue_is_not_duplicated` が全テナント横断 GC を回すため、先に
+    // 消されると report は 0 になる。「消えるべきものが消えている」という不変条件は変わらない。
 
     assert!(!run_exists(&pool, &tenant, run_id).await);
     assert_eq!(
@@ -355,9 +363,20 @@ async fn journal_purge_reaches_past_a_full_batch_of_live_runs() {
     .await
     .unwrap();
 
-    let report = store.purge_expired_history(Some(&tenant)).await.unwrap();
+    store.purge_expired_history(Some(&tenant)).await.unwrap();
+
+    // ここも report の件数ではなく DB の事実で見る（全テナント横断 GC を回す別テストと同時に
+    // 走ると、孤児を先に消されて report が 0 になる）。
+    let orphan_left: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM effect_journal WHERE tenant_id = $1 AND idempotency_key = $2",
+    )
+    .bind(&tenant)
+    .bind(format!("wf:{tenant}:{expired}:n1"))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(
-        report.journal_deleted, 1,
+        orphan_left, 0,
         "生存 run の journal に阻まれず、その先の孤児へ到達する"
     );
     let alive_left: i64 = sqlx::query_scalar(
