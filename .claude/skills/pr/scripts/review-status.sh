@@ -104,36 +104,67 @@ else
 fi
 
 # --- 2. 未解消 AI レビュースレッド ---
+# ここは**コミット時刻に関係なく**未解決スレッドを全部出す。3. の「最終コミット後の
+# コメント」だけに頼ると、コミットを重ねた時に古い未対応コメントが判定から外れる。
 echo "== 未解消 AI レビュースレッド =="
-threads=$(gh api graphql -F owner="$OWNER" -F name="$NAME" -F pr="$PR_NUM" -f query='
+if ! threads=$(gh api graphql -F owner="$OWNER" -F name="$NAME" -F pr="$PR_NUM" -f query='
   query($owner:String!, $name:String!, $pr:Int!) {
     repository(owner:$owner, name:$name) {
       pullRequest(number:$pr) {
         reviewThreads(first:100) {
           nodes {
             isResolved
-            comments(first:1) {
-              nodes { author { login } path body }
+            comments(first:50) {
+              nodes { author { login } path line originalLine body }
             }
           }
         }
       }
     }
-  }' 2>/dev/null || echo '{}')
+  }' 2>&1); then
+  # ⚠️ 取得失敗を空結果に化かさない（`|| echo '{}'` にすると「スレッド無し」＝緑になる）。
+  err "レビュースレッドを取得できませんでした:"
+  printf '%s\n' "$threads" | head -5 >&2
+  exit 2
+fi
 
-unresolved=$(printf '%s' "$threads" | jq -r --argjson bots "$bots_json" '
-  [ .data.repository.pullRequest.reviewThreads.nodes[]?
-    | select(.isResolved == false)
-    | .comments.nodes[0] as $c
-    | select($c.author.login as $a | $bots | index($a))
-    | "  [\($c.author.login)] \($c.path // "-"): \(($c.body // "") | gsub("\n"; " ") | .[0:160])"
-  ] | .[]' 2>/dev/null || true)
+# ⚠️ bot ログインの表記が API で違う。REST は `coderabbitai[bot]`、**GraphQL は
+#    `coderabbitai`**（`[bot]` が付かない）。PR_REVIEW_BOTS は REST 表記なので、
+#    そのまま突合すると一致せず、この節が**恒久的に「未解消なし」を返す**。
+#    実際に本スクリプトはこの不一致で、未解決スレッドが 3 件ある PR を緑と報告していた。
+#    比較前に両側の `[bot]` を落として正規化する。
+# ブロックするのは「未解決 **かつ** 人間の返信が 1 件も無い」スレッドだけにする。
+# Codex はスレッドを解決しないため、`isResolved == false` だけでブロックすると
+# 根拠を返信しても永久に緑にならない（恒久ブロック＝ゲートとして使い物にならなくなる）。
+# 返信済みのものは件数だけ出して人の目に残す。
+filter='
+  ($bots | map(sub("\\[bot\\]$"; ""))) as $names
+  | [ .data.repository.pullRequest.reviewThreads.nodes[]?
+      | select(.isResolved == false)
+      | . as $t
+      | $t.comments.nodes[0] as $c
+      | select(($c.author.login // "" | sub("\\[bot\\]$"; "")) as $a | $names | index($a))
+      | ( [ $t.comments.nodes[]
+            | select((.author.login // "" | sub("\\[bot\\]$"; "")) as $a | ($names | index($a)) | not) ]
+          | length ) as $human_replies
+      | select(($human_replies > 0) == ANSWERED)
+      | "  [\($c.author.login)] \($c.path // "-"):\($c.line // $c.originalLine // "-")\n      \(($c.body // "") | gsub("\n"; " ") | .[0:150])"
+    ]'
 
-if [ -n "$unresolved" ]; then
-  printf '%s\n' "$unresolved"
+unaddressed=$(printf '%s' "$threads" | jq -r --argjson bots "$bots_json" "${filter//ANSWERED/false} | .[]" 2>/dev/null || true)
+answered=$(printf '%s' "$threads" | jq -r --argjson bots "$bots_json" "${filter//ANSWERED/true} | length" 2>/dev/null || echo 0)
+
+if [ -n "$unaddressed" ]; then
+  printf '%s\n' "$unaddressed"
+  echo "  → 対応するか、根拠を返信すること:"
+  echo "     gh api repos/$OWNER/$NAME/pulls/$PR_NUM/comments/<id>/replies -f body=\"...\""
   blocked=1
 else
-  echo "  （未解消なし）"
+  echo "  （未返信のスレッドなし）"
+fi
+if [ "${answered:-0}" -gt 0 ] 2>/dev/null; then
+  echo "  ℹ️  返信済みだが未解決のスレッドが ${answered} 件あります（ブロックしません）。"
+  echo "     bot がスレッドを解決しないだけのことが多いが、返信で議論が終わっているか一度は確認すること。"
 fi
 
 # --- 3. 最終コミットより後に付いた bot コメント（取りこぼし検出） ---
@@ -159,10 +190,17 @@ else
     exit 2
   fi
 
+  # ⚠️ スレッドへの**返信**（`in_reply_to_id` あり）は新規指摘ではない。既存スレッドの続きなので
+  #    2. の未解消スレッド判定が担当する。ここで拾うと、CodeRabbit の
+  #    「修正を確認しました／この指摘は解消されています」という返信を新規指摘として数えて
+  #    恒久的に赤くなる（ACK_MARKERS は付かないことがあるので、マーカー除外だけでは防げない）。
+  #    実例: CodeRabbit は「スレッドを解決できなかったので open のまま。手動で解決して」と
+  #    返信することがあり、この文面にマーカーは無い。
   late_inline=$(printf '%s' "$comments_json" \
     | jq -r --argjson bots "$bots_json" --arg t "$last_commit" --arg ack "$ACK_MARKERS" '
       [ .[]
         | select(.user.login as $a | $bots | index($a))
+        | select(.in_reply_to_id == null)
         | select(.created_at > $t)
         | select((.body // "") | test($ack) | not)
         | "  [\(.created_at)] [\(.user.login)] id=\(.id) \(.path):\(.line // .original_line // "-")\n      \((.body // "") | gsub("\n"; " ") | .[0:200])"
