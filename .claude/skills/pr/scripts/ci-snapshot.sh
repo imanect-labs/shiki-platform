@@ -79,9 +79,13 @@ def emit(path, value):
         out.append(f"{path} = {'true' if value else 'false'}")
         return
     s = str(value)
-    # 行頭・行末の空白は落とす（整形の揺れで落ちないように）。
-    lines = [ln.strip() for ln in s.splitlines()]
-    lines = [ln for ln in lines if ln]
+    # 行末の空白と空行だけ落とす。**行頭のインデントは保持する**（`ln.strip()` にすると
+    # run 本文に埋め込んだ Python / heredoc のようにインデントが意味を持つスクリプトで、
+    # 挙動が変わっても正規化結果が動かなくなる）。
+    # ブロックのベースインデントは PyYAML が既に取り除いているので、ステップを別の
+    # ネストへ動かしただけでは落ちない。
+    lines = [ln.rstrip() for ln in s.splitlines()]
+    lines = [ln for ln in lines if ln.strip()]
     if len(lines) <= 1:
         # `run: cmd` と `run: |` ＋ 1 行は同じものを実行する。同じ表現に畳んで、
         # 書き方を変えただけでドリフト扱いにしない。

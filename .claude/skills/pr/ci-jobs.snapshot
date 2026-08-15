@@ -52,10 +52,10 @@ ci.yml.jobs.compose-smoke.steps[05].run |
     cp .env.example .env
     docker compose up -d --build shiki-server
     for i in $(seq 1 60); do
-    s=$(docker compose ps shiki-server --format '{{.Health}}' || true)
-    echo "attempt $i: health=$s"
-    [ "$s" = "healthy" ] && exit 0
-    sleep 5
+      s=$(docker compose ps shiki-server --format '{{.Health}}' || true)
+      echo "attempt $i: health=$s"
+      [ "$s" = "healthy" ] && exit 0
+      sleep 5
     done
     echo "shiki-server が healthy になりませんでした"; exit 1
 ci.yml.jobs.compose-smoke.steps[05].working-directory = deploy/compose
@@ -71,8 +71,8 @@ ci.yml.jobs.compose-smoke.steps[09].run |
     set -euo pipefail
     echo "--- skillex client_credentials (aud=shiki-llm) ---"
     SK=$(curl -s -X POST http://localhost:8081/realms/shiki/protocol/openid-connect/token \
-    -d grant_type=client_credentials -d client_id=skillex -d client_secret=skillex-dev-secret \
-    | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+      -d grant_type=client_credentials -d client_id=skillex -d client_secret=skillex-dev-secret \
+      | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
     echo "$SK" | cut -d. -f2 | python3 -c "import sys,base64,json; p=sys.stdin.read().strip(); p+='='*(-len(p)%4); c=json.loads(base64.urlsafe_b64decode(p)); a=c.get('aud'); a=a if isinstance(a,list) else [a]; assert 'shiki-llm' in a, a; print('skillex aud OK:', a, 'azp=', c.get('azp'))"
 ci.yml.jobs.compose-smoke.steps[09].working-directory = deploy/compose
 ci.yml.jobs.compose-smoke.steps[10].env.OPENFGA_TEST_URL = http://localhost:8082
@@ -99,14 +99,14 @@ ci.yml.jobs.coverage.steps[05].run |
     cp .env.example .env
     docker compose up -d postgres minio openfga redis qdrant
     for svc in postgres minio openfga redis qdrant; do
-    ok=""
-    for i in $(seq 1 60); do
-    s=$(docker compose ps "$svc" --format '{{.Health}}' || true)
-    echo "[$svc] attempt $i: health=$s"
-    [ "$s" = "healthy" ] && { ok=1; break; }
-    sleep 5
-    done
-    [ -n "$ok" ] || { echo "$svc が healthy になりませんでした"; exit 1; }
+      ok=""
+      for i in $(seq 1 60); do
+        s=$(docker compose ps "$svc" --format '{{.Health}}' || true)
+        echo "[$svc] attempt $i: health=$s"
+        [ "$s" = "healthy" ] && { ok=1; break; }
+        sleep 5
+      done
+      [ -n "$ok" ] || { echo "$svc が healthy になりませんでした"; exit 1; }
     done
 ci.yml.jobs.coverage.steps[05].working-directory = deploy/compose
 ci.yml.jobs.coverage.steps[06].name = clean stale coverage artifacts
@@ -126,10 +126,10 @@ ci.yml.jobs.coverage.steps[09].run |
     # サマリ表を再利用するためファイルに保存（Job Summary と PR コメントの両方で使う）。
     cargo llvm-cov report --summary-only --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs' | tee coverage-summary.txt
     {
-    echo '### Rust test coverage'
-    echo '```'
-    cat coverage-summary.txt
-    echo '```'
+      echo '### Rust test coverage'
+      echo '```'
+      cat coverage-summary.txt
+      echo '```'
     } >> "$GITHUB_STEP_SUMMARY"
 ci.yml.jobs.coverage.steps[10].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
 ci.yml.jobs.coverage.steps[10].env.PR = ${{ github.event.pull_request.number }}
@@ -140,32 +140,32 @@ ci.yml.jobs.coverage.steps[10].run |
     marker='<!-- coverage-report -->'
     total_line=$(grep '^TOTAL' coverage-summary.txt || true)
     {
-    echo "$marker"
-    echo '## 📊 Rust test coverage'
-    echo "閾値ゲート: 行 **80%** 以上（\`cargo llvm-cov --fail-under-lines 80\`）"
-    echo
-    if [ -n "$total_line" ]; then
-    echo '```'
-    echo "$total_line"
-    echo '```'
-    fi
-    echo '<details>'
-    echo '<summary>ファイル別内訳を表示</summary>'
-    echo
-    echo '```'
-    cat coverage-summary.txt
-    echo '```'
-    echo '</details>'
+      echo "$marker"
+      echo '## 📊 Rust test coverage'
+      echo "閾値ゲート: 行 **80%** 以上（\`cargo llvm-cov --fail-under-lines 80\`）"
+      echo
+      if [ -n "$total_line" ]; then
+        echo '```'
+        echo "$total_line"
+        echo '```'
+      fi
+      echo '<details>'
+      echo '<summary>ファイル別内訳を表示</summary>'
+      echo
+      echo '```'
+      cat coverage-summary.txt
+      echo '```'
+      echo '</details>'
     } > body.md
     body="$(cat body.md)"
     existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
-    --jq "[.[] | select(.user.login==\"github-actions[bot]\" and (.body | startswith(\"${marker}\")))] | last | .id")
+      --jq "[.[] | select(.user.login==\"github-actions[bot]\" and (.body | startswith(\"${marker}\")))] | last | .id")
     if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-    gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -X PATCH -f body="$body" >/dev/null
-    echo "既存コメントを更新: $existing"
+      gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -X PATCH -f body="$body" >/dev/null
+      echo "既存コメントを更新: $existing"
     else
-    gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -f body="$body" >/dev/null
-    echo "新規コメントを作成"
+      gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -f body="$body" >/dev/null
+      echo "新規コメントを作成"
     fi
 ci.yml.jobs.coverage.steps[11].name = coverage gate (fail under 80% lines)
 ci.yml.jobs.coverage.steps[11].run = cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex 'src/(bin/|main\.rs)|vendor/secure-exec/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
@@ -323,10 +323,10 @@ ci.yml.jobs.web-e2e.steps[07].run |
     cp .env.example .env
     docker compose up -d --build shiki-server
     for i in $(seq 1 60); do
-    s=$(docker compose ps shiki-server --format '{{.Health}}' || true)
-    echo "attempt $i: health=$s"
-    [ "$s" = "healthy" ] && exit 0
-    sleep 5
+      s=$(docker compose ps shiki-server --format '{{.Health}}' || true)
+      echo "attempt $i: health=$s"
+      [ "$s" = "healthy" ] && exit 0
+      sleep 5
     done
     echo "shiki-server が healthy になりませんでした"; exit 1
 ci.yml.jobs.web-e2e.steps[07].working-directory = deploy/compose
@@ -394,8 +394,8 @@ office-image.yml.jobs.build-and-push.steps[02].run |
     set -euo pipefail
     source deploy/docker/collabora/office-manifest.env
     for v in CORE_REPO CORE_REF CORE_COMMIT ONLINE_REPO ONLINE_REF ONLINE_COMMIT; do
-    [ -n "${!v}" ] || { echo "manifest に $v が無い"; exit 1; }
-    echo "$v=${!v}" >> "$GITHUB_ENV"
+      [ -n "${!v}" ] || { echo "manifest に $v が無い"; exit 1; }
+      echo "$v=${!v}" >> "$GITHUB_ENV"
     done
 office-image.yml.jobs.build-and-push.steps[03].uses = docker/setup-buildx-action
 office-image.yml.jobs.build-and-push.steps[04].uses = docker/login-action
@@ -425,16 +425,16 @@ office-image.yml.jobs.build-and-push.steps[06].name = smoke（discovery が取�
 office-image.yml.jobs.build-and-push.steps[06].run |
     set -euo pipefail
     docker run -d --rm --name collabora-smoke -p 127.0.0.1:19980:9980 \
-    "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
-    coolwsd --o:sys_template_path=/opt/cool/systemplate \
-    --o:child_root_path=/opt/cool/child-roots \
-    --o:lo_template_path=/opt/collaboraoffice \
-    --o:ssl.enable=false --o:ssl.termination=false
+      "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
+      coolwsd --o:sys_template_path=/opt/cool/systemplate \
+        --o:child_root_path=/opt/cool/child-roots \
+        --o:lo_template_path=/opt/collaboraoffice \
+        --o:ssl.enable=false --o:ssl.termination=false
     for i in $(seq 1 60); do
-    if curl -fsS http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
-    echo "discovery OK"; docker stop collabora-smoke; exit 0
-    fi
-    sleep 2
+      if curl -fsS http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
+        echo "discovery OK"; docker stop collabora-smoke; exit 0
+      fi
+      sleep 2
     done
     echo "discovery が 120 秒で応答しない"; docker logs collabora-smoke; exit 1
 office-image.yml.name = office-image
