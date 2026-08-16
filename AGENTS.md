@@ -87,3 +87,23 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 - `dev-workflow` — ブランチ → Issue → 実装 → PR → close の進め方
 - `architecture-invariants` — 不変条件の詳細チェックリスト
 - `pr` — PR 作成から CI・AI レビュー通過までのループ
+
+## Cursor Cloud specific instructions
+
+Cloud Agent VM 特有の非自明な起動時の注意（依存導入は update script が済ませる。ここには書かない）。
+
+- **Docker はデーモンを手動起動する。** インストール済みだが自動起動しない。各セッション開始時に一度だけ:
+  `sudo dockerd > /tmp/dockerd.log 2>&1 &` の後 `sudo chmod 666 /var/run/docker.sock`。依存
+  （Postgres/Keycloak/OpenFGA/Redis/MinIO 等）は全て docker compose 前提なので、これが無いと何も起動できない。
+- **フルスタック起動は `.claude/skills/pr/scripts/dev-up.sh`（native 既定）を使う。** compose で依存だけ起動し、
+  shiki-server を `cargo run`（:8080・cold build は数分）・web を `pnpm dev`（:3000）で立てる。RAG/sandbox が要る時だけ
+  `--rag`/`--sandbox`（`--rag` は ingestion-worker の初回モデル DL で重い）。ログイン導線は
+  `http://localhost:3000` → Keycloak（`alice` / `password`）→ 認証済みホーム。ユーザ情報は `/api/me`（`/me` ルートは無い）。
+- **pnpm は 10 系（corepack で 10.33.3 を activate 済み）。** pnpm 11 は `pnpm install` 時に gitignore されない
+  `web/pnpm-workspace.yaml`（allowBuilds スタブ）を作り作業ツリーを汚す。plain `pnpm` が 11 に戻ったら
+  `COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack prepare pnpm@10.33.3 --activate` で戻す。
+- **`pnpm build` は web の dev サーバを止めてから流す。** `next dev`（dev-up の web）と `pnpm build` は `web/.next` を
+  共有するため、同時に走らせると `Cannot find module for page` でビルドが壊れる（lint `pnpm lint` は同時可）。
+- **`pnpm gen:api`（＝ `pnpm build` の prebuild）は `crates/*/bindings/` の ts-rs 生成物（追跡対象）を書き換えることがある。**
+  意図しない差分が出たら `git checkout -- crates/gui/bindings crates/workflow-engine/bindings` で戻す。
+- `uv` は `~/.local/bin/uv`（ログインシェルは PATH 済み）。`cargo nextest`・`cargo machete` も導入済み。
