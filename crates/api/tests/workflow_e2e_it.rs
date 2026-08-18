@@ -191,7 +191,7 @@ async fn interactive_run_completes_through_production_executor() {
         Arc::clone(&env.fga),
     ));
     let workflows = WorkflowStore::new(Arc::clone(&artifacts));
-    let runs = RunStore::new(env.pool.clone());
+    let runs = RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let delegation = DelegationStore::new(env.pool.clone(), Arc::clone(&env.fga));
     let launcher = WorkflowRunLauncher::new(delegation, workflows.clone(), runs.clone());
 

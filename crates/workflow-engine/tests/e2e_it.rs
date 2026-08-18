@@ -148,7 +148,7 @@ async fn interactive_and_scheduled_run_complete_with_exactly_once_effects() {
     ));
     let workflows = WorkflowStore::new(artifacts.clone());
     let delegation = DelegationStore::new(pool.clone(), fga.clone() as Arc<dyn AuthzClient>);
-    let runs = RunStore::new(pool.clone());
+    let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let journal = EffectJournal::new(pool.clone());
 
     // ① IR を保存（V1〜V7）。
@@ -254,7 +254,7 @@ async fn suspended_workflow_scheduled_launch_creates_no_run() {
     ));
     let workflows = WorkflowStore::new(artifacts.clone());
     let delegation = DelegationStore::new(pool.clone(), fga.clone() as Arc<dyn AuthzClient>);
-    let runs = RunStore::new(pool.clone());
+    let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
 
     let (wf_id, _ir) = workflows
         .create(&alice, &workflow_ir(), &Catalog::default(), None)

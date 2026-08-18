@@ -48,7 +48,7 @@ pub use run::{
 };
 pub use run::{
     ConcurrencyLimits, NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus,
-    WorkerConfig, WorkflowRunLauncher, WorkflowWorker, WORKFLOW_GC_QUEUE,
+    WorkerConfig, WorkflowRunLauncher, WorkflowWorker, DEFAULT_LEASE_SECS, WORKFLOW_GC_QUEUE,
 };
 pub use scheduler::{LeaderLease, RunLauncher, SchedulerStore};
 pub use store::{WorkflowStore, WorkflowStoreError};

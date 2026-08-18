@@ -209,7 +209,7 @@ async fn create_run(store: &RunStore, tenant: &str, wf: Uuid, ir: &Value) -> Opt
 
 fn gauge_worker(pool: PgPool, tenant: &str) -> WorkflowWorker {
     WorkflowWorker::new(
-        RunStore::new(pool),
+        RunStore::new(pool, workflow_engine::DEFAULT_LEASE_SECS),
         Arc::new(GaugeExecutor {
             current: Arc::new(AtomicI32::new(0)),
             peak: Arc::new(AtomicI32::new(0)),
@@ -224,7 +224,7 @@ async fn node_kind_limit_serializes_steps_without_failing() {
     let Some(pool) = pg().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let wf = Uuid::new_v4();
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let ir = fanout_ir("conc-serialize", &json!({}));
     let run_id = create_run(&store, &tenant, wf, &ir)
         .await
@@ -233,7 +233,7 @@ async fn node_kind_limit_serializes_steps_without_failing() {
     let current = Arc::new(AtomicI32::new(0));
     let peak = Arc::new(AtomicI32::new(0));
     let worker = WorkflowWorker::new(
-        RunStore::new(pool.clone()),
+        RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
         Arc::new(GaugeExecutor {
             current: Arc::clone(&current),
             peak: Arc::clone(&peak),
@@ -288,7 +288,7 @@ async fn max_parallel_runs_queues_and_promotes() {
     let Some(pool) = pg().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let wf = Uuid::new_v4();
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let ir = fanout_ir(
         "conc-queue",
         &json!({ "max_parallel_runs": 1, "on_trigger_overflow": "queue" }),
@@ -336,7 +336,7 @@ async fn overflow_skip_creates_no_run() {
     let Some(pool) = pg().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let wf = Uuid::new_v4();
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let ir = fanout_ir(
         "conc-skip",
         &json!({ "max_parallel_runs": 1, "on_trigger_overflow": "skip" }),
@@ -357,7 +357,7 @@ async fn run_timeout_fails_run() {
     let Some(pool) = pg().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let wf = Uuid::new_v4();
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let ir = fanout_ir("conc-timeout", &json!({ "run_timeout_sec": 1 }));
     let run_id = create_run(&store, &tenant, wf, &ir).await.expect("run");
 

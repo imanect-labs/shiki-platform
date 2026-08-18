@@ -206,14 +206,26 @@ impl RunStore {
         // claim 済みで中断された step（fencing_token>0）は ready に戻すが、**旧リース分の猶予**を置く
         //（失敗直後の resume で、まだ実行中かもしれない元 worker と二重実行しない・Codex P1。
         // 元 worker の checkpoint は fencing で無害化されるが、外部副作用の同時併走を避ける）。
+        //
+        // 猶予は固定値ではなく `lease_secs` から導出する。固定 35 秒だと `lease_secs` を既定の
+        // 30 から 120 等へ上げた構成で猶予がリースより短くなり、旧 worker がリースを保持したまま
+        // 別 worker が再 claim できてしまう（#446）。
+        //
+        // **起算は resume 時刻ではなく step が cancelled になった時刻**（`updated_at`）。旧 worker の
+        // リースは cancel 時点から最大 `lease_secs` しか残らないので、now() 起算にすると「翌日に
+        // resume を押したら旧 worker はとうに死んでいるのに `lease_secs` 秒待たされる」という
+        // 死に時間になる（`lease_secs` を上げた構成ほど長い）。`greatest` で下限を now() に
+        // クランプするので、期限が既に過ぎていれば即時 ready になる。
+        // SET 式は同一 UPDATE 内でも**旧行**の値を見るため、`updated_at = now()` の併記と両立する。
         sqlx::query(
             "UPDATE step_execution SET status = 'ready', \
-                 next_retry_at = now() + interval '35 seconds', \
+                 next_retry_at = greatest(now(), updated_at + ($3 || ' seconds')::interval), \
                  lease_owner = NULL, lease_expires_at = NULL, updated_at = now() \
              WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled' AND fencing_token > 0",
         )
         .bind(tenant_id)
         .bind(run_id)
+        .bind(self.resume_grace_secs())
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;

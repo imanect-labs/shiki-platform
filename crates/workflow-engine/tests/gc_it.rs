@@ -8,7 +8,7 @@
 //! - 日次投入が二重に積まれない
 //!
 //! **削除の検証は `GcReport` の件数ではなく DB の事実で行う。** `daily_enqueue_is_not_duplicated`
-//! が全テナント横断 GC（`purge_expired_history(None)`）を回すため、同一バイナリで並行実行すると
+//! が `HistoryGcWorker` 経由で全テナント横断 GC を回すため、同一バイナリで並行実行すると
 //! 他テストの期限切れ fixture を先に消し得る。件数で見ると 0 になって落ちるが、「消えるべきものが
 //! 消えている」不変条件は変わらない。DB を見る形なら回帰検出力も落ちない（バグがあれば横断 GC も
 //! 同じ理由で消せないため、行は残る）。
@@ -105,6 +105,39 @@ async fn finish_run_days_ago(pool: &PgPool, tenant: &str, run_id: Uuid, days: i3
     .unwrap();
 }
 
+/// 日次投入の台帳とキューを初期状態へ戻す（テストを再実行可能にする）。
+async fn reset_gc_state(pool: &PgPool) {
+    sqlx::query("DELETE FROM job_queue WHERE queue = $1")
+        .bind(workflow_engine::WORKFLOW_GC_QUEUE)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM maintenance_schedule WHERE job_name = 'workflow_history_gc'")
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// 日次投入の期限を到来させる。
+async fn make_gc_due(pool: &PgPool) {
+    sqlx::query(
+        "UPDATE maintenance_schedule SET last_enqueued_at = now() - interval '25 hours' \
+          WHERE job_name = 'workflow_history_gc'",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// GC キューに載っているジョブ数（差分で見るためのヘルパ）。
+async fn gc_jobs(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM job_queue WHERE queue = $1")
+        .bind(workflow_engine::WORKFLOW_GC_QUEUE)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 async fn run_exists(pool: &PgPool, tenant: &str, run_id: Uuid) -> bool {
     sqlx::query_scalar::<_, i64>(
         "SELECT count(*) FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
@@ -130,7 +163,7 @@ async fn count_children(pool: &PgPool, table: &str, tenant: &str, run_id: Uuid) 
 #[tokio::test]
 async fn expired_terminal_run_is_purged_with_children() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = create_tenant(&pool, 90).await;
     let run_id = create_run(&store, &tenant).await;
 
@@ -148,7 +181,7 @@ async fn expired_terminal_run_is_purged_with_children() {
     assert!(count_children(&pool, "run_event", &tenant, run_id).await > 0);
 
     finish_run_days_ago(&pool, &tenant, run_id, 91, "succeeded").await;
-    let report = store.purge_expired_history(Some(&tenant)).await.unwrap();
+    let report = store.purge_tenant_history(&tenant).await.unwrap();
     assert!(!report.truncated, "この規模ではバッチ上限に当たらない");
     // 削除の検証は **report の件数ではなく DB の事実**で行う（下の run_exists / count_children）。
     // 同一バイナリの `daily_enqueue_is_not_duplicated` が全テナント横断 GC を回すため、先に
@@ -170,7 +203,7 @@ async fn expired_terminal_run_is_purged_with_children() {
 #[tokio::test]
 async fn running_run_survives_regardless_of_age() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = create_tenant(&pool, 1).await;
 
     // 「1000 日前に作られてまだ終わっていない run」。finished_at が NULL なので対象外。
@@ -189,7 +222,7 @@ async fn running_run_survives_regardless_of_age() {
     let expired = create_run(&store, &tenant).await;
     finish_run_days_ago(&pool, &tenant, expired, 2, "failed").await;
 
-    store.purge_expired_history(Some(&tenant)).await.unwrap();
+    store.purge_tenant_history(&tenant).await.unwrap();
 
     assert!(
         run_exists(&pool, &tenant, running).await,
@@ -201,7 +234,7 @@ async fn running_run_survives_regardless_of_age() {
 #[tokio::test]
 async fn retention_is_per_tenant_and_respects_the_window() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     // 保持 7 日のテナントと保持 365 日のテナント。どちらも「30 日前に終わった run」を持つ。
     let short = create_tenant(&pool, 7).await;
     let long = create_tenant(&pool, 365).await;
@@ -214,8 +247,8 @@ async fn retention_is_per_tenant_and_respects_the_window() {
     let fresh = create_run(&store, &short).await;
     finish_run_days_ago(&pool, &short, fresh, 1, "succeeded").await;
 
-    store.purge_expired_history(Some(&short)).await.unwrap();
-    store.purge_expired_history(Some(&long)).await.unwrap();
+    store.purge_tenant_history(&short).await.unwrap();
+    store.purge_tenant_history(&long).await.unwrap();
 
     assert!(
         !run_exists(&pool, &short, short_run).await,
@@ -235,7 +268,7 @@ async fn retention_is_per_tenant_and_respects_the_window() {
 #[tokio::test]
 async fn effect_journal_survives_while_its_run_is_alive() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     // 保持 1 日。run はまだ実行中で、その副作用記録は 10 日前のもの。
     let tenant = create_tenant(&pool, 1).await;
     let alive = create_run(&store, &tenant).await;
@@ -265,7 +298,7 @@ async fn effect_journal_survives_while_its_run_is_alive() {
     .await
     .unwrap();
 
-    store.purge_expired_history(Some(&tenant)).await.unwrap();
+    store.purge_tenant_history(&tenant).await.unwrap();
 
     let left: Vec<String> = sqlx::query_scalar(
         "SELECT idempotency_key FROM effect_journal WHERE tenant_id = $1 ORDER BY 1",
@@ -281,48 +314,49 @@ async fn effect_journal_survives_while_its_run_is_alive() {
     );
 }
 
+/// 日次投入と消費は `HistoryGcWorker`（`workflow.enabled` から独立した保守ランタイム・#448）が持つ。
+///
+/// 多重投入を潰しているのは**リーダー選出ではなく `maintenance_schedule` の行ロック**なので、
+/// 逐次呼び出し（24h ゲート）と同時呼び出し（`FOR UPDATE`）の両方を 1 本で見る。`FOR UPDATE` を
+/// 外すと同時呼び出し側だけが落ちる。台帳は単一行のグローバル状態なので、テストを分けると
+/// 互いの前提を壊す。
 #[tokio::test]
-async fn daily_enqueue_is_not_duplicated() {
+async fn daily_enqueue_is_folded_into_one_job() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let gc = workflow_engine::HistoryGcWorker::new(pool.clone());
+    // **台帳とキューを先に初期化する。** どちらも単一行/単一キューのグローバル状態なので、
+    // 前回の失敗実行が残した行があると絶対値の検証が誤検出する（dirty な開発 DB で踏む）。
+    // このキューと台帳キーを使うのは本テストだけなので、消して困る他テストは無い。
+    reset_gc_state(&pool).await;
 
     // 初回は行の作成のみで、投入は次回以降（起動直後に重い削除を走らせない）。
-    assert!(!store.enqueue_history_gc_if_due().await.unwrap());
+    assert!(!gc.enqueue_if_due().await.unwrap());
 
     // 24h 経過を作る。
-    sqlx::query(
-        "UPDATE maintenance_schedule SET last_enqueued_at = now() - interval '25 hours' \
-          WHERE job_name = 'workflow_history_gc'",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    make_gc_due(&pool).await;
 
-    assert!(
-        store.enqueue_history_gc_if_due().await.unwrap(),
-        "期限到来で 1 件積む"
+    // 別コネクションを持つ 2 ワーカーが同時に投入を試みても 1 件に畳まれる。
+    let other = workflow_engine::HistoryGcWorker::new(pool.clone());
+    let (a, b) = tokio::join!(gc.enqueue_if_due(), other.enqueue_if_due());
+    assert_eq!(
+        usize::from(a.unwrap()) + usize::from(b.unwrap()),
+        1,
+        "同時に呼んでも投入は 1 件だけ（FOR UPDATE が畳む）"
     );
     assert!(
-        !store.enqueue_history_gc_if_due().await.unwrap(),
-        "同日中の再 tick では積まない"
+        !gc.enqueue_if_due().await.unwrap(),
+        "同日中の再ポーリングでは積まない"
     );
-
-    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM job_queue WHERE queue = $1")
-        .bind(workflow_engine::WORKFLOW_GC_QUEUE)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(queued, 1);
+    assert_eq!(gc_jobs(&pool).await, 1, "積まれたのは 1 件だけ");
 
     // ワーカーが消費すると ack されキューから消える。
-    assert!(store.consume_history_gc_once().await.unwrap().is_some());
-    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM job_queue WHERE queue = $1")
-        .bind(workflow_engine::WORKFLOW_GC_QUEUE)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(left, 0);
-    assert!(store.consume_history_gc_once().await.unwrap().is_none());
+    assert!(gc.run_once().await.unwrap().is_some());
+    assert_eq!(
+        gc_jobs(&pool).await,
+        0,
+        "消費したジョブは ack されてキューから消える"
+    );
+    assert!(gc.run_once().await.unwrap().is_none());
 }
 
 /// 生存 run の journal が 1 バッチ分を埋めても、その先の削除可能な journal に到達する。
@@ -332,7 +366,7 @@ async fn daily_enqueue_is_not_duplicated() {
 #[tokio::test]
 async fn journal_purge_reaches_past_a_full_batch_of_live_runs() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = create_tenant(&pool, 1).await;
     // 実行中の run（journal は消せない）と、期限切れ terminal の run（先に消える → journal も消せる）。
     let alive = create_run(&store, &tenant).await;
@@ -363,7 +397,7 @@ async fn journal_purge_reaches_past_a_full_batch_of_live_runs() {
     .await
     .unwrap();
 
-    store.purge_expired_history(Some(&tenant)).await.unwrap();
+    store.purge_tenant_history(&tenant).await.unwrap();
 
     // ここも report の件数ではなく DB の事実で見る（全テナント横断 GC を回す別テストと同時に
     // 走ると、孤児を先に消されて report が 0 になる）。

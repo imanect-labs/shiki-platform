@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
@@ -99,7 +100,7 @@ fn worker(
     a: Arc<AtomicUsize>,
 ) -> WorkflowWorker {
     WorkflowWorker::new(
-        RunStore::new(pool),
+        RunStore::new(pool, workflow_engine::DEFAULT_LEASE_SECS),
         Arc::new(FlakyExecutor {
             counts,
             a_counts: a,
@@ -114,7 +115,7 @@ async fn cancel_drains_waiting_run_and_timer_never_revives() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let wf = Uuid::new_v4();
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let ir = json!({
         "ir_version": 1, "name": "cancelme",
         "declared_scopes": ["storage.read"],
@@ -177,7 +178,7 @@ async fn resume_restarts_failed_step_without_reexecuting_checkpoints() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let wf = Uuid::new_v4();
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let ir = json!({
         "ir_version": 1, "name": "resumeme",
         "declared_scopes": ["storage.read"],
@@ -241,4 +242,135 @@ async fn resume_restarts_failed_step_without_reexecuting_checkpoints() {
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].status, "succeeded");
     let _ = StepStatus::Succeeded;
+}
+
+/// resume の猶予は固定値ではなく `lease_secs` から導出する（#446）。
+///
+/// 猶予は「まだ実行中かもしれない旧 worker と外部副作用を併走させない」ためにあるので、
+/// リース期間より必ず長くなければならない。固定 35 秒だと `lease_secs` を既定の 30 から
+/// 上げた構成（例: 120）で猶予がリースより短くなり、旧 worker が有効リースを保持したまま
+/// 別 worker が再 claim できてしまう。
+#[tokio::test]
+async fn resume_grace_always_outlasts_the_configured_lease() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let wf = Uuid::new_v4();
+    let ir = json!({
+        "ir_version": 1, "name": "graceme",
+        "nodes": [{ "id": "a", "type": "debug.log", "params": {} }],
+        "edges": [], "triggers": [], "declared_scopes": []
+    });
+
+    for lease_secs in [30_i64, 120] {
+        let store = RunStore::new(pool.clone(), lease_secs);
+        let run_id = create_run(&store, &tenant, wf, &ir).await;
+        // 「claim 済みで中断された step」を再現する。**目印は `fencing_token > 0`**（#438 で
+        // `attempt` から変わった。`rate_limited` の相殺で attempt は 0 になり得るため）。
+        // ここを attempt だけにすると行が「一度も claim されていない」側の分岐に落ち、
+        // 猶予の経路を一切通らないままテストが通ってしまう。
+        // 猶予は `updated_at`（cancel 時刻）起算なので、その時刻を控えて検証の基準にする
+        // （`RETURNING` で 1 行返ることが fixture の空振り検出も兼ねる）。
+        let cancelled_at: DateTime<Utc> = sqlx::query_scalar(
+            "UPDATE step_execution SET status = 'cancelled', attempt = 1, fencing_token = 1, \
+                 updated_at = now() \
+              WHERE tenant_id = $1 AND run_id = $2 RETURNING updated_at",
+        )
+        .bind(&tenant)
+        .bind(run_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE workflow_run SET status = 'failed', finished_at = now() \
+              WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(&tenant)
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            store.resume_failed(&tenant, wf, run_id).await.unwrap(),
+            ResumeOutcome::Resumed
+        );
+
+        // **cancel 時刻からの猶予**を測る。`now()` からの残り時間で測ると
+        // `lease + 5 - 経過時間` を見ることになり、経過が 5 秒を超えるだけで落ちる
+        // （CI の遅いランナーで実際に踏んだ）。不変条件は「cancel から lease 以上あけて
+        // ready に戻す」なので、基準は cancel 時刻でなければならない。
+        let grace: f64 = sqlx::query_scalar(
+            "SELECT extract(epoch FROM (next_retry_at - $3::timestamptz))::float8 \
+               FROM step_execution WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(&tenant)
+        .bind(run_id)
+        .bind(cancelled_at)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        let lease = lease_secs as f64;
+        assert!(
+            grace > lease,
+            "lease_secs={lease_secs} の猶予はリースより長くなければならない（cancel 起算 {grace:.1}s）"
+        );
+    }
+}
+
+/// 猶予の起算は resume 時刻ではなく step が cancelled になった時刻。
+///
+/// now() 起算だと、旧 worker がとうに死んでいる（cancel から `lease_secs` 以上経っている）
+/// のに resume のたびに満額待たされる。`lease_secs` を上げた構成ほど死に時間が伸びる。
+#[tokio::test]
+async fn resume_grace_is_measured_from_cancel_time_not_resume_time() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let wf = Uuid::new_v4();
+    let ir = json!({
+        "ir_version": 1, "name": "staleme",
+        "nodes": [{ "id": "a", "type": "debug.log", "params": {} }],
+        "edges": [], "triggers": [], "declared_scopes": []
+    });
+    // lease_secs=300（猶予 305 秒）だが、cancel は 1 日前。
+    let store = RunStore::new(pool.clone(), 300);
+    let run_id = create_run(&store, &tenant, wf, &ir).await;
+    sqlx::query(
+        "UPDATE step_execution SET status = 'cancelled', attempt = 1, fencing_token = 1, \
+             updated_at = now() - interval '1 day' \
+          WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&tenant)
+    .bind(run_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE workflow_run SET status = 'failed', finished_at = now() \
+          WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&tenant)
+    .bind(run_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        store.resume_failed(&tenant, wf, run_id).await.unwrap(),
+        ResumeOutcome::Resumed
+    );
+
+    let wait: f64 = sqlx::query_scalar(
+        "SELECT extract(epoch FROM (next_retry_at - now()))::float8 \
+           FROM step_execution WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&tenant)
+    .bind(run_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        wait <= 0.0,
+        "旧リースは 1 日前に切れているので即時 ready にする（実測 {wait:.1}s 待ち）"
+    );
 }

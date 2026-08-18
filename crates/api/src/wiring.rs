@@ -386,6 +386,9 @@ pub(crate) async fn wire_chat(
 ///
 /// `workflow.enabled=false` なら `(None, None)`。enabled なら launcher/runs を組んで
 /// worker/scheduler/relay を spawn し、API 用の launcher/runs を返す（AppState に載る）。
+///
+/// **実行履歴 GC ワーカーだけは `enabled` に依らず起動する**（#448・engine.md §12.2）。保持は
+/// コンプライアンス側の義務で、新規 run を受け付けるかとは独立した責務のため。
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn wire_workflow(
     config: &AppConfig,
@@ -402,11 +405,20 @@ pub(crate) async fn wire_workflow(
     Option<Arc<workflow_engine::WorkflowRunLauncher>>,
     Option<Arc<workflow_engine::RunStore>>,
 )> {
+    // 実行履歴 GC は **`workflow.enabled` の外**で起動する（#448）。保持期間はプライバシー/
+    // コンプライアンス側の義務で、「新規 run を受け付けるか」とは独立した責務。ランタイムの中に
+    // 置くと、過去にワークフローを使っていたデプロイが無効化した瞬間に保持義務まで止まり、
+    // 既存履歴が期限を過ぎても永久に残る。日次投入もワーカーが持つのでリーダー選出も要らない。
+    workflow_engine::HistoryGcWorker::new(db.clone()).spawn();
+    tracing::info!("実行履歴 GC ワーカーを起動しました");
+
     if !config.workflow.enabled {
         tracing::info!("workflow.enabled=false: ワークフロー実行時は無効（/workflows は保存のみ）");
         return Ok((None, None));
     }
-    let runs = workflow_engine::RunStore::new(db.clone());
+    // resume の猶予をワーカーのリースから導出させる（固定値だと lease_secs を上げた構成で
+    // 猶予がリースより短くなる・#446）。ワーカーと同じ値を 1 箇所で渡す。
+    let runs = workflow_engine::RunStore::new(db.clone(), config.workflow.lease_secs);
     let delegation = workflow_engine::DelegationStore::new(db.clone(), Arc::clone(authz));
     let launcher =
         workflow_engine::WorkflowRunLauncher::new(delegation, (**workflows).clone(), runs.clone());

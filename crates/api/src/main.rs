@@ -228,6 +228,7 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     // ワークフロー実行時（Stage A W3）: enabled のとき launcher/runs を組み、worker/scheduler/relay を spawn。
+    // 履歴 GC ワーカーは enabled に依らず起動する（保持は新規実行の可否と独立・#448）。
     let (workflow_launcher, workflow_runs) = wiring::wire_workflow(
         &config,
         &http,

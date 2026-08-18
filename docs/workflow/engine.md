@@ -771,6 +771,8 @@ v1 は次の 2 つだけを提供する。step 単位の入力編集リプレイ
 - **失敗 step からの再開**: 同一 run 内で failed step を `ready` に戻す。成功済み checkpoint は再利用する（再実行しない）。
 - **run の再実行**: 新規 run（同一 input）を作成する。
 
+**claim 済みで中断された step（失敗ドレインで `cancelled` になった `attempt > 0`）は、旧リースが切れるまでの猶予を置いてから `ready` に戻す。** 猶予 > `lease_secs` が不変条件（初期値は `lease_secs` ＋ 5 秒）。失敗直後の resume では旧ワーカーがまだ生きている可能性があり、別ワーカーが即座に再 claim すると**外部副作用が併走する**（checkpoint 自体は fencing が無害化するが、`http.request` 等は二度出る）。猶予は固定秒ではなく `lease_secs` から導出する — 固定値だと `lease_secs` を既定より大きく設定した構成で猶予がリースより短くなり、不変条件が破れる（#446）。
+
 ### 11.5 メトリクス
 
 queue 滞留・step 実行時間・リトライ率・リース失効率・スケジューラ遅延を Prometheus に出す。
@@ -789,13 +791,16 @@ queue 滞留・step 実行時間・リトライ率・リース失効率・スケ
 
 ### 12.2 run 履歴の保持
 
-- 保持期間はテナント設定（初期値 90 日）。
+- 保持期間はテナント設定 `tenant.workflow_retention_days`（初期値 90 日・範囲 1〜3650 日）。設定は `PUT /admin/tenants/{tenant_id}/workflow-retention`（provisioner トークン）。下限が 1 日でよいのは、`effect_journal` の削除条件が**所有 run 行の不在**であり、run 行は terminal になるまで消えないため（保持を `run_timeout_sec` の上限 30 日より短くしても実行中 run の副作用記録は消えない）。
 - GC ジョブが `workflow_run`（`step_execution`・`run_event`・`wait_subscription` は FK の `ON DELETE CASCADE` で連動）と `effect_journal` を消す（§7.3 の journal TTL は run 保持期間と同じ）。spill blob は §12.1 のとおり未実装のため現時点では対象外。
 
-- **GC の実行主体**: 専用の jobq ジョブ（キュー `workflow_gc`）とし、スケジューラリーダーが日次で enqueue する（tick ループに重い削除を同居させない）。投入状態は `maintenance_schedule` に持ち、判定・投入・台帳更新を同一 TX ＋ `FOR UPDATE` で行って二重投入を潰す。消費は専用の `HistoryGcWorker`（step 実行のプールとは別タスク）。
+- **GC の実行主体**: 専用の jobq ジョブ（キュー `workflow_gc`）。投入・消費の両方を `HistoryGcWorker`（step 実行のプールとは別タスク）が持つ。投入状態は `maintenance_schedule` に持ち、判定・投入・台帳更新を同一 TX ＋ `FOR UPDATE` で行って二重投入を潰すため、**全レプリカが無条件に呼んでよい**（スケジューラの単一リーダーである必要がない）。
+- **GC は `workflow.enabled` から独立して起動する**（#448）。保持期間はプライバシー/コンプライアンス側の義務であり、「新規 run を受け付けるか」とは別の責務である。ワークフローランタイム（`spawn_workflow_runtime`）の中に置くと、過去にワークフローを使っていたデプロイが機能を無効化した瞬間に保持義務まで止まり、既存履歴が期限を過ぎても永久に残る。配線は `wiring::wire_workflow` の enabled ゲートの**手前**。
+- **テナント横断の削除は公開しない**。`RunStore` の公開入口は対象テナントが引数に現れる `purge_tenant_history` だけで、横断版は `pub(crate)`（`HistoryGcWorker` 専用）。保守ジョブに `AuthContext` は載らない（実行主体が存在しない）ので、境界は可視性で担保する。
 - **削除は必ずバッチ**（run は 50 件・journal は 2000 行ごとにコミット。run は CASCADE で子行が桁で増えるので小さく取る）。数百万行を 1 TX で消すと長時間のロックと巨大な WAL で本番が止まる。途中失敗しても消えた分は確定済みで、次回が続きから再開する（冪等）。
 - **走査はテナント単位**（`workflow_run (tenant_id, finished_at)` の partial index）。全テナントを 1 クエリで舐めると、保持期間が最短のテナントに引きずられて長期保持テナントの履歴まで毎日走査する。
 - **候補は `FOR UPDATE SKIP LOCKED` で固定する**。ロックしないと、候補を読んでから DELETE するまでの間に `resume_failed` が同じ run を再開でき、再開済みの run を消してしまう。
 - **`effect_journal` は「期限切れ かつ 所有 run が消えている」ものだけ消す**。保持期間は run の生存期間より短く設定できるため、`created_at` だけで消すと実行中 run の副作用記録が先に消え、再開時に二重実行される（PIT-31）。
 - `wait_subscription` は `(tenant_id, run_id)` の FK（`ON DELETE CASCADE`）で道連れにする。FK が無いと run 削除のたびに確実に孤児が残る。
-- **保持期間の起算は run の terminal 時刻**。terminal でない run は保持期間を跨いでも GC 対象外（`run_timeout_sec` 最大 30 日 < 保持初期値 90 日のため実質的に衝突しない）。
+- 運用手順（保持日数の変更・GC の状態確認・大規模 DB への index 事前作成）は `docs/guides/db-maintenance.md`。
+- **保持期間の起算は run の terminal 時刻**。terminal でない run は保持期間を跨いでも GC 対象外。保持日数は 1 日まで縮められる（`run_timeout_sec` 最大 30 日より短くできる）ので既定 90 日のときだけ衝突しない、ではなく**条件として明示的に効かせる**。journal 側も所有 run 行の不在を条件にするので、衝突しても実行中 run の副作用記録は消えない（上記）。

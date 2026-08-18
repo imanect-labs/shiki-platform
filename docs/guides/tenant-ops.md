@@ -33,6 +33,21 @@ curl -s -X POST "$SHIKI/admin/tenants" \
 - `tenant_id` は FGA/オブジェクトキーの名前空間になるため `| : # @` 空白は不可。
 - 削除済み（tombstone）の tenant_id は再利用**不可**（名前空間衝突防止）。別 id を使う。
 
+## ワークフロー実行履歴の保持期間
+
+```bash
+curl -s -X PUT "$SHIKI/admin/tenants/acme/workflow-retention" \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"retention_days": 30}'
+# → 204
+```
+
+- 既定 90 日・範囲 1〜3650 日（範囲外は 400）。active でないテナントは 404。
+- 起算は **run が terminal になった時刻**。実行中の run は保持期間を跨いでも消えない。
+- 期限切れの run と、その step/イベント/wait 購読・副作用 journal を日次 GC が消す（不可逆）。
+- **短くする方向は次回の日次 GC で効く。** 監査要件で履歴が要るなら縮める前に退避する。
+- GC の状態確認・詰まったときの調べ方は [db-maintenance.md](./db-maintenance.md) §3。
+
 ## テナント削除（破壊的・不可逆）
 
 ```bash

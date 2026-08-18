@@ -156,7 +156,7 @@ async fn setup() -> Option<Harness> {
 
     let artifacts = Arc::new(artifact::ArtifactStore::new(pool.clone(), Arc::clone(&fga)));
     let workflows = WorkflowStore::new(Arc::clone(&artifacts));
-    let runs = RunStore::new(pool.clone());
+    let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let delegation = DelegationStore::new(pool.clone(), Arc::clone(&fga));
     let launcher = WorkflowRunLauncher::new(delegation, workflows.clone(), runs.clone());
 

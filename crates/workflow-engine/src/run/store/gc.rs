@@ -1,8 +1,9 @@
 //! 実行履歴の保持期間 GC（engine.md §12.2・#444）。
 //!
-//! 起算は **run が terminal になった時刻**。実行中の run は保持期間を跨いでも対象外にする
-//! （`run_timeout_sec` の上限 30 日 < 保持初期値 90 日なので実運用では衝突しないが、
-//! 設定次第では起こり得るので条件として明示する）。
+//! 起算は **run が terminal になった時刻**。実行中の run は保持期間を跨いでも対象外にする。
+//! 保持日数は 1 日まで縮められる（`run_timeout_sec` の上限 30 日より短くできる）ので、
+//! 「既定 90 日なら衝突しない」に頼らず条件として明示的に効かせる。journal も所有 run 行の
+//! 不在を条件にするため、衝突しても実行中 run の副作用記録は先に消えない（PIT-31）。
 //!
 //! 消す対象と経路:
 //!
@@ -55,6 +56,8 @@ pub struct GcReport {
     pub journal_deleted: u64,
     /// バッチ上限に当たって消し残した場合 true（次回の日次ジョブが続きを消す）。
     pub truncated: bool,
+    /// 失敗して飛ばしたテナント数。1 件でもあればジョブ全体を Err にして jobq に再試行させる。
+    pub failed_tenants: u64,
 }
 
 /// 保持期間を過ぎた terminal run を 1 バッチ消す。`$1`=tenant_id・`$2`=保持日数・`$3`=件数。
@@ -83,7 +86,8 @@ const PURGE_RUNS_SQL: &str = "\
      USING victim v \
      WHERE w.tenant_id = v.tenant_id AND w.run_id = v.run_id";
 
-/// effect_journal の TTL 削除（run 保持期間と同じ・§7.3）。`$1`=tenant_id・`$2`=保持日数・`$3`=件数。
+/// effect_journal の TTL 削除（run 保持期間と同じ・§7.3）。
+/// `$1`=tenant_id・`$2`=保持日数・`$3`=件数・`$4`=走査再開位置（カーソル）。
 ///
 /// **所有 run が残っている journal は消さない。** 保持期間は run の生存期間より短く設定できる以上
 /// （`> 0` しか制約が無い）、`created_at` だけで消すと**実行中/待機中の run の副作用記録が先に消え**、
@@ -96,6 +100,17 @@ const PURGE_RUNS_SQL: &str = "\
 /// journal へ二度と到達しない**（毎日同じ N 件で止まる・CodeRabbit 指摘）。前に置けば index 順に
 /// 流しながら「消せるもの」だけを N 件集めて止まる。
 ///
+/// **`$4` のカーソルで走査を再開する。** 削除条件が「期限切れ かつ 所有 run が不在」なので、
+/// 生存 run に属する期限切れ journal は**消せないまま index の先頭に残り続ける**。カーソルが無いと
+/// 毎バッチその先頭群を頭から舐め直すため、1 GC の総走査が O(消せない行数 × バッチ数) に膨らむ
+/// （実測: 生存 run 25 万・journal 100 万行で **1 バッチ 10.5 秒 / 400 万バッファ**）。前バッチで
+/// 到達した `created_at` から再開すれば 1 GC = 1 パス（O(行数)）になる。
+///
+/// 境界は `>=` にして同一 `created_at` の同着群を取りこぼさない。既に消した行はテーブルから
+/// 消えているので、再走査で当たるのは「消せない同着行」だけ＝有界。初回は `$4 = NULL` で、
+/// `coalesce` で `-infinity` に落とす（`$4 IS NULL OR ...` と書くと index レンジに落ちないため。
+/// chrono の `MIN_UTC` は Postgres の timestamptz 範囲外なので番兵値としては使えない）。
+///
 /// 冪等キーは `wf:{tenant_id}:{run_id}:{step_path}`（script の `#cN` は step_path 側に付く）なので、
 /// 3 番目のフィールドが run_id。tenant_id は `: | # @` と空白を禁止済み（API 層の validate）なので
 /// `split_part` の位置がずれることはない。`CASE` は**キャスト安全のためのガード**で、形式外のキーを
@@ -106,6 +121,7 @@ const PURGE_JOURNAL_SQL: &str = "\
           FROM effect_journal j \
          WHERE j.tenant_id = $1 \
            AND j.created_at < now() - make_interval(days => $2) \
+           AND j.created_at >= coalesce($4::timestamptz, '-infinity'::timestamptz) \
            AND j.idempotency_key ~ \
                '^wf:[^:]+:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:' \
            AND NOT EXISTS ( \
@@ -119,19 +135,29 @@ const PURGE_JOURNAL_SQL: &str = "\
     ) \
     DELETE FROM effect_journal e \
      USING victim v \
-     WHERE e.tenant_id = v.tenant_id AND e.idempotency_key = v.idempotency_key";
+     WHERE e.tenant_id = v.tenant_id AND e.idempotency_key = v.idempotency_key \
+     RETURNING e.created_at";
 
 impl RunStore {
+    /// **1 テナント分**の保持期間 GC を実行する（外部から呼べる唯一の入口）。
+    ///
+    /// テナント横断版（[`RunStore::purge_expired_history`]）は `pub(crate)` に閉じてあり、
+    /// アンビエントに全テナントを消せる公開経路を作らない。破壊的操作を公開するなら、対象
+    /// テナントが引数として必ず現れる形にする（AGENTS.md「tenant_id が落ちる経路を作らない」）。
+    pub async fn purge_tenant_history(&self, tenant_id: &str) -> Result<GcReport, RunStoreError> {
+        self.purge_expired_history(Some(tenant_id)).await
+    }
+
     /// 保持期間を過ぎた実行履歴を消す（jobq ジョブの本体・engine.md §12.2）。
     ///
     /// **内部運用経路であり `AuthContext` を持たない全テナント横断処理。** 呼ぶのは
-    /// `spawn_workflow_runtime` が起動する [`HistoryGcWorker`] だけで、公開 API から呼んではいけない。
+    /// [`HistoryGcWorker`] だけなので `pub(crate)` に閉じる（#445 のレビュー指摘の残り穴を、
+    /// コメントではなく可視性で担保する）。テナント単位の入口が要るなら
+    /// [`RunStore::purge_tenant_history`] を使う。
     ///
     /// テナントごとに、バッチごとにコミットしながら消す。途中で失敗しても消えた分はコミット済みで、
     /// 次回が続きから再開する（冪等）。
-    /// `tenant_scope` を渡すとそのテナントだけを対象にする（テスト分離。他の `RunStore` の
-    /// 走査系と同じ規約）。ワーカーは `None`（全テナント横断）で呼ぶ。
-    pub async fn purge_expired_history(
+    pub(crate) async fn purge_expired_history(
         &self,
         tenant_scope: Option<&str>,
     ) -> Result<GcReport, RunStoreError> {
@@ -144,20 +170,47 @@ impl RunStore {
         .await
         .map_err(map_db)?;
 
+        // **1 テナントの失敗で他テナントを巻き添えにしない。** ここを `?` で抜けると、先頭テナントの
+        // 行ロック待ちや statement_timeout ひとつで**その日の GC が以降 1 件も走らない**。GC は
+        // `workflow.enabled` から独立した唯一の保持機構なので、blast radius をテナント内に閉じる。
+        // 失敗件数は最後に Err へ畳んで jobq の再試行に載せる（黙って成功にしない）。
         let mut report = GcReport::default();
+        let mut last_error = None;
         for (tenant_id, days) in tenants {
-            // run を先に消す。journal はその結果（run 行の消滅）を見て消せるようになる。
-            let (runs, runs_left) = self
-                .purge_in_batches(PURGE_RUNS_SQL, &tenant_id, days, RUN_BATCH)
-                .await?;
-            let (journal, journal_left) = self
-                .purge_in_batches(PURGE_JOURNAL_SQL, &tenant_id, days, JOURNAL_BATCH)
-                .await?;
-            report.runs_deleted += runs;
-            report.journal_deleted += journal;
-            report.truncated |= runs_left || journal_left;
+            match self.purge_one_tenant(&tenant_id, days).await {
+                Ok((runs, journal, left)) => {
+                    report.runs_deleted += runs;
+                    report.journal_deleted += journal;
+                    report.truncated |= left;
+                }
+                Err(e) => {
+                    tracing::error!(tenant = %tenant_id, error = %e, "テナントの履歴 GC に失敗（他テナントは継続）");
+                    report.failed_tenants += 1;
+                    last_error = Some(e);
+                }
+            }
+        }
+        if let Some(e) = last_error {
+            return Err(RunStoreError::Internal(format!(
+                "{} テナントの GC に失敗（最後の理由: {e}）",
+                report.failed_tenants
+            )));
         }
         Ok(report)
+    }
+
+    /// 1 テナント分を消す。戻り値は (run 削除数, journal 削除数, 消し残しの有無)。
+    async fn purge_one_tenant(
+        &self,
+        tenant_id: &str,
+        days: i32,
+    ) -> Result<(u64, u64, bool), RunStoreError> {
+        // run を先に消す。journal はその結果（run 行の消滅）を見て消せるようになる。
+        let (runs, runs_left) = self
+            .purge_in_batches(PURGE_RUNS_SQL, tenant_id, days, RUN_BATCH)
+            .await?;
+        let (journal, journal_left) = self.purge_journal_in_batches(tenant_id, days).await?;
+        Ok((runs, journal, runs_left || journal_left))
     }
 
     /// 1 テナント分を「消えなくなるまで」バッチ削除する。戻り値は (削除数, 消し残しの有無)。
@@ -188,6 +241,38 @@ impl RunStore {
         }
         Ok((total, true))
     }
+
+    /// journal を「消えなくなるまで」カーソル付きでバッチ削除する。戻り値は (削除数, 消し残しの有無)。
+    ///
+    /// run 側と違い**カーソルを持つ**。journal の削除条件は「期限切れ かつ 所有 run が不在」で、
+    /// 生存 run に属する期限切れ行は消せないまま index の先頭に残るため、毎バッチ先頭から
+    /// 舐め直すと 1 GC の総走査が O(消せない行数 × バッチ数) になる（`PURGE_JOURNAL_SQL` 参照）。
+    async fn purge_journal_in_batches(
+        &self,
+        tenant_id: &str,
+        retention_days: i32,
+    ) -> Result<(u64, bool), RunStoreError> {
+        let mut total = 0u64;
+        // 走査開始位置。初回は None（SQL 側で `-infinity` に落ちる）。
+        let mut cursor: Option<chrono::DateTime<chrono::Utc>> = None;
+        for _ in 0..MAX_BATCHES {
+            let deleted: Vec<(chrono::DateTime<chrono::Utc>,)> = sqlx::query_as(PURGE_JOURNAL_SQL)
+                .bind(tenant_id)
+                .bind(retention_days)
+                .bind(JOURNAL_BATCH)
+                .bind(cursor)
+                .fetch_all(&self.db)
+                .await
+                .map_err(map_db)?;
+            total += deleted.len() as u64;
+            if deleted.len() < usize::try_from(JOURNAL_BATCH).unwrap_or(usize::MAX) {
+                return Ok((total, false));
+            }
+            // 次バッチはこのバッチで到達した位置から。`>=` なので同着群は取りこぼさない。
+            cursor = deleted.iter().map(|r| r.0).max().or(cursor);
+        }
+        Ok((total, true))
+    }
 }
 
 /// 保持期間 GC の専用キュー。ワークフローのレーンとは別に持つ（§1.1 のレーン分離と同じ理由で、
@@ -205,12 +290,12 @@ const GC_INTERVAL: Duration = Duration::from_hours(24);
 const GC_VISIBILITY_TIMEOUT: Duration = Duration::from_mins(30);
 
 impl RunStore {
-    /// 前回投入から [`GC_INTERVAL`] 経っていれば GC ジョブを 1 件積む（スケジューラ tick から呼ぶ）。
+    /// 前回投入から [`GC_INTERVAL`] 経っていれば GC ジョブを 1 件積む（[`HistoryGcWorker`] が呼ぶ）。
     ///
     /// 積んだら `true`。**判定と投入と台帳更新は同一 TX** で行い、`maintenance_schedule` の行を
-    /// `FOR UPDATE` で押さえる。複数インスタンスが同時にリーダーだと誤認した場合でも
-    /// （リース更新の隙間などで起こり得る）、二重投入しない。
-    pub async fn enqueue_history_gc_if_due(&self) -> Result<bool, RunStoreError> {
+    /// `FOR UPDATE` で押さえる。全レプリカが無条件に呼んでも二重投入しない（＝スケジューラの
+    /// 単一リーダーである必要がない。だからワークフローランタイムの外で回せる・#448）。
+    pub(crate) async fn enqueue_history_gc_if_due(&self) -> Result<bool, RunStoreError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;
         // 初回は行を作る。作成時刻を last_enqueued_at にするので、初回投入は次の tick 以降になる
         // （起動直後にいきなり重い削除が走らない）。
@@ -266,7 +351,7 @@ impl RunStore {
     /// GC キューを 1 件消費する（ワーカーのループから呼ぶ）。処理した場合 `Some(report)`。
     ///
     /// 削除は冪等（消えたものは消えたまま）なので、失敗時は jobq のバックオフ再配信に任せる。
-    pub async fn consume_history_gc_once(&self) -> Result<Option<GcReport>, RunStoreError> {
+    pub(crate) async fn consume_history_gc_once(&self) -> Result<Option<GcReport>, RunStoreError> {
         let mut conn = self.db.acquire().await.map_err(map_db)?;
         let mut jobs = jobq::claim(&mut conn, WORKFLOW_GC_QUEUE, GC_VISIBILITY_TIMEOUT, 1)
             .await
@@ -305,7 +390,15 @@ impl RunStore {
     }
 }
 
-/// GC ワーカーのループ（`start` でタスクを起こす）。
+/// 実行履歴 GC の保守ランタイム（投入と消費の両方を持つ・`spawn` でループを起こす）。
+///
+/// **ワークフローランタイム（`spawn_workflow_runtime`）の外で起動する。** 保持期間はプライバシー/
+/// コンプライアンス側の義務であり、「新規 run を受け付けるか」（`workflow.enabled`）とは独立した
+/// 責務である。ランタイムの中に置くと、過去にワークフローを使っていたデプロイが機能を無効化した
+/// 瞬間に保持義務まで止まり、既存履歴が期限を過ぎても永久に残る（#448）。
+///
+/// 日次投入もこのループが持つ。判定は `maintenance_schedule` の `FOR UPDATE` ＋ 24h チェックで
+/// 多重起動安全なので、スケジューラの単一リーダーである必要がない。
 ///
 /// step 実行のワーカープールとは別タスクにする。重いバッチ削除で step の claim を止めないため。
 #[derive(Clone)]
@@ -318,20 +411,39 @@ impl HistoryGcWorker {
     /// 既定のポーリング間隔（1 分）。日次ジョブなので短くする意味が無い。
     pub fn new(db: PgPool) -> Self {
         HistoryGcWorker {
-            store: RunStore::new(db),
+            // GC は resume 経路を持たない（`resume_failed` を呼ばない）ので既定でよい。
+            store: RunStore::new(db, crate::DEFAULT_LEASE_SECS),
             poll: Duration::from_mins(1),
         }
+    }
+
+    /// 期限が来ていれば GC ジョブを 1 件積む。積んだら `true`。
+    ///
+    /// 全レプリカが無条件に呼んでよい（同一 TX ＋ `FOR UPDATE` で 1 件に畳まれる）。
+    pub async fn enqueue_if_due(&self) -> Result<bool, RunStoreError> {
+        self.store.enqueue_history_gc_if_due().await
+    }
+
+    /// 積まれた GC ジョブを 1 件消費する。処理した場合 `Some(report)`。
+    pub async fn run_once(&self) -> Result<Option<GcReport>, RunStoreError> {
+        self.store.consume_history_gc_once().await
     }
 
     /// ポーリングループを起動する（プロセス生存中は走り続ける・detach）。
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
-                match self.store.consume_history_gc_once().await {
+                match self.enqueue_if_due().await {
+                    Ok(true) => tracing::info!("実行履歴 GC ジョブを投入しました"),
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!(error = %e, "実行履歴 GC の投入でエラー"),
+                }
+                match self.run_once().await {
                     Ok(Some(report)) => tracing::info!(
                         runs_deleted = report.runs_deleted,
                         journal_deleted = report.journal_deleted,
                         truncated = report.truncated,
+                        failed_tenants = report.failed_tenants,
                         "実行履歴 GC を実行しました"
                     ),
                     Ok(None) => {}
