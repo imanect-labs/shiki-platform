@@ -294,6 +294,75 @@ pub async fn set_tenant_autonomous_policy(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// テナントのワークフロー実行履歴 保持期間の設定リクエスト（#448）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TenantWorkflowRetentionRequest {
+    /// 保持日数（1〜3650）。terminal になってからこの日数を過ぎた run 履歴を日次 GC が消す。
+    ///
+    /// **i64 で受けて範囲はハンドラで見る。** i32 で受けると `4000000000` のような桁溢れが
+    /// `Json` 抽出の時点で 422 になり、範囲外は 400 という OpenAPI/運用ドキュメントの記述と
+    /// 食い違う（同じ「範囲外」なのに値によって応答が変わる）。範囲自体は schema にも出して
+    /// 生成クライアント側でも見えるようにする（受け口の型と許容範囲は別物）。
+    #[schema(minimum = 1, maximum = 3650)]
+    pub retention_days: i64,
+}
+
+/// テナントのワークフロー実行履歴の保持期間を設定する（#448）。
+///
+/// 起算は **run が terminal になった時刻**で、実行中の run は保持期間を跨いでも消えない。
+/// 期限を過ぎた run と、その `step_execution` / `run_event` / `wait_subscription`（FK CASCADE）・
+/// `effect_journal` を日次 GC が消す。既定は 90 日。
+///
+/// **短くする方向は即座に効く**（次回の日次 GC で、新しい期限を過ぎた履歴が消える）。監査要件で
+/// 履歴が要る場合は縮める前に退避すること。
+#[utoipa::path(
+    put,
+    path = "/admin/tenants/{tenant_id}/workflow-retention",
+    params(("tenant_id" = String, Path, description = "テナント識別子")),
+    request_body = TenantWorkflowRetentionRequest,
+    responses(
+        (status = 204, description = "保持期間を更新した"),
+        (status = 400, description = "tenant_id または retention_days が不正（範囲外・桁溢れを含む）"),
+        (status = 422, description = "リクエスト本文が JSON として不正（retention_days の欠落・型違い）"),
+        (status = 401, description = "provisioner トークンが無効"),
+        (status = 404, description = "active なテナントが存在しない"),
+    ),
+    security(("provisioner_token" = [])),
+)]
+pub async fn set_tenant_workflow_retention(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+    Json(req): Json<TenantWorkflowRetentionRequest>,
+) -> Result<StatusCode, ApiError> {
+    validate_tenant_id(&tenant_id)
+        .map_err(|_| ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into()))?;
+    // 範囲の正本は storage 側（DB の CHECK は `> 0` しか見ない）。i32 に収まらない値もここで
+    // 400 に畳む（`i32::try_from` の失敗＝範囲外なので、検証と同じ扱いにする）。
+    let days = i32::try_from(req.retention_days).map_err(|_| {
+        ApiError::BadRequest(format!(
+            "保持日数は {}〜{} 日で指定してください（指定値: {}）",
+            storage::tenant::MIN_WORKFLOW_RETENTION_DAYS,
+            storage::tenant::MAX_WORKFLOW_RETENTION_DAYS,
+            req.retention_days
+        ))
+    })?;
+    storage::tenant::validate_workflow_retention_days(days)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let updated = state
+        .tenants
+        .set_workflow_retention_days(&tenant_id, days)
+        .await?;
+    if !updated {
+        return Err(ApiError::NotFound);
+    }
+    tracing::info!(
+        %tenant_id,
+        retention_days = days,
+        "ワークフロー実行履歴の保持期間を更新しました"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// データ面の purge（FGA タプル → オブジェクト → DB 行）。
 ///
 /// 構造化データ（式インデックス・FGA タプル・Task 9.2）→ storage（FGA タプル・オブジェクト・

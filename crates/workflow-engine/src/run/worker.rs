@@ -15,6 +15,9 @@ use super::{NodeContext, NodeExecutor, NodeResult};
 use crate::concurrency::{ConcurrencyStore, Slot};
 use crate::ir::WorkflowIr;
 
+/// リース期間の既定（秒）。`RunStore` の resume 猶予もこの値から導出する（[`crate::run::store`]）。
+pub const DEFAULT_LEASE_SECS: i64 = 30;
+
 /// ワーカー設定（数値は engine 初期値・運用で調整）。
 #[derive(Debug, Clone, Copy)]
 pub struct WorkerConfig {
@@ -27,7 +30,7 @@ pub struct WorkerConfig {
 impl Default for WorkerConfig {
     fn default() -> Self {
         WorkerConfig {
-            lease_secs: 30,
+            lease_secs: DEFAULT_LEASE_SECS,
             idle_poll: Duration::from_millis(200),
         }
     }

@@ -469,6 +469,13 @@ pub fn route_table() -> Vec<RouteDecl> {
             Provisioner,
             || put(routes::admin::set_tenant_autonomous_policy),
         ),
+        // ワークフロー実行履歴の保持期間（日次 GC の起算・#448）。
+        r(
+            "/admin/tenants/{tenant_id}/workflow-retention",
+            &["PUT"],
+            Provisioner,
+            || put(routes::admin::set_tenant_workflow_retention),
+        ),
     ];
     table.extend(routes::collab::collab_route_decls());
     table.extend(routes::documents::documents_route_decls());

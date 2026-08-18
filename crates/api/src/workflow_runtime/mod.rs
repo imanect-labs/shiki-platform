@@ -91,7 +91,9 @@ fn default_node_kind_steps() -> i32 {
     8
 }
 fn default_lease_secs() -> i64 {
-    30
+    // エンジン側の既定と単一ソースにする。ここに 30 を書くと、RunStore の resume 猶予が
+    // 見ている既定とドリフトし得る（#457）。
+    workflow_engine::DEFAULT_LEASE_SECS
 }
 fn default_http_timeout_ms() -> u64 {
     30_000
@@ -231,10 +233,8 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
         "ワークフロー run ワーカーを起動しました"
     );
 
-    // ①' 実行履歴 GC ワーカー（engine.md §12.2・#444）。step 実行のプールとは別タスクにする。
-    // 重いバッチ削除で step の claim を止めないため（§1.1 のレーン分離と同じ理由）。
-    workflow_engine::HistoryGcWorker::new(deps.db.clone()).spawn();
-    tracing::info!("実行履歴 GC ワーカーを起動しました");
+    // 実行履歴 GC（engine.md §12.2）はここでは起動しない。`workflow.enabled` と独立した保守
+    // ランタイムとして `wiring::wire_workflow` が enabled ゲートの外で起動する（#448）。
 
     // ② スケジューラ ③ イベント relay（単一リーダー・tick ループ・detach）。
     let leader_id = format!("wf-sched-{}", std::process::id());
@@ -295,15 +295,6 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                     }
                     if let Err(e) = tick_concurrency.reconcile().await {
                         tracing::warn!(error = %e, "並行カウンタ reconcile でエラー");
-                    }
-                    // 実行履歴の保持期間 GC は **jobq へ積むだけ**（engine.md §12.2・#444）。
-                    // 数百万行の削除は分単位でかかり得るので、ここで直接消すと cron 評価・
-                    // タイマー起床・リース回収まで巻き添えで止まる。実際の削除は
-                    // HistoryGcWorker が別タスクで消費する。
-                    match tick_runs.enqueue_history_gc_if_due().await {
-                        Ok(true) => tracing::info!("実行履歴 GC ジョブを投入しました"),
-                        Ok(false) => {}
-                        Err(e) => tracing::warn!(error = %e, "実行履歴 GC の投入でエラー"),
                     }
                 }
                 Ok(false) => {} // 別インスタンスがリーダー。

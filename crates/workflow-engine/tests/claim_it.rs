@@ -123,7 +123,7 @@ async fn seed_steps(pool: &PgPool, tenant: &str, runs: i32, steps_per_run: i32) 
 #[tokio::test]
 async fn claim_plan_stays_index_ordered() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", Uuid::new_v4());
     let _ = create_run(&store, &tenant).await;
     seed_steps(&pool, &tenant, 2_000, 10).await;
@@ -156,7 +156,7 @@ async fn claim_plan_stays_index_ordered() {
 #[tokio::test]
 async fn sweeper_reclaims_expired_lease_without_consuming_attempt() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", Uuid::new_v4());
     let run_id = create_run(&store, &tenant).await;
 
@@ -237,7 +237,7 @@ async fn sweeper_reclaims_expired_lease_without_consuming_attempt() {
 #[tokio::test]
 async fn retryable_failure_consumes_one_attempt_per_execution() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", Uuid::new_v4());
     let run_id = create_run(&store, &tenant).await;
     let ir = single_node_ir();
@@ -291,7 +291,7 @@ async fn retryable_failure_consumes_one_attempt_per_execution() {
 #[tokio::test]
 async fn sweeper_skips_cancel_requested_runs() {
     let Some(pool) = setup().await else { return };
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let tenant = format!("t-{}", Uuid::new_v4());
     let run_id = create_run(&store, &tenant).await;
 

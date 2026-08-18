@@ -43,6 +43,8 @@ pub struct Tenant {
     pub org: String,
     pub display_name: String,
     pub status: TenantStatus,
+    /// ワークフロー実行履歴の保持日数（日次 GC の起算・#448）。
+    pub workflow_retention_days: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -53,6 +55,7 @@ struct TenantRow {
     org: String,
     display_name: String,
     status: String,
+    workflow_retention_days: i32,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -70,10 +73,35 @@ impl TryFrom<TenantRow> for Tenant {
             org: r.org,
             display_name: r.display_name,
             status,
+            workflow_retention_days: r.workflow_retention_days,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
     }
+}
+
+/// ワークフロー実行履歴の保持日数の下限（1 日）。
+pub const MIN_WORKFLOW_RETENTION_DAYS: i32 = 1;
+
+/// ワークフロー実行履歴の保持日数の上限（10 年）。
+///
+/// 保持の意図ではなく**打ち間違いの検出**が目的。`90` のつもりで `9000` と入れると GC が事実上
+/// 無効化され、`workflow_run` / `effect_journal` が無限に伸びる（それが #444 で潰した状態そのもの）。
+pub const MAX_WORKFLOW_RETENTION_DAYS: i32 = 3650;
+
+/// 保持日数の範囲を検証する（設定経路の入口で必ず通す）。
+///
+/// 下限が 1 日でよいのは、`effect_journal` の削除が **所有 run 行の不在**を条件にしているため
+/// （`workflow-engine` の GC・#445）。run 行は terminal になるまで消えないので、保持日数を run の
+/// 最大生存期間（`MAX_RUN_TIMEOUT_SEC` = 30 日）より短くしても、実行中 run の副作用記録が先に
+/// 消えることはない。プライバシー要件で 7 日等に縮めるのは正当な選択なので下限で塞がない。
+pub fn validate_workflow_retention_days(days: i32) -> Result<(), StorageError> {
+    if (MIN_WORKFLOW_RETENTION_DAYS..=MAX_WORKFLOW_RETENTION_DAYS).contains(&days) {
+        return Ok(());
+    }
+    Err(StorageError::Invalid(format!(
+        "保持日数は {MIN_WORKFLOW_RETENTION_DAYS}〜{MAX_WORKFLOW_RETENTION_DAYS} 日で指定してください（指定値: {days}）"
+    )))
 }
 
 /// テナントレジストリのリポジトリ（Postgres backing）。
@@ -122,7 +150,8 @@ impl TenantStore {
                SET org = excluded.org, display_name = excluded.display_name, \
                    status = 'active', updated_at = now() \
                WHERE tenant.status = 'active' \
-             RETURNING tenant_id, org, display_name, status, created_at, updated_at",
+             RETURNING tenant_id, org, display_name, status, workflow_retention_days, \
+                       created_at, updated_at",
         )
         .bind(tenant_id)
         .bind(org)
@@ -138,7 +167,8 @@ impl TenantStore {
             "UPDATE tenant SET status = CASE WHEN status = 'deleted' THEN status ELSE 'deleting' END, \
                     updated_at = now() \
              WHERE tenant_id = $1 \
-             RETURNING tenant_id, org, display_name, status, created_at, updated_at",
+             RETURNING tenant_id, org, display_name, status, workflow_retention_days, \
+                       created_at, updated_at",
         )
         .bind(tenant_id)
         .fetch_optional(&self.db)
@@ -177,6 +207,32 @@ impl TenantStore {
         Ok(updated.rows_affected() == 1)
     }
 
+    /// ワークフロー実行履歴の保持日数を設定する（#448）。戻り `false` = active なテナントが無い。
+    ///
+    /// 期限を過ぎた terminal run とその `step_execution` / `run_event` / `effect_journal` が
+    /// 日次 GC で消える（`workflow-engine` の `HistoryGcWorker`）。
+    ///
+    /// **範囲検証はここで行う**（呼び出し側の約束にしない）。DB の CHECK は `> 0` しか見ないため、
+    /// 検証を呼び出し側に委ねると 2 番目の呼び出し元が忘れた瞬間に `2_000_000_000` のような値が
+    /// 入る。GC は `make_interval(days => ...)` を使うので、その値では `timestamp out of range` で
+    /// クエリが落ち、テナントループを `?` で抜けて**全テナントの GC が止まる**。
+    pub async fn set_workflow_retention_days(
+        &self,
+        tenant_id: &str,
+        days: i32,
+    ) -> Result<bool, StorageError> {
+        validate_workflow_retention_days(days)?;
+        let updated = sqlx::query(
+            "UPDATE tenant SET workflow_retention_days = $2, updated_at = now() \
+             WHERE tenant_id = $1 AND status = 'active'",
+        )
+        .bind(tenant_id)
+        .bind(days)
+        .execute(&self.db)
+        .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
     /// 同じ org slug を使う**他の未削除テナント**が存在するか（Keycloak group の共有判定）。
     ///
     /// テナント削除時、org group を消すと同 org slug を使う他テナントの `groups` claim が
@@ -200,7 +256,8 @@ impl TenantStore {
     /// テナントを取得する（tombstone 含む。無ければ `None`）。
     pub async fn get(&self, tenant_id: &str) -> Result<Option<Tenant>, StorageError> {
         let row: Option<TenantRow> = sqlx::query_as(
-            "SELECT tenant_id, org, display_name, status, created_at, updated_at \
+            "SELECT tenant_id, org, display_name, status, workflow_retention_days, \
+             created_at, updated_at \
              FROM tenant WHERE tenant_id = $1",
         )
         .bind(tenant_id)
@@ -224,5 +281,15 @@ mod tests {
             assert_eq!(TenantStatus::parse(s.as_str()), Some(s));
         }
         assert_eq!(TenantStatus::parse("bogus"), None);
+    }
+
+    #[test]
+    fn retention_days_range() {
+        for ok in [1, 7, 90, 3650] {
+            assert!(validate_workflow_retention_days(ok).is_ok(), "{ok} は許可");
+        }
+        for ng in [0, -1, 3651, i32::MAX] {
+            assert!(validate_workflow_retention_days(ng).is_err(), "{ng} は拒否");
+        }
     }
 }

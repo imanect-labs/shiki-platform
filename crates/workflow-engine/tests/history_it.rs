@@ -82,7 +82,7 @@ async fn run_to_completion(
     trigger_kind: &str,
     ir: &Value,
 ) -> Uuid {
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let parsed = workflow_engine::WorkflowIr::from_json(ir).unwrap();
     let graph = RunGraph::build(&parsed);
     let run_id = store
@@ -103,7 +103,7 @@ async fn run_to_completion(
         .expect("create_run")
         .expect("admitted");
     let w = WorkflowWorker::new(
-        RunStore::new(pool.clone()),
+        RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
         Arc::new(PassExecutor),
         WorkerConfig::default(),
     )
@@ -118,7 +118,7 @@ async fn history_queries_project_only_needed_fields_with_binding() {
     let tenant = format!("t-{}", Uuid::new_v4());
     let wf = Uuid::new_v4();
     let other_wf = Uuid::new_v4();
-    let store = RunStore::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
 
     let ok_run = run_to_completion(&pool, &tenant, wf, "interactive", &two_step_ir(false)).await;
     let failed_run = run_to_completion(&pool, &tenant, wf, "schedule", &two_step_ir(true)).await;

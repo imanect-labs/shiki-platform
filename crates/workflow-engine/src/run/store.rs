@@ -85,15 +85,37 @@ pub struct ClaimedStep {
     pub ir_snapshot: Json<Value>,
 }
 
+/// resume がリース失効を待つときの上乗せ（秒）。旧 worker のリースが切れた「直後」を狙わず、
+/// 時計ずれと最後の heartbeat の遅延を吸収するための余白。
+const RESUME_GRACE_MARGIN_SECS: i64 = 5;
+
 /// run/step のデータチョークポイント。
 #[derive(Clone)]
 pub struct RunStore {
     db: PgPool,
+    /// ワーカーが取るリース期間（秒）。`resume_failed` の猶予をここから導出する。
+    lease_secs: i64,
 }
 
 impl RunStore {
-    pub fn new(db: PgPool) -> Self {
-        RunStore { db }
+    /// ワーカーと同じ `lease_secs` を渡して組む。
+    ///
+    /// **`lease_secs` は必須引数にしてある。** `resume_failed` の猶予をここから導出するので、
+    /// ビルダで後付けにすると「呼び忘れると既定 30 のまま」という壊し方ができてしまう
+    /// （`WorkerConfig` 側だけ 120 に上げた構成で、猶予 35 秒 < リース 120 秒になる・#446）。
+    /// 必須にすれば新しい配線を書く人が必ず値を選ぶことになり、自然な選択が
+    /// `config.workflow.lease_secs` になる。resume 経路を持たない用途（GC ワーカー等）は
+    /// [`crate::DEFAULT_LEASE_SECS`] を渡してよい。
+    pub fn new(db: PgPool, lease_secs: i64) -> Self {
+        RunStore { db, lease_secs }
+    }
+
+    /// `resume_failed` が claim 済み step を `ready` へ戻すときに置く猶予（秒）。
+    ///
+    /// 旧 worker が有効リースを保持したまま別 worker が再 claim すると、checkpoint は fencing が
+    /// 無害化するものの**外部副作用が併走する**。リース期間より必ず長くすることでこれを避ける。
+    pub(crate) fn resume_grace_secs(&self) -> i64 {
+        self.lease_secs.saturating_add(RESUME_GRACE_MARGIN_SECS)
     }
 
     /// run を作成し本体ノードを一括実体化する（root=ready・他=pending・run.started 追記）。

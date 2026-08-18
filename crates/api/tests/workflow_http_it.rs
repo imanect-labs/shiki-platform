@@ -237,7 +237,7 @@ async fn setup() -> Option<Env> {
         Arc::clone(&authz),
     ));
     let workflows = Arc::new(workflow_engine::WorkflowStore::new(Arc::clone(&artifacts)));
-    let runs = RunStore::new(pool.clone());
+    let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let delegation = workflow_engine::DelegationStore::new(pool.clone(), Arc::clone(&authz));
     let launcher = Arc::new(workflow_engine::WorkflowRunLauncher::new(
         delegation.clone(),
@@ -510,7 +510,7 @@ async fn workflow_http_end_to_end() {
     let name_ok = format!("http-ok-{}", &suffix[..12]);
     let name_fail = format!("http-fail-{}", &suffix[..12]);
     let worker = WorkflowWorker::new(
-        RunStore::new(env.pool.clone()),
+        RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
         Arc::new(PassExecutor),
         WorkerConfig::default(),
     )
