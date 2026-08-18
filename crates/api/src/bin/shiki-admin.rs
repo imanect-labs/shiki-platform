@@ -109,9 +109,16 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
 
     // --- 依存の配線（shiki-server と同じ設定・migration は適用しない） ---
     let config = AppConfig::load().context("設定のロードに失敗")?;
+    // retenant は全テーブルを 1 txn で書き換える重い操作。pg_stat_activity で shiki-server と
+    // 区別できるよう application_name を分ける（main.rs と同じ理由）。
+    let db_options: sqlx::postgres::PgConnectOptions = config
+        .database
+        .url
+        .parse()
+        .context("DATABASE_URL の解析に失敗")?;
     let db = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&config.database.url)
+        .connect_with(db_options.application_name("shiki-admin"))
         .await
         .context("Postgres へ接続できません")?;
     // timeout は必須（#376。理由は main.rs の同等箇所を参照）。

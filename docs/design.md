@@ -735,6 +735,7 @@ FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメ
 
 - OTel計装（axum/tonic/agent-core）→ Tempo/Loki/Prometheus（クラウドはエクスポータ差し替え）。
 - Langfuse で LLM 可視化。**監査ログ（権限・引用chunk）と Langfuse を trace_id で突合**（早期に種を蒔く）。
+- DB は `pg_stat_statements` ＋ `auto_explain` ＋ `postgres_exporter` → 既存 Prometheus/Grafana。商用 SaaS（pganalyze 等）を正に据えない理由（オンプレ/エアギャップでクエリ形状を外へ出せない・部品点数最小）と実際の見方は [guides/db-observability.md](./guides/db-observability.md)。
 
 ### 4.10 ミニアプリ／業務アプリ基盤
 
