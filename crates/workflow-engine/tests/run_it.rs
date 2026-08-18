@@ -1,6 +1,6 @@
 //! run/step エンジンの結合テスト（Task 10.2 受け入れ条件・実 Postgres）。
 //!
-//! - ワーカー kill →別ワーカーが完了済みステップを再実行せずに run を継続する
+//! - ワーカー kill →sweeper が回収し、別ワーカーが完了済みステップを再実行せずに run を継続する
 //! - `(run_id, seq)` unique で追記が exactly-once に潰れる
 //! - fan-out→join の待ち合わせ・skip 伝播
 //! - checkpoint 済み step の再 claim は fencing で no-op（再実行なし）
@@ -257,7 +257,8 @@ async fn zombie_recheckpoint_does_not_reexecute() {
         .expect("claim a");
     assert_eq!(claimed.node_id, "a");
 
-    // リースを失効させ、別ワーカーが再 claim（fencing 2）。
+    // リースを失効させ、sweeper が ready へ戻してから別ワーカーが再 claim（fencing 2）。
+    // claim 自体は ready 専用で失効 running を拾わない（#438・engine.md §9.5）。
     sqlx::query(
         "UPDATE step_execution SET lease_expires_at = now() - interval '1 second' \
          WHERE tenant_id = $1 AND run_id = $2 AND step_path = 'a'",
@@ -267,12 +268,18 @@ async fn zombie_recheckpoint_does_not_reexecute() {
     .execute(&pool)
     .await
     .unwrap();
+    assert_eq!(
+        store.reclaim_expired_leases(Some(&tenant)).await.unwrap(),
+        1
+    );
     let claimed2 = store
         .claim_ready_step("w2", 60, Some(&tenant))
         .await
         .unwrap()
         .expect("reclaim a");
-    assert_eq!(claimed2.fencing_token, claimed.fencing_token + 1);
+    // 回収と再 claim がそれぞれ fencing を進めるので、旧 token より必ず大きい
+    //（sweeper が回収時点で旧ワーカーを失効させる・#439）。
+    assert!(claimed2.fencing_token > claimed.fencing_token);
 
     let graph = RunGraph::build(&workflow_engine::WorkflowIr::from_json(&linear_ir()).unwrap());
     // 旧ワーカー（fencing 1）の checkpoint は no-op（ゾンビ）。

@@ -15,7 +15,7 @@
 `crates/workflow-engine` は shiki-server の in-process サブシステムとして動く。外形は 3 つの協調する構成要素からなる。
 
 - **ワーカープール**: ready な step を `FOR UPDATE SKIP LOCKED` で claim し、ノード実装を実行してチェックポイントを書き、DAG を前進させる（§4）。
-- **リーダー選出スケジューラ**: 単一リースを CAS 取得したインスタンスだけが、cron 評価・タイマー起床・リース heartbeat を回す（§5）。
+- **リーダー選出スケジューラ**: 単一リースを CAS 取得したインスタンスだけが、cron 評価・タイマー起床・失効リースの回収 sweeper（§9.5）を回す（§5）。
 - **トリガマッチャ**: 既存 outbox イベントを購読し、イベントトリガと `wait(event)` 購読を照合して run を起こす／step を起こす（§5）。
 
 設計の骨子は「新規ステートフル依存ゼロ」である。永続化は Postgres、配信は既存 Redis の pub/sub のみを使う。Temporal 等の外部 Durable Execution エンジンは持ち込まない（部品点数最小化・エアギャップ・認可/監査/テナント分離を心臓部に編み込むため。miniapp-platform §2.2）。durability は **ノード境界にのみ存在**し、決定論的リプレイは採らない（§7 でこの帰結を明示する）。
@@ -175,11 +175,17 @@ create table step_execution (
     updated_at        timestamptz not null default now(),
     primary key (tenant_id, run_id, step_path)
 );
--- ready/再試行の claim 対象抽出（claim はテナント横断・公平性は §8 の tenant 上限で担保）。
-create index step_ready_idx on step_execution (next_retry_at)
+-- ready の claim 対象抽出。claim は **ready 専用**であり、リース失効 running は拾わない（§9.5）。
+-- 1 本の OR で両方を拾うと partial index 2 本の BitmapOr になって index の並び順が失われ、
+-- `ORDER BY next_retry_at LIMIT 1` が「候補全件を Sort してから 1 件」に退化する
+-- （＝claim コストが実行待ち件数に比例する。実測 2,539 → 22 バッファ・#438）。
+-- 全テナント横断ワーカー（既定）は next_retry_at 先頭、tenant シャーディングは tenant_id 先頭を使う。
+create index step_ready_global_idx on step_execution (next_retry_at)
+    where status = 'ready';
+create index step_ready_idx on step_execution (tenant_id, next_retry_at)
     where status = 'ready';
 -- 孤児回収 sweeper: リース失効の running を拾う。
-create index step_lease_idx on step_execution (lease_expires_at)
+create index step_lease_idx on step_execution (tenant_id, lease_expires_at)
     where status = 'running';
 
 -- 追記ログ。chat generation_event と同型パターン（本表は #91 規約どおり tenant_id を持つ）。
@@ -445,7 +451,9 @@ join の再発火防止と「初回 live」の判定は §4.1 手順 3 の readi
 1. **due な cron の評価**: enable 中の schedule トリガについて、前回発火〜現在の間に来た論理発火時刻を cron から算出し、各 `scheduled_at` について占有 TX（§5.3）を実行する。
 2. **due な waiting_timer の起床**: `wake_at <= now()` の `waiting_timer` step を **terminal 化（out）して前進 TX を実行**する（§9.1・ready に戻して wait を再実行させない）。
 3. **waiting_event の期限処理**: `timeout_at <= now()` の `wait_subscription` を消し込み、`on_timeout` に従い terminal 化（timeout ポート）or failed にして前進する（§9.2）。
-4. **リース heartbeat**: `scheduler_lease.expires_at` を延長。失効すれば別インスタンスが CAS で引き継ぐ。
+4. **失効リースの回収（sweeper）**: `step_lease_idx` で `lease_expires_at < now()` の running step を拾い、`ready` へ戻す（§9.5）。ワーカーの claim は ready 専用なのでここが唯一の takeover 経路。
+5. **concurrency カウンタの突合**: running の実数からカウンタを再計算する（§8.1）。**必ず sweeper の後**に置く——回収で running から外れた分をこの突合が回収するため、順序が逆だと 1 tick ぶん古い値が残る。
+6. **リース heartbeat**: `scheduler_lease.expires_at` を延長。失効すれば別インスタンスが CAS で引き継ぐ。
 
 ```mermaid
 flowchart TB
@@ -454,7 +462,9 @@ flowchart TB
     CAS -- 成功 --> CRON[due な cron を列挙<br/>前回〜now を逆算]
     CRON --> OCC[各 scheduled_at で<br/>占有 TX §5.3]
     OCC --> TIMER[wake_at<=now の waiting_timer を<br/>terminal 化して前進 §9.1]
-    TIMER --> HB[lease heartbeat]
+    TIMER --> SWEEP[失効リースの running を<br/>ready へ回収 §9.5]
+    SWEEP --> RECON[concurrency カウンタ突合<br/>running 実数から再計算 §8.1]
+    RECON --> HB[lease heartbeat]
     HB --> END([次 tick へ])
 ```
 
@@ -695,12 +705,19 @@ step の `timeout_sec`（ノード種ごとに既定・上限あり・ir.md §7�
 
 ### 9.5 リース失効（ワーカー死）
 
-リース失効した step は別ワーカーが claim する（`fencing_token` +1）。
+リース失効した step は **sweeper が `ready` へ戻し**、それを別ワーカーが claim する（`fencing_token` +1）。
 
 - **完了済み（terminal）step は再実行しない**（checkpoint が正・§7.1）。
 - running のまま死んだ step は attempt そのままで re-run する（at-least-once・冪等キー不変）。
 
-sweeper（§5 のスケジューラ内 or 専用ループ）が `step_lease_idx` で失効 running を拾い、concurrency カウンタの減分リークも同時に回収する（§8.1）。
+sweeper はスケジューラリーダーの tick が回し、`step_lease_idx` で失効 running を拾う。**ワーカーの claim は ready 専用**であり失効 running を拾わない（§2.2 の index コメント・#438）。concurrency カウンタの減分リークは同一 tick の `reconcile` が running の実数から再計算して回収するため、sweeper は reconcile より前に走らせる（§8.1）。
+
+cancel 要求済み run の失効リースは sweeper の対象外とする。claim が cancel 要求済み run を除外する以上 ready に戻しても誰も拾えないため、`drain_cancel_requested`（§9.3）が `cancelled` へ回収する担当になる。
+
+**`attempt` の会計**（実行履歴 UI が「N 回目」としてそのまま表示するため、running 中も現在値であること）:
+
+1. claim が +1 する（実行を 1 つ始めた）。
+2. 「この実行は試行として数えない」と決めた経路が、`ready` へ戻すのと**同一 UPDATE で** -1 する。該当は (a) 本節のリース失効回収＝ワーカーのクラッシュ、(b) `rate_limited` ＝並行上限の順番待ち（§8.2）。
 
 ---
 
