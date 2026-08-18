@@ -190,25 +190,27 @@ impl RunStore {
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
-        // 失敗ドレインで cancelled になった**未 claim** step（attempt=0）を pending に復元
-        //（readiness は下で再計算）。
+        // 失敗ドレインで cancelled になった**未 claim** step を pending に復元（readiness は下で再計算）。
+        // 「未 claim」の判定は `fencing_token = 0`。claim は必ず fencing を +1 する一方、`attempt` は
+        // 試行の消費だけを数える（rate_limited の順番待ちや claim 自体では増えない）ので、attempt=0 は
+        // 「一度も claim されていない」を意味しない（#438）。
         sqlx::query(
             "UPDATE step_execution SET status = 'pending', updated_at = now() \
-             WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled' AND attempt = 0",
+             WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled' AND fencing_token = 0",
         )
         .bind(tenant_id)
         .bind(run_id)
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
-        // claim 済みで中断された step（attempt>0）は ready に戻すが、**旧リース分の猶予**を置く
+        // claim 済みで中断された step（fencing_token>0）は ready に戻すが、**旧リース分の猶予**を置く
         //（失敗直後の resume で、まだ実行中かもしれない元 worker と二重実行しない・Codex P1。
         // 元 worker の checkpoint は fencing で無害化されるが、外部副作用の同時併走を避ける）。
         sqlx::query(
             "UPDATE step_execution SET status = 'ready', \
                  next_retry_at = now() + interval '35 seconds', \
                  lease_owner = NULL, lease_expires_at = NULL, updated_at = now() \
-             WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled' AND attempt > 0",
+             WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled' AND fencing_token > 0",
         )
         .bind(tenant_id)
         .bind(run_id)
