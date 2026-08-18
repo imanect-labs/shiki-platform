@@ -43,12 +43,12 @@ pub use registration::{
 };
 pub use retry::{backoff_with_jitter, classify, RetryClass};
 pub use run::{
-    CancelOutcome, ResumeOutcome, RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail,
-    StepOverview,
+    CancelOutcome, GcReport, HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter,
+    RunListItem, StepDetail, StepOverview,
 };
 pub use run::{
     ConcurrencyLimits, NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus,
-    WorkerConfig, WorkflowRunLauncher, WorkflowWorker,
+    WorkerConfig, WorkflowRunLauncher, WorkflowWorker, WORKFLOW_GC_QUEUE,
 };
 pub use scheduler::{LeaderLease, RunLauncher, SchedulerStore};
 pub use store::{WorkflowStore, WorkflowStoreError};

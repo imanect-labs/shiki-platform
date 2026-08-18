@@ -5767,6 +5767,7 @@ dependencies = [
  "shiki-artifact",
  "shiki-authz",
  "shiki-durable",
+ "shiki-jobq",
  "shiki-script-runtime",
  "shiki-secrets",
  "sqlx",
