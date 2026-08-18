@@ -23,6 +23,7 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 ```
 
 - main で直接作業しない。1 タスク = 1 ブランチ = 1 GitHub Issue（手順は `dev-workflow` スキル）。
+- **PR を出す作業では必ず `pr` スキルの手順を通す。** `/pr` と明示的に言われたかどうかで変えない（「〜を実装して」から PR に至った場合も同じ）。特に独立レビュー（コンテキスト非共有エージェント）を依頼の文言で省かない。
 - 実装前に `docs/design-caveats.md` に該当する落とし穴（PIT-*）が無いか確認する。
 - そのタスクがどのフェーズ・どの依存に属するかを `docs/roadmap.md` で確認する。
 
@@ -61,7 +62,7 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 | 対象 | コマンド |
 | --- | --- |
 | Rust | `cargo fmt --all --check` ／ `cargo clippy --all-targets --all-features -- -D warnings` ／ `cargo nextest run --workspace --all-features`（絞るなら `-p <crate>`） |
-| 品質ゲート | `bash scripts/check-file-size.sh` ／ `bash scripts/check-migration-versions.sh` ／ `cargo machete crates` ／ `cargo deny --all-features check` |
+| 品質ゲート | `bash scripts/check-file-size.sh` ／ `bash scripts/check-migration-versions.sh` ／ `bash scripts/check-compose-ports.sh` ／ `cargo machete crates` ／ `cargo deny --all-features check` |
 | カバレッジ | `cargo llvm-cov --all`（CI は行カバレッジ 80% 未満で fail。除外パターンは ci.yml 参照） |
 | Web | `cd web && pnpm install --frozen-lockfile && pnpm gen:api && pnpm lint && pnpm build`（E2E は `pnpm e2e`） |
 | Python | `cd ingestion-worker && uv sync --frozen && uv run ruff check . && uv run pytest -m "not slow" -q` |

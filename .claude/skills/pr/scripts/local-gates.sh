@@ -26,6 +26,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# cd する前に解決する。`$0` は起動時の cwd 基準の相対パスになり得るので、`cd "$ROOT"` の後に
+# 解決するとサブディレクトリから相対パスで起動された時に別の場所を指す。
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "git リポジトリ内で実行してください。" >&2; exit 2; }
 cd "$ROOT"
 
@@ -89,6 +93,43 @@ sh_c() { bash -c "$1"; }
 echo "base: $BASE"
 echo "変更ファイル: $(printf '%s\n' "$CHANGED" | grep -c . ) 件"
 echo "ログ: $LOGDIR"
+
+# ---------- ワークフローのドリフト検出（最初に見る） ----------
+# このスクリプト・references/gates.md・AGENTS.md の検証コマンド表は .github/workflows/ の
+# 引き写しなので、CI が変わると黙って腐る。「突き合わせを思い出す」に頼ると取りこぼしが出る
+# （実例 #455: ci.yml にステップを足した本人が、同じセッション内でこのスクリプトへの追随を忘れた）。
+# 機構で必ず止める。
+printf '\n=== ワークフローのドリフト ===\n'
+# ⚠️ 非 0 を一律「ドリフト」と読まないこと。ci-snapshot.sh は環境不備（python3 / PyYAML 不在・
+#    ワークフロー不在・YAML 解析失敗・diff 自体の失敗）で **exit 2** を返す。これを 1 と混同すると、
+#    原因が別なのに「gates.md を追随させろ」という無関係な指示だけが出て、実際の原因が隠れる。
+drift=$("$SCRIPT_DIR/ci-snapshot.sh" --check 2>&1); drift_rc=$?
+case "$drift_rc" in
+  0)
+    printf '   ✅ ワークフローのドリフトなし\n'
+    RESULTS="${RESULTS}✅ ワークフローのドリフトなし\n"
+    ;;
+  1)
+    printf '   ❌ ワークフローがスナップショットと食い違っています\n'
+    printf '%s\n' "$drift" | sed 's/^/      /'
+    echo
+    echo "   → まず次の 3 つをこの差分に追随させること:"
+    echo "        references/gates.md の対応表 / このスクリプト / AGENTS.md の「検証コマンド」節"
+    echo "     そのうえで: .claude/skills/pr/scripts/ci-snapshot.sh --update"
+    echo "   ⚠️  追随前は、下のゲート一覧が CI を網羅していない可能性があります。"
+    RESULTS="${RESULTS}❌ ワークフローのドリフト（gates.md / local-gates.sh / AGENTS.md の追随が必要）\n"
+    FAILED=1
+    ;;
+  *)
+    printf '   ❌ ドリフト検査を実行できませんでした（rc=%s・ドリフトの有無は不明）\n' "$drift_rc"
+    printf '%s\n' "$drift" | sed 's/^/      /'
+    echo
+    echo "   → 環境不備（python3 / PyYAML 不在など）です。差分ではなく上のエラーを解消してください。"
+    echo "   ⚠️  検査できていないので、下のゲート一覧が CI を網羅しているかは未確認です。"
+    RESULTS="${RESULTS}❌ ドリフト検査が実行不能（rc=${drift_rc}・網羅性は未確認）\n"
+    FAILED=1
+    ;;
+esac
 
 # ---------- 常に回す（CI の quality ジョブと同一） ----------
 run_gate "file-size (1ファイルの行数上限)" bash scripts/check-file-size.sh
