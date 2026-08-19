@@ -29,6 +29,7 @@ import { seasonVar } from "@/lib/season";
 import { EASE_STANDARD } from "@/components/ui/motion-primitives";
 import { useNodeNames } from "@/lib/node-name-cache";
 import { toolFacts } from "@/lib/tool-facts";
+import type { Citation } from "@/lib/chat-api";
 import {
   describeTool,
   nodeIdOf,
@@ -144,15 +145,27 @@ function formatElapsed(secs: number): string {
   return `${Math.floor(secs / 60)}分${String(secs % 60).padStart(2, "0")}秒`;
 }
 
+/// 参照ドキュメントのチップ（最大 MAX_CITATION_CHIPS 件）。フェーズ行の右端に並べる。
+const MAX_CITATION_CHIPS = 3;
+
+function citationChipLabel(c: Citation): string {
+  return c.heading_path && c.heading_path.length > 0
+    ? c.heading_path[c.heading_path.length - 1]
+    : "ドキュメント";
+}
+
 export function ToolActivity({
   items,
   streaming = false,
   /// 計画のサブタスク（`plan` の doing）。あればフェーズ行に優先して出す。
   phaseOverride = null,
+  /// 参照ドキュメント。running 時のフェーズ行に最大 MAX_CITATION_CHIPS 件のチップとして表示。
+  citations = [],
 }: {
   items: ToolActivityItem[];
   streaming?: boolean;
   phaseOverride?: string | null;
+  citations?: Citation[];
 }) {
   // 開閉は**自動で閉じない**。既定は畳んだまま（直近 3 件がロールするだけ）で、ヘッダを押すと
   // 全件のタイムラインになる。**実行状態から開閉を導かない**のが要点で、`running` はステップ
@@ -200,6 +213,24 @@ export function ToolActivity({
         {running ? (
           <span className="shrink-0 tabular-nums text-muted-foreground">
             ・ {formatElapsed(elapsed)}
+          </span>
+        ) : null}
+        {/* 参照ドキュメントのチップ（running 時・最大 MAX_CITATION_CHIPS 件） */}
+        {citations.length > 0 ? (
+          <span className="shiki-fade-r flex min-w-0 shrink items-center gap-1 overflow-hidden">
+            {citations.slice(0, MAX_CITATION_CHIPS).map((c) => (
+              <span
+                key={c.chunk_id}
+                className="shrink-0 rounded-full bg-muted px-1.5 py-[1px] text-[11px] text-foreground/65"
+              >
+                {citationChipLabel(c)}
+              </span>
+            ))}
+            {citations.length > MAX_CITATION_CHIPS ? (
+              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70">
+                +{citations.length - MAX_CITATION_CHIPS}
+              </span>
+            ) : null}
           </span>
         ) : null}
         <span className="min-w-0 flex-1" />
