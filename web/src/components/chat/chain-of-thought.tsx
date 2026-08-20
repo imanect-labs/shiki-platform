@@ -47,7 +47,7 @@ export function ChainOfThought({
           citations はフェーズ行のチップとして表示するため渡す（展開セクションは廃止）。 */}
       <ToolActivity items={tools} streaming={streaming} phaseOverride={phase} citations={citations} />
 
-      {hasSide || streaming ? (
+      {hasSide || (streaming && tools.length === 0 && citations.length === 0) ? (
         <>
           <button
             type="button"

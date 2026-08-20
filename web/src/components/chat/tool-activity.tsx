@@ -148,13 +148,26 @@ function formatElapsed(secs: number): string {
 /// 参照ドキュメントのチップ（最大 MAX_CITATION_CHIPS 件）。フェーズ行の右端に並べる。
 const MAX_CITATION_CHIPS = 3;
 
-function citationChipLabel(c: Citation): string {
-  return c.heading_path && c.heading_path.length > 0
-    ? c.heading_path[c.heading_path.length - 1]
-    : "ドキュメント";
+function clipLabel(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
 
-function CitationChips({ citations }: { citations: Citation[] }) {
+function citationChipLabel(c: Citation, nodeNames: Record<string, string>): string {
+  if (c.heading_path.length > 0) return c.heading_path[c.heading_path.length - 1];
+  const name = nodeNames[c.node_id];
+  if (name) return name;
+  const snippet = c.snippet?.trim();
+  if (snippet) return clipLabel(snippet, 20);
+  return "ドキュメント";
+}
+
+function CitationChips({
+  citations,
+  nodeNames,
+}: {
+  citations: Citation[];
+  nodeNames: Record<string, string>;
+}) {
   if (citations.length === 0) return null;
   return (
     <span className="flex min-w-0 shrink items-center gap-1">
@@ -164,7 +177,7 @@ function CitationChips({ citations }: { citations: Citation[] }) {
             key={c.chunk_id}
             className="shrink-0 rounded-full bg-muted px-1.5 py-[1px] text-[11px] text-foreground/65"
           >
-            {citationChipLabel(c)}
+            {citationChipLabel(c, nodeNames)}
           </span>
         ))}
       </span>
@@ -195,43 +208,40 @@ export function ToolActivity({
   // 境界で false↔true に振れるため、そこから導くと走行中ずっとパカパカする。
   const [manualOpen, setManualOpen] = React.useState<boolean | null>(null);
 
-  // node_id しか持たないツール（office/document/slide/csv）のファイル名を解決する。
-  const nodeIds = React.useMemo(
-    () => items.map((it) => nodeIdOf(it)).filter((v): v is string => v !== null),
-    [items],
-  );
+  // node_id しか持たないツール（office/document/slide/csv）と citation のファイル名を解決する。
+  const nodeIds = React.useMemo(() => {
+    const ids = items.map((it) => nodeIdOf(it)).filter((v): v is string => v !== null);
+    for (const c of citations) ids.push(c.node_id);
+    return [...new Set(ids)];
+  }, [items, citations]);
   const nodeNames = useNodeNames(nodeIds);
   const hasTools = items.length > 0;
-  const running = streaming && (hasTools ? items.some((it) => it.running) : true);
+  const toolsRunning = hasTools && items.some((it) => it.running);
+  // 描画対象が無い間は計時しない（生成開始直後の空振りを避ける）。
+  const running = streaming && (toolsRunning || (!hasTools && citations.length > 0));
   const elapsed = useElapsed(running);
 
   if (!hasTools && citations.length === 0) return null;
 
   // ツール呼び出しが無く citation だけ届いた経路（pre-filter 等）。チップだけ出す。
+  // 進行表示は ChainOfThought が担うので、ここではステータス行を重ねない。
   if (!hasTools) {
-    const season = seasonVar(seasonIndexFor("read", running));
+    if (streaming) {
+      return (
+        <div
+          className="mb-2.5 flex items-center py-1 pl-[1.375rem] text-[13px]"
+          data-testid="tool-activity"
+        >
+          <CitationChips citations={citations} nodeNames={nodeNames} />
+        </div>
+      );
+    }
     return (
       <div className="mb-2.5" data-testid="tool-activity">
         <div className="flex w-full items-center gap-2 rounded-lg py-1 text-[13px]">
-          {running ? (
-            <Loader2 className="size-3.5 shrink-0 animate-spin" style={{ color: season }} aria-hidden />
-          ) : (
-            <Check className="size-3.5 shrink-0" style={{ color: season }} aria-hidden />
-          )}
-          <span
-            className={cn(
-              "shrink-0 font-medium",
-              running ? "shiki-text-shimmer" : "text-foreground/85",
-            )}
-          >
-            {running ? (phaseOverride ?? "準備しています") : "参照ドキュメント"}
-          </span>
-          {running ? (
-            <span className="shrink-0 tabular-nums text-muted-foreground">
-              ・ {formatElapsed(elapsed)}
-            </span>
-          ) : null}
-          <CitationChips citations={citations} />
+          <Check className="size-3.5 shrink-0" style={{ color: seasonVar(3) }} aria-hidden />
+          <span className="shrink-0 font-medium text-foreground/85">参照ドキュメント</span>
+          <CitationChips citations={citations} nodeNames={nodeNames} />
         </div>
       </div>
     );
@@ -269,7 +279,7 @@ export function ToolActivity({
             ・ {formatElapsed(elapsed)}
           </span>
         ) : null}
-        <CitationChips citations={citations} />
+        <CitationChips citations={citations} nodeNames={nodeNames} />
         <span className="min-w-0 flex-1" />
         {summary.length > 0 ? (
           <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
