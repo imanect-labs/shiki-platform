@@ -30,9 +30,9 @@ export function ChainOfThought({
   const [showDetail, setShowDetail] = React.useState(false);
 
   const hasThinking = thinking.trim().length > 0;
-  // citations は ToolActivity のチップに移したので、ここでは思考テキストだけを担う。
+  // citations は ToolActivity のチップに移した。hasContent から漏れるとチップ行ごと消える。
   const hasSide = hasThinking;
-  const hasContent = hasSide || tools.length > 0;
+  const hasContent = hasSide || tools.length > 0 || citations.length > 0;
   if (!hasContent && !streaming) return null;
 
   // 思考テキスト/引用のパネル。生成中は自動で開き、ユーザーが触ったらその意思を優先する。

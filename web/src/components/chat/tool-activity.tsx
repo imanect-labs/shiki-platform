@@ -154,6 +154,29 @@ function citationChipLabel(c: Citation): string {
     : "ドキュメント";
 }
 
+function CitationChips({ citations }: { citations: Citation[] }) {
+  if (citations.length === 0) return null;
+  return (
+    <span className="flex min-w-0 shrink items-center gap-1">
+      <span className="shiki-fade-r flex min-w-0 items-center gap-1 overflow-hidden">
+        {citations.slice(0, MAX_CITATION_CHIPS).map((c) => (
+          <span
+            key={c.chunk_id}
+            className="shrink-0 rounded-full bg-muted px-1.5 py-[1px] text-[11px] text-foreground/65"
+          >
+            {citationChipLabel(c)}
+          </span>
+        ))}
+      </span>
+      {citations.length > MAX_CITATION_CHIPS ? (
+        <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70">
+          +{citations.length - MAX_CITATION_CHIPS}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function ToolActivity({
   items,
   streaming = false,
@@ -178,10 +201,41 @@ export function ToolActivity({
     [items],
   );
   const nodeNames = useNodeNames(nodeIds);
-  const running = streaming && items.some((it) => it.running);
+  const hasTools = items.length > 0;
+  const running = streaming && (hasTools ? items.some((it) => it.running) : true);
   const elapsed = useElapsed(running);
 
-  if (items.length === 0) return null;
+  if (!hasTools && citations.length === 0) return null;
+
+  // ツール呼び出しが無く citation だけ届いた経路（pre-filter 等）。チップだけ出す。
+  if (!hasTools) {
+    const season = seasonVar(seasonIndexFor("read", running));
+    return (
+      <div className="mb-2.5" data-testid="tool-activity">
+        <div className="flex w-full items-center gap-2 rounded-lg py-1 text-[13px]">
+          {running ? (
+            <Loader2 className="size-3.5 shrink-0 animate-spin" style={{ color: season }} aria-hidden />
+          ) : (
+            <Check className="size-3.5 shrink-0" style={{ color: season }} aria-hidden />
+          )}
+          <span
+            className={cn(
+              "shrink-0 font-medium",
+              running ? "shiki-text-shimmer" : "text-foreground/85",
+            )}
+          >
+            {running ? (phaseOverride ?? "準備しています") : "参照ドキュメント"}
+          </span>
+          {running ? (
+            <span className="shrink-0 tabular-nums text-muted-foreground">
+              ・ {formatElapsed(elapsed)}
+            </span>
+          ) : null}
+          <CitationChips citations={citations} />
+        </div>
+      </div>
+    );
+  }
 
   const open = manualOpen ?? false;
   const lastCategory = describeTool(items[items.length - 1]).category;
@@ -215,27 +269,7 @@ export function ToolActivity({
             ・ {formatElapsed(elapsed)}
           </span>
         ) : null}
-        {/* 参照ドキュメントのチップ（最大 MAX_CITATION_CHIPS 件）。
-            チップ群は overflow-hidden + shiki-fade-r で溢れを隠し、+N は必ず外側に出す。 */}
-        {citations.length > 0 ? (
-          <span className="flex min-w-0 shrink items-center gap-1">
-            <span className="shiki-fade-r flex min-w-0 items-center gap-1 overflow-hidden">
-              {citations.slice(0, MAX_CITATION_CHIPS).map((c) => (
-                <span
-                  key={c.chunk_id}
-                  className="shrink-0 rounded-full bg-muted px-1.5 py-[1px] text-[11px] text-foreground/65"
-                >
-                  {citationChipLabel(c)}
-                </span>
-              ))}
-            </span>
-            {citations.length > MAX_CITATION_CHIPS ? (
-              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70">
-                +{citations.length - MAX_CITATION_CHIPS}
-              </span>
-            ) : null}
-          </span>
-        ) : null}
+        <CitationChips citations={citations} />
         <span className="min-w-0 flex-1" />
         {summary.length > 0 ? (
           <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
