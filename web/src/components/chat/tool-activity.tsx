@@ -153,7 +153,8 @@ function clipLabel(s: string, max: number): string {
 }
 
 function citationChipLabel(c: Citation, nodeNames: Record<string, string>): string {
-  if (c.heading_path.length > 0) return c.heading_path[c.heading_path.length - 1];
+  const path = c.heading_path;
+  if (path && path.length > 0) return path[path.length - 1];
   const name = nodeNames[c.node_id];
   if (name) return name;
   const snippet = c.snippet?.trim();
