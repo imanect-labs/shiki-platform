@@ -37,10 +37,55 @@ pub struct StorageConfig {
     /// これを超えたら拒否し、容量枯渇（認証ユーザーによる無制限アップロード）を防ぐ。
     #[serde(default = "default_max_upload_size_bytes")]
     pub max_upload_size_bytes: i64,
+    /// 中断アップロード（finalize されなかった declare）の回収設定（#468）。
+    #[serde(default)]
+    pub upload_gc: UploadGcConfig,
 }
 
 fn default_max_upload_size_bytes() -> i64 {
     5 * 1024 * 1024 * 1024 // 5 GiB
+}
+
+/// 中断アップロードの回収（#468）。
+///
+/// クライアント切断で finalize が中断されると `pending_upload` 行と staging/incoming
+/// オブジェクトが残り、放置するとテナントごとに単調増加する。既定で有効。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct UploadGcConfig {
+    /// 回収を行うか。既定 true（無効化はストレージが増え続けることを承知した上での運用判断）。
+    #[serde(default = "default_upload_gc_enabled")]
+    pub enabled: bool,
+    /// finalize されないまま経過したら回収するまでの秒数。既定 24 時間。
+    ///
+    /// presigned PUT の TTL より十分長くする。短くすると、巨大ファイルを低速回線で
+    /// アップロード中の declare を回収してしまう。
+    #[serde(default = "default_upload_gc_ttl_secs")]
+    pub ttl_secs: u64,
+    /// sweep の実行間隔（秒）。既定 1 時間。
+    #[serde(default = "default_upload_gc_interval_secs")]
+    pub interval_secs: u64,
+}
+
+fn default_upload_gc_enabled() -> bool {
+    true
+}
+
+fn default_upload_gc_ttl_secs() -> u64 {
+    24 * 60 * 60
+}
+
+fn default_upload_gc_interval_secs() -> u64 {
+    60 * 60
+}
+
+impl Default for UploadGcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_upload_gc_enabled(),
+            ttl_secs: default_upload_gc_ttl_secs(),
+            interval_secs: default_upload_gc_interval_secs(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -4849,3 +4849,224 @@ async fn rename_tenant_rows_moves_every_table() {
             .expect("node 再取得");
     assert_eq!(node_org.as_deref(), Some(org.as_str()));
 }
+
+/// 中断アップロードの回収（#468）。
+///
+/// finalize されないまま TTL を過ぎた declare が、行ごと・staging オブジェクトごと
+/// 回収されること。そして **進行中（TTL 未満）の declare を巻き添えにしない**こと。
+#[tokio::test]
+async fn upload_gc_reclaims_expired_pending_uploads() {
+    let Some(Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        store,
+    }) = setup().await
+    else {
+        return;
+    };
+    let org = format!("gc-ttl-{}", Uuid::new_v4());
+    let uid = format!("u-{}", Uuid::new_v4());
+    seed_org_member(&authz, &org, &uid).await;
+    let ctx = make_ctx(&org, &uid);
+
+    // 中断されるアップロード: declare して PUT まで済ませ、finalize しない。
+    let stale = b"abandoned before finalize";
+    let stale_ticket = service
+        .begin_upload(
+            &ctx,
+            None,
+            "stale.txt",
+            "text/plain",
+            &sha256_hex(stale),
+            stale.len() as i64,
+            None,
+            None,
+        )
+        .await
+        .expect("declare");
+    http.put(&stale_ticket.upload_url)
+        .body(stale.to_vec())
+        .send()
+        .await
+        .expect("presigned PUT");
+    let stale_key = staging_key_of(&pool, stale_ticket.upload_id).await;
+    assert!(store.exists(&stale_key).await.expect("exists"), "PUT 済み");
+
+    // 進行中のアップロード: declare 済みで、まだ TTL を過ぎていない。
+    let fresh = b"still uploading";
+    let fresh_ticket = service
+        .begin_upload(
+            &ctx,
+            None,
+            "fresh.txt",
+            "text/plain",
+            &sha256_hex(fresh),
+            fresh.len() as i64,
+            None,
+            None,
+        )
+        .await
+        .expect("declare");
+    http.put(&fresh_ticket.upload_url)
+        .body(fresh.to_vec())
+        .send()
+        .await
+        .expect("presigned PUT");
+
+    // stale だけを TTL の外へ追い出す（created_at を巻き戻す）。
+    sqlx::query(
+        "UPDATE pending_upload SET created_at = now() - interval '48 hours' WHERE upload_id = $1",
+    )
+    .bind(stale_ticket.upload_id)
+    .execute(&pool)
+    .await
+    .expect("created_at 巻き戻し");
+
+    let reclaimed = service
+        .sweep_expired_pending_uploads(chrono::Utc::now(), Duration::from_secs(24 * 60 * 60))
+        .await
+        .expect("TTL sweep");
+    assert_eq!(reclaimed, 1, "期限切れの 1 件だけ回収される");
+
+    // 行もオブジェクトも消えている。
+    assert_eq!(pending_exists(&pool, stale_ticket.upload_id).await, 0);
+    assert!(
+        !store.exists(&stale_key).await.expect("exists"),
+        "staging オブジェクトが削除されている"
+    );
+
+    // 進行中は残っており、この後も finalize できる。
+    assert_eq!(pending_exists(&pool, fresh_ticket.upload_id).await, 1);
+    service
+        .finalize_upload(&ctx, fresh_ticket.upload_id, None)
+        .await
+        .expect("TTL 内の declare は sweep 後も finalize できる");
+}
+
+/// 孤児 sweep（#468）: `pending_upload` に対応行が無い staging/incoming を回収する。
+///
+/// finalize は成功したが後始末の delete が落ちた（プロセスが落ちた）ケースを模す。
+#[tokio::test]
+async fn upload_gc_reclaims_orphan_staging_objects() {
+    let Some(Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        store,
+    }) = setup().await
+    else {
+        return;
+    };
+    let org = format!("gc-orphan-{}", Uuid::new_v4());
+    let uid = format!("u-{}", Uuid::new_v4());
+    seed_org_member(&authz, &org, &uid).await;
+    let ctx = make_ctx(&org, &uid);
+
+    // 正常に finalize させて node を 1 つ作る（この org を走査対象に載せるため）。
+    upload(&service, &http, &ctx, None, "kept.txt", b"kept")
+        .await
+        .expect("upload");
+
+    // 孤児を作る: declare → PUT → **行だけ**消す（後始末が落ちた状態）。
+    let bytes = b"orphan";
+    let ticket = service
+        .begin_upload(
+            &ctx,
+            None,
+            "orphan.txt",
+            "text/plain",
+            &sha256_hex(bytes),
+            bytes.len() as i64,
+            None,
+            None,
+        )
+        .await
+        .expect("declare");
+    http.put(&ticket.upload_url)
+        .body(bytes.to_vec())
+        .send()
+        .await
+        .expect("presigned PUT");
+    let staging = staging_key_of(&pool, ticket.upload_id).await;
+    // incoming も finalize と同じ規則で置く（コピー後に落ちた状態を模す）。
+    let incoming = format!("default/{org}/incoming/{}", ticket.upload_id);
+    store
+        .copy(&staging, &incoming)
+        .await
+        .expect("incoming コピー");
+    sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
+        .bind(ticket.upload_id)
+        .execute(&pool)
+        .await
+        .expect("行だけ削除");
+
+    // 進行中のアップロード（行が在る）は巻き添えにしない。
+    let live = b"live";
+    let live_ticket = service
+        .begin_upload(
+            &ctx,
+            None,
+            "live.txt",
+            "text/plain",
+            &sha256_hex(live),
+            live.len() as i64,
+            None,
+            None,
+        )
+        .await
+        .expect("declare");
+    http.put(&live_ticket.upload_url)
+        .body(live.to_vec())
+        .send()
+        .await
+        .expect("presigned PUT");
+    let live_key = staging_key_of(&pool, live_ticket.upload_id).await;
+
+    let deleted = service
+        .sweep_orphan_upload_objects()
+        .await
+        .expect("孤児 sweep");
+    assert!(
+        deleted >= 2,
+        "staging と incoming の 2 つ以上が回収される: {deleted}"
+    );
+
+    assert!(
+        !store.exists(&staging).await.expect("exists"),
+        "孤児 staging が消えている"
+    );
+    assert!(
+        !store.exists(&incoming).await.expect("exists"),
+        "孤児 incoming が消えている"
+    );
+    assert!(
+        store.exists(&live_key).await.expect("exists"),
+        "行の在るアップロードは巻き添えにしない"
+    );
+    // 巻き添えにしていないので finalize もできる。
+    service
+        .finalize_upload(&ctx, live_ticket.upload_id, None)
+        .await
+        .expect("行の在る declare は孤児 sweep 後も finalize できる");
+}
+
+/// pending_upload の staging_key を引く。
+async fn staging_key_of(pool: &PgPool, upload_id: Uuid) -> String {
+    sqlx::query_scalar("SELECT staging_key FROM pending_upload WHERE upload_id = $1")
+        .bind(upload_id)
+        .fetch_one(pool)
+        .await
+        .expect("staging_key")
+}
+
+/// pending_upload に行が在るか（0/1）。
+async fn pending_exists(pool: &PgPool, upload_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM pending_upload WHERE upload_id = $1")
+        .bind(upload_id)
+        .fetch_one(pool)
+        .await
+        .expect("count")
+}
