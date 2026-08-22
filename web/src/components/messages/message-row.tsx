@@ -270,7 +270,7 @@ export function MessageRow({
                 onClick={onOpenThread}
                 className="mt-1.5 flex items-center gap-2 rounded-md py-1 pr-2 text-left outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <span className="flex -space-x-1">
+                <span className="flex -space-x-0.5">
                   {Array.from(new Set(message.replies.map((r) => r.authorId)))
                     .slice(0, 3)
                     .map((id) => (

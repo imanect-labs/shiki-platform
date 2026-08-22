@@ -7,7 +7,7 @@ import { FileSpreadsheet, FileText, Hash, Lock, Presentation, User, Users } from
 
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   canRead,
   findFile,
@@ -17,8 +17,9 @@ import {
   type DriveFile,
 } from "@/lib/messages-mock";
 
-/// 利用者のアバター。色は四季アクセントの巡回で、人ごとに安定して同じ色になる。
-/// `className` はアバター本体（枠の丸み・リング）に当たる。在席の点は本体の右下に重ねる。
+/// 利用者のアバター。顔写真があればそれを出し、無いとき（AI など）は季節色のタイルに
+/// 頭文字を置く。`className` はアバター本体（枠の丸み・リング）に当たる。
+/// 在席の点は本体の右下に重ねる。
 export function MemberAvatar({
   memberId,
   size = "default",
@@ -35,6 +36,7 @@ export function MemberAvatar({
   return (
     <span className="relative inline-flex shrink-0">
       <Avatar size={size} className={cn("rounded-[10px]", className)}>
+        {member.photo ? <AvatarImage src={member.photo} alt="" /> : null}
         <AvatarFallback
           // 平らなパステルではなく、その人の季節色で淡いグラデ＋内側の細い縁。
           // 文字は季節色を前景へ寄せて締め、地との差を保つ。

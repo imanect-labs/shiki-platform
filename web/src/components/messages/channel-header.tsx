@@ -74,13 +74,13 @@ export function ChannelHeader({
         onClick={onInvite}
         className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border/60 bg-card/40 py-1 pl-1.5 pr-2 outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <span className="flex -space-x-1">
+        <span className="flex -space-x-1.5">
           {shown.map((id) => (
             <MemberAvatar
               key={id}
               memberId={id}
-              size="xs"
-              className="rounded-[6px] ring-2 ring-background"
+              size="sm"
+              className="rounded-[8px] ring-2 ring-background"
             />
           ))}
         </span>

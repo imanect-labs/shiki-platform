@@ -13,8 +13,10 @@
 export type Member = {
   id: string;
   name: string;
-  /// アバターのフォールバック表示（姓の 1 文字）。
+  /// アバターのフォールバック表示（姓の 1 文字）。写真が読めないときに出る。
   initial: string;
+  /// 顔写真（`web/public` 配下）。デモ用の素材で、実在の人物ではない。
+  photo?: string;
   dept: string;
   /// 四季アクセントの巡回インデックス。アバターの色味に使う。
   seasonIndex: number;
@@ -80,12 +82,16 @@ export const ME = "tanaka";
 /// デモで「見る人」を切り替える候補。file_ref の権限差を実演するために使う。
 export const VIEWER_CHOICES = ["tanaka", "suzuki"] as const;
 
+/// 顔写真はすべて **生成モデルが作った実在しない人物**（`web/public/demo/avatars/`）。
+/// デモ用の仮素材なので、実運用では利用者のプロフィール画像に差し替える。
+const PHOTO = (id: string) => `/demo/avatars/${id}.jpg`;
+
 export const MEMBERS: Member[] = [
-  { id: "tanaka", name: "田中 誠", initial: "田", dept: "総務部", seasonIndex: 0, presence: "online" },
-  { id: "sato", name: "佐藤 花子", initial: "佐", dept: "情報システム部", seasonIndex: 1, presence: "online" },
-  { id: "suzuki", name: "鈴木 一郎", initial: "鈴", dept: "営業部", seasonIndex: 2, presence: "away" },
-  { id: "yamada", name: "山田 美咲", initial: "山", dept: "人事部", seasonIndex: 3, presence: "offline" },
-  { id: "kobayashi", name: "小林 健", initial: "小", dept: "総務部", seasonIndex: 1, presence: "online" },
+  { id: "tanaka", name: "田中 誠", initial: "田", dept: "総務部", seasonIndex: 0, presence: "online", photo: PHOTO("tanaka") },
+  { id: "sato", name: "佐藤 花子", initial: "佐", dept: "情報システム部", seasonIndex: 1, presence: "online", photo: PHOTO("sato") },
+  { id: "suzuki", name: "鈴木 一郎", initial: "鈴", dept: "営業部", seasonIndex: 2, presence: "away", photo: PHOTO("suzuki") },
+  { id: "yamada", name: "山田 美咲", initial: "山", dept: "人事部", seasonIndex: 3, presence: "offline", photo: PHOTO("yamada") },
+  { id: "kobayashi", name: "小林 健", initial: "小", dept: "総務部", seasonIndex: 1, presence: "online", photo: PHOTO("kobayashi") },
   { id: "shiki", name: "Shiki アシスタント", initial: "S", dept: "AI アシスタント", seasonIndex: 0, presence: "online" },
 ];
 
