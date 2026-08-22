@@ -18,15 +18,16 @@
 > PIT-66（pub/sub トピックからの `tenant_id` 欠落）を確認すること。**
 > 併せて PIT-45（org＝テナント内の隔離境界）・PIT-46（匿名/テナント跨ぎ共有の安全包絡）も前提になる。
 >
+> ✅ **決定済み（2026-08）**:
+> - **14.2 OpenFGA `channel` relation schema** — `owner ⊇ admin ⊇ poster ⊇ member`。
+>   公開チャンネルは `poster@organization#member` を 1 本だけ書く。**退出は ReBAC で表現せず**
+>   購読状態として持つ。詳細は design §4.14。モデルは実装済み。
+> - **参加前の発言の可視性** — v1 は**全履歴可視**。参加日以降に限る要件が出たら
+>   `channel_member.joined_at` をクエリ時述語として 3 経路に足す（ReBAC は触らない）。
+>
 > 🔒 **human 承認が要るタスク**:
-> - **14.2（OpenFGA `channel` relation schema）** — AGENTS.md の「必ず human に確認する」に該当する
->   ポリシ決定。公開チャンネルを `member from parent`（org 継承）で表すか明示タプルにするか、
->   `can_post` を `member` と分けるか、`admin` を org 管理者から継承させるかが未決。
->   **ここを決めないと 14.3 以降が全部やり直しになる。**
 > - **14.9（管理者の閲覧・エクスポート）** — DM を誰がどの手続で読めるかはテナントの規程に属する。
 >   承認者の定義と保持期間を human と決めてから実装する（PIT-65）。
-> - **参加前の発言の可視性** — 後から参加した利用者が過去ログを読めるかはポリシ決定。
->   検索・エクスポート・対話の文脈組み立ての 3 経路すべてに同じ答えを適用する必要がある（PIT-63）。
 >
 > **規模と応答の目安**: 同時接続は登録利用者数と同数（オンプレ構成では 1,000）。
 > 送信から相手方への表示まで 3 秒以内。
@@ -36,7 +37,7 @@
 |----|---------|------|------|
 | **Stage 1 — ドメインと配信** | | | |
 | 14.1 | `crates/messaging` ドメイン（channel / member / message / reaction / read_state）＋ migration | storage | 1.x |
-| 14.2 | OpenFGA `channel` 型と relation（公開の org 継承・非公開/DM の明示タプル） 🔒 | authz | 14.1 |
+| 14.2 | OpenFGA `channel` 型と relation（`owner`/`admin`/`poster`/`member`） **✅ モデル定義済み** | authz | — |
 | 14.3 | メッセージ API（投稿・編集・削除・スレッド返信・リアクション・content blocks 共有） | api | 14.2, 3.1 |
 | 14.4 | リアルタイム配信（SSE ＋ Redis pub/sub・トピックに `tenant_id`・剥奪時の leave push） | api | 14.3 |
 | 14.5 | 未読とメンション（`read_state` 導出・メンション抽出・`app_notification` への相乗り可否判断） | api | 14.3 |
@@ -128,7 +129,7 @@
   持ち回れる API にしない（PIT-63）。参照文書側は RAG の二段 authz が守る。
 - **受け入れ条件**:
   - [ ] 非公開チャンネルの発言を含むスレッドから非メンバーが起動しても、その発言が回答に出ない（negative e2e）
-  - [ ] 参加前の発言の可視性が、検索・エクスポート・文脈組み立ての3経路で一致する
+  - [ ] 参加前の発言が3経路（検索・エクスポート・文脈組み立て）で同じ可視性になる（v1 は全履歴可視）
 
 ### Task 14.9: 管理者の閲覧・エクスポート 🔒
 - **area**: api / **path**: `crates/api`
