@@ -1052,9 +1052,38 @@ flowchart LR
 評価し、権限が無い相手には「参照できない添付」として出す。共有した後に文書の権限を絞れば、
 過去の発言からも見えなくなる。
 
-**認可は OpenFGA に `channel` 型を新設**して表す。公開チャンネルは `member from parent`（org 継承）、
-非公開と DM は明示タプルのみ。**relation schema はポリシ決定であり human 承認が要る**（AGENTS.md）。
-`can_post` を `member` と同一にするか分けるか、`admin` を org 管理者から継承させるかは未決。
+**認可は OpenFGA の `channel` 型**（2026-08 決定・`crates/authz/model/authorization-model.fga`）。
+`owner ⊇ admin ⊇ poster ⊇ member` の含意で、thread / artifact / data_table と同型の非階層共有。
+
+| relation | 受理する subject | 意味 |
+|---|---|---|
+| `owner` | `user` | 作成者。共有語彙から外し横展開しない |
+| `admin` | `user` / `role#member` | 招待・アーカイブ・名称変更 |
+| `poster` | `user` / `role#member` / `organization#member` | 投稿できる |
+| `member` | `user` / `role#member` / `organization#member` | 読める |
+
+**公開チャンネルは `poster@organization#member` を 1 本だけ書く。** org に何人いてもタプルは 1 本で、
+`folder`/`file` の共有リンク（#342）・`artifact` の公式スキル（#387）と同じ形である。
+「org メンバーというだけで到達する」自動継承ではなく、公開チャンネルを作る操作でタプルが書かれる
+（folder の厳格モデルと矛盾しない）。非公開と DM は `organization#member` を書かず参加者ぶんの明示タプルのみ
+（DM は `owner` を書かない）。
+
+**`poster` と `member` を分けたのは、全庁通達のような読み取り専用チャンネルをタプルを増やさずに
+表すため**である。通常の公開チャンネルは `poster@organization#member` 1 本、読み取り専用は
+`member@organization#member` ＋ `poster@role#member` の 2 本で表す。
+
+**退出は ReBAC で表現しない。** 公開チャンネルの退出は閲覧権限の剥奪ではなく購読の解除であり、
+アプリ側の `channel_member` 行で持つ。ReBAC は「読めるか」だけを答える。差集合（`but not`）を
+本モデルへ持ち込まずに済み、UI 状態と権限モデルが混ざらない。
+
+**発言ごとの relation は作らない。** 可視性はチャンネル単位で決まる（`data_table` と `data_record` の
+役割分担と同じ考え方）。将来「この発言だけ共有」が要るなら `data_record` と同型でスパースに足せる。
+
+**`user:*` は受理しない。** FR-18 の「外部ユーザーの参加機能は設けない」を構造的に担保する。
+
+**参加前の発言は読める**（v1）。参加日以降に限りたくなった場合は `channel_member.joined_at` を
+**クエリ時述語**として検索・エクスポート・文脈組み立ての 3 経路に足す（`data_record` の行可視性と同じ作法）。
+ReBAC は触らない。3 経路が同じ述語を通ることで答えが構造的に一致する。
 
 **配信**は SSE ＋ Redis pub/sub。**トピック名に必ず `tenant_id` を含める**（アンビエント権限の禁止）。
 購読開始時に FGA でチャンネル可視性を解決するが、**開始時の 1 回では足りない** — メンバーシップを
