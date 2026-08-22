@@ -29,6 +29,7 @@ import { seasonVar } from "@/lib/season";
 import { EASE_STANDARD } from "@/components/ui/motion-primitives";
 import { useNodeNames } from "@/lib/node-name-cache";
 import { toolFacts } from "@/lib/tool-facts";
+import type { Citation } from "@/lib/chat-api";
 import {
   describeTool,
   nodeIdOf,
@@ -144,31 +145,108 @@ function formatElapsed(secs: number): string {
   return `${Math.floor(secs / 60)}分${String(secs % 60).padStart(2, "0")}秒`;
 }
 
+/// 参照ドキュメントのチップ（最大 MAX_CITATION_CHIPS 件）。フェーズ行の右端に並べる。
+const MAX_CITATION_CHIPS = 3;
+
+function clipLabel(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max)}…`;
+}
+
+function citationChipLabel(c: Citation, nodeNames: Record<string, string>): string {
+  const path = c.heading_path;
+  if (path && path.length > 0) return path[path.length - 1];
+  const name = nodeNames[c.node_id];
+  if (name) return name;
+  const snippet = c.snippet?.trim();
+  if (snippet) return clipLabel(snippet, 20);
+  return "ドキュメント";
+}
+
+function CitationChips({
+  citations,
+  nodeNames,
+}: {
+  citations: Citation[];
+  nodeNames: Record<string, string>;
+}) {
+  if (citations.length === 0) return null;
+  return (
+    <span className="flex min-w-0 shrink items-center gap-1">
+      <span className="shiki-fade-r flex min-w-0 items-center gap-1 overflow-hidden">
+        {citations.slice(0, MAX_CITATION_CHIPS).map((c) => (
+          <span
+            key={c.chunk_id}
+            className="shrink-0 rounded-full bg-muted px-1.5 py-[1px] text-[11px] text-foreground/65"
+          >
+            {citationChipLabel(c, nodeNames)}
+          </span>
+        ))}
+      </span>
+      {citations.length > MAX_CITATION_CHIPS ? (
+        <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70">
+          +{citations.length - MAX_CITATION_CHIPS}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function ToolActivity({
   items,
   streaming = false,
   /// 計画のサブタスク（`plan` の doing）。あればフェーズ行に優先して出す。
   phaseOverride = null,
+  /// 参照ドキュメント。running 時のフェーズ行に最大 MAX_CITATION_CHIPS 件のチップとして表示。
+  citations = [],
 }: {
   items: ToolActivityItem[];
   streaming?: boolean;
   phaseOverride?: string | null;
+  citations?: Citation[];
 }) {
   // 開閉は**自動で閉じない**。既定は畳んだまま（直近 3 件がロールするだけ）で、ヘッダを押すと
   // 全件のタイムラインになる。**実行状態から開閉を導かない**のが要点で、`running` はステップ
   // 境界で false↔true に振れるため、そこから導くと走行中ずっとパカパカする。
   const [manualOpen, setManualOpen] = React.useState<boolean | null>(null);
 
-  // node_id しか持たないツール（office/document/slide/csv）のファイル名を解決する。
-  const nodeIds = React.useMemo(
-    () => items.map((it) => nodeIdOf(it)).filter((v): v is string => v !== null),
-    [items],
-  );
+  // node_id しか持たないツール（office/document/slide/csv）と citation のファイル名を解決する。
+  const nodeIds = React.useMemo(() => {
+    const ids = items.map((it) => nodeIdOf(it)).filter((v): v is string => v !== null);
+    for (const c of citations) ids.push(c.node_id);
+    return [...new Set(ids)];
+  }, [items, citations]);
   const nodeNames = useNodeNames(nodeIds);
-  const running = streaming && items.some((it) => it.running);
+  const hasTools = items.length > 0;
+  const toolsRunning = hasTools && items.some((it) => it.running);
+  // 描画対象が無い間は計時しない（生成開始直後の空振りを避ける）。
+  const running = streaming && (toolsRunning || (!hasTools && citations.length > 0));
   const elapsed = useElapsed(running);
 
-  if (items.length === 0) return null;
+  if (!hasTools && citations.length === 0) return null;
+
+  // ツール呼び出しが無く citation だけ届いた経路（pre-filter 等）。チップだけ出す。
+  // 進行表示は ChainOfThought が担うので、ここではステータス行を重ねない。
+  if (!hasTools) {
+    if (streaming) {
+      return (
+        <div
+          className="mb-2.5 flex items-center py-1 pl-[1.375rem] text-[13px]"
+          data-testid="tool-activity"
+        >
+          <CitationChips citations={citations} nodeNames={nodeNames} />
+        </div>
+      );
+    }
+    return (
+      <div className="mb-2.5" data-testid="tool-activity">
+        <div className="flex w-full items-center gap-2 rounded-lg py-1 text-[13px]">
+          <Check className="size-3.5 shrink-0" style={{ color: seasonVar(3) }} aria-hidden />
+          <span className="shrink-0 font-medium text-foreground/85">参照ドキュメント</span>
+          <CitationChips citations={citations} nodeNames={nodeNames} />
+        </div>
+      </div>
+    );
+  }
 
   const open = manualOpen ?? false;
   const lastCategory = describeTool(items[items.length - 1]).category;
@@ -202,6 +280,7 @@ export function ToolActivity({
             ・ {formatElapsed(elapsed)}
           </span>
         ) : null}
+        <CitationChips citations={citations} nodeNames={nodeNames} />
         <span className="min-w-0 flex-1" />
         {summary.length > 0 ? (
           <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">

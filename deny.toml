@@ -28,6 +28,11 @@ ignore = [
     # smallstr と同型の unmaintained 通知で、既知脆弱性は無い。swc 上流が置換するまで
     # cargo update では到達できない。上流更新で外す（要追跡）。
     { id = "RUSTSEC-2026-0249", reason = "swc_ecma_parser 推移依存の smartstring unmaintained 通知。脆弱性ではなく swc 上流の置換待ち。" },
+    # h2 0.3.x は aws-smithy-http-client → hyper 0.14 経路で残る。パッチは >=0.4.16 のみで、
+    # 0.3 系には修正版が無い。0.4 系は Cargo.lock を 0.4.18 へ更新済み。上流が hyper 0.14
+    # を落とすまで 0.3 は cargo update で解消できない。実害は空 DATA フレームの無制限キュー
+    # （DoS・低）で、直接ピアが悪意ある場合に限る。
+    { id = "RUSTSEC-2026-0258", reason = "aws-smithy-http-client→hyper 0.14 経由の h2 0.3.27。パッチは 0.4.16+ のみで 0.3 系は上流更新待ち。0.4 系は 0.4.18 へ更新済み。" },
 ]
 
 [licenses]
