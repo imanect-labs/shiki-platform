@@ -1016,6 +1016,68 @@ flowchart LR
   したまま、限定共有だけで配る」ことであり、**将来のパブリック公開を前提に境界（別オリジン・noindex 既定・
   匿名 principal の束縛・参照断ち・定義の版ピン）を先に敷く**。
 
+### 4.14 職員間メッセージ（チャンネル／DM・`crates/messaging`）
+
+2026-08 追加。**人と人が会話する面**。§4.4 のチャット（人と LLM）とは別機能だが、**content blocks・
+配信・監査・ReBAC はすべて既存の枠に載せる**。メッセージ機能のために権限判定を新設しないことが設計の要。
+
+```mermaid
+flowchart LR
+  subgraph FGA["OpenFGA"]
+    CH["channel<br/>member / admin / parent→org"]
+    FILE["file<br/>既存の relation"]
+  end
+  subgraph MSG["crates/messaging"]
+    C["channel"] --> M["message<br/>blocks: text/file_ref/mention"]
+    M --> R["reaction"]
+    C --> RS["read_state"]
+  end
+  M -- file_ref --> SS["StorageService<br/>（表示時に FGA 評価）"]
+  SS --> FILE
+  C --> FGA
+  M -- 索引 --> FT["全文検索<br/>二段 authz"]
+  M -- 文脈 --> AC["agent-core<br/>AuthContext は照会者"]
+  M --> AUD["audit_log"]
+  API["SSE + Redis pub/sub<br/>topic に tenant_id"] --> M
+```
+
+**ドメイン**（`crates/messaging`）。`channel`（`kind` = Public / Private / Dm）・`channel_member`・
+`message`（`parent_id` でスレッド返信）・`message_reaction`・`read_state`。
+**DM は独立テーブルにせず `kind = Dm` のチャンネルとして持つ** — 検索・監査・配信・保持期間の経路を
+1 本に保てる。グループ DM も同型になる。未読は `read_state.last_read_at` より新しい件数で導出し、
+既読フラグを行ごとに持たない（1,000 接続 × 発言数の書き込みを避ける）。
+
+**本文は §4.4 の content blocks を共有する。** `text` / `file_ref` / `mention` の部分集合。
+`file_ref` は **file_id を持つだけで本文を複製しない**。表示のたびに StorageService 経由で ReBAC を
+評価し、権限が無い相手には「参照できない添付」として出す。共有した後に文書の権限を絞れば、
+過去の発言からも見えなくなる。
+
+**認可は OpenFGA に `channel` 型を新設**して表す。公開チャンネルは `member from parent`（org 継承）、
+非公開と DM は明示タプルのみ。**relation schema はポリシ決定であり human 承認が要る**（AGENTS.md）。
+`can_post` を `member` と同一にするか分けるか、`admin` を org 管理者から継承させるかは未決。
+
+**配信**は SSE ＋ Redis pub/sub。**トピック名に必ず `tenant_id` を含める**（アンビエント権限の禁止）。
+購読開始時に FGA でチャンネル可視性を解決するが、**開始時の 1 回では足りない** — メンバーシップを
+剥奪された接続が購読を持ち続ける。剥奪イベントで接続側へ leave を push し、あわせて購読の再評価に
+上限 TTL を置く（PIT-64）。
+
+**検索**は RAG の索引には入れず、発言専用のコレクションを全文検索側に持つ。**二段 authz** は RAG と同型で、
+pre-filter が「検索者が member のチャンネル」に絞り、post-filter が結果の `channel_id` を再評価する。
+索引はメンバーシップ変更に追従させる（退出後のチャンネルの発言が pre-filter をすり抜けても
+post-filter で落ちること）。
+
+**メッセージからの対話呼出し**は agent-core を呼ぶ。`AuthContext` は**照会者**のもので、チャンネルの
+発言を文脈として渡す。**渡してよいのは照会者が読める発言だけ** — 参照文書側は RAG の二段 authz が守るが、
+発言そのものの混入は messaging 側でしか止められない（PIT-63）。
+
+**管理者の閲覧（eDiscovery）は通常の read 経路に相乗りさせない。** 専用の管理 API に分け、
+公開チャンネルは管理者ロールで、DM と非公開チャンネルは**承認レコード（承認者・対象・期間）を作った
+場合に限り、その期間内だけ**読めるようにする。全操作を `audit_log` へ落とす。承認者を誰にするかは
+テナントの規程に依存するため設定可能にする（PIT-65）。
+
+**外部ユーザーは参加できない。** principal はテナント内に限り、Phase 13 の匿名 `PrincipalKind` を
+messaging の経路へ流さない。
+
 ## 5. リポジトリ構成（モノレポ・Rustワークスペース）
 
 ```

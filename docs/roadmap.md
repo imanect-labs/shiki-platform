@@ -10,7 +10,7 @@
 > [Phase 6](./roadmap/phase-6.md) ・ [Phase 7](./roadmap/phase-7.md) ・ [Phase 8](./roadmap/phase-8.md) ・
 > [Phase 9](./roadmap/phase-9.md) ・ [Phase 10](./roadmap/phase-10.md) ・ [Phase 11-pre](./roadmap/phase-11-pre.md) ・
 > [Phase 11](./roadmap/phase-11.md) ・ [Phase 12](./roadmap/phase-12.md) ・ [Phase 13](./roadmap/phase-13.md) ・
-> [並行/将来トラック](./roadmap/parallel-tracks.md)
+> [Phase 14](./roadmap/phase-14.md) ・ [並行/将来トラック](./roadmap/parallel-tracks.md)
 >
 > 各タスクは1つのGitHub Issueに対応（area:* ラベル）。
 
@@ -45,6 +45,9 @@ flowchart LR
   P11 --> ALPHA
   P12 --> ALPHA
   ALPHA --> P13["Phase 13<br/>HTMLページ/サイト公開<br/>アーティファクト/CMS/フォーム"]
+  ALPHA --> P14["Phase 14<br/>職員間メッセージ<br/>チャンネル/DM"]
+  P3 -.->|content blocks/配信/agent-core| P14
+  P2 -.->|全文検索の二段authz| P14
   P11 -.->|collab/砂箱の流用| P13
   P9 -.->|B1匿名配信の型| P13
   P0 -.->|並行| SK["skillex 認証統合"]
@@ -197,6 +200,24 @@ Phase 10（ワークフロートリガ）・Phase 8/12（インフラ・IaC）�
 
 ---
 
+## Phase 14 — 職員間メッセージ（チャンネル／DM・ポストアルファ）
+**依存**: Phase 3（content blocks・SSE 配信・agent-core）・Phase 2（全文検索の二段 authz）・
+Phase 1（ストレージ・ReBAC）・Phase 8（監査）。詳細: [phase-14.md](./roadmap/phase-14.md)
+- **人と人が会話する面**。§4.4 のチャット（人と LLM）とは別機能だが、**content blocks・配信・監査・
+  ReBAC はすべて既存の枠に載せる**。メッセージ機能のために権限判定を新設しない。
+- チャンネル（公開／非公開）・DM・スレッド返信・リアクション・メンション・未読。
+  **DM は独立テーブルにせず `kind = Dm` のチャンネル**として持つ（design §4.14）。
+- **文書共有は `file_ref` のみを持ち本文を複製しない。** 閲覧可否は文書側の ReBAC が毎回決める。
+- **発言の検索は RAG と同型の二段 authz。**発言は RAG の索引には入れない。
+- **メッセージからの対話呼出しは照会者の `AuthContext`** で行い、文脈に渡す発言も照会者が読めるものに限る。
+- **管理者の閲覧は通常の read 経路に相乗りさせない。** DM は承認レコードのある期間内だけ。
+- 🔒 OpenFGA `channel` relation schema と、DM の閲覧手続は human 承認事項。
+- **規模と応答の目安**: 同時接続は登録利用者数と同数（オンプレ構成では 1,000）。
+  送信から相手方への表示まで 3 秒以内。
+- **成果物**: 職員同士が閉域内で会話でき、その文脈のまま権限を守った AI 照会ができる。
+
+---
+
 ## 並行 / 将来トラック
 
 | トラック | タイミング | 備考 |
@@ -207,6 +228,7 @@ Phase 10（ワークフロートリガ）・Phase 8/12（インフラ・IaC）�
 | データプレーン完全相乗り（フルプール） | 需要が出たら | **SaaS（共有コントロールプレーン＋cell隔離データプレーン）は優先ターゲット**（design §4.1.1）。本項は cell 隔離をやめ全テナント共有プールへ寄せる更なる最適化＝tenant_id 行分離の全面適用 |
 | ミニアプリ marketplace（第三者公開） | Phase 9 安定後 | 信頼ティアに審査付き第三者枠を追加 |
 | 会話ブランチUI | 任意 | データ構造は Phase 3 で用意済み |
+| **音声入力（トラックASR）** | Phase 3 の後ならいつでも | マイクの発話を文字にして入力欄へ。認識は `SpeechToText` トレイト裏でオンプレ完結。対話用 GPU に CUDA MPS で同居（GPU 追加なし）。[parallel-tracks.md](./roadmap/parallel-tracks.md) |
 
 ## マイルストーン要約
 
@@ -218,3 +240,5 @@ Phase 10（ワークフロートリガ）・Phase 8/12（インフラ・IaC）�
 - **M6（Phase 10–11）**: ★ワークフロー基盤（n8n 相当）＋エディタ（ノート/CSV=11-pre）＋Office 統合 = 業務自動化と文書作成の完成形
   （エンジン核心 Stage A は 2026-07 前倒しで M3 以降と並走・#121）。
 - **M7（Phase 12）**: ★★プライベートアルファ・リリース（運用体制込み）。
+- **M8（Phase 13–14・ポストアルファ）**: HTML ページ／サイト公開と、職員間メッセージ。
+  閉域構成では外部のチャットツール・音声入力を併用できないため、この2つは優先度が上がる。
