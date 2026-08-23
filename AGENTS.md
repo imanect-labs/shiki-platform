@@ -51,8 +51,8 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 - 1 ファイル 1000 行以内（`*.rs`・CI ゲート）。超えたら責務で分割する。
 - 全件取得 → フィルタではなく、最初から必要な行・フィールドのみ取得する。
 - 新規 migration は既存の最大番号 +1。番号重複は新規 DB でだけ壊れるため CI で弾いている。
-- `vendor/` は所有フォーク。品質ゲート（1000 行 / カバレッジ / clippy / machete）の対象外で、`docs/sandbox/fork-policy.md` に従う。サンドボックス由来の入力は敵対的として扱う。
-- workspace 外のクレート（`vendor/secure-exec`・`crates/script-runtime/{guest,fuzz}`・`crates/tabular/runner`）はワークスペースのコマンドでは検査されない。`--manifest-path` で個別に回す。
+- `vendor/` は所有フォーク。品質ゲート（1000 行 / カバレッジ / clippy / machete）の対象外で、`docs/sandbox/fork-policy.md`（secure-exec）／`docs/jtd/fork-policy.md`（openjtd）に従う。サンドボックス由来の入力・アップロードされた文書バイナリは敵対的として扱う。
+- workspace 外のクレート（`vendor/secure-exec`・`vendor/openjtd/rjtd`・`crates/script-runtime/{guest,fuzz}`・`crates/tabular/runner`）はワークスペースのコマンドでは検査されない。`--manifest-path` で個別に回す。
 
 ## 検証コマンド（`.github/workflows/ci.yml` が正）
 
