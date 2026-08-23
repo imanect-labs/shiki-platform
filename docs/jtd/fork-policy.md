@@ -33,6 +33,9 @@ JTD のリバースエンジニアリングをゼロからやり直す合理性�
   依存グラフには載らないので、抱えるコストは容量だけ。
 
   ```bash
+  # 我々の側の入口（本文・ストリーム一覧・制御レコードの生表示）
+  cargo run -p shiki-jtd --example jtd-dump -- --hex <file.jtd>
+  # 上流のプローブ群（表候補・ページマーク・制御コードの分布）
   cd vendor/openjtd/rjtd && cargo run -p rjtd-cli -- table-candidates <file.jtd>
   ```
 
