@@ -15,11 +15,16 @@ name = "jtd"
 rjtd-core.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# docx の生成。XML のエスケープは quick-xml、パッケージングは zip。
+quick-xml.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 # 合成 CFB を組んで境界条件を突く（実ファイルに依存しない決定的テスト）。
 # rjtd-core と同じ 0.14 系に合わせ、lock に cfb が二重に載らないようにする。
 cfb = "0.14"
+# 生成した docx を開き直して中身を検査する（忠実度ハーネス）。
+zip.workspace = true
 
 [lints]
 workspace = true

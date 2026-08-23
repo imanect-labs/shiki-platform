@@ -11,8 +11,8 @@ use super::{JtdError, JtdFile, JtdFormat, JtdLimitKind, JtdLimits};
 
 /// `DocumentText` の先頭 8 バイト（一太郎 8〜13 系の本文ストリーム）。
 const DOCUMENT_TEXT_MAGIC: &[u8; 8] = b"SsmgV.01";
-/// テキストランの開始マーカー。これ以降の UTF-16BE が本文になる。
-const TEXT_RUN_MARKER: u16 = 0x001f;
+/// マジックの後に続くヘッダ（6 ワード）。実物と同じ長さにしないと本文の開始位置がずれる。
+const HEADER_UNITS: [u16; 6] = [0x0000, 0x0003, 0x0000, 0x0100, 0x0000, 0x011c];
 
 /// 1 ストリームだけを持つ合成 CFB を作る。
 fn cfb_with_stream(path: &str, payload: &[u8]) -> Vec<u8> {
@@ -29,10 +29,17 @@ fn cfb_with_streams(entries: &[(&str, &[u8])]) -> Vec<u8> {
     compound.into_inner().into_inner()
 }
 
+/// 段落レコード（`class=0x0010`・最小長）。実物と同じ自己記述構造を持たせる。
+const PARAGRAPH_RECORD: [u16; 8] = [
+    0x001c, 0x0010, 0x0008, 0x0000, 0x0008, 0x0000, 0x0010, 0x001f,
+];
+
 /// 本文 `text` を持つ `/DocumentText` ストリームのバイト列を組む。
 fn document_text_stream(text: &str) -> Vec<u8> {
     let mut bytes = DOCUMENT_TEXT_MAGIC.to_vec();
-    bytes.extend_from_slice(&TEXT_RUN_MARKER.to_be_bytes());
+    for unit in HEADER_UNITS.iter().chain(PARAGRAPH_RECORD.iter()) {
+        bytes.extend_from_slice(&unit.to_be_bytes());
+    }
     for unit in text.encode_utf16() {
         bytes.extend_from_slice(&unit.to_be_bytes());
     }

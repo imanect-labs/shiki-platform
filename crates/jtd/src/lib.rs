@@ -37,6 +37,9 @@
 
 mod error;
 mod limits;
+mod model;
+mod ooxml;
+mod parse;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -48,6 +51,8 @@ use rjtd_core::document_text::{
 
 pub use error::{JtdError, JtdLimitKind};
 pub use limits::JtdLimits;
+pub use model::{Block, JtdDocument, Paragraph, TextRun};
+pub use ooxml::DOCX_CONTENT_TYPE;
 
 /// CFB（OLE 複合文書）のシグネチャ。一太郎 8〜13 系はこの容れ物を使う。
 const CFB_MAGIC: &[u8; 8] = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
@@ -102,7 +107,7 @@ pub struct JtdFile {
     format: JtdFormat,
     streams: Vec<JtdStream>,
     document_text: Vec<u8>,
-    plain_text: String,
+    document: JtdDocument,
 }
 
 impl JtdFile {
@@ -152,11 +157,16 @@ impl JtdFile {
             .map_err(|error| map_upstream(&error))?;
         let format = classify(payload.source_name(), &streams);
 
+        let document_text = payload.bytes().to_vec();
+        drop(payload);
+        // 本文の組み立ては自前で行う。上流の抽出は最初のレコードより前の本文を落とす。
+        let document = guard(|| parse::parse_document(&document_text))?;
+
         Ok(JtdFile {
             format,
             streams,
-            document_text: payload.bytes().to_vec(),
-            plain_text: payload.text().to_string(),
+            document_text,
+            document,
         })
     }
 
@@ -197,12 +207,24 @@ impl JtdFile {
         }
     }
 
-    /// 本文テキスト（読み順）。
+    /// 中間モデル。OOXML への写像はここを入力にする。
     ///
-    /// **表は構造を失って読み順のテキストになる。** セルの升目は復元されない。
-    /// 表を表として扱えるようにするのは後続タスク。
-    pub fn plain_text(&self) -> &str {
-        &self.plain_text
+    /// **表はまだ構造を持たない。** セルは読み順の段落として並ぶ（升目の復元は JTD.3）。
+    pub fn document(&self) -> &JtdDocument {
+        &self.document
+    }
+
+    /// 本文テキスト（読み順）。比較・検索用の平坦化。
+    pub fn plain_text(&self) -> String {
+        self.document.plain_text()
+    }
+
+    /// docx バイト列へ書き出す。
+    ///
+    /// **表・罫線・ページ幾何はまだ写らない**（段落として縦に並ぶ）。
+    /// 用紙は A4 縦・余白 20mm の暫定値で、実値の反映は JTD.4 の範囲。
+    pub fn to_docx(&self) -> Result<Vec<u8>, JtdError> {
+        ooxml::to_docx(&self.document)
     }
 }
 

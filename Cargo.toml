@@ -147,6 +147,8 @@ secure-exec-bridge = { path = "vendor/secure-exec/crates/bridge" }
 # 後者 2 つは解読プローブと WASM ビューア）。docs/jtd/fork-policy.md 参照。
 # rjtd-core の依存は cfb 1 つだけで、shiki の依存グラフはほとんど増えない。
 rjtd-core = { path = "vendor/openjtd/rjtd/crates/rjtd-core" }
+# docx（OOXML）の書き出し（crates/jtd）。zip は deflate だけ有効にして面積を絞る。
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # gRPC（sandbox-client 契約・lock 済みの 0.13 系に固定）
 tonic = "0.13"
