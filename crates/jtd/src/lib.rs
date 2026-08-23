@@ -128,8 +128,13 @@ impl JtdFile {
             return Err(JtdError::NotJtd);
         }
 
-        // CFB を開くのは 1 回だけにする。ここで得たストリーム一覧から系統も判定できるので、
-        // 上流の `detect_format`（内部でもう一度 CFB を開き `/DocumentText` を読み捨てる）は使わない。
+        // 上流の `detect_format` は使わない。内部でもう一度 CFB を開いて `/DocumentText` を
+        // 丸ごと読んでは捨てるだけで、ここで得るストリーム一覧から同じ判定ができる。
+        //
+        // それでも CFB は 2 回開く（ここと、下の本文読み）。上流に「解析済みの `Container` から
+        // ストリームを読む」入口が無いためで、これを 1 回にするのは rjtd-core の API 追加＝
+        // 上流へ出す変更になる。実物（60〜100 KB）では無視できるコストなので、
+        // 中間モデルを起こす JTD.2 で本文読みを自前に置き換えるときに併せて畳む。
         let container =
             guard(|| Container::from_cfb_bytes(bytes))?.map_err(|error| map_upstream(&error))?;
         let streams: Vec<JtdStream> = container
@@ -165,12 +170,31 @@ impl JtdFile {
         &self.streams
     }
 
-    /// `DocumentText` ストリームの生バイト列。
+    /// `/DocumentText` ストリームの生バイト列。
     ///
     /// 先頭 8 バイトは `SsmgV.01`、以降は UTF-16BE のテキストと、`0x001C` で開き `0x001F` で
-    /// 閉じる制御レコードが交互に並ぶ。後続タスクのレイアウト解読はここを入力にする。
-    pub fn document_text_bytes(&self) -> &[u8] {
-        &self.document_text
+    /// 閉じる制御レコードが交互に並ぶ。**単一のストリーム**であることが保証されるので、
+    /// 後続タスクのレイアウト解読はここを入力にする。
+    ///
+    /// [`JtdFormat::EmbeddedDocumentText`] では `None`。その変種の本文は複数の断片を
+    /// つないだもので、単一ストリームとして読むと断片ヘッダと境界を誤読する
+    /// （[`Self::embedded_fragments`] で取る）。
+    pub fn document_text_bytes(&self) -> Option<&[u8]> {
+        match self.format {
+            JtdFormat::DocumentText | JtdFormat::CompressedDocument => Some(&self.document_text),
+            JtdFormat::EmbeddedDocumentText => None,
+        }
+    }
+
+    /// 埋め込み断片をつないだバイト列（[`JtdFormat::EmbeddedDocumentText`] のときだけ `Some`）。
+    ///
+    /// **単一ストリームではない。** `SsmgV.01` で始まる断片が `0x0000` 区切りで並ぶ。
+    /// レイアウト解読に使うなら、まず断片へ切り分けること。
+    pub fn embedded_fragments(&self) -> Option<&[u8]> {
+        match self.format {
+            JtdFormat::EmbeddedDocumentText => Some(&self.document_text),
+            JtdFormat::DocumentText | JtdFormat::CompressedDocument => None,
+        }
     }
 
     /// 本文テキスト（読み順）。

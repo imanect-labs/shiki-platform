@@ -61,8 +61,15 @@ fn exposes_raw_document_text_for_layout_decoding() {
 
     let file = JtdFile::open(&bytes).expect("合成 JTD は読めること");
 
-    assert!(file.document_text_bytes().starts_with(DOCUMENT_TEXT_MAGIC));
-    assert_eq!(file.document_text_bytes(), document_text_stream("本文"));
+    let raw = file
+        .document_text_bytes()
+        .expect("単一ストリームの変種では生バイト列が取れること");
+    assert!(raw.starts_with(DOCUMENT_TEXT_MAGIC));
+    assert_eq!(raw, document_text_stream("本文"));
+    assert!(
+        file.embedded_fragments().is_none(),
+        "断片版のアクセサは None であること"
+    );
 }
 
 #[test]
@@ -200,4 +207,34 @@ fn classifies_by_the_body_actually_read_not_by_stream_presence() {
         "ストリームの存在ではなく、実際に読んだ本文の出所で分類すること"
     );
     assert!(file.plain_text().contains("埋め込み本文"));
+}
+
+#[test]
+fn embedded_fragments_are_not_exposed_as_a_single_stream() {
+    // 埋め込み変種の本文は複数断片を 0x0000 でつないだもので、`/DocumentText` ストリーム
+    // ではない。単一ストリームとして読むと断片ヘッダと境界を誤読するので、
+    // document_text_bytes() では出さない。
+    let mut payload = document_text_stream("いち");
+    payload.extend_from_slice(&[0x00, 0x00]);
+    payload.extend_from_slice(&document_text_stream("に"));
+    let bytes = cfb_with_stream("/JSSlipObject1", &payload);
+
+    let file = JtdFile::open(&bytes).expect("埋め込み断片から本文が拾えること");
+
+    assert_eq!(file.format(), JtdFormat::EmbeddedDocumentText);
+    assert!(
+        file.document_text_bytes().is_none(),
+        "単一ストリームとしては公開しないこと"
+    );
+    let fragments = file
+        .embedded_fragments()
+        .expect("断片版のアクセサからは取れること");
+    assert!(
+        fragments
+            .windows(DOCUMENT_TEXT_MAGIC.len())
+            .filter(|window| *window == DOCUMENT_TEXT_MAGIC)
+            .count()
+            >= 2,
+        "断片が複数つながっていること"
+    );
 }
