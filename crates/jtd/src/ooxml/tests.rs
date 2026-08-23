@@ -56,9 +56,21 @@ fn writes_each_paragraph_as_a_single_w_p() {
 }
 
 #[test]
+fn preserves_leading_and_repeated_spaces() {
+    // 畳まれるのは ASCII の空白（XML 1.0 の空白は #x20/#x9/#xD/#xA）。
+    // 申請書には `  (1)氏名は、…` のような ASCII 2 個のインデントが実在する。
+    let xml = part(&docx_of(&["  (1)氏名は、"]), "word/document.xml");
+
+    assert!(
+        xml.contains(r#"<w:t xml:space="preserve">  (1)氏名は、</w:t>"#),
+        "先頭の ASCII 空白が保たれること: {xml}"
+    );
+}
+
+#[test]
 fn preserves_ideographic_space_padding() {
-    // 申請書の記入欄は全角スペースの連なりで升目を作っている。
-    // `xml:space="preserve"` が無いと Word 側で畳まれ、原本の見た目が壊れる。
+    // 升目は全角スペース（U+3000）の連なりで組まれている。これは XML の空白ではないので
+    // 畳まれないが、詰められて原本の見た目が壊れていないことは固定しておく。
     let xml = part(&docx_of(&["氏　　名　　　　　"]), "word/document.xml");
 
     assert!(

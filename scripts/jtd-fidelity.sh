@@ -4,9 +4,9 @@
 #   scripts/jtd-fidelity.sh [出力ディレクトリ]
 #
 # やること:
-#   1. フィクスチャの .jtd を crates/jtd で docx へ変換する
-#   2. Collabora（docker）で docx を PDF 化し、各ページを PNG にする
-#   3. 原本の配布 PDF も PNG にして、並べて見られる状態にする
+#   1. 原本の配布 PDF を取得して参照側に置く
+#   2. フィクスチャの .jtd を crates/jtd で docx へ変換する
+#   3. Collabora（docker）で docx を PDF 化し、各ページを PNG にする
 #
 # **Collabora が無ければ失敗する。** cargo test に入れずスクリプトに分けてあるのは、
 # 「無いので静かにスキップ」を起こさないため（CLAUDE.md「意図したテストが実際に
@@ -30,12 +30,27 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker pull "$IMAGE"
 fi
 
-mkdir -p "$OUT/docx" "$OUT/pdf" "$OUT/png"
+# 再配布しないフィクスチャは取得済みでなければならない。**黙って飛ばさない。**
+if ! compgen -G "$FIXTURES/external/*.jtd" >/dev/null; then
+  echo "❌ $FIXTURES/external/ に .jtd がありません。" >&2
+  echo "   先に scripts/fetch-jtd-fixtures.sh を実行してください。" >&2
+  exit 1
+fi
+
+mkdir -p "$OUT/docx" "$OUT/pdf" "$OUT/png" "$OUT/reference"
 chmod 777 "$OUT/pdf"
+
+# 原本の配布 PDF。罫線位置とページ割りの真値で、視覚比較の参照側になる。
+echo "→ 原本の配布 PDF を取得"
+if ! curl -fsSL --retry 3 -A "Mozilla/5.0" \
+     -o "$OUT/reference/f1.pdf" "https://www.mhlw.go.jp/wp/kenkyu/koubo04/dl/f1.pdf"; then
+  echo "❌ 原本 PDF を取得できませんでした（比較対象が無いので中止します）。" >&2
+  exit 1
+fi
+echo "   ✅ reference/f1.pdf（$(wc -c <"$OUT/reference/f1.pdf") bytes）"
 
 echo "→ .jtd → docx"
 for jtd in "$FIXTURES"/*.jtd "$FIXTURES"/external/*.jtd; do
-  [ -e "$jtd" ] || continue
   name="$(basename "$jtd" .jtd)"
   cargo run --quiet -p shiki-jtd --example jtd-dump -- --docx "$OUT/docx/$name.docx" "$jtd"
 done
@@ -60,23 +75,24 @@ except ImportError:
     sys.exit("❌ PNG 化には pypdfium2 と pillow が要ります: uv pip install pypdfium2 pillow")
 import pypdfium2 as pdfium
 out = pathlib.Path(sys.argv[1])
-for pdf in sorted((out / "pdf").glob("*.pdf")):
+for pdf in sorted((out / "pdf").glob("*.pdf")) + sorted((out / "reference").glob("*.pdf")):
     document = pdfium.PdfDocument(str(pdf))
     print(f"   {pdf.stem}: {len(document)} ページ")
     for index in range(min(3, len(document))):
         image = document[index].render(scale=2).to_pil()
-        image.save(out / "png" / f"{pdf.stem}.p{index + 1}.png")
+        prefix = "reference-" if pdf.parent.name == "reference" else ""
+        image.save(out / "png" / f"{prefix}{pdf.stem}.p{index + 1}.png")
 PY
 
 cat <<EOF
 
 ✅ 出力: $OUT
-   docx/  変換結果
-   pdf/   Collabora で PDF 化したもの
-   png/   各ファイルの先頭 3 ページ（2 倍解像度）
+   docx/       変換結果
+   pdf/        Collabora で PDF 化したもの
+   reference/  原本の配布 PDF（比較の参照側）
+   png/        各ファイルの先頭 3 ページ（2 倍解像度・reference- 接頭辞が原本）
 
-原本の配布 PDF と並べて見てください（f1 は
-https://www.mhlw.go.jp/wp/kenkyu/koubo04/dl/f1.pdf）。
+png/f1.p1.png と png/reference-f1.p1.png を並べて見てください。
 **この時点では表・罫線・段組・ページ割りは写りません**（JTD.3 / JTD.4 の範囲）。
 見るべきは本文の欠落・文字化け・全角スペースの潰れです。
 EOF

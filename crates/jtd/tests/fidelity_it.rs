@@ -60,7 +60,10 @@ fn normalize(text: &str) -> Vec<char> {
 
 /// `reference` と `ours` の最長共通部分列の長さ。
 ///
-/// 素朴な O(n·m) だが、実文書で 5,000 文字程度なのでこれで足りる（実測 30ms 未満）。
+/// 素朴な O(n·m)。正規化後で参照 4,812 文字 × 我々 4,787 文字なので 2,300 万比較になり、
+/// **debug ビルドで 1 テストあたり 0.6〜0.9 秒**かかる（release なら 0.04 秒）。
+/// 現状 1 テストだけなので許容しているが、サンプルを増やすなら線形時間の差分アルゴリズムに
+/// 替えるか、明示実行に回すこと。
 fn lcs_len(reference: &[char], ours: &[char]) -> usize {
     if reference.is_empty() || ours.is_empty() {
         return 0;
@@ -232,9 +235,9 @@ fn writes_a_valid_docx_package_for_each_fixture() {
 }
 
 #[test]
-fn docx_preserves_the_ideographic_space_padding_of_the_form() {
-    // 申請書の記入欄は全角スペースの連なりで升目を作っている。
-    // `xml:space="preserve"` が落ちると原本の見た目が壊れる。
+fn docx_preserves_the_spacing_of_the_form() {
+    // 畳まれるのは ASCII の空白（XML 1.0 の空白は #x20/#x9/#xD/#xA）で、申請書には
+    // ASCII 空白のインデントが実在する。升目を作る全角スペースは XML の空白ではない。
     let file = JtdFile::open(&fixture("f1.jtd")).expect("f1.jtd が読めること");
     let body = docx_part(
         &file.to_docx().expect("書き出せること"),

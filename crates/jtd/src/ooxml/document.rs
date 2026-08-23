@@ -65,8 +65,8 @@ fn render_run(out: &mut String, text: &str) {
         if line.is_empty() {
             continue;
         }
-        // `xml:space="preserve"` は必須。全角スペースの連なりが升目を作っているので、
-        // 空白が畳まれると原本の見た目が壊れる。
+        // `xml:space="preserve"` は必須。畳まれるのは ASCII の空白で（XML 1.0 の空白は
+        // `#x20` / `#x9` / `#xD` / `#xA` だけ）、申請書には ASCII 空白のインデントが実在する。
         let _ = write!(
             out,
             r#"<w:t xml:space="preserve">{}</w:t>"#,
