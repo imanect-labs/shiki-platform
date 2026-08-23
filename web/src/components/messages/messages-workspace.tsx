@@ -268,12 +268,13 @@ export function MessagesWorkspace() {
     setSearchOpen(false);
   };
 
-  const list = (
+  const list = (drawer: boolean) => (
     <ChannelListPane
       channels={channels}
       activeId={active?.id ?? null}
       viewerId={viewerId}
       searchOpen={searchOpen}
+      drawer={drawer}
       onSelect={openChannel}
       onOpenSearch={() => {
         setSearchOpen(true);
@@ -285,13 +286,13 @@ export function MessagesWorkspace() {
 
   return (
     <div className="flex h-full min-h-0 w-full">
-      <div className="hidden md:flex">{list}</div>
+      <div className="hidden md:flex">{list(false)}</div>
 
       {/* 狭い画面では一覧をドロワで出す（本体は常に 1 カラム）。 */}
       <Sheet open={listOpen} onOpenChange={setListOpen}>
         <SheetContent side="left" className="w-[236px] p-0">
           <SheetTitle className="sr-only">チャンネル一覧</SheetTitle>
-          {list}
+          {list(true)}
         </SheetContent>
       </Sheet>
 

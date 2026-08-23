@@ -103,6 +103,7 @@ export function ChannelListPane({
   activeId,
   viewerId,
   searchOpen,
+  drawer,
   onSelect,
   onOpenSearch,
   onCreateChannel,
@@ -111,6 +112,9 @@ export function ChannelListPane({
   activeId: string | null;
   viewerId: string;
   searchOpen: boolean;
+  /// ドロワ（狭幅）として描くか。Sheet 自身の閉じるボタンが右上に重なるため、
+  /// 見出し行の右側を空けて「＋」がぶつからないようにする。
+  drawer?: boolean;
   onSelect: (id: string) => void;
   onOpenSearch: () => void;
   onCreateChannel: () => void;
@@ -121,8 +125,13 @@ export function ChannelListPane({
   const dms = mine.filter((c) => c.kind === "dm");
 
   return (
-    <aside className="flex h-full w-[236px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
-      <div className="flex h-14 shrink-0 items-center gap-1 px-3">
+    <aside
+      className={cn(
+        "flex h-full shrink-0 flex-col border-r border-sidebar-border bg-sidebar",
+        drawer ? "w-full" : "w-[236px]",
+      )}
+    >
+      <div className={cn("flex h-14 shrink-0 items-center gap-1 px-3", drawer && "pr-11")}>
         <h2 className="flex-1 truncate text-[15px] font-semibold text-sidebar-foreground">
           メッセージ
         </h2>

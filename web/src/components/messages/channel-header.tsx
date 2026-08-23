@@ -60,10 +60,13 @@ export function ChannelHeader({
             非公開
           </span>
         ) : null}
+        {/* トピックは幅に余裕がある時だけ出す。狭いと「2...」のような無意味な省略になる。 */}
         {channel.topic ? (
           <>
-            <span className="h-3.5 w-px shrink-0 bg-border" aria-hidden />
-            <p className="min-w-0 truncate text-[12px] text-muted-foreground">{channel.topic}</p>
+            <span className="hidden h-3.5 w-px shrink-0 bg-border xl:block" aria-hidden />
+            <p className="hidden min-w-0 truncate text-[12px] text-muted-foreground xl:block">
+              {channel.topic}
+            </p>
           </>
         ) : null}
       </div>
