@@ -1,0 +1,38 @@
+openjtd vendored fork — upstream pin
+====================================
+
+upstream:   https://github.com/KimEJ/OpenJTD
+commit:     95cb40321d0f39910068c65fb10ce20230204f37
+vendored:   2026-08-23
+license:    Apache-2.0 (LICENSE / THIRD_PARTY.md を保持)
+
+これは shiki が所有するフォークです（docs/jtd/fork-policy.md）。上流追従は義務ではなく、
+必要な修正のみ patches/ 経由で cherry-pick します。
+
+vendor したもの:
+  rjtd/            Rust ワークスペース（rjtd-core / rjtd-model / rjtd-export / rjtd-cli /
+                   rjtd-wasm / rjtd-testkit）。上流のまま無改変で保持する。
+  openjtd-spec/    JTD フォーマットのリバースエンジニアリング RFC。
+                   crates/jtd のレイアウト解読はこれを出発点にする（RFC 0003 DocumentText・
+                   0006 position tables・0007 layout mark streams が本命）。
+  docs/            上流の ARCHITECTURE / ROADMAP / ICHITARO-FILTER-RESEARCH。
+  TODO.md          どこまで解読済みかのマイルストーン表（M1 コンテナ〜M5 WASM ビューア）。
+
+vendor しなかったもの（上流にあるが不要）:
+  openjtd.github.io/          上流のウェブサイト（4MB）
+  rjtd-testdata/              サンプル置き場。中身は .gitignore で上流も再配布していない
+  openjtd-samples/            同上
+  ichitaro-source-y-probe/    上流の実験メモ
+  scripts/                    上流のリリース補助
+
+shiki 本体が依存するのは rjtd-core と rjtd-model の 2 つだけ
+（`default-features = false` で `bitmap-images` を落とす）。この 2 crate の依存は
+`cfb` と `base64` のみで、shiki の依存グラフはほぼ増えない。
+rjtd-export / rjtd-cli / rjtd-wasm は **依存させず**、リバースエンジニアリング用の
+ローカル調査ツールとして vendor 内に残してある（`cargo run -p rjtd-cli -- <probe>`）。
+
+ローカルパッチ:
+  patches/ 以下に番号付き .patch で管理（現状なし）。
+
+再 vendor 手順:
+  scripts/update-openjtd.sh を参照。
