@@ -10,8 +10,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
-
 use crate::service::StorageService;
 
 /// 中断アップロード回収の設定。
@@ -26,6 +24,14 @@ pub struct UploadGcOptions {
 /// 連続失敗時の最小待機（0 で回して DB/オブジェクトストアを叩き続けないための下限）。
 const MIN_BACKOFF: Duration = Duration::from_secs(30);
 
+/// sweep 間隔の下限。
+///
+/// 設定は起動時に検証しているが（`AppConfig::check_upload_gc_bounds`）、タイマ側でも
+/// 下限を効かせる。ここが 0 になると、成功時の待機も失敗時 backoff の上限
+/// （`min(interval)`）も 0 に潰れ、全テナントのプレフィックス LIST と DB 走査を
+/// 休みなく連続実行して自分でストアを飽和させる。
+const MIN_INTERVAL: Duration = Duration::from_mins(1);
+
 /// 中断アップロードの回収タイマをバックグラウンド起動する。
 ///
 /// 返した `JoinHandle` は保持不要（プロセス生存中は動き続ける）。
@@ -33,16 +39,14 @@ pub fn spawn_upload_gc_timer(
     service: Arc<StorageService>,
     opts: UploadGcOptions,
 ) -> tokio::task::JoinHandle<()> {
+    let interval = opts.interval.max(MIN_INTERVAL);
     tokio::spawn(async move {
         // 起動直後に 1 回走らせる（前回プロセスが落ちた時の取り残しを引き継いで回収する）。
         let mut backoff = MIN_BACKOFF;
         loop {
             let mut failed = false;
 
-            match service
-                .sweep_expired_pending_uploads(Utc::now(), opts.ttl)
-                .await
-            {
+            match service.sweep_expired_pending_uploads(opts.ttl).await {
                 Ok(n) if n > 0 => {
                     tracing::info!(count = n, "中断アップロードを回収しました（#468）");
                 }
@@ -69,11 +73,11 @@ pub fn spawn_upload_gc_timer(
 
             let wait = if failed {
                 let w = backoff;
-                backoff = (backoff * 2).min(opts.interval);
+                backoff = (backoff * 2).min(interval).max(MIN_BACKOFF);
                 w
             } else {
                 backoff = MIN_BACKOFF;
-                opts.interval
+                interval
             };
             tokio::time::sleep(wait).await;
         }

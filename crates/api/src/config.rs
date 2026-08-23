@@ -261,6 +261,7 @@ impl AppConfig {
             return Err(ConfigError::Invalid("session.redis_url が空です".into()));
         }
         Self::check_session_bounds(&self.session)?;
+        Self::check_upload_gc_bounds(&self.storage)?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),
@@ -323,6 +324,44 @@ impl AppConfig {
             return Err(ConfigError::Invalid(
                 "session.refresh_leeway_secs は 0 以上が必要です".into(),
             ));
+        }
+        Ok(())
+    }
+
+    /// 中断アップロード回収（#468）の数値設定の境界を検証する。
+    ///
+    /// この GC は**全テナントの pending_upload とオブジェクトを消す**ので、不正値の影響が
+    /// 設定ミスの範囲に留まらない。
+    ///
+    /// - `ttl_secs = 0` を通すと、起動直後の初回 sweep が全テナントの pending_upload を
+    ///   一掃する。その瞬間に PUT 中だった全ユーザーの finalize が NotFound になり、
+    ///   アップロード済みのバイトは復旧できない。
+    /// - `interval_secs = 0` を通すと、sweep が休みなく連続実行され、DB とオブジェクト
+    ///   ストアを自前で飽和させる。
+    /// - presigned PUT の TTL 以下だと、URL がまだ有効なうちに declare が回収される。
+    ///   低速回線での大きいファイルほど確実に踏む。
+    fn check_upload_gc_bounds(storage: &StorageConfig) -> Result<(), ConfigError> {
+        let gc = &storage.upload_gc;
+        if gc.ttl_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "storage.upload_gc.ttl_secs は 1 以上が必要です（0 は進行中のアップロードを\
+                 即座に回収します）"
+                    .into(),
+            ));
+        }
+        if gc.interval_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "storage.upload_gc.interval_secs は 1 以上が必要です".into(),
+            ));
+        }
+        if let Some(s3) = storage.s3.as_ref() {
+            if gc.ttl_secs <= s3.presign_put_ttl_secs {
+                return Err(ConfigError::Invalid(format!(
+                    "storage.upload_gc.ttl_secs ({}) は storage.s3.presign_put_ttl_secs ({}) より\
+                     大きい必要があります（URL がまだ有効なうちに declare を回収してしまいます）",
+                    gc.ttl_secs, s3.presign_put_ttl_secs
+                )));
+            }
         }
         Ok(())
     }

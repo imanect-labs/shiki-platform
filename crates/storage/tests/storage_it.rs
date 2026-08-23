@@ -4925,10 +4925,12 @@ async fn upload_gc_reclaims_expired_pending_uploads() {
     .expect("created_at 巻き戻し");
 
     let reclaimed = service
-        .sweep_expired_pending_uploads(chrono::Utc::now(), Duration::from_secs(24 * 60 * 60))
+        .sweep_expired_pending_uploads(Duration::from_secs(24 * 60 * 60))
         .await
         .expect("TTL sweep");
-    assert_eq!(reclaimed, 1, "期限切れの 1 件だけ回収される");
+    // sweep は全テナント横断なので、同時に走る他テストの期限切れ行も数に乗る。
+    // 「この org の stale だけが消え fresh は残る」ことは下の個別アサーションで見る。
+    assert!(reclaimed >= 1, "期限切れが回収される: {reclaimed}");
 
     // 行もオブジェクトも消えている。
     assert_eq!(pending_exists(&pool, stale_ticket.upload_id).await, 0);
@@ -4943,6 +4945,75 @@ async fn upload_gc_reclaims_expired_pending_uploads() {
         .finalize_upload(&ctx, fresh_ticket.upload_id, None)
         .await
         .expect("TTL 内の declare は sweep 後も finalize できる");
+
+    // 全テナント横断の破壊的操作なので削除証跡が残る（設定ミス・時計 skew で進行中を
+    // 巻き添えにした時、どの upload_id を消したか事後に追える必要がある）。
+    let audited: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log \
+          WHERE org = $1 AND action = 'storage.upload_gc.expire' ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&org)
+    .fetch_optional(&pool)
+    .await
+    .expect("監査取得");
+    let audited = audited.expect("TTL 回収が audit_log に記録される");
+    assert_eq!(audited["count"], 1);
+    assert_eq!(
+        audited["upload_ids"][0],
+        serde_json::json!(stale_ticket.upload_id),
+        "回収した upload_id が証跡に載る"
+    );
+}
+
+/// TTL sweep（#468）は 1 バッチ（500 行）を超える取り残しも 1 周で回収し切る。
+///
+/// 既存デプロイへの初回投入では、それまで溜まった中断アップロードがまとめて対象になる。
+/// バッチ境界でループが止まると回収が何周にも渡って遅延するため、跨げることを確かめる。
+#[tokio::test]
+async fn upload_gc_sweeps_across_batch_boundary() {
+    let Some(Ctx { service, pool, .. }) = setup().await else {
+        return;
+    };
+    let org = format!("gc-batch-{}", Uuid::new_v4());
+    let tenant = "default";
+
+    // オブジェクトを伴わない行だけを直接入れる（バッチ境界の検証が目的で、
+    // 実バイトの有無は sweep のループ制御に影響しない）。
+    let n = 520; // TTL_BATCH(500) を跨ぐ。
+    sqlx::query(
+        "INSERT INTO pending_upload \
+           (org, tenant_id, name, content_type, declared_sha256, declared_size, \
+            staging_key, created_by, created_at) \
+         SELECT $1, $2, 'x.txt', 'text/plain', 'deadbeef', 0, \
+                $1 || '/staging/' || gen_random_uuid(), 'u', now() - interval '48 hours' \
+           FROM generate_series(1, $3)",
+    )
+    .bind(&org)
+    .bind(tenant)
+    .bind(n)
+    .execute(&pool)
+    .await
+    .expect("バックログ投入");
+
+    // 返り値（全テナント横断の件数）ではなく **自分の org の行だけ**を見る。共有 DB で
+    // 並行するテストの sweep も同じ行を claim しうるため、件数アサーションは競合する
+    // （`share_link_sweep_ignores_poison_kind` と同じ作法）。
+    service
+        .sweep_expired_pending_uploads(Duration::from_secs(24 * 60 * 60))
+        .await
+        .expect("TTL sweep");
+
+    let left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pending_upload WHERE org = $1 AND tenant_id = $2")
+            .bind(&org)
+            .bind(tenant)
+            .fetch_one(&pool)
+            .await
+            .expect("残数");
+    assert_eq!(
+        left, 0,
+        "1 回の sweep で {n} 行すべて回収される（バッチ境界で止まらない）"
+    );
 }
 
 /// 孤児 sweep（#468）: `pending_upload` に対応行が無い staging/incoming を回収する。
@@ -5051,6 +5122,17 @@ async fn upload_gc_reclaims_orphan_staging_objects() {
         .finalize_upload(&ctx, live_ticket.upload_id, None)
         .await
         .expect("行の在る declare は孤児 sweep 後も finalize できる");
+
+    // 孤児削除も削除証跡を残す（どのプレフィックスで何件消したか）。
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log \
+          WHERE org = $1 AND action = 'storage.upload_gc.orphan_delete'",
+    )
+    .bind(&org)
+    .fetch_one(&pool)
+    .await
+    .expect("監査取得");
+    assert!(audited > 0, "孤児削除が audit_log に記録される");
 }
 
 /// pending_upload の staging_key を引く。
