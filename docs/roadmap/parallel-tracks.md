@@ -3,7 +3,7 @@
 > フェーズの直線（Phase 0→8）に乗らない作業を、トラックごとにまとめる。
 > 各トラックは独立した起動タイミングを持ち、対応する基盤フェーズが安定してから着手する。
 > タスク粒度は各 Phase ファイルと同じ**イシュー粒度**（1タスク=1 GitHub Issue）。
-> task ID はトラック接頭辞（SK / V2 / SAAS / GUI2 / BR）を使う。
+> task ID はトラック接頭辞（SK / V2 / SAAS / GUI2 / BR / ASR / JTD）を使う。
 > 関連: [要件定義書](../requirements.md)（6. スコープ外/将来, FR-1 skillex統合）/ [設計書](../design.md) / [ROADMAP](../roadmap.md)
 
 ---
@@ -523,3 +523,99 @@
 - **受け入れ条件**:
   - [ ] 保存 OFF のとき、認識後に音声が残らない
   - [ ] 保存 ON のとき、閲覧が ReBAC で制御され監査に残る
+
+---
+
+## トラックJTD — 一太郎（JTD）→ docx 変換（接頭辞 JTD.x）
+
+> 目的: **日本の官公庁・学会が現在も配布している一太郎形式（.jtd）を shiki で扱えるようにする**。
+> 原本は保持したまま docx へ変換し、以後は RAG・プレビュー・共有・編集の既存 docx 経路に乗せる。
+> Phase 1（ストレージ）と Phase 2（RAG）が入っていれば着手できる独立トラック。
+>
+> **なぜ自前で持つのか**: **Collabora / LibreOffice は JTD を読めない**。Linux 版に一太郎フィルタが無く、
+> `soffice --headless --convert-to docx` は Writer 扱いにこそなるが実体はテキストフィルタへの
+> フォールバックで、CFB の生バイトをそのまま吐く（実機で確認）。かつて OpenOffice.org にあった
+> Ichitaro Document Filter は Windows 専用拡張で、我々のデプロイ先には存在しない。
+> よって Phase 11 の Office 経路は流用できず、変換器を自前で持つ。
+>
+> **どこまでが自前か**: CFB コンテナの読解と `DocumentText` のトークン化は所有フォーク
+> [OpenJTD](https://github.com/KimEJ/OpenJTD)（`vendor/openjtd`・Apache-2.0）に任せる。
+> 上流の文書モデルは `Block = Paragraph | Unknown` で**表を持たず**、ページ幾何は上流自身が
+> 未解読と明示している。**表・罫線・ページ幾何の解読と OOXML への写像が我々の担当分**。
+> 運用方針は [docs/jtd/fork-policy.md](../jtd/fork-policy.md) が正本。
+>
+> **対象**: 一太郎 8〜13 系（CFB ＋ `/DocumentText`）。
+> **スコープ外**: 一太郎 2004（v14）以降 / `.jtdc` 圧縮形式（認識のみ行い変換しない）。
+> JTD への書き戻しも行わない（原本は常に不変）。
+>
+> **到達目標**: 判定用サンプル 3 本（厚労省「研究計画書」`f1.jtd` / 厚労省「第一種使用規程」`betu.jtd` /
+> 日本コンクリート工学会「和文原稿作成テンプレート」`tpwin_jp.jtd`）を、原本の配布 PDF と
+> 並べて見て遜色ないレベルで docx に写せること。**PR3（表・罫線）と PR4（ページ幾何）は
+> リバースエンジニアリングであり、ページ割りの完全一致は達成できない可能性がある。**
+> その場合は到達水準を正直に報告して妥協点を human に判断してもらう。
+
+### タスク一覧
+
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| JTD.1 | OpenJTD を `vendor/openjtd` に所有フォークとして取り込む | infra | — |
+| JTD.2 | `crates/jtd`: 本文・段落の中間モデル ＋ OOXML ライタ ＋ 忠実度ハーネス | api | JTD.1 |
+| JTD.3 | 表と罫線の解読（`0x001C`…`0x001F` レコード・`0x000E` セル区切り）→ `w:tbl` | api | JTD.2 |
+| JTD.4 | ページ・段組・余白の解読（`PageMark` / `PaperMark` / `PageLayoutStyle`）→ `w:sectPr` | api | JTD.2 |
+| JTD.5 | 文字書式・ルビ・フォント（`Font` / `TextLayoutStyle` / `DocumentEditStyles`）→ `w:rPr` / `w:ruby` | api | JTD.2 |
+| JTD.6 | 画像・数式・オブジェクト（`EmbedItems` / `Equation Native` / `Frame`）→ `w:drawing` / OMML | api | JTD.2 |
+| JTD.7 | プロダクト結線（rendition 生成・RAG・UI・E2E） | storage/rag/frontend | JTD.3, JTD.4, JTD.5, JTD.6 |
+
+### Task JTD.1: OpenJTD を所有フォークとして取り込む
+- **area**: infra / **path**: `vendor/openjtd/`, `crates/jtd/`, `Cargo.toml`, `scripts/update-openjtd.sh`
+- **仕様**: `vendor/secure-exec` と同じ所有フォーク運用（独自 workspace・`exclude`・品質ゲート除外・
+  再 vendor スクリプト・`patches/` による最小 diff）。shiki 本体が依存するのは `rjtd-core` のみとし、
+  同梱の `rjtd-cli`（解読プローブ）・`rjtd-export`・`rjtd-wasm` には依存しない。
+  **JTD は外部由来バイナリで、パースは worker 往復ではなく shiki-server のプロセス内で走る**ため、
+  資源上限を上流既定より締め、細工入力に対して**有界な時間とメモリで返る**ことをテストで固定する。
+- **受け入れ条件**:
+  - [ ] `cargo deny --all-features check` が通り、増える依存が把握できている
+  - [ ] カバレッジ 80% ゲートが上流コードに当たらない
+  - [ ] 細工した CFB ヘッダでプロセスが落ちない（negative・時間もアサートする）
+
+### Task JTD.2: 本文・段落 ＋ OOXML ライタ ＋ 忠実度ハーネス
+- **area**: api / **path**: `crates/jtd/`
+- **仕様**: `DocumentText` トークン列 → 中間モデル `JtdDocument` → docx bytes。docx 生成は
+  `zip` ＋ `quick-xml` で自前に書く（既存の `DocxComposer` は Python worker の python-docx 経由で、
+  セル単位の罫線・絶対配置フレーム・ルビ・段組・OMML を組むには足りない）。
+  **忠実度ハーネスを同時に入れ、以後のタスクのゲートにする**: 生成した docx を Collabora で PDF 化し、
+  原本の配布 PDF と比べる。指標は ①正規化テキスト一致率 ②表の構造一致 ③ページ数一致 ④ページ画像の差分率。
+  ①②③を CI ゲートにし、④は PR にスクリーンショットを貼って目視で確認する。
+- **受け入れ条件**:
+  - [ ] サンプル 3 本の本文テキストが原本 PDF の抽出テキストと一致する（正規化後）
+  - [ ] 忠実度ハーネスが Collabora 不在の環境で**黙ってスキップせず**明示的に失敗する
+
+### Task JTD.3: 表と罫線
+- **area**: api / **path**: `crates/jtd/`
+- **仕様**: `0x001C` で開き `0x001F` で閉じる制御レコード（上流の `RECORD_CLASS_TABLE_CELL = 0x0030`）から
+  セルの水平範囲を取り、`0x000E` のセル区切りで行を束ねる。罫線は**セルごとに上下左右が独立**なので
+  `w:tcBorders` に個別に写す。結合は `w:gridSpan` / `w:vMerge`。
+  解読の出発点は `vendor/openjtd/openjtd-spec/rfc/0009-document-text-paragraph-record` と同 `0003`。
+- **受け入れ条件**:
+  - [ ] `f1.jtd` の申請者テーブルが原本 PDF と同じ行数・列数・結合で出る（視覚確認必須）
+
+### Task JTD.4: ページ・段組・余白
+- **area**: api / **path**: `crates/jtd/`
+- **仕様**: `PageMark` / `PaperMark` / `PageLayoutStyle` の幾何を解読して `w:sectPr` に写す。
+  **上流が `page-mark-u16-geometry-semantics-unproven` として踏み込んでいない領域**で、ここは
+  我々のリバースエンジニアリングになる。出発点は同 RFC `0007-layout-mark-streams`。
+- **受け入れ条件**:
+  - [ ] ページ数が原本 PDF と一致する（`f1` = 11 / `betu` = 9 / `tpwin_jp` = 4）
+  - [ ] 達成できない場合、到達水準と妥協点を PR に明記して human の判断を仰いでいる
+
+### Task JTD.7: プロダクト結線
+- **area**: storage / rag / frontend / **path**: `crates/storage`, `crates/rag`, `crates/api`, `web/`, `migrations/`
+- **仕様**: 変換は **StorageService チョークポイントの内側**でのみ走らせる（`AuthContext` 必須）。
+  派生 docx は原本ノードに**完全従属する rendition** として持ち、**rendition 固有の ReBAC タプルは作らない**
+  （権限は常に原本 node のもの＝認可の分岐点を増やさない）。RAG は rendition の docx bytes を
+  既存 Docling 経路へ流す。**JTD への書き戻しはしない**ので、編集は「Word として複製して編集」＝
+  新規 docx ノードの作成として UI に明示する。
+- **受け入れ条件**:
+  - [ ] JTD をアップロードすると RAG 検索でヒットする
+  - [ ] rendition の閲覧可否が原本 node の ReBAC に完全に従う（negative 含む）
+  - [ ] 原本 JTD が変換・編集のどちらでも書き換わらない
