@@ -610,6 +610,15 @@
 
 ### Task JTD.7: プロダクト結線
 - **area**: storage / rag / frontend / **path**: `crates/storage`, `crates/rag`, `crates/api`, `web/`, `migrations/`
+- **前提（JTD.1 時点で未決定・human 判断が要る）**: **JTD パーサをどこで走らせるか。**
+  既存の文書パースのチョークポイントは `DocumentParser` トレイト（`crates/rag/src/parser.rs`）で、
+  既定実装は ingestion-worker への HTTP 呼び出し。JTD を `shiki-server` の**プロセス内**で解くのは
+  その差し替え点の外に経路を作る決定であり、CLAUDE.md の「トレイト境界の変更は human に確認」に当たる。
+  選択肢は ①`DocumentParser` の裏に入れる ②worker／別プロセスへ出す
+  ③in-process のまま semaphore ＋ `spawn_blocking` ＋ wall-clock timeout を必須にする。
+  **本タスクの着手前に決め、結論を `docs/design.md` に書く。**
+  判断材料: JTD.1 の独立レビューで、細工した 1 KiB〜1 MiB のファイルがプロセスごと落とせることを
+  実測している（`vendor/openjtd/patches/000{1,2,3}`）。in-process は被害が API 全体に及ぶ。
 - **仕様**: 変換は **StorageService チョークポイントの内側**でのみ走らせる（`AuthContext` 必須）。
   派生 docx は原本ノードに**完全従属する rendition** として持ち、**rendition 固有の ReBAC タプルは作らない**
   （権限は常に原本 node のもの＝認可の分岐点を増やさない）。RAG は rendition の docx bytes を

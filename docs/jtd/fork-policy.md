@@ -1,8 +1,8 @@
 # OpenJTD フォーク運用ポリシ
 
 > 一太郎（JTD）対応の基盤である [OpenJTD](https://github.com/KimEJ/OpenJTD) を
-> **我々が所有するフォーク**として保守する方針。`vendor/secure-exec` と同じ扱い
-> （[docs/sandbox/fork-policy.md](../sandbox/fork-policy.md) と対）。
+> **我々が所有するフォーク**として保守する方針。`vendor/secure-exec` と同じ扱いで、
+> [docs/sandbox/fork-policy.md](../sandbox/fork-policy.md) と対になる文書。
 
 ## なぜ自前で持つのか
 

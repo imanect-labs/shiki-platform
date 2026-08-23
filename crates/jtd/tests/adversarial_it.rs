@@ -20,6 +20,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::io::{Cursor, Write};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use jtd::{JtdError, JtdFile};
@@ -27,6 +29,12 @@ use jtd::{JtdError, JtdFile};
 /// 細工した入力 1 件あたりの許容時間。実測は μs オーダーなので、
 /// これに触れたら「有界でなくなった」と判断してよい。
 const BUDGET: Duration = Duration::from_secs(5);
+
+/// パースを走らせるスレッドのスタックサイズ。
+///
+/// tokio ワーカースレッドの既定と同じ 2 MiB に揃える。テストスレッドの既定は
+/// 実行環境で変わるため、**本番で落ちるものがテストでは落ちない**という取りこぼしを避ける。
+const PARSE_STACK_BYTES: usize = 2 * 1024 * 1024;
 
 const CFB_MAGIC: &[u8; 8] = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
 
@@ -49,11 +57,38 @@ fn crafted_header(len: usize, sector_shift: u16) -> Vec<u8> {
     bytes
 }
 
-/// 経過時間つきで開く。
+/// 別スレッドで開き、`BUDGET` を超えたらその場で落とす。
+///
+/// 呼び出し元で `elapsed < BUDGET` を assert するだけでは**ハングを検出できない**
+/// （戻ってこないので assert に到達しない）。それだと CI の外側タイムアウトまで止まり、
+/// 「遅い」のか「壊れた」のか区別が付かない。ここで見切ることで、退行は
+/// `BUDGET` 内のテスト失敗として出る。
+///
+/// スレッドは kill できないので、超過時は走りっぱなしのまま残す。テストプロセスの
+/// 終了で回収されるので実害は無い。
 fn open_timed(bytes: &[u8]) -> (Result<JtdFile, JtdError>, Duration) {
+    let owned = bytes.to_vec();
+    let (sender, receiver) = mpsc::channel();
     let started = Instant::now();
-    let result = JtdFile::open(bytes);
-    (result, started.elapsed())
+
+    thread::Builder::new()
+        .stack_size(PARSE_STACK_BYTES)
+        .spawn(move || {
+            let _ = sender.send(JtdFile::open(&owned));
+        })
+        .expect("パース用スレッドを起動できること");
+
+    match receiver.recv_timeout(BUDGET) {
+        Ok(result) => (result, started.elapsed()),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            panic!("{BUDGET:?} を超えても返らなかった（有界性の退行）")
+        }
+        // `JtdFile::open` 内のパニックは `guard()` が Err へ畳むので、ここに来るのは
+        // その外側で落ちたとき。abort ならプロセスごと死ぬので、そもそも到達しない。
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("パース用スレッドが結果を返さずに終了しました")
+        }
+    }
 }
 
 #[test]

@@ -22,6 +22,7 @@ fi
 ROOT="$(git rev-parse --show-toplevel)"
 DST="$ROOT/vendor/openjtd"
 TMP="$(mktemp -d)"
+# 退避を作るまでは単純に片付けるだけ。退避後は restore() に差し替える。
 trap 'rm -rf "$TMP"' EXIT
 
 echo "→ 上流 clone（$SHA）"
@@ -50,6 +51,27 @@ EOF
   done
 fi
 
+# 既存ツリーは**退避**してから差し替える。単に rm -rf して上書きすると、コピー失敗・
+# 容量不足・後段のビルド失敗のいずれでも、部分更新または未検証のツリーが残ってしまう。
+BACKUP="$TMP/backup"
+restore() {
+  if [ -d "$BACKUP" ]; then
+    echo "↩ 失敗したので vendor/openjtd を元に戻します" >&2
+    for item in rjtd openjtd-spec docs LICENSE THIRD_PARTY.md README.md README.ja.md TODO.md TODO.ja.md UPSTREAM; do
+      rm -rf "${DST:?}/$item"
+      [ -e "$BACKUP/$item" ] && cp -a "$BACKUP/$item" "$DST/"
+    done
+  fi
+  rm -rf "$TMP"
+}
+trap restore EXIT
+
+echo "→ 現行ツリーを退避"
+mkdir -p "$BACKUP"
+for item in rjtd openjtd-spec docs LICENSE THIRD_PARTY.md README.md README.ja.md TODO.md TODO.ja.md UPSTREAM; do
+  [ -e "$DST/$item" ] && cp -a "$DST/$item" "$BACKUP/"
+done
+
 echo "→ rjtd ワークスペース同期（ビルド成果物は除く・patches 適用済み）"
 rm -rf "$DST/rjtd"
 cp -a "$TMP/src/rjtd" "$DST/"
@@ -72,5 +94,9 @@ echo "→ ビルド確認（shiki が依存する rjtd-core ＋ 解読プロー�
 
 echo "→ 敵対的入力の回帰テスト"
 ( cd "$ROOT" && cargo test -p shiki-jtd )
+
+# ここまで来たら成功。退避を捨てて、trap を通常の後片付けへ戻す。
+rm -rf "$BACKUP"
+trap 'rm -rf "$TMP"' EXIT
 
 echo "✅ 再 vendor 完了。crates/jtd 側のゴールデンテストも流して退行が無いか確認すること。"

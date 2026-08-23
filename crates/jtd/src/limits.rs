@@ -84,10 +84,15 @@ impl JtdLimits {
     /// 上流の型を公開 API に出さないのは、将来 rjtd を別実装へ差し替えても
     /// `crates/jtd` の公開型が変わらないようにするため（CLAUDE.md「差し替えはトレイト裏で」）。
     pub(crate) fn to_parse_limits(self) -> ParseLimits {
+        // 展開上限は入力上限で頭打ちにする。setter は独立に呼べるので、これを写す側で
+        // 保証しないと「入力 8 MiB・展開 16 MiB」のような設定が作れてしまい、
+        // 圧縮を経由するだけで入力上限を超える CFB を再パースさせられる。
+        let max_decompressed = self.max_document_text_bytes.min(self.max_input_bytes);
+
         ParseLimits::DEFAULT
             .with_max_input_bytes(self.max_input_bytes)
-            .with_max_decompressed_bytes(self.max_document_text_bytes)
-            .with_max_total_decompressed_bytes(self.max_document_text_bytes)
+            .with_max_decompressed_bytes(max_decompressed)
+            .with_max_total_decompressed_bytes(max_decompressed)
             .with_max_decompression_ratio(self.max_expansion_ratio)
             .with_decompression_ratio_floor_bytes(EXPANSION_RATIO_FLOOR_BYTES)
     }
@@ -121,16 +126,16 @@ mod tests {
     #[test]
     fn overrides_reach_upstream_limit_type() {
         let limits = JtdLimits::DEFAULT
-            .with_max_input_bytes(123)
-            .with_max_document_text_bytes(456);
+            .with_max_input_bytes(456)
+            .with_max_document_text_bytes(123);
 
-        assert_eq!(limits.max_input_bytes(), 123);
+        assert_eq!(limits.max_input_bytes(), 456);
 
         let parse_limits = limits.to_parse_limits();
-        assert_eq!(parse_limits.max_input_bytes(), 123);
-        assert_eq!(parse_limits.max_total_decompressed_bytes(), 456);
+        assert_eq!(parse_limits.max_input_bytes(), 456);
+        assert_eq!(parse_limits.max_total_decompressed_bytes(), 123);
         assert!(
-            parse_limits.check_input_size(124).is_err(),
+            parse_limits.check_input_size(457).is_err(),
             "入力上限を超えたら弾かれること"
         );
     }
@@ -182,6 +187,23 @@ mod tests {
         assert!(
             parse_limits.max_total_decompressed_bytes() <= limits.max_input_bytes(),
             "展開上限は入力上限を超えないこと"
+        );
+    }
+
+    #[test]
+    fn inconsistent_custom_limits_are_clamped() {
+        // setter は独立に呼べるので、矛盾した組み合わせを作れてしまう。
+        // 写す側で頭打ちにしていることを固定する。
+        let limits = JtdLimits::DEFAULT
+            .with_max_input_bytes(8 * MIB)
+            .with_max_document_text_bytes(16 * MIB);
+
+        let parse_limits = limits.to_parse_limits();
+
+        assert_eq!(
+            parse_limits.max_total_decompressed_bytes(),
+            8 * MIB,
+            "入力上限より大きい展開上限は入力上限へ切り詰められること"
         );
     }
 

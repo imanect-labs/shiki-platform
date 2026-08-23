@@ -9,8 +9,8 @@ members = ["crates/*"]
 # script-runtime/fuzz は cargo-fuzz 専用クレート。いずれもメイン workspace から除外し、
 # 前者は再現ビルドした wasm を assets/ に vendor する（docs/script-runtime-guest.md）。
 # vendor/openjtd も同じ扱いの所有フォーク（独自 workspace）。shiki が依存するのは
-# rjtd-core / rjtd-model の 2 つだけで、同梱の rjtd-cli（解読プローブ）・rjtd-export・
-# rjtd-wasm には依存しない。docs/jtd/fork-policy.md 参照。
+# rjtd-core だけで、同梱の rjtd-model・rjtd-cli（解読プローブ）・rjtd-export・rjtd-wasm には
+# 依存しない。docs/jtd/fork-policy.md 参照。
 exclude = [
     "vendor/secure-exec",
     "vendor/openjtd/rjtd",
