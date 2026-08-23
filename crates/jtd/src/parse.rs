@@ -41,6 +41,10 @@ use crate::model::{Block, JtdDocument, Paragraph, TextRun};
 const MAGIC: &[u8; 8] = b"SsmgV.01";
 /// マジックの後に続くヘッダのワード数（ストリーム先頭から数えて 10 ワード − マジック 4 ワード）。
 const HEADER_WORDS_AFTER_MAGIC: usize = 6;
+/// セグメント数フィールドの位置（マジックの後ろから数えて）。
+const SEGMENT_COUNT_INDEX: usize = 1;
+/// 生テキストセグメント形式を表すセグメント数。
+const RAW_TEXT_SEGMENT_COUNT: u16 = 0x0001;
 /// 生テキストセグメント形式の名前。
 const TEXT_SEGMENT_NAME: &[u16; 4] = &[0x5465, 0x7874, 0x562e, 0x3031]; // "TextV.01"
 
@@ -52,8 +56,12 @@ const RECORD_END: u16 = 0x001f;
 const INLINE_OPEN: u16 = 0x001d;
 /// インライン形式の終了。
 const INLINE_CLOSE: u16 = 0x001e;
-/// 表のセル区切り（表としての再構成は JTD.3）。
-const CELL_DELIMITER: u16 = 0x000e;
+/// 表の**行**区切り（RFC 0003 `TABLE_ROW_DELIMITER_CONTROL`・上流 `TEXT_ROW_DELIMITER`）。
+///
+/// **セル区切りではない。** セルはクラス `0x0030` のレコードが 1 セル 1 件で区切る
+/// （RFC 0009）。実データでも `0x000E` の直後は必ず `0x001C class=0x0010` の行ヘッダで、
+/// 行の末尾にしか現れない。タブとして出すと行末にゴミが残る。
+const ROW_DELIMITER: u16 = 0x000e;
 /// 段落内の改行。
 const LINE_BREAK: u16 = 0x000a;
 /// 改ページ（RFC 0003: 一太郎の COM エクスポートが `Chr(12)` を改ページ文字に使う）。
@@ -70,15 +78,21 @@ const CLASS_PARAGRAPH: u16 = 0x0010;
 /// 「所属施設」などがこの形で入っている）。認識できないセレクタはルビ・テンプレート
 /// 差込なので本文には混ぜない。
 const INLINE_TEXT_SELECTORS: [u16; 3] = [0x0001, 0x0003, 0x0013];
-/// 認識するインラインレコードのヘッダ（`0x001D` の直前 6 ワードのうち先頭 5 つ）。
-const INLINE_HEADER: [u16; 5] = [0x001c, 0x0001, 0x0007, 0x0000, 0x0000];
-
-/// ルビ・テンプレート差込のインライン形式のクラス。
+/// インラインレコードの固定ヘッダ（`0x001C class=0x0001 len=0x0007 0x0000 0x0000`）。
 ///
 /// **このクラスだけフッタを持たない。** 終端が `0x001D` で、以降 `0x001E` までが表示テキスト。
 /// 標準レコードとして読もうとすると整合検査に落ち、そこで本文全体が途切れる
 /// （実際 `f1.jtd` は 9,984 文字が 223 文字になっていた）。
-const CLASS_INLINE: u16 = 0x0001;
+const INLINE_HEADER: [u16; 5] = [0x001c, 0x0001, 0x0007, 0x0000, 0x0000];
+/// インラインレコードの固定長（`0x001C 0x0001 0x0007 … 0x001D` の 7 ワード・RFC 0009）。
+const INLINE_RECORD_WORDS: usize = 7;
+/// 表示テキストの最大ユニット数。
+///
+/// **有界性のために要る。** 閉じ `0x001E` を末尾まで探すと、`0x001D` を敷き詰めた入力で
+/// 走査が O(n²) になる（実測 400,000 ユニットで 56 秒・8 MiB なら 1.7 時間）。
+/// 上流 `read_skipped_inline_segment` も同じ 256 ユニットで打ち切っている。
+const INLINE_MAX_UNITS: usize = 256;
+
 /// フッタの固定ワード（len エコーの次）。
 const FOOTER_PAD: u16 = 0x0000;
 /// フッタ（len エコー・0x0000・class エコー・0x001F）を含む最小のレコード長。
@@ -98,7 +112,8 @@ pub(crate) fn parse_document(raw: &[u8]) -> JtdDocument {
         .collect();
 
     let start = text_start(&units);
-    Builder::default().run(&units, start)
+    let end = text_end(&units, start);
+    Builder::default().run(&units[..end], start)
 }
 
 /// 本文が始まるユニット位置を返す。
@@ -116,6 +131,24 @@ fn text_start(units: &[u16]) -> usize {
     } else {
         after_header
     }
+}
+
+/// 本文の終端ユニット位置。
+///
+/// 生テキストセグメント形式（セグメント数 `0x0001` ＋ `TextV.01`）は宣言長を持つので、
+/// そこで切る。宣言長を無視すると末尾のパディングを本文として取り込む。
+/// 通常形式は宣言長を持たないのでストリーム末尾まで。
+fn text_end(units: &[u16], start: usize) -> usize {
+    let is_raw_text_segment = units.get(SEGMENT_COUNT_INDEX) == Some(&RAW_TEXT_SEGMENT_COUNT)
+        && units
+            .get(HEADER_WORDS_AFTER_MAGIC..HEADER_WORDS_AFTER_MAGIC + TEXT_SEGMENT_NAME.len())
+            .is_some_and(|name| name == TEXT_SEGMENT_NAME);
+
+    if !is_raw_text_segment {
+        return units.len();
+    }
+    let declared = units.get(start - 1).copied().unwrap_or(0) as usize;
+    start.saturating_add(declared).min(units.len())
 }
 
 /// レコードの読み取り結果。
@@ -145,8 +178,8 @@ impl Builder {
             let unit = units[index];
 
             if unit == RECORD_OPEN {
-                if units.get(index + 1) == Some(&CLASS_INLINE) {
-                    index = self.read_inline_record(units, index);
+                if let Some(open) = inline_record_open(units, index) {
+                    index = self.read_inline_record(units, open);
                     continue;
                 }
                 let Some(record) = read_record(units, index) else {
@@ -199,14 +232,9 @@ impl Builder {
     fn push_text(&mut self, units: &[u16], index: usize) -> usize {
         let unit = units[index];
         match unit {
-            // 改行と改ページはどちらも行を割るが、本文は続く。
-            LINE_BREAK | PAGE_BREAK => {
+            // 改行・改ページ・表の行区切りはどれも行を割るが、本文は続く。
+            LINE_BREAK | PAGE_BREAK | ROW_DELIMITER => {
                 self.current.push('\n');
-                return 1;
-            }
-            // セル区切りはテキストを途切れさせるが段落は割らない（JTD.3 で表になる）。
-            CELL_DELIMITER => {
-                self.current.push('\t');
                 return 1;
             }
             0x0000..=0x001f => {
@@ -242,36 +270,38 @@ impl Builder {
         1
     }
 
-    /// `0x001C 0x0001 …` のインラインレコードを処理し、次の位置を返す。
+    /// インラインレコードの表示テキストを処理し、次の位置を返す。
     ///
-    /// 終端は `0x001D` で、そこから `0x001E` までが表示テキスト。
+    /// `open` は終端 `0x001D` の位置。そこから `0x001E` までが表示テキストで、
     /// セレクタが [`INLINE_TEXT_SELECTORS`] のものは本文に取り込み、それ以外
     /// （ルビ・テンプレート差込）は捨てる。
-    fn read_inline_record(&mut self, units: &[u16], start: usize) -> usize {
-        let Some(open) = find_inline_open(units, start) else {
-            return start + 1;
+    fn read_inline_record(&mut self, units: &[u16], open: usize) -> usize {
+        let Some(close) = find_inline_close(units, open) else {
+            // 閉じが無い（＝インラインではなかった）。`0x001D` を制御コードとして
+            // 1 ユニットだけ進める。ここで末尾まで走査すると O(n²) になる。
+            self.reading_text = false;
+            return open + 1;
         };
 
         if is_display_text(units, open) {
             let mut index = open + 1;
-            while index < units.len() && units[index] != INLINE_CLOSE {
+            while index < close {
                 index += self.push_text(units, index);
             }
-            // 表示テキストの直後はレコードのフッタ。単独の `0x001F` が
-            // テキストランを開き直すので、そのまま本文の続きへ戻れる。
-            return index.saturating_add(1);
         }
-
-        skip_inline(units, open)
+        // 表示テキストの直後はレコードのフッタ。単独の `0x001F` が
+        // テキストランを開き直すので、そのまま本文の続きへ戻れる。
+        close + 1
     }
 
     /// 段落を確定する。
     ///
-    /// 末尾の改行は落とす。JTD は「本文…改行、次の段落レコード」という並びなので、
-    /// そのまま残すと全段落の末尾に空行が付く。段落内部の改行は残す。
+    /// 末尾の改行は **1 つだけ** 落とす。JTD は「本文…改行、次の段落レコード」という
+    /// 並びなので 1 つ残ると全段落の末尾に空行が付くが、全部落とすと原本にある
+    /// 空行まで消えて詰まって見える。段落内部の改行は当然残す。
     fn break_paragraph(&mut self) {
         let text = std::mem::take(&mut self.current);
-        let text = text.trim_end_matches('\n');
+        let text = text.strip_suffix('\n').unwrap_or(&text);
         if text.is_empty() {
             return;
         }
@@ -304,16 +334,29 @@ fn read_record(units: &[u16], start: usize) -> Option<Record> {
     Some(Record { class, words: len })
 }
 
-/// インラインレコードの終端 `0x001D` の位置を探す。
+/// `0x001C` がインラインレコードの開始なら、その終端 `0x001D` の位置を返す。
 ///
-/// 次のレコードオープナーに当たったら諦める（終端を取り違えない）。
-fn find_inline_open(units: &[u16], start: usize) -> Option<usize> {
+/// **形が完全に一致するときだけ受ける。** 標準レコードには len/class のエコー検査が
+/// あるのに、こちらは `0x001C 0x0001` の 2 ワードが並ぶだけで入っていた。
+/// `0x001C` は非テキスト領域にも偶然現れるので、同じ厳しさで見ないと
+/// 偽陽性 1 件で本文が丸ごと消える（標準レコード側は再同期できるのに、
+/// こちらだけ壊れ方が非対称だった）。
+fn inline_record_open(units: &[u16], start: usize) -> Option<usize> {
+    let open = start + INLINE_RECORD_WORDS - 1;
+    let header = units.get(start..=open)?;
+    (header[..INLINE_HEADER.len()] == INLINE_HEADER
+        && header[INLINE_RECORD_WORDS - 1] == INLINE_OPEN)
+        .then_some(open)
+}
+
+/// 表示テキストの閉じ `0x001E` を、`INLINE_MAX_UNITS` の窓の中だけ探す。
+fn find_inline_close(units: &[u16], open: usize) -> Option<usize> {
+    let end = units.len().min(open + 1 + INLINE_MAX_UNITS);
     units
+        .get(open + 1..end)?
         .iter()
-        .enumerate()
-        .skip(start + 2)
-        .find(|(_, unit)| **unit == INLINE_OPEN || **unit == RECORD_OPEN)
-        .and_then(|(offset, unit)| (*unit == INLINE_OPEN).then_some(offset))
+        .position(|unit| *unit == INLINE_CLOSE)
+        .map(|offset| open + 1 + offset)
 }
 
 /// `0x001D` の直前のヘッダを見て、続く表示テキストを本文に取り込むべきか判定する。
@@ -325,16 +368,12 @@ fn is_display_text(units: &[u16], open: usize) -> bool {
         && INLINE_TEXT_SELECTORS.contains(&context[INLINE_HEADER.len()])
 }
 
-/// `0x001D`…`0x001E` のインラインセグメントを読み飛ばし、次の位置を返す。
+/// 単独で現れた `0x001D`…`0x001E` を読み飛ばし、次の位置を返す。
 ///
-/// 閉じが見つからない場合は 1 ユニットだけ進める（本文全体を巻き込んで捨てない）。
+/// 閉じが窓の中に無ければ 1 ユニットだけ進める。末尾まで探すと、`0x001D` を
+/// 敷き詰めた入力で走査が O(n²) になる。
 fn skip_inline(units: &[u16], start: usize) -> usize {
-    for (offset, unit) in units.iter().enumerate().skip(start + 1) {
-        if *unit == INLINE_CLOSE {
-            return offset + 1;
-        }
-    }
-    start + 1
+    find_inline_close(units, start).map_or(start + 1, |close| close + 1)
 }
 
 #[cfg(test)]

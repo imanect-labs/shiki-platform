@@ -25,6 +25,8 @@ zip.workspace = true
 cfb = "0.14"
 # 生成した docx を開き直して中身を検査する（忠実度ハーネス）。
 zip.workspace = true
+# document.xml が整形式であることを実際にパースして確かめる。
+quick-xml.workspace = true
 
 [lints]
 workspace = true

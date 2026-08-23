@@ -21,12 +21,17 @@ use std::io::{Cursor, Read as _};
 
 use jtd::JtdFile;
 
-/// 公式テキストの回収率の下限。
+/// 公式テキストの回収率（recall）の下限。
 ///
 /// 2026-08-23 の実測は **0.9815**。下回ったら本文の取りこぼしが増えたということ。
 /// 1.0 にできないのは、公式 text 版が手作りの別版で、表のセルを 1 行に並べる等の
 /// 版面差があるため（残差はほぼ表の並べ方。表の再構成は JTD.3）。
-const MIN_REFERENCE_RECOVERY: f64 = 0.97;
+const MIN_REFERENCE_RECALL: f64 = 0.97;
+/// 我々の出力のうち公式テキストで裏の取れる割合（precision）の下限。
+///
+/// **recall だけでは足りない。** 取りこぼしは測れても、レコードのペイロードや
+/// バイナリ領域が本文へ漏れる退行では recall は 1 文字も動かない。実測は **0.9866**。
+const MIN_REFERENCE_PRECISION: f64 = 0.97;
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/");
@@ -53,13 +58,12 @@ fn normalize(text: &str) -> Vec<char> {
         .collect()
 }
 
-/// `reference` のうち `ours` に順序どおり現れる文字数の割合。
+/// `reference` と `ours` の最長共通部分列の長さ。
 ///
-/// 最長共通部分列の長さ / 参照側の長さ。素朴な O(n·m) だが、実文書で 5,000 文字程度なので
-/// これで足りる（実測 30ms 未満）。
-fn recovery_ratio(reference: &[char], ours: &[char]) -> f64 {
-    if reference.is_empty() {
-        return 1.0;
+/// 素朴な O(n·m) だが、実文書で 5,000 文字程度なのでこれで足りる（実測 30ms 未満）。
+fn lcs_len(reference: &[char], ours: &[char]) -> usize {
+    if reference.is_empty() || ours.is_empty() {
+        return 0;
     }
     let mut previous = vec![0usize; ours.len() + 1];
     let mut current = vec![0usize; ours.len() + 1];
@@ -75,10 +79,16 @@ fn recovery_ratio(reference: &[char], ours: &[char]) -> f64 {
         std::mem::swap(&mut previous, &mut current);
     }
 
-    // 文字数は実文書で数千。f64 の仮数に収まる範囲なので精度の心配は無い。
-    #[allow(clippy::cast_precision_loss)]
-    let ratio = previous[ours.len()] as f64 / reference.len() as f64;
-    ratio
+    previous[ours.len()]
+}
+
+/// 文字数は実文書で数千。f64 の仮数に収まる範囲なので精度の心配は無い。
+#[allow(clippy::cast_precision_loss)]
+fn ratio(part: usize, whole: usize) -> f64 {
+    if whole == 0 {
+        return 0.0;
+    }
+    part as f64 / whole as f64
 }
 
 /// docx の中の 1 パートを文字列で取り出す。
@@ -98,12 +108,19 @@ fn recovers_the_official_text_rendition_of_f1() {
     let file = JtdFile::open(&fixture("f1.jtd")).expect("f1.jtd が読めること");
 
     let reference = normalize(&fixture_text("f1.reference.txt"));
-    let ours = normalize(&file.plain_text());
-    let ratio = recovery_ratio(&reference, &ours);
+    let ours = normalize(file.plain_text());
+    let common = lcs_len(&reference, &ours);
 
+    let recall = ratio(common, reference.len());
     assert!(
-        ratio >= MIN_REFERENCE_RECOVERY,
-        "公式テキストの回収率が {ratio:.4}（下限 {MIN_REFERENCE_RECOVERY}）。本文の取りこぼしが増えている"
+        recall >= MIN_REFERENCE_RECALL,
+        "回収率が {recall:.4}（下限 {MIN_REFERENCE_RECALL}）。本文の取りこぼしが増えている"
+    );
+
+    let precision = ratio(common, ours.len());
+    assert!(
+        precision >= MIN_REFERENCE_PRECISION,
+        "精度が {precision:.4}（下限 {MIN_REFERENCE_PRECISION}）。本文でないものが混ざっている"
     );
 }
 
@@ -194,10 +211,20 @@ fn writes_a_valid_docx_package_for_each_fixture() {
             let _ = docx_part(&docx, part);
         }
 
+        // 整形式であることを実際にパースして確かめる。要素を数えるだけだと、
+        // ライタが壊れた XML を出しても気づけない。
         let body = docx_part(&docx, "word/document.xml");
-        let paragraphs = body.matches("<w:p>").count();
+        let mut reader = quick_xml::Reader::from_str(&body);
+        loop {
+            match reader.read_event() {
+                Ok(quick_xml::events::Event::Eof) => break,
+                Ok(_) => {}
+                Err(error) => panic!("{name}: document.xml が整形式でない: {error}"),
+            }
+        }
+
         assert_eq!(
-            paragraphs,
+            body.matches("<w:p>").count(),
             file.document().blocks().len(),
             "{name}: 段落数が中間モデルと一致すること"
         );
@@ -222,13 +249,25 @@ fn docx_preserves_the_ideographic_space_padding_of_the_form() {
 }
 
 #[test]
-fn recovery_ratio_is_a_meaningful_metric() {
-    // 指標自体が壊れていないことを確かめる（常に 1.0 を返すような実装だと退行を検出できない）。
-    let same: Vec<char> = "あいうえお".chars().collect();
-    let half: Vec<char> = "あいう".chars().collect();
-    let none: Vec<char> = "かきくけこ".chars().collect();
+fn the_metric_detects_both_loss_and_junk() {
+    // 指標自体が壊れていないことを確かめる（常に 1.0 を返す実装だと退行を検出できない）。
+    let reference: Vec<char> = "あいうえお".chars().collect();
+    let missing: Vec<char> = "あいう".chars().collect();
+    let unrelated: Vec<char> = "かきくけこ".chars().collect();
+    let with_junk: Vec<char> = "あいうえお※※※※※".chars().collect();
 
-    assert!((recovery_ratio(&same, &same) - 1.0).abs() < f64::EPSILON);
-    assert!((recovery_ratio(&same, &none) - 0.0).abs() < f64::EPSILON);
-    assert!((recovery_ratio(&same, &half) - 0.6).abs() < 1e-9);
+    assert!((ratio(lcs_len(&reference, &reference), reference.len()) - 1.0).abs() < f64::EPSILON);
+    assert!(ratio(lcs_len(&reference, &unrelated), reference.len()).abs() < f64::EPSILON);
+    assert!((ratio(lcs_len(&reference, &missing), reference.len()) - 0.6).abs() < 1e-9);
+
+    // ゴミが混ざっても recall は落ちない。だから precision も見る必要がある。
+    let common = lcs_len(&reference, &with_junk);
+    assert!(
+        (ratio(common, reference.len()) - 1.0).abs() < f64::EPSILON,
+        "recall は不変"
+    );
+    assert!(
+        ratio(common, with_junk.len()) < 0.6,
+        "precision がゴミを検出すること"
+    );
 }

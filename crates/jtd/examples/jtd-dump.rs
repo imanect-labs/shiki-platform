@@ -31,14 +31,28 @@ fn main() -> ExitCode {
         match arg.as_str() {
             "--streams" => streams = true,
             "--hex" => hex = true,
-            "--docx" => docx = args.next(),
-            "--text" => text_out = args.next(),
+            "--docx" | "--text" => {
+                let Some(value) = args.next() else {
+                    eprintln!("{arg} には出力先が要ります");
+                    return ExitCode::FAILURE;
+                };
+                if arg == "--docx" {
+                    docx = Some(value);
+                } else {
+                    text_out = Some(value);
+                }
+            }
             _ => paths.push(arg),
         }
     }
 
     if paths.is_empty() {
-        eprintln!("usage: jtd-dump [--streams] [--hex] <file.jtd>...");
+        eprintln!("usage: jtd-dump [--streams] [--hex] [--docx OUT] [--text OUT] <file.jtd>...");
+        return ExitCode::FAILURE;
+    }
+    // 出力先は 1 つしか取らないので、複数入力だと最後のファイルで上書きされる。
+    if paths.len() > 1 && (docx.is_some() || text_out.is_some()) {
+        eprintln!("--docx / --text は入力 1 件のときだけ使えます");
         return ExitCode::FAILURE;
     }
 
@@ -90,7 +104,7 @@ fn dump(
         // ゴールデン用。`plain_text()` の戻り値をそのまま書く（末尾改行を足さない）。
         std::fs::write(out, file.plain_text().as_bytes())
             .map_err(|error| format!("{out} に書けません: {error}"))?;
-        println!("text        : {out}");
+        println!("wrote text  : {out}");
         return Ok(());
     }
 

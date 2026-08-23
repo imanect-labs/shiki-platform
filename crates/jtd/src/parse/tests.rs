@@ -93,14 +93,77 @@ fn non_paragraph_records_do_not_split_paragraphs() {
 }
 
 #[test]
-fn cell_delimiter_separates_text_without_splitting_the_paragraph() {
+fn row_delimiter_breaks_the_line_not_the_cell() {
+    // 0x000E は表の**行**区切り（RFC 0003 / 上流 TEXT_ROW_DELIMITER）。セル区切りではない。
+    // タブとして出すと行末にゴミが残る（実際 f1 のゴールデンは 688 行中 286 行が
+    // タブだけの行になっていた）。
     let mut units = header();
     units.extend(record(0x0010, &[0x0000]));
-    units.extend(text("左"));
+    units.extend(text("上の行"));
     units.push(0x000e);
-    units.extend(text("右"));
+    units.extend(text("下の行"));
 
-    assert_eq!(paragraphs(&stream(&units)), vec!["左\t右"]);
+    assert_eq!(paragraphs(&stream(&units)), vec!["上の行\n下の行"]);
+}
+
+#[test]
+fn row_delimiter_at_the_end_of_a_row_leaves_no_trailing_junk() {
+    // 実データでは 0x000E の直後は必ず行ヘッダ（0x001C class=0x0010）。
+    let mut units = header();
+    units.extend(record(0x0010, &[0x0000]));
+    units.extend(text("行"));
+    units.push(0x000e);
+    units.extend(record(0x0010, &[0x0000]));
+    units.extend(text("次の行"));
+
+    assert_eq!(paragraphs(&stream(&units)), vec!["行", "次の行"]);
+}
+
+#[test]
+fn inline_record_needs_the_exact_shape() {
+    // `0x001C 0x0001` が 2 ワード並ぶだけで入ると、非テキスト領域の偶然の一致で
+    // 本文が消える。標準レコードにはエコー検査があるので、こちらも同じ厳しさで見る
+    // ＝形が違えば標準レコードとして扱われ、同じ再同期の規則に乗る。
+    let mut units = header();
+    units.extend(record(0x0010, &[0x0000]));
+    units.extend(text("前"));
+    units.extend_from_slice(&[0x001c, 0x0001]); // 形が違う（0x0007 も 0x001D も無い）
+    units.extend(text("捨てられる"));
+    units.extend(record(0x0010, &[0x0000]));
+    units.extend(text("再同期後"));
+
+    let joined = paragraphs(&stream(&units)).join("");
+
+    assert!(joined.contains("前"), "手前の本文が残ること");
+    assert!(
+        joined.contains("再同期後"),
+        "次の正しいレコードで再同期すること"
+    );
+    assert!(
+        !joined.contains('\u{1}'),
+        "レコードの生ワードが本文へ漏れないこと"
+    );
+}
+
+#[test]
+fn unterminated_inline_display_text_is_bounded() {
+    // 閉じ 0x001E を末尾まで探すと、0x001D を敷き詰めた入力で O(n^2) になる
+    // （実測 400,000 ユニットで 56 秒）。窓で切って有界にする。
+    let mut units = header();
+    units.extend(record(0x0010, &[0x0000]));
+    units.extend(std::iter::repeat_n(0x001d_u16, 20_000));
+    units.extend(record(0x0010, &[0x0000]));
+    units.extend(text("後"));
+
+    let started = std::time::Instant::now();
+    let joined = paragraphs(&stream(&units)).join("");
+    let elapsed = started.elapsed();
+
+    assert!(joined.contains("後"), "再同期して本文が読めること");
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "有界な時間で返ること（実測 {elapsed:?}）"
+    );
 }
 
 #[test]
@@ -148,7 +211,7 @@ fn skips_inline_segments() {
 }
 
 #[test]
-fn unterminated_inline_segment_does_not_swallow_the_document() {
+fn unterminated_inline_segment_does_not_swallow_the_document_body() {
     let mut units = header();
     units.extend(record(0x0010, &[0x0000]));
     units.extend(text("前"));
@@ -287,14 +350,27 @@ fn drops_display_text_of_unrecognised_inline_segments() {
 }
 
 #[test]
-fn trailing_newlines_do_not_create_empty_paragraphs() {
-    let mut units = header();
-    units.extend(record(0x0010, &[0x0000]));
-    units.extend(text("本文"));
-    units.push(0x000a);
-    units.push(0x000a);
+fn strips_only_the_newline_that_precedes_the_next_record() {
+    // JTD は「本文…改行、次の段落レコード」という並び。1 つ残ると全段落の末尾に
+    // 空行が付くので落とす。**全部落とすと原本にある空行まで消える**ので 1 つだけ。
+    let mut only_separator = header();
+    only_separator.extend(record(0x0010, &[0x0000]));
+    only_separator.extend(text("本文"));
+    only_separator.push(0x000a);
 
-    assert_eq!(paragraphs(&stream(&units)), vec!["本文"]);
+    assert_eq!(paragraphs(&stream(&only_separator)), vec!["本文"]);
+
+    let mut with_blank_line = header();
+    with_blank_line.extend(record(0x0010, &[0x0000]));
+    with_blank_line.extend(text("本文"));
+    with_blank_line.push(0x000a);
+    with_blank_line.push(0x000a);
+
+    assert_eq!(
+        paragraphs(&stream(&with_blank_line)),
+        vec!["本文\n"],
+        "原本の空行は残すこと"
+    );
 }
 
 #[test]

@@ -108,6 +108,7 @@ pub struct JtdFile {
     streams: Vec<JtdStream>,
     document_text: Vec<u8>,
     document: JtdDocument,
+    plain_text: String,
 }
 
 impl JtdFile {
@@ -162,11 +163,14 @@ impl JtdFile {
         // 本文の組み立ては自前で行う。上流の抽出は最初のレコードより前の本文を落とす。
         let document = guard(|| parse::parse_document(&document_text))?;
 
+        let plain_text = document.plain_text();
+
         Ok(JtdFile {
             format,
             streams,
             document_text,
             document,
+            plain_text,
         })
     }
 
@@ -215,8 +219,10 @@ impl JtdFile {
     }
 
     /// 本文テキスト（読み順）。比較・検索用の平坦化。
-    pub fn plain_text(&self) -> String {
-        self.document.plain_text()
+    ///
+    /// 読み取り時に 1 度だけ組み立てて保持する（呼ぶたびに全文をコピーしない）。
+    pub fn plain_text(&self) -> &str {
+        &self.plain_text
     }
 
     /// docx バイト列へ書き出す。
