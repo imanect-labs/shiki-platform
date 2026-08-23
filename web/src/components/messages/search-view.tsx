@@ -50,12 +50,16 @@ export function SearchView({
   onJump: (channelId: string, messageId: string) => void;
 }) {
   const [query, setQuery] = React.useState("予算");
+  // 照合は trim 済みの語で行う（Highlighted も同じ語で切らないとハイライトが消える）。
+  const needle = query.trim();
   const hits = React.useMemo(
     () => searchMessages(channels, query, viewerId),
     [channels, query, viewerId],
   );
+  // 参加チャンネル数だけを出す。**非参加チャンネルの件数は出さない** —
+  // 非公開チャンネルと他人の DM は非メンバーには存在ごと見えないため、
+  // 「N 件は対象外」は隠すべきものの件数を漏らす。
   const mine = channels.filter((c) => c.memberIds.includes(viewerId)).length;
-  const hidden = channels.length - mine;
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col bg-background">
@@ -101,7 +105,6 @@ export function SearchView({
             <span className="flex items-center gap-1.5 rounded-full border border-border/60 bg-card/40 px-2.5 py-1 text-[11px] text-muted-foreground">
               <ShieldCheck className="size-3.5" aria-hidden />
               {findMember(viewerId).name} が参加する {mine} チャンネルを検索
-              {hidden > 0 ? `（${hidden} 件は対象外）` : ""}
             </span>
           </div>
 
@@ -147,7 +150,7 @@ export function SearchView({
                           </span>
                         </span>
                         <span className="mt-0.5 block text-[13px] leading-[1.6] text-foreground/90">
-                          <Highlighted text={plainText(hit.message)} query={query} />
+                          <Highlighted text={plainText(hit.message, viewerId)} query={needle} />
                         </span>
                       </span>
                     </button>
@@ -158,9 +161,9 @@ export function SearchView({
           )}
 
           <p className="mt-3 px-1 text-[11.5px] leading-relaxed text-muted-foreground/80">
-            発言は RAG の索引には入れず、専用の全文検索に持ちます。検索結果は
-            参加チャンネルへの絞り込み（pre-filter）と、結果ごとの再評価（post-filter）の
-            二段で守られます。
+            発言は RAG の索引には入れず、専用の全文検索に持ちます。実装では、参加チャンネルへの
+            絞り込み（pre-filter）と結果ごとの再評価（post-filter）の二段で守ります。
+            この画面はモックのため、絞り込みの側だけを再現しています。
           </p>
         </div>
       </div>

@@ -132,9 +132,20 @@ export function ChannelListPane({
       )}
     >
       <div className={cn("flex h-14 shrink-0 items-center gap-1 px-3", drawer && "pr-11")}>
-        <h2 className="flex-1 truncate text-[15px] font-semibold text-sidebar-foreground">
-          メッセージ
-        </h2>
+        <h2 className="truncate text-[15px] font-semibold text-sidebar-foreground">メッセージ</h2>
+        {/* 捏造データを実データと取り違えさせないための表示。バックエンド（crates/messaging・
+            OpenFGA channel 型・SSE 配信）が入ったら消す。 */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="shrink-0 cursor-default rounded-full border border-dashed border-sidebar-border px-1.5 py-px text-[10px] font-medium leading-4 text-sidebar-foreground/60">
+              モック
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-[240px]">
+            画面のみの試作です。発言は保存されず、表示されている人と発言はすべて架空のものです。
+          </TooltipContent>
+        </Tooltip>
+        <span className="flex-1" />
         <Tooltip>
           <TooltipTrigger asChild>
             <button

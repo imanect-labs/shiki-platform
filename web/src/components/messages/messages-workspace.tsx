@@ -14,13 +14,15 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   CHANNELS,
+  FILES,
   ME,
+  canRead,
   channelTitle,
   findMember,
   plainText,
-  type Block,
   type Channel,
   type Message,
+  type MessageBlock,
 } from "@/lib/messages-mock";
 import { ChannelListPane } from "./channel-list-pane";
 import { ChannelHeader } from "./channel-header";
@@ -37,7 +39,7 @@ function nowTime(): string {
 }
 
 let localSeq = 0;
-function newMessage(authorId: string, blocks: Block[], extra: Partial<Message> = {}): Message {
+function newMessage(authorId: string, blocks: MessageBlock[], extra: Partial<Message> = {}): Message {
   localSeq += 1;
   return {
     id: `local-${localSeq}`,
@@ -86,18 +88,25 @@ function aiAnswer(channel: Channel, root: Message, viewerId: string) {
       ? "このチャンネルの直近のやり取りでは、2027年度予算案が共有され、情報システム部のサーバ更改分が上乗せ済みです。備品費の内訳だけ未確定で、営業部への共有は部長確認待ちになっています。次の論点は「営業部への共有可否」と「備品費の内訳」の 2 点です。"
       : channel.id === "ch-all"
         ? "直近の周知は 3 件です。就業規則の改定版（10月1日施行・第3章と第7章が変更）、9月5日(木) 14:00 の防災訓練、今夜22時からのネットワーク定期メンテナンスです。既存契約への第7章適用には経過措置があります。"
-        : `このチャンネルの直近 ${readable} 件を読みました。${plainText(root).slice(0, 40)}… に関するやり取りが中心です。`;
+        : `このチャンネルの直近 ${readable} 件を読みました。${plainText(root, viewerId).slice(0, 40)}… に関するやり取りが中心です。`;
 
   const label = channel.kind === "dm" ? channelTitle(channel, viewerId) : `#${channel.name}`;
+  // 参照に載せてよいのは照会者が読める文書だけ（PIT-63）。判定は canRead に一本化し、
+  // メッセージ機能のために別の権限判定機構を作らない。
+  const nodeIds = Array.from(
+    new Set(
+      channel.messages
+        .flatMap((m) => m.blocks)
+        .flatMap((b) => (b.type === "file_ref" ? [b.node_id] : [])),
+    ),
+  );
   const sources = [
     `${label} の直近 ${readable} 件（あなたが読める発言のみ）`,
-    ...channel.messages
-      .flatMap((m) => m.blocks)
-      .filter((b) => b.kind === "file_ref")
-      .map((b) => (b.kind === "file_ref" ? b.fileId : ""))
-      .map((id) => (id === "f-budget" ? "2027年度予算案.xlsx" : id === "f-rule" ? "就業規則_2027改定版.docx" : "情シス定例_8月報告.pptx"))
-      .filter((name, i, arr) => arr.indexOf(name) === i)
-      .filter((name) => !(name === "2027年度予算案.xlsx" && viewerId === "suzuki"))
+    ...nodeIds
+      .flatMap((id) => {
+        const file = FILES.find((f) => f.id === id);
+        return file && canRead(file, viewerId) ? [file.name] : [];
+      })
       .map((name) => `ドライブの文書: ${name}`),
   ];
 
@@ -114,16 +123,30 @@ export function MessagesWorkspace() {
   const [listOpen, setListOpen] = React.useState(false);
   const [typingBy, setTypingBy] = React.useState<string | null>(null);
   const scroller = React.useRef<HTMLDivElement>(null);
-  const timers = React.useRef<ReturnType<typeof setTimeout>[]>([]);
+  // 予約済みのタイマー。**発火したら必ず取り除く**（配列に積みっぱなしにしない）。
+  const timers = React.useRef(new Set<ReturnType<typeof setTimeout>>());
 
-  React.useEffect(() => {
-    const list = timers.current;
-    return () => list.forEach(clearTimeout);
+  const later = React.useCallback((fn: () => void, ms: number) => {
+    const id = setTimeout(() => {
+      timers.current.delete(id);
+      fn();
+    }, ms);
+    timers.current.add(id);
   }, []);
 
-  const later = (fn: () => void, ms: number) => {
-    timers.current.push(setTimeout(fn, ms));
-  };
+  // 予約を全部落とす。チャンネル/表示者を切り替えた瞬間に呼ぶ。
+  // 演出（相手の返信・AI の生成）が、離れた後のチャンネルや別の表示者の画面へ
+  // 漏れ出さないための境界。
+  const cancelPending = React.useCallback(() => {
+    timers.current.forEach(clearTimeout);
+    timers.current.clear();
+    setTypingBy(null);
+  }, []);
+
+  React.useEffect(() => {
+    const pending = timers.current;
+    return () => pending.forEach(clearTimeout);
+  }, []);
 
   const visible = channels.filter((c) => c.memberIds.includes(viewerId));
   const active = visible.find((c) => c.id === activeId) ?? visible[0] ?? null;
@@ -135,16 +158,32 @@ export function MessagesWorkspace() {
     if (threadId && !active?.messages.some((m) => m.id === threadId)) setThreadId(null);
   }, [active, activeId, threadId]);
 
+  // 予約実行（相手の返信・AI 生成）が古い activeId を掴まないようにする。
+  const activeIdRef = React.useRef(activeId);
+  React.useEffect(() => {
+    activeIdRef.current = active?.id ?? activeId;
+  }, [active, activeId]);
+
   // チャンネルを開いたら最下部から読み始める（未読ラインは残したまま）。
+  // 検索から戻った時も本体ペインが再マウントされるので、searchOpen も依存に入れる。
   React.useEffect(() => {
     const el = scroller.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [activeId, viewerId]);
+  }, [activeId, viewerId, searchOpen]);
+
+  // 予約実行から呼ばれるスクロール。**対象チャンネルが表示中の時だけ**動かす
+  // （離れた後に発火して、いま見ている別チャンネルを勝手にスクロールさせない）。
+  const scrollToBottom = (channelId: string) => {
+    if (activeIdRef.current !== channelId) return;
+    const el = scroller.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
 
   const patch = (channelId: string, fn: (c: Channel) => Channel) =>
     setChannels((prev) => prev.map((c) => (c.id === channelId ? fn(c) : c)));
 
   const openChannel = (id: string) => {
+    if (id !== activeId) cancelPending();
     setActiveId(id);
     setThreadId(null);
     setSearchOpen(false);
@@ -162,34 +201,31 @@ export function MessagesWorkspace() {
     }));
   };
 
-  const send = (blocks: Block[]) => {
+  const send = (blocks: MessageBlock[]) => {
     if (!active) return;
+    const channelId = active.id;
     const mine = newMessage(viewerId, blocks);
-    patch(active.id, (c) => ({ ...c, messages: [...c.messages, mine] }));
-    later(() => {
-      const el = scroller.current;
-      if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    }, 30);
+    patch(channelId, (c) => ({ ...c, messages: [...c.messages, mine] }));
+    later(() => scrollToBottom(channelId), 30);
 
-    // 相手が返す演出（配信は SSE になる箇所）。DM と、自分以外の参加者が居る場で 1 回だけ。
+    // 相手が返す演出（実装では SSE 配信になる箇所）。自分以外の参加者が居る場で 1 回だけ。
     const other = active.memberIds.find((m) => m !== viewerId && m !== "shiki");
     if (!other) return;
     later(() => setTypingBy(other), 1400);
     later(() => {
       setTypingBy(null);
-      patch(active.id, (c) => ({
+      patch(channelId, (c) => ({
         ...c,
         messages: [
           ...c.messages,
-          newMessage(other, [{ kind: "text", text: "確認しました。ありがとうございます。" }]),
+          newMessage(other, [{ type: "text", text: "確認しました。ありがとうございます。" }]),
         ],
       }));
-      const el = scroller.current;
-      if (el) el.scrollTo({ top: el.scrollHeight + 200, behavior: "smooth" });
+      scrollToBottom(channelId);
     }, 3600);
   };
 
-  const reply = (blocks: Block[]) => {
+  const reply = (blocks: MessageBlock[]) => {
     if (!active || !threadId) return;
     patch(active.id, (c) => ({
       ...c,
@@ -209,16 +245,17 @@ export function MessagesWorkspace() {
     if (!root) return;
     const { body, sources } = aiAnswer(active, root, viewerId);
 
+    const channelId = active.id;
     const question = newMessage(viewerId, [
-      { kind: "text", text: "この流れの要点と、次に決めることを教えてください。" },
+      { type: "text", text: "この流れの要点と、次に決めることを教えてください。" },
     ]);
     const answerId = `local-ai-${Date.now()}`;
     const answer: Message = {
-      ...newMessage("shiki", [{ kind: "text", text: "" }], { ai: true, pending: true }),
+      ...newMessage("shiki", [{ type: "text", text: "" }], { ai: true, pending: true }),
       id: answerId,
     };
 
-    patch(active.id, (c) => ({
+    patch(channelId, (c) => ({
       ...c,
       messages: mapMessages(c.messages, messageId, (m) => ({
         ...m,
@@ -231,7 +268,7 @@ export function MessagesWorkspace() {
     const step = () => {
       i = Math.min(i + 2, body.length);
       const done = i >= body.length;
-      patch(active.id, (c) => ({
+      patch(channelId, (c) => ({
         ...c,
         messages: mapMessages(c.messages, messageId, (m) => ({
           ...m,
@@ -239,7 +276,7 @@ export function MessagesWorkspace() {
             r.id === answerId
               ? {
                   ...r,
-                  blocks: [{ kind: "text", text: body.slice(0, i) }],
+                  blocks: [{ type: "text", text: body.slice(0, i) } as MessageBlock],
                   pending: !done,
                   sources: done ? sources : undefined,
                 }
@@ -286,7 +323,7 @@ export function MessagesWorkspace() {
 
   return (
     <div className="flex h-full min-h-0 w-full">
-      <div className="hidden md:flex">{list(false)}</div>
+      <div className="hidden lg:flex">{list(false)}</div>
 
       {/* 狭い画面では一覧をドロワで出す（本体は常に 1 カラム）。 */}
       <Sheet open={listOpen} onOpenChange={setListOpen}>
@@ -323,7 +360,7 @@ export function MessagesWorkspace() {
               type="button"
               onClick={() => setListOpen(true)}
               aria-label="チャンネル一覧を開く"
-              className="ml-2 flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring md:hidden"
+              className="ml-2 flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring lg:hidden"
             >
               <PanelLeft className="size-[18px]" aria-hidden />
             </button>
@@ -331,8 +368,10 @@ export function MessagesWorkspace() {
               <ChannelHeader
                 channel={active}
                 viewerId={viewerId}
-                onViewerChange={setViewerId}
-                onInvite={() => setCreateOpen(true)}
+                onViewerChange={(id) => {
+                  cancelPending();
+                  setViewerId(id);
+                }}
               />
             </div>
           </div>
@@ -377,9 +416,13 @@ export function MessagesWorkspace() {
                 </p>
               ) : null}
             </div>
+            {/* key で宛先ごとに作り直す。持ち越すと、別チャンネルへ下書きと添付が
+                そのまま飛ぶ（表示者を切り替えた時は名義も変わる）。 */}
             <Composer
-              placeholder={`${active.kind === "dm" ? "" : "#"}${active.name} へメッセージを送る`}
+              key={`${active.id}:${viewerId}`}
+              placeholder={`${active.kind === "dm" ? "" : "#"}${channelTitle(active, viewerId)} へメッセージを送る`}
               channelMemberIds={active.memberIds}
+              viewerId={viewerId}
               onSend={send}
             />
           </div>

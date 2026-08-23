@@ -9,12 +9,12 @@ import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
-  canRead,
-  findFile,
+  fileRefView,
   findMember,
-  type Block,
-  type ChannelKind,
   type DriveFile,
+  type FileRefView,
+  type ChannelKind,
+  type MessageBlock,
 } from "@/lib/messages-mock";
 
 /// 利用者のアバター。顔写真があればそれを出し、無いとき（AI など）は季節色のタイルに
@@ -112,11 +112,11 @@ export function FileKindIcon({ kind }: { kind: DriveFile["kind"] }) {
 
 /// `file_ref` ブロックの描画。**file_id を持つだけで本文を複製しない**ため、
 /// 表示のたびに閲覧側の権限を評価する（実装では StorageService 経由の ReBAC）。
-/// 権限が無い相手にはファイル名・サイズ等のメタデータを出さず「参照できない添付」にする。
-export function FileRefCard({ file, viewerId }: { file: DriveFile; viewerId: string }) {
-  const readable = canRead(file, viewerId);
-
-  if (!readable) {
+///
+/// 受け取るのは**評価済みの表示情報だけ**で、ACL（誰が読めるか）は渡らない。
+/// 権限が無い相手にはファイル名・サイズ等のメタデータが手元に届かない形にしてある。
+export function FileRefCard({ view }: { view: FileRefView }) {
+  if (!view.readable) {
     return (
       <div className="mt-1.5 inline-flex max-w-full items-center gap-2.5 rounded-lg border border-dashed border-border bg-muted/40 px-3 py-2">
         <span className="flex size-8 items-center justify-center rounded-md bg-muted text-muted-foreground">
@@ -139,11 +139,11 @@ export function FileRefCard({ file, viewerId }: { file: DriveFile; viewerId: str
       type="button"
       className="group/file mt-1.5 inline-flex max-w-full items-center gap-2.5 rounded-lg border border-border/60 bg-card/40 px-3 py-2 text-left outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <FileKindIcon kind={file.kind} />
+      <FileKindIcon kind={view.kind} />
       <span className="min-w-0">
-        <span className="block truncate text-[13px] font-medium text-foreground">{file.name}</span>
+        <span className="block truncate text-[13px] font-medium text-foreground">{view.name}</span>
         <span className="block truncate text-[11.5px] text-muted-foreground">
-          {file.location} ・ {file.size}
+          {view.location} ・ {view.size}
         </span>
       </span>
     </button>
@@ -159,7 +159,7 @@ export function MentionChip({ memberId, viewerId }: { memberId: string; viewerId
       className={cn(
         "mx-px inline-flex items-center rounded px-1 py-px text-[13.5px] font-medium",
         isMe
-          ? "bg-[color-mix(in_oklab,var(--season-autumn)_22%,transparent)] text-foreground"
+          ? "bg-[color-mix(in_oklab,var(--season-autumn)_34%,transparent)] font-semibold text-foreground"
           : "bg-accent text-foreground/80",
       )}
     >
@@ -169,29 +169,29 @@ export function MentionChip({ memberId, viewerId }: { memberId: string; viewerId
 }
 
 /// content blocks（text / mention / file_ref）の描画。チャットとブロックの型を分けない。
-export function Blocks({ blocks, viewerId }: { blocks: Block[]; viewerId: string }) {
-  const inline = blocks.filter((b) => b.kind !== "file_ref");
-  const files = blocks.filter((b) => b.kind === "file_ref");
+export function Blocks({ blocks, viewerId }: { blocks: MessageBlock[]; viewerId: string }) {
+  const inline = blocks.filter((b) => b.type !== "file_ref");
+  const files = blocks.filter((b) => b.type === "file_ref");
   return (
     <>
       {inline.length > 0 ? (
         <p className="whitespace-pre-wrap break-words text-[13.5px] leading-[1.65] text-foreground/90">
           {inline.map((b, i) =>
-            b.kind === "text" ? (
+            b.type === "text" ? (
               <React.Fragment key={i}>{b.text}</React.Fragment>
-            ) : b.kind === "mention" ? (
-              <MentionChip key={i} memberId={b.memberId} viewerId={viewerId} />
+            ) : b.type === "mention" ? (
+              <MentionChip key={i} memberId={b.member_id} viewerId={viewerId} />
             ) : null,
           )}
         </p>
       ) : null}
       {files.map((b, i) => {
-        if (b.kind !== "file_ref") return null;
-        const file = findFile(b.fileId);
-        if (!file) return null;
+        if (b.type !== "file_ref") return null;
+        const view = fileRefView(b.node_id, viewerId);
+        if (!view) return null;
         return (
-          <div key={i}>
-            <FileRefCard file={file} viewerId={viewerId} />
+          <div key={`${b.node_id}-${i}`}>
+            <FileRefCard view={view} />
           </div>
         );
       })}

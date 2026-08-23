@@ -75,7 +75,9 @@ function HoverToolbar({
   return (
     <div
       className={cn(
-        "absolute -top-3 right-3 z-10 flex items-center gap-0.5 rounded-[9px] border border-border/70 bg-popover p-0.5 shadow-sm",
+        // 行の内側に収める。行の外（-top-3）へ出すと、上の発言のリアクション行や
+        // 区切り線に重なって「どの発言の操作か」が読めなくなる。
+        "absolute right-3 top-0 z-10 flex items-center gap-0.5 rounded-[9px] border border-border/70 bg-popover p-0.5 shadow-sm",
         // 見えていない間はクリックを奪わない（上の行の右上に不可視の的が重なるのを防ぐ）。
         "pointer-events-none opacity-0 transition-opacity duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
         "group-hover/msg:pointer-events-auto group-hover/msg:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100",
@@ -179,12 +181,12 @@ export function MessageRow({
     <>
       {unreadBoundary ? (
         <div className="relative my-2 flex items-center gap-2 px-5">
-          <span className="h-px flex-1 bg-[color-mix(in_oklab,var(--season-spring)_55%,transparent)]" />
+          <span className="h-px flex-1 bg-[color-mix(in_oklab,var(--season-spring)_70%,transparent)]" />
           <span
             className="rounded-full px-2 py-0.5 text-[10.5px] font-semibold leading-none"
             style={{
-              backgroundColor: `color-mix(in oklab, ${seasonVar(0)} 18%, transparent)`,
-              color: seasonVar(0),
+              backgroundColor: `color-mix(in oklab, ${seasonVar(0)} 26%, transparent)`,
+              color: `color-mix(in oklab, ${seasonVar(0)} 42%, var(--foreground))`,
             }}
           >
             ここから未読
@@ -251,7 +253,10 @@ export function MessageRow({
                 </p>
                 <ul className="mt-1 flex flex-col gap-0.5">
                   {message.sources.map((s) => (
-                    <li key={s} className="text-[11.5px] leading-snug text-muted-foreground">
+                    <li
+                      key={s}
+                      className="pl-3 -indent-3 text-[11.5px] leading-snug text-muted-foreground"
+                    >
                       ・{s}
                     </li>
                   ))}
@@ -282,7 +287,14 @@ export function MessageRow({
                       />
                     ))}
                 </span>
-                <span className="text-[12px] font-medium text-primary">返信 {replyCount} 件</span>
+                {/* 差し色は四季トークン。text-primary はライトで本文と見分けが付かない
+                    （ダークだけリンクに見える）ため使わない。 */}
+                <span
+                  className="text-[12px] font-medium"
+                  style={{ color: seasonVar(currentSeasonIndex()) }}
+                >
+                  返信 {replyCount} 件
+                </span>
                 <span className="text-[11.5px] text-muted-foreground">
                   最終 {message.replies[replyCount - 1]?.time}
                 </span>

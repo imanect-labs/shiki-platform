@@ -36,11 +36,18 @@ export type DriveFile = {
   readableBy: "all" | string[];
 };
 
-/// 本文のブロック。§4.4 のチャットと型を分けない（text / mention / file_ref の部分集合）。
-export type Block =
-  | { kind: "text"; text: string }
-  | { kind: "mention"; memberId: string }
-  | { kind: "file_ref"; fileId: string };
+/// 本文のブロック。**この型はモック限定**で、実装時は codegen（Rust → OpenAPI → TS）から出す。
+///
+/// 生成物の `ContentBlock`（`web/src/generated/api.d.ts`）は §4.4 のチャット用で、
+/// `file_ref` が `name` をブロック自身に持つ。§4.14 は messaging の `file_ref` について
+/// 「**file_id だけを持ち本文を複製しない**」と定めるため、ここでは `name` を持たせない
+/// （持たせると、権限の無い相手にもファイル名がブロックごと届く）。
+/// `mention` は現行の生成 union に無い。実装時は messaging 用のブロックを Rust 側に足し、
+/// この手書き型を捨てる。内部タグ（`type`）と snake_case は生成物に合わせてある。
+export type MessageBlock =
+  | { type: "text"; text: string }
+  | { type: "mention"; member_id: string }
+  | { type: "file_ref"; node_id: string };
 
 export type Reaction = { emoji: string; by: string[] };
 
@@ -50,7 +57,7 @@ export type Message = {
   /// 日付の区切り見出し。連続する同ラベルはまとめて 1 本だけ描く。
   dayLabel: string;
   time: string;
-  blocks: Block[];
+  blocks: MessageBlock[];
   reactions: Reaction[];
   /// スレッド返信（`parent_id` で親にぶら下がる発言）。
   replies: Message[];
@@ -144,21 +151,46 @@ export function canRead(file: DriveFile, viewerId: string): boolean {
   return file.readableBy === "all" || file.readableBy.includes(viewerId);
 }
 
+/// 閲覧者から見た添付の表示情報。**読めない相手にはメタデータを一切返さない。**
+/// 実装では StorageService 経由の ReBAC 評価がサーバ側でこれを返す。
+/// `readableBy` のような ACL をレンダラへ渡さないための境界。
+export type FileRefView =
+  | { readable: true; name: string; kind: DriveFile["kind"]; location: string; size: string }
+  | { readable: false };
+
+export function fileRefView(nodeId: string, viewerId: string): FileRefView | null {
+  const file = findFile(nodeId);
+  if (!file) return null;
+  if (!canRead(file, viewerId)) return { readable: false };
+  return {
+    readable: true,
+    name: file.name,
+    kind: file.kind,
+    location: file.location,
+    size: file.size,
+  };
+}
+
 /// 発言を平文に落とす（検索・一覧のプレビュー用）。
-export function plainText(msg: Message): string {
+///
+/// **添付は閲覧者の権限を見る。** ここで無条件にファイル名を返すと、本文側で
+/// 「参照できない添付」として伏せた名前が検索プレビュー経由で漏れる。
+export function plainText(msg: Message, viewerId: string): string {
   return msg.blocks
     .map((b) => {
-      if (b.kind === "text") return b.text;
-      if (b.kind === "mention") return `@${findMember(b.memberId).name}`;
-      return findFile(b.fileId)?.name ?? "添付";
+      if (b.type === "text") return b.text;
+      if (b.type === "mention") return `@${findMember(b.member_id).name}`;
+      const file = findFile(b.node_id);
+      if (!file || !canRead(file, viewerId)) return "［参照できない添付］";
+      return file.name;
     })
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function text(t: string): Block {
-  return { kind: "text", text: t };
+function text(t: string): MessageBlock {
+  return { type: "text", text: t };
 }
 
 let seq = 0;
@@ -166,7 +198,7 @@ function msg(
   authorId: string,
   dayLabel: string,
   time: string,
-  blocks: Block[],
+  blocks: MessageBlock[],
   extra: Partial<Message> = {},
 ): Message {
   seq += 1;
@@ -198,7 +230,7 @@ export const CHANNELS: Channel[] = [
         "yamada",
         "8月20日",
         "09:13",
-        [text("変更点は第3章と第7章です。"), { kind: "file_ref", fileId: "f-rule" }],
+        [text("変更点は第3章と第7章です。"), { type: "file_ref", node_id: "f-rule" }],
         {
           reactions: [
             { emoji: "👀", by: ["tanaka", "sato", "kobayashi"] },
@@ -209,7 +241,7 @@ export const CHANNELS: Channel[] = [
               text("第7章の適用開始は既存契約にも及びますか？"),
             ]),
             msg("yamada", "8月20日", "10:20", [
-              { kind: "mention", memberId: "suzuki" },
+              { type: "mention", member_id: "suzuki" },
               text(" 既存契約は経過措置があります。別途ご案内します。"),
             ]),
           ],
@@ -231,7 +263,7 @@ export const CHANNELS: Channel[] = [
     kind: "public",
     name: "総務-予算相談",
     topic: "2027年度予算の取りまとめ。資料はドライブ / 総務部 / 予算 に置いています。",
-    memberIds: ["tanaka", "sato", "suzuki", "kobayashi"],
+    memberIds: ["tanaka", "sato", "suzuki", "kobayashi", "yamada"],
     messages: [
       msg("tanaka", "昨日", "17:30", [
         text("来期の予算案を各部から集め終えました。明日たたき台を共有します。"),
@@ -242,7 +274,7 @@ export const CHANNELS: Channel[] = [
         "10:02",
         [
           text("お待たせしました。2027年度の予算案です。"),
-          { kind: "file_ref", fileId: "f-budget" },
+          { type: "file_ref", node_id: "f-budget" },
         ],
         {
           reactions: [{ emoji: "🎉", by: ["sato", "kobayashi"] }],
@@ -261,9 +293,9 @@ export const CHANNELS: Channel[] = [
         "今日",
         "10:18",
         [
-          { kind: "mention", memberId: "tanaka" },
+          { type: "mention", member_id: "tanaka" },
           text(" 情シスの定例資料も併せて置いておきます。"),
-          { kind: "file_ref", fileId: "f-report" },
+          { type: "file_ref", node_id: "f-report" },
         ],
         { reactions: [{ emoji: "👍", by: ["tanaka"] }] },
       ),
@@ -271,7 +303,7 @@ export const CHANNELS: Channel[] = [
         text("営業部です。予算案の添付が開けないのですが、権限でしょうか？"),
       ]),
       msg("tanaka", "今日", "10:31", [
-        { kind: "mention", memberId: "suzuki" },
+        { type: "mention", member_id: "suzuki" },
         text(" 総務部内の共有にしていました。部長確認のうえ営業部にも共有します。"),
       ], { reactions: [{ emoji: "🙏", by: ["suzuki"] }] }),
     ],
@@ -281,7 +313,9 @@ export const CHANNELS: Channel[] = [
     kind: "public",
     name: "情シス-運用",
     topic: "障害・メンテナンスの共有。緊急は電話で。",
-    memberIds: ["sato", "tanaka", "kobayashi"],
+    // 公開チャンネルは組織の全員が読める（FR-18）。参加を明示タプルで表すか org 継承にするかは
+    // 14.2 のポリシ決定（human 承認待ち）だが、「全員が読める」という結果はどちらでも同じ。
+    memberIds: ["sato", "tanaka", "kobayashi", "suzuki", "yamada"],
     messages: [
       msg("sato", "昨日", "11:05", [
         text("バックアップジョブの実行時間が伸びています。世代数を見直します。"),
@@ -360,9 +394,9 @@ export function searchMessages(
     // pre-filter: 参加していないチャンネルは走査対象にすら入れない。
     if (!channel.memberIds.includes(viewerId)) continue;
     for (const m of channel.messages) {
-      if (plainText(m).includes(q)) hits.push({ channel, message: m });
+      if (plainText(m, viewerId).includes(q)) hits.push({ channel, message: m });
       for (const r of m.replies) {
-        if (plainText(r).includes(q)) hits.push({ channel, message: r, parent: m });
+        if (plainText(r, viewerId).includes(q)) hits.push({ channel, message: r, parent: m });
       }
     }
   }

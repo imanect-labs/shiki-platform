@@ -30,7 +30,7 @@ const KINDS: {
     kind: "public",
     icon: Globe,
     label: "公開",
-    note: "組織の全員が参加でき、発言を読めます。",
+    note: "組織の全員が読めます。誰が既定で参加するかは設定によります。",
   },
   {
     kind: "private",
@@ -180,7 +180,7 @@ export function CreateChannelDialog({
                     </span>
                     <span
                       className={cn(
-                        "flex size-5 items-center justify-center rounded-md border",
+                        "flex size-5 items-center justify-center rounded-[5px] border",
                         on
                           ? "border-transparent bg-primary text-primary-foreground"
                           : "border-border",
@@ -194,7 +194,7 @@ export function CreateChannelDialog({
             </div>
             {kind === "public" ? (
               <p className="text-[11px] leading-snug text-muted-foreground">
-                公開チャンネルは招待しなくても組織の全員が参加できます。
+                公開チャンネルは招待しなくても組織の全員が読めます。招待した人は最初から一覧に出ます。
               </p>
             ) : null}
           </div>

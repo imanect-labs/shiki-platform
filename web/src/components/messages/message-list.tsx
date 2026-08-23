@@ -57,13 +57,8 @@ export function MessageList({
         return (
           <React.Fragment key={m.id}>
             {showDay ? <DayDivider label={m.dayLabel} /> : null}
-            <div
-              className={
-                activeThreadId === m.id
-                  ? "border-l-2 border-primary/70 bg-accent/40"
-                  : "border-l-2 border-transparent"
-              }
-            >
+            {/* スレッド展開中の行は塗りで示す（設計言語: 選択は bg-accent の塗り・枠は使わない）。 */}
+            <div className={activeThreadId === m.id ? "bg-accent/60" : undefined}>
               <MessageRow
                 message={m}
                 viewerId={viewerId}

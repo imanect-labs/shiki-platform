@@ -5,7 +5,7 @@
 import * as React from "react";
 import { X } from "lucide-react";
 
-import { channelTitle, type Block, type Channel, type Message } from "@/lib/messages-mock";
+import { channelTitle, type Channel, type Message, type MessageBlock } from "@/lib/messages-mock";
 import { ChannelIcon } from "./primitives";
 import { MessageList } from "./message-list";
 import { Composer } from "./composer";
@@ -22,7 +22,7 @@ export function ThreadPane({
   root: Message;
   viewerId: string;
   onClose: () => void;
-  onReply: (blocks: Block[]) => void;
+  onReply: (blocks: MessageBlock[]) => void;
   onToggleReaction: (messageId: string, emoji: string) => void;
 }) {
   const scroller = React.useRef<HTMLDivElement>(null);
@@ -32,18 +32,22 @@ export function ThreadPane({
   const replyCount = root.replies.length;
   const tailLength = React.useMemo(
     () => root.replies[replyCount - 1]?.blocks.reduce(
-      (n, b) => n + (b.kind === "text" ? b.text.length : 1),
+      (n, b) => n + (b.type === "text" ? b.text.length : 1),
       0,
     ) ?? 0,
     [root.replies, replyCount],
   );
   React.useEffect(() => {
     const el = scroller.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    // 利用者が上へ遡って読んでいる間は追わない。生成中の AI 回答は 1 文字ごとに
+    // ここを通るので、無条件に最下部へ寄せると読んでいる手を奪う。
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [replyCount, tailLength]);
 
   return (
-    <aside className="flex h-full w-[352px] shrink-0 flex-col border-l border-border bg-background">
+    <aside className="flex h-full w-[380px] shrink-0 flex-col border-l border-border bg-background">
       <header className="shiki-dash-bottom flex h-14 shrink-0 items-center gap-2 px-4">
         <div className="min-w-0 flex-1">
           <p className="text-[14px] font-semibold text-foreground">スレッド</p>
@@ -91,9 +95,12 @@ export function ThreadPane({
         />
       </div>
 
+      {/* スレッドごとに作り直す（書きかけの返信を別スレッドへ持ち越さない）。 */}
       <Composer
+        key={`${root.id}:${viewerId}`}
         placeholder="スレッドに返信…"
         channelMemberIds={channel.memberIds}
+        viewerId={viewerId}
         onSend={onReply}
         hideHint
       />

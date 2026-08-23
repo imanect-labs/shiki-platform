@@ -12,15 +12,16 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import {
   FILES,
   MEMBERS,
+  canRead,
   findFile,
-  type Block,
   type Member,
+  type MessageBlock,
 } from "@/lib/messages-mock";
 import { FileKindIcon, MemberAvatar } from "./primitives";
 
 /// 平文をブロック列へ。`@氏名` は登録利用者に一致した場合だけ mention ブロックにする。
-export function toBlocks(text: string, fileIds: string[]): Block[] {
-  const blocks: Block[] = [];
+export function toBlocks(text: string, fileIds: string[]): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
   let buf = "";
   let i = 0;
   const names = MEMBERS.map((m) => m.name).sort((a, b) => b.length - a.length);
@@ -30,10 +31,11 @@ export function toBlocks(text: string, fileIds: string[]): Block[] {
       const hit = names.find((n) => text.startsWith(n, i + 1));
       if (hit) {
         if (buf) {
-          blocks.push({ kind: "text", text: buf });
+          blocks.push({ type: "text", text: buf });
           buf = "";
         }
-        blocks.push({ kind: "mention", memberId: MEMBERS.find((m) => m.name === hit)!.id });
+        const member = MEMBERS.find((m) => m.name === hit);
+        if (member) blocks.push({ type: "mention", member_id: member.id });
         i += hit.length + 1;
         continue;
       }
@@ -41,8 +43,8 @@ export function toBlocks(text: string, fileIds: string[]): Block[] {
     buf += text[i];
     i += 1;
   }
-  if (buf) blocks.push({ kind: "text", text: buf });
-  for (const id of fileIds) blocks.push({ kind: "file_ref", fileId: id });
+  if (buf) blocks.push({ type: "text", text: buf });
+  for (const id of fileIds) blocks.push({ type: "file_ref", node_id: id });
   return blocks;
 }
 
@@ -61,13 +63,16 @@ function mentionQuery(text: string, caret: number): { start: number; query: stri
 export function Composer({
   placeholder,
   channelMemberIds,
+  viewerId,
   onSend,
   autoFocus,
   hideHint,
 }: {
   placeholder: string;
   channelMemberIds: string[];
-  onSend: (blocks: Block[]) => void;
+  /// 添付候補を閲覧権限で絞るために要る（自分が読めない文書は名前も出さない）。
+  viewerId: string;
+  onSend: (blocks: MessageBlock[]) => void;
   autoFocus?: boolean;
   /// スレッドなど、同じ画面に既に注記が出ている場所では下の注記を省く。
   hideHint?: boolean;
@@ -78,6 +83,10 @@ export function Composer({
   const [mention, setMention] = React.useState<{ start: number; query: string } | null>(null);
   const [highlight, setHighlight] = React.useState(0);
   const ref = React.useRef<HTMLTextAreaElement>(null);
+
+  // 自分が読めない文書は候補に出さない。本文側で「参照できない添付」と伏せているのに、
+  // 添付候補から名前と所在が漏れては意味がない。
+  const attachable = React.useMemo(() => FILES.filter((f) => canRead(f, viewerId)), [viewerId]);
 
   const candidates: Member[] = React.useMemo(() => {
     if (!mention) return [];
@@ -126,6 +135,8 @@ export function Composer({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // IME 変換中のキーは IME のもの。奪うと確定文字が二重に入る／変換が壊れる。
+    if (e.nativeEvent.isComposing) return;
     if (mention && candidates.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -148,7 +159,7 @@ export function Composer({
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       send();
     }
@@ -199,7 +210,7 @@ export function Composer({
           <p className="px-2 py-1 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">
             ドライブから共有
           </p>
-          {FILES.map((f) => (
+          {attachable.map((f) => (
             <button
               key={f.id}
               type="button"
@@ -221,8 +232,14 @@ export function Composer({
               </span>
             </button>
           ))}
+          {attachable.length === 0 ? (
+            <p className="px-2 py-2 text-[12px] text-muted-foreground">
+              共有できる文書がありません。
+            </p>
+          ) : null}
           <p className="shiki-dash-top mt-1 px-2 pb-1 pt-2 text-[11px] leading-snug text-muted-foreground">
-            共有しても本文は複製されません。閲覧可否は文書側の権限に従います。
+            共有しても本文は複製されません。閲覧可否は文書側の権限に従うため、
+            相手によっては「参照できない添付」として表示されます。
           </p>
         </div>
       ) : null}
