@@ -23,6 +23,13 @@
 //! - 資源上限を [`JtdLimits`] で必ず掛ける（既定は上流より厳しい値）。
 //! - 上流のパニックが API を巻き込まないよう境界で捕捉して [`JtdError::Malformed`] に落とす。
 //! - 失敗理由の詳細は公開せず `tracing` に落とす（フォーマット解析のオラクルにしない）。
+//!
+//! ただし **`catch_unwind` は万能ではない**。捕まえられるのは unwind するパニックだけで、
+//! **確保失敗による abort**（Rust の OOM は unwind しない）と**無限ループ**は素通りする。
+//! 実際、細工した 1 KiB の CFB が上流の DIFAT 走査を暴走させ、2 GiB の確保失敗でプロセスごと
+//! 落ちる穴があった（`vendor/openjtd/patches/0001-bound-difat-walk.patch` で修正）。
+//! よって細工入力に対する要件は「エラーを返すこと」ではなく
+//! **「有界な時間とメモリで返ること」**とし、`tests/adversarial_it.rs` で経過時間ごと固定する。
 
 mod error;
 mod limits;

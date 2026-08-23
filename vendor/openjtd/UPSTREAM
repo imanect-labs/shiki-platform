@@ -32,7 +32,18 @@ rjtd-export / rjtd-cli / rjtd-wasm は **依存させず**、リバースエン�
 ローカル調査ツールとして vendor 内に残してある（`cargo run -p rjtd-cli -- <probe>`）。
 
 ローカルパッチ:
-  patches/ 以下に番号付き .patch で管理（現状なし）。
+  patches/ 以下に番号付き .patch で管理する。再 vendor 時は scripts/update-openjtd.sh が順に適用する。
+
+  0001-bound-difat-walk.patch
+    lenient CFB リーダの DIFAT 走査を入力サイズで有界化する。ヘッダの
+    fat_sector_count / difat_sector_count は攻撃者制御の u32 で、自己参照する DIFAT
+    セクタと組み合わせると 1 KiB のファイルで sector_ids が 2 GiB を超え、確保失敗で
+    プロセスが abort した（abort は unwind ではないため catch_unwind で捕まえられない）。
+    併せて sector_size < 4 での `sector_size / 4 - 1` の underflow を潰す
+    （debug ではパニック、release では usize::MAX 回のループ）。
+    兄弟の走査（collect_sector_ids / read_sector_chain）は既に visited を持っており、
+    ここだけが漏れていた。**上流へ PR 化する価値がある（上流にも同じ穴がある）。**
+    回帰テストは crates/jtd/tests/adversarial_it.rs。
 
 再 vendor 手順:
   scripts/update-openjtd.sh を参照。

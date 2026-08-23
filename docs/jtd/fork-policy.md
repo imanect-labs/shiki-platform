@@ -60,6 +60,17 @@ RFC は `vendor/openjtd/openjtd-spec/rfc/` にある。解読作業の出発点�
   日本の文書資産を開けるようにすること自体に価値がある。
 - 再 vendor は `scripts/update-openjtd.sh`（clone → サブセット抽出 → patches 適用 → ビルド確認）。
 
+### 現在のパッチ
+
+- **`0001-bound-difat-walk.patch`** — lenient CFB リーダの DIFAT 走査を入力サイズで有界化する。
+  ヘッダの `fat_sector_count` / `difat_sector_count` は攻撃者制御の u32 で、自己参照する DIFAT
+  セクタと組み合わせると **1 KiB のファイルで `sector_ids` が 2 GiB を超え、確保失敗でプロセスが
+  abort** した。abort は unwind ではないので `catch_unwind` では捕まえられず、API 全体が落ちる。
+  併せて `sector_size < 4` での `sector_size / 4 - 1` の underflow も潰した（debug ではパニック、
+  release では `usize::MAX` 回のループ）。兄弟の走査（`collect_sector_ids` / `read_sector_chain`）は
+  既に visited セットを持っており、ここだけが漏れていた。**同じ穴は上流にもあるので PR 化する。**
+  回帰テストは `crates/jtd/tests/adversarial_it.rs`。
+
 ## 品質ゲートの扱い
 
 `vendor/` は自作コードの規約を当てない（`docs/sandbox/fork-policy.md` と同じ）。
@@ -82,6 +93,12 @@ JTD はユーザーがアップロードした外部由来のバイナリで、�
 - 上流呼び出しは `catch_unwind` で囲み、パニックを 1 リクエストのエラーに閉じ込める。
   `rjtd-core` は `unsafe_code = forbid` なので未定義動作は無いが、細工されたオフセットによる
   範囲外パニックは残りうる。
+- **`catch_unwind` を万能だと思わないこと。** 捕まえられるのは unwind するパニックだけで、
+  次の 2 つは素通りする。パーサ側で有界にするしかない。
+  - **確保失敗による abort** — Rust の OOM は unwind せずプロセスごと落ちる。`0001` で踏んだのがこれ。
+  - **無限ループ** — そもそも戻ってこないので捕捉の機会が無い。
+  したがって、細工入力に対しては「エラーを返すこと」ではなく **「有界な時間とメモリで返ること」**を
+  テストで固定する（`crates/jtd/tests/adversarial_it.rs` は経過時間もアサートしている）。
 - 解析失敗の理由はユーザーへ返さない（フォーマット解析のオラクルにしない）。詳細は `tracing` へ。
 
 ## 対象バージョンのスコープ

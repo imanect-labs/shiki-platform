@@ -1,0 +1,55 @@
+diff --git a/rjtd/crates/rjtd-core/src/container.rs b/rjtd/crates/rjtd-core/src/container.rs
+index 00024229..42f13687 100644
+--- a/rjtd/crates/rjtd-core/src/container.rs
++++ b/rjtd/crates/rjtd-core/src/container.rs
+@@ -840,6 +840,22 @@ fn read_difat_sector_ids(
+     first_difat_sector: u32,
+     difat_sector_count: usize,
+ ) -> Vec<u32> {
++    // shiki patch 0001: bound this walk by what the input can actually contain.
++    //
++    // `fat_sector_count` and `difat_sector_count` come straight from the header and are
++    // attacker-controlled u32 values. A DIFAT sector whose "next" pointer refers back to
++    // itself made this loop run `difat_sector_count` times, pushing `entries_per_sector`
++    // ids each time; a 1 KiB file declaring 0xFFFFFFFF drove `sector_ids` past 2 GiB and
++    // aborted the process on allocation failure. The sibling walkers
++    // (`collect_sector_ids` / `read_sector_chain`) already keep a visited set; this one did not.
++    //
++    // A real FAT sector has to live inside the file, so the number of them is bounded by
++    // the sector count of the input. Cap both declared counts by that, refuse to revisit a
++    // DIFAT sector, and stop as soon as we have the ids that survive the truncate below.
++    let max_sectors = data.len() / sector_size.max(1) + 1;
++    let fat_sector_count = fat_sector_count.min(max_sectors);
++    let difat_sector_count = difat_sector_count.min(max_sectors);
++
+     let mut sector_ids = Vec::new();
+     for index in 0..109.min(fat_sector_count) {
+         let offset = 76 + index * 4;
+@@ -851,14 +867,26 @@ fn read_difat_sector_ids(
+     }
+ 
+     let mut sector_id = first_difat_sector;
++    let mut visited = HashSet::new();
+     for _ in 0..difat_sector_count {
+         if !is_real_sector(sector_id) {
+             break;
+         }
++        if !visited.insert(sector_id) {
++            break;
++        }
++        if sector_ids.len() >= fat_sector_count {
++            break;
++        }
+         let Some(offset) = sector_offset(data, sector_id, sector_size) else {
+             break;
+         };
+-        let entries_per_sector = sector_size / 4 - 1;
++        // shiki patch 0001: `sector_size / 4 - 1` underflowed for sector_size < 4
++        // (sector shift 0 gives sector_size = 1), which panics in debug and wraps to
++        // usize::MAX in release — a 2^64 iteration hang.
++        let Some(entries_per_sector) = (sector_size / 4).checked_sub(1) else {
++            break;
++        };
+         for index in 0..entries_per_sector {
+             let entry_offset = offset + index * 4;
+             if let Ok(fat_sector_id) = read_u32_le(data, entry_offset)
