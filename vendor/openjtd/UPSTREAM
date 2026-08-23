@@ -56,7 +56,11 @@ rjtd-export / rjtd-cli / rjtd-wasm は **依存させず**、リバースエン�
     再帰するため、再帰深度がエントリ数（入力サイズでしか縛られない）と等しくなっていた。
     約 1 MiB の細工ファイルでスタックオーバーフロー → プロセス abort（catch_unwind では
     捕まえられない）。兄弟リンク（left/right）はパスが伸びないので id だけを反復し、
-    child_id の下降にだけ深さ上限（64）を掛ける。**上流へ PR 化する価値がある。**
+    child_id の下降にだけ深さ上限（16）を掛ける。
+    深さだけでは足りないので、パス文字列の総バイト数も有界にする。8 MiB の入力に約 65,000 の
+    ディレクトリエントリを置き、深い storage prefix の下に並べると各エントリが同じ prefix を
+    複製して数百 MiB になる（後段の inspect_cfb_entries_lenient でさらに複製・ソートされる）。
+    **上流へ PR 化する価値がある。**
 
   0003-linear-embedded-text-dedup.patch
     埋め込みテキスト断片の重複排除を線形走査から HashSet へ置き換える。
@@ -64,6 +68,13 @@ rjtd-export / rjtd-cli / rjtd-wasm は **依存させず**、リバースエン�
     既出テキスト全体と比較する実装は O(N^2) だった（1 MiB で 29 秒・2 MiB で 133 秒）。
     しかも detect_format と本文読みの両方から呼ばれて 2 回走っていた。
     **上流へ PR 化する価値がある。**
+
+  0004-utf16-surrogate-pairs.patch
+    UTF-16 のサロゲート対を結合してデコードする。is_invalid_scalar が各 code unit を
+    単独で無効と見なすため、U+10000 以上の文字が本文から無言で落ちていた。日本語文書では
+    他人事ではなく、氏名に CJK 拡張 B（𠮷・𩸽）が普通に使われるので「𠮷田」が「田」に
+    なっていた。**上流へ PR 化する価値がある。**
+    回帰テストは crates/jtd/src/tests.rs の keeps_characters_above_the_basic_plane。
 
 再 vendor 手順:
   scripts/update-openjtd.sh を参照。

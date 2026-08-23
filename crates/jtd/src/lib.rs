@@ -43,6 +43,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use rjtd_core::container::Container;
 use rjtd_core::document_text::{
     read_document_text_payload_with_limits, COMPRESSED_DOCUMENT_PATH, DOCUMENT_TEXT_PATH,
+    EMBEDDED_DOCUMENT_TEXT_PATH,
 };
 
 pub use error::{JtdError, JtdLimitKind};
@@ -144,7 +145,7 @@ impl JtdFile {
         let parse_limits = limits.to_parse_limits();
         let payload = guard(|| read_document_text_payload_with_limits(bytes, parse_limits))?
             .map_err(|error| map_upstream(&error))?;
-        let format = classify(&streams);
+        let format = classify(payload.source_name(), &streams);
 
         Ok(JtdFile {
             format,
@@ -181,13 +182,21 @@ impl JtdFile {
     }
 }
 
-/// 本文がどこから来たかで系統を決める。
+/// 本文がどこから来たかで系統を決める。本文の取得に成功した後にだけ呼ぶ。
 ///
-/// 本文の取得に成功した後にだけ呼ぶ。`/DocumentText` も `/JSCompDocument` も無いのに
-/// 本文が取れたということは、埋め込み断片から拾えたということ。
-fn classify(streams: &[JtdStream]) -> JtdFormat {
-    let has = |path: &str| streams.iter().any(|stream| stream.path() == path);
+/// **ストリームの有無だけで決めない。** 壊れた `/JSCompDocument` と有効な埋め込み断片が
+/// 同居していると、上流は展開に失敗して埋め込み断片へフォールバックする。存在だけを見ると
+/// `CompressedDocument` と名乗ってしまい、監査ラベルが実際に読んだ経路と食い違う。
+/// 埋め込み経由かどうかは payload の出所が教えてくれるので、そちらを優先する。
+///
+/// 直接読みと圧縮経由はどちらも出所が `/DocumentText` になるため、この 2 つの区別だけは
+/// ストリームの有無で行う。
+fn classify(source_name: &str, streams: &[JtdStream]) -> JtdFormat {
+    if source_name == EMBEDDED_DOCUMENT_TEXT_PATH {
+        return JtdFormat::EmbeddedDocumentText;
+    }
 
+    let has = |path: &str| streams.iter().any(|stream| stream.path() == path);
     if has(DOCUMENT_TEXT_PATH) {
         JtdFormat::DocumentText
     } else if has(COMPRESSED_DOCUMENT_PATH) {

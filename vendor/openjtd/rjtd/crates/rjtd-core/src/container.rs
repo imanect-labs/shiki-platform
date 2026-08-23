@@ -1137,7 +1137,16 @@ fn assign_directory_paths(entries: &mut [LenientDirectoryEntry]) {
 /// Real documents are shallow (the Ichitaro samples reach `/DocumentMacro/Macros/BaseStorage0`,
 /// i.e. depth 3). The cap only bounds how long a single path string can grow; entries below it
 /// are left unnamed, which is the same degradation this lenient reader already applies elsewhere.
-const MAX_STORAGE_DEPTH: usize = 64;
+const MAX_STORAGE_DEPTH: usize = 16;
+
+/// shiki patch 0002: total bytes this walk will spend on path strings.
+///
+/// Depth alone does not bound the cost. An 8 MiB input holds ~65k directory entries, and putting
+/// them all as siblings under a deep storage prefix makes every entry copy that prefix — hundreds
+/// of MiB of near-identical strings, which `inspect_cfb_entries_lenient` then duplicates and sorts
+/// again. Cap the total instead; entries past the cap keep `path: None`, the same degradation this
+/// lenient reader already applies to anything it cannot name.
+const MAX_TOTAL_PATH_BYTES: usize = 4 * 1024 * 1024;
 
 /// shiki patch 0002: walk the directory tree iteratively instead of recursively.
 ///
@@ -1160,9 +1169,10 @@ fn assign_child_tree_paths(
 ) {
     // Storages still to descend into: (subtree root, path of the containing storage, depth).
     let mut pending = vec![(entry_id, parent_path.to_string(), 0usize)];
+    let mut path_bytes = 0usize;
 
     while let Some((root, parent, depth)) = pending.pop() {
-        if depth > MAX_STORAGE_DEPTH {
+        if depth > MAX_STORAGE_DEPTH || path_bytes > MAX_TOTAL_PATH_BYTES {
             continue;
         }
 
@@ -1190,6 +1200,10 @@ fn assign_child_tree_paths(
                 format!("{parent}/{}", entries[index].name)
             };
             let is_storage = entries[index].object_type == CfbObjectType::Storage;
+            path_bytes = path_bytes.saturating_add(path.len());
+            if path_bytes > MAX_TOTAL_PATH_BYTES {
+                break;
+            }
             entries[index].path = Some(path.clone());
             if is_storage {
                 pending.push((entries[index].child_id, path, depth + 1));

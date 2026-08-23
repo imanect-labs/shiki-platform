@@ -28,6 +28,12 @@ trap 'rm -rf "$TMP"' EXIT
 echo "→ 上流 clone（$SHA）"
 git clone --quiet https://github.com/KimEJ/OpenJTD "$TMP/src"
 git -C "$TMP/src" checkout --quiet "$SHA"
+# 引数はブランチ名やタグでも checkout できてしまう。そのまま UPSTREAM に書くと
+# 「可変な名前」が pin として残り、後から同じソースを再現できない。完全な commit ID へ解決する。
+RESOLVED_SHA="$(git -C "$TMP/src" rev-parse HEAD)"
+if [ "$RESOLVED_SHA" != "$SHA" ]; then
+  echo "   （$SHA → $RESOLVED_SHA へ解決）"
+fi
 
 # パッチが当たるかを**先に**確かめる。順序が逆だと、適用に失敗した瞬間に
 # パッチの当たっていない（＝既知の穴が開いた）上流ソースが作業ツリーに残る。
@@ -37,7 +43,7 @@ if compgen -G "$DST/patches/*.patch" >/dev/null; then
   for p in "$DST/patches"/*.patch; do
     if ! git -C "$TMP/src" apply --check "$p" 2>/dev/null; then
       cat >&2 <<EOF
-❌ $(basename "$p") が $SHA に適用できません。
+❌ $(basename "$p") が $RESOLVED_SHA に適用できません。
 
 上流が同等の修正を取り込んだ可能性があります。その場合は
   1. 上流の該当箇所を読み、我々の修正が不要になったことを確かめる
@@ -85,7 +91,7 @@ for f in LICENSE THIRD_PARTY.md README.md README.ja.md TODO.md TODO.ja.md; do
 done
 
 echo "→ UPSTREAM の commit を更新"
-sed -i "s|^commit:.*|commit:     $SHA|" "$DST/UPSTREAM"
+sed -i "s|^commit:.*|commit:     $RESOLVED_SHA|" "$DST/UPSTREAM"
 sed -i "s|^vendored:.*|vendored:   $(date +%Y-%m-%d)|" "$DST/UPSTREAM"
 
 echo "→ ビルド確認（shiki が依存する rjtd-core ＋ 解読プローブの rjtd-cli）"

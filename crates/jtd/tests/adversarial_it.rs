@@ -269,8 +269,13 @@ fn many_embedded_text_fragments_stay_linear() {
     for index in 0..FRAGMENT_COUNT {
         payload.extend_from_slice(b"SsmgV.01");
         payload.extend_from_slice(&0x001fu16.to_be_bytes());
-        // 断片ごとに異なるテキストにして、重複排除を最悪ケースで踏ませる。
-        for unit in format!("{index:04x}").encode_utf16().take(3) {
+        // 断片ごとに**必ず**異なるテキストにして、重複排除を最悪ケースで踏ませる。
+        // ここが衝突すると比較量が減り、O(N²) へ退行しても素通りしてしまう。
+        for unit in [
+            0x0041 + (index & 0x1f) as u16,
+            0x0041 + ((index >> 5) & 0x1f) as u16,
+            0x0041 + ((index >> 10) & 0x1f) as u16,
+        ] {
             payload.extend_from_slice(&unit.to_be_bytes());
         }
     }

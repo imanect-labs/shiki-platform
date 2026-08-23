@@ -592,14 +592,23 @@ pub fn parse_document_text(data: &[u8]) -> ParsedDocumentText {
         }
 
         if reading_text {
-            if is_control_boundary(code) || is_invalid_scalar(code) {
+            if is_control_boundary(code) {
                 push_run(&mut elements, &mut run);
                 elements.push(DocumentTextElement::ControlBoundary(
                     DocumentTextControl::new(code),
                 ));
                 reading_text = code == TEXT_ROW_DELIMITER;
-            } else if let Some(character) = char::from_u32(code as u32) {
+            } else if let Some((character, consumed)) = decode_scalar(&units, index) {
+                // shiki patch 0004: surrogate pairs are one character, two units.
                 run.push(character);
+                index += consumed;
+                continue;
+            } else if is_invalid_scalar(code) {
+                push_run(&mut elements, &mut run);
+                elements.push(DocumentTextElement::ControlBoundary(
+                    DocumentTextControl::new(code),
+                ));
+                reading_text = code == TEXT_ROW_DELIMITER;
             }
         }
 
@@ -684,14 +693,19 @@ fn parse_raw_text_segment(units: &[u16]) -> ParsedDocumentText {
     let text_start = HEADER_WORDS;
     let text_end = text_start.saturating_add(length).min(units.len());
     let mut run = String::new();
-    for &code in &units[text_start..text_end] {
-        if code == 0x0000 {
+    let segment = &units[text_start..text_end];
+    let mut index = 0;
+    while index < segment.len() {
+        if segment[index] == 0x0000 {
             break;
         }
-        if !is_invalid_scalar(code)
-            && let Some(character) = char::from_u32(code as u32)
-        {
-            run.push(character);
+        // shiki patch 0004: surrogate pairs are one character, two units.
+        match decode_scalar(segment, index) {
+            Some((character, consumed)) => {
+                run.push(character);
+                index += consumed;
+            }
+            None => index += 1,
         }
     }
     if run.is_empty() {
@@ -714,6 +728,31 @@ fn is_control_boundary(code: u16) -> bool {
 
 fn is_invalid_scalar(code: u16) -> bool {
     (0xd800..=0xdfff).contains(&code) || code == 0xffff
+}
+
+/// shiki patch 0004: decode one scalar from UTF-16BE units, joining surrogate pairs.
+///
+/// `is_invalid_scalar` rejects every surrogate code unit on its own, so characters above
+/// U+FFFF were dropped silently. That is not an edge case for Japanese documents: personal
+/// names routinely use CJK Extension B (`𠮷`, `𩸽`), so `𠮷田` came out as `田`.
+///
+/// Returns the decoded character and how many units it consumed.
+fn decode_scalar(units: &[u16], index: usize) -> Option<(char, usize)> {
+    let code = *units.get(index)?;
+
+    if (0xd800..=0xdbff).contains(&code) {
+        let low = *units.get(index + 1)?;
+        if !(0xdc00..=0xdfff).contains(&low) {
+            return None;
+        }
+        let scalar = 0x1_0000 + (u32::from(code - 0xd800) << 10) + u32::from(low - 0xdc00);
+        return char::from_u32(scalar).map(|character| (character, 2));
+    }
+
+    if is_invalid_scalar(code) {
+        return None;
+    }
+    char::from_u32(u32::from(code)).map(|character| (character, 1))
 }
 
 fn inline_text_selector(units: &[u16], index: usize) -> Option<u16> {

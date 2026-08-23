@@ -16,10 +16,16 @@ const TEXT_RUN_MARKER: u16 = 0x001f;
 
 /// 1 ストリームだけを持つ合成 CFB を作る。
 fn cfb_with_stream(path: &str, payload: &[u8]) -> Vec<u8> {
+    cfb_with_streams(&[(path, payload)])
+}
+
+/// 複数ストリームを持つ合成 CFB を作る。
+fn cfb_with_streams(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut compound = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
-    let mut stream = compound.create_stream(path).unwrap();
-    stream.write_all(payload).unwrap();
-    drop(stream);
+    for (path, payload) in entries {
+        let mut stream = compound.create_stream(path).unwrap();
+        stream.write_all(payload).unwrap();
+    }
     compound.into_inner().into_inner()
 }
 
@@ -164,4 +170,34 @@ fn format_labels_are_stable() {
         JtdFormat::EmbeddedDocumentText.as_str(),
         "embedded-document-text"
     );
+}
+
+#[test]
+fn keeps_characters_above_the_basic_plane() {
+    // 日本人の氏名は CJK 拡張 B（𠮷・𩸽）を普通に使う。UTF-16 のサロゲート対を
+    // code unit 単位で捨てると「𠮷田」が「田」になる。
+    let bytes = synthetic_jtd("𠮷田さんと𩸽");
+
+    let file = JtdFile::open(&bytes).expect("合成 JTD は読めること");
+
+    assert_eq!(file.plain_text(), "𠮷田さんと𩸽");
+}
+
+#[test]
+fn classifies_by_the_body_actually_read_not_by_stream_presence() {
+    // 壊れた `/JSCompDocument` と有効な埋め込み断片が同居する CFB。上流は展開に失敗して
+    // 埋め込み断片へフォールバックするので、系統も埋め込みでなければ監査ラベルが嘘になる。
+    let bytes = cfb_with_streams(&[
+        ("/JSCompDocument", b"not a JustCompressedDocument at all"),
+        ("/JSSlipObject1", &document_text_stream("埋め込み本文")),
+    ]);
+
+    let file = JtdFile::open(&bytes).expect("埋め込み断片から本文が拾えること");
+
+    assert_eq!(
+        file.format(),
+        JtdFormat::EmbeddedDocumentText,
+        "ストリームの存在ではなく、実際に読んだ本文の出所で分類すること"
+    );
+    assert!(file.plain_text().contains("埋め込み本文"));
 }
