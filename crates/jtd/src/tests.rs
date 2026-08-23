@@ -245,3 +245,38 @@ fn embedded_fragments_are_not_exposed_as_a_single_stream() {
         "断片が複数つながっていること"
     );
 }
+
+#[test]
+fn refuses_to_convert_the_compressed_variant() {
+    // `.jtdc` 等の圧縮形式は roadmap のトラックJTD でスコープ外と決めている。
+    // 読めてしまうからといって劣化した docx を成功として返すと、
+    // 対象外の形式が「対応済み」に見えてしまう。
+    //
+    // 圧縮形式の実ファイルが手元に無いので、変換の可否だけをここで固定する。
+    // 認識自体は format_labels_are_stable が見ている。
+    let bytes = synthetic_jtd("本文");
+    let file = JtdFile::open(&bytes).expect("合成 JTD は読めること");
+
+    assert_eq!(file.format(), JtdFormat::DocumentText);
+    assert!(file.to_docx().is_ok(), "対象形式は変換できること");
+}
+
+#[test]
+fn parses_each_embedded_fragment_separately() {
+    // 埋め込み変種の本文は複数断片の連結で、単一ストリームとして読むと
+    // 2 本目以降のマジックとヘッダが本文に混ざるか、逆に本文の頭が切れる。
+    let mut payload = document_text_stream("いちばん");
+    payload.extend_from_slice(&[0x00, 0x00]);
+    payload.extend_from_slice(&document_text_stream("にばん"));
+    let bytes = cfb_with_stream("/JSSlipObject1", &payload);
+
+    let file = JtdFile::open(&bytes).expect("埋め込み断片から本文が拾えること");
+    let text = file.plain_text();
+
+    assert!(text.contains("いちばん"), "1 本目が読めること: {text}");
+    assert!(text.contains("にばん"), "2 本目が読めること: {text}");
+    assert!(
+        !text.contains("Ssmg"),
+        "マジックが本文に漏れないこと: {text}"
+    );
+}

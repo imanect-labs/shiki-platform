@@ -42,7 +42,12 @@ const MAGIC: &[u8; 8] = b"SsmgV.01";
 /// マジックの後に続くヘッダのワード数（ストリーム先頭から数えて 10 ワード − マジック 4 ワード）。
 const HEADER_WORDS_AFTER_MAGIC: usize = 6;
 /// セグメント数フィールドの位置（マジックの後ろから数えて）。
-const SEGMENT_COUNT_INDEX: usize = 1;
+///
+/// ストリーム先頭から数えると 9 ワード目（`SsmgV.01` 4 ワード ＋ ヘッダ 4 ワード ＋
+/// セグメント数 2 ワードの下位側）。上流 `parse_document_text` の `units.get(9)` と同じ。
+/// **ここを 1 にすると `betu.jtd` / `tpwin_jp.jtd` が生テキスト形式と誤判定され、
+/// 宣言長で本文が切り詰められる**（実際 betu が 6,880 → 6,706 文字になっていた）。
+const SEGMENT_COUNT_INDEX: usize = 5;
 /// 生テキストセグメント形式を表すセグメント数。
 const RAW_TEXT_SEGMENT_COUNT: u16 = 0x0001;
 /// 生テキストセグメント形式の名前。
@@ -64,6 +69,10 @@ const INLINE_CLOSE: u16 = 0x001e;
 const ROW_DELIMITER: u16 = 0x000e;
 /// 段落内の改行。
 const LINE_BREAK: u16 = 0x000a;
+/// タブと復帰。制御コードではなく本文の文字として扱う
+/// （上流 `is_control_boundary` も `0x09` / `0x0A` / `0x0D` を除外している）。
+const TAB: u16 = 0x0009;
+const CARRIAGE_RETURN: u16 = 0x000d;
 /// 改ページ（RFC 0003: 一太郎の COM エクスポートが `Chr(12)` を改ページ文字に使う）。
 ///
 /// **テキストランを閉じない。** 制御コードとして扱うと、改ページの直後から次の
@@ -104,17 +113,49 @@ const MIN_RECORD_WORDS: usize = 7;
 /// マジックが違う場合は空文書を返す（入力の妥当性は呼び出し側の
 /// [`crate::JtdFile`] が既に判定している）。
 pub(crate) fn parse_document(raw: &[u8]) -> JtdDocument {
-    let Some(body) = raw.strip_prefix(MAGIC) else {
-        return JtdDocument::default();
-    };
-    let units: Vec<u16> = body
-        .chunks_exact(2)
-        .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
-        .collect();
+    // 埋め込み変種の本文は `SsmgV.01` で始まる断片が `0x0000` 区切りで並んだもので、
+    // **単一ストリームではない**。断片ごとにヘッダを飛ばして読まないと、2 本目以降の
+    // マジックとヘッダが本文に混ざるか、逆に本文の頭が切れる。
+    // 通常の単一ストリームは先頭 1 件だけがヒットするので、同じ経路で扱える。
+    let mut blocks = Vec::new();
+    for fragment in fragments(raw) {
+        let units: Vec<u16> = fragment
+            .chunks_exact(2)
+            .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+            .collect();
+        let start = text_start(&units);
+        let end = text_end(&units, start);
+        if start >= end {
+            continue;
+        }
+        blocks.extend(Builder::default().run(&units[..end], start).into_blocks());
+    }
+    JtdDocument::new(blocks)
+}
 
-    let start = text_start(&units);
-    let end = text_end(&units, start);
-    Builder::default().run(&units[..end], start)
+/// `SsmgV.01` で始まる断片へ切り分ける（マジックの次のバイトから返す）。
+fn fragments(raw: &[u8]) -> Vec<&[u8]> {
+    let mut starts: Vec<usize> = Vec::new();
+    let mut offset = 0;
+    while let Some(found) = raw
+        .get(offset..)
+        .and_then(|rest| rest.windows(MAGIC.len()).position(|w| w == MAGIC))
+    {
+        let at = offset + found;
+        starts.push(at + MAGIC.len());
+        offset = at + MAGIC.len();
+    }
+
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, from)| {
+            let to = starts
+                .get(index + 1)
+                .map_or(raw.len(), |next| next - MAGIC.len());
+            &raw[*from..to]
+        })
+        .collect()
 }
 
 /// 本文が始まるユニット位置を返す。
@@ -233,9 +274,14 @@ impl Builder {
     fn push_text(&mut self, units: &[u16], index: usize) -> usize {
         let unit = units[index];
         match unit {
-            // 改行・改ページ・表の行区切りはどれも行を割るが、本文は続く。
-            LINE_BREAK | PAGE_BREAK | ROW_DELIMITER => {
+            // 改行・改ページ・復帰・表の行区切りはどれも行を割るが、本文は続く。
+            LINE_BREAK | PAGE_BREAK | CARRIAGE_RETURN | ROW_DELIMITER => {
                 self.current.push('\n');
+                return 1;
+            }
+            // タブもテキストランを閉じない。閉じると以降の本文が次のマーカーまで落ちる。
+            TAB => {
+                self.current.push('\t');
                 return 1;
             }
             0x0000..=0x001f => {

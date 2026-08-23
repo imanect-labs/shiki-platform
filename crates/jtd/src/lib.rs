@@ -229,7 +229,14 @@ impl JtdFile {
     ///
     /// **表・罫線・ページ幾何はまだ写らない**（段落として縦に並ぶ）。
     /// 用紙は A4 縦・余白 20mm の暫定値で、実値の反映は JTD.4 の範囲。
+    ///
+    /// [`JtdFormat::CompressedDocument`]（`.jtdc` 等）は
+    /// **スコープ外なので変換しない**（roadmap のトラックJTD）。読めてしまうからといって
+    /// 劣化した docx を成功として返すと、対象外の形式が「対応済み」に見えてしまう。
     pub fn to_docx(&self) -> Result<Vec<u8>, JtdError> {
+        if self.format == JtdFormat::CompressedDocument {
+            return Err(JtdError::Unsupported);
+        }
         ooxml::to_docx(&self.document)
     }
 }

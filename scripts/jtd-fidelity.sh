@@ -59,6 +59,7 @@ echo "→ docx → PDF（Collabora）"
 docker run --rm -v "$OUT:/w" --entrypoint /bin/bash "$IMAGE" -c '
   set -e
   cd /tmp && cp /w/docx/*.docx .
+  mkdir -p /tmp/pdf
   for f in *.docx; do
     /opt/collaboraoffice/program/soffice --headless \
       -env:UserInstallation=file:///tmp/lo --convert-to pdf --outdir /tmp/pdf "$f" >/dev/null 2>&1

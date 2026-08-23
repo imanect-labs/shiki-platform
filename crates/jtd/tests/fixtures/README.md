@@ -14,8 +14,7 @@ CC BY 4.0 と互換で、国は利用者が CC BY 4.0 に従って利用する�
 | --- | --- |
 | `f1.jtd` | 厚生労働省「研究計画書（新規申請用）」<br>https://www.mhlw.go.jp/wp/kenkyu/koubo04/dl/f1.jtd （配布ページ: `.../koubo04/kh08.html`） |
 | `f1.reference.txt` | 同省が同じ様式で配布している text 版<br>https://www.mhlw.go.jp/wp/kenkyu/koubo04/dl/f1.txt<br>**加工内容: 文字コードを CP932 から UTF-8 へ変換（内容は変えていない）** |
-| `betu.jtd` | 厚生労働省「第一種使用規程承認申請手続等について（別紙様式）」<br>https://www.mhlw.go.jp/general/seido/kousei/i-kenkyu/seibutu/dl/betu.jtd<br>（[e-Gov データポータル](https://data.e-gov.go.jp/data/dataset/mhlw_20140917_0897)にも登録されているが、
-そちらのページはライセンス欄を持たないので出典は実ファイルの配布元を挙げる） |
+| `betu.jtd` | 厚生労働省「第一種使用規程承認申請手続等について（別紙様式）」<br>https://www.mhlw.go.jp/general/seido/kousei/i-kenkyu/seibutu/dl/betu.jtd<br>（[e-Gov データポータル](https://data.e-gov.go.jp/data/dataset/mhlw_20140917_0897)にも登録されているが、そちらのページはライセンス欄を持たないので出典は実ファイルの配布元を挙げる） |
 
 `*.golden.txt` は**我々の抽出結果のスナップショット**で、退行を止めるためだけのもの。
 配布物ではないので上の規約の対象外。意図した改善で内容が変わったら中身を確認して更新する

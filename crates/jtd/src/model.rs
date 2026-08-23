@@ -25,17 +25,26 @@ impl JtdDocument {
         &self.blocks
     }
 
+    /// ブロック列を取り出す（断片ごとに読んだ結果をつなぐため）。
+    pub(crate) fn into_blocks(self) -> Vec<Block> {
+        self.blocks
+    }
+
     /// 読み順のプレーンテキスト（段落間は改行 1 つ）。
     ///
     /// 比較・検索用の平坦化であって、レイアウトは表現しない。
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
-        for block in &self.blocks {
+        // 区切りは「出力が空かどうか」ではなく位置で決める。空段落が先頭にあると
+        // 前者では区切りが落ち、段落数と改行数が合わなくなる。
+        for (index, block) in self.blocks.iter().enumerate() {
             let Block::Paragraph(paragraph) = block;
-            if !out.is_empty() {
+            if index > 0 {
                 out.push('\n');
             }
-            out.push_str(&paragraph.text());
+            for run in paragraph.runs() {
+                out.push_str(run.text());
+            }
         }
         out
     }
@@ -148,5 +157,16 @@ mod tests {
     fn empty_document_has_empty_text() {
         assert_eq!(JtdDocument::default().plain_text(), "");
         assert!(JtdDocument::default().blocks().is_empty());
+    }
+
+    #[test]
+    fn empty_leading_paragraph_still_separates() {
+        // 区切りを「出力が空か」で決めると、先頭の空段落で区切りが落ちる。
+        let document = JtdDocument::new(vec![
+            Block::Paragraph(Paragraph::default()),
+            Block::Paragraph(Paragraph::from_text("二行目")),
+        ]);
+
+        assert_eq!(document.plain_text(), "\n二行目");
     }
 }

@@ -386,13 +386,49 @@ fn keeps_line_breaks_inside_a_paragraph() {
 
 #[test]
 fn handles_raw_text_segment_layout() {
-    // w[9]=0x0001 かつ TextV.01 が続く生テキスト形式は、名前 4 ワードと長さ 2 ワードを飛ばす。
+    // セグメント数 0x0001 かつ TextV.01 が続く生テキスト形式は、
+    // 名前 4 ワードと長さ 2 ワードを飛ばし、**宣言長で本文を切る**。
     let mut units = vec![0x0000, 0x0003, 0x0000, 0x0100, 0x0000, 0x0001];
     units.extend_from_slice(super::TEXT_SEGMENT_NAME);
-    units.extend_from_slice(&[0x0000, 0x0004]);
+    units.extend_from_slice(&[0x0000, 0x0005]); // 宣言長 = 5 ユニット
     units.extend(text("生テキスト"));
+    units.extend(text("これはパディング")); // 宣言長の外
 
-    assert_eq!(paragraphs(&stream(&units)), vec!["生テキスト"]);
+    assert_eq!(
+        paragraphs(&stream(&units)),
+        vec!["生テキスト"],
+        "宣言長より後ろは本文に含めないこと"
+    );
+}
+
+#[test]
+fn normal_layout_is_not_truncated_by_the_segment_length_field() {
+    // TextV.01 は通常形式にも現れる。セグメント数が 0x0001 でなければ生テキスト形式ではなく、
+    // 長さフィールドで切ってはいけない。**ここを取り違えると betu.jtd の本文が
+    // 6,880 文字から 6,706 文字に切り詰められる。**
+    let mut units = vec![0x0000, 0x0001, 0x0000, 0x0100, 0x0000, 0x00a8];
+    units.extend_from_slice(super::TEXT_SEGMENT_NAME);
+    units.extend_from_slice(&[0x0000, 0x0002]); // 小さな値。生テキスト形式なら 2 ユニットで切れる
+    units.extend(record(0x0010, &[0x0000]));
+    units.extend(text("宣言長より後ろの本文"));
+
+    assert_eq!(
+        paragraphs(&stream(&units)),
+        vec!["宣言長より後ろの本文"],
+        "通常形式では長さフィールドで切らないこと"
+    );
+}
+
+#[test]
+fn tab_is_body_text_not_a_control_boundary() {
+    // 0x0009 でテキストランを閉じると、タブ以降の本文が次のマーカーまで落ちる。
+    let mut units = header();
+    units.extend(record(0x0010, &[0x0000]));
+    units.extend(text("前"));
+    units.push(0x0009);
+    units.extend(text("後"));
+
+    assert_eq!(paragraphs(&stream(&units)), vec!["前\t後"]);
 }
 
 #[test]

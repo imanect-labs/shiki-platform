@@ -560,7 +560,7 @@
 |----|---------|------|------|
 | JTD.1 | OpenJTD を `vendor/openjtd` に所有フォークとして取り込む | infra | — |
 | JTD.2 | `crates/jtd`: 本文・段落の中間モデル ＋ OOXML ライタ ＋ 忠実度ハーネス | api | JTD.1 |
-| JTD.3 | 表と罫線の解読（`0x001C`…`0x001F` レコード・`0x000E` セル区切り）→ `w:tbl` | api | JTD.2 |
+| JTD.3 | 表と罫線の解読（セル境界 = `class=0x0030` レコード・行境界 = `0x000E`）→ `w:tbl` | api | JTD.2 |
 | JTD.4 | ページ・段組・余白の解読（`PageMark` / `PaperMark` / `PageLayoutStyle`）→ `w:sectPr` | api | JTD.2 |
 | JTD.5 | 文字書式・ルビ・フォント（`Font` / `TextLayoutStyle` / `DocumentEditStyles`）→ `w:rPr` / `w:ruby` | api | JTD.2 |
 | JTD.6 | 画像・数式・オブジェクト（`EmbedItems` / `Equation Native` / `Frame`）→ `w:drawing` / OMML | api | JTD.2 |

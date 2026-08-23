@@ -169,7 +169,8 @@ fn drops_characters_that_xml_cannot_represent() {
 
 #[test]
 fn keeps_tab_which_xml_allows() {
-    // セル区切りはタブとして本文に入る（表としての再構成は JTD.3）。
+    // タブは XML 1.0 が許す文字なので、モデルに入っていれば落とさない。
+    // （パーサ側で本文に入るのは実際のタブ 0x0009 だけ。表の行区切り 0x000E は改行になる。）
     let xml = part(&docx_of(&["左\t右"]), "word/document.xml");
 
     assert!(xml.contains('\t') || xml.contains("&#9;"), "{xml}");
