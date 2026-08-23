@@ -19,15 +19,29 @@ pub enum JtdError {
     #[error("一太郎ファイルの構造が壊れています")]
     Malformed,
     /// 資源上限に触れた（巨大入力・圧縮爆弾）。
-    #[error("一太郎ファイルが大きすぎます（{resource}: {actual} > {limit}）")]
-    TooLarge {
-        /// 触れた上限の名前（`input bytes` 等・上流の語彙をそのまま載せる）。
-        resource: &'static str,
-        /// 上限値。
-        limit: usize,
-        /// 実際の値。
-        actual: usize,
-    },
+    ///
+    /// バイト数は載せない。パーサの内部段階名や実測値を返すと、上限の位置を測る
+    /// オラクルになるため（内訳は `tracing` へ落とす）。
+    #[error("一太郎ファイルが大きすぎます（{0}）")]
+    TooLarge(JtdLimitKind),
+}
+
+/// どの上限に触れたか。上流のパース段階名を公開しないための粗い分類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JtdLimitKind {
+    /// 入力バイト数。
+    Input,
+    /// 圧縮（`.jtdc`）の展開後サイズ・展開率。
+    Decompressed,
+}
+
+impl std::fmt::Display for JtdLimitKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Input => write!(f, "ファイルサイズ"),
+            Self::Decompressed => write!(f, "展開後サイズ"),
+        }
+    }
 }
 
 impl JtdError {
@@ -38,22 +52,23 @@ impl JtdError {
                 JtdError::Unsupported
             }
             rjtd_core::Error::InvalidData(_) | rjtd_core::Error::Io(_) => JtdError::Malformed,
-            rjtd_core::Error::ResourceLimit {
-                resource,
-                limit,
-                actual,
-            } => JtdError::TooLarge {
-                resource,
-                limit: *limit,
-                actual: *actual,
-            },
+            // 上流の `resource` は `input bytes` / `LH5 decompressed bytes` /
+            // `LH5 expansion bytes` / `total LH5 decompressed bytes` のいずれか。
+            // 入力かそれ以外（＝圧縮展開）かの 2 分類にだけ落とす。
+            rjtd_core::Error::ResourceLimit { resource, .. } => {
+                JtdError::TooLarge(if *resource == "input bytes" {
+                    JtdLimitKind::Input
+                } else {
+                    JtdLimitKind::Decompressed
+                })
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::JtdError;
+    use super::{JtdError, JtdLimitKind};
 
     #[test]
     fn upstream_errors_map_to_our_vocabulary() {
@@ -79,12 +94,19 @@ mod tests {
                 limit: 1,
                 actual: 2,
             }),
-            JtdError::TooLarge {
-                resource: "input bytes",
-                limit: 1,
-                actual: 2
-            }
+            JtdError::TooLarge(JtdLimitKind::Input)
         ));
+        assert!(
+            matches!(
+                JtdError::from_upstream(&rjtd_core::Error::ResourceLimit {
+                    resource: "LH5 expansion bytes",
+                    limit: 1,
+                    actual: 2,
+                }),
+                JtdError::TooLarge(JtdLimitKind::Decompressed)
+            ),
+            "圧縮展開系はまとめて Decompressed に落ちること"
+        );
     }
 
     #[test]
@@ -100,17 +122,16 @@ mod tests {
     }
 
     #[test]
-    fn too_large_reports_the_limit_it_hit() {
-        let message = JtdError::TooLarge {
-            resource: "input bytes",
-            limit: 10,
-            actual: 11,
-        }
-        .to_string();
+    fn too_large_does_not_leak_sizes_or_stage_names() {
+        // バイト数や上流の段階名を返すと、上限の位置を測るオラクルになる。
+        let message = JtdError::TooLarge(JtdLimitKind::Decompressed).to_string();
 
-        assert!(message.contains("input bytes"));
-        assert!(message.contains("11"));
-        assert!(message.contains("10"));
+        assert_eq!(message, "一太郎ファイルが大きすぎます（展開後サイズ）");
+        assert!(!message.contains("LH5"), "上流の段階名が漏れていないこと");
+        assert_eq!(
+            JtdError::TooLarge(JtdLimitKind::Input).to_string(),
+            "一太郎ファイルが大きすぎます（ファイルサイズ）"
+        );
     }
 
     #[test]

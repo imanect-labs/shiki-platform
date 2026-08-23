@@ -7,7 +7,7 @@
 
 use std::io::{Cursor, Write};
 
-use super::{JtdError, JtdFile, JtdFormat, JtdLimits};
+use super::{JtdError, JtdFile, JtdFormat, JtdLimitKind, JtdLimits};
 
 /// `DocumentText` の先頭 8 バイト（一太郎 8〜13 系の本文ストリーム）。
 const DOCUMENT_TEXT_MAGIC: &[u8; 8] = b"SsmgV.01";
@@ -100,30 +100,42 @@ fn rejects_input_larger_than_the_limit() {
 
     let error = JtdFile::open_with_limits(&bytes, limits).expect_err("上限を超えたら失敗すること");
 
-    match error {
-        JtdError::TooLarge {
-            resource,
-            limit,
-            actual,
-        } => {
-            assert_eq!(resource, "input bytes");
-            assert_eq!(limit, bytes.len() - 1);
-            assert_eq!(actual, bytes.len());
-        }
-        other => panic!("TooLarge を期待したが {other:?} だった"),
-    }
+    assert!(
+        matches!(error, JtdError::TooLarge(JtdLimitKind::Input)),
+        "入力上限として分類されること（実際は {error:?}）"
+    );
+    assert!(
+        !error.to_string().contains(&bytes.len().to_string()),
+        "実測バイト数が公開メッセージに漏れていないこと"
+    );
 }
 
 #[test]
 fn truncated_compressed_document_is_rejected() {
-    // 圧縮ヘッダだけ名乗って中身が無い入力。プロセス内パースなので、
-    // ここで落ちずにエラーへ閉じ込められることが可用性の要件になる。
+    // 圧縮ヘッダだけ名乗って中身が無い入力。
+    //
+    // 注意: `guard()` がパニックを `Malformed` に変換するため、**このテストは
+    // 「パニックしないこと」を検証できない**（パニックしても Err で通る）。
+    // パニック・abort・ハングの検出は `tests/adversarial_it.rs` の担当。
+    // ここが固定するのは「壊れた圧縮文書が Ok にならない」ことだけ。
     let bytes = cfb_with_stream("/JSCompDocument", b"\x26\0JustCompressedDocument\0-lh5-\0");
 
     assert!(
         JtdFile::open(&bytes).is_err(),
-        "壊れた圧縮文書はエラーになること（パニックしないこと）"
+        "壊れた圧縮文書は Ok にならないこと"
     );
+}
+
+#[test]
+fn recognises_embedded_document_text_variant() {
+    // `/DocumentText` も `/JSCompDocument` も持たないが、別ストリームに `SsmgV.01` の
+    // 断片が埋まっている変種。本文はそこから拾える。
+    let bytes = cfb_with_stream("/JSSlipObject1", &document_text_stream("埋め込み本文"));
+
+    let file = JtdFile::open(&bytes).expect("埋め込み断片から本文が拾えること");
+
+    assert_eq!(file.format(), JtdFormat::EmbeddedDocumentText);
+    assert!(file.plain_text().contains("埋め込み本文"));
 }
 
 #[test]

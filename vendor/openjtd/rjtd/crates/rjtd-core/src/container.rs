@@ -1132,39 +1132,70 @@ fn assign_directory_paths(entries: &mut [LenientDirectoryEntry]) {
     }
 }
 
+/// shiki patch 0002: maximum storage nesting this walk will descend.
+///
+/// Real documents are shallow (the Ichitaro samples reach `/DocumentMacro/Macros/BaseStorage0`,
+/// i.e. depth 3). The cap only bounds how long a single path string can grow; entries below it
+/// are left unnamed, which is the same degradation this lenient reader already applies elsewhere.
+const MAX_STORAGE_DEPTH: usize = 64;
+
+/// shiki patch 0002: walk the directory tree iteratively instead of recursively.
+///
+/// The recursive version kept a `visited` set but no depth bound, and recursed on `left_id`
+/// before doing any work. Directory entries whose `left_id` forms a chain therefore produced a
+/// recursion depth equal to the entry count, which is bounded only by the input size (a 32 MiB
+/// input holds ~260k entries). A ~1 MiB crafted file overflowed the stack, and a stack overflow
+/// aborts the process — `catch_unwind` cannot contain it, so the whole API goes down.
+///
+/// Sibling links (`left_id` / `right_id`) share the containing storage's path, so they are walked
+/// with a flat id stack. Only `child_id` descends into a new storage, so only that path grows and
+/// only it is depth-capped. Nodes are still visited at most once; for a well-formed CFB (a proper
+/// tree) the assigned paths are identical to the recursive version. For malformed input where one
+/// id is reachable from two parents, which parent wins can differ — the input is already broken.
 fn assign_child_tree_paths(
     entries: &mut [LenientDirectoryEntry],
     entry_id: u32,
     parent_path: &str,
     visited: &mut HashSet<u32>,
 ) {
-    if !is_real_sector(entry_id) || entry_id as usize >= entries.len() || !visited.insert(entry_id)
-    {
-        return;
-    }
+    // Storages still to descend into: (subtree root, path of the containing storage, depth).
+    let mut pending = vec![(entry_id, parent_path.to_string(), 0usize)];
 
-    let index = entry_id as usize;
-    let left_id = entries[index].left_id;
-    let right_id = entries[index].right_id;
-    let child_id = entries[index].child_id;
-    assign_child_tree_paths(entries, left_id, parent_path, visited);
+    while let Some((root, parent, depth)) = pending.pop() {
+        if depth > MAX_STORAGE_DEPTH {
+            continue;
+        }
 
-    if matches!(
-        entries[index].object_type,
-        CfbObjectType::Storage | CfbObjectType::Stream
-    ) {
-        let path = if parent_path.is_empty() {
-            format!("/{}", entries[index].name)
-        } else {
-            format!("{parent_path}/{}", entries[index].name)
-        };
-        entries[index].path = Some(path.clone());
-        if entries[index].object_type == CfbObjectType::Storage {
-            assign_child_tree_paths(entries, child_id, &path, visited);
+        // Siblings of one directory: same parent path, so only the ids need to be carried.
+        let mut siblings = vec![root];
+        while let Some(id) = siblings.pop() {
+            if !is_real_sector(id) || id as usize >= entries.len() || !visited.insert(id) {
+                continue;
+            }
+
+            let index = id as usize;
+            siblings.push(entries[index].left_id);
+            siblings.push(entries[index].right_id);
+
+            if !matches!(
+                entries[index].object_type,
+                CfbObjectType::Storage | CfbObjectType::Stream
+            ) {
+                continue;
+            }
+
+            let path = if parent.is_empty() {
+                format!("/{}", entries[index].name)
+            } else {
+                format!("{parent}/{}", entries[index].name)
+            };
+            let is_storage = entries[index].object_type == CfbObjectType::Storage;
+            entries[index].path = Some(path.clone());
+            if is_storage {
+                pending.push((entries[index].child_id, path, depth + 1));
+            }
         }
     }
-
-    assign_child_tree_paths(entries, right_id, parent_path, visited);
 }
 
 fn read_u16_le(data: &[u8], offset: usize) -> Result<u16> {

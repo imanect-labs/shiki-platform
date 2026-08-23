@@ -25,7 +25,7 @@ JTD のリバースエンジニアリングをゼロからやり直す合理性�
 - `vendor/openjtd/` は shiki が**所有するソース**。上流の破壊的変更に追従する義務は負わない。
   pin は `vendor/openjtd/UPSTREAM`（commit SHA）。
 - ライセンスは Apache-2.0。`LICENSE` と `THIRD_PARTY.md` を保持する。
-- **shiki 本体が依存するのは `rjtd-core` と `rjtd-model` の 2 つだけ**（現時点では `rjtd-core` のみ）。
+- **shiki 本体が依存するのは `rjtd-core` だけ**。
   同梱の `rjtd-export`（pdf/svg 出力）・`rjtd-cli`（解読プローブ）・`rjtd-wasm`（WASM ビューア）には
   依存しない。`Cargo.lock` に増えるのは `cfb` 1 つで、供給元の面積はほとんど広がらない。
 - `rjtd-cli` を捨てずに残しているのは、そこにある `table-candidates` / `page-marks` /
@@ -35,6 +35,11 @@ JTD のリバースエンジニアリングをゼロからやり直す合理性�
   ```bash
   cd vendor/openjtd/rjtd && cargo run -p rjtd-cli -- table-candidates <file.jtd>
   ```
+
+  **ただし `vendor/openjtd/rjtd/Cargo.lock` の依存（`image` / `resvg` / `usvg` / `tiny-skia` /
+  `wasm-bindgen` 等 100 crate 超）は `cargo deny` の走査対象外**である。shiki の依存グラフに
+  入らないので当然だが、裏を返すと **RUSTSEC の監視外**ということでもある。
+  `rjtd-cli` は開発者ローカルの調査専用とし、**素性の分からない `.jtd` を食わせない**。
 
 ## 上流がどこまで解いているか（我々の担当分の境界）
 
@@ -70,13 +75,30 @@ RFC は `vendor/openjtd/openjtd-spec/rfc/` にある。解読作業の出発点�
   release では `usize::MAX` 回のループ）。兄弟の走査（`collect_sector_ids` / `read_sector_chain`）は
   既に visited セットを持っており、ここだけが漏れていた。**同じ穴は上流にもあるので PR 化する。**
   回帰テストは `crates/jtd/tests/adversarial_it.rs`。
+- **`0002-iterative-directory-walk.patch`** — ディレクトリツリーの走査を再帰から明示スタックの
+  反復へ置き換える。`assign_child_tree_paths` は visited セットは持つが**深さ上限が無く**、
+  しかも何より先に `left_id` へ再帰するため、再帰深度がエントリ数（＝入力サイズでしか
+  縛られない）と等しくなっていた。**約 1 MiB の細工ファイルでスタックオーバーフロー → abort**。
+  兄弟リンク（`left`/`right`）はパスが伸びないので id だけを反復し、`child_id` の下降にだけ
+  深さ上限（64）を掛ける。**同じ穴は上流にもあるので PR 化する。**
+- **`0003-linear-embedded-text-dedup.patch`** — 埋め込みテキスト断片の重複排除を線形走査から
+  `HashSet` へ置き換える。`SsmgV.01` は入力のどこにあってもよく 18 バイトで 1 断片になるため、
+  断片ごとに既出テキスト全体と比較する実装は **O(N²)** だった（実測 1 MiB で 29 秒、
+  2 MiB で 133 秒。しかも `detect_format` と本文読みの両方から呼ばれて 2 回走っていた）。
+  **同じ穴は上流にもあるので PR 化する。**
+
+`patches/` に記録されていない改変は `scripts/update-openjtd.sh` で**無言で消える**。
+vendored ツリーへ直接手を入れたら必ず patches/ にも切り出すこと。
+スクリプトは同期の**前に**全パッチをドライランし、当たらなければ何も壊さずに止まる
+（上流が同等の修正を取り込むと必ずここで落ちる。それが期待動作）。
 
 ## 品質ゲートの扱い
 
 `vendor/` は自作コードの規約を当てない（`docs/sandbox/fork-policy.md` と同じ）。
 
 - **1 ファイル 1000 行**（`scripts/check-file-size.sh`）: 対象外。
-  `rjtd-model/src/lib.rs` は 11,000 行超あり、これが取り込み可否の前提になっている。
+  `rjtd-model/src/lib.rs` は **90,000 行超**（次点の `rjtd-cli/src/main.rs` も 10,000 行超）あり、
+  これが取り込み可否の前提になっている。
 - **カバレッジ 80%**: 対象外（`ci.yml` の `--ignore-filename-regex` に `vendor/(secure-exec|openjtd)/`）。
 - **clippy / machete**: workspace 外なので当たらない。
 - **`cargo deny`**: **当たる**。依存グラフ全体を走査するため、vendor 経由で入る crate も検査される。
@@ -84,19 +106,34 @@ RFC は `vendor/openjtd/openjtd-spec/rfc/` にある。解読作業の出発点�
 
 ## 入力は敵対的として扱う
 
-JTD はユーザーがアップロードした外部由来のバイナリで、しかも docx/pdf と違って
-パースが **worker 往復ではなく `shiki-server` のプロセス内**で走る。資源枯渇もパニックも
-そのまま API 全体の可用性に効くため、`crates/jtd` の境界で次を守る。
+JTD はユーザーがアップロードした外部由来のバイナリで、パーサは Rust なので
+**`shiki-server` のプロセス内**で動かせてしまう。資源枯渇もパニックもそのまま API 全体の
+可用性に効くため、`crates/jtd` の境界で次を守る。
+
+> **⚠️ どこで走らせるかは未確定（human 判断待ち）。** 既存の文書パースのチョークポイントは
+> `DocumentParser` トレイト（`crates/rag/src/parser.rs`）で、既定実装は ingestion-worker への
+> HTTP 呼び出しである。JTD を in-process で解くのは**その差し替え点の外に経路を作る決定**で、
+> CLAUDE.md の「トレイト境界の変更は human に確認」に当たる。選択肢は
+> ①`DocumentParser` の裏に入れる ②worker/別プロセスへ出す ③in-process のまま
+> semaphore ＋ `spawn_blocking` ＋ wall-clock timeout を必須にする、の 3 つ。
+> **`crates/jtd` を実際に配線する前に決め、結論を `docs/design.md` に書く。**
+> 下の防御は、どれを選んでもパーサ自身に必要な最低限である。
 
 - 資源上限を `JtdLimits` で必ず掛ける。既定は上流の `ParseLimits::DEFAULT`（入力 64 MiB・
-  展開 256 MiB）より厳しい値（入力 32 MiB・展開 64 MiB・展開率 64 倍）。
+  展開 256 MiB）より厳しい値（入力 8 MiB・展開 8 MiB・展開率 64 倍・比率下限 64 KiB）。
+- **実効的に効くのは入力サイズだけ**だと理解しておくこと。展開上限は上流の契約上
+  LH5（`.jtdc`）経路にしか掛からず、本命の非圧縮 `/DocumentText` は上限を受け取らない。
+  しかもパーサの中間表現は入力に対して増幅する（実測: `0x001D` を敷き詰めた入力で**約 40 倍**、
+  正当な文書でも**約 8.6 倍**）。だから入力上限を実物の分布（60〜100 KB）に照らして
+  8 MiB まで締めてある。
 - 上流呼び出しは `catch_unwind` で囲み、パニックを 1 リクエストのエラーに閉じ込める。
   `rjtd-core` は `unsafe_code = forbid` なので未定義動作は無いが、細工されたオフセットによる
   範囲外パニックは残りうる。
 - **`catch_unwind` を万能だと思わないこと。** 捕まえられるのは unwind するパニックだけで、
   次の 2 つは素通りする。パーサ側で有界にするしかない。
   - **確保失敗による abort** — Rust の OOM は unwind せずプロセスごと落ちる。`0001` で踏んだのがこれ。
-  - **無限ループ** — そもそも戻ってこないので捕捉の機会が無い。
+  - **スタックオーバーフローによる abort** — 同じく unwind しない。`0002` で踏んだのがこれ。
+  - **無限ループ／二次時間** — そもそも戻ってこないので捕捉の機会が無い。`0003` で踏んだのがこれ。
   したがって、細工入力に対しては「エラーを返すこと」ではなく **「有界な時間とメモリで返ること」**を
   テストで固定する（`crates/jtd/tests/adversarial_it.rs` は経過時間もアサートしている）。
 - 解析失敗の理由はユーザーへ返さない（フォーマット解析のオラクルにしない）。詳細は `tracing` へ。

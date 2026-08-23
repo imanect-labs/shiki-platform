@@ -25,9 +25,13 @@
 //! - 失敗理由の詳細は公開せず `tracing` に落とす（フォーマット解析のオラクルにしない）。
 //!
 //! ただし **`catch_unwind` は万能ではない**。捕まえられるのは unwind するパニックだけで、
-//! **確保失敗による abort**（Rust の OOM は unwind しない）と**無限ループ**は素通りする。
-//! 実際、細工した 1 KiB の CFB が上流の DIFAT 走査を暴走させ、2 GiB の確保失敗でプロセスごと
-//! 落ちる穴があった（`vendor/openjtd/patches/0001-bound-difat-walk.patch` で修正）。
+//! **abort**（Rust の OOM とスタックオーバーフローは unwind しない）と**二次時間・無限ループ**は
+//! 素通りする。実際、独立レビューで 3 種類とも踏み抜いた:
+//!
+//! - 1 KiB の CFB が DIFAT 走査を暴走させ、2 GiB の確保失敗で abort（`patches/0001`）。
+//! - 約 1 MiB の CFB がディレクトリ走査の再帰でスタックオーバーフロー → abort（`patches/0002`）。
+//! - 512 KiB の CFB が埋め込みテキストの重複排除を O(N²) で回した（`patches/0003`）。
+//!
 //! よって細工入力に対する要件は「エラーを返すこと」ではなく
 //! **「有界な時間とメモリで返ること」**とし、`tests/adversarial_it.rs` で経過時間ごと固定する。
 
@@ -37,11 +41,15 @@ mod limits;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use rjtd_core::container::Container;
-use rjtd_core::document_text::read_document_text_payload_with_limits;
-use rjtd_core::format::{detect_format, FileFormat};
+use rjtd_core::document_text::{
+    read_document_text_payload_with_limits, COMPRESSED_DOCUMENT_PATH, DOCUMENT_TEXT_PATH,
+};
 
-pub use error::JtdError;
+pub use error::{JtdError, JtdLimitKind};
 pub use limits::JtdLimits;
+
+/// CFB（OLE 複合文書）のシグネチャ。一太郎 8〜13 系はこの容れ物を使う。
+const CFB_MAGIC: &[u8; 8] = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
 
 /// 認識した JTD の系統。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,20 +116,22 @@ impl JtdFile {
     /// 取り戻せないので、アップロード経路側のサイズ上限と二重に掛けること。
     pub fn open_with_limits(bytes: &[u8], limits: JtdLimits) -> Result<Self, JtdError> {
         if bytes.len() > limits.max_input_bytes() {
-            return Err(JtdError::TooLarge {
-                resource: "input bytes",
-                limit: limits.max_input_bytes(),
-                actual: bytes.len(),
-            });
+            tracing::debug!(
+                actual = bytes.len(),
+                limit = limits.max_input_bytes(),
+                "jtd: 入力が上限を超えています"
+            );
+            return Err(JtdError::TooLarge(JtdLimitKind::Input));
+        }
+        if !bytes.starts_with(CFB_MAGIC) {
+            return Err(JtdError::NotJtd);
         }
 
-        let format = classify(bytes)?;
-        let parse_limits = limits.to_parse_limits();
-        let payload = guard(|| read_document_text_payload_with_limits(bytes, parse_limits))?
-            .map_err(|error| map_upstream(&error))?;
+        // CFB を開くのは 1 回だけにする。ここで得たストリーム一覧から系統も判定できるので、
+        // 上流の `detect_format`（内部でもう一度 CFB を開き `/DocumentText` を読み捨てる）は使わない。
         let container =
             guard(|| Container::from_cfb_bytes(bytes))?.map_err(|error| map_upstream(&error))?;
-        let streams = container
+        let streams: Vec<JtdStream> = container
             .entries()
             .iter()
             .map(|entry| JtdStream {
@@ -129,6 +139,12 @@ impl JtdFile {
                 size: entry.size(),
             })
             .collect();
+        drop(container);
+
+        let parse_limits = limits.to_parse_limits();
+        let payload = guard(|| read_document_text_payload_with_limits(bytes, parse_limits))?
+            .map_err(|error| map_upstream(&error))?;
+        let format = classify(&streams);
 
         Ok(JtdFile {
             format,
@@ -165,15 +181,19 @@ impl JtdFile {
     }
 }
 
-/// 系統判定。CFB ですらないものと、本文へ到達できないものをここで切り分ける。
-fn classify(bytes: &[u8]) -> Result<JtdFormat, JtdError> {
-    match guard(|| detect_format(bytes))? {
-        FileFormat::CompoundDocumentText => Ok(JtdFormat::DocumentText),
-        FileFormat::CompoundJustCompressedDocument => Ok(JtdFormat::CompressedDocument),
-        FileFormat::CompoundEmbeddedDocumentText => Ok(JtdFormat::EmbeddedDocumentText),
-        // CFB ではあるが一太郎として解釈できない（doc/xls など別アプリの複合文書を含む）。
-        FileFormat::CompoundUnknown => Err(JtdError::Unsupported),
-        FileFormat::Unknown => Err(JtdError::NotJtd),
+/// 本文がどこから来たかで系統を決める。
+///
+/// 本文の取得に成功した後にだけ呼ぶ。`/DocumentText` も `/JSCompDocument` も無いのに
+/// 本文が取れたということは、埋め込み断片から拾えたということ。
+fn classify(streams: &[JtdStream]) -> JtdFormat {
+    let has = |path: &str| streams.iter().any(|stream| stream.path() == path);
+
+    if has(DOCUMENT_TEXT_PATH) {
+        JtdFormat::DocumentText
+    } else if has(COMPRESSED_DOCUMENT_PATH) {
+        JtdFormat::CompressedDocument
+    } else {
+        JtdFormat::EmbeddedDocumentText
     }
 }
 
