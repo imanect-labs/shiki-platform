@@ -31,6 +31,10 @@ test.describe("skill（作成・共有・チャット適用）", () => {
     await bobRow.getByRole("button", { name: "共有" }).click();
     await expect(page.getByRole("dialog").getByText("共有中の相手")).toBeVisible();
     await page.keyboard.press("Escape");
+    // ダイアログが**閉じ切る**まで待つ。Radix Dialog は開いている間、背景コンテンツに
+    // aria-hidden を付ける。閉じる前に背景をロール検索すると要素がアクセシビリティツリーに
+    // 現れず、原因の分からない 60s タイムアウトになる（CI で実際に発生した）。
+    await expect(page.getByRole("dialog")).toBeHidden();
 
     // バージョン履歴が開く。
     await card.getByRole("button", { name: `${name} のバージョン履歴` }).click();
@@ -41,6 +45,7 @@ test.describe("skill（作成・共有・チャット適用）", () => {
     await expect(versionRows).toHaveCount(1);
     await expect(versionRows.first().getByTestId("version-label")).toHaveText("v1");
     await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toBeHidden();
 
     // このスキルでチャット → skill ピン付きスレッドが作られ、生成が通る（適用経路の疎通）。
     await card.getByRole("button", { name: "このスキルでチャット" }).click();
