@@ -61,6 +61,7 @@ fn render_run(out: &mut String, text: &str) {
         if index > 0 {
             out.push_str("<w:br/>");
         }
+        let line = sanitise(line);
         if line.is_empty() {
             continue;
         }
@@ -69,8 +70,25 @@ fn render_run(out: &mut String, text: &str) {
         let _ = write!(
             out,
             r#"<w:t xml:space="preserve">{}</w:t>"#,
-            quick_xml::escape::escape(line)
+            quick_xml::escape::escape(&line)
         );
     }
     out.push_str("</w:r>");
+}
+
+/// XML 1.0 で許されない文字を落とす。
+///
+/// パーサ側でも制御コードは本文に混ぜないようにしているが、**不正な XML を出せないことは
+/// ライタが単独で保証すべき**。モデルに何が入っていても、生成物が開けなくなることはない。
+/// 許されるのは `#x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]`。
+fn sanitise(line: &str) -> String {
+    line.chars()
+        .filter(|ch| {
+            matches!(*ch as u32,
+                0x9 | 0xa | 0xd
+                | 0x20..=0xd7ff
+                | 0xe000..=0xfffd
+                | 0x1_0000..=0x10_ffff)
+        })
+        .collect()
 }

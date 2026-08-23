@@ -136,3 +136,29 @@ fn round_trips_characters_above_the_basic_plane() {
 
     assert!(xml.contains("𠮷田と𩸽"), "{xml}");
 }
+
+#[test]
+fn drops_characters_that_xml_cannot_represent() {
+    // パーサ側でも制御コードは混ぜないが、不正な XML を出せないことは
+    // ライタが単独で保証する。ここが抜けると docx がそもそも開けなくなる。
+    let xml = part(
+        &docx_of(&["前\u{0}\u{1}\u{8}\u{b}\u{c}\u{1f}後"]),
+        "word/document.xml",
+    );
+
+    assert!(xml.contains("前後"), "許される文字だけが残ること: {xml}");
+    assert!(!xml.contains('\u{0}'));
+    assert!(!xml.contains('\u{b}'));
+    assert!(
+        zip::ZipArchive::new(Cursor::new(docx_of(&["\u{0}\u{1}"]))).is_ok(),
+        "制御文字だけの入力でもパッケージは壊れないこと"
+    );
+}
+
+#[test]
+fn keeps_tab_which_xml_allows() {
+    // セル区切りはタブとして本文に入る（表としての再構成は JTD.3）。
+    let xml = part(&docx_of(&["左\t右"]), "word/document.xml");
+
+    assert!(xml.contains('\t') || xml.contains("&#9;"), "{xml}");
+}
