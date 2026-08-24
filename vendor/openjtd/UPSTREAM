@@ -1,0 +1,80 @@
+openjtd vendored fork — upstream pin
+====================================
+
+upstream:   https://github.com/KimEJ/OpenJTD
+commit:     95cb40321d0f39910068c65fb10ce20230204f37
+vendored:   2026-08-23
+license:    Apache-2.0 (LICENSE / THIRD_PARTY.md を保持)
+
+これは shiki が所有するフォークです（docs/jtd/fork-policy.md）。上流追従は義務ではなく、
+必要な修正のみ patches/ 経由で cherry-pick します。
+
+vendor したもの:
+  rjtd/            Rust ワークスペース（rjtd-core / rjtd-model / rjtd-export / rjtd-cli /
+                   rjtd-wasm / rjtd-testkit）。**patches/ の改変を除き**上流のまま。
+  openjtd-spec/    JTD フォーマットのリバースエンジニアリング RFC。
+                   crates/jtd のレイアウト解読はこれを出発点にする（RFC 0003 DocumentText・
+                   0006 position tables・0007 layout mark streams が本命）。
+  docs/            上流の ARCHITECTURE / ROADMAP / ICHITARO-FILTER-RESEARCH。
+  TODO.md / TODO.ja.md
+                   どこまで解読済みかのマイルストーン表（M1 コンテナ〜M5 WASM ビューア）。
+  LICENSE / THIRD_PARTY.md / README.md / README.ja.md
+                   ライセンスと帰属表示（Apache-2.0 §4 の要求）。
+
+vendor しなかったもの（上流にあるが不要）:
+  openjtd.github.io/          上流のウェブサイト（4MB）
+  rjtd-testdata/              サンプル置き場。中身は .gitignore で上流も再配布していない
+  openjtd-samples/            同上
+  ichitaro-source-y-probe/    上流の実験メモ
+  scripts/                    上流のリリース補助
+
+shiki 本体が依存するのは **rjtd-core だけ**（Cargo.toml の workspace.dependencies）。
+その依存は `cfb` 1 つで、shiki の Cargo.lock に増えるのも `cfb` と `rjtd-core` の 2 つだけ。
+将来 rjtd-model を足すときは `default-features = false` にして `bitmap-images`
+（＝`image` crate の bmp/jpeg/png デコーダ）を落とすこと。画像デコーダは新しい
+敵対的入力パーサの面積なので、黙って依存グラフに入れない。
+rjtd-export / rjtd-cli / rjtd-wasm は **依存させず**、リバースエンジニアリング用の
+ローカル調査ツールとして vendor 内に残してある（`cargo run -p rjtd-cli -- <probe>`）。
+
+ローカルパッチ:
+  patches/ 以下に番号付き .patch で管理する。再 vendor 時は scripts/update-openjtd.sh が順に適用する。
+
+  0001-bound-difat-walk.patch
+    lenient CFB リーダの DIFAT 走査を入力サイズで有界化する。ヘッダの
+    fat_sector_count / difat_sector_count は攻撃者制御の u32 で、自己参照する DIFAT
+    セクタと組み合わせると 1 KiB のファイルで sector_ids が 2 GiB を超え、確保失敗で
+    プロセスが abort した（abort は unwind ではないため catch_unwind で捕まえられない）。
+    併せて sector_size < 4 での `sector_size / 4 - 1` の underflow を潰す
+    （debug ではパニック、release では usize::MAX 回のループ）。
+    兄弟の走査（collect_sector_ids / read_sector_chain）は既に visited を持っており、
+    ここだけが漏れていた。**上流へ PR 化する価値がある（上流にも同じ穴がある）。**
+    回帰テストは crates/jtd/tests/adversarial_it.rs。
+
+  0002-iterative-directory-walk.patch
+    ディレクトリツリーの走査を再帰から明示スタックの反復へ置き換える。
+    assign_child_tree_paths は visited セットは持つが深さ上限が無く、しかも先に left_id へ
+    再帰するため、再帰深度がエントリ数（入力サイズでしか縛られない）と等しくなっていた。
+    約 1 MiB の細工ファイルでスタックオーバーフロー → プロセス abort（catch_unwind では
+    捕まえられない）。兄弟リンク（left/right）はパスが伸びないので id だけを反復し、
+    child_id の下降にだけ深さ上限（16）を掛ける。
+    深さだけでは足りないので、パス文字列の総バイト数も有界にする。8 MiB の入力に約 65,000 の
+    ディレクトリエントリを置き、深い storage prefix の下に並べると各エントリが同じ prefix を
+    複製して数百 MiB になる（後段の inspect_cfb_entries_lenient でさらに複製・ソートされる）。
+    **上流へ PR 化する価値がある。**
+
+  0003-linear-embedded-text-dedup.patch
+    埋め込みテキスト断片の重複排除を線形走査から HashSet へ置き換える。
+    SsmgV.01 は入力のどこにあってもよく 18 バイトで 1 断片になるため、断片ごとに
+    既出テキスト全体と比較する実装は O(N^2) だった（1 MiB で 29 秒・2 MiB で 133 秒）。
+    しかも detect_format と本文読みの両方から呼ばれて 2 回走っていた。
+    **上流へ PR 化する価値がある。**
+
+  0004-utf16-surrogate-pairs.patch
+    UTF-16 のサロゲート対を結合してデコードする。is_invalid_scalar が各 code unit を
+    単独で無効と見なすため、U+10000 以上の文字が本文から無言で落ちていた。日本語文書では
+    他人事ではなく、氏名に CJK 拡張 B（𠮷・𩸽）が普通に使われるので「𠮷田」が「田」に
+    なっていた。**上流へ PR 化する価値がある。**
+    回帰テストは crates/jtd/src/tests.rs の keeps_characters_above_the_basic_plane。
+
+再 vendor 手順:
+  scripts/update-openjtd.sh を参照。

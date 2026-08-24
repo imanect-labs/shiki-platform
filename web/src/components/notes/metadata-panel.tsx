@@ -44,9 +44,15 @@ function readMeta(map: Y.Map<unknown>): MetaState {
 export function MetadataPanel({
   meta,
   editable,
+  fallbackTitle,
 }: {
   meta: Y.Map<unknown>;
   editable: boolean;
+  /// meta.title 未設定時にプレースホルダとして見せる名前（通常は拡張子を除いたファイル名）。
+  /// アップロードした .md は frontmatter を持たないため meta.title が空で、
+  /// 固定文言だけだと中身のあるノートが「無題」に見えていた（#467）。
+  /// **表示だけのフォールバックで、Yjs には書かない**（ユーザーが実際に付けた題と区別する）。
+  fallbackTitle?: string;
 }) {
   const [state, setState] = React.useState<MetaState>(() => readMeta(meta));
   const [tagDraft, setTagDraft] = React.useState("");
@@ -120,7 +126,7 @@ export function MetadataPanel({
             value={state.title}
             onChange={(e) => setKey("title", e.target.value)}
             disabled={!editable}
-            placeholder="無題のノート"
+            placeholder={fallbackTitle?.trim() || "無題のノート"}
             aria-label="タイトル"
             data-testid="note-title-input"
             className="h-14 border-transparent bg-transparent px-2 text-3xl font-bold shadow-none focus-visible:border-input"

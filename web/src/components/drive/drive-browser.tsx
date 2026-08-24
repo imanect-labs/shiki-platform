@@ -592,7 +592,10 @@ export function DriveBrowser() {
         }}
         onDrop={onDrop}
         className={cn(
-          "rule-soft relative min-h-[16rem] rounded-xl transition-colors",
+          // @container: 列の出し入れを**一覧自身の幅**で決める（LIST_GRID）。ビューポート幅で
+          // 決めると、サイドバーの出現（768px で 0→288px）の分だけ一覧が狭くなり、
+          // 同じ幅なのに名前列だけが潰れる（#466）。
+          "@container rule-soft relative min-h-[16rem] rounded-xl transition-colors",
           dragging && "bg-primary/5 ring-2 ring-primary/30",
         )}
       >

@@ -8,8 +8,12 @@ members = ["crates/*"]
 # script-runtime/guest は wasm32-wasip1 専用のゲスト（wasi-sdk 要・別ターゲット）、
 # script-runtime/fuzz は cargo-fuzz 専用クレート。いずれもメイン workspace から除外し、
 # 前者は再現ビルドした wasm を assets/ に vendor する（docs/script-runtime-guest.md）。
+# vendor/openjtd も同じ扱いの所有フォーク（独自 workspace）。shiki が依存するのは
+# rjtd-core だけで、同梱の rjtd-model・rjtd-cli（解読プローブ）・rjtd-export・rjtd-wasm には
+# 依存しない。docs/jtd/fork-policy.md 参照。
 exclude = [
     "vendor/secure-exec",
+    "vendor/openjtd/rjtd",
     "crates/script-runtime/guest",
     "crates/script-runtime/fuzz",
     # 隔離 DuckDB ランナー（Task 11P.7）。重い C++（bundled DuckDB）を含み、メイン
@@ -137,6 +141,12 @@ secure-exec-client = { path = "vendor/secure-exec/crates/secure-exec-client" }
 secure-exec-sidecar-protocol = { path = "vendor/secure-exec/crates/sidecar-protocol" }
 secure-exec-vm-config = { path = "vendor/secure-exec/crates/vm-config" }
 secure-exec-bridge = { path = "vendor/secure-exec/crates/bridge" }
+
+# 一太郎 JTD（所有フォーク openjtd）。CFB リーダと DocumentText トークン層のみ依存する。
+# 同梱の rjtd-export / rjtd-cli / rjtd-wasm には依存しない（前者は pdf/svg 出力、
+# 後者 2 つは解読プローブと WASM ビューア）。docs/jtd/fork-policy.md 参照。
+# rjtd-core の依存は cfb 1 つだけで、shiki の依存グラフはほとんど増えない。
+rjtd-core = { path = "vendor/openjtd/rjtd/crates/rjtd-core" }
 
 # gRPC（sandbox-client 契約・lock 済みの 0.13 系に固定）
 tonic = "0.13"

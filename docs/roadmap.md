@@ -229,6 +229,7 @@ Phase 1（ストレージ・ReBAC）・Phase 8（監査）。詳細: [phase-14.m
 | ミニアプリ marketplace（第三者公開） | Phase 9 安定後 | 信頼ティアに審査付き第三者枠を追加 |
 | 会話ブランチUI | 任意 | データ構造は Phase 3 で用意済み |
 | **音声入力（トラックASR）** | Phase 3 の後ならいつでも | マイクの発話を文字にして入力欄へ。認識は `SpeechToText` トレイト裏でオンプレ完結。対話用 GPU に CUDA MPS で同居（GPU 追加なし）。[parallel-tracks.md](./roadmap/parallel-tracks.md) |
+| **一太郎（JTD）→ docx 変換（トラックJTD）** | Phase 1・2 の後ならいつでも | 官公庁・学会が現在も配布する `.jtd` を扱う。**Collabora / LibreOffice は JTD を読めない**ため Phase 11 の Office 経路は流用できず、変換器を自前で持つ（所有フォーク `vendor/openjtd`）。原本は保持し docx 派生を rendition として生成、以後は既存 docx 経路に乗せる。[parallel-tracks.md](./roadmap/parallel-tracks.md) / [fork-policy](./jtd/fork-policy.md) |
 
 ## マイルストーン要約
 

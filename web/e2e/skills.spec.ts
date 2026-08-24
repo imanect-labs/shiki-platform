@@ -30,7 +30,16 @@ test.describe("skill（作成・共有・チャット適用）", () => {
     const bobRow = page.getByRole("dialog").locator("li", { hasText: "bob" }).first();
     await bobRow.getByRole("button", { name: "共有" }).click();
     await expect(page.getByRole("dialog").getByText("共有中の相手")).toBeVisible();
-    await page.keyboard.press("Escape");
+    // 閉じるボタンで明示的に閉じる（`workflows-history.spec.ts` と同じ作法）。
+    // Escape ではこのダイアログが閉じないことが CI で確認できている（5s 経っても
+    // data-state="open" のまま）。他の spec にも Escape を `.catch()` で握り潰している
+    // 箇所があり、Escape での dismiss は当てにできない。
+    //
+    // 閉じ切るまで待つのも必須。Radix Dialog は開いている間、背景コンテンツに
+    // aria-hidden を付けるため、閉じる前に背景をロール検索すると要素がアクセシビリティ
+    // ツリーに現れず、原因の分からない 60s タイムアウトになる（CI で実際に発生した）。
+    await page.getByRole("dialog").getByRole("button", { name: "閉じる" }).click();
+    await expect(page.getByRole("dialog")).toBeHidden();
 
     // バージョン履歴が開く。
     await card.getByRole("button", { name: `${name} のバージョン履歴` }).click();
@@ -40,7 +49,8 @@ test.describe("skill（作成・共有・チャット適用）", () => {
     const versionRows = versionsDialog.getByTestId("version-row");
     await expect(versionRows).toHaveCount(1);
     await expect(versionRows.first().getByTestId("version-label")).toHaveText("v1");
-    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").getByRole("button", { name: "閉じる" }).click();
+    await expect(page.getByRole("dialog")).toBeHidden();
 
     // このスキルでチャット → skill ピン付きスレッドが作られ、生成が通る（適用経路の疎通）。
     await card.getByRole("button", { name: "このスキルでチャット" }).click();

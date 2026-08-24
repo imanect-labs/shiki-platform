@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "crates/rjtd-core",
+    "crates/rjtd-model",
+    "crates/rjtd-export",
+    "crates/rjtd-cli",
+    "crates/rjtd-wasm",
+    "crates/rjtd-testkit",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/KimEJ/OpenJTD"
+homepage = "https://kimej.github.io/OpenJTD/"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

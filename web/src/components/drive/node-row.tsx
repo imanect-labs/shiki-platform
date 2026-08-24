@@ -48,17 +48,17 @@ export function NodeRow({
         <span className="truncate text-[15px] font-medium">{node.name}</span>
       </button>
 
-      <span className="hidden truncate text-[13px] text-muted-foreground sm:block">
+      <span className="hidden truncate text-[13px] text-muted-foreground @xl:block">
         {formatDateTime(node.updated_at)}
       </span>
-      <span className="hidden truncate text-[13px] text-muted-foreground lg:block">
+      <span className="hidden truncate text-[13px] text-muted-foreground @4xl:block">
         {/* 最終更新者（updated_by・11P.10）。自分は「自分」、他者は表示名、AI は主体名義。 */}
         {editorLabel(node, meId)}
       </span>
-      <span className="hidden truncate text-[13px] text-muted-foreground sm:block">
+      <span className="hidden truncate text-[13px] text-muted-foreground @xl:block">
         {isFolder ? "—" : formatBytes(node.size_bytes)}
       </span>
-      <span className="hidden items-center gap-1.5 truncate text-[13px] lg:flex">
+      <span className="hidden items-center gap-1.5 truncate text-[13px] @4xl:flex">
         {/* shared フラグも後続 PR で提供。未提供時は「プライベート」表示に degrade する。 */}
         {(node as { shared?: boolean }).shared ? (
           <>
