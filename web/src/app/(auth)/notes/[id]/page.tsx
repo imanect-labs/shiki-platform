@@ -165,13 +165,15 @@ function NotePageInner() {
   const editable = access.mode === "editor";
   const userId = me.data?.id ?? "unknown";
   const userName = me.data?.email?.split("@")[0] ?? userId;
+  // ヘッダとタイトル欄のフォールバックで共有する表示名（拡張子を落としたファイル名）。
+  const displayName = access.name.replace(/\.md$/i, "");
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* 統一ヘッダへ注入（横バー二重を解消・null を返すだけ） */}
       <NoteSyncSlot
         nodeId={nodeId}
-        name={access.name.replace(/\.md$/i, "")}
+        name={displayName}
         editable={editable}
         status={status}
         synced={synced}
@@ -193,7 +195,11 @@ function NotePageInner() {
             )}
           >
             <div className="mx-auto max-w-3xl px-4 pb-24 pt-4">
-              <MetadataPanel meta={session.doc.getMap("meta")} editable={editable} />
+              <MetadataPanel
+                meta={session.doc.getMap("meta")}
+                editable={editable}
+                fallbackTitle={displayName}
+              />
               <div className="mt-4">
                 <NoteEditor
                   provider={session.provider}
