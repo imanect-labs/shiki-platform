@@ -193,6 +193,7 @@ jobs:
           name: shiki-tabular-runner-bin
           path: crates/tabular/runner/target/release/shiki-tabular-runner
           if-no-files-found: error
+          retention-days: 1
 
   # gVisor 既定ティア（#346）の gated IT。GHA ランナーで runsc（rootless・systrap・KVM 不要）を
   # 実際に回し、rootfs 同梱の numpy/pandas import・shell・メモリ watchdog を検証する。
@@ -379,6 +380,7 @@ jobs:
           name: coverage-lcov
           path: lcov.info
           if-no-files-found: error
+          retention-days: 7
       - name: dump compose logs on failure
         if: failure()
         working-directory: deploy/compose
@@ -570,6 +572,7 @@ jobs:
           name: playwright-report
           path: web/playwright-report
           if-no-files-found: ignore
+          retention-days: 7
       - name: dump compose logs on failure
         if: failure()
         working-directory: deploy/compose
