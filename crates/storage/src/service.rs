@@ -173,6 +173,7 @@ mod share_link_util;
 mod sharing;
 mod trash;
 mod upload;
+mod upload_gc;
 mod versions;
 mod workspace_io;
 

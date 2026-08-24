@@ -300,6 +300,44 @@ fn validate_rejects_negative_leeway() {
 }
 
 #[test]
+fn validate_rejects_zero_upload_gc_ttl() {
+    // ttl_secs=0 は初回 sweep が全テナントの進行中アップロードを一掃する（#468）。
+    let mut cfg = valid_config();
+    cfg.storage.upload_gc.ttl_secs = 0;
+    assert!(cfg.validate().is_err());
+}
+
+#[test]
+fn validate_rejects_zero_upload_gc_interval() {
+    // interval_secs=0 は sweep が休みなく回り、DB/オブジェクトストアを飽和させる（#468）。
+    let mut cfg = valid_config();
+    cfg.storage.upload_gc.interval_secs = 0;
+    assert!(cfg.validate().is_err());
+}
+
+#[test]
+fn validate_rejects_upload_gc_ttl_not_longer_than_presign_put() {
+    // presigned PUT がまだ有効なうちに declare を回収する設定を起動時に弾く（#468）。
+    let mut cfg = valid_config();
+    cfg.storage.s3 = Some(storage::S3Config {
+        internal_endpoint: "http://minio:9000".into(),
+        public_endpoint: "http://localhost:9000".into(),
+        bucket: "shiki".into(),
+        access_key: "key".into(),
+        secret_key: "secret".into(),
+        region: "us-east-1".into(),
+        presign_get_ttl_secs: 120,
+        presign_put_ttl_secs: 3600,
+        cors_allowed_origins: vec![],
+    });
+
+    cfg.storage.upload_gc.ttl_secs = 3600; // 同値も不可（URL 有効中に消える）。
+    assert!(cfg.validate().is_err());
+    cfg.storage.upload_gc.ttl_secs = 3601;
+    assert!(cfg.validate().is_ok());
+}
+
+#[test]
 fn validate_accepts_multi_tenancy() {
     // SAAS.1（#84）で全隔離層が tenant_id スコープになり、tenancy=multi は設定だけで validate を通る
     // （旧 dev opt-in ゲートは撤去）。

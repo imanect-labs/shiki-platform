@@ -4849,3 +4849,306 @@ async fn rename_tenant_rows_moves_every_table() {
             .expect("node 再取得");
     assert_eq!(node_org.as_deref(), Some(org.as_str()));
 }
+
+/// 中断アップロードの回収（#468）。
+///
+/// finalize されないまま TTL を過ぎた declare が、行ごと・staging オブジェクトごと
+/// 回収されること。そして **進行中（TTL 未満）の declare を巻き添えにしない**こと。
+#[tokio::test]
+async fn upload_gc_reclaims_expired_pending_uploads() {
+    let Some(Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        store,
+    }) = setup().await
+    else {
+        return;
+    };
+    let org = format!("gc-ttl-{}", Uuid::new_v4());
+    let uid = format!("u-{}", Uuid::new_v4());
+    seed_org_member(&authz, &org, &uid).await;
+    let ctx = make_ctx(&org, &uid);
+
+    // 中断されるアップロード: declare して PUT まで済ませ、finalize しない。
+    let stale = b"abandoned before finalize";
+    let stale_ticket = service
+        .begin_upload(
+            &ctx,
+            None,
+            "stale.txt",
+            "text/plain",
+            &sha256_hex(stale),
+            stale.len() as i64,
+            None,
+            None,
+        )
+        .await
+        .expect("declare");
+    http.put(&stale_ticket.upload_url)
+        .body(stale.to_vec())
+        .send()
+        .await
+        .expect("presigned PUT");
+    let stale_key = staging_key_of(&pool, stale_ticket.upload_id).await;
+    assert!(store.exists(&stale_key).await.expect("exists"), "PUT 済み");
+
+    // 進行中のアップロード: declare 済みで、まだ TTL を過ぎていない。
+    let fresh = b"still uploading";
+    let fresh_ticket = service
+        .begin_upload(
+            &ctx,
+            None,
+            "fresh.txt",
+            "text/plain",
+            &sha256_hex(fresh),
+            fresh.len() as i64,
+            None,
+            None,
+        )
+        .await
+        .expect("declare");
+    http.put(&fresh_ticket.upload_url)
+        .body(fresh.to_vec())
+        .send()
+        .await
+        .expect("presigned PUT");
+
+    // stale だけを TTL の外へ追い出す（created_at を巻き戻す）。
+    sqlx::query(
+        "UPDATE pending_upload SET created_at = now() - interval '48 hours' WHERE upload_id = $1",
+    )
+    .bind(stale_ticket.upload_id)
+    .execute(&pool)
+    .await
+    .expect("created_at 巻き戻し");
+
+    let reclaimed = service
+        .sweep_expired_pending_uploads(Duration::from_secs(24 * 60 * 60))
+        .await
+        .expect("TTL sweep");
+    // sweep は全テナント横断なので、同時に走る他テストの期限切れ行も数に乗る。
+    // 「この org の stale だけが消え fresh は残る」ことは下の個別アサーションで見る。
+    assert!(reclaimed >= 1, "期限切れが回収される: {reclaimed}");
+
+    // 行もオブジェクトも消えている。
+    assert_eq!(pending_exists(&pool, stale_ticket.upload_id).await, 0);
+    assert!(
+        !store.exists(&stale_key).await.expect("exists"),
+        "staging オブジェクトが削除されている"
+    );
+
+    // 進行中は残っており、この後も finalize できる。
+    assert_eq!(pending_exists(&pool, fresh_ticket.upload_id).await, 1);
+    service
+        .finalize_upload(&ctx, fresh_ticket.upload_id, None)
+        .await
+        .expect("TTL 内の declare は sweep 後も finalize できる");
+
+    // 全テナント横断の破壊的操作なので削除証跡が残る（設定ミス・時計 skew で進行中を
+    // 巻き添えにした時、どの upload_id を消したか事後に追える必要がある）。
+    let audited: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log \
+          WHERE org = $1 AND action = 'storage.upload_gc.expire' ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&org)
+    .fetch_optional(&pool)
+    .await
+    .expect("監査取得");
+    let audited = audited.expect("TTL 回収が audit_log に記録される");
+    assert_eq!(audited["count"], 1);
+    assert_eq!(
+        audited["upload_ids"][0],
+        serde_json::json!(stale_ticket.upload_id),
+        "回収した upload_id が証跡に載る"
+    );
+}
+
+/// TTL sweep（#468）は 1 バッチ（500 行）を超える取り残しも 1 周で回収し切る。
+///
+/// 既存デプロイへの初回投入では、それまで溜まった中断アップロードがまとめて対象になる。
+/// バッチ境界でループが止まると回収が何周にも渡って遅延するため、跨げることを確かめる。
+#[tokio::test]
+async fn upload_gc_sweeps_across_batch_boundary() {
+    let Some(Ctx { service, pool, .. }) = setup().await else {
+        return;
+    };
+    let org = format!("gc-batch-{}", Uuid::new_v4());
+    let tenant = "default";
+
+    // オブジェクトを伴わない行だけを直接入れる（バッチ境界の検証が目的で、
+    // 実バイトの有無は sweep のループ制御に影響しない）。
+    let n = 520; // TTL_BATCH(500) を跨ぐ。
+    sqlx::query(
+        "INSERT INTO pending_upload \
+           (org, tenant_id, name, content_type, declared_sha256, declared_size, \
+            staging_key, created_by, created_at) \
+         SELECT $1, $2, 'x.txt', 'text/plain', 'deadbeef', 0, \
+                $1 || '/staging/' || gen_random_uuid(), 'u', now() - interval '48 hours' \
+           FROM generate_series(1, $3)",
+    )
+    .bind(&org)
+    .bind(tenant)
+    .bind(n)
+    .execute(&pool)
+    .await
+    .expect("バックログ投入");
+
+    // 返り値（全テナント横断の件数）ではなく **自分の org の行だけ**を見る。共有 DB で
+    // 並行するテストの sweep も同じ行を claim しうるため、件数アサーションは競合する
+    // （`share_link_sweep_ignores_poison_kind` と同じ作法）。
+    service
+        .sweep_expired_pending_uploads(Duration::from_secs(24 * 60 * 60))
+        .await
+        .expect("TTL sweep");
+
+    let left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pending_upload WHERE org = $1 AND tenant_id = $2")
+            .bind(&org)
+            .bind(tenant)
+            .fetch_one(&pool)
+            .await
+            .expect("残数");
+    assert_eq!(
+        left, 0,
+        "1 回の sweep で {n} 行すべて回収される（バッチ境界で止まらない）"
+    );
+}
+
+/// 孤児 sweep（#468）: `pending_upload` に対応行が無い staging/incoming を回収する。
+///
+/// finalize は成功したが後始末の delete が落ちた（プロセスが落ちた）ケースを模す。
+#[tokio::test]
+async fn upload_gc_reclaims_orphan_staging_objects() {
+    let Some(Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        store,
+    }) = setup().await
+    else {
+        return;
+    };
+    let org = format!("gc-orphan-{}", Uuid::new_v4());
+    let uid = format!("u-{}", Uuid::new_v4());
+    seed_org_member(&authz, &org, &uid).await;
+    let ctx = make_ctx(&org, &uid);
+
+    // 正常に finalize させて node を 1 つ作る（この org を走査対象に載せるため）。
+    upload(&service, &http, &ctx, None, "kept.txt", b"kept")
+        .await
+        .expect("upload");
+
+    // 孤児を作る: declare → PUT → **行だけ**消す（後始末が落ちた状態）。
+    let bytes = b"orphan";
+    let ticket = service
+        .begin_upload(
+            &ctx,
+            None,
+            "orphan.txt",
+            "text/plain",
+            &sha256_hex(bytes),
+            bytes.len() as i64,
+            None,
+            None,
+        )
+        .await
+        .expect("declare");
+    http.put(&ticket.upload_url)
+        .body(bytes.to_vec())
+        .send()
+        .await
+        .expect("presigned PUT");
+    let staging = staging_key_of(&pool, ticket.upload_id).await;
+    // incoming も finalize と同じ規則で置く（コピー後に落ちた状態を模す）。
+    let incoming = format!("default/{org}/incoming/{}", ticket.upload_id);
+    store
+        .copy(&staging, &incoming)
+        .await
+        .expect("incoming コピー");
+    sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
+        .bind(ticket.upload_id)
+        .execute(&pool)
+        .await
+        .expect("行だけ削除");
+
+    // 進行中のアップロード（行が在る）は巻き添えにしない。
+    let live = b"live";
+    let live_ticket = service
+        .begin_upload(
+            &ctx,
+            None,
+            "live.txt",
+            "text/plain",
+            &sha256_hex(live),
+            live.len() as i64,
+            None,
+            None,
+        )
+        .await
+        .expect("declare");
+    http.put(&live_ticket.upload_url)
+        .body(live.to_vec())
+        .send()
+        .await
+        .expect("presigned PUT");
+    let live_key = staging_key_of(&pool, live_ticket.upload_id).await;
+
+    let deleted = service
+        .sweep_orphan_upload_objects()
+        .await
+        .expect("孤児 sweep");
+    assert!(
+        deleted >= 2,
+        "staging と incoming の 2 つ以上が回収される: {deleted}"
+    );
+
+    assert!(
+        !store.exists(&staging).await.expect("exists"),
+        "孤児 staging が消えている"
+    );
+    assert!(
+        !store.exists(&incoming).await.expect("exists"),
+        "孤児 incoming が消えている"
+    );
+    assert!(
+        store.exists(&live_key).await.expect("exists"),
+        "行の在るアップロードは巻き添えにしない"
+    );
+    // 巻き添えにしていないので finalize もできる。
+    service
+        .finalize_upload(&ctx, live_ticket.upload_id, None)
+        .await
+        .expect("行の在る declare は孤児 sweep 後も finalize できる");
+
+    // 孤児削除も削除証跡を残す（どのプレフィックスで何件消したか）。
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log \
+          WHERE org = $1 AND action = 'storage.upload_gc.orphan_delete'",
+    )
+    .bind(&org)
+    .fetch_one(&pool)
+    .await
+    .expect("監査取得");
+    assert!(audited > 0, "孤児削除が audit_log に記録される");
+}
+
+/// pending_upload の staging_key を引く。
+async fn staging_key_of(pool: &PgPool, upload_id: Uuid) -> String {
+    sqlx::query_scalar("SELECT staging_key FROM pending_upload WHERE upload_id = $1")
+        .bind(upload_id)
+        .fetch_one(pool)
+        .await
+        .expect("staging_key")
+}
+
+/// pending_upload に行が在るか（0/1）。
+async fn pending_exists(pool: &PgPool, upload_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM pending_upload WHERE upload_id = $1")
+        .bind(upload_id)
+        .fetch_one(pool)
+        .await
+        .expect("count")
+}

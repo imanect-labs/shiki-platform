@@ -332,6 +332,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             backend: ObjectStoreBackend::Minio,
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
+            upload_gc: api::config::UploadGcConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,

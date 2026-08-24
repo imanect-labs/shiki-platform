@@ -67,6 +67,23 @@ pub(crate) async fn wire_storage(
     // 配送を待つべきコンシューマ集合は outbox_consumer 表から読むので、workflow/gateway の
     // フィーチャフラグの状態に依らず「他コンシューマ宛の未配送イベントを消す」事故が起きない。
     storage::outbox_gc::spawn_outbox_gc(db.clone());
+    // 中断アップロードの回収（#468）。クライアント切断で finalize が中断されると
+    // pending_upload 行と staging/incoming オブジェクトが残り、回収経路が無いと
+    // テナントごとに単調増加する。TTL sweep と孤児 sweep を対で回す。
+    let gc = config.storage.upload_gc;
+    if gc.enabled {
+        storage::upload_gc_timer::spawn_upload_gc_timer(
+            Arc::clone(&service),
+            storage::upload_gc_timer::UploadGcOptions {
+                ttl: std::time::Duration::from_secs(gc.ttl_secs),
+                interval: std::time::Duration::from_secs(gc.interval_secs),
+            },
+        );
+    } else {
+        tracing::warn!(
+            "upload_gc.enabled=false: 中断アップロードの staging/incoming が回収されません（#468）"
+        );
+    }
     Ok((object_store, service))
 }
 

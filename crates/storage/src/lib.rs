@@ -36,6 +36,7 @@ pub mod outbox_gc;
 pub mod service;
 pub mod tenant;
 pub mod tenant_scope;
+pub mod upload_gc_timer;
 
 pub use directory::{
     DirectoryPage, DirectoryRole, DirectoryRolePage, DirectoryStore, DirectoryUser,

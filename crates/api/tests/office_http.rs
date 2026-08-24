@@ -222,6 +222,7 @@ fn base_config(db_url: &str) -> AppConfig {
             backend: ObjectStoreBackend::Minio,
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
+            upload_gc: api::config::UploadGcConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
