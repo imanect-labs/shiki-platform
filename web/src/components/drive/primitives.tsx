@@ -25,12 +25,21 @@ import { cn } from "@/lib/utils";
 
 /// 一覧の列レイアウト（ヘッダーと各行で共有）。OneDrive 風に
 /// 名前（可変）｜更新日時｜更新者｜サイズ｜共有｜操作。
-/// 画面幅で段階的に列を出す: 〜sm=名前+操作 / sm=更新日時+サイズ追加 / lg=更新者+共有も。
+/// 段階的に列を出す: 最小=名前+操作 / `@xl`=更新日時+サイズ追加 / `@4xl`=更新者+共有も。
 /// セルの DOM 順は常に固定し、隠す列は hidden で外す（grid 自動配置が崩れない）。
+///
+/// 閾値は**ビューポートではなくコンテナ（一覧自身）の幅**で判定する
+///（drive-browser の `@container`）。ビューポート基準だと、サイドバーが出現する 768px と
+/// 列が増える 1024px の 2 箇所で名前列だけが 60px 台まで潰れていた（#466）。
+///
+/// 付加列を足した後も名前列に 230px 以上残るよう閾値を選ぶ:
+///   - `@xl`（36rem=576px）で 更新日時 ＋ サイズ → 名前 = 576 − 340 = 236px
+///   - `@4xl`（56rem=896px）で 更新者 ＋ 共有   → 名前 = 896 − 588 = 308px
+/// （固定幅 ＋ gap-3 ＋ 行の px-3 を差し引いた値。列を増やす時はこの計算も更新する）
 export const LIST_GRID =
   "grid items-center gap-3 grid-cols-[minmax(0,1fr)_40px] " +
-  "sm:grid-cols-[minmax(0,1fr)_9.5rem_5.5rem_40px] " +
-  "lg:grid-cols-[minmax(0,1fr)_9.5rem_8rem_5.5rem_6rem_40px]";
+  "@xl:grid-cols-[minmax(0,1fr)_9.5rem_5.5rem_40px] " +
+  "@4xl:grid-cols-[minmax(0,1fr)_9.5rem_8rem_5.5rem_6rem_40px]";
 
 /// 拡張子/Content-Type からファイル種別アイコンと色を決める（OneDrive 風）。
 /// 種別色はファイルアイコンの慣習色（PDF=赤・Word=青・Excel=緑・PowerPoint=橙…）に合わせる。
@@ -191,18 +200,18 @@ export function ListHeader({
         sort={sort}
         desc={desc}
         onSort={onSort}
-        className="hidden sm:flex"
+        className="hidden @xl:flex"
       />
-      <span className="hidden truncate lg:block">更新者</span>
+      <span className="hidden truncate @4xl:block">更新者</span>
       <SortLabel
         label="サイズ"
         field="size"
         sort={sort}
         desc={desc}
         onSort={onSort}
-        className="hidden sm:flex"
+        className="hidden @xl:flex"
       />
-      <span className="hidden truncate lg:block">共有</span>
+      <span className="hidden truncate @4xl:block">共有</span>
       <span aria-hidden />
     </div>
   );
