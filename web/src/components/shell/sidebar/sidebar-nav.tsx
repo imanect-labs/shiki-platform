@@ -4,7 +4,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { PenSquare, Search } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { APPS_NAV, SKILLS_NAV, WORKFLOWS_NAV, isActivePath } from "@/lib/nav-config";
+import { APPS_NAV, MESSAGES_NAV, SKILLS_NAV, WORKFLOWS_NAV, isActivePath } from "@/lib/nav-config";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NavItem } from "./nav-item";
@@ -101,6 +101,16 @@ export function SidebarNav({
         className={cn("flex flex-col gap-0.5", collapsed ? "pt-1" : "pt-1.5")}
       >
         <SidebarDriveAccordion collapsed={collapsed} onNavigate={onNavigate} />
+        <NavItem
+          icon={MESSAGES_NAV.icon}
+          label={MESSAGES_NAV.label}
+          collapsed={collapsed}
+          active={isActivePath(MESSAGES_NAV.href, pathname)}
+          onClick={() => {
+            router.push(MESSAGES_NAV.href);
+            onNavigate?.();
+          }}
+        />
         <NavItem
           icon={SKILLS_NAV.icon}
           label={SKILLS_NAV.label}
