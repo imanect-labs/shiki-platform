@@ -4,6 +4,8 @@
 //! cargo run -p shiki-jtd --example jtd-dump -- <file.jtd>          # 素性 ＋ 本文
 //! cargo run -p shiki-jtd --example jtd-dump -- --streams <file.jtd> # CFB のストリーム一覧
 //! cargo run -p shiki-jtd --example jtd-dump -- --hex <file.jtd>     # 本文ストリームの生バイト
+//! cargo run -p shiki-jtd --example jtd-dump -- --docx out.docx <file.jtd>  # docx へ書き出す
+//! cargo run -p shiki-jtd --example jtd-dump -- --text out.txt <file.jtd>   # ゴールデン更新用
 //! ```
 //!
 //! `--hex` は `0x001C`〜`0x001F` の制御レコードを `<1C>` の形で見せる。表・罫線の解読は
@@ -21,17 +23,36 @@ use jtd::JtdFile;
 fn main() -> ExitCode {
     let mut streams = false;
     let mut hex = false;
+    let mut docx: Option<String> = None;
+    let mut text_out: Option<String> = None;
     let mut paths = Vec::new();
-    for arg in std::env::args().skip(1) {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--streams" => streams = true,
             "--hex" => hex = true,
+            "--docx" | "--text" => {
+                let Some(value) = args.next() else {
+                    eprintln!("{arg} には出力先が要ります");
+                    return ExitCode::FAILURE;
+                };
+                if arg == "--docx" {
+                    docx = Some(value);
+                } else {
+                    text_out = Some(value);
+                }
+            }
             _ => paths.push(arg),
         }
     }
 
     if paths.is_empty() {
-        eprintln!("usage: jtd-dump [--streams] [--hex] <file.jtd>...");
+        eprintln!("usage: jtd-dump [--streams] [--hex] [--docx OUT] [--text OUT] <file.jtd>...");
+        return ExitCode::FAILURE;
+    }
+    // 出力先は 1 つしか取らないので、複数入力だと最後のファイルで上書きされる。
+    if paths.len() > 1 && (docx.is_some() || text_out.is_some()) {
+        eprintln!("--docx / --text は入力 1 件のときだけ使えます");
         return ExitCode::FAILURE;
     }
 
@@ -40,7 +61,7 @@ fn main() -> ExitCode {
         if paths.len() > 1 {
             println!("===== {path}");
         }
-        match dump(path, streams, hex) {
+        match dump(path, streams, hex, docx.as_deref(), text_out.as_deref()) {
             Ok(()) => {}
             Err(message) => {
                 eprintln!("{path}: {message}");
@@ -56,7 +77,13 @@ fn main() -> ExitCode {
     }
 }
 
-fn dump(path: &str, streams: bool, hex: bool) -> Result<(), String> {
+fn dump(
+    path: &str,
+    streams: bool,
+    hex: bool,
+    docx: Option<&str>,
+    text_out: Option<&str>,
+) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|error| format!("読めません: {error}"))?;
     let file = JtdFile::open(&bytes).map_err(|error| error.to_string())?;
 
@@ -69,7 +96,24 @@ fn dump(path: &str, streams: bool, hex: bool) -> Result<(), String> {
             file.embedded_fragments().map_or(0, <[u8]>::len)
         ),
     }
-    println!("text        : {} chars", file.plain_text().chars().count());
+    let text = file.plain_text();
+    println!("text        : {} chars", text.chars().count());
+    println!("paragraphs  : {}", file.document().blocks().len());
+
+    if let Some(out) = text_out {
+        // ゴールデン用。`plain_text()` の戻り値をそのまま書く（末尾改行を足さない）。
+        std::fs::write(out, file.plain_text().as_bytes())
+            .map_err(|error| format!("{out} に書けません: {error}"))?;
+        println!("wrote text  : {out}");
+        return Ok(());
+    }
+
+    if let Some(out) = docx {
+        let bytes = file.to_docx().map_err(|error| error.to_string())?;
+        std::fs::write(out, &bytes).map_err(|error| format!("{out} に書けません: {error}"))?;
+        println!("docx        : {out} ({} bytes)", bytes.len());
+        return Ok(());
+    }
 
     if streams {
         println!("--- streams ---");
@@ -87,7 +131,7 @@ fn dump(path: &str, streams: bool, hex: bool) -> Result<(), String> {
         println!("{}", annotate(raw));
     } else {
         println!("--- text ---");
-        println!("{}", file.plain_text());
+        println!("{text}");
     }
 
     Ok(())

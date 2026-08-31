@@ -32,6 +32,8 @@ crates/tabular/runner/target/
 # 所有フォーク openjtd は独自 workspace なので target/ が別に生える
 # （解読プローブ `cargo run -p rjtd-cli` をここで回したとき）。
 vendor/openjtd/rjtd/target/
+# 再配布条件が未確認のため同梱しない JTD フィクスチャ（scripts/fetch-jtd-fixtures.sh が取得）。
+crates/jtd/tests/fixtures/external/
 
 # Playwright の実行結果（リポジトリ直下で流したとき用・web/ 側は web/.gitignore が担当）
 /test-results/
