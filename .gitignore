@@ -6,6 +6,9 @@
 .env
 *.env
 !*.env.example
+# Collabora のバージョンピン正本。シークレットではなく manifest（*.env の巻き添えを外す）。
+# 除外されたままだと office-image.yml が source で落ち、Office 用イメージが一切ビルドされない。
+!deploy/docker/collabora/office-manifest.env
 
 # Node / Next.js
 web/node_modules
