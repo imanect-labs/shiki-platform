@@ -26,9 +26,14 @@ use std::time::{Duration, Instant};
 
 use jtd::{JtdError, JtdFile};
 
-/// 細工した入力 1 件あたりの許容時間。実測は μs オーダーなので、
-/// これに触れたら「有界でなくなった」と判断してよい。
-const BUDGET: Duration = Duration::from_secs(5);
+/// 細工した入力 1 件あたりの許容時間。
+///
+/// **わざと緩い。** ここで見たいのは「桁が変わる退行」（ハング・二次時間・abort）であって、
+/// 数百 ms の増減ではない。修正後の実測は最も重いケースでも 1 秒未満なので 20 倍以上の
+/// 余裕がある一方、修正前は 1 MiB の入力で 29 秒かかっていたので取り逃さない。
+/// 締めすぎると、テストが並列に走ってビルドと CPU を奪い合ったときに落ちる
+/// （実際 5 秒だと並列実行で落ちた）。
+const BUDGET: Duration = Duration::from_secs(20);
 
 /// パースを走らせるスレッドのスタックサイズ。
 ///
@@ -263,7 +268,8 @@ fn many_embedded_text_fragments_stay_linear() {
     // 1 MiB のファイルが 29 秒、既定上限では時間単位に達した。
     // ここは `/DocumentText` も `/JSCompDocument` も持たない CFB なので、
     // 埋め込み断片の走査（`has_embedded_document_text`）に落ちる。
-    const FRAGMENT_COUNT: usize = 32_768; // 断片 16B ＋ ヘッダで約 512 KiB
+    // 修正前は O(N²) で 1 MiB が 29 秒かかった。BUDGET（20 秒）を確実に超える大きさにする。
+    const FRAGMENT_COUNT: usize = 65_536; // 断片 16B ＋ ヘッダで約 1 MiB
 
     let mut payload = Vec::with_capacity(FRAGMENT_COUNT * 16);
     for index in 0..FRAGMENT_COUNT {

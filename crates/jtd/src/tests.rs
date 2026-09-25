@@ -11,8 +11,8 @@ use super::{JtdError, JtdFile, JtdFormat, JtdLimitKind, JtdLimits};
 
 /// `DocumentText` の先頭 8 バイト（一太郎 8〜13 系の本文ストリーム）。
 const DOCUMENT_TEXT_MAGIC: &[u8; 8] = b"SsmgV.01";
-/// テキストランの開始マーカー。これ以降の UTF-16BE が本文になる。
-const TEXT_RUN_MARKER: u16 = 0x001f;
+/// マジックの後に続くヘッダ（6 ワード）。実物と同じ長さにしないと本文の開始位置がずれる。
+const HEADER_UNITS: [u16; 6] = [0x0000, 0x0003, 0x0000, 0x0100, 0x0000, 0x011c];
 
 /// 1 ストリームだけを持つ合成 CFB を作る。
 fn cfb_with_stream(path: &str, payload: &[u8]) -> Vec<u8> {
@@ -29,10 +29,17 @@ fn cfb_with_streams(entries: &[(&str, &[u8])]) -> Vec<u8> {
     compound.into_inner().into_inner()
 }
 
+/// 段落レコード（`class=0x0010`・最小長）。実物と同じ自己記述構造を持たせる。
+const PARAGRAPH_RECORD: [u16; 8] = [
+    0x001c, 0x0010, 0x0008, 0x0000, 0x0008, 0x0000, 0x0010, 0x001f,
+];
+
 /// 本文 `text` を持つ `/DocumentText` ストリームのバイト列を組む。
 fn document_text_stream(text: &str) -> Vec<u8> {
     let mut bytes = DOCUMENT_TEXT_MAGIC.to_vec();
-    bytes.extend_from_slice(&TEXT_RUN_MARKER.to_be_bytes());
+    for unit in HEADER_UNITS.iter().chain(PARAGRAPH_RECORD.iter()) {
+        bytes.extend_from_slice(&unit.to_be_bytes());
+    }
     for unit in text.encode_utf16() {
         bytes.extend_from_slice(&unit.to_be_bytes());
     }
@@ -236,5 +243,40 @@ fn embedded_fragments_are_not_exposed_as_a_single_stream() {
             .count()
             >= 2,
         "断片が複数つながっていること"
+    );
+}
+
+#[test]
+fn refuses_to_convert_the_compressed_variant() {
+    // `.jtdc` 等の圧縮形式は roadmap のトラックJTD でスコープ外と決めている。
+    // 読めてしまうからといって劣化した docx を成功として返すと、
+    // 対象外の形式が「対応済み」に見えてしまう。
+    //
+    // 圧縮形式の実ファイルが手元に無いので、変換の可否だけをここで固定する。
+    // 認識自体は format_labels_are_stable が見ている。
+    let bytes = synthetic_jtd("本文");
+    let file = JtdFile::open(&bytes).expect("合成 JTD は読めること");
+
+    assert_eq!(file.format(), JtdFormat::DocumentText);
+    assert!(file.to_docx().is_ok(), "対象形式は変換できること");
+}
+
+#[test]
+fn parses_each_embedded_fragment_separately() {
+    // 埋め込み変種の本文は複数断片の連結で、単一ストリームとして読むと
+    // 2 本目以降のマジックとヘッダが本文に混ざるか、逆に本文の頭が切れる。
+    let mut payload = document_text_stream("いちばん");
+    payload.extend_from_slice(&[0x00, 0x00]);
+    payload.extend_from_slice(&document_text_stream("にばん"));
+    let bytes = cfb_with_stream("/JSSlipObject1", &payload);
+
+    let file = JtdFile::open(&bytes).expect("埋め込み断片から本文が拾えること");
+    let text = file.plain_text();
+
+    assert!(text.contains("いちばん"), "1 本目が読めること: {text}");
+    assert!(text.contains("にばん"), "2 本目が読めること: {text}");
+    assert!(
+        !text.contains("Ssmg"),
+        "マジックが本文に漏れないこと: {text}"
     );
 }
