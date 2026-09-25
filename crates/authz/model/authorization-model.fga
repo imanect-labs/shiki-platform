@@ -88,6 +88,34 @@ type thread
     define commenter: [user, role#member] or editor
     define viewer: [user, role#member] or commenter
 
+# メッセージ: チャンネル（公開／非公開／DM・Task 14.2）。
+# 非階層共有（thread / artifact / data_table と同型）。owner は横展開しない（共有語彙は admin/poster/member）。
+# 含意は owner ⊇ admin ⊇ poster ⊇ member。
+#
+# 公開チャンネルは organization#member（社内＝現テナント）を subject として **1 本だけ**書く。
+# folder/file の共有リンク（#342）・artifact の公式スキル（#387）と同じ形で、
+# 「org メンバーというだけで到達する」自動継承ではない（公開チャンネルを作る操作でタプルが書かれる）。
+# これにより org に何人いても公開チャンネルのタプルは 1 本で済む（タプル爆発防止・design §4.10 と同じ考え方）。
+#
+# poster と member を分けるのは、全庁通達のような**読み取り専用チャンネル**を
+# タプルを増やさずに表現するため。通常の公開チャンネルは poster@organization#member を 1 本、
+# 読み取り専用は member@organization#member ＋ poster@role#member の 2 本で表す。
+#
+# 非公開チャンネルと DM は organization#member を書かず、参加者ぶんの明示タプルのみ
+# （DM は kind=Dm のチャンネルとして持ち、owner を書かない・design §4.14）。
+#
+# **退出は ReBAC で表現しない。** 公開チャンネルの退出は閲覧権限の剥奪ではなく購読の解除であり、
+# アプリ側の channel_member 行で持つ。ReBAC は「読めるか」だけを答える。
+#
+# user:* は受理しない。FR-18 の「外部ユーザーの参加機能は設けない」を構造的に担保する
+# （folder/file は将来の跨ぎ閲覧共有のために viewer だけ予約しているが、channel は閉じる）。
+type channel
+  relations
+    define owner: [user]
+    define admin: [user, role#member] or owner
+    define poster: [user, role#member, organization#member] or admin
+    define member: [user, role#member, organization#member] or poster
+
 # アーティファクト: バージョン付き共有本文の共通枠（Task 6.1・Phase 10 Stage A 前倒し）。
 # prompt template / UI スペック / ミニアプリ / ワークフロー IR / skill / script が同じ枠に乗る。
 # thread と同型の非階層共有（作成者 owner ＋明示共有・共有語彙は viewer/editor のみ）。

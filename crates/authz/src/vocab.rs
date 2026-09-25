@@ -35,6 +35,12 @@ pub enum Relation {
     EditorViaLink,
     /// シークレットの利用権限（解決して使える・平文の読み返しではない・Task 10.9）。owner が含意する。
     CanUse,
+    /// チャンネルの管理権限（招待・アーカイブ・名称変更・Task 14.2）。owner が含意し poster を含意する。
+    Admin,
+    /// チャンネルへの投稿権限（Task 14.2）。admin が含意し member を含意する。
+    /// member と分けているのは、読み取り専用チャンネル（全庁通達等）をタプルを増やさずに表す
+    /// ため（通常のチャンネルは poster を 1 本書けば member も満たされる）。
+    Poster,
 }
 
 impl Relation {
@@ -50,6 +56,8 @@ impl Relation {
             Relation::ViewerViaLink => "viewer_via_link",
             Relation::EditorViaLink => "editor_via_link",
             Relation::CanUse => "can_use",
+            Relation::Admin => "admin",
+            Relation::Poster => "poster",
         }
     }
 
@@ -68,6 +76,8 @@ impl Relation {
             "viewer_via_link" => Some(Relation::ViewerViaLink),
             "editor_via_link" => Some(Relation::EditorViaLink),
             "can_use" => Some(Relation::CanUse),
+            "admin" => Some(Relation::Admin),
+            "poster" => Some(Relation::Poster),
             _ => None,
         }
     }
@@ -96,6 +106,10 @@ pub enum ObjectType {
     /// 共有可能アーティファクト（バージョン付き JSON 本文の共通枠・Task 6.1）。
     /// prompt template / UI スペック / ミニアプリ / ワークフロー IR / skill / script が乗る。
     Artifact,
+    /// メッセージのチャンネル（公開／非公開／DM・owner/admin/poster/member・Task 14.2）。
+    /// 公開チャンネルは organization#member を subject として 1 本だけ書き、
+    /// 発言ごとのタプルは作らない（可視性はチャンネル単位・design §4.14）。
+    Channel,
     /// シークレット（write-only/use-only・owner/can_use で ReBAC・Task 10.9）。
     Secret,
     /// ワークフロープリンシパル（schedule/event run の実行主体・subject 専用型・Task 10.4a）。
@@ -124,6 +138,7 @@ impl ObjectType {
             ObjectType::File => "file",
             ObjectType::Thread => "thread",
             ObjectType::Artifact => "artifact",
+            ObjectType::Channel => "channel",
             ObjectType::Secret => "secret",
             ObjectType::Workflow => "workflow",
             ObjectType::MiniApp => "miniapp",
@@ -150,6 +165,17 @@ mod tests {
         assert_eq!(Relation::Owner.as_str(), "owner");
         assert_eq!(Relation::Editor.as_str(), "editor");
         assert_eq!(Relation::Viewer.as_str(), "viewer");
+        assert_eq!(Relation::Admin.as_str(), "admin");
+        assert_eq!(Relation::Poster.as_str(), "poster");
+    }
+
+    #[test]
+    fn channel_vocab_roundtrips() {
+        // Task 14.2 で足した語彙が as_str / parse の双方向で閉じていること。
+        for r in [Relation::Admin, Relation::Poster] {
+            assert_eq!(Relation::parse(r.as_str()), Some(r));
+        }
+        assert_eq!(ObjectType::Channel.to_string(), "channel");
     }
 
     #[test]
@@ -238,7 +264,10 @@ mod tests {
         assert_eq!(ObjectType::Secret.as_str(), "secret");
         assert_eq!(ObjectType::DataTable.as_str(), "data_table");
         assert_eq!(ObjectType::DataRecord.as_str(), "data_record");
+        assert_eq!(ObjectType::Channel.as_str(), "channel");
         assert_eq!(Relation::CanUse.as_str(), "can_use");
+        assert_eq!(Relation::Admin.as_str(), "admin");
+        assert_eq!(Relation::Poster.as_str(), "poster");
     }
 
     #[test]
