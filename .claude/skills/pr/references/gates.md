@@ -1,21 +1,52 @@
 # ローカル品質ゲート（CI と同一）
 
-**正本は `.github/workflows/ci.yml`。** 下の表はそれを引き写したものなので、CI が変われば腐る。
-食い違いを見つけたら **ci.yml が正**として扱い、**この表と `local-gates.sh` を同じ PR で直す**（Phase 3-b のドキュメント整合点検は `.claude/skills/*` も対象）。
+**正本は `.github/workflows/` のワークフロー。** 下の表はそれを引き写したものなので、CI が変われば腐る。
+食い違いを見つけたら **ワークフローが正**として扱い、**引き写している 3 箇所を同じ PR で直す**
+（Phase 3-b のドキュメント整合点検は `.claude/skills/*` も対象）:
 
-その場で突き合わせるには:
+1. この `gates.md` の対応表
+2. `local-gates.sh`
+3. `AGENTS.md` の「検証コマンド」節
+
+## ドリフト検出は自動（思い出さなくてよい）
+
+突き合わせは `local-gates.sh` が**毎回強制的に**行う。`.github/workflows/*.yml` を
+YAML として解析して正規化し、`.claude/skills/pr/ci-jobs.snapshot` に記録してある。
+差があればゲートが落ちて差分が出る。
 
 ```bash
-# jobs: 以降に限定する（限定しないと on: の push: を拾って偽陽性になる）
-sed -n '/^jobs:/,$p' .github/workflows/ci.yml | grep -E '^  [a-z-]+:$'
+.claude/skills/pr/scripts/ci-snapshot.sh --check    # 差があれば diff を出して exit 1
+.claude/skills/pr/scripts/ci-snapshot.sh --update   # 追随を済ませてから更新する
 ```
 
-表に無いジョブがあれば、それがドリフトしている。**各ジョブが実行する `run:` も突き合わせる**
-（ジョブ名が同じでもステップが増えていることがある）:
+**差分が出たときの順序を守る**（逆にすると検出した意味が無い）:
 
-```bash
-sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E '^\s+(- name|run):'
-```
+1. 差分を読み、上の 3 箇所を追随させる。
+2. そのうえで `ci-snapshot.sh --update` を実行し、スナップショットも同じコミットに含める。
+
+### 何を見ているか
+
+**既定で全部**。ワークフローの全リーフを記録するので、新しいキーが増えても自動で監視対象に入る。
+除外は churn しか生まないものに限る:
+
+- `timeout-minutes` / `runs-on` / `permissions` / `concurrency`
+- `uses:` はアクション名だけ記録し `@version` は落とす（追加・削除は検出、bump では落ちない）
+
+逆に、YAML として等価な書き換え（コメント・引用符・フロースタイル・行継続・キー順・
+ジョブの並べ替え・`run: cmd` ↔ `run: |` の 1 行）では**落ちない**。
+
+**なぜこの方式か**: 初版は「拾うキーを列挙する」許可リスト方式だったが、列挙から漏れたものが
+*無言で* 監視外になった。独立レビューで `working-directory`・`continue-on-error`・`needs`・
+`strategy`・`shell`・`defaults` の変更が素通りすることが実測で確認され、さらに `jobs:` 先頭の
+ジョブ ID が想定パターンに合わないとそのジョブが丸ごと記録から消える穴もあった。
+**取りこぼしを防ぐ機構が取りこぼしていた**ので、既定を反転した。
+
+**なぜ機構にしたか**: 以前はここに突き合わせ用のワンライナーを置いていたが、
+「実行しようと思い出す」必要があった。実際に `ci.yml` へステップを足した本人が、
+同じセッション内で `local-gates.sh` への追随を忘れている（#455）。
+
+PyYAML が必要。無ければ黙って劣化させず明示的に失敗する（劣化した検出は、
+検出できていないことに気づけないので緑より悪い）。
 
 **`docs/**` / `**.md` / `.claude/**` のみの変更では CI が丸ごとスキップされる**（`paths-ignore`）ため、docs のみの PR で「チェックなし」は正常。
 
@@ -35,7 +66,7 @@ sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E
 | Web E2E | `references/verify.md` 参照 | `web/` 差分 |
 | Sandbox gVisor IT | `bash scripts/fetch-native-assets.sh && bash scripts/build-sandbox-rootfs.sh`<br>→ `SANDBOX_GVISOR_IT=1 RUNSC_BIN=deploy/sandbox-assets/bin/runsc GVISOR_ROOTFS=deploy/sandbox-assets/rootfs cargo test -p shiki-sandbox-orchestrator --test gvisor_it -- --test-threads=1` | `crates/sandbox-*` 差分（CI では**非ブロッキング**） |
 
-`scripts/local-gates.sh` は、この表のうち**自動化できるもの**（file-size / fmt / clippy / test / machete / deny / doctest / tabular / web / python）を差分から判定して実行する。
+`scripts/local-gates.sh` は、この表のうち**自動化できるもの**（ワークフローのドリフト / file-size / migration-version / compose port / fmt / clippy / test / machete / deny / doctest / tabular / web / python）を差分から判定して実行する。
 **compose smoke・Web E2E・gVisor IT・カバレッジ実測は自動実行しない**（compose 起動やアセット取得が要るため）。必要な時に上表のコマンドで手動実行する。
 
 ### CI との差異（意図的）
