@@ -252,10 +252,27 @@ fn refuses_to_convert_the_compressed_variant() {
     // 読めてしまうからといって劣化した docx を成功として返すと、
     // 対象外の形式が「対応済み」に見えてしまう。
     //
-    // 圧縮形式の実ファイルが手元に無いので、変換の可否だけをここで固定する。
-    // 認識自体は format_labels_are_stable が見ている。
-    let bytes = synthetic_jtd("本文");
-    let file = JtdFile::open(&bytes).expect("合成 JTD は読めること");
+    // 圧縮形式として分類される入力を合成するには、有効な `-lh5-` ストリームが要る
+    // （上流が対応する唯一の方式で、静的ハフマンのビット詰めを自前で書くことになる）。
+    // ここでは分類済みの状態を直接組んでガードを突く。分類そのものは
+    // classifies_by_the_body_actually_read_not_by_stream_presence が見ている。
+    let compressed = JtdFile {
+        format: JtdFormat::CompressedDocument,
+        streams: Vec::new(),
+        document_text: Vec::new(),
+        document: crate::JtdDocument::default(),
+        plain_text: String::new(),
+    };
+
+    assert!(
+        matches!(compressed.to_docx(), Err(JtdError::Unsupported)),
+        "スコープ外の圧縮形式は変換しないこと"
+    );
+}
+
+#[test]
+fn converts_the_supported_variant() {
+    let file = JtdFile::open(&synthetic_jtd("本文")).expect("合成 JTD は読めること");
 
     assert_eq!(file.format(), JtdFormat::DocumentText);
     assert!(file.to_docx().is_ok(), "対象形式は変換できること");
