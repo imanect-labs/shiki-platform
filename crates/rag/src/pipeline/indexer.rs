@@ -209,6 +209,8 @@ async fn index_node(
         .iter()
         .filter(|c| c.kind != ChunkKind::Parent)
         .collect();
+    // searchable_text() は本文の String を新規に作る。埋め込みと Tantivy で 2 度呼ぶと
+    // 文書全文ぶんの確保が二重に走るので、1 度だけ作って使い回す。
     let texts: Vec<String> = embeddable.iter().map(|c| c.searchable_text()).collect();
     let embedded = deps
         .embedder
@@ -264,7 +266,9 @@ async fn index_node(
         message.node_id,
         embeddable
             .iter()
-            .map(|c| (c.id, message.version, c.searchable_text()))
+            .map(|c| c.id)
+            .zip(texts)
+            .map(|(id, text)| (id, message.version, text))
             .collect(),
         authz_tags,
     )

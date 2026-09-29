@@ -24,6 +24,13 @@ use crate::vector_store::{ChunkPoint, PreFilter, ScoredChunk, VectorSearch, Vect
 /// 検索・書込に使う alias（正本設計 §4.3 の `rag_chunks_active`）。
 pub const ACTIVE_ALIAS: &str = "rag_chunks_active";
 
+/// 1 回の upsert に載せる点数の上限。
+///
+/// 1 点は「ベクタ（次元数ぶんの f32）＋ payload」なので、次元 1024 でも 1 バッチが
+/// おおよそ数 MB に収まる大きさにしてある。これ以上大きくしても往復が減るだけで、
+/// 中間表現のメモリと Qdrant 側の 1 リクエスト処理時間が伸びる。
+const UPSERT_BATCH_POINTS: usize = 256;
+
 pub struct QdrantVectorStore {
     http: reqwest::Client,
     base_url: String,
@@ -173,28 +180,34 @@ impl VectorStore for QdrantVectorStore {
         if points.is_empty() {
             return Ok(());
         }
-        let body_points: Vec<Value> = points
-            .iter()
-            .map(|p| {
-                json!({
-                    "id": p.chunk_id.to_string(),
-                    "vector": p.vector,
-                    "payload": {
-                        "tenant_id": ctx.tenant_id,
-                        "node_id": p.node_id.to_string(),
-                        "version": p.version,
-                        "authz_tags": p.authz_tags,
-                    }
+        // 1 リクエストにまとめない。1 文書のチャンク数は文書長に比例し、空行を持たない
+        // 大きな text/plain では数万点に達する（PIT-67）。全点を 1 度に送ると
+        // serde_json::Value の中間表現を丸ごと組み立ててから直列化するため、
+        // リクエストボディが数百 MB になって Qdrant の上限に当たるか、その前に OOM する。
+        for batch in points.chunks(UPSERT_BATCH_POINTS) {
+            let body_points: Vec<Value> = batch
+                .iter()
+                .map(|p| {
+                    json!({
+                        "id": p.chunk_id.to_string(),
+                        "vector": p.vector,
+                        "payload": {
+                            "tenant_id": ctx.tenant_id,
+                            "node_id": p.node_id.to_string(),
+                            "version": p.version,
+                            "authz_tags": p.authz_tags,
+                        }
+                    })
                 })
-            })
-            .collect();
-        let resp = self
-            .http
-            .put(self.url(&format!("/collections/{ACTIVE_ALIAS}/points?wait=true")))
-            .json(&json!({"points": body_points}))
-            .send()
-            .await?;
-        Self::ensure_ok(resp).await?;
+                .collect();
+            let resp = self
+                .http
+                .put(self.url(&format!("/collections/{ACTIVE_ALIAS}/points?wait=true")))
+                .json(&json!({"points": body_points}))
+                .send()
+                .await?;
+            Self::ensure_ok(resp).await?;
+        }
         Ok(())
     }
 

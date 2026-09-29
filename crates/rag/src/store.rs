@@ -36,6 +36,12 @@ impl StoredChunk {
     }
 }
 
+/// 1 文の INSERT に載せる行数の上限。
+///
+/// Postgres のバインド引数は 1 文あたり 65535 個までで、1 行が 14 個を使うので
+/// 上限は約 4600 行。余裕を見てここで切る。
+const INSERT_BATCH_ROWS: usize = 1000;
+
 /// ノードのチャンクを差し替える（旧版含む全行 DELETE → 新版 INSERT・単一 Tx）。
 ///
 /// 決定的 chunk_id と合わせ、同一版の再実行も冪等になる。
@@ -54,37 +60,40 @@ pub async fn replace_chunks(
         .bind(node_id)
         .execute(&mut *tx)
         .await?;
-    for chunk in chunks {
-        // 埋め込み対象（leaf/table）にのみ model version を刻む（PIT-8）。
-        let model_version = match chunk.kind {
-            ChunkKind::Parent => None,
-            ChunkKind::Leaf | ChunkKind::Table => Some(embedding_model_version),
-        };
-        // 同一 (node, version) の重複ジョブが並行実行されても衝突しない（決定的 ID
-        // かつ内容も決定的なので do nothing で同値。at-least-once 配信の並行冪等性）。
-        sqlx::query(
+    // 1 行 1 クエリで回さない。チャンク数は文書長に比例し、空行を持たない大きな
+    // text/plain では数万行に達する（PIT-67）。往復ぶんだけトランザクションが伸び、
+    // その間 delete で取った行ロックを握り続けることになる。
+    for batch in chunks.chunks(INSERT_BATCH_ROWS) {
+        let mut qb = sqlx::QueryBuilder::new(
             "insert into rag_chunk \
                  (id, tenant_id, org, node_id, version, parent_id, kind, ordinal, page, \
-                  heading_path, content, char_count, authz_tags, embedding_model_version) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
-             on conflict (id) do nothing",
-        )
-        .bind(chunk.id)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(node_id)
-        .bind(version)
-        .bind(chunk.parent_id)
-        .bind(chunk.kind.as_str())
-        .bind(chunk.ordinal)
-        .bind(chunk.page)
-        .bind(&chunk.heading_path)
-        .bind(&chunk.content)
-        .bind(i32::try_from(chunk.content.chars().count()).unwrap_or(i32::MAX))
-        .bind(authz_tags)
-        .bind(model_version)
-        .execute(&mut *tx)
-        .await?;
+                  heading_path, content, char_count, authz_tags, embedding_model_version) ",
+        );
+        qb.push_values(batch, |mut row, chunk| {
+            // 埋め込み対象（leaf/table）にのみ model version を刻む（PIT-8）。
+            let model_version = match chunk.kind {
+                ChunkKind::Parent => None,
+                ChunkKind::Leaf | ChunkKind::Table => Some(embedding_model_version),
+            };
+            row.push_bind(chunk.id)
+                .push_bind(&ctx.tenant_id)
+                .push_bind(&ctx.org)
+                .push_bind(node_id)
+                .push_bind(version)
+                .push_bind(chunk.parent_id)
+                .push_bind(chunk.kind.as_str())
+                .push_bind(chunk.ordinal)
+                .push_bind(chunk.page)
+                .push_bind(&chunk.heading_path)
+                .push_bind(&chunk.content)
+                .push_bind(i32::try_from(chunk.content.chars().count()).unwrap_or(i32::MAX))
+                .push_bind(authz_tags)
+                .push_bind(model_version);
+        });
+        // 同一 (node, version) の重複ジョブが並行実行されても衝突しない（決定的 ID
+        // かつ内容も決定的なので do nothing で同値。at-least-once 配信の並行冪等性）。
+        qb.push(" on conflict (id) do nothing");
+        qb.build().execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(())
