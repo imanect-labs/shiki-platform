@@ -103,6 +103,7 @@
       "publicClient": false,
       "secret": "skillex-dev-secret",
       "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "redirectUris": [],
