@@ -13,6 +13,7 @@ name: shiki
 
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:16-alpine
     # クエリ性能の観測手段を最初から載せる（docs/guides/db-observability.md が使い方の正）。
     # pg_stat_statements / auto_explain はどちらも shared_preload_libraries 経由でしか有効化
@@ -59,6 +60,7 @@ services:
       retries: 10
 
   keycloak:
+    restart: unless-stopped
     # 26.2 で Standard Token Exchange（RFC 8693・V2）が GA（プレビュー flag 不要）。
     # ミニアプリ B2 の on-behalf-of は client 属性 standard.token.exchange.enabled=true で有効化する
     # （Task 9.7・crates/app-gateway/src/oauth.rs）。
@@ -101,6 +103,7 @@ services:
     restart: "no"
 
   openfga:
+    restart: unless-stopped
     image: openfga/openfga:v1.8.0
     command: run
     environment:
@@ -123,6 +126,7 @@ services:
       retries: 20
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     # BFF セッションストア（オパーク Cookie の実体。tenant_id スコープのキーで論理分離）。
     command: ["redis-server", "--save", "", "--appendonly", "no"]
@@ -135,6 +139,7 @@ services:
       retries: 20
 
   minio:
+    restart: unless-stopped
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address ":9001"
     environment:
@@ -155,6 +160,7 @@ services:
       retries: 20
 
   qdrant:
+    restart: unless-stopped
     image: qdrant/qdrant:v1.12.5
     # Docker 既定の nofile ソフト上限（1024）では、文書が増えて RocksDB のセグメントが
     # 育つと必ず枯渇する。枯渇すると Qdrant は接続の受付にも書き込みの flush にも失敗するが、
@@ -178,6 +184,7 @@ services:
       retries: 20
 
   ingestion-worker:
+    restart: unless-stopped
     build:
       context: ../../ingestion-worker
     environment:
@@ -216,6 +223,7 @@ services:
   # サンドボックス orchestrator（非特権・code_interpreter 用）。gRPC を compose 網内で待ち受ける。
   # per-sandbox の secure-exec-sidecar 子プロセスを spawn する。ストレージ/DB クレデンシャルは持たない。
   sandbox-orchestrator:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: deploy/docker/sandbox-orchestrator.Dockerfile
@@ -258,6 +266,7 @@ services:
   # web 検索（オンプレ向け SearXNG・websearch profile でオプトイン起動）。
   # SaaS は Brave（SHIKI__WEBSEARCH__BRAVE_API_KEY）、テストは stub を使う。
   searxng:
+    restart: unless-stopped
     # SearXNG は rolling tag で古いタグが GC される（2025.6.20 は upstream から消滅・
     # `--profile websearch` が pull 不能になっていた）。digest 併記で再現性を担保する。
     image: searxng/searxng:2026.7.24-4f64d9501@sha256:f68e460a549631cd0c09f943fc9d7befc4c0ff8c75e38accd734c7ac9f0b537c
@@ -282,6 +291,7 @@ services:
   # 既定はソース自前ビルドイメージ（deploy/docker/collabora/・office-image.yml が GHCR へ push）。
   # 開発と CI に限り COLLABORA_IMAGE=collabora/code:<pin> のフォールバック可（配布物は自前ビルド必須）。
   collabora:
+    restart: unless-stopped
     image: ${COLLABORA_IMAGE:-ghcr.io/syuya2036/shiki-collabora:cp-25.04.9-5}
     profiles: ["office"]
     # command で環境依存値を注入する（イメージの CMD を丸ごと置き換えるため基本引数も再掲）:
@@ -319,6 +329,7 @@ services:
 
   # --- 監視スタック（observability profile・オプトイン起動） ---
   tempo:
+    restart: unless-stopped
     image: grafana/tempo:2.6.1
     profiles: ["observability"]
     command: ["-config.file=/etc/tempo.yaml"]
@@ -329,6 +340,7 @@ services:
       - "3200:3200"
 
   loki:
+    restart: unless-stopped
     image: grafana/loki:3.2.1
     profiles: ["observability"]
     command: ["-config.file=/etc/loki/local-config.yaml"]
@@ -336,6 +348,7 @@ services:
       - "3100:3100"
 
   prometheus:
+    restart: unless-stopped
     image: prom/prometheus:v3.0.1
     profiles: ["observability"]
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
@@ -348,6 +361,7 @@ services:
   # オンプレ/エアギャップ配布が前提で、テナントのクエリ形状を外へ出せないため（design.md §4.9・
   # 「新規ステートフル依存ゼロ」）。中身は pg_stat_* を読んでいるだけなのでここで完結する。
   postgres-exporter:
+    restart: unless-stopped
     image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
     profiles: ["observability"]
     environment:
@@ -367,6 +381,7 @@ services:
         condition: service_healthy
 
   otel-collector:
+    restart: unless-stopped
     image: otel/opentelemetry-collector-contrib:0.115.1
     profiles: ["observability"]
     command: ["--config=/etc/otel-collector-config.yaml"]
@@ -381,6 +396,7 @@ services:
       - loki
 
   grafana:
+    restart: unless-stopped
     image: grafana/grafana:11.4.0
     profiles: ["observability"]
     environment:
@@ -400,6 +416,7 @@ services:
   # OTel trace_id を Langfuse trace id に使い、監査ログ↔Langfuse↔OTel を同一 trace_id で突合する。
   # 初回起動時に LANGFUSE_INIT_* で org/project/API キーを headless 作成する（gateway が使う鍵）。
   langfuse:
+    restart: unless-stopped
     image: langfuse/langfuse:2
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/langfuse
@@ -426,6 +443,7 @@ services:
       start_period: 30s
 
   shiki-server:
+    restart: unless-stopped
     build:
       context: ../..
       dockerfile: deploy/Dockerfile
