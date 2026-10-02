@@ -177,20 +177,34 @@ impl ChunkBuilder {
             content: parent_content,
         });
 
-        // 段落を max_leaf_chars まで詰めて leaf 化（段落境界でのみ分割）。
+        // 段落を max_leaf_chars まで詰めて leaf 化。段落境界で切るのが基本だが、
+        // 1 段落だけで上限を超える場合は段落内でも割る（下記 split_oversized）。
         let mut leaf_text = String::new();
+        // leaf_text.chars().count() を毎回やり直さないための累積。断片が短い文書
+        // （字幕・チャットログ）ほど数え直しの倍率が上がる。
+        let mut leaf_chars = 0usize;
         let mut leaf_page: Option<i32> = None;
         for (text, page) in &paragraphs {
-            let would_be = leaf_text.chars().count() + text.chars().count();
-            if !leaf_text.is_empty() && would_be > self.params.max_leaf_chars {
-                self.emit_leaf(&mut leaf_text, &mut leaf_page, parent_uuid, path);
+            for piece in split_oversized(text, self.params.max_leaf_chars) {
+                let piece_chars = piece.chars().count();
+                // 区切りの "\n\n" も leaf の文字数に乗るので判定に含める。含めないと
+                // ちょうど上限で収まる組み合わせのときだけ max+2 文字の leaf ができる。
+                let sep = if leaf_text.is_empty() { 0 } else { 2 };
+                if !leaf_text.is_empty()
+                    && leaf_chars + sep + piece_chars > self.params.max_leaf_chars
+                {
+                    self.emit_leaf(&mut leaf_text, &mut leaf_page, parent_uuid, path);
+                    leaf_chars = 0;
+                }
+                if leaf_text.is_empty() {
+                    leaf_page = *page;
+                } else {
+                    leaf_text.push_str("\n\n");
+                    leaf_chars += 2;
+                }
+                leaf_text.push_str(piece);
+                leaf_chars += piece_chars;
             }
-            if leaf_text.is_empty() {
-                leaf_page = *page;
-            } else {
-                leaf_text.push_str("\n\n");
-            }
-            leaf_text.push_str(text);
         }
         self.emit_leaf(&mut leaf_text, &mut leaf_page, parent_uuid, path);
 
@@ -228,6 +242,66 @@ impl ChunkBuilder {
         self.chunks.sort_by_key(|c| c.ordinal);
         self.chunks
     }
+}
+
+/// 上限を超える 1 段落を、上限以下の断片へ割る（上限以下ならそのまま 1 個返す）。
+///
+/// パーサが段落を刻めなかった文書（空行を使わない議事録・字幕・ログ、改行を持たない
+/// PDF 抽出結果など）が、そのまま数万文字の leaf になるのを防ぐ最後の砦。巨大 leaf は
+/// 埋め込みが文書全体の平均に薄まって意味検索から消え、BM25 でも長文ペナルティで沈む。
+///
+/// 切れ目は「文末（。！？!?）→ 改行 → 空白 → 文字数」の順に優先する。空白を見るのは
+/// 英文で語の途中が切れるのを防ぐため。ASCII の `.` は小数や略語にも出るので文末には
+/// 含めない（空白へのフォールバックがあれば語中分割は起きない）。
+///
+/// 見つけた切れ目が手前すぎる場合は使わず次の候補へ送る。窓の先頭近くに句点が 1 個だけ
+/// ある文書（「開会します。」＋句読点の無い長い羅列）で、1 文字の leaf が索引に入るため。
+///
+/// 計算量は入力長に対して線形。**残り文字数を数え直さない**こと（`rest.chars().count()`
+/// をループ条件に置くと O(n^2) になり、改行も句点も無い 50MB の text/plain で
+/// チャンク化だけに数分かかる。`chunk_document` は `spawn_blocking` の外で呼ばれるため
+/// tokio ワーカを占有し、`job_vt_secs` 超過でジョブが再配信されて DLQ に落ちる）。
+fn split_oversized(text: &str, max_chars: usize) -> Vec<&str> {
+    let max = max_chars.max(1);
+    let text = text.trim();
+    let mut pieces = Vec::new();
+    let mut rest = text;
+    // nth(max) は高々 max 文字ぶんしか進まないので、1 周あたり O(max)。
+    // 各周で rest は min_fill 以上縮むため、全体でも入力長に線形。
+    while let Some((limit, _)) = rest.char_indices().nth(max) {
+        let head = &rest[..limit];
+        // 断片が短くなりすぎる切れ目は採らない（ノイズ chunk を作らないための下限）。
+        let min_fill = limit / 2;
+        let cut = [
+            sentence_end(head),
+            head.rfind('\n').map(|i| i + 1),
+            head.rfind(char::is_whitespace)
+                .map(|i| i + head[i..].chars().next().map_or(1, char::len_utf8)),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|&c| c >= min_fill)
+        // どの候補も無い/手前すぎるなら max 文字で強制的に割る。
+        // cut は必ず 1 以上になるので rest は毎周必ず縮む（無限ループしない）。
+        .unwrap_or(limit);
+        let (piece, tail) = rest.split_at(cut);
+        let piece = piece.trim();
+        if !piece.is_empty() {
+            pieces.push(piece);
+        }
+        rest = tail;
+    }
+    let rest = rest.trim();
+    if !rest.is_empty() {
+        pieces.push(rest);
+    }
+    pieces
+}
+
+/// `head` 内で最後に現れる文末の直後のバイト位置。
+fn sentence_end(head: &str) -> Option<usize> {
+    head.rfind(['。', '！', '？', '!', '?'])
+        .map(|i| i + head[i..].chars().next().map_or(1, char::len_utf8))
 }
 
 #[cfg(test)]
@@ -408,5 +482,158 @@ mod tests {
         let chunks = chunk_document(node(), 1, &blocks, &ChunkParams::default());
         let leaf = chunks.iter().find(|c| c.kind == ChunkKind::Leaf).unwrap();
         assert_eq!(leaf.searchable_text(), "報告 > 概要\n本文。");
+    }
+
+    /// 実バグの回帰: 空行を持たない議事録 TXT はパーサが 1 段落として返すため、
+    /// 段落境界だけを見る実装では数万文字の leaf が 1 個できていた。
+    #[test]
+    fn single_oversized_paragraph_is_split_into_bounded_leaves() {
+        let body = ("あ".repeat(200) + "。").repeat(50);
+        let blocks = vec![heading(1, "会議録"), para(&body)];
+        let params = ChunkParams {
+            max_leaf_chars: 600,
+            max_parent_chars: 4000,
+        };
+        let chunks = chunk_document(node(), 1, &blocks, &params);
+        let leaves: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.kind == ChunkKind::Leaf)
+            .collect();
+        assert!(leaves.len() > 10, "1 段落でも分割される: {}", leaves.len());
+        for leaf in &leaves {
+            assert!(
+                leaf.content.chars().count() <= params.max_leaf_chars,
+                "leaf が上限超過: {}",
+                leaf.content.chars().count()
+            );
+        }
+        // 本文が欠けていないこと。区切り "\n\n" のぶんだけ増えるので下限で見る。
+        let total: usize = leaves.iter().map(|c| c.content.chars().count()).sum();
+        assert!(
+            total >= body.chars().count(),
+            "本文が落ちている: {total} < {}",
+            body.chars().count()
+        );
+    }
+
+    #[test]
+    fn oversized_paragraph_prefers_sentence_then_newline_boundaries() {
+        assert_eq!(
+            split_oversized("あいう。えおか。きくけ。", 8),
+            vec!["あいう。えおか。", "きくけ。"]
+        );
+        assert_eq!(
+            split_oversized("あいうえお\nかきくけこ\nさし", 7),
+            vec!["あいうえお", "かきくけこ", "さし"]
+        );
+    }
+
+    /// 切れ目が無い（句読点も改行も無い）場合でも必ず上限以下に割れること。
+    /// 全角文字でバイト境界を割らないことも同時に見る。
+    #[test]
+    fn oversized_paragraph_without_boundaries_is_hard_split() {
+        let text = "あ".repeat(1000);
+        let pieces = split_oversized(&text, 300);
+        assert_eq!(pieces.len(), 4);
+        assert!(pieces.iter().all(|p| p.chars().count() <= 300));
+        assert_eq!(pieces.concat().chars().count(), 1000);
+    }
+
+    #[test]
+    fn text_within_limit_is_returned_untouched() {
+        assert_eq!(split_oversized("短い。", 600), vec!["短い。"]);
+    }
+
+    /// 区切り "\n\n" を上限判定に含めていないと leaf が max+2 文字になる回帰。
+    #[test]
+    fn separator_is_counted_against_the_limit() {
+        let half = "あ".repeat(300);
+        let blocks = vec![heading(1, "章"), para(&half), para(&half)];
+        let params = ChunkParams {
+            max_leaf_chars: 600,
+            max_parent_chars: 4000,
+        };
+        let chunks = chunk_document(node(), 1, &blocks, &params);
+        for leaf in chunks.iter().filter(|c| c.kind == ChunkKind::Leaf) {
+            assert!(
+                leaf.content.chars().count() <= params.max_leaf_chars,
+                "leaf が上限超過: {}",
+                leaf.content.chars().count()
+            );
+        }
+    }
+
+    /// 英文は文末記号（。！？）が無いため、空白に落ちないと語の途中で切れる。
+    #[test]
+    fn english_text_splits_at_word_boundaries() {
+        let sentence = "The quick brown fox jumps over the lazy dog. ";
+        let body = sentence.repeat(3);
+        let pieces = split_oversized(&body, 100);
+        for piece in &pieces {
+            assert!(
+                !piece.ends_with(|c: char| c.is_alphanumeric()) || piece.chars().count() <= 100,
+                "語中で切れている: {piece:?}"
+            );
+            // 断片の先頭・末尾が語の断片になっていないこと。
+            assert!(
+                piece.split_whitespace().all(|w| sentence.contains(w)),
+                "語が壊れている: {piece:?}"
+            );
+        }
+    }
+
+    /// 窓の先頭付近にだけ文末がある文書で、1 文字の leaf を作らない。
+    #[test]
+    fn early_sentence_end_does_not_produce_a_tiny_leaf() {
+        let body = "。".to_string() + &"い".repeat(1500);
+        let blocks = vec![heading(1, "章"), para(&body)];
+        let params = ChunkParams {
+            max_leaf_chars: 600,
+            max_parent_chars: 4000,
+        };
+        let chunks = chunk_document(node(), 1, &blocks, &params);
+        for leaf in chunks.iter().filter(|c| c.kind == ChunkKind::Leaf) {
+            assert!(
+                leaf.content.chars().count() > 1,
+                "1 文字の leaf が生成された: {:?}",
+                leaf.content
+            );
+        }
+    }
+
+    /// 文末と改行の両方があるとき、文末が優先されること（優先順位そのものの検証）。
+    #[test]
+    fn sentence_end_wins_over_newline_when_both_are_available() {
+        // 窓内には文末（3 文字目）と改行（6 文字目）の両方があるが、より手前の
+        // 文末で切れる＝改行より文末が優先されている。
+        assert_eq!(
+            split_oversized("あいう。えお\nかきくけこ", 8),
+            vec!["あいう。", "えお\nかきくけこ"]
+        );
+    }
+
+    /// 空・空白のみは断片を生まない（呼び出し側で "\n\n" だけが積まれるのを防ぐ）。
+    #[test]
+    fn blank_input_yields_no_pieces() {
+        assert!(split_oversized("", 600).is_empty());
+        assert!(split_oversized("   ", 600).is_empty());
+        assert!(split_oversized(&" ".repeat(2000), 600).is_empty());
+    }
+
+    /// 切れ目を持たない巨大入力でも線形時間で終わること。
+    ///
+    /// 残り文字数をループ条件で数え直す実装（O(n^2)）だと、この入力は debug ビルドで
+    /// 分単位になる。閾値は環境差を吸収できる大きさに取り、二次オーダだけを検出する。
+    #[test]
+    fn huge_input_without_boundaries_stays_linear() {
+        let body = "あ".repeat(400_000);
+        let started = std::time::Instant::now();
+        let pieces = split_oversized(&body, 600);
+        let elapsed = started.elapsed();
+        assert_eq!(pieces.len(), 400_000 / 600 + 1);
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "分割に時間がかかりすぎ（二次オーダの疑い）: {elapsed:?}"
+        );
     }
 }

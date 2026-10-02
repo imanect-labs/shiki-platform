@@ -125,10 +125,14 @@
   - 既存 `docker compose` に**加えて** k8s マニフェスト/Helm チャートを整備（compose は小規模オンプレ用に維持）。
     `shiki-server` / `sandbox-orchestrator`（特権・別 PodSecurity）/ `ingestion-worker` と、ステートフル依存（Postgres/Qdrant/OpenFGA/Keycloak/MinIO/監視/Langfuse）を Helm 値で構成。
   - 特権サンドボックスのノード隔離（taint/affinity、KVMノード選択）、GPUノードへの推論スケジューリングを values 化。
+  - ステートフル依存の**実行時上限**（Qdrant 等の nofile・メモリ）を values で固定する。
+    既定のままだと文書増で枯渇し、コンテナは `running` のまま意味検索とインジェストが
+    壊れる（[PIT-67](../design-caveats.md)）。compose 側だけ直しても k8s 経路で再発する。
 - **受け入れ条件**:
   - [ ] Helm install でフルスタックが k8s 上に起動する
   - [ ] 特権オーケストレータと推論がノード隔離/GPU指定で配置される
   - [ ] compose と k8s が同一イメージ・同一設定キーで構成される
+  - [ ] ステートフル依存の nofile 等の実行時上限が compose と同値で設定される
 
 ### Task 8.9: 顧客ごと隔離インスタンスのプロビジョニング自動化
 - **area**: infra / **path**: `deploy/helm`, `deploy/provisioning`
