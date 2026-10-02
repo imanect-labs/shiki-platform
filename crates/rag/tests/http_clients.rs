@@ -248,3 +248,73 @@ async fn reranker_short_circuits_on_empty_input() {
     let scores = reranker.rerank(&ctx(), "q", &[]).await.unwrap();
     assert!(scores.is_empty());
 }
+
+/// Qdrant への upsert が点数で分割され、1 リクエストが上限を超えないこと。
+///
+/// 1 リクエストにまとめる実装では、1 文書のチャンク数が数万に達したときに
+/// `serde_json::Value` の中間表現ごとボディが数百 MB になり、Qdrant の上限に
+/// 当たるか、その前に OOM する（PIT-67）。実 Qdrant では再現に数万点が要るため、
+/// ここではスタブサーバで**分割そのもの**を検証する。
+#[tokio::test]
+async fn qdrant_upsert_is_split_into_bounded_requests() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    // 1 リクエストあたりの点数を記録する。
+    let sizes: Arc<std::sync::Mutex<Vec<usize>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (s, c) = (Arc::clone(&sizes), Arc::clone(&calls));
+    let router = Router::new()
+        .route(
+            "/collections/rag_chunks_active/points",
+            axum::routing::put(move |Json(body): Json<serde_json::Value>| {
+                let (s, c) = (Arc::clone(&s), Arc::clone(&c));
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    s.lock()
+                        .unwrap()
+                        .push(body["points"].as_array().unwrap().len());
+                    Json(serde_json::json!({"status": "ok"}))
+                }
+            }),
+        )
+        // ensure_ready が叩く経路（存在確認 → 作成 → alias）。
+        .route(
+            "/collections/{name}",
+            axum::routing::get(|| async { Json(serde_json::json!({"status": "ok"})) }),
+        );
+    let base = serve(router).await;
+
+    let store = rag::QdrantVectorStore::new(reqwest::Client::new(), &base, "test-model");
+    let node = uuid::Uuid::new_v4();
+    let points: Vec<rag::vector_store::ChunkPoint> = (0..600)
+        .map(|i: usize| rag::vector_store::ChunkPoint {
+            chunk_id: uuid::Uuid::new_v5(&node, &i.to_le_bytes()),
+            node_id: node,
+            version: 1,
+            vector: vec![0.1, 0.2, 0.3, 0.4],
+            authz_tags: vec!["file:a-corp|x".into()],
+        })
+        .collect();
+    rag::vector_store::VectorStore::upsert(&store, &ctx(), &points)
+        .await
+        .unwrap();
+
+    let sizes = sizes.lock().unwrap().clone();
+    assert!(
+        calls.load(Ordering::SeqCst) > 1,
+        "分割されていない（1 リクエストで全点を送っている）: {sizes:?}"
+    );
+    assert_eq!(
+        sizes.iter().sum::<usize>(),
+        600,
+        "点が欠けている: {sizes:?}"
+    );
+    // 実装の上限（vector_qdrant.rs の UPSERT_BATCH_POINTS）と同値にする。緩めると
+    // 「分割はしているが 1 回が大きすぎる」実装を見逃す。
+    const MAX_POINTS_PER_REQUEST: usize = 256;
+    assert!(
+        sizes.iter().all(|&n| n <= MAX_POINTS_PER_REQUEST),
+        "1 リクエストの点数が上限を超えている: {sizes:?}"
+    );
+}
