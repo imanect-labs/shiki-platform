@@ -310,8 +310,11 @@ async fn qdrant_upsert_is_split_into_bounded_requests() {
         600,
         "点が欠けている: {sizes:?}"
     );
+    // 実装の上限（vector_qdrant.rs の UPSERT_BATCH_POINTS）と同値にする。緩めると
+    // 「分割はしているが 1 回が大きすぎる」実装を見逃す。
+    const MAX_POINTS_PER_REQUEST: usize = 256;
     assert!(
-        sizes.iter().all(|&n| n <= 1000),
-        "1 リクエストの点数が多すぎる: {sizes:?}"
+        sizes.iter().all(|&n| n <= MAX_POINTS_PER_REQUEST),
+        "1 リクエストの点数が上限を超えている: {sizes:?}"
     );
 }
