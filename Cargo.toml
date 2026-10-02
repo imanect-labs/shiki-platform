@@ -147,6 +147,14 @@ secure-exec-bridge = { path = "vendor/secure-exec/crates/bridge" }
 # 後者 2 つは解読プローブと WASM ビューア）。docs/jtd/fork-policy.md 参照。
 # rjtd-core の依存は cfb 1 つだけで、shiki の依存グラフはほとんど増えない。
 rjtd-core = { path = "vendor/openjtd/rjtd/crates/rjtd-core" }
+# docx（OOXML）の書き出し（crates/jtd）。既定 feature（aes / bzip2 / lzma / zstd / xz）は
+# 落とし、deflate だけにする。
+#
+# zip 2.4 の `deflate` は flate2 と zopfli の合成で、`deflate-flate2` 単体では flate2 の
+# バックエンドが有効にならない（`deflate = ["flate2/rust_backend", "deflate-zopfli",
+# "deflate-flate2"]`）。よって zopfli は依存に入るが、zip が zopfli を選ぶのは圧縮レベル
+# 10 以上のときだけで、我々は既定レベルしか使わないので実行時には通らない。
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # gRPC（sandbox-client 契約・lock 済みの 0.13 系に固定）
 tonic = "0.13"
