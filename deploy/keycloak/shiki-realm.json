@@ -98,7 +98,7 @@
     {
       "clientId": "skillex",
       "name": "skillex service (llm-gateway m2m)",
-      "description": "skillex（外部クライアント）が llm-gateway を machine-to-machine で呼ぶための client（client_credentials・aud=shiki-llm）。テナント group には属さない。詳細は docs/auth/skillex-identity.md。",
+      "description": "skillex（外部クライアント）が llm-gateway を machine-to-machine で呼ぶための client（client_credentials・aud=shiki-llm）。テナント属性は持たない。詳細は docs/auth/skillex-identity.md。",
       "enabled": true,
       "publicClient": false,
       "secret": "skillex-dev-secret",
