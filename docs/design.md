@@ -829,7 +829,7 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
   **整合スナップショット**（バラバラ復元は FGA タプルとファイルがズレて権限事故 → PIT-38）。
 - **データレジデンシ**: 東京リージョン固定を明示。外部 LLM 使用時の越境はモデルカタログの「国外処理」バッジで顧客に明示。
 - **IaC**: `deploy/` に **OpenTofu** で GCP を記述。**cell=モジュールのインスタンス化**。
-  「契約→ベンダーコンソールから cell プロビジョニング（CI 経由 tofu apply）→ Keycloak realm・DNS・初期管理者招待」
+  「契約→ベンダーコンソールから cell プロビジョニング（CI 経由 tofu apply）→ Keycloak group（テナント単位・realm は全テナント共有の `shiki`）・DNS・初期管理者招待」
   まで自動化（リリースブロッカー扱い）。オンプレは compose/k8s のまま。
 - **API レート制限**: テナント単位。workflow-engine のトークンバケット（Redis）を API 面にも適用。
 
