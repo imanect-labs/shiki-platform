@@ -2,8 +2,8 @@
 //!
 //! BFF 化により `Authorization: Bearer` 入口は撤去した（docs/auth/browser-token-strategy.md /
 //! roadmap phase-0 Task 0.11）。本モジュールは BFF callback での token 交換後検証など、
-//! サーバ側が受領したトークンの検証に再利用される。内部/サービス間（skillex 等）の
-//! ステートレス JWT 検証もここを通る。
+//! サーバ側が受領したトークンの検証に再利用される。外部クライアント（skillex）の m2m トークン
+//! （`aud=shiki-llm`）はここを通らない（`auth.audience` で拒否される。受け口は roadmap SK.8）。
 
 use jsonwebtoken::{Algorithm, Validation};
 

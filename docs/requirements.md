@@ -49,14 +49,14 @@ shiki は **LLMチャットとストレージを核とするエンタープラ�
 > 残る連携は **skillex → shiki llm-gateway の machine-to-machine 呼び出しのみ**（design §4.1.1 / §4.5）。
 
 - **ユーザー認証は SaaS でも分離**: shiki の Keycloak realm `shiki` は **shiki ユーザー専用**
-  （単一 realm・テナントは Keycloak group で識別＝SAAS.2 のまま）。skillex は SaaS/オンプレとも
+  （単一 realm・テナントはユーザー属性 `tenant`／org は group＝SAAS.2 のまま）。skillex は SaaS/オンプレとも
   **自前の専用 Keycloak（別インスタンス）**を持つ（skillex 側の関心事）。User・Org・メンバー招待・
   サービスアクセス権・管理画面を両サービスで共有しない。
 - **llm-gateway = 全社共通 LLM ゲートウェイ**: skillex はその**最初の外部クライアント**。
   shiki-server が同一バイナリで**外部クライアント向け LLM API**（OpenAI 互換を想定・形は実装タスクで確定）を公開し、
   会計・監査・Langfuse・認可のチョークポイントは内部利用と同じ経路を通す（llm-gateway は in-process のまま）。
-- **認証は OAuth2 client_credentials**: realm `shiki` の client `skillex`（service account・**どのテナント group にも属さない**
-  ＝テナントデータに到達不能）が `aud=shiki-llm` のトークンを取得。ゲートウェイは `iss`/`aud`/`azp` を厳密検証し、
+- **認証は OAuth2 client_credentials**: realm `shiki` の client `skillex`（service account・**テナント属性を持たず**、
+  外部クライアント API は通常のテナント解決を使わない）が `aud=shiki-llm` のトークンを取得。ゲートウェイは `iss`/`aud`/`azp` を厳密検証し、
   **shiki の通常ユーザー API はこの m2m トークンを拒否**する（confused-deputy 防御）。契約は `docs/auth/skillex-identity.md`。
 - **会計は外部クライアント別の名前空間**（`azp` をキー）で計測する。消費側は自分の org id を**会計ラベルとしてのみ**渡せる
   （認可根拠には使わない）。skillex の LLM 利用は**製品間の内部原価精算**であり、顧客への統一請求は行わない

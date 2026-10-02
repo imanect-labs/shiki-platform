@@ -195,7 +195,7 @@ flowchart LR
 > 理由は運用負荷と、shiki・skillex の顧客が重ならないこと。経緯と旧リスクは [PIT-26〜29](./design-caveats.md)（各項に更新注記）。
 
 - **shiki 自身の SaaS コントロールプレーン**（skillex とは共有しない）: Keycloak realm `shiki`（**shiki ユーザー専用**・
-  単一 realm・テナントは Keycloak group で識別＝SAAS.2）、テナント・プロビジョニング（SAAS.2 の admin プレーン）、
+  単一 realm・テナントはユーザー属性 `tenant`／org は group＝SAAS.2）、テナント・プロビジョニング（SAAS.2 の admin プレーン）、
   ベンダーコンソール（§4.12）、Stripe 課金（SAAS.3）。オンプレはこれを積まず、AuthN をローカル Keycloak へ向ける（設定差し替え）。
   データプレーン側のテナント分離は §4.1「authz のテナント分離」（SAAS.1）を参照。
 - **ユーザー認証は SaaS でも分離**: skillex は SaaS/オンプレとも**自前の専用 Keycloak（別インスタンス）**を持つ（skillex 側の関心事）。
@@ -211,7 +211,7 @@ flowchart LR
 ```
 
 - **認証**: realm `shiki` の client `skillex`（confidential・service account）で OAuth2 client_credentials。
-  service account は**どのテナント group にも属さない**ため、テナントデータに到達する経路が無い。
+  service account は**テナント属性（`tenant` claim）を持たない**。ただしテナント解決は claim だけで決まらない（single テナンシーでは設定値で固定される）ため、外部クライアント API は通常の `AuthContext` テナント解決を**使わず**、外部クライアント用の予約名前空間に固定する（SK.8）。
   ゲートウェイは `iss`/`aud`（`shiki-llm`）/`azp` を**厳密検証**し、**shiki の通常ユーザー API はこの m2m トークンを拒否**する
   （confused-deputy 防御・[PIT-27](./design-caveats.md)）。契約は [docs/auth/skillex-identity.md](./auth/skillex-identity.md)。
 - **会計**: 外部クライアントは**クライアント別の名前空間**（`azp` をキー）で計測。消費側が渡す自社 org id は
@@ -425,7 +425,7 @@ flowchart LR
   skill のモデル既定（FR-7）もここに整合。
 - **思考強度の正規化**: `effort: low/medium/high` を内部正規形に持ち、各アダプタが reasoning budget /
   thinking tokens に翻訳。UI は3段階セレクタのみ（プロバイダ固有ノブは晒さない）。
-- `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。
+- `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。外部クライアント向け API も同一プロセスで公開し、別サービス化は §4.1.1 の条件（3 つ目の消費者）で再検討する。
 - **外部クライアント向け LLM API（全社共通ゲートウェイ・§4.1.1・2026-09-29 決定）**: skillex 等の社内他製品向けに、
   shiki-server が**同一バイナリで** LLM API を公開する（OpenAI 互換を想定。パス・形は実装タスク〔parallel-tracks SK.8〕で確定）。
   会計・監査・Langfuse・認可のチョークポイントは内部利用と**同じ経路**を通す（外部用の別経路を作らない）。
@@ -829,7 +829,7 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
   **整合スナップショット**（バラバラ復元は FGA タプルとファイルがズレて権限事故 → PIT-38）。
 - **データレジデンシ**: 東京リージョン固定を明示。外部 LLM 使用時の越境はモデルカタログの「国外処理」バッジで顧客に明示。
 - **IaC**: `deploy/` に **OpenTofu** で GCP を記述。**cell=モジュールのインスタンス化**。
-  「契約→ベンダーコンソールから cell プロビジョニング（CI 経由 tofu apply）→ Keycloak group（テナント単位・realm は全テナント共有の `shiki`）・DNS・初期管理者招待」
+  「契約→ベンダーコンソールから cell プロビジョニング（CI 経由 tofu apply）→ Keycloak realm・DNS・初期管理者招待」
   まで自動化（リリースブロッカー扱い）。オンプレは compose/k8s のまま。
 - **API レート制限**: テナント単位。workflow-engine のトークンバケット（Redis）を API 面にも適用。
 

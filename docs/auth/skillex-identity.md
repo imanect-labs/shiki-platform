@@ -26,7 +26,7 @@
 （`contracts/` 作成時にそちらへ切り出す。`contracts/` は外部 LLM API 仕様＋本契約＋後方互換ポリシのみを持つ）。
 
 - client_id: `skillex`（confidential、`serviceAccountsEnabled=true`）。
-  service account は**どのテナント group にも属さない**＝テナントデータに到達する経路が無い。
+  service account は**テナント属性（`tenant` claim）を持たない**。ただしテナント解決は claim だけで決まらない（single テナンシーでは設定値で固定される）ため、外部クライアント API は通常の `AuthContext` テナント解決を**使わず**、外部クライアント用の予約名前空間に固定する（SK.8）。
 - 取得方法（machine-to-machine）: OAuth2 client_credentials grant。
   - エンドポイント: `POST {issuer}/protocol/openid-connect/token`
   - パラメータ: `grant_type=client_credentials`, `client_id=skillex`, `client_secret=<secret>`
@@ -38,12 +38,13 @@
 - **検証側（shiki）の義務**:
   - 外部クライアント LLM API は `iss`/`aud`/`azp` を**厳密検証**し、登録済み外部クライアントの `azp` のみ受理する。
   - **shiki の通常ユーザー API はこの m2m トークンを拒否**する（confused-deputy 防御・PIT-27）。
-    通常 API の access token 検証は `aud=shiki-api` を必須にしている（`crates/api/src/middleware/auth.rs`）。
+    現行の通常ユーザー API は BFF のセッション Cookie のみで **Bearer 入口を持たない**。Bearer JWT を検証する `/admin/*` と
+    BFF callback は `auth.audience`（既定 `shiki-api`）を必須にしている（`crates/api/src/middleware/auth.rs`）。
 - **会計**: 外部クライアントは `azp` をキーにした別名前空間で計測する。skillex が渡す自社 org id は
   **会計ラベルとしてのみ**扱い、認可根拠にしない。skillex 分は製品間の内部原価精算（顧客への統一請求はしない）。
 - ユーザー委譲（skillex のユーザー代理で shiki を叩く）は**想定しない**。必要になったら別途 human 判断とする。
 
-## 検証（Phase 0 受け入れ・CI `ci.yml` の compose smoke でも確認）
+## 検証（Phase 0 受け入れ。CI `ci.yml` の compose smoke は `aud` に `shiki-llm` が含まれることを assert）
 
 `docker compose up` 後、client_credentials でアクセストークンを取得し `aud` を確認する:
 

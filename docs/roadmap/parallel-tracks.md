@@ -63,11 +63,11 @@
 - **2026-09-29**: 旧「共有 realm 設計＋skillex を同一 realm へフェデレート」から、**外部クライアントの client 登録のみ**に縮小。
 - **仕様**:
   - realm `shiki` に外部クライアント用の confidential client（service account）を登録する（最初は `skillex`）。
-  - service account は**どのテナント group にも属さない**（テナントデータへ到達不能）。
+  - service account は**テナント属性（`tenant` claim）を持たない**。外部クライアント API は通常のテナント解決を使わない（SK.8）。
   - `aud=shiki-llm` を audience mapper で付与する。ユーザーフェデレーションは行わない。
 - **受け入れ条件**:
   - [x] `skillex` client が realm に登録され、client_credentials で `aud=shiki-llm` のトークンを取得できる（CI compose smoke）
-  - [ ] service account がテナント group に属さないことが確認・文書化される
+  - [ ] service account がテナント属性を持たないことが確認・文書化される
 
 ### Task SK.2: 外部クライアント用 m2m トークン（一般化）
 - **area**: auth / **path**: `crates/api`, `crates/auth`
@@ -97,6 +97,8 @@
 - **仕様**:
   - 外部クライアントによる LLM API 呼び出しを `azp` 付きで監査ログに記録し、shiki の監査と突合可能にする。
   - client secret / 署名鍵のローテーション手順、失効（client 無効化・secret 再発行）を整備する。
+  - Keycloak の client 無効化だけでは発行済み JWT が exp まで有効（realm 既定 `accessTokenLifespan` 1800 秒）なため、
+    ゲートウェイ側に**取り消し可能な登録 `azp` 許可リスト**をリクエスト毎に照合し、m2m トークンの TTL を短くする。
 - **受け入れ条件**:
   - [ ] 外部クライアントの呼び出しが `azp` 付きで監査ログに残る
   - [ ] client secret/鍵のローテーション手順が文書化・実行できる
@@ -122,6 +124,9 @@
   - 会計・監査・Langfuse・認可のチョークポイントは**内部利用と同じ経路**を通す（外部用の別経路を作らない）。
   - 会計は `azp` をキーにした**外部クライアント別名前空間**。消費側が渡す自社 org id は**会計ラベルのみ**（認可根拠にしない）。
   - `contracts/` を作成し、外部 LLM API 仕様＋m2m トークン契約（issuer・`aud`・`azp`・scope）＋後方互換ポリシを置く。
+  - **要 human 判断（着手前）**: m2m 呼び出しの `AuthContext { principal, org, tenant_id }` の作り方。llm-gateway の会計は
+    `tenant_id`＋`org` を必須カラムとし（§4.5）、`tenant_id` が落ちる経路は作らない不変条件がある。案: 予約名前空間
+    `tenant_id = "ext:<azp>"`・`org` = 消費側ラベル。外部クライアントに適用するモデルカタログ（許可モデル・単価）も併せて決める。
 - **受け入れ条件**:
   - [ ] skillex の m2m トークンで外部クライアント LLM API から推論できる
   - [ ] 呼び出しが `azp` 別に会計され、テナントの会計（SAAS.3）と混ざらない
@@ -316,7 +321,7 @@
 - **経緯**: 旧 SK.6（共有コントロールプレーン）のうち、skillex と無関係な **shiki 自身の SaaS 機能**を移管。
   サービスアクセス権・統一シェル／マイクロフロントエンド合成は廃止（管理画面は Phase 12 の通常ページ）。
 - **仕様**:
-  - テナント管理者によるメンバー招待（メール招待→テナント参加）。realm `shiki`（単一 realm・テナント=Keycloak group）の上で行う。
+  - テナント管理者によるメンバー招待（メール招待→テナント参加）。realm `shiki`（単一 realm・テナント=ユーザー属性 `tenant`／org=group）の上で行う。
   - 本番のグループ完全同期（SCIM 等）。現状はログイン時の diff 同期（#89・次ログインで剥奪）のみ。
   - オンプレ（シングルテナント）でも同じ経路で動く（本体を分岐させない）。
 - **受け入れ条件**:
