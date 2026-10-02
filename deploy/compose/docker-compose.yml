@@ -156,6 +156,16 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.12.5
+    # Docker 既定の nofile ソフト上限（1024）では、文書が増えて RocksDB のセグメントが
+    # 育つと必ず枯渇する。枯渇すると Qdrant は接続の受付にも書き込みの flush にも失敗するが、
+    # コンテナは running のままなので気づきにくい。既定の hybrid 検索は try_join で
+    # dense と keyword を待つため丸ごと失敗し、SearchMode::Keyword だけが生き残る
+    # （Tantivy で完結し Qdrant を触らないため）。インジェスト側は upsert 失敗として
+    # リトライののち DLQ に落ちる。
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - qdrant-data:/qdrant/storage
     ports:
