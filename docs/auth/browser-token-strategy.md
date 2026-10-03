@@ -71,7 +71,7 @@
 - **ブラウザ ⇄ api**: `httpOnly` + `Secure` + `SameSite=Lax/Strict` の**不透明セッション Cookie** のみ。トークンは一切ブラウザに置かない。
 - **api（BFF 役）**: OIDC Authorization Code + PKCE の **code 受け／token 交換をサーバ側**で実施し、OIDC token をセッションストアに保管。リクエストごとに Cookie → セッション → `Principal` を復元。
 - **トークン更新（refresh）**: BFF が **refresh token をサーバ側のみで保持**し、access token の期限前にローテーション更新する。セッション Cookie の TTL が Keycloak access token より長い通常運用で、Redis 上の access token 失効により **downstream の JWT/token-exchange だけが 401**（ブラウザはログイン済みなのに内部呼び出しが失敗）になるのを防ぐ。リフレッシュ失敗（refresh も失効）時はセッションを破棄して再ログインへ誘導。
-- **api ⇄ 内部/サービス間（skillex 等）**: 従来どおり JWT / token-exchange。**ここは無変更**。
+- **api ⇄ 内部/サービス間**: 従来どおり JWT / token-exchange。**ここは無変更**。外部クライアント（skillex）は client_credentials の m2m JWT のみ（token-exchange は使わない）。
 - **失効**: サーバ側セッション削除で**セッション/プリンシパル単位**を即時失効。**個別リソースの共有解除（Task 1.6）は OpenFGA のリクエスト毎チェック＋PIT-11 `HIGHER_CONSISTENCY`** が担う（役割分担を混同しない）。
 - **CSRF**: `SameSite` ＋ CSRF トークン（double-submit）。
 
@@ -124,10 +124,10 @@ phase-9 Task 9.6 の「BFF（`crates/app-gateway`）」は**ミニアプリ用�
 
 ## 6. skillex 連携への影響（軽め調査）
 
-- skillex は **server-to-server（client_credentials）**でトークンを取得し、`aud=shiki-llm` で shiki の DLC/LLM を叩く設計（`docs/auth/skillex-identity.md`、`deploy/keycloak/shiki-realm.json` の `skillex` client、CI `ci.yml` で検証済み）。**ユーザーのブラウザを経由しない**。
+- skillex は **server-to-server（client_credentials）**でトークンを取得し、`aud=shiki-llm` で shiki の llm-gateway（外部クライアント向け LLM API・未実装＝parallel-tracks SK.8）を叩く設計（`docs/auth/skillex-identity.md`、`deploy/keycloak/shiki-realm.json` の `skillex` client、トークン取得は CI `ci.yml` で検証済み）。**ユーザーのブラウザを経由しない**。
 - したがって **BFF 化の skillex への直接影響はほぼ無い**。skillex のトークン取得経路・`aud` 束縛・confused-deputy 防御（PIT-27）は不変。
-- 唯一の注意: ブラウザが `aud` を検証する余地は元々無いので、`aud`/`scope` 厳密検証の責務は引き続き **api／サービス側**にある（PIT-27 のまま）。BFF 化でこの結論は変わらない。
-- skillex web app 自身の OIDC ログイン（roadmap SK.4）は共有 realm へのログインであり、shiki 側 BFF 化とは独立。
+- 唯一の注意: ブラウザが `aud` を検証する余地は元々無いので、`aud`/`azp` 厳密検証の責務は引き続き **api／サービス側**にある（PIT-27 のまま）。BFF 化でこの結論は変わらない。
+- **2026-09-29 更新**: ユーザー認証の共有は廃止（旧 roadmap SK.4 も廃止）。skillex web app は**自前の IdP（専用 Keycloak）**へログインし、realm `shiki` を使わないため、shiki 側 BFF 化とは無関係。
 
 ---
 

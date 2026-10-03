@@ -2,7 +2,7 @@
 
 > 目的: トレイト境界・認証/認可・**SaaS トポロジ**・配布形態（compose）・型契約・可観測性の土台を**最初に1本通す**。
 > 機能価値はまだ無いが、以降の全フェーズがこの骨格に乗る。
-> **SaaS を優先ターゲット**とし、共有コントロールプレーン＋顧客ごと隔離 cell データプレーン（design §4.1.1）と `tenant_id` を day-1 から前提にする。認証は **BFF + オパークセッション Cookie**（Redis）。
+> **SaaS を優先ターゲット**とし、shiki の SaaS コントロールプレーン＋顧客ごと隔離 cell データプレーン（design §4.1.1）と `tenant_id` を day-1 から前提にする。認証は **BFF + オパークセッション Cookie**（Redis）。
 > 完了の定義(DoD): `docker compose up` 一発で全依存（Redis 含む）が起動し、Keycloak でログインしたユーザーが
 > **セッション Cookie** で OpenFGA 認可される `GET /me`（`tenant_id` スコープ込み）をブラウザから叩けて、その1リクエストが OTel トレースに現れる。
 
@@ -186,6 +186,9 @@
 - **area**: auth
 - **依存**: 0.4
 - **path**: `deploy/keycloak/`, `docs/`
+- ⚠️ **2026-09-29 更新**: 下記の「共有アイデンティティプール」方針は**廃止**（ユーザー認証は SaaS でも分離）。
+  残るのは `skillex` client の client_credentials（`aud=shiki-llm`）による llm-gateway の m2m 利用のみ
+  （design §4.1.1・parallel-tracks SK）。以下は経緯として残す。
 - **仕様**:
   - shiki Keycloak を**共有アイデンティティプール**として設計する方針を確定・文書化
     （skillexはこのrealmへフェデレート、ユーザープール共有、認可は shiki が保持）。

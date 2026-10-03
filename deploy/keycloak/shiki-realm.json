@@ -97,17 +97,16 @@
     },
     {
       "clientId": "skillex",
-      "name": "skillex service (DLC/LLM 利用)",
-      "description": "skillex が shiki 共有 ID プールへフェデレートし、DLC/LLM 利用トークンを得るための client。詳細は docs/auth/skillex-identity.md。",
+      "name": "skillex service (llm-gateway m2m)",
+      "description": "skillex（外部クライアント）が llm-gateway を machine-to-machine で呼ぶための client（client_credentials・aud=shiki-llm）。テナント属性は持たない。詳細は docs/auth/skillex-identity.md。",
       "enabled": true,
       "publicClient": false,
       "secret": "skillex-dev-secret",
       "serviceAccountsEnabled": true,
-      "standardFlowEnabled": true,
+      "fullScopeAllowed": false,
+      "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
-      "redirectUris": [
-        "http://localhost:3100/*"
-      ],
+      "redirectUris": [],
       "protocolMappers": [
         {
           "name": "shiki-llm-audience",

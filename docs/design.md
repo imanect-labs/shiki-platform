@@ -130,8 +130,8 @@ flowchart LR
   ⚠️ **個別リソースの共有解除（Task 1.6）はトークン/セッション形式に依らず OpenFGA のリクエスト毎チェック（＋PIT-11 の `HIGHER_CONSISTENCY`）で担保する**（セッション削除では代替できない・混同しないこと）。
   access token の期限切れに備え、**BFF（`crates/api`）が refresh token をサーバ側で保持・更新・ローテーション**し、downstream への token-exchange を継続させる（ブラウザ上はログイン済みなのに内部呼び出しだけ 401 になるのを防ぐ）。
   CSRF は SameSite ＋ double-submit トークンで防御。Cookie を first-party にするため **web/api は同一オリジン配信**（リバースプロキシ / Next rewrites）を前提とする。
-  SSE は Cookie が自動添付されヘッダ注入が不要になる。ただし **POST で発話を送るチャットストリーム（Task 3.5）は `EventSource` が GET 専用・body 不可のため**、fetch-stream を維持するか「POST で stream を作成 → GET `EventSource` で購読」に分離する。downstream/サービス間（skillex 等）へは引き続き **JWT/token-exchange** で identity を運ぶ（内部はステートレス）。
-  shiki-server の **AuthN 向き先は設定で差し替え**（SaaS=共有コントロールプレーンのissuer / オンプレ=ローカルKeycloak）。
+  SSE は Cookie が自動添付されヘッダ注入が不要になる。ただし **POST で発話を送るチャットストリーム（Task 3.5）は `EventSource` が GET 専用・body 不可のため**、fetch-stream を維持するか「POST で stream を作成 → GET `EventSource` で購読」に分離する。downstream/サービス間へは引き続き **JWT/token-exchange** で identity を運ぶ（内部はステートレス）。外部クライアント（skillex）→ llm-gateway の m2m 呼び出しも **JWT（client_credentials・§4.1.1）** で受け、BFF セッションは使わない。
+  shiki-server の **AuthN 向き先は設定で差し替え**（SaaS=shiki の SaaS コントロールプレーンの Keycloak realm `shiki` の issuer / オンプレ=ローカルKeycloak）。
   > 経緯と比較・影響範囲は [design-caveats PIT-30](./design-caveats.md) / [docs/auth/browser-token-strategy.md](./auth/browser-token-strategy.md) を参照。
 - **AuthZ = ReBAC（OpenFGA/SpiceDB）**: タプル `object#relation@subject` で表現。
 
@@ -188,44 +188,38 @@ flowchart LR
   **インスタンス単位の実認可は依然 OpenFGA（ReBAC）＋行レベル ABAC 述語**で行う（語彙の型安全 ≠ 認可判定）。
   RBAC のロール×権限表をコアにはしない（ロール階層・個別共有で RBAC ロールが爆発するため／ReBAC維持）。
 
-#### 4.1.1 マルチサービス境界（shiki × skillex）— SaaS版のみ
+#### 4.1.1 SaaS コントロールプレーンと外部クライアント境界（skillex）
 
-統一は **SaaS版限定**。オンプレは shiki・skillex とも認証基盤を切り離し単独運用（外部依存ゼロ）。
+> **2026-09-29 決定（human）**: 旧「マルチサービス境界（shiki × skillex の共有コントロールプレーン）」
+> ——User 統一・サービスアクセス権（入場券/管理者バッジ）統一・統一請求・統一シェル＋マイクロフロントエンドの管理画面——は**廃止**。
+> 理由は運用負荷と、shiki・skillex の顧客が重ならないこと。経緯と旧リスクは [PIT-26〜29](./design-caveats.md)（各項に更新注記）。
 
-> ⚠️ 共有プレーンが全顧客・両サービスの blast radius になる点、aud/scope の厳密束縛と失効伝播、
-> 利用量＝金額クリティカルの整合、「設定差し替えだけでオンプレ化」の過大主張は [PIT-26〜29](./design-caveats.md)。
+- **shiki 自身の SaaS コントロールプレーン**（skillex とは共有しない）: Keycloak realm `shiki`（**shiki ユーザー専用**・
+  単一 realm・テナントはユーザー属性 `tenant`／org は group＝SAAS.2）、テナント・プロビジョニング（SAAS.2 の admin プレーン）、
+  ベンダーコンソール（§4.12）、Stripe 課金（SAAS.3）。オンプレはこれを積まず、AuthN をローカル Keycloak へ向ける（設定差し替え）。
+  データプレーン側のテナント分離は §4.1「authz のテナント分離」（SAAS.1）を参照。
+- **ユーザー認証は SaaS でも分離**: skillex は SaaS/オンプレとも**自前の専用 Keycloak（別インスタンス）**を持つ（skillex 側の関心事）。
+  shiki の realm に skillex ユーザーは存在しない。
+- **残る結合は skillex → llm-gateway の machine-to-machine のみ**。llm-gateway は**全社共通 LLM ゲートウェイ**と位置づけ、
+  skillex はその最初の外部クライアント（外部クライアント向け API は §4.5）。
 
 ```mermaid
-flowchart TB
-  subgraph CP["共有コントロールプレーン (SaaS専用 / shiki repo所有 / マルチテナント)"]
-    KC[Keycloak<br/>User=統一]
-    ORGB[Org・Member・サービスアクセス権<br/>＋請求＋管理ダッシュボード=統一]
-  end
-  subgraph SHIKI["shiki データプレーン (顧客ごと隔離セル)"]
-    SAUTHZ[ReBAC/ロール/設定=分離]
-    SMETER[LLM利用量計測=分離]
-  end
-  subgraph SKILLEX["skillex データプレーン"]
-    KAUTHZ[訓練/DLC権限/設定=分離]
-    KMETER[DLC/LLM利用量計測=分離]
-  end
-  KC -->|OIDC| SHIKI
-  KC -->|OIDC| SKILLEX
-  ORGB -->|サービスアクセス権参照| SHIKI
-  ORGB -->|サービスアクセス権参照| SKILLEX
-  SMETER -->|集約使用量のみ| ORGB
-  KMETER -->|集約使用量のみ| ORGB
+flowchart LR
+  SKX[skillex バックエンド<br/>自前 Keycloak] -->|client_credentials<br/>aud=shiki-llm| KC[Keycloak realm shiki<br/>client skillex]
+  SKX -->|Bearer m2m トークン| EXT[shiki-server<br/>外部クライアント LLM API]
+  EXT --> GW[llm-gateway in-process<br/>会計・監査・Langfuse・認可]
 ```
 
-- **3層境界**: ①User=統一 ②サービスへの入場券＋管理者バッジ=統一 ③館内ルール（細かい認可/設定）=分離。
-- **サービスロール付与**は `利用可否＋サービス管理者か` の粗い粒度のみ。細かい権限は各サービス内。
-- **請求=統一（Org単位1請求・サービス別内訳）／利用量=分離（集約値のみ請求へ・クォータ強制は各サービス）**。
-- **オンプレ**: 共有プレーンを積まず、`shiki-server` の AuthN をローカルKeycloakへ向ける（設定差し替え）。
-- **契約の正本 = shiki repo `contracts/`**: skillex（別リポ）が参照する OIDC設定・サービスアクセス権API・
-  利用量集約イベント・トークンの aud/scope の正本を公開し、skillex が取り込む（バージョン管理＋後方互換ポリシ）。
-- **管理画面はUIのみ統一・データ分離**: SaaSは統一シェル（共有ページ）＋各サービス設定ページをマイクロフロントエンドで合成。
-  各ページは自サービスのAPI/ストアを叩き authz・設定データは分離。各ページは「シェル埋め込み／単独」両対応の自己完結モジュール
-  （オンプレは単独管理画面として動作）。
+- **認証**: realm `shiki` の client `skillex`（confidential・service account）で OAuth2 client_credentials。
+  service account は**テナント属性（`tenant` claim）を持たない**。ただしテナント解決は claim だけで決まらない（single テナンシーでは設定値で固定される）ため、外部クライアント API は通常の `AuthContext` テナント解決を**使わず**、外部クライアント用の予約名前空間に固定する（SK.8）。
+  ゲートウェイは `iss`/`aud`（`shiki-llm`）/`azp` を**厳密検証**し、**shiki の通常ユーザー API はこの m2m トークンを拒否**する
+  （confused-deputy 防御・[PIT-27](./design-caveats.md)）。契約は [docs/auth/skillex-identity.md](./auth/skillex-identity.md)。
+- **会計**: 外部クライアントは**クライアント別の名前空間**（`azp` をキー）で計測。消費側が渡す自社 org id は
+  **会計ラベルとしてのみ**扱い、認可根拠にしない。skillex 分は製品間の内部原価精算（統一請求はしない）。
+- **オンプレ**: 対象外（skillex オンプレは自前のローカル vLLM を使う）。
+- **契約の正本 = shiki repo `contracts/`**（未作成）: 外部 LLM API 仕様＋m2m トークン契約（issuer・`aud`・`azp`・scope）＋
+  後方互換ポリシのみ。skillex（別リポ）が取り込む。
+- llm-gateway の**別サービス化は 3 つ目の消費者が現れるまで保留**（それまでは §4.5 の in-process のまま）。
 
 ### 4.2 ストレージ（3層分離 ＋ FUSE）
 
@@ -431,7 +425,13 @@ flowchart LR
   skill のモデル既定（FR-7）もここに整合。
 - **思考強度の正規化**: `effort: low/medium/high` を内部正規形に持ち、各アダプタが reasoning budget /
   thinking tokens に翻訳。UI は3段階セレクタのみ（プロバイダ固有ノブは晒さない）。
-- `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。
+- `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。外部クライアント向け API も同一プロセスで公開し、別サービス化は §4.1.1 の条件（3 つ目の消費者）で再検討する。
+- **外部クライアント向け LLM API（全社共通ゲートウェイ・§4.1.1・2026-09-29 決定）**: skillex 等の社内他製品向けに、
+  shiki-server が**同一バイナリで** LLM API を公開する（OpenAI 互換を想定。パス・形は実装タスク〔parallel-tracks SK.8〕で確定）。
+  会計・監査・Langfuse・認可のチョークポイントは内部利用と**同じ経路**を通す（外部用の別経路を作らない）。
+  認証は realm `shiki` の client_credentials トークン（`aud=shiki-llm`・`iss`/`aud`/`azp` 厳密検証）、
+  会計は `azp` をキーにした**外部クライアント別名前空間**（消費側の org id は会計ラベルのみ・認可根拠にしない）。
+  ⚠️ **未実装**: 現時点で `aud=shiki-llm` のトークンを受け付けるエンドポイントは `crates/` に存在しない。
 - **トークン会計は `tenant_id` + `org` スコープで day-1 から刻む（SAAS.3 課金の集計元・#91）**:
   計測レコード（prompt/completion tokens・model・cost・trace_id）に `tenant_id` + `org` を**必須カラム**とし、
   監査ハッシュチェーンが `tenant_id|org` で直列化・スコープする前例に倣う。金額クリティカル
@@ -804,7 +804,7 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
 ### 4.12 SaaS 運用面（アルファ必須）
 
 - **フィードバック（テナント境界を跨ぐ唯一のデータフロー）**: 二段構え。
-  ①既定=メタデータのみ（評価＋カテゴリ＋run_id/trace_id・**会話本文なし**）を共有コントロールプレーンの
+  ①既定=メタデータのみ（評価＋カテゴリ＋run_id/trace_id・**会話本文なし**）を shiki の SaaS コントロールプレーンの
   feedback ストアへ。ベンダー側は Langfuse/監査と trace_id 突合（本文は見えない）。
   ②内容の共有（本文添付・**自由記述コメントも同格の「顧客コンテンツ」として扱う**。コメント欄に会話の抜粋を
   貼れば本文添付と同じため）=報告ダイアログでのユーザー明示同意時のみ。さらに**組織管理者ポリシーで禁止可能**
@@ -814,10 +814,10 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
   ①ヘルプセンター UI ②**RAG 組み込み知識スコープ「shiki-help」**（全テナント同梱・事前インデックス・テナントデータと別イン
   デックス）の両面に出す。チャットの doc_search が help コーパスに当たり「できること」の質問に答える。
 - **管理ダッシュボードは2枚**:
-  ①**顧客管理者**（統一シェル＋マイクロフロントエンドの既存設計）: メンバー/ロール・モデルカタログ/予算・
+  ①**顧客管理者**（shiki web の通常ページ。SaaS/オンプレ共通）: メンバー/ロール・モデルカタログ/予算・
   使用量（org/ユーザー/アプリ/ワークフロー別）・監査ビューア＋エクスポート・**同意/委譲の一覧/棚卸し/失効**
   （ワークフロー委譲・skill インストール・secret 利用）・プラン/請求（Stripe ポータル）・組織ポリシー。
-  ②**ベンダーコンソール**（共有コントロールプレーンの新モジュール・Imanect 専用）: テナントライフサイクル
+  ②**ベンダーコンソール**（shiki の SaaS コントロールプレーン〔§4.1.1〕のモジュール・Imanect 専用）: テナントライフサイクル
   （cell プロビジョニング/停止/解約）・プラン/サブスク・テナント別機能フラグ・全テナント横断の**集約**使用量/SLO/ヘルス
   （顧客データ本文には構造的に到達不能）。
   サポートアクセスは **break-glass 方式のみ**: 顧客管理者の明示許可→時限→全操作監査→顧客画面にバナー。
