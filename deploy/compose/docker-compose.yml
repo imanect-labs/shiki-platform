@@ -150,11 +150,14 @@ services:
   #   * **path-style のみ**。`RUSTFS_SERVER_DOMAINS` 未設定だと
   #     virtual-hosted-style は通らない。shiki 側は既に
   #     `force_path_style(true)` なので問題ない
-  #   * **API の CORS は env で設定しない。** MinIO の
-  #     `MINIO_API_CORS_ALLOW_ORIGIN` に相当する設定は無く、代わりに S3 の
-  #     `PutBucketCors` に対応している。shiki は元々 `put_bucket_cors` で
-  #     設定しているのでこちらが正しい経路 (presigned PUT の
-  #     Access-Control-Allow-Origin と OPTIONS preflight も実測で通る)
+  #   * **サーバ側 CORS の env が無い。** MinIO の
+  #     `MINIO_API_CORS_ALLOW_ORIGIN` に相当する設定は存在せず、S3 の
+  #     `PutBucketCors` だけに対応している。
+  #     **ここを取り違えると Drive のアップロードが壊れる。** shiki の
+  #     `put_bucket_cors` は `storage.s3.cors_allowed_origins` が空でないときだけ
+  #     呼ばれる実装で、compose はこれを設定していなかった。つまりブラウザ直
+  #     PUT は MinIO のサーバ側 CORS だけで成立していた。RustFS では
+  #     `SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS` を明示する (下記)
   #   * **オンディスク形式は MinIO と非互換。** 既存環境を移すときは
   #     ボリュームを使い回さず S3 レベルでオブジェクトをコピーすること
   rustfs:
@@ -509,6 +512,11 @@ services:
       SHIKI__TELEMETRY__OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
       SHIKI__TELEMETRY__SERVICE_NAME: shiki-server
       SHIKI__TELEMETRY__LOG_FORMAT: json
+      # **`s3` は enum 改名後のバイナリでしか読めない。** 旧バイナリのイメージが
+      # 残っている環境で compose だけ更新して `up -d`（`--build` 無し）すると
+      #   unknown variant: found `s3`, expected `minio` or `gcs`
+      # で起動ループする（実際に踏んだ）。compose を更新したらイメージも作り直すこと。
+      # 逆方向（新バイナリが旧 `minio` を読む）は serde alias で通る。
       SHIKI__STORAGE__BACKEND: s3
       # server→ストア は内部ホスト、presigned URL はブラウザ到達可能ホストで署名する。
       SHIKI__STORAGE__S3__INTERNAL_ENDPOINT: http://rustfs:9000
@@ -516,8 +524,20 @@ services:
       SHIKI__STORAGE__S3__BUCKET: ${SHIKI__STORAGE__S3__BUCKET:-shiki-blobs}
       SHIKI__STORAGE__S3__ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-minioadmin}
       SHIKI__STORAGE__S3__SECRET_KEY: ${RUSTFS_SECRET_KEY:-minioadmin}
-      # ブラウザ直 PUT/GET（別オリジン）にはバケット CORS が要る。Drive UI（1.10）導入時に
-      # config/TOML で storage.s3.cors_allowed_origins を配列指定する（env スカラは Vec に展開できない）。
+      # ブラウザ直 PUT/GET（別オリジン）にはバケット CORS が要る。これを設定しないと
+      # `put_bucket_cors` が呼ばれず、Drive のアップロードが CORS で失敗する
+      # （MinIO 時代はサーバ側 env の CORS で代替されていたため露見していなかった）。
+      #
+      # **figment は env 値をブラケット記法で配列として読む。** 以前のコメントは
+      # 「env スカラは Vec に展開できない」としていたが誤りで、実測では
+      #   [a,b] / ["a", "b"] / [*]  → OK
+      #   a,b（裸のカンマ区切り）    → invalid type: expected a sequence
+      # となる。
+      #
+      # 既定は `[*]`。MinIO の `MINIO_API_CORS_ALLOW_ORIGIN: *` と同じ挙動で、
+      # dev/CI の複数オリジン（web :3000・ゲートウェイ :8090）を網羅する。
+      # **本番では配信元オリジンを列挙して絞ること。**
+      SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS: "${SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS:-[*]}"
       SHIKI__VECTOR__BACKEND: qdrant
       # LLM プロバイダ（Phase 3）。既定はオフラインで動く決定的スタブ（API キー不要でフルスタック
       # デモ/CI が回る）。実運用は BACKEND=openai＋BASE_URL＋API_KEY で OpenAI 互換（vLLM 含む）へ。

@@ -315,6 +315,10 @@ export SHIKI__STORAGE__BACKEND=s3
 export SHIKI__STORAGE__S3__INTERNAL_ENDPOINT=http://localhost:${RUSTFS_PORT}
 export SHIKI__STORAGE__S3__PUBLIC_ENDPOINT=http://localhost:${RUSTFS_PORT}
 export SHIKI__STORAGE__S3__BUCKET=shiki-blobs
+# ブラウザ直 PUT/GET のバケット CORS。設定しないと put_bucket_cors が呼ばれず
+# Drive のアップロードが CORS で失敗する（MinIO 時代はサーバ側 env で代替されていた）。
+# figment は env 値をブラケット記法で配列として読む（裸のカンマ区切りは不可）。
+export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS='[*]'
 export SHIKI__STORAGE__S3__ACCESS_KEY=minioadmin
 export SHIKI__STORAGE__S3__SECRET_KEY=minioadmin
 export SHIKI__GATEWAY__ENABLED=true
