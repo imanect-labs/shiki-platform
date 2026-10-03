@@ -31,7 +31,7 @@ pub(crate) async fn wire_storage(
     use api::config::ObjectStoreBackend;
     let (object_store, presign_get_ttl, presign_put_ttl): (Arc<dyn ObjectStore>, _, _) =
         match config.storage.backend {
-            ObjectStoreBackend::Minio => {
+            ObjectStoreBackend::S3 => {
                 let s3 = config
                     .storage
                     .s3
