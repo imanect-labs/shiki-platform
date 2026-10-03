@@ -27,7 +27,7 @@ git diff --stat "$BASE"...HEAD    # 件数がおかしければ base が間違�
 
 ### 2. finder を並列起動する
 
-**4 観点を 1 メッセージで同時に投げる**（`subagent_type: "general-purpose"`）。順に投げると直列化して遅い。
+**4 観点を 1 メッセージで同時に投げる**（`subagent_type: "general-purpose"`・`model: "opus"`）。順に投げると直列化して遅い。
 
 4 体とも完了通知が返るまで待ってから次へ進む。**結果を予測して書かない**（まだ返っていない finder の所見を推測で埋めない）。ユーザに途中経過を聞かれたら「まだ実行中」と答える。
 
@@ -222,7 +222,7 @@ reason: <1〜2 文の根拠。読んだファイルと行を含める>
 
 ## プロンプト
 
-`subagent_type: "general-purpose"`。却下したい指摘ごとに 1 体、並列で投げる。
+`subagent_type: "general-purpose"`・`model: "opus"`。却下したい指摘ごとに 1 体、並列で投げる。
 
 ```
 リポジトリ: <ROOT>

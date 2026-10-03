@@ -104,36 +104,100 @@ else
 fi
 
 # --- 2. 未解消 AI レビュースレッド ---
+# ここは**コミット時刻に関係なく**未解決スレッドを全部出す。3. の「最終コミット後の
+# コメント」だけに頼ると、コミットを重ねた時に古い未対応コメントが判定から外れる。
 echo "== 未解消 AI レビュースレッド =="
-threads=$(gh api graphql -F owner="$OWNER" -F name="$NAME" -F pr="$PR_NUM" -f query='
-  query($owner:String!, $name:String!, $pr:Int!) {
+# ⚠️ `first: N` は最初のページしか返さない。ページングしないと 101 件目以降の未対応スレッドを
+#    見落とし（＝偽の緑）、スレッド内の返信も打ち切られて「返信済みなのに未返信」と誤ってブロックする。
+#    reviewThreads は `--paginate`（$endCursor 変数を宣言すると gh が自動で辿る）で全件取る。
+#    スレッド内の comments は入れ子なので --paginate の対象外。上限に達したら黙って切り詰めず、
+#    fail-closed で exit 2 にする（100 件超の返信が付くスレッドは異常なので、緑を返すより止める）。
+if ! threads_raw=$(gh api graphql --paginate \
+  -F owner="$OWNER" -F name="$NAME" -F pr="$PR_NUM" -f query='
+  query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
     repository(owner:$owner, name:$name) {
       pullRequest(number:$pr) {
-        reviewThreads(first:100) {
+        reviewThreads(first:100, after:$endCursor) {
+          pageInfo { hasNextPage endCursor }
           nodes {
             isResolved
-            comments(first:1) {
-              nodes { author { login } path body }
+            comments(first:100) {
+              pageInfo { hasNextPage }
+              nodes { author { login } path line originalLine body }
             }
           }
         }
       }
     }
-  }' 2>/dev/null || echo '{}')
+  }' 2>&1); then
+  # ⚠️ 取得失敗を空結果に化かさない（`|| echo '{}'` にすると「スレッド無し」＝緑になる）。
+  err "レビュースレッドを取得できませんでした:"
+  printf '%s\n' "$threads_raw" | head -5 >&2
+  exit 2
+fi
 
-unresolved=$(printf '%s' "$threads" | jq -r --argjson bots "$bots_json" '
-  [ .data.repository.pullRequest.reviewThreads.nodes[]?
-    | select(.isResolved == false)
-    | .comments.nodes[0] as $c
-    | select($c.author.login as $a | $bots | index($a))
-    | "  [\($c.author.login)] \($c.path // "-"): \(($c.body // "") | gsub("\n"; " ") | .[0:160])"
-  ] | .[]' 2>/dev/null || true)
+# --paginate はページごとに JSON を 1 個ずつ出すので、slurp して nodes を連結する。
+if ! threads=$(printf '%s' "$threads_raw" \
+  | jq -s '[ .[].data.repository.pullRequest.reviewThreads.nodes[]? ]' 2>&1); then
+  err "レビュースレッドの解析に失敗しました:"
+  printf '%s\n' "$threads" | head -5 >&2
+  exit 2
+fi
 
-if [ -n "$unresolved" ]; then
-  printf '%s\n' "$unresolved"
+truncated=$(printf '%s' "$threads" | jq '[ .[] | select(.comments.pageInfo.hasNextPage) ] | length' 2>/dev/null || echo "?")
+if [ "$truncated" != "0" ]; then
+  err "スレッド内のコメントが上限を超えました（${truncated} 件のスレッドで打ち切り）。判定できません。"
+  err "  review-status.sh の comments(first:100) を増やすか、ページングを実装してください。"
+  exit 2
+fi
+
+# ⚠️ bot ログインの表記が API で違う。REST は `coderabbitai[bot]`、**GraphQL は
+#    `coderabbitai`**（`[bot]` が付かない）。PR_REVIEW_BOTS は REST 表記なので、
+#    そのまま突合すると一致せず、この節が**恒久的に「未解消なし」を返す**。
+#    実際に本スクリプトはこの不一致で、未解決スレッドが 3 件ある PR を緑と報告していた。
+#    比較前に両側の `[bot]` を落として正規化する。
+# ブロックするのは「未解決 **かつ** 人間の返信が 1 件も無い」スレッドだけにする。
+# Codex はスレッドを解決しないため、`isResolved == false` だけでブロックすると
+# 根拠を返信しても永久に緑にならない（恒久ブロック＝ゲートとして使い物にならなくなる）。
+# 返信済みのものは件数だけ出して人の目に残す。
+filter='
+  ($bots | map(sub("\\[bot\\]$"; ""))) as $names
+  | [ .[]?
+      | select(.isResolved == false)
+      | . as $t
+      | $t.comments.nodes[0] as $c
+      | select(($c.author.login // "" | sub("\\[bot\\]$"; "")) as $a | $names | index($a))
+      | ( [ $t.comments.nodes[]
+            | select((.author.login // "" | sub("\\[bot\\]$"; "")) as $a | ($names | index($a)) | not) ]
+          | length ) as $human_replies
+      | select(($human_replies > 0) == ANSWERED)
+      | "  [\($c.author.login)] \($c.path // "-"):\($c.line // $c.originalLine // "-")\n      \(($c.body // "") | gsub("\n"; " ") | .[0:150])"
+    ]'
+
+# ⚠️ jq の失敗を握り潰さない。`2>/dev/null || true` にすると、フィルタの構文誤りや想定外の
+#    JSON 形状で unaddressed が空・answered が 0 になり、**判定していないのに緑**になる。
+if ! unaddressed=$(printf '%s' "$threads" | jq -r --argjson bots "$bots_json" "${filter//ANSWERED/false} | .[]" 2>&1); then
+  err "未対応スレッドの判定に失敗しました（jq）:"
+  printf '%s\n' "$unaddressed" | head -5 >&2
+  exit 2
+fi
+if ! answered=$(printf '%s' "$threads" | jq -r --argjson bots "$bots_json" "${filter//ANSWERED/true} | length" 2>&1); then
+  err "返信済みスレッドの集計に失敗しました（jq）:"
+  printf '%s\n' "$answered" | head -5 >&2
+  exit 2
+fi
+
+if [ -n "$unaddressed" ]; then
+  printf '%s\n' "$unaddressed"
+  echo "  → 対応するか、根拠を返信すること:"
+  echo "     gh api repos/$OWNER/$NAME/pulls/$PR_NUM/comments/<id>/replies -f body=\"...\""
   blocked=1
 else
-  echo "  （未解消なし）"
+  echo "  （未返信のスレッドなし）"
+fi
+if [ "${answered:-0}" -gt 0 ] 2>/dev/null; then
+  echo "  ℹ️  返信済みだが未解決のスレッドが ${answered} 件あります（ブロックしません）。"
+  echo "     bot がスレッドを解決しないだけのことが多いが、返信で議論が終わっているか一度は確認すること。"
 fi
 
 # --- 3. 最終コミットより後に付いた bot コメント（取りこぼし検出） ---
@@ -159,10 +223,17 @@ else
     exit 2
   fi
 
+  # ⚠️ スレッドへの**返信**（`in_reply_to_id` あり）は新規指摘ではない。既存スレッドの続きなので
+  #    2. の未解消スレッド判定が担当する。ここで拾うと、CodeRabbit の
+  #    「修正を確認しました／この指摘は解消されています」という返信を新規指摘として数えて
+  #    恒久的に赤くなる（ACK_MARKERS は付かないことがあるので、マーカー除外だけでは防げない）。
+  #    実例: CodeRabbit は「スレッドを解決できなかったので open のまま。手動で解決して」と
+  #    返信することがあり、この文面にマーカーは無い。
   late_inline=$(printf '%s' "$comments_json" \
     | jq -r --argjson bots "$bots_json" --arg t "$last_commit" --arg ack "$ACK_MARKERS" '
       [ .[]
         | select(.user.login as $a | $bots | index($a))
+        | select(.in_reply_to_id == null)
         | select(.created_at > $t)
         | select((.body // "") | test($ack) | not)
         | "  [\(.created_at)] [\(.user.login)] id=\(.id) \(.path):\(.line // .original_line // "-")\n      \((.body // "") | gsub("\n"; " ") | .[0:200])"

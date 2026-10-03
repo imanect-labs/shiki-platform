@@ -45,7 +45,7 @@ git diff --stat "$(git merge-base "$BASE" HEAD)".."$BASE" -- CLAUDE.md AGENTS.md
 
 ### 3. サブエージェントに委譲する
 
-`subagent_type: "general-purpose"`。プロンプトに書いてよいのは、パス・観点・出力形式だけ。
+`subagent_type: "general-purpose"`・`model: "opus"`。プロンプトに書いてよいのは、パス・観点・出力形式だけ。
 
 ```
 リポジトリ: <ROOT>
