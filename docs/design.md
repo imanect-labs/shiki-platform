@@ -105,7 +105,7 @@ flowchart LR
 
 | トレイト | オンプレ実装 | クラウド実装 |
 |----------|-------------|-------------|
-| `ObjectStore` | MinIO (S3) | GCS |
+| `ObjectStore` | RustFS (S3 互換) | GCS |
 | `VectorStore` | Qdrant（小規模は pgvector） | Qdrant / マネージド |
 | `LlmProvider` | vLLM（ローカル） | Vertex / 外部API / LiteLLM アダプタ（§4.5） |
 | `Sandbox` | wasm（agentos）/ Firecracker（KVM有）/ gVisor | wasm（agentos）/ gVisor / Firecracker（§4.6 3ティア） |

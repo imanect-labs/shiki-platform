@@ -1,5 +1,5 @@
 # shiki-platform — docker compose 一発起動。
-# 依存（Postgres/Keycloak/OpenFGA/MinIO/Qdrant/ingestion-worker）＋ shiki-server。
+# 依存（Postgres/Keycloak/OpenFGA/RustFS/Qdrant/ingestion-worker）＋ shiki-server。
 # `cp .env.example .env && docker compose up --build`。
 #
 # 監視スタック（OTel collector/Tempo/Loki/Prometheus/Grafana）は `observability` profile に
@@ -138,23 +138,50 @@ services:
       timeout: 5s
       retries: 20
 
-  minio:
+  # S3 互換オブジェクトストア。**MinIO から RustFS へ差し替えた。**
+  #
+  # MinIO のコンテナイメージは配布が止まっている。Docker Hub は
+  # `minio/minio` ごと消えており (リポジトリ API が 404)、quay.io は private、
+  # ghcr にも無い。**認証を足しても解決しない。** これが CI の
+  # compose smoke / Web E2E / Coverage を 3 週間止めていた原因 (Issue #490)。
+  #
+  # RustFS は shiki が実際に使う S3 API を満たすことを実測で確認している
+  # (14/14 PASS)。要点は 3 つ:
+  #   * **path-style のみ**。`RUSTFS_SERVER_DOMAINS` 未設定だと
+  #     virtual-hosted-style は通らない。shiki 側は既に
+  #     `force_path_style(true)` なので問題ない
+  #   * **サーバ側 CORS の env が無い。** MinIO の
+  #     `MINIO_API_CORS_ALLOW_ORIGIN` に相当する設定は存在せず、S3 の
+  #     `PutBucketCors` だけに対応している。
+  #     **ここを取り違えると Drive のアップロードが壊れる。** shiki の
+  #     `put_bucket_cors` は `storage.s3.cors_allowed_origins` が空でないときだけ
+  #     呼ばれる実装で、compose はこれを設定していなかった。つまりブラウザ直
+  #     PUT は MinIO のサーバ側 CORS だけで成立していた。RustFS では
+  #     `SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS` を明示する (下記)
+  #   * **オンディスク形式は MinIO と非互換。** 既存環境を移すときは
+  #     ボリュームを使い回さず S3 レベルでオブジェクトをコピーすること
+  rustfs:
     restart: unless-stopped
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    command: server /data --console-address ":9001"
+    image: rustfs/rustfs:1.0.1
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      # ブラウザからの presigned PUT/GET（別オリジン: web → MinIO）を許可する CORS。
-      # Drive UI（Task 1.10）はクライアント直転送のため必須。dev は全オリジン許可。
-      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-*}
+      # **既定値が minioadmin のままなのは意図的。** 結合テストは
+      # STORAGE_TEST_S3_ACCESS_KEY の未設定時フォールバックに同じ文字列を
+      # 持っており (crates/*/tests/*.rs の 10 ファイル)、ここを変えると
+      # 両者がずれて IT が落ちる。dev 用の固定文字列であって MinIO 依存ではない。
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-minioadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-minioadmin}
+      RUSTFS_VOLUMES: /data
+      # コンソール (:9001) は既定で無効。dev では中身を目で見たいので有効化する。
+      RUSTFS_CONSOLE_ENABLE: "true"
     volumes:
-      - minio-data:/data
+      - rustfs-data:/data
     ports:
       - "9000:9000"
       - "9001:9001"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      # `mc` は無い。RustFS は認証不要の /health を持つ (200 を返す)。
+      # S3 のルート `GET /` は認証を要求して 403 を返すため `curl -f` では使えない。
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/health"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -485,15 +512,32 @@ services:
       SHIKI__TELEMETRY__OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
       SHIKI__TELEMETRY__SERVICE_NAME: shiki-server
       SHIKI__TELEMETRY__LOG_FORMAT: json
-      SHIKI__STORAGE__BACKEND: minio
-      # server→MinIO は内部ホスト、presigned URL はブラウザ到達可能ホストで署名する。
-      SHIKI__STORAGE__S3__INTERNAL_ENDPOINT: http://minio:9000
+      # **`s3` は enum 改名後のバイナリでしか読めない。** 旧バイナリのイメージが
+      # 残っている環境で compose だけ更新して `up -d`（`--build` 無し）すると
+      #   unknown variant: found `s3`, expected `minio` or `gcs`
+      # で起動ループする（実際に踏んだ）。compose を更新したらイメージも作り直すこと。
+      # 逆方向（新バイナリが旧 `minio` を読む）は serde alias で通る。
+      SHIKI__STORAGE__BACKEND: s3
+      # server→ストア は内部ホスト、presigned URL はブラウザ到達可能ホストで署名する。
+      SHIKI__STORAGE__S3__INTERNAL_ENDPOINT: http://rustfs:9000
       SHIKI__STORAGE__S3__PUBLIC_ENDPOINT: ${SHIKI__STORAGE__S3__PUBLIC_ENDPOINT:-http://localhost:9000}
       SHIKI__STORAGE__S3__BUCKET: ${SHIKI__STORAGE__S3__BUCKET:-shiki-blobs}
-      SHIKI__STORAGE__S3__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      SHIKI__STORAGE__S3__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      # ブラウザ直 PUT/GET（別オリジン）には MinIO バケット CORS が要る。Drive UI（1.10）導入時に
-      # config/TOML で storage.s3.cors_allowed_origins を配列指定する（env スカラは Vec に展開できない）。
+      SHIKI__STORAGE__S3__ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-minioadmin}
+      SHIKI__STORAGE__S3__SECRET_KEY: ${RUSTFS_SECRET_KEY:-minioadmin}
+      # ブラウザ直 PUT/GET（別オリジン）にはバケット CORS が要る。これを設定しないと
+      # `put_bucket_cors` が呼ばれず、Drive のアップロードが CORS で失敗する
+      # （MinIO 時代はサーバ側 env の CORS で代替されていたため露見していなかった）。
+      #
+      # **figment は env 値をブラケット記法で配列として読む。** 以前のコメントは
+      # 「env スカラは Vec に展開できない」としていたが誤りで、実測では
+      #   [a,b] / ["a", "b"] / [*]  → OK
+      #   a,b（裸のカンマ区切り）    → invalid type: expected a sequence
+      # となる。
+      #
+      # 既定は `[*]`。MinIO の `MINIO_API_CORS_ALLOW_ORIGIN: *` と同じ挙動で、
+      # dev/CI の複数オリジン（web :3000・ゲートウェイ :8090）を網羅する。
+      # **本番では配信元オリジンを列挙して絞ること。**
+      SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS: "${SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS:-[*]}"
       SHIKI__VECTOR__BACKEND: qdrant
       # LLM プロバイダ（Phase 3）。既定はオフラインで動く決定的スタブ（API キー不要でフルスタック
       # デモ/CI が回る）。実運用は BACKEND=openai＋BASE_URL＋API_KEY で OpenAI 互換（vLLM 含む）へ。
@@ -567,7 +611,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
+      rustfs:
         condition: service_healthy
       # qdrant / ingestion-worker には依存しない: 検索・インジェストは遅延接続＋
       # リトライで吸収され、server 単体起動（CI smoke 等）で worker のビルドを
@@ -581,7 +625,7 @@ services:
 
 volumes:
   postgres-data:
-  minio-data:
+  rustfs-data:
   tempo-data:
   qdrant-data:
   hf-cache:

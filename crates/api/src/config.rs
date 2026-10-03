@@ -215,7 +215,7 @@ fn defaults() -> serde_json::Value {
             "refresh_leeway_secs": 60,
         },
         "telemetry": { "service_name": "shiki-server", "log_format": "json" },
-        "storage": { "backend": "minio" },
+        "storage": { "backend": "s3" },
         "vector": { "backend": "qdrant" },
         "llm": { "backend": "vllm" },
     })

@@ -1,4 +1,4 @@
-//! MinIO(S3 互換) 実装。GCS 実装は Phase 8 で同 trait 裏に追加する。
+//! S3 互換オブジェクトストア実装（compose では RustFS）。GCS 実装は Phase 8 で同 trait 裏に追加する。
 //!
 //! presigned URL は **公開エンドポイント**で署名する必要がある（ブラウザのアクセス先と
 //! 署名ホストを一致させる）。一方 head/copy/delete 等の server-side 操作は**内部
@@ -30,10 +30,10 @@ fn default_put_ttl() -> u64 {
     900
 }
 
-/// MinIO/S3 接続設定。`StorageConfig.s3` として API の設定から渡る。
+/// S3 互換の接続設定。`StorageConfig.s3` として API の設定から渡る。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct S3Config {
-    /// server→MinIO の内部エンドポイント（例 `http://minio:9000`）。head/copy/delete に使う。
+    /// server→ストアの内部エンドポイント（例 `http://rustfs:9000`）。head/copy/delete に使う。
     pub internal_endpoint: String,
     /// presigned URL の署名に使う公開エンドポイント（ブラウザ到達可能・例 `http://localhost:9000`）。
     pub public_endpoint: String,
@@ -63,7 +63,7 @@ impl S3Config {
     }
 }
 
-/// S3 互換オブジェクトストア（MinIO）。
+/// S3 互換オブジェクトストア（RustFS / MinIO / AWS S3）。
 pub struct S3ObjectStore {
     /// server-side 操作（head/copy/delete/get）用。内部エンドポイント。
     internal: Client,
@@ -123,7 +123,8 @@ fn build_client(endpoint: &str, cfg: &S3Config) -> Client {
         .region(Region::new(cfg.region.clone()))
         .endpoint_url(endpoint)
         .credentials_provider(creds)
-        // MinIO は path-style（`http://host/bucket/key`）が必要。
+        // RustFS / MinIO は path-style（`http://host/bucket/key`）が必要。
+        // RustFS は RUSTFS_SERVER_DOMAINS 未設定だと virtual-hosted-style を解決しない。
         .force_path_style(true)
         .build();
     Client::from_conf(conf)

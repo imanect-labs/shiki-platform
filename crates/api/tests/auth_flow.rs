@@ -329,7 +329,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             log_format: LogFormat::Json,
         },
         storage: StorageConfig {
-            backend: ObjectStoreBackend::Minio,
+            backend: ObjectStoreBackend::S3,
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),

@@ -30,7 +30,7 @@ pub enum LogFormat {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
     pub backend: ObjectStoreBackend,
-    /// MinIO/S3 接続設定（`backend=minio` のとき必須。起動時に main で検証）。
+    /// S3 互換の接続設定（`backend=s3` のとき必須。起動時に main で検証）。
     #[serde(default)]
     pub s3: Option<storage::S3Config>,
     /// 1 ファイルの最大アップロードサイズ（バイト）。既定 5 GiB。declare の宣言サイズが
@@ -91,7 +91,14 @@ impl Default for UploadGcConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectStoreBackend {
-    Minio,
+    /// S3 互換（RustFS / MinIO / AWS S3 など）。実装は `storage::S3ObjectStore`。
+    ///
+    /// **旧名 `minio` も受け付ける。** 実装は最初から S3 互換汎用
+    /// （`S3ObjectStore` / `S3Config`）で特定製品に縛られていないが、
+    /// enum の名前だけ製品名のままだった。RustFS へ差し替えた時点で実体に
+    /// 合わせて改名し、既存の `.env` / TOML を壊さないよう alias を残す。
+    #[serde(alias = "minio")]
+    S3,
     Gcs,
 }
 
