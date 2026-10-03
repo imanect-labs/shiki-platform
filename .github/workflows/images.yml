@@ -1,0 +1,154 @@
+# shiki-server / ingestion-worker のコンテナイメージを GHCR へ publish する。
+#
+# **これが無いと K8s へ載せられない。** compose は `build:` 指定だけで `image:`
+# タグを持たず、CI も push していなかったため、GHCR にあるのは自前ビルドの
+# Collabora (office-image.yml) だけだった。K8s は pull しかできないので、
+# プレビュー環境を compose から K8s へ移す前提条件がこれ。
+#
+# **タグは commit SHA を正とする。** GitOps 側 (imanect-labs/giken-ops) は
+# `sha-<短縮SHA>` をピンして「いまデプロイされているのはどのコミットか」を
+# 一意に決める。`main` は人が手で引くとき用の別名で、ピン先には使わない。
+#
+# 注意: deploy/Dockerfile の Rust ビルドは `--mount=type=cache` を使っている。
+# cache mount はレイヤキャッシュに含まれず GHA キャッシュへ export されない
+# ため、**buildx のキャッシュを足しても Rust のコンパイルは毎回フルで走る**
+# (20 分前後)。paths でトリガを絞っているのはこのため。
+name: images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # shiki-server (deploy/Dockerfile はリポジトリルートを context に取る)
+      - "crates/**"
+      - "vendor/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "migrations/**"
+      - "web/editor-sandbox/**"
+      - "web/package.json"
+      - "web/pnpm-lock.yaml"
+      - "deploy/Dockerfile"
+      # ingestion-worker
+      - "ingestion-worker/**"
+      - ".github/workflows/images.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  # 同じ ref の古いビルドは捨てる。main が連続で進んだとき、古い SHA の
+  # イメージを作り終える意味は無い。
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    name: ${{ matrix.name }} → GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      # **片方が落ちても他方は作り切る。** 両方揃わないと K8s 側は古い SHA を
+      # 使い続けるだけなので、部分的な成功にも意味がある。
+      fail-fast: false
+      matrix:
+        include:
+          - name: shiki-server
+            context: .
+            dockerfile: deploy/Dockerfile
+            # Rust の release ビルド ＋ node のエディタ砂箱ビルドでディスクを食う。
+            free_disk: true
+          - name: shiki-ingestion-worker
+            context: ingestion-worker
+            dockerfile: ingestion-worker/Dockerfile
+            free_disk: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: free disk space (不要プリインストール削除)
+        if: matrix.free_disk
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+
+      - name: タグを決める (SHA を正とする)
+        run: |
+          set -euo pipefail
+          # github.sha は PR の merge commit になりうるが、このワークフローは
+          # push(main) と workflow_dispatch だけなので実コミットを指す。
+          echo "IMAGE=ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}" >> "$GITHUB_ENV"
+          echo "SHA_TAG=sha-$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          # クラスタは Talos amd64 のみ。arm64 を足すとビルド時間が倍になって
+          # 得るものが無い。
+          platforms: linux/amd64
+          tags: |
+            ${{ env.IMAGE }}:${{ env.SHA_TAG }}
+            ${{ env.IMAGE }}:main
+          cache-from: type=gha,scope=${{ matrix.name }}
+          # mode=min。Rust の cache mount は export されないので max にしても
+          # 増えるのは中間レイヤだけで、Actions のキャッシュ枠を無駄に食う。
+          cache-to: type=gha,mode=min,scope=${{ matrix.name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: smoke (shiki-server — 3 つの COPY 先が揃っていること)
+        if: matrix.name == 'shiki-server'
+        run: |
+          set -euo pipefail
+          IMG="${IMAGE}:${SHA_TAG}"
+          # **バイナリだけ確認しても足りない。** deploy/Dockerfile は別ビルドの
+          # tabular runner と、node で作ったエディタ砂箱 dist を COPY している。
+          # COPY 元のパスが変わると、起動はするのに機能だけ欠けた
+          # イメージが出来上がる (SHIKI__GATEWAY__BUILTIN_DIR が空になる)。
+          docker run --rm --entrypoint sh "$IMG" -c '
+            set -e
+            command -v shiki-server
+            command -v shiki-tabular-runner
+            test -n "$(ls -A /opt/shiki/builtin)" || { echo "builtin dir が空"; exit 1; }
+            ls /opt/shiki/builtin
+          '
+
+      - name: smoke (ingestion-worker — アプリが import 可能であること)
+        if: matrix.name == 'shiki-ingestion-worker'
+        run: |
+          set -euo pipefail
+          IMG="${IMAGE}:${SHA_TAG}"
+          # find_spec はモジュールを実行しない。import してしまうと HF から
+          # モデルを取りに行きかねないので、解決できることだけを見る。
+          docker run --rm --entrypoint uv "$IMG" \
+            run --no-sync python -c '
+          import importlib.util, sys
+          for m in ("ingestion_worker.main", "uvicorn"):
+              if importlib.util.find_spec(m) is None:
+                  print(f"{m} が解決できない"); sys.exit(1)
+          print("import OK")
+          '
+
+      - name: 公開されたタグを出す
+        run: |
+          {
+            echo "### ${{ matrix.name }}"
+            echo '```'
+            echo "${IMAGE}:${SHA_TAG}"
+            echo "${IMAGE}:main"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
