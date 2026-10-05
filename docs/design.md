@@ -44,7 +44,7 @@ flowchart TB
     TV[(Tantivy 全文)]
     FGA[(OpenFGA / SpiceDB)]
     KC[(Keycloak)]
-    OBJ[(MinIO / GCS)]
+    OBJ[(RustFS / GCS)]
     RD[(Redis<br/>セッション)]
   end
 
@@ -86,7 +86,7 @@ flowchart LR
     S1[shiki-server]
     O1[sandbox-orchestrator]
     I1[ingestion-worker]
-    DEP1[(Postgres/Qdrant/OpenFGA<br/>Keycloak/MinIO/Redis)]
+    DEP1[(Postgres/Qdrant/OpenFGA<br/>Keycloak/RustFS/Redis)]
     INF1[vLLM/埋め込み/reranker/OCR<br/>ローカルGPU]
   end
 
@@ -237,7 +237,7 @@ flowchart TB
     evt[書込イベント発行]
   end
   meta[(Postgres: ツリー/メタ<br/>closure table)]
-  blob[(MinIO/GCS: 実体<br/>content-addressed)]
+  blob[(RustFS/GCS: 実体<br/>content-addressed)]
   client1[Drive UI] --> SS
   client2[RAG インデクサ] --> SS
   client3[サンドボックス FUSE] --> SS

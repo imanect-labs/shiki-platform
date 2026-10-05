@@ -319,8 +319,17 @@ export SHIKI__STORAGE__S3__BUCKET=shiki-blobs
 # Drive のアップロードが CORS で失敗する（MinIO 時代はサーバ側 env で代替されていた）。
 # figment は env 値をブラケット記法で配列として読む（裸のカンマ区切りは不可）。
 export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS='[*]'
-export SHIKI__STORAGE__S3__ACCESS_KEY=minioadmin
-export SHIKI__STORAGE__S3__SECRET_KEY=minioadmin
+# **資格情報は compose が解決した実値から取る。** ここを minioadmin で固定すると、
+# .env で RUSTFS_ACCESS_KEY（または旧 MINIO_ROOT_USER）を変えている環境で
+# native 版サーバだけ認証に失敗する。起動済みコンテナの env が、compose の
+# フォールバック連鎖（RUSTFS_* → MINIO_ROOT_* → 既定）を通った唯一の正解。
+rustfs_env() {  # rustfs_env <VAR> <fallback>
+  local v
+  v=$( cd deploy/compose && docker compose exec -T rustfs printenv "$1" 2>/dev/null | tr -d '\r\n' ) || v=""
+  if [ -n "$v" ]; then printf '%s' "$v"; else printf '%s' "$2"; fi
+}
+export SHIKI__STORAGE__S3__ACCESS_KEY=$(rustfs_env RUSTFS_ACCESS_KEY minioadmin)
+export SHIKI__STORAGE__S3__SECRET_KEY=$(rustfs_env RUSTFS_SECRET_KEY minioadmin)
 export SHIKI__GATEWAY__ENABLED=true
 # native の第2/第3リスナは compose の shiki-server（8090/8091 を publish）と衝突しない
 # 18090/18091 を使う。web 側には NEXT_PUBLIC_GATEWAY_ORIGIN / NEXT_PUBLIC_B1_ORIGIN で

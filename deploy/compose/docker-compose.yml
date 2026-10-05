@@ -150,9 +150,16 @@ services:
   #   * **path-style のみ**。`RUSTFS_SERVER_DOMAINS` 未設定だと
   #     virtual-hosted-style は通らない。shiki 側は既に
   #     `force_path_style(true)` なので問題ない
-  #   * **サーバ側 CORS の env が無い。** MinIO の
-  #     `MINIO_API_CORS_ALLOW_ORIGIN` に相当する設定は存在せず、S3 の
-  #     `PutBucketCors` だけに対応している。
+  #   * **CORS の経路が 2 つあり、既定ではどちらも無効。**
+  #     対照実験の結果 (バケット CORS 未設定・preflight の
+  #     Access-Control-Allow-Origin を見た):
+  #       env なし                      → acao なし (= ブラウザ直 PUT は失敗)
+  #       RUSTFS_CORS_ALLOWED_ORIGINS   → 指定オリジンのみ acao あり・他は拒否
+  #       PutBucketCors                 → 同じく有効
+  #     `RUSTFS_CORS_ALLOWED_ORIGINS` は `server --help` に出てこないが実際に
+  #     効く。ここでは **S3 API の `PutBucketCors` 側を使う** —
+  #     AWS S3 / MinIO / RustFS のどれでも同じ経路で、shiki が既に実装を
+  #     持っているため (設定は下の SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS)。
   #     **ここを取り違えると Drive のアップロードが壊れる。** shiki の
   #     `put_bucket_cors` は `storage.s3.cors_allowed_origins` が空でないときだけ
   #     呼ばれる実装で、compose はこれを設定していなかった。つまりブラウザ直
@@ -162,14 +169,22 @@ services:
   #     ボリュームを使い回さず S3 レベルでオブジェクトをコピーすること
   rustfs:
     restart: unless-stopped
-    image: rustfs/rustfs:1.0.1
+    # **digest でピンする。** タグは可変で、上流が差し替えたり消したりできる。
+    # MinIO はまさにリポジトリごと消えてこの PR の原因になったので、同じ轍を踏まない。
+    # 更新時は Docker Hub の tags API で digest を取り直す。
+    image: rustfs/rustfs:1.0.1@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
     environment:
-      # **既定値が minioadmin のままなのは意図的。** 結合テストは
+      # **旧 MINIO_ROOT_USER / MINIO_ROOT_PASSWORD をフォールバックとして受ける。**
+      # 独自の資格情報を .env に書いている既存環境が、アップグレード後に黙って
+      # 公開既定値 minioadmin へ落ちるのを防ぐ (9000/9001 は全 IF へ publish
+      # されるため、正常に見えたまま管理資格情報が弱体化する)。
+      #
+      # 既定値が minioadmin のままなのは意図的。結合テストは
       # STORAGE_TEST_S3_ACCESS_KEY の未設定時フォールバックに同じ文字列を
       # 持っており (crates/*/tests/*.rs の 10 ファイル)、ここを変えると
       # 両者がずれて IT が落ちる。dev 用の固定文字列であって MinIO 依存ではない。
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-minioadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-minioadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       RUSTFS_VOLUMES: /data
       # コンソール (:9001) は既定で無効。dev では中身を目で見たいので有効化する。
       RUSTFS_CONSOLE_ENABLE: "true"
@@ -179,9 +194,13 @@ services:
       - "9000:9000"
       - "9001:9001"
     healthcheck:
-      # `mc` は無い。RustFS は認証不要の /health を持つ (200 を返す)。
+      # `mc` は無い。**`/health` ではなく `/health/ready` を見る。**
+      # 実測では /health は起動から 0.00 秒で 200 を返すのに対し、
+      # /health/ready と S3 エンドポイントの実働はどちらも 0.16 秒だった。
+      # /health で待つと、まだ S3 が応答しない RustFS に対して shiki-server が
+      # ensure_bucket を叩き、遅い環境で断続的に失敗する。
       # S3 のルート `GET /` は認証を要求して 403 を返すため `curl -f` では使えない。
-      test: ["CMD", "curl", "-sf", "http://localhost:9000/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/health/ready"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -522,8 +541,8 @@ services:
       SHIKI__STORAGE__S3__INTERNAL_ENDPOINT: http://rustfs:9000
       SHIKI__STORAGE__S3__PUBLIC_ENDPOINT: ${SHIKI__STORAGE__S3__PUBLIC_ENDPOINT:-http://localhost:9000}
       SHIKI__STORAGE__S3__BUCKET: ${SHIKI__STORAGE__S3__BUCKET:-shiki-blobs}
-      SHIKI__STORAGE__S3__ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-minioadmin}
-      SHIKI__STORAGE__S3__SECRET_KEY: ${RUSTFS_SECRET_KEY:-minioadmin}
+      SHIKI__STORAGE__S3__ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      SHIKI__STORAGE__S3__SECRET_KEY: ${RUSTFS_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       # ブラウザ直 PUT/GET（別オリジン）にはバケット CORS が要る。これを設定しないと
       # `put_bucket_cors` が呼ばれず、Drive のアップロードが CORS で失敗する
       # （MinIO 時代はサーバ側 env の CORS で代替されていたため露見していなかった）。
