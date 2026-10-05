@@ -22,6 +22,25 @@
 
 ## 手順
 
+### 0. 書き込み元を止める
+
+**先に止めないとコピーが壊れる。** `docker compose up <サービス>` は指定した
+サービスとその依存だけを起動し、**既に動いている `shiki-server` は止めない。**
+コピー中にオブジェクトが更新されると、手順 2 の検証は「同じキーが両側にある」
+ことしか見ないので、**RustFS 側に古い内容が残ったまま failed=0 で通る。**
+そのまま手順 4 で旧ボリュームを消すと、その更新は失われる。
+
+```bash
+cd deploy/compose
+# MinIO へ書き込みうるものを全部止める。
+docker compose stop shiki-server ingestion-worker
+# 確認（これらが up のままなら先へ進まない）
+docker compose ps shiki-server ingestion-worker
+```
+
+Collabora も WOPI 経由で `shiki-server` に書かせるが、`shiki-server` が止まって
+いれば書けない。再開は手順 3。
+
 ### 1. 旧 MinIO と新 RustFS を同時に上げる
 
 MinIO は旧定義のまま別ポートで残し、RustFS を本来のポートに上げる。
@@ -92,27 +111,52 @@ for p in src.get_paginator("list_objects_v2").paginate(Bucket=B):
         except Exception as e:
             failed += 1; print(f"FAIL {o['Key']}: {e}", file=sys.stderr)
 
-# **件数を突き合わせる。** 「エラーが出なかった」だけではページングの
-# 取りこぼしを検出できない。
-def n(cl):
-    return sum(p.get("KeyCount", 0) for p in cl.get_paginator("list_objects_v2").paginate(Bucket=B))
-ns, nd = n(src), n(dst)
-print(f"copied={copied} skipped={skipped} failed={failed} / src={ns} dst={nd}")
-sys.exit(1 if (failed or nd < ns) else 0)
+# **キーと ETag の両方を突き合わせる。** 件数だけ見ると、
+#   - ページングの取りこぼし
+#   - コピー後に更新されたキー（キーは両側にあるが内容が違う）
+# のどちらも検出できない。手順 0 で書き込みを止めていれば後者は起きないが、
+# 止め忘れをここで捕まえる。
+def inventory(cl):
+    inv = {}
+    for p in cl.get_paginator("list_objects_v2").paginate(Bucket=B):
+        for o in p.get("Contents", []): inv[o["Key"]] = o["ETag"]
+    return inv
+si, di = inventory(src), inventory(dst)
+missing = sorted(set(si) - set(di))
+mismatch = sorted(k for k in set(si) & set(di) if si[k] != di[k])
+print(f"copied={copied} skipped={skipped} failed={failed} / src={len(si)} dst={len(di)}")
+if missing:  print(f"dst に無いキー {len(missing)} 件: {missing[:5]}", file=sys.stderr)
+if mismatch: print(f"ETag 不一致 {len(mismatch)} 件（コピー中に更新された疑い）: {mismatch[:5]}", file=sys.stderr)
+sys.exit(1 if (failed or missing or mismatch) else 0)
 ```
 
+**資格情報を渡すこと。** 既定は `minioadmin` なので、`.env` で
+`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`（または `RUSTFS_*`）を変えている環境で
+省略すると認証エラーで落ちる。実値は compose から取る。
+
 ```bash
+cd deploy/compose
+AK=$(docker compose exec -T rustfs printenv RUSTFS_ACCESS_KEY | tr -d '\r\n')
+SK=$(docker compose exec -T rustfs printenv RUSTFS_SECRET_KEY | tr -d '\r\n')
+cd ../..
+
 SRC_ENDPOINT=http://127.0.0.1:19000 DST_ENDPOINT=http://127.0.0.1:9000 \
+  ACCESS_KEY="$AK" SECRET_KEY="$SK" \
   /tmp/s3v/bin/python /tmp/copy-objects.py
 ```
 
-**件数が一致し failed=0 になるまで次へ進まない。**
+> 旧 MinIO と新 RustFS で資格情報が違う場合は、スクリプトの `src` / `dst` を
+> 別々のキーで作るよう手で直す（上の例は両者が同じ前提）。
+
+**`failed=0` かつ「全キーの ETag が一致」になるまで次へ進まない。**
+件数一致だけでは、コピー後に更新されたキーを見逃す。
 
 ### 3. 切り替えて確認する
 
 ```bash
 docker compose -f docker-compose.yml -f /tmp/migrate.yml rm -sf minio-old
-docker compose up -d --build shiki-server
+# 手順 0 で止めたものを再開する。--build を忘れないこと（BACKEND が s3 に変わっている）。
+docker compose up -d --build shiki-server ingestion-worker
 ```
 
 アプリから確認する（最低限この 3 つ）。

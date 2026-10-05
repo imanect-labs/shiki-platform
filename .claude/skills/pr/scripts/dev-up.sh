@@ -260,6 +260,17 @@ else
   REDIS_PORT=$(host_port redis 6379 6379)
   RUSTFS_PORT=$(host_port rustfs 9000 9000)
   QDRANT_PORT=$(host_port qdrant 6333 6333)
+  # 資格情報も compose から導出する。minioadmin で焼き込むと、.env で
+  # RUSTFS_ACCESS_KEY（または旧 MINIO_ROOT_USER）を変えている環境で native 版
+  # サーバだけ S3 認証に失敗する。**起動済みコンテナの env が、compose の
+  # フォールバック連鎖（RUSTFS_* → MINIO_ROOT_* → 既定）を通った唯一の正解。**
+  rustfs_env() {  # rustfs_env <VAR> <fallback>
+    local v
+    v=$( cd deploy/compose && docker compose exec -T rustfs printenv "$1" 2>/dev/null | tr -d '\r\n' ) || v=""
+    if [ -n "$v" ]; then printf '%s' "$v"; else printf '%s' "$2"; fi
+  }
+  RUSTFS_AK=$(rustfs_env RUSTFS_ACCESS_KEY minioadmin)
+  RUSTFS_SK=$(rustfs_env RUSTFS_SECRET_KEY minioadmin)
   # 任意サービス（フラグを付けた時だけ起動している）。未起動ならフォールバック値のまま。
   WORKER_PORT=$(host_port ingestion-worker 8000 8000)
   SANDBOX_PORT=$(host_port sandbox-orchestrator 50000 50000)
@@ -319,17 +330,13 @@ export SHIKI__STORAGE__S3__BUCKET=shiki-blobs
 # Drive のアップロードが CORS で失敗する（MinIO 時代はサーバ側 env で代替されていた）。
 # figment は env 値をブラケット記法で配列として読む（裸のカンマ区切りは不可）。
 export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS='[*]'
-# **資格情報は compose が解決した実値から取る。** ここを minioadmin で固定すると、
-# .env で RUSTFS_ACCESS_KEY（または旧 MINIO_ROOT_USER）を変えている環境で
-# native 版サーバだけ認証に失敗する。起動済みコンテナの env が、compose の
-# フォールバック連鎖（RUSTFS_* → MINIO_ROOT_* → 既定）を通った唯一の正解。
-rustfs_env() {  # rustfs_env <VAR> <fallback>
-  local v
-  v=$( cd deploy/compose && docker compose exec -T rustfs printenv "$1" 2>/dev/null | tr -d '\r\n' ) || v=""
-  if [ -n "$v" ]; then printf '%s' "$v"; else printf '%s' "$2"; fi
-}
-export SHIKI__STORAGE__S3__ACCESS_KEY=$(rustfs_env RUSTFS_ACCESS_KEY minioadmin)
-export SHIKI__STORAGE__S3__SECRET_KEY=$(rustfs_env RUSTFS_SECRET_KEY minioadmin)
+# 資格情報は上（heredoc の外）で compose から解決した値を焼き込む。
+# **この heredoc は unquoted なので、コメント行まで生成時に展開される。**
+# コマンド置換や位置パラメータをここに書くと（コメントの中であっても）
+# dev-up.sh 自身のシェルで評価され、set -u のもと未設定変数で死ぬ。
+# 実行時に評価したいものは heredoc の外で解決して値を渡すこと。
+export SHIKI__STORAGE__S3__ACCESS_KEY=${RUSTFS_AK}
+export SHIKI__STORAGE__S3__SECRET_KEY=${RUSTFS_SK}
 export SHIKI__GATEWAY__ENABLED=true
 # native の第2/第3リスナは compose の shiki-server（8090/8091 を publish）と衝突しない
 # 18090/18091 を使う。web 側には NEXT_PUBLIC_GATEWAY_ORIGIN / NEXT_PUBLIC_B1_ORIGIN で
