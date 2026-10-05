@@ -384,3 +384,26 @@ fn defaults_deserialize_into_partial_config() {
     assert_eq!(value["session"]["ttl_secs"], serde_json::json!(86400));
     assert_eq!(value["telemetry"]["log_format"], serde_json::json!("json"));
 }
+
+#[test]
+fn object_store_backend_parses_canonical_and_legacy_names() {
+    // 正式名。実装が S3 互換汎用（S3ObjectStore）なので enum も S3。
+    assert_eq!(
+        serde_json::from_str::<ObjectStoreBackend>(r#""s3""#).unwrap(),
+        ObjectStoreBackend::S3
+    );
+    // **旧名 `minio` を受け付け続けること。** RustFS へ差し替えるときに
+    // enum を Minio → S3 へ改名したが、既存の .env / TOML に
+    // `SHIKI__STORAGE__BACKEND=minio` が書かれている環境を壊してはいけない。
+    // ここが落ちたら、既存環境は起動時の設定パースで死ぬ。
+    assert_eq!(
+        serde_json::from_str::<ObjectStoreBackend>(r#""minio""#).unwrap(),
+        ObjectStoreBackend::S3
+    );
+    assert_eq!(
+        serde_json::from_str::<ObjectStoreBackend>(r#""gcs""#).unwrap(),
+        ObjectStoreBackend::Gcs
+    );
+    // 知らない値は黙って既定に落とさず失敗させる（設定ミスを起動時に出す）。
+    assert!(serde_json::from_str::<ObjectStoreBackend>(r#""rustfs""#).is_err());
+}

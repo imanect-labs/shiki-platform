@@ -314,7 +314,7 @@ FR-6 の generative UI を土台に、「社内業務アプリが自然増殖す
 
 - アプリ: `shiki-server`（Rustモジュラモノリス）／`sandbox-orchestrator`（特権・別プロセス）／
   `ingestion-worker`（Python・Docling）。
-- ステートフル依存: Postgres、Qdrant、OpenFGA、Keycloak、MinIO、（監視）Grafana/Tempo/Loki/Prometheus、Langfuse。
+- ステートフル依存: Postgres、Qdrant、OpenFGA、Keycloak、RustFS、（監視）Grafana/Tempo/Loki/Prometheus、Langfuse。
 - ローカル推論（エアギャップ時）: vLLM（生成LLM）、埋め込み（Ruri等）、reranker、OCR。
 - **受注ごとにHW構成（特にGPUサイジング）を検討**: 同時実行数 × モデルサイズ × コンテキスト長 → 必要VRAM。
 
