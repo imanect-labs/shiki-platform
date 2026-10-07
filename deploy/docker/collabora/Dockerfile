@@ -70,11 +70,25 @@ RUN cd core && ./autogen.sh --with-distro=CPLinux-LOKit --disable-symbols \
 #   AC_CHECK_HEADERS([LibreOfficeKit/LibreOfficeKit.h], ...,
 #     [AC_MSG_ERROR([header LibreOfficeKit/LibreOfficeKit.h not found ...])])
 # で止まるので、ソースツリーから持ち出して次のステージへ渡す。
+RUN cd core && make -j"$(nproc)"
+#
+# **ooinstall は make とは別レイヤにする。** ここは約 3 時間の make が終わった
+# 後にしか到達しないので、同じレイヤだと 1 回失敗するたびに 3 時間やり直しになる
+# （実際に 2 回やり直した）。分けておけば make の結果がキャッシュに残る。
+#
+# **WITH_LANG_LIST を明示的に渡す。** ooinstall は $ENV{WITH_LANG_LIST} を
+# `-l` の値に使うが、この変数は config_host_lang.mk に export 無しで定義され、
+# Makefile.in は config_host.mk しか include しない。つまり環境には出てこない。
+# 空のまま渡すと `-l -p CollaboraOffice` となって `-l` が `-p` を食い、
+#   ERROR: unknown parameter: CollaboraOffice
+# で落ちる（upstream の定義を追って切り分けた）。
 RUN cd core \
-    && make -j"$(nproc)" \
-    && mkdir -p /opt/collaboraoffice \
-    && make cmd cmd='./solenv/bin/ooinstall /opt/collaboraoffice' \
-    && cp -a include /opt/collaboraoffice/include
+    && LANGS="$(sed -n 's/^WITH_LANG_LIST=//p' config_host_lang.mk)" \
+    && if [ -z "$LANGS" ]; then echo "WITH_LANG_LIST が取れない" >&2; exit 1; fi \
+    && echo "languages: $LANGS" \
+    && WITH_LANG_LIST="$LANGS" make cmd cmd='./solenv/bin/ooinstall /opt/collaboraoffice' \
+    && cp -a include /opt/collaboraoffice/include \
+    && test -f /opt/collaboraoffice/program/versionrc
 
 # ---- Stage 2: coolwsd（Collabora Online 本体）のビルド ----
 FROM ubuntu:24.04 AS online-build
