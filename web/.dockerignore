@@ -2,6 +2,13 @@
 # node_modules は pnpm install で作り直すので送る意味がない（数百 MB の無駄）。
 node_modules
 .next
+# **秘密情報を送らない。** `COPY . .` が web/.env や .env.production を取り込むと、
+# Next.js がそれを standalone 出力へコピーするため、イメージを配ると秘密も渡る。
+# ビルドに要る設定は build-arg で明示的に渡すこと。
+.env
+.env.*
+!.env.example
+
 # Playwright の成果物。
 test-results
 playwright-report

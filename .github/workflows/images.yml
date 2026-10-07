@@ -32,6 +32,8 @@ on:
       # web (Next.js BFF)。**gen:api の入力である crates/** も上にあるので、
       # Rust の型が変われば web も焼き直される（型は Rust から生成される）。
       - "web/**"
+      # 型生成そのもののスクリプト。これだけ変えた push でも web を焼き直す。
+      - "scripts/gen-api.sh"
       # ingestion-worker
       - "ingestion-worker/**"
       - ".github/workflows/images.yml"
@@ -48,7 +50,68 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # **何をビルドするか変更パスから決める。** TSX を 1 行直しただけで
+  # shiki-server のフルビルド（約 20 分。cargo の cache mount は GHA へ
+  # export されないので毎回フル）が走るのは無駄が大きい。
+  #
+  # workflow_dispatch では全部作る（手で叩くのは作り直したいときなので）。
+  select:
+    name: 変更パスから対象を決める
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      any: ${{ steps.pick.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 差分を取るため直前のコミットも要る。
+          fetch-depth: 2
+          persist-credentials: false
+      - id: pick
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            changed=""
+            all=1
+          else
+            changed=$(git diff --name-only HEAD~1 HEAD)
+            all=0
+          fi
+          echo "変更ファイル:"
+          echo "$changed" | while IFS= read -r f; do [ -n "$f" ] && echo "  $f"; done
+
+          want() {  # want <正規表現>
+            [ "$all" = 1 ] && return 0
+            echo "$changed" | grep -qE "$1"
+          }
+
+          names=""
+          # server: Rust と migration と deploy/Dockerfile と editor-sandbox。
+          want '^(crates/|vendor/|migrations/|Cargo[.](toml|lock)$|deploy/Dockerfile$|web/editor-sandbox/|web/package[.]json$|web/pnpm-lock[.]yaml$|[.]github/workflows/images[.]yml$)' \
+            && names="$names shiki-server"
+          # worker: Python 側だけ。
+          want '^(ingestion-worker/|[.]github/workflows/images[.]yml$)' \
+            && names="$names shiki-ingestion-worker"
+          # web: web 全体と、型生成の入力である Rust 定義とスクリプト。
+          want '^(web/|crates/|Cargo[.](toml|lock)$|scripts/gen-api[.]sh$|[.]github/workflows/images[.]yml$)' \
+            && names="$names shiki-web"
+
+          echo "ビルド対象:$names"
+          if [ -z "$names" ]; then
+            echo 'any=false' >> "$GITHUB_OUTPUT"
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'any=true' >> "$GITHUB_OUTPUT"
+          # 名前の配列を JSON にして matrix へ渡す。
+          # $names は空白区切りの名前列。改行に直して python へ渡す
+          # （単語分割を期待しているので quote しない形を避け、tr で明示する）。
+          json=$(printf '%s' "$names" | tr ' ' '\n' | python3 -c 'import json,sys; print(json.dumps({"include":[{"name":n.strip()} for n in sys.stdin if n.strip()]}))')
+          echo "matrix=$json" >> "$GITHUB_OUTPUT"
+
   build-and-push:
+    needs: select
+    if: needs.select.outputs.any == 'true'
     name: ${{ matrix.name }} → GHCR
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -56,35 +119,61 @@ jobs:
       # **片方が落ちても他方は作り切る。** 両方揃わないと K8s 側は古い SHA を
       # 使い続けるだけなので、部分的な成功にも意味がある。
       fail-fast: false
-      matrix:
-        include:
-          - name: shiki-server
-            context: .
-            dockerfile: deploy/Dockerfile
-            # Rust の release ビルド ＋ node のエディタ砂箱ビルドでディスクを食う。
-            free_disk: true
-          - name: shiki-ingestion-worker
-            context: ingestion-worker
-            dockerfile: ingestion-worker/Dockerfile
-            free_disk: false
-          - name: shiki-web
-            context: web
-            dockerfile: web/Dockerfile
-            # **gen:api が要る。** web/Dockerfile は生成物 (web/src/generated/*) が
-            # 揃っている前提で、無ければ明示的に失敗する。生成は cargo を 4 本
-            # 走らせるのでイメージの中ではやらない (Rust のフルビルドを web の
-            # ために二重に回すことになる)。
-            needs_gen: true
-            # Next.js のビルドと node_modules でディスクを食う。
-            free_disk: true
+      # 対象は select job が変更パスから決める（名前だけの配列）。
+      matrix: ${{ fromJson(needs.select.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
+      # イメージ名から固有の設定を引く。matrix に持たせると select 側で
+      # 全部を組み立てる必要があり、2 箇所に同じ知識が散る。
+      - name: このイメージの設定を決める
+        run: |
+          set -euo pipefail
+          case "${{ matrix.name }}" in
+            shiki-server)
+              # deploy/Dockerfile はリポジトリルートを context に取る。
+              echo "CONTEXT=." >> "$GITHUB_ENV"
+              echo "DOCKERFILE=deploy/Dockerfile" >> "$GITHUB_ENV"
+              # Rust の release ビルドと node のエディタ砂箱でディスクを食う。
+              echo "FREE_DISK=1" >> "$GITHUB_ENV"
+              echo "NEEDS_GEN=0" >> "$GITHUB_ENV"
+              echo "BUILD_ARGS=" >> "$GITHUB_ENV"
+              ;;
+            shiki-ingestion-worker)
+              echo "CONTEXT=ingestion-worker" >> "$GITHUB_ENV"
+              echo "DOCKERFILE=ingestion-worker/Dockerfile" >> "$GITHUB_ENV"
+              echo "FREE_DISK=0" >> "$GITHUB_ENV"
+              echo "NEEDS_GEN=0" >> "$GITHUB_ENV"
+              echo "BUILD_ARGS=" >> "$GITHUB_ENV"
+              ;;
+            shiki-web)
+              echo "CONTEXT=web" >> "$GITHUB_ENV"
+              echo "DOCKERFILE=web/Dockerfile" >> "$GITHUB_ENV"
+              echo "FREE_DISK=1" >> "$GITHUB_ENV"
+              # **gen:api が要る。** web/Dockerfile は生成物が揃っている前提で、
+              # 無ければ明示的に失敗する。生成は cargo を 4 本走らせるので
+              # イメージの中ではやらない。
+              echo "NEEDS_GEN=1" >> "$GITHUB_ENV"
+              # **ビルド時にバンドルへ焼き込まれる値。** 実行時の env では直せない。
+              # BACKEND_ORIGIN はサーバ側のプロキシ先（クラスタ内 DNS）、
+              # NEXT_PUBLIC_* はブラウザが見る先（公開ホスト）。
+              {
+                echo "BUILD_ARGS<<EOF"
+                echo "BACKEND_ORIGIN=http://shiki-preview-server:8080"
+                echo "NEXT_PUBLIC_GATEWAY_ORIGIN=https://shiki-preview.imanect.app"
+                echo "NEXT_PUBLIC_B1_ORIGIN=https://shiki-preview.imanect.app"
+                echo "NEXT_PUBLIC_OIDC_ISSUER=https://shiki-preview-auth.imanect.app/realms/shiki"
+                echo "EOF"
+              } >> "$GITHUB_ENV"
+              ;;
+            *) echo "未知のイメージ: ${{ matrix.name }}" >&2; exit 1 ;;
+          esac
+
       - name: free disk space (不要プリインストール削除)
-        if: matrix.free_disk
+        if: env.FREE_DISK == '1' 
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
 
       - name: タグを決める (SHA を正とする)
@@ -97,31 +186,31 @@ jobs:
 
       # ---- web だけ: gen:api で型を生成してからビルドする ----
       - uses: dtolnay/rust-toolchain@master
-        if: matrix.needs_gen
+        if: env.NEEDS_GEN == '1'
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
-        if: matrix.needs_gen
+        if: env.NEEDS_GEN == '1'
       - uses: pnpm/action-setup@v4
-        if: matrix.needs_gen
+        if: env.NEEDS_GEN == '1'
         with:
           version: 9
       - uses: actions/setup-node@v4
-        if: matrix.needs_gen
+        if: env.NEEDS_GEN == '1'
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - name: install (web)
-        if: matrix.needs_gen
+        if: env.NEEDS_GEN == '1'
         working-directory: web
         run: pnpm install --frozen-lockfile
       - name: gen:api (Rust 定義から型生成)
-        if: matrix.needs_gen
+        if: env.NEEDS_GEN == '1'
         working-directory: web
         run: pnpm gen:api
       - name: 生成物が揃っていることを確認
-        if: matrix.needs_gen
+        if: env.NEEDS_GEN == '1'
         run: |
           set -euo pipefail
           # **Dockerfile 側でも確認しているが、ここで落とした方が原因が分かりやすい**
@@ -140,36 +229,30 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: build & push
+      # **smoke を通してから publish する。** 1 段で push すると、起動して
+      # 500 を返すイメージや root で動くイメージが先に `:main` を上書きしてから
+      # smoke が落ちる。ワークフローが赤でも壊れたものが配られてしまう。
+      #
+      # そこで「ローカルへ load → smoke → 同じキャッシュで push」に分ける。
+      # 2 回目は cache-from が効くので再ビルドにはならない。
+      - name: build (ローカルへ load・まだ publish しない)
         uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          push: true
-          # クラスタは Talos amd64 のみ。arm64 を足すとビルド時間が倍になって
-          # 得るものが無い。
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:smoke
           platforms: linux/amd64
-          tags: |
-            ${{ env.IMAGE }}:${{ env.SHA_TAG }}
-            ${{ env.IMAGE }}:main
-          # **BACKEND_ORIGIN はビルド時に routes-manifest.json へ焼き込まれる**
-          # （next.config.mjs の rewrites() 経由）。実行時に渡しても効かないので
-          # ここで k8s のクラスタ内 DNS を渡す。
-          build-args: |
-            ${{ matrix.name == 'shiki-web' && 'BACKEND_ORIGIN=http://shiki-preview-server:8080' || '' }}
+          build-args: ${{ env.BUILD_ARGS }}
           cache-from: type=gha,scope=${{ matrix.name }}
-          # mode=min。Rust の cache mount は export されないので max にしても
-          # 増えるのは中間レイヤだけで、Actions のキャッシュ枠を無駄に食う。
           cache-to: type=gha,mode=min,scope=${{ matrix.name }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
 
       - name: smoke (shiki-server — 3 つの COPY 先が揃っていること)
         if: matrix.name == 'shiki-server'
         run: |
           set -euo pipefail
-          IMG="${IMAGE}:${SHA_TAG}"
+          IMG="${IMAGE}:smoke"
           # **バイナリだけ確認しても足りない。** deploy/Dockerfile は別ビルドの
           # tabular runner と、node で作ったエディタ砂箱 dist を COPY している。
           # COPY 元のパスが変わると、起動はするのに機能だけ欠けた
@@ -186,7 +269,7 @@ jobs:
         if: matrix.name == 'shiki-web'
         run: |
           set -euo pipefail
-          IMG="${IMAGE}:${SHA_TAG}"
+          IMG="${IMAGE}:smoke"
           # **「起動した」だけでは足りない。** standalone の COPY 漏れは起動後に
           # 初めて 500 になるので、実際にページを引いて中身を見る。
           docker run -d --name web-smoke -p 127.0.0.1:13000:3000 "$IMG"
@@ -213,7 +296,7 @@ jobs:
         if: matrix.name == 'shiki-ingestion-worker'
         run: |
           set -euo pipefail
-          IMG="${IMAGE}:${SHA_TAG}"
+          IMG="${IMAGE}:smoke"
           # find_spec はモジュールを実行しない。import してしまうと HF から
           # モデルを取りに行きかねないので、解決できることだけを見る。
           docker run --rm --entrypoint uv "$IMG" \
@@ -224,6 +307,23 @@ jobs:
                   print(f"{m} が解決できない"); sys.exit(1)
           print("import OK")
           '
+
+      # smoke が全部通ってから publish する。build はキャッシュから再利用される。
+      - name: push (smoke 通過後に publish)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.IMAGE }}:${{ env.SHA_TAG }}
+            ${{ env.IMAGE }}:main
+          build-args: ${{ env.BUILD_ARGS }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
 
       - name: 公開されたタグを出す
         run: |

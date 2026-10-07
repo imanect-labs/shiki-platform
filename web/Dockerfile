@@ -32,6 +32,23 @@ RUN set -eu; \
 # k8s ではクラスタ内 DNS を指す。
 ARG BACKEND_ORIGIN=http://localhost:8080
 ENV BACKEND_ORIGIN=${BACKEND_ORIGIN}
+
+# **NEXT_PUBLIC_* もビルド時にバンドルへ焼き込まれる。** これらはブラウザ側の
+# コードが読む値で、実行時の env では直せない。未指定だと
+#   miniapp-b1-api.ts  → http://localhost:8091 / :8090
+#   miniapp-oauth.ts   → http://localhost:8081/realms/shiki
+# にフォールバックし、**閲覧者の端末の localhost** を見に行くので B1 ミニアプリと
+# スライドエディタと OIDC が非ローカル環境で動かない（ビルド済みイメージの
+# .next/static/chunks に localhost:8081/8090/8091 が実際に入っていることを確認した）。
+ARG NEXT_PUBLIC_GATEWAY_ORIGIN=http://localhost:8090
+ARG NEXT_PUBLIC_B1_ORIGIN=http://localhost:8091
+ARG NEXT_PUBLIC_OIDC_ISSUER=http://localhost:8081/realms/shiki
+ARG NEXT_PUBLIC_COLLAB_WS_ORIGIN=
+ENV NEXT_PUBLIC_GATEWAY_ORIGIN=${NEXT_PUBLIC_GATEWAY_ORIGIN} \
+    NEXT_PUBLIC_B1_ORIGIN=${NEXT_PUBLIC_B1_ORIGIN} \
+    NEXT_PUBLIC_OIDC_ISSUER=${NEXT_PUBLIC_OIDC_ISSUER} \
+    NEXT_PUBLIC_COLLAB_WS_ORIGIN=${NEXT_PUBLIC_COLLAB_WS_ORIGIN}
+
 ENV NODE_ENV=production
 # prebuild(gen:api) を飛ばして next build だけ走らせる。
 RUN pnpm exec next build
