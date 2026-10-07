@@ -50,11 +50,11 @@ flowchart LR
   P2 -.->|全文検索の二段authz| P14
   P11 -.->|collab/砂箱の流用| P13
   P9 -.->|B1匿名配信の型| P13
-  P0 -.->|並行| SK["skillex 認証統合"]
+  P0 -.->|並行| SK["llm-gateway 外部クライアント<br/>（skillex m2m）"]
   P8 -.->|将来| FULLPOOL["データプレーン完全相乗り<br/>（フルプール最適化）"]
 ```
 
-> **SaaS を優先ターゲットとする**（requirements §1.1）。**SaaS トポロジ（共有コントロールプレーン＋顧客ごと隔離 cell データプレーン・design §4.1.1）と `tenant_id` を Phase 0 の歩く骨格から前提**にし、クラウド向けトレイト実装（GCS/Cloud SQL/Vertex 等）は各フェーズで該当機能を作る都度に実装する（旧 Phase 8「クラウド対応」を解体し各フェーズへ溶かした）。オンプレ版は同一コードベースをトレイト差し替え＋デプロイ構成で吸収する従ターゲット。「データプレーン完全相乗り（フルプール）」だけが将来最適化として残る。
+> **SaaS を優先ターゲットとする**（requirements §1.1）。**SaaS トポロジ（shiki の SaaS コントロールプレーン＋顧客ごと隔離 cell データプレーン・design §4.1.1）と `tenant_id` を Phase 0 の歩く骨格から前提**にし、クラウド向けトレイト実装（GCS/Cloud SQL/Vertex 等）は各フェーズで該当機能を作る都度に実装する（旧 Phase 8「クラウド対応」を解体し各フェーズへ溶かした）。オンプレ版は同一コードベースをトレイト差し替え＋デプロイ構成で吸収する従ターゲット。「データプレーン完全相乗り（フルプール）」だけが将来最適化として残る。
 
 ---
 
@@ -63,7 +63,7 @@ flowchart LR
 - モノレポ／Rustワークスペース、axum、Postgres、Next.js。
 - Keycloak（OIDCログイン）、OpenFGA（authz）配線、認証付きエンドポイント1本をE2E。
 - **認証は BFF + オパークセッション Cookie**（Redis セッションストア。Task 0.11/#55）。ブラウザにトークンを置かない。
-- **SaaS トポロジを前提**: 共有コントロールプレーン（Keycloak/Org）＋顧客ごと隔離 cell データプレーン（design §4.1.1）。ローカル開発は compose、優先デプロイ先はクラウド（GCP）。
+- **SaaS トポロジを前提**: shiki の SaaS コントロールプレーン（Keycloak/テナント）＋顧客ごと隔離 cell データプレーン（design §4.1.1）。ローカル開発は compose、優先デプロイ先はクラウド（GCP）。
 - OTel計装の土台、`docker compose` 一発起動。
 - 認可コンテキスト（**principal + org + `tenant_id`**）を最初から導入（SaaS マルチテナントを day-1 前提・後付けで隔離境界を壊さない）。
 - **成果物**: ログインして認可された空のアプリが起動する（SaaS トポロジで `tenant_id` スコープが通っている）。
@@ -223,9 +223,9 @@ Phase 1（ストレージ・ReBAC）・Phase 8（監査）。詳細: [phase-14.m
 | トラック | タイミング | 備考 |
 |----------|-----------|------|
 | **Phase 10 Stage A（WF エンジン核心 前倒し）** | **完了（2026-07-10・#203〜）**。dnd/AI 編集/実行履歴 UI も完了し、残りは Phase 9 依存分（skill/data 系）のみ | 6.1 先行＋既存基盤のみで Phase 5〜9 と並走。Stage 分割は [phase-10.md](./roadmap/phase-10.md) |
-| **skillex 認証統合** | Phase 0 の認証が安定したら**並行**（skillexは並行進行中） | 共有プール、DLC/LLM利用トークン発行を Phase 0 設計に織り込む |
+| **llm-gateway 外部クライアント（skillex）** | skillex 側の必要時期に合わせて**並行** | **2026-09-29 に縮小**: ユーザー認証の共有（共有プール）・統一請求・統一管理画面は廃止。残るのは skillex → llm-gateway の m2m（client_credentials・`aud=shiki-llm`）と外部クライアント向け LLM API（[parallel-tracks SK](./roadmap/parallel-tracks.md)） |
 | ~~資料作成 v2（ブラウザ内編集）~~ | **Phase 11 に昇格**（2026-07） | V2 トラックは Phase 11（Collabora）へ統合 |
-| データプレーン完全相乗り（フルプール） | 需要が出たら | **SaaS（共有コントロールプレーン＋cell隔離データプレーン）は優先ターゲット**（design §4.1.1）。本項は cell 隔離をやめ全テナント共有プールへ寄せる更なる最適化＝tenant_id 行分離の全面適用 |
+| データプレーン完全相乗り（フルプール） | 需要が出たら | **SaaS（shiki の SaaS コントロールプレーン＋cell隔離データプレーン）は優先ターゲット**（design §4.1.1）。本項は cell 隔離をやめ全テナント共有プールへ寄せる更なる最適化＝tenant_id 行分離の全面適用 |
 | ミニアプリ marketplace（第三者公開） | Phase 9 安定後 | 信頼ティアに審査付き第三者枠を追加 |
 | 会話ブランチUI | 任意 | データ構造は Phase 3 で用意済み |
 | **音声入力（トラックASR）** | Phase 3 の後ならいつでも | マイクの発話を文字にして入力欄へ。認識は `SpeechToText` トレイト裏でオンプレ完結。対話用 GPU に CUDA MPS で同居（GPU 追加なし）。[parallel-tracks.md](./roadmap/parallel-tracks.md) |

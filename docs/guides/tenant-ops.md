@@ -81,7 +81,7 @@ DB 行の対象は `information_schema` から `tenant_id` 列を持つ実テー
 ログイン時に IdP claims（`roles` ＋ `groups`＝AD 部署）と FGA の直接 role タプルを **diff 同期**する。
 部署異動・ロール剥奪は**次回ログインで自動反映**（それまではセッション TTL 内は旧権限が残る点に注意。
 即時失効が必要ならセッション削除を併用）。role タプルの正は IdP claims — **FGA へ手動で role
-member タプルを足しても次回ログインで剥がれる**。本番の SCIM/グループ完全同期は SK.6。
+member タプルを足しても次回ログインで剥がれる**。本番の SCIM/グループ完全同期は SAAS.6。
 
 ## テナント名前空間の移行（shiki-admin retenant）
 
