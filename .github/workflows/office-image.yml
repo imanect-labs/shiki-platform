@@ -67,6 +67,15 @@ jobs:
           context: deploy/docker/collabora
           load: true
           push: false
+          # **core のビルドだけで約 2 時間 50 分かかる。** キャッシュが無いと、
+          # stage 2 以降を 1 行直すたびにそこからやり直しになる（実際に 3 回溶かした）。
+          # GHCR をキャッシュ置き場にする（GHA キャッシュと違って容量上限が緩い）。
+          #
+          # **週次だけはキャッシュを使わない。** この schedule の目的は
+          # 「キャッシュ無しのクリーンビルドで腐敗を検知する」ことなので、
+          # 効かせると目的を失う。
+          cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
+          cache-to: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache,mode=max', github.repository_owner) || '' }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest

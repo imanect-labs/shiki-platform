@@ -60,10 +60,21 @@ RUN git clone --depth 1 --branch "$CORE_REF" "$CORE_REPO" core \
 # 使わない経路のためにビルド依存が増え続ける。archive なら tar/gzip で足りる。
 RUN cd core && ./autogen.sh --with-distro=CPLinux-LOKit --disable-symbols \
     --with-package-format=archive
+#
+# **ooinstall はパスつきで呼ぶ。** `bin/` は PATH に無いので裸の `ooinstall` は
+#   /bin/sh: 1: ooinstall: not found   make: *** [Makefile:261: cmd] Error 127
+# になる。**2 時間 48 分の make が完走した直後にこれで落ちた。**
+#
+# **LOKit のヘッダは ooinstall が入れない**（-simple インストールは実行時の
+# program/ と share/ だけ）。coolwsd 側の configure は
+#   AC_CHECK_HEADERS([LibreOfficeKit/LibreOfficeKit.h], ...,
+#     [AC_MSG_ERROR([header LibreOfficeKit/LibreOfficeKit.h not found ...])])
+# で止まるので、ソースツリーから持ち出して次のステージへ渡す。
 RUN cd core \
     && make -j"$(nproc)" \
     && mkdir -p /opt/collaboraoffice \
-    && make cmd cmd='ooinstall /opt/collaboraoffice'
+    && make cmd cmd='./solenv/bin/ooinstall /opt/collaboraoffice' \
+    && cp -a include /opt/collaboraoffice/include
 
 # ---- Stage 2: coolwsd（Collabora Online 本体）のビルド ----
 FROM ubuntu:24.04 AS online-build
@@ -71,9 +82,14 @@ ARG ONLINE_REPO=https://github.com/CollaboraOnline/online.git
 ARG ONLINE_REF=cp-25.04.9-5
 ARG ONLINE_COMMIT=53f91c25641febb11d77702380530775a923890e
 ENV DEBIAN_FRONTEND=noninteractive
+# **zlib と cppunit も要る。** coolwsd の configure.ac は Linux では
+#   PKG_CHECK_MODULES([ZLIB], [zlib])
+#   PKG_CHECK_MODULES([CPPUNIT], [cppunit])
+# を無条件で通すので、欠けると configure が止まる（upstream の configure.ac で確認）。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential autoconf automake libtool pkg-config python3 python3-polib \
     libpoco-dev libcap-dev libzstd-dev libpam0g-dev libssl-dev libpng-dev \
+    zlib1g-dev libcppunit-dev \
     nodejs npm ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=core-build /opt/collaboraoffice /opt/collaboraoffice
