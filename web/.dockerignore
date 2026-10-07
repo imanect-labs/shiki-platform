@@ -1,0 +1,8 @@
+# ビルドコンテキストから除外する。
+# node_modules は pnpm install で作り直すので送る意味がない（数百 MB の無駄）。
+node_modules
+.next
+# Playwright の成果物。
+test-results
+playwright-report
+# 生成物は **送る**（Dockerfile が存在を確認する）。.gitignore とは意図的に違う。

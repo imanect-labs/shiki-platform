@@ -29,6 +29,9 @@ on:
       - "web/package.json"
       - "web/pnpm-lock.yaml"
       - "deploy/Dockerfile"
+      # web (Next.js BFF)。**gen:api の入力である crates/** も上にあるので、
+      # Rust の型が変われば web も焼き直される（型は Rust から生成される）。
+      - "web/**"
       # ingestion-worker
       - "ingestion-worker/**"
       - ".github/workflows/images.yml"
@@ -64,6 +67,16 @@ jobs:
             context: ingestion-worker
             dockerfile: ingestion-worker/Dockerfile
             free_disk: false
+          - name: shiki-web
+            context: web
+            dockerfile: web/Dockerfile
+            # **gen:api が要る。** web/Dockerfile は生成物 (web/src/generated/*) が
+            # 揃っている前提で、無ければ明示的に失敗する。生成は cargo を 4 本
+            # 走らせるのでイメージの中ではやらない (Rust のフルビルドを web の
+            # ために二重に回すことになる)。
+            needs_gen: true
+            # Next.js のビルドと node_modules でディスクを食う。
+            free_disk: true
 
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +94,43 @@ jobs:
           # push(main) と workflow_dispatch だけなので実コミットを指す。
           echo "IMAGE=ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}" >> "$GITHUB_ENV"
           echo "SHA_TAG=sha-$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
+
+      # ---- web だけ: gen:api で型を生成してからビルドする ----
+      - uses: dtolnay/rust-toolchain@master
+        if: matrix.needs_gen
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.needs_gen
+      - uses: pnpm/action-setup@v4
+        if: matrix.needs_gen
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        if: matrix.needs_gen
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: install (web)
+        if: matrix.needs_gen
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: gen:api (Rust 定義から型生成)
+        if: matrix.needs_gen
+        working-directory: web
+        run: pnpm gen:api
+      - name: 生成物が揃っていることを確認
+        if: matrix.needs_gen
+        run: |
+          set -euo pipefail
+          # **Dockerfile 側でも確認しているが、ここで落とした方が原因が分かりやすい**
+          # （docker build のログに埋もれない）。
+          for f in web/src/generated/openapi.json web/src/generated/api.d.ts \
+                   web/src/generated/authz-vocab.ts; do
+            [ -s "$f" ] || { echo "生成物が無い: $f"; exit 1; }
+          done
+          ls -la web/src/generated/
 
       - uses: docker/setup-buildx-action@v3
 
@@ -102,6 +152,11 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ env.SHA_TAG }}
             ${{ env.IMAGE }}:main
+          # **BACKEND_ORIGIN はビルド時に routes-manifest.json へ焼き込まれる**
+          # （next.config.mjs の rewrites() 経由）。実行時に渡しても効かないので
+          # ここで k8s のクラスタ内 DNS を渡す。
+          build-args: |
+            ${{ matrix.name == 'shiki-web' && 'BACKEND_ORIGIN=http://shiki-preview-server:8080' || '' }}
           cache-from: type=gha,scope=${{ matrix.name }}
           # mode=min。Rust の cache mount は export されないので max にしても
           # 増えるのは中間レイヤだけで、Actions のキャッシュ枠を無駄に食う。
@@ -126,6 +181,33 @@ jobs:
             test -n "$(ls -A /opt/shiki/builtin)" || { echo "builtin dir が空"; exit 1; }
             ls /opt/shiki/builtin
           '
+
+      - name: smoke (web — standalone が起動して応答すること)
+        if: matrix.name == 'shiki-web'
+        run: |
+          set -euo pipefail
+          IMG="${IMAGE}:${SHA_TAG}"
+          # **「起動した」だけでは足りない。** standalone の COPY 漏れは起動後に
+          # 初めて 500 になるので、実際にページを引いて中身を見る。
+          docker run -d --name web-smoke -p 127.0.0.1:13000:3000 "$IMG"
+          # カウンタを明示的に使う（未使用変数の警告を避ける）。
+          tries=0
+          until curl -sf -o /dev/null http://127.0.0.1:13000/login; do
+            tries=$((tries + 1))
+            [ "$tries" -ge 60 ] && { echo "起動しない"; docker logs web-smoke; exit 1; }
+            sleep 2
+          done
+          code=$(curl -s -o /tmp/body -w '%{http_code}' http://127.0.0.1:13000/login)
+          echo "GET /login => $code"
+          [ "$code" = "200" ] || { echo "200 でない"; docker logs web-smoke; exit 1; }
+          # Next.js が実際にレンダリングしたか（静的アセットの参照があるか）。
+          grep -q '/_next/static' /tmp/body || { echo "描画されていない"; head -c 400 /tmp/body; exit 1; }
+          echo "  /login が 200 で _next/static を含む"
+          # 非 root で動いていること。
+          u=$(docker exec web-smoke id -u)
+          echo "  uid=$u"
+          [ "$u" != "0" ] || { echo "root で動いている"; exit 1; }
+          docker rm -f web-smoke
 
       - name: smoke (ingestion-worker — アプリが import 可能であること)
         if: matrix.name == 'shiki-ingestion-worker'

@@ -16,6 +16,10 @@ const backendOrigin = process.env.BACKEND_ORIGIN ?? "http://localhost:8080";
 
 const nextConfig = {
   reactStrictMode: true,
+  // コンテナ用の自己完結出力。node_modules 全体ではなく実際に使うものだけを
+  // .next/standalone へまとめるので、イメージが数百 MB 小さくなる。
+  // **サーバは `node server.js` で起動する**（`next start` ではない）。
+  output: "standalone",
   async rewrites() {
     return [
       // フロントの API 呼び出し（/api/me 等）→ shiki-server のルート（/me 等）。
