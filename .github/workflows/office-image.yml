@@ -57,11 +57,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: build & push
+      # **push する前に smoke する。** 以前はこの step が push: true で、
+      # ビルドが通っただけのイメージが latest として公開されていた。
+      # 起動しないイメージを掴まされると、利用側は原因がイメージ側にあると
+      # 気づけない。load してローカルで検証し、通ってから push する。
+      - name: build（load のみ・まだ push しない）
         uses: docker/build-push-action@v6
         with:
           context: deploy/docker/collabora
-          push: true
+          load: true
+          push: false
           tags: |
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest
@@ -94,3 +99,10 @@ jobs:
             sleep 2
           done
           echo "discovery が 120 秒で応答しない"; docker logs collabora-smoke; exit 1
+
+      # smoke を通ったものだけ公開する。
+      - name: push
+        run: |
+          set -euo pipefail
+          docker push "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}"
+          docker push "ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest"
