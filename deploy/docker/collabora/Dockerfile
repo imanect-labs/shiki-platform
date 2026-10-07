@@ -20,17 +20,18 @@ ARG CORE_REPO=https://git.libreoffice.org/core
 ARG CORE_REF=cp-25.04.9-4
 ARG CORE_COMMIT=bbf180856f1919e69a04fdf6175ff4f11f52e1db
 ENV DEBIAN_FRONTEND=noninteractive
-# **fakeroot は必須。** --with-distro=CPLinux-LOKit が
-# --with-package-format='deb rpm' を設定するため、configure が
+# **fakeroot / unzip / gettext を足している。** いずれも configure の検査に
+# 必要で、欠けると数秒で落ちる（2026-09 以降この workflow が全失敗していた）。
+# 実測で 1 つずつ潰した順:
 #   configure: error: --with-package-format='deb rpm' requires fakeroot.
-# で落ちる（2026-09 以降この workflow が全失敗していた直接の原因）。
-# パッケージ自体は作らず ooinstall しか使わないが、configure の検査は通す。
+#   configure: error: unzip is required
+#   configure: error: msgfmt not found. Install GNU gettext, ...
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential autoconf automake libtool pkg-config python3 python3-dev \
-    zip ccache flex bison gperf nasm libx11-dev libxml2-dev libxml2-utils libxslt1-dev \
+    zip unzip ccache flex bison gperf nasm libx11-dev libxml2-dev libxml2-utils libxslt1-dev \
     libcups2-dev libfontconfig1-dev libxrandr-dev libgl-dev libglu1-mesa-dev \
     libkrb5-dev libnss3-dev libpam0g-dev libssl-dev libcairo2-dev \
-    libavahi-client-dev libdbus-glib-1-dev ca-certificates curl fakeroot \
+    libavahi-client-dev libdbus-glib-1-dev ca-certificates curl fakeroot gettext \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN git clone --depth 1 --branch "$CORE_REF" "$CORE_REPO" core \
@@ -43,7 +44,13 @@ RUN git clone --depth 1 --branch "$CORE_REF" "$CORE_REPO" core \
 # 落ちたのか configure の数秒で落ちたのかがログの末尾からは読めない
 # （実際、fakeroot 欠けで 5 分で落ちていたのを「タイムアウトだろう」と
 #  誤って見積もっていた）。分けておけばどちらかが一目で分かる。
-RUN cd core && ./autogen.sh --with-distro=CPLinux-LOKit --disable-symbols
+#
+# **--with-package-format を上書きする。** CPLinux-LOKit の既定は 'deb rpm' だが、
+# ここでは `make cmd cmd='ooinstall ...'` しか使わず deb/rpm は作らない。
+# 既定のままだと rpm コマンドまで要求され（configure: error: not found）、
+# 使わない経路のためにビルド依存が増え続ける。archive なら tar/gzip で足りる。
+RUN cd core && ./autogen.sh --with-distro=CPLinux-LOKit --disable-symbols \
+    --with-package-format=archive
 RUN cd core \
     && make -j"$(nproc)" \
     && mkdir -p /opt/collaboraoffice \
