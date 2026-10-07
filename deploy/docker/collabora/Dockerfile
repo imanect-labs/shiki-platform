@@ -33,11 +33,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libkrb5-dev libnss3-dev libpam0g-dev libssl-dev libcairo2-dev \
     libavahi-client-dev libdbus-glib-1-dev ca-certificates curl fakeroot gettext \
     && rm -rf /var/lib/apt/lists/*
+# **core は root でビルドできない。** LibreOffice の Makefile に
+#   check-if-root: Building LibreOffice as root is a very bad idea, use a regular user.
+# という明示の拒否があり、make が即 Error 1 になる（実測）。
+# 書き込む先（/src と /opt/collaboraoffice）を先に用意して所有者を移し、
+# 以降を非 root で走らせる。
+RUN useradd -m build \
+    && mkdir -p /src /opt/collaboraoffice \
+    && chown -R build:build /src /opt/collaboraoffice
+USER build
 WORKDIR /src
 RUN git clone --depth 1 --branch "$CORE_REF" "$CORE_REPO" core \
     && cd core \
     && test "$(git rev-parse HEAD)" = "$CORE_COMMIT" \
-    && git rev-parse HEAD | tee /CORE_COMMIT
+    && git rev-parse HEAD > /src/CORE_COMMIT && cat /src/CORE_COMMIT
 # LOKit 向け最小構成（GUI 依存を切る）。--with-distro が依存/機能セットを固定する。
 #
 # **configure と make をレイヤで分ける。** 一体にすると、数時間走った末に
@@ -95,7 +104,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=core-build /opt/collaboraoffice /opt/collaboraoffice
 COPY --from=online-build /inst/ /
-COPY --from=core-build /CORE_COMMIT /etc/collabora/CORE_COMMIT
+COPY --from=core-build /src/CORE_COMMIT /etc/collabora/CORE_COMMIT
 COPY --from=online-build /ONLINE_COMMIT /etc/collabora/ONLINE_COMMIT
 # 非 root 実行（cool ユーザー）＋ systemplate/jail の初期化＋forkit へのファイル capability 付与
 # （jail の chroot に必要。Docker 既定 cap 集合（CHOWN/FOWNER/MKNOD/SYS_CHROOT）内で動く。
