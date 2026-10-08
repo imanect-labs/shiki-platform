@@ -17,6 +17,13 @@ const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STA
 /// stdout=0 / stderr=1 のタグ付きチャンク。
 type Chunk = (u8, Vec<u8>);
 
+/// 子が終了した後、まだ届いていない出力を待つ猶予（#504）。
+///
+/// パイプの切断だけを終端にすると、子が残したバックグラウンドプロセス（`sh -c "srv & echo ok"`）が
+/// パイプを握ったまま生き続け、子はとうに終わっているのに timeout まで待つ（その間 vsock 接続も
+/// 塞がる）。子が終わったらこの猶予の後にグループごと kill して読み手を終わらせる。
+const DRAIN_GRACE: Duration = Duration::from_millis(250);
+
 /// argv を実行し、結果イベントを `conn` に逐次書く（作業ディレクトリは `cwd`）。
 pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd: &str) {
     let Some((program, args)) = argv.split_first() else {
@@ -64,10 +71,20 @@ pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd:
         .checked_add(Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
     let mut killed = false;
+    // 子（グループリーダ）が終了した時刻。終了後 DRAIN_GRACE でグループの残りを kill する。
+    let mut exited_at: Option<Instant> = None;
     loop {
         // deadline は**毎周**判定する。子が 100ms 未満間隔で出力し続けると `recv_timeout` が常に
         // `Ok` を返し Timeout ブランチに入らないため、ここで判定しないとタイムアウトが発火しない。
         if !killed && Instant::now() >= deadline {
+            let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
+            killed = true;
+        }
+        if exited_at.is_none() && matches!(child.try_wait(), Ok(Some(_))) {
+            exited_at = Some(Instant::now());
+        }
+        if !killed && exited_at.is_some_and(|at| at.elapsed() >= DRAIN_GRACE) {
+            // リーダは reap 済みでも、グループの残り（バックグラウンドジョブ）には届く。
             let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
             killed = true;
         }
@@ -194,5 +211,33 @@ mod tests {
             decode(buf).last(),
             Some(Event::Exited { code: 3 })
         ));
+    }
+
+    /// 子が残したバックグラウンドジョブがパイプを握っていても、子の終了で打ち切る（#504）。
+    /// timeout まで待たず、子の終了コードを返し、残ったジョブはグループごと kill される。
+    #[test]
+    fn background_job_is_cut_off_when_the_child_exits() {
+        let marker = std::env::temp_dir().join(format!("bg-job-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let line = format!(
+            "(sleep 2; touch {}) & echo started; exit 4",
+            marker.display()
+        );
+        let started = Instant::now();
+        let mut buf = Vec::new();
+        run(&mut buf, &argv(&["/bin/sh", "-c", &line]), 10_000, ".");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "子の終了で打ち切ること: {:?}",
+            started.elapsed()
+        );
+        let evs = decode(buf);
+        assert!(evs.iter().any(
+            |e| matches!(e, Event::Stdout { b64 } if B64.decode(b64).unwrap() == b"started\n")
+        ));
+        assert!(matches!(evs.last(), Some(Event::Exited { code: 4 })));
+        // 残ったジョブは kill 済み（生きていれば 2 秒後に marker を作る）。
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(!marker.exists(), "バックグラウンドジョブが生き残っている");
     }
 }

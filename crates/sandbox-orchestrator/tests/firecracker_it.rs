@@ -163,6 +163,17 @@ async fn firecracker_shell_line_is_interpreted_by_sh() {
         "{out:?}"
     );
 
+    // バックグラウンドジョブがパイプを握っていても、シェルの終了で返る（壁時計上限まで待たない）。
+    let started = std::time::Instant::now();
+    let (out, code) = collect_stdout(&inst, shell("sleep 60 & echo started")).await;
+    assert_eq!(code, Some(0), "stdout={out:?}");
+    assert!(out.contains("started"), "{out:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+
     inst.destroy().await.expect("destroy");
 }
 

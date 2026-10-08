@@ -15,6 +15,15 @@ use tokio_stream::wrappers::ReceiverStream;
 /// stdout=0 / stderr=1 のタグ付きチャンク。
 type Chunk = (u8, Vec<u8>);
 
+/// 子が終了した後、まだ届いていない出力を待つ猶予（#504）。
+///
+/// パイプの EOF だけを終端にすると、子が残したバックグラウンドプロセス（`sh -c "srv & echo ok"`）が
+/// パイプを握ったまま生き続け、子はとうに終わっているのに壁時計上限まで待って `LimitExceeded` になる。
+/// 子が終わったらこの猶予だけ汲み出して打ち切る（残りのプロセスはサンドボックス破棄で消える）。
+const DRAIN_GRACE: Duration = Duration::from_millis(250);
+/// 子の終了を確かめる間隔。
+const EXIT_POLL: Duration = Duration::from_millis(50);
+
 /// 子プロセスを exec ストリームへ変換する（stdout/stderr は piped で spawn 済みであること）。
 pub fn stream_child(
     mut child: Child,
@@ -36,6 +45,9 @@ pub fn stream_child(
         let mut total = 0usize;
         let deadline = tokio::time::sleep(timeout);
         tokio::pin!(deadline);
+        // 子の終了時刻と終了コード（終わったら DRAIN_GRACE だけ汲み出して打ち切る）。
+        let mut exited: Option<(tokio::time::Instant, i32)> = None;
+        let mut poll = tokio::time::interval(EXIT_POLL);
         loop {
             tokio::select! {
                 biased;
@@ -70,13 +82,26 @@ pub fn stream_child(
                         }
                     }
                     None => break, // 両 reader が完了。
-                }
+                },
+                _ = poll.tick() => match exited {
+                    None => {
+                        if let Ok(Some(status)) = child.try_wait() {
+                            exited = Some((tokio::time::Instant::now(), status.code().unwrap_or(-1)));
+                        }
+                    }
+                    // 子は終わったがパイプが閉じない＝子孫が握っている。猶予を過ぎたら打ち切る。
+                    Some((at, _)) if at.elapsed() >= DRAIN_GRACE => break,
+                    Some(_) => {}
+                },
             }
         }
         // 終了コードを回収（kill 済みでも wait で reap）。
-        let code = match child.wait().await {
-            Ok(status) => status.code().unwrap_or(-1),
-            Err(_) => -1,
+        let code = match exited {
+            Some((_, code)) => code,
+            None => match child.wait().await {
+                Ok(status) => status.code().unwrap_or(-1),
+                Err(_) => -1,
+            },
         };
         let _ = tx.send(Ok(ExecEvent::Exited { code })).await;
     });
@@ -182,5 +207,37 @@ mod tests {
             .unwrap();
         let evs = collect(stream_child(child, 1 << 20, Duration::from_secs(5))).await;
         assert!(matches!(evs.last(), Some(ExecEvent::Exited { code: 7 })));
+    }
+
+    /// 子が残したバックグラウンドプロセスがパイプを握っていても、子の終了で打ち切る（#504）。
+    /// 壁時計上限まで待たず、`LimitExceeded` にもならず、子の終了コードを返す。
+    #[tokio::test]
+    async fn background_job_does_not_hold_the_stream_open() {
+        let child = Command::new("/bin/sh")
+            .args(["-c", "sleep 30 & echo started; exit 3"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let evs = collect(stream_child(child, 1 << 20, Duration::from_secs(10))).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "子の終了で打ち切ること: {:?}",
+            started.elapsed()
+        );
+        let stdout: Vec<u8> = evs
+            .iter()
+            .filter_map(|e| match e {
+                ExecEvent::Stdout(b) => Some(b.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(String::from_utf8_lossy(&stdout), "started\n");
+        assert!(!evs
+            .iter()
+            .any(|e| matches!(e, ExecEvent::LimitExceeded { .. })));
+        assert!(matches!(evs.last(), Some(ExecEvent::Exited { code: 3 })));
     }
 }
