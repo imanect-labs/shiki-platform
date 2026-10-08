@@ -9,6 +9,8 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/utils";
+import { citeNumberFromHref } from "@/lib/citation";
+import { CitationMarker } from "@/components/chat/citations/citation-marker";
 import { CodeBlock } from "./code-block";
 
 /// LLM は GFM 表のセル内改行に `<br>` を使うことがある（表セルは実改行を持てないため）。
@@ -79,15 +81,10 @@ const components: Components = {
   },
   a({ href, children }) {
     const url = href ?? "";
-    // 引用マーカー（/drive/file/...）は本文中の上付き番号チップとして描画する。
-    // 参照元は下部の「参照したソース」に一覧表示するため、ここは非遷移の表示のみ。
-    if (url.startsWith("/drive/file/")) {
-      return (
-        <span className="mx-px inline-flex h-[1.2em] min-w-[1.2em] -translate-y-[0.3em] items-center justify-center rounded-[5px] bg-primary/12 px-1 align-baseline text-[0.7em] font-semibold leading-none text-primary">
-          {children}
-        </span>
-      );
-    }
+    // 引用マーカー（`#cite-n`・linkifyCitations が付ける）は本文中の上付き番号チップにする。
+    // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
+    const cite = citeNumberFromHref(url);
+    if (cite != null) return <CitationMarker n={cite}>{children}</CitationMarker>;
     // その他の内部リンクはクライアント遷移。
     if (url.startsWith("/")) {
       return (

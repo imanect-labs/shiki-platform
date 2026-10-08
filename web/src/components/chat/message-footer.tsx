@@ -6,8 +6,8 @@ import { Check, Copy, Share2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/use-toast";
 
-/// アシスタントメッセージ下部のアクション（コピー / シェア）。
-export function MessageFooter({ text }: { text: string }) {
+/// アシスタントメッセージ下部のアクション（コピー / シェア＋呼び出し側の追加ボタン）。
+export function MessageFooter({ text, children }: { text: string; children?: React.ReactNode }) {
   const [copied, setCopied] = React.useState(false);
 
   const copy = async () => {
@@ -39,24 +39,28 @@ export function MessageFooter({ text }: { text: string }) {
   };
 
   return (
-    <div className="mt-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+    <div className="mt-1.5 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
       <FooterButton label={copied ? "コピー済み" : "コピー"} onClick={copy}>
         {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
       </FooterButton>
       <FooterButton label="共有" onClick={share}>
         <Share2 className="size-3.5" />
       </FooterButton>
+      {children}
     </div>
   );
 }
 
-function FooterButton({
+export function FooterButton({
   label,
   onClick,
+  pressed,
   children,
 }: {
   label: string;
   onClick: () => void;
+  /// トグルボタンの押下状態（指定時のみ aria-pressed を付ける）。
+  pressed?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -64,10 +68,12 @@ function FooterButton({
       type="button"
       onClick={onClick}
       aria-label={label}
+      aria-pressed={pressed}
       title={label}
       className={cn(
         "flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors",
         "hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        pressed && "bg-secondary text-foreground",
       )}
     >
       {children}
