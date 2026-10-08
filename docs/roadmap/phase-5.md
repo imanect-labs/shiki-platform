@@ -17,7 +17,8 @@
 > - **既知の未実装（後続）**: ①プロセス再起動を跨ぐチェックポイント run 再開（承認ベースの suspend は動作）
 >   ②ページ再訪後の承認（run_id 再取得が要る・ライブセッション中は動作）③Playwright 自律 e2e（CI に MinIO＋
 >   autonomous 対応の web-e2e 環境が要る・Rust e2e `autonomous_run_writes_workspace_file_e2e` で DoD を担保済み）
->   ④shell のパイプ/`&&`（brush 制約・ポストアルファ）。
+>   ④**wasm ティアの** shell のパイプ/`&&`（brush 制約・ポストアルファ。gVisor/Firecracker は #504 で
+>   ゲストの `/bin/sh -c` が解釈するよう対応済み）。
 
 
 > 📝 **方針転換（2026-07-05・#97・design §4.6）**: アルファのサンドボックスは **wasm ティア（Task 4.12）**。
