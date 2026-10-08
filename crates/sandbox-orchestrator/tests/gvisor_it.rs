@@ -129,6 +129,53 @@ async fn gvisor_code_interpreter_and_files() {
     inst.destroy().await.expect("destroy");
 }
 
+/// #504: シェル行はゲストの `/bin/sh -c` が解釈する（パイプ・`&&`・`||`・リダイレクト）。
+/// リダイレクト先は /workspace に残り、ホスト側で回収できる（`shell` ツールの sync-back の前提）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gvisor_shell_line_is_interpreted_by_sh() {
+    let Some(env) = gated() else { return };
+    let backend = GvisorBackend::new(
+        &env.runsc,
+        env.rootfs.clone(),
+        env.state.clone(),
+        None,
+        None,
+    )
+    .expect("backend");
+    let inst = backend.create(gvisor_spec()).await.expect("create");
+    inst.put_file("/workspace/rows.csv", b"a,x\nb,y\nc,x\n".to_vec())
+        .await
+        .expect("put");
+
+    let shell = |cmd: &str| ExecRequest::Shell {
+        cmd: cmd.into(),
+        timeout_ms: None,
+    };
+    let (out, code) = collect_stdout(
+        &inst,
+        shell("cut -d, -f2 rows.csv | sort | uniq -c > counts.txt && echo piped-ok"),
+    )
+    .await;
+    assert_eq!(code, Some(0), "stdout={out:?}");
+    assert!(out.contains("piped-ok"), "stdout={out:?}");
+    let counts = inst.get_file("counts.txt").await.expect("redirect target");
+    let counts = String::from_utf8_lossy(&counts);
+    assert!(
+        counts.contains("2 x") && counts.contains("1 y"),
+        "{counts:?}"
+    );
+
+    // `&&` は左が失敗すれば右を実行しない・`||` は実行する（シェルの意味論そのもの）。
+    let (out, code) = collect_stdout(&inst, shell("false && echo never || echo fallback")).await;
+    assert_eq!(code, Some(0), "stdout={out:?}");
+    assert!(
+        !out.contains("never") && out.contains("fallback"),
+        "{out:?}"
+    );
+
+    inst.destroy().await.expect("destroy");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gvisor_two_instances_isolated() {
     let Some(env) = gated() else { return };

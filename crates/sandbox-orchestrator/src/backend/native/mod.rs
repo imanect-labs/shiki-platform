@@ -9,6 +9,7 @@ pub mod workspace;
 
 use std::path::Path;
 
+use sandbox_client::SandboxError;
 use tokio::process::Command;
 
 /// `nsenter -t <pid> -U -n --preserve-credentials -- <program>` を組み立てる。
@@ -40,6 +41,21 @@ pub fn nsenter_ip(netns_pid: u32, args: &[&str]) -> Command {
 #[must_use]
 pub fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file())
+}
+
+/// シェル行をゲストの POSIX シェル（`/bin/sh -c`）で解釈させる argv を組み立てる（#504）。
+///
+/// ネイティブティアの rootfs は `python:3.12-slim` 由来で `/bin/sh`（dash）を持つ（Firecracker の
+/// `rootfs.ext4` も同じツリーから生成・`scripts/build-sandbox-rootfs.sh`）。パイプ・`&&`・リダイレクトが
+/// そのまま使える。wasm ティアは brush の PTY 問題で shlex 分割のまま（`backend/wasm/instance.rs`）。
+///
+/// 能力は増えない: `shell` からは既に `python3` の `subprocess` で任意のパイプを組める。境界は
+/// 従来どおり隔離・egress 遮断・使い捨て・承認ゲート（`shell` は `requires_confirmation`）。
+pub fn shell_argv(cmd: &str) -> Result<Vec<String>, SandboxError> {
+    if cmd.trim().is_empty() {
+        return Err(SandboxError::Invalid("empty shell command".into()));
+    }
+    Ok(vec!["/bin/sh".into(), "-c".into(), cmd.to_string()])
 }
 
 #[cfg(test)]
@@ -92,5 +108,25 @@ mod tests {
         assert!(is_executable(Path::new("/bin/sh")));
         assert!(!is_executable(Path::new("/nonexistent/xyz")));
         assert!(!is_executable(Path::new("/")));
+    }
+
+    /// シェル行は分割せず `/bin/sh -c` へ 1 引数で渡す（演算子・クォートの解釈はゲストのシェル・#504）。
+    #[test]
+    fn shell_argv_hands_the_whole_line_to_sh() {
+        let line = "cut -d, -f2 a.csv | sort > 'out file.txt' && echo done";
+        assert_eq!(
+            shell_argv(line).unwrap(),
+            vec!["/bin/sh".to_string(), "-c".to_string(), line.to_string()]
+        );
+    }
+
+    #[test]
+    fn shell_argv_rejects_blank_lines() {
+        for blank in ["", "   ", "\n\t"] {
+            assert!(
+                matches!(shell_argv(blank), Err(SandboxError::Invalid(_))),
+                "{blank:?} は拒否する"
+            );
+        }
     }
 }

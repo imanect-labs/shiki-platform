@@ -17,7 +17,7 @@ use tokio::process::{Child, Command};
 
 use crate::backend::egress::EgressStack;
 use crate::backend::native::workspace::Workspace;
-use crate::backend::native::{nsenter_command, stream::stream_child};
+use crate::backend::native::{nsenter_command, shell_argv, stream::stream_child};
 use crate::backend::Instance;
 
 /// runsc 実行の共有設定（バイナリ・プラットフォーム）。
@@ -168,15 +168,12 @@ impl Instance for GvisorInstance {
                     .arg("python3")
                     .arg(guest_path);
             }
+            // シェル行はゲストの `/bin/sh -c` が解釈する（パイプ・`&&`・リダイレクト可・#504）。
             ExecRequest::Shell {
                 cmd: shell,
                 timeout_ms,
             } => {
-                let parts = shlex::split(shell)
-                    .ok_or_else(|| SandboxError::Invalid("unparseable shell command".into()))?;
-                if parts.is_empty() {
-                    return Err(SandboxError::Invalid("empty shell command".into()));
-                }
+                let parts = shell_argv(shell)?;
                 cmd.arg(&self.id)
                     .arg("timeout")
                     .arg("-k")

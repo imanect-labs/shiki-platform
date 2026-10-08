@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 
 use super::vsock::AgentConn;
 use crate::backend::egress::EgressStack;
+use crate::backend::native::shell_argv;
 use crate::backend::Instance;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
@@ -96,9 +97,8 @@ impl Instance for FirecrackerInstance {
                 }
                 vec!["python3".to_string(), path]
             }
-            ExecRequest::Shell { cmd, .. } => shlex::split(cmd)
-                .filter(|v| !v.is_empty())
-                .ok_or_else(|| SandboxError::Invalid("unparseable shell command".into()))?,
+            // シェル行はゲストの `/bin/sh -c` が解釈する（パイプ・`&&`・リダイレクト可・#504）。
+            ExecRequest::Shell { cmd, .. } => shell_argv(cmd)?,
         };
 
         conn.send(&Request::Exec { argv, timeout_ms }).await?;
