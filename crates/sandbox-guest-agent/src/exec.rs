@@ -83,19 +83,18 @@ pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd:
         // deadline は**毎周**判定する。子が 100ms 未満間隔で出力し続けると `recv_timeout` が常に
         // `Ok` を返し Timeout ブランチに入らないため、ここで判定しないとタイムアウトが発火しない。
         if killed_at.is_none() && Instant::now() >= deadline {
-            let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
+            kill_leftovers(pid);
             killed_at = Some(Instant::now());
         }
         if exited_at.is_none() && matches!(child.try_wait(), Ok(Some(_))) {
             exited_at = Some(Instant::now());
         }
         if killed_at.is_none() && exited_at.is_some_and(|at| at.elapsed() >= DRAIN_GRACE) {
-            // リーダは reap 済みでも、グループの残り（バックグラウンドジョブ）には届く。
-            let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
+            kill_leftovers(pid);
             killed_at = Some(Instant::now());
         }
-        // kill 後もパイプが閉じない＝別グループへ抜けた子孫（`setsid` 等）が握っている。
-        // グループ kill は届かないので、出力が猶予の間途絶えたら（溜まった分は送り切ってから）
+        // kill 後もパイプが閉じない＝止められなかった子孫が握っている（VM 外のテストでは別グループへ
+        // 抜けた子孫にグループ kill が届かない）。出力が猶予の間途絶えたら（溜まった分は送り切ってから）
         // パイプを待たずに打ち切る（読み手スレッドは VM 破棄まで残る）。待ち続けると vsock 接続
         // ごと塞がり、後続の exec / destroy も止まる。書き続ける子孫でも timeout＋猶予で抜ける。
         if let Some(at) = killed_at {
@@ -125,6 +124,22 @@ pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd:
 
     let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
     let _ = write_frame(conn, &Event::Exited { code });
+}
+
+/// exec が残したプロセスを止める（timeout・子の終了後の打ち切り・#504）。
+///
+/// VM の PID 1（本エージェント）として動いているなら、自分以外の**全プロセス**へ SIGKILL を送る
+/// （`kill(-1)` は呼び出し元と PID 1 を除く）。別グループへ抜けた子孫（`setsid`・自己デーモン化）や、
+/// timeout で SIGKILL されたシェルラッパが止め損ねたシェル行のグループまで確実に止めるため。
+/// 要求は逐次処理なので、止めてよいのはこの exec のプロセスだけ。PID 1 でない（ホスト上のテスト）
+/// なら、子のプロセスグループだけを止める（`kill(-1)` はホストの無関係なプロセスを止める）。
+fn kill_leftovers(pid: i32) {
+    if nix::unistd::getpid() == Pid::from_raw(1) {
+        let _ = kill(Pid::from_raw(-1), Signal::SIGKILL);
+    } else {
+        // リーダは reap 済みでも、グループの残り（バックグラウンドジョブ）には届く。
+        let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
+    }
 }
 
 /// 1 本のパイプを汲み出して mpsc へ送る（EOF/エラーで終了）。

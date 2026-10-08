@@ -17,7 +17,7 @@ use tokio::process::{Child, Command};
 
 use crate::backend::egress::EgressStack;
 use crate::backend::native::workspace::Workspace;
-use crate::backend::native::{nsenter_command, shell_argv, stream::stream_child};
+use crate::backend::native::{nsenter_command, shell_argv, stream::stream_child, ShellCleanup};
 use crate::backend::Instance;
 
 /// runsc 実行の共有設定（バイナリ・プラットフォーム）。
@@ -173,7 +173,7 @@ impl Instance for GvisorInstance {
                 cmd: shell,
                 timeout_ms,
             } => {
-                let parts = shell_argv(shell)?;
+                let parts = shell_argv(shell, ShellCleanup::SweepSandbox)?;
                 cmd.arg(&self.id)
                     .arg("timeout")
                     .arg("-k")

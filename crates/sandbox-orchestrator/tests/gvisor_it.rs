@@ -200,6 +200,60 @@ async fn gvisor_shell_line_is_interpreted_by_sh() {
     inst.destroy().await.expect("destroy");
 }
 
+/// #504: グループを抜けた子孫（`setsid`）も、返る前にサンドボックスごと掃除されている。
+///
+/// 検証ごとに**新しいサンドボックス**を使う。init は孤児を reap しないので、前の検証で止めたプロセスが
+/// ゾンビとしてプロセス数上限（constrained = 8）を埋め、後続の fork が失敗して検証にならないため。
+/// シェル行末尾の sleep は、子孫が `setsid` を終えてグループを抜けるのを待つ（無いとグループ kill で
+/// 先に止まり、掃除を検証できない）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gvisor_shell_line_leaves_no_process_behind() {
+    let Some(env) = gated() else { return };
+    let backend = GvisorBackend::new(
+        &env.runsc,
+        env.rootfs.clone(),
+        env.state.clone(),
+        None,
+        None,
+    )
+    .expect("backend");
+    let shell = |cmd: &str| ExecRequest::Shell {
+        cmd: cmd.into(),
+        timeout_ms: None,
+    };
+
+    // 返った後に /workspace を書き換えない。
+    let inst = backend.create(gvisor_spec()).await.expect("create");
+    let (out, code) = collect_stdout(
+        &inst,
+        shell("setsid sh -c 'sleep 1; echo late > escaped.txt' & echo started; sleep 0.5"),
+    )
+    .await;
+    assert_eq!(code, Some(0), "stdout={out:?}");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert!(
+        inst.get_file("escaped.txt").await.is_err(),
+        "グループを抜けた子孫が返った後に書き込んだ"
+    );
+    inst.destroy().await.expect("destroy");
+
+    // 書き続ける子孫がいても、パイプが閉じて即座に返る。
+    let inst = backend.create(gvisor_spec()).await.expect("create");
+    let started = std::time::Instant::now();
+    let (out, code) = collect_stdout(
+        &inst,
+        shell("setsid sh -c 'while :; do echo x; sleep 0.05; done' & echo started; sleep 0.5"),
+    )
+    .await;
+    assert_eq!(code, Some(0), "stdout={out:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    inst.destroy().await.expect("destroy");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gvisor_two_instances_isolated() {
     let Some(env) = gated() else { return };

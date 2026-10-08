@@ -55,6 +55,13 @@ pub fn stream_child(
         let mut last_chunk = tokio::time::Instant::now();
         let mut poll = tokio::time::interval(EXIT_POLL);
         loop {
+            // 子の終了は毎周確かめる（出力が途切れず `irx` が常に準備済みだと、biased の select では
+            // tick の枝が選ばれず終了を見落とす）。
+            if exited.is_none() {
+                if let Ok(Some(status)) = child.try_wait() {
+                    exited = Some((tokio::time::Instant::now(), status.code().unwrap_or(-1)));
+                }
+            }
             tokio::select! {
                 biased;
                 () = &mut deadline => {
@@ -90,16 +97,13 @@ pub fn stream_child(
                     }
                     None => break, // 両 reader が完了。
                 },
-                _ = poll.tick() => match exited {
-                    None => {
-                        if let Ok(Some(status)) = child.try_wait() {
-                            exited = Some((tokio::time::Instant::now(), status.code().unwrap_or(-1)));
-                        }
+                // 出力が無いときの起床（ループ先頭で終了を確かめ、下の打ち切り判定へ進む）。
+                _ = poll.tick() => {
+                    // 子は終わったがパイプが閉じない＝子孫が握っている。出力が猶予の間途絶えたら打ち切る。
+                    if exited.is_some_and(|(at, _)| at.max(last_chunk).elapsed() >= DRAIN_GRACE) {
+                        break;
                     }
-                    // 子は終わったがパイプが閉じない＝子孫が握っている。猶予を過ぎたら打ち切る。
-                    Some((at, _)) if at.max(last_chunk).elapsed() >= DRAIN_GRACE => break,
-                    Some(_) => {}
-                },
+                }
             }
         }
         // 終了コードを回収（kill 済みでも wait で reap）。
