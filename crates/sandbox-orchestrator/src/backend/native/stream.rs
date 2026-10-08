@@ -54,6 +54,9 @@ pub fn stream_child(
         // 判定する（終了からの経過時間で切ると、まだ汲み出し中の出力を捨てうる）。上限は deadline。
         let mut last_chunk = tokio::time::Instant::now();
         let mut poll = tokio::time::interval(EXIT_POLL);
+        // 出力パイプが全て閉じたか。閉じても子の終了とはみなさない（`exec >/dev/null` で出力を閉じて
+        // 走り続ける子がある）。閉じた後は子の終了か壁時計上限を待つ。
+        let mut pipes_closed = false;
         loop {
             // 子の終了は毎周確かめる（出力が途切れず `irx` が常に準備済みだと、biased の select では
             // tick の枝が選ばれず終了を見落とす）。
@@ -61,6 +64,9 @@ pub fn stream_child(
                 if let Ok(Some(status)) = child.try_wait() {
                     exited = Some((tokio::time::Instant::now(), status.code().unwrap_or(-1)));
                 }
+            }
+            if pipes_closed && exited.is_some() {
+                break;
             }
             tokio::select! {
                 biased;
@@ -72,7 +78,7 @@ pub fn stream_child(
                     })).await;
                     break;
                 }
-                msg = irx.recv() => match msg {
+                msg = irx.recv(), if !pipes_closed => match msg {
                     Some((ch, bytes)) => {
                         last_chunk = tokio::time::Instant::now();
                         total = total.saturating_add(bytes.len());
@@ -95,7 +101,7 @@ pub fn stream_child(
                             return;
                         }
                     }
-                    None => break, // 両 reader が完了。
+                    None => pipes_closed = true, // 両 reader が完了（子の終了はループ先頭で待つ）。
                 },
                 // 出力が無いときの起床（ループ先頭で終了を確かめ、下の打ち切り判定へ進む）。
                 _ = poll.tick() => {
@@ -218,6 +224,31 @@ mod tests {
             .unwrap();
         let evs = collect(stream_child(child, 1 << 20, Duration::from_secs(5))).await;
         assert!(matches!(evs.last(), Some(ExecEvent::Exited { code: 7 })));
+    }
+
+    /// 出力を閉じて走り続ける子でも、壁時計上限で止めて返る（パイプの EOF を終了とみなさない）。
+    #[tokio::test]
+    async fn child_that_closes_its_output_still_hits_the_wall_clock() {
+        let child = Command::new("/bin/sh")
+            .args(["-c", "exec >/dev/null 2>&1; sleep 30"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let evs = collect(stream_child(child, 1 << 20, Duration::from_millis(500))).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            ExecEvent::LimitExceeded {
+                kind: LimitKind::WallClock,
+                ..
+            }
+        )));
     }
 
     /// 受け手が遅くても、子の終了後に汲み出し中の出力を捨てない（打ち切りは出力の途絶で判定）。

@@ -79,6 +79,9 @@ pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd:
     let hard_stop = deadline.checked_add(DRAIN_GRACE).unwrap_or(deadline);
     // 子（グループリーダ）が終了した時刻。終了後 DRAIN_GRACE でグループの残りを kill する。
     let mut exited_at: Option<Instant> = None;
+    // 出力パイプが全て閉じたか。閉じても**子の終了とはみなさない**（`exec >/dev/null` で出力を閉じて
+    // 走り続ける子がある）。閉じた後は子の終了か timeout を待ち、残りを止めてから抜ける。
+    let mut pipes_closed = false;
     loop {
         // deadline は**毎周**判定する。子が 100ms 未満間隔で出力し続けると `recv_timeout` が常に
         // `Ok` を返し Timeout ブランチに入らないため、ここで判定しないとタイムアウトが発火しない。
@@ -88,6 +91,18 @@ pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd:
         }
         if exited_at.is_none() && matches!(child.try_wait(), Ok(Some(_))) {
             exited_at = Some(Instant::now());
+        }
+        if pipes_closed {
+            // 出力は全て受け取った。子が終わったか timeout で止めたなら、出力をリダイレクトして
+            // 残ったジョブも止めてから抜ける（止めずに抜けると、返った後に /workspace を書き換える）。
+            if exited_at.is_some() || killed_at.is_some() {
+                if killed_at.is_none() {
+                    kill_leftovers(pid);
+                }
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
         }
         if killed_at.is_none() && exited_at.is_some_and(|at| at.elapsed() >= DRAIN_GRACE) {
             kill_leftovers(pid);
@@ -118,7 +133,7 @@ pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd:
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => pipes_closed = true,
         }
     }
 
@@ -302,6 +317,44 @@ mod tests {
             .sum();
         assert_eq!(got, BYTES, "転送途中の出力が捨てられた");
         assert!(matches!(evs.last(), Some(Event::Exited { code: 0 })));
+    }
+
+    /// 出力を閉じて走り続ける子でも、timeout で止めて返る（パイプの切断を終了とみなさない）。
+    #[test]
+    fn child_that_closes_its_output_still_times_out() {
+        let started = Instant::now();
+        let mut buf = Vec::new();
+        run(
+            &mut buf,
+            &argv(&["/bin/sh", "-c", "exec >/dev/null 2>&1; sleep 30"]),
+            1_000,
+            ".",
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(matches!(decode(buf).last(), Some(Event::Exited { .. })));
+    }
+
+    /// 出力をリダイレクトしたジョブを残して子が終わっても、パイプの切断で抜ける前に残りを止める。
+    #[test]
+    fn redirected_job_is_stopped_when_the_child_exits() {
+        let marker = std::env::temp_dir().join(format!("redirected-job-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let line = format!(
+            "(sleep 1; touch {}) >/dev/null 2>&1 & exit 0",
+            marker.display()
+        );
+        let mut buf = Vec::new();
+        run(&mut buf, &argv(&["/bin/sh", "-c", &line]), 10_000, ".");
+        assert!(matches!(
+            decode(buf).last(),
+            Some(Event::Exited { code: 0 })
+        ));
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(!marker.exists(), "出力を閉じたジョブが生き残って書き込んだ");
     }
 
     /// 別グループへ抜けた子孫が書き続けても（出力が途絶えなくても）、timeout＋猶予で抜ける。
