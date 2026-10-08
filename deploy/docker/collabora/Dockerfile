@@ -90,6 +90,41 @@ RUN cd core \
     && cp -a include /opt/collaboraoffice/include \
     && test -f /opt/collaboraoffice/program/versionrc
 
+# ---- Stage 1-b: Poco（coolwsd の依存）のビルド ----
+#
+# **distro から取れない。** coolwsd の configure は
+#   #if POCO_VERSION < 0x010C0000 → "The POCO version is too old, 1.12.0 or newer required"
+# を要求するが、Ubuntu 24.04 の libpoco-dev は **1.11.0**（実測）。
+# 1.13.0 は configure が「known buggy poco 1.13.0」と判定する版なので避ける。
+#
+# バージョンは office-manifest.env が正。tarball なので sha256 で直接固定する。
+FROM ubuntu:24.04 AS poco-build
+ARG POCO_URL=https://github.com/pocoproject/poco/archive/refs/tags/poco-1.14.2-release.tar.gz
+ARG POCO_SHA256=47394ea7ddb7b0a40e1a5be896f8f5dc77cfdc4f561d2e7131ecf582df5a0c3a
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake ca-certificates curl libssl-dev zlib1g-dev libpcre2-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN curl -fsSL -o poco.tar.gz "$POCO_URL" \
+    && echo "$POCO_SHA256  poco.tar.gz" | sha256sum -c - \
+    && tar xf poco.tar.gz && mv poco-* poco
+# coolwsd が使うのは Foundation / Net / NetSSL / Crypto / Util / XML / JSON。
+# それ以外（Data・MongoDB・Redis・Zip 等）は切って時間とサイズを節約する。
+RUN cmake -S poco -B build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/poco \
+      -DBUILD_SHARED_LIBS=ON \
+      -DENABLE_NETSSL=ON -DENABLE_CRYPTO=ON -DENABLE_UTIL=ON \
+      -DENABLE_XML=ON -DENABLE_JSON=ON \
+      -DENABLE_DATA=OFF -DENABLE_DATA_SQLITE=OFF -DENABLE_MONGODB=OFF \
+      -DENABLE_REDIS=OFF -DENABLE_ZIP=OFF -DENABLE_PAGECOMPILER=OFF \
+      -DENABLE_PAGECOMPILER_FILE2PAGE=OFF -DENABLE_ENCODINGS=OFF \
+      -DENABLE_TESTS=OFF -DENABLE_SAMPLES=OFF \
+    && cmake --build build -j"$(nproc)" \
+    && cmake --install build \
+    && test -f /opt/poco/include/Poco/Version.h
+
 # ---- Stage 2: coolwsd（Collabora Online 本体）のビルド ----
 FROM ubuntu:24.04 AS online-build
 ARG ONLINE_REPO=https://github.com/CollaboraOnline/online.git
@@ -100,12 +135,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   PKG_CHECK_MODULES([ZLIB], [zlib])
 #   PKG_CHECK_MODULES([CPPUNIT], [cppunit])
 # を無条件で通すので、欠けると configure が止まる（upstream の configure.ac で確認）。
+# **libpoco-dev は入れない**（1.11.0 で古い。poco-build ステージの 1.14.2 を使う）。
+# python3-lxml と python3-polib は configure が `import` して確かめる。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git build-essential autoconf automake libtool pkg-config python3 python3-polib \
-    libpoco-dev libcap-dev libzstd-dev libpam0g-dev libssl-dev libpng-dev \
-    zlib1g-dev libcppunit-dev \
+    git build-essential autoconf automake libtool pkg-config \
+    python3 python3-polib python3-lxml \
+    libcap-dev libzstd-dev libpam0g-dev libssl-dev libpng-dev \
+    zlib1g-dev libcppunit-dev libpcre2-dev \
     nodejs npm ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=poco-build /opt/poco /opt/poco
 COPY --from=core-build /opt/collaboraoffice /opt/collaboraoffice
 WORKDIR /src
 RUN git clone --depth 1 --branch "$ONLINE_REF" "$ONLINE_REPO" online \
@@ -114,11 +153,15 @@ RUN git clone --depth 1 --branch "$ONLINE_REF" "$ONLINE_REPO" online \
     && git rev-parse HEAD | tee /ONLINE_COMMIT
 # setcap は configure 時ではなくランタイムステージで明示的に付与する（DESTDIR install と
 # レイヤ分離のため）。
+# configure と make を分ける（core 側と同じ理由）。
 RUN cd online && ./autogen.sh \
     && ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
          --with-lokit-path=/opt/collaboraoffice/include \
          --with-lo-path=/opt/collaboraoffice \
-         --disable-setcap --enable-silent-rules \
+         --with-poco-includes=/opt/poco/include \
+         --with-poco-libs=/opt/poco/lib \
+         --disable-setcap --enable-silent-rules
+RUN cd online \
     && make -j"$(nproc)" \
     && make install DESTDIR=/inst
 
@@ -129,9 +172,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 # パッケージ名差異に依存しないため。ヘッダ分のサイズ増は堅牢性とのトレード）。
 # 日本語フォント（Noto CJK）はオンプレ・エアギャップで文書の見た目を保つため同梱する。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpoco-dev libssl-dev libpng-dev libzstd-dev libpam0g-dev libcap2-bin \
+    libssl-dev libpng-dev libzstd-dev libpam0g-dev libcap2-bin libpcre2-8-0 \
     fonts-noto-cjk fonts-noto-cjk-extra ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+# **ビルドに使ったのと同じ Poco を載せる。** distro の 1.11.0 を入れると
+# coolwsd がリンクしたシンボルと食い違う。
+COPY --from=poco-build /opt/poco/lib /opt/poco/lib
+RUN echo /opt/poco/lib > /etc/ld.so.conf.d/poco.conf && ldconfig
 COPY --from=core-build /opt/collaboraoffice /opt/collaboraoffice
 COPY --from=online-build /inst/ /
 COPY --from=core-build /src/CORE_COMMIT /etc/collabora/CORE_COMMIT
