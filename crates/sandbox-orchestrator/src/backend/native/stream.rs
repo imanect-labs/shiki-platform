@@ -50,6 +50,9 @@ pub fn stream_child(
         tokio::pin!(deadline);
         // 子の終了時刻と終了コード（終わったら DRAIN_GRACE だけ汲み出して打ち切る）。
         let mut exited: Option<(tokio::time::Instant, i32)> = None;
+        // 最後に出力を受け取った時刻。打ち切りは「子の終了後、出力が DRAIN_GRACE 途絶えたら」で
+        // 判定する（終了からの経過時間で切ると、まだ汲み出し中の出力を捨てうる）。上限は deadline。
+        let mut last_chunk = tokio::time::Instant::now();
         let mut poll = tokio::time::interval(EXIT_POLL);
         loop {
             tokio::select! {
@@ -64,6 +67,7 @@ pub fn stream_child(
                 }
                 msg = irx.recv() => match msg {
                     Some((ch, bytes)) => {
+                        last_chunk = tokio::time::Instant::now();
                         total = total.saturating_add(bytes.len());
                         if total > max_output {
                             let _ = child.start_kill();
@@ -93,7 +97,7 @@ pub fn stream_child(
                         }
                     }
                     // 子は終わったがパイプが閉じない＝子孫が握っている。猶予を過ぎたら打ち切る。
-                    Some((at, _)) if at.elapsed() >= DRAIN_GRACE => break,
+                    Some((at, _)) if at.max(last_chunk).elapsed() >= DRAIN_GRACE => break,
                     Some(_) => {}
                 },
             }
@@ -210,6 +214,29 @@ mod tests {
             .unwrap();
         let evs = collect(stream_child(child, 1 << 20, Duration::from_secs(5))).await;
         assert!(matches!(evs.last(), Some(ExecEvent::Exited { code: 7 })));
+    }
+
+    /// 受け手が遅くても、子の終了後に汲み出し中の出力を捨てない（打ち切りは出力の途絶で判定）。
+    #[tokio::test]
+    async fn slow_consumer_receives_all_output() {
+        const BYTES: usize = 2_000_000;
+        let child = Command::new("/bin/sh")
+            .args(["-c", &format!("head -c {BYTES} /dev/zero")])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut s = stream_child(child, 1 << 24, Duration::from_secs(30));
+        let (mut got, mut last) = (0usize, None);
+        while let Some(Ok(ev)) = s.next().await {
+            if let ExecEvent::Stdout(b) = &ev {
+                got += b.len();
+            }
+            tokio::time::sleep(Duration::from_millis(3)).await;
+            last = Some(ev);
+        }
+        assert_eq!(got, BYTES, "汲み出し中の出力が捨てられた");
+        assert!(matches!(last, Some(ExecEvent::Exited { code: 0 })));
     }
 
     /// 子が残したバックグラウンドプロセスがパイプを握っていても、子の終了で打ち切る（#504）。

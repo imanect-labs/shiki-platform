@@ -72,6 +72,11 @@ pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd:
         .unwrap_or_else(Instant::now);
     // グループへ SIGKILL を送った時刻（timeout か、子の終了後の打ち切り）。
     let mut killed_at: Option<Instant> = None;
+    // 最後に出力を受け取った時刻。打ち切りは「kill 後に出力が DRAIN_GRACE 途絶えたら」で判定する
+    // （kill からの経過時間で切ると、転送待ちで溜まっている出力を捨ててしまう）。
+    let mut last_data = Instant::now();
+    // 出力が途絶えなくても、timeout＋猶予を過ぎたら必ず抜ける上限。
+    let hard_stop = deadline.checked_add(DRAIN_GRACE).unwrap_or(deadline);
     // 子（グループリーダ）が終了した時刻。終了後 DRAIN_GRACE でグループの残りを kill する。
     let mut exited_at: Option<Instant> = None;
     loop {
@@ -90,13 +95,17 @@ pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd:
             killed_at = Some(Instant::now());
         }
         // kill 後もパイプが閉じない＝別グループへ抜けた子孫（`setsid` 等）が握っている。
-        // グループ kill は届かないので、猶予を過ぎたらパイプを待たずに打ち切る（読み手スレッドは
-        // VM 破棄まで残る）。待ち続けると vsock 接続ごと塞がり、後続の exec / destroy も止まる。
-        if killed_at.is_some_and(|at| at.elapsed() >= DRAIN_GRACE) {
-            break;
+        // グループ kill は届かないので、出力が猶予の間途絶えたら（溜まった分は送り切ってから）
+        // パイプを待たずに打ち切る（読み手スレッドは VM 破棄まで残る）。待ち続けると vsock 接続
+        // ごと塞がり、後続の exec / destroy も止まる。書き続ける子孫でも timeout＋猶予で抜ける。
+        if let Some(at) = killed_at {
+            if at.max(last_data).elapsed() >= DRAIN_GRACE || Instant::now() >= hard_stop {
+                break;
+            }
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok((ch, bytes)) => {
+                last_data = Instant::now();
                 let b64 = B64.encode(&bytes);
                 let ev = if ch == 0 {
                     Event::Stdout { b64 }
@@ -246,6 +255,62 @@ mod tests {
         // 残ったジョブは kill 済み（生きていれば 2 秒後に marker を作る）。
         std::thread::sleep(Duration::from_secs(3));
         assert!(!marker.exists(), "バックグラウンドジョブが生き残っている");
+    }
+
+    /// 書き出し先が遅い（vsock 相当）書き手。1 回の write ごとに待つ。
+    struct SlowConn(Vec<u8>);
+    impl Write for SlowConn {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            std::thread::sleep(Duration::from_millis(3));
+            self.0.extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 子が大量に書いてすぐ終わり、転送が猶予より長くかかっても、溜まった出力を捨てない。
+    #[test]
+    fn queued_output_is_not_dropped_when_forwarding_is_slow() {
+        const BYTES: usize = 2_000_000;
+        let mut conn = SlowConn(Vec::new());
+        let line = format!("head -c {BYTES} /dev/zero");
+        run(&mut conn, &argv(&["/bin/sh", "-c", &line]), 30_000, ".");
+        let evs = decode(conn.0);
+        let got: usize = evs
+            .iter()
+            .filter_map(|e| match e {
+                Event::Stdout { b64 } => Some(B64.decode(b64).unwrap().len()),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(got, BYTES, "転送途中の出力が捨てられた");
+        assert!(matches!(evs.last(), Some(Event::Exited { code: 0 })));
+    }
+
+    /// 別グループへ抜けた子孫が書き続けても（出力が途絶えなくても）、timeout＋猶予で抜ける。
+    #[test]
+    fn detached_writer_is_cut_off_at_the_timeout() {
+        let started = Instant::now();
+        let mut buf = Vec::new();
+        run(
+            &mut buf,
+            &argv(&[
+                "/bin/sh",
+                "-c",
+                // 子孫は自分で 4 秒後に終わる（テストがホストにプロセスを残さない）。
+                "setsid sh -c 'for i in $(seq 80); do echo x; sleep 0.05; done' & echo started",
+            ]),
+            1_000,
+            ".",
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(matches!(decode(buf).last(), Some(Event::Exited { .. })));
     }
 
     /// 別グループへ抜けた子孫（`setsid`）がパイプを握っていても、kill の猶予を過ぎたら打ち切る。

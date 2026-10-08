@@ -184,6 +184,19 @@ async fn gvisor_shell_line_is_interpreted_by_sh() {
         started.elapsed()
     );
 
+    // 返った後にジョブが /workspace を書き換えない（書き戻し中の取りこぼし防止・ジョブは止まっている）。
+    let (_, code) = collect_stdout(
+        &inst,
+        shell("(sleep 1; echo late > late.txt) & echo started"),
+    )
+    .await;
+    assert_eq!(code, Some(0));
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert!(
+        inst.get_file("late.txt").await.is_err(),
+        "返った後もジョブが書き込んだ"
+    );
+
     inst.destroy().await.expect("destroy");
 }
 
