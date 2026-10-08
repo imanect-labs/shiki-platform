@@ -70,23 +70,30 @@ pub(crate) fn run<W: Write>(conn: &mut W, argv: &[String], timeout_ms: u64, cwd:
     let deadline = Instant::now()
         .checked_add(Duration::from_millis(timeout_ms))
         .unwrap_or_else(Instant::now);
-    let mut killed = false;
+    // グループへ SIGKILL を送った時刻（timeout か、子の終了後の打ち切り）。
+    let mut killed_at: Option<Instant> = None;
     // 子（グループリーダ）が終了した時刻。終了後 DRAIN_GRACE でグループの残りを kill する。
     let mut exited_at: Option<Instant> = None;
     loop {
         // deadline は**毎周**判定する。子が 100ms 未満間隔で出力し続けると `recv_timeout` が常に
         // `Ok` を返し Timeout ブランチに入らないため、ここで判定しないとタイムアウトが発火しない。
-        if !killed && Instant::now() >= deadline {
+        if killed_at.is_none() && Instant::now() >= deadline {
             let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
-            killed = true;
+            killed_at = Some(Instant::now());
         }
         if exited_at.is_none() && matches!(child.try_wait(), Ok(Some(_))) {
             exited_at = Some(Instant::now());
         }
-        if !killed && exited_at.is_some_and(|at| at.elapsed() >= DRAIN_GRACE) {
+        if killed_at.is_none() && exited_at.is_some_and(|at| at.elapsed() >= DRAIN_GRACE) {
             // リーダは reap 済みでも、グループの残り（バックグラウンドジョブ）には届く。
             let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
-            killed = true;
+            killed_at = Some(Instant::now());
+        }
+        // kill 後もパイプが閉じない＝別グループへ抜けた子孫（`setsid` 等）が握っている。
+        // グループ kill は届かないので、猶予を過ぎたらパイプを待たずに打ち切る（読み手スレッドは
+        // VM 破棄まで残る）。待ち続けると vsock 接続ごと塞がり、後続の exec / destroy も止まる。
+        if killed_at.is_some_and(|at| at.elapsed() >= DRAIN_GRACE) {
+            break;
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok((ch, bytes)) => {
@@ -239,5 +246,28 @@ mod tests {
         // 残ったジョブは kill 済み（生きていれば 2 秒後に marker を作る）。
         std::thread::sleep(Duration::from_secs(3));
         assert!(!marker.exists(), "バックグラウンドジョブが生き残っている");
+    }
+
+    /// 別グループへ抜けた子孫（`setsid`）がパイプを握っていても、kill の猶予を過ぎたら打ち切る。
+    /// グループ kill が届かないので、パイプの切断を待ち続けると timeout を過ぎても返らない。
+    #[test]
+    fn detached_descendant_holding_the_pipe_does_not_hang() {
+        let started = Instant::now();
+        let mut buf = Vec::new();
+        run(
+            &mut buf,
+            &argv(&["/bin/sh", "-c", "setsid sleep 30 & echo started"]),
+            10_000,
+            ".",
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "打ち切ること: {:?}",
+            started.elapsed()
+        );
+        assert!(matches!(
+            decode(buf).last(),
+            Some(Event::Exited { code: 0 })
+        ));
     }
 }

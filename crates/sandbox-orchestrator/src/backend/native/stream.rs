@@ -19,7 +19,10 @@ type Chunk = (u8, Vec<u8>);
 ///
 /// パイプの EOF だけを終端にすると、子が残したバックグラウンドプロセス（`sh -c "srv & echo ok"`）が
 /// パイプを握ったまま生き続け、子はとうに終わっているのに壁時計上限まで待って `LimitExceeded` になる。
-/// 子が終わったらこの猶予だけ汲み出して打ち切る（残りのプロセスはサンドボックス破棄で消える）。
+/// 子が終わったらこの猶予だけ汲み出して打ち切る。残ったプロセスはここでは止めない。
+/// 出力先の読み手を失うので、次の書込で EPIPE/SIGPIPE を受けるか、
+/// サンドボックス破棄で消える。`shell` / `code_interpreter` は呼び出しごとに破棄するので後続の exec
+/// からは見えない。
 const DRAIN_GRACE: Duration = Duration::from_millis(250);
 /// 子の終了を確かめる間隔。
 const EXIT_POLL: Duration = Duration::from_millis(50);
