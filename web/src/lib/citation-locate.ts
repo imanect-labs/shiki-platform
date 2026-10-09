@@ -40,13 +40,27 @@ function endPhrase(text: string): string {
 }
 
 /// 引用箇所を探す手がかり（本文の断片なので URL には載せない）。
-export type CiteLocator = { find: string | null; end: string | null; heading: string | null };
+export type CiteLocator = {
+  find: string | null;
+  end: string | null;
+  heading: string | null;
+  /// 一節の最初の段落（Collabora の検索語。段落をまたぐ文字列は検索に当たらないため 1 段落まで）。
+  paragraph?: string | null;
+};
+
+/// Collabora に渡す段落の長さの上限（文字）。
+const PARAGRAPH_CHARS = 240;
 
 export function citeLocator(c: Citation): CiteLocator {
   const text = quoteText(c);
   const find = findPhrase(text) || null;
   const end = endPhrase(text);
-  return { find, end: end && end !== find ? end : null, heading: (c.heading_path ?? []).at(-1) ?? null };
+  return {
+    find,
+    end: end && end !== find ? end : null,
+    heading: (c.heading_path ?? []).at(-1) ?? null,
+    paragraph: findPhrase(text, PARAGRAPH_CHARS) || null,
+  };
 }
 
 const STORE_PREFIX = "shiki:cite:";

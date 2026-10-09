@@ -49,7 +49,9 @@ export default function OfficePage() {
   const [reloadKey, setReloadKey] = React.useState(0);
   const editorRef = React.useRef<OfficeEditorHandle>(null);
   // 引用箇所から開いたとき（?cite=）: 読み込み後にこの一節を文書内で検索する（#508）。
-  const findText = useCiteLocator(useSearchParams().get("cite"))?.find ?? null;
+  // 段落全体で探すと、該当の段落がまるごと選択される（先頭だけだと途中までしか選ばれない）。
+  const locator = useCiteLocator(useSearchParams().get("cite"));
+  const findText = locator?.paragraph ?? locator?.find ?? null;
 
   React.useEffect(() => {
     let cancelled = false;
