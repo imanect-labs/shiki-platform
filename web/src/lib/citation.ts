@@ -112,6 +112,17 @@ function plain(s: string): string {
     .trim();
 }
 
+/// 出典を示すだけの行（「【出典】…」「出典: …」「参照：…」）。
+const SOURCE_LABEL = /^[【\[(（]?\s*(?:出典|参照|引用元|根拠)\s*[】\])）:：]/;
+
+/// 主張として見せる長さの上限（文字）。長い本文は末尾側を残す（番号に近い方が根拠に近い）。
+const CLAIM_MAX = 240;
+
+function clip(s: string): string {
+  const chars = Array.from(s);
+  return chars.length > CLAIM_MAX ? `…${chars.slice(chars.length - CLAIM_MAX).join("")}` : s;
+}
+
 /// 連続した引用マーカー（`[3][4]` など）1 まとまりと、その直前の 1 文（主張）。
 export type CitationRun = { ns: number[]; claim: string };
 
@@ -123,6 +134,8 @@ export function citationRuns(text: string, citations: readonly Citation[]): Cita
   // コードの中の `[n]` は引用ではない（linkifyCitations もリンクにしない）。
   const code = codeRanges(text);
   let prevEnd = 0;
+  // 直前の出典行の本文（「【出典】…[3]」「【出典】…[4]」と出典行が続くとき、後ろの行も同じ本文を指す）。
+  let lastLabelBody = "";
   for (let m = re.exec(text); m; m = re.exec(text)) {
     const at = m.index;
     if (code.some(([s, e]) => at >= s && at < e)) continue;
@@ -141,9 +154,19 @@ export function citationRuns(text: string, citations: readonly Citation[]): Cita
       while (b > prevEnd && !SENTENCE_END.test(text[b - 1])) b--;
       raw = text.slice(b, s + 1);
     }
+    // 「【出典】就業規則 第32条[1]」のように、本文の後に出典行を立てて番号を付ける書き方がある。
+    // その行は主張ではないので、前の番号から出典行までの本文を主張とする。
+    let body: string | null = null;
+    if (SOURCE_LABEL.test(plain(raw))) {
+      body = clip(plain(text.slice(prevEnd, start)));
+      if (!body) body = lastLabelBody;
+      lastLabelBody = body;
+    } else {
+      lastLabelBody = "";
+    }
     prevEnd = m.index + m[0].length;
     // 「〜である[1]、[2]。」のように番号の間に句読点しか無い場合は、直前のまとまりに合流する。
-    const claim = plain(raw).replace(/^[、，,。．.\s]+/, "");
+    const claim = body ?? plain(raw).replace(/^[、，,。．.\s]+/, "");
     if (ns.length === 0) continue;
     const last = runs[runs.length - 1];
     if (!claim && last) last.ns.push(...ns.filter((n) => !last.ns.includes(n)));

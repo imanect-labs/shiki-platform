@@ -189,6 +189,37 @@ def test_parse_markdown_keeps_list_items_with_markers(
     assert items == [("申請書を開く", "1."), ("提出する", "2."), ("期限後も申請できる", "•")]
 
 
+@pytest.mark.slow
+def test_parse_markdown_keeps_inline_formatting_in_one_block(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """太字などで分かれた断片を 1 段落・1 項目にまとめる（出典パネルで段落が割れない・#508）。"""
+    md = "# T\n\n申出書は**1か月前**までに提出。\n\n- 項目は **太字** を含む\n- 普通の項目\n"
+    _stub_download(monkeypatch, md.encode())
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "source_url": "http://minio:9000/blob",
+            "content_type": "text/markdown",
+            "file_name": "inline.md",
+        },
+    )
+    assert resp.status_code == 200
+    got = [(b["type"], b["text"]) for b in resp.json()["blocks"]]
+    assert got == [
+        ("heading", "T"),
+        ("paragraph", "申出書は1か月前までに提出。"),
+        ("list_item", "項目は太字を含む"),
+        ("list_item", "普通の項目"),
+    ]
+
+
+def test_join_inline_spaces_only_between_ascii_words() -> None:
+    assert parse_mod._join_inline(["申出書は", "1か月前", "までに"]) == "申出書は1か月前までに"
+    assert parse_mod._join_inline(["see", "docs", "now"]) == "see docs now"
+
+
 def test_prov_of_copies_every_page_box() -> None:
     """Docling の prov はページ・bbox・原点・charspan をすべて写す（ページをまたぐブロックも）。"""
 

@@ -51,6 +51,7 @@ export function SourceBlocks({
   const { node_id: nodeId, version, anchor } = citation;
   const [state, setState] = React.useState<State>({ status: "loading" });
   const markRef = React.useRef<HTMLDivElement>(null);
+  const scrollRef = React.useRef<HTMLDivElement>(null);
   const scrolledFor = React.useRef<string | null>(null);
   const key = `${nodeId}:${version}:${anchor.block_start}:${anchor.off_start}`;
 
@@ -78,11 +79,16 @@ export function SourceBlocks({
     };
   }, [nodeId, version, anchor.block_start, anchor.block_end]);
 
-  // 開いた・別の引用へ送ったときに、引用箇所をパネルの中央へ寄せる（窓を広げたときは動かさない）。
+  // 開いた・別の引用へ送ったときに、引用箇所を原文の枠の上 1/3 あたりへ寄せる（窓を広げたときは
+  // 動かさない）。scrollIntoView はパネル全体まで動かし、回答の記述や PDF の縮小表示を押し出すので、
+  // この枠の中だけをスクロールする。
   React.useEffect(() => {
     if (state.status !== "ready" || scrolledFor.current === key) return;
     scrolledFor.current = key;
-    markRef.current?.scrollIntoView({ block: "center" });
+    const box = scrollRef.current;
+    const mark = markRef.current;
+    // 枠は position: relative なので、mark.offsetTop は枠の先頭からの距離になる。
+    if (box && mark) box.scrollTop = Math.max(0, mark.offsetTop - box.clientHeight / 4);
   }, [state, key]);
 
   const loadBefore = () => {
@@ -129,7 +135,11 @@ export function SourceBlocks({
   const { blocks, from, nextFrom } = state.window;
   let firstMarked = true;
   return (
-    <div className={className} data-testid="source-blocks">
+    <div
+      ref={scrollRef}
+      className={cn("relative max-h-[26rem] overflow-y-auto scrollbar-subtle", className)}
+      data-testid="source-blocks"
+    >
       {from > 0 ? (
         <MoreButton onClick={loadBefore} busy={state.more === "before"} direction="before" />
       ) : null}
