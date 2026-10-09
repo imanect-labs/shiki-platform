@@ -26,14 +26,21 @@ export function linkifyCitations(text: string, citations: readonly Citation[]): 
     .map(({ code, s }) =>
       code
         ? s
-        : s.replace(/\[(\d+)\]/g, (match, digits: string) => {
-            const n = Number.parseInt(digits, 10);
-            if (!citationAt(citations, n)) return match;
-            return `[${n}](${CITE_HREF_PREFIX}${n})`;
-          }),
+        : s.replace(CITE_RUN, (run: string) =>
+            run.replace(/\[(\d+)\]/g, (match, digits: string) => {
+              const n = Number.parseInt(digits, 10);
+              if (!citationAt(citations, n)) return match;
+              return `[${n}](${CITE_HREF_PREFIX}${n})`;
+            }),
+          ),
     )
     .join("");
 }
+
+/// 本文中の `[n]` の並び（`[1][3]` は 1 まとまり）。既存の Markdown リンクの一部は除く:
+/// `[1](url)`・画像 `![1](x)`・参照リンク `[本文][1]` / `[1][ref]`・参照定義 `[1]: url`
+/// （ラベルを引用に化けさせない）。
+const CITE_RUN = /(?<![\]!])(?:\[\d+\])+(?![(\[:])/g;
 
 /// 本文をコード（```〜``` / ~~~〜~~~ のフェンス、`〜` のインラインコード）とそれ以外に分ける。
 /// 閉じていないフェンス（生成途中）は末尾までコードとして扱う。
@@ -78,7 +85,8 @@ export type CitationRun = { ns: number[]; claim: string };
 /// 本文から引用マーカーのまとまりを出現順に取り出す。範囲外の番号は捨てる。
 export function citationRuns(text: string, citations: readonly Citation[]): CitationRun[] {
   const runs: CitationRun[] = [];
-  const re = /(?:\[\d+\])+/g;
+  // linkifyCitations と同じ判定（Markdown リンクのラベルは引用として数えない）。
+  const re = new RegExp(CITE_RUN.source, "g");
   let prevEnd = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
     const ns = Array.from(m[0].matchAll(/\[(\d+)\]/g), (x) => Number.parseInt(x[1], 10)).filter(
