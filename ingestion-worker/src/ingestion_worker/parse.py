@@ -332,20 +332,22 @@ def _list_marker(item: Any, document: Any) -> str:
 
 
 def _join_inline(parts: list[str]) -> str:
-    """インラインの断片をつなぐ。英数字どうしの境目だけ空白を挟む（和文に空白を足さない）。"""
+    """インラインの断片をつなぐ。
+
+    Docling は断片の前後の空白を落とすので、英文の語の境目（英数字どうし・英文の句読点の後）に
+    だけ空白を戻す。和文の境目には足さない（「申出書は**1か月前**まで」が空白入りにならない）。
+    """
     out = ""
     for part in parts:
-        if (
-            out
-            and part
-            and out[-1].isascii()
-            and out[-1].isalnum()
-            and part[0].isascii()
-            and part[0].isalnum()
-        ):
+        if out and part and _needs_space(out[-1], part[0]):
             out += " "
         out += part
     return out
+
+
+def _needs_space(left: str, right: str) -> bool:
+    word = left.isascii() and (left.isalnum() or left in ",.;:!?)]") and left not in "(["
+    return word and right.isascii() and (right.isalnum() or right in "([")
 
 
 def _inline_text(group: Any, document: Any, seen: set[str]) -> tuple[str, list[Any]]:

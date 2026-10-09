@@ -8,7 +8,7 @@ import { ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
 import { matchSpan } from "@/lib/citation";
-import { citeLocatorQuery } from "@/lib/citation-locate";
+import { citeLocatorQuery, stashCiteLocator } from "@/lib/citation-locate";
 import type { Citation } from "@/lib/chat-api";
 import { resourcePath } from "@/lib/resource-link";
 import type { NodeMeta } from "@/lib/node-name-cache";
@@ -111,6 +111,10 @@ export function OpenOriginalLink({
   return (
     <Link
       href={target.href}
+      // 本文の手がかりはクリック時に渡す。プリフェッチもしない（遷移先 URL をサーバへ先送りしない）。
+      prefetch={false}
+      onClick={citation ? () => stashCiteLocator(citation) : undefined}
+      onAuxClick={citation ? () => stashCiteLocator(citation) : undefined}
       className={cn(
         "inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[12px] transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",

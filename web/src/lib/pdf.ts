@@ -41,10 +41,11 @@ export function loadPdf(fileId: string, version: number): Promise<PDFDocumentPro
     .then((data) => pdfjs().then((m) => m.getDocument({ data }).promise));
   p.catch(() => docs.delete(key));
   docs.set(key, p);
+  // 溢れたものはキャッシュから外すだけにする（destroy しない）。出典パネルやビューアが
+  // まだ描いている最中の文書を壊さないため。worker 側の資源は destroy まで残るが、1 回の
+  // 利用で開く PDF の数は限られるので許容する（タブを閉じれば解放される）。
   while (docs.size > KEEP) {
-    const oldest = docs.keys().next().value as string;
-    void docs.get(oldest)?.then((d) => d.destroy()).catch(() => undefined);
-    docs.delete(oldest);
+    docs.delete(docs.keys().next().value as string);
   }
   return p;
 }

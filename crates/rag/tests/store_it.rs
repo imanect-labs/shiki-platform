@@ -227,3 +227,32 @@ async fn replace_chunks_keeps_blocks_per_version_and_anchor_columns() {
             .unwrap();
     assert_eq!(left, 0);
 }
+
+/// ブロック列は直近 KEEP_BLOCK_VERSIONS 版だけ残る（ノートの頻繁な版で本文の写しが増え続けない）。
+#[tokio::test]
+async fn old_block_versions_are_pruned() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let ctx = ctx(&tenant);
+    let node = Uuid::new_v4();
+    let tags = vec![format!("file:{tenant}|{node}")];
+    let blocks = vec![block(BlockType::Paragraph, "本文")];
+    let total = store::KEEP_BLOCK_VERSIONS + 3;
+    for v in 1..=total {
+        store::replace_chunks(&pool, &ctx, node, v, &[], &blocks, &tags, "m")
+            .await
+            .unwrap();
+    }
+    let (min, count): (i64, i64) = sqlx::query_as(
+        "select min(version), count(distinct version) from doc_block \
+         where tenant_id = $1 and node_id = $2",
+    )
+    .bind(&tenant)
+    .bind(node)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, store::KEEP_BLOCK_VERSIONS);
+    assert_eq!(min, total - store::KEEP_BLOCK_VERSIONS + 1);
+    store::delete_node(&pool, &ctx, node).await.unwrap();
+}

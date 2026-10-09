@@ -27,8 +27,12 @@ pub struct Anchor {
 ///
 /// 版が変わってもオフセットに頼らず探し直せる。`exact` は引用したチャンクの本文、
 /// `prefix` / `suffix` は前後の文脈（各 [`QUOTE_CONTEXT_CHARS`] 文字まで）。
+///
+/// 引用（Citation）では `exact` を空にして送る。本文は `snippet` と同じなので、二重に
+/// 流して保存しない（読み手は空なら `snippet` を使う）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TextQuote {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub exact: String,
     #[serde(default)]
     pub prefix: String,

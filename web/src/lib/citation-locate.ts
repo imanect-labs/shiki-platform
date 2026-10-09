@@ -3,10 +3,15 @@
 /// 原本のバイト位置には戻さない。エディタ（ノートの TipTap + Yjs、Collabora）は共同編集で
 /// 内容が変わるので、オフセットではなく**一節の本文**で探す（W3C TextQuoteSelector の考え方）。
 ///
-/// - URL には一節の先頭（`find`）と末尾（`end`）だけを載せる（長い一節で URL を膨らませない）。
-///   ノートは先頭から末尾までをハイライトする。Collabora は先頭を検索する。
-/// - 見つからなければ見出し（`h`）まで移る。
-/// - PDF は版・ページ・枠（`v` / `page` / `box`）で開く（座標が確実に取れる唯一の形式）。
+/// - **文書の本文は URL に載せない**（アクセスログ・履歴・共有リンクに機密の断片が残るため）。
+///   URL には引用の識別子（`cite` = chunk_id）だけを載せ、一節の先頭（find）・末尾（end）・
+///   見出し（h）はクリック時に localStorage へ置いて渡す。リンクだけを共有された人は、
+///   一節を知らないまま文書の先頭で開く（本文は権限のある画面でしか見えない）。
+/// - ノートは先頭から末尾までをハイライトし、見つからなければ見出しまで移る。
+///   Collabora は先頭を検索する。
+/// - PDF は版・ページ・枠（`v` / `page` / `box`。数値だけ）で開く。
+import * as React from "react";
+
 import type { Citation } from "@/lib/chat-api";
 
 /// `find` の長さ（文字）。1 段落に収まりやすく、Collabora の検索にも通る長さにする。
@@ -16,7 +21,8 @@ const END_CHARS = 24;
 
 /// 引用の一節（位置情報の無い旧データは抜粋で代える）。
 function quoteText(c: Citation): string {
-  return (c.quote?.exact ?? c.snippet ?? "").trim();
+  // 引用では quote.exact を空で送る（本文は snippet と同じ）。
+  return (c.quote?.exact || c.snippet || "").trim();
 }
 
 /// 一節の最初の段落の先頭（検索語）。段落をまたぐ文字列は Collabora の検索に当たらないため。
@@ -33,16 +39,59 @@ function endPhrase(text: string): string {
   return chars.slice(Math.max(0, chars.length - END_CHARS)).join("");
 }
 
-/// 原本を開く URL に足すクエリ（ノート・Office・PDF で共通）。
+/// 引用箇所を探す手がかり（本文の断片なので URL には載せない）。
+export type CiteLocator = { find: string | null; end: string | null; heading: string | null };
+
+export function citeLocator(c: Citation): CiteLocator {
+  const text = quoteText(c);
+  const find = findPhrase(text) || null;
+  const end = endPhrase(text);
+  return { find, end: end && end !== find ? end : null, heading: (c.heading_path ?? []).at(-1) ?? null };
+}
+
+const STORE_PREFIX = "shiki:cite:";
+/// 受け渡しの有効期間。開いた直後に読むだけなので短くてよい。
+const STORE_TTL_MS = 10 * 60_000;
+
+/// クリック時に手がかりを置く（開いた先の画面が `cite` で読む）。
+export function stashCiteLocator(c: Citation): void {
+  try {
+    const now = Date.now();
+    // 古い受け渡しを掃除する（溜めない）。
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (!k?.startsWith(STORE_PREFIX)) continue;
+      const at = Number(JSON.parse(localStorage.getItem(k) ?? "{}").at ?? 0);
+      if (now - at > STORE_TTL_MS) localStorage.removeItem(k);
+    }
+    localStorage.setItem(STORE_PREFIX + c.chunk_id, JSON.stringify({ ...citeLocator(c), at: now }));
+  } catch {
+    /* 保存できない（プライベートモード等）なら、文書の先頭で開くだけ */
+  }
+}
+
+/// `cite` の手がかりを読む（無い・期限切れなら null）。描画後に読む（SSR では触らない）。
+export function useCiteLocator(key: string | null): CiteLocator | null {
+  const [loc, setLoc] = React.useState<CiteLocator | null>(null);
+  React.useEffect(() => {
+    if (!key) {
+      setLoc(null);
+      return;
+    }
+    try {
+      const raw = JSON.parse(localStorage.getItem(STORE_PREFIX + key) ?? "null");
+      setLoc(raw && Date.now() - Number(raw.at ?? 0) <= STORE_TTL_MS ? raw : null);
+    } catch {
+      setLoc(null);
+    }
+  }, [key]);
+  return loc;
+}
+
+/// 原本を開く URL に足すクエリ（ノート・Office・PDF で共通・本文は含めない）。
 export function citeLocatorQuery(c: Citation): string {
   const sp = new URLSearchParams();
-  const text = quoteText(c);
-  const find = findPhrase(text);
-  if (find) sp.set("find", find);
-  const end = endPhrase(text);
-  if (end && end !== find) sp.set("end", end);
-  const heading = (c.heading_path ?? []).at(-1);
-  if (heading) sp.set("h", heading);
+  sp.set("cite", c.chunk_id);
   if (typeof c.version === "number") sp.set("v", String(c.version));
   const page = c.boxes?.[0]?.page ?? c.page;
   if (page != null) sp.set("page", String(page));

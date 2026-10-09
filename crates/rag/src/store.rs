@@ -113,6 +113,12 @@ pub async fn replace_chunks(
     Ok(())
 }
 
+/// ブロック列を残す版の数（ノードごと・新しい順）。
+///
+/// ノートは編集中に数十秒ごとに版を作るので、全版を残すと本文の写しが際限なく増える。
+/// これより古い版を引用した会話は、引用自身が持つ抜粋（snippet）での表示に落ちる。
+pub const KEEP_BLOCK_VERSIONS: i64 = 20;
+
 /// この版のブロック列を書き直す（同じ版の再インジェストでも同じ内容になる）。
 async fn replace_blocks(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -154,6 +160,21 @@ async fn replace_blocks(
         qb.push(" on conflict do nothing");
         qb.build().execute(&mut **tx).await?;
     }
+    // 古い版のブロック列を捨てる（直近 KEEP_BLOCK_VERSIONS 版だけ残す）。
+    sqlx::query(
+        "delete from doc_block where tenant_id = $1 and node_id = $2 and version < ( \
+             select min(version) from ( \
+                 select distinct version from doc_block \
+                 where tenant_id = $1 and node_id = $2 \
+                 order by version desc limit $3 \
+             ) recent \
+         )",
+    )
+    .bind(&ctx.tenant_id)
+    .bind(node_id)
+    .bind(KEEP_BLOCK_VERSIONS)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 

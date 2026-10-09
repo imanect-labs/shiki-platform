@@ -6,6 +6,7 @@
 //! 加えて tenant_id と org で必ず絞る（node の所属と同じ境界）。
 
 use authz::AuthContext;
+use storage::audit::{AuditEntry, Decision};
 
 use crate::error::RagError;
 use crate::search::SearchService;
@@ -23,6 +24,7 @@ impl SearchService {
         version: i64,
         from: i32,
         limit: u32,
+        trace_id: Option<&str>,
     ) -> Result<DocBlocksPage, RagError> {
         let limit = limit.clamp(1, MAX_BLOCKS_PER_PAGE);
         // 1 件多く取り、続きがあるかを判定する。
@@ -46,6 +48,25 @@ impl SearchService {
         } else {
             None
         };
+        // メタデータの参照（get_metadata）とは別に、本文を読み出したことを残す（design §4.9）。
+        let first = rows.first().map(|b| b.ordinal);
+        let last = rows.last().map(|b| b.ordinal);
+        self.audit
+            .record(
+                ctx,
+                AuditEntry {
+                    action: "file.blocks.read",
+                    object_type: "file",
+                    object_id: &node.id.to_string(),
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: serde_json::json!({
+                        "version": version,
+                        "ordinals": [first, last],
+                    }),
+                },
+            )
+            .await?;
         Ok(DocBlocksPage {
             blocks: rows,
             next_from,

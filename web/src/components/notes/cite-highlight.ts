@@ -102,7 +102,8 @@ export function useCiteHighlight(
 ): CiteHighlightResult | null {
   const [result, setResult] = React.useState<CiteHighlightResult | null>(null);
   const { find, end, heading } = target;
-  const done = React.useRef(false);
+  // 探し終えた一節（同じ一節は 1 回だけ。別の引用を開いたら探し直す）。
+  const done = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     if (!editor || !find) return;
@@ -113,11 +114,11 @@ export function useCiteHighlight(
   }, [editor, find]);
 
   React.useEffect(() => {
-    if (!editor || !synced || !find || done.current) return;
+    if (!editor || !synced || !find || done.current === `${find}\u0000${end}`) return;
     // 同期直後は初回描画が終わっていないことがあるので、1 フレーム待ってから探す。
     const raf = window.requestAnimationFrame(() => {
       if (editor.isDestroyed) return;
-      done.current = true;
+      done.current = `${find}\u0000${end}`;
       const doc = editor.state.doc;
       const { chars, pos } = flatten(doc);
       const hit = locatePhrase(chars, find, end);

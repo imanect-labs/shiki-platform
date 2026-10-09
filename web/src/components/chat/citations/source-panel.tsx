@@ -175,7 +175,9 @@ export function SourcePanelView({
             <h3 className="mb-1.5 text-[11.5px] font-medium text-muted-foreground">回答の記述</h3>
             <div className="flex items-start gap-2 rounded-lg bg-muted/50 px-3 py-2.5 text-[13px] leading-relaxed text-foreground/85">
               <NumberBadge n={passage.n} colorIndex={color} solid className="mt-[3px]" />
-              <span>{claim}</span>
+              <span className="line-clamp-6" title={claim}>
+                {claim}
+              </span>
             </div>
           </section>
         ) : null}
@@ -195,7 +197,7 @@ export function SourcePanelView({
               {meta?.version}）。
             </p>
           ) : null}
-          {(citation.boxes?.length ?? 0) > 0 ? <PdfCitePreview citation={citation} width={384} /> : null}
+          {(citation.boxes?.length ?? 0) > 0 ? <PdfCitePreview key={citation.chunk_id} citation={citation} width={384} /> : null}
           <div
             style={docColorStyle(color)}
             className="rounded-lg border border-[var(--doc)]/35 bg-card px-3.5 py-3 text-[13.5px] leading-[1.85] text-foreground/85"

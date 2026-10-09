@@ -218,6 +218,7 @@ def test_parse_markdown_keeps_inline_formatting_in_one_block(
 def test_join_inline_spaces_only_between_ascii_words() -> None:
     assert parse_mod._join_inline(["申出書は", "1か月前", "までに"]) == "申出書は1か月前までに"
     assert parse_mod._join_inline(["see", "docs", "now"]) == "see docs now"
+    assert parse_mod._join_inline(["Note:", "important", "thing"]) == "Note: important thing"
 
 
 def test_prov_of_copies_every_page_box() -> None:

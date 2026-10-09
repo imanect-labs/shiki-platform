@@ -17,6 +17,7 @@ import * as Y from "yjs";
 
 import { embedSlashItems } from "@/components/notes/embed/embed-slash-items";
 import { useCiteHighlight } from "@/components/notes/cite-highlight";
+import { useCiteLocator } from "@/lib/citation-locate";
 import { CiteHint, shortPhrase } from "@/components/shell/cite-hint";
 import { MetadataPanel } from "@/components/notes/metadata-panel";
 import { NoteChatPanel } from "@/components/notes/note-chat-panel";
@@ -60,11 +61,13 @@ function NotePageInner() {
   const [editor, setEditor] = React.useState<Editor | null>(null);
   // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため）。
   const [chatOpen, setChatOpen] = React.useState(Boolean(initialThreadId));
-  // 引用箇所から開いたとき（?find=&end=&h=）: その一節をハイライトしてスクロールする（#508）。
+  // 引用箇所から開いたとき（?cite=）: その一節をハイライトしてスクロールする（#508）。
+  // 一節そのものは URL に載せず、クリック時に置かれた手がかりを読む。
+  const locator = useCiteLocator(searchParams.get("cite"));
   const cite = useCiteHighlight(editor, synced, {
-    find: searchParams.get("find"),
-    end: searchParams.get("end"),
-    heading: searchParams.get("h"),
+    find: locator?.find ?? null,
+    end: locator?.end ?? null,
+    heading: locator?.heading ?? null,
   });
   // 直近の選択（ヘッダの「AI に依頼」で開いた瞬間に挿入する材料）。
   const latestSelRef = React.useRef<{ text: string; headingPath: string[] } | null>(null);

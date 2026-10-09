@@ -207,7 +207,8 @@ impl SearchService {
                     // 前後の文脈が無く、元エディタでの探索は本文だけでは当たりにくいため。
                     anchor: row.anchor(),
                     quote: row.anchor().map(|_| TextQuote {
-                        exact: row.content.clone(),
+                        // 本文は content（引用の snippet）と同じなので持たない（TextQuote の注記）。
+                        exact: String::new(),
                         prefix: row.quote_prefix.clone(),
                         suffix: row.quote_suffix.clone(),
                     }),

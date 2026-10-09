@@ -12,7 +12,6 @@ import * as React from "react";
 import { ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { Markdown } from "@/components/prompt-kit/markdown";
 import type { Citation } from "@/lib/chat-api";
 import { getVersionBlocks, type DocBlock } from "@/lib/storage";
 
@@ -92,7 +91,8 @@ export function SourceBlocks({
   }, [state, key]);
 
   const loadBefore = () => {
-    if (state.status !== "ready" || state.window.from === 0) return;
+    // 読み込み中はもう一方も押せない（古い窓を閉じ込めた 2 つの結果が上書きし合うため）。
+    if (state.status !== "ready" || state.more || state.window.from === 0) return;
     const cur = state.window;
     const from = Math.max(0, cur.from - STEP);
     setState({ ...state, more: "before" });
@@ -108,7 +108,7 @@ export function SourceBlocks({
   };
 
   const loadAfter = () => {
-    if (state.status !== "ready" || state.window.nextFrom == null) return;
+    if (state.status !== "ready" || state.more || state.window.nextFrom == null) return;
     const cur = state.window;
     setState({ ...state, more: "after" });
     getVersionBlocks(nodeId, version, { from: cur.nextFrom!, limit: STEP })
@@ -141,7 +141,12 @@ export function SourceBlocks({
       data-testid="source-blocks"
     >
       {from > 0 ? (
-        <MoreButton onClick={loadBefore} busy={state.more === "before"} direction="before" />
+        <MoreButton
+          onClick={loadBefore}
+          busy={state.more === "before"}
+          disabled={state.more != null}
+          direction="before"
+        />
       ) : null}
       <div className="space-y-2.5 text-[13.5px] leading-[1.85] text-foreground/85">
         {blocks.map((b) => {
@@ -156,7 +161,12 @@ export function SourceBlocks({
         })}
       </div>
       {nextFrom != null ? (
-        <MoreButton onClick={loadAfter} busy={state.more === "after"} direction="after" />
+        <MoreButton
+          onClick={loadAfter}
+          busy={state.more === "after"}
+          disabled={state.more != null}
+          direction="after"
+        />
       ) : null}
     </div>
   );
@@ -216,15 +226,17 @@ function BlockView({ block, range }: { block: DocBlock; range: [number, number] 
         </p>
       );
     case "table":
-      // 表は Markdown のまま描く。引用範囲に入っていれば表ごと縁取る（セル単位では塗らない）。
+      // 表は worker が Markdown の表にして寄越す。**Markdown として描かない**（アップロードされた
+      // 文書のセルに画像やリンクの記法があると、開いた人のブラウザが外部へリクエストを出すため）。
+      // 行と列に割って文字として描き、引用範囲に入っていれば表ごと縁取る。
       return (
         <div
           className={cn(
-            "overflow-x-auto rounded-md text-[12.5px] [&_table]:my-0",
+            "overflow-x-auto rounded-md",
             range && "bg-[var(--doc,var(--season-autumn))]/10 ring-1 ring-[var(--doc,var(--season-autumn))]/40",
           )}
         >
-          <Markdown>{block.text}</Markdown>
+          <PlainTable text={block.text} />
         </div>
       );
     default:
@@ -236,13 +248,61 @@ function BlockView({ block, range }: { block: DocBlock; range: [number, number] 
   }
 }
 
+/// Markdown の表（`| a | b |`）を行と列に割る。区切り行（`|---|`）は捨てる。
+export function parseMarkdownTable(text: string): string[][] {
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("|"))
+    .filter((l) => !/^\|[\s:|-]+\|?$/.test(l))
+    .map((l) =>
+      l
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
+        .split(/(?<!\\)\|/)
+        .map((c) => c.replace(/\\\|/g, "|").trim()),
+    );
+}
+
+function PlainTable({ text }: { text: string }) {
+  const rows = parseMarkdownTable(text);
+  if (rows.length === 0) return <p className="whitespace-pre-wrap text-[12.5px]">{text}</p>;
+  const [head, ...body] = rows;
+  return (
+    <table className="w-full border-collapse text-[12.5px] leading-relaxed">
+      <thead>
+        <tr>
+          {head.map((c, i) => (
+            <th key={i} className="border-b border-border px-2 py-1 text-left font-medium text-foreground/80">
+              {c}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {body.map((r, i) => (
+          <tr key={i}>
+            {r.map((c, j) => (
+              <td key={j} className="border-b border-border/60 px-2 py-1 align-top">
+                {c}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function MoreButton({
   onClick,
   busy,
+  disabled,
   direction,
 }: {
   onClick: () => void;
   busy: boolean;
+  disabled: boolean;
   direction: "before" | "after";
 }) {
   const Icon = direction === "before" ? ChevronUp : ChevronDown;
@@ -250,7 +310,7 @@ function MoreButton({
     <button
       type="button"
       onClick={onClick}
-      disabled={busy}
+      disabled={disabled}
       className={cn(
         "flex w-full items-center justify-center gap-1 rounded-md py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
         direction === "before" ? "mb-2" : "mt-2",

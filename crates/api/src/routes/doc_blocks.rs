@@ -77,6 +77,7 @@ pub async fn list_blocks(
             version,
             q.from.unwrap_or(0),
             q.limit.unwrap_or(60),
+            trace.as_deref(),
         )
         .await?;
     Ok(Json(page))

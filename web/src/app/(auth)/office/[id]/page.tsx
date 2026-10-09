@@ -15,6 +15,7 @@ import * as React from "react";
 
 import { ShareDialog } from "@/components/drive/share-dialog";
 import { CiteHint, shortPhrase } from "@/components/shell/cite-hint";
+import { useCiteLocator } from "@/lib/citation-locate";
 import { OfficeChatPanel } from "@/components/office/office-chat-panel";
 import { OfficeEditor, type OfficeEditorHandle } from "@/components/office/office-editor";
 import { EditorLoading } from "@/components/shell/editor-loading";
@@ -47,8 +48,8 @@ export default function OfficePage() {
   // 解錠（redeem）後にセッション取得をやり直すためのリロードキー。
   const [reloadKey, setReloadKey] = React.useState(0);
   const editorRef = React.useRef<OfficeEditorHandle>(null);
-  // 引用箇所から開いたとき: 読み込み後にこの一節を文書内で検索する（#508）。
-  const findText = useSearchParams().get("find");
+  // 引用箇所から開いたとき（?cite=）: 読み込み後にこの一節を文書内で検索する（#508）。
+  const findText = useCiteLocator(useSearchParams().get("cite"))?.find ?? null;
 
   React.useEffect(() => {
     let cancelled = false;

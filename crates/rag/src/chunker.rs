@@ -275,8 +275,11 @@ impl<'a> ChunkBuilder<'a> {
                 // 区切りの "\n\n" も leaf の文字数に乗るので判定に含める。含めないと
                 // ちょうど上限で収まる組み合わせのときだけ max+2 文字の leaf ができる。
                 let sep = if leaf.text.is_empty() { 0 } else { 2 };
+                // 段落の間に表（別チャンク）を挟むなら、そこで leaf を切る。続けると leaf の
+                // 範囲が表まで含み、出典パネルや PDF の枠で表まで引用箇所に見えてしまう。
+                let gap = leaf.end.is_some_and(|e| para.block > e.block + 1);
                 if !leaf.text.is_empty()
-                    && leaf.chars + sep + piece_chars > self.params.max_leaf_chars
+                    && (gap || leaf.chars + sep + piece_chars > self.params.max_leaf_chars)
                 {
                     self.emit_leaf(&mut leaf, parent_uuid, path);
                 }
@@ -918,6 +921,22 @@ mod tests {
         let chunks = chunk_document(node(), 1, &[a, b], &ChunkParams::default());
         let leaf = leaves(&chunks)[0];
         assert_eq!(leaf.boxes, vec![boxed(1), boxed(2)]);
+    }
+
+    #[test]
+    fn leaf_does_not_span_a_table_between_paragraphs() {
+        let blocks = vec![
+            para("前の段落。"),
+            table("| a |\n|---|"),
+            para("後の段落。"),
+        ];
+        let chunks = chunk_document(node(), 1, &blocks, &ChunkParams::default());
+        let ranges: Vec<(i32, i32)> = chunks
+            .iter()
+            .filter(|c| c.kind == ChunkKind::Leaf)
+            .map(|c| (c.anchor.unwrap().block_start, c.anchor.unwrap().block_end))
+            .collect();
+        assert_eq!(ranges, vec![(0, 0), (2, 2)]);
     }
 
     #[test]

@@ -48,6 +48,8 @@ function PdfViewer() {
   const [current, setCurrent] = React.useState(1);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const jumped = React.useRef(false);
+  // 1 ページ目の縦横比（まだ描いていないページの高さの見積もりに使う）。
+  const [aspect, setAspect] = React.useState(1.414);
 
   React.useEffect(() => {
     let active = true;
@@ -56,7 +58,11 @@ function PdfViewer() {
       .then(async (node) => {
         const version = askedVersion ?? node.version;
         const doc = await loadPdf(id, version);
-        if (active) setState({ phase: "ready", node, version, doc });
+        const first = await doc.getPage(1);
+        const vp = first.getViewport({ scale: 1 });
+        if (!active) return;
+        setAspect(vp.height / vp.width);
+        setState({ phase: "ready", node, version, doc });
       })
       .catch((e: unknown) => {
         if (active) setState({ phase: "error", message: e instanceof Error ? e.message : "読み込みに失敗しました" });
@@ -93,18 +99,21 @@ function PdfViewer() {
     return () => window.clearTimeout(t);
   }, [state, targetPage, containerWidth, pageWidth]);
 
-  // 今見ているページ番号（ヘッダ表示）。
+  // 今見ているページ番号（ヘッダ表示）。スクロールごとに全ページを測らないよう、
+  // フレームに 1 回だけ、上 1/3 の位置にある要素を引く。
+  const frame = React.useRef<number | null>(null);
   const onScroll = React.useCallback(() => {
-    const root = scrollRef.current;
-    if (!root) return;
-    const mid = root.getBoundingClientRect().top + root.clientHeight / 3;
-    for (const el of root.querySelectorAll<HTMLElement>("[data-page]")) {
-      const r = el.getBoundingClientRect();
-      if (r.top <= mid && r.bottom >= mid) {
-        setCurrent(Number(el.dataset.page));
-        break;
-      }
-    }
+    if (frame.current != null) return;
+    frame.current = window.requestAnimationFrame(() => {
+      frame.current = null;
+      const root = scrollRef.current;
+      if (!root) return;
+      const r = root.getBoundingClientRect();
+      const hit = document
+        .elementsFromPoint(r.left + r.width / 2, r.top + root.clientHeight / 3)
+        .find((el): el is HTMLElement => el instanceof HTMLElement && el.dataset.page != null);
+      if (hit) setCurrent(Number(hit.dataset.page));
+    });
   }, []);
 
   const download = async () => {
@@ -177,6 +186,7 @@ function PdfViewer() {
                     doc={doc}
                     pageNumber={n}
                     width={pageWidth}
+                    estimate={pageWidth * aspect}
                     boxes={boxes}
                     eager={n === targetPage}
                   />

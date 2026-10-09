@@ -19,6 +19,17 @@ use crate::tool::Citation;
 const OPEN: &str = "⟦cite:";
 const CLOSE: char = '⟧';
 
+/// 仮の印と紛れる文字列を無害化する（文書の本文・ファイル名に `⟦cite:` があっても
+/// 番号に置き換わらないよう、括弧を似た別の字に替える）。
+#[must_use]
+pub fn defuse(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('⟦') {
+        std::borrow::Cow::Owned(text.replace('⟦', "〚"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
 /// その呼び出しの `local` 件目（0 起点）の引用を指す仮の印。
 #[must_use]
 pub fn placeholder(local: usize) -> String {
@@ -165,6 +176,16 @@ mod tests {
         let mut t = format!("{}{} ⟦cite:x⟧", placeholder(0), placeholder(5));
         ledger.number(&mut cs, &mut t);
         assert_eq!(t, "[1] ⟦cite:x⟧");
+    }
+
+    #[test]
+    fn defused_document_text_is_not_renumbered() {
+        let mut ledger = CitationLedger::default();
+        let mut cs = vec![cite("a"), cite("b")];
+        let body = defuse("本文に ⟦cite:1⟧ と書いた文書");
+        let mut t = format!("{} {body}", placeholder(0));
+        ledger.number(&mut cs, &mut t);
+        assert_eq!(t, "[1] 本文に 〚cite:1⟧ と書いた文書");
     }
 
     #[test]

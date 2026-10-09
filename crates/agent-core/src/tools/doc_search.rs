@@ -80,13 +80,14 @@ pub async fn run_doc_search(
             } else {
                 format!(" / {}", r.heading_path.join(" > "))
             };
+            // 文書側に仮の印の形の文字列があっても、番号に化けないよう無害化する。
             let _ = write!(
                 s,
                 "{} 出典: {}{}\n{}\n\n",
                 crate::cite::placeholder(i),
-                r.file_name,
-                heading,
-                r.content.trim()
+                crate::cite::defuse(&r.file_name),
+                crate::cite::defuse(&heading),
+                crate::cite::defuse(r.content.trim())
             );
         }
         s

@@ -54,8 +54,9 @@ export const OfficeEditor = React.forwardRef<
     () => new URL(session.action_url).origin,
     [session.action_url],
   );
-  // 引用箇所の検索を送ったか。
-  const searched = React.useRef(false);
+  // 文書の読み込みが終わったか / どの一節まで検索を送ったか。
+  const loaded = React.useRef(false);
+  const searched = React.useRef<string | null>(null);
   // Action_Copy_Resp を待つ解決関数（選択取得の 1 回きりの待ち受け）。
   const selectionWaiterRef = React.useRef<((text: string | null) => void) | null>(null);
 
@@ -90,9 +91,10 @@ export const OfficeEditor = React.forwardRef<
           // 埋め込み表示では横幅を圧迫し見栄えを損ねるため既定オフにする（ユーザーは
           // Collabora の「表示」メニューからいつでも再表示できる）。
           postToFrame({ MessageId: "Send_UNO_Command", Values: { Command: ".uno:SidebarHide" } });
-          // 引用箇所へ移る（1 回だけ。再接続で Document_Loaded が再送されても選択を奪わない）。
-          if (findText && !searched.current) {
-            searched.current = true;
+          loaded.current = true;
+          // 引用箇所へ移る（同じ一節は 1 回だけ。再接続で Document_Loaded が再送されても選択を奪わない）。
+          if (findText && searched.current !== findText) {
+            searched.current = findText;
             postToFrame(searchCommand(findText));
           }
         }
@@ -108,6 +110,13 @@ export const OfficeEditor = React.forwardRef<
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, [collaboraOrigin, onClose, postToFrame, findText]);
+
+  // 読み込み後に別の引用を開いた（同じページのまま ?cite= が変わった）ときも探し直す。
+  React.useEffect(() => {
+    if (!findText || !loaded.current || searched.current === findText) return;
+    searched.current = findText;
+    postToFrame(searchCommand(findText));
+  }, [findText, postToFrame]);
 
   React.useImperativeHandle(
     ref,
