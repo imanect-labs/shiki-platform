@@ -21,6 +21,25 @@ const TTL_MS = 60_000;
 /// 取り直しを始める経過時間。TTL より少し前にして、表示中の値が切れる前に差し替える。
 const REFRESH_MS = TTL_MS - 5_000;
 
+/// タブに戻ってきたときに知らせる（取り直しの契機。開きっぱなしの間は定期的に叩かない）。
+const revalidateListeners = new Set<() => void>();
+function subscribeRevalidate(cb: () => void): () => void {
+  if (revalidateListeners.size === 0 && typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisible);
+  }
+  revalidateListeners.add(cb);
+  return () => {
+    revalidateListeners.delete(cb);
+    if (revalidateListeners.size === 0 && typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", onVisible);
+    }
+  };
+}
+function onVisible() {
+  if (document.visibilityState !== "visible") return;
+  for (const cb of revalidateListeners) cb();
+}
+
 /// 名前と一緒に取れるノードの付帯情報（引用カードの「置き場所・更新日」・原本リンク用）。
 export type NodeMeta = {
   name: string;
@@ -72,36 +91,34 @@ function useResolved<T>(
   pick: (hit: { name: string | null; meta: NodeMeta | null }) => T | null,
 ): Record<string, T> {
   const key = React.useMemo(() => Array.from(new Set(ids)).sort().join(","), [ids]);
-  // 解決完了・期限前の取り直しのたびに進める。memo はこれを依存に持つ（既存エントリの上書きは
+  // 解決完了・取り直しのたびに進める。memo はこれを依存に持つ（既存エントリの上書きは
   // Map の size を変えないため、size を依存にすると取り直した値が反映されない）。
   const [tick, bump] = React.useReducer((n: number) => n + 1, 0);
 
   React.useEffect(() => {
     if (!key) return;
     let active = true;
-    const all = key.split(",").filter(Boolean);
-    const pending = all.filter(isStale);
+    const pending = key.split(",").filter((id) => id && isStale(id));
     if (pending.length > 0) {
       void Promise.all(pending.map(fetchName)).then(() => {
         // 解決後に一度だけ再描画する（1 件ごとに揺らさない）。
         if (active) bump();
       });
     }
-    // 表示中の値は TTL で消えるので、その少し前に取り直す（マウントしたまま期限を迎えても
-    // 「読み込み中」に戻らないように）。
-    // 取得中（stale）の id は解決時の bump で回るので、ここでは新しいものだけを見る
-    // （取得中を含めると期限切れの時刻で即時タイマーが回り続ける）。
-    const refreshAt = Math.min(
-      ...all.filter((id) => !isStale(id)).map((id) => resolved.get(id)!.at + REFRESH_MS),
-    );
-    const timer = Number.isFinite(refreshAt)
-      ? window.setTimeout(() => active && bump(), Math.max(0, refreshAt - Date.now()))
-      : null;
     return () => {
       active = false;
-      if (timer != null) window.clearTimeout(timer);
     };
   }, [key, tick]);
+
+  // 開いたままの画面では定期的に取り直さない（文書 1 件 1 リクエストのため、引用の多い会話で
+  // 叩き続けてしまう）。表示中の memo は作り直さない限り値を保つので「読み込み中」には戻らない。
+  // 期限を過ぎた値はタブに戻ってきたときに取り直す（id 変更・解決完了時は上の effect が拾う）。
+  React.useEffect(() => {
+    if (!key) return;
+    return subscribeRevalidate(() => {
+      if (key.split(",").some(isStale)) bump();
+    });
+  }, [key]);
 
   return React.useMemo(() => {
     const out: Record<string, T> = {};

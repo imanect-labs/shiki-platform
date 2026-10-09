@@ -119,7 +119,8 @@ export function SnippetText({
   className?: string;
 }) {
   const trimmed = text.trim();
-  const span = matchSpan(trimmed, claim);
+  // 一覧・対照表は生成中にトークンごとに再描画されるので、照合（bigram 集合の構築）は覚えておく。
+  const span = React.useMemo(() => matchSpan(trimmed, claim), [trimmed, claim]);
   if (!span) return <span className={className}>{trimmed}</span>;
   const [s, e] = span;
   const before = around != null && s > around ? `…${trimmed.slice(s - around, s)}` : trimmed.slice(0, s);

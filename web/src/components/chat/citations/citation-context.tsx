@@ -85,7 +85,7 @@ export function MessageCitationsProvider({
     return {
       key: messageKey,
       citations,
-      groups: groupCitations(citations, text),
+      groups: groupCitations(citations, text, runs),
       runs,
       claims: claimsByNumber(runs),
       metas,
@@ -123,15 +123,12 @@ type Registry = {
   set: (value: MessageCitations) => void;
   remove: (value: MessageCitations) => void;
   subscribe: (cb: () => void) => () => void;
-  version: () => number;
 };
 
 function createRegistry(): Registry {
   const map = new Map<string, MessageCitations>();
   const listeners = new Set<() => void>();
-  let v = 0;
   const emit = () => {
-    v++;
     for (const l of listeners) l();
   };
   return {
@@ -150,7 +147,6 @@ function createRegistry(): Registry {
       listeners.add(cb);
       return () => listeners.delete(cb);
     },
-    version: () => v,
   };
 }
 
@@ -197,19 +193,23 @@ export function useSourcePanel(): SourcePanelApi | null {
 }
 
 /// パネルが表示すべきメッセージの最新の引用文脈。
+///
+/// 開いているメッセージの値だけを購読する（生成中の別メッセージがトークンごとに登録し直しても
+/// パネルは再描画しない）。
 export function usePanelMessage(api: SourcePanelApi | null): MessageCitations | null {
   const registry = api?.registry;
-  React.useSyncExternalStore(
-    registry?.subscribe ?? noopSubscribe,
-    registry?.version ?? zero,
-    zero,
+  const key = api?.state?.key;
+  const getSnapshot = React.useCallback(
+    () => (registry && key != null ? (registry.get(key) ?? null) : null),
+    [registry, key],
   );
+  const live = React.useSyncExternalStore(registry?.subscribe ?? noopSubscribe, getSnapshot, nullSnapshot);
   if (!api?.state) return null;
-  return api.registry.get(api.state.key) ?? api.state.snapshot;
+  return live ?? api.state.snapshot;
 }
 
 const noopSubscribe = () => () => {};
-const zero = () => 0;
+const nullSnapshot = () => null;
 
 /// パネルで送る順（本文で使われた引用の番号順。マーカーが無ければ全件）。
 export function panelOrder(message: MessageCitations): number[] {

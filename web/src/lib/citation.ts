@@ -111,9 +111,15 @@ export type CitationGroups = {
 };
 
 /// 引用を文書ごとにまとめ、本文で使われたものと使われなかったものに分ける。
-export function groupCitations(citations: readonly Citation[], text: string): CitationGroups {
+///
+/// `runs` は `citationRuns(text, citations)` の結果（呼び出し側で計算済みなら渡して二重走査を避ける）。
+export function groupCitations(
+  citations: readonly Citation[],
+  text: string,
+  runs: readonly CitationRun[] = citationRuns(text, citations),
+): CitationGroups {
   const usedNumbers = new Set<number>();
-  for (const r of citationRuns(text, citations)) for (const n of r.ns) usedNumbers.add(n);
+  for (const r of runs) for (const n of r.ns) usedNumbers.add(n);
   const hasMarkers = usedNumbers.size > 0;
 
   // 同じチャンクは 1 箇所にまとめる（2 回の検索で同じ結果が返ることがある）。
