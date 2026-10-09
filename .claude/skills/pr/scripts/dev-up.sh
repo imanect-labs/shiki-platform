@@ -2,15 +2,25 @@
 # dev-up.sh — 変更を目で確認できる状態まで環境を起動する。
 #
 #   使い方:
-#     dev-up.sh [--compose] [--rag] [--sandbox] [--office] [--reset-db]
+#     dev-up.sh [--compose] [--rag|--rag-local] [--sandbox] [--office] [--reset-db]
 #     dev-up.sh --down     # 起動したものを止める
 #     dev-up.sh --status   # 生存確認だけする
 #
 #   --reset-db: compose の dev DB 'shiki' を DROP/CREATE してから起動する（破壊操作）。
 #               別ブランチの migration が当たって checksum 不一致になった時に使う。
 #
+#   --rag:       **クラスタの ingestion-worker と S3 を使う**（既定）。
+#                worker のイメージは 9.7GB（torch＋docling＋モデル）で常駐 RAM も
+#                2〜3GB あり、開発機ごとに持つのは割に合わない。
+#                blob はクラスタの S3 の **dev 専用バケット**へ置く
+#                （worker は presigned URL を自分で取りに行くので、S3 も
+#                 クラスタ側でないと届かない）。
+#   --rag-local: 従来どおり worker と RustFS をローカルに立てる。
+#                LAN の外（クラスタに届かない所）で作業する時はこちら。
+#
 #   既定（native モード）:
-#     compose で依存だけ起動（postgres/keycloak/openfga/redis/rustfs）
+#     compose で依存だけ起動（postgres/keycloak/openfga/redis・RustFS は
+#     --rag の共有モードではクラスタ側を使うので立てない）
 #     → shiki-server を `cargo run` でホスト :8080
 #     → web を `pnpm dev` で :3000
 #   Rust を変更した時の反復が速い（docker イメージの再ビルドが要らない）。
@@ -30,6 +40,8 @@ say() { printf '%s\n' "$*"; }
 MODE=native
 RESET_DB=0
 WITH_RAG=0
+# RAG を共有インフラで動かすか。--rag の既定は共有、--rag-local で従来どおり。
+RAG_SHARED=1
 WITH_SANDBOX=0
 WITH_OFFICE=0
 ACTION=up
@@ -38,7 +50,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --compose) MODE=compose ;;
     --reset-db) RESET_DB=1 ;;
-    --rag)     WITH_RAG=1 ;;
+    --rag)       WITH_RAG=1 ;;
+    --rag-local) WITH_RAG=1; RAG_SHARED=0 ;;
     --sandbox) WITH_SANDBOX=1 ;;
     --office)  WITH_OFFICE=1 ;;
     --down)    ACTION=down ;;
@@ -163,9 +176,58 @@ case "$ACTION" in
   down)   stop_all; exit 0 ;;
 esac
 
+# --- 0. RAG を共有インフラで動かすなら、先に疎通と資格情報を解決する ---
+# **黙ってローカルへフォールバックしない。** 届かないまま進むと、worker が
+# presigned URL を取りに来られず「アップロードは通るのに索引だけ入らない」
+# という分かりにくい壊れ方をする。
+SHARED_WORKER_URL=${SHIKI_DEV_SHARED_WORKER_URL:-http://192.168.1.201:8000}
+SHARED_S3_URL=${SHIKI_DEV_SHARED_S3_URL:-http://192.168.1.202:9000}
+SHARED_S3_BUCKET=${SHIKI_DEV_SHARED_S3_BUCKET:-shiki-blobs-dev}
+SHARED_S3_AK=""
+SHARED_S3_SK=""
+
+if [ "$WITH_RAG" = 1 ] && [ "$RAG_SHARED" = 1 ]; then
+  say "== 0. 共有 RAG インフラ（クラスタ）を確認 =="
+  if ! curl -fsS -m 5 -o /dev/null "$SHARED_WORKER_URL/healthz" 2>/dev/null; then
+    err "   共有 ingestion-worker に届きません: $SHARED_WORKER_URL"
+    err "   LAN の外に居るか、クラスタ側の公開が off です。"
+    err "   → ローカルに立てるなら --rag-local を使ってください。"
+    exit 1
+  fi
+  # RustFS は無署名リクエストに 403 を返す。応答コードが返れば生きている。
+  if ! curl -s -m 5 -o /dev/null -w '%{http_code}' "$SHARED_S3_URL" 2>/dev/null | grep -qE '^[2-4]'; then
+    err "   共有 S3 に届きません: $SHARED_S3_URL"
+    err "   → ローカルに立てるなら --rag-local を使ってください。"
+    exit 1
+  fi
+  # **資格情報はファイルに置かない。** その場でクラスタの Secret から読む。
+  SHARED_S3_AK=${SHIKI_DEV_SHARED_S3_AK:-}
+  SHARED_S3_SK=${SHIKI_DEV_SHARED_S3_SK:-}
+  if [ -z "$SHARED_S3_AK" ] || [ -z "$SHARED_S3_SK" ]; then
+    if ! command -v kubectl >/dev/null 2>&1; then
+      err "   kubectl が無く、共有 S3 の資格情報を取れません。"
+      err "   → SHIKI_DEV_SHARED_S3_AK / _SK を渡すか、--rag-local を使ってください。"
+      exit 1
+    fi
+    SHARED_S3_AK=$(kubectl -n shiki-preview get secret shiki-preview-secrets -o jsonpath='{.data.s3-access-key}' 2>/dev/null | base64 -d)
+    SHARED_S3_SK=$(kubectl -n shiki-preview get secret shiki-preview-secrets -o jsonpath='{.data.s3-secret-key}' 2>/dev/null | base64 -d)
+  fi
+  if [ -z "$SHARED_S3_AK" ] || [ -z "$SHARED_S3_SK" ]; then
+    err "   共有 S3 の資格情報を取得できませんでした（kubeconfig を確認）。"
+    exit 1
+  fi
+  say "   [ok] worker=$SHARED_WORKER_URL"
+  say "        s3=$SHARED_S3_URL  bucket=$SHARED_S3_BUCKET"
+fi
+
 # --- 1. compose 依存サービス ---
-DEPS="postgres keycloak openfga redis rustfs"
-[ "$WITH_RAG" = 1 ] && DEPS="$DEPS qdrant ingestion-worker"
+DEPS="postgres keycloak openfga redis"
+# 共有モードでは RustFS をローカルに立てない（blob はクラスタの dev バケットへ置く）。
+if [ "$WITH_RAG" = 1 ] && [ "$RAG_SHARED" = 1 ]; then :; else DEPS="$DEPS rustfs"; fi
+# Qdrant は常にローカル。小さいし、ベクトルは手元で使い捨てたい。
+[ "$WITH_RAG" = 1 ] && DEPS="$DEPS qdrant"
+# **worker は共有モードでは立てない。ここが 9.7GB の削減分。**
+[ "$WITH_RAG" = 1 ] && [ "$RAG_SHARED" = 0 ] && DEPS="$DEPS ingestion-worker"
 [ "$WITH_SANDBOX" = 1 ] && DEPS="$DEPS sandbox-orchestrator"
 [ "$WITH_OFFICE" = 1 ] && DEPS="$DEPS collabora"
 
@@ -296,6 +358,26 @@ else
   fi
   say "   依存ポート: pg=$PG_PORT kc=$KC_PORT fga=$FGA_PORT redis=$REDIS_PORT rustfs=$RUSTFS_PORT qdrant=$QDRANT_PORT"
 
+  # S3 と worker の実効値をここで決める。**heredoc は unquoted なので、
+  # 中で分岐を書くと生成時に評価されてしまう。** 値は外で確定させて渡す。
+  if [ "$WITH_RAG" = 1 ] && [ "$RAG_SHARED" = 1 ]; then
+    EFF_S3_INTERNAL=$SHARED_S3_URL
+    # **PUBLIC もクラスタの LAN アドレス。** ブラウザが presigned URL を直接叩くので、
+    # localhost を入れるとアップロードとダウンロードが必ず落ちる。
+    EFF_S3_PUBLIC=$SHARED_S3_URL
+    EFF_S3_BUCKET=$SHARED_S3_BUCKET
+    EFF_S3_AK=$SHARED_S3_AK
+    EFF_S3_SK=$SHARED_S3_SK
+    EFF_WORKER_URL=$SHARED_WORKER_URL
+  else
+    EFF_S3_INTERNAL=http://localhost:${RUSTFS_PORT}
+    EFF_S3_PUBLIC=http://localhost:${RUSTFS_PORT}
+    EFF_S3_BUCKET=shiki-blobs
+    EFF_S3_AK=$RUSTFS_AK
+    EFF_S3_SK=$RUSTFS_SK
+    EFF_WORKER_URL=http://localhost:${WORKER_PORT}
+  fi
+
   # コンテナ内部ホスト名をホストの公開ポートへ読み替える。
   # env 名は deploy/compose/docker-compose.yml の shiki-server 節が正（食い違ったら合わせる）。
   cat > "$RUNDIR/run-server.sh" <<EOF
@@ -323,9 +405,9 @@ export SHIKI__SESSION__SECURE=false
 export SHIKI__AUTHZ__BASE_URL=http://localhost:${FGA_PORT}
 export SHIKI__AUTHZ__STORE_NAME=shiki
 export SHIKI__STORAGE__BACKEND=s3
-export SHIKI__STORAGE__S3__INTERNAL_ENDPOINT=http://localhost:${RUSTFS_PORT}
-export SHIKI__STORAGE__S3__PUBLIC_ENDPOINT=http://localhost:${RUSTFS_PORT}
-export SHIKI__STORAGE__S3__BUCKET=shiki-blobs
+export SHIKI__STORAGE__S3__INTERNAL_ENDPOINT=${EFF_S3_INTERNAL}
+export SHIKI__STORAGE__S3__PUBLIC_ENDPOINT=${EFF_S3_PUBLIC}
+export SHIKI__STORAGE__S3__BUCKET=${EFF_S3_BUCKET}
 # ブラウザ直 PUT/GET のバケット CORS。設定しないと put_bucket_cors が呼ばれず
 # Drive のアップロードが CORS で失敗する（MinIO 時代はサーバ側 env で代替されていた）。
 # figment は env 値をブラケット記法で配列として読む（裸のカンマ区切りは不可）。
@@ -335,8 +417,8 @@ export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS='[*]'
 # コマンド置換や位置パラメータをここに書くと（コメントの中であっても）
 # dev-up.sh 自身のシェルで評価され、set -u のもと未設定変数で死ぬ。
 # 実行時に評価したいものは heredoc の外で解決して値を渡すこと。
-export SHIKI__STORAGE__S3__ACCESS_KEY=${RUSTFS_AK}
-export SHIKI__STORAGE__S3__SECRET_KEY=${RUSTFS_SK}
+export SHIKI__STORAGE__S3__ACCESS_KEY=${EFF_S3_AK}
+export SHIKI__STORAGE__S3__SECRET_KEY=${EFF_S3_SK}
 export SHIKI__GATEWAY__ENABLED=true
 # native の第2/第3リスナは compose の shiki-server（8090/8091 を publish）と衝突しない
 # 18090/18091 を使う。web 側には NEXT_PUBLIC_GATEWAY_ORIGIN / NEXT_PUBLIC_B1_ORIGIN で
@@ -354,7 +436,7 @@ export SHIKI__LLM__BACKEND=stub
 export SHIKI__WEBSEARCH__BACKEND=stub
 export SHIKI__RAG__ENABLED=$([ "$WITH_RAG" = 1 ] && echo true || echo false)
 export SHIKI__RAG__QDRANT_URL=http://localhost:${QDRANT_PORT}
-export SHIKI__RAG__WORKER_BASE_URL=http://localhost:${WORKER_PORT}
+export SHIKI__RAG__WORKER_BASE_URL=${EFF_WORKER_URL}
 export SHIKI__RAG__INDEX_DATA_DIR="$RUNDIR/index"
 export SHIKI__CHAT__SANDBOX_ENDPOINT=http://localhost:${SANDBOX_PORT}
 export SHIKI__OFFICE__ENABLED=$([ "$WITH_OFFICE" = 1 ] && echo true || echo false)
@@ -513,7 +595,7 @@ say "  keycloak   http://localhost:8081"
 say "  ログ       $SERVER_LOG"
 say "             $WEB_LOG"
 say ""
-say "  RAG=$([ "$WITH_RAG" = 1 ] && echo on || echo off)  sandbox=$([ "$WITH_SANDBOX" = 1 ] && echo on || echo off)  office=$([ "$WITH_OFFICE" = 1 ] && echo on || echo off)  （必要なら --rag / --sandbox / --office）"
+say "  RAG=$([ "$WITH_RAG" = 1 ] && { [ "$RAG_SHARED" = 1 ] && echo "on(共有: worker と S3 はクラスタ)" || echo "on(ローカル)"; } || echo off)  sandbox=$([ "$WITH_SANDBOX" = 1 ] && echo on || echo off)  office=$([ "$WITH_OFFICE" = 1 ] && echo on || echo off)  （必要なら --rag / --sandbox / --office）"
 say ""
 say "  E2E:  cd web && E2E_BASE_URL=http://localhost:3000 pnpm exec playwright test e2e/<x>.spec.ts"
 say "  停止:  $0 --down"
