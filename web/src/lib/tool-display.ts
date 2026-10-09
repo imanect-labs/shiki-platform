@@ -403,14 +403,18 @@ const META_DISPLAY: Record<MetaToolName, ToolDisplay> = {
     verb: "更新",
     suru: true,
   },
-  // 遅延ロードのツールを検索して読み込む。`select:a,b` は名指しの読み込みで、接頭辞は見せない。
+  // 遅延ロードのツールを検索して読み込む。`select:a,b` は名指しの読み込みで、
+  // ツール名（生の英識別子）は見せない。
   tool_search: {
     icon: Wrench,
     category: "meta",
-    lead: (t) => (t ? `「${t}」のツールを` : "使うツールを"),
+    lead: (t) => (t ? `「${t}」のツールを` : "指定したツールを"),
     verb: "検索",
     suru: true,
-    target: (input) => str(input, "query")?.replace(/^select:/, "").trim() || null,
+    target: (input) => {
+      const q = str(input, "query");
+      return q && !q.startsWith("select:") ? q : null;
+    },
   },
 };
 

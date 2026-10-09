@@ -187,14 +187,14 @@ impl ToolSearch {
             .map_or(DEFAULT_LIMIT, |n| n.clamp(1, MAX_LIMIT));
 
         let (hits, unknown) = match query.strip_prefix("select:") {
-            Some(list) => self.select(list),
+            Some(list) => self.select(list, limit),
             None => (self.rank(query, limit), Vec::new()),
         };
         self.render(&hits, &unknown)
     }
 
     /// `select:a,b` — 名前の完全一致（区切り違いは同一視）。
-    fn select(&self, list: &str) -> (Vec<usize>, Vec<String>) {
+    fn select(&self, list: &str, limit: usize) -> (Vec<usize>, Vec<String>) {
         let mut hits = Vec::new();
         let mut unknown = Vec::new();
         for want in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -205,7 +205,7 @@ impl ToolSearch {
                 None => unknown.push(want.to_string()),
             }
         }
-        hits.truncate(MAX_LIMIT);
+        hits.truncate(limit);
         (hits, unknown)
     }
 

@@ -166,6 +166,13 @@ fn select_loads_exact_names_and_reports_unknown_ones() {
 }
 
 #[test]
+fn select_honours_limit() {
+    let s = search();
+    let r = s.handle(&json!({ "query": "select:csv.query,csv.patch", "limit": 1 }));
+    assert_eq!(r.references, ["csv.query"]);
+}
+
+#[test]
 fn select_cannot_reach_tools_outside_the_deferred_catalog() {
     // 提示していないツール（語彙には在る）を名指ししても読み込めない＝検索は認可を広げない。
     let s = search();

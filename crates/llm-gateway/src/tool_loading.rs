@@ -50,6 +50,20 @@ pub fn context_tools<'a>(tools: &'a [ToolDef], messages: &[Message]) -> Vec<&'a 
     out
 }
 
+/// 参照をネイティブに表せないときの tool 結果本文（本文の後ろに読み込んだツールの名前を足す）。
+///
+/// `names` はそのプロバイダで呼び出しに使う名前（OpenAI 互換なら wire 名）。空なら本文のまま。
+#[must_use]
+pub fn with_loaded_note(content: &str, names: &[String]) -> String {
+    if names.is_empty() {
+        return content.to_string();
+    }
+    format!(
+        "{content}\n（読み込んだツールの呼び出し名: {}）",
+        names.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

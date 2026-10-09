@@ -14,8 +14,11 @@ use futures::channel::mpsc;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
-use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
+use crate::model::{
+    Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef, Usage,
+};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::tool_loading::{context_tools, with_loaded_note};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -47,11 +50,17 @@ impl AnthropicProvider {
             .model
             .clone()
             .unwrap_or_else(|| self.default_model.clone());
-        let known: HashSet<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
+        // tool search（`defer_loading`＋`tool_reference`）はモデルが対応している時だけ使う。
+        // 非対応モデルでは OpenAI 互換と同じく、読み込み済みの定義だけを `tools` に載せる。
+        let native = supports_tool_search(&model);
+        let refs = RefRendering {
+            known: req.tools.iter().map(|t| t.name.as_str()).collect(),
+            native,
+        };
         let messages: Vec<Value> = req
             .messages
             .iter()
-            .map(|m| to_anthropic_message(m, &known))
+            .map(|m| to_anthropic_message(m, &refs))
             .collect();
         let mut body = json!({
             "model": model,
@@ -62,12 +71,16 @@ impl AnthropicProvider {
         if let Some(sys) = &req.system {
             body["system"] = json!(sys);
         }
-        if !req.tools.is_empty() {
+        let tools: Vec<&ToolDef> = if native {
+            req.tools.iter().collect()
+        } else {
+            context_tools(&req.tools, &req.messages)
+        };
+        if !tools.is_empty() {
             // 全ツールが遅延だと API は 400 を返す（最低 1 つは非遅延が要る）。その場合は
             // 遅延を無視して全部載せる（提示を欠くより文脈が膨らむ方が安全）。
-            let defer = req.tools.iter().any(|t| !t.defer_loading);
-            body["tools"] = json!(req
-                .tools
+            let defer = native && tools.iter().any(|t| !t.defer_loading);
+            body["tools"] = json!(tools
                 .iter()
                 .map(|t| {
                     let mut v = json!({
@@ -91,14 +104,39 @@ impl AnthropicProvider {
     }
 }
 
-/// 中立メッセージ 1 件を Anthropic message へ写す（tool 結果は user ロールの tool_result ブロック）。
+/// tool search に対応するモデルか（[互換性表] で非対応と明記されたものだけを外す）。
 ///
-/// `known` はこのリクエストで提示するツール名（`tool_reference` の参照先が在るかの判定に使う）。
-fn to_anthropic_message(m: &Message, known: &HashSet<&str>) -> Value {
+/// 対応は Claude 4.5 世代以降（Haiku 4.5・Sonnet 4.5・Opus 4.5〜）。Opus 4.1 以前と Claude 3 系は
+/// `defer_loading` / `tool_reference` を受け付けない。未知の ID（新しいモデル）は対応扱いにする。
+///
+/// [互換性表]: https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#model-compatibility
+fn supports_tool_search(model: &str) -> bool {
+    const UNSUPPORTED: [&str; 7] = [
+        "claude-3",
+        "claude-opus-4-0",
+        "claude-opus-4-1",
+        "claude-opus-4-2025",
+        "claude-sonnet-4-0",
+        "claude-sonnet-4-2025",
+        "claude-haiku-4-0",
+    ];
+    !UNSUPPORTED.iter().any(|p| model.starts_with(p))
+}
+
+/// 読み込み参照（`tool_references`）の写し方。
+struct RefRendering<'a> {
+    /// このリクエストで提示するツール名（参照先が在るかの判定に使う）。
+    known: HashSet<&'a str>,
+    /// `tool_reference` ブロックで送るか（false なら本文に名前を書き足す）。
+    native: bool,
+}
+
+/// 中立メッセージ 1 件を Anthropic message へ写す（tool 結果は user ロールの tool_result ブロック）。
+fn to_anthropic_message(m: &Message, refs: &RefRendering<'_>) -> Value {
     let blocks: Vec<Value> = m
         .content
         .iter()
-        .filter_map(|b| to_anthropic_block(b, known))
+        .filter_map(|b| to_anthropic_block(b, refs))
         .collect();
     let role = match m.role {
         // system はトップレベル（build_body 側）へ回すため空にする。
@@ -114,13 +152,21 @@ fn to_anthropic_message(m: &Message, known: &HashSet<&str>) -> Value {
 /// （API がそれを遅延ツールの完全な定義へ展開する）。本文はその後ろに text ブロックで添える
 /// （ループが観測に書き足す残り予算・催促を落とさない）。
 ///
-/// 参照先が 1 つでも `tools` に無ければ（ツールを外した着地ターン等）、API は 400 を返す。
-/// その場合は本文（テキスト）だけを送る。
-fn tool_result_content(content: &str, references: &[String], known: &HashSet<&str>) -> Value {
-    if references.is_empty() || !references.iter().all(|r| known.contains(r.as_str())) {
+/// `tools` に無い参照（ツールを外した着地ターン・配線が変わった再開）を送ると API は 400 を
+/// 返すため、**提示中のものだけ**を参照として残す。1 つも残らなければ本文だけを送る。
+fn tool_result_content(content: &str, references: &[String], refs: &RefRendering<'_>) -> Value {
+    let loaded: Vec<&String> = references
+        .iter()
+        .filter(|r| refs.known.contains(r.as_str()))
+        .collect();
+    if loaded.is_empty() {
         return json!(content);
     }
-    let mut blocks: Vec<Value> = references
+    if !refs.native {
+        let names: Vec<String> = loaded.into_iter().cloned().collect();
+        return json!(with_loaded_note(content, &names));
+    }
+    let mut blocks: Vec<Value> = loaded
         .iter()
         .map(|r| json!({ "type": "tool_reference", "tool_name": r }))
         .collect();
@@ -130,7 +176,7 @@ fn tool_result_content(content: &str, references: &[String], known: &HashSet<&st
     json!(blocks)
 }
 
-fn to_anthropic_block(b: &Block, known: &HashSet<&str>) -> Option<Value> {
+fn to_anthropic_block(b: &Block, refs: &RefRendering<'_>) -> Option<Value> {
     match b {
         Block::Text { text } => Some(json!({ "type": "text", "text": text })),
         Block::Thinking { .. } => None, // 再送する thinking はここでは扱わない（Phase 3 では省略）
@@ -145,7 +191,7 @@ fn to_anthropic_block(b: &Block, known: &HashSet<&str>) -> Option<Value> {
         } => Some(json!({
             "type": "tool_result",
             "tool_use_id": tool_use_id,
-            "content": tool_result_content(content, tool_references, known),
+            "content": tool_result_content(content, tool_references, refs),
             "is_error": is_error,
         })),
     }
@@ -331,7 +377,6 @@ impl LlmProvider for AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ToolDef;
 
     #[test]
     fn tool_result_maps_to_user_tool_result_block() {
@@ -339,7 +384,11 @@ mod tests {
             role: Role::Tool,
             content: vec![Block::tool_result("t1", "r", false)],
         };
-        let out = to_anthropic_message(&m, &HashSet::new());
+        let refs = RefRendering {
+            known: HashSet::new(),
+            native: true,
+        };
+        let out = to_anthropic_message(&m, &refs);
         assert_eq!(out["role"], "user");
         assert_eq!(out["content"][0]["type"], "tool_result");
         assert_eq!(out["content"][0]["tool_use_id"], "t1");
@@ -428,5 +477,70 @@ mod tests {
         let body = provider().build_body(&req);
         assert!(body["tools"][0].get("defer_loading").is_none());
         assert!(body["tools"][1].get("defer_loading").is_none());
+    }
+
+    #[test]
+    fn unknown_references_are_dropped_but_known_ones_stay_native() {
+        let mut req = GenerateRequest::new(vec![
+            Message::text(Role::User, "hi"),
+            loaded(&["csv.query", "gone.tool"]),
+        ]);
+        req.tools = vec![
+            ToolDef::new("tool_search", "s", json!({"type": "object"})),
+            deferred("csv.query"),
+        ];
+        let body = provider().build_body(&req);
+        let content = &body["messages"][1]["content"][0]["content"];
+        assert_eq!(content[0]["tool_name"], "csv.query");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn models_without_tool_search_get_loaded_definitions_appended_instead() {
+        let mut req = GenerateRequest::new(vec![
+            Message::text(Role::User, "hi"),
+            loaded(&["csv.query"]),
+        ]);
+        req.model = Some("claude-opus-4-1-20250805".into());
+        req.tools = vec![
+            ToolDef::new("tool_search", "s", json!({"type": "object"})),
+            deferred("csv.query"),
+            deferred("office.edit"),
+        ];
+        let body = provider().build_body(&req);
+        let names: Vec<&str> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        // 読み込み済み（csv.query）だけが載り、defer_loading は送らない。
+        assert_eq!(names, ["tool_search", "csv.query"]);
+        assert!(body["tools"][1].get("defer_loading").is_none());
+        let content = body["messages"][1]["content"][0]["content"]
+            .as_str()
+            .unwrap();
+        assert!(content.starts_with("読み込みました") && content.contains("csv.query"));
+    }
+
+    #[test]
+    fn tool_search_support_follows_the_compatibility_table() {
+        for m in [
+            "claude-opus-4-1-20250805",
+            "claude-opus-4-20250514",
+            "claude-sonnet-4-20250514",
+            "claude-3-7-sonnet-latest",
+        ] {
+            assert!(!supports_tool_search(m), "{m}");
+        }
+        for m in [
+            "claude-opus-4-8",
+            "claude-sonnet-4-5-20250929",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-5-5",
+        ] {
+            assert!(supports_tool_search(m), "{m}");
+        }
     }
 }
