@@ -136,15 +136,30 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   PKG_CHECK_MODULES([CPPUNIT], [cppunit])
 # を無条件で通すので、欠けると configure が止まる（upstream の configure.ac で確認）。
 # **libpoco-dev は入れない**（1.11.0 で古い。poco-build ステージの 1.14.2 を使う）。
-# python3-lxml と python3-polib は configure が `import` して確かめる。
+#
+# python3-lxml / python3-polib: configure が `import` して確かめる。
+# cpio / file / fontconfig とフォント: **make の中で coolwsd-systemplate-setup が
+# 走る**（jail の雛形を作る）。欠けると
+#   ./coolwsd-systemplate-setup: line 88: cpio: command not found
+#   cp: cannot stat '/usr//share/fonts': No such file or directory
+#   make[2]: *** [Makefile:4370: all-local] Error 127
+# で落ちる。同スクリプトが使う外部コマンドは
+#   cp cpio dirname file find grep ldd ln mkdir rm sed sort touch xargs
+# で、このうち base イメージに無いのが cpio と file（実測で切り分け）。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential autoconf automake libtool pkg-config \
     python3 python3-polib python3-lxml \
     libcap-dev libzstd-dev libpam0g-dev libssl-dev libpng-dev \
     zlib1g-dev libcppunit-dev libpcre2-dev \
+    cpio file fontconfig fonts-dejavu-core \
     nodejs npm ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+# **ローダにも登録する。** make の途中で coolforkit-ns を実行するので、
+# ヘッダとリンク時だけでなく実行時にも Poco が見えている必要がある
+#   ./coolforkit-ns: error while loading shared libraries: libPocoXML.so.112
 COPY --from=poco-build /opt/poco /opt/poco
+RUN echo /opt/poco/lib > /etc/ld.so.conf.d/poco.conf && ldconfig \
+    && ldconfig -p | grep -q libPocoXML
 COPY --from=core-build /opt/collaboraoffice /opt/collaboraoffice
 WORKDIR /src
 RUN git clone --depth 1 --branch "$ONLINE_REF" "$ONLINE_REPO" online \
