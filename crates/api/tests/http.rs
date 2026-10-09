@@ -751,6 +751,44 @@ async fn session_store_is_tenant_scoped() {
     assert!(store.get("tenant-a", "sid").await.unwrap().is_some());
 }
 
+/// 版のブロック列（出典パネル・#508）: セッション必須、RAG 無効なら 503（DB に触れる前に止まる）。
+#[tokio::test]
+async fn version_blocks_requires_session_and_rag() {
+    let path = format!(
+        "/files/{}/versions/1/blocks?from=0&limit=10",
+        uuid::Uuid::new_v4()
+    );
+    let app = build_router(state_with(Arc::new(MemorySessionStore::new()), None));
+    let resp = app
+        .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let store = Arc::new(MemorySessionStore::new());
+    store
+        .put(
+            "default",
+            "sid-blocks",
+            &session_record(now() + 3600, None, "csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let app = build_router(state_with(store, None));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(&path)
+                .header(COOKIE, "shiki_session=sid-blocks.default")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
 #[tokio::test]
 async fn openapi_json_is_served() {
     let app = build_router(state_with(Arc::new(MemorySessionStore::new()), None));

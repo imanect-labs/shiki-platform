@@ -554,3 +554,85 @@ async fn citations_and_decisions_are_audited_with_trace_id() {
     );
     assert!(metadata["query_sha256"].as_str().unwrap().len() == 64);
 }
+
+/// 検索結果が位置情報（アンカー・前後の文脈）を持ち、その版のブロック列を窓で読めること。
+/// 読み出しは本文の参照として監査に残る（#508）。
+#[tokio::test]
+async fn search_results_carry_anchor_and_blocks_are_readable_with_audit() {
+    let Some(env) = setup().await else { return };
+    let folder = create_folder(&env, "位置情報").await;
+    let file = index_file(&env, folder, "位置文書").await;
+
+    let output = env
+        .search
+        .search(&env.alice, "売上", Some(5), SearchMode::Hybrid, None, None)
+        .await
+        .unwrap();
+    let hit = output
+        .results
+        .iter()
+        .find(|r| r.file_id == file)
+        .expect("索引した文書がヒットする");
+    let anchor = hit.anchor.expect("位置情報つきで索引される");
+    assert_eq!((anchor.block_start, anchor.block_end), (0, 0));
+    // 一節の本文は snippet と同じなので quote には持たない（前後の文脈だけ）。
+    assert!(hit.quote.as_ref().is_some_and(|q| q.exact.is_empty()));
+
+    // 認可済みの Node（実運用では StorageService::get_metadata の戻り）を渡して読む。
+    let now = sqlx::types::chrono::Utc::now();
+    let node = storage::Node {
+        id: file,
+        org: env.alice.org.clone(),
+        tenant_id: env.alice.tenant_id.clone(),
+        kind: storage::NodeKind::File,
+        name: "位置文書".into(),
+        parent_id: Some(folder),
+        blob_sha256: None,
+        size_bytes: Some(10),
+        content_type: Some("text/plain".into()),
+        version: hit.version,
+        deleted_at: None,
+        created_by: env.alice.principal.id.clone(),
+        updated_by: env.alice.principal.id.clone(),
+        created_at: now,
+        updated_at: now,
+    };
+    let page = env
+        .search
+        .blocks(&env.alice, &node, hit.version, 0, 10, Some("trace-blocks"))
+        .await
+        .unwrap();
+    assert_eq!(page.blocks.len(), 1);
+    assert_eq!(page.blocks[0].block_type, BlockType::Paragraph);
+    assert!(page.blocks[0].text.contains("位置文書"));
+    assert!(page.next_from.is_none());
+
+    // 窓の外（存在しない ordinal 以降）は空。別テナントの文脈では何も読めない。
+    let empty = env
+        .search
+        .blocks(&env.alice, &node, hit.version, 5, 10, None)
+        .await
+        .unwrap();
+    assert!(empty.blocks.is_empty());
+    let other = test_ctx(&format!("t-{}", Uuid::new_v4().simple()), "charlie");
+    let leaked = env
+        .search
+        .blocks(&other, &node, hit.version, 0, 10, None)
+        .await
+        .unwrap();
+    assert!(leaked.blocks.is_empty(), "tenant_id で必ず絞る");
+
+    // 本文の読み出しは file.blocks.read として、版と範囲つきで残る。
+    let metadata: serde_json::Value = sqlx::query_scalar(
+        "select metadata from audit_log \
+         where tenant_id = $1 and object_id = $2 and action = 'file.blocks.read' \
+           and trace_id = 'trace-blocks'",
+    )
+    .bind(&env.alice.tenant_id)
+    .bind(file.to_string())
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(metadata["version"], hit.version);
+    assert_eq!(metadata["ordinals"], serde_json::json!([0, 0]));
+}
