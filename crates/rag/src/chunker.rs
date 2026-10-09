@@ -357,7 +357,11 @@ impl<'a> ChunkBuilder<'a> {
             let prev = self.block_text(at.block - 1).trim_end();
             out.extend(prev.chars().rev().take(CONTEXT_CHARS - out.len()));
         }
-        out.into_iter().rev().collect::<String>().trim_start().to_string()
+        out.into_iter()
+            .rev()
+            .collect::<String>()
+            .trim_start()
+            .to_string()
     }
 
     /// 範囲の直後の文脈（同じブロックで足りなければ、次のブロックの先頭を改行でつなぐ）。
@@ -365,11 +369,18 @@ impl<'a> ChunkBuilder<'a> {
         let tail = &self.block_text(at.block)[at.byte..];
         let mut out: String = tail.chars().take(CONTEXT_CHARS).collect();
         let taken = out.chars().count();
-        let next = usize::try_from(at.block + 1).ok().and_then(|i| self.blocks.get(i));
+        let next = usize::try_from(at.block + 1)
+            .ok()
+            .and_then(|i| self.blocks.get(i));
         if taken < CONTEXT_CHARS {
             if let Some(next) = next {
                 out.push('\n');
-                out.extend(next.text.trim_start().chars().take(CONTEXT_CHARS - taken - 1));
+                out.extend(
+                    next.text
+                        .trim_start()
+                        .chars()
+                        .take(CONTEXT_CHARS - taken - 1),
+                );
             }
         }
         out.trim_end().to_string()
@@ -797,16 +808,28 @@ mod tests {
     }
 
     fn leaves(chunks: &[Chunk]) -> Vec<&Chunk> {
-        chunks.iter().filter(|c| c.kind != ChunkKind::Parent).collect()
+        chunks
+            .iter()
+            .filter(|c| c.kind != ChunkKind::Parent)
+            .collect()
     }
 
     /// アンカーの範囲を doc_block（＝入力ブロック列）から UTF-16 で切り出す（ブラウザと同じ数え方）。
+    #[allow(clippy::cast_sign_loss)] // テストの入力は非負の番号・オフセットだけ。
     fn slice(blocks: &[ParsedBlock], a: &Anchor) -> String {
         let mut out = Vec::new();
         for i in a.block_start..=a.block_end {
             let units: Vec<u16> = blocks[i as usize].text.encode_utf16().collect();
-            let from = if i == a.block_start { a.off_start as usize } else { 0 };
-            let to = if i == a.block_end { a.off_end as usize } else { units.len() };
+            let from = if i == a.block_start {
+                a.off_start as usize
+            } else {
+                0
+            };
+            let to = if i == a.block_end {
+                a.off_end as usize
+            } else {
+                units.len()
+            };
             out.push(String::from_utf16(&units[from..to]).unwrap());
         }
         out.join("\n\n")
@@ -832,7 +855,9 @@ mod tests {
         assert_eq!((t.block_start, t.block_end), (3, 3));
         assert_eq!(slice(&blocks, &t), table.content);
         // parent は位置を持たない。
-        assert!(chunks.iter().any(|c| c.kind == ChunkKind::Parent && c.anchor.is_none()));
+        assert!(chunks
+            .iter()
+            .any(|c| c.kind == ChunkKind::Parent && c.anchor.is_none()));
     }
 
     #[test]

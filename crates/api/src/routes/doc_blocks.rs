@@ -71,7 +71,13 @@ pub async fn list_blocks(
         }));
     }
     let page = search
-        .blocks(&ctx, &node, version, q.from.unwrap_or(0), q.limit.unwrap_or(60))
+        .blocks(
+            &ctx,
+            &node,
+            version,
+            q.from.unwrap_or(0),
+            q.limit.unwrap_or(60),
+        )
         .await?;
     Ok(Json(page))
 }

@@ -40,13 +40,12 @@ impl CitationLedger {
     /// 印の i は `citations` の添字。範囲外の印は消す（モデルに壊れた番号を見せない）。
     pub fn number(&mut self, citations: &mut [Citation], text: &mut String) {
         for c in citations.iter_mut() {
-            c.cite_id = match self.by_chunk.get(&c.chunk_id) {
-                Some(n) => *n,
-                None => {
-                    self.last += 1;
-                    self.by_chunk.insert(c.chunk_id.clone(), self.last);
-                    self.last
-                }
+            c.cite_id = if let Some(n) = self.by_chunk.get(&c.chunk_id) {
+                *n
+            } else {
+                self.last += 1;
+                self.by_chunk.insert(c.chunk_id.clone(), self.last);
+                self.last
             };
         }
         if text.contains(OPEN) {
@@ -65,7 +64,9 @@ fn replace_placeholders(text: &str, lookup: impl Fn(usize) -> Option<u32>) -> St
         let digits = after.bytes().take_while(u8::is_ascii_digit).count();
         if digits > 0 && after[digits..].starts_with(CLOSE) {
             if let Some(n) = after[..digits].parse::<usize>().ok().and_then(&lookup) {
-                out.push_str(&format!("[{n}]"));
+                out.push('[');
+                out.push_str(&n.to_string());
+                out.push(']');
             }
             rest = &after[digits + CLOSE.len_utf8()..];
         } else {
@@ -104,15 +105,12 @@ pub fn relabel_to_placeholders(text: &str, citations: &[Citation]) -> String {
             .then(|| after[..digits].parse::<u32>().ok())
             .flatten()
             .and_then(|n| index.get(&n));
-        match hit {
-            Some(i) => {
-                out.push_str(&placeholder(*i));
-                rest = &after[digits + 1..];
-            }
-            None => {
-                out.push('[');
-                rest = after;
-            }
+        if let Some(i) = hit {
+            out.push_str(&placeholder(*i));
+            rest = &after[digits + 1..];
+        } else {
+            out.push('[');
+            rest = after;
         }
     }
     out.push_str(rest);
@@ -192,6 +190,9 @@ mod tests {
         let mut parent = CitationLedger::default();
         parent.number(&mut [cite("x")], &mut String::new());
         parent.number(&mut child, &mut text);
-        assert_eq!(text, "条件は A[2]、期限は B[3]。配列 arr[0] と [9] は触らない。");
+        assert_eq!(
+            text,
+            "条件は A[2]、期限は B[3]。配列 arr[0] と [9] は触らない。"
+        );
     }
 }
