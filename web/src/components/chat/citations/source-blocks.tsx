@@ -51,11 +51,15 @@ export function SourceBlocks({
   const [state, setState] = React.useState<State>({ status: "loading" });
   const markRef = React.useRef<HTMLDivElement>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
+  // 「前を表示」「続きを表示」の結果を、閉じた後・別の引用へ移った後に反映しない。
+  const current = React.useRef(0);
   const scrolledFor = React.useRef<string | null>(null);
   const key = `${nodeId}:${version}:${anchor.block_start}:${anchor.off_start}`;
 
   React.useEffect(() => {
     let active = true;
+    const gen = current;
+    gen.current++;
     const from = Math.max(0, anchor.block_start - BEFORE);
     const limit = Math.min(200, anchor.block_end - from + 1 + AFTER);
     setState({ status: "loading" });
@@ -75,6 +79,8 @@ export function SourceBlocks({
       .catch(() => active && setState({ status: "error" }));
     return () => {
       active = false;
+      // 閉じた・別の引用へ移ったら世代を進め、読み込み中の「前/続き」の結果を捨てさせる。
+      gen.current++;
     };
   }, [nodeId, version, anchor.block_start, anchor.block_end]);
 
@@ -95,31 +101,35 @@ export function SourceBlocks({
     if (state.status !== "ready" || state.more || state.window.from === 0) return;
     const cur = state.window;
     const from = Math.max(0, cur.from - STEP);
+    const token = current.current;
     setState({ ...state, more: "before" });
     getVersionBlocks(nodeId, version, { from, limit: cur.from - from })
-      .then((page) =>
+      .then((page) => {
+        if (current.current !== token) return;
         setState({
           status: "ready",
           window: { ...cur, blocks: [...page.blocks, ...cur.blocks], from },
           more: null,
-        }),
-      )
-      .catch(() => setState({ status: "ready", window: cur, more: null }));
+        });
+      })
+      .catch(() => current.current === token && setState({ status: "ready", window: cur, more: null }));
   };
 
   const loadAfter = () => {
     if (state.status !== "ready" || state.more || state.window.nextFrom == null) return;
     const cur = state.window;
+    const token = current.current;
     setState({ ...state, more: "after" });
     getVersionBlocks(nodeId, version, { from: cur.nextFrom!, limit: STEP })
-      .then((page) =>
+      .then((page) => {
+        if (current.current !== token) return;
         setState({
           status: "ready",
           window: { ...cur, blocks: [...cur.blocks, ...page.blocks], nextFrom: page.next_from ?? null },
           more: null,
-        }),
-      )
-      .catch(() => setState({ status: "ready", window: cur, more: null }));
+        });
+      })
+      .catch(() => current.current === token && setState({ status: "ready", window: cur, more: null }));
   };
 
   if (state.status === "loading") {

@@ -75,8 +75,14 @@ export function stashCiteLocator(c: Citation): void {
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const k = localStorage.key(i);
       if (!k?.startsWith(STORE_PREFIX)) continue;
-      const at = Number(JSON.parse(localStorage.getItem(k) ?? "{}").at ?? 0);
-      if (now - at > STORE_TTL_MS) localStorage.removeItem(k);
+      // 壊れた値は捨てる（1 件の破損で新しい受け渡しが保存できなくならないように）。
+      let at = 0;
+      try {
+        at = Number(JSON.parse(localStorage.getItem(k) ?? "{}")?.at ?? 0);
+      } catch {
+        at = 0;
+      }
+      if (!Number.isFinite(at) || now - at > STORE_TTL_MS) localStorage.removeItem(k);
     }
     localStorage.setItem(STORE_PREFIX + c.chunk_id, JSON.stringify({ ...citeLocator(c), at: now }));
   } catch {

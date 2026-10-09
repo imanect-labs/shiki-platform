@@ -10,6 +10,7 @@ import * as React from "react";
 
 import type { Citation } from "@/lib/chat-api";
 import {
+  visibleCitations,
   citationRuns,
   claimsByNumber,
   groupCitations,
@@ -60,7 +61,7 @@ function useCitationMetas(citations: readonly Citation[]): {
 } {
   const override = React.useContext(MetaOverrideContext);
   const ids = React.useMemo(
-    () => (override ? [] : Array.from(new Set(citations.map((c) => c.node_id)))),
+    () => (override ? [] : Array.from(new Set(visibleCitations(citations).map((c) => c.node_id)))),
     [citations, override],
   );
   const fetched = useNodeMetas(ids);

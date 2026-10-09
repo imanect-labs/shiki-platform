@@ -24,16 +24,19 @@ export function numberOf(citations: readonly Citation[], i: number): number {
 /// 本文の `[n]` に対応する引用（無ければ undefined）。
 export function citationAt(citations: readonly Citation[], n: number): Citation | undefined {
   if (!Number.isInteger(n) || n < 1) return undefined;
-  if (hasCiteIds(citations)) return citations.find((c) => c.cite_id === n);
+  if (hasCiteIds(citations)) return citations.find((c) => c.cite_id === n && !c.withheld);
   return citations[n - 1];
 }
 
-/// `[n]` が「あったはずだが見えない引用」か（共有された会話で、閲覧者の権限では読めない
-/// 文書の引用はサーバが取り除く。番号は詰めないので、欠けた番号として残る）。
+/// `[n]` が「閲覧できない出典」か。共有された会話で閲覧者の権限では読めない文書の引用は、
+/// サーバが番号だけの引用（`withheld`）に置き換えて返す（番号は詰めない）。
 export function isWithheldCitation(citations: readonly Citation[], n: number): boolean {
-  if (!hasCiteIds(citations) || citationAt(citations, n)) return false;
-  const max = Math.max(...citations.map((c) => c.cite_id ?? 0));
-  return Number.isInteger(n) && n >= 1 && n <= max;
+  return citations.some((c) => c.withheld && c.cite_id === n);
+}
+
+/// 表示に使う引用（閲覧できない出典を除く）。
+export function visibleCitations(citations: readonly Citation[]): Citation[] {
+  return citations.filter((c) => !c.withheld);
 }
 
 /// 本文中の `[n]` 引用マーカーを、引用チップ用のリンクに変換する（Markdown 用）。
@@ -221,6 +224,8 @@ export function groupCitations(
   const byChunk = new Map<string, CitedPassage>();
   const order: CitedPassage[] = [];
   citations.forEach((c, i) => {
+    // 閲覧できない出典は一覧に出さない（本文の番号だけを欠番として描く）。
+    if (c.withheld) return;
     const n = numberOf(citations, i);
     const used = !hasMarkers || usedNumbers.has(n);
     const hit = byChunk.get(c.chunk_id);

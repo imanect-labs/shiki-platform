@@ -80,6 +80,31 @@ pub struct Citation {
     /// PDF のページ上の枠（PDF 以外は空）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boxes: Vec<rag::PageBox>,
+    /// 閲覧者の権限では読めない引用（共有された会話）。番号だけを残し、中身は空にする。
+    /// 本文の `[n]` を「閲覧できない出典」として描くために使う（番号は本文に既に出ている）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub withheld: bool,
+}
+
+impl Citation {
+    /// 番号だけを残した「閲覧できない出典」（ファイル・本文・位置情報は一切持たない）。
+    #[must_use]
+    pub fn withheld(cite_id: u32) -> Self {
+        Citation {
+            cite_id,
+            node_id: String::new(),
+            chunk_id: String::new(),
+            snippet: String::new(),
+            page: None,
+            heading_path: Vec::new(),
+            score: 0.0,
+            version: None,
+            anchor: None,
+            quote: None,
+            boxes: Vec::new(),
+            withheld: true,
+        }
+    }
 }
 
 impl From<&agent_core::Citation> for Citation {
@@ -96,6 +121,7 @@ impl From<&agent_core::Citation> for Citation {
             anchor: c.anchor,
             quote: c.quote.clone(),
             boxes: c.boxes.clone(),
+            withheld: false,
         }
     }
 }
@@ -365,6 +391,7 @@ mod tests {
             anchor: None,
             quote: None,
             boxes: Vec::new(),
+            withheld: false,
         });
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "citation");
@@ -376,6 +403,22 @@ mod tests {
         // 位置情報が無ければ出さない（旧クライアント・保存量）。
         assert!(json.get("anchor").is_none());
         assert!(json.get("boxes").is_none());
+        assert!(json.get("withheld").is_none());
+    }
+
+    #[test]
+    fn withheld_citation_keeps_only_the_number() {
+        let json = serde_json::to_value(ContentBlock::Citation(Citation::withheld(7))).unwrap();
+        assert_eq!(json["cite_id"], 7);
+        assert_eq!(json["withheld"], true);
+        assert_eq!(json["node_id"], "");
+        assert_eq!(json["snippet"], "");
+        for key in ["anchor", "quote", "boxes", "version", "page"] {
+            assert!(
+                json.get(key).is_none() || json[key].is_null(),
+                "{key} を出さない"
+            );
+        }
     }
 
     #[test]

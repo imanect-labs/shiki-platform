@@ -36,12 +36,15 @@ use storage::model::ShareTarget;
 struct AllowAll {
     /// `list_thread_shares` が読み出すタプル（テストが事前に注入する）。
     tuples: std::sync::Mutex<Vec<ReadTupleKey>>,
+    /// 例外的に拒否するオブジェクト（`FgaObject::as_str()`）。閲覧権限の無いファイルの再現用。
+    deny: std::sync::Mutex<Vec<String>>,
 }
 
 impl AllowAll {
     fn new() -> Self {
         Self {
             tuples: std::sync::Mutex::new(vec![]),
+            deny: std::sync::Mutex::new(vec![]),
         }
     }
 }
@@ -52,10 +55,10 @@ impl AuthzClient for AllowAll {
         &self,
         _s: &Subject,
         _r: Relation,
-        _o: &FgaObject,
+        o: &FgaObject,
         _c: Consistency,
     ) -> Result<bool, AuthzError> {
-        Ok(true)
+        Ok(!self.deny.lock().unwrap().iter().any(|d| d == o.as_str()))
     }
     async fn write_tuple(
         &self,
@@ -1011,4 +1014,82 @@ async fn tool_result_bodies_are_hidden_from_other_viewers() {
         matches!(results[0], ContentBlock::ToolResult { content, .. } if content.is_empty()),
         "他人には観測本文を返さない: {results:?}"
     );
+}
+
+/// 閲覧者が読めない文書の引用は、番号だけの「閲覧できない出典」に置き換わる（#508）。
+///
+/// 落とすと本文の `[n]` が欠番として描けない（読めないのが最大番号だと、残りの引用からは
+/// 欠番だと分からない）。ファイル・本文・位置情報は一切残さない。
+#[tokio::test]
+async fn unreadable_citations_become_number_only_stubs() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::new());
+    let store = store(&pool, Arc::clone(&authz) as _).await;
+    let owner = ctx(&tenant);
+    let thread = store
+        .create_thread(&owner, "共有スレッド", false, None, None)
+        .await
+        .unwrap();
+    let posted = store
+        .post_message(
+            &owner,
+            thread.id,
+            "調べて",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+
+    let cite = |cite_id: u32, node: &str| {
+        let mut c = chat::Citation::withheld(cite_id);
+        c.withheld = false;
+        c.node_id = node.into();
+        c.chunk_id = format!("chunk-{cite_id}");
+        c.snippet = format!("{node} の本文");
+        c.version = Some(1);
+        ContentBlock::Citation(c)
+    };
+    let readable = uuid::Uuid::new_v4().to_string();
+    let secret = uuid::Uuid::new_v4().to_string();
+    let content = vec![
+        ContentBlock::Text {
+            text: "条件です[1]。期限です[2]。".into(),
+        },
+        cite(1, &readable),
+        cite(2, &secret),
+    ];
+    sqlx::query("UPDATE message SET content = $2 WHERE id = $1")
+        .bind(posted.assistant_message_id)
+        .bind(sqlx::types::Json(&content))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut viewer = ctx(&tenant);
+    viewer.principal.id = "bob".into();
+    authz
+        .deny
+        .lock()
+        .unwrap()
+        .push(viewer.ns().file(&secret).as_str().to_string());
+    let theirs = store.get_messages(&viewer, thread.id, None).await.unwrap();
+    let cites: Vec<&chat::Citation> = theirs
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            ContentBlock::Citation(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cites.len(), 2, "番号は詰めない");
+    assert!(!cites[0].withheld && cites[0].node_id == readable);
+    let stub = cites[1];
+    assert!(stub.withheld && stub.cite_id == 2);
+    assert!(stub.node_id.is_empty() && stub.snippet.is_empty() && stub.version.is_none());
 }
