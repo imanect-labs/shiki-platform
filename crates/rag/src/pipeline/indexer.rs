@@ -232,6 +232,7 @@ async fn index_node(
         message.node_id,
         message.version,
         &chunks,
+        &parsed.blocks,
         &authz_tags,
         deps.embedder.model_version(),
     )

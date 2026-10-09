@@ -46,6 +46,8 @@ export type NodeMeta = {
   parentId: string | null;
   updatedAt: string | null;
   contentType: string | null;
+  /// 現在の版（引用時点の版と比べて「古い版を引用している」を出す・#508）。
+  version?: number | null;
 };
 
 /// 解決済み（value=null は解決不能として確定）。`at` は解決時刻（TTL 判定）。
@@ -65,6 +67,7 @@ function fetchName(id: string): Promise<string | null> {
             parentId: node.parent_id ?? null,
             updatedAt: node.updated_at ?? null,
             contentType: node.content_type ?? null,
+            version: typeof node.version === "number" ? node.version : null,
           }
         : null;
       resolved.set(id, { name, meta, at: Date.now() });

@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from .schemas import BlockType, ParsedBlock, ParseRequest, ParseResponse
+from .schemas import BlockType, ParsedBlock, ParseRequest, ParseResponse, Prov
 from .settings import get_settings
 
 router = APIRouter()
@@ -195,8 +195,21 @@ class _HtmlTextExtractor(HTMLParser):
     """
 
     _BLOCK_TAGS = {
-        "p", "div", "section", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
-        "blockquote", "figcaption", "br", "hr",
+        "p",
+        "div",
+        "section",
+        "li",
+        "tr",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "blockquote",
+        "figcaption",
+        "br",
+        "hr",
     }
     _SKIP_TAGS = {"script", "style", "template", "noscript"}
 
@@ -282,6 +295,42 @@ def _page_of(item: Any) -> int | None:
     return None
 
 
+def _prov_of(item: Any) -> list[Prov]:
+    """Docling の prov（ページ・bbox・charspan）をすべて写す（引用箇所を原本の上に描く・#508）。"""
+    out: list[Prov] = []
+    for p in getattr(item, "prov", None) or []:
+        bbox = getattr(p, "bbox", None)
+        if bbox is None:
+            continue
+        origin = str(getattr(bbox, "coord_origin", "BOTTOMLEFT")).upper()
+        span = getattr(p, "charspan", None)
+        out.append(
+            Prov(
+                page=int(p.page_no),
+                bbox=(float(bbox.l), float(bbox.t), float(bbox.r), float(bbox.b)),
+                origin="top_left" if "TOPLEFT" in origin else "bottom_left",
+                charspan=(int(span[0]), int(span[1])) if span else None,
+            )
+        )
+    return out
+
+
+def _list_marker(item: Any, document: Any) -> str:
+    """箇条書きの見た目の記号。Docling が記号を持たなければ、番号付きは兄弟内の順番から作る。"""
+    marker = (getattr(item, "marker", "") or "").strip()
+    if marker:
+        return marker
+    if not getattr(item, "enumerated", False):
+        return "•"
+    parent = getattr(item, "parent", None)
+    try:
+        group = parent.resolve(document) if parent is not None else None
+        refs = [c.cref for c in getattr(group, "children", [])]
+        return f"{refs.index(item.self_ref) + 1}."
+    except (AttributeError, ValueError):
+        return "•"
+
+
 def _docling_blocks(document: Any) -> list[ParsedBlock]:
     """DoclingDocument を読み順の構造化ブロック列へ落とす。"""
     from docling_core.types.doc import DocItemLabel
@@ -291,11 +340,12 @@ def _docling_blocks(document: Any) -> list[ParsedBlock]:
         label = getattr(item, "label", None)
         if label in (DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER):
             continue
+        page, prov = _page_of(item), _prov_of(item)
         if label == DocItemLabel.TABLE:
             markdown = item.export_to_markdown(doc=document)
             if markdown.strip():
                 blocks.append(
-                    ParsedBlock(type=BlockType.TABLE, text=markdown, page=_page_of(item))
+                    ParsedBlock(type=BlockType.TABLE, text=markdown, page=page, prov=prov)
                 )
             continue
         text = (getattr(item, "text", "") or "").strip()
@@ -303,19 +353,29 @@ def _docling_blocks(document: Any) -> list[ParsedBlock]:
             continue
         if label == DocItemLabel.TITLE:
             blocks.append(
-                ParsedBlock(type=BlockType.HEADING, level=1, text=text, page=_page_of(item))
+                ParsedBlock(type=BlockType.HEADING, level=1, text=text, page=page, prov=prov)
             )
         elif label == DocItemLabel.SECTION_HEADER:
             # SectionHeaderItem.level は 1 始まり。TITLE を 1 とし、その下に続ける。
             level = int(getattr(item, "level", 1)) + 1
             blocks.append(
-                ParsedBlock(type=BlockType.HEADING, level=level, text=text, page=_page_of(item))
+                ParsedBlock(type=BlockType.HEADING, level=level, text=text, page=page, prov=prov)
             )
         elif label == DocItemLabel.CAPTION:
-            blocks.append(ParsedBlock(type=BlockType.CAPTION, text=text, page=_page_of(item)))
+            blocks.append(ParsedBlock(type=BlockType.CAPTION, text=text, page=page, prov=prov))
+        elif label == DocItemLabel.LIST_ITEM:
+            blocks.append(
+                ParsedBlock(
+                    type=BlockType.LIST_ITEM,
+                    text=text,
+                    page=page,
+                    prov=prov,
+                    list_marker=_list_marker(item, document),
+                )
+            )
         else:
-            # TEXT / PARAGRAPH / LIST_ITEM / CODE / FOOTNOTE などは段落として扱う。
-            blocks.append(ParsedBlock(type=BlockType.PARAGRAPH, text=text, page=_page_of(item)))
+            # TEXT / PARAGRAPH / CODE / FOOTNOTE などは段落として扱う。
+            blocks.append(ParsedBlock(type=BlockType.PARAGRAPH, text=text, page=page, prov=prov))
     return blocks
 
 

@@ -441,6 +441,12 @@ pub fn route_table() -> Vec<RouteDecl> {
             || get(routes::file_versions::version_download_url),
         ),
         r(
+            "/files/{id}/versions/{version}/blocks",
+            &["GET"],
+            SessionLongRunning,
+            || get(routes::doc_blocks::list_blocks),
+        ),
+        r(
             "/files/{id}/versions/{version}/restore",
             &["POST"],
             SessionLongRunning,

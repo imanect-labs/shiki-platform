@@ -62,6 +62,8 @@ impl DocumentParser for ContentParser {
                 level: None,
                 text: format!("「{}」の四半期売上の報告です。", req.file_name),
                 page: Some(1),
+                prov: Vec::new(),
+                list_marker: None,
             }],
             used_ocr: false,
         })

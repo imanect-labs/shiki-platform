@@ -1,7 +1,8 @@
 /// 引用（doc_search のソース）の解釈を一か所にまとめる（issue #505）。
 ///
-/// - 本文の `[n]` → 引用の解決は `citationAt` だけが行う。現状は「メッセージ内の引用を到着順に
-///   並べた配列の n-1 番目」。サーバが応答内の通し番号を振るようになったら、ここを差し替える。
+/// - 本文の `[n]` → 引用の解決は `citationAt` だけが行う。サーバが振った応答内の通し番号
+///   （`cite_id`）で引く（#508）。採番前に保存された旧データ（`cite_id` が 0）だけは、従来どおり
+///   「メッセージ内の引用を到着順に並べた配列の n-1 番目」で引く。
 /// - 表示は「引用箇所（チャンク）ごとの番号」を保ったまま、一覧だけを文書ごとにまとめる。
 /// - 回答の文（主張）と原文の対応は、本文中の `[n]` の直前の 1 文から推定する。
 import type { Citation } from "@/lib/chat-api";
@@ -9,13 +10,34 @@ import type { Citation } from "@/lib/chat-api";
 /// 本文中の引用マーカーのリンク先。Markdown の a レンダラがこの接頭辞で引用チップに差し替える。
 export const CITE_HREF_PREFIX = "#cite-";
 
-/// 本文の `[n]` に対応する引用（範囲外は undefined）。
+/// サーバが番号を振った引用か（旧データは 0 / 欠落）。
+function hasCiteIds(citations: readonly Citation[]): boolean {
+  return citations.some((c) => (c.cite_id ?? 0) > 0);
+}
+
+/// 配列の i 番目の引用が本文で何番として書かれているか。
+export function numberOf(citations: readonly Citation[], i: number): number {
+  const id = citations[i]?.cite_id ?? 0;
+  return id > 0 ? id : i + 1;
+}
+
+/// 本文の `[n]` に対応する引用（無ければ undefined）。
 export function citationAt(citations: readonly Citation[], n: number): Citation | undefined {
-  return Number.isInteger(n) && n >= 1 ? citations[n - 1] : undefined;
+  if (!Number.isInteger(n) || n < 1) return undefined;
+  if (hasCiteIds(citations)) return citations.find((c) => c.cite_id === n);
+  return citations[n - 1];
+}
+
+/// `[n]` が「あったはずだが見えない引用」か（共有された会話で、閲覧者の権限では読めない
+/// 文書の引用はサーバが取り除く。番号は詰めないので、欠けた番号として残る）。
+export function isWithheldCitation(citations: readonly Citation[], n: number): boolean {
+  if (!hasCiteIds(citations) || citationAt(citations, n)) return false;
+  const max = Math.max(...citations.map((c) => c.cite_id ?? 0));
+  return Number.isInteger(n) && n >= 1 && n <= max;
 }
 
 /// 本文中の `[n]` 引用マーカーを、引用チップ用のリンクに変換する（Markdown 用）。
-/// 範囲外の番号やマッチしない `[n]` はそのまま残す。
+/// 対応する引用が無く、欠けた番号でもない `[n]` はそのまま残す。
 ///
 /// コード（フェンスのコードブロック・インラインコード）の中は変えない。Markdown の解析前に
 /// 文字列で置き換えるので、ここで除かないとコード例の `[1]` が `[1](#cite-1)` に化け、表示と
@@ -29,7 +51,7 @@ export function linkifyCitations(text: string, citations: readonly Citation[]): 
         : s.replace(CITE_RUN, (run: string) =>
             run.replace(/\[(\d+)\]/g, (match, digits: string) => {
               const n = Number.parseInt(digits, 10);
-              if (!citationAt(citations, n)) return match;
+              if (!citationAt(citations, n) && !isWithheldCitation(citations, n)) return match;
               return `[${n}](${CITE_HREF_PREFIX}${n})`;
             }),
           ),
@@ -176,11 +198,12 @@ export function groupCitations(
   const byChunk = new Map<string, CitedPassage>();
   const order: CitedPassage[] = [];
   citations.forEach((c, i) => {
-    const n = i + 1;
+    const n = numberOf(citations, i);
     const used = !hasMarkers || usedNumbers.has(n);
     const hit = byChunk.get(c.chunk_id);
     if (hit) {
-      hit.ns.push(n);
+      // 番号を振り直す前の旧データは別番号、振り直した後は同じ番号で再ヒットする。
+      if (!hit.ns.includes(n)) hit.ns.push(n);
       hit.used ||= used;
       return;
     }

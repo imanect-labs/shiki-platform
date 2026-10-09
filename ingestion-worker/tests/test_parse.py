@@ -65,7 +65,14 @@ def test_parse_slide_extracts_text_per_slide(
     assert resp.status_code == 200
     blocks = resp.json()["blocks"]
     # 文書タイトル → スライド1（見出し＋段落＋ノート）→ スライド2（見出し＋箇条書き）。
-    assert blocks[0] == {"type": "heading", "level": 1, "text": "提案書", "page": None}
+    assert blocks[0] == {
+        "type": "heading",
+        "level": 1,
+        "text": "提案書",
+        "page": None,
+        "prov": [],
+        "list_marker": None,
+    }
     texts = [b["text"] for b in blocks]
     for expected in ["表紙", "ご提案の概要", "最初に挨拶", "課題", "コスト", "速度"]:
         assert expected in texts, f"{expected} が抽出されていない: {texts}"
@@ -158,6 +165,53 @@ def test_parse_markdown_preserves_table_structure(
     assert len(tables) == 1
     # 表のセル内容が Markdown 表として残る。
     assert "東京" in tables[0]["text"] and "1200" in tables[0]["text"]
+
+
+@pytest.mark.slow
+def test_parse_markdown_keeps_list_items_with_markers(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """箇条書きは list_item として、見た目の番号・記号つきで返る（出典パネルで再現・#508）。"""
+    md = "# 手引き\n\n手順:\n\n1. 申請書を開く\n2. 提出する\n\n- 期限後も申請できる\n"
+    _stub_download(monkeypatch, md.encode())
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "source_url": "http://minio:9000/blob",
+            "content_type": "text/markdown",
+            "file_name": "guide.md",
+        },
+    )
+    assert resp.status_code == 200
+    blocks = resp.json()["blocks"]
+    items = [(b["text"], b["list_marker"]) for b in blocks if b["type"] == "list_item"]
+    assert items == [("申請書を開く", "1."), ("提出する", "2."), ("期限後も申請できる", "•")]
+
+
+def test_prov_of_copies_every_page_box() -> None:
+    """Docling の prov はページ・bbox・原点・charspan をすべて写す（ページをまたぐブロックも）。"""
+
+    class _Box:
+        def __init__(self, box: tuple[float, float, float, float], origin: str) -> None:
+            self.l, self.t, self.r, self.b = box
+            self.coord_origin = origin
+
+    class _Prov:
+        def __init__(self, page: int, box: _Box, span: tuple[int, int] | None) -> None:
+            self.page_no, self.bbox, self.charspan = page, box, span
+
+    class _Item:
+        prov = [
+            _Prov(3, _Box((72, 700, 540, 640), "CoordOrigin.BOTTOMLEFT"), (0, 120)),
+            _Prov(4, _Box((72, 90, 540, 60), "CoordOrigin.TOPLEFT"), None),
+        ]
+
+    out = [p.model_dump() for p in parse_mod._prov_of(_Item())]
+    first = {"page": 3, "bbox": (72.0, 700.0, 540.0, 640.0), "origin": "bottom_left"}
+    second = {"page": 4, "bbox": (72.0, 90.0, 540.0, 60.0), "origin": "top_left"}
+    assert out == [{**first, "charspan": (0, 120)}, {**second, "charspan": None}]
+    assert parse_mod._prov_of(object()) == []
 
 
 @pytest.mark.slow

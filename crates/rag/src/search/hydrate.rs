@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use authz::AuthContext;
 use uuid::Uuid;
 
+use crate::anchor::{Anchor, PageBox, TextQuote};
 use crate::error::RagError;
 use crate::rerank::RerankPassage;
 use crate::search::SearchService;
@@ -30,6 +31,25 @@ pub(super) struct HydratedChunk {
     content: String,
     file_name: String,
     folder_id: Option<Uuid>,
+    block_start: Option<i32>,
+    off_start: Option<i32>,
+    block_end: Option<i32>,
+    off_end: Option<i32>,
+    quote_prefix: String,
+    quote_suffix: String,
+    boxes: sqlx::types::Json<Vec<PageBox>>,
+}
+
+impl HydratedChunk {
+    /// `doc_block` 上の範囲（位置情報を持たない旧インデックスは None）。
+    fn anchor(&self) -> Option<Anchor> {
+        Some(Anchor {
+            block_start: self.block_start?,
+            off_start: self.off_start?,
+            block_end: self.block_end?,
+            off_end: self.off_end?,
+        })
+    }
 }
 
 impl SearchService {
@@ -86,7 +106,9 @@ impl SearchService {
         let ids: Vec<Uuid> = chunks.iter().map(|c| c.chunk_id).collect();
         let rows: Vec<HydratedChunk> = sqlx::query_as(
             "select c.id, c.node_id, c.version, c.parent_id, c.page, c.heading_path, c.content, \
-                    n.name as file_name, n.parent_id as folder_id \
+                    n.name as file_name, n.parent_id as folder_id, \
+                    c.block_start, c.off_start, c.block_end, c.off_end, \
+                    c.quote_prefix, c.quote_suffix, c.boxes \
              from rag_chunk c \
              join node n on n.id = c.node_id and n.tenant_id = c.tenant_id \
              where c.tenant_id = $1 and c.id = any($2) and n.org = $3 and n.deleted_at is null",
@@ -181,9 +203,15 @@ impl SearchService {
                     // rerank 後の順位ベースのスコア（表示用に単調減少へ正規化）。
                     score,
                     version: row.version,
-                    anchor: None,
-                    quote: None,
-                    boxes: Vec::new(),
+                    // 位置情報（#508）。一節（quote）は位置を持つ索引だけに付ける。旧索引は
+                    // 前後の文脈が無く、元エディタでの探索は本文だけでは当たりにくいため。
+                    anchor: row.anchor(),
+                    quote: row.anchor().map(|_| TextQuote {
+                        exact: row.content.clone(),
+                        prefix: row.quote_prefix.clone(),
+                        suffix: row.quote_suffix.clone(),
+                    }),
+                    boxes: row.boxes.0.clone(),
                 }
             })
             .collect())

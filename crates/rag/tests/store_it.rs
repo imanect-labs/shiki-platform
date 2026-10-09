@@ -57,6 +57,10 @@ fn chunk(node: Uuid, ordinal: i32) -> Chunk {
         page: None,
         heading_path: vec!["章".into(), format!("節{ordinal}")],
         content: format!("本文 {ordinal}"),
+        anchor: None,
+        quote_prefix: String::new(),
+        quote_suffix: String::new(),
+        boxes: Vec::new(),
     }
 }
 
@@ -77,7 +81,7 @@ async fn replace_chunks_writes_every_row_across_batch_boundaries() {
     let chunks: Vec<Chunk> = (0..N).map(|i| chunk(node, i)).collect();
     let tags = vec![format!("file:{tenant}|{node}")];
 
-    store::replace_chunks(&pool, &ctx, node, 1, &chunks, &tags, "test-model")
+    store::replace_chunks(&pool, &ctx, node, 1, &chunks, &[], &tags, "test-model")
         .await
         .unwrap();
 
@@ -105,7 +109,7 @@ async fn replace_chunks_writes_every_row_across_batch_boundaries() {
     assert_eq!(stored_tags, tags);
 
     // 決定的 ID なので再実行しても増えない（at-least-once 配信の冪等性）。
-    store::replace_chunks(&pool, &ctx, node, 1, &chunks, &tags, "test-model")
+    store::replace_chunks(&pool, &ctx, node, 1, &chunks, &[], &tags, "test-model")
         .await
         .unwrap();
     let again: i64 =

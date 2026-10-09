@@ -12,6 +12,8 @@ export type UploadTicketResponse = components["schemas"]["UploadTicketResponse"]
 export type DownloadUrlResponse = components["schemas"]["DownloadUrlResponse"];
 export type FileVersionResponse = components["schemas"]["FileVersionResponse"];
 export type FileVersionsResponse = components["schemas"]["FileVersionsResponse"];
+export type DocBlock = components["schemas"]["DocBlock"];
+export type DocBlocksPage = components["schemas"]["DocBlocksPage"];
 export type ShareEntry = components["schemas"]["ShareEntry"];
 export type ShareRole = components["schemas"]["ShareRole"];
 export type ShareTarget = components["schemas"]["ShareTarget"];
@@ -243,6 +245,17 @@ export function listVersions(
 export function versionDownloadUrl(fileId: string, version: number): Promise<DownloadUrlResponse> {
   return apiFetch(`/files/${fileId}/versions/${version}/download-url`).then((r) =>
     okJson<DownloadUrlResponse>(r),
+  );
+}
+
+/// 版のブロック列を ordinal 順の窓で取る（出典パネル・#508）。
+export function getVersionBlocks(
+  fileId: string,
+  version: number,
+  opts: { from: number; limit: number },
+): Promise<DocBlocksPage> {
+  return apiFetch(`/files/${fileId}/versions/${version}/blocks${qs({ from: opts.from, limit: opts.limit })}`).then(
+    (r) => okJson<DocBlocksPage>(r),
   );
 }
 

@@ -31,7 +31,10 @@ use crate::rerank::Reranker;
 use crate::search_types::{SearchDebug, SearchMode, SearchResult, SearchScope, StageTimings};
 use crate::vector_store::{PreFilter, ScoredChunk, VectorSearch, VectorStore};
 
+mod blocks;
 mod hydrate;
+
+pub use blocks::MAX_BLOCKS_PER_PAGE;
 
 /// バックフィルの上限（PIT-2: 候補が尽きるまで最終件数が top_k を下回らない）。
 const MAX_BACKFILL_ROUNDS: u32 = 3;
