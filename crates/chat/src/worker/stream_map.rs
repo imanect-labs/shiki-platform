@@ -151,12 +151,5 @@ fn subtask_status_str(s: agent_core::SubtaskStatus) -> &'static str {
 
 /// agent-core の Citation → chat の Citation（同型フィールド）。
 fn to_citation(c: &AgentCitation) -> Citation {
-    Citation {
-        node_id: c.node_id.clone(),
-        chunk_id: c.chunk_id.clone(),
-        snippet: c.snippet.clone(),
-        page: c.page,
-        heading_path: c.heading_path.clone(),
-        score: c.score,
-    }
+    Citation::from(c)
 }

@@ -383,7 +383,11 @@ impl Tool for SubagentTool {
                 role.fallback()
             ))
         } else {
-            ToolOutcome::ok(findings)
+            // 子の `[n]` は子の台帳の番号。親の台帳で振り直せるよう仮の印へ戻す（#508）。
+            ToolOutcome::ok(crate::cite::relabel_to_placeholders(
+                &findings,
+                &sink.citations,
+            ))
         };
         // 社内文書の引用は UI へ伝播させる（**イベント経路**であり親の LLM コンテキストには
         // 入らないので、隔離の不変条件は保たれる）。

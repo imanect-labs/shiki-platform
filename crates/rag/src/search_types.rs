@@ -63,6 +63,15 @@ pub struct SearchResult {
     pub parent_content: Option<String>,
     pub score: f32,
     pub version: i64,
+    /// `doc_block` 上の範囲（位置情報を持つ索引のみ・#508）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<crate::anchor::Anchor>,
+    /// 元エディタで探すための一節（前後の文脈つき）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<crate::anchor::TextQuote>,
+    /// PDF のページ上の枠（PDF 以外は空）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub boxes: Vec<crate::anchor::PageBox>,
 }
 
 /// 各検索段の所要時間（ms）。

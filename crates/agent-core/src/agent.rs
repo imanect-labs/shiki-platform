@@ -411,7 +411,14 @@ async fn run_step(
         approver,
     };
     let (mut result_blocks, looping, external) =
-        match crate::agent_tools::run_tool_calls(&phase, calls, &mut state.plan, sink, detector)
+        match crate::agent_tools::run_tool_calls(
+            &phase,
+            calls,
+            &mut state.plan,
+            &mut state.citations,
+            sink,
+            detector,
+        )
             .await?
         {
             crate::agent_tools::ToolPhaseOutcome::Cancelled { external } => {

@@ -23,21 +23,30 @@ pub struct DocSearchResult {
     pub context_text: String,
 }
 
-/// 検索結果 → Citation。
+/// 検索結果 → Citation（番号は未採番。ループの台帳が振る・#508）。
 fn to_citation(r: &SearchResult) -> Citation {
     Citation {
+        cite_id: 0,
         node_id: r.file_id.to_string(),
         chunk_id: r.chunk_id.to_string(),
         snippet: r.content.clone(),
         page: r.page,
         heading_path: r.heading_path.clone(),
         score: r.score,
+        version: Some(r.version),
+        anchor: r.anchor,
+        quote: r.quote.clone(),
+        boxes: r.boxes.clone(),
     }
 }
 
 /// permission-aware 検索を呼び出しユーザーの権限で実行し、引用＋文脈テキストへ写す。
 ///
 /// エージェントの doc_search ツールと通常チャットの古典 RAG 注入の**単一実装**。
+///
+/// 文脈テキストの番号は仮の印（[`crate::cite::placeholder`]）で書く。呼び出し側が
+/// [`crate::CitationLedger::number`] で応答内の通し番号に置き換える（呼び出しごとに 1 から
+/// 振ると、2 回目の検索の `[n]` が別の文書を指してしまう・#508）。
 pub async fn run_doc_search(
     search: &SearchService,
     ctx: &AuthContext,
@@ -60,7 +69,11 @@ pub async fn run_doc_search(
         "検索結果はありませんでした（権限内に該当文書なし）。".to_string()
     } else {
         use std::fmt::Write as _;
-        let mut s = format!("検索結果 {} 件:\n", out.results.len());
+        // 引用の書き方を結果と一緒に示す（モデルは番号の書式を結果から真似る）。
+        let mut s = format!(
+            "検索結果 {} 件（回答で根拠にした箇所は、その文の末尾に結果の番号を [n] の形で付ける）:\n",
+            out.results.len()
+        );
         for (i, r) in out.results.iter().enumerate() {
             let heading = if r.heading_path.is_empty() {
                 String::new()
@@ -69,8 +82,8 @@ pub async fn run_doc_search(
             };
             let _ = write!(
                 s,
-                "[{}] 出典: {}{}\n{}\n\n",
-                i + 1,
+                "{} 出典: {}{}\n{}\n\n",
+                crate::cite::placeholder(i),
                 r.file_name,
                 heading,
                 r.content.trim()

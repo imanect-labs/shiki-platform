@@ -46,10 +46,14 @@ impl Role {
 
 /// 引用チャンク（RAG 検索結果 → 会話内の citation ブロック / SSE citation イベント）。
 ///
-/// 元文書へジャンプできるよう node_id/folder_id/page/heading_path を持つ。RAG の
-/// `SearchResult` には文字オフセットが無いため、粒度は page＋heading_path まで。
+/// 本文の `[n]` は `cite_id` で引く（配列の位置ではない）。権限で一部の引用を落としても
+/// 残りの番号はずれない（#508）。位置情報（anchor / quote / boxes）は引用時点の版
+/// （`version`）の `doc_block` を指す。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct Citation {
+    /// 応答内の通し番号（本文の `[n]`）。0 は採番前に保存された旧データ（配列の位置で引く）。
+    #[serde(default)]
+    pub cite_id: u32,
     /// 引用元ファイルの storage node id。
     pub node_id: String,
     /// 引用チャンク id（監査突合の鍵）。
@@ -64,6 +68,36 @@ pub struct Citation {
     pub heading_path: Vec<String>,
     /// ランクベースの正規化スコア。
     pub score: f32,
+    /// 引用時点のファイルの版。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<i64>,
+    /// `doc_block` 上の範囲（位置情報を持たない旧インデックスは無し）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<rag::Anchor>,
+    /// 元エディタで探すための一節（前後の文脈つき）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<rag::TextQuote>,
+    /// PDF のページ上の枠（PDF 以外は空）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boxes: Vec<rag::PageBox>,
+}
+
+impl From<&agent_core::Citation> for Citation {
+    fn from(c: &agent_core::Citation) -> Self {
+        Citation {
+            cite_id: c.cite_id,
+            node_id: c.node_id.clone(),
+            chunk_id: c.chunk_id.clone(),
+            snippet: c.snippet.clone(),
+            page: c.page,
+            heading_path: c.heading_path.clone(),
+            score: c.score,
+            version: c.version,
+            anchor: c.anchor,
+            quote: c.quote.clone(),
+            boxes: c.boxes.clone(),
+        }
+    }
 }
 
 /// 旧行（フィールド追加前に永続化された `content`）を成功として読むための serde 既定。
@@ -320,18 +354,28 @@ mod tests {
     #[test]
     fn citation_block_matches_frontend_fields() {
         let block = ContentBlock::Citation(Citation {
+            cite_id: 4,
             node_id: "n1".into(),
             chunk_id: "c1".into(),
             snippet: "s".into(),
             page: Some(3),
             heading_path: vec!["A".into(), "B".into()],
             score: 0.5,
+            version: Some(2),
+            anchor: None,
+            quote: None,
+            boxes: Vec::new(),
         });
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "citation");
         assert_eq!(json["node_id"], "n1");
         assert_eq!(json["page"], 3);
         assert_eq!(json["heading_path"][1], "B");
+        assert_eq!(json["cite_id"], 4);
+        assert_eq!(json["version"], 2);
+        // 位置情報が無ければ出さない（旧クライアント・保存量）。
+        assert!(json.get("anchor").is_none());
+        assert!(json.get("boxes").is_none());
     }
 
     #[test]
@@ -345,6 +389,9 @@ mod tests {
             ContentBlock::Citation(c) => {
                 assert!(c.page.is_none());
                 assert!(c.heading_path.is_empty());
+                // 採番前の旧データは 0（UI は配列の位置で引く）。
+                assert_eq!(c.cite_id, 0);
+                assert!(c.version.is_none());
             }
             _ => panic!("citation でない"),
         }

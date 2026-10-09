@@ -10,6 +10,7 @@
 //! - 公開トレイトの第一引数は `&AuthContext`。
 
 pub mod admin;
+pub mod anchor;
 pub mod authz_filter;
 pub mod chunker;
 pub mod config;
@@ -30,6 +31,7 @@ pub mod vector_qdrant;
 pub mod vector_store;
 
 pub use admin::RagAdmin;
+pub use anchor::{Anchor, BoxOrigin, PageBox, TextQuote};
 pub use config::RagConfig;
 pub use embedding::{EmbedInput, EmbeddingProvider, HttpEmbeddingProvider};
 pub use error::RagError;

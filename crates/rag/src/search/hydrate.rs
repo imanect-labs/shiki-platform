@@ -181,6 +181,9 @@ impl SearchService {
                     // rerank 後の順位ベースのスコア（表示用に単調減少へ正規化）。
                     score,
                     version: row.version,
+                    anchor: None,
+                    quote: None,
+                    boxes: Vec::new(),
                 }
             })
             .collect())

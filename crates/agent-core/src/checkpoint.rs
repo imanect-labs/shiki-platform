@@ -28,6 +28,9 @@ pub struct Checkpoint {
     /// 失敗ループ検出器の状態（resume でも失敗履歴を引き継ぐ・旧チェックポイントは既定で空）。
     #[serde(default)]
     pub loop_detector: LoopDetector,
+    /// 引用番号の台帳（再開しても `[n]` の通し番号が続く・#508。旧チェックポイントは空から）。
+    #[serde(default)]
+    pub citations: crate::cite::CitationLedger,
 }
 
 impl Checkpoint {
@@ -40,6 +43,7 @@ impl Checkpoint {
             messages,
             step: 0,
             loop_detector: LoopDetector::default(),
+            citations: crate::cite::CitationLedger::default(),
         }
     }
 }
