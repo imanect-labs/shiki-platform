@@ -62,7 +62,7 @@ pub use tools::{
     FsDeleteTool, FsEditTool, FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool,
     SubagentLimits, SubagentTool, WebFetchTool, WebSearchTool,
 };
-pub use vocab::{ToolLoading, ToolName};
+pub use vocab::{MetaToolName, ToolLoading, ToolName};
 pub use workspace::{WorkspaceEntry, WorkspaceStore, WorkspaceWrite};
 // サンドボックス契約を再輸出（chat は agent-core 経由で code_interpreter を配線する）。
 // `SandboxBackend` は admin ポリシーで隔離ティアを選ぶ導線で chat 側が渡す。

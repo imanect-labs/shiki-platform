@@ -28,6 +28,8 @@ pub(super) struct ThreadHistory {
     pub messages: Vec<LlmMessage>,
     /// 会話に添付されたファイル（古い順・同名は新しい方が残る）。
     pub attachments: Vec<agent_core::AttachmentRef>,
+    /// この会話で使われている（使う前提の）ツール名（tool search で常時ロードに回す）。
+    pub tools_in_use: Vec<String>,
 }
 
 impl ChatWorker {
@@ -41,10 +43,12 @@ impl ChatWorker {
         let msgs = self.store.get_messages(ctx, thread_id, None).await?;
         let mut out = Vec::new();
         let mut attachments: Vec<agent_core::AttachmentRef> = Vec::new();
+        let mut tools_in_use: Vec<String> = Vec::new();
         for m in msgs {
             if m.id == assistant_message_id {
                 continue; // 生成対象のプレースホルダは履歴に含めない
             }
+            super::history::tools_in_use(&m.content, &mut tools_in_use);
             // 添付はプレースホルダ以外の全メッセージから拾う（role で絞らない）。assistant 側の
             // FileRef＝code_interpreter が保存した成果物も含む: 前ターンで作った CSV を次の
             // ターンで読み直せる方が自然で、上限は seed 側が持つ（#379）。
@@ -72,6 +76,7 @@ impl ChatWorker {
         Ok(ThreadHistory {
             messages: out,
             attachments,
+            tools_in_use,
         })
     }
 
@@ -100,10 +105,21 @@ impl ChatWorker {
     ///
     /// これが無いと「この文書に書いて」に対し対象 id が分からず、モデルは新規下書き
     /// （save_note / save_document）へ逃げてしまう（実 LLM 検証で確認）。
-    async fn system_with_origin_document(&self, run: &ClaimedRun, base: Option<String>) -> String {
-        let base = base.unwrap_or_else(|| self.config.system_prompt.clone());
-        match self.origin_document(run).await {
+    ///
+    /// 開いているドキュメントの読み書きツールは遅延にしない（`always_load` へ足す）。
+    /// system プロンプトがそれらを使えと指示しているのに、毎ターン検索の 1 手を挟ませない。
+    async fn system_with_origin_document(&self, run: &ClaimedRun, opts: &mut AgentOptions) {
+        let base = opts
+            .system
+            .take()
+            .unwrap_or_else(|| self.config.system_prompt.clone());
+        opts.system = Some(match self.origin_document(run).await {
             Some((node_id, name)) => {
+                opts.tool_search.always_load.extend(
+                    super::history::origin_document_tools(name.as_deref())
+                        .iter()
+                        .map(|t| t.as_str().to_string()),
+                );
                 // ドキュメント名はユーザーが自由に付けられる文字列。system プロンプトへ
                 // 無加工で連結すると「以降の指示を無視せよ」等を**システム発話として**
                 // 注入できてしまうため、改行を潰して長さを切り、引用で括る。
@@ -118,7 +134,7 @@ impl ChatWorker {
                 )
             }
             None => base,
-        }
+        });
     }
 
     /// エージェントモード（agent-core ループ）。`run.autonomous` で Chat/Autonomous を切り替える。
@@ -133,6 +149,7 @@ impl ChatWorker {
         let ThreadHistory {
             messages: history,
             attachments,
+            tools_in_use,
         } = thread_history;
         // skill のピン解決（複数可・Task 6.9/#344・fail-closed: 読めないピンは run を失敗させる）。
         let skills = crate::skill::AppliedSkill::load_pins(
@@ -230,7 +247,7 @@ impl ChatWorker {
         } else {
             // 通常チャット: deny_all（既定）のまま。破壊系は都度ユーザー承認が要る（要確認ツールの設計意図）。
             let mut opts = chat_opts(self);
-            opts.system = Some(self.system_with_origin_document(run, opts.system).await);
+            self.system_with_origin_document(run, &mut opts).await;
             opts
         };
         let approver = Some(approver);
@@ -240,6 +257,8 @@ impl ChatWorker {
         // あり提示ツールは縮小しない（#344 の再定義。決定性はツール実装＋認可＋承認ゲート）。
         // ⚠️ opts.approval には触れない（破壊系の明示許可は skill で無効化できない・Task 6.9）。
         let (mut opts, mut history) = (opts, history);
+        // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
+        opts.tool_search.always_load.extend(tools_in_use);
         if !skills.is_empty() {
             let mut system = opts.system.take().unwrap_or_default();
             for skill in &skills {

@@ -5,7 +5,7 @@
 //! で見つけたものだけを読み込む。
 //!
 //! - **検索は認可を広げない。** 候補はこの run に**提示済みの**ツール（配線・プロファイル・
-//!   実行前フェーズの門・skill/ミニアプリの絞り込みを通った集合）だけ。読み込みは文脈の
+//!   実行前フェーズの門・ミニアプリの宣言を通った集合）だけ。読み込みは文脈の
 //!   最適化であり、実行可否は従来どおり `Tool::call`（発話者の `AuthContext`）と承認ゲートが
 //!   決める。
 //! - **読み込み状態は履歴が正**（[`llm_gateway::tool_loading`]）。結果ブロックの
@@ -23,7 +23,7 @@ use crate::vocab::{ToolLoading, ToolName};
 use index::ToolIndex;
 
 /// tool search メタツールの名前（ループが横取りして処理する・`plan` と同じ扱い）。
-pub(crate) const TOOL_SEARCH_TOOL: &str = "tool_search";
+pub(crate) const TOOL_SEARCH_TOOL: &str = crate::vocab::MetaToolName::ToolSearch.as_str();
 
 /// 1 回の検索で返す既定件数と上限。
 const DEFAULT_LIMIT: usize = 5;

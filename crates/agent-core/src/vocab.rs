@@ -111,6 +111,18 @@ vocab_enum! {
     }
 }
 
+vocab_enum! {
+    /// ループが**横取りする**メタツールの名前（`Tool` として dispatch されない・[`ToolName`] の外）。
+    ///
+    /// モデルには通常のツールとして見えるため、UI の表示辞書もこの名前で引く（TS へ生成する）。
+    pub enum MetaToolName {
+        /// 計画の提示/改訂（自律プロファイル・[`crate::agent`]）。
+        Plan => "plan",
+        /// 遅延ツールの検索と読み込み（[`crate::tool_search`]）。
+        ToolSearch => "tool_search",
+    }
+}
+
 /// ツール定義をモデルの文脈へ載せる時機（tool search・[`crate::tool_search`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolLoading {

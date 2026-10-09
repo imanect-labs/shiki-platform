@@ -32,7 +32,7 @@ use crate::profile::{AgentOptions, AgentOutcome};
 use crate::tool::Tool;
 
 /// 計画メタツールの名前（自律版のみ提示・ループが横取りしてツールへは dispatch しない）。
-pub(crate) const PLAN_TOOL: &str = "plan";
+pub(crate) const PLAN_TOOL: &str = crate::vocab::MetaToolName::Plan.as_str();
 
 /// ループの停止理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

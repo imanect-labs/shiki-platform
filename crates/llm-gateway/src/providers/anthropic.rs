@@ -111,18 +111,23 @@ fn to_anthropic_message(m: &Message, known: &HashSet<&str>) -> Value {
 }
 
 /// tool_result の content。読み込み参照があれば `tool_reference` ブロック列にする
-/// （API がそれを遅延ツールの完全な定義へ展開する）。
+/// （API がそれを遅延ツールの完全な定義へ展開する）。本文はその後ろに text ブロックで添える
+/// （ループが観測に書き足す残り予算・催促を落とさない）。
 ///
 /// 参照先が 1 つでも `tools` に無ければ（ツールを外した着地ターン等）、API は 400 を返す。
-/// その場合は中立形のフォールバック本文（テキスト）を送る。
+/// その場合は本文（テキスト）だけを送る。
 fn tool_result_content(content: &str, references: &[String], known: &HashSet<&str>) -> Value {
-    if !references.is_empty() && references.iter().all(|r| known.contains(r.as_str())) {
-        return json!(references
-            .iter()
-            .map(|r| json!({ "type": "tool_reference", "tool_name": r }))
-            .collect::<Vec<_>>());
+    if references.is_empty() || !references.iter().all(|r| known.contains(r.as_str())) {
+        return json!(content);
     }
-    json!(content)
+    let mut blocks: Vec<Value> = references
+        .iter()
+        .map(|r| json!({ "type": "tool_reference", "tool_name": r }))
+        .collect();
+    if !content.is_empty() {
+        blocks.push(json!({ "type": "text", "text": content }));
+    }
+    json!(blocks)
 }
 
 fn to_anthropic_block(b: &Block, known: &HashSet<&str>) -> Option<Value> {
@@ -395,7 +400,10 @@ mod tests {
         let content = &body["messages"][1]["content"][0]["content"];
         assert_eq!(
             content,
-            &json!([{ "type": "tool_reference", "tool_name": "csv.query" }])
+            &json!([
+                { "type": "tool_reference", "tool_name": "csv.query" },
+                { "type": "text", "text": "読み込みました" },
+            ])
         );
     }
 
