@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { citationAt } from "@/lib/citation";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { SourceBlocks, hasBlockAnchor } from "./source-blocks";
+import { PdfCitePreview } from "./pdf-cite-preview";
 import {
   panelOrder,
   passageOf,
@@ -194,6 +195,7 @@ export function SourcePanelView({
               {meta?.version}）。
             </p>
           ) : null}
+          {(citation.boxes?.length ?? 0) > 0 ? <PdfCitePreview citation={citation} width={384} /> : null}
           <div
             style={docColorStyle(color)}
             className="rounded-lg border border-[var(--doc)]/35 bg-card px-3.5 py-3 text-[13.5px] leading-[1.85] text-foreground/85"
@@ -233,7 +235,7 @@ export function SourcePanelView({
       </div>
 
       <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-2.5">
-        <OpenOriginalLink nodeId={citation.node_id} meta={meta} variant="outline" />
+        <OpenOriginalLink nodeId={citation.node_id} meta={meta} citation={citation} variant="outline" />
       </div>
     </div>
   );

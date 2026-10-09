@@ -8,6 +8,8 @@ import { ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
 import { matchSpan } from "@/lib/citation";
+import { citeLocatorQuery } from "@/lib/citation-locate";
+import type { Citation } from "@/lib/chat-api";
 import { resourcePath } from "@/lib/resource-link";
 import type { NodeMeta } from "@/lib/node-name-cache";
 import { NodeIcon } from "@/components/drive/primitives";
@@ -63,12 +65,28 @@ export function formatDate(iso: string | null | undefined): string | null {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
 }
 
+/// PDF か（名前か content-type で判定）。
+function isPdf(meta: NodeMeta): boolean {
+  return meta.contentType === "application/pdf" || /\.pdf$/i.test(meta.name);
+}
+
 /// 「原本で開く」の遷移先と文言。専用エディタの無い形式は格納フォルダを開く。
-export function openTarget(nodeId: string, meta: NodeMeta | undefined): { href: string; label: string } | null {
+///
+/// `citation` を渡すと、引用箇所を探す手がかりをクエリに足す（ノート・Office は一節で探し、
+/// PDF はページと枠で開く・#508）。
+export function openTarget(
+  nodeId: string,
+  meta: NodeMeta | undefined,
+  citation?: Citation,
+): { href: string; label: string } | null {
   if (!meta) return null;
+  const at = citation ? citeLocatorQuery(citation) : "";
+  const withCite = (href: string) => (at ? `${href}${href.includes("?") ? "&" : "?"}${at}` : href);
+  if (isPdf(meta)) return { href: withCite(`/pdf/${nodeId}`), label: citation ? "PDF で該当ページを開く" : "PDF で開く" };
   const href = resourcePath({ id: nodeId, name: meta.name, kind: "file", parent_id: meta.parentId });
-  if (href.startsWith("/notes/")) return { href, label: "ノートで開く" };
-  if (href.startsWith("/office/")) return { href, label: "Office で開く" };
+  if (href.startsWith("/notes/")) return { href: withCite(href), label: citation ? "ノートで該当箇所を開く" : "ノートで開く" };
+  if (href.startsWith("/office/"))
+    return { href: withCite(href), label: citation ? "Office で該当箇所を開く" : "Office で開く" };
   if (href.startsWith("/csv/")) return { href, label: "表で開く" };
   if (href.startsWith("/slides/")) return { href, label: "スライドで開く" };
   return { href, label: "フォルダを開く" };
@@ -77,15 +95,18 @@ export function openTarget(nodeId: string, meta: NodeMeta | undefined): { href: 
 export function OpenOriginalLink({
   nodeId,
   meta,
+  citation,
   variant = "ghost",
   className,
 }: {
   nodeId: string;
   meta: NodeMeta | undefined;
+  /// 渡すと引用箇所へ直接飛ぶリンクにする。
+  citation?: Citation;
   variant?: "ghost" | "outline";
   className?: string;
 }) {
-  const target = openTarget(nodeId, meta);
+  const target = openTarget(nodeId, meta, citation);
   if (!target) return null;
   return (
     <Link

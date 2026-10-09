@@ -21,16 +21,41 @@ export interface OfficeEditorHandle {
 /// ウォームアップで数百 ms〜1 秒かかることがあるため余裕を持つ）。
 const SELECTION_TIMEOUT_MS = 4000;
 
+/// 文書内検索（引用箇所へ移る・#508）。Collabora の `.uno:ExecuteSearch` を送る。
+/// 見つかると該当箇所が選択され、そこまでスクロールされる。段落をまたぐ文字列は当たらないため、
+/// 呼び出し側は 1 段落に収まる一節を渡す。
+function searchCommand(text: string): Record<string, unknown> {
+  return {
+    MessageId: "Send_UNO_Command",
+    Values: {
+      Command: ".uno:ExecuteSearch",
+      Args: {
+        "SearchItem.SearchString": { type: "string", value: text },
+        "SearchItem.Backward": { type: "boolean", value: false },
+        // 0 = FIND（次を検索）。先頭から探すため、読み込み直後（カーソルが文頭）に送る。
+        "SearchItem.Command": { type: "long", value: 0 },
+      },
+    },
+  };
+}
+
 export const OfficeEditor = React.forwardRef<
   OfficeEditorHandle,
-  { session: OfficeSession; onClose: () => void }
->(function OfficeEditor({ session, onClose }, ref) {
+  {
+    session: OfficeSession;
+    onClose: () => void;
+    /// 読み込み完了後に文書内で探す一節（引用箇所へのディープリンク）。
+    findText?: string | null;
+  }
+>(function OfficeEditor({ session, onClose, findText }, ref) {
   const iframeRef = React.useRef<HTMLIFrameElement>(null);
   const [frameReady, setFrameReady] = React.useState(false);
   const collaboraOrigin = React.useMemo(
     () => new URL(session.action_url).origin,
     [session.action_url],
   );
+  // 引用箇所の検索を送ったか。
+  const searched = React.useRef(false);
   // Action_Copy_Resp を待つ解決関数（選択取得の 1 回きりの待ち受け）。
   const selectionWaiterRef = React.useRef<((text: string | null) => void) | null>(null);
 
@@ -65,6 +90,11 @@ export const OfficeEditor = React.forwardRef<
           // 埋め込み表示では横幅を圧迫し見栄えを損ねるため既定オフにする（ユーザーは
           // Collabora の「表示」メニューからいつでも再表示できる）。
           postToFrame({ MessageId: "Send_UNO_Command", Values: { Command: ".uno:SidebarHide" } });
+          // 引用箇所へ移る（1 回だけ。再接続で Document_Loaded が再送されても選択を奪わない）。
+          if (findText && !searched.current) {
+            searched.current = true;
+            postToFrame(searchCommand(findText));
+          }
         }
       } else if (msg.MessageId === "UI_Close") {
         onClose();
@@ -77,7 +107,7 @@ export const OfficeEditor = React.forwardRef<
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [collaboraOrigin, onClose, postToFrame]);
+  }, [collaboraOrigin, onClose, postToFrame, findText]);
 
   React.useImperativeHandle(
     ref,

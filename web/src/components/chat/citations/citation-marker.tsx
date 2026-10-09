@@ -200,7 +200,7 @@ export function CitationCardBody({
             出典を開く
           </button>
         ) : null}
-        <OpenOriginalLink nodeId={citation.node_id} meta={meta} />
+        <OpenOriginalLink nodeId={citation.node_id} meta={meta} citation={citation} />
       </div>
     </div>
   );
