@@ -186,7 +186,9 @@ impl ToolName {
             Self::Shell => "shell bash command terminal run コマンド 実行 端末",
             Self::EmitWorkflow => "workflow automation create update ワークフロー 自動化 作成",
             Self::ReadWorkflow => "workflow read inspect ワークフロー 読む 確認",
-            Self::DocumentEdit => "note markdown document edit rewrite ノート 文書 編集",
+            Self::DocumentEdit => {
+                "note markdown document edit rewrite append ノート 文書 編集 追記 書き換え"
+            }
             Self::DocumentRead => "note markdown document read ノート 文書 本文 読む",
             Self::DocumentEmbed => "note chart graph embed ノート グラフ 図 埋め込み",
             Self::SaveNote => "note markdown create save draft ノート メモ 作成 保存",
@@ -196,7 +198,9 @@ impl ToolName {
             Self::SaveSheet => {
                 "excel xlsx spreadsheet sheet workbook create 表計算 エクセル スプレッドシート 作成"
             }
-            Self::SlideEdit => "slide presentation deck edit スライド プレゼン 編集",
+            Self::SlideEdit => {
+                "slide presentation deck edit rewrite スライド プレゼン 編集 書き換え"
+            }
             Self::SlideRead => "slide presentation deck read スライド プレゼン 読む",
             Self::OfficeEdit => {
                 "office word excel powerpoint docx xlsx pptx edit ワード エクセル パワポ 編集"
@@ -205,7 +209,7 @@ impl ToolName {
                 "office word excel powerpoint live collaborative edit ワード エクセル 共同編集"
             }
             Self::CsvQuery => "csv sql query table select aggregate 表 集計 検索",
-            Self::CsvPatch => "csv table edit update rows 表 編集 更新",
+            Self::CsvPatch => "csv table edit update row cell 表 行 セル 編集 更新",
             Self::CsvWrite => "csv table create write save 表 作成 保存",
             Self::Skill
             | Self::DocSearch

@@ -213,10 +213,21 @@ fn flush_word(word: &mut String, out: &mut Vec<String>) {
 }
 
 fn flush_cjk(run: &mut Vec<char>, out: &mut Vec<String>) {
-    match run.len() {
-        0 => {}
-        1 => out.push(run[0].to_string()),
-        _ => out.extend(run.windows(2).map(|w| w.iter().collect::<String>())),
+    // ひらがなだけの語（助詞・活用語尾「を」「した」「たい」）は手掛かりにならず、説明の長い
+    // ツールほど偶然に一致して順位を押し上げる。漢字・カタカナを含むものだけを残す。
+    let is_kana_only = |w: &[char]| w.iter().all(|c| ('\u{3040}'..='\u{309F}').contains(c));
+    // 漢字は 1 字でも語になる（「行」「表」）。bigram だけだと「行を更新」の「行」が
+    // 検索語「行」と一致しないため、漢字の単字も併せて入れる。
+    let is_kanji = |c: &char| matches!(c, '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}');
+    out.extend(run.iter().filter(|c| is_kanji(c)).map(char::to_string));
+    if run.len() >= 2 {
+        out.extend(
+            run.windows(2)
+                .filter(|w| !is_kana_only(w))
+                .map(|w| w.iter().collect::<String>()),
+        );
+    } else if run.len() == 1 && !is_kanji(&run[0]) && !is_kana_only(run) {
+        out.push(run[0].to_string());
     }
     run.clear();
 }
@@ -231,8 +242,10 @@ mod tests {
         assert_eq!(tokenize("csv.query"), ["csv", "query"]);
         assert_eq!(tokenize("Spreadsheets"), ["spreadsheet"]);
         assert_eq!(tokenize("ＣＳＶ"), ["csv"]);
-        assert_eq!(tokenize("表計算"), ["表計", "計算"]);
-        assert_eq!(tokenize("表 を"), ["表", "を"]);
+        assert_eq!(tokenize("表計算"), ["表", "計", "算", "表計", "計算"]);
+        // ひらがなだけの語（助詞・活用語尾）は捨てる。
+        assert_eq!(tokenize("表 を"), ["表"]);
+        assert_eq!(tokenize("集計したい"), ["集", "計", "集計", "計し"]);
         assert_eq!(tokenize("class"), ["class"]);
     }
 
