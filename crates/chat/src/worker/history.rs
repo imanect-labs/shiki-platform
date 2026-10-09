@@ -121,6 +121,66 @@ pub(super) fn message_text(blocks: &[ContentBlock]) -> String {
     parts.join("\n")
 }
 
+/// この会話で使われている（使う前提の）ツール名を `out` へ足す（重複なし）。
+///
+/// tool search はこれを**常時ロード**に回す。履歴はテキストしか引き継がないため、前のターンで
+/// 読み込んだツールも次のターンでは遅延に戻る。続きの依頼（「さっきの表をもう一度集計して」
+/// 「2 枚目だけ直して」）のたびに検索の 1 手を払わせない。
+pub(super) fn tools_in_use(blocks: &[ContentBlock], out: &mut Vec<String>) {
+    use agent_core::ToolName as T;
+    let mut push = |name: &str| {
+        if !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    };
+    for b in blocks {
+        match b {
+            ContentBlock::ToolCall { name, .. } => push(name),
+            // 下書きの refine は同名の save_* で行う（上の観測テキストがそう誘導する）。
+            ContentBlock::NoteDraft { .. } => push(T::SaveNote.as_str()),
+            ContentBlock::SlideDraft { .. } => push(T::SaveSlide.as_str()),
+            ContentBlock::CsvDraft { .. } => push(T::SaveCsv.as_str()),
+            ContentBlock::SelectionContext { context } => {
+                for t in selection_tools(context.kind) {
+                    push(t.as_str());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 選択範囲の種別ごとに、その対象を読む・直すツール。
+fn selection_tools(kind: crate::model::SelectionKind) -> [agent_core::ToolName; 2] {
+    use crate::model::SelectionKind as K;
+    use agent_core::ToolName as T;
+    match kind {
+        K::NoteSelection => [T::DocumentRead, T::DocumentEdit],
+        K::CsvRange => [T::CsvQuery, T::CsvPatch],
+        K::SlideSelection => [T::SlideRead, T::SlideEdit],
+        K::OfficeSelection => [T::OfficeLiveEdit, T::OfficeEdit],
+    }
+}
+
+/// 開いているドキュメント（名前の拡張子で種別を見る）を読む・直すツール。
+///
+/// ドキュメントアシスタントは system プロンプトでこれらの編集ツールを使うよう指示するため、
+/// 遅延にすると毎ターン検索の 1 手を挟む。拡張子が分からなければノートとして扱う。
+pub(super) fn origin_document_tools(name: Option<&str>) -> [agent_core::ToolName; 2] {
+    use crate::model::SelectionKind as K;
+    let ext = name
+        .and_then(|n| n.rsplit_once('.'))
+        .map(|(_, e)| e.to_ascii_lowercase());
+    selection_tools(match ext.as_deref() {
+        Some("docx" | "xlsx" | "pptx" | "doc" | "xls" | "ppt" | "odt" | "ods" | "odp") => {
+            K::OfficeSelection
+        }
+        Some("csv") => K::CsvRange,
+        Some("slide") => K::SlideSelection,
+        _ => K::NoteSelection,
+    })
+}
+
 /// 下書き内容の履歴注入の上限（選択コンテキストの excerpt clamp と同水準）。
 const DRAFT_HISTORY_MAX_CHARS: usize = 8_000;
 
@@ -147,7 +207,7 @@ pub(super) fn message_preview(m: &LlmMessage) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::message_text;
+    use super::{message_text, origin_document_tools, tools_in_use};
     use crate::model::ContentBlock;
 
     /// 追編集に要る参照（添付/ワークフロー/保存済みノート/下書き）が観測テキストへ載る。
@@ -264,5 +324,61 @@ mod tests {
         assert_eq!(clamped.excerpt.chars().count(), SELECTION_EXCERPT_MAX_CHARS);
         assert_eq!(clamped.draft_name.unwrap().chars().count(), 200);
         assert!(clamped.locator.is_null(), "巨大 locator は落とす");
+    }
+
+    #[test]
+    fn tools_in_use_collects_called_tools_and_draft_and_selection_targets() {
+        use crate::model::{SelectionContext, SelectionKind};
+        let blocks = vec![
+            ContentBlock::ToolCall {
+                id: "1".into(),
+                name: "csv.query".into(),
+                input: serde_json::json!({}),
+                step: None,
+            },
+            ContentBlock::SlideDraft {
+                draft: serde_json::json!({"name": "提案"}),
+            },
+            ContentBlock::SelectionContext {
+                context: SelectionContext {
+                    kind: SelectionKind::NoteSelection,
+                    node_id: None,
+                    draft_name: None,
+                    locator: serde_json::json!({}),
+                    excerpt: "x".into(),
+                },
+            },
+        ];
+        let mut out = vec!["csv.query".to_string()];
+        tools_in_use(&blocks, &mut out);
+        assert_eq!(
+            out,
+            ["csv.query", "save_slide", "document.read", "document.edit"]
+        );
+    }
+
+    #[test]
+    fn origin_document_tools_follow_the_extension() {
+        use agent_core::ToolName as T;
+        assert_eq!(
+            origin_document_tools(Some("報告書.DOCX")),
+            [T::OfficeLiveEdit, T::OfficeEdit]
+        );
+        assert_eq!(
+            origin_document_tools(Some("売上.csv")),
+            [T::CsvQuery, T::CsvPatch]
+        );
+        assert_eq!(
+            origin_document_tools(Some("提案.slide")),
+            [T::SlideRead, T::SlideEdit]
+        );
+        assert_eq!(
+            origin_document_tools(Some("メモ")),
+            [T::DocumentRead, T::DocumentEdit]
+        );
+        assert_eq!(
+            origin_document_tools(None),
+            [T::DocumentRead, T::DocumentEdit]
+        );
     }
 }

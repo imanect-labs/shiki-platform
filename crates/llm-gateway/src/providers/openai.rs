@@ -141,9 +141,9 @@ fn to_openai_messages(m: &Message, names: &ToolNameMap, known: &HashSet<&str>) -
     }
 }
 
-/// tool メッセージの本文。読み込み参照があれば、追加されたツールを **wire 名で**示す
-/// （定義そのものは `tools` に足される・[`context_tools`]）。参照先が 1 つも提示に無ければ
-/// 中立形のフォールバック本文を送る。
+/// tool メッセージの本文。読み込み参照があれば、追加されたツールの **wire 名**を本文に
+/// 書き足す（定義そのものは `tools` に足される・[`context_tools`]。本文の名前は中立名の
+/// ままなので、呼び出しに使う名前をここで示す）。参照先が 1 つも提示に無ければ本文のまま。
 fn tool_message_content(
     content: &str,
     references: &[String],
@@ -159,7 +159,7 @@ fn tool_message_content(
         return content.to_string();
     }
     format!(
-        "次のツールを読み込みました。以降は通常のツールとして呼び出せます: {}",
+        "{content}\n（読み込んだツールの呼び出し名: {}）",
         loaded.join(", ")
     )
 }
@@ -494,6 +494,7 @@ mod tests {
         assert_eq!(wire(&body), ["tool_search", "csv_query"]);
         let shown = body["messages"][1]["content"].as_str().unwrap();
         assert!(shown.contains("csv_query"), "{shown}");
-        assert!(!shown.contains("fallback"), "{shown}");
+        // 本文（ループが書き足した観測を含む）は落とさない。
+        assert!(shown.starts_with("fallback"), "{shown}");
     }
 }
