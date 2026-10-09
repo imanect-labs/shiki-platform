@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use super::openai_names::ToolNameMap;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
-use crate::tool_loading::context_tools;
+use crate::tool_loading::{context_tools, with_loaded_note};
 
 /// OpenAI 互換アダプタ。
 pub struct OpenAiProvider {
@@ -155,13 +155,7 @@ fn tool_message_content(
         .filter(|r| known.contains(r.as_str()))
         .map(|r| names.wire(r))
         .collect();
-    if loaded.is_empty() {
-        return content.to_string();
-    }
-    format!(
-        "{content}\n（読み込んだツールの呼び出し名: {}）",
-        loaded.join(", ")
-    )
+    with_loaded_note(content, &loaded)
 }
 
 fn join_text(blocks: &[Block]) -> String {
