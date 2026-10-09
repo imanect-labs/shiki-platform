@@ -7,6 +7,7 @@
 //! 本アダプタは実装するが検証経路は openai-compat（human 指示）。ここではメッセージ変換の
 //! 単体テストのみ行い、実サーバ結線はコードレビュー範囲とする。
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use futures::channel::mpsc;
@@ -46,7 +47,12 @@ impl AnthropicProvider {
             .model
             .clone()
             .unwrap_or_else(|| self.default_model.clone());
-        let messages: Vec<Value> = req.messages.iter().map(to_anthropic_message).collect();
+        let known: HashSet<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
+        let messages: Vec<Value> = req
+            .messages
+            .iter()
+            .map(|m| to_anthropic_message(m, &known))
+            .collect();
         let mut body = json!({
             "model": model,
             "max_tokens": req.max_tokens.unwrap_or(4096),
@@ -57,14 +63,23 @@ impl AnthropicProvider {
             body["system"] = json!(sys);
         }
         if !req.tools.is_empty() {
+            // 全ツールが遅延だと API は 400 を返す（最低 1 つは非遅延が要る）。その場合は
+            // 遅延を無視して全部載せる（提示を欠くより文脈が膨らむ方が安全）。
+            let defer = req.tools.iter().any(|t| !t.defer_loading);
             body["tools"] = json!(req
                 .tools
                 .iter()
-                .map(|t| json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": t.input_schema,
-                }))
+                .map(|t| {
+                    let mut v = json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.input_schema,
+                    });
+                    if defer && t.defer_loading {
+                        v["defer_loading"] = json!(true);
+                    }
+                    v
+                })
                 .collect::<Vec<_>>());
         }
         if let Some(effort) = req.effort {
@@ -77,24 +92,40 @@ impl AnthropicProvider {
 }
 
 /// 中立メッセージ 1 件を Anthropic message へ写す（tool 結果は user ロールの tool_result ブロック）。
-fn to_anthropic_message(m: &Message) -> Value {
-    let (role, blocks): (&str, Vec<Value>) = match m.role {
+///
+/// `known` はこのリクエストで提示するツール名（`tool_reference` の参照先が在るかの判定に使う）。
+fn to_anthropic_message(m: &Message, known: &HashSet<&str>) -> Value {
+    let blocks: Vec<Value> = m
+        .content
+        .iter()
+        .filter_map(|b| to_anthropic_block(b, known))
+        .collect();
+    let role = match m.role {
         // system はトップレベル（build_body 側）へ回すため空にする。
-        Role::System => ("user", vec![]),
-        Role::Assistant => (
-            "assistant",
-            m.content.iter().filter_map(to_anthropic_block).collect(),
-        ),
+        Role::System => return json!({ "role": "user", "content": [] }),
+        Role::Assistant => "assistant",
         // user と tool 結果はどちらも user ロール（Anthropic は tool_result を user ブロックに置く）。
-        Role::User | Role::Tool => (
-            "user",
-            m.content.iter().filter_map(to_anthropic_block).collect(),
-        ),
+        Role::User | Role::Tool => "user",
     };
     json!({ "role": role, "content": blocks })
 }
 
-fn to_anthropic_block(b: &Block) -> Option<Value> {
+/// tool_result の content。読み込み参照があれば `tool_reference` ブロック列にする
+/// （API がそれを遅延ツールの完全な定義へ展開する）。
+///
+/// 参照先が 1 つでも `tools` に無ければ（ツールを外した着地ターン等）、API は 400 を返す。
+/// その場合は中立形のフォールバック本文（テキスト）を送る。
+fn tool_result_content(content: &str, references: &[String], known: &HashSet<&str>) -> Value {
+    if !references.is_empty() && references.iter().all(|r| known.contains(r.as_str())) {
+        return json!(references
+            .iter()
+            .map(|r| json!({ "type": "tool_reference", "tool_name": r }))
+            .collect::<Vec<_>>());
+    }
+    json!(content)
+}
+
+fn to_anthropic_block(b: &Block, known: &HashSet<&str>) -> Option<Value> {
     match b {
         Block::Text { text } => Some(json!({ "type": "text", "text": text })),
         Block::Thinking { .. } => None, // 再送する thinking はここでは扱わない（Phase 3 では省略）
@@ -105,10 +136,11 @@ fn to_anthropic_block(b: &Block) -> Option<Value> {
             tool_use_id,
             content,
             is_error,
+            tool_references,
         } => Some(json!({
             "type": "tool_result",
             "tool_use_id": tool_use_id,
-            "content": content,
+            "content": tool_result_content(content, tool_references, known),
             "is_error": is_error,
         })),
     }
@@ -294,18 +326,15 @@ impl LlmProvider for AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ToolDef;
 
     #[test]
     fn tool_result_maps_to_user_tool_result_block() {
         let m = Message {
             role: Role::Tool,
-            content: vec![Block::ToolResult {
-                tool_use_id: "t1".into(),
-                content: "r".into(),
-                is_error: false,
-            }],
+            content: vec![Block::tool_result("t1", "r", false)],
         };
-        let out = to_anthropic_message(&m);
+        let out = to_anthropic_message(&m, &HashSet::new());
         assert_eq!(out["role"], "user");
         assert_eq!(out["content"][0]["type"], "tool_result");
         assert_eq!(out["content"][0]["tool_use_id"], "t1");
@@ -321,5 +350,75 @@ mod tests {
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "high");
         assert_eq!(body["max_tokens"], 4096);
+    }
+
+    fn provider() -> AnthropicProvider {
+        AnthropicProvider::new(
+            reqwest::Client::new(),
+            "https://api.anthropic.com",
+            "k",
+            "claude-opus-4-8",
+        )
+    }
+
+    fn deferred(name: &str) -> ToolDef {
+        let mut d = ToolDef::new(name, "d", json!({"type": "object"}));
+        d.defer_loading = true;
+        d
+    }
+
+    fn loaded(names: &[&str]) -> Message {
+        Message {
+            role: Role::Tool,
+            content: vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "読み込みました".into(),
+                is_error: false,
+                tool_references: names.iter().map(|s| (*s).to_string()).collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn deferred_tools_carry_defer_loading_and_references_become_tool_reference_blocks() {
+        let mut req = GenerateRequest::new(vec![
+            Message::text(Role::User, "hi"),
+            loaded(&["csv.query"]),
+        ]);
+        req.tools = vec![
+            ToolDef::new("tool_search", "s", json!({"type": "object"})),
+            deferred("csv.query"),
+        ];
+        let body = provider().build_body(&req);
+        assert!(body["tools"][0].get("defer_loading").is_none());
+        assert_eq!(body["tools"][1]["defer_loading"], true);
+        let content = &body["messages"][1]["content"][0]["content"];
+        assert_eq!(
+            content,
+            &json!([{ "type": "tool_reference", "tool_name": "csv.query" }])
+        );
+    }
+
+    #[test]
+    fn reference_to_tool_absent_from_request_falls_back_to_text() {
+        // 着地ターン（tools 空）で参照を送ると API が 400 を返すため、本文へ落とす。
+        let req = GenerateRequest::new(vec![
+            Message::text(Role::User, "hi"),
+            loaded(&["csv.query"]),
+        ]);
+        let body = provider().build_body(&req);
+        assert_eq!(
+            body["messages"][1]["content"][0]["content"],
+            "読み込みました"
+        );
+    }
+
+    #[test]
+    fn all_deferred_request_drops_defer_flags() {
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        req.tools = vec![deferred("a"), deferred("b")];
+        let body = provider().build_body(&req);
+        assert!(body["tools"][0].get("defer_loading").is_none());
+        assert!(body["tools"][1].get("defer_loading").is_none());
     }
 }

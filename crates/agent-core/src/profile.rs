@@ -63,6 +63,38 @@ pub struct AgentOptions {
     /// deep research の `web_search`→複数 `web_fetch` ファンアウトを直列にしないための有界並列度。
     /// 同一ホストへの `web_fetch` は本値によらず互いに直列化される（礼儀）。
     pub parallel_read_tools: usize,
+    /// tool search（遅延ツールを検索して読み込む）の設定。
+    pub tool_search: ToolSearchOptions,
+}
+
+/// tool search の設定（[`crate::tool_search`]）。
+///
+/// 遅延にできるツール（[`crate::ToolName::loading`] が `Deferred`）の定義が十分大きいときだけ
+/// 有効になる。小さいなら全部載せる方が安い（検索の 1 手と、その往復のトークンを払わない）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolSearchOptions {
+    /// 有効にするか（false なら常に全ツールを載せる）。
+    pub enabled: bool,
+    /// 遅延にできる定義の推定トークン合計がこれ未満なら使わない。
+    pub min_deferred_tokens: usize,
+    /// 語彙の既定によらず**常に載せる**ツール名（skill の `allowed_tools` 等・run 単位の上書き）。
+    pub always_load: Vec<String>,
+}
+
+/// tool search を有効にする遅延定義の既定下限（推定トークン）。
+///
+/// Anthropic の目安（定義が 10k トークン超・ツール 10 個以上で効く）より低めに置く:
+/// 選択精度の劣化はトークン量より**候補数**で効くため、中規模でも絞る価値がある。
+pub const DEFAULT_TOOL_SEARCH_MIN_DEFERRED_TOKENS: usize = 2_000;
+
+impl Default for ToolSearchOptions {
+    fn default() -> Self {
+        ToolSearchOptions {
+            enabled: true,
+            min_deferred_tokens: DEFAULT_TOOL_SEARCH_MIN_DEFERRED_TOKENS,
+            always_load: Vec::new(),
+        }
+    }
 }
 
 /// 冪等 read ツールの既定並列度（#349）。検索 API/取得先への負荷と体感速度の折衷。
@@ -85,6 +117,7 @@ impl AgentOptions {
             context_keep_recent: 0,
             offer_plan_tool: true,
             parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
+            tool_search: ToolSearchOptions::default(),
         }
     }
 
@@ -111,6 +144,7 @@ impl AgentOptions {
             context_keep_recent: 6,
             offer_plan_tool: true,
             parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
+            tool_search: ToolSearchOptions::default(),
         }
     }
 }

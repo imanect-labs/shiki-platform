@@ -22,13 +22,31 @@ use crate::budget::{Budget, Spent};
 ///
 /// ツール結果が 1 つも無いステップは終端（ループが抜ける）なので、添える先も要らない。
 pub(crate) fn append_budget_observation(blocks: &mut [Block], budget: &Budget, spent: &Spent) {
-    let last = blocks
-        .iter_mut()
-        .rev()
-        .find(|b| matches!(b, Block::ToolResult { .. }));
-    if let Some(Block::ToolResult { content, .. }) = last {
+    if let Some(content) = note_target(blocks) {
         content.push_str("\n\n");
         content.push_str(&budget.remaining(spent, Instant::now()).observation());
+    }
+}
+
+/// 観測を書き足すツール結果（同じステップの結果のうち最後のもの）。
+///
+/// **ツールを読み込んだ結果（`tool_references` が非空）は避ける**: Anthropic はそれを
+/// `tool_reference` ブロックだけで送り本文を落とすため、書き足しても届かない。
+/// 読み込み結果しか無いステップでだけ、それに書く（OpenAI 互換・フォールバック時は届く）。
+fn note_target(blocks: &mut [Block]) -> Option<&mut String> {
+    let at = blocks
+        .iter()
+        .rposition(|b| {
+            matches!(b, Block::ToolResult { tool_references, .. } if tool_references.is_empty())
+        })
+        .or_else(|| {
+            blocks
+                .iter()
+                .rposition(|b| matches!(b, Block::ToolResult { .. }))
+        })?;
+    match &mut blocks[at] {
+        Block::ToolResult { content, .. } => Some(content),
+        _ => None,
     }
 }
 
@@ -69,16 +87,14 @@ fn append_to_last_tool_result(messages: &mut [LlmMessage], note: &str) -> bool {
     true
 }
 
-/// 履歴の最後のツール結果の本文（可変参照）。
+/// 履歴の最後のツール結果の本文（可変参照・選び方は [`note_target`]）。
 fn last_tool_result(messages: &mut [LlmMessage]) -> Option<&mut String> {
-    messages
-        .iter_mut()
-        .rev()
-        .flat_map(|m| m.content.iter_mut().rev())
-        .find_map(|b| match b {
-            Block::ToolResult { content, .. } => Some(content),
-            _ => None,
-        })
+    let msg = messages.iter_mut().rev().find(|m| {
+        m.content
+            .iter()
+            .any(|b| matches!(b, Block::ToolResult { .. }))
+    })?;
+    note_target(&mut msg.content)
 }
 
 #[cfg(test)]
@@ -88,11 +104,35 @@ mod tests {
     use llm_gateway::Role as LlmRole;
 
     fn result(id: &str, content: &str) -> Block {
-        Block::ToolResult {
-            tool_use_id: id.into(),
-            content: content.into(),
-            is_error: false,
-        }
+        Block::tool_result(id, content, false)
+    }
+
+    /// ツールを読み込んだ結果には乗せない（Anthropic では本文が落ちて届かない）。
+    #[test]
+    fn budget_observation_skips_tool_loading_results() {
+        let mut blocks = vec![
+            result("1", "1 件"),
+            Block::ToolResult {
+                tool_use_id: "2".into(),
+                content: "読み込みました".into(),
+                is_error: false,
+                tool_references: vec!["csv.query".into()],
+            },
+        ];
+        let spent = Spent::default();
+        append_budget_observation(
+            &mut blocks,
+            &Budget::autonomous(8, None, 100_000, 1_000_000),
+            &spent,
+        );
+        let Block::ToolResult { content: first, .. } = &blocks[0] else {
+            panic!("形が違う");
+        };
+        let Block::ToolResult { content: last, .. } = &blocks[1] else {
+            panic!("形が違う");
+        };
+        assert!(first.contains("[予算]"), "{first}");
+        assert_eq!(last, "読み込みました");
     }
 
     /// 残量は**最後のツール結果**に 1 度だけ乗る（両プロバイダに確実に届く唯一の場所）。

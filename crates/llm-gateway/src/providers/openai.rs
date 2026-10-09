@@ -5,7 +5,7 @@
 //! 逐次ストリーミングは Phase 3 では不要のため、各ツール呼び出しは累積して完了時に
 //! [`StreamDelta::ToolUseStop`]（完全な入力 JSON）を 1 回出す。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
 
 use futures::channel::mpsc;
@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use super::openai_names::ToolNameMap;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::tool_loading::context_tools;
 
 /// OpenAI 互換アダプタ。
 pub struct OpenAiProvider {
@@ -49,8 +50,9 @@ impl OpenAiProvider {
         if let Some(sys) = &req.system {
             messages.push(json!({ "role": "system", "content": sys }));
         }
+        let known: HashSet<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
         for m in &req.messages {
-            messages.extend(to_openai_messages(m, names));
+            messages.extend(to_openai_messages(m, names, &known));
         }
         let mut body = json!({
             "model": model,
@@ -64,9 +66,10 @@ impl OpenAiProvider {
         if let Some(t) = req.temperature {
             body["temperature"] = json!(t);
         }
-        if !req.tools.is_empty() {
-            body["tools"] = json!(req
-                .tools
+        // 遅延ツールは読み込まれた分だけ載せる（OpenAI 互換に参照の展開は無い・tool_loading）。
+        let tools = context_tools(&req.tools, &req.messages);
+        if !tools.is_empty() {
+            body["tools"] = json!(tools
                 .iter()
                 .map(|t| json!({
                     "type": "function",
@@ -84,7 +87,8 @@ impl OpenAiProvider {
 
 /// 中立メッセージ 1 件を OpenAI messages（複数になり得る）へ写す。
 /// 履歴中のツール名も wire 名へ写す（厳格プロバイダは履歴の tool_calls 名も検証する）。
-fn to_openai_messages(m: &Message, names: &ToolNameMap) -> Vec<Value> {
+/// `known` はこのリクエストで提示するツール名（読み込み参照の表示に使う）。
+fn to_openai_messages(m: &Message, names: &ToolNameMap, known: &HashSet<&str>) -> Vec<Value> {
     match m.role {
         Role::Tool => m
             .content
@@ -93,11 +97,12 @@ fn to_openai_messages(m: &Message, names: &ToolNameMap) -> Vec<Value> {
                 Block::ToolResult {
                     tool_use_id,
                     content,
+                    tool_references,
                     ..
                 } => Some(json!({
                     "role": "tool",
                     "tool_call_id": tool_use_id,
-                    "content": content,
+                    "content": tool_message_content(content, tool_references, names, known),
                 })),
                 _ => None,
             })
@@ -134,6 +139,29 @@ fn to_openai_messages(m: &Message, names: &ToolNameMap) -> Vec<Value> {
             vec![msg]
         }
     }
+}
+
+/// tool メッセージの本文。読み込み参照があれば、追加されたツールを **wire 名で**示す
+/// （定義そのものは `tools` に足される・[`context_tools`]）。参照先が 1 つも提示に無ければ
+/// 中立形のフォールバック本文を送る。
+fn tool_message_content(
+    content: &str,
+    references: &[String],
+    names: &ToolNameMap,
+    known: &HashSet<&str>,
+) -> String {
+    let loaded: Vec<String> = references
+        .iter()
+        .filter(|r| known.contains(r.as_str()))
+        .map(|r| names.wire(r))
+        .collect();
+    if loaded.is_empty() {
+        return content.to_string();
+    }
+    format!(
+        "次のツールを読み込みました。以降は通常のツールとして呼び出せます: {}",
+        loaded.join(", ")
+    )
 }
 
 fn join_text(blocks: &[Block]) -> String {
@@ -374,7 +402,7 @@ mod tests {
             }],
         };
         let names = ToolNameMap::new(["doc_search"].into_iter());
-        let out = to_openai_messages(&m, &names);
+        let out = to_openai_messages(&m, &names, &HashSet::new());
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["tool_calls"][0]["id"], "t1");
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "doc_search");
@@ -394,7 +422,7 @@ mod tests {
                 input: json!({"path": "a.md"}),
             }],
         };
-        let out = to_openai_messages(&m, &names);
+        let out = to_openai_messages(&m, &names, &HashSet::new());
         assert_eq!(out[0]["tool_calls"][0]["function"]["name"], "document_edit");
     }
 
@@ -402,14 +430,10 @@ mod tests {
     fn tool_result_maps_to_tool_role() {
         let m = Message {
             role: Role::Tool,
-            content: vec![Block::ToolResult {
-                tool_use_id: "t1".into(),
-                content: "result".into(),
-                is_error: false,
-            }],
+            content: vec![Block::tool_result("t1", "result", false)],
         };
         let names = ToolNameMap::new(std::iter::empty::<&str>());
-        let out = to_openai_messages(&m, &names);
+        let out = to_openai_messages(&m, &names, &HashSet::new());
         assert_eq!(out[0]["role"], "tool");
         assert_eq!(out[0]["tool_call_id"], "t1");
     }
@@ -430,5 +454,46 @@ mod tests {
             }
             _ => panic!("expected ToolUseStop"),
         }
+    }
+
+    #[test]
+    fn deferred_tools_are_sent_only_after_being_loaded_and_named_by_wire_name() {
+        use crate::model::ToolDef;
+        let p = OpenAiProvider::new(reqwest::Client::new(), "http://x/v1", None, "m");
+        let mut csv = ToolDef::new("csv.query", "q", json!({"type": "object"}));
+        csv.defer_loading = true;
+        let mut office = ToolDef::new("office.edit", "e", json!({"type": "object"}));
+        office.defer_loading = true;
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        req.tools = vec![
+            ToolDef::new("tool_search", "s", json!({"type": "object"})),
+            csv,
+            office,
+        ];
+        let names = ToolNameMap::new(req.tools.iter().map(|t| t.name.as_str()));
+        let wire = |b: &Value| -> Vec<String> {
+            b["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["function"]["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(wire(&p.build_body(&req, &names)), ["tool_search"]);
+
+        req.messages.push(Message {
+            role: Role::Tool,
+            content: vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "fallback".into(),
+                is_error: false,
+                tool_references: vec!["csv.query".into()],
+            }],
+        });
+        let body = p.build_body(&req, &names);
+        assert_eq!(wire(&body), ["tool_search", "csv_query"]);
+        let shown = body["messages"][1]["content"].as_str().unwrap();
+        assert!(shown.contains("csv_query"), "{shown}");
+        assert!(!shown.contains("fallback"), "{shown}");
     }
 }
