@@ -120,6 +120,129 @@ async fn firecracker_code_interpreter_and_files() {
     inst.destroy().await.expect("destroy");
 }
 
+/// #504: シェル行はゲストの `/bin/sh -c` が解釈する（パイプ・`&&`・`||`・リダイレクト）。
+/// リダイレクト先は /workspace に残り、ホスト側で回収できる（`shell` ツールの sync-back の前提）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn firecracker_shell_line_is_interpreted_by_sh() {
+    let Some(env) = gated() else { return };
+    let backend = FirecrackerBackend::new(
+        &env.bin,
+        env.kernel.clone(),
+        env.rootfs.clone(),
+        env.state.clone(),
+    )
+    .expect("backend");
+    let inst = backend.create(fc_spec()).await.expect("create");
+    inst.put_file("/workspace/rows.csv", b"a,x\nb,y\nc,x\n".to_vec())
+        .await
+        .expect("put");
+
+    let shell = |cmd: &str| ExecRequest::Shell {
+        cmd: cmd.into(),
+        timeout_ms: None,
+    };
+    let (out, code) = collect_stdout(
+        &inst,
+        shell("cut -d, -f2 rows.csv | sort | uniq -c > counts.txt && echo piped-ok"),
+    )
+    .await;
+    assert_eq!(code, Some(0), "stdout={out:?}");
+    assert!(out.contains("piped-ok"), "stdout={out:?}");
+    let counts = inst.get_file("counts.txt").await.expect("redirect target");
+    let counts = String::from_utf8_lossy(&counts);
+    assert!(
+        counts.contains("2 x") && counts.contains("1 y"),
+        "{counts:?}"
+    );
+
+    // `&&` は左が失敗すれば右を実行しない・`||` は実行する（シェルの意味論そのもの）。
+    let (out, code) = collect_stdout(&inst, shell("false && echo never || echo fallback")).await;
+    assert_eq!(code, Some(0), "stdout={out:?}");
+    assert!(
+        !out.contains("never") && out.contains("fallback"),
+        "{out:?}"
+    );
+
+    // バックグラウンドジョブがパイプを握っていても、シェルの終了で返る（壁時計上限まで待たない）。
+    let started = std::time::Instant::now();
+    let (out, code) = collect_stdout(&inst, shell("sleep 60 & echo started")).await;
+    assert_eq!(code, Some(0), "stdout={out:?}");
+    assert!(out.contains("started"), "{out:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+
+    // 返った後にジョブが /workspace を書き換えない（書き戻し中の取りこぼし防止・ジョブは止まっている）。
+    let (_, code) = collect_stdout(
+        &inst,
+        shell("(sleep 1; echo late > late.txt) & echo started"),
+    )
+    .await;
+    assert_eq!(code, Some(0));
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert!(
+        inst.get_file("late.txt").await.is_err(),
+        "返った後もジョブが書き込んだ"
+    );
+
+    inst.destroy().await.expect("destroy");
+}
+
+/// #504: グループを抜けた子孫（`setsid`）も、返る前にサンドボックスごと掃除されている。
+///
+/// 検証ごとに**新しいサンドボックス**を使う。init は孤児を reap しないので、前の検証で止めたプロセスが
+/// ゾンビとしてプロセス数上限（constrained = 8）を埋め、後続の fork が失敗して検証にならないため。
+/// シェル行末尾の sleep は、子孫が `setsid` を終えてグループを抜けるのを待つ（無いとグループ kill で
+/// 先に止まり、掃除を検証できない）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn firecracker_shell_line_leaves_no_process_behind() {
+    let Some(env) = gated() else { return };
+    let backend = FirecrackerBackend::new(
+        &env.bin,
+        env.kernel.clone(),
+        env.rootfs.clone(),
+        env.state.clone(),
+    )
+    .expect("backend");
+    let shell = |cmd: &str| ExecRequest::Shell {
+        cmd: cmd.into(),
+        timeout_ms: None,
+    };
+
+    // 返った後に /workspace を書き換えない。
+    let inst = backend.create(fc_spec()).await.expect("create");
+    let (out, code) = collect_stdout(
+        &inst,
+        shell("setsid sh -c 'sleep 1; echo late > escaped.txt' & echo started; sleep 0.5"),
+    )
+    .await;
+    assert_eq!(code, Some(0), "stdout={out:?}");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert!(
+        inst.get_file("escaped.txt").await.is_err(),
+        "グループを抜けた子孫が返った後に書き込んだ"
+    );
+    inst.destroy().await.expect("destroy");
+
+    // 書き続ける子孫がいても、パイプが閉じて即座に返る。
+    let inst = backend.create(fc_spec()).await.expect("create");
+    let started = std::time::Instant::now();
+    let (out, code) = collect_stdout(
+        &inst,
+        shell("setsid sh -c 'while :; do echo x; sleep 0.05; done' & echo started; sleep 0.5"),
+    )
+    .await;
+    assert_eq!(code, Some(0), "stdout={out:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    inst.destroy().await.expect("destroy");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn firecracker_two_instances_isolated() {
     let Some(env) = gated() else { return };
