@@ -42,6 +42,17 @@ export function linkifyCitations(text: string, citations: readonly Citation[]): 
 /// （ラベルを引用に化けさせない）。
 const CITE_RUN = /(?<![\]!])(?:\[\d+\])+(?![(\[:])/g;
 
+/// コード部分の範囲（`[start, end)`・文字列の添字）。
+function codeRanges(text: string): [number, number][] {
+  const out: [number, number][] = [];
+  let at = 0;
+  for (const part of splitByCode(text)) {
+    if (part.code) out.push([at, at + part.s.length]);
+    at += part.s.length;
+  }
+  return out;
+}
+
 /// 本文をコード（```〜``` / ~~~〜~~~ のフェンス、`〜` のインラインコード）とそれ以外に分ける。
 /// 閉じていないフェンス（生成途中）は末尾までコードとして扱う。
 export function splitByCode(text: string): { code: boolean; s: string }[] {
@@ -87,8 +98,12 @@ export function citationRuns(text: string, citations: readonly Citation[]): Cita
   const runs: CitationRun[] = [];
   // linkifyCitations と同じ判定（Markdown リンクのラベルは引用として数えない）。
   const re = new RegExp(CITE_RUN.source, "g");
+  // コードの中の `[n]` は引用ではない（linkifyCitations もリンクにしない）。
+  const code = codeRanges(text);
   let prevEnd = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
+    const at = m.index;
+    if (code.some(([s, e]) => at >= s && at < e)) continue;
     const ns = Array.from(m[0].matchAll(/\[(\d+)\]/g), (x) => Number.parseInt(x[1], 10)).filter(
       (n) => citationAt(citations, n),
     );
