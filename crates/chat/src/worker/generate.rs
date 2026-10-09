@@ -220,6 +220,7 @@ impl ChatWorker {
                     approver = approver.with_pre_authorized(extra);
                 }
                 opts.parallel_read_tools = self.config.parallel_read_tools;
+                opts.tool_search.enabled = self.config.tool_search;
                 opts
             } else {
                 // storage 未配線: 自律不能。制約版に落とす（黙って弱くしない・警告）。
@@ -253,6 +254,13 @@ impl ChatWorker {
             for skill in &skills {
                 skill.audit_apply(&self.db, ctx, run).await;
             }
+            // 手順書が名指しするツールは遅延にしない（毎回の検索の 1 手を払わせない）。
+            opts.tool_search.always_load.extend(
+                skills
+                    .iter()
+                    .flat_map(crate::skill::AppliedSkill::declared_tools)
+                    .map(str::to_string),
+            );
         }
 
         // 門の段階を system へ明示する（ツールが無い理由と、次へ進む条件・#400）。

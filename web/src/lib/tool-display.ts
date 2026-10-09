@@ -34,6 +34,7 @@ import {
   Trash2,
   Users,
   Workflow,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 
@@ -68,6 +69,10 @@ type ToolDisplay = {
 /// `plan` は `ToolName` 語彙の外（`crates/agent-core/src/agent.rs` の `PLAN_TOOL` リテラル。
 /// ループが横取りするため `Tool` として dispatch されない）。表示だけは同じ体系に載せる。
 export const PLAN_TOOL = "plan";
+
+/// `tool_search` も語彙の外（`crates/agent-core/src/tool_search/mod.rs` の `TOOL_SEARCH_TOOL`。
+/// 遅延ツールの読み込みで、`plan` と同じくループが横取りする）。
+export const TOOL_SEARCH_TOOL = "tool_search";
 
 // ── 入力から対象を取り出すヘルパ ────────────────────────────────
 
@@ -404,6 +409,16 @@ const PLAN_DISPLAY: ToolDisplay = {
   suru: true,
 };
 
+const TOOL_SEARCH_DISPLAY: ToolDisplay = {
+  icon: Wrench,
+  category: "meta",
+  lead: (t) => (t ? `「${t}」のツールを` : "使うツールを"),
+  verb: "検索",
+  suru: true,
+  // `select:csv.query,csv.patch` は名指しの読み込み。接頭辞は見せない。
+  target: (input) => str(input, "query")?.replace(/^select:/, "").trim() || null,
+};
+
 const UNKNOWN_DISPLAY: ToolDisplay = {
   icon: Check,
   category: "meta",
@@ -414,6 +429,7 @@ const UNKNOWN_DISPLAY: ToolDisplay = {
 
 function displayFor(name: string): ToolDisplay {
   if (name === PLAN_TOOL) return PLAN_DISPLAY;
+  if (name === TOOL_SEARCH_TOOL) return TOOL_SEARCH_DISPLAY;
   return TOOL_DISPLAY[name as ToolName] ?? UNKNOWN_DISPLAY;
 }
 

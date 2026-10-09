@@ -89,7 +89,10 @@ pub async fn run_agent(
     sink: &mut dyn EventSink,
 ) -> Result<AgentOutcome, AgentError> {
     let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
-    let tool_defs = build_tool_defs(tools, opts);
+    // 出番の限られるツールは定義を遅延にし、`tool_search` で読み込ませる（候補は提示済みの
+    // ツールだけ＝検索で認可は広がらない・tool_search.rs）。
+    let (tool_defs, tool_search) =
+        crate::tool_search::prepare(build_tool_defs(tools, opts), &opts.tool_search);
 
     // 再開 or 新規開始の状態。ループ検出器はチェックポイントから復元する（resume で失敗履歴を失わない）。
     let mut state = resume.unwrap_or_else(|| Checkpoint::start(messages));
@@ -130,6 +133,7 @@ pub async fn run_agent(
             gateway,
             &tool_defs,
             &tool_map,
+            tool_search.as_ref(),
             run,
             opts,
             approver,
@@ -271,6 +275,7 @@ async fn run_step(
     gateway: &LlmGateway,
     tool_defs: &[ToolDef],
     tool_map: &HashMap<&str, &Arc<dyn Tool>>,
+    tool_search: Option<&crate::tool_search::ToolSearch>,
     run: &RunContext<'_>,
     opts: &AgentOptions,
     approver: Option<&dyn Approver>,
@@ -405,6 +410,7 @@ async fn run_step(
     // ツール実行 → 観測を履歴へ。冪等 read は有界並列・それ以外は逐次（#349・agent_tools）。
     let phase = crate::agent_tools::ToolPhase {
         tool_map,
+        tool_search,
         ctx: run.ctx,
         trace_id: run.trace_id.as_deref(),
         opts,
@@ -464,22 +470,16 @@ async fn run_step(
 fn build_tool_defs(tools: &[Arc<dyn Tool>], opts: &AgentOptions) -> Vec<ToolDef> {
     let mut defs: Vec<ToolDef> = tools
         .iter()
-        .map(|t| ToolDef {
-            name: t.name().to_string(),
-            description: t.description().to_string(),
-            input_schema: t.input_schema(),
-        })
+        .map(|t| ToolDef::new(t.name(), t.description(), t.input_schema()))
         .collect();
     if opts.profile.is_autonomous() && opts.offer_plan_tool {
-        defs.push(ToolDef {
-            name: PLAN_TOOL.to_string(),
-            description:
-                "現在の計画（サブタスク列）を提示/改訂する。目標を数個のサブタスクに分解し、\
-                進捗に応じて全置換で更新する（各要素に status: todo/doing/done/blocked）。\
-                計画は UI に表示され進捗が追跡される。"
-                    .to_string(),
-            input_schema: plan::plan_tool_schema(),
-        });
+        defs.push(ToolDef::new(
+            PLAN_TOOL,
+            "現在の計画（サブタスク列）を提示/改訂する。目標を数個のサブタスクに分解し、\
+            進捗に応じて全置換で更新する（各要素に status: todo/doing/done/blocked）。\
+            計画は UI に表示され進捗が追跡される。",
+            plan::plan_tool_schema(),
+        ));
     }
     defs
 }

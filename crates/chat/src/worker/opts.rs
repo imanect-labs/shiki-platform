@@ -33,6 +33,7 @@ pub(super) fn chat_opts(worker: &ChatWorker) -> AgentOptions {
     // 長い成果物・大きなツール引数が途中で切れる。設定値で上書きする）。
     opts.max_tokens = Some(worker.config.max_tokens);
     opts.parallel_read_tools = worker.config.parallel_read_tools;
+    opts.tool_search.enabled = worker.config.tool_search;
     opts
 }
 

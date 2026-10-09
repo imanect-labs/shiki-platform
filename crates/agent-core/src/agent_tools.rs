@@ -27,10 +27,13 @@ use crate::loop_detect::LoopDetector;
 use crate::plan::{self, Plan};
 use crate::profile::AgentOptions;
 use crate::tool::{Tool, ToolOutcome};
+use crate::tool_search::{ToolSearch, TOOL_SEARCH_TOOL};
 
 /// ツール実行フェーズの不変な入力（run 中ずっと同じもの）。
 pub(crate) struct ToolPhase<'a> {
     pub(crate) tool_map: &'a HashMap<&'a str, &'a Arc<dyn Tool>>,
+    /// 遅延ツールの索引（tool search が有効な run のみ・`tool_search` を横取りする）。
+    pub(crate) tool_search: Option<&'a ToolSearch>,
     pub(crate) ctx: &'a AuthContext,
     pub(crate) trace_id: Option<&'a str>,
     pub(crate) opts: &'a AgentOptions,
@@ -71,6 +74,8 @@ struct Processed {
     index: usize,
     outcome: ToolOutcome,
     disposition: Disposition,
+    /// この結果で読み込んだ遅延ツール（`tool_search` のみ・他は空）。
+    references: Vec<String>,
 }
 
 /// このステップのツール呼び出しを実行し、観測ブロックを**呼び出し順**で返す。
@@ -137,6 +142,7 @@ pub(crate) async fn run_tool_calls(
             tool_use_id: call.id,
             content: p.outcome.content,
             is_error: p.outcome.is_error,
+            tool_references: p.references,
         });
     }
     if seq.cancelled {
@@ -194,6 +200,7 @@ async fn run_reads(
                 index: i,
                 outcome: execute_tool(phase.tool_map, phase.ctx, &calls[i], phase.trace_id).await,
                 disposition: Disposition::Executed,
+                references: Vec::new(),
             });
         }
         done
@@ -238,6 +245,24 @@ async fn run_sequential(
                 index: i,
                 outcome: ToolOutcome::ok(handle_plan_tool(call, plan_state, sink).await?),
                 disposition: Disposition::Plan,
+                references: Vec::new(),
+            });
+            continue;
+        }
+        // tool search（遅延ツールの読み込み）: 索引を引くだけで副作用も外部 I/O も無い。
+        // 承認ゲートの対象外。読み込んだ名前は結果ブロックへ残し、以降の提示に効かせる。
+        if let Some(search) = phase.tool_search.filter(|_| call.name == TOOL_SEARCH_TOOL) {
+            let found = search.handle(&call.input);
+            let outcome = if found.is_error {
+                ToolOutcome::error(found.content)
+            } else {
+                ToolOutcome::ok(found.content)
+            };
+            results.push(Processed {
+                index: i,
+                outcome,
+                disposition: Disposition::Executed,
+                references: found.references,
             });
             continue;
         }
@@ -260,6 +285,7 @@ async fn run_sequential(
             index: i,
             outcome,
             disposition,
+            references: Vec::new(),
         });
     }
     Ok(SequentialRun {
