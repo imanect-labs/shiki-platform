@@ -16,13 +16,40 @@ export function citationAt(citations: readonly Citation[], n: number): Citation 
 
 /// 本文中の `[n]` 引用マーカーを、引用チップ用のリンクに変換する（Markdown 用）。
 /// 範囲外の番号やマッチしない `[n]` はそのまま残す。
+///
+/// コード（フェンスのコードブロック・インラインコード）の中は変えない。Markdown の解析前に
+/// 文字列で置き換えるので、ここで除かないとコード例の `[1]` が `[1](#cite-1)` に化け、表示と
+/// コピー結果が壊れる。
 export function linkifyCitations(text: string, citations: readonly Citation[]): string {
   if (citations.length === 0) return text;
-  return text.replace(/\[(\d+)\]/g, (match, digits: string) => {
-    const n = Number.parseInt(digits, 10);
-    if (!citationAt(citations, n)) return match;
-    return `[${n}](${CITE_HREF_PREFIX}${n})`;
-  });
+  return splitByCode(text)
+    .map(({ code, s }) =>
+      code
+        ? s
+        : s.replace(/\[(\d+)\]/g, (match, digits: string) => {
+            const n = Number.parseInt(digits, 10);
+            if (!citationAt(citations, n)) return match;
+            return `[${n}](${CITE_HREF_PREFIX}${n})`;
+          }),
+    )
+    .join("");
+}
+
+/// 本文をコード（```〜``` / ~~~〜~~~ のフェンス、`〜` のインラインコード）とそれ以外に分ける。
+/// 閉じていないフェンス（生成途中）は末尾までコードとして扱う。
+export function splitByCode(text: string): { code: boolean; s: string }[] {
+  const out: { code: boolean; s: string }[] = [];
+  const re = /(^|\n)([ \t]*)(`{3,}|~{3,})[^\n]*(?:\n[\s\S]*?(?:\n[ \t]*\3[`~]*[ \t]*(?=\n|$))|[\s\S]*$)|(`+)[^`\n]+?\4/g;
+  let last = 0;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    // フェンスの前の改行は本文側に残す。
+    const start = m.index + (m[1]?.length ?? 0);
+    if (start > last) out.push({ code: false, s: text.slice(last, start) });
+    out.push({ code: true, s: text.slice(start, m.index + m[0].length) });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push({ code: false, s: text.slice(last) });
+  return out;
 }
 
 /// 引用チップのリンク先から番号を取り出す（引用リンクでなければ null）。

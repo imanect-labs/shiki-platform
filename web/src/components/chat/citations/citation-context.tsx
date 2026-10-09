@@ -64,7 +64,10 @@ function useCitationMetas(citations: readonly Citation[]): {
     [citations, override],
   );
   const fetched = useNodeMetas(ids);
-  if (override) return { metas: override, missing: (id) => !(id in override) };
+  // 判定関数は override ごとに 1 つにする（毎レンダー作り直すと、これを依存に持つ
+  // MessageCitationsProvider の memo が効かず、出典パネルの登録も毎回やり直しになる）。
+  const missingInOverride = React.useCallback((id: string) => !!override && !(id in override), [override]);
+  if (override) return { metas: override, missing: missingInOverride };
   return { metas: fetched, missing: isUnresolvable };
 }
 
