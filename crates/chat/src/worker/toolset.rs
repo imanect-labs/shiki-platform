@@ -278,11 +278,18 @@ impl ChatWorker {
                         command: s.body.command.clone(),
                     })
                     .collect();
+                let entries = crate::skill_catalog::merge_entries(pinned, entries);
+                // 一覧の上限を超えたら検索も足す（載らない分を探せるように・#520）。
+                if let Some(search) = crate::skill_search_tool::SkillSearchTool::build(
+                    &entries,
+                    self.tool_search_embedder(),
+                ) {
+                    tools.push(Arc::new(search));
+                }
                 if let Some(tool) = crate::skill_tool::SkillTool::build(
                     artifacts.clone(),
                     self.db.clone(),
                     run,
-                    pinned,
                     entries,
                 ) {
                     tools.push(Arc::new(tool));
