@@ -1,0 +1,25 @@
+[project]
+name = "tool-search-eval"
+version = "0.0.0"
+description = "tool_search（遅延ツールの検索）の検索精度・規模・融合の評価基盤"
+requires-python = ">=3.12,<3.13"
+license = "LicenseRef-Proprietary"
+dependencies = [
+    "httpx>=0.28",
+    "numpy>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8.3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+# プロンプト（日本語の長文）を折り返すと読みにくくなるため行長は見ない。
+ignore = ["E501"]

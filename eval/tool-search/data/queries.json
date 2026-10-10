@@ -1,0 +1,3554 @@
+[
+ {
+  "id": "emit_workflow:ja",
+  "target": "emit_workflow",
+  "kind": "ja",
+  "text": "毎朝9時に社内ナレッジベースから「AI活用事例」を検索し、要約してSlackの#generalチャンネルに投稿する自動化フローを作成してください。"
+ },
+ {
+  "id": "emit_workflow:en",
+  "target": "emit_workflow",
+  "kind": "en",
+  "text": "Create an automation workflow that searches the internal knowledge base for 'AI use cases' every day at 9 AM, summarizes the results, and posts them to the #general Slack channel."
+ },
+ {
+  "id": "emit_workflow:ja_para",
+  "target": "emit_workflow",
+  "kind": "ja_para",
+  "text": "朝9時になったら、社内の資料庫からAIの使い方の例を探し出して、簡単にまとめてみんなのチャットルームに自動で流すような仕組みを作って。"
+ },
+ {
+  "id": "read_workflow:ja",
+  "target": "read_workflow",
+  "kind": "ja",
+  "text": "既存のワークフロー「日報集計」の現在の設定内容を確認して、トリガー条件を毎日9時から8時に変更したい。"
+ },
+ {
+  "id": "read_workflow:en",
+  "target": "read_workflow",
+  "kind": "en",
+  "text": "Check the current configuration of the existing 'Daily Report Aggregation' workflow and change the trigger time from 9 AM to 8 AM daily."
+ },
+ {
+  "id": "read_workflow:ja_para",
+  "target": "read_workflow",
+  "kind": "ja_para",
+  "text": "今動いてる自動処理のルールってどうなってるか中身を見せて。それ見てから、起動する時間を1時間早めるように書き換えてほしいんだ。"
+ },
+ {
+  "id": "save_note:ja",
+  "target": "save_note",
+  "kind": "ja",
+  "text": "先ほどの会議の議事録をまとめて、新しいノートとして下書きを作成してください。"
+ },
+ {
+  "id": "save_note:en",
+  "target": "save_note",
+  "kind": "en",
+  "text": "Please summarize the minutes from the earlier meeting and create a new note draft."
+ },
+ {
+  "id": "save_note:ja_para",
+  "target": "save_note",
+  "kind": "ja_para",
+  "text": "さっきの打ち合わせで話したことを整理して、後で編集できる状態のメモ用ファイルを用意しておいて。"
+ },
+ {
+  "id": "save_slide:ja",
+  "target": "save_slide",
+  "kind": "ja",
+  "text": "来週のQ3決算報告会用のプレゼン資料を、forestテーマで作成してください。"
+ },
+ {
+  "id": "save_slide:en",
+  "target": "save_slide",
+  "kind": "en",
+  "text": "Please create a presentation deck for next week's Q3 earnings report using the forest theme."
+ },
+ {
+  "id": "save_slide:ja_para",
+  "target": "save_slide",
+  "kind": "ja_para",
+  "text": "次の四半期の数字をまとめるための、緑色系の雰囲気がある見せる用の資料を新規で起こしてほしいです。"
+ },
+ {
+  "id": "save_csv:ja",
+  "target": "save_csv",
+  "kind": "ja",
+  "text": "先週の営業実績を項目ごとに整理して、一覧表の形で出力してください。"
+ },
+ {
+  "id": "save_csv:en",
+  "target": "save_csv",
+  "kind": "en",
+  "text": "Please organize last week's sales performance by item and output it as a table."
+ },
+ {
+  "id": "save_csv:ja_para",
+  "target": "save_csv",
+  "kind": "ja_para",
+  "text": "前の週の売り上げデータを箇条書きじゃなくて、行と列が整ったグリッド状の形式で見られるようにして。"
+ },
+ {
+  "id": "document.read:ja",
+  "target": "document.read",
+  "kind": "ja",
+  "text": "現在開いているノートの見出し構成や本文の内容を確認したいです。"
+ },
+ {
+  "id": "document.read:en",
+  "target": "document.read",
+  "kind": "en",
+  "text": "I want to check the heading structure and current content of the note I have open."
+ },
+ {
+  "id": "document.read:ja_para",
+  "target": "document.read",
+  "kind": "ja_para",
+  "text": "今見てるメモに何が書かれてるか、ざっと中身を教えて。"
+ },
+ {
+  "id": "document.edit:ja",
+  "target": "document.edit",
+  "kind": "ja",
+  "text": "プロジェクトAの議事録ノートに、決定事項として「来週月曜日にリリースする」旨を末尾に追記してください。"
+ },
+ {
+  "id": "document.edit:en",
+  "target": "document.edit",
+  "kind": "en",
+  "text": "Please append the decision 'Release next Monday' to the end of the Project A meeting notes."
+ },
+ {
+  "id": "document.edit:ja_para",
+  "target": "document.edit",
+  "kind": "ja_para",
+  "text": "あの議事録ファイルの一番下に、来週月曜リリースって決まったことを書き足しておいて。"
+ },
+ {
+  "id": "document.embed:ja",
+  "target": "document.embed",
+  "kind": "ja",
+  "text": "先ほど作成した売上推移の折れ線グラフを、今開いている「Q3事業報告.md」ノートの一番下に追加して。"
+ },
+ {
+  "id": "document.embed:en",
+  "target": "document.embed",
+  "kind": "en",
+  "text": "Embed the sales trend line chart we just created at the very bottom of the currently open 'Q3 Business Report.md' note."
+ },
+ {
+  "id": "document.embed:ja_para",
+  "target": "document.embed",
+  "kind": "ja_para",
+  "text": "さっき作ったグラフ、今のノートのお尻にくっつけておいて。"
+ },
+ {
+  "id": "slide.read:ja",
+  "target": "slide.read",
+  "kind": "ja",
+  "text": "今開いているスライドファイルの、現在の全ページの内容とID構成を確認したい。"
+ },
+ {
+  "id": "slide.read:en",
+  "target": "slide.read",
+  "kind": "en",
+  "text": "I want to check the current content and ID structure of all pages in the open slide file."
+ },
+ {
+  "id": "slide.read:ja_para",
+  "target": "slide.read",
+  "kind": "ja_para",
+  "text": "このプレゼン資料、今どんな順番で何が入ってるか一覧で見せて。"
+ },
+ {
+  "id": "slide.edit:ja",
+  "target": "slide.edit",
+  "kind": "ja",
+  "text": "現在開いているスライドの3ページ目と4ページ目の間に、新しいスライドを1枚挿入してください。"
+ },
+ {
+  "id": "slide.edit:en",
+  "target": "slide.edit",
+  "kind": "en",
+  "text": "Insert a new slide between the 3rd and 4th slides of the currently open presentation."
+ },
+ {
+  "id": "slide.edit:ja_para",
+  "target": "slide.edit",
+  "kind": "ja_para",
+  "text": "今見てる資料の3枚目と4枚目の隙間に、もう一页足してほしいんだ。"
+ },
+ {
+  "id": "csv.query:ja",
+  "target": "csv.query",
+  "kind": "ja",
+  "text": "sales_2023.csvを開いて、地域ごとの売上合計をSQLで集計して教えてください。"
+ },
+ {
+  "id": "csv.query:en",
+  "target": "csv.query",
+  "kind": "en",
+  "text": "Open sales_2023.csv and calculate the total sales by region using SQL."
+ },
+ {
+  "id": "csv.query:ja_para",
+  "target": "csv.query",
+  "kind": "ja_para",
+  "text": "去年の販売データファイルがあるんだけど、都道府県別にいくら売れたか、数字をまとめて出せないかな？"
+ },
+ {
+  "id": "csv.patch:ja",
+  "target": "csv.patch",
+  "kind": "ja",
+  "text": "社用車の管理表（vehicle_list.csv）の「ステータス」列にある、車両ID「V-102」の値を「点検中」に更新してください。"
+ },
+ {
+  "id": "csv.patch:en",
+  "target": "csv.patch",
+  "kind": "en",
+  "text": "Update the 'Status' cell for vehicle ID 'V-102' to 'Under Inspection' in the company vehicle list (vehicle_list.csv)."
+ },
+ {
+  "id": "csv.patch:ja_para",
+  "target": "csv.patch",
+  "kind": "ja_para",
+  "text": "車のリストファイルで、番号V-102の車の状態が今どうなってるか、「点検中」って書き換えておいて。"
+ },
+ {
+  "id": "csv.write:ja",
+  "target": "csv.write",
+  "kind": "ja",
+  "text": "以下の売上データをヘッダ行付きで新しいCSVファイルとして保存してください。日付,商品名,金額\n2024-01-01,りんご,150\n2024-01-02,みかん,100"
+ },
+ {
+  "id": "csv.write:en",
+  "target": "csv.write",
+  "kind": "en",
+  "text": "Please save the following sales data as a new CSV file with a header row. Date,Product,Amount\\n2024-01-01,Apple,150\\n2024-01-02,Orange,100"
+ },
+ {
+  "id": "csv.write:ja_para",
+  "target": "csv.write",
+  "kind": "ja_para",
+  "text": "この表の内容を、そのままファイルにしてドライブに放り込んでおいて。見出しも入れた状態でね。"
+ },
+ {
+  "id": "github_search_issues:ja",
+  "target": "github_search_issues",
+  "kind": "ja",
+  "text": "frontend-appリポジトリで、ラベルが「bug」かつassigneeが未設定のイシューをすべて検索してください。"
+ },
+ {
+  "id": "github_search_issues:en",
+  "target": "github_search_issues",
+  "kind": "en",
+  "text": "Search for all issues in the frontend-app repository that have the label \"bug\" and are unassigned."
+ },
+ {
+  "id": "github_search_issues:ja_para",
+  "target": "github_search_issues",
+  "kind": "ja_para",
+  "text": "フロントエンドのプロジェクトにある、バグ報告なのに誰も担当していない案件をリストアップして。"
+ },
+ {
+  "id": "github_get_issue:ja",
+  "target": "github_get_issue",
+  "kind": "ja",
+  "text": "イシュー番号 #402 の現在のステータスと、誰がアサインされているかを確認してください。"
+ },
+ {
+  "id": "github_get_issue:en",
+  "target": "github_get_issue",
+  "kind": "en",
+  "text": "Please check the current status and assignee of issue #402."
+ },
+ {
+  "id": "github_get_issue:ja_para",
+  "target": "github_get_issue",
+  "kind": "ja_para",
+  "text": "#402 の件、今どんな具合で進んでて、担当者が誰なのか知りたいです。"
+ },
+ {
+  "id": "github_create_pull_request:ja",
+  "target": "github_create_pull_request",
+  "kind": "ja",
+  "text": "feature/login-update ブランチの変更を main ブランチへ反映させるために、新しいプルリクエストを作成してください。"
+ },
+ {
+  "id": "github_create_pull_request:en",
+  "target": "github_create_pull_request",
+  "kind": "en",
+  "text": "Please create a new pull request to merge the changes from the 'feature/login-update' branch into the 'main' branch."
+ },
+ {
+  "id": "github_create_pull_request:ja_para",
+  "target": "github_create_pull_request",
+  "kind": "ja_para",
+  "text": "ログイン機能の修正が終わったので、本体のコードに取り込めるように申請を出しておいて。"
+ },
+ {
+  "id": "gitlab_get_pipeline_job_logs:ja",
+  "target": "gitlab_get_pipeline_job_logs",
+  "kind": "ja",
+  "text": "先ほど失敗したデプロイ用パイプラインのジョブID 12345の実行ログを確認したいので、エラーメッセージを含む全出力を取得してください。"
+ },
+ {
+  "id": "gitlab_get_pipeline_job_logs:en",
+  "target": "gitlab_get_pipeline_job_logs",
+  "kind": "en",
+  "text": "Please retrieve the full output, including error messages, for pipeline job ID 12345 from the recently failed deployment pipeline."
+ },
+ {
+  "id": "gitlab_get_pipeline_job_logs:ja_para",
+  "target": "gitlab_get_pipeline_job_logs",
+  "kind": "ja_para",
+  "text": "さっきコケたビルドの詳細な中身が見たいんだ。特にエラーが出てる部分のテキストを全部抜き出してもらえる？"
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "kind": "ja",
+  "text": "プロジェクト「backend-api」のリポジトリURLと現在の説明欄の内容を確認したいです。"
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "kind": "en",
+  "text": "I need to check the repository URL and the current description for the 'backend-api' project."
+ },
+ {
+  "id": "gitlab_get_project:ja_para",
+  "target": "gitlab_get_project",
+  "kind": "ja_para",
+  "text": "社内のバックエンドAPI用の作業場所について、コードをcloneするためのアドレスと、どんな目的で作られたか書いてある概要部分を教えて。"
+ },
+ {
+  "id": "gitlab_create_project:ja",
+  "target": "gitlab_create_project",
+  "kind": "ja",
+  "text": "新規プロジェクト「backend-api-v2」をGitLab上に作成してください。"
+ },
+ {
+  "id": "gitlab_create_project:en",
+  "target": "gitlab_create_project",
+  "kind": "en",
+  "text": "Please create a new project named 'backend-api-v2' on GitLab."
+ },
+ {
+  "id": "gitlab_create_project:ja_para",
+  "target": "gitlab_create_project",
+  "kind": "ja_para",
+  "text": "これから使うリポジトリの箱を、名前を付けて新しく用意してほしいんだ。"
+ },
+ {
+  "id": "jira_add_comment:ja",
+  "target": "jira_add_comment",
+  "kind": "ja",
+  "text": "PROJ-123のチケットに、設計書のレビュー結果をコメントとして追記してください。"
+ },
+ {
+  "id": "jira_add_comment:en",
+  "target": "jira_add_comment",
+  "kind": "en",
+  "text": "Please add a comment to ticket PROJ-123 with the results of the design document review."
+ },
+ {
+  "id": "jira_add_comment:ja_para",
+  "target": "jira_add_comment",
+  "kind": "ja_para",
+  "text": "PROJ-123の話だけど、設計書見た感想を書き込んでおいて。"
+ },
+ {
+  "id": "jira_update_issue:ja",
+  "target": "jira_update_issue",
+  "kind": "ja",
+  "text": "JIRAの課題「PROJ-123」の優先度を「最高」に変更してください。"
+ },
+ {
+  "id": "jira_update_issue:en",
+  "target": "jira_update_issue",
+  "kind": "en",
+  "text": "Please change the priority of JIRA issue 'PROJ-123' to 'Highest'."
+ },
+ {
+  "id": "jira_update_issue:ja_para",
+  "target": "jira_update_issue",
+  "kind": "ja_para",
+  "text": "あのチケット、すごく急ぎになったから一番上のランクに上げておいて。"
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "kind": "ja",
+  "text": "Jiraの「第5スプリント」の終了日を来週の金曜日まで延長してください。"
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "kind": "en",
+  "text": "Please extend the end date of the 'Sprint 5' in Jira to next Friday."
+ },
+ {
+  "id": "jira_update_sprint:ja_para",
+  "target": "jira_update_sprint",
+  "kind": "ja_para",
+  "text": "今やってる5回目の期間、終わりを来週の金曜にずらせない？"
+ },
+ {
+  "id": "confluence_add_labels:ja",
+  "target": "confluence_add_labels",
+  "kind": "ja",
+  "text": "Confluenceの「2024年度Q1報告書」ページに、「財務」と「確定済み」というラベルを付与してください。"
+ },
+ {
+  "id": "confluence_add_labels:en",
+  "target": "confluence_add_labels",
+  "kind": "en",
+  "text": "Please add the labels 'Finance' and 'Finalized' to the Confluence page titled '2024 Q1 Report'."
+ },
+ {
+  "id": "confluence_add_labels:ja_para",
+  "target": "confluence_add_labels",
+  "kind": "ja_para",
+  "text": "あの四半期のまとめページ、後で探しやすいように「お金関係」と「完了」って印をつけておいてくれる？"
+ },
+ {
+  "id": "confluence_create_page:ja",
+  "target": "confluence_create_page",
+  "kind": "ja",
+  "text": "Confluenceの「開発チーム」スペースに、新しいAPI仕様書のページを作成して公開してください。"
+ },
+ {
+  "id": "confluence_create_page:en",
+  "target": "confluence_create_page",
+  "kind": "en",
+  "text": "Please create and publish a new page for the API documentation in the 'Development Team' space on Confluence."
+ },
+ {
+  "id": "confluence_create_page:ja_para",
+  "target": "confluence_create_page",
+  "kind": "ja_para",
+  "text": "開発チーム用の場所へ、APIの決まり事を書くための新しい紙を一枚、みんなが見られる状態で作っておいて。"
+ },
+ {
+  "id": "confluence_download_attachment:ja",
+  "target": "confluence_download_attachment",
+  "kind": "ja",
+  "text": "Confluenceの「Q3設計仕様書」ページに添付されている最新版のPDFファイルを、私のローカル環境に保存したいのでダウンロードURLを取得してください。"
+ },
+ {
+  "id": "confluence_download_attachment:en",
+  "target": "confluence_download_attachment",
+  "kind": "en",
+  "text": "Please retrieve the download URL for the latest PDF file attached to the 'Q3 Design Specifications' page in Confluence, so I can save it to my local environment."
+ },
+ {
+  "id": "confluence_download_attachment:ja_para",
+  "target": "confluence_download_attachment",
+  "kind": "ja_para",
+  "text": "Confluenceのあの設計書のページにくっついてるPDF、手元のPCに取り込みたいからリンクを貰えないかな？"
+ },
+ {
+  "id": "backlog_save_issue_draft:ja",
+  "target": "backlog_save_issue_draft",
+  "kind": "ja",
+  "text": "Backlogで、現在調査中の不具合報告を下書き状態で作成して保存してください。チームにはまだ公開したくないので、非公開のままにしておいてください。"
+ },
+ {
+  "id": "backlog_save_issue_draft:en",
+  "target": "backlog_save_issue_draft",
+  "kind": "en",
+  "text": "Please create and save a draft of the bug report currently under investigation in Backlog. Keep it private as I don't want to share it with the team yet."
+ },
+ {
+  "id": "backlog_save_issue_draft:ja_para",
+  "target": "backlog_save_issue_draft",
+  "kind": "ja_para",
+  "text": "今調べてるバグの件、Backlogにメモだけ残しといて。でも、みんなに見えちゃう状態じゃなくて、自分だけで編集できる仮置き状態でお願い。"
+ },
+ {
+  "id": "backlog_get_project:ja",
+  "target": "backlog_get_project",
+  "kind": "ja",
+  "text": "プロジェクト「Alpha」の現在のステータスとリーダーを確認したいので、詳細情報を取得してください。"
+ },
+ {
+  "id": "backlog_get_project:en",
+  "target": "backlog_get_project",
+  "kind": "en",
+  "text": "Please retrieve the detailed information for the 'Alpha' project to check its current status and leader."
+ },
+ {
+  "id": "backlog_get_project:ja_para",
+  "target": "backlog_get_project",
+  "kind": "ja_para",
+  "text": "今進めてる『Alpha』って案件、誰が責任者で今どんな状況か知りたいんだけど、そこの概要教えてもらえない？"
+ },
+ {
+  "id": "backlog_list_issues:ja",
+  "target": "backlog_list_issues",
+  "kind": "ja",
+  "text": "『モバイルアプリ刷新』プロジェクトで現在起票されている課題の一覧をすべて取得してください。"
+ },
+ {
+  "id": "backlog_list_issues:en",
+  "target": "backlog_list_issues",
+  "kind": "en",
+  "text": "Please retrieve the complete list of issues currently registered in the 'Mobile App Refresh' project."
+ },
+ {
+  "id": "backlog_list_issues:ja_para",
+  "target": "backlog_list_issues",
+  "kind": "ja_para",
+  "text": "スマホアプリの改修プロジェクトで、今どんなタスクが立ってるか全貌を確認したいです。"
+ },
+ {
+  "id": "slack_add_reaction:ja",
+  "target": "slack_add_reaction",
+  "kind": "ja",
+  "text": "#generalの田中さんの報告メッセージに、承認の意を示すため「thumbsup」のリアクションを付けてください。"
+ },
+ {
+  "id": "slack_add_reaction:en",
+  "target": "slack_add_reaction",
+  "kind": "en",
+  "text": "Please add a 'thumbsup' reaction to Tanaka's report message in the #general channel to indicate approval."
+ },
+ {
+  "id": "slack_add_reaction:ja_para",
+  "target": "slack_add_reaction",
+  "kind": "ja_para",
+  "text": "一般チャンネルにある田中さんのあの投稿、いいね的な感じでスタンプ押しておいて。"
+ },
+ {
+  "id": "slack_create_channel:ja",
+  "target": "slack_create_channel",
+  "kind": "ja",
+  "text": "新規プロジェクト『Alpha』用のSlackチャンネルを作成してください。"
+ },
+ {
+  "id": "slack_create_channel:en",
+  "target": "slack_create_channel",
+  "kind": "en",
+  "text": "Please create a new Slack channel for the 'Alpha' project."
+ },
+ {
+  "id": "slack_create_channel:ja_para",
+  "target": "slack_create_channel",
+  "kind": "ja_para",
+  "text": "アルファ案件のメンバーだけで話せる新しい場所を設けてもらえますか？"
+ },
+ {
+  "id": "slack_post_message:ja",
+  "target": "slack_post_message",
+  "kind": "ja",
+  "text": "#general チャンネルに、明日のミーティングが15時からであることを投稿してください。"
+ },
+ {
+  "id": "slack_post_message:en",
+  "target": "slack_post_message",
+  "kind": "en",
+  "text": "Please post a message in the #general channel stating that tomorrow's meeting is at 3 PM."
+ },
+ {
+  "id": "slack_post_message:ja_para",
+  "target": "slack_post_message",
+  "kind": "ja_para",
+  "text": "みんなが見てるメインの部屋に、あすの打ち合わせは午後3時スタートだって伝えといて。"
+ },
+ {
+  "id": "teams_send_message:ja",
+  "target": "teams_send_message",
+  "kind": "ja",
+  "text": "プロジェクトAlphaのチャットに、進捗報告のテキストメッセージを送ってください。"
+ },
+ {
+  "id": "teams_send_message:en",
+  "target": "teams_send_message",
+  "kind": "en",
+  "text": "Please send a text message with the progress report to the Project Alpha chat."
+ },
+ {
+  "id": "teams_send_message:ja_para",
+  "target": "teams_send_message",
+  "kind": "ja_para",
+  "text": "アルファチームの会話窓に、今の状況をちょこっと書き込んでおいて。"
+ },
+ {
+  "id": "teams_save_meeting_draft:ja",
+  "target": "teams_save_meeting_draft",
+  "kind": "ja",
+  "text": "来週月曜日のプロジェクト進捗会議の設定をTeamsで下書き保存しておいてください。招待は後で確認してから送るので、今は送信しないでください。"
+ },
+ {
+  "id": "teams_save_meeting_draft:en",
+  "target": "teams_save_meeting_draft",
+  "kind": "en",
+  "text": "Please save the draft for next Monday's project progress meeting in Teams. Do not send the invitation yet, as I need to review it first."
+ },
+ {
+  "id": "teams_save_meeting_draft:ja_para",
+  "target": "teams_save_meeting_draft",
+  "kind": "ja_para",
+  "text": "来週の月曜にある進捗ミーティングの件、Teamsの方で一旦内容だけ入力して保留にしておいて。誰かを呼ぶのはまだだから、通知は飛ばさないでね。"
+ },
+ {
+  "id": "teams_add_member:ja",
+  "target": "teams_add_member",
+  "kind": "ja",
+  "text": "田中さんを「プロジェクトA」チームにメンバーとして追加してください。"
+ },
+ {
+  "id": "teams_add_member:en",
+  "target": "teams_add_member",
+  "kind": "en",
+  "text": "Please add Tanaka-san to the 'Project A' team as a member."
+ },
+ {
+  "id": "teams_add_member:ja_para",
+  "target": "teams_add_member",
+  "kind": "ja_para",
+  "text": "田中さんがプロジェクトAのグループに入れるように手配して。"
+ },
+ {
+  "id": "chatwork_list_rooms:ja",
+  "target": "chatwork_list_rooms",
+  "kind": "ja",
+  "text": "Chatworkで自分が参加しているすべてのチャットルームの一覧を表示してください。"
+ },
+ {
+  "id": "chatwork_list_rooms:en",
+  "target": "chatwork_list_rooms",
+  "kind": "en",
+  "text": "Please display a list of all Chatwork chat rooms I am participating in."
+ },
+ {
+  "id": "chatwork_list_rooms:ja_para",
+  "target": "chatwork_list_rooms",
+  "kind": "ja_para",
+  "text": "今、どのグループトークに入ってるか全部見せて。"
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "kind": "ja",
+  "text": "Chatworkで共有されたファイルID「12345」のダウンロードリンクとメタデータを取得してください。"
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "kind": "en",
+  "text": "Please retrieve the download link and metadata for the file with ID \"12345\" shared on Chatwork."
+ },
+ {
+  "id": "chatwork_get_file:ja_para",
+  "target": "chatwork_get_file",
+  "kind": "ja_para",
+  "text": "あの番号の添付書類、どこから落とせるか情報教えて。"
+ },
+ {
+  "id": "chatwork_create_room:ja",
+  "target": "chatwork_create_room",
+  "kind": "ja",
+  "text": "新規プロジェクト『Alpha』の開始に伴い、関係者全員で議論するための新しいチャットルームを作成してください。"
+ },
+ {
+  "id": "chatwork_create_room:en",
+  "target": "chatwork_create_room",
+  "kind": "en",
+  "text": "Please create a new chat room for all stakeholders to discuss the launch of the new project 'Alpha'."
+ },
+ {
+  "id": "chatwork_create_room:ja_para",
+  "target": "chatwork_create_room",
+  "kind": "ja_para",
+  "text": "アルファ案件のキックオフ用に、みんなが集まって話せる場所をChatwork上に新しく設けてもらえますか？"
+ },
+ {
+  "id": "lineworks_create_post:ja",
+  "target": "lineworks_create_post",
+  "kind": "ja",
+  "text": "『全社共通』掲示板に、来週のシステムメンテナンスに関する重要なお知らせを投稿してください。"
+ },
+ {
+  "id": "lineworks_create_post:en",
+  "target": "lineworks_create_post",
+  "kind": "en",
+  "text": "Please post an important announcement regarding next week's system maintenance on the 'Company-wide' board."
+ },
+ {
+  "id": "lineworks_create_post:ja_para",
+  "target": "lineworks_create_post",
+  "kind": "ja_para",
+  "text": "みんなが見れるあの共有スペースに、来週のお休み連絡みたいな大事な話を載っけておいて。"
+ },
+ {
+  "id": "lineworks_send_read_receipt:ja",
+  "target": "lineworks_send_read_receipt",
+  "kind": "ja",
+  "text": "先ほど送られてきたプロジェクト進捗のメッセージ、確認したので既読にしておいてください。"
+ },
+ {
+  "id": "lineworks_send_read_receipt:en",
+  "target": "lineworks_send_read_receipt",
+  "kind": "en",
+  "text": "Please mark the project progress message sent earlier as read, as I have checked it."
+ },
+ {
+  "id": "lineworks_send_read_receipt:ja_para",
+  "target": "lineworks_send_read_receipt",
+  "kind": "ja_para",
+  "text": "さっき来た連絡、目を通したから未読のままにならないようにしといて。"
+ },
+ {
+  "id": "lineworks_list_drives:ja",
+  "target": "lineworks_list_drives",
+  "kind": "ja",
+  "text": "プロジェクトの資料が保存されているクラウド上のフォルダ一覧を確認したいです。"
+ },
+ {
+  "id": "lineworks_list_drives:en",
+  "target": "lineworks_list_drives",
+  "kind": "en",
+  "text": "I want to check the list of cloud folders where project materials are stored."
+ },
+ {
+  "id": "lineworks_list_drives:ja_para",
+  "target": "lineworks_list_drives",
+  "kind": "ja_para",
+  "text": "今アクセスできるオンラインの保管場所って、どこどこにあるか教えて。"
+ },
+ {
+  "id": "gmail_search_messages:ja",
+  "target": "gmail_search_messages",
+  "kind": "ja",
+  "text": "先週、山田さんから送られてきた「プロジェクトXの予算案」という件名のメールを探してください。"
+ },
+ {
+  "id": "gmail_search_messages:en",
+  "target": "gmail_search_messages",
+  "kind": "en",
+  "text": "Please find the email with the subject \"Project X Budget Proposal\" sent by Mr. Yamada last week."
+ },
+ {
+  "id": "gmail_search_messages:ja_para",
+  "target": "gmail_search_messages",
+  "kind": "ja_para",
+  "text": "こないだ山田さんがくれた、あの予算の話が書いてあるメール、どこいったっけ？見つけてほしいんだ。"
+ },
+ {
+  "id": "gmail_star_message:ja",
+  "target": "gmail_star_message",
+  "kind": "ja",
+  "text": "先ほど届いた「Q3予算案」のメールを見落としそうなので、Gmailでスターを付けて目立つようにしてください。"
+ },
+ {
+  "id": "gmail_star_message:en",
+  "target": "gmail_star_message",
+  "kind": "en",
+  "text": "Please star the email titled 'Q3 Budget Proposal' that just arrived in Gmail so I don't miss it."
+ },
+ {
+  "id": "gmail_star_message:ja_para",
+  "target": "gmail_star_message",
+  "kind": "ja_para",
+  "text": "さっき来た予算の話、後で絶対に見返すから、Gmailの方でパッと分かるように印をつけておいて。"
+ },
+ {
+  "id": "gmail_delete_label:ja",
+  "target": "gmail_delete_label",
+  "kind": "ja",
+  "text": "もう使わなくなった「2023年プロジェクト」ラベルをシステムから完全に削除してください。"
+ },
+ {
+  "id": "gmail_delete_label:en",
+  "target": "gmail_delete_label",
+  "kind": "en",
+  "text": "Please completely delete the '2023 Project' label from the system as it is no longer in use."
+ },
+ {
+  "id": "gmail_delete_label:ja_para",
+  "target": "gmail_delete_label",
+  "kind": "ja_para",
+  "text": "古くなった「2023年プロジェクト」の分類タグ、もう要らないので消しちゃって。"
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "kind": "ja",
+  "text": "先週、山田部長から送られてきた「Q3予算案」に関するメールを探してください。"
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "kind": "en",
+  "text": "Please find the email regarding the \"Q3 Budget Plan\" sent by Director Yamada last week."
+ },
+ {
+  "id": "outlook_search_emails:ja_para",
+  "target": "outlook_search_emails",
+  "kind": "ja_para",
+  "text": "こないだ山田さんが送ってきた、来期の予算についての件、どこに行ったっけ？ちょっと見せて。"
+ },
+ {
+  "id": "outlook_reply_to_email:ja",
+  "target": "outlook_reply_to_email",
+  "kind": "ja",
+  "text": "先ほど届いた山田様からの見積もり依頼メールに対して、承認済みの旨を記載して返信してください。"
+ },
+ {
+  "id": "outlook_reply_to_email:en",
+  "target": "outlook_reply_to_email",
+  "kind": "en",
+  "text": "Please reply to the estimation request email from Mr. Yamada that arrived earlier, stating that it has been approved."
+ },
+ {
+  "id": "outlook_reply_to_email:ja_para",
+  "target": "outlook_reply_to_email",
+  "kind": "ja_para",
+  "text": "さっき来た山田さんの見積もりの件、OKって返事を出しておいて。"
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "kind": "ja",
+  "text": "来週の水曜日に設定されている「プロジェクト定例会」の予定を、キャンセルして削除してください。"
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "kind": "en",
+  "text": "Please cancel and delete the 'Project Regular Meeting' scheduled for next Wednesday."
+ },
+ {
+  "id": "outlook_delete_event:ja_para",
+  "target": "outlook_delete_event",
+  "kind": "ja_para",
+  "text": "来水のお定例、もうやらないから消しといて。"
+ },
+ {
+  "id": "gcal_get_event:ja",
+  "target": "gcal_get_event",
+  "kind": "ja",
+  "text": "イベントID「evt_12345」の予定の詳細な内容を確認してください。"
+ },
+ {
+  "id": "gcal_get_event:en",
+  "target": "gcal_get_event",
+  "kind": "en",
+  "text": "Please check the detailed information for the event with ID \"evt_12345\"."
+ },
+ {
+  "id": "gcal_get_event:ja_para",
+  "target": "gcal_get_event",
+  "kind": "ja_para",
+  "text": "IDが evt_12345 の件、具体的にいつどこで何をするのか中身を教えて。"
+ },
+ {
+  "id": "gcal_find_free_busy:ja",
+  "target": "gcal_find_free_busy",
+  "kind": "ja",
+  "text": "来週の水曜日、田中さんと山本さんの両方が空いている1時間の枠を探してください。"
+ },
+ {
+  "id": "gcal_find_free_busy:en",
+  "target": "gcal_find_free_busy",
+  "kind": "en",
+  "text": "Please find a one-hour slot next Wednesday where both Tanaka-san and Yamamoto-san are available."
+ },
+ {
+  "id": "gcal_find_free_busy:ja_para",
+  "target": "gcal_find_free_busy",
+  "kind": "ja_para",
+  "text": "来週の水曜、田中さんと山本さんがどっちも予定入ってなくて話せる時間、1時間くらいあるかな？"
+ },
+ {
+  "id": "gcal_set_event_color:ja",
+  "target": "gcal_set_event_color",
+  "kind": "ja",
+  "text": "来週月曜の定例会議イベントの色を、優先度が高いことを示す赤に変更してください。"
+ },
+ {
+  "id": "gcal_set_event_color:en",
+  "target": "gcal_set_event_color",
+  "kind": "en",
+  "text": "Please change the color of next Monday's regular meeting event to red to indicate high priority."
+ },
+ {
+  "id": "gcal_set_event_color:ja_para",
+  "target": "gcal_set_event_color",
+  "kind": "ja_para",
+  "text": "来週の月曜にある定例の予定、目立つように真っ赤な見た目にしておいて。"
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "kind": "ja",
+  "text": "先ほど作成した「Q3売上報告書.xlsx」をGoogleドライブにアップロードしてください。"
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "kind": "en",
+  "text": "Please upload the 'Q3 Sales Report.xlsx' file I just created to Google Drive."
+ },
+ {
+  "id": "gdrive_upload_file:ja_para",
+  "target": "gdrive_upload_file",
+  "kind": "ja_para",
+  "text": "手元にできたエクセルの決算資料、クラウドの方へ送っておいて。"
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "kind": "ja",
+  "text": "先週更新した企画書の、過去の編集履歴をすべて確認したいです。"
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "kind": "en",
+  "text": "I want to check all the past edit history of the proposal document updated last week."
+ },
+ {
+  "id": "gdrive_list_revisions:ja_para",
+  "target": "gdrive_list_revisions",
+  "kind": "ja_para",
+  "text": "あの資料、前に誰かが直した時の状態とか、いつどう変わったかの記録って見れる？"
+ },
+ {
+  "id": "gdrive_download_file:ja",
+  "target": "gdrive_download_file",
+  "kind": "ja",
+  "text": "Googleドライブにある「2024年度予算案.xlsx」の中身を読み取って、数値データを抽出してください。"
+ },
+ {
+  "id": "gdrive_download_file:en",
+  "target": "gdrive_download_file",
+  "kind": "en",
+  "text": "Please read the contents of '2024_Budget_Plan.xlsx' on Google Drive and extract the numerical data."
+ },
+ {
+  "id": "gdrive_download_file:ja_para",
+  "target": "gdrive_download_file",
+  "kind": "ja_para",
+  "text": "ドライブに置いてある今年の予算ファイル、開いて中にある数字を拾ってもらえない？"
+ },
+ {
+  "id": "box_unlock_file:ja",
+  "target": "box_unlock_file",
+  "kind": "ja",
+  "text": "Boxにある「2024年度予算案.xlsx」のロックを解除して、編集できるようにしてください。"
+ },
+ {
+  "id": "box_unlock_file:en",
+  "target": "box_unlock_file",
+  "kind": "en",
+  "text": "Please unlock the file '2024_Budget_Plan.xlsx' on Box so it can be edited again."
+ },
+ {
+  "id": "box_unlock_file:ja_para",
+  "target": "box_unlock_file",
+  "kind": "ja_para",
+  "text": "Boxの「2024年度予算案.xlsx」が今誰かが開いてるせいで触れないみたいなんだけど、その状態を解消してもう一度書き込めるようにしてもらえない？"
+ },
+ {
+  "id": "box_copy_item:ja",
+  "target": "box_copy_item",
+  "kind": "ja",
+  "text": "Boxにある「2024年度予算案.xlsx」を「アーカイブ」フォルダにもう一つ複製して残しておいてください。元のファイルはそのままにしてください。"
+ },
+ {
+  "id": "box_copy_item:en",
+  "target": "box_copy_item",
+  "kind": "en",
+  "text": "Please make a duplicate of '2024_Budget_Plan.xlsx' in the 'Archive' folder on Box, keeping the original file intact."
+ },
+ {
+  "id": "box_copy_item:ja_para",
+  "target": "box_copy_item",
+  "kind": "ja_para",
+  "text": "今使ってる予算ファイル、消さないで同じものを別フォルダにもう一個作っておいて。"
+ },
+ {
+  "id": "box_lock_file:ja",
+  "target": "box_lock_file",
+  "kind": "ja",
+  "text": "Q3の決算報告書のドラフトを、誤って上書きされないように一時的に編集不可の状態にしてください。"
+ },
+ {
+  "id": "box_lock_file:en",
+  "target": "box_lock_file",
+  "kind": "en",
+  "text": "Please temporarily make the Q3 financial report draft uneditable to prevent accidental overwrites."
+ },
+ {
+  "id": "box_lock_file:ja_para",
+  "target": "box_lock_file",
+  "kind": "ja_para",
+  "text": "今月中は誰もこのファイルに手出しできないように、栓をしておいてくれますか？"
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "kind": "ja",
+  "text": "プロジェクトAの資料が入っているフォルダを、社外のパートナー企業と共有して編集権限を与えてください。"
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "kind": "en",
+  "text": "Please share the folder containing Project A materials with our external partner company and grant them edit permissions."
+ },
+ {
+  "id": "dropbox_share_folder:ja_para",
+  "target": "dropbox_share_folder",
+  "kind": "ja_para",
+  "text": "取引先の人たちにも、あの案件のデータ置き場を見られるようにして、書き込みもできるようにしといて。"
+ },
+ {
+  "id": "dropbox_delete_item:ja",
+  "target": "dropbox_delete_item",
+  "kind": "ja",
+  "text": "Dropboxにある「2023年度_決算資料_v1.pdf」というファイルを削除してください。"
+ },
+ {
+  "id": "dropbox_delete_item:en",
+  "target": "dropbox_delete_item",
+  "kind": "en",
+  "text": "Please delete the file named '2023_Financial_Statement_v1.pdf' from Dropbox."
+ },
+ {
+  "id": "dropbox_delete_item:ja_para",
+  "target": "dropbox_delete_item",
+  "kind": "ja_para",
+  "text": "もう使わないから、Dropboxに入ってるあの古い決算書のファイル、消しちゃって。"
+ },
+ {
+  "id": "dropbox_download_file:ja",
+  "target": "dropbox_download_file",
+  "kind": "ja",
+  "text": "Dropboxにある『2024年度予算案.xlsx』を、ローカルのPCに保存してください。"
+ },
+ {
+  "id": "dropbox_download_file:en",
+  "target": "dropbox_download_file",
+  "kind": "en",
+  "text": "Please download the file '2024_Budget_Plan.xlsx' from Dropbox to my local machine."
+ },
+ {
+  "id": "dropbox_download_file:ja_para",
+  "target": "dropbox_download_file",
+  "kind": "ja_para",
+  "text": "クラウドにある見積もりファイルを手元のハードディスクに落としておいて。オフラインで見たいんだ。"
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "kind": "ja",
+  "text": "Notionページの「2023年予算案」セクションにある古いドラフトのブロックを削除してください。"
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "kind": "en",
+  "text": "Please delete the old draft block in the '2023 Budget Plan' section of the Notion page."
+ },
+ {
+  "id": "notion_delete_block:ja_para",
+  "target": "notion_delete_block",
+  "kind": "ja_para",
+  "text": "Notionにある『2023年予算案』のところ、もう使わない下書きの部分が消しちゃって。"
+ },
+ {
+  "id": "notion_move_block_children:ja",
+  "target": "notion_move_block_children",
+  "kind": "ja",
+  "text": "Notionの「Q3目標」セクションにある箇条書きリストを、「完了済みタスク」の見出しの下に移動させてください。"
+ },
+ {
+  "id": "notion_move_block_children:en",
+  "target": "notion_move_block_children",
+  "kind": "en",
+  "text": "Please move the bullet list from the 'Q3 Goals' section to under the 'Completed Tasks' heading in Notion."
+ },
+ {
+  "id": "notion_move_block_children:ja_para",
+  "target": "notion_move_block_children",
+  "kind": "ja_para",
+  "text": "Notionで、今書いてあるチェックリストのところを、下の「終わった仕事」ってとこに引っ越してほしいんだ。場所を変えたいだけだから、中身はそのままでOK。"
+ },
+ {
+  "id": "notion_update_page_properties:ja",
+  "target": "notion_update_page_properties",
+  "kind": "ja",
+  "text": "Notionの「Q3営業進捗」データベースにある「案件A」のステータスを「完了」に変更してください。"
+ },
+ {
+  "id": "notion_update_page_properties:en",
+  "target": "notion_update_page_properties",
+  "kind": "en",
+  "text": "Please update the status of 'Deal A' in the 'Q3 Sales Progress' database on Notion to 'Completed'."
+ },
+ {
+  "id": "notion_update_page_properties:ja_para",
+  "target": "notion_update_page_properties",
+  "kind": "ja_para",
+  "text": "Notionで管理してるQ3の営業リストなんだけど、案件Aのところ、もう終わったから「完了」って状態に変えといて。"
+ },
+ {
+  "id": "asana_get_task:ja",
+  "target": "asana_get_task",
+  "kind": "ja",
+  "text": "AsanaのタスクID「123456789」について、担当者やカスタムフィールドを含むすべての詳細情報を確認したいです。"
+ },
+ {
+  "id": "asana_get_task:en",
+  "target": "asana_get_task",
+  "kind": "en",
+  "text": "I need to check all the detailed information, including assignees and custom fields, for Asana task ID '123456789'."
+ },
+ {
+  "id": "asana_get_task:ja_para",
+  "target": "asana_get_task",
+  "kind": "ja_para",
+  "text": "あの番号の案件、誰がやっててどんな追加情報が入ってるか、中身を全部見せてくれない？"
+ },
+ {
+  "id": "asana_search_projects:ja",
+  "target": "asana_search_projects",
+  "kind": "ja",
+  "text": "Asanaで「Q3マーケティング」という名前のプロジェクトを探してください。"
+ },
+ {
+  "id": "asana_search_projects:en",
+  "target": "asana_search_projects",
+  "kind": "en",
+  "text": "Please search for the project named 'Q3 Marketing' in Asana."
+ },
+ {
+  "id": "asana_search_projects:ja_para",
+  "target": "asana_search_projects",
+  "kind": "ja_para",
+  "text": "今やってる四半期の宣伝用の仕事部屋、どれだっけ？名前がそれっぽい奴を引っ張り出して。"
+ },
+ {
+  "id": "asana_list_tags:ja",
+  "target": "asana_list_tags",
+  "kind": "ja",
+  "text": "Asanaのワークスペース内で現在使用されているすべてのタグの一覧を取得してください。"
+ },
+ {
+  "id": "asana_list_tags:en",
+  "target": "asana_list_tags",
+  "kind": "en",
+  "text": "Please retrieve a list of all tags currently in use within the Asana workspace."
+ },
+ {
+  "id": "asana_list_tags:ja_para",
+  "target": "asana_list_tags",
+  "kind": "ja_para",
+  "text": "今、仕事場で使ってるラベルみたいな分類項目って、どんな種類があるか全部見せてくれない？"
+ },
+ {
+  "id": "trello_create_board:ja",
+  "target": "trello_create_board",
+  "kind": "ja",
+  "text": "来月から始まる『Q3マーケティングキャンペーン』用の新しいTrelloボードを作成してください。"
+ },
+ {
+  "id": "trello_create_board:en",
+  "target": "trello_create_board",
+  "kind": "en",
+  "text": "Please create a new Trello board for the 'Q3 Marketing Campaign' starting next month."
+ },
+ {
+  "id": "trello_create_board:ja_para",
+  "target": "trello_create_board",
+  "kind": "ja_para",
+  "text": "次の四半期のプロモーション活動を進めるための、専用の作業スペースをTrello上に用意してほしいです。"
+ },
+ {
+  "id": "trello_remove_member_from_card:ja",
+  "target": "trello_remove_member_from_card",
+  "kind": "ja",
+  "text": "Trelloの「Q3マーケティング計画」カードから、異動した田中さんのアカウントを外してください。"
+ },
+ {
+  "id": "trello_remove_member_from_card:en",
+  "target": "trello_remove_member_from_card",
+  "kind": "en",
+  "text": "Please remove Tanaka's account from the 'Q3 Marketing Plan' card on Trello as he has transferred departments."
+ },
+ {
+  "id": "trello_remove_member_from_card:ja_para",
+  "target": "trello_remove_member_from_card",
+  "kind": "ja_para",
+  "text": "あのマーケ用のタスク、もう田中さんは関わらないから名前を消しておいて。"
+ },
+ {
+  "id": "trello_get_board_details:ja",
+  "target": "trello_get_board_details",
+  "kind": "ja",
+  "text": "TrelloのボードID「board_123」の名前とURL、ラベル設定などの詳細情報を確認してください。"
+ },
+ {
+  "id": "trello_get_board_details:en",
+  "target": "trello_get_board_details",
+  "kind": "en",
+  "text": "Please retrieve the detailed information, including the name, URL, and label settings, for the Trello board with ID \"board_123\"."
+ },
+ {
+  "id": "trello_get_board_details:ja_para",
+  "target": "trello_get_board_details",
+  "kind": "ja_para",
+  "text": "あの「board_123」っていうプロジェクトのページ、どんな名前になっててどこにリンクしてるか、あと色分けの設定とかも全部教えて。"
+ },
+ {
+  "id": "linear_create_webhook:ja",
+  "target": "linear_create_webhook",
+  "kind": "ja",
+  "text": "Slackの#dev-alertsチャンネルにLinearの課題更新通知を飛ばせるように、Webhookの設定を追加してください。"
+ },
+ {
+  "id": "linear_create_webhook:en",
+  "target": "linear_create_webhook",
+  "kind": "en",
+  "text": "Please add a webhook configuration to send Linear issue update notifications to the #dev-alerts Slack channel."
+ },
+ {
+  "id": "linear_create_webhook:ja_para",
+  "target": "linear_create_webhook",
+  "kind": "ja_para",
+  "text": "Linearで何か動きがあったら、すぐにSlackの特定チャンネルへ自動で知らせる仕組みを作りたいんだ。外部連携用のアドレスを登録しておいて。"
+ },
+ {
+  "id": "linear_list_teams:ja",
+  "target": "linear_list_teams",
+  "kind": "ja",
+  "text": "新しいタスクを登録したいので、Linearで管理されているすべてのチームの一覧を教えてください。"
+ },
+ {
+  "id": "linear_list_teams:en",
+  "target": "linear_list_teams",
+  "kind": "en",
+  "text": "Please provide a list of all teams managed in Linear so I can register a new task."
+ },
+ {
+  "id": "linear_list_teams:ja_para",
+  "target": "linear_list_teams",
+  "kind": "ja_para",
+  "text": "今度作るチケット、どこのグループに振り分けるか決めたいんだけど、選択肢としてどんな部署名があるか全部見せてくれない？"
+ },
+ {
+  "id": "linear_create_comment:ja",
+  "target": "linear_create_comment",
+  "kind": "ja",
+  "text": "Linearの課題「API認証の不具合」に対して、再現手順の詳細をコメントとして追加してください。"
+ },
+ {
+  "id": "linear_create_comment:en",
+  "target": "linear_create_comment",
+  "kind": "en",
+  "text": "Please add a comment with the detailed reproduction steps to the Linear issue 'API Authentication Bug'."
+ },
+ {
+  "id": "linear_create_comment:ja_para",
+  "target": "linear_create_comment",
+  "kind": "ja_para",
+  "text": "あのAPIのエラー件なんだけど、どうやったら起きるかの手順を書き込んでおいて。"
+ },
+ {
+  "id": "salesforce_list_products:ja",
+  "target": "salesforce_list_products",
+  "kind": "ja",
+  "text": "現在カタログに登録されている全商品の一覧を取得してください。"
+ },
+ {
+  "id": "salesforce_list_products:en",
+  "target": "salesforce_list_products",
+  "kind": "en",
+  "text": "Please retrieve the list of all products currently registered in the catalog."
+ },
+ {
+  "id": "salesforce_list_products:ja_para",
+  "target": "salesforce_list_products",
+  "kind": "ja_para",
+  "text": "今、うちで扱ってるアイテムって全部でどんなのがあるか、リストで出してくれる？"
+ },
+ {
+  "id": "salesforce_send_email:ja",
+  "target": "salesforce_send_email",
+  "kind": "ja",
+  "text": "ABC株式会社への見積書送付と、その活動履歴をSalesforceに記録してください。"
+ },
+ {
+  "id": "salesforce_send_email:en",
+  "target": "salesforce_send_email",
+  "kind": "en",
+  "text": "Please send the quotation to ABC Corp and log this activity in Salesforce."
+ },
+ {
+  "id": "salesforce_send_email:ja_para",
+  "target": "salesforce_send_email",
+  "kind": "ja_para",
+  "text": "あそこの会社に見積もりのPDFを飛ばして、やった証拠をCRMの方にも残しといて。"
+ },
+ {
+  "id": "salesforce_close_lost_opportunity:ja",
+  "target": "salesforce_close_lost_opportunity",
+  "kind": "ja",
+  "text": "競合他社に価格で負けてしまったので、商談ID「OPP-2024-001」の案件を失注としてクローズしてください。"
+ },
+ {
+  "id": "salesforce_close_lost_opportunity:en",
+  "target": "salesforce_close_lost_opportunity",
+  "kind": "en",
+  "text": "Please close the opportunity with ID 'OPP-2024-001' as Lost, as we were beaten on price by a competitor."
+ },
+ {
+  "id": "salesforce_close_lost_opportunity:ja_para",
+  "target": "salesforce_close_lost_opportunity",
+  "kind": "ja_para",
+  "text": "あの件、相手側の条件の方が良くてうちじゃ無理っぽいから、システム上でダメだったって処理にしといて。"
+ },
+ {
+  "id": "hubspot_create_deal:ja",
+  "target": "hubspot_create_deal",
+  "kind": "ja",
+  "text": "ABC株式会社との新規商談について、見積金額500万円でHubSpotに取引レコードを作成してください。"
+ },
+ {
+  "id": "hubspot_create_deal:en",
+  "target": "hubspot_create_deal",
+  "kind": "en",
+  "text": "Please create a new deal record in HubSpot for the potential business with ABC Corp, with an estimated amount of 5 million yen."
+ },
+ {
+  "id": "hubspot_create_deal:ja_para",
+  "target": "hubspot_create_deal",
+  "kind": "ja_para",
+  "text": "ABC社との新しい仕事の話が進んだので、500万円の見積もりで営業用のリストに新しく項目を追加しておいて。"
+ },
+ {
+  "id": "hubspot_associate_objects:ja",
+  "target": "hubspot_associate_objects",
+  "kind": "ja",
+  "text": "新規登録したコンタクトID「1024」と、既存の企業ID「505」を紐付けて、この担当者が所属する会社として設定してください。"
+ },
+ {
+  "id": "hubspot_associate_objects:en",
+  "target": "hubspot_associate_objects",
+  "kind": "en",
+  "text": "Please associate the newly created contact ID '1024' with the existing company ID '505' to set them as the affiliated organization."
+ },
+ {
+  "id": "hubspot_associate_objects:ja_para",
+  "target": "hubspot_associate_objects",
+  "kind": "ja_para",
+  "text": "さっき作った連絡先と、前からある取引先のレコードをつなげておいて。この人がどこの会社の人か分かるようにしたいんだ。"
+ },
+ {
+  "id": "hubspot_create_draft_email:ja",
+  "target": "hubspot_create_draft_email",
+  "kind": "ja",
+  "text": "来月の新製品ローンチキャンペーン用のメール文案をHubSpotで作成してください。すぐに送らず、チームで確認できる下書き状態にしておいてください。"
+ },
+ {
+  "id": "hubspot_create_draft_email:en",
+  "target": "hubspot_create_draft_email",
+  "kind": "en",
+  "text": "Please create a draft email in HubSpot for next month's new product launch campaign. Do not send it immediately; keep it as a draft for team review."
+ },
+ {
+  "id": "hubspot_create_draft_email:ja_para",
+  "target": "hubspot_create_draft_email",
+  "kind": "ja_para",
+  "text": "次回のプロモーションで使うメールの内容を先に書いて保存だけしといて。いきなり飛ばしちゃダメだから、後でみんなでチェックできるように未完成のまま残しておいてね。"
+ },
+ {
+  "id": "kintone_get_app_settings:ja",
+  "target": "kintone_get_app_settings",
+  "kind": "ja",
+  "text": "kintoneの「営業案件管理」アプリが誰によって作成され、どのような説明文が設定されているか確認してください。"
+ },
+ {
+  "id": "kintone_get_app_settings:en",
+  "target": "kintone_get_app_settings",
+  "kind": "en",
+  "text": "Please check who created the 'Sales Case Management' app in kintone and what description is set for it."
+ },
+ {
+  "id": "kintone_get_app_settings:ja_para",
+  "target": "kintone_get_app_settings",
+  "kind": "ja_para",
+  "text": "うちのkintoneにある『営業案件管理』ってやつ、だれが作ったのかとか、どんな概要が書かれてるか知りたいんだ。"
+ },
+ {
+  "id": "kintone_get_comments:ja",
+  "target": "kintone_get_comments",
+  "kind": "ja",
+  "text": "kintoneのレコードID 1024に付いているコメント履歴をすべて確認したいです。"
+ },
+ {
+  "id": "kintone_get_comments:en",
+  "target": "kintone_get_comments",
+  "kind": "en",
+  "text": "I want to check all the comment history attached to record ID 1024 in kintone."
+ },
+ {
+  "id": "kintone_get_comments:ja_para",
+  "target": "kintone_get_comments",
+  "kind": "ja_para",
+  "text": "あの案件、番号1024のやつだけど、これまで誰がどんなやり取りをしてきたのか、会話の流れを全部見せて。"
+ },
+ {
+  "id": "kintone_upload_file:ja",
+  "target": "kintone_upload_file",
+  "kind": "ja",
+  "text": "見積書のPDFファイルをkintoneのストレージにアップロードして、添付に必要なキーを取得してください。"
+ },
+ {
+  "id": "kintone_upload_file:en",
+  "target": "kintone_upload_file",
+  "kind": "en",
+  "text": "Please upload the quotation PDF to kintone storage and retrieve the key required for attachment."
+ },
+ {
+  "id": "kintone_upload_file:ja_para",
+  "target": "kintone_upload_file",
+  "kind": "ja_para",
+  "text": "この見積書のデータをシステム側の保管場所に送って、後でレコードにくっつけられるように準備しておいて。"
+ },
+ {
+  "id": "garoon_send_message:ja",
+  "target": "garoon_send_message",
+  "kind": "ja",
+  "text": "プロジェクトXの進捗遅れについて、開発チームの田中さんにGaroonでメッセージを送ってください。"
+ },
+ {
+  "id": "garoon_send_message:en",
+  "target": "garoon_send_message",
+  "kind": "en",
+  "text": "Please send a message via Garoon to Mr. Tanaka from the development team regarding the delay in Project X's progress."
+ },
+ {
+  "id": "garoon_send_message:ja_para",
+  "target": "garoon_send_message",
+  "kind": "ja_para",
+  "text": "開発の田中さんへ、プロジェXの件でちょっと連絡を入れておいて。"
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "kind": "ja",
+  "text": "Garoonの受信トレイにある最新のメッセージ一覧を表示してください。"
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "kind": "en",
+  "text": "Please display the list of the latest messages in the Garoon inbox."
+ },
+ {
+  "id": "garoon_list_messages:ja_para",
+  "target": "garoon_list_messages",
+  "kind": "ja_para",
+  "text": "今、届いている連絡やメールのタイトルとか sender のリストをざっと見たいんだけど。"
+ },
+ {
+  "id": "garoon_update_schedule:ja",
+  "target": "garoon_update_schedule",
+  "kind": "ja",
+  "text": "来週月曜の10時からの定例会議ですが、参加者に田中さんを追加して、開始時間を30分遅らせてください。"
+ },
+ {
+  "id": "garoon_update_schedule:en",
+  "target": "garoon_update_schedule",
+  "kind": "en",
+  "text": "For the regular meeting next Monday at 10:00 AM, please add Mr. Tanaka as a participant and delay the start time by 30 minutes."
+ },
+ {
+  "id": "garoon_update_schedule:ja_para",
+  "target": "garoon_update_schedule",
+  "kind": "ja_para",
+  "text": "来週の月曜にやってる朝の会議なんだけど、ちょっと時間ずらして、あと田中さんも呼べるようにしておいて。"
+ },
+ {
+  "id": "freee_list_reports_pl:ja",
+  "target": "freee_list_reports_pl",
+  "kind": "ja",
+  "text": "今月の損益計算書を確認して、収益と費用のバランスを把握したいです。"
+ },
+ {
+  "id": "freee_list_reports_pl:en",
+  "target": "freee_list_reports_pl",
+  "kind": "en",
+  "text": "I want to check this month's profit and loss statement to understand the balance between revenue and expenses."
+ },
+ {
+  "id": "freee_list_reports_pl:ja_para",
+  "target": "freee_list_reports_pl",
+  "kind": "ja_para",
+  "text": "今月、いくら稼いでいくら使ったかの全体像をパッと見たいんだけど、どの画面で見れる？"
+ },
+ {
+  "id": "freee_get_invoice:ja",
+  "target": "freee_get_invoice",
+  "kind": "ja",
+  "text": "請求書番号 INV-2024-058 の明細と、現在の入金ステータスを確認してください。"
+ },
+ {
+  "id": "freee_get_invoice:en",
+  "target": "freee_get_invoice",
+  "kind": "en",
+  "text": "Please check the line items and current payment status for invoice number INV-2024-058."
+ },
+ {
+  "id": "freee_get_invoice:ja_para",
+  "target": "freee_get_invoice",
+  "kind": "ja_para",
+  "text": "先月送ったINV-2024-058ってやつ、具体的に何が含まれてて、もうお金は振り込まれてる感じ？"
+ },
+ {
+  "id": "freee_list_expense_applications:ja",
+  "target": "freee_list_expense_applications",
+  "kind": "ja",
+  "text": "先月提出した出張費の経費申請が、現在どのような承認ステータスになっているか一覧で確認したいです。"
+ },
+ {
+  "id": "freee_list_expense_applications:en",
+  "target": "freee_list_expense_applications",
+  "kind": "en",
+  "text": "I would like to check the current approval status of the business trip expense applications submitted last month in a list format."
+ },
+ {
+  "id": "freee_list_expense_applications:ja_para",
+  "target": "freee_list_expense_applications",
+  "kind": "ja_para",
+  "text": "こないだ出した旅費の請求、今どこまで話が進んでるのかまとめて見たいんだけど。"
+ },
+ {
+  "id": "moneyforward_get_balance_sheet:ja",
+  "target": "moneyforward_get_balance_sheet",
+  "kind": "ja",
+  "text": "株式会社Aの2023年12月期期末における資産と負債の状況を確認したいので、貸借対照表を取得してください。"
+ },
+ {
+  "id": "moneyforward_get_balance_sheet:en",
+  "target": "moneyforward_get_balance_sheet",
+  "kind": "en",
+  "text": "Please retrieve the balance sheet for Company A as of the end of the fiscal year December 2023 to check their assets and liabilities."
+ },
+ {
+  "id": "moneyforward_get_balance_sheet:ja_para",
+  "target": "moneyforward_get_balance_sheet",
+  "kind": "ja_para",
+  "text": "あのさ、会社Aが去年の終わり時点でどれくらい財産を持ってて、借金がいくらあるのか、その瞬間の財務状態が分かる資料を出してくれない？"
+ },
+ {
+  "id": "moneyforward_create_invoice_draft:ja",
+  "target": "moneyforward_create_invoice_draft",
+  "kind": "ja",
+  "text": "A社への5月分のサービス利用料として、金額10万円で請求書の下書きを作成してください。すぐに送らずに内容を確認したいです。"
+ },
+ {
+  "id": "moneyforward_create_invoice_draft:en",
+  "target": "moneyforward_create_invoice_draft",
+  "kind": "en",
+  "text": "Please create a draft invoice for Company A for May's service fees amounting to 100,000 JPY. I want to review the content before sending it."
+ },
+ {
+  "id": "moneyforward_create_invoice_draft:ja_para",
+  "target": "moneyforward_create_invoice_draft",
+  "kind": "ja_para",
+  "text": "来月出す予定のA社宛ての請求書類、とりあえず10万円で作っておいて。まだ送りたくないから、下書き状態のまま保存しといて。"
+ },
+ {
+  "id": "moneyforward_reject_expense_claim:ja",
+  "target": "moneyforward_reject_expense_claim",
+  "kind": "ja",
+  "text": "経費申請ID #12345の内容に不備があるため、この申請を却下して修正を促してください。"
+ },
+ {
+  "id": "moneyforward_reject_expense_claim:en",
+  "target": "moneyforward_reject_expense_claim",
+  "kind": "en",
+  "text": "Please reject expense claim #12345 due to discrepancies and prompt the applicant for corrections."
+ },
+ {
+  "id": "moneyforward_reject_expense_claim:ja_para",
+  "target": "moneyforward_reject_expense_claim",
+  "kind": "ja_para",
+  "text": "番号12345の経費精算、内容が間違ってるから一度戻しておいて。本人に直し方を伝えるように頼むわ。"
+ },
+ {
+  "id": "rakurakuseisan_add_items_to_report:ja",
+  "target": "rakurakuseisan_add_items_to_report",
+  "kind": "ja",
+  "text": "先週作成した出張費の報告書に、昨日発生したタクシー代5,000円を追加してください。"
+ },
+ {
+  "id": "rakurakuseisan_add_items_to_report:en",
+  "target": "rakurakuseisan_add_items_to_report",
+  "kind": "en",
+  "text": "Please add yesterday's taxi fare of 5,000 yen to the business trip expense report created last week."
+ },
+ {
+  "id": "rakurakuseisan_add_items_to_report:ja_para",
+  "target": "rakurakuseisan_add_items_to_report",
+  "kind": "ja_para",
+  "text": "前に作った旅費精算の書類に、きのう使ったタクシ－代の分を付け足しておいて。"
+ },
+ {
+  "id": "rakurakuseisan_get_credit_card_transactions:ja",
+  "target": "rakurakuseisan_get_credit_card_transactions",
+  "kind": "ja",
+  "text": "法人カードの利用履歴で、まだシステムに取り込まれていない未処理の取引一覧を確認したいです。"
+ },
+ {
+  "id": "rakurakuseisan_get_credit_card_transactions:en",
+  "target": "rakurakuseisan_get_credit_card_transactions",
+  "kind": "en",
+  "text": "I want to check the list of unprocessed transactions from our corporate card that have not yet been imported into the system."
+ },
+ {
+  "id": "rakurakuseisan_get_credit_card_transactions:ja_para",
+  "target": "rakurakuseisan_get_credit_card_transactions",
+  "kind": "ja_para",
+  "text": "会社のカードで使った分の中で、まだ経費として登録されていないものって、どこで見れますか？"
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja",
+  "target": "rakurakuseisan_get_expense_detail",
+  "kind": "ja",
+  "text": "経費明細ID「EXP-2024-089」の領収書の画像URLと、誰がいつ承認したかの履歴を確認したいです。"
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en",
+  "target": "rakurakuseisan_get_expense_detail",
+  "kind": "en",
+  "text": "I need to check the receipt image URL and the approval history (who approved it and when) for expense detail ID 'EXP-2024-089'."
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja_para",
+  "target": "rakurakuseisan_get_expense_detail",
+  "kind": "ja_para",
+  "text": "先ほど出した交通費の件なんだけど、添付してるレシートのリンク先と、上司のOKが出た記録が見たいんだ。IDはEXP-2024-089ね。"
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja",
+  "target": "smarthr_create_employee_draft",
+  "kind": "ja",
+  "text": "来月1日付で入社予定の田中太郎さんの基本情報をシステムに入力し、下書きとして保存してください。"
+ },
+ {
+  "id": "smarthr_create_employee_draft:en",
+  "target": "smarthr_create_employee_draft",
+  "kind": "en",
+  "text": "Please input the basic information for Taro Tanaka, who is scheduled to join on the 1st of next month, and save it as a draft."
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja_para",
+  "target": "smarthr_create_employee_draft",
+  "kind": "ja_para",
+  "text": "新人の田中くんのことなんだけど、まだ正式な手続き前だから、とりあえず今の段階で名前とか住所をポチポチ入れて、中途半端な状態で一旦止めておいてくれる？"
+ },
+ {
+  "id": "smarthr_approve_leave_request:ja",
+  "target": "smarthr_approve_leave_request",
+  "kind": "ja",
+  "text": "田中さんの5月20日の有給休暇申請を承認してください。"
+ },
+ {
+  "id": "smarthr_approve_leave_request:en",
+  "target": "smarthr_approve_leave_request",
+  "kind": "en",
+  "text": "Please approve Tanaka's paid leave request for May 20th."
+ },
+ {
+  "id": "smarthr_approve_leave_request:ja_para",
+  "target": "smarthr_approve_leave_request",
+  "kind": "ja_para",
+  "text": "田中さんが休みたいって言ってる件、OK出してあげて。"
+ },
+ {
+  "id": "smarthr_assign_employee_to_department:ja",
+  "target": "smarthr_assign_employee_to_department",
+  "kind": "ja",
+  "text": "田中健太を営業部へ異動させてください。"
+ },
+ {
+  "id": "smarthr_assign_employee_to_department:en",
+  "target": "smarthr_assign_employee_to_department",
+  "kind": "en",
+  "text": "Please transfer Kenta Tanaka to the Sales Department."
+ },
+ {
+  "id": "smarthr_assign_employee_to_department:ja_para",
+  "target": "smarthr_assign_employee_to_department",
+  "kind": "ja_para",
+  "text": "田中くん、今月から営業の方に行ってもらうことになったんで、そっちのチームに所属変更しといて。"
+ },
+ {
+  "id": "jobcan_create_leave_request:ja",
+  "target": "jobcan_create_leave_request",
+  "kind": "ja",
+  "text": "来週の月曜日から3日間、有給休暇を取得したいので、Jobcanで下書きを作成してください。"
+ },
+ {
+  "id": "jobcan_create_leave_request:en",
+  "target": "jobcan_create_leave_request",
+  "kind": "en",
+  "text": "Please create a draft in Jobcan for taking three days of paid leave starting next Monday."
+ },
+ {
+  "id": "jobcan_create_leave_request:ja_para",
+  "target": "jobcan_create_leave_request",
+  "kind": "ja_para",
+  "text": "次の月曜から3日ほど休む予定なんだけど、まだ上司には送らずに、システムの方にメモだけ残しておいてくれる？"
+ },
+ {
+  "id": "jobcan_list_holidays:ja",
+  "target": "jobcan_list_holidays",
+  "kind": "ja",
+  "text": "来月の給与計算のために、会社カレンダーに登録されている祝日と休業日の一覧を取得してください。"
+ },
+ {
+  "id": "jobcan_list_holidays:en",
+  "target": "jobcan_list_holidays",
+  "kind": "en",
+  "text": "Please retrieve the list of holidays and company closures registered in the calendar for next month's payroll calculation."
+ },
+ {
+  "id": "jobcan_list_holidays:ja_para",
+  "target": "jobcan_list_holidays",
+  "kind": "ja_para",
+  "text": "次のお給料を出す時に必要だから、いつが休みで出勤しない日なのか、その予定表を全部見せて。"
+ },
+ {
+  "id": "jobcan_clock_out:ja",
+  "target": "jobcan_clock_out",
+  "kind": "ja",
+  "text": "田中太郎の今日の退勤時刻を18:30で登録してください。"
+ },
+ {
+  "id": "jobcan_clock_out:en",
+  "target": "jobcan_clock_out",
+  "kind": "en",
+  "text": "Please register Taro Tanaka's clock-out time for today as 18:30."
+ },
+ {
+  "id": "jobcan_clock_out:ja_para",
+  "target": "jobcan_clock_out",
+  "kind": "ja_para",
+  "text": "田中さん、本日のお仕事終わり時間を18時半としてシステムに反映しておいて。"
+ },
+ {
+  "id": "cloudsign_remind_signer:ja",
+  "target": "cloudsign_remind_signer",
+  "kind": "ja",
+  "text": "ABC株式会社との契約書について、まだ署名が完了していないようなので、CloudSignから催促のメールを送ってください。"
+ },
+ {
+  "id": "cloudsign_remind_signer:en",
+  "target": "cloudsign_remind_signer",
+  "kind": "en",
+  "text": "Please send a reminder email via CloudSign to the counterparty who hasn't signed the contract with ABC Corporation yet."
+ },
+ {
+  "id": "cloudsign_remind_signer:ja_para",
+  "target": "cloudsign_remind_signer",
+  "kind": "ja_para",
+  "text": "あっちの会社、まだサインしてないみたいだから、システムの方でプッシュ通知みたいな感じで連絡入れといて。"
+ },
+ {
+  "id": "cloudsign_remove_signer:ja",
+  "target": "cloudsign_remove_signer",
+  "kind": "ja",
+  "text": "CloudSignで送付前の契約書にある、誤って追加してしまった取引先の担当者を削除してください。"
+ },
+ {
+  "id": "cloudsign_remove_signer:en",
+  "target": "cloudsign_remove_signer",
+  "kind": "en",
+  "text": "Please remove the client representative who was accidentally added to the pre-submission contract in CloudSign."
+ },
+ {
+  "id": "cloudsign_remove_signer:ja_para",
+  "target": "cloudsign_remove_signer",
+  "kind": "ja_para",
+  "text": "まだ出してない書類なんだけど、間違って入れちゃった相手の名前をリストから外してほしいんだ。"
+ },
+ {
+  "id": "cloudsign_search_contracts:ja",
+  "target": "cloudsign_search_contracts",
+  "kind": "ja",
+  "text": "CloudSignで、契約先が「株式会社テックソリューション」かつ件名に「保守」が含まれる契約書を探してください。"
+ },
+ {
+  "id": "cloudsign_search_contracts:en",
+  "target": "cloudsign_search_contracts",
+  "kind": "en",
+  "text": "Please search for contracts in CloudSign where the counterparty is 'Tech Solutions Inc.' and the subject contains 'maintenance'."
+ },
+ {
+  "id": "cloudsign_search_contracts:ja_para",
+  "target": "cloudsign_search_contracts",
+  "kind": "ja_para",
+  "text": "あのさ、テックソリューションって会社との間で結んだ、タイトルに保守って入ってるような書類、引っ張り出せない？一覧とかじゃなくて、ちゃんと条件絞って見たいんだ。"
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "kind": "ja",
+  "text": "契約書のステータスが「完了」に変わった瞬間に、社内の管理システムにある https://example.com/api/notify というURLへ自動で通知を送る設定をDocuSignで行ってください。"
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "kind": "en",
+  "text": "Please configure DocuSign to automatically send a notification to https://example.com/api/notify whenever the contract status changes to 'Completed'."
+ },
+ {
+  "id": "docusign_create_webhook:ja_para",
+  "target": "docusign_create_webhook",
+  "kind": "ja_para",
+  "text": "書類のサインが終わったタイミングで、うちのサーバーの特定のアドレスにリアルタイムで連絡が飛ぶように仕掛けておいて。"
+ },
+ {
+  "id": "docusign_get_envelope_status:ja",
+  "target": "docusign_get_envelope_status",
+  "kind": "ja",
+  "text": "DocuSignで送った契約書「ABC社_2024年度保守契約」の署名が完了しているか、現在の状況を確認してください。"
+ },
+ {
+  "id": "docusign_get_envelope_status:en",
+  "target": "docusign_get_envelope_status",
+  "kind": "en",
+  "text": "Please check the current status of the DocuSign envelope 'ABC Corp_2024 Maintenance Contract' to see if the signatures are complete."
+ },
+ {
+  "id": "docusign_get_envelope_status:ja_para",
+  "target": "docusign_get_envelope_status",
+  "kind": "ja_para",
+  "text": "先日ABC社に回したあの契約書類、相手側での手続きはもう終わってる感じ？今どうなってるか教えて。"
+ },
+ {
+  "id": "docusign_get_folder_items:ja",
+  "target": "docusign_get_folder_items",
+  "kind": "ja",
+  "text": "DocuSignの「下書き」フォルダに入っているすべての文書リストを取得してください。"
+ },
+ {
+  "id": "docusign_get_folder_items:en",
+  "target": "docusign_get_folder_items",
+  "kind": "en",
+  "text": "Please retrieve the list of all documents currently located in the 'Drafts' folder in DocuSign."
+ },
+ {
+  "id": "docusign_get_folder_items:ja_para",
+  "target": "docusign_get_folder_items",
+  "kind": "ja_para",
+  "text": "まだ送信してなくて手元に残ってる未完了のファイルたち、一覧で見せて。"
+ },
+ {
+  "id": "zendesk_list_tags:ja",
+  "target": "zendesk_list_tags",
+  "kind": "ja",
+  "text": "Zendeskで現在使われているすべてのタグの一覧を取得してください。"
+ },
+ {
+  "id": "zendesk_list_tags:en",
+  "target": "zendesk_list_tags",
+  "kind": "en",
+  "text": "Please retrieve a list of all tags currently in use in Zendesk."
+ },
+ {
+  "id": "zendesk_list_tags:ja_para",
+  "target": "zendesk_list_tags",
+  "kind": "ja_para",
+  "text": "システムに登録されてるラベルの種類、全部教えて。"
+ },
+ {
+  "id": "zendesk_suspend_user:ja",
+  "target": "zendesk_suspend_user",
+  "kind": "ja",
+  "text": "スパム行為を繰り返しているユーザー「spam_user_01」のZendeskアカウントを一時停止してください。"
+ },
+ {
+  "id": "zendesk_suspend_user:en",
+  "target": "zendesk_suspend_user",
+  "kind": "en",
+  "text": "Please suspend the Zendesk account for the user 'spam_user_01' who is repeatedly engaging in spam activities."
+ },
+ {
+  "id": "zendesk_suspend_user:ja_para",
+  "target": "zendesk_suspend_user",
+  "kind": "ja_para",
+  "text": "あの迷惑な投稿ばかりしてる人、もうシステムから一時的に締め出しておいて。"
+ },
+ {
+  "id": "zendesk_list_organizations:ja",
+  "target": "zendesk_list_organizations",
+  "kind": "ja",
+  "text": "現在Zendeskに登録されている企業の一覧をすべて取得してください。"
+ },
+ {
+  "id": "zendesk_list_organizations:en",
+  "target": "zendesk_list_organizations",
+  "kind": "en",
+  "text": "Please retrieve a complete list of all organizations currently registered in Zendesk."
+ },
+ {
+  "id": "zendesk_list_organizations:ja_para",
+  "target": "zendesk_list_organizations",
+  "kind": "ja_para",
+  "text": "サポートシステムに入っている取引先の会社名リスト、全部見せて。"
+ },
+ {
+  "id": "servicenow_list_configuration_items:ja",
+  "target": "servicenow_list_configuration_items",
+  "kind": "ja",
+  "text": "現在管理しているすべてのサーバーとネットワーク機器の資産リストを出力してください。"
+ },
+ {
+  "id": "servicenow_list_configuration_items:en",
+  "target": "servicenow_list_configuration_items",
+  "kind": "en",
+  "text": "Please output the asset list of all servers and network devices currently under management."
+ },
+ {
+  "id": "servicenow_list_configuration_items:ja_para",
+  "target": "servicenow_list_configuration_items",
+  "kind": "ja_para",
+  "text": "うちで持ってるハードウェアとかシステムの一覧表、全部見せて。"
+ },
+ {
+  "id": "servicenow_list_user_accounts:ja",
+  "target": "servicenow_list_user_accounts",
+  "kind": "ja",
+  "text": "ServiceNowに登録されている全ユーザーアカウントの一覧を取得してください。権限監査のために必要です。"
+ },
+ {
+  "id": "servicenow_list_user_accounts:en",
+  "target": "servicenow_list_user_accounts",
+  "kind": "en",
+  "text": "Please retrieve the list of all user accounts registered in ServiceNow. This is required for a permission audit."
+ },
+ {
+  "id": "servicenow_list_user_accounts:ja_para",
+  "target": "servicenow_list_user_accounts",
+  "kind": "ja_para",
+  "text": "今システムに入ってる人、みんな誰かリストで出せない？誰がアクセス権持ってるかチェックしたいんだ。"
+ },
+ {
+  "id": "servicenow_add_work_note:ja",
+  "target": "servicenow_add_work_note",
+  "kind": "ja",
+  "text": "INC0012345のチケットに、データベースのクエリ実行結果と暫定対応策について、顧客には見えない形で内部メモを残してください。"
+ },
+ {
+  "id": "servicenow_add_work_note:en",
+  "target": "servicenow_add_work_note",
+  "kind": "en",
+  "text": "Please add an internal work note to ticket INC0012345 regarding the database query results and temporary countermeasures, ensuring it is not visible to the customer."
+ },
+ {
+  "id": "servicenow_add_work_note:ja_para",
+  "target": "servicenow_add_work_note",
+  "kind": "ja_para",
+  "text": "あの番号の件だけど、裏で調べたDBの結果とか一時的な処置について、お客さん側には出ないようにこっそり記録だけ残しておいて。"
+ },
+ {
+  "id": "datadog_get_log_detail:ja",
+  "target": "datadog_get_log_detail",
+  "kind": "ja",
+  "text": "Datadogで検索して見つけたログID「abc-123-xyz」の、すべての生データとメタデータを含む完全な詳細情報を確認したいです。"
+ },
+ {
+  "id": "datadog_get_log_detail:en",
+  "target": "datadog_get_log_detail",
+  "kind": "en",
+  "text": "I need to retrieve the full detailed information, including all raw data and metadata, for the log ID 'abc-123-xyz' found in Datadog search."
+ },
+ {
+  "id": "datadog_get_log_detail:ja_para",
+  "target": "datadog_get_log_detail",
+  "kind": "ja_para",
+  "text": "さっきリストに出たあの特定のログ番号なんだけど、中身の細かい情報まで全部引っ張ってきて見せてくれない？"
+ },
+ {
+  "id": "datadog_get_monitor:ja",
+  "target": "datadog_get_monitor",
+  "kind": "ja",
+  "text": "監視ID mon-12345 の詳細な設定内容、特にアラート条件と通知先を確認したいです。"
+ },
+ {
+  "id": "datadog_get_monitor:en",
+  "target": "datadog_get_monitor",
+  "kind": "en",
+  "text": "I need to check the detailed configuration, specifically the alert conditions and notification targets, for monitor ID mon-12345."
+ },
+ {
+  "id": "datadog_get_monitor:ja_para",
+  "target": "datadog_get_monitor",
+  "kind": "ja_para",
+  "text": "mon-12345 という番号の監視ルールが今どういう仕組みで動いてて、どこに連絡が行くようになってるか中身を見たいんだけど。"
+ },
+ {
+  "id": "datadog_list_dashboards:ja",
+  "target": "datadog_list_dashboards",
+  "kind": "ja",
+  "text": "現在利用可能なDatadogのダッシュボード一覧を、タイトルやタグで検索できる形式で取得してください。"
+ },
+ {
+  "id": "datadog_list_dashboards:en",
+  "target": "datadog_list_dashboards",
+  "kind": "en",
+  "text": "Please retrieve a list of available Datadog dashboards, including metadata for searching by title or tag."
+ },
+ {
+  "id": "datadog_list_dashboards:ja_para",
+  "target": "datadog_list_dashboards",
+  "kind": "ja_para",
+  "text": "今見られる画面の一覧を教えて。名前とか分類で探せる情報が欲しいんだ。"
+ },
+ {
+  "id": "sentry_update_alert_rule:ja",
+  "target": "sentry_update_alert_rule",
+  "kind": "ja",
+  "text": "Sentryのアラートルール「高頻度エラー通知」の通知先を、#dev-alerts から #incident-response に変更してください。"
+ },
+ {
+  "id": "sentry_update_alert_rule:en",
+  "target": "sentry_update_alert_rule",
+  "kind": "en",
+  "text": "Please update the notification destination for the Sentry alert rule 'High Frequency Error Notification' from #dev-alerts to #incident-response."
+ },
+ {
+  "id": "sentry_update_alert_rule:ja_para",
+  "target": "sentry_update_alert_rule",
+  "kind": "ja_para",
+  "text": "今、頻繁に鳴ってるあのアラートなんだけど、飛ばす場所を開発用チャンネルからインシデント対応用のほうに変えといて。"
+ },
+ {
+  "id": "sentry_get_organization_stats:ja",
+  "target": "sentry_get_organization_stats",
+  "kind": "ja",
+  "text": "今月の組織全体でのエラー発生数と、処理が拒否された件数の推移を確認したいです。"
+ },
+ {
+  "id": "sentry_get_organization_stats:en",
+  "target": "sentry_get_organization_stats",
+  "kind": "en",
+  "text": "I want to check the trend of total error counts and rejected events across the organization for this month."
+ },
+ {
+  "id": "sentry_get_organization_stats:ja_para",
+  "target": "sentry_get_organization_stats",
+  "kind": "ja_para",
+  "text": "先月から現在にかけて、うちのチーム全体でどれくらいトラブルが起きているか、またシステム側で弾かれたリクエストがどのくらいあるか、大まかな数字を把握したいんだ。"
+ },
+ {
+  "id": "sentry_get_project_details:ja",
+  "target": "sentry_get_project_details",
+  "kind": "ja",
+  "text": "プロジェクト「frontend-app」の現在のステータスと基本設定を確認したいです。"
+ },
+ {
+  "id": "sentry_get_project_details:en",
+  "target": "sentry_get_project_details",
+  "kind": "en",
+  "text": "I want to check the current status and basic settings of the 'frontend-app' project."
+ },
+ {
+  "id": "sentry_get_project_details:ja_para",
+  "target": "sentry_get_project_details",
+  "kind": "ja_para",
+  "text": "あのフロントエンド側のやつ、今どんな具合で動いてるのか、細かい中身が見たいんだけど。"
+ },
+ {
+  "id": "pagerduty_get_incident:ja",
+  "target": "pagerduty_get_incident",
+  "kind": "ja",
+  "text": "インシデントID「INC-2024-051」の詳細なステータスとログを確認したいです。"
+ },
+ {
+  "id": "pagerduty_get_incident:en",
+  "target": "pagerduty_get_incident",
+  "kind": "en",
+  "text": "I need to check the detailed status and logs for incident ID 'INC-2024-051'."
+ },
+ {
+  "id": "pagerduty_get_incident:ja_para",
+  "target": "pagerduty_get_incident",
+  "kind": "ja_para",
+  "text": "さっき届いたアラートの番号が INC-2024-051 なんだけど、これの詳しい中身が見たいんだ。"
+ },
+ {
+  "id": "pagerduty_update_service:ja",
+  "target": "pagerduty_update_service",
+  "kind": "ja",
+  "text": "決済マイクロサービスの責任部署をバックエンドチームからSREチームに変更してください。"
+ },
+ {
+  "id": "pagerduty_update_service:en",
+  "target": "pagerduty_update_service",
+  "kind": "en",
+  "text": "Please change the responsible team for the Payment Microservice from the Backend Team to the SRE Team."
+ },
+ {
+  "id": "pagerduty_update_service:ja_para",
+  "target": "pagerduty_update_service",
+  "kind": "ja_para",
+  "text": "決済系のやつ、今バックエンドが見てるけど、これからはSRE側で面倒見てもらうように設定を変えておいて。"
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "kind": "ja",
+  "text": "Slackの#dev-alertsチャンネル向けに、PagerDutyからの通知連携が正常に動作するか確認するためのテスト用Webhookを発火させてください。"
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "kind": "en",
+  "text": "Please trigger a test webhook for PagerDuty to verify that the notification integration with the Slack #dev-alerts channel is working correctly."
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja_para",
+  "target": "pagerduty_trigger_webhook",
+  "kind": "ja_para",
+  "text": "今、Slackのほうにアラートが届くか試しに信号を送ってほしいんだ。連携設定が生きてるかどうか、実際にプッシュして確かめたいの。"
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "kind": "ja",
+  "text": "CloudWatch Logsの『app-production』ロググループにあるストリームから、直近1時間のログイベントをすべて取得してください。"
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "kind": "en",
+  "text": "Please retrieve all log events from the streams in the 'app-production' CloudWatch Logs log group for the last hour."
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja_para",
+  "target": "aws_cloudwatch_get_log_events",
+  "kind": "ja_para",
+  "text": "本番環境のアプリが出してる記録、さっき1時間分を丸ごと引っ張ってきてほしいんだけど。"
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "kind": "ja",
+  "text": "CloudWatch Logsで「OutOfMemoryError」という文字列が含まれるログを検索して、エラーが発生した箇所を特定してください。"
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "kind": "en",
+  "text": "Search CloudWatch Logs for entries containing the string \"OutOfMemoryError\" to identify where the error occurred."
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja_para",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "kind": "ja_para",
+  "text": "アプリがメモリ不足で落ちたみたいなんだけど、CloudWatchの記録の中から『OutOfMemoryError』って文言が出てくる部分を探し出せないかな。"
+ },
+ {
+  "id": "aws_cloudwatch_put_metric_data:ja",
+  "target": "aws_cloudwatch_put_metric_data",
+  "kind": "ja",
+  "text": "自作の注文処理アプリから、1分ごとのトランザクション数をCloudWatchのカスタムメトリクスとして送信してください。"
+ },
+ {
+  "id": "aws_cloudwatch_put_metric_data:en",
+  "target": "aws_cloudwatch_put_metric_data",
+  "kind": "en",
+  "text": "Please send the number of transactions per minute from our custom order processing app to CloudWatch as a custom metric."
+ },
+ {
+  "id": "aws_cloudwatch_put_metric_data:ja_para",
+  "target": "aws_cloudwatch_put_metric_data",
+  "kind": "ja_para",
+  "text": "うちのオーダーシステムで毎分どれくらい捌いてるか、監視用のダッシュボードに数値を流し込んどいて。"
+ },
+ {
+  "id": "gcp_list_gcs_objects:ja",
+  "target": "gcp_list_gcs_objects",
+  "kind": "ja",
+  "text": "GCSバケット「monthly-reports-2024」の中に、先月アップロードした請求書PDFがきちんと保存されているか確認したいです。ファイル一覧を取得してください。"
+ },
+ {
+  "id": "gcp_list_gcs_objects:en",
+  "target": "gcp_list_gcs_objects",
+  "kind": "en",
+  "text": "I want to verify if the invoice PDF uploaded last month is properly stored in the GCS bucket 'monthly-reports-2024'. Please retrieve the list of files."
+ },
+ {
+  "id": "gcp_list_gcs_objects:ja_para",
+  "target": "gcp_list_gcs_objects",
+  "kind": "ja_para",
+  "text": "あの『monthly-reports-2024』って名前の入れ物、中身どうなってるか見せて。先月の請求書のファイルが入ってるか確かめたいんだ。"
+ },
+ {
+  "id": "gcp_delete_gcs_object:ja",
+  "target": "gcp_delete_gcs_object",
+  "kind": "ja",
+  "text": "GCSのバケット「temp-uploads」にある、昨日誤ってアップロードしてしまった「report_v2_draft.pdf」というファイルを削除してください。"
+ },
+ {
+  "id": "gcp_delete_gcs_object:en",
+  "target": "gcp_delete_gcs_object",
+  "kind": "en",
+  "text": "Please delete the file 'report_v2_draft.pdf' from the GCS bucket 'temp-uploads', which was uploaded by mistake yesterday."
+ },
+ {
+  "id": "gcp_delete_gcs_object:ja_para",
+  "target": "gcp_delete_gcs_object",
+  "kind": "ja_para",
+  "text": "クラウド上のストレージに入れてしまった、一昨日の間違えて送っちゃったPDF、あれを消しといてもらえない？"
+ },
+ {
+  "id": "gcp_check_iam_permissions:ja",
+  "target": "gcp_check_iam_permissions",
+  "kind": "ja",
+  "text": "プロジェクト 'prod-analytics' の BigQuery データセット 'sales_data' に対して、ユーザー 'tanaka@example.com' が現在どのような操作権限を持っているか確認してください。"
+ },
+ {
+  "id": "gcp_check_iam_permissions:en",
+  "target": "gcp_check_iam_permissions",
+  "kind": "en",
+  "text": "Please check what IAM permissions the user 'tanaka@example.com' currently has on the BigQuery dataset 'sales_data' in the 'prod-analytics' project."
+ },
+ {
+  "id": "gcp_check_iam_permissions:ja_para",
+  "target": "gcp_check_iam_permissions",
+  "kind": "ja_para",
+  "text": "田中さんが本番の売上データセットをいじれるかどうか、アクセス権の設定状況を教えて。"
+ },
+ {
+  "id": "stripe_refund_payment:ja",
+  "target": "stripe_refund_payment",
+  "kind": "ja",
+  "text": "顧客ID cus_12345 の先週の購入分について、全額返金の手続きを行ってください。"
+ },
+ {
+  "id": "stripe_refund_payment:en",
+  "target": "stripe_refund_payment",
+  "kind": "en",
+  "text": "Please process a full refund for the purchase made last week by customer ID cus_12345."
+ },
+ {
+  "id": "stripe_refund_payment:ja_para",
+  "target": "stripe_refund_payment",
+  "kind": "ja_para",
+  "text": "先週、cus_12345 さんが払ったお金を全部戻してあげて。"
+ },
+ {
+  "id": "stripe_create_customer:ja",
+  "target": "stripe_create_customer",
+  "kind": "ja",
+  "text": "新規クライアントの田中太郎さん（tanaka@example.com）をStripeに登録してください。"
+ },
+ {
+  "id": "stripe_create_customer:en",
+  "target": "stripe_create_customer",
+  "kind": "en",
+  "text": "Please register a new client, Taro Tanaka (tanaka@example.com), in Stripe."
+ },
+ {
+  "id": "stripe_create_customer:ja_para",
+  "target": "stripe_create_customer",
+  "kind": "ja_para",
+  "text": "新しく取引を始める田中さんの連絡先情報を、決済システムの顧客リストに追加しておいて。"
+ },
+ {
+  "id": "stripe_list_invoices:ja",
+  "target": "stripe_list_invoices",
+  "kind": "ja",
+  "text": "顧客ID cus_12345 の Stripe 上の請求書履歴をすべて確認したいです。未払いのものがあるかチェックしてください。"
+ },
+ {
+  "id": "stripe_list_invoices:en",
+  "target": "stripe_list_invoices",
+  "kind": "en",
+  "text": "Please retrieve all invoice history for customer ID cus_12345 on Stripe to check for any unpaid items."
+ },
+ {
+  "id": "stripe_list_invoices:ja_para",
+  "target": "stripe_list_invoices",
+  "kind": "ja_para",
+  "text": "あそこの取引先、cus_12345なんだけど、これまで送った 청구서들이 어떻게処理されてるか一覧で見たいんだ。まだ払ってないのが混じってないか確認したいの。"
+ },
+ {
+  "id": "shopify_list_customers:ja",
+  "target": "shopify_list_customers",
+  "kind": "ja",
+  "text": "Shopifyに登録されている全顧客のリストを、メールアドレス順にソートして取得してください。"
+ },
+ {
+  "id": "shopify_list_customers:en",
+  "target": "shopify_list_customers",
+  "kind": "en",
+  "text": "Please retrieve the list of all customers registered in Shopify, sorted by email address."
+ },
+ {
+  "id": "shopify_list_customers:ja_para",
+  "target": "shopify_list_customers",
+  "kind": "ja_para",
+  "text": "うちのお客さんの名簿、全部引っ張ってきて。メアドのABC順で並べ替えておいてね。"
+ },
+ {
+  "id": "shopify_search_products:ja",
+  "target": "shopify_search_products",
+  "kind": "ja",
+  "text": "「夏用 麻シャツ」というキーワードで現在販売中の商品を検索してください。"
+ },
+ {
+  "id": "shopify_search_products:en",
+  "target": "shopify_search_products",
+  "kind": "en",
+  "text": "Please search for products currently on sale using the keyword 'summer linen shirt'."
+ },
+ {
+  "id": "shopify_search_products:ja_para",
+  "target": "shopify_search_products",
+  "kind": "ja_para",
+  "text": "倉庫にある夏向けの麻素材のシャツ、タイトルにそういう文字が入ってるやつを全部引っ張ってきて。"
+ },
+ {
+  "id": "shopify_get_collection:ja",
+  "target": "shopify_get_collection",
+  "kind": "ja",
+  "text": "「サマーセール」コレクションに含まれる商品の自動選定ルールを確認したいです。"
+ },
+ {
+  "id": "shopify_get_collection:en",
+  "target": "shopify_get_collection",
+  "kind": "en",
+  "text": "I want to check the automatic selection rules for products included in the 'Summer Sale' collection."
+ },
+ {
+  "id": "shopify_get_collection:ja_para",
+  "target": "shopify_get_collection",
+  "kind": "ja_para",
+  "text": "あの夏物特設ページって、どういう条件の商品が勝手に集まるようになってるんだっけ？その仕組みを教えて。"
+ },
+ {
+  "id": "zoom_get_meeting_details:ja",
+  "target": "zoom_get_meeting_details",
+  "kind": "ja",
+  "text": "Zoomの会議ID「123-456-789」の詳細設定と参加用URLを確認してください。"
+ },
+ {
+  "id": "zoom_get_meeting_details:en",
+  "target": "zoom_get_meeting_details",
+  "kind": "en",
+  "text": "Please check the detailed settings and join URL for the Zoom meeting ID \"123-456-789\"."
+ },
+ {
+  "id": "zoom_get_meeting_details:ja_para",
+  "target": "zoom_get_meeting_details",
+  "kind": "ja_para",
+  "text": "この番号のオンラインミーティング、どんな風に設定されてて、どこから入れるか教えて。"
+ },
+ {
+  "id": "zoom_list_registrants:ja",
+  "target": "zoom_list_registrants",
+  "kind": "ja",
+  "text": "来週開催予定の『新製品説明会』というウェビナーに、現在誰が登録済みで、承認待ちの人がいるか確認したいです。"
+ },
+ {
+  "id": "zoom_list_registrants:en",
+  "target": "zoom_list_registrants",
+  "kind": "en",
+  "text": "I need to check who is currently registered and who is pending approval for the 'New Product Briefing' webinar scheduled for next week."
+ },
+ {
+  "id": "zoom_list_registrants:ja_para",
+  "target": "zoom_list_registrants",
+  "kind": "ja_para",
+  "text": "次の水曜にあるウェビナーの話なんだけど、もう申し込んでる人の名前一覧と、許可が出てるかどうかの状態が見たいんだ。"
+ },
+ {
+  "id": "zoom_search_meetings:ja",
+  "target": "zoom_search_meetings",
+  "kind": "ja",
+  "text": "先週行われた『Q3予算レビュー』というタイトルのZoom会議を探してください。"
+ },
+ {
+  "id": "zoom_search_meetings:en",
+  "target": "zoom_search_meetings",
+  "kind": "en",
+  "text": "Please find the Zoom meeting titled 'Q3 Budget Review' that took place last week."
+ },
+ {
+  "id": "zoom_search_meetings:ja_para",
+  "target": "zoom_search_meetings",
+  "kind": "ja_para",
+  "text": "こないだの予算の話で集まったやつ、どこにあったっけ？ちょっと探してほしいな。"
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "kind": "ja",
+  "text": "Figmaで誤って投稿してしまったコメントID「98765」を削除してください。"
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "kind": "en",
+  "text": "Please delete the comment with ID \"98765\" that was accidentally posted in Figma."
+ },
+ {
+  "id": "figma_delete_comment:ja_para",
+  "target": "figma_delete_comment",
+  "kind": "ja_para",
+  "text": "さっきFigmaに書き込んだやつ、間違えたから消しといて。IDは98765ね。"
+ },
+ {
+  "id": "figma_get_project_files:ja",
+  "target": "figma_get_project_files",
+  "kind": "ja",
+  "text": "プロジェクトID「proj_12345」に含まれているすべてのFigmaファイルのリストを取得してください。"
+ },
+ {
+  "id": "figma_get_project_files:en",
+  "target": "figma_get_project_files",
+  "kind": "en",
+  "text": "Please retrieve the list of all Figma files contained within the project ID 'proj_12345'."
+ },
+ {
+  "id": "figma_get_project_files:ja_para",
+  "target": "figma_get_project_files",
+  "kind": "ja_para",
+  "text": "proj_12345という案件フォルダの中に、今どんなデザインデータが入ってるか一覧で見せて。"
+ },
+ {
+  "id": "figma_get_comments:ja",
+  "target": "figma_get_comments",
+  "kind": "ja",
+  "text": "Figmaファイルに残っている未解決のレビューコメントをすべて確認したいです。"
+ },
+ {
+  "id": "figma_get_comments:en",
+  "target": "figma_get_comments",
+  "kind": "en",
+  "text": "I want to check all unresolved review comments remaining in the Figma file."
+ },
+ {
+  "id": "figma_get_comments:ja_para",
+  "target": "figma_get_comments",
+  "kind": "ja_para",
+  "text": "あのデザイン案について、チームメンバーからどんな指摘や意見が出てるか一覧で見せて。"
+ },
+ {
+  "id": "miro_create_sticky_note:ja",
+  "target": "miro_create_sticky_note",
+  "kind": "ja",
+  "text": "Miroの「Q3マーケティング戦略」ボードに、黄色の付箋で「SNSキャンペーン案」というアイデアを追加してください。"
+ },
+ {
+  "id": "miro_create_sticky_note:en",
+  "target": "miro_create_sticky_note",
+  "kind": "en",
+  "text": "Please add a yellow sticky note with the idea 'Social Media Campaign Plan' to the 'Q3 Marketing Strategy' board on Miro."
+ },
+ {
+  "id": "miro_create_sticky_note:ja_para",
+  "target": "miro_create_sticky_note",
+  "kind": "ja_para",
+  "text": "Miroのあのマーケティング用の板に、目立つように黄色いメモ用紙を貼って、『SNSの販促プラン』って書き込んでおいて。"
+ },
+ {
+  "id": "miro_delete_item:ja",
+  "target": "miro_delete_item",
+  "kind": "ja",
+  "text": "Miroの「Q3企画案」ボードにある、IDが 'item_12345' の古い付箋を削除してください。"
+ },
+ {
+  "id": "miro_delete_item:en",
+  "target": "miro_delete_item",
+  "kind": "en",
+  "text": "Please delete the old sticky note with ID 'item_12345' from the 'Q3 Proposal' board in Miro."
+ },
+ {
+  "id": "miro_delete_item:ja_para",
+  "target": "miro_delete_item",
+  "kind": "ja_para",
+  "text": "ミーロの企画用ボードに残ってる、あの特定の番号のメモ、もう要らないから消しといて。"
+ },
+ {
+  "id": "miro_resolve_comment:ja",
+  "target": "miro_resolve_comment",
+  "kind": "ja",
+  "text": "Miroの「Q3マーケティング戦略」ボードにある、田中さんからの「ロゴ案Aで決定」というコメントを解決済みにしてください。"
+ },
+ {
+  "id": "miro_resolve_comment:en",
+  "target": "miro_resolve_comment",
+  "kind": "en",
+  "text": "Please mark the comment \"Decided on Logo A\" from Tanaka as resolved on the Miro board \"Q3 Marketing Strategy\"."
+ },
+ {
+  "id": "miro_resolve_comment:ja_para",
+  "target": "miro_resolve_comment",
+  "kind": "ja_para",
+  "text": "ミロの企画書ボードで、田中さんがOK出した件のやり取り、もう片付いたことにしといて。"
+ },
+ {
+  "id": "ga4_create_property:ja",
+  "target": "ga4_create_property",
+  "kind": "ja",
+  "text": "来月公開予定の新しいECサイト「ShopNext」のアクセス解析を始めるために、Google Analytics 4の新しいプロパティを作成してください。"
+ },
+ {
+  "id": "ga4_create_property:en",
+  "target": "ga4_create_property",
+  "kind": "en",
+  "text": "Please create a new Google Analytics 4 property to start tracking access for our new e-commerce site 'ShopNext', which is scheduled to launch next month."
+ },
+ {
+  "id": "ga4_create_property:ja_para",
+  "target": "ga4_create_property",
+  "kind": "ja_para",
+  "text": "今度立ち上げるネットショップ用の分析環境をGA4で新しく用意してほしいんだけど、お願いできる？"
+ },
+ {
+  "id": "ga4_get_data_stream:ja",
+  "target": "ga4_get_data_stream",
+  "kind": "ja",
+  "text": "GA4の「コーポレートサイト」用データストリームに登録されている測定IDとデフォルトのURLを確認したいです。"
+ },
+ {
+  "id": "ga4_get_data_stream:en",
+  "target": "ga4_get_data_stream",
+  "kind": "en",
+  "text": "I need to check the Measurement ID and default URL configured in the GA4 data stream for the 'Corporate Site'."
+ },
+ {
+  "id": "ga4_get_data_stream:ja_para",
+  "target": "ga4_get_data_stream",
+  "kind": "ja_para",
+  "text": "会社のメインサイトの分析設定のところ、トラッキング用の番号とアドレスがどうなってるか教えて。"
+ },
+ {
+  "id": "ga4_list_audiences:ja",
+  "target": "ga4_list_audiences",
+  "kind": "ja",
+  "text": "現在設定されているリターゲティング用のユーザーセグメントの一覧を確認したいです。"
+ },
+ {
+  "id": "ga4_list_audiences:en",
+  "target": "ga4_list_audiences",
+  "kind": "en",
+  "text": "I want to check the list of currently configured user segments for retargeting."
+ },
+ {
+  "id": "ga4_list_audiences:ja_para",
+  "target": "ga4_list_audiences",
+  "kind": "ja_para",
+  "text": "今、どんなグループ分けでユーザーを拾えるようにしてるか、全部見せて。"
+ },
+ {
+  "id": "bigquery_cancel_job:ja",
+  "target": "bigquery_cancel_job",
+  "kind": "ja",
+  "text": "先ほど誤って実行してしまった重たい集計クエリを、すぐに停止してください。"
+ },
+ {
+  "id": "bigquery_cancel_job:en",
+  "target": "bigquery_cancel_job",
+  "kind": "en",
+  "text": "Please immediately stop the heavy aggregation query that was accidentally executed earlier."
+ },
+ {
+  "id": "bigquery_cancel_job:ja_para",
+  "target": "bigquery_cancel_job",
+  "kind": "ja_para",
+  "text": "さっき間違って走らせてしまった、処理が重そうなやつを止めて。"
+ },
+ {
+  "id": "bigquery_search_tables:ja",
+  "target": "bigquery_search_tables",
+  "kind": "ja",
+  "text": "プロジェクト内に 'sales_2024' という名前が含まれるテーブルをすべて見つけてください。"
+ },
+ {
+  "id": "bigquery_search_tables:en",
+  "target": "bigquery_search_tables",
+  "kind": "en",
+  "text": "Find all tables within the project that contain 'sales_2024' in their names."
+ },
+ {
+  "id": "bigquery_search_tables:ja_para",
+  "target": "bigquery_search_tables",
+  "kind": "ja_para",
+  "text": "今年の売上データが入ってるっぽい表、名前に『sales_2024』って付いてるやつ全部探して。"
+ },
+ {
+  "id": "bigquery_update_table_schema:ja",
+  "target": "bigquery_update_table_schema",
+  "kind": "ja",
+  "text": "BigQueryの「sales_2024」テーブルに、顧客の年齢層を示す「age_group」という新しい列を追加してください。"
+ },
+ {
+  "id": "bigquery_update_table_schema:en",
+  "target": "bigquery_update_table_schema",
+  "kind": "en",
+  "text": "Please add a new column named 'age_group' to the 'sales_2024' table in BigQuery."
+ },
+ {
+  "id": "bigquery_update_table_schema:ja_para",
+  "target": "bigquery_update_table_schema",
+  "kind": "ja_para",
+  "text": "今使ってる売上データの表なんだけど、そこにユーザーの年代区分を入れる欄を一つ増やせない？"
+ },
+ {
+  "id": "tableau_get_workbook_details:ja",
+  "target": "tableau_get_workbook_details",
+  "kind": "ja",
+  "text": "「2024年度売上ダッシュボード」の最終更新日と現在のオーナーが誰なのかを確認したいです。"
+ },
+ {
+  "id": "tableau_get_workbook_details:en",
+  "target": "tableau_get_workbook_details",
+  "kind": "en",
+  "text": "I need to check the last updated date and the current owner of the '2024 Sales Dashboard'."
+ },
+ {
+  "id": "tableau_get_workbook_details:ja_para",
+  "target": "tableau_get_workbook_details",
+  "kind": "ja_para",
+  "text": "あの売上用のファイル、最後に触ったのはいつで、今誰が管理責任者になってるか教えて。"
+ },
+ {
+  "id": "tableau_refresh_datasource:ja",
+  "target": "tableau_refresh_datasource",
+  "kind": "ja",
+  "text": "売上管理ダッシュボードのデータが古くなっているので、今すぐ抽出を更新して最新の状態にしてください。"
+ },
+ {
+  "id": "tableau_refresh_datasource:en",
+  "target": "tableau_refresh_datasource",
+  "kind": "en",
+  "text": "The data in the Sales Management dashboard is outdated, so please refresh the extract immediately to update it to the latest state."
+ },
+ {
+  "id": "tableau_refresh_datasource:ja_para",
+  "target": "tableau_refresh_datasource",
+  "kind": "ja_para",
+  "text": "あの売上の画面、数字が昨日のままなんだけど、今すぐにピカピカの新しい数値に切り替わらないかな？"
+ },
+ {
+  "id": "tableau_add_user_to_site:ja",
+  "target": "tableau_add_user_to_site",
+  "kind": "ja",
+  "text": "Tableauに新しいメンバーとして田中さんを追加して、閲覧者ロールを割り当ててください。"
+ },
+ {
+  "id": "tableau_add_user_to_site:en",
+  "target": "tableau_add_user_to_site",
+  "kind": "en",
+  "text": "Please add Tanaka as a new member to Tableau and assign the Viewer role."
+ },
+ {
+  "id": "tableau_add_user_to_site:ja_para",
+  "target": "tableau_add_user_to_site",
+  "kind": "ja_para",
+  "text": "今月から仲間入りする田中くん、Tableauの方でも見れるようにアカウント作って、最低限の権限で登録しといて。"
+ },
+ {
+  "id": "emit_workflow:agent",
+  "target": "emit_workflow",
+  "kind": "agent",
+  "text": "schedule cron job search knowledge base post slack"
+ },
+ {
+  "id": "read_workflow:agent",
+  "target": "read_workflow",
+  "kind": "agent",
+  "text": "get workflow settings edit trigger time daily"
+ },
+ {
+  "id": "save_note:agent",
+  "target": "save_note",
+  "kind": "agent",
+  "text": "summarize meeting transcript create new note draft"
+ },
+ {
+  "id": "save_slide:agent",
+  "target": "save_slide",
+  "kind": "agent",
+  "text": "create presentation slides Q3 financial report forest theme"
+ },
+ {
+  "id": "save_csv:agent",
+  "target": "save_csv",
+  "kind": "agent",
+  "text": "aggregate weekly sales data generate summary table list"
+ },
+ {
+  "id": "document.read:agent",
+  "target": "document.read",
+  "kind": "agent",
+  "text": "read current open note content headings structure"
+ },
+ {
+  "id": "document.edit:agent",
+  "target": "document.edit",
+  "kind": "agent",
+  "text": "append text to end of specific project note"
+ },
+ {
+  "id": "document.embed:agent",
+  "target": "document.embed",
+  "kind": "agent",
+  "text": "insert chart image into markdown note bottom"
+ },
+ {
+  "id": "slide.read:agent",
+  "target": "slide.read",
+  "kind": "agent",
+  "text": "list all slides content and IDs current presentation"
+ },
+ {
+  "id": "slide.edit:agent",
+  "target": "slide.edit",
+  "kind": "agent",
+  "text": "insert new slide between page 3 and 4"
+ },
+ {
+  "id": "csv.query:agent",
+  "target": "csv.query",
+  "kind": "agent",
+  "text": "read CSV file execute SQL query group by region sum"
+ },
+ {
+  "id": "csv.patch:agent",
+  "target": "csv.patch",
+  "kind": "agent",
+  "text": "update CSV cell value filter by vehicle ID column"
+ },
+ {
+  "id": "csv.write:agent",
+  "target": "csv.write",
+  "kind": "agent",
+  "text": "create new CSV file from provided data rows"
+ },
+ {
+  "id": "github_search_issues:agent",
+  "target": "github_search_issues",
+  "kind": "agent",
+  "text": "search GitHub issues label bug no assignee repository"
+ },
+ {
+  "id": "github_get_issue:agent",
+  "target": "github_get_issue",
+  "kind": "agent",
+  "text": "get issue details status assignee by issue number"
+ },
+ {
+  "id": "github_create_pull_request:agent",
+  "target": "github_create_pull_request",
+  "kind": "agent",
+  "text": "create pull request merge feature branch to main"
+ },
+ {
+  "id": "gitlab_get_pipeline_job_logs:agent",
+  "target": "gitlab_get_pipeline_job_logs",
+  "kind": "agent",
+  "text": "get CI CD pipeline job logs error messages by ID"
+ },
+ {
+  "id": "gitlab_get_project:agent",
+  "target": "gitlab_get_project",
+  "kind": "agent",
+  "text": "get repository details URL description by project name"
+ },
+ {
+  "id": "gitlab_create_project:agent",
+  "target": "gitlab_create_project",
+  "kind": "agent",
+  "text": "create new GitLab project repository with name"
+ },
+ {
+  "id": "jira_add_comment:agent",
+  "target": "jira_add_comment",
+  "kind": "agent",
+  "text": "add comment to Jira ticket by issue key"
+ },
+ {
+  "id": "jira_update_issue:agent",
+  "target": "jira_update_issue",
+  "kind": "agent",
+  "text": "Jira update issue priority highest"
+ },
+ {
+  "id": "jira_update_sprint:agent",
+  "target": "jira_update_sprint",
+  "kind": "agent",
+  "text": "Jira update sprint end date"
+ },
+ {
+  "id": "confluence_add_labels:agent",
+  "target": "confluence_add_labels",
+  "kind": "agent",
+  "text": "Confluence add page labels"
+ },
+ {
+  "id": "confluence_create_page:agent",
+  "target": "confluence_create_page",
+  "kind": "agent",
+  "text": "Confluence create new page in space"
+ },
+ {
+  "id": "confluence_download_attachment:agent",
+  "target": "confluence_download_attachment",
+  "kind": "agent",
+  "text": "Confluence get attachment download URL"
+ },
+ {
+  "id": "backlog_save_issue_draft:agent",
+  "target": "backlog_save_issue_draft",
+  "kind": "agent",
+  "text": "Backlog create draft issue private"
+ },
+ {
+  "id": "backlog_get_project:agent",
+  "target": "backlog_get_project",
+  "kind": "agent",
+  "text": "get project details status leader"
+ },
+ {
+  "id": "backlog_list_issues:agent",
+  "target": "backlog_list_issues",
+  "kind": "agent",
+  "text": "list all issues for project"
+ },
+ {
+  "id": "slack_add_reaction:agent",
+  "target": "slack_add_reaction",
+  "kind": "agent",
+  "text": "Slack add reaction thumbsup message"
+ },
+ {
+  "id": "slack_create_channel:agent",
+  "target": "slack_create_channel",
+  "kind": "agent",
+  "text": "Slack create new channel"
+ },
+ {
+  "id": "slack_post_message:agent",
+  "target": "slack_post_message",
+  "kind": "agent",
+  "text": "Slack post message to channel"
+ },
+ {
+  "id": "teams_send_message:agent",
+  "target": "teams_send_message",
+  "kind": "agent",
+  "text": "send chat message to project channel"
+ },
+ {
+  "id": "teams_save_meeting_draft:agent",
+  "target": "teams_save_meeting_draft",
+  "kind": "agent",
+  "text": "Teams create meeting draft do not send"
+ },
+ {
+  "id": "teams_add_member:agent",
+  "target": "teams_add_member",
+  "kind": "agent",
+  "text": "add member to team project"
+ },
+ {
+  "id": "chatwork_list_rooms:agent",
+  "target": "chatwork_list_rooms",
+  "kind": "agent",
+  "text": "Chatwork list all joined rooms"
+ },
+ {
+  "id": "chatwork_get_file:agent",
+  "target": "chatwork_get_file",
+  "kind": "agent",
+  "text": "Chatwork get file metadata download link"
+ },
+ {
+  "id": "chatwork_create_room:agent",
+  "target": "chatwork_create_room",
+  "kind": "agent",
+  "text": "create new chat room for project"
+ },
+ {
+  "id": "lineworks_create_post:agent",
+  "target": "lineworks_create_post",
+  "kind": "agent",
+  "text": "post announcement to bulletin board"
+ },
+ {
+  "id": "lineworks_send_read_receipt:agent",
+  "target": "lineworks_send_read_receipt",
+  "kind": "agent",
+  "text": "mark chat message as read"
+ },
+ {
+  "id": "lineworks_list_drives:agent",
+  "target": "lineworks_list_drives",
+  "kind": "agent",
+  "text": "list cloud storage folders for project"
+ },
+ {
+  "id": "gmail_search_messages:agent",
+  "target": "gmail_search_messages",
+  "kind": "agent",
+  "text": "search email sender Yamada subject Project X budget last week"
+ },
+ {
+  "id": "gmail_star_message:agent",
+  "target": "gmail_star_message",
+  "kind": "agent",
+  "text": "Gmail star email subject Q3 budget proposal recent"
+ },
+ {
+  "id": "gmail_delete_label:agent",
+  "target": "gmail_delete_label",
+  "kind": "agent",
+  "text": "delete Gmail label 2023 project permanently"
+ },
+ {
+  "id": "outlook_search_emails:agent",
+  "target": "outlook_search_emails",
+  "kind": "agent",
+  "text": "search email sender Department Head Yamada subject Q3 budget last week"
+ },
+ {
+  "id": "outlook_reply_to_email:agent",
+  "target": "outlook_reply_to_email",
+  "kind": "agent",
+  "text": "reply to email from Yamada estimate request approved status"
+ },
+ {
+  "id": "outlook_delete_event:agent",
+  "target": "outlook_delete_event",
+  "kind": "agent",
+  "text": "cancel delete calendar event Project Regular Meeting next Wednesday"
+ },
+ {
+  "id": "gcal_get_event:agent",
+  "target": "gcal_get_event",
+  "kind": "agent",
+  "text": "get calendar event details by ID evt_12345"
+ },
+ {
+  "id": "gcal_find_free_busy:agent",
+  "target": "gcal_find_free_busy",
+  "kind": "agent",
+  "text": "find free 1 hour slot next Wednesday Tanaka Yamamoto availability"
+ },
+ {
+  "id": "gcal_set_event_color:agent",
+  "target": "gcal_set_event_color",
+  "kind": "agent",
+  "text": "change calendar event color red next Monday regular meeting high priority"
+ },
+ {
+  "id": "gdrive_upload_file:agent",
+  "target": "gdrive_upload_file",
+  "kind": "agent",
+  "text": "upload file Q3 Sales Report.xlsx to Google Drive"
+ },
+ {
+  "id": "gdrive_list_revisions:agent",
+  "target": "gdrive_list_revisions",
+  "kind": "agent",
+  "text": "get file revision history planning document updated last week"
+ },
+ {
+  "id": "gdrive_download_file:agent",
+  "target": "gdrive_download_file",
+  "kind": "agent",
+  "text": "read extract data from Google Drive file 2024 Annual Budget.xlsx"
+ },
+ {
+  "id": "box_unlock_file:agent",
+  "target": "box_unlock_file",
+  "kind": "agent",
+  "text": "unlock Box file 2024 Annual Budget.xlsx for editing"
+ },
+ {
+  "id": "box_copy_item:agent",
+  "target": "box_copy_item",
+  "kind": "agent",
+  "text": "copy Box file 2024 Annual Budget.xlsx to Archive folder keep original"
+ },
+ {
+  "id": "box_lock_file:agent",
+  "target": "box_lock_file",
+  "kind": "agent",
+  "text": "set Q3 financial report draft read-only prevent overwrite"
+ },
+ {
+  "id": "dropbox_share_folder:agent",
+  "target": "dropbox_share_folder",
+  "kind": "agent",
+  "text": "share Project A folder with external partner edit permission"
+ },
+ {
+  "id": "dropbox_delete_item:agent",
+  "target": "dropbox_delete_item",
+  "kind": "agent",
+  "text": "delete Dropbox file 2023 Annual Financial Statements_v1.pdf"
+ },
+ {
+  "id": "dropbox_download_file:agent",
+  "target": "dropbox_download_file",
+  "kind": "agent",
+  "text": "download Dropbox file 2024 Annual Budget.xlsx to local PC"
+ },
+ {
+  "id": "notion_delete_block:agent",
+  "target": "notion_delete_block",
+  "kind": "agent",
+  "text": "delete old draft blocks in Notion page 2023 Budget section"
+ },
+ {
+  "id": "notion_move_block_children:agent",
+  "target": "notion_move_block_children",
+  "kind": "agent",
+  "text": "move bullet list items in Notion Q3 Goals section under Completed Tasks header"
+ },
+ {
+  "id": "notion_update_page_properties:agent",
+  "target": "notion_update_page_properties",
+  "kind": "agent",
+  "text": "Notion update database page status property"
+ },
+ {
+  "id": "asana_get_task:agent",
+  "target": "asana_get_task",
+  "kind": "agent",
+  "text": "Asana get task details by ID custom fields"
+ },
+ {
+  "id": "asana_search_projects:agent",
+  "target": "asana_search_projects",
+  "kind": "agent",
+  "text": "Asana search project by name Q3 Marketing"
+ },
+ {
+  "id": "asana_list_tags:agent",
+  "target": "asana_list_tags",
+  "kind": "agent",
+  "text": "Asana list all tags in workspace"
+ },
+ {
+  "id": "trello_create_board:agent",
+  "target": "trello_create_board",
+  "kind": "agent",
+  "text": "Trello create new board for marketing campaign"
+ },
+ {
+  "id": "trello_remove_member_from_card:agent",
+  "target": "trello_remove_member_from_card",
+  "kind": "agent",
+  "text": "Trello remove member from card by username"
+ },
+ {
+  "id": "trello_get_board_details:agent",
+  "target": "trello_get_board_details",
+  "kind": "agent",
+  "text": "Trello get board details by ID labels url"
+ },
+ {
+  "id": "linear_create_webhook:agent",
+  "target": "linear_create_webhook",
+  "kind": "agent",
+  "text": "Slack add incoming webhook configuration channel"
+ },
+ {
+  "id": "linear_list_teams:agent",
+  "target": "linear_list_teams",
+  "kind": "agent",
+  "text": "Linear list all teams available"
+ },
+ {
+  "id": "linear_create_comment:agent",
+  "target": "linear_create_comment",
+  "kind": "agent",
+  "text": "Linear add comment to issue by title"
+ },
+ {
+  "id": "salesforce_list_products:agent",
+  "target": "salesforce_list_products",
+  "kind": "agent",
+  "text": "catalog list all registered products inventory"
+ },
+ {
+  "id": "salesforce_send_email:agent",
+  "target": "salesforce_send_email",
+  "kind": "agent",
+  "text": "Salesforce send quote and log activity history"
+ },
+ {
+  "id": "salesforce_close_lost_opportunity:agent",
+  "target": "salesforce_close_lost_opportunity",
+  "kind": "agent",
+  "text": "Salesforce close opportunity as lost by ID"
+ },
+ {
+  "id": "hubspot_create_deal:agent",
+  "target": "hubspot_create_deal",
+  "kind": "agent",
+  "text": "HubSpot create deal record with amount company"
+ },
+ {
+  "id": "hubspot_associate_objects:agent",
+  "target": "hubspot_associate_objects",
+  "kind": "agent",
+  "text": "HubSpot associate contact with company by IDs"
+ },
+ {
+  "id": "hubspot_create_draft_email:agent",
+  "target": "hubspot_create_draft_email",
+  "kind": "agent",
+  "text": "HubSpot create email draft marketing campaign"
+ },
+ {
+  "id": "kintone_get_app_settings:agent",
+  "target": "kintone_get_app_settings",
+  "kind": "agent",
+  "text": "kintone get app metadata description creator"
+ },
+ {
+  "id": "kintone_get_comments:agent",
+  "target": "kintone_get_comments",
+  "kind": "agent",
+  "text": "kintone get record comments history by ID"
+ },
+ {
+  "id": "kintone_upload_file:agent",
+  "target": "kintone_upload_file",
+  "kind": "agent",
+  "text": "kintone upload file to storage get attachment key"
+ },
+ {
+  "id": "garoon_send_message:agent",
+  "target": "garoon_send_message",
+  "kind": "agent",
+  "text": "Garoon send message to user development team"
+ },
+ {
+  "id": "garoon_list_messages:agent",
+  "target": "garoon_list_messages",
+  "kind": "agent",
+  "text": "Garoon inbox latest messages list"
+ },
+ {
+  "id": "garoon_update_schedule:agent",
+  "target": "garoon_update_schedule",
+  "kind": "agent",
+  "text": "calendar event update attendees start time"
+ },
+ {
+  "id": "freee_list_reports_pl:agent",
+  "target": "freee_list_reports_pl",
+  "kind": "agent",
+  "text": "profit and loss statement current month"
+ },
+ {
+  "id": "freee_get_invoice:agent",
+  "target": "freee_get_invoice",
+  "kind": "agent",
+  "text": "invoice details payment status INV-2024-058"
+ },
+ {
+  "id": "freee_list_expense_applications:agent",
+  "target": "freee_list_expense_applications",
+  "kind": "agent",
+  "text": "expense report approval status last month"
+ },
+ {
+  "id": "moneyforward_get_balance_sheet:agent",
+  "target": "moneyforward_get_balance_sheet",
+  "kind": "agent",
+  "text": "balance sheet assets liabilities fiscal year end"
+ },
+ {
+  "id": "moneyforward_create_invoice_draft:agent",
+  "target": "moneyforward_create_invoice_draft",
+  "kind": "agent",
+  "text": "create invoice draft service fee May"
+ },
+ {
+  "id": "moneyforward_reject_expense_claim:agent",
+  "target": "moneyforward_reject_expense_claim",
+  "kind": "agent",
+  "text": "reject expense application ID 12345"
+ },
+ {
+  "id": "rakurakuseisan_add_items_to_report:agent",
+  "target": "rakurakuseisan_add_items_to_report",
+  "kind": "agent",
+  "text": "add taxi expense to travel report"
+ },
+ {
+  "id": "rakurakuseisan_get_credit_card_transactions:agent",
+  "target": "rakurakuseisan_get_credit_card_transactions",
+  "kind": "agent",
+  "text": "corporate card unprocessed transactions list"
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:agent",
+  "target": "rakurakuseisan_get_expense_detail",
+  "kind": "agent",
+  "text": "expense receipt image URL approval history"
+ },
+ {
+  "id": "smarthr_create_employee_draft:agent",
+  "target": "smarthr_create_employee_draft",
+  "kind": "agent",
+  "text": "create new employee draft basic information"
+ },
+ {
+  "id": "smarthr_approve_leave_request:agent",
+  "target": "smarthr_approve_leave_request",
+  "kind": "agent",
+  "text": "approve paid leave application Tanaka May 20"
+ },
+ {
+  "id": "smarthr_assign_employee_to_department:agent",
+  "target": "smarthr_assign_employee_to_department",
+  "kind": "agent",
+  "text": "employee transfer sales department Kenta Tanaka"
+ },
+ {
+  "id": "jobcan_create_leave_request:agent",
+  "target": "jobcan_create_leave_request",
+  "kind": "agent",
+  "text": "Jobcan create paid leave draft next week"
+ },
+ {
+  "id": "jobcan_list_holidays:agent",
+  "target": "jobcan_list_holidays",
+  "kind": "agent",
+  "text": "company calendar holidays business days next month"
+ },
+ {
+  "id": "jobcan_clock_out:agent",
+  "target": "jobcan_clock_out",
+  "kind": "agent",
+  "text": "register clock-out time 18:30 today"
+ },
+ {
+  "id": "cloudsign_remind_signer:agent",
+  "target": "cloudsign_remind_signer",
+  "kind": "agent",
+  "text": "CloudSign send reminder unsigned contract ABC"
+ },
+ {
+  "id": "cloudsign_remove_signer:agent",
+  "target": "cloudsign_remove_signer",
+  "kind": "agent",
+  "text": "CloudSign remove recipient from draft contract"
+ },
+ {
+  "id": "cloudsign_search_contracts:agent",
+  "target": "cloudsign_search_contracts",
+  "kind": "agent",
+  "text": "CloudSign search contract TechSolution maintenance"
+ },
+ {
+  "id": "docusign_create_webhook:agent",
+  "target": "docusign_create_webhook",
+  "kind": "agent",
+  "text": "DocuSign webhook setup contract completed status notify URL"
+ },
+ {
+  "id": "docusign_get_envelope_status:agent",
+  "target": "docusign_get_envelope_status",
+  "kind": "agent",
+  "text": "DocuSign check envelope status by document name"
+ },
+ {
+  "id": "docusign_get_folder_items:agent",
+  "target": "docusign_get_folder_items",
+  "kind": "agent",
+  "text": "DocuSign list all documents in drafts folder"
+ },
+ {
+  "id": "zendesk_list_tags:agent",
+  "target": "zendesk_list_tags",
+  "kind": "agent",
+  "text": "Zendesk API get list of all active tags"
+ },
+ {
+  "id": "zendesk_suspend_user:agent",
+  "target": "zendesk_suspend_user",
+  "kind": "agent",
+  "text": "Zendesk suspend user account by username spam_user_01"
+ },
+ {
+  "id": "zendesk_list_organizations:agent",
+  "target": "zendesk_list_organizations",
+  "kind": "agent",
+  "text": "Zendesk API retrieve list of all registered organizations"
+ },
+ {
+  "id": "servicenow_list_configuration_items:agent",
+  "target": "servicenow_list_configuration_items",
+  "kind": "agent",
+  "text": "ServiceNow CMDB query list servers and network devices assets"
+ },
+ {
+  "id": "servicenow_list_user_accounts:agent",
+  "target": "servicenow_list_user_accounts",
+  "kind": "agent",
+  "text": "ServiceNow sys_user table list all user accounts for audit"
+ },
+ {
+  "id": "servicenow_add_work_note:agent",
+  "target": "servicenow_add_work_note",
+  "kind": "agent",
+  "text": "ServiceNow add internal work notes to incident ticket INC0012345"
+ },
+ {
+  "id": "datadog_get_log_detail:agent",
+  "target": "datadog_get_log_detail",
+  "kind": "agent",
+  "text": "Datadog logs API get full details by log ID abc-123-xyz"
+ },
+ {
+  "id": "datadog_get_monitor:agent",
+  "target": "datadog_get_monitor",
+  "kind": "agent",
+  "text": "Datadog monitor configuration details alert conditions notification mon-12345"
+ },
+ {
+  "id": "datadog_list_dashboards:agent",
+  "target": "datadog_list_dashboards",
+  "kind": "agent",
+  "text": "Datadog API list dashboards with title and tag search filter"
+ },
+ {
+  "id": "sentry_update_alert_rule:agent",
+  "target": "sentry_update_alert_rule",
+  "kind": "agent",
+  "text": "Sentry update alert rule notification channel from dev-alerts to incident-response"
+ },
+ {
+  "id": "sentry_get_organization_stats:agent",
+  "target": "sentry_get_organization_stats",
+  "kind": "agent",
+  "text": "Sentry organization stats error count and rejected events trend this month"
+ },
+ {
+  "id": "sentry_get_project_details:agent",
+  "target": "sentry_get_project_details",
+  "kind": "agent",
+  "text": "Sentry project settings and status details for frontend-app"
+ },
+ {
+  "id": "pagerduty_get_incident:agent",
+  "target": "pagerduty_get_incident",
+  "kind": "agent",
+  "text": "Sentry issue details and logs for incident ID INC-2024-051"
+ },
+ {
+  "id": "pagerduty_update_service:agent",
+  "target": "pagerduty_update_service",
+  "kind": "agent",
+  "text": "Sentry update project team assignment from backend to SRE"
+ },
+ {
+  "id": "pagerduty_trigger_webhook:agent",
+  "target": "pagerduty_trigger_webhook",
+  "kind": "agent",
+  "text": "PagerDuty trigger test webhook integration for Slack dev-alerts channel"
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:agent",
+  "target": "aws_cloudwatch_get_log_events",
+  "kind": "agent",
+  "text": "AWS CloudWatch Logs get log events last 1 hour app-production group"
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:agent",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "kind": "agent",
+  "text": "AWS CloudWatch Logs filter search OutOfMemoryError string find location"
+ },
+ {
+  "id": "aws_cloudwatch_put_metric_data:agent",
+  "target": "aws_cloudwatch_put_metric_data",
+  "kind": "agent",
+  "text": "CloudWatch put custom metric transactions per minute"
+ },
+ {
+  "id": "gcp_list_gcs_objects:agent",
+  "target": "gcp_list_gcs_objects",
+  "kind": "agent",
+  "text": "GCS list files in bucket monthly-reports-2024"
+ },
+ {
+  "id": "gcp_delete_gcs_object:agent",
+  "target": "gcp_delete_gcs_object",
+  "kind": "agent",
+  "text": "GCS delete file report_v2_draft.pdf from temp-uploads"
+ },
+ {
+  "id": "gcp_check_iam_permissions:agent",
+  "target": "gcp_check_iam_permissions",
+  "kind": "agent",
+  "text": "BigQuery check user permissions tanaka@example.com sales_data"
+ },
+ {
+  "id": "stripe_refund_payment:agent",
+  "target": "stripe_refund_payment",
+  "kind": "agent",
+  "text": "Stripe refund full amount customer cus_12345 last week"
+ },
+ {
+  "id": "stripe_create_customer:agent",
+  "target": "stripe_create_customer",
+  "kind": "agent",
+  "text": "Stripe create new customer Tanaka Taro tanaka@example.com"
+ },
+ {
+  "id": "stripe_list_invoices:agent",
+  "target": "stripe_list_invoices",
+  "kind": "agent",
+  "text": "Stripe list invoices customer cus_12345 check unpaid"
+ },
+ {
+  "id": "shopify_list_customers:agent",
+  "target": "shopify_list_customers",
+  "kind": "agent",
+  "text": "Shopify list all customers sorted by email address"
+ },
+ {
+  "id": "shopify_search_products:agent",
+  "target": "shopify_search_products",
+  "kind": "agent",
+  "text": "Shopify search active products keyword summer linen shirt"
+ },
+ {
+  "id": "shopify_get_collection:agent",
+  "target": "shopify_get_collection",
+  "kind": "agent",
+  "text": "Shopify get automatic collection conditions Summer Sale"
+ },
+ {
+  "id": "zoom_get_meeting_details:agent",
+  "target": "zoom_get_meeting_details",
+  "kind": "agent",
+  "text": "Zoom get meeting details and join URL 123-456-789"
+ },
+ {
+  "id": "zoom_list_registrants:agent",
+  "target": "zoom_list_registrants",
+  "kind": "agent",
+  "text": "Zoom webinar registrants status pending approved New Product Seminar"
+ },
+ {
+  "id": "zoom_search_meetings:agent",
+  "target": "zoom_search_meetings",
+  "kind": "agent",
+  "text": "Zoom search past meetings title Q3 Budget Review last week"
+ },
+ {
+  "id": "figma_delete_comment:agent",
+  "target": "figma_delete_comment",
+  "kind": "agent",
+  "text": "Figma delete comment ID 98765"
+ },
+ {
+  "id": "figma_get_project_files:agent",
+  "target": "figma_get_project_files",
+  "kind": "agent",
+  "text": "Figma list all files in project proj_12345"
+ },
+ {
+  "id": "figma_get_comments:agent",
+  "target": "figma_get_comments",
+  "kind": "agent",
+  "text": "Figma list unresolved review comments in file"
+ },
+ {
+  "id": "miro_create_sticky_note:agent",
+  "target": "miro_create_sticky_note",
+  "kind": "agent",
+  "text": "Miro create yellow sticky note SNS campaign idea Q3 Marketing Strategy board"
+ },
+ {
+  "id": "miro_delete_item:agent",
+  "target": "miro_delete_item",
+  "kind": "agent",
+  "text": "Miro delete sticky note item_12345 from Q3 Plan board"
+ },
+ {
+  "id": "miro_resolve_comment:agent",
+  "target": "miro_resolve_comment",
+  "kind": "agent",
+  "text": "Miro resolve comment Tanaka logo A decision Q3 Marketing Strategy"
+ },
+ {
+  "id": "ga4_create_property:agent",
+  "target": "ga4_create_property",
+  "kind": "agent",
+  "text": "Google Analytics 4 create new property ShopNext EC site"
+ },
+ {
+  "id": "ga4_get_data_stream:agent",
+  "target": "ga4_get_data_stream",
+  "kind": "agent",
+  "text": "GA4 data stream list measurement ID default URL"
+ },
+ {
+  "id": "ga4_list_audiences:agent",
+  "target": "ga4_list_audiences",
+  "kind": "agent",
+  "text": "list retargeting user segments configuration"
+ },
+ {
+  "id": "bigquery_cancel_job:agent",
+  "target": "bigquery_cancel_job",
+  "kind": "agent",
+  "text": "cancel running heavy aggregation query immediately"
+ },
+ {
+  "id": "bigquery_search_tables:agent",
+  "target": "bigquery_search_tables",
+  "kind": "agent",
+  "text": "find tables containing sales_2024 in project"
+ },
+ {
+  "id": "bigquery_update_table_schema:agent",
+  "target": "bigquery_update_table_schema",
+  "kind": "agent",
+  "text": "BigQuery add column age_group to sales_2024 table"
+ },
+ {
+  "id": "tableau_get_workbook_details:agent",
+  "target": "tableau_get_workbook_details",
+  "kind": "agent",
+  "text": "check dashboard last updated date and owner"
+ },
+ {
+  "id": "tableau_refresh_datasource:agent",
+  "target": "tableau_refresh_datasource",
+  "kind": "agent",
+  "text": "refresh sales management dashboard data extract now"
+ },
+ {
+  "id": "tableau_add_user_to_site:agent",
+  "target": "tableau_add_user_to_site",
+  "kind": "agent",
+  "text": "Tableau add user Tanaka viewer role"
+ }
+]
