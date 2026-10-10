@@ -56,6 +56,12 @@ pub struct SearchOutput {
 }
 
 impl SearchService {
+    /// 検索が使う埋め込み（ツール・skill の検索の融合にも同じものを使う・#517）。
+    #[must_use]
+    pub fn embedder(&self) -> Arc<dyn EmbeddingProvider> {
+        Arc::clone(&self.embedder)
+    }
+
     #[allow(clippy::too_many_arguments)] // 依存束の注入点（AppState からの一回きり）。
     pub fn new(
         pool: PgPool,

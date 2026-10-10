@@ -7,7 +7,7 @@
 
 use std::io::{BufWriter, Read, Write};
 
-use agent_core::EvalCatalog;
+use agent_core::CatalogSearch;
 use llm_gateway::ToolDef;
 use serde::Deserialize;
 
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut raw = String::new();
     std::io::stdin().read_to_string(&mut raw)?;
     let input: Input = serde_json::from_str(&raw)?;
-    let catalog = EvalCatalog::new(&input.catalog);
+    let catalog = CatalogSearch::new(&input.catalog, None);
     let mut out = BufWriter::new(std::io::stdout().lock());
     for q in &input.queries {
         let ranked: Vec<(String, f64)> = catalog
@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect();
         let line = serde_json::json!({
             "id": q.id,
-            "search": catalog.search(&q.text, input.limit),
+            "search": catalog.search_lexical(&q.text, input.limit),
             "ranked": ranked,
         });
         writeln!(out, "{line}")?;

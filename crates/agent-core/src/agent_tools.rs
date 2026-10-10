@@ -252,7 +252,7 @@ async fn run_sequential(
         // tool search（遅延ツールの読み込み）: 索引を引くだけで副作用も外部 I/O も無い。
         // 承認ゲートの対象外。読み込んだ名前は結果ブロックへ残し、以降の提示に効かせる。
         if let Some(search) = phase.tool_search.filter(|_| call.name == TOOL_SEARCH_TOOL) {
-            let found = search.handle(&call.input);
+            let found = search.handle(phase.ctx, &call.input).await;
             let outcome = if found.is_error {
                 ToolOutcome::error(found.content)
             } else {
