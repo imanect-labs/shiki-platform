@@ -1,10 +1,10 @@
 """検索精度の評価（規模・融合・言語・件数・レイテンシ）。
 
 方式:
-- `bm25`        … 製品の BM25F の打ち切り前の順位（`EvalCatalog::ranked`）
-- `bm25_prod`   … 製品が実際に読み込む順位（limit 5・相対カットオフ込み・`EvalCatalog::search`）
+- `bm25`        … 製品の BM25F の打ち切り前の順位（`CatalogSearch::ranked`）
+- `bm25_prod`   … 製品が実際に読み込む順位（limit 5・相対カットオフ込み・`CatalogSearch::search_lexical`）
 - `emb`         … Ruri v3 の埋め込みのコサイン類似度
-- `rrf`         … bm25 と emb の Reciprocal Rank Fusion（k=60・`crates/rag/src/fusion.rs` と同じ定数）
+- `rrf`         … bm25 と emb の Reciprocal Rank Fusion（k=10・製品の tool_search と同じ定数・#517）
 - `rrf_rerank`  … rrf の上位 20 件を cross-encoder で並べ替え
 
 実験:
@@ -34,7 +34,8 @@ from .metrics import bootstrap_ci, rank_of, summarize
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "results"
-RRF_K = 60
+# 製品の tool_search の融合と同じ（`crates/agent-core/src/tool_search/hybrid.rs` の RRF_K）。
+RRF_K = 10
 RERANK_DEPTH = 20
 METHODS = ("bm25", "bm25_prod", "emb", "rrf", "rrf_rerank")
 
