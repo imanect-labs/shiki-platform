@@ -238,6 +238,7 @@ impl ChatWorker {
                 }
                 opts.parallel_read_tools = self.config.parallel_read_tools;
                 opts.tool_search.enabled = self.config.tool_search;
+                opts.tool_search.embedder = self.tool_search_embedder();
                 opts
             } else {
                 // storage 未配線: 自律不能。制約版に落とす（黙って弱くしない・警告）。
