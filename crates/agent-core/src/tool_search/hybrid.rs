@@ -47,18 +47,31 @@ struct TenantCache {
 /// なり、上限が効かずに tenant/org の数だけ増え続ける）。上限なら最も長く使われていない枠を
 /// 1 つだけ追い出す（全消去すると、上限を少し超える規模で温めが毎回やり直しになる）。
 /// 埋め込み中の枠は追い出さない（戻ってきた結果の置き場を失わない）。
-fn tenant_entry(guard: &mut HashMap<String, TenantCache>, scope: String) -> &mut TenantCache {
-    static TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let now = TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if !guard.contains_key(&scope) && guard.len() >= TENANT_LIMIT {
+/// 枠の数が `max` 以下になるまで、最も長く使われていない枠から追い出す（埋め込み中は除く）。
+///
+/// 埋め込み中の枠しか残っていなければ一時的に上限を超えたままにし、その埋め込みが終わった時点で
+/// [`warm`] がもう一度呼んで上限まで戻す（超過分を持ち続けない）。
+fn evict_to(guard: &mut HashMap<String, TenantCache>, max: usize) {
+    while guard.len() > max {
         let oldest = guard
             .iter()
             .filter(|(_, t)| t.in_flight.is_empty())
             .min_by_key(|(_, t)| t.last_used)
             .map(|(k, _)| k.clone());
-        if let Some(k) = oldest {
-            guard.remove(&k);
+        match oldest {
+            Some(k) => {
+                guard.remove(&k);
+            }
+            None => break,
         }
+    }
+}
+
+fn tenant_entry(guard: &mut HashMap<String, TenantCache>, scope: String) -> &mut TenantCache {
+    static TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if !guard.contains_key(&scope) {
+        evict_to(guard, TENANT_LIMIT.saturating_sub(1));
     }
     let tenant = guard.entry(scope).or_default();
     tenant.last_used = now;
@@ -286,6 +299,8 @@ async fn warm(
             tracing::warn!(error = %e, "tool search: 文書の埋め込みに失敗（BM25 のみで続ける）");
         }
     }
+    // 埋め込み中で追い出せずに上限を超えていた分を、ここで上限まで戻す。
+    evict_to(&mut guard, TENANT_LIMIT);
 }
 
 /// 2 つの順位の Reciprocal Rank Fusion（同点は添字順で決定的に）。
@@ -328,6 +343,25 @@ mod tests {
         assert_eq!(table.len(), TENANT_LIMIT);
         assert!(table.contains_key("t0/o") && table.contains_key("new/o"));
         assert!(!table.contains_key("t1/o"));
+    }
+
+    #[test]
+    fn scopes_kept_while_embedding_are_trimmed_once_done() {
+        let mut table: HashMap<String, TenantCache> = HashMap::new();
+        for i in 0..TENANT_LIMIT {
+            let t = tenant_entry(&mut table, format!("t{i}/o"));
+            t.in_flight.insert(("m".into(), 1));
+        }
+        // 全部が埋め込み中なら追い出せず、一時的に上限を超える。
+        tenant_entry(&mut table, "new/o".into());
+        assert_eq!(table.len(), TENANT_LIMIT + 1);
+        // 埋め込みが終わったら上限まで戻す（最も古い t0 から）。
+        for t in table.values_mut() {
+            t.in_flight.clear();
+        }
+        evict_to(&mut table, TENANT_LIMIT);
+        assert_eq!(table.len(), TENANT_LIMIT);
+        assert!(!table.contains_key("t0/o") && table.contains_key("new/o"));
     }
 
     #[test]
