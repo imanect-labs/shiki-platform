@@ -153,12 +153,19 @@ def e2e(name: str = "e2e", title: str = "E2E（LLM が会話の中で正解ツ�
         rs = [r for r in all_rs if not r["error"]]
         errors = len(all_rs) - len(rs)
         if not rs:
-            rows.append([str(n), cond, "0", "—", "—", "—", "—", "—", str(errors)])
+            rows.append([str(n), cond, "0", "—", "—", "—", "—", "—", "—", "—", str(errors)])
             continue
         v2 = "calls" in rs[0]
         ok = sum(r["correct"] for r in rs) / len(rs)
         first = sum(r["first_correct"] if v2 else r["correct"] for r in rs) / len(rs)
         none = sum(1 for r in rs if not (r["calls"] if v2 else r["called"])) / len(rs)
+        wrong = sum(1 for r in rs if (r["calls"] if v2 else r["called"]) and not r["correct"])
+        # 正解を読み込めていたのに、どのツールも呼ばずに終えた（聞き返しなど）。
+        none_loaded = sum(
+            1
+            for r in rs
+            if v2 and not r["calls"] and any(r["target"] in s["hits"] for s in r["searches"])
+        )
         tok = sum(r["prompt_tokens"] for r in rs) / len(rs)
         srch = sum(len(r["searches"]) for r in rs) / len(rs)
         rows.append(
@@ -169,6 +176,8 @@ def e2e(name: str = "e2e", title: str = "E2E（LLM が会話の中で正解ツ�
                 _pct(ok),
                 _pct(first),
                 _pct(none),
+                _pct(none_loaded / len(rs)),
+                _pct(wrong / len(rs)),
                 f"{tok:.0f}",
                 f"{srch:.2f}",
                 str(errors),
@@ -185,6 +194,8 @@ def e2e(name: str = "e2e", title: str = "E2E（LLM が会話の中で正解ツ�
                 "正解率",
                 "最初の実ツール呼び出しで正解",
                 "ツール呼び出しなし",
+                "うち正解を読み込み済み",
+                "別のツールを呼んだ",
                 "平均入力トークン",
                 "検索回数",
                 "失敗（除外）",
