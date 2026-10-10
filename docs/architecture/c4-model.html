@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>shiki C4 アーキテクチャ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+JP:wght@400;600;700&family=Zen+Kaku+Gothic+New:wght@700&display=swap">
+<style>
+/* レイアウト: 1 カラムの技術文書。図は横スクロール可能な figure に入れ、表で関係を補う */
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --fg: #16202a;
+  --muted: #566372;
+  --line: #c7d0da;
+  --edge: #4d5b6a;
+  --int: #2c5f93;
+  --int-bg: #e4edf7;
+  --sys: #1f4f80;
+  --on-sys: #ffffff;
+  --on-sys-muted: #cfe0f2;
+  --ext: #7b8693;
+  --ext-bg: #eceff2;
+  --per: #2d6e57;
+  --per-bg: #dcece5;
+  --choke: #a85a17;
+  --choke-bg: #f7e8d8;
+  --band: #eef2f6;
+  --font-display: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  --font-body: "IBM Plex Sans JP", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f141a; --surface: #161d25; --fg: #e3e9ef; --muted: #9aa6b4; --line: #334150; --edge: #8d9aa8;
+    --int: #79aee2; --int-bg: #172c42; --sys: #6fa6dc; --on-sys: #0c1520; --on-sys-muted: #1d3550;
+    --ext: #8e99a6; --ext-bg: #1f262e; --per: #6cc29e; --per-bg: #143127;
+    --choke: #e7a160; --choke-bg: #36230f; --band: #131a21; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f141a; --surface: #161d25; --fg: #e3e9ef; --muted: #9aa6b4; --line: #334150; --edge: #8d9aa8;
+  --int: #79aee2; --int-bg: #172c42; --sys: #6fa6dc; --on-sys: #0c1520; --on-sys-muted: #1d3550;
+  --ext: #8e99a6; --ext-bg: #1f262e; --per: #6cc29e; --per-bg: #143127;
+  --choke: #e7a160; --choke-bg: #36230f; --band: #131a21; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.7; margin: 0; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 64px; }
+header.top { display: grid; gap: 8px; padding-block-end: 20px; border-bottom: 1px solid var(--line); }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(26px, 4vw, 36px); line-height: 1.25; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--font-display); font-weight: 700; font-size: 22px; line-height: 1.35; margin: 0; text-wrap: balance; }
+h3 { font-size: 15px; margin: 0; }
+p { margin: 0; max-width: 68ch; }
+.meta { color: var(--muted); font-size: 13px; }
+code { font-family: var(--font-mono); font-size: .88em; }
+nav.toc { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line); }
+nav.toc ul { list-style: none; display: flex; gap: 4px 18px; flex-wrap: wrap; margin: 0; padding-block: 10px; padding-inline: 0; font-size: 13.5px; }
+nav.toc a { color: var(--fg); text-decoration: none; border-bottom: 1px solid transparent; }
+nav.toc a:hover, nav.toc a:focus-visible { border-bottom-color: var(--fg); }
+nav.toc .lv { font-family: var(--font-mono); color: var(--muted); margin-right: 6px; font-size: 12px; }
+a:focus-visible { outline: 2px solid var(--int); outline-offset: 2px; }
+section { display: grid; gap: 14px; padding-block: 36px 8px; scroll-margin-top: 56px; }
+.sec-head { display: grid; gap: 4px; }
+.sec-head .lv { font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; color: var(--muted); }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; }
+figure .canvas { padding: 14px; }
+figure svg { display: block; width: 100%; height: auto; color: var(--edge); }
+figcaption { font-size: 13px; color: var(--muted); padding-inline: 14px; padding-block: 0 12px; max-width: 80ch; }
+.principles { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; padding-block-start: 20px; }
+.principles div { min-width: 0; border-top: 2px solid var(--choke); padding-block-start: 8px; }
+.principles h3 { font-size: 14px; }
+.principles p { font-size: 13.5px; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); padding-block-start: 16px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 18px; height: 12px; border-radius: 3px; border: 1.5px solid; display: inline-block; }
+.sw.per { background: var(--per-bg); border-color: var(--per); border-radius: 6px; }
+.sw.sys { background: var(--sys); border-color: var(--sys); }
+.sw.int { background: var(--int-bg); border-color: var(--int); }
+.sw.store { background: var(--int-bg); border-color: var(--int); border-radius: 6px / 4px; }
+.sw.ext { background: var(--ext-bg); border-color: var(--ext); }
+.sw.choke { background: var(--choke-bg); border-color: var(--choke); }
+.sw.dash { background: transparent; border-color: var(--ext); border-style: dashed; }
+.tbl { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+td:first-child { font-variant-numeric: tabular-nums; }
+table.rel td:first-child { font-family: var(--font-mono); color: var(--muted); width: 2.5em; }
+table.rel td:nth-child(2) { white-space: nowrap; font-weight: 600; }
+table.matrix th, table.matrix td { text-align: center; white-space: nowrap; padding: 6px 10px; }
+table.matrix th:nth-child(-n+2), table.matrix td:nth-child(-n+2) { text-align: left; }
+table.matrix .dot { color: var(--int); }
+table.matrix tr td:nth-child(4) .dot { color: var(--choke); }
+table.matrix .self { color: var(--line); }
+.note { border-left: 3px solid var(--choke); background: var(--surface); padding: 12px 16px; border-radius: 0 8px 8px 0; display: grid; gap: 8px; font-size: 14px; }
+.note ul { margin: 0; padding-left: 1.2em; display: grid; gap: 4px; }
+footer { margin-block-start: 40px; color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--line); padding-block-start: 14px; }
+
+/* --- SVG --- */
+.k-per { fill: var(--per-bg); stroke: var(--per); stroke-width: 1.5; }
+.k-sys { fill: var(--sys); stroke: var(--sys); stroke-width: 1.5; }
+.k-int { fill: var(--int-bg); stroke: var(--int); stroke-width: 1.5; }
+.k-ext { fill: var(--ext-bg); stroke: var(--ext); stroke-width: 1.5; }
+.k-choke { fill: var(--choke-bg); stroke: var(--choke); stroke-width: 2; }
+.k-store { fill: var(--int-bg); stroke: var(--int); stroke-width: 1.5; }
+.k-store-rim { fill: none; stroke: var(--int); stroke-width: 1.5; }
+.boundary { fill: none; stroke: var(--sys); stroke-width: 1.5; stroke-dasharray: 8 5; }
+.band { fill: var(--band); stroke: var(--line); stroke-width: 1; }
+.band.accent { fill: none; stroke: var(--choke); stroke-dasharray: 6 4; }
+.t-band { fill: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .04em; font-family: var(--font-body); }
+.t-band.accent { fill: var(--choke); }
+.t-boundary { fill: var(--sys); font-size: 13px; font-weight: 700; font-family: var(--font-body); }
+.t-title { fill: var(--fg); font-size: 13.5px; font-weight: 700; font-family: var(--font-body); }
+.t-tech { fill: var(--muted); font-size: 10.5px; font-family: var(--font-mono); }
+.t-desc { fill: var(--fg); font-size: 11.5px; font-family: var(--font-body); }
+.t-title-on { fill: var(--on-sys); font-size: 14px; font-weight: 700; font-family: var(--font-body); }
+.t-tech-on { fill: var(--on-sys); opacity: .8; font-size: 10.5px; font-family: var(--font-mono); }
+.t-desc-on { fill: var(--on-sys); font-size: 11.5px; font-family: var(--font-body); }
+.edge { fill: none; stroke: var(--edge); stroke-width: 1.4; }
+.edge.dashed { stroke-dasharray: 5 4; }
+.edge.accent { stroke: var(--choke); stroke-width: 1.8; }
+.ahp { fill: var(--edge); }
+.ahp-a { fill: var(--choke); }
+.lifeline { stroke: var(--line); stroke-width: 1.2; stroke-dasharray: 3 4; fill: none; }
+.badge { fill: var(--fg); }
+.badge-t { fill: var(--bg); font-size: 10.5px; font-weight: 700; font-family: var(--font-mono); }
+.elabel { fill: var(--fg); font-size: 11.5px; font-family: var(--font-body); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+.elabel.sub { fill: var(--muted); font-size: 10.5px; font-family: var(--font-mono); }
+.elabel.accent { fill: var(--choke); font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <div class="eyebrow">C4 model · shiki-platform</div>
+  <h1>shiki C4 アーキテクチャ</h1>
+  <p>権限考慮 RAG・自律エージェント・ミニアプリ基盤を備えるエンタープライズ AI プラットフォームを、C4 モデルの 3 階層（コンテキスト・コンテナ・コンポーネント）と 1 枚の動的図で示す。</p>
+  <p class="meta">基準: <code>main@5313f22</code>（2026-10-10）。出典は <code>docs/design.md</code>・<code>deploy/compose/docker-compose.yml</code>・<code>crates/*/Cargo.toml</code>。設計の正本は <code>docs/</code> 側で、本ページはその図解。</p>
+  <div class="principles">
+    <div><h3>単一チョークポイント</h3><p>ストレージは StorageService、認可は OpenFGA クライアント、LLM は llm-gateway を必ず通る。</p></div>
+    <div><h3>アンビエント権限の禁止</h3><p>全データアクセスは <code>AuthContext { principal, org, tenant_id }</code> 経由。</p></div>
+    <div><h3>二段 authz</h3><p>RAG は pre-filter と post-filter の両方を通す。片方が壊れても権限は守られる。</p></div>
+    <div><h3>差し替えはトレイト裏で</h3><p>オンプレとクラウドの差はトレイト実装だけで吸収し、本体は分岐させない。</p></div>
+  </div>
+  <div class="legend" aria-label="凡例">
+    <span><i class="sw per"></i>人</span>
+    <span><i class="sw sys"></i>対象システム／中心コンテナ</span>
+    <span><i class="sw int"></i>コンテナ・コンポーネント</span>
+    <span><i class="sw store"></i>データストア</span>
+    <span><i class="sw ext"></i>外部システム</span>
+    <span><i class="sw choke"></i>単一チョークポイント・認可経路</span>
+    <span><i class="sw dash"></i>未実装・未配線</span>
+  </div>
+</header>
+<nav class="toc" aria-label="目次"><ul>
+  <li><a href="#context"><span class="lv">L1</span>システムコンテキスト</a></li>
+  <li><a href="#containers"><span class="lv">L2</span>コンテナ</a></li>
+  <li><a href="#components"><span class="lv">L3</span>コンポーネント</a></li>
+  <li><a href="#dynamic"><span class="lv">動的</span>RAG 付きチャット</a></li>
+  <li><a href="#deployment"><span class="lv">配置</span>オンプレ / クラウド</a></li>
+  <li><a href="#gaps"><span class="lv">注記</span>設計書との差分</a></li>
+</ul></nav>
+
+<section id="context">
+  <div class="sec-head"><span class="lv">LEVEL 1</span><h2>システムコンテキスト</h2></div>
+  <p>shiki を 1 つの箱として、誰が使い、何に依存するかを示す。社員の ID の正本は顧客 IdP にあり、shiki は Keycloak を介してフェデレートする。推論はオンプレではローカル vLLM、SaaS では外部 API に向く。</p>
+  <figure><div class="canvas"><svg viewBox="0 0 1100 590" role="img" aria-label="システムコンテキスト図: 社員・管理者・開発者が shiki を使い、shiki は顧客 IdP・LLM・Web 検索・公開 Web に依存する" style="min-width:860px"><defs>
+<marker id="ah-l1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker>
+<marker id="ahs-l1" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker>
+<marker id="ah-a-l1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahp-a"/></marker>
+<marker id="ah-as-l1" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp-a"/></marker>
+</defs><rect x="20" y="20" width="200" height="96" rx="6" class="k-ext" stroke-dasharray="6 4"/>
+<text x="120.0" y="42" class="t-title" text-anchor="middle">skillex</text>
+<text x="120.0" y="58" class="t-tech" text-anchor="middle">[外部ソフトウェアシステム]</text>
+<text x="120.0" y="77" class="t-desc" text-anchor="middle">社内の別製品（最初の外部</text>
+<text x="120.0" y="92" class="t-desc" text-anchor="middle">LLM クライアント）</text>
+<rect x="260" y="32" width="200" height="84" rx="16" class="k-per"/>
+<circle cx="360.0" cy="30" r="13" class="k-per"/>
+<text x="360.0" y="56" class="t-title" text-anchor="middle">社員ユーザー</text>
+<text x="360.0" y="72" class="t-tech" text-anchor="middle">[人]</text>
+<text x="360.0" y="91" class="t-desc" text-anchor="middle">チャット・資料作成・</text>
+<text x="360.0" y="106" class="t-desc" text-anchor="middle">エージェントを使う</text>
+<rect x="500" y="32" width="200" height="84" rx="16" class="k-per"/>
+<circle cx="600.0" cy="30" r="13" class="k-per"/>
+<text x="600.0" y="56" class="t-title" text-anchor="middle">テナント管理者</text>
+<text x="600.0" y="72" class="t-tech" text-anchor="middle">[人]</text>
+<text x="600.0" y="91" class="t-desc" text-anchor="middle">ユーザー・モデル・</text>
+<text x="600.0" y="106" class="t-desc" text-anchor="middle">ポリシを管理する</text>
+<rect x="740" y="32" width="200" height="84" rx="16" class="k-per"/>
+<circle cx="840.0" cy="30" r="13" class="k-per"/>
+<text x="840.0" y="56" class="t-title" text-anchor="middle">ミニアプリ開発者</text>
+<text x="840.0" y="72" class="t-tech" text-anchor="middle">[人]</text>
+<text x="840.0" y="91" class="t-desc" text-anchor="middle">業務アプリを作って</text>
+<text x="840.0" y="106" class="t-desc" text-anchor="middle">テナントへ公開する</text>
+<rect x="240" y="240" width="620" height="120" rx="6" class="k-sys"/>
+<text x="550.0" y="262" class="t-title-on" text-anchor="middle">shiki プラットフォーム</text>
+<text x="550.0" y="278" class="t-tech-on" text-anchor="middle">[ソフトウェアシステム]</text>
+<text x="550.0" y="297" class="t-desc-on" text-anchor="middle">権限考慮 RAG・自律エージェント・ミニアプリ基盤を備える</text>
+<text x="550.0" y="312" class="t-desc-on" text-anchor="middle">エンタープライズ AI プラットフォーム。オンプレ（シングルテナント）と</text>
+<text x="550.0" y="327" class="t-desc-on" text-anchor="middle">SaaS（マルチテナント）を同一バイナリで提供</text>
+<rect x="40" y="470" width="220" height="100" rx="6" class="k-ext"/>
+<text x="150.0" y="492" class="t-title" text-anchor="middle">顧客 IdP</text>
+<text x="150.0" y="508" class="t-tech" text-anchor="middle">[外部ソフトウェアシステム]</text>
+<text x="150.0" y="527" class="t-desc" text-anchor="middle">AD・Entra ID・Okta など</text>
+<text x="150.0" y="542" class="t-desc" text-anchor="middle">社員の ID の正本</text>
+<rect x="300" y="470" width="220" height="100" rx="6" class="k-ext"/>
+<text x="410.0" y="492" class="t-title" text-anchor="middle">LLM プロバイダ</text>
+<text x="410.0" y="508" class="t-tech" text-anchor="middle">[外部 / ローカル推論]</text>
+<text x="410.0" y="527" class="t-desc" text-anchor="middle">vLLM（オンプレ GPU）・</text>
+<text x="410.0" y="542" class="t-desc" text-anchor="middle">Anthropic・Gemini・Vertex</text>
+<rect x="560" y="470" width="220" height="100" rx="6" class="k-ext"/>
+<text x="670.0" y="492" class="t-title" text-anchor="middle">Web 検索</text>
+<text x="670.0" y="508" class="t-tech" text-anchor="middle">[外部ソフトウェアシステム]</text>
+<text x="670.0" y="527" class="t-desc" text-anchor="middle">Brave Search API（SaaS）・</text>
+<text x="670.0" y="542" class="t-desc" text-anchor="middle">SearXNG（オンプレ）</text>
+<rect x="820" y="470" width="220" height="100" rx="6" class="k-ext"/>
+<text x="930.0" y="492" class="t-title" text-anchor="middle">公開 Web サイト</text>
+<text x="930.0" y="508" class="t-tech" text-anchor="middle">[外部]</text>
+<text x="930.0" y="527" class="t-desc" text-anchor="middle">web_fetch の取得先</text>
+<text x="930.0" y="542" class="t-desc" text-anchor="middle">（エアギャップでは無効）</text>
+<path d="M360,116 L360,240" class="edge" marker-end="url(#ah-l1)"/>
+<text x="370" y="168" class="elabel" text-anchor="start">チャット・Drive・共同編集</text>
+<text x="370" y="183" class="elabel sub" text-anchor="start">[HTTPS・SSE・WebSocket]</text>
+<path d="M600,116 L600,240" class="edge" marker-end="url(#ah-l1)"/>
+<text x="610" y="168" class="elabel" text-anchor="start">テナント・モデル・ポリシ</text>
+<text x="610" y="183" class="elabel sub" text-anchor="start">[HTTPS]</text>
+<path d="M840,116 L840,240" class="edge" marker-end="url(#ah-l1)"/>
+<text x="850" y="168" class="elabel" text-anchor="start">ミニアプリを公開・API 利用</text>
+<text x="850" y="183" class="elabel sub" text-anchor="start">[shiki CLI・公開 API]</text>
+<path d="M120,116 L120,290 L240,290" class="edge dashed" marker-end="url(#ah-l1)"/>
+<text x="130" y="168" class="elabel" text-anchor="start">LLM API を m2m で呼ぶ</text>
+<text x="130" y="183" class="elabel sub" text-anchor="start">[client_credentials・未実装]</text>
+<path d="M240,330 L150,330 L150,470" class="edge" marker-end="url(#ah-l1)"/>
+<text x="160" y="405" class="elabel" text-anchor="start">認証フェデレーション</text>
+<text x="160" y="420" class="elabel sub" text-anchor="start">[OIDC・SAML・LDAP]</text>
+<path d="M410,360 L410,470" class="edge" marker-end="url(#ah-l1)"/>
+<text x="420" y="405" class="elabel" text-anchor="start">生成・tool use</text>
+<text x="420" y="420" class="elabel sub" text-anchor="start">[HTTPS・OpenAI 互換]</text>
+<path d="M670,360 L670,470" class="edge" marker-end="url(#ah-l1)"/>
+<text x="680" y="405" class="elabel" text-anchor="start">検索クエリ</text>
+<text x="680" y="420" class="elabel sub" text-anchor="start">[HTTPS]</text>
+<path d="M860,330 L930,330 L930,470" class="edge" marker-end="url(#ah-l1)"/>
+<text x="940" y="405" class="elabel" text-anchor="start">ページ取得</text>
+<text x="940" y="420" class="elabel sub" text-anchor="start">[公開 IP のみ]</text></svg></div>
+  <figcaption>skillex からの m2m 呼び出し（realm <code>shiki</code> の client_credentials・<code>aud=shiki-llm</code>）は設計済みだが、受け付けるエンドポイントはまだ <code>crates/</code> に無い（design §4.5）。</figcaption></figure>
+</section>
+
+<section id="containers">
+  <div class="sec-head"><span class="lv">LEVEL 2</span><h2>コンテナ</h2></div>
+  <p>コアは単一バイナリの <code>shiki-server</code>。特権や重い依存を要するもの（サンドボックス制御・DuckDB・Python パーサ）だけを別プロセスに出し、それらには資格情報を渡さない。データストアへ接続するのは shiki-server だけである。</p>
+  <figure><div class="canvas"><svg viewBox="0 0 1330 930" role="img" aria-label="コンテナ図: ブラウザは Web アプリ経由で shiki-server に入り、shiki-server だけが全ストアに触れ、サンドボックス・パーサ・DuckDB は資格情報を持たない別プロセスに隔離されている" style="min-width:980px"><defs>
+<marker id="ah-l2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker>
+<marker id="ahs-l2" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker>
+<marker id="ah-a-l2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahp-a"/></marker>
+<marker id="ah-as-l2" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp-a"/></marker>
+</defs><rect x="30" y="135" width="1050" height="780" rx="10" class="boundary"/>
+<text x="190" y="157" class="t-boundary">shiki プラットフォーム</text>
+<text x="190" y="173" class="t-tech" text-anchor="start">[ソフトウェアシステム境界]</text>
+<rect x="50" y="14" width="230" height="96" rx="6" class="k-ext"/>
+<text x="165.0" y="36" class="t-title" text-anchor="middle">顧客 IdP</text>
+<text x="165.0" y="52" class="t-tech" text-anchor="middle">[外部]</text>
+<text x="165.0" y="71" class="t-desc" text-anchor="middle">AD・Entra・Okta</text>
+<rect x="310" y="26" width="230" height="84" rx="16" class="k-per"/>
+<circle cx="425.0" cy="24" r="13" class="k-per"/>
+<text x="425.0" y="50" class="t-title" text-anchor="middle">社員ユーザー</text>
+<text x="425.0" y="66" class="t-tech" text-anchor="middle">[人・ブラウザ]</text>
+<text x="425.0" y="85" class="t-desc" text-anchor="middle">Cookie セッションのみ保持</text>
+<rect x="570" y="14" width="230" height="96" rx="6" class="k-ext"/>
+<text x="685.0" y="36" class="t-title" text-anchor="middle">ミニアプリ</text>
+<text x="685.0" y="52" class="t-tech" text-anchor="middle">[ブラウザ内・別オリジン]</text>
+<text x="685.0" y="71" class="t-desc" text-anchor="middle">Bearer JWT で公開 API を呼ぶ</text>
+<rect x="50" y="190" width="230" height="90" rx="6" class="k-int"/>
+<text x="165.0" y="212" class="t-title" text-anchor="middle">Keycloak</text>
+<text x="165.0" y="228" class="t-tech" text-anchor="middle">[コンテナ: Keycloak]</text>
+<text x="165.0" y="247" class="t-desc" text-anchor="middle">AuthN・realm shiki</text>
+<text x="165.0" y="262" class="t-desc" text-anchor="middle">顧客 IdP をフェデレート</text>
+<rect x="310" y="190" width="230" height="90" rx="6" class="k-int"/>
+<text x="425.0" y="212" class="t-title" text-anchor="middle">Web アプリ</text>
+<text x="425.0" y="228" class="t-tech" text-anchor="middle">[コンテナ: Next.js / TS]</text>
+<text x="425.0" y="247" class="t-desc" text-anchor="middle">チャット・Drive・エディタ UI</text>
+<text x="425.0" y="262" class="t-desc" text-anchor="middle">/api・/auth を同一オリジン中継</text>
+<rect x="830" y="190" width="230" height="90" rx="6" class="k-int"/>
+<text x="945.0" y="212" class="t-title" text-anchor="middle">監視スタック</text>
+<text x="945.0" y="228" class="t-tech" text-anchor="middle">[OTel Collector・Langfuse]</text>
+<text x="945.0" y="247" class="t-desc" text-anchor="middle">Tempo・Loki・Prometheus</text>
+<text x="945.0" y="262" class="t-desc" text-anchor="middle">Grafana・LLM トレース</text>
+<rect x="310" y="350" width="490" height="180" rx="6" class="k-sys"/>
+<text x="555.0" y="372" class="t-title-on" text-anchor="middle">shiki-server</text>
+<text x="555.0" y="388" class="t-tech-on" text-anchor="middle">[コンテナ: Rust モジュラモノリス・単一バイナリ]</text>
+<text x="555.0" y="407" class="t-desc-on" text-anchor="middle">:8080 内部 API・BFF 認証・SSE・WebSocket・WOPI</text>
+<text x="555.0" y="422" class="t-desc-on" text-anchor="middle">:8090 公開 API ゲートウェイ（Bearer JWT のみ）</text>
+<text x="555.0" y="437" class="t-desc-on" text-anchor="middle">:8091 B1 配信（ミニアプリ・editor-sandbox）</text>
+<text x="555.0" y="452" class="t-desc-on" text-anchor="middle">chat run ワーカー・jobq 消費・workflow-engine</text>
+<text x="555.0" y="467" class="t-desc-on" text-anchor="middle">script-runtime（wasmtime＋QuickJS）を内蔵</text>
+<rect x="50" y="420" width="230" height="100" rx="6" class="k-int"/>
+<text x="165.0" y="442" class="t-title" text-anchor="middle">shiki-tabular-runner</text>
+<text x="165.0" y="458" class="t-tech" text-anchor="middle">[子プロセス: Rust＋DuckDB]</text>
+<text x="165.0" y="477" class="t-desc" text-anchor="middle">CSV のクエリ/パッチを</text>
+<text x="165.0" y="492" class="t-desc" text-anchor="middle">非特権プロセスで隔離実行</text>
+<rect x="830" y="350" width="230" height="120" rx="6" class="k-int"/>
+<text x="945.0" y="372" class="t-title" text-anchor="middle">sandbox-orchestrator</text>
+<text x="945.0" y="388" class="t-tech" text-anchor="middle">[コンテナ: Rust・非特権]</text>
+<text x="945.0" y="407" class="t-desc" text-anchor="middle">gVisor（既定）・wasm・</text>
+<text x="945.0" y="422" class="t-desc" text-anchor="middle">Firecracker を起動</text>
+<text x="945.0" y="437" class="t-desc" text-anchor="middle">egress は既定遮断＋allowlist</text>
+<rect x="50" y="590" width="230" height="110" rx="6" class="k-int"/>
+<text x="165.0" y="612" class="t-title" text-anchor="middle">ingestion-worker</text>
+<text x="165.0" y="628" class="t-tech" text-anchor="middle">[コンテナ: Python・Docling]</text>
+<text x="165.0" y="647" class="t-desc" text-anchor="middle">/parse（レイアウト/表/OCR）</text>
+<text x="165.0" y="662" class="t-desc" text-anchor="middle">/embed（Ruri）・/rerank</text>
+<text x="165.0" y="677" class="t-desc" text-anchor="middle">/edit（docx・pptx）</text>
+<rect x="570" y="590" width="230" height="110" rx="6" class="k-int"/>
+<text x="685.0" y="612" class="t-title" text-anchor="middle">Collabora Online</text>
+<text x="685.0" y="628" class="t-tech" text-anchor="middle">[コンテナ: profile office]</text>
+<text x="685.0" y="647" class="t-desc" text-anchor="middle">docx・xlsx のブラウザ内</text>
+<text x="685.0" y="662" class="t-desc" text-anchor="middle">編集と共同編集</text>
+<text x="685.0" y="677" class="t-desc" text-anchor="middle">（任意で有効化）</text>
+<path d="M50,789 v82 a75.0,9 0 0 0 150,0 v-82 a75.0,9 0 0 0 -150,0 z" class="k-store"/>
+<path d="M50,789 a75.0,9 0 0 0 150,0" class="k-store-rim"/>
+<text x="125.0" y="814" class="t-title" text-anchor="middle">Postgres</text>
+<text x="125.0" y="833" class="t-desc" text-anchor="middle">ツリー/メタ・監査</text>
+<text x="125.0" y="848" class="t-desc" text-anchor="middle">outbox・jobq・run</text>
+<path d="M222,789 v82 a75.0,9 0 0 0 150,0 v-82 a75.0,9 0 0 0 -150,0 z" class="k-store"/>
+<path d="M222,789 a75.0,9 0 0 0 150,0" class="k-store-rim"/>
+<text x="297.0" y="814" class="t-title" text-anchor="middle">Redis</text>
+<text x="297.0" y="833" class="t-desc" text-anchor="middle">BFF セッション</text>
+<text x="297.0" y="848" class="t-desc" text-anchor="middle">run イベント pub/sub</text>
+<path d="M394,789 v82 a75.0,9 0 0 0 150,0 v-82 a75.0,9 0 0 0 -150,0 z" class="k-store"/>
+<path d="M394,789 a75.0,9 0 0 0 150,0" class="k-store-rim"/>
+<text x="469.0" y="814" class="t-title" text-anchor="middle">Qdrant</text>
+<text x="469.0" y="833" class="t-desc" text-anchor="middle">密ベクトル索引</text>
+<text x="469.0" y="848" class="t-desc" text-anchor="middle">tenant_id 必須 AND</text>
+<path d="M566,789 v82 a75.0,9 0 0 0 150,0 v-82 a75.0,9 0 0 0 -150,0 z" class="k-store"/>
+<path d="M566,789 a75.0,9 0 0 0 150,0" class="k-store-rim"/>
+<text x="641.0" y="814" class="t-title" text-anchor="middle">Tantivy 索引</text>
+<text x="641.0" y="833" class="t-desc" text-anchor="middle">BM25＋Lindera</text>
+<text x="641.0" y="848" class="t-desc" text-anchor="middle">ローカル volume</text>
+<path d="M738,789 v82 a75.0,9 0 0 0 150,0 v-82 a75.0,9 0 0 0 -150,0 z" class="k-store"/>
+<path d="M738,789 a75.0,9 0 0 0 150,0" class="k-store-rim"/>
+<text x="813.0" y="814" class="t-title" text-anchor="middle">RustFS / GCS</text>
+<text x="813.0" y="833" class="t-desc" text-anchor="middle">ファイル実体</text>
+<text x="813.0" y="848" class="t-desc" text-anchor="middle">content-addressed</text>
+<path d="M910,789 v82 a75.0,9 0 0 0 150,0 v-82 a75.0,9 0 0 0 -150,0 z" class="k-store"/>
+<path d="M910,789 a75.0,9 0 0 0 150,0" class="k-store-rim"/>
+<text x="985.0" y="814" class="t-title" text-anchor="middle">OpenFGA</text>
+<text x="985.0" y="833" class="t-desc" text-anchor="middle">ReBAC タプル</text>
+<text x="985.0" y="848" class="t-desc" text-anchor="middle">check・ListObjects</text>
+<rect x="1110" y="262" width="200" height="96" rx="6" class="k-ext"/>
+<text x="1210.0" y="284" class="t-title" text-anchor="middle">LLM プロバイダ</text>
+<text x="1210.0" y="300" class="t-tech" text-anchor="middle">[外部 / ローカル]</text>
+<text x="1210.0" y="319" class="t-desc" text-anchor="middle">vLLM・Anthropic・</text>
+<text x="1210.0" y="334" class="t-desc" text-anchor="middle">Gemini・Vertex</text>
+<rect x="1110" y="452" width="200" height="96" rx="6" class="k-ext"/>
+<text x="1210.0" y="474" class="t-title" text-anchor="middle">Web</text>
+<text x="1210.0" y="490" class="t-tech" text-anchor="middle">[外部]</text>
+<text x="1210.0" y="509" class="t-desc" text-anchor="middle">Brave・SearXNG・</text>
+<text x="1210.0" y="524" class="t-desc" text-anchor="middle">公開サイト</text>
+<path d="M425,110 L425,190" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="425.0" cy="150.0" r="9.5" class="badge"/>
+<text x="425.0" y="153.8" class="badge-t" text-anchor="middle">1</text>
+<path d="M425,280 L425,350" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="425.0" cy="315.0" r="9.5" class="badge"/>
+<text x="425.0" y="318.8" class="badge-t" text-anchor="middle">2</text>
+<path d="M685,110 L685,350" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="685" cy="230" r="9.5" class="badge"/>
+<text x="685" y="233.8" class="badge-t" text-anchor="middle">3</text>
+<path d="M310,380 L165,380 L165,280" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="238" cy="380" r="9.5" class="badge"/>
+<text x="238" y="383.8" class="badge-t" text-anchor="middle">4</text>
+<path d="M165,190 L165,110" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="165.0" cy="150.0" r="9.5" class="badge"/>
+<text x="165.0" y="153.8" class="badge-t" text-anchor="middle">5</text>
+<path d="M310,470 L280,470" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="295" cy="455" r="9.5" class="badge"/>
+<text x="295" y="458.8" class="badge-t" text-anchor="middle">6</text>
+<path d="M800,400 L830,400" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="815" cy="385" r="9.5" class="badge"/>
+<text x="815" y="388.8" class="badge-t" text-anchor="middle">7</text>
+<path d="M755,350 L755,235 L830,235" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="755" cy="290" r="9.5" class="badge"/>
+<text x="755" y="293.8" class="badge-t" text-anchor="middle">8</text>
+<path d="M785,350 L785,310 L1110,310" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="960" cy="310" r="9.5" class="badge"/>
+<text x="960" y="313.8" class="badge-t" text-anchor="middle">9</text>
+<path d="M800,500 L1110,500" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="960" cy="500" r="9.5" class="badge"/>
+<text x="960" y="503.8" class="badge-t" text-anchor="middle">10</text>
+<path d="M330,530 L330,645 L280,645" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="330" cy="590" r="9.5" class="badge"/>
+<text x="330" y="593.8" class="badge-t" text-anchor="middle">11</text>
+<path d="M700,530 L700,590" class="edge" marker-end="url(#ah-l2)" marker-start="url(#ahs-l2)"/>
+<circle cx="700" cy="560" r="9.5" class="badge"/>
+<text x="700" y="563.8" class="badge-t" text-anchor="middle">12</text>
+<path d="M535,530 L535,745" class="edge"/>
+<path d="M125,745 L985,745" class="edge"/>
+<path d="M125,745 L125,780" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="141" cy="761" r="9.5" class="badge"/>
+<text x="141" y="764.8" class="badge-t" text-anchor="middle">13</text>
+<path d="M297,745 L297,780" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="313" cy="761" r="9.5" class="badge"/>
+<text x="313" y="764.8" class="badge-t" text-anchor="middle">14</text>
+<path d="M469,745 L469,780" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="485" cy="761" r="9.5" class="badge"/>
+<text x="485" y="764.8" class="badge-t" text-anchor="middle">15</text>
+<path d="M641,745 L641,780" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="657" cy="761" r="9.5" class="badge"/>
+<text x="657" y="764.8" class="badge-t" text-anchor="middle">16</text>
+<path d="M813,745 L813,780" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="829" cy="761" r="9.5" class="badge"/>
+<text x="829" y="764.8" class="badge-t" text-anchor="middle">17</text>
+<path d="M985,745 L985,780" class="edge" marker-end="url(#ah-l2)"/>
+<circle cx="1001" cy="761" r="9.5" class="badge"/>
+<text x="1001" y="764.8" class="badge-t" text-anchor="middle">18</text>
+<text x="545" y="738" class="elabel sub" text-anchor="start">ストアに直接触れるのは shiki-server だけ</text></svg></div>
+  <figcaption>番号は下表の関係に対応する。compose では Collabora（<code>profile office</code>）と SearXNG（<code>profile websearch</code>）はオプトイン。OpenFGA と Keycloak の永続化は同じ Postgres インスタンスの別 DB。</figcaption></figure>
+  <div class="tbl"><table class="rel"><thead><tr><th scope="col">#</th><th scope="col">関係</th><th scope="col">内容</th><th scope="col">プロトコル・制約</th></tr></thead><tbody><tr><td>1</td><td>社員ユーザー → Web アプリ</td><td>画面操作</td><td>HTTPS。ブラウザが持つのは httpOnly の不透明セッション Cookie だけで、トークンは置かない</td></tr><tr><td>2</td><td>Web アプリ → shiki-server :8080</td><td>REST・SSE・WebSocket（Yjs 共同編集）</td><td>Next rewrites で /api/*・/auth/* を同一オリジン中継。CSRF は SameSite＋double-submit</td></tr><tr><td>3</td><td>ミニアプリ → shiki-server :8090</td><td>公開 API ゲートウェイ</td><td>Bearer JWT のみ（Cookie・CORS credentials なし）。ルート→スコープ宣言マップ → 同意スコープ → 呼出ユーザーの ReBAC の多重ゲート</td></tr><tr><td>4</td><td>shiki-server → Keycloak</td><td>OIDC code＋PKCE のトークン交換・JWKS 検証</td><td>BFF が refresh token をサーバ側で保持・更新。Back-Channel Logout で即時失効</td></tr><tr><td>5</td><td>Keycloak → 顧客 IdP</td><td>フェデレーション</td><td>OIDC・SAML・LDAP</td></tr><tr><td>6</td><td>shiki-server → tabular-runner</td><td>CSV のクエリ/パッチを DuckDB で実行</td><td>子プロセス（stdin/stdout）。重い C++ を本体から隔離</td></tr><tr><td>7</td><td>shiki-server → sandbox-orchestrator</td><td>code_interpreter・自律エージェントの shell</td><td>gRPC :50000。orchestrator はストレージ/DB の資格情報を持たない</td></tr><tr><td>8</td><td>shiki-server → 監視スタック</td><td>トレース・ログ・メトリクス・LLM トレース</td><td>OTLP／Langfuse API</td></tr><tr><td>9</td><td>shiki-server → LLM プロバイダ</td><td>生成（llm-gateway 経由のみ）</td><td>HTTPS。内部正規形は OpenAI 互換。LiteLLM は任意のアダプタ</td></tr><tr><td>10</td><td>shiki-server → Web</td><td>web_search・web_fetch</td><td>サンドボックスを使わずホスト側で取得。解決後 IP を検証し接続先を固定、リダイレクト非追従</td></tr><tr><td>11</td><td>shiki-server → ingestion-worker</td><td>パース・埋め込み・rerank・Office 編集</td><td>HTTP :8000。文書は URL ではなくバイト列で渡す</td></tr><tr><td>12</td><td>shiki-server ⇄ Collabora</td><td>WOPI ホスト／AI のライブ編集参加</td><td>WOPI は毎呼出で ReBAC を再チェック。PutFile は新版 → 書込イベント → 再索引</td></tr><tr><td>13</td><td>shiki-server → Postgres</td><td>ツリー/メタ（closure table）・storage_event_outbox・job_queue・audit_log・run・ワークフロー</td><td>SQL（sqlx）。outbox→queue のコピーは同一 Tx</td></tr><tr><td>14</td><td>shiki-server → Redis</td><td>BFF セッション（tenant_id キースコープ）・run イベント pub/sub</td><td>RESP</td></tr><tr><td>15</td><td>shiki-server → Qdrant</td><td>dense 検索・書込（collection 名に埋め込みモデル版、alias 経由）</td><td>HTTP :6333。全 search に tenant_id を無条件 AND</td></tr><tr><td>16</td><td>shiki-server → Tantivy</td><td>BM25 全文検索（Lindera で日本語分割）</td><td>組込みライブラリ・ローカル volume。index-per-tenant</td></tr><tr><td>17</td><td>shiki-server → RustFS / GCS</td><td>ファイル実体（content-addressed・テナント単位で重複排除）</td><td>S3 API / GCS（ObjectStore トレイト）</td></tr><tr><td>18</td><td>shiki-server → OpenFGA</td><td>check・ListObjects・タプル書込</td><td>HTTP。識別子は &lt;type&gt;:&lt;tenant&gt;|&lt;id&gt; に名前空間化</td></tr></tbody></table></div>
+</section>
+
+<section id="components">
+  <div class="sec-head"><span class="lv">LEVEL 3</span><h2>コンポーネント: shiki-server</h2></div>
+  <p>shiki-server 内のクレートを 4 層に分けた。ドメイン層は永続化・認可・LLM 呼出を自前で持たず、必ず単一チョークポイントの層を経由する。層間の矢印は集約表示で、個々の依存は下の表に示す（<code>Cargo.toml</code> の path 依存から抽出）。</p>
+  <figure><div class="canvas"><svg viewBox="0 0 1200 712" role="img" aria-label="コンポーネント図: shiki-server 内のクレートを入口・ドメイン・単一チョークポイント・実行基盤の 4 層に分け、ドメインは必ずチョークポイントを経由する" style="min-width:960px"><defs>
+<marker id="ah-l3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker>
+<marker id="ahs-l3" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker>
+<marker id="ah-a-l3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahp-a"/></marker>
+<marker id="ah-as-l3" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp-a"/></marker>
+</defs><rect x="20" y="20" width="1160" height="120" rx="8" class="band"/>
+<text x="36" y="42" class="t-band">入口（HTTP リスナ）</text>
+<rect x="40" y="52" width="550" height="74" rx="6" class="k-int"/>
+<text x="315.0" y="74" class="t-title" text-anchor="middle">api</text>
+<text x="315.0" y="90" class="t-tech" text-anchor="middle">[crate: axum・utoipa]</text>
+<text x="315.0" y="109" class="t-desc" text-anchor="middle">内部 API :8080・BFF 認証/セッション・SSE・OpenAPI 生成・依存の配線</text>
+<rect x="610" y="52" width="550" height="74" rx="6" class="k-int"/>
+<text x="885.0" y="74" class="t-title" text-anchor="middle">app-gateway</text>
+<text x="885.0" y="90" class="t-tech" text-anchor="middle">[crate]</text>
+<text x="885.0" y="109" class="t-desc" text-anchor="middle">公開 API :8090・B1 配信 :8091・ルート→スコープの宣言的マップ（集中 PEP）</text>
+<rect x="20" y="170" width="1160" height="220" rx="8" class="band"/>
+<text x="36" y="192" class="t-band">ドメイン</text>
+<rect x="40" y="202" width="170" height="80" rx="6" class="k-int"/>
+<text x="125.0" y="224" class="t-title" text-anchor="middle">chat</text>
+<text x="125.0" y="243" class="t-desc" text-anchor="middle">スレッド・メッセージ</text>
+<text x="125.0" y="258" class="t-desc" text-anchor="middle">run ワーカー・承認</text>
+<rect x="230" y="202" width="170" height="80" rx="6" class="k-int"/>
+<text x="315.0" y="224" class="t-title" text-anchor="middle">agent-core</text>
+<text x="315.0" y="243" class="t-desc" text-anchor="middle">LLM↔ツールのループ</text>
+<text x="315.0" y="258" class="t-desc" text-anchor="middle">Tool トレイト・委譲</text>
+<rect x="420" y="202" width="170" height="80" rx="6" class="k-int"/>
+<text x="505.0" y="224" class="t-title" text-anchor="middle">workflow-engine</text>
+<text x="505.0" y="243" class="t-desc" text-anchor="middle">ワークフロー IR</text>
+<text x="505.0" y="258" class="t-desc" text-anchor="middle">スケジューラ・トリガ</text>
+<rect x="610" y="202" width="170" height="80" rx="6" class="k-int"/>
+<text x="695.0" y="224" class="t-title" text-anchor="middle">app-platform</text>
+<text x="695.0" y="243" class="t-desc" text-anchor="middle">ミニアプリ・skill</text>
+<text x="695.0" y="258" class="t-desc" text-anchor="middle">マニフェスト検証</text>
+<rect x="800" y="202" width="170" height="80" rx="6" class="k-int"/>
+<text x="885.0" y="224" class="t-title" text-anchor="middle">gui</text>
+<text x="885.0" y="243" class="t-desc" text-anchor="middle">生成 UI スペック</text>
+<text x="885.0" y="258" class="t-desc" text-anchor="middle">検証・信頼カタログ</text>
+<rect x="990" y="202" width="170" height="80" rx="6" class="k-int"/>
+<text x="1075.0" y="224" class="t-title" text-anchor="middle">data</text>
+<text x="1075.0" y="243" class="t-desc" text-anchor="middle">構造化データ</text>
+<text x="1075.0" y="258" class="t-desc" text-anchor="middle">行 authz 述語・FSM</text>
+<rect x="40" y="296" width="170" height="80" rx="6" class="k-int"/>
+<text x="125.0" y="318" class="t-title" text-anchor="middle">collab</text>
+<text x="125.0" y="337" class="t-desc" text-anchor="middle">Yjs 同期サーバ</text>
+<text x="125.0" y="352" class="t-desc" text-anchor="middle">ノート・スライド</text>
+<rect x="230" y="296" width="170" height="80" rx="6" class="k-int"/>
+<text x="315.0" y="318" class="t-title" text-anchor="middle">office</text>
+<text x="315.0" y="337" class="t-desc" text-anchor="middle">WOPI ホスト</text>
+<text x="315.0" y="352" class="t-desc" text-anchor="middle">Collabora ライブ編集</text>
+<rect x="420" y="296" width="170" height="80" rx="6" class="k-int"/>
+<text x="505.0" y="318" class="t-title" text-anchor="middle">tabular</text>
+<text x="505.0" y="337" class="t-desc" text-anchor="middle">CSV クエリ/パッチ</text>
+<text x="505.0" y="352" class="t-desc" text-anchor="middle">→ tabular-runner</text>
+<rect x="610" y="296" width="170" height="80" rx="6" class="k-int"/>
+<text x="695.0" y="318" class="t-title" text-anchor="middle">artifact</text>
+<text x="695.0" y="337" class="t-desc" text-anchor="middle">共有アーティファクト</text>
+<text x="695.0" y="352" class="t-desc" text-anchor="middle">版・ReBAC 共有</text>
+<rect x="800" y="296" width="170" height="80" rx="6" class="k-int"/>
+<text x="885.0" y="318" class="t-title" text-anchor="middle">secrets</text>
+<text x="885.0" y="337" class="t-desc" text-anchor="middle">シークレット管理</text>
+<text x="885.0" y="352" class="t-desc" text-anchor="middle">KeyProvider</text>
+<rect x="990" y="296" width="170" height="80" rx="6" class="k-int" stroke-dasharray="6 4"/>
+<text x="1075.0" y="318" class="t-title" text-anchor="middle">jtd</text>
+<text x="1075.0" y="337" class="t-desc" text-anchor="middle">一太郎 JTD 読取</text>
+<text x="1075.0" y="352" class="t-desc" text-anchor="middle">（まだ未配線）</text>
+<rect x="20" y="420" width="1160" height="140" rx="8" class="band accent"/>
+<text x="36" y="442" class="t-band accent">単一チョークポイント（権限・監査・イベントはここで担保）</text>
+<rect x="40" y="452" width="265" height="96" rx="6" class="k-choke"/>
+<text x="172.5" y="474" class="t-title" text-anchor="middle">storage</text>
+<text x="172.5" y="490" class="t-tech" text-anchor="middle">[StorageService・ObjectStore]</text>
+<text x="172.5" y="509" class="t-desc" text-anchor="middle">権限チェック・監査・書込イベント</text>
+<text x="172.5" y="524" class="t-desc" text-anchor="middle">→ Postgres・RustFS / GCS</text>
+<rect x="325" y="452" width="265" height="96" rx="6" class="k-choke"/>
+<text x="457.5" y="474" class="t-title" text-anchor="middle">authz</text>
+<text x="457.5" y="490" class="t-tech" text-anchor="middle">[OpenFGA クライアント]</text>
+<text x="457.5" y="509" class="t-desc" text-anchor="middle">AuthContext{principal, org, tenant}</text>
+<text x="457.5" y="524" class="t-desc" text-anchor="middle">ns() で識別子を名前空間化</text>
+<rect x="610" y="452" width="265" height="96" rx="6" class="k-choke"/>
+<text x="742.5" y="474" class="t-title" text-anchor="middle">llm-gateway</text>
+<text x="742.5" y="490" class="t-tech" text-anchor="middle">[LlmProvider]</text>
+<text x="742.5" y="509" class="t-desc" text-anchor="middle">会計・監査・Langfuse・フォールバック</text>
+<text x="742.5" y="524" class="t-desc" text-anchor="middle">→ vLLM・Anthropic・Gemini</text>
+<rect x="895" y="452" width="265" height="96" rx="6" class="k-choke"/>
+<text x="1027.5" y="474" class="t-title" text-anchor="middle">rag</text>
+<text x="1027.5" y="490" class="t-tech" text-anchor="middle">[VectorStore・二段 authz]</text>
+<text x="1027.5" y="509" class="t-desc" text-anchor="middle">pre-filter＋post-filter・RRF</text>
+<text x="1027.5" y="524" class="t-desc" text-anchor="middle">→ Qdrant・Tantivy・worker</text>
+<rect x="20" y="590" width="1160" height="110" rx="8" class="band"/>
+<text x="36" y="612" class="t-band">実行基盤・アダプタ</text>
+<rect x="40" y="620" width="208" height="72" rx="6" class="k-int"/>
+<text x="144.0" y="642" class="t-title" text-anchor="middle">jobq</text>
+<text x="144.0" y="661" class="t-desc" text-anchor="middle">Postgres ジョブキュー</text>
+<text x="144.0" y="676" class="t-desc" text-anchor="middle">SKIP LOCKED・DLQ</text>
+<rect x="268" y="620" width="208" height="72" rx="6" class="k-int"/>
+<text x="372.0" y="642" class="t-title" text-anchor="middle">durable</text>
+<text x="372.0" y="661" class="t-desc" text-anchor="middle">耐久実行の下部構造</text>
+<text x="372.0" y="676" class="t-desc" text-anchor="middle">Redis pub/sub</text>
+<rect x="496" y="620" width="208" height="72" rx="6" class="k-int"/>
+<text x="600.0" y="642" class="t-title" text-anchor="middle">sandbox-client</text>
+<text x="600.0" y="661" class="t-desc" text-anchor="middle">Sandbox 契約</text>
+<text x="600.0" y="676" class="t-desc" text-anchor="middle">→ orchestrator gRPC</text>
+<rect x="724" y="620" width="208" height="72" rx="6" class="k-int"/>
+<text x="828.0" y="642" class="t-title" text-anchor="middle">script-runtime</text>
+<text x="828.0" y="661" class="t-desc" text-anchor="middle">shiki script 処理系</text>
+<text x="828.0" y="676" class="t-desc" text-anchor="middle">wasmtime＋QuickJS</text>
+<rect x="952" y="620" width="208" height="72" rx="6" class="k-int"/>
+<text x="1056.0" y="642" class="t-title" text-anchor="middle">websearch</text>
+<text x="1056.0" y="661" class="t-desc" text-anchor="middle">SearchProvider</text>
+<text x="1056.0" y="676" class="t-desc" text-anchor="middle">→ Brave・SearXNG</text>
+<path d="M315,126 L315,202" class="edge" marker-end="url(#ah-l3)"/>
+<text x="325" y="168" class="elabel" text-anchor="start">ハンドラがドメインを呼ぶ</text>
+<path d="M885,126 L885,202" class="edge" marker-end="url(#ah-l3)"/>
+<text x="895" y="168" class="elabel" text-anchor="start">公開 API → data・storage 等</text>
+<path d="M172,376 L172,452" class="edge accent" marker-end="url(#ah-a-l3)"/>
+<path d="M457,376 L457,452" class="edge accent" marker-end="url(#ah-a-l3)"/>
+<path d="M742,376 L742,452" class="edge accent" marker-end="url(#ah-a-l3)"/>
+<path d="M1027,376 L1027,452" class="edge accent" marker-end="url(#ah-a-l3)"/>
+<text x="600" y="408" class="elabel accent" text-anchor="middle">全データアクセス・認可・LLM 呼出は必ずここを通る</text>
+<path d="M600,548 L600,620" class="edge" marker-end="url(#ah-l3)"/>
+<text x="610" y="590" class="elabel" text-anchor="start">キュー・耐久実行・隔離実行</text></svg></div>
+  <figcaption>shiki-server の外にあるクレート: <code>sandbox-orchestrator</code>・<code>sandbox-netns</code>・<code>sandbox-guest-agent</code>・<code>sandbox-agent-proto</code>（orchestrator コンテナと Firecracker ゲスト側）、<code>tabular/runner</code>（DuckDB 子プロセス）、<code>sandbox-bench</code>（計測用）。<code>fuse</code> は gVisor/Firecracker ティアで StorageService を <code>/workspace</code> に見せる層。</figcaption></figure>
+  <h3>チョークポイント・実行基盤への直接依存</h3>
+  <div class="tbl"><table class="matrix"><thead><tr><th scope="col">クレート</th><th scope="col">層</th><th scope="col"><code>storage</code></th><th scope="col"><code>authz</code></th><th scope="col"><code>llm-gateway</code></th><th scope="col"><code>rag</code></th><th scope="col"><code>jobq</code></th><th scope="col"><code>durable</code></th><th scope="col"><code>sandbox-client</code></th><th scope="col"><code>script-runtime</code></th><th scope="col"><code>websearch</code></th></tr></thead><tbody><tr><td><code>api</code></td><td>入口</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td></tr><tr><td><code>app-gateway</code></td><td>入口</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td><code>chat</code></td><td>ドメイン</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td><span class="dot" aria-label="依存">●</span></td></tr><tr><td><code>agent-core</code></td><td>ドメイン</td><td></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td><span class="dot" aria-label="依存">●</span></td></tr><tr><td><code>workflow-engine</code></td><td>ドメイン</td><td></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td><span class="dot" aria-label="依存">●</span></td><td></td></tr><tr><td><code>app-platform</code></td><td>ドメイン</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td></tr><tr><td><code>gui</code></td><td>ドメイン</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td><code>data</code></td><td>ドメイン</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td><code>collab</code></td><td>ドメイン</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td><code>office</code></td><td>ドメイン</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td><code>tabular</code></td><td>ドメイン</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td><code>artifact</code></td><td>ドメイン</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td><code>secrets</code></td><td>ドメイン</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td><code>storage</code></td><td>チョークポイント</td><td><span class="self">—</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td><code>llm-gateway</code></td><td>チョークポイント</td><td></td><td><span class="dot" aria-label="依存">●</span></td><td><span class="self">—</span></td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td><code>rag</code></td><td>チョークポイント</td><td><span class="dot" aria-label="依存">●</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td><span class="self">—</span></td><td><span class="dot" aria-label="依存">●</span></td><td></td><td></td><td></td><td></td></tr></tbody></table></div>
+  <p class="meta"><code>authz</code> にはほぼ全クレートが依存する。<code>AuthContext</code> と名前空間化された識別子（<code>authz::Namespace</code>）がここにしか無いため、テナントを落とした呼び出しは型の段階で書けない。</p>
+</section>
+
+<section id="dynamic">
+  <div class="sec-head"><span class="lv">DYNAMIC</span><h2>動的図: RAG 付きチャットの 1 往復</h2></div>
+  <p>チャット送信はすぐ <code>202</code> を返し、生成は jobq 上の run としてサーバ側で続く。ページを離れても生成は止まらない。オレンジの矢印が二段 authz で、pre-filter（ListObjects による可読集合）と post-filter（rerank 前の file 粒度 check）のどちらか一方が壊れても読めない文書は引用されない。</p>
+  <figure><div class="canvas"><svg viewBox="0 0 1278 876" role="img" aria-label="動的図: チャット送信から RAG の二段 authz を経て SSE で応答が届くまでの 18 ステップ" style="min-width:1040px"><defs>
+<marker id="ah-seq" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker>
+<marker id="ahs-seq" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp"/></marker>
+<marker id="ah-a-seq" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ahp-a"/></marker>
+<marker id="ah-as-seq" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ahp-a"/></marker>
+</defs><rect x="46" y="14" width="108" height="58" rx="6" class="k-int"/>
+<text x="100.0" y="36" class="t-title" text-anchor="middle">ブラウザ</text>
+<text x="100.0" y="55" class="t-desc" text-anchor="middle">Web アプリ</text>
+<path d="M100,74 L100,866" class="lifeline"/>
+<rect x="168" y="14" width="108" height="58" rx="6" class="k-int"/>
+<text x="222.0" y="36" class="t-title" text-anchor="middle">api</text>
+<text x="222.0" y="55" class="t-desc" text-anchor="middle">shiki-server</text>
+<path d="M222,74 L222,866" class="lifeline"/>
+<path d="M290,23 v40 a54.0,9 0 0 0 108,0 v-40 a54.0,9 0 0 0 -108,0 z" class="k-store"/>
+<path d="M290,23 a54.0,9 0 0 0 108,0" class="k-store-rim"/>
+<text x="344.0" y="48" class="t-title" text-anchor="middle">Postgres</text>
+<path d="M344,74 L344,866" class="lifeline"/>
+<path d="M412,23 v40 a54.0,9 0 0 0 108,0 v-40 a54.0,9 0 0 0 -108,0 z" class="k-store"/>
+<path d="M412,23 a54.0,9 0 0 0 108,0" class="k-store-rim"/>
+<text x="466.0" y="48" class="t-title" text-anchor="middle">Redis</text>
+<path d="M466,74 L466,866" class="lifeline"/>
+<rect x="534" y="14" width="108" height="58" rx="6" class="k-int"/>
+<text x="588.0" y="36" class="t-title" text-anchor="middle">chat ワーカー</text>
+<text x="588.0" y="55" class="t-desc" text-anchor="middle">agent-core</text>
+<path d="M588,74 L588,866" class="lifeline"/>
+<rect x="656" y="14" width="108" height="58" rx="6" class="k-choke"/>
+<text x="710.0" y="36" class="t-title" text-anchor="middle">rag</text>
+<text x="710.0" y="55" class="t-desc" text-anchor="middle">チョークポイント</text>
+<path d="M710,74 L710,866" class="lifeline"/>
+<path d="M778,23 v40 a54.0,9 0 0 0 108,0 v-40 a54.0,9 0 0 0 -108,0 z" class="k-store"/>
+<path d="M778,23 a54.0,9 0 0 0 108,0" class="k-store-rim"/>
+<text x="832.0" y="48" class="t-title" text-anchor="middle">OpenFGA</text>
+<path d="M832,74 L832,866" class="lifeline"/>
+<path d="M900,23 v40 a54.0,9 0 0 0 108,0 v-40 a54.0,9 0 0 0 -108,0 z" class="k-store"/>
+<path d="M900,23 a54.0,9 0 0 0 108,0" class="k-store-rim"/>
+<text x="954.0" y="48" class="t-title" text-anchor="middle">Qdrant</text>
+<text x="954.0" y="67" class="t-desc" text-anchor="middle">Tantivy</text>
+<path d="M954,74 L954,866" class="lifeline"/>
+<rect x="1022" y="14" width="108" height="58" rx="6" class="k-int"/>
+<text x="1076.0" y="36" class="t-title" text-anchor="middle">ingestion</text>
+<text x="1076.0" y="55" class="t-desc" text-anchor="middle">worker</text>
+<path d="M1076,74 L1076,866" class="lifeline"/>
+<rect x="1144" y="14" width="108" height="58" rx="6" class="k-int"/>
+<text x="1198.0" y="36" class="t-title" text-anchor="middle">llm-gateway</text>
+<text x="1198.0" y="55" class="t-desc" text-anchor="middle">→ LLM</text>
+<path d="M1198,74 L1198,866" class="lifeline"/>
+<path d="M100,132 L219,132" class="edge" marker-end="url(#ah-seq)"/>
+<text x="161.0" y="126" class="elabel" text-anchor="middle">POST /threads/:id/messages</text>
+<circle cx="28" cy="128" r="9.5" class="badge"/><text x="28" y="131.8" class="badge-t" text-anchor="middle">1</text>
+<path d="M222,172 L341,172" class="edge" marker-end="url(#ah-seq)"/>
+<text x="283.0" y="166" class="elabel" text-anchor="middle">1 Tx: メッセージ＋run(queued)＋jobq</text>
+<circle cx="28" cy="168" r="9.5" class="badge"/><text x="28" y="171.8" class="badge-t" text-anchor="middle">2</text>
+<path d="M222,212 L103,212" class="edge dashed" marker-end="url(#ah-seq)"/>
+<text x="161.0" y="206" class="elabel" text-anchor="middle">202 run_id</text>
+<circle cx="28" cy="208" r="9.5" class="badge"/><text x="28" y="211.8" class="badge-t" text-anchor="middle">3</text>
+<path d="M100,252 L219,252" class="edge" marker-end="url(#ah-seq)"/>
+<text x="161.0" y="246" class="elabel" text-anchor="middle">GET /runs/:id/events（SSE）</text>
+<circle cx="28" cy="248" r="9.5" class="badge"/><text x="28" y="251.8" class="badge-t" text-anchor="middle">4</text>
+<path d="M222,292 L463,292" class="edge" marker-end="url(#ah-seq)"/>
+<text x="344.0" y="286" class="elabel" text-anchor="middle">①購読開始 → ②DB リプレイ → ③合流</text>
+<circle cx="28" cy="288" r="9.5" class="badge"/><text x="28" y="291.8" class="badge-t" text-anchor="middle">5</text>
+<path d="M588,332 L347,332" class="edge" marker-end="url(#ah-seq)"/>
+<text x="466.0" y="326" class="elabel" text-anchor="middle">claim（SKIP LOCKED）＋リース</text>
+<circle cx="28" cy="328" r="9.5" class="badge"/><text x="28" y="331.8" class="badge-t" text-anchor="middle">6</text>
+<path d="M588,372 L1195,372" class="edge" marker-end="url(#ah-seq)"/>
+<text x="893.0" y="366" class="elabel" text-anchor="middle">計画: tool call → doc_search</text>
+<circle cx="28" cy="368" r="9.5" class="badge"/><text x="28" y="371.8" class="badge-t" text-anchor="middle">7</text>
+<path d="M588,412 L707,412" class="edge" marker-end="url(#ah-seq)"/>
+<text x="649.0" y="406" class="elabel" text-anchor="middle">doc_search(&amp;AuthContext)</text>
+<circle cx="28" cy="408" r="9.5" class="badge"/><text x="28" y="411.8" class="badge-t" text-anchor="middle">8</text>
+<path d="M710,452 L829,452" class="edge accent" marker-end="url(#ah-a-seq)"/>
+<text x="771.0" y="446" class="elabel accent" text-anchor="middle">ListObjects → 可読集合（pre-filter）</text>
+<circle cx="28" cy="448" r="9.5" class="badge"/><text x="28" y="451.8" class="badge-t" text-anchor="middle">9</text>
+<path d="M710,492 L951,492" class="edge accent" marker-end="url(#ah-a-seq)"/>
+<text x="832.0" y="486" class="elabel accent" text-anchor="middle">tenant_id AND authz_tags ∩ 可読集合</text>
+<circle cx="28" cy="488" r="9.5" class="badge"/><text x="28" y="491.8" class="badge-t" text-anchor="middle">10</text>
+<path d="M710,520 L744,520 L744,536 L714,536" class="edge" marker-end="url(#ah-seq)"/>
+<text x="752" y="532" class="elabel" text-anchor="start">RRF 融合（dense＋BM25）</text>
+<circle cx="28" cy="528" r="9.5" class="badge"/><text x="28" y="531.8" class="badge-t" text-anchor="middle">11</text>
+<path d="M710,572 L829,572" class="edge accent" marker-end="url(#ah-a-seq)"/>
+<text x="771.0" y="566" class="elabel accent" text-anchor="middle">file 粒度 check（post-filter）</text>
+<circle cx="28" cy="568" r="9.5" class="badge"/><text x="28" y="571.8" class="badge-t" text-anchor="middle">12</text>
+<path d="M710,612 L1073,612" class="edge" marker-end="url(#ah-seq)"/>
+<text x="893.0" y="606" class="elabel" text-anchor="middle">/rerank（認可済み候補のみ）</text>
+<circle cx="28" cy="608" r="9.5" class="badge"/><text x="28" y="611.8" class="badge-t" text-anchor="middle">13</text>
+<path d="M710,652 L347,652" class="edge" marker-end="url(#ah-seq)"/>
+<text x="527.0" y="646" class="elabel" text-anchor="middle">audit_log: rag.search</text>
+<circle cx="28" cy="648" r="9.5" class="badge"/><text x="28" y="651.8" class="badge-t" text-anchor="middle">14</text>
+<path d="M588,692 L1195,692" class="edge" marker-end="url(#ah-seq)"/>
+<text x="893.0" y="686" class="elabel" text-anchor="middle">引用付きで生成（会計・Langfuse）</text>
+<circle cx="28" cy="688" r="9.5" class="badge"/><text x="28" y="691.8" class="badge-t" text-anchor="middle">15</text>
+<path d="M588,732 L347,732" class="edge" marker-end="url(#ah-seq)"/>
+<text x="466.0" y="726" class="elabel" text-anchor="middle">イベント (run_id, seq) を追記</text>
+<circle cx="28" cy="728" r="9.5" class="badge"/><text x="28" y="731.8" class="badge-t" text-anchor="middle">16</text>
+<path d="M588,772 L469,772" class="edge" marker-end="url(#ah-seq)"/>
+<text x="527.0" y="766" class="elabel" text-anchor="middle">pub/sub で配信</text>
+<circle cx="28" cy="768" r="9.5" class="badge"/><text x="28" y="771.8" class="badge-t" text-anchor="middle">17</text>
+<path d="M222,812 L103,812" class="edge dashed" marker-end="url(#ah-seq)"/>
+<text x="161.0" y="806" class="elabel" text-anchor="middle">SSE イベント（seq 順・重複破棄）</text>
+<circle cx="28" cy="808" r="9.5" class="badge"/><text x="28" y="811.8" class="badge-t" text-anchor="middle">18</text></svg></div>
+  <figcaption>⑤ の順序は「購読開始 → DB リプレイ → ライブと合流し seq で重複破棄」で固定（逆順は隙間のイベントを取りこぼす）。可読集合が 500 件を超えると pre-filter を tenant-only に縮退し、post-filter と over-fetch（3× → 8×）で正しさを保つ（design §4.3・§4.4.1）。</figcaption></figure>
+</section>
+
+<section id="deployment">
+  <div class="sec-head"><span class="lv">DEPLOYMENT</span><h2>配置: オンプレとクラウド</h2></div>
+  <p>オンプレ（compose / k8s・シングルテナント）とクラウド（GCP・顧客ごと隔離インスタンス）は同じコンテナ構成で動く。違いは次のトレイトの実装と推論バックエンドだけ。</p>
+  <div class="tbl"><table class=""><thead><tr><th scope="col">トレイト</th><th scope="col">オンプレ</th><th scope="col">クラウド</th></tr></thead><tbody><tr><td><code>ObjectStore</code></td><td>RustFS（S3 互換）</td><td>GCS</td></tr><tr><td><code>VectorStore</code></td><td>Qdrant（小規模は pgvector）</td><td>Qdrant / マネージド</td></tr><tr><td><code>LlmProvider</code></td><td>vLLM（ローカル GPU）</td><td>Vertex・外部 API・LiteLLM アダプタ</td></tr><tr><td><code>Sandbox</code></td><td>gVisor（既定）・wasm・Firecracker（KVM 有）</td><td>gVisor（既定）・wasm・Firecracker</td></tr><tr><td><code>DocumentParser</code></td><td>Docling（ローカル）</td><td>Docling / 商用 OCR</td></tr><tr><td><code>EmbeddingProvider</code></td><td>Ruri・BGE-m3</td><td>同左 / 外部</td></tr><tr><td><code>KeyProvider</code></td><td>ローカルキーファイル（将来 HSM）</td><td>Cloud KMS</td></tr><tr><td><code>SearchProvider</code></td><td>SearXNG 自己ホスト（エアギャップは無効）</td><td>Brave Search API</td></tr><tr><td><code>OfficeSuite</code></td><td>Collabora Online（同梱）</td><td>Collabora Online</td></tr></tbody></table></div>
+</section>
+
+<section id="gaps">
+  <div class="sec-head"><span class="lv">NOTE</span><h2>設計書との差分</h2></div>
+  <div class="note">
+    <p>図は現行コード（<code>crates/</code>・compose）に合わせた。次の点は <code>docs/design.md</code> の記述と食い違っているため、設計書側の更新を検討したい。</p>
+    <ul>
+      <li>§5 のリポジトリ構成にある <code>crates/sandbox-wasm/</code> と <code>crates/site/</code> は存在しない。wasm ティアは <code>sandbox-orchestrator</code> が spawn する secure-exec sidecar（<code>vendor/secure-exec</code>）で実装されている。</li>
+      <li>§5 に無いクレートが存在する: <code>artifact</code>・<code>durable</code>・<code>gui</code>・<code>jobq</code>・<code>jtd</code>・<code>websearch</code>・<code>sandbox-netns</code>・<code>sandbox-agent-proto</code>・<code>sandbox-guest-agent</code>・<code>sandbox-bench</code>。</li>
+      <li>§2 の全体図では ingestion-worker が Qdrant・Tantivy に書く矢印になっているが、実装では worker は <code>/parse</code>・<code>/embed</code>・<code>/rerank</code>・<code>/edit</code> を提供するだけで、索引への書込は shiki-server の <code>rag</code> が行う。</li>
+      <li>§2 では script-runtime を「別プロセス」としているが、現行の配線（<code>api/src/wiring_gateway.rs</code>）は <code>ScriptEngine</code> を in-process で生成している。gRPC サーバ実装（<code>script-runtime/src/server.rs</code>）は別プロセス化用に存在する。</li>
+    </ul>
+  </div>
+</section>
+
+<footer>このページは手書きの静的 HTML（外部依存は Google Fonts のみ）。構成が変わったら図と表を合わせて更新する。</footer>
+</div>
+</body>
+</html>
