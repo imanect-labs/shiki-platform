@@ -145,23 +145,25 @@ function formatElapsed(secs: number): string {
   return `${Math.floor(secs / 60)}分${String(secs % 60).padStart(2, "0")}秒`;
 }
 
-/// 参照ドキュメントのチップ（最大 MAX_CITATION_CHIPS 件）。フェーズ行の右端に並べる。
+/// 参照ドキュメントのチップ（最大 MAX_CITATION_CHIPS 文書）。フェーズ行の右端に並べる。
 const MAX_CITATION_CHIPS = 3;
 
 function clipLabel(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
 
+/// 参照文書のチップ名。ファイル名を優先し、未解決（読み込み中・権限なし）の間は見出しで代える。
 function citationChipLabel(c: Citation, nodeNames: Record<string, string>): string {
-  const path = c.heading_path;
-  if (path && path.length > 0) return path[path.length - 1];
   const name = nodeNames[c.node_id];
   if (name) return name;
+  const path = c.heading_path;
+  if (path && path.length > 0) return path[path.length - 1];
   const snippet = c.snippet?.trim();
   if (snippet) return clipLabel(snippet, 20);
   return "ドキュメント";
 }
 
+/// 参照文書のチップ。引用はチャンク単位で届くため、同じ文書は 1 つにまとめる。
 function CitationChips({
   citations,
   nodeNames,
@@ -169,22 +171,26 @@ function CitationChips({
   citations: Citation[];
   nodeNames: Record<string, string>;
 }) {
-  if (citations.length === 0) return null;
+  const docs = React.useMemo(() => {
+    const seen = new Set<string>();
+    return citations.filter((c) => (seen.has(c.node_id) ? false : (seen.add(c.node_id), true)));
+  }, [citations]);
+  if (docs.length === 0) return null;
   return (
     <span className="flex min-w-0 shrink items-center gap-1">
       <span className="shiki-fade-r flex min-w-0 items-center gap-1 overflow-hidden">
-        {citations.slice(0, MAX_CITATION_CHIPS).map((c) => (
+        {docs.slice(0, MAX_CITATION_CHIPS).map((c) => (
           <span
-            key={c.chunk_id}
-            className="shrink-0 rounded-full bg-muted px-1.5 py-[1px] text-[11px] text-foreground/65"
+            key={c.node_id}
+            className="max-w-[12rem] shrink-0 truncate rounded-full bg-muted px-1.5 py-[1px] text-[11px] text-foreground/65"
           >
             {citationChipLabel(c, nodeNames)}
           </span>
         ))}
       </span>
-      {citations.length > MAX_CITATION_CHIPS ? (
+      {docs.length > MAX_CITATION_CHIPS ? (
         <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70">
-          +{citations.length - MAX_CITATION_CHIPS}
+          +{docs.length - MAX_CITATION_CHIPS}
         </span>
       ) : null}
     </span>

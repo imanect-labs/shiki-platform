@@ -40,8 +40,12 @@ import { SpecRenderer } from "@/components/genui/spec-renderer";
 import { SaveAsAppDialog, specHasChatOnlyAction } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
 import { Markdown } from "@/components/prompt-kit/markdown";
-import { Sources } from "@/components/prompt-kit/source";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { MessageFooter } from "./message-footer";
+import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
+import { CitationSources } from "./citations/citation-sources";
+import { EvidenceTable, EvidenceToggle } from "./citations/evidence-table";
+import { SourcePanelAside, SourcePanelSheet } from "./citations/source-panel";
 import { type ToolActivityItem } from "./tool-activity";
 import { ChainOfThought } from "./chain-of-thought";
 import { Composer } from "./composer";
@@ -153,6 +157,9 @@ export function Conversation({
 }) {
   const isPanel = variant === "panel";
   const router = useRouter();
+  // 出典パネルを右カラムで出せる幅か（サイドバー＋本文＋パネルが並ぶ幅）。
+  const wide = useMediaQuery("(min-width: 1200px)");
+  const sourceAside = !isPanel && wide;
   const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
   const [stream, setStream] = React.useState<StreamState | null>(null);
   const [notFound, setNotFound] = React.useState(false);
@@ -693,108 +700,115 @@ export function Conversation({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {/* page: 統一ヘッダスロットへタイトル＋共有/設定を注入（横バー二重を解消）。
-          panel: 注入しない（分割ビューは自前ヘッダを持つ・null を返すだけ）。 */}
-      {!isPanel ? <ChatPageHeaderSlot title="会話" onShare={openShare} /> : null}
-      <ThreadShareDialog open={shareOpen} onOpenChange={setShareOpen} threadId={threadId} />
+    <SourcePanelProvider key={threadId}>
+      <div className="flex h-full min-h-0">
+        <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+          {/* page: 統一ヘッダスロットへタイトル＋共有/設定を注入（横バー二重を解消）。
+              panel: 注入しない（分割ビューは自前ヘッダを持つ・null を返すだけ）。 */}
+          {!isPanel ? <ChatPageHeaderSlot title="会話" onShare={openShare} /> : null}
+          <ThreadShareDialog open={shareOpen} onOpenChange={setShareOpen} threadId={threadId} />
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div
-          className={cn(
-            "mx-auto flex w-full flex-col gap-6 px-4 py-8",
-            isPanel ? "max-w-none px-4 py-5" : "max-w-3xl",
-          )}
-        >
-          {/* パネルの空会話は「何ができるか」を軽く案内する（空白のままにしない）。 */}
-          {isPanel && messages.length === 0 && !stream && !notFound && !error ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <div
-              className="flex flex-col items-center gap-2 px-6 py-14 text-center"
-              data-testid="panel-empty-hint"
+              className={cn(
+                "mx-auto flex w-full flex-col gap-6 px-4 py-8",
+                isPanel ? "max-w-none px-4 py-5" : "max-w-3xl",
+              )}
             >
-              <Sparkles className="size-6 text-muted-foreground/70" aria-hidden />
-              <p className="text-sm font-medium text-foreground">
-                このドキュメントについて AI に相談できます
-              </p>
-              <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
-                質問・要約・編集の依頼ができます。本文を選択して「AI
-                に依頼」を押すと、選択箇所を指定して指示できます。
-              </p>
+              {/* パネルの空会話は「何ができるか」を軽く案内する（空白のままにしない）。 */}
+              {isPanel && messages.length === 0 && !stream && !notFound && !error ? (
+                <div
+                  className="flex flex-col items-center gap-2 px-6 py-14 text-center"
+                  data-testid="panel-empty-hint"
+                >
+                  <Sparkles className="size-6 text-muted-foreground/70" aria-hidden />
+                  <p className="text-sm font-medium text-foreground">
+                    このドキュメントについて AI に相談できます
+                  </p>
+                  <p className="max-w-xs text-xs leading-relaxed text-muted-foreground">
+                    質問・要約・編集の依頼ができます。本文を選択して「AI
+                    に依頼」を押すと、選択箇所を指定して指示できます。
+                  </p>
+                </div>
+              ) : null}
+              {messages.map((m) =>
+                m.role === "user" ? (
+                  <UserRow key={m.id} blocks={m.content} />
+                ) : (
+                  <AssistantRow
+                    key={m.id}
+                    threadId={threadId}
+                    messageId={m.id}
+                    blocks={m.content}
+                    invokedActions={m.invokedActions}
+                    onUiAction={() => setReloadKey((k) => k + 1)}
+                  />
+                ),
+              )}
+              {stream ? (
+                <StreamingRow
+                  stream={stream}
+                  onApproval={decideApproval}
+                  threadId={threadId}
+                  onQueueUiAction={onQueueUiAction}
+                />
+              ) : null}
+              {/* 順番待ちは「AI が答えている最中に積んだ次の発話」なので応答の後ろに置く。 */}
+              {queued.map((q) => (
+                <QueuedRow key={q.key} item={q} onCancel={() => cancelQueued(q)} />
+              ))}
+              {notice ? (
+                <div
+                  className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
+                  data-testid="mode-clamp-notice"
+                >
+                  {notice}
+                </div>
+              ) : null}
+              {error ? (
+                <div
+                  // e2e が「異常終了なのに緑」を見逃さないための足がかり（実測で 429 の run が
+                  // 完走扱いになっていた）。role="alert" は読み上げにも要る。
+                  data-testid="conversation-error"
+                  role="alert"
+                  className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+                >
+                  {error}
+                </div>
+              ) : null}
+              <div ref={bottomRef} />
             </div>
-          ) : null}
-          {messages.map((m) =>
-            m.role === "user" ? (
-              <UserRow key={m.id} blocks={m.content} />
-            ) : (
-              <AssistantRow
-                key={m.id}
+          </div>
+
+          <div className="bg-background">
+            <div className={cn("mx-auto w-full px-4 py-4", isPanel ? "max-w-none pb-3" : "max-w-3xl")}>
+              <Composer
+                onSubmit={(text, attachments, context, command) =>
+                  void submitFromComposer(text, attachments, context, command)
+                }
+                onStop={stop}
+                streaming={stream !== null}
+                autonomous={autonomous}
+                onAutonomousChange={setAutonomous}
+                approvalMode={approvalMode}
+                onApprovalModeChange={changeApprovalMode}
+                bypassAllowed={bypassAllowed}
                 threadId={threadId}
-                messageId={m.id}
-                blocks={m.content}
-                invokedActions={m.invokedActions}
-                onUiAction={() => setReloadKey((k) => k + 1)}
+                autoFocus
               />
-            ),
-          )}
-          {stream ? (
-            <StreamingRow
-              stream={stream}
-              onApproval={decideApproval}
-              threadId={threadId}
-              onQueueUiAction={onQueueUiAction}
-            />
-          ) : null}
-          {/* 順番待ちは「AI が答えている最中に積んだ次の発話」なので応答の後ろに置く。 */}
-          {queued.map((q) => (
-            <QueuedRow key={q.key} item={q} onCancel={() => cancelQueued(q)} />
-          ))}
-          {notice ? (
-            <div
-              className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400"
-              data-testid="mode-clamp-notice"
-            >
-              {notice}
+              <p className="mt-2 text-center text-xs text-muted-foreground">
+                {isPanel
+                  ? "誤りが含まれる場合があります。"
+                  : "Shiki は社内文書を参照して回答します。誤りが含まれる場合があります。"}
+              </p>
             </div>
-          ) : null}
-          {error ? (
-            <div
-              // e2e が「異常終了なのに緑」を見逃さないための足がかり（実測で 429 の run が
-              // 完走扱いになっていた）。role="alert" は読み上げにも要る。
-              data-testid="conversation-error"
-              role="alert"
-              className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-            >
-              {error}
-            </div>
-          ) : null}
-          <div ref={bottomRef} />
+          </div>
         </div>
+        {/* 出典パネル: 広い画面のチャットページは右カラム、それ以外（狭い画面・分割ビュー）はシート。 */}
+        {sourceAside ? <SourcePanelAside /> : null}
       </div>
-
-      <div className="bg-background">
-        <div className={cn("mx-auto w-full px-4 py-4", isPanel ? "max-w-none pb-3" : "max-w-3xl")}>
-          <Composer
-            onSubmit={(text, attachments, context, command) =>
-              void submitFromComposer(text, attachments, context, command)
-            }
-            onStop={stop}
-            streaming={stream !== null}
-            autonomous={autonomous}
-            onAutonomousChange={setAutonomous}
-            approvalMode={approvalMode}
-            onApprovalModeChange={changeApprovalMode}
-            bypassAllowed={bypassAllowed}
-            threadId={threadId}
-            autoFocus
-          />
-          <p className="mt-2 text-center text-xs text-muted-foreground">
-            {isPanel
-              ? "誤りが含まれる場合があります。"
-              : "Shiki は社内文書を参照して回答します。誤りが含まれる場合があります。"}
-          </p>
-        </div>
-      </div>
-    </div>
+      {!sourceAside ? <SourcePanelSheet /> : null}
+    </SourcePanelProvider>
   );
 }
 
@@ -987,7 +1001,11 @@ function AssistantRow({
         result: res?.content,
       };
     });
-  const citations = blocks.filter((b): b is Citation => b.type === "citation");
+  const citations = React.useMemo(
+    () => blocks.filter((b): b is Citation => b.type === "citation"),
+    [blocks],
+  );
+  const [evidenceOpen, setEvidenceOpen] = React.useState(false);
   const files = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "file_ref" }> => b.type === "file_ref",
   );
@@ -1018,52 +1036,59 @@ function AssistantRow({
   );
 
   return (
-    <Message className="group justify-start">
-      <div className="w-full min-w-0">
-        <ChainOfThought thinking={thinking} tools={tools} citations={citations} />
-        {text ? <Markdown>{linkifyCitations(text, citations)}</Markdown> : null}
-        {uiSpecs.length > 0 ? (
-          <ChatGenUiProvider
-            threadId={threadId}
-            messageId={messageId}
-            invokedActions={invokedActions}
-            onActionCompleted={(result) => {
-              // chat.submit は新しい発話と生成を作るため会話を再読込する。
-              // 結果なし（409 を受けた）も再読込する＝送信済みかどうかはサーバに聞き直す。
-              if (!result || result.result.kind === "handler") onUiAction();
-            }}
-          >
-            {uiSpecs.map((b, i) => (
-              <GenUiBlock key={i} spec={b.spec} />
-            ))}
-          </ChatGenUiProvider>
-        ) : null}
-        {workflowRefs.map((b, i) => (
-          <WorkflowRefCard key={i} raw={b.workflow} />
-        ))}
-        {noteRefs.map((b, i) => (
-          <NoteRefCard key={i} raw={b.note} />
-        ))}
-        {noteDrafts.map((b, i) => (
-          <NoteDraftCard key={i} raw={b.draft} threadId={threadId} />
-        ))}
-        {slideDrafts.map((b, i) => (
-          <SlideDraftCard key={i} raw={b.draft} threadId={threadId} />
-        ))}
-        {csvDrafts.map((b, i) => (
-          <CsvDraftCard key={i} raw={b.draft} threadId={threadId} />
-        ))}
-        {documentRefs.map((b, i) => (
-          <DocumentRefCard key={i} raw={b.document} />
-        ))}
-        {legacyDocumentDrafts.map((b, i) => (
-          <LegacyDocumentDraftCard key={i} raw={b.draft} />
-        ))}
-        <ArtifactFiles files={files} />
-        <Sources citations={citations} />
-        {text ? <MessageFooter text={text} /> : null}
-      </div>
-    </Message>
+    <MessageCitationsProvider messageKey={messageId} citations={citations} text={text}>
+      <Message className="group justify-start">
+        <div className="w-full min-w-0">
+          <ChainOfThought thinking={thinking} tools={tools} citations={citations} />
+          {text ? <Markdown>{linkifyCitations(text, citations)}</Markdown> : null}
+          {uiSpecs.length > 0 ? (
+            <ChatGenUiProvider
+              threadId={threadId}
+              messageId={messageId}
+              invokedActions={invokedActions}
+              onActionCompleted={(result) => {
+                // chat.submit は新しい発話と生成を作るため会話を再読込する。
+                // 結果なし（409 を受けた）も再読込する＝送信済みかどうかはサーバに聞き直す。
+                if (!result || result.result.kind === "handler") onUiAction();
+              }}
+            >
+              {uiSpecs.map((b, i) => (
+                <GenUiBlock key={i} spec={b.spec} />
+              ))}
+            </ChatGenUiProvider>
+          ) : null}
+          {workflowRefs.map((b, i) => (
+            <WorkflowRefCard key={i} raw={b.workflow} />
+          ))}
+          {noteRefs.map((b, i) => (
+            <NoteRefCard key={i} raw={b.note} />
+          ))}
+          {noteDrafts.map((b, i) => (
+            <NoteDraftCard key={i} raw={b.draft} threadId={threadId} />
+          ))}
+          {slideDrafts.map((b, i) => (
+            <SlideDraftCard key={i} raw={b.draft} threadId={threadId} />
+          ))}
+          {csvDrafts.map((b, i) => (
+            <CsvDraftCard key={i} raw={b.draft} threadId={threadId} />
+          ))}
+          {documentRefs.map((b, i) => (
+            <DocumentRefCard key={i} raw={b.document} />
+          ))}
+          {legacyDocumentDrafts.map((b, i) => (
+            <LegacyDocumentDraftCard key={i} raw={b.draft} />
+          ))}
+          <ArtifactFiles files={files} />
+          <CitationSources />
+          {evidenceOpen ? <EvidenceTable /> : null}
+          {text ? (
+            <MessageFooter text={text}>
+              <EvidenceToggle open={evidenceOpen} onToggle={() => setEvidenceOpen((v) => !v)} />
+            </MessageFooter>
+          ) : null}
+        </div>
+      </Message>
+    </MessageCitationsProvider>
   );
 }
 
@@ -1138,63 +1163,65 @@ function StreamingRow({
     stream.plan.length === 0 &&
     !stream.approval;
   return (
-    <Message className="justify-start">
-      <div className="w-full min-w-0 space-y-2">
-        {stream.plan.length > 0 ? <PlanPanel subtasks={stream.plan} /> : null}
-        {/* streaming は「生成中か」であって「本文が出ていないか」ではない。旧実装は
-            `!stream.text` を渡していたため、本文が 1 文字出た瞬間にツール表示が畳まれ、
-            その後に走るツール（本文 → ツール → 本文の往復）が見えなくなっていた（#386）。 */}
-        <ChainOfThought
-          thinking={stream.thinking}
-          tools={stream.tools}
-          citations={stream.citations}
-          streaming
-          phase={runningSubtask(stream.plan)}
-        />
-        {stream.budget ? <BudgetBanner {...stream.budget} /> : null}
-        {stream.approval ? (
-          <ApprovalCard
-            request={stream.approval}
-            pending={stream.approvalPending}
-            onDecision={onApproval}
+    <MessageCitationsProvider messageKey="streaming" citations={stream.citations} text={stream.text}>
+      <Message className="justify-start">
+        <div className="w-full min-w-0 space-y-2">
+          {stream.plan.length > 0 ? <PlanPanel subtasks={stream.plan} /> : null}
+          {/* streaming は「生成中か」であって「本文が出ていないか」ではない。旧実装は
+              `!stream.text` を渡していたため、本文が 1 文字出た瞬間にツール表示が畳まれ、
+              その後に走るツール（本文 → ツール → 本文の往復）が見えなくなっていた（#386）。 */}
+          <ChainOfThought
+            thinking={stream.thinking}
+            tools={stream.tools}
+            citations={stream.citations}
+            streaming
+            phase={runningSubtask(stream.plan)}
           />
-        ) : null}
-        {showLoader ? (
-          <MessageContent className="py-1">
-            <Loader variant="typing" />
-          </MessageContent>
-        ) : stream.text ? (
-          <div className="text-[15px] leading-relaxed">
-            <Markdown>{linkifyCitations(stream.text, stream.citations)}</Markdown>
-          </div>
-        ) : null}
-        {stream.uiSpecs.length > 0 ? (
-          // messageId は null（＝まだ保存されていないので即時実行できない）。押された操作は
-          // onQueue で受け取り、生成完了時に確定した assistant メッセージへ流す。
-          <ChatGenUiProvider threadId={threadId} messageId={null} onQueue={onQueueUiAction}>
-            {stream.uiSpecs.map((spec, i) => (
-              <SpecRenderer key={i} spec={spec} />
-            ))}
-          </ChatGenUiProvider>
-        ) : null}
-        {stream.workflowRefs.map((workflow, i) => (
-          <WorkflowRefCard key={i} raw={workflow} />
-        ))}
-        {stream.noteDrafts.map((draft, i) => (
-          <NoteDraftCard key={i} raw={draft} threadId={threadId} />
-        ))}
-        {stream.slideDrafts.map((draft, i) => (
-          <SlideDraftCard key={i} raw={draft} threadId={threadId} />
-        ))}
-        {stream.csvDrafts.map((draft, i) => (
-          <CsvDraftCard key={i} raw={draft} threadId={threadId} />
-        ))}
-        {stream.documentRefs.map((document, i) => (
-          <DocumentRefCard key={i} raw={document} />
-        ))}
-        <ArtifactFiles files={stream.files} />
-      </div>
-    </Message>
+          {stream.budget ? <BudgetBanner {...stream.budget} /> : null}
+          {stream.approval ? (
+            <ApprovalCard
+              request={stream.approval}
+              pending={stream.approvalPending}
+              onDecision={onApproval}
+            />
+          ) : null}
+          {showLoader ? (
+            <MessageContent className="py-1">
+              <Loader variant="typing" />
+            </MessageContent>
+          ) : stream.text ? (
+            <div className="text-[15px] leading-relaxed">
+              <Markdown>{linkifyCitations(stream.text, stream.citations)}</Markdown>
+            </div>
+          ) : null}
+          {stream.uiSpecs.length > 0 ? (
+            // messageId は null（＝まだ保存されていないので即時実行できない）。押された操作は
+            // onQueue で受け取り、生成完了時に確定した assistant メッセージへ流す。
+            <ChatGenUiProvider threadId={threadId} messageId={null} onQueue={onQueueUiAction}>
+              {stream.uiSpecs.map((spec, i) => (
+                <SpecRenderer key={i} spec={spec} />
+              ))}
+            </ChatGenUiProvider>
+          ) : null}
+          {stream.workflowRefs.map((workflow, i) => (
+            <WorkflowRefCard key={i} raw={workflow} />
+          ))}
+          {stream.noteDrafts.map((draft, i) => (
+            <NoteDraftCard key={i} raw={draft} threadId={threadId} />
+          ))}
+          {stream.slideDrafts.map((draft, i) => (
+            <SlideDraftCard key={i} raw={draft} threadId={threadId} />
+          ))}
+          {stream.csvDrafts.map((draft, i) => (
+            <CsvDraftCard key={i} raw={draft} threadId={threadId} />
+          ))}
+          {stream.documentRefs.map((document, i) => (
+            <DocumentRefCard key={i} raw={document} />
+          ))}
+          <ArtifactFiles files={stream.files} />
+        </div>
+      </Message>
+    </MessageCitationsProvider>
   );
 }
 
