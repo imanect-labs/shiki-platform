@@ -3,3 +3,4 @@ data/cache/
 .venv/
 *.log
 __pycache__/
+report/tool-search-eval.html
