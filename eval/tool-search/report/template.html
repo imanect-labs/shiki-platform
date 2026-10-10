@@ -165,10 +165,12 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 7
   <section id="e2e">
     <div class="eyebrow">E2E · LLM に選ばせる</div>
     <h2 id="h-e2e">tool_search は入力トークンを大きく減らすが、聞き返して終える会話が増える</h2>
-    <p>正解ツール 30 件 × 日英の依頼 60 件（1,000 件の規模は全条件で同じ 30 件）。全ツールを提示する場合と、<code>tool_search</code> だけを提示して読み込ませる場合を比べた（読み込みは OpenAI 互換アダプタと同じく定義を末尾に追記）。正解以外のツールにはモックの結果を返して会話を続け、6 ステップ以内に正解ツールを呼べたかで判定した。入力トークンは会話全体の合計。</p>
+    <p>正解ツール 30 件 × 日英の依頼 60 件（1,000 件の規模は全条件で同じ 30 件）。全ツールを提示する場合と、<code>tool_search</code> だけを提示して読み込ませる場合を比べた（読み込みは OpenAI 互換アダプタと同じく定義を末尾に追記）。正解以外のツールにはモックの結果を返して会話を続け、6 ステップ以内に正解ツールを呼べたかで判定した。入力トークンは会話全体の合計。tool_search の結果本文は、製品の文面（<code>CatalogSearch::loaded_message</code>・本文の比較はこちら）と、評価側の簡略版（読み込んだ名前だけ・初回の計測）の 2 通りで測った。</p>
     <div class="tablewrap"><table id="tb-e2e2"></table></div>
     <p id="e2e-read"></p>
     <p>どのツールも呼ばずに終えた会話を 12 件抜き取って同じ条件で再生すると、11 件はチャンネル ID・カード ID・ファイルの中身などの不足を利用者に聞き返して終えていた（全ツール提示 4 件・tool_search 8 件。残る 1 件は再生では別のツールを呼んだ）。聞き返し自体は全ツールを提示した場合にも起き、ID を調べられる一覧・検索系のツールが提示されていても起きている。tool_search の条件で多い理由は、この評価では切り分けていない（読み込まれる 5 件に下調べのツールが入らないこと、検索で 1 往復増えることなどが考えられる）。</p>
+    <h3>下調べ用ツールの案内（#522・製品には入れなかった）</h3>
+    <p id="e2e-hint"></p>
   </section>
 
   <section id="skills">
@@ -306,8 +308,8 @@ const findings = [
    "製品に入れた（#517・k=10・重み 1:1・文書は名前＋説明＋引数）。埋め込みが無い・温まっていない・2 秒で返らないときは BM25 のみ。k=60 では英語の説明で融合が埋め込み単体を下回った。"],
   [`クエリの埋め込みは 1 回 ${Math.round(lat.embed_query_ms)} ms で、対話の経路に入れられる。cross-encoder の再順位付けはさらに上げる（全カタログ ${pct(e1full.rrf)}% → ${pct(e1full.rrf_rerank)}%）が、CPU で 1 検索 ${(lat.rerank20_ms / 1000).toFixed(1)} 秒かかる。`,
    "推奨: reranker は対話経路には入れない（GPU のある構成で再検討）。"],
-  [`E2E では、tool_search は 1 会話の入力トークンを 1,000 件で ${Math.round(e2e(1000, "all").tok / 1000)}k → ${(e2e(1000, "search_rrf").tok / 1000).toFixed(1)}k にした。一方、正解ツールを呼べた率は ${pct(e2e(1000, "all").ok)}% → ${pct(e2e(1000, "search_rrf").ok)}%（RRF）に下がった。`,
-   "下がった分は選び間違いではなく、ツールを呼ばずに ID などを聞き返して終えた会話。推奨: 読み込み時に同じ名前空間の一覧・検索系ツールも候補に示すなど、下調べの手段を残す方法を別途評価する。"],
+  [`E2E では、tool_search は 1 会話の入力トークンを 1,000 件で ${Math.round(e2e(1000, "all").tok / 1000)}k → ${(e2e(1000, "search_rrf_prod").tok / 1000).toFixed(1)}k にした。一方、正解ツールを呼べた率は ${pct(e2e(1000, "all").ok)}% → ${pct(e2e(1000, "search_rrf_prod").ok)}%（RRF・製品の文面）に下がった。`,
+   "下がった分は選び間違いではなく、ツールを呼ばずに ID などを聞き返して終えた会話。同じ名前空間の下調べ用ツールを結果で案内する案（#522）は、正解率が上がらず選び間違いとトークンが増えたため入れていない。"],
   [`tool_search の説明に載せていた名前の一覧は 1,003 件で 24,461 字になっていた。100 件を超えたら名前空間ごとの件数に要約するようにし（#519）、${lat.tool_search_description_chars.toLocaleString()} 字になった。`,
    "名指し（select:）と検索の案内は残し、名前は検索結果で分かる。"],
   [`name 順に先頭 50 件で切る skill の一覧は、200 件で正解率 ${pct(sk2("list_cap50", 200).ok)}% まで崩れる。skill 専用の検索は ${Math.max(...DATA.skills.map(r => r.n))} 件でも ${pct(sk2("search", Math.max(...DATA.skills.map(r => r.n))).ok)}% を保ち、入力トークンは件数によらず約 1,600。`,
@@ -388,17 +390,40 @@ lineChart("ch-desc", {
 });
 
 // ---- E2E ----
-const COND = { all: "全ツール提示", search_bm25: "tool_search（BM25）", search_rrf: "tool_search（RRF）" };
+const COND = {
+  all: "全ツール提示", search_bm25: "BM25・評価側の簡略版", search_rrf: "RRF・評価側の簡略版",
+  search_bm25_prod: "BM25・製品の文面", search_rrf_prod: "RRF・製品の文面",
+  search_bm25_hint: "BM25・製品の文面＋下調べの案内", search_rrf_hint: "RRF・製品の文面＋下調べの案内",
+};
+const COND_ORDER = Object.keys(COND);
 const e2eRows = rows => rows.map(r => [r.n, COND[r.cond], r.k, pct(r.ok), pct(r.wrong), pct(r.none), pct(r.none_loaded), Math.round(r.tok).toLocaleString(), r.search.toFixed(2)]);
-table("tb-e2e2", ["N", "条件", "件数", "正解ツールを呼んだ", "別のツールを呼んだ", "ツール呼び出しなし", "うち正解を読み込み済み", "平均入力トークン", "検索回数"], e2eRows(DATA.e2e_v2), { left: 2 });
+table("tb-e2e2", ["N", "条件", "件数", "正解ツールを呼んだ", "別のツールを呼んだ", "ツール呼び出しなし", "うち正解を読み込み済み", "平均入力トークン", "検索回数"], e2eRows([...DATA.e2e_v2].sort((a, b) => a.n - b.n || COND_ORDER.indexOf(a.cond) - COND_ORDER.indexOf(b.cond))), { left: 2 });
 {
   const g = (n, c) => DATA.e2e_v2.find(r => r.n === n && r.cond === c);
-  const [a2, b2, r2, a1, b1, r1] = [g(200, "all"), g(200, "search_bm25"), g(200, "search_rrf"), g(1000, "all"), g(1000, "search_bm25"), g(1000, "search_rrf")];
+  const [a2, b2, r2, a1, b1, r1] = [g(200, "all"), g(200, "search_bm25_prod"), g(200, "search_rrf_prod"), g(1000, "all"), g(1000, "search_bm25_prod"), g(1000, "search_rrf_prod")];
   if (a2 && b2 && r2 && a1 && b1 && r1) {
     document.getElementById("e2e-read").textContent =
-      `入力トークンは 200 件で ${Math.round(a2.tok).toLocaleString()} → ${Math.round(r2.tok).toLocaleString()}（RRF）、1,000 件で ${Math.round(a1.tok).toLocaleString()} → ${Math.round(r1.tok).toLocaleString()} に減った。` +
+      `製品の文面で比べると、入力トークンは 200 件で ${Math.round(a2.tok).toLocaleString()} → ${Math.round(r2.tok).toLocaleString()}（RRF）、1,000 件で ${Math.round(a1.tok).toLocaleString()} → ${Math.round(r1.tok).toLocaleString()} に減った。` +
       `正解ツールを呼べた率は 200 件で ${pct(a2.ok)}% → ${pct(b2.ok)}%（BM25）/ ${pct(r2.ok)}%（RRF）、1,000 件で ${pct(a1.ok)}% → ${pct(b1.ok)}% / ${pct(r1.ok)}% に下がった。` +
       `下がった分はツールを呼ばずに終えた会話で、別のツールを選び間違えた率は増えていない（1,000 件で ${pct(a1.wrong)}% → ${pct(b1.wrong)}% / ${pct(r1.wrong)}%）。1,000 件の規模は依頼 30 件で、差の幅は大きく読まない。`;
+  }
+}
+
+{
+  const g = (n, c) => DATA.e2e_v2.find(r => r.n === n && r.cond === c);
+  const pooled = c => { const a = g(200, c), b = g(1000, c); return a && b ? (a.ok * a.k + b.ok * b.k) / (a.k + b.k) : NaN; };
+  const el = document.getElementById("e2e-hint");
+  const dTok = [200, 1000].flatMap(n => ["bm25", "rrf"].map(m => (g(n, `search_${m}_hint`)?.tok ?? NaN) - (g(n, `search_${m}_prod`)?.tok ?? NaN)));
+  if (g(200, "search_rrf_hint") && g(1000, "search_rrf_hint")) {
+    const txtNoise = Math.max(...[200, 1000].flatMap(n => ["bm25", "rrf"].map(m => Math.abs((g(n, `search_${m}`)?.ok ?? NaN) - (g(n, `search_${m}_prod`)?.ok ?? NaN)))));
+    el.textContent =
+      `読み込んだツールと同じ名前空間の、まだ読み込んでいないツールの名前（それまでに読み込んだものを除き 15 件まで）を結果に添え、ID などが分からなければ利用者に尋ねる前に select: で読み込んで調べられると案内する案を試した。` +
+      `製品の文面（案内なし）と比べて、正解ツールを呼べた率は 200 件で BM25 ${pct(g(200, "search_bm25_prod").ok)}% → ${pct(g(200, "search_bm25_hint").ok)}%・RRF ${pct(g(200, "search_rrf_prod").ok)}% → ${pct(g(200, "search_rrf_hint").ok)}%、` +
+      `1,000 件で BM25 ${pct(g(1000, "search_bm25_prod").ok)}% → ${pct(g(1000, "search_bm25_hint").ok)}%・RRF ${pct(g(1000, "search_rrf_prod").ok)}% → ${pct(g(1000, "search_rrf_hint").ok)}%、` +
+      `合算で BM25 ${pct(pooled("search_bm25_prod"))}% → ${pct(pooled("search_bm25_hint"))}%・RRF ${pct(pooled("search_rrf_prod"))}% → ${pct(pooled("search_rrf_hint"))}%。` +
+      `別のツールを呼んだ率は 1,000 件で BM25 ${pct(g(1000, "search_bm25_prod").wrong)}% → ${pct(g(1000, "search_bm25_hint").wrong)}%・RRF ${pct(g(1000, "search_rrf_prod").wrong)}% → ${pct(g(1000, "search_rrf_hint").wrong)}%、入力トークンは 1 会話あたり平均 ${dTok.reduce((x, y) => x + y, 0) / dTok.length >= 0 ? "+" : ""}${Math.round(dTok.reduce((x, y) => x + y, 0) / dTok.length)}（条件ごとに ${Math.round(Math.min(...dTok))}〜+${Math.round(Math.max(...dTok))}）だった。` +
+      `正解率は上がらず、選び間違いとトークンが増えたため、製品には入れていない。` +
+      `なお、結果本文が簡略版か製品の文面かだけが違う条件の間でも、正解ツールを呼べた率は最大 ${(txtNoise * 100).toFixed(1)} ポイント動いた。この規模の E2E では、数ポイントの差は読めない。`;
   }
 }
 

@@ -59,3 +59,16 @@ def rank(
         "parameters": tail["tool_search_schema"],
     }
     return {r["id"]: r for r in lines}, definition
+
+
+def loaded_message(catalog: list[dict], query: str, names: list[str]) -> str:
+    """`query` の検索で `names` を読み込んだときの製品の `tool_search` 結果本文
+    （`CatalogSearch::loaded_message`・名指しと入力の誤りは製品の処理そのもの）。"""
+    if not _built:
+        build()
+    payload = json.dumps(
+        {"catalog": catalog, "queries": [], "loads": [{"id": "l", "query": query, "names": names}]},
+        ensure_ascii=False,
+    )
+    out = subprocess.run([str(_BIN)], input=payload, capture_output=True, text=True, check=True)
+    return json.loads(out.stdout.splitlines()[0])["content"]

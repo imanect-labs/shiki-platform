@@ -462,6 +462,31 @@ impl CatalogSearch {
             .collect()
     }
 
+    /// `query` の検索で `names` を読み込んだときの `tool_search` の結果本文。評価の E2E が製品の
+    /// 文面そのままで会話させるために使う（順位は評価側が融合して決めるため、名前を受け取る）。
+    /// 入力の誤り（空・長すぎる）と `select:` の名指しは製品の処理そのものの本文を返す
+    /// （見つからなかった名前・重複の扱いまで製品と同じにする）。索引に無い名前は無視する。
+    #[must_use]
+    pub fn loaded_message(&self, query: &str, names: &[String]) -> String {
+        let input = json!({ "query": query });
+        if let Err(e) = parse_input(&input) {
+            return e.content;
+        }
+        if query.trim().starts_with("select:") {
+            return self.0.handle_lexical(&input).content;
+        }
+        let mut hits: Vec<usize> = Vec::new();
+        for n in names {
+            let key = name_key(n);
+            if let Some(i) = self.0.tools.iter().position(|(t, _)| name_key(t) == key) {
+                if !hits.contains(&i) {
+                    hits.push(i);
+                }
+            }
+        }
+        self.0.render(&hits, &[]).content
+    }
+
     /// `tool_search` の定義（説明に載る一覧の長さ・E2E での提示に使う）。
     #[must_use]
     pub fn definition(&self) -> ToolDef {

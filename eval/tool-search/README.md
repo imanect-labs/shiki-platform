@@ -58,7 +58,7 @@ PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/t
 | E3 lang | カタログ言語（ja/en）× クエリ種別 |
 | E4 limit | 読み込み件数 k と recall・読み込む定義のトークン |
 | E5 latency | 1 クエリの処理時間（BM25 / 埋め込み / rerank）と `tool_search` 説明の長さ |
-| E2E | 全ツール提示 vs `tool_search`（BM25 / RRF）で、LLM が正解ツールを呼べた率・トークン |
+| E2E | 全ツール提示 vs `tool_search`（BM25 / RRF）で、LLM が正解ツールを呼べた率・トークン。結果本文は評価側の簡略版・製品の文面（`_prod`）・下調べ用ツールの案内付き（`_hint`・#522 で試して入れなかった案）の 3 通り |
 | skills | skill の一覧方式（製品の先頭 50 件 / 全件）vs 検索方式 |
 
 方式: `bm25`（製品の打ち切り前順位）/ `bm25_prod`（埋め込みが無いときに製品が読み込む 5 件・BM25 のみ）/ `emb`（Ruri v3）/
