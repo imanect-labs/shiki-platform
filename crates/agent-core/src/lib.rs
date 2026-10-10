@@ -37,6 +37,8 @@ pub mod loop_detect;
 pub mod plan;
 pub mod profile;
 pub mod tool;
+/// tool search（遅延ツールを検索して読み込む `tool_search` メタツール）。
+mod tool_search;
 pub mod tools;
 pub mod vocab;
 pub mod workspace;
@@ -47,7 +49,10 @@ pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
 pub use checkpoint::Checkpoint;
 pub use event::{AgentError, AgentEvent, EventSink, RecoveryAction};
 pub use plan::{Plan, Subtask, SubtaskStatus};
-pub use profile::{AgentOptions, AgentOutcome, AgentProfile, DEFAULT_PARALLEL_READ_TOOLS};
+pub use profile::{
+    AgentOptions, AgentOutcome, AgentProfile, ToolSearchOptions, DEFAULT_PARALLEL_READ_TOOLS,
+    DEFAULT_TOOL_SEARCH_MIN_DEFERRED_TOKENS,
+};
 pub use tool::{
     ArtifactRef, ArtifactStore, AttachmentRef, AttachmentStore, Citation, CsvDraft, SlideDraft,
     Tool, ToolError, ToolOutcome, ToolUsage,
@@ -57,7 +62,7 @@ pub use tools::{
     FsDeleteTool, FsEditTool, FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool,
     SubagentLimits, SubagentTool, WebFetchTool, WebSearchTool,
 };
-pub use vocab::ToolName;
+pub use vocab::{MetaToolName, ToolLoading, ToolName};
 pub use workspace::{WorkspaceEntry, WorkspaceStore, WorkspaceWrite};
 // サンドボックス契約を再輸出（chat は agent-core 経由で code_interpreter を配線する）。
 // `SandboxBackend` は admin ポリシーで隔離ティアを選ぶ導線で chat 側が渡す。

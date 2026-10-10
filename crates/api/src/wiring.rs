@@ -312,6 +312,10 @@ pub(crate) async fn wire_chat(
             .parallel_read_tools
             .unwrap_or_else(|| chat::WorkerConfig::default().parallel_read_tools)
             .max(1),
+        tool_search: config
+            .chat
+            .tool_search
+            .unwrap_or_else(|| chat::WorkerConfig::default().tool_search),
         classic_rag: config.chat.classic_rag,
         // コード実行系の隔離ティア（admin ポリシー）。未指定は既定（gVisor・#346）。
         sandbox_backend: config

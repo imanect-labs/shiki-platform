@@ -101,11 +101,7 @@ mod tests {
     fn tool_result(content: &str, is_error: bool) -> Message {
         Message {
             role: Role::Tool,
-            content: vec![Block::ToolResult {
-                tool_use_id: "t1".into(),
-                content: content.into(),
-                is_error,
-            }],
+            content: vec![Block::tool_result("t1", content, is_error)],
         }
     }
 

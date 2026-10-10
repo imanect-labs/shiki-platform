@@ -56,6 +56,8 @@ fn main() {
         ChartKind,
         // ツール名語彙は agent-core が単一ソース（アクション束縛が参照する）。
         agent_core::ToolName,
+        // ループが横取りするメタツール（plan / tool_search）。表示辞書が引く。
+        agent_core::MetaToolName,
         UiSpecDoc,
         UiNode,
         ActionRef,

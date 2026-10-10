@@ -350,6 +350,13 @@ flowchart LR
   - 自律 = フルツール（shell/任意コマンド/CRUD）＋長ホライズン＋FUSEストレージ。
 - 共通化: llm-gateway、Langfuseトレース、監査、トークン会計、権限境界。
 - **ツール選択**: デフォルト全提示・モデル自動選択。権限/破壊/コスト系のみ明示許可。
+  - **tool search（#511）**: 出番の限られるツール（`ToolName::loading()` が `Deferred`）は名前だけを
+    `tool_search` の説明に載せ、定義はモデルが検索（BM25F・`select:` 名指し）して読み込む。候補は
+    その run に提示済みのツールだけ（検索で認可は広がらない）。読み込み状態は履歴の
+    `ToolResult.tool_references` が正で、Anthropic は `defer_loading`＋`tool_reference`、OpenAI 互換は
+    読み込んだ定義を `tools` 末尾へ追記して写す。遅延にできる定義が閾値未満の run・
+    `SHIKI__CHAT__TOOL_SEARCH=false` では全定義を提示する。開いている文書・会話で使ったツール・
+    skill の `allowed_tools` は常時ロードに回す。
 - **自律の承認 3 モード（#350・thread 単位・実行中トグル可）**: 承認必須（既定・全破壊系が承認カードで停止）/
   オート（版管理で復元可能な書込のみ自動・fs_delete/shell 等の不可逆は承認維持）/ 全自動（危険・明示オプトイン・
   `tenant.allow_autonomous_bypass=false` の org キャップで禁止可・違反は明示エラー/警告でクランプ）。

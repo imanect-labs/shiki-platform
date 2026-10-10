@@ -29,6 +29,7 @@ pub mod langfuse;
 pub mod model;
 pub mod provider;
 pub mod providers;
+pub mod tool_loading;
 
 pub use config::{
     GatewayConfig, LangfuseConfig, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,

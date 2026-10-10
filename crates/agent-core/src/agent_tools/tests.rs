@@ -166,6 +166,7 @@ async fn tool_internal_usage_is_reported_on_every_axis() {
     let opts = AgentOptions::autonomous(8, None, 120_000, 600_000);
     let phase = ToolPhase {
         tool_map: &map,
+        tool_search: None,
         ctx: &ctx(),
         trace_id: None,
         opts: &opts,
@@ -200,6 +201,7 @@ async fn reads_run_in_parallel_and_keep_call_order() {
     let opts = AgentOptions::chat(8);
     let phase = ToolPhase {
         tool_map: &map,
+        tool_search: None,
         ctx: &ctx(),
         trace_id: None,
         opts: &opts,
@@ -249,6 +251,7 @@ async fn reads_do_not_block_on_approval() {
     let approver = YesApprover;
     let phase = ToolPhase {
         tool_map: &map,
+        tool_search: None,
         ctx: &ctx(),
         trace_id: None,
         opts: &opts,
@@ -299,6 +302,7 @@ async fn unapproved_write_is_rejected_in_place() {
     let opts = AgentOptions::chat(8);
     let phase = ToolPhase {
         tool_map: &map,
+        tool_search: None,
         ctx: &ctx(),
         trace_id: None,
         opts: &opts,
@@ -334,6 +338,7 @@ async fn same_host_web_fetch_is_serialized() {
     let opts = AgentOptions::chat(8);
     let phase = ToolPhase {
         tool_map: &map,
+        tool_search: None,
         ctx: &ctx(),
         trace_id: None,
         opts: &opts,
@@ -383,6 +388,7 @@ async fn concurrency_limit_is_honoured() {
     opts.parallel_read_tools = 1;
     let phase = ToolPhase {
         tool_map: &map,
+        tool_search: None,
         ctx: &ctx(),
         trace_id: None,
         opts: &opts,
@@ -409,6 +415,7 @@ async fn pre_authorized_write_runs_without_approver() {
     opts.approval = ApprovalPolicy::auto(["fs_write".to_string()]);
     let phase = ToolPhase {
         tool_map: &map,
+        tool_search: None,
         ctx: &ctx(),
         trace_id: None,
         opts: &opts,
@@ -459,6 +466,7 @@ async fn cancellation_still_reports_completed_reads() {
     let approver = CancelApprover;
     let phase = ToolPhase {
         tool_map: &map,
+        tool_search: None,
         ctx: &ctx(),
         trace_id: None,
         opts: &opts,

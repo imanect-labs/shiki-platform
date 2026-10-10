@@ -111,6 +111,123 @@ vocab_enum! {
     }
 }
 
+vocab_enum! {
+    /// ループが**横取りする**メタツールの名前（`Tool` として dispatch されない・[`ToolName`] の外）。
+    ///
+    /// モデルには通常のツールとして見えるため、UI の表示辞書もこの名前で引く（TS へ生成する）。
+    pub enum MetaToolName {
+        /// 計画の提示/改訂（自律プロファイル・[`crate::agent`]）。
+        Plan => "plan",
+        /// 遅延ツールの検索と読み込み（[`crate::tool_search`]）。
+        ToolSearch => "tool_search",
+    }
+}
+
+/// ツール定義をモデルの文脈へ載せる時機（tool search・[`crate::tool_search`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolLoading {
+    /// 常に載せる（ほぼ毎回使う・検索の 1 手を挟む方が高くつく）。
+    Eager,
+    /// `tool_search` で見つかるまで載せない（使う場面が限られる・定義が大きい）。
+    Deferred,
+}
+
+impl ToolName {
+    /// 既定のロード区分。**網羅 match** なので、新ツールは追加時にここで区分を決める。
+    ///
+    /// 常時ロードの基準: 会話・調査・作業ファイルの**基本動作**（毎 run のように使う）。
+    /// 遅延の基準: 特定の文書種別（ノート/スライド/Office/CSV）やワークフローに紐づくもの、
+    /// 破壊的で出番の少ないもの。run 単位の上書きは [`crate::profile::ToolSearchOptions`]。
+    #[must_use]
+    pub const fn loading(self) -> ToolLoading {
+        match self {
+            Self::Skill
+            | Self::DocSearch
+            | Self::WebSearch
+            | Self::WebFetch
+            | Self::CodeInterpreter
+            | Self::FsList
+            | Self::FsRead
+            | Self::Grep
+            | Self::FsWrite
+            | Self::FsAppend
+            | Self::FsEdit
+            | Self::Subagent
+            | Self::EmitUi => ToolLoading::Eager,
+            Self::FsDelete
+            | Self::Shell
+            | Self::EmitWorkflow
+            | Self::ReadWorkflow
+            | Self::DocumentEdit
+            | Self::DocumentRead
+            | Self::DocumentEmbed
+            | Self::SaveNote
+            | Self::SaveSlide
+            | Self::SaveCsv
+            | Self::SaveDocument
+            | Self::SaveSheet
+            | Self::SlideEdit
+            | Self::SlideRead
+            | Self::OfficeEdit
+            | Self::OfficeLiveEdit
+            | Self::CsvQuery
+            | Self::CsvPatch
+            | Self::CsvWrite => ToolLoading::Deferred,
+        }
+    }
+
+    /// tool search の索引に足す検索語（description に現れない言い換え・英語の別名）。
+    ///
+    /// description は日本語だが、モデルは英語で検索することが多い。ここで橋を架ける。
+    #[must_use]
+    pub const fn search_keywords(self) -> &'static str {
+        match self {
+            Self::FsDelete => "delete remove file 削除 消去",
+            Self::Shell => "shell bash command terminal run コマンド 実行 端末",
+            Self::EmitWorkflow => "workflow automation create update ワークフロー 自動化 作成",
+            Self::ReadWorkflow => "workflow read inspect ワークフロー 読む 確認",
+            Self::DocumentEdit => {
+                "note markdown document edit rewrite append ノート 文書 編集 追記 書き換え"
+            }
+            Self::DocumentRead => "note markdown document read ノート 文書 本文 読む",
+            Self::DocumentEmbed => "note chart graph embed ノート グラフ 図 埋め込み",
+            Self::SaveNote => "note markdown create save draft ノート メモ 作成 保存",
+            Self::SaveSlide => "slide presentation deck create draft スライド プレゼン 資料 作成",
+            Self::SaveCsv => "csv table spreadsheet create draft 表 作成",
+            Self::SaveDocument => "word docx document create report 文書 ワード 報告書 作成",
+            Self::SaveSheet => {
+                "excel xlsx spreadsheet sheet workbook create 表計算 エクセル スプレッドシート 作成"
+            }
+            Self::SlideEdit => {
+                "slide presentation deck edit rewrite スライド プレゼン 編集 書き換え"
+            }
+            Self::SlideRead => "slide presentation deck read スライド プレゼン 読む",
+            Self::OfficeEdit => {
+                "office word excel powerpoint docx xlsx pptx edit ワード エクセル パワポ 編集"
+            }
+            Self::OfficeLiveEdit => {
+                "office word excel powerpoint live collaborative edit ワード エクセル 共同編集"
+            }
+            Self::CsvQuery => "csv sql query table select aggregate 表 集計 検索",
+            Self::CsvPatch => "csv table edit update row cell 表 行 セル 編集 更新",
+            Self::CsvWrite => "csv table create write save 表 作成 保存",
+            Self::Skill
+            | Self::DocSearch
+            | Self::WebSearch
+            | Self::WebFetch
+            | Self::CodeInterpreter
+            | Self::FsList
+            | Self::FsRead
+            | Self::Grep
+            | Self::FsWrite
+            | Self::FsAppend
+            | Self::FsEdit
+            | Self::Subagent
+            | Self::EmitUi => "",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

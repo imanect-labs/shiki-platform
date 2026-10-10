@@ -6,8 +6,42 @@
 
 use super::stub_fixtures::genui_spec;
 use super::stub_stream::tool_call_stream;
-use crate::model::GenerateRequest;
+use crate::model::{Block, GenerateRequest, Role};
 use crate::provider::DeltaStream;
+
+/// tool search の決定的駆動 `toolsearch:<query>`（遅延ツールの検索→読み込み→呼び出しの e2e）。
+///
+/// 1 ターン目に `tool_search` を `{query}` で呼び、直前の観測が読み込み参照を持てば
+/// その**先頭のツール**を空入力で 1 回呼ぶ。それ以外（参照なし・呼び出し後）は `None`
+/// （通常の本文応答へ落ちる）。
+pub(super) fn tool_search_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let query = user_text.strip_prefix("toolsearch:")?.trim();
+    let last = req.messages.last()?;
+    if last.role == Role::User {
+        let t = req.tools.iter().find(|t| t.name == "tool_search")?;
+        return Some(tool_call_stream(
+            t.name.clone(),
+            serde_json::json!({ "query": query }),
+            prompt_tokens,
+        ));
+    }
+    let loaded = last.content.iter().find_map(|b| match b {
+        Block::ToolResult {
+            tool_references, ..
+        } => tool_references.first(),
+        _ => None,
+    })?;
+    let t = req.tools.iter().find(|t| &t.name == loaded)?;
+    Some(tool_call_stream(
+        t.name.clone(),
+        serde_json::json!({}),
+        prompt_tokens,
+    ))
+}
 
 /// ドキュメント下書き/編集ツールの決定的駆動（issue #282 / Task 11.3 の e2e）。
 /// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（genui chart）、

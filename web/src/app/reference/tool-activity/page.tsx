@@ -205,6 +205,8 @@ const ALL_VOCAB: ToolActivityItem[] = [
   { name: "csv.patch", input: {} },
   { name: "csv.write", input: { name: "集計結果" } },
   { name: "plan", input: {} },
+  { name: "tool_search", input: { query: "CSV を集計する" } },
+  { name: "tool_search", input: { query: "select:csv.query,csv.patch" } },
 ].map((t, i) => ({ ...t, key: `v${i}`, id: `v${i}`, running: false, ok: true, step: i }));
 
 /// ローリングの「動き」を確認するための再生デモ。

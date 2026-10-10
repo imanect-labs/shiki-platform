@@ -16,6 +16,8 @@
 //!   - `plan: A, B, C` … 1 ターン目に `plan` メタツールをカンマ区切りのサブタスクで呼ぶ（計画分解の検証）。
 //!   - `loop:` … tool_result の有無に関わらず**毎ターン** tools[0] を空入力で呼び続ける
 //!     （ループ検出・ステップ/予算上限・長ホライズンの決定的駆動）。
+//! - tool search 検証用の `toolsearch:<query>` … `tool_search` で検索し、読み込んだ先頭の
+//!   遅延ツールを次のターンで呼ぶ（[`super::stub_triggers::tool_search_call`]）。
 
 use std::time::Duration;
 
@@ -24,7 +26,7 @@ use futures::stream::{self, StreamExt};
 use super::stub_deep_research::deep_research_call;
 use super::stub_fixtures::genui_spec;
 use super::stub_stream::{slow_text_stream, text_stream, tool_call_stream, tool_calls_stream};
-use super::stub_triggers::note_tool_call;
+use super::stub_triggers::{note_tool_call, tool_search_call};
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 
@@ -216,6 +218,10 @@ impl LlmProvider for StubProvider {
                 prompt_tokens,
             ));
         }
+        // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
+        if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {
+            return Ok(s);
+        }
         // --- 並行 read 駆動 `parallel:`（#386）。 ---
         if !has_tool_result(req) {
             if let Some(s) = parallel_read_call(req, &user_text, prompt_tokens) {
@@ -363,11 +369,11 @@ mod tests {
     #[tokio::test]
     async fn stub_calls_tool_on_search_prefix() {
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "search: 経費規程")]);
-        req.tools.push(crate::model::ToolDef {
-            name: "doc_search".into(),
-            description: "d".into(),
-            input_schema: serde_json::json!({}),
-        });
+        req.tools.push(crate::model::ToolDef::new(
+            "doc_search",
+            "d",
+            serde_json::json!({}),
+        ));
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
         let mut stop = None;
@@ -387,11 +393,8 @@ mod tests {
         // websearch: プレフィックスは提示ツールの中から web_search を選ぶ（順序非依存）。
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "websearch: rust")]);
         for name in ["code_interpreter", "web_search", "web_fetch"] {
-            req.tools.push(crate::model::ToolDef {
-                name: name.into(),
-                description: "d".into(),
-                input_schema: serde_json::json!({}),
-            });
+            req.tools
+                .push(crate::model::ToolDef::new(name, "d", serde_json::json!({})));
         }
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
@@ -410,11 +413,11 @@ mod tests {
     #[tokio::test]
     async fn stub_python_prefix_selects_code_interpreter() {
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "python: print(1)")]);
-        req.tools.push(crate::model::ToolDef {
-            name: "code_interpreter".into(),
-            description: "d".into(),
-            input_schema: serde_json::json!({}),
-        });
+        req.tools.push(crate::model::ToolDef::new(
+            "code_interpreter",
+            "d",
+            serde_json::json!({}),
+        ));
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
         let mut input = None;
@@ -433,11 +436,11 @@ mod tests {
     async fn stub_falls_back_to_first_tool_when_named_absent() {
         // websearch: だが web_search が提示に無い → tools[0]（doc_search）にフォールバック。
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "websearch: x")]);
-        req.tools.push(crate::model::ToolDef {
-            name: "doc_search".into(),
-            description: "d".into(),
-            input_schema: serde_json::json!({}),
-        });
+        req.tools.push(crate::model::ToolDef::new(
+            "doc_search",
+            "d",
+            serde_json::json!({}),
+        ));
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
         while let Some(ev) = s.next().await {

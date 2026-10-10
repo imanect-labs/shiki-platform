@@ -37,6 +37,9 @@ pub struct WorkerConfig {
     /// deep research の検索→複数取得ファンアウトを直列にしないための有界並列度（#349）。
     /// 検索 API の rate limit に合わせて絞れる（1 で従来どおりの逐次）。
     pub parallel_read_tools: usize,
+    /// tool search（出番の限られるツールの定義を遅延にし、`tool_search` で読み込ませる）を
+    /// 使うか。遅延にできる定義が小さい run では有効でも何もしない（agent-core の閾値）。
+    pub tool_search: bool,
     /// 自律プロファイルの累積コスト上限（マイクロ USD・Task 5.7）。
     pub autonomous_max_cost_usd_micros: i64,
     /// サブエージェント委譲（#391）の上限。1 体の予算・1 run の体数・子の並列度の三重で縛る。
@@ -70,6 +73,7 @@ impl Default for WorkerConfig {
             // 子はそれぞれ 4 並列で取得するため、同時取得は最大 24 件になる（別ホスト前提。
             // 同一ホストは `politeness_key` が直列化する）。画面のロールが実際に速く流れる。
             parallel_read_tools: 6,
+            tool_search: true,
             autonomous_max_cost_usd_micros: 8_000_000,
             // 既定は `SubagentLimits::default()`（1 体 8 ステップ・20 万トークン・1 run 16 体）。
             // 同時実行数は `parallel_read_tools`（親側 4）が決める。
