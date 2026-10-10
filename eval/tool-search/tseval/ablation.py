@@ -28,12 +28,9 @@ def weighted_rrf(a: list[str], b: list[str], k: int, wb: float) -> list[str]:
     return sorted(score, key=lambda n: (-score[n], n))
 
 
-def main() -> None:
-    catalog = shuffled(load_catalog())  # 定義順の同点解決で正解が有利にならないように。
-    queries = load_queries()
-    svc = {t.name: t.service for t in catalog}
-    clean = {q["id"] for q in queries if names_service(q["text"], svc[q["target"]])}
-    ranks, _ = bm25.rank([t.tooldef("ja") for t in catalog], queries, limit=5, depth=len(catalog))
+def run(lang: str, catalog: list, queries: list[dict], clean: set[str]) -> list[dict]:
+    """カタログ言語 lang での融合の各設定の R@5（全クエリ / 一意な依頼）。"""
+    ranks, _ = bm25.rank([t.tooldef(lang) for t in catalog], queries, limit=5, depth=len(catalog))
     b = {q["id"]: [n for n, _ in ranks[q["id"]]["ranked"]] for q in queries}
     qv = worker.embed([q["text"] for q in queries], "query")
     names = [t.name for t in catalog]
@@ -46,9 +43,9 @@ def main() -> None:
         }
 
     variants = {
-        "name+desc+params": emb_ranks([t.doc_text("ja") for t in catalog]),
-        "name+desc": emb_ranks([f"{t.name}: {t.tooldef('ja')['description']}" for t in catalog]),
-        "desc": emb_ranks([t.tooldef("ja")["description"] for t in catalog]),
+        "name+desc+params": emb_ranks([t.doc_text(lang) for t in catalog]),
+        "name+desc": emb_ranks([f"{t.name}: {t.tooldef(lang)['description']}" for t in catalog]),
+        "desc": emb_ranks([t.tooldef(lang)["description"] for t in catalog]),
     }
 
     def measure(by_q: dict[str, list[str]]) -> dict:
@@ -58,34 +55,60 @@ def main() -> None:
 
     rows = []
     for doc, e in variants.items():
-        rows.append({"doc": doc, "method": "emb", **measure(e)})
+        rows.append({"lang": lang, "doc": doc, "method": "emb", **measure(e)})
         for k in (10, 30, 60, 100):
             for wb in (0.5, 1.0, 1.5, 2.0):
                 fused = {q["id"]: weighted_rrf(b[q["id"]], e[q["id"]], k, wb) for q in queries}
-                rows.append({"doc": doc, "method": "rrf", "k": k, "w_emb": wb, **measure(fused)})
-    rows.append({"doc": "-", "method": "bm25", **measure(b)})
+                rows.append(
+                    {
+                        "lang": lang,
+                        "doc": doc,
+                        "method": "rrf",
+                        "k": k,
+                        "w_emb": wb,
+                        **measure(fused),
+                    }
+                )
+    rows.append({"lang": lang, "doc": "-", "method": "bm25", **measure(b)})
+    return rows
+
+
+def main() -> None:
+    catalog = shuffled(load_catalog())  # 定義順の同点解決で正解が有利にならないように。
+    queries = load_queries()
+    svc = {t.name: t.service for t in catalog}
+    clean = {q["id"] for q in queries if names_service(q["text"], svc[q["target"]])}
+    rows = run("ja", catalog, queries, clean) + run("en", catalog, queries, clean)
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / "ablation.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1))
-    best = sorted((r for r in rows if r["method"] == "rrf"), key=lambda r: -r["all"]["recall@5"])[
-        :5
-    ]
-    for r in best:
-        print(
-            r["doc"],
-            r["k"],
-            r["w_emb"],
-            round(r["all"]["recall@5"] * 100, 1),
-            round(r["clean"]["recall@5"] * 100, 1),
-        )
-    for r in rows:
-        if r["method"] in ("emb", "bm25") or (r.get("k") == 60 and r.get("w_emb") == 1.0):
+    for lang in ("ja", "en"):
+        best = sorted(
+            (r for r in rows if r["method"] == "rrf" and r["lang"] == lang),
+            key=lambda r: -r["all"]["recall@5"],
+        )[:3]
+        for r in best:
             print(
+                lang,
+                "best",
                 r["doc"],
-                r["method"],
-                r.get("k"),
+                r["k"],
+                r["w_emb"],
                 round(r["all"]["recall@5"] * 100, 1),
                 round(r["clean"]["recall@5"] * 100, 1),
             )
+        for r in rows:
+            if (
+                r["lang"] == lang
+                and r["doc"] in ("name+desc+params", "-")
+                and (r["method"] != "rrf" or (r["w_emb"] == 1.0))
+            ):
+                print(
+                    lang,
+                    r["method"],
+                    r.get("k"),
+                    round(r["all"]["recall@5"] * 100, 1),
+                    round(r["clean"]["recall@5"] * 100, 1),
+                )
 
 
 if __name__ == "__main__":

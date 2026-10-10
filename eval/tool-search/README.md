@@ -26,6 +26,7 @@ uv run python -m tseval.evaluate      # 検索精度（E1〜E5）→ results/e*.
 uv run python -m tseval.e2e           # LLM にツールを選ばせる E2E → results/e2e.json
 uv run python -m tseval.skills        # skill の一覧方式 vs 検索方式 → results/skills_e2e.json
 uv run python -m tseval.report        # 集計表 → results/summary.md
+PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/tool-search-eval.html
 ```
 
 生成物と LLM・埋め込みの応答は `data/cache/` にキャッシュする（再実行で再生成しない）。
