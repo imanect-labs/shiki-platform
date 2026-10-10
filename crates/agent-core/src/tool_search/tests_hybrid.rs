@@ -221,6 +221,33 @@ async fn cold_cache_answers_lexically_and_warms_in_the_background() {
 }
 
 #[tokio::test]
+async fn two_catalogs_of_one_tenant_warm_without_dropping_each_other() {
+    // tool_search と skill_search のように、同じ tenant/org で別のカタログを続けて温める。
+    let e = embedder(false);
+    let c = ctx_of("two-catalogs");
+    let tools = catalog();
+    let skills = vec![
+        def("expense-check", "経費精算の確認"),
+        def("weekly-report", "週報を書く"),
+    ];
+    let a = CatalogSearch::new(&tools, Some(e.clone()));
+    let b = CatalogSearch::new(&skills, Some(e.clone()));
+    a.prewarm(&c);
+    b.prewarm(&c);
+    for _ in 0..100 {
+        if e.doc_calls.load(Ordering::SeqCst) == tools.len() + skills.len() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // 後から来たカタログの温めも捨てられず、両方の文書が 1 回ずつ埋め込まれる。
+    assert_eq!(
+        e.doc_calls.load(Ordering::SeqCst),
+        tools.len() + skills.len()
+    );
+}
+
+#[tokio::test]
 async fn mismatched_dimensions_fall_back_to_lexical() {
     // クエリだけ次元が違う（モデルの差し替え・設定ミス）→ 切り詰めて掛けずに BM25 へ。
     struct Skewed(Arc<FakeEmbedder>);
