@@ -57,8 +57,7 @@ pub use tool::{
     ArtifactRef, ArtifactStore, AttachmentRef, AttachmentStore, Citation, CsvDraft, SlideDraft,
     Tool, ToolError, ToolOutcome, ToolUsage,
 };
-#[doc(hidden)]
-pub use tool_search::EvalCatalog;
+pub use tool_search::CatalogSearch;
 pub use tools::{
     run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsAppendTool,
     FsDeleteTool, FsEditTool, FsListTool, FsReadTool, FsWriteTool, GrepTool, ShellTool,

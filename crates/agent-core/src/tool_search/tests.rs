@@ -41,9 +41,8 @@ fn catalog() -> Vec<ToolDef> {
 /// 閾値を外して必ず有効にする（中身の検証用）。
 fn enabled() -> ToolSearchOptions {
     ToolSearchOptions {
-        enabled: true,
         min_deferred_tokens: 0,
-        always_load: Vec::new(),
+        ..ToolSearchOptions::default()
     }
 }
 
@@ -52,7 +51,7 @@ fn search() -> ToolSearch {
 }
 
 fn query(s: &ToolSearch, q: &str) -> Vec<String> {
-    s.handle(&json!({ "query": q })).references
+    s.handle_lexical(&json!({ "query": q })).references
 }
 
 #[test]
@@ -159,7 +158,7 @@ fn exact_name_ranks_first_even_in_wire_form() {
 #[test]
 fn select_loads_exact_names_and_reports_unknown_ones() {
     let s = search();
-    let r = s.handle(&json!({ "query": "select:csv.query, office_edit, nope, csv.query" }));
+    let r = s.handle_lexical(&json!({ "query": "select:csv.query, office_edit, nope, csv.query" }));
     assert_eq!(r.references, ["csv.query", "office.edit"]);
     assert!(r.content.contains("nope"), "{}", r.content);
     assert!(!r.is_error);
@@ -168,7 +167,7 @@ fn select_loads_exact_names_and_reports_unknown_ones() {
 #[test]
 fn select_honours_limit() {
     let s = search();
-    let r = s.handle(&json!({ "query": "select:csv.query,csv.patch", "limit": 1 }));
+    let r = s.handle_lexical(&json!({ "query": "select:csv.query,csv.patch", "limit": 1 }));
     assert_eq!(r.references, ["csv.query"]);
 }
 
@@ -197,16 +196,16 @@ fn required_term_filters_by_name() {
 #[test]
 fn limit_caps_results() {
     let s = search();
-    let r = s.handle(&json!({ "query": "編集", "limit": 1 }));
+    let r = s.handle_lexical(&json!({ "query": "編集", "limit": 1 }));
     assert_eq!(r.references.len(), 1);
-    let r = s.handle(&json!({ "query": "編集", "limit": 0 }));
+    let r = s.handle_lexical(&json!({ "query": "編集", "limit": 0 }));
     assert_eq!(r.references.len(), 1, "下限 1 に丸める");
 }
 
 #[test]
 fn no_hit_lists_searchable_names_instead_of_failing() {
     let s = search();
-    let r = s.handle(&json!({ "query": "weather forecast" }));
+    let r = s.handle_lexical(&json!({ "query": "weather forecast" }));
     assert!(r.references.is_empty());
     assert!(!r.is_error);
     assert!(r.content.contains("save_note"), "{}", r.content);
@@ -215,15 +214,18 @@ fn no_hit_lists_searchable_names_instead_of_failing() {
 #[test]
 fn invalid_input_is_an_error_observation() {
     let s = search();
-    assert!(s.handle(&json!({})).is_error);
-    assert!(s.handle(&json!({ "query": "  " })).is_error);
-    assert!(s.handle(&json!({ "query": "あ".repeat(501) })).is_error);
+    assert!(s.handle_lexical(&json!({})).is_error);
+    assert!(s.handle_lexical(&json!({ "query": "  " })).is_error);
+    assert!(
+        s.handle_lexical(&json!({ "query": "あ".repeat(501) }))
+            .is_error
+    );
 }
 
 #[test]
 fn hit_content_lists_loaded_tools_with_summaries() {
     let s = search();
-    let r = s.handle(&json!({ "query": "select:csv.query" }));
+    let r = s.handle_lexical(&json!({ "query": "select:csv.query" }));
     assert!(r.content.contains("1 件"), "{}", r.content);
     assert!(
         r.content.contains("- csv.query: CSV ファイル"),
@@ -245,14 +247,14 @@ fn summary_takes_first_sentence_and_truncates() {
 fn eval_catalog_matches_the_production_ranking() {
     // 評価の窓口は製品と同じ索引・同じ順位（別実装を持たない）。
     let deferred: Vec<ToolDef> = catalog().into_iter().skip(3).collect();
-    let eval = EvalCatalog::new(&deferred);
+    let eval = CatalogSearch::new(&deferred, None);
     let prod = search();
     for q in [
         "CSV を SQL で集計したい",
         "スライドを書き換える",
         "edit a PowerPoint file",
     ] {
-        assert_eq!(eval.search(q, 5), query(&prod, q), "{q}");
+        assert_eq!(eval.search_lexical(q, 5), query(&prod, q), "{q}");
         let ranked = eval.ranked(q);
         assert!(
             ranked.windows(2).all(|w| w[0].1 >= w[1].1),
@@ -261,12 +263,15 @@ fn eval_catalog_matches_the_production_ranking() {
         // 打ち切り前の順位は、読み込む順位を先頭に含む。
         let head: Vec<String> = ranked
             .iter()
-            .take(eval.search(q, 5).len())
+            .take(eval.search_lexical(q, 5).len())
             .map(|(n, _)| n.clone())
             .collect();
-        assert_eq!(head, eval.search(q, 5));
+        assert_eq!(head, eval.search_lexical(q, 5));
     }
     assert!(eval.definition().description.contains("csv.query"));
     // `select:` の名指しも製品と同じ経路で読み込む。
-    assert_eq!(eval.search("select:office_edit", 5), ["office.edit"]);
+    assert_eq!(
+        eval.search_lexical("select:office_edit", 5),
+        ["office.edit"]
+    );
 }

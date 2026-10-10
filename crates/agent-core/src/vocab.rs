@@ -50,6 +50,10 @@ vocab_enum! {
         /// スキルのカタログ引き（name+description 一覧から必要時に instructions を読み込む・
         /// 発話ユーザー権限で解決・発動は run イベントに記録・#344 Task 10.11）。
         Skill => "skill",
+        /// スキルの検索（件数が一覧の上限を超えたときだけ提示・name と説明を返す・#520）。
+        /// 読み込みは従来どおり `skill`。tool search には統合しない（返すものが指示文で、
+        /// 定義の読み込みではないため）。
+        SkillSearch => "skill_search",
         DocSearch => "doc_search",
         WebSearch => "web_search",
         WebFetch => "web_fetch",
@@ -142,6 +146,7 @@ impl ToolName {
     pub const fn loading(self) -> ToolLoading {
         match self {
             Self::Skill
+            | Self::SkillSearch
             | Self::DocSearch
             | Self::WebSearch
             | Self::WebFetch
@@ -212,6 +217,7 @@ impl ToolName {
             Self::CsvPatch => "csv table edit update row cell 表 行 セル 編集 更新",
             Self::CsvWrite => "csv table create write save 表 作成 保存",
             Self::Skill
+            | Self::SkillSearch
             | Self::DocSearch
             | Self::WebSearch
             | Self::WebFetch

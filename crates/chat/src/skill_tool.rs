@@ -23,7 +23,7 @@ use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 
 use crate::skill::AppliedSkill;
-use crate::skill_catalog::{merge_entries, render_tool_description, SkillCatalogEntry};
+use crate::skill_catalog::{render_tool_description, SkillCatalogEntry};
 use crate::store::ClaimedRun;
 use crate::ChatError;
 
@@ -51,15 +51,13 @@ pub(crate) struct SkillTool {
 }
 
 impl SkillTool {
-    /// カタログからツールを組み立てる（エントリが空なら None＝提示しない）。
+    /// カタログ（[`merge_entries`] 済み）からツールを組み立てる（空なら None＝提示しない）。
     pub(crate) fn build(
         artifacts: Arc<artifact::ArtifactStore>,
         db: PgPool,
         run: &ClaimedRun,
-        pinned: Vec<SkillCatalogEntry>,
-        source_entries: Vec<SkillCatalogEntry>,
+        entries: Vec<SkillCatalogEntry>,
     ) -> Option<SkillTool> {
-        let entries = merge_entries(pinned, source_entries);
         if entries.is_empty() {
             return None;
         }

@@ -1,6 +1,6 @@
 """製品の tool_search 順位（Rust の `tool_search_rank` example を呼ぶ）。
 
-評価が測るのは本番の索引・順位付けそのもの（`agent_core::EvalCatalog`）。Python で
+評価が測るのは本番の索引・順位付けそのもの（`agent_core::CatalogSearch`）。Python で
 BM25 を書き直さない。
 """
 
