@@ -192,7 +192,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 7
     <div class="eyebrow">方法と限界</div>
     <h2>どう測ったか</h2>
     <ul class="plain">
-      <li>BM25F は製品のコードそのもの（<code>agent_core::EvalCatalog</code> と順位 CLI）。埋め込み・reranker はプレビュー環境の ingestion-worker を製品と同じ契約で呼んだ。</li>
+      <li>BM25F は製品のコードそのもの（<code>agent_core::CatalogSearch</code> と順位 CLI）。埋め込み・reranker はプレビュー環境の ingestion-worker を製品と同じ契約で呼んだ。</li>
       <li>合成カタログは 45 の業務 SaaS（GitHub・Slack・freee・SmartHR・kintone など）について MCP 風のツールを LLM に作らせ、説明と引数を日英で持たせた。</li>
       <li>依頼文は、同じサービスの紛らわしい近縁ツールを見せたうえで「正解ツールでしか満たせない」ものに限定して生成した。ツール名がそのまま含まれる依頼は 0 件。</li>
       <li>限界: データは LLM 生成で、生成と E2E が同じモデル。E2E は推論トークンを止めて回した。実ツールは dev 構成で配線された 13 件だけ。Anthropic の <code>tool_reference</code> 経路は実 API で測っていない。</li>

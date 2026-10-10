@@ -7,7 +7,7 @@
 
 読み込みは OpenAI 互換アダプタと同じ写し方（読み込んだ定義を `tools` の末尾へ追記し、
 結果本文に呼び出し名を書き足す・`crates/llm-gateway/src/providers/openai.rs`）。
-`tool_search` の説明は製品の定義そのもの（`EvalCatalog::definition`）。
+`tool_search` の説明は製品の定義そのもの（`CatalogSearch::definition`）。
 
 1 会話は、モデルが `tool_search` 以外のツールを初めて呼んだ時点で打ち切る（その名前が
 正解かどうかだけを見る。ツールの実行結果は要らない）。
