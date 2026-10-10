@@ -316,6 +316,23 @@ flowchart LR
   「上限以下」はサイズの目標ではなく検索品質の不変条件として扱う。
 - 引用監査は既存 `audit_log`（storage の監査チョークポイント）に `action="rag.search"` で記録
   （引用 chunk_id 群・file 粒度の認可判定・クエリ sha256・trace_id）。
+- **引用の番号と位置（#508）**:
+  - 本文の `[n]` は**応答内の通し番号**（`Citation.cite_id`）。doc_search は結果に仮の印を書くだけで、
+    agent-core のループが呼び出し順に振る（同じチャンクの再ヒットは同じ番号・台帳はチェックポイント
+    に載せて再開しても続く・サブエージェントの番号は親の台帳で振り直す）。共有スレッドで閲覧者が
+    読めない引用は、番号だけの `withheld` 引用に置き換えて返す（番号は詰めない）。
+  - 引用は**版ごとの正規化ブロック列（`doc_block`）の中の範囲**で位置を指す。原本（docx の XML・
+    md のバイト列）の位置には戻さない。ブロック番号（ordinal）は worker の出力順、ブロック内の
+    オフセットは **UTF-16**（読むのはブラウザだけ）。`rag_chunk` は最新版だけを持つが、`doc_block`
+    は**直近 20 版**まで残し（古い版を引用した会話の出典パネル用・ノートの頻繁な版で増え続けない
+    上限）、ノード削除・テナント撤去で消す。
+  - Citation は anchor（ブロック範囲）・quote（前後の文脈 32 字。本文は snippet と同じなので持たない）・
+    boxes（PDF のページ上の枠＝Docling の prov）を持つ。元エディタでは一節を本文検索して探す
+    （ノート: ProseMirror の Decoration・Collabora: `.uno:ExecuteSearch`・PDF: pdf.js に枠を重ねる）。
+    一節は URL に載せない（クリック時に localStorage で渡す）。
+  - 出典パネルは `GET /files/{id}/versions/{version}/blocks`（StorageService の viewer 判定を通った
+    `Node` を受け取って `doc_block` を窓で返す・上限 200 件）で前後の原文を描く。本文の読み出しは
+    `action="file.blocks.read"` で監査に残す。
 
 - **テナント分離（SAAS.1 の RAG 適用・#91 で明文化）**: Qdrant/Tantivy は DB/blob/FGA/session と同じく
   `tenant_id` 境界を持つ。これは `authz_tags`（テナント**内** ReBAC 可読性・PIT-1）とは**別レイヤ**の
