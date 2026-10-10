@@ -24,7 +24,7 @@ use rag::{EmbedInput, EmbeddingProvider, RagError};
 pub(crate) const RRF_K: f64 = 10.0;
 /// 1 tenant/org あたりの文書ベクトルの上限（超えたら、いま使う分だけ残して捨てる）。
 const TENANT_CACHE_LIMIT: usize = 5_000;
-/// キャッシュを持つ tenant/org の数の上限（超えたら他の分を捨てる・メモリの上限）。
+/// キャッシュを持つ tenant/org の数の上限（超えたら最も長く使われていないものから追い出す）。
 const TENANT_LIMIT: usize = 1_000;
 /// クエリの埋め込みを待つ上限。超えたら BM25 だけで返す（ingestion-worker がインジェストで
 /// 詰まっていても、検索の 1 手を数十秒止めない）。平常時は 1 回 40ms 程度。
@@ -39,15 +39,30 @@ struct TenantCache {
     /// 裏で埋め込み中の文書（同じ文書を同時に何本も送らない・single-flight）。文書単位で持つので、
     /// 同じ tenant/org で別のカタログ（tool_search と skill_search）を同時に温めても互いを捨てない。
     in_flight: HashSet<DocKey>,
+    /// 最後に使った順番（追い出すときに最も古いものを選ぶ）。
+    last_used: u64,
 }
 
 /// `scope` の枠を取る。**新しい枠を作る前に**数の上限を見る（作ってからでは常に「既にある」に
-/// なり、上限が効かずに tenant/org の数だけ増え続ける）。
+/// なり、上限が効かずに tenant/org の数だけ増え続ける）。上限なら最も長く使われていない枠を
+/// 1 つだけ追い出す（全消去すると、上限を少し超える規模で温めが毎回やり直しになる）。
+/// 埋め込み中の枠は追い出さない（戻ってきた結果の置き場を失わない）。
 fn tenant_entry(guard: &mut HashMap<String, TenantCache>, scope: String) -> &mut TenantCache {
+    static TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if !guard.contains_key(&scope) && guard.len() >= TENANT_LIMIT {
-        guard.clear();
+        let oldest = guard
+            .iter()
+            .filter(|(_, t)| t.in_flight.is_empty())
+            .min_by_key(|(_, t)| t.last_used)
+            .map(|(k, _)| k.clone());
+        if let Some(k) = oldest {
+            guard.remove(&k);
+        }
     }
-    guard.entry(scope).or_default()
+    let tenant = guard.entry(scope).or_default();
+    tenant.last_used = now;
+    tenant
 }
 
 /// `{tenant_id}/{org}` → 文書ベクトル。**キャッシュは tenant/org で閉じる**（design §4.3 の
@@ -299,6 +314,20 @@ mod tests {
         assert_eq!(rrf(&[0, 1], &[0, 2]), [0, 1, 2]);
         // 片方にしか無い同順位は添字順。
         assert_eq!(rrf(&[3], &[1]), [1, 3]);
+    }
+
+    #[test]
+    fn full_scope_table_evicts_only_the_least_recently_used() {
+        let mut table: HashMap<String, TenantCache> = HashMap::new();
+        for i in 0..TENANT_LIMIT {
+            tenant_entry(&mut table, format!("t{i}/o"));
+        }
+        // t0 を使い直して「最近使った」側へ回す。追い出されるのは次に古い t1。
+        tenant_entry(&mut table, "t0/o".into());
+        tenant_entry(&mut table, "new/o".into());
+        assert_eq!(table.len(), TENANT_LIMIT);
+        assert!(table.contains_key("t0/o") && table.contains_key("new/o"));
+        assert!(!table.contains_key("t1/o"));
     }
 
     #[test]
