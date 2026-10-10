@@ -84,6 +84,9 @@ class Searcher:
         self.tools = shuffled(tools)  # 定義順の同点解決で正解が有利にならないように。
         tools = self.tools
         self.method = base_method(method)
+        # 製品の文面の条件は、融合も製品の関数（`CatalogSearch::fused`）で行う。簡略版の条件は
+        # 初回の計測どおり評価側の RRF のまま。
+        self.product = method != self.method
         self.defs = [t.tooldef("ja") for t in tools]
         self._ranks: dict[tuple[str, int], dict] = {}
         _, self.definition = bm25.rank(self.defs, [], limit=5)
@@ -108,9 +111,15 @@ class Searcher:
         if self.method == "search_bm25" or query.strip().startswith("select:"):
             return ranks["search"]
         qv = worker.embed([query], "query")[0]
-        order = np.argsort(-(self.doc_vecs @ qv), kind="stable")
+        sims = self.doc_vecs @ qv
+        order = np.argsort(-sims, kind="stable")  # 同点は定義順（製品と同じ）。
         emb = [self.tools[i].name for i in order]
-        return rrf([n for n, _ in ranks["ranked"]], emb)[:limit]
+        if not self.product:
+            return rrf([n for n, _ in ranks["ranked"]], emb)[:limit]
+        # 製品は全文書の類似度が同じ（クエリが何も区別しない）とき BM25 だけで返す。
+        if float(sims.max() - sims.min()) <= np.finfo(np.float32).eps:
+            return ranks["search"]
+        return bm25.fuse(self.defs, query, emb, limit)
 
 
 def base_method(condition: str) -> str:
@@ -174,7 +183,8 @@ def sibling_hint(searcher: Searcher, query: str, hits: list[str], loaded: set[st
 
 def product_limit(raw: object) -> int:
     """製品の `parse_input` と同じ limit の正規化（整数でなければ既定・1〜上限に丸める）。"""
-    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+    # serde の `as_u64` が受け付ける範囲（0 以上 2^64 未満の整数）だけを有効とする。
+    if isinstance(raw, int) and not isinstance(raw, bool) and 0 <= raw < 2**64:
         return min(max(raw, 1), MAX_LIMIT)
     return DEFAULT_LIMIT
 
@@ -186,10 +196,12 @@ def catalog_fingerprint(tools: list[Tool]) -> str:
 
 
 @functools.cache
-def text_fingerprint() -> str:
-    """結果本文を作るコードの指紋（変われば `_prod` / `_hint` のキャッシュを使わない）。"""
+def text_fingerprint(fused: bool = False) -> str:
+    """結果本文と順位を作るコードの指紋（変われば `_prod` / `_hint` のキャッシュを使わない）。"""
     src = (ROOT.parents[1] / "crates/agent-core/src/tool_search/mod.rs").read_text()
     src += inspect.getsource(search_content) + inspect.getsource(sibling_hint)
+    if fused:  # RRF の条件は融合の経路（Searcher）も含める。
+        src += inspect.getsource(Searcher)
     return hashlib.sha256(src.encode()).hexdigest()[:16]
 
 
@@ -206,7 +218,7 @@ def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher |
     # 使う条件は、文面を作るコード（製品の tool_search と評価側の案内）も入力に含める。
     parts = [condition, query["text"], sorted(t.name for t in tools)]
     if condition not in ("all", "search_bm25", "search_rrf"):
-        parts.append(text_fingerprint())
+        parts.append(text_fingerprint(base_method(condition) == "search_rrf"))
         # 説明文の変更でも本文が変わる（名前だけでは取り直しにならない）。
         parts.append(catalog_fingerprint(tools))
     digest = hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()[:16]

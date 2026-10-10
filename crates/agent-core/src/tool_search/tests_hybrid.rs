@@ -316,3 +316,17 @@ fn large_catalogs_list_namespaces_instead_of_every_name() {
         .description;
     assert!(small.contains("csv.query, office.edit"), "{small}");
 }
+
+#[test]
+fn eval_fused_applies_required_terms_and_exact_name_like_production() {
+    let s = CatalogSearch::new(&catalog(), None);
+    // 埋め込みは csv 以外を上位に推すが、`+csv` は名前に csv を含むものだけに絞る。
+    let emb: Vec<String> = ["office.edit", "slide.edit", "csv.query", "save_note"]
+        .map(String::from)
+        .to_vec();
+    let got = s.fused("+csv revenue", &emb, 5);
+    assert!(got.iter().all(|n| n.starts_with("csv.")), "{got:?}");
+    // 名前そのものは融合しても先頭。
+    assert_eq!(s.fused("save_note", &emb, 3)[0], "save_note");
+    assert_eq!(s.fused("office", &emb, 2).len(), 2);
+}

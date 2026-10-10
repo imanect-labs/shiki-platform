@@ -490,6 +490,22 @@ impl CatalogSearch {
         self.0.render(&hits, &[]).content
     }
 
+    /// 埋め込みの順位（名前・類似度の降順）を受け取り、製品と同じ融合（BM25 との RRF・`+語` の
+    /// 絞り込み・名前の完全一致を先頭）で `limit` 件を返す。評価の E2E が埋め込みを自前で引いた
+    /// うえで、製品の融合順位で読み込ませるために使う（索引に無い名前は無視する）。
+    #[must_use]
+    pub fn fused(&self, query: &str, embedding_order: &[String], limit: usize) -> Vec<String> {
+        let emb: Vec<usize> = embedding_order
+            .iter()
+            .filter_map(|n| self.0.tools.iter().position(|(t, _)| t == n))
+            .collect();
+        self.0
+            .fused(query, &emb, limit)
+            .into_iter()
+            .map(|i| self.0.tools[i].0.clone())
+            .collect()
+    }
+
     /// `tool_search` の定義（説明に載る一覧の長さ・E2E での提示に使う）。
     #[must_use]
     pub fn definition(&self) -> ToolDef {

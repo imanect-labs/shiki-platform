@@ -405,7 +405,7 @@ table("tb-e2e2", ["N", "条件", "件数", "正解ツールを呼んだ", "別�
     document.getElementById("e2e-read").textContent =
       `製品の文面で比べると、入力トークンは 200 件で ${Math.round(a2.tok).toLocaleString()} → ${Math.round(r2.tok).toLocaleString()}（RRF）、1,000 件で ${Math.round(a1.tok).toLocaleString()} → ${Math.round(r1.tok).toLocaleString()} に減った。` +
       `正解ツールを呼べた率は 200 件で ${pct(a2.ok)}% → ${pct(b2.ok)}%（BM25）/ ${pct(r2.ok)}%（RRF）、1,000 件で ${pct(a1.ok)}% → ${pct(b1.ok)}% / ${pct(r1.ok)}% に下がった。` +
-      `下がった分の多くはツールを呼ばずに終えた会話で、1,000 件では別のツールを選び間違えた率は増えていない（ ${pct(a1.wrong)}% → ${pct(b1.wrong)}% / ${pct(r1.wrong)}%）。1,000 件の規模は依頼 30 件で、差の幅は大きく読まない。`;
+      `下がった分の多くはツールを呼ばずに終えた会話で、1,000 件では別のツールを選び間違えた率は増えていない（${pct(a1.wrong)}% → ${pct(b1.wrong)}% / ${pct(r1.wrong)}%）。1,000 件の規模は依頼 30 件で、差の幅は大きく読まない。`;
   }
 }
 
@@ -422,7 +422,7 @@ table("tb-e2e2", ["N", "条件", "件数", "正解ツールを呼んだ", "別�
       `1,000 件で BM25 ${pct(g(1000, "search_bm25_prod").ok)}% → ${pct(g(1000, "search_bm25_hint").ok)}%・RRF ${pct(g(1000, "search_rrf_prod").ok)}% → ${pct(g(1000, "search_rrf_hint").ok)}%、` +
       `合算で BM25 ${pct(pooled("search_bm25_prod"))}% → ${pct(pooled("search_bm25_hint"))}%・RRF ${pct(pooled("search_rrf_prod"))}% → ${pct(pooled("search_rrf_hint"))}%。` +
       `別のツールを呼んだ率は 1,000 件で BM25 ${pct(g(1000, "search_bm25_prod").wrong)}% → ${pct(g(1000, "search_bm25_hint").wrong)}%・RRF ${pct(g(1000, "search_rrf_prod").wrong)}% → ${pct(g(1000, "search_rrf_hint").wrong)}%、入力トークンは 1 会話あたり平均 ${dTok.reduce((x, y) => x + y, 0) / dTok.length >= 0 ? "+" : ""}${Math.round(dTok.reduce((x, y) => x + y, 0) / dTok.length)}（条件ごとに ${Math.round(Math.min(...dTok))}〜+${Math.round(Math.max(...dTok))}）だった。` +
-      `正解率の改善は確認できず（合算の差は数ポイントで、下の文面の違いだけによる変動より小さい）、1,000 件では選び間違いが増え、トークンも増えたため、製品には入れていない。` +
+      `正解率の改善は確認できず（合算ではむしろ数ポイント下がったが、下に書く文面の違いだけによる変動の範囲内）、1,000 件では選び間違いが増え、トークンも増えたため、製品には入れていない。` +
       `なお、結果本文が簡略版か製品の文面かだけが違う条件の間でも、正解ツールを呼べた率は最大 ${(txtNoise * 100).toFixed(1)} ポイント動いた。この規模の E2E では、数ポイントの差は読めない。`;
   }
 }
