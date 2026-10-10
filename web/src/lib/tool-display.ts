@@ -129,7 +129,7 @@ function objectOf(fallbackNoun: string) {
   return (t: string | null) => (t ? `${t} を` : `${fallbackNoun}を`);
 }
 
-// ── 辞書（30 語彙・漏れはコンパイルエラー）──────────────────────
+// ── 辞書（全語彙・漏れはコンパイルエラー）──────────────────────
 
 const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
   skill: {
@@ -139,6 +139,15 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     verb: "読み込み",
     failed: "読み込めませんでした",
     target: named(),
+  },
+  // 一覧に載らない skill の検索（件数が上限を超えたときだけ提示・#520）。
+  skill_search: {
+    icon: Sparkles,
+    category: "meta",
+    lead: (t) => (t ? `「${t}」のスキルを` : "スキルを"),
+    verb: "検索",
+    suru: true,
+    target: inline("query"),
   },
   subagent: {
     // 委譲は「調査の一種」として phase 行に集約する（category を増やすと季節色が増える）。

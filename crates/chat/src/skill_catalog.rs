@@ -139,12 +139,14 @@ pub(crate) fn render_tool_description(entries: &[SkillCatalogEntry]) -> String {
     }
     if entries.len() > MAX_LISTED_ENTRIES {
         use std::fmt::Write as _;
-        // 一覧外でも by_name マップには載っている（構築時に同じ entries から作る）ため
-        // 名前指定で読み込める、は取得上限内でのみ真。上限超過は掲載も解決も不可なので
-        // 正直に「ピンで使える」誘導にする（silent cap にしない・#344 レビュー指摘）。
+        // 一覧に載らない分は skill_search で探せる（件数が上限を超えると必ず提示する・#520）。
+        // 名前が分かれば一覧外でも読み込める（by_name は同じ entries から作る）。カタログ源の
+        // 取得上限を超えた分は掲載も解決もできないので「ピンで使える」と正直に誘導する
+        // （silent cap にしない・#344 レビュー指摘）。
         let _ = writeln!(
             out,
-            "（他 {} 件。名前が分かれば一覧外でも読み込める。見つからないスキルはスレッドへの             ピンで使える）",
+            "（他 {} 件。skill_search で検索でき、名前が分かれば一覧外でも読み込める。\
+             見つからないスキルはスレッドへのピンで使える）",
             entries.len() - MAX_LISTED_ENTRIES
         );
     }
