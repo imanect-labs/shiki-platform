@@ -267,4 +267,6 @@ fn eval_catalog_matches_the_production_ranking() {
         assert_eq!(head, eval.search(q, 5));
     }
     assert!(eval.definition().description.contains("csv.query"));
+    // `select:` の名指しも製品と同じ経路で読み込む。
+    assert_eq!(eval.search("select:office_edit", 5), ["office.edit"]);
 }
