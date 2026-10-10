@@ -1,7 +1,8 @@
 /// 引用（doc_search のソース）の解釈を一か所にまとめる（issue #505）。
 ///
-/// - 本文の `[n]` → 引用の解決は `citationAt` だけが行う。現状は「メッセージ内の引用を到着順に
-///   並べた配列の n-1 番目」。サーバが応答内の通し番号を振るようになったら、ここを差し替える。
+/// - 本文の `[n]` → 引用の解決は `citationAt` だけが行う。サーバが振った応答内の通し番号
+///   （`cite_id`）で引く（#508）。採番前に保存された旧データ（`cite_id` が 0）だけは、従来どおり
+///   「メッセージ内の引用を到着順に並べた配列の n-1 番目」で引く。
 /// - 表示は「引用箇所（チャンク）ごとの番号」を保ったまま、一覧だけを文書ごとにまとめる。
 /// - 回答の文（主張）と原文の対応は、本文中の `[n]` の直前の 1 文から推定する。
 import type { Citation } from "@/lib/chat-api";
@@ -9,13 +10,37 @@ import type { Citation } from "@/lib/chat-api";
 /// 本文中の引用マーカーのリンク先。Markdown の a レンダラがこの接頭辞で引用チップに差し替える。
 export const CITE_HREF_PREFIX = "#cite-";
 
-/// 本文の `[n]` に対応する引用（範囲外は undefined）。
+/// サーバが番号を振った引用か（旧データは 0 / 欠落）。
+function hasCiteIds(citations: readonly Citation[]): boolean {
+  return citations.some((c) => (c.cite_id ?? 0) > 0);
+}
+
+/// 配列の i 番目の引用が本文で何番として書かれているか。
+export function numberOf(citations: readonly Citation[], i: number): number {
+  const id = citations[i]?.cite_id ?? 0;
+  return id > 0 ? id : i + 1;
+}
+
+/// 本文の `[n]` に対応する引用（無ければ undefined）。
 export function citationAt(citations: readonly Citation[], n: number): Citation | undefined {
-  return Number.isInteger(n) && n >= 1 ? citations[n - 1] : undefined;
+  if (!Number.isInteger(n) || n < 1) return undefined;
+  if (hasCiteIds(citations)) return citations.find((c) => c.cite_id === n && !c.withheld);
+  return citations[n - 1];
+}
+
+/// `[n]` が「閲覧できない出典」か。共有された会話で閲覧者の権限では読めない文書の引用は、
+/// サーバが番号だけの引用（`withheld`）に置き換えて返す（番号は詰めない）。
+export function isWithheldCitation(citations: readonly Citation[], n: number): boolean {
+  return citations.some((c) => c.withheld && c.cite_id === n);
+}
+
+/// 表示に使う引用（閲覧できない出典を除く）。
+export function visibleCitations(citations: readonly Citation[]): Citation[] {
+  return citations.filter((c) => !c.withheld);
 }
 
 /// 本文中の `[n]` 引用マーカーを、引用チップ用のリンクに変換する（Markdown 用）。
-/// 範囲外の番号やマッチしない `[n]` はそのまま残す。
+/// 対応する引用が無く、欠けた番号でもない `[n]` はそのまま残す。
 ///
 /// コード（フェンスのコードブロック・インラインコード）の中は変えない。Markdown の解析前に
 /// 文字列で置き換えるので、ここで除かないとコード例の `[1]` が `[1](#cite-1)` に化け、表示と
@@ -29,7 +54,7 @@ export function linkifyCitations(text: string, citations: readonly Citation[]): 
         : s.replace(CITE_RUN, (run: string) =>
             run.replace(/\[(\d+)\]/g, (match, digits: string) => {
               const n = Number.parseInt(digits, 10);
-              if (!citationAt(citations, n)) return match;
+              if (!citationAt(citations, n) && !isWithheldCitation(citations, n)) return match;
               return `[${n}](${CITE_HREF_PREFIX}${n})`;
             }),
           ),
@@ -90,6 +115,17 @@ function plain(s: string): string {
     .trim();
 }
 
+/// 出典を示すだけの行（「【出典】…」「出典: …」「参照：…」）。
+const SOURCE_LABEL = /^[【\[(（]?\s*(?:出典|参照|引用元|根拠)\s*[】\])）:：]/;
+
+/// 主張として見せる長さの上限（文字）。長い本文は末尾側を残す（番号に近い方が根拠に近い）。
+const CLAIM_MAX = 240;
+
+function clip(s: string): string {
+  const chars = Array.from(s);
+  return chars.length > CLAIM_MAX ? `…${chars.slice(chars.length - CLAIM_MAX).join("")}` : s;
+}
+
 /// 連続した引用マーカー（`[3][4]` など）1 まとまりと、その直前の 1 文（主張）。
 export type CitationRun = { ns: number[]; claim: string };
 
@@ -101,6 +137,8 @@ export function citationRuns(text: string, citations: readonly Citation[]): Cita
   // コードの中の `[n]` は引用ではない（linkifyCitations もリンクにしない）。
   const code = codeRanges(text);
   let prevEnd = 0;
+  // 直前の出典行の本文（「【出典】…[3]」「【出典】…[4]」と出典行が続くとき、後ろの行も同じ本文を指す）。
+  let lastLabelBody = "";
   for (let m = re.exec(text); m; m = re.exec(text)) {
     const at = m.index;
     if (code.some(([s, e]) => at >= s && at < e)) continue;
@@ -119,9 +157,19 @@ export function citationRuns(text: string, citations: readonly Citation[]): Cita
       while (b > prevEnd && !SENTENCE_END.test(text[b - 1])) b--;
       raw = text.slice(b, s + 1);
     }
+    // 「【出典】就業規則 第32条[1]」のように、本文の後に出典行を立てて番号を付ける書き方がある。
+    // その行は主張ではないので、前の番号から出典行までの本文を主張とする。
+    let body: string | null = null;
+    if (SOURCE_LABEL.test(plain(raw))) {
+      body = clip(plain(text.slice(prevEnd, start)));
+      if (!body) body = lastLabelBody;
+      lastLabelBody = body;
+    } else {
+      lastLabelBody = "";
+    }
     prevEnd = m.index + m[0].length;
     // 「〜である[1]、[2]。」のように番号の間に句読点しか無い場合は、直前のまとまりに合流する。
-    const claim = plain(raw).replace(/^[、，,。．.\s]+/, "");
+    const claim = body ?? plain(raw).replace(/^[、，,。．.\s]+/, "");
     if (ns.length === 0) continue;
     const last = runs[runs.length - 1];
     if (!claim && last) last.ns.push(...ns.filter((n) => !last.ns.includes(n)));
@@ -176,11 +224,14 @@ export function groupCitations(
   const byChunk = new Map<string, CitedPassage>();
   const order: CitedPassage[] = [];
   citations.forEach((c, i) => {
-    const n = i + 1;
+    // 閲覧できない出典は一覧に出さない（本文の番号だけを欠番として描く）。
+    if (c.withheld) return;
+    const n = numberOf(citations, i);
     const used = !hasMarkers || usedNumbers.has(n);
     const hit = byChunk.get(c.chunk_id);
     if (hit) {
-      hit.ns.push(n);
+      // 番号を振り直す前の旧データは別番号、振り直した後は同じ番号で再ヒットする。
+      if (!hit.ns.includes(n)) hit.ns.push(n);
       hit.used ||= used;
       return;
     }

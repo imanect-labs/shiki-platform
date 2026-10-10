@@ -12,7 +12,7 @@ import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { PanelRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { citationAt } from "@/lib/citation";
+import { citationAt, isWithheldCitation } from "@/lib/citation";
 import {
   passageOf,
   useMessageCitations,
@@ -37,6 +37,20 @@ const CHIP =
 
 export function CitationMarker({ n, children }: { n: number; children: React.ReactNode }) {
   const message = useMessageCitations();
+  if (message && isWithheldCitation(message.citations, n)) {
+    // 共有された会話で、閲覧者の権限では読めない文書の引用（番号は詰めずに残す）。
+    const label = `出典 ${n}: 閲覧できない出典`;
+    return (
+      <span
+        role="img"
+        aria-label={label}
+        title={label}
+        className={cn(CHIP, "bg-muted text-muted-foreground/70 line-through decoration-muted-foreground/40")}
+      >
+        {n}
+      </span>
+    );
+  }
   if (!message || !citationAt(message.citations, n)) {
     return <span className={cn(CHIP, "bg-primary/12 text-primary")}>{children}</span>;
   }
@@ -186,7 +200,7 @@ export function CitationCardBody({
             出典を開く
           </button>
         ) : null}
-        <OpenOriginalLink nodeId={citation.node_id} meta={meta} />
+        <OpenOriginalLink nodeId={citation.node_id} meta={meta} citation={citation} />
       </div>
     </div>
   );

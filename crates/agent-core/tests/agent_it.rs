@@ -110,6 +110,11 @@ impl Tool for MockSearchTool {
         Ok(ToolOutcome {
             content: format!("検索結果: {query}"),
             citations: vec![Citation {
+                cite_id: 0,
+                version: None,
+                anchor: None,
+                quote: None,
+                boxes: Vec::new(),
                 node_id: "n1".into(),
                 chunk_id: "c1".into(),
                 snippet: "根拠スニペット".into(),

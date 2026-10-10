@@ -168,6 +168,12 @@ fn to_markdown(parsed: &ParsedDocument) -> Parsed {
             BlockType::Paragraph => {
                 let _ = writeln!(out, "{}\n", block.text.trim());
             }
+            // 箇条書きは記号つきで 1 行にする（番号付きは「1.」、無ければ「-」）。
+            BlockType::ListItem => {
+                let marker = block.list_marker.as_deref().unwrap_or("-");
+                let marker = if marker == "•" { "-" } else { marker };
+                let _ = writeln!(out, "{marker} {}", block.text.trim());
+            }
         }
     }
     Parsed {
@@ -194,6 +200,8 @@ mod tests {
             level,
             text: text.into(),
             page,
+            prov: Vec::new(),
+            list_marker: None,
         }
     }
 

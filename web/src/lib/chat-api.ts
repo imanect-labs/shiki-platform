@@ -525,12 +525,17 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
       case "citation":
         handlers.onCitation?.({
           type: "citation",
+          cite_id: kind.cite_id,
           node_id: kind.node_id,
           chunk_id: kind.chunk_id,
           snippet: kind.snippet,
           page: kind.page,
           heading_path: kind.heading_path,
           score: kind.score,
+          version: kind.version,
+          anchor: kind.anchor,
+          quote: kind.quote,
+          boxes: kind.boxes,
         });
         break;
       case "file_ref":

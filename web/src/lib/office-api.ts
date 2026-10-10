@@ -43,6 +43,18 @@ export function buildOfficeFrameUrl(session: OfficeSession): string {
   const url = new URL(session.action_url);
   url.searchParams.set("WOPISrc", session.wopi_src);
   // Collabora の UI 言語をブラウザに合わせる（既定は英語になってしまう）。
-  url.searchParams.set("lang", typeof navigator === "undefined" ? "ja" : navigator.language);
+  url.searchParams.set("lang", officeLang(typeof navigator === "undefined" ? undefined : navigator.language));
   return url.toString();
+}
+
+/// Collabora に渡す言語タグ。ブラウザの言語が BCP 47 として解釈できないと（POSIX ロケール由来の
+/// `en-US@posix` など）、Collabora の JS が Intl の RangeError で止まり、文書を読み込まない。
+/// `@` 以降を落として正規化し、それでも解釈できなければ日本語にする。
+export function officeLang(raw: string | undefined): string {
+  const tag = (raw ?? "").split("@")[0].replace(/_/g, "-");
+  try {
+    return Intl.getCanonicalLocales(tag)[0] ?? "ja";
+  } catch {
+    return "ja";
+  }
 }

@@ -173,7 +173,10 @@ function CitationChips({
 }) {
   const docs = React.useMemo(() => {
     const seen = new Set<string>();
-    return citations.filter((c) => (seen.has(c.node_id) ? false : (seen.add(c.node_id), true)));
+    return citations.filter((c) =>
+      // 閲覧できない出典（番号だけ）はファイルのチップにしない。
+      c.withheld || seen.has(c.node_id) ? false : (seen.add(c.node_id), true),
+    );
   }, [citations]);
   if (docs.length === 0) return null;
   return (

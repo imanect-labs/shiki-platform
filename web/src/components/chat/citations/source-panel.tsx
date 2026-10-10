@@ -15,6 +15,8 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { cn } from "@/lib/utils";
 import { citationAt } from "@/lib/citation";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { SourceBlocks, hasBlockAnchor } from "./source-blocks";
+import { PdfCitePreview } from "./pdf-cite-preview";
 import {
   panelOrder,
   passageOf,
@@ -106,6 +108,13 @@ export function SourcePanelView({
   const prev = idx > 0 ? order[idx - 1] : null;
   const next = idx >= 0 && idx < order.length - 1 ? order[idx + 1] : null;
   const heading = citation.heading_path ?? [];
+  const staleVersion =
+    typeof citation.version === "number" && typeof meta?.version === "number" && citation.version < meta.version;
+  const snippet = (
+    <p className="whitespace-pre-wrap">
+      <SnippetText text={citation.snippet} claim={claim} />
+    </p>
+  );
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowLeft" && prev != null) {
@@ -166,7 +175,9 @@ export function SourcePanelView({
             <h3 className="mb-1.5 text-[11.5px] font-medium text-muted-foreground">回答の記述</h3>
             <div className="flex items-start gap-2 rounded-lg bg-muted/50 px-3 py-2.5 text-[13px] leading-relaxed text-foreground/85">
               <NumberBadge n={passage.n} colorIndex={color} solid className="mt-[3px]" />
-              <span>{claim}</span>
+              <span className="line-clamp-6" title={claim}>
+                {claim}
+              </span>
             </div>
           </section>
         ) : null}
@@ -180,13 +191,22 @@ export function SourcePanelView({
                 .join(" ・ ")}
             </div>
           ) : null}
+          {staleVersion ? (
+            <p className="mb-2 rounded-md bg-muted/60 px-2.5 py-1.5 text-[12px] text-muted-foreground" data-testid="stale-version">
+              引用した時点の版（v{citation.version}）の内容です。このファイルはその後更新されています（最新は v
+              {meta?.version}）。
+            </p>
+          ) : null}
+          {(citation.boxes?.length ?? 0) > 0 ? <PdfCitePreview key={citation.chunk_id} citation={citation} width={384} /> : null}
           <div
             style={docColorStyle(color)}
             className="rounded-lg border border-[var(--doc)]/35 bg-card px-3.5 py-3 text-[13.5px] leading-[1.85] text-foreground/85"
           >
-            <p className="whitespace-pre-wrap">
-              <SnippetText text={citation.snippet} claim={claim} />
-            </p>
+            {hasBlockAnchor(citation) ? (
+              <SourceBlocks key={`${citation.chunk_id}:${citation.version}`} citation={citation} fallback={snippet} />
+            ) : (
+              snippet
+            )}
           </div>
           {!passage.used ? (
             <p className="mt-2 text-[12px] text-muted-foreground">この箇所は検索で見つかりましたが、回答では引用していません。</p>
@@ -217,7 +237,7 @@ export function SourcePanelView({
       </div>
 
       <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-2.5">
-        <OpenOriginalLink nodeId={citation.node_id} meta={meta} variant="outline" />
+        <OpenOriginalLink nodeId={citation.node_id} meta={meta} citation={citation} variant="outline" />
       </div>
     </div>
   );

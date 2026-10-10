@@ -22,6 +22,7 @@ use llm_gateway::Block;
 use crate::agent::{PendingCall, PLAN_TOOL};
 use crate::agent_gate::{authorize, emit_tool_events, execute_tool, is_gated, Authz};
 use crate::approval::Approver;
+use crate::cite::CitationLedger;
 use crate::event::{AgentError, AgentEvent, EventSink, RecoveryAction};
 use crate::loop_detect::LoopDetector;
 use crate::plan::{self, Plan};
@@ -78,6 +79,7 @@ pub(crate) async fn run_tool_calls(
     phase: &ToolPhase<'_>,
     calls: Vec<PendingCall>,
     plan_state: &mut Plan,
+    ledger: &mut CitationLedger,
     sink: &mut dyn EventSink,
     detector: &mut LoopDetector,
 ) -> Result<ToolPhaseOutcome, AgentError> {
@@ -111,7 +113,9 @@ pub(crate) async fn run_tool_calls(
     let mut external = crate::tool::ToolUsage::default();
     for (call, slot) in calls.into_iter().zip(slots) {
         // キャンセルで未処理のまま残った呼び出しは飛ばす。
-        let Some(p) = slot else { continue };
+        let Some(mut p) = slot else { continue };
+        // 引用番号は呼び出し順に振る（並列 read の完了順に依らず決定的・#508）。
+        ledger.number(&mut p.outcome.citations, &mut p.outcome.content);
         if let Some(u) = p.outcome.usage {
             external.tokens = external.tokens.saturating_add(u.tokens);
             // **上限判定に使う軸**（#404）。ここを積み忘れると、親のトークン上限が委譲を

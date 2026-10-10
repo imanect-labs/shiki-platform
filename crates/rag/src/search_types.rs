@@ -63,6 +63,41 @@ pub struct SearchResult {
     pub parent_content: Option<String>,
     pub score: f32,
     pub version: i64,
+    /// `doc_block` 上の範囲（位置情報を持つ索引のみ・#508）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<crate::anchor::Anchor>,
+    /// 元エディタで探すための一節（前後の文脈つき）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<crate::anchor::TextQuote>,
+    /// PDF のページ上の枠（PDF 以外は空）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub boxes: Vec<crate::anchor::PageBox>,
+}
+
+/// 版のブロック列の 1 ブロック（出典パネルの描画用・#508）。
+#[derive(Debug, Clone, Serialize, ToSchema, sqlx::FromRow)]
+pub struct DocBlock {
+    /// 版の中のブロック番号（アンカーの `block_start` / `block_end` と同じ基準）。
+    pub ordinal: i32,
+    #[sqlx(rename = "type", try_from = "String")]
+    #[serde(rename = "type")]
+    pub block_type: crate::types::BlockType,
+    /// heading のみ: 見出しレベル（1 が最上位）。
+    pub level: Option<i32>,
+    pub text: String,
+    /// list_item のみ: 見た目の番号・記号。
+    pub list_marker: Option<String>,
+    pub page: Option<i32>,
+    #[sqlx(json)]
+    pub prov: Vec<crate::anchor::PageBox>,
+}
+
+/// `GET /files/{id}/versions/{version}/blocks` のレスポンス（ordinal 順の窓）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct DocBlocksPage {
+    pub blocks: Vec<DocBlock>,
+    /// 窓の後ろに続きがあれば、次に `from` へ渡す ordinal。
+    pub next_from: Option<i32>,
 }
 
 /// 各検索段の所要時間（ms）。

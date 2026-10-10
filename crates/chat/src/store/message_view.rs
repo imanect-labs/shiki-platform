@@ -10,12 +10,16 @@ use super::*;
 use authz::{AuthContext, Consistency, Relation};
 use uuid::Uuid;
 
-use crate::model::{ContentBlock, Message};
+use crate::model::{Citation, ContentBlock, Message};
 
 use super::threads::map_db;
 
 impl ChatStore {
     /// 各メッセージの citation ブロックを閲覧者の viewer 権限で再評価し、読めない引用を落とす。
+    ///
+    /// 番号（`cite_id`）を持つ引用は、落とす代わりに番号だけの「閲覧できない出典」に置き換える
+    /// （[`Citation::withheld`]）。本文の `[n]` を欠番として描けるようにするため。ファイル・本文・
+    /// 位置情報は一切残さない。番号を持たない旧データは従来どおり落とす。
     pub(super) async fn filter_citations_for_viewer(
         &self,
         ctx: &AuthContext,
@@ -38,10 +42,17 @@ impl ChatStore {
             return Ok(()); // 全て閲覧可（所有者/十分な権限）なら何もしない
         }
         for m in messages.iter_mut() {
-            m.content.retain(|b| match b {
-                ContentBlock::Citation(c) => *decisions.get(&c.node_id).unwrap_or(&false),
-                _ => true,
-            });
+            let content = std::mem::take(&mut m.content);
+            m.content = content
+                .into_iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Citation(c) if !*decisions.get(&c.node_id).unwrap_or(&false) => {
+                        (c.cite_id > 0)
+                            .then(|| ContentBlock::Citation(Citation::withheld(c.cite_id)))
+                    }
+                    other => Some(other),
+                })
+                .collect();
         }
         Ok(())
     }

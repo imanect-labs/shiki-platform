@@ -63,21 +63,17 @@ impl ChatWorker {
             )
             .await
             {
-                Ok(result) => {
+                Ok(mut result) => {
+                    // 検索は 1 回だけなので 1 から振る（ツールループと同じ台帳で番号を確定する）。
+                    agent_core::CitationLedger::default()
+                        .number(&mut result.citations, &mut result.context_text);
                     system.push_str("\n\n# 参考（社内文書検索の結果）\n");
                     system.push_str(&result.context_text);
                     for c in result.citations {
                         // 古典注入でも引用を UI/監査へ流す（post-filter は検索内で済み）。
-                        sink.emit(AgentEvent::Citation(agent_core::Citation {
-                            node_id: c.node_id,
-                            chunk_id: c.chunk_id,
-                            snippet: c.snippet,
-                            page: c.page,
-                            heading_path: c.heading_path,
-                            score: c.score,
-                        }))
-                        .await
-                        .map_err(|e| ChatError::Internal(e.to_string()))?;
+                        sink.emit(AgentEvent::Citation(c))
+                            .await
+                            .map_err(|e| ChatError::Internal(e.to_string()))?;
                     }
                 }
                 Err(e) => {

@@ -10,10 +10,12 @@
 /// - Collabora 未配備（office profile 未起動）は 503 → 案内表示へフォールバック。
 
 import { FileWarning, MessageSquare, PlugZap, Share2, Sparkles, X } from "lucide-react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 
 import { ShareDialog } from "@/components/drive/share-dialog";
+import { CiteHint, shortPhrase } from "@/components/shell/cite-hint";
+import { useCiteLocator } from "@/lib/citation-locate";
 import { OfficeChatPanel } from "@/components/office/office-chat-panel";
 import { OfficeEditor, type OfficeEditorHandle } from "@/components/office/office-editor";
 import { EditorLoading } from "@/components/shell/editor-loading";
@@ -46,6 +48,10 @@ export default function OfficePage() {
   // 解錠（redeem）後にセッション取得をやり直すためのリロードキー。
   const [reloadKey, setReloadKey] = React.useState(0);
   const editorRef = React.useRef<OfficeEditorHandle>(null);
+  // 引用箇所から開いたとき（?cite=）: 読み込み後にこの一節を文書内で検索する（#508）。
+  // 段落全体で探すと、該当の段落がまるごと選択される（先頭だけだと途中までしか選ばれない）。
+  const locator = useCiteLocator(useSearchParams().get("cite"));
+  const findText = locator?.paragraph ?? locator?.find ?? null;
 
   React.useEffect(() => {
     let cancelled = false;
@@ -183,8 +189,16 @@ export default function OfficePage() {
             ref={editorRef}
             session={state.session}
             onClose={() => router.push("/drive")}
+            findText={findText}
           />
         </div>
+        {findText ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center">
+            <CiteHint tone="approx">
+              引用箇所「{shortPhrase(findText)}」を文書内で検索しました（選択されている箇所）
+            </CiteHint>
+          </div>
+        ) : null}
 
         {chatOpen ? (
           <FadeSlide

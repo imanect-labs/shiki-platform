@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 /// フロント `chat-api.ts` / `chat::Citation` と同型のフィールドを持つ。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Citation {
+    /// 応答内の通し番号（本文の `[n]`）。ループの [`crate::cite::CitationLedger`] が振る。
+    /// 0 は未採番（ツールが返した直後・旧データ）。
+    #[serde(default)]
+    pub cite_id: u32,
     pub node_id: String,
     pub chunk_id: String,
     pub snippet: String,
@@ -18,6 +22,18 @@ pub struct Citation {
     #[serde(default)]
     pub heading_path: Vec<String>,
     pub score: f32,
+    /// 引用時点のファイルの版（`doc_block` を引く鍵・#508）。
+    #[serde(default)]
+    pub version: Option<i64>,
+    /// `doc_block` 上の範囲。位置情報を持たない旧インデックスは None。
+    #[serde(default)]
+    pub anchor: Option<rag::Anchor>,
+    /// 元エディタで探すための一節。
+    #[serde(default)]
+    pub quote: Option<rag::TextQuote>,
+    /// PDF のページ上の枠（PDF 以外は空）。
+    #[serde(default)]
+    pub boxes: Vec<rag::PageBox>,
 }
 
 /// ツール実行のエラー。

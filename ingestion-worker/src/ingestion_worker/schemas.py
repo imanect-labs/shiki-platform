@@ -6,6 +6,7 @@
 """
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -17,16 +18,38 @@ class BlockType(StrEnum):
     PARAGRAPH = "paragraph"
     TABLE = "table"
     CAPTION = "caption"
+    LIST_ITEM = "list_item"
+
+
+class Prov(BaseModel):
+    """ブロックの原本上の位置（PDF など、ページ座標を持つ形式のみ）。
+
+    Docling の ProvenanceItem をそのまま写す。bbox は PDF ポイント座標で (l, t, r, b)。
+    原点は `origin`（Docling の既定は左下）。ブロックがページをまたぐと複数になる。
+    """
+
+    page: int
+    bbox: tuple[float, float, float, float]
+    origin: Literal["bottom_left", "top_left"] = "bottom_left"
+    charspan: tuple[int, int] | None = None
 
 
 class ParsedBlock(BaseModel):
-    """文書の読み順に並んだ構造化ブロック。表は Markdown 化したテキストを持つ。"""
+    """文書の読み順に並んだ構造化ブロック。表は Markdown 化したテキストを持つ。
+
+    配列の並び（0 起点）がそのまま版の中のブロック番号（ordinal）になる。引用は
+    この番号とブロック内オフセットで位置を指すので、並びを変えないこと（#508）。
+    """
 
     type: BlockType
     # heading のみ: 見出しレベル（1 が最上位）。
     level: int | None = None
     text: str
     page: int | None = None
+    # PDF など座標を持つ形式のみ。引用箇所を原本の上で枠として描く。
+    prov: list[Prov] = Field(default_factory=list)
+    # list_item のみ: 見た目の番号・記号（「1.」「•」など、取れる範囲で）。
+    list_marker: str | None = None
 
 
 class ParseRequest(BaseModel):

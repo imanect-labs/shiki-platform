@@ -13,8 +13,9 @@
 )]
 
 use authz::{AuthContext, Principal};
+use rag::anchor::{Anchor, BoxOrigin, PageBox};
 use rag::store;
-use rag::types::{Chunk, ChunkKind};
+use rag::types::{BlockType, Chunk, ChunkKind, ParsedBlock};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -57,6 +58,10 @@ fn chunk(node: Uuid, ordinal: i32) -> Chunk {
         page: None,
         heading_path: vec!["章".into(), format!("節{ordinal}")],
         content: format!("本文 {ordinal}"),
+        anchor: None,
+        quote_prefix: String::new(),
+        quote_suffix: String::new(),
+        boxes: Vec::new(),
     }
 }
 
@@ -77,7 +82,7 @@ async fn replace_chunks_writes_every_row_across_batch_boundaries() {
     let chunks: Vec<Chunk> = (0..N).map(|i| chunk(node, i)).collect();
     let tags = vec![format!("file:{tenant}|{node}")];
 
-    store::replace_chunks(&pool, &ctx, node, 1, &chunks, &tags, "test-model")
+    store::replace_chunks(&pool, &ctx, node, 1, &chunks, &[], &tags, "test-model")
         .await
         .unwrap();
 
@@ -105,7 +110,7 @@ async fn replace_chunks_writes_every_row_across_batch_boundaries() {
     assert_eq!(stored_tags, tags);
 
     // 決定的 ID なので再実行しても増えない（at-least-once 配信の冪等性）。
-    store::replace_chunks(&pool, &ctx, node, 1, &chunks, &tags, "test-model")
+    store::replace_chunks(&pool, &ctx, node, 1, &chunks, &[], &tags, "test-model")
         .await
         .unwrap();
     let again: i64 =
@@ -122,4 +127,132 @@ async fn replace_chunks_writes_every_row_across_batch_boundaries() {
         .execute(&pool)
         .await
         .unwrap();
+}
+
+fn block(block_type: BlockType, text: &str) -> ParsedBlock {
+    ParsedBlock {
+        block_type,
+        level: (block_type == BlockType::Heading).then_some(2),
+        text: text.into(),
+        page: Some(1),
+        prov: vec![PageBox {
+            page: 1,
+            bbox: [72.0, 700.0, 540.0, 680.0],
+            origin: BoxOrigin::BottomLeft,
+        }],
+        list_marker: (block_type == BlockType::ListItem).then(|| "1.".to_string()),
+    }
+}
+
+/// 版のブロック列（doc_block）とチャンクのアンカーが同じトランザクションで保存され、
+/// 版ごとに残り、ノード削除で全版が消えること（#508）。
+#[tokio::test]
+async fn replace_chunks_keeps_blocks_per_version_and_anchor_columns() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let ctx = ctx(&tenant);
+    let node = Uuid::new_v4();
+    let tags = vec![format!("file:{tenant}|{node}")];
+    let blocks = vec![
+        block(BlockType::Heading, "提出期限"),
+        block(BlockType::Paragraph, "申出書は1か月前までに提出する。"),
+        block(BlockType::ListItem, "Workday を開く"),
+    ];
+    let mut leaf = chunk(node, 0);
+    leaf.anchor = Some(Anchor {
+        block_start: 1,
+        off_start: 0,
+        block_end: 2,
+        off_end: 12,
+    });
+    leaf.quote_prefix = "提出期限\n".into();
+    leaf.quote_suffix = String::new();
+    leaf.boxes = blocks[1].prov.clone();
+
+    store::replace_chunks(&pool, &ctx, node, 1, &[leaf.clone()], &blocks, &tags, "m")
+        .await
+        .unwrap();
+    // 版 2 を書いても版 1 のブロック列は残る（rag_chunk は最新版だけ）。
+    store::replace_chunks(&pool, &ctx, node, 2, &[leaf], &blocks[..2], &tags, "m")
+        .await
+        .unwrap();
+
+    let per_version: Vec<(i64, i64)> = sqlx::query_as(
+        "select version, count(*) from doc_block where tenant_id = $1 and node_id = $2 \
+         group by version order by version",
+    )
+    .bind(&tenant)
+    .bind(node)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(per_version, vec![(1, 3), (2, 2)]);
+
+    let (kind, marker, prov): (String, Option<String>, serde_json::Value) = sqlx::query_as(
+        "select type, list_marker, prov from doc_block \
+         where tenant_id = $1 and node_id = $2 and version = 1 and ordinal = 2",
+    )
+    .bind(&tenant)
+    .bind(node)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(kind, "list_item");
+    assert_eq!(marker.as_deref(), Some("1."));
+    assert_eq!(prov[0]["page"], 1);
+    assert_eq!(prov[0]["origin"], "bottom_left");
+
+    let (bs, os, be, oe, prefix, boxes): (i32, i32, i32, i32, String, serde_json::Value) =
+        sqlx::query_as(
+            "select block_start, off_start, block_end, off_end, quote_prefix, boxes \
+             from rag_chunk where tenant_id = $1 and node_id = $2",
+        )
+        .bind(&tenant)
+        .bind(node)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!((bs, os, be, oe), (1, 0, 2, 12));
+    assert_eq!(prefix, "提出期限\n");
+    assert_eq!(boxes[0]["bbox"][0], 72.0);
+
+    // ノード削除で全版のブロック列が消える。
+    store::delete_node(&pool, &ctx, node).await.unwrap();
+    let left: i64 =
+        sqlx::query_scalar("select count(*) from doc_block where tenant_id = $1 and node_id = $2")
+            .bind(&tenant)
+            .bind(node)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// ブロック列は直近 KEEP_BLOCK_VERSIONS 版だけ残る（ノートの頻繁な版で本文の写しが増え続けない）。
+#[tokio::test]
+async fn old_block_versions_are_pruned() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let ctx = ctx(&tenant);
+    let node = Uuid::new_v4();
+    let tags = vec![format!("file:{tenant}|{node}")];
+    let blocks = vec![block(BlockType::Paragraph, "本文")];
+    let total = store::KEEP_BLOCK_VERSIONS + 3;
+    for v in 1..=total {
+        store::replace_chunks(&pool, &ctx, node, v, &[], &blocks, &tags, "m")
+            .await
+            .unwrap();
+    }
+    let (min, count): (i64, i64) = sqlx::query_as(
+        "select min(version), count(distinct version) from doc_block \
+         where tenant_id = $1 and node_id = $2",
+    )
+    .bind(&tenant)
+    .bind(node)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, store::KEEP_BLOCK_VERSIONS);
+    assert_eq!(min, total - store::KEEP_BLOCK_VERSIONS + 1);
+    store::delete_node(&pool, &ctx, node).await.unwrap();
 }

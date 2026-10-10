@@ -410,25 +410,31 @@ async fn run_step(
         opts,
         approver,
     };
-    let (mut result_blocks, looping, external) =
-        match crate::agent_tools::run_tool_calls(&phase, calls, &mut state.plan, sink, detector)
-            .await?
-        {
-            crate::agent_tools::ToolPhaseOutcome::Cancelled { external } => {
-                // キャンセルでも走った分は計上してから止める（「止めれば無料」を作らない）。
-                state.spent.add_external(
-                    external.tokens,
-                    external.fresh_tokens,
-                    external.cost_usd_micros,
-                );
-                return Ok(StepOutcome::Stop(AgentStop::Cancelled));
-            }
-            crate::agent_tools::ToolPhaseOutcome::Executed {
-                blocks,
-                looping,
-                external,
-            } => (blocks, looping, external),
-        };
+    let (mut result_blocks, looping, external) = match crate::agent_tools::run_tool_calls(
+        &phase,
+        calls,
+        &mut state.plan,
+        &mut state.citations,
+        sink,
+        detector,
+    )
+    .await?
+    {
+        crate::agent_tools::ToolPhaseOutcome::Cancelled { external } => {
+            // キャンセルでも走った分は計上してから止める（「止めれば無料」を作らない）。
+            state.spent.add_external(
+                external.tokens,
+                external.fresh_tokens,
+                external.cost_usd_micros,
+            );
+            return Ok(StepOutcome::Stop(AgentStop::Cancelled));
+        }
+        crate::agent_tools::ToolPhaseOutcome::Executed {
+            blocks,
+            looping,
+            external,
+        } => (blocks, looping, external),
+    };
     // ツールの内側で起きた LLM 消費（サブエージェント委譲・#391）を親の会計へ積む。
     // steps は増やさない（親のループ回数の指標を保つ）。次のステップ境界の `Budget::check` が
     // 子の消費込みで判定するため、**トークン/コスト上限で確実に止まる**。

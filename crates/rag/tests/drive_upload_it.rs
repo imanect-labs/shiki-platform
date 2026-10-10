@@ -81,6 +81,8 @@ impl DocumentParser for FetchingParser {
                 level: None,
                 text: p.trim().to_string(),
                 page: None,
+                prov: Vec::new(),
+                list_marker: None,
             })
             .collect();
         Ok(ParsedDocument {

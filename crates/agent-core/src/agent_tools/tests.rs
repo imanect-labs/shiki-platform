@@ -175,9 +175,16 @@ async fn tool_internal_usage_is_reported_on_every_axis() {
     let mut sink = NullSink { events: Vec::new() };
     let mut plan = Plan::default();
     let mut detector = LoopDetector::default();
-    let out = run_tool_calls(&phase, calls, &mut plan, &mut sink, &mut detector)
-        .await
-        .unwrap();
+    let out = run_tool_calls(
+        &phase,
+        calls,
+        &mut plan,
+        &mut CitationLedger::default(),
+        &mut sink,
+        &mut detector,
+    )
+    .await
+    .unwrap();
     let ToolPhaseOutcome::Executed { external, .. } = out else {
         panic!("cancelled")
     };
@@ -214,9 +221,16 @@ async fn reads_run_in_parallel_and_keep_call_order() {
     let mut plan = Plan::default();
     let mut detector = LoopDetector::default();
     let started = Instant::now();
-    let out = run_tool_calls(&phase, calls, &mut plan, &mut sink, &mut detector)
-        .await
-        .unwrap();
+    let out = run_tool_calls(
+        &phase,
+        calls,
+        &mut plan,
+        &mut CitationLedger::default(),
+        &mut sink,
+        &mut detector,
+    )
+    .await
+    .unwrap();
     let elapsed = started.elapsed();
 
     let ToolPhaseOutcome::Executed { blocks, .. } = out else {
@@ -264,9 +278,16 @@ async fn reads_do_not_block_on_approval() {
     let mut plan = Plan::default();
     let mut detector = LoopDetector::default();
     let started = Instant::now();
-    let out = run_tool_calls(&phase, calls, &mut plan, &mut sink, &mut detector)
-        .await
-        .unwrap();
+    let out = run_tool_calls(
+        &phase,
+        calls,
+        &mut plan,
+        &mut CitationLedger::default(),
+        &mut sink,
+        &mut detector,
+    )
+    .await
+    .unwrap();
     let elapsed = started.elapsed();
 
     let ToolPhaseOutcome::Executed { blocks, .. } = out else {
@@ -308,11 +329,16 @@ async fn unapproved_write_is_rejected_in_place() {
     let mut sink = NullSink { events: Vec::new() };
     let mut plan = Plan::default();
     let mut detector = LoopDetector::default();
-    let ToolPhaseOutcome::Executed { blocks, .. } =
-        run_tool_calls(&phase, calls, &mut plan, &mut sink, &mut detector)
-            .await
-            .unwrap()
-    else {
+    let ToolPhaseOutcome::Executed { blocks, .. } = run_tool_calls(
+        &phase,
+        calls,
+        &mut plan,
+        &mut CitationLedger::default(),
+        &mut sink,
+        &mut detector,
+    )
+    .await
+    .unwrap() else {
         panic!("cancelled")
     };
     assert_eq!(blocks.len(), 2);
@@ -352,11 +378,16 @@ async fn same_host_web_fetch_is_serialized() {
     let mut sink = NullSink { events: Vec::new() };
     let mut plan = Plan::default();
     let mut detector = LoopDetector::default();
-    let ToolPhaseOutcome::Executed { blocks, .. } =
-        run_tool_calls(&phase, calls, &mut plan, &mut sink, &mut detector)
-            .await
-            .unwrap()
-    else {
+    let ToolPhaseOutcome::Executed { blocks, .. } = run_tool_calls(
+        &phase,
+        calls,
+        &mut plan,
+        &mut CitationLedger::default(),
+        &mut sink,
+        &mut detector,
+    )
+    .await
+    .unwrap() else {
         panic!("cancelled")
     };
     // 同一ホストは直列なので、同時実行は「別ホストとの 2 本」が上限。
@@ -392,9 +423,16 @@ async fn concurrency_limit_is_honoured() {
     let mut sink = NullSink { events: Vec::new() };
     let mut plan = Plan::default();
     let mut detector = LoopDetector::default();
-    run_tool_calls(&phase, calls, &mut plan, &mut sink, &mut detector)
-        .await
-        .unwrap();
+    run_tool_calls(
+        &phase,
+        calls,
+        &mut plan,
+        &mut CitationLedger::default(),
+        &mut sink,
+        &mut detector,
+    )
+    .await
+    .unwrap();
     assert_eq!(peak.load(Ordering::SeqCst), 1);
 }
 
@@ -421,6 +459,7 @@ async fn pre_authorized_write_runs_without_approver() {
         &phase,
         vec![call("1", "fs_write", "w")],
         &mut plan,
+        &mut CitationLedger::default(),
         &mut sink,
         &mut detector,
     )
@@ -468,9 +507,16 @@ async fn cancellation_still_reports_completed_reads() {
     let mut sink = NullSink { events: Vec::new() };
     let mut plan = Plan::default();
     let mut detector = LoopDetector::default();
-    let out = run_tool_calls(&phase, calls, &mut plan, &mut sink, &mut detector)
-        .await
-        .unwrap();
+    let out = run_tool_calls(
+        &phase,
+        calls,
+        &mut plan,
+        &mut CitationLedger::default(),
+        &mut sink,
+        &mut detector,
+    )
+    .await
+    .unwrap();
     assert!(matches!(out, ToolPhaseOutcome::Cancelled { .. }));
     // 完了した read の結果はイベントとして出ている（実行したのに無かったことにしない）。
     assert!(
