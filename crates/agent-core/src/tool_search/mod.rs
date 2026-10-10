@@ -321,14 +321,12 @@ impl EvalCatalog {
         EvalCatalog(ToolSearch::build(defs))
     }
 
-    /// 本番の `tool_search` が読み込む順位（`limit` 件・相対カットオフ込み）。
+    /// 本番の `tool_search` が読み込むツール（`handle` と同じ経路・`select:` の名指しも含む）。
     #[must_use]
     pub fn search(&self, query: &str, limit: usize) -> Vec<String> {
         self.0
-            .rank(query, limit)
-            .into_iter()
-            .map(|i| self.0.tools[i].0.clone())
-            .collect()
+            .handle(&json!({ "query": query, "limit": limit }))
+            .references
     }
 
     /// 打ち切り前の全順位とスコア（他の検索との融合の入力）。

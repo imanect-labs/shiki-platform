@@ -14,6 +14,7 @@ skill は tool search に統合せず、`skill` ツールの説明に name: desc
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import re
@@ -159,47 +160,63 @@ SKILL_PARAMS = {
 }
 
 
-def run_one(entries: list[dict], condition: str, q: dict, search_def: dict | None) -> dict:
-    path = CACHE / f"e2e-{condition}-{len(entries)}-{q['target']}.json"
-    if path.exists():
-        return json.loads(path.read_text())
+SEARCH_DESCRIPTION = (
+    "社内のスキル（作業手順・指示文）を検索する。やりたい作業を自然文（日本語/英語）か"
+    "キーワードで探すと、候補の name と説明が返る。見つけた name で skill を読み込む。"
+)
+
+
+def skill_tools(entries: list[dict], condition: str, search_def: dict | None) -> list[dict]:
+    """条件ごとに提示するツール（一覧方式は skill 1 つ・検索方式は skill ＋ skill_search）。"""
     ordered = sorted(entries, key=lambda e: e["name"])  # 製品のカタログ源は name 順。
-    if condition == "search":
-        assert search_def is not None
-        tools = [
+    if condition in ("list_cap50", "list_all"):
+        listing = render_listing(ordered, MAX_LISTED if condition == "list_cap50" else None)
+        return [
             {
                 "type": "function",
-                "function": {
-                    "name": "skill",
-                    "description": "スキル（社内で定義された作業手順・指示文）を名前で読み込む。"
-                    "名前が分からなければ先に skill_search で探すこと。",
-                    "parameters": SKILL_PARAMS,
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "skill_search",
-                    "description": search_def["description"]
-                    .replace("まだ読み込まれていないツール", "スキル")
-                    .replace("tool_search", "skill_search"),
-                    "parameters": search_def["parameters"],
-                },
-            },
-        ]
-    else:
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "skill",
-                    "description": render_listing(
-                        ordered, MAX_LISTED if condition == "list_cap50" else None
-                    ),
-                    "parameters": SKILL_PARAMS,
-                },
+                "function": {"name": "skill", "description": listing, "parameters": SKILL_PARAMS},
             }
         ]
+    assert search_def is not None
+    # search は名前一覧を持たない専用の説明。search_names は tool_search と同じく
+    # 検索できる名前の一覧を説明に載せる（名前だけの一覧 ＋ 検索という中間案）。
+    desc = SEARCH_DESCRIPTION
+    if condition == "search_names":
+        desc = (
+            search_def["description"]
+            .replace("まだ読み込まれていないツール", "スキル")
+            .replace("tool_search", "skill_search")
+        )
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "skill",
+                "description": "スキル（社内で定義された作業手順・指示文）を名前で読み込む。"
+                "名前が分からなければ先に skill_search で探すこと。",
+                "parameters": SKILL_PARAMS,
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "skill_search",
+                "description": desc,
+                "parameters": search_def["parameters"],
+            },
+        },
+    ]
+
+
+def run_one(entries: list[dict], condition: str, q: dict, search_def: dict | None) -> dict:
+    tools = skill_tools(entries, condition, search_def)
+    # キーは入力内容から作る（依頼文・提示するツール定義が変われば取り直す）。
+    digest = hashlib.sha256(
+        json.dumps([condition, q["text"], tools], ensure_ascii=False).encode()
+    ).hexdigest()[:16]
+    path = CACHE / f"e2e-v2-{condition}-{len(entries)}-{q['target']}-{digest}.json"
+    if path.exists():
+        return json.loads(path.read_text())
     messages = [
         {
             "role": "system",
@@ -212,19 +229,23 @@ def run_one(entries: list[dict], condition: str, q: dict, search_def: dict | Non
         "target": q["target"],
         "condition": condition,
         "n": len(entries),
-        "called": None,
+        "called": [],
         "searches": 0,
         "prompt_tokens": 0,
         "error": None,
     }
+    # 検索の索引は名前順に依存しないよう決まった乱数で混ぜる（同点は定義順で解決される）。
+    shuffled_entries = sorted(entries, key=lambda e: e["name"])
+    random.Random(17).shuffle(shuffled_entries)
     defs = [
         {
             "name": e["name"],
             "description": e["description"],
             "input_schema": {"type": "object", "properties": {}},
         }
-        for e in entries
+        for e in shuffled_entries
     ]
+    by = {e["name"]: e for e in entries}
     try:
         for _ in range(4):
             r = chat(messages, tools=tools, max_tokens=2048, temperature=0.0)
@@ -236,12 +257,14 @@ def run_one(entries: list[dict], condition: str, q: dict, search_def: dict | Non
             messages.append(
                 {"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls}
             )
+            # 1 メッセージで複数の skill を読み込んでよい（説明にそう書いてある）。全部見る。
             loaded = [c for c in calls if c["function"]["name"] == "skill"]
-            if loaded:
+            for c in loaded:
                 try:
-                    rec["called"] = json.loads(loaded[0]["function"]["arguments"]).get("name")
+                    rec["called"].append(json.loads(c["function"]["arguments"]).get("name"))
                 except json.JSONDecodeError:
-                    rec["called"] = None
+                    rec["called"].append(None)
+            if loaded:
                 break
             for c in calls:
                 rec["searches"] += 1
@@ -251,7 +274,6 @@ def run_one(entries: list[dict], condition: str, q: dict, search_def: dict | Non
                     query = ""
                 ranks, _ = bm25.rank(defs, [{"id": "q", "text": query or "?"}], limit=5)
                 hits = ranks["q"]["search"]
-                by = {e["name"]: e for e in entries}
                 body = "\n".join(f"- {h}: {by[h]['description'][:MAX_DESC]}" for h in hits)
                 messages.append(
                     {
@@ -262,7 +284,7 @@ def run_one(entries: list[dict], condition: str, q: dict, search_def: dict | Non
                 )
     except RuntimeError as e:
         rec["error"] = str(e)[:300]
-    rec["correct"] = rec["called"] == q["target"]
+    rec["correct"] = q["target"] in rec["called"]
     # 利用枠超過などの失敗はキャッシュしない（再実行で取り直す）。
     if rec["error"] is None:
         CACHE.mkdir(parents=True, exist_ok=True)
@@ -301,7 +323,7 @@ def main(sizes: tuple[int, ...] = (20, 50, 100, 200, 500)) -> None:
             for e in entries
         ]
         _, search_def = bm25.rank(defs, [], limit=5)
-        for condition in ("list_cap50", "list_all", "search"):
+        for condition in ("list_cap50", "list_all", "search", "search_names"):
             with ThreadPoolExecutor(max_workers=4) as pool:
                 rows += list(
                     pool.map(

@@ -13,7 +13,7 @@ import numpy as np
 
 from . import bm25, worker
 from .catalog import load_catalog, names_service
-from .evaluate import load_queries
+from .evaluate import load_queries, shuffled
 from .metrics import rank_of, summarize
 
 RESULTS = Path(__file__).resolve().parent.parent / "results"
@@ -29,11 +29,11 @@ def weighted_rrf(a: list[str], b: list[str], k: int, wb: float) -> list[str]:
 
 
 def main() -> None:
-    catalog = load_catalog()
+    catalog = shuffled(load_catalog())  # 定義順の同点解決で正解が有利にならないように。
     queries = load_queries()
     svc = {t.name: t.service for t in catalog}
     clean = {q["id"] for q in queries if names_service(q["text"], svc[q["target"]])}
-    ranks, _ = bm25.rank([t.tooldef("ja") for t in catalog], queries, limit=5, depth=100)
+    ranks, _ = bm25.rank([t.tooldef("ja") for t in catalog], queries, limit=5, depth=len(catalog))
     b = {q["id"]: [n for n, _ in ranks[q["id"]]["ranked"]] for q in queries}
     qv = worker.embed([q["text"] for q in queries], "query")
     names = [t.name for t in catalog]
@@ -41,7 +41,7 @@ def main() -> None:
     def emb_ranks(doc_texts: list[str]) -> dict[str, list[str]]:
         sims = qv @ worker.embed(doc_texts, "document").T
         return {
-            q["id"]: [names[i] for i in np.argsort(-sims[qi], kind="stable")[:100]]
+            q["id"]: [names[i] for i in np.argsort(-sims[qi], kind="stable")]
             for qi, q in enumerate(queries)
         }
 

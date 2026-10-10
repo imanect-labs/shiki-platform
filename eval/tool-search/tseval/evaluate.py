@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -60,8 +61,11 @@ def run_methods(
     """
     methods = METHODS if rerank else tuple(m for m in METHODS if m != "rrf_rerank")
     out: dict[str, dict[str, list[str]]] = {m: {} for m in methods}
+    # 定義順を決まった乱数で混ぜる（同点は定義順で解決されるため、正解ツールを先頭に置くと
+    # 系統的に有利になる）。順位は全件まで取る（MRR を 100 位で切らない）。
+    tools = shuffled(tools)
     defs = [t.tooldef(lang) for t in tools]
-    ranks, _ = bm25.rank(defs, queries, limit=5, depth=100)
+    ranks, _ = bm25.rank(defs, queries, limit=5, depth=len(tools))
     for q in queries:
         out.setdefault("bm25", {})[q["id"]] = [n for n, _ in ranks[q["id"]]["ranked"]]
         out.setdefault("bm25_prod", {})[q["id"]] = ranks[q["id"]]["search"]
@@ -73,7 +77,7 @@ def run_methods(
     sims = qv @ docs.T
     by_name = {t.name: t for t in tools}
     for qi, q in enumerate(queries):
-        order = np.argsort(-sims[qi], kind="stable")[:100]
+        order = np.argsort(-sims[qi], kind="stable")
         emb = [names[i] for i in order]
         out["emb"][q["id"]] = emb
         out["rrf"][q["id"]] = rrf(out["bm25"][q["id"]], emb)
@@ -83,14 +87,46 @@ def run_methods(
             fused = out["rrf"][q["id"]]
             head = fused[:RERANK_DEPTH]
             # 引数まで入れると cross-encoder が遅く、順位もほぼ変わらない。名前と説明だけ渡す。
-            passages = [(n, f"{n}: {by_name[n].tooldef(lang)['description']}") for n in head]
-            scores = worker.rerank(q["text"], passages)
+            scores = worker.rerank(q["text"], rerank_passages([by_name[n] for n in head], lang))
             return q["id"], sorted(head, key=lambda n: -scores[n]) + fused[RERANK_DEPTH:]
 
         with ThreadPoolExecutor(max_workers=3) as pool:
             for qid, ranked in pool.map(one, queries):
                 out["rrf_rerank"][qid] = ranked
     return out
+
+
+def shuffled(tools: list[Tool], seed: int = 17) -> list[Tool]:
+    """名前で並べてから決まった乱数で混ぜる（入力の並びに依存しない・再現できる）。"""
+    out = sorted(tools, key=lambda t: t.name)
+    random.Random(seed).shuffle(out)
+    return out
+
+
+def rerank_passages(tools: list[Tool], lang: str = "ja") -> list[tuple[str, str]]:
+    """reranker に渡す文書（名前と説明・引数まで入れると遅く、順位もほぼ変わらない）。"""
+    return [(t.name, f"{t.name}: {t.tooldef(lang)['description']}") for t in tools]
+
+
+def service_boundaries(catalog: list[Tool], counts: tuple[int, ...]) -> list[int]:
+    """E1 の規模（実ツールのあと、合成サービスを counts 個足した時点のツール数）。
+
+    固定の件数で切るとサービスの途中で切れ、「サービス単位で増える」実験にならない。
+    """
+    order = growth_order(catalog)
+    real = sum(1 for t in order if t.service == "shiki")
+    sizes = []
+    for c in counts:
+        seen: list[str] = []
+        n = real
+        for t in order[real:]:
+            if t.service not in seen:
+                if len(seen) == c:
+                    break
+                seen.append(t.service)
+            n += 1
+        sizes.append(n)
+    return sorted(set(sizes))
 
 
 def score(rankings: dict[str, dict[str, list[str]]], queries: list[dict]) -> dict:
@@ -194,21 +230,18 @@ def e4_limit(catalog: list[Tool], queries: list[dict]) -> list[dict]:
 
 
 def e5_latency(catalog: list[Tool], queries: list[dict], sample: int = 50) -> dict:
+    """1 クエリの処理時間。埋め込み・reranker はキャッシュを通らない経路で往復を測る。"""
     qs = queries[:sample]
     defs = [t.tooldef("ja") for t in catalog]
     t0 = time.perf_counter()
     _, definition = bm25.rank(defs, qs, limit=5, depth=100)
     desc_chars = len(definition["description"])
     bm25_ms = (time.perf_counter() - t0) * 1000 / len(qs)
-    # 埋め込みはキャッシュを避けて 1 件ずつ往復を測る（クエリ時の実コスト）。
-    t0 = time.perf_counter()
-    for q in qs[:20]:
-        worker.embed([q["text"] + f" #{time.time_ns()}"], "query")
-    emb_ms = (time.perf_counter() - t0) * 1000 / 20
-    head = [(t.name, t.doc_text("ja")) for t in catalog[:RERANK_DEPTH]]
+    emb_ms = worker.embed_latency_ms([q["text"] for q in qs[:20]])
+    head = rerank_passages(catalog[:RERANK_DEPTH])
     t0 = time.perf_counter()
     for q in qs[:10]:
-        worker.rerank(q["text"], head)
+        worker.rerank(q["text"], head, use_cache=False)
     rerank_ms = (time.perf_counter() - t0) * 1000 / 10
     return {
         "catalog": len(catalog),
@@ -237,7 +270,8 @@ def main() -> None:
     RESULTS.mkdir(exist_ok=True)
     catalog = load_catalog()
     queries = load_queries()
-    sizes = [16, 32, 64, 128, 256, 512, len(catalog)]
+    # 実ツールのあと合成サービスを 0, 1, 2, 4, … 個足した時点（サービスの途中で切らない）。
+    sizes = service_boundaries(catalog, (0, 1, 2, 4, 8, 16, 32, 64))
     print(f"catalog={len(catalog)} queries={len(queries)}", flush=True)
     only = set(sys.argv[1:])
     for name, fn in (

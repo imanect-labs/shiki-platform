@@ -12,9 +12,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 _BIN = ROOT / "target" / "release" / "examples" / "tool_search_rank"
+_built = False
 
 
 def build() -> None:
+    """Cargo にビルド要否を判定させる（最新なら即終わる）。古いバイナリで測らないため、
+    プロセスごとに 1 回は必ず通す。"""
+    global _built
     subprocess.run(
         [
             "cargo",
@@ -29,13 +33,14 @@ def build() -> None:
         cwd=ROOT,
         check=True,
     )
+    _built = True
 
 
 def rank(
     catalog: list[dict], queries: list[dict], limit: int = 5, depth: int = 100
 ) -> tuple[dict[str, dict], dict]:
     """クエリ id → {search: 本番の読み込み順位, ranked: [(name, score)]}、と `tool_search` の定義。"""
-    if not _BIN.exists():
+    if not _built:
         build()
     payload = json.dumps(
         {

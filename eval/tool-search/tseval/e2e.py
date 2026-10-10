@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import time
@@ -27,7 +28,7 @@ import numpy as np
 
 from . import bm25, worker
 from .catalog import Tool, fixed_target_subsets, load_catalog
-from .evaluate import load_queries, rrf
+from .evaluate import load_queries, rrf, shuffled
 from .llm import chat
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -59,7 +60,8 @@ class Searcher:
     """1 カタログぶんの検索器（方式ごとに読み込む 5 件を返す）。"""
 
     def __init__(self, tools: list[Tool], method: str):
-        self.tools = tools
+        self.tools = shuffled(tools)  # 定義順の同点解決で正解が有利にならないように。
+        tools = self.tools
         self.method = method
         self.defs = [t.tooldef("ja") for t in tools]
         _, self.definition = bm25.rank(self.defs, [], limit=5)
@@ -67,11 +69,11 @@ class Searcher:
             self.doc_vecs = worker.embed([t.doc_text("ja") for t in tools], "document")
 
     def search(self, query: str) -> list[str]:
-        ranks, _ = bm25.rank(self.defs, [{"id": "q", "text": query}], limit=5, depth=100)
+        ranks, _ = bm25.rank(self.defs, [{"id": "q", "text": query}], limit=5, depth=len(self.defs))
         if self.method == "search_bm25":
             return ranks["q"]["search"]
         qv = worker.embed([query], "query")[0]
-        order = np.argsort(-(self.doc_vecs @ qv), kind="stable")[:100]
+        order = np.argsort(-(self.doc_vecs @ qv), kind="stable")
         emb = [self.tools[i].name for i in order]
         return rrf([n for n, _ in ranks["q"]["ranked"]], emb)[:5]
 
@@ -85,13 +87,19 @@ MOCK_RESULT = (
 def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher | None) -> dict:
     """1 会話を回す。正解ツールを呼んだ時点で打ち切る（下調べのツールを先に呼ぶのは正しい手順
     なので、他のツールにはモックの結果を返して続けさせる）。"""
-    key = f"v2-{condition}-{len(tools)}-{query['id']}".replace("/", "_")
+    # キーは入力内容から作る（依頼文・提示するカタログ・条件が変われば取り直す）。
+    digest = hashlib.sha256(
+        json.dumps(
+            [condition, query["text"], sorted(t.name for t in tools)], ensure_ascii=False
+        ).encode()
+    ).hexdigest()[:16]
+    key = f"v3-{condition}-{len(tools)}-{query['id']}-{digest}".replace("/", "_")
     path = CACHE / f"{key}.json"
     if path.exists():
         return json.loads(path.read_text())
     by_wire = {wire(t.name): t for t in tools}
     if condition == "all":
-        offered = [as_function(t) for t in tools]
+        offered = [as_function(t) for t in shuffled(tools)]
     else:
         assert searcher is not None
         offered = [
@@ -187,22 +195,23 @@ def main(sizes: tuple[int, ...] = (200, 1000), sample: int = 60, seed: int = 3) 
     targets = sorted({q["target"] for q in queries})
     chosen = set(rng.sample(targets, min(sample // 2, len(targets))))
     qs = [q for q in queries if q["target"] in chosen]
+    half = set(sorted(chosen)[: len(chosen) // 2])
+    big_qs = [q for q in qs if q["target"] in half]
     subsets = fixed_target_subsets(catalog, {q["target"] for q in qs}, list(sizes))
     rows = []
     for tools in subsets.values():
         for condition in ("all", "search_bm25", "search_rrf"):
             searcher = Searcher(tools, condition) if condition != "all" else None
             # 全ツール提示は 1 会話 10 万トークン超になり、利用枠を使い切る。大きい規模では
-            # 件数を半分に絞る（正解ツールの集合は同じまま、ja/en の片方ずつ）。
-            batch = qs[::2] if condition == "all" and len(tools) >= 1000 else qs
+            # **全条件で**同じ半分の正解ツール（日英とも）に絞る（条件間で同じ標本を比べる）。
+            batch = big_qs if len(tools) >= 1000 else qs
             with ThreadPoolExecutor(max_workers=4) as pool:
-                rows += [
-                    r
-                    for r in pool.map(
+                # 失敗（利用枠超過など）も行として残す。集計で正解率から外し、件数を数える。
+                rows += list(
+                    pool.map(
                         lambda q, c=condition, s=searcher, ts=tools: run_one(ts, c, q, s), batch
                     )
-                    if not r["error"]
-                ]
+                )
             print(f"E2E n={len(tools)} {condition} done", flush=True)
     (ROOT / "results").mkdir(exist_ok=True)
     (ROOT / "results" / "e2e.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1))

@@ -138,7 +138,10 @@ def latency() -> str:
 
 
 def e2e(name: str = "e2e", title: str = "E2E（LLM が会話の中で正解ツールを呼べた率）") -> str:
-    """E2E の集計。v1（最初のツール呼び出しで打ち切り）と v2（モック結果で続ける）の両方を読む。"""
+    """E2E の集計。v1（最初のツール呼び出しで打ち切り）と v2 以降（モック結果で続ける）を読む。
+
+    LLM 呼び出しが失敗した会話（利用枠超過など）は正解率から外し、件数を別に示す。
+    """
     data = _load(name)
     if not data:
         return ""
@@ -146,7 +149,12 @@ def e2e(name: str = "e2e", title: str = "E2E（LLM が会話の中で正解ツ�
     for r in data:
         agg[(r["n"], r["condition"])].append(r)
     rows = []
-    for (n, cond), rs in sorted(agg.items()):
+    for (n, cond), all_rs in sorted(agg.items()):
+        rs = [r for r in all_rs if not r["error"]]
+        errors = len(all_rs) - len(rs)
+        if not rs:
+            rows.append([str(n), cond, "0", "—", "—", "—", "—", "—", str(errors)])
+            continue
         v2 = "calls" in rs[0]
         ok = sum(r["correct"] for r in rs) / len(rs)
         first = sum(r["first_correct"] if v2 else r["correct"] for r in rs) / len(rs)
@@ -163,6 +171,7 @@ def e2e(name: str = "e2e", title: str = "E2E（LLM が会話の中で正解ツ�
                 _pct(none),
                 f"{tok:.0f}",
                 f"{srch:.2f}",
+                str(errors),
             ]
         )
     return (
@@ -174,10 +183,11 @@ def e2e(name: str = "e2e", title: str = "E2E（LLM が会話の中で正解ツ�
                 "条件",
                 "件数",
                 "正解率",
-                "初手で正解",
+                "最初の実ツール呼び出しで正解",
                 "ツール呼び出しなし",
                 "平均入力トークン",
                 "検索回数",
+                "失敗（除外）",
             ],
         )
         + "\n"
@@ -192,10 +202,13 @@ def skills() -> str:
     for r in data:
         agg[(r["n"], r["condition"])].append(r)
     rows = []
-    for (n, cond), rs in sorted(agg.items()):
+    for (n, cond), all_rs in sorted(agg.items()):
+        rs = [r for r in all_rs if not r["error"]]
+        if not rs:
+            continue
+        called = [r for r in rs if r["called"]]
         ok = sum(r["correct"] for r in rs) / len(rs)
-        invoked = [r for r in rs if r["called"] is not None]
-        cond_ok = (sum(r["correct"] for r in invoked) / len(invoked)) if invoked else None
+        cond_ok = (sum(r["correct"] for r in called) / len(called)) if called else None
         tok = sum(r["prompt_tokens"] for r in rs) / len(rs)
         rows.append(
             [
@@ -203,9 +216,10 @@ def skills() -> str:
                 cond,
                 str(len(rs)),
                 _pct(ok),
-                _pct(len(invoked) / len(rs)),
+                _pct(len(called) / len(rs)),
                 _pct(cond_ok),
                 f"{tok:.0f}",
+                str(len(all_rs) - len(rs)),
             ]
         )
     return (
@@ -220,6 +234,7 @@ def skills() -> str:
                 "読み込んだ率",
                 "読み込んだうちの正解率",
                 "平均入力トークン",
+                "失敗（除外）",
             ],
         )
         + "\n"

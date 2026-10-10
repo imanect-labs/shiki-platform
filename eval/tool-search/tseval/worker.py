@@ -24,8 +24,26 @@ def _key(model: str, kind: str, text: str) -> str:
     return hashlib.sha256(f"{model}\0{kind}\0{text}".encode()).hexdigest()
 
 
+_MODELS: dict | None = None
+# モデル版ごとの埋め込みキャッシュ（プロセス内では 1 回だけ読む）。
+_MEM: dict[str, dict[str, list[float]]] = {}
+
+
 def models() -> dict:
-    return httpx.get(f"{BASE_URL}/healthz", timeout=30).json()["models"]
+    global _MODELS
+    if _MODELS is None:
+        _MODELS = httpx.get(f"{BASE_URL}/healthz", timeout=30).json()["models"]
+    return _MODELS
+
+
+def _post_embed(texts: list[str], kind: str) -> dict:
+    r = httpx.post(
+        f"{BASE_URL}/embed",
+        json={"tenant_id": "tseval", "input_type": kind, "texts": texts},
+        timeout=600,
+    )
+    r.raise_for_status()
+    return r.json()
 
 
 def embed(texts: list[str], kind: str) -> np.ndarray:
@@ -33,22 +51,18 @@ def embed(texts: list[str], kind: str) -> np.ndarray:
     model = models()["embed"]["id"]
     CACHE.mkdir(parents=True, exist_ok=True)
     store = CACHE / f"{model.replace('/', '__')}.jsonl"
-    cached: dict[str, list[float]] = {}
-    if store.exists():
-        for line in store.read_text().splitlines():
-            k, v = json.loads(line)
-            cached[k] = v
+    if model not in _MEM:
+        _MEM[model] = {}
+        if store.exists():
+            for line in store.read_text().splitlines():
+                k, v = json.loads(line)
+                _MEM[model][k] = v
+    cached = _MEM[model]
     missing = [t for t in dict.fromkeys(texts) if _key(model, kind, t) not in cached]
     with store.open("a") as f:
         for i in range(0, len(missing), _BATCH):
             chunk = missing[i : i + _BATCH]
-            r = httpx.post(
-                f"{BASE_URL}/embed",
-                json={"tenant_id": "tseval", "input_type": kind, "texts": chunk},
-                timeout=600,
-            )
-            r.raise_for_status()
-            body = r.json()
+            body = _post_embed(chunk, kind)
             if body["model_version"] != model or len(body["vectors"]) != len(chunk):
                 raise RuntimeError("埋め込みの応答がリクエストと合わない")
             for t, v in zip(chunk, body["vectors"], strict=True):
@@ -58,14 +72,27 @@ def embed(texts: list[str], kind: str) -> np.ndarray:
     return np.array([cached[_key(model, kind, t)] for t in texts], dtype=np.float32)
 
 
-def rerank(query: str, passages: list[tuple[str, str]]) -> dict[str, float]:
-    """cross-encoder のスコア（id → score）。passages は (id, text)。結果はディスクにキャッシュする。"""
+def embed_latency_ms(texts: list[str]) -> float:
+    """クエリ 1 件の埋め込みの往復時間（キャッシュを通らない・平均 ms）。"""
+    import time
+
+    t0 = time.perf_counter()
+    for t in texts:
+        _post_embed([t], "query")
+    return (time.perf_counter() - t0) * 1000 / len(texts)
+
+
+def rerank(query: str, passages: list[tuple[str, str]], use_cache: bool = True) -> dict[str, float]:
+    """cross-encoder のスコア（id → score）。passages は (id, text)。
+
+    結果はディスクにキャッシュする。`use_cache=False` はレイテンシ計測用（読みも書きもしない）。
+    """
     model = models()["rerank"]["id"]
     key = hashlib.sha256(
         json.dumps([model, query, passages], ensure_ascii=False).encode()
     ).hexdigest()
     path = CACHE.parent / "rerank" / f"{key}.json"
-    if path.exists():
+    if use_cache and path.exists():
         return json.loads(path.read_text())
     r = httpx.post(
         f"{BASE_URL}/rerank",
@@ -78,6 +105,7 @@ def rerank(query: str, passages: list[tuple[str, str]]) -> dict[str, float]:
     )
     r.raise_for_status()
     out = {s["id"]: s["score"] for s in r.json()["scores"]}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(out))
+    if use_cache:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(out))
     return out
