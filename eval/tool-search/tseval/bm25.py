@@ -61,13 +61,21 @@ def rank(
     return {r["id"]: r for r in lines}, definition
 
 
-def loaded_message(catalog: list[dict], query: str, names: list[str]) -> str:
-    """`query` の検索で `names` を読み込んだときの製品の `tool_search` 結果本文
-    （`CatalogSearch::loaded_message`・名指しと入力の誤りは製品の処理そのもの）。"""
+def loaded_message(catalog: list[dict], query: str, limit: object, names: list[str]) -> str:
+    """`query`（とモデルが渡した `limit`）の検索で `names` を読み込んだときの製品の
+    `tool_search` 結果本文（`CatalogSearch::loaded_message`・名指しと入力の誤りは製品の処理
+    そのもの）。`limit` はモデルが渡した値（製品と同じに丸める）。"""
     if not _built:
         build()
+    # 製品は整数（0 以上）でない limit を既定値として扱う。CLI の型（u64）に合わない値は渡さない。
+    if not (isinstance(limit, int) and not isinstance(limit, bool) and 0 <= limit < 2**63):
+        limit = None
     payload = json.dumps(
-        {"catalog": catalog, "queries": [], "loads": [{"id": "l", "query": query, "names": names}]},
+        {
+            "catalog": catalog,
+            "queries": [],
+            "loads": [{"id": "l", "query": query, "limit": limit, "names": names}],
+        },
         ensure_ascii=False,
     )
     out = subprocess.run([str(_BIN)], input=payload, capture_output=True, text=True, check=True)

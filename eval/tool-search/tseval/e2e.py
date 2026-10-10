@@ -51,6 +51,10 @@ CONDITIONS = (
 )
 CACHE = ROOT / "data" / "cache" / "e2e"
 MAX_STEPS = 6
+SIBLING_LIMIT = 15
+MAX_QUERY_CHARS = 500  # 製品の `tool_search` と同じ上限。
+DEFAULT_LIMIT = 5  # 製品の既定件数と上限。
+MAX_LIMIT = 10
 SYSTEM = (
     "あなたは社内業務を手伝う AI アシスタントです。必要ならツールを使って依頼を実行してください。"
 )
@@ -81,32 +85,32 @@ class Searcher:
         tools = self.tools
         self.method = base_method(method)
         self.defs = [t.tooldef("ja") for t in tools]
-        self._ranks: dict[str, dict] = {}
+        self._ranks: dict[tuple[str, int], dict] = {}
         _, self.definition = bm25.rank(self.defs, [], limit=5)
         if self.method == "search_rrf":
             self.doc_vecs = worker.embed([t.doc_text("ja") for t in tools], "document")
 
-    def ranks(self, query: str) -> dict:
+    def ranks(self, query: str, limit: int = DEFAULT_LIMIT) -> dict:
         """製品の BM25 の結果（同じクエリは使い回す・案内の並びでも使う）。"""
-        if query not in self._ranks:
+        if (query, limit) not in self._ranks:
             ranks, _ = bm25.rank(
-                self.defs, [{"id": "q", "text": query}], limit=5, depth=len(self.defs)
+                self.defs, [{"id": "q", "text": query}], limit=limit, depth=len(self.defs)
             )
-            self._ranks[query] = ranks["q"]
-        return self._ranks[query]
+            self._ranks[(query, limit)] = ranks["q"]
+        return self._ranks[(query, limit)]
 
-    def search(self, query: str) -> list[str]:
+    def search(self, query: str, limit: int = DEFAULT_LIMIT) -> list[str]:
         # 製品は空・長すぎるクエリをエラーにする（何も読み込まない）。
         if not query.strip() or len(query.strip()) > MAX_QUERY_CHARS:
             return []
-        ranks = self.ranks(query)
+        ranks = self.ranks(query, limit)
         # `select:` の名指しは製品と同じく埋め込みを使わない（名前の完全一致だけ）。
         if self.method == "search_bm25" or query.strip().startswith("select:"):
             return ranks["search"]
         qv = worker.embed([query], "query")[0]
         order = np.argsort(-(self.doc_vecs @ qv), kind="stable")
         emb = [self.tools[i].name for i in order]
-        return rrf([n for n, _ in ranks["ranked"]], emb)[:5]
+        return rrf([n for n, _ in ranks["ranked"]], emb)[:limit]
 
 
 def base_method(condition: str) -> str:
@@ -115,7 +119,12 @@ def base_method(condition: str) -> str:
 
 
 def search_content(
-    condition: str, searcher: Searcher, query: str, hits: list[str], loaded: set[str]
+    condition: str,
+    searcher: Searcher,
+    query: str,
+    limit: int | None,
+    hits: list[str],
+    loaded: set[str],
 ) -> str:
     """`tool_search` の結果本文（OpenAI 互換アダプタと同じく呼び出し名を書き足す）。
 
@@ -128,16 +137,12 @@ def search_content(
             if hits
             else "該当するツールは見つかりませんでした。"
         )
-    content = bm25.loaded_message(searcher.defs, query, hits)
+    content = bm25.loaded_message(searcher.defs, query, limit, hits)
     if condition.endswith("_hint") and hits:
         content += sibling_hint(searcher, query, hits, loaded)
     if hits:
         content += f"\n（読み込んだツールの呼び出し名: {', '.join(wire(h) for h in hits)}）"
     return content
-
-
-SIBLING_LIMIT = 15
-MAX_QUERY_CHARS = 500  # 製品の `tool_search` と同じ上限。
 
 
 def namespace(name: str) -> str:
@@ -167,6 +172,19 @@ def sibling_hint(searcher: Searcher, query: str, hits: list[str], loaded: set[st
     )
 
 
+def product_limit(raw: object) -> int:
+    """製品の `parse_input` と同じ limit の正規化（整数でなければ既定・1〜上限に丸める）。"""
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return min(max(raw, 1), MAX_LIMIT)
+    return DEFAULT_LIMIT
+
+
+def catalog_fingerprint(tools: list[Tool]) -> str:
+    """提示するカタログの定義（名前・説明・引数）の指紋。"""
+    defs = sorted((t.tooldef("ja") for t in tools), key=lambda d: d["name"])
+    return hashlib.sha256(json.dumps(defs, ensure_ascii=False).encode()).hexdigest()[:16]
+
+
 @functools.cache
 def text_fingerprint() -> str:
     """結果本文を作るコードの指紋（変われば `_prod` / `_hint` のキャッシュを使わない）。"""
@@ -189,6 +207,8 @@ def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher |
     parts = [condition, query["text"], sorted(t.name for t in tools)]
     if condition not in ("all", "search_bm25", "search_rrf"):
         parts.append(text_fingerprint())
+        # 説明文の変更でも本文が変わる（名前だけでは取り直しにならない）。
+        parts.append(catalog_fingerprint(tools))
     digest = hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()[:16]
     key = f"v3-{condition}-{len(tools)}-{query['id']}-{digest}".replace("/", "_")
     path = CACHE / f"{key}.json"
@@ -253,18 +273,23 @@ def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher |
                     )
                     continue
                 try:
-                    q = json.loads(c["function"]["arguments"] or "{}").get("query", "")
+                    args = json.loads(c["function"]["arguments"] or "{}")
                 except json.JSONDecodeError:
-                    q = ""
+                    args = {}
+                q = args.get("query", "") if isinstance(args, dict) else ""
+                q = q if isinstance(q, str) else ""
+                # 製品の文面の条件は、モデルが渡した limit も製品と同じに扱う（簡略版は 5 件固定）。
+                raw_limit = args.get("limit") if isinstance(args, dict) else None
+                limit = raw_limit if condition not in ("search_bm25", "search_rrf") else None
                 assert searcher is not None
-                hits = searcher.search(q) if q else []
-                rec["searches"].append({"query": q, "hits": hits})
+                hits = searcher.search(q, product_limit(limit)) if q else []
+                rec["searches"].append({"query": q, "limit": limit, "hits": hits})
                 known = {o["function"]["name"] for o in offered}
                 offered += [
                     as_function(t) for t in tools if t.name in hits and wire(t.name) not in known
                 ]
                 loaded = {by_wire[n].name for n in known if n in by_wire}
-                content = search_content(condition, searcher, q, hits, loaded)
+                content = search_content(condition, searcher, q, limit, hits, loaded)
                 messages.append({"role": "tool", "tool_call_id": c["id"], "content": content})
             if query["target"] in rec["calls"]:
                 break

@@ -3,7 +3,7 @@
 //! 標準入力に `{"catalog": [ToolDef...], "queries": [{"id", "text"}...], "limit": 5, "depth": 50}`
 //! を受け、1 クエリ 1 行の JSON を標準出力へ書く:
 //! `{"id", "search": [BM25 のみの経路で製品が読み込む順位（埋め込み未配線時）], "ranked": [[name, score] 上位 depth 件]}`。
-//! `"loads": [{"id", "query", "names"}]` があれば、1 件 1 行で `{"load_id", "content": 製品の結果本文}`
+//! `"loads": [{"id", "query", "limit"?, "names"}]` があれば、1 件 1 行で `{"load_id", "content": 製品の結果本文}`
 //! も書く（E2E が製品の文面で会話させる・#522）。
 //! 最終行に `{"tool_search_description": 説明}` を書く（名前一覧の長さの観測・E2E の提示用）。
 
@@ -23,6 +23,8 @@ struct Query {
 struct Load {
     id: String,
     query: String,
+    #[serde(default)]
+    limit: Option<u64>,
     names: Vec<String>,
 }
 
@@ -66,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         writeln!(out, "{line}")?;
     }
     for l in &input.loads {
-        let line = serde_json::json!({ "load_id": l.id, "content": catalog.loaded_message(&l.query, &l.names) });
+        let line = serde_json::json!({ "load_id": l.id, "content": catalog.loaded_message(&l.query, l.limit, &l.names) });
         writeln!(out, "{line}")?;
     }
     let def = catalog.definition();

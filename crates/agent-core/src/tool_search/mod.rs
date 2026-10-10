@@ -462,13 +462,16 @@ impl CatalogSearch {
             .collect()
     }
 
-    /// `query` の検索で `names` を読み込んだときの `tool_search` の結果本文。評価の E2E が製品の
-    /// 文面そのままで会話させるために使う（順位は評価側が融合して決めるため、名前を受け取る）。
-    /// 入力の誤り（空・長すぎる）と `select:` の名指しは製品の処理そのものの本文を返す
-    /// （見つからなかった名前・重複の扱いまで製品と同じにする）。索引に無い名前は無視する。
+    /// `query`（と `limit`）の検索で `names` を読み込んだときの `tool_search` の結果本文。評価の
+    /// E2E が製品の文面そのままで会話させるために使う（順位は評価側が融合して決めるため、名前を
+    /// 受け取る）。入力の誤り（空・長すぎる）と `select:` の名指しは製品の処理そのものの本文を
+    /// 返す（見つからなかった名前・重複・件数の上限まで製品と同じにする）。索引に無い名前は無視する。
     #[must_use]
-    pub fn loaded_message(&self, query: &str, names: &[String]) -> String {
-        let input = json!({ "query": query });
+    pub fn loaded_message(&self, query: &str, limit: Option<u64>, names: &[String]) -> String {
+        let mut input = json!({ "query": query });
+        if let Some(l) = limit {
+            input["limit"] = json!(l);
+        }
         if let Err(e) = parse_input(&input) {
             return e.content;
         }

@@ -309,7 +309,7 @@ const findings = [
   [`クエリの埋め込みは 1 回 ${Math.round(lat.embed_query_ms)} ms で、対話の経路に入れられる。cross-encoder の再順位付けはさらに上げる（全カタログ ${pct(e1full.rrf)}% → ${pct(e1full.rrf_rerank)}%）が、CPU で 1 検索 ${(lat.rerank20_ms / 1000).toFixed(1)} 秒かかる。`,
    "推奨: reranker は対話経路には入れない（GPU のある構成で再検討）。"],
   [`E2E では、tool_search は 1 会話の入力トークンを 1,000 件で ${Math.round(e2e(1000, "all").tok / 1000)}k → ${(e2e(1000, "search_rrf_prod").tok / 1000).toFixed(1)}k にした。一方、正解ツールを呼べた率は ${pct(e2e(1000, "all").ok)}% → ${pct(e2e(1000, "search_rrf_prod").ok)}%（RRF・製品の文面）に下がった。`,
-   "下がった分は選び間違いではなく、ツールを呼ばずに ID などを聞き返して終えた会話。同じ名前空間の下調べ用ツールを結果で案内する案（#522）は、正解率が上がらず選び間違いとトークンが増えたため入れていない。"],
+   "下がった分の多くは選び間違いではなく、ツールを呼ばずに ID などを聞き返して終えた会話。同じ名前空間の下調べ用ツールを結果で案内する案（#522）は、正解率の改善が確認できず、選び間違いとトークンが増えたため入れていない。"],
   [`tool_search の説明に載せていた名前の一覧は 1,003 件で 24,461 字になっていた。100 件を超えたら名前空間ごとの件数に要約するようにし（#519）、${lat.tool_search_description_chars.toLocaleString()} 字になった。`,
    "名指し（select:）と検索の案内は残し、名前は検索結果で分かる。"],
   [`name 順に先頭 50 件で切る skill の一覧は、200 件で正解率 ${pct(sk2("list_cap50", 200).ok)}% まで崩れる。skill 専用の検索は ${Math.max(...DATA.skills.map(r => r.n))} 件でも ${pct(sk2("search", Math.max(...DATA.skills.map(r => r.n))).ok)}% を保ち、入力トークンは件数によらず約 1,600。`,
@@ -405,7 +405,7 @@ table("tb-e2e2", ["N", "条件", "件数", "正解ツールを呼んだ", "別�
     document.getElementById("e2e-read").textContent =
       `製品の文面で比べると、入力トークンは 200 件で ${Math.round(a2.tok).toLocaleString()} → ${Math.round(r2.tok).toLocaleString()}（RRF）、1,000 件で ${Math.round(a1.tok).toLocaleString()} → ${Math.round(r1.tok).toLocaleString()} に減った。` +
       `正解ツールを呼べた率は 200 件で ${pct(a2.ok)}% → ${pct(b2.ok)}%（BM25）/ ${pct(r2.ok)}%（RRF）、1,000 件で ${pct(a1.ok)}% → ${pct(b1.ok)}% / ${pct(r1.ok)}% に下がった。` +
-      `下がった分はツールを呼ばずに終えた会話で、別のツールを選び間違えた率は増えていない（1,000 件で ${pct(a1.wrong)}% → ${pct(b1.wrong)}% / ${pct(r1.wrong)}%）。1,000 件の規模は依頼 30 件で、差の幅は大きく読まない。`;
+      `下がった分の多くはツールを呼ばずに終えた会話で、1,000 件では別のツールを選び間違えた率は増えていない（ ${pct(a1.wrong)}% → ${pct(b1.wrong)}% / ${pct(r1.wrong)}%）。1,000 件の規模は依頼 30 件で、差の幅は大きく読まない。`;
   }
 }
 
@@ -422,7 +422,7 @@ table("tb-e2e2", ["N", "条件", "件数", "正解ツールを呼んだ", "別�
       `1,000 件で BM25 ${pct(g(1000, "search_bm25_prod").ok)}% → ${pct(g(1000, "search_bm25_hint").ok)}%・RRF ${pct(g(1000, "search_rrf_prod").ok)}% → ${pct(g(1000, "search_rrf_hint").ok)}%、` +
       `合算で BM25 ${pct(pooled("search_bm25_prod"))}% → ${pct(pooled("search_bm25_hint"))}%・RRF ${pct(pooled("search_rrf_prod"))}% → ${pct(pooled("search_rrf_hint"))}%。` +
       `別のツールを呼んだ率は 1,000 件で BM25 ${pct(g(1000, "search_bm25_prod").wrong)}% → ${pct(g(1000, "search_bm25_hint").wrong)}%・RRF ${pct(g(1000, "search_rrf_prod").wrong)}% → ${pct(g(1000, "search_rrf_hint").wrong)}%、入力トークンは 1 会話あたり平均 ${dTok.reduce((x, y) => x + y, 0) / dTok.length >= 0 ? "+" : ""}${Math.round(dTok.reduce((x, y) => x + y, 0) / dTok.length)}（条件ごとに ${Math.round(Math.min(...dTok))}〜+${Math.round(Math.max(...dTok))}）だった。` +
-      `正解率は上がらず、選び間違いとトークンが増えたため、製品には入れていない。` +
+      `正解率の改善は確認できず（合算の差は数ポイントで、下の文面の違いだけによる変動より小さい）、1,000 件では選び間違いが増え、トークンも増えたため、製品には入れていない。` +
       `なお、結果本文が簡略版か製品の文面かだけが違う条件の間でも、正解ツールを呼べた率は最大 ${(txtNoise * 100).toFixed(1)} ポイント動いた。この規模の E2E では、数ポイントの差は読めない。`;
   }
 }

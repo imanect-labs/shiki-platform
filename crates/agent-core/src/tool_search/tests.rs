@@ -240,12 +240,13 @@ fn loaded_message_is_the_production_result_text() {
     // 名指しは製品の処理そのもの（見つからなかった名前・重複・wire 名まで同じ）。
     let q = "select:csv_query,csv.query,nope";
     let direct = s.0.handle_lexical(&json!({ "query": q }));
-    assert_eq!(s.loaded_message(q, &[]), direct.content);
+    assert_eq!(s.loaded_message(q, None, &[]), direct.content);
     assert!(direct.content.contains("1 件"), "{}", direct.content);
     assert!(direct.content.contains("nope"), "{}", direct.content);
     // 自然文は渡した名前を製品の文面で（重複・索引に無い名前は除く）。
     let got = s.loaded_message(
         "表を集計",
+        None,
         &["csv.query".into(), "csv_query".into(), "nope".into()],
     );
     let csv =
@@ -255,11 +256,19 @@ fn loaded_message_is_the_production_result_text() {
             .expect("csv.query");
     assert_eq!(got, s.0.render(&[csv], &[]).content);
     assert!(s
-        .loaded_message("表を集計", &[])
+        .loaded_message("表を集計", None, &[])
         .contains("見つかりませんでした"));
+    // 名指しの件数の上限はモデルが渡した limit に従う（製品と同じ）。
+    let two = "select:csv.query,csv.patch";
+    assert_eq!(
+        s.loaded_message(two, Some(1), &[]),
+        s.0.handle_lexical(&json!({ "query": two, "limit": 1 }))
+            .content
+    );
+    assert!(s.loaded_message(two, Some(1), &[]).contains("1 件"));
     // 入力の誤りは製品と同じエラーの本文。
     assert_eq!(
-        s.loaded_message(" ", &[]),
+        s.loaded_message(" ", None, &[]),
         s.0.handle_lexical(&json!({ "query": " " })).content
     );
 }
