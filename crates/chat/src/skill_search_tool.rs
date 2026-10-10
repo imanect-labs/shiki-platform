@@ -3,7 +3,7 @@
 //! skill は `skill` ツールの説明に name: description を一覧する方式（Anthropic Agent Skills・
 //! Claude Code・Codex と同じ）で、tool search には統合しない（返すものが指示文で、定義の
 //! 読み込みではない）。一覧は件数で破綻する（評価 #516: 50 件で読み込み率が落ち、先頭 50 件で
-//! 切る方式は 200 件で正解率 5%）ため、上限を超えたら検索を足す。
+//! 切る方式は 200 件で正解率 5%・暫定値で取り直し中）ため、上限を超えたら検索を足す。
 //!
 //! - **候補は本人のカタログだけ**（`skill` ツールと同じ entries・権限は広げない）。
 //!   返すのは name と説明だけで、本文（instructions）は従来どおり `skill` が発話者の権限で
@@ -40,17 +40,27 @@ impl SkillSearchTool {
         if entries.len() <= MAX_LISTED_ENTRIES {
             return None;
         }
+        // 同名は先に出たもの（ピン → カタログ源の順）だけを残す。`skill` の名前解決と同じく
+        // 名前で 1 件に決まる前提で、同じ候補を 2 行出さない。
+        let mut seen = std::collections::HashSet::new();
+        let entries: Vec<(String, String)> = entries
+            .iter()
+            .filter(|e| seen.insert(e.name.clone()))
+            .map(|e| (e.name.clone(), e.description.clone()))
+            .collect();
         let defs: Vec<ToolDef> = entries
             .iter()
-            .map(|e| ToolDef::new(&e.name, &e.description, json!({ "type": "object" })))
+            .map(|(n, d)| ToolDef::new(n, d, json!({ "type": "object" })))
             .collect();
         Some(SkillSearchTool {
             index: CatalogSearch::new(&defs, embedder),
-            entries: entries
-                .iter()
-                .map(|e| (e.name.clone(), e.description.clone()))
-                .collect(),
+            entries,
         })
+    }
+
+    /// 文書の埋め込みを裏で温め始める（最初の検索を BM25 に落とさない）。
+    pub(crate) fn prewarm(&self, ctx: &AuthContext) {
+        self.index.prewarm(ctx);
     }
 
     fn render(&self, hits: &[String]) -> String {

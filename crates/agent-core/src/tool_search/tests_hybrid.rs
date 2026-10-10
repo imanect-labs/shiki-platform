@@ -69,7 +69,8 @@ impl EmbeddingProvider for FakeEmbedder {
     }
 }
 
-fn ctx() -> AuthContext {
+/// テストごとに別のテナントにする（文書ベクトルのキャッシュは tenant/org 単位で共有される）。
+fn ctx_of(tenant: &str) -> AuthContext {
     AuthContext::new(
         authz::Principal {
             kind: authz::PrincipalKind::User,
@@ -77,11 +78,18 @@ fn ctx() -> AuthContext {
             email: None,
             groups: vec![],
             roles: vec![],
-            tenant_id: Some("t1".into()),
+            tenant_id: Some(tenant.into()),
         },
         "org1".into(),
-        "t1".into(),
+        tenant.into(),
     )
+}
+
+/// 温めてから検索する（文書ベクトルが無いうちは BM25 のみで返す仕様のため）。
+async fn warmed(defs: &[ToolDef], e: Arc<FakeEmbedder>, c: &AuthContext) -> CatalogSearch {
+    let cs = CatalogSearch::new(defs, Some(e));
+    cs.warm(c).await;
+    cs
 }
 
 fn def(name: &str, description: &str) -> ToolDef {
@@ -122,8 +130,9 @@ async fn embedding_rescues_a_query_bm25_cannot_match() {
         "{lex:?}"
     );
 
-    let fused = CatalogSearch::new(&defs, Some(embedder(false)));
-    let got = fused.search(&ctx(), "roll up the revenue sheet", 5).await;
+    let c = ctx_of("rescue");
+    let fused = warmed(&defs, embedder(false), &c).await;
+    let got = fused.search(&c, "roll up the revenue sheet", 5).await;
     assert_eq!(
         got.first().map(String::as_str),
         Some("csv.query"),
@@ -133,23 +142,27 @@ async fn embedding_rescues_a_query_bm25_cannot_match() {
 
 #[tokio::test]
 async fn agreement_of_both_rankers_wins_and_exact_name_stays_first() {
-    let fused = CatalogSearch::new(&catalog(), Some(embedder(false)));
+    let c = ctx_of("agree");
+    let fused = warmed(&catalog(), embedder(false), &c).await;
     // BM25 も（「スライド」「編集」）埋め込みも（「スライド」）slide.edit を推す。
-    let got = fused.search(&ctx(), "スライドを編集", 2).await;
+    let got = fused.search(&c, "スライドを編集", 2).await;
     assert_eq!(got[0], "slide.edit", "{got:?}");
     // 名前そのものは融合しても先頭。
-    let exact = fused.search(&ctx(), "office.edit", 3).await;
+    let exact = fused.search(&c, "office.edit", 3).await;
     assert_eq!(exact[0], "office.edit", "{exact:?}");
 }
 
 #[tokio::test]
 async fn embedding_failure_falls_back_to_lexical() {
     let defs = catalog();
+    let c = ctx_of("fail");
+    // 文書は正常な埋め込みで温め（同じモデル版＝同じキャッシュ）、クエリの埋め込みだけ失敗させる。
+    warmed(&defs, embedder(false), &c).await;
     let fused = CatalogSearch::new(&defs, Some(embedder(true)));
     let lexical = CatalogSearch::new(&defs, None);
     for q in ["スライドを編集", "roll up the revenue sheet"] {
         assert_eq!(
-            fused.search(&ctx(), q, 5).await,
+            fused.search(&c, q, 5).await,
             lexical.search_lexical(q, 5),
             "{q}"
         );
@@ -158,33 +171,88 @@ async fn embedding_failure_falls_back_to_lexical() {
 
 #[tokio::test]
 async fn select_and_required_terms_behave_as_in_lexical_search() {
-    let fused = CatalogSearch::new(&catalog(), Some(embedder(false)));
-    assert_eq!(
-        fused.search(&ctx(), "select:save_note", 5).await,
-        ["save_note"]
-    );
+    let c = ctx_of("select");
+    let fused = warmed(&catalog(), embedder(false), &c).await;
+    assert_eq!(fused.search(&c, "select:save_note", 5).await, ["save_note"]);
     // `+csv` は名前に csv を含むものだけ（埋め込みの順位にも効かせる）。
-    let got = fused.search(&ctx(), "+csv revenue", 5).await;
+    let got = fused.search(&c, "+csv revenue", 5).await;
     assert!(got.iter().all(|n| n.starts_with("csv.")), "{got:?}");
     assert_eq!(got.first().map(String::as_str), Some("csv.query"));
 }
 
 #[tokio::test]
-async fn document_embeddings_are_reused_across_searches() {
+async fn document_embeddings_are_reused_and_scoped_per_tenant() {
     let e = embedder(false);
-    // 他のテストとキャッシュを共有しないよう、このテストだけの説明にする。
-    let defs = vec![
-        def("csv.query", "キャッシュ確認用の説明 A。"),
-        def("office.edit", "キャッシュ確認用の説明 B。"),
-    ];
-    let fused = CatalogSearch::new(&defs, Some(e.clone()));
-    fused.search(&ctx(), "revenue", 5).await;
-    let after_first = e.doc_calls.load(Ordering::SeqCst);
-    assert_eq!(after_first, 2);
-    // 同じ定義の別インスタンス（次の run）でも埋め込み直さない。
-    let again = CatalogSearch::new(&defs, Some(e.clone()));
-    again.search(&ctx(), "revenue", 5).await;
-    assert_eq!(e.doc_calls.load(Ordering::SeqCst), after_first);
+    let defs = catalog();
+    let a = ctx_of("reuse-a");
+    warmed(&defs, e.clone(), &a).await;
+    assert_eq!(e.doc_calls.load(Ordering::SeqCst), defs.len());
+    // 同じテナントなら次の run（別インスタンス）でも埋め込み直さない。
+    let again = warmed(&defs, e.clone(), &a).await;
+    assert_eq!(e.doc_calls.load(Ordering::SeqCst), defs.len());
+    assert_eq!(again.search(&a, "revenue", 1).await, ["csv.query"]);
+    // 別テナントは共有しない（キャッシュの存在が他テナントから観測できないように）。
+    warmed(&defs, e.clone(), &ctx_of("reuse-b")).await;
+    assert_eq!(e.doc_calls.load(Ordering::SeqCst), 2 * defs.len());
+}
+
+#[tokio::test]
+async fn cold_cache_answers_lexically_and_warms_in_the_background() {
+    let e = embedder(false);
+    let defs = catalog();
+    let c = ctx_of("cold");
+    let cs = CatalogSearch::new(&defs, Some(e.clone()));
+    // 文書ベクトルがまだ無い最初の検索は待たずに BM25 で返す。
+    let lexical = CatalogSearch::new(&defs, None);
+    let q = "roll up the revenue sheet";
+    assert_eq!(cs.search(&c, q, 5).await, lexical.search_lexical(q, 5));
+    // 裏で温まったら融合で返す。
+    for _ in 0..50 {
+        if e.doc_calls.load(Ordering::SeqCst) == defs.len() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert_eq!(
+        cs.search(&c, q, 5).await.first().map(String::as_str),
+        Some("csv.query")
+    );
+}
+
+#[tokio::test]
+async fn mismatched_dimensions_fall_back_to_lexical() {
+    // クエリだけ次元が違う（モデルの差し替え・設定ミス）→ 切り詰めて掛けずに BM25 へ。
+    struct Skewed(Arc<FakeEmbedder>);
+    #[async_trait]
+    impl EmbeddingProvider for Skewed {
+        async fn embed(
+            &self,
+            ctx: &AuthContext,
+            input: EmbedInput,
+            texts: &[String],
+        ) -> Result<EmbedResponse, RagError> {
+            let mut r = self.0.embed(ctx, input, texts).await?;
+            if input == EmbedInput::Query {
+                for v in &mut r.vectors {
+                    v.push(1.0);
+                }
+            }
+            Ok(r)
+        }
+        fn model_version(&self) -> &str {
+            "fake-skewed"
+        }
+    }
+    let defs = catalog();
+    let c = ctx_of("skew");
+    let cs = CatalogSearch::new(&defs, Some(Arc::new(Skewed(embedder(false)))));
+    cs.warm(&c).await;
+    let q = "roll up the revenue sheet";
+    assert_eq!(
+        cs.search(&c, q, 5).await,
+        CatalogSearch::new(&defs, None).search_lexical(q, 5)
+    );
 }
 
 #[tokio::test]
@@ -192,13 +260,11 @@ async fn uninformative_query_embedding_is_ignored() {
     // ヒントの無いクエリは全文書と同じ類似度（0）になる。その並び（定義順）は情報ではないので
     // 融合に入れず BM25 だけで返す（入れると定義順が順位に紛れ込む）。
     let defs = catalog();
-    let fused = CatalogSearch::new(&defs, Some(embedder(false)));
+    let c = ctx_of("uninformative");
+    let fused = warmed(&defs, embedder(false), &c).await;
     let lexical = CatalogSearch::new(&defs, None);
     let q = "ノートの下書きを作る";
-    assert_eq!(
-        fused.search(&ctx(), q, 5).await,
-        lexical.search_lexical(q, 5)
-    );
+    assert_eq!(fused.search(&c, q, 5).await, lexical.search_lexical(q, 5));
 }
 
 #[test]

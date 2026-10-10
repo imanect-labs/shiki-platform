@@ -170,8 +170,9 @@ impl ToolSearch {
         )
     }
 
-    /// `tool_search` のツール定義。検索できるツールの**名前の一覧**を説明に載せる
-    /// （何が在るかを知らないと探しようがない・run 内で不変＝prefix cache を壊さない）。
+    /// `tool_search` のツール定義。検索できるツールを説明に載せる（何が在るかを知らないと
+    /// 探しようがない・run 内で不変＝prefix cache を壊さない）。100 件以下なら名前の一覧、
+    /// 超えたら名前空間ごとの件数の要約（[`Self::catalog_listing`]）。
     fn definition(&self) -> ToolDef {
         ToolDef::new(
             TOOL_SEARCH_TOOL,
@@ -202,6 +203,13 @@ impl ToolSearch {
                 "required": ["query"],
             }),
         )
+    }
+
+    /// 文書の埋め込みを裏で温め始める（run の開始時に呼ぶ・最初の検索を BM25 に落とさない）。
+    pub(crate) fn prewarm(&self, ctx: &AuthContext) {
+        if let Some(e) = &self.embedder {
+            e.prewarm(ctx);
+        }
     }
 
     /// `tool_search` の呼び出しを処理する（埋め込みが配線されていれば BM25 と融合する）。
@@ -414,7 +422,20 @@ impl CatalogSearch {
         CatalogSearch(ToolSearch::build(defs, embedder))
     }
 
-    /// 製品の検索結果（名前・`limit` 件）。埋め込みが無ければ・失敗すれば BM25 のみ。
+    /// 文書の埋め込みを裏で温め始める（待たない）。
+    pub fn prewarm(&self, ctx: &AuthContext) {
+        self.0.prewarm(ctx);
+    }
+
+    /// 文書の埋め込みを温め終わるまで待つ（埋め込みが無ければ何もしない）。
+    pub async fn warm(&self, ctx: &AuthContext) {
+        if let Some(e) = &self.0.embedder {
+            e.warm(ctx).await;
+        }
+    }
+
+    /// 製品の検索結果（名前・`limit` 件）。埋め込みが無い・まだ温まっていない・失敗した・
+    /// 時間内に返らないときは BM25 のみ。
     pub async fn search(&self, ctx: &AuthContext, query: &str, limit: usize) -> Vec<String> {
         self.0
             .handle(ctx, &json!({ "query": query, "limit": limit }))
@@ -422,7 +443,8 @@ impl CatalogSearch {
             .references
     }
 
-    /// BM25 だけの検索結果（`select:` の名指し・相対カットオフ込み）。評価の順位 CLI 用。
+    /// BM25 だけの検索結果（`select:` の名指し・相対カットオフ込み・埋め込み未配線時の製品と
+    /// 同じ）。評価の順位 CLI 用。
     #[must_use]
     pub fn search_lexical(&self, query: &str, limit: usize) -> Vec<String> {
         self.0

@@ -108,7 +108,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 7
     <div class="figure">
       <div class="legend" id="lg-growth"></div>
       <div class="chart" id="ch-growth"></div>
-      <div class="cap">規模が大きいほど評価クエリも増える（N=13 では実ツールの 52 件、N=1,003 で 592 件）。小さいカタログでは製品の相対カットオフが正解を落とす（N=13 で打ち切り前 <span id="cut-raw"></span>% → 製品が読み込む 5 件では <span id="cut-prod"></span>%）。</div>
+      <div class="cap">規模が大きいほど評価クエリも増える（N=13 では実ツールの 52 件、N=1,003 で 592 件）。製品の相対カットオフは 0.25 だと小さいカタログで正解を落としていた（N=13 で 90.4% → 86.5%）ため 0.1 に下げた（#518）。現在は N=13 で打ち切り前 <span id="cut-raw"></span>%・製品が読み込む 5 件 <span id="cut-prod"></span>%。</div>
     </div>
     <div class="tablewrap"><table id="tb-growth"></table></div>
     <p>評価クエリを固定して妨害ツールだけを増やしても、同じ形で落ちる（N=148 → 1,003 で BM25 R@5 は <span id="e2-bm25"></span>、RRF は <span id="e2-rrf"></span>）。劣化は候補の数そのものによる。</p>
@@ -302,7 +302,7 @@ const abEmb = lang => DATA.ablation.find(r => r.lang === lang && r.doc === "name
 const abBm = lang => DATA.ablation.find(r => r.lang === lang && r.method === "bm25");
 const findings = [
   [`ツールが ${DATA.e1[0].n} 件から ${e1full.n.toLocaleString()} 件に増えると、製品の BM25 の R@5 は ${pct(DATA.e1[0].bm25)}% → ${pct(e1full.bm25)}% に落ちる。`,
-   "候補の数そのものが効く（妨害ツールだけを増やしても同じ形で落ちる）。小さいカタログでは製品の相対カットオフも正解を落としている。"],
+   "候補の数そのものが効く（妨害ツールだけを増やしても同じ形で落ちる）。相対カットオフが小さいカタログで正解を落としていた分は 0.1 に下げて解消した（#518）。"],
   [`BM25 と埋め込みの RRF 融合（k=10）は、全カタログで BM25 ${pct(abBm("ja").all)}% → ${pct(ab("ja", 10).all)}%、英語の説明では ${pct(abBm("en").all)}% → ${pct(ab("en", 10).all)}% に上げる。正解が一意な依頼では ${pct(abBm("ja").clean)}% → ${pct(ab("ja", 10).clean)}%。`,
    "推奨: tool_search に埋め込みの融合を入れる（k=10・重み 1:1・文書は名前＋説明＋引数）。埋め込みが無い構成では BM25 のみに落とす。k=60 では英語の説明で融合が埋め込み単体を下回る。"],
   [`クエリの埋め込みは 1 回 ${Math.round(lat.embed_query_ms)} ms で、対話の経路に入れられる。cross-encoder の再順位付けはさらに上げる（全カタログ ${pct(e1full.rrf)}% → ${pct(e1full.rrf_rerank)}%）が、CPU で 1 検索 ${(lat.rerank20_ms / 1000).toFixed(1)} 秒かかる。`,

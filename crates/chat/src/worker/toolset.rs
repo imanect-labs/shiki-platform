@@ -284,6 +284,7 @@ impl ChatWorker {
                     &entries,
                     self.tool_search_embedder(),
                 ) {
+                    search.prewarm(ctx);
                     tools.push(Arc::new(search));
                 }
                 if let Some(tool) = crate::skill_tool::SkillTool::build(
