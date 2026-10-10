@@ -157,7 +157,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 7
       <div class="tablewrap"><table id="tb-lat"></table></div>
       <div class="figure">
         <div class="chart" id="ch-desc"></div>
-        <div class="cap">tool_search の説明に載る「検索できるツール名の一覧」の文字数。件数に比例して伸び、それ自体が毎ステップの文脈を食う。</div>
+        <div class="cap">tool_search の説明に載る「検索できるツール」の文字数。100 件までは名前の一覧で件数に比例して伸び、超えると名前空間ごとの件数の要約に切り替わる（#519。切り替え前は 1,003 件で 24,461 字）。</div>
       </div>
     </div>
   </section>
@@ -304,13 +304,13 @@ const findings = [
   [`ツールが ${DATA.e1[0].n} 件から ${e1full.n.toLocaleString()} 件に増えると、製品の BM25 の R@5 は ${pct(DATA.e1[0].bm25)}% → ${pct(e1full.bm25)}% に落ちる。`,
    "候補の数そのものが効く（妨害ツールだけを増やしても同じ形で落ちる）。相対カットオフが小さいカタログで正解を落としていた分は 0.1 に下げて解消した（#518）。"],
   [`BM25 と埋め込みの RRF 融合（k=10）は、全カタログで BM25 ${pct(abBm("ja").all)}% → ${pct(ab("ja", 10).all)}%、英語の説明では ${pct(abBm("en").all)}% → ${pct(ab("en", 10).all)}% に上げる。正解が一意な依頼では ${pct(abBm("ja").clean)}% → ${pct(ab("ja", 10).clean)}%。`,
-   "推奨: tool_search に埋め込みの融合を入れる（k=10・重み 1:1・文書は名前＋説明＋引数）。埋め込みが無い構成では BM25 のみに落とす。k=60 では英語の説明で融合が埋め込み単体を下回る。"],
+   "製品に入れた（#517・k=10・重み 1:1・文書は名前＋説明＋引数）。埋め込みが無い・温まっていない・2 秒で返らないときは BM25 のみ。k=60 では英語の説明で融合が埋め込み単体を下回った。"],
   [`クエリの埋め込みは 1 回 ${Math.round(lat.embed_query_ms)} ms で、対話の経路に入れられる。cross-encoder の再順位付けはさらに上げる（全カタログ ${pct(e1full.rrf)}% → ${pct(e1full.rrf_rerank)}%）が、CPU で 1 検索 ${(lat.rerank20_ms / 1000).toFixed(1)} 秒かかる。`,
    "推奨: reranker は対話経路には入れない（GPU のある構成で再検討）。"],
   [`E2E では、tool_search は入力トークンを全提示の 1/7〜1/12（1,000 件で約 12.5 万 → 1 万）にした（暫定・取り直し中）。`,
    "全提示は 1,000 件で 1 会話 12 万トークンを超え、利用枠をすぐ使い切る。"],
-  [`tool_search の説明に載る名前一覧は 1,003 件で ${lat.tool_search_description_chars.toLocaleString()} 字になる。`,
-   "推奨: 100 件程度を超えたら、名前の一覧をサービス（名前空間）単位の要約に切り替える。"],
+  [`tool_search の説明に載せていた名前の一覧は 1,003 件で 24,461 字になっていた。100 件を超えたら名前空間ごとの件数に要約するようにし（#519）、${lat.tool_search_description_chars.toLocaleString()} 字になった。`,
+   "名指し（select:）と検索の案内は残し、名前は検索結果で分かる。"],
   [`skill の一覧は 50 件で正解率 6 割前後に落ち、name 順に先頭 50 件で切る現行方式は 200 件で 5% まで崩れる（暫定・取り直し中）。`,
    "推奨: skill は tool_search に統合せず（Anthropic・Codex と同じく別系統）、件数が数十を超えたら skill 専用の検索を足す。先頭 50 件の切り方（name 順）は関連度順に改める。"],
 ];
@@ -382,7 +382,8 @@ table("tb-lat", ["処理", "1 クエリ"], [
 ]);
 const dg = DATA.e5.description_growth;
 lineChart("ch-desc", {
-  xs: dg.map(r => r.n), log: true, yMin: 0, yMax: 25000, xLabel: "ツール数（対数）",
+  xs: dg.map(r => r.n), log: true, yMin: 0,
+  yMax: Math.ceil(Math.max(...dg.map(r => r.tool_search_description_chars)) / 1000) * 1000, xLabel: "ツール数（対数）",
   yFmt: v => v >= 1000 ? (v / 1000).toFixed(0) + "k" : String(Math.round(v)),
   series: [{ key: "d", label: "説明の文字数", color: "var(--s1)", marker: "circle", values: dg.map(r => r.tool_search_description_chars) }],
 });

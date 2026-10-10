@@ -1,10 +1,10 @@
 {
  "latency": {
   "catalog": 1003,
-  "bm25_ms_per_query_incl_index_build_amortized": 7.021639980375767,
-  "embed_query_ms": 42.715143505483866,
-  "rerank20_ms": 3287.75838855654,
-  "tool_search_description_chars": 24461
+  "bm25_ms_per_query_incl_index_build_amortized": 19.447053913027048,
+  "embed_query_ms": 63.755323458462954,
+  "rerank20_ms": 4736.944216210395,
+  "tool_search_description_chars": 830
  },
  "description_growth": [
   {
@@ -21,23 +21,23 @@
   },
   {
    "n": 101,
-   "tool_search_description_chars": 2433
+   "tool_search_description_chars": 316
   },
   {
    "n": 189,
-   "tool_search_description_chars": 4632
+   "tool_search_description_chars": 366
   },
   {
    "n": 365,
-   "tool_search_description_chars": 8985
+   "tool_search_description_chars": 472
   },
   {
    "n": 717,
-   "tool_search_description_chars": 17264
+   "tool_search_description_chars": 656
   },
   {
    "n": 1003,
-   "tool_search_description_chars": 24461
+   "tool_search_description_chars": 830
   }
  ]
 }
