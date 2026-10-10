@@ -36,8 +36,18 @@ type DocKey = (String, u64);
 #[derive(Default)]
 struct TenantCache {
     vectors: HashMap<DocKey, Arc<Vec<f32>>>,
-    /// 文書の埋め込みを裏で進めている最中か（同じ文書を同時に何本も送らない・single-flight）。
-    warming: bool,
+    /// 裏で埋め込み中の文書（同じ文書を同時に何本も送らない・single-flight）。文書単位で持つので、
+    /// 同じ tenant/org で別のカタログ（tool_search と skill_search）を同時に温めても互いを捨てない。
+    in_flight: HashSet<DocKey>,
+}
+
+/// `scope` の枠を取る。**新しい枠を作る前に**数の上限を見る（作ってからでは常に「既にある」に
+/// なり、上限が効かずに tenant/org の数だけ増え続ける）。
+fn tenant_entry(guard: &mut HashMap<String, TenantCache>, scope: String) -> &mut TenantCache {
+    if !guard.contains_key(&scope) && guard.len() >= TENANT_LIMIT {
+        guard.clear();
+    }
+    guard.entry(scope).or_default()
 }
 
 /// `{tenant_id}/{org}` → 文書ベクトル。**キャッシュは tenant/org で閉じる**（design §4.3 の
@@ -120,7 +130,7 @@ impl Embedder {
     fn cached_or_warm(&self, ctx: &AuthContext) -> Option<Vec<Arc<Vec<f32>>>> {
         let keys = self.keys();
         let mut guard = lock();
-        let tenant = guard.entry(scope(ctx)).or_default();
+        let tenant = tenant_entry(&mut guard, scope(ctx));
         let found: Vec<Option<Arc<Vec<f32>>>> = keys
             .iter()
             .map(|k| tenant.vectors.get(k).cloned())
@@ -128,15 +138,20 @@ impl Embedder {
         if found.iter().all(Option::is_some) {
             return Some(found.into_iter().flatten().collect());
         }
-        if !tenant.warming {
-            tenant.warming = true;
-            let missing: Vec<String> = self
-                .docs
-                .iter()
-                .zip(&found)
-                .filter(|(_, v)| v.is_none())
-                .map(|(d, _)| d.clone())
-                .collect();
+        // 欠けていて、まだ誰も埋め込んでいない文書だけを裏で埋め込む。
+        let missing: Vec<(String, DocKey)> = self
+            .docs
+            .iter()
+            .zip(&keys)
+            .zip(&found)
+            .filter(|((_, k), v)| v.is_none() && !tenant.in_flight.contains(*k))
+            .map(|((d, k), _)| (d.clone(), k.clone()))
+            .collect();
+        if !missing.is_empty() {
+            tenant
+                .in_flight
+                .extend(missing.iter().map(|(_, k)| k.clone()));
+            let missing: Vec<String> = missing.into_iter().map(|(d, _)| d).collect();
             let provider = Arc::clone(&self.provider);
             let ctx = ctx.clone();
             drop(guard);
@@ -225,7 +240,7 @@ impl Embedder {
 /// 欠けている文書を埋め込んでキャッシュへ入れる（自テナントの `AuthContext` で呼ぶ）。
 ///
 /// 上限を超えたら、そのテナントの分のうち `keep`（いま使う文書）以外を捨てる。失敗しても
-/// 何も入れずに `warming` を戻すだけ（次の検索で取り直す・それまでは BM25 のみ）。
+/// 何も入れずに埋め込み中の印を外すだけ（次の検索で取り直す・それまでは BM25 のみ）。
 async fn warm(
     provider: Arc<dyn EmbeddingProvider>,
     ctx: AuthContext,
@@ -235,12 +250,10 @@ async fn warm(
     let model = provider.model_version().to_string();
     let result = provider.embed(&ctx, EmbedInput::Document, &missing).await;
     let mut guard = lock();
-    let key = scope(&ctx);
-    if guard.len() >= TENANT_LIMIT && !guard.contains_key(&key) {
-        guard.clear();
+    let tenant = tenant_entry(&mut guard, scope(&ctx));
+    for d in &missing {
+        tenant.in_flight.remove(&(model.clone(), text_hash(d)));
     }
-    let tenant = guard.entry(key).or_default();
-    tenant.warming = false;
     match result {
         Ok(resp) if resp.vectors.len() == missing.len() => {
             if tenant.vectors.len() + missing.len() > TENANT_CACHE_LIMIT {
