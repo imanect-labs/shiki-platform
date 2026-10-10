@@ -11,9 +11,10 @@
 //!   埋め込み直さない）。クエリの埋め込みは 1 回 40ms 程度。
 //! - 埋め込みが失敗したら呼び出し側が BM25 だけで返す（検索そのものは止めない）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use authz::AuthContext;
 use llm_gateway::ToolDef;
@@ -21,19 +22,45 @@ use rag::{EmbedInput, EmbeddingProvider, RagError};
 
 /// RRF の定数（評価で選んだ値・上の説明）。
 pub(crate) const RRF_K: f64 = 10.0;
-/// 文書埋め込みのキャッシュ上限（超えたら空にする・定義の総数は高々数千）。
-const CACHE_LIMIT: usize = 20_000;
+/// 1 tenant/org あたりの文書ベクトルの上限（超えたら、いま使う分だけ残して捨てる）。
+const TENANT_CACHE_LIMIT: usize = 5_000;
+/// キャッシュを持つ tenant/org の数の上限（超えたら他の分を捨てる・メモリの上限）。
+const TENANT_LIMIT: usize = 1_000;
+/// クエリの埋め込みを待つ上限。超えたら BM25 だけで返す（ingestion-worker がインジェストで
+/// 詰まっていても、検索の 1 手を数十秒止めない）。平常時は 1 回 40ms 程度。
+const QUERY_TIMEOUT: Duration = Duration::from_secs(2);
 
-type CacheKey = (String, u64);
-type DocCache = Mutex<HashMap<CacheKey, Arc<Vec<f32>>>>;
+type DocKey = (String, u64);
 
-/// (モデル版, 文書のハッシュ) → ベクトル。キーは文書の**内容**なので、テナントをまたいで
-/// 共有しても何も開示しない（同じ文字列を持つ者だけが同じベクトルに当たる。ベクトルは順位付けに
-/// 使うだけで呼び出し側へ返さない）。中身は製品のツール定義と、skill_search では本人の
-/// カタログの name と説明。
-fn cache() -> &'static DocCache {
-    static CACHE: OnceLock<DocCache> = OnceLock::new();
+/// 1 テナントぶんの文書ベクトル。
+#[derive(Default)]
+struct TenantCache {
+    vectors: HashMap<DocKey, Arc<Vec<f32>>>,
+    /// 文書の埋め込みを裏で進めている最中か（同じ文書を同時に何本も送らない・single-flight）。
+    warming: bool,
+}
+
+/// `{tenant_id}/{org}` → 文書ベクトル。**キャッシュは tenant/org で閉じる**（design §4.3 の
+/// キャッシュキー規約）。内容のハッシュだけで共有すると「他テナントが同じ文書を持つか」の
+/// 存在オラクルになる（PIT-14 と同型・skill_search では本人のカタログの name と説明が入る）。
+/// 分けておけば、上限での追い出しも他テナントへ波及せず、埋め込みは必ず自分の `AuthContext`
+/// で呼ばれる（worker 側の追跡・計上が正しい）。
+type Cache = Mutex<HashMap<String, TenantCache>>;
+
+fn cache() -> &'static Cache {
+    static CACHE: OnceLock<Cache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock() -> std::sync::MutexGuard<'static, HashMap<String, TenantCache>> {
+    cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// キャッシュを閉じる単位（`{tenant_id}/{org}`）。
+fn scope(ctx: &AuthContext) -> String {
+    format!("{}/{}", ctx.tenant_id, ctx.org)
 }
 
 fn text_hash(text: &str) -> u64 {
@@ -80,76 +107,104 @@ impl Embedder {
         }
     }
 
-    /// 文書のベクトル（キャッシュに無いものだけ埋め込む）。
-    async fn doc_vectors(&self, ctx: &AuthContext) -> Result<Vec<Arc<Vec<f32>>>, RagError> {
+    fn keys(&self) -> Vec<DocKey> {
         let model = self.provider.model_version().to_string();
-        let keys: Vec<CacheKey> = self
-            .docs
+        self.docs
             .iter()
             .map(|d| (model.clone(), text_hash(d)))
+            .collect()
+    }
+
+    /// キャッシュ済みの文書ベクトル（全部そろっていれば `Some`）。欠けていれば `None` を返し、
+    /// まだ誰も温めていなければ裏で温め始める（この検索は BM25 だけで返す）。
+    fn cached_or_warm(&self, ctx: &AuthContext) -> Option<Vec<Arc<Vec<f32>>>> {
+        let keys = self.keys();
+        let mut guard = lock();
+        let tenant = guard.entry(scope(ctx)).or_default();
+        let found: Vec<Option<Arc<Vec<f32>>>> = keys
+            .iter()
+            .map(|k| tenant.vectors.get(k).cloned())
             .collect();
+        if found.iter().all(Option::is_some) {
+            return Some(found.into_iter().flatten().collect());
+        }
+        if !tenant.warming {
+            tenant.warming = true;
+            let missing: Vec<String> = self
+                .docs
+                .iter()
+                .zip(&found)
+                .filter(|(_, v)| v.is_none())
+                .map(|(d, _)| d.clone())
+                .collect();
+            let provider = Arc::clone(&self.provider);
+            let ctx = ctx.clone();
+            drop(guard);
+            tokio::spawn(async move { warm(provider, ctx, missing, keys).await });
+        }
+        None
+    }
+
+    /// 文書ベクトルを裏で温め始める（欠けていれば・待たない）。
+    pub(crate) fn prewarm(&self, ctx: &AuthContext) {
+        if self.cached_or_warm(ctx).is_none() {
+            tracing::debug!("tool search: 文書の埋め込みを裏で温める");
+        }
+    }
+
+    /// 文書ベクトルを温め終わるまで待つ。
+    pub(crate) async fn warm(&self, ctx: &AuthContext) {
         let missing: Vec<String> = {
-            let guard = cache()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let guard = lock();
+            let have = guard.get(&scope(ctx));
             self.docs
                 .iter()
-                .zip(&keys)
-                .filter(|(_, k)| !guard.contains_key(k))
+                .zip(self.keys())
+                .filter(|(_, k)| have.is_none_or(|t| !t.vectors.contains_key(k)))
                 .map(|(d, _)| d.clone())
                 .collect()
         };
         if !missing.is_empty() {
-            let resp = self
-                .provider
-                .embed(ctx, EmbedInput::Document, &missing)
-                .await?;
-            if resp.vectors.len() != missing.len() {
-                return Err(RagError::Worker(
-                    "埋め込みの件数がリクエストと合わない".into(),
-                ));
-            }
-            let mut guard = cache()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if guard.len() + missing.len() > CACHE_LIMIT {
-                guard.clear();
-            }
-            for (d, v) in missing.iter().zip(resp.vectors) {
-                guard.insert((model.clone(), text_hash(d)), Arc::new(v));
-            }
+            warm(
+                Arc::clone(&self.provider),
+                ctx.clone(),
+                missing,
+                self.keys(),
+            )
+            .await;
         }
-        let guard = cache()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        keys.iter()
-            .map(|k| {
-                guard
-                    .get(k)
-                    .cloned()
-                    .ok_or_else(|| RagError::Worker("文書の埋め込みが見つからない".into()))
-            })
-            .collect()
     }
 
     /// クエリに近い順の文書の添字（コサイン類似度・ベクトルは L2 正規化済み）。
     ///
-    /// 全文書の類似度が同じ（クエリの埋め込みが何も区別していない）なら `None`。その並びは
-    /// 定義順でしかなく、融合に入れると情報の無い順位が紛れ込む。
+    /// `Ok(None)` は「埋め込みを使わない」: 文書ベクトルがまだ温まっていない（裏で温め始める）、
+    /// または全文書の類似度が同じ（クエリの埋め込みが何も区別していない・その並びは定義順で
+    /// しかなく、融合に入れると情報の無い順位が紛れ込む）。
     pub(crate) async fn rank(
         &self,
         ctx: &AuthContext,
         query: &str,
     ) -> Result<Option<Vec<usize>>, RagError> {
-        let docs = self.doc_vectors(ctx).await?;
-        let resp = self
-            .provider
-            .embed(ctx, EmbedInput::Query, &[query.to_string()])
-            .await?;
+        let Some(docs) = self.cached_or_warm(ctx) else {
+            return Ok(None);
+        };
+        let resp = tokio::time::timeout(
+            QUERY_TIMEOUT,
+            self.provider
+                .embed(ctx, EmbedInput::Query, &[query.to_string()]),
+        )
+        .await
+        .map_err(|_| RagError::Worker("クエリの埋め込みが時間内に返らない".into()))??;
         let q = resp
             .vectors
             .first()
             .ok_or_else(|| RagError::Worker("クエリの埋め込みが空".into()))?;
+        // 次元が食い違うベクトル同士を切り詰めて掛けない（モデルの差し替え・設定ミス）。
+        if docs.iter().any(|d| d.len() != q.len()) {
+            return Err(RagError::Worker(
+                "埋め込みの次元が文書とクエリで合わない".into(),
+            ));
+        }
         let mut scored: Vec<(usize, f32)> = docs
             .iter()
             .enumerate()
@@ -164,6 +219,44 @@ impl Embedder {
             return Ok(None);
         }
         Ok(Some(scored.into_iter().map(|(i, _)| i).collect()))
+    }
+}
+
+/// 欠けている文書を埋め込んでキャッシュへ入れる（自テナントの `AuthContext` で呼ぶ）。
+///
+/// 上限を超えたら、そのテナントの分のうち `keep`（いま使う文書）以外を捨てる。失敗しても
+/// 何も入れずに `warming` を戻すだけ（次の検索で取り直す・それまでは BM25 のみ）。
+async fn warm(
+    provider: Arc<dyn EmbeddingProvider>,
+    ctx: AuthContext,
+    missing: Vec<String>,
+    keep: Vec<DocKey>,
+) {
+    let model = provider.model_version().to_string();
+    let result = provider.embed(&ctx, EmbedInput::Document, &missing).await;
+    let mut guard = lock();
+    let key = scope(&ctx);
+    if guard.len() >= TENANT_LIMIT && !guard.contains_key(&key) {
+        guard.clear();
+    }
+    let tenant = guard.entry(key).or_default();
+    tenant.warming = false;
+    match result {
+        Ok(resp) if resp.vectors.len() == missing.len() => {
+            if tenant.vectors.len() + missing.len() > TENANT_CACHE_LIMIT {
+                let keep: HashSet<&DocKey> = keep.iter().collect();
+                tenant.vectors.retain(|k, _| keep.contains(k));
+            }
+            for (d, v) in missing.iter().zip(resp.vectors) {
+                tenant
+                    .vectors
+                    .insert((model.clone(), text_hash(d)), Arc::new(v));
+            }
+        }
+        Ok(_) => tracing::warn!("tool search: 文書の埋め込みの件数がリクエストと合わない"),
+        Err(e) => {
+            tracing::warn!(error = %e, "tool search: 文書の埋め込みに失敗（BM25 のみで続ける）");
+        }
     }
 }
 

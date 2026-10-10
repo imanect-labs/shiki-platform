@@ -2,7 +2,7 @@
 
 方式:
 - `bm25`        … 製品の BM25F の打ち切り前の順位（`CatalogSearch::ranked`）
-- `bm25_prod`   … 製品が実際に読み込む順位（limit 5・相対カットオフ込み・`CatalogSearch::search_lexical`）
+- `bm25_prod`   … 埋め込みが無いときに製品が読み込む 5 件（BM25 のみ・相対カットオフ込み・`CatalogSearch::search_lexical`）
 - `emb`         … Ruri v3 の埋め込みのコサイン類似度
 - `rrf`         … bm25 と emb の Reciprocal Rank Fusion（k=10・製品の tool_search と同じ定数・#517）
 - `rrf_rerank`  … rrf の上位 20 件を cross-encoder で並べ替え

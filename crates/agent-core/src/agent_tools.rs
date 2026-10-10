@@ -249,8 +249,9 @@ async fn run_sequential(
             });
             continue;
         }
-        // tool search（遅延ツールの読み込み）: 索引を引くだけで副作用も外部 I/O も無い。
-        // 承認ゲートの対象外。読み込んだ名前は結果ブロックへ残し、以降の提示に効かせる。
+        // tool search（遅延ツールの読み込み）: 副作用は無く、承認ゲートの対象外。外部 I/O は
+        // クエリの埋め込み 1 回だけ（2 秒で打ち切り BM25 に落ちる・hybrid.rs）。読み込んだ名前は
+        // 結果ブロックへ残し、以降の提示に効かせる。
         if let Some(search) = phase.tool_search.filter(|_| call.name == TOOL_SEARCH_TOOL) {
             let found = search.handle(phase.ctx, &call.input).await;
             let outcome = if found.is_error {

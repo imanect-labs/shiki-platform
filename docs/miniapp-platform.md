@@ -184,7 +184,7 @@ jobq（自作 Postgres キュー）の延長＋状態機械として `crates/wor
   - **一覧の上限を超えたら `skill_search`**（#520）: 一覧はピン → カタログ源の順に先頭 50 件まで。
     超過時だけ `skill_search`（本人のカタログを tool_search と同じ索引で検索し name と説明を返す・
     読み込みは `skill`）を提示する。skill は tool search には統合しない（返すのが定義でなく指示文で、
-    Anthropic Agent Skills・Codex も別系統）。根拠は `eval/tool-search/`（一覧は 50 件で読み込み率が落ちる）。
+    Anthropic Agent Skills・Codex も別系統）。根拠は `eval/tool-search/`（一覧は 50 件で読み込み率が落ちる・暫定値で取り直し中）。
 - **`allowed_tools` は「そのスキルが使うツールの宣言＝モデルへの誘導」**（#344 で再定義。
   旧: 提示ツールの縮小。途中発動では過去ターンに遡及できないため一本化した）。決定性は
   ツール実装＋認可＋承認ゲートが担い、skill は承認ポリシ（破壊系の明示許可）に一切触れない。

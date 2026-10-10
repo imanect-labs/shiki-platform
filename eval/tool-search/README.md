@@ -61,7 +61,7 @@ PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/t
 | E2E | 全ツール提示 vs `tool_search`（BM25 / RRF）で、LLM が正解ツールを呼べた率・トークン |
 | skills | skill の一覧方式（製品の先頭 50 件 / 全件）vs 検索方式 |
 
-方式: `bm25`（製品の打ち切り前順位）/ `bm25_prod`（製品が実際に読み込む 5 件）/ `emb`（Ruri v3）/
+方式: `bm25`（製品の打ち切り前順位）/ `bm25_prod`（埋め込みが無いときに製品が読み込む 5 件・BM25 のみ）/ `emb`（Ruri v3）/
 `rrf`（bm25 と emb の RRF・k=10・製品と同じ）/ `rrf_rerank`（rrf 上位 20 件を cross-encoder で並べ替え）。
 
 ## 限界
