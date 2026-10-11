@@ -27,7 +27,6 @@ import {
 } from "./citation-context";
 import {
   DocIcon,
-  KindBadge,
   NumberBadge,
   OpenOriginalLink,
   SnippetText,
@@ -94,6 +93,10 @@ export function SourcePanelView({
   const folder = useNodeMeta(meta?.parentId)?.name;
   const updated = formatDate(meta?.updatedAt);
   const headingRef = React.useRef<HTMLHeadingElement>(null);
+  // PDF の引用の見せ方。引用を送ったら本文に戻す。
+  const [view, setView] = React.useState<"text" | "page">("text");
+  const viewKey = citation?.chunk_id;
+  React.useEffect(() => setView("text"), [viewKey]);
 
   // 開いた・送ったときに見出しへフォーカスを移す（読み上げとキーボード操作の起点）。
   React.useEffect(() => {
@@ -129,34 +132,34 @@ export function SourcePanelView({
     }
   };
 
+  const isPdf = (citation.boxes?.length ?? 0) > 0;
+  const where = [citation.page != null ? `p.${citation.page}` : null, ...heading].filter(Boolean).join(" › ");
+
   return (
     <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeyDown}>
-      <div className="flex items-start gap-2 border-b border-border px-4 py-3">
-        <DocIcon meta={meta} className="mt-0.5" />
+      <div className="flex items-center gap-2.5 px-4 py-3 shiki-dash-bottom">
+        <DocIcon meta={meta} className="shrink-0" />
         <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <h2
-              ref={headingRef}
-              tabIndex={-1}
-              className="truncate text-[13.5px] font-medium outline-none"
-              title={message.nameOf(citation.node_id)}
-            >
-              {message.nameOf(citation.node_id)}
-            </h2>
-            <KindBadge name={meta?.name} />
-          </div>
+          <h2
+            ref={headingRef}
+            tabIndex={-1}
+            className="truncate text-[13.5px] font-medium leading-snug outline-none"
+            title={message.nameOf(citation.node_id)}
+          >
+            {message.nameOf(citation.node_id)}
+          </h2>
           {folder || updated ? (
-            <div className="truncate text-[11.5px] text-muted-foreground">
-              {[folder, updated ? `${updated} 更新` : null].filter(Boolean).join(" ・ ")}
+            <div className="truncate text-[11.5px] leading-snug text-muted-foreground">
+              {[folder, updated ? `${updated} 更新` : null].filter(Boolean).join(" · ")}
             </div>
           ) : null}
         </div>
-        {idx >= 0 ? (
+        {idx >= 0 && order.length > 1 ? (
           <div className="flex shrink-0 items-center text-[11.5px] tabular-nums text-muted-foreground">
             <NavButton label="前の引用" disabled={prev == null} onClick={() => prev != null && onNavigate(prev)}>
               <ChevronLeft className="size-4" />
             </NavButton>
-            <span aria-live="polite">
+            <span aria-live="polite" className="min-w-[2.5rem] text-center">
               {idx + 1} / {order.length}
             </span>
             <NavButton label="次の引用" disabled={next == null} onClick={() => next != null && onNavigate(next)}>
@@ -169,85 +172,109 @@ export function SourcePanelView({
         </NavButton>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 scrollbar-subtle">
+      {/* 本文は固定の段組み: 引用した文 → 場所 → 原文（残りの高さいっぱい・中だけスクロール）。
+          原文の枠がパネルの外へ押し出されないよう、パネル全体はスクロールさせない。 */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 pb-3 pt-4" style={docColorStyle(color)}>
         {claim ? (
-          <section>
-            <h3 className="mb-1.5 text-[11.5px] font-medium text-muted-foreground">回答の記述</h3>
-            <div className="flex items-start gap-2 rounded-lg bg-muted/50 px-3 py-2.5 text-[13px] leading-relaxed text-foreground/85">
-              <NumberBadge n={passage.n} colorIndex={color} solid className="mt-[3px]" />
-              <span className="line-clamp-6" title={claim}>
-                {claim}
-              </span>
-            </div>
-          </section>
-        ) : null}
-
-        <section>
-          <h3 className="mb-1.5 text-[11.5px] font-medium text-muted-foreground">原文</h3>
-          {heading.length > 0 || citation.page != null ? (
-            <div className="mb-1.5 text-[12px] text-foreground/70">
-              {[citation.page != null ? `p.${citation.page}` : null, heading.join(" › ") || null]
-                .filter(Boolean)
-                .join(" ・ ")}
-            </div>
-          ) : null}
-          {staleVersion ? (
-            <p className="mb-2 rounded-md bg-muted/60 px-2.5 py-1.5 text-[12px] text-muted-foreground" data-testid="stale-version">
-              引用した時点の版（v{citation.version}）の内容です。このファイルはその後更新されています（最新は v
-              {meta?.version}）。
-            </p>
-          ) : null}
-          {(citation.boxes?.length ?? 0) > 0 ? <PdfCitePreview key={citation.chunk_id} citation={citation} width={384} /> : null}
-          <div
-            style={docColorStyle(color)}
-            className="rounded-lg border border-[var(--doc)]/35 bg-card px-3.5 py-3 text-[13.5px] leading-[1.85] text-foreground/85"
+          <blockquote
+            aria-label="回答の記述"
+            className="flex shrink-0 gap-2 border-l-2 border-[var(--doc)]/45 pl-3 text-[12.5px] leading-relaxed text-muted-foreground"
           >
-            {hasBlockAnchor(citation) ? (
-              <SourceBlocks
-                key={`${citation.chunk_id}:${citation.version}`}
-                citation={citation}
-                fallback={snippet}
-                // PDF の縮小表示があるぶん原文の枠を低くし、回答の記述・縮小表示・引用箇所を 1 画面に収める。
-                className={(citation.boxes?.length ?? 0) > 0 ? "max-h-[18rem]" : undefined}
-              />
-            ) : (
-              snippet
-            )}
-          </div>
-          {!passage.used ? (
-            <p className="mt-2 text-[12px] text-muted-foreground">この箇所は検索で見つかりましたが、回答では引用していません。</p>
-          ) : null}
-        </section>
-
-        {siblings.length > 0 ? (
-          <section>
-            <h3 className="mb-1.5 text-[11.5px] font-medium text-muted-foreground">この文書のほかの引用</h3>
-            <ul className="space-y-0.5">
-              {siblings.map((p) => (
-                <li key={p.citation.chunk_id}>
-                  <button
-                    type="button"
-                    onClick={() => onNavigate(p.n)}
-                    className="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <NumberBadge n={p.n} colorIndex={color} className="mt-[2px]" />
-                    <span className="line-clamp-2 text-[12.5px] leading-relaxed text-muted-foreground">
-                      {(p.citation.heading_path ?? []).slice(-1)[0] ?? p.citation.snippet.trim()}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </section>
+            <NumberBadge n={passage.n} colorIndex={color} className="mt-[3px]" />
+            <span className="line-clamp-2" title={claim}>
+              {claim}
+            </span>
+          </blockquote>
         ) : null}
+
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground" title={where || undefined}>
+            {where || "原文"}
+            {staleVersion ? (
+              <span data-testid="stale-version">
+                {" · "}引用時点の版 v{citation.version}（最新は v{meta?.version}）
+              </span>
+            ) : null}
+          </span>
+          {isPdf ? <ViewToggle value={view} onChange={setView} /> : null}
+        </div>
+
+
+        <div className="min-h-0 flex-1 text-[13.5px] leading-[1.85] text-foreground/85">
+          {isPdf && view === "page" ? (
+            <PdfCitePreview key={citation.chunk_id} citation={citation} width={384} zoom="fit" className="h-full" />
+          ) : hasBlockAnchor(citation) ? (
+            <SourceBlocks
+              key={`${citation.chunk_id}:${citation.version}`}
+              citation={citation}
+              fallback={<div className="h-full overflow-y-auto scrollbar-subtle">{snippet}</div>}
+              className="h-full max-h-none pr-1"
+            />
+          ) : (
+            <div className="h-full overflow-y-auto pr-1 scrollbar-subtle">{snippet}</div>
+          )}
+        </div>
+
+        {!passage.used ? (
+          <p className="shrink-0 text-[11.5px] text-muted-foreground">検索で見つかった箇所です（回答では引用していません）。</p>
+        ) : null}
+
       </div>
 
-      <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-2.5">
+      {/* 下部は 1 本の帯: 同じ文書の他の箇所（左）と原本を開く（右）。 */}
+      <div className="flex items-center gap-3 px-4 py-2.5 shiki-dash-top">
+          {siblings.length > 0 ? (
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-subtle">
+              <span className="shrink-0 text-[11.5px] text-muted-foreground">同じ文書</span>
+              {siblings.map((p) => (
+                <button
+                  key={p.citation.chunk_id}
+                  type="button"
+                  onClick={() => onNavigate(p.n)}
+                  title={(p.citation.heading_path ?? []).join(" › ") || p.citation.snippet.trim()}
+                  className="inline-flex max-w-[12rem] shrink-0 items-center gap-1.5 rounded-full border border-border py-0.5 pl-1 pr-2.5 text-[12px] text-foreground/75 transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <NumberBadge n={p.n} colorIndex={color} />
+                  <span className="truncate">{(p.citation.heading_path ?? []).slice(-1)[0] ?? p.citation.snippet.trim()}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        {siblings.length === 0 ? <span className="flex-1" /> : null}
         <OpenOriginalLink nodeId={citation.node_id} meta={meta} citation={citation} variant="outline" />
       </div>
     </div>
   );
 }
+
+/// PDF の引用で、原文の見せ方（ブロックの本文 / ページの画像と枠）を切り替える。
+function ViewToggle({ value, onChange }: { value: "text" | "page"; onChange: (v: "text" | "page") => void }) {
+  return (
+    <div role="tablist" aria-label="原文の表示" className="flex shrink-0 rounded-lg bg-muted/70 p-0.5 text-[11.5px]">
+      {(
+        [
+          ["text", "本文"],
+          ["page", "ページ"],
+        ] as const
+      ).map(([v, label]) => (
+        <button
+          key={v}
+          type="button"
+          role="tab"
+          aria-selected={value === v}
+          onClick={() => onChange(v)}
+          className={cn(
+            "rounded-md px-2.5 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            value === v ? "bg-accent text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 
 function NavButton({
   label,
