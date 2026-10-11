@@ -209,7 +209,8 @@ export function SourceBlocks({
 }
 
 /// 文の途中で終わる段落（PDF の行の折り返しで分かれたもの）を、次の段落とまとめる。
-/// 句点・閉じ括弧などで終わる段落と、段落以外のブロックはまとめない。
+/// 座標（prov）を持つ PDF の段落どうしに限る（スライドのように同じページ番号の独立した段落を
+/// つながない）。句点・閉じ括弧などで終わる段落と、段落以外のブロックはまとめない。
 function groupParagraphs(blocks: DocBlock[]): DocBlock[][] {
   const out: DocBlock[][] = [];
   for (const b of blocks) {
@@ -219,6 +220,8 @@ function groupParagraphs(blocks: DocBlock[]): DocBlock[][] {
       prev != null &&
       prev.type === "paragraph" &&
       b.type === "paragraph" &&
+      prev.prov.length > 0 &&
+      b.prov.length > 0 &&
       prev.page != null &&
       prev.page === b.page &&
       b.ordinal === prev.ordinal + 1 &&

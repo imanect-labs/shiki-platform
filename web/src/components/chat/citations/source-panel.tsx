@@ -95,8 +95,12 @@ export function SourcePanelView({
   const headingRef = React.useRef<HTMLHeadingElement>(null);
   // PDF の引用の見せ方。引用を送ったら本文に戻す。
   const [view, setView] = React.useState<"text" | "page">("text");
+  const [pdfFailed, setPdfFailed] = React.useState(false);
   const viewKey = citation?.chunk_id;
-  React.useEffect(() => setView("text"), [viewKey]);
+  React.useEffect(() => {
+    setView("text");
+    setPdfFailed(false);
+  }, [viewKey]);
 
   // 開いた・送ったときに見出しへフォーカスを移す（読み上げとキーボード操作の起点）。
   React.useEffect(() => {
@@ -132,7 +136,8 @@ export function SourcePanelView({
     }
   };
 
-  const isPdf = (citation.boxes?.length ?? 0) > 0;
+  // PDF が読めない（取得・解析に失敗）ときは、ページ表示を出さず本文だけにする。
+  const isPdf = (citation.boxes?.length ?? 0) > 0 && !pdfFailed;
   const where = [citation.page != null ? `p.${citation.page}` : null, ...heading].filter(Boolean).join(" › ");
 
   return (
@@ -188,21 +193,32 @@ export function SourcePanelView({
         ) : null}
 
         <div className="flex shrink-0 items-center gap-2">
-          <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground" title={where || undefined}>
+          <span className="min-w-0 truncate text-[11.5px] text-muted-foreground" title={where || undefined}>
             {where || "原文"}
-            {staleVersion ? (
-              <span data-testid="stale-version">
-                {" · "}引用時点の版 v{citation.version}（最新は v{meta?.version}）
-              </span>
-            ) : null}
           </span>
+          {/* 版の注記は省略しない（場所の文字列が長くても、古い版だと必ず分かるように）。 */}
+          {staleVersion ? (
+            <span className="shrink-0 text-[11.5px] text-muted-foreground" data-testid="stale-version">
+              · 引用時点 v{citation.version}（最新 v{meta?.version}）
+            </span>
+          ) : null}
+          <span className="flex-1" />
           {isPdf ? <ViewToggle value={view} onChange={setView} /> : null}
         </div>
 
 
         <div className="min-h-0 flex-1 text-[13.5px] leading-[1.85] text-foreground/85">
           {isPdf && view === "page" ? (
-            <PdfCitePreview key={citation.chunk_id} citation={citation} width={384} zoom="fit" className="h-full" />
+            <PdfCitePreview
+              key={citation.chunk_id}
+              citation={citation}
+              zoom="fit"
+              className="h-full"
+              onUnavailable={() => {
+                setPdfFailed(true);
+                setView("text");
+              }}
+            />
           ) : hasBlockAnchor(citation) ? (
             <SourceBlocks
               key={`${citation.chunk_id}:${citation.version}`}
