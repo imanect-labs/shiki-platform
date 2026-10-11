@@ -83,6 +83,11 @@ export function PdfCitePreview({
     if (typeof citation.version !== "number" || page == null) return;
     let active = true;
     loadPdf(citation.node_id, citation.version)
+      // ページ番号が PDF の範囲外なら、そのページは描けない（読み込み失敗と同じに扱う）。
+      .then((d) => {
+        if (page < 1 || page > d.numPages) throw new Error("page out of range");
+        return d.getPage(page).then(() => d);
+      })
       .then((d) => active && setDoc(d))
       .catch(() => {
         if (!active) return;

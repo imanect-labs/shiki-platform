@@ -137,7 +137,7 @@ export function SourcePanelView({
   };
 
   // PDF が読めない（取得・解析に失敗）ときは、ページ表示を出さず本文だけにする。
-  const isPdf = (citation.boxes?.length ?? 0) > 0 && !pdfFailed;
+  const isPdf = (citation.boxes?.length ?? 0) > 0 && typeof citation.version === "number" && !pdfFailed;
   const where = [citation.page != null ? `p.${citation.page}` : null, ...heading].filter(Boolean).join(" › ");
 
   return (
