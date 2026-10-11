@@ -30,4 +30,12 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+// バンドル解析（`pnpm analyze`）。どのチャンクにどの依存が入っているかを
+// .next/analyze/{client,nodejs,edge}.html に書き出す。devDependency なので
+// ANALYZE=true の時だけ読み込む（通常ビルド・`next start` では import しない）。
+const withBundleAnalyzer =
+  process.env.ANALYZE === "true"
+    ? (await import("@next/bundle-analyzer")).default({ enabled: true, openAnalyzer: false })
+    : (config) => config;
+
+export default withBundleAnalyzer(nextConfig);

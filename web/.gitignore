@@ -6,3 +6,6 @@
 /test-results/
 /blob-report/
 /playwright/.cache/
+
+# 性能計測（pnpm perf）の結果 JSON
+/perf-results/

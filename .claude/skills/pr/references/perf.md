@@ -151,6 +151,15 @@ echo "ビルドログ: $LOGD"    # 失敗調査のため残す（不要なら rm
 
 数十 KB 単位で増えていたら、遅延 import の漏れか、意図しない依存の巻き込みを疑う。
 
+**どの依存が増えたか**は `pnpm analyze`（`ANALYZE=true pnpm build`）で見る。`web/.next/analyze/client.html`
+にチャンクごとの内訳（treemap）が出る。base/head の worktree それぞれで流して見比べる。
+
+**実ブラウザでの転送量・LCP** は `pnpm perf`（`web/e2e/perf.manual.spec.ts`）で測る。前提は
+`pnpm e2e` と同じ（compose ＋本番ビルドの web）。主要画面を cold（キャッシュ空）と warm（再読込）で
+読み込み、転送量（JS/CSS/font 別・圧縮後）・展開後 JS・FCP/LCP を表と JSON（`web/perf-results/`）に出す。
+既定は slow4g 相当の回線・CPU 4x 減速（localhost のままだと転送量が時間に現れない）。base の JSON を
+`PERF_BASELINE=<path>` で渡すと差分列が付く。時間系は揺れるので、比較は転送量を主に見る。
+
 ### `crates/sandbox-*` を変更した
 
 3 ティア横断のライフサイクル実測（gated バイナリ）:
@@ -175,6 +184,7 @@ SANDBOX_BENCH=1 cargo run --release -p shiki-sandbox-bench --bin sandbox-bench
 | 単一クエリの実行時間 | ローカルの小データで **50ms 超** | クエリログの `elapsed_secs` / `EXPLAIN (ANALYZE)` |
 | API 応答（LLM を挟まない経路） | **300ms 超** | リクエストログの `latency_ms` |
 | Route の First Load JS | **300KB 超** | `next build` の出力 |
+| 画面の cold LCP（slow4g） | **2.5 秒超** | `pnpm perf` |
 | 画面遷移・操作の体感 | **1 秒以上待たされる** | Phase 2 のスクショ/動画を撮る過程で気づく |
 
 ### SQL を実測する（N+1 の検出・遅いクエリの特定）
