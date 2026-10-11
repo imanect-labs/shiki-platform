@@ -198,7 +198,10 @@ def catalog_fingerprint(tools: list[Tool]) -> str:
 @functools.cache
 def text_fingerprint(fused: bool = False) -> str:
     """結果本文と順位を作るコードの指紋（変われば `_prod` / `_hint` のキャッシュを使わない）。"""
-    src = (ROOT.parents[1] / "crates/agent-core/src/tool_search/mod.rs").read_text()
+    repo = ROOT.parents[1]
+    src = (repo / "crates/agent-core/src/tool_search/mod.rs").read_text()
+    src += (repo / "crates/agent-core/examples/tool_search_rank.rs").read_text()
+    src += inspect.getsource(bm25)  # CLI への橋渡し（loaded_message / fuse）。
     src += inspect.getsource(search_content) + inspect.getsource(sibling_hint)
     if fused:  # RRF の条件は融合の経路（Searcher）も含める。
         src += inspect.getsource(Searcher)
@@ -211,19 +214,29 @@ MOCK_RESULT = (
 )
 
 
+def cache_path(
+    tools: list[Tool], condition: str, query: dict, fingerprint: str | None = None
+) -> Path:
+    """1 会話のキャッシュの置き場所。
+
+    キーは入力内容から作る（依頼文・提示するカタログ・条件が変われば取り直す）。製品の文面を
+    使う条件は、文面と順位を作るコード（製品の tool_search・順位 CLI・評価側の案内と橋渡し）と
+    カタログの定義（説明文の変更でも本文が変わる）も入力に含める。`fingerprint` はコードの指紋を
+    差し替えるとき（キャッシュの付け替え）だけ渡す。
+    """
+    parts = [condition, query["text"], sorted(t.name for t in tools)]
+    if condition not in ("all", "search_bm25", "search_rrf"):
+        fp = fingerprint or text_fingerprint(base_method(condition) == "search_rrf")
+        parts += [fp, catalog_fingerprint(tools)]
+    digest = hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()[:16]
+    key = f"v3-{condition}-{len(tools)}-{query['id']}-{digest}".replace("/", "_")
+    return CACHE / f"{key}.json"
+
+
 def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher | None) -> dict:
     """1 会話を回す。正解ツールを呼んだ時点で打ち切る（下調べのツールを先に呼ぶのは正しい手順
     なので、他のツールにはモックの結果を返して続けさせる）。"""
-    # キーは入力内容から作る（依頼文・提示するカタログ・条件が変われば取り直す）。製品の文面を
-    # 使う条件は、文面を作るコード（製品の tool_search と評価側の案内）も入力に含める。
-    parts = [condition, query["text"], sorted(t.name for t in tools)]
-    if condition not in ("all", "search_bm25", "search_rrf"):
-        parts.append(text_fingerprint(base_method(condition) == "search_rrf"))
-        # 説明文の変更でも本文が変わる（名前だけでは取り直しにならない）。
-        parts.append(catalog_fingerprint(tools))
-    digest = hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()[:16]
-    key = f"v3-{condition}-{len(tools)}-{query['id']}-{digest}".replace("/", "_")
-    path = CACHE / f"{key}.json"
+    path = cache_path(tools, condition, query)
     if path.exists():
         return json.loads(path.read_text())
     by_wire = {wire(t.name): t for t in tools}
