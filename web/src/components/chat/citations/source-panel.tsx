@@ -96,7 +96,8 @@ export function SourcePanelView({
   // PDF の引用の見せ方。引用を送ったら本文に戻す。
   const [view, setView] = React.useState<"text" | "page">("text");
   const [pdfFailed, setPdfFailed] = React.useState(false);
-  const viewKey = citation?.chunk_id;
+  // 別の引用へ移ったら（同じ箇所を指す別番号でも）表示の状態を戻す。
+  const viewKey = `${message.key}:${citation?.chunk_id}:${n}`;
   React.useEffect(() => {
     setView("text");
     setPdfFailed(false);
