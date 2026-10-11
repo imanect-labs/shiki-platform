@@ -203,7 +203,13 @@ export function SourcePanelView({
             className="rounded-lg border border-[var(--doc)]/35 bg-card px-3.5 py-3 text-[13.5px] leading-[1.85] text-foreground/85"
           >
             {hasBlockAnchor(citation) ? (
-              <SourceBlocks key={`${citation.chunk_id}:${citation.version}`} citation={citation} fallback={snippet} />
+              <SourceBlocks
+                key={`${citation.chunk_id}:${citation.version}`}
+                citation={citation}
+                fallback={snippet}
+                // PDF の縮小表示があるぶん原文の枠を低くし、回答の記述・縮小表示・引用箇所を 1 画面に収める。
+                className={(citation.boxes?.length ?? 0) > 0 ? "max-h-[18rem]" : undefined}
+              />
             ) : (
               snippet
             )}

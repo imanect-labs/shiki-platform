@@ -2,7 +2,8 @@
 
 /// 出典パネルの PDF プレビュー（引用箇所のページを縮小で描き、枠を重ねる・#508）。
 ///
-/// 枠のあたりが見えるよう、ページを小さな窓の中でスクロールしておく。全体はビューアで開く。
+/// 枠のまわりの帯だけを見せる（ページ全体を出すと余白ばかりで、下の原文を画面外へ押し出す）。
+/// 枠が窓の縦の中央に来るようスクロールしておく。全体はビューアで開く。
 import * as React from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 
@@ -36,16 +37,22 @@ export function PdfCitePreview({ citation, width }: { citation: Citation; width:
     };
   }, [citation.node_id, citation.version, page]);
 
-  // 枠が描かれたら、窓の中で枠が上から 1/3 あたりに来るようスクロールする。
+  // 枠が描かれたら、枠（複数なら全体）が窓の縦の中央に来るようスクロールする。
   React.useEffect(() => {
     if (!doc || doc === "error") return;
     const frame = frameRef.current;
     if (!frame) return;
     let tries = 0;
     const id = window.setInterval(() => {
-      const box = frame.querySelector<HTMLElement>("[data-cite-box]");
-      if (box || ++tries > 20) window.clearInterval(id);
-      if (box) frame.scrollTop = Math.max(0, box.offsetTop - frame.clientHeight / 3);
+      const boxes = Array.from(frame.querySelectorAll<HTMLElement>("[data-cite-box]"));
+      if (boxes.length > 0 || ++tries > 20) window.clearInterval(id);
+      if (boxes.length === 0) return;
+      // 枠の位置はページ（PdfPage）からの相対値。ページの窓内の位置を足して窓の座標にする。
+      const pageEl = boxes[0].offsetParent as HTMLElement | null;
+      const base = pageEl?.offsetTop ?? 0;
+      const top = Math.min(...boxes.map((b) => b.offsetTop));
+      const bottom = Math.max(...boxes.map((b) => b.offsetTop + b.offsetHeight));
+      frame.scrollTop = Math.max(0, base + (top + bottom) / 2 - frame.clientHeight / 2);
     }, 100);
     return () => window.clearInterval(id);
   }, [doc]);
@@ -54,14 +61,14 @@ export function PdfCitePreview({ citation, width }: { citation: Citation; width:
   return (
     <div
       ref={frameRef}
-      className="mb-2.5 max-h-60 overflow-hidden rounded-lg bg-muted/50 p-2"
+      className="relative mb-2.5 h-36 overflow-hidden rounded-lg bg-muted/50 p-2"
       data-testid="pdf-cite-preview"
       aria-label={`p.${page} の引用箇所`}
     >
       {doc ? (
         <PdfPage doc={doc} pageNumber={page} width={width - 16} boxes={boxes} eager className="mx-auto" />
       ) : (
-        <div className="h-40 animate-pulse rounded-md bg-muted" />
+        <div className="h-full animate-pulse rounded-md bg-muted" />
       )}
     </div>
   );
