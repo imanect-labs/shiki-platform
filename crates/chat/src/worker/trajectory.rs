@@ -30,6 +30,10 @@ pub enum TrajectoryError {
     NotFound(Uuid),
     #[error("ツール呼び出しを含む assistant メッセージが無い")]
     NoAgentRun,
+    /// run の実行者以外が取得した記録はツール結果の本文が空になる（閲覧者向けの伏せ字）。
+    /// そのまま再生すると「溢れない」という誤ったレポートが黙って出るので、拒否する。
+    #[error("ツール結果の本文が伏せられている（run を実行した本人の権限でエクスポートすること）")]
+    Redacted,
 }
 
 /// メッセージ列から再生入力を作る。`message_id` 省略時は、ツール呼び出しを含む最後の assistant
@@ -48,6 +52,9 @@ pub fn from_messages(
             .rposition(|m| m.role == Role::Assistant && has_tool_call(&m.content))
             .ok_or(TrajectoryError::NoAgentRun)?,
     };
+    if is_redacted(&messages[pos].content) {
+        return Err(TrajectoryError::Redacted);
+    }
     let initial = messages[..pos]
         .iter()
         .filter_map(|m| {
@@ -65,6 +72,15 @@ pub fn from_messages(
         initial,
         steps: steps_of(&messages[pos].content),
     })
+}
+
+/// ツール結果があり、その本文が全て空（＝閲覧者向けに伏せられた記録）か。
+fn is_redacted(blocks: &[ContentBlock]) -> bool {
+    let mut results = blocks.iter().filter_map(|b| match b {
+        ContentBlock::ToolResult { content, .. } => Some(content),
+        _ => None,
+    });
+    results.next().is_some_and(String::is_empty) && results.all(String::is_empty)
 }
 
 fn has_tool_call(blocks: &[ContentBlock]) -> bool {
@@ -297,5 +313,38 @@ mod tests {
             from_messages(&chat_only, None),
             Err(TrajectoryError::NoAgentRun)
         );
+    }
+
+    #[test]
+    fn rejects_viewer_redacted_export() {
+        let blank = |id: &str| ContentBlock::ToolResult {
+            tool_call_id: id.into(),
+            content: String::new(),
+            ok: true,
+        };
+        let redacted = msg(
+            Role::Assistant,
+            vec![
+                call("a", Some(0)),
+                blank("a"),
+                call("b", Some(1)),
+                blank("b"),
+            ],
+        );
+        assert_eq!(
+            from_messages(&[redacted], None),
+            Err(TrajectoryError::Redacted)
+        );
+        // 空の結果が一部だけなら伏せ字ではない（空出力のツールは実在する）。
+        let partly = msg(
+            Role::Assistant,
+            vec![
+                call("a", Some(0)),
+                blank("a"),
+                call("b", Some(1)),
+                result("b", true),
+            ],
+        );
+        assert!(from_messages(&[partly], None).is_ok());
     }
 }

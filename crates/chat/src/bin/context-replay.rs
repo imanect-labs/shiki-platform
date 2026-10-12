@@ -9,6 +9,8 @@
 //! ```
 //!
 //! `--soft 0` は管理なし（ベースライン）。窓 × 設定値の全組み合わせを 1 行ずつ出す。
+//! 自律プロファイルの run を前提にする（Chat の run は本番で剪定しない）。見積りの限界は
+//! `agent_core::context_replay` のモジュール doc を参照。
 
 // CLI バイナリ: 標準出力/標準エラーへの出力は正当な用途のため print 系 lint を許容する。
 #![allow(clippy::print_stdout, clippy::print_stderr)]
@@ -100,6 +102,9 @@ fn run() -> Result<(), String> {
         trajectory.message_id,
         trajectory.steps.len(),
         trajectory.initial.len()
+    );
+    eprintln!(
+        "注意: 自律プロファイルの run として再生します（Chat の run は本番では剪定されません）"
     );
     for &window_tokens in &args.windows {
         for &soft_limit_tokens in &args.softs {
