@@ -16,6 +16,7 @@ import { CodeBlock } from "./code-block";
 export const UiFigure = React.memo(function UiFigure({
   source,
   complete,
+  truncated,
   kind,
   lang,
   renderTable,
@@ -24,6 +25,8 @@ export const UiFigure = React.memo(function UiFigure({
   source: string;
   /// ブロックが書き終わっているか（フェンスが閉じた・生成完了）。
   complete: boolean;
+  /// 生成が途中で終わり（停止・閉じ忘れ）、書きかけの最終行を落としたか。
+  truncated?: boolean;
   /// フェンスの情報文字列で指定された種類（```ui:bar）。
   kind?: Kind;
   /// 図にできないときに表示するコードブロックの言語名。
@@ -64,7 +67,11 @@ export const UiFigure = React.memo(function UiFigure({
     );
   }
 
-  const note = complete ? diagnosticsSummary(result.diagnostics) : null;
+  const note = !complete
+    ? null
+    : truncated
+      ? "生成が途中で終わったため、最後の行は表示していません"
+      : diagnosticsSummary(result.diagnostics);
   const copy = async () => {
     try {
       // 貼り付け先を選ばないよう、表・箇条書きにしたテキストを入れる。

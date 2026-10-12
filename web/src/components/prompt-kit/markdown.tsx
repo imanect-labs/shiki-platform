@@ -91,7 +91,15 @@ function fenceClosed(text: string, node: ExtraProps["node"]): boolean {
   const end = node?.position?.end.offset;
   if (start === undefined || end === undefined) return false;
   const lines = text.slice(start, end).split(/\r?\n/);
-  return lines.length > 1 && /^\s*(`{3,}|~{3,})\s*$/.test(lines[lines.length - 1] ?? "");
+  // 引用・リストの中のフェンスは閉じ行に `>` が付く。
+  return lines.length > 1 && /^\s*(?:>\s*)*(`{3,}|~{3,})\s*$/.test(lines[lines.length - 1] ?? "");
+}
+
+/// ```ui bar のように空白区切りで書かれた種類（react-markdown はクラス名に載せず meta に残す）。
+function fenceMeta(node: ExtraProps["node"]): string | undefined {
+  const code = node?.children?.[0];
+  const meta = code && "data" in code ? (code.data as { meta?: unknown } | undefined)?.meta : undefined;
+  return typeof meta === "string" ? meta.trim().split(/\s+/)[0] : undefined;
 }
 
 /// 図の「表で表示」。リンク・画像は描かない（図と同じく文字と数値だけにする）。
@@ -113,15 +121,19 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
   const { text, streaming } = React.useContext(SourceContext);
   const { code, raw, lang, ui, uiKind } = extractCode(children);
   if (!ui) return <CodeBlock code={code} lang={lang} />;
-  const complete = !streaming || fenceClosed(text, node);
-  // 書き終わっていないブロックは、確定した行だけを渡す（本文が改行で終わっていれば最終行も確定）。
-  // 書きかけの行が伸びるたびに図を解析し直さないため、ここで切っておく。
-  const source = complete ? raw : text.endsWith("\n") ? raw : raw.slice(0, raw.lastIndexOf("\n", raw.length - 2) + 1);
+  const closed = fenceClosed(text, node);
+  // 閉じていないブロックは、確定した行だけを渡す（本文が改行で終わっていれば最終行も確定）。
+  // 生成中は書きかけの行が伸びるたびに図を解析し直さないため、生成後（停止・閉じ忘れ）は
+  // 途中で切れた値を確定値として描かないため。
+  const lastLineDone = closed || text.endsWith("\n");
+  const source = lastLineDone ? raw : raw.slice(0, raw.lastIndexOf("\n", raw.length - 2) + 1);
+  const kind = uiKind ?? fenceMeta(node);
   return (
     <UiFigure
       source={source}
-      complete={complete}
-      kind={uiKind ? resolveKind(uiKind) : undefined}
+      complete={closed || !streaming}
+      truncated={!lastLineDone && !streaming && raw.trim() !== source.trim()}
+      kind={kind ? resolveKind(kind) : undefined}
       lang={lang}
       renderTable={renderFigureTable}
     />
