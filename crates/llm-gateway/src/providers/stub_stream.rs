@@ -68,11 +68,21 @@ pub(super) fn text_stream(reply: &str, prompt_tokens: u64) -> DeltaStream {
     stream::iter(events).boxed()
 }
 
-/// 本文を 1 行ずつ `gap` 間隔で流す（生成途中の描画を目で追える速さにする・#530）。
-pub(super) fn paced_lines_stream(reply: &str, prompt_tokens: u64, gap: Duration) -> DeltaStream {
-    let lines: Vec<String> = reply.split_inclusive('\n').map(str::to_string).collect();
-    let completion_tokens = lines.len() as u64;
-    stream::iter(lines)
+/// 本文を `chunk` 文字ずつ `gap` 間隔で流す（実 LLM と同じく行の途中で区切れる。
+/// 生成途中の描画を目で追える速さにする・#530）。
+pub(super) fn paced_chunks_stream(
+    reply: &str,
+    prompt_tokens: u64,
+    chunk: usize,
+    gap: Duration,
+) -> DeltaStream {
+    let chars: Vec<char> = reply.chars().collect();
+    let pieces: Vec<String> = chars
+        .chunks(chunk.max(1))
+        .map(|c| c.iter().collect())
+        .collect();
+    let completion_tokens = pieces.len() as u64;
+    stream::iter(pieces)
         .then(move |text| async move {
             tokio::time::sleep(gap).await;
             Ok(StreamDelta::TextDelta { text })

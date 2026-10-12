@@ -5,12 +5,13 @@
 
 import * as React from "react";
 import Link from "next/link";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
 import { CitationMarker } from "@/components/chat/citations/citation-marker";
+import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
 
 import { CodeBlock } from "./code-block";
@@ -54,39 +55,83 @@ function remarkBrTags() {
 }
 
 /// 1 つの React 要素（```pre > code```）からコード文字列と言語を取り出す。
-/// `raw` は末尾の改行を残したもの（閉じたフェンスかどうかを ui ブロックの判定に使う）。
-function extractCode(child: React.ReactNode): { code: string; raw: string; lang?: string; ui: boolean } {
+/// `raw` は react-markdown が渡す中身そのもの（フェンスが閉じていなくても末尾に改行が足されている）。
+function extractCode(child: React.ReactNode): {
+  code: string;
+  raw: string;
+  lang?: string;
+  ui: boolean;
+  /// ```ui:bar のように情報文字列で指定された図の種類。
+  uiKind?: string;
+} {
   if (!React.isValidElement(child)) return { code: "", raw: "", ui: false };
   const props = child.props as { className?: string; children?: React.ReactNode };
   const className = props.className ?? "";
   const match = /language-(\w+)/.exec(className);
   const raw = String(props.children ?? "");
-  return { code: raw.replace(/\n$/, ""), raw, lang: match?.[1], ui: isYuiLanguage(className) };
+  return {
+    code: raw.replace(/\n$/, ""),
+    raw,
+    lang: match?.[1],
+    ui: isYuiLanguage(className),
+    uiKind: /language-(?:ui|yui):(\S+)/.exec(className)?.[1],
+  };
 }
 
-/// 生成中か（ui ブロックが書きかけの最終行を読まないようにする）。
-const StreamingContext = React.createContext(false);
+/// 描画中の本文と、生成中かどうか（```ui の図が書きかけの行を描かないようにする）。
+const SourceContext = React.createContext<{ text: string; streaming: boolean }>({
+  text: "",
+  streaming: false,
+});
+
+/// フェンスが原文で閉じているか。react-markdown（mdast-util-to-hast）はフェンスの中身の末尾に
+/// 必ず改行を足すため、中身からは閉じたかどうかも、最終行が書き終わったかどうかも分からない。
+function fenceClosed(text: string, node: ExtraProps["node"]): boolean {
+  const start = node?.position?.start.offset;
+  const end = node?.position?.end.offset;
+  if (start === undefined || end === undefined) return false;
+  const lines = text.slice(start, end).split(/\r?\n/);
+  return lines.length > 1 && /^\s*(`{3,}|~{3,})\s*$/.test(lines[lines.length - 1] ?? "");
+}
+
+/// 図の「表で表示」。リンク・画像は描かない（図と同じく文字と数値だけにする）。
+function renderFigureTable(markdown: string) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={components}
+      allowedElements={["p", "strong", "em", "br", "table", "thead", "tbody", "tr", "th", "td"]}
+      unwrapDisallowed
+    >
+      {markdown}
+    </ReactMarkdown>
+  );
+}
 
 /// ブロックコード。```ui（Yui）の図は図にし、描けなければ通常のコードブロックに戻す（#530）。
-function FencedCode({ children }: { children: React.ReactNode }) {
-  const streaming = React.useContext(StreamingContext);
-  const { code, raw, lang, ui } = extractCode(children);
-  const block = <CodeBlock code={code} lang={lang} />;
-  if (!ui) return block;
+function FencedCode({ node, children }: { node: ExtraProps["node"]; children: React.ReactNode }) {
+  const { text, streaming } = React.useContext(SourceContext);
+  const { code, raw, lang, ui, uiKind } = extractCode(children);
+  if (!ui) return <CodeBlock code={code} lang={lang} />;
+  const complete = !streaming || fenceClosed(text, node);
+  // 書き終わっていないブロックは、確定した行だけを渡す（本文が改行で終わっていれば最終行も確定）。
+  // 書きかけの行が伸びるたびに図を解析し直さないため、ここで切っておく。
+  const source = complete ? raw : text.endsWith("\n") ? raw : raw.slice(0, raw.lastIndexOf("\n", raw.length - 2) + 1);
   return (
     <UiFigure
-      source={raw}
-      streaming={streaming}
-      fallback={block}
-      renderMarkdown={(md) => <Markdown>{md}</Markdown>}
+      source={source}
+      complete={complete}
+      kind={uiKind ? resolveKind(uiKind) : undefined}
+      lang={lang}
+      renderTable={renderFigureTable}
     />
   );
 }
 
 const components: Components = {
   // ブロックコードは pre をフックして CodeBlock に差し替える。
-  pre({ children }) {
-    return <FencedCode>{children}</FencedCode>;
+  pre({ node, children }) {
+    return <FencedCode node={node}>{children}</FencedCode>;
   },
   code({ className, children }) {
     // インラインコード（pre 配下は上で処理済み）。
@@ -193,11 +238,11 @@ export function Markdown({
 }) {
   return (
     <div className={cn("text-[15px] leading-relaxed text-foreground", className)}>
-      <StreamingContext.Provider value={streaming}>
+      <SourceContext.Provider value={{ text: children, streaming }}>
         <ReactMarkdown remarkPlugins={[remarkGfm, remarkBrTags]} components={components}>
           {children}
         </ReactMarkdown>
-      </StreamingContext.Provider>
+      </SourceContext.Provider>
     </div>
   );
 }

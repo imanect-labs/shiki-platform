@@ -24,7 +24,7 @@ use futures::stream::{self, StreamExt};
 use super::stub_deep_research::deep_research_call;
 use super::stub_fixtures::{genui_spec, yui_reply};
 use super::stub_stream::{
-    paced_lines_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
+    paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
 };
 use super::stub_triggers::note_tool_call;
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
@@ -210,12 +210,14 @@ impl LlmProvider for StubProvider {
                 Duration::from_secs(secs),
             ));
         }
-        // --- 図の回答 `yui:<kind>`（#530）: ```ui ブロックを含む本文を 1 行ずつ流す。 ---
+        // --- 図の回答 `yui:<kind>`（#530）: ```ui ブロックを含む本文を数文字ずつ流す
+        // （行の途中で区切れる＝書きかけの値を描かないことを e2e で確かめられる）。 ---
         if let Some(kind) = user_text.strip_prefix("yui:") {
-            return Ok(paced_lines_stream(
+            return Ok(paced_chunks_stream(
                 &yui_reply(kind.trim()),
                 prompt_tokens,
-                Duration::from_millis(150),
+                3,
+                Duration::from_millis(25),
             ));
         }
         // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
@@ -371,7 +373,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stub_streams_ui_block_line_by_line() {
+    async fn stub_streams_ui_block_in_small_chunks() {
         let req = GenerateRequest::new(vec![Message::text(Role::User, "yui:flow")]);
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut chunks = Vec::new();
@@ -382,9 +384,9 @@ mod tests {
         }
         let text = chunks.concat();
         assert!(text.contains("```ui\nflow 経費精算\n"));
-        // 行ごとに届く（生成途中の描画を試せる）。
-        assert!(chunks.len() > 5);
-        assert!(chunks[..chunks.len() - 1].iter().all(|c| c.ends_with('\n')));
+        // 数文字ずつ、行の途中でも区切れて届く（書きかけの行を試せる）。
+        assert!(chunks.iter().all(|c| c.chars().count() <= 3));
+        assert!(chunks.iter().any(|c| !c.ends_with('\n')));
     }
 
     #[tokio::test]
