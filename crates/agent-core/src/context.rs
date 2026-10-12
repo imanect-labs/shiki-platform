@@ -106,21 +106,29 @@ pub fn prune_history(
 /// 直近 `keep_recent` メッセージより古い大きな `tool_result` 本文を畳む。戻り値は「畳んだか」。
 fn fold_older_than(messages: &mut [Message], keep_recent: usize) -> bool {
     let cutoff = messages.len().saturating_sub(keep_recent);
+    fold_results(messages, cutoff, None)
+}
+
+/// `messages[..cutoff]` の大きな `tool_result` 本文を畳む（`protect` の位置＝(メッセージ, ブロック)
+/// は畳まない）。戻り値は「畳んだか」。
+fn fold_results(messages: &mut [Message], cutoff: usize, protect: Option<(usize, usize)>) -> bool {
     let mut pruned = false;
-    for msg in messages.iter_mut().take(cutoff) {
+    for (mi, msg) in messages.iter_mut().enumerate().take(cutoff) {
         if msg.role != Role::Tool {
             continue;
         }
-        for block in &mut msg.content {
+        for (bi, block) in msg.content.iter_mut().enumerate() {
+            if Some((mi, bi)) == protect {
+                continue;
+            }
             if let Block::ToolResult {
                 content, is_error, ..
             } = block
             {
-                if content.len() < MIN_FOLD_BYTES || is_folded(content) {
-                    continue;
+                if content.len() >= MIN_FOLD_BYTES && !is_folded(content) {
+                    *content = fold(content, *is_error);
+                    pruned = true;
                 }
-                *content = fold(content, *is_error);
-                pruned = true;
             }
         }
     }
@@ -154,40 +162,19 @@ const SOFT_PERMILLE: usize = 600;
 /// 非常時の閾値（千分率）。超えたら最後のツール結果以外を全て畳む。
 const HARD_PERMILLE: usize = 850;
 
-/// 非常時: **最後のツール結果ブロック**以外の大きな結果を全て畳む。戻り値は「畳んだか」。
+/// **最後のツール結果ブロック**の位置（剪定で守る対象）。
 ///
-/// 次の一手（あるいは「まとめて」等の追質問への回答）の根拠は直前の観測なので、それは消さない
-/// （末尾がユーザー発話でも、その手前の結果を守る）。メッセージ単位ではなくブロック単位で守る:
-/// 並列実行の結果は 1 つの Tool メッセージにまとまるため、メッセージごと守ると大きな結果が
-/// 複数同時に返ったときに畳めず、そのまま溢れる。
-fn fold_all_but_last_result(messages: &mut [Message]) -> bool {
-    let last = messages.iter().enumerate().rev().find_map(|(mi, m)| {
+/// 次の一手（あるいは「まとめて」等の追質問への回答）の根拠は直前の観測なので、通常の剪定でも
+/// 非常時でも消さない（末尾がユーザー発話でも、その手前の結果を守る）。メッセージ単位ではなく
+/// ブロック単位で守る: 並列実行の結果は 1 つの Tool メッセージにまとまるため、メッセージごと
+/// 守ると大きな結果が複数同時に返ったときに畳めず、そのまま溢れる。
+fn last_result_position(messages: &[Message]) -> Option<(usize, usize)> {
+    messages.iter().enumerate().rev().find_map(|(mi, m)| {
         m.content
             .iter()
             .rposition(|b| matches!(b, Block::ToolResult { .. }))
             .map(|bi| (mi, bi))
-    });
-    let mut pruned = false;
-    for (mi, msg) in messages.iter_mut().enumerate() {
-        if msg.role != Role::Tool {
-            continue;
-        }
-        for (bi, block) in msg.content.iter_mut().enumerate() {
-            if Some((mi, bi)) == last {
-                continue;
-            }
-            if let Block::ToolResult {
-                content, is_error, ..
-            } = block
-            {
-                if content.len() >= MIN_FOLD_BYTES && !is_folded(content) {
-                    *content = fold(content, *is_error);
-                    pruned = true;
-                }
-            }
-        }
-    }
-    pruned
+    })
 }
 
 /// 1 run の剪定閾値（設定値とモデルの窓から決める）。
@@ -254,9 +241,12 @@ impl ContextLimits {
         if !over_history && !over_window {
             return false;
         }
-        let mut pruned = fold_older_than(messages, self.keep_recent);
+        // 守る位置は畳む前に決める（`keep_recent = 0` でも最後の結果は残す）。
+        let protect = last_result_position(messages);
+        let cutoff = messages.len().saturating_sub(self.keep_recent);
+        let mut pruned = fold_results(messages, cutoff, protect);
         if self.window.is_some_and(|w| gauge.tokens(messages) > w.hard) {
-            pruned |= fold_all_but_last_result(messages);
+            pruned |= fold_results(messages, messages.len(), protect);
         }
         pruned
     }
@@ -481,6 +471,19 @@ mod tests {
             .content
             .iter()
             .map(|b| matches!(b, Block::ToolResult { content, .. } if is_folded(content)))
+            .collect();
+        assert_eq!(folded, vec![true, true, false]);
+    }
+
+    #[test]
+    fn last_result_survives_even_with_keep_recent_zero() {
+        let big = "k".repeat(40_000);
+        let mut msgs: Vec<Message> = (0..3).map(|_| tool_result(&big, false)).collect();
+        let l = ContextLimits::resolve(24_000, 0, Some(30_000), None);
+        assert!(l.apply(&mut msgs, &ContextGauge::default()));
+        let folded: Vec<bool> = msgs
+            .iter()
+            .map(|m| matches!(&m.content[0], Block::ToolResult { content, .. } if is_folded(content)))
             .collect();
         assert_eq!(folded, vec![true, true, false]);
     }

@@ -105,11 +105,10 @@ pub async fn run_agent(
     );
     // 実測の補正がまだ無い（新規開始・旧チェックポイント）なら、固定分（system＋ツール定義）を
     // 概算で入れておく。最初の 1 回で溢れて拒否されると、補正に必要な実測すら得られない。
-    let initial_overhead = if state.context_overhead_tokens > 0 {
-        state.context_overhead_tokens
-    } else {
+    // 実測済みなら（0 でも）その値を使う。
+    let initial_overhead = state.context_overhead_tokens.unwrap_or_else(|| {
         crate::context::estimate_static_tokens(opts.system.as_deref(), &tool_defs)
-    };
+    });
     let mut gauge = crate::context::ContextGauge::with_overhead(initial_overhead);
 
     let stop = loop {
@@ -158,7 +157,7 @@ pub async fn run_agent(
         // 生成まで進んだステップだけ実測で補正する（途中キャンセルは報告が無い）。
         if let Some(sent) = sent_estimate.filter(|_| state.spent.steps > steps_before) {
             gauge.calibrate(sent, state.spent.last_prompt_tokens());
-            state.context_overhead_tokens = gauge.overhead_tokens();
+            state.context_overhead_tokens = Some(gauge.overhead_tokens());
         }
         // ステップ境界でループ検出器の状態をチェックポイントへ畳み込む（中断/再開に耐える）。
         state.loop_detector = detector.clone();
