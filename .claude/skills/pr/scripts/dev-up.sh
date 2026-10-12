@@ -349,7 +349,7 @@ export SHIKI__GATEWAY__WEB_ORIGIN=http://localhost:3000
 # 閲覧フォールバックに落ちるため、変更が反映されない画面をスクショしてしまう。
 export SHIKI__GATEWAY__BUILTIN_DIR=${ROOT}/web/editor-sandbox/dist
 export SHIKI__CHAT__ENABLED=true
-# 回答の ```ui ブロック（Yui）の図（#530）。compose の既定と揃える。
+# 回答の ui ブロック（Yui）の図（#530）。compose の既定と揃える。
 export SHIKI__CHAT__YUI=true
 export SHIKI__WORKFLOW__ENABLED=true
 export SHIKI__LLM__BACKEND=stub
