@@ -144,6 +144,9 @@ pub struct LlmModelEntry {
     pub prompt_price_micros_per_mtok: u64,
     #[serde(default)]
     pub completion_price_micros_per_mtok: u64,
+    /// コンテキスト窓トークン数（未設定ならエージェントの剪定は固定閾値のまま・#529）。
+    #[serde(default)]
+    pub context_window_tokens: Option<u32>,
 }
 
 /// Langfuse 計装の設定（設定表現）。

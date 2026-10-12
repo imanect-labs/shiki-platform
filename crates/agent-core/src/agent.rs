@@ -96,6 +96,14 @@ pub async fn run_agent(
     let mut detector = state.loop_detector.clone();
     let mut warned: std::collections::HashSet<crate::budget::BudgetKind> =
         std::collections::HashSet::new();
+    // 剪定閾値はモデルの窓を天井にする（#529）。見積りは各ステップの実測 prompt で補正する。
+    let limits = crate::context::ContextLimits::resolve(
+        opts.context_soft_limit_tokens,
+        opts.context_keep_recent,
+        gateway.context_window_tokens(opts.model.as_deref()),
+        opts.max_tokens,
+    );
+    let mut gauge = crate::context::ContextGauge::default();
 
     let stop = loop {
         if sink.is_cancelled() {
@@ -118,14 +126,12 @@ pub async fn run_agent(
         }
 
         // --- コンテキスト剪定（自律版のみ・古い大きなツール出力を畳む・Task 5.3）。 ---
-        if opts.profile.is_autonomous() && opts.context_soft_limit_tokens > 0 {
-            crate::context::prune_history(
-                &mut state.messages,
-                opts.context_soft_limit_tokens,
-                opts.context_keep_recent,
-            );
+        if opts.profile.is_autonomous() {
+            limits.apply(&mut state.messages, &gauge);
         }
 
+        let sent_estimate = crate::context::estimate_tokens(&state.messages);
+        let steps_before = state.spent.steps;
         let step_outcome = run_step(
             gateway,
             &tool_defs,
@@ -138,6 +144,10 @@ pub async fn run_agent(
             &mut detector,
         )
         .await?;
+        // 生成まで進んだステップだけ実測で補正する（途中キャンセルは報告が無い）。
+        if state.spent.steps > steps_before {
+            gauge.calibrate(sent_estimate, state.spent.last_prompt_tokens());
+        }
         // ステップ境界でループ検出器の状態をチェックポイントへ畳み込む（中断/再開に耐える）。
         state.loop_detector = detector.clone();
         match step_outcome {

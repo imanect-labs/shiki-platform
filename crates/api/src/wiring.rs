@@ -212,6 +212,7 @@ pub(crate) fn build_gateway(
             real_id: None,
             prompt_price_micros_per_mtok: 0,
             completion_price_micros_per_mtok: 0,
+            context_window_tokens: None,
         }]
     } else {
         llm.models
@@ -221,6 +222,7 @@ pub(crate) fn build_gateway(
                 real_id: m.real_id.clone(),
                 prompt_price_micros_per_mtok: m.prompt_price_micros_per_mtok,
                 completion_price_micros_per_mtok: m.completion_price_micros_per_mtok,
+                context_window_tokens: m.context_window_tokens,
             })
             .collect()
     };
