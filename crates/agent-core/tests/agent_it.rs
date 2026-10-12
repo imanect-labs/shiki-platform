@@ -840,7 +840,19 @@ async fn autonomous_prunes_against_model_context_window() {
     .await
     .expect("run_agent 成功");
     assert_eq!(outcome.stop, AgentStop::Completed);
-    assert_eq!(folded(&outcome), 2, "窓に合わせて古いツール出力が畳まれる");
+    // 非常閾値で、最後のツール結果（「まとめて」の根拠）より前だけが畳まれる。
+    assert_eq!(folded(&outcome), 1, "窓に合わせて古いツール出力が畳まれる");
+    let last_result = outcome
+        .checkpoint
+        .messages
+        .iter()
+        .rev()
+        .flat_map(|m| m.content.iter())
+        .find_map(|b| match b {
+            llm_gateway::Block::ToolResult { content, .. } => Some(content.len()),
+            _ => None,
+        });
+    assert_eq!(last_result, Some(big.len()), "直前のツール結果は無傷で残る");
 
     let unknown = stub_gateway(pool);
     let mut sink = TestSink::new();

@@ -1,16 +1,16 @@
 //! コンテキスト管理・圧縮（Task 5.3）。
 //!
 //! 長ホライズンでコンテキスト長を超えないよう、**古いツール結果を剪定**する。直近 `keep_recent`
-//! ステップの観測は無傷で残し、それ以前の**大きな `tool_result`**だけを短い要約プレースホルダに
-//! 畳み込む。重要事実・計画・成果物参照は agent-core 外（外部メモリ＝ワークスペースの `plan.md`/
+//! メッセージの観測は無傷で残し、それ以前の**大きな `tool_result`**だけを短い要約プレースホルダに
+//! 畳み込む（窓の非常閾値を超えたときだけは、最後のツール結果より前を全て畳む）。重要事実・計画・成果物参照は agent-core 外（外部メモリ＝ワークスペースの `plan.md`/
 //! `notes.md`・W2）に逃がす前提で、ここでは**冗長なツール出力の畳み込み**に徹する。
 //!
 //! 閾値はモデルのコンテキスト窓が分かればそれに合わせる（[`ContextLimits`]・#529）。窓に対する
 //! 比率（省略 0.6・非常 0.85）は arXiv:2609.20804 の段階的管理に倣う。同論文では管理の効果の
-//! 大半が**窓あふれ失敗の防止**で、窓が狭いほど効く。トークン数は bytes/4 の概算を、プロバイダが
-//! 報告した prompt トークンで補正する（[`ContextGauge`]・system/ツール定義の分を拾う）。
+//! 大半が**窓あふれ失敗の防止**で、窓が狭いほど効く。窓判定の見積りは、プロバイダが報告した
+//! prompt トークンで補正する（[`ContextGauge`]・system/ツール定義の分を拾う）。
 //!
-//! 剪定は**純粋関数**（[`prune_history`]）。tool_use / text / thinking は保持し（呼び出しと結果の
+//! 剪定は**純粋関数**（ループは [`ContextLimits::apply`]・固定閾値だけなら [`prune_history`]）。tool_use / text / thinking は保持し（呼び出しと結果の
 //! 対応を壊さない）、`tool_result` の本文のみ縮める。引用は別イベントで既に外部化済みのため
 //! 出所追跡は壊れない（Task 2.7 整合・PIT-5）。
 
@@ -25,6 +25,32 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
         .map(block_bytes)
         .sum();
     bytes / 4
+}
+
+/// prompt トークンの見積り（窓判定用）。ASCII は 4 バイト ≒ 1 トークン、それ以外は 1 文字 ≒
+/// 1 トークンで数える。
+///
+/// bytes/4 は日本語（3 バイト/字）を 1 字 0.75 トークンと数え、実トークナイザより小さく出る。
+/// 補正（[`ContextGauge`]）は直前ステップまでの差しか拾えないため、**このステップで入った大きな
+/// 日本語のツール結果**を過小評価して非常閾値を素通りする。溢れの判定は過小評価側に倒さない。
+#[must_use]
+pub fn estimate_prompt_tokens(messages: &[Message]) -> usize {
+    fn text_tokens(s: &str) -> usize {
+        let ascii = s.bytes().filter(u8::is_ascii).count();
+        let non_ascii = s.chars().filter(|c| !c.is_ascii()).count();
+        ascii / 4 + non_ascii
+    }
+    messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .map(|b| match b {
+            Block::Text { text } | Block::Thinking { text } => text_tokens(text),
+            Block::ToolResult { content, .. } => text_tokens(content),
+            Block::ToolUse { name, input, .. } => {
+                text_tokens(name) + text_tokens(&input.to_string())
+            }
+        })
+        .sum()
 }
 
 fn block_bytes(b: &Block) -> usize {
@@ -105,10 +131,19 @@ fn fold(content: &str, is_error: bool) -> String {
 
 /// 省略（畳み込み）を始める閾値の、有効窓に対する千分率。
 const SOFT_PERMILLE: usize = 600;
-/// 非常時の閾値（千分率）。超えたら直近の保護を最小にして畳む。
+/// 非常時の閾値（千分率）。超えたら最後のツール結果より前を全て畳む。
 const HARD_PERMILLE: usize = 850;
-/// 非常時にも無傷で残す直近メッセージ数（＝直前のツール結果。次の一手の根拠は消さない）。
-const EMERGENCY_KEEP_RECENT: usize = 1;
+
+/// 非常時にも無傷で残す直近メッセージ数 ＝ **最後のツール結果以降**。
+///
+/// 次の一手（あるいは「まとめて」等の追質問への回答）の根拠は直前の観測なので、それは消さない。
+/// 末尾がユーザー発話でも、その手前のツール結果までを守る。
+fn emergency_keep_recent(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .rposition(|m| m.role == Role::Tool)
+        .map_or(0, |i| messages.len() - i)
+}
 
 /// 1 run の剪定閾値（設定値とモデルの窓から決める）。
 ///
@@ -130,7 +165,7 @@ pub struct ContextLimits {
 pub struct WindowLimits {
     /// 超えたら `keep_recent` を残して畳む（有効窓の 0.6）。
     pub soft: usize,
-    /// 超えたら直近の保護を最小にして畳む（有効窓の 0.85・溢れ直前の非常手段）。
+    /// 超えたら最後のツール結果より前を全て畳む（有効窓の 0.85・溢れ直前の非常手段）。
     pub hard: usize,
 }
 
@@ -161,40 +196,56 @@ impl ContextLimits {
     }
 
     /// 履歴を閾値に収める。まず `keep_recent` を残して畳み、それでも非常閾値を超えるなら
-    /// 直近の保護を最小にしてもう一度畳む。戻り値は「畳んだか」。
+    /// 最後のツール結果より前を全て畳む。戻り値は「畳んだか」。
     pub fn apply(&self, messages: &mut [Message], gauge: &ContextGauge) -> bool {
         if self.history_soft == 0 {
             return false;
         }
         let over_history = estimate_tokens(messages) > self.history_soft;
-        let over_window = self.window.is_some_and(|w| gauge.tokens(messages) > w.soft);
+        let over_window = match self.window {
+            Some(w) => gauge.tokens(messages) > w.soft,
+            None => false,
+        };
         if !over_history && !over_window {
             return false;
         }
         let mut pruned = fold_older_than(messages, self.keep_recent);
         if self.window.is_some_and(|w| gauge.tokens(messages) > w.hard) {
-            pruned |= fold_older_than(messages, EMERGENCY_KEEP_RECENT);
+            pruned |= fold_older_than(messages, emergency_keep_recent(messages));
         }
         pruned
     }
 }
 
-/// 履歴の実トークン数の見積り。bytes/4 の概算に、プロバイダ実測との差（system プロンプト・
-/// ツール定義・トークナイザ差）を足す。差は直前ステップの実測で更新する。
+/// prompt 全体の実トークン数の見積り。履歴の見積り（[`estimate_prompt_tokens`]）に、プロバイダ
+/// 実測との差（system プロンプト・ツール定義・トークナイザ差）を足す。差は直前ステップの実測で
+/// 更新し、チェックポイントに載せて再開後も使う（再開直後のステップで差を落とさない）。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ContextGauge {
     overhead_tokens: usize,
 }
 
 impl ContextGauge {
+    /// チェックポイントに保存した差から復元する。
+    #[must_use]
+    pub fn with_overhead(overhead_tokens: usize) -> Self {
+        ContextGauge { overhead_tokens }
+    }
+
+    /// 現在の差（チェックポイントへ保存する）。
+    #[must_use]
+    pub fn overhead_tokens(&self) -> usize {
+        self.overhead_tokens
+    }
+
     /// 現在の履歴を送ったときの prompt トークンの見積り。
     #[must_use]
     pub fn tokens(&self, messages: &[Message]) -> usize {
-        estimate_tokens(messages).saturating_add(self.overhead_tokens)
+        estimate_prompt_tokens(messages).saturating_add(self.overhead_tokens)
     }
 
-    /// 送った履歴の概算（`sent_estimate`）と、プロバイダが報告した prompt トークンで差を更新する。
-    /// 報告が無い（0）プロバイダでは補正しない（概算のみ＝従来どおり）。
+    /// 送った履歴の見積り（`sent_estimate`＝[`estimate_prompt_tokens`]）と、プロバイダが報告した
+    /// prompt トークンで差を更新する。報告が無い（0）プロバイダでは補正しない。
     pub fn calibrate(&mut self, sent_estimate: usize, reported_prompt_tokens: u64) {
         if reported_prompt_tokens > 0 {
             let reported = usize::try_from(reported_prompt_tokens).unwrap_or(usize::MAX);
@@ -347,6 +398,40 @@ mod tests {
             .map(|m| matches!(&m.content[0], Block::ToolResult { content, .. } if is_folded(content)))
             .collect();
         assert_eq!(folded, vec![true, true, true, false]);
+    }
+
+    #[test]
+    fn hard_limit_keeps_the_last_tool_result_before_a_user_follow_up() {
+        // 末尾がユーザー発話（「まとめて」）でも、その根拠である直前のツール結果は畳まない。
+        let big = "z".repeat(40_000);
+        let mut msgs: Vec<Message> = (0..3).map(|_| tool_result(&big, false)).collect();
+        msgs.push(Message::text(Role::User, "まとめて"));
+        let l = ContextLimits::resolve(24_000, 6, Some(30_000), None);
+        assert!(l.apply(&mut msgs, &ContextGauge::default()));
+        let folded: Vec<bool> = msgs
+            .iter()
+            .map(|m| matches!(&m.content[0], Block::ToolResult { content, .. } if is_folded(content)))
+            .collect();
+        assert_eq!(folded, vec![true, true, false, false]);
+    }
+
+    #[test]
+    fn prompt_estimate_counts_non_ascii_per_char() {
+        // ASCII は bytes/4、日本語は 1 字 1 トークン（bytes/4 だと 0.75 で過小）。
+        let ascii = vec![tool_result(&"a".repeat(4_000), false)];
+        assert_eq!(estimate_prompt_tokens(&ascii), 1_000);
+        let ja = vec![tool_result(&"あ".repeat(1_000), false)];
+        assert_eq!(estimate_tokens(&ja), 750);
+        assert_eq!(estimate_prompt_tokens(&ja), 1_000);
+    }
+
+    #[test]
+    fn gauge_overhead_roundtrips_for_resume() {
+        let mut g = ContextGauge::default();
+        g.calibrate(1_000, 7_000);
+        let restored = ContextGauge::with_overhead(g.overhead_tokens());
+        let msgs = vec![tool_result(&"x".repeat(4_000), false)];
+        assert_eq!(restored.tokens(&msgs), g.tokens(&msgs));
     }
 
     #[test]

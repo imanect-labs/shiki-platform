@@ -103,7 +103,7 @@ pub async fn run_agent(
         gateway.context_window_tokens(opts.model.as_deref()),
         opts.max_tokens,
     );
-    let mut gauge = crate::context::ContextGauge::default();
+    let mut gauge = crate::context::ContextGauge::with_overhead(state.context_overhead_tokens);
 
     let stop = loop {
         if sink.is_cancelled() {
@@ -130,7 +130,11 @@ pub async fn run_agent(
             limits.apply(&mut state.messages, &gauge);
         }
 
-        let sent_estimate = crate::context::estimate_tokens(&state.messages);
+        // 補正の基準（送る履歴の見積り）。剪定するのは自律版だけなので Chat では測らない。
+        let sent_estimate = opts
+            .profile
+            .is_autonomous()
+            .then(|| crate::context::estimate_prompt_tokens(&state.messages));
         let steps_before = state.spent.steps;
         let step_outcome = run_step(
             gateway,
@@ -145,8 +149,9 @@ pub async fn run_agent(
         )
         .await?;
         // 生成まで進んだステップだけ実測で補正する（途中キャンセルは報告が無い）。
-        if state.spent.steps > steps_before {
-            gauge.calibrate(sent_estimate, state.spent.last_prompt_tokens());
+        if let Some(sent) = sent_estimate.filter(|_| state.spent.steps > steps_before) {
+            gauge.calibrate(sent, state.spent.last_prompt_tokens());
+            state.context_overhead_tokens = gauge.overhead_tokens();
         }
         // ステップ境界でループ検出器の状態をチェックポイントへ畳み込む（中断/再開に耐える）。
         state.loop_detector = detector.clone();
