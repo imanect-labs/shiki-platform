@@ -114,17 +114,16 @@ export default function SkillsPage() {
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-6">
-      <div className="mb-5 flex items-center justify-between">
-        <div>
+      {/* 狭い幅でもボタンが説明文を押しつぶさないよう、説明はタイトル行の下に全幅で置く。 */}
+      <div className="mb-5">
+        <div className="flex items-center justify-between gap-3">
           <h1 className="text-lg font-semibold">スキル</h1>
-          <p className="text-sm text-muted-foreground">
-            指示文・知識スコープ・許可ツールをまとめて、チャットに適用できます。
-          </p>
+          <Button onClick={() => setDialog({ kind: "create" })}>
+            <Sparkles className="size-4" aria-hidden />
+            スキルを作成
+          </Button>
         </div>
-        <Button onClick={() => setDialog({ kind: "create" })}>
-          <Sparkles className="size-4" aria-hidden />
-          スキルを作成
-        </Button>
+        <p className="mt-1 text-sm text-muted-foreground">指示文・知識スコープ・許可ツールをまとめて、チャットに適用できます。</p>
       </div>
 
       {items === null ? (

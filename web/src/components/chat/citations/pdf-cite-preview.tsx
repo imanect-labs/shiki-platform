@@ -16,6 +16,10 @@ import { PdfPage } from "@/components/pdf/pdf-page";
 
 /// 枠の位置合わせを続ける時間（ページの寸法・倍率が後から決まるため、その間は追従する）。
 const SETTLE_MS = 3000;
+/// `"fit"` で文字が読める最小の大きさ（PDF の 1pt を何 px 以上で描くか）。10pt の本文が 10px になる。
+/// 狭い窓（スマホのシート）では枠の幅に合わせるだけだと 6px 前後になり読めないため、
+/// 枠が窓からはみ出しても（横スクロールで枠の左端に揃える）この大きさまでは拡大する。
+const MIN_PX_PER_PT = 1;
 
 export function PdfCitePreview({
   citation,
@@ -24,7 +28,7 @@ export function PdfCitePreview({
   onUnavailable,
 }: {
   citation: Citation;
-  /// ページの拡大。`"fit"` は表示中のページの枠の幅が窓に収まる倍率にする（1〜2.2 倍）。
+  /// ページの拡大。`"fit"` は表示中のページの枠の幅が窓に収まる倍率にする（1〜2.2 倍・文字が読める大きさ以上）。
   zoom?: number | "fit";
   className?: string;
   onUnavailable?: () => void;
@@ -69,14 +73,16 @@ export function PdfCitePreview({
         const pageWidth = p.getViewport({ scale: 1 }).width;
         const left = Math.min(...pageBoxes.map((b) => Math.min(b.bbox[0], b.bbox[2])));
         const right = Math.max(...pageBoxes.map((b) => Math.max(b.bbox[0], b.bbox[2])));
-        // 枠の左右に 16pt の余白を見て、その幅が窓に収まる倍率。
-        if (active) setFit(Math.min(2.2, Math.max(1, pageWidth / (right - left + 32))));
+        // 枠の左右に 16pt の余白を見て、その幅が窓に収まる倍率。ただし文字が読める大きさは下回らない。
+        const boxFit = pageWidth / (right - left + 32);
+        const readable = (pageWidth * MIN_PX_PER_PT) / inner;
+        if (active) setFit(Math.min(2.2, Math.max(1, boxFit, readable)));
       })
       .catch(() => undefined);
     return () => {
       active = false;
     };
-  }, [zoom, doc, page, pageBoxes]);
+  }, [zoom, doc, page, pageBoxes, inner]);
   const scale = zoom === "fit" ? fit : zoom;
 
   React.useEffect(() => {

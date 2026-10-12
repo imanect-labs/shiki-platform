@@ -279,7 +279,8 @@ export function ToolActivity({
           className={cn(
             "min-w-0 truncate font-medium",
             // 実行中は文字を光が舐める（止まって見える時間帯に「生きている」ことを伝える）。
-            running ? "shiki-text-shimmer" : "text-foreground/85",
+            // 終わった後の「N 件の操作」は短いので縮めない（狭い幅では文書チップの方を畳む）。
+            running ? "shiki-text-shimmer" : "shrink-0 text-foreground/85",
           )}
         >
           {running ? (phaseOverride ?? phaseLabel(items, true)) : `${items.length} 件の操作`}

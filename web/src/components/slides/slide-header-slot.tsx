@@ -32,7 +32,8 @@ export function SlideHeaderSlot({
 }) {
   usePageHeader(
     () => (
-      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+      // 狭い幅ではボタンをアイコンだけにして、名前に幅を残す（NoteSyncSlot と同じ）。
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2.5">
         <Link
           href="/drive"
           className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-95"
@@ -59,10 +60,12 @@ export function SlideHeaderSlot({
             size="sm"
             onClick={onToggleChat}
             aria-pressed={chatOpen}
+            aria-label="AI に依頼"
             data-testid="slide-ask-ai"
+            className="shrink-0 px-2 sm:px-3"
           >
-            <Sparkles className="mr-1.5 size-4" aria-hidden />
-            AI に依頼
+            <Sparkles className="size-4 sm:mr-1.5" aria-hidden />
+            <span className="hidden sm:inline">AI に依頼</span>
           </Button>
         ) : null}
       </div>

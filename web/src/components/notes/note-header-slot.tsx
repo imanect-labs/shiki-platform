@@ -43,7 +43,8 @@ export function NoteSyncSlot({
   const [shareOpen, setShareOpen] = React.useState(false);
   usePageHeader(
     () => (
-      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+      // 狭い幅ではボタンをアイコンだけにして、文書名に幅を残す（ラベルは aria-label で保つ）。
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2.5">
         <Link
           href="/drive"
           className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-95"
@@ -69,10 +70,12 @@ export function NoteSyncSlot({
           variant="ghost"
           size="sm"
           onClick={() => setShareOpen(true)}
+          aria-label="共有"
           data-testid="note-share"
+          className="shrink-0 px-2 sm:px-3"
         >
-          <Share2 className="mr-1.5 size-4" aria-hidden />
-          共有
+          <Share2 className="size-4 sm:mr-1.5" aria-hidden />
+          <span className="hidden sm:inline">共有</span>
         </Button>
         <Button
           type="button"
@@ -80,10 +83,12 @@ export function NoteSyncSlot({
           size="sm"
           onClick={onToggleChat}
           aria-pressed={chatOpen}
+          aria-label="AI に依頼"
           data-testid="note-ask-ai"
+          className="shrink-0 px-2 sm:px-3"
         >
-          <Sparkles className="mr-1.5 size-4" aria-hidden />
-          AI に依頼
+          <Sparkles className="size-4 sm:mr-1.5" aria-hidden />
+          <span className="hidden sm:inline">AI に依頼</span>
         </Button>
       </div>
     ),
