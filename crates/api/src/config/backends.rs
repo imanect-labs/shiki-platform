@@ -129,9 +129,51 @@ pub struct LlmConfig {
     /// モデルカタログ（許可モデル＋単価）。空ならモデル名を素通しする単一エントリを合成する。
     #[serde(default)]
     pub models: Vec<LlmModelEntry>,
+    /// 既定モデルのコンテキスト窓トークン数。`models` を書かない構成（Compose の env だけ）で
+    /// 合成する単一エントリに載せる（#529）。0 は未設定（env の既定値に空文字を置けないため）。
+    #[serde(default)]
+    pub context_window_tokens: Option<u32>,
     /// Langfuse（self-host）計装。未設定なら計装は no-op。
     #[serde(default)]
     pub langfuse: Option<LangfuseConfig>,
+}
+
+impl LlmConfig {
+    /// llm-gateway のモデルカタログへ写す。既定モデルは `default_model` → カタログ先頭 →
+    /// `"default"` の順。`models` が空ならモデル名を素通しする単一エントリを合成し、
+    /// `context_window_tokens`（0 は未設定）をそこに載せる。
+    #[must_use]
+    pub fn model_catalog(&self) -> llm_gateway::ModelCatalog {
+        let default_model = self
+            .default_model
+            .clone()
+            .or_else(|| self.models.first().map(|m| m.id.clone()))
+            .unwrap_or_else(|| "default".to_string());
+        let models = if self.models.is_empty() {
+            vec![llm_gateway::ModelEntry {
+                id: default_model.clone(),
+                real_id: None,
+                prompt_price_micros_per_mtok: 0,
+                completion_price_micros_per_mtok: 0,
+                context_window_tokens: self.context_window_tokens.filter(|&w| w > 0),
+            }]
+        } else {
+            self.models
+                .iter()
+                .map(|m| llm_gateway::ModelEntry {
+                    id: m.id.clone(),
+                    real_id: m.real_id.clone(),
+                    prompt_price_micros_per_mtok: m.prompt_price_micros_per_mtok,
+                    completion_price_micros_per_mtok: m.completion_price_micros_per_mtok,
+                    context_window_tokens: m.context_window_tokens,
+                })
+                .collect()
+        };
+        llm_gateway::ModelCatalog {
+            default_model,
+            models,
+        }
+    }
 }
 
 /// モデルカタログの 1 エントリ（設定表現）。単価はマイクロ USD / 100万トークン。

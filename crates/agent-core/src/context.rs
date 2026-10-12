@@ -2,7 +2,7 @@
 //!
 //! 長ホライズンでコンテキスト長を超えないよう、**古いツール結果を剪定**する。直近 `keep_recent`
 //! メッセージの観測は無傷で残し、それ以前の**大きな `tool_result`**だけを短い要約プレースホルダに
-//! 畳み込む（窓の非常閾値を超えたときだけは、最後のツール結果より前を全て畳む）。重要事実・計画・成果物参照は agent-core 外（外部メモリ＝ワークスペースの `plan.md`/
+//! 畳み込む（窓の非常閾値を超えたときだけは、最後のツール結果以外を全て畳む）。重要事実・計画・成果物参照は agent-core 外（外部メモリ＝ワークスペースの `plan.md`/
 //! `notes.md`・W2）に逃がす前提で、ここでは**冗長なツール出力の畳み込み**に徹する。
 //!
 //! 閾値はモデルのコンテキスト窓が分かればそれに合わせる（[`ContextLimits`]・#529）。窓に対する
@@ -14,7 +14,7 @@
 //! 対応を壊さない）、`tool_result` の本文のみ縮める。引用は別イベントで既に外部化済みのため
 //! 出所追跡は壊れない（Task 2.7 整合・PIT-5）。
 
-use llm_gateway::{Block, Message, Role};
+use llm_gateway::{Block, Message, Role, ToolDef};
 
 /// トークン概算（1 トークン ≒ 4 バイトの粗い近似・予算/剪定のトリガにのみ使う）。
 #[must_use]
@@ -35,11 +35,6 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
 /// 日本語のツール結果**を過小評価して非常閾値を素通りする。溢れの判定は過小評価側に倒さない。
 #[must_use]
 pub fn estimate_prompt_tokens(messages: &[Message]) -> usize {
-    fn text_tokens(s: &str) -> usize {
-        let ascii = s.bytes().filter(u8::is_ascii).count();
-        let non_ascii = s.chars().filter(|c| !c.is_ascii()).count();
-        ascii / 4 + non_ascii
-    }
     messages
         .iter()
         .flat_map(|m| m.content.iter())
@@ -51,6 +46,31 @@ pub fn estimate_prompt_tokens(messages: &[Message]) -> usize {
             }
         })
         .sum()
+}
+
+/// system プロンプトとツール定義（毎回送る固定分）のトークン見積り。
+///
+/// 実測の補正が無いうち（新規開始・旧チェックポイントからの再開の最初のステップ）に使う。
+/// 窓の小さいモデルでは、履歴が閾値未満でも固定分を足すと溢れうる。溢れて拒否されると実測
+/// usage が得られず、以後の補正にも到達できない。
+#[must_use]
+pub fn estimate_static_tokens(system: Option<&str>, tools: &[ToolDef]) -> usize {
+    let tools: usize = tools
+        .iter()
+        .map(|t| {
+            text_tokens(&t.name)
+                + text_tokens(&t.description)
+                + text_tokens(&t.input_schema.to_string())
+        })
+        .sum();
+    system.map_or(0, text_tokens) + tools
+}
+
+/// ASCII は 4 バイト ≒ 1 トークン、それ以外は 1 文字 ≒ 1 トークン。
+fn text_tokens(s: &str) -> usize {
+    let ascii = s.bytes().filter(u8::is_ascii).count();
+    let non_ascii = s.chars().filter(|c| !c.is_ascii()).count();
+    ascii / 4 + non_ascii
 }
 
 fn block_bytes(b: &Block) -> usize {
@@ -131,18 +151,43 @@ fn fold(content: &str, is_error: bool) -> String {
 
 /// 省略（畳み込み）を始める閾値の、有効窓に対する千分率。
 const SOFT_PERMILLE: usize = 600;
-/// 非常時の閾値（千分率）。超えたら最後のツール結果より前を全て畳む。
+/// 非常時の閾値（千分率）。超えたら最後のツール結果以外を全て畳む。
 const HARD_PERMILLE: usize = 850;
 
-/// 非常時にも無傷で残す直近メッセージ数 ＝ **最後のツール結果以降**。
+/// 非常時: **最後のツール結果ブロック**以外の大きな結果を全て畳む。戻り値は「畳んだか」。
 ///
-/// 次の一手（あるいは「まとめて」等の追質問への回答）の根拠は直前の観測なので、それは消さない。
-/// 末尾がユーザー発話でも、その手前のツール結果までを守る。
-fn emergency_keep_recent(messages: &[Message]) -> usize {
-    messages
-        .iter()
-        .rposition(|m| m.role == Role::Tool)
-        .map_or(0, |i| messages.len() - i)
+/// 次の一手（あるいは「まとめて」等の追質問への回答）の根拠は直前の観測なので、それは消さない
+/// （末尾がユーザー発話でも、その手前の結果を守る）。メッセージ単位ではなくブロック単位で守る:
+/// 並列実行の結果は 1 つの Tool メッセージにまとまるため、メッセージごと守ると大きな結果が
+/// 複数同時に返ったときに畳めず、そのまま溢れる。
+fn fold_all_but_last_result(messages: &mut [Message]) -> bool {
+    let last = messages.iter().enumerate().rev().find_map(|(mi, m)| {
+        m.content
+            .iter()
+            .rposition(|b| matches!(b, Block::ToolResult { .. }))
+            .map(|bi| (mi, bi))
+    });
+    let mut pruned = false;
+    for (mi, msg) in messages.iter_mut().enumerate() {
+        if msg.role != Role::Tool {
+            continue;
+        }
+        for (bi, block) in msg.content.iter_mut().enumerate() {
+            if Some((mi, bi)) == last {
+                continue;
+            }
+            if let Block::ToolResult {
+                content, is_error, ..
+            } = block
+            {
+                if content.len() >= MIN_FOLD_BYTES && !is_folded(content) {
+                    *content = fold(content, *is_error);
+                    pruned = true;
+                }
+            }
+        }
+    }
+    pruned
 }
 
 /// 1 run の剪定閾値（設定値とモデルの窓から決める）。
@@ -165,7 +210,7 @@ pub struct ContextLimits {
 pub struct WindowLimits {
     /// 超えたら `keep_recent` を残して畳む（有効窓の 0.6）。
     pub soft: usize,
-    /// 超えたら最後のツール結果より前を全て畳む（有効窓の 0.85・溢れ直前の非常手段）。
+    /// 超えたら最後のツール結果以外を全て畳む（有効窓の 0.85・溢れ直前の非常手段）。
     pub hard: usize,
 }
 
@@ -196,7 +241,7 @@ impl ContextLimits {
     }
 
     /// 履歴を閾値に収める。まず `keep_recent` を残して畳み、それでも非常閾値を超えるなら
-    /// 最後のツール結果より前を全て畳む。戻り値は「畳んだか」。
+    /// 最後のツール結果以外を全て畳む。戻り値は「畳んだか」。
     pub fn apply(&self, messages: &mut [Message], gauge: &ContextGauge) -> bool {
         if self.history_soft == 0 {
             return false;
@@ -211,7 +256,7 @@ impl ContextLimits {
         }
         let mut pruned = fold_older_than(messages, self.keep_recent);
         if self.window.is_some_and(|w| gauge.tokens(messages) > w.hard) {
-            pruned |= fold_older_than(messages, emergency_keep_recent(messages));
+            pruned |= fold_all_but_last_result(messages);
         }
         pruned
     }
@@ -413,6 +458,42 @@ mod tests {
             .map(|m| matches!(&m.content[0], Block::ToolResult { content, .. } if is_folded(content)))
             .collect();
         assert_eq!(folded, vec![true, true, false, false]);
+    }
+
+    #[test]
+    fn hard_limit_folds_parallel_results_in_the_same_message() {
+        // 並列 3 件の大きな結果が 1 つの Tool メッセージに入って溢れかけたら、最後の 1 件以外を畳む。
+        let big = "p".repeat(40_000);
+        let blocks = (0..3)
+            .map(|i| Block::ToolResult {
+                tool_use_id: format!("t{i}"),
+                content: big.clone(),
+                is_error: false,
+            })
+            .collect();
+        let mut msgs = vec![Message {
+            role: Role::Tool,
+            content: blocks,
+        }];
+        let l = ContextLimits::resolve(24_000, 6, Some(30_000), None);
+        assert!(l.apply(&mut msgs, &ContextGauge::default()));
+        let folded: Vec<bool> = msgs[0]
+            .content
+            .iter()
+            .map(|b| matches!(b, Block::ToolResult { content, .. } if is_folded(content)))
+            .collect();
+        assert_eq!(folded, vec![true, true, false]);
+    }
+
+    #[test]
+    fn static_estimate_counts_system_and_tool_definitions() {
+        let tools = vec![ToolDef {
+            name: "web_fetch".into(),            // 9 bytes → 2
+            description: "取得する".into(),      // 4 字 → 4
+            input_schema: serde_json::json!({}), // "{}" → 0
+        }];
+        assert_eq!(estimate_static_tokens(Some(&"s".repeat(400)), &tools), 106);
+        assert_eq!(estimate_static_tokens(None, &[]), 0);
     }
 
     #[test]

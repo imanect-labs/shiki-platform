@@ -103,7 +103,14 @@ pub async fn run_agent(
         gateway.context_window_tokens(opts.model.as_deref()),
         opts.max_tokens,
     );
-    let mut gauge = crate::context::ContextGauge::with_overhead(state.context_overhead_tokens);
+    // 実測の補正がまだ無い（新規開始・旧チェックポイント）なら、固定分（system＋ツール定義）を
+    // 概算で入れておく。最初の 1 回で溢れて拒否されると、補正に必要な実測すら得られない。
+    let initial_overhead = if state.context_overhead_tokens > 0 {
+        state.context_overhead_tokens
+    } else {
+        crate::context::estimate_static_tokens(opts.system.as_deref(), &tool_defs)
+    };
+    let mut gauge = crate::context::ContextGauge::with_overhead(initial_overhead);
 
     let stop = loop {
         if sink.is_cancelled() {
