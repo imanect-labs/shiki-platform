@@ -20,6 +20,8 @@ mod opts;
 mod sink;
 mod stream_map;
 mod toolset;
+/// 記録済みスレッド → 剪定再生のステップ列（#532・`context-replay` CLI が使う）。
+pub mod trajectory;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
