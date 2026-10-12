@@ -147,7 +147,12 @@ export function SourceBlocks({
   return (
     <div
       ref={scrollRef}
-      className={cn("relative max-h-[26rem] overflow-y-auto scrollbar-subtle", className)}
+      className={cn(
+        "relative max-h-[26rem] overflow-y-auto scrollbar-subtle",
+        // 上下の端をフェードさせ、続きがある（スクロールできる）ことを静かに伝える。
+        "[mask-image:linear-gradient(to_bottom,transparent,black_12px,black_calc(100%-20px),transparent)]",
+        className,
+      )}
       data-testid="source-blocks"
     >
       {from > 0 ? (
@@ -159,14 +164,35 @@ export function SourceBlocks({
         />
       ) : null}
       <div className="space-y-2.5 text-[13.5px] leading-[1.85] text-foreground/85">
-        {blocks.map((b) => {
-          const range = markRange(b, anchor);
-          const ref = range && firstMarked ? markRef : undefined;
-          if (range) firstMarked = false;
+        {groupParagraphs(blocks).map((group) => {
+          if (group.length === 1) {
+            const b = group[0];
+            const range = markRange(b, anchor);
+            const ref = range && firstMarked ? markRef : undefined;
+            if (range) firstMarked = false;
+            return (
+              <div key={b.ordinal} ref={ref} data-ordinal={b.ordinal} data-cited={range ? "" : undefined}>
+                <BlockView block={b} range={range} />
+              </div>
+            );
+          }
+          // 行の折り返しで分かれた段落（PDF）は 1 段落として続けて描く。
           return (
-            <div key={b.ordinal} ref={ref} data-ordinal={b.ordinal} data-cited={range ? "" : undefined}>
-              <BlockView block={b} range={range} />
-            </div>
+            <p key={group[0].ordinal} className="whitespace-pre-wrap">
+              {group.map((b, i) => {
+                const range = markRange(b, anchor);
+                const ref = range && firstMarked ? markRef : undefined;
+                if (range) firstMarked = false;
+                const prev = group[i - 1]?.text.trimEnd().slice(-1) ?? "";
+                const gap = i > 0 && /[A-Za-z0-9]/.test(prev) && /^[A-Za-z0-9]/.test(b.text.trimStart()) ? " " : "";
+                return (
+                  <span key={b.ordinal} ref={ref} data-ordinal={b.ordinal} data-cited={range ? "" : undefined}>
+                    {gap}
+                    <Marked text={b.text} range={range} />
+                  </span>
+                );
+              })}
+            </p>
           );
         })}
       </div>
@@ -182,6 +208,30 @@ export function SourceBlocks({
   );
 }
 
+/// 文の途中で終わる段落（PDF の行の折り返しで分かれたもの）を、次の段落とまとめる。
+/// 座標（prov）を持つ PDF の段落どうしに限る（スライドのように同じページ番号の独立した段落を
+/// つながない）。句点・閉じ括弧などで終わる段落と、段落以外のブロックはまとめない。
+function groupParagraphs(blocks: DocBlock[]): DocBlock[][] {
+  const out: DocBlock[][] = [];
+  for (const b of blocks) {
+    const last = out[out.length - 1];
+    const prev = last?.[last.length - 1];
+    const continues =
+      prev != null &&
+      prev.type === "paragraph" &&
+      b.type === "paragraph" &&
+      prev.prov.length > 0 &&
+      b.prov.length > 0 &&
+      prev.page != null &&
+      prev.page === b.page &&
+      b.ordinal === prev.ordinal + 1 &&
+      !/[。．！？!?」』）)：:]\s*$/.test(prev.text);
+    if (continues) last.push(b);
+    else out.push([b]);
+  }
+  return out;
+}
+
 /// ブロック内の引用範囲（UTF-16）。範囲外なら null。
 function markRange(b: DocBlock, a: Anchor): [number, number] | null {
   if (b.ordinal < a.block_start || b.ordinal > a.block_end) return null;
@@ -191,7 +241,7 @@ function markRange(b: DocBlock, a: Anchor): [number, number] | null {
 }
 
 const MARK =
-  "rounded-[3px] bg-[var(--doc,var(--season-autumn))]/20 px-0.5 text-foreground [box-decoration-break:clone]";
+  "rounded-[3px] bg-[var(--doc,var(--season-autumn))]/15 px-0.5 text-foreground [box-decoration-break:clone] dark:bg-[var(--doc,var(--season-autumn))]/35";
 
 function Marked({ text, range }: { text: string; range: [number, number] | null }) {
   if (!range) return <>{text}</>;
