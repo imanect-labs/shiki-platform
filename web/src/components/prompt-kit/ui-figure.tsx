@@ -57,7 +57,12 @@ export function UiFigure({
 
   return (
     <figure className="my-3 min-w-0" data-testid="ui-figure" data-ui-kind={figure.kind}>
-      {asTable ? <div className="text-[14px]">{renderMarkdown(text)}</div> : <YuiFigure figure={figure} />}
+      {asTable ? (
+        <div className="text-[14px]">{renderMarkdown(text)}</div>
+      ) : (
+        // 図の内側の余白（幅 400px 未満は 12px、それ以上は 16px）だけ外へ広げ、見出しを本文の左端に揃える。
+        <YuiFigure figure={figure} className="-mx-3 sm:-mx-4" />
+      )}
       <figcaption className="mt-1 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
         {note ? <span className="mr-auto">{note}</span> : null}
         {streaming ? null : (
