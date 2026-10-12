@@ -78,7 +78,9 @@ jobs:
             all=0
           fi
           echo "変更ファイル:"
-          echo "$changed" | while IFS= read -r f; do [ -n "$f" ] && echo "  $f"; done
+          # `[ -n "$f" ] && echo` だと空行で偽を返し、set -e / pipefail でスクリプトごと落ちる
+          # （手動実行では changed が空になるため、workflow_dispatch が必ず失敗していた）。
+          echo "$changed" | while IFS= read -r f; do if [ -n "$f" ]; then echo "  $f"; fi; done
 
           want() {  # want <正規表現>
             [ "$all" = 1 ] && return 0
