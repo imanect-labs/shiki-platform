@@ -613,3 +613,14 @@
     break-inside: avoid;
   }
 }
+
+/* ```ui ブロックの図（@imanect/yui・#530）の地・文字・線をセマンティックトークンに合わせる
+   （ライト/ダークは .dark の変数切り替えにそのまま追従する）。系列の色は Yui の既定
+   （四季の色相を色覚多様性シミュレーションで検証済み）のまま上書きしない。 */
+[data-yui] {
+  --yui-surface: var(--background);
+  --yui-ink: var(--foreground);
+  --yui-muted: var(--muted-foreground);
+  --yui-border: var(--border);
+  --yui-grid: var(--border);
+}

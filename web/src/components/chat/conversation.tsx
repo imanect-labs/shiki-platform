@@ -1191,7 +1191,7 @@ function StreamingRow({
             </MessageContent>
           ) : stream.text ? (
             <div className="text-[15px] leading-relaxed">
-              <Markdown>{linkifyCitations(stream.text, stream.citations)}</Markdown>
+              <Markdown streaming>{linkifyCitations(stream.text, stream.citations)}</Markdown>
             </div>
           ) : null}
           {stream.uiSpecs.length > 0 ? (

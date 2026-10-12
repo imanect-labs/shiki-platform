@@ -68,6 +68,27 @@ pub(super) fn text_stream(reply: &str, prompt_tokens: u64) -> DeltaStream {
     stream::iter(events).boxed()
 }
 
+/// 本文を 1 行ずつ `gap` 間隔で流す（生成途中の描画を目で追える速さにする・#530）。
+pub(super) fn paced_lines_stream(reply: &str, prompt_tokens: u64, gap: Duration) -> DeltaStream {
+    let lines: Vec<String> = reply.split_inclusive('\n').map(str::to_string).collect();
+    let completion_tokens = lines.len() as u64;
+    stream::iter(lines)
+        .then(move |text| async move {
+            tokio::time::sleep(gap).await;
+            Ok(StreamDelta::TextDelta { text })
+        })
+        .chain(stream::once(async move {
+            Ok(StreamDelta::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                },
+            })
+        }))
+        .boxed()
+}
+
 /// 本文を出し切ってから `hold` だけ待って終える（生成中の UI を試すための遅延）。
 ///
 /// 先に本文を出すのは、e2e が「生成が始まった」ことを本文の出現で待てるようにするため。

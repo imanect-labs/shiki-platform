@@ -22,8 +22,10 @@ use std::time::Duration;
 use futures::stream::{self, StreamExt};
 
 use super::stub_deep_research::deep_research_call;
-use super::stub_fixtures::genui_spec;
-use super::stub_stream::{slow_text_stream, text_stream, tool_call_stream, tool_calls_stream};
+use super::stub_fixtures::{genui_spec, yui_reply};
+use super::stub_stream::{
+    paced_lines_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
+};
 use super::stub_triggers::note_tool_call;
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
@@ -208,6 +210,14 @@ impl LlmProvider for StubProvider {
                 Duration::from_secs(secs),
             ));
         }
+        // --- 図の回答 `yui:<kind>`（#530）: ```ui ブロックを含む本文を 1 行ずつ流す。 ---
+        if let Some(kind) = user_text.strip_prefix("yui:") {
+            return Ok(paced_lines_stream(
+                &yui_reply(kind.trim()),
+                prompt_tokens,
+                Duration::from_millis(150),
+            ));
+        }
         // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
         if !req.tools.is_empty() && user_text.starts_with("loop:") {
             return Ok(tool_call_stream(
@@ -358,6 +368,23 @@ mod tests {
         let usage = done.unwrap();
         assert_eq!(usage.prompt_tokens, 2);
         assert!(usage.completion_tokens > 0);
+    }
+
+    #[tokio::test]
+    async fn stub_streams_ui_block_line_by_line() {
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "yui:flow")]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut chunks = Vec::new();
+        while let Some(ev) = s.next().await {
+            if let StreamDelta::TextDelta { text } = ev.unwrap() {
+                chunks.push(text);
+            }
+        }
+        let text = chunks.concat();
+        assert!(text.contains("```ui\nflow 経費精算\n"));
+        // 行ごとに届く（生成途中の描画を試せる）。
+        assert!(chunks.len() > 5);
+        assert!(chunks[..chunks.len() - 1].iter().all(|c| c.ends_with('\n')));
     }
 
     #[tokio::test]

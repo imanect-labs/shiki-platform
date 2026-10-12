@@ -1,5 +1,5 @@
 // prompt-kit (https://www.prompt-kit.com) 由来の Markdown/Response を本リポジトリ向けに実装。
-// MIT License。react-markdown + remark-gfm で LLM 応答を描画する。コードブロックは CodeBlock、
+// MIT License。react-markdown + remark-gfm で LLM 応答を描画する。コードブロックは CodeBlock（```ui は図・#530）、
 // 装飾はすべてセマンティックトークンで行う（生色禁止）。
 "use client";
 
@@ -11,7 +11,10 @@ import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
 import { CitationMarker } from "@/components/chat/citations/citation-marker";
+import { isYuiLanguage } from "@imanect/yui/react";
+
 import { CodeBlock } from "./code-block";
+import { UiFigure } from "./ui-figure";
 
 /// LLM は GFM 表のセル内改行に `<br>` を使うことがある（表セルは実改行を持てないため）。
 /// react-markdown は raw HTML を通さず `<br>` が文字列で残り「安っぽく」見えるので、
@@ -51,20 +54,39 @@ function remarkBrTags() {
 }
 
 /// 1 つの React 要素（```pre > code```）からコード文字列と言語を取り出す。
-function extractCode(child: React.ReactNode): { code: string; lang?: string } {
-  if (!React.isValidElement(child)) return { code: "" };
+/// `raw` は末尾の改行を残したもの（閉じたフェンスかどうかを ui ブロックの判定に使う）。
+function extractCode(child: React.ReactNode): { code: string; raw: string; lang?: string; ui: boolean } {
+  if (!React.isValidElement(child)) return { code: "", raw: "", ui: false };
   const props = child.props as { className?: string; children?: React.ReactNode };
   const className = props.className ?? "";
   const match = /language-(\w+)/.exec(className);
-  const code = String(props.children ?? "").replace(/\n$/, "");
-  return { code, lang: match?.[1] };
+  const raw = String(props.children ?? "");
+  return { code: raw.replace(/\n$/, ""), raw, lang: match?.[1], ui: isYuiLanguage(className) };
+}
+
+/// 生成中か（ui ブロックが書きかけの最終行を読まないようにする）。
+const StreamingContext = React.createContext(false);
+
+/// ブロックコード。```ui（Yui）の図は図にし、描けなければ通常のコードブロックに戻す（#530）。
+function FencedCode({ children }: { children: React.ReactNode }) {
+  const streaming = React.useContext(StreamingContext);
+  const { code, raw, lang, ui } = extractCode(children);
+  const block = <CodeBlock code={code} lang={lang} />;
+  if (!ui) return block;
+  return (
+    <UiFigure
+      source={raw}
+      streaming={streaming}
+      fallback={block}
+      renderMarkdown={(md) => <Markdown>{md}</Markdown>}
+    />
+  );
 }
 
 const components: Components = {
   // ブロックコードは pre をフックして CodeBlock に差し替える。
   pre({ children }) {
-    const { code, lang } = extractCode(children);
-    return <CodeBlock code={code} lang={lang} />;
+    return <FencedCode>{children}</FencedCode>;
   },
   code({ className, children }) {
     // インラインコード（pre 配下は上で処理済み）。
@@ -159,12 +181,23 @@ const components: Components = {
   },
 };
 
-export function Markdown({ children, className }: { children: string; className?: string }) {
+export function Markdown({
+  children,
+  className,
+  streaming = false,
+}: {
+  children: string;
+  className?: string;
+  /// 生成中の本文か（```ui の図が書きかけの行を描かないようにする）。
+  streaming?: boolean;
+}) {
   return (
     <div className={cn("text-[15px] leading-relaxed text-foreground", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBrTags]} components={components}>
-        {children}
-      </ReactMarkdown>
+      <StreamingContext.Provider value={streaming}>
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBrTags]} components={components}>
+          {children}
+        </ReactMarkdown>
+      </StreamingContext.Provider>
     </div>
   );
 }

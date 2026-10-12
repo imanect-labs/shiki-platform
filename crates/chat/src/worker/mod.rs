@@ -20,6 +20,8 @@ mod opts;
 mod sink;
 mod stream_map;
 mod toolset;
+/// ```ui ブロック（Yui）の図の書き方（#530）。
+mod yui;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -36,6 +38,7 @@ use crate::store::{ChatStore, ClaimedRun, CHAT_GENERATION_QUEUE};
 use crate::ChatError;
 pub use config::{WorkerConfig, WorkerDeps};
 use sink::WorkerSink;
+pub use yui::with_yui_guide;
 
 /// 順番待ちのジョブを見直す間隔。先行 run の完了はイベントで通知されないため短くポーリングする
 /// （`defer` は attempts を消費しないので、何度見直しても DLQ には影響しない）。
