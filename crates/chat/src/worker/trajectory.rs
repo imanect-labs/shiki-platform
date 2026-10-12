@@ -91,19 +91,9 @@ fn has_tool_call(blocks: &[ContentBlock]) -> bool {
 
 /// content の並びをステップ列に分ける。
 ///
-/// サブエージェントが中継した子の呼び出し（`step` が無い）は親のコンテキストに載らないので除く。
-/// ただし `step` 自体が無い旧い記録（全呼び出しが `None`）は、全て親の呼び出しとして扱う。
+/// サブエージェントが中継した子の呼び出しは親のコンテキストに載らないので除く。
 fn steps_of(blocks: &[ContentBlock]) -> Vec<ReplayStep> {
-    let has_steps = blocks
-        .iter()
-        .any(|b| matches!(b, ContentBlock::ToolCall { step: Some(_), .. }));
-    let child_ids: Vec<&str> = blocks
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::ToolCall { id, step: None, .. } if has_steps => Some(id.as_str()),
-            _ => None,
-        })
-        .collect();
+    let child_ids = child_call_ids(blocks);
 
     let mut steps = Vec::new();
     let mut assistant: Vec<Block> = Vec::new();
@@ -152,6 +142,36 @@ fn steps_of(blocks: &[ContentBlock]) -> Vec<ReplayStep> {
         });
     }
     steps
+}
+
+/// 子の呼び出し（サブエージェントが中継したもの）の id。
+///
+/// 中継は `step` を落とすが、`step` が無いだけでは子と決められない（フィールド追加前の旧い記録や、
+/// 版を跨いだ takeover で旧イベントと混在した親の呼び出しも `None`）。**親の `subagent` 呼び出しが
+/// 結果を返すまでの間に現れた `step` 無しの呼び出し**だけを子とみなす（子は親のツール実行中にしか
+/// 走らない）。
+fn child_call_ids(blocks: &[ContentBlock]) -> Vec<&str> {
+    let subagent = agent_core::ToolName::Subagent.as_str();
+    let mut pending: Vec<&str> = Vec::new();
+    let mut children = Vec::new();
+    for b in blocks {
+        match b {
+            ContentBlock::ToolCall {
+                id,
+                name,
+                step: Some(_),
+                ..
+            } if name == subagent => pending.push(id),
+            ContentBlock::ToolCall { id, step: None, .. } if !pending.is_empty() => {
+                children.push(id.as_str());
+            }
+            ContentBlock::ToolResult { tool_call_id, .. } => {
+                pending.retain(|p| p != tool_call_id);
+            }
+            _ => {}
+        }
+    }
+    children
 }
 
 /// 観測まで揃ったステップを確定する（観測がまだ無ければ何もしない＝同じステップの続き）。
@@ -261,11 +281,17 @@ mod tests {
 
     #[test]
     fn drops_subagent_relayed_calls() {
+        let delegate = ContentBlock::ToolCall {
+            id: "parent".into(),
+            name: "subagent".into(),
+            input: serde_json::json!({"objective": "x"}),
+            step: Some(0),
+        };
         let run = msg(
             Role::Assistant,
             vec![
-                call("parent", Some(0)),
-                call("child", None), // 子の中継（step なし）
+                delegate,
+                call("child", None), // 子の中継（親の subagent 実行中・step なし）
                 result("child", true),
                 result("parent", true),
             ],
@@ -277,6 +303,23 @@ mod tests {
             t.steps[0].observation.as_ref().map(|m| m.content.len()),
             Some(1)
         );
+    }
+
+    #[test]
+    fn legacy_calls_mixed_with_new_ones_are_kept() {
+        // 版を跨いだ takeover: 旧イベント（step なし）と新イベントが混在しても、subagent の実行中で
+        // なければ親の呼び出しとして残す。
+        let run = msg(
+            Role::Assistant,
+            vec![
+                call("old", None),
+                result("old", true),
+                call("new", Some(1)),
+                result("new", true),
+            ],
+        );
+        let t = from_messages(&[run], None).unwrap();
+        assert_eq!(t.steps.len(), 2);
     }
 
     #[test]

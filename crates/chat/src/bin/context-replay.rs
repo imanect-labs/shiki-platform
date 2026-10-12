@@ -5,8 +5,12 @@
 //! ```text
 //! cargo run -p shiki-chat --bin context-replay -- --input thread.json \
 //!     [--message <assistant message uuid>] [--window 32000,64000,none] [--soft 0,24000] \
-//!     [--keep-recent 6] [--max-tokens 4096] [--overhead 6000]
+//!     [--keep-recent 6] [--max-tokens 4096] [--overhead 6000] [--history-prefix-tokens 0]
 //! ```
+//!
+//! `--history-prefix-tokens` は記録に残らない先頭履歴（ピン留め skill の few-shot 等）のトークン数。
+//! 剪定はツール結果しか畳まないので、テキスト履歴の効果はトークン数だけで決まる。同じ量の詰め物を
+//! 先頭に置けば剪定のタイミングを再現できる。
 //!
 //! `--soft 0` は管理なし（ベースライン）。窓 × 設定値の全組み合わせを 1 行ずつ出す。
 //! 自律プロファイルの run を前提にする（Chat の run は本番で剪定しない）。見積りの限界は
@@ -25,7 +29,12 @@ use chat::worker::trajectory::from_messages;
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Export {
-    Response { messages: Vec<Message> },
+    Response {
+        messages: Vec<Message>,
+        /// 進行中 run の assistant メッセージ（あれば未完の軌跡なので再生しない）。
+        #[serde(default)]
+        active_assistant_message_id: Option<uuid::Uuid>,
+    },
     Bare(Vec<Message>),
 }
 
@@ -37,6 +46,7 @@ struct Args {
     keep_recent: usize,
     max_tokens: u32,
     overhead: usize,
+    history_prefix_tokens: usize,
 }
 
 fn parse_list<T>(v: &str, f: impl Fn(&str) -> Result<T, String>) -> Result<Vec<T>, String> {
@@ -52,6 +62,7 @@ fn parse_args() -> Result<Args, String> {
         keep_recent: 6,
         max_tokens: 4_096,
         overhead: 6_000,
+        history_prefix_tokens: 0,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -81,6 +92,7 @@ fn parse_args() -> Result<Args, String> {
                 args.max_tokens = value.parse().map_err(|e| format!("--max-tokens: {e}"))?;
             }
             "--overhead" => args.overhead = num(&value)?,
+            "--history-prefix-tokens" => args.history_prefix_tokens = num(&value)?,
             other => return Err(format!("不明な引数: {other}")),
         }
     }
@@ -93,10 +105,31 @@ fn parse_args() -> Result<Args, String> {
 fn run() -> Result<(), String> {
     let args = parse_args()?;
     let raw = std::fs::read_to_string(&args.input).map_err(|e| format!("{}: {e}", args.input))?;
-    let messages = match serde_json::from_str::<Export>(&raw).map_err(|e| e.to_string())? {
-        Export::Response { messages } | Export::Bare(messages) => messages,
-    };
-    let trajectory = from_messages(&messages, args.message).map_err(|e| e.to_string())?;
+    let (messages, active) =
+        match serde_json::from_str::<Export>(&raw).map_err(|e| e.to_string())? {
+            Export::Response {
+                messages,
+                active_assistant_message_id,
+            } => (messages, active_assistant_message_id),
+            Export::Bare(messages) => (messages, None),
+        };
+    let mut trajectory = from_messages(&messages, args.message).map_err(|e| e.to_string())?;
+    if active == Some(trajectory.message_id) {
+        return Err(format!(
+            "message {} の run はまだ実行中です（完了後にエクスポートし直すこと）",
+            trajectory.message_id
+        ));
+    }
+    if args.history_prefix_tokens > 0 {
+        // bytes/4 でも ASCII の見積りでも同じトークン数になる詰め物（剪定はテキストを畳まない）。
+        trajectory.initial.insert(
+            0,
+            llm_gateway::Message::text(
+                llm_gateway::Role::User,
+                " ".repeat(args.history_prefix_tokens * 4),
+            ),
+        );
+    }
     eprintln!(
         "message {}: {} ステップを再生（前ターン {} 件）",
         trajectory.message_id,
