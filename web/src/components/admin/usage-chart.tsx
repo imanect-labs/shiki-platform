@@ -22,11 +22,34 @@ const FORMAT: Record<UsageMetric, (n: number) => string> = {
   calls: (n) => `${formatInt(n)} 回`,
 };
 
-const AXIS: Record<UsageMetric, (n: number) => string> = {
-  cost: (n) => `$${formatCompact(n / 1_000_000)}`,
-  tokens: formatCompact,
-  calls: formatCompact,
+/// コストの目盛り。最大値の桁に合わせて小数を決め、目盛りが同じ表記に潰れないようにする。
+function costTick(maxMicros: number): (micros: number) => string {
+  const maxUsd = maxMicros / 1_000_000;
+  const digits = maxUsd < 1 ? 2 : 0;
+  return (micros) => {
+    const usd = micros / 1_000_000;
+    if (usd === 0) return "$0";
+    // 1 ドル未満は有効数字 2 桁（$0.00015 と $0.0001 が同じ表記に潰れない）。
+    return digits === 0 ? `$${formatCompact(usd)}` : `$${Number(usd.toPrecision(2))}`;
+  };
+}
+
+function axisFormatter(metric: UsageMetric, max: number): (n: number) => string {
+  return metric === "cost" ? costTick(max) : formatCompact;
+}
+
+const EMPTY_LABEL: Record<UsageMetric, string> = {
+  cost: "この期間のコストは $0 です（単価未設定のモデルは $0 で集計されます）",
+  tokens: "この期間の利用はありません",
+  calls: "この期間の利用はありません",
 };
+
+/// 合計が 0 でない指標（コスト → トークン → 呼び出しの順）。グラフの初期表示に使う。
+export function metricWithData(days: Day[]): UsageMetric {
+  if (days.some((d) => d.cost_usd_micros > 0)) return "cost";
+  if (days.some((d) => d.tokens > 0)) return "tokens";
+  return "calls";
+}
 
 /// 日別の棒グラフ（単一系列・ホバーで日付と値）。0 埋め済みの全日付を受け取る。
 export function UsageChart({
@@ -42,6 +65,16 @@ export function UsageChart({
   label: string;
 }) {
   const rows = days.map((d) => ({ day: d.day, value: VALUE[metric](d) }));
+  if (rows.every((r) => r.value === 0)) {
+    return (
+      <div
+        className="flex items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground"
+        style={{ height }}
+      >
+        {EMPTY_LABEL[metric]}
+      </div>
+    );
+  }
   return (
     <div role="img" aria-label={label} style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
@@ -63,8 +96,8 @@ export function UsageChart({
             tick={AXIS_TICK}
             tickLine={false}
             axisLine={false}
-            width={48}
-            tickFormatter={AXIS[metric]}
+            width={56}
+            tickFormatter={axisFormatter(metric, Math.max(...rows.map((r) => r.value)))}
             allowDecimals={false}
           />
           <Tooltip

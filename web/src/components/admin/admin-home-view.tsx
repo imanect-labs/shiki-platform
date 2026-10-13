@@ -10,13 +10,15 @@ import { AdminPage, Panel, StatTile } from "./admin-page";
 import { periodRange } from "./ai-usage-view";
 import { EFFORT_LABEL, formatCompact, formatInt, formatJpy, formatUsd } from "./format";
 import { MockBadge } from "./mock-banner";
-import { UsageChart } from "./usage-chart";
+import { metricWithData, UsageChart } from "./usage-chart";
 
 const SHORTCUTS = [
   { href: "/admin/ai/models", icon: Sparkles, title: "モデル", body: "公開するモデル・既定・Auto・円換算" },
   { href: "/admin/members", icon: Users, title: "メンバー", body: "招待・無効化・アクセスの理由", mock: true },
   { href: "/admin/audit", icon: ScrollText, title: "監査ログ", body: "操作・権限判定・引用の記録", mock: true },
 ];
+
+const METRIC_TITLE = { cost: "日別コスト", tokens: "日別トークン", calls: "日別の呼び出し" } as const;
 
 /// 管理コンソールのホーム（今月の AI 利用量とモデル設定の要約）。
 export function AdminHomeView() {
@@ -83,7 +85,7 @@ export function AdminHomeView() {
             />
           </section>
           <Panel
-            title="日別コスト"
+            title={METRIC_TITLE[metricWithData(usage.daily)]}
             actions={
               <Link
                 href="/admin/ai/usage"
@@ -97,9 +99,9 @@ export function AdminHomeView() {
             <div className="px-3 pb-3 pt-4">
               <UsageChart
                 days={usage.daily}
-                metric="cost"
+                metric={metricWithData(usage.daily)}
                 height={180}
-                label={`${usage.from} から ${usage.to} までの日別コスト`}
+                label={`${usage.from} から ${usage.to} までの${METRIC_TITLE[metricWithData(usage.daily)]}`}
               />
             </div>
           </Panel>

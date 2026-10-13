@@ -30,7 +30,7 @@ import {
   formatUsd,
   todayJst,
 } from "./format";
-import { UsageChart, type UsageMetric } from "./usage-chart";
+import { metricWithData, UsageChart, type UsageMetric } from "./usage-chart";
 
 type Period = "7d" | "month" | "last-month" | "90d";
 
@@ -139,6 +139,7 @@ export function AiUsageView() {
   const [model, setModel] = React.useState<string>(ALL);
   const [source, setSource] = React.useState<string>(ALL);
   const [metric, setMetric] = React.useState<UsageMetric>("cost");
+  const metricChosen = React.useRef(false);
   const [data, setData] = React.useState<UsageResponse | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -169,6 +170,8 @@ export function AiUsageView() {
         if (!active) return;
         setData(r);
         setError(null);
+        // 初回だけ、値のある指標を選ぶ（単価未設定でコストが全部 0 のときはトークン）。
+        if (!metricChosen.current) setMetric(metricWithData(r.daily));
       })
       .catch((e: unknown) => active && setError(e instanceof Error ? e.message : String(e)))
       .finally(() => active && setLoading(false));
@@ -281,7 +284,10 @@ export function AiUsageView() {
                   { value: "calls", label: "呼び出し" },
                 ]}
                 value={metric}
-                onValueChange={(v) => setMetric(v as UsageMetric)}
+                onValueChange={(v) => {
+                  metricChosen.current = true;
+                  setMetric(v as UsageMetric);
+                }}
               />
             }
           >
