@@ -796,10 +796,12 @@ export function Conversation({
                 threadId={threadId}
                 autoFocus
               />
+              {/* 狭い幅では前半を落として 1 行に収める（「す。」だけが次の行に落ちないように）。 */}
               <p className="mt-2 text-center text-xs text-muted-foreground">
-                {isPanel
-                  ? "誤りが含まれる場合があります。"
-                  : "Shiki は社内文書を参照して回答します。誤りが含まれる場合があります。"}
+                {isPanel ? null : (
+                  <span className="hidden sm:inline">Shiki は社内文書を参照して回答します。</span>
+                )}
+                誤りが含まれる場合があります。
               </p>
             </div>
           </div>
