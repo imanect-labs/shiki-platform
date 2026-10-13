@@ -61,3 +61,48 @@ def test_rerank_returns_score_per_passage(client: TestClient) -> None:
     # 関連パッセージのスコアが高い（フェイクは共通文字数ベースだが同傾向）。
     assert body["scores"][0]["score"] > body["scores"][1]["score"]
     assert body["model_version"]
+
+
+def test_warmup_runs_both_models_and_survives_failures() -> None:
+    from ingestion_worker.model_registry import ModelRegistry
+
+    calls: list[str] = []
+
+    class Embedding:
+        def encode(self, texts: list[str]) -> list[list[float]]:
+            calls.append("embed")
+            return [[1.0]]
+
+    class BrokenReranker:
+        def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
+            calls.append("rerank")
+            raise RuntimeError("boom")
+
+    registry = ModelRegistry()
+    registry._embedding = Embedding()  # noqa: SLF001
+    registry._reranker = BrokenReranker()  # noqa: SLF001
+    registry.warmup()  # reranker が失敗しても例外を投げない
+    assert calls == ["embed", "rerank"]
+
+
+def test_startup_starts_warmup_in_background(monkeypatch) -> None:
+    import threading
+
+    from ingestion_worker import main, model_registry
+    from ingestion_worker.model_registry import ModelRegistry
+
+    done = threading.Event()
+
+    class Recording(ModelRegistry):
+        def warmup(self) -> None:
+            done.set()
+
+    original = model_registry.get_registry()
+    model_registry.set_registry_for_tests(Recording())
+    try:
+        # lifespan は TestClient を with で使った時だけ走る。
+        with TestClient(main.create_app()) as c:
+            assert c.get("/healthz").status_code == 200
+            assert done.wait(5), "起動時に warmup が始まる"
+    finally:
+        model_registry.set_registry_for_tests(original)

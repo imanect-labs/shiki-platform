@@ -7,10 +7,14 @@
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from typing import Protocol
 
 from .settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingModel(Protocol):
@@ -79,6 +83,23 @@ class ModelRegistry:
                 if self._reranker is None:
                     self._reranker = _CrossEncoderReranker(get_settings().rerank_model)
         return self._reranker
+
+    def warmup(self) -> None:
+        """両モデルを読み込み、1 回ずつ空打ちする（最初の推論だけ遅い分もここで払う）。
+
+        失敗しても落とさない（その場合は従来どおり最初のリクエストで読み込む）。
+        """
+        for name, run in (
+            ("embed", lambda: self.embedding().encode(["warmup"])),
+            ("rerank", lambda: self.reranker().predict([("warmup", "warmup")])),
+        ):
+            started = time.monotonic()
+            try:
+                run()
+            except Exception:  # noqa: BLE001 — warmup の失敗で worker を落とさない
+                logger.warning("warmup %s failed", name, exc_info=True)
+                continue
+            logger.info("warmup %s done in %.1fs", name, time.monotonic() - started)
 
 
 _registry = ModelRegistry()
