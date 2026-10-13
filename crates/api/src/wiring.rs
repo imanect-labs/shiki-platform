@@ -196,9 +196,10 @@ pub(crate) fn build_gateway(
     let kind = match llm.backend {
         LlmBackend::Vllm | LlmBackend::Openai => ProviderKind::Openai,
         LlmBackend::Anthropic => ProviderKind::Anthropic,
+        LlmBackend::OpenaiResponses => ProviderKind::OpenaiResponses,
         LlmBackend::Stub => ProviderKind::Stub,
         other => anyhow::bail!(
-            "llm.backend={other:?} は未実装です（Phase 3 は openai-compat/anthropic/stub）"
+            "llm.backend={other:?} は未実装です（openai-compat/openai_responses/anthropic/stub のみ）"
         ),
     };
     let default_model = llm
@@ -230,6 +231,9 @@ pub(crate) fn build_gateway(
             base_url: llm.base_url.clone(),
             api_key: llm.api_key.clone(),
             timeout_secs: 120,
+            // compose は未設定の変数を空文字で渡すため、空は未指定として扱う。
+            user_agent: llm.user_agent.clone().filter(|s| !s.trim().is_empty()),
+            session_header: llm.session_header.clone().filter(|s| !s.trim().is_empty()),
         },
         catalog: ModelCatalog {
             default_model,

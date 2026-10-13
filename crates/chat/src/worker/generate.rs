@@ -239,6 +239,7 @@ impl ChatWorker {
         // あり提示ツールは縮小しない（#344 の再定義。決定性はツール実装＋認可＋承認ゲート）。
         // ⚠️ opts.approval には触れない（破壊系の明示許可は skill で無効化できない・Task 6.9）。
         let (mut opts, mut history) = (opts, history);
+        opts.session_id = Some(run.thread_id.to_string());
         if !skills.is_empty() {
             let mut system = opts.system.take().unwrap_or_default();
             for skill in &skills {

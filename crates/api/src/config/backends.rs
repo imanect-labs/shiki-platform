@@ -132,6 +132,12 @@ pub struct LlmConfig {
     /// Langfuse（self-host）計装。未設定なら計装は no-op。
     #[serde(default)]
     pub langfuse: Option<LangfuseConfig>,
+    /// プロバイダへ送る User-Agent（未指定は HTTP クライアントの既定）。
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    /// 会話（スレッド）ごとの ID を載せるヘッダ名（例 `x-opencode-session`）。未指定なら送らない。
+    #[serde(default)]
+    pub session_header: Option<String>,
 }
 
 /// モデルカタログの 1 エントリ（設定表現）。単価はマイクロ USD / 100万トークン。
@@ -163,6 +169,8 @@ pub enum LlmBackend {
     Openai,
     /// Anthropic Messages API 直結。
     Anthropic,
+    /// OpenAI Responses API（`/v1/responses`）。Chat Completions を話さないモデル用。
+    OpenaiResponses,
     /// Google Gemini（枠・未実装）。
     Gemini,
     /// Vertex AI（枠・未実装）。

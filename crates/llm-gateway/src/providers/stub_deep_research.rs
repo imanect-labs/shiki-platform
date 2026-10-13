@@ -231,6 +231,7 @@ mod tests {
             effort: None,
             max_tokens: None,
             temperature: None,
+            session_id: None,
         }
     }
 

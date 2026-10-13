@@ -345,6 +345,8 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             default_model: None,
             models: vec![],
             langfuse: None,
+            user_agent: None,
+            session_header: None,
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),

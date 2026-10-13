@@ -431,6 +431,9 @@ flowchart LR
 
 - 内部正規形=OpenAI互換スキーマ（⚠️ 中立 content-block 案は [PIT-9](./design-caveats.md)。Task 3.2 着手時に確定）。
   薄いアダプタで vLLM / Anthropic / Gemini /（必要なら Azure）。
+  Chat Completions を話さないモデル（Responses API 専用）は OpenAI Responses アダプタで受ける
+  （`llm.backend=openai_responses`・#535）。会話ごとの ID（スレッド ID）はルーティング・キャッシュの
+  手がかりとしてだけ渡す（`llm.session_header` で指定したヘッダ・`prompt_cache_key`）。
 - **LiteLLM は `LlmProvider` 実装の一つ（オプションアダプタ）**（2026-07-05 確定・#32）:
   雑多な外部プロバイダを一括で足したい時だけ LiteLLM Proxy アダプタを有効化。
   **チョークポイント（会計・認可・監査・Langfuse）は Rust in-process から動かさない**。

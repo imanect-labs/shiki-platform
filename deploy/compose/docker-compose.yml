@@ -564,6 +564,10 @@ services:
       SHIKI__LLM__BASE_URL: ${SHIKI__LLM__BASE_URL:-}
       SHIKI__LLM__API_KEY: ${SHIKI__LLM__API_KEY:-}
       SHIKI__LLM__DEFAULT_MODEL: ${SHIKI__LLM__DEFAULT_MODEL:-shiki-default}
+      # Responses API（BACKEND=openai_responses）のプロバイダが名乗り・会話 ID を求める場合
+      # （例 OpenCode Go: USER_AGENT=shiki/1.0・SESSION_HEADER=x-opencode-session）。
+      SHIKI__LLM__USER_AGENT: ${SHIKI__LLM__USER_AGENT:-}
+      SHIKI__LLM__SESSION_HEADER: ${SHIKI__LLM__SESSION_HEADER:-}
       # Langfuse 計装（gateway 層が正・trace_id 起点で突合）。self-host の内部エンドポイント。
       SHIKI__LLM__LANGFUSE__BASE_URL: ${SHIKI__LLM__LANGFUSE__BASE_URL:-http://langfuse:3000}
       SHIKI__LLM__LANGFUSE__PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-pk-lf-shiki-dev}

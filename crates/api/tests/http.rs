@@ -230,6 +230,8 @@ fn base_config() -> AppConfig {
             default_model: None,
             models: vec![],
             langfuse: None,
+            user_agent: None,
+            session_header: None,
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),

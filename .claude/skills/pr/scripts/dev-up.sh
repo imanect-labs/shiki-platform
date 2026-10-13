@@ -350,7 +350,8 @@ export SHIKI__GATEWAY__WEB_ORIGIN=http://localhost:3000
 export SHIKI__GATEWAY__BUILTIN_DIR=${ROOT}/web/editor-sandbox/dist
 export SHIKI__CHAT__ENABLED=true
 export SHIKI__WORKFLOW__ENABLED=true
-export SHIKI__LLM__BACKEND=stub
+# 既定は stub（E2E の前提）。実 LLM で確かめるときは呼び出し側で BACKEND 等を渡す。
+export SHIKI__LLM__BACKEND=${SHIKI__LLM__BACKEND:-stub}
 export SHIKI__WEBSEARCH__BACKEND=stub
 export SHIKI__RAG__ENABLED=$([ "$WITH_RAG" = 1 ] && echo true || echo false)
 export SHIKI__RAG__QDRANT_URL=http://localhost:${QDRANT_PORT}

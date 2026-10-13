@@ -63,6 +63,9 @@ pub struct AgentOptions {
     /// deep research の `web_search`→複数 `web_fetch` ファンアウトを直列にしないための有界並列度。
     /// 同一ホストへの `web_fetch` は本値によらず互いに直列化される（礼儀）。
     pub parallel_read_tools: usize,
+    /// 会話（スレッド）ごとに安定した ID。プロバイダのルーティング・キャッシュの手がかりとして
+    /// llm-gateway へそのまま渡す（`GenerateRequest::session_id`）。
+    pub session_id: Option<String>,
 }
 
 /// 冪等 read ツールの既定並列度（#349）。検索 API/取得先への負荷と体感速度の折衷。
@@ -85,6 +88,7 @@ impl AgentOptions {
             context_keep_recent: 0,
             offer_plan_tool: true,
             parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
+            session_id: None,
         }
     }
 
@@ -111,6 +115,7 @@ impl AgentOptions {
             context_keep_recent: 6,
             offer_plan_tool: true,
             parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
+            session_id: None,
         }
     }
 }
