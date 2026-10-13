@@ -36,7 +36,7 @@ export function SyncPill({ status, synced }: { status: CollabStatus; synced: boo
 
   return (
     <span
-      className="inline-flex select-none items-center gap-1.5 text-xs text-muted-foreground"
+      className="inline-flex shrink-0 select-none items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground"
       data-testid="note-sync-status"
       data-state={state}
       title={label}

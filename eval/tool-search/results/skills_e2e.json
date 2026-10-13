@@ -1,0 +1,9509 @@
+[
+ {
+  "target": "objection-handling-responses",
+  "condition": "list_cap50",
+  "n": 20,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1744,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "list_cap50",
+  "n": 20,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1751,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "list_cap50",
+  "n": 20,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1734,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "list_cap50",
+  "n": 20,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1755,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "list_cap50",
+  "n": 20,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1765,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "list_cap50",
+  "n": 20,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 3528,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "list_cap50",
+  "n": 20,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1765,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "list_cap50",
+  "n": 20,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1736,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "list_cap50",
+  "n": 20,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 3528,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "list_cap50",
+  "n": 20,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1751,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "list_all",
+  "n": 20,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1744,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "list_all",
+  "n": 20,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1751,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "list_all",
+  "n": 20,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 3507,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "list_all",
+  "n": 20,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1755,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "list_all",
+  "n": 20,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1765,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "list_all",
+  "n": 20,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 3528,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "list_all",
+  "n": 20,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1765,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "list_all",
+  "n": 20,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1736,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "list_all",
+  "n": 20,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 3528,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "list_all",
+  "n": 20,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1751,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "search",
+  "n": 20,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1470,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "search",
+  "n": 20,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1626,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "search",
+  "n": 20,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1487,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "search",
+  "n": 20,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1557,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "search",
+  "n": 20,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1437,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "search",
+  "n": 20,
+  "called": [
+   "post-resolution-survey-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1524,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "search",
+  "n": 20,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1622,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "search",
+  "n": 20,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1546,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "search",
+  "n": 20,
+  "called": [
+   "quarterly-close-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1549,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "search",
+  "n": 20,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1549,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "search_names",
+  "n": 20,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1689,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "search_names",
+  "n": 20,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1648,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "search_names",
+  "n": 20,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1563,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "search_names",
+  "n": 20,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1736,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "search_names",
+  "n": 20,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1619,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "search_names",
+  "n": 20,
+  "called": [
+   "post-resolution-survey-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1872,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "search_names",
+  "n": 20,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 740,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "search_names",
+  "n": 20,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1582,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "search_names",
+  "n": 20,
+  "called": [
+   "quarterly-close-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1819,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "search_names",
+  "n": 20,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 0,
+  "prompt_tokens": 726,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3886,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7777,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7819,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7838,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7798,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3900,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3871,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "quarterly-close-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3880,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7811,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "ir-calendar-management"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3882,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3898,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7804,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "network-troubleshooting-flow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3870,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7786,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7803,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7824,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3892,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7823,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "pc-performance-tuning-advice"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3870,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "quarterly-infra-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3884,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7789,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "list_cap50",
+  "n": 50,
+  "called": [
+   "e-learning-content-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3885,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3886,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "list_all",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7777,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "list_all",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7819,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3900,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "list_all",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7798,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3900,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3871,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 7798,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3886,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "list_all",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7801,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3898,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "list_all",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7804,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "list_all",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7779,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "list_all",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7786,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "list_all",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7803,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "list_all",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7824,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3892,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "list_all",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7823,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "pc-performance-tuning-advice"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3870,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "quarterly-infra-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3884,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "list_all",
+  "n": 50,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7789,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "list_all",
+  "n": 50,
+  "called": [
+   "e-learning-content-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3885,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1521,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1639,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1574,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1580,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1658,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "post-resolution-survey-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1582,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1633,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1566,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "quarterly-close-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1580,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1579,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "ir-calendar-management"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1405,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1675,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1593,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "network-troubleshooting-flow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1557,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "safety-stock-calculation-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1562,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "mentor-mentee-matching-guide"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1657,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1568,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "missing-receipt-alert"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1592,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1562,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1620,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "electronic-invoice-compliance-check"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1689,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "pc-performance-tuning-advice"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1550,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "quarterly-infra-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1665,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "exit-interview-logistics"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1590,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "search",
+  "n": 50,
+  "called": [
+   "e-learning-content-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1612,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2285,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2011,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2003,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2222,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1996,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "post-resolution-survey-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2213,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 922,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2166,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2230,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2256,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "ir-calendar-management"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2119,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2023,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2248,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "network-troubleshooting-flow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1924,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "safety-stock-calculation-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2243,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "mentor-mentee-matching-guide"
+  ],
+  "searches": 0,
+  "prompt_tokens": 903,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1977,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "missing-receipt-alert"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2268,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1916,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2167,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "electronic-invoice-compliance-check"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2335,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "pc-performance-tuning-advice"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2191,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "quarterly-infra-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2001,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "exit-interview-logistics"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1928,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "search_names",
+  "n": 50,
+  "called": [
+   "e-learning-content-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2228,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3866,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3873,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3856,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "incident-response-initial-triage"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3877,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3887,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3867,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "ci-cd-pipeline-qa-gate-def",
+   "bug-report-handover",
+   "data-preprocessing-pipeline"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3887,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3858,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3867,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3873,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7775,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3885,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7778,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3857,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "inventory-reorder-calculation",
+   "material-req-planning"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3860,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "mentor-mentee-matching-guide"
+  ],
+  "searches": 1,
+  "prompt_tokens": 7777,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "cost-reduction-brainstorm"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3866,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7798,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3866,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7797,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3857,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "cost-optimization-analysis",
+   "cost-reduction-initiative"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3871,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "exit-interview-logistics"
+  ],
+  "searches": 1,
+  "prompt_tokens": 7763,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "e-learning-content-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3872,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3875,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3858,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "customer-master-update-billing"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3864,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3870,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "accounts-receivable-aging-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3853,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7782,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "employee-status-change-proc"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3882,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3857,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3871,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "career-path-consultation-script"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "minority-shareholder-response"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3871,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7756,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "incident-response-initial-triage"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3864,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "interview-question-generation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3876,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3885,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3869,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7757,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "inventory-reorder-calculation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3867,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "grant-application-outline"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3864,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "ci-cd-pipeline-qa-gate-def",
+   "data-preprocessing-pipeline"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3878,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "duplicate-claim-detection",
+   "contract-review-checklist"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3873,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3867,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "monthly-closing-checklist"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3875,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "emergency-drill-coordination"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3858,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "list_cap50",
+  "n": 100,
+  "called": [
+   "annual-financial-statements-draft"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3876,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7346,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7353,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14711,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14753,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7367,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14732,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7367,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7338,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 2,
+  "prompt_tokens": 22224,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14745,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14735,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7365,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7350,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "network-troubleshooting-flow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7337,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14720,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14737,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7346,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "missing-receipt-alert"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7360,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7346,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14758,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14757,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "pc-performance-tuning-advice"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7337,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "quarterly-infra-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7351,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14723,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14741,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14749,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14715,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "customer-master-update-billing"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7344,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "post-event-followup"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7350,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "accounts-receivable-aging-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7333,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14742,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14763,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "pii-data-discovery-and-mapping"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7337,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "quarterly-compliance-audit"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7351,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "performance-review-draft"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7359,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "minority-shareholder-response"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7351,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "lean-kpi-dashboard"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7339,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "incident-response-initial-triage"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7344,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14749,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14768,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14737,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14717,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14734,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14727,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14755,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14744,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14732,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "list_all",
+  "n": 100,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 14749,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "emergency-drill-coordination"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7338,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "list_all",
+  "n": 100,
+  "called": [
+   "annual-financial-statements-draft"
+  ],
+  "searches": 0,
+  "prompt_tokens": 7356,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1531,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1638,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1579,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1606,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1657,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "post-resolution-survey-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1584,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1683,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1612,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "quarterly-close-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1588,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1580,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "ir-calendar-management"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1559,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1677,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1607,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "network-troubleshooting-flow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1558,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "safety-stock-calculation-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1571,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "mentor-mentee-matching-guide"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1638,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1612,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "missing-receipt-alert"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1604,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1597,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1644,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "electronic-invoice-compliance-check"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1634,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "pc-performance-tuning-advice"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1580,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "quarterly-infra-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1653,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "exit-interview-logistics"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1571,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "e-learning-content-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1620,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "video-conference-platform-setup"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1586,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "seo-blog-drafting"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1574,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "customer-master-update-billing"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1545,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "post-event-followup"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1608,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "accounts-receivable-aging-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1547,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "ci-cd-pipeline-qa-gate-def"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1608,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "employee-status-change-proc"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1647,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "pii-data-discovery-and-mapping"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1598,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "quarterly-compliance-audit"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1655,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "performance-review-draft"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1632,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "minority-shareholder-response"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1555,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "lean-kpi-dashboard"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1567,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "incident-response-initial-triage"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1574,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "interview-question-generation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1578,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "safety-incident-report"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1563,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "quality-inspection-protocol"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1576,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "duplicate-claim-detection"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1576,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "inventory-reorder-calculation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1583,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "proposal-draft-creator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1565,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "refactor-legacy-code"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1589,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "purchase-order-creation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1591,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "quarterly-business-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1581,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "monthly-closing-checklist"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1576,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "emergency-drill-coordination"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1330,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "search",
+  "n": 100,
+  "called": [
+   "annual-financial-statements-draft"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1622,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2696,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1200,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2823,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2798,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1214,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "post-resolution-survey-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2827,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2758,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1185,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2836,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2803,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "ir-calendar-management"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2797,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1212,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2832,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "network-troubleshooting-flow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2507,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "safety-stock-calculation-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2754,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "mentor-mentee-matching-guide"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2524,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2561,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "missing-receipt-alert"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2867,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1193,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2840,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "electronic-invoice-compliance-check"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1205,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "pc-performance-tuning-advice"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2699,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "quarterly-infra-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2886,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "exit-interview-logistics"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2802,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "e-learning-content-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2844,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "video-conference-platform-setup"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2865,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "seo-blog-drafting"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2541,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "customer-master-update-billing"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2676,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "post-event-followup"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2750,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "accounts-receivable-aging-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2740,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "ci-cd-pipeline-qa-gate-def"
+  ],
+  "searches": 0,
+  "prompt_tokens": 1196,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "employee-status-change-proc"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2603,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "pii-data-discovery-and-mapping"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2814,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "quarterly-compliance-audit"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2933,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "performance-review-draft"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2840,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "minority-shareholder-response"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2706,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "lean-kpi-dashboard"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2762,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "incident-response-initial-triage"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2755,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "interview-question-generation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2900,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "safety-incident-report"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2776,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "quality-inspection-protocol"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2848,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "duplicate-claim-detection"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2567,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "inventory-reorder-calculation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2810,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "proposal-draft-creator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2605,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "refactor-legacy-code"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2533,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "purchase-order-creation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2621,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "quarterly-business-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2828,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "monthly-closing-checklist"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2572,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "emergency-drill-coordination"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2552,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "search_names",
+  "n": 100,
+  "called": [
+   "annual-financial-statements-draft"
+  ],
+  "searches": 1,
+  "prompt_tokens": 2705,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3886,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3869,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "access-control-audit",
+   "crisis-statement-template"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3890,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "daily-stock-level-monitoring",
+   "cost-optimization-analysis",
+   "cycle-count-execution-guide"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3900,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3880,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3900,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3871,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3880,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3886,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3882,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 3,
+  "prompt_tokens": 18041,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3883,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3870,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "daily-stock-level-monitoring",
+   "cost-optimization-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3873,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "career-path-consultation-script"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3881,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "contract-review-checklist",
+   "cost-reduction-brainstorm"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "auto-draft-response-generation",
+   "contract-review-checklist"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3893,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3892,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "compliance-checklist-gen"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3891,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3870,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "cost-optimization-analysis",
+   "budget-variance-analysis",
+   "board-presentation-deck-creation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3884,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "access-control-audit"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3875,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3885,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3888,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3871,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "customer-master-update-billing"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3877,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "customer-segmentation-clustering",
+   "customer-onboarding-followup"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3883,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7773,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7808,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "access-control-audit",
+   "compliance-risk-assessment"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3895,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "compliance-checklist-gen",
+   "access-control-audit"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3870,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "access-control-audit",
+   "compliance-checklist-gen",
+   "contract-review-checklist"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3884,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "career-path-consultation-script"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3892,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 2,
+  "prompt_tokens": 12531,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3872,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "access-control-audit"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3877,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3889,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "accident-report-template"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3898,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "compliance-checklist-gen",
+   "contract-review-checklist"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3882,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3872,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3880,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "demo-scenario-planner"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3877,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "database-migration-assist",
+   "ci-cd-pipeline-qa-gate-def",
+   "dockerfile-optimization"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3891,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3886,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3880,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "annual-financial-statements-draft"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3888,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3871,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 7819,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "shift-scheduling-optimization",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3875,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "daily-stock-level-monitoring",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "daily-stock-level-monitoring"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3898,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "raw-data-anomaly-detect",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "data-preprocessing-pipeline"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3897,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rejection-email-drafting",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3866,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "onboarding-checklist-gen",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "customer-onboarding-followup"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3873,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "litigation-case-summarizer",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3902,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "whistleblowing-intake-triage",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "conflict-of-interest-declaration-review",
+   "compliance-risk-assessment"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "processed-data-trend-analysis",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3888,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "paid-leave-balance-inquiry",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3871,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "monthly-marketing-report",
+  "condition": "list_cap50",
+  "n": 200,
+  "called": [
+   "competitor-swatch-analysis",
+   "conversion-funnel-optimization",
+   "ad-copy-generation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3880,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14384,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28860,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14374,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "incident-response-initial-triage"
+  ],
+  "searches": 1,
+  "prompt_tokens": 28829,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14405,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28808,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14405,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14376,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "quarterly-close-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 28808,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14391,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "ir-calendar-management"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14387,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14403,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14388,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "network-troubleshooting-flow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14375,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28796,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28813,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14384,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28834,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14384,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14397,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28833,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "pc-performance-tuning-advice"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14375,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "quarterly-infra-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14389,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28799,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28817,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28825,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28791,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "customer-master-update-billing"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14382,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28813,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28783,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28818,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28839,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28791,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "quarterly-compliance-audit"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14389,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "performance-review-draft"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14397,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28817,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "lean-kpi-dashboard"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14377,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "incident-response-initial-triage"
+  ],
+  "searches": 1,
+  "prompt_tokens": 28844,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28825,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28844,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "quality-inspection-protocol"
+  ],
+  "searches": 1,
+  "prompt_tokens": 28813,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "duplicate-claim-detection"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14377,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "inventory-reorder-calculation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14385,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28803,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28831,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28820,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28832,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28825,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "emergency-drill-coordination"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14376,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28829,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "shift-scheduling-optimization",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "shift-scheduling-optimization"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14380,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "daily-stock-level-monitoring",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "daily-stock-level-monitoring"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14403,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "raw-data-anomaly-detect",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28844,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rejection-email-drafting",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "rejection-email-drafting"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14371,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "onboarding-checklist-gen",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "onboarding-checklist-gen"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14378,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "litigation-case-summarizer",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28854,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "whistleblowing-intake-triage",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 3,
+  "prompt_tokens": 58070,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "processed-data-trend-analysis",
+  "condition": "list_all",
+  "n": 200,
+  "called": [
+   "processed-data-trend-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 14393,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "paid-leave-balance-inquiry",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28793,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "monthly-marketing-report",
+  "condition": "list_all",
+  "n": 200,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 28808,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1525,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1626,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1552,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1560,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1691,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "post-resolution-survey-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1578,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1642,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1546,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "quarterly-close-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1583,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1563,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "ir-calendar-management"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1592,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1671,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1589,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "network-troubleshooting-flow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1537,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "safety-stock-calculation-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1557,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "mentor-mentee-matching-guide"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1583,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1602,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "missing-receipt-alert"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1581,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1569,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1645,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "electronic-invoice-compliance-check"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1634,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "search",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 565,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "quarterly-infra-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1657,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "exit-interview-logistics"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1570,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "e-learning-content-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1605,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "video-conference-platform-setup"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1596,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "seo-blog-drafting"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1536,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "customer-master-update-billing"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1567,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "post-event-followup"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1574,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "accounts-receivable-aging-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1539,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "ci-cd-pipeline-qa-gate-def"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1598,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "employee-status-change-proc"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1663,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "pii-data-discovery-and-mapping"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1598,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "quarterly-compliance-audit"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1663,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "performance-review-draft"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1601,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "minority-shareholder-response"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1527,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "lean-kpi-dashboard"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1533,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "incident-response-initial-triage",
+   "incident-response-initial"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1666,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "interview-question-generation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1578,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "safety-incident-report"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1552,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "quality-inspection-protocol"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1646,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "duplicate-claim-detection"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1569,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "inventory-reorder-calculation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1596,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "proposal-draft-creator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1553,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "refactor-legacy-code"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1603,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "purchase-order-creation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1603,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "quarterly-business-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1578,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "monthly-closing-checklist"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1579,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "emergency-drill-coordination"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1593,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "annual-financial-statements-draft"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1584,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "shift-scheduling-optimization",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "shift-scheduling-optimization"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1575,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "daily-stock-level-monitoring",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "daily-stock-level-monitoring"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1637,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "raw-data-anomaly-detect",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "raw-data-anomaly-detect"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1620,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rejection-email-drafting",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "rejection-email-drafting"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1531,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "onboarding-checklist-gen",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "onboarding-checklist-gen"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1556,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "litigation-case-summarizer",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "litigation-case-summarizer"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1679,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "whistleblowing-intake-triage",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "whistleblowing-intake-triage"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1606,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "processed-data-trend-analysis",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "processed-data-trend-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1604,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "paid-leave-balance-inquiry",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "paid-leave-balance-inquiry"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1575,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "monthly-marketing-report",
+  "condition": "search",
+  "n": 200,
+  "called": [
+   "monthly-marketing-report"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1584,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5164,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2409,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2392,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2413,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2423,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "post-resolution-survey-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5224,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2423,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5242,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5256,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5201,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "ir-calendar-management"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5256,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2421,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2406,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "network-troubleshooting-flow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 4925,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "safety-stock-calculation-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5236,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "mentor-mentee-matching-guide"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2404,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5074,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "missing-receipt-alert"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5385,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2402,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2415,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "electronic-invoice-compliance-check"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2414,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "pc-performance-tuning-advice"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2393,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "quarterly-infra-review",
+   "cost-optimization-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5142,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "offboarding-clearance-check"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5218,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "e-learning-content-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2408,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "search_names",
+  "n": 200,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 2411,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "seo-blog-drafting"
+  ],
+  "searches": 1,
+  "prompt_tokens": 4910,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "customer-master-update-billing"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2400,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "post-event-followup"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5239,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "accounts-receivable-aging-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5155,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "ci-cd-pipeline-qa-gate-def"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2405,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "employee-status-change-proc"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5283,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "pii-data-discovery-and-mapping"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2393,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "quarterly-compliance-audit",
+   "internal-regulation-revisor",
+   "sop-compliance-audit",
+   "contract-review-checklist"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5309,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "performance-review-draft"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5253,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "minority-shareholder-response"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5175,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "lean-kpi-dashboard"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5180,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "incident-response-initial-triage",
+   "incident-response-initial"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5289,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "interview-question-generation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5296,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "industrial-accident-reporting"
+  ],
+  "searches": 1,
+  "prompt_tokens": 4968,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "quality-inspection-protocol"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5216,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "duplicate-claim-detection"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5058,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "inventory-reorder-calculation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2403,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "proposal-draft-creator"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2400,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "refactor-legacy-code"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5080,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "purchase-order-creation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5108,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "quarterly-business-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5243,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "monthly-closing-checklist"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2411,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "emergency-drill-coordination"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5272,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "annual-financial-statements-draft"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2412,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "shift-scheduling-optimization",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "shift-scheduling-optimization"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5233,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "daily-stock-level-monitoring",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "daily-stock-level-monitoring"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5303,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "raw-data-anomaly-detect",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "raw-data-anomaly-detect"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2420,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rejection-email-drafting",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "rejection-email-drafting"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5159,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "onboarding-checklist-gen",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "onboarding-checklist-gen"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5216,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "litigation-case-summarizer",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "litigation-case-summarizer"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2425,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "whistleblowing-intake-triage",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "whistleblowing-intake-triage"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5196,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "processed-data-trend-analysis",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "processed-data-trend-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5265,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "paid-leave-balance-inquiry",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "paid-leave-balance-inquiry"
+  ],
+  "searches": 1,
+  "prompt_tokens": 5021,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "monthly-marketing-report",
+  "condition": "search_names",
+  "n": 200,
+  "called": [
+   "monthly-marketing-report"
+  ],
+  "searches": 0,
+  "prompt_tokens": 2403,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3875,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "ai-literacy-training-module",
+   "agent-performance-coaching-feedback"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3882,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3865,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "access-control-audit"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3886,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3896,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3876,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3896,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3867,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3876,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3882,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "annual-report-composition",
+   "board-presentation-deck-creation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3878,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3894,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3866,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3869,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "30day-onboarding-plan",
+   "90day-onboarding-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3877,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3875,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "advance-payment-settlement",
+   "auto-draft-response-generation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3889,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3875,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3888,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3887,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3866,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "annual-summary-preparation",
+   "board-presentation-deck-creation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3880,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3871,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "accessibility-compliance-check"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3881,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3884,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "ad-copy-generation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3867,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3873,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3879,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "accounts-receivable-aging-analysis"
+  ],
+  "searches": 2,
+  "prompt_tokens": 11705,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "automation-feasibility-assessment"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3878,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "access-rights-monthly-review",
+   "30day-onboarding-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3891,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3866,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "annual-compliance-report-compilation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3880,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "agent-performance-coaching-feedback"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3888,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "annual-report-composition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3880,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3868,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "access-control-audit"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3873,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3885,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3894,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3878,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3868,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3876,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3873,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3887,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3882,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3876,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "accruals-and-prepayments-adjustment",
+   "accounts-payable-reconciliation",
+   "accounts-receivable-aging-analysis",
+   "annual-financial-statements-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3884,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "backup-restore-drill-execution-guide",
+   "breakdown-response-protocol"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3867,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "annual-financial-statements-draft"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3885,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "shift-scheduling-optimization",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3871,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "daily-stock-level-monitoring",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "accounts-payable-reconciliation",
+   "accruals-and-prepayments-adjustment",
+   "annual-financial-statements-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3894,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "raw-data-anomaly-detect",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "billing-data-export-audit"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3893,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rejection-email-drafting",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3862,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "onboarding-checklist-gen",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [
+   "30day-onboarding-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 3869,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "litigation-case-summarizer",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3898,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "whistleblowing-intake-triage",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3875,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "processed-data-trend-analysis",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3884,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "paid-leave-balance-inquiry",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3867,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "monthly-marketing-report",
+  "condition": "list_cap50",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 3876,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34544,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 1,
+  "prompt_tokens": 69187,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34534,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 69149,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34565,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69128,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "test-case-design",
+   "performance-test-scenario-design",
+   "root-cause-analysis-report"
+  ],
+  "searches": 1,
+  "prompt_tokens": 69167,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34536,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "quarterly-close-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34545,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34551,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69131,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34563,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34548,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69125,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69116,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "mentorship-program-evaluation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 69133,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34544,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "missing-receipt-alert"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34558,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34544,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34557,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69153,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "pc-performance-tuning-advice"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34535,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "quarterly-infra-review"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34549,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69119,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69137,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "video-conference-platform-setup"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34553,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69111,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "customer-master-update-billing"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34542,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "post-event-followup"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34548,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69103,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "ci-cd-pipeline-qa-gate-def"
+  ],
+  "searches": 1,
+  "prompt_tokens": 69138,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69159,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "pii-data-discovery-and-mapping"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34535,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "quarterly-compliance-report-compilation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 69192,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "performance-review-draft"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34557,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69137,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "lean-kpi-dashboard"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34537,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "incident-response-initial-triage"
+  ],
+  "searches": 2,
+  "prompt_tokens": 103859,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "interview-question-generation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34554,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69164,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "quality-issue-triage"
+  ],
+  "searches": 3,
+  "prompt_tokens": 139262,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69113,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "inventory-reorder-calculation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34545,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69123,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69151,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "purchase-order-creation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34551,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "quarterly-business-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 69152,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69145,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 2,
+  "prompt_tokens": 103838,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "annual-financial-statements-draft"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34554,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "shift-scheduling-optimization",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "shift-scheduling-optimization"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34540,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "daily-stock-level-monitoring",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "daily-stock-level-monitoring"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34563,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "raw-data-anomaly-detect",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "raw-data-anomaly-detect"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34562,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rejection-email-drafting",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69101,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "onboarding-checklist-gen",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "onboarding-checklist-gen"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34538,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "litigation-case-summarizer",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "litigation-case-summarizer"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34567,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "whistleblowing-intake-triage",
+  "condition": "list_all",
+  "n": 493,
+  "called": [
+   "whistleblowing-intake-triage"
+  ],
+  "searches": 0,
+  "prompt_tokens": 34544,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "processed-data-trend-analysis",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 2,
+  "prompt_tokens": 104186,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "paid-leave-balance-inquiry",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69113,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "monthly-marketing-report",
+  "condition": "list_all",
+  "n": 493,
+  "called": [],
+  "searches": 1,
+  "prompt_tokens": 69128,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1553,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1632,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1577,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "phishing-email-report-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1558,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1687,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "post-resolution-survey-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1569,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1680,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1553,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "quarterly-close-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1541,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1599,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "ir-calendar-management"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1575,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1701,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1575,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "network-troubleshooting-flow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1562,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "safety-stock-calculation-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1565,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "mentor-mentee-matching-guide"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1617,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1580,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "missing-receipt-alert"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1553,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1566,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1628,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "electronic-invoice-compliance-check"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1639,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "search",
+  "n": 493,
+  "called": [],
+  "searches": 0,
+  "prompt_tokens": 565,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "quarterly-infra-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1654,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "exit-interview-logistics"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1528,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "e-learning-content-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1633,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "video-conference-platform-setup"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1627,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "seo-blog-drafting"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1505,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "customer-master-update-billing"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1544,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "post-event-followup"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1560,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "aging-report-generation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1547,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "ci-cd-pipeline-qa-gate-def"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1606,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "employee-status-change-proc"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1632,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "pii-data-discovery-and-mapping"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1581,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "quarterly-compliance-audit"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1648,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "performance-review-draft"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1599,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "minority-shareholder-response"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1530,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "lean-kpi-dashboard"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1558,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "incident-response-initial-triage"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1568,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "interview-question-generation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1600,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "safety-incident-report"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1557,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "quality-inspection-protocol"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1593,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "duplicate-claim-detection"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1535,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "inventory-reorder-calculation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1595,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "proposal-draft-creator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1554,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "refactor-legacy-code"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1630,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "purchase-order-creation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1605,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "quarterly-business-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1559,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "monthly-closing-checklist"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1593,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "emergency-drill-coordination"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1607,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "annual-financial-statements-draft"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1584,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "shift-scheduling-optimization",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "shift-scheduling-optimization"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1573,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "daily-stock-level-monitoring",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "daily-stock-level-monitoring"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1649,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "raw-data-anomaly-detect",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "raw-data-anomaly-detect"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1617,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rejection-email-drafting",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "rejection-email-drafting"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1583,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "onboarding-checklist-gen",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "onboarding-checklist-gen"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1574,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "litigation-case-summarizer",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "litigation-case-summarizer"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1682,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "whistleblowing-intake-triage",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "whistleblowing-intake-triage"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1588,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "processed-data-trend-analysis",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "processed-data-trend-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1617,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "paid-leave-balance-inquiry",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "paid-leave-balance-inquiry"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1619,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "monthly-marketing-report",
+  "condition": "search",
+  "n": 493,
+  "called": [
+   "monthly-marketing-report"
+  ],
+  "searches": 1,
+  "prompt_tokens": 1571,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "objection-handling-responses",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "objection-handling-responses"
+  ],
+  "searches": 2,
+  "prompt_tokens": 16417,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "soft-skills-workshop-design",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "soft-skills-workshop-design"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10520,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "material-req-planning",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "material-req-planning"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10459,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "phishing-email-report-analysis",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "phishing-email-report-analysis",
+   "incident-response-initial-triage"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10535,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "returns-processing-workflow",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "returns-processing-workflow"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5048,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-resolution-survey-analysis",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "post-resolution-survey-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10471,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "prototype-testing-plan",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "prototype-testing-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5048,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-control-rule-definition",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "budget-control-rule-definition"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5019,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-close-review",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "budget-variance-analysis"
+  ],
+  "searches": 2,
+  "prompt_tokens": 16375,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "rfp-response-coordinator",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "rfp-response-coordinator"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10458,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ir-calendar-management",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "ir-calendar-management",
+   "board-presentation-deck-creation",
+   "shareholder-meeting-scripting",
+   "stakeholder-letter-draft"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5030,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "financial-anomaly-detection",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "financial-anomaly-detection"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5046,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "budget-variance-analysis",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "monthly-budget-variance-analysis"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5031,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "network-troubleshooting-flow",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "network-troubleshooting-flow"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10461,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-stock-calculation-review",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "safety-stock-calculation-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10480,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "mentor-mentee-matching-guide",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "mentor-mentee-matching-guide"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5029,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "negotiation-concession-planner",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "negotiation-concession-planner"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10393,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "missing-receipt-alert",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "receipt-ocr-extraction"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5041,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "fair-disclosure-policy-review",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "fair-disclosure-policy-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10475,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "jd-review-and-optimization",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "jd-review-and-optimization"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5040,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "electronic-invoice-compliance-check",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "electronic-invoice-compliance-check"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5039,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pc-performance-tuning-advice",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "pc-performance-tuning-advice"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5018,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-infra-review",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "quarterly-infra-review",
+   "opex-cost-optimization"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5032,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "exit-interview-logistics",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "offboarding-clearance-check"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10451,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "e-learning-content-review",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "e-learning-content-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10518,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "video-conference-platform-setup",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "video-conference-platform-setup"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5036,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "seo-blog-drafting",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "seo-blog-drafting"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10160,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "customer-master-update-billing",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "customer-master-update-billing"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5025,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "post-event-followup",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "post-event-followup"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10491,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "accounts-receivable-aging-analysis",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "accounts-receivable-aging-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10443,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "ci-cd-pipeline-qa-gate-def"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5030,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "employee-status-change-proc",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "employee-status-change-proc",
+   "access-rights-quarterly-audit",
+   "stakeholder-letter-draft",
+   "offboarding-clearance-check",
+   "new-hire-onboarding-plan"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5043,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "pii-data-discovery-and-mapping",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "pii-data-discovery-and-mapping"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10499,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-compliance-audit",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "quarterly-compliance-audit"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10551,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "performance-review-draft",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "performance-review-draft"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10527,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "minority-shareholder-response",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "minority-shareholder-response"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10422,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "lean-kpi-dashboard",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "lean-kpi-dashboard"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10466,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "incident-response-initial-triage",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "incident-response-initial-triage"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5025,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "interview-question-generation",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "interview-question-generation"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5037,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "safety-incident-report",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "industrial-accident-reporting"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10276,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "quality-inspection-protocol",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "quality-inspection-protocol"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5030,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "duplicate-claim-detection",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "duplicate-claim-detection"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5020,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "inventory-reorder-calculation",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "inventory-reorder-calculation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10497,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "proposal-draft-creator",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "proposal-draft-creator"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5025,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "refactor-legacy-code",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "refactor-legacy-code"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10473,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "purchase-order-creation",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "purchase-order-creation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10492,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "quarterly-business-review",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "quarterly-business-review"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10497,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "monthly-closing-checklist",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "monthly-closing-checklist"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5036,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "emergency-drill-coordination",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "emergency-drill-coordination"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10517,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "annual-financial-statements-draft",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "annual-financial-statements-draft"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5037,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "shift-scheduling-optimization",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "shift-scheduling-optimization"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10472,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "daily-stock-level-monitoring",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "daily-stock-level-monitoring",
+   "inventory-reorder-calculation"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10570,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "raw-data-anomaly-detect",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "raw-data-anomaly-detect"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10530,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "rejection-email-drafting",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "rejection-email-drafting"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5014,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "onboarding-checklist-gen",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "new-hire-desk-setup",
+   "new-hire-account-setup",
+   "new-hire-onboarding-plan"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10467,
+  "error": null,
+  "correct": false
+ },
+ {
+  "target": "litigation-case-summarizer",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "litigation-case-summarizer"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5050,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "whistleblowing-intake-triage",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "whistleblowing-intake-triage"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10497,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "processed-data-trend-analysis",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "processed-data-trend-analysis"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10266,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "paid-leave-balance-inquiry",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "paid-leave-balance-inquiry"
+  ],
+  "searches": 1,
+  "prompt_tokens": 10277,
+  "error": null,
+  "correct": true
+ },
+ {
+  "target": "monthly-marketing-report",
+  "condition": "search_names",
+  "n": 493,
+  "called": [
+   "monthly-marketing-report"
+  ],
+  "searches": 0,
+  "prompt_tokens": 5028,
+  "error": null,
+  "correct": true
+ }
+]

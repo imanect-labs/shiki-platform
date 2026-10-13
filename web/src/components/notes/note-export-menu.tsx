@@ -73,14 +73,14 @@ export function NoteExportMenu({
           aria-label="エクスポート"
           title={!synced ? "同期の完了後にエクスポートできます" : undefined}
           data-testid="note-export"
-          className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+          className="inline-flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 sm:px-2.5"
         >
           {busy ? (
             <Loader2 className="size-4 animate-spin" aria-hidden />
           ) : (
             <Download className="size-4" aria-hidden />
           )}
-          エクスポート
+          <span className="hidden sm:inline">エクスポート</span>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48 p-1.5">

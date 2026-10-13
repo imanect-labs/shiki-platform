@@ -53,10 +53,16 @@ pub fn estimate_prompt_tokens(messages: &[Message]) -> usize {
 /// 実測の補正が無いうち（新規開始・旧チェックポイントからの再開の最初のステップ）に使う。
 /// 窓の小さいモデルでは、履歴が閾値未満でも固定分を足すと溢れうる。溢れて拒否されると実測
 /// usage が得られず、以後の補正にも到達できない。
+///
+/// `tools` には**文脈に載る定義**だけを渡す（遅延ロードで未読込のものは数えない・
+/// [`llm_gateway::tool_loading::context_tools`]）。
 #[must_use]
-pub fn estimate_static_tokens(system: Option<&str>, tools: &[ToolDef]) -> usize {
+pub fn estimate_static_tokens<'a>(
+    system: Option<&str>,
+    tools: impl IntoIterator<Item = &'a ToolDef>,
+) -> usize {
     let tools: usize = tools
-        .iter()
+        .into_iter()
         .map(|t| {
             text_tokens(&t.name)
                 + text_tokens(&t.description)
@@ -297,11 +303,7 @@ mod tests {
     fn tool_result(content: &str, is_error: bool) -> Message {
         Message {
             role: Role::Tool,
-            content: vec![Block::ToolResult {
-                tool_use_id: "t1".into(),
-                content: content.into(),
-                is_error,
-            }],
+            content: vec![Block::tool_result("t1", content, is_error)],
         }
     }
 
@@ -455,11 +457,7 @@ mod tests {
         // 並列 3 件の大きな結果が 1 つの Tool メッセージに入って溢れかけたら、最後の 1 件以外を畳む。
         let big = "p".repeat(40_000);
         let blocks = (0..3)
-            .map(|i| Block::ToolResult {
-                tool_use_id: format!("t{i}"),
-                content: big.clone(),
-                is_error: false,
-            })
+            .map(|i| Block::tool_result(format!("t{i}"), big.clone(), false))
             .collect();
         let mut msgs = vec![Message {
             role: Role::Tool,
@@ -490,11 +488,8 @@ mod tests {
 
     #[test]
     fn static_estimate_counts_system_and_tool_definitions() {
-        let tools = vec![ToolDef {
-            name: "web_fetch".into(),            // 9 bytes → 2
-            description: "取得する".into(),      // 4 字 → 4
-            input_schema: serde_json::json!({}), // "{}" → 0
-        }];
+        // name "web_fetch" 9 bytes → 2 / description 4 字 → 4 / schema "{}" → 0
+        let tools = vec![ToolDef::new("web_fetch", "取得する", serde_json::json!({}))];
         assert_eq!(estimate_static_tokens(Some(&"s".repeat(400)), &tools), 106);
         assert_eq!(estimate_static_tokens(None, &[]), 0);
     }
