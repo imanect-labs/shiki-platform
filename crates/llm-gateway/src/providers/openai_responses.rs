@@ -200,7 +200,10 @@ impl EventMapper {
         let kind = v.get("type").and_then(Value::as_str).unwrap_or_default();
         let str_of = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
         match kind {
-            "response.output_text.delta" => text_delta(str_of("delta"), false),
+            // 拒否文（安全上の理由など）も本文として見せる（捨てると空の応答になる）。
+            "response.output_text.delta" | "response.refusal.delta" => {
+                text_delta(str_of("delta"), false)
+            }
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
                 text_delta(str_of("delta"), true)
             }
@@ -248,7 +251,16 @@ impl EventMapper {
                     .and_then(Value::as_str)
                     .filter(|a| !a.is_empty())
                     .unwrap_or(&streamed);
-                let input: Value = serde_json::from_str(args.trim()).unwrap_or(json!({}));
+                // 壊れた引数を `{}` にしてツールを実行しない。生成のやり直し（gateway の再試行）に回す。
+                let input: Value = match serde_json::from_str(args.trim()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.finished = true;
+                        return vec![Err(LlmError::Unavailable(format!(
+                            "responses: invalid tool arguments: {e}"
+                        )))];
+                    }
+                };
                 self.saw_tool_call = true;
                 vec![Ok(StreamDelta::ToolUseStop { id: call_id, input })]
             }
@@ -283,6 +295,41 @@ impl EventMapper {
             _ => Vec::new(),
         }
     }
+}
+
+/// SSE のイベント単位の組み立て（WHATWG: 空行で確定し、同じイベント内の `data:` 行は LF で連結する）。
+#[derive(Default)]
+struct SseFramer {
+    data: Vec<String>,
+}
+
+impl SseFramer {
+    /// 1 行を受け取り、イベントが確定したらその data を返す。
+    fn push_line(&mut self, line: &str) -> Option<String> {
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            return (!self.data.is_empty()).then(|| std::mem::take(&mut self.data).join("\n"));
+        }
+        if let Some(v) = line.strip_prefix("data:") {
+            self.data.push(v.strip_prefix(' ').unwrap_or(v).to_string());
+        }
+        None
+    }
+}
+
+/// 確定した 1 イベントを写して送る。完了・失敗まで来たら true。
+fn dispatch(
+    payload: &str,
+    mapper: &mut EventMapper,
+    names: &ToolNameMap,
+    tx: &mpsc::UnboundedSender<Result<StreamDelta, LlmError>>,
+) -> bool {
+    if let Ok(v) = serde_json::from_str::<Value>(payload) {
+        for out in mapper.feed(&v, names) {
+            let _ = tx.unbounded_send(out);
+        }
+    }
+    mapper.finished
 }
 
 fn text_delta(text: &str, thinking: bool) -> Vec<Result<StreamDelta, LlmError>> {
@@ -361,6 +408,7 @@ impl LlmProvider for OpenAiResponsesProvider {
         tokio::spawn(async move {
             let mut byte_stream = resp.bytes_stream();
             let mut buf: Vec<u8> = Vec::new();
+            let mut framer = SseFramer::default();
             let mut mapper = EventMapper::default();
             while let Some(chunk) = byte_stream.next().await {
                 let chunk = match chunk {
@@ -374,19 +422,19 @@ impl LlmProvider for OpenAiResponsesProvider {
                 buf.extend_from_slice(&chunk);
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=pos).collect();
-                    let line = String::from_utf8_lossy(&line);
-                    let Some(data) = line.trim().strip_prefix("data:") else {
+                    let Some(payload) = framer.push_line(&String::from_utf8_lossy(&line)) else {
                         continue;
                     };
-                    let Ok(v) = serde_json::from_str::<Value>(data.trim()) else {
-                        continue;
-                    };
-                    for out in mapper.feed(&v, &names) {
-                        let _ = tx.unbounded_send(out);
-                    }
-                    if mapper.finished {
+                    if dispatch(&payload, &mut mapper, &names, &tx) {
                         return;
                     }
+                }
+            }
+            // 末尾の空行が無いまま閉じた最後のイベントも捨てない。
+            let tail = framer.push_line(&String::from_utf8_lossy(&buf));
+            for payload in tail.into_iter().chain(framer.push_line("")) {
+                if dispatch(&payload, &mut mapper, &names, &tx) {
+                    return;
                 }
             }
             // 完了イベントが来ないまま切れた。書きかけの応答を完了扱いにしない。
@@ -571,6 +619,36 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn framer_joins_multiline_data_and_dispatches_on_blank_line() {
+        let mut f = SseFramer::default();
+        assert_eq!(f.push_line("event: response.output_text.delta\n"), None);
+        assert_eq!(f.push_line("data: {\"type\":\n"), None);
+        assert_eq!(f.push_line("data: \"x\"}\r\n"), None);
+        assert_eq!(f.push_line("\n").as_deref(), Some("{\"type\":\n\"x\"}"));
+        assert_eq!(f.push_line("\n"), None);
+    }
+
+    #[test]
+    fn mapper_maps_refusal_to_text_and_rejects_broken_tool_arguments() {
+        let out =
+            feed_all(&[json!({"type": "response.refusal.delta", "delta": "お答えできません"})]);
+        assert!(
+            matches!(&out[0], Ok(StreamDelta::TextDelta { text }) if text == "お答えできません")
+        );
+        let out = feed_all(&[
+            json!({"type": "response.output_item.added", "item": {"id": "fc_1", "type": "function_call", "call_id": "c", "name": "document_edit"}}),
+            json!({"type": "response.output_item.done", "item": {"id": "fc_1", "type": "function_call", "call_id": "c", "arguments": "{\"path\": "}}),
+            json!({"type": "response.completed", "response": {"usage": {}}}),
+        ]);
+        assert!(
+            matches!(out.last(), Some(Err(LlmError::Unavailable(m))) if m.contains("invalid tool arguments"))
+        );
+        assert!(!out
+            .iter()
+            .any(|d| matches!(d, Ok(StreamDelta::ToolUseStop { .. }))));
     }
 
     #[test]
