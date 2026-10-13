@@ -22,6 +22,11 @@
 #                 {tenant_id}/{org}/{sha256} で環境を区別せず、参照カウントも各自の DB にしか
 #                 無いため、別環境のテナント削除（{tenant_id}/ 以下の一括削除）が自分の blob を消す。
 #                 compose の DB は docker ホストごとに 1 つなので、バケットもホストごとに分ける。
+#                   SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS  バケットの CORS を起動時に設定する（例 '[http://localhost:3000]'）。
+#                                 未指定ならバケット側の既存の設定に任せる（外部のバケットを勝手に書き換えない）。
+#                 DB と保存先は組で使う。--rag（ローカルの RustFS）で使った DB のまま切り替えると、
+#                 既存の blob が読めず、同じ内容の再アップロードも重複扱いで実体が作られない。
+#                 組が変わる時は止めるので、--reset-db で DB を作り直す。
 #
 #   既定（native モード）:
 #     compose で依存だけ起動（postgres/keycloak/openfga/redis/rustfs）
@@ -213,6 +218,11 @@ if [ "$RAG_REMOTE" = 1 ]; then
   fi
   say "   [ok] worker=$SHIKI_DEV_RAG_WORKER_URL"
   say "        s3=$SHIKI_DEV_S3_ENDPOINT  bucket=$SHIKI_DEV_S3_BUCKET"
+  # 資格情報は export されて入ってくる。このままだと pnpm install・compose・cargo・next dev まで
+  # 引き継ぐので、非 export の変数へ退避して元を消す（shiki-server の起動時にだけ渡す）。
+  REMOTE_S3_AK=$SHIKI_DEV_S3_ACCESS_KEY
+  REMOTE_S3_SK=$SHIKI_DEV_S3_SECRET_KEY
+  unset SHIKI_DEV_S3_ACCESS_KEY SHIKI_DEV_S3_SECRET_KEY
 fi
 
 # --- 1. compose 依存サービス ---
@@ -255,6 +265,16 @@ fi
     [ -n "$ok" ] || { err "$svc が healthy になりませんでした（docker compose logs $svc）"; exit 1; }
     say "   [ok] $svc"
   done
+  # --rag から切り替えた時、前に立てたローカルの worker（常駐 2〜3GB）と RustFS は
+  # DEPS から外しても動き続ける（restart: unless-stopped）。外部を使うなら止める。
+  if [ "$RAG_REMOTE" = 1 ]; then
+    for svc in ingestion-worker rustfs; do
+      if [ -n "$(docker compose ps -q "$svc" 2>/dev/null)" ]; then
+        docker compose stop "$svc" >/dev/null
+        say "   [stop] $svc（外部のものを使うため）"
+      fi
+    done
+  fi
 )
 
 # --- 1.5 dev DB のリセット（明示 opt-in） ---
@@ -272,6 +292,35 @@ reset_dev_db() {
   say "   [ok] dev DB をリセットしました（SHIKI_DEV_SEED=true が再投入します）"
 }
 [ "$RESET_DB" = 1 ] && reset_dev_db
+
+# --- 1.6 DB と保存先の組を確かめる ---
+# blob の行は保存先を記録しないので、DB を残したまま保存先だけ変えると既存の blob が読めず、
+# 同じ内容を上げ直しても重複扱いで実体が作られない。どの保存先と組で使った DB かを
+# DB のコメントに残し、食い違えば止める（DB を作り直すとコメントも消える）。
+STORE_TAG=$([ "$RAG_REMOTE" = 1 ] && printf 'shiki-dev-store=%s/%s' "$SHIKI_DEV_S3_ENDPOINT" "$SHIKI_DEV_S3_BUCKET" || printf 'shiki-dev-store=local')
+dev_psql() {  # dev_psql <sql>  → 1 行目の値だけ返す
+  local pguser
+  pguser=$(grep -E '^POSTGRES_USER=' deploy/compose/.env 2>/dev/null | tail -1 | cut -d= -f2-)
+  docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
+    psql -U "${pguser:-postgres}" -d shiki -tAc "$1" 2>/dev/null | head -1 || true
+}
+cur_tag=$(dev_psql "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = 'shiki'")
+if [ -z "$cur_tag" ]; then
+  # 印の無い DB は、この仕組みより前に作られたもの（＝ローカルの RustFS と組）か、まだ空のもの。
+  # blob 表が無い（migration 前の）DB で FROM blob を書くとエラーになるので、先に有無を見る。
+  if [ "$(dev_psql "SELECT to_regclass('public.blob') IS NOT NULL")" = t ] \
+    && [ "$(dev_psql "SELECT EXISTS (SELECT 1 FROM blob)")" = t ]; then
+    cur_tag="shiki-dev-store=local"
+  fi
+fi
+if [ -n "$cur_tag" ] && [ "$cur_tag" != "$STORE_TAG" ]; then
+  err "❌ この dev DB は別の保存先と組で使われています。"
+  err "   DB の保存先: ${cur_tag#shiki-dev-store=}"
+  err "   今回の保存先: ${STORE_TAG#shiki-dev-store=}"
+  err "   切り替えるなら DB を作り直してください: $0 --reset-db ...（元に戻すなら前と同じ引数で起動）"
+  exit 1
+fi
+dev_psql "COMMENT ON DATABASE shiki IS '${STORE_TAG//\'/\'\'}'" >/dev/null
 
 # --- 2. shiki-server ---
 # web に渡すゲートウェイ/B1 オリジン。compose は publish 済みの 8090/8091、
@@ -358,9 +407,11 @@ else
     # ブラウザが presigned URL を直接叩くので、ブラウザから届く先でなければならない。
     EFF_S3_PUBLIC=${SHIKI_DEV_S3_PUBLIC_ENDPOINT:-$SHIKI_DEV_S3_ENDPOINT}
     EFF_S3_BUCKET=$SHIKI_DEV_S3_BUCKET
-    EFF_S3_AK=$SHIKI_DEV_S3_ACCESS_KEY
-    EFF_S3_SK=$SHIKI_DEV_S3_SECRET_KEY
+    EFF_S3_AK=$REMOTE_S3_AK
+    EFF_S3_SK=$REMOTE_S3_SK
     EFF_WORKER_URL=$SHIKI_DEV_RAG_WORKER_URL
+    # 外部のバケットの CORS は、指定された時だけ設定する（既存の設定を勝手に書き換えない）。
+    EFF_CORS=${SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS:-}
   else
     EFF_S3_INTERNAL=http://localhost:${RUSTFS_PORT}
     EFF_S3_PUBLIC=http://localhost:${RUSTFS_PORT}
@@ -368,6 +419,17 @@ else
     EFF_S3_AK=$RUSTFS_AK
     EFF_S3_SK=$RUSTFS_SK
     EFF_WORKER_URL=http://localhost:${WORKER_PORT}
+    EFF_CORS='[*]'
+  fi
+  # 生成するスクリプトへ値を埋め込むので、シェルの構文としてクォートする（& などを含んでも壊れない）。
+  Q_S3_INTERNAL=$(printf '%q' "$EFF_S3_INTERNAL")
+  Q_S3_PUBLIC=$(printf '%q' "$EFF_S3_PUBLIC")
+  Q_S3_BUCKET=$(printf '%q' "$EFF_S3_BUCKET")
+  Q_WORKER_URL=$(printf '%q' "$EFF_WORKER_URL")
+  if [ -n "$EFF_CORS" ]; then
+    CORS_LINE="export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS=$(printf '%q' "$EFF_CORS")"
+  else
+    CORS_LINE="# CORS はバケット側の既存の設定に任せる（SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS で設定できる）"
   fi
 
   # コンテナ内部ホスト名をホストの公開ポートへ読み替える。
@@ -397,13 +459,13 @@ export SHIKI__SESSION__SECURE=false
 export SHIKI__AUTHZ__BASE_URL=http://localhost:${FGA_PORT}
 export SHIKI__AUTHZ__STORE_NAME=shiki
 export SHIKI__STORAGE__BACKEND=s3
-export SHIKI__STORAGE__S3__INTERNAL_ENDPOINT=${EFF_S3_INTERNAL}
-export SHIKI__STORAGE__S3__PUBLIC_ENDPOINT=${EFF_S3_PUBLIC}
-export SHIKI__STORAGE__S3__BUCKET=${EFF_S3_BUCKET}
+export SHIKI__STORAGE__S3__INTERNAL_ENDPOINT=${Q_S3_INTERNAL}
+export SHIKI__STORAGE__S3__PUBLIC_ENDPOINT=${Q_S3_PUBLIC}
+export SHIKI__STORAGE__S3__BUCKET=${Q_S3_BUCKET}
 # ブラウザ直 PUT/GET のバケット CORS。設定しないと put_bucket_cors が呼ばれず
 # Drive のアップロードが CORS で失敗する（MinIO 時代はサーバ側 env で代替されていた）。
 # figment は env 値をブラケット記法で配列として読む（裸のカンマ区切りは不可）。
-export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS='[*]'
+${CORS_LINE}
 # **資格情報はこのファイルに書かない。** 起動時に dev-up.sh がプロセスの環境で渡す
 # （外部の S3 の資格情報が /tmp に平文で残るのを避ける。値をシェルとして再解析もしない）。
 # **この heredoc は unquoted なので、コメント行まで生成時に展開される。**
@@ -429,7 +491,7 @@ export SHIKI__LLM__BACKEND=stub
 export SHIKI__WEBSEARCH__BACKEND=stub
 export SHIKI__RAG__ENABLED=$([ "$WITH_RAG" = 1 ] && echo true || echo false)
 export SHIKI__RAG__QDRANT_URL=http://localhost:${QDRANT_PORT}
-export SHIKI__RAG__WORKER_BASE_URL=${EFF_WORKER_URL}
+export SHIKI__RAG__WORKER_BASE_URL=${Q_WORKER_URL}
 export SHIKI__RAG__INDEX_DATA_DIR="$RUNDIR/index"
 export SHIKI__CHAT__SANDBOX_ENDPOINT=http://localhost:${SANDBOX_PORT}
 export SHIKI__OFFICE__ENABLED=$([ "$WITH_OFFICE" = 1 ] && echo true || echo false)
