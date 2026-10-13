@@ -193,17 +193,20 @@ pub(crate) fn build_gateway(
     let kind = match llm.backend {
         LlmBackend::Vllm | LlmBackend::Openai => ProviderKind::Openai,
         LlmBackend::Anthropic => ProviderKind::Anthropic,
+        LlmBackend::OpenaiResponses => ProviderKind::OpenaiResponses,
         LlmBackend::Stub => ProviderKind::Stub,
         other => anyhow::bail!(
-            "llm.backend={other:?} は未実装です（Phase 3 は openai-compat/anthropic/stub）"
+            "llm.backend={other:?} は未実装です（openai-compat/openai_responses/anthropic/stub のみ）"
         ),
     };
     let gateway_config = GatewayConfig {
         provider: ProviderConfig {
             kind,
-            base_url: llm.base_url.clone(),
+            base_url: non_empty(llm.base_url.as_deref()),
             api_key: llm.api_key.clone(),
             timeout_secs: 120,
+            user_agent: non_empty(llm.user_agent.as_deref()),
+            session_header: non_empty(llm.session_header.as_deref()),
         },
         catalog: llm.model_catalog(),
         langfuse: llm.langfuse.as_ref().map(|l| LangfuseConfig {
@@ -442,4 +445,27 @@ pub(crate) async fn wire_workflow(
     })
     .await;
     Ok((Some(Arc::new(launcher)), Some(Arc::new(runs))))
+}
+
+/// compose は未設定の変数を空文字で渡すため、空（空白だけを含む）は未指定として扱い、前後の空白を落とす。
+fn non_empty(v: Option<&str>) -> Option<String> {
+    v.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::non_empty;
+
+    #[test]
+    fn empty_or_blank_settings_are_unset_and_values_are_trimmed() {
+        assert_eq!(non_empty(None), None);
+        assert_eq!(non_empty(Some("")), None);
+        assert_eq!(non_empty(Some("  ")), None);
+        assert_eq!(
+            non_empty(Some(" x-opencode-session\r")).as_deref(),
+            Some("x-opencode-session")
+        );
+    }
 }

@@ -249,6 +249,7 @@ async fn land_on_budget(
             effort: opts.effort,
             max_tokens: opts.max_tokens,
             temperature: opts.temperature,
+            session_id: opts.session_id.clone(),
         })
         .await
         .map_err(map_llm_error)?;
@@ -333,6 +334,7 @@ async fn run_step(
         max_tokens: opts.max_tokens,
         // skill のモデル既定（Task 6.9）。None は provider 既定。
         temperature: opts.temperature,
+        session_id: opts.session_id.clone(),
     };
     let mut stream = gateway.stream(req).await.map_err(map_llm_error)?;
 

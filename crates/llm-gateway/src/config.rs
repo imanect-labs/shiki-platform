@@ -14,6 +14,9 @@ pub enum ProviderKind {
     Openai,
     /// Anthropic Messages API 直結。
     Anthropic,
+    /// OpenAI Responses API（`/v1/responses`）。Chat Completions を話さないモデル用
+    /// （OpenCode Go の GPT 系など）。
+    OpenaiResponses,
     /// テスト/CI 用の決定的スタブ（外部依存なし）。
     Stub,
 }
@@ -31,6 +34,16 @@ pub struct ProviderConfig {
     /// リクエストタイムアウト秒（既定 120）。
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+    /// 送出する User-Agent（未指定は HTTP クライアントの既定）。呼び出し元の名乗りを
+    /// 求めるプロバイダ（OpenCode Go 等）向け。
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    /// 会話ごとの ID（[`GenerateRequest::session_id`]）を載せるヘッダ名
+    /// （例 `x-opencode-session`）。未指定なら送らない。
+    ///
+    /// [`GenerateRequest::session_id`]: crate::model::GenerateRequest::session_id
+    #[serde(default)]
+    pub session_header: Option<String>,
 }
 
 fn default_timeout_secs() -> u64 {

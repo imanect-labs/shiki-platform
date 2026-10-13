@@ -238,6 +238,8 @@ fn stub_gateway_with_window(pool: PgPool, context_window_tokens: Option<u32>) ->
             base_url: None,
             api_key: None,
             timeout_secs: 120,
+            user_agent: None,
+            session_header: None,
         },
         catalog: ModelCatalog {
             default_model: "m".into(),

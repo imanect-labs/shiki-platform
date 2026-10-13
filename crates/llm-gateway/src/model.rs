@@ -150,6 +150,10 @@ pub struct GenerateRequest {
     /// 温度（未指定はプロバイダ既定）。
     #[serde(default)]
     pub temperature: Option<f32>,
+    /// 会話（スレッド）ごとに安定した ID。プロバイダのルーティングとプロンプトキャッシュの
+    /// 手がかりにだけ使う（認可・課金には使わない）。使わないプロバイダは無視する。
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 impl GenerateRequest {
@@ -163,6 +167,7 @@ impl GenerateRequest {
             effort: None,
             max_tokens: None,
             temperature: None,
+            session_id: None,
         }
     }
 }

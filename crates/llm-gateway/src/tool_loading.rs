@@ -5,7 +5,7 @@
 //! 剪定（本文の畳み込み）でも参照は消えない。
 //!
 //! ネイティブに参照を展開できるプロバイダ（Anthropic）はこれを使わず、全定義を
-//! `defer_loading` 付きで送る。展開できないプロバイダ（OpenAI 互換）は
+//! `defer_loading` 付きで送る。展開できないプロバイダ（OpenAI 互換・Responses）は
 //! [`context_tools`] の結果だけを `tools` に載せる。
 
 use std::collections::HashSet;

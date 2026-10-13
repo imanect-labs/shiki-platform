@@ -115,6 +115,8 @@ async fn setup() -> Option<Harness> {
                     base_url: None,
                     api_key: None,
                     timeout_secs: 30,
+                    user_agent: None,
+                    session_header: None,
                 },
                 catalog: llm_gateway::ModelCatalog {
                     default_model: "stub".into(),

@@ -94,6 +94,8 @@ pub struct SubagentTool {
     system: String,
     /// 論理モデル名（親と同じものを渡す想定）。
     model: Option<String>,
+    /// 会話 ID（親と同じものを渡す。プロバイダのルーティング・キャッシュの手がかり）。
+    session_id: Option<String>,
     /// 冪等キーの接頭辞（親の `<run_id>:<fencing>`）。子は `:sub<n>` を足す。
     idempotency_prefix: String,
     /// 生成済みの体数（`max_per_run` の判定と冪等キーの採番を兼ねる）。
@@ -127,6 +129,7 @@ impl SubagentTool {
             limits,
             system: DEFAULT_SYSTEM.to_string(),
             model: None,
+            session_id: None,
             idempotency_prefix,
             spawned: AtomicUsize::new(0),
             cancel,
@@ -148,9 +151,18 @@ impl SubagentTool {
         self
     }
 
+    /// 子の生成に親と同じ会話 ID を付ける。
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: Option<String>) -> Self {
+        self.session_id = session_id;
+        self
+    }
+
     /// 子の実行オプション（ロールごとに system と予算を変える）。
     fn child_options(&self, role: Role) -> AgentOptions {
-        child_options(&self.limits, role, &self.system, self.model.as_deref())
+        let mut opts = child_options(&self.limits, role, &self.system, self.model.as_deref());
+        opts.session_id.clone_from(&self.session_id);
+        opts
     }
 }
 

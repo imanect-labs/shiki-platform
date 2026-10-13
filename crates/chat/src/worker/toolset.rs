@@ -246,6 +246,7 @@ impl ChatWorker {
                 cancel,
             )
             .with_model(self.config.model.clone())
+            .with_session_id(Some(run.thread_id.to_string()))
             .with_tool_events(tx),
         ));
     }

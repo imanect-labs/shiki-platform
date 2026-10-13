@@ -217,6 +217,8 @@ fn base_config(db_url: &str) -> AppConfig {
             models: vec![],
             context_window_tokens: None,
             langfuse: None,
+            user_agent: None,
+            session_header: None,
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
