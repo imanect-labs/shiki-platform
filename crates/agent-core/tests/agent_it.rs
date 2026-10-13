@@ -362,6 +362,47 @@ async fn run_agent_dispatches_tool_then_completes() {
     assert!(artifact_ok, "成果物イベントが 1 件流れる");
 }
 
+/// プロバイダ固有の推論アイテム（#542）は、前後の本文・ツール呼び出しと届いた順のまま assistant
+/// メッセージに積まれ、次のステップのリクエストでそのまま送り返される（stub の `reasoning:` が
+/// 2 ターン目に確かめる）。
+#[tokio::test]
+async fn run_agent_carries_reasoning_items_to_the_next_step() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockOkTool)];
+    let mut sink = TestSink::new();
+
+    let stop = run_agent(
+        &gateway,
+        &tools,
+        user_msg("reasoning: 考えてから呼ぶ"),
+        &run_context(&c, "reasoning: 考えてから呼ぶ"),
+        &AgentOptions::chat(4),
+        None,
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功")
+    .stop;
+
+    assert_eq!(stop, AgentStop::Completed);
+    let text: String = sink
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("推論を引き継ぎました"),
+        "2 ターン目の本文: {text}"
+    );
+}
+
 /// 事前にキャンセル要求済みの sink → ループはステップ境界で即停止する。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_agent_stops_on_cancellation() {
