@@ -2,12 +2,26 @@
 # dev-up.sh — 変更を目で確認できる状態まで環境を起動する。
 #
 #   使い方:
-#     dev-up.sh [--compose] [--rag] [--sandbox] [--office] [--reset-db]
+#     dev-up.sh [--compose] [--rag|--rag-remote] [--sandbox] [--office] [--reset-db]
 #     dev-up.sh --down     # 起動したものを止める
 #     dev-up.sh --status   # 生存確認だけする
 #
 #   --reset-db: compose の dev DB 'shiki' を DROP/CREATE してから起動する（破壊操作）。
 #               別ブランチの migration が当たって checksum 不一致になった時に使う。
+#
+#   --rag-remote: RAG を有効にし、ingestion-worker と S3 は**外部のものを使う**（native のみ）。
+#                 worker のイメージは 9.7GB・常駐 RAM 2〜3GB あり、開発機ごとに持つと重い。
+#                 S3 も外部にするのは、worker が presigned URL を自分で取りに行くため
+#                 （開発機の S3 は外部の worker から見えない）。接続先は環境変数で渡す:
+#                   SHIKI_DEV_RAG_WORKER_URL     worker のベース URL
+#                   SHIKI_DEV_S3_ENDPOINT        S3 のエンドポイント（サーバ・worker が使う）
+#                   SHIKI_DEV_S3_PUBLIC_ENDPOINT ブラウザが presigned URL で叩く先（既定は上と同じ）
+#                   SHIKI_DEV_S3_BUCKET          **開発環境ごとに別のバケット**にする（後述）
+#                   SHIKI_DEV_S3_ACCESS_KEY / SHIKI_DEV_S3_SECRET_KEY
+#                 バケットを他の開発環境と共有しない。オブジェクトキーは
+#                 {tenant_id}/{org}/{sha256} で環境を区別せず、参照カウントも各自の DB にしか
+#                 無いため、別環境のテナント削除（{tenant_id}/ 以下の一括削除）が自分の blob を消す。
+#                 compose の DB は docker ホストごとに 1 つなので、バケットもホストごとに分ける。
 #
 #   既定（native モード）:
 #     compose で依存だけ起動（postgres/keycloak/openfga/redis/rustfs）
@@ -30,6 +44,8 @@ say() { printf '%s\n' "$*"; }
 MODE=native
 RESET_DB=0
 WITH_RAG=0
+# --rag-remote: worker と S3 を外部のものにする（RAG 自体は WITH_RAG で有効にする）。
+RAG_REMOTE=0
 WITH_SANDBOX=0
 WITH_OFFICE=0
 ACTION=up
@@ -39,6 +55,7 @@ while [ $# -gt 0 ]; do
     --compose) MODE=compose ;;
     --reset-db) RESET_DB=1 ;;
     --rag)     WITH_RAG=1 ;;
+    --rag-remote) WITH_RAG=1; RAG_REMOTE=1 ;;
     --sandbox) WITH_SANDBOX=1 ;;
     --office)  WITH_OFFICE=1 ;;
     --down)    ACTION=down ;;
@@ -58,6 +75,14 @@ cd "$ROOT"
 if [ "$WITH_OFFICE" = 1 ] && [ "$MODE" != compose ]; then
   err "--office は --compose と併用してください（native では Collabora がホストの shiki-server に到達できません）。"
   err "  例: $0 --compose --office"
+  exit 2
+fi
+
+# compose の shiki-server は worker・S3 の接続先が docker-compose.yml に固定されており、
+# 外部の接続先を渡す経路が無い。起動はできても索引が入らない状態を作らず、ここで止める。
+if [ "$RAG_REMOTE" = 1 ] && [ "$MODE" = compose ]; then
+  err "--rag-remote は native 専用です（compose の shiki-server には外部の worker・S3 を渡せません）。"
+  err "  compose で RAG を使うなら: $0 --compose --rag"
   exit 2
 fi
 
@@ -163,9 +188,40 @@ case "$ACTION" in
   down)   stop_all; exit 0 ;;
 esac
 
+# --- 0. 外部の worker・S3 を使うなら、先に接続先と疎通を確かめる ---
+# **黙ってローカルへフォールバックしない。** 届かないまま進むと、worker が presigned URL を
+# 取りに来られず「アップロードは通るのに索引だけ入らない」という分かりにくい壊れ方をする。
+if [ "$RAG_REMOTE" = 1 ]; then
+  say "== 0. 外部の ingestion-worker と S3 を確認 =="
+  missing=""
+  for v in SHIKI_DEV_RAG_WORKER_URL SHIKI_DEV_S3_ENDPOINT SHIKI_DEV_S3_BUCKET SHIKI_DEV_S3_ACCESS_KEY SHIKI_DEV_S3_SECRET_KEY; do
+    [ -n "${!v:-}" ] || missing="$missing $v"
+  done
+  if [ -n "$missing" ]; then
+    err "   --rag-remote には次の環境変数が要ります:$missing"
+    err "   （worker と S3 をローカルに立てるなら --rag）"
+    exit 2
+  fi
+  if ! curl -fsS -m 5 -o /dev/null "$SHIKI_DEV_RAG_WORKER_URL/healthz" 2>/dev/null; then
+    err "   ingestion-worker に届きません: $SHIKI_DEV_RAG_WORKER_URL"
+    exit 1
+  fi
+  # S3 は無署名リクエストに 403 などを返す。応答コードが返れば届いている。
+  if ! curl -s -m 5 -o /dev/null -w '%{http_code}' "$SHIKI_DEV_S3_ENDPOINT" 2>/dev/null | grep -qE '^[2-4]'; then
+    err "   S3 に届きません: $SHIKI_DEV_S3_ENDPOINT"
+    exit 1
+  fi
+  say "   [ok] worker=$SHIKI_DEV_RAG_WORKER_URL"
+  say "        s3=$SHIKI_DEV_S3_ENDPOINT  bucket=$SHIKI_DEV_S3_BUCKET"
+fi
+
 # --- 1. compose 依存サービス ---
-DEPS="postgres keycloak openfga redis rustfs"
-[ "$WITH_RAG" = 1 ] && DEPS="$DEPS qdrant ingestion-worker"
+DEPS="postgres keycloak openfga redis"
+# 外部の S3 を使うなら RustFS は立てない。
+[ "$RAG_REMOTE" = 1 ] || DEPS="$DEPS rustfs"
+# Qdrant は常にローカル（小さく、ベクトルは手元で使い捨てたい）。
+[ "$WITH_RAG" = 1 ] && DEPS="$DEPS qdrant"
+[ "$WITH_RAG" = 1 ] && [ "$RAG_REMOTE" = 0 ] && DEPS="$DEPS ingestion-worker"
 [ "$WITH_SANDBOX" = 1 ] && DEPS="$DEPS sandbox-orchestrator"
 [ "$WITH_OFFICE" = 1 ] && DEPS="$DEPS collabora"
 
@@ -296,6 +352,24 @@ else
   fi
   say "   依存ポート: pg=$PG_PORT kc=$KC_PORT fga=$FGA_PORT redis=$REDIS_PORT rustfs=$RUSTFS_PORT qdrant=$QDRANT_PORT"
 
+  # S3 と worker の実効値。heredoc は unquoted で中の分岐が生成時に評価されるため、外で決める。
+  if [ "$RAG_REMOTE" = 1 ]; then
+    EFF_S3_INTERNAL=$SHIKI_DEV_S3_ENDPOINT
+    # ブラウザが presigned URL を直接叩くので、ブラウザから届く先でなければならない。
+    EFF_S3_PUBLIC=${SHIKI_DEV_S3_PUBLIC_ENDPOINT:-$SHIKI_DEV_S3_ENDPOINT}
+    EFF_S3_BUCKET=$SHIKI_DEV_S3_BUCKET
+    EFF_S3_AK=$SHIKI_DEV_S3_ACCESS_KEY
+    EFF_S3_SK=$SHIKI_DEV_S3_SECRET_KEY
+    EFF_WORKER_URL=$SHIKI_DEV_RAG_WORKER_URL
+  else
+    EFF_S3_INTERNAL=http://localhost:${RUSTFS_PORT}
+    EFF_S3_PUBLIC=http://localhost:${RUSTFS_PORT}
+    EFF_S3_BUCKET=shiki-blobs
+    EFF_S3_AK=$RUSTFS_AK
+    EFF_S3_SK=$RUSTFS_SK
+    EFF_WORKER_URL=http://localhost:${WORKER_PORT}
+  fi
+
   # コンテナ内部ホスト名をホストの公開ポートへ読み替える。
   # env 名は deploy/compose/docker-compose.yml の shiki-server 節が正（食い違ったら合わせる）。
   cat > "$RUNDIR/run-server.sh" <<EOF
@@ -323,20 +397,21 @@ export SHIKI__SESSION__SECURE=false
 export SHIKI__AUTHZ__BASE_URL=http://localhost:${FGA_PORT}
 export SHIKI__AUTHZ__STORE_NAME=shiki
 export SHIKI__STORAGE__BACKEND=s3
-export SHIKI__STORAGE__S3__INTERNAL_ENDPOINT=http://localhost:${RUSTFS_PORT}
-export SHIKI__STORAGE__S3__PUBLIC_ENDPOINT=http://localhost:${RUSTFS_PORT}
-export SHIKI__STORAGE__S3__BUCKET=shiki-blobs
+export SHIKI__STORAGE__S3__INTERNAL_ENDPOINT=${EFF_S3_INTERNAL}
+export SHIKI__STORAGE__S3__PUBLIC_ENDPOINT=${EFF_S3_PUBLIC}
+export SHIKI__STORAGE__S3__BUCKET=${EFF_S3_BUCKET}
 # ブラウザ直 PUT/GET のバケット CORS。設定しないと put_bucket_cors が呼ばれず
 # Drive のアップロードが CORS で失敗する（MinIO 時代はサーバ側 env で代替されていた）。
 # figment は env 値をブラケット記法で配列として読む（裸のカンマ区切りは不可）。
 export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS='[*]'
-# 資格情報は上（heredoc の外）で compose から解決した値を焼き込む。
+# **資格情報はこのファイルに書かない。** 起動時に dev-up.sh がプロセスの環境で渡す
+# （外部の S3 の資格情報が /tmp に平文で残るのを避ける。値をシェルとして再解析もしない）。
 # **この heredoc は unquoted なので、コメント行まで生成時に展開される。**
 # コマンド置換や位置パラメータをここに書くと（コメントの中であっても）
 # dev-up.sh 自身のシェルで評価され、set -u のもと未設定変数で死ぬ。
-# 実行時に評価したいものは heredoc の外で解決して値を渡すこと。
-export SHIKI__STORAGE__S3__ACCESS_KEY=${RUSTFS_AK}
-export SHIKI__STORAGE__S3__SECRET_KEY=${RUSTFS_SK}
+# 実行時に評価したいものはドル記号をバックスラッシュでエスケープするか、heredoc の外で解決して値を渡すこと。
+export SHIKI__STORAGE__S3__ACCESS_KEY="\${SHIKI_DEV_RUN_S3_ACCESS_KEY:?dev-up.sh から起動してください}"
+export SHIKI__STORAGE__S3__SECRET_KEY="\${SHIKI_DEV_RUN_S3_SECRET_KEY:?dev-up.sh から起動してください}"
 export SHIKI__GATEWAY__ENABLED=true
 # native の第2/第3リスナは compose の shiki-server（8090/8091 を publish）と衝突しない
 # 18090/18091 を使う。web 側には NEXT_PUBLIC_GATEWAY_ORIGIN / NEXT_PUBLIC_B1_ORIGIN で
@@ -354,7 +429,7 @@ export SHIKI__LLM__BACKEND=stub
 export SHIKI__WEBSEARCH__BACKEND=stub
 export SHIKI__RAG__ENABLED=$([ "$WITH_RAG" = 1 ] && echo true || echo false)
 export SHIKI__RAG__QDRANT_URL=http://localhost:${QDRANT_PORT}
-export SHIKI__RAG__WORKER_BASE_URL=http://localhost:${WORKER_PORT}
+export SHIKI__RAG__WORKER_BASE_URL=${EFF_WORKER_URL}
 export SHIKI__RAG__INDEX_DATA_DIR="$RUNDIR/index"
 export SHIKI__CHAT__SANDBOX_ENDPOINT=http://localhost:${SANDBOX_PORT}
 export SHIKI__OFFICE__ENABLED=$([ "$WITH_OFFICE" = 1 ] && echo true || echo false)
@@ -414,7 +489,8 @@ EOF
     exit 1
   fi
 
-  setsid nohup "$RUNDIR/run-server.sh" > "$SERVER_LOG" 2>&1 < /dev/null &
+  SHIKI_DEV_RUN_S3_ACCESS_KEY="$EFF_S3_AK" SHIKI_DEV_RUN_S3_SECRET_KEY="$EFF_S3_SK" \
+    setsid nohup "$RUNDIR/run-server.sh" > "$SERVER_LOG" 2>&1 < /dev/null &
   echo $! > "$SERVER_PID"
   disown || true
   say "   起動中… ログ: $SERVER_LOG"
@@ -513,7 +589,7 @@ say "  keycloak   http://localhost:8081"
 say "  ログ       $SERVER_LOG"
 say "             $WEB_LOG"
 say ""
-say "  RAG=$([ "$WITH_RAG" = 1 ] && echo on || echo off)  sandbox=$([ "$WITH_SANDBOX" = 1 ] && echo on || echo off)  office=$([ "$WITH_OFFICE" = 1 ] && echo on || echo off)  （必要なら --rag / --sandbox / --office）"
+say "  RAG=$([ "$WITH_RAG" = 1 ] && { [ "$RAG_REMOTE" = 1 ] && echo "on(worker と S3 は外部)" || echo on; } || echo off)  sandbox=$([ "$WITH_SANDBOX" = 1 ] && echo on || echo off)  office=$([ "$WITH_OFFICE" = 1 ] && echo on || echo off)  （必要なら --rag / --rag-remote / --sandbox / --office）"
 say ""
 say "  E2E:  cd web && E2E_BASE_URL=http://localhost:3000 pnpm exec playwright test e2e/<x>.spec.ts"
 say "  停止:  $0 --down"
