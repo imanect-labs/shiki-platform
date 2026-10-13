@@ -268,12 +268,18 @@ pub(crate) async fn wire_chat(
         .await
         .map_err(|e| anyhow::anyhow!("chat store 構築に失敗: {e}"))?;
 
+    let system_prompt = config
+        .chat
+        .system_prompt
+        .clone()
+        .unwrap_or_else(|| chat::WorkerConfig::default().system_prompt);
     let worker_config = chat::WorkerConfig {
-        system_prompt: config
-            .chat
-            .system_prompt
-            .clone()
-            .unwrap_or_else(|| chat::WorkerConfig::default().system_prompt),
+        // 図（```ui ブロック）を書かせるなら書き方を足す（#530）。
+        system_prompt: if config.chat.yui {
+            chat::with_yui_guide(&system_prompt)
+        } else {
+            system_prompt
+        },
         model: config.llm.default_model.clone(),
         lease_secs: config.chat.lease_secs,
         max_steps: config.chat.max_steps,

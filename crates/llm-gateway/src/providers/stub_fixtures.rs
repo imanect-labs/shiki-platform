@@ -318,6 +318,28 @@ fn domain_spec() -> Value {
     })
 }
 
+/// `yui:<kind>` の応答本文（```ui ブロックの図を含む Markdown・#530）。
+///
+/// `bar` / `line` / `stat` / `flow` / `stack` はそれぞれの図、`all` は全種類、`bad` は図にできない
+/// ブロック（コードブロック表示へのフォールバック検証用）。
+pub(super) fn yui_reply(kind: &str) -> String {
+    const BAR: &str = "```ui\nbar 四半期ごとの売上と利益\nunit: 百万円\n四半期 | 売上 | 利益\nQ1 | 120 | 30\nQ2 | 150 | -5\nQ3 | 135 | 12\nQ4 | 210 | 44\n```";
+    const LINE: &str = "```ui\nline 週次アクティブユーザー\n週 | Web | アプリ\n第1週 | 1200 | 800\n第2週 | 1350 | 950\n第3週 | 1280 | 1100\n第4週 | 1500 | 1300\n```";
+    const STAT: &str = "```ui\nstat 今月の営業実績\n売上 | 3,200万円 | 前年比 +18%\n新規顧客数 | 165社\n解約率 | 2.2% | 前月 2.6%\n```";
+    const FLOW: &str = "```ui\nflow 経費精算\n精算書提出 -> 上長承認\n上長承認 -承認-> 経理確認 -> 支払\n上長承認 -差戻し-> 修正\n修正 -> 精算書提出\n```";
+    const STACK: &str = "```ui\nstack システム構成\n- 画面: Web / スマホ\n- API サーバ\n  - 認証\n  - 検索\n- データベース | ファイル保管\nnote: 論理構成。\n```";
+    let body = match kind {
+        "line" => LINE.to_string(),
+        "stat" => STAT.to_string(),
+        "flow" => FLOW.to_string(),
+        "stack" => STACK.to_string(),
+        "all" => [BAR, LINE, STAT, FLOW, STACK].join("\n\n"),
+        "bad" => "```ui\nこれは図ではありません\n```".to_string(),
+        _ => BAR.to_string(),
+    };
+    format!("集計結果を図にしました。\n\n{body}\n\n以上です。")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

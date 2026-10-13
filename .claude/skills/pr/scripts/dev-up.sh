@@ -523,6 +523,8 @@ export SHIKI__GATEWAY__WEB_ORIGIN=http://localhost:3000
 # 閲覧フォールバックに落ちるため、変更が反映されない画面をスクショしてしまう。
 export SHIKI__GATEWAY__BUILTIN_DIR=${ROOT}/web/editor-sandbox/dist
 export SHIKI__CHAT__ENABLED=true
+# 回答の ui ブロック（Yui）の図（#530）。compose の既定と揃える。
+export SHIKI__CHAT__YUI=true
 export SHIKI__WORKFLOW__ENABLED=true
 # 既定は stub（E2E の前提）。実 LLM で確かめるときは呼び出し側で BACKEND 等を渡す
 # （シェルに残った値を拾うことがあるので、起動後のまとめに LLM の種類を出して警告する）。

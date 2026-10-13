@@ -68,6 +68,37 @@ pub(super) fn text_stream(reply: &str, prompt_tokens: u64) -> DeltaStream {
     stream::iter(events).boxed()
 }
 
+/// 本文を `chunk` 文字ずつ `gap` 間隔で流す（実 LLM と同じく行の途中で区切れる。
+/// 生成途中の描画を目で追える速さにする・#530）。
+pub(super) fn paced_chunks_stream(
+    reply: &str,
+    prompt_tokens: u64,
+    chunk: usize,
+    gap: Duration,
+) -> DeltaStream {
+    let chars: Vec<char> = reply.chars().collect();
+    let pieces: Vec<String> = chars
+        .chunks(chunk.max(1))
+        .map(|c| c.iter().collect())
+        .collect();
+    let completion_tokens = pieces.len() as u64;
+    stream::iter(pieces)
+        .then(move |text| async move {
+            tokio::time::sleep(gap).await;
+            Ok(StreamDelta::TextDelta { text })
+        })
+        .chain(stream::once(async move {
+            Ok(StreamDelta::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                },
+            })
+        }))
+        .boxed()
+}
+
 /// 本文を出し切ってから `hold` だけ待って終える（生成中の UI を試すための遅延）。
 ///
 /// 先に本文を出すのは、e2e が「生成が始まった」ことを本文の出現で待てるようにするため。
