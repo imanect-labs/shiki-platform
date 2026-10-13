@@ -623,4 +623,5 @@
   --yui-muted: var(--muted-foreground);
   --yui-border: var(--border);
   --yui-grid: var(--border);
+  --yui-focus: var(--ring);
 }
