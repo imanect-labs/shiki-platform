@@ -33,6 +33,7 @@ pub mod budget;
 pub mod checkpoint;
 pub mod cite;
 pub mod context;
+pub mod context_replay;
 pub mod event;
 pub mod loop_detect;
 pub mod plan;
