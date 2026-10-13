@@ -201,6 +201,10 @@ pub struct ChatConfig {
     /// 検索プロバイダの rate limit がきつい環境では 1〜2 に絞る（1 で従来どおりの逐次）。
     #[serde(default)]
     pub parallel_read_tools: Option<usize>,
+    /// tool search（出番の限られるツールを `tool_search` で読み込ませる）を使うか
+    /// （未指定は WorkerConfig 既定 true）。false で全ツールの定義を常に提示する。
+    #[serde(default)]
+    pub tool_search: Option<bool>,
     /// 通常チャットで旧・無条件 RAG 注入経路を使う後方互換フォールバック（既定 false）。
     /// false ならモデル裁量ループ（issue #102）。明示的なエージェントモード run/自律 run には影響しない。
     #[serde(default)]
@@ -309,6 +313,7 @@ impl Default for ChatConfig {
             max_steps: default_max_steps(),
             max_tokens: None,
             parallel_read_tools: None,
+            tool_search: None,
             classic_rag: false,
             sandbox_endpoint: None,
             sandbox_backend: None,

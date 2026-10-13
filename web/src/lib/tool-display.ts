@@ -34,10 +34,11 @@ import {
   Trash2,
   Users,
   Workflow,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 
-import type { ToolName } from "@/generated/gui-spec";
+import type { MetaToolName, ToolName } from "@/generated/gui-spec";
 
 /// ツールの大分類。フェーズ行の文言と季節アクセントの導出に使う
 /// （旧実装は日本語ラベルのプレフィックス一致で段階判定しており、文言変更で静かに壊れていた）。
@@ -64,10 +65,6 @@ type ToolDisplay = {
   /// 対象が storage の node_id で、名前解決（`node-name-cache`）が要る。
   nodeIdKey?: string;
 };
-
-/// `plan` は `ToolName` 語彙の外（`crates/agent-core/src/agent.rs` の `PLAN_TOOL` リテラル。
-/// ループが横取りするため `Tool` として dispatch されない）。表示だけは同じ体系に載せる。
-export const PLAN_TOOL = "plan";
 
 // ── 入力から対象を取り出すヘルパ ────────────────────────────────
 
@@ -396,12 +393,29 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
   },
 };
 
-const PLAN_DISPLAY: ToolDisplay = {
-  icon: ListChecks,
-  category: "meta",
-  lead: () => "計画を",
-  verb: "更新",
-  suru: true,
+/// ループが横取りするメタツール（`MetaToolName` = `crates/agent-core/src/vocab.rs` → ts-rs）。
+/// `Tool` として dispatch されないが、モデルには通常のツールとして見えるので同じ体系に載せる。
+const META_DISPLAY: Record<MetaToolName, ToolDisplay> = {
+  plan: {
+    icon: ListChecks,
+    category: "meta",
+    lead: () => "計画を",
+    verb: "更新",
+    suru: true,
+  },
+  // 遅延ロードのツールを検索して読み込む。`select:a,b` は名指しの読み込みで、
+  // ツール名（生の英識別子）は見せない。
+  tool_search: {
+    icon: Wrench,
+    category: "meta",
+    lead: (t) => (t ? `「${t}」のツールを` : "指定したツールを"),
+    verb: "検索",
+    suru: true,
+    target: (input) => {
+      const q = str(input, "query");
+      return q && !q.startsWith("select:") ? q : null;
+    },
+  },
 };
 
 const UNKNOWN_DISPLAY: ToolDisplay = {
@@ -413,8 +427,9 @@ const UNKNOWN_DISPLAY: ToolDisplay = {
 };
 
 function displayFor(name: string): ToolDisplay {
-  if (name === PLAN_TOOL) return PLAN_DISPLAY;
-  return TOOL_DISPLAY[name as ToolName] ?? UNKNOWN_DISPLAY;
+  return (
+    TOOL_DISPLAY[name as ToolName] ?? META_DISPLAY[name as MetaToolName] ?? UNKNOWN_DISPLAY
+  );
 }
 
 // ── 公開 API ───────────────────────────────────────────────────

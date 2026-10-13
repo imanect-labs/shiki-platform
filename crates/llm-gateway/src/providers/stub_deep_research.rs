@@ -214,11 +214,7 @@ mod tests {
     fn tools(names: &[&str]) -> Vec<ToolDef> {
         names
             .iter()
-            .map(|n| ToolDef {
-                name: (*n).to_string(),
-                description: String::new(),
-                input_schema: serde_json::json!({}),
-            })
+            .map(|n| ToolDef::new(*n, "", serde_json::json!({})))
             .collect()
     }
 
@@ -252,11 +248,7 @@ mod tests {
     fn tool_result() -> Message {
         Message {
             role: Role::Tool,
-            content: vec![Block::ToolResult {
-                tool_use_id: "t1".into(),
-                content: "ok".into(),
-                is_error: false,
-            }],
+            content: vec![Block::tool_result("t1", "ok", false)],
         }
     }
 
