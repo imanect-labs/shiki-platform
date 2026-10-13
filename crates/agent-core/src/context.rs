@@ -540,6 +540,24 @@ mod tests {
     }
 
     #[test]
+    fn tools_loaded_in_the_last_step_survive_into_the_checkpoint() {
+        // 送信時 300 → 実測で補正 → このステップの結果で 800 に増えた。保存する差には増分が入り、
+        // 再開時に履歴から求めた基準（800）と食い違わない。
+        let msgs = vec![tool_result("x", false)];
+        let mut g = ContextGauge::with_overhead(0).with_tool_tokens(300);
+        g.calibrate(
+            estimate_prompt_tokens(&msgs),
+            1_300 + estimate_prompt_tokens(&msgs) as u64,
+        );
+        g.observe_tools(800);
+        let saved = g.overhead_tokens();
+        assert_eq!(saved, 1_800);
+        let mut resumed = ContextGauge::with_overhead(saved).with_tool_tokens(800);
+        resumed.observe_tools(800);
+        assert_eq!(resumed.overhead_tokens(), 1_800);
+    }
+
+    #[test]
     fn static_estimate_counts_system_and_tool_definitions() {
         // name "web_fetch" 9 bytes → 2 / description 4 字 → 4 / schema "{}" → 0
         let tools = vec![ToolDef::new("web_fetch", "取得する", serde_json::json!({}))];
