@@ -163,14 +163,15 @@ export default function WorkflowsPage() {
       {/* 狭い幅でもボタンが説明文を押しつぶさないよう、説明はタイトル行の下に全幅で置く。 */}
       <div className="mb-5">
         <div className="flex items-center justify-between gap-3">
-          <h1 className="text-lg font-semibold">ワークフロー</h1>
-          <Button onClick={create} disabled={creating}>
+          <h1 className="shrink-0 text-lg font-semibold">ワークフロー</h1>
+          <Button onClick={create} disabled={creating} aria-label="新しいワークフロー">
             {creating ? (
               <Loader2 className="size-4 animate-spin" aria-hidden />
             ) : (
               <Plus className="size-4" aria-hidden />
             )}
-            新しいワークフロー
+            <span className="sm:hidden">新規作成</span>
+            <span className="hidden sm:inline">新しいワークフロー</span>
           </Button>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">ブロックをつないで、定型作業を自動で動く流れにできます。</p>

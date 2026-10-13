@@ -293,7 +293,8 @@ export function ToolActivity({
         <CitationChips citations={citations} nodeNames={nodeNames} />
         <span className="min-w-0 flex-1" />
         {summary.length > 0 ? (
-          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+          // 種類別の内訳は、狭い幅では見出しより先に省略する。
+          <span className="min-w-0 truncate text-[11px] tabular-nums text-muted-foreground">
             {running ? `${items.length} 件の操作` : summary.join(" ・ ")}
           </span>
         ) : null}

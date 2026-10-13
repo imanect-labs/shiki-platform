@@ -115,7 +115,8 @@ function InteractiveMarker({ n, message }: { n: number; message: MessageCitation
           className={cn(
             CHIP,
             // 指で触る端末では、見た目はそのままで当たり判定だけ広げる（チップは本文の 7 割の大きさしかない）。
-            "relative pointer-coarse:before:absolute pointer-coarse:before:-inset-x-1.5 pointer-coarse:before:-inset-y-2.5 pointer-coarse:before:content-['']",
+            // 横は隣のチップとの間（mx-px）まで、縦は上下の行に届かない分だけにする（隣を覆うと別の番号が開く）。
+            "relative pointer-coarse:before:absolute pointer-coarse:before:-inset-x-px pointer-coarse:before:-inset-y-1.5 pointer-coarse:before:content-['']",
             "cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             active
               ? "bg-[var(--doc)] text-background"

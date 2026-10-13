@@ -55,7 +55,7 @@ export default function AppsPage() {
       {/* 狭い幅でもボタンが説明文を押しつぶさないよう、説明はタイトル行の下に全幅で置く。 */}
       <div className="mb-5">
         <div className="flex items-center justify-between gap-3">
-          <h1 className="text-lg font-semibold">アプリ</h1>
+          <h1 className="shrink-0 text-lg font-semibold">アプリ</h1>
           <Button onClick={() => setDialog({ kind: "create" })}>
             <LayoutGrid className="size-4" aria-hidden />
             アプリを作成

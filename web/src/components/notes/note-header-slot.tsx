@@ -55,11 +55,12 @@ export function NoteSyncSlot({
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{name}</span>
         {!editable ? (
           <span
-            className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
+            className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border bg-muted/50 px-2 py-0.5 text-xs font-medium text-muted-foreground sm:px-2.5"
+            title="閲覧のみ"
             data-testid="note-readonly-badge"
           >
             <Eye className="size-3.5" aria-hidden />
-            閲覧のみ
+            <span className="sr-only sm:not-sr-only">閲覧のみ</span>
           </span>
         ) : null}
         {provider ? <PresenceAvatars provider={provider} /> : null}
