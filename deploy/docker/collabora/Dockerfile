@@ -191,8 +191,17 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ランタイム依存は dev パッケージで引き込む（noble の t64 リネーム等、実ライブラリの
 # パッケージ名差異に依存しないため。ヘッダ分のサイズ増は堅牢性とのトレード）。
 # 日本語フォント（Noto CJK）はオンプレ・エアギャップで文書の見た目を保つため同梱する。
+#
+# cpio / tzdata / fontconfig: 下の coolwsd-systemplate-setup が使う（online-build と同じ理由）。
+# このスクリプトは cpio が無くても**exit 0 で終わる**ので、ビルドは通るのに
+# jail の雛形が空になり、coolwsd が起動直後に落ちる。
+#   /usr/bin/coolwsd-systemplate-setup: line 88: cpio: command not found
+#   cp: cannot stat '/etc/timezone': No such file or directory
+# tzdata は /etc/timezone と /etc/localtime を、fontconfig は /etc/fonts と
+# /var/cache/fontconfig を供給する（いずれも雛形へコピーされる）。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev libpng-dev libzstd-dev libpam0g-dev libcap2-bin libpcre2-8-0 \
+    cpio tzdata fontconfig \
     fonts-noto-cjk fonts-noto-cjk-extra ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 # **ビルドに使ったのと同じ Poco を載せる。** distro の 1.11.0 を入れると
@@ -206,9 +215,13 @@ COPY --from=online-build /ONLINE_COMMIT /etc/collabora/ONLINE_COMMIT
 # 非 root 実行（cool ユーザー）＋ systemplate/jail の初期化＋forkit へのファイル capability 付与
 # （jail の chroot に必要。Docker 既定 cap 集合（CHOWN/FOWNER/MKNOD/SYS_CHROOT）内で動く。
 #  compose 側で no-new-privileges を付けないこと — file caps の獲得が塞がれ起動不能になる）。
+# systemplate-setup は失敗しても exit 0 なので、雛形の中身をここで確かめて止める。
 RUN useradd -m -d /opt/cool cool \
     && mkdir -p /etc/coolwsd /var/cache/coolwsd /opt/cool/child-roots \
     && coolwsd-systemplate-setup /opt/cool/systemplate /opt/collaboraoffice \
+    && for f in lib64/ld-linux-x86-64.so.2 etc/ld.so.cache etc/localtime etc/fonts usr/share/fonts; do \
+         test -e "/opt/cool/systemplate/$f" || { echo "systemplate に $f が無い"; exit 1; }; \
+       done \
     && for b in /usr/bin/coolforkit /usr/bin/coolforkit-caps /usr/bin/coolmount; do \
          [ -x "$b" ] && setcap cap_fowner,cap_chown,cap_mknod,cap_sys_chroot=ep "$b" || true; \
        done \

@@ -114,10 +114,13 @@ jobs:
             io.shiki.collabora.core=${{ env.CORE_REF }}@${{ env.CORE_COMMIT }}
             io.shiki.collabora.online=${{ env.ONLINE_REF }}@${{ env.ONLINE_COMMIT }}
 
+      # **--rm を付けない。** 付けていると coolwsd が起動直後に落ちたとき
+      # コンテナごとログが消え、「No such container」しか残らなかった。
       - name: smoke（discovery が取れること）
         run: |
           set -euo pipefail
-          docker run -d --rm --name collabora-smoke -p 127.0.0.1:19980:9980 \
+          trap 'docker rm -f collabora-smoke >/dev/null 2>&1 || true' EXIT
+          docker run -d --name collabora-smoke -p 127.0.0.1:19980:9980 \
             "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
             coolwsd --o:sys_template_path=/opt/cool/systemplate \
               --o:child_root_path=/opt/cool/child-roots \
@@ -125,11 +128,15 @@ jobs:
               --o:ssl.enable=false --o:ssl.termination=false
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
-              echo "discovery OK"; docker stop collabora-smoke; exit 0
+              echo "discovery OK"; exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' collabora-smoke)" != true ]; then
+              echo "coolwsd が終了した（exit code: $(docker inspect -f '{{.State.ExitCode}}' collabora-smoke)）"
+              docker logs collabora-smoke 2>&1 | tail -200; exit 1
             fi
             sleep 2
           done
-          echo "discovery が 120 秒で応答しない"; docker logs collabora-smoke; exit 1
+          echo "discovery が 120 秒で応答しない"; docker logs collabora-smoke 2>&1 | tail -200; exit 1
 
       # smoke を通ったものだけ公開する。
       - name: push
