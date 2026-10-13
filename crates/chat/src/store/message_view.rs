@@ -8,8 +8,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::collections::{HashMap, HashSet};
 
 use authz::{AuthContext, Consistency, Relation};
 use futures::stream::{BoxStream, StreamExt};
@@ -18,9 +17,6 @@ use uuid::Uuid;
 use crate::model::{Citation, ContentBlock, Message, StreamEvent, StreamEventKind};
 
 use super::threads::map_db;
-
-/// SSE の見直しで、ファイルごとの閲覧判定を使い回す時間（[`ChatStore::viewer_event_stream`]）。
-const DECISION_TTL: Duration = Duration::from_secs(30);
 
 impl ChatStore {
     /// 各メッセージの citation ブロックを閲覧者の viewer 権限で再評価し、読めない引用を落とす。
@@ -137,7 +133,7 @@ impl ChatStore {
     /// 保存済みメッセージ（`get_messages`）と同じ 2 つを、生成中の再送にも掛ける。掛けないと、
     /// 共有スレッドを開いた閲覧者が、自分では読めない文書の抜粋を生成中にだけ見られてしまう。
     /// - 引用: 閲覧者が読めないファイルのものは番号だけの出典（[`Citation::withheld`]）に置き換える。
-    ///   判定はファイル単位でストリームの間覚えておく（同じファイルの引用ごとに問い合わせない）。
+    ///   許可は引用のたびに確かめ直し、拒否だけをストリームの間覚えておく（剥奪を直後の引用から反映する）。
     /// - ツール結果: 閲覧者が run の実行主体でなければ本文を落とす（成否は残す）。
     ///
     /// スレッドの viewer 認可と「run がそのスレッドのものか」もここで確かめる（呼び出し側の
@@ -170,44 +166,40 @@ impl ChatStore {
             self.event_stream(run_id, from_seq),
             self.clone(),
             ctx.clone(),
-            HashMap::<String, (bool, Instant)>::new(),
+            HashSet::<String>::new(),
         );
         // 順序を保って 1 件ずつ見直す（引用の判定は非同期なので then ではなく unfold で状態を持ち回す）。
-        let stream = futures::stream::unfold(
-            state,
-            move |(mut rx, store, ctx, mut decisions)| async move {
+        let stream =
+            futures::stream::unfold(state, move |(mut rx, store, ctx, mut denied)| async move {
                 let ev = rx.next().await?;
                 let ev = store
-                    .redact_event_for_viewer(&ctx, is_actor, &mut decisions, ev)
+                    .redact_event_for_viewer(&ctx, is_actor, &mut denied, ev)
                     .await;
-                Some((ev, (rx, store, ctx, decisions)))
-            },
-        )
-        .filter_map(futures::future::ready);
+                Some((ev, (rx, store, ctx, denied)))
+            })
+            .filter_map(futures::future::ready);
         Ok(stream.boxed())
     }
 
     /// 1 件のイベントを閲覧者の権限で見直す（落とす場合は `None`）。
     ///
-    /// ファイルごとの判定は [`DECISION_TTL`] の間だけ使い回す。長い run を開いたままの間に
-    /// 閲覧権限が外れたら、それ以降の引用には反映させる（保存済みの経路と同じく剥奪を優先する）。
+    /// **許可は使い回さない。** 引用のたびに HigherConsistency で確かめ直す（長い run を開いたままの間に
+    /// 閲覧権限が外れたら、直後の引用から反映させる。保存済みの経路と同じく剥奪を優先する）。
+    /// 使い回すのは拒否だけ（拒否を覚えていても漏れる方向には倒れない）。
     async fn redact_event_for_viewer(
         &self,
         ctx: &AuthContext,
         is_actor: bool,
-        decisions: &mut HashMap<String, (bool, Instant)>,
+        denied: &mut HashSet<String>,
         mut ev: StreamEvent,
     ) -> Option<StreamEvent> {
         match &mut ev.event {
             StreamEventKind::Citation(c) => {
-                let allowed = match decisions.get(&c.node_id) {
-                    Some((v, at)) if at.elapsed() < DECISION_TTL => *v,
-                    _ => {
-                        let v = self.can_view_file(ctx, &c.node_id).await;
-                        decisions.insert(c.node_id.clone(), (v, Instant::now()));
-                        v
-                    }
-                };
+                let allowed =
+                    !denied.contains(&c.node_id) && self.can_view_file(ctx, &c.node_id).await;
+                if !allowed {
+                    denied.insert(c.node_id.clone());
+                }
                 if !allowed {
                     // 番号を持たない旧形式は保存済みの経路と同じく落とす。
                     if c.cite_id == 0 {
