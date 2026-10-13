@@ -116,16 +116,14 @@ jobs:
 
       # **--rm を付けない。** 付けていると coolwsd が起動直後に落ちたとき
       # コンテナごとログが消え、「No such container」しか残らなかった。
+      # **command を上書きしない。** 配布するのはイメージの CMD なので、それ自体を検証する
+      # （以前は引数をここに再掲していて、CMD の不備を素通りさせうる形だった）。
       - name: smoke（discovery が取れること）
         run: |
           set -euo pipefail
           trap 'docker rm -f collabora-smoke >/dev/null 2>&1 || true' EXIT
           docker run -d --name collabora-smoke -p 127.0.0.1:19980:9980 \
-            "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
-            coolwsd --o:sys_template_path=/opt/cool/systemplate \
-              --o:child_root_path=/opt/cool/child-roots \
-              --o:lo_template_path=/opt/collaboraoffice \
-              --o:ssl.enable=false --o:ssl.termination=false
+            "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}"
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
               echo "discovery OK"; exit 0

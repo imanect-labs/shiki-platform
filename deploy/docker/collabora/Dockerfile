@@ -230,7 +230,15 @@ USER cool
 EXPOSE 9980
 # WOPI ホスト許可・server_name 等の環境依存値は compose/K8s 側の command 追記で注入する。
 # TLS はリバースプロキシ終端が前提（コンテナ内は平文 9980）。
+#
+# file_server_root_path: **必須。** make install は discovery.xml と browser/dist を
+# /usr/share/coolwsd に置くが、coolwsd.xml の既定（空）だと実行ファイルの場所
+# （/usr/bin/）を探して起動直後に落ちる。upstream の coolwsd.service と公式 Docker の
+# 起動スクリプトも同じ値を渡している。
+#   Processing discovery.xml from /usr/bin//discovery.xml
+#   FTL  Exception: File not found   （exit 70）
 CMD ["coolwsd", "--o:sys_template_path=/opt/cool/systemplate", \
      "--o:child_root_path=/opt/cool/child-roots", \
      "--o:lo_template_path=/opt/collaboraoffice", \
+     "--o:file_server_root_path=/usr/share/coolwsd", \
      "--o:ssl.enable=false", "--o:ssl.termination=false"]
