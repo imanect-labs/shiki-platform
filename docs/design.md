@@ -442,6 +442,12 @@ flowchart LR
 
 - 内部正規形=OpenAI互換スキーマ（⚠️ 中立 content-block 案は [PIT-9](./design-caveats.md)。Task 3.2 着手時に確定）。
   薄いアダプタで vLLM / Anthropic / Gemini /（必要なら Azure）。
+  Chat Completions を話さないモデル（Responses API 専用）は OpenAI Responses アダプタで受ける
+  （`llm.backend=openai_responses`・#535）。会話ごとの ID（スレッド ID）はルーティング・キャッシュの
+  手がかりとしてだけ渡す（`llm.session_header` で指定したヘッダ・`prompt_cache_key`）。
+  会話はサーバに持たせない（`store: false`）ので、推論モデルの推論アイテムは暗号化された中身ごと受け取り、
+  中立形の不透明なブロック（`Block::Reasoning`・プロバイダ名付き）として履歴に積んで、同じプロバイダへの
+  次のツールのターンでだけ送り返す（他のプロバイダ・アプリ向け SSE には出さない・#542）。
 - **LiteLLM は `LlmProvider` 実装の一つ（オプションアダプタ）**（2026-07-05 確定・#32）:
   雑多な外部プロバイダを一括で足したい時だけ LiteLLM Proxy アダプタを有効化。
   **チョークポイント（会計・認可・監査・Langfuse）は Rust in-process から動かさない**。
@@ -573,6 +579,12 @@ flowchart TB
 > Phase 9 待ち**。詳細・出典は [miniapp-platform.md §6](./miniapp-platform.md)。
 
 - **生成UI**: LLM→検証済みJSONスペック→信頼コンポーネントカタログで描画（任意コード実行なし）。
+- **図ブロック（`` ```ui ``・#530）**: 回答の Markdown の中に、図（棒・折れ線・数値カード・流れ図・構成図）を
+  行単位の宣言で書かせ、フロントの `@imanect/yui` が描く（モデルへの書き方の指示は `chat.yui` で有効化・既定オフ。
+  フロントは設定に関わらず `` ```ui `` フェンスを図として描き、描けなければコードブロックに戻す）。**表示専用**で、
+  操作・アクション束縛・URL・HTML を持たず、描くのは文字と数値だけ＝扱いは Markdown の表と同じ信頼水準。
+  そのため上の検証済みスペック（`crates/gui`）は通さず、本文と一緒に保存・再送する。操作を伴う UI
+  （フォーム・ボタン・質問/計画カード）と地図・表、図ブロックに無い種類のチャートは引き続き検証済みスペックで出す。
 - **ミニアプリ** = skill ＋ UIスペック ＋ ワークフロー（＋Phase 9合流後はテーブル）、のバージョン付きアーティファクト。
   バックエンド束縛は宣言済み・認可済みアクション経由のみ（アンビエント権限なし）。ReBACで共有。
   完全な定義・出典は [miniapp-platform.md §6](./miniapp-platform.md)。

@@ -45,6 +45,13 @@ pub enum Block {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_references: Vec<String>,
     },
+    /// プロバイダ固有の不透明な推論アイテム（OpenAI Responses の暗号化された reasoning 等）。
+    /// 同じプロバイダへの次のツールのターンでそのまま送り返すためだけに持つ。中身は読まず、
+    /// `provider` が一致しないアダプタは送らない（表示用の思考は [`Block::Thinking`]）。
+    Reasoning {
+        provider: String,
+        item: serde_json::Value,
+    },
 }
 
 impl Block {
@@ -150,6 +157,10 @@ pub struct GenerateRequest {
     /// 温度（未指定はプロバイダ既定）。
     #[serde(default)]
     pub temperature: Option<f32>,
+    /// 会話（スレッド）ごとに安定した ID。プロバイダのルーティングとプロンプトキャッシュの
+    /// 手がかりにだけ使う（認可・課金には使わない）。使わないプロバイダは無視する。
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 impl GenerateRequest {
@@ -163,6 +174,7 @@ impl GenerateRequest {
             effort: None,
             max_tokens: None,
             temperature: None,
+            session_id: None,
         }
     }
 }
@@ -204,6 +216,11 @@ pub enum StreamDelta {
     ToolUseStop {
         id: String,
         input: serde_json::Value,
+    },
+    /// プロバイダ固有の不透明な推論アイテム（[`Block::Reasoning`] として履歴へ積む）。
+    ReasoningItem {
+        provider: String,
+        item: serde_json::Value,
     },
     /// ストリーム完了（停止理由＋使用量）。
     Done {

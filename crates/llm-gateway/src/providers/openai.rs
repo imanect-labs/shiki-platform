@@ -144,7 +144,7 @@ fn to_openai_messages(m: &Message, names: &ToolNameMap, known: &HashSet<&str>) -
 /// tool メッセージの本文。読み込み参照があれば、追加されたツールの **wire 名**を本文に
 /// 書き足す（定義そのものは `tools` に足される・[`context_tools`]。本文の名前は中立名の
 /// ままなので、呼び出しに使う名前をここで示す）。参照先が 1 つも提示に無ければ本文のまま。
-fn tool_message_content(
+pub(super) fn tool_message_content(
     content: &str,
     references: &[String],
     names: &ToolNameMap,

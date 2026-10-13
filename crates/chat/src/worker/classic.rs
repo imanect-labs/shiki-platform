@@ -108,6 +108,7 @@ impl ChatWorker {
             effort: None,
             max_tokens,
             temperature,
+            session_id: Some(run.thread_id.to_string()),
         };
         let mut stream = self
             .gateway

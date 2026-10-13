@@ -179,7 +179,9 @@ fn tool_result_content(content: &str, references: &[String], refs: &RefRendering
 fn to_anthropic_block(b: &Block, refs: &RefRendering<'_>) -> Option<Value> {
     match b {
         Block::Text { text } => Some(json!({ "type": "text", "text": text })),
-        Block::Thinking { .. } => None, // 再送する thinking はここでは扱わない（Phase 3 では省略）
+        // 再送する thinking はここでは扱わない（Phase 3 では省略）。
+        // 他プロバイダの不透明な推論アイテムも送らない。
+        Block::Thinking { .. } | Block::Reasoning { .. } => None,
         Block::ToolUse { id, name, input } => Some(json!({
             "type": "tool_use", "id": id, "name": name, "input": input,
         })),

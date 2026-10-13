@@ -125,6 +125,8 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
             base_url: None,
             api_key: None,
             timeout_secs: 120,
+            user_agent: None,
+            session_header: None,
         },
         catalog: ModelCatalog {
             default_model: "m".into(),

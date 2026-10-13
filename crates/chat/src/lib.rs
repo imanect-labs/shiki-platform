@@ -69,6 +69,6 @@ pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
 pub use store::{
     ChatStore, ClaimedRun, CurrentRun, PostResult, ThreadOrigin, CHAT_GENERATION_QUEUE,
 };
-pub use worker::{ChatWorker, WorkerConfig, WorkerDeps};
+pub use worker::{with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
 pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};
 pub use workspace::StorageWorkspaceStore;

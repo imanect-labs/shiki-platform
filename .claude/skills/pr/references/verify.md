@@ -7,6 +7,7 @@ UI/挙動が変わる変更では、**実装して終わりにしない**。起�
 ```bash
 .claude/skills/pr/scripts/dev-up.sh                  # 既定（native）
 .claude/skills/pr/scripts/dev-up.sh --rag            # 検索/RAG も使う（qdrant + ingestion-worker）
+.claude/skills/pr/scripts/dev-up.sh --rag-remote     # RAG を使い、worker と S3 は外部（SHIKI_DEV_RAG_WORKER_URL 等・dev-up.sh 冒頭参照）
 .claude/skills/pr/scripts/dev-up.sh --sandbox        # コード実行を使う（sandbox-orchestrator）
 .claude/skills/pr/scripts/dev-up.sh --compose --office   # Word/Excel を使う（collabora・compose 必須）
 .claude/skills/pr/scripts/dev-up.sh --compose        # shiki-server も compose（CI と同一構成）

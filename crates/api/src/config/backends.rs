@@ -136,6 +136,12 @@ pub struct LlmConfig {
     /// Langfuse（self-host）計装。未設定なら計装は no-op。
     #[serde(default)]
     pub langfuse: Option<LangfuseConfig>,
+    /// プロバイダへ送る User-Agent（未指定は HTTP クライアントの既定）。
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    /// 会話（スレッド）ごとの ID を載せるヘッダ名（例 `x-opencode-session`）。未指定なら送らない。
+    #[serde(default)]
+    pub session_header: Option<String>,
 }
 
 impl LlmConfig {
@@ -208,6 +214,8 @@ pub enum LlmBackend {
     Openai,
     /// Anthropic Messages API 直結。
     Anthropic,
+    /// OpenAI Responses API（`/v1/responses`）。Chat Completions を話さないモデル用。
+    OpenaiResponses,
     /// Google Gemini（枠・未実装）。
     Gemini,
     /// Vertex AI（枠・未実装）。
@@ -231,6 +239,10 @@ pub struct ChatConfig {
     /// システムプロンプト（未指定は既定）。
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// 回答の中に ```ui ブロック（Yui）で図を書かせるか（既定 false・#530）。
+    /// true ならシステムプロンプトの末尾に書き方を足す（`system_prompt` を上書きしていても足す）。
+    #[serde(default)]
+    pub yui: bool,
     /// 生成リースの秒数。
     #[serde(default = "default_lease_secs")]
     pub lease_secs: i64,
@@ -354,6 +366,7 @@ impl Default for ChatConfig {
             redis_url: None,
             worker_concurrency: default_worker_concurrency(),
             system_prompt: None,
+            yui: false,
             lease_secs: default_lease_secs(),
             max_steps: default_max_steps(),
             max_tokens: None,
