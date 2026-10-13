@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::stream::StreamExt;
+use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::{json, Value};
 
 use super::openai_names::ToolNameMap;
@@ -29,9 +30,12 @@ pub struct OpenAiResponsesProvider {
     base_url: String,
     api_key: Option<String>,
     default_model: String,
-    user_agent: Option<String>,
-    session_header: Option<String>,
+    user_agent: Option<HeaderValue>,
+    session_header: Option<HeaderName>,
 }
+
+/// Responses API の `max_output_tokens` の下限（これ未満は 400）。
+const MIN_OUTPUT_TOKENS: u32 = 16;
 
 impl OpenAiResponsesProvider {
     /// `base_url` は `/responses` の親（例 `https://opencode.ai/inference/go/v1`）。
@@ -51,18 +55,27 @@ impl OpenAiResponsesProvider {
         }
     }
 
-    /// 送出する User-Agent を指定する。
-    #[must_use]
-    pub fn with_user_agent(mut self, user_agent: Option<String>) -> Self {
-        self.user_agent = user_agent;
-        self
+    /// 送出する User-Agent を指定する。ヘッダ値にできない文字列は設定エラーにする
+    /// （起動時に気づけるように。リクエストごとに失敗させない）。
+    pub fn with_user_agent(mut self, user_agent: Option<&str>) -> Result<Self, LlmError> {
+        self.user_agent = user_agent
+            .map(|ua| {
+                HeaderValue::from_str(ua.trim())
+                    .map_err(|e| LlmError::Config(format!("invalid llm.user_agent: {e}")))
+            })
+            .transpose()?;
+        Ok(self)
     }
 
-    /// 会話 ID を載せるヘッダ名を指定する。
-    #[must_use]
-    pub fn with_session_header(mut self, header: Option<String>) -> Self {
-        self.session_header = header;
-        self
+    /// 会話 ID を載せるヘッダ名を指定する。ヘッダ名にできない文字列は設定エラーにする。
+    pub fn with_session_header(mut self, header: Option<&str>) -> Result<Self, LlmError> {
+        self.session_header = header
+            .map(|h| {
+                HeaderName::from_bytes(h.trim().as_bytes())
+                    .map_err(|e| LlmError::Config(format!("invalid llm.session_header: {e}")))
+            })
+            .transpose()?;
+        Ok(self)
     }
 
     fn build_body(&self, req: &GenerateRequest, names: &ToolNameMap) -> Value {
@@ -85,11 +98,11 @@ impl OpenAiResponsesProvider {
             body["instructions"] = json!(sys);
         }
         if let Some(mt) = req.max_tokens {
-            body["max_output_tokens"] = json!(mt);
+            // Chat Completions では通る小さな上限も、Responses では下限未満だと 400 になる。
+            body["max_output_tokens"] = json!(mt.max(MIN_OUTPUT_TOKENS));
         }
-        if let Some(t) = req.temperature {
-            body["temperature"] = json!(t);
-        }
+        // temperature は送らない。このアダプタの対象（Responses 専用の推論モデル）は受け付けず、
+        // skill のモデル既定に温度があるだけで生成が 400 で失敗するため（中立 API では任意項目）。
         if let Some(effort) = req.effort {
             body["reasoning"] = json!({ "effort": effort.as_str(), "summary": "auto" });
         }
@@ -105,6 +118,9 @@ impl OpenAiResponsesProvider {
                     "name": names.wire(&t.name),
                     "description": t.description,
                     "parameters": t.input_schema,
+                    // Responses は既定で strict（任意プロパティも必須に書き換える）。
+                    // Chat Completions アダプタと同じく、スキーマどおりの意味で渡す。
+                    "strict": false,
                 }))
                 .collect::<Vec<_>>());
         }
@@ -308,14 +324,19 @@ impl LlmProvider for OpenAiResponsesProvider {
             builder = builder.bearer_auth(key);
         }
         if let Some(ua) = &self.user_agent {
-            builder = builder.header(reqwest::header::USER_AGENT, ua);
+            builder = builder.header(reqwest::header::USER_AGENT, ua.clone());
         }
         if let Some(header) = &self.session_header {
+            // ID が無い（またはヘッダ値にできない）呼び出しには、呼び出しごとの ID を付ける。
             let sid = req
                 .session_id
-                .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            builder = builder.header(header.as_str(), sid);
+                .as_deref()
+                .and_then(|s| HeaderValue::from_str(s).ok())
+                .unwrap_or_else(|| {
+                    HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
+                        .unwrap_or_else(|_| HeaderValue::from_static("shiki"))
+                });
+            builder = builder.header(header.clone(), sid);
         }
         let resp = builder
             .send()
@@ -411,7 +432,34 @@ mod tests {
         // Responses のツール定義は function の中身が平ら（name が直下）。
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["name"], "document_edit");
+        assert_eq!(body["tools"][0]["strict"], false);
         assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn body_clamps_small_max_tokens_and_drops_temperature() {
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        req.max_tokens = Some(10);
+        req.temperature = Some(0.3);
+        let body = provider().build_body(&req, &ToolNameMap::new(std::iter::empty::<&str>()));
+        assert_eq!(body["max_output_tokens"], 16);
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn invalid_identity_settings_are_config_errors() {
+        assert!(matches!(
+            provider().with_session_header(Some("x opencode session")),
+            Err(LlmError::Config(_))
+        ));
+        assert!(matches!(
+            provider().with_user_agent(Some("shiki/1.0\nx-injected: 1")),
+            Err(LlmError::Config(_))
+        ));
+        // 前後の空白は落として受け付ける（.env の書き方の揺れ）。
+        assert!(provider()
+            .with_session_header(Some(" x-opencode-session "))
+            .is_ok());
     }
 
     #[test]

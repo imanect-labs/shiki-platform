@@ -207,8 +207,8 @@ fn build_provider(
                 .ok_or_else(|| LlmError::Config("openai_responses base_url required".into()))?;
             Ok(Arc::new(
                 OpenAiResponsesProvider::new(http, base, pc.api_key.clone(), default_real)
-                    .with_user_agent(pc.user_agent.clone())
-                    .with_session_header(pc.session_header.clone()),
+                    .with_user_agent(pc.user_agent.as_deref())?
+                    .with_session_header(pc.session_header.as_deref())?,
             ))
         }
         ProviderKind::Anthropic => {

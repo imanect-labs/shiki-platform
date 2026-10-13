@@ -53,8 +53,10 @@ const SSE_BODY: &str = concat!(
 
 fn provider(base: &str) -> OpenAiResponsesProvider {
     OpenAiResponsesProvider::new(reqwest::Client::new(), base, Some("k".into()), "gpt-x")
-        .with_user_agent(Some("shiki-test/1.0".into()))
-        .with_session_header(Some("x-opencode-session".into()))
+        .with_user_agent(Some("shiki-test/1.0"))
+        .unwrap()
+        .with_session_header(Some("x-opencode-session"))
+        .unwrap()
 }
 
 async fn drain(
@@ -181,8 +183,14 @@ async fn live_round_trip_with_tool_call() {
         std::env::var("OPENAI_RESPONSES_TEST_KEY").ok(),
         model,
     )
-    .with_user_agent(Some("shiki-it/1.0".into()))
-    .with_session_header(std::env::var("OPENAI_RESPONSES_TEST_SESSION_HEADER").ok());
+    .with_user_agent(Some("shiki-it/1.0"))
+    .unwrap()
+    .with_session_header(
+        std::env::var("OPENAI_RESPONSES_TEST_SESSION_HEADER")
+            .ok()
+            .as_deref(),
+    )
+    .unwrap();
 
     // 1 往目: ツールを呼ばせる。
     let tool = llm_gateway::model::ToolDef {
