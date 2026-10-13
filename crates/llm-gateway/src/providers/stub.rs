@@ -24,8 +24,10 @@ use std::time::Duration;
 use futures::stream::{self, StreamExt};
 
 use super::stub_deep_research::deep_research_call;
-use super::stub_fixtures::genui_spec;
-use super::stub_stream::{slow_text_stream, text_stream, tool_call_stream, tool_calls_stream};
+use super::stub_fixtures::{genui_spec, yui_reply};
+use super::stub_stream::{
+    paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
+};
 use super::stub_triggers::{note_tool_call, tool_search_call};
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
@@ -184,6 +186,18 @@ fn parallel_read_call(
     (!calls.is_empty()).then(|| tool_calls_stream(calls, prompt_tokens))
 }
 
+/// 図の回答 `yui:<kind>`（#530）: ```ui ブロックを含む本文を数文字ずつ流す
+/// （行の途中で区切れる＝書きかけの値を描かないことを e2e で確かめられる）。
+fn yui_call(user_text: &str, prompt_tokens: u64) -> Option<DeltaStream> {
+    let kind = user_text.strip_prefix("yui:")?;
+    Some(paced_chunks_stream(
+        &yui_reply(kind.trim()),
+        prompt_tokens,
+        3,
+        Duration::from_millis(25),
+    ))
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for StubProvider {
     fn name(&self) -> &'static str {
@@ -209,6 +223,10 @@ impl LlmProvider for StubProvider {
                 prompt_tokens,
                 Duration::from_secs(secs),
             ));
+        }
+        // --- 図の回答 `yui:<kind>`（#530）。 ---
+        if let Some(s) = yui_call(&user_text, prompt_tokens) {
+            return Ok(s);
         }
         // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
         if !req.tools.is_empty() && user_text.starts_with("loop:") {
@@ -364,6 +382,23 @@ mod tests {
         let usage = done.unwrap();
         assert_eq!(usage.prompt_tokens, 2);
         assert!(usage.completion_tokens > 0);
+    }
+
+    #[tokio::test]
+    async fn stub_streams_ui_block_in_small_chunks() {
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "yui:flow")]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut chunks = Vec::new();
+        while let Some(ev) = s.next().await {
+            if let StreamDelta::TextDelta { text } = ev.unwrap() {
+                chunks.push(text);
+            }
+        }
+        let text = chunks.concat();
+        assert!(text.contains("```ui\nflow 経費精算\n"));
+        // 数文字ずつ、行の途中でも区切れて届く（書きかけの行を試せる）。
+        assert!(chunks.iter().all(|c| c.chars().count() <= 3));
+        assert!(chunks.iter().any(|c| !c.ends_with('\n')));
     }
 
     #[tokio::test]

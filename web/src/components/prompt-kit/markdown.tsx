@@ -1,17 +1,21 @@
 // prompt-kit (https://www.prompt-kit.com) 由来の Markdown/Response を本リポジトリ向けに実装。
-// MIT License。react-markdown + remark-gfm で LLM 応答を描画する。コードブロックは CodeBlock、
+// MIT License。react-markdown + remark-gfm で LLM 応答を描画する。コードブロックは CodeBlock（```ui は図・#530）、
 // 装飾はすべてセマンティックトークンで行う（生色禁止）。
 "use client";
 
 import * as React from "react";
 import Link from "next/link";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
 import { CitationMarker } from "@/components/chat/citations/citation-marker";
+import { resolveKind } from "@imanect/yui";
+import { isYuiLanguage } from "@imanect/yui/react";
+
 import { CodeBlock } from "./code-block";
+import { UiFigure } from "./ui-figure";
 
 /// LLM は GFM 表のセル内改行に `<br>` を使うことがある（表セルは実改行を持てないため）。
 /// react-markdown は raw HTML を通さず `<br>` が文字列で残り「安っぽく」見えるので、
@@ -51,20 +55,99 @@ function remarkBrTags() {
 }
 
 /// 1 つの React 要素（```pre > code```）からコード文字列と言語を取り出す。
-function extractCode(child: React.ReactNode): { code: string; lang?: string } {
-  if (!React.isValidElement(child)) return { code: "" };
+/// `raw` は react-markdown が渡す中身そのもの（フェンスが閉じていなくても末尾に改行が足されている）。
+function extractCode(child: React.ReactNode): {
+  code: string;
+  raw: string;
+  lang?: string;
+  ui: boolean;
+  /// ```ui:bar のように情報文字列で指定された図の種類。
+  uiKind?: string;
+} {
+  if (!React.isValidElement(child)) return { code: "", raw: "", ui: false };
   const props = child.props as { className?: string; children?: React.ReactNode };
   const className = props.className ?? "";
   const match = /language-(\w+)/.exec(className);
-  const code = String(props.children ?? "").replace(/\n$/, "");
-  return { code, lang: match?.[1] };
+  const raw = String(props.children ?? "");
+  return {
+    code: raw.replace(/\n$/, ""),
+    raw,
+    lang: match?.[1],
+    ui: isYuiLanguage(className),
+    uiKind: /language-(?:ui|yui):(\S+)/.exec(className)?.[1],
+  };
+}
+
+/// 描画中の本文と、生成中かどうか（```ui の図が書きかけの行を描かないようにする）。
+const SourceContext = React.createContext<{ text: string; streaming: boolean }>({
+  text: "",
+  streaming: false,
+});
+
+/// フェンスが原文で終わっているか。react-markdown（mdast-util-to-hast）はフェンスの中身の末尾に
+/// 必ず改行を足すため、中身からは閉じたかどうかも、最終行が書き終わったかどうかも分からない。
+/// 閉じ行がある場合のほか、後ろに本文が続く場合（引用・リストの終わりで暗黙に閉じた）も終わっている。
+function fenceEnded(text: string, node: ExtraProps["node"]): boolean {
+  const start = node?.position?.start.offset;
+  const end = node?.position?.end.offset;
+  if (start === undefined || end === undefined) return false;
+  if (end < text.trimEnd().length) return true;
+  const lines = text.slice(start, end).split(/\r?\n/);
+  // 引用・リストの中のフェンスは閉じ行に `>` が付く。
+  return lines.length > 1 && /^\s*(?:>\s*)*(`{3,}|~{3,})\s*$/.test(lines[lines.length - 1] ?? "");
+}
+
+/// ```ui bar のように空白区切りで書かれた種類（react-markdown はクラス名に載せず meta に残す）。
+function fenceMeta(node: ExtraProps["node"]): string | undefined {
+  const code = node?.children?.[0];
+  const meta = code && "data" in code ? (code.data as { meta?: unknown } | undefined)?.meta : undefined;
+  return typeof meta === "string" ? meta.trim().split(/\s+/)[0] : undefined;
+}
+
+/// 図の「表で表示」。リンク・画像は描かない（図と同じく文字と数値だけにする）。
+function renderFigureTable(markdown: string) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={components}
+      allowedElements={["p", "strong", "em", "br", "table", "thead", "tbody", "tr", "th", "td"]}
+      unwrapDisallowed
+    >
+      {markdown}
+    </ReactMarkdown>
+  );
+}
+
+/// ブロックコード。```ui（Yui）の図は図にし、描けなければ通常のコードブロックに戻す（#530）。
+function FencedCode({ node, children }: { node: ExtraProps["node"]; children: React.ReactNode }) {
+  const { text, streaming } = React.useContext(SourceContext);
+  const { code, raw, lang, ui, uiKind } = extractCode(children);
+  if (!ui) return <CodeBlock code={code} lang={lang} />;
+  const closed = fenceEnded(text, node);
+  // 終わっていないブロックは、確定した行だけを渡す（本文が改行で終わっていれば最終行も確定）。
+  // 生成中は書きかけの行が伸びるたびに図を解析し直さないため、生成後（停止・閉じ忘れ）は
+  // 途中で切れた値を確定値として描かないため。
+  const lastLineDone = closed || text.endsWith("\n");
+  const source = lastLineDone ? raw : raw.slice(0, raw.lastIndexOf("\n", raw.length - 2) + 1);
+  const kind = uiKind ?? fenceMeta(node);
+  return (
+    <UiFigure
+      source={source}
+      // 記述そのものを見せるのは書き終わった後だけ。生成中は渡さない（トークンごとに描き直さない）。
+      raw={closed || !streaming ? raw : undefined}
+      complete={closed || !streaming}
+      truncated={!lastLineDone && !streaming && raw.trim() !== source.trim()}
+      kind={kind ? resolveKind(kind) : undefined}
+      lang={lang}
+      renderTable={renderFigureTable}
+    />
+  );
 }
 
 const components: Components = {
   // ブロックコードは pre をフックして CodeBlock に差し替える。
-  pre({ children }) {
-    const { code, lang } = extractCode(children);
-    return <CodeBlock code={code} lang={lang} />;
+  pre({ node, children }) {
+    return <FencedCode node={node}>{children}</FencedCode>;
   },
   code({ className, children }) {
     // インラインコード（pre 配下は上で処理済み）。
@@ -159,12 +242,23 @@ const components: Components = {
   },
 };
 
-export function Markdown({ children, className }: { children: string; className?: string }) {
+export function Markdown({
+  children,
+  className,
+  streaming = false,
+}: {
+  children: string;
+  className?: string;
+  /// 生成中の本文か（```ui の図が書きかけの行を描かないようにする）。
+  streaming?: boolean;
+}) {
   return (
     <div className={cn("text-[15px] leading-relaxed text-foreground", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBrTags]} components={components}>
-        {children}
-      </ReactMarkdown>
+      <SourceContext.Provider value={{ text: children, streaming }}>
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBrTags]} components={components}>
+          {children}
+        </ReactMarkdown>
+      </SourceContext.Provider>
     </div>
   );
 }
