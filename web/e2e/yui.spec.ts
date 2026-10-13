@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 import type { Page } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { loginViaKeycloak, submitKeycloakLogin } from "./helpers";
 
 /// ホームから会話を開始して `text` を送信する。
 async function send(page: Page, text: string) {
@@ -56,8 +56,12 @@ test.describe("```ui ブロックの図", () => {
     await expect(tip).toContainText("44");
     await page.mouse.move(0, 0);
     await expect(tip).toHaveCount(0);
-    // キーボードでも辿れる（Tab で図に入り、矢印キーで次の四半期へ）。
+    // キーボードでも辿れる（図に入り、矢印キーで四半期を送る）。フォーカスの当て方で
+    // 先頭の値が出るかが変わる（キーボードで入ったときだけ出す）ので、一度閉じてから送る。
     await figure.getByRole("group").focus();
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("ArrowRight");
+    await expect(tip).toContainText("Q1");
     await page.keyboard.press("ArrowRight");
     await expect(tip).toContainText("Q2");
     await page.keyboard.press("Escape");
@@ -88,5 +92,57 @@ test.describe("```ui ブロックの図", () => {
     const fallback = page.getByTestId("ui-figure-fallback");
     await expect(fallback.getByText("これは図ではありません")).toBeVisible();
     await expect(fallback.getByText("図にできなかったため、記述をそのまま表示しています。")).toBeVisible();
+  });
+});
+
+/// スマホ（タッチ）では、タップが確定してから値が出る。見出し・余白のタップでは出ない。
+test.describe("```ui ブロックの図（スマホ）", () => {
+  // isMobile まで付ける（付けないとタップに合わせてマウスのホバーも出て、実機と違う結果になる）。
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("タップで値が出て、もう一度のタップと図の外のタップで閉じる", async ({ page }) => {
+    // loginViaKeycloak はデスクトップ幅のメニューで完了を確かめるので、ここでは手順だけ踏む。
+    await page.goto("/login");
+    await page.getByRole("button", { name: "Keycloak でログイン" }).click();
+    await submitKeycloakLogin(page);
+    await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 20_000 });
+    // Playwright のマウスは最後にクリックした位置に残り、そこへ図が流れてくるとホバー扱いで値が出る
+    // （実機のスマホにマウスは無い）。ログインで押した位置から退かせ、送信もタップで行う。
+    await page.mouse.move(0, 0);
+    await page.goto("/");
+    await page.getByLabel("メッセージを入力").fill("yui:bar");
+    await page.getByRole("button", { name: "送信" }).tap();
+    await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
+    await expect(page.getByText("以上です。")).toBeVisible({ timeout: 30_000 });
+    const figure = page.getByTestId("ui-figure");
+    const tip = figure.locator("[data-yui-tip]");
+    const center = async (label: string) => {
+      const bar = figure.locator("svg path").filter({ has: page.locator("title", { hasText: label }) });
+      await bar.scrollIntoViewIfNeeded();
+      const b = (await bar.boundingBox())!;
+      return [b.x + b.width / 2, b.y + b.height / 2] as const;
+    };
+
+    await expect(tip).toHaveCount(0);
+    // 見出しのあたり（値の無い所）をタップしても出ない。
+    await figure.getByRole("img").scrollIntoViewIfNeeded();
+    const svg = (await figure.getByRole("img").boundingBox())!;
+    await page.touchscreen.tap(svg.x + 30, svg.y + 12);
+    await expect(tip).toHaveCount(0);
+
+    const [x, y] = await center("Q2 売上");
+    await page.touchscreen.tap(x, y);
+    await expect(tip).toContainText("Q2");
+    await expect(tip).toContainText("150");
+    // 同じ棒をもう一度タップすると閉じる。
+    await page.touchscreen.tap(x, y);
+    await expect(tip).toHaveCount(0);
+
+    // 開いてから図の外（本文）をタップすると閉じる。
+    await page.touchscreen.tap(x, y);
+    await expect(tip).toContainText("Q2");
+    const intro = (await page.getByText("以上です。").boundingBox())!;
+    await page.touchscreen.tap(intro.x + 10, intro.y + intro.height / 2);
+    await expect(tip).toHaveCount(0);
   });
 });
