@@ -208,16 +208,27 @@ if [ "$RAG_REMOTE" = 1 ]; then
     err "   （worker と S3 をローカルに立てるなら --rag）"
     exit 2
   fi
-  if ! curl -fsS -m 5 -o /dev/null "$SHIKI_DEV_RAG_WORKER_URL/healthz" 2>/dev/null; then
+  if ! worker_health=$(curl -fsS -m 5 "$SHIKI_DEV_RAG_WORKER_URL/healthz" 2>/dev/null); then
     err "   ingestion-worker に届きません: $SHIKI_DEV_RAG_WORKER_URL"
     exit 1
   fi
-  # S3 は無署名リクエストに 403 などを返す。応答コードが返れば届いている。
-  if ! curl -s -m 5 -o /dev/null -w '%{http_code}' "$SHIKI_DEV_S3_ENDPOINT" 2>/dev/null | grep -qE '^[2-4]'; then
-    err "   S3 に届きません: $SHIKI_DEV_S3_ENDPOINT"
+  # 埋め込みの版は server と worker で一致していないと、/embed の応答が版の突合で毎回拒否される
+  # （起動は成功して索引だけが入らない）。worker が名乗るモデルを server の期待値にする。
+  REMOTE_EMBED_MODEL=$(printf '%s' "$worker_health" | grep -o '"embed":{"id":"[^"]*"' | sed 's/.*"id":"//; s/"$//' || true)
+  if [ -z "$REMOTE_EMBED_MODEL" ]; then
+    err "   ingestion-worker の /healthz から埋め込みモデルを読めません: $worker_health"
     exit 1
   fi
-  say "   [ok] worker=$SHIKI_DEV_RAG_WORKER_URL"
+  # S3 は無署名リクエストに 403 などを返す。応答コードが返れば届いている。
+  # 公開側（ブラウザが presigned URL で叩く先）を別に指定したなら、そちらも確かめる。
+  # server は presigned URL を手元で作るだけなので、届かなくても起動は通り、最初のアップロードで初めて落ちる。
+  for ep in "$SHIKI_DEV_S3_ENDPOINT" ${SHIKI_DEV_S3_PUBLIC_ENDPOINT:+"$SHIKI_DEV_S3_PUBLIC_ENDPOINT"}; do
+    if ! curl -s -m 5 -o /dev/null -w '%{http_code}' "$ep" 2>/dev/null | grep -qE '^[2-4]'; then
+      err "   S3 に届きません: $ep"
+      exit 1
+    fi
+  done
+  say "   [ok] worker=$SHIKI_DEV_RAG_WORKER_URL  embed=$REMOTE_EMBED_MODEL"
   say "        s3=$SHIKI_DEV_S3_ENDPOINT  bucket=$SHIKI_DEV_S3_BUCKET"
   # 資格情報は export されて入ってくる。このままだと pnpm install・compose・cargo・next dev まで
   # 引き継ぐので、非 export の変数へ退避して元を消す（shiki-server の起動時にだけ渡す）。
@@ -311,19 +322,22 @@ if [ -n "$cur_tag" ] && [ "$cur_tag" != "$STORE_TAG" ]; then
   err "   切り替えるなら DB を作り直してください: $0 --reset-db ...（元に戻すなら前と同じ引数で起動）"
   exit 1
 fi
-dev_psql "COMMENT ON DATABASE shiki IS '${STORE_TAG//\'/\'\'}'" >/dev/null
 
-# --rag から切り替えた時、前に立てたローカルの worker（常駐 2〜3GB）と RustFS は
-# DEPS から外しても動き続ける（restart: unless-stopped）。外部を使うなら止める。
-# **保存先の組を確かめた後に止める。** 先に止めると、切り替えを拒否した時に今の環境が壊れる。
-if [ "$RAG_REMOTE" = 1 ]; then
-  for svc in ingestion-worker rustfs; do
-    if [ -n "$(docker compose -f deploy/compose/docker-compose.yml ps -q "$svc" 2>/dev/null)" ]; then
-      docker compose -f deploy/compose/docker-compose.yml stop "$svc" >/dev/null
-      say "   [stop] $svc（外部のものを使うため）"
-    fi
-  done
-fi
+# 印の付け替えと不要なサービスの停止。**起動前の検査をすべて通した後に呼ぶ。**
+# 先にやると、後の検査（:8080 の取り合いなど）で止まった時に今の環境を壊してしまう。
+apply_store_switch() {
+  dev_psql "COMMENT ON DATABASE shiki IS '${STORE_TAG//\'/\'\'}'" >/dev/null
+  # --rag から切り替えた時、前に立てたローカルの worker（常駐 2〜3GB）と RustFS は
+  # DEPS から外しても動き続ける（restart: unless-stopped）。外部を使うなら止める。
+  if [ "$RAG_REMOTE" = 1 ]; then
+    for svc in ingestion-worker rustfs; do
+      if [ -n "$(docker compose -f deploy/compose/docker-compose.yml ps -q "$svc" 2>/dev/null)" ]; then
+        docker compose -f deploy/compose/docker-compose.yml stop "$svc" >/dev/null
+        say "   [stop] $svc（外部のものを使うため）"
+      fi
+    done
+  fi
+}
 
 # --- 2. shiki-server ---
 # web に渡すゲートウェイ/B1 オリジン。compose は publish 済みの 8090/8091、
@@ -338,6 +352,7 @@ if [ "$MODE" = compose ]; then
   #   healthcheck は /healthz＝DB 非依存なので healthy と出るが、実際は空 DB で全 API が 500）。
   RECREATE=""
   [ "$RESET_DB" = 1 ] && RECREATE="--force-recreate"
+  apply_store_switch
   (
     cd deploy/compose
     SHIKI__AUTH__REDIRECT_URI=http://localhost:3000/auth/callback \
@@ -413,6 +428,7 @@ else
     EFF_S3_AK=$REMOTE_S3_AK
     EFF_S3_SK=$REMOTE_S3_SK
     EFF_WORKER_URL=$SHIKI_DEV_RAG_WORKER_URL
+    EMBED_LINE="export SHIKI__RAG__EMBEDDING_MODEL_VERSION=$(printf '%q' "$REMOTE_EMBED_MODEL")"
     # 外部のバケットの CORS は、指定された時だけ設定する（既存の設定を勝手に書き換えない）。
     EFF_CORS=${SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS:-}
   else
@@ -423,6 +439,7 @@ else
     EFF_S3_SK=$RUSTFS_SK
     EFF_WORKER_URL=http://localhost:${WORKER_PORT}
     EFF_CORS='[*]'
+    EMBED_LINE="# 埋め込みの版は server の既定値（ローカルの worker と同じ）"
   fi
   # 生成するスクリプトへ値を埋め込むので、シェルの構文としてクォートする（& などを含んでも壊れない）。
   Q_S3_INTERNAL=$(printf '%q' "$EFF_S3_INTERNAL")
@@ -495,6 +512,7 @@ export SHIKI__WEBSEARCH__BACKEND=stub
 export SHIKI__RAG__ENABLED=$([ "$WITH_RAG" = 1 ] && echo true || echo false)
 export SHIKI__RAG__QDRANT_URL=http://localhost:${QDRANT_PORT}
 export SHIKI__RAG__WORKER_BASE_URL=${Q_WORKER_URL}
+${EMBED_LINE}
 export SHIKI__RAG__INDEX_DATA_DIR="$RUNDIR/index"
 export SHIKI__CHAT__SANDBOX_ENDPOINT=http://localhost:${SANDBOX_PORT}
 export SHIKI__OFFICE__ENABLED=$([ "$WITH_OFFICE" = 1 ] && echo true || echo false)
@@ -554,6 +572,7 @@ EOF
     exit 1
   fi
 
+  apply_store_switch
   SHIKI_DEV_RUN_S3_ACCESS_KEY="$EFF_S3_AK" SHIKI_DEV_RUN_S3_SECRET_KEY="$EFF_S3_SK" \
     setsid nohup "$RUNDIR/run-server.sh" > "$SERVER_LOG" 2>&1 < /dev/null &
   echo $! > "$SERVER_PID"
