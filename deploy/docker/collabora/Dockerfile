@@ -278,17 +278,23 @@ ENV DEBIAN_FRONTEND=noninteractive
 # sources ステージがその版のソースを deb-src から取れない（索引には各ポケットの
 # 最新版しか載らない）。セキュリティ修正の取り込みにもなる。
 #
-# **apt-get update の時刻を記録する（#549）。** このレイヤはビルドキャッシュから
-# 再利用されるので、後から deb-src を引くと版がずれる。sources ステージはこの時刻の
-# Ubuntu スナップショット（snapshot.ubuntu.com）からソースを取る。記録とインストールが
-# 同じレイヤにあるので、キャッシュに当たっても対応は崩れない。
+# **Ubuntu スナップショット（snapshot.ubuntu.com）から入れ、その時刻を記録する（#549）。**
+# このレイヤはビルドキャッシュから再利用されるので、後からライブの deb-src を引くと版がずれる。
+# また、ライブの archive から入れて後でスナップショットを引く形だと、スナップショット側の
+# 反映の遅れで版が見つからないことがある。入れる側も取る側も同じ時刻のスナップショットを
+# 使えば、原理的に一致する（sources ステージは ubuntu-snapshot.txt の時刻で取る）。
+# ca-certificates だけは、スナップショットに https で繋ぐために先にライブから入れる
+# （その後の upgrade でスナップショットの版に揃う。揃わない場合は sources 側でライブから取る）。
 #
 # libutf8proc3: Poco が同梱している utf8proc の著作権表示とライセンス本文
 # （/usr/share/doc/libutf8proc3/copyright）を NOTICE から参照するため。
 # PCRE2 / zlib / expat の分は既に入っているパッケージのものを参照する。
 RUN mkdir -p /usr/share/doc/shiki-office \
-    && apt-get update \
-    && date -u +%Y%m%dT%H%M%SZ > /usr/share/doc/shiki-office/ubuntu-snapshot.txt \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && snap="$(date -u +%Y%m%dT%H%M%SZ)" \
+    && echo "$snap" > /usr/share/doc/shiki-office/ubuntu-snapshot.txt \
+    && echo "APT::Snapshot \"$snap\";" > /etc/apt/apt.conf.d/50shiki-snapshot \
+    && rm -rf /var/lib/apt/lists/* && apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
     libssl-dev libpng-dev libzstd-dev libpam0g-dev libcap2-bin libpcre2-8-0 \
@@ -297,6 +303,7 @@ RUN mkdir -p /usr/share/doc/shiki-office \
     libavahi-client-dev libdbus-glib-1-dev \
     cpio tzdata fontconfig libutf8proc3 \
     fonts-noto-cjk fonts-noto-cjk-extra ca-certificates \
+    && rm -f /etc/apt/apt.conf.d/50shiki-snapshot \
     && rm -rf /var/lib/apt/lists/*
 # **このイメージに入っている Ubuntu パッケージのソースパッケージと版を記録する（#549）。**
 # GPL / LGPL のパッケージ（bash・coreutils・libc 等）を含むイメージを配布すると、
@@ -410,18 +417,25 @@ COPY --from=runtime /usr/share/doc/shiki-office/ubuntu-snapshot.txt /ubuntu-snap
 # ランタイムに入っている**版そのもの**のソースを取る（別の版で代用しない）。
 # ランタイムが apt-get update した時刻のスナップショットから取る（ランタイムのレイヤが
 # キャッシュから来ても版がずれない）。deb-src は noble の DEB822 形式の Types 行に足す。
-# 取れなかったものは名前を全部出して止める。
+# 取れなかったものは名前を全部出して止める。数百件あるので 8 並列で取る（1 件ずつだと 30 分を超える）。
 WORKDIR /out/ubuntu
 RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources \
     && grep -q '^Types: deb deb-src$' /etc/apt/sources.list.d/ubuntu.sources \
     && snap="$(cat /ubuntu-snapshot.txt)" \
     && apt-get update --snapshot "$snap" \
-    && failed="" \
-    && while read -r pkg ver; do \
-         apt-get source --snapshot "$snap" --download-only "$pkg=$ver" >/dev/null 2>&1 \
-           || failed="$failed $pkg=$ver"; \
-       done < /ubuntu-source-packages.txt \
-    && if [ -n "$failed" ]; then echo "ソースを取得できなかったパッケージ（snapshot $snap）:$failed"; exit 1; fi \
+    && : > /failed.txt \
+    && sed 's/ /=/' /ubuntu-source-packages.txt \
+       | xargs -P 8 -n 1 sh -c 'apt-get source --snapshot "$0" --download-only "$1" >/dev/null 2>&1 \
+                               || echo "$1" >> /failed.txt' "$snap" \
+    && failed="$(sort /failed.txt | tr '\n' ' ')" \
+    && if [ -n "$failed" ]; then \
+         echo "snapshot $snap で取れなかったものをライブの索引で取り直す:$failed"; \
+         apt-get update; retry="$failed"; failed=""; \
+         for pv in $retry; do \
+           apt-get source --download-only "$pv" >/dev/null 2>&1 || failed="$failed $pv"; \
+         done; \
+       fi \
+    && if [ -n "$failed" ]; then echo "ソースを取得できなかったパッケージ:$failed"; exit 1; fi \
     && ls | wc -l
 
 FROM scratch AS sources
