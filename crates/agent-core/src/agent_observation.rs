@@ -88,11 +88,7 @@ mod tests {
     use llm_gateway::Role as LlmRole;
 
     fn result(id: &str, content: &str) -> Block {
-        Block::ToolResult {
-            tool_use_id: id.into(),
-            content: content.into(),
-            is_error: false,
-        }
+        Block::tool_result(id, content, false)
     }
 
     /// 残量は**最後のツール結果**に 1 度だけ乗る（両プロバイダに確実に届く唯一の場所）。

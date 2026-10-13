@@ -33,6 +33,8 @@ pub(super) fn chat_opts(worker: &ChatWorker) -> AgentOptions {
     // 長い成果物・大きなツール引数が途中で切れる。設定値で上書きする）。
     opts.max_tokens = Some(worker.config.max_tokens);
     opts.parallel_read_tools = worker.config.parallel_read_tools;
+    opts.tool_search.enabled = worker.config.tool_search;
+    opts.tool_search.embedder = worker.tool_search_embedder();
     opts
 }
 
@@ -47,4 +49,14 @@ pub(super) fn autonomous_system_prompt(base: &str) -> String {
          - 破壊的な操作（shell・削除）は承認が必要な場合がある。承認待ちで停止したら結果を待つ。\n\
          - 目標を達成したら簡潔に要約して終了する。"
     )
+}
+
+impl ChatWorker {
+    /// tool search（と skill_search）の融合に使う埋め込み。RAG が配線されていれば同じもの、
+    /// 無ければ `None`（BM25 のみ・#517）。
+    pub(super) fn tool_search_embedder(
+        &self,
+    ) -> Option<std::sync::Arc<dyn rag::EmbeddingProvider>> {
+        self.search.as_ref().map(|s| s.embedder())
+    }
 }

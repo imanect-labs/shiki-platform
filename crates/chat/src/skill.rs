@@ -137,6 +137,13 @@ impl AppliedSkill {
         ))
     }
 
+    /// このスキルが使うと宣言したツール名（tool search で**常時ロード**に回す・遅延にしない）。
+    ///
+    /// 手順書が名指しするツールを検索の 1 手の向こうに置くと、毎回その 1 手を払うことになる。
+    pub(crate) fn declared_tools(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.body.allowed_tools.iter().flatten().map(|t| t.as_str())
+    }
+
     /// skill ツールの観測テキスト（途中発動で instructions を読み込んだ結果・#344）。
     pub(crate) fn loaded_content(&self) -> String {
         let mut out = format!("# Skill: {}\n\n{}", self.name, self.body.instructions);

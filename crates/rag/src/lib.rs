@@ -33,7 +33,7 @@ pub mod vector_store;
 pub use admin::RagAdmin;
 pub use anchor::{Anchor, BoxOrigin, PageBox, TextQuote};
 pub use config::RagConfig;
-pub use embedding::{EmbedInput, EmbeddingProvider, HttpEmbeddingProvider};
+pub use embedding::{EmbedInput, EmbedResponse, EmbeddingProvider, HttpEmbeddingProvider};
 pub use error::RagError;
 pub use fulltext::{FulltextDoc, FulltextIndex};
 pub use fulltext_tantivy::TantivyFulltext;

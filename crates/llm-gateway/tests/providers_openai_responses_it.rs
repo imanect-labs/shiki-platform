@@ -198,15 +198,15 @@ async fn live_round_trip_with_tool_call() {
     let p = live_provider(base);
 
     // 1 往目: ツールを呼ばせる。
-    let tool = llm_gateway::model::ToolDef {
-        name: "doc.search".into(),
-        description: "社内文書を検索する".into(),
-        input_schema: serde_json::json!({
+    let tool = llm_gateway::model::ToolDef::new(
+        "doc.search",
+        "社内文書を検索する",
+        serde_json::json!({
             "type": "object",
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
         }),
-    };
+    );
     let mut req = GenerateRequest::new(vec![Message::text(
         Role::User,
         "doc.search ツールで「経費規程」を検索してから答えて。",
@@ -246,6 +246,7 @@ async fn live_round_trip_with_tool_call() {
             tool_use_id: id,
             content: "経費規程: 5万円以上は部長承認が必要。".into(),
             is_error: false,
+            tool_references: Vec::new(),
         }],
     });
     let out: Vec<StreamDelta> = drain(&p, &req)
@@ -288,15 +289,15 @@ async fn live_reasoning_items_round_trip() {
         return;
     };
     let p = live_provider(base);
-    let tool = llm_gateway::model::ToolDef {
-        name: "calc".into(),
-        description: "四則演算を正確に計算する".into(),
-        input_schema: serde_json::json!({
+    let tool = llm_gateway::model::ToolDef::new(
+        "calc",
+        "四則演算を正確に計算する",
+        serde_json::json!({
             "type": "object",
             "properties": {"expr": {"type": "string"}},
             "required": ["expr"],
         }),
-    };
+    );
     let mut req = GenerateRequest::new(vec![Message::text(
         Role::User,
         "原価 1,280 円・送料 95 円で、粗利率 35% を確保する税抜の販売価格（円未満切り上げ）を、calc ツールで検算しながら求めて。",
@@ -348,6 +349,7 @@ async fn live_reasoning_items_round_trip() {
                         _ => "35.02".into(),
                     },
                     is_error: false,
+                    tool_references: Vec::new(),
                 }),
                 _ => None,
             })
