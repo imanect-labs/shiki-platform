@@ -12,7 +12,7 @@
 //!   にも使う。ヘッダ名を設定しているのに ID が無い呼び出しには、呼び出しごとの ID を付ける
 //!   （ヘッダ必須のプロバイダで落ちないように）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use futures::channel::mpsc;
@@ -20,9 +20,11 @@ use futures::stream::StreamExt;
 use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::{json, Value};
 
+use super::openai::tool_message_content;
 use super::openai_names::ToolNameMap;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::tool_loading::context_tools;
 
 /// OpenAI Responses API アダプタ。
 pub struct OpenAiResponsesProvider {
@@ -87,10 +89,11 @@ impl OpenAiResponsesProvider {
             .model
             .clone()
             .unwrap_or_else(|| self.default_model.clone());
+        let known: HashSet<&str> = req.tools.iter().map(|t| t.name.as_str()).collect();
         let input: Vec<Value> = req
             .messages
             .iter()
-            .flat_map(|m| to_input_items(m, names))
+            .flat_map(|m| to_input_items(m, names, &known))
             .collect();
         let mut body = json!({
             "model": model,
@@ -113,9 +116,10 @@ impl OpenAiResponsesProvider {
         if let Some(sid) = &req.session_id {
             body["prompt_cache_key"] = json!(sid);
         }
-        if !req.tools.is_empty() {
-            body["tools"] = json!(req
-                .tools
+        // 遅延ツールは読み込まれた分だけ載せる（Chat Completions アダプタと同じ・tool_loading）。
+        let tools = context_tools(&req.tools, &req.messages);
+        if !tools.is_empty() {
+            body["tools"] = json!(tools
                 .iter()
                 .map(|t| json!({
                     "type": "function",
@@ -134,7 +138,8 @@ impl OpenAiResponsesProvider {
 
 /// 中立メッセージ 1 件を Responses の入力アイテム（複数になり得る）へ写す。
 /// 思考ブロックは送らない（`store: false` では前ターンの推論アイテムを参照できないため）。
-fn to_input_items(m: &Message, names: &ToolNameMap) -> Vec<Value> {
+/// `known` はこのリクエストで提示するツール名（読み込み参照の表示に使う）。
+fn to_input_items(m: &Message, names: &ToolNameMap, known: &HashSet<&str>) -> Vec<Value> {
     match m.role {
         Role::Tool => m
             .content
@@ -143,11 +148,12 @@ fn to_input_items(m: &Message, names: &ToolNameMap) -> Vec<Value> {
                 Block::ToolResult {
                     tool_use_id,
                     content,
+                    tool_references,
                     ..
                 } => Some(json!({
                     "type": "function_call_output",
                     "call_id": tool_use_id,
-                    "output": content,
+                    "output": tool_message_content(content, tool_references, names, known),
                 })),
                 _ => None,
             })
@@ -487,11 +493,11 @@ mod tests {
         req.effort = Some(Effort::Low);
         req.max_tokens = Some(100);
         req.session_id = Some("thread-1".into());
-        req.tools = vec![ToolDef {
-            name: "document.edit".into(),
-            description: "d".into(),
-            input_schema: json!({"type": "object"}),
-        }];
+        req.tools = vec![ToolDef::new(
+            "document.edit",
+            "d",
+            json!({"type": "object"}),
+        )];
         let names = ToolNameMap::new(["document.edit"].into_iter());
         let body = provider().build_body(&req, &names);
         assert_eq!(body["model"], "gpt-x");
@@ -551,7 +557,8 @@ mod tests {
                 },
             ],
         };
-        let items = to_input_items(&assistant, &names);
+        let known = HashSet::from(["doc_search"]);
+        let items = to_input_items(&assistant, &names, &known);
         assert_eq!(items.len(), 2);
         assert_eq!(
             items[0],
@@ -567,12 +574,52 @@ mod tests {
                 tool_use_id: "call_1".into(),
                 content: "結果".into(),
                 is_error: false,
+                tool_references: Vec::new(),
             }],
         };
         assert_eq!(
-            to_input_items(&tool, &names),
+            to_input_items(&tool, &names, &known),
             vec![json!({"type": "function_call_output", "call_id": "call_1", "output": "結果"})]
         );
+    }
+
+    /// 遅延ツールは読み込まれた分だけ載り、読み込んだツール結果には呼び出し名の注記が付く
+    /// （Chat Completions アダプタと同じ扱い・tool_loading）。
+    #[test]
+    fn deferred_tools_are_sent_only_after_they_are_loaded() {
+        let mut csv = ToolDef::new("csv.query", "d", json!({"type": "object"}));
+        csv.defer_loading = true;
+        let mut office = ToolDef::new("office.edit", "d", json!({"type": "object"}));
+        office.defer_loading = true;
+        let search = ToolDef::new("tool_search", "d", json!({"type": "object"}));
+        let names = ToolNameMap::new(["tool_search", "csv.query", "office.edit"].into_iter());
+
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        req.tools = vec![search, csv, office];
+        let body = provider().build_body(&req, &names);
+        assert_eq!(body["tools"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["tools"][0]["name"], "tool_search");
+
+        req.messages.push(Message {
+            role: Role::Tool,
+            content: vec![Block::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "見つかりました".into(),
+                is_error: false,
+                tool_references: vec!["csv.query".into()],
+            }],
+        });
+        let body = provider().build_body(&req, &names);
+        let sent: Vec<&str> = body["tools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert_eq!(sent, ["tool_search", "csv_query"]);
+        let output = body["input"][1]["output"].as_str().unwrap_or_default();
+        assert!(output.starts_with("見つかりました"), "{output}");
+        assert!(output.contains("csv_query"), "{output}");
     }
 
     fn feed_all(events: &[Value]) -> Vec<Result<StreamDelta, LlmError>> {

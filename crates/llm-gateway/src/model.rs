@@ -37,7 +37,30 @@ pub enum Block {
         content: String,
         #[serde(default)]
         is_error: bool,
+        /// この結果で**読み込んだ遅延ツール**の名前（`tool_search` の結果・空が通常）。
+        ///
+        /// 非空のとき、プロバイダは参照をネイティブに表す（Anthropic の `tool_reference`）か、
+        /// 当該ツールを以降の `tools` へ加えて名前を示す（OpenAI 互換）。`content` はどちらも
+        /// できない場合（参照先が `tools` に無い等）のフォールバック表示。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tool_references: Vec<String>,
     },
+}
+
+impl Block {
+    /// 参照なしのツール結果（通常のツールはこれ）。
+    pub fn tool_result(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
+        Block::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content: content.into(),
+            is_error,
+            tool_references: Vec::new(),
+        }
+    }
 }
 
 /// 1 メッセージ（role ＋ block 列）。
@@ -64,6 +87,29 @@ pub struct ToolDef {
     pub description: String,
     /// JSON Schema（input）。
     pub input_schema: serde_json::Value,
+    /// 遅延ロード（tool search で見つかるまで定義をモデルの文脈に載せない）。
+    ///
+    /// 定義そのものは毎回 `tools` に含める（検索結果の参照を展開するのに要る）。文脈へ
+    /// 載るのは非遅延のものと、履歴中の [`Block::ToolResult::tool_references`] が指すものだけ。
+    /// 写し方はアダプタが決める（[`crate::tool_loading`]）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_loading: bool,
+}
+
+impl ToolDef {
+    /// 非遅延のツール定義。
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        input_schema: serde_json::Value,
+    ) -> Self {
+        ToolDef {
+            name: name.into(),
+            description: description.into(),
+            input_schema,
+            defer_loading: false,
+        }
+    }
 }
 
 /// 思考強度の正規化（3 段階）。各アダプタが reasoning budget / thinking へ翻訳する。

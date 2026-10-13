@@ -193,15 +193,15 @@ async fn live_round_trip_with_tool_call() {
     .unwrap();
 
     // 1 往目: ツールを呼ばせる。
-    let tool = llm_gateway::model::ToolDef {
-        name: "doc.search".into(),
-        description: "社内文書を検索する".into(),
-        input_schema: serde_json::json!({
+    let tool = llm_gateway::model::ToolDef::new(
+        "doc.search",
+        "社内文書を検索する",
+        serde_json::json!({
             "type": "object",
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
         }),
-    };
+    );
     let mut req = GenerateRequest::new(vec![Message::text(
         Role::User,
         "doc.search ツールで「経費規程」を検索してから答えて。",
@@ -241,6 +241,7 @@ async fn live_round_trip_with_tool_call() {
             tool_use_id: id,
             content: "経費規程: 5万円以上は部長承認が必要。".into(),
             is_error: false,
+            tool_references: Vec::new(),
         }],
     });
     let out: Vec<StreamDelta> = drain(&p, &req)
