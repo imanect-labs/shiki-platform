@@ -434,6 +434,9 @@ flowchart LR
   Chat Completions を話さないモデル（Responses API 専用）は OpenAI Responses アダプタで受ける
   （`llm.backend=openai_responses`・#535）。会話ごとの ID（スレッド ID）はルーティング・キャッシュの
   手がかりとしてだけ渡す（`llm.session_header` で指定したヘッダ・`prompt_cache_key`）。
+  会話はサーバに持たせない（`store: false`）ので、推論モデルの推論アイテムは暗号化された中身ごと受け取り、
+  中立形の不透明なブロック（`Block::Reasoning`・プロバイダ名付き）として履歴に積んで、同じプロバイダへの
+  次のツールのターンでだけ送り返す（他のプロバイダ・アプリ向け SSE には出さない・#542）。
 - **LiteLLM は `LlmProvider` 実装の一つ（オプションアダプタ）**（2026-07-05 確定・#32）:
   雑多な外部プロバイダを一括で足したい時だけ LiteLLM Proxy アダプタを有効化。
   **チョークポイント（会計・認可・監査・Langfuse）は Rust in-process から動かさない**。

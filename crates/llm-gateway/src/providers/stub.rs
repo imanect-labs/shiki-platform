@@ -83,6 +83,36 @@ fn has_tool_result(req: &GenerateRequest) -> bool {
     })
 }
 
+/// `reasoning:` の決定的駆動（[`Block::Reasoning`] の往復を agent-core の結合テストで確かめる）。
+fn reasoning_round_trip(req: &GenerateRequest, prompt_tokens: u64) -> DeltaStream {
+    if has_tool_result(req) {
+        // 推論アイテムが、同じ assistant メッセージのツール呼び出しより前に戻っているか。
+        let carried = req.messages.iter().any(|m| {
+            let first_tool = m.content.iter().position(|b| matches!(b, Block::ToolUse { .. }));
+            let reasoning = m.content.iter().position(|b| {
+                matches!(b, Block::Reasoning { provider, item } if provider == "stub" && item["n"] == 1)
+            });
+            matches!((reasoning, first_tool), (Some(r), Some(t)) if r < t)
+        });
+        let reply = if carried {
+            "推論を引き継ぎました"
+        } else {
+            "推論が戻っていません"
+        };
+        return text_stream(reply, prompt_tokens);
+    }
+    let call = tool_call_stream(
+        req.tools[0].name.clone(),
+        serde_json::json!({}),
+        prompt_tokens,
+    );
+    let item = stream::iter([Ok(StreamDelta::ReasoningItem {
+        provider: "stub".to_string(),
+        item: serde_json::json!({ "n": 1 }),
+    })]);
+    item.chain(call).boxed()
+}
+
 /// プレフィックス → (対応ツール名, 入力 JSON のキー)。入力値は本文の残り。
 /// 対応ツールが提示に無ければ `None` を返し、呼び出し側が tools[0] にフォールバックする。
 fn tool_trigger(user_text: &str) -> Option<(&'static str, &'static str, String)> {
@@ -215,6 +245,11 @@ impl LlmProvider for StubProvider {
                 serde_json::json!({}),
                 prompt_tokens,
             ));
+        }
+        // --- 推論アイテムの引き継ぎ `reasoning:`（#542）: 1 ターン目は推論アイテム＋tools[0] の呼び出し、
+        // 2 ターン目は、その推論アイテムが履歴（ツール呼び出しより前）に戻っているかを本文で答える。 ---
+        if !req.tools.is_empty() && user_text.starts_with("reasoning:") {
+            return Ok(reasoning_round_trip(req, prompt_tokens));
         }
         // --- 並行 read 駆動 `parallel:`（#386）。 ---
         if !has_tool_result(req) {

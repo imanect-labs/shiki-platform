@@ -158,7 +158,9 @@ pub(crate) async fn llm_invoke(
                     if let StreamDelta::Done { usage, .. } = &d {
                         done_usage = Some(*usage);
                     }
-                    let _ = tx.send(delta_event(&d)).await;
+                    if let Some(ev) = delta_event(&d) {
+                        let _ = tx.send(ev).await;
+                    }
                 }
                 Err(e) => {
                     let _ = tx
@@ -191,8 +193,10 @@ pub(crate) async fn llm_invoke(
 }
 
 /// [`StreamDelta`] → SSE イベント（event=type タグ・data=中立形 JSON）。
-fn delta_event(d: &StreamDelta) -> AiEvent {
+/// プロバイダ固有の不透明な推論アイテムはアプリへ出さない（次のターンへ戻すためだけのもの）。
+fn delta_event(d: &StreamDelta) -> Option<AiEvent> {
     let name = match d {
+        StreamDelta::ReasoningItem { .. } => return None,
         StreamDelta::TextDelta { .. } => "text",
         StreamDelta::ThinkingDelta { .. } => "thinking",
         StreamDelta::ToolUseStart { .. } => "tool_use_start",
@@ -200,10 +204,10 @@ fn delta_event(d: &StreamDelta) -> AiEvent {
         StreamDelta::ToolUseStop { .. } => "tool_use_stop",
         StreamDelta::Done { .. } => "done",
     };
-    AiEvent {
+    Some(AiEvent {
         event: name.into(),
         data: serde_json::to_value(d).unwrap_or_else(|_| json!({})),
-    }
+    })
 }
 
 fn map_llm_err(e: llm_gateway::LlmError) -> GatewayError {

@@ -27,6 +27,8 @@ fn block_bytes(b: &Block) -> usize {
         Block::Text { text } | Block::Thinking { text } => text.len(),
         Block::ToolResult { content, .. } => content.len(),
         Block::ToolUse { name, input, .. } => name.len() + input.to_string().len(),
+        // 暗号化された推論もプロバイダ側では入力トークンとして数えられる。
+        Block::Reasoning { item, .. } => item.to_string().len(),
     }
 }
 

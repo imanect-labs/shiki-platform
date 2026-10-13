@@ -296,6 +296,8 @@ async fn run_step(
     let mut text_acc = String::new();
     let mut pending_names: HashMap<String, String> = HashMap::new();
     let mut calls: Vec<PendingCall> = Vec::new();
+    // プロバイダ固有の推論アイテム（次のツールのターンでそのまま送り返す・#542）。
+    let mut reasoning: Vec<Block> = Vec::new();
     let mut usage = Usage::default();
     let mut final_stop = StopReason::EndTurn;
 
@@ -315,6 +317,9 @@ async fn run_step(
                 pending_names.insert(id, name);
             }
             StreamDelta::ToolUseInputDelta { .. } => {}
+            StreamDelta::ReasoningItem { provider, item } => {
+                reasoning.push(Block::Reasoning { provider, item });
+            }
             StreamDelta::ToolUseStop { id, input } => {
                 let name = pending_names
                     .get(&id)
@@ -378,8 +383,9 @@ async fn run_step(
         return Ok(StepOutcome::Continue);
     }
 
-    // assistant メッセージを履歴へ。
-    let mut assistant_blocks: Vec<Block> = Vec::new();
+    // assistant メッセージを履歴へ。推論アイテムは、それに続く本文・ツール呼び出しより前に置く
+    // （Responses は推論 → function_call の順で入力に戻すことを求める）。
+    let mut assistant_blocks: Vec<Block> = reasoning;
     if !text_acc.is_empty() {
         assistant_blocks.push(Block::Text { text: text_acc });
     }

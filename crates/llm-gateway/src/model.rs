@@ -38,6 +38,13 @@ pub enum Block {
         #[serde(default)]
         is_error: bool,
     },
+    /// プロバイダ固有の不透明な推論アイテム（OpenAI Responses の暗号化された reasoning 等）。
+    /// 同じプロバイダへの次のツールのターンでそのまま送り返すためだけに持つ。中身は読まず、
+    /// `provider` が一致しないアダプタは送らない（表示用の思考は [`Block::Thinking`]）。
+    Reasoning {
+        provider: String,
+        item: serde_json::Value,
+    },
 }
 
 /// 1 メッセージ（role ＋ block 列）。
@@ -163,6 +170,11 @@ pub enum StreamDelta {
     ToolUseStop {
         id: String,
         input: serde_json::Value,
+    },
+    /// プロバイダ固有の不透明な推論アイテム（[`Block::Reasoning`] として履歴へ積む）。
+    ReasoningItem {
+        provider: String,
+        item: serde_json::Value,
     },
     /// ストリーム完了（停止理由＋使用量）。
     Done {

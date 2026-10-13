@@ -37,6 +37,9 @@ pub struct OpenAiResponsesProvider {
 /// Responses API の `max_output_tokens` の下限（これ未満は 400）。
 const MIN_OUTPUT_TOKENS: u32 = 16;
 
+/// [`Block::Reasoning`] の `provider`（このアダプタが受け取り、送り返すものの印）。
+const REASONING_PROVIDER: &str = "openai_responses";
+
 /// SSE の 1 行・1 イベントの上限。`response.completed` は応答全文を含むので大きめに取る。
 /// 改行・空行を送らない相手でメモリを使い尽くさないため（超えたらストリームをエラーで終える）。
 const MAX_SSE_BYTES: usize = 8 * 1024 * 1024;
@@ -97,6 +100,9 @@ impl OpenAiResponsesProvider {
             "input": input,
             "stream": true,
             "store": false,
+            // 会話をサーバに持たせないので、推論は暗号化した中身ごと受け取り、次のツールのターンで
+            // 送り返す（ID だけでは参照できない・#542）。
+            "include": ["reasoning.encrypted_content"],
         });
         if let Some(sys) = &req.system {
             body["instructions"] = json!(sys);
@@ -155,7 +161,17 @@ fn to_input_items(m: &Message, names: &ToolNameMap) -> Vec<Value> {
         Role::System => vec![json!({ "role": "system", "content": join_text(&m.content) })],
         Role::User => vec![json!({ "role": "user", "content": join_text(&m.content) })],
         Role::Assistant => {
-            let mut items = Vec::new();
+            // 推論アイテムは本文・ツール呼び出しより前に戻す（受け取った順のまま）。
+            let mut items: Vec<Value> = m
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    Block::Reasoning { provider, item } if provider == REASONING_PROVIDER => {
+                        Some(item.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
             let text = join_text(&m.content);
             if !text.is_empty() {
                 items.push(json!({ "role": "assistant", "content": text }));
@@ -242,6 +258,9 @@ impl EventMapper {
             }
             "response.output_item.done" => {
                 let item = &v["item"];
+                if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+                    return reasoning_item(item).into_iter().map(Ok).collect();
+                }
                 if item.get("type").and_then(Value::as_str) != Some("function_call") {
                     return Vec::new();
                 }
@@ -299,6 +318,24 @@ impl EventMapper {
             _ => Vec::new(),
         }
     }
+}
+
+/// 受け取った推論アイテムを、送り返せる形（type・id・encrypted_content・summary）にして返す。
+/// 暗号化された中身が無いものは送り返しても参照できない（`store: false`）ので捨てる。
+fn reasoning_item(item: &Value) -> Option<StreamDelta> {
+    let encrypted = item.get("encrypted_content").and_then(Value::as_str)?;
+    if encrypted.is_empty() {
+        return None;
+    }
+    Some(StreamDelta::ReasoningItem {
+        provider: REASONING_PROVIDER.to_string(),
+        item: json!({
+            "type": "reasoning",
+            "id": item.get("id").cloned().unwrap_or(Value::Null),
+            "encrypted_content": encrypted,
+            "summary": item.get("summary").cloned().unwrap_or_else(|| json!([])),
+        }),
+    })
 }
 
 /// SSE のイベント単位の組み立て（WHATWG: 空行で確定し、同じイベント内の `data:` 行は LF で連結する）。
@@ -653,6 +690,63 @@ mod tests {
         assert_eq!(f.push_line("data: \"x\"}\r\n"), None);
         assert_eq!(f.push_line("\n").as_deref(), Some("{\"type\":\n\"x\"}"));
         assert_eq!(f.push_line("\n"), None);
+    }
+
+    #[test]
+    fn reasoning_items_are_received_and_sent_back_before_tool_calls() {
+        let names = ToolNameMap::new(["calc"].into_iter());
+        let mut m = EventMapper::default();
+        let out = m.feed(
+            &json!({"type": "response.output_item.done", "item": {"id": "rs_1", "type": "reasoning", "status": "completed", "encrypted_content": "enc", "summary": [{"type": "summary_text", "text": "考え"}]}}),
+            &names,
+        );
+        let Ok(StreamDelta::ReasoningItem { provider, item }) = &out[0] else {
+            panic!("expected ReasoningItem, got {out:?}");
+        };
+        assert_eq!(provider, REASONING_PROVIDER);
+        // status は送り返さない（入力に要らない）。
+        assert_eq!(
+            item,
+            &json!({"type": "reasoning", "id": "rs_1", "encrypted_content": "enc", "summary": [{"type": "summary_text", "text": "考え"}]})
+        );
+        // 暗号化された中身が無いものは捨てる。
+        assert!(m
+            .feed(&json!({"type": "response.output_item.done", "item": {"id": "rs_2", "type": "reasoning", "summary": []}}), &names)
+            .is_empty());
+
+        let assistant = Message {
+            role: Role::Assistant,
+            content: vec![
+                Block::Reasoning {
+                    provider: REASONING_PROVIDER.into(),
+                    item: item.clone(),
+                },
+                Block::Reasoning {
+                    provider: "anthropic".into(),
+                    item: json!({"sig": "x"}),
+                },
+                Block::Text {
+                    text: "計算します".into(),
+                },
+                Block::ToolUse {
+                    id: "call_1".into(),
+                    name: "calc".into(),
+                    input: json!({"expr": "1+1"}),
+                },
+            ],
+        };
+        let items = to_input_items(&assistant, &names);
+        assert_eq!(items.len(), 3, "他プロバイダの推論は送らない: {items:?}");
+        assert_eq!(items[0]["type"], "reasoning");
+        assert_eq!(items[1]["role"], "assistant");
+        assert_eq!(items[2]["type"], "function_call");
+    }
+
+    #[test]
+    fn body_asks_for_encrypted_reasoning() {
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        let body = provider().build_body(&req, &ToolNameMap::new(std::iter::empty::<&str>()));
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     }
 
     #[test]

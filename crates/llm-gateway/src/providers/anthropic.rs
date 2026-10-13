@@ -97,7 +97,9 @@ fn to_anthropic_message(m: &Message) -> Value {
 fn to_anthropic_block(b: &Block) -> Option<Value> {
     match b {
         Block::Text { text } => Some(json!({ "type": "text", "text": text })),
-        Block::Thinking { .. } => None, // 再送する thinking はここでは扱わない（Phase 3 では省略）
+        // 再送する thinking はここでは扱わない（Phase 3 では省略）。
+        // 他プロバイダの不透明な推論アイテムも送らない。
+        Block::Thinking { .. } | Block::Reasoning { .. } => None,
         Block::ToolUse { id, name, input } => Some(json!({
             "type": "tool_use", "id": id, "name": name, "input": input,
         })),
