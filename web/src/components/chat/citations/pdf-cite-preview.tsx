@@ -28,7 +28,7 @@ export function PdfCitePreview({
   onUnavailable,
 }: {
   citation: Citation;
-  /// ページの拡大。`"fit"` は表示中のページの枠の幅が窓に収まる倍率にする（1〜2.2 倍・文字が読める大きさ以上）。
+  /// ページの拡大。`"fit"` は表示中のページの枠の幅が窓に収まる倍率にする（1〜2.2 倍。文字が読める大きさを優先）。
   zoom?: number | "fit";
   className?: string;
   onUnavailable?: () => void;
@@ -73,10 +73,11 @@ export function PdfCitePreview({
         const pageWidth = p.getViewport({ scale: 1 }).width;
         const left = Math.min(...pageBoxes.map((b) => Math.min(b.bbox[0], b.bbox[2])));
         const right = Math.max(...pageBoxes.map((b) => Math.max(b.bbox[0], b.bbox[2])));
-        // 枠の左右に 16pt の余白を見て、その幅が窓に収まる倍率。ただし文字が読める大きさは下回らない。
-        const boxFit = pageWidth / (right - left + 32);
+        // 枠の左右に 16pt の余白を見て、その幅が窓に収まる倍率（上限 2.2 倍）。
+        // ただし文字が読める大きさは上限より優先する（狭い窓で横長のページを開いた場合など）。
+        const boxFit = Math.min(2.2, Math.max(1, pageWidth / (right - left + 32)));
         const readable = (pageWidth * MIN_PX_PER_PT) / inner;
-        if (active) setFit(Math.min(2.2, Math.max(1, boxFit, readable)));
+        if (active) setFit(Math.max(boxFit, readable));
       })
       .catch(() => undefined);
     return () => {

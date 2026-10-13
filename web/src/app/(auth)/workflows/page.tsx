@@ -164,7 +164,7 @@ export default function WorkflowsPage() {
       <div className="mb-5">
         <div className="flex items-center justify-between gap-3">
           <h1 className="shrink-0 text-lg font-semibold">ワークフロー</h1>
-          <Button onClick={create} disabled={creating} aria-label="新しいワークフロー">
+          <Button onClick={create} disabled={creating}>
             {creating ? (
               <Loader2 className="size-4 animate-spin" aria-hidden />
             ) : (
