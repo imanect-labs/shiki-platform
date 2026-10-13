@@ -264,3 +264,14 @@ async fn live_round_trip_with_tool_call() {
         Some(StreamDelta::Done { stop_reason: StopReason::EndTurn, usage }) if usage.completion_tokens > 0
     ));
 }
+
+#[tokio::test]
+async fn endless_line_without_newline_is_cut_off_with_an_error() {
+    // 改行を送らないまま 9 MiB を超える 1 行（上限 8 MiB）。
+    static HUGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let body: &'static str = HUGE.get_or_init(|| format!("data: {}", "x".repeat(9 * 1024 * 1024)));
+    let (base, _) = spawn_mock(StatusCode::OK, body).await;
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "x")]);
+    let out = drain(&provider(&base), &req).await;
+    assert!(matches!(out.last(), Some(Err(LlmError::Unavailable(m))) if m.contains("size limit")));
+}

@@ -37,6 +37,10 @@ pub struct OpenAiResponsesProvider {
 /// Responses API の `max_output_tokens` の下限（これ未満は 400）。
 const MIN_OUTPUT_TOKENS: u32 = 16;
 
+/// SSE の 1 行・1 イベントの上限。`response.completed` は応答全文を含むので大きめに取る。
+/// 改行・空行を送らない相手でメモリを使い尽くさないため（超えたらストリームをエラーで終える）。
+const MAX_SSE_BYTES: usize = 8 * 1024 * 1024;
+
 impl OpenAiResponsesProvider {
     /// `base_url` は `/responses` の親（例 `https://opencode.ai/inference/go/v1`）。
     pub fn new(
@@ -301,6 +305,8 @@ impl EventMapper {
 #[derive(Default)]
 struct SseFramer {
     data: Vec<String>,
+    /// 確定前の data の合計バイト数。
+    size: usize,
 }
 
 impl SseFramer {
@@ -308,12 +314,20 @@ impl SseFramer {
     fn push_line(&mut self, line: &str) -> Option<String> {
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
+            self.size = 0;
             return (!self.data.is_empty()).then(|| std::mem::take(&mut self.data).join("\n"));
         }
         if let Some(v) = line.strip_prefix("data:") {
-            self.data.push(v.strip_prefix(' ').unwrap_or(v).to_string());
+            let v = v.strip_prefix(' ').unwrap_or(v);
+            self.size += v.len() + 1;
+            self.data.push(v.to_string());
         }
         None
+    }
+
+    /// 確定前のイベントが上限を超えたか。
+    fn overflowed(&self) -> bool {
+        self.size > MAX_SSE_BYTES
     }
 }
 
@@ -422,12 +436,22 @@ impl LlmProvider for OpenAiResponsesProvider {
                 buf.extend_from_slice(&chunk);
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=pos).collect();
-                    let Some(payload) = framer.push_line(&String::from_utf8_lossy(&line)) else {
+                    let payload = framer.push_line(&String::from_utf8_lossy(&line));
+                    if framer.overflowed() {
+                        break;
+                    }
+                    let Some(payload) = payload else {
                         continue;
                     };
                     if dispatch(&payload, &mut mapper, &names, &tx) {
                         return;
                     }
+                }
+                if buf.len() > MAX_SSE_BYTES || framer.overflowed() {
+                    let _ = tx.unbounded_send(Err(LlmError::Unavailable(
+                        "responses: SSE line or event exceeded the size limit".into(),
+                    )));
+                    return;
                 }
             }
             // 末尾の空行が無いまま閉じた最後のイベントも捨てない。
@@ -629,6 +653,19 @@ mod tests {
         assert_eq!(f.push_line("data: \"x\"}\r\n"), None);
         assert_eq!(f.push_line("\n").as_deref(), Some("{\"type\":\n\"x\"}"));
         assert_eq!(f.push_line("\n"), None);
+    }
+
+    #[test]
+    fn framer_reports_overflow_of_an_unterminated_event() {
+        let mut f = SseFramer::default();
+        let chunk = format!("data: {}", "x".repeat(1024 * 1024));
+        for _ in 0..8 {
+            assert_eq!(f.push_line(&chunk), None);
+        }
+        assert!(f.overflowed());
+        // 空行で確定すれば数え直す。
+        assert!(f.push_line("").is_some());
+        assert!(!f.overflowed());
     }
 
     #[test]
