@@ -208,6 +208,8 @@ if [ "$RAG_REMOTE" = 1 ]; then
     err "   （worker と S3 をローカルに立てるなら --rag）"
     exit 2
   fi
+  # server はベース URL の末尾の / を除いて連結するので、確認側も合わせる。
+  SHIKI_DEV_RAG_WORKER_URL=${SHIKI_DEV_RAG_WORKER_URL%/}
   if ! worker_health=$(curl -fsS -m 5 "$SHIKI_DEV_RAG_WORKER_URL/healthz" 2>/dev/null); then
     err "   ingestion-worker に届きません: $SHIKI_DEV_RAG_WORKER_URL"
     exit 1
@@ -259,38 +261,44 @@ if [ ! -d web/node_modules ]; then
   WEB_INSTALL_PID=$!
 fi
 
-(
-  cd deploy/compose
-  [ -f .env ] || cp .env.example .env
-  # shellcheck disable=SC2086
-  docker compose up -d $DEPS
-  for svc in $DEPS; do
-    ok=""
-    for _ in $(seq 1 60); do
-      s=$(docker compose ps "$svc" --format '{{.Health}}' 2>/dev/null || true)
-      # healthcheck 未定義のサービスは Health が空になる。起動していれば良しとする。
-      if [ "$s" = "healthy" ] || { [ -z "$s" ] && [ -n "$(docker compose ps -q "$svc" 2>/dev/null)" ]; }; then
-        ok=1; break
-      fi
-      sleep 5
+compose_up() {  # compose_up <service...>: 起動して healthy になるまで待つ
+  (
+    cd deploy/compose
+    [ -f .env ] || cp .env.example .env
+    docker compose up -d "$@"
+    for svc in "$@"; do
+      ok=""
+      for _ in $(seq 1 60); do
+        s=$(docker compose ps "$svc" --format '{{.Health}}' 2>/dev/null || true)
+        # healthcheck 未定義のサービスは Health が空になる。起動していれば良しとする。
+        if [ "$s" = "healthy" ] || { [ -z "$s" ] && [ -n "$(docker compose ps -q "$svc" 2>/dev/null)" ]; }; then
+          ok=1; break
+        fi
+        sleep 5
+      done
+      [ -n "$ok" ] || { err "$svc が healthy になりませんでした（docker compose logs $svc）"; exit 1; }
+      say "   [ok] $svc"
     done
-    [ -n "$ok" ] || { err "$svc が healthy になりませんでした（docker compose logs $svc）"; exit 1; }
-    say "   [ok] $svc"
-  done
-)
+  )
+}
+# 先に Postgres だけ立て、DB のリセットと保存先の組の確認を済ませてから残りを立てる
+# （確認で止まる時に、ローカルの worker など重いものを起動したまま残さない）。
+compose_up postgres
 
 # --- 1.5 dev DB のリセット（明示 opt-in） ---
 # 別ブランチの migration が当たった compose DB は checksum 不一致で起動を止める
 # （"migration N was previously applied but has been modified"）。dev DB は使い捨てなので
 # 作り直してよいが、破壊操作なので必ず明示フラグでのみ行う。
+# compose が解釈した POSTGRES_USER（.env の引用符やシェルの上書きを反映済み）を、起動中のコンテナから読む。
+pg_user() {
+  local u
+  u=$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres printenv POSTGRES_USER 2>/dev/null | tr -d '\r\n') || u=""
+  printf '%s' "${u:-postgres}"
+}
 reset_dev_db() {
   err "⚠️  compose の dev DB 'shiki' を DROP して作り直します（データは失われます）。"
-  # compose の .env が POSTGRES_USER を上書きしている場合があるので固定値にしない。
-  local pguser
-  pguser=$(grep -E '^POSTGRES_USER=' deploy/compose/.env 2>/dev/null | tail -1 | cut -d= -f2-)
-  pguser=${pguser:-postgres}
   docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
-    psql -U "$pguser" -c "DROP DATABASE IF EXISTS shiki WITH (FORCE);" -c "CREATE DATABASE shiki;"
+    psql -U "$(pg_user)" -c "DROP DATABASE IF EXISTS shiki WITH (FORCE);" -c "CREATE DATABASE shiki;"
   say "   [ok] dev DB をリセットしました（SHIKI_DEV_SEED=true が再投入します）"
 }
 [ "$RESET_DB" = 1 ] && reset_dev_db
@@ -301,10 +309,15 @@ reset_dev_db() {
 # DB のコメントに残し、食い違えば止める（DB を作り直すとコメントも消える）。
 STORE_TAG=$([ "$RAG_REMOTE" = 1 ] && printf 'shiki-dev-store=%s/%s' "$SHIKI_DEV_S3_ENDPOINT" "$SHIKI_DEV_S3_BUCKET" || printf 'shiki-dev-store=local')
 dev_psql() {  # dev_psql <sql>  → 1 行目の値だけ返す
-  local pguser
-  pguser=$(grep -E '^POSTGRES_USER=' deploy/compose/.env 2>/dev/null | tail -1 | cut -d= -f2-)
-  docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
-    psql -U "${pguser:-postgres}" -d shiki -tAc "$1" 2>/dev/null | head -1 || true
+  # **接続や SQL の失敗を握り潰さない。** 空として扱うと、印も blob も無い DB と見なして
+  # 別の保存先へ切り替えを通してしまう。
+  local out
+  if ! out=$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
+    psql -v ON_ERROR_STOP=1 -U "$(pg_user)" -d shiki -tAc "$1" 2>&1); then
+    err "dev DB への問い合わせに失敗しました: $out"
+    exit 1
+  fi
+  printf '%s' "${out%%$'\n'*}"
 }
 cur_tag=$(dev_psql "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = 'shiki'")
 if [ -z "$cur_tag" ]; then
@@ -322,6 +335,9 @@ if [ -n "$cur_tag" ] && [ "$cur_tag" != "$STORE_TAG" ]; then
   err "   切り替えるなら DB を作り直してください: $0 --reset-db ...（元に戻すなら前と同じ引数で起動）"
   exit 1
 fi
+
+# shellcheck disable=SC2086
+compose_up $DEPS
 
 # 印の付け替えと不要なサービスの停止。**起動前の検査をすべて通した後に呼ぶ。**
 # 先にやると、後の検査（:8080 の取り合いなど）で止まった時に今の環境を壊してしまう。
@@ -449,7 +465,8 @@ else
   if [ -n "$EFF_CORS" ]; then
     CORS_LINE="export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS=$(printf '%q' "$EFF_CORS")"
   else
-    CORS_LINE="# CORS はバケット側の既存の設定に任せる（SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS で設定できる）"
+    # 呼び出し元の環境に残っていると引き継いでしまうので、明示的に消す。
+    CORS_LINE="unset SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS  # バケット側の既存の設定に任せる（SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS で設定できる）"
   fi
 
   # コンテナ内部ホスト名をホストの公開ポートへ読み替える。
