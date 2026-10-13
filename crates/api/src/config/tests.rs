@@ -445,3 +445,14 @@ fn explicit_catalog_keeps_per_model_windows() {
     assert_eq!(catalog.models.len(), 1);
     assert_eq!(catalog.models[0].context_window_tokens, Some(200_000));
 }
+
+#[test]
+fn chat_yui_defaults_on() {
+    // 節ごと省略しても、節はあって yui だけ省略しても既定オン（#530）。明示の false は効く。
+    assert!(ChatConfig::default().yui);
+    let partial: ChatConfig =
+        serde_json::from_value(serde_json::json!({ "enabled": true })).unwrap();
+    assert!(partial.yui);
+    let off: ChatConfig = serde_json::from_value(serde_json::json!({ "yui": false })).unwrap();
+    assert!(!off.yui);
+}

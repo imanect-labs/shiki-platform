@@ -583,8 +583,7 @@ services:
       # 1 応答の最大トークン（既定 8192）。reasoning 系モデルは思考トークンも消費するため、
       # 長い成果物（レポート執筆・大きなツール引数）を作らせる場合はさらに引き上げる。
       SHIKI__CHAT__MAX_TOKENS: ${SHIKI__CHAT__MAX_TOKENS:-8192}
-      # 回答の中に ```ui ブロック（Yui）で図を書かせる（#530）。本番設定の既定は false で、開発用の
-      # compose ではオンにして試す。
+      # 回答の中に ```ui ブロック（Yui）で図を書かせる（#530・既定オン）。false で書き方の指示を外す。
       SHIKI__CHAT__YUI: ${SHIKI__CHAT__YUI:-true}
       # ワークフロー実行時（Phase 10）。launcher/worker/scheduler を有効化（エディタからの実行・
       # スケジュール発火・実行履歴 SSE が動く）。
