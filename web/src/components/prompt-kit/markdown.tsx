@@ -84,12 +84,14 @@ const SourceContext = React.createContext<{ text: string; streaming: boolean }>(
   streaming: false,
 });
 
-/// フェンスが原文で閉じているか。react-markdown（mdast-util-to-hast）はフェンスの中身の末尾に
+/// フェンスが原文で終わっているか。react-markdown（mdast-util-to-hast）はフェンスの中身の末尾に
 /// 必ず改行を足すため、中身からは閉じたかどうかも、最終行が書き終わったかどうかも分からない。
-function fenceClosed(text: string, node: ExtraProps["node"]): boolean {
+/// 閉じ行がある場合のほか、後ろに本文が続く場合（引用・リストの終わりで暗黙に閉じた）も終わっている。
+function fenceEnded(text: string, node: ExtraProps["node"]): boolean {
   const start = node?.position?.start.offset;
   const end = node?.position?.end.offset;
   if (start === undefined || end === undefined) return false;
+  if (end < text.trimEnd().length) return true;
   const lines = text.slice(start, end).split(/\r?\n/);
   // 引用・リストの中のフェンスは閉じ行に `>` が付く。
   return lines.length > 1 && /^\s*(?:>\s*)*(`{3,}|~{3,})\s*$/.test(lines[lines.length - 1] ?? "");
@@ -121,8 +123,8 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
   const { text, streaming } = React.useContext(SourceContext);
   const { code, raw, lang, ui, uiKind } = extractCode(children);
   if (!ui) return <CodeBlock code={code} lang={lang} />;
-  const closed = fenceClosed(text, node);
-  // 閉じていないブロックは、確定した行だけを渡す（本文が改行で終わっていれば最終行も確定）。
+  const closed = fenceEnded(text, node);
+  // 終わっていないブロックは、確定した行だけを渡す（本文が改行で終わっていれば最終行も確定）。
   // 生成中は書きかけの行が伸びるたびに図を解析し直さないため、生成後（停止・閉じ忘れ）は
   // 途中で切れた値を確定値として描かないため。
   const lastLineDone = closed || text.endsWith("\n");
@@ -131,6 +133,8 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
   return (
     <UiFigure
       source={source}
+      // 記述そのものを見せるのは書き終わった後だけ。生成中は渡さない（トークンごとに描き直さない）。
+      raw={closed || !streaming ? raw : undefined}
       complete={closed || !streaming}
       truncated={!lastLineDone && !streaming && raw.trim() !== source.trim()}
       kind={kind ? resolveKind(kind) : undefined}

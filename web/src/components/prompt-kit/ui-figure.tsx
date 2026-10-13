@@ -15,6 +15,7 @@ import { CodeBlock } from "./code-block";
 /// （確定済みの図・書きかけの行しか変わっていない図の解析とレイアウトを繰り返さない）。
 export const UiFigure = React.memo(function UiFigure({
   source,
+  raw,
   complete,
   truncated,
   kind,
@@ -27,6 +28,8 @@ export const UiFigure = React.memo(function UiFigure({
   complete: boolean;
   /// 生成が途中で終わり（停止・閉じ忘れ）、書きかけの最終行を落としたか。
   truncated?: boolean;
+  /// 図にできないときにそのまま見せる記述（書きかけの最終行も含む全体）。省略時は source。
+  raw?: string;
   /// フェンスの情報文字列で指定された種類（```ui:bar）。
   kind?: Kind;
   /// 図にできないときに表示するコードブロックの言語名。
@@ -48,7 +51,7 @@ export const UiFigure = React.memo(function UiFigure({
   if (failed) {
     return (
       <div data-testid="ui-figure-fallback">
-        <CodeBlock code={source.replace(/\n$/, "")} lang={lang} />
+        <CodeBlock code={(raw ?? source).replace(/\n$/, "")} lang={lang} />
         <p className="-mt-1.5 mb-3 text-[11px] text-muted-foreground">
           図にできなかったため、記述をそのまま表示しています。
         </p>
@@ -67,11 +70,14 @@ export const UiFigure = React.memo(function UiFigure({
     );
   }
 
-  const note = !complete
-    ? null
-    : truncated
-      ? "生成が途中で終わったため、最後の行は表示していません"
-      : diagnosticsSummary(result.diagnostics);
+  const note = complete
+    ? [
+        truncated ? "生成が途中で終わったため、最後の行は表示していません" : null,
+        diagnosticsSummary(result.diagnostics),
+      ]
+        .filter(Boolean)
+        .join("。")
+    : null;
   const copy = async () => {
     try {
       // 貼り付け先を選ばないよう、表・箇条書きにしたテキストを入れる。
