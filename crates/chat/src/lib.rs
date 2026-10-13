@@ -39,6 +39,7 @@ pub mod office_tool;
 pub mod selection;
 pub(crate) mod skill;
 pub mod skill_catalog;
+pub(crate) mod skill_search_tool;
 pub(crate) mod skill_tool;
 pub mod slide_templates;
 pub mod slide_tool;

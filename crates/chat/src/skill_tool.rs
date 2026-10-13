@@ -23,7 +23,7 @@ use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 
 use crate::skill::AppliedSkill;
-use crate::skill_catalog::{merge_entries, render_tool_description, SkillCatalogEntry};
+use crate::skill_catalog::{render_tool_description, SkillCatalogEntry};
 use crate::store::ClaimedRun;
 use crate::ChatError;
 
@@ -50,33 +50,33 @@ pub(crate) struct SkillTool {
     description: String,
 }
 
+/// 名前 → 実体。同名は**先に出たもの**（ピン → カタログ源の順）を残す。`skill_search` の
+/// 候補（同じく先勝ち）と、`skill` が読み込む実体を食い違わせない。
+fn index_by_name(entries: Vec<SkillCatalogEntry>) -> HashMap<String, Resolvable> {
+    let mut by_name = HashMap::with_capacity(entries.len());
+    for e in entries {
+        by_name.entry(e.name).or_insert(Resolvable {
+            id: e.id,
+            version: e.version,
+            pinned: e.pinned,
+        });
+    }
+    by_name
+}
+
 impl SkillTool {
-    /// カタログからツールを組み立てる（エントリが空なら None＝提示しない）。
+    /// カタログ（[`merge_entries`] 済み）からツールを組み立てる（空なら None＝提示しない）。
     pub(crate) fn build(
         artifacts: Arc<artifact::ArtifactStore>,
         db: PgPool,
         run: &ClaimedRun,
-        pinned: Vec<SkillCatalogEntry>,
-        source_entries: Vec<SkillCatalogEntry>,
+        entries: Vec<SkillCatalogEntry>,
     ) -> Option<SkillTool> {
-        let entries = merge_entries(pinned, source_entries);
         if entries.is_empty() {
             return None;
         }
         let description = render_tool_description(&entries);
-        let by_name = entries
-            .into_iter()
-            .map(|e| {
-                (
-                    e.name,
-                    Resolvable {
-                        id: e.id,
-                        version: e.version,
-                        pinned: e.pinned,
-                    },
-                )
-            })
-            .collect();
+        let by_name = index_by_name(entries);
         Some(SkillTool {
             artifacts,
             db,
@@ -195,5 +195,34 @@ impl Tool for SkillTool {
             "name": skill.name,
         })];
         Ok(outcome)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, pinned: bool) -> SkillCatalogEntry {
+        SkillCatalogEntry {
+            id: Uuid::new_v4(),
+            version: 1,
+            name: name.into(),
+            description: "d".into(),
+            pinned,
+            command: None,
+        }
+    }
+
+    #[test]
+    fn same_name_keeps_the_first_entry_like_skill_search() {
+        // merge_entries は ID でしか重複を除かない。ID 違いの同名はピン → カタログ源の順に並ぶ。
+        let pinned = entry("monthly-close", true);
+        let catalog = entry("monthly-close", false);
+        let first = pinned.id;
+        let by_name = index_by_name(vec![pinned, catalog]);
+        assert_eq!(by_name.len(), 1);
+        let hit = &by_name["monthly-close"];
+        assert_eq!(hit.id, first);
+        assert!(hit.pinned);
     }
 }

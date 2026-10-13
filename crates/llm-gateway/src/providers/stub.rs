@@ -16,6 +16,8 @@
 //!   - `plan: A, B, C` … 1 ターン目に `plan` メタツールをカンマ区切りのサブタスクで呼ぶ（計画分解の検証）。
 //!   - `loop:` … tool_result の有無に関わらず**毎ターン** tools[0] を空入力で呼び続ける
 //!     （ループ検出・ステップ/予算上限・長ホライズンの決定的駆動）。
+//! - tool search 検証用の `toolsearch:<query>` … `tool_search` で検索し、読み込んだ先頭の
+//!   遅延ツールを次のターンで呼ぶ（[`super::stub_triggers::tool_search_call`]）。
 
 use std::time::Duration;
 
@@ -26,7 +28,7 @@ use super::stub_fixtures::{genui_spec, yui_reply};
 use super::stub_stream::{
     paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
 };
-use super::stub_triggers::note_tool_call;
+use super::stub_triggers::{note_tool_call, tool_search_call};
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 
@@ -184,6 +186,18 @@ fn parallel_read_call(
     (!calls.is_empty()).then(|| tool_calls_stream(calls, prompt_tokens))
 }
 
+/// 図の回答 `yui:<kind>`（#530）: ```ui ブロックを含む本文を数文字ずつ流す
+/// （行の途中で区切れる＝書きかけの値を描かないことを e2e で確かめられる）。
+fn yui_call(user_text: &str, prompt_tokens: u64) -> Option<DeltaStream> {
+    let kind = user_text.strip_prefix("yui:")?;
+    Some(paced_chunks_stream(
+        &yui_reply(kind.trim()),
+        prompt_tokens,
+        3,
+        Duration::from_millis(25),
+    ))
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for StubProvider {
     fn name(&self) -> &'static str {
@@ -210,15 +224,9 @@ impl LlmProvider for StubProvider {
                 Duration::from_secs(secs),
             ));
         }
-        // --- 図の回答 `yui:<kind>`（#530）: ```ui ブロックを含む本文を数文字ずつ流す
-        // （行の途中で区切れる＝書きかけの値を描かないことを e2e で確かめられる）。 ---
-        if let Some(kind) = user_text.strip_prefix("yui:") {
-            return Ok(paced_chunks_stream(
-                &yui_reply(kind.trim()),
-                prompt_tokens,
-                3,
-                Duration::from_millis(25),
-            ));
+        // --- 図の回答 `yui:<kind>`（#530）。 ---
+        if let Some(s) = yui_call(&user_text, prompt_tokens) {
+            return Ok(s);
         }
         // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
         if !req.tools.is_empty() && user_text.starts_with("loop:") {
@@ -227,6 +235,10 @@ impl LlmProvider for StubProvider {
                 serde_json::json!({}),
                 prompt_tokens,
             ));
+        }
+        // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
+        if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {
+            return Ok(s);
         }
         // --- 並行 read 駆動 `parallel:`（#386）。 ---
         if !has_tool_result(req) {
@@ -392,11 +404,11 @@ mod tests {
     #[tokio::test]
     async fn stub_calls_tool_on_search_prefix() {
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "search: 経費規程")]);
-        req.tools.push(crate::model::ToolDef {
-            name: "doc_search".into(),
-            description: "d".into(),
-            input_schema: serde_json::json!({}),
-        });
+        req.tools.push(crate::model::ToolDef::new(
+            "doc_search",
+            "d",
+            serde_json::json!({}),
+        ));
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
         let mut stop = None;
@@ -416,11 +428,8 @@ mod tests {
         // websearch: プレフィックスは提示ツールの中から web_search を選ぶ（順序非依存）。
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "websearch: rust")]);
         for name in ["code_interpreter", "web_search", "web_fetch"] {
-            req.tools.push(crate::model::ToolDef {
-                name: name.into(),
-                description: "d".into(),
-                input_schema: serde_json::json!({}),
-            });
+            req.tools
+                .push(crate::model::ToolDef::new(name, "d", serde_json::json!({})));
         }
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
@@ -439,11 +448,11 @@ mod tests {
     #[tokio::test]
     async fn stub_python_prefix_selects_code_interpreter() {
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "python: print(1)")]);
-        req.tools.push(crate::model::ToolDef {
-            name: "code_interpreter".into(),
-            description: "d".into(),
-            input_schema: serde_json::json!({}),
-        });
+        req.tools.push(crate::model::ToolDef::new(
+            "code_interpreter",
+            "d",
+            serde_json::json!({}),
+        ));
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
         let mut input = None;
@@ -462,11 +471,11 @@ mod tests {
     async fn stub_falls_back_to_first_tool_when_named_absent() {
         // websearch: だが web_search が提示に無い → tools[0]（doc_search）にフォールバック。
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "websearch: x")]);
-        req.tools.push(crate::model::ToolDef {
-            name: "doc_search".into(),
-            description: "d".into(),
-            input_schema: serde_json::json!({}),
-        });
+        req.tools.push(crate::model::ToolDef::new(
+            "doc_search",
+            "d",
+            serde_json::json!({}),
+        ));
         let mut s = StubProvider::new().stream(&req).await.unwrap();
         let mut tool_name = None;
         while let Some(ev) = s.next().await {
