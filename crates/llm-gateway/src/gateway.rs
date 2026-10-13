@@ -113,6 +113,9 @@ impl LlmGateway {
     ///
     /// カタログのモデルが**存在しないプロバイダ**を指していたら構築を失敗させる
     /// （実行時に初めて「振り先が無い」と分かる構成を起動させない）。
+    // 呼び出し側（各配線・多数のテスト）は Client を値で渡す。プロバイダごとに clone して
+    // 接続プールを共有するため、ここで消費はしない。
+    #[allow(clippy::needless_pass_by_value)]
     pub fn build(
         db: PgPool,
         http: reqwest::Client,

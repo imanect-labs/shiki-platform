@@ -5,7 +5,12 @@
 //! - 会計（record_generation）に刻んだ行が、利用量集計（合計・日別・モデル/ユーザー/利用元別）に
 //!   そのまま出て、別テナント・別 org の行が混ざらないこと。
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
 
 use authz::{AuthContext, Principal};
 use chrono::{Duration, Utc};

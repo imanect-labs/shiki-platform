@@ -58,7 +58,7 @@ impl TenantLlmSettings {
         catalog
             .models
             .iter()
-            .filter(|m| !self.disabled_models.iter().any(|d| *d == m.id))
+            .filter(|m| !self.disabled_models.contains(&m.id))
             .collect()
     }
 }

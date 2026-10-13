@@ -55,6 +55,9 @@ pub(super) const EVENT_SPEC: EventTableSpec = EventTableSpec {
 pub(super) const RUN_KEY_COLUMNS: &[&str] = &["run_id"];
 
 /// ワーカーが claim した run（生成に必要な材料一式）。
+// generation_run の行の射影（DB の boolean 列をそのまま写す）。状態機械に畳むと
+// 列との対応が崩れるので bool のまま持つ。
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ClaimedRun {
     pub run_id: Uuid,

@@ -37,6 +37,27 @@ pub(super) fn effective_model(
     }
 }
 
+/// 自律・ツールループの実行オプションへ適用する（skill の既定を適用した**後**に呼ぶ）。
+///
+/// skill の既定（`apply_model_defaults`）は温度・上限も触るので、モデルと思考強度だけを
+/// ここで決め直す。`opts.model` には skill の指定か設定の既定が入っている。
+pub(super) fn apply_to_opts(
+    run: &crate::store::ClaimedRun,
+    skills: &[crate::skill::AppliedSkill],
+    opts: &mut agent_core::AgentOptions,
+) {
+    let skill_model = crate::skill::combined_model_defaults(skills).and_then(|d| d.model);
+    let chosen = effective_model(
+        run.model.as_deref(),
+        run.effort.as_deref(),
+        run.model_auto,
+        skill_model.as_deref(),
+        opts.model.as_deref(),
+    );
+    opts.model = chosen.model;
+    opts.effort = chosen.effort;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -119,21 +119,7 @@ pub(crate) async fn dev_seed(
                 .context("dev seed tuple の書き込みに失敗")?;
             tracing::info!(user = %u.id, org = %u.org, tenant = %seed_tenant, "dev seed: org member tuple を投入");
         }
-        if u.admin
-            && !fga
-                .check(
-                    &subject,
-                    Relation::Admin,
-                    &object,
-                    Consistency::HigherConsistency,
-                )
-                .await?
-        {
-            fga.write_tuple(&subject, Relation::Admin, &object)
-                .await
-                .context("dev seed: org admin tuple の書き込みに失敗")?;
-            tracing::info!(user = %u.id, org = %u.org, "dev seed: org admin tuple を投入");
-        }
+        seed_org_admin(fga, &subject, &object, u.admin).await?;
         // ディレクトリ（共有相手検索）へ投入。ON CONFLICT 更新で冪等。
         directory
             .upsert_user(u.id, seed_tenant, u.org, u.email, u.display_name)
@@ -182,6 +168,31 @@ pub(crate) async fn dev_seed(
             .context("dev seed: directory_role の投入に失敗")?;
     }
     tracing::info!(count = SEED_ROLES.len(), "dev seed: ロール群を投入");
+    Ok(())
+}
+
+/// 組織管理者のタプルを冪等に投入する（#553・管理コンソールの検証用）。
+async fn seed_org_admin(
+    fga: &OpenFgaClient,
+    subject: &authz::Subject,
+    object: &authz::FgaObject,
+    admin: bool,
+) -> anyhow::Result<()> {
+    if admin
+        && !fga
+            .check(
+                subject,
+                Relation::Admin,
+                object,
+                Consistency::HigherConsistency,
+            )
+            .await?
+    {
+        fga.write_tuple(subject, Relation::Admin, object)
+            .await
+            .context("dev seed: org admin tuple の書き込みに失敗")?;
+        tracing::info!(subject = %subject, "dev seed: org admin tuple を投入");
+    }
     Ok(())
 }
 
