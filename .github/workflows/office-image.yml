@@ -57,11 +57,47 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: build & push
+      # **core だけ先に建ててキャッシュへ出す。**
+      # cache-to はビルドが**成功したときしか**書き出されない。core の後ろ
+      # （coolwsd・ランタイム）で落ちると、3 時間かけた core も毎回捨てられる
+      # ——実際それで 4 回連続フルビルドになった。core 単体なら必ず成功するので、
+      # ここで確実にキャッシュへ載せてから全体を建てる。
+      #
+      # **週次だけはキャッシュを使わない。** あの schedule の目的は
+      # 「キャッシュ無しのクリーンビルドで腐敗を検知する」ことなので、
+      # 効かせると目的を失う。
+      - name: build core（キャッシュ投入のみ・成果物は捨てる）
+        if: github.event_name != 'schedule'
         uses: docker/build-push-action@v6
         with:
           context: deploy/docker/collabora
-          push: true
+          target: core-build
+          load: false
+          push: false
+          cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
+          cache-to: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache,mode=max', github.repository_owner) || '' }}
+          build-args: |
+            CORE_REPO=${{ env.CORE_REPO }}
+            CORE_REF=${{ env.CORE_REF }}
+            CORE_COMMIT=${{ env.CORE_COMMIT }}
+            ONLINE_REPO=${{ env.ONLINE_REPO }}
+            ONLINE_REF=${{ env.ONLINE_REF }}
+            ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+
+
+      # **push する前に smoke する。** 以前はこの step が push: true で、
+      # ビルドが通っただけのイメージが latest として公開されていた。
+      # 起動しないイメージを掴まされると、利用側は原因がイメージ側にあると
+      # 気づけない。load してローカルで検証し、通ってから push する。
+      - name: build（load のみ・まだ push しない）
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/docker/collabora
+          load: true
+          push: false
+          # 上の step が入れた core のキャッシュを使う。成功したら全層を更新する。
+          cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
+          cache-to: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache,mode=max', github.repository_owner) || '' }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest
@@ -78,19 +114,33 @@ jobs:
             io.shiki.collabora.core=${{ env.CORE_REF }}@${{ env.CORE_COMMIT }}
             io.shiki.collabora.online=${{ env.ONLINE_REF }}@${{ env.ONLINE_COMMIT }}
 
+      # **--rm を付けない。** 付けていると coolwsd が起動直後に落ちたとき
+      # コンテナごとログが消え、「No such container」しか残らなかった。
+      # **command を上書きしない。** 配布するのはイメージの CMD なので、それ自体を検証する
+      # （以前は引数をここに再掲していて、CMD の不備を素通りさせうる形だった）。
       - name: smoke（discovery が取れること）
         run: |
           set -euo pipefail
-          docker run -d --rm --name collabora-smoke -p 127.0.0.1:19980:9980 \
-            "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
-            coolwsd --o:sys_template_path=/opt/cool/systemplate \
-              --o:child_root_path=/opt/cool/child-roots \
-              --o:lo_template_path=/opt/collaboraoffice \
-              --o:ssl.enable=false --o:ssl.termination=false
+          trap 'docker rm -f collabora-smoke >/dev/null 2>&1 || true' EXIT
+          docker run -d --name collabora-smoke -p 127.0.0.1:19980:9980 \
+            "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}"
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
-              echo "discovery OK"; docker stop collabora-smoke; exit 0
+            # --max-time: 無いと coolwsd が子プロセス待ちで応答を返さないとき
+            # curl が固まり、120 秒の打ち切りが効かない（実際 17 分待った）。
+            if curl -fsS --max-time 5 http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
+              echo "discovery OK"; exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' collabora-smoke)" != true ]; then
+              echo "coolwsd が終了した（exit code: $(docker inspect -f '{{.State.ExitCode}}' collabora-smoke)）"
+              docker logs collabora-smoke 2>&1 | tail -200; exit 1
             fi
             sleep 2
           done
-          echo "discovery が 120 秒で応答しない"; docker logs collabora-smoke; exit 1
+          echo "discovery が 120 秒で応答しない"; docker logs collabora-smoke 2>&1 | tail -200; exit 1
+
+      # smoke を通ったものだけ公開する。
+      - name: push
+        run: |
+          set -euo pipefail
+          docker push "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}"
+          docker push "ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest"

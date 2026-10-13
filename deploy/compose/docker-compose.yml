@@ -338,7 +338,7 @@ services:
   # 開発と CI に限り COLLABORA_IMAGE=collabora/code:<pin> のフォールバック可（配布物は自前ビルド必須）。
   collabora:
     restart: unless-stopped
-    image: ${COLLABORA_IMAGE:-ghcr.io/syuya2036/shiki-collabora:cp-25.04.9-5}
+    image: ${COLLABORA_IMAGE:-ghcr.io/imanect-labs/shiki-collabora:cp-25.04.9-5}
     profiles: ["office"]
     # command で環境依存値を注入する（イメージの CMD を丸ごと置き換えるため基本引数も再掲）:
     #   - storage.wopi.host: WOPI ホスト（shiki-server）以外からの文書取得を拒否（SSRF 抑止）。
@@ -348,6 +348,8 @@ services:
       - --o:sys_template_path=/opt/cool/systemplate
       - --o:child_root_path=/opt/cool/child-roots
       - --o:lo_template_path=/opt/collaboraoffice
+      # discovery.xml と browser/ の置き場所。無いと coolwsd が起動直後に落ちる（Dockerfile の CMD 参照）。
+      - --o:file_server_root_path=/usr/share/coolwsd
       - --o:ssl.enable=false
       - --o:ssl.termination=false
       - --o:storage.wopi.host[0]=${COLLABORA_WOPI_HOST:-shiki-server}
