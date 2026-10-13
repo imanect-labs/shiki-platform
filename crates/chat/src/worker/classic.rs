@@ -43,6 +43,11 @@ impl ChatWorker {
             skill.apply_system(&mut system);
             skill.audit_apply(&self.db, ctx, run).await;
         }
+        // 今日の日付（#546）。後ろに続く検索結果の前に置く（指示と参考資料を分けておく）。
+        system.push_str(&super::opts::today_note(
+            run.created_at,
+            self.config.timezone,
+        ));
         // few-shot は「ピン順に前から並ぶ」よう逆順で先頭 splice する。
         for skill in skills.iter().rev() {
             skill.apply_few_shot(&mut history);

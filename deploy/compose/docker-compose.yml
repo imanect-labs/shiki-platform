@@ -586,6 +586,8 @@ services:
       # 回答の中に ```ui ブロック（Yui）で図を書かせる（#530）。本番設定の既定は false で、開発用の
       # compose ではオンにして試す。
       SHIKI__CHAT__YUI: ${SHIKI__CHAT__YUI:-true}
+      # system プロンプトに入れる「今日の日付」のタイムゾーン（IANA 名・#546）。
+      SHIKI__CHAT__TIMEZONE: ${SHIKI__CHAT__TIMEZONE:-Asia/Tokyo}
       # ワークフロー実行時（Phase 10）。launcher/worker/scheduler を有効化（エディタからの実行・
       # スケジュール発火・実行履歴 SSE が動く）。
       SHIKI__WORKFLOW__ENABLED: ${SHIKI__WORKFLOW__ENABLED:-true}
