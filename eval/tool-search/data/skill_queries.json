@@ -1,0 +1,302 @@
+[
+ {
+  "id": "skill:objection-handling-responses",
+  "target": "objection-handling-responses",
+  "text": "競合他社より価格が高いと指摘された際、相手の懸念に共感しつつ自社の優位性を伝え、前向きな議論へ誘導するような返答の具体例を考えてください。"
+ },
+ {
+  "id": "skill:soft-skills-workshop-design",
+  "target": "soft-skills-workshop-design",
+  "text": "全社員のコミュニケーション能力とストレス対処法を向上させるための、参加型ワークショップの企画をお願いします。グループディスカッションのテーマや振り返りシート、そして実務で使えるテクニックを学べる進行台本を含めて設計してください。"
+ },
+ {
+  "id": "skill:material-req-planning",
+  "target": "material-req-planning",
+  "text": "来月の生産計画に基づき、リードタイムと安全在庫を考慮した上で、不足する原材料の発注リストと推奨発注日を作成してください。"
+ },
+ {
+  "id": "skill:phishing-email-report-analysis",
+  "target": "phishing-email-report-analysis",
+  "text": "複数の社員から「請求書未払いにつき口座を凍結する」という不審なメールの報告が届いているので、ヘッダー情報や送信元の信頼性を確認し、必要に応じて全社へ注意喚起を行うための対応手順を教えてください。"
+ },
+ {
+  "id": "skill:returns-processing-workflow",
+  "target": "returns-processing-workflow",
+  "text": "顧客からの返品を受け付けてから検品、再在庫化または廃棄に至るまでの一連の流れを標準化した手順書を作成してください。返品理由の分類ルールや商品状態ごとの処分支分岐、クレジット発行との連携ステップも含め、逆物流コストの管理観点も盛り込む必要があります。"
+ },
+ {
+  "id": "skill:post-resolution-survey-analysis",
+  "target": "post-resolution-survey-analysis",
+  "text": "先月回収したCSAT調査の自由回答欄にあるテキストデータを分析し、高評価・低評価それぞれの主な要因をカテゴリ別に整理して、具体的な改善策につなげるためのインサイトを抽出してください。"
+ },
+ {
+  "id": "skill:prototype-testing-plan",
+  "target": "prototype-testing-plan",
+  "text": "開発中の新型センサーモジュールの試作機について、機能検証と耐久性テストの具体的な計画を立ててください。評価指標やテスト環境の構築方法、さらに不具合発生時のログ収集手順も明確に定義し、製品化前の技術的課題を早期に発見できる枠組みを作成したいです。"
+ },
+ {
+  "id": "skill:budget-control-rule-definition",
+  "target": "budget-control-rule-definition",
+  "text": "予算超過が発生した際の承認ルートや、予備費の適用条件、費目間の流用ルールを明確に定めた統制規定を作成したいです。"
+ },
+ {
+  "id": "skill:quarterly-close-review",
+  "target": "quarterly-close-review",
+  "text": "今期の生産コストが予算を大きく上回っている要因について、季節変動や大型設備のメンテナンス影響を踏まえて深掘りし、四半期決算提出用の差異分析レポートを作成してください。"
+ },
+ {
+  "id": "skill:rfp-response-coordinator",
+  "target": "rfp-response-coordinator",
+  "text": "大手製造業から届いた数十項目あるRFPの回答期限が迫っているので、質問を技術・運用・価格などに分類し、過去の類似案件の回答テンプレートを基にカスタマイズが必要な箇所を洗い出してほしい。"
+ },
+ {
+  "id": "skill:ir-calendar-management",
+  "target": "ir-calendar-management",
+  "text": "来期の決算発表と株主総会の日程が決まったので、各イベントに向けた準備タスクの締切日を逆算してスケジュールを組み、関係部署へ協力依頼をするためのメール下書きも合わせて作成してください。"
+ },
+ {
+  "id": "skill:financial-anomaly-detection",
+  "target": "financial-anomaly-detection",
+  "text": "今期の経理データと取引履歴をスキャンし、通常のパターンから逸脱している不正取引や入力ミスの疑いがあるケースを特定してください。監査担当者が精査すべき対象を絞り込むためのリストを作成し、内部統制の強化に役立てたいです。"
+ },
+ {
+  "id": "skill:budget-variance-analysis",
+  "target": "budget-variance-analysis",
+  "text": "今月の部門別実績と予算の差異が大きいので、主要な乖離要因を特定するための分析表を作成してください。経営陣への報告用に、各科目の詳細な比較と解説コメントの草案も合わせてお願いします。"
+ },
+ {
+  "id": "skill:network-troubleshooting-flow",
+  "target": "network-troubleshooting-flow",
+  "text": "社内から特定のWebサイトへアクセスできないという報告が上がっています。原因を特定するために、疎通確認や経路調査を含めた切り分け手順を教えてください。"
+ },
+ {
+  "id": "skill:safety-stock-calculation-review",
+  "target": "safety-stock-calculation-review",
+  "text": "現在の安全在庫の設定値が需要変動やリードタイムの変化に対応できているか統計的に再検証し、最適値への更新手順と関係部署との調整ポイントを整理してください。"
+ },
+ {
+  "id": "skill:mentor-mentee-matching-guide",
+  "target": "mentor-mentee-matching-guide",
+  "text": "社内のメンター制度を刷新するにあたり、経験年数やキャリアゴールだけでなく性格の相性も考慮した適切なペアリング基準と、関係構築のための初期ステップを定めたガイドラインを作成してください。"
+ },
+ {
+  "id": "skill:negotiation-concession-planner",
+  "target": "negotiation-concession-planner",
+  "text": "今回の価格交渉で、値引き幅と納期短縮のトレードオフを整理したいです。自社の利益ラインを守りつつ顧客も納得できる複数の着地点と代替案を提案してください。"
+ },
+ {
+  "id": "skill:missing-receipt-alert",
+  "target": "missing-receipt-alert",
+  "text": "今回の出張精算申請について、システム上の明細とアップロードされた領収書ファイルの整合性を確認し、添付漏れや画像が不鮮明で判読できないものがある場合は、申請者へ再提出を促す通知文を作成してください。"
+ },
+ {
+  "id": "skill:fair-disclosure-policy-review",
+  "target": "fair-disclosure-policy-review",
+  "text": "最新のコーポレートガバナンス・コードの改訂に合わせて、現在の公平開示規程に不整合や不足している条項がないか点検し、修正すべき箇所を具体的に提案してください。"
+ },
+ {
+  "id": "skill:jd-review-and-optimization",
+  "target": "jd-review-and-optimization",
+  "text": "先日作成した営業職の職務記述書に、無意識の偏見が含まれていないか確認してほしいです。また、必須要件と歓迎条件の優先順位を明確にし、よりインクルーシブで読みやすい表現に改善する提案をお願いします。"
+ },
+ {
+  "id": "skill:electronic-invoice-compliance-check",
+  "target": "electronic-invoice-compliance-check",
+  "text": "発行済みの請求書PDFが、電子帳簿保存法やインボイス制度の要件を満たしているか確認したいです。適格請求書発行事業者番号の記載漏れや、電子的な保存要件に不備がないかチェックしてください。"
+ },
+ {
+  "id": "skill:pc-performance-tuning-advice",
+  "target": "pc-performance-tuning-advice",
+  "text": "社員のPCが最近非常に重くて業務に支障が出ているのですが、新しいパソコンを購入する前に試せる設定変更や軽量化の措置があれば教えてください。"
+ },
+ {
+  "id": "skill:quarterly-infra-review",
+  "target": "quarterly-infra-review",
+  "text": "来期の予算策定会議に向けて、直近のインフラ利用動向を踏まえたコスト削減案や老朽化設備の更新計画など、中長期的な視点での戦略的な改善提言を作成してほしい。"
+ },
+ {
+  "id": "skill:exit-interview-logistics",
+  "target": "exit-interview-logistics",
+  "text": "来週退職する社員の最終出退勤日に合わせて、貸与PCやセキュリティカードなどの回収チェックリストを作成し、私物の梱包に関する注意点も併せて案内してほしい。"
+ },
+ {
+  "id": "skill:e-learning-content-review",
+  "target": "e-learning-content-review",
+  "text": "先日作成した新製品の取扱説明eラーニングのドラフトについて、学習者が飽きずに理解を深められるよう内容の正確性や表現の工夫、アクセシビリティの観点からレビューと改善アドバイスをお願いします。"
+ },
+ {
+  "id": "skill:video-conference-platform-setup",
+  "target": "video-conference-platform-setup",
+  "text": "来週開催予定の全社ウェビナーで、参加者を部門ごとに自動分配する分科会ルームを事前に設定したいのですが、Zoom側での具体的な手順と、録画データがクラウドに正しく保存されるための確認ポイントを教えてください。"
+ },
+ {
+  "id": "skill:seo-blog-drafting",
+  "target": "seo-blog-drafting",
+  "text": "「リモートワーク 生産性向上」をメインキーワードに、管理職層向けに検索流入を狙ったブログ記事の構成案とドラフトを作成してください。"
+ },
+ {
+  "id": "skill:customer-master-update-billing",
+  "target": "customer-master-update-billing",
+  "text": "取引先A社の本社移転に伴い、請求書送付先の住所と担当部署名が変更になったので、顧客マスタの情報を更新して次の請求から反映されるようにしてください。"
+ },
+ {
+  "id": "skill:post-event-followup",
+  "target": "post-event-followup",
+  "text": "先週開催したウェビナーの参加者リストを基に、出席者と欠席者でセグメントを分け、それぞれに適したアーカイブ動画や資料を送信するフォローアップメールの手配をお願いします。"
+ },
+ {
+  "id": "skill:accounts-receivable-aging-analysis",
+  "target": "accounts-receivable-aging-analysis",
+  "text": "取引先ごとの売掛金の未回収期間を整理し、長期化している債権を特定するための帳齢分析表を作成してください。"
+ },
+ {
+  "id": "skill:ci-cd-pipeline-qa-gate-def",
+  "target": "ci-cd-pipeline-qa-gate-def",
+  "text": "本番環境へのデプロイ前に自動で品質チェックを行うゲート条件を設定したいので、コードカバレッジの閾値や必須テストの通過基準、および不適合時の処理フローを定義してください。"
+ },
+ {
+  "id": "skill:employee-status-change-proc",
+  "target": "employee-status-change-proc",
+  "text": "来月1日付で営業部から企画部へ異動する田中さんの手続きを進めたいので、権限グループの更新や勤怠コードの切り替え時期を確認し、関係部署への通知文面と実務引継ぎのチェックリストを作成してください。"
+ },
+ {
+  "id": "skill:pii-data-discovery-and-mapping",
+  "target": "pii-data-discovery-and-mapping",
+  "text": "社内共有ドライブと顧客管理データベースをスキャンして、氏名や住所などの個人情報が含まれるファイルの所在をすべて特定し、一覧化してください。"
+ },
+ {
+  "id": "skill:quarterly-compliance-audit",
+  "target": "quarterly-compliance-audit",
+  "text": "今期分の社内規程の更新状況や従業員研修の受講率、主要契約の期限などを横断的に確認し、コンプライアンス上のギャップや未対応課題を洗い出した監査レポートを作成してください。"
+ },
+ {
+  "id": "skill:performance-review-draft",
+  "target": "performance-review-draft",
+  "text": "部下の自己評価シートと私が記入した管理職評価を基に、面談で伝えるためのフィードバック文章を作成してください。具体的な業務事例を交えて改善点を指摘しつつ、次期の目標設定へと自然につながるような建設的な内容にまとめたいです。"
+ },
+ {
+  "id": "skill:minority-shareholder-response",
+  "target": "minority-shareholder-response",
+  "text": "保有株式の1%に満たない個人投資家から、取締役選任議案への反対理由と監査役の独立性に関する質問書が届いたので、会社法および定款に基づいた標準的な回答文を作成してください。"
+ },
+ {
+  "id": "skill:lean-kpi-dashboard",
+  "target": "lean-kpi-dashboard",
+  "text": "リーン生産の継続的改善を推進するため、サイクルタイムや第一次合格率といった重要指標を一元管理できるKPIダッシュボードの画面レイアウト案を考えてください。"
+ },
+ {
+  "id": "skill:incident-response-initial-triage",
+  "target": "incident-response-initial-triage",
+  "text": "社内の重要サーバーから不審な外部通信が検知されました。影響範囲の特定や証拠保全、関係者への初動連絡など、今すぐ取るべき対応手順を教えてください。"
+ },
+ {
+  "id": "skill:interview-question-generation",
+  "target": "interview-question-generation",
+  "text": "添付の職務要件書と候補者の履歴書を照合し、行動面接技法に基づいた深掘り質問リストを作成してください。過去の実績から将来のパフォーマンスを予測できるよう、適性を見極めるための構造化された質問案が必要です。"
+ },
+ {
+  "id": "skill:safety-incident-report",
+  "target": "safety-incident-report",
+  "text": "昨日、組立ラインで作業員が足場から転落し負傷する事故が発生しました。所定のフォーマットに沿って、発生状況や怪我の程度、直接原因、再発防止策を網羅した報告書を作成するためのインタビュー質問リストと記入例を提供してください。"
+ },
+ {
+  "id": "skill:quality-inspection-protocol",
+  "target": "quality-inspection-protocol",
+  "text": "入荷時および保管中の不良品流出を防ぐため、AQLに基づくサンプリング基準や不合格品の隔離手順、ベンダーへの不適合報告書テンプレートを含む品質検査の運用ルールを定めてください。"
+ },
+ {
+  "id": "skill:duplicate-claim-detection",
+  "target": "duplicate-claim-detection",
+  "text": "先月すでに精算済みの交通費が、今月の申請データにも含まれているようなので、過去の履歴と照合して重複申請になっていないか確認してください。"
+ },
+ {
+  "id": "skill:inventory-reorder-calculation",
+  "target": "inventory-reorder-calculation",
+  "text": "主要部品の平均消費量とリードタイム、それに設定した安全在庫の数値を基に、欠品リスクを抑えつつ過剰在庫にならない最適な発注点と推奨数量を算出してください。"
+ },
+ {
+  "id": "skill:proposal-draft-creator",
+  "target": "proposal-draft-creator",
+  "text": "先ほどヒアリングしたA社のDX推進における現状の課題と期待する効果を整理して、論理的なストーリーラインを持つ提案書の構成案と主要な訴求ポイントを作成してください。"
+ },
+ {
+  "id": "skill:refactor-legacy-code",
+  "target": "refactor-legacy-code",
+  "text": "10年以上メンテナンスされていない巨大なクラスファイルがあり、責任が混在して読解が困難な状態です。既存の挙動を壊さずに、このコードを現代的な設計へ段階的に移行するための具体的なリファクタリング計画を立ててください。"
+ },
+ {
+  "id": "skill:purchase-order-creation",
+  "target": "purchase-order-creation",
+  "text": "承認済みの購買依頼書に基づいて、正式な発注書（PO）を作成してください。品目や金額に誤りがないか二重発注の確認も行った上で、ベンダー送付用のPDFを出力したいです。"
+ },
+ {
+  "id": "skill:quarterly-business-review",
+  "target": "quarterly-business-review",
+  "text": "来週予定している主要ベンダーとの定例ミーティングに向けて、直近3ヶ月の成果と課題、そして次四半期の目標を整理したアジェンダと資料構成案を作成してください。"
+ },
+ {
+  "id": "skill:monthly-closing-checklist",
+  "target": "monthly-closing-checklist",
+  "text": "今月の期締め作業を進めるにあたり、未処理の仕訳や振替漏れがないか確認したいです。残高試算表の作成から主要勘定科目の対照まで、標準的な手順に沿って点検をお願いします。"
+ },
+ {
+  "id": "skill:emergency-drill-coordination",
+  "target": "emergency-drill-coordination",
+  "text": "来月予定している全社規模の防災訓練に向けて、避難経路の確認手順や各担当者の役割分担表、そして当日の進行マニュアル作成をサポートしてほしい。"
+ },
+ {
+  "id": "skill:annual-financial-statements-draft",
+  "target": "annual-financial-statements-draft",
+  "text": "今年度の決算期を迎えるにあたり、貸借対照表と損益計算書の草案を作成してください。監査法人へ提出する基礎資料として、会計基準に準拠した形式で数値を集計し、体裁を整える必要があります。"
+ },
+ {
+  "id": "skill:shift-scheduling-optimization",
+  "target": "shift-scheduling-optimization",
+  "text": "来月のシフト案で希望休の反映漏れや深夜帯の偏りが見られるので、法定休憩を確保しつつ人員配置が最適化されるよう修正案を作成してください。"
+ },
+ {
+  "id": "skill:daily-stock-level-monitoring",
+  "target": "daily-stock-level-monitoring",
+  "text": "毎朝の業務開始時に、安全在庫を下回ったSKUや過剰在庫の異常値を即座に把握したいので、自動アラートを確認してから緊急発注を行うまでの判断基準と、余剰品が発生した場合の処分フローを含めたリアルタイムな監視体制を整備してください。"
+ },
+ {
+  "id": "skill:raw-data-anomaly-detect",
+  "target": "raw-data-anomaly-detect",
+  "text": "工場内のIoTセンサーから収集した数TB規模の生ログデータに、予期せぬノイズや不正な計測値が混入している疑いがあります。これらの異常パターンを自動で検出し、データ品質の問題箇所を特定するためのアルゴリズム適用手順を教えてください。"
+ },
+ {
+  "id": "skill:rejection-email-drafting",
+  "target": "rejection-email-drafting",
+  "text": "先日最終面接まで進んだ候補者へ、今回はご縁がなかったことを伝える丁寧な不採用通知メールの文面を作成してください。"
+ },
+ {
+  "id": "skill:onboarding-checklist-gen",
+  "target": "onboarding-checklist-gen",
+  "text": "来月入社する営業部の新入社員向けに、PCなどの備品準備やアカウント発行手順、初日の具体的なスケジュールを含めたオンボーディングチェックリストを作成してください。"
+ },
+ {
+  "id": "skill:litigation-case-summarizer",
+  "target": "litigation-case-summarizer",
+  "text": "現在進行中のA社との特許侵害訴訟について、訴状と答弁書の内容を整理して、時系列の事実関係と主な争点を分かりやすく要約してください。法務部以外の経営陣にも現状と次の裁判期日、必要な対応がすぐに把握できるような概要資料を作成したいです。"
+ },
+ {
+  "id": "skill:whistleblowing-intake-triage",
+  "target": "whistleblowing-intake-triage",
+  "text": "取引先からのキックバックを疑う匿名の内部通報が届いたので、緊急性や報復リスクを踏まえて優先度を判断し、調査チームへの引継ぎ方針を決めてほしい。"
+ },
+ {
+  "id": "skill:processed-data-trend-analysis",
+  "target": "processed-data-trend-analysis",
+  "text": "欠損値処理と正規化が完了した直近3年間の月次販売データがあるので、季節変動や広告費との相関関係から売上トレンドを分析し、今後の施策立案に向けたビジネス上の示唆を導き出してください。"
+ },
+ {
+  "id": "skill:paid-leave-balance-inquiry",
+  "target": "paid-leave-balance-inquiry",
+  "text": "来月で有給休暇の時効を迎える社員の残日数を確認し、期限切れ前に消化できるよう具体的な取得計画と本人への通知文を作成してください。"
+ },
+ {
+  "id": "skill:monthly-marketing-report",
+  "target": "monthly-marketing-report",
+  "text": "先月の各チャネル別のマーケティング実績とKPI達成率をまとめ、前月比の増減要因や課題を分析した上で、翌月の施策改善に向けた具体的な提言を含むレポートを作成してください。"
+ }
+]

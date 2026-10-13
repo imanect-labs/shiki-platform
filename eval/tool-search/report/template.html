@@ -1,0 +1,418 @@
+<title>tool_search 評価レポート</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&family=Zen+Kaku+Gothic+New:wght@700&display=swap">
+<style>
+/* Layout: 1 カラムの研究ノート。結論 → 各実験（図 → 表 → 読み方）→ 方法と限界。 */
+:root {
+  --bg: #f7f8fa; --surface: #ffffff; --fg: #15171c; --muted: #5a6070; --faint: #8a90a0;
+  --rule: #dfe2e8; --grid: #eceef2; --accent: #2f4f8f; --accent-soft: #e6ecf7;
+  --good: #1f7a4d; --warn: #9a6a00;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  --font-display: "Zen Kaku Gothic New", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  --font-body: "IBM Plex Sans JP", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111318; --surface: #171a20; --fg: #eef0f4; --muted: #a8aebb; --faint: #7d8494;
+    --rule: #2a2e37; --grid: #22262e; --accent: #8fb0ee; --accent-soft: #1d2638;
+    --good: #5cc28d; --warn: #e0b04a;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111318; --surface: #171a20; --fg: #eef0f4; --muted: #a8aebb; --faint: #7d8494;
+  --rule: #2a2e37; --grid: #22262e; --accent: #8fb0ee; --accent-soft: #1d2638;
+  --good: #5cc28d; --warn: #e0b04a;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px;
+  line-height: 1.75; padding-inline: 16px; padding-block: 0; }
+main { max-width: 860px; margin: 0 auto; padding-block: 48px 96px; display: grid; gap: 56px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.35; margin: 0; }
+h1 { font-size: 30px; letter-spacing: .01em; }
+h2 { font-size: 21px; }
+h3 { font-size: 16px; }
+p { margin: 0; max-width: 68ch; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; color: var(--muted);
+  text-transform: uppercase; }
+header { display: grid; gap: 12px; border-bottom: 1px solid var(--rule); padding-bottom: 28px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 13px; }
+.meta b { color: var(--fg); font-weight: 500; }
+section { display: grid; gap: 18px; min-width: 0; }
+.lead { color: var(--muted); }
+.findings { display: grid; gap: 14px; counter-reset: f; padding: 0; margin: 0; list-style: none; }
+.findings li { display: grid; grid-template-columns: 2.2em 1fr; gap: 4px 10px; }
+.findings li::before { counter-increment: f; content: counter(f); font-family: var(--font-mono);
+  color: var(--accent); font-weight: 500; padding-top: 1px; }
+.findings strong { font-weight: 700; }
+.findings .rec { grid-column: 2; color: var(--muted); font-size: 14px; }
+.callout { background: var(--accent-soft); border-radius: 8px; padding: 14px 16px; font-size: 14px; }
+.figure { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px;
+  padding: 16px 16px 10px; display: grid; gap: 8px; min-width: 0; }
+.figure .cap { font-size: 13px; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.chart { position: relative; width: 100%; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { font-family: var(--font-mono); font-size: 11px; fill: var(--muted); }
+.chart .lbl { font-family: var(--font-body); font-size: 12px; fill: var(--fg); }
+.tip { position: absolute; pointer-events: none; background: var(--surface); color: var(--fg);
+  border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px; font-size: 12px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / .12); white-space: nowrap; font-family: var(--font-mono); }
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px;
+  background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { font-weight: 500; color: var(--muted); background: var(--bg); position: sticky; top: 0; }
+td:first-child, th:first-child, td.l, th.l { text-align: left; }
+tr:last-child td { border-bottom: 0; }
+td.best { font-weight: 700; color: var(--accent); }
+td.dim { color: var(--faint); }
+details { font-size: 14px; }
+summary { cursor: pointer; color: var(--accent); }
+summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code { font-family: var(--font-mono); font-size: .92em; background: var(--accent-soft);
+  padding: 1px 5px; border-radius: 4px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.pending { color: var(--warn); font-weight: 500; }
+ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 70ch; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<main>
+  <header>
+    <div class="eyebrow">shiki-platform · tool_search · #511 / #514</div>
+    <h1>tool_search 評価レポート</h1>
+    <p class="lead">出番の限られるツールを検索して読み込む <code>tool_search</code> が、ツールの数・言語・言い換えに対してどこまで正しく当てられるか。製品の BM25F、Ruri v3 埋め込み、両者の RRF 融合、cross-encoder の再順位付けを、1,003 ツールの合成カタログで比べた。</p>
+    <div class="meta">
+      <span>カタログ <b>1,003</b> ツール（実 13 ＋ 合成 990・45 サービス）</span>
+      <span>評価クエリ <b>592</b>（正解 148 × 4 種）</span>
+      <span>skill <b>493</b>・依頼 60</span>
+      <span>LLM <b>qwen3.6-plus</b>（推論なし）</span>
+      <span>埋め込み <b>ruri-v3-30m</b>・reranker <b>japanese-reranker-xsmall-v1</b></span>
+    </div>
+  </header>
+
+  <section>
+    <h2>結論</h2>
+    <ol class="findings" id="findings"></ol>
+  </section>
+
+  <section id="growth">
+    <div class="eyebrow">E1 · 規模</div>
+    <h2 id="h-growth">ツールが増えると BM25 は落ちる</h2>
+    <p>カタログをサービス単位で増やしたときの R@5（正解が上位 5 件に入る率。製品は 5 件を読み込む）。横軸は対数で、各点はサービスの境界（実ツール 13 件のあと合成サービスを 1, 2, 4, … 個足した時点）。RRF ＋ reranker は CPU で 1 クエリ 3 秒以上かかるため、全カタログでだけ測った。</p>
+    <div class="figure">
+      <div class="legend" id="lg-growth"></div>
+      <div class="chart" id="ch-growth"></div>
+      <div class="cap">規模が大きいほど評価クエリも増える（N=13 では実ツールの 52 件、N=1,003 で 592 件）。小さいカタログでは製品の相対カットオフが正解を落とす（N=13 で打ち切り前 <span id="cut-raw"></span>% → 製品が読み込む 5 件では <span id="cut-prod"></span>%）。</div>
+    </div>
+    <div class="tablewrap"><table id="tb-growth"></table></div>
+    <p>評価クエリを固定して妨害ツールだけを増やしても、同じ形で落ちる（N=148 → 1,003 で BM25 R@5 は <span id="e2-bm25"></span>、RRF は <span id="e2-rrf"></span>）。劣化は候補の数そのものによる。</p>
+  </section>
+
+  <section id="lang">
+    <div class="eyebrow">E3 · 言語と言い換え</div>
+    <h2 id="h-lang">英語の説明 × 日本語の依頼で BM25 は崩れ、埋め込みが救う</h2>
+    <p>全カタログ（1,003 件）での R@5。外部の MCP ツールは英語の説明が多く、利用者は日本語で頼むので、この組み合わせは実運用で起きる。<code>agent</code> は依頼文からモデルが <code>tool_search</code> に渡しそうな検索語を作ったもので、実運用の入力に最も近い。</p>
+    <div class="tablewrap"><table id="tb-lang"></table></div>
+    <p>言い換え（<code>ja_para</code>：ツールの語を避けた口語）は、どの方式も 4 割に届かない。語彙のずれは検索だけでは埋まらず、モデルが検索語を言い直すこと（<code>agent</code> の行）に頼っている。</p>
+  </section>
+
+  <section id="subset">
+    <div class="eyebrow">正解の一意性</div>
+    <h2>正解が一意な依頼に限ると、RRF は BM25 より 7 ポイント上</h2>
+    <p>サービス名を含まない依頼（「プロジェクトのチャットに送って」）は、別サービスの同等ツールでも満たせるため正解が一意でない。依頼文がサービスを名指ししているもの（と製品の実ツール）を「一意」として分けた。</p>
+    <div class="tablewrap"><table id="tb-subset"></table></div>
+  </section>
+
+  <section id="limit">
+    <div class="eyebrow">E4 · 読み込み件数</div>
+    <h2>5 件読み込みで 1 件あたり約 130 トークン、k を増やすほど逓減する</h2>
+    <div class="figure">
+      <div class="legend" id="lg-limit"></div>
+      <div class="chart" id="ch-limit"></div>
+      <div class="cap">全カタログ・全クエリ。括弧内は読み込む定義の平均トークン（UTF-8 4 バイト ≒ 1 トークンの近似）。</div>
+    </div>
+    <div class="tablewrap"><table id="tb-limit"></table></div>
+  </section>
+
+  <section id="ablation">
+    <div class="eyebrow">融合の調整</div>
+    <h2>RRF の k は 60 より 10、埋め込みには名前と引数まで渡す</h2>
+    <p>全カタログでの R@5（各セルは「全クエリ / 一意な依頼」・重み 1:1）。k が小さいほど各方式の上位を重く見る。<code>crates/rag</code> の既定 k=60 は文書検索向けで、ツール検索では上位の一致を薄めすぎる。特に英語の説明では BM25 がほとんど当たらず、k=60 だと融合が埋め込み単体を下回る。</p>
+    <div class="grid2">
+      <div class="tablewrap"><table id="tb-abl-k"></table></div>
+      <div class="tablewrap"><table id="tb-abl-doc"></table></div>
+    </div>
+  </section>
+
+  <section id="cost">
+    <div class="eyebrow">E5 · コスト</div>
+    <h2 id="h-cost">検索 1 回のコスト</h2>
+    <div class="grid2">
+      <div class="tablewrap"><table id="tb-lat"></table></div>
+      <div class="figure">
+        <div class="chart" id="ch-desc"></div>
+        <div class="cap">tool_search の説明に載る「検索できるツール名の一覧」の文字数。件数に比例して伸び、それ自体が毎ステップの文脈を食う。</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="e2e">
+    <div class="eyebrow">E2E · LLM に選ばせる</div>
+    <h2>tool_search は入力トークンを 1/7〜1/12 にし、選択の正しさは全提示と同等</h2>
+    <p>正解ツール 30 件 × 日英の依頼 60 件。全ツールを提示する場合と、<code>tool_search</code> だけを提示して読み込ませる場合を比べた（読み込みは OpenAI 互換アダプタと同じく定義を末尾に追記）。</p>
+    <h3>v1 · 最初のツール呼び出しで判定（暫定・候補の並びを混ぜる前の結果）</h3>
+    <div class="tablewrap"><table id="tb-e2e1"></table></div>
+    <p>正解率が 5 割前後なのは方式の差ではなく、採点の厳しさによる。予定を消す前に予定を検索する、チャンネルを引いてからリアクションする、といった正しい下調べの手順を不正解に数えていた。また、サービス名の無い依頼は別サービスの同等ツールを選んでも不正解になる。</p>
+    <h3>v2 · モックの結果を返して会話を続け、正解ツールを呼べたかで判定</h3>
+    <div class="tablewrap"><table id="tb-e2e2"></table></div>
+    <p class="pending" id="e2e-pending"></p>
+  </section>
+
+  <section id="skills">
+    <div class="eyebrow">skill</div>
+    <h2>skill の一覧は 50 件で崩れ、検索なら 500 件でも 9 割を保つ（暫定）</h2>
+    <p>製品の <code>skill</code> ツールは説明に name: description を一覧し、name 順の先頭 50 件で切る。上限なしの一覧、skill 専用の検索（製品の BM25F）と比べた。</p>
+    <p class="pending">暫定: この結果には既知の偏りがある（検索条件の説明に全 skill の名前一覧が残っていた・1 メッセージで複数の skill を読み込んだ場合に先頭しか見ていなかった）。レビューで見つかり、修正したコードで取り直し中。</p>
+    <div class="figure">
+      <div class="legend" id="lg-skills"></div>
+      <div class="chart" id="ch-skills"></div>
+      <div class="cap">LLM が正解の skill を読み込めた率。N=20 は依頼 10 件、N=50 は 25 件、N=100 は 50 件、N≥200 は 60 件。</div>
+    </div>
+    <div class="tablewrap"><table id="tb-skills"></table></div>
+    <p>一覧方式の失敗の大半は「skill を読み込まずに自分で答えた」。一覧が長いほど読み込むこと自体が減り、読み込んだときの選択は 9 割以上正しい。先頭 50 件で切る現行方式は、正解が一覧に載らず似た skill を選ぶ誤りが加わり、200 件で 5% まで落ちる。検索方式の skill ツールには「名前が分からなければ skill_search で探す」と書いてあり、読み込みを促す文言の差が含まれる。</p>
+  </section>
+
+  <section id="method">
+    <div class="eyebrow">方法と限界</div>
+    <h2>どう測ったか</h2>
+    <ul class="plain">
+      <li>BM25F は製品のコードそのもの（<code>agent_core::EvalCatalog</code> と順位 CLI）。埋め込み・reranker はプレビュー環境の ingestion-worker を製品と同じ契約で呼んだ。</li>
+      <li>合成カタログは 45 の業務 SaaS（GitHub・Slack・freee・SmartHR・kintone など）について MCP 風のツールを LLM に作らせ、説明と引数を日英で持たせた。</li>
+      <li>依頼文は、同じサービスの紛らわしい近縁ツールを見せたうえで「正解ツールでしか満たせない」ものに限定して生成した。ツール名がそのまま含まれる依頼は 0 件。</li>
+      <li>限界: データは LLM 生成で、生成と E2E が同じモデル。E2E は推論トークンを止めて回した。実ツールは dev 構成で配線された 13 件だけ。Anthropic の <code>tool_reference</code> 経路は実 API で測っていない。</li>
+      <li>再実行: <code>eval/tool-search/README.md</code>。生成済みのカタログとクエリはリポジトリに入っている。</li>
+    </ul>
+  </section>
+</main>
+
+<script>
+const DATA = __DATA__;
+const pct = (x, d = 1) => x == null ? "—" : (x * 100).toFixed(d);
+const SERIES = [
+  { key: "bm25", label: "BM25（製品）", color: "var(--s1)", marker: "circle" },
+  { key: "emb", label: "埋め込み", color: "var(--s2)", marker: "square" },
+  { key: "rrf", label: "RRF 融合", color: "var(--s3)", marker: "diamond" },
+  { key: "rrf_rerank", label: "RRF ＋ reranker", color: "var(--s4)", marker: "triangle" },
+];
+const svgNS = "http://www.w3.org/2000/svg";
+function el(tag, attrs = {}, parent) {
+  const e = document.createElementNS(svgNS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function marker(g, kind, x, y, color) {
+  const r = 4.5;
+  if (kind === "square") return el("rect", { x: x - r, y: y - r, width: 2 * r, height: 2 * r, rx: 1.5, fill: color, stroke: "var(--surface)", "stroke-width": 2 }, g);
+  if (kind === "diamond") return el("path", { d: `M${x} ${y - r - 1}L${x + r + 1} ${y}L${x} ${y + r + 1}L${x - r - 1} ${y}Z`, fill: color, stroke: "var(--surface)", "stroke-width": 2 }, g);
+  if (kind === "triangle") return el("path", { d: `M${x} ${y - r - 1}L${x + r + 1} ${y + r}L${x - r - 1} ${y + r}Z`, fill: color, stroke: "var(--surface)", "stroke-width": 2 }, g);
+  return el("circle", { cx: x, cy: y, r, fill: color, stroke: "var(--surface)", "stroke-width": 2 }, g);
+}
+function legend(id, series) {
+  document.getElementById(id).innerHTML = series.map(s =>
+    `<span><i style="background:${s.color}"></i>${s.label}</span>`).join("");
+}
+// 折れ線（y は 0–100%）。xs は数値。log=true で対数軸。ホバーで最寄りの x の値を出す。
+function lineChart(id, { xs, series, log = false, yMin = 0, yMax = 1, xFmt = String, yFmt = v => pct(v, 0) + "%", xLabel = "" }) {
+  const host = document.getElementById(id);
+  const W = 760, H = 300, m = { l: 44, r: 130, t: 14, b: 38 };
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" }, host);
+  const fx = log ? (v => Math.log2(v)) : (v => v);
+  const x0 = fx(xs[0]), x1 = fx(xs[xs.length - 1]);
+  const X = v => m.l + (fx(v) - x0) / (x1 - x0 || 1) * (W - m.l - m.r);
+  const Y = v => m.t + (1 - (v - yMin) / (yMax - yMin)) * (H - m.t - m.b);
+  const ticks = 5;
+  for (let i = 0; i <= ticks; i++) {
+    const v = yMin + (yMax - yMin) * i / ticks, y = Y(v);
+    el("line", { x1: m.l, x2: W - m.r, y1: y, y2: y, stroke: "var(--grid)", "stroke-width": 1 }, svg);
+    el("text", { x: m.l - 8, y: y + 4, "text-anchor": "end" }, svg).textContent = yFmt(v);
+  }
+  xs.forEach(v => { el("text", { x: X(v), y: H - m.b + 18, "text-anchor": "middle" }, svg).textContent = xFmt(v); });
+  if (xLabel) el("text", { x: (m.l + W - m.r) / 2, y: H - 4, "text-anchor": "middle" }, svg).textContent = xLabel;
+  const ends = [];
+  for (const s of series) {
+    const pts = xs.map((x, i) => [x, s.values[i]]).filter(p => p[1] != null);
+    if (pts.length > 1) el("path", { d: pts.map((p, i) => `${i ? "L" : "M"}${X(p[0])} ${Y(p[1])}`).join(""), fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+    const g = el("g", {}, svg);
+    pts.forEach(p => marker(g, s.marker, X(p[0]), Y(p[1]), s.color));
+    const last = pts[pts.length - 1];
+    if (last) ends.push({ s, x: X(last[0]), y: Y(last[1]), v: last[1] });
+  }
+  // 右端の直接ラベル（重なりを 14px ずつ押し下げて解く）。
+  ends.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 15) ends[i].y = ends[i - 1].y + 15;
+  ends.forEach(e => {
+    el("text", { x: W - m.r + 12, y: e.y + 4, class: "lbl" }, svg).textContent = `${e.s.label} ${yFmt(e.v)}`;
+  });
+  // ホバー
+  const tip = document.createElement("div"); tip.className = "tip"; tip.hidden = true; host.appendChild(tip);
+  const cross = el("line", { y1: m.t, y2: H - m.b, stroke: "var(--faint)", "stroke-width": 1, "stroke-dasharray": "3 3", opacity: 0 }, svg);
+  const hit = el("rect", { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent" }, svg);
+  function show(evt) {
+    const r = svg.getBoundingClientRect(), sx = (evt.clientX - r.left) * W / r.width;
+    let bi = 0, bd = Infinity;
+    xs.forEach((v, i) => { const d = Math.abs(X(v) - sx); if (d < bd) { bd = d; bi = i; } });
+    const cx = X(xs[bi]);
+    cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("opacity", 1);
+    tip.innerHTML = `<b>${xFmt(xs[bi])}</b><br>` + series.filter(s => s.values[bi] != null)
+      .map(s => `<span style="color:${s.color}">■</span> ${s.label} ${yFmt(s.values[bi])}`).join("<br>");
+    tip.hidden = false;
+    const px = cx * r.width / W, w = tip.offsetWidth;
+    tip.style.left = Math.min(Math.max(px + 12, 0), r.width - w) + "px"; tip.style.top = "8px";
+  }
+  hit.addEventListener("pointermove", show);
+  hit.addEventListener("pointerleave", () => { tip.hidden = true; cross.setAttribute("opacity", 0); });
+}
+function table(id, head, rows, { bestCols = [], left = 1 } = {}) {
+  const t = document.getElementById(id);
+  const best = new Map();
+  rows.forEach((r, ri) => {
+    const vals = bestCols.map(c => parseFloat(r[c])).filter(v => !isNaN(v));
+    const mx = Math.max(...vals);
+    bestCols.forEach(c => { if (parseFloat(r[c]) === mx) best.set(`${ri}:${c}`, true); });
+  });
+  t.innerHTML = `<thead><tr>${head.map((h, i) => `<th class="${i < left ? "l" : ""}">${h}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map((r, ri) => `<tr>${r.map((c, ci) => `<td class="${ci < left ? "l " : ""}${best.get(`${ri}:${ci}`) ? "best" : ""}">${c}</td>`).join("")}</tr>`).join("") + "</tbody>";
+}
+
+// ---- 結論 ----
+const e1full = DATA.e1[DATA.e1.length - 1];
+const clean = (lang, kind, c) => DATA.subset.find(s => s.lang === lang && s.kind === kind && s.clean === c);
+const cj = clean("ja", "all", true), ceja = clean("en", "ja", true);
+const lat = DATA.e5.latency;
+const e3 = (lang, kind) => DATA.e3.find(r => r.lang === lang && r.kind === kind);
+const ab = (lang, k) => DATA.ablation.find(r => r.lang === lang && r.doc === "name+desc+params" && r.method === "rrf" && r.k === k && r.w === 1);
+const abEmb = lang => DATA.ablation.find(r => r.lang === lang && r.doc === "name+desc+params" && r.method === "emb");
+const abBm = lang => DATA.ablation.find(r => r.lang === lang && r.method === "bm25");
+const findings = [
+  [`ツールが ${DATA.e1[0].n} 件から ${e1full.n.toLocaleString()} 件に増えると、製品の BM25 の R@5 は ${pct(DATA.e1[0].bm25)}% → ${pct(e1full.bm25)}% に落ちる。`,
+   "候補の数そのものが効く（妨害ツールだけを増やしても同じ形で落ちる）。小さいカタログでは製品の相対カットオフも正解を落としている。"],
+  [`BM25 と埋め込みの RRF 融合（k=10）は、全カタログで BM25 ${pct(abBm("ja").all)}% → ${pct(ab("ja", 10).all)}%、英語の説明では ${pct(abBm("en").all)}% → ${pct(ab("en", 10).all)}% に上げる。正解が一意な依頼では ${pct(abBm("ja").clean)}% → ${pct(ab("ja", 10).clean)}%。`,
+   "推奨: tool_search に埋め込みの融合を入れる（k=10・重み 1:1・文書は名前＋説明＋引数）。埋め込みが無い構成では BM25 のみに落とす。k=60 では英語の説明で融合が埋め込み単体を下回る。"],
+  [`クエリの埋め込みは 1 回 ${Math.round(lat.embed_query_ms)} ms で、対話の経路に入れられる。cross-encoder の再順位付けはさらに上げる（全カタログ ${pct(e1full.rrf)}% → ${pct(e1full.rrf_rerank)}%）が、CPU で 1 検索 ${(lat.rerank20_ms / 1000).toFixed(1)} 秒かかる。`,
+   "推奨: reranker は対話経路には入れない（GPU のある構成で再検討）。"],
+  [`E2E では、tool_search は入力トークンを全提示の 1/7〜1/12（1,000 件で約 12.5 万 → 1 万）にした（暫定・取り直し中）。`,
+   "全提示は 1,000 件で 1 会話 12 万トークンを超え、利用枠をすぐ使い切る。"],
+  [`tool_search の説明に載る名前一覧は 1,003 件で ${lat.tool_search_description_chars.toLocaleString()} 字になる。`,
+   "推奨: 100 件程度を超えたら、名前の一覧をサービス（名前空間）単位の要約に切り替える。"],
+  [`skill の一覧は 50 件で正解率 6 割前後に落ち、name 順に先頭 50 件で切る現行方式は 200 件で 5% まで崩れる（暫定・取り直し中）。`,
+   "推奨: skill は tool_search に統合せず（Anthropic・Codex と同じく別系統）、件数が数十を超えたら skill 専用の検索を足す。先頭 50 件の切り方（name 順）は関連度順に改める。"],
+];
+document.getElementById("findings").innerHTML = findings.map(([a, b]) =>
+  `<li><span><strong>${a}</strong></span><span class="rec">${b}</span></li>`).join("");
+
+// ---- 見出し（数値はデータから） ----
+document.getElementById("h-growth").textContent = `ツールが増えると BM25 は ${pct(DATA.e1[0].bm25, 0)}% から ${pct(e1full.bm25, 0)}% まで落ちる`;
+document.getElementById("h-lang").textContent = `英語の説明 × 日本語の依頼で BM25 は ${pct(e3("en", "ja").bm25, 0)}% まで崩れ、埋め込みが救う`;
+document.getElementById("h-cost").textContent = `BM25 は ${lat.bm25_ms_per_query_incl_index_build_amortized.toFixed(0)} ms、埋め込みは ${Math.round(lat.embed_query_ms)} ms、reranker は ${(lat.rerank20_ms / 1000).toFixed(1)} 秒`;
+document.getElementById("cut-raw").textContent = pct(DATA.e1[0].bm25);
+document.getElementById("cut-prod").textContent = pct(DATA.e1[0].bm25_prod);
+
+// ---- E1 ----
+legend("lg-growth", SERIES);
+lineChart("ch-growth", {
+  xs: DATA.e1.map(r => r.n), log: true, yMin: 0.4, yMax: 1, xLabel: "カタログのツール数（対数）",
+  series: SERIES.map(s => ({ ...s, values: DATA.e1.map(r => r[s.key]) })),
+});
+table("tb-growth", ["N", "クエリ", ...SERIES.map(s => s.label + " R@5"), "BM25 MRR", "RRF MRR"],
+  DATA.e1.map(r => [r.n, r.q, ...SERIES.map(s => pct(r[s.key])), pct(r.bm25_mrr), pct(r.rrf_mrr)]),
+  { bestCols: [2, 3, 4, 5] });
+const e2a = DATA.e2[0], e2b = DATA.e2[DATA.e2.length - 1];
+document.getElementById("e2-bm25").textContent = `${pct(e2a.bm25)}% → ${pct(e2b.bm25)}%`;
+document.getElementById("e2-rrf").textContent = `${pct(e2a.rrf)}% → ${pct(e2b.rrf)}%`;
+
+// ---- E3 ----
+const KIND = { ja: "日本語の依頼", en: "英語の依頼", ja_para: "日本語の言い換え", agent: "エージェントの検索語" };
+table("tb-lang", ["カタログの説明", "クエリ", "件数", ...SERIES.map(s => s.label)],
+  DATA.e3.map(r => [r.lang === "ja" ? "日本語" : "英語", KIND[r.kind], r.q, ...SERIES.map(s => pct(r[s.key]))]),
+  { bestCols: [3, 4, 5, 6], left: 2 });
+
+// ---- 一意 / 曖昧 ----
+table("tb-subset", ["カタログ", "クエリ", "区分", "件数", ...SERIES.map(s => s.label)],
+  DATA.subset.map(r => [r.lang === "ja" ? "日本語" : "英語", r.kind === "all" ? "全種別" : KIND[r.kind],
+    r.clean ? "一意" : "曖昧", r.q, ...SERIES.map(s => pct(r[s.key]))]),
+  { bestCols: [4, 5, 6, 7], left: 3 });
+
+// ---- E4 ----
+const ks = [...new Set(DATA.e4.map(r => r.k))];
+const e4 = (m, k) => DATA.e4.find(r => r.method === m && r.k === k);
+legend("lg-limit", SERIES);
+lineChart("ch-limit", {
+  xs: ks, yMin: 0.4, yMax: 0.9, xLabel: "読み込む件数 k",
+  series: SERIES.map(s => ({ ...s, values: ks.map(k => e4(s.key, k)?.recall) })),
+});
+table("tb-limit", ["k", ...SERIES.map(s => s.label)],
+  ks.map(k => [k, ...SERIES.map(s => { const r = e4(s.key, k); return r ? `${pct(r.recall)}（${Math.round(r.loaded_tokens_mean)}）` : "—"; })]));
+
+// ---- 融合の調整 ----
+const kv = [10, 30, 60, 100];
+const cell = r => r ? `${pct(r.all)} / ${pct(r.clean)}` : "—";
+table("tb-abl-k", ["", "日本語の説明", "英語の説明"], [
+  ["BM25（製品）", cell(abBm("ja")), cell(abBm("en"))],
+  ["埋め込みのみ", cell(abEmb("ja")), cell(abEmb("en"))],
+  ...kv.map(k => [`RRF k=${k}`, cell(ab("ja", k)), cell(ab("en", k))]),
+], { left: 1 });
+const docs = ["name+desc+params", "name+desc", "desc"];
+const DOC = { "name+desc+params": "名前＋説明＋引数", "name+desc": "名前＋説明", "desc": "説明のみ" };
+const abDoc = (lang, d, m) => DATA.ablation.find(r => r.lang === lang && r.doc === d && r.method === m && (m === "emb" || (r.k === 10 && r.w === 1)));
+table("tb-abl-doc", ["埋め込みに渡す文書（日本語）", "埋め込みのみ", "RRF（k=10）"],
+  docs.map(d => [DOC[d], cell(abDoc("ja", d, "emb")), cell(abDoc("ja", d, "rrf"))]));
+
+// ---- コスト ----
+table("tb-lat", ["処理", "1 クエリ"], [
+  ["BM25F（製品・索引構築込み）", `${lat.bm25_ms_per_query_incl_index_build_amortized.toFixed(1)} ms`],
+  ["クエリの埋め込み（プレビュー・CPU・キャッシュなし）", `${Math.round(lat.embed_query_ms)} ms`],
+  ["reranker（20 件・CPU・キャッシュなし）", `${(lat.rerank20_ms / 1000).toFixed(1)} s`],
+]);
+const dg = DATA.e5.description_growth;
+lineChart("ch-desc", {
+  xs: dg.map(r => r.n), log: true, yMin: 0, yMax: 25000, xLabel: "ツール数（対数）",
+  yFmt: v => v >= 1000 ? (v / 1000).toFixed(0) + "k" : String(Math.round(v)),
+  series: [{ key: "d", label: "説明の文字数", color: "var(--s1)", marker: "circle", values: dg.map(r => r.tool_search_description_chars) }],
+});
+
+// ---- E2E ----
+const COND = { all: "全ツール提示", search_bm25: "tool_search（BM25）", search_rrf: "tool_search（RRF）" };
+const e2eRows = rows => rows.map(r => [r.n, COND[r.cond], r.k, pct(r.ok), pct(r.first), pct(r.none), Math.round(r.tok).toLocaleString(), r.search.toFixed(2)]);
+table("tb-e2e1", ["N", "条件", "件数", "正解率", "初手で正解", "ツール呼び出しなし", "平均入力トークン", "検索回数"], e2eRows(DATA.e2e_v1), { left: 2 });
+table("tb-e2e2", ["N", "条件", "件数", "正解率", "初手で正解", "ツール呼び出しなし", "平均入力トークン", "検索回数"], e2eRows(DATA.e2e_v2), { left: 2 });
+const expected = 6;
+if (DATA.e2e_v2.length < expected || DATA.e2e_v2.some(r => r.k < 30)) {
+  document.getElementById("e2e-pending").textContent =
+    "v2 は途中まで。LLM の利用枠（5 時間枠）を使い切ったため中断し、枠の回復後に残り（RRF 条件と 1,000 件の規模）を流して更新する。";
+}
+
+// ---- skill ----
+const SK = [
+  { key: "list_cap50", label: "一覧（現行・先頭 50 件）", color: "var(--s1)", marker: "circle" },
+  { key: "list_all", label: "一覧（上限なし）", color: "var(--s2)", marker: "square" },
+  { key: "search", label: "skill 専用の検索", color: "var(--s3)", marker: "diamond" },
+  { key: "search_names", label: "名前一覧＋検索", color: "var(--s4)", marker: "triangle" },
+];
+const sns = [...new Set(DATA.skills.map(r => r.n))];
+const sk = (c, n) => DATA.skills.find(r => r.cond === c && r.n === n);
+legend("lg-skills", SK);
+lineChart("ch-skills", {
+  xs: sns, log: true, yMin: 0, yMax: 1, xLabel: "skill の数（対数）",
+  series: SK.map(s => ({ ...s, values: sns.map(n => sk(s.key, n)?.ok) })),
+});
+table("tb-skills", ["N", "方式", "依頼", "正解率", "読み込んだ率", "平均入力トークン"],
+  DATA.skills.map(r => [r.n, SK.find(s => s.key === r.cond).label, r.k, pct(r.ok), pct(r.invoked), Math.round(r.tok).toLocaleString()]),
+  { left: 2 });
+</script>

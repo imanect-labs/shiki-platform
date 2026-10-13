@@ -1,0 +1,43 @@
+{
+ "latency": {
+  "catalog": 1003,
+  "bm25_ms_per_query_incl_index_build_amortized": 7.021639980375767,
+  "embed_query_ms": 42.715143505483866,
+  "rerank20_ms": 3287.75838855654,
+  "tool_search_description_chars": 24461
+ },
+ "description_growth": [
+  {
+   "n": 13,
+   "tool_search_description_chars": 344
+  },
+  {
+   "n": 35,
+   "tool_search_description_chars": 870
+  },
+  {
+   "n": 57,
+   "tool_search_description_chars": 1461
+  },
+  {
+   "n": 101,
+   "tool_search_description_chars": 2433
+  },
+  {
+   "n": 189,
+   "tool_search_description_chars": 4632
+  },
+  {
+   "n": 365,
+   "tool_search_description_chars": 8985
+  },
+  {
+   "n": 717,
+   "tool_search_description_chars": 17264
+  },
+  {
+   "n": 1003,
+   "tool_search_description_chars": 24461
+  }
+ ]
+}

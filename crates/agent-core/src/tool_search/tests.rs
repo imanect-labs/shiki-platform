@@ -240,3 +240,33 @@ fn summary_takes_first_sentence_and_truncates() {
     assert_eq!(s.chars().count(), SUMMARY_CHARS + 1);
     assert!(s.ends_with('…'));
 }
+
+#[test]
+fn eval_catalog_matches_the_production_ranking() {
+    // 評価の窓口は製品と同じ索引・同じ順位（別実装を持たない）。
+    let deferred: Vec<ToolDef> = catalog().into_iter().skip(3).collect();
+    let eval = EvalCatalog::new(&deferred);
+    let prod = search();
+    for q in [
+        "CSV を SQL で集計したい",
+        "スライドを書き換える",
+        "edit a PowerPoint file",
+    ] {
+        assert_eq!(eval.search(q, 5), query(&prod, q), "{q}");
+        let ranked = eval.ranked(q);
+        assert!(
+            ranked.windows(2).all(|w| w[0].1 >= w[1].1),
+            "スコア降順: {ranked:?}"
+        );
+        // 打ち切り前の順位は、読み込む順位を先頭に含む。
+        let head: Vec<String> = ranked
+            .iter()
+            .take(eval.search(q, 5).len())
+            .map(|(n, _)| n.clone())
+            .collect();
+        assert_eq!(head, eval.search(q, 5));
+    }
+    assert!(eval.definition().description.contains("csv.query"));
+    // `select:` の名指しも製品と同じ経路で読み込む。
+    assert_eq!(eval.search("select:office_edit", 5), ["office.edit"]);
+}

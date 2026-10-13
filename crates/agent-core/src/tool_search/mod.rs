@@ -84,17 +84,7 @@ pub(crate) fn prepare(
         defs[i].defer_loading = true;
     }
     let deferred: Vec<ToolDef> = deferrable.iter().map(|&i| defs[i].clone()).collect();
-    let keywords: Vec<&str> = deferred
-        .iter()
-        .map(|d| ToolName::parse(&d.name).map_or("", ToolName::search_keywords))
-        .collect();
-    let search = ToolSearch {
-        index: ToolIndex::build(&deferred, &keywords),
-        tools: deferred
-            .iter()
-            .map(|d| (d.name.clone(), summary(&d.description)))
-            .collect(),
-    };
+    let search = ToolSearch::build(&deferred);
     tracing::info!(
         deferred = deferrable.len(),
         deferred_tokens = tokens,
@@ -130,6 +120,21 @@ fn name_key(name: &str) -> String {
 }
 
 impl ToolSearch {
+    /// 遅延ツールの定義から索引を組む（検索語は語彙の単一定義から引く・語彙外は無し）。
+    fn build(deferred: &[ToolDef]) -> Self {
+        let keywords: Vec<&str> = deferred
+            .iter()
+            .map(|d| ToolName::parse(&d.name).map_or("", ToolName::search_keywords))
+            .collect();
+        ToolSearch {
+            index: ToolIndex::build(deferred, &keywords),
+            tools: deferred
+                .iter()
+                .map(|d| (d.name.clone(), summary(&d.description)))
+                .collect(),
+        }
+    }
+
     /// `tool_search` のツール定義。検索できるツールの**名前の一覧**を説明に載せる
     /// （何が在るかを知らないと探しようがない・run 内で不変＝prefix cache を壊さない）。
     fn definition(&self) -> ToolDef {
@@ -211,6 +216,18 @@ impl ToolSearch {
 
     /// 自然文/キーワード検索（`+語` は名前に含むものへの絞り込み）。
     fn rank(&self, query: &str, limit: usize) -> Vec<usize> {
+        let scored = self.scored(query);
+        let top = scored.first().map_or(0.0, |(_, s)| *s);
+        scored
+            .into_iter()
+            .filter(|(_, s)| top <= 0.0 || *s >= top * RELATIVE_CUTOFF)
+            .take(limit)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// 打ち切り前の全順位（スコア降順・同点は定義順）。
+    fn scored(&self, query: &str) -> Vec<(usize, f64)> {
         let mut required: Vec<String> = Vec::new();
         let mut rest: Vec<&str> = Vec::new();
         for word in query.split_whitespace() {
@@ -246,13 +263,7 @@ impl ToolSearch {
             .filter(|(_, s)| *s > 0.0 || !required.is_empty())
             .collect();
         scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-        let top = scored.first().map_or(0.0, |(_, s)| *s);
         scored
-            .into_iter()
-            .filter(|(_, s)| top <= 0.0 || *s >= top * RELATIVE_CUTOFF)
-            .take(limit)
-            .map(|(i, _)| i)
-            .collect()
     }
 
     fn render(&self, hits: &[usize], unknown: &[String]) -> SearchResult {
@@ -293,6 +304,45 @@ impl SearchResult {
             references: Vec::new(),
             is_error: true,
         }
+    }
+}
+
+/// 評価用の窓口（`eval/tool-search/` の順位 CLI が使う・製品の経路は [`prepare`]）。
+///
+/// 製品と**同じ索引・同じ順位付け**（名前一致ブースト・相対カットオフ）を外へ出すだけで、
+/// 別実装を持たない。評価が測るのは本番のコードそのもの。
+#[doc(hidden)]
+pub struct EvalCatalog(ToolSearch);
+
+impl EvalCatalog {
+    /// 検索対象のツール定義から索引を組む（語彙のツールは検索語も入る）。
+    #[must_use]
+    pub fn new(defs: &[ToolDef]) -> Self {
+        EvalCatalog(ToolSearch::build(defs))
+    }
+
+    /// 本番の `tool_search` が読み込むツール（`handle` と同じ経路・`select:` の名指しも含む）。
+    #[must_use]
+    pub fn search(&self, query: &str, limit: usize) -> Vec<String> {
+        self.0
+            .handle(&json!({ "query": query, "limit": limit }))
+            .references
+    }
+
+    /// 打ち切り前の全順位とスコア（他の検索との融合の入力）。
+    #[must_use]
+    pub fn ranked(&self, query: &str) -> Vec<(String, f64)> {
+        self.0
+            .scored(query)
+            .into_iter()
+            .map(|(i, s)| (self.0.tools[i].0.clone(), s))
+            .collect()
+    }
+
+    /// `tool_search` の定義（説明に載る名前一覧の長さを測る）。
+    #[must_use]
+    pub fn definition(&self) -> ToolDef {
+        self.0.definition()
     }
 }
 
