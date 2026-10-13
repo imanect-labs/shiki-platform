@@ -103,6 +103,30 @@ pub async fn run_agent(
     let mut detector = state.loop_detector.clone();
     let mut warned: std::collections::HashSet<crate::budget::BudgetKind> =
         std::collections::HashSet::new();
+    // 剪定閾値はモデルの窓を天井にする（#529）。見積りは各ステップの実測 prompt で補正する。
+    let limits = crate::context::ContextLimits::resolve(
+        opts.context_soft_limit_tokens,
+        opts.context_keep_recent,
+        gateway.context_window_tokens(opts.model.as_deref()),
+        opts.max_tokens,
+    );
+    // 実測の補正がまだ無い（新規開始・旧チェックポイント）なら、固定分（system＋ツール定義）を
+    // 概算で入れておく。最初の 1 回で溢れて拒否されると、補正に必要な実測すら得られない。
+    // 実測済みなら（0 でも）その値を使う。
+    // 遅延ロードで未読込のツール定義は文脈に載らないので数えない。
+    let context_tool_tokens = |messages: &[llm_gateway::Message]| {
+        crate::context::estimate_static_tokens(
+            None,
+            llm_gateway::tool_loading::context_tools(&tool_defs, messages),
+        )
+    };
+    let tool_tokens = context_tool_tokens(&state.messages);
+    let initial_overhead = state.context_overhead_tokens.unwrap_or_else(|| {
+        crate::context::estimate_static_tokens(opts.system.as_deref(), [])
+            .saturating_add(tool_tokens)
+    });
+    let mut gauge =
+        crate::context::ContextGauge::with_overhead(initial_overhead).with_tool_tokens(tool_tokens);
 
     let stop = loop {
         if sink.is_cancelled() {
@@ -125,14 +149,18 @@ pub async fn run_agent(
         }
 
         // --- コンテキスト剪定（自律版のみ・古い大きなツール出力を畳む・Task 5.3）。 ---
-        if opts.profile.is_autonomous() && opts.context_soft_limit_tokens > 0 {
-            crate::context::prune_history(
-                &mut state.messages,
-                opts.context_soft_limit_tokens,
-                opts.context_keep_recent,
-            );
+        if opts.profile.is_autonomous() {
+            // tool_search で読み込んだ定義の増分を見積りに足す（次の実測で置き換わる）。
+            gauge.observe_tools(context_tool_tokens(&state.messages));
+            limits.apply(&mut state.messages, &gauge);
         }
 
+        // 補正の基準（送る履歴の見積り）。剪定するのは自律版だけなので Chat では測らない。
+        let sent_estimate = opts
+            .profile
+            .is_autonomous()
+            .then(|| crate::context::estimate_prompt_tokens(&state.messages));
+        let steps_before = state.spent.steps;
         let step_outcome = run_step(
             gateway,
             &tool_defs,
@@ -146,6 +174,14 @@ pub async fn run_agent(
             &mut detector,
         )
         .await?;
+        // 生成まで進んだステップだけ実測で補正する（途中キャンセルは報告が無い）。
+        if let Some(sent) = sent_estimate.filter(|_| state.spent.steps > steps_before) {
+            gauge.calibrate(sent, state.spent.last_prompt_tokens());
+            // このステップで読み込んだ定義は実測に入っていない。保存前に足しておく（再開時の
+            // 基準は履歴から求めるので、ここで足さないと再開直後に見落とす）。
+            gauge.observe_tools(context_tool_tokens(&state.messages));
+            state.context_overhead_tokens = Some(gauge.overhead_tokens());
+        }
         // ステップ境界でループ検出器の状態をチェックポイントへ畳み込む（中断/再開に耐える）。
         state.loop_detector = detector.clone();
         match step_outcome {

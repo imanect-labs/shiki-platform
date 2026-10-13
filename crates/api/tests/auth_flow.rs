@@ -344,6 +344,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             api_key: None,
             default_model: None,
             models: vec![],
+            context_window_tokens: None,
             langfuse: None,
             user_agent: None,
             session_header: None,

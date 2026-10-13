@@ -188,10 +188,7 @@ pub(crate) fn build_gateway(
     http: &reqwest::Client,
     db: &sqlx::PgPool,
 ) -> anyhow::Result<llm_gateway::LlmGateway> {
-    use llm_gateway::{
-        GatewayConfig, LangfuseConfig, LlmGateway, ModelCatalog, ModelEntry, ProviderConfig,
-        ProviderKind,
-    };
+    use llm_gateway::{GatewayConfig, LangfuseConfig, LlmGateway, ProviderConfig, ProviderKind};
     let llm = &config.llm;
     let kind = match llm.backend {
         LlmBackend::Vllm | LlmBackend::Openai => ProviderKind::Openai,
@@ -202,29 +199,6 @@ pub(crate) fn build_gateway(
             "llm.backend={other:?} は未実装です（openai-compat/openai_responses/anthropic/stub のみ）"
         ),
     };
-    let default_model = llm
-        .default_model
-        .clone()
-        .or_else(|| llm.models.first().map(|m| m.id.clone()))
-        .unwrap_or_else(|| "default".to_string());
-    let models: Vec<ModelEntry> = if llm.models.is_empty() {
-        vec![ModelEntry {
-            id: default_model.clone(),
-            real_id: None,
-            prompt_price_micros_per_mtok: 0,
-            completion_price_micros_per_mtok: 0,
-        }]
-    } else {
-        llm.models
-            .iter()
-            .map(|m| ModelEntry {
-                id: m.id.clone(),
-                real_id: m.real_id.clone(),
-                prompt_price_micros_per_mtok: m.prompt_price_micros_per_mtok,
-                completion_price_micros_per_mtok: m.completion_price_micros_per_mtok,
-            })
-            .collect()
-    };
     let gateway_config = GatewayConfig {
         provider: ProviderConfig {
             kind,
@@ -234,10 +208,7 @@ pub(crate) fn build_gateway(
             user_agent: non_empty(llm.user_agent.as_deref()),
             session_header: non_empty(llm.session_header.as_deref()),
         },
-        catalog: ModelCatalog {
-            default_model,
-            models,
-        },
+        catalog: llm.model_catalog(),
         langfuse: llm.langfuse.as_ref().map(|l| LangfuseConfig {
             base_url: l.base_url.clone(),
             public_key: l.public_key.clone(),
