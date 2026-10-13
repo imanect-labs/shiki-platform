@@ -228,6 +228,10 @@ fn ctx(tenant: &str) -> AuthContext {
 }
 
 fn stub_gateway(pool: PgPool) -> LlmGateway {
+    stub_gateway_with_window(pool, None)
+}
+
+fn stub_gateway_with_window(pool: PgPool, context_window_tokens: Option<u32>) -> LlmGateway {
     let config = GatewayConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Stub,
@@ -242,6 +246,7 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
                 real_id: None,
                 prompt_price_micros_per_mtok: 0,
                 completion_price_micros_per_mtok: 0,
+                context_window_tokens,
             }],
         },
         langfuse: None,
@@ -769,5 +774,99 @@ async fn pre_authorized_tool_skips_approval() {
         sink.count(|e| matches!(e, AgentEvent::ApprovalRequested { .. })),
         0,
         "承認要求は出ない"
+    );
+}
+
+/// 窓の小さいモデルでは、設定値（24k）未満の履歴でも溢れる前に古いツール出力を畳む（#529）。
+/// 同じ履歴を窓未設定のモデルで流すと畳まない（従来挙動の維持）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn autonomous_prunes_against_model_context_window() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let c = ctx(&tenant);
+    let tools: Vec<Arc<dyn Tool>> = vec![];
+    // ツール結果 2 件で概算 ≒ 12k トークン（設定値 24k 未満）。
+    let big = "r".repeat(24_000);
+    let history = || {
+        let mut m = Vec::new();
+        for i in 0..2 {
+            let id = format!("call-{i}");
+            m.push(LlmMessage {
+                role: LlmRole::Assistant,
+                content: vec![llm_gateway::Block::ToolUse {
+                    id: id.clone(),
+                    name: "mock_search".into(),
+                    input: serde_json::json!({}),
+                }],
+            });
+            m.push(LlmMessage {
+                role: LlmRole::Tool,
+                content: vec![llm_gateway::Block::tool_result(id, big.clone(), false)],
+            });
+        }
+        m.push(LlmMessage::text(LlmRole::User, "まとめて"));
+        m
+    };
+    let folded = |outcome: &agent_core::AgentOutcome| {
+        outcome
+            .checkpoint
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter(|b| {
+                matches!(b, llm_gateway::Block::ToolResult { content, .. } if content.len() < big.len())
+            })
+            .count()
+    };
+    let opts = AgentOptions::autonomous(4, None, 10_000_000, 10_000_000);
+
+    // 窓 16k・出力 4096 → 有効 ≒ 11.9k（soft 7.1k・hard 10.1k）。12k は非常閾値も超える。
+    let small = stub_gateway_with_window(pool.clone(), Some(16_000));
+    let mut sink = TestSink::new();
+    let outcome = run_agent(
+        &small,
+        &tools,
+        history(),
+        &run_context(&c, "x"),
+        &opts,
+        None,
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功");
+    assert_eq!(outcome.stop, AgentStop::Completed);
+    // 非常閾値で、最後のツール結果（「まとめて」の根拠）より前だけが畳まれる。
+    assert_eq!(folded(&outcome), 1, "窓に合わせて古いツール出力が畳まれる");
+    let last_result = outcome
+        .checkpoint
+        .messages
+        .iter()
+        .rev()
+        .flat_map(|m| m.content.iter())
+        .find_map(|b| match b {
+            llm_gateway::Block::ToolResult { content, .. } => Some(content.len()),
+            _ => None,
+        });
+    assert_eq!(last_result, Some(big.len()), "直前のツール結果は無傷で残る");
+
+    let unknown = stub_gateway(pool);
+    let mut sink = TestSink::new();
+    let outcome = run_agent(
+        &unknown,
+        &tools,
+        history(),
+        &run_context(&c, "x"),
+        &opts,
+        None,
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功");
+    assert_eq!(
+        folded(&outcome),
+        0,
+        "窓を知らなければ設定値どおり（24k 未満は畳まない）"
     );
 }

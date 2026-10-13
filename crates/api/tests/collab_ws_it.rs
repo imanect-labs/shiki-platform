@@ -260,6 +260,7 @@ fn base_config(db_url: &str) -> AppConfig {
             api_key: None,
             default_model: None,
             models: vec![],
+            context_window_tokens: None,
             langfuse: None,
         },
         chat: api::config::ChatConfig::default(),

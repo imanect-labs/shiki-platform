@@ -357,6 +357,7 @@ pub fn stub_llm(pool: PgPool) -> Arc<llm_gateway::LlmGateway> {
                 // 有償単価（1M tok = 1 USD）＝トークン消費でコストが載る。
                 prompt_price_micros_per_mtok: 1_000_000,
                 completion_price_micros_per_mtok: 1_000_000,
+                context_window_tokens: None,
             }],
         },
         langfuse: None,
