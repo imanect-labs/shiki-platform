@@ -566,6 +566,10 @@ services:
       SHIKI__LLM__BASE_URL: ${SHIKI__LLM__BASE_URL:-}
       SHIKI__LLM__API_KEY: ${SHIKI__LLM__API_KEY:-}
       SHIKI__LLM__DEFAULT_MODEL: ${SHIKI__LLM__DEFAULT_MODEL:-shiki-default}
+      # Responses API（BACKEND=openai_responses）のプロバイダが名乗り・会話 ID を求める場合
+      # （例 OpenCode Go: USER_AGENT=shiki/1.0・SESSION_HEADER=x-opencode-session）。
+      SHIKI__LLM__USER_AGENT: ${SHIKI__LLM__USER_AGENT:-}
+      SHIKI__LLM__SESSION_HEADER: ${SHIKI__LLM__SESSION_HEADER:-}
       # 既定モデルのコンテキスト窓（例: 32768）。設定すると自律エージェントの剪定閾値がこの窓を
       # 天井にする（#529）。0 は未設定（固定閾値のまま）。
       SHIKI__LLM__CONTEXT_WINDOW_TOKENS: ${SHIKI__LLM__CONTEXT_WINDOW_TOKENS:-0}

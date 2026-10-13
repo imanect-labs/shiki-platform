@@ -13,7 +13,10 @@ use crate::config::{GatewayConfig, ProviderKind};
 use crate::langfuse::{GenerationTrace, LangfuseClient};
 use crate::model::{GenerateRequest, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
-use crate::providers::{anthropic::AnthropicProvider, openai::OpenAiProvider, stub::StubProvider};
+use crate::providers::{
+    anthropic::AnthropicProvider, openai::OpenAiProvider,
+    openai_responses::OpenAiResponsesProvider, stub::StubProvider,
+};
 use std::sync::Arc;
 
 /// 生成 1 回分の会計/計装レコード（ストリーム消費後に gateway へ渡す）。
@@ -209,6 +212,17 @@ fn build_provider(
                 default_real,
             )))
         }
+        ProviderKind::OpenaiResponses => {
+            let base = pc
+                .base_url
+                .clone()
+                .ok_or_else(|| LlmError::Config("openai_responses base_url required".into()))?;
+            Ok(Arc::new(
+                OpenAiResponsesProvider::new(http, base, pc.api_key.clone(), default_real)
+                    .with_user_agent(pc.user_agent.as_deref())?
+                    .with_session_header(pc.session_header.as_deref())?,
+            ))
+        }
         ProviderKind::Anthropic => {
             let base = pc
                 .base_url
@@ -241,6 +255,8 @@ mod tests {
                 base_url: base_url.map(str::to_string),
                 api_key: api_key.map(str::to_string),
                 timeout_secs: 120,
+                user_agent: None,
+                session_header: None,
             },
             catalog: ModelCatalog {
                 default_model: "m".into(),
@@ -261,6 +277,22 @@ mod tests {
         let cfg = config(ProviderKind::Stub, None, None);
         let p = build_provider(reqwest::Client::new(), &cfg).unwrap();
         assert_eq!(p.name(), "stub");
+    }
+
+    #[test]
+    fn openai_responses_requires_base_url() {
+        let ok = config(
+            ProviderKind::OpenaiResponses,
+            Some("https://opencode.ai/inference/go/v1"),
+            None,
+        );
+        assert_eq!(
+            build_provider(reqwest::Client::new(), &ok).unwrap().name(),
+            "openai_responses"
+        );
+        let missing = config(ProviderKind::OpenaiResponses, None, None);
+        let res = build_provider(reqwest::Client::new(), &missing);
+        assert!(matches!(res, Err(LlmError::Config(_))));
     }
 
     #[test]

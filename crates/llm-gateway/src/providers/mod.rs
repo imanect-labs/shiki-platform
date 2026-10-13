@@ -3,6 +3,7 @@
 pub mod anthropic;
 pub mod openai;
 mod openai_names;
+pub mod openai_responses;
 pub mod stub;
 mod stub_deep_research;
 mod stub_deep_research_specs;

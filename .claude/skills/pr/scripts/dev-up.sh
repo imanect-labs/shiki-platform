@@ -524,7 +524,9 @@ export SHIKI__GATEWAY__WEB_ORIGIN=http://localhost:3000
 export SHIKI__GATEWAY__BUILTIN_DIR=${ROOT}/web/editor-sandbox/dist
 export SHIKI__CHAT__ENABLED=true
 export SHIKI__WORKFLOW__ENABLED=true
-export SHIKI__LLM__BACKEND=stub
+# 既定は stub（E2E の前提）。実 LLM で確かめるときは呼び出し側で BACKEND 等を渡す
+# （シェルに残った値を拾うことがあるので、起動後のまとめに LLM の種類を出して警告する）。
+export SHIKI__LLM__BACKEND=${SHIKI__LLM__BACKEND:-stub}
 export SHIKI__WEBSEARCH__BACKEND=stub
 export SHIKI__RAG__ENABLED=$([ "$WITH_RAG" = 1 ] && echo true || echo false)
 export SHIKI__RAG__QDRANT_URL=http://localhost:${QDRANT_PORT}
@@ -690,6 +692,7 @@ say "  keycloak   http://localhost:8081"
 say "  ログ       $SERVER_LOG"
 say "             $WEB_LOG"
 say ""
+say "  LLM=${SHIKI__LLM__BACKEND}$([ "$SHIKI__LLM__BACKEND" = stub ] || echo "  ⚠️ stub ではない（E2E は stub が前提・実プロバイダへ課金される）")"
 say "  RAG=$([ "$WITH_RAG" = 1 ] && { [ "$RAG_REMOTE" = 1 ] && echo "on(worker と S3 は外部)" || echo on; } || echo off)  sandbox=$([ "$WITH_SANDBOX" = 1 ] && echo on || echo off)  office=$([ "$WITH_OFFICE" = 1 ] && echo on || echo off)  （必要なら --rag / --rag-remote / --sandbox / --office）"
 say ""
 say "  E2E:  cd web && E2E_BASE_URL=http://localhost:3000 pnpm exec playwright test e2e/<x>.spec.ts"
