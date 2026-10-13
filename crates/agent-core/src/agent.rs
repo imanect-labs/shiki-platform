@@ -114,13 +114,19 @@ pub async fn run_agent(
     // 概算で入れておく。最初の 1 回で溢れて拒否されると、補正に必要な実測すら得られない。
     // 実測済みなら（0 でも）その値を使う。
     // 遅延ロードで未読込のツール定義は文脈に載らないので数えない。
-    let initial_overhead = state.context_overhead_tokens.unwrap_or_else(|| {
+    let context_tool_tokens = |messages: &[llm_gateway::Message]| {
         crate::context::estimate_static_tokens(
-            opts.system.as_deref(),
-            llm_gateway::tool_loading::context_tools(&tool_defs, &state.messages),
+            None,
+            llm_gateway::tool_loading::context_tools(&tool_defs, messages),
         )
+    };
+    let tool_tokens = context_tool_tokens(&state.messages);
+    let initial_overhead = state.context_overhead_tokens.unwrap_or_else(|| {
+        crate::context::estimate_static_tokens(opts.system.as_deref(), [])
+            .saturating_add(tool_tokens)
     });
-    let mut gauge = crate::context::ContextGauge::with_overhead(initial_overhead);
+    let mut gauge =
+        crate::context::ContextGauge::with_overhead(initial_overhead).with_tool_tokens(tool_tokens);
 
     let stop = loop {
         if sink.is_cancelled() {
@@ -144,6 +150,8 @@ pub async fn run_agent(
 
         // --- コンテキスト剪定（自律版のみ・古い大きなツール出力を畳む・Task 5.3）。 ---
         if opts.profile.is_autonomous() {
+            // tool_search で読み込んだ定義の増分を見積りに足す（次の実測で置き換わる）。
+            gauge.observe_tools(context_tool_tokens(&state.messages));
             limits.apply(&mut state.messages, &gauge);
         }
 

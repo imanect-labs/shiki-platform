@@ -247,8 +247,9 @@ impl ContextLimits {
         if !over_history && !over_window {
             return false;
         }
-        // 守る位置は畳む前に決める（`keep_recent = 0` でも最後の結果は残す）。
-        let protect = last_result_position(messages);
+        // 守る位置は畳む前に決める（`keep_recent = 0` でも最後の結果は残す）。窓を知らない
+        // モデルでは保護しない（設定値だけの剪定は従来どおり・#529）。
+        let protect = self.window.and_then(|_| last_result_position(messages));
         let cutoff = messages.len().saturating_sub(self.keep_recent);
         let mut pruned = fold_results(messages, cutoff, protect);
         if self.window.is_some_and(|w| gauge.tokens(messages) > w.hard) {
@@ -264,13 +265,39 @@ impl ContextLimits {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ContextGauge {
     overhead_tokens: usize,
+    /// 差に含まれている（＝前回送った）ツール定義のトークン見積り。
+    tool_tokens: usize,
 }
 
 impl ContextGauge {
     /// チェックポイントに保存した差から復元する。
     #[must_use]
     pub fn with_overhead(overhead_tokens: usize) -> Self {
-        ContextGauge { overhead_tokens }
+        ContextGauge {
+            overhead_tokens,
+            tool_tokens: 0,
+        }
+    }
+
+    /// 差に既に含まれているツール定義の見積り（以後の増分だけを [`Self::observe_tools`] で足す）。
+    #[must_use]
+    pub fn with_tool_tokens(mut self, tool_tokens: usize) -> Self {
+        self.tool_tokens = tool_tokens;
+        self
+    }
+
+    /// 次に送るツール定義の見積りを知らせる。
+    ///
+    /// `tool_search` が遅延ツールを読み込むと、次のリクエストから定義が文脈に増える。差は前回の
+    /// 実測から求めたものなので、その増分を足しておかないと窓の判定が足りなくなる（溢れて
+    /// 拒否されうる）。次の [`Self::calibrate`] で実測に置き換わる。
+    pub fn observe_tools(&mut self, tool_tokens: usize) {
+        if tool_tokens > self.tool_tokens {
+            self.overhead_tokens = self
+                .overhead_tokens
+                .saturating_add(tool_tokens - self.tool_tokens);
+        }
+        self.tool_tokens = tool_tokens;
     }
 
     /// 現在の差（チェックポイントへ保存する）。
@@ -484,6 +511,32 @@ mod tests {
             .map(|m| matches!(&m.content[0], Block::ToolResult { content, .. } if is_folded(content)))
             .collect();
         assert_eq!(folded, vec![true, true, false]);
+    }
+
+    #[test]
+    fn without_window_the_last_result_is_not_protected() {
+        // 窓を知らないモデルは従来どおり（keep_recent = 0 なら最後の結果も畳む）。
+        let big = "k".repeat(40_000);
+        let mut msgs: Vec<Message> = (0..2).map(|_| tool_result(&big, false)).collect();
+        let l = ContextLimits::resolve(1_000, 0, None, None);
+        assert!(l.apply(&mut msgs, &ContextGauge::default()));
+        assert!(msgs.iter().all(
+            |m| matches!(&m.content[0], Block::ToolResult { content, .. } if is_folded(content))
+        ));
+    }
+
+    #[test]
+    fn newly_loaded_tools_raise_the_estimate_until_calibrated() {
+        let msgs = vec![tool_result("x", false)];
+        let mut g = ContextGauge::with_overhead(1_000).with_tool_tokens(300);
+        let base = g.tokens(&msgs);
+        g.observe_tools(300); // 変化なし
+        assert_eq!(g.tokens(&msgs), base);
+        g.observe_tools(800); // 遅延ツールを読み込んだ
+        assert_eq!(g.tokens(&msgs), base + 500);
+        // 実測で置き換わる（読み込んだ定義込みの実測）。
+        g.calibrate(estimate_prompt_tokens(&msgs), 2_000);
+        assert_eq!(g.overhead_tokens(), 2_000 - estimate_prompt_tokens(&msgs));
     }
 
     #[test]
