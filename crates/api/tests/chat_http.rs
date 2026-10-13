@@ -219,6 +219,7 @@ fn base_config(db_url: &str) -> AppConfig {
             langfuse: None,
             user_agent: None,
             session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -405,6 +406,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         tenants,
         search: None,
         chat,
+        llm: None,
         rag_admin,
         office: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(

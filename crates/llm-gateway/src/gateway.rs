@@ -8,16 +8,55 @@
 use authz::AuthContext;
 use sqlx::PgPool;
 
+use std::collections::HashMap;
+
 use crate::accounting::{UsageRecord, UsageRecorder};
-use crate::config::{GatewayConfig, ProviderKind};
+use crate::config::{
+    AutoConfig, GatewayConfig, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,
+    DEFAULT_PROVIDER_ID,
+};
 use crate::langfuse::{GenerationTrace, LangfuseClient};
-use crate::model::{GenerateRequest, Usage};
+use crate::model::{Effort, GenerateRequest, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::providers::{
     anthropic::AnthropicProvider, openai::OpenAiProvider,
     openai_responses::OpenAiResponsesProvider, stub::StubProvider,
 };
+use crate::tenant::{
+    self, apply_patch, resolve_choice, ChoiceError, ModelChoice, ResolvedChoice, SettingsError,
+    SettingsPatch, TenantLlmSettings, TenantLlmStore,
+};
+use crate::usage_report::{UsageFilter, UsageReport, UsageReporter};
 use std::sync::Arc;
+
+/// 会計の「利用元」（管理画面の利用元別集計・`llm_usage.source`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UsageSource {
+    /// 通常チャット（1 往復の生成）。
+    Chat,
+    /// エージェント（ツールループ・自律・サブエージェント）。
+    Agent,
+    /// ワークフローの `llm.invoke`。
+    Workflow,
+    /// ミニアプリのゲートウェイ AI 能力。
+    MiniApp,
+    /// 上記以外（後方互換の既定）。
+    #[default]
+    Other,
+}
+
+impl UsageSource {
+    /// DB に刻む文字列（`llm_usage.source` の CHECK と一致させる）。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            UsageSource::Chat => "chat",
+            UsageSource::Agent => "agent",
+            UsageSource::Workflow => "workflow",
+            UsageSource::MiniApp => "miniapp",
+            UsageSource::Other => "other",
+        }
+    }
+}
 
 /// 生成 1 回分の会計/計装レコード（ストリーム消費後に gateway へ渡す）。
 pub struct GenerationRecord {
@@ -32,6 +71,20 @@ pub struct GenerationRecord {
     pub output_preview: String,
     /// 呼び出し元ミニアプリ（ゲートウェイ AI 能力・Task 9.9）。chat 等は `None`。
     pub app_id: Option<uuid::Uuid>,
+    /// 利用元（管理画面の利用元別集計）。
+    pub source: UsageSource,
+}
+
+/// 管理画面に出すプロバイダ 1 件（秘密は含めない）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderInfo {
+    pub id: String,
+    pub label: String,
+    pub kind: ProviderKind,
+    /// 接続先（ホスト部まで）。API キーやパスのクエリは載せない。
+    pub endpoint: Option<String>,
+    /// API キーが設定されているか（値そのものは出さない）。
+    pub has_api_key: bool,
 }
 
 /// LLM ゲートウェイ（チョークポイント）。
@@ -40,15 +93,26 @@ pub struct LlmGateway {
     inner: Arc<Inner>,
 }
 
-struct Inner {
+struct ProviderSlot {
     provider: Arc<dyn LlmProvider>,
+    config: ProviderConfig,
+}
+
+struct Inner {
+    /// プロバイダ ID → アダプタ。モデルの `provider` で振り分ける。
+    providers: HashMap<String, ProviderSlot>,
     config: GatewayConfig,
     accounting: UsageRecorder,
+    tenants: TenantLlmStore,
+    usage: UsageReporter,
     langfuse: Option<LangfuseClient>,
 }
 
 impl LlmGateway {
     /// 設定からゲートウェイを構築する（プロバイダを kind で選択）。
+    ///
+    /// カタログのモデルが**存在しないプロバイダ**を指していたら構築を失敗させる
+    /// （実行時に初めて「振り先が無い」と分かる構成を起動させない）。
     pub fn build(
         db: PgPool,
         http: reqwest::Client,
@@ -58,11 +122,39 @@ impl LlmGateway {
             .langfuse
             .as_ref()
             .map(|c| LangfuseClient::new(http.clone(), c));
-        let provider: Arc<dyn LlmProvider> = build_provider(http, &config)?;
+        let mut providers: HashMap<String, ProviderSlot> = HashMap::new();
+        for pc in std::iter::once(&config.provider).chain(config.extra_providers.iter()) {
+            let id = pc.effective_id().to_string();
+            if providers.contains_key(&id) {
+                return Err(LlmError::Config(format!("duplicate llm provider id: {id}")));
+            }
+            let provider = build_provider(http.clone(), pc, &config.catalog)?;
+            providers.insert(
+                id,
+                ProviderSlot {
+                    provider,
+                    config: pc.clone(),
+                },
+            );
+        }
+        if let Some(m) = config
+            .catalog
+            .models
+            .iter()
+            .find(|m| !providers.contains_key(m.provider_id()))
+        {
+            return Err(LlmError::Config(format!(
+                "model {} refers to unknown provider {}",
+                m.id,
+                m.provider_id()
+            )));
+        }
         Ok(LlmGateway {
             inner: Arc::new(Inner {
-                provider,
-                accounting: UsageRecorder::new(db),
+                providers,
+                accounting: UsageRecorder::new(db.clone()),
+                tenants: TenantLlmStore::new(db.clone()),
+                usage: UsageReporter::new(db),
                 langfuse,
                 config,
             }),
@@ -72,6 +164,101 @@ impl LlmGateway {
     /// 既定モデル（論理名）。
     pub fn default_model(&self) -> &str {
         &self.inner.config.catalog.default_model
+    }
+
+    /// モデルカタログ（プラットフォーム全体・テナントの絞り込み前）。
+    pub fn catalog(&self) -> &ModelCatalog {
+        &self.inner.config.catalog
+    }
+
+    /// Auto の振り先（設定値・カタログ外なら既定モデルへ落とす前の値）。
+    pub fn auto_config(&self) -> &AutoConfig {
+        &self.inner.config.auto
+    }
+
+    /// 接続済みプロバイダの一覧（管理画面用・秘密を含まない）。設定順で返す。
+    pub fn providers(&self) -> Vec<ProviderInfo> {
+        std::iter::once(&self.inner.config.provider)
+            .chain(self.inner.config.extra_providers.iter())
+            .map(|pc| ProviderInfo {
+                id: pc.effective_id().to_string(),
+                label: pc.label().to_string(),
+                kind: pc.kind,
+                endpoint: pc.base_url.as_deref().map(endpoint_label),
+                has_api_key: pc.api_key.as_deref().is_some_and(|k| !k.is_empty()),
+            })
+            .collect()
+    }
+
+    /// モデルが思考強度を受け付けるか（カタログの明示 → プロバイダ種別の既定）。
+    #[must_use]
+    pub fn supports_effort(&self, entry: &ModelEntry) -> bool {
+        entry.supports_effort.unwrap_or_else(|| {
+            self.inner
+                .providers
+                .get(entry.provider_id())
+                .is_some_and(|s| s.config.kind.effort_by_default())
+        })
+    }
+
+    /// テナントの AI 設定を読む（行が無ければ既定＝全モデル有効・Auto）。
+    pub async fn tenant_settings(
+        &self,
+        ctx: &AuthContext,
+    ) -> Result<TenantLlmSettings, sqlx::Error> {
+        self.inner.tenants.load(ctx).await
+    }
+
+    /// テナントの AI 設定を更新する（検証してから保存し、保存後の設定を返す）。
+    ///
+    /// 呼び出し側（管理 API）が管理者であることを確認してから呼ぶこと（ここは認可しない）。
+    pub async fn update_tenant_settings(
+        &self,
+        ctx: &AuthContext,
+        patch: &SettingsPatch,
+    ) -> Result<Result<TenantLlmSettings, SettingsError>, sqlx::Error> {
+        let current = self.inner.tenants.load(ctx).await?;
+        let next = match apply_patch(&self.inner.config.catalog, &current, patch) {
+            Ok(n) => n,
+            Err(e) => return Ok(Err(e)),
+        };
+        self.inner.tenants.save(ctx, &next, &patch.models).await?;
+        Ok(Ok(next))
+    }
+
+    /// チャットのモデル指定をテナント設定で解決する（許可外は `Err`・API は 400 に写す）。
+    pub async fn resolve_choice(
+        &self,
+        ctx: &AuthContext,
+        choice: &ModelChoice,
+    ) -> Result<Result<ResolvedChoice, ChoiceError>, sqlx::Error> {
+        let settings = self.inner.tenants.load(ctx).await?;
+        Ok(resolve_choice(
+            &self.inner.config.catalog,
+            &self.inner.config.auto,
+            &settings,
+            |e| self.supports_effort(e),
+            choice,
+        ))
+    }
+
+    /// テナント設定での Auto の振り先（管理画面・モデル一覧の表示用）。
+    pub fn auto_target(&self, settings: &TenantLlmSettings) -> Option<(String, Effort)> {
+        tenant::auto_target(
+            &self.inner.config.catalog,
+            &self.inner.config.auto,
+            settings,
+        )
+        .ok()
+    }
+
+    /// 利用量ダッシュボードの集計（tenant_id ＋ org に閉じる）。
+    pub async fn usage_report(
+        &self,
+        ctx: &AuthContext,
+        filter: &UsageFilter,
+    ) -> Result<UsageReport, sqlx::Error> {
+        self.inner.usage.report(ctx, filter).await
     }
 
     /// トークン消費からコスト（マイクロ USD）を見積もる（予算ガード連動・agent-core が使う）。
@@ -102,8 +289,9 @@ impl LlmGateway {
             .and_then(|e| e.context_window_tokens)
     }
 
-    /// リクエストを**ストリーミング**生成する。論理モデル→実 ID をカタログで解決してから
-    /// プロバイダへ委譲する。接続確立前の一時障害は 1 回だけ再試行する（フォールバックの床）。
+    /// リクエストを**ストリーミング**生成する。論理モデル→実 ID をカタログで解決し、
+    /// モデルの振り先プロバイダへ委譲する。接続確立前の一時障害は 1 回だけ再試行する
+    /// （フォールバックの床）。思考強度に対応しないモデルへは effort を落としてから送る。
     pub async fn stream(&self, mut req: GenerateRequest) -> Result<DeltaStream, LlmError> {
         let logical = req
             .model
@@ -115,17 +303,40 @@ impl LlmGateway {
             .catalog
             .get(&logical)
             .ok_or_else(|| LlmError::Config(format!("unknown model: {logical}")))?;
+        let slot = self
+            .inner
+            .providers
+            .get(entry.provider_id())
+            .ok_or_else(|| LlmError::Config(format!("unknown provider for model: {logical}")))?;
+        if !self.supports_effort(entry) {
+            req.effort = None;
+        }
         req.model = Some(entry.resolved_id().to_string());
 
         // 接続確立前（最初のバイト前）の Unavailable のみ再試行する。
-        match self.inner.provider.stream(&req).await {
+        match slot.provider.stream(&req).await {
             Ok(s) => Ok(s),
             Err(LlmError::Unavailable(first)) => {
                 tracing::warn!(error = %first, "llm provider unavailable, retrying once");
-                self.inner.provider.stream(&req).await
+                slot.provider.stream(&req).await
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// モデル（論理名）の振り先プロバイダの会計名。未知モデルは既定プロバイダ。
+    fn provider_name_for(&self, model: &str) -> String {
+        let id = self
+            .inner
+            .config
+            .catalog
+            .get(model)
+            .map_or(DEFAULT_PROVIDER_ID, ModelEntry::provider_id);
+        self.inner
+            .providers
+            .get(id)
+            .or_else(|| self.inner.providers.get(DEFAULT_PROVIDER_ID))
+            .map_or_else(|| "unknown".to_string(), |s| s.provider.name().to_string())
     }
 
     /// 生成 1 回分の会計＋Langfuse 計装を記録する（ストリーム消費後に呼ぶ）。
@@ -141,7 +352,7 @@ impl LlmGateway {
         let cost = entry.map_or(0, |e| {
             e.cost_usd_micros(rec.usage.prompt_tokens, rec.usage.completion_tokens)
         });
-        let provider = self.inner.provider.name().to_string();
+        let provider = self.provider_name_for(&rec.model);
 
         let usage_rec = UsageRecord {
             idempotency_key: rec.idempotency_key.clone(),
@@ -151,6 +362,7 @@ impl LlmGateway {
             cost_usd_micros: cost,
             trace_id: rec.trace_id.clone(),
             app_id: rec.app_id,
+            source: rec.source,
         };
         if let Err(e) = self.inner.accounting.record(ctx, &usage_rec).await {
             tracing::error!(error = %e, "llm usage accounting failed");
@@ -171,6 +383,7 @@ impl LlmGateway {
                     "user": ctx.principal.id,
                     "cost_usd_micros": cost,
                     "app_id": rec.app_id,
+                    "source": rec.source.as_str(),
                 }),
             })
             .await;
@@ -187,17 +400,38 @@ impl LlmGateway {
     }
 }
 
+/// 管理画面に出す接続先の表記（`scheme://host[:port]` まで。パス・クエリ・userinfo は落とす）。
+fn endpoint_label(base_url: &str) -> String {
+    match reqwest::Url::parse(base_url) {
+        Ok(u) => {
+            let host = u.host_str().unwrap_or_default();
+            match u.port() {
+                Some(p) => format!("{}://{host}:{p}", u.scheme()),
+                None => format!("{}://{host}", u.scheme()),
+            }
+        }
+        Err(_) => String::new(),
+    }
+}
+
 fn build_provider(
     http: reqwest::Client,
-    config: &GatewayConfig,
+    pc: &ProviderConfig,
+    catalog: &ModelCatalog,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let pc = &config.provider;
     // タイムアウトはプロバイダ側の per-request `.timeout()` で制御するため、
     // 共有 HTTP クライアント（接続プール共有）をそのまま各アダプタへ渡す。
-    let default_real = config.catalog.default_entry().map_or_else(
-        || config.catalog.default_model.clone(),
-        |e| e.resolved_id().to_string(),
-    );
+    // 各アダプタの「既定モデル」は、このプロバイダへ振られるモデルのうち既定モデル→先頭の順
+    // （gateway は常に実 ID を詰めて渡すので、既定は保険にすぎない）。
+    let id = pc.effective_id();
+    let default_real = catalog
+        .default_entry()
+        .filter(|e| e.provider_id() == id)
+        .or_else(|| catalog.models.iter().find(|m| m.provider_id() == id))
+        .map_or_else(
+            || catalog.default_model.clone(),
+            |e| e.resolved_id().to_string(),
+        );
     match pc.kind {
         ProviderKind::Stub => Ok(Arc::new(StubProvider::new())),
         ProviderKind::Openai => {
@@ -257,6 +491,7 @@ mod tests {
                 timeout_secs: 120,
                 user_agent: None,
                 session_header: None,
+                ..Default::default()
             },
             catalog: ModelCatalog {
                 default_model: "m".into(),
@@ -266,16 +501,18 @@ mod tests {
                     prompt_price_micros_per_mtok: 0,
                     completion_price_micros_per_mtok: 0,
                     context_window_tokens: None,
+                    ..Default::default()
                 }],
             },
             langfuse: None,
+            ..Default::default()
         }
     }
 
     #[test]
     fn stub_provider_needs_no_endpoint() {
         let cfg = config(ProviderKind::Stub, None, None);
-        let p = build_provider(reqwest::Client::new(), &cfg).unwrap();
+        let p = build_provider(reqwest::Client::new(), &cfg.provider, &cfg.catalog).unwrap();
         assert_eq!(p.name(), "stub");
     }
 
@@ -287,11 +524,13 @@ mod tests {
             None,
         );
         assert_eq!(
-            build_provider(reqwest::Client::new(), &ok).unwrap().name(),
+            build_provider(reqwest::Client::new(), &ok.provider, &ok.catalog)
+                .unwrap()
+                .name(),
             "openai_responses"
         );
         let missing = config(ProviderKind::OpenaiResponses, None, None);
-        let res = build_provider(reqwest::Client::new(), &missing);
+        let res = build_provider(reqwest::Client::new(), &missing.provider, &missing.catalog);
         assert!(matches!(res, Err(LlmError::Config(_))));
     }
 
@@ -299,12 +538,14 @@ mod tests {
     fn openai_requires_base_url() {
         let ok = config(ProviderKind::Openai, Some("http://vllm:8000/v1"), None);
         assert_eq!(
-            build_provider(reqwest::Client::new(), &ok).unwrap().name(),
+            build_provider(reqwest::Client::new(), &ok.provider, &ok.catalog)
+                .unwrap()
+                .name(),
             "openai"
         );
 
         let missing = config(ProviderKind::Openai, None, None);
-        let res = build_provider(reqwest::Client::new(), &missing);
+        let res = build_provider(reqwest::Client::new(), &missing.provider, &missing.catalog);
         assert!(matches!(res, Err(LlmError::Config(_))));
     }
 
@@ -313,13 +554,103 @@ mod tests {
         // base_url 省略時は既定エンドポイントへフォールバックし、api_key があれば構築できる。
         let ok = config(ProviderKind::Anthropic, None, Some("k"));
         assert_eq!(
-            build_provider(reqwest::Client::new(), &ok).unwrap().name(),
+            build_provider(reqwest::Client::new(), &ok.provider, &ok.catalog)
+                .unwrap()
+                .name(),
             "anthropic"
         );
 
         let missing = config(ProviderKind::Anthropic, None, None);
-        let res = build_provider(reqwest::Client::new(), &missing);
+        let res = build_provider(reqwest::Client::new(), &missing.provider, &missing.catalog);
         assert!(matches!(res, Err(LlmError::Config(_))));
+    }
+
+    fn lazy_db() -> PgPool {
+        sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/none")
+            .unwrap()
+    }
+
+    /// 既定（stub）＋追加（openai・vLLM）の 2 プロバイダ構成。
+    fn two_providers() -> GatewayConfig {
+        let mut cfg = config(ProviderKind::Stub, None, None);
+        cfg.extra_providers.push(ProviderConfig {
+            id: "vllm".into(),
+            display_name: Some("社内 GPU".into()),
+            kind: ProviderKind::Openai,
+            base_url: Some("http://user:pw@vllm.internal:8000/v1?x=1".into()),
+            ..Default::default()
+        });
+        cfg.catalog.models.push(ModelEntry {
+            id: "local".into(),
+            provider: Some("vllm".into()),
+            ..Default::default()
+        });
+        cfg
+    }
+
+    // connect_lazy は tokio ランタイムを要する。
+    #[tokio::test]
+    async fn multiple_providers_are_listed_without_secrets() {
+        let gw = LlmGateway::build(lazy_db(), reqwest::Client::new(), two_providers()).unwrap();
+        let ps = gw.providers();
+        assert_eq!(ps.len(), 2);
+        assert_eq!(ps[0].id, DEFAULT_PROVIDER_ID);
+        assert_eq!(ps[1].id, "vllm");
+        assert_eq!(ps[1].label, "社内 GPU");
+        // userinfo・パス・クエリは表示に出さない。
+        assert_eq!(ps[1].endpoint.as_deref(), Some("http://vllm.internal:8000"));
+        assert!(!ps[1].has_api_key);
+        // 振り先プロバイダで会計名が決まる。
+        assert_eq!(gw.provider_name_for("local"), "openai");
+        assert_eq!(gw.provider_name_for("m"), "stub");
+    }
+
+    // connect_lazy は tokio ランタイムを要する。
+    #[tokio::test]
+    async fn model_pointing_to_unknown_provider_fails_to_build() {
+        let mut cfg = config(ProviderKind::Stub, None, None);
+        cfg.catalog.models[0].provider = Some("nope".into());
+        let res = LlmGateway::build(lazy_db(), reqwest::Client::new(), cfg);
+        assert!(matches!(res, Err(LlmError::Config(_))));
+    }
+
+    // connect_lazy は tokio ランタイムを要する。
+    #[tokio::test]
+    async fn duplicate_provider_id_fails_to_build() {
+        let mut cfg = config(ProviderKind::Stub, None, None);
+        cfg.extra_providers.push(ProviderConfig::default());
+        let res = LlmGateway::build(lazy_db(), reqwest::Client::new(), cfg);
+        assert!(matches!(res, Err(LlmError::Config(_))));
+    }
+
+    // connect_lazy は tokio ランタイムを要する。
+    #[tokio::test]
+    async fn effort_support_follows_catalog_then_provider_kind() {
+        let gw = LlmGateway::build(lazy_db(), reqwest::Client::new(), two_providers()).unwrap();
+        let local = gw.catalog().get("local").unwrap().clone();
+        // OpenAI 互換（Chat Completions）は既定で送らない。
+        assert!(!gw.supports_effort(&local));
+        let explicit = ModelEntry {
+            supports_effort: Some(true),
+            ..local
+        };
+        assert!(gw.supports_effort(&explicit));
+    }
+
+    #[tokio::test]
+    async fn stream_routes_to_the_models_provider() {
+        let gw = LlmGateway::build(lazy_db(), reqwest::Client::new(), two_providers()).unwrap();
+        // 既定プロバイダ（stub）へ振られるモデルはそのまま生成できる。
+        let mut req = GenerateRequest::new(vec![crate::model::Message::text(
+            crate::model::Role::User,
+            "hi",
+        )]);
+        req.model = Some("m".into());
+        assert!(gw.stream(req.clone()).await.is_ok());
+        // 未知モデルは既定へ落とさず拒否する。
+        req.model = Some("ghost".into());
+        assert!(matches!(gw.stream(req).await, Err(LlmError::Config(_))));
     }
 
     #[tokio::test]

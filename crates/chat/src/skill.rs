@@ -319,6 +319,9 @@ mod tests {
             skill_pins: Json(pins),
             mini_app_id: None,
             mini_app_version: None,
+            model: None,
+            effort: None,
+            model_auto: true,
         }
     }
 

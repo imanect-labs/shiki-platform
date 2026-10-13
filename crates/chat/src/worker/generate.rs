@@ -259,6 +259,17 @@ impl ChatWorker {
         // ⚠️ opts.approval には触れない（破壊系の明示許可は skill で無効化できない・Task 6.9）。
         let (mut opts, mut history) = (opts, history);
         opts.session_id = Some(run.thread_id.to_string());
+        // モデルと思考強度: ユーザーの選択 → skill → Auto の振り先 → 設定（#553・run_model.rs）。
+        // skill の既定（apply_model_defaults）は温度・上限も触るので、モデルだけここで決め直す。
+        let chosen = super::run_model::effective_model(
+            run.model.as_deref(),
+            run.effort.as_deref(),
+            run.model_auto,
+            crate::skill::combined_model_defaults(&skills)
+                .as_ref()
+                .and_then(|d| d.model.as_deref()),
+            opts.model.as_deref(),
+        );
         // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
         opts.tool_search.always_load.extend(tools_in_use);
         if !skills.is_empty() {
@@ -283,6 +294,8 @@ impl ChatWorker {
                     .map(str::to_string),
             );
         }
+        opts.model = chosen.model;
+        opts.effort = chosen.effort;
 
         // 門の段階を system へ明示する（ツールが無い理由と、次へ進む条件・#400）。
         // skill の instructions より**後ろ**に置く（手順書の記述に上書きされないように）。

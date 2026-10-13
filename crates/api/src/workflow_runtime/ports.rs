@@ -228,6 +228,7 @@ impl NodePorts for ProdNodePorts {
                     input_preview: preview(&req.prompt),
                     output_preview: preview(&text),
                     app_id: None,
+                    source: llm_gateway::UsageSource::Workflow,
                 },
             )
             .await;

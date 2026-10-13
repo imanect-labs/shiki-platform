@@ -233,6 +233,7 @@ fn base_config() -> AppConfig {
             langfuse: None,
             user_agent: None,
             session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -375,6 +376,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         tenants,
         search: None,
         chat: None,
+        llm: None,
         rag_admin,
         office: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(

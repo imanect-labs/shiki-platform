@@ -66,6 +66,11 @@ impl OpenAiProvider {
         if let Some(t) = req.temperature {
             body["temperature"] = json!(t);
         }
+        // 思考強度（OpenAI の reasoning 系）。対応しないモデル（vLLM の多く）には gateway が
+        // 載せない（カタログの supports_effort で落とす）ので、ここに来たら素直に写す。
+        if let Some(effort) = req.effort {
+            body["reasoning_effort"] = json!(effort.as_str());
+        }
         // 遅延ツールは読み込まれた分だけ載せる（OpenAI 互換に参照の展開は無い・tool_loading）。
         let tools = context_tools(&req.tools, &req.messages);
         if !tools.is_empty() {
@@ -448,6 +453,16 @@ mod tests {
             }
             _ => panic!("expected ToolUseStop"),
         }
+    }
+
+    #[test]
+    fn effort_maps_to_reasoning_effort_only_when_set() {
+        let p = OpenAiProvider::new(reqwest::Client::new(), "http://x/v1", None, "m");
+        let names = ToolNameMap::new(std::iter::empty::<&str>());
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        assert!(p.build_body(&req, &names).get("reasoning_effort").is_none());
+        req.effort = Some(crate::model::Effort::Low);
+        assert_eq!(p.build_body(&req, &names)["reasoning_effort"], "low");
     }
 
     #[test]

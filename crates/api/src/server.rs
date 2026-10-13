@@ -36,6 +36,9 @@ pub enum AccessPolicy {
     /// BFF セッション必須・**タイムアウト無し**（SSE ストリーミング。生成の逐次配信で
     /// 接続が長時間開いたままになるため 30s/300s のタイムアウトと衝突させない）。
     SessionStreaming,
+    /// BFF セッション必須＋**組織管理者**（`organization#admin`・管理コンソールの API・標準 30s）。
+    /// パスは `/org-admin/*` に限る（プロビジョナの `/admin/*` と混ぜない）。
+    OrgAdmin,
     /// provisioner service account の Bearer JWT 必須（admin プレーン・300s）。
     /// config（provisioner 資格情報＋admin base）が無ければルートごと不在（fail-closed）。
     Provisioner,
@@ -493,6 +496,8 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::app_install::app_install_route_decls());
     table.extend(routes::app_install::trusted_key_route_decls());
     table.extend(routes::office::office_route_decls());
+    table.extend(routes::llm_models::llm_model_route_decls());
+    table.extend(routes::org_admin_ai::org_admin_ai_route_decls());
     table
 }
 

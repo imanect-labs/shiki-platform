@@ -245,6 +245,7 @@ fn config(db_url: &str) -> AppConfig {
             langfuse: None,
             user_agent: None,
             session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -475,6 +476,7 @@ fn build_app(
         tenants: Arc::new(storage::TenantStore::new(pool.clone())),
         search: None,
         chat: None,
+        llm: None,
         rag_admin: Arc::new(rag::RagAdmin::new(pool.clone(), None, None)),
         office: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(

@@ -14,6 +14,8 @@ struct SeedUser {
     org: &'static str,
     email: &'static str,
     display_name: &'static str,
+    /// 組織管理者（`organization#admin`・管理コンソールの検証用・#553）。
+    admin: bool,
 }
 
 /// dev/E2E の固定ユーザー群。**alice/bob は tenant `a-corp`、charlie は別 tenant `b-corp`**。
@@ -25,6 +27,7 @@ const SEED_USERS: &[SeedUser] = &[
         org: "a-corp",
         email: "alice@a-corp.example.com",
         display_name: "Alice",
+        admin: true,
     },
     SeedUser {
         id: "00000000-0000-0000-0000-000000000002",
@@ -32,6 +35,7 @@ const SEED_USERS: &[SeedUser] = &[
         org: "a-corp",
         email: "bob@a-corp.example.com",
         display_name: "Bob",
+        admin: false,
     },
     SeedUser {
         id: "00000000-0000-0000-0000-000000000003",
@@ -39,6 +43,7 @@ const SEED_USERS: &[SeedUser] = &[
         org: "b-corp",
         email: "charlie@b-corp.example.com",
         display_name: "Charlie",
+        admin: false,
     },
 ];
 
@@ -113,6 +118,21 @@ pub(crate) async fn dev_seed(
                 .await
                 .context("dev seed tuple の書き込みに失敗")?;
             tracing::info!(user = %u.id, org = %u.org, tenant = %seed_tenant, "dev seed: org member tuple を投入");
+        }
+        if u.admin
+            && !fga
+                .check(
+                    &subject,
+                    Relation::Admin,
+                    &object,
+                    Consistency::HigherConsistency,
+                )
+                .await?
+        {
+            fga.write_tuple(&subject, Relation::Admin, &object)
+                .await
+                .context("dev seed: org admin tuple の書き込みに失敗")?;
+            tracing::info!(user = %u.id, org = %u.org, "dev seed: org admin tuple を投入");
         }
         // ディレクトリ（共有相手検索）へ投入。ON CONFLICT 更新で冪等。
         directory

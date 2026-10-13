@@ -22,8 +22,13 @@ impl StorageService {
     ) -> Result<(), StorageError> {
         let ctx = system_ctx(tenant_id, org, actor);
         let subject = ctx.ns().user(admin_user_id);
+        let org_obj = ctx.ns().organization(org);
         self.authz
-            .write_tuple(&subject, Relation::Member, &ctx.ns().organization(org))
+            .write_tuple(&subject, Relation::Member, &org_obj)
+            .await?;
+        // 初期管理者は組織管理者（管理コンソール・#553）。admin は閲覧権に連鎖しない（PIT-65）。
+        self.authz
+            .write_tuple(&subject, Relation::Admin, &org_obj)
             .await?;
         self.audit
             .record(

@@ -19,6 +19,9 @@ pub struct MeResponse {
     pub org: String,
     /// テナント識別子（SaaS の隔離境界。オンプレは単一固定）。
     pub tenant_id: String,
+    /// 組織管理者か（管理コンソールの入口を出すか・`organization#admin`）。
+    /// 表示のための値で、管理 API 自体はルートのポリシーで毎回確かめる。
+    pub is_admin: bool,
 }
 
 /// 認証済みユーザー自身の情報を返す。
@@ -50,7 +53,9 @@ pub async fn get_me(
         return Err(ApiError::Forbidden);
     }
 
+    let is_admin = crate::middleware::org_admin::is_org_admin(&state, &ctx).await?;
     Ok(Json(MeResponse {
+        is_admin,
         id: ctx.principal.id,
         email: ctx.principal.email,
         roles: ctx.principal.roles,

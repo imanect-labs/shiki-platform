@@ -348,6 +348,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             langfuse: None,
             user_agent: None,
             session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -492,6 +493,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         tenants,
         search: None,
         chat: None,
+        llm: None,
         rag_admin,
         office: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(

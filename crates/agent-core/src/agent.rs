@@ -289,6 +289,7 @@ async fn land_on_budget(
                 input_preview: run.input_preview.clone(),
                 output_preview: preview(&text_acc),
                 app_id: run.app_id,
+                source: llm_gateway::UsageSource::Agent,
             },
         )
         .await;
@@ -424,6 +425,7 @@ async fn run_step(
                 input_preview: run.input_preview.clone(),
                 output_preview: preview(&text_acc),
                 app_id: run.app_id,
+                source: llm_gateway::UsageSource::Agent,
             },
         )
         .await;

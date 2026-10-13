@@ -185,6 +185,7 @@ pub(crate) async fn llm_invoke(
                     input_preview,
                     output_preview: text_acc.chars().take(2000).collect(),
                     app_id: Some(app_id),
+                    source: llm_gateway::UsageSource::MiniApp,
                 },
             )
             .await;

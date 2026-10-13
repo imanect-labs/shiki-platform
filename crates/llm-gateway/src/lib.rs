@@ -29,13 +29,21 @@ pub mod langfuse;
 pub mod model;
 pub mod provider;
 pub mod providers;
+pub mod tenant;
 pub mod tool_loading;
+pub mod usage_report;
 
 pub use config::{
-    GatewayConfig, LangfuseConfig, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,
+    AutoConfig, GatewayConfig, LangfuseConfig, ModelCatalog, ModelEntry, ProviderConfig,
+    ProviderKind, DEFAULT_PROVIDER_ID,
 };
-pub use gateway::{GenerationRecord, LlmGateway};
+pub use gateway::{GenerationRecord, LlmGateway, ProviderInfo, UsageSource};
 pub use model::{
     Block, Effort, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef, Usage,
 };
 pub use provider::{DeltaStream, LlmError, LlmProvider};
+pub use tenant::{
+    ChoiceError, ModelChoice, ResolvedChoice, SettingsError, SettingsPatch, TenantLlmSettings,
+    AUTO_MODEL,
+};
+pub use usage_report::{UsageBreakdown, UsageDay, UsageFilter, UsageReport, UsageTotals};
