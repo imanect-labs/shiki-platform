@@ -65,7 +65,8 @@ while [ $# -gt 0 ]; do
     --office)  WITH_OFFICE=1 ;;
     --down)    ACTION=down ;;
     --status)  ACTION=status ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    # 冒頭のコメントの塊を最後まで出す（行数を決め打ちすると説明を足した時に途中で切れる）。
+    -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
     *) err "未知の引数: $1"; exit 2 ;;
   esac
   shift
@@ -265,16 +266,6 @@ fi
     [ -n "$ok" ] || { err "$svc が healthy になりませんでした（docker compose logs $svc）"; exit 1; }
     say "   [ok] $svc"
   done
-  # --rag から切り替えた時、前に立てたローカルの worker（常駐 2〜3GB）と RustFS は
-  # DEPS から外しても動き続ける（restart: unless-stopped）。外部を使うなら止める。
-  if [ "$RAG_REMOTE" = 1 ]; then
-    for svc in ingestion-worker rustfs; do
-      if [ -n "$(docker compose ps -q "$svc" 2>/dev/null)" ]; then
-        docker compose stop "$svc" >/dev/null
-        say "   [stop] $svc（外部のものを使うため）"
-      fi
-    done
-  fi
 )
 
 # --- 1.5 dev DB のリセット（明示 opt-in） ---
@@ -321,6 +312,18 @@ if [ -n "$cur_tag" ] && [ "$cur_tag" != "$STORE_TAG" ]; then
   exit 1
 fi
 dev_psql "COMMENT ON DATABASE shiki IS '${STORE_TAG//\'/\'\'}'" >/dev/null
+
+# --rag から切り替えた時、前に立てたローカルの worker（常駐 2〜3GB）と RustFS は
+# DEPS から外しても動き続ける（restart: unless-stopped）。外部を使うなら止める。
+# **保存先の組を確かめた後に止める。** 先に止めると、切り替えを拒否した時に今の環境が壊れる。
+if [ "$RAG_REMOTE" = 1 ]; then
+  for svc in ingestion-worker rustfs; do
+    if [ -n "$(docker compose -f deploy/compose/docker-compose.yml ps -q "$svc" 2>/dev/null)" ]; then
+      docker compose -f deploy/compose/docker-compose.yml stop "$svc" >/dev/null
+      say "   [stop] $svc（外部のものを使うため）"
+    fi
+  done
+fi
 
 # --- 2. shiki-server ---
 # web に渡すゲートウェイ/B1 オリジン。compose は publish 済みの 8090/8091、
