@@ -43,6 +43,8 @@ const MIN_FOLD_BYTES: usize = 800;
 /// - tool_use / text / thinking は縮めない（計画・意思決定の連続性を保つ）。
 /// - 短い tool_result は縮めない（`MIN_FOLD_BYTES` 未満）。
 /// - 既に畳み込み済みのものは再短縮しない（冪等）。
+/// - 古い assistant メッセージのプロバイダ固有の推論アイテム（暗号化された推論）は落とす。送り返す
+///   のは続きのツールのターンのためで、古いものは役目を終えている（溜まると剪定が効かなくなる・#542）。
 pub fn prune_history(
     messages: &mut [Message],
     soft_limit_tokens: usize,
@@ -54,6 +56,19 @@ pub fn prune_history(
     let cutoff = messages.len().saturating_sub(keep_recent);
     let mut pruned = false;
     for msg in messages.iter_mut().take(cutoff) {
+        if msg.role == Role::Assistant {
+            let keeps_something = msg
+                .content
+                .iter()
+                .any(|b| !matches!(b, Block::Reasoning { .. }));
+            let before = msg.content.len();
+            if keeps_something {
+                msg.content
+                    .retain(|b| !matches!(b, Block::Reasoning { .. }));
+            }
+            pruned |= msg.content.len() != before;
+            continue;
+        }
         if msg.role != Role::Tool {
             continue;
         }
@@ -183,5 +198,40 @@ mod tests {
         if let Block::ToolResult { content, .. } = &msgs[0].content[0] {
             assert!(content.starts_with('あ'));
         }
+    }
+
+    #[test]
+    fn prune_drops_old_reasoning_items_but_keeps_recent_ones() {
+        let reasoning = || Block::Reasoning {
+            provider: "openai_responses".into(),
+            item: serde_json::json!({ "encrypted_content": "x".repeat(8_000) }),
+        };
+        let assistant = |blocks: Vec<Block>| Message {
+            role: Role::Assistant,
+            content: blocks,
+        };
+        let call = || Block::ToolUse {
+            id: "c".into(),
+            name: "t".into(),
+            input: serde_json::json!({}),
+        };
+        let mut msgs = vec![
+            assistant(vec![reasoning(), call()]),
+            assistant(vec![reasoning(), call()]),
+        ];
+        assert!(prune_history(&mut msgs, 100, 1));
+        assert!(!msgs[0]
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::Reasoning { .. })));
+        assert!(msgs[0]
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::ToolUse { .. })));
+        // 直近（keep_recent）の推論は残す（続きのツールのターンで送り返す）。
+        assert!(msgs[1]
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::Reasoning { .. })));
     }
 }

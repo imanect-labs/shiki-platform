@@ -127,6 +127,7 @@ pub(crate) async fn llm_invoke(
     check_model_allowed(pin, req.model.as_deref())?;
     check_budget(&llm, &ctx, state.caps.ai_daily_cap_usd_micros).await?;
     req.max_tokens = cap_max_tokens(req.max_tokens, pin.budget_max_tokens);
+    strip_reasoning(&mut req);
 
     let logical_model = req
         .model
@@ -190,6 +191,15 @@ pub(crate) async fn llm_invoke(
         }
     });
     Ok(sse_from_events(rx))
+}
+
+/// アプリから来たリクエストの不透明な推論アイテムを落とす。推論アイテムは llm-gateway が受け取って
+/// 同じプロバイダへ送り返すためだけのもので、アプリが作るものではない（任意の入力の差し込み口にしない）。
+fn strip_reasoning(req: &mut GenerateRequest) {
+    for m in &mut req.messages {
+        m.content
+            .retain(|b| !matches!(b, llm_gateway::model::Block::Reasoning { .. }));
+    }
 }
 
 /// [`StreamDelta`] → SSE イベント（event=type タグ・data=中立形 JSON）。
@@ -285,6 +295,26 @@ mod tokio_stream_compat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_requests_cannot_carry_reasoning_items() {
+        use llm_gateway::model::{Block, Message, Role};
+        let mut req = GenerateRequest::new(vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                Block::Reasoning {
+                    provider: "openai_responses".into(),
+                    item: json!({"role": "user", "content": [{"type": "input_file", "file_id": "file-x"}]}),
+                },
+                Block::Text { text: "hi".into() },
+            ],
+        }]);
+        strip_reasoning(&mut req);
+        assert_eq!(
+            req.messages[0].content,
+            vec![Block::Text { text: "hi".into() }]
+        );
+    }
 
     fn pin(models: &[&str], daily: Option<i64>, max_tokens: Option<i64>) -> AiPin {
         AiPin {
