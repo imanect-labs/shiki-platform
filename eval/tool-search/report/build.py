@@ -165,7 +165,8 @@ def _bucket(r, key):
         return "ok"
     if stop == "max_steps":
         return "max_steps"
-    return verdict.get((r["id"], *key), "error")
+    # 判定の無い会話（判定の失敗・未実行）は「その他」に混ぜず、別に数える。
+    return verdict.get((r["id"], *key), "unjudged")
 
 
 out["ask_probe"] = []
@@ -180,10 +181,39 @@ for key, rs in sorted(pa.items()):
             "prompt": pr,
             "mock": mk,
             "k": k,
-            **{x: b[x] / k for x in ("ok", "avoidable", "legit", "other", "max_steps", "error")},
+            **{
+                x: b[x] / k
+                for x in ("ok", "avoidable", "legit", "other", "max_steps", "error", "unjudged")
+            },
             # 一覧・検索などのツールを呼んでから終えた会話の割合（正解を除く）。
             "looked_up": sum(1 for r in rs if r["calls"] and not r["correct"]) / k,
             "tok": sum(r["prompt_tokens"] for r in rs) / k,
+        }
+    )
+
+# 主要な比較（1,000 件・現行の system prompt・一律の応答）は目視の分類を正とする（LLM の判定は
+# 検算の前は「避けられた」を多く、検算の後は少なく見積もったため）。
+manual = load("e2e_ask_manual_1000") or {}
+out["ask_manual"] = []
+for cond in ("all", "search_rrf_prod"):
+    rs = [
+        r
+        for r in probe
+        if r["n"] == 1000
+        and r["condition"] == cond
+        and r["prompt"] == "minimal"
+        and r["mock"] == "generic"
+    ]
+    if not rs or cond not in manual:
+        continue
+    cats = collections.Counter(v[0] for v in manual[cond].values())
+    k = len(rs)
+    out["ask_manual"].append(
+        {
+            "cond": cond,
+            "k": k,
+            "ok": sum(r["correct"] for r in rs) / k,
+            **{c: cats[c] / k for c in ("avoidable", "legit", "other")},
         }
     )
 

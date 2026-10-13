@@ -26,6 +26,7 @@ uv run python -m tseval.evaluate      # 検索精度（E1〜E5）→ results/e*.
 uv run python -m tseval.e2e           # LLM にツールを選ばせる E2E → results/e2e.json
 uv run python -m tseval.skills        # skill の一覧方式 vs 検索方式 → results/skills_e2e.json
 uv run python -m tseval.ask_probe     # 聞き返しの切り分け（system prompt・モック・最後の応答の分類）→ results/e2e_ask_*.json
+# results/e2e_ask_manual_1000.json は主要な比較（1,000 件・現行・一律）を目視で分類したもの（手で作る）
 uv run python -m tseval.report        # 集計表 → results/summary.md
 PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/tool-search-eval.html
 ```
@@ -61,7 +62,7 @@ PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/t
 | E5 latency | 1 クエリの処理時間（BM25 / 埋め込み / rerank）と `tool_search` 説明の長さ |
 | E2E | 全ツール提示 vs `tool_search`（BM25 / RRF）で、LLM が正解ツールを呼べた率・トークン。結果本文は評価側の簡略版・製品の文面（`_prod`）・下調べ用ツールの案内付き（`_hint`・#522 で試して入れなかった案）の 3 通り |
 | skills | skill の一覧方式（製品の先頭 50 件 / 全件）vs 検索方式 |
-| ask_probe | E2E でツールを呼ばずに終えた会話の切り分け（system prompt 3 通り × ツールの応答 2 通り・最後の応答を「避けられた／正当な聞き返し／その他」に LLM で分類・#545） |
+| ask_probe | E2E で正解ツールを呼ばずに文章で終えた会話（下調べのツールを呼んでから終えたものを含む）の切り分け（system prompt 3 通り × ツールの応答 2 通り・最後の応答を「避けられた／正当な聞き返し／その他」に LLM で分類し、「避けられた」は挙げたツールで本当に調べられるかを別の呼び出しで検算・#545） |
 
 方式: `bm25`（製品の打ち切り前順位）/ `bm25_prod`（埋め込みが無いときに製品が読み込む 5 件・BM25 のみ）/ `emb`（Ruri v3）/
 `rrf`（bm25 と emb の RRF・k=10・製品と同じ）/ `rrf_rerank`（rrf 上位 20 件を cross-encoder で並べ替え）。

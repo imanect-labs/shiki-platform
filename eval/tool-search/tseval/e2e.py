@@ -247,7 +247,8 @@ def llm_mock(tool: Tool, args: str, request: str) -> str:
     prompt = MOCK_PROMPT.format(
         request=request, name=d["name"], description=d["description"], args=args or "{}"
     )
-    key = hashlib.sha256(prompt.encode()).hexdigest()[:20]
+    # 生成・抽出のコードが変われば作り直す（文面だけでなく実装の指紋もキーに入れる）。
+    key = hashlib.sha256((mock_fingerprint() + prompt).encode()).hexdigest()[:20]
     path = MOCK_CACHE / f"{key}.json"
     if path.exists():
         cached = path.read_text()
@@ -365,7 +366,7 @@ def run_one(
             rec["completion_tokens"] += usage.get("completion_tokens", 0)
             calls = msg.get("tool_calls") or []
             # 最後の応答の本文（聞き返しの中身を後で分類する・#545）。
-            rec["final_text"] = (msg.get("content") or "")[:2000]
+            rec["final_text"] = msg.get("content") or ""  # 全文（末尾の質問を落とさない）
             if not calls:
                 rec["stop"] = "reply"
                 break

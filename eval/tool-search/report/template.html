@@ -175,16 +175,19 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 7
 
   <section id="askback">
     <div class="eyebrow">E2E · 聞き返しの切り分け（#545）</div>
-    <h2>1,000 件の tool_search で正解率が下がるのは、調べれば分かることを聞き返すため</h2>
-    <p>正解ツールを呼ばずに文章で終えた会話（一覧・検索のツールを呼んでから終えたものを含む）の最後の応答を、LLM で「避けられた聞き返し（その会話のカタログにあるツールで調べられる情報を聞いている）」「正当な聞き返し（カタログのツールでは得られない情報を聞いている）」「その他」に分けた。判定には、その会話で提示されたカタログの同じサービスのツールと、その会話で呼んだツールを見せ、避けられたと付けるには調べられるツールを名前で挙げさせた。上限のステップで打ち切られた会話は判定せず別に数えた。目視で 20 件を抜き取ると 18 件が妥当で、外れの 2 件は正解ツール自身を「調べられるツール」に挙げていた。</p>
-    <p>system prompt は、評価の現行（1 行）、製品の通常チャット、現行に「利用者に尋ねる前にツールで調べる」を足したもの、の 3 通り。ツールの応答は、一律の文面（「該当の項目」）と、依頼に沿った内容を LLM で作ったもの、の 2 通り。値は全会話に対する割合で、行ごとに足すと 100% になる。1,000 件の規模は依頼 30 件（200 件の依頼 60 件の半分）。</p>
+    <h2 id="h-ask">1,000 件の tool_search で下がる正解率の大半は、ID を調べるツールを読み込まずに聞き返すため</h2>
+    <p>正解ツールを呼ばずに文章で終えた会話（一覧・検索のツールを呼んでから終えたものを含む）を、「避けられた聞き返し（その会話のカタログにあるツールで調べられる ID などを聞いている）」「正当な聞き返し（宛先・本文・保存先など、カタログのツールでは得られない情報を聞いている）」「その他（別サービスの同等ツールで済ませた・別のツールで終えた）」に分けた。</p>
+    <h3>主要な比較（1,000 件・同じ 30 件の依頼・現行の system prompt・目視で分類）</h3>
+    <div class="tablewrap"><table id="tb-ask-manual"></table></div>
+    <p id="ask-manual-read"></p>
+    <h3>system prompt とツールの応答を変えた比較（LLM による分類）</h3>
+    <p>system prompt は、評価の現行（1 行）、製品の通常チャット、現行に「利用者に尋ねる前にツールで調べる」を足したもの、の 3 通り。ツールの応答は、一律の文面（「該当の項目」）と、依頼に沿った内容を LLM で作ったもの、の 2 通り。分類は LLM で行い、「避けられた」は挙げたツールで本当に調べられるかを別の呼び出しで検算した。検算の前は「避けられた」を多く、検算の後は少なく見積もる（主要な比較の目視では 5 件のところ 2 件）ので、この表の「避けられた」は下限として読む。値は全会話に対する割合で、「正解ツール」から「未判定」までが終わり方の内訳（足すと 100%）。「正解＋正当」と「下調べしてから終えた」は参考の列。</p>
     <div class="tablewrap"><table id="tb-ask"></table></div>
     <ul class="plain">
-      <li><strong>正当な聞き返しが全会話の 3〜5 割を占める。</strong>依頼文に宛先・本文・日付が無いもの、200 件のカタログに ID を引く一覧・検索ツールが無いものが多い。E2E の正解率の絶対値が低い主な理由で、依頼データの作り直し（#547）で対処する。</li>
-      <li><strong>1,000 件の tool_search で正解率が下がる分は、ほぼ避けられた聞き返しの増加。</strong>同じ 30 件の依頼・現行の system prompt で比べると、全ツール提示は正解 36.7%・避けられた聞き返し 6.7%、tool_search は正解 20.0%・避けられた聞き返し 26.7%。正当な聞き返しとその他はほぼ同じ（40.0% と 36.7%、16.7% と 16.7%）。読み込んだ 5 件に ID を引くツールが無く、もう一度検索せずに利用者へ聞いている。同じ名前空間のツールを結果で案内する案（#522）では正解率が上がらなかった。</li>
-      <li><strong>製品の system prompt は正解率を下げる。</strong>全ツール提示 200 件で 58.3% → 48.3%、tool_search で 200 件 46.7% → 36.7%、1,000 件 20.0% → 10.0%。</li>
-      <li><strong>「調べてから尋ねる」指示は正解率を上げない。</strong>58.3% → 45.0%（全ツール提示 200 件）、46.7% → 40.0%（tool_search 200 件）、20.0% → 13.3%（1,000 件）。一覧・検索のツールを呼ぶ会話は増える（全ツール提示 200 件で 3.3% → 16.7%）が、そのあと得られない情報（相手のメールアドレス・本文など）を聞いて終える。</li>
-      <li><strong>依頼に沿ったモックにしても大きくは変わらない。</strong>一律の文面との差は正解率で 0〜5 ポイント。</li>
+      <li><strong>正当な聞き返しが多い。</strong>依頼文に宛先・本文・保存先・日付が無いもの、カタログに ID を引く一覧・検索ツールが無いものが多い。E2E の正解率の絶対値が低い主な理由で、依頼データの作り直し（#547）で対処する。</li>
+      <li><strong>製品の system prompt は正解率を下げる。</strong>全ツール提示 200 件で 60.0% → 48.3%、tool_search で 200 件 46.7% → 36.7%、1,000 件 20.0% → 10.0%。</li>
+      <li><strong>「調べてから尋ねる」指示は正解率を上げない。</strong>60.0% → 45.0%（全ツール提示 200 件）、46.7% → 40.0%（tool_search 200 件）、20.0% → 13.3%（1,000 件）。一覧・検索のツールを呼ぶ会話は増える（全ツール提示 200 件で 3.3% → 16.7%）が、そのあと得られない情報（相手のメールアドレス・本文など）を聞いて終える。</li>
+      <li><strong>依頼に沿ったモックにしても大きくは変わらない。</strong>一律の文面との差は正解率で 0〜3 ポイント程度。</li>
       <li><strong>製品は今日の日付を system prompt に入れていなかった。</strong>「来週の金曜」などの依頼は日付を決められずに聞き返していた（#546 で対応）。</li>
     </ul>
   </section>
@@ -448,9 +451,23 @@ table("tb-e2e2", ["N", "条件", "件数", "正解ツールを呼んだ", "別�
   const P = { minimal: "評価の現行", product: "製品の通常チャット", lookup: "調べてから尋ねる" };
   const M = { generic: "一律", llm: "依頼に沿う" };
   const C = { all: "全ツール提示", search_rrf_prod: "tool_search（RRF）" };
-  table("tb-ask", ["N", "条件", "system prompt", "ツールの応答", "依頼", "正解ツール", "避けられた聞き返し", "正当な聞き返し", "その他の終わり方", "打ち切り", "正解＋正当", "下調べしてから終えた"],
-    [...(DATA.ask_probe || [])].sort((a, b) => a.n - b.n || a.cond.localeCompare(b.cond) || Object.keys(P).indexOf(a.prompt) - Object.keys(P).indexOf(b.prompt) || Object.keys(M).indexOf(a.mock) - Object.keys(M).indexOf(b.mock)).map(r => [r.n, C[r.cond], P[r.prompt], M[r.mock], r.k, pct(r.ok), pct(r.avoidable), pct(r.legit), pct(r.other + r.error), pct(r.max_steps), pct(r.ok + r.legit), pct(r.looked_up)]),
+  table("tb-ask", ["N", "条件", "system prompt", "ツールの応答", "依頼", "正解ツール", "避けられた聞き返し", "正当な聞き返し", "その他の終わり方", "打ち切り", "未判定", "正解＋正当", "下調べしてから終えた"],
+    [...(DATA.ask_probe || [])].sort((a, b) => a.n - b.n || a.cond.localeCompare(b.cond) || Object.keys(P).indexOf(a.prompt) - Object.keys(P).indexOf(b.prompt) || Object.keys(M).indexOf(a.mock) - Object.keys(M).indexOf(b.mock)).map(r => [r.n, C[r.cond], P[r.prompt], M[r.mock], r.k, pct(r.ok), pct(r.avoidable), pct(r.legit), pct(r.other), pct(r.max_steps), pct(r.error + r.unjudged), pct(r.ok + r.legit), pct(r.looked_up)]),
     { left: 4 });
+}
+
+{
+  const C2 = { all: "全ツール提示", search_rrf_prod: "tool_search（RRF）" };
+  const rows = DATA.ask_manual || [];
+  table("tb-ask-manual", ["条件", "依頼", "正解ツール", "避けられた聞き返し", "正当な聞き返し", "その他"],
+    rows.map(r => [C2[r.cond], r.k, pct(r.ok), pct(r.avoidable), pct(r.legit), pct(r.other)]), { left: 1 });
+  const a = rows.find(r => r.cond === "all"), t = rows.find(r => r.cond === "search_rrf_prod");
+  if (a && t) {
+    document.getElementById("ask-manual-read").textContent =
+      `正解ツールを呼べた率は ${pct(a.ok)}% → ${pct(t.ok)}% と ${((a.ok - t.ok) * 100).toFixed(1)} ポイント下がり、そのうち ${((t.avoidable - a.avoidable) * 100).toFixed(1)} ポイントは避けられた聞き返しの増加（${pct(a.avoidable)}% → ${pct(t.avoidable)}%）。` +
+      `「Outlook の予定を消して」で削除のツールは読み込むが、イベント ID を引く outlook_search_events は読み込まず、もう一度検索せずに利用者へ聞く、という形。` +
+      `全ツール提示では、別サービスの同等ツールで済ませる会話（Outlook の予定を Google カレンダーで消すなど）が多く（その他 ${pct(a.other)}%）、tool_search ではそれが正当な聞き返しに置き換わる（${pct(a.legit)}% → ${pct(t.legit)}%）。依頼は 30 件なので、差の大きさは目安として読む。`;
+  }
 }
 
 // ---- skill ----

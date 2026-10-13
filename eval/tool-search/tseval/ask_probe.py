@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import random
 import re
@@ -65,9 +66,20 @@ def redact(text: str) -> str:
     return text
 
 
+def redact_all(value: object) -> object:
+    """入れ子の値の文字列をすべて伏せ字に通す（本文・検索語・判定理由など）。"""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, list):
+        return [redact_all(v) for v in value]
+    if isinstance(value, dict):
+        return {k: redact_all(v) for k, v in value.items()}
+    return value
+
+
 def write_results(name: str, rows: list[dict]) -> None:
-    """結果を書く。モデルの本文（`final_text`）は伏せ字を通す。"""
-    safe = [{**r, "final_text": redact(r.get("final_text", ""))} for r in rows]
+    """結果を書く。モデルや判定器が書いた文字列はすべて伏せ字を通す（判定の入力は変えない）。"""
+    safe = redact_all(rows)
     (ROOT / "results" / name).write_text(json.dumps(safe, ensure_ascii=False, indent=1))
 
 
@@ -193,9 +205,11 @@ def judge_one(row: dict, catalog: dict[str, dict]) -> dict:
         + json.dumps(target["input_schema"], ensure_ascii=False)[:800],
         siblings="\n".join(f"- {t['name']}: {t['description'][:120]}" for t in sib),
         called=", ".join(row["calls"]) or "（なし）",
-        final=row["final_text"] or "（本文なし）",
+        final=clip_middle(row["final_text"]) or "（本文なし）",
     )
-    key = hashlib.sha256(prompt.encode()).hexdigest()[:20]
+    # 判定と検算の手順が変われば取り直す（同じ文面でも以前の判定を使わない）。
+    src = inspect.getsource(judge_one) + inspect.getsource(check_avoidable) + VERIFY
+    key = hashlib.sha256((src + prompt).encode()).hexdigest()[:20]
     path = JUDGE_CACHE / f"{key}.json"
     if path.exists():
         return json.loads(path.read_text())
@@ -210,9 +224,67 @@ def judge_one(row: dict, catalog: dict[str, dict]) -> dict:
             "tools": "",
             "reason": f"形式が不正: {out!r}"[:200],
         }
+    if out["category"] == "avoidable":
+        try:
+            out = check_avoidable(out, row, target, sib)
+        except RuntimeError as e:
+            return {"category": "error", "asked": "", "tools": "", "reason": str(e)[:200]}
     JUDGE_CACHE.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out, ensure_ascii=False))
     return out
+
+
+VERIFY = """次の判定を検算してください。AI アシスタントが利用者に「{asked}」を尋ねました。
+判定者は、それが次のツールで調べられると言っています: {tools}
+
+それぞれのツールの説明と引数:
+{tool_defs}
+
+利用者の依頼:
+{query}
+
+質問: 尋ねている情報の**すべて**を、上のツールの戻り値から得られますか（依頼文に書かれた名前などを手がかりに、一覧・検索・取得して特定できるか）。
+一つでも得られない情報があれば no。ツールの説明から読み取れない場合も no。
+
+JSON だけを返してください: {{"answer": "yes|no", "reason": "短く"}}"""
+
+
+def check_avoidable(out: dict, row: dict, target: dict, sib: list[dict]) -> dict:
+    """「避けられた」の検算（#552 のレビュー指摘）。挙げたツールがその会話のカタログの同じ
+    サービスにあり、正解ツール自身でなく、尋ねた情報を返せると別の呼び出しで確かめられた
+    ときだけ avoidable を残す。確かめられなければ legit に倒す（避けられた聞き返しを
+    多く見積もらない）。"""
+    by_name = {t["name"]: t for t in sib}
+    raw = out.get("tools") or ""
+    named = raw if isinstance(raw, list) else re.split(r"[,、\s]+", str(raw))
+    tools = [n.strip(" '\"[]") for n in named if n.strip(" '\"[]") in by_name]
+    tools = [n for n in tools if n != target["name"]]
+    if not tools:
+        return {**out, "category": "legit", "check": "挙げたツールがカタログに無い・正解ツール自身"}
+    verdict = chat_json(
+        VERIFY.format(
+            asked=out.get("asked", ""),
+            tools=", ".join(tools),
+            tool_defs="\n".join(
+                f"- {n}: {by_name[n]['description'][:200]}\n  引数: "
+                + json.dumps(by_name[n]["input_schema"], ensure_ascii=False)[:400]
+                for n in tools
+            ),
+            query=row["query_text"],
+        ),
+        temperature=0.0,
+    )
+    if isinstance(verdict, dict) and verdict.get("answer") == "yes":
+        return {**out, "tools": tools, "check": "検算で確認"}
+    reason = verdict.get("reason", "") if isinstance(verdict, dict) else ""
+    return {**out, "category": "legit", "tools": tools, "check": f"検算で否定: {reason}"[:200]}
+
+
+def clip_middle(text: str, head: int = 1500, tail: int = 3000) -> str:
+    """長い応答は先頭と末尾を残す（末尾の質問を落とさない）。"""
+    if len(text) <= head + tail:
+        return text
+    return text[:head] + "\n…（中略）…\n" + text[-tail:]
 
 
 def judge(rows: list[dict]) -> list[dict]:
