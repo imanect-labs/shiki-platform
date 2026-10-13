@@ -206,6 +206,7 @@ const ALL_VOCAB: ToolActivityItem[] = [
   { name: "csv.write", input: { name: "集計結果" } },
   { name: "plan", input: {} },
   { name: "tool_search", input: { query: "CSV を集計する" } },
+  { name: "skill_search", input: { query: "月次決算のチェック" } },
   { name: "tool_search", input: { query: "select:csv.query,csv.patch" } },
 ].map((t, i) => ({ ...t, key: `v${i}`, id: `v${i}`, running: false, ok: true, step: i }));
 

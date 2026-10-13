@@ -2,12 +2,12 @@
 //!
 //! 標準入力に `{"catalog": [ToolDef...], "queries": [{"id", "text"}...], "limit": 5, "depth": 50}`
 //! を受け、1 クエリ 1 行の JSON を標準出力へ書く:
-//! `{"id", "search": [本番の読み込み順位], "ranked": [[name, score] 上位 depth 件]}`。
+//! `{"id", "search": [BM25 のみの経路で製品が読み込む順位（埋め込み未配線時）], "ranked": [[name, score] 上位 depth 件]}`。
 //! 最終行に `{"tool_search_description": 説明}` を書く（名前一覧の長さの観測・E2E の提示用）。
 
 use std::io::{BufWriter, Read, Write};
 
-use agent_core::EvalCatalog;
+use agent_core::CatalogSearch;
 use llm_gateway::ToolDef;
 use serde::Deserialize;
 
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut raw = String::new();
     std::io::stdin().read_to_string(&mut raw)?;
     let input: Input = serde_json::from_str(&raw)?;
-    let catalog = EvalCatalog::new(&input.catalog);
+    let catalog = CatalogSearch::new(&input.catalog, None);
     let mut out = BufWriter::new(std::io::stdout().lock());
     for q in &input.queries {
         let ranked: Vec<(String, f64)> = catalog
@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect();
         let line = serde_json::json!({
             "id": q.id,
-            "search": catalog.search(&q.text, input.limit),
+            "search": catalog.search_lexical(&q.text, input.limit),
             "ranked": ranked,
         });
         writeln!(out, "{line}")?;

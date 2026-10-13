@@ -3,7 +3,7 @@
 `tool_search`（遅延ツールを検索して読み込む・#511）の検索精度を、カタログ規模・検索方式・
 言語・読み込み件数・LLM を含めた E2E で測る。**製品の順位付けそのもの**を測るため、BM25F は
 Python で書き直さず、Rust の順位 CLI（`crates/agent-core/examples/tool_search_rank.rs`・
-`agent_core::EvalCatalog`）を呼ぶ。
+`agent_core::CatalogSearch`）を呼ぶ。
 
 ## 前提
 
@@ -61,8 +61,8 @@ PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/t
 | E2E | 全ツール提示 vs `tool_search`（BM25 / RRF）で、LLM が正解ツールを呼べた率・トークン |
 | skills | skill の一覧方式（製品の先頭 50 件 / 全件）vs 検索方式 |
 
-方式: `bm25`（製品の打ち切り前順位）/ `bm25_prod`（製品が実際に読み込む 5 件）/ `emb`（Ruri v3）/
-`rrf`（bm25 と emb の RRF・k=60）/ `rrf_rerank`（rrf 上位 20 件を cross-encoder で並べ替え）。
+方式: `bm25`（製品の打ち切り前順位）/ `bm25_prod`（埋め込みが無いときに製品が読み込む 5 件・BM25 のみ）/ `emb`（Ruri v3）/
+`rrf`（bm25 と emb の RRF・k=10・製品と同じ）/ `rrf_rerank`（rrf 上位 20 件を cross-encoder で並べ替え）。
 
 ## 限界
 

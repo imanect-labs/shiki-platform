@@ -93,6 +93,10 @@ pub async fn run_agent(
     // ツールだけ＝検索で認可は広がらない・tool_search.rs）。
     let (tool_defs, tool_search) =
         crate::tool_search::prepare(build_tool_defs(tools, opts), &opts.tool_search);
+    // 文書の埋め込みを先に温めておく（モデルが最初に検索するまでに間に合えば融合で返せる）。
+    if let Some(search) = &tool_search {
+        search.prewarm(run.ctx);
+    }
 
     // 再開 or 新規開始の状態。ループ検出器はチェックポイントから復元する（resume で失敗履歴を失わない）。
     let mut state = resume.unwrap_or_else(|| Checkpoint::start(messages));

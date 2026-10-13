@@ -100,6 +100,20 @@ def agg_e2e(rows):
                 "ok": sum(r["correct"] for r in rs) / k,
                 "first": sum((r["first_correct"] if v2 else r["correct"]) for r in rs) / k,
                 "none": sum(1 for r in rs if not (r["calls"] if v2 else r["called"])) / k,
+                # ツールは呼んだが正解ではなかった（選び間違い）。
+                "wrong": sum(
+                    1 for r in rs if (r["calls"] if v2 else r["called"]) and not r["correct"]
+                )
+                / k,
+                # 正解を読み込めていたのに、どのツールも呼ばずに終えた（聞き返しなど）。
+                "none_loaded": sum(
+                    1
+                    for r in rs
+                    if v2
+                    and not r["calls"]
+                    and any(r["target"] in s["hits"] for s in r["searches"])
+                )
+                / k,
                 "tok": sum(r["prompt_tokens"] for r in rs) / k,
                 "search": sum(len(r["searches"]) for r in rs) / k,
             }
@@ -122,6 +136,9 @@ out["skills"] = [
         "k": len(rs),
         "ok": sum(r["correct"] for r in rs) / len(rs),
         "invoked": sum(1 for r in rs if r["called"]) / len(rs),
+        "cond_ok": (
+            sum(r["correct"] for r in rs if r["called"]) / max(1, sum(1 for r in rs if r["called"]))
+        ),
         "tok": sum(r["prompt_tokens"] for r in rs) / len(rs),
     }
     for (n, c), rs in sorted(a.items())

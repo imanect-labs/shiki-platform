@@ -1,0 +1,6378 @@
+[
+ {
+  "id": "save_csv:ja",
+  "target": "save_csv",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "salesforce_list_accounts",
+   "notion_search_pages",
+   "freee_list_items",
+   "save_csv"
+  ],
+  "searches": [],
+  "prompt_tokens": 104480,
+  "completion_tokens": 1826,
+  "steps": 4,
+  "error": null,
+  "latency_s": 39.65498920995742,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "save_csv:en",
+  "target": "save_csv",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25173,
+  "completion_tokens": 129,
+  "steps": 1,
+  "error": null,
+  "latency_s": 5.175243688747287,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "gitlab_get_project"
+  ],
+  "searches": [],
+  "prompt_tokens": 25175,
+  "completion_tokens": 30,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.4698064932599664,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "gitlab_get_project"
+  ],
+  "searches": [],
+  "prompt_tokens": 25176,
+  "completion_tokens": 30,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.167992515489459,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [],
+  "prompt_tokens": 76041,
+  "completion_tokens": 478,
+  "steps": 3,
+  "error": null,
+  "latency_s": 14.198072652332485,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [],
+  "prompt_tokens": 75927,
+  "completion_tokens": 330,
+  "steps": 3,
+  "error": null,
+  "latency_s": 11.22705408744514,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "slack_add_reaction:ja",
+  "target": "slack_add_reaction",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25184,
+  "completion_tokens": 240,
+  "steps": 1,
+  "error": null,
+  "latency_s": 5.80643002782017,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "slack_add_reaction:en",
+  "target": "slack_add_reaction",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25180,
+  "completion_tokens": 65,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.3802393907681108,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "teams_send_message:ja",
+  "target": "teams_send_message",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25173,
+  "completion_tokens": 104,
+  "steps": 1,
+  "error": null,
+  "latency_s": 4.076945795677602,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "teams_send_message:en",
+  "target": "teams_send_message",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25172,
+  "completion_tokens": 106,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.6186933293938637,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 49,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.189745742827654,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 53,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.9173887902870774,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [],
+  "prompt_tokens": 25178,
+  "completion_tokens": 67,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.082239876501262,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [],
+  "prompt_tokens": 25177,
+  "completion_tokens": 68,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.9152139388024807,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "outlook_search_emails",
+   "outlook_delete_event"
+  ],
+  "searches": [],
+  "prompt_tokens": 50539,
+  "completion_tokens": 244,
+  "steps": 2,
+  "error": null,
+  "latency_s": 7.9476151037961245,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "outlook_list_emails"
+  ],
+  "searches": [],
+  "prompt_tokens": 50468,
+  "completion_tokens": 340,
+  "steps": 2,
+  "error": null,
+  "latency_s": 10.302728333510458,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25177,
+  "completion_tokens": 79,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.295076970010996,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25175,
+  "completion_tokens": 94,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.6219042791053653,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25173,
+  "completion_tokens": 313,
+  "steps": 1,
+  "error": null,
+  "latency_s": 7.534739168360829,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25174,
+  "completion_tokens": 198,
+  "steps": 1,
+  "error": null,
+  "latency_s": 4.875243581831455,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 115,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.7276366520673037,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25176,
+  "completion_tokens": 92,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.43124161940068,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "notion_search_pages"
+  ],
+  "searches": [],
+  "prompt_tokens": 50703,
+  "completion_tokens": 499,
+  "steps": 2,
+  "error": null,
+  "latency_s": 12.654086898081005,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "notion_search_pages",
+   "notion_list_comments"
+  ],
+  "searches": [],
+  "prompt_tokens": 75948,
+  "completion_tokens": 320,
+  "steps": 3,
+  "error": null,
+  "latency_s": 12.039918221533298,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "trello_create_board:ja",
+  "target": "trello_create_board",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "trello_create_board"
+  ],
+  "searches": [],
+  "prompt_tokens": 25175,
+  "completion_tokens": 41,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.5280670253559947,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "trello_create_board:en",
+  "target": "trello_create_board",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "trello_create_board"
+  ],
+  "searches": [],
+  "prompt_tokens": 25176,
+  "completion_tokens": 58,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.7324562137946486,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "trello_remove_member_from_card:ja",
+  "target": "trello_remove_member_from_card",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25179,
+  "completion_tokens": 107,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.965479058213532,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "trello_remove_member_from_card:en",
+  "target": "trello_remove_member_from_card",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 99,
+  "steps": 1,
+  "error": null,
+  "latency_s": 4.076751527376473,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "trello_get_board_details:ja",
+  "target": "trello_get_board_details",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "trello_get_board_details"
+  ],
+  "searches": [],
+  "prompt_tokens": 25183,
+  "completion_tokens": 33,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.6285265162587166,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "trello_get_board_details:en",
+  "target": "trello_get_board_details",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "trello_get_board_details"
+  ],
+  "searches": [],
+  "prompt_tokens": 25187,
+  "completion_tokens": 33,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.4505531350150704,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [],
+  "prompt_tokens": 25170,
+  "completion_tokens": 16,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.43656640779227,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [],
+  "prompt_tokens": 25171,
+  "completion_tokens": 16,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.3938882406800985,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "rakurakuseisan_get_expense_detail"
+  ],
+  "searches": [],
+  "prompt_tokens": 25193,
+  "completion_tokens": 43,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.340429729782045,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "rakurakuseisan_get_expense_detail"
+  ],
+  "searches": [],
+  "prompt_tokens": 25192,
+  "completion_tokens": 43,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.826901413500309,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja",
+  "target": "smarthr_create_employee_draft",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "smarthr_create_employee_draft"
+  ],
+  "searches": [],
+  "prompt_tokens": 25183,
+  "completion_tokens": 83,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.5551532013341784,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:en",
+  "target": "smarthr_create_employee_draft",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "smarthr_create_employee_draft"
+  ],
+  "searches": [],
+  "prompt_tokens": 25189,
+  "completion_tokens": 85,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.2178182872012258,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "docusign_create_webhook"
+  ],
+  "searches": [],
+  "prompt_tokens": 25198,
+  "completion_tokens": 1634,
+  "steps": 1,
+  "error": null,
+  "latency_s": 29.93181979842484,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25184,
+  "completion_tokens": 55,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.181512964889407,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "zendesk_list_tags:ja",
+  "target": "zendesk_list_tags",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "zendesk_list_tags"
+  ],
+  "searches": [],
+  "prompt_tokens": 25170,
+  "completion_tokens": 16,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.5768048716709018,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "zendesk_list_tags:en",
+  "target": "zendesk_list_tags",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "zendesk_list_tags"
+  ],
+  "searches": [],
+  "prompt_tokens": 25171,
+  "completion_tokens": 16,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.1591006238013506,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:ja",
+  "target": "zendesk_list_organizations",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "zendesk_list_organizations"
+  ],
+  "searches": [],
+  "prompt_tokens": 25170,
+  "completion_tokens": 17,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.086183635517955,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:en",
+  "target": "zendesk_list_organizations",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "zendesk_list_organizations"
+  ],
+  "searches": [],
+  "prompt_tokens": 25171,
+  "completion_tokens": 17,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.0132582392543554,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25190,
+  "completion_tokens": 177,
+  "steps": 1,
+  "error": null,
+  "latency_s": 5.155973137356341,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25184,
+  "completion_tokens": 70,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.1969679994508624,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "aws_cloudwatch_get_log_events"
+  ],
+  "searches": [],
+  "prompt_tokens": 25183,
+  "completion_tokens": 85,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.314186744391918,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 184,
+  "steps": 1,
+  "error": null,
+  "latency_s": 5.184830968268216,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25184,
+  "completion_tokens": 60,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.0409711841493845,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25178,
+  "completion_tokens": 82,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.1622612020000815,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "stripe_create_customer:ja",
+  "target": "stripe_create_customer",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "stripe_create_customer"
+  ],
+  "searches": [],
+  "prompt_tokens": 25175,
+  "completion_tokens": 42,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.7198682026937604,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "stripe_create_customer:en",
+  "target": "stripe_create_customer",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "stripe_create_customer"
+  ],
+  "searches": [],
+  "prompt_tokens": 25176,
+  "completion_tokens": 43,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.5686520347371697,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "stripe_list_invoices:ja",
+  "target": "stripe_list_invoices",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "stripe_list_invoices"
+  ],
+  "searches": [],
+  "prompt_tokens": 25187,
+  "completion_tokens": 35,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.6290739411488175,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "stripe_list_invoices:en",
+  "target": "stripe_list_invoices",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "stripe_list_invoices"
+  ],
+  "searches": [],
+  "prompt_tokens": 25181,
+  "completion_tokens": 46,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.6144311260432005,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "shopify_list_customers:ja",
+  "target": "shopify_list_customers",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "shopify_list_customers"
+  ],
+  "searches": [],
+  "prompt_tokens": 25176,
+  "completion_tokens": 17,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.0151469921693206,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "shopify_list_customers:en",
+  "target": "shopify_list_customers",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "shopify_list_customers"
+  ],
+  "searches": [],
+  "prompt_tokens": 25173,
+  "completion_tokens": 31,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.6001232406124473,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "shopify_search_products:ja",
+  "target": "shopify_search_products",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "shopify_search_products"
+  ],
+  "searches": [],
+  "prompt_tokens": 25175,
+  "completion_tokens": 31,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.3874967684969306,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "shopify_search_products:en",
+  "target": "shopify_search_products",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "shopify_search_products"
+  ],
+  "searches": [],
+  "prompt_tokens": 25172,
+  "completion_tokens": 29,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.7139130225405097,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25177,
+  "completion_tokens": 84,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.1217732839286327,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 200,
+  "calls": [
+   "figma_delete_comment"
+  ],
+  "searches": [],
+  "prompt_tokens": 25178,
+  "completion_tokens": 47,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.6746126543730497,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "tableau_add_user_to_site:ja",
+  "target": "tableau_add_user_to_site",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25177,
+  "completion_tokens": 60,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.7690788526088,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "tableau_add_user_to_site:en",
+  "target": "tableau_add_user_to_site",
+  "condition": "all",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 25173,
+  "completion_tokens": 41,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.758254756219685,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "save_csv:ja",
+  "target": "save_csv",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "営業実績 sales report",
+    "hits": [
+     "ga4_run_report",
+     "ga4_run_realtime_report",
+     "rakurakuseisan_list_reports",
+     "asana_create_task",
+     "bigquery_cancel_job"
+    ]
+   },
+   {
+    "query": "salesforce hubspot csv kintone slack",
+    "hits": [
+     "csv.write",
+     "save_csv",
+     "hubspot_create_draft_email",
+     "salesforce_get_opportunity",
+     "slack_add_reaction"
+    ]
+   },
+   {
+    "query": "select:csv.query,gdrive.list,notion.query,salesforce.query",
+    "hits": []
+   },
+   {
+    "query": "report list query read",
+    "hits": [
+     "rakurakuseisan_list_reports",
+     "ga4_run_report",
+     "ga4_run_realtime_report",
+     "bigquery_create_job_from_query",
+     "outlook_search_emails"
+    ]
+   },
+   {
+    "query": "salesforce list hubspot report csv read gdrive read slack messages",
+    "hits": [
+     "slack_unpin_message",
+     "salesforce_list_accounts",
+     "csv.write",
+     "save_csv",
+     "hubspot_create_draft_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 18006,
+  "completion_tokens": 2761,
+  "steps": 6,
+  "error": null,
+  "latency_s": 57.01074274070561,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "save_csv:en",
+  "target": "save_csv",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "sales performance data",
+    "hits": [
+     "ga4_get_data_stream",
+     "aws_cloudwatch_put_metric_data",
+     "datadog_list_monitors",
+     "kintone_upload_file",
+     "docusign_update_brand"
+    ]
+   }
+  ],
+  "prompt_tokens": 2396,
+  "completion_tokens": 325,
+  "steps": 2,
+  "error": null,
+  "latency_s": 8.485998972319067,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "github_get_repository"
+  ],
+  "searches": [
+   {
+    "query": "github repository get",
+    "hits": [
+     "github_get_repository",
+     "github_get_file_content",
+     "gitlab_list_repository_tree",
+     "github_add_issue_comment",
+     "salesforce_get_opportunity"
+    ]
+   }
+  ],
+  "prompt_tokens": 4063,
+  "completion_tokens": 165,
+  "steps": 3,
+  "error": null,
+  "latency_s": 7.267526215873659,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "github_get_repository"
+  ],
+  "searches": [
+   {
+    "query": "backend-api repository URL description",
+    "hits": [
+     "github_get_repository",
+     "gitlab_list_repository_tree",
+     "asana_create_story",
+     "kintone_list_records",
+     "docusign_create_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 4300,
+  "completion_tokens": 143,
+  "steps": 3,
+  "error": null,
+  "latency_s": 7.290626364760101,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "Jira sprint update",
+    "hits": [
+     "jira_update_sprint",
+     "jira_close_sprint",
+     "jira_list_sprints",
+     "jira_delete_issue",
+     "jira_list_boards"
+    ]
+   }
+  ],
+  "prompt_tokens": 5682,
+  "completion_tokens": 129,
+  "steps": 4,
+  "error": null,
+  "latency_s": 8.640022358857095,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "jira update sprint end date",
+    "hits": [
+     "jira_update_sprint",
+     "jira_close_sprint",
+     "jira_list_sprints",
+     "jobcan_update_employee_department",
+     "jira_delete_issue"
+    ]
+   }
+  ],
+  "prompt_tokens": 4015,
+  "completion_tokens": 124,
+  "steps": 3,
+  "error": null,
+  "latency_s": 6.557041544467211,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "slack_add_reaction:ja",
+  "target": "slack_add_reaction",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "slack add reaction",
+    "hits": [
+     "slack_add_reaction",
+     "slack_unpin_message",
+     "asana_add_comment",
+     "backlog_add_comment",
+     "zoom_add_registrant"
+    ]
+   }
+  ],
+  "prompt_tokens": 2397,
+  "completion_tokens": 179,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.773726603016257,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "slack_add_reaction:en",
+  "target": "slack_add_reaction",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "slack add reaction",
+    "hits": [
+     "slack_add_reaction",
+     "slack_unpin_message",
+     "asana_add_comment",
+     "backlog_add_comment",
+     "zoom_add_registrant"
+    ]
+   }
+  ],
+  "prompt_tokens": 2389,
+  "completion_tokens": 88,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.646173330023885,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "teams_send_message:ja",
+  "target": "teams_send_message",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "チャットにメッセージを送る",
+    "hits": [
+     "teams_send_message",
+     "slack_unpin_message",
+     "outlook_reply_to_email",
+     "outlook_search_emails",
+     "slack_add_reaction"
+    ]
+   },
+   {
+    "query": "slack send message",
+    "hits": [
+     "teams_send_message",
+     "slack_unpin_message",
+     "slack_add_reaction",
+     "gmail_unstar_message",
+     "chatwork_get_messages"
+    ]
+   },
+   {
+    "query": "chatwork send message",
+    "hits": [
+     "teams_send_message",
+     "chatwork_get_messages",
+     "gmail_unstar_message",
+     "slack_unpin_message",
+     "garoon_list_messages"
+    ]
+   }
+  ],
+  "prompt_tokens": 6754,
+  "completion_tokens": 474,
+  "steps": 4,
+  "error": null,
+  "latency_s": 14.459607206285,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "teams_send_message:en",
+  "target": "teams_send_message",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "send message to chat slack teams chatwork",
+    "hits": [
+     "teams_send_message",
+     "slack_unpin_message",
+     "chatwork_get_messages",
+     "slack_add_reaction",
+     "chatwork_list_schedules"
+    ]
+   }
+  ],
+  "prompt_tokens": 2401,
+  "completion_tokens": 705,
+  "steps": 2,
+  "error": null,
+  "latency_s": 14.962434367276728,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "chatwork",
+    "hits": [
+     "chatwork_delete_room",
+     "chatwork_get_messages",
+     "chatwork_list_tasks",
+     "chatwork_get_file",
+     "chatwork_list_schedules"
+    ]
+   }
+  ],
+  "prompt_tokens": 2236,
+  "completion_tokens": 71,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.1308827279135585,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "Chatwork file download metadata",
+    "hits": [
+     "chatwork_get_file",
+     "gcal_get_calendar_metadata",
+     "confluence_download_attachment",
+     "aws_s3_download_object",
+     "chatwork_delete_room"
+    ]
+   }
+  ],
+  "prompt_tokens": 2252,
+  "completion_tokens": 75,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.192991200834513,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "gmail.search"
+  ],
+  "searches": [],
+  "prompt_tokens": 1721,
+  "completion_tokens": 147,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.187893959693611,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [
+   {
+    "query": "find email",
+    "hits": [
+     "gcal_find_free_busy",
+     "hubspot_create_draft_email",
+     "outlook_search_emails",
+     "outlook_list_emails",
+     "outlook_reply_to_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 2394,
+  "completion_tokens": 94,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.3447053004056215,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "gcal_list_calendars"
+  ],
+  "searches": [
+   {
+    "query": "gcal cancel delete event",
+    "hits": [
+     "outlook_delete_event",
+     "bigquery_cancel_job",
+     "gcal_list_calendars",
+     "gcal_list_colors",
+     "outlook_get_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 3814,
+  "completion_tokens": 366,
+  "steps": 3,
+  "error": null,
+  "latency_s": 10.759519035927951,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "cancel delete event calendar",
+    "hits": [
+     "outlook_delete_event",
+     "gcal_get_calendar_metadata",
+     "gcal_list_calendars",
+     "bigquery_cancel_job",
+     "outlook_get_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 2274,
+  "completion_tokens": 145,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.432013753801584,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "select:gdrive.upload",
+    "hits": []
+   },
+   {
+    "query": "gdrive",
+    "hits": [
+     "gdrive_list_revisions",
+     "gdrive_create_permission",
+     "gdrive_list_permissions",
+     "gdrive_copy_file",
+     "gdrive_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 3322,
+  "completion_tokens": 327,
+  "steps": 3,
+  "error": null,
+  "latency_s": 9.77107887994498,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 789,
+  "completion_tokens": 122,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.5492400974035263,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 787,
+  "completion_tokens": 220,
+  "steps": 1,
+  "error": null,
+  "latency_s": 5.002005280926824,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 788,
+  "completion_tokens": 92,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.9496406381949782,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "folder share external edit permission",
+    "hits": [
+     "dropbox_share_folder",
+     "gdrive_create_permission",
+     "gdrive_list_permissions",
+     "gcp_check_iam_permissions",
+     "tableau_update_workbook_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 2457,
+  "completion_tokens": 213,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.241612573154271,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "share folder google drive",
+    "hits": [
+     "dropbox_share_folder",
+     "gdrive_upload_file",
+     "outlook_list_folders",
+     "dropbox_list_folder",
+     "cloudsign_move_contract_to_folder"
+    ]
+   },
+   {
+    "query": "google drive share folder permissions",
+    "hits": [
+     "dropbox_share_folder",
+     "gdrive_create_permission",
+     "gdrive_list_permissions",
+     "gcp_check_iam_permissions",
+     "tableau_update_workbook_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 4727,
+  "completion_tokens": 311,
+  "steps": 3,
+  "error": null,
+  "latency_s": 9.818918745964766,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "notion_search_pages",
+   "notion_delete_block"
+  ],
+  "searches": [
+   {
+    "query": "Notion delete block",
+    "hits": [
+     "notion_delete_block",
+     "notion_list_comments",
+     "notion_search_pages",
+     "notion_create_page",
+     "notion_restore_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 3784,
+  "completion_tokens": 95,
+  "steps": 3,
+  "error": null,
+  "latency_s": 6.338328072801232,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "notion_search_pages",
+   "notion_list_comments",
+   "notion_delete_block"
+  ],
+  "searches": [
+   {
+    "query": "notion delete block",
+    "hits": [
+     "notion_delete_block",
+     "notion_list_comments",
+     "notion_search_pages",
+     "notion_create_page",
+     "notion_restore_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 5422,
+  "completion_tokens": 128,
+  "steps": 4,
+  "error": null,
+  "latency_s": 7.828169380314648,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "trello_create_board:ja",
+  "target": "trello_create_board",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "trello_create_board"
+  ],
+  "searches": [
+   {
+    "query": "Trello ボード作成",
+    "hits": [
+     "trello_create_board",
+     "trello_delete_card",
+     "trello_get_board_details",
+     "trello_list_lists",
+     "miro_create_sticky_note"
+    ]
+   }
+  ],
+  "prompt_tokens": 2341,
+  "completion_tokens": 128,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.974173788912594,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "trello_create_board:en",
+  "target": "trello_create_board",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "trello_create_board"
+  ],
+  "searches": [
+   {
+    "query": "create a new Trello board",
+    "hits": [
+     "trello_create_board",
+     "trello_get_board_details",
+     "trello_list_lists",
+     "trello_delete_card",
+     "trello_remove_member_from_card"
+    ]
+   }
+  ],
+  "prompt_tokens": 2267,
+  "completion_tokens": 71,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.382651716470718,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "trello_remove_member_from_card:ja",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "Trello カードからメンバーを外す",
+    "hits": [
+     "trello_remove_member_from_card",
+     "gmail_unstar_message",
+     "trello_delete_card",
+     "trello_list_lists",
+     "ga4_list_conversions"
+    ]
+   }
+  ],
+  "prompt_tokens": 2239,
+  "completion_tokens": 144,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.20379108376801,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "trello_remove_member_from_card:en",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "Trello remove member from card",
+    "hits": [
+     "trello_remove_member_from_card",
+     "trello_delete_card",
+     "trello_create_board",
+     "cloudsign_remove_signer",
+     "docusign_remove_recipient"
+    ]
+   }
+  ],
+  "prompt_tokens": 2308,
+  "completion_tokens": 61,
+  "steps": 2,
+  "error": null,
+  "latency_s": 3.895830878056586,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "trello_get_board_details:ja",
+  "target": "trello_get_board_details",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "trello_get_board_details"
+  ],
+  "searches": [
+   {
+    "query": "Trello ボード詳細取得",
+    "hits": [
+     "trello_get_board_details",
+     "ga4_get_data_stream",
+     "trello_list_lists",
+     "notion_get_user",
+     "miro_get_item"
+    ]
+   }
+  ],
+  "prompt_tokens": 2230,
+  "completion_tokens": 63,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.525076610967517,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "trello_get_board_details:en",
+  "target": "trello_get_board_details",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "trello_get_board_details"
+  ],
+  "searches": [
+   {
+    "query": "trello get board details",
+    "hits": [
+     "trello_get_board_details",
+     "trello_create_board",
+     "rakurakuseisan_get_expense_detail",
+     "trello_list_lists",
+     "trello_delete_card"
+    ]
+   }
+  ],
+  "prompt_tokens": 2266,
+  "completion_tokens": 62,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.048696788027883,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "Garoon 受信トレイ メッセージ一覧",
+    "hits": [
+     "garoon_list_messages",
+     "outlook_list_emails",
+     "teams_send_message",
+     "outlook_reply_to_email",
+     "gmail_unstar_message"
+    ]
+   }
+  ],
+  "prompt_tokens": 2291,
+  "completion_tokens": 49,
+  "steps": 2,
+  "error": null,
+  "latency_s": 3.943289921618998,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "Garoon inbox messages",
+    "hits": [
+     "garoon_list_messages",
+     "garoon_search_schedules",
+     "garoon_search_users",
+     "garoon_create_schedule",
+     "gmail_unstar_message"
+    ]
+   }
+  ],
+  "prompt_tokens": 2288,
+  "completion_tokens": 44,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.227979421615601,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "rakurakuseisan_get_expense_detail"
+  ],
+  "searches": [
+   {
+    "query": "経費 明細 承認履歴 receipt",
+    "hits": [
+     "rakurakuseisan_get_expense_detail",
+     "rakurakuseisan_delete_expense",
+     "rakurakuseisan_import_transaction",
+     "rakurakuseisan_get_approval_status",
+     "rakurakuseisan_list_reports"
+    ]
+   }
+  ],
+  "prompt_tokens": 2319,
+  "completion_tokens": 153,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.770078525878489,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "rakurakuseisan_get_expense_detail"
+  ],
+  "searches": [
+   {
+    "query": "expense receipt approval history",
+    "hits": [
+     "rakurakuseisan_get_approval_status",
+     "rakurakuseisan_delete_expense",
+     "rakurakuseisan_get_expense_detail"
+    ]
+   }
+  ],
+  "prompt_tokens": 2043,
+  "completion_tokens": 71,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.1808859426528215,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "社員 登録 下書き save",
+    "hits": [
+     "smarthr_create_employee_draft",
+     "save_csv",
+     "confluence_publish_draft_page",
+     "gmail_delete_draft",
+     "docusign_remove_recipient"
+    ]
+   }
+  ],
+  "prompt_tokens": 2475,
+  "completion_tokens": 1422,
+  "steps": 2,
+  "error": null,
+  "latency_s": 27.097893808968365,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "smarthr_create_employee_draft:en",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "smarthr_create_employee_draft"
+  ],
+  "searches": [
+   {
+    "query": "save draft employee information",
+    "hits": [
+     "smarthr_create_employee_draft",
+     "save_csv",
+     "jobcan_update_employee_department",
+     "gmail_delete_draft",
+     "confluence_publish_draft_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 2473,
+  "completion_tokens": 113,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.505437879823148,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "DocuSign",
+    "hits": [
+     "docusign_create_brand",
+     "docusign_list_templates",
+     "docusign_void_envelope",
+     "docusign_remove_recipient",
+     "docusign_search_envelopes"
+    ]
+   }
+  ],
+  "prompt_tokens": 2473,
+  "completion_tokens": 408,
+  "steps": 2,
+  "error": null,
+  "latency_s": 9.840355196967721,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "docusign",
+    "hits": [
+     "docusign_create_brand",
+     "docusign_list_templates",
+     "docusign_void_envelope",
+     "docusign_remove_recipient",
+     "docusign_search_envelopes"
+    ]
+   }
+  ],
+  "prompt_tokens": 2444,
+  "completion_tokens": 227,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.761384272016585,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "zendesk_list_tags:ja",
+  "target": "zendesk_list_tags",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "zendesk_list_tags"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk タグ一覧取得",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "dropbox_list_folder",
+     "moneyforward_search_deals",
+     "aws_ec2_list_instances"
+    ]
+   },
+   {
+    "query": "Zendesk タグ一覧取得",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "dropbox_list_folder",
+     "moneyforward_search_deals",
+     "aws_ec2_list_instances"
+    ]
+   },
+   {
+    "query": "Zendesk タグ一覧取得",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "dropbox_list_folder",
+     "moneyforward_search_deals",
+     "aws_ec2_list_instances"
+    ]
+   }
+  ],
+  "prompt_tokens": 5494,
+  "completion_tokens": 106,
+  "steps": 4,
+  "error": null,
+  "latency_s": 8.422431426122785,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "zendesk_list_tags:en",
+  "target": "zendesk_list_tags",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "zendesk_list_tags"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk tags list",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "asana_add_tag_to_task",
+     "zendesk_search_tickets",
+     "zendesk_get_user"
+    ]
+   }
+  ],
+  "prompt_tokens": 2152,
+  "completion_tokens": 44,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.221827389672399,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:ja",
+  "target": "zendesk_list_organizations",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "zendesk_list_organizations"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk 企業一覧を取得する",
+    "hits": [
+     "zendesk_list_organizations",
+     "smarthr_list_documents",
+     "zendesk_list_tags",
+     "dropbox_list_folder",
+     "lineworks_list_posts"
+    ]
+   }
+  ],
+  "prompt_tokens": 2183,
+  "completion_tokens": 48,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.303562670946121,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:en",
+  "target": "zendesk_list_organizations",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "zendesk_list_organizations"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk organizations list",
+    "hits": [
+     "zendesk_list_organizations",
+     "zendesk_list_tags",
+     "zendesk_search_tickets",
+     "zendesk_get_user",
+     "sentry_get_organization_stats"
+    ]
+   }
+  ],
+  "prompt_tokens": 2181,
+  "completion_tokens": 45,
+  "steps": 2,
+  "error": null,
+  "latency_s": 3.9360680347308517,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "PagerDuty webhook test trigger",
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "docusign_create_webhook",
+     "linear_list_webhooks",
+     "pagerduty_list_vendors",
+     "pagerduty_acknowledge_incident"
+    ]
+   }
+  ],
+  "prompt_tokens": 2324,
+  "completion_tokens": 50,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.0790705271065235,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "pagerduty_trigger_webhook"
+  ],
+  "searches": [
+   {
+    "query": "PagerDuty trigger test webhook",
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "docusign_create_webhook",
+     "linear_list_webhooks",
+     "pagerduty_list_vendors",
+     "pagerduty_acknowledge_incident"
+    ]
+   }
+  ],
+  "prompt_tokens": 2330,
+  "completion_tokens": 144,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.3515493758022785,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "aws_cloudwatch_get_log_events"
+  ],
+  "searches": [
+   {
+    "query": "CloudWatch Logs get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "outlook_get_event",
+     "aws_cloudwatch_put_metric_data",
+     "outlook_update_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 2424,
+  "completion_tokens": 96,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.470192169770598,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "aws_cloudwatch_search_logs_by_pattern"
+  ],
+  "searches": [
+   {
+    "query": "CloudWatch Logs get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "outlook_get_event",
+     "aws_cloudwatch_put_metric_data",
+     "outlook_update_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 4822,
+  "completion_tokens": 948,
+  "steps": 3,
+  "error": null,
+  "latency_s": 20.81575874425471,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "aws cloudwatch logs filter",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_put_metric_data",
+     "aws_ec2_list_instances",
+     "aws_ec2_launch_instance"
+    ]
+   }
+  ],
+  "prompt_tokens": 2571,
+  "completion_tokens": 148,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.483361799269915,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "CloudWatch Logs search",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_put_metric_data",
+     "docusign_search_envelopes",
+     "lineworks_search_posts"
+    ]
+   }
+  ],
+  "prompt_tokens": 2470,
+  "completion_tokens": 111,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.168349668383598,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "stripe_create_customer:ja",
+  "target": "stripe_create_customer",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "stripe_create_customer"
+  ],
+  "searches": [
+   {
+    "query": "Stripe customer create",
+    "hits": [
+     "stripe_create_customer",
+     "stripe_create_price",
+     "stripe_list_invoices",
+     "shopify_create_customer",
+     "shopify_list_customers"
+    ]
+   }
+  ],
+  "prompt_tokens": 2333,
+  "completion_tokens": 69,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.108634187839925,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "stripe_create_customer:en",
+  "target": "stripe_create_customer",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "stripe_create_customer"
+  ],
+  "searches": [
+   {
+    "query": "Stripe create customer",
+    "hits": [
+     "stripe_create_customer",
+     "stripe_create_price",
+     "stripe_list_invoices",
+     "shopify_create_customer",
+     "shopify_list_customers"
+    ]
+   }
+  ],
+  "prompt_tokens": 2335,
+  "completion_tokens": 70,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.408170147798955,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "stripe_list_invoices:ja",
+  "target": "stripe_list_invoices",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "stripe_list_invoices"
+  ],
+  "searches": [
+   {
+    "query": "stripe invoice list",
+    "hits": [
+     "stripe_list_invoices",
+     "stripe_create_customer",
+     "stripe_create_price",
+     "trello_list_lists",
+     "freee_list_items"
+    ]
+   }
+  ],
+  "prompt_tokens": 2397,
+  "completion_tokens": 62,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.190296324901283,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "stripe_list_invoices:en",
+  "target": "stripe_list_invoices",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "stripe_list_invoices"
+  ],
+  "searches": [
+   {
+    "query": "Stripe invoice history",
+    "hits": [
+     "stripe_list_invoices",
+     "stripe_create_customer",
+     "stripe_create_price"
+    ]
+   }
+  ],
+  "prompt_tokens": 2127,
+  "completion_tokens": 73,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.270865690894425,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "shopify_list_customers:ja",
+  "target": "shopify_list_customers",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "shopify_list_customers"
+  ],
+  "searches": [
+   {
+    "query": "Shopify 顧客 リスト取得 ソート",
+    "hits": [
+     "shopify_list_customers",
+     "shopify_create_customer",
+     "stripe_list_invoices",
+     "stripe_create_customer",
+     "freee_create_partner"
+    ]
+   }
+  ],
+  "prompt_tokens": 2285,
+  "completion_tokens": 64,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.313715289346874,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "shopify_list_customers:en",
+  "target": "shopify_list_customers",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "shopify_list_customers"
+  ],
+  "searches": [
+   {
+    "query": "Shopify customers list",
+    "hits": [
+     "shopify_list_customers",
+     "shopify_create_customer",
+     "shopify_search_products",
+     "stripe_create_customer",
+     "stripe_list_invoices"
+    ]
+   }
+  ],
+  "prompt_tokens": 2246,
+  "completion_tokens": 59,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.651499790139496,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "shopify_search_products:ja",
+  "target": "shopify_search_products",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 789,
+  "completion_tokens": 97,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.8675351794809103,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "shopify_search_products:en",
+  "target": "shopify_search_products",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "shopify_search_products"
+  ],
+  "searches": [
+   {
+    "query": "search products on sale summer linen shirt",
+    "hits": [
+     "shopify_search_products",
+     "docusign_search_envelopes",
+     "lineworks_search_posts",
+     "notion_search_pages",
+     "garoon_search_users"
+    ]
+   }
+  ],
+  "prompt_tokens": 2305,
+  "completion_tokens": 73,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.053976357914507,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "Figma delete comment",
+    "hits": [
+     "figma_delete_comment",
+     "figma_get_prototypes",
+     "figma_get_team_styles",
+     "miro_resolve_comment",
+     "asana_add_comment"
+    ]
+   }
+  ],
+  "prompt_tokens": 2251,
+  "completion_tokens": 56,
+  "steps": 2,
+  "error": null,
+  "latency_s": 3.6161240050569177,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "figma delete comment",
+    "hits": [
+     "figma_delete_comment",
+     "figma_get_prototypes",
+     "figma_get_team_styles",
+     "miro_resolve_comment",
+     "asana_add_comment"
+    ]
+   }
+  ],
+  "prompt_tokens": 2253,
+  "completion_tokens": 59,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.330762958154082,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "tableau_add_user_to_site:ja",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "tableau_add_user_to_site"
+  ],
+  "searches": [
+   {
+    "query": "Tableau add user assign role",
+    "hits": [
+     "tableau_add_user_to_site",
+     "tableau_list_workbooks",
+     "tableau_list_datasources",
+     "tableau_create_group",
+     "tableau_update_workbook_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 2356,
+  "completion_tokens": 86,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.424016686156392,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "tableau_add_user_to_site:en",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_bm25",
+  "n": 200,
+  "calls": [
+   "tableau_add_user_to_site"
+  ],
+  "searches": [
+   {
+    "query": "add member to Tableau",
+    "hits": [
+     "tableau_add_user_to_site",
+     "asana_add_tag_to_task",
+     "servicenow_add_comment_to_ticket",
+     "trello_remove_member_from_card",
+     "tableau_list_workbooks"
+    ]
+   }
+  ],
+  "prompt_tokens": 2319,
+  "completion_tokens": 70,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.519354349933565,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "save_csv:ja",
+  "target": "save_csv",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "salesforce_list_accounts"
+  ],
+  "searches": [
+   {
+    "query": "営業実績 sales report",
+    "hits": [
+     "ga4_run_report",
+     "rakurakuseisan_list_reports",
+     "ga4_run_realtime_report",
+     "salesforce_list_accounts",
+     "freee_list_items"
+    ]
+   },
+   {
+    "query": "CSV ファイルを読み込む 集計する",
+    "hits": [
+     "csv.write",
+     "save_csv",
+     "kintone_upload_file",
+     "confluence_download_attachment",
+     "chatwork_get_file"
+    ]
+   },
+   {
+    "query": "slack messages read",
+    "hits": [
+     "slack_add_reaction",
+     "slack_unpin_message",
+     "garoon_list_messages",
+     "chatwork_get_messages",
+     "teams_send_message"
+    ]
+   },
+   {
+    "query": "csv query read file",
+    "hits": [
+     "csv.write",
+     "save_csv",
+     "gdrive_list_revisions",
+     "gdrive_delete_file",
+     "bigquery_create_job_from_query"
+    ]
+   },
+   {
+    "query": "hubspot kintone backlog sales deals",
+    "hits": [
+     "kintone_list_records",
+     "backlog_list_issues",
+     "backlog_add_comment",
+     "backlog_search_issues",
+     "hubspot_create_draft_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 16344,
+  "completion_tokens": 1265,
+  "steps": 6,
+  "error": null,
+  "latency_s": 32.37033799942583,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "save_csv:en",
+  "target": "save_csv",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "sales performance data",
+    "hits": [
+     "ga4_get_data_stream",
+     "aws_cloudwatch_put_metric_data",
+     "datadog_list_monitors",
+     "salesforce_list_accounts",
+     "sentry_get_organization_stats"
+    ]
+   },
+   {
+    "query": "sales report items performance",
+    "hits": [
+     "ga4_run_realtime_report",
+     "ga4_run_report",
+     "rakurakuseisan_get_approval_status",
+     "freee_update_item",
+     "rakurakuseisan_list_reports"
+    ]
+   },
+   {
+    "query": "shopify sales items",
+    "hits": [
+     "shopify_list_customers",
+     "shopify_create_customer",
+     "shopify_search_products",
+     "freee_update_item",
+     "freee_create_item"
+    ]
+   }
+  ],
+  "prompt_tokens": 8039,
+  "completion_tokens": 531,
+  "steps": 4,
+  "error": null,
+  "latency_s": 16.224562909454107,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "github_get_repository"
+  ],
+  "searches": [
+   {
+    "query": "github repository info",
+    "hits": [
+     "github_get_repository",
+     "gitlab_list_repository_tree",
+     "github_add_issue_comment",
+     "github_get_file_content",
+     "sentry_set_release_commits"
+    ]
+   }
+  ],
+  "prompt_tokens": 4159,
+  "completion_tokens": 149,
+  "steps": 3,
+  "error": null,
+  "latency_s": 7.37115013319999,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "github_get_repository"
+  ],
+  "searches": [
+   {
+    "query": "github get repository",
+    "hits": [
+     "github_get_repository",
+     "github_get_file_content",
+     "github_add_issue_comment",
+     "gitlab_list_repository_tree",
+     "gitlab_get_project"
+    ]
+   }
+  ],
+  "prompt_tokens": 4064,
+  "completion_tokens": 101,
+  "steps": 3,
+  "error": null,
+  "latency_s": 6.2519125593826175,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "Jira sprint update",
+    "hits": [
+     "jira_update_sprint",
+     "jira_close_sprint",
+     "jira_list_sprints",
+     "jira_delete_issue",
+     "chatwork_update_task_status"
+    ]
+   }
+  ],
+  "prompt_tokens": 3959,
+  "completion_tokens": 110,
+  "steps": 3,
+  "error": null,
+  "latency_s": 6.6281611025333405,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "jira update sprint end date",
+    "hits": [
+     "jira_update_sprint",
+     "jira_close_sprint",
+     "jira_list_sprints",
+     "jira_delete_issue",
+     "jira_list_boards"
+    ]
+   }
+  ],
+  "prompt_tokens": 5688,
+  "completion_tokens": 131,
+  "steps": 4,
+  "error": null,
+  "latency_s": 8.50754223484546,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "slack_add_reaction:ja",
+  "target": "slack_add_reaction",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "slack",
+    "hits": [
+     "slack_add_reaction",
+     "slack_unpin_message",
+     "gmail_delete_draft",
+     "jira_close_sprint",
+     "lineworks_list_posts"
+    ]
+   }
+  ],
+  "prompt_tokens": 2335,
+  "completion_tokens": 165,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.022977993823588,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "slack_add_reaction:en",
+  "target": "slack_add_reaction",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "slack add reaction",
+    "hits": [
+     "slack_add_reaction",
+     "slack_unpin_message",
+     "backlog_add_comment",
+     "asana_add_comment",
+     "servicenow_add_comment_to_ticket"
+    ]
+   }
+  ],
+  "prompt_tokens": 2356,
+  "completion_tokens": 80,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.451228231191635,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "teams_send_message:ja",
+  "target": "teams_send_message",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "chat send message",
+    "hits": [
+     "teams_send_message",
+     "chatwork_get_messages",
+     "hubspot_create_draft_email",
+     "gmail_unstar_message",
+     "garoon_list_messages"
+    ]
+   }
+  ],
+  "prompt_tokens": 2335,
+  "completion_tokens": 217,
+  "steps": 2,
+  "error": null,
+  "latency_s": 7.276285883970559,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "teams_send_message:en",
+  "target": "teams_send_message",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "send message chat slack teams chatwork",
+    "hits": [
+     "teams_send_message",
+     "slack_add_reaction",
+     "chatwork_get_messages",
+     "slack_unpin_message",
+     "chatwork_delete_room"
+    ]
+   }
+  ],
+  "prompt_tokens": 2356,
+  "completion_tokens": 362,
+  "steps": 2,
+  "error": null,
+  "latency_s": 9.322313942015171,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "chatwork",
+    "hits": [
+     "chatwork_delete_room",
+     "chatwork_get_messages",
+     "chatwork_create_task",
+     "chatwork_get_file",
+     "chatwork_list_tasks"
+    ]
+   }
+  ],
+  "prompt_tokens": 2257,
+  "completion_tokens": 71,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.497707271948457,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "Chatwork file download metadata",
+    "hits": [
+     "chatwork_get_file",
+     "confluence_download_attachment",
+     "gcal_get_calendar_metadata",
+     "chatwork_delete_room",
+     "chatwork_create_room"
+    ]
+   }
+  ],
+  "prompt_tokens": 2288,
+  "completion_tokens": 77,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.719180223532021,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "gmail",
+    "hits": [
+     "gmail_delete_draft",
+     "gmail_unstar_message",
+     "gmail_modify_labels",
+     "hubspot_create_draft_email",
+     "garoon_search_users"
+    ]
+   }
+  ],
+  "prompt_tokens": 2293,
+  "completion_tokens": 148,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.00314599275589,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [
+   {
+    "query": "search emails",
+    "hits": [
+     "outlook_search_emails",
+     "docusign_search_envelopes",
+     "outlook_list_emails",
+     "hubspot_create_draft_email",
+     "moneyforward_search_deals"
+    ]
+   }
+  ],
+  "prompt_tokens": 2393,
+  "completion_tokens": 94,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.5065572410821915,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "gcal_list_calendars"
+  ],
+  "searches": [
+   {
+    "query": "calendar delete event",
+    "hits": [
+     "outlook_delete_event",
+     "gcal_list_calendars",
+     "outlook_get_event",
+     "outlook_update_event",
+     "jobcan_delete_holiday"
+    ]
+   }
+  ],
+  "prompt_tokens": 3831,
+  "completion_tokens": 462,
+  "steps": 3,
+  "error": null,
+  "latency_s": 12.553189421072602,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "cancel delete event calendar",
+    "hits": [
+     "outlook_delete_event",
+     "gcal_list_calendars",
+     "outlook_update_event",
+     "jobcan_delete_holiday",
+     "outlook_get_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 2287,
+  "completion_tokens": 336,
+  "steps": 2,
+  "error": null,
+  "latency_s": 8.611825762316585,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "gdrive",
+    "hits": [
+     "gdrive_list_revisions",
+     "gdrive_upload_file",
+     "gdrive_create_permission",
+     "gdrive_delete_file",
+     "gdrive_list_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 2346,
+  "completion_tokens": 145,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.458962672390044,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "gdrive.upload"
+  ],
+  "searches": [],
+  "prompt_tokens": 1703,
+  "completion_tokens": 136,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.859980626031756,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 787,
+  "completion_tokens": 142,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.7318319529294968,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 788,
+  "completion_tokens": 92,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.702022456564009,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "file share folder external partner",
+    "hits": [
+     "dropbox_share_folder",
+     "freee_create_partner",
+     "cloudsign_move_contract_to_folder",
+     "moneyforward_list_business_partners",
+     "gdrive_create_permission"
+    ]
+   }
+  ],
+  "prompt_tokens": 2445,
+  "completion_tokens": 216,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.7959313550964,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "share folder grant permissions",
+    "hits": [
+     "dropbox_share_folder",
+     "gdrive_create_permission",
+     "gdrive_list_permissions",
+     "tableau_update_workbook_permissions",
+     "gcp_check_iam_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 2443,
+  "completion_tokens": 176,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.079587051644921,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "notion_search_pages",
+   "notion_delete_block"
+  ],
+  "searches": [
+   {
+    "query": "notion delete block",
+    "hits": [
+     "notion_delete_block",
+     "notion_list_comments",
+     "notion_restore_page",
+     "notion_search_pages",
+     "notion_create_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 3784,
+  "completion_tokens": 95,
+  "steps": 3,
+  "error": null,
+  "latency_s": 5.98803086951375,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "notion_search_pages",
+   "notion_list_comments",
+   "notion_delete_block"
+  ],
+  "searches": [
+   {
+    "query": "notion delete block",
+    "hits": [
+     "notion_delete_block",
+     "notion_list_comments",
+     "notion_restore_page",
+     "notion_search_pages",
+     "notion_create_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 5422,
+  "completion_tokens": 128,
+  "steps": 4,
+  "error": null,
+  "latency_s": 8.163912539370358,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "trello_create_board:ja",
+  "target": "trello_create_board",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "trello_create_board"
+  ],
+  "searches": [
+   {
+    "query": "trello",
+    "hits": [
+     "trello_create_board",
+     "trello_list_lists",
+     "trello_get_board_details",
+     "trello_delete_card",
+     "trello_remove_member_from_card"
+    ]
+   }
+  ],
+  "prompt_tokens": 2278,
+  "completion_tokens": 125,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.016821689903736,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "trello_create_board:en",
+  "target": "trello_create_board",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "trello_create_board"
+  ],
+  "searches": [
+   {
+    "query": "create a new Trello board",
+    "hits": [
+     "trello_create_board",
+     "trello_get_board_details",
+     "trello_list_lists",
+     "miro_create_frame",
+     "trello_delete_card"
+    ]
+   }
+  ],
+  "prompt_tokens": 2292,
+  "completion_tokens": 71,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.4920441042631865,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "trello_remove_member_from_card:ja",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "Trello カードからメンバーを外す",
+    "hits": [
+     "trello_remove_member_from_card",
+     "trello_delete_card",
+     "trello_list_lists",
+     "trello_create_board",
+     "gmail_unstar_message"
+    ]
+   }
+  ],
+  "prompt_tokens": 2268,
+  "completion_tokens": 209,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.877544657327235,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "trello_remove_member_from_card:en",
+  "target": "trello_remove_member_from_card",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "trello remove member from card",
+    "hits": [
+     "trello_remove_member_from_card",
+     "trello_delete_card",
+     "docusign_remove_recipient",
+     "trello_create_board",
+     "cloudsign_remove_signer"
+    ]
+   }
+  ],
+  "prompt_tokens": 2308,
+  "completion_tokens": 110,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.6097152680158615,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "trello_get_board_details:ja",
+  "target": "trello_get_board_details",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "trello_get_board_details"
+  ],
+  "searches": [
+   {
+    "query": "Trello ボード詳細取得",
+    "hits": [
+     "trello_get_board_details",
+     "trello_list_lists",
+     "trello_create_board",
+     "miro_get_item",
+     "ga4_get_data_stream"
+    ]
+   }
+  ],
+  "prompt_tokens": 2267,
+  "completion_tokens": 63,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.43937168084085,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "trello_get_board_details:en",
+  "target": "trello_get_board_details",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "trello_get_board_details"
+  ],
+  "searches": [
+   {
+    "query": "Trello",
+    "hits": [
+     "trello_create_board",
+     "trello_list_lists",
+     "trello_get_board_details",
+     "trello_delete_card",
+     "trello_remove_member_from_card"
+    ]
+   }
+  ],
+  "prompt_tokens": 2285,
+  "completion_tokens": 59,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.41799574624747,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "Garoon 受信トレイ メッセージ一覧",
+    "hits": [
+     "garoon_list_messages",
+     "gmail_unstar_message",
+     "outlook_list_emails",
+     "slack_unpin_message",
+     "teams_send_message"
+    ]
+   }
+  ],
+  "prompt_tokens": 2284,
+  "completion_tokens": 49,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.301933825016022,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "Garoon inbox messages",
+    "hits": [
+     "garoon_list_messages",
+     "garoon_create_schedule",
+     "garoon_search_users",
+     "garoon_search_schedules",
+     "chatwork_get_messages"
+    ]
+   }
+  ],
+  "prompt_tokens": 2299,
+  "completion_tokens": 44,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.28643589373678,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "rakurakuseisan_get_expense_detail"
+  ],
+  "searches": [
+   {
+    "query": "経費 明細 承認 履歴 receipt approval",
+    "hits": [
+     "rakurakuseisan_get_expense_detail",
+     "rakurakuseisan_delete_expense",
+     "rakurakuseisan_get_approval_status",
+     "rakurakuseisan_list_reports",
+     "rakurakuseisan_import_transaction"
+    ]
+   }
+  ],
+  "prompt_tokens": 2532,
+  "completion_tokens": 424,
+  "steps": 2,
+  "error": null,
+  "latency_s": 10.139708985574543,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en",
+  "target": "rakurakuseisan_get_expense_detail",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "rakurakuseisan_get_expense_detail"
+  ],
+  "searches": [
+   {
+    "query": "expense receipt approval history",
+    "hits": [
+     "rakurakuseisan_get_approval_status",
+     "rakurakuseisan_delete_expense",
+     "rakurakuseisan_get_expense_detail",
+     "smarthr_get_leave_balance",
+     "stripe_list_invoices"
+    ]
+   }
+  ],
+  "prompt_tokens": 2302,
+  "completion_tokens": 71,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.611378234811127,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "smarthr_create_employee_draft"
+  ],
+  "searches": [
+   {
+    "query": "社員情報 入力 下書き保存",
+    "hits": [
+     "smarthr_create_employee_draft",
+     "save_csv",
+     "gmail_delete_draft",
+     "csv.write",
+     "kintone_create_draft_app"
+    ]
+   }
+  ],
+  "prompt_tokens": 2469,
+  "completion_tokens": 127,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.591444694437087,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "smarthr_create_employee_draft:en",
+  "target": "smarthr_create_employee_draft",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "smarthr_create_employee_draft"
+  ],
+  "searches": [
+   {
+    "query": "save draft employee information",
+    "hits": [
+     "smarthr_create_employee_draft",
+     "save_csv",
+     "jobcan_update_employee_department",
+     "confluence_publish_draft_page",
+     "smarthr_get_leave_balance"
+    ]
+   }
+  ],
+  "prompt_tokens": 2504,
+  "completion_tokens": 113,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.203551858663559,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "docusign",
+    "hits": [
+     "docusign_create_brand",
+     "docusign_void_envelope",
+     "docusign_update_brand",
+     "docusign_list_templates",
+     "docusign_create_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 2499,
+  "completion_tokens": 124,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.3535632928833365,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "DocuSign",
+    "hits": [
+     "docusign_create_brand",
+     "docusign_update_brand",
+     "docusign_void_envelope",
+     "docusign_create_webhook",
+     "docusign_list_templates"
+    ]
+   }
+  ],
+  "prompt_tokens": 2464,
+  "completion_tokens": 172,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.819762913510203,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "zendesk_list_tags:ja",
+  "target": "zendesk_list_tags",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "zendesk_list_tags"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk tags list",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "zendesk_search_tickets",
+     "asana_add_tag_to_task",
+     "zendesk_get_user"
+    ]
+   }
+  ],
+  "prompt_tokens": 2150,
+  "completion_tokens": 44,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.244398809969425,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "zendesk_list_tags:en",
+  "target": "zendesk_list_tags",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "zendesk_list_tags"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk tags list",
+    "hits": [
+     "zendesk_list_tags",
+     "zendesk_list_organizations",
+     "zendesk_search_tickets",
+     "asana_add_tag_to_task",
+     "zendesk_get_user"
+    ]
+   }
+  ],
+  "prompt_tokens": 2152,
+  "completion_tokens": 44,
+  "steps": 2,
+  "error": null,
+  "latency_s": 3.4346977658569813,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:ja",
+  "target": "zendesk_list_organizations",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "zendesk_list_organizations"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk 企業一覧を取得する",
+    "hits": [
+     "zendesk_list_organizations",
+     "zendesk_list_tags",
+     "smarthr_list_documents",
+     "freee_list_items",
+     "jira_list_boards"
+    ]
+   }
+  ],
+  "prompt_tokens": 2179,
+  "completion_tokens": 48,
+  "steps": 2,
+  "error": null,
+  "latency_s": 3.988861083984375,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "zendesk_list_organizations:en",
+  "target": "zendesk_list_organizations",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "zendesk_list_organizations"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk organizations list",
+    "hits": [
+     "zendesk_list_organizations",
+     "zendesk_list_tags",
+     "zendesk_get_user",
+     "tableau_list_workbooks",
+     "zendesk_search_tickets"
+    ]
+   }
+  ],
+  "prompt_tokens": 2137,
+  "completion_tokens": 45,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.358436277136207,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "pagerduty",
+    "hits": [
+     "pagerduty_get_schedule",
+     "pagerduty_list_vendors",
+     "pagerduty_acknowledge_incident",
+     "pagerduty_get_escalation_policy",
+     "pagerduty_trigger_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 2308,
+  "completion_tokens": 319,
+  "steps": 2,
+  "error": null,
+  "latency_s": 8.327951467595994,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "PagerDuty trigger test webhook",
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "docusign_create_webhook",
+     "linear_list_webhooks",
+     "pagerduty_list_vendors",
+     "pagerduty_get_schedule"
+    ]
+   }
+  ],
+  "prompt_tokens": 2305,
+  "completion_tokens": 129,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.965435192920268,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "CloudWatch Logs get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_put_metric_data",
+     "outlook_get_event",
+     "servicenow_get_incident"
+    ]
+   }
+  ],
+  "prompt_tokens": 2412,
+  "completion_tokens": 92,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.048216710798442,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "aws cloudwatch logs",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_put_metric_data",
+     "aws_ec2_launch_instance",
+     "aws_ec2_list_instances"
+    ]
+   }
+  ],
+  "prompt_tokens": 2574,
+  "completion_tokens": 221,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.9304009741172194,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "aws cloudwatch logs",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_put_metric_data",
+     "aws_ec2_launch_instance",
+     "aws_ec2_list_instances"
+    ]
+   }
+  ],
+  "prompt_tokens": 2575,
+  "completion_tokens": 1365,
+  "steps": 2,
+  "error": null,
+  "latency_s": 26.41228417493403,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "CloudWatch Logs search",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_put_metric_data",
+     "backlog_search_issues",
+     "lineworks_search_posts"
+    ]
+   }
+  ],
+  "prompt_tokens": 2466,
+  "completion_tokens": 112,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.578660125844181,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "stripe_create_customer:ja",
+  "target": "stripe_create_customer",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "stripe_create_customer"
+  ],
+  "searches": [
+   {
+    "query": "stripe customer create",
+    "hits": [
+     "stripe_create_customer",
+     "stripe_create_price",
+     "shopify_create_customer",
+     "stripe_list_invoices",
+     "shopify_list_customers"
+    ]
+   }
+  ],
+  "prompt_tokens": 2333,
+  "completion_tokens": 69,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.158950407989323,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "stripe_create_customer:en",
+  "target": "stripe_create_customer",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "stripe_create_customer"
+  ],
+  "searches": [
+   {
+    "query": "stripe create customer",
+    "hits": [
+     "stripe_create_customer",
+     "stripe_create_price",
+     "stripe_list_invoices",
+     "shopify_create_customer",
+     "shopify_list_customers"
+    ]
+   }
+  ],
+  "prompt_tokens": 2335,
+  "completion_tokens": 70,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.189933747053146,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "stripe_list_invoices:ja",
+  "target": "stripe_list_invoices",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "stripe_list_invoices"
+  ],
+  "searches": [
+   {
+    "query": "Stripe 請求書履歴 確認",
+    "hits": [
+     "stripe_list_invoices",
+     "stripe_create_price",
+     "rakurakuseisan_get_expense_detail",
+     "stripe_create_customer",
+     "freee_list_items"
+    ]
+   }
+  ],
+  "prompt_tokens": 2387,
+  "completion_tokens": 66,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.789918497204781,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "stripe_list_invoices:en",
+  "target": "stripe_list_invoices",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "stripe_list_invoices"
+  ],
+  "searches": [
+   {
+    "query": "stripe invoice history",
+    "hits": [
+     "stripe_list_invoices",
+     "stripe_create_customer",
+     "stripe_create_price",
+     "smarthr_get_payroll_statement",
+     "rakurakuseisan_import_transaction"
+    ]
+   }
+  ],
+  "prompt_tokens": 2369,
+  "completion_tokens": 62,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.070783264935017,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "shopify_list_customers:ja",
+  "target": "shopify_list_customers",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "shopify_list_customers"
+  ],
+  "searches": [
+   {
+    "query": "Shopify 顧客 リスト取得",
+    "hits": [
+     "shopify_create_customer",
+     "shopify_list_customers",
+     "stripe_list_invoices",
+     "stripe_create_customer",
+     "shopify_search_products"
+    ]
+   }
+  ],
+  "prompt_tokens": 2255,
+  "completion_tokens": 48,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.290461676195264,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "shopify_list_customers:en",
+  "target": "shopify_list_customers",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "shopify_list_customers"
+  ],
+  "searches": [
+   {
+    "query": "Shopify customers list",
+    "hits": [
+     "shopify_list_customers",
+     "shopify_create_customer",
+     "stripe_create_customer",
+     "stripe_list_invoices",
+     "moneyforward_list_business_partners"
+    ]
+   }
+  ],
+  "prompt_tokens": 2267,
+  "completion_tokens": 59,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.068089265376329,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "shopify_search_products:ja",
+  "target": "shopify_search_products",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "shopify_search_products"
+  ],
+  "searches": [
+   {
+    "query": "shopify 商品検索",
+    "hits": [
+     "shopify_search_products",
+     "freee_list_items",
+     "freee_create_item",
+     "shopify_list_customers",
+     "shopify_create_customer"
+    ]
+   }
+  ],
+  "prompt_tokens": 2351,
+  "completion_tokens": 187,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.260977351106703,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "shopify_search_products:en",
+  "target": "shopify_search_products",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 786,
+  "completion_tokens": 56,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.250224052928388,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "figma delete comment",
+    "hits": [
+     "figma_delete_comment",
+     "figma_get_prototypes",
+     "miro_resolve_comment",
+     "asana_add_comment",
+     "figma_get_team_styles"
+    ]
+   }
+  ],
+  "prompt_tokens": 2268,
+  "completion_tokens": 85,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.4058049488812685,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "figma delete comment",
+    "hits": [
+     "figma_delete_comment",
+     "figma_get_prototypes",
+     "miro_resolve_comment",
+     "asana_add_comment",
+     "figma_get_team_styles"
+    ]
+   }
+  ],
+  "prompt_tokens": 2253,
+  "completion_tokens": 59,
+  "steps": 2,
+  "error": null,
+  "latency_s": 3.5027129985392094,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "tableau_add_user_to_site:ja",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [
+   "tableau_add_user_to_site"
+  ],
+  "searches": [
+   {
+    "query": "Tableau add user assign role",
+    "hits": [
+     "tableau_add_user_to_site",
+     "tableau_update_workbook_permissions",
+     "tableau_create_group",
+     "tableau_list_workbooks",
+     "notion_get_user"
+    ]
+   }
+  ],
+  "prompt_tokens": 2315,
+  "completion_tokens": 74,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.506992597132921,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "tableau_add_user_to_site:en",
+  "target": "tableau_add_user_to_site",
+  "condition": "search_rrf",
+  "n": 200,
+  "calls": [],
+  "searches": [
+   {
+    "query": "add member to Tableau",
+    "hits": [
+     "tableau_add_user_to_site",
+     "tableau_create_group",
+     "trello_remove_member_from_card",
+     "tableau_update_workbook_permissions",
+     "tableau_list_workbooks"
+    ]
+   }
+  ],
+  "prompt_tokens": 2345,
+  "completion_tokens": 102,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.574394534341991,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "github_get_repository"
+  ],
+  "searches": [],
+  "prompt_tokens": 250485,
+  "completion_tokens": 737,
+  "steps": 2,
+  "error": null,
+  "latency_s": 23.350603562779725,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "github_get_repository"
+  ],
+  "searches": [],
+  "prompt_tokens": 250017,
+  "completion_tokens": 74,
+  "steps": 2,
+  "error": null,
+  "latency_s": 12.233411275781691,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [],
+  "prompt_tokens": 375480,
+  "completion_tokens": 544,
+  "steps": 3,
+  "error": null,
+  "latency_s": 30.020011758431792,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "jira_list_boards",
+   "jira_list_sprints",
+   "jira_update_sprint"
+  ],
+  "searches": [],
+  "prompt_tokens": 375650,
+  "completion_tokens": 733,
+  "steps": 3,
+  "error": null,
+  "latency_s": 27.71997178439051,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 124960,
+  "completion_tokens": 181,
+  "steps": 1,
+  "error": null,
+  "latency_s": 6.505329042673111,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "chatwork_get_file"
+  ],
+  "searches": [],
+  "prompt_tokens": 124960,
+  "completion_tokens": 49,
+  "steps": 1,
+  "error": null,
+  "latency_s": 4.995205187238753,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "gmail_search_messages",
+   "gmail_get_message"
+  ],
+  "searches": [],
+  "prompt_tokens": 375489,
+  "completion_tokens": 354,
+  "steps": 3,
+  "error": null,
+  "latency_s": 16.103823543526232,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "gmail_search_messages"
+  ],
+  "searches": [],
+  "prompt_tokens": 250074,
+  "completion_tokens": 175,
+  "steps": 2,
+  "error": null,
+  "latency_s": 10.13810632377863,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "gcal_search_events",
+   "gcal_delete_event"
+  ],
+  "searches": [],
+  "prompt_tokens": 375309,
+  "completion_tokens": 194,
+  "steps": 3,
+  "error": null,
+  "latency_s": 12.85277974139899,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "gcal_search_events",
+   "gcal_delete_event"
+  ],
+  "searches": [],
+  "prompt_tokens": 375344,
+  "completion_tokens": 219,
+  "steps": 3,
+  "error": null,
+  "latency_s": 15.366124455817044,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 124956,
+  "completion_tokens": 117,
+  "steps": 1,
+  "error": null,
+  "latency_s": 5.968043179251254,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 124954,
+  "completion_tokens": 122,
+  "steps": 1,
+  "error": null,
+  "latency_s": 5.520462493412197,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 124952,
+  "completion_tokens": 201,
+  "steps": 1,
+  "error": null,
+  "latency_s": 9.872395867481828,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 124953,
+  "completion_tokens": 123,
+  "steps": 1,
+  "error": null,
+  "latency_s": 5.638972060754895,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "gdrive_search_files",
+   "gdrive_create_permission"
+  ],
+  "searches": [],
+  "prompt_tokens": 375381,
+  "completion_tokens": 307,
+  "steps": 3,
+  "error": null,
+  "latency_s": 16.744797785766423,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 124955,
+  "completion_tokens": 98,
+  "steps": 1,
+  "error": null,
+  "latency_s": 5.063776785507798,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "notion_search_pages",
+   "notion_list_blocks"
+  ],
+  "searches": [],
+  "prompt_tokens": 375564,
+  "completion_tokens": 485,
+  "steps": 3,
+  "error": null,
+  "latency_s": 18.16109197307378,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 124959,
+  "completion_tokens": 117,
+  "steps": 1,
+  "error": null,
+  "latency_s": 5.016743518412113,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [],
+  "prompt_tokens": 124949,
+  "completion_tokens": 16,
+  "steps": 1,
+  "error": null,
+  "latency_s": 3.4000039529055357,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [],
+  "prompt_tokens": 124950,
+  "completion_tokens": 16,
+  "steps": 1,
+  "error": null,
+  "latency_s": 4.416752421297133,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 124977,
+  "completion_tokens": 2073,
+  "steps": 1,
+  "error": null,
+  "latency_s": 37.78190807066858,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "docusign_list_webhooks",
+   "docusign_create_webhook"
+  ],
+  "searches": [],
+  "prompt_tokens": 250061,
+  "completion_tokens": 255,
+  "steps": 2,
+  "error": null,
+  "latency_s": 11.73418219294399,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "pagerduty_trigger_webhook"
+  ],
+  "searches": [],
+  "prompt_tokens": 124969,
+  "completion_tokens": 186,
+  "steps": 1,
+  "error": null,
+  "latency_s": 6.79025091137737,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 124963,
+  "completion_tokens": 159,
+  "steps": 1,
+  "error": null,
+  "latency_s": 6.426651484332979,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 124962,
+  "completion_tokens": 550,
+  "steps": 1,
+  "error": null,
+  "latency_s": 13.003903635777533,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "aws_cloudwatch_get_log_events"
+  ],
+  "searches": [],
+  "prompt_tokens": 124960,
+  "completion_tokens": 587,
+  "steps": 1,
+  "error": null,
+  "latency_s": 13.94777410570532,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "aws_cloudwatch_search_logs_by_pattern"
+  ],
+  "searches": [],
+  "prompt_tokens": 124963,
+  "completion_tokens": 348,
+  "steps": 1,
+  "error": null,
+  "latency_s": 9.991842655465007,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 124957,
+  "completion_tokens": 201,
+  "steps": 1,
+  "error": null,
+  "latency_s": 7.000825009308755,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 124956,
+  "completion_tokens": 91,
+  "steps": 1,
+  "error": null,
+  "latency_s": 4.83145406935364,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "all",
+  "n": 1000,
+  "calls": [
+   "figma_delete_comment"
+  ],
+  "searches": [],
+  "prompt_tokens": 124957,
+  "completion_tokens": 47,
+  "steps": 1,
+  "error": null,
+  "latency_s": 4.726615387946367,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [
+   "github_get_repository"
+  ],
+  "searches": [
+   {
+    "query": "github repository get",
+    "hits": [
+     "github_get_repository",
+     "github_create_repository",
+     "github_update_repository_settings",
+     "github_list_repository_files",
+     "github_list_repository_commits"
+    ]
+   }
+  ],
+  "prompt_tokens": 4298,
+  "completion_tokens": 140,
+  "steps": 3,
+  "error": null,
+  "latency_s": 6.706566547974944,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [
+   "github_get_repository"
+  ],
+  "searches": [
+   {
+    "query": "github get repository backend-api",
+    "hits": [
+     "github_get_repository",
+     "github_create_repository",
+     "github_update_repository_settings",
+     "github_list_repository_files",
+     "github_list_repository_commits"
+    ]
+   }
+  ],
+  "prompt_tokens": 4305,
+  "completion_tokens": 136,
+  "steps": 3,
+  "error": null,
+  "latency_s": 7.1949756545946,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [
+   "jira_list_sprints",
+   "jira_get_sprint",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "Jira sprint update",
+    "hits": [
+     "jira_update_sprint",
+     "jira_get_sprint",
+     "jira_close_sprint",
+     "jira_create_sprint",
+     "jira_list_sprints"
+    ]
+   }
+  ],
+  "prompt_tokens": 6206,
+  "completion_tokens": 322,
+  "steps": 4,
+  "error": null,
+  "latency_s": 11.5013443864882,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [
+   "jira_list_sprints",
+   "jira_get_sprint",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "jira update sprint end date",
+    "hits": [
+     "jira_update_sprint",
+     "jira_create_sprint",
+     "jira_get_sprint",
+     "jira_close_sprint",
+     "jira_list_sprints"
+    ]
+   }
+  ],
+  "prompt_tokens": 6088,
+  "completion_tokens": 156,
+  "steps": 4,
+  "error": null,
+  "latency_s": 8.837571706622839,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "chatwork file download metadata",
+    "hits": [
+     "gdrive_get_file_metadata",
+     "gdrive_update_file_metadata",
+     "gdrive_download_file",
+     "kintone_download_file",
+     "dropbox_download_file"
+    ]
+   },
+   {
+    "query": "chatwork get file metadata download link",
+    "hits": [
+     "gdrive_get_file_metadata",
+     "chatwork_get_file",
+     "gdrive_update_file_metadata",
+     "gdrive_download_file",
+     "kintone_download_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 4113,
+  "completion_tokens": 133,
+  "steps": 3,
+  "error": null,
+  "latency_s": 6.71171058062464,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "Chatwork file download metadata",
+    "hits": [
+     "gdrive_get_file_metadata",
+     "gdrive_update_file_metadata",
+     "gdrive_download_file",
+     "kintone_download_file",
+     "dropbox_download_file"
+    ]
+   },
+   {
+    "query": "Chatwork",
+    "hits": [
+     "chatwork_search_messages",
+     "chatwork_send_message",
+     "chatwork_delete_room",
+     "chatwork_create_schedule",
+     "chatwork_create_room"
+    ]
+   }
+  ],
+  "prompt_tokens": 4618,
+  "completion_tokens": 199,
+  "steps": 3,
+  "error": null,
+  "latency_s": 8.356777856126428,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [
+   "gmail.search"
+  ],
+  "searches": [],
+  "prompt_tokens": 1827,
+  "completion_tokens": 120,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.834168838337064,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "find email Q3 Budget Plan Director Yamada",
+    "hits": [
+     "gcal_find_free_busy",
+     "hubspot_send_email",
+     "outlook_get_email",
+     "outlook_move_email",
+     "outlook_delete_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 2474,
+  "completion_tokens": 207,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.817144388332963,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [
+   "gcal_search_events",
+   "gcal_delete_event"
+  ],
+  "searches": [
+   {
+    "query": "gcal cancel delete event",
+    "hits": [
+     "gcal_delete_event",
+     "outlook_delete_event",
+     "gcal_search_events",
+     "gcal_get_event",
+     "gcal_move_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 6506,
+  "completion_tokens": 305,
+  "steps": 4,
+  "error": null,
+  "latency_s": 11.314877537079155,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [
+   "outlook_search_events",
+   "outlook_delete_event"
+  ],
+  "searches": [
+   {
+    "query": "cancel event delete meeting",
+    "hits": [
+     "outlook_delete_event",
+     "zoom_delete_meeting",
+     "gcal_delete_event",
+     "outlook_search_events",
+     "shopify_cancel_order"
+    ]
+   }
+  ],
+  "prompt_tokens": 4140,
+  "completion_tokens": 146,
+  "steps": 3,
+  "error": null,
+  "latency_s": 6.913220984861255,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "upload file to Google Drive",
+    "hits": [
+     "gdrive_upload_file",
+     "kintone_upload_file",
+     "lineworks_upload_file",
+     "teams_upload_file",
+     "backlog_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 2588,
+  "completion_tokens": 100,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.1516316290944815,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 854,
+  "completion_tokens": 190,
+  "steps": 1,
+  "error": null,
+  "latency_s": 4.783259682357311,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "企画書 編集履歴 history",
+    "hits": [
+     "confluence_get_page_history",
+     "figma_get_version_history",
+     "csv.patch",
+     "outlook_create_draft",
+     "cloudsign_get_audit_log"
+    ]
+   }
+  ],
+  "prompt_tokens": 2533,
+  "completion_tokens": 354,
+  "steps": 2,
+  "error": null,
+  "latency_s": 8.82541282940656,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "document edit history",
+    "hits": [
+     "document.edit",
+     "document.read",
+     "slide.edit",
+     "confluence_get_page_history",
+     "slack_get_message_history"
+    ]
+   }
+  ],
+  "prompt_tokens": 3367,
+  "completion_tokens": 259,
+  "steps": 2,
+  "error": null,
+  "latency_s": 7.101419132202864,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "gdrive",
+    "hits": [
+     "gdrive_export_file",
+     "gdrive_upload_file",
+     "gdrive_watch_changes",
+     "gdrive_delete_file",
+     "gdrive_restore_revision"
+    ]
+   }
+  ],
+  "prompt_tokens": 2614,
+  "completion_tokens": 571,
+  "steps": 2,
+  "error": null,
+  "latency_s": 12.388517408631742,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "share folder grant permissions",
+    "hits": [
+     "dropbox_share_folder",
+     "gdrive_delete_permission",
+     "gdrive_list_permissions",
+     "gdrive_create_permission",
+     "gcp_check_iam_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 2517,
+  "completion_tokens": 167,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.726433199830353,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "notion delete block",
+    "hits": [
+     "notion_delete_block",
+     "notion_get_block",
+     "notion_list_blocks",
+     "notion_update_block",
+     "notion_append_block_children"
+    ]
+   }
+  ],
+  "prompt_tokens": 2409,
+  "completion_tokens": 192,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.110668840818107,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "notion delete block",
+    "hits": [
+     "notion_delete_block",
+     "notion_get_block",
+     "notion_list_blocks",
+     "notion_update_block",
+     "notion_append_block_children"
+    ]
+   }
+  ],
+  "prompt_tokens": 2407,
+  "completion_tokens": 89,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.12317796703428,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "garoon 受信トレイ メッセージ一覧",
+    "hits": [
+     "garoon_list_messages",
+     "gmail_archive_message",
+     "gmail_list_messages",
+     "outlook_list_emails",
+     "garoon_send_message"
+    ]
+   }
+  ],
+  "prompt_tokens": 2434,
+  "completion_tokens": 49,
+  "steps": 2,
+  "error": null,
+  "latency_s": 3.3173544285818934,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "garoon inbox messages",
+    "hits": [
+     "gmail_archive_message",
+     "garoon_send_message",
+     "garoon_list_messages",
+     "garoon_get_message_detail",
+     "garoon_search_schedules"
+    ]
+   }
+  ],
+  "prompt_tokens": 2358,
+  "completion_tokens": 44,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.184576706960797,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "docusign",
+    "hits": [
+     "docusign_list_brands",
+     "docusign_list_webhooks",
+     "docusign_delete_template",
+     "docusign_create_brand",
+     "docusign_list_templates"
+    ]
+   },
+   {
+    "query": "docusign webhook create connect",
+    "hits": [
+     "docusign_list_webhooks",
+     "docusign_create_webhook",
+     "linear_create_webhook",
+     "stripe_create_webhook_endpoint",
+     "docusign_create_brand"
+    ]
+   }
+  ],
+  "prompt_tokens": 4818,
+  "completion_tokens": 506,
+  "steps": 3,
+  "error": null,
+  "latency_s": 12.691925579681993,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [
+   "docusign.webhook.create"
+  ],
+  "searches": [],
+  "prompt_tokens": 1866,
+  "completion_tokens": 149,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.971789636649191,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "PagerDuty trigger incident test webhook",
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "pagerduty_resolve_incident",
+     "pagerduty_get_incident",
+     "pagerduty_acknowledge_incident",
+     "pagerduty_list_incidents"
+    ]
+   }
+  ],
+  "prompt_tokens": 2474,
+  "completion_tokens": 404,
+  "steps": 2,
+  "error": null,
+  "latency_s": 9.81270592380315,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "PagerDuty trigger test webhook",
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "gitlab_trigger_pipeline",
+     "bigquery_test_iam_permissions",
+     "linear_delete_webhook",
+     "figma_delete_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 2488,
+  "completion_tokens": 120,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.038709359243512,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "CloudWatch Logs get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "datadog_get_log_detail",
+     "cloudsign_get_audit_log",
+     "aws_cloudwatch_get_metric_statistics"
+    ]
+   }
+  ],
+  "prompt_tokens": 2631,
+  "completion_tokens": 165,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.763005464337766,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "CloudWatch Logs get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "datadog_get_log_detail",
+     "cloudsign_get_audit_log",
+     "aws_cloudwatch_get_metric_statistics"
+    ]
+   }
+  ],
+  "prompt_tokens": 2670,
+  "completion_tokens": 247,
+  "steps": 2,
+  "error": null,
+  "latency_s": 7.006476724520326,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "aws cloudwatch logs",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_delete_alarm",
+     "aws_cloudwatch_describe_alarms",
+     "aws_cloudwatch_put_alarm"
+    ]
+   }
+  ],
+  "prompt_tokens": 2642,
+  "completion_tokens": 135,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.041170724667609,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "cloudwatch logs search",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "aws_cloudwatch_get_log_events",
+     "datadog_search_logs",
+     "aws_cloudwatch_delete_alarm",
+     "aws_cloudwatch_describe_alarms"
+    ]
+   }
+  ],
+  "prompt_tokens": 2599,
+  "completion_tokens": 209,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.216728635132313,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "figma delete comment",
+    "hits": [
+     "figma_delete_comment",
+     "figma_get_comments",
+     "figma_post_comment",
+     "figma_delete_webhook",
+     "confluence_delete_comment"
+    ]
+   }
+  ],
+  "prompt_tokens": 2438,
+  "completion_tokens": 120,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.755746845155954,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "search_bm25",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "figma delete comment",
+    "hits": [
+     "figma_delete_comment",
+     "figma_get_comments",
+     "figma_post_comment",
+     "figma_delete_webhook",
+     "confluence_delete_comment"
+    ]
+   }
+  ],
+  "prompt_tokens": 2423,
+  "completion_tokens": 59,
+  "steps": 2,
+  "error": null,
+  "latency_s": 3.9210785795003176,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gitlab_get_project:ja",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [
+   "github_get_repository"
+  ],
+  "searches": [
+   {
+    "query": "github get repository",
+    "hits": [
+     "github_get_repository",
+     "github_create_repository",
+     "github_list_repository_files",
+     "github_get_issue",
+     "github_list_repository_commits"
+    ]
+   }
+  ],
+  "prompt_tokens": 4296,
+  "completion_tokens": 153,
+  "steps": 3,
+  "error": null,
+  "latency_s": 7.599742320366204,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gitlab_get_project:en",
+  "target": "gitlab_get_project",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [
+   "github_get_repository"
+  ],
+  "searches": [
+   {
+    "query": "github get repository backend-api",
+    "hits": [
+     "github_get_repository",
+     "github_create_repository",
+     "github_update_repository_settings",
+     "github_get_issue",
+     "github_list_repository_files"
+    ]
+   }
+  ],
+  "prompt_tokens": 4201,
+  "completion_tokens": 108,
+  "steps": 3,
+  "error": null,
+  "latency_s": 6.27889802120626,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "jira_update_sprint:ja",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [
+   "jira_list_sprints",
+   "jira_get_sprint",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "Jira sprint update",
+    "hits": [
+     "jira_update_sprint",
+     "jira_create_sprint",
+     "jira_get_sprint",
+     "jira_close_sprint",
+     "jira_list_sprints"
+    ]
+   }
+  ],
+  "prompt_tokens": 6058,
+  "completion_tokens": 142,
+  "steps": 4,
+  "error": null,
+  "latency_s": 8.781573950313032,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "jira_update_sprint:en",
+  "target": "jira_update_sprint",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [
+   "jira_list_sprints",
+   "jira_get_sprint",
+   "jira_update_sprint"
+  ],
+  "searches": [
+   {
+    "query": "jira update sprint end date",
+    "hits": [
+     "jira_update_sprint",
+     "jira_create_sprint",
+     "jira_close_sprint",
+     "jira_get_sprint",
+     "jira_list_sprints"
+    ]
+   }
+  ],
+  "prompt_tokens": 6064,
+  "completion_tokens": 144,
+  "steps": 4,
+  "error": null,
+  "latency_s": 8.946992657147348,
+  "correct": true,
+  "first_correct": false
+ },
+ {
+  "id": "chatwork_get_file:ja",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "chatwork file download metadata",
+    "hits": [
+     "chatwork_get_file",
+     "gdrive_get_file_metadata",
+     "chatwork_list_files",
+     "kintone_download_file",
+     "chatwork_upload_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 2367,
+  "completion_tokens": 114,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.847773812711239,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "chatwork_get_file:en",
+  "target": "chatwork_get_file",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "Chatwork file download metadata",
+    "hits": [
+     "gdrive_get_file_metadata",
+     "chatwork_get_file",
+     "kintone_download_file",
+     "chatwork_list_files",
+     "gdrive_download_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 2326,
+  "completion_tokens": 77,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.154857109300792,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_search_emails:ja",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [
+   "gmail_search_messages"
+  ],
+  "searches": [
+   {
+    "query": "gmail search email",
+    "hits": [
+     "gmail_search_messages",
+     "outlook_search_emails",
+     "gmail_list_messages",
+     "gmail_get_message",
+     "gmail_get_attachment"
+    ]
+   }
+  ],
+  "prompt_tokens": 4290,
+  "completion_tokens": 195,
+  "steps": 3,
+  "error": null,
+  "latency_s": 7.8087682612240314,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_search_emails:en",
+  "target": "outlook_search_emails",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [
+   "outlook_search_emails"
+  ],
+  "searches": [
+   {
+    "query": "search emails",
+    "hits": [
+     "outlook_search_emails",
+     "hubspot_send_email",
+     "outlook_list_emails",
+     "shopify_search_customers",
+     "smarthr_search_employees"
+    ]
+   }
+  ],
+  "prompt_tokens": 2475,
+  "completion_tokens": 94,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.537872570566833,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "outlook_delete_event:ja",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "gcal delete event",
+    "hits": [
+     "gcal_delete_event",
+     "gcal_get_event",
+     "gcal_update_event",
+     "gcal_delete_calendar",
+     "gcal_move_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 2542,
+  "completion_tokens": 258,
+  "steps": 2,
+  "error": null,
+  "latency_s": 7.456473721191287,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "outlook_delete_event:en",
+  "target": "outlook_delete_event",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "cancel delete event meeting calendar",
+    "hits": [
+     "gcal_delete_event",
+     "outlook_delete_event",
+     "zoom_delete_meeting",
+     "gcal_delete_calendar",
+     "gcal_move_event"
+    ]
+   }
+  ],
+  "prompt_tokens": 2442,
+  "completion_tokens": 138,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.856802706606686,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:ja",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "upload file to Google Drive",
+    "hits": [
+     "gdrive_upload_file",
+     "lineworks_upload_file",
+     "gdrive_export_file",
+     "backlog_upload_file",
+     "gdrive_download_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 2522,
+  "completion_tokens": 143,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.3620875822380185,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_upload_file:en",
+  "target": "gdrive_upload_file",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 854,
+  "completion_tokens": 100,
+  "steps": 1,
+  "error": null,
+  "latency_s": 2.9176498921588063,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:ja",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 852,
+  "completion_tokens": 185,
+  "steps": 1,
+  "error": null,
+  "latency_s": 4.22985924128443,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "gdrive_list_revisions:en",
+  "target": "gdrive_list_revisions",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "document edit history",
+    "hits": [
+     "document.edit",
+     "document.read",
+     "confluence_get_page_history",
+     "figma_get_version_history",
+     "slide.edit"
+    ]
+   }
+  ],
+  "prompt_tokens": 3344,
+  "completion_tokens": 293,
+  "steps": 2,
+  "error": null,
+  "latency_s": 8.273870972916484,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:ja",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [],
+  "prompt_tokens": 860,
+  "completion_tokens": 161,
+  "steps": 1,
+  "error": null,
+  "latency_s": 4.1750677060335875,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "dropbox_share_folder:en",
+  "target": "dropbox_share_folder",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "share folder google drive",
+    "hits": [
+     "lineworks_list_drives",
+     "dropbox_share_folder",
+     "gdrive_create_folder",
+     "gdrive_export_file",
+     "gdrive_upload_file"
+    ]
+   },
+   {
+    "query": "share google drive folder permissions",
+    "hits": [
+     "lineworks_list_drives",
+     "dropbox_share_folder",
+     "gdrive_create_permission",
+     "gdrive_list_permissions",
+     "gdrive_create_folder"
+    ]
+   }
+  ],
+  "prompt_tokens": 4693,
+  "completion_tokens": 226,
+  "steps": 3,
+  "error": null,
+  "latency_s": 8.278493132442236,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:ja",
+  "target": "notion_delete_block",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "notion delete block",
+    "hits": [
+     "notion_delete_block",
+     "notion_get_block",
+     "notion_update_block",
+     "notion_list_blocks",
+     "notion_append_block_children"
+    ]
+   }
+  ],
+  "prompt_tokens": 2409,
+  "completion_tokens": 175,
+  "steps": 2,
+  "error": null,
+  "latency_s": 6.009868850931525,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "notion_delete_block:en",
+  "target": "notion_delete_block",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "notion delete block",
+    "hits": [
+     "notion_delete_block",
+     "notion_get_block",
+     "notion_update_block",
+     "notion_list_blocks",
+     "notion_append_block_children"
+    ]
+   }
+  ],
+  "prompt_tokens": 2407,
+  "completion_tokens": 97,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.571473239921033,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "garoon_list_messages:ja",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "Garoon 受信トレイ メッセージ一覧",
+    "hits": [
+     "garoon_list_messages",
+     "garoon_send_message",
+     "gmail_list_messages",
+     "garoon_get_message_detail",
+     "gmail_archive_message"
+    ]
+   }
+  ],
+  "prompt_tokens": 2397,
+  "completion_tokens": 49,
+  "steps": 2,
+  "error": null,
+  "latency_s": 3.783815407194197,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "garoon_list_messages:en",
+  "target": "garoon_list_messages",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [
+   "garoon_list_messages"
+  ],
+  "searches": [
+   {
+    "query": "garoon inbox messages",
+    "hits": [
+     "garoon_list_messages",
+     "garoon_send_message",
+     "garoon_get_message_detail",
+     "gmail_archive_message",
+     "garoon_update_schedule"
+    ]
+   }
+  ],
+  "prompt_tokens": 2360,
+  "completion_tokens": 44,
+  "steps": 2,
+  "error": null,
+  "latency_s": 3.6500720167532563,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "docusign_create_webhook:ja",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "docusign",
+    "hits": [
+     "docusign_create_brand",
+     "docusign_list_brands",
+     "docusign_list_webhooks",
+     "docusign_download_document",
+     "docusign_get_envelope_status"
+    ]
+   }
+  ],
+  "prompt_tokens": 2496,
+  "completion_tokens": 319,
+  "steps": 2,
+  "error": null,
+  "latency_s": 8.064403160475194,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "docusign_create_webhook:en",
+  "target": "docusign_create_webhook",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "docusign webhook notification",
+    "hits": [
+     "docusign_create_webhook",
+     "docusign_list_webhooks",
+     "pagerduty_trigger_webhook",
+     "figma_post_webhook",
+     "linear_delete_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 2533,
+  "completion_tokens": 133,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.369032959453762,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "PagerDuty trigger test webhook",
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "figma_get_webhooks",
+     "figma_post_webhook",
+     "docusign_create_webhook",
+     "figma_put_webhook"
+    ]
+   }
+  ],
+  "prompt_tokens": 2568,
+  "completion_tokens": 121,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.004898373968899,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en",
+  "target": "pagerduty_trigger_webhook",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [
+   "pagerduty_trigger_webhook"
+  ],
+  "searches": [
+   {
+    "query": "trigger test webhook pagerduty",
+    "hits": [
+     "pagerduty_trigger_webhook",
+     "docusign_create_webhook",
+     "figma_post_webhook",
+     "gitlab_trigger_pipeline",
+     "stripe_create_webhook_endpoint"
+    ]
+   }
+  ],
+  "prompt_tokens": 2636,
+  "completion_tokens": 149,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.3116022227332,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "CloudWatch Logs get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "gcal_delete_event",
+     "aws_cloudwatch_get_metric_statistics",
+     "aws_cloudwatch_put_alarm"
+    ]
+   }
+  ],
+  "prompt_tokens": 2771,
+  "completion_tokens": 248,
+  "steps": 2,
+  "error": null,
+  "latency_s": 7.529562097974122,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en",
+  "target": "aws_cloudwatch_get_log_events",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "CloudWatch Logs get log events",
+    "hits": [
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_search_logs_by_pattern",
+     "gcal_delete_event",
+     "aws_cloudwatch_get_metric_statistics",
+     "aws_cloudwatch_put_alarm"
+    ]
+   }
+  ],
+  "prompt_tokens": 2767,
+  "completion_tokens": 158,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.54978727735579,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "CloudWatch Logs search",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "datadog_search_logs",
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_describe_alarms",
+     "aws_cloudwatch_delete_alarm"
+    ]
+   }
+  ],
+  "prompt_tokens": 2570,
+  "completion_tokens": 126,
+  "steps": 2,
+  "error": null,
+  "latency_s": 5.040584736503661,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [
+   "aws_cloudwatch_search_logs_by_pattern"
+  ],
+  "searches": [
+   {
+    "query": "CloudWatch Logs search",
+    "hits": [
+     "aws_cloudwatch_search_logs_by_pattern",
+     "datadog_search_logs",
+     "aws_cloudwatch_get_log_events",
+     "aws_cloudwatch_describe_alarms",
+     "aws_cloudwatch_delete_alarm"
+    ]
+   }
+  ],
+  "prompt_tokens": 2558,
+  "completion_tokens": 76,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.841467197984457,
+  "correct": true,
+  "first_correct": true
+ },
+ {
+  "id": "figma_delete_comment:ja",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "figma delete comment",
+    "hits": [
+     "figma_delete_comment",
+     "figma_get_comments",
+     "figma_post_comment",
+     "figma_delete_webhook",
+     "confluence_delete_comment"
+    ]
+   }
+  ],
+  "prompt_tokens": 2438,
+  "completion_tokens": 82,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.294656458310783,
+  "correct": false,
+  "first_correct": false
+ },
+ {
+  "id": "figma_delete_comment:en",
+  "target": "figma_delete_comment",
+  "condition": "search_rrf",
+  "n": 1000,
+  "calls": [],
+  "searches": [
+   {
+    "query": "figma delete comment",
+    "hits": [
+     "figma_delete_comment",
+     "figma_get_comments",
+     "figma_post_comment",
+     "figma_delete_webhook",
+     "confluence_delete_comment"
+    ]
+   }
+  ],
+  "prompt_tokens": 2423,
+  "completion_tokens": 59,
+  "steps": 2,
+  "error": null,
+  "latency_s": 4.092027804814279,
+  "correct": false,
+  "first_correct": false
+ }
+]
