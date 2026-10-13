@@ -46,6 +46,23 @@ test.describe("```ui ブロックの図", () => {
     expect(seen).toMatch(/\|\s*Q4\s*\|\s*210\s*\|\s*44\s*\|/);
     expect(seen).not.toMatch(/\|\s*(1|2|3|4|15)\s*\|/);
 
+    // Q4 の棒にカーソルを載せると、その四半期の全系列の値がツールチップに出る。
+    const q4 = figure.locator("svg path").filter({ has: page.locator("title", { hasText: "Q4 売上" }) });
+    // 棒の上には区画ごとの透明な当たり判定が重なっているので、棒の位置へマウスを動かす。
+    await q4.hover({ force: true });
+    const tip = figure.locator("[data-yui-tip]");
+    await expect(tip).toContainText("Q4");
+    await expect(tip).toContainText("210");
+    await expect(tip).toContainText("44");
+    await page.mouse.move(0, 0);
+    await expect(tip).toHaveCount(0);
+    // キーボードでも辿れる（Tab で図に入り、矢印キーで次の四半期へ）。
+    await figure.getByRole("group").focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(tip).toContainText("Q2");
+    await page.keyboard.press("Escape");
+    await expect(tip).toHaveCount(0);
+
     // 表に切り替えると、値が表のセルとして読める。
     await figure.getByRole("button", { name: "表で表示" }).click();
     await expect(figure.getByRole("cell", { name: "210" })).toBeVisible();
