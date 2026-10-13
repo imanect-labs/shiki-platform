@@ -93,6 +93,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: deploy/docker/collabora
+          # 後ろに sources ステージが続くので、無指定だとそちらが建つ。
+          target: runtime
           load: true
           push: false
           # 上の step が入れた core のキャッシュを使う。成功したら全層を更新する。
@@ -122,13 +124,39 @@ jobs:
         run: |
           set -euo pipefail
           trap 'docker rm -f collabora-smoke >/dev/null 2>&1 || true' EXIT
+          # **Shiki Office としてブランドされていること（#549）。** 設定やファイルの置き場所が
+          # ずれると、ビルドは通っても UI に Collabora の名前が戻る。利用者の目に入る
+          # 経路（capabilities・エディタのページ・branding.css）と同梱物を実物で確かめる。
+          check_brand() {
+            local base=http://127.0.0.1:19980 caps path html
+            caps="$(curl -fsS --max-time 5 "$base/hosting/capabilities")"
+            echo "$caps" | grep -Eq '"productName" *: *"Shiki Office"' \
+              || { echo "capabilities の productName が Shiki Office でない: $caps"; return 1; }
+            path="$(curl -fsS --max-time 5 "$base/hosting/discovery" \
+              | grep -o 'urlsrc="[^"]*/cool.html' | head -1 | sed -E 's#urlsrc="https?://[^/]+##')"
+            html="$(curl -fsS --max-time 10 "$base$path")"
+            echo "$html" | grep -q 'id="init-product-branding-name" value="Shiki Office"' \
+              || { echo "エディタのページの製品名が Shiki Office でない"; return 1; }
+            echo "$html" | grep -q 'id="init-product-branding-url" value="https://www.imanect.co.jp/"' \
+              || { echo "エディタのページの製品 URL が想定と違う"; return 1; }
+            curl -fsS --max-time 5 "$base${path%/cool.html}/branding.css" | grep -q 'menu-forum' \
+              || { echo "branding.css が配信されていない"; return 1; }
+            docker exec collabora-smoke sh -ec \
+              'test ! -e /opt/collaboraoffice/EULA.odt; test ! -e /opt/collaboraoffice/EULA_en-US.rtf
+               test -s /usr/share/doc/shiki-office/NOTICE
+               test -s /usr/share/doc/shiki-office/ubuntu-source-packages.txt
+               test -s /usr/share/doc/shiki-office/core-external-tarballs.sha256
+               grep -q "^Vendor=Imanect Labs" /opt/collaboraoffice/program/versionrc' \
+              || { echo "同梱物（EULA の除去・NOTICE・ベンダー）が想定と違う"; return 1; }
+            echo "brand OK"
+          }
           docker run -d --name collabora-smoke -p 127.0.0.1:19980:9980 \
             "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}"
           for i in $(seq 1 60); do
             # --max-time: 無いと coolwsd が子プロセス待ちで応答を返さないとき
             # curl が固まり、120 秒の打ち切りが効かない（実際 17 分待った）。
             if curl -fsS --max-time 5 http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
-              echo "discovery OK"; exit 0
+              echo "discovery OK"; check_brand; exit 0
             fi
             if [ "$(docker inspect -f '{{.State.Running}}' collabora-smoke)" != true ]; then
               echo "coolwsd が終了した（exit code: $(docker inspect -f '{{.State.ExitCode}}' collabora-smoke)）"
@@ -139,8 +167,65 @@ jobs:
           echo "discovery が 120 秒で応答しない"; docker logs collabora-smoke 2>&1 | tail -200; exit 1
 
       # smoke を通ったものだけ公開する。
-      - name: push
+      #
+      # **BuildKit から push する（docker push にしない）。** load したイメージを
+      # docker push すると、build-push-action が付ける provenance（どのコミット・
+      # どのワークフローから建てたか）が付かない（load: true では attestation が
+      # 付かないと Docker の文書にある）。同じビルダーで上の build と同じ入力を
+      # 建て直すので全層キャッシュに当たり、smoke したものと同じ中身になる。
+      # sbom: 配布物の構成要素の一覧をイメージに添える（ライセンス順守・#549）。
+      - name: push（provenance と SBOM を付けて）
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/docker/collabora
+          target: runtime
+          push: true
+          provenance: mode=max
+          sbom: true
+          cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest
+          build-args: |
+            CORE_REPO=${{ env.CORE_REPO }}
+            CORE_REF=${{ env.CORE_REF }}
+            CORE_COMMIT=${{ env.CORE_COMMIT }}
+            ONLINE_REPO=${{ env.ONLINE_REPO }}
+            ONLINE_REF=${{ env.ONLINE_REF }}
+            ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MPL-2.0
+            io.shiki.collabora.core=${{ env.CORE_REF }}@${{ env.CORE_COMMIT }}
+            io.shiki.collabora.online=${{ env.ONLINE_REF }}@${{ env.ONLINE_COMMIT }}
+
+      # **対応するソース一式を `<ONLINE_REF>-sources` として公開する（#549）。**
+      # 配布物（上の push）と同じビルドのソースを固めたもの。NOTICE が参照している。
+      # 本体の push より後ろに置くのは、ソース取得側の一時的な失敗で本体の公開まで
+      # 止めないため（失敗すればこの job は赤くなるので、見落としはしない）。
+      # 先にローカルのイメージを消して、Ubuntu のソース取得に使うディスクを空ける。
+      - name: ローカルのイメージを消す（sources のためにディスクを空ける）
         run: |
-          set -euo pipefail
-          docker push "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}"
-          docker push "ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest"
+          docker image rm "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
+            "ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest" || true
+          df -h /
+
+      - name: sources（対応するソース一式）を建てて push
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/docker/collabora
+          target: sources
+          push: true
+          cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}-sources
+          build-args: |
+            CORE_REPO=${{ env.CORE_REPO }}
+            CORE_REF=${{ env.CORE_REF }}
+            CORE_COMMIT=${{ env.CORE_COMMIT }}
+            ONLINE_REPO=${{ env.ONLINE_REPO }}
+            ONLINE_REF=${{ env.ONLINE_REF }}
+            ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=Complete corresponding source of shiki-collabora:${{ env.ONLINE_REF }}

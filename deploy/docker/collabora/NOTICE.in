@@ -1,0 +1,65 @@
+Shiki Office — Third-party software notice
+Shiki Office 第三者ソフトウェアに関する告知
+=============================================
+
+Shiki Office is built by Imanect Labs from the unmodified source code of the
+open-source projects listed below. It is not affiliated with, sponsored by, or
+endorsed by Collabora Productivity Ltd. or The Document Foundation.
+"Collabora", "Collabora Online" and "Collabora Office" are trademarks of
+Collabora Productivity Ltd. "LibreOffice" is a trademark of The Document
+Foundation. They are mentioned here only to identify the upstream source.
+
+Shiki Office は、以下のオープンソース・プロジェクトのソースコードを改変せずに
+Imanect Labs がビルドしたものです。Collabora Productivity Ltd. および
+The Document Foundation とは提携・後援・推奨の関係にありません。
+上記の名称はそれぞれの所有者の商標で、ここではソースの出所を示すためだけに記載しています。
+
+
+1. Components and source code / 構成要素とソースコード
+------------------------------------------------------
+
+Collabora Online (coolwsd)                 MPL-2.0
+  repository: @ONLINE_REPO@
+  tag:        @ONLINE_REF@
+  commit:     @ONLINE_COMMIT@
+
+Collabora Office core (LibreOffice technology)  MPL-2.0
+  Built with --enable-mpl-subset (components that are not MPL or more
+  liberally licensed are excluded at build time).
+  repository: @CORE_REPO@
+  tag:        @CORE_REF@
+  commit:     @CORE_COMMIT@
+
+Poco C++ Libraries                         BSL-1.0
+  archive:    @POCO_URL@
+  sha256:     @POCO_SHA256@
+
+Third-party libraries bundled into the core (ICU, NSS, OpenSSL, curl, cairo,
+fonts and others), as source archives with their sha256:
+  core-external-tarballs.sha256 (in this directory)
+  Upstream mirror: https://dev-www.libreoffice.org/src/
+
+Ubuntu 24.04 packages in this image (source package and version):
+  ubuntu-source-packages.txt (in this directory)
+
+
+2. License texts / ライセンス文書
+-------------------------------
+
+  /opt/collaboraoffice/LICENSE, LICENSE.html, NOTICE, CREDITS.fodt
+  /usr/share/doc/coolwsd/THIRDPARTYLICENSES
+  /usr/share/doc/*/copyright            (Ubuntu packages)
+
+
+3. Complete corresponding source / 対応するソース一式
+------------------------------------------------
+
+The complete corresponding source code of everything listed above, including
+the Ubuntu packages, is provided as the container image
+
+  shiki-collabora:@ONLINE_REF@-sources
+
+which is delivered together with this image.
+
+上記すべて（Ubuntu パッケージを含む）の対応するソース一式は、本イメージと一緒に
+提供されるコンテナイメージ shiki-collabora:@ONLINE_REF@-sources に収録しています。

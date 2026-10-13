@@ -1,0 +1,21 @@
+/*
+ * Shiki Office のブランド上書き（#549）。
+ *
+ * coolwsd は未ブランドのビルドでもエディタのページに
+ * /browser/<hash>/branding.css と branding.js を読み込む（wsd/FileServer.cpp）。
+ * ここに置いたものが上流の CSS の後から効く。ソースは無改変のまま。
+ *
+ * Collabora のコミュニティ（フォーラム・GitHub の Issue）へ飛ぶヘルプ項目を隠す。
+ * Shiki Office の利用者の問い合わせ先は Collabora ではないため。
+ *   - クラシックメニュー: <li id="menu-<項目 id>">（Control.Menubar.ts）
+ *   - ノートブックバー: <div id="<項目 id>" modelid="<項目 id>">。id は重複時に連番が
+ *     付くので、元の id が残る modelid で当てる（Control.JSDialogBuilder.js）
+ * 「Online Help」は configure の --without-help-url で消している。
+ */
+#menu-forum,
+#menu-report-an-issue,
+[modelid="forum"],
+[modelid="report-an-issue"],
+[modelid="help-reportissue-break"] {
+	display: none !important;
+}
