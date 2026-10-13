@@ -119,11 +119,12 @@ fn steps_of(blocks: &[ContentBlock]) -> Vec<ReplayStep> {
                 content,
                 ok,
             } if !child_ids.contains(&tool_call_id.as_str()) => {
-                results.push(Block::ToolResult {
-                    tool_use_id: tool_call_id.clone(),
-                    content: content.clone(),
-                    is_error: !ok,
-                });
+                // 遅延ツールの参照（tool_references）は記録に残らないが、剪定の見積りには効かない。
+                results.push(Block::tool_result(
+                    tool_call_id.clone(),
+                    content.clone(),
+                    !ok,
+                ));
             }
             // 思考は履歴に積まれない（本番ループも assistant には本文と tool_use だけを積む）。
             // 引用・参照カード等は UI 用の投影で、モデルの入力ではない。

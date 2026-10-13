@@ -146,11 +146,7 @@ mod tests {
             },
             observation: Some(Message {
                 role: Role::Tool,
-                content: vec![Block::ToolResult {
-                    tool_use_id: id,
-                    content: "w".repeat(result_bytes),
-                    is_error: false,
-                }],
+                content: vec![Block::tool_result(id, "w".repeat(result_bytes), false)],
             }),
         }
     }
