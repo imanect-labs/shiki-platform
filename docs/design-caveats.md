@@ -502,13 +502,18 @@ skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止�
 ## 🟠 PIT-43: Collabora ソース自前ビルドはサプライチェーンと鮮度の責任を引き取る決断
 
 - **箇所**: design §4.8 / phase-11 Task 11.5。
-- **リスク**: 公式 CODE バイナリは 10 文書/20 接続制限＋商用契約前提のため、オンプレ配布では
-  MPLv2 ソースからの自前ビルドを選んだ。これは①LibreOffice core 込みの数時間級ビルド（per-commit CI に
-  載せると CI が死ぬ）②取得物の改竄・すり替え（実行時 DL は PIT-33 違反）③upstream セキュリティ修正への
-  追従遅れ、の3責任を自分で持つということ。
+- **リスク**: 公式 CODE バイナリは Collabora が本番利用を想定しておらず（無償の本番利用は「MPLv2 ソースから
+  自前ビルド・自前ブランド・自前サポート」が条件。home_mode では 10 文書/20 接続の上限も掛かる）、
+  オンプレ配布では MPLv2 ソースからの自前ビルドを選んだ（Shiki Office としてブランド・#549）。
+  これは①LibreOffice core 込みの数時間級ビルド（per-commit CI に載せると CI が死ぬ）②取得物の改竄・
+  すり替え（実行時 DL は PIT-33 違反）③upstream セキュリティ修正への追従遅れ、の3責任を自分で持つということ。
 - **決めること**: ①ビルドは別 CI ワークフロー（タグ/週次/manifest 変更トリガ）＋レジストリ push、
   通常 CI は manifest 検証と smoke まで ②ソース取得はタグ pin＋sha256 manifest（sandbox-assets と同型）
-  ③fork-policy 準拠の追従周期を README に明文化 ④開発/CI は暫定 upstream CODE pin 可・**配布物は必ず自前ビルド**。
+  ③fork-policy 準拠の追従周期を README に明文化 ④開発/CI は暫定 upstream CODE pin 可・**配布物は必ず自前ビルド**
+  ⑤Collabora の商標を出さない（Shiki Office へのブランド・EULA 除去。configure と設定で行いソースは無改変。
+  エンジンの内部名 "Collabora Office" はインストーラ設定に直書きのため残す＝About の「powered by」のみ）
+  ⑥対応するソース一式（core / online / Poco / core の外部 tarball / Ubuntu パッケージ）を `-sources` イメージで保全し、
+  NOTICE から参照する（#549）。
 - **受け入れ条件**: 自前ビルドイメージがレジストリにあり、compose がそれを参照し、manifest の
   checksum 検証が CI にある。
 
