@@ -369,7 +369,7 @@ pub async fn stream_thread(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let chat = chat_store(&state)?;
-    // viewer 認可（403/404）。共有スレッドの引用は get_messages 側で閲覧者権限に再評価される。
+    // viewer 認可（403/404）。引用とツール結果は viewer_event_stream が閲覧者の権限で見直す（#513）。
     chat.get_thread(&ctx, id, trace.as_deref()).await?;
 
     let from_seq = last_event_id(&headers, &q);
@@ -377,7 +377,8 @@ pub async fn stream_thread(
     // 順番待ちの run を購読した場合はイベント 0 件で待機し、ワーカーが着手した時点で流れ出す。
     let stream: SseEventStream = match chat.current_run(id, &ctx.tenant_id).await? {
         Some(current) => chat
-            .event_stream(current.run_id, from_seq)
+            .viewer_event_stream(&ctx, id, current.run_id, from_seq, trace.as_deref())
+            .await?
             .map(|ev| {
                 let data = serde_json::to_string(&ev.event).unwrap_or_else(|_| "{}".to_string());
                 Ok(Event::default().id(ev.seq.to_string()).data(data))
