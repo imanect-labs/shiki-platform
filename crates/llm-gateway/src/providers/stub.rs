@@ -86,13 +86,21 @@ fn has_tool_result(req: &GenerateRequest) -> bool {
 /// `reasoning:` の決定的駆動（[`Block::Reasoning`] の往復を agent-core の結合テストで確かめる）。
 fn reasoning_round_trip(req: &GenerateRequest, prompt_tokens: u64) -> DeltaStream {
     if has_tool_result(req) {
-        // 推論アイテムが、同じ assistant メッセージのツール呼び出しより前に戻っているか。
+        // 1 ターン目の assistant メッセージが、届いた順（本文・推論アイテム・本文・ツール呼び出し）の
+        // まま戻っているか。本文を 1 か所にまとめると推論アイテムの後ろの本文が前へ動く。
         let carried = req.messages.iter().any(|m| {
-            let first_tool = m.content.iter().position(|b| matches!(b, Block::ToolUse { .. }));
-            let reasoning = m.content.iter().position(|b| {
-                matches!(b, Block::Reasoning { provider, item } if provider == "stub" && item["n"] == 1)
-            });
-            matches!((reasoning, first_tool), (Some(r), Some(t)) if r < t)
+            matches!(
+                m.content.as_slice(),
+                [
+                    Block::Text { text: before },
+                    Block::Reasoning { provider, item },
+                    Block::Text { text: after },
+                    Block::ToolUse { .. },
+                ] if before == "考えます。"
+                    && provider == "stub"
+                    && item["n"] == 1
+                    && after == "呼びます。"
+            )
         });
         let reply = if carried {
             "推論を引き継ぎました"
@@ -106,11 +114,19 @@ fn reasoning_round_trip(req: &GenerateRequest, prompt_tokens: u64) -> DeltaStrea
         serde_json::json!({}),
         prompt_tokens,
     );
-    let item = stream::iter([Ok(StreamDelta::ReasoningItem {
-        provider: "stub".to_string(),
-        item: serde_json::json!({ "n": 1 }),
-    })]);
-    item.chain(call).boxed()
+    let head = stream::iter([
+        Ok(StreamDelta::TextDelta {
+            text: "考えます。".to_string(),
+        }),
+        Ok(StreamDelta::ReasoningItem {
+            provider: "stub".to_string(),
+            item: serde_json::json!({ "n": 1 }),
+        }),
+        Ok(StreamDelta::TextDelta {
+            text: "呼びます。".to_string(),
+        }),
+    ]);
+    head.chain(call).boxed()
 }
 
 /// プレフィックス → (対応ツール名, 入力 JSON のキー)。入力値は本文の残り。
@@ -246,8 +262,8 @@ impl LlmProvider for StubProvider {
                 prompt_tokens,
             ));
         }
-        // --- 推論アイテムの引き継ぎ `reasoning:`（#542）: 1 ターン目は推論アイテム＋tools[0] の呼び出し、
-        // 2 ターン目は、その推論アイテムが履歴（ツール呼び出しより前）に戻っているかを本文で答える。 ---
+        // --- 推論アイテムの引き継ぎ `reasoning:`（#542）: 1 ターン目は本文・推論アイテム・本文＋tools[0] の
+        // 呼び出し、2 ターン目は、それらが届いた順のまま履歴に戻っているかを本文で答える。 ---
         if !req.tools.is_empty() && user_text.starts_with("reasoning:") {
             return Ok(reasoning_round_trip(req, prompt_tokens));
         }

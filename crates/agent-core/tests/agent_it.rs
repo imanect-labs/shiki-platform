@@ -357,8 +357,9 @@ async fn run_agent_dispatches_tool_then_completes() {
     assert!(artifact_ok, "成果物イベントが 1 件流れる");
 }
 
-/// プロバイダ固有の推論アイテム（#542）は、assistant メッセージのツール呼び出しより前に積まれ、
-/// 次のステップのリクエストでそのまま送り返される（stub の `reasoning:` が 2 ターン目に確かめる）。
+/// プロバイダ固有の推論アイテム（#542）は、前後の本文・ツール呼び出しと届いた順のまま assistant
+/// メッセージに積まれ、次のステップのリクエストでそのまま送り返される（stub の `reasoning:` が
+/// 2 ターン目に確かめる）。
 #[tokio::test]
 async fn run_agent_carries_reasoning_items_to_the_next_step() {
     let Some(pool) = setup().await else { return };

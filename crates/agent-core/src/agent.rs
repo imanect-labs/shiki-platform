@@ -297,9 +297,9 @@ async fn run_step(
     let mut pending_names: HashMap<String, String> = HashMap::new();
     let mut calls: Vec<PendingCall> = Vec::new();
     // assistant メッセージのブロックを**届いた順**に積む（推論アイテムは直後の本文・ツール呼び出しと
-    // 対で送り返す必要があり、並べ替えると Responses が拒否する・#542）。本文は最初に届いた位置に置く。
+    // 対で送り返す必要があり、並べ替えると Responses が拒否する・#542）。本文は直前のブロックが本文なら
+    // そこへ足し、推論アイテム・ツール呼び出しの後なら新しい本文ブロックを始める。
     let mut ordered: Vec<Block> = Vec::new();
-    let mut text_at: Option<usize> = None;
     let mut usage = Usage::default();
     let mut final_stop = StopReason::EndTurn;
 
@@ -309,11 +309,11 @@ async fn run_step(
         }
         match delta.map_err(map_llm_error)? {
             StreamDelta::TextDelta { text } => {
-                if text_at.is_none() && !text.is_empty() {
-                    text_at = Some(ordered.len());
-                    ordered.push(Block::Text {
-                        text: String::new(),
-                    });
+                if !text.is_empty() {
+                    match ordered.last_mut() {
+                        Some(Block::Text { text: last }) => last.push_str(&text),
+                        _ => ordered.push(Block::Text { text: text.clone() }),
+                    }
                 }
                 text_acc.push_str(&text);
                 sink.emit(AgentEvent::Text(text)).await?;
@@ -396,14 +396,10 @@ async fn run_step(
         return Ok(StepOutcome::Continue);
     }
 
-    // assistant メッセージを履歴へ（届いた順のまま。本文は最初に届いた位置に全文を置く）。
-    let mut assistant_blocks = ordered;
-    if let Some(slot) = text_at.and_then(|i| assistant_blocks.get_mut(i)) {
-        *slot = Block::Text { text: text_acc };
-    }
+    // assistant メッセージを履歴へ（届いた順のまま）。
     state.messages.push(LlmMessage {
         role: LlmRole::Assistant,
-        content: assistant_blocks,
+        content: ordered,
     });
 
     // 終了判定: ツール呼び出しが無ければ終わり。ただし **max_tokens で切れたのは完了ではない**。
