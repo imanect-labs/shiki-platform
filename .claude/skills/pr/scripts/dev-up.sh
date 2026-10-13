@@ -2,12 +2,31 @@
 # dev-up.sh — 変更を目で確認できる状態まで環境を起動する。
 #
 #   使い方:
-#     dev-up.sh [--compose] [--rag] [--sandbox] [--office] [--reset-db]
+#     dev-up.sh [--compose] [--rag|--rag-remote] [--sandbox] [--office] [--reset-db]
 #     dev-up.sh --down     # 起動したものを止める
 #     dev-up.sh --status   # 生存確認だけする
 #
 #   --reset-db: compose の dev DB 'shiki' を DROP/CREATE してから起動する（破壊操作）。
 #               別ブランチの migration が当たって checksum 不一致になった時に使う。
+#
+#   --rag-remote: RAG を有効にし、ingestion-worker と S3 は**外部のものを使う**（native のみ）。
+#                 worker のイメージは 9.7GB・常駐 RAM 2〜3GB あり、開発機ごとに持つと重い。
+#                 S3 も外部にするのは、worker が presigned URL を自分で取りに行くため
+#                 （開発機の S3 は外部の worker から見えない）。接続先は環境変数で渡す:
+#                   SHIKI_DEV_RAG_WORKER_URL     worker のベース URL
+#                   SHIKI_DEV_S3_ENDPOINT        S3 のエンドポイント（サーバ・worker が使う）
+#                   SHIKI_DEV_S3_PUBLIC_ENDPOINT ブラウザが presigned URL で叩く先（既定は上と同じ）
+#                   SHIKI_DEV_S3_BUCKET          **開発環境ごとに別のバケット**にする（後述）
+#                   SHIKI_DEV_S3_ACCESS_KEY / SHIKI_DEV_S3_SECRET_KEY
+#                 バケットを他の開発環境と共有しない。オブジェクトキーは
+#                 {tenant_id}/{org}/{sha256} で環境を区別せず、参照カウントも各自の DB にしか
+#                 無いため、別環境のテナント削除（{tenant_id}/ 以下の一括削除）が自分の blob を消す。
+#                 compose の DB は docker ホストごとに 1 つなので、バケットもホストごとに分ける。
+#                   SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS  バケットの CORS を起動時に設定する（例 '[http://localhost:3000]'）。
+#                                 未指定ならバケット側の既存の設定に任せる（外部のバケットを勝手に書き換えない）。
+#                 DB と保存先は組で使う。--rag（ローカルの RustFS）で使った DB のまま切り替えると、
+#                 既存の blob が読めず、同じ内容の再アップロードも重複扱いで実体が作られない。
+#                 組が変わる時は止めるので、--reset-db で DB を作り直す。
 #
 #   既定（native モード）:
 #     compose で依存だけ起動（postgres/keycloak/openfga/redis/rustfs）
@@ -30,6 +49,8 @@ say() { printf '%s\n' "$*"; }
 MODE=native
 RESET_DB=0
 WITH_RAG=0
+# --rag-remote: worker と S3 を外部のものにする（RAG 自体は WITH_RAG で有効にする）。
+RAG_REMOTE=0
 WITH_SANDBOX=0
 WITH_OFFICE=0
 ACTION=up
@@ -39,11 +60,13 @@ while [ $# -gt 0 ]; do
     --compose) MODE=compose ;;
     --reset-db) RESET_DB=1 ;;
     --rag)     WITH_RAG=1 ;;
+    --rag-remote) WITH_RAG=1; RAG_REMOTE=1 ;;
     --sandbox) WITH_SANDBOX=1 ;;
     --office)  WITH_OFFICE=1 ;;
     --down)    ACTION=down ;;
     --status)  ACTION=status ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    # 冒頭のコメントの塊を最後まで出す（行数を決め打ちすると説明を足した時に途中で切れる）。
+    -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
     *) err "未知の引数: $1"; exit 2 ;;
   esac
   shift
@@ -58,6 +81,14 @@ cd "$ROOT"
 if [ "$WITH_OFFICE" = 1 ] && [ "$MODE" != compose ]; then
   err "--office は --compose と併用してください（native では Collabora がホストの shiki-server に到達できません）。"
   err "  例: $0 --compose --office"
+  exit 2
+fi
+
+# compose の shiki-server は worker・S3 の接続先が docker-compose.yml に固定されており、
+# 外部の接続先を渡す経路が無い。起動はできても索引が入らない状態を作らず、ここで止める。
+if [ "$RAG_REMOTE" = 1 ] && [ "$MODE" = compose ]; then
+  err "--rag-remote は native 専用です（compose の shiki-server には外部の worker・S3 を渡せません）。"
+  err "  compose で RAG を使うなら: $0 --compose --rag"
   exit 2
 fi
 
@@ -163,9 +194,58 @@ case "$ACTION" in
   down)   stop_all; exit 0 ;;
 esac
 
+# --- 0. 外部の worker・S3 を使うなら、先に接続先と疎通を確かめる ---
+# **黙ってローカルへフォールバックしない。** 届かないまま進むと、worker が presigned URL を
+# 取りに来られず「アップロードは通るのに索引だけ入らない」という分かりにくい壊れ方をする。
+if [ "$RAG_REMOTE" = 1 ]; then
+  say "== 0. 外部の ingestion-worker と S3 を確認 =="
+  missing=""
+  for v in SHIKI_DEV_RAG_WORKER_URL SHIKI_DEV_S3_ENDPOINT SHIKI_DEV_S3_BUCKET SHIKI_DEV_S3_ACCESS_KEY SHIKI_DEV_S3_SECRET_KEY; do
+    [ -n "${!v:-}" ] || missing="$missing $v"
+  done
+  if [ -n "$missing" ]; then
+    err "   --rag-remote には次の環境変数が要ります:$missing"
+    err "   （worker と S3 をローカルに立てるなら --rag）"
+    exit 2
+  fi
+  # server はベース URL の末尾の / を除いて連結するので、確認側も合わせる。
+  SHIKI_DEV_RAG_WORKER_URL=${SHIKI_DEV_RAG_WORKER_URL%/}
+  if ! worker_health=$(curl -fsS -m 5 "$SHIKI_DEV_RAG_WORKER_URL/healthz" 2>/dev/null); then
+    err "   ingestion-worker に届きません: $SHIKI_DEV_RAG_WORKER_URL"
+    exit 1
+  fi
+  # 埋め込みの版は server と worker で一致していないと、/embed の応答が版の突合で毎回拒否される
+  # （起動は成功して索引だけが入らない）。worker が名乗るモデルを server の期待値にする。
+  REMOTE_EMBED_MODEL=$(printf '%s' "$worker_health" | grep -o '"embed":{"id":"[^"]*"' | sed 's/.*"id":"//; s/"$//' || true)
+  if [ -z "$REMOTE_EMBED_MODEL" ]; then
+    err "   ingestion-worker の /healthz から埋め込みモデルを読めません: $worker_health"
+    exit 1
+  fi
+  # S3 は無署名リクエストに 403 などを返す。応答コードが返れば届いている。
+  # 公開側（ブラウザが presigned URL で叩く先）を別に指定したなら、そちらも確かめる。
+  # server は presigned URL を手元で作るだけなので、届かなくても起動は通り、最初のアップロードで初めて落ちる。
+  for ep in "$SHIKI_DEV_S3_ENDPOINT" ${SHIKI_DEV_S3_PUBLIC_ENDPOINT:+"$SHIKI_DEV_S3_PUBLIC_ENDPOINT"}; do
+    if ! curl -s -m 5 -o /dev/null -w '%{http_code}' "$ep" 2>/dev/null | grep -qE '^[2-4]'; then
+      err "   S3 に届きません: $ep"
+      exit 1
+    fi
+  done
+  say "   [ok] worker=$SHIKI_DEV_RAG_WORKER_URL  embed=$REMOTE_EMBED_MODEL"
+  say "        s3=$SHIKI_DEV_S3_ENDPOINT  bucket=$SHIKI_DEV_S3_BUCKET"
+  # 資格情報は export されて入ってくる。このままだと pnpm install・compose・cargo・next dev まで
+  # 引き継ぐので、非 export の変数へ退避して元を消す（shiki-server の起動時にだけ渡す）。
+  REMOTE_S3_AK=$SHIKI_DEV_S3_ACCESS_KEY
+  REMOTE_S3_SK=$SHIKI_DEV_S3_SECRET_KEY
+  unset SHIKI_DEV_S3_ACCESS_KEY SHIKI_DEV_S3_SECRET_KEY
+fi
+
 # --- 1. compose 依存サービス ---
-DEPS="postgres keycloak openfga redis rustfs"
-[ "$WITH_RAG" = 1 ] && DEPS="$DEPS qdrant ingestion-worker"
+DEPS="postgres keycloak openfga redis"
+# 外部の S3 を使うなら RustFS は立てない。
+[ "$RAG_REMOTE" = 1 ] || DEPS="$DEPS rustfs"
+# Qdrant は常にローカル（小さく、ベクトルは手元で使い捨てたい）。
+[ "$WITH_RAG" = 1 ] && DEPS="$DEPS qdrant"
+[ "$WITH_RAG" = 1 ] && [ "$RAG_REMOTE" = 0 ] && DEPS="$DEPS ingestion-worker"
 [ "$WITH_SANDBOX" = 1 ] && DEPS="$DEPS sandbox-orchestrator"
 [ "$WITH_OFFICE" = 1 ] && DEPS="$DEPS collabora"
 
@@ -181,41 +261,99 @@ if [ ! -d web/node_modules ]; then
   WEB_INSTALL_PID=$!
 fi
 
-(
-  cd deploy/compose
-  [ -f .env ] || cp .env.example .env
-  # shellcheck disable=SC2086
-  docker compose up -d $DEPS
-  for svc in $DEPS; do
-    ok=""
-    for _ in $(seq 1 60); do
-      s=$(docker compose ps "$svc" --format '{{.Health}}' 2>/dev/null || true)
-      # healthcheck 未定義のサービスは Health が空になる。起動していれば良しとする。
-      if [ "$s" = "healthy" ] || { [ -z "$s" ] && [ -n "$(docker compose ps -q "$svc" 2>/dev/null)" ]; }; then
-        ok=1; break
-      fi
-      sleep 5
+compose_up() {  # compose_up <service...>: 起動して healthy になるまで待つ
+  (
+    cd deploy/compose
+    [ -f .env ] || cp .env.example .env
+    docker compose up -d "$@"
+    for svc in "$@"; do
+      ok=""
+      for _ in $(seq 1 60); do
+        s=$(docker compose ps "$svc" --format '{{.Health}}' 2>/dev/null || true)
+        # healthcheck 未定義のサービスは Health が空になる。起動していれば良しとする。
+        if [ "$s" = "healthy" ] || { [ -z "$s" ] && [ -n "$(docker compose ps -q "$svc" 2>/dev/null)" ]; }; then
+          ok=1; break
+        fi
+        sleep 5
+      done
+      [ -n "$ok" ] || { err "$svc が healthy になりませんでした（docker compose logs $svc）"; exit 1; }
+      say "   [ok] $svc"
     done
-    [ -n "$ok" ] || { err "$svc が healthy になりませんでした（docker compose logs $svc）"; exit 1; }
-    say "   [ok] $svc"
-  done
-)
+  )
+}
+# 先に Postgres だけ立て、DB のリセットと保存先の組の確認を済ませてから残りを立てる
+# （確認で止まる時に、ローカルの worker など重いものを起動したまま残さない）。
+compose_up postgres
 
 # --- 1.5 dev DB のリセット（明示 opt-in） ---
 # 別ブランチの migration が当たった compose DB は checksum 不一致で起動を止める
 # （"migration N was previously applied but has been modified"）。dev DB は使い捨てなので
 # 作り直してよいが、破壊操作なので必ず明示フラグでのみ行う。
+# compose が解釈した POSTGRES_USER（.env の引用符やシェルの上書きを反映済み）を、起動中のコンテナから読む。
+pg_user() {
+  local u
+  u=$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres printenv POSTGRES_USER 2>/dev/null | tr -d '\r\n') || u=""
+  printf '%s' "${u:-postgres}"
+}
 reset_dev_db() {
   err "⚠️  compose の dev DB 'shiki' を DROP して作り直します（データは失われます）。"
-  # compose の .env が POSTGRES_USER を上書きしている場合があるので固定値にしない。
-  local pguser
-  pguser=$(grep -E '^POSTGRES_USER=' deploy/compose/.env 2>/dev/null | tail -1 | cut -d= -f2-)
-  pguser=${pguser:-postgres}
   docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
-    psql -U "$pguser" -c "DROP DATABASE IF EXISTS shiki WITH (FORCE);" -c "CREATE DATABASE shiki;"
+    psql -U "$(pg_user)" -c "DROP DATABASE IF EXISTS shiki WITH (FORCE);" -c "CREATE DATABASE shiki;"
   say "   [ok] dev DB をリセットしました（SHIKI_DEV_SEED=true が再投入します）"
 }
 [ "$RESET_DB" = 1 ] && reset_dev_db
+
+# --- 1.6 DB と保存先の組を確かめる ---
+# blob の行は保存先を記録しないので、DB を残したまま保存先だけ変えると既存の blob が読めず、
+# 同じ内容を上げ直しても重複扱いで実体が作られない。どの保存先と組で使った DB かを
+# DB のコメントに残し、食い違えば止める（DB を作り直すとコメントも消える）。
+STORE_TAG=$([ "$RAG_REMOTE" = 1 ] && printf 'shiki-dev-store=%s/%s' "$SHIKI_DEV_S3_ENDPOINT" "$SHIKI_DEV_S3_BUCKET" || printf 'shiki-dev-store=local')
+dev_psql() {  # dev_psql <sql>  → 1 行目の値だけ返す
+  # **接続や SQL の失敗を握り潰さない。** 空として扱うと、印も blob も無い DB と見なして
+  # 別の保存先へ切り替えを通してしまう。
+  local out
+  if ! out=$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
+    psql -v ON_ERROR_STOP=1 -U "$(pg_user)" -d shiki -tAc "$1" 2>&1); then
+    err "dev DB への問い合わせに失敗しました: $out"
+    exit 1
+  fi
+  printf '%s' "${out%%$'\n'*}"
+}
+cur_tag=$(dev_psql "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = 'shiki'")
+if [ -z "$cur_tag" ]; then
+  # 印の無い DB は、この仕組みより前に作られたもの（＝ローカルの RustFS と組）か、まだ空のもの。
+  # blob 表が無い（migration 前の）DB で FROM blob を書くとエラーになるので、先に有無を見る。
+  if [ "$(dev_psql "SELECT to_regclass('public.blob') IS NOT NULL")" = t ] \
+    && [ "$(dev_psql "SELECT EXISTS (SELECT 1 FROM blob)")" = t ]; then
+    cur_tag="shiki-dev-store=local"
+  fi
+fi
+if [ -n "$cur_tag" ] && [ "$cur_tag" != "$STORE_TAG" ]; then
+  err "❌ この dev DB は別の保存先と組で使われています。"
+  err "   DB の保存先: ${cur_tag#shiki-dev-store=}"
+  err "   今回の保存先: ${STORE_TAG#shiki-dev-store=}"
+  err "   切り替えるなら DB を作り直してください: $0 --reset-db ...（元に戻すなら前と同じ引数で起動）"
+  exit 1
+fi
+
+# shellcheck disable=SC2086
+compose_up $DEPS
+
+# 印の付け替えと不要なサービスの停止。**起動前の検査をすべて通した後に呼ぶ。**
+# 先にやると、後の検査（:8080 の取り合いなど）で止まった時に今の環境を壊してしまう。
+apply_store_switch() {
+  dev_psql "COMMENT ON DATABASE shiki IS '${STORE_TAG//\'/\'\'}'" >/dev/null
+  # --rag から切り替えた時、前に立てたローカルの worker（常駐 2〜3GB）と RustFS は
+  # DEPS から外しても動き続ける（restart: unless-stopped）。外部を使うなら止める。
+  if [ "$RAG_REMOTE" = 1 ]; then
+    for svc in ingestion-worker rustfs; do
+      if [ -n "$(docker compose -f deploy/compose/docker-compose.yml ps -q "$svc" 2>/dev/null)" ]; then
+        docker compose -f deploy/compose/docker-compose.yml stop "$svc" >/dev/null
+        say "   [stop] $svc（外部のものを使うため）"
+      fi
+    done
+  fi
+}
 
 # --- 2. shiki-server ---
 # web に渡すゲートウェイ/B1 オリジン。compose は publish 済みの 8090/8091、
@@ -230,6 +368,7 @@ if [ "$MODE" = compose ]; then
   #   healthcheck は /healthz＝DB 非依存なので healthy と出るが、実際は空 DB で全 API が 500）。
   RECREATE=""
   [ "$RESET_DB" = 1 ] && RECREATE="--force-recreate"
+  apply_store_switch
   (
     cd deploy/compose
     SHIKI__AUTH__REDIRECT_URI=http://localhost:3000/auth/callback \
@@ -296,6 +435,40 @@ else
   fi
   say "   依存ポート: pg=$PG_PORT kc=$KC_PORT fga=$FGA_PORT redis=$REDIS_PORT rustfs=$RUSTFS_PORT qdrant=$QDRANT_PORT"
 
+  # S3 と worker の実効値。heredoc は unquoted で中の分岐が生成時に評価されるため、外で決める。
+  if [ "$RAG_REMOTE" = 1 ]; then
+    EFF_S3_INTERNAL=$SHIKI_DEV_S3_ENDPOINT
+    # ブラウザが presigned URL を直接叩くので、ブラウザから届く先でなければならない。
+    EFF_S3_PUBLIC=${SHIKI_DEV_S3_PUBLIC_ENDPOINT:-$SHIKI_DEV_S3_ENDPOINT}
+    EFF_S3_BUCKET=$SHIKI_DEV_S3_BUCKET
+    EFF_S3_AK=$REMOTE_S3_AK
+    EFF_S3_SK=$REMOTE_S3_SK
+    EFF_WORKER_URL=$SHIKI_DEV_RAG_WORKER_URL
+    EMBED_LINE="export SHIKI__RAG__EMBEDDING_MODEL_VERSION=$(printf '%q' "$REMOTE_EMBED_MODEL")"
+    # 外部のバケットの CORS は、指定された時だけ設定する（既存の設定を勝手に書き換えない）。
+    EFF_CORS=${SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS:-}
+  else
+    EFF_S3_INTERNAL=http://localhost:${RUSTFS_PORT}
+    EFF_S3_PUBLIC=http://localhost:${RUSTFS_PORT}
+    EFF_S3_BUCKET=shiki-blobs
+    EFF_S3_AK=$RUSTFS_AK
+    EFF_S3_SK=$RUSTFS_SK
+    EFF_WORKER_URL=http://localhost:${WORKER_PORT}
+    EFF_CORS='[*]'
+    EMBED_LINE="# 埋め込みの版は server の既定値（ローカルの worker と同じ）"
+  fi
+  # 生成するスクリプトへ値を埋め込むので、シェルの構文としてクォートする（& などを含んでも壊れない）。
+  Q_S3_INTERNAL=$(printf '%q' "$EFF_S3_INTERNAL")
+  Q_S3_PUBLIC=$(printf '%q' "$EFF_S3_PUBLIC")
+  Q_S3_BUCKET=$(printf '%q' "$EFF_S3_BUCKET")
+  Q_WORKER_URL=$(printf '%q' "$EFF_WORKER_URL")
+  if [ -n "$EFF_CORS" ]; then
+    CORS_LINE="export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS=$(printf '%q' "$EFF_CORS")"
+  else
+    # 呼び出し元の環境に残っていると引き継いでしまうので、明示的に消す。
+    CORS_LINE="unset SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS  # バケット側の既存の設定に任せる（SHIKI_DEV_S3_CORS_ALLOWED_ORIGINS で設定できる）"
+  fi
+
   # コンテナ内部ホスト名をホストの公開ポートへ読み替える。
   # env 名は deploy/compose/docker-compose.yml の shiki-server 節が正（食い違ったら合わせる）。
   cat > "$RUNDIR/run-server.sh" <<EOF
@@ -323,20 +496,21 @@ export SHIKI__SESSION__SECURE=false
 export SHIKI__AUTHZ__BASE_URL=http://localhost:${FGA_PORT}
 export SHIKI__AUTHZ__STORE_NAME=shiki
 export SHIKI__STORAGE__BACKEND=s3
-export SHIKI__STORAGE__S3__INTERNAL_ENDPOINT=http://localhost:${RUSTFS_PORT}
-export SHIKI__STORAGE__S3__PUBLIC_ENDPOINT=http://localhost:${RUSTFS_PORT}
-export SHIKI__STORAGE__S3__BUCKET=shiki-blobs
+export SHIKI__STORAGE__S3__INTERNAL_ENDPOINT=${Q_S3_INTERNAL}
+export SHIKI__STORAGE__S3__PUBLIC_ENDPOINT=${Q_S3_PUBLIC}
+export SHIKI__STORAGE__S3__BUCKET=${Q_S3_BUCKET}
 # ブラウザ直 PUT/GET のバケット CORS。設定しないと put_bucket_cors が呼ばれず
 # Drive のアップロードが CORS で失敗する（MinIO 時代はサーバ側 env で代替されていた）。
 # figment は env 値をブラケット記法で配列として読む（裸のカンマ区切りは不可）。
-export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS='[*]'
-# 資格情報は上（heredoc の外）で compose から解決した値を焼き込む。
+${CORS_LINE}
+# **資格情報はこのファイルに書かない。** 起動時に dev-up.sh がプロセスの環境で渡す
+# （外部の S3 の資格情報が /tmp に平文で残るのを避ける。値をシェルとして再解析もしない）。
 # **この heredoc は unquoted なので、コメント行まで生成時に展開される。**
 # コマンド置換や位置パラメータをここに書くと（コメントの中であっても）
 # dev-up.sh 自身のシェルで評価され、set -u のもと未設定変数で死ぬ。
-# 実行時に評価したいものは heredoc の外で解決して値を渡すこと。
-export SHIKI__STORAGE__S3__ACCESS_KEY=${RUSTFS_AK}
-export SHIKI__STORAGE__S3__SECRET_KEY=${RUSTFS_SK}
+# 実行時に評価したいものはドル記号をバックスラッシュでエスケープするか、heredoc の外で解決して値を渡すこと。
+export SHIKI__STORAGE__S3__ACCESS_KEY="\${SHIKI_DEV_RUN_S3_ACCESS_KEY:?dev-up.sh から起動してください}"
+export SHIKI__STORAGE__S3__SECRET_KEY="\${SHIKI_DEV_RUN_S3_SECRET_KEY:?dev-up.sh から起動してください}"
 export SHIKI__GATEWAY__ENABLED=true
 # native の第2/第3リスナは compose の shiki-server（8090/8091 を publish）と衝突しない
 # 18090/18091 を使う。web 側には NEXT_PUBLIC_GATEWAY_ORIGIN / NEXT_PUBLIC_B1_ORIGIN で
@@ -356,7 +530,8 @@ export SHIKI__LLM__BACKEND=${SHIKI__LLM__BACKEND:-stub}
 export SHIKI__WEBSEARCH__BACKEND=stub
 export SHIKI__RAG__ENABLED=$([ "$WITH_RAG" = 1 ] && echo true || echo false)
 export SHIKI__RAG__QDRANT_URL=http://localhost:${QDRANT_PORT}
-export SHIKI__RAG__WORKER_BASE_URL=http://localhost:${WORKER_PORT}
+export SHIKI__RAG__WORKER_BASE_URL=${Q_WORKER_URL}
+${EMBED_LINE}
 export SHIKI__RAG__INDEX_DATA_DIR="$RUNDIR/index"
 export SHIKI__CHAT__SANDBOX_ENDPOINT=http://localhost:${SANDBOX_PORT}
 export SHIKI__OFFICE__ENABLED=$([ "$WITH_OFFICE" = 1 ] && echo true || echo false)
@@ -416,7 +591,9 @@ EOF
     exit 1
   fi
 
-  setsid nohup "$RUNDIR/run-server.sh" > "$SERVER_LOG" 2>&1 < /dev/null &
+  apply_store_switch
+  SHIKI_DEV_RUN_S3_ACCESS_KEY="$EFF_S3_AK" SHIKI_DEV_RUN_S3_SECRET_KEY="$EFF_S3_SK" \
+    setsid nohup "$RUNDIR/run-server.sh" > "$SERVER_LOG" 2>&1 < /dev/null &
   echo $! > "$SERVER_PID"
   disown || true
   say "   起動中… ログ: $SERVER_LOG"
@@ -516,7 +693,7 @@ say "  ログ       $SERVER_LOG"
 say "             $WEB_LOG"
 say ""
 say "  LLM=${SHIKI__LLM__BACKEND}$([ "$SHIKI__LLM__BACKEND" = stub ] || echo "  ⚠️ stub ではない（E2E は stub が前提・実プロバイダへ課金される）")"
-say "  RAG=$([ "$WITH_RAG" = 1 ] && echo on || echo off)  sandbox=$([ "$WITH_SANDBOX" = 1 ] && echo on || echo off)  office=$([ "$WITH_OFFICE" = 1 ] && echo on || echo off)  （必要なら --rag / --sandbox / --office）"
+say "  RAG=$([ "$WITH_RAG" = 1 ] && { [ "$RAG_REMOTE" = 1 ] && echo "on(worker と S3 は外部)" || echo on; } || echo off)  sandbox=$([ "$WITH_SANDBOX" = 1 ] && echo on || echo off)  office=$([ "$WITH_OFFICE" = 1 ] && echo on || echo off)  （必要なら --rag / --rag-remote / --sandbox / --office）"
 say ""
 say "  E2E:  cd web && E2E_BASE_URL=http://localhost:3000 pnpm exec playwright test e2e/<x>.spec.ts"
 say "  停止:  $0 --down"
