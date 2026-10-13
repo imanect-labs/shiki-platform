@@ -87,6 +87,62 @@ fn has_tool_result(req: &GenerateRequest) -> bool {
     })
 }
 
+/// `reasoning:` で始まり、ツールが提示されていれば [`reasoning_round_trip`] で返す。
+fn reasoning_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    (!req.tools.is_empty() && user_text.starts_with("reasoning:"))
+        .then(|| reasoning_round_trip(req, prompt_tokens))
+}
+
+/// `reasoning:` の決定的駆動（[`Block::Reasoning`] の往復を agent-core の結合テストで確かめる）。
+fn reasoning_round_trip(req: &GenerateRequest, prompt_tokens: u64) -> DeltaStream {
+    if has_tool_result(req) {
+        // 1 ターン目の assistant メッセージが、届いた順（本文・推論アイテム・本文・ツール呼び出し）の
+        // まま戻っているか。本文を 1 か所にまとめると推論アイテムの後ろの本文が前へ動く。
+        let carried = req.messages.iter().any(|m| {
+            matches!(
+                m.content.as_slice(),
+                [
+                    Block::Text { text: before },
+                    Block::Reasoning { provider, item },
+                    Block::Text { text: after },
+                    Block::ToolUse { .. },
+                ] if before == "考えます。"
+                    && provider == "stub"
+                    && item["n"] == 1
+                    && after == "呼びます。"
+            )
+        });
+        let reply = if carried {
+            "推論を引き継ぎました"
+        } else {
+            "推論が戻っていません"
+        };
+        return text_stream(reply, prompt_tokens);
+    }
+    let call = tool_call_stream(
+        req.tools[0].name.clone(),
+        serde_json::json!({}),
+        prompt_tokens,
+    );
+    let head = stream::iter([
+        Ok(StreamDelta::TextDelta {
+            text: "考えます。".to_string(),
+        }),
+        Ok(StreamDelta::ReasoningItem {
+            provider: "stub".to_string(),
+            item: serde_json::json!({ "n": 1 }),
+        }),
+        Ok(StreamDelta::TextDelta {
+            text: "呼びます。".to_string(),
+        }),
+    ]);
+    head.chain(call).boxed()
+}
+
 /// プレフィックス → (対応ツール名, 入力 JSON のキー)。入力値は本文の残り。
 /// 対応ツールが提示に無ければ `None` を返し、呼び出し側が tools[0] にフォールバックする。
 fn tool_trigger(user_text: &str) -> Option<(&'static str, &'static str, String)> {
@@ -224,8 +280,10 @@ impl LlmProvider for StubProvider {
                 Duration::from_secs(secs),
             ));
         }
-        // --- 図の回答 `yui:<kind>`（#530）。 ---
-        if let Some(s) = yui_call(&user_text, prompt_tokens) {
+        // --- 図の回答 `yui:<kind>`（#530）・推論アイテムの引き継ぎ `reasoning:`（#542）。 ---
+        if let Some(s) = yui_call(&user_text, prompt_tokens)
+            .or_else(|| reasoning_call(req, &user_text, prompt_tokens))
+        {
             return Ok(s);
         }
         // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---

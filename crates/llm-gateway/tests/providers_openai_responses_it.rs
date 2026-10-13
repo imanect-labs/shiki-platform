@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 use axum::Router;
 use futures::stream::StreamExt;
 
-use llm_gateway::model::{GenerateRequest, Message, Role, StopReason, StreamDelta};
+use llm_gateway::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta};
 use llm_gateway::provider::{LlmError, LlmProvider};
 use llm_gateway::providers::openai_responses::OpenAiResponsesProvider;
 
@@ -156,17 +156,8 @@ async fn http_errors_map_to_bad_request_and_rate_limited() {
     assert!(matches!(err, LlmError::RateLimited(m) if m.contains("usage limit")));
 }
 
-/// 実エンドポイントでの往復（`OPENAI_RESPONSES_TEST_URL` が無ければ黙ってスキップ）。
-///
-/// 例: `OPENAI_RESPONSES_TEST_URL=https://opencode.ai/inference/go/v1`
-///     `OPENAI_RESPONSES_TEST_MODEL=gpt-6-luna`
-///     `OPENAI_RESPONSES_TEST_SESSION_HEADER=x-opencode-session`（認証はプロキシ注入か `..._KEY`）
-///     `OPENAI_RESPONSES_TEST_CA=<PEM>`（TLS を中継するプロキシの CA。必要な環境だけ）
-#[tokio::test]
-async fn live_round_trip_with_tool_call() {
-    let Ok(base) = std::env::var("OPENAI_RESPONSES_TEST_URL") else {
-        return;
-    };
+/// 実エンドポイント向けのプロバイダ（`OPENAI_RESPONSES_TEST_*` から組む）。
+fn live_provider(base: String) -> OpenAiResponsesProvider {
     let model =
         std::env::var("OPENAI_RESPONSES_TEST_MODEL").unwrap_or_else(|_| "gpt-6-luna".into());
     // TLS を中継するプロキシ越しに叩く環境向けに、追加の CA を受け取る（本番の経路は変えない）。
@@ -177,7 +168,7 @@ async fn live_round_trip_with_tool_call() {
             http = http.add_root_certificate(cert);
         }
     }
-    let p = OpenAiResponsesProvider::new(
+    OpenAiResponsesProvider::new(
         http.build().unwrap(),
         base,
         std::env::var("OPENAI_RESPONSES_TEST_KEY").ok(),
@@ -190,7 +181,21 @@ async fn live_round_trip_with_tool_call() {
             .ok()
             .as_deref(),
     )
-    .unwrap();
+    .unwrap()
+}
+
+/// 実エンドポイントでの往復（`OPENAI_RESPONSES_TEST_URL` が無ければ黙ってスキップ）。
+///
+/// 例: `OPENAI_RESPONSES_TEST_URL=https://opencode.ai/inference/go/v1`
+///     `OPENAI_RESPONSES_TEST_MODEL=gpt-6-luna`
+///     `OPENAI_RESPONSES_TEST_SESSION_HEADER=x-opencode-session`（認証はプロキシ注入か `..._KEY`）
+///     `OPENAI_RESPONSES_TEST_CA=<PEM>`（TLS を中継するプロキシの CA。必要な環境だけ）
+#[tokio::test]
+async fn live_round_trip_with_tool_call() {
+    let Ok(base) = std::env::var("OPENAI_RESPONSES_TEST_URL") else {
+        return;
+    };
+    let p = live_provider(base);
 
     // 1 往目: ツールを呼ばせる。
     let tool = llm_gateway::model::ToolDef::new(
@@ -275,4 +280,95 @@ async fn endless_line_without_newline_is_cut_off_with_an_error() {
     let req = GenerateRequest::new(vec![Message::text(Role::User, "x")]);
     let out = drain(&provider(&base), &req).await;
     assert!(matches!(out.last(), Some(Err(LlmError::Unavailable(m))) if m.contains("size limit")));
+}
+
+/// 推論アイテムの往復（#542）: 推論 → ツール呼び出し → 推論アイテムを先頭に戻した 2 ターン目。
+#[tokio::test]
+async fn live_reasoning_items_round_trip() {
+    let Ok(base) = std::env::var("OPENAI_RESPONSES_TEST_URL") else {
+        return;
+    };
+    let p = live_provider(base);
+    let tool = llm_gateway::model::ToolDef::new(
+        "calc",
+        "四則演算を正確に計算する",
+        serde_json::json!({
+            "type": "object",
+            "properties": {"expr": {"type": "string"}},
+            "required": ["expr"],
+        }),
+    );
+    let mut req = GenerateRequest::new(vec![Message::text(
+        Role::User,
+        "原価 1,280 円・送料 95 円で、粗利率 35% を確保する税抜の販売価格（円未満切り上げ）を、calc ツールで検算しながら求めて。",
+    )]);
+    req.tools = vec![tool];
+    req.effort = Some(llm_gateway::model::Effort::High);
+    req.session_id = Some(format!("shiki-it-{}", uuid::Uuid::new_v4()));
+    // ツールを呼ぶ限り、推論アイテムを先頭に積んだ assistant メッセージとツール結果を戻して続ける。
+    let mut saw_reasoning = false;
+    let mut text = String::new();
+    for _ in 0..4 {
+        let out: Vec<StreamDelta> = drain(&p, &req)
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        let mut content = Vec::new();
+        let mut names = std::collections::HashMap::new();
+        text.clear();
+        for d in &out {
+            match d {
+                StreamDelta::ReasoningItem { provider, item } => {
+                    saw_reasoning = true;
+                    content.push(Block::Reasoning {
+                        provider: provider.clone(),
+                        item: item.clone(),
+                    });
+                }
+                StreamDelta::TextDelta { text: t } => text.push_str(t),
+                StreamDelta::ToolUseStart { id, name } => {
+                    names.insert(id.clone(), name.clone());
+                }
+                StreamDelta::ToolUseStop { id, input } => content.push(Block::ToolUse {
+                    id: id.clone(),
+                    name: names[id].clone(),
+                    input: input.clone(),
+                }),
+                _ => {}
+            }
+        }
+        let results: Vec<Block> = content
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolUse { id, input, .. } => Some(Block::ToolResult {
+                    tool_use_id: id.clone(),
+                    content: match input["expr"].as_str().unwrap_or_default() {
+                        e if e.contains("0.35") || e.contains("0.65") => "2115.3846".into(),
+                        e if e.contains('+') && !e.contains('/') => "1375".into(),
+                        _ => "35.02".into(),
+                    },
+                    is_error: false,
+                    tool_references: Vec::new(),
+                }),
+                _ => None,
+            })
+            .collect();
+        if results.is_empty() {
+            break;
+        }
+        req.messages.push(Message {
+            role: Role::Assistant,
+            content,
+        });
+        req.messages.push(Message {
+            role: Role::Tool,
+            content: results,
+        });
+    }
+    assert!(saw_reasoning, "推論アイテムが返ること");
+    assert!(
+        text.contains("2,116") || text.contains("2116"),
+        "回答: {text}"
+    );
 }

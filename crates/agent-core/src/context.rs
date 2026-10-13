@@ -44,6 +44,8 @@ pub fn estimate_prompt_tokens(messages: &[Message]) -> usize {
             Block::ToolUse { name, input, .. } => {
                 text_tokens(name) + text_tokens(&input.to_string())
             }
+            // 暗号化された推論もプロバイダ側では入力トークンとして数えられる。
+            Block::Reasoning { item, .. } => text_tokens(&item.to_string()),
         })
         .sum()
 }
@@ -84,6 +86,8 @@ fn block_bytes(b: &Block) -> usize {
         Block::Text { text } | Block::Thinking { text } => text.len(),
         Block::ToolResult { content, .. } => content.len(),
         Block::ToolUse { name, input, .. } => name.len() + input.to_string().len(),
+        // 暗号化された推論もプロバイダ側では入力トークンとして数えられる。
+        Block::Reasoning { item, .. } => item.to_string().len(),
     }
 }
 
@@ -98,6 +102,8 @@ const MIN_FOLD_BYTES: usize = 800;
 /// - tool_use / text / thinking は縮めない（計画・意思決定の連続性を保つ）。
 /// - 短い tool_result は縮めない（`MIN_FOLD_BYTES` 未満）。
 /// - 既に畳み込み済みのものは再短縮しない（冪等）。
+/// - 古い assistant メッセージのプロバイダ固有の推論アイテム（暗号化された推論）は落とす。送り返す
+///   のは続きのツールのターンのためで、古いものは役目を終えている（溜まると剪定が効かなくなる・#542）。
 pub fn prune_history(
     messages: &mut [Message],
     soft_limit_tokens: usize,
@@ -112,7 +118,32 @@ pub fn prune_history(
 /// 直近 `keep_recent` メッセージより古い大きな `tool_result` 本文を畳む。戻り値は「畳んだか」。
 fn fold_older_than(messages: &mut [Message], keep_recent: usize) -> bool {
     let cutoff = messages.len().saturating_sub(keep_recent);
-    fold_results(messages, cutoff, None)
+    let dropped = drop_old_reasoning(messages, cutoff);
+    fold_results(messages, cutoff, None) | dropped
+}
+
+/// `messages[..cutoff]` の assistant メッセージから、プロバイダ固有の推論アイテムを落とす
+/// （推論以外のブロックが残るメッセージだけ）。戻り値は「落としたか」。
+///
+/// 送り返すのは続きのツールのターンのためで、古いものは役目を終えている（溜まると剪定が
+/// 効かなくなる・#542）。非常閾値の畳み込みでは呼ばない（直近の推論は次のターンに要る）。
+fn drop_old_reasoning(messages: &mut [Message], cutoff: usize) -> bool {
+    let mut dropped = false;
+    for msg in messages.iter_mut().take(cutoff) {
+        if msg.role != Role::Assistant
+            || msg
+                .content
+                .iter()
+                .all(|b| matches!(b, Block::Reasoning { .. }))
+        {
+            continue;
+        }
+        let before = msg.content.len();
+        msg.content
+            .retain(|b| !matches!(b, Block::Reasoning { .. }));
+        dropped |= msg.content.len() != before;
+    }
+    dropped
 }
 
 /// `messages[..cutoff]` の大きな `tool_result` 本文を畳む（`protect` の位置＝(メッセージ, ブロック)
@@ -251,7 +282,8 @@ impl ContextLimits {
         // モデルでは保護しない（設定値だけの剪定は従来どおり・#529）。
         let protect = self.window.and_then(|_| last_result_position(messages));
         let cutoff = messages.len().saturating_sub(self.keep_recent);
-        let mut pruned = fold_results(messages, cutoff, protect);
+        let mut pruned = drop_old_reasoning(messages, cutoff);
+        pruned |= fold_results(messages, cutoff, protect);
         if self.window.is_some_and(|w| gauge.tokens(messages) > w.hard) {
             pruned |= fold_results(messages, messages.len(), protect);
         }
@@ -405,6 +437,53 @@ mod tests {
         // パニックせず、頭は「あ」で始まる。
         if let Block::ToolResult { content, .. } = &msgs[0].content[0] {
             assert!(content.starts_with('あ'));
+        }
+    }
+
+    #[test]
+    fn prune_drops_old_reasoning_items_but_keeps_recent_ones() {
+        let reasoning = || Block::Reasoning {
+            provider: "openai_responses".into(),
+            item: serde_json::json!({ "encrypted_content": "x".repeat(8_000) }),
+        };
+        let assistant = |blocks: Vec<Block>| Message {
+            role: Role::Assistant,
+            content: blocks,
+        };
+        let call = || Block::ToolUse {
+            id: "c".into(),
+            name: "t".into(),
+            input: serde_json::json!({}),
+        };
+        let has_reasoning = |m: &Message| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, Block::Reasoning { .. }))
+        };
+        let fresh = || {
+            vec![
+                assistant(vec![reasoning(), call()]),
+                assistant(vec![reasoning(), call()]),
+            ]
+        };
+
+        let mut msgs = fresh();
+        assert!(prune_history(&mut msgs, 100, 1));
+        assert!(!has_reasoning(&msgs[0]));
+        assert!(msgs[0]
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::ToolUse { .. })));
+        // 直近（keep_recent）の推論は残す（続きのツールのターンで送り返す）。
+        assert!(has_reasoning(&msgs[1]));
+
+        // エージェントの剪定（ContextLimits）でも同じ（窓を知る・非常閾値を超える場合も直近は残す）。
+        for window in [None, Some(3_000)] {
+            let mut msgs = fresh();
+            let l = ContextLimits::resolve(100, 1, window, None);
+            assert!(l.apply(&mut msgs, &ContextGauge::default()));
+            assert!(!has_reasoning(&msgs[0]), "window={window:?}");
+            assert!(has_reasoning(&msgs[1]), "window={window:?}");
         }
     }
 
