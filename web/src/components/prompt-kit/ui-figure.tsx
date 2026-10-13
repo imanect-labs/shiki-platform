@@ -4,10 +4,17 @@
 "use client";
 
 import * as React from "react";
-import { BarChart3, Check, Copy, Table2 } from "lucide-react";
+import { BarChart3, Check, Copy, Download, Table2 } from "lucide-react";
 import { isEmpty, parseBlock, toText, type Kind } from "@imanect/yui";
+import { copyFigure, downloadFigure } from "@imanect/yui/export";
 import { YuiFigure, diagnosticsSummary } from "@imanect/yui/react";
 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "./code-block";
 
@@ -80,13 +87,21 @@ export const UiFigure = React.memo(function UiFigure({
     : null;
   const copy = async () => {
     try {
-      // 貼り付け先を選ばないよう、表・箇条書きにしたテキストを入れる。
-      await navigator.clipboard.writeText(text);
+      // 画像（PNG）・画像と表の HTML・表と箇条書きのテキスト・Yui のソースを一度に入れる。
+      // 貼り付け先が形式を選ぶ（Word やメールは画像、Slack やエディタは表）。画像を書けない
+      // 環境では、テキストだけが入る。
+      await copyFigure(figure);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
       /* クリップボード不可は無視 */
     }
+  };
+  // 書き出す図は明るい配色で色を焼き込む（画面がダークでも、文書に貼る前提の見た目にする）。
+  const save = (format: "png" | "svg") => {
+    void downloadFigure(figure, format).catch(() => {
+      /* 保存できない環境は無視 */
+    });
   };
 
   return (
@@ -105,10 +120,22 @@ export const UiFigure = React.memo(function UiFigure({
               {asTable ? <BarChart3 className="size-3.5" /> : <Table2 className="size-3.5" />}
               {asTable ? "図で表示" : "表で表示"}
             </ToolbarButton>
-            <ToolbarButton onClick={copy} label="図の内容をテキストでコピー">
+            <ToolbarButton onClick={copy} label="図を画像と表としてコピー">
               {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
               {copied ? "コピー済み" : "コピー"}
             </ToolbarButton>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <ToolbarButton label="図を画像で保存">
+                  <Download className="size-3.5" />
+                  保存
+                </ToolbarButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[9rem]">
+                <DropdownMenuItem onSelect={() => save("png")}>PNG で保存</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => save("svg")}>SVG で保存</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </>
         ) : null}
       </figcaption>
@@ -116,27 +143,29 @@ export const UiFigure = React.memo(function UiFigure({
   );
 });
 
+/// メニューの開閉ボタン（Radix の asChild）にも使うので、ref と残りの属性をそのまま渡す。
 function ToolbarButton({
-  onClick,
   pressed,
   label,
+  className,
   children,
-}: {
-  onClick: () => void;
+  ...props
+}: React.ComponentProps<"button"> & {
   pressed?: boolean;
   label?: string;
-  children: React.ReactNode;
 }) {
   return (
     <button
       type="button"
-      onClick={onClick}
       aria-pressed={pressed}
       aria-label={label}
       className={cn(
         "flex items-center gap-1 rounded-md px-1.5 py-1 transition-colors hover:bg-secondary hover:text-foreground",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "data-[state=open]:bg-secondary data-[state=open]:text-foreground",
+        className,
       )}
+      {...props}
     >
       {children}
     </button>
