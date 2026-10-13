@@ -125,6 +125,7 @@ async fn setup() -> Option<Harness> {
                         real_id: None,
                         prompt_price_micros_per_mtok: 0,
                         completion_price_micros_per_mtok: 0,
+                        context_window_tokens: None,
                     }],
                 },
                 langfuse: None,

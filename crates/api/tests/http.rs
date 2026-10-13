@@ -229,6 +229,7 @@ fn base_config() -> AppConfig {
             api_key: None,
             default_model: None,
             models: vec![],
+            context_window_tokens: None,
             langfuse: None,
             user_agent: None,
             session_header: None,

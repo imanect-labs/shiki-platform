@@ -151,6 +151,7 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
                 real_id: None,
                 prompt_price_micros_per_mtok: 0,
                 completion_price_micros_per_mtok: 0,
+                context_window_tokens: None,
             }],
         },
         langfuse: None,

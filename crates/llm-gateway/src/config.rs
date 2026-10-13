@@ -64,6 +64,11 @@ pub struct ModelEntry {
     /// 補完単価（マイクロ USD / 100万トークン）。
     #[serde(default)]
     pub completion_price_micros_per_mtok: u64,
+    /// コンテキスト窓（入力＋出力の合計トークン上限）。未設定なら窓を知らない扱い。
+    ///
+    /// agent-core が剪定閾値の天井に使う（#529）。窓の小さいモデルでの溢れ失敗を防ぐ。
+    #[serde(default)]
+    pub context_window_tokens: Option<u32>,
 }
 
 impl ModelEntry {
@@ -130,6 +135,7 @@ mod tests {
             real_id: None,
             prompt_price_micros_per_mtok: 5_000_000, // $5 / Mtok
             completion_price_micros_per_mtok: 25_000_000, // $25 / Mtok
+            context_window_tokens: None,
         };
         // 1000 prompt + 200 completion → 5000 + 5000 = 10000 micros = $0.01
         assert_eq!(m.cost_usd_micros(1000, 200), 10_000);
@@ -145,6 +151,7 @@ mod tests {
                 real_id: Some("real-a".into()),
                 prompt_price_micros_per_mtok: 0,
                 completion_price_micros_per_mtok: 0,
+                context_window_tokens: None,
             }],
         };
         assert_eq!(c.get("a").unwrap().resolved_id(), "real-a");

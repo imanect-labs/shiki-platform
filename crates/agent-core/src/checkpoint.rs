@@ -31,6 +31,11 @@ pub struct Checkpoint {
     /// 引用番号の台帳（再開しても `[n]` の通し番号が続く・#508。旧チェックポイントは空から）。
     #[serde(default)]
     pub citations: crate::cite::CitationLedger,
+    /// 剪定の見積りに足す、実測 prompt との差（system/ツール定義ぶん・#529）。再開直後の
+    /// ステップでも窓判定から落とさないために載せる。`None` は未測定（旧チェックポイント・
+    /// 1 ステップも生成していない）で、実測の結果 0 になった `Some(0)` とは区別する。
+    #[serde(default)]
+    pub context_overhead_tokens: Option<usize>,
 }
 
 impl Checkpoint {
@@ -44,6 +49,7 @@ impl Checkpoint {
             step: 0,
             loop_detector: LoopDetector::default(),
             citations: crate::cite::CitationLedger::default(),
+            context_overhead_tokens: None,
         }
     }
 }
@@ -80,5 +86,21 @@ mod tests {
             d.observe("shell", &serde_json::json!({"cmd": "x"}), true),
             "resume 後もループ検出履歴が継続する"
         );
+    }
+
+    #[test]
+    fn measured_zero_overhead_is_distinct_from_unmeasured() {
+        // 実測の結果 0 になった補正は、再開後も「測定済み」として残る（固定分の概算を足し直さない）。
+        let mut cp = Checkpoint::start(vec![Message::text(Role::User, "goal")]);
+        cp.context_overhead_tokens = Some(0);
+        let json = serde_json::to_value(&cp).expect("serialize");
+        let back: Checkpoint = serde_json::from_value(json.clone()).expect("deserialize");
+        assert_eq!(back.context_overhead_tokens, Some(0));
+        // フィールドの無い旧チェックポイントは未測定。
+        let mut old = json;
+        old.as_object_mut()
+            .map(|o| o.remove("context_overhead_tokens"));
+        let back: Checkpoint = serde_json::from_value(old).expect("deserialize");
+        assert_eq!(back.context_overhead_tokens, None);
     }
 }
