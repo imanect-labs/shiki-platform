@@ -160,21 +160,21 @@ export default function WorkflowsPage() {
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-6">
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold">ワークフロー</h1>
-          <p className="text-sm text-muted-foreground">
-            ブロックをつないで、定型作業を自動で動く流れにできます。
-          </p>
+      {/* 狭い幅でもボタンが説明文を押しつぶさないよう、説明はタイトル行の下に全幅で置く。 */}
+      <div className="mb-5">
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="shrink-0 text-lg font-semibold">ワークフロー</h1>
+          <Button onClick={create} disabled={creating}>
+            {creating ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+            ) : (
+              <Plus className="size-4" aria-hidden />
+            )}
+            <span className="sm:hidden">新規作成</span>
+            <span className="hidden sm:inline">新しいワークフロー</span>
+          </Button>
         </div>
-        <Button onClick={create} disabled={creating}>
-          {creating ? (
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-          ) : (
-            <Plus className="size-4" aria-hidden />
-          )}
-          新しいワークフロー
-        </Button>
+        <p className="mt-1 text-sm text-muted-foreground">ブロックをつないで、定型作業を自動で動く流れにできます。</p>
       </div>
 
       {items === null ? (
