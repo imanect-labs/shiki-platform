@@ -4,6 +4,11 @@
 - `all`         … 全ツールの定義を最初から提示（tool search なし・従来の挙動）
 - `search_bm25` … `tool_search` だけを提示し、製品の順位（limit 5）で読み込ませる
 - `search_rrf`  … 同上、順位は BM25 と埋め込みの RRF 融合の上位 5 件
+- `*_prod`      … 結果本文を製品の文面（`CatalogSearch::loaded_message`）にしたもの（案内なし）
+- `*_hint`      … 製品の文面に、同じ名前空間の下調べ用ツールの案内を付けたもの（#522・
+                  効果が無く製品には入れなかった案。文面は評価側で再現する）
+
+`search_bm25` / `search_rrf` の結果本文は評価側で組んだ簡略版（v3 の基準・名前の一覧のみ）。
 
 読み込みは OpenAI 互換アダプタと同じ写し方（読み込んだ定義を `tools` の末尾へ追記し、
 結果本文に呼び出し名を書き足す・`crates/llm-gateway/src/providers/openai.rs`）。
@@ -17,9 +22,12 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import inspect
 import json
 import random
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -32,8 +40,21 @@ from .evaluate import load_queries, rrf, shuffled
 from .llm import chat
 
 ROOT = Path(__file__).resolve().parent.parent
+CONDITIONS = (
+    "all",
+    "search_bm25",
+    "search_rrf",
+    "search_bm25_prod",
+    "search_rrf_prod",
+    "search_bm25_hint",
+    "search_rrf_hint",
+)
 CACHE = ROOT / "data" / "cache" / "e2e"
 MAX_STEPS = 6
+SIBLING_LIMIT = 15
+MAX_QUERY_CHARS = 500  # 製品の `tool_search` と同じ上限。
+DEFAULT_LIMIT = 5  # 製品の既定件数と上限。
+MAX_LIMIT = 10
 SYSTEM = (
     "あなたは社内業務を手伝う AI アシスタントです。必要ならツールを使って依頼を実行してください。"
 )
@@ -62,20 +83,129 @@ class Searcher:
     def __init__(self, tools: list[Tool], method: str):
         self.tools = shuffled(tools)  # 定義順の同点解決で正解が有利にならないように。
         tools = self.tools
-        self.method = method
+        self.method = base_method(method)
+        # 製品の文面の条件は、融合も製品の関数（`CatalogSearch::fused`）で行う。簡略版の条件は
+        # 初回の計測どおり評価側の RRF のまま。
+        self.product = method != self.method
         self.defs = [t.tooldef("ja") for t in tools]
+        self._ranks: dict[tuple[str, int], dict] = {}
         _, self.definition = bm25.rank(self.defs, [], limit=5)
-        if method == "search_rrf":
+        if self.method == "search_rrf":
             self.doc_vecs = worker.embed([t.doc_text("ja") for t in tools], "document")
 
-    def search(self, query: str) -> list[str]:
-        ranks, _ = bm25.rank(self.defs, [{"id": "q", "text": query}], limit=5, depth=len(self.defs))
-        if self.method == "search_bm25":
-            return ranks["q"]["search"]
+    def ranks(self, query: str, limit: int = DEFAULT_LIMIT) -> dict:
+        """製品の BM25 の結果（同じクエリは使い回す・案内の並びでも使う）。"""
+        if (query, limit) not in self._ranks:
+            ranks, _ = bm25.rank(
+                self.defs, [{"id": "q", "text": query}], limit=limit, depth=len(self.defs)
+            )
+            self._ranks[(query, limit)] = ranks["q"]
+        return self._ranks[(query, limit)]
+
+    def search(self, query: str, limit: int = DEFAULT_LIMIT) -> list[str]:
+        # 製品は空・長すぎるクエリをエラーにする（何も読み込まない）。
+        if not query.strip() or len(query.strip()) > MAX_QUERY_CHARS:
+            return []
+        ranks = self.ranks(query, limit)
+        # `select:` の名指しは製品と同じく埋め込みを使わない（名前の完全一致だけ）。
+        if self.method == "search_bm25" or query.strip().startswith("select:"):
+            return ranks["search"]
         qv = worker.embed([query], "query")[0]
-        order = np.argsort(-(self.doc_vecs @ qv), kind="stable")
+        sims = self.doc_vecs @ qv
+        order = np.argsort(-sims, kind="stable")  # 同点は定義順（製品と同じ）。
         emb = [self.tools[i].name for i in order]
-        return rrf([n for n, _ in ranks["q"]["ranked"]], emb)[:5]
+        if not self.product:
+            return rrf([n for n, _ in ranks["ranked"]], emb)[:limit]
+        # 製品は全文書の類似度が同じ（クエリが何も区別しない）とき BM25 だけで返す。
+        if float(sims.max() - sims.min()) <= np.finfo(np.float32).eps:
+            return ranks["search"]
+        return bm25.fuse(self.defs, query, emb, limit)
+
+
+def base_method(condition: str) -> str:
+    """条件名から順位付けの方式（`search_bm25` / `search_rrf`）を取り出す。"""
+    return condition.removesuffix("_prod").removesuffix("_hint")
+
+
+def search_content(
+    condition: str,
+    searcher: Searcher,
+    query: str,
+    limit: int | None,
+    hits: list[str],
+    loaded: set[str],
+) -> str:
+    """`tool_search` の結果本文（OpenAI 互換アダプタと同じく呼び出し名を書き足す）。
+
+    `loaded` はこの会話でそれまでに読み込んだツール（案内から除く）。"""
+    if condition in ("search_bm25", "search_rrf"):
+        lines = "".join(f"\n- {h}" for h in hits)
+        return (
+            f"{len(hits)} 件のツールを読み込みました。以降は通常どおり呼び出せます。{lines}"
+            f"\n（読み込んだツールの呼び出し名: {', '.join(wire(h) for h in hits)}）"
+            if hits
+            else "該当するツールは見つかりませんでした。"
+        )
+    content = bm25.loaded_message(searcher.defs, query, limit, hits)
+    if condition.endswith("_hint") and hits:
+        content += sibling_hint(searcher, query, hits, loaded)
+    if hits:
+        content += f"\n（読み込んだツールの呼び出し名: {', '.join(wire(h) for h in hits)}）"
+    return content
+
+
+def namespace(name: str) -> str:
+    """名前空間（名前の最初の区切りまで・製品の `catalog_listing` と同じ）。"""
+    return re.split(r"[._]", name, maxsplit=1)[0]
+
+
+def sibling_hint(searcher: Searcher, query: str, hits: list[str], loaded: set[str]) -> str:
+    """製品に入れなかった案（#522）の再現: 読み込んだツールと同じ名前空間の、まだ読み込んで
+    いないツールの名前を添え、下調べに使えると案内する。並びは製品の BM25 の順位 → 定義順で
+    15 件まで（試作した製品実装と同じ文面・同じ並び）。今回とそれまでに読み込んだツールは除く
+    （試作は今回の分しか除かず、読み込み済みのツールを案内して読み込み直しを招いた）。"""
+    spaces = {namespace(h) for h in hits}
+    order = [n for n, _ in searcher.ranks(query)["ranked"]] + [d["name"] for d in searcher.defs]
+    out: list[str] = []
+    for n in order:
+        if len(out) >= SIBLING_LIMIT:
+            break
+        if n not in hits and n not in loaded and namespace(n) in spaces and n not in out:
+            out.append(n)
+    if not out:
+        return ""
+    return (
+        f"\n同じ名前空間のまだ読み込んでいないツール: {', '.join(out)}。"
+        "必要な ID や値が分からないときは、利用者に尋ねる前に、この中の一覧・検索・取得のツールを"
+        " `select:<名前>` で読み込んで調べられる。"
+    )
+
+
+def product_limit(raw: object) -> int:
+    """製品の `parse_input` と同じ limit の正規化（整数でなければ既定・1〜上限に丸める）。"""
+    # serde の `as_u64` が受け付ける範囲（0 以上 2^64 未満の整数）だけを有効とする。
+    if isinstance(raw, int) and not isinstance(raw, bool) and 0 <= raw < 2**64:
+        return min(max(raw, 1), MAX_LIMIT)
+    return DEFAULT_LIMIT
+
+
+def catalog_fingerprint(tools: list[Tool]) -> str:
+    """提示するカタログの定義（名前・説明・引数）の指紋。"""
+    defs = sorted((t.tooldef("ja") for t in tools), key=lambda d: d["name"])
+    return hashlib.sha256(json.dumps(defs, ensure_ascii=False).encode()).hexdigest()[:16]
+
+
+@functools.cache
+def text_fingerprint(fused: bool = False) -> str:
+    """結果本文と順位を作るコードの指紋（変われば `_prod` / `_hint` のキャッシュを使わない）。"""
+    repo = ROOT.parents[1]
+    src = (repo / "crates/agent-core/src/tool_search/mod.rs").read_text()
+    src += (repo / "crates/agent-core/examples/tool_search_rank.rs").read_text()
+    src += inspect.getsource(bm25)  # CLI への橋渡し（loaded_message / fuse）。
+    src += inspect.getsource(search_content) + inspect.getsource(sibling_hint)
+    if fused:  # RRF の条件は融合の経路（Searcher）も含める。
+        src += inspect.getsource(Searcher)
+    return hashlib.sha256(src.encode()).hexdigest()[:16]
 
 
 MOCK_RESULT = (
@@ -84,17 +214,29 @@ MOCK_RESULT = (
 )
 
 
+def cache_path(
+    tools: list[Tool], condition: str, query: dict, fingerprint: str | None = None
+) -> Path:
+    """1 会話のキャッシュの置き場所。
+
+    キーは入力内容から作る（依頼文・提示するカタログ・条件が変われば取り直す）。製品の文面を
+    使う条件は、文面と順位を作るコード（製品の tool_search・順位 CLI・評価側の案内と橋渡し）と
+    カタログの定義（説明文の変更でも本文が変わる）も入力に含める。`fingerprint` はコードの指紋を
+    差し替えるとき（キャッシュの付け替え）だけ渡す。
+    """
+    parts = [condition, query["text"], sorted(t.name for t in tools)]
+    if condition not in ("all", "search_bm25", "search_rrf"):
+        fp = fingerprint or text_fingerprint(base_method(condition) == "search_rrf")
+        parts += [fp, catalog_fingerprint(tools)]
+    digest = hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()[:16]
+    key = f"v3-{condition}-{len(tools)}-{query['id']}-{digest}".replace("/", "_")
+    return CACHE / f"{key}.json"
+
+
 def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher | None) -> dict:
     """1 会話を回す。正解ツールを呼んだ時点で打ち切る（下調べのツールを先に呼ぶのは正しい手順
     なので、他のツールにはモックの結果を返して続けさせる）。"""
-    # キーは入力内容から作る（依頼文・提示するカタログ・条件が変われば取り直す）。
-    digest = hashlib.sha256(
-        json.dumps(
-            [condition, query["text"], sorted(t.name for t in tools)], ensure_ascii=False
-        ).encode()
-    ).hexdigest()[:16]
-    key = f"v3-{condition}-{len(tools)}-{query['id']}-{digest}".replace("/", "_")
-    path = CACHE / f"{key}.json"
+    path = cache_path(tools, condition, query)
     if path.exists():
         return json.loads(path.read_text())
     by_wire = {wire(t.name): t for t in tools}
@@ -156,23 +298,23 @@ def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher |
                     )
                     continue
                 try:
-                    q = json.loads(c["function"]["arguments"] or "{}").get("query", "")
+                    args = json.loads(c["function"]["arguments"] or "{}")
                 except json.JSONDecodeError:
-                    q = ""
+                    args = {}
+                q = args.get("query", "") if isinstance(args, dict) else ""
+                q = q if isinstance(q, str) else ""
+                # 製品の文面の条件は、モデルが渡した limit も製品と同じに扱う（簡略版は 5 件固定）。
+                raw_limit = args.get("limit") if isinstance(args, dict) else None
+                limit = raw_limit if condition not in ("search_bm25", "search_rrf") else None
                 assert searcher is not None
-                hits = searcher.search(q) if q else []
-                rec["searches"].append({"query": q, "hits": hits})
+                hits = searcher.search(q, product_limit(limit)) if q else []
+                rec["searches"].append({"query": q, "limit": limit, "hits": hits})
                 known = {o["function"]["name"] for o in offered}
                 offered += [
                     as_function(t) for t in tools if t.name in hits and wire(t.name) not in known
                 ]
-                lines = "".join(f"\n- {h}" for h in hits)
-                content = (
-                    f"{len(hits)} 件のツールを読み込みました。以降は通常どおり呼び出せます。{lines}"
-                    f"\n（読み込んだツールの呼び出し名: {', '.join(wire(h) for h in hits)}）"
-                    if hits
-                    else "該当するツールは見つかりませんでした。"
-                )
+                loaded = {by_wire[n].name for n in known if n in by_wire}
+                content = search_content(condition, searcher, q, limit, hits, loaded)
                 messages.append({"role": "tool", "tool_call_id": c["id"], "content": content})
             if query["target"] in rec["calls"]:
                 break
@@ -200,7 +342,7 @@ def main(sizes: tuple[int, ...] = (200, 1000), sample: int = 60, seed: int = 3) 
     subsets = fixed_target_subsets(catalog, {q["target"] for q in qs}, list(sizes))
     rows = []
     for tools in subsets.values():
-        for condition in ("all", "search_bm25", "search_rrf"):
+        for condition in CONDITIONS:
             searcher = Searcher(tools, condition) if condition != "all" else None
             # 全ツール提示は 1 会話 10 万トークン超になり、利用枠を使い切る。大きい規模では
             # **全条件で**同じ半分の正解ツール（日英とも）に絞る（条件間で同じ標本を比べる）。

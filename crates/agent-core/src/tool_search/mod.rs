@@ -462,6 +462,50 @@ impl CatalogSearch {
             .collect()
     }
 
+    /// `query`（と `limit`）の検索で `names` を読み込んだときの `tool_search` の結果本文。評価の
+    /// E2E が製品の文面そのままで会話させるために使う（順位は評価側が融合して決めるため、名前を
+    /// 受け取る）。入力の誤り（空・長すぎる）と `select:` の名指しは製品の処理そのものの本文を
+    /// 返す（見つからなかった名前・重複・件数の上限まで製品と同じにする）。索引に無い名前は無視する。
+    #[must_use]
+    pub fn loaded_message(&self, query: &str, limit: Option<u64>, names: &[String]) -> String {
+        let mut input = json!({ "query": query });
+        if let Some(l) = limit {
+            input["limit"] = json!(l);
+        }
+        if let Err(e) = parse_input(&input) {
+            return e.content;
+        }
+        if query.trim().starts_with("select:") {
+            return self.0.handle_lexical(&input).content;
+        }
+        let mut hits: Vec<usize> = Vec::new();
+        for n in names {
+            let key = name_key(n);
+            if let Some(i) = self.0.tools.iter().position(|(t, _)| name_key(t) == key) {
+                if !hits.contains(&i) {
+                    hits.push(i);
+                }
+            }
+        }
+        self.0.render(&hits, &[]).content
+    }
+
+    /// 埋め込みの順位（名前・類似度の降順）を受け取り、製品と同じ融合（BM25 との RRF・`+語` の
+    /// 絞り込み・名前の完全一致を先頭）で `limit` 件を返す。評価の E2E が埋め込みを自前で引いた
+    /// うえで、製品の融合順位で読み込ませるために使う（索引に無い名前は無視する）。
+    #[must_use]
+    pub fn fused(&self, query: &str, embedding_order: &[String], limit: usize) -> Vec<String> {
+        let emb: Vec<usize> = embedding_order
+            .iter()
+            .filter_map(|n| self.0.tools.iter().position(|(t, _)| t == n))
+            .collect();
+        self.0
+            .fused(query, &emb, limit)
+            .into_iter()
+            .map(|i| self.0.tools[i].0.clone())
+            .collect()
+    }
+
     /// `tool_search` の定義（説明に載る一覧の長さ・E2E での提示に使う）。
     #[must_use]
     pub fn definition(&self) -> ToolDef {
