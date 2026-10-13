@@ -5,9 +5,22 @@
 //! パイプライン全体を決定的に叩くための入口（issue #282 / #328 / Task 11.3・11.10）。
 
 use super::stub_fixtures::genui_spec;
-use super::stub_stream::tool_call_stream;
+use super::stub_stream::{text_stream, tool_call_stream};
 use crate::model::{Block, GenerateRequest, Role};
 use crate::provider::DeltaStream;
+
+/// `echosystem:` … 受け取った system プロンプトをそのまま本文で返す（system の組み立て＝
+/// 今日の日付などが実際にモデルへ届くことの検証・#546）。
+pub(super) fn echo_system_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    user_text.starts_with("echosystem:").then(|| {
+        let system = req.system.as_deref().unwrap_or_default();
+        text_stream(&format!("system: {system}"), prompt_tokens)
+    })
+}
 
 /// tool search の決定的駆動 `toolsearch:<query>`（遅延ツールの検索→読み込み→呼び出しの e2e）。
 ///
