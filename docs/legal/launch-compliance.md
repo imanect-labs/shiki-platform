@@ -179,8 +179,8 @@ shiki は顧客の文書・チャットを預かり、顧客従業員（エン�
       Collabora の名称・ロゴ・有償 EULA を外した。**Collabora への書面での確認（trademark@collaboraoffice.com）は未実施**
       （human 判断で後回し）。
     - 告知: イメージ内 `/usr/share/doc/shiki-office/NOTICE` に構成要素・ライセンス・ソースの入手先を記載。
-    - ソース: `shiki-collabora:<ONLINE_REF>-sources` に対応するソース一式（Ubuntu パッケージを含む）を保全。
-      **納品物に本体と一緒に添える**こと。
+    - ソース: `shiki-collabora:<ONLINE_REF>-<BUILD_ID>-sources` に、同じ BUILD_ID の本体に対応するソース一式
+      （Ubuntu パッケージを含む）を保全。**納品物に本体と一緒に添える**こと（BUILD_ID を揃える）。
   - [ ] **他の配布イメージの Ubuntu / Debian ベースの GPL・LGPL パッケージ**: ベースイメージに入っている
     bash・coreutils・libc 等にもソース提供義務がある（GPLv2 §3 / GPLv3 §6）。Office と同じ方式
     （イメージ内のソースパッケージ一覧＋`-sources` イメージの同梱）か、書面による申し出のどちらで満たすかを

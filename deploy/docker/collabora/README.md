@@ -64,6 +64,7 @@ online が Shiki Office に置き換える。
 | `NOTICE` | 構成要素ごとのライセンスとソースの入手先（リポジトリ・タグ・コミット）、ライセンス文書の場所、`-sources` イメージの案内 |
 | `core-external-tarballs.sha256` | core が同梱する外部ライブラリ（ICU・NSS・OpenSSL・curl・cairo・フォント等）のソース tarball と sha256 |
 | `ubuntu-source-packages.txt` | イメージ内の Ubuntu パッケージのソースパッケージ名と版 |
+| `poco-LICENSE` | Poco の BSL-1.0 本文 |
 | `ubuntu-snapshot.txt` | それらを入れたときの Ubuntu archive の時刻（`snapshot.ubuntu.com` でその時点の archive を引ける） |
 
 Poco は既定（`POCO_UNBUNDLED=OFF`）で PCRE2・zlib・Expat・utf8proc を自分のソースから取り込んでビルドする。
@@ -73,29 +74,39 @@ NOTICE から参照している（utf8proc のためにランタイムへ `libut
 ライセンス文書そのものは `/opt/collaboraoffice/LICENSE.html`・`/usr/share/doc/coolwsd/THIRDPARTYLICENSES`・
 `/usr/share/doc/*/copyright` にある。
 
-### ソースの保全（`<ONLINE_REF>-sources` イメージ）
+### ソースの保全（`-sources` イメージ）とタグ
 
-`office-image.yml` は本体の push の後、`--target sources` で**対応するソース一式**を固めたイメージを
-`ghcr.io/<owner>/shiki-collabora:<ONLINE_REF>-sources` として push する。上流のリポジトリやミラーが
-消えても提供できるようにするため。中身は NOTICE の構成要素と 1 対 1:
+`office-image.yml` は smoke の後、`--target sources` で**対応するソース一式**を固めたイメージを先に push し、
+それが成功してから本体を push する（対応ソースの無い本体を公開しないため）。上流のリポジトリやミラーが
+消えても提供できるようにするため。
+
+| タグ | 中身 | 上書き |
+| --- | --- | --- |
+| `<ONLINE_REF>-<BUILD_ID>` | 本体（このビルド） | されない |
+| `<ONLINE_REF>-<BUILD_ID>-sources` | 上の本体に対応するソース一式。本体の NOTICE はこれを案内する | されない |
+| `<ONLINE_REF>` / `latest` / `<ONLINE_REF>-sources` | 最新のビルド | 週次の再ビルド等で上書きされる |
+
+`BUILD_ID` は `b<run_id>-<run_attempt>`。**配布・デプロイでは不変タグ（`<ONLINE_REF>-<BUILD_ID>`）を指す**
+（上書きされるタグだと、ノードに残った古いイメージが使われたり、ソースとの対応が崩れたりする）。
+`-sources` の中身は NOTICE の構成要素と 1 対 1:
 
 ```
 core-<CORE_REF>.tar.gz      core（submodule 込み・git の追跡対象のみ）
 core-external/              core が取得した外部ライブラリの tarball
 online-<ONLINE_REF>.tar.gz  online
-poco.tar.gz                 Poco
+poco.tar.gz                 Poco（PCRE2 / zlib / Expat / utf8proc の同梱ソースを含む）
 ubuntu/                     Ubuntu パッケージのソース（.dsc / orig / debian、イメージ内の版そのもの。
                             ランタイムが apt-get update した時刻のスナップショットから取る）
 doc/                        NOTICE ほか（上の表）
 ```
 
-**オンプレ顧客への納品物には、本体と一緒にこの `-sources` イメージを添える**（NOTICE がそう案内している。
+**オンプレ顧客への納品物には、本体と、同じ `BUILD_ID` の `-sources` イメージを添える**（NOTICE がそう案内している。
 Ubuntu の GPL パッケージのソース提供義務もこれで満たす）。
 
 取り出し方:
 
 ```bash
-docker create --name src ghcr.io/<owner>/shiki-collabora:<ONLINE_REF>-sources none
+docker create --name src ghcr.io/<owner>/shiki-collabora:<ONLINE_REF>-<BUILD_ID>-sources none
 docker cp src:/ ./shiki-collabora-sources && docker rm src
 ```
 

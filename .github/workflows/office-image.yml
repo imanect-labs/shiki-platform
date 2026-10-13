@@ -48,6 +48,8 @@ jobs:
             [ -n "${!v}" ] || { echo "manifest に $v が無い"; exit 1; }
             echo "$v=${!v}" >> "$GITHUB_ENV"
           done
+          # ビルドごとに不変のタグに使う（run_id は再実行でも変わらないので attempt も付ける）。
+          echo "BUILD_ID=b${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -114,11 +116,13 @@ jobs:
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
             POCO_URL=${{ env.POCO_URL }}
             POCO_SHA256=${{ env.POCO_SHA256 }}
+            BUILD_ID=${{ env.BUILD_ID }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=MPL-2.0
             io.shiki.collabora.core=${{ env.CORE_REF }}@${{ env.CORE_COMMIT }}
             io.shiki.collabora.online=${{ env.ONLINE_REF }}@${{ env.ONLINE_COMMIT }}
+            io.shiki.collabora.sources=${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}-sources
 
       # **--rm を付けない。** 付けていると coolwsd が起動直後に落ちたとき
       # コンテナごとログが消え、「No such container」しか残らなかった。
@@ -154,6 +158,8 @@ jobs:
                test -s /usr/share/doc/shiki-office/NOTICE
                test -s /usr/share/doc/shiki-office/ubuntu-source-packages.txt
                test -s /usr/share/doc/shiki-office/core-external-tarballs.sha256
+               test -s /usr/share/doc/shiki-office/poco-LICENSE
+               grep -q "shiki-collabora:.*-b[0-9].*-sources" /usr/share/doc/shiki-office/NOTICE
                grep -q "^Vendor=Imanect Labs" /opt/collaboraoffice/program/versionrc' \
               || { echo "同梱物（EULA の除去・NOTICE・ベンダー）が想定と違う"; return 1; }
             echo "brand OK"
@@ -176,6 +182,48 @@ jobs:
 
       # smoke を通ったものだけ公開する。
       #
+      # **ソースを先に公開し、成功してから本体を公開する（#549）。** 本体の NOTICE は
+      # 「対応するソース一式は -sources イメージにある」と案内している。逆順だと、
+      # ソース側が失敗したとき（snapshot の取得失敗・ディスク不足・タイムアウト）に
+      # 対応ソースの無い本体だけが公開される。
+      #
+      # **タグはビルドごとに不変のもの（<ONLINE_REF>-<BUILD_ID>）も付ける。** 週次の
+      # 再ビルドで <ONLINE_REF> は上書きされる（Ubuntu パッケージの版が変わる）ので、
+      # 不変タグが無いと古い本体に対応するソースが引けなくなる。本体の NOTICE には
+      # この不変タグのソースイメージを書き込んでいる。配布・デプロイでは不変タグを指す。
+      #
+      # smoke で load したイメージはもう使わない（push は BuildKit から行う）ので、
+      # Ubuntu のソース取得に使うディスクを空けるために消す。
+      - name: ローカルのイメージを消す（sources のためにディスクを空ける）
+        run: |
+          docker image rm "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
+            "ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest" || true
+          df -h /
+
+      - name: sources（対応するソース一式）を建てて push
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/docker/collabora
+          target: sources
+          push: true
+          cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}-sources
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}-sources
+          build-args: |
+            CORE_REPO=${{ env.CORE_REPO }}
+            CORE_REF=${{ env.CORE_REF }}
+            CORE_COMMIT=${{ env.CORE_COMMIT }}
+            ONLINE_REPO=${{ env.ONLINE_REPO }}
+            ONLINE_REF=${{ env.ONLINE_REF }}
+            ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            POCO_URL=${{ env.POCO_URL }}
+            POCO_SHA256=${{ env.POCO_SHA256 }}
+            BUILD_ID=${{ env.BUILD_ID }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=Complete corresponding source of shiki-collabora:${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}
+
       # **BuildKit から push する（docker push にしない）。** load したイメージを
       # docker push すると、build-push-action が付ける provenance（どのコミット・
       # どのワークフローから建てたか）が付かない（load: true では attestation が
@@ -192,6 +240,7 @@ jobs:
           sbom: true
           cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
           tags: |
+            ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest
           build-args: |
@@ -203,41 +252,15 @@ jobs:
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
             POCO_URL=${{ env.POCO_URL }}
             POCO_SHA256=${{ env.POCO_SHA256 }}
+            BUILD_ID=${{ env.BUILD_ID }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=MPL-2.0
             io.shiki.collabora.core=${{ env.CORE_REF }}@${{ env.CORE_COMMIT }}
             io.shiki.collabora.online=${{ env.ONLINE_REF }}@${{ env.ONLINE_COMMIT }}
+            io.shiki.collabora.sources=${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}-sources
 
-      # **対応するソース一式を `<ONLINE_REF>-sources` として公開する（#549）。**
-      # 配布物（上の push）と同じビルドのソースを固めたもの。NOTICE が参照している。
-      # 本体の push より後ろに置くのは、ソース取得側の一時的な失敗で本体の公開まで
-      # 止めないため（失敗すればこの job は赤くなるので、見落としはしない）。
-      # 先にローカルのイメージを消して、Ubuntu のソース取得に使うディスクを空ける。
-      - name: ローカルのイメージを消す（sources のためにディスクを空ける）
+      - name: 公開したタグ
         run: |
-          docker image rm "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}" \
-            "ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest" || true
-          df -h /
-
-      - name: sources（対応するソース一式）を建てて push
-        uses: docker/build-push-action@v6
-        with:
-          context: deploy/docker/collabora
-          target: sources
-          push: true
-          cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}-sources
-          build-args: |
-            CORE_REPO=${{ env.CORE_REPO }}
-            CORE_REF=${{ env.CORE_REF }}
-            CORE_COMMIT=${{ env.CORE_COMMIT }}
-            ONLINE_REPO=${{ env.ONLINE_REPO }}
-            ONLINE_REF=${{ env.ONLINE_REF }}
-            ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
-            POCO_URL=${{ env.POCO_URL }}
-            POCO_SHA256=${{ env.POCO_SHA256 }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.description=Complete corresponding source of shiki-collabora:${{ env.ONLINE_REF }}
+          echo "本体:   ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}-${BUILD_ID}" >> "$GITHUB_STEP_SUMMARY"
+          echo "ソース: ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}-${BUILD_ID}-sources" >> "$GITHUB_STEP_SUMMARY"

@@ -317,7 +317,12 @@ COPY --from=core-build /src/CORE_EXTERNAL_TARBALLS.sha256 /usr/share/doc/shiki-o
 # **第三者ソフトウェアの告知（#549・MPL-2.0 §3.2(a)）。** 受け取った人がソースの入手先を
 # 分かるようにする。コミット SHA だけでは足りないので、リポジトリ・タグ・SHA を並べる。
 COPY --from=poco-build /src/POCO_SOURCE /usr/share/doc/shiki-office/POCO_SOURCE
+COPY --from=poco-build /src/poco/LICENSE /usr/share/doc/shiki-office/poco-LICENSE
 COPY NOTICE.in /usr/share/doc/shiki-office/NOTICE.in
+# BUILD_ID: office-image.yml がビルドごとに付ける不変タグの一部。NOTICE はこのビルドに
+# 対応する -sources イメージ（<ONLINE_REF>-<BUILD_ID>-sources）を案内する。
+# ここで初めて宣言するのは、毎回変わる値でキャッシュを外すのをこれより後ろに限るため。
+ARG BUILD_ID=local
 RUN cd /usr/share/doc/shiki-office \
     && POCO_URL="$(sed -n 1p POCO_SOURCE)" && POCO_SHA256="$(sed -n 2p POCO_SOURCE)" && rm POCO_SOURCE \
     && for d in libpcre2-8-0 zlib1g libexpat1 libutf8proc3; do \
@@ -327,6 +332,7 @@ RUN cd /usr/share/doc/shiki-office \
            -e "s|@CORE_COMMIT@|$CORE_COMMIT|g" -e "s|@ONLINE_REPO@|$ONLINE_REPO|g" \
            -e "s|@ONLINE_REF@|$ONLINE_REF|g" -e "s|@ONLINE_COMMIT@|$ONLINE_COMMIT|g" \
            -e "s|@POCO_URL@|$POCO_URL|g" -e "s|@POCO_SHA256@|$POCO_SHA256|g" \
+           -e "s|@BUILD_ID@|$BUILD_ID|g" \
            NOTICE.in > NOTICE \
     && rm NOTICE.in \
     && if grep -n '@[A-Z_]*@' NOTICE; then echo "NOTICE に未置換のプレースホルダが残っている"; exit 1; fi \
