@@ -177,6 +177,9 @@ pub async fn run_agent(
         // 生成まで進んだステップだけ実測で補正する（途中キャンセルは報告が無い）。
         if let Some(sent) = sent_estimate.filter(|_| state.spent.steps > steps_before) {
             gauge.calibrate(sent, state.spent.last_prompt_tokens());
+            // このステップで読み込んだ定義は実測に入っていない。保存前に足しておく（再開時の
+            // 基準は履歴から求めるので、ここで足さないと再開直後に見落とす）。
+            gauge.observe_tools(context_tool_tokens(&state.messages));
             state.context_overhead_tokens = Some(gauge.overhead_tokens());
         }
         // ステップ境界でループ検出器の状態をチェックポイントへ畳み込む（中断/再開に耐える）。
