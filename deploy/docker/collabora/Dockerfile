@@ -199,8 +199,17 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   cp: cannot stat '/etc/timezone': No such file or directory
 # tzdata は /etc/timezone と /etc/localtime を、fontconfig は /etc/fonts と
 # /var/cache/fontconfig を供給する（いずれも雛形へコピーされる）。
+#
+# 2 行目は **core-build でリンクに使った -dev と同じ並び**（ビルド専用ツールは除く）。
+# 欠けると coolforkit が LOKit を読めず、子プロセスが 1 つも上がらない。
+#   Failed to load .../libmergedlo.so: libgssapi_krb5.so.2: cannot open shared object file
+#   FTL  No child process could be created. Exiting.   （exit 70）
+# core-build の apt を変えたらここも揃えること（漏れは下の ldd 検査で止まる）。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev libpng-dev libzstd-dev libpam0g-dev libcap2-bin libpcre2-8-0 \
+    libx11-dev libxml2-dev libxslt1-dev libcups2-dev libfontconfig1-dev libxrandr-dev \
+    libgl-dev libglu1-mesa-dev libkrb5-dev libnss3-dev libcairo2-dev \
+    libavahi-client-dev libdbus-glib-1-dev \
     cpio tzdata fontconfig \
     fonts-noto-cjk fonts-noto-cjk-extra ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -212,6 +221,14 @@ COPY --from=core-build /opt/collaboraoffice /opt/collaboraoffice
 COPY --from=online-build /inst/ /
 COPY --from=core-build /src/CORE_COMMIT /etc/collabora/CORE_COMMIT
 COPY --from=online-build /ONLINE_COMMIT /etc/collabora/ONLINE_COMMIT
+# **共有ライブラリの解決漏れをビルド時に全部出して止める。** 実行時に初めて
+# dlopen で 1 つずつ見つかる形だと、1 件ごとに CI を 1 往復（40 分）することになる。
+RUN missing="$( { for f in /opt/collaboraoffice/program/*.so* \
+                       /opt/collaboraoffice/program/soffice.bin \
+                       /usr/bin/coolwsd /usr/bin/coolforkit*; do \
+                    ldd "$f" 2>/dev/null; \
+                  done; } | grep 'not found' | sort -u)" \
+    && if [ -n "$missing" ]; then echo "解決できない共有ライブラリ:"; echo "$missing"; exit 1; fi
 # 非 root 実行（cool ユーザー）＋ systemplate/jail の初期化＋forkit へのファイル capability 付与
 # （jail の chroot に必要。Docker 既定 cap 集合（CHOWN/FOWNER/MKNOD/SYS_CHROOT）内で動く。
 #  compose 側で no-new-privileges を付けないこと — file caps の獲得が塞がれ起動不能になる）。

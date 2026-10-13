@@ -125,7 +125,9 @@ jobs:
           docker run -d --name collabora-smoke -p 127.0.0.1:19980:9980 \
             "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}"
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
+            # --max-time: 無いと coolwsd が子プロセス待ちで応答を返さないとき
+            # curl が固まり、120 秒の打ち切りが効かない（実際 17 分待った）。
+            if curl -fsS --max-time 5 http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
               echo "discovery OK"; exit 0
             fi
             if [ "$(docker inspect -f '{{.State.Running}}' collabora-smoke)" != true ]; then
