@@ -801,11 +801,7 @@ async fn autonomous_prunes_against_model_context_window() {
             });
             m.push(LlmMessage {
                 role: LlmRole::Tool,
-                content: vec![llm_gateway::Block::ToolResult {
-                    tool_use_id: id,
-                    content: big.clone(),
-                    is_error: false,
-                }],
+                content: vec![llm_gateway::Block::tool_result(id, big.clone(), false)],
             });
         }
         m.push(LlmMessage::text(LlmRole::User, "まとめて"));

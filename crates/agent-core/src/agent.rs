@@ -113,8 +113,12 @@ pub async fn run_agent(
     // 実測の補正がまだ無い（新規開始・旧チェックポイント）なら、固定分（system＋ツール定義）を
     // 概算で入れておく。最初の 1 回で溢れて拒否されると、補正に必要な実測すら得られない。
     // 実測済みなら（0 でも）その値を使う。
+    // 遅延ロードで未読込のツール定義は文脈に載らないので数えない。
     let initial_overhead = state.context_overhead_tokens.unwrap_or_else(|| {
-        crate::context::estimate_static_tokens(opts.system.as_deref(), &tool_defs)
+        crate::context::estimate_static_tokens(
+            opts.system.as_deref(),
+            llm_gateway::tool_loading::context_tools(&tool_defs, &state.messages),
+        )
     });
     let mut gauge = crate::context::ContextGauge::with_overhead(initial_overhead);
 
