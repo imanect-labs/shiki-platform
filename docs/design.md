@@ -609,7 +609,8 @@ flowchart TB
   - **デプロイ（ライセンス方針込み・2026-07 確定）**: Collabora はステートレスコンテナ。
     **配布物は MPLv2 ソースからの自前ビルド**（公式 CODE バイナリは Collabora が本番利用を想定しておらず、
     無償で本番に使う条件として「MPLv2 ソースから自前でビルド・自前のブランドで出す・自前でサポートする」ことを
-    求めている。自前ビルドは **Shiki Office** としてブランドし、Collabora の名称・ロゴ・EULA を外す（#549）。
+    求めている。自前ビルドは **Shiki Office** としてブランドし、Collabora の名称・ロゴ・EULA を外す（#549。
+    エンジンの内部名 "Collabora Office" は About の「powered by」等に残る。詳細は `deploy/docker/collabora/README.md`）。
     `deploy/docker/collabora/` にタグ pin＋sha256 manifest のビルドパイプライン・fork-policy 準拠・PIT-43）。
     ビルドは重いため別 CI ワークフローでレジストリへ push し、**開発/CI は暫定で upstream CODE イメージ pin 可**
     （配布物は必ず自前ビルド）。SaaS はテナント共有プール、オンプレ/エアギャップは同一イメージ同梱

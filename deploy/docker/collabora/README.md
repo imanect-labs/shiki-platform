@@ -26,8 +26,9 @@ Collabora の[商標ポリシー](https://www.collaboraonline.com/trademark-poli
 
 | 何を | どこで |
 | --- | --- |
-| core のベンダー・ロゴ | `--with-vendor` / `--with-branding=branding/core`（7 ファイル。欠けると LibreOffice のロゴで埋まる） |
-| online の製品名（WOPI の capabilities 等） | `--with-app-name` / `--with-vendor` |
+| core のベンダー・ロゴ | `--with-vendor` / `--with-branding`（このディレクトリの `branding/core/` を `/src/branding` へコピーして渡す。7 ファイル。欠けると LibreOffice のロゴで埋まる） |
+| online の製品名（WOPI の capabilities 等） | `--with-app-name` |
+| About の著作権表示（`Copyright © <年>, <vendor>.`） | online の `--with-vendor="the Collabora Online and LibreOffice contributors"`。**著作権表示なので自社名にしない**（無改変の上流コードの著作権者は上流の貢献者。未指定だとビルドユーザー名 root が出る） |
 | Collabora のヘルプへのリンク | `--without-help-url` |
 | UI の製品名・リンク・ロゴ | `coolwsd.xml` の `user_interface.brandProductName` / `brandProductURL`（`https://www.imanect.co.jp/`）/ `logoURL=none` をイメージに焼き込む |
 | Collabora のフォーラム・Issue へ飛ぶヘルプ項目 | `branding/online/branding.css`（coolwsd が未ブランドのビルドでも読み込む） |
@@ -63,6 +64,11 @@ online が Shiki Office に置き換える。
 | `NOTICE` | 構成要素ごとのライセンスとソースの入手先（リポジトリ・タグ・コミット）、ライセンス文書の場所、`-sources` イメージの案内 |
 | `core-external-tarballs.sha256` | core が同梱する外部ライブラリ（ICU・NSS・OpenSSL・curl・cairo・フォント等）のソース tarball と sha256 |
 | `ubuntu-source-packages.txt` | イメージ内の Ubuntu パッケージのソースパッケージ名と版 |
+| `ubuntu-snapshot.txt` | それらを入れたときの Ubuntu archive の時刻（`snapshot.ubuntu.com` でその時点の archive を引ける） |
+
+Poco は既定（`POCO_UNBUNDLED=OFF`）で PCRE2・zlib・Expat・utf8proc を自分のソースから取り込んでビルドする。
+それらの著作権表示とライセンス本文は、同じ上流の Ubuntu パッケージの `/usr/share/doc/<pkg>/copyright` を
+NOTICE から参照している（utf8proc のためにランタイムへ `libutf8proc3` を入れている）。
 
 ライセンス文書そのものは `/opt/collaboraoffice/LICENSE.html`・`/usr/share/doc/coolwsd/THIRDPARTYLICENSES`・
 `/usr/share/doc/*/copyright` にある。
@@ -78,7 +84,8 @@ core-<CORE_REF>.tar.gz      core（submodule 込み・git の追跡対象のみ�
 core-external/              core が取得した外部ライブラリの tarball
 online-<ONLINE_REF>.tar.gz  online
 poco.tar.gz                 Poco
-ubuntu/                     Ubuntu パッケージのソース（.dsc / orig / debian、イメージ内の版そのもの）
+ubuntu/                     Ubuntu パッケージのソース（.dsc / orig / debian、イメージ内の版そのもの。
+                            ランタイムが apt-get update した時刻のスナップショットから取る）
 doc/                        NOTICE ほか（上の表）
 ```
 
@@ -133,7 +140,7 @@ docker build deploy/docker/collabora --target runtime \
 ## 開発・CI の暫定フォールバック
 
 フルビルドは重いため、**開発と CI に限り** 公式 CODE イメージのピン利用を許す
-（compose の `COLLABORA_IMAGE` で差し替え。CODE の接続数制限は dev では実害なし）:
+（compose の `COLLABORA_IMAGE` で差し替え。CODE は Collabora のブランドのままだが dev では実害なし）:
 
 ```bash
 COLLABORA_IMAGE=collabora/code:26.04.2.1.1 docker compose --profile office up -d

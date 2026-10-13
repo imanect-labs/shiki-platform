@@ -1,8 +1,9 @@
 # Collabora Online（coolwsd＋Collabora Office core）の**ソース自前ビルド**（Task 11.5・PIT-43）。
 #
 # なぜソースビルドか（human 確定判断・docs/design.md §4.8）:
-#   公式 CODE バイナリには 10 文書/20 接続の制限が焼き込まれ、本番利用は商用契約が前提になる。
-#   ソースは MPLv2 であり、自前ビルドなら制限・契約なしでオンプレ同梱できる。
+#   公式 CODE バイナリは Collabora が本番利用を想定しておらず、無償で本番に使う条件は
+#   「MPLv2 ソースから自前でビルドし、自前のブランドで出し、自前でサポートする」こと。
+#   自前ビルドなら制限・契約なしでオンプレ同梱できる。Shiki Office としてブランドする（#549・README.md）。
 #   代償としてサプライチェーンと鮮度の責任を自分で持つ（PIT-43・README.md の追従手順参照）。
 #
 # 取得物は office-manifest.env の「リリースタグ＋peel 済みコミット SHA」で二重にピンする
@@ -125,10 +126,12 @@ RUN cd core \
 # **ソース保全用に core のソース一式を固める（#549）。** submodule（translations /
 # dictionaries / helpcontent2）は make の中で取得されるので、make の後に作る。
 # git の追跡対象だけを入れ、workdir/ や instdir/ の成果物は混ぜない。
+# --transform の flags=r: 既定（rsh）だとシンボリックリンクのリンク先にも接頭辞が付き、
+# 展開すると core-<ref>/core-<ref>/... を指す壊れたリンクになる（.vsconfig 等）。
 RUN mkdir -p /src/sources \
     && cd core \
     && git ls-files --recurse-submodules -z \
-       | tar --null -T - --transform "s,^,core-$CORE_REF/," -czf /src/sources/core-$CORE_REF.tar.gz \
+       | tar --null -T - --transform "flags=r;s,^,core-$CORE_REF/," -czf /src/sources/core-$CORE_REF.tar.gz \
     && tar tzf /src/sources/core-$CORE_REF.tar.gz "core-$CORE_REF/configure.ac" >/dev/null
 
 # ---- Stage 1-b: Poco（coolwsd の依存）のビルド ----
@@ -149,7 +152,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 RUN curl -fsSL -o poco.tar.gz "$POCO_URL" \
     && echo "$POCO_SHA256  poco.tar.gz" | sha256sum -c - \
-    && tar xf poco.tar.gz && mv poco-* poco
+    && tar xf poco.tar.gz && mv poco-* poco \
+    && printf '%s\n%s\n' "$POCO_URL" "$POCO_SHA256" > /src/POCO_SOURCE
 # coolwsd が使うのは Foundation / Net / NetSSL / Crypto / Util / XML / JSON。
 # それ以外（Data・MongoDB・Redis・Zip 等）は切って時間とサイズを節約する。
 RUN cmake -S poco -B build \
@@ -224,13 +228,17 @@ RUN git clone --depth 1 --branch "$ONLINE_REF" "$ONLINE_REPO" online \
 #     /hosting/capabilities の productName 等に出る
 #   --without-help-url: 既定は help.collaboraoffice.com。空にするとヘルプボタンが消える
 #     （coolwsd.xml の help_url の既定値もこれになる）
+#   --with-vendor: About の「Copyright © <年>, <vendor>.」にそのまま出る（Control.AboutDialog.ts）。
+#     **著作権表示なので Imanect Labs にしない**（無改変の上流コードの著作権者は上流の貢献者）。
+#     未指定だとビルドしたユーザー名（root）が入る。
 RUN cd online && ./autogen.sh \
     && ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
          --with-lokit-path=/opt/collaboraoffice/include \
          --with-lo-path=/opt/collaboraoffice \
          --with-poco-includes=/opt/poco/include \
          --with-poco-libs=/opt/poco/lib \
-         --with-app-name="Shiki Office" --with-vendor="Imanect Labs" \
+         --with-app-name="Shiki Office" \
+         --with-vendor="the Collabora Online and LibreOffice contributors" \
          --without-help-url \
          --disable-setcap --enable-silent-rules
 RUN cd online \
@@ -247,8 +255,6 @@ ARG CORE_COMMIT=bbf180856f1919e69a04fdf6175ff4f11f52e1db
 ARG ONLINE_REPO=https://github.com/CollaboraOnline/online.git
 ARG ONLINE_REF=cp-25.04.9-5
 ARG ONLINE_COMMIT=53f91c25641febb11d77702380530775a923890e
-ARG POCO_URL=https://github.com/pocoproject/poco/archive/refs/tags/poco-1.14.2-release.tar.gz
-ARG POCO_SHA256=47394ea7ddb7b0a40e1a5be896f8f5dc77cfdc4f561d2e7131ecf582df5a0c3a
 ENV DEBIAN_FRONTEND=noninteractive
 # ランタイム依存は dev パッケージで引き込む（noble の t64 リネーム等、実ライブラリの
 # パッケージ名差異に依存しないため。ヘッダ分のサイズ増は堅牢性とのトレード）。
@@ -271,21 +277,32 @@ ENV DEBIAN_FRONTEND=noninteractive
 # **upgrade してから入れる（#549）。** ベースイメージに入っている古い版のままだと、
 # sources ステージがその版のソースを deb-src から取れない（索引には各ポケットの
 # 最新版しか載らない）。セキュリティ修正の取り込みにもなる。
-RUN apt-get update && apt-get upgrade -y \
+#
+# **apt-get update の時刻を記録する（#549）。** このレイヤはビルドキャッシュから
+# 再利用されるので、後から deb-src を引くと版がずれる。sources ステージはこの時刻の
+# Ubuntu スナップショット（snapshot.ubuntu.com）からソースを取る。記録とインストールが
+# 同じレイヤにあるので、キャッシュに当たっても対応は崩れない。
+#
+# libutf8proc3: Poco が同梱している utf8proc の著作権表示とライセンス本文
+# （/usr/share/doc/libutf8proc3/copyright）を NOTICE から参照するため。
+# PCRE2 / zlib / expat の分は既に入っているパッケージのものを参照する。
+RUN mkdir -p /usr/share/doc/shiki-office \
+    && apt-get update \
+    && date -u +%Y%m%dT%H%M%SZ > /usr/share/doc/shiki-office/ubuntu-snapshot.txt \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
     libssl-dev libpng-dev libzstd-dev libpam0g-dev libcap2-bin libpcre2-8-0 \
     libx11-dev libxml2-dev libxslt1-dev libcups2-dev libfontconfig1-dev libxrandr-dev \
     libgl-dev libglu1-mesa-dev libkrb5-dev libnss3-dev libcairo2-dev \
     libavahi-client-dev libdbus-glib-1-dev \
-    cpio tzdata fontconfig \
+    cpio tzdata fontconfig libutf8proc3 \
     fonts-noto-cjk fonts-noto-cjk-extra ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 # **このイメージに入っている Ubuntu パッケージのソースパッケージと版を記録する（#549）。**
 # GPL / LGPL のパッケージ（bash・coreutils・libc 等）を含むイメージを配布すると、
 # そのソースの提供義務を負う。sources ステージはこの一覧どおりにソースを取得する。
 # apt はこの上の 1 回しか走らせないこと（後から足すと一覧から漏れる）。
-RUN mkdir -p /usr/share/doc/shiki-office \
-    && dpkg-query -W -f='${source:Package} ${source:Version}\n' | sort -u \
+RUN dpkg-query -W -f='${source:Package} ${source:Version}\n' | sort -u \
        > /usr/share/doc/shiki-office/ubuntu-source-packages.txt \
     && test -s /usr/share/doc/shiki-office/ubuntu-source-packages.txt
 # **ビルドに使ったのと同じ Poco を載せる。** distro の 1.11.0 を入れると
@@ -299,8 +316,13 @@ COPY --from=online-build /ONLINE_COMMIT /etc/collabora/ONLINE_COMMIT
 COPY --from=core-build /src/CORE_EXTERNAL_TARBALLS.sha256 /usr/share/doc/shiki-office/core-external-tarballs.sha256
 # **第三者ソフトウェアの告知（#549・MPL-2.0 §3.2(a)）。** 受け取った人がソースの入手先を
 # 分かるようにする。コミット SHA だけでは足りないので、リポジトリ・タグ・SHA を並べる。
+COPY --from=poco-build /src/POCO_SOURCE /usr/share/doc/shiki-office/POCO_SOURCE
 COPY NOTICE.in /usr/share/doc/shiki-office/NOTICE.in
 RUN cd /usr/share/doc/shiki-office \
+    && POCO_URL="$(sed -n 1p POCO_SOURCE)" && POCO_SHA256="$(sed -n 2p POCO_SOURCE)" && rm POCO_SOURCE \
+    && for d in libpcre2-8-0 zlib1g libexpat1 libutf8proc3; do \
+         test -s "/usr/share/doc/$d/copyright" || { echo "/usr/share/doc/$d/copyright が無い"; exit 1; }; \
+       done \
     && sed -e "s|@CORE_REPO@|$CORE_REPO|g" -e "s|@CORE_REF@|$CORE_REF|g" \
            -e "s|@CORE_COMMIT@|$CORE_COMMIT|g" -e "s|@ONLINE_REPO@|$ONLINE_REPO|g" \
            -e "s|@ONLINE_REF@|$ONLINE_REF|g" -e "s|@ONLINE_COMMIT@|$ONLINE_COMMIT|g" \
@@ -375,20 +397,26 @@ CMD ["coolwsd", "--o:sys_template_path=/opt/cool/systemplate", \
 # 中身は NOTICE の「1. 構成要素」と 1 対 1 に対応する。
 FROM ubuntu:24.04 AS ubuntu-sources
 ENV DEBIAN_FRONTEND=noninteractive
-# deb-src を有効にする（noble の DEB822 形式。Types 行に deb-src を足す）。
-RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources \
-    && grep -q '^Types: deb deb-src$' /etc/apt/sources.list.d/ubuntu.sources \
-    && apt-get update && apt-get install -y --no-install-recommends dpkg-dev ca-certificates
+# ca-certificates: snapshot.ubuntu.com は https のみ。
+RUN apt-get update && apt-get install -y --no-install-recommends dpkg-dev ca-certificates
 COPY --from=runtime /usr/share/doc/shiki-office/ubuntu-source-packages.txt /ubuntu-source-packages.txt
+COPY --from=runtime /usr/share/doc/shiki-office/ubuntu-snapshot.txt /ubuntu-snapshot.txt
 # ランタイムに入っている**版そのもの**のソースを取る（別の版で代用しない）。
+# ランタイムが apt-get update した時刻のスナップショットから取る（ランタイムのレイヤが
+# キャッシュから来ても版がずれない）。deb-src は noble の DEB822 形式の Types 行に足す。
 # 取れなかったものは名前を全部出して止める。
 WORKDIR /out/ubuntu
-RUN failed=""; \
-    while read -r pkg ver; do \
-      apt-get source --download-only "$pkg=$ver" >/dev/null 2>&1 || failed="$failed $pkg=$ver"; \
-    done < /ubuntu-source-packages.txt; \
-    if [ -n "$failed" ]; then echo "ソースを取得できなかったパッケージ:$failed"; exit 1; fi; \
-    ls | wc -l
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources \
+    && grep -q '^Types: deb deb-src$' /etc/apt/sources.list.d/ubuntu.sources \
+    && snap="$(cat /ubuntu-snapshot.txt)" \
+    && apt-get update --snapshot "$snap" \
+    && failed="" \
+    && while read -r pkg ver; do \
+         apt-get source --snapshot "$snap" --download-only "$pkg=$ver" >/dev/null 2>&1 \
+           || failed="$failed $pkg=$ver"; \
+       done < /ubuntu-source-packages.txt \
+    && if [ -n "$failed" ]; then echo "ソースを取得できなかったパッケージ（snapshot $snap）:$failed"; exit 1; fi \
+    && ls | wc -l
 
 FROM scratch AS sources
 COPY --from=core-build /src/sources/ /

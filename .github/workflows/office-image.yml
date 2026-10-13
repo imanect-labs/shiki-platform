@@ -44,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           source deploy/docker/collabora/office-manifest.env
-          for v in CORE_REPO CORE_REF CORE_COMMIT ONLINE_REPO ONLINE_REF ONLINE_COMMIT; do
+          for v in CORE_REPO CORE_REF CORE_COMMIT ONLINE_REPO ONLINE_REF ONLINE_COMMIT POCO_URL POCO_SHA256; do
             [ -n "${!v}" ] || { echo "manifest に $v が無い"; exit 1; }
             echo "$v=${!v}" >> "$GITHUB_ENV"
           done
@@ -83,6 +83,8 @@ jobs:
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            POCO_URL=${{ env.POCO_URL }}
+            POCO_SHA256=${{ env.POCO_SHA256 }}
 
 
       # **push する前に smoke する。** 以前はこの step が push: true で、
@@ -110,6 +112,8 @@ jobs:
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            POCO_URL=${{ env.POCO_URL }}
+            POCO_SHA256=${{ env.POCO_SHA256 }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=MPL-2.0
@@ -128,12 +132,16 @@ jobs:
           # ずれると、ビルドは通っても UI に Collabora の名前が戻る。利用者の目に入る
           # 経路（capabilities・エディタのページ・branding.css）と同梱物を実物で確かめる。
           check_brand() {
-            local base=http://127.0.0.1:19980 caps path html
+            local base=http://127.0.0.1:19980 caps disc path html
             caps="$(curl -fsS --max-time 5 "$base/hosting/capabilities")"
             echo "$caps" | grep -Eq '"productName" *: *"Shiki Office"' \
               || { echo "capabilities の productName が Shiki Office でない: $caps"; return 1; }
-            path="$(curl -fsS --max-time 5 "$base/hosting/discovery" \
-              | grep -o 'urlsrc="[^"]*/cool.html' | head -1 | sed -E 's#urlsrc="https?://[^/]+##')"
+            # head で途中から読むのをやめると、pipefail の下では前段が SIGPIPE で落ちて
+            # パイプライン全体が失敗する（urlsrc は数百件ある）。最後まで読む sed -n で 1 件目を取る。
+            disc="$(curl -fsS --max-time 5 "$base/hosting/discovery")"
+            path="$(printf '%s\n' "$disc" | grep -o 'urlsrc="[^"]*/cool.html' \
+              | sed -n -E '1{s#urlsrc="https?://[^/]+##;p}')"
+            [ -n "$path" ] || { echo "discovery に cool.html の urlsrc が無い"; return 1; }
             html="$(curl -fsS --max-time 10 "$base$path")"
             echo "$html" | grep -q 'id="init-product-branding-name" value="Shiki Office"' \
               || { echo "エディタのページの製品名が Shiki Office でない"; return 1; }
@@ -193,6 +201,8 @@ jobs:
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            POCO_URL=${{ env.POCO_URL }}
+            POCO_SHA256=${{ env.POCO_SHA256 }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=MPL-2.0
@@ -226,6 +236,8 @@ jobs:
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
+            POCO_URL=${{ env.POCO_URL }}
+            POCO_SHA256=${{ env.POCO_SHA256 }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.description=Complete corresponding source of shiki-collabora:${{ env.ONLINE_REF }}
