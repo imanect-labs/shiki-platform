@@ -25,17 +25,16 @@ use agent_core::context_replay::{replay, ReplayConfig};
 use chat::model::Message;
 use chat::worker::trajectory::from_messages;
 
-/// 応答 JSON のうち再生に要る部分（`MessagesResponse.messages`）。素の配列も受ける。
+/// 応答 JSON のうち再生に要る部分（`MessagesResponse`）。
+///
+/// 応答オブジェクトだけを受ける。素の `messages` 配列は run が進行中かどうかを持たないので、
+/// 未完の軌跡を完了済みとして再生しかねない。
 #[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum Export {
-    Response {
-        messages: Vec<Message>,
-        /// 進行中 run の assistant メッセージ（あれば未完の軌跡なので再生しない）。
-        #[serde(default)]
-        active_assistant_message_id: Option<uuid::Uuid>,
-    },
-    Bare(Vec<Message>),
+struct Export {
+    messages: Vec<Message>,
+    /// 進行中 run の assistant メッセージ（あれば未完の軌跡なので再生しない）。
+    #[serde(default)]
+    active_assistant_message_id: Option<uuid::Uuid>,
 }
 
 struct Args {
@@ -105,14 +104,11 @@ fn parse_args() -> Result<Args, String> {
 fn run() -> Result<(), String> {
     let args = parse_args()?;
     let raw = std::fs::read_to_string(&args.input).map_err(|e| format!("{}: {e}", args.input))?;
-    let (messages, active) =
-        match serde_json::from_str::<Export>(&raw).map_err(|e| e.to_string())? {
-            Export::Response {
-                messages,
-                active_assistant_message_id,
-            } => (messages, active_assistant_message_id),
-            Export::Bare(messages) => (messages, None),
-        };
+    let Export {
+        messages,
+        active_assistant_message_id: active,
+    } = serde_json::from_str(&raw)
+        .map_err(|e| format!("GET /threads/{{id}}/messages の応答オブジェクトを渡すこと: {e}"))?;
     let mut trajectory = from_messages(&messages, args.message).map_err(|e| e.to_string())?;
     if active == Some(trajectory.message_id) {
         return Err(format!(
