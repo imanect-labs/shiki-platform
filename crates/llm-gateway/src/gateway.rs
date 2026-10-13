@@ -87,6 +87,18 @@ impl LlmGateway {
             })
     }
 
+    /// モデルのコンテキスト窓トークン数（agent-core の剪定閾値・#529）。
+    ///
+    /// `None` は既定モデル。**未知のモデルは既定へフォールバックしない**: 単価と違い、別モデルの
+    /// 窓を当てると閾値を誤る（窓を知らない＝固定閾値のまま、の方が安全）。
+    #[must_use]
+    pub fn context_window_tokens(&self, model: Option<&str>) -> Option<u32> {
+        let catalog = &self.inner.config.catalog;
+        model
+            .map_or_else(|| catalog.default_entry(), |m| catalog.get(m))
+            .and_then(|e| e.context_window_tokens)
+    }
+
     /// リクエストを**ストリーミング**生成する。論理モデル→実 ID をカタログで解決してから
     /// プロバイダへ委譲する。接続確立前の一時障害は 1 回だけ再試行する（フォールバックの床）。
     pub async fn stream(&self, mut req: GenerateRequest) -> Result<DeltaStream, LlmError> {
@@ -237,6 +249,7 @@ mod tests {
                     real_id: Some("real-m".into()),
                     prompt_price_micros_per_mtok: 0,
                     completion_price_micros_per_mtok: 0,
+                    context_window_tokens: None,
                 }],
             },
             langfuse: None,
@@ -275,5 +288,19 @@ mod tests {
         let missing = config(ProviderKind::Anthropic, None, None);
         let res = build_provider(reqwest::Client::new(), &missing);
         assert!(matches!(res, Err(LlmError::Config(_))));
+    }
+
+    #[tokio::test]
+    async fn context_window_does_not_borrow_another_models_window() {
+        let mut cfg = config(ProviderKind::Stub, None, None);
+        cfg.catalog.models[0].context_window_tokens = Some(32_768);
+        let db = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/none")
+            .unwrap();
+        let gw = LlmGateway::build(db, reqwest::Client::new(), cfg).unwrap();
+        assert_eq!(gw.context_window_tokens(None), Some(32_768)); // 既定モデル
+        assert_eq!(gw.context_window_tokens(Some("m")), Some(32_768));
+        // 未知モデルに既定の窓を当てると閾値を誤るので「知らない」を返す。
+        assert_eq!(gw.context_window_tokens(Some("other")), None);
     }
 }

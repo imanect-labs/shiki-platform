@@ -407,3 +407,41 @@ fn object_store_backend_parses_canonical_and_legacy_names() {
     // 知らない値は黙って既定に落とさず失敗させる（設定ミスを起動時に出す）。
     assert!(serde_json::from_str::<ObjectStoreBackend>(r#""rustfs""#).is_err());
 }
+
+// ---- llm.model_catalog（env だけの構成で既定モデルの窓を渡す・#529） ----
+
+#[test]
+fn context_window_reaches_synthesized_default_model() {
+    let window = |w: Option<u32>| {
+        let mut cfg = valid_config();
+        cfg.llm.models.clear();
+        cfg.llm.default_model = Some("m".into());
+        cfg.llm.context_window_tokens = w;
+        let catalog = cfg.llm.model_catalog();
+        assert_eq!(catalog.default_model, "m");
+        catalog
+            .default_entry()
+            .and_then(|e| e.context_window_tokens)
+    };
+    assert_eq!(window(Some(32_768)), Some(32_768));
+    // 0 は未設定（Compose の env 既定値）。窓を知らない扱いで固定閾値のまま。
+    assert_eq!(window(Some(0)), None);
+    assert_eq!(window(None), None);
+}
+
+#[test]
+fn explicit_catalog_keeps_per_model_windows() {
+    let mut cfg = valid_config();
+    cfg.llm.context_window_tokens = Some(8_192); // カタログがあれば使わない
+    cfg.llm.models = vec![LlmModelEntry {
+        id: "big".into(),
+        real_id: None,
+        prompt_price_micros_per_mtok: 0,
+        completion_price_micros_per_mtok: 0,
+        context_window_tokens: Some(200_000),
+    }];
+    let catalog = cfg.llm.model_catalog();
+    assert_eq!(catalog.default_model, "big");
+    assert_eq!(catalog.models.len(), 1);
+    assert_eq!(catalog.models[0].context_window_tokens, Some(200_000));
+}

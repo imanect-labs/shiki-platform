@@ -82,6 +82,12 @@ impl Spent {
         self.fresh_tokens = self.fresh_tokens.saturating_add(fresh_tokens);
         self.cost_usd_micros = self.cost_usd_micros.saturating_add(cost_usd_micros);
     }
+
+    /// 直前ステップでプロバイダが報告した prompt トークン（剪定の概算補正に使う・#529）。
+    #[must_use]
+    pub fn last_prompt_tokens(&self) -> u64 {
+        self.prev_prompt_tokens
+    }
 }
 
 /// 予算上限。`None` は当該軸を無制限にする（Chat プロファイルは token/cost を付けない）。
