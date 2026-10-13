@@ -87,6 +87,16 @@ fn has_tool_result(req: &GenerateRequest) -> bool {
     })
 }
 
+/// `reasoning:` で始まり、ツールが提示されていれば [`reasoning_round_trip`] で返す。
+fn reasoning_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    (!req.tools.is_empty() && user_text.starts_with("reasoning:"))
+        .then(|| reasoning_round_trip(req, prompt_tokens))
+}
+
 /// `reasoning:` の決定的駆動（[`Block::Reasoning`] の往復を agent-core の結合テストで確かめる）。
 fn reasoning_round_trip(req: &GenerateRequest, prompt_tokens: u64) -> DeltaStream {
     if has_tool_result(req) {
@@ -270,8 +280,10 @@ impl LlmProvider for StubProvider {
                 Duration::from_secs(secs),
             ));
         }
-        // --- 図の回答 `yui:<kind>`（#530）。 ---
-        if let Some(s) = yui_call(&user_text, prompt_tokens) {
+        // --- 図の回答 `yui:<kind>`（#530）・推論アイテムの引き継ぎ `reasoning:`（#542）。 ---
+        if let Some(s) = yui_call(&user_text, prompt_tokens)
+            .or_else(|| reasoning_call(req, &user_text, prompt_tokens))
+        {
             return Ok(s);
         }
         // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
@@ -281,10 +293,6 @@ impl LlmProvider for StubProvider {
                 serde_json::json!({}),
                 prompt_tokens,
             ));
-        }
-        // --- 推論アイテムの引き継ぎ `reasoning:`（#542・`reasoning_round_trip`）。 ---
-        if !req.tools.is_empty() && user_text.starts_with("reasoning:") {
-            return Ok(reasoning_round_trip(req, prompt_tokens));
         }
         // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
         if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {
