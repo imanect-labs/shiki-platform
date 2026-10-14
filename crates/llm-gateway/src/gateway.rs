@@ -223,9 +223,7 @@ impl LlmGateway {
         let catalog = &self.inner.config.catalog;
         self.inner
             .tenants
-            .update(ctx, &patch.models, |current| {
-                apply_patch(catalog, current, patch)
-            })
+            .update(ctx, |current| apply_patch(catalog, current, patch))
             .await
     }
 
@@ -315,8 +313,8 @@ impl LlmGateway {
     /// モデルの振り先プロバイダへ委譲する。接続確立前の一時障害は 1 回だけ再試行する
     /// （フォールバックの床）。思考強度に対応しないモデルへは effort を落としてから送る。
     ///
-    /// 呼び出し元の組織が無効にしたモデルはここで拒否する（#553）。チャット・ミニアプリ・
-    /// ワークフロー・エージェントのどの経路も必ずここを通るので、管理画面での無効化
+    /// 呼び出し元の組織が許可していないモデルはここで拒否する（#553）。チャット・ミニアプリ・
+    /// ワークフロー・エージェントのどの経路も必ずここを通るので、管理画面での許可・無効化
     /// （国外処理モデルを止める等）が経路によらず効く。
     pub async fn stream(
         &self,
@@ -338,15 +336,15 @@ impl LlmGateway {
             .providers
             .get(entry.provider_id())
             .ok_or_else(|| LlmError::Config(format!("unknown provider for model: {logical}")))?;
-        let disabled = self
+        let permitted = self
             .inner
             .tenants
-            .is_disabled(ctx, &logical)
+            .permits(ctx, entry)
             .await
             .map_err(|e| LlmError::Unavailable(format!("tenant llm settings: {e}")))?;
-        if disabled {
+        if !permitted {
             return Err(LlmError::Config(format!(
-                "model is disabled for this organization: {logical}"
+                "model is not enabled for this organization: {logical}"
             )));
         }
         if !self.supports_effort(entry) {

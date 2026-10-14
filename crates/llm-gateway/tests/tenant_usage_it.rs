@@ -3,6 +3,7 @@
 //! `STORAGE_TEST_DATABASE_URL` が設定されている時のみ実行（未設定はスキップ）。
 //! - 設定の既定（全モデル有効・Auto）と、更新→読み戻し→モデル指定の解決（許可外は拒否）。
 //! - 無効化したモデルは gateway の `stream` が拒否し、別テナント・別 org には効かない。
+//! - 許可リスト: 保存後にカタログへ足したモデルは、管理者が有効にするまで使えない。
 //! - 同時更新が直列化される（変更が消えない・既定が無効のまま残らない）。
 //! - 会計（record_generation）に刻んだ行が、利用量集計（合計・日別・モデル/ユーザー/利用元別）に
 //!   そのまま出て、別テナント・別 org の行が混ざらないこと。
@@ -58,7 +59,12 @@ fn ctx(tenant: &str, org: &str, user: &str) -> AuthContext {
 
 /// stub プロバイダ 1 つに 2 モデル（a: 1 Mtok あたり $1 / $2、b: 単価なし）。
 fn gateway(pool: PgPool) -> LlmGateway {
-    let config = GatewayConfig {
+    gateway_with(pool, vec![])
+}
+
+/// [`gateway`] のカタログに `extra` を足したもの（デプロイ設定にモデルを追加した後の状態）。
+fn gateway_with(pool: PgPool, extra: Vec<ModelEntry>) -> LlmGateway {
+    let mut config = GatewayConfig {
         catalog: ModelCatalog {
             default_model: "a".into(),
             models: vec![
@@ -77,6 +83,7 @@ fn gateway(pool: PgPool) -> LlmGateway {
         },
         ..Default::default()
     };
+    config.catalog.models.extend(extra);
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
 
@@ -116,7 +123,7 @@ async fn tenant_settings_default_update_and_resolve() {
     // 既定: 全モデル有効・Auto。Auto の振り先（gpt-6-luna）はカタログに無いので既定モデルへ落ちる。
     let s = gw.tenant_settings(&alice).await.unwrap();
     assert_eq!(s.default_model, AUTO_MODEL);
-    assert!(s.disabled_models.is_empty());
+    assert_eq!(s.allowed_models, None);
     let r = gw
         .resolve_choice(&alice, &ModelChoice::default())
         .await
@@ -139,7 +146,7 @@ async fn tenant_settings_default_update_and_resolve() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(next.disabled_models, vec!["b".to_string()]);
+    assert_eq!(next.allowed_models, Some(vec!["a".to_string()]));
     let reloaded = gw.tenant_settings(&alice).await.unwrap();
     assert_eq!(reloaded, next);
     assert_eq!(reloaded.jpy_per_usd_centi, Some(15_025));
@@ -183,14 +190,74 @@ async fn tenant_settings_default_update_and_resolve() {
     let other = ctx(&format!("t-{}", uuid::Uuid::new_v4()), "acme", "bob");
     let sibling = ctx(&tenant, "other-org", "carol");
     for c in [&other, &sibling] {
-        assert!(gw
-            .tenant_settings(c)
-            .await
-            .unwrap()
-            .disabled_models
-            .is_empty());
+        assert_eq!(gw.tenant_settings(c).await.unwrap().allowed_models, None);
         assert!(gw.stream(c, req.clone()).await.is_ok());
     }
+}
+
+/// 許可リスト: 保存した組織では、後からカタログに足したモデルは管理者が有効にするまで使えない。
+/// 未保存の組織はカタログの既定（`requires_opt_in` 以外）を使える。
+#[tokio::test]
+async fn models_added_after_saving_stay_off_until_enabled() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let saved = ctx(&tenant, "saved-org", "alice");
+    let unsaved = ctx(&tenant, "unsaved-org", "bob");
+
+    // 追加前に保存（レートだけ変えても許可リストは確定する）。
+    let before = gateway(pool.clone());
+    let rate = SettingsPatch {
+        jpy_per_usd_centi: Some(Some(15_000)),
+        ..Default::default()
+    };
+    before
+        .update_tenant_settings(&saved, &rate)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let after = gateway_with(
+        pool,
+        vec![
+            ModelEntry {
+                id: "new".into(),
+                ..Default::default()
+            },
+            ModelEntry {
+                id: "abroad".into(),
+                processed_abroad: true,
+                requires_opt_in: true,
+                ..Default::default()
+            },
+        ],
+    );
+    let req = |m: &str| {
+        let mut r = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        r.model = Some(m.into());
+        r
+    };
+    assert!(matches!(
+        after.stream(&saved, req("new")).await,
+        Err(LlmError::Config(_))
+    ));
+    assert!(after.stream(&unsaved, req("new")).await.is_ok());
+    assert!(matches!(
+        after.stream(&unsaved, req("abroad")).await,
+        Err(LlmError::Config(_))
+    ));
+
+    // 管理者が有効にすれば使える。
+    let enable = SettingsPatch {
+        models: vec![("new".into(), true), ("abroad".into(), true)],
+        ..Default::default()
+    };
+    after
+        .update_tenant_settings(&saved, &enable)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(after.stream(&saved, req("new")).await.is_ok());
+    assert!(after.stream(&saved, req("abroad")).await.is_ok());
 }
 
 /// 同時に来た更新は直列化され、両方の変更が残り、検証済みの不変条件も崩れない。
@@ -218,7 +285,11 @@ async fn concurrent_updates_do_not_lose_changes_or_break_invariants() {
     let oks = [r1.unwrap().is_ok(), r2.unwrap().is_ok()];
     assert_eq!(oks.iter().filter(|ok| **ok).count(), 1, "{oks:?}");
     let s = gw.tenant_settings(&alice).await.unwrap();
-    assert!(!(s.default_model == "b" && s.disabled_models.contains(&"b".to_string())));
+    let b_allowed = s
+        .allowed_models
+        .as_ref()
+        .is_some_and(|l| l.contains(&"b".to_string()));
+    assert!(s.default_model != "b" || b_allowed);
 
     // 別項目の同時更新は両方残る。
     let rate = SettingsPatch {

@@ -1,9 +1,9 @@
--- テナントの AI 設定（モデルカタログの絞り込み・既定・Auto）と、利用量の利用元・
+-- 組織の AI 設定（モデルカタログの絞り込み・既定・Auto）と、利用量の利用元・
 -- チャット run ごとのモデル指定。
 --
 -- モデルとプロバイダの実体（接続先・API キー・単価）はデプロイの設定が正（秘密を DB に置かない）。
 -- ここは組織の管理者が「その中から何を使わせるか」を決める層だけを持つ。行が無い組織は
--- 全モデルを使え、既定は Auto（ユーザーがモデルを選ばない）。
+-- カタログの既定のモデルを使え、既定は Auto（ユーザーがモデルを選ばない）。
 --
 -- 粒度は (tenant_id, org): 変更できるのは organization:<tenant>|<org>#admin で、利用量の集計も
 -- tenant_id ＋ org に閉じる。テナント単位にすると、ある org の管理者が同じテナントの別 org の
@@ -30,13 +30,13 @@ create table tenant_llm_settings (
     primary key (tenant_id, org)
 );
 
--- 組織が無効にしたモデル（行が無いモデルは有効）。デプロイ設定に新しいモデルを足したとき、
--- 既存の組織に行を作らなくても使えるよう「無効の記録」で持つ。
+-- 組織が許可したモデル（許可リスト）。設定の行（tenant_llm_settings）が無い組織は未保存で、
+-- カタログの既定（requires_opt_in でないモデル）を使える。管理者が保存した時点で許可リストが
+-- 確定し、それ以降にデプロイ設定へ足したモデルは管理者が有効にするまで使えない。
 create table tenant_llm_model (
     tenant_id   text        not null,
     org         text        not null,
     model_id    text        not null,
-    enabled     boolean     not null,
     updated_by  text,
     updated_at  timestamptz not null default now(),
     primary key (tenant_id, org, model_id)

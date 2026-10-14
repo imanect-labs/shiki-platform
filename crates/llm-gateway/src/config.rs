@@ -139,6 +139,13 @@ pub struct ModelEntry {
     /// 思考強度を送るか。省略はプロバイダ種別の既定（[`ProviderKind::effort_by_default`]）。
     #[serde(default)]
     pub supports_effort: Option<bool>,
+    /// 組織の管理者が明示的に有効にするまで使わせない（AI 設定を一度も保存していない組織でも）。
+    ///
+    /// 組織の許可リストは管理者が保存した時点で確定し、それ以降にカタログへ足したモデルは
+    /// 管理者が有効にするまで使えない。未保存の組織はカタログの既定で動くので、国外処理の
+    /// モデルなど同意を取ってから使わせたいものはここを `true` にする。
+    #[serde(default)]
+    pub requires_opt_in: bool,
 }
 
 impl ModelEntry {

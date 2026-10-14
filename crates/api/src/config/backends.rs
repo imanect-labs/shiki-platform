@@ -212,6 +212,7 @@ impl LlmConfig {
                     description: m.description.clone(),
                     processed_abroad: m.processed_abroad,
                     supports_effort: m.supports_effort,
+                    requires_opt_in: m.requires_opt_in,
                 })
                 .collect()
         };
@@ -250,6 +251,9 @@ pub struct LlmModelEntry {
     /// 思考強度を送るか（省略はプロバイダ種別の既定）。
     #[serde(default)]
     pub supports_effort: Option<bool>,
+    /// 組織の管理者が有効にするまで使わせない（[`llm_gateway::ModelEntry::requires_opt_in`]）。
+    #[serde(default)]
+    pub requires_opt_in: bool,
 }
 
 /// Langfuse 計装の設定（設定表現）。

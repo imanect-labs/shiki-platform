@@ -1,8 +1,12 @@
-//! テナントの AI 設定（モデルカタログの絞り込み・既定・Auto）と、チャットのモデル指定の解決。
+//! 組織の AI 設定（モデルカタログの絞り込み・既定・Auto）と、チャットのモデル指定の解決。
 //!
-//! モデルとプロバイダの実体（接続先・API キー・単価）はデプロイ設定のカタログが正で、テナント
+//! モデルとプロバイダの実体（接続先・API キー・単価）はデプロイ設定のカタログが正で、組織の
 //! 管理者は「その中から何を使わせるか」だけを決める（requirements §FR: 管理者が絞るモデル
-//! カタログの範囲でユーザーが選ぶ・思考強度は 3 段階）。
+//! カタログの範囲でユーザーが選ぶ・思考強度は 3 段階）。粒度は tenant_id ＋ org。
+//!
+//! 使えるモデルは**許可リスト**で持つ。管理者が一度も保存していない組織はカタログの既定
+//! （[`ModelEntry::requires_opt_in`] でないもの）を使え、保存した時点で許可リストが確定する。
+//! それ以降にカタログへ足したモデルは、管理者が有効にするまで使えない。
 //!
 //! 解決（[`resolve_choice`]）は純粋関数にして、API（投入時の検証・400）とテストが同じ規則を使う。
 
@@ -15,7 +19,7 @@ use crate::model::Effort;
 /// 「Auto」を表すモデル指定。
 pub const AUTO_MODEL: &str = "auto";
 
-/// テナントの AI 設定（`tenant_llm_settings` ＋ `tenant_llm_model`）。
+/// 組織の AI 設定（`tenant_llm_settings` ＋ `tenant_llm_model`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantLlmSettings {
     /// 新しいチャットの既定（[`AUTO_MODEL`] かモデル ID）。
@@ -29,8 +33,8 @@ pub struct TenantLlmSettings {
     pub auto_effort: Option<Effort>,
     /// 円換算レート（1 USD あたりの円 × 100）。`None` は円を出さない。
     pub jpy_per_usd_centi: Option<i32>,
-    /// テナントが無効にしたモデル ID。
-    pub disabled_models: Vec<String>,
+    /// 許可したモデル ID（昇順）。`None` は未保存で、カタログの既定に従う。
+    pub allowed_models: Option<Vec<String>>,
 }
 
 impl Default for TenantLlmSettings {
@@ -42,24 +46,27 @@ impl Default for TenantLlmSettings {
             auto_model: None,
             auto_effort: None,
             jpy_per_usd_centi: None,
-            disabled_models: Vec::new(),
+            allowed_models: None,
         }
     }
 }
 
 impl TenantLlmSettings {
-    /// テナントで使えるモデルか（カタログにあり、無効化されていない）。
+    /// 組織で使えるモデルか（カタログにあり、許可されている）。
     pub fn is_enabled(&self, catalog: &ModelCatalog, model: &str) -> bool {
-        catalog.get(model).is_some() && !self.disabled_models.iter().any(|d| d == model)
+        catalog.get(model).is_some_and(|e| self.allows(e))
     }
 
-    /// テナントで使えるモデル（カタログ順）。
+    /// 組織で使えるモデル（カタログ順）。
     pub fn enabled_models<'a>(&self, catalog: &'a ModelCatalog) -> Vec<&'a ModelEntry> {
-        catalog
-            .models
-            .iter()
-            .filter(|m| !self.disabled_models.contains(&m.id))
-            .collect()
+        catalog.models.iter().filter(|m| self.allows(m)).collect()
+    }
+
+    fn allows(&self, entry: &ModelEntry) -> bool {
+        match &self.allowed_models {
+            None => !entry.requires_opt_in,
+            Some(list) => list.contains(&entry.id),
+        }
     }
 }
 
@@ -247,16 +254,23 @@ pub fn apply_patch(
     patch: &SettingsPatch,
 ) -> Result<TenantLlmSettings, SettingsError> {
     let mut next = current.clone();
+    // 保存した時点で許可リストを確定させる（未保存ならいまカタログの既定で使えるものから始める）。
+    let mut allowed: Vec<String> = current
+        .enabled_models(catalog)
+        .into_iter()
+        .map(|m| m.id.clone())
+        .collect();
     for (id, enabled) in &patch.models {
         if catalog.get(id).is_none() {
             return Err(SettingsError::UnknownModel(id.clone()));
         }
-        next.disabled_models.retain(|d| d != id);
-        if !enabled {
-            next.disabled_models.push(id.clone());
+        allowed.retain(|a| a != id);
+        if *enabled {
+            allowed.push(id.clone());
         }
     }
-    next.disabled_models.sort();
+    allowed.sort();
+    next.allowed_models = Some(allowed);
     if let Some(m) = &patch.default_model {
         next.default_model.clone_from(m);
     }
@@ -308,6 +322,7 @@ pub struct TenantLlmStore {
 }
 
 type SettingsRow = (
+    bool,
     Option<String>,
     Option<bool>,
     Option<String>,
@@ -317,18 +332,17 @@ type SettingsRow = (
     Vec<String>,
 );
 
-/// 設定と無効モデルを 1 往復で読む（行が無ければ設定列は NULL）。
+/// 設定と許可モデルを 1 往復で読む（設定の行が無ければ未保存）。
 const LOAD_SQL: &str =
-    "SELECT s.default_model, s.allow_user_choice, s.default_effort, s.auto_model, \
-            s.auto_effort, s.jpy_per_usd_centi, \
+    "SELECT s.tenant_id IS NOT NULL, s.default_model, s.allow_user_choice, s.default_effort, \
+            s.auto_model, s.auto_effort, s.jpy_per_usd_centi, \
             ARRAY(SELECT m.model_id FROM tenant_llm_model m \
-                  WHERE m.tenant_id = $1 AND m.org = $2 AND NOT m.enabled ORDER BY m.model_id) \
+                  WHERE m.tenant_id = $1 AND m.org = $2 ORDER BY m.model_id) \
      FROM (SELECT 1) AS one \
      LEFT JOIN tenant_llm_settings s ON s.tenant_id = $1 AND s.org = $2";
 
 fn settings_from_row(row: SettingsRow) -> TenantLlmSettings {
-    let (default_model, allow, default_effort, auto_model, auto_effort, rate, disabled_models) =
-        row;
+    let (saved, default_model, allow, default_effort, auto_model, auto_effort, rate, allowed) = row;
     let base = TenantLlmSettings::default();
     TenantLlmSettings {
         default_model: default_model.unwrap_or(base.default_model),
@@ -340,7 +354,7 @@ fn settings_from_row(row: SettingsRow) -> TenantLlmSettings {
         auto_model,
         auto_effort: auto_effort.as_deref().and_then(Effort::parse),
         jpy_per_usd_centi: rate,
-        disabled_models,
+        allowed_models: saved.then_some(allowed),
     }
 }
 
@@ -359,27 +373,37 @@ impl TenantLlmStore {
         Ok(settings_from_row(row))
     }
 
-    /// 組織がこのモデルを無効にしているか（gateway が生成のたびに引く・1 往復）。
-    pub async fn is_disabled(&self, ctx: &AuthContext, model: &str) -> Result<bool, sqlx::Error> {
-        sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM tenant_llm_model \
-             WHERE tenant_id = $1 AND org = $2 AND model_id = $3 AND NOT enabled)",
+    /// 組織がこのモデルを使えるか（gateway が生成のたびに引く・1 往復）。
+    pub async fn permits(
+        &self,
+        ctx: &AuthContext,
+        entry: &ModelEntry,
+    ) -> Result<bool, sqlx::Error> {
+        let (saved, listed): (bool, bool) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM tenant_llm_settings WHERE tenant_id = $1 AND org = $2), \
+                    EXISTS (SELECT 1 FROM tenant_llm_model \
+                            WHERE tenant_id = $1 AND org = $2 AND model_id = $3)",
         )
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
-        .bind(model)
+        .bind(&entry.id)
         .fetch_one(&self.db)
-        .await
+        .await?;
+        Ok(if saved {
+            listed
+        } else {
+            !entry.requires_opt_in
+        })
     }
 
     /// 読む → `change` で次の設定を作る → 保存する、を 1 トランザクションで行う。
     ///
     /// 組織ごとの advisory lock で直列化する。読みと保存の間に別の管理者の更新が挟まると、
     /// 片方の変更が消えたり、検証済みの不変条件（既定モデルが有効、など）が崩れたりするため。
+    /// 保存後の許可リストは `next.allowed_models` で丸ごと置き換える（`None` なら触らない）。
     pub async fn update<E>(
         &self,
         ctx: &AuthContext,
-        changed_models: &[(String, bool)],
         change: impl FnOnce(&TenantLlmSettings) -> Result<TenantLlmSettings, E>,
     ) -> Result<Result<TenantLlmSettings, E>, sqlx::Error> {
         let mut tx = self.db.begin().await?;
@@ -422,18 +446,24 @@ impl TenantLlmStore {
         .bind(&ctx.principal.id)
         .execute(&mut *tx)
         .await?;
-        for (model, enabled) in changed_models {
+        if let Some(allowed) = &next.allowed_models {
             sqlx::query(
-                "INSERT INTO tenant_llm_model \
-                 (tenant_id, org, model_id, enabled, updated_by, updated_at) \
-                 VALUES ($1, $2, $3, $4, $5, now()) \
-                 ON CONFLICT (tenant_id, org, model_id) DO UPDATE SET \
-                   enabled = EXCLUDED.enabled, updated_by = EXCLUDED.updated_by, updated_at = now()",
+                "DELETE FROM tenant_llm_model \
+                 WHERE tenant_id = $1 AND org = $2 AND NOT (model_id = ANY($3))",
             )
             .bind(&ctx.tenant_id)
             .bind(&ctx.org)
-            .bind(model)
-            .bind(*enabled)
+            .bind(allowed)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO tenant_llm_model (tenant_id, org, model_id, updated_by, updated_at) \
+                 SELECT $1, $2, m, $4, now() FROM unnest($3::text[]) AS m \
+                 ON CONFLICT (tenant_id, org, model_id) DO NOTHING",
+            )
+            .bind(&ctx.tenant_id)
+            .bind(&ctx.org)
+            .bind(allowed)
             .bind(&ctx.principal.id)
             .execute(&mut *tx)
             .await?;
@@ -456,6 +486,51 @@ mod tests {
             default_model: "sonnet".into(),
             models: vec![m("sonnet"), m("opus"), m("gpt-6-luna"), m("local")],
         }
+    }
+
+    /// カタログから `off` を除いた許可リスト（保存済みの組織）。
+    fn without(off: &[String]) -> Option<Vec<String>> {
+        let mut ids: Vec<String> = catalog()
+            .models
+            .into_iter()
+            .map(|m| m.id)
+            .filter(|id| !off.contains(id))
+            .collect();
+        ids.sort();
+        Some(ids)
+    }
+
+    #[test]
+    fn unsaved_org_uses_catalog_defaults_and_saved_org_is_an_allowlist() {
+        let mut c = catalog();
+        c.models.push(ModelEntry {
+            id: "abroad".into(),
+            requires_opt_in: true,
+            ..Default::default()
+        });
+        // 未保存: requires_opt_in 以外は使える。
+        let unsaved = TenantLlmSettings::default();
+        assert!(unsaved.is_enabled(&c, "opus"));
+        assert!(!unsaved.is_enabled(&c, "abroad"));
+        // 保存すると、その時点で使えたものが許可リストとして確定する。
+        let saved = apply_patch(&c, &unsaved, &SettingsPatch::default()).unwrap();
+        let mut expected: Vec<String> = ["sonnet", "opus", "gpt-6-luna", "local"]
+            .map(String::from)
+            .to_vec();
+        expected.sort();
+        assert_eq!(saved.allowed_models, Some(expected));
+        // 後からカタログに足したモデルは、管理者が有効にするまで使えない。
+        c.models.push(ModelEntry {
+            id: "new".into(),
+            ..Default::default()
+        });
+        assert!(!saved.is_enabled(&c, "new"));
+        let opt_in = SettingsPatch {
+            models: vec![("new".into(), true), ("abroad".into(), true)],
+            ..Default::default()
+        };
+        let next = apply_patch(&c, &saved, &opt_in).unwrap();
+        assert!(next.is_enabled(&c, "new") && next.is_enabled(&c, "abroad"));
     }
 
     fn effort_except_local(e: &ModelEntry) -> bool {
@@ -491,12 +566,12 @@ mod tests {
     #[test]
     fn auto_falls_back_when_target_is_disabled_or_missing() {
         let s = TenantLlmSettings {
-            disabled_models: vec!["gpt-6-luna".into()],
+            allowed_models: without(&["gpt-6-luna".into()]),
             ..Default::default()
         };
         assert_eq!(resolve(&s, Some(AUTO_MODEL), None).unwrap().model, "sonnet");
         let s = TenantLlmSettings {
-            disabled_models: vec!["gpt-6-luna".into(), "sonnet".into()],
+            allowed_models: without(&["gpt-6-luna".into(), "sonnet".into()]),
             ..Default::default()
         };
         assert_eq!(resolve(&s, Some(AUTO_MODEL), None).unwrap().model, "opus");
@@ -531,7 +606,7 @@ mod tests {
     #[test]
     fn disabled_unknown_and_forbidden_choices_are_rejected() {
         let s = TenantLlmSettings {
-            disabled_models: vec!["opus".into()],
+            allowed_models: without(&["opus".into()]),
             ..Default::default()
         };
         assert_eq!(
@@ -599,7 +674,7 @@ mod tests {
     #[test]
     fn run_drops_user_choice_disabled_or_forbidden_after_post() {
         let disabled = TenantLlmSettings {
-            disabled_models: vec!["opus".into()],
+            allowed_models: without(&["opus".into()]),
             ..Default::default()
         };
         let r = at_run(&disabled, ("opus", false), None);
@@ -615,12 +690,12 @@ mod tests {
     }
 
     #[test]
-    fn skill_pin_obeys_disabled_models_and_choice_policy() {
+    fn skill_pin_obeys_allowlist_and_choice_policy() {
         let s = TenantLlmSettings::default();
         let r = at_run(&s, ("gpt-6-luna", true), Some("opus"));
         assert_eq!((r.model.as_str(), r.effort), ("opus", None));
         let disabled = TenantLlmSettings {
-            disabled_models: vec!["opus".into()],
+            allowed_models: without(&["opus".into()]),
             ..Default::default()
         };
         let r = at_run(&disabled, ("gpt-6-luna", true), Some("opus"));
@@ -638,7 +713,7 @@ mod tests {
         );
         // Auto の振り先が投入後に無効化されたら、今の設定で振り直す。
         let auto_off = TenantLlmSettings {
-            disabled_models: vec!["gpt-6-luna".into()],
+            allowed_models: without(&["gpt-6-luna".into()]),
             ..Default::default()
         };
         assert_eq!(
@@ -696,7 +771,7 @@ mod tests {
             ..Default::default()
         };
         let next = apply_patch(&c, &base, &ok).unwrap();
-        assert_eq!(next.disabled_models, vec!["local".to_string()]);
+        assert_eq!(next.allowed_models, without(&["local".into()]));
         assert_eq!(next.jpy_per_usd_centi, Some(15_000));
         assert_eq!(next.auto_model.as_deref(), Some("sonnet"));
     }

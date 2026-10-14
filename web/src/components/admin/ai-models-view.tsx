@@ -174,7 +174,10 @@ export function AiModelsView() {
       description="組織で使える AI モデルと、チャットでの選び方を決めます。接続先と単価はデプロイ設定で管理されます。"
       wide
     >
-      <Panel title="モデルカタログ" description="公開したモデルだけがチャットのモデル選択に出ます。">
+      <Panel
+        title="モデルカタログ"
+        description="公開したモデルだけが使えます。保存後にデプロイ設定へ追加されたモデルは、ここで公開するまで使えません。"
+      >
         <div className="overflow-x-auto">
           <table className="w-full min-w-[820px] border-collapse text-[13px]">
             <thead>
