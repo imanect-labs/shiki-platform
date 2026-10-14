@@ -187,7 +187,7 @@ jobs:
           echo "SHA_TAG=sha-$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
 
       # ---- web だけ: gen:api で型を生成してからビルドする ----
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         if: env.NEEDS_GEN == '1'
         with:
           toolchain: "1.96.0"
