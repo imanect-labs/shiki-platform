@@ -63,26 +63,44 @@ def test_rerank_returns_score_per_passage(client: TestClient) -> None:
     assert body["model_version"]
 
 
-def test_warmup_runs_both_models_and_survives_failures() -> None:
+def test_warmup_loads_both_models_and_survives_failures() -> None:
     from ingestion_worker.model_registry import ModelRegistry
 
     calls: list[str] = []
 
-    class Embedding:
-        def encode(self, texts: list[str]) -> list[list[float]]:
+    class Registry(ModelRegistry):
+        def embedding(self):  # type: ignore[override]
             calls.append("embed")
-            return [[1.0]]
+            return object()
 
-    class BrokenReranker:
-        def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
+        def reranker(self):  # type: ignore[override]
             calls.append("rerank")
             raise RuntimeError("boom")
 
+    Registry().warmup()  # reranker が失敗しても例外を投げない
+    assert sorted(calls) == ["embed", "rerank"]
+
+
+def test_model_is_published_only_after_first_inference(monkeypatch) -> None:
+    """空打ちが終わるまでモデルを公開しない（途中で来た推論が並行して走らない）。"""
+    from ingestion_worker import model_registry
+    from ingestion_worker.model_registry import ModelRegistry
+
+    order: list[str] = []
     registry = ModelRegistry()
-    registry._embedding = Embedding()  # noqa: SLF001
-    registry._reranker = BrokenReranker()  # noqa: SLF001
-    registry.warmup()  # reranker が失敗しても例外を投げない
-    assert calls == ["embed", "rerank"]
+
+    class Reranker:
+        def __init__(self, _model_id: str) -> None:
+            order.append("init")
+
+        def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
+            # 空打ちの最中はまだ公開されていない。
+            order.append(f"predict loaded={registry.reranker_loaded}")
+            return [0.0 for _ in pairs]
+
+    monkeypatch.setattr(model_registry, "_CrossEncoderReranker", Reranker)
+    registry.reranker().predict([("q", "p")])
+    assert order == ["init", "predict loaded=False", "predict loaded=True"]
 
 
 def test_startup_starts_warmup_in_background(monkeypatch) -> None:
