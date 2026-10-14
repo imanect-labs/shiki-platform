@@ -1240,98 +1240,38 @@
   "target": "tableau_add_user_to_site",
   "kind": "ja",
   "n": 200,
-  "text": "Tableau の「営業本部」サイトに、新入社員の中村健太（nakamura.kenta）を追加してください。ロールは「Explorer」で、メールアドレスは kenta.nakamura@example.com です。",
+  "text": "Tableau の「マーケティング本部」サイト（site_id: mkt-hq-01）に、新入社員の佐藤健太（username: k.sato, email: k.sato@example.com）を Viewer ロールで追加してください。",
   "plan": [
-   {
-    "tool": "tableau_list_workbooks",
-    "args": {
-     "site_id": {
-      "value": "Sales HQ",
-      "ja": "「営業本部」サイト",
-      "en": "'Sales HQ' site"
-     }
-    },
-    "pick": {
-     "ja": "「営業本部」サイト",
-     "en": "'Sales HQ' site"
-    }
-   },
    {
     "tool": "tableau_add_user_to_site",
     "args": {
-     "username": {
-      "value": "nakamura.kenta",
-      "ja": "中村健太（nakamura.kenta）",
-      "en": "Kenta Nakamura (nakamura.kenta)"
-     },
-     "role": {
-      "value": "Explorer",
-      "ja": "「Explorer」",
-      "en": "'Explorer'"
-     },
-     "email": {
-      "value": "kenta.nakamura@example.com",
-      "ja": "kenta.nakamura@example.com",
-      "en": "kenta.nakamura@example.com"
-     },
-     "site_id": {
-      "from": 0,
-      "field": "site_id"
-     }
+     "username": "k.sato",
+     "role": "Viewer",
+     "email": "k.sato@example.com"
     }
    }
   ],
   "missing": null,
-  "attempts": 1
+  "attempts": 2
  },
  {
   "id": "tableau_add_user_to_site:en@200",
   "target": "tableau_add_user_to_site",
   "kind": "en",
   "n": 200,
-  "text": "Please add a new employee, Kenta Nakamura (nakamura.kenta), to the 'Sales HQ' site in Tableau. Assign the 'Explorer' role and use the email address kenta.nakamura@example.com.",
+  "text": "Please add new employee Kenta Sato (username: k.sato, email: k.sato@example.com) to the \"Marketing HQ\" site (site_id: mkt-hq-01) in Tableau with the Viewer role.",
   "plan": [
-   {
-    "tool": "tableau_list_workbooks",
-    "args": {
-     "site_id": {
-      "value": "Sales HQ",
-      "ja": "「営業本部」サイト",
-      "en": "'Sales HQ' site"
-     }
-    },
-    "pick": {
-     "ja": "「営業本部」サイト",
-     "en": "'Sales HQ' site"
-    }
-   },
    {
     "tool": "tableau_add_user_to_site",
     "args": {
-     "username": {
-      "value": "nakamura.kenta",
-      "ja": "中村健太（nakamura.kenta）",
-      "en": "Kenta Nakamura (nakamura.kenta)"
-     },
-     "role": {
-      "value": "Explorer",
-      "ja": "「Explorer」",
-      "en": "'Explorer'"
-     },
-     "email": {
-      "value": "kenta.nakamura@example.com",
-      "ja": "kenta.nakamura@example.com",
-      "en": "kenta.nakamura@example.com"
-     },
-     "site_id": {
-      "from": 0,
-      "field": "site_id"
-     }
+     "username": "k.sato",
+     "role": "Viewer",
+     "email": "k.sato@example.com"
     }
    }
   ],
   "missing": null,
-  "attempts": 1
+  "attempts": 2
  },
  {
   "id": "teams_send_message:ja@200",

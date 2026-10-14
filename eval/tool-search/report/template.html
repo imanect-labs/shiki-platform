@@ -201,7 +201,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 7
     <ul class="plain">
       <li><strong>外した会話（1,000 件の tool_search の 3 件・目で分類）。</strong>Figma のファイルキーを尋ねた（<code>figma_search_files</code> で調べられる・避けられた聞き返し）、「outlook」だけで検索して削除のツールを読み込めず「機能が無い」と答えた、一覧の応答に詳細が含まれていたのでそれで答えた、の 3 件。</li>
       <li><strong>評価の不具合を直した。</strong>検索せずに提示されていないツール名（<code>gdrive.files.create</code> など）を呼ぶと、評価は成功のモックを返していた。製品は <code>unknown tool</code> のエラーを返すので、それに合わせた（その名前を呼んだ会話だけ取り直した）。直すと、200 件の tool_search で外していた 1 件は、検索し直して正解した。前の節までの E2E（旧データ）は直す前の結果で、tool_search の条件ごとに 0〜3 件、この形の会話を含む（全ツール提示には無い）。</li>
-      <li><strong>情報が足りない依頼では、どちらの条件でも尋ねずに正解ツールを呼ぶことが多い。</strong>「通知先は社内の標準エンドポイント」「本文はいつものテンプレート」のような依頼で起きる。ただし、値を作ったのか、別サービスのツールで調べたのか（「担当者に確認済みのメールアドレス」をメール検索で探す、「田中さん」を Slack のユーザー検索で探す、など）、引数を省いたのかは、この結果では区別できない（呼んだ引数を記録していなかった。以後は記録する）。差は条件の間より依頼の書き方で大きく、件数も少ないので、ここから tool_search の良し悪しは読まない。</li>
+      <li id="v2-missing"></li>
       <li><strong>揺れ。</strong>temperature 0 でも、同じ依頼を回し直すと 1,000 件の tool_search の正解は 30 件中 1 件動いた。数ポイントの差は読めない。</li>
     </ul>
   </section>
@@ -488,16 +488,25 @@ table("tb-e2e2", ["N", "条件", "件数", "正解ツールを呼んだ", "別�
 {
   const C3 = { all: "全ツール提示", search_rrf_prod: "tool_search（RRF）", search_rrf_comp: "tool_search＋下調べ用ツール（#565）" };
   const rows = [...(DATA.e2e_data_v2 || [])].sort((a, b) => a.n - b.n || Object.keys(C3).indexOf(a.cond) - Object.keys(C3).indexOf(b.cond));
-  table("tb-v2", ["N", "条件", "十分な依頼", "正解ツール", "避けられた聞き返し", "正当な聞き返し", "その他", "打ち切り", "下調べを経て正解", "平均入力トークン", "足りない依頼", "聞き返せた", "尋ねずに正解ツールを呼んだ"],
-    rows.map(r => [r.n, C3[r.cond], r.k, pct(r.ok), pct(r.avoidable), pct(r.legit), pct(r.other), pct(r.max_steps), pct(r.chain), Math.round(r.tok).toLocaleString(), r.km, r.asked, r.called_target]),
+  table("tb-v2", ["N", "条件", "十分な依頼", "正解ツール", "避けられた聞き返し", "正当な聞き返し", "その他", "打ち切り", "未判定", "下調べを経て正解", "平均入力トークン", "足りない依頼", "聞き返せた", "尋ねずに正解ツールを呼んだ（値を渡した／渡さなかった）"],
+    rows.map(r => [r.n, C3[r.cond], r.k, pct(r.ok), pct(r.avoidable), pct(r.legit), pct(r.other), pct(r.max_steps), pct(r.unjudged), pct(r.chain), Math.round(r.tok).toLocaleString(), r.km, r.asked, `${r.called_target}（${r.filled}／${r.omitted}）`]),
     { left: 2 });
   const f = (n, c) => rows.find(r => r.n === n && r.cond === c);
+  {
+    const base = rows.filter(r => r.cond !== "search_rrf_comp");
+    const sum = k => base.reduce((x, r) => x + r[k], 0);
+    document.getElementById("v2-missing").innerHTML =
+      `<strong>情報が足りない依頼では、どちらの条件でも尋ねずに値を作って実行することがある。</strong>` +
+      `全ツール提示と tool_search の 4 条件の計 ${sum("km")} 件で、聞き返せたのは ${sum("asked")} 件、尋ねずに正解ツールを呼んだのは ${sum("called_target")} 件。` +
+      `呼んだ引数を見ると、${sum("called_target")} 件のうち ${sum("filled")} 件は足りない値を作って渡していた（架空の URL・tanaka@example.com・本文の雛形など）。別サービスのツールで調べてから呼んだ会話は ${sum("other_service")} 件。` +
+      `「通知先は社内の標準エンドポイント」「本文はいつものテンプレート」のような依頼で起きる。件数が少なく、条件の間の差は読まない。`;
+  }
   const a2 = f(200, "all"), t2 = f(200, "search_rrf_prod"), a1 = f(1000, "all"), t1 = f(1000, "search_rrf_prod");
   if (a2 && t2 && a1 && t1) {
     document.getElementById("v2-read").textContent =
       `正解ツールを呼べた率は、200 件で全ツール提示 ${pct(a2.ok)}%・tool_search ${pct(t2.ok)}%、1,000 件で ${pct(a1.ok)}%・${pct(t1.ok)}%。` +
-      `前の節で 1,000 件の差の大半を占めた「避けられた聞き返し」は ${pct(t1.avoidable)}%（30 件中 ${Math.round(t1.avoidable * t1.k)} 件）に減り、正当な聞き返しは ${pct(t1.legit)}%。` +
-      `旧データの低い正解率と差の多くは、依頼に必要な値が無かったことによる。tool_search の入力トークンは 1,000 件で 1 会話 ${Math.round(a1.tok / 1000)}k → ${(t1.tok / 1000).toFixed(1)}k。`;
+      `前の節で 1,000 件の差の大半を占めた「避けられた聞き返し」は ${pct(t1.avoidable)}%（30 件中 ${Math.round(t1.avoidable * t1.k)} 件）、正当な聞き返しは ${pct(t1.legit)}%。` +
+      `旧データとは依頼のほかにモック・日付・応答の上限も違うので、正解率が上がった原因をどれか一つに帰せない（依頼だけを差し替えた比較はしていない）。旧データで正当な聞き返しに分類された会話が尋ねていたのは、依頼に無い宛先・本文・日付や、カタログで引けない ID だった。tool_search の入力トークンは 1,000 件で 1 会話 ${Math.round(a1.tok / 1000)}k → ${(t1.tok / 1000).toFixed(1)}k。`;
   }
 }
 

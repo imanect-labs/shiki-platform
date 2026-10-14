@@ -309,6 +309,7 @@ def run_one(
     system: str | None = None,
     mock: str = "generic",
     max_steps: int = MAX_STEPS,
+    record_args: bool = False,
 ) -> dict:
     """1 会話を回す。正解ツールを呼んだ時点で打ち切る（下調べのツールを先に呼ぶのは正しい手順
     なので、他のツールにはモックの結果を返して続けさせる）。
@@ -316,6 +317,7 @@ def run_one(
     `system` を渡すと既定（`SYSTEM`）の代わりに使う（キャッシュのキーにも入る・#545）。
     `mock="llm"` は、ツールの応答を一律の文面ではなく依頼に沿った内容にする（[`llm_mock`]）。
     `max_steps` は 1 会話の応答の回数の上限（既定以外はキャッシュのキーにも入る・#547）。
+    `record_args` なら、呼んだ引数（`call_args`）を持たない古いキャッシュを使わずに取り直す。
     """
     variant = (
         system
@@ -331,7 +333,8 @@ def run_one(
         cached = json.loads(path.read_text())
         # 提示していない名前を呼んだ会話は、以前は成功のモックを返していた（製品は
         # `unknown tool` のエラー）。その会話だけ取り直す（それ以外は呼ぶまでが同じ）。
-        if all(c in names for c in cached["calls"]):
+        stale_args = record_args and "call_args" not in cached
+        if all(c in names for c in cached["calls"]) and not stale_args:
             return cached
     by_wire = {wire(t.name): t for t in tools}
     if condition == "all":

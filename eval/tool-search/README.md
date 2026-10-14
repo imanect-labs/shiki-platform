@@ -27,8 +27,8 @@ uv run python -m tseval.e2e           # LLM にツールを選ばせる E2E → 
 uv run python -m tseval.skills        # skill の一覧方式 vs 検索方式 → results/skills_e2e.json
 uv run python -m tseval.ask_probe     # 聞き返しの切り分け（system prompt・モック・最後の応答の分類）→ results/e2e_ask_*.json
 # results/e2e_ask_manual_1000.json は主要な比較（1,000 件・現行・一律）を目視で分類したもの（手で作る）
-uv run python -m tseval.gen_e2e_queries  # E2E の依頼データ v2（必要な値が揃う依頼・規模ごと）→ data/e2e_queries_v2.json
-uv run python -m tseval.gen_e2e_queries --verify  # 書き出した依頼データを今の検査にかけ直す（作り直さない）
+uv run python -m tseval.gen_e2e_queries  # E2E の依頼データ v2（必要な値が揃う依頼・規模ごと）→ data/e2e_queries_v2.json（書き出し済みで今の検査を通るものは作り直さない）
+uv run python -m tseval.gen_e2e_queries --verify  # 書き出した依頼データを今の検査にかけ直す（作り直さない・不合格があれば終了コード 1）
 uv run python -m tseval.e2e_v2        # 依頼データ v2 の E2E → results/e2e_v2*.json
 # results/e2e_v2_manual.json は v2 で正解ツールを呼ばずに終えた会話を目視で分類したもの（手で作る）
 uv run python -m tseval.report        # 集計表 → results/summary.md

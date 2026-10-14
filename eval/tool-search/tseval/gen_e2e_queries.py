@@ -204,6 +204,27 @@ def check_value(
     return [f"{where}: {arg} の値 {v!r} は {{value, ja, en}} の形にする（依頼文の該当箇所を示す）"]
 
 
+def schema_errors(where: str, tool: Tool, args: dict) -> list[str]:
+    """引数が入力スキーマにあるか、数値の引数に数として読める値を渡しているか（plan は実行しない
+    ので型は緩く見る: 依頼文から取った "12345678" は整数の引数に渡せるとする）。"""
+    props = tool.tooldef("ja")["input_schema"].get("properties", {})
+    errs = []
+    for k, v in args.items():
+        if k not in props:
+            errs.append(f"{where}: 引数 {k} はこのツールに無い（あるのは {', '.join(props)}）")
+            continue
+        if props[k].get("type") not in ("integer", "number") or not isinstance(v, (str, dict)):
+            continue
+        raw = v.get("value") if isinstance(v, dict) else v
+        if isinstance(v, dict) and ("from" in v or v.get("missing") is True):
+            continue
+        try:
+            float(str(raw).replace(",", ""))
+        except ValueError:
+            errs.append(f"{where}: 数値の引数 {k} に数として読めない値 {raw!r} を渡している")
+    return errs
+
+
 def check_plan(item: dict, target: Tool, available: list[Tool], missing: str | None) -> list[str]:
     """plan の機械的な検査。誤りの一覧を返す（空なら合格）。"""
     texts = {lang: item.get(lang) for lang in ("ja", "en")}
@@ -234,6 +255,7 @@ def check_plan(item: dict, target: Tool, available: list[Tool], missing: str | N
             continue
         errs += [f"{where}: 必須引数 {r} が無い" for r in required(tools[name]) if r not in args]
         req = required(tools[name])
+        errs += schema_errors(where, tools[name], args)
         for k, v in args.items():
             # 下調べの任意の引数（絞り込みの項目名など）と、任意の真偽値・数値（再帰の有無・
             # 件数など）は依頼文の根拠を求めない（検索の仕方であって、依頼の内容ではない）。
@@ -351,7 +373,16 @@ def generate(target: Tool, available: list[Tool], missing: str | None, n: int) -
     # 検査の手順が変われば作り直す（以前の検査だけを通った依頼を使わない）。
     checks = "".join(
         inspect.getsource(f)
-        for f in (norm, literal, check_value, check_plan, written_ids, independent_check)
+        for f in (
+            norm,
+            literal,
+            check_value,
+            schema_errors,
+            check_plan,
+            written_ids,
+            independent_check,
+            check_item,
+        )
     )
     rules = json.dumps([LOOKUP.pattern, ID_ARG.pattern, [p.pattern for p in ask_probe.SECRET_LIKE]])
     key = hashlib.sha256(
@@ -367,15 +398,7 @@ def generate(target: Tool, available: list[Tool], missing: str | None, n: int) -
         if not isinstance(item, dict):
             errs = [f"JSON の形が不正: {item!r}"[:200]]
         else:
-            errs = check_plan(item, target, available, missing)
-            if not errs:
-                errs = written_ids(item, target, available)
-            if not errs:
-                for lang in ("ja", "en"):
-                    errs += [
-                        f"{lang}: {e}"
-                        for e in independent_check(item[lang], target, available, missing)
-                    ]
+            errs = check_item(item, target, available, missing)
         log.append(errs)
         if not errs:
             out = {**item, "attempts": attempt, "rejections": log[:-1]}
@@ -393,27 +416,66 @@ def generate(target: Tool, available: list[Tool], missing: str | None, n: int) -
     raise RuntimeError(f"{target.name}（n={n}, missing={missing}）: 検査を通らない: {log[-1]}")
 
 
-def main() -> None:
+Key = tuple[str, int, str | None]
+
+
+def jobs_and_catalog() -> tuple[list[Key], dict[str, Tool], dict[int, list[Tool]]]:
+    """作る依頼の一覧（正解ツール・規模・書かない引数）と、カタログ。"""
     qs, big, subsets = ask_probe.sample()
     catalog = {t.name: t for t in load_catalog()}
     per_size = {200: {q["target"] for q in qs}, 1000: {q["target"] for q in big}}
     jobs = [
-        (name, missing, n)
+        (name, n, missing)
         for n, targets in per_size.items()
         for name, missing in [(t, None) for t in sorted(targets)]
         + sorted((t, a) for t, a in MISSING.items() if t in targets)
     ]
+    return jobs, catalog, subsets
+
+
+def written() -> dict[Key, dict]:
+    """書き出し済みの依頼（日英と plan をまとめたもの）。"""
+    if not OUT.exists():
+        return {}
+    pairs: dict[Key, dict] = {}
+    for q in json.loads(OUT.read_text()):
+        key = (q["target"], q["n"], q["missing"])
+        pair = pairs.setdefault(key, {"plan": q["plan"], "attempts": q["attempts"]})
+        pair[q["kind"].removesuffix("_missing")] = q["text"]
+    return pairs
+
+
+def check_item(item: dict, target: Tool, available: list[Tool], missing: str | None) -> list[str]:
+    """生成時と同じ検査一式（plan の検査 → 書いた ID → plan を見せない判定）。"""
+    errs = check_plan(item, target, available, missing)
+    if not errs:
+        errs = written_ids(item, target, available)
+    if not errs:
+        for lang in ("ja", "en"):
+            errs += [
+                f"{lang}: {e}" for e in independent_check(item[lang], target, available, missing)
+            ]
+    return errs
+
+
+def main() -> None:
+    """依頼を作る。書き出し済みの依頼が今の検査を通るならそのまま使い、通らないものだけ作り直す
+    （検査を厳しくしても、通るデータまで作り直して E2E を取り直さない）。"""
+    jobs, catalog, subsets = jobs_and_catalog()
+    old = written()
+
+    def one(job: Key) -> dict:
+        name, n, missing = job
+        target = catalog[name]
+        available = lookups(target, subsets[n])
+        if job in old and not check_item(old[job], target, available, missing):
+            return old[job]
+        return generate(target, available, missing, n)
+
     with ThreadPoolExecutor(max_workers=4) as pool:
-        made = list(
-            pool.map(
-                lambda j: generate(
-                    catalog[j[0]], lookups(catalog[j[0]], subsets[j[2]]), j[1], j[2]
-                ),
-                jobs,
-            )
-        )
+        made = list(pool.map(one, jobs))
     queries = []
-    for (name, missing, n), item in zip(jobs, made, strict=True):
+    for (name, n, missing), item in zip(jobs, made, strict=True):
         for lang in ("ja", "en"):
             kind = f"{lang}_missing" if missing else lang
             queries.append(
@@ -429,49 +491,41 @@ def main() -> None:
                 }
             )
     OUT.write_text(json.dumps(queries, ensure_ascii=False, indent=1))
+    kept = sum(1 for job, item in zip(jobs, made, strict=True) if old.get(job) is item)
     retried = sum(1 for m in made if m["attempts"] > 1)
     chains = sum(1 for m in made if len(m["plan"]) > 1)
     print(
         f"{len(jobs)} 件（正解ツール × 規模）/ {len(queries)} 件の依頼"
-        f"（作り直しあり {retried} 件・下調べの手順あり {chains} 件）"
+        f"（書き出し済みをそのまま使った {kept} 件・作り直しあり {retried} 件・"
+        f"下調べの手順あり {chains} 件）"
     )
 
 
-def verify() -> None:
-    """書き出した依頼データを、今の検査（plan の検査と、plan を見せない判定）にかけ直す。
+def verify() -> int:
+    """書き出した依頼データを今の検査一式にかけ直す（作り直さない）。不合格の件数を返す。"""
+    jobs, catalog, subsets = jobs_and_catalog()
+    pairs = written()
+    missing_jobs = [j for j in jobs if j not in pairs]
 
-    検査を厳しくしたとき、コミット済みのデータがそのまま通るかを確かめる（作り直さない）。"""
-    _, _, subsets = ask_probe.sample()
-    catalog = {t.name: t for t in load_catalog()}
-    queries = json.loads(OUT.read_text())
-    pairs: dict[tuple[str, int, str | None], dict] = {}
-    for q in queries:
-        pair = pairs.setdefault((q["target"], q["n"], q["missing"]), {"plan": q["plan"]})
-        pair[q["kind"].removesuffix("_missing")] = q["text"]
-
-    def one(key: tuple[str, int, str | None]) -> list[str]:
+    def one(key: Key) -> list[str]:
         name, n, missing = key
-        target, item = catalog[name], pairs[key]
-        available = lookups(target, subsets[n])
-        errs = check_plan(item, target, available, missing)
-        for lang in ("ja", "en"):
-            errs += [
-                f"{lang}: {e}" for e in independent_check(item[lang], target, available, missing)
-            ]
-        return errs
+        target = catalog[name]
+        return check_item(pairs[key], target, lookups(target, subsets[n]), missing)
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(one, pairs))
     failed = [(k, e) for k, e in zip(pairs, results, strict=True) if e]
     for k, e in failed:
         print(k, e)
-    print(f"{len(pairs) - len(failed)}/{len(pairs)} 件が今の検査を通った")
+    for k in missing_jobs:
+        print(k, ["依頼が書き出されていない"])
+    print(f"{len(pairs) - len(failed)}/{len(jobs)} 件が今の検査を通った")
+    return len(failed) + len(missing_jobs)
 
 
 if __name__ == "__main__":
     import sys
 
     if "--verify" in sys.argv:
-        verify()
-    else:
-        main()
+        sys.exit(1 if verify() else 0)
+    main()

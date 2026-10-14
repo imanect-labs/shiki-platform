@@ -67,7 +67,15 @@ def run() -> list[dict]:
             out = list(
                 pool.map(
                     lambda q, ts=tools, c=condition, se=searcher: e2e.run_one(
-                        ts, c, q, se, system=SYSTEM, mock=MOCK, max_steps=MAX_STEPS
+                        ts,
+                        c,
+                        q,
+                        se,
+                        system=SYSTEM,
+                        mock=MOCK,
+                        max_steps=MAX_STEPS,
+                        # 足りない依頼は、正解ツールに足りない値を渡したかを見る。
+                        record_args=q["missing"] is not None,
                     ),
                     batch,
                 )
@@ -141,42 +149,87 @@ def judge(rows: list[dict]) -> list[dict]:
     return out
 
 
+MANUAL = ROOT / "results" / "e2e_v2_manual.json"
+
+
+def target_args(r: dict) -> dict | None:
+    """正解ツールに渡した引数（記録が無い・読めないときは None）。"""
+    args = r.get("call_args")
+    if not args or r["target"] not in r["calls"]:
+        return None
+    try:
+        out = json.loads(args[r["calls"].index(r["target"])] or "{}")
+    except json.JSONDecodeError:
+        return None
+    return out if isinstance(out, dict) else None
+
+
 def summarize(rows: list[dict], verdicts: list[dict]) -> list[dict]:
-    """条件ごとの集計。十分な依頼は終わり方の内訳、足りない依頼は聞き返せた率。"""
+    """条件ごとの集計。十分な依頼は終わり方の内訳（目視の分類 `e2e_v2_manual.json` があれば
+    LLM の判定より優先する）、足りない依頼は聞き返せたか・正解ツールに何を渡したか。"""
     v = {(x["id"], x["condition"], x["n"]): x for x in verdicts}
+    manual = json.loads(MANUAL.read_text()) if MANUAL.exists() else {}
     out = []
     for condition, n in RUNS:
         mine = [r for r in rows if r["condition"] == condition and r["n"] == n and not r["error"]]
         full = [r for r in mine if r["missing"] is None]
         short = [r for r in mine if r["missing"] is not None]
+        hand = {k: c for k, (c, _) in manual.get(f"{condition}@{n}", {}).items()}
 
-        def cat(r: dict) -> str:
+        def cat(r: dict, hand: dict = hand) -> str:
             if r["correct"]:
                 return "correct"
             if r["stop"] != "reply":
                 return "max_steps"
-            return v.get((r["id"], r["condition"], r["n"]), {}).get("category", "error")
+            if r["id"] in hand:
+                return hand[r["id"]]
+            # 判定の失敗・未実行は未判定（内訳を足して全件にする）。
+            got = v.get((r["id"], r["condition"], r["n"]), {}).get("category")
+            return got if got in ("avoidable", "legit", "other") else "unjudged"
 
         counts = {
             k: sum(1 for r in full if cat(r) == k)
-            for k in ("correct", "avoidable", "legit", "other", "max_steps", "error")
+            for k in ("correct", "avoidable", "legit", "other", "max_steps", "unjudged")
         }
-        asked = sum(
-            1
-            for r in short
-            if not r["correct"]
-            and r["stop"] == "reply"
-            and v.get((r["id"], condition, n), {}).get("asked") is True
-        )
+        called = [r for r in short if r["correct"]]
+        passed = [target_args(r) for r in called]
         out.append(
             {
                 "condition": condition,
                 "n": n,
                 "full": len(full),
                 **counts,
+                # 正解ツールの前に下調べのツールを呼んで正解した会話。
+                "chain": sum(1 for r in full if r["correct"] and r["calls"][:-1]),
                 "missing": len(short),
-                "missing_asked": asked,
-                "missing_called_target": sum(1 for r in short if r["correct"]),
+                "missing_asked": sum(
+                    1
+                    for r in short
+                    if not r["correct"]
+                    and r["stop"] == "reply"
+                    and v.get((r["id"], r["condition"], r["n"]), {}).get("asked") is True
+                ),
+                # 尋ねずに正解ツールを呼んだ会話の内訳: 足りない値を渡した／渡さなかった／記録なし。
+                "missing_called_target": len(called),
+                "missing_filled": sum(
+                    1
+                    for r, a in zip(called, passed, strict=True)
+                    if a is not None and a.get(r["missing"]) not in (None, "", [], {})
+                ),
+                "missing_omitted": sum(
+                    1
+                    for r, a in zip(called, passed, strict=True)
+                    if a is not None and a.get(r["missing"]) in (None, "", [], {})
+                ),
+                # そのうち、正解ツールの前に別サービスのツールを呼んだ（調べた可能性がある）。
+                "missing_other_service": sum(
+                    1
+                    for r in called
+                    if any(
+                        e2e.namespace(c) != e2e.namespace(r["target"])
+                        for c in r["calls"][: r["calls"].index(r["target"])]
+                    )
+                ),
                 "errors": sum(
                     1 for r in rows if r["condition"] == condition and r["n"] == n and r["error"]
                 ),
@@ -197,9 +250,10 @@ def main() -> None:
         print(
             f"n={s['n']} {s['condition']}: 正解 {s['correct']}/{s['full']}"
             f"（{100 * s['correct'] / f:.1f}%）avoidable {s['avoidable']} legit {s['legit']}"
-            f" other {s['other']} 打ち切り {s['max_steps']} 判定失敗 {s['error']}"
+            f" other {s['other']} 打ち切り {s['max_steps']} 未判定 {s['unjudged']}"
             f" / 足りない依頼で聞き返せた {s['missing_asked']}/{s['missing']}"
-            f"（正解ツールを呼んだ {s['missing_called_target']}）/ 会話の失敗 {s['errors']}"
+            f"（正解ツールを呼んだ {s['missing_called_target']}: 値を渡した"
+            f" {s['missing_filled']}・渡さなかった {s['missing_omitted']}）/ 会話の失敗 {s['errors']}"
         )
 
 

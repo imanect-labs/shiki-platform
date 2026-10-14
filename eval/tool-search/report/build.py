@@ -217,53 +217,25 @@ for cond in ("all", "search_rrf_prod"):
         }
     )
 
-# 依頼データ v2（#547）: 必要な値が揃う依頼と、情報がわざと足りない依頼。十分な依頼で正解ツールを
-# 呼ばずに終えた会話は目視の分類（e2e_v2_manual）を正とし、無ければ LLM の判定を使う。
-v2rows = [r for r in (load("e2e_v2") or []) if not r.get("error")]
-v2judge = {(j["id"], j["condition"], j["n"]): j for j in (load("e2e_v2_judge") or [])}
-v2manual = load("e2e_v2_manual") or {}
-va = collections.defaultdict(list)
-for r in v2rows:
-    va[(r["n"], r["condition"])].append(r)
+# 依頼データ v2（#547）: 集計は tseval.e2e_v2.summarize（目視の分類を優先）が書いたものを使う。
 out["e2e_data_v2"] = []
-for (n, c), rs in sorted(va.items()):
-    full = [r for r in rs if r["missing"] is None]
-    short = [r for r in rs if r["missing"] is not None]
-    hand = v2manual.get(f"{c}@{n}", {})
-
-    def cat(r, hand=hand):
-        if r["correct"]:
-            return "ok"
-        if r["stop"] != "reply":
-            return "max_steps"
-        if r["id"] in hand:
-            return hand[r["id"]][0]
-        return v2judge.get((r["id"], r["condition"], r["n"]), {}).get("category", "unjudged")
-
-    b = collections.Counter(cat(r) for r in full)
-    k = len(full)
+for x in load("e2e_v2_summary") or []:
+    k = x["full"] or 1
     out["e2e_data_v2"].append(
         {
-            "n": n,
-            "cond": c,
-            "k": k,
-            # 判定の失敗（"error"）も未判定に含める（内訳を足して 100% にする）。
-            **{x: b[x] / k for x in ("ok", "avoidable", "legit", "other", "max_steps")},
-            "unjudged": (b["unjudged"] + b["error"]) / k,
-            "tok": sum(r["prompt_tokens"] for r in full) / k,
-            # 正解ツールの前に別のツール（下調べ）を呼んで正解した会話。
-            "chain": sum(1 for r in full if r["correct"] and r["calls"][:-1]) / k,
-            "km": len(short),
-            "asked": sum(
-                1
-                for r in short
-                if not r["correct"]
-                and r["stop"] == "reply"
-                and v2judge.get((r["id"], r["condition"], r["n"]), {}).get("asked") is True
-            ),
-            # 足りない値を尋ねずに正解ツールを呼んだ（値を作った・他のツールで調べた・引数を
-            # 省いた、のどれかは区別していない）。
-            "called_target": sum(1 for r in short if r["correct"]),
+            "n": x["n"],
+            "cond": x["condition"],
+            "k": x["full"],
+            "ok": x["correct"] / k,
+            **{c: x[c] / k for c in ("avoidable", "legit", "other", "max_steps", "unjudged")},
+            "chain": x["chain"] / k,
+            "tok": x["mean_prompt_tokens"],
+            "km": x["missing"],
+            "asked": x["missing_asked"],
+            "called_target": x["missing_called_target"],
+            "filled": x["missing_filled"],
+            "omitted": x["missing_omitted"],
+            "other_service": x["missing_other_service"],
         }
     )
 
