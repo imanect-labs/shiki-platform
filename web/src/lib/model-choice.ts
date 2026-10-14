@@ -81,20 +81,55 @@ export function useModelChoice(scope: string): [ModelChoice, (c: ModelChoice) =>
   return [choice, set];
 }
 
-let modelsPromise: Promise<LlmModelsResponse | null> | null = null;
+// 選べるモデルの共有キャッシュ（stale-while-revalidate）。管理者が公開設定を変えると古くなるので、
+// 手元の値をすぐ返しつつ、マウント時（一定時間たっていれば）・タブに戻ったとき・同じタブで設定を
+// 保存したとき（invalidateLlmModels）に取り直す。古い一覧のまま送ると 400 になり、新しく公開した
+// モデルもリロードまで出ないため。
+const STALE_MS = 30_000;
+let modelsCache: { data: LlmModelsResponse | null; at: number } | null = null;
+let inflight: Promise<void> | null = null;
+const modelListeners = new Set<() => void>();
 
-/// 選べるモデル（ページ内で 1 回だけ取得して共有する）。取れなければ `null`（選択 UI を出さない）。
-export function useLlmModels(): LlmModelsResponse | null {
-  const [data, setData] = React.useState<LlmModelsResponse | null>(null);
-  React.useEffect(() => {
-    let active = true;
-    modelsPromise ??= fetchLlmModels().catch(() => {
-      modelsPromise = null; // 次のマウントで取り直す
-      return null;
+function refreshLlmModels(): Promise<void> {
+  inflight ??= fetchLlmModels()
+    .then((data) => {
+      modelsCache = { data, at: Date.now() };
+    })
+    // 取れなければ手元の値のまま（次の契機で取り直す）。初回なら null＝選択 UI を出さない。
+    .catch(() => {
+      modelsCache ??= { data: null, at: 0 };
+    })
+    .finally(() => {
+      inflight = null;
+      modelListeners.forEach((l) => l());
     });
-    void modelsPromise.then((d) => active && setData(d));
+  return inflight;
+}
+
+/// 選べるモデルの一覧を古いものとして取り直す（管理画面で AI の設定を保存した後に呼ぶ）。
+export function invalidateLlmModels(): void {
+  if (modelsCache) modelsCache.at = 0;
+  if (modelListeners.size > 0) void refreshLlmModels();
+}
+
+/// 選べるモデル（ページ内で共有する）。取れなければ `null`（選択 UI を出さない）。
+export function useLlmModels(): LlmModelsResponse | null {
+  const [data, setData] = React.useState<LlmModelsResponse | null>(modelsCache?.data ?? null);
+  React.useEffect(() => {
+    const sync = () => setData(modelsCache?.data ?? null);
+    modelListeners.add(sync);
+    sync();
+    const refreshIfStale = () => {
+      if (!modelsCache || Date.now() - modelsCache.at > STALE_MS) void refreshLlmModels();
+    };
+    refreshIfStale();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshIfStale();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
-      active = false;
+      modelListeners.delete(sync);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
   return data;

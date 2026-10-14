@@ -50,7 +50,8 @@ alter table llm_usage
 alter table llm_usage
     add constraint llm_usage_source_check
         check (source in ('chat', 'agent', 'workflow', 'miniapp', 'other')) not valid;
-update llm_usage set source = 'miniapp' where app_id is not null;
+-- 既存行のバックフィル（app_id あり → miniapp）は 0068 に分ける。ここで流すと、上の ALTER が取った
+-- ACCESS EXCLUSIVE ロックをトランザクション終了まで握ったまま全件更新することになる。
 
 -- チャット run のモデル指定（投入時点でスナップショット・承認モードと同じ扱い）。
 -- model が NULL の run は従来どおり（skill のピン → 既定モデル）。model_auto はユーザーが

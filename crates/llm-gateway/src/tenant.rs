@@ -147,13 +147,15 @@ pub fn resolve_choice(
         .as_deref()
         .filter(|m| !m.is_empty())
         .unwrap_or(settings.default_model.as_str());
+    // 選択禁止なら既定以外は拒否する。既定が特定モデルの組織で `auto` を明示しても同じ
+    // （Auto の振り先へ逃がすと「全員が既定で使う」が API から崩れる）。
+    if !settings.allow_user_choice && requested != settings.default_model {
+        return Err(ChoiceError::ChoiceDisabled);
+    }
     let (model, effort, is_auto) = if requested == AUTO_MODEL {
         let (m, e) = auto_target(catalog, auto, settings)?;
         (m, e, true)
     } else {
-        if !settings.allow_user_choice && requested != settings.default_model {
-            return Err(ChoiceError::ChoiceDisabled);
-        }
         if !settings.is_enabled(catalog, requested) {
             return Err(ChoiceError::ModelNotAllowed(requested.to_string()));
         }
@@ -213,8 +215,10 @@ pub fn resolve_at_run(
             auto: true,
         });
     }
+    // 投入後に「既定を特定モデル＋選択禁止」へ変えられていたら、Auto ではなく既定で動かす。
+    let auto_allowed = settings.allow_user_choice || settings.default_model == AUTO_MODEL;
     let choice = ModelChoice {
-        model: Some(AUTO_MODEL.to_string()),
+        model: auto_allowed.then(|| AUTO_MODEL.to_string()),
         effort: None,
     };
     resolve_choice(catalog, auto, settings, supports_effort, &choice)
@@ -627,6 +631,17 @@ mod tests {
         );
         // 選択禁止でも Auto（＝既定）は使える。
         assert!(resolve(&s, Some(AUTO_MODEL), None).is_ok());
+        // 既定が特定モデルで選択禁止なら、`auto` の明示も既定以外として拒否する。
+        let forced = TenantLlmSettings {
+            default_model: "opus".into(),
+            allow_user_choice: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve(&forced, Some(AUTO_MODEL), None),
+            Err(ChoiceError::ChoiceDisabled)
+        );
+        assert_eq!(resolve(&forced, None, None).unwrap().model, "opus");
     }
 
     #[test]
@@ -711,6 +726,14 @@ mod tests {
             at_run(&forbidden, ("gpt-6-luna", true), Some("opus")).model,
             "gpt-6-luna"
         );
+        // 投入後に「既定を特定モデル＋選択禁止」へ変えられたら、Auto の run も既定で動く。
+        let forced = TenantLlmSettings {
+            default_model: "opus".into(),
+            allow_user_choice: false,
+            ..Default::default()
+        };
+        let r = at_run(&forced, ("gpt-6-luna", true), Some("sonnet"));
+        assert_eq!((r.model.as_str(), r.auto), ("opus", false));
         // Auto の振り先が投入後に無効化されたら、今の設定で振り直す。
         let auto_off = TenantLlmSettings {
             allowed_models: without(&["gpt-6-luna".into()]),

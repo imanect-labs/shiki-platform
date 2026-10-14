@@ -12,6 +12,7 @@ import {
   type UpdateAiSettingsRequest,
 } from "@/lib/admin-ai-api";
 import { cn } from "@/lib/utils";
+import { invalidateLlmModels } from "@/lib/model-choice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -155,6 +156,8 @@ export function AiModelsView() {
     setSaving(true);
     try {
       await updateAiSettings(req);
+      // チャットのモデル選択が古い一覧のまま残らないようにする。
+      invalidateLlmModels();
       toast({ title: "AI の設定を保存しました" });
       await load();
     } catch (e) {
