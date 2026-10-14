@@ -323,7 +323,9 @@ def written_ids(item: dict, target: Tool, available: list[Tool]) -> list[str]:
             if not isinstance(out, dict) or out.get("answer") != "yes":
                 continue
             via = str(out.get("tool", "")).strip()
-            if via in names:
+            # 調べるツール自身がその ID を要するなら（同じ手順・同じ引数を必須に持つ）循環して
+            # いて調べられない。そういう判定では作り直させない。
+            if via in names and via != step["tool"] and arg not in required(tools[via]):
                 errs.append(
                     f"{step['tool']} の {arg}（「{value}」）は {via} で調べられる。"
                     "依頼文には ID を書かず、名前などの手がかりを書いて、調べる手順を plan に入れる"
@@ -363,6 +365,10 @@ def independent_check(
         elif not filled:
             errs.append(f"判定者は {arg} を埋められないと判断した（「{raw}」・{reason}）")
     return errs
+
+
+class Rejected(RuntimeError):
+    """検査を通る依頼を作れなかった（LLM の呼び出しの失敗とは区別する）。"""
 
 
 def generate(
@@ -428,7 +434,7 @@ def generate(
                 previous=json.dumps(item, ensure_ascii=False),
             )
         )
-    raise RuntimeError(f"{target.name}（n={n}, missing={missing}）: 検査を通らない: {log[-1]}")
+    raise Rejected(f"{target.name}（n={n}, missing={missing}）: 検査を通らない: {log[-1]}")
 
 
 Key = tuple[str, int, str | None]
@@ -448,12 +454,12 @@ def jobs_and_catalog() -> tuple[list[Key], dict[str, Tool], dict[int, list[Tool]
     return jobs, catalog, subsets
 
 
-def written() -> dict[Key, dict]:
+def written(path: Path = OUT) -> dict[Key, dict]:
     """書き出し済みの依頼（日英と plan をまとめたもの）。"""
-    if not OUT.exists():
+    if not path.exists():
         return {}
     pairs: dict[Key, dict] = {}
-    for q in json.loads(OUT.read_text()):
+    for q in json.loads(path.read_text()):
         key = (q["target"], q["n"], q["missing"])
         pair = pairs.setdefault(key, {"plan": q["plan"], "attempts": q["attempts"]})
         pair[q["kind"].removesuffix("_missing")] = q["text"]
@@ -539,15 +545,29 @@ def lookup_targets(seed: int = 21) -> tuple[list[Tool], list[Tool]]:
     return random.Random(seed).sample(pool, min(LOOKUP_TARGETS, len(pool))), catalog
 
 
+def lookup_ok(item: dict, target: Tool, available: list[Tool]) -> list[str]:
+    """評価セットの依頼の検査（下調べの手順がある ＋ 生成時と同じ検査一式）。"""
+    if len(item.get("plan") or []) < 2:
+        return ["下調べの手順が無い"]
+    return check_item(item, target, available, None)
+
+
 def main_lookup() -> None:
-    """下調べが要る依頼の評価セットを作る。検査を通らない正解ツールは外して記録する（下調べで
-    ID を引けない組み合わせ＝この評価の対象外）。"""
+    """下調べが要る依頼の評価セットを作る。書き出し済みで今の検査を通る依頼はそのまま使う。
+    検査を通る依頼を作れなかった正解ツール（`Rejected`・下調べで ID を引けない組み合わせ＝この
+    評価の対象外）は外して記録する。LLM の呼び出しの失敗は外さずに止める（母集団を障害で
+    変えない）。"""
     targets, catalog = lookup_targets()
+    old = written(LOOKUP_OUT)
 
     def one(t: Tool) -> dict | str:
+        available = lookups(t, catalog)
+        prev = old.get((t.name, 1000, None))
+        if prev is not None and not lookup_ok(prev, t, available):
+            return prev
         try:
-            return generate(t, lookups(t, catalog), None, 1000, need_lookup=True)
-        except RuntimeError as e:
+            return generate(t, available, None, 1000, need_lookup=True)
+        except Rejected as e:
             return str(e)[:300]
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -574,7 +594,13 @@ def main_lookup() -> None:
     (DATA / "e2e_queries_lookup_skipped.json").write_text(
         json.dumps(skipped, ensure_ascii=False, indent=1)
     )
-    print(f"{len(targets)} 件の正解ツール / {len(queries)} 件の依頼（外した {len(skipped)} 件）")
+    kept = sum(
+        1 for t, item in zip(targets, made, strict=True) if old.get((t.name, 1000, None)) is item
+    )
+    print(
+        f"{len(targets)} 件の正解ツール / {len(queries)} 件の依頼"
+        f"（書き出し済みをそのまま使った {kept} 件・外した {len(skipped)} 件）"
+    )
 
 
 def verify() -> int:

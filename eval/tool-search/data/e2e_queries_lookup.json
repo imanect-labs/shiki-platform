@@ -1,5 +1,103 @@
 [
  {
+  "id": "docusign_void_envelope:ja@1000",
+  "target": "docusign_void_envelope",
+  "kind": "ja",
+  "n": 1000,
+  "text": "DocuSignのアカウント「acc_98765」で、件名に「XYZ社 保守契約書」が含まれる封筒を誤って送信してしまったので、無効化（キャンセル）してください。理由は「添付ファイルのバージョン違い」です。",
+  "plan": [
+   {
+    "tool": "docusign_search_envelopes",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "「acc_98765」",
+      "en": "\"acc_98765\""
+     },
+     "search_text": {
+      "value": "XYZ社 保守契約書",
+      "ja": "「XYZ社 保守契約書」",
+      "en": "\"XYZ Corp Maintenance Agreement\""
+     }
+    },
+    "pick": {
+     "ja": "件名に「XYZ社 保守契約書」が含まれる封筒",
+     "en": "envelope containing \"XYZ Corp Maintenance Agreement\" in the subject line"
+    }
+   },
+   {
+    "tool": "docusign_void_envelope",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "「acc_98765」",
+      "en": "\"acc_98765\""
+     },
+     "envelope_id": {
+      "from": 0,
+      "field": "envelopeId"
+     },
+     "reason": {
+      "value": "添付ファイルのバージョン違い",
+      "ja": "「添付ファイルのバージョン違い」",
+      "en": "\"Incorrect attachment version\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "docusign_void_envelope:en@1000",
+  "target": "docusign_void_envelope",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please void the DocuSign envelope containing \"XYZ Corp Maintenance Agreement\" in the subject line for account \"acc_98765\", as it was sent by mistake. The reason is \"Incorrect attachment version\".",
+  "plan": [
+   {
+    "tool": "docusign_search_envelopes",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "「acc_98765」",
+      "en": "\"acc_98765\""
+     },
+     "search_text": {
+      "value": "XYZ社 保守契約書",
+      "ja": "「XYZ社 保守契約書」",
+      "en": "\"XYZ Corp Maintenance Agreement\""
+     }
+    },
+    "pick": {
+     "ja": "件名に「XYZ社 保守契約書」が含まれる封筒",
+     "en": "envelope containing \"XYZ Corp Maintenance Agreement\" in the subject line"
+    }
+   },
+   {
+    "tool": "docusign_void_envelope",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "「acc_98765」",
+      "en": "\"acc_98765\""
+     },
+     "envelope_id": {
+      "from": 0,
+      "field": "envelopeId"
+     },
+     "reason": {
+      "value": "添付ファイルのバージョン違い",
+      "ja": "「添付ファイルのバージョン違い」",
+      "en": "\"Incorrect attachment version\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
   "id": "miro_update_board:ja@1000",
   "target": "miro_update_board",
   "kind": "ja",
@@ -318,6 +416,74 @@
   ],
   "missing": null,
   "attempts": 1
+ },
+ {
+  "id": "ga4_get_metadata:ja@1000",
+  "target": "ga4_get_metadata",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Google Analytics 4のアカウントID「123456789」に紐づくプロパティの中から、「ECサイト本番環境」という名前のプロパティを探し、そのレポート作成に使用可能なディメンションと指標のメタデータを取得してください。",
+  "plan": [
+   {
+    "tool": "ga4_list_properties",
+    "args": {
+     "account_id": {
+      "value": "123456789",
+      "ja": "アカウントID「123456789」",
+      "en": "account ID \"123456789\""
+     }
+    },
+    "pick": {
+     "ja": "ECサイト本番環境",
+     "en": "EC Site Production"
+    }
+   },
+   {
+    "tool": "ga4_get_metadata",
+    "args": {
+     "property_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 5
+ },
+ {
+  "id": "ga4_get_metadata:en@1000",
+  "target": "ga4_get_metadata",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please find the property named \"EC Site Production\" under the Google Analytics 4 account ID \"123456789\" and retrieve the metadata for dimensions and metrics available for report creation.",
+  "plan": [
+   {
+    "tool": "ga4_list_properties",
+    "args": {
+     "account_id": {
+      "value": "123456789",
+      "ja": "アカウントID「123456789」",
+      "en": "account ID \"123456789\""
+     }
+    },
+    "pick": {
+     "ja": "ECサイト本番環境",
+     "en": "EC Site Production"
+    }
+   },
+   {
+    "tool": "ga4_get_metadata",
+    "args": {
+     "property_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 5
  },
  {
   "id": "rakurakuseisan_import_transaction:ja@1000",
@@ -1036,70 +1202,98 @@
   "attempts": 1
  },
  {
-  "id": "garoon_check_facility_availability:ja@1000",
-  "target": "garoon_check_facility_availability",
+  "id": "docusign_add_recipient:ja@1000",
+  "target": "docusign_add_recipient",
   "kind": "ja",
   "n": 1000,
-  "text": "Garoonで、第1会議室の10月21日の空き状況を確認してください。",
+  "text": "DocuSignの下書きにある「2026年度Q4 保守契約書」の封筒に、追加で法務部の田中太郎（tanaka.taro@example.com）を署名者として加えてください。アカウントIDはacc_998877です。",
   "plan": [
    {
-    "tool": "garoon_list_facilities",
-    "args": {},
+    "tool": "docusign_search_envelopes",
+    "args": {
+     "account_id": "acc_998877",
+     "search_text": {
+      "value": "2026年度Q4 保守契約書",
+      "ja": "2026年度Q4 保守契約書",
+      "en": "2026 Q4 Maintenance Agreement"
+     }
+    },
     "pick": {
-     "ja": "第1会議室",
-     "en": "Conference Room 1"
+     "ja": "2026年度Q4 保守契約書",
+     "en": "2026 Q4 Maintenance Agreement"
     }
    },
    {
-    "tool": "garoon_check_facility_availability",
+    "tool": "docusign_add_recipient",
     "args": {
-     "facility_id": {
+     "account_id": "acc_998877",
+     "envelope_id": {
       "from": 0,
-      "field": "id"
+      "field": "envelopeId"
      },
-     "date": {
-      "value": "2026-10-21",
-      "ja": "10月21日",
-      "en": "October 21st"
+     "recipient_name": {
+      "value": "田中太郎",
+      "ja": "田中太郎",
+      "en": "Taro Tanaka"
+     },
+     "recipient_email": "tanaka.taro@example.com",
+     "role": {
+      "value": "Signer",
+      "ja": "署名者",
+      "en": "signer"
      }
     }
    }
   ],
   "missing": null,
-  "attempts": 3
+  "attempts": 2
  },
  {
-  "id": "garoon_check_facility_availability:en@1000",
-  "target": "garoon_check_facility_availability",
+  "id": "docusign_add_recipient:en@1000",
+  "target": "docusign_add_recipient",
   "kind": "en",
   "n": 1000,
-  "text": "Please check the availability of Conference Room 1 on October 21st in Garoon.",
+  "text": "Please add Taro Tanaka (tanaka.taro@example.com) from the Legal Department as a signer to the draft envelope titled \"2026 Q4 Maintenance Agreement\" in DocuSign. The account ID is acc_998877.",
   "plan": [
    {
-    "tool": "garoon_list_facilities",
-    "args": {},
+    "tool": "docusign_search_envelopes",
+    "args": {
+     "account_id": "acc_998877",
+     "search_text": {
+      "value": "2026年度Q4 保守契約書",
+      "ja": "2026年度Q4 保守契約書",
+      "en": "2026 Q4 Maintenance Agreement"
+     }
+    },
     "pick": {
-     "ja": "第1会議室",
-     "en": "Conference Room 1"
+     "ja": "2026年度Q4 保守契約書",
+     "en": "2026 Q4 Maintenance Agreement"
     }
    },
    {
-    "tool": "garoon_check_facility_availability",
+    "tool": "docusign_add_recipient",
     "args": {
-     "facility_id": {
+     "account_id": "acc_998877",
+     "envelope_id": {
       "from": 0,
-      "field": "id"
+      "field": "envelopeId"
      },
-     "date": {
-      "value": "2026-10-21",
-      "ja": "10月21日",
-      "en": "October 21st"
+     "recipient_name": {
+      "value": "田中太郎",
+      "ja": "田中太郎",
+      "en": "Taro Tanaka"
+     },
+     "recipient_email": "tanaka.taro@example.com",
+     "role": {
+      "value": "Signer",
+      "ja": "署名者",
+      "en": "signer"
      }
     }
    }
   ],
   "missing": null,
-  "attempts": 3
+  "attempts": 2
  },
  {
   "id": "backlog_list_issues:ja@1000",
@@ -1695,6 +1889,84 @@
       "reviewed",
       "approved"
      ]
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "aws_ec2_reboot_instance:ja@1000",
+  "target": "aws_ec2_reboot_instance",
+  "kind": "ja",
+  "n": 1000,
+  "text": "AWSのEC2インスタンスで、Nameタグが「prod-web-01」のサーバーが応答しないため、OSレベルの問題解決のために再起動してください。",
+  "plan": [
+   {
+    "tool": "aws_ec2_search_instances_by_tag",
+    "args": {
+     "tag_key": {
+      "value": "Name",
+      "ja": "Nameタグ",
+      "en": "Name tag"
+     },
+     "tag_value": {
+      "value": "prod-web-01",
+      "ja": "「prod-web-01」",
+      "en": "\"prod-web-01\""
+     }
+    },
+    "pick": {
+     "ja": "prod-web-01",
+     "en": "prod-web-01"
+    }
+   },
+   {
+    "tool": "aws_ec2_reboot_instance",
+    "args": {
+     "instance_id": {
+      "from": 0,
+      "field": "InstanceId"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "aws_ec2_reboot_instance:en@1000",
+  "target": "aws_ec2_reboot_instance",
+  "kind": "en",
+  "n": 1000,
+  "text": "The AWS EC2 instance with the Name tag \"prod-web-01\" is unresponsive, so please reboot it to resolve the OS-level issue.",
+  "plan": [
+   {
+    "tool": "aws_ec2_search_instances_by_tag",
+    "args": {
+     "tag_key": {
+      "value": "Name",
+      "ja": "Nameタグ",
+      "en": "Name tag"
+     },
+     "tag_value": {
+      "value": "prod-web-01",
+      "ja": "「prod-web-01」",
+      "en": "\"prod-web-01\""
+     }
+    },
+    "pick": {
+     "ja": "prod-web-01",
+     "en": "prod-web-01"
+    }
+   },
+   {
+    "tool": "aws_ec2_reboot_instance",
+    "args": {
+     "instance_id": {
+      "from": 0,
+      "field": "InstanceId"
+     }
     }
    }
   ],
