@@ -314,3 +314,70 @@ fn eval_catalog_matches_the_production_ranking() {
         ["office.edit"]
     );
 }
+
+#[test]
+fn companions_load_lookup_tools_for_id_args_with_the_reason() {
+    let schema = |req: &[&str]| json!({"type": "object", "properties": {}, "required": req});
+    let defs = vec![
+        ToolDef::new(
+            "outlook_delete_event",
+            "Outlook の予定を削除する。",
+            schema(&["event_id"]),
+        ),
+        ToolDef::new(
+            "outlook_search_events",
+            "Outlook の予定をキーワードで検索する。",
+            schema(&["query"]),
+        ),
+        ToolDef::new(
+            "outlook_send_email",
+            "Outlook でメールを送る。",
+            schema(&["to"]),
+        ),
+    ];
+    let plain = CatalogSearch::new(&defs, None);
+    let with = CatalogSearch::new(&defs, None).with_companions(&defs);
+    let names = ["outlook_delete_event".to_string()];
+
+    let (_, loaded) = plain.loaded("予定を削除", None, &names);
+    assert_eq!(loaded, ["outlook_delete_event"], "既定では足さない");
+
+    let (content, loaded) = with.loaded("予定を削除", None, &names);
+    assert_eq!(loaded, ["outlook_delete_event", "outlook_search_events"]);
+    assert!(
+        content.starts_with("1 件のツールを読み込みました"),
+        "{content}"
+    );
+    assert!(
+        content.contains("- outlook_search_events: Outlook の予定をキーワードで検索する。（outlook_delete_event の event_id を調べられる）"),
+        "{content}"
+    );
+    // `select:` の名指しでも同じに足す（製品の処理そのもの）。
+    let (_, loaded) = with.loaded("select:outlook_delete_event", None, &[]);
+    assert_eq!(loaded, ["outlook_delete_event", "outlook_search_events"]);
+    // 検索で直接読み込んだものは重ねて足さない。
+    let both = [
+        "outlook_delete_event".to_string(),
+        "outlook_search_events".to_string(),
+    ];
+    let (content, loaded) = with.loaded("予定", None, &both);
+    assert_eq!(loaded.len(), 2);
+    assert!(!content.contains("調べるためのツール"), "{content}");
+}
+
+#[test]
+fn prepare_wires_companions_by_default_and_can_turn_them_off() {
+    // 製品の遅延ツール（語彙）には ID 引数で引ける一覧が無いので、有効でも結果は変わらない。
+    let s = search();
+    assert!(s.companions.is_some(), "既定で有効");
+    assert_eq!(query(&s, "select:csv.query"), ["csv.query"]);
+    let off = ToolSearchOptions {
+        companions: false,
+        ..enabled()
+    };
+    assert!(prepare(catalog(), &off)
+        .1
+        .expect("有効になる")
+        .companions
+        .is_none());
+}

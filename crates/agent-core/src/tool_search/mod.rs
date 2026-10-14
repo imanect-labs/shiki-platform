@@ -13,6 +13,7 @@
 //! - **プロバイダ差はアダプタが吸収する。** Anthropic は `defer_loading` ＋ `tool_reference`
 //!   （API が展開・prefix cache を壊さない）、OpenAI 互換は読み込んだ定義を `tools` 末尾へ足す。
 
+mod companions;
 mod hybrid;
 mod index;
 
@@ -54,6 +55,8 @@ pub(crate) struct ToolSearch {
     index: ToolIndex,
     /// 埋め込みとの融合（配線されていれば・#517）。無ければ BM25 だけで順位付けする。
     embedder: Option<hybrid::Embedder>,
+    /// 読み込むツールの ID 引数を調べる下調べ用ツール（有効なら・#565）。
+    companions: Option<Vec<Vec<companions::Companion>>>,
 }
 
 /// 検索 1 回の結果（観測テキスト＋読み込むツール名）。
@@ -96,7 +99,7 @@ pub(crate) fn prepare(
         defs[i].defer_loading = true;
     }
     let deferred: Vec<ToolDef> = deferrable.iter().map(|&i| defs[i].clone()).collect();
-    let search = ToolSearch::build(&deferred, opts.embedder.clone());
+    let search = ToolSearch::build(&deferred, opts.embedder.clone(), opts.companions);
     tracing::info!(
         deferred = deferrable.len(),
         deferred_tokens = tokens,
@@ -133,7 +136,11 @@ fn name_key(name: &str) -> String {
 
 impl ToolSearch {
     /// 遅延ツールの定義から索引を組む（検索語は語彙の単一定義から引く・語彙外は無し）。
-    fn build(deferred: &[ToolDef], embedder: Option<Arc<dyn EmbeddingProvider>>) -> Self {
+    fn build(
+        deferred: &[ToolDef],
+        embedder: Option<Arc<dyn EmbeddingProvider>>,
+        with_companions: bool,
+    ) -> Self {
         let keywords: Vec<&str> = deferred
             .iter()
             .map(|d| ToolName::parse(&d.name).map_or("", ToolName::search_keywords))
@@ -145,6 +152,7 @@ impl ToolSearch {
                 .map(|d| (d.name.clone(), summary(&d.description)))
                 .collect(),
             embedder: embedder.map(|p| hybrid::Embedder::new(p, deferred)),
+            companions: with_companions.then(|| companions::build(deferred)),
         }
     }
 
@@ -333,6 +341,11 @@ impl ToolSearch {
     }
 
     fn render(&self, hits: &[usize], unknown: &[String]) -> SearchResult {
+        let extra = self
+            .companions
+            .as_ref()
+            .map(|t| companions::expand(t, hits))
+            .unwrap_or_default();
         let mut content = if hits.is_empty() {
             format!(
                 "該当するツールは見つかりませんでした。検索できるツール: {}。\
@@ -351,12 +364,32 @@ impl ToolSearch {
                 lines.concat()
             )
         };
+        if !extra.is_empty() {
+            let lines: Vec<String> = extra
+                .iter()
+                .map(|(j, i, arg)| {
+                    format!(
+                        "\n- {}: {}（{} の {arg} を調べられる）",
+                        self.tools[*j].0, self.tools[*j].1, self.tools[*i].0
+                    )
+                })
+                .collect();
+            content = format!(
+                "{content}\n必要な ID を調べるためのツールも読み込みました。\
+                 ID が分からないときは、利用者に尋ねる前にこれで調べられます。{}",
+                lines.concat()
+            );
+        }
         if !unknown.is_empty() {
             content = format!("{content}\n見つからなかった名前: {}", unknown.join(", "));
         }
         SearchResult {
             content,
-            references: hits.iter().map(|&i| self.tools[i].0.clone()).collect(),
+            references: hits
+                .iter()
+                .chain(extra.iter().map(|(j, _, _)| j))
+                .map(|&i| self.tools[i].0.clone())
+                .collect(),
             is_error: false,
         }
     }
@@ -419,7 +452,14 @@ impl CatalogSearch {
     /// 自然文の検索は BM25 と埋め込みの RRF になる。
     #[must_use]
     pub fn new(defs: &[ToolDef], embedder: Option<Arc<dyn EmbeddingProvider>>) -> Self {
-        CatalogSearch(ToolSearch::build(defs, embedder))
+        CatalogSearch(ToolSearch::build(defs, embedder, false))
+    }
+
+    /// 読み込むツールの ID 引数を調べる下調べ用ツールも一緒に読み込む（#565・評価の比較用）。
+    #[must_use]
+    pub fn with_companions(mut self, defs: &[ToolDef]) -> Self {
+        self.0.companions = Some(companions::build(defs));
+        self
     }
 
     /// 文書の埋め込みを裏で温め始める（待たない）。
@@ -468,15 +508,27 @@ impl CatalogSearch {
     /// 返す（見つからなかった名前・重複・件数の上限まで製品と同じにする）。索引に無い名前は無視する。
     #[must_use]
     pub fn loaded_message(&self, query: &str, limit: Option<u64>, names: &[String]) -> String {
+        self.loaded(query, limit, names).0
+    }
+
+    /// [`Self::loaded_message`] の本文と、実際に読み込むツールの名前（下調べ用ツールを含む）。
+    #[must_use]
+    pub fn loaded(
+        &self,
+        query: &str,
+        limit: Option<u64>,
+        names: &[String],
+    ) -> (String, Vec<String>) {
         let mut input = json!({ "query": query });
         if let Some(l) = limit {
             input["limit"] = json!(l);
         }
         if let Err(e) = parse_input(&input) {
-            return e.content;
+            return (e.content, e.references);
         }
         if query.trim().starts_with("select:") {
-            return self.0.handle_lexical(&input).content;
+            let r = self.0.handle_lexical(&input);
+            return (r.content, r.references);
         }
         let mut hits: Vec<usize> = Vec::new();
         for n in names {
@@ -487,7 +539,8 @@ impl CatalogSearch {
                 }
             }
         }
-        self.0.render(&hits, &[]).content
+        let r = self.0.render(&hits, &[]);
+        (r.content, r.references)
     }
 
     /// 埋め込みの順位（名前・類似度の降順）を受け取り、製品と同じ融合（BM25 との RRF・`+語` の

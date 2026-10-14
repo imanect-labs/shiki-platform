@@ -85,6 +85,9 @@ pub struct ToolSearchOptions {
     /// 埋め込み（配線されていれば自然文の検索を BM25 と RRF で融合する・#517）。
     /// RAG と同じ `EmbeddingProvider`（ingestion-worker）。`None` なら BM25 のみ。
     pub embedder: Option<std::sync::Arc<dyn rag::EmbeddingProvider>>,
+    /// 読み込むツールの ID 引数を調べる一覧・検索のツールも一緒に読み込む（#565・既定で有効）。
+    /// 下調べが要る依頼の評価で正解率 75.0% → 89.6%、入力トークン +1.8%。
+    pub companions: bool,
 }
 
 impl std::fmt::Debug for ToolSearchOptions {
@@ -93,6 +96,7 @@ impl std::fmt::Debug for ToolSearchOptions {
             .field("enabled", &self.enabled)
             .field("min_deferred_tokens", &self.min_deferred_tokens)
             .field("always_load", &self.always_load)
+            .field("companions", &self.companions)
             .field(
                 "embedder",
                 &self
@@ -117,6 +121,7 @@ impl Default for ToolSearchOptions {
             min_deferred_tokens: DEFAULT_TOOL_SEARCH_MIN_DEFERRED_TOKENS,
             always_load: Vec::new(),
             embedder: None,
+            companions: true,
         }
     }
 }
