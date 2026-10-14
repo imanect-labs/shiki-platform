@@ -126,6 +126,34 @@
   "reason": "利用者に情報を尋ねておらず、既存のWikiページを確認した結果を報告して応答を終えているため。"
  },
  {
+  "id": "aws_ec2_reboot_instance:ja@1000",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "final_text": "Nameタグが「prod-web-01」のEC2インスタンスのIDを取得するために、まずインスタンスの詳細を確認する必要があります。しかし、提供されているツールには、タグや名前でインスタンスを検索する機能（例: `describe-instances` のようなフィルタリング機能）が含まれていません。\n\n利用可能なツールは以下の通りです：\n- `aws_ec2_get_instance_details`: 特定の **instance_id** を指定して詳細を取得\n- `aws_ec2_reboot_instance`: 特定の **instance_id** を指定して再起動\n\nこれらのツールを使用するには、対象のEC2インスタンスの **Instance ID**（例: `i-xxxxxxxxxxxxxxxxx`）が必要です。\n\nお手数ですが、「prod-web-01」のEC2インスタンスIDを教えていただけますでしょうか？\nもし不明な場合は、AWSマネジメントコンソールやCLIなどで確認していただく必要があります。",
+  "category": "avoidable",
+  "asked": "EC2インスタンスID",
+  "tools": [
+   "aws_ec2_search_instances_by_tag"
+  ],
+  "reason": "アシスタントはタグ検索ツールがないと誤認しているが、カタログに `aws_ec2_search_instances_by_tag` が存在し、NameタグからインスタンスIDを取得できるため。",
+  "check": "検算で確認"
+ },
+ {
+  "id": "aws_ec2_reboot_instance:en@1000",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "final_text": "I need to find the instance ID for the EC2 instance with the Name tag \"prod-web-01\" before I can reboot it. I will first list the instances or get details to find the ID. However, the available tools don't include a \"list instances\" function. I only have `aws_ec2_get_instance_details` which requires an `instance_id`.\n\nSince I cannot directly search for an instance by Name tag with the provided tools, I must ask the user for the Instance ID, or assume there might be a way to get it if I had more tools. But looking at the loaded tools, I only have:\n- `aws_ec2_reboot_instance`\n- `aws_ec2_stop_instance`\n- `aws_ec2_launch_instance`\n- `aws_ec2_terminate_instance`\n- `aws_ec2_get_instance_details`\n\nNone of these allow me to search for an instance by name. I need the `instance_id` to proceed. I will ask the user for the Instance ID.\n\nWait, often in these scenarios, if I can't find the ID, I should check if there are other tools. Let me re-read the tool descriptions. No, none of them list instances.\n\nI will inform the user that I need the Instance ID.\n\nActually, let me double-check if I missed any tool in the initial search. The search result showed 5 tools. None of them are `describe_instances` or similar.\n\nTherefore, I cannot proceed without the Instance ID.\n\nHowever, sometimes the \"Name\" tag is not the same as the Instance ID. The user provided the Name tag \"prod-web-01\".\n\nI will ask the user for the Instance ID.\n\n**Correction**: In many AI agent environments, if a specific lookup tool isn't available, I might be expected to know the ID or it might be provided in a previous context. Here, it is not. I will ask for the Instance ID.\n\nBut wait, looking at the prompt style, usually, I should try to execute if possible. If I can't find the ID, I can't reboot.\n\nLet's assume the user might know the ID or I should ask.\n\n\"I need the Instance ID to reboot the EC2 instance. Could you please provide the Instance ID for the instance named 'prod-web-01'?\"\n\nAlternatively, if this is a test and I'm supposed to simulate or if there's a standard ID, I don't have that info.\n\nI will ask for the Instance ID.",
+  "category": "avoidable",
+  "asked": "EC2インスタンスID",
+  "tools": [
+   "aws_ec2_search_instances_by_tag"
+  ],
+  "reason": "アシスタントはツール一覧を誤って認識し「検索機能がない」と判断したが、実際にはカタログに `aws_ec2_search_instances_by_tag` が存在しており、NameタグからインスタンスIDを取得できるため。",
+  "check": "検算で確認"
+ },
+ {
   "id": "chatwork_create_task:en@1000",
   "condition": "search_rrf_prod",
   "n": 1000,
@@ -210,6 +238,19 @@
   "asked": "",
   "tools": "",
   "reason": "利用者に情報を尋ねておらず、サーバーのIPアドレスとOSバージョンという依頼された情報を直接回答して応答を終えているため。"
+ },
+ {
+  "id": "docusign_add_recipient:ja@1000",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "docusign_search_envelopes"
+  ],
+  "final_text": "封筒が見つかりました（ID: `e8a7b6c5-4d3e-2f1a-0b9c-8d7e6f5a4b3c`）。ステータスは `created`（下書き）です。\n\nしかし、読み込まれているDocuSignのツール一覧を確認すると、**封筒に受信者（署名者）を追加する機能を持つツールが含まれていません**。\n\n現在利用可能なDocuSign関連ツールは以下の通りです：\n- `docusign_create_brand`: ブランド作成\n- `docusign_list_brands`: ブランド一覧\n- `docusign_list_webhooks`: Webhook一覧\n- `docusign_download_document`: ドキュメントダウンロード\n- `docusign_get_envelope_status`: ステータス取得\n- `docusign_search_envelopes`: 封筒検索\n- `docusign_list_envelopes`: 封筒一覧\n\n署名者を追加するための `docusign_update_recipients` や `docusign_update_envelope` といったツールが定義されていないため、この操作を実行することができません。\n\n新しいツールを読み込む必要があるか、または他の方法で対応する必要がありますか？",
+  "category": "legit",
+  "asked": "新しいツールを読み込むか、他の方法で対応するか",
+  "tools": "",
+  "reason": "アシスタントは「封筒に受信者を追加するツールがない」と誤って主張し、利用者に方針の選択（ツール追加か別手段か）を尋ねている。利用者の意図や方針の選択はツールでは得られない情報であるため、legitとなる。"
  },
  {
   "id": "notion_move_block_children:ja@1000",
