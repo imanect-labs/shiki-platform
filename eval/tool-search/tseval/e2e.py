@@ -213,6 +213,8 @@ MOCK_RESULT = (
     "name=該当の項目、url=https://example.invalid/item-1024"
 )
 MOCK_CACHE = ROOT / "data" / "cache" / "mock"
+# 提示していない名前の呼び出しへの製品の観測（`crates/agent-core/src/agent_gate.rs`）。
+UNKNOWN_TOOL = "unknown tool: {name}"
 MOCK_PROMPT = """あなたは業務 SaaS の API のモックです。次のツールが、次の引数で呼ばれました。
 利用者の依頼の文脈に沿った、もっともらしい成功時の応答を JSON で返してください。
 
@@ -306,12 +308,16 @@ def run_one(
     searcher: Searcher | None,
     system: str | None = None,
     mock: str = "generic",
+    max_steps: int = MAX_STEPS,
+    record_args: bool = False,
 ) -> dict:
     """1 会話を回す。正解ツールを呼んだ時点で打ち切る（下調べのツールを先に呼ぶのは正しい手順
     なので、他のツールにはモックの結果を返して続けさせる）。
 
     `system` を渡すと既定（`SYSTEM`）の代わりに使う（キャッシュのキーにも入る・#545）。
     `mock="llm"` は、ツールの応答を一律の文面ではなく依頼に沿った内容にする（[`llm_mock`]）。
+    `max_steps` は 1 会話の応答の回数の上限（既定以外はキャッシュのキーにも入る・#547）。
+    `record_args` なら、呼んだ引数（`call_args`）を持たない古いキャッシュを使わずに取り直す。
     """
     variant = (
         system
@@ -319,9 +325,17 @@ def run_one(
         # モックを作るコードと文面が変われば取り直す。
         else json.dumps([system, mock, mock_fingerprint()], ensure_ascii=False)
     )
+    if max_steps != MAX_STEPS:
+        variant = json.dumps([variant, "max_steps", max_steps], ensure_ascii=False)
     path = cache_path(tools, condition, query, variant=variant)
+    names = {t.name for t in tools}
     if path.exists():
-        return json.loads(path.read_text())
+        cached = json.loads(path.read_text())
+        # 提示していない名前を呼んだ会話は、以前は成功のモックを返していた（製品は
+        # `unknown tool` のエラー）。その会話だけ取り直す（それ以外は呼ぶまでが同じ）。
+        stale_args = record_args and "call_args" not in cached
+        if all(c in names for c in cached["calls"]) and not stale_args:
+            return cached
     by_wire = {wire(t.name): t for t in tools}
     if condition == "all":
         offered = [as_function(t) for t in shuffled(tools)]
@@ -347,6 +361,8 @@ def run_one(
         "condition": condition,
         "n": len(tools),
         "calls": [],
+        # 呼んだツールの引数（足りない依頼で値を作ったかを後で見る・#547。古いキャッシュには無い）。
+        "call_args": [],
         "searches": [],
         "prompt_tokens": 0,
         "completion_tokens": 0,
@@ -358,7 +374,7 @@ def run_one(
     }
     t0 = time.perf_counter()
     try:
-        for _ in range(MAX_STEPS):
+        for _ in range(max_steps):
             r = chat(messages, tools=offered, max_tokens=4096, temperature=0.0)
             msg, usage = r["message"], r["usage"]
             rec["steps"] += 1
@@ -378,13 +394,17 @@ def run_one(
                 if name != "tool_search":
                     local = by_wire[name].name if name in by_wire else name
                     rec["calls"].append(local)
+                    rec["call_args"].append(c["function"]["arguments"])
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": c["id"],
                             "content": (
-                                MOCK_RESULT.format(name=name)
-                                if mock == "generic" or name not in by_wire
+                                # 製品は提示していない名前をエラーの観測にする（agent_gate::execute_tool）。
+                                UNKNOWN_TOOL.format(name=name)
+                                if name not in by_wire
+                                else MOCK_RESULT.format(name=name)
+                                if mock == "generic"
                                 else llm_mock(
                                     by_wire[name], c["function"]["arguments"], query["text"]
                                 )

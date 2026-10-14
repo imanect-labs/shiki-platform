@@ -217,6 +217,28 @@ for cond in ("all", "search_rrf_prod"):
         }
     )
 
+# 依頼データ v2（#547）: 集計は tseval.e2e_v2.summarize（目視の分類を優先）が書いたものを使う。
+out["e2e_data_v2"] = []
+for x in load("e2e_v2_summary") or []:
+    k = x["full"] or 1
+    out["e2e_data_v2"].append(
+        {
+            "n": x["n"],
+            "cond": x["condition"],
+            "k": x["full"],
+            "ok": x["correct"] / k,
+            **{c: x[c] / k for c in ("avoidable", "legit", "other", "max_steps", "unjudged")},
+            "chain": x["chain"] / k,
+            "tok": x["mean_prompt_tokens"],
+            "km": x["missing"],
+            "asked": x["missing_asked"],
+            "called_target": x["missing_called_target"],
+            "filled": x["missing_filled"],
+            "omitted": x["missing_omitted"],
+            "other_service": x["missing_other_service"],
+        }
+    )
+
 t = (HERE / "template.html").read_text()
 (HERE / "tool-search-eval.html").write_text(
     t.replace("__DATA__", json.dumps(out, ensure_ascii=False))

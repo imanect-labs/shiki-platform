@@ -1,0 +1,2912 @@
+[
+ {
+  "id": "aws_cloudwatch_get_log_events:ja@200",
+  "target": "aws_cloudwatch_get_log_events",
+  "kind": "ja",
+  "n": 200,
+  "text": "AWS CloudWatchのロググループ「prod-app-logs」にあるストリーム「i-0a1b2c3d4e5f6g7h8」から、直近のエラー調査用に最新のログイベントを50件取得してください。",
+  "plan": [
+   {
+    "tool": "aws_cloudwatch_get_log_events",
+    "args": {
+     "log_group_name": {
+      "value": "prod-app-logs",
+      "ja": "「prod-app-logs」",
+      "en": "\"prod-app-logs\""
+     },
+     "log_stream_name": {
+      "value": "i-0a1b2c3d4e5f6g7h8",
+      "ja": "「i-0a1b2c3d4e5f6g7h8」",
+      "en": "\"i-0a1b2c3d4e5f6g7h8\""
+     },
+     "limit": {
+      "value": 50,
+      "ja": "50件",
+      "en": "50"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en@200",
+  "target": "aws_cloudwatch_get_log_events",
+  "kind": "en",
+  "n": 200,
+  "text": "Please retrieve the latest 50 log events from the stream \"i-0a1b2c3d4e5f6g7h8\" in the AWS CloudWatch log group \"prod-app-logs\" for recent error investigation.",
+  "plan": [
+   {
+    "tool": "aws_cloudwatch_get_log_events",
+    "args": {
+     "log_group_name": {
+      "value": "prod-app-logs",
+      "ja": "「prod-app-logs」",
+      "en": "\"prod-app-logs\""
+     },
+     "log_stream_name": {
+      "value": "i-0a1b2c3d4e5f6g7h8",
+      "ja": "「i-0a1b2c3d4e5f6g7h8」",
+      "en": "\"i-0a1b2c3d4e5f6g7h8\""
+     },
+     "limit": {
+      "value": 50,
+      "ja": "50件",
+      "en": "50"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja@200",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "kind": "ja",
+  "n": 200,
+  "text": "AWS CloudWatchのロググループ「/aws/lambda/payment-service」で、10月21日午前9時以降に発生した「TimeoutException」というエラーパターンのログを検索してください。",
+  "plan": [
+   {
+    "tool": "aws_cloudwatch_search_logs_by_pattern",
+    "args": {
+     "log_group_name": "/aws/lambda/payment-service",
+     "filter_pattern": "TimeoutException",
+     "start_time": {
+      "value": 1761004800,
+      "ja": "10月21日午前9時",
+      "en": "9:00 AM on October 21st"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en@200",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "kind": "en",
+  "n": 200,
+  "text": "Please search for logs in the AWS CloudWatch log group \"/aws/lambda/payment-service\" that match the pattern \"TimeoutException\" occurring after 9:00 AM on October 21st.",
+  "plan": [
+   {
+    "tool": "aws_cloudwatch_search_logs_by_pattern",
+    "args": {
+     "log_group_name": "/aws/lambda/payment-service",
+     "filter_pattern": "TimeoutException",
+     "start_time": {
+      "value": 1761004800,
+      "ja": "10月21日午前9時",
+      "en": "9:00 AM on October 21st"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "chatwork_get_file:ja@200",
+  "target": "chatwork_get_file",
+  "kind": "ja",
+  "n": 200,
+  "text": "ChatworkのルームID 12345678にある、ファイルID 987654321の資料のダウンロードURLを取得してください。",
+  "plan": [
+   {
+    "tool": "chatwork_get_file",
+    "args": {
+     "room_id": "12345678",
+     "file_id": "987654321"
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "chatwork_get_file:en@200",
+  "target": "chatwork_get_file",
+  "kind": "en",
+  "n": 200,
+  "text": "Please get the download URL for the file with ID 987654321 in Chatwork room ID 12345678.",
+  "plan": [
+   {
+    "tool": "chatwork_get_file",
+    "args": {
+     "room_id": "12345678",
+     "file_id": "987654321"
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "docusign_create_webhook:ja@200",
+  "target": "docusign_create_webhook",
+  "kind": "ja",
+  "n": 200,
+  "text": "DocuSignで、封筒が完了した際に https://api.example.com/hooks/docusign へ通知を送るWebhookを設定してください。通知にはドキュメントを含めてください。アカウントIDは acc_12345 です。",
+  "plan": [
+   {
+    "tool": "docusign_create_webhook",
+    "args": {
+     "account_id": "acc_12345",
+     "url": "https://api.example.com/hooks/docusign",
+     "events": [
+      {
+       "value": "envelope-completed",
+       "ja": "封筒が完了した際",
+       "en": "when an envelope is completed"
+      }
+     ],
+     "include_documents": true
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "docusign_create_webhook:en@200",
+  "target": "docusign_create_webhook",
+  "kind": "en",
+  "n": 200,
+  "text": "Please set up a DocuSign webhook to send a notification to https://api.example.com/hooks/docusign when an envelope is completed. Include the documents in the notification. The account ID is acc_12345.",
+  "plan": [
+   {
+    "tool": "docusign_create_webhook",
+    "args": {
+     "account_id": "acc_12345",
+     "url": "https://api.example.com/hooks/docusign",
+     "events": [
+      {
+       "value": "envelope-completed",
+       "ja": "封筒が完了した際",
+       "en": "when an envelope is completed"
+      }
+     ],
+     "include_documents": true
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "dropbox_share_folder:ja@200",
+  "target": "dropbox_share_folder",
+  "kind": "ja",
+  "n": 200,
+  "text": "Dropboxのルート直下にある「2026年度 戦略資料」フォルダを、佐藤さん（sato@example.com）と共有してください。アクセス権限は編集者（editor）に設定してください。",
+  "plan": [
+   {
+    "tool": "dropbox_list_folder",
+    "args": {
+     "path": {
+      "value": "/",
+      "ja": "ルート直下",
+      "en": "root of Dropbox"
+     },
+     "recursive": false
+    },
+    "pick": {
+     "ja": "2026年度 戦略資料",
+     "en": "2026 Strategic Materials"
+    }
+   },
+   {
+    "tool": "dropbox_share_folder",
+    "args": {
+     "folder_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "member_email": "sato@example.com",
+     "access_level": "editor"
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "dropbox_share_folder:en@200",
+  "target": "dropbox_share_folder",
+  "kind": "en",
+  "n": 200,
+  "text": "Please share the folder named \"2026 Strategic Materials\" located at the root of Dropbox with Sato (sato@example.com). Set the access level to editor.",
+  "plan": [
+   {
+    "tool": "dropbox_list_folder",
+    "args": {
+     "path": {
+      "value": "/",
+      "ja": "ルート直下",
+      "en": "root of Dropbox"
+     },
+     "recursive": false
+    },
+    "pick": {
+     "ja": "2026年度 戦略資料",
+     "en": "2026 Strategic Materials"
+    }
+   },
+   {
+    "tool": "dropbox_share_folder",
+    "args": {
+     "folder_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "member_email": "sato@example.com",
+     "access_level": "editor"
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "figma_delete_comment:ja@200",
+  "target": "figma_delete_comment",
+  "kind": "ja",
+  "n": 200,
+  "text": "Figmaのファイルキー「abc123xyz」にある「ログイン画面 v2」デザインのコメント欄で、私が昨日投稿した誤ったフィードバックを削除してください。そのコメントのIDは「987654321」です。",
+  "plan": [
+   {
+    "tool": "figma_delete_comment",
+    "args": {
+     "file_key": {
+      "value": "abc123xyz",
+      "ja": "abc123xyz",
+      "en": "abc123xyz"
+     },
+     "comment_id": {
+      "value": "987654321",
+      "ja": "987654321",
+      "en": "987654321"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "figma_delete_comment:en@200",
+  "target": "figma_delete_comment",
+  "kind": "en",
+  "n": 200,
+  "text": "Please delete the incorrect feedback comment I posted yesterday on the \"Login Screen v2\" design in the Figma file with key \"abc123xyz\". The comment ID is \"987654321\".",
+  "plan": [
+   {
+    "tool": "figma_delete_comment",
+    "args": {
+     "file_key": {
+      "value": "abc123xyz",
+      "ja": "abc123xyz",
+      "en": "abc123xyz"
+     },
+     "comment_id": {
+      "value": "987654321",
+      "ja": "987654321",
+      "en": "987654321"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "garoon_list_messages:ja@200",
+  "target": "garoon_list_messages",
+  "kind": "ja",
+  "n": 200,
+  "text": "Garoonの受信トレイにある最新のメッセージを10件取得してください。",
+  "plan": [
+   {
+    "tool": "garoon_list_messages",
+    "args": {
+     "limit": {
+      "value": 10,
+      "ja": "10件",
+      "en": "10"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "garoon_list_messages:en@200",
+  "target": "garoon_list_messages",
+  "kind": "en",
+  "n": 200,
+  "text": "Please retrieve the latest 10 messages from the Garoon inbox.",
+  "plan": [
+   {
+    "tool": "garoon_list_messages",
+    "args": {
+     "limit": {
+      "value": 10,
+      "ja": "10件",
+      "en": "10"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "gdrive_list_revisions:ja@200",
+  "target": "gdrive_list_revisions",
+  "kind": "ja",
+  "n": 200,
+  "text": "Google DriveのファイルID「1a2B3c4D5e6F7g8H9i0J」について、過去の編集履歴（リビジョン一覧）を取得してください。",
+  "plan": [
+   {
+    "tool": "gdrive_list_revisions",
+    "args": {
+     "file_id": {
+      "value": "1a2B3c4D5e6F7g8H9i0J",
+      "ja": "1a2B3c4D5e6F7g8H9i0J",
+      "en": "1a2B3c4D5e6F7g8H9i0J"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 4
+ },
+ {
+  "id": "gdrive_list_revisions:en@200",
+  "target": "gdrive_list_revisions",
+  "kind": "en",
+  "n": 200,
+  "text": "Please retrieve the revision history for the Google Drive file with ID \"1a2B3c4D5e6F7g8H9i0J\".",
+  "plan": [
+   {
+    "tool": "gdrive_list_revisions",
+    "args": {
+     "file_id": {
+      "value": "1a2B3c4D5e6F7g8H9i0J",
+      "ja": "1a2B3c4D5e6F7g8H9i0J",
+      "en": "1a2B3c4D5e6F7g8H9i0J"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 4
+ },
+ {
+  "id": "gdrive_upload_file:ja@200",
+  "target": "gdrive_upload_file",
+  "kind": "ja",
+  "n": 200,
+  "text": "Googleドライブに「2026年10月定例議事録.txt」という名前でファイルを保存してください。内容は「出席者：田中、鈴木。決定事項：来期の予算案を承認。」です。",
+  "plan": [
+   {
+    "tool": "gdrive_upload_file",
+    "args": {
+     "file_name": {
+      "value": "2026年10月定例議事録.txt",
+      "ja": "「2026年10月定例議事録.txt」",
+      "en": "\"October 2026 Regular Meeting Minutes.txt\""
+     },
+     "content": {
+      "value": "出席者：田中、鈴木。決定事項：来期の予算案を承認。",
+      "ja": "「出席者：田中、鈴木。決定事項：来期の予算案を承認。」",
+      "en": "\"Attendees: Tanaka, Suzuki. Decisions: Next term's budget proposal approved.\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "gdrive_upload_file:en@200",
+  "target": "gdrive_upload_file",
+  "kind": "en",
+  "n": 200,
+  "text": "Please upload a file named \"October 2026 Regular Meeting Minutes.txt\" to Google Drive. The content is \"Attendees: Tanaka, Suzuki. Decisions: Next term's budget proposal approved.\"",
+  "plan": [
+   {
+    "tool": "gdrive_upload_file",
+    "args": {
+     "file_name": {
+      "value": "2026年10月定例議事録.txt",
+      "ja": "「2026年10月定例議事録.txt」",
+      "en": "\"October 2026 Regular Meeting Minutes.txt\""
+     },
+     "content": {
+      "value": "出席者：田中、鈴木。決定事項：来期の予算案を承認。",
+      "ja": "「出席者：田中、鈴木。決定事項：来期の予算案を承認。」",
+      "en": "\"Attendees: Tanaka, Suzuki. Decisions: Next term's budget proposal approved.\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "gitlab_get_project:ja@200",
+  "target": "gitlab_get_project",
+  "kind": "ja",
+  "n": 200,
+  "text": "GitLabの「backend-api」プロジェクトの詳細情報を確認してください。リポジトリのURLや現在の統計情報が知りたいです。",
+  "plan": [
+   {
+    "tool": "gitlab_get_project",
+    "args": {
+     "project_id": {
+      "value": "backend-api",
+      "ja": "「backend-api」",
+      "en": "\"backend-api\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "gitlab_get_project:en@200",
+  "target": "gitlab_get_project",
+  "kind": "en",
+  "n": 200,
+  "text": "Please check the details of the \"backend-api\" project on GitLab. I need to know the repository URL and current statistics.",
+  "plan": [
+   {
+    "tool": "gitlab_get_project",
+    "args": {
+     "project_id": {
+      "value": "backend-api",
+      "ja": "「backend-api」",
+      "en": "\"backend-api\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "jira_update_sprint:ja@200",
+  "target": "jira_update_sprint",
+  "kind": "ja",
+  "n": 200,
+  "text": "Jiraの「モバイルアプリ開発」ボードにある現在アクティブなスプリントの名前を「Sprint 24 - Hotfix」に変更し、終了日を10月21日に更新してください。ゴールは「クリティカルバグの修正」とします。",
+  "plan": [
+   {
+    "tool": "jira_list_boards",
+    "args": {
+     "project_key": null,
+     "type": "scrum",
+     "max_results": 50
+    },
+    "pick": {
+     "ja": "モバイルアプリ開発",
+     "en": "Mobile App Development"
+    }
+   },
+   {
+    "tool": "jira_list_sprints",
+    "args": {
+     "board_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "state": "active",
+     "max_results": 5
+    },
+    "pick": {
+     "ja": "現在アクティブなスプリント",
+     "en": "currently active sprint"
+    }
+   },
+   {
+    "tool": "jira_update_sprint",
+    "args": {
+     "sprint_id": {
+      "from": 1,
+      "field": "id"
+     },
+     "name": "Sprint 24 - Hotfix",
+     "end_date": {
+      "value": "2026-10-21",
+      "ja": "10月21日",
+      "en": "2026-10-21"
+     },
+     "goal": {
+      "value": "クリティカルバグの修正",
+      "ja": "クリティカルバグの修正",
+      "en": "Fix critical bugs"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "jira_update_sprint:en@200",
+  "target": "jira_update_sprint",
+  "kind": "en",
+  "n": 200,
+  "text": "Please update the currently active sprint on the 'Mobile App Development' board in Jira. Change the name to 'Sprint 24 - Hotfix', set the end date to 2026-10-21, and update the goal to 'Fix critical bugs'.",
+  "plan": [
+   {
+    "tool": "jira_list_boards",
+    "args": {
+     "project_key": null,
+     "type": "scrum",
+     "max_results": 50
+    },
+    "pick": {
+     "ja": "モバイルアプリ開発",
+     "en": "Mobile App Development"
+    }
+   },
+   {
+    "tool": "jira_list_sprints",
+    "args": {
+     "board_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "state": "active",
+     "max_results": 5
+    },
+    "pick": {
+     "ja": "現在アクティブなスプリント",
+     "en": "currently active sprint"
+    }
+   },
+   {
+    "tool": "jira_update_sprint",
+    "args": {
+     "sprint_id": {
+      "from": 1,
+      "field": "id"
+     },
+     "name": "Sprint 24 - Hotfix",
+     "end_date": {
+      "value": "2026-10-21",
+      "ja": "10月21日",
+      "en": "2026-10-21"
+     },
+     "goal": {
+      "value": "クリティカルバグの修正",
+      "ja": "クリティカルバグの修正",
+      "en": "Fix critical bugs"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "notion_delete_block:ja@200",
+  "target": "notion_delete_block",
+  "kind": "ja",
+  "n": 200,
+  "text": "Notionのブロック「blk_987654321」を削除してください。",
+  "plan": [
+   {
+    "tool": "notion_delete_block",
+    "args": {
+     "block_id": {
+      "value": "blk_987654321",
+      "ja": "「blk_987654321」",
+      "en": "\"blk_987654321\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "notion_delete_block:en@200",
+  "target": "notion_delete_block",
+  "kind": "en",
+  "n": 200,
+  "text": "Please delete the Notion block with ID \"blk_987654321\".",
+  "plan": [
+   {
+    "tool": "notion_delete_block",
+    "args": {
+     "block_id": {
+      "value": "blk_987654321",
+      "ja": "「blk_987654321」",
+      "en": "\"blk_987654321\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "outlook_delete_event:ja@200",
+  "target": "outlook_delete_event",
+  "kind": "ja",
+  "n": 200,
+  "text": "Outlookの予定表から、イベントID「AAMkADAwATM0MDAAMS1iNTcwLWI2NjEtMDACLTAwCgBGAAAAAAA」を削除してください。これは定期的なシリーズなので、シリーズ全体をキャンセルしてください。",
+  "plan": [
+   {
+    "tool": "outlook_delete_event",
+    "args": {
+     "event_id": {
+      "value": "AAMkADAwATM0MDAAMS1iNTcwLWI2NjEtMDACLTAwCgBGAAAAAAA",
+      "ja": "AAMkADAwATM0MDAAMS1iNTcwLWI2NjEtMDACLTAwCgBGAAAAAAA",
+      "en": "AAMkADAwATM0MDAAMS1iNTcwLWI2NjEtMDACLTAwCgBGAAAAAAA"
+     },
+     "cancel_series": {
+      "value": true,
+      "ja": "シリーズ全体をキャンセル",
+      "en": "cancel the entire series"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "outlook_delete_event:en@200",
+  "target": "outlook_delete_event",
+  "kind": "en",
+  "n": 200,
+  "text": "Please delete the calendar event with ID \"AAMkADAwATM0MDAAMS1iNTcwLWI2NjEtMDACLTAwCgBGAAAAAAA\" from Outlook. Since this is a recurring series, please cancel the entire series.",
+  "plan": [
+   {
+    "tool": "outlook_delete_event",
+    "args": {
+     "event_id": {
+      "value": "AAMkADAwATM0MDAAMS1iNTcwLWI2NjEtMDACLTAwCgBGAAAAAAA",
+      "ja": "AAMkADAwATM0MDAAMS1iNTcwLWI2NjEtMDACLTAwCgBGAAAAAAA",
+      "en": "AAMkADAwATM0MDAAMS1iNTcwLWI2NjEtMDACLTAwCgBGAAAAAAA"
+     },
+     "cancel_series": {
+      "value": true,
+      "ja": "シリーズ全体をキャンセル",
+      "en": "cancel the entire series"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "outlook_search_emails:ja@200",
+  "target": "outlook_search_emails",
+  "kind": "ja",
+  "n": 200,
+  "text": "Outlookで、10月1日以降にtanaka@example.comから受信した「Q3予算案」を含むメールを検索してください。",
+  "plan": [
+   {
+    "tool": "outlook_search_emails",
+    "args": {
+     "query": {
+      "value": "from:tanaka@example.com subject:\"Q3 Budget Proposal\"",
+      "ja": "tanaka@example.comから受信した「Q3予算案」を含む",
+      "en": "from tanaka@example.com containing \"Q3 Budget Proposal\""
+     },
+     "start_date": {
+      "value": "2026-10-01",
+      "ja": "10月1日以降",
+      "en": "since October 1st"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "outlook_search_emails:en@200",
+  "target": "outlook_search_emails",
+  "kind": "en",
+  "n": 200,
+  "text": "Search Outlook for emails from tanaka@example.com containing \"Q3 Budget Proposal\" received since October 1st.",
+  "plan": [
+   {
+    "tool": "outlook_search_emails",
+    "args": {
+     "query": {
+      "value": "from:tanaka@example.com subject:\"Q3 Budget Proposal\"",
+      "ja": "tanaka@example.comから受信した「Q3予算案」を含む",
+      "en": "from tanaka@example.com containing \"Q3 Budget Proposal\""
+     },
+     "start_date": {
+      "value": "2026-10-01",
+      "ja": "10月1日以降",
+      "en": "since October 1st"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja@200",
+  "target": "pagerduty_trigger_webhook",
+  "kind": "ja",
+  "n": 200,
+  "text": "PagerDutyのWebhookテスト用エンドポイント https://hooks.example.com/pagerduty/test に対して、ペイロード {\"event\": \"test\", \"timestamp\": \"2026-10-21T10:00:00Z\"} を送信して通知連携の動作確認をしてください。",
+  "plan": [
+   {
+    "tool": "pagerduty_trigger_webhook",
+    "args": {
+     "webhook_url": {
+      "value": "https://hooks.example.com/pagerduty/test",
+      "ja": "https://hooks.example.com/pagerduty/test",
+      "en": "https://hooks.example.com/pagerduty/test"
+     },
+     "payload": {
+      "value": "{\"event\": \"test\", \"timestamp\": \"2026-10-21T10:00:00Z\"}",
+      "ja": "{\"event\": \"test\", \"timestamp\": \"2026-10-21T10:00:00Z\"}",
+      "en": "{\"event\": \"test\", \"timestamp\": \"2026-10-21T10:00:00Z\"}"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en@200",
+  "target": "pagerduty_trigger_webhook",
+  "kind": "en",
+  "n": 200,
+  "text": "Please trigger a webhook to the PagerDuty test endpoint https://hooks.example.com/pagerduty/test with the payload {\"event\": \"test\", \"timestamp\": \"2026-10-21T10:00:00Z\"} to verify the notification integration.",
+  "plan": [
+   {
+    "tool": "pagerduty_trigger_webhook",
+    "args": {
+     "webhook_url": {
+      "value": "https://hooks.example.com/pagerduty/test",
+      "ja": "https://hooks.example.com/pagerduty/test",
+      "en": "https://hooks.example.com/pagerduty/test"
+     },
+     "payload": {
+      "value": "{\"event\": \"test\", \"timestamp\": \"2026-10-21T10:00:00Z\"}",
+      "ja": "{\"event\": \"test\", \"timestamp\": \"2026-10-21T10:00:00Z\"}",
+      "en": "{\"event\": \"test\", \"timestamp\": \"2026-10-21T10:00:00Z\"}"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:ja@200",
+  "target": "rakurakuseisan_get_expense_detail",
+  "kind": "ja",
+  "n": 200,
+  "text": "楽々精算で、経費明細ID「EXP-20261014-005」の領収書画像と承認履歴を確認したいので、詳細情報を取得してください。",
+  "plan": [
+   {
+    "tool": "rakurakuseisan_get_expense_detail",
+    "args": {
+     "expense_id": {
+      "value": "EXP-20261014-005",
+      "ja": "EXP-20261014-005",
+      "en": "EXP-20261014-005"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "rakurakuseisan_get_expense_detail:en@200",
+  "target": "rakurakuseisan_get_expense_detail",
+  "kind": "en",
+  "n": 200,
+  "text": "In Rakuraku Seisan, please retrieve the details for expense ID \"EXP-20261014-005\" as I need to check the receipt image and approval history.",
+  "plan": [
+   {
+    "tool": "rakurakuseisan_get_expense_detail",
+    "args": {
+     "expense_id": {
+      "value": "EXP-20261014-005",
+      "ja": "EXP-20261014-005",
+      "en": "EXP-20261014-005"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "save_csv:ja@200",
+  "target": "save_csv",
+  "kind": "ja",
+  "n": 200,
+  "text": "SaaSで、Acme Corp（10月15日、$50,000）、Globex Inc（10月20日、$75,000）、Soylent Corp（10月21日、$30,000）のデータを「Q4_営業見込み.csv」という名前で表にして下書きを作成してください。",
+  "plan": [
+   {
+    "tool": "save_csv",
+    "args": {
+     "csv": {
+      "value": "Customer Name,Estimated Close Date,Deal Value\nAcme Corp,2026-10-15,\"$50,000\"\nGlobex Inc,2026-10-20,\"$75,000\"\nSoylent Corp,2026-10-21,\"$30,000\"",
+      "ja": "Acme Corp（10月15日、$50,000）、Globex Inc（10月20日、$75,000）、Soylent Corp（10月21日、$30,000）",
+      "en": "Acme Corp (Oct 15, $50,000), Globex Inc (Oct 20, $75,000), and Soylent Corp (Oct 21, $30,000)"
+     },
+     "name": {
+      "value": "Q4_営業見込み",
+      "ja": "「Q4_営業見込み.csv」",
+      "en": "\"Q4_Sales_Pipeline.csv\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "save_csv:en@200",
+  "target": "save_csv",
+  "kind": "en",
+  "n": 200,
+  "text": "In the SaaS, please create a draft table named \"Q4_Sales_Pipeline.csv\" with the following data: Acme Corp (Oct 15, $50,000), Globex Inc (Oct 20, $75,000), and Soylent Corp (Oct 21, $30,000).",
+  "plan": [
+   {
+    "tool": "save_csv",
+    "args": {
+     "csv": {
+      "value": "Customer Name,Estimated Close Date,Deal Value\nAcme Corp,2026-10-15,\"$50,000\"\nGlobex Inc,2026-10-20,\"$75,000\"\nSoylent Corp,2026-10-21,\"$30,000\"",
+      "ja": "Acme Corp（10月15日、$50,000）、Globex Inc（10月20日、$75,000）、Soylent Corp（10月21日、$30,000）",
+      "en": "Acme Corp (Oct 15, $50,000), Globex Inc (Oct 20, $75,000), and Soylent Corp (Oct 21, $30,000)"
+     },
+     "name": {
+      "value": "Q4_営業見込み",
+      "ja": "「Q4_営業見込み.csv」",
+      "en": "\"Q4_Sales_Pipeline.csv\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "shopify_list_customers:ja@200",
+  "target": "shopify_list_customers",
+  "kind": "ja",
+  "n": 200,
+  "text": "Shopifyに登録されている顧客の一覧を、メールアドレス順に並べ替えて上位50件取得してください。",
+  "plan": [
+   {
+    "tool": "shopify_list_customers",
+    "args": {
+     "limit": {
+      "value": 50,
+      "ja": "上位50件",
+      "en": "top 50"
+     }
+    },
+    "pick": null
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "shopify_list_customers:en@200",
+  "target": "shopify_list_customers",
+  "kind": "en",
+  "n": 200,
+  "text": "Please retrieve the top 50 customers registered in Shopify, sorted by email address.",
+  "plan": [
+   {
+    "tool": "shopify_list_customers",
+    "args": {
+     "limit": {
+      "value": 50,
+      "ja": "上位50件",
+      "en": "top 50"
+     }
+    },
+    "pick": null
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "shopify_search_products:ja@200",
+  "target": "shopify_search_products",
+  "kind": "ja",
+  "n": 200,
+  "text": "Shopifyで「オーガニック コーヒー」というキーワードの商品を検索して、上位5件を表示してください。",
+  "plan": [
+   {
+    "tool": "shopify_search_products",
+    "args": {
+     "query": {
+      "value": "オーガニック コーヒー",
+      "ja": "「オーガニック コーヒー」",
+      "en": "\"Organic Coffee\""
+     },
+     "limit": {
+      "value": 5,
+      "ja": "5件",
+      "en": "5"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "shopify_search_products:en@200",
+  "target": "shopify_search_products",
+  "kind": "en",
+  "n": 200,
+  "text": "Please search for products with the keyword \"Organic Coffee\" in Shopify and show the top 5 results.",
+  "plan": [
+   {
+    "tool": "shopify_search_products",
+    "args": {
+     "query": {
+      "value": "オーガニック コーヒー",
+      "ja": "「オーガニック コーヒー」",
+      "en": "\"Organic Coffee\""
+     },
+     "limit": {
+      "value": 5,
+      "ja": "5件",
+      "en": "5"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "slack_add_reaction:ja@200",
+  "target": "slack_add_reaction",
+  "kind": "ja",
+  "n": 200,
+  "text": "Slackで、チャンネルID「C0123456789」、タイムスタンプ「1697000000.123456」のメッセージに対して、「thumbsup」のリアクションを追加してください。",
+  "plan": [
+   {
+    "tool": "slack_add_reaction",
+    "args": {
+     "channel_id": {
+      "value": "C0123456789",
+      "ja": "「C0123456789」",
+      "en": "\"C0123456789\""
+     },
+     "ts": {
+      "value": "1697000000.123456",
+      "ja": "「1697000000.123456」",
+      "en": "\"1697000000.123456\""
+     },
+     "name": {
+      "value": "thumbsup",
+      "ja": "「thumbsup」",
+      "en": "\"thumbsup\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "slack_add_reaction:en@200",
+  "target": "slack_add_reaction",
+  "kind": "en",
+  "n": 200,
+  "text": "Please add a \"thumbsup\" reaction to the Slack message with channel ID \"C0123456789\" and timestamp \"1697000000.123456\".",
+  "plan": [
+   {
+    "tool": "slack_add_reaction",
+    "args": {
+     "channel_id": {
+      "value": "C0123456789",
+      "ja": "「C0123456789」",
+      "en": "\"C0123456789\""
+     },
+     "ts": {
+      "value": "1697000000.123456",
+      "ja": "「1697000000.123456」",
+      "en": "\"1697000000.123456\""
+     },
+     "name": {
+      "value": "thumbsup",
+      "ja": "「thumbsup」",
+      "en": "\"thumbsup\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "smarthr_create_employee_draft:ja@200",
+  "target": "smarthr_create_employee_draft",
+  "kind": "ja",
+  "n": 200,
+  "text": "SmartHRで、10月21日入社予定の新規従業員「田中 健太」さんの登録下書きを作成してください。メールアドレスは kenta.tanaka@example.com です。",
+  "plan": [
+   {
+    "tool": "smarthr_create_employee_draft",
+    "args": {
+     "first_name": {
+      "value": "健太",
+      "ja": "健太",
+      "en": "Kenta"
+     },
+     "last_name": {
+      "value": "田中",
+      "ja": "田中",
+      "en": "Tanaka"
+     },
+     "email": "kenta.tanaka@example.com",
+     "hire_date": {
+      "value": "2026-10-21",
+      "ja": "10月21日",
+      "en": "October 21st"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "smarthr_create_employee_draft:en@200",
+  "target": "smarthr_create_employee_draft",
+  "kind": "en",
+  "n": 200,
+  "text": "Please create a draft registration in SmartHR for the new employee \"Kenta Tanaka\", who is scheduled to join on October 21st. His email address is kenta.tanaka@example.com.",
+  "plan": [
+   {
+    "tool": "smarthr_create_employee_draft",
+    "args": {
+     "first_name": {
+      "value": "健太",
+      "ja": "健太",
+      "en": "Kenta"
+     },
+     "last_name": {
+      "value": "田中",
+      "ja": "田中",
+      "en": "Tanaka"
+     },
+     "email": "kenta.tanaka@example.com",
+     "hire_date": {
+      "value": "2026-10-21",
+      "ja": "10月21日",
+      "en": "October 21st"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "stripe_create_customer:ja@200",
+  "target": "stripe_create_customer",
+  "kind": "ja",
+  "n": 200,
+  "text": "Stripeに新規顧客として「山田太郎」さんを登録してください。メールアドレスは taro.yamada@example.com です。メモ欄には「2026年10月開催のセミナー参加者」と記載しておいてください。",
+  "plan": [
+   {
+    "tool": "stripe_create_customer",
+    "args": {
+     "email": "taro.yamada@example.com",
+     "name": {
+      "value": "山田太郎",
+      "ja": "山田太郎",
+      "en": "Taro Yamada"
+     },
+     "description": {
+      "value": "2026年10月開催のセミナー参加者",
+      "ja": "2026年10月開催のセミナー参加者",
+      "en": "Seminar attendee for October 2026"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "stripe_create_customer:en@200",
+  "target": "stripe_create_customer",
+  "kind": "en",
+  "n": 200,
+  "text": "Please register Taro Yamada as a new customer in Stripe. His email address is taro.yamada@example.com. Add \"Seminar attendee for October 2026\" to the description field.",
+  "plan": [
+   {
+    "tool": "stripe_create_customer",
+    "args": {
+     "email": "taro.yamada@example.com",
+     "name": {
+      "value": "山田太郎",
+      "ja": "山田太郎",
+      "en": "Taro Yamada"
+     },
+     "description": {
+      "value": "2026年10月開催のセミナー参加者",
+      "ja": "2026年10月開催のセミナー参加者",
+      "en": "Seminar attendee for October 2026"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "stripe_list_invoices:ja@200",
+  "target": "stripe_list_invoices",
+  "kind": "ja",
+  "n": 200,
+  "text": "Stripeで顧客ID「cus_98765」の未払い（open）状態の請求書一覧を取得してください。",
+  "plan": [
+   {
+    "tool": "stripe_list_invoices",
+    "args": {
+     "customer_id": {
+      "value": "cus_98765",
+      "ja": "cus_98765",
+      "en": "cus_98765"
+     },
+     "status": {
+      "value": "open",
+      "ja": "未払い（open）",
+      "en": "unpaid (open)"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "stripe_list_invoices:en@200",
+  "target": "stripe_list_invoices",
+  "kind": "en",
+  "n": 200,
+  "text": "Please retrieve the list of unpaid (open) invoices for customer ID \"cus_98765\" in Stripe.",
+  "plan": [
+   {
+    "tool": "stripe_list_invoices",
+    "args": {
+     "customer_id": {
+      "value": "cus_98765",
+      "ja": "cus_98765",
+      "en": "cus_98765"
+     },
+     "status": {
+      "value": "open",
+      "ja": "未払い（open）",
+      "en": "unpaid (open)"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "tableau_add_user_to_site:ja@200",
+  "target": "tableau_add_user_to_site",
+  "kind": "ja",
+  "n": 200,
+  "text": "Tableau の「マーケティング本部」サイト（site_id: mkt-hq-01）に、新入社員の佐藤健太（username: k.sato, email: k.sato@example.com）を Viewer ロールで追加してください。",
+  "plan": [
+   {
+    "tool": "tableau_add_user_to_site",
+    "args": {
+     "username": "k.sato",
+     "role": "Viewer",
+     "email": "k.sato@example.com"
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "tableau_add_user_to_site:en@200",
+  "target": "tableau_add_user_to_site",
+  "kind": "en",
+  "n": 200,
+  "text": "Please add new employee Kenta Sato (username: k.sato, email: k.sato@example.com) to the \"Marketing HQ\" site (site_id: mkt-hq-01) in Tableau with the Viewer role.",
+  "plan": [
+   {
+    "tool": "tableau_add_user_to_site",
+    "args": {
+     "username": "k.sato",
+     "role": "Viewer",
+     "email": "k.sato@example.com"
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "teams_send_message:ja@200",
+  "target": "teams_send_message",
+  "kind": "ja",
+  "n": 200,
+  "text": "TeamsのチャットID「ch_98765」に、「10月21日のプロジェクト定例会の資料リンクは https://example.com/doc です」というメッセージを送ってください。",
+  "plan": [
+   {
+    "tool": "teams_send_message",
+    "args": {
+     "chat_id": {
+      "value": "ch_98765",
+      "ja": "ch_98765",
+      "en": "ch_98765"
+     },
+     "content": {
+      "value": "10月21日のプロジェクト定例会の資料リンクは https://example.com/doc です",
+      "ja": "10月21日のプロジェクト定例会の資料リンクは https://example.com/doc です",
+      "en": "The link for the project regular meeting on October 21 is https://example.com/doc"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "teams_send_message:en@200",
+  "target": "teams_send_message",
+  "kind": "en",
+  "n": 200,
+  "text": "Please send a message to the Teams chat ID \"ch_98765\" saying \"The link for the project regular meeting on October 21 is https://example.com/doc\".",
+  "plan": [
+   {
+    "tool": "teams_send_message",
+    "args": {
+     "chat_id": {
+      "value": "ch_98765",
+      "ja": "ch_98765",
+      "en": "ch_98765"
+     },
+     "content": {
+      "value": "10月21日のプロジェクト定例会の資料リンクは https://example.com/doc です",
+      "ja": "10月21日のプロジェクト定例会の資料リンクは https://example.com/doc です",
+      "en": "The link for the project regular meeting on October 21 is https://example.com/doc"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "trello_create_board:ja@200",
+  "target": "trello_create_board",
+  "kind": "ja",
+  "n": 200,
+  "text": "Trelloで「Q4マーケティングキャンペーン」という名前の新しいボードを作成してください。デフォルトのリスト（To Do, Doing, Done）も自動的に作成しておいてください。",
+  "plan": [
+   {
+    "tool": "trello_create_board",
+    "args": {
+     "name": {
+      "value": "Q4マーケティングキャンペーン",
+      "ja": "「Q4マーケティングキャンペーン」",
+      "en": "\"Q4 Marketing Campaign\""
+     },
+     "default_lists": true
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "trello_create_board:en@200",
+  "target": "trello_create_board",
+  "kind": "en",
+  "n": 200,
+  "text": "Please create a new Trello board named \"Q4 Marketing Campaign\". Also, automatically create the default lists (To Do, Doing, Done).",
+  "plan": [
+   {
+    "tool": "trello_create_board",
+    "args": {
+     "name": {
+      "value": "Q4マーケティングキャンペーン",
+      "ja": "「Q4マーケティングキャンペーン」",
+      "en": "\"Q4 Marketing Campaign\""
+     },
+     "default_lists": true
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "trello_get_board_details:ja@200",
+  "target": "trello_get_board_details",
+  "kind": "ja",
+  "n": 200,
+  "text": "TrelloのボードID「brd_98765」の詳細設定（名前やURLなど）を確認してください。",
+  "plan": [
+   {
+    "tool": "trello_get_board_details",
+    "args": {
+     "board_id": {
+      "value": "brd_98765",
+      "ja": "「brd_98765」",
+      "en": "\"brd_98765\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "trello_get_board_details:en@200",
+  "target": "trello_get_board_details",
+  "kind": "en",
+  "n": 200,
+  "text": "Please check the detailed settings (name, URL, etc.) for the Trello board with ID \"brd_98765\".",
+  "plan": [
+   {
+    "tool": "trello_get_board_details",
+    "args": {
+     "board_id": {
+      "value": "brd_98765",
+      "ja": "「brd_98765」",
+      "en": "\"brd_98765\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "trello_remove_member_from_card:ja@200",
+  "target": "trello_remove_member_from_card",
+  "kind": "ja",
+  "n": 200,
+  "text": "Trelloのカード「card_98765」から、メンバー「mem_12345」を削除してください。",
+  "plan": [
+   {
+    "tool": "trello_remove_member_from_card",
+    "args": {
+     "card_id": {
+      "value": "card_98765",
+      "ja": "カード「card_98765」",
+      "en": "card \"card_98765\""
+     },
+     "member_id": {
+      "value": "mem_12345",
+      "ja": "メンバー「mem_12345」",
+      "en": "member \"mem_12345\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "trello_remove_member_from_card:en@200",
+  "target": "trello_remove_member_from_card",
+  "kind": "en",
+  "n": 200,
+  "text": "Please remove member \"mem_12345\" from the Trello card \"card_98765\".",
+  "plan": [
+   {
+    "tool": "trello_remove_member_from_card",
+    "args": {
+     "card_id": {
+      "value": "card_98765",
+      "ja": "カード「card_98765」",
+      "en": "card \"card_98765\""
+     },
+     "member_id": {
+      "value": "mem_12345",
+      "ja": "メンバー「mem_12345」",
+      "en": "member \"mem_12345\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "zendesk_list_organizations:ja@200",
+  "target": "zendesk_list_organizations",
+  "kind": "ja",
+  "n": 200,
+  "text": "Zendeskに登録されているすべての企業一覧を取得してください。",
+  "plan": [
+   {
+    "tool": "zendesk_list_organizations",
+    "args": {}
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "zendesk_list_organizations:en@200",
+  "target": "zendesk_list_organizations",
+  "kind": "en",
+  "n": 200,
+  "text": "Please retrieve the list of all organizations registered in Zendesk.",
+  "plan": [
+   {
+    "tool": "zendesk_list_organizations",
+    "args": {}
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "zendesk_list_tags:ja@200",
+  "target": "zendesk_list_tags",
+  "kind": "ja",
+  "n": 200,
+  "text": "Zendeskで現在利用可能なすべてのタグの一覧を確認したいです。分類体系を整理するために必要です。",
+  "plan": [
+   {
+    "tool": "zendesk_list_tags",
+    "args": {},
+    "pick": null
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "zendesk_list_tags:en@200",
+  "target": "zendesk_list_tags",
+  "kind": "en",
+  "n": 200,
+  "text": "I need to check the list of all currently available tags in Zendesk. This is necessary to organize our classification system.",
+  "plan": [
+   {
+    "tool": "zendesk_list_tags",
+    "args": {},
+    "pick": null
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "docusign_create_webhook:ja_missing@200",
+  "target": "docusign_create_webhook",
+  "kind": "ja_missing",
+  "n": 200,
+  "text": "DocuSignのアカウントID「acc_98765」で、封筒ステータスが完了した際に通知を送るWebhookを設定してください。イベントは「envelope-completed」で、ドキュメント本体は含めないでください。通知先URLは社内の標準エンドポイントを使用します。",
+  "plan": [
+   {
+    "tool": "docusign_create_webhook",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "「acc_98765」",
+      "en": "\"acc_98765\""
+     },
+     "url": {
+      "missing": true
+     },
+     "events": {
+      "value": [
+       "envelope-completed"
+      ],
+      "ja": "「envelope-completed」",
+      "en": "\"envelope-completed\""
+     },
+     "include_documents": {
+      "value": false,
+      "ja": "ドキュメント本体は含めない",
+      "en": "do not include the document body"
+     }
+    }
+   }
+  ],
+  "missing": "url",
+  "attempts": 4
+ },
+ {
+  "id": "docusign_create_webhook:en_missing@200",
+  "target": "docusign_create_webhook",
+  "kind": "en_missing",
+  "n": 200,
+  "text": "Please set up a webhook for DocuSign account ID \"acc_98765\" to send notifications when the envelope status is completed. Use the event \"envelope-completed\" and do not include the document body. Use the internal standard endpoint for the notification URL.",
+  "plan": [
+   {
+    "tool": "docusign_create_webhook",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "「acc_98765」",
+      "en": "\"acc_98765\""
+     },
+     "url": {
+      "missing": true
+     },
+     "events": {
+      "value": [
+       "envelope-completed"
+      ],
+      "ja": "「envelope-completed」",
+      "en": "\"envelope-completed\""
+     },
+     "include_documents": {
+      "value": false,
+      "ja": "ドキュメント本体は含めない",
+      "en": "do not include the document body"
+     }
+    }
+   }
+  ],
+  "missing": "url",
+  "attempts": 4
+ },
+ {
+  "id": "dropbox_share_folder:ja_missing@200",
+  "target": "dropbox_share_folder",
+  "kind": "ja_missing",
+  "n": 200,
+  "text": "Dropboxのルート直下にある「2026年度 第4四半期 戦略会議」フォルダを、取引先の担当者と共有したいです。閲覧権限（viewer）を付与してください。",
+  "plan": [
+   {
+    "tool": "dropbox_list_folder",
+    "args": {
+     "path": {
+      "value": "/",
+      "ja": "ルート直下",
+      "en": "root directory"
+     },
+     "recursive": false
+    },
+    "pick": {
+     "ja": "2026年度 第4四半期 戦略会議",
+     "en": "Q4 2026 Strategy Meeting"
+    }
+   },
+   {
+    "tool": "dropbox_share_folder",
+    "args": {
+     "folder_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "member_email": {
+      "missing": true
+     },
+     "access_level": {
+      "value": "viewer",
+      "ja": "閲覧権限",
+      "en": "viewer access"
+     }
+    }
+   }
+  ],
+  "missing": "member_email",
+  "attempts": 2
+ },
+ {
+  "id": "dropbox_share_folder:en_missing@200",
+  "target": "dropbox_share_folder",
+  "kind": "en_missing",
+  "n": 200,
+  "text": "Please share the Dropbox folder named \"Q4 2026 Strategy Meeting\" located in the root directory with our client contact. Grant them viewer access.",
+  "plan": [
+   {
+    "tool": "dropbox_list_folder",
+    "args": {
+     "path": {
+      "value": "/",
+      "ja": "ルート直下",
+      "en": "root directory"
+     },
+     "recursive": false
+    },
+    "pick": {
+     "ja": "2026年度 第4四半期 戦略会議",
+     "en": "Q4 2026 Strategy Meeting"
+    }
+   },
+   {
+    "tool": "dropbox_share_folder",
+    "args": {
+     "folder_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "member_email": {
+      "missing": true
+     },
+     "access_level": {
+      "value": "viewer",
+      "ja": "閲覧権限",
+      "en": "viewer access"
+     }
+    }
+   }
+  ],
+  "missing": "member_email",
+  "attempts": 2
+ },
+ {
+  "id": "stripe_create_customer:ja_missing@200",
+  "target": "stripe_create_customer",
+  "kind": "ja_missing",
+  "n": 200,
+  "text": "Stripeに新規顧客として「株式会社テックイノベーション」を登録してください。メールアドレスは先方の担当者に確認済みなので、そちらを使ってください。備考欄には「2026年10月導入予定のエンタープライズプラン契約」と記載しておいてください。",
+  "plan": [
+   {
+    "tool": "stripe_create_customer",
+    "args": {
+     "email": {
+      "missing": true
+     },
+     "name": {
+      "value": "株式会社テックイノベーション",
+      "ja": "「株式会社テックイノベーション」",
+      "en": "\"Tech Innovation Inc.\""
+     },
+     "description": {
+      "value": "2026年10月導入予定のエンタープライズプラン契約",
+      "ja": "「2026年10月導入予定のエンタープライズプラン契約」",
+      "en": "\"Enterprise plan contract scheduled for October 2026 implementation\""
+     }
+    }
+   }
+  ],
+  "missing": "email",
+  "attempts": 1
+ },
+ {
+  "id": "stripe_create_customer:en_missing@200",
+  "target": "stripe_create_customer",
+  "kind": "en_missing",
+  "n": 200,
+  "text": "Please register \"Tech Innovation Inc.\" as a new customer in Stripe. Use the email address that has already been confirmed with their representative. In the description field, please note \"Enterprise plan contract scheduled for October 2026 implementation\".",
+  "plan": [
+   {
+    "tool": "stripe_create_customer",
+    "args": {
+     "email": {
+      "missing": true
+     },
+     "name": {
+      "value": "株式会社テックイノベーション",
+      "ja": "「株式会社テックイノベーション」",
+      "en": "\"Tech Innovation Inc.\""
+     },
+     "description": {
+      "value": "2026年10月導入予定のエンタープライズプラン契約",
+      "ja": "「2026年10月導入予定のエンタープライズプラン契約」",
+      "en": "\"Enterprise plan contract scheduled for October 2026 implementation\""
+     }
+    }
+   }
+  ],
+  "missing": "email",
+  "attempts": 1
+ },
+ {
+  "id": "teams_send_message:ja_missing@200",
+  "target": "teams_send_message",
+  "kind": "ja_missing",
+  "n": 200,
+  "text": "TeamsのチャンネルID「19:abc123def456@thread.tacv2」に、10月21日の進捗報告に関するメッセージを送信してください。本文はいつものテンプレートでお願いします。",
+  "plan": [
+   {
+    "tool": "teams_send_message",
+    "args": {
+     "chat_id": {
+      "value": "19:abc123def456@thread.tacv2",
+      "ja": "19:abc123def456@thread.tacv2",
+      "en": "19:abc123def456@thread.tacv2"
+     },
+     "content": {
+      "missing": true
+     },
+     "subject": {
+      "value": "10月21日の進捗報告",
+      "ja": "10月21日の進捗報告",
+      "en": "progress report for October 21st"
+     }
+    }
+   }
+  ],
+  "missing": "content",
+  "attempts": 4
+ },
+ {
+  "id": "teams_send_message:en_missing@200",
+  "target": "teams_send_message",
+  "kind": "en_missing",
+  "n": 200,
+  "text": "Please send a message to the Teams channel ID \"19:abc123def456@thread.tacv2\" regarding the progress report for October 21st. Use the usual template for the content.",
+  "plan": [
+   {
+    "tool": "teams_send_message",
+    "args": {
+     "chat_id": {
+      "value": "19:abc123def456@thread.tacv2",
+      "ja": "19:abc123def456@thread.tacv2",
+      "en": "19:abc123def456@thread.tacv2"
+     },
+     "content": {
+      "missing": true
+     },
+     "subject": {
+      "value": "10月21日の進捗報告",
+      "ja": "10月21日の進捗報告",
+      "en": "progress report for October 21st"
+     }
+    }
+   }
+  ],
+  "missing": "content",
+  "attempts": 4
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:ja@1000",
+  "target": "aws_cloudwatch_get_log_events",
+  "kind": "ja",
+  "n": 1000,
+  "text": "AWS CloudWatchのロググループ「prod-app-logs」にあるストリーム「i-0a1b2c3d4e5f6g7h8」から、直近のエラー調査用に最新50件のログイベントを取得してください。",
+  "plan": [
+   {
+    "tool": "aws_cloudwatch_get_log_events",
+    "args": {
+     "log_group_name": "prod-app-logs",
+     "log_stream_name": "i-0a1b2c3d4e5f6g7h8",
+     "limit": 50
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "aws_cloudwatch_get_log_events:en@1000",
+  "target": "aws_cloudwatch_get_log_events",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please retrieve the latest 50 log events from the stream \"i-0a1b2c3d4e5f6g7h8\" in the AWS CloudWatch log group \"prod-app-logs\" for recent error investigation.",
+  "plan": [
+   {
+    "tool": "aws_cloudwatch_get_log_events",
+    "args": {
+     "log_group_name": "prod-app-logs",
+     "log_stream_name": "i-0a1b2c3d4e5f6g7h8",
+     "limit": 50
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:ja@1000",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "kind": "ja",
+  "n": 1000,
+  "text": "AWS CloudWatchのロググループ「/aws/lambda/payment-service」で、10月13日以降に発生した「TimeoutError」というエラーメッセージを含むログを検索してください。",
+  "plan": [
+   {
+    "tool": "aws_cloudwatch_search_logs_by_pattern",
+    "args": {
+     "log_group_name": "/aws/lambda/payment-service",
+     "filter_pattern": "TimeoutError",
+     "start_time": {
+      "value": 1760284800,
+      "ja": "10月13日",
+      "en": "October 13"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "aws_cloudwatch_search_logs_by_pattern:en@1000",
+  "target": "aws_cloudwatch_search_logs_by_pattern",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please search the AWS CloudWatch log group \"/aws/lambda/payment-service\" for logs containing the error message \"TimeoutError\" that occurred since October 13.",
+  "plan": [
+   {
+    "tool": "aws_cloudwatch_search_logs_by_pattern",
+    "args": {
+     "log_group_name": "/aws/lambda/payment-service",
+     "filter_pattern": "TimeoutError",
+     "start_time": {
+      "value": 1760284800,
+      "ja": "10月13日",
+      "en": "October 13"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "chatwork_get_file:ja@1000",
+  "target": "chatwork_get_file",
+  "kind": "ja",
+  "n": 1000,
+  "text": "ChatworkのルームID 12345678にある、ファイルID 98765432 のメタデータとダウンロードURLを取得してください。",
+  "plan": [
+   {
+    "tool": "chatwork_get_file",
+    "args": {
+     "room_id": {
+      "value": "12345678",
+      "ja": "ルームID 12345678",
+      "en": "room ID 12345678"
+     },
+     "file_id": {
+      "value": "98765432",
+      "ja": "ファイルID 98765432",
+      "en": "file ID 98765432"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 4
+ },
+ {
+  "id": "chatwork_get_file:en@1000",
+  "target": "chatwork_get_file",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please retrieve the metadata and download URL for file ID 98765432 in Chatwork room ID 12345678.",
+  "plan": [
+   {
+    "tool": "chatwork_get_file",
+    "args": {
+     "room_id": {
+      "value": "12345678",
+      "ja": "ルームID 12345678",
+      "en": "room ID 12345678"
+     },
+     "file_id": {
+      "value": "98765432",
+      "ja": "ファイルID 98765432",
+      "en": "file ID 98765432"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 4
+ },
+ {
+  "id": "docusign_create_webhook:ja@1000",
+  "target": "docusign_create_webhook",
+  "kind": "ja",
+  "n": 1000,
+  "text": "DocuSignのアカウント「acc_12345」で、封筒が「完了」した際に https://api.example.com/hooks/docusign へ通知を送るWebhookを設定してください。ドキュメント本体は含めないでください。",
+  "plan": [
+   {
+    "tool": "docusign_create_webhook",
+    "args": {
+     "account_id": "acc_12345",
+     "url": "https://api.example.com/hooks/docusign",
+     "events": [
+      {
+       "value": "envelope-completed",
+       "ja": "完了",
+       "en": "completed"
+      }
+     ],
+     "include_documents": false
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "docusign_create_webhook:en@1000",
+  "target": "docusign_create_webhook",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please set up a webhook in the DocuSign account \"acc_12345\" to send a notification to https://api.example.com/hooks/docusign when an envelope is \"completed\". Do not include the document body.",
+  "plan": [
+   {
+    "tool": "docusign_create_webhook",
+    "args": {
+     "account_id": "acc_12345",
+     "url": "https://api.example.com/hooks/docusign",
+     "events": [
+      {
+       "value": "envelope-completed",
+       "ja": "完了",
+       "en": "completed"
+      }
+     ],
+     "include_documents": false
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "dropbox_share_folder:ja@1000",
+  "target": "dropbox_share_folder",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Dropboxの「2026年度 予算計画」フォルダを ken.tanaka@example.com と共有して、編集権限を付与してください。",
+  "plan": [
+   {
+    "tool": "dropbox_search_files",
+    "args": {
+     "query": {
+      "value": "2026年度 予算計画",
+      "ja": "「2026年度 予算計画」",
+      "en": "\"2026 Annual Budget Plan\""
+     }
+    },
+    "pick": {
+     "ja": "「2026年度 予算計画」",
+     "en": "\"2026 Annual Budget Plan\""
+    }
+   },
+   {
+    "tool": "dropbox_share_folder",
+    "args": {
+     "folder_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "member_email": {
+      "value": "ken.tanaka@example.com",
+      "ja": "ken.tanaka@example.com",
+      "en": "ken.tanaka@example.com"
+     },
+     "access_level": {
+      "value": "editor",
+      "ja": "編集権限",
+      "en": "editor access"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "dropbox_share_folder:en@1000",
+  "target": "dropbox_share_folder",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please share the Dropbox folder named \"2026 Annual Budget Plan\" with ken.tanaka@example.com and grant editor access.",
+  "plan": [
+   {
+    "tool": "dropbox_search_files",
+    "args": {
+     "query": {
+      "value": "2026年度 予算計画",
+      "ja": "「2026年度 予算計画」",
+      "en": "\"2026 Annual Budget Plan\""
+     }
+    },
+    "pick": {
+     "ja": "「2026年度 予算計画」",
+     "en": "\"2026 Annual Budget Plan\""
+    }
+   },
+   {
+    "tool": "dropbox_share_folder",
+    "args": {
+     "folder_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "member_email": {
+      "value": "ken.tanaka@example.com",
+      "ja": "ken.tanaka@example.com",
+      "en": "ken.tanaka@example.com"
+     },
+     "access_level": {
+      "value": "editor",
+      "ja": "編集権限",
+      "en": "editor access"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "figma_delete_comment:ja@1000",
+  "target": "figma_delete_comment",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Figmaの「モバイルアプリUI設計」ファイルにある、先ほど私が誤って投稿した「テスト用コメントです」という内容のコメントを削除してください。",
+  "plan": [
+   {
+    "tool": "figma_search_files",
+    "args": {
+     "query": {
+      "value": "モバイルアプリUI設計",
+      "ja": "「モバイルアプリUI設計」",
+      "en": "\"Mobile App UI Design\""
+     }
+    },
+    "pick": {
+     "ja": "「モバイルアプリUI設計」",
+     "en": "\"Mobile App UI Design\""
+    }
+   },
+   {
+    "tool": "figma_get_comments",
+    "args": {
+     "file_key": {
+      "from": 0,
+      "field": "files[0].key"
+     }
+    },
+    "pick": {
+     "ja": "「テスト用コメントです」",
+     "en": "\"Test comment\""
+    }
+   },
+   {
+    "tool": "figma_delete_comment",
+    "args": {
+     "file_key": {
+      "from": 0,
+      "field": "files[0].key"
+     },
+     "comment_id": {
+      "from": 1,
+      "field": "comments[0].id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "figma_delete_comment:en@1000",
+  "target": "figma_delete_comment",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please delete the comment I accidentally posted earlier with the content \"Test comment\" in the Figma file named \"Mobile App UI Design\".",
+  "plan": [
+   {
+    "tool": "figma_search_files",
+    "args": {
+     "query": {
+      "value": "モバイルアプリUI設計",
+      "ja": "「モバイルアプリUI設計」",
+      "en": "\"Mobile App UI Design\""
+     }
+    },
+    "pick": {
+     "ja": "「モバイルアプリUI設計」",
+     "en": "\"Mobile App UI Design\""
+    }
+   },
+   {
+    "tool": "figma_get_comments",
+    "args": {
+     "file_key": {
+      "from": 0,
+      "field": "files[0].key"
+     }
+    },
+    "pick": {
+     "ja": "「テスト用コメントです」",
+     "en": "\"Test comment\""
+    }
+   },
+   {
+    "tool": "figma_delete_comment",
+    "args": {
+     "file_key": {
+      "from": 0,
+      "field": "files[0].key"
+     },
+     "comment_id": {
+      "from": 1,
+      "field": "comments[0].id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "garoon_list_messages:ja@1000",
+  "target": "garoon_list_messages",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Garoonの受信トレイにある最新のメッセージを10件確認してください。",
+  "plan": [
+   {
+    "tool": "garoon_list_messages",
+    "args": {
+     "limit": 10
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "garoon_list_messages:en@1000",
+  "target": "garoon_list_messages",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please check the latest 10 messages in my Garoon inbox.",
+  "plan": [
+   {
+    "tool": "garoon_list_messages",
+    "args": {
+     "limit": 10
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "gdrive_list_revisions:ja@1000",
+  "target": "gdrive_list_revisions",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Googleドライブにある「Q3マーケティング戦略案」のファイルIDを特定し、その編集履歴（リビジョン）の一覧を取得してください。",
+  "plan": [
+   {
+    "tool": "gdrive_search_files",
+    "args": {
+     "query": {
+      "value": "name contains 'Q3 Marketing Strategy Proposal'",
+      "ja": "「Q3マーケティング戦略案」",
+      "en": "\"Q3 Marketing Strategy Proposal\""
+     }
+    },
+    "pick": {
+     "ja": "「Q3マーケティング戦略案」",
+     "en": "\"Q3 Marketing Strategy Proposal\""
+    }
+   },
+   {
+    "tool": "gdrive_list_revisions",
+    "args": {
+     "file_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "gdrive_list_revisions:en@1000",
+  "target": "gdrive_list_revisions",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please identify the file ID for \"Q3 Marketing Strategy Proposal\" in Google Drive and retrieve the list of its revision history.",
+  "plan": [
+   {
+    "tool": "gdrive_search_files",
+    "args": {
+     "query": {
+      "value": "name contains 'Q3 Marketing Strategy Proposal'",
+      "ja": "「Q3マーケティング戦略案」",
+      "en": "\"Q3 Marketing Strategy Proposal\""
+     }
+    },
+    "pick": {
+     "ja": "「Q3マーケティング戦略案」",
+     "en": "\"Q3 Marketing Strategy Proposal\""
+    }
+   },
+   {
+    "tool": "gdrive_list_revisions",
+    "args": {
+     "file_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "gdrive_upload_file:ja@1000",
+  "target": "gdrive_upload_file",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Google ドライブのフォルダID「1A2B3C4D5E6F7G8H9I0J」に、ファイル名「2026年度_第3四半期_営業報告書.pdf」として、以下のテキストコンテンツをアップロードしてください。MIMEタイプは application/pdf です。コンテンツ: \"今期の売上は前年比10%増となりました。詳細な分析データは添付の通りです。\"",
+  "plan": [
+   {
+    "tool": "gdrive_upload_file",
+    "args": {
+     "file_name": {
+      "value": "2026年度_第3四半期_営業報告書.pdf",
+      "ja": "ファイル名「2026年度_第3四半期_営業報告書.pdf」",
+      "en": "file name '2026_Q3_Sales_Report.pdf'"
+     },
+     "content": {
+      "value": "今期の売上は前年比10%増となりました。詳細な分析データは添付の通りです。",
+      "ja": "コンテンツ: \"今期の売上は前年比10%増となりました。詳細な分析データは添付の通りです。\"",
+      "en": "Content: \"Sales this quarter increased by 10% year-over-year. Detailed analysis data is as attached.\""
+     },
+     "mime_type": {
+      "value": "application/pdf",
+      "ja": "MIMEタイプは application/pdf",
+      "en": "The MIME type is application/pdf"
+     },
+     "folder_id": {
+      "value": "1A2B3C4D5E6F7G8H9I0J",
+      "ja": "フォルダID「1A2B3C4D5E6F7G8H9I0J」",
+      "en": "folder ID '1A2B3C4D5E6F7G8H9I0J'"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "gdrive_upload_file:en@1000",
+  "target": "gdrive_upload_file",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please upload the following text content to the Google Drive folder ID '1A2B3C4D5E6F7G8H9I0J' with the file name '2026_Q3_Sales_Report.pdf'. The MIME type is application/pdf. Content: \"Sales this quarter increased by 10% year-over-year. Detailed analysis data is as attached.\"",
+  "plan": [
+   {
+    "tool": "gdrive_upload_file",
+    "args": {
+     "file_name": {
+      "value": "2026年度_第3四半期_営業報告書.pdf",
+      "ja": "ファイル名「2026年度_第3四半期_営業報告書.pdf」",
+      "en": "file name '2026_Q3_Sales_Report.pdf'"
+     },
+     "content": {
+      "value": "今期の売上は前年比10%増となりました。詳細な分析データは添付の通りです。",
+      "ja": "コンテンツ: \"今期の売上は前年比10%増となりました。詳細な分析データは添付の通りです。\"",
+      "en": "Content: \"Sales this quarter increased by 10% year-over-year. Detailed analysis data is as attached.\""
+     },
+     "mime_type": {
+      "value": "application/pdf",
+      "ja": "MIMEタイプは application/pdf",
+      "en": "The MIME type is application/pdf"
+     },
+     "folder_id": {
+      "value": "1A2B3C4D5E6F7G8H9I0J",
+      "ja": "フォルダID「1A2B3C4D5E6F7G8H9I0J」",
+      "en": "folder ID '1A2B3C4D5E6F7G8H9I0J'"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "gitlab_get_project:ja@1000",
+  "target": "gitlab_get_project",
+  "kind": "ja",
+  "n": 1000,
+  "text": "GitLabで「frontend-dashboard」という名前のプロジェクトを探して、その詳細情報とリポジトリURLを確認してください。",
+  "plan": [
+   {
+    "tool": "gitlab_list_projects",
+    "args": {},
+    "pick": {
+     "ja": "「frontend-dashboard」",
+     "en": "\"frontend-dashboard\""
+    }
+   },
+   {
+    "tool": "gitlab_get_project",
+    "args": {
+     "project_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "gitlab_get_project:en@1000",
+  "target": "gitlab_get_project",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please find the project named \"frontend-dashboard\" in GitLab and check its details and repository URL.",
+  "plan": [
+   {
+    "tool": "gitlab_list_projects",
+    "args": {},
+    "pick": {
+     "ja": "「frontend-dashboard」",
+     "en": "\"frontend-dashboard\""
+    }
+   },
+   {
+    "tool": "gitlab_get_project",
+    "args": {
+     "project_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "jira_update_sprint:ja@1000",
+  "target": "jira_update_sprint",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Jiraの「モバイルアプリ刷新」プロジェクトで現在アクティブなスプリントの終了日を10月21日に延期し、ゴールを「決済機能のQA完了」に変更してください。",
+  "plan": [
+   {
+    "tool": "jira_list_projects",
+    "args": {
+     "status": "active"
+    },
+    "pick": {
+     "ja": "モバイルアプリ刷新",
+     "en": "Mobile App Refresh"
+    }
+   },
+   {
+    "tool": "jira_list_boards",
+    "args": {
+     "project_key": {
+      "from": 0,
+      "field": "key"
+     },
+     "type": "scrum"
+    },
+    "pick": {
+     "ja": "モバイルアプリ刷新",
+     "en": "Mobile App Refresh"
+    }
+   },
+   {
+    "tool": "jira_list_sprints",
+    "args": {
+     "board_id": {
+      "from": 1,
+      "field": "id"
+     },
+     "state": "active"
+    },
+    "pick": {
+     "ja": "アクティブな",
+     "en": "active"
+    }
+   },
+   {
+    "tool": "jira_update_sprint",
+    "args": {
+     "sprint_id": {
+      "from": 2,
+      "field": "id"
+     },
+     "end_date": {
+      "value": "2026-10-21",
+      "ja": "10月21日",
+      "en": "October 21"
+     },
+     "goal": {
+      "value": "決済機能のQA完了",
+      "ja": "決済機能のQA完了",
+      "en": "Complete QA for payment features"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "jira_update_sprint:en@1000",
+  "target": "jira_update_sprint",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please update the active sprint in the Jira \"Mobile App Refresh\" project: extend the end date to October 21 and change the goal to \"Complete QA for payment features\".",
+  "plan": [
+   {
+    "tool": "jira_list_projects",
+    "args": {
+     "status": "active"
+    },
+    "pick": {
+     "ja": "モバイルアプリ刷新",
+     "en": "Mobile App Refresh"
+    }
+   },
+   {
+    "tool": "jira_list_boards",
+    "args": {
+     "project_key": {
+      "from": 0,
+      "field": "key"
+     },
+     "type": "scrum"
+    },
+    "pick": {
+     "ja": "モバイルアプリ刷新",
+     "en": "Mobile App Refresh"
+    }
+   },
+   {
+    "tool": "jira_list_sprints",
+    "args": {
+     "board_id": {
+      "from": 1,
+      "field": "id"
+     },
+     "state": "active"
+    },
+    "pick": {
+     "ja": "アクティブな",
+     "en": "active"
+    }
+   },
+   {
+    "tool": "jira_update_sprint",
+    "args": {
+     "sprint_id": {
+      "from": 2,
+      "field": "id"
+     },
+     "end_date": {
+      "value": "2026-10-21",
+      "ja": "10月21日",
+      "en": "October 21"
+     },
+     "goal": {
+      "value": "決済機能のQA完了",
+      "ja": "決済機能のQA完了",
+      "en": "Complete QA for payment features"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "notion_delete_block:ja@1000",
+  "target": "notion_delete_block",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Notionの「2026年Q4 製品ロードマップ」ページにある、「検討中」という見出しのブロック（ID: b_987654321）を削除してください。",
+  "plan": [
+   {
+    "tool": "notion_delete_block",
+    "args": {
+     "block_id": "b_987654321"
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "notion_delete_block:en@1000",
+  "target": "notion_delete_block",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please delete the block with ID 'b_987654321', which is the 'Under Consideration' heading in the Notion page '2026 Q4 Product Roadmap'.",
+  "plan": [
+   {
+    "tool": "notion_delete_block",
+    "args": {
+     "block_id": "b_987654321"
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "outlook_delete_event:ja@1000",
+  "target": "outlook_delete_event",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Outlookの予定表にある「週次進捗会議」の recurring series をすべてキャンセルしてください。",
+  "plan": [
+   {
+    "tool": "outlook_search_events",
+    "args": {
+     "query": {
+      "value": "週次進捗会議",
+      "ja": "「週次進捗会議」",
+      "en": "\"Weekly Progress Meeting\""
+     },
+     "max_results": 5
+    },
+    "pick": {
+     "ja": "「週次進捗会議」",
+     "en": "\"Weekly Progress Meeting\""
+    }
+   },
+   {
+    "tool": "outlook_delete_event",
+    "args": {
+     "event_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "cancel_series": true
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "outlook_delete_event:en@1000",
+  "target": "outlook_delete_event",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please cancel the entire recurring series for the \"Weekly Progress Meeting\" in my Outlook calendar.",
+  "plan": [
+   {
+    "tool": "outlook_search_events",
+    "args": {
+     "query": {
+      "value": "週次進捗会議",
+      "ja": "「週次進捗会議」",
+      "en": "\"Weekly Progress Meeting\""
+     },
+     "max_results": 5
+    },
+    "pick": {
+     "ja": "「週次進捗会議」",
+     "en": "\"Weekly Progress Meeting\""
+    }
+   },
+   {
+    "tool": "outlook_delete_event",
+    "args": {
+     "event_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "cancel_series": true
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "outlook_search_emails:ja@1000",
+  "target": "outlook_search_emails",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Outlookで、10月7日以降に「田中」さんから受信した、「Q3予算案」という件名のメールを検索してください。",
+  "plan": [
+   {
+    "tool": "outlook_search_emails",
+    "args": {
+     "query": {
+      "value": "from:Tanaka subject:Q3予算案",
+      "ja": "「田中」さんから受信した、「Q3予算案」という件名",
+      "en": "subject 'Q3 Budget Proposal' from 'Tanaka'"
+     },
+     "start_date": {
+      "value": "2026-10-07T00:00:00Z",
+      "ja": "10月7日以降",
+      "en": "since October 7th"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "outlook_search_emails:en@1000",
+  "target": "outlook_search_emails",
+  "kind": "en",
+  "n": 1000,
+  "text": "Search Outlook for emails with the subject 'Q3 Budget Proposal' from 'Tanaka' received since October 7th.",
+  "plan": [
+   {
+    "tool": "outlook_search_emails",
+    "args": {
+     "query": {
+      "value": "from:Tanaka subject:Q3予算案",
+      "ja": "「田中」さんから受信した、「Q3予算案」という件名",
+      "en": "subject 'Q3 Budget Proposal' from 'Tanaka'"
+     },
+     "start_date": {
+      "value": "2026-10-07T00:00:00Z",
+      "ja": "10月7日以降",
+      "en": "since October 7th"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "pagerduty_trigger_webhook:ja@1000",
+  "target": "pagerduty_trigger_webhook",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Slack通知の連携テストを行うため、PagerDutyからWebhookを発火させてください。宛先URLは https://hooks.example.com/test-endpoint で、送信するJSONペイロードは {\"test\": true, \"source\": \"manual_check\"} です。",
+  "plan": [
+   {
+    "tool": "pagerduty_trigger_webhook",
+    "args": {
+     "webhook_url": {
+      "value": "https://hooks.example.com/test-endpoint",
+      "ja": "https://hooks.example.com/test-endpoint",
+      "en": "https://hooks.example.com/test-endpoint"
+     },
+     "payload": {
+      "value": "{\"test\": true, \"source\": \"manual_check\"}",
+      "ja": "{\"test\": true, \"source\": \"manual_check\"}",
+      "en": "{\"test\": true, \"source\": \"manual_check\"}"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "pagerduty_trigger_webhook:en@1000",
+  "target": "pagerduty_trigger_webhook",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please trigger a webhook from PagerDuty to test the Slack integration. The destination URL is https://hooks.example.com/test-endpoint, and the JSON payload to send is {\"test\": true, \"source\": \"manual_check\"}.",
+  "plan": [
+   {
+    "tool": "pagerduty_trigger_webhook",
+    "args": {
+     "webhook_url": {
+      "value": "https://hooks.example.com/test-endpoint",
+      "ja": "https://hooks.example.com/test-endpoint",
+      "en": "https://hooks.example.com/test-endpoint"
+     },
+     "payload": {
+      "value": "{\"test\": true, \"source\": \"manual_check\"}",
+      "ja": "{\"test\": true, \"source\": \"manual_check\"}",
+      "en": "{\"test\": true, \"source\": \"manual_check\"}"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "docusign_create_webhook:ja_missing@1000",
+  "target": "docusign_create_webhook",
+  "kind": "ja_missing",
+  "n": 1000,
+  "text": "DocuSignのアカウントID「acc_98765」で、封筒が完了した際に通知を受け取るWebhookを設定してください。イベントは「envelope-completed」で、ペイロードにドキュメントを含めるようにしてください。通知先のURLは社内の標準エンドポイントを使用します。",
+  "plan": [
+   {
+    "tool": "docusign_create_webhook",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "アカウントID「acc_98765」",
+      "en": "account ID \"acc_98765\""
+     },
+     "url": {
+      "missing": true
+     },
+     "events": {
+      "value": [
+       "envelope-completed"
+      ],
+      "ja": "イベントは「envelope-completed」",
+      "en": "trigger on \"envelope-completed\" events"
+     },
+     "include_documents": {
+      "value": true,
+      "ja": "ペイロードにドキュメントを含める",
+      "en": "payload includes documents"
+     }
+    }
+   }
+  ],
+  "missing": "url",
+  "attempts": 3
+ },
+ {
+  "id": "docusign_create_webhook:en_missing@1000",
+  "target": "docusign_create_webhook",
+  "kind": "en_missing",
+  "n": 1000,
+  "text": "Please set up a DocuSign webhook for account ID \"acc_98765\" to trigger on \"envelope-completed\" events. Ensure the payload includes documents. Use our internal standard endpoint for the notification URL.",
+  "plan": [
+   {
+    "tool": "docusign_create_webhook",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "アカウントID「acc_98765」",
+      "en": "account ID \"acc_98765\""
+     },
+     "url": {
+      "missing": true
+     },
+     "events": {
+      "value": [
+       "envelope-completed"
+      ],
+      "ja": "イベントは「envelope-completed」",
+      "en": "trigger on \"envelope-completed\" events"
+     },
+     "include_documents": {
+      "value": true,
+      "ja": "ペイロードにドキュメントを含める",
+      "en": "payload includes documents"
+     }
+    }
+   }
+  ],
+  "missing": "url",
+  "attempts": 3
+ },
+ {
+  "id": "dropbox_share_folder:ja_missing@1000",
+  "target": "dropbox_share_folder",
+  "kind": "ja_missing",
+  "n": 1000,
+  "text": "Dropboxのルートにある「2026年度 戦略企画」フォルダを、社外のパートナーである田中様と共有したいです。閲覧のみ可能にする設定でお願いします。",
+  "plan": [
+   {
+    "tool": "dropbox_list_folder",
+    "args": {
+     "path": {
+      "value": "/",
+      "ja": "ルート",
+      "en": "root"
+     }
+    },
+    "pick": {
+     "ja": "2026年度 戦略企画",
+     "en": "2026 Strategic Planning"
+    }
+   },
+   {
+    "tool": "dropbox_share_folder",
+    "args": {
+     "folder_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "member_email": {
+      "missing": true
+     },
+     "access_level": {
+      "value": "viewer",
+      "ja": "閲覧のみ",
+      "en": "view-only"
+     }
+    }
+   }
+  ],
+  "missing": "member_email",
+  "attempts": 2
+ },
+ {
+  "id": "dropbox_share_folder:en_missing@1000",
+  "target": "dropbox_share_folder",
+  "kind": "en_missing",
+  "n": 1000,
+  "text": "Please share the \"2026 Strategic Planning\" folder located at the root of Dropbox with our external partner, Mr. Tanaka. Set the permission to view-only.",
+  "plan": [
+   {
+    "tool": "dropbox_list_folder",
+    "args": {
+     "path": {
+      "value": "/",
+      "ja": "ルート",
+      "en": "root"
+     }
+    },
+    "pick": {
+     "ja": "2026年度 戦略企画",
+     "en": "2026 Strategic Planning"
+    }
+   },
+   {
+    "tool": "dropbox_share_folder",
+    "args": {
+     "folder_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "member_email": {
+      "missing": true
+     },
+     "access_level": {
+      "value": "viewer",
+      "ja": "閲覧のみ",
+      "en": "view-only"
+     }
+    }
+   }
+  ],
+  "missing": "member_email",
+  "attempts": 2
+ }
+]
