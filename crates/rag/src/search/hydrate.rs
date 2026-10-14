@@ -201,7 +201,13 @@ impl SearchService {
                     parent_content: row.parent_id.and_then(|p| parents.get(&p).cloned()),
                     // rerank 後の順位ベースのスコア（表示用に単調減少へ正規化）。
                     score,
-                    rerank_score,
+                    // 有限でないスコア（差し替えた reranker の異常値）は API へ流さない（JSON では
+                    // null になり、必須の数値という型契約を破る）。関連度は元の値で「低」に倒す。
+                    rerank_score: if rerank_score.is_finite() {
+                        rerank_score
+                    } else {
+                        0.0
+                    },
                     relevance: self.relevance(rerank_score),
                     version: row.version,
                     // 位置情報（#508）。一節（quote）は位置を持つ索引だけに付ける。旧索引は
