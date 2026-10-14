@@ -312,3 +312,140 @@ async fn tenant_only_degradation_keeps_scope_clause() {
         "縮退時もスコープは狭める方向に効き続ける"
     );
 }
+
+/// フォルダ/ファイルの node と closure 行（自身 depth 0 ＋親の祖先 +1）を作る。
+async fn make_node(env: &Env, kind: &str, parent: Option<Uuid>) -> Uuid {
+    let ctx = &env.ctx;
+    let name = format!("{kind}-{}", Uuid::new_v4().simple());
+    let id: Uuid = if kind == "folder" {
+        sqlx::query_scalar(
+            "insert into node (org, tenant_id, kind, name, parent_id, created_by, updated_by) \
+             values ($1, $2, 'folder', $3, $4, $5, $5) returning id",
+        )
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(&name)
+        .bind(parent)
+        .bind(&ctx.principal.id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap()
+    } else {
+        let sha = format!("{:0>64}", Uuid::new_v4().simple().to_string());
+        sqlx::query(
+            "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
+             values ($1, $2, $3, 10, 'text/plain', $4, 1)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(&sha)
+        .bind(format!("{}/{}/{}", ctx.tenant_id, ctx.org, sha))
+        .execute(&env.pool)
+        .await
+        .unwrap();
+        sqlx::query_scalar(
+            "insert into node (org, tenant_id, kind, name, parent_id, blob_sha256, size_bytes, \
+                               content_type, created_by, updated_by) \
+             values ($1, $2, 'file', $3, $4, $5, 10, 'text/plain', $6, $6) returning id",
+        )
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(&name)
+        .bind(parent)
+        .bind(&sha)
+        .bind(&ctx.principal.id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap()
+    };
+    sqlx::query(
+        "insert into node_closure (org, tenant_id, ancestor, descendant, depth) \
+         select $1, $2, ancestor, $3, depth + 1 from node_closure \
+          where tenant_id = $2 and descendant = $4 \
+         union all select $1, $2, $3, $3, 0",
+    )
+    .bind(&ctx.org)
+    .bind(&ctx.tenant_id)
+    .bind(id)
+    .bind(parent)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    id
+}
+
+fn folders(ids: &[Uuid]) -> SearchScope {
+    SearchScope {
+        folders: ids.to_vec(),
+        files: vec![],
+    }
+}
+
+fn files(ids: &[Uuid]) -> SearchScope {
+    SearchScope {
+        folders: vec![],
+        files: ids.to_vec(),
+    }
+}
+
+/// モデルの絞り込み（#423）は知識スコープとの**交差**で、スコープを広げない。
+#[tokio::test]
+async fn narrow_scope_intersects_with_knowledge_scope() {
+    let Some(env) = setup().await else { return };
+    // R ─┬─ A ── A1 ── fa1
+    //    └─ B ── fb
+    let r = make_node(&env, "folder", None).await;
+    let a = make_node(&env, "folder", Some(r)).await;
+    let a1 = make_node(&env, "folder", Some(a)).await;
+    let b = make_node(&env, "folder", Some(r)).await;
+    let fa1 = make_node(&env, "file", Some(a1)).await;
+    let fb = make_node(&env, "file", Some(b)).await;
+    let svc = service(&env, allow_all_authz(&env, &[r]), RagConfig::default());
+    let ctx = &env.ctx;
+    let narrow = |base: Option<SearchScope>, n: SearchScope| {
+        let svc = &svc;
+        async move { svc.narrow_scope(ctx, base.as_ref(), &n).await.unwrap() }
+    };
+
+    // 知識スコープ無し → 絞り込みがそのまま実効スコープ。
+    assert_eq!(narrow(None, files(&[fb, fb])).await, files(&[fb]));
+    // 絞り込み無し → 知識スコープのまま。
+    assert_eq!(
+        narrow(Some(folders(&[a])), SearchScope::default()).await,
+        folders(&[a])
+    );
+    // 内側へ絞る → 絞り込み側。
+    assert_eq!(
+        narrow(Some(folders(&[a])), folders(&[a1])).await,
+        folders(&[a1])
+    );
+    // 外側を指定しても知識スコープより広がらない。
+    assert_eq!(
+        narrow(Some(folders(&[a1])), folders(&[r])).await,
+        folders(&[a1])
+    );
+    assert_eq!(
+        narrow(Some(files(&[fa1])), folders(&[a])).await,
+        files(&[fa1])
+    );
+    // 交わらない → 空（呼び出し側は検索せず 0 件にする）。
+    assert!(narrow(Some(folders(&[a])), folders(&[b])).await.is_empty());
+    // ファイル単位: 知識スコープ内のものだけ残る。
+    assert_eq!(
+        narrow(Some(folders(&[a])), files(&[fa1, fb])).await,
+        files(&[fa1])
+    );
+
+    // 種別をまたいだ一致は認めない: skill がフォルダ ID を files に保存していても
+    // （`file:` タグは何にも一致しない）、folder_ids で同じ ID を渡して配下へ広げられない。
+    assert!(narrow(Some(files(&[a])), folders(&[a])).await.is_empty());
+    assert!(narrow(Some(folders(&[fb])), files(&[fb])).await.is_empty());
+
+    // 別テナントからは closure が見えない → 交差は空（越境で包含判定しない）。
+    let other = test_ctx(&format!("t-{}", Uuid::new_v4().simple()), "alice");
+    let got = svc
+        .narrow_scope(&other, Some(&folders(&[a])), &folders(&[a1]))
+        .await
+        .unwrap();
+    assert!(got.is_empty());
+}

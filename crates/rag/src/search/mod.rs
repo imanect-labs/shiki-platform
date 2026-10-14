@@ -33,6 +33,7 @@ use crate::vector_store::{PreFilter, ScoredChunk, VectorSearch, VectorStore};
 
 mod blocks;
 mod hydrate;
+mod narrow;
 
 pub use blocks::MAX_BLOCKS_PER_PAGE;
 
@@ -65,6 +66,12 @@ impl SearchService {
         Arc::clone(&self.embedder)
     }
 
+    /// 1 回の検索で返せる件数の上限（ツールの入力スキーマに出す・#423）。
+    #[must_use]
+    pub fn max_top_k(&self) -> usize {
+        self.config.max_top_k
+    }
+
     #[allow(clippy::too_many_arguments)] // 依存束の注入点（AppState からの一回きり）。
     pub fn new(
         pool: PgPool,
@@ -88,8 +95,9 @@ impl SearchService {
         }
     }
 
-    /// permission-aware 検索。`scope` は知識スコープ（skill・Task 6.8）による**絞り込み**で、
-    /// `None` は従来どおり全可読範囲。スコープを広く設定しても最終可読性は post-filter
+    /// permission-aware 検索。`scope` は知識スコープ（skill・Task 6.8）、またはそれとモデルの
+    /// 絞り込みの交差（[`Self::narrow_scope`]・#423）による**絞り込み**で、`None` は従来どおり
+    /// 全可読範囲。スコープを広く設定しても最終可読性は post-filter
     /// （OpenFGA file check）が常に再検証する（広げる方向には一切働かない）。
     pub async fn search(
         &self,
@@ -107,6 +115,7 @@ impl SearchService {
 
         // 知識スコープ → 構造タグ（`folder:<t>|<id>` は配下全体をカバー）。
         // 空スコープは「絞らない」として扱う（skill 側の保存時検証が空を拒否する前提の防御）。
+        // 交差が空になった絞り込みは、呼び出し側が検索せずに 0 件を返す（`narrow_scope` の契約）。
         let scope_tags: Vec<String> = scope.map_or_else(Vec::new, |s| {
             let ns = ctx.ns();
             s.folders
@@ -354,6 +363,7 @@ impl SearchService {
             "file_decisions": { "allowed": allowed_files, "denied": denied_files },
         });
         // 知識スコープ（skill・Task 6.8/6.12）を適用した検索であることを監査に残す。
+        // モデルの絞り込み（#423）があれば交差後の実効スコープ（実際に検索した範囲）になる。
         if let Some(scope) = scope {
             metadata["scope"] = serde_json::json!({
                 "folders": scope.folders,
