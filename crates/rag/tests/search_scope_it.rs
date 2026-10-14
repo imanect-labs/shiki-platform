@@ -98,12 +98,31 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_id: 
     .fetch_one(&env.pool)
     .await
     .unwrap();
-    let chunk_id = Uuid::new_v5(&node_id, b"leaf-0");
     // 構造タグ: file 自身＋所属フォルダ（本物のインジェストと同じ形）。
-    let tags = vec![
-        ctx.ns().file(&node_id.to_string()).as_str().to_string(),
-        ctx.ns().folder(&folder_id.to_string()).as_str().to_string(),
-    ];
+    seed_chunk_on(env, node_id, name, query, weight, &[folder_id]).await;
+    node_id
+}
+
+/// 既存の file node にチャンクを 1 つ積む。`folders` はチャンクの構造タグに載せるフォルダ
+/// （索引上の祖先。木の実際の祖先と食い違わせれば「移動後の古い索引」を作れる）。
+async fn seed_chunk_on(
+    env: &Env,
+    node_id: Uuid,
+    name: &str,
+    query: &str,
+    weight: f32,
+    folders: &[Uuid],
+) {
+    let ctx = &env.ctx;
+    let chunk_id = Uuid::new_v5(&node_id, b"leaf-0");
+    let tags: Vec<String> =
+        std::iter::once(ctx.ns().file(&node_id.to_string()).as_str().to_string())
+            .chain(
+                folders
+                    .iter()
+                    .map(|f| ctx.ns().folder(&f.to_string()).as_str().to_string()),
+            )
+            .collect();
     sqlx::query(
         "insert into rag_chunk \
              (id, tenant_id, org, node_id, version, parent_id, kind, ordinal, page, heading_path, \
@@ -133,7 +152,6 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_id: 
         )
         .await
         .unwrap();
-    node_id
 }
 
 /// 全チャンク可読の台本 authz（フォルダ 2 つの構造タグを可読集合に持つ）。
@@ -311,4 +329,270 @@ async fn tenant_only_degradation_keeps_scope_clause() {
         !files.contains(&out_scope),
         "縮退時もスコープは狭める方向に効き続ける"
     );
+}
+
+/// フォルダ/ファイルの node と closure 行（自身 depth 0 ＋親の祖先 +1）を作る。
+async fn make_node(env: &Env, kind: &str, parent: Option<Uuid>) -> Uuid {
+    let ctx = &env.ctx;
+    let name = format!("{kind}-{}", Uuid::new_v4().simple());
+    let id: Uuid = if kind == "folder" {
+        sqlx::query_scalar(
+            "insert into node (org, tenant_id, kind, name, parent_id, created_by, updated_by) \
+             values ($1, $2, 'folder', $3, $4, $5, $5) returning id",
+        )
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(&name)
+        .bind(parent)
+        .bind(&ctx.principal.id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap()
+    } else {
+        let sha = format!("{:0>64}", Uuid::new_v4().simple().to_string());
+        sqlx::query(
+            "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
+             values ($1, $2, $3, 10, 'text/plain', $4, 1)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(&sha)
+        .bind(format!("{}/{}/{}", ctx.tenant_id, ctx.org, sha))
+        .execute(&env.pool)
+        .await
+        .unwrap();
+        sqlx::query_scalar(
+            "insert into node (org, tenant_id, kind, name, parent_id, blob_sha256, size_bytes, \
+                               content_type, created_by, updated_by) \
+             values ($1, $2, 'file', $3, $4, $5, 10, 'text/plain', $6, $6) returning id",
+        )
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(&name)
+        .bind(parent)
+        .bind(&sha)
+        .bind(&ctx.principal.id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap()
+    };
+    sqlx::query(
+        "insert into node_closure (org, tenant_id, ancestor, descendant, depth) \
+         select $1, $2, ancestor, $3, depth + 1 from node_closure \
+          where tenant_id = $2 and descendant = $4 \
+         union all select $1, $2, $3, $3, 0",
+    )
+    .bind(&ctx.org)
+    .bind(&ctx.tenant_id)
+    .bind(id)
+    .bind(parent)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    id
+}
+
+fn folders(ids: &[Uuid]) -> SearchScope {
+    SearchScope {
+        folders: ids.to_vec(),
+        files: vec![],
+    }
+}
+
+fn files(ids: &[Uuid]) -> SearchScope {
+    SearchScope {
+        folders: vec![],
+        files: ids.to_vec(),
+    }
+}
+
+/// モデルの絞り込み（#423）は知識スコープとの**交差**で、スコープを広げない。
+#[tokio::test]
+async fn narrow_scope_intersects_with_knowledge_scope() {
+    let Some(env) = setup().await else { return };
+    // R ─┬─ A ── A1 ── fa1
+    //    └─ B ── fb
+    let r = make_node(&env, "folder", None).await;
+    let a = make_node(&env, "folder", Some(r)).await;
+    let a1 = make_node(&env, "folder", Some(a)).await;
+    let b = make_node(&env, "folder", Some(r)).await;
+    let fa1 = make_node(&env, "file", Some(a1)).await;
+    let fb = make_node(&env, "file", Some(b)).await;
+    let svc = service(&env, allow_all_authz(&env, &[r]), RagConfig::default());
+    let ctx = &env.ctx;
+    let narrow = |base: Option<SearchScope>, n: SearchScope| {
+        let svc = &svc;
+        async move { svc.narrow_scope(ctx, base.as_ref(), &n).await.unwrap() }
+    };
+
+    // 知識スコープ無し → 絞り込みがそのまま実効スコープ。
+    assert_eq!(narrow(None, files(&[fb, fb])).await, files(&[fb]));
+    // 絞り込み無し → 知識スコープのまま。
+    assert_eq!(
+        narrow(Some(folders(&[a])), SearchScope::default()).await,
+        folders(&[a])
+    );
+    // 内側へ絞る → 絞り込み側。
+    assert_eq!(
+        narrow(Some(folders(&[a])), folders(&[a1])).await,
+        folders(&[a1])
+    );
+    // 外側を指定しても知識スコープより広がらない。
+    assert_eq!(
+        narrow(Some(folders(&[a1])), folders(&[r])).await,
+        folders(&[a1])
+    );
+    assert_eq!(
+        narrow(Some(files(&[fa1])), folders(&[a])).await,
+        files(&[fa1])
+    );
+    // 交わらない → 空（呼び出し側は検索せず 0 件にする）。
+    assert!(narrow(Some(folders(&[a])), folders(&[b])).await.is_empty());
+    // ファイル単位: 知識スコープ内のものだけ残る。
+    assert_eq!(
+        narrow(Some(folders(&[a])), files(&[fa1, fb])).await,
+        files(&[fa1])
+    );
+
+    // 種別をまたいだ一致は認めない: skill がフォルダ ID を files に保存していても
+    // （`file:` タグは何にも一致しない）、folder_ids で同じ ID を渡して配下へ広げられない。
+    assert!(narrow(Some(files(&[a])), folders(&[a])).await.is_empty());
+    assert!(narrow(Some(folders(&[fb])), files(&[fb])).await.is_empty());
+
+    // 別テナントからは closure が見えない → 交差は空（越境で包含判定しない）。
+    let other = test_ctx(&format!("t-{}", Uuid::new_v4().simple()), "alice");
+    let got = svc
+        .narrow_scope(&other, Some(&folders(&[a])), &folders(&[a1]))
+        .await
+        .unwrap();
+    assert!(got.is_empty());
+}
+
+/// 交差で検索するときは、元の知識スコープで候補を検索時点の木に対して再検証する（#423・Codex）。
+/// 交差が空なら検索せず 0 件だが、`rag.search` の監査は残す。
+#[tokio::test]
+async fn search_narrowed_rechecks_base_and_audits_empty_intersection() {
+    let Some(env) = setup().await else { return };
+    let query = "移動後の資料";
+    // A ── B（絞り込み先）／C ── moved（索引上はまだ B 配下のタグを持つ）
+    let a = make_node(&env, "folder", None).await;
+    let b = make_node(&env, "folder", Some(a)).await;
+    let c = make_node(&env, "folder", None).await;
+    let stays = make_node(&env, "file", Some(b)).await;
+    let moved = make_node(&env, "file", Some(c)).await;
+    seed_chunk_on(&env, stays, "stays", query, 0.8, &[a, b]).await;
+    seed_chunk_on(&env, moved, "moved", query, 0.9, &[a, b]).await;
+    let svc = service(
+        &env,
+        allow_all_authz(&env, &[a, b, c]),
+        RagConfig::default(),
+    );
+    let ctx = &env.ctx;
+
+    let out = svc
+        .search_narrowed(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &folders(&[b]),
+            None,
+        )
+        .await
+        .unwrap();
+    let got: HashSet<Uuid> = out.results.iter().map(|r| r.file_id).collect();
+    assert_eq!(
+        got,
+        HashSet::from([stays]),
+        "木の上で A の外にあるファイルは返さない"
+    );
+
+    // 上限外の候補が取得枠を埋めても、バックフィルが上限内の候補で埋め直す（Codex）。
+    // fetch_k = 1 なので 1 ラウンド目は上位の moved だけを取る。
+    let narrow_pool = service(
+        &env,
+        allow_all_authz(&env, &[a, b, c]),
+        RagConfig {
+            rerank_pool: 1,
+            over_fetch_tags: 1,
+            ..RagConfig::default()
+        },
+    );
+    let out = narrow_pool
+        .search_narrowed(
+            ctx,
+            query,
+            Some(1),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &folders(&[b]),
+            None,
+        )
+        .await
+        .unwrap();
+    let got: Vec<Uuid> = out.results.iter().map(|r| r.file_id).collect();
+    assert_eq!(got, vec![stays], "上限外で落ちた分を次のラウンドで埋める");
+
+    // 知識スコープ無しの絞り込みでも、木の上で絞り込み先の外にあるファイルは返さない
+    // （moved は索引上まだ B のタグを持つが、木の上では C 配下・Codex）。
+    let out = svc
+        .search_narrowed(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            None,
+            &folders(&[b]),
+            None,
+        )
+        .await
+        .unwrap();
+    let got: Vec<Uuid> = out.results.iter().map(|r| r.file_id).collect();
+    assert_eq!(got, vec![stays], "絞り込み先も検索時点の木で確かめる");
+
+    // 交わらない絞り込み → 0 件。監査は残る。
+    let before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'rag.search'",
+    )
+    .bind(&ctx.tenant_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    let out = svc
+        .search_narrowed(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[b])),
+            &folders(&[c]),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(out.results.is_empty());
+    let after: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'rag.search'",
+    )
+    .bind(&ctx.tenant_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(after, before + 1, "交差が空でも rag.search を監査に残す");
+
+    // 絞り込み無しは知識スコープそのままの検索（再検証なし・従来どおり）。
+    let out = svc
+        .search_narrowed(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &SearchScope::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.results.len(), 2);
 }

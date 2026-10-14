@@ -73,6 +73,7 @@
 - **依存**: 3.3, 2.10
 - **仕様**:
   - `doc_search(query, scope?)` ツール。Phase 2 の permission-aware 検索を**呼び出し時のユーザー権限で**実行。
+    （#423 でモデルが `top_k` / `mode`（hybrid・keyword）/ `file_ids`・`folder_ids` を指定できるようにした。絞り込みは知識スコープとの交差で、範囲を広げない）
   - 戻りは引用チャンク（content blockの citation に変換）。skill（Phase 6・旧 prompt template）の知識スコープがあれば反映、
     ただし**最終可読性は個人ReBACで再チェック**（Task 2.7）。
 - **受け入れ条件**:

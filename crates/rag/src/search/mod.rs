@@ -33,6 +33,7 @@ use crate::vector_store::{PreFilter, ScoredChunk, VectorSearch, VectorStore};
 
 mod blocks;
 mod hydrate;
+mod narrow;
 
 pub use blocks::MAX_BLOCKS_PER_PAGE;
 
@@ -65,6 +66,18 @@ impl SearchService {
         Arc::clone(&self.embedder)
     }
 
+    /// 件数を指定しない検索で返す件数（設定 `default_top_k`）。
+    #[must_use]
+    pub fn default_top_k(&self) -> usize {
+        self.config.default_top_k
+    }
+
+    /// 1 回の検索で返せる件数の上限（ツールの入力スキーマに出す・#423）。
+    #[must_use]
+    pub fn max_top_k(&self) -> usize {
+        self.config.max_top_k
+    }
+
     #[allow(clippy::too_many_arguments)] // 依存束の注入点（AppState からの一回きり）。
     pub fn new(
         pool: PgPool,
@@ -88,8 +101,9 @@ impl SearchService {
         }
     }
 
-    /// permission-aware 検索。`scope` は知識スコープ（skill・Task 6.8）による**絞り込み**で、
-    /// `None` は従来どおり全可読範囲。スコープを広く設定しても最終可読性は post-filter
+    /// permission-aware 検索。`scope` は知識スコープ（skill・Task 6.8）、またはそれとモデルの
+    /// 絞り込みの交差（[`Self::narrow_scope`]・#423）による**絞り込み**で、`None` は従来どおり
+    /// 全可読範囲。スコープを広く設定しても最終可読性は post-filter
     /// （OpenFGA file check）が常に再検証する（広げる方向には一切働かない）。
     pub async fn search(
         &self,
@@ -100,6 +114,25 @@ impl SearchService {
         scope: Option<&SearchScope>,
         trace_id: Option<&str>,
     ) -> Result<SearchOutput, RagError> {
+        self.search_bounded(ctx, query, top_k, mode, scope, &[], trace_id)
+            .await
+    }
+
+    /// [`Self::search`] の本体。`bounds` は**検索時点の木で**候補を再検証するスコープ群で、
+    /// 候補のファイルは全部の内側になければならない（モデルの絞り込みを交差させた検索で、元の
+    /// 知識スコープと絞り込みを渡す・[`Self::search_narrowed`]）。`scope` は索引のタグで絞るため、
+    /// 交差を取った後のフォルダ移動や、移動後の非同期な再タグ付けが済む前の古いタグで範囲を外れ得る。
+    #[allow(clippy::too_many_arguments)] // search の引数＋上限（呼び出しは本モジュール内）。
+    pub(super) async fn search_bounded(
+        &self,
+        ctx: &AuthContext,
+        query: &str,
+        top_k: Option<u32>,
+        mode: SearchMode,
+        scope: Option<&SearchScope>,
+        bounds: &[&SearchScope],
+        trace_id: Option<&str>,
+    ) -> Result<SearchOutput, RagError> {
         let top_k = (top_k.unwrap_or(self.config.default_top_k as u32) as usize)
             .clamp(1, self.config.max_top_k);
         let mut debug = SearchDebug::default();
@@ -107,6 +140,7 @@ impl SearchService {
 
         // 知識スコープ → 構造タグ（`folder:<t>|<id>` は配下全体をカバー）。
         // 空スコープは「絞らない」として扱う（skill 側の保存時検証が空を拒否する前提の防御）。
+        // 交差が空になった絞り込みは、呼び出し側が検索せずに 0 件を返す（`narrow_scope` の契約）。
         let scope_tags: Vec<String> = scope.map_or_else(Vec::new, |s| {
             let ns = ctx.ns();
             s.folders
@@ -212,11 +246,17 @@ impl SearchService {
             let live = self.live_chunk_ids(ctx, &round_allowed).await?;
             liveness_ms += t_h.elapsed().as_millis() as u64;
             debug.hydrate_dropped += (round_allowed.len().saturating_sub(live.len())) as u32;
-            allowed.extend(
-                round_allowed
-                    .into_iter()
-                    .filter(|c| live.contains(&c.chunk_id)),
-            );
+            let mut round_live: Vec<ScoredChunk> = round_allowed
+                .into_iter()
+                .filter(|c| live.contains(&c.chunk_id))
+                .collect();
+            // 上限スコープの再検証も採択条件に含める（落ちた分は `seen` に入っているので、
+            // 次ラウンドのバックフィルが上限内の候補で埋め直す・Codex）。
+            for bound in bounds {
+                let inside = self.files_within(ctx, bound, &round_live).await?;
+                round_live.retain(|c| inside.contains(&c.node_id));
+            }
+            allowed.extend(round_live);
 
             if allowed.len() >= pool_target
                 || exhausted
@@ -322,8 +362,8 @@ impl SearchService {
     }
 
     /// 引用監査: LLM/UI に出す chunk_id 群とその時の file 粒度認可判定を記録する。
-    #[allow(clippy::too_many_arguments)] // 監査に載せる文脈の束（呼び出しは search 内の 1 箇所）。
-    async fn audit_citations(
+    #[allow(clippy::too_many_arguments)] // 監査に載せる文脈の束（呼び出しは本モジュール内）。
+    pub(super) async fn audit_citations(
         &self,
         ctx: &AuthContext,
         query: &str,
@@ -354,6 +394,7 @@ impl SearchService {
             "file_decisions": { "allowed": allowed_files, "denied": denied_files },
         });
         // 知識スコープ（skill・Task 6.8/6.12）を適用した検索であることを監査に残す。
+        // モデルの絞り込み（#423）があれば交差後の実効スコープ（実際に検索した範囲）になる。
         if let Some(scope) = scope {
             metadata["scope"] = serde_json::json!({
                 "folders": scope.folders,

@@ -68,7 +68,7 @@ pub(super) async fn seed_attachments(
         if remaining == 0 {
             notes.push(format!(
                 "添付「{}」は合計サイズ上限のため /workspace に置いていません。node_id \
-                 「{}」を csv.query / doc_search へ渡して読んでください。",
+                 「{}」を csv.query の node_id か doc_search の file_ids に渡して読んでください。",
                 a.name, a.node_id
             ));
             continue;
@@ -78,7 +78,7 @@ pub(super) async fn seed_attachments(
             Err(e) => {
                 notes.push(format!(
                     "添付「{}」は /workspace に置けませんでした（{e}）。node_id 「{}」を \
-                     csv.query / doc_search へ渡して読んでください。",
+                     csv.query の node_id か doc_search の file_ids に渡して読んでください。",
                     a.name, a.node_id
                 ));
                 continue;
@@ -94,7 +94,7 @@ pub(super) async fn seed_attachments(
             }
             Err(e) => notes.push(format!(
                 "添付「{}」を /workspace へ書き込めませんでした（{e}）。node_id 「{}」を \
-                 csv.query / doc_search へ渡して読んでください。",
+                 csv.query の node_id か doc_search の file_ids に渡して読んでください。",
                 a.name, a.node_id
             )),
         }
@@ -102,7 +102,7 @@ pub(super) async fn seed_attachments(
     if attachments.len() > MAX_ATTACHMENTS {
         notes.push(format!(
             "添付が {} 件あるため新しい {MAX_ATTACHMENTS} 件のみ /workspace に置きました。\
-             他は node_id で csv.query / doc_search を使ってください。",
+             他は node_id を csv.query の node_id か doc_search の file_ids に渡して読んでください。",
             attachments.len()
         ));
     }

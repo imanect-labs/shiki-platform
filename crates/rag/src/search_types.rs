@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// 検索モード。`hybrid` が既定（dense/keyword 単独はデバッグ比較用）。
+/// 検索モード。`hybrid` が既定。`keyword` は型番・固有名詞など表記どおりの一致を引くために
+/// モデルにも開いている（doc_search・#423）。`dense` 単独はデバッグ比較用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchMode {
