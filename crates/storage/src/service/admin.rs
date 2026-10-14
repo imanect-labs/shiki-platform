@@ -7,7 +7,11 @@
 use super::*;
 
 impl StorageService {
-    /// テナント初期 admin へ org member タプルを付与する（冪等・監査つき）。
+    /// テナント初期 admin へ org の member と admin タプルを付与する（冪等・監査つき）。
+    ///
+    /// タプルの書き込みは「既にある」を成功として扱うので、`organization#admin` 導入前に
+    /// プロビジョニングした既存テナントも、`POST /admin/tenants` を同じ内容で再実行すれば
+    /// admin が付く（#553 のアップグレード手順）。
     ///
     /// admin プレーン操作のため呼び出しユーザーの `AuthContext` は無い。実行時と同じ
     /// `AuthContext::ns()` 名前空間経路を通すために合成コンテキストで識別子を組む
@@ -22,8 +26,13 @@ impl StorageService {
     ) -> Result<(), StorageError> {
         let ctx = system_ctx(tenant_id, org, actor);
         let subject = ctx.ns().user(admin_user_id);
+        let org_obj = ctx.ns().organization(org);
         self.authz
-            .write_tuple(&subject, Relation::Member, &ctx.ns().organization(org))
+            .write_tuple(&subject, Relation::Member, &org_obj)
+            .await?;
+        // 初期管理者は組織管理者（管理コンソール・#553）。admin は閲覧権に連鎖しない（PIT-65）。
+        self.authz
+            .write_tuple(&subject, Relation::Admin, &org_obj)
             .await?;
         self.audit
             .record(

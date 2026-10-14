@@ -210,6 +210,17 @@ pub struct Attachment {
     pub name: String,
 }
 
+/// チャット run のモデル指定（投入時に API がテナント設定で解決・検証した値・#553）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunModel {
+    /// 論理モデル名（カタログ内）。
+    pub model: String,
+    /// 思考強度（モデルが対応しなければ `None`）。
+    pub effort: Option<llm_gateway::Effort>,
+    /// ユーザーが選ばなかった（Auto）か。Auto のときだけ skill のピンがモデルを上書きできる。
+    pub auto: bool,
+}
+
 /// skill のバージョンピン 1 件（thread の「最初からロード済み」スキル・#344 Task 10.11）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SkillPin {

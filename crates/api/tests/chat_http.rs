@@ -219,6 +219,7 @@ fn base_config(db_url: &str) -> AppConfig {
             langfuse: None,
             user_agent: None,
             session_header: None,
+            ..Default::default()
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
@@ -405,6 +406,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         tenants,
         search: None,
         chat,
+        llm: None,
         rag_admin,
         office: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(
@@ -656,4 +658,137 @@ async fn chat_authz_and_availability_edges() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// 投稿時のモデル指定（#553）: 組織で使えないモデルは 400、指定・Auto は run に記録される。
+#[tokio::test]
+async fn chat_post_resolves_model_choice() {
+    let Some((mut state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
+    // stub プロバイダに 2 モデル（"fast" は思考強度を受ける・"local" は受けない）。
+    let gw = llm_gateway::LlmGateway::build(
+        pool.clone(),
+        reqwest::Client::new(),
+        llm_gateway::GatewayConfig {
+            catalog: llm_gateway::ModelCatalog {
+                default_model: "fast".into(),
+                models: vec![
+                    llm_gateway::ModelEntry {
+                        id: "fast".into(),
+                        supports_effort: Some(true),
+                        ..Default::default()
+                    },
+                    llm_gateway::ModelEntry {
+                        id: "local".into(),
+                        ..Default::default()
+                    },
+                ],
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    state.llm = Some(Arc::new(gw));
+    let (cookie, csrf) = login(&sessions, "sid-chat-model").await;
+    let app = build_router(state);
+
+    let post = |uri: String, body: String| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .header("x-csrf-token", csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let resp = app
+        .clone()
+        .oneshot(post("/threads".into(), r#"{"title":"model"}"#.into()))
+        .await
+        .unwrap();
+    let tid = body_json(resp).await["id"].as_str().unwrap().to_string();
+    let messages = format!("/threads/{tid}/messages");
+
+    // カタログに無いモデルは 400（理由つき）。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages.clone(),
+            r#"{"text":"x","model":"ghost"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(body_json(resp).await["detail"]
+        .as_str()
+        .unwrap()
+        .contains("ghost"));
+
+    // 選んだモデル＋思考強度は run に記録される。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages.clone(),
+            r#"{"text":"x","model":"fast","effort":"high"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let row: (Option<String>, Option<String>, bool) =
+        sqlx::query_as("SELECT model, effort, model_auto FROM generation_run WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row, (Some("fast".into()), Some("high".into()), false));
+
+    // 思考強度に対応しないモデルは effort を記録しない。省略は Auto（ここでは既定モデルへ）。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages.clone(),
+            r#"{"text":"x","model":"local","effort":"high"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let row: (Option<String>, Option<String>, bool) =
+        sqlx::query_as("SELECT model, effort, model_auto FROM generation_run WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row, (Some("local".into()), None, false));
+
+    let resp = app
+        .clone()
+        .oneshot(post(messages, r#"{"text":"x"}"#.into()))
+        .await
+        .unwrap();
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let row: (Option<String>, Option<String>, bool) =
+        sqlx::query_as("SELECT model, effort, model_auto FROM generation_run WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row, (Some("fast".into()), Some("low".into()), true));
 }

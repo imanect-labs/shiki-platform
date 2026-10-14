@@ -88,3 +88,16 @@ fn admin_routes_are_provisioner_scoped() {
         }
     }
 }
+
+#[test]
+fn org_admin_routes_are_org_admin_scoped() {
+    // /org-admin/* は必ず OrgAdmin（組織管理者）で、OrgAdmin はそれ以外に使わない（#553）。
+    for decl in route_table() {
+        assert_eq!(
+            decl.path.starts_with("/org-admin/"),
+            decl.policy == AccessPolicy::OrgAdmin,
+            "{} のポリシーとパスが一致しない",
+            decl.path
+        );
+    }
+}

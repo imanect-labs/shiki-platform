@@ -136,6 +136,16 @@ impl Effort {
             Effort::High => "high",
         }
     }
+
+    /// 文字列から読む（`low` / `medium` / `high`・未知は `None`）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(Effort::Low),
+            "medium" => Some(Effort::Medium),
+            "high" => Some(Effort::High),
+            _ => None,
+        }
+    }
 }
 
 /// 生成リクエスト（中立形）。プロバイダ差はアダプタが吸収する。

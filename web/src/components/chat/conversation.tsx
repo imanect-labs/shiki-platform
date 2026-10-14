@@ -28,6 +28,7 @@ import {
   type StreamHandlers,
 } from "@/lib/chat-api";
 import { popPending } from "@/lib/pending-message";
+import { readModelChoice } from "@/lib/model-choice";
 import { triggerDownload } from "@/lib/storage";
 import { linkifyCitations } from "@/lib/citation";
 import { newId } from "@/lib/chat-store";
@@ -466,6 +467,8 @@ export function Conversation({
       setNotice(null);
       // ホームからの初回メッセージは選択時点の値を明示指定する（state 初期化のタイミングに依存しない）。
       const runAutonomous = autonomousOverride ?? autonomous;
+      // 入力欄で選んだモデル（#553）。未選択は Auto（組織の既定）。
+      const model = readModelChoice(threadId);
       // 楽観的にユーザーメッセージを表示。
       const userBlocks: ContentBlock[] = [
         ...(context ? [{ type: "selection_context" as const, context }] : []),
@@ -482,6 +485,7 @@ export function Conversation({
           autonomous: runAutonomous,
           context,
           skills: onceSkills,
+          model,
         })
           .then((posted) =>
             setQueued((prev) =>
@@ -514,6 +518,7 @@ export function Conversation({
         runAutonomous,
         context,
         onceSkills,
+        model,
       );
     },
     [threadId, makeHandlers, autonomous],

@@ -118,6 +118,13 @@ pub struct PostMessageRequest {
     /// version 省略は current を解決する。読めない skill は 403/404（fail-closed）。
     #[serde(default)]
     pub skills: Option<Vec<ArtifactPinRequest>>,
+    /// この発話のモデル（`auto` かモデル ID・#553）。省略は組織の既定（通常 Auto）。
+    /// 組織で使えないモデルは 400。
+    #[serde(default)]
+    pub model: Option<String>,
+    /// 思考の深さ（モデルを選んだときだけ効く・Auto では組織の設定に従う）。
+    #[serde(default)]
+    pub effort: Option<super::llm_models::EffortLevel>,
 }
 
 /// 発話送信レスポンス（202・生成は接続非依存ジョブで継続）。

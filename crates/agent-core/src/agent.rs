@@ -241,16 +241,19 @@ async fn land_on_budget(
     }
     let step = state.spent.steps;
     let mut stream = gateway
-        .stream(GenerateRequest {
-            model: opts.model.clone(),
-            system: opts.system.clone(),
-            messages: state.messages.clone(),
-            tools: Vec::new(), // ← 追加の取得を構造的に不可能にする
-            effort: opts.effort,
-            max_tokens: opts.max_tokens,
-            temperature: opts.temperature,
-            session_id: opts.session_id.clone(),
-        })
+        .stream(
+            run.ctx,
+            GenerateRequest {
+                model: opts.model.clone(),
+                system: opts.system.clone(),
+                messages: state.messages.clone(),
+                tools: Vec::new(), // ← 追加の取得を構造的に不可能にする
+                effort: opts.effort,
+                max_tokens: opts.max_tokens,
+                temperature: opts.temperature,
+                session_id: opts.session_id.clone(),
+            },
+        )
         .await
         .map_err(map_llm_error)?;
 
@@ -289,6 +292,7 @@ async fn land_on_budget(
                 input_preview: run.input_preview.clone(),
                 output_preview: preview(&text_acc),
                 app_id: run.app_id,
+                source: usage_source(opts, run.app_id),
             },
         )
         .await;
@@ -336,7 +340,7 @@ async fn run_step(
         temperature: opts.temperature,
         session_id: opts.session_id.clone(),
     };
-    let mut stream = gateway.stream(req).await.map_err(map_llm_error)?;
+    let mut stream = gateway.stream(run.ctx, req).await.map_err(map_llm_error)?;
 
     let mut text_acc = String::new();
     let mut pending_names: HashMap<String, String> = HashMap::new();
@@ -424,6 +428,7 @@ async fn run_step(
                 input_preview: run.input_preview.clone(),
                 output_preview: preview(&text_acc),
                 app_id: run.app_id,
+                source: usage_source(opts, run.app_id),
             },
         )
         .await;
@@ -550,4 +555,16 @@ fn preview(s: &str) -> String {
         end -= 1;
     }
     format!("{}…", &s[..end])
+}
+
+/// 会計の利用元（管理画面の利用元別集計・#553）。ミニアプリ経由はミニアプリ、
+/// チャット制約版はチャット、自律版はエージェントとして数える。
+fn usage_source(opts: &AgentOptions, app_id: Option<uuid::Uuid>) -> llm_gateway::UsageSource {
+    if app_id.is_some() {
+        llm_gateway::UsageSource::MiniApp
+    } else if opts.profile.is_autonomous() {
+        llm_gateway::UsageSource::Agent
+    } else {
+        llm_gateway::UsageSource::Chat
+    }
 }

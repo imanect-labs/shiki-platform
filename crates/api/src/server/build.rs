@@ -10,7 +10,12 @@ use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
 use super::http_util::{cors_layer, make_request_span};
 use super::{route_table, AccessPolicy};
-use crate::{middleware::require_session, routes, state::AppState, telemetry};
+use crate::{
+    middleware::{require_org_admin, require_session},
+    routes,
+    state::AppState,
+    telemetry,
+};
 
 /// アプリの axum ルータを構築する（テストからも利用）。
 pub fn build_router(state: AppState) -> Router {
@@ -24,6 +29,7 @@ pub fn build_router(state: AppState) -> Router {
     let mut session_std = Router::new();
     let mut session_long = Router::new();
     let mut session_stream = Router::new();
+    let mut org_admin = Router::new();
     let mut admin = Router::new();
     // admin ルート（SAAS.2）: **config（provisioner 資格情報＋admin base）が揃っている時のみ
     // 組み込む**（未設定なら 404 = fail-closed）。
@@ -45,6 +51,7 @@ pub fn build_router(state: AppState) -> Router {
             AccessPolicy::SessionStreaming => {
                 session_stream = session_stream.route(decl.path, method_router);
             }
+            AccessPolicy::OrgAdmin => org_admin = org_admin.route(decl.path, method_router),
             AccessPolicy::Provisioner => {
                 if admin_enabled {
                     admin = admin.route(decl.path, method_router);
@@ -60,6 +67,15 @@ pub fn build_router(state: AppState) -> Router {
     let session_long = session_long
         .route_layer(session_layer.clone())
         .layer(long_timeout());
+    // 組織管理者: route_layer は後から足したものが外側＝先に走る。セッション（Principal を載せる）
+    // → 管理者チェックの順にするため、管理者チェックを先に足す。
+    let org_admin = org_admin
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_org_admin,
+        ))
+        .route_layer(session_layer.clone())
+        .layer(standard_timeout());
     // SSE ストリーム: セッション必須だがタイムアウトレイヤは付けない（接続を長時間開く）。
     let session_stream = session_stream.route_layer(session_layer);
     let admin = if admin_enabled {
@@ -87,6 +103,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(session_std)
         .merge(session_long)
         .merge(session_stream)
+        .merge(org_admin)
         .merge(admin)
         .with_state(state);
     // WOPI は状態適用済み（`Router<()>`）のため、`with_state` 後に merge する。

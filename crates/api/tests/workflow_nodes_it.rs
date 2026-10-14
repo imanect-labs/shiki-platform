@@ -117,6 +117,7 @@ async fn setup() -> Option<Harness> {
                     timeout_secs: 30,
                     user_agent: None,
                     session_header: None,
+                    ..Default::default()
                 },
                 catalog: llm_gateway::ModelCatalog {
                     default_model: "stub".into(),
@@ -126,9 +127,11 @@ async fn setup() -> Option<Harness> {
                         prompt_price_micros_per_mtok: 0,
                         completion_price_micros_per_mtok: 0,
                         context_window_tokens: None,
+                        ..Default::default()
                     }],
                 },
                 langfuse: None,
+                ..Default::default()
             },
         )
         .expect("gateway"),

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ChevronsUpDown, LogIn, LogOut, Settings } from "lucide-react";
+import { ChevronsUpDown, LogIn, LogOut, Settings, ShieldCheck } from "lucide-react";
 
 import { cn, initialsFrom } from "@/lib/utils";
 import { login, logout } from "@/lib/auth";
@@ -138,6 +138,14 @@ export function SidebarAccount({
               設定
             </Link>
           </DropdownMenuItem>
+          {data.is_admin ? (
+            <DropdownMenuItem asChild>
+              <Link href="/admin" onClick={onNavigate}>
+                <ShieldCheck aria-hidden />
+                管理コンソール
+              </Link>
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem variant="destructive" onSelect={() => void logout()}>
             <LogOut aria-hidden />
             ログアウト

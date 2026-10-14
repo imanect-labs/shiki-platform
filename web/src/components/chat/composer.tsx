@@ -23,7 +23,9 @@ import {
 import { cn } from "@/lib/utils";
 import { uploadFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
+import { HOME_SCOPE } from "@/lib/model-choice";
 import { ApprovalModeSelect } from "./approval-mode-select";
+import { ModelPill, ModelSubmenu } from "./model-picker";
 import {
   clearPendingSelection,
   selectionKindLabel,
@@ -364,6 +366,7 @@ export function Composer({
               // ワークスペース（作業フォルダ）はエージェントモード ON のときだけ意味を持つ。
               // OFF のときは残存する workspace 選択を無視し、既定（マイドライブ直下）へ作成する。
               createParentId={autonomous ? (workspace?.folderId ?? null) : null}
+              modelScope={threadId ?? HOME_SCOPE}
             />
             {onAutonomousChange ? (
               <button
@@ -416,7 +419,9 @@ export function Composer({
 
           {/* 生成中は停止を出し、書きかけがあれば送信（＝順番待ちへ積む）も並べる。
               書きかけが無いのに無効な送信ボタンを置くと、押せないボタンが常駐して邪魔になる。 */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex min-w-0 items-center gap-1.5">
+            {/* モデルを選んだときだけ出る（既定の Auto では何も出さない・#553）。 */}
+            <ModelPill scope={threadId ?? HOME_SCOPE} />
             {streaming ? (
               <button
                 type="button"
@@ -486,11 +491,14 @@ function PlusMenu({
   createParentId = null,
   skills = [],
   onPickSkill,
+  modelScope,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onUploadLocal: () => void;
   onOpenDrive: () => void;
+  /// モデル選択のスコープ（スレッド id かホーム・#553）。
+  modelScope: string;
   /// 「作成」の保存先フォルダ（エージェントモードのワークスペース選択時はそれ・既定はマイドライブ直下）。
   createParentId?: string | null;
   /// スラッシュコマンドを持つスキル（#387）。選ぶと入力欄へコマンドが打ち込まれる。
@@ -597,6 +605,9 @@ function PlusMenu({
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
+
+        {/* モデル（#553）。既定は Auto で、ここで選ぶと送信ボタンの左にピルが出る。 */}
+        <ModelSubmenu scope={modelScope} />
 
         {/* スキル（#387）。選ぶと入力欄へスラッシュコマンドが打ち込まれる
             （打鍵で呼べることを学べるよう、実行ではなくコマンド確定にする）。

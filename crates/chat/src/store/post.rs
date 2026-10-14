@@ -12,7 +12,7 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 use super::runs::{map_db, CHAT_GENERATION_QUEUE};
-use crate::model::{Attachment, ContentBlock, SkillPin};
+use crate::model::{Attachment, ContentBlock, RunModel, SkillPin};
 
 /// `post_message` の結果（202 で返す）。
 #[derive(Debug, Clone)]
@@ -34,6 +34,36 @@ impl ChatStore {
         thread_id: Uuid,
         text: &str,
         attachments: &[Attachment],
+        selection: Option<crate::model::SelectionContext>,
+        agent_mode_override: Option<bool>,
+        autonomous: bool,
+        once_skills: &[SkillPin],
+        trace_id: Option<&str>,
+    ) -> Result<PostResult, ChatError> {
+        self.post_message_with_model(
+            ctx,
+            thread_id,
+            text,
+            attachments,
+            selection,
+            agent_mode_override,
+            autonomous,
+            once_skills,
+            None,
+            trace_id,
+        )
+        .await
+    }
+
+    /// [`Self::post_message`] にモデル指定（#553）を足したもの。`model` が `None` の run は
+    /// 従来どおり（skill のピン → 既定モデル）で生成される。
+    #[allow(clippy::too_many_arguments)] // 発話の全構成要素（呼び出し元は api 1 箇所＋UI アクション）。
+    pub async fn post_message_with_model(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        text: &str,
+        attachments: &[Attachment],
         // エディタの選択コンテキスト（Task 11.10）。node_id の可読性検証は api 層の責務
         // （storage.get_metadata の viewer 判定・監査つき）。ここでは上限の切り詰めのみ行う。
         selection: Option<crate::model::SelectionContext>,
@@ -43,6 +73,8 @@ impl ChatStore {
         // thread のピン（＝「最初からロード済み」）とは別で、次の発話には持ち越さない
         // （積み上がる「専門家モード」ではなく「1 発の指示」という体験にするため）。
         once_skills: &[SkillPin],
+        // モデル指定（API がテナント設定で解決・検証済み）。run にスナップショットする。
+        model: Option<&RunModel>,
         trace_id: Option<&str>,
     ) -> Result<PostResult, ChatError> {
         self.require_thread(ctx, thread_id, Relation::Editor, "thread.post", trace_id)
@@ -141,8 +173,9 @@ impl ChatStore {
         // ＝その水準での実行に同意・実行中の緩和は actor 本人設定のみ有効・#350）。
         let run_id: Uuid = sqlx::query_scalar(
             "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, status, trace_id, autonomous, \
-                                         autonomous_mode, skill_pins, mini_app_id, mini_app_version) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11, $12) RETURNING run_id",
+                                         autonomous_mode, skill_pins, mini_app_id, mini_app_version, \
+                                         model, effort, model_auto) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING run_id",
         )
         .bind(asst_id)
         .bind(thread_id)
@@ -156,6 +189,9 @@ impl ChatStore {
         .bind(&skill_pins)
         .bind(mini_app_id)
         .bind(mini_app_version)
+        .bind(model.map(|m| m.model.as_str()))
+        .bind(model.and_then(|m| m.effort).map(llm_gateway::Effort::as_str))
+        .bind(model.is_none_or(|m| m.auto))
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;

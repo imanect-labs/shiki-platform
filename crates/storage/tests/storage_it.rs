@@ -5152,3 +5152,59 @@ async fn pending_exists(pool: &PgPool, upload_id: Uuid) -> i64 {
         .await
         .expect("count")
 }
+
+/// #553: 初期管理者のプロビジョニングは `organization#admin` も付ける。
+///
+/// admin 追加前にプロビジョニングされた既存テナント（member タプルだけがある状態）でも、
+/// 同じプロビジョニングを再実行すれば重複エラーにならず admin が付く（アップグレード経路）。
+#[tokio::test]
+async fn provision_tenant_admin_grants_admin_and_upgrades_existing_member() {
+    let Some(c) = setup().await else { return };
+    let tenant = format!("t{}", Uuid::new_v4().simple());
+    let org = "acme";
+    let ctx = AuthContext::new(
+        Principal {
+            kind: authz::PrincipalKind::User,
+            id: "kc-admin".into(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: Some(tenant.clone()),
+        },
+        org.into(),
+        tenant.clone(),
+    );
+    let subject = ctx.subject();
+    let org_obj = ctx.ns().organization(org);
+    let is = |rel: Relation| {
+        let (authz, subject, org_obj) = (c.authz.clone(), subject.clone(), org_obj.clone());
+        async move {
+            authz
+                .check(&subject, rel, &org_obj, Consistency::HigherConsistency)
+                .await
+                .unwrap()
+        }
+    };
+
+    // アップグレード前の状態: member だけがある。
+    c.authz
+        .write_tuple(&subject, Relation::Member, &org_obj)
+        .await
+        .unwrap();
+    assert!(is(Relation::Member).await);
+    assert!(!is(Relation::Admin).await);
+
+    // 再プロビジョニング（POST /admin/tenants の再実行と同じ経路）で admin が付く。
+    c.service
+        .provision_tenant_admin(&tenant, org, "kc-admin", "provisioner:test")
+        .await
+        .expect("既存 member があっても再実行できる");
+    assert!(is(Relation::Admin).await);
+    assert!(is(Relation::Member).await);
+
+    // もう一度流しても冪等。
+    c.service
+        .provision_tenant_admin(&tenant, org, "kc-admin", "provisioner:test")
+        .await
+        .expect("冪等");
+}

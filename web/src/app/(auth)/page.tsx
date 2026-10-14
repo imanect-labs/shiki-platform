@@ -8,6 +8,7 @@ import { useMe } from "@/hooks/use-me";
 import { createThread, type Attachment } from "@/lib/chat-api";
 import type { ActiveCommand } from "@/lib/slash-command";
 import { stashPending } from "@/lib/pending-message";
+import { HOME_SCOPE, moveModelChoice } from "@/lib/model-choice";
 import { titleFrom } from "@/lib/chat-store";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -64,6 +65,8 @@ export default function HomePage() {
           ? [{ artifactId: command.skillId, version: command.skillVersion }]
           : undefined,
       });
+      // ホームで選んだモデルを新しいスレッドへ引き継ぐ（ホーム側は Auto に戻る・#553）。
+      moveModelChoice(HOME_SCOPE, thread.id);
       router.push(`/c/${thread.id}`);
     } catch {
       toast({ description: "チャットを開始できませんでした。ログイン状態をご確認ください。" });

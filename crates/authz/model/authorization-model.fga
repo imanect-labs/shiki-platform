@@ -25,9 +25,13 @@ type workflow
 # アーティファクト（artifact 型）の owner ReBAC が担う。
 type miniapp
 
+# 組織。admin は管理コンソール（管理 API）を使える組織管理者（#553）。
+# **admin は閲覧権に連鎖させない**（PIT-65）: folder/file/thread 等の viewer/editor の
+# 計算式から organization#admin を参照しない。管理者でも中身は通常の共有でしか読めない。
 type organization
   relations
     define member: [user]
+    define admin: [user]
 
 # ロール: テナント内のメンバーシップ集合。階層は親ロールが子ロールを含む（上方向ロールアップ）。
 # 例: role:営業部#member@role:営業1課#member を書くと、営業1課 のメンバーが営業部のメンバーになる。
