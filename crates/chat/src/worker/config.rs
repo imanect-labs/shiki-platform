@@ -50,6 +50,9 @@ pub struct WorkerConfig {
     /// 既定は gVisor（#346・native Python。rootfs は numpy/pandas 同梱がビルドで保証される）。
     /// runsc の無い開発ホストは wasm へ明示退避する（自動降格はしない）。
     pub sandbox_backend: agent_core::SandboxBackend,
+    /// system プロンプトに入れる「今日の日付」のタイムゾーン（#546・既定 Asia/Tokyo）。
+    /// テナントごとの設定は持たない（必要になったら別途）。
+    pub timezone: chrono_tz::Tz,
 }
 
 impl Default for WorkerConfig {
@@ -85,6 +88,7 @@ impl Default for WorkerConfig {
             // 既定ティアの単一ソースは enum の `#[default]`（gVisor・#346）。ここに別のリテラルを
             // 持たない（「もう一つの正」を作らない）。
             sandbox_backend: agent_core::SandboxBackend::default(),
+            timezone: chrono_tz::Asia::Tokyo,
         }
     }
 }

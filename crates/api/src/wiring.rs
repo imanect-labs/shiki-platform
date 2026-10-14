@@ -297,6 +297,11 @@ pub(crate) async fn wire_chat(
             .tool_search
             .unwrap_or_else(|| chat::WorkerConfig::default().tool_search),
         classic_rag: config.chat.classic_rag,
+        timezone: match &config.chat.timezone {
+            Some(name) => chat::parse_timezone(name)
+                .map_err(|e| anyhow::anyhow!("SHIKI__CHAT__TIMEZONE: {e}"))?,
+            None => chat::WorkerConfig::default().timezone,
+        },
         // コード実行系の隔離ティア（admin ポリシー）。未指定は既定（gVisor・#346）。
         sandbox_backend: config
             .chat

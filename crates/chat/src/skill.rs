@@ -319,6 +319,7 @@ mod tests {
             skill_pins: Json(pins),
             mini_app_id: None,
             mini_app_version: None,
+            created_at: chrono::Utc::now(),
         }
     }
 

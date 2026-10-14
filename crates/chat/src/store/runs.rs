@@ -81,6 +81,8 @@ pub struct ClaimedRun {
     /// ミニアプリ経由のセッション（Task 6.10・skill はバンドル権限で読む）。
     pub mini_app_id: Option<Uuid>,
     pub mini_app_version: Option<i64>,
+    /// run の作成時刻（system プロンプトの「今日の日付」の基準・再開しても変わらない・#546）。
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// いま UI が映すべき run（[`ChatStore::current_run`]）。
@@ -115,7 +117,7 @@ impl ChatStore {
             lease_secs,
             "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
              fencing_token, cancel_requested, trace_id, autonomous, autonomous_mode, checkpoint, \
-             skill_pins, mini_app_id, mini_app_version",
+             skill_pins, mini_app_id, mini_app_version, created_at",
         )
         .await
         .map_err(map_db)
