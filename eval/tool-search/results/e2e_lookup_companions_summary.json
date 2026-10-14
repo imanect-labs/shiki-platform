@@ -2,14 +2,14 @@
  {
   "condition": "search_rrf_prod",
   "n": 1000,
-  "full": 48,
-  "correct": 36,
-  "avoidable": 3,
+  "full": 54,
+  "correct": 40,
+  "avoidable": 5,
   "legit": 2,
   "other": 7,
   "max_steps": 0,
   "unjudged": 0,
-  "chain": 31,
+  "chain": 35,
   "missing": 0,
   "missing_asked": 0,
   "missing_called_target": 0,
@@ -17,19 +17,19 @@
   "missing_omitted": 0,
   "missing_other_service": 0,
   "errors": 0,
-  "mean_prompt_tokens": 6101
+  "mean_prompt_tokens": 6059
  },
  {
   "condition": "search_rrf_comp",
   "n": 1000,
-  "full": 48,
-  "correct": 43,
+  "full": 54,
+  "correct": 48,
   "avoidable": 1,
-  "legit": 2,
+  "legit": 3,
   "other": 2,
   "max_steps": 0,
   "unjudged": 0,
-  "chain": 41,
+  "chain": 46,
   "missing": 0,
   "missing_asked": 0,
   "missing_called_target": 0,
@@ -37,6 +37,6 @@
   "missing_omitted": 0,
   "missing_other_service": 0,
   "errors": 0,
-  "mean_prompt_tokens": 6212
+  "mean_prompt_tokens": 6151
  }
 ]

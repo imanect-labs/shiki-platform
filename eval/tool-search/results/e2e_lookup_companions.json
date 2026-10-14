@@ -1,5 +1,97 @@
 [
  {
+  "id": "docusign_void_envelope:ja@1000",
+  "target": "docusign_void_envelope",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "docusign_search_envelopes",
+   "docusign_void_envelope"
+  ],
+  "call_args": [
+   "{\"account_id\": \"acc_98765\", \"search_text\": \"XYZ社 保守契約書\"}",
+   "{\"account_id\": \"acc_98765\", \"envelope_id\": \"e7b2c4d1-8f9a-4e3b-b5c6-1a2d3e4f5g6h\", \"reason\": \"添付ファイルのバージョン違い\"}"
+  ],
+  "searches": [
+   {
+    "query": "docusign",
+    "limit": null,
+    "hits": [
+     "docusign_create_brand",
+     "docusign_list_brands",
+     "docusign_list_webhooks",
+     "docusign_download_document",
+     "docusign_get_envelope_status"
+    ]
+   },
+   {
+    "query": "docusign envelope void cancel list",
+    "limit": 10,
+    "hits": [
+     "docusign_void_envelope",
+     "docusign_list_envelopes",
+     "docusign_send_draft_envelope",
+     "docusign_remove_recipient",
+     "stripe_void_invoice",
+     "docusign_get_envelope_status",
+     "docusign_search_envelopes",
+     "cloudsign_cancel_contract",
+     "docusign_create_envelope_from_template",
+     "docusign_create_envelope_from_document"
+    ]
+   }
+  ],
+  "prompt_tokens": 10228,
+  "completion_tokens": 592,
+  "steps": 4,
+  "error": null,
+  "final_text": "検索結果から、件名に「XYZ社 保守契約書」が含まれる封筒が1件見つかりました。\n- 封筒ID: `e7b2c4d1-8f9a-4e3b-b5c6-1a2d3e4f5g6h`\n- ステータス: `sent`\n\nこの封筒を指定された理由「添付ファイルのバージョン違い」で無効化（キャンセル）します。\n\n",
+  "stop": "target",
+  "latency_s": 24.977826259098947,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "docusign_void_envelope:en@1000",
+  "target": "docusign_void_envelope",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "docusign_search_envelopes",
+   "docusign_void_envelope"
+  ],
+  "call_args": [
+   "{\"account_id\": \"acc_98765\", \"search_text\": \"XYZ Corp Maintenance Agreement\"}",
+   "{\"account_id\": \"acc_98765\", \"envelope_id\": \"e7b2c4d1-8f9a-4e3b-b5c6-1a2d3e4f5g6h\", \"reason\": \"Incorrect attachment version\"}"
+  ],
+  "searches": [
+   {
+    "query": "docusign void envelope",
+    "limit": null,
+    "hits": [
+     "docusign_void_envelope",
+     "docusign_list_envelopes",
+     "docusign_send_draft_envelope",
+     "docusign_get_envelope_status",
+     "docusign_search_envelopes"
+    ]
+   }
+  ],
+  "prompt_tokens": 4951,
+  "completion_tokens": 178,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 16.64309262484312,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
   "id": "miro_update_board:ja@1000",
   "target": "miro_update_board",
   "condition": "search_rrf_prod",
@@ -345,6 +437,80 @@
   "latency_s": 82.438018810004,
   "correct": false,
   "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "ga4_get_metadata:ja@1000",
+  "target": "ga4_get_metadata",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "ga4_get_property",
+   "ga4_get_metadata"
+  ],
+  "call_args": [
+   "{\"property_id\": \"123456789\"}",
+   "{\"property_id\": \"123456789\"}"
+  ],
+  "searches": [
+   {
+    "query": "ga4",
+    "limit": null,
+    "hits": [
+     "ga4_create_property",
+     "ga4_get_property",
+     "ga4_update_property",
+     "ga4_get_metadata",
+     "ga4_list_events"
+    ]
+   }
+  ],
+  "prompt_tokens": 4648,
+  "completion_tokens": 100,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 22.303141988813877,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "ga4_get_metadata:en@1000",
+  "target": "ga4_get_metadata",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "ga4_get_metadata"
+  ],
+  "call_args": [
+   "{\"property_id\": \"EC Site Production\"}"
+  ],
+  "searches": [
+   {
+    "query": "ga4 metadata dimensions metrics",
+    "limit": null,
+    "hits": [
+     "ga4_get_metadata",
+     "ga4_create_custom_dimension",
+     "ga4_list_custom_metrics",
+     "ga4_list_custom_dimensions",
+     "ga4_create_custom_metric"
+    ]
+   }
+  ],
+  "prompt_tokens": 2688,
+  "completion_tokens": 60,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 11.931349233724177,
+  "correct": true,
+  "first_correct": true,
   "kind": "en",
   "missing": null
  },
@@ -951,76 +1117,89 @@
   "missing": null
  },
  {
-  "id": "garoon_check_facility_availability:ja@1000",
-  "target": "garoon_check_facility_availability",
+  "id": "docusign_add_recipient:ja@1000",
+  "target": "docusign_add_recipient",
   "condition": "search_rrf_prod",
   "n": 1000,
   "calls": [
-   "garoon_list_facilities",
-   "garoon_check_facility_availability"
+   "docusign_search_envelopes",
+   "docusign_add_recipient"
   ],
   "call_args": [
-   "{}",
-   "{\"facility_id\": 101, \"date\": \"2026-10-21\"}"
+   "{\"account_id\": \"acc_998877\", \"search_text\": \"2026年度Q4 保守契約書\"}",
+   "{\"account_id\": \"acc_998877\", \"envelope_id\": \"e8a7b6c5-4d3e-2f1a-0b9c-8d7e6f5a4b3c\", \"recipient_name\": \"田中太郎\", \"recipient_email\": \"tanaka.taro@example.com\", \"role\": \"Signer\"}"
   ],
   "searches": [
    {
-    "query": "garoon 空き状況 確認",
+    "query": "docusign add recipient envelope",
     "limit": null,
     "hits": [
-     "garoon_check_facility_availability",
-     "garoon_list_facilities",
-     "gcal_find_free_busy",
-     "gcal_list_events",
-     "garoon_list_schedules"
+     "docusign_add_recipient",
+     "docusign_remove_recipient",
+     "docusign_send_draft_envelope",
+     "docusign_search_envelopes",
+     "docusign_void_envelope"
     ]
    }
   ],
-  "prompt_tokens": 4687,
-  "completion_tokens": 103,
+  "prompt_tokens": 5085,
+  "completion_tokens": 221,
   "steps": 3,
   "error": null,
   "final_text": "",
   "stop": "target",
-  "latency_s": 17.858396684750915,
+  "latency_s": 19.33177677169442,
   "correct": true,
   "first_correct": false,
   "kind": "ja",
   "missing": null
  },
  {
-  "id": "garoon_check_facility_availability:en@1000",
-  "target": "garoon_check_facility_availability",
+  "id": "docusign_add_recipient:en@1000",
+  "target": "docusign_add_recipient",
   "condition": "search_rrf_prod",
   "n": 1000,
   "calls": [
-   "garoon_check_facility_availability"
+   "docusign_search_envelopes",
+   "docusign_add_recipient"
   ],
   "call_args": [
-   "{\"facility_id\": 1, \"date\": \"2026-10-21\"}"
+   "{\"account_id\": \"acc_998877\", \"search_text\": \"2026 Q4 Maintenance Agreement\"}",
+   "{\"account_id\": \"acc_998877\", \"envelope_id\": \"env_2026q4_maint_001\", \"recipient_name\": \"Taro Tanaka\", \"recipient_email\": \"tanaka.taro@example.com\", \"role\": \"Signer\"}"
   ],
   "searches": [
    {
-    "query": "garoon check schedule availability",
+    "query": "docusign add signer",
     "limit": null,
     "hits": [
-     "garoon_update_schedule",
-     "garoon_check_facility_availability",
-     "garoon_list_schedules",
-     "garoon_search_schedules",
-     "garoon_delete_schedule"
+     "docusign_add_recipient",
+     "cloudsign_add_signer",
+     "docusign_create_brand",
+     "docusign_update_brand",
+     "docusign_list_webhooks"
+    ]
+   },
+   {
+    "query": "docusign list envelopes",
+    "limit": null,
+    "hits": [
+     "docusign_list_envelopes",
+     "docusign_search_envelopes",
+     "docusign_send_draft_envelope",
+     "docusign_void_envelope",
+     "docusign_get_envelope_status"
     ]
    }
   ],
-  "prompt_tokens": 2560,
-  "completion_tokens": 82,
-  "steps": 2,
+  "prompt_tokens": 8740,
+  "completion_tokens": 373,
+  "steps": 4,
   "error": null,
-  "final_text": "",
+  "final_text": "I found the envelope with ID `env_2026q4_maint_001`. Now I will add Taro Tanaka as a signer to this envelope.\n\n",
   "stop": "target",
-  "latency_s": 11.02495280932635,
+  "latency_s": 21.166860066354275,
   "correct": true,
-  "first_correct": true,
+  "first_correct": false,
   "kind": "en",
   "missing": null
  },
@@ -1556,6 +1735,70 @@
   "missing": null
  },
  {
+  "id": "aws_ec2_reboot_instance:ja@1000",
+  "target": "aws_ec2_reboot_instance",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "aws ec2 reboot instance",
+    "limit": null,
+    "hits": [
+     "aws_ec2_reboot_instance",
+     "aws_ec2_stop_instance",
+     "aws_ec2_launch_instance",
+     "aws_ec2_terminate_instance",
+     "aws_ec2_get_instance_details"
+    ]
+   }
+  ],
+  "prompt_tokens": 2634,
+  "completion_tokens": 231,
+  "steps": 2,
+  "error": null,
+  "final_text": "Nameタグが「prod-web-01」のEC2インスタンスのIDを取得するために、まずインスタンスの詳細を確認する必要があります。しかし、提供されているツールには、タグや名前でインスタンスを検索する機能（例: `describe-instances` のようなフィルタリング機能）が含まれていません。\n\n利用可能なツールは以下の通りです：\n- `aws_ec2_get_instance_details`: 特定の **instance_id** を指定して詳細を取得\n- `aws_ec2_reboot_instance`: 特定の **instance_id** を指定して再起動\n\nこれらのツールを使用するには、対象のEC2インスタンスの **Instance ID**（例: `i-xxxxxxxxxxxxxxxxx`）が必要です。\n\nお手数ですが、「prod-web-01」のEC2インスタンスIDを教えていただけますでしょうか？\nもし不明な場合は、AWSマネジメントコンソールやCLIなどで確認していただく必要があります。",
+  "stop": "reply",
+  "latency_s": 7.077236891724169,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "aws_ec2_reboot_instance:en@1000",
+  "target": "aws_ec2_reboot_instance",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "aws ec2 reboot instance",
+    "limit": null,
+    "hits": [
+     "aws_ec2_reboot_instance",
+     "aws_ec2_stop_instance",
+     "aws_ec2_launch_instance",
+     "aws_ec2_terminate_instance",
+     "aws_ec2_get_instance_details"
+    ]
+   }
+  ],
+  "prompt_tokens": 2623,
+  "completion_tokens": 568,
+  "steps": 2,
+  "error": null,
+  "final_text": "I need to find the instance ID for the EC2 instance with the Name tag \"prod-web-01\" before I can reboot it. I will first list the instances or get details to find the ID. However, the available tools don't include a \"list instances\" function. I only have `aws_ec2_get_instance_details` which requires an `instance_id`.\n\nSince I cannot directly search for an instance by Name tag with the provided tools, I must ask the user for the Instance ID, or assume there might be a way to get it if I had more tools. But looking at the loaded tools, I only have:\n- `aws_ec2_reboot_instance`\n- `aws_ec2_stop_instance`\n- `aws_ec2_launch_instance`\n- `aws_ec2_terminate_instance`\n- `aws_ec2_get_instance_details`\n\nNone of these allow me to search for an instance by name. I need the `instance_id` to proceed. I will ask the user for the Instance ID.\n\nWait, often in these scenarios, if I can't find the ID, I should check if there are other tools. Let me re-read the tool descriptions. No, none of them list instances.\n\nI will inform the user that I need the Instance ID.\n\nActually, let me double-check if I missed any tool in the initial search. The search result showed 5 tools. None of them are `describe_instances` or similar.\n\nTherefore, I cannot proceed without the Instance ID.\n\nHowever, sometimes the \"Name\" tag is not the same as the Instance ID. The user provided the Name tag \"prod-web-01\".\n\nI will ask the user for the Instance ID.\n\n**Correction**: In many AI agent environments, if a specific lookup tool isn't available, I might be expected to know the ID or it might be provided in a previous context. Here, it is not. I will ask for the Instance ID.\n\nBut wait, looking at the prompt style, usually, I should try to execute if possible. If I can't find the ID, I can't reboot.\n\nLet's assume the user might know the ID or I should ask.\n\n\"I need the Instance ID to reboot the EC2 instance. Could you please provide the Instance ID for the instance named 'prod-web-01'?\"\n\nAlternatively, if this is a test and I'm supposed to simulate or if there's a standard ID, I don't have that info.\n\nI will ask for the Instance ID.",
+  "stop": "reply",
+  "latency_s": 12.736920572817326,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
   "id": "chatwork_create_task:ja@1000",
   "target": "chatwork_create_task",
   "condition": "search_rrf_prod",
@@ -1922,6 +2165,83 @@
   "missing": null
  },
  {
+  "id": "docusign_void_envelope:ja@1000",
+  "target": "docusign_void_envelope",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "docusign_search_envelopes",
+   "docusign_void_envelope"
+  ],
+  "call_args": [
+   "{\"account_id\": \"acc_98765\", \"search_text\": \"XYZ社 保守契約書\"}",
+   "{\"account_id\": \"acc_98765\", \"envelope_id\": \"e7b2c4d1-8f9a-4e3b-b5c6-1a2d3e4f5g6h\", \"reason\": \"添付ファイルのバージョン違い\"}"
+  ],
+  "searches": [
+   {
+    "query": "docusign envelope cancel void",
+    "limit": null,
+    "hits": [
+     "docusign_void_envelope",
+     "docusign_send_draft_envelope",
+     "docusign_remove_recipient",
+     "docusign_list_envelopes",
+     "docusign_get_envelope_status",
+     "docusign_search_envelopes"
+    ]
+   }
+  ],
+  "prompt_tokens": 5465,
+  "completion_tokens": 327,
+  "steps": 3,
+  "error": null,
+  "final_text": "検索結果から、対象の封筒IDは `e7b2c4d1-8f9a-4e3b-b5c6-1a2d3e4f5g6h` であることが確認できました。\nステータスが `sent`（送信済み）ですので、指定された理由で無効化（キャンセル）処理を実行します。\n\n",
+  "stop": "target",
+  "latency_s": 10.087853210046887,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "docusign_void_envelope:en@1000",
+  "target": "docusign_void_envelope",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "docusign_search_envelopes",
+   "docusign_void_envelope"
+  ],
+  "call_args": [
+   "{\"account_id\": \"acc_98765\", \"search_text\": \"XYZ Corp Maintenance Agreement\"}",
+   "{\"account_id\": \"acc_98765\", \"envelope_id\": \"e7b2c4d1-8f9a-4e3b-b5c6-1a2d3e4f5g6h\", \"reason\": \"Incorrect attachment version\"}"
+  ],
+  "searches": [
+   {
+    "query": "void docusign envelope",
+    "limit": null,
+    "hits": [
+     "docusign_void_envelope",
+     "docusign_list_envelopes",
+     "docusign_send_draft_envelope",
+     "docusign_search_envelopes",
+     "docusign_get_envelope_status"
+    ]
+   }
+  ],
+  "prompt_tokens": 4951,
+  "completion_tokens": 178,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.804929311387241,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
   "id": "miro_update_board:ja@1000",
   "target": "miro_update_board",
   "condition": "search_rrf_comp",
@@ -2249,6 +2569,84 @@
   "final_text": "I have found the `rakurakuseisan_upload_receipt` tool, which is designed to upload and attach a receipt to an expense detail. This matches the context of the expense ID I found earlier (`EXP-20261012-0042`) using `rakurakuseisan_search_expenses`.\n\nThe parameters for `rakurakuseisan_upload_receipt` are:\n- `expense_id`: \"EXP-20261012-0042\"\n- `file_url`: \"https://example.com/receipts/stb_20261012.pdf\"\n- `file_name`: \"stb_receipt_20261012.pdf\"\n\nI will now call this function.\n\n",
   "stop": "target",
   "latency_s": 25.679216352291405,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "ga4_get_metadata:ja@1000",
+  "target": "ga4_get_metadata",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "ga4_list_properties",
+   "ga4_get_metadata"
+  ],
+  "call_args": [
+   "{\"account_id\": \"123456789\"}",
+   "{\"property_id\": \"987654321\"}"
+  ],
+  "searches": [
+   {
+    "query": "ga4 property list dimensions metrics metadata",
+    "limit": null,
+    "hits": [
+     "ga4_get_metadata",
+     "ga4_list_custom_dimensions",
+     "ga4_list_custom_metrics",
+     "ga4_create_custom_dimension",
+     "ga4_create_custom_metric",
+     "ga4_list_properties"
+    ]
+   }
+  ],
+  "prompt_tokens": 5270,
+  "completion_tokens": 105,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 21.2119763167575,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "ga4_get_metadata:en@1000",
+  "target": "ga4_get_metadata",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "ga4_list_properties",
+   "ga4_get_metadata"
+  ],
+  "call_args": [
+   "{\"account_id\": \"123456789\"}",
+   "{\"property_id\": \"987654321\"}"
+  ],
+  "searches": [
+   {
+    "query": "ga4 metadata dimensions metrics",
+    "limit": null,
+    "hits": [
+     "ga4_get_metadata",
+     "ga4_create_custom_dimension",
+     "ga4_list_custom_metrics",
+     "ga4_list_custom_dimensions",
+     "ga4_create_custom_metric",
+     "ga4_list_properties"
+    ]
+   }
+  ],
+  "prompt_tokens": 5239,
+  "completion_tokens": 103,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 21.985493319109082,
   "correct": true,
   "first_correct": false,
   "kind": "en",
@@ -2897,78 +3295,80 @@
   "missing": null
  },
  {
-  "id": "garoon_check_facility_availability:ja@1000",
-  "target": "garoon_check_facility_availability",
+  "id": "docusign_add_recipient:ja@1000",
+  "target": "docusign_add_recipient",
   "condition": "search_rrf_comp",
   "n": 1000,
   "calls": [
-   "garoon_list_facilities",
-   "garoon_check_facility_availability"
+   "docusign_search_envelopes"
   ],
   "call_args": [
-   "{}",
-   "{\"facility_id\": 101, \"date\": \"2026-10-21\"}"
+   "{\"account_id\": \"acc_998877\", \"search_text\": \"2026年度Q4 保守契約書\"}"
   ],
   "searches": [
    {
-    "query": "Garoon 空き状況 確認",
+    "query": "docusign",
     "limit": null,
     "hits": [
-     "garoon_check_facility_availability",
-     "garoon_list_facilities",
-     "gcal_find_free_busy",
-     "gcal_list_events",
-     "garoon_list_schedules",
-     "gcal_list_calendars"
+     "docusign_create_brand",
+     "docusign_list_brands",
+     "docusign_list_webhooks",
+     "docusign_download_document",
+     "docusign_get_envelope_status",
+     "docusign_search_envelopes",
+     "docusign_list_envelopes"
     ]
    }
   ],
-  "prompt_tokens": 5109,
-  "completion_tokens": 103,
+  "prompt_tokens": 5675,
+  "completion_tokens": 379,
   "steps": 3,
   "error": null,
-  "final_text": "",
-  "stop": "target",
-  "latency_s": 6.819341477006674,
-  "correct": true,
+  "final_text": "封筒が見つかりました（ID: `e8a7b6c5-4d3e-2f1a-0b9c-8d7e6f5a4b3c`）。ステータスは `created`（下書き）です。\n\nしかし、読み込まれているDocuSignのツール一覧を確認すると、**封筒に受信者（署名者）を追加する機能を持つツールが含まれていません**。\n\n現在利用可能なDocuSign関連ツールは以下の通りです：\n- `docusign_create_brand`: ブランド作成\n- `docusign_list_brands`: ブランド一覧\n- `docusign_list_webhooks`: Webhook一覧\n- `docusign_download_document`: ドキュメントダウンロード\n- `docusign_get_envelope_status`: ステータス取得\n- `docusign_search_envelopes`: 封筒検索\n- `docusign_list_envelopes`: 封筒一覧\n\n署名者を追加するための `docusign_update_recipients` や `docusign_update_envelope` といったツールが定義されていないため、この操作を実行することができません。\n\n新しいツールを読み込む必要があるか、または他の方法で対応する必要がありますか？",
+  "stop": "reply",
+  "latency_s": 11.122621689923108,
+  "correct": false,
   "first_correct": false,
   "kind": "ja",
   "missing": null
  },
  {
-  "id": "garoon_check_facility_availability:en@1000",
-  "target": "garoon_check_facility_availability",
+  "id": "docusign_add_recipient:en@1000",
+  "target": "docusign_add_recipient",
   "condition": "search_rrf_comp",
   "n": 1000,
   "calls": [
-   "garoon_list_facilities",
-   "garoon_check_facility_availability"
+   "docusign_search_envelopes",
+   "docusign_add_recipient"
   ],
   "call_args": [
-   "{}",
-   "{\"facility_id\": 101, \"date\": \"2026-10-21\"}"
+   "{\"account_id\": \"acc_998877\", \"search_text\": \"2026 Q4 Maintenance Agreement\"}",
+   "{\"account_id\": \"acc_998877\", \"envelope_id\": \"env_2026q4_maint_001\", \"recipient_name\": \"Taro Tanaka\", \"recipient_email\": \"tanaka.taro@example.com\", \"role\": \"Signer\"}"
   ],
   "searches": [
    {
-    "query": "garoon check schedule availability",
+    "query": "docusign add signer",
     "limit": null,
     "hits": [
-     "garoon_update_schedule",
-     "garoon_check_facility_availability",
-     "garoon_list_schedules",
-     "garoon_search_schedules",
-     "garoon_delete_schedule",
-     "garoon_list_facilities"
+     "docusign_add_recipient",
+     "cloudsign_add_signer",
+     "docusign_create_brand",
+     "docusign_update_brand",
+     "docusign_list_webhooks",
+     "docusign_search_envelopes",
+     "docusign_list_envelopes",
+     "cloudsign_search_contracts",
+     "cloudsign_list_contracts"
     ]
    }
   ],
-  "prompt_tokens": 4768,
-  "completion_tokens": 101,
+  "prompt_tokens": 6436,
+  "completion_tokens": 215,
   "steps": 3,
   "error": null,
   "final_text": "",
   "stop": "target",
-  "latency_s": 18.42045216728002,
+  "latency_s": 8.459920523688197,
   "correct": true,
   "first_correct": false,
   "kind": "en",
@@ -3539,6 +3939,86 @@
   "final_text": "",
   "stop": "target",
   "latency_s": 6.948086661286652,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "aws_ec2_reboot_instance:ja@1000",
+  "target": "aws_ec2_reboot_instance",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "aws_ec2_search_instances_by_tag",
+   "aws_ec2_reboot_instance"
+  ],
+  "call_args": [
+   "{\"tag_key\": \"Name\", \"tag_value\": \"prod-web-01\"}",
+   "{\"instance_id\": \"i-0a1b2c3d4e5f67890\"}"
+  ],
+  "searches": [
+   {
+    "query": "aws ec2 reboot instance",
+    "limit": null,
+    "hits": [
+     "aws_ec2_reboot_instance",
+     "aws_ec2_stop_instance",
+     "aws_ec2_launch_instance",
+     "aws_ec2_terminate_instance",
+     "aws_ec2_get_instance_details",
+     "aws_ec2_search_instances_by_tag",
+     "aws_ec2_list_instances"
+    ]
+   }
+  ],
+  "prompt_tokens": 5402,
+  "completion_tokens": 197,
+  "steps": 3,
+  "error": null,
+  "final_text": "見つかったインスタンスID `i-0a1b2c3d4e5f67890` を再起動します。\n\n",
+  "stop": "target",
+  "latency_s": 15.87813160661608,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "aws_ec2_reboot_instance:en@1000",
+  "target": "aws_ec2_reboot_instance",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "aws_ec2_search_instances_by_tag",
+   "aws_ec2_reboot_instance"
+  ],
+  "call_args": [
+   "{\"tag_key\": \"Name\", \"tag_value\": \"prod-web-01\"}",
+   "{\"instance_id\": \"i-0a1b2c3d4e5f67890\"}"
+  ],
+  "searches": [
+   {
+    "query": "aws ec2 reboot instance",
+    "limit": null,
+    "hits": [
+     "aws_ec2_reboot_instance",
+     "aws_ec2_stop_instance",
+     "aws_ec2_launch_instance",
+     "aws_ec2_terminate_instance",
+     "aws_ec2_get_instance_details",
+     "aws_ec2_search_instances_by_tag",
+     "aws_ec2_list_instances"
+    ]
+   }
+  ],
+  "prompt_tokens": 5419,
+  "completion_tokens": 196,
+  "steps": 3,
+  "error": null,
+  "final_text": "I found the instance with ID `i-0a1b2c3d4e5f67890`. I will now reboot it.\n\n",
+  "stop": "target",
+  "latency_s": 16.011166610755026,
   "correct": true,
   "first_correct": false,
   "kind": "en",
