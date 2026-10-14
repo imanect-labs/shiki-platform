@@ -322,6 +322,7 @@ mod tests {
             model: None,
             effort: None,
             model_auto: true,
+            created_at: chrono::Utc::now(),
         }
     }
 

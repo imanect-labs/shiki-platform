@@ -90,6 +90,8 @@ pub struct ClaimedRun {
     pub effort: Option<String>,
     /// ユーザーがモデルを選ばなかった（Auto）か。Auto のときだけ skill のピンが上書きできる。
     pub model_auto: bool,
+    /// run の作成時刻（system プロンプトの「今日の日付」の基準・再開しても変わらない・#546）。
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// カードを出した run の生成材料（`chat.submit` の続きの run へ継ぐ）。
@@ -133,7 +135,7 @@ impl ChatStore {
             lease_secs,
             "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
              fencing_token, cancel_requested, trace_id, autonomous, autonomous_mode, checkpoint, \
-             skill_pins, mini_app_id, mini_app_version, model, effort, model_auto",
+             skill_pins, mini_app_id, mini_app_version, model, effort, model_auto, created_at",
         )
         .await
         .map_err(map_db)

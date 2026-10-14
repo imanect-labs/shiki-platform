@@ -257,6 +257,87 @@ async fn worker_generates_streams_and_persists_projection() {
     assert!(usage_count >= 1, "llm_usage に会計行が刻まれること");
 }
 
+/// system プロンプトの末尾に、run の作成時刻から決めた「今日の日付」が入り、実際にモデルへ
+/// 届く（#546・stub の `echosystem:` で受け取った system を本文に返させて確かめる）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn system_prompt_carries_todays_date_from_run_creation() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
+        .await
+        .unwrap();
+    let worker = ChatWorker::new(
+        pool.clone(),
+        store.clone(),
+        test_deps(stub_gateway(pool.clone())),
+        WorkerConfig {
+            system_prompt: "あなたはアシスタントです。".into(),
+            model: Some("m".into()),
+            lease_secs: 120,
+            max_steps: 4,
+            ..Default::default()
+        },
+    );
+    worker.spawn(1);
+
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "t", false, None, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(
+            &c,
+            thread.id,
+            "echosystem:",
+            &[],
+            None,
+            Some(false),
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut rx = store.event_stream(res.run_id, 0);
+    let mut text = String::new();
+    for _ in 0..500 {
+        let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
+            .await
+            .expect("イベント待ちがタイムアウト（ワーカーが生成しない）");
+        let Some(ev) = next else { break };
+        match ev.event {
+            StreamEventKind::Token { text: t } => text.push_str(&t),
+            StreamEventKind::Done { .. } => break,
+            StreamEventKind::Error { message } => panic!("生成失敗: {message}"),
+            _ => {}
+        }
+    }
+    // 期待する日付は run の作成時刻を既定のタイムゾーン（Asia/Tokyo）で見たもの。
+    let created: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT created_at FROM generation_run WHERE run_id = $1")
+            .bind(res.run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let d = created.with_timezone(&chrono_tz::Asia::Tokyo).date_naive();
+    let want = format!(
+        "{}年{}月{}日",
+        chrono::Datelike::year(&d),
+        chrono::Datelike::month(&d),
+        chrono::Datelike::day(&d)
+    );
+    assert!(
+        text.starts_with("system: あなたはアシスタントです。"),
+        "設定の system がそのまま先頭に来ること: {text:?}"
+    );
+    assert!(
+        text.contains(&want) && text.contains("（Asia/Tokyo）"),
+        "今日の日付（{want}）が system に入ること: {text:?}"
+    );
+}
+
 /// 生成中に送った発話は**受理され、順番に 1 本ずつ**生成される。
 ///
 /// 並行に走らせると後の run が前の run の出力を含まない履歴で生成し（発話順と応答が食い違う）、

@@ -18,6 +18,7 @@ mod history;
 /// 実行オプション/system プロンプト（generate.rs から分割）。
 mod opts;
 mod run_model;
+pub use opts::parse_timezone;
 mod sink;
 mod stream_map;
 mod toolset;

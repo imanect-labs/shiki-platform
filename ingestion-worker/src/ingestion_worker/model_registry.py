@@ -7,10 +7,14 @@
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from typing import Protocol
 
 from .settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingModel(Protocol):
@@ -51,10 +55,16 @@ class _CrossEncoderReranker:
 
 
 class ModelRegistry:
-    """スレッドセーフな遅延ロード。ロード状態は /healthz で可視化する。"""
+    """スレッドセーフな遅延ロード。ロード状態は /healthz で可視化する。
+
+    モデルは**作ってから 1 回空打ちしたうえで**公開する（最初の推論だけ遅い分を、公開前に払う）。
+    ロックはモデルごとに分ける（埋め込みのダウンロード中に reranker を待たせない）。
+    読み込み中に来た推論は、そのモデルのロックで読み込みと空打ちの終わりを待つ。
+    """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._embed_lock = threading.Lock()
+        self._rerank_lock = threading.Lock()
         self._embedding: EmbeddingModel | None = None
         self._reranker: RerankModel | None = None
 
@@ -68,17 +78,45 @@ class ModelRegistry:
 
     def embedding(self) -> EmbeddingModel:
         if self._embedding is None:
-            with self._lock:
+            with self._embed_lock:
                 if self._embedding is None:
-                    self._embedding = _SentenceTransformerEmbedding(get_settings().embed_model)
+                    model = _SentenceTransformerEmbedding(get_settings().embed_model)
+                    model.encode(["warmup"])
+                    self._embedding = model
         return self._embedding
 
     def reranker(self) -> RerankModel:
         if self._reranker is None:
-            with self._lock:
+            with self._rerank_lock:
                 if self._reranker is None:
-                    self._reranker = _CrossEncoderReranker(get_settings().rerank_model)
+                    model = _CrossEncoderReranker(get_settings().rerank_model)
+                    model.predict([("warmup", "warmup")])
+                    self._reranker = model
         return self._reranker
+
+    def warmup(self) -> None:
+        """両モデルを並行して読み込む（起動時にバックグラウンドで呼ぶ・`warmup_models`）。
+
+        失敗しても落とさない（その場合は従来どおり最初のリクエストで読み込む）。
+        """
+        threads = [
+            threading.Thread(target=self._warm, args=(name, load), daemon=True)
+            for name, load in (("embed", self.embedding), ("rerank", self.reranker))
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    @staticmethod
+    def _warm(name: str, load: object) -> None:
+        started = time.monotonic()
+        try:
+            load()  # type: ignore[operator]
+        except Exception:  # noqa: BLE001 — warmup の失敗で worker を落とさない
+            logger.warning("warmup %s failed", name, exc_info=True)
+            return
+        logger.info("warmup %s done in %.1fs", name, time.monotonic() - started)
 
 
 _registry = ModelRegistry()

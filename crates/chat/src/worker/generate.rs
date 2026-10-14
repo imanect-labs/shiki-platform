@@ -260,13 +260,13 @@ impl ChatWorker {
         self.apply_skills(ctx, run, &skills, &mut opts, &mut history)
             .await?;
 
-        // 門の段階を system へ明示する（ツールが無い理由と、次へ進む条件・#400）。
-        // skill の instructions より**後ろ**に置く（手順書の記述に上書きされないように）。
-        if let Some(note) = gate_stage.system_note() {
-            let mut system = opts.system.take().unwrap_or_default();
-            system.push_str(note);
-            opts.system = Some(system);
-        }
+        // 門の段階（ツールが無い理由と次へ進む条件・#400）は skill の instructions より**後ろ**に
+        // （手順書の記述に上書きされないように）、今日の日付（#546）は最後に置く。
+        super::opts::append_system_tail(
+            &mut opts,
+            gate_stage.system_note(),
+            &super::opts::today_note(run.created_at, self.config.timezone),
+        );
 
         // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する。
         let resume = match restore_checkpoint(run) {

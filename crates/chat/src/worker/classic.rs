@@ -82,6 +82,12 @@ impl ChatWorker {
             }
         }
 
+        // 今日の日付（#546）は検索結果のあと、system の最後に置く（ほかの経路と同じ）。
+        system.push_str(&super::opts::today_note(
+            run.created_at,
+            self.config.timezone,
+        ));
+
         // skill のモデル既定（Task 6.9・指定があるものだけ上書き・複数ピンは後勝ち・#344）。
         // 未指定時の上限はチャット設定（reasoning モデルの思考で 2048 では足りない・#352）。
         let defaults = crate::skill::combined_model_defaults(&skills);
