@@ -226,11 +226,13 @@ RUN git clone --depth 1 --branch "$ONLINE_REF" "$ONLINE_REPO" online \
 # ブランド（#549）:
 #   --with-app-name: 既定は "Collabora Online Development Edition"。WOPI の
 #     /hosting/capabilities の productName 等に出る
-#   --without-help-url: 既定は help.collaboraoffice.com。空にするとヘルプボタンが消える
-#     （coolwsd.xml の help_url の既定値もこれになる）
-#   --with-vendor: About の「Copyright © <年>, <vendor>.」にそのまま出る（Control.AboutDialog.ts）。
+#   --without-help-url: 既定は help.collaboraoffice.com（coolwsd.xml の help_url の既定値もこれ）。
+#     空にすると「オンラインヘルプ」は外へ飛ばず、同梱のヘルプ（製品名は Shiki Office に置き換わる）を開く
+#   --with-vendor: About の「Copyright © <年>, <vendor>.」に出る（Control.AboutDialog.ts）。
 #     **著作権表示なので Imanect Labs にしない**（無改変の上流コードの著作権者は上流の貢献者）。
 #     未指定だとビルドしたユーザー名（root）が入る。
+#     上流の cool.html.m4 は `data-vendor = VENDOR` と引用符なしで埋め込むので、空白を含む値は
+#     最初の単語で切れる（About に「Copyright © 2026, the.」と出た）。branding.js で正す（下の検査で一致を確かめる）。
 RUN cd online && ./autogen.sh \
     && ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
          --with-lokit-path=/opt/collaboraoffice/include \
@@ -348,6 +350,12 @@ RUN cd /usr/share/doc/shiki-office \
 # **ブランドの上書き（#549）。** ソースは無改変のまま、未ブランドのビルドが読み込む
 # branding.css / branding.js を置く（中身の説明は各ファイルの冒頭）。
 COPY branding/online/branding.css branding/online/branding.js /usr/share/coolwsd/browser/dist/
+# branding.js で入れ直す vendor が、configure に渡した --with-vendor と同じであること
+# （cool.html には引用符なしで全文が入っているので、そこから取る）。
+RUN v="$(sed -n 's/^ *data-vendor = //p' /usr/share/coolwsd/browser/dist/cool.html)" \
+    && test -n "$v" \
+    && grep -qF "window.vendor = '$v';" /usr/share/coolwsd/browser/dist/branding.js \
+    || { echo "branding.js の vendor が --with-vendor と一致しない: $v"; exit 1; }
 # **共有ライブラリの解決漏れをビルド時に全部出して止める。** 実行時に初めて
 # dlopen で 1 つずつ見つかる形だと、1 件ごとに CI を 1 往復（40 分）することになる。
 RUN missing="$( { for f in /opt/collaboraoffice/program/*.so* \

@@ -28,8 +28,8 @@ Collabora の[商標ポリシー](https://www.collaboraonline.com/trademark-poli
 | --- | --- |
 | core のベンダー・ロゴ | `--with-vendor` / `--with-branding`（このディレクトリの `branding/core/` を `/src/branding` へコピーして渡す。7 ファイル。欠けると LibreOffice のロゴで埋まる） |
 | online の製品名（WOPI の capabilities 等） | `--with-app-name` |
-| About の著作権表示（`Copyright © <年>, <vendor>.`） | online の `--with-vendor="the Collabora Online and LibreOffice contributors"`。**著作権表示なので自社名にしない**（無改変の上流コードの著作権者は上流の貢献者。未指定だとビルドユーザー名 root が出る） |
-| Collabora のヘルプへのリンク | `--without-help-url` |
+| About の著作権表示（`Copyright © <年>, <vendor>.`） | online の `--with-vendor="the Collabora Online and LibreOffice contributors"`。**著作権表示なので自社名にしない**（無改変の上流コードの著作権者は上流の貢献者。未指定だとビルドユーザー名 root が出る）。上流のテンプレートが値を引用符なしで HTML に埋め込み、空白で切れるため、`branding/online/branding.js` で同じ値を入れ直す |
+| Collabora のヘルプへのリンク | `--without-help-url`（「オンラインヘルプ」は同梱のヘルプを開く） |
 | UI の製品名・リンク・ロゴ | `coolwsd.xml` の `user_interface.brandProductName` / `brandProductURL`（`https://www.imanect.co.jp/`）/ `logoURL=none` をイメージに焼き込む |
 | Collabora のフォーラム・Issue へ飛ぶヘルプ項目 | `branding/online/branding.css`（coolwsd が未ブランドのビルドでも読み込む） |
 | Collabora Office の有償 EULA（`EULA.odt` / `EULA_en-US.rtf`） | core-build で削除（MPL のライセンス表示ではない。LICENSE / NOTICE は残す） |

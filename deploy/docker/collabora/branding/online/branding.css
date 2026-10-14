@@ -10,12 +10,14 @@
  *   - クラシックメニュー: <li id="menu-<項目 id>">（Control.Menubar.ts）
  *   - ノートブックバー: <div id="<項目 id>" modelid="<項目 id>">。id は重複時に連番が
  *     付くので、元の id が残る modelid で当てる（Control.JSDialogBuilder.js）
- * 「Online Help」は configure の --without-help-url で消している。
+ *   - ノートブックバーの区切り線は modelid を持たず id だけなので id で当てる
+ *     （残すと「サーバー監査」と「このソフトウェアについて」の間に線が 2 本並ぶ）
+ * 「オンラインヘルプ」は残す。--without-help-url により外へは飛ばず、同梱のヘルプを開く。
  */
 #menu-forum,
 #menu-report-an-issue,
 [modelid="forum"],
 [modelid="report-an-issue"],
-[modelid="help-reportissue-break"] {
+#help-reportissue-break {
 	display: none !important;
 }

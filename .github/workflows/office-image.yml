@@ -151,8 +151,13 @@ jobs:
               || { echo "エディタのページの製品名が Shiki Office でない"; return 1; }
             echo "$html" | grep -q 'id="init-product-branding-url" value="https://www.imanect.co.jp/"' \
               || { echo "エディタのページの製品 URL が想定と違う"; return 1; }
-            curl -fsS --max-time 5 "$base${path%/cool.html}/branding.css" | grep -q 'menu-forum' \
+            css="$(curl -fsS --max-time 5 "$base${path%/cool.html}/branding.css")"
+            echo "$css" | grep -q 'menu-forum' \
               || { echo "branding.css が配信されていない"; return 1; }
+            # About の著作権表示の vendor（上流のテンプレートが空白で切るので branding.js で入れ直す）
+            js="$(curl -fsS --max-time 5 "$base${path%/cool.html}/branding.js")"
+            echo "$js" | grep -qF "window.vendor = 'the Collabora Online and LibreOffice contributors';" \
+              || { echo "branding.js が vendor を入れ直していない"; return 1; }
             docker exec collabora-smoke sh -ec \
               'test ! -e /opt/collaboraoffice/EULA.odt; test ! -e /opt/collaboraoffice/EULA_en-US.rtf
                test -s /usr/share/doc/shiki-office/NOTICE
