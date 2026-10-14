@@ -247,9 +247,12 @@ for (n, c), rs in sorted(va.items()):
             "n": n,
             "cond": c,
             "k": k,
-            **{x: b[x] / k for x in ("ok", "avoidable", "legit", "other", "max_steps", "unjudged")},
+            # 判定の失敗（"error"）も未判定に含める（内訳を足して 100% にする）。
+            **{x: b[x] / k for x in ("ok", "avoidable", "legit", "other", "max_steps")},
+            "unjudged": (b["unjudged"] + b["error"]) / k,
             "tok": sum(r["prompt_tokens"] for r in full) / k,
-            "chain": sum(1 for r in full if r["calls"][:-1]) / k,
+            # 正解ツールの前に別のツール（下調べ）を呼んで正解した会話。
+            "chain": sum(1 for r in full if r["correct"] and r["calls"][:-1]) / k,
             "km": len(short),
             "asked": sum(
                 1
@@ -258,7 +261,9 @@ for (n, c), rs in sorted(va.items()):
                 and r["stop"] == "reply"
                 and v2judge.get((r["id"], r["condition"], r["n"]), {}).get("asked") is True
             ),
-            "fabricated": sum(1 for r in short if r["correct"]),
+            # 足りない値を尋ねずに正解ツールを呼んだ（値を作った・他のツールで調べた・引数を
+            # 省いた、のどれかは区別していない）。
+            "called_target": sum(1 for r in short if r["correct"]),
         }
     )
 

@@ -9,8 +9,9 @@ v1（`data/queries.json` の ja / en）には、宛先・本文・日付や、�
   その会話のカタログにあるものだけで、規模で違う（予定を探すツールが 1,000 件にしか無い、など）。
 - 依頼文（日英）と一緒に、正解ツールまでの手順（plan: 呼ぶツールと引数）を出させる。引数の値は
   依頼文に書かれた文字列か、前の手順の結果の参照のどちらか。
-- plan を機械的に検査する（[`check_plan`]）: 各手順の必須引数が揃っている／文字列の値が日英それぞれの
-  依頼文に書かれている／参照は前の手順を指す／下調べのツールはその規模のカタログにある一覧・検索・
+- plan を機械的に検査する（[`check_plan`]）: 各手順の必須引数が揃っている／文字列の値（言語で書き方が
+  違う値は、その該当箇所）が日英それぞれの依頼文に書かれている（該当箇所から実際の値への変換の正しさは
+  見ない）／参照は前の手順を指す／下調べのツールはその規模のカタログにある一覧・検索・
   取得のツールである。
 - 依頼文に書いた ID が、カタログのツールで調べられるものなら作り直させる（[`written_ids`]・
   「調べられる ID は書かない」を生成役任せにすると、ほぼ全件で ID を書いてしまう）。
@@ -34,7 +35,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import ask_probe, e2e
+from . import ask_probe, e2e, llm
 from .catalog import Tool, load_catalog
 from .llm import chat_json
 
@@ -158,12 +159,12 @@ def required(t: Tool) -> list[str]:
     return list(t.tooldef("ja")["input_schema"].get("required", []))
 
 
-def lookups(target: Tool, catalog200: list[Tool]) -> list[Tool]:
-    """下調べに使えるツール: 200 件のカタログにある、同じサービスの一覧・検索・取得のツール。"""
+def lookups(target: Tool, catalog: list[Tool]) -> list[Tool]:
+    """下調べに使えるツール: その規模のカタログにある、同じサービスの一覧・検索・取得のツール。"""
     ns = e2e.namespace(target.name)
     return [
         t
-        for t in catalog200
+        for t in catalog
         if t.name != target.name and e2e.namespace(t.name) == ns and LOOKUP.search(t.name)
     ]
 
@@ -249,7 +250,10 @@ def check_plan(item: dict, target: Tool, available: list[Tool], missing: str | N
                 isinstance(v, str) or (isinstance(v, dict) and "value" in v) for v in args.values()
             ):
                 errs.append(f"{where}: 結果からどれを選ぶかの手がかり（pick）が無い")
-    if missing is not None and plan[last].get("args", {}).get(missing) != {"missing": True}:
+    last_args = plan[last].get("args")
+    if missing is not None and (
+        not isinstance(last_args, dict) or last_args.get(missing) != {"missing": True}
+    ):
         errs.append(f'正解ツールの {missing} を {{"missing": true}} にしていない')
     return errs
 
@@ -318,14 +322,17 @@ def independent_check(
     names = {t.name for t in available}
     errs = []
     for arg in required(target):
-        how = str(got.get(arg, "missing"))
+        raw = str(got.get(arg, "missing")).strip()
+        how = raw.lower()
+        # 決めた 3 つの形以外（表記の揺れ・説明付き）は埋まると扱わない。
+        filled = how == "request" or (
+            how.startswith("tool:") and raw[len("tool:") :].strip() in names
+        )
         if arg == missing:
-            if how != "missing":
-                errs.append(f"{arg} は書かない指定だが、判定者は「{how}」で埋まると判断した")
-        elif how == "missing":
-            errs.append(f"判定者は {arg} が依頼文にもツールにも無いと判断した（{reason}）")
-        elif how.startswith("tool:") and how.removeprefix("tool:").strip() not in names:
-            errs.append(f"判定者は {arg} を一覧に無いツール {how} で埋めた（{reason}）")
+            if not how.startswith("missing"):
+                errs.append(f"{arg} は書かない指定だが、判定者は「{raw}」で埋まると判断した")
+        elif not filled:
+            errs.append(f"判定者は {arg} を埋められないと判断した（「{raw}」・{reason}）")
     return errs
 
 
@@ -343,10 +350,12 @@ def generate(target: Tool, available: list[Tool], missing: str | None, n: int) -
     )
     # 検査の手順が変われば作り直す（以前の検査だけを通った依頼を使わない）。
     checks = "".join(
-        inspect.getsource(f) for f in (check_value, check_plan, written_ids, independent_check)
+        inspect.getsource(f)
+        for f in (norm, literal, check_value, check_plan, written_ids, independent_check)
     )
+    rules = json.dumps([LOOKUP.pattern, ID_ARG.pattern, [p.pattern for p in ask_probe.SECRET_LIKE]])
     key = hashlib.sha256(
-        (prompt + LOOKUPABLE_PROMPT + CHECK_PROMPT + RETRY + checks).encode()
+        (llm.MODEL + prompt + LOOKUPABLE_PROMPT + CHECK_PROMPT + RETRY + checks + rules).encode()
     ).hexdigest()[:16]
     path = CACHE / f"{target.name}-{n}-{'missing' if missing else 'full'}-{key}.json"
     if path.exists():
@@ -428,5 +437,41 @@ def main() -> None:
     )
 
 
+def verify() -> None:
+    """書き出した依頼データを、今の検査（plan の検査と、plan を見せない判定）にかけ直す。
+
+    検査を厳しくしたとき、コミット済みのデータがそのまま通るかを確かめる（作り直さない）。"""
+    _, _, subsets = ask_probe.sample()
+    catalog = {t.name: t for t in load_catalog()}
+    queries = json.loads(OUT.read_text())
+    pairs: dict[tuple[str, int, str | None], dict] = {}
+    for q in queries:
+        pair = pairs.setdefault((q["target"], q["n"], q["missing"]), {"plan": q["plan"]})
+        pair[q["kind"].removesuffix("_missing")] = q["text"]
+
+    def one(key: tuple[str, int, str | None]) -> list[str]:
+        name, n, missing = key
+        target, item = catalog[name], pairs[key]
+        available = lookups(target, subsets[n])
+        errs = check_plan(item, target, available, missing)
+        for lang in ("ja", "en"):
+            errs += [
+                f"{lang}: {e}" for e in independent_check(item[lang], target, available, missing)
+            ]
+        return errs
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(one, pairs))
+    failed = [(k, e) for k, e in zip(pairs, results, strict=True) if e]
+    for k, e in failed:
+        print(k, e)
+    print(f"{len(pairs) - len(failed)}/{len(pairs)} 件が今の検査を通った")
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if "--verify" in sys.argv:
+        verify()
+    else:
+        main()

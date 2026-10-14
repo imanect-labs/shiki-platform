@@ -23,7 +23,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import ask_probe, e2e
+from . import ask_probe, e2e, llm
 from .gen_e2e_queries import OUT as QUERIES
 from .gen_e2e_queries import TODAY_NOTE
 from .llm import chat_json
@@ -90,7 +90,8 @@ def asked_missing(row: dict, query: dict, desc: str) -> dict:
         query=query["text"],
         final=ask_probe.clip_middle(row["final_text"]) or "（本文なし）",
     )
-    key = hashlib.sha256((inspect.getsource(asked_missing) + prompt).encode()).hexdigest()[:20]
+    src = llm.MODEL + inspect.getsource(asked_missing)
+    key = hashlib.sha256((src + prompt).encode()).hexdigest()[:20]
     path = JUDGE_CACHE / f"{key}.json"
     if path.exists():
         return json.loads(path.read_text())

@@ -351,6 +351,8 @@ def run_one(
         "condition": condition,
         "n": len(tools),
         "calls": [],
+        # 呼んだツールの引数（足りない依頼で値を作ったかを後で見る・#547。古いキャッシュには無い）。
+        "call_args": [],
         "searches": [],
         "prompt_tokens": 0,
         "completion_tokens": 0,
@@ -382,6 +384,7 @@ def run_one(
                 if name != "tool_search":
                     local = by_wire[name].name if name in by_wire else name
                     rec["calls"].append(local)
+                    rec["call_args"].append(c["function"]["arguments"])
                     messages.append(
                         {
                             "role": "tool",
