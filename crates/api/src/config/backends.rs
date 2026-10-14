@@ -70,6 +70,11 @@ fn default_upload_gc_enabled() -> bool {
     true
 }
 
+/// 既定オン。評価（Gemma・Luna）で、今の emit_ui より正確で軽いことを確かめた（#559）。
+fn default_yui() -> bool {
+    true
+}
+
 fn default_upload_gc_ttl_secs() -> u64 {
     24 * 60 * 60
 }
@@ -299,9 +304,9 @@ pub struct ChatConfig {
     /// システムプロンプト（未指定は既定）。
     #[serde(default)]
     pub system_prompt: Option<String>,
-    /// 回答の中に ```ui ブロック（Yui）で図を書かせるか（既定 false・#530）。
+    /// 回答の中に ```ui ブロック（Yui）で図を書かせるか（既定 true・#530）。
     /// true ならシステムプロンプトの末尾に書き方を足す（`system_prompt` を上書きしていても足す）。
-    #[serde(default)]
+    #[serde(default = "default_yui")]
     pub yui: bool,
     /// 生成リースの秒数。
     #[serde(default = "default_lease_secs")]
@@ -430,7 +435,7 @@ impl Default for ChatConfig {
             redis_url: None,
             worker_concurrency: default_worker_concurrency(),
             system_prompt: None,
-            yui: false,
+            yui: default_yui(),
             lease_secs: default_lease_secs(),
             max_steps: default_max_steps(),
             max_tokens: None,

@@ -448,6 +448,17 @@ fn explicit_catalog_keeps_per_model_windows() {
 }
 
 #[test]
+fn chat_yui_defaults_on() {
+    // 節ごと省略しても、節はあって yui だけ省略しても既定オン（#530）。明示の false は効く。
+    assert!(ChatConfig::default().yui);
+    let partial: ChatConfig =
+        serde_json::from_value(serde_json::json!({ "enabled": true })).unwrap();
+    assert!(partial.yui);
+    let off: ChatConfig = serde_json::from_value(serde_json::json!({ "yui": false })).unwrap();
+    assert!(!off.yui);
+}
+
+#[test]
 fn catalog_carries_provider_and_display_metadata() {
     // 複数プロバイダ（#553）: モデルの振り先・表示名・国外処理・思考強度の指定が gateway へ届く。
     let mut cfg = valid_config();
