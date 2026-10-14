@@ -131,10 +131,10 @@ pub(crate) fn wire_rag(
         &rag_cfg.worker_base_url,
         &rag_cfg.embedding_model_version,
     ));
-    let reranker: Arc<dyn rag::Reranker> = Arc::new(rag::HttpReranker::new(
-        rag_http.clone(),
-        &rag_cfg.worker_base_url,
-    ));
+    let reranker: Arc<dyn rag::Reranker> = Arc::new(
+        rag::HttpReranker::new(rag_http.clone(), &rag_cfg.worker_base_url)
+            .expect_model(&rag_cfg.relevance_model),
+    );
     let vector: Arc<dyn rag::VectorStore> = Arc::new(rag::QdrantVectorStore::new(
         rag_http,
         &rag_cfg.qdrant_url,

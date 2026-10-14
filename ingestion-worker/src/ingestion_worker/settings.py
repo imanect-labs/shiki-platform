@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # （不一致はインジェスト時に version 突合ガードで拒否される）。
     embed_model: str = "cl-nagoya/ruri-v3-30m"
     # 日本語 cross-encoder reranker（CPU 可）。
+    # ここを変えたら Rust 側の関連度の閾値 SHIKI__RAG__RELEVANCE_HIGH / _LOW を実クエリで
+    # 測り直し、SHIKI__RAG__RELEVANCE_MODEL も揃えること（スコアのスケールはモデルごとに違う・
+    # 食い違いはサーバのログに警告が出る・#424）。
     rerank_model: str = "hotchpotch/japanese-reranker-cross-encoder-xsmall-v1"
     # /parse がダウンロードする blob の上限（bytes）。Rust 側の max_parse_bytes と対にする。
     max_download_bytes: int = 50 * 1024 * 1024

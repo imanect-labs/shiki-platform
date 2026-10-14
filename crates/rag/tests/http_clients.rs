@@ -218,7 +218,8 @@ async fn reranker_scores_passages_in_order() {
         }),
     );
     let base = serve(router).await;
-    let reranker = HttpReranker::new(reqwest::Client::new(), &base);
+    // 閾値を測ったモデルと違っても採点は返す（警告をログに出すだけ・#424）。
+    let reranker = HttpReranker::new(reqwest::Client::new(), &base).expect_model("reranker-y");
     let scores = reranker
         .rerank(
             &ctx(),

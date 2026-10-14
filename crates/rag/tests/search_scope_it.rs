@@ -596,3 +596,80 @@ async fn search_narrowed_rechecks_base_and_audits_empty_intersection() {
         .unwrap();
     assert_eq!(out.results.len(), 2);
 }
+
+/// 結果には reranker の生スコアと、設定の閾値で落とした関連度が付く（#424）。
+/// 候補が 1 件でも採点する（以前は 1 件だと rerank を飛ばしていた）。
+#[tokio::test]
+async fn results_carry_rerank_score_and_relevance_band() {
+    let Some(env) = setup().await else { return };
+    let folder = Uuid::new_v4();
+    // FakeReranker のスコア = 本文の文字のうちクエリに含まれる文字の数。本文は「foo の本文」。
+    seed_chunk(&env, "foo", "foo本文", 0.9, folder).await;
+    let config = RagConfig {
+        relevance_high: 4.0,
+        relevance_low: 1.0,
+        ..RagConfig::default()
+    };
+    let svc = service(&env, allow_all_authz(&env, &[folder]), config);
+    for (query, score, band) in [
+        ("foo本文", 5.0, rag::Relevance::High),
+        ("本文", 2.0, rag::Relevance::Medium),
+        ("zzz", 0.0, rag::Relevance::Low),
+    ] {
+        let out = svc
+            .search(&env.ctx, query, Some(5), SearchMode::Dense, None, None)
+            .await
+            .unwrap();
+        assert_eq!(out.results.len(), 1, "{query}");
+        assert_eq!(out.results[0].rerank_score, score, "{query}");
+        assert_eq!(out.results[0].relevance, band, "{query}");
+    }
+}
+
+/// 有限でないスコアを返す reranker（差し替え点の異常値）。
+struct NanReranker;
+
+#[async_trait::async_trait]
+impl rag::rerank::Reranker for NanReranker {
+    async fn rerank(
+        &self,
+        _ctx: &AuthContext,
+        _query: &str,
+        passages: &[rag::rerank::RerankPassage],
+    ) -> Result<Vec<rag::rerank::RerankScore>, rag::RagError> {
+        Ok(passages
+            .iter()
+            .map(|p| rag::rerank::RerankScore {
+                id: p.id.clone(),
+                score: f32::NAN,
+            })
+            .collect())
+    }
+}
+
+/// 非有限のスコアは API へ流さず（JSON で null になる）、関連度は「低」に倒す（Codex）。
+#[tokio::test]
+async fn non_finite_rerank_score_is_normalized() {
+    let Some(env) = setup().await else { return };
+    let folder = Uuid::new_v4();
+    seed_chunk(&env, "nan", "異常値", 0.9, folder).await;
+    let svc = SearchService::new(
+        env.pool.clone(),
+        RagConfig::default(),
+        Arc::new(FakeEmbedder),
+        Arc::new(NanReranker),
+        Arc::clone(&env.vector) as _,
+        Arc::new(TantivyFulltext::new(env._tmp.path())),
+        Arc::new(allow_all_authz(&env, &[folder])),
+        AuditRecorder::new(env.pool.clone()),
+    );
+    let out = svc
+        .search(&env.ctx, "異常値", Some(5), SearchMode::Dense, None, None)
+        .await
+        .unwrap();
+    assert_eq!(out.results.len(), 1);
+    assert_eq!(out.results[0].rerank_score, 0.0);
+    assert_eq!(out.results[0].relevance, rag::Relevance::Low);
+    let json = serde_json::to_value(&out.results[0]).unwrap();
+    assert!(json["rerank_score"].is_number());
+}

@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use authz::AuthContext;
-use rag::{SearchMode, SearchResult, SearchScope, SearchService};
+use rag::{Relevance, SearchMode, SearchResult, SearchScope, SearchService};
 
 use crate::tool::{Citation, Tool, ToolError, ToolOutcome};
 
@@ -76,7 +76,7 @@ pub async fn run_doc_search(
             mode: SearchMode::Hybrid,
             base: scope,
             narrow: &SearchScope::default(),
-            with_ids: false,
+            for_tool: false,
         },
         trace_id,
     )
@@ -92,11 +92,11 @@ struct SearchParams<'a> {
     base: Option<&'a SearchScope>,
     /// モデルの絞り込み（空 = 絞らない）。`base` との交差で検索する。
     narrow: &'a SearchScope,
-    /// 観測テキストに各結果の `file_id`（と `folder_id`）を載せるか（ツール経路のみ）。
-    /// モデルが「この文書に絞って再検索」（[`DocSearchTool`] の `file_ids`）や本文の読み出しを
-    /// 指定できるようにするため。載るのは post-filter を通過したチャンクの ID だけなので、
+    /// ツール経路か（観測に各結果の `file_id`（と `folder_id`）を載せ、探し直し方を案内する）。
+    /// ID はモデルが「この文書に絞って再検索」（[`DocSearchTool`] の `file_ids`）や本文の
+    /// 読み出しを指定するのに使う。載るのは post-filter を通過したチャンクの ID だけなので、
     /// 読めない文書の存在は漏れない。
-    with_ids: bool,
+    for_tool: bool,
 }
 
 /// [`run_doc_search`] と [`DocSearchTool`] の本体。
@@ -118,52 +118,84 @@ async fn search_docs(
         .map_err(|e| ToolError::Unavailable(format!("doc_search failed: {e}")))?;
 
     let citations: Vec<Citation> = out.results.iter().map(to_citation).collect();
-    let context_text = context_text(&out.results, p.with_ids);
+    let context_text = context_text(&out.results, p.for_tool);
     Ok(DocSearchResult {
         citations,
         context_text,
     })
 }
 
-/// 検索結果 → モデルが読む観測テキスト。
-fn context_text(results: &[SearchResult], with_ids: bool) -> String {
-    if results.is_empty() {
-        NO_RESULTS.to_string()
-    } else {
-        use std::fmt::Write as _;
-        // 引用の書き方を結果と一緒に示す（モデルは番号の書式を結果から真似る）。
-        let mut s = format!(
-            "検索結果 {} 件（回答で根拠にした箇所は、その文の末尾に結果の番号を [n] の形で付ける）:\n",
-            results.len()
-        );
-        for (i, r) in results.iter().enumerate() {
-            let heading = if r.heading_path.is_empty() {
-                String::new()
-            } else {
-                format!(" / {}", r.heading_path.join(" > "))
-            };
-            let ids = if with_ids {
-                let folder = r
-                    .folder_id
-                    .map(|f| format!(", folder_id: {f}"))
-                    .unwrap_or_default();
-                format!("（file_id: {}{folder}）", r.file_id)
-            } else {
-                String::new()
-            };
-            // 文書側に仮の印の形の文字列があっても、番号に化けないよう無害化する。
-            let _ = write!(
-                s,
-                "{} 出典: {}{}{}\n{}\n\n",
-                crate::cite::placeholder(i),
-                crate::cite::defuse(&r.file_name),
-                crate::cite::defuse(&heading),
-                ids,
-                crate::cite::defuse(r.content.trim())
-            );
-        }
-        s
+/// 関連度の段階 → 観測に書くラベル（#424）。数値は見せない（モデル依存のスケールを過信させない）。
+fn relevance_label(r: Relevance) -> &'static str {
+    match r {
+        Relevance::High => "高",
+        Relevance::Medium => "中",
+        Relevance::Low => "低",
     }
+}
+
+/// 検索結果 → モデルが読む観測テキスト。
+///
+/// `for_tool` はツール経路（モデルが続けて検索できる）か。ツール経路だけ各結果の `file_id`
+/// （と `folder_id`）を載せ、全件が関連度「低」のときの案内に探し直し方を書く。古典注入には
+/// ツールループが無いので、ID は載せず（トークンの無駄・回答へ UUID が写る）、案内も
+/// 「低い結果だけで断定しない」に留める。
+fn context_text(results: &[SearchResult], for_tool: bool) -> String {
+    use std::fmt::Write as _;
+    if results.is_empty() {
+        return NO_RESULTS.to_string();
+    }
+    // 「該当なし」と「弱い一致しかない」を区別する。上位がかすっているだけなのに普通の検索結果と
+    // して出すと、モデルは弱い根拠のまま答えてしまう。
+    let all_low = results.iter().all(|r| r.relevance == Relevance::Low);
+    // 引用の書き方を結果と一緒に示す（モデルは番号の書式を結果から真似る）。
+    let mut s = if all_low {
+        let next = if for_tool {
+            "言い換える → mode を keyword にする → 絞り込みを外す、の順で探し直し、\
+             それでも見つからなければ見つからなかったと伝える"
+        } else {
+            "低い結果だけを根拠に断定せず、見つからなかった可能性も伝える"
+        };
+        format!(
+            "検索結果 {} 件。ただし、いずれも関連度は「低」で、質問に直接答える箇所は見つかって\
+             いない可能性が高い。{next}（根拠にした箇所は、その文の末尾に結果の番号を [n] の形で付ける）:\n",
+            results.len()
+        )
+    } else {
+        format!(
+            "検索結果 {} 件（関連度は 高 / 中 / 低 の目安。回答で根拠にした箇所は、その文の末尾に\
+             結果の番号を [n] の形で付ける）:\n",
+            results.len()
+        )
+    };
+    for (i, r) in results.iter().enumerate() {
+        let heading = if r.heading_path.is_empty() {
+            String::new()
+        } else {
+            format!(" / {}", r.heading_path.join(" > "))
+        };
+        let ids = if for_tool {
+            let folder = r
+                .folder_id
+                .map(|f| format!(", folder_id: {f}"))
+                .unwrap_or_default();
+            format!("（file_id: {}{folder}）", r.file_id)
+        } else {
+            String::new()
+        };
+        // 文書側に仮の印の形の文字列があっても、番号に化けないよう無害化する。
+        let _ = write!(
+            s,
+            "{} 関連度: {} ／ 出典: {}{}{}\n{}\n\n",
+            crate::cite::placeholder(i),
+            relevance_label(r.relevance),
+            crate::cite::defuse(&r.file_name),
+            crate::cite::defuse(&heading),
+            ids,
+            crate::cite::defuse(r.content.trim())
+        );
+    }
+    s
 }
 
 /// `doc_search` ツール（エージェントモード）。呼び出しユーザーの権限で検索する。
@@ -306,7 +338,9 @@ impl Tool for DocSearchTool {
          固有名詞など、表記どおりに一致する箇所が欲しいときは keyword にする。\n\
          - file_ids / folder_ids: 結果に出た文書やフォルダの中だけで探し直すときに、結果の file_id / \
          folder_id を渡す。絞り込み専用で、読める範囲は広がらない。\n\
-         - top_k: 返す件数（既定 8）。一覧を作る・網羅的に集めるときだけ増やす。"
+         - top_k: 返す件数（既定 8）。一覧を作る・網羅的に集めるときだけ増やす。\n\
+         各結果には関連度（高 / 中 / 低）が付く。関連度が低い結果しか無いときは、言い換える → \
+         keyword にする → 絞り込みを外す、の順で探し直す。低い結果だけを根拠に断定しない。"
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -370,7 +404,7 @@ impl Tool for DocSearchTool {
                 mode: input.mode,
                 base: self.scope.as_ref(),
                 narrow: &input.narrow,
-                with_ids: true,
+                for_tool: true,
             },
             trace_id,
         )
@@ -463,6 +497,14 @@ mod tests {
     }
 
     fn result(file_name: &str, folder_id: Option<uuid::Uuid>) -> SearchResult {
+        scored(file_name, folder_id, Relevance::High)
+    }
+
+    fn scored(
+        file_name: &str,
+        folder_id: Option<uuid::Uuid>,
+        relevance: Relevance,
+    ) -> SearchResult {
         SearchResult {
             chunk_id: uuid::Uuid::new_v4(),
             file_id: uuid::Uuid::new_v4(),
@@ -473,6 +515,8 @@ mod tests {
             content: " 本文 ".into(),
             parent_content: None,
             score: 1.0,
+            rerank_score: 0.9,
+            relevance,
             version: 1,
             anchor: None,
             quote: None,
@@ -488,17 +532,41 @@ mod tests {
         let text = context_text(&[in_folder.clone(), at_root.clone()], true);
         assert!(text.starts_with("検索結果 2 件"));
         assert!(text.contains(&format!(
-            "⟦cite:0⟧ 出典: 規程.pdf / 第2章（file_id: {}, folder_id: {folder}）\n本文\n",
+            "⟦cite:0⟧ 関連度: 高 ／ 出典: 規程.pdf / 第2章（file_id: {}, folder_id: {folder}）\n本文\n",
             in_folder.file_id
         )));
         // ルート直下は folder_id を出さない。ファイル名の仮の印は無害化される。
         assert!(text.contains(&format!(
-            "⟦cite:1⟧ 出典: 〚cite:9⟧.txt / 第2章（file_id: {}）\n",
+            "⟦cite:1⟧ 関連度: 高 ／ 出典: 〚cite:9⟧.txt / 第2章（file_id: {}）\n",
             at_root.file_id
         )));
         assert_eq!(context_text(&[], true), NO_RESULTS);
         // 古典注入（ツールループ無し）には ID を載せない。
         assert!(!context_text(&[in_folder], false).contains("file_id"));
+    }
+
+    #[test]
+    fn context_text_distinguishes_weak_matches_from_no_results() {
+        let weak = [
+            scored("a.pdf", None, Relevance::Low),
+            scored("b.pdf", None, Relevance::Low),
+        ];
+        let text = context_text(&weak, true);
+        assert!(text.starts_with("検索結果 2 件。ただし、いずれも関連度は「低」"));
+        assert!(text.contains("keyword"), "ツール経路は探し直し方を案内する");
+        assert!(text.contains("⟦cite:0⟧ 関連度: 低 ／ 出典: a.pdf"));
+        // 古典注入は探し直せないので、断定しない旨だけ。
+        let classic = context_text(&weak, false);
+        assert!(classic.contains("断定せず") && !classic.contains("keyword"));
+        // 1 件でも 低 以外があれば通常の見出し。
+        let mixed = [
+            scored("a.pdf", None, Relevance::Medium),
+            scored("b.pdf", None, Relevance::Low),
+        ];
+        let text = context_text(&mixed, true);
+        assert!(text.starts_with("検索結果 2 件（関連度は 高 / 中 / 低 の目安"));
+        assert!(text.contains("⟦cite:0⟧ 関連度: 中") && text.contains("⟦cite:1⟧ 関連度: 低"));
+        assert_ne!(context_text(&weak, true), NO_RESULTS);
     }
 
     #[test]

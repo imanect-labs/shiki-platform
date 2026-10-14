@@ -239,6 +239,8 @@ services:
       # server 側 SHIKI__RAG__EMBEDDING_MODEL_VERSION と必ず一致させる（不一致は
       # インジェスト時の版突合ガードで拒否される）。
       EMBED_MODEL: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}
+      # 替えたら server 側の SHIKI__RAG__RELEVANCE_*（関連度の閾値と、それを測ったモデル）も揃える。
+      RERANK_MODEL: ${RERANK_MODEL:-hotchpotch/japanese-reranker-cross-encoder-xsmall-v1}
     volumes:
       - hf-cache:/models
     ports:
@@ -621,6 +623,10 @@ services:
       SHIKI__RAG__QDRANT_URL: http://qdrant:6333
       SHIKI__RAG__EMBEDDING_MODEL_VERSION: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}
       SHIKI__RAG__INDEX_DATA_DIR: /var/lib/shiki/index
+      # 関連度ラベル（高/中/低）の閾値と、それを測った reranker のモデル（#424）。
+      SHIKI__RAG__RELEVANCE_HIGH: ${SHIKI__RAG__RELEVANCE_HIGH:-0.55}
+      SHIKI__RAG__RELEVANCE_LOW: ${SHIKI__RAG__RELEVANCE_LOW:-0.45}
+      SHIKI__RAG__RELEVANCE_MODEL: ${SHIKI__RAG__RELEVANCE_MODEL:-hotchpotch/japanese-reranker-cross-encoder-xsmall-v1}
       # dev seed は明示フラグでのみ有効化（本番では設定しない）。
       SHIKI_DEV_SEED: ${SHIKI_DEV_SEED:-true}
       SHIKI_DEV_SEED_USER: ${SHIKI_DEV_SEED_USER:-00000000-0000-0000-0000-000000000001}

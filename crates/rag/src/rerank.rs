@@ -39,6 +39,10 @@ pub trait Reranker: Send + Sync {
 pub struct HttpReranker {
     http: reqwest::Client,
     base_url: String,
+    /// 関連度の閾値を測ったモデル（`RagConfig.relevance_model`）。None は照合しない。
+    expected_model: Option<String>,
+    /// 食い違いの警告を一度だけ出すための印。
+    warned_mismatch: std::sync::atomic::AtomicBool,
 }
 
 impl HttpReranker {
@@ -46,6 +50,29 @@ impl HttpReranker {
         HttpReranker {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
+            expected_model: None,
+            warned_mismatch: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// worker が返すモデル名を照合する（関連度の閾値を測ったモデルと違えば警告・#424）。
+    #[must_use]
+    pub fn expect_model(mut self, model: &str) -> Self {
+        self.expected_model = Some(model.to_string());
+        self
+    }
+
+    fn check_model(&self, actual: Option<&str>) {
+        use std::sync::atomic::Ordering;
+        let (Some(expected), Some(actual)) = (self.expected_model.as_deref(), actual) else {
+            return;
+        };
+        if expected != actual && !self.warned_mismatch.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                expected,
+                actual,
+                "reranker のモデルが関連度の閾値を測ったものと違う（SHIKI__RAG__RELEVANCE_* を測り直す）"
+            );
         }
     }
 }
@@ -53,6 +80,8 @@ impl HttpReranker {
 #[derive(Deserialize)]
 struct RerankResponseBody {
     scores: Vec<RerankScore>,
+    #[serde(default)]
+    model_version: Option<String>,
 }
 
 #[async_trait]
@@ -83,6 +112,8 @@ impl Reranker for HttpReranker {
         if !resp.status().is_success() {
             return Err(map_worker_error(resp).await);
         }
-        Ok(resp.json::<RerankResponseBody>().await?.scores)
+        let body = resp.json::<RerankResponseBody>().await?;
+        self.check_model(body.model_version.as_deref());
+        Ok(body.scores)
     }
 }
