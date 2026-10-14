@@ -19,17 +19,17 @@
   "condition": "search_rrf_prod",
   "n": 200,
   "full": 60,
-  "correct": 59,
+  "correct": 60,
   "avoidable": 0,
   "legit": 0,
-  "other": 1,
+  "other": 0,
   "max_steps": 0,
   "error": 0,
   "missing": 8,
   "missing_asked": 4,
   "missing_called_target": 4,
   "errors": 0,
-  "mean_prompt_tokens": 2816
+  "mean_prompt_tokens": 2828
  },
  {
   "condition": "all",

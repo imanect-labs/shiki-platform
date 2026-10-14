@@ -213,6 +213,8 @@ MOCK_RESULT = (
     "name=該当の項目、url=https://example.invalid/item-1024"
 )
 MOCK_CACHE = ROOT / "data" / "cache" / "mock"
+# 提示していない名前の呼び出しへの製品の観測（`crates/agent-core/src/agent_gate.rs`）。
+UNKNOWN_TOOL = "unknown tool: {name}"
 MOCK_PROMPT = """あなたは業務 SaaS の API のモックです。次のツールが、次の引数で呼ばれました。
 利用者の依頼の文脈に沿った、もっともらしい成功時の応答を JSON で返してください。
 
@@ -324,8 +326,13 @@ def run_one(
     if max_steps != MAX_STEPS:
         variant = json.dumps([variant, "max_steps", max_steps], ensure_ascii=False)
     path = cache_path(tools, condition, query, variant=variant)
+    names = {t.name for t in tools}
     if path.exists():
-        return json.loads(path.read_text())
+        cached = json.loads(path.read_text())
+        # 提示していない名前を呼んだ会話は、以前は成功のモックを返していた（製品は
+        # `unknown tool` のエラー）。その会話だけ取り直す（それ以外は呼ぶまでが同じ）。
+        if all(c in names for c in cached["calls"]):
+            return cached
     by_wire = {wire(t.name): t for t in tools}
     if condition == "all":
         offered = [as_function(t) for t in shuffled(tools)]
@@ -390,8 +397,11 @@ def run_one(
                             "role": "tool",
                             "tool_call_id": c["id"],
                             "content": (
-                                MOCK_RESULT.format(name=name)
-                                if mock == "generic" or name not in by_wire
+                                # 製品は提示していない名前をエラーの観測にする（agent_gate::execute_tool）。
+                                UNKNOWN_TOOL.format(name=name)
+                                if name not in by_wire
+                                else MOCK_RESULT.format(name=name)
+                                if mock == "generic"
                                 else llm_mock(
                                     by_wire[name], c["function"]["arguments"], query["text"]
                                 )

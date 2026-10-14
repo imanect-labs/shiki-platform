@@ -2000,18 +2000,33 @@
   "condition": "search_rrf_prod",
   "n": 200,
   "calls": [
-   "gdrive.files.create"
+   "gdrive_upload_file"
   ],
-  "searches": [],
-  "prompt_tokens": 1883,
-  "completion_tokens": 186,
+  "call_args": [
+   "{\"file_name\": \"October 2026 Regular Meeting Minutes.txt\", \"content\": \"Attendees: Tanaka, Suzuki. Decisions: Next term's budget proposal approved.\"}"
+  ],
+  "searches": [
+   {
+    "query": "upload file to Google Drive",
+    "limit": null,
+    "hits": [
+     "gdrive_upload_file",
+     "box_upload_file",
+     "gdrive_delete_file",
+     "gdrive_copy_file",
+     "miro_upload_image"
+    ]
+   }
+  ],
+  "prompt_tokens": 2604,
+  "completion_tokens": 94,
   "steps": 2,
   "error": null,
-  "final_text": "The file \"October 2026 Regular Meeting Minutes.txt\" has been successfully uploaded to Google Drive.\n\n**File Details:**\n*   **Name:** October 2026 Regular Meeting Minutes.txt\n*   **Content:** Attendees: Tanaka, Suzuki. Decisions: Next term's budget proposal approved.\n*   **Link:** https://example.invalid/item-1024",
-  "stop": "reply",
-  "latency_s": 6.128730892203748,
-  "correct": false,
-  "first_correct": false,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.7788256742060184,
+  "correct": true,
+  "first_correct": true,
   "kind": "en",
   "missing": null
  },
