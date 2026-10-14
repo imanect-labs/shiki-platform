@@ -2,11 +2,16 @@
 -- チャット run ごとのモデル指定。
 --
 -- モデルとプロバイダの実体（接続先・API キー・単価）はデプロイの設定が正（秘密を DB に置かない）。
--- ここはテナント管理者が「その中から何を使わせるか」を決める層だけを持つ。行が無いテナントは
+-- ここは組織の管理者が「その中から何を使わせるか」を決める層だけを持つ。行が無い組織は
 -- 全モデルを使え、既定は Auto（ユーザーがモデルを選ばない）。
+--
+-- 粒度は (tenant_id, org): 変更できるのは organization:<tenant>|<org>#admin で、利用量の集計も
+-- tenant_id ＋ org に閉じる。テナント単位にすると、ある org の管理者が同じテナントの別 org の
+-- 設定まで変えられてしまう。
 
 create table tenant_llm_settings (
-    tenant_id          text        primary key,
+    tenant_id          text        not null,
+    org                text        not null,
     -- 新しいチャットの既定。'auto' かカタログのモデル ID。
     default_model      text        not null default 'auto',
     -- ユーザーがチャットでモデルを選べるか（false なら全員が既定で使う）。
@@ -21,24 +26,30 @@ create table tenant_llm_settings (
     -- 会計（llm_usage.cost_usd_micros）は USD のまま持つ。
     jpy_per_usd_centi  integer     check (jpy_per_usd_centi between 100 and 100000),
     updated_by         text,
-    updated_at         timestamptz not null default now()
+    updated_at         timestamptz not null default now(),
+    primary key (tenant_id, org)
 );
 
--- テナントが無効にしたモデル（行が無いモデルは有効）。デプロイ設定に新しいモデルを足したとき、
--- 既存テナントに行を作らなくても使えるよう「無効の記録」で持つ。
+-- 組織が無効にしたモデル（行が無いモデルは有効）。デプロイ設定に新しいモデルを足したとき、
+-- 既存の組織に行を作らなくても使えるよう「無効の記録」で持つ。
 create table tenant_llm_model (
     tenant_id   text        not null,
+    org         text        not null,
     model_id    text        not null,
     enabled     boolean     not null,
     updated_by  text,
     updated_at  timestamptz not null default now(),
-    primary key (tenant_id, model_id)
+    primary key (tenant_id, org, model_id)
 );
 
 -- 利用量の利用元（管理画面の利用元別集計）。既存行はミニアプリ経由（app_id あり）だけ判別できる。
+-- 定数 default の列追加はメタデータだけで済む。CHECK は NOT VALID で付けて既存行の全件検証を
+-- 避け（新しい行は検証される）、会計の INSERT を長く止めない。
 alter table llm_usage
-    add column source text not null default 'other'
-        check (source in ('chat', 'agent', 'workflow', 'miniapp', 'other'));
+    add column source text not null default 'other';
+alter table llm_usage
+    add constraint llm_usage_source_check
+        check (source in ('chat', 'agent', 'workflow', 'miniapp', 'other')) not valid;
 update llm_usage set source = 'miniapp' where app_id is not null;
 
 -- チャット run のモデル指定（投入時点でスナップショット・承認モードと同じ扱い）。

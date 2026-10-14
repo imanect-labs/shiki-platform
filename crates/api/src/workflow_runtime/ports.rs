@@ -197,7 +197,7 @@ impl NodePorts for ProdNodePorts {
         greq.max_tokens = req.max_tokens;
         let mut stream = self
             .gateway
-            .stream(greq)
+            .stream(&ctx, greq)
             .await
             .map_err(|e| PortError::unavailable(format!("llm: {e}")))?;
         let mut text = String::new();

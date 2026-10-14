@@ -2,7 +2,7 @@
 
 /// チャットのモデル選択（#553）。
 ///
-/// - 既定は Auto（組織の設定で決まるモデル）で、入力欄には何も出さない。
+/// - 既定（組織の設定。ふつうは Auto）では入力欄には何も出さない。
 /// - 「＋」メニューの「モデル」からモデルを選ぶと、送信ボタンの左にピルが出る。
 /// - ピルを開くとモデルの切替と思考の深さ（3 段のスライダー）を変えられ、Auto に戻すとピルが消える。
 /// 選べるのは組織の管理者が公開したモデルだけ（サーバも投稿時に検証する）。
@@ -54,10 +54,22 @@ function ModelRow({ m }: { m: LlmModelOption }) {
   );
 }
 
-/// Auto の説明（何を使うか）。
-function autoHint(data: LlmModelsResponse): string {
-  if (!data.auto) return "組織の設定に合わせて選びます";
-  return `${data.auto.label}（${effortLabel(data.auto.effort)}）を使います`;
+/// 「選ばない」選択肢の表示。モデルを指定しない投稿は組織の既定で動くので、既定が Auto なら
+/// Auto、管理者が特定のモデルを既定にしていればそのモデルとして見せる（実際に動くものと揃える）。
+function defaultOption(data: LlmModelsResponse): { label: string; hint: string } {
+  if (data.default_model !== "auto") {
+    const m = data.models.find((x) => x.id === data.default_model);
+    return {
+      label: "組織の既定",
+      hint: m ? `${m.label} を使います` : "組織の設定に合わせて選びます",
+    };
+  }
+  return {
+    label: "Auto（おまかせ）",
+    hint: data.auto
+      ? `${data.auto.label}（${effortLabel(data.auto.effort)}）を使います`
+      : "組織の設定に合わせて選びます",
+  };
 }
 
 /// 選んだモデルが公開から外れていたら Auto に戻す（送信時の 400 を避ける）。
@@ -77,6 +89,7 @@ export function ModelPill({ scope }: { scope: string }) {
   const [open, setOpen] = React.useState(false);
   if (!data || !choice || !model) return null;
 
+  const fallback = defaultOption(data);
   const pick = (m: LlmModelOption) => setChoice({ model: m.id, effort: choice.effort });
   const effortIndex = EFFORTS.findIndex((e) => e.value === choice.effort);
   const summary = model.supports_effort
@@ -126,8 +139,8 @@ export function ModelPill({ scope }: { scope: string }) {
             className="flex items-start gap-2.5 rounded-md px-2.5 py-2 text-left outline-none hover:bg-accent focus-visible:bg-accent"
           >
             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className="text-[13px] font-medium">Auto（おまかせ）</span>
-              <span className="truncate text-[12px] text-muted-foreground">{autoHint(data)}</span>
+              <span className="text-[13px] font-medium">{fallback.label}</span>
+              <span className="truncate text-[12px] text-muted-foreground">{fallback.hint}</span>
             </span>
           </button>
           {data.models.map((m) => {
@@ -199,20 +212,22 @@ export function ModelSubmenu({ scope }: { scope: string }) {
   const { choice, setChoice } = useValidChoice(scope, data);
   if (!data || !data.allow_user_choice || data.models.length === 0) return null;
   const select = (next: ModelChoice) => setChoice(next);
+  const fallback = defaultOption(data);
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger className="gap-2.5 px-2.5 py-2" data-testid="composer-model-menu">
         <Sparkles className="text-muted-foreground" />
         <span className="flex-1">モデル</span>
         <span className="max-w-[110px] truncate text-[12px] text-muted-foreground">
-          {choice ? (data.models.find((m) => m.id === choice.model)?.label ?? "Auto") : "Auto"}
+          {(choice && data.models.find((m) => m.id === choice.model)?.label) ||
+            (data.default_model === "auto" ? "Auto" : "既定")}
         </span>
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="w-72 p-1.5">
         <DropdownMenuItem className="items-start gap-2.5 px-2.5 py-2" onSelect={() => select(null)}>
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-[13px] font-medium">Auto（おまかせ）</span>
-            <span className="truncate text-[12px] text-muted-foreground">{autoHint(data)}</span>
+            <span className="text-[13px] font-medium">{fallback.label}</span>
+            <span className="truncate text-[12px] text-muted-foreground">{fallback.hint}</span>
           </span>
           {!choice ? <Check className="mt-0.5 size-4 text-primary" aria-hidden /> : null}
         </DropdownMenuItem>

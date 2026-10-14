@@ -241,16 +241,19 @@ async fn land_on_budget(
     }
     let step = state.spent.steps;
     let mut stream = gateway
-        .stream(GenerateRequest {
-            model: opts.model.clone(),
-            system: opts.system.clone(),
-            messages: state.messages.clone(),
-            tools: Vec::new(), // ← 追加の取得を構造的に不可能にする
-            effort: opts.effort,
-            max_tokens: opts.max_tokens,
-            temperature: opts.temperature,
-            session_id: opts.session_id.clone(),
-        })
+        .stream(
+            run.ctx,
+            GenerateRequest {
+                model: opts.model.clone(),
+                system: opts.system.clone(),
+                messages: state.messages.clone(),
+                tools: Vec::new(), // ← 追加の取得を構造的に不可能にする
+                effort: opts.effort,
+                max_tokens: opts.max_tokens,
+                temperature: opts.temperature,
+                session_id: opts.session_id.clone(),
+            },
+        )
         .await
         .map_err(map_llm_error)?;
 
@@ -337,7 +340,7 @@ async fn run_step(
         temperature: opts.temperature,
         session_id: opts.session_id.clone(),
     };
-    let mut stream = gateway.stream(req).await.map_err(map_llm_error)?;
+    let mut stream = gateway.stream(run.ctx, req).await.map_err(map_llm_error)?;
 
     let mut text_acc = String::new();
     let mut pending_names: HashMap<String, String> = HashMap::new();

@@ -258,7 +258,7 @@ impl ChatWorker {
         // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
         opts.tool_search.always_load.extend(tools_in_use);
         self.apply_skills(ctx, run, &skills, &mut opts, &mut history)
-            .await;
+            .await?;
 
         // 門の段階を system へ明示する（ツールが無い理由と、次へ進む条件・#400）。
         // skill の instructions より**後ろ**に置く（手順書の記述に上書きされないように）。
@@ -315,7 +315,7 @@ impl ChatWorker {
         skills: &[crate::skill::AppliedSkill],
         opts: &mut AgentOptions,
         history: &mut Vec<llm_gateway::Message>,
-    ) {
+    ) -> Result<(), ChatError> {
         if !skills.is_empty() {
             let mut system = opts.system.take().unwrap_or_default();
             for skill in skills {
@@ -338,7 +338,7 @@ impl ChatWorker {
                     .map(str::to_string),
             );
         }
-        super::run_model::apply_to_opts(run, skills, opts);
+        super::run_model::apply_to_opts(&self.gateway, ctx, run, skills, opts).await
     }
 
     /// thread のワークスペース（Durable Workspace）を**遅延生成**で束ねる（#392）。

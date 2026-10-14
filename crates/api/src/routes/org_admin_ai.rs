@@ -346,6 +346,7 @@ pub async fn update_settings(
         Err(e) => return Err(invalid(&e.to_string())),
     };
     // 監査はコミット済み操作の記録（失敗しても結果は変えず、欠落をログで顕在化する）。
+    let object_id = format!("{}|{}", ctx.tenant_id, ctx.org);
     if let Err(e) = state
         .audit
         .record(
@@ -353,7 +354,7 @@ pub async fn update_settings(
             AuditEntry {
                 action: "org_admin.ai_settings.update",
                 object_type: "tenant_llm_settings",
-                object_id: &ctx.tenant_id,
+                object_id: &object_id,
                 decision: Decision::Allow,
                 trace_id: trace.as_deref(),
                 metadata: json!({
@@ -500,19 +501,18 @@ pub async fn get_usage(
             return Err(invalid("利用元が不正です"));
         }
     }
-    let report = gw
-        .usage_report(
-            &ctx,
-            &llm_gateway::UsageFilter {
-                from,
-                to,
-                model: q.model.clone().filter(|m| !m.is_empty()),
-                source: q.source.clone(),
-            },
-        )
-        .await
-        .map_err(|e| ApiError::Internal(format!("usage report: {e}")))?;
-    let settings = load_settings(gw, &ctx).await?;
+    let filter = llm_gateway::UsageFilter {
+        from,
+        to,
+        model: q.model.clone().filter(|m| !m.is_empty()),
+        source: q.source.clone(),
+    };
+    let report = async {
+        gw.usage_report(&ctx, &filter)
+            .await
+            .map_err(|e| ApiError::Internal(format!("usage report: {e}")))
+    };
+    let (report, settings) = tokio::try_join!(report, load_settings(gw, &ctx))?;
 
     // 日別: 範囲内の全日付を 0 埋めで返す（グラフの欠け＝利用なし、を表現する）。
     let by_day: BTreeMap<NaiveDate, &llm_gateway::UsageDay> =

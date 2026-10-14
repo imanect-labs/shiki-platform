@@ -68,7 +68,10 @@ export function periodRange(period: Period, today = todayJst()): { from: string;
   }
 }
 
-/// 内訳 1 つ（横棒で相対量を示す・値はコスト）。
+/// 内訳 1 つ（横棒で相対量を示す）。
+///
+/// 棒の基準は 1 つにそろえる: どれかに費用があれば費用、全部 0（単価未設定のモデルだけ）なら
+/// トークン。行ごとに費用とトークンを混ぜると、単位の違う値を同じ棒で比べてしまう。
 function Breakdown({
   title,
   rows,
@@ -78,7 +81,9 @@ function Breakdown({
   rows: UsageRow[];
   jpyPerUsd: number | null | undefined;
 }) {
-  const max = Math.max(1, ...rows.map((r) => r.cost_usd_micros || r.tokens));
+  const byCost = rows.some((r) => r.cost_usd_micros > 0);
+  const basisOf = (r: UsageRow) => (byCost ? r.cost_usd_micros : r.tokens);
+  const max = Math.max(1, ...rows.map(basisOf));
   return (
     <Panel title={title}>
       {rows.length === 0 ? (
@@ -86,7 +91,7 @@ function Breakdown({
       ) : (
         <ul className="flex flex-col gap-3 px-4 py-3.5">
           {rows.map((r) => {
-            const basis = r.cost_usd_micros || r.tokens;
+            const basis = basisOf(r);
             const jpy = formatJpy(r.cost_usd_micros, jpyPerUsd);
             return (
               <li key={r.key}>
@@ -104,7 +109,7 @@ function Breakdown({
                 <div className="mt-1.5 h-1.5 rounded-full bg-muted">
                   <div
                     className="h-full rounded-full bg-primary"
-                    style={{ width: `${Math.max(2, (basis / max) * 100)}%` }}
+                    style={{ width: basis > 0 ? `${Math.max(2, (basis / max) * 100)}%` : "0%" }}
                   />
                 </div>
               </li>

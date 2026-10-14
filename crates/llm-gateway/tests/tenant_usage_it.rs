@@ -2,6 +2,8 @@
 //!
 //! `STORAGE_TEST_DATABASE_URL` が設定されている時のみ実行（未設定はスキップ）。
 //! - 設定の既定（全モデル有効・Auto）と、更新→読み戻し→モデル指定の解決（許可外は拒否）。
+//! - 無効化したモデルは gateway の `stream` が拒否し、別テナント・別 org には効かない。
+//! - 同時更新が直列化される（変更が消えない・既定が無効のまま残らない）。
 //! - 会計（record_generation）に刻んだ行が、利用量集計（合計・日別・モデル/ユーザー/利用元別）に
 //!   そのまま出て、別テナント・別 org の行が混ざらないこと。
 
@@ -15,8 +17,9 @@
 use authz::{AuthContext, Principal};
 use chrono::{Duration, Utc};
 use llm_gateway::{
-    ChoiceError, Effort, GatewayConfig, GenerationRecord, LlmGateway, ModelCatalog, ModelChoice,
-    ModelEntry, SettingsPatch, Usage, UsageFilter, UsageSource, AUTO_MODEL,
+    ChoiceError, Effort, GatewayConfig, GenerateRequest, GenerationRecord, LlmError, LlmGateway,
+    Message, ModelCatalog, ModelChoice, ModelEntry, Role, SettingsPatch, Usage, UsageFilter,
+    UsageSource, AUTO_MODEL,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
@@ -168,14 +171,72 @@ async fn tenant_settings_default_update_and_resolve() {
     assert!(invalid.is_err());
     assert_eq!(gw.tenant_settings(&alice).await.unwrap(), next);
 
-    // 別テナントは影響を受けない。
+    // チョークポイント: 無効化したモデルは経路によらず gateway が生成を拒否する。
+    let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    req.model = Some("b".into());
+    assert!(matches!(
+        gw.stream(&alice, req.clone()).await,
+        Err(LlmError::Config(_))
+    ));
+
+    // 別テナント・同じテナントの別 org は影響を受けない（設定の粒度は tenant_id ＋ org）。
     let other = ctx(&format!("t-{}", uuid::Uuid::new_v4()), "acme", "bob");
-    assert!(gw
-        .tenant_settings(&other)
-        .await
-        .unwrap()
-        .disabled_models
-        .is_empty());
+    let sibling = ctx(&tenant, "other-org", "carol");
+    for c in [&other, &sibling] {
+        assert!(gw
+            .tenant_settings(c)
+            .await
+            .unwrap()
+            .disabled_models
+            .is_empty());
+        assert!(gw.stream(c, req.clone()).await.is_ok());
+    }
+}
+
+/// 同時に来た更新は直列化され、両方の変更が残り、検証済みの不変条件も崩れない。
+#[tokio::test]
+async fn concurrent_updates_do_not_lose_changes_or_break_invariants() {
+    let Some(pool) = pool().await else { return };
+    let gw = gateway(pool);
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let alice = ctx(&tenant, "acme", "alice");
+    let bob = ctx(&tenant, "acme", "bob");
+
+    // 「b を無効化」と「既定を b に」は片方しか通らない（両方通ると既定が無効のまま残る）。
+    let disable_b = SettingsPatch {
+        models: vec![("b".into(), false)],
+        ..Default::default()
+    };
+    let default_b = SettingsPatch {
+        default_model: Some("b".into()),
+        ..Default::default()
+    };
+    let (r1, r2) = tokio::join!(
+        gw.update_tenant_settings(&alice, &disable_b),
+        gw.update_tenant_settings(&bob, &default_b),
+    );
+    let oks = [r1.unwrap().is_ok(), r2.unwrap().is_ok()];
+    assert_eq!(oks.iter().filter(|ok| **ok).count(), 1, "{oks:?}");
+    let s = gw.tenant_settings(&alice).await.unwrap();
+    assert!(!(s.default_model == "b" && s.disabled_models.contains(&"b".to_string())));
+
+    // 別項目の同時更新は両方残る。
+    let rate = SettingsPatch {
+        jpy_per_usd_centi: Some(Some(14_000)),
+        ..Default::default()
+    };
+    let choice = SettingsPatch {
+        allow_user_choice: Some(false),
+        ..Default::default()
+    };
+    let (r1, r2) = tokio::join!(
+        gw.update_tenant_settings(&alice, &rate),
+        gw.update_tenant_settings(&bob, &choice),
+    );
+    assert!(r1.unwrap().is_ok() && r2.unwrap().is_ok());
+    let s = gw.tenant_settings(&alice).await.unwrap();
+    assert_eq!(s.jpy_per_usd_centi, Some(14_000));
+    assert!(!s.allow_user_choice);
 }
 
 #[tokio::test]

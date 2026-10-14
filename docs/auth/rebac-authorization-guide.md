@@ -100,7 +100,7 @@ flowchart TB
   workflow((workflow<br/>実行主体プリンシパル))
 
   subgraph ORG[組織・ロール]
-    organization["organization<br/>・member"]
+    organization["organization<br/>・member<br/>・admin"]
     role["role<br/>・member: [user, role#member]"]
     role -->|"member ⊇ 配下role#member<br/>（上方向ロールアップ）"| role
   end
@@ -153,7 +153,7 @@ flowchart TB
 
 | ObjectType | relation | 継承・含意 | 共有語彙（誰を付与できるか） |
 |---|---|---|---|
-| `organization` | `member` | — | `[user]` |
+| `organization` | `member` / `admin` | —（admin は member・各オブジェクトの relation を**含意しない**） | `[user]` |
 | `role` | `member` | `member ⊇ 配下 role#member`（上方向） | `[user, role#member]` |
 | `folder` | `parent` / `owner` / `editor` / `viewer` | `owner⊆editor⊆viewer`、`editor/viewer from parent` | owner=`[user, workflow]`、editor/viewer=`[user, role#member, workflow]` |
 | `file` | `parent` / `owner` / `editor` / `viewer` | folder と同じ（parent は folder のみ） | 同上 |
@@ -172,6 +172,9 @@ flowchart TB
 - **secret に viewer 系は無い**。write-only / use-only。`can_use` は「解決して使える」であって**平文の読み返しではない**
   （`vocab.rs:30-31`, `secret` の doc）。
 - **workflow は subject 専用型**。オブジェクトとして relation を持たない。委譲タプルの右辺（誰が持つか）にだけ現れる（§11）。
+- **`organization#admin` は閲覧権に連鎖しない**（PIT-65）。管理コンソールの API（`/org-admin/*`・ルート表の
+  `AccessPolicy::OrgAdmin`）を通すためだけの relation で、どのオブジェクトの `viewer` 等にも `from` で繋がない。
+  管理者でも中身の読み取りは各チョークポイントの ReBAC が通常どおり判定する（#553）。
 
 ---
 

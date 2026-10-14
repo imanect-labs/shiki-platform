@@ -167,6 +167,52 @@ pub fn resolve_choice(
     })
 }
 
+/// 実行時点の設定で run のモデルを決め直す（純粋関数・チャットのワーカーが使う）。
+///
+/// 投入時に解決した `snapshot` は、実行までの間（キュー待ち・GUI カードへの回答で続く run）に
+/// 管理者が設定を変えると古くなる。ここで照らし直し、使えなくなっていれば既定へ戻す。
+/// - ユーザーが選んだモデル: 今も有効で、選択が許されている（または既定と同じ）なら維持。
+/// - Auto: skill のピンが今の設定で選べるモデルならそれ（思考強度は載せない）、
+///   なければ今の設定での Auto の振り先。skill のピンもユーザーの選択と同じ扱いにする
+///   （選択禁止・無効化を skill 経由ですり抜けさせない）。
+pub fn resolve_at_run(
+    catalog: &ModelCatalog,
+    auto: &AutoConfig,
+    settings: &TenantLlmSettings,
+    supports_effort: impl Fn(&ModelEntry) -> bool,
+    snapshot: &ResolvedChoice,
+    skill_model: Option<&str>,
+) -> Result<ResolvedChoice, ChoiceError> {
+    let user_may_use = |m: &str| {
+        settings.is_enabled(catalog, m)
+            && (settings.allow_user_choice || m == settings.default_model)
+    };
+    if !snapshot.auto {
+        if user_may_use(&snapshot.model) {
+            return Ok(snapshot.clone());
+        }
+        return resolve_choice(
+            catalog,
+            auto,
+            settings,
+            supports_effort,
+            &ModelChoice::default(),
+        );
+    }
+    if let Some(m) = skill_model.filter(|m| user_may_use(m)) {
+        return Ok(ResolvedChoice {
+            model: m.to_string(),
+            effort: None,
+            auto: true,
+        });
+    }
+    let choice = ModelChoice {
+        model: Some(AUTO_MODEL.to_string()),
+        effort: None,
+    };
+    resolve_choice(catalog, auto, settings, supports_effort, &choice)
+}
+
 /// 設定の更新内容（管理画面から）。`None` の項目は変えない。
 #[derive(Debug, Clone, Default)]
 pub struct SettingsPatch {
@@ -255,72 +301,107 @@ pub fn apply_patch(
     Ok(next)
 }
 
-/// `tenant_llm_settings` / `tenant_llm_model` の読み書き。
+/// `tenant_llm_settings` / `tenant_llm_model` の読み書き（粒度は tenant_id ＋ org）。
 #[derive(Clone)]
 pub struct TenantLlmStore {
     db: PgPool,
 }
 
 type SettingsRow = (
-    String,
-    bool,
-    String,
+    Option<String>,
+    Option<bool>,
+    Option<String>,
     Option<String>,
     Option<String>,
     Option<i32>,
+    Vec<String>,
 );
+
+/// 設定と無効モデルを 1 往復で読む（行が無ければ設定列は NULL）。
+const LOAD_SQL: &str =
+    "SELECT s.default_model, s.allow_user_choice, s.default_effort, s.auto_model, \
+            s.auto_effort, s.jpy_per_usd_centi, \
+            ARRAY(SELECT m.model_id FROM tenant_llm_model m \
+                  WHERE m.tenant_id = $1 AND m.org = $2 AND NOT m.enabled ORDER BY m.model_id) \
+     FROM (SELECT 1) AS one \
+     LEFT JOIN tenant_llm_settings s ON s.tenant_id = $1 AND s.org = $2";
+
+fn settings_from_row(row: SettingsRow) -> TenantLlmSettings {
+    let (default_model, allow, default_effort, auto_model, auto_effort, rate, disabled_models) =
+        row;
+    let base = TenantLlmSettings::default();
+    TenantLlmSettings {
+        default_model: default_model.unwrap_or(base.default_model),
+        allow_user_choice: allow.unwrap_or(base.allow_user_choice),
+        default_effort: default_effort
+            .as_deref()
+            .and_then(Effort::parse)
+            .unwrap_or(base.default_effort),
+        auto_model,
+        auto_effort: auto_effort.as_deref().and_then(Effort::parse),
+        jpy_per_usd_centi: rate,
+        disabled_models,
+    }
+}
 
 impl TenantLlmStore {
     pub fn new(db: PgPool) -> Self {
         TenantLlmStore { db }
     }
 
-    /// テナントの設定を読む（行が無ければ既定）。
+    /// 組織の設定を読む（行が無ければ既定）。
     pub async fn load(&self, ctx: &AuthContext) -> Result<TenantLlmSettings, sqlx::Error> {
-        let row: Option<SettingsRow> = sqlx::query_as(
-            "SELECT default_model, allow_user_choice, default_effort, auto_model, auto_effort, \
-                    jpy_per_usd_centi \
-             FROM tenant_llm_settings WHERE tenant_id = $1",
-        )
-        .bind(&ctx.tenant_id)
-        .fetch_optional(&self.db)
-        .await?;
-        let disabled_models: Vec<String> = sqlx::query_scalar(
-            "SELECT model_id FROM tenant_llm_model \
-             WHERE tenant_id = $1 AND NOT enabled ORDER BY model_id",
-        )
-        .bind(&ctx.tenant_id)
-        .fetch_all(&self.db)
-        .await?;
-        let mut s = TenantLlmSettings {
-            disabled_models,
-            ..TenantLlmSettings::default()
-        };
-        if let Some((default_model, allow, default_effort, auto_model, auto_effort, rate)) = row {
-            s.default_model = default_model;
-            s.allow_user_choice = allow;
-            s.default_effort = Effort::parse(&default_effort).unwrap_or(Effort::Medium);
-            s.auto_model = auto_model;
-            s.auto_effort = auto_effort.as_deref().and_then(Effort::parse);
-            s.jpy_per_usd_centi = rate;
-        }
-        Ok(s)
+        let row: SettingsRow = sqlx::query_as(LOAD_SQL)
+            .bind(&ctx.tenant_id)
+            .bind(&ctx.org)
+            .fetch_one(&self.db)
+            .await?;
+        Ok(settings_from_row(row))
     }
 
-    /// 設定を保存する（検証済みの値を渡す・1 トランザクション）。
-    pub async fn save(
+    /// 組織がこのモデルを無効にしているか（gateway が生成のたびに引く・1 往復）。
+    pub async fn is_disabled(&self, ctx: &AuthContext, model: &str) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM tenant_llm_model \
+             WHERE tenant_id = $1 AND org = $2 AND model_id = $3 AND NOT enabled)",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(model)
+        .fetch_one(&self.db)
+        .await
+    }
+
+    /// 読む → `change` で次の設定を作る → 保存する、を 1 トランザクションで行う。
+    ///
+    /// 組織ごとの advisory lock で直列化する。読みと保存の間に別の管理者の更新が挟まると、
+    /// 片方の変更が消えたり、検証済みの不変条件（既定モデルが有効、など）が崩れたりするため。
+    pub async fn update<E>(
         &self,
         ctx: &AuthContext,
-        settings: &TenantLlmSettings,
         changed_models: &[(String, bool)],
-    ) -> Result<(), sqlx::Error> {
+        change: impl FnOnce(&TenantLlmSettings) -> Result<TenantLlmSettings, E>,
+    ) -> Result<Result<TenantLlmSettings, E>, sqlx::Error> {
         let mut tx = self.db.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 553))")
+            .bind(format!("tenant_llm_settings:{}|{}", ctx.tenant_id, ctx.org))
+            .execute(&mut *tx)
+            .await?;
+        let row: SettingsRow = sqlx::query_as(LOAD_SQL)
+            .bind(&ctx.tenant_id)
+            .bind(&ctx.org)
+            .fetch_one(&mut *tx)
+            .await?;
+        let next = match change(&settings_from_row(row)) {
+            Ok(n) => n,
+            Err(e) => return Ok(Err(e)),
+        };
         sqlx::query(
             "INSERT INTO tenant_llm_settings \
-             (tenant_id, default_model, allow_user_choice, default_effort, auto_model, auto_effort, \
-              jpy_per_usd_centi, updated_by, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now()) \
-             ON CONFLICT (tenant_id) DO UPDATE SET \
+             (tenant_id, org, default_model, allow_user_choice, default_effort, auto_model, \
+              auto_effort, jpy_per_usd_centi, updated_by, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now()) \
+             ON CONFLICT (tenant_id, org) DO UPDATE SET \
                default_model = EXCLUDED.default_model, \
                allow_user_choice = EXCLUDED.allow_user_choice, \
                default_effort = EXCLUDED.default_effort, \
@@ -331,30 +412,34 @@ impl TenantLlmStore {
                updated_at = now()",
         )
         .bind(&ctx.tenant_id)
-        .bind(&settings.default_model)
-        .bind(settings.allow_user_choice)
-        .bind(settings.default_effort.as_str())
-        .bind(settings.auto_model.as_deref())
-        .bind(settings.auto_effort.map(Effort::as_str))
-        .bind(settings.jpy_per_usd_centi)
+        .bind(&ctx.org)
+        .bind(&next.default_model)
+        .bind(next.allow_user_choice)
+        .bind(next.default_effort.as_str())
+        .bind(next.auto_model.as_deref())
+        .bind(next.auto_effort.map(Effort::as_str))
+        .bind(next.jpy_per_usd_centi)
         .bind(&ctx.principal.id)
         .execute(&mut *tx)
         .await?;
         for (model, enabled) in changed_models {
             sqlx::query(
-                "INSERT INTO tenant_llm_model (tenant_id, model_id, enabled, updated_by, updated_at) \
-                 VALUES ($1, $2, $3, $4, now()) \
-                 ON CONFLICT (tenant_id, model_id) DO UPDATE SET \
+                "INSERT INTO tenant_llm_model \
+                 (tenant_id, org, model_id, enabled, updated_by, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5, now()) \
+                 ON CONFLICT (tenant_id, org, model_id) DO UPDATE SET \
                    enabled = EXCLUDED.enabled, updated_by = EXCLUDED.updated_by, updated_at = now()",
             )
             .bind(&ctx.tenant_id)
+            .bind(&ctx.org)
             .bind(model)
             .bind(*enabled)
             .bind(&ctx.principal.id)
             .execute(&mut *tx)
             .await?;
         }
-        tx.commit().await
+        tx.commit().await?;
+        Ok(Ok(next))
     }
 }
 
@@ -478,6 +563,88 @@ mod tests {
         };
         let r = resolve(&s, None, None).unwrap();
         assert_eq!((r.model.as_str(), r.auto), ("opus", false));
+    }
+
+    fn at_run(
+        settings: &TenantLlmSettings,
+        snapshot: (&str, bool),
+        skill: Option<&str>,
+    ) -> ResolvedChoice {
+        let snapshot = ResolvedChoice {
+            model: snapshot.0.into(),
+            effort: Some(Effort::High),
+            auto: snapshot.1,
+        };
+        resolve_at_run(
+            &catalog(),
+            &AutoConfig::default(),
+            settings,
+            effort_except_local,
+            &snapshot,
+            skill,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn run_keeps_user_choice_while_still_allowed() {
+        let r = at_run(
+            &TenantLlmSettings::default(),
+            ("opus", false),
+            Some("sonnet"),
+        );
+        assert_eq!((r.model.as_str(), r.effort), ("opus", Some(Effort::High)));
+    }
+
+    #[test]
+    fn run_drops_user_choice_disabled_or_forbidden_after_post() {
+        let disabled = TenantLlmSettings {
+            disabled_models: vec!["opus".into()],
+            ..Default::default()
+        };
+        let r = at_run(&disabled, ("opus", false), None);
+        assert_eq!((r.model.as_str(), r.auto), ("gpt-6-luna", true));
+        let forbidden = TenantLlmSettings {
+            allow_user_choice: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            at_run(&forbidden, ("opus", false), None).model,
+            "gpt-6-luna"
+        );
+    }
+
+    #[test]
+    fn skill_pin_obeys_disabled_models_and_choice_policy() {
+        let s = TenantLlmSettings::default();
+        let r = at_run(&s, ("gpt-6-luna", true), Some("opus"));
+        assert_eq!((r.model.as_str(), r.effort), ("opus", None));
+        let disabled = TenantLlmSettings {
+            disabled_models: vec!["opus".into()],
+            ..Default::default()
+        };
+        let r = at_run(&disabled, ("gpt-6-luna", true), Some("opus"));
+        assert_eq!(
+            (r.model.as_str(), r.effort),
+            ("gpt-6-luna", Some(Effort::Low))
+        );
+        let forbidden = TenantLlmSettings {
+            allow_user_choice: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            at_run(&forbidden, ("gpt-6-luna", true), Some("opus")).model,
+            "gpt-6-luna"
+        );
+        // Auto の振り先が投入後に無効化されたら、今の設定で振り直す。
+        let auto_off = TenantLlmSettings {
+            disabled_models: vec!["gpt-6-luna".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            at_run(&auto_off, ("gpt-6-luna", true), None).model,
+            "sonnet"
+        );
     }
 
     #[test]

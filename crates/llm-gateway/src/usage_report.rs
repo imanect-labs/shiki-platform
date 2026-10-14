@@ -94,13 +94,30 @@ impl UsageReporter {
         UsageReporter { db }
     }
 
-    /// ダッシュボード 1 画面分をまとめて集計する。
+    /// ダッシュボード 1 画面分をまとめて集計する（互いに独立な集計は並べて流す）。
     pub async fn report(
         &self,
         ctx: &AuthContext,
         f: &UsageFilter,
     ) -> Result<UsageReport, sqlx::Error> {
-        let totals: UsageTotals = sqlx::query_as(&format!(
+        let (totals, daily, by_model, by_user, by_source) = tokio::try_join!(
+            self.totals(ctx, f),
+            self.daily(ctx, f),
+            self.breakdown(ctx, f, Dimension::Model),
+            self.breakdown(ctx, f, Dimension::User),
+            self.breakdown(ctx, f, Dimension::Source),
+        )?;
+        Ok(UsageReport {
+            totals,
+            daily,
+            by_model,
+            by_user,
+            by_source,
+        })
+    }
+
+    async fn totals(&self, ctx: &AuthContext, f: &UsageFilter) -> Result<UsageTotals, sqlx::Error> {
+        sqlx::query_as(&format!(
             "SELECT COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros, \
                     COALESCE(SUM(prompt_tokens), 0)::bigint AS prompt_tokens, \
                     COALESCE(SUM(completion_tokens), 0)::bigint AS completion_tokens, \
@@ -115,9 +132,15 @@ impl UsageReporter {
         .bind(f.model.as_deref())
         .bind(f.source.as_deref())
         .fetch_one(&self.db)
-        .await?;
+        .await
+    }
 
-        let daily: Vec<UsageDay> = sqlx::query_as(&format!(
+    async fn daily(
+        &self,
+        ctx: &AuthContext,
+        f: &UsageFilter,
+    ) -> Result<Vec<UsageDay>, sqlx::Error> {
+        sqlx::query_as(&format!(
             "SELECT (created_at AT TIME ZONE 'Asia/Tokyo')::date AS day, \
                     COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros, \
                     COALESCE(SUM(prompt_tokens + completion_tokens), 0)::bigint AS tokens, \
@@ -131,15 +154,7 @@ impl UsageReporter {
         .bind(f.model.as_deref())
         .bind(f.source.as_deref())
         .fetch_all(&self.db)
-        .await?;
-
-        Ok(UsageReport {
-            totals,
-            daily,
-            by_model: self.breakdown(ctx, f, Dimension::Model).await?,
-            by_user: self.breakdown(ctx, f, Dimension::User).await?,
-            by_source: self.breakdown(ctx, f, Dimension::Source).await?,
-        })
+        .await
     }
 
     async fn breakdown(

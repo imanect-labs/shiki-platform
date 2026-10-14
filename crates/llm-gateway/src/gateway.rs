@@ -212,7 +212,7 @@ impl LlmGateway {
         self.inner.tenants.load(ctx).await
     }
 
-    /// テナントの AI 設定を更新する（検証してから保存し、保存後の設定を返す）。
+    /// 組織の AI 設定を更新する（読み・検証・保存を 1 トランザクションで直列化し、保存後の設定を返す）。
     ///
     /// 呼び出し側（管理 API）が管理者であることを確認してから呼ぶこと（ここは認可しない）。
     pub async fn update_tenant_settings(
@@ -220,16 +220,16 @@ impl LlmGateway {
         ctx: &AuthContext,
         patch: &SettingsPatch,
     ) -> Result<Result<TenantLlmSettings, SettingsError>, sqlx::Error> {
-        let current = self.inner.tenants.load(ctx).await?;
-        let next = match apply_patch(&self.inner.config.catalog, &current, patch) {
-            Ok(n) => n,
-            Err(e) => return Ok(Err(e)),
-        };
-        self.inner.tenants.save(ctx, &next, &patch.models).await?;
-        Ok(Ok(next))
+        let catalog = &self.inner.config.catalog;
+        self.inner
+            .tenants
+            .update(ctx, &patch.models, |current| {
+                apply_patch(catalog, current, patch)
+            })
+            .await
     }
 
-    /// チャットのモデル指定をテナント設定で解決する（許可外は `Err`・API は 400 に写す）。
+    /// チャットのモデル指定を組織の設定で解決する（許可外は `Err`・API は 400 に写す）。
     pub async fn resolve_choice(
         &self,
         ctx: &AuthContext,
@@ -242,6 +242,25 @@ impl LlmGateway {
             &settings,
             |e| self.supports_effort(e),
             choice,
+        ))
+    }
+
+    /// 投入時に解決した run のモデルを、実行時点の設定と skill のピンで決め直す
+    /// （[`tenant::resolve_at_run`]）。
+    pub async fn resolve_at_run(
+        &self,
+        ctx: &AuthContext,
+        snapshot: &ResolvedChoice,
+        skill_model: Option<&str>,
+    ) -> Result<Result<ResolvedChoice, ChoiceError>, sqlx::Error> {
+        let settings = self.inner.tenants.load(ctx).await?;
+        Ok(tenant::resolve_at_run(
+            &self.inner.config.catalog,
+            &self.inner.config.auto,
+            &settings,
+            |e| self.supports_effort(e),
+            snapshot,
+            skill_model,
         ))
     }
 
@@ -295,7 +314,15 @@ impl LlmGateway {
     /// リクエストを**ストリーミング**生成する。論理モデル→実 ID をカタログで解決し、
     /// モデルの振り先プロバイダへ委譲する。接続確立前の一時障害は 1 回だけ再試行する
     /// （フォールバックの床）。思考強度に対応しないモデルへは effort を落としてから送る。
-    pub async fn stream(&self, mut req: GenerateRequest) -> Result<DeltaStream, LlmError> {
+    ///
+    /// 呼び出し元の組織が無効にしたモデルはここで拒否する（#553）。チャット・ミニアプリ・
+    /// ワークフロー・エージェントのどの経路も必ずここを通るので、管理画面での無効化
+    /// （国外処理モデルを止める等）が経路によらず効く。
+    pub async fn stream(
+        &self,
+        ctx: &AuthContext,
+        mut req: GenerateRequest,
+    ) -> Result<DeltaStream, LlmError> {
         let logical = req
             .model
             .clone()
@@ -311,6 +338,17 @@ impl LlmGateway {
             .providers
             .get(entry.provider_id())
             .ok_or_else(|| LlmError::Config(format!("unknown provider for model: {logical}")))?;
+        let disabled = self
+            .inner
+            .tenants
+            .is_disabled(ctx, &logical)
+            .await
+            .map_err(|e| LlmError::Unavailable(format!("tenant llm settings: {e}")))?;
+        if disabled {
+            return Err(LlmError::Config(format!(
+                "model is disabled for this organization: {logical}"
+            )));
+        }
         if !self.supports_effort(entry) {
             req.effort = None;
         }
@@ -570,6 +608,7 @@ mod tests {
 
     fn lazy_db() -> PgPool {
         sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(500))
             .connect_lazy("postgres://unused:unused@127.0.0.1:1/none")
             .unwrap()
     }
@@ -642,18 +681,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_routes_to_the_models_provider() {
+    async fn stream_rejects_unknown_model_before_touching_tenant_settings() {
         let gw = LlmGateway::build(lazy_db(), reqwest::Client::new(), two_providers()).unwrap();
-        // 既定プロバイダ（stub）へ振られるモデルはそのまま生成できる。
+        let ctx = AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "u".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some("t".into()),
+            },
+            "o".into(),
+            "t".into(),
+        );
         let mut req = GenerateRequest::new(vec![crate::model::Message::text(
             crate::model::Role::User,
             "hi",
         )]);
-        req.model = Some("m".into());
-        assert!(gw.stream(req.clone()).await.is_ok());
-        // 未知モデルは既定へ落とさず拒否する。
+        // 未知モデルは既定へ落とさず拒否する（DB に届く前・接続先は無いので届けば Unavailable）。
         req.model = Some("ghost".into());
-        assert!(matches!(gw.stream(req).await, Err(LlmError::Config(_))));
+        assert!(matches!(
+            gw.stream(&ctx, req.clone()).await,
+            Err(LlmError::Config(_))
+        ));
+        // 既知モデルは組織の設定を引く（無効化の判定・ここでは DB が無いので Unavailable）。
+        req.model = Some("m".into());
+        assert!(matches!(
+            gw.stream(&ctx, req).await,
+            Err(LlmError::Unavailable(_))
+        ));
     }
 
     #[tokio::test]

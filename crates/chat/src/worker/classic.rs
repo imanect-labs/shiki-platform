@@ -91,12 +91,13 @@ impl ChatWorker {
         };
         // モデルと思考強度: ユーザーの選択 → skill → Auto の振り先 → 設定（#553・run_model.rs）。
         let chosen = super::run_model::effective_model(
-            run.model.as_deref(),
-            run.effort.as_deref(),
-            run.model_auto,
+            &self.gateway,
+            ctx,
+            run,
             defaults.as_ref().and_then(|d| d.model.as_deref()),
             self.config.model.as_deref(),
-        );
+        )
+        .await?;
         let model = chosen.model;
         let effective_model = model
             .clone()
@@ -113,7 +114,7 @@ impl ChatWorker {
         };
         let mut stream = self
             .gateway
-            .stream(req)
+            .stream(ctx, req)
             .await
             .map_err(|e| ChatError::Unavailable(format!("llm: {e}")))?;
 
