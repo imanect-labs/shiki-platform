@@ -53,6 +53,19 @@ pub struct RagConfig {
     #[serde(default = "default_rerank_pool")]
     pub rerank_pool: usize,
 
+    /// 関連度ラベルの閾値（reranker の生スコア・#424）。`relevance_high` 以上を「高」、
+    /// `relevance_low` 未満を「低」、その間を「中」とする。**reranker のモデルに依存する**ので、
+    /// ingestion-worker の `RERANK_MODEL` を替えたら実クエリで測り直す（既定値は
+    /// `hotchpotch/japanese-reranker-cross-encoder-xsmall-v1` での実測・#424）。
+    #[serde(default = "default_relevance_high")]
+    pub relevance_high: f32,
+    #[serde(default = "default_relevance_low")]
+    pub relevance_low: f32,
+    /// 上の閾値を測った reranker のモデル名。worker が返す `model_version` と違えば警告する
+    /// （閾値はモデルごとのスコアのスケールに依存し、食い違うと全件「低」等に化ける）。
+    #[serde(default = "default_relevance_model")]
+    pub relevance_model: String,
+
     /// インジェスト consumer の並列ジョブ数。
     #[serde(default = "default_consumer_concurrency")]
     pub consumer_concurrency: usize,
@@ -106,6 +119,15 @@ fn default_max_top_k() -> usize {
 fn default_rerank_pool() -> usize {
     32
 }
+fn default_relevance_high() -> f32 {
+    0.55
+}
+fn default_relevance_low() -> f32 {
+    0.45
+}
+fn default_relevance_model() -> String {
+    "hotchpotch/japanese-reranker-cross-encoder-xsmall-v1".to_string()
+}
 fn default_consumer_concurrency() -> usize {
     2
 }
@@ -134,6 +156,9 @@ impl Default for RagConfig {
             default_top_k: default_top_k(),
             max_top_k: default_max_top_k(),
             rerank_pool: default_rerank_pool(),
+            relevance_high: default_relevance_high(),
+            relevance_low: default_relevance_low(),
+            relevance_model: default_relevance_model(),
             consumer_concurrency: default_consumer_concurrency(),
             relay_poll_ms: default_relay_poll_ms(),
             job_vt_secs: default_job_vt_secs(),

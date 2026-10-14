@@ -121,14 +121,16 @@ impl SearchService {
         Ok(rows.into_iter().map(|r| (r.id, r)).collect())
     }
 
-    /// reranker で並べ替えた chunk_id 列を返す（本文が引けない chunk は落ちる）。
+    /// reranker で並べ替えた (chunk_id, 生スコア) 列を返す（本文が引けない chunk は落ちる）。
+    ///
+    /// 候補が 1 件でも採点する（関連度ラベルが要るため・#424）。
     pub(super) async fn rerank(
         &self,
         ctx: &AuthContext,
         query: &str,
         allowed: &[ScoredChunk],
         rows: &HashMap<Uuid, HydratedChunk>,
-    ) -> Result<Vec<Uuid>, RagError> {
+    ) -> Result<Vec<(Uuid, f32)>, RagError> {
         let passages: Vec<RerankPassage> = allowed
             .iter()
             .filter_map(|c| rows.get(&c.chunk_id))
@@ -137,17 +139,14 @@ impl SearchService {
                 text: row.content.clone(),
             })
             .collect();
-        if passages.len() <= 1 {
-            return Ok(passages
-                .iter()
-                .filter_map(|p| Uuid::parse_str(&p.id).ok())
-                .collect());
+        if passages.is_empty() {
+            return Ok(Vec::new());
         }
         let mut scores = self.reranker.rerank(ctx, query, &passages).await?;
         scores.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
         Ok(scores
             .into_iter()
-            .filter_map(|s| Uuid::parse_str(&s.id).ok())
+            .filter_map(|s| Uuid::parse_str(&s.id).ok().map(|id| (id, s.score)))
             .collect())
     }
 
@@ -155,12 +154,12 @@ impl SearchService {
     pub(super) async fn build_results(
         &self,
         ctx: &AuthContext,
-        final_ids: &[Uuid],
+        ranked: &[(Uuid, f32)],
         rows: &HashMap<Uuid, HydratedChunk>,
     ) -> Result<Vec<SearchResult>, RagError> {
-        let parent_ids: Vec<Uuid> = final_ids
+        let parent_ids: Vec<Uuid> = ranked
             .iter()
-            .filter_map(|id| rows.get(id).and_then(|r| r.parent_id))
+            .filter_map(|(id, _)| rows.get(id).and_then(|r| r.parent_id))
             .collect();
         let parents: HashMap<Uuid, String> = if parent_ids.is_empty() {
             HashMap::new()
@@ -183,11 +182,11 @@ impl SearchService {
             rows.into_iter().collect()
         };
 
-        Ok(final_ids
+        Ok(ranked
             .iter()
             .enumerate()
-            .filter_map(|(rank, id)| rows.get(id).map(|r| (rank, r)))
-            .map(|(rank, row)| {
+            .filter_map(|(rank, (id, rerank_score))| rows.get(id).map(|r| (rank, *rerank_score, r)))
+            .map(|(rank, rerank_score, row)| {
                 // rank は top_k（≦max_top_k=50）に有界で f32 の精度内。
                 #[allow(clippy::cast_precision_loss)]
                 let score = 1.0 / (rank as f32 + 1.0);
@@ -202,6 +201,8 @@ impl SearchService {
                     parent_content: row.parent_id.and_then(|p| parents.get(&p).cloned()),
                     // rerank 後の順位ベースのスコア（表示用に単調減少へ正規化）。
                     score,
+                    rerank_score,
+                    relevance: self.relevance(rerank_score),
                     version: row.version,
                     // 位置情報（#508）。一節（quote）は位置を持つ索引だけに付ける。旧索引は
                     // 前後の文脈が無く、元エディタでの探索は本文だけでは当たりにくいため。

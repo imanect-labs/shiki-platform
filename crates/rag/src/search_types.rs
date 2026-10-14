@@ -49,6 +49,38 @@ impl SearchScope {
     }
 }
 
+/// 検索結果 1 件の関連度の目安（reranker の生スコアを設定の閾値で段階に落としたもの・#424）。
+///
+/// 生スコアは cross-encoder の実装に依存し、数値そのものに意味は無い。モデルへはこの段階だけを
+/// 見せる（数値を見せると過信する）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Relevance {
+    High,
+    Medium,
+    Low,
+}
+
+impl Relevance {
+    /// reranker の生スコアを閾値で段階に落とす（`high` 以上 = 高・`low` 未満 = 低・間 = 中）。
+    ///
+    /// 有限でないスコアは「低」（根拠として扱わない側へ倒す）。`low > high` の設定は
+    /// `low = high` として扱う（中が空になるだけで、高と低の意味は崩さない）。
+    #[must_use]
+    pub fn from_score(score: f32, high: f32, low: f32) -> Self {
+        if !score.is_finite() {
+            return Relevance::Low;
+        }
+        if score >= high {
+            Relevance::High
+        } else if score < low.min(high) {
+            Relevance::Low
+        } else {
+            Relevance::Medium
+        }
+    }
+}
+
 /// 引用チャンク 1 件。`file_name`/`folder_id` は検索時点の現在値（node JOIN）。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SearchResult {
@@ -63,6 +95,10 @@ pub struct SearchResult {
     /// small-to-big の親チャンク本文（文脈提示用）。
     pub parent_content: Option<String>,
     pub score: f32,
+    /// reranker の生スコア（大きいほど関連）。モデル依存でスケールに意味は無い。閾値の較正用。
+    pub rerank_score: f32,
+    /// `rerank_score` を設定の閾値で段階に落としたもの。
+    pub relevance: Relevance,
     pub version: i64,
     /// `doc_block` 上の範囲（位置情報を持つ索引のみ・#508）。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,4 +181,28 @@ pub struct SearchResponse {
     /// `debug: true` のリクエスト時のみ。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debug: Option<SearchDebug>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Relevance;
+
+    #[test]
+    fn relevance_bands_include_lower_bound_of_each_band() {
+        let band = |s| Relevance::from_score(s, 0.55, 0.45);
+        assert_eq!(band(0.55), Relevance::High);
+        assert_eq!(band(0.549), Relevance::Medium);
+        assert_eq!(band(0.45), Relevance::Medium);
+        assert_eq!(band(0.449), Relevance::Low);
+        assert_eq!(band(f32::NAN), Relevance::Low);
+        assert_eq!(band(f32::INFINITY), Relevance::Low);
+    }
+
+    #[test]
+    fn inverted_thresholds_keep_high_and_low_meaning() {
+        // low > high の誤設定: 中が空になる。
+        let band = |s| Relevance::from_score(s, 0.4, 0.45);
+        assert_eq!(band(0.42), Relevance::High);
+        assert_eq!(band(0.39), Relevance::Low);
+    }
 }

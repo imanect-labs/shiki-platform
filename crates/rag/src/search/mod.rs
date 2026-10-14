@@ -72,6 +72,16 @@ impl SearchService {
         self.config.default_top_k
     }
 
+    /// reranker の生スコア → 関連度の段階（設定の閾値・#424）。
+    #[must_use]
+    pub fn relevance(&self, rerank_score: f32) -> crate::search_types::Relevance {
+        crate::search_types::Relevance::from_score(
+            rerank_score,
+            self.config.relevance_high,
+            self.config.relevance_low,
+        )
+    }
+
     /// 1 回の検索で返せる件数の上限（ツールの入力スキーマに出す・#423）。
     #[must_use]
     pub fn max_top_k(&self) -> usize {
@@ -89,6 +99,14 @@ impl SearchService {
         authz: Arc<dyn AuthzClient>,
         audit: AuditRecorder,
     ) -> Self {
+        let (high, low) = (config.relevance_high, config.relevance_low);
+        if !high.is_finite() || !low.is_finite() || low > high {
+            tracing::warn!(
+                high,
+                low,
+                "関連度の閾値が有限の relevance_low <= relevance_high になっていない"
+            );
+        }
         SearchService {
             pool,
             config,
@@ -298,8 +316,8 @@ impl SearchService {
         timings.rerank_ms = t.elapsed().as_millis() as u64;
 
         // 7(後半). 上位 top_k を確定し、親チャンクを展開する。
-        let final_ids: Vec<Uuid> = ranked.into_iter().take(top_k).collect();
-        let results = self.build_results(ctx, &final_ids, &rows).await?;
+        let ranked: Vec<(Uuid, f32)> = ranked.into_iter().take(top_k).collect();
+        let results = self.build_results(ctx, &ranked, &rows).await?;
 
         // 8. 引用監査（Task 2.7 受入条件: 引用 chunk と認可判定が監査ログに残る）。
         self.audit_citations(ctx, query, &results, &file_decisions, scope, trace_id)
