@@ -50,6 +50,9 @@ jobs:
           done
           # ビルドごとに不変のタグに使う（run_id は再実行でも変わらないので attempt も付ける）。
           echo "BUILD_ID=b${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+          # Ubuntu スナップショットの時刻。runtime（load）・sources・push の 3 回のビルドで
+          # 同じ値を使い、本体と -sources の Ubuntu パッケージの版を揃える（Dockerfile 参照）。
+          echo "UBUNTU_SNAPSHOT=$(date -u +%Y%m%dT%H%M%SZ)" >> "$GITHUB_ENV"
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
@@ -117,6 +120,7 @@ jobs:
             POCO_URL=${{ env.POCO_URL }}
             POCO_SHA256=${{ env.POCO_SHA256 }}
             BUILD_ID=${{ env.BUILD_ID }}
+            UBUNTU_SNAPSHOT=${{ env.UBUNTU_SNAPSHOT }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=MPL-2.0
@@ -167,6 +171,9 @@ jobs:
                grep -q "shiki-collabora:.*-b[0-9].*-sources" /usr/share/doc/shiki-office/NOTICE
                grep -q "^Vendor=Imanect Labs" /opt/collaboraoffice/program/versionrc' \
               || { echo "同梱物（EULA の除去・NOTICE・ベンダー）が想定と違う"; return 1; }
+            snap="$(docker exec collabora-smoke cat /usr/share/doc/shiki-office/ubuntu-snapshot.txt)"
+            [ "$snap" = "$UBUNTU_SNAPSHOT" ] \
+              || { echo "Ubuntu スナップショットの時刻が渡した値と違う: $snap != $UBUNTU_SNAPSHOT"; return 1; }
             echo "brand OK"
           }
           docker run -d --name collabora-smoke -p 127.0.0.1:19980:9980 \
@@ -225,6 +232,7 @@ jobs:
             POCO_URL=${{ env.POCO_URL }}
             POCO_SHA256=${{ env.POCO_SHA256 }}
             BUILD_ID=${{ env.BUILD_ID }}
+            UBUNTU_SNAPSHOT=${{ env.UBUNTU_SNAPSHOT }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.description=Complete corresponding source of shiki-collabora:${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}
@@ -258,6 +266,7 @@ jobs:
             POCO_URL=${{ env.POCO_URL }}
             POCO_SHA256=${{ env.POCO_SHA256 }}
             BUILD_ID=${{ env.BUILD_ID }}
+            UBUNTU_SNAPSHOT=${{ env.UBUNTU_SNAPSHOT }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=MPL-2.0

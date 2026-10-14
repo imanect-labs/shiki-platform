@@ -285,15 +285,20 @@ ENV DEBIAN_FRONTEND=noninteractive
 # また、ライブの archive から入れて後でスナップショットを引く形だと、スナップショット側の
 # 反映の遅れで版が見つからないことがある。入れる側も取る側も同じ時刻のスナップショットを
 # 使えば、原理的に一致する（sources ステージは ubuntu-snapshot.txt の時刻で取る）。
+# 時刻は CI が 1 回だけ決めて UBUNTU_SNAPSHOT で渡す。runtime（load）・sources・push は
+# 別々のビルドなので、間でキャッシュが消えてこの RUN がやり直しになったときに、`date` だと
+# 本体と -sources で時刻（＝版）がずれうる。未指定（手元のビルド）なら今の時刻を使う。
 # ca-certificates だけは、スナップショットに https で繋ぐために先にライブから入れる
 # （その後の upgrade でスナップショットの版に揃う。揃わない場合は sources 側でライブから取る）。
 #
 # libutf8proc3: Poco が同梱している utf8proc の著作権表示とライセンス本文
 # （/usr/share/doc/libutf8proc3/copyright）を NOTICE から参照するため。
 # PCRE2 / zlib / expat の分は既に入っているパッケージのものを参照する。
+ARG UBUNTU_SNAPSHOT=
 RUN mkdir -p /usr/share/doc/shiki-office \
     && apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-    && snap="$(date -u +%Y%m%dT%H%M%SZ)" \
+    && snap="${UBUNTU_SNAPSHOT:-$(date -u +%Y%m%dT%H%M%SZ)}" \
+    && echo "$snap" | grep -Eqx '[0-9]{8}T[0-9]{6}Z' \
     && echo "$snap" > /usr/share/doc/shiki-office/ubuntu-snapshot.txt \
     && echo "APT::Snapshot \"$snap\";" > /etc/apt/apt.conf.d/50shiki-snapshot \
     && rm -rf /var/lib/apt/lists/* && apt-get update \
