@@ -7,6 +7,8 @@
 - `*_prod`      … 結果本文を製品の文面（`CatalogSearch::loaded_message`）にしたもの（案内なし）
 - `*_hint`      … 製品の文面に、同じ名前空間の下調べ用ツールの案内を付けたもの（#522・
                   効果が無く製品には入れなかった案。文面は評価側で再現する）
+- `*_comp`      … 製品の文面で、読み込むツールの ID 引数を調べる一覧・検索のツールも一緒に
+                  読み込むもの（#565・製品の実装を順位 CLI 経由で使う）
 
 `search_bm25` / `search_rrf` の結果本文は評価側で組んだ簡略版（v3 の基準・名前の一覧のみ）。
 
@@ -124,7 +126,7 @@ class Searcher:
 
 def base_method(condition: str) -> str:
     """条件名から順位付けの方式（`search_bm25` / `search_rrf`）を取り出す。"""
-    return condition.removesuffix("_prod").removesuffix("_hint")
+    return condition.removesuffix("_prod").removesuffix("_hint").removesuffix("_comp")
 
 
 def search_content(
@@ -200,6 +202,7 @@ def text_fingerprint(fused: bool = False) -> str:
     """結果本文と順位を作るコードの指紋（変われば `_prod` / `_hint` のキャッシュを使わない）。"""
     repo = ROOT.parents[1]
     src = (repo / "crates/agent-core/src/tool_search/mod.rs").read_text()
+    src += (repo / "crates/agent-core/src/tool_search/companions.rs").read_text()
     src += (repo / "crates/agent-core/examples/tool_search_rank.rs").read_text()
     src += inspect.getsource(bm25)  # CLI への橋渡し（loaded_message / fuse）。
     src += inspect.getsource(search_content) + inspect.getsource(sibling_hint)
@@ -423,13 +426,19 @@ def run_one(
                 limit = raw_limit if condition not in ("search_bm25", "search_rrf") else None
                 assert searcher is not None
                 hits = searcher.search(q, product_limit(limit)) if q else []
-                rec["searches"].append({"query": q, "limit": limit, "hits": hits})
                 known = {o["function"]["name"] for o in offered}
+                loaded = {by_wire[n].name for n in known if n in by_wire}
+                if condition.endswith("_comp"):
+                    # 製品の処理そのもの（下調べ用ツールを足した名前と、その本文）。
+                    content, hits = bm25.load(searcher.defs, q, limit, hits, companions=True)
+                    if hits:  # OpenAI 互換アダプタと同じく呼び出し名を書き足す。
+                        content += f"\n（読み込んだツールの呼び出し名: {', '.join(wire(h) for h in hits)}）"
+                else:
+                    content = search_content(condition, searcher, q, limit, hits, loaded)
+                rec["searches"].append({"query": q, "limit": limit, "hits": hits})
                 offered += [
                     as_function(t) for t in tools if t.name in hits and wire(t.name) not in known
                 ]
-                loaded = {by_wire[n].name for n in known if n in by_wire}
-                content = search_content(condition, searcher, q, limit, hits, loaded)
                 messages.append({"role": "tool", "tool_call_id": c["id"], "content": content})
             if query["target"] in rec["calls"]:
                 rec["stop"] = "target"

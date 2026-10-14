@@ -82,6 +82,29 @@ def loaded_message(catalog: list[dict], query: str, limit: object, names: list[s
     return json.loads(out.stdout.splitlines()[0])["content"]
 
 
+def load(
+    catalog: list[dict], query: str, limit: object, names: list[str], companions: bool
+) -> tuple[str, list[str]]:
+    """[`loaded_message`] の本文と、製品が実際に読み込む名前（`companions` なら、読み込む
+    ツールの ID 引数を調べる下調べ用ツールも含む・#565）。"""
+    if not _built:
+        build()
+    if not (isinstance(limit, int) and not isinstance(limit, bool) and 0 <= limit < 2**64):
+        limit = None
+    payload = json.dumps(
+        {
+            "catalog": catalog,
+            "queries": [],
+            "loads": [{"id": "l", "query": query, "limit": limit, "names": names}],
+            "companions": companions,
+        },
+        ensure_ascii=False,
+    )
+    out = subprocess.run([str(_BIN)], input=payload, capture_output=True, text=True, check=True)
+    line = json.loads(out.stdout.splitlines()[0])
+    return line["content"], line["names"]
+
+
 def fuse(catalog: list[dict], query: str, embedding: list[str], limit: int) -> list[str]:
     """埋め込みの順位（名前・類似度の降順）を渡し、製品の融合（`CatalogSearch::fused`・BM25 との
     RRF・`+語` の絞り込み・名前の完全一致を先頭）で `limit` 件を返す。"""

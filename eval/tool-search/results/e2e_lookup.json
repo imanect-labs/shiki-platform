@@ -1,0 +1,3898 @@
+[
+ {
+  "id": "miro_update_board:ja@1000",
+  "target": "miro_update_board",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "miro",
+    "limit": null,
+    "hits": [
+     "miro_create_board",
+     "miro_export_board",
+     "miro_get_board",
+     "miro_create_comment",
+     "miro_update_board"
+    ]
+   }
+  ],
+  "prompt_tokens": 2698,
+  "completion_tokens": 219,
+  "steps": 2,
+  "error": null,
+  "final_text": "Miroのツールが読み込まれました。しかし、ボードを検索してIDを取得する機能（例: `miro_search_boards` や `miro_list_boards`）が現在の利用可能なツールに含まれていないようです。\n\n利用可能なMiro関連ツールは以下の通りです：\n- `miro_create_board`: 新規作成\n- `miro_export_board`: エクスポート\n- `miro_get_board`: ID指定での詳細取得\n- `miro_create_comment`: コメント投稿\n- `miro_update_board`: ID指定での更新\n\nボード名「Q4製品ロードマップ」からボードIDを特定するための検索機能が不足しています。もしボードIDが分かっている場合は、それを教えていただければ更新処理を実行できます。 otherwise, ボード一覧を取得する機能が必要ですが、現在利用可能なツールには含まれていません。\n\n何か他の方法でボードIDを提供いただくか、あるいは別のアプローチが必要かもしれません。",
+  "stop": "reply",
+  "latency_s": 7.215574893169105,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "miro_update_board:en@1000",
+  "target": "miro_update_board",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "miro_list_boards",
+   "miro_update_board"
+  ],
+  "call_args": [
+   "{\"limit\": 50}",
+   "{\"board_id\": \"o9J_kL2mN3pQ4rS5tU6vW7x\", \"name\": \"Q4 Product Roadmap (Finalized)\", \"description\": \"For the stakeholder meeting on October 21\"}"
+  ],
+  "searches": [
+   {
+    "query": "miro rename board update description",
+    "limit": null,
+    "hits": [
+     "miro_update_board",
+     "miro_create_board",
+     "miro_update_item",
+     "miro_get_board",
+     "trello_update_board"
+    ]
+   },
+   {
+    "query": "miro list boards search board by name",
+    "limit": null,
+    "hits": [
+     "miro_list_boards",
+     "miro_create_board",
+     "miro_update_board",
+     "miro_get_board",
+     "miro_search_items"
+    ]
+   }
+  ],
+  "prompt_tokens": 7701,
+  "completion_tokens": 182,
+  "steps": 4,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 23.322709775529802,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "zoom_update_meeting:ja@1000",
+  "target": "zoom_update_meeting",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "zoom_search_meetings",
+   "zoom_update_meeting"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4 戦略会議\"}",
+   "{\"meeting_id\": \"89234567890\", \"start_time\": \"2026-10-21T14:00:00+09:00\", \"topic\": \"Q4 戦略会議（延長）\"}"
+  ],
+  "searches": [
+   {
+    "query": "zoom update meeting",
+    "limit": null,
+    "hits": [
+     "zoom_update_meeting",
+     "zoom_create_meeting",
+     "zoom_search_meetings",
+     "zoom_list_meetings",
+     "zoom_get_meeting_details"
+    ]
+   }
+  ],
+  "prompt_tokens": 4824,
+  "completion_tokens": 153,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 16.633297226391733,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "zoom_update_meeting:en@1000",
+  "target": "zoom_update_meeting",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "zoom_search_meetings",
+   "zoom_update_meeting"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4 Strategy Meeting\"}",
+   "{\"meeting_id\": \"987654321\", \"start_time\": \"2026-10-21T14:00:00+09:00\", \"topic\": \"Q4 Strategy Meeting (Extended)\"}"
+  ],
+  "searches": [
+   {
+    "query": "zoom list meetings",
+    "limit": null,
+    "hits": [
+     "zoom_list_meetings",
+     "zoom_create_meeting",
+     "zoom_get_meeting_details",
+     "zoom_search_meetings",
+     "zoom_update_meeting"
+    ]
+   }
+  ],
+  "prompt_tokens": 4980,
+  "completion_tokens": 364,
+  "steps": 3,
+  "error": null,
+  "final_text": "I found the meeting with ID `987654321`. Now I will update the start time to October 21, 2026, at 14:00 (Asia/Tokyo) and change the topic to \"Q4 Strategy Meeting (Extended)\".\n\nThe start time needs to be in ISO 8601 format. October 21, 2026, at 14:00 in Asia/Tokyo is `2026-10-21T14:00:00+09:00`.\n\n",
+  "stop": "target",
+  "latency_s": 21.176717028021812,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gdrive_get_file_metadata:ja@1000",
+  "target": "gdrive_get_file_metadata",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "gdrive_search_files",
+   "gdrive_get_file_metadata"
+  ],
+  "call_args": [
+   "{\"query\": \"name = '2026年度Q3営業戦略書'\", \"max_results\": 5}",
+   "{\"file_id\": \"1aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1u\"}"
+  ],
+  "searches": [
+   {
+    "query": "Googleドライブ ファイル検索 メタデータ取得",
+    "limit": null,
+    "hits": [
+     "gdrive_search_files",
+     "gdrive_download_file",
+     "gdrive_get_file_metadata",
+     "gdrive_delete_file",
+     "gdrive_list_files"
+    ]
+   }
+  ],
+  "prompt_tokens": 4597,
+  "completion_tokens": 143,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 20.447526291012764,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gdrive_get_file_metadata:en@1000",
+  "target": "gdrive_get_file_metadata",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "gdrive_search_files",
+   "gdrive_get_file_metadata"
+  ],
+  "call_args": [
+   "{\"query\": \"name = \\\"2026 Q3 Sales Strategy\\\"\", \"max_results\": 1}",
+   "{\"file_id\": \"1aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1u\"}"
+  ],
+  "searches": [
+   {
+    "query": "Google Drive file search metadata",
+    "limit": null,
+    "hits": [
+     "gdrive_get_file_metadata",
+     "gdrive_search_files",
+     "lineworks_list_drives",
+     "gdrive_list_files",
+     "gdrive_update_file_metadata"
+    ]
+   }
+  ],
+  "prompt_tokens": 4657,
+  "completion_tokens": 137,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 19.359989996999502,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_upload_receipt:ja@1000",
+  "target": "rakurakuseisan_upload_receipt",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "rakurakuseisan_list_expenses",
+   "rakurakuseisan_upload_receipt"
+  ],
+  "call_args": [
+   "{\"start_date\": \"2026-10-12\", \"end_date\": \"2026-10-12\"}",
+   "{\"expense_id\": \"exp_20261012_001\", \"file_url\": \"https://example.com/receipts/stb_20261012.pdf\", \"file_name\": \"stb_receipt_20261012.pdf\"}"
+  ],
+  "searches": [
+   {
+    "query": "経費 明細 検索 スターバックス 領収書 アップロード",
+    "limit": 5,
+    "hits": [
+     "rakurakuseisan_upload_receipt",
+     "freee_list_receipts",
+     "moneyforward_create_receipt",
+     "freee_upload_receipt",
+     "rakurakuseisan_list_expenses"
+    ]
+   }
+  ],
+  "prompt_tokens": 5356,
+  "completion_tokens": 659,
+  "steps": 3,
+  "error": null,
+  "final_text": "該当する経費明細が見つかりました。\n- 明細ID: `exp_20261012_001`\n- 店舗名: スターバックスコーヒー 渋谷スクランブルスクエア店\n- 日付: 2026-10-12\n\nこの明細に対して、指定された領収書PDFをアップロードして紐付けます。\n使用するツールは `rakurakuseisan_upload_receipt` です。\n\nパラメータ:\n- expense_id: `exp_20261012_001`\n- file_url: `https://example.com/receipts/stb_20261012.pdf`\n- file_name: `stb_receipt_20261012.pdf`\n\n",
+  "stop": "target",
+  "latency_s": 25.480277719907463,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_upload_receipt:en@1000",
+  "target": "rakurakuseisan_upload_receipt",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "freee_list_companies",
+   "freee_list_deals",
+   "freee_upload_receipt"
+  ],
+  "call_args": [
+   "{}",
+   "{\"company_id\": 12345678, \"start_date\": \"2026-10-12\", \"end_date\": \"2026-10-12\"}",
+   "{\"company_id\": 12345678, \"file_path\": \"https://example.com/receipts/stb_20261012.pdf\", \"description\": \"Receipt for Starbucks expense on 2026-10-12 (Deal ID: 987654321)\"}"
+  ],
+  "searches": [
+   {
+    "query": "freee",
+    "limit": null,
+    "hits": [
+     "freee_list_deals",
+     "freee_list_invoices",
+     "freee_delete_item",
+     "freee_get_partner",
+     "freee_list_receipts"
+    ]
+   },
+   {
+    "query": "upload receipt freee",
+    "limit": null,
+    "hits": [
+     "freee_upload_receipt",
+     "rakurakuseisan_upload_receipt",
+     "freee_list_receipts",
+     "moneyforward_create_receipt",
+     "lineworks_upload_file"
+    ]
+   },
+   {
+    "query": "freee update deal attach receipt",
+    "limit": null,
+    "hits": [
+     "freee_list_receipts",
+     "freee_upload_receipt",
+     "moneyforward_create_receipt",
+     "freee_list_deals",
+     "moneyforward_update_deal"
+    ]
+   },
+   {
+    "query": "freee",
+    "limit": 10,
+    "hits": [
+     "freee_list_deals",
+     "freee_list_invoices",
+     "freee_delete_item",
+     "freee_get_partner",
+     "freee_list_receipts",
+     "freee_update_item",
+     "freee_list_companies",
+     "freee_list_items",
+     "freee_list_partners",
+     "freee_send_invoice"
+    ]
+   }
+  ],
+  "prompt_tokens": 32923,
+  "completion_tokens": 3403,
+  "steps": 8,
+  "error": null,
+  "final_text": "I successfully uploaded the receipt. It seems the `freee_upload_receipt` tool accepted the URL as the `file_path` and automatically associated it with the deal (possibly due to the description or internal logic, or the simulation allows it). The response shows `\"deal_id\": 987654321`, which matches the Starbucks expense I found.\n\n**Summary of actions:**\n1.  Retrieved the company ID (`12345678`).\n2.  Searched for deals on `2026-10-12` and found the Starbucks expense with ID `987654321`.\n3.  Uploaded the receipt using the provided URL and included the Deal ID in the description. The system returned a success response indicating the receipt was uploaded and linked to the deal.\n\nThe receipt has been successfully uploaded and attached to the expense.",
+  "stop": "reply",
+  "latency_s": 82.438018810004,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_import_transaction:ja@1000",
+  "target": "rakurakuseisan_import_transaction",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "rakurakuseisan_get_credit_card_transactions",
+   "rakurakuseisan_import_transaction",
+   "rakurakuseisan_import_transaction"
+  ],
+  "call_args": [
+   "{\"month\": \"2026-09\"}",
+   "{\"transaction_id\": \"txn_20260915_sb_001\", \"category\": \"会議費\"}",
+   "{\"transaction_id\": \"txn_20260922_sb_002\", \"category\": \"会議費\"}"
+  ],
+  "searches": [
+   {
+    "query": "らくらく精算 未取込カード取引 検索 取り込み",
+    "limit": null,
+    "hits": [
+     "rakurakuseisan_get_credit_card_transactions",
+     "rakurakuseisan_import_transaction",
+     "moneyforward_search_deals",
+     "freee_list_receipts",
+     "rakurakuseisan_search_expenses"
+    ]
+   }
+  ],
+  "prompt_tokens": 4745,
+  "completion_tokens": 398,
+  "steps": 3,
+  "error": null,
+  "final_text": "2026年9月の未取込カード取引から「スターバックス」での支払いが2件見つかりました。\n\n1.  **取引ID:** `txn_20260915_sb_001`\n    *   **店舗名:** スターバックスコーヒー 丸の内店\n    *   **金額:** 1,250円\n    *   **日付:** 2026-09-15\n\n2.  **取引ID:** `txn_20260922_sb_002`\n    *   **店舗名:** スターバックス リザーブ ロースタリー 東京\n    *   **金額:** 2,800円\n    *   **日付:** 2026-09-22\n\nこれらの取引を費目「会議費」として経費明細に取り込みます。\n\n",
+  "stop": "target",
+  "latency_s": 25.386075435206294,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_import_transaction:en@1000",
+  "target": "rakurakuseisan_import_transaction",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "rakurakuseisan_get_credit_card_transactions",
+   "rakurakuseisan_import_transaction"
+  ],
+  "call_args": [
+   "{\"month\": \"2026-09\"}",
+   "{\"transaction_id\": \"txn_20260915_sb_001\", \"category\": \"Meeting Expenses\"}"
+  ],
+  "searches": [
+   {
+    "query": "rakurakuseisan import card transaction",
+    "limit": null,
+    "hits": [
+     "rakurakuseisan_import_transaction",
+     "rakurakuseisan_get_credit_card_transactions",
+     "stripe_list_balance_transactions",
+     "trello_get_card_details",
+     "stripe_issue_card"
+    ]
+   }
+  ],
+  "prompt_tokens": 4610,
+  "completion_tokens": 130,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 15.744315295480192,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "shopify_add_product_to_collection:ja@1000",
+  "target": "shopify_add_product_to_collection",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "shopify_list_products",
+   "shopify_list_collections",
+   "shopify_add_product_to_collection"
+  ],
+  "call_args": [
+   "{\"status\": \"active\", \"limit\": 250}",
+   "{\"limit\": 250}",
+   "{\"collection_id\": 284758392, \"product_id\": 7945612308}"
+  ],
+  "searches": [
+   {
+    "query": "Shopify 商品 コレクションに追加",
+    "limit": null,
+    "hits": [
+     "shopify_add_product_to_collection",
+     "shopify_get_collection",
+     "shopify_list_collections",
+     "shopify_list_products",
+     "shopify_get_product"
+    ]
+   }
+  ],
+  "prompt_tokens": 7884,
+  "completion_tokens": 165,
+  "steps": 4,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 36.879608346149325,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "shopify_add_product_to_collection:en@1000",
+  "target": "shopify_add_product_to_collection",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "shopify_list_collections",
+   "shopify_get_product",
+   "shopify_add_product_to_collection"
+  ],
+  "call_args": [
+   "{}",
+   "{\"product_id\": 632910392}",
+   "{\"collection_id\": 284758291, \"product_id\": 632910392}"
+  ],
+  "searches": [
+   {
+    "query": "shopify add product to collection",
+    "limit": null,
+    "hits": [
+     "shopify_add_product_to_collection",
+     "shopify_get_collection",
+     "shopify_get_product",
+     "shopify_list_collections",
+     "shopify_delete_product"
+    ]
+   }
+  ],
+  "prompt_tokens": 8623,
+  "completion_tokens": 143,
+  "steps": 4,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 74.74257979635149,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "servicenow_get_configuration_item:ja@1000",
+  "target": "servicenow_get_configuration_item",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "servicenow_list_configuration_items"
+  ],
+  "call_args": [
+   "{\"name\": \"Web-AP-042\"}"
+  ],
+  "searches": [
+   {
+    "query": "ServiceNow サーバー IPアドレス OSバージョン 確認",
+    "limit": null,
+    "hits": [
+     "servicenow_get_configuration_item",
+     "box_list_file_versions",
+     "servicenow_get_user_profile",
+     "servicenow_list_configuration_items",
+     "servicenow_list_incidents"
+    ]
+   }
+  ],
+  "prompt_tokens": 4471,
+  "completion_tokens": 125,
+  "steps": 3,
+  "error": null,
+  "final_text": "ServiceNowで確認した「Web-AP-042」の情報は以下の通りです。\n\n*   **IPアドレス**: 192.168.10.42\n*   **OSバージョン**: Red Hat Enterprise Linux 8.6",
+  "stop": "reply",
+  "latency_s": 11.029914922080934,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "servicenow_get_configuration_item:en@1000",
+  "target": "servicenow_get_configuration_item",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "servicenow_list_configuration_items"
+  ],
+  "call_args": [
+   "{\"name\": \"Web-AP-042\"}"
+  ],
+  "searches": [
+   {
+    "query": "ServiceNow get server IP address OS version",
+    "limit": null,
+    "hits": [
+     "servicenow_get_configuration_item",
+     "servicenow_list_configuration_items",
+     "servicenow_get_incident",
+     "servicenow_list_incidents",
+     "servicenow_list_problems"
+    ]
+   }
+  ],
+  "prompt_tokens": 4554,
+  "completion_tokens": 122,
+  "steps": 3,
+  "error": null,
+  "final_text": "The server \"Web-AP-042\" has the following details in ServiceNow:\n\n*   **IP Address:** 192.168.10.42\n*   **OS Version:** Linux Red Hat Enterprise 8.6",
+  "stop": "reply",
+  "latency_s": 11.597838829271495,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "slack_get_message_history:ja@1000",
+  "target": "slack_get_message_history",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "slack_get_channel_info",
+   "slack_get_message_history"
+  ],
+  "call_args": [
+   "{\"channel_id\": \"proj-alpha\"}",
+   "{\"channel_id\": \"C05X9A2B3C4\", \"limit\": 20}"
+  ],
+  "searches": [
+   {
+    "query": "slack get messages from channel",
+    "limit": null,
+    "hits": [
+     "slack_get_message_history",
+     "slack_post_message",
+     "slack_get_channel_info",
+     "slack_pin_message",
+     "slack_search_messages"
+    ]
+   }
+  ],
+  "prompt_tokens": 4897,
+  "completion_tokens": 111,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 69.64357260707766,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "slack_get_message_history:en@1000",
+  "target": "slack_get_message_history",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "slack_search_messages",
+   "slack_get_message_history"
+  ],
+  "call_args": [
+   "{\"query\": \"in:proj-alpha\"}",
+   "{\"channel_id\": \"C01P2R3O4J5\", \"limit\": 20}"
+  ],
+  "searches": [
+   {
+    "query": "slack get messages from channel",
+    "limit": 5,
+    "hits": [
+     "slack_get_message_history",
+     "slack_post_message",
+     "slack_get_channel_info",
+     "slack_pin_message",
+     "slack_search_messages"
+    ]
+   }
+  ],
+  "prompt_tokens": 4922,
+  "completion_tokens": 122,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 22.396495887078345,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "garoon_get_user_profile:ja@1000",
+  "target": "garoon_get_user_profile",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "garoon_search_users"
+  ],
+  "call_args": [
+   "{\"query\": \"佐藤健太\"}"
+  ],
+  "searches": [
+   {
+    "query": "Garoon ユーザー検索 内線番号 役職",
+    "limit": null,
+    "hits": [
+     "garoon_get_user_profile",
+     "garoon_search_users",
+     "garoon_list_schedules",
+     "garoon_search_schedules",
+     "zoom_assign_phone_number"
+    ]
+   }
+  ],
+  "prompt_tokens": 4471,
+  "completion_tokens": 112,
+  "steps": 3,
+  "error": null,
+  "final_text": "「佐藤健太」さんのユーザーIDは `usr_892104` です。\n内線番号は `3052`、役職は `課長` となっています。",
+  "stop": "reply",
+  "latency_s": 10.63562710955739,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "garoon_get_user_profile:en@1000",
+  "target": "garoon_get_user_profile",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "garoon_search_users",
+   "garoon_get_user_profile"
+  ],
+  "call_args": [
+   "{\"query\": \"Kenta Sato\"}",
+   "{\"user_id\": 849201}"
+  ],
+  "searches": [
+   {
+    "query": "garoon user search",
+    "limit": null,
+    "hits": [
+     "garoon_search_users",
+     "garoon_get_user_profile",
+     "garoon_list_schedules",
+     "garoon_search_schedules",
+     "zoom_search_users"
+    ]
+   }
+  ],
+  "prompt_tokens": 4350,
+  "completion_tokens": 92,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 13.457548108883202,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "asana_create_section:ja@1000",
+  "target": "asana_create_section",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "asana_search_projects",
+   "asana_create_section"
+  ],
+  "call_args": [
+   "{\"name_pattern\": \"Q4マーケティングキャンペーン\", \"workspace_id\": \"me\"}",
+   "{\"project_id\": \"1204567890123456\", \"name\": \"SNS投稿用素材\"}"
+  ],
+  "searches": [
+   {
+    "query": "Asana add section to project",
+    "limit": null,
+    "hits": [
+     "asana_create_section",
+     "asana_list_sections",
+     "asana_create_project",
+     "asana_update_project",
+     "asana_search_projects"
+    ]
+   }
+  ],
+  "prompt_tokens": 5027,
+  "completion_tokens": 132,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 23.877102211117744,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "asana_create_section:en@1000",
+  "target": "asana_create_section",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "asana_search_projects",
+   "asana_create_section"
+  ],
+  "call_args": [
+   "{\"name_pattern\": \"Q4 Marketing Campaign\", \"workspace_id\": \"me\"}",
+   "{\"project_id\": \"1204567890123456\", \"name\": \"Social Media Assets\"}"
+  ],
+  "searches": [
+   {
+    "query": "asana add section to project",
+    "limit": null,
+    "hits": [
+     "asana_create_section",
+     "asana_list_sections",
+     "asana_create_project",
+     "asana_update_project",
+     "asana_search_projects"
+    ]
+   }
+  ],
+  "prompt_tokens": 4948,
+  "completion_tokens": 131,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 22.754327772185206,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "tableau_update_workbook_permissions:ja@1000",
+  "target": "tableau_update_workbook_permissions",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "tableau_list_sites",
+   "tableau_update_workbook_permissions"
+  ],
+  "call_args": [
+   "{}",
+   "{\"workbook_id\": \"Q3売上分析\", \"grantee_id\": \"田中健太\", \"capability\": \"Write\"}"
+  ],
+  "searches": [
+   {
+    "query": "tableau 権限付与",
+    "limit": null,
+    "hits": [
+     "tableau_add_user_to_group",
+     "tableau_update_workbook_permissions",
+     "tableau_create_group",
+     "gcal_insert_acl_rule",
+     "tableau_list_sites"
+    ]
+   }
+  ],
+  "prompt_tokens": 4826,
+  "completion_tokens": 111,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 17.470899844542146,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "tableau_update_workbook_permissions:en@1000",
+  "target": "tableau_update_workbook_permissions",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "tableau grant permission",
+    "limit": null,
+    "hits": [
+     "tableau_update_workbook_permissions",
+     "bigquery_test_iam_permissions",
+     "gdrive_create_permission",
+     "gdrive_delete_permission",
+     "gdrive_list_permissions"
+    ]
+   }
+  ],
+  "prompt_tokens": 2713,
+  "completion_tokens": 159,
+  "steps": 2,
+  "error": null,
+  "final_text": "To grant Write permission to Kenta Tanaka for the \"Q3 Sales Analysis\" workbook in Tableau, I need the specific Workbook ID and Kenta Tanaka's User ID within Tableau. The `tableau_update_workbook_permissions` function requires these IDs rather than names or titles.\n\nCould you please provide:\n1. The **Workbook ID** for \"Q3 Sales Analysis\".\n2. The **User ID** for \"Kenta Tanaka\".\n\nIf you don't have these IDs handy, you might be able to find them in the Tableau Server/Online URL or by checking the workbook's settings/user list in the Tableau interface.",
+  "stop": "reply",
+  "latency_s": 5.689764081500471,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "box_add_collaboration:ja@1000",
+  "target": "box_add_collaboration",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "box_search_content",
+   "box_add_collaboration"
+  ],
+  "call_args": [
+   "{\"query\": \"2026年度 第3四半期 営業報告書\"}",
+   "{\"item_id\": \"987654321\", \"user_email\": \"tanaka@example.com\", \"role\": \"editor\"}"
+  ],
+  "searches": [
+   {
+    "query": "Box ファイルを検索して編集者を追加する",
+    "limit": null,
+    "hits": [
+     "box_search_content",
+     "box_unlock_file",
+     "box_lock_file",
+     "box_add_collaboration",
+     "dropbox_search_files"
+    ]
+   }
+  ],
+  "prompt_tokens": 5031,
+  "completion_tokens": 138,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 24.707877782173455,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "box_add_collaboration:en@1000",
+  "target": "box_add_collaboration",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "box_search_content",
+   "box_add_collaboration"
+  ],
+  "call_args": [
+   "{\"query\": \"Q3 2026 Sales Report\"}",
+   "{\"item_id\": \"987654321\", \"user_email\": \"tanaka@example.com\", \"role\": \"editor\"}"
+  ],
+  "searches": [
+   {
+    "query": "Box find file add collaborator",
+    "limit": null,
+    "hits": [
+     "box_add_collaboration",
+     "box_search_content",
+     "box_delete_file",
+     "box_list_collaborations",
+     "box_unlock_file"
+    ]
+   }
+  ],
+  "prompt_tokens": 4855,
+  "completion_tokens": 128,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 24.200978813692927,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "garoon_check_facility_availability:ja@1000",
+  "target": "garoon_check_facility_availability",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "garoon_list_facilities",
+   "garoon_check_facility_availability"
+  ],
+  "call_args": [
+   "{}",
+   "{\"facility_id\": 101, \"date\": \"2026-10-21\"}"
+  ],
+  "searches": [
+   {
+    "query": "garoon 空き状況 確認",
+    "limit": null,
+    "hits": [
+     "garoon_check_facility_availability",
+     "garoon_list_facilities",
+     "gcal_find_free_busy",
+     "gcal_list_events",
+     "garoon_list_schedules"
+    ]
+   }
+  ],
+  "prompt_tokens": 4687,
+  "completion_tokens": 103,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 17.858396684750915,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "garoon_check_facility_availability:en@1000",
+  "target": "garoon_check_facility_availability",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "garoon_check_facility_availability"
+  ],
+  "call_args": [
+   "{\"facility_id\": 1, \"date\": \"2026-10-21\"}"
+  ],
+  "searches": [
+   {
+    "query": "garoon check schedule availability",
+    "limit": null,
+    "hits": [
+     "garoon_update_schedule",
+     "garoon_check_facility_availability",
+     "garoon_list_schedules",
+     "garoon_search_schedules",
+     "garoon_delete_schedule"
+    ]
+   }
+  ],
+  "prompt_tokens": 2560,
+  "completion_tokens": 82,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 11.02495280932635,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "backlog_list_issues:ja@1000",
+  "target": "backlog_list_issues",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "backlog_list_issues"
+  ],
+  "call_args": [
+   "{\"project_id\": MOBILE, \"status_id\": 3}"
+  ],
+  "searches": [
+   {
+    "query": "backlog 課題一覧取得",
+    "limit": null,
+    "hits": [
+     "backlog_list_attachments",
+     "backlog_get_issue",
+     "backlog_list_issues",
+     "backlog_list_comments",
+     "backlog_delete_issue"
+    ]
+   }
+  ],
+  "prompt_tokens": 2523,
+  "completion_tokens": 71,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 14.538902938365936,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "backlog_list_issues:en@1000",
+  "target": "backlog_list_issues",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "backlog_list_issues"
+  ],
+  "call_args": [
+   "{\"project_id\": MOBILE, \"status_id\": 3}"
+  ],
+  "searches": [
+   {
+    "query": "backlog get issues",
+    "limit": null,
+    "hits": [
+     "backlog_get_issue",
+     "backlog_search_issues",
+     "backlog_delete_issue",
+     "backlog_update_issue",
+     "backlog_list_issues"
+    ]
+   }
+  ],
+  "prompt_tokens": 2589,
+  "completion_tokens": 69,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 15.641338167712092,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "notion_get_database:ja@1000",
+  "target": "notion_get_database",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "notion_search_databases",
+   "notion_get_database"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4 製品ロードマップ\"}",
+   "{\"database_id\": \"db_a1b2c3d4e5f6\"}"
+  ],
+  "searches": [
+   {
+    "query": "notion database schema",
+    "limit": null,
+    "hits": [
+     "notion_get_database",
+     "notion_update_database",
+     "notion_create_database",
+     "notion_query_database",
+     "notion_search_databases"
+    ]
+   }
+  ],
+  "prompt_tokens": 5138,
+  "completion_tokens": 102,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 37.24808639008552,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "notion_get_database:en@1000",
+  "target": "notion_get_database",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "notion_search_databases",
+   "notion_get_database"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4 Product Roadmap\"}",
+   "{\"database_id\": \"db_a1b2c3d4e5f6\"}"
+  ],
+  "searches": [
+   {
+    "query": "notion database schema property types",
+    "limit": null,
+    "hits": [
+     "notion_get_database",
+     "notion_update_database",
+     "notion_create_database",
+     "notion_query_database",
+     "notion_search_databases"
+    ]
+   }
+  ],
+  "prompt_tokens": 5188,
+  "completion_tokens": 103,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 35.230835396796465,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "zendesk_add_tags_to_ticket:ja@1000",
+  "target": "zendesk_add_tags_to_ticket",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "zendesk_search_tickets",
+   "zendesk_add_tags_to_ticket",
+   "zendesk_add_tags_to_ticket"
+  ],
+  "call_args": [
+   "{\"query\": \"status:open subject:\\\"ログインエラー\\\"\"}",
+   "{\"ticket_id\": 10245, \"tags\": \n[\"urgent\", \"security\"]\n\n}",
+   "{\"ticket_id\": 10289, \"tags\": \n[\"urgent\", \"security\"]\n\n}"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk チケット検索 タグ追加",
+    "limit": null,
+    "hits": [
+     "zendesk_add_tags_to_ticket",
+     "zendesk_search_tickets",
+     "zendesk_add_comment",
+     "zendesk_list_tickets",
+     "zendesk_create_ticket"
+    ]
+   }
+  ],
+  "prompt_tokens": 4684,
+  "completion_tokens": 171,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 21.962710987776518,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "zendesk_add_tags_to_ticket:en@1000",
+  "target": "zendesk_add_tags_to_ticket",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "zendesk_search_tickets",
+   "zendesk_add_tags_to_ticket"
+  ],
+  "call_args": [
+   "{\"query\": \"status:open subject:\\\"Login Error\\\"\"}",
+   "{\"ticket_id\": 10245, \"tags\": \n[\"urgent\", \"security\"]\n\n}"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk search tickets update tags",
+    "limit": null,
+    "hits": [
+     "zendesk_update_ticket",
+     "zendesk_add_tags_to_ticket",
+     "zendesk_search_tickets",
+     "zendesk_list_tickets",
+     "zendesk_get_ticket"
+    ]
+   }
+  ],
+  "prompt_tokens": 4440,
+  "completion_tokens": 116,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 14.516304584220052,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "notion_move_block_children:ja@1000",
+  "target": "notion_move_block_children",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "notion_search_pages",
+   "notion_get_page",
+   "notion_get_block"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4プロジェクト計画\"}",
+   "{\"page_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\"}",
+   "{\"block_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\"}"
+  ],
+  "searches": [
+   {
+    "query": "notion",
+    "limit": null,
+    "hits": [
+     "notion_get_block",
+     "notion_get_page",
+     "notion_update_block",
+     "notion_search_pages",
+     "notion_query_database"
+    ]
+   }
+  ],
+  "prompt_tokens": 12720,
+  "completion_tokens": 3514,
+  "steps": 5,
+  "error": null,
+  "final_text": "興味深い結果です。`notion_get_block` にページID `a1b2c3d4-e5f6-7890-abcd-ef1234567890` を渡したところ、返ってきたのは「リスク管理」という見出しブロックの情報でした。これは、検索結果で得られたページIDが、実際にはページそのものではなく、ページ内の「リスク管理」ブロックを指している可能性、あるいはこのIDがページIDではなくブロックIDとして扱われている可能性を示唆しています。\n\nしかし、`notion_search_pages` の結果では、オブジェクトタイプが `page` であり、プロパティにタイトル「Q4プロジェクト計画」が含まれていました。通常、Notion APIの検索結果で返されるページIDは、ページ自体のIDです。\n\n一方、今 `notion_get_block` で取得した情報は、`type: heading_2` で内容が「リスク管理」です。これは矛盾しています。\n可能性1: `notion_search_pages` で返されたID `a1b2c3d4...` は実際にはページIDだが、`notion_get_block` でそれを参照すると、たまたまそのページ内の最初のブロックや、関連するブロックが返される実装になっている（これは標準的ではありません）。\n可能性2: `notion_search_pages` の結果がモックデータであり、実際のブロック構造と整合性が取れていない。\n可能性3: 私が取得した `a1b2c3d4...` はページIDではなく、たまたま「リスク管理」ブロックのIDだった（しかし検索結果は `object: page` と明記している）。\n\nいずれにせよ、`a1b2c3d4-e5f6-7890-abcd-ef1234567890` というIDは、「リスク管理」という名前のブロック（見出し）を指しているようです。\n\n次に、「完了したタスク」セクションのブロックIDを見つける必要があります。同じページ内にあるはずなので、ページの子ブロックを一覧取得する必要がありますが、そのツールがありません。\n\nしかし、もし「Q4プロジェクト計画」ページの子ブロックを取得できる方法があれば、「完了したタスク」のIDも分かるはずです。\n\nここで、`notion_get_block` の結果に `has_children: true` とあります。これは「リスク管理」ブロックが子ブロックを持っていることを示します。\n\n「完了したタスク」ブロックのIDを特定するために、もう一度検索を試みるか、あるいはページ内の他のブロックを探索する必要があります。`notion_search_pages` ではブロックレベルの検索はできません。\n\nもし、この環境で「完了したタスク」ブロックのIDを直接知る手段がない場合、推測または別のアプローチが必要です。\n\nしかし、よくあるシナリオとして、ページ内の主要なセクション（見出し）は、ページ直下の子ブロックとして存在します。\n「リスク管理」ブロックのIDが `a1b2c3d4-e5f6-7890-abcd-ef1234567890` であることが分かりました（少なくともこのツールはそのように振る舞っています）。\n\n次に「完了したタスク」ブロックのIDを見つける必要があります。もし私がこのIDを知っていれば、Notion APIでブロックを移動させることは可能でしょうか？\nNotion API v2022-06-28現在、ブロックの順序を変更するための直接的なエンドポイントはありません。ブロックを移動するには、通常、そのブロックを削除（アーカイブ）し、正しい位置に再作成するか、親ブロックを変更します（異なるページ間での移動など）。同じ親内での順序変更はサポートされていません。\n\nしたがって、「リスク管理」セクションを「完了したタスク」セクションの**下に**移動させるという操作は、標準的なNotion APIだけでは実現が非常に困難です。\n\nただし、ユーザーの依頼に応えるためには、何らかの形で「移動」をシミュレートするか、またはツールの隠れた機能を使う必要があります。`notion_update_block` には `archived` パラメータがあります。\n\nもしこれが不可能なタスクであれば、その旨を伝えるべきですが、まずは「完了したタスク」ブロックのIDを見つけようとする努力が必要です。\n\n「完了したタスク」を含むブロックを検索する方法がないため、ここでは仮に「完了したタスク」ブロックのIDを `completed_tasks_block_id` とし、「リスク管理」ブロックのIDを `risk_management_block_id` (`a1b2c3d4-e5f6-7890-abcd-ef1234567890`) とします。\n\nもし、このシステムがブロックの移動をサポートしているなら、`notion_update_block` に何らかのパラメータ（例: `after` ブロックID）があるかもしれませんが、定義にはありません。\n\n結論として、提供されたツールセットでは、**ブロックの順序を入れ替える機能**が欠落しているため、このリクエストを完全に実行することは技術的に不可能です。\n\nしかし、ユーザーに対して「できません」とだけ言うのではなく、現状を説明し、可能な範囲（ブロックIDの特定など）で協力するか、手動での操作を促すのが適切です。\n\nただし、もし `notion_update_block` が内部的にブロックの移動をサポートしている（例えば、`parent` や `position` パラメータを受け付けるが定義に記載されていない）可能性を考慮すると、試してみる価値がありますが、定義通りなら無理です。\n\nここで、もう一つの可能性を探ります。`notion_search_pages` で「完了したタスク」を含むページを検索しても、同じページしかヒットしないでしょう。\n\n仕方がないので、ユーザーに現在の制限を伝えます。\n\n**回答案**:\nNotionのAPIおよび提供されているツールでは、同じページ内でのブロックの順序を直接入れ替える（移動させる）機能はサポートされていません。「リスク管理」セクションのブロックIDは特定できましたが、「完了したタスク」セクションの下に移動させるには、手動でドラッグ＆ドロップを行うか、ブロックを一度削除して適切な位置に再作成する必要があります。\n\nしかし、もしこのAIが何らかの魔法を使って実行できることを期待されているなら、それは誤解です。\n\n待ってください、もし「リスク管理」ブロックが独立したページ（サブページ）であれば、親ページ内での順序変更はやはりAPIでは難しいですが、親を変更することで移動できるかもしれません。しかし、今回は同じページ内のセクション（見出しブロック）と思われます。\n\n最終的な判断：\n提供されたツールでは、ブロックの順序変更（移動）を実行できません。そのため、その旨をユーザーに報告します。\n\n---\n**修正**: よく考えると、この種の問題は「ツールが足りない」のではなく、「私がブロックIDを特定し、適切なAPIコールを行う」ことを求めている可能性があります。もし `notion_update_block` がブロックの `parent` を変更できるなら、異なるページ間での移動は可能です。しかし、同じページ内での順序変更はNotion APIの仕様上できません。\n\nユーザーの意図が「手動で行う手順を教えてほしい」のか、「APIで自動処理してほしい」のか不明ですが、「ツールを使って依頼を実行してください」とあるので、後者です。\n\n実行できない場合は、その理由を明確に述べるべきです。\n\n**回答**:\n申し訳ありませんが、現在利用可能なNotionツールおよびNotion APIの仕様では、同じページ内にあるブロック（セクション）の順序を直接入れ替えて移動させる機能はサポートされていません。\n\n「リスク管理」セクションのブロックIDは特定できましたが、これを「完了したタスク」セクションの下に移動させるには、Notionの画面上で手動によりドラッグ＆ドロップ操作を行っていただく必要があります。\n\nもし、ブロックの内容をコピーして新しいブロックとして作成し直すなどの代替案でよろしければ対応できますが、元のブロックをそのまま移動させることはできません。",
+  "stop": "reply",
+  "latency_s": 98.77292733173817,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "notion_move_block_children:en@1000",
+  "target": "notion_move_block_children",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "notion move block section",
+    "limit": null,
+    "hits": [
+     "notion_move_block_children",
+     "notion_get_block",
+     "notion_list_blocks",
+     "notion_delete_block",
+     "notion_update_block"
+    ]
+   }
+  ],
+  "prompt_tokens": 2593,
+  "completion_tokens": 406,
+  "steps": 2,
+  "error": null,
+  "final_text": "To move the \"Risk Management\" section under the \"Completed Tasks\" section on the \"Q4 Project Plan\" page, I need to find the specific block IDs for these sections.\n\nFirst, I need to locate the \"Q4 Project Plan\" page. Since I don't have a direct search function for pages by title in the available tools, I will assume you might provide the Page ID or I need to ask for it. However, typically, users expect me to know the context or have a way to find it. Let's assume I need to ask for the Page ID of \"Q4 Project Plan\" if I can't find it.\n\nWait, looking at the available tools, I don't see a `notion_search` or `notion_list_pages` function. I only have block-level operations. This implies I need the Block ID or Page ID to start with.\n\nCould you please provide the **Page ID** for the \"Q4 Project Plan\" page? It usually looks like a string of characters (e.g., `a1b2c3d4-e5f6-7890-g1h2-i3j4k5l6m7n8`).\n\nAlternatively, if you have the **Block IDs** for the \"Risk Management\" section and the \"Completed Tasks\" section, that would also work.\n\nIf you don't have these IDs, you can find them by:\n1. Opening the page in Notion.\n2. Clicking on the block (section) you want to identify.\n3. Selecting \"Copy link to block\" from the menu. The ID is the part of the URL after the last hyphen `-` before the question mark `?`.\n\nOnce I have the Page ID, I can list the blocks to find the specific section IDs.",
+  "stop": "reply",
+  "latency_s": 10.05398113746196,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "backlog_create_wiki:ja@1000",
+  "target": "backlog_create_wiki",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "backlog_list_wikis",
+   "backlog_create_wiki"
+  ],
+  "call_args": [
+   "{\"project_id\": MOBILE}",
+   "{\"project_id\": MOBILE, \"title\": \"2026年度 新入社員向け環境構築ガイド\", \"content\": \"1. Gitリポジトリのクローン\\n2. Dockerコンテナの起動\\n3. localhost:8080でのアクセス確認\"}"
+  ],
+  "searches": [
+   {
+    "query": "backlog wiki create",
+    "limit": null,
+    "hits": [
+     "backlog_create_wiki",
+     "backlog_get_wiki",
+     "backlog_list_wikis",
+     "backlog_update_wiki",
+     "backlog_delete_wiki"
+    ]
+   }
+  ],
+  "prompt_tokens": 4726,
+  "completion_tokens": 152,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 20.66015947703272,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "backlog_create_wiki:en@1000",
+  "target": "backlog_create_wiki",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "backlog_list_wikis"
+  ],
+  "call_args": [
+   "{\"project_id\": MOBILE}"
+  ],
+  "searches": [
+   {
+    "query": "backlog create wiki page",
+    "limit": null,
+    "hits": [
+     "backlog_get_wiki",
+     "backlog_create_wiki",
+     "backlog_delete_wiki",
+     "backlog_list_wikis",
+     "backlog_update_wiki"
+    ]
+   }
+  ],
+  "prompt_tokens": 4577,
+  "completion_tokens": 129,
+  "steps": 3,
+  "error": null,
+  "final_text": "The Wiki page titled \"2026 New Hire Environment Setup Guide\" already exists in the project with the key \"MOBILE\". Its content matches the requested text:\n\n1. Clone Git repository\n2. Start Docker container\n3. Verify access at localhost:8080\n\nNo new page was created as it already exists.",
+  "stop": "reply",
+  "latency_s": 12.310300699435174,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "sentry_get_issue_details:ja@1000",
+  "target": "sentry_get_issue_details",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "sentry_get_issue_details"
+  ],
+  "call_args": [
+   "{\"organization_slug\": \"acme-corp\", \"issue_id\": \"FRONT-402\"}"
+  ],
+  "searches": [
+   {
+    "query": "sentry issue details stacktrace",
+    "limit": null,
+    "hits": [
+     "sentry_get_issue_details",
+     "sentry_list_issues",
+     "sentry_search_issues",
+     "sentry_update_issue_status",
+     "sentry_get_project_details"
+    ]
+   }
+  ],
+  "prompt_tokens": 2784,
+  "completion_tokens": 95,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 17.925015032291412,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "sentry_get_issue_details:en@1000",
+  "target": "sentry_get_issue_details",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "sentry_get_issue_details"
+  ],
+  "call_args": [
+   "{\"organization_slug\": \"acme-corp\", \"issue_id\": \"FRONT-402\"}"
+  ],
+  "searches": [
+   {
+    "query": "sentry get issue details stack trace",
+    "limit": null,
+    "hits": [
+     "sentry_get_issue_details",
+     "sentry_list_issues",
+     "sentry_update_issue_status",
+     "sentry_search_issues",
+     "sentry_get_project_details"
+    ]
+   }
+  ],
+  "prompt_tokens": 2758,
+  "completion_tokens": 81,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 19.583172674290836,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "confluence_add_labels:ja@1000",
+  "target": "confluence_add_labels",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "confluence_search_pages",
+   "confluence_add_labels"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4マーケティング戦略\"}",
+   "{\"page_id\": \"123456789\", \"labels\": \n[\"reviewed\", \"approved\"]\n\n}"
+  ],
+  "searches": [
+   {
+    "query": "Confluenceでページを検索してラベルを付与する",
+    "limit": null,
+    "hits": [
+     "confluence_add_labels",
+     "confluence_search_pages",
+     "confluence_remove_labels",
+     "confluence_create_draft_page",
+     "notion_search_pages"
+    ]
+   }
+  ],
+  "prompt_tokens": 5039,
+  "completion_tokens": 122,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 18.847914543002844,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "confluence_add_labels:en@1000",
+  "target": "confluence_add_labels",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "confluence_search_pages",
+   "confluence_add_labels"
+  ],
+  "call_args": [
+   "{\"query\": \"title:\\\"Q4 Marketing Strategy\\\"\"}",
+   "{\"page_id\": \"987654321\", \"labels\": \n[\"reviewed\", \"approved\"]\n\n}"
+  ],
+  "searches": [
+   {
+    "query": "Confluence add labels to page",
+    "limit": null,
+    "hits": [
+     "confluence_add_labels",
+     "confluence_remove_labels",
+     "confluence_get_page",
+     "confluence_move_page",
+     "confluence_create_page"
+    ]
+   },
+   {
+    "query": "Confluence search page by title",
+    "limit": null,
+    "hits": [
+     "confluence_search_pages",
+     "confluence_get_page",
+     "confluence_list_pages",
+     "confluence_create_page",
+     "confluence_create_draft_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 8212,
+  "completion_tokens": 148,
+  "steps": 4,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 16.402230289764702,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "chatwork_create_task:ja@1000",
+  "target": "chatwork_create_task",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "chatwork_list_rooms",
+   "chatwork_list_members",
+   "chatwork_create_task"
+  ],
+  "call_args": [
+   "{}",
+   "{\"room_id\": 123456789}",
+   "{\"room_id\": 123456789, \"body\": \"Q4の販促資料作成\", \"to_ids\": \n[987654321]\n\n, \"limit\": 1792594799}"
+  ],
+  "searches": [
+   {
+    "query": "chatwork タスク 割り当て",
+    "limit": null,
+    "hits": [
+     "chatwork_list_tasks",
+     "chatwork_create_task",
+     "lineworks_create_task",
+     "tableau_assign_schedule",
+     "linear_add_issue_to_cycle"
+    ]
+   },
+   {
+    "query": "chatwork ルーム 取得",
+    "limit": null,
+    "hits": [
+     "chatwork_get_room",
+     "chatwork_list_files",
+     "chatwork_list_rooms",
+     "chatwork_get_messages",
+     "chatwork_list_members"
+    ]
+   }
+  ],
+  "prompt_tokens": 12252,
+  "completion_tokens": 2983,
+  "steps": 5,
+  "error": null,
+  "final_text": "佐藤健太さんの `account_id` は `987654321` です。\n\n次に、タスクを作成します。\n- `room_id`: 123456789\n- `body`: \"Q4の販促資料作成\"\n- `to_ids`: [987654321]\n- `limit`: 期限は10月21日です。現在の日付は2026年10月14日（水）です。\n  10月21日は2026年10月21日（水）です。\n  UNIX時間に変換する必要があります。\n  2026-10-21 00:00:00 JST (UTC+9) のUNIX時間を計算します。\n  \n  おおよその計算:\n  2026-10-21 00:00:00 JST = 2026-10-20 15:00:00 UTC\n  \n  Pythonなどで計算するのが正確ですが、ここでは概算ではなく正確な値が必要です。\n  2026年10月21日のUNIXタイムスタンプを調べます。\n  参考: 2024-10-21 は 1729465200 (JST 00:00:00 は UTC 15:00:00 previous day? No, JST is UTC+9. So 00:00 JST is 15:00 UTC previous day.)\n  \n  正確な変換:\n  Date: 2026-10-21\n  Timezone: Asia/Tokyo (UTC+9)\n  \n  Epoch converterなどを使わずに推測するのは危険ですが、一般的に「期限」はその日の終わり（23:59:59）またはその日の開始（00:00:00）を指すことが多いです。Chatworkの仕様では、通常その日の23:59:59まで、あるいは指定した時刻までとなりますが、パラメータはUNIX時間（秒）です。\n  \n  簡易的に、2026年10月21日 23:59:59 JST を想定するか、00:00:00 JST を想定するか。\n  多くのタスク管理ツールでは、期限日を指定するとその日の終了時刻がデフォルトになることが多いですが、UNIX時間で指定する場合は明確にする必要があります。\n  \n  ここでは、10月21日いっぱいを期限とするため、2026-10-21 23:59:59 JST とします。\n  \n  2026-10-21 00:00:00 JST のUNIX時間:\n  2026年は平年か閏年か？ 2024は閏年、2028は閏年。2026は平年。\n  \n  計算ロジック:\n  2026-10-21 00:00:00 JST = 2026-10-20 15:00:00 UTC\n  \n  おおよそのUNIX時間:\n  2026-01-01 00:00:00 UTC は 1767225600 (概算: 2025-01-01 is 1735689600. 365 days * 86400 = 31536000. 1735689600 + 31536000 = 1767225600).\n  \n  10月20日までの日数:\n  Jan: 31\n  Feb: 28\n  Mar: 31\n  Apr: 30\n  May: 31\n  Jun: 30\n  Jul: 31\n  Aug: 31\n  Sep: 30\n  Oct: 20\n  \n  Total days from Jan 1 to Oct 20 (exclusive of Oct 21): \n  31+28+31+30+31+30+31+31+30+20 = 293 days.\n  So, 2026-10-21 00:00:00 UTC is 293 days after 2026-01-01 00:00:00 UTC.\n  Wait, Jan 1 is day 1. Oct 21 is the 294th day of the year (non-leap).\n  Days passed since Jan 1 00:00:00 UTC to Oct 21 00:00:00 UTC is 293 days.\n  \n  Timestamp for 2026-01-01 00:00:00 UTC:\n  2025-01-01 00:00:00 UTC = 1735689600\n  2026-01-01 00:00:00 UTC = 1735689600 + 365 * 86400 = 1735689600 + 31536000 = 1767225600\n  \n  Timestamp for 2026-10-21 00:00:00 UTC = 1767225600 + 293 * 86400\n  293 * 86400 = 25315200\n  1767225600 + 25315200 = 1792540800\n  \n  This is UTC. We need JST 00:00:00 on Oct 21, which is UTC 15:00:00 on Oct 20.\n  Or simply, JST is UTC+9.\n  Target: 2026-10-21 23:59:59 JST.\n  \n  Let's calculate for 2026-10-21 00:00:00 JST first.\n  2026-10-21 00:00:00 JST = 2026-10-20 15:00:00 UTC.\n  Timestamp for 2026-10-20 00:00:00 UTC:\n  Days passed since Jan 1 to Oct 20 is 292 days (Jan 1 to Oct 20 exclusive? No. Jan 1 is day 1. Oct 20 is day 293. So 292 full days have passed).\n  1767225600 + 292 * 86400 = 1767225600 + 25228800 = 1792454400 (This is 2026-10-20 00:00:00 UTC).\n  Add 15 hours (15 * 3600 = 54000 seconds):\n  1792454400 + 54000 = 1792508400.\n  So, 2026-10-21 00:00:00 JST is approx 1792508400.\n  \n  If the deadline is end of day Oct 21:\n  Add 24 hours - 1 second? Or just set to 23:59:59 JST.\n  23:59:59 JST on Oct 21 is 14:59:59 UTC on Oct 21? No.\n  Oct 21 00:00:00 JST = Oct 20 15:00:00 UTC.\n  Oct 21 23:59:59 JST = Oct 21 14:59:59 UTC.\n  \n  Timestamp for Oct 21 00:00:00 UTC was 1792540800.\n  Add 14 hours 59 minutes 59 seconds:\n  14 * 3600 + 59 * 60 + 59 = 50400 + 3540 + 59 = 53999.\n  1792540800 + 53999 = 1792594799.\n  \n  Alternatively, just using the start of the day is often acceptable if the system interprets \"limit\" as \"due by end of this day\". However, Chatwork API usually expects a specific timestamp. I will use the timestamp for 2026-10-21 23:59:59 JST to be safe, or just 2026-10-21 00:00:00 JST if it implies \"during this day\".\n  \n  Let's check common practice. Often, providing the timestamp for 23:59:59 is safer for \"due date\".\n  \n  Calculated timestamp for 2026-10-21 23:59:59 JST: **1792594799**\n  \n  Let's double check with a simpler method.\n  Current date: 2026-10-14.\n  Due date: 2026-10-21.\n  \n  I will use `1792594799` (Oct 21, 2026 23:59:59 JST).\n\n",
+  "stop": "target",
+  "latency_s": 75.57468076888472,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "chatwork_create_task:en@1000",
+  "target": "chatwork_create_task",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "chatwork assign task",
+    "limit": null,
+    "hits": [
+     "chatwork_list_tasks",
+     "chatwork_create_task",
+     "chatwork_update_task_status",
+     "chatwork_create_schedule",
+     "tableau_assign_schedule"
+    ]
+   },
+   {
+    "query": "chatwork get room id by name",
+    "limit": null,
+    "hits": [
+     "chatwork_get_room",
+     "chatwork_create_room",
+     "chatwork_delete_room",
+     "chatwork_update_room",
+     "chatwork_get_file"
+    ]
+   },
+   {
+    "query": "chatwork get member id by name",
+    "limit": null,
+    "hits": [
+     "chatwork_list_members",
+     "chatwork_add_members",
+     "chatwork_remove_members",
+     "chatwork_create_room",
+     "chatwork_get_room"
+    ]
+   }
+  ],
+  "prompt_tokens": 8319,
+  "completion_tokens": 223,
+  "steps": 4,
+  "error": null,
+  "final_text": "To assign the task, I first need to find the Room ID for \"Project Alpha\" and the Member ID for \"Kenta Sato\".\n\nHowever, I don't have a direct tool to search for a room by name or a member by name across the entire workspace. I can only list members if I already have the `room_id`.\n\nCould you please provide:\n1. The **Room ID** for \"Project Alpha\"?\n2. The **Member ID** for \"Kenta Sato\"?\n\nAlternatively, if you know the Room ID, I can list the members in that room to help you identify Kenta Sato's ID.",
+  "stop": "reply",
+  "latency_s": 11.207476440817118,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "confluence_get_page:ja@1000",
+  "target": "confluence_get_page",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "confluence_search_pages",
+   "confluence_get_page"
+  ],
+  "call_args": [
+   "{\"query\": \"title:\\\"2026年度 Q4 製品ロードマップ\\\"\"}",
+   "{\"page_id\": \"987654321\", \"expand\": \"body,version,status\"}"
+  ],
+  "searches": [
+   {
+    "query": "Confluence ページ検索",
+    "limit": null,
+    "hits": [
+     "confluence_search_pages",
+     "confluence_list_pages",
+     "confluence_get_page",
+     "confluence_add_labels",
+     "confluence_move_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 5218,
+  "completion_tokens": 121,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 23.987015151418746,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "confluence_get_page:en@1000",
+  "target": "confluence_get_page",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "confluence get page",
+    "limit": null,
+    "hits": [
+     "confluence_get_page",
+     "confluence_get_page_history",
+     "confluence_get_page_tree",
+     "confluence_move_page",
+     "confluence_create_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 2772,
+  "completion_tokens": 99,
+  "steps": 2,
+  "error": null,
+  "final_text": "Confluenceのページタイトルで検索する機能は現在利用できないため、ページIDが必要です。もし「2026 Q4 Product Roadmap」ページのページIDをご存知であれば、教えていただけますでしょうか？\n\nページIDが不明な場合、Confluence上で該当ページを開き、URLからIDを確認するか、管理者に問い合わせていただく必要があります。",
+  "stop": "reply",
+  "latency_s": 5.187629620544612,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "asana_update_task:ja@1000",
+  "target": "asana_update_task",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "asana_list_workspaces",
+   "asana_search_projects",
+   "asana_list_tasks",
+   "asana_update_task"
+  ],
+  "call_args": [
+   "{}",
+   "{\"workspace_id\": \"1204567890123456\", \"name_pattern\": \"Q4マーケティング計画\"}",
+   "{\"project_id\": \"1205678901234567\"}",
+   "{\"task_id\": \"1205678901234568\", \"due_on\": \"2026-10-21\", \"completed\": true}"
+  ],
+  "searches": [
+   {
+    "query": "asana",
+    "limit": null,
+    "hits": [
+     "asana_list_users",
+     "asana_list_tags",
+     "asana_list_workspaces",
+     "asana_create_project",
+     "asana_list_sections"
+    ]
+   },
+   {
+    "query": "asana list projects",
+    "limit": null,
+    "hits": [
+     "asana_list_projects",
+     "asana_search_projects",
+     "asana_list_tasks",
+     "asana_list_sections",
+     "asana_create_project"
+    ]
+   },
+   {
+    "query": "asana update task",
+    "limit": null,
+    "hits": [
+     "asana_update_task",
+     "asana_list_tasks",
+     "asana_search_tasks",
+     "asana_create_task",
+     "asana_get_task"
+    ]
+   }
+  ],
+  "prompt_tokens": 17004,
+  "completion_tokens": 280,
+  "steps": 7,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 42.663408290594816,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "asana_update_task:en@1000",
+  "target": "asana_update_task",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "asana_list_workspaces",
+   "asana_search_tasks",
+   "asana_get_task"
+  ],
+  "call_args": [
+   "{}",
+   "{\"workspace_id\": \"1234567890123456\", \"text\": \"Q4 Marketing Plan\"}",
+   "{\"task_id\": \"1203456789012345\"}"
+  ],
+  "searches": [
+   {
+    "query": "asana",
+    "limit": null,
+    "hits": [
+     "asana_list_users",
+     "asana_list_tags",
+     "asana_list_workspaces",
+     "asana_create_project",
+     "asana_list_sections"
+    ]
+   },
+   {
+    "query": "asana list tasks",
+    "limit": null,
+    "hits": [
+     "asana_list_tasks",
+     "asana_get_task",
+     "asana_search_tasks",
+     "asana_add_tag_to_task",
+     "asana_delete_task"
+    ]
+   }
+  ],
+  "prompt_tokens": 13726,
+  "completion_tokens": 288,
+  "steps": 6,
+  "error": null,
+  "final_text": "I have found the task \"Landing page design revision\" in the \"Q4 Marketing Plan\" project. However, I do not have access to tools that can update a task's due date or mark it as completed. The available Asana tools are limited to listing, searching, getting details, creating projects, and deleting tasks.\n\nTo complete your request, you will need to manually update the due date to October 21, 2026, and mark the task as completed in the Asana interface, or use an integration that supports task updates.",
+  "stop": "reply",
+  "latency_s": 33.95211633481085,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "outlook_reply_to_email:ja@1000",
+  "target": "outlook_reply_to_email",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "outlook_search_emails",
+   "outlook_reply_to_email"
+  ],
+  "call_args": [
+   "{\"query\": \"subject:\\\"Q4予算承認のお願い\\\"\"}",
+   "{\"email_id\": \"AAMkAGI2MzQ1NjY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MA==\", \"body\": \"10月21日までに承認済みです\"}"
+  ],
+  "searches": [
+   {
+    "query": "Outlookでメールを検索して返信する",
+    "limit": null,
+    "hits": [
+     "outlook_search_emails",
+     "outlook_reply_to_email",
+     "outlook_search_events",
+     "gmail_search_messages",
+     "outlook_send_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 4819,
+  "completion_tokens": 172,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 19.457830796949565,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "outlook_reply_to_email:en@1000",
+  "target": "outlook_reply_to_email",
+  "condition": "search_rrf_prod",
+  "n": 1000,
+  "calls": [
+   "outlook_search_emails",
+   "outlook_reply_to_email"
+  ],
+  "call_args": [
+   "{\"query\": \"subject:\\\"Q4 Budget Approval Request\\\"\"}",
+   "{\"email_id\": \"AAMkAGIzN2E4YjQxLTg5ZDctNGFhYi05MmE3LWQ1ZjY3YjE2MzQ1NgBGAAAAAAAvK8qJ5vHTRpGqHqXqJqXQBwC7xK9jL8RfTqGqHqXqJqXQAAAAAAEMAAC7xK9jL8RfTqGqHqXqJqXQAABDm2xPAAA=\", \"body\": \"Approved by October 21st\"}"
+  ],
+  "searches": [
+   {
+    "query": "Outlook search email reply",
+    "limit": null,
+    "hits": [
+     "outlook_search_emails",
+     "outlook_reply_to_email",
+     "outlook_list_emails",
+     "outlook_send_email",
+     "outlook_get_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 4864,
+  "completion_tokens": 234,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 27.036860733292997,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "miro_update_board:ja@1000",
+  "target": "miro_update_board",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "miro_list_boards",
+   "miro_update_board"
+  ],
+  "call_args": [
+   "{}",
+   "{\"board_id\": \"o9J_kL2mN3p=\", \"name\": \"Q4製品ロードマップ（確定版）\", \"description\": \"10月21日のステークホルダー会議用\"}"
+  ],
+  "searches": [
+   {
+    "query": "miro board update title description",
+    "limit": null,
+    "hits": [
+     "miro_update_board",
+     "miro_create_board",
+     "miro_update_item",
+     "miro_get_board",
+     "trello_update_board",
+     "miro_list_boards",
+     "miro_search_items",
+     "miro_list_items",
+     "trello_list_boards"
+    ]
+   }
+  ],
+  "prompt_tokens": 6301,
+  "completion_tokens": 128,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 19.008336478844285,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "miro_update_board:en@1000",
+  "target": "miro_update_board",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "miro_list_boards",
+   "miro_update_board"
+  ],
+  "call_args": [
+   "{}",
+   "{\"board_id\": \"o9J_kL2mN3p\", \"name\": \"Q4 Product Roadmap (Finalized)\", \"description\": \"For the stakeholder meeting on October 21\"}"
+  ],
+  "searches": [
+   {
+    "query": "miro rename board update description",
+    "limit": null,
+    "hits": [
+     "miro_update_board",
+     "miro_create_board",
+     "miro_update_item",
+     "miro_get_board",
+     "trello_update_board",
+     "miro_list_boards",
+     "miro_search_items",
+     "miro_list_items",
+     "trello_list_boards"
+    ]
+   }
+  ],
+  "prompt_tokens": 6312,
+  "completion_tokens": 125,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 19.81342268921435,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "zoom_update_meeting:ja@1000",
+  "target": "zoom_update_meeting",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "zoom_search_meetings",
+   "zoom_update_meeting"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4 戦略会議\"}",
+   "{\"meeting_id\": \"89234567890\", \"start_time\": \"2026-10-21T14:00:00+09:00\", \"topic\": \"Q4 戦略会議（延長）\"}"
+  ],
+  "searches": [
+   {
+    "query": "zoom update meeting",
+    "limit": null,
+    "hits": [
+     "zoom_update_meeting",
+     "zoom_create_meeting",
+     "zoom_search_meetings",
+     "zoom_list_meetings",
+     "zoom_get_meeting_details",
+     "zoom_search_users",
+     "zoom_list_users"
+    ]
+   }
+  ],
+  "prompt_tokens": 5398,
+  "completion_tokens": 153,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.905051815323532,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "zoom_update_meeting:en@1000",
+  "target": "zoom_update_meeting",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "zoom_search_meetings",
+   "zoom_update_meeting"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4 Strategy Meeting\"}",
+   "{\"meeting_id\": \"987654321\", \"topic\": \"Q4 Strategy Meeting (Extended)\", \"start_time\": \"2026-10-21T14:00:00+09:00\"}"
+  ],
+  "searches": [
+   {
+    "query": "update zoom meeting",
+    "limit": null,
+    "hits": [
+     "zoom_update_meeting",
+     "zoom_create_meeting",
+     "zoom_search_meetings",
+     "zoom_list_meetings",
+     "zoom_get_meeting_details",
+     "zoom_search_users",
+     "zoom_list_users"
+    ]
+   }
+  ],
+  "prompt_tokens": 5402,
+  "completion_tokens": 149,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 11.772712673060596,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "gdrive_get_file_metadata:ja@1000",
+  "target": "gdrive_get_file_metadata",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "gdrive_search_files",
+   "gdrive_get_file_metadata"
+  ],
+  "call_args": [
+   "{\"query\": \"name = '2026年度Q3営業戦略書'\", \"max_results\": 5}",
+   "{\"file_id\": \"1aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1u\"}"
+  ],
+  "searches": [
+   {
+    "query": "Googleドライブ ファイル検索 メタデータ取得",
+    "limit": null,
+    "hits": [
+     "gdrive_search_files",
+     "gdrive_download_file",
+     "gdrive_get_file_metadata",
+     "gdrive_delete_file",
+     "gdrive_list_files"
+    ]
+   }
+  ],
+  "prompt_tokens": 4597,
+  "completion_tokens": 143,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.745675327256322,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "gdrive_get_file_metadata:en@1000",
+  "target": "gdrive_get_file_metadata",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "gdrive_search_files",
+   "gdrive_get_file_metadata"
+  ],
+  "call_args": [
+   "{\"query\": \"name = \\\"2026 Q3 Sales Strategy\\\"\", \"max_results\": 1}",
+   "{\"file_id\": \"1aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1u\"}"
+  ],
+  "searches": [
+   {
+    "query": "Google Drive file search metadata",
+    "limit": null,
+    "hits": [
+     "gdrive_get_file_metadata",
+     "gdrive_search_files",
+     "lineworks_list_drives",
+     "gdrive_list_files",
+     "gdrive_update_file_metadata"
+    ]
+   }
+  ],
+  "prompt_tokens": 4657,
+  "completion_tokens": 137,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.909435356967151,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_upload_receipt:ja@1000",
+  "target": "rakurakuseisan_upload_receipt",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "rakurakuseisan_search_expenses",
+   "rakurakuseisan_upload_receipt"
+  ],
+  "call_args": [
+   "{\"keyword\": \"スターバックス\"}",
+   "{\"expense_id\": \"exp_20261012_001\", \"file_url\": \"https://example.com/receipts/stb_20261012.pdf\", \"file_name\": \"stb_receipt_20261012.pdf\"}"
+  ],
+  "searches": [
+   {
+    "query": "経費 明細 検索 アップロード",
+    "limit": 5,
+    "hits": [
+     "rakurakuseisan_upload_receipt",
+     "rakurakuseisan_search_expenses",
+     "rakurakuseisan_list_expenses",
+     "rakurakuseisan_get_expense_detail",
+     "rakurakuseisan_add_items_to_report",
+     "rakurakuseisan_list_reports"
+    ]
+   }
+  ],
+  "prompt_tokens": 5307,
+  "completion_tokens": 273,
+  "steps": 3,
+  "error": null,
+  "final_text": "該当する経費明細が見つかりました。IDは `exp_20261012_001` です。\n次に、指定されたURLのPDFファイルをこの明細にアップロードして紐付けます。\n\n",
+  "stop": "target",
+  "latency_s": 13.13664172962308,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_upload_receipt:en@1000",
+  "target": "rakurakuseisan_upload_receipt",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "rakurakuseisan_search_expenses",
+   "rakurakuseisan_upload_receipt"
+  ],
+  "call_args": [
+   "{\"keyword\": \"Starbucks\"}",
+   "{\"expense_id\": \"EXP-20261012-0042\", \"file_url\": \"https://example.com/receipts/stb_20261012.pdf\", \"file_name\": \"stb_receipt_20261012.pdf\"}"
+  ],
+  "searches": [
+   {
+    "query": "freee expense search",
+    "limit": null,
+    "hits": [
+     "rakurakuseisan_search_expenses",
+     "freee_list_expense_applications",
+     "freee_create_expense_application",
+     "rakurakuseisan_list_expenses",
+     "rakurakuseisan_delete_expense",
+     "freee_list_companies"
+    ]
+   },
+   {
+    "query": "upload receipt attach file expense",
+    "limit": null,
+    "hits": [
+     "rakurakuseisan_upload_receipt",
+     "freee_upload_receipt",
+     "confluence_upload_attachment",
+     "backlog_upload_file",
+     "lineworks_upload_file",
+     "rakurakuseisan_search_expenses",
+     "rakurakuseisan_list_expenses",
+     "freee_list_companies",
+     "confluence_search_pages"
+    ]
+   }
+  ],
+  "prompt_tokens": 8979,
+  "completion_tokens": 629,
+  "steps": 4,
+  "error": null,
+  "final_text": "I have found the `rakurakuseisan_upload_receipt` tool, which is designed to upload and attach a receipt to an expense detail. This matches the context of the expense ID I found earlier (`EXP-20261012-0042`) using `rakurakuseisan_search_expenses`.\n\nThe parameters for `rakurakuseisan_upload_receipt` are:\n- `expense_id`: \"EXP-20261012-0042\"\n- `file_url`: \"https://example.com/receipts/stb_20261012.pdf\"\n- `file_name`: \"stb_receipt_20261012.pdf\"\n\nI will now call this function.\n\n",
+  "stop": "target",
+  "latency_s": 25.679216352291405,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_import_transaction:ja@1000",
+  "target": "rakurakuseisan_import_transaction",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "rakurakuseisan_get_credit_card_transactions"
+  ],
+  "call_args": [
+   "{\"month\": \"2026-09\"}"
+  ],
+  "searches": [
+   {
+    "query": "らくらく精算 未取込カード取引 検索 取り込み",
+    "limit": null,
+    "hits": [
+     "rakurakuseisan_get_credit_card_transactions",
+     "rakurakuseisan_import_transaction",
+     "moneyforward_search_deals",
+     "freee_list_receipts",
+     "rakurakuseisan_search_expenses",
+     "freee_list_companies"
+    ]
+   }
+  ],
+  "prompt_tokens": 5125,
+  "completion_tokens": 290,
+  "steps": 3,
+  "error": null,
+  "final_text": "2026年9月の未取込カード取引から「スターバックス」での支払いが2件見つかりました。\n\n1.  **取引ID:** `txn_20260915_sb_001`\n    *   **店舗名:** スターバックスコーヒー 丸の内店\n    *   **金額:** 1,250円\n    *   **日付:** 2026-09-15\n\n2.  **取引ID:** `txn_20260922_sb_002`\n    *   **店舗名:** スターバックス リザーブ ロースタリー 東京\n    *   **金額:** 2,800円\n    *   **日付:** 2026-09-22\n\nこれらの取引を費目「会議費」として経費明細に取り込みますか？ それとも特定の1件だけ取り込みますか？",
+  "stop": "reply",
+  "latency_s": 10.21881256159395,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "rakurakuseisan_import_transaction:en@1000",
+  "target": "rakurakuseisan_import_transaction",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "rakurakuseisan_get_credit_card_transactions",
+   "rakurakuseisan_import_transaction"
+  ],
+  "call_args": [
+   "{\"month\": \"2026-09\"}",
+   "{\"transaction_id\": \"txn_20260915_sb_001\", \"category\": \"Meeting Expenses\"}"
+  ],
+  "searches": [
+   {
+    "query": "rakurakuseisan import card transaction",
+    "limit": null,
+    "hits": [
+     "rakurakuseisan_import_transaction",
+     "rakurakuseisan_get_credit_card_transactions",
+     "stripe_list_balance_transactions",
+     "trello_get_card_details",
+     "stripe_issue_card",
+     "trello_search_cards",
+     "trello_list_cards_in_list",
+     "trello_create_list",
+     "trello_list_comments_on_card"
+    ]
+   }
+  ],
+  "prompt_tokens": 6078,
+  "completion_tokens": 130,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.613753535784781,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "shopify_add_product_to_collection:ja@1000",
+  "target": "shopify_add_product_to_collection",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "shopify_search_products",
+   "shopify_list_collections",
+   "shopify_add_product_to_collection"
+  ],
+  "call_args": [
+   "{\"query\": \"ワイヤレスノイズキャンセリングヘッドフォン\", \"limit\": 1}",
+   "{\"limit\": 50}",
+   "{\"collection_id\": 284758392, \"product_id\": 7982345612345}"
+  ],
+  "searches": [
+   {
+    "query": "Shopify 商品 コレクションに追加",
+    "limit": null,
+    "hits": [
+     "shopify_add_product_to_collection",
+     "shopify_get_collection",
+     "shopify_list_collections",
+     "shopify_list_products",
+     "shopify_get_product",
+     "shopify_search_products"
+    ]
+   }
+  ],
+  "prompt_tokens": 7720,
+  "completion_tokens": 174,
+  "steps": 4,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 31.6968292016536,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "shopify_add_product_to_collection:en@1000",
+  "target": "shopify_add_product_to_collection",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "shopify_search_products",
+   "shopify_list_collections",
+   "shopify_add_product_to_collection"
+  ],
+  "call_args": [
+   "{\"query\": \"Wireless Noise-Canceling Headphones\"}",
+   "{}",
+   "{\"collection_id\": 284758291, \"product_id\": 7945621038}"
+  ],
+  "searches": [
+   {
+    "query": "shopify add product to collection",
+    "limit": null,
+    "hits": [
+     "shopify_add_product_to_collection",
+     "shopify_get_collection",
+     "shopify_get_product",
+     "shopify_list_collections",
+     "shopify_delete_product",
+     "shopify_search_products",
+     "shopify_list_products"
+    ]
+   }
+  ],
+  "prompt_tokens": 8193,
+  "completion_tokens": 141,
+  "steps": 4,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 23.31622799579054,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "servicenow_get_configuration_item:ja@1000",
+  "target": "servicenow_get_configuration_item",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "servicenow_list_configuration_items"
+  ],
+  "call_args": [
+   "{\"name\": \"Web-AP-042\"}"
+  ],
+  "searches": [
+   {
+    "query": "ServiceNow サーバー IPアドレス OSバージョン 確認",
+    "limit": null,
+    "hits": [
+     "servicenow_get_configuration_item",
+     "box_list_file_versions",
+     "servicenow_get_user_profile",
+     "servicenow_list_configuration_items",
+     "servicenow_list_incidents",
+     "servicenow_list_user_accounts"
+    ]
+   }
+  ],
+  "prompt_tokens": 4827,
+  "completion_tokens": 125,
+  "steps": 3,
+  "error": null,
+  "final_text": "ServiceNowで確認した「Web-AP-042」の情報は以下の通りです。\n\n*   **IPアドレス**: 192.168.10.42\n*   **OSバージョン**: Red Hat Enterprise Linux 8.6",
+  "stop": "reply",
+  "latency_s": 7.329043259844184,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "servicenow_get_configuration_item:en@1000",
+  "target": "servicenow_get_configuration_item",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "servicenow_list_configuration_items"
+  ],
+  "call_args": [
+   "{\"name\": \"Web-AP-042\"}"
+  ],
+  "searches": [
+   {
+    "query": "ServiceNow server IP address OS version",
+    "limit": null,
+    "hits": [
+     "servicenow_get_configuration_item",
+     "servicenow_list_incidents",
+     "servicenow_list_configuration_items",
+     "servicenow_list_problems",
+     "servicenow_update_incident"
+    ]
+   }
+  ],
+  "prompt_tokens": 4602,
+  "completion_tokens": 118,
+  "steps": 3,
+  "error": null,
+  "final_text": "The server \"Web-AP-042\" has the following details:\n\n*   **IP Address:** 192.168.10.42\n*   **OS Version:** Linux Red Hat Enterprise 8.6",
+  "stop": "reply",
+  "latency_s": 7.832105601206422,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "slack_get_message_history:ja@1000",
+  "target": "slack_get_message_history",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "slack_search_channels",
+   "slack_get_message_history"
+  ],
+  "call_args": [
+   "{\"query\": \"proj-alpha\"}",
+   "{\"channel_id\": \"C05X9A2B3C4\", \"limit\": 20}"
+  ],
+  "searches": [
+   {
+    "query": "slack get messages from channel",
+    "limit": null,
+    "hits": [
+     "slack_get_message_history",
+     "slack_post_message",
+     "slack_get_channel_info",
+     "slack_pin_message",
+     "slack_search_messages",
+     "slack_search_channels",
+     "slack_list_channels"
+    ]
+   }
+  ],
+  "prompt_tokens": 5688,
+  "completion_tokens": 108,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 14.507441196590662,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "slack_get_message_history:en@1000",
+  "target": "slack_get_message_history",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "slack_search_channels",
+   "slack_get_message_history"
+  ],
+  "call_args": [
+   "{\"query\": \"proj-alpha\"}",
+   "{\"channel_id\": \"C05A1B2C3D4\", \"limit\": 20}"
+  ],
+  "searches": [
+   {
+    "query": "slack get messages from channel",
+    "limit": 5,
+    "hits": [
+     "slack_get_message_history",
+     "slack_post_message",
+     "slack_get_channel_info",
+     "slack_pin_message",
+     "slack_search_messages",
+     "slack_search_channels",
+     "slack_list_channels"
+    ]
+   }
+  ],
+  "prompt_tokens": 5641,
+  "completion_tokens": 120,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 20.66675551701337,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "garoon_get_user_profile:ja@1000",
+  "target": "garoon_get_user_profile",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "garoon_search_users",
+   "garoon_get_user_profile"
+  ],
+  "call_args": [
+   "{\"query\": \"佐藤健太\"}",
+   "{\"user_id\": 892104}"
+  ],
+  "searches": [
+   {
+    "query": "Garoon ユーザー検索 内線番号 役職",
+    "limit": null,
+    "hits": [
+     "garoon_get_user_profile",
+     "garoon_search_users",
+     "garoon_list_schedules",
+     "garoon_search_schedules",
+     "zoom_assign_phone_number"
+    ]
+   }
+  ],
+  "prompt_tokens": 4471,
+  "completion_tokens": 102,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 9.645967123098671,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "garoon_get_user_profile:en@1000",
+  "target": "garoon_get_user_profile",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "garoon_search_users",
+   "garoon_get_user_profile"
+  ],
+  "call_args": [
+   "{\"query\": \"Kenta Sato\"}",
+   "{\"user_id\": 849201}"
+  ],
+  "searches": [
+   {
+    "query": "garoon user search",
+    "limit": null,
+    "hits": [
+     "garoon_search_users",
+     "garoon_get_user_profile",
+     "garoon_list_schedules",
+     "garoon_search_schedules",
+     "zoom_search_users",
+     "zoom_search_meetings"
+    ]
+   }
+  ],
+  "prompt_tokens": 4782,
+  "completion_tokens": 92,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.674423611722887,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "asana_create_section:ja@1000",
+  "target": "asana_create_section",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "asana_list_workspaces",
+   "asana_search_projects",
+   "asana_create_section"
+  ],
+  "call_args": [
+   "{}",
+   "{\"workspace_id\": \"1234567890123456\", \"name_pattern\": \"Q4マーケティングキャンペーン\"}",
+   "{\"project_id\": \"1203456789012345\", \"name\": \"SNS投稿用素材\"}"
+  ],
+  "searches": [
+   {
+    "query": "asana add section to project",
+    "limit": null,
+    "hits": [
+     "asana_create_section",
+     "asana_list_sections",
+     "asana_create_project",
+     "asana_update_project",
+     "asana_search_projects",
+     "asana_list_projects",
+     "asana_list_workspaces"
+    ]
+   }
+  ],
+  "prompt_tokens": 7956,
+  "completion_tokens": 164,
+  "steps": 4,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 28.72264677565545,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "asana_create_section:en@1000",
+  "target": "asana_create_section",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "asana_list_workspaces",
+   "asana_search_projects",
+   "asana_create_section"
+  ],
+  "call_args": [
+   "{}",
+   "{\"workspace_id\": \"1234567890123456\", \"name_pattern\": \"Q4 Marketing Campaign\"}",
+   "{\"project_id\": \"1203456789012345\", \"name\": \"Social Media Assets\"}"
+  ],
+  "searches": [
+   {
+    "query": "asana add section to project",
+    "limit": null,
+    "hits": [
+     "asana_create_section",
+     "asana_list_sections",
+     "asana_create_project",
+     "asana_update_project",
+     "asana_search_projects",
+     "asana_list_projects",
+     "asana_list_workspaces"
+    ]
+   }
+  ],
+  "prompt_tokens": 7993,
+  "completion_tokens": 163,
+  "steps": 4,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 30.433583041653037,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "tableau_update_workbook_permissions:ja@1000",
+  "target": "tableau_update_workbook_permissions",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "tableau_list_sites",
+   "tableau_search_workbooks",
+   "tableau_list_users",
+   "tableau_update_workbook_permissions"
+  ],
+  "call_args": [
+   "{}",
+   "{\"query\": \"Q3売上分析\", \"site_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\"}",
+   "{\"site_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\"}",
+   "{\"workbook_id\": \"wb-98765-q3-sales\", \"grantee_id\": \"u-9876543210\", \"capability\": \"Write\"}"
+  ],
+  "searches": [
+   {
+    "query": "tableau 権限付与",
+    "limit": null,
+    "hits": [
+     "tableau_add_user_to_group",
+     "tableau_update_workbook_permissions",
+     "tableau_create_group",
+     "gcal_insert_acl_rule",
+     "tableau_list_sites",
+     "tableau_list_users",
+     "tableau_search_workbooks",
+     "tableau_list_workbooks",
+     "gcal_list_calendars"
+    ]
+   }
+  ],
+  "prompt_tokens": 12909,
+  "completion_tokens": 258,
+  "steps": 5,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 29.720944653265178,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "tableau_update_workbook_permissions:en@1000",
+  "target": "tableau_update_workbook_permissions",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "tableau_search_workbooks",
+   "tableau_update_workbook_permissions"
+  ],
+  "call_args": [
+   "{\"query\": \"Q3 Sales Analysis\", \"site_id\": \"default\"}",
+   "{\"workbook_id\": \"wb-8a2f4c1d-9e3b-4567-8901-234567890abc\", \"grantee_id\": \"Kenta Tanaka\", \"capability\": \"Write\"}"
+  ],
+  "searches": [
+   {
+    "query": "tableau grant permission",
+    "limit": null,
+    "hits": [
+     "tableau_update_workbook_permissions",
+     "bigquery_test_iam_permissions",
+     "gdrive_create_permission",
+     "gdrive_delete_permission",
+     "gdrive_list_permissions",
+     "tableau_search_workbooks",
+     "tableau_list_workbooks",
+     "gdrive_search_files",
+     "gdrive_list_files"
+    ]
+   }
+  ],
+  "prompt_tokens": 6222,
+  "completion_tokens": 168,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 17.68361916951835,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "box_add_collaboration:ja@1000",
+  "target": "box_add_collaboration",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "box_search_content",
+   "box_add_collaboration"
+  ],
+  "call_args": [
+   "{\"query\": \"2026年度 第3四半期 営業報告書\"}",
+   "{\"item_id\": \"987654321\", \"user_email\": \"tanaka@example.com\", \"role\": \"editor\"}"
+  ],
+  "searches": [
+   {
+    "query": "Box ファイル検索 編集者追加",
+    "limit": null,
+    "hits": [
+     "box_unlock_file",
+     "box_search_content",
+     "box_lock_file",
+     "box_get_file_info",
+     "box_add_collaboration",
+     "box_list_folder_items"
+    ]
+   }
+  ],
+  "prompt_tokens": 5499,
+  "completion_tokens": 136,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.702910247258842,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "box_add_collaboration:en@1000",
+  "target": "box_add_collaboration",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "box_search_content",
+   "box_add_collaboration"
+  ],
+  "call_args": [
+   "{\"query\": \"Q3 2026 Sales Report\"}",
+   "{\"item_id\": \"987654321\", \"user_email\": \"tanaka@example.com\", \"role\": \"editor\"}"
+  ],
+  "searches": [
+   {
+    "query": "Box find file add collaborator editor",
+    "limit": null,
+    "hits": [
+     "box_add_collaboration",
+     "box_delete_file",
+     "box_search_content",
+     "box_unlock_file",
+     "box_list_collaborations",
+     "box_list_folder_items"
+    ]
+   }
+  ],
+  "prompt_tokens": 5311,
+  "completion_tokens": 129,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.558063178323209,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "garoon_check_facility_availability:ja@1000",
+  "target": "garoon_check_facility_availability",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "garoon_list_facilities",
+   "garoon_check_facility_availability"
+  ],
+  "call_args": [
+   "{}",
+   "{\"facility_id\": 101, \"date\": \"2026-10-21\"}"
+  ],
+  "searches": [
+   {
+    "query": "Garoon 空き状況 確認",
+    "limit": null,
+    "hits": [
+     "garoon_check_facility_availability",
+     "garoon_list_facilities",
+     "gcal_find_free_busy",
+     "gcal_list_events",
+     "garoon_list_schedules",
+     "gcal_list_calendars"
+    ]
+   }
+  ],
+  "prompt_tokens": 5109,
+  "completion_tokens": 103,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.819341477006674,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "garoon_check_facility_availability:en@1000",
+  "target": "garoon_check_facility_availability",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "garoon_list_facilities",
+   "garoon_check_facility_availability"
+  ],
+  "call_args": [
+   "{}",
+   "{\"facility_id\": 101, \"date\": \"2026-10-21\"}"
+  ],
+  "searches": [
+   {
+    "query": "garoon check schedule availability",
+    "limit": null,
+    "hits": [
+     "garoon_update_schedule",
+     "garoon_check_facility_availability",
+     "garoon_list_schedules",
+     "garoon_search_schedules",
+     "garoon_delete_schedule",
+     "garoon_list_facilities"
+    ]
+   }
+  ],
+  "prompt_tokens": 4768,
+  "completion_tokens": 101,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 18.42045216728002,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "backlog_list_issues:ja@1000",
+  "target": "backlog_list_issues",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "backlog_get_project",
+   "backlog_list_issues"
+  ],
+  "call_args": [
+   "{\"project_key\": \"MOBILE\"}",
+   "{\"project_id\": 1024, \"status_id\": 3}"
+  ],
+  "searches": [
+   {
+    "query": "backlog 課題一覧取得",
+    "limit": null,
+    "hits": [
+     "backlog_list_attachments",
+     "backlog_get_issue",
+     "backlog_list_issues",
+     "backlog_list_comments",
+     "backlog_delete_issue",
+     "backlog_search_issues",
+     "backlog_list_projects",
+     "backlog_get_project"
+    ]
+   }
+  ],
+  "prompt_tokens": 5262,
+  "completion_tokens": 102,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 22.561371356248856,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "backlog_list_issues:en@1000",
+  "target": "backlog_list_issues",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "backlog_get_project",
+   "backlog_list_issues"
+  ],
+  "call_args": [
+   "{\"project_key\": \"MOBILE\"}",
+   "{\"project_id\": 1024, \"status_id\": 3}"
+  ],
+  "searches": [
+   {
+    "query": "backlog get issues",
+    "limit": null,
+    "hits": [
+     "backlog_get_issue",
+     "backlog_search_issues",
+     "backlog_delete_issue",
+     "backlog_update_issue",
+     "backlog_list_issues",
+     "backlog_list_projects",
+     "backlog_get_project"
+    ]
+   }
+  ],
+  "prompt_tokens": 5029,
+  "completion_tokens": 100,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 20.33928213827312,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "notion_get_database:ja@1000",
+  "target": "notion_get_database",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "notion_search_databases",
+   "notion_get_database"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4 製品ロードマップ\"}",
+   "{\"database_id\": \"db_a1b2c3d4e5f6\"}"
+  ],
+  "searches": [
+   {
+    "query": "notion database schema",
+    "limit": null,
+    "hits": [
+     "notion_get_database",
+     "notion_update_database",
+     "notion_create_database",
+     "notion_query_database",
+     "notion_search_databases",
+     "notion_list_databases",
+     "notion_search_pages",
+     "notion_get_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 6000,
+  "completion_tokens": 102,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.295292682014406,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "notion_get_database:en@1000",
+  "target": "notion_get_database",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "notion_search_databases",
+   "notion_get_database"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4 Product Roadmap\"}",
+   "{\"database_id\": \"db_a1b2c3d4e5f6\"}"
+  ],
+  "searches": [
+   {
+    "query": "notion database schema property types",
+    "limit": null,
+    "hits": [
+     "notion_get_database",
+     "notion_update_database",
+     "notion_create_database",
+     "notion_query_database",
+     "notion_search_databases",
+     "notion_list_databases",
+     "notion_search_pages",
+     "notion_get_page"
+    ]
+   }
+  ],
+  "prompt_tokens": 6050,
+  "completion_tokens": 103,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.057496621273458,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "zendesk_add_tags_to_ticket:ja@1000",
+  "target": "zendesk_add_tags_to_ticket",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "zendesk_search_tickets",
+   "zendesk_add_tags_to_ticket",
+   "zendesk_add_tags_to_ticket"
+  ],
+  "call_args": [
+   "{\"query\": \"status:open subject:\\\"ログインエラー\\\"\"}",
+   "{\"ticket_id\": 10245, \"tags\": \n[\"urgent\", \"security\"]\n\n}",
+   "{\"ticket_id\": 10289, \"tags\": \n[\"urgent\", \"security\"]\n\n}"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk チケット検索 タグ追加",
+    "limit": null,
+    "hits": [
+     "zendesk_add_tags_to_ticket",
+     "zendesk_search_tickets",
+     "zendesk_add_comment",
+     "zendesk_list_tickets",
+     "zendesk_create_ticket"
+    ]
+   },
+   {
+    "query": "Zendesk チケット検索 タグ追加",
+    "limit": null,
+    "hits": [
+     "zendesk_add_tags_to_ticket",
+     "zendesk_search_tickets",
+     "zendesk_add_comment",
+     "zendesk_list_tickets",
+     "zendesk_create_ticket"
+    ]
+   },
+   {
+    "query": "Zendesk チケット検索 タグ追加",
+    "limit": null,
+    "hits": [
+     "zendesk_add_tags_to_ticket",
+     "zendesk_search_tickets",
+     "zendesk_add_comment",
+     "zendesk_list_tickets",
+     "zendesk_create_ticket"
+    ]
+   }
+  ],
+  "prompt_tokens": 9038,
+  "completion_tokens": 235,
+  "steps": 5,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 12.277295666746795,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "zendesk_add_tags_to_ticket:en@1000",
+  "target": "zendesk_add_tags_to_ticket",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "zendesk_search_tickets",
+   "zendesk_add_tags_to_ticket"
+  ],
+  "call_args": [
+   "{\"query\": \"subject:\\\"Login Error\\\" status:open\"}",
+   "{\"ticket_id\": 10245, \"tags\": \n[\"urgent\", \"security\"]\n\n}"
+  ],
+  "searches": [
+   {
+    "query": "Zendesk search tickets add tags",
+    "limit": null,
+    "hits": [
+     "zendesk_add_tags_to_ticket",
+     "zendesk_search_tickets",
+     "zendesk_list_tickets",
+     "zendesk_get_ticket",
+     "zendesk_delete_ticket"
+    ]
+   }
+  ],
+  "prompt_tokens": 4361,
+  "completion_tokens": 116,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 12.557300051674247,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "notion_move_block_children:ja@1000",
+  "target": "notion_move_block_children",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "notion_search_pages",
+   "notion_search_pages"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4プロジェクト計画\"}",
+   "{\"query\": \"リスク管理\"}"
+  ],
+  "searches": [
+   {
+    "query": "notion move section",
+    "limit": null,
+    "hits": [
+     "notion_move_block_children",
+     "asana_list_sections",
+     "notion_search_pages",
+     "notion_list_users",
+     "confluence_move_page",
+     "asana_search_projects",
+     "asana_list_projects",
+     "confluence_search_pages",
+     "confluence_list_pages"
+    ]
+   }
+  ],
+  "prompt_tokens": 9994,
+  "completion_tokens": 471,
+  "steps": 4,
+  "error": null,
+  "final_text": "NotionのAPI制限により、ページ内の特定の「セクション」（見出しやブロック）を直接検索してIDを取得することができません。`notion_move_block_children` を使用するには、移動元ブロック（「リスク管理」）と移動先親ブロック（「完了したタスク」）、および配置位置の基準となるブロック（「完了したタスク」セクションの最後のブロックなど）のIDが必要です。\n\nこれらのブロックIDを確認するためには、対象のページの内容を取得する必要がありますが、現在利用可能なツールには「Notionページのブロック一覧を取得する」機能が含まれていません。\n\nそのため、以下のいずれかの方法で対応させてください。\n\n1. **ブロックIDを手動で取得していただく**:\n   - Notion上で「リスク管理」見出しブロックと「完了したタスク」見出しブロック（またはその直下のブロック）のIDを確認し、教えていただく。\n   - ※ブロックIDは、Notionのウェブ版でブロックを選択し、「Copy link to block」を行った際のURLに含まれるハッシュ値（例: `#b1c2d3e4...`）の下線より前の部分などが該当しますが、API用のIDとは形式が異なる場合があり注意が必要です。正確なAPI用ブロックIDは、開発者向け機能や外部ツールで確認するのが確実です。\n\n2. **代替案**:\n   - もし「リスク管理」と「完了したタスク」が独立した**子ページ**である場合は、それらのページIDを取得し、親ページへの参照順序を変えるなどの操作が可能ですが、通常のページ内セクション（見出しブロック等）の場合は上記の制限があります。\n\n現状のツールセットでは、ページ内のブロック構造を取得する手段がないため、自動での移動処理が困難です。ブロックIDをご提供いただけるか、あるいはページ内のブロック一覧を取得できるツールの追加が必要となります。",
+  "stop": "reply",
+  "latency_s": 24.756958122365177,
+  "correct": false,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "notion_move_block_children:en@1000",
+  "target": "notion_move_block_children",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [],
+  "call_args": [],
+  "searches": [
+   {
+    "query": "notion move block section",
+    "limit": null,
+    "hits": [
+     "notion_move_block_children",
+     "notion_get_block",
+     "notion_list_blocks",
+     "notion_delete_block",
+     "notion_update_block"
+    ]
+   }
+  ],
+  "prompt_tokens": 2593,
+  "completion_tokens": 146,
+  "steps": 2,
+  "error": null,
+  "final_text": "To move the \"Risk Management\" section under the \"Completed Tasks\" section on the \"Q4 Project Plan\" page, I first need to find the specific block IDs for these sections.\n\nCould you please provide the Notion Page ID for the \"Q4 Project Plan\" page? It usually looks like a long string of characters (e.g., `a1b2c3d4e5f6...`) found in the page's URL.\n\nAlternatively, if you know the Block IDs for \"Risk Management\" and \"Completed Tasks\", please provide those directly.",
+  "stop": "reply",
+  "latency_s": 5.7480782661587,
+  "correct": false,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "backlog_create_wiki:ja@1000",
+  "target": "backlog_create_wiki",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "backlog_get_project",
+   "backlog_create_wiki"
+  ],
+  "call_args": [
+   "{\"project_key\": \"MOBILE\"}",
+   "{\"project_id\": 1024, \"title\": \"2026年度 新入社員向け環境構築ガイド\", \"content\": \"1. Gitリポジトリのクローン\\n2. Dockerコンテナの起動\\n3. localhost:8080でのアクセス確認\"}"
+  ],
+  "searches": [
+   {
+    "query": "backlog wiki create",
+    "limit": null,
+    "hits": [
+     "backlog_create_wiki",
+     "backlog_get_wiki",
+     "backlog_list_wikis",
+     "backlog_update_wiki",
+     "backlog_delete_wiki",
+     "backlog_list_projects",
+     "backlog_get_project"
+    ]
+   }
+  ],
+  "prompt_tokens": 5084,
+  "completion_tokens": 152,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 16.61450982093811,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "backlog_create_wiki:en@1000",
+  "target": "backlog_create_wiki",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "backlog_get_project",
+   "backlog_create_wiki"
+  ],
+  "call_args": [
+   "{\"project_key\": \"MOBILE\"}",
+   "{\"project_id\": 1024, \"title\": \"2026 New Hire Environment Setup Guide\", \"content\": \"1. Clone Git repository\\n2. Start Docker container\\n3. Verify access at localhost:8080\"}"
+  ],
+  "searches": [
+   {
+    "query": "backlog create wiki page",
+    "limit": null,
+    "hits": [
+     "backlog_get_wiki",
+     "backlog_create_wiki",
+     "backlog_delete_wiki",
+     "backlog_list_wikis",
+     "backlog_update_wiki",
+     "backlog_list_projects",
+     "backlog_get_project"
+    ]
+   }
+  ],
+  "prompt_tokens": 5093,
+  "completion_tokens": 143,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 16.8222652990371,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "sentry_get_issue_details:ja@1000",
+  "target": "sentry_get_issue_details",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "sentry_get_issue_details"
+  ],
+  "call_args": [
+   "{\"organization_slug\": \"acme-corp\", \"issue_id\": \"FRONT-402\"}"
+  ],
+  "searches": [
+   {
+    "query": "sentry issue details stacktrace",
+    "limit": null,
+    "hits": [
+     "sentry_get_issue_details",
+     "sentry_list_issues",
+     "sentry_search_issues",
+     "sentry_update_issue_status",
+     "sentry_get_project_details"
+    ]
+   }
+  ],
+  "prompt_tokens": 2784,
+  "completion_tokens": 95,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.6606028620153666,
+  "correct": true,
+  "first_correct": true,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "sentry_get_issue_details:en@1000",
+  "target": "sentry_get_issue_details",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "sentry_get_issue_details"
+  ],
+  "call_args": [
+   "{\"organization_slug\": \"acme-corp\", \"issue_id\": \"FRONT-402\"}"
+  ],
+  "searches": [
+   {
+    "query": "sentry get issue details stack trace",
+    "limit": null,
+    "hits": [
+     "sentry_get_issue_details",
+     "sentry_list_issues",
+     "sentry_update_issue_status",
+     "sentry_search_issues",
+     "sentry_get_project_details"
+    ]
+   }
+  ],
+  "prompt_tokens": 2758,
+  "completion_tokens": 81,
+  "steps": 2,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 4.726586316712201,
+  "correct": true,
+  "first_correct": true,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "confluence_add_labels:ja@1000",
+  "target": "confluence_add_labels",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "confluence_search_pages",
+   "confluence_add_labels"
+  ],
+  "call_args": [
+   "{\"query\": \"Q4マーケティング戦略\"}",
+   "{\"page_id\": \"123456789\", \"labels\": \n[\"reviewed\", \"approved\"]\n\n}"
+  ],
+  "searches": [
+   {
+    "query": "Confluenceでページを検索してラベルを付与する",
+    "limit": null,
+    "hits": [
+     "confluence_add_labels",
+     "confluence_search_pages",
+     "confluence_remove_labels",
+     "confluence_create_draft_page",
+     "notion_search_pages",
+     "confluence_list_pages",
+     "confluence_list_spaces"
+    ]
+   }
+  ],
+  "prompt_tokens": 5841,
+  "completion_tokens": 122,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.1200214875862,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "confluence_add_labels:en@1000",
+  "target": "confluence_add_labels",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "confluence_search_pages",
+   "confluence_add_labels"
+  ],
+  "call_args": [
+   "{\"query\": \"title:\\\"Q4 Marketing Strategy\\\"\"}",
+   "{\"page_id\": \"987654321\", \"labels\": \n[\"reviewed\", \"approved\"]\n\n}"
+  ],
+  "searches": [
+   {
+    "query": "confluence add labels to page",
+    "limit": null,
+    "hits": [
+     "confluence_add_labels",
+     "confluence_remove_labels",
+     "confluence_get_page",
+     "confluence_create_page",
+     "confluence_move_page",
+     "confluence_search_pages",
+     "confluence_list_pages",
+     "confluence_list_spaces"
+    ]
+   }
+  ],
+  "prompt_tokens": 6087,
+  "completion_tokens": 118,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 6.948086661286652,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "chatwork_create_task:ja@1000",
+  "target": "chatwork_create_task",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "chatwork_list_rooms",
+   "chatwork_create_task"
+  ],
+  "call_args": [
+   "{}",
+   "{\"room_id\": 123456789, \"body\": \"Q4の販促資料作成\", \"to_ids\": \n[\n  \"佐藤健太さんのメンバーID\"\n]\n\n, \"limit\": 1697846400}"
+  ],
+  "searches": [
+   {
+    "query": "chatwork タスク 割り当て",
+    "limit": null,
+    "hits": [
+     "chatwork_list_tasks",
+     "chatwork_create_task",
+     "lineworks_create_task",
+     "tableau_assign_schedule",
+     "linear_add_issue_to_cycle",
+     "chatwork_list_rooms",
+     "linear_search_issues",
+     "linear_list_issues",
+     "linear_list_cycles"
+    ]
+   }
+  ],
+  "prompt_tokens": 6231,
+  "completion_tokens": 148,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 11.850618917495012,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "chatwork_create_task:en@1000",
+  "target": "chatwork_create_task",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "chatwork_list_rooms",
+   "chatwork_create_task"
+  ],
+  "call_args": [
+   "{}",
+   "{\"room_id\": 123456789, \"body\": \"Create Q4 promotional materials\", \"to_ids\": \n[987654321]\n\n, \"limit\": 1697846400}"
+  ],
+  "searches": [
+   {
+    "query": "chatwork assign task",
+    "limit": null,
+    "hits": [
+     "chatwork_list_tasks",
+     "chatwork_create_task",
+     "chatwork_update_task_status",
+     "chatwork_create_schedule",
+     "tableau_assign_schedule",
+     "chatwork_list_rooms"
+    ]
+   }
+  ],
+  "prompt_tokens": 5359,
+  "completion_tokens": 141,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 21.438595032319427,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "confluence_get_page:ja@1000",
+  "target": "confluence_get_page",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "confluence_search_pages",
+   "confluence_get_page"
+  ],
+  "call_args": [
+   "{\"query\": \"title = \\\"2026年度 Q4 製品ロードマップ\\\"\", \"limit\": 5}",
+   "{\"page_id\": \"987654321\", \"expand\": \"body,version,status\"}"
+  ],
+  "searches": [
+   {
+    "query": "Confluence ページ検索 取得",
+    "limit": null,
+    "hits": [
+     "confluence_search_pages",
+     "confluence_get_page",
+     "confluence_list_pages",
+     "confluence_get_page_tree",
+     "confluence_get_page_history",
+     "confluence_list_spaces"
+    ]
+   }
+  ],
+  "prompt_tokens": 5576,
+  "completion_tokens": 136,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 17.103793307207525,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "confluence_get_page:en@1000",
+  "target": "confluence_get_page",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "confluence_search_pages",
+   "confluence_get_page"
+  ],
+  "call_args": [
+   "{\"query\": \"title:\\\"2026 Q4 Product Roadmap\\\"\"}",
+   "{\"page_id\": \"987654321\", \"expand\": \"body,version,status\"}"
+  ],
+  "searches": [
+   {
+    "query": "Confluence page titled \"2026 Q4 Product Roadmap\"",
+    "limit": null,
+    "hits": [
+     "confluence_get_page_tree",
+     "confluence_search_pages",
+     "confluence_get_page",
+     "confluence_create_page",
+     "confluence_list_pages",
+     "confluence_list_spaces"
+    ]
+   }
+  ],
+  "prompt_tokens": 5526,
+  "completion_tokens": 129,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 21.931549549102783,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "asana_update_task:ja@1000",
+  "target": "asana_update_task",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "asana_search_projects",
+   "asana_search_tasks",
+   "asana_update_task"
+  ],
+  "call_args": [
+   "{\"workspace_id\": \"me\", \"name_pattern\": \"Q4マーケティング計画\"}",
+   "{\"workspace_id\": \"1204567890123460\", \"text\": \"ランディングページのデザイン修正\"}",
+   "{\"task_id\": \"1204567890123499\", \"due_on\": \"2026-10-21\", \"completed\": true}"
+  ],
+  "searches": [
+   {
+    "query": "asana update task due date status",
+    "limit": null,
+    "hits": [
+     "asana_update_task",
+     "asana_create_task",
+     "asana_list_tasks",
+     "chatwork_update_task_status",
+     "asana_delete_task",
+     "asana_search_tasks",
+     "asana_search_projects",
+     "asana_list_projects",
+     "chatwork_list_tasks"
+    ]
+   }
+  ],
+  "prompt_tokens": 9782,
+  "completion_tokens": 212,
+  "steps": 4,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 32.762108284048736,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "asana_update_task:en@1000",
+  "target": "asana_update_task",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "asana_list_workspaces",
+   "asana_search_projects",
+   "asana_search_tasks",
+   "asana_update_task"
+  ],
+  "call_args": [
+   "{}",
+   "{\"workspace_id\": \"1234567890123456\", \"name_pattern\": \"Q4 Marketing Plan\"}",
+   "{\"workspace_id\": \"1234567890123456\", \"text\": \"Landing page design revision\"}",
+   "{\"task_id\": \"1203456789012345\", \"due_on\": \"2026-10-21\", \"completed\": true}"
+  ],
+  "searches": [
+   {
+    "query": "asana",
+    "limit": null,
+    "hits": [
+     "asana_list_users",
+     "asana_list_tags",
+     "asana_list_workspaces",
+     "asana_create_project",
+     "asana_list_sections",
+     "asana_search_projects",
+     "asana_list_projects"
+    ]
+   },
+   {
+    "query": "asana search tasks",
+    "limit": null,
+    "hits": [
+     "asana_search_tasks",
+     "asana_get_task",
+     "asana_search_projects",
+     "asana_delete_task",
+     "asana_list_tasks",
+     "asana_list_workspaces",
+     "asana_list_projects"
+    ]
+   },
+   {
+    "query": "asana update task",
+    "limit": null,
+    "hits": [
+     "asana_update_task",
+     "asana_list_tasks",
+     "asana_search_tasks",
+     "asana_create_task",
+     "asana_get_task",
+     "asana_search_projects",
+     "asana_list_projects",
+     "asana_list_workspaces"
+    ]
+   }
+  ],
+  "prompt_tokens": 19836,
+  "completion_tokens": 295,
+  "steps": 7,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 39.822123679332435,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ },
+ {
+  "id": "outlook_reply_to_email:ja@1000",
+  "target": "outlook_reply_to_email",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "outlook_search_emails",
+   "outlook_reply_to_email"
+  ],
+  "call_args": [
+   "{\"query\": \"subject:\\\"Q4予算承認のお願い\\\"\"}",
+   "{\"email_id\": \"AAMkAGI2MzQ1NjY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MA==\", \"body\": \"10月21日までに承認済みです\"}"
+  ],
+  "searches": [
+   {
+    "query": "Outlookでメールを検索して返信する",
+    "limit": null,
+    "hits": [
+     "outlook_search_emails",
+     "outlook_reply_to_email",
+     "outlook_search_events",
+     "gmail_search_messages",
+     "outlook_send_email",
+     "outlook_list_emails"
+    ]
+   }
+  ],
+  "prompt_tokens": 5201,
+  "completion_tokens": 172,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 7.82094266731292,
+  "correct": true,
+  "first_correct": false,
+  "kind": "ja",
+  "missing": null
+ },
+ {
+  "id": "outlook_reply_to_email:en@1000",
+  "target": "outlook_reply_to_email",
+  "condition": "search_rrf_comp",
+  "n": 1000,
+  "calls": [
+   "outlook_search_emails",
+   "outlook_reply_to_email"
+  ],
+  "call_args": [
+   "{\"query\": \"subject:\\\"Q4 Budget Approval Request\\\"\"}",
+   "{\"email_id\": \"AAMkAGIzN2E4YjQxLTg5ZDctNGFhYi05MmE3LWQ1ZjY3YjE2MzQ1NgBGAAAAAAAvK8qJ5vHTRpGqHqXqJqXQBwC7xK9jL8RfTqGqHqXqJqXQAAAAAAEMAAC7xK9jL8RfTqGqHqXqJqXQAABDm2xPAAA=\", \"body\": \"Approved by October 21st\"}"
+  ],
+  "searches": [
+   {
+    "query": "outlook search email reply",
+    "limit": null,
+    "hits": [
+     "outlook_search_emails",
+     "outlook_reply_to_email",
+     "outlook_list_emails",
+     "outlook_send_email",
+     "outlook_get_email"
+    ]
+   }
+  ],
+  "prompt_tokens": 4864,
+  "completion_tokens": 234,
+  "steps": 3,
+  "error": null,
+  "final_text": "",
+  "stop": "target",
+  "latency_s": 8.995295401662588,
+  "correct": true,
+  "first_correct": false,
+  "kind": "en",
+  "missing": null
+ }
+]

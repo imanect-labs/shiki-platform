@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import ask_probe, e2e, llm
+from .gen_e2e_queries import LOOKUP_OUT as LOOKUP_QUERIES
 from .gen_e2e_queries import OUT as QUERIES
 from .gen_e2e_queries import TODAY_NOTE
 from .llm import chat_json
@@ -34,7 +35,23 @@ SYSTEM = e2e.SYSTEM + TODAY_NOTE
 MOCK = "llm"
 MAX_STEPS = 10
 # (条件, カタログの規模)。1,000 件の依頼は v1 と同じく正解ツールの半分（ask_probe.sample の big）。
-RUNS = (("all", 200), ("search_rrf_prod", 200), ("all", 1000), ("search_rrf_prod", 1000))
+# `search_rrf_comp` は、読み込むツールの ID 引数を調べるツールも一緒に読み込む案（#565）。
+RUNS = (
+    ("all", 200),
+    ("search_rrf_prod", 200),
+    ("search_rrf_comp", 200),
+    ("all", 1000),
+    ("search_rrf_prod", 1000),
+    ("search_rrf_comp", 1000),
+)
+
+# 下調べが要る依頼だけの評価セット（#565・1,000 件のカタログ）。全ツール提示は回さず、
+# tool_search の現行と、ID を調べるツールも一緒に読み込む案を比べる。
+LOOKUP_RUNS = (("search_rrf_prod", 1000), ("search_rrf_comp", 1000))
+DATASETS = {
+    "v2": {"queries": QUERIES, "runs": RUNS, "prefix": "e2e_v2"},
+    "lookup": {"queries": LOOKUP_QUERIES, "runs": LOOKUP_RUNS, "prefix": "e2e_lookup"},
+}
 
 MISSING_JUDGE = """AI アシスタントが利用者の依頼に対し、ツールを実行せずに応答を終えました。
 依頼には、実行に必要な「{arg}」（{desc}）が書かれていません。
@@ -49,17 +66,17 @@ MISSING_JUDGE = """AI アシスタントが利用者の依頼に対し、ツー�
 JSON だけを返してください: {{"asked": true または false, "reason": "短く"}}"""
 
 
-def load() -> tuple[list[dict], dict[int, list]]:
-    """v2 の依頼と、v1 と同じカタログの部分集合。"""
-    queries = json.loads(QUERIES.read_text())
+def load(ds: str = "v2") -> tuple[list[dict], dict[int, list]]:
+    """評価セットの依頼と、v1 と同じカタログの部分集合。"""
+    queries = json.loads(DATASETS[ds]["queries"].read_text())
     _, _, subsets = ask_probe.sample()
     return queries, subsets
 
 
-def run() -> list[dict]:
-    queries, subsets = load()
+def run(ds: str = "v2") -> list[dict]:
+    queries, subsets = load(ds)
     rows: list[dict] = []
-    for condition, n in RUNS:
+    for condition, n in DATASETS[ds]["runs"]:
         tools = subsets[n]
         searcher = e2e.Searcher(tools, condition) if condition != "all" else None
         batch = [q for q in queries if q["n"] == n]
@@ -85,8 +102,8 @@ def run() -> list[dict]:
             {**r, "kind": kinds[r["id"]]["kind"], "missing": kinds[r["id"]]["missing"]} for r in out
         ]
         errors = sum(1 for r in out if r["error"])
-        print(f"E2E v2 n={n} {condition} done（失敗 {errors} 件）", flush=True)
-    ask_probe.write_results("e2e_v2.json", rows)
+        print(f"E2E {ds} n={n} {condition} done（失敗 {errors} 件）", flush=True)
+    ask_probe.write_results(f"{DATASETS[ds]['prefix']}.json", rows)
     return rows
 
 
@@ -114,8 +131,8 @@ def asked_missing(row: dict, query: dict, desc: str) -> dict:
     return out
 
 
-def judge(rows: list[dict]) -> list[dict]:
-    queries, subsets = load()
+def judge(rows: list[dict], ds: str = "v2") -> list[dict]:
+    queries, subsets = load(ds)
     by_id = {q["id"]: q for q in queries}
     catalogs = {n: {t.name: t.tooldef("ja") for t in tools} for n, tools in subsets.items()}
     replies = [
@@ -145,11 +162,8 @@ def judge(rows: list[dict]) -> list[dict]:
         }
         for r, v in zip(replies, verdicts, strict=True)
     ]
-    ask_probe.write_results("e2e_v2_judge.json", out)
+    ask_probe.write_results(f"{DATASETS[ds]['prefix']}_judge.json", out)
     return out
-
-
-MANUAL = ROOT / "results" / "e2e_v2_manual.json"
 
 
 def target_args(r: dict) -> dict | None:
@@ -164,13 +178,15 @@ def target_args(r: dict) -> dict | None:
     return out if isinstance(out, dict) else None
 
 
-def summarize(rows: list[dict], verdicts: list[dict]) -> list[dict]:
+def summarize(rows: list[dict], verdicts: list[dict], ds: str = "v2") -> list[dict]:
     """条件ごとの集計。十分な依頼は終わり方の内訳（目視の分類 `e2e_v2_manual.json` があれば
     LLM の判定より優先する）、足りない依頼は聞き返せたか・正解ツールに何を渡したか。"""
     v = {(x["id"], x["condition"], x["n"]): x for x in verdicts}
-    manual = json.loads(MANUAL.read_text()) if MANUAL.exists() else {}
+    prefix = DATASETS[ds]["prefix"]
+    manual_path = ROOT / "results" / f"{prefix}_manual.json"
+    manual = json.loads(manual_path.read_text()) if manual_path.exists() else {}
     out = []
-    for condition, n in RUNS:
+    for condition, n in DATASETS[ds]["runs"]:
         mine = [r for r in rows if r["condition"] == condition and r["n"] == n and not r["error"]]
         full = [r for r in mine if r["missing"] is None]
         short = [r for r in mine if r["missing"] is not None]
@@ -238,14 +254,14 @@ def summarize(rows: list[dict], verdicts: list[dict]) -> list[dict]:
                 ),
             }
         )
-    (ROOT / "results" / "e2e_v2_summary.json").write_text(json.dumps(out, indent=1))
+    (ROOT / "results" / f"{prefix}_summary.json").write_text(json.dumps(out, indent=1))
     return out
 
 
-def main() -> None:
-    rows = run()
-    verdicts = judge(rows)
-    for s in summarize(rows, verdicts):
+def main(ds: str = "v2") -> None:
+    rows = run(ds)
+    verdicts = judge(rows, ds)
+    for s in summarize(rows, verdicts, ds):
         f = s["full"] or 1
         print(
             f"n={s['n']} {s['condition']}: 正解 {s['correct']}/{s['full']}"
@@ -258,4 +274,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    main("lookup" if "--lookup" in sys.argv else "v2")
