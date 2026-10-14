@@ -1,0 +1,11 @@
+{
+ "note": "依頼データ v2（#547）で、十分な依頼なのに正解ツールを呼ばずに終えた会話を目視で分類した（全ツール提示は 0 件）。キーは「条件@規模」。avoidable は尋ねた情報をその会話のカタログにあるツールで調べられるもの、other は聞き返し以外の終わり方。",
+ "search_rrf_prod@200": {
+  "gdrive_upload_file:en@200": ["other", "tool_search を呼ばずに、提示されていないツール名（gdrive.files.create）を呼んで終えた"]
+ },
+ "search_rrf_prod@1000": {
+  "figma_delete_comment:ja@1000": ["avoidable", "ファイルキーを尋ねた。カタログの figma_search_files でファイル名から調べられる（LLM 判定は検算で legit に倒していた）"],
+  "gitlab_get_project:en@1000": ["other", "一覧（gitlab_list_projects）の応答に詳細が含まれていたので、それで答えて終えた"],
+  "outlook_delete_event:ja@1000": ["other", "「outlook」だけで検索し、削除のツールが 5 件に入らなかった。検索し直さず「削除の機能が無い」と答えた"]
+ }
+}
