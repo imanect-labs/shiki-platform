@@ -32,8 +32,9 @@ impl SearchService {
     /// - `narrow` が空なら `base` のまま [`Self::search`] と同じ。
     /// - 交差が空なら検索せずに 0 件を返す（空のスコープは「絞らない」になるため）。この場合も
     ///   `rag.search` の監査は残す（全検索操作の監査・NFR-6）。
-    /// - 交差で検索するときは、候補を `base` で**検索時点の木に対して**再検証する。交差を
-    ///   取った後に絞り込み先のフォルダが `base` の外へ移動されても、上限を失わない。
+    /// - 交差で検索するときは、候補を `base` と `narrow` の両方で**検索時点の木に対して**
+    ///   再検証する。交差を取った後に絞り込み先のフォルダが `base` の外へ移動されても、
+    ///   ファイルが絞り込み先の外へ移動された直後（索引の再タグ付けは非同期）でも範囲を外れない。
     #[allow(clippy::too_many_arguments)] // search の引数＋絞り込み（呼び出しは doc_search の 1 箇所）。
     pub async fn search_narrowed(
         &self,
@@ -65,7 +66,9 @@ impl SearchService {
                 debug: SearchDebug::default(),
             });
         }
-        self.search_bounded(ctx, query, top_k, mode, Some(&scope), base, trace_id)
+        // 知識スコープと絞り込みの両方を検索時点の木で再検証する（両方の内側 = 交差の内側）。
+        let bounds: Vec<&SearchScope> = base.into_iter().chain(std::iter::once(narrow)).collect();
+        self.search_bounded(ctx, query, top_k, mode, Some(&scope), &bounds, trace_id)
             .await
     }
 

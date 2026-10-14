@@ -534,6 +534,23 @@ async fn search_narrowed_rechecks_base_and_audits_empty_intersection() {
     let got: Vec<Uuid> = out.results.iter().map(|r| r.file_id).collect();
     assert_eq!(got, vec![stays], "上限外で落ちた分を次のラウンドで埋める");
 
+    // 知識スコープ無しの絞り込みでも、木の上で絞り込み先の外にあるファイルは返さない
+    // （moved は索引上まだ B のタグを持つが、木の上では C 配下・Codex）。
+    let out = svc
+        .search_narrowed(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            None,
+            &folders(&[b]),
+            None,
+        )
+        .await
+        .unwrap();
+    let got: Vec<Uuid> = out.results.iter().map(|r| r.file_id).collect();
+    assert_eq!(got, vec![stays], "絞り込み先も検索時点の木で確かめる");
+
     // 交わらない絞り込み → 0 件。監査は残る。
     let before: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'rag.search'",

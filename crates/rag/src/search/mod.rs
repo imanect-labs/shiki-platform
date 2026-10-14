@@ -114,13 +114,14 @@ impl SearchService {
         scope: Option<&SearchScope>,
         trace_id: Option<&str>,
     ) -> Result<SearchOutput, RagError> {
-        self.search_bounded(ctx, query, top_k, mode, scope, None, trace_id)
+        self.search_bounded(ctx, query, top_k, mode, scope, &[], trace_id)
             .await
     }
 
-    /// [`Self::search`] の本体。`bound` は**検索時点の木で**候補を再検証する上限スコープ
-    /// （モデルの絞り込みを交差させた検索で、元の知識スコープを渡す・[`Self::search_narrowed`]）。
-    /// `scope` は索引のタグで絞るため、交差を取った後にフォルダが動くと上限を失い得る。
+    /// [`Self::search`] の本体。`bounds` は**検索時点の木で**候補を再検証するスコープ群で、
+    /// 候補のファイルは全部の内側になければならない（モデルの絞り込みを交差させた検索で、元の
+    /// 知識スコープと絞り込みを渡す・[`Self::search_narrowed`]）。`scope` は索引のタグで絞るため、
+    /// 交差を取った後のフォルダ移動や、移動後の非同期な再タグ付けが済む前の古いタグで範囲を外れ得る。
     #[allow(clippy::too_many_arguments)] // search の引数＋上限（呼び出しは本モジュール内）。
     pub(super) async fn search_bounded(
         &self,
@@ -129,7 +130,7 @@ impl SearchService {
         top_k: Option<u32>,
         mode: SearchMode,
         scope: Option<&SearchScope>,
-        bound: Option<&SearchScope>,
+        bounds: &[&SearchScope],
         trace_id: Option<&str>,
     ) -> Result<SearchOutput, RagError> {
         let top_k = (top_k.unwrap_or(self.config.default_top_k as u32) as usize)
@@ -251,7 +252,7 @@ impl SearchService {
                 .collect();
             // 上限スコープの再検証も採択条件に含める（落ちた分は `seen` に入っているので、
             // 次ラウンドのバックフィルが上限内の候補で埋め直す・Codex）。
-            if let Some(bound) = bound {
+            for bound in bounds {
                 let inside = self.files_within(ctx, bound, &round_live).await?;
                 round_live.retain(|c| inside.contains(&c.node_id));
             }
