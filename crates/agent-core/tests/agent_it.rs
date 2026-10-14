@@ -240,6 +240,7 @@ fn stub_gateway_with_window(pool: PgPool, context_window_tokens: Option<u32>) ->
             timeout_secs: 120,
             user_agent: None,
             session_header: None,
+            ..Default::default()
         },
         catalog: ModelCatalog {
             default_model: "m".into(),
@@ -249,9 +250,11 @@ fn stub_gateway_with_window(pool: PgPool, context_window_tokens: Option<u32>) ->
                 prompt_price_micros_per_mtok: 0,
                 completion_price_micros_per_mtok: 0,
                 context_window_tokens,
+                ..Default::default()
             }],
         },
         langfuse: None,
+        ..Default::default()
     };
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }

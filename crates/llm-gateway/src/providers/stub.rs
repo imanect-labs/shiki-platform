@@ -18,6 +18,8 @@
 //!     （ループ検出・ステップ/予算上限・長ホライズンの決定的駆動）。
 //! - tool search 検証用の `toolsearch:<query>` … `tool_search` で検索し、読み込んだ先頭の
 //!   遅延ツールを次のターンで呼ぶ（[`super::stub_triggers::tool_search_call`]）。
+//! - `echosystem:` … 受け取った system プロンプトをそのまま本文で返す（system の組み立て
+//!   ＝今日の日付などが実際にモデルへ届くことの検証用・#546）。
 
 use std::time::Duration;
 
@@ -28,7 +30,7 @@ use super::stub_fixtures::{genui_spec, yui_reply};
 use super::stub_stream::{
     paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
 };
-use super::stub_triggers::{note_tool_call, tool_search_call};
+use super::stub_triggers::{echo_system_call, note_tool_call, tool_search_call};
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 
@@ -242,6 +244,17 @@ fn parallel_read_call(
     (!calls.is_empty()).then(|| tool_calls_stream(calls, prompt_tokens))
 }
 
+/// 本文を決め打ちで返す駆動（図・推論の引き継ぎ・受け取った system の返却）をまとめて試す。
+fn fixed_reply_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    yui_call(user_text, prompt_tokens)
+        .or_else(|| reasoning_call(req, user_text, prompt_tokens))
+        .or_else(|| echo_system_call(req, user_text, prompt_tokens))
+}
+
 /// 図の回答 `yui:<kind>`（#530）: ```ui ブロックを含む本文を数文字ずつ流す
 /// （行の途中で区切れる＝書きかけの値を描かないことを e2e で確かめられる）。
 fn yui_call(user_text: &str, prompt_tokens: u64) -> Option<DeltaStream> {
@@ -280,10 +293,8 @@ impl LlmProvider for StubProvider {
                 Duration::from_secs(secs),
             ));
         }
-        // --- 図の回答 `yui:<kind>`（#530）・推論アイテムの引き継ぎ `reasoning:`（#542）。 ---
-        if let Some(s) = yui_call(&user_text, prompt_tokens)
-            .or_else(|| reasoning_call(req, &user_text, prompt_tokens))
-        {
+        // --- 図 `yui:<kind>`（#530）・推論の引き継ぎ `reasoning:`（#542）・`echosystem:`（#546）。 ---
+        if let Some(s) = fixed_reply_call(req, &user_text, prompt_tokens) {
             return Ok(s);
         }
         // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---

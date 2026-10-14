@@ -694,7 +694,9 @@ say "  keycloak   http://localhost:8081"
 say "  ログ       $SERVER_LOG"
 say "             $WEB_LOG"
 say ""
-say "  LLM=${SHIKI__LLM__BACKEND}$([ "$SHIKI__LLM__BACKEND" = stub ] || echo "  ⚠️ stub ではない（E2E は stub が前提・実プロバイダへ課金される）")"
+# サーバの環境ファイルと同じ既定（stub）で表示する（このシェルでは未設定のことがある）。
+LLM_BACKEND=${SHIKI__LLM__BACKEND:-stub}
+say "  LLM=${LLM_BACKEND}$([ "$LLM_BACKEND" = stub ] || echo "  ⚠️ stub ではない（E2E は stub が前提・実プロバイダへ課金される）")"
 say "  RAG=$([ "$WITH_RAG" = 1 ] && { [ "$RAG_REMOTE" = 1 ] && echo "on(worker と S3 は外部)" || echo on; } || echo off)  sandbox=$([ "$WITH_SANDBOX" = 1 ] && echo on || echo off)  office=$([ "$WITH_OFFICE" = 1 ] && echo on || echo off)  （必要なら --rag / --rag-remote / --sandbox / --office）"
 say ""
 say "  E2E:  cd web && E2E_BASE_URL=http://localhost:3000 pnpm exec playwright test e2e/<x>.spec.ts"

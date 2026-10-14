@@ -11,6 +11,7 @@
 
 import * as React from "react";
 
+import type { ModelChoice } from "@/lib/model-choice";
 import { apiFetch } from "@/lib/api";
 import type { components } from "@/generated/api";
 import { newId } from "@/lib/chat-store";
@@ -536,6 +537,8 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
           anchor: kind.anchor,
           quote: kind.quote,
           boxes: kind.boxes,
+          // 閲覧者が読めない文書の引用は、サーバが番号だけの出典に置き換えて送る（#513）。
+          withheld: kind.withheld,
         });
         break;
       case "file_ref":
@@ -639,12 +642,14 @@ export function streamMessage(
   /// **この発話にだけ**適用する skill（スラッシュコマンド起動・#387）。
   /// thread のピンは変えない＝次の発話へ持ち越さない。
   skills?: ArtifactPin[],
+  /// モデルと思考の深さ（#553）。`null`/省略は Auto（組織の既定）。
+  model?: ModelChoice,
 ): (opts?: { cancelServer?: boolean }) => void {
   let unsub: (() => void) | null = null;
   let runId: string | null = null;
   let stopped = false;
 
-  postMessage(threadId, text, attachments, { agentMode, autonomous, context, skills })
+  postMessage(threadId, text, attachments, { agentMode, autonomous, context, skills, model })
     .then((posted) => {
       runId = posted.runId;
       // 承認 API 呼び出しのため run_id を UI へ渡す（自律プロファイル・Task 5.6）。
@@ -676,6 +681,8 @@ export async function postMessage(
     autonomous?: boolean;
     context?: SelectionContext;
     skills?: ArtifactPin[];
+    /// モデルと思考の深さ（#553）。`null`/省略は Auto。
+    model?: ModelChoice;
   } = {},
 ): Promise<{ runId: string; userMessageId: string; assistantMessageId: string }> {
   const res = await apiFetch(`/threads/${threadId}/messages`, {
@@ -691,9 +698,20 @@ export async function postMessage(
         artifact_id: p.artifactId,
         version: p.version ?? undefined,
       })),
+      model: opts.model?.model,
+      effort: opts.model?.effort,
     }),
   });
-  if (!res.ok) throw new Error(`送信に失敗しました (${res.status})`);
+  if (!res.ok) {
+    // 組織で使えないモデル等の 400 は理由を出す（「モデルが使えない」と分かるように）。
+    let detail = "";
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail ?? "";
+    } catch {
+      // 本文なし
+    }
+    throw new Error(detail || `送信に失敗しました (${res.status})`);
+  }
   const body = (await res.json()) as {
     run_id: string;
     user_message_id: string;

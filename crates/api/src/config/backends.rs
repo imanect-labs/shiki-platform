@@ -119,8 +119,9 @@ pub enum VectorStoreBackend {
     Pgvector,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LlmConfig {
+    /// 既定プロバイダ（ID `default`）。`models[].provider` を省略したモデルの振り先。
     pub backend: LlmBackend,
     /// プロバイダのベース URL（openai-compat/vLLM: `http://vllm:8000/v1`・Anthropic: 省略可）。
     #[serde(default)]
@@ -147,6 +148,39 @@ pub struct LlmConfig {
     /// 会話（スレッド）ごとの ID を載せるヘッダ名（例 `x-opencode-session`）。未指定なら送らない。
     #[serde(default)]
     pub session_header: Option<String>,
+    /// 追加プロバイダ（複数同時利用）。`models[].provider` がこの `id` を指す。
+    /// 既定プロバイダ（`backend` 等の単一設定）と併用できる。
+    #[serde(default)]
+    pub providers: Vec<LlmProviderEntry>,
+    /// 「Auto」の振り先（既定 `gpt-6-luna`・思考強度 `low`）。カタログに無ければ既定モデルへ落ちる。
+    #[serde(default)]
+    pub auto: Option<LlmAutoConfig>,
+}
+
+/// 追加プロバイダ 1 件（設定表現）。API キーは環境変数で注入する（コード・イメージに置かない）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmProviderEntry {
+    pub id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    pub backend: LlmBackend,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    #[serde(default)]
+    pub session_header: Option<String>,
+}
+
+/// Auto の振り先（設定表現）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmAutoConfig {
+    pub model: String,
+    /// `low` / `medium` / `high`。
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 impl LlmConfig {
@@ -167,6 +201,7 @@ impl LlmConfig {
                 prompt_price_micros_per_mtok: 0,
                 completion_price_micros_per_mtok: 0,
                 context_window_tokens: self.context_window_tokens.filter(|&w| w > 0),
+                ..Default::default()
             }]
         } else {
             self.models
@@ -177,6 +212,12 @@ impl LlmConfig {
                     prompt_price_micros_per_mtok: m.prompt_price_micros_per_mtok,
                     completion_price_micros_per_mtok: m.completion_price_micros_per_mtok,
                     context_window_tokens: m.context_window_tokens,
+                    provider: m.provider.clone(),
+                    display_name: m.display_name.clone(),
+                    description: m.description.clone(),
+                    processed_abroad: m.processed_abroad,
+                    supports_effort: m.supports_effort,
+                    requires_opt_in: m.requires_opt_in,
                 })
                 .collect()
         };
@@ -188,7 +229,7 @@ impl LlmConfig {
 }
 
 /// モデルカタログの 1 エントリ（設定表現）。単価はマイクロ USD / 100万トークン。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LlmModelEntry {
     pub id: String,
     #[serde(default)]
@@ -200,6 +241,24 @@ pub struct LlmModelEntry {
     /// コンテキスト窓トークン数（未設定ならエージェントの剪定は固定閾値のまま・#529）。
     #[serde(default)]
     pub context_window_tokens: Option<u32>,
+    /// 振り先プロバイダの ID（`providers[].id`）。省略は既定プロバイダ。
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// ユーザー・管理画面に出す名前。
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// モデル選択メニューの 1 行説明。
+    #[serde(default)]
+    pub description: Option<String>,
+    /// 日本国外で処理される（外部 API）。「国外処理」バッジを出す。
+    #[serde(default)]
+    pub processed_abroad: bool,
+    /// 思考強度を送るか（省略はプロバイダ種別の既定）。
+    #[serde(default)]
+    pub supports_effort: Option<bool>,
+    /// 組織の管理者が有効にするまで使わせない（[`llm_gateway::ModelEntry::requires_opt_in`]）。
+    #[serde(default)]
+    pub requires_opt_in: bool,
 }
 
 /// Langfuse 計装の設定（設定表現）。
@@ -210,7 +269,7 @@ pub struct LangfuseConfig {
     pub secret_key: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LlmBackend {
     /// ローカル vLLM（OpenAI 互換・オンプレ/エアギャップ既定）。
@@ -226,6 +285,7 @@ pub enum LlmBackend {
     /// Vertex AI（枠・未実装）。
     Vertex,
     /// テスト/CI 用の決定的スタブ（外部依存なし）。
+    #[default]
     Stub,
 }
 
@@ -267,6 +327,10 @@ pub struct ChatConfig {
     /// （未指定は WorkerConfig 既定 true）。false で全ツールの定義を常に提示する。
     #[serde(default)]
     pub tool_search: Option<bool>,
+    /// system プロンプトに入れる「今日の日付」のタイムゾーン（IANA 名・未指定は
+    /// WorkerConfig 既定 `Asia/Tokyo`・#546）。不正な名前は起動時にエラーにする。
+    #[serde(default)]
+    pub timezone: Option<String>,
     /// 通常チャットで旧・無条件 RAG 注入経路を使う後方互換フォールバック（既定 false）。
     /// false ならモデル裁量ループ（issue #102）。明示的なエージェントモード run/自律 run には影響しない。
     #[serde(default)]
@@ -377,6 +441,7 @@ impl Default for ChatConfig {
             max_tokens: None,
             parallel_read_tools: None,
             tool_search: None,
+            timezone: None,
             classic_rag: false,
             sandbox_endpoint: None,
             sandbox_backend: None,

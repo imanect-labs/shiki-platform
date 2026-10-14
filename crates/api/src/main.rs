@@ -291,6 +291,15 @@ async fn main() -> anyhow::Result<()> {
         secrets: secrets.as_ref(),
     })
     .await?;
+    // 管理コンソール・モデル一覧・チャットのモデル解決が使うゲートウェイ（同一設定から構築）。
+    // 未実装 backend 等で組めない構成でも、AI 以外の API は動かす（該当 API だけ 503）。
+    let llm = match wiring::build_gateway(&config, &http, &db) {
+        Ok(gw) => Some(Arc::new(gw)),
+        Err(e) => {
+            tracing::warn!(error = %e, "llm-gateway を構築できません（/llm/models・/org-admin/ai は 503）");
+            None
+        }
+    };
     let state = AppState {
         config: Arc::new(config),
         // 生 PgPool は StorageService 等のチョークポイントにのみ渡し、AppState には
@@ -328,6 +337,7 @@ async fn main() -> anyhow::Result<()> {
         tenants,
         search,
         chat,
+        llm,
         rag_admin,
         office,
         docx_composer,

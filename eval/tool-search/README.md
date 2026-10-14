@@ -25,6 +25,12 @@ uv run python -m tseval.gen_queries   # 評価クエリ（正解 148 件 × ja /
 uv run python -m tseval.evaluate      # 検索精度（E1〜E5）→ results/e*.json
 uv run python -m tseval.e2e           # LLM にツールを選ばせる E2E → results/e2e.json
 uv run python -m tseval.skills        # skill の一覧方式 vs 検索方式 → results/skills_e2e.json
+uv run python -m tseval.ask_probe     # 聞き返しの切り分け（system prompt・モック・最後の応答の分類）→ results/e2e_ask_*.json
+# results/e2e_ask_manual_1000.json は主要な比較（1,000 件・現行・一律）を目視で分類したもの（手で作る）
+uv run python -m tseval.gen_e2e_queries  # E2E の依頼データ v2（必要な値が揃う依頼・規模ごと）→ data/e2e_queries_v2.json（書き出し済みで今の検査を通るものは作り直さない）
+uv run python -m tseval.gen_e2e_queries --verify  # 書き出した依頼データを今の検査にかけ直す（作り直さない・不合格があれば終了コード 1）
+uv run python -m tseval.e2e_v2        # 依頼データ v2 の E2E → results/e2e_v2*.json
+# results/e2e_v2_manual.json は v2 で正解ツールを呼ばずに終えた会話を目視で分類したもの（手で作る）
 uv run python -m tseval.report        # 集計表 → results/summary.md
 PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/tool-search-eval.html
 ```
@@ -39,6 +45,7 @@ PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/t
 | `data/catalog_real_snapshot.json` | 製品のツール定義のスナップショット（dev 構成の通常チャット・`defer_loading` が遅延になった 13 件が検索対象） |
 | `data/catalog_synth.json` | 合成ツール 990 件（業務 SaaS 45 サービスの MCP 風ツール・日英の説明と引数） |
 | `data/queries.json` | 評価クエリ 592 件（正解は 1 ツール。紛らわしい近縁ツールでは満たせない依頼に限定して生成） |
+| `data/e2e_queries_v2.json` | E2E の依頼データ v2 102 件（#547）。依頼文・正解ツールまでの手順（plan）・わざと書かない引数（`missing`）。必須引数が依頼文かその会話のカタログのツールで埋まることを検査済み |
 | `data/skills.json` / `data/skill_queries.json` | 合成 skill 493 件（25 分野）と依頼 60 件 |
 
 クエリ種別:
@@ -59,7 +66,9 @@ PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/t
 | E4 limit | 読み込み件数 k と recall・読み込む定義のトークン |
 | E5 latency | 1 クエリの処理時間（BM25 / 埋め込み / rerank）と `tool_search` 説明の長さ |
 | E2E | 全ツール提示 vs `tool_search`（BM25 / RRF）で、LLM が正解ツールを呼べた率・トークン。結果本文は評価側の簡略版・製品の文面（`_prod`）・下調べ用ツールの案内付き（`_hint`・#522 で試して入れなかった案）の 3 通り |
+| E2E v2 | 依頼データ v2 で全ツール提示 vs tool_search（RRF・製品の文面）。固定の今日の日付・依頼に沿ったモック・応答 10 回まで。情報がわざと足りない依頼は、聞き返せたら正解（#547・v1 の E2E とは比べられない） |
 | skills | skill の一覧方式（製品の先頭 50 件 / 全件）vs 検索方式 |
+| ask_probe | E2E で正解ツールを呼ばずに文章で終えた会話（下調べのツールを呼んでから終えたものを含む）の切り分け（system prompt 3 通り × ツールの応答 2 通り・最後の応答を「避けられた／正当な聞き返し／その他」に LLM で分類し、「避けられた」は挙げたツールで本当に調べられるかを別の呼び出しで検算・#545） |
 
 方式: `bm25`（製品の打ち切り前順位）/ `bm25_prod`（埋め込みが無いときに製品が読み込む 5 件・BM25 のみ）/ `emb`（Ruri v3）/
 `rrf`（bm25 と emb の RRF・k=10・製品と同じ）/ `rrf_rerank`（rrf 上位 20 件を cross-encoder で並べ替え）。

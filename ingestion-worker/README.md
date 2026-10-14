@@ -21,7 +21,9 @@ uv run pytest -m slow   # Docling 実走（重い・opt-in。PDF は WORKER_MODE
 uv run uvicorn ingestion_worker.main:app --reload  # ローカル起動
 ```
 
-モデルは初回リクエスト時に `HF_HOME`（compose では `hf-cache` volume）へダウンロードされる。
+モデルは**起動時にバックグラウンドで** `HF_HOME`（compose では `hf-cache` volume）へダウンロードし、読み込んで 1 回空打ちする
+（`/healthz` は待たせない・`loaded` で状態が分かる）。`/parse` や `/edit` しか使わない構成やネットワークに出られない環境では
+`WARMUP_MODELS=false` で止められる（その場合は従来どおり初回リクエスト時に読み込む）。
 埋め込みモデルを変えるときは Rust 側 `SHIKI__RAG__EMBEDDING_MODEL_VERSION` も揃えること
 （不一致はインジェスト時に version 突合ガードで拒否 → インデックスは shadow 再構築で移行。
 docs/design.md §4.3 PIT-8）。

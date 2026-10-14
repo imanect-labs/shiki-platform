@@ -287,7 +287,7 @@ pub async fn get_messages(
     request_body = PostMessageRequest,
     responses(
         (status = 202, description = "受理（生成は接続非依存ジョブで継続）", body = PostMessageResponse),
-        (status = 400, description = "空メッセージ"),
+        (status = 400, description = "空メッセージ・組織で使えないモデル"),
         (status = 403, description = "投稿権限なし"),
         (status = 404, description = "存在しない"),
         (status = 503, description = "chat 無効"),
@@ -321,8 +321,9 @@ pub async fn post_message(
         }
         _ => Vec::new(),
     };
+    let model = resolve_run_model(&state, &ctx, req.model.as_deref(), req.effort).await?;
     let r = chat_store(&state)?
-        .post_message(
+        .post_message_with_model(
             &ctx,
             id,
             &req.text,
@@ -331,6 +332,7 @@ pub async fn post_message(
             req.agent_mode,
             req.autonomous.unwrap_or(false),
             &once_skills,
+            model.as_ref(),
             trace.as_deref(),
         )
         .await?;
@@ -343,6 +345,46 @@ pub async fn post_message(
             agent_mode: r.agent_mode,
         }),
     ))
+}
+
+/// 発話のモデル指定をテナント設定で解決する（#553）。組織で使えないモデルは 400。
+///
+/// LLM ゲートウェイが無い構成（テスト・未構成）では、指定が無ければ従来どおり run にモデルを
+/// 載せない（ワーカーの既定で生成）。指定があるのに解決できないなら 503。
+async fn resolve_run_model(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    model: Option<&str>,
+    effort: Option<super::llm_models::EffortLevel>,
+) -> Result<Option<chat::RunModel>, ApiError> {
+    let Some(gw) = state.llm.as_ref() else {
+        if model.is_some() || effort.is_some() {
+            return Err(ApiError::ServiceUnavailable(
+                "llm gateway is not configured".into(),
+            ));
+        }
+        return Ok(None);
+    };
+    let choice = llm_gateway::ModelChoice {
+        model: model.map(str::to_string),
+        effort: effort.map(Into::into),
+    };
+    match gw
+        .resolve_choice(ctx, &choice)
+        .await
+        .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?
+    {
+        Ok(r) => Ok(Some(chat::RunModel {
+            model: r.model,
+            effort: r.effort,
+            auto: r.auto,
+        })),
+        Err(e) => Err(ApiError::UnprocessableJson(serde_json::json!({
+            "status": 400,
+            "title": "Bad Request",
+            "detail": e.to_string(),
+        }))),
+    }
 }
 
 /// スレッドの最新 run を SSE で購読する（replay-then-subscribe）。
@@ -369,7 +411,7 @@ pub async fn stream_thread(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let chat = chat_store(&state)?;
-    // viewer 認可（403/404）。共有スレッドの引用は get_messages 側で閲覧者権限に再評価される。
+    // viewer 認可（403/404）。引用とツール結果は viewer_event_stream が閲覧者の権限で見直す（#513）。
     chat.get_thread(&ctx, id, trace.as_deref()).await?;
 
     let from_seq = last_event_id(&headers, &q);
@@ -377,7 +419,8 @@ pub async fn stream_thread(
     // 順番待ちの run を購読した場合はイベント 0 件で待機し、ワーカーが着手した時点で流れ出す。
     let stream: SseEventStream = match chat.current_run(id, &ctx.tenant_id).await? {
         Some(current) => chat
-            .event_stream(current.run_id, from_seq)
+            .viewer_event_stream(&ctx, id, current.run_id, from_seq, trace.as_deref())
+            .await?
             .map(|ev| {
                 let data = serde_json::to_string(&ev.event).unwrap_or_else(|_| "{}".to_string());
                 Ok(Event::default().id(ev.seq.to_string()).data(data))

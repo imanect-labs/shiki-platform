@@ -439,6 +439,7 @@ fn explicit_catalog_keeps_per_model_windows() {
         prompt_price_micros_per_mtok: 0,
         completion_price_micros_per_mtok: 0,
         context_window_tokens: Some(200_000),
+        ..Default::default()
     }];
     let catalog = cfg.llm.model_catalog();
     assert_eq!(catalog.default_model, "big");
@@ -455,4 +456,25 @@ fn chat_yui_defaults_on() {
     assert!(partial.yui);
     let off: ChatConfig = serde_json::from_value(serde_json::json!({ "yui": false })).unwrap();
     assert!(!off.yui);
+}
+
+#[test]
+fn catalog_carries_provider_and_display_metadata() {
+    // 複数プロバイダ（#553）: モデルの振り先・表示名・国外処理・思考強度の指定が gateway へ届く。
+    let mut cfg = valid_config();
+    cfg.llm.models = vec![LlmModelEntry {
+        id: "gpt-6-luna".into(),
+        provider: Some("opencode".into()),
+        display_name: Some("GPT-6 Luna".into()),
+        description: Some("速い".into()),
+        processed_abroad: true,
+        supports_effort: Some(true),
+        ..Default::default()
+    }];
+    let m = &cfg.llm.model_catalog().models[0];
+    assert_eq!(m.provider_id(), "opencode");
+    assert_eq!(m.label(), "GPT-6 Luna");
+    assert_eq!(m.description.as_deref(), Some("速い"));
+    assert!(m.processed_abroad);
+    assert_eq!(m.supports_effort, Some(true));
 }

@@ -3,14 +3,18 @@
 //! 会話は共有できるが、その中の引用・ツール結果は**閲覧者自身の権限**で見直す必要がある。
 //! 「他人の引用をそのまま見せない」「認可の再評価ができない本文は出さない」の 2 つを、
 //! 線形取得（[`super::threads`] の `get_messages`）の後段でまとめて掛ける。
+//! 生成中の SSE 再送（[`ChatStore::viewer_event_stream`]）にも同じ 2 つを掛ける（#513）。
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+use std::collections::{HashMap, HashSet};
+
 use authz::{AuthContext, Consistency, Relation};
+use futures::stream::{BoxStream, StreamExt};
 use uuid::Uuid;
 
-use crate::model::{Citation, ContentBlock, Message};
+use crate::model::{Citation, ContentBlock, Message, StreamEvent, StreamEventKind};
 
 use super::threads::map_db;
 
@@ -25,7 +29,6 @@ impl ChatStore {
         ctx: &AuthContext,
         messages: &mut [Message],
     ) -> Result<(), ChatError> {
-        use std::collections::HashMap;
         // 引用対象ファイルの重複を除いて一括判定（同一ファイルの複数引用を一度に）。
         let mut decisions: HashMap<String, bool> = HashMap::new();
         for m in messages.iter() {
@@ -123,6 +126,92 @@ impl ChatStore {
             }
         }
         Ok(())
+    }
+
+    /// run のイベントを、**閲覧者の権限で見直してから**流すストリームを返す（#513）。
+    ///
+    /// 保存済みメッセージ（`get_messages`）と同じ 2 つを、生成中の再送にも掛ける。掛けないと、
+    /// 共有スレッドを開いた閲覧者が、自分では読めない文書の抜粋を生成中にだけ見られてしまう。
+    /// - 引用: 閲覧者が読めないファイルのものは番号だけの出典（[`Citation::withheld`]）に置き換える。
+    ///   許可は引用のたびに確かめ直し、拒否だけをストリームの間覚えておく（剥奪を直後の引用から反映する）。
+    /// - ツール結果: 閲覧者が run の実行主体でなければ本文を落とす（成否は残す）。
+    ///
+    /// スレッドの viewer 認可と「run がそのスレッドのものか」もここで確かめる（呼び出し側の
+    /// 事前確認に頼らない。run_id だけで読めると同じテナントの他スレッドの run を覗ける）。
+    pub async fn viewer_event_stream(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        run_id: Uuid,
+        from_seq: i64,
+        trace_id: Option<&str>,
+    ) -> Result<BoxStream<'static, StreamEvent>, ChatError> {
+        self.require_thread(ctx, thread_id, Relation::Viewer, "thread.stream", trace_id)
+            .await?;
+        let actor: Option<String> = sqlx::query_scalar(
+            "SELECT actor FROM generation_run \
+             WHERE run_id = $1 AND thread_id = $2 AND tenant_id = $3",
+        )
+        .bind(run_id)
+        .bind(thread_id)
+        .bind(&ctx.tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        let Some(actor) = actor else {
+            return Err(ChatError::NotFound);
+        };
+        let is_actor = actor == ctx.principal.id;
+        let state = (
+            self.event_stream(run_id, from_seq),
+            self.clone(),
+            ctx.clone(),
+            HashSet::<String>::new(),
+        );
+        // 順序を保って 1 件ずつ見直す（引用の判定は非同期なので then ではなく unfold で状態を持ち回す）。
+        let stream =
+            futures::stream::unfold(state, move |(mut rx, store, ctx, mut denied)| async move {
+                let ev = rx.next().await?;
+                let ev = store
+                    .redact_event_for_viewer(&ctx, is_actor, &mut denied, ev)
+                    .await;
+                Some((ev, (rx, store, ctx, denied)))
+            })
+            .filter_map(futures::future::ready);
+        Ok(stream.boxed())
+    }
+
+    /// 1 件のイベントを閲覧者の権限で見直す（落とす場合は `None`）。
+    ///
+    /// **許可は使い回さない。** 引用のたびに HigherConsistency で確かめ直す（長い run を開いたままの間に
+    /// 閲覧権限が外れたら、直後の引用から反映させる。保存済みの経路と同じく剥奪を優先する）。
+    /// 使い回すのは拒否だけ（拒否を覚えていても漏れる方向には倒れない）。
+    async fn redact_event_for_viewer(
+        &self,
+        ctx: &AuthContext,
+        is_actor: bool,
+        denied: &mut HashSet<String>,
+        mut ev: StreamEvent,
+    ) -> Option<StreamEvent> {
+        match &mut ev.event {
+            StreamEventKind::Citation(c) => {
+                let allowed =
+                    !denied.contains(&c.node_id) && self.can_view_file(ctx, &c.node_id).await;
+                if !allowed {
+                    denied.insert(c.node_id.clone());
+                }
+                if !allowed {
+                    // 番号を持たない旧形式は保存済みの経路と同じく落とす。
+                    if c.cite_id == 0 {
+                        return None;
+                    }
+                    *c = Citation::withheld(c.cite_id);
+                }
+            }
+            StreamEventKind::ToolResult { content, .. } if !is_actor => content.clear(),
+            _ => {}
+        }
+        Some(ev)
     }
 
     /// 閲覧者が該当ファイルを閲覧できるか（citation 再評価用・失敗時は保守的に false）。

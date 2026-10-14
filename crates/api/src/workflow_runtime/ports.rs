@@ -197,9 +197,9 @@ impl NodePorts for ProdNodePorts {
         greq.max_tokens = req.max_tokens;
         let mut stream = self
             .gateway
-            .stream(greq)
+            .stream(&ctx, greq)
             .await
-            .map_err(|e| PortError::unavailable(format!("llm: {e}")))?;
+            .map_err(|e| llm_port_error(&e))?;
         let mut text = String::new();
         let mut usage = Usage {
             prompt_tokens: 0,
@@ -228,6 +228,7 @@ impl NodePorts for ProdNodePorts {
                     input_preview: preview(&req.prompt),
                     output_preview: preview(&text),
                     app_id: None,
+                    source: llm_gateway::UsageSource::Workflow,
                 },
             )
             .await;
@@ -495,4 +496,34 @@ fn cell_to_json(cell: Option<&str>) -> Value {
 fn preview(s: &str) -> String {
     let flat: String = s.chars().take(200).collect();
     flat.replace('\n', " ")
+}
+
+/// gateway の失敗をワークフローの再試行分類へ写す。
+///
+/// 設定・入力の誤り（未知のモデル・組織が許可していないモデル・プロバイダの 4xx）は、設定を
+/// 変えない限り何度やっても通らないので再試行しない。到達障害やレート制限だけを再試行する。
+fn llm_port_error(e: &llm_gateway::LlmError) -> PortError {
+    match e {
+        llm_gateway::LlmError::Config(_) | llm_gateway::LlmError::BadRequest(_) => {
+            PortError::invalid(format!("llm: {e}"))
+        }
+        _ => PortError::unavailable(format!("llm: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn llm_config_errors_are_not_retried() {
+        use llm_gateway::LlmError;
+        // 組織が許可していないモデルは設定を変えるまで通らない → 再試行しない。
+        let e = llm_port_error(&LlmError::Config("model is not enabled".into()));
+        assert!(!e.retryable);
+        assert!(!llm_port_error(&LlmError::BadRequest("bad".into())).retryable);
+        // 到達障害・レート制限は再試行する。
+        assert!(llm_port_error(&LlmError::Unavailable("down".into())).retryable);
+        assert!(llm_port_error(&LlmError::RateLimited("429".into())).retryable);
+    }
 }

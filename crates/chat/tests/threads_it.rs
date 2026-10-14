@@ -38,6 +38,8 @@ struct AllowAll {
     tuples: std::sync::Mutex<Vec<ReadTupleKey>>,
     /// 例外的に拒否するオブジェクト（`FgaObject::as_str()`）。閲覧権限の無いファイルの再現用。
     deny: std::sync::Mutex<Vec<String>>,
+    /// 特定の主体にだけ拒否する（主体, オブジェクト）。**誰の権限で判定したか**を検証する用。
+    deny_for: std::sync::Mutex<Vec<(String, String)>>,
 }
 
 impl AllowAll {
@@ -45,6 +47,7 @@ impl AllowAll {
         Self {
             tuples: std::sync::Mutex::new(vec![]),
             deny: std::sync::Mutex::new(vec![]),
+            deny_for: std::sync::Mutex::new(vec![]),
         }
     }
 }
@@ -53,12 +56,19 @@ impl AllowAll {
 impl AuthzClient for AllowAll {
     async fn check(
         &self,
-        _s: &Subject,
+        s: &Subject,
         _r: Relation,
         o: &FgaObject,
         _c: Consistency,
     ) -> Result<bool, AuthzError> {
-        Ok(!self.deny.lock().unwrap().iter().any(|d| d == o.as_str()))
+        let subject = s.to_string();
+        let denied_for = self
+            .deny_for
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(ds, d)| *ds == subject && d == o.as_str());
+        Ok(!denied_for && !self.deny.lock().unwrap().iter().any(|d| d == o.as_str()))
     }
     async fn write_tuple(
         &self,
@@ -164,6 +174,7 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
             timeout_secs: 120,
             user_agent: None,
             session_header: None,
+            ..Default::default()
         },
         catalog: ModelCatalog {
             default_model: "m".into(),
@@ -173,9 +184,11 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
                 prompt_price_micros_per_mtok: 0,
                 completion_price_micros_per_mtok: 0,
                 context_window_tokens: None,
+                ..Default::default()
             }],
         },
         langfuse: None,
+        ..Default::default()
     };
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
@@ -1095,4 +1108,226 @@ async fn unreadable_citations_become_number_only_stubs() {
     let stub = cites[1];
     assert!(stub.withheld && stub.cite_id == 2);
     assert!(stub.node_id.is_empty() && stub.snippet.is_empty() && stub.version.is_none());
+}
+
+/// 生成中の SSE 再送も、保存済みメッセージと同じく閲覧者の権限で見直す（#513）。
+///
+/// 引用は読めないファイルのものを番号だけの出典に、ツール結果は実行主体以外には本文を落とす。
+/// 実行主体本人には何も落とさない（読めるファイルの引用・自分のツール結果はそのまま）。
+#[tokio::test]
+async fn viewer_event_stream_redacts_for_other_viewers() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::new());
+    let store = store(&pool, Arc::clone(&authz) as _).await;
+    let owner = ctx(&tenant);
+    let thread = store
+        .create_thread(&owner, "共有スレッド", false, None, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(
+            &owner,
+            thread.id,
+            "調べて",
+            &[],
+            None,
+            Some(false),
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_run(res.run_id, "w1", 30)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let readable = uuid::Uuid::new_v4().to_string();
+    let secret = uuid::Uuid::new_v4().to_string();
+    let cite = |cite_id: u32, node: &str| {
+        let mut c = chat::Citation::withheld(cite_id);
+        c.withheld = false;
+        c.node_id = node.into();
+        c.snippet = format!("{node} の本文");
+        StreamEventKind::Citation(c)
+    };
+    for ev in [
+        StreamEventKind::ToolResult {
+            tool_call_id: "t1".into(),
+            ok: true,
+            content: "社外秘: 給与テーブルの抜粋".into(),
+        },
+        cite(1, &readable),
+        cite(2, &secret),
+        // 同じファイルの 2 つ目の引用（判定の使い回しでも結果が変わらないこと）。
+        cite(3, &secret),
+        StreamEventKind::Done {
+            message_id: res.assistant_message_id,
+        },
+    ] {
+        store
+            .append_stream_event(res.run_id, claimed.fencing_token, &ev)
+            .await
+            .unwrap();
+    }
+
+    let mut viewer = ctx(&tenant);
+    viewer.principal.id = "bob".into();
+    // **閲覧者（bob）にだけ**拒否する。実装が誤って実行主体（alice）の権限で判定すると、
+    // bob にも抜粋が流れてこのテストが落ちる。
+    authz.deny_for.lock().unwrap().push((
+        viewer.subject().to_string(),
+        viewer.ns().file(&secret).as_str().to_string(),
+    ));
+
+    let collect = |ctx: AuthContext| {
+        let store = store.clone();
+        async move {
+            let mut s = store
+                .viewer_event_stream(&ctx, thread.id, res.run_id, 0, None)
+                .await
+                .unwrap();
+            let mut out = vec![];
+            while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(10), s.next()).await {
+                let done = matches!(ev.event, StreamEventKind::Done { .. });
+                out.push(ev.event);
+                if done {
+                    break;
+                }
+            }
+            out
+        }
+    };
+
+    // 閲覧者（bob）: 読めない引用は番号だけ・ツール結果は本文なし。
+    let theirs = collect(viewer.clone()).await;
+    assert!(
+        matches!(theirs.last(), Some(StreamEventKind::Done { .. })),
+        "Done まで届く"
+    );
+    assert!(
+        theirs.iter().any(|e| matches!(
+            e,
+            StreamEventKind::ToolResult { content, ok: true, .. } if content.is_empty()
+        )),
+        "他人にはツール結果の本文を流さない（成否は残す）: {theirs:?}"
+    );
+    let cites: Vec<&chat::Citation> = theirs
+        .iter()
+        .filter_map(|e| match e {
+            StreamEventKind::Citation(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cites.len(), 3, "番号は詰めない");
+    assert!(!cites[0].withheld && cites[0].node_id == readable);
+    for stub in &cites[1..] {
+        assert!(stub.withheld && stub.node_id.is_empty() && stub.snippet.is_empty());
+    }
+
+    // 実行主体（alice）: 自分のツール結果は見える。読める引用はそのまま（bob への拒否は効かない）。
+    let mine = collect(owner.clone()).await;
+    assert!(mine.iter().any(|e| matches!(
+        e,
+        StreamEventKind::ToolResult { content, .. } if content.contains("社外秘")
+    )));
+    assert!(mine
+        .iter()
+        .filter_map(|e| match e {
+            StreamEventKind::Citation(c) => Some(c),
+            _ => None,
+        })
+        .all(|c| !c.withheld));
+}
+
+/// SSE の見直しは run がそのスレッドのものかを確かめ、番号の無い旧形式の読めない引用は落とす（#513）。
+#[tokio::test]
+async fn viewer_event_stream_checks_thread_and_drops_legacy_citations() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::new());
+    let store = store(&pool, Arc::clone(&authz) as _).await;
+    let owner = ctx(&tenant);
+    let thread = store
+        .create_thread(&owner, "共有スレッド", false, None, None)
+        .await
+        .unwrap();
+    let other_thread = store
+        .create_thread(&owner, "別スレッド", false, None, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(
+            &owner,
+            thread.id,
+            "調べて",
+            &[],
+            None,
+            Some(false),
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_run(res.run_id, "w1", 30)
+        .await
+        .unwrap()
+        .unwrap();
+    let secret = uuid::Uuid::new_v4().to_string();
+    let mut legacy = chat::Citation::withheld(0);
+    legacy.withheld = false;
+    legacy.node_id = secret.clone();
+    legacy.snippet = "旧形式の抜粋".into();
+    for ev in [
+        StreamEventKind::Citation(legacy),
+        StreamEventKind::Done {
+            message_id: res.assistant_message_id,
+        },
+    ] {
+        store
+            .append_stream_event(res.run_id, claimed.fencing_token, &ev)
+            .await
+            .unwrap();
+    }
+
+    // run が属さないスレッドを名乗っても読めない（同じテナントの他スレッドの run を覗かせない）。
+    let err = store
+        .viewer_event_stream(&owner, other_thread.id, res.run_id, 0, None)
+        .await
+        .err()
+        .expect("別スレッドの run は読めない");
+    assert!(matches!(err, chat::ChatError::NotFound), "{err:?}");
+
+    // 番号の無い旧形式の引用は、読めなければ番号だけの出典にもできないので落とす。
+    let mut viewer = ctx(&tenant);
+    viewer.principal.id = "bob".into();
+    authz
+        .deny
+        .lock()
+        .unwrap()
+        .push(viewer.ns().file(&secret).as_str().to_string());
+    let mut s = store
+        .viewer_event_stream(&viewer, thread.id, res.run_id, 0, None)
+        .await
+        .unwrap();
+    let mut events = vec![];
+    while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(10), s.next()).await {
+        let done = matches!(ev.event, StreamEventKind::Done { .. });
+        events.push(ev.event);
+        if done {
+            break;
+        }
+    }
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEventKind::Citation(_))),
+        "読めない旧形式の引用は流さない: {events:?}"
+    );
+    assert!(matches!(events.last(), Some(StreamEventKind::Done { .. })));
 }

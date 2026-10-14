@@ -82,21 +82,29 @@ impl ChatWorker {
             }
         }
 
+        // 今日の日付（#546）は検索結果のあと、system の最後に置く（ほかの経路と同じ）。
+        system.push_str(&super::opts::today_note(
+            run.created_at,
+            self.config.timezone,
+        ));
+
         // skill のモデル既定（Task 6.9・指定があるものだけ上書き・複数ピンは後勝ち・#344）。
         // 未指定時の上限はチャット設定（reasoning モデルの思考で 2048 では足りない・#352）。
-        let (model, max_tokens, temperature) = match crate::skill::combined_model_defaults(&skills)
-        {
-            Some(defaults) => (
-                defaults.model.clone().or_else(|| self.config.model.clone()),
-                defaults.max_tokens.or(Some(self.config.max_tokens)),
-                defaults.temperature,
-            ),
-            None => (
-                self.config.model.clone(),
-                Some(self.config.max_tokens),
-                None,
-            ),
+        let defaults = crate::skill::combined_model_defaults(&skills);
+        let (max_tokens, temperature) = match &defaults {
+            Some(d) => (d.max_tokens.or(Some(self.config.max_tokens)), d.temperature),
+            None => (Some(self.config.max_tokens), None),
         };
+        // モデルと思考強度: ユーザーの選択 → skill → Auto の振り先 → 設定（#553・run_model.rs）。
+        let chosen = super::run_model::effective_model(
+            &self.gateway,
+            ctx,
+            run,
+            defaults.as_ref().and_then(|d| d.model.as_deref()),
+            self.config.model.as_deref(),
+        )
+        .await?;
+        let model = chosen.model;
         let effective_model = model
             .clone()
             .unwrap_or_else(|| self.gateway.default_model().to_string());
@@ -105,14 +113,14 @@ impl ChatWorker {
             system: Some(system),
             messages: history,
             tools: Vec::new(),
-            effort: None,
+            effort: chosen.effort,
             max_tokens,
             temperature,
             session_id: Some(run.thread_id.to_string()),
         };
         let mut stream = self
             .gateway
-            .stream(req)
+            .stream(ctx, req)
             .await
             .map_err(|e| ChatError::Unavailable(format!("llm: {e}")))?;
 
@@ -151,6 +159,7 @@ impl ChatWorker {
                     input_preview: query,
                     output_preview: text_acc.chars().take(2000).collect(),
                     app_id: None,
+                    source: llm_gateway::UsageSource::Chat,
                 },
             )
             .await;

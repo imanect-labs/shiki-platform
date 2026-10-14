@@ -21,11 +21,21 @@
       "relations": {
         "member": {
           "this": {}
+        },
+        "admin": {
+          "this": {}
         }
       },
       "metadata": {
         "relations": {
           "member": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              }
+            ]
+          },
+          "admin": {
             "directly_related_user_types": [
               {
                 "type": "user"

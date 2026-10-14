@@ -253,44 +253,20 @@ impl ChatWorker {
         };
         let approver = Some(approver);
 
-        // skill を最後に適用する（system 追記・few-shot・モデル既定。ピン順・モデル既定は
-        // 指定フィールドのみ後勝ち・#344）。`allowed_tools` は誘導テキスト（apply_system 内）で
-        // あり提示ツールは縮小しない（#344 の再定義。決定性はツール実装＋認可＋承認ゲート）。
-        // ⚠️ opts.approval には触れない（破壊系の明示許可は skill で無効化できない・Task 6.9）。
         let (mut opts, mut history) = (opts, history);
         opts.session_id = Some(run.thread_id.to_string());
         // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
         opts.tool_search.always_load.extend(tools_in_use);
-        if !skills.is_empty() {
-            let mut system = opts.system.take().unwrap_or_default();
-            for skill in &skills {
-                skill.apply_system(&mut system);
-                skill.apply_model_defaults(&mut opts);
-            }
-            opts.system = Some(system);
-            // few-shot は「ピン順に前から並ぶ」よう逆順で先頭 splice する。
-            for skill in skills.iter().rev() {
-                skill.apply_few_shot(&mut history);
-            }
-            for skill in &skills {
-                skill.audit_apply(&self.db, ctx, run).await;
-            }
-            // 手順書が名指しするツールは遅延にしない（毎回の検索の 1 手を払わせない）。
-            opts.tool_search.always_load.extend(
-                skills
-                    .iter()
-                    .flat_map(crate::skill::AppliedSkill::declared_tools)
-                    .map(str::to_string),
-            );
-        }
+        self.apply_skills(ctx, run, &skills, &mut opts, &mut history)
+            .await?;
 
-        // 門の段階を system へ明示する（ツールが無い理由と、次へ進む条件・#400）。
-        // skill の instructions より**後ろ**に置く（手順書の記述に上書きされないように）。
-        if let Some(note) = gate_stage.system_note() {
-            let mut system = opts.system.take().unwrap_or_default();
-            system.push_str(note);
-            opts.system = Some(system);
-        }
+        // 門の段階（ツールが無い理由と次へ進む条件・#400）は skill の instructions より**後ろ**に
+        // （手順書の記述に上書きされないように）、今日の日付（#546）は最後に置く。
+        super::opts::append_system_tail(
+            &mut opts,
+            gate_stage.system_note(),
+            &super::opts::today_note(run.created_at, self.config.timezone),
+        );
 
         // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する。
         let resume = match restore_checkpoint(run) {
@@ -324,6 +300,45 @@ impl ChatWorker {
         })?;
         let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理
         Ok(())
+    }
+
+    /// skill を最後に適用する（system 追記・few-shot・モデル既定。ピン順・モデル既定は
+    /// 指定フィールドのみ後勝ち・#344）。`allowed_tools` は誘導テキスト（apply_system 内）で
+    /// あり提示ツールは縮小しない（#344 の再定義。決定性はツール実装＋認可＋承認ゲート）。
+    /// ⚠️ opts.approval には触れない（破壊系の明示許可は skill で無効化できない・Task 6.9）。
+    ///
+    /// 最後にモデルと思考強度を決め直す（ユーザーの選択 → skill → Auto の振り先 → 設定・#553）。
+    async fn apply_skills(
+        &self,
+        ctx: &AuthContext,
+        run: &ClaimedRun,
+        skills: &[crate::skill::AppliedSkill],
+        opts: &mut AgentOptions,
+        history: &mut Vec<llm_gateway::Message>,
+    ) -> Result<(), ChatError> {
+        if !skills.is_empty() {
+            let mut system = opts.system.take().unwrap_or_default();
+            for skill in skills {
+                skill.apply_system(&mut system);
+                skill.apply_model_defaults(opts);
+            }
+            opts.system = Some(system);
+            // few-shot は「ピン順に前から並ぶ」よう逆順で先頭 splice する。
+            for skill in skills.iter().rev() {
+                skill.apply_few_shot(history);
+            }
+            for skill in skills {
+                skill.audit_apply(&self.db, ctx, run).await;
+            }
+            // 手順書が名指しするツールは遅延にしない（毎回の検索の 1 手を払わせない）。
+            opts.tool_search.always_load.extend(
+                skills
+                    .iter()
+                    .flat_map(crate::skill::AppliedSkill::declared_tools)
+                    .map(str::to_string),
+            );
+        }
+        super::run_model::apply_to_opts(&self.gateway, ctx, run, skills, opts).await
     }
 
     /// thread のワークスペース（Durable Workspace）を**遅延生成**で束ねる（#392）。

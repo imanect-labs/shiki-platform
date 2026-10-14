@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # 呼び出し側が諦めても解析スレッドは走り続ける。上限を超える要求は待たせずに
     # 503 で返し、取り残しがスレッドプールと CPU を食い潰さないようにする（#405）。
     max_concurrent_parses: int = 2
+    # 起動時にモデルを読み込んで空打ちしておく（バックグラウンド）。しないと、起動後や
+    # 久しぶりの最初の検索が reranker の読み込み（torch の import を含めて十数秒）を待つ。
+    warmup_models: bool = True
 
 
 @lru_cache

@@ -188,27 +188,52 @@ pub(crate) fn build_gateway(
     http: &reqwest::Client,
     db: &sqlx::PgPool,
 ) -> anyhow::Result<llm_gateway::LlmGateway> {
-    use llm_gateway::{GatewayConfig, LangfuseConfig, LlmGateway, ProviderConfig, ProviderKind};
+    use llm_gateway::{
+        AutoConfig, Effort, GatewayConfig, LangfuseConfig, LlmGateway, ProviderConfig,
+    };
     let llm = &config.llm;
-    let kind = match llm.backend {
-        LlmBackend::Vllm | LlmBackend::Openai => ProviderKind::Openai,
-        LlmBackend::Anthropic => ProviderKind::Anthropic,
-        LlmBackend::OpenaiResponses => ProviderKind::OpenaiResponses,
-        LlmBackend::Stub => ProviderKind::Stub,
-        other => anyhow::bail!(
-            "llm.backend={other:?} は未実装です（openai-compat/openai_responses/anthropic/stub のみ）"
-        ),
+    let primary = ProviderConfig {
+        kind: provider_kind(llm.backend)?,
+        base_url: non_empty(llm.base_url.as_deref()),
+        api_key: llm.api_key.clone(),
+        timeout_secs: 120,
+        user_agent: non_empty(llm.user_agent.as_deref()),
+        session_header: non_empty(llm.session_header.as_deref()),
+        ..Default::default()
+    };
+    let extra_providers = llm
+        .providers
+        .iter()
+        .map(|p| {
+            Ok(ProviderConfig {
+                id: p.id.clone(),
+                display_name: non_empty(p.display_name.as_deref()),
+                kind: provider_kind(p.backend)?,
+                base_url: non_empty(p.base_url.as_deref()),
+                api_key: p.api_key.clone().filter(|k| !k.is_empty()),
+                timeout_secs: 120,
+                user_agent: non_empty(p.user_agent.as_deref()),
+                session_header: non_empty(p.session_header.as_deref()),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let auto = match &llm.auto {
+        None => AutoConfig::default(),
+        Some(a) => AutoConfig {
+            model: a.model.clone(),
+            effort: match a.effort.as_deref() {
+                None => AutoConfig::default().effort,
+                Some(e) => Effort::parse(e).ok_or_else(|| {
+                    anyhow::anyhow!("llm.auto.effort={e} は low/medium/high のいずれか")
+                })?,
+            },
+        },
     };
     let gateway_config = GatewayConfig {
-        provider: ProviderConfig {
-            kind,
-            base_url: non_empty(llm.base_url.as_deref()),
-            api_key: llm.api_key.clone(),
-            timeout_secs: 120,
-            user_agent: non_empty(llm.user_agent.as_deref()),
-            session_header: non_empty(llm.session_header.as_deref()),
-        },
+        provider: primary,
+        extra_providers,
         catalog: llm.model_catalog(),
+        auto,
         langfuse: llm.langfuse.as_ref().map(|l| LangfuseConfig {
             base_url: l.base_url.clone(),
             public_key: l.public_key.clone(),
@@ -217,6 +242,20 @@ pub(crate) fn build_gateway(
     };
     LlmGateway::build(db.clone(), http.clone(), gateway_config)
         .map_err(|e| anyhow::anyhow!("llm-gateway 構築に失敗: {e}"))
+}
+
+/// 設定の backend をプロバイダ種別へ写す（未実装の枠は起動を止める）。
+fn provider_kind(backend: LlmBackend) -> anyhow::Result<llm_gateway::ProviderKind> {
+    use llm_gateway::ProviderKind;
+    Ok(match backend {
+        LlmBackend::Vllm | LlmBackend::Openai => ProviderKind::Openai,
+        LlmBackend::Anthropic => ProviderKind::Anthropic,
+        LlmBackend::OpenaiResponses => ProviderKind::OpenaiResponses,
+        LlmBackend::Stub => ProviderKind::Stub,
+        other => anyhow::bail!(
+            "llm.backend={other:?} は未実装です（openai-compat/openai_responses/anthropic/stub のみ）"
+        ),
+    })
 }
 
 /// サンドボックスクライアントを構築する（`chat.sandbox_endpoint` 設定時のみ・chat/workflow 共通）。
@@ -297,6 +336,11 @@ pub(crate) async fn wire_chat(
             .tool_search
             .unwrap_or_else(|| chat::WorkerConfig::default().tool_search),
         classic_rag: config.chat.classic_rag,
+        timezone: match &config.chat.timezone {
+            Some(name) => chat::parse_timezone(name)
+                .map_err(|e| anyhow::anyhow!("SHIKI__CHAT__TIMEZONE: {e}"))?,
+            None => chat::WorkerConfig::default().timezone,
+        },
         // コード実行系の隔離ティア（admin ポリシー）。未指定は既定（gVisor・#346）。
         sandbox_backend: config
             .chat

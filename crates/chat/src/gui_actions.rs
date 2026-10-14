@@ -140,7 +140,7 @@ impl ActionHandler for ChatSubmitHandler {
         // スラッシュコマンド起動の手順書とフェーズ宣言が 2 ターン目から消える。
         // 引けない（run 消失等）ときは従来どおり非自律・ピン無しで投稿する
         // （能力を勝手に増やさない方向のフォールバック）。
-        let (autonomous, skill_pins) = self
+        let run_ctx = self
             .store
             .message_run_context(ctx, *thread_id, *message_id, trace_id)
             .await
@@ -148,17 +148,19 @@ impl ActionHandler for ChatSubmitHandler {
             .unwrap_or_default();
         let result = self
             .store
-            .post_message(
+            .post_message_with_model(
                 ctx,
                 *thread_id,
                 &text,
                 &[],
                 None,
                 None,
-                autonomous,
+                run_ctx.autonomous,
                 // カードからの回答は「そのカードを出した run の続き」。run 単位 skill
                 // （スラッシュコマンド起動）は thread ピンに無いので、ここで明示的に継ぐ。
-                &skill_pins,
+                &run_ctx.skill_pins,
+                // ユーザーが選んだモデルも続きのターンへ継ぐ（#553）。
+                run_ctx.model.as_ref(),
                 trace_id,
             )
             .await

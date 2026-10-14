@@ -180,9 +180,9 @@ mod tests;
 
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
 pub use backends::{
-    AuthzConfig, ChatConfig, LangfuseConfig, LlmBackend, LlmConfig, LlmModelEntry, LogFormat,
-    ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig, UploadGcConfig,
-    VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
+    AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend, LlmConfig, LlmModelEntry,
+    LlmProviderEntry, LogFormat, ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig,
+    UploadGcConfig, VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
 
 #[derive(Debug, thiserror::Error)]

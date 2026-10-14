@@ -139,7 +139,7 @@ pub(crate) async fn llm_invoke(
         .map(|m| format!("{:?}", m.content).chars().take(200).collect())
         .unwrap_or_default();
 
-    let deltas = llm.stream(req).await.map_err(map_llm_err)?;
+    let deltas = llm.stream(&ctx.auth, req).await.map_err(map_llm_err)?;
 
     // driver task: クライアント切断でも Done まで消費して会計を落とさない。
     let (tx, rx) = mpsc::channel::<AiEvent>(64);
@@ -185,6 +185,7 @@ pub(crate) async fn llm_invoke(
                     input_preview,
                     output_preview: text_acc.chars().take(2000).collect(),
                     app_id: Some(app_id),
+                    source: llm_gateway::UsageSource::MiniApp,
                 },
             )
             .await;

@@ -175,7 +175,7 @@ fn fold_results(messages: &mut [Message], cutoff: usize, protect: Option<(usize,
 /// 畳み込みマーカー（再短縮の冪等判定に使う）。
 const FOLD_MARK: &str = "…［古い出力を要約のため省略";
 
-fn is_folded(s: &str) -> bool {
+pub(crate) fn is_folded(s: &str) -> bool {
     s.contains(FOLD_MARK)
 }
 

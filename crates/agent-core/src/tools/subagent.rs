@@ -96,6 +96,8 @@ pub struct SubagentTool {
     model: Option<String>,
     /// 会話 ID（親と同じものを渡す。プロバイダのルーティング・キャッシュの手がかり）。
     session_id: Option<String>,
+    /// どのロールの system にも末尾に足す文（親と同じ「今日の日付」など・既定は空）。
+    system_note: String,
     /// 冪等キーの接頭辞（親の `<run_id>:<fencing>`）。子は `:sub<n>` を足す。
     idempotency_prefix: String,
     /// 生成済みの体数（`max_per_run` の判定と冪等キーの採番を兼ねる）。
@@ -130,6 +132,7 @@ impl SubagentTool {
             system: DEFAULT_SYSTEM.to_string(),
             model: None,
             session_id: None,
+            system_note: String::new(),
             idempotency_prefix,
             spawned: AtomicUsize::new(0),
             cancel,
@@ -158,9 +161,24 @@ impl SubagentTool {
         self
     }
 
+    /// どのロールの子の system にも末尾に足す文を設定する（親と同じ「今日の日付」を渡す
+    /// など。子は親の system を引き継がないので、日付が無いと「今年の」「最新の」を
+    /// 学習時点の感覚で解釈する）。
+    #[must_use]
+    pub fn with_system_note(mut self, note: impl Into<String>) -> Self {
+        self.system_note = note.into();
+        self
+    }
+
     /// 子の実行オプション（ロールごとに system と予算を変える）。
     fn child_options(&self, role: Role) -> AgentOptions {
-        let mut opts = child_options(&self.limits, role, &self.system, self.model.as_deref());
+        let mut opts = child_options(
+            &self.limits,
+            role,
+            &self.system,
+            &self.system_note,
+            self.model.as_deref(),
+        );
         opts.session_id.clone_from(&self.session_id);
         opts
     }
@@ -184,6 +202,7 @@ fn child_options(
     limits: &SubagentLimits,
     role: Role,
     research_system: &str,
+    system_note: &str,
     model: Option<&str>,
 ) -> AgentOptions {
     let mut opts = AgentOptions::autonomous(
@@ -192,7 +211,7 @@ fn child_options(
         limits.max_tokens,
         limits.max_cost_usd_micros,
     );
-    opts.system = Some(role.system(research_system).to_string());
+    opts.system = Some(format!("{}{system_note}", role.system(research_system)));
     opts.model = model.map(str::to_string);
     // 1 応答の出力上限。既定（4096）だと findings を書き出す前に枠が尽きる（`max_response_tokens`）。
     opts.max_tokens = Some(limits.max_response_tokens);
@@ -440,7 +459,7 @@ mod tests {
     #[test]
     fn child_options_are_isolated_and_read_only() {
         let limits = SubagentLimits::default();
-        let opts = child_options(&limits, Role::Research, "sys", Some("m"));
+        let opts = child_options(&limits, Role::Research, "sys", "", Some("m"));
         assert!(
             !opts.offer_plan_tool,
             "plan は提示しない（限られたステップを使わせない）"
@@ -477,8 +496,8 @@ mod tests {
     #[test]
     fn verify_keeps_its_input_from_being_pruned() {
         let limits = SubagentLimits::default();
-        let research = child_options(&limits, Role::Research, "sys", None);
-        let verify = child_options(&limits, Role::Verify, "sys", None);
+        let research = child_options(&limits, Role::Research, "sys", "", None);
+        let verify = child_options(&limits, Role::Verify, "sys", "", None);
         assert!(
             verify.context_soft_limit_tokens > research.context_soft_limit_tokens,
             "レポートと証拠台帳が剪定で畳まれると、突き合わせる材料そのものが消える"
@@ -486,7 +505,18 @@ mod tests {
         // ステップは調査と同じ（着地指示が入っていれば上限前に畳める・#407 の実測）。
         assert_eq!(verify.budget.max_steps, research.budget.max_steps);
         // 計画だけは小さい（ツールが無く 1 ターンで返る）。
-        let plan = child_options(&limits, Role::Plan, "sys", None);
+        let plan = child_options(&limits, Role::Plan, "sys", "", None);
         assert!(plan.budget.max_steps < research.budget.max_steps);
+    }
+
+    /// 親と同じ「今日の日付」などは、どのロールの子にも system の末尾で届く。
+    #[test]
+    fn system_note_reaches_every_role() {
+        let limits = SubagentLimits::default();
+        for role in [Role::Research, Role::Verify, Role::Plan] {
+            let opts = child_options(&limits, role, "sys", "\n\n今日は X です。", None);
+            let system = opts.system.unwrap_or_default();
+            assert!(system.ends_with("\n\n今日は X です。"), "{system}");
+        }
     }
 }

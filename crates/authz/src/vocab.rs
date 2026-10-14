@@ -35,6 +35,8 @@ pub enum Relation {
     EditorViaLink,
     /// シークレットの利用権限（解決して使える・平文の読み返しではない・Task 10.9）。owner が含意する。
     CanUse,
+    /// 組織管理者（管理コンソール・管理 API を使える）。**閲覧権を含意しない**（PIT-65）。
+    Admin,
 }
 
 impl Relation {
@@ -50,6 +52,7 @@ impl Relation {
             Relation::ViewerViaLink => "viewer_via_link",
             Relation::EditorViaLink => "editor_via_link",
             Relation::CanUse => "can_use",
+            Relation::Admin => "admin",
         }
     }
 
@@ -68,6 +71,7 @@ impl Relation {
             "viewer_via_link" => Some(Relation::ViewerViaLink),
             "editor_via_link" => Some(Relation::EditorViaLink),
             "can_use" => Some(Relation::CanUse),
+            "admin" => Some(Relation::Admin),
             _ => None,
         }
     }
@@ -150,6 +154,8 @@ mod tests {
         assert_eq!(Relation::Owner.as_str(), "owner");
         assert_eq!(Relation::Editor.as_str(), "editor");
         assert_eq!(Relation::Viewer.as_str(), "viewer");
+        assert_eq!(Relation::Admin.as_str(), "admin");
+        assert_eq!(Relation::parse("admin"), Some(Relation::Admin));
     }
 
     #[test]

@@ -58,8 +58,8 @@ pub use document_tool::{DocumentEditTool, DocumentEmbedTool, DocumentReadTool, S
 pub use error::ChatError;
 pub use gui_actions::{ChatActionLedger, ChatSubmitHandler};
 pub use model::{
-    Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunStatus, SelectionContext,
-    SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,
+    Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunModel, RunStatus,
+    SelectionContext, SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,
 };
 pub use skill_catalog::{
     merge_entries as merge_skill_catalog_entries, OwnedSkillCatalog, SkillCatalogEntry,
@@ -67,8 +67,8 @@ pub use skill_catalog::{
 };
 pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
 pub use store::{
-    ChatStore, ClaimedRun, CurrentRun, PostResult, ThreadOrigin, CHAT_GENERATION_QUEUE,
+    ChatStore, ClaimedRun, CurrentRun, PostResult, RunContext, ThreadOrigin, CHAT_GENERATION_QUEUE,
 };
-pub use worker::{with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
+pub use worker::{parse_timezone, with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
 pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};
 pub use workspace::StorageWorkspaceStore;

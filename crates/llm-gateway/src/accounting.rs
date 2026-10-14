@@ -25,6 +25,8 @@ pub struct UsageRecord {
     pub trace_id: Option<String>,
     /// 呼び出し元ミニアプリ（ゲートウェイ AI 能力・Task 9.9）。chat 等は `None`。
     pub app_id: Option<Uuid>,
+    /// 利用元（管理画面の利用元別集計）。
+    pub source: crate::gateway::UsageSource,
 }
 
 /// アプリの LLM 利用量集計行（user×app×model）。
@@ -53,8 +55,8 @@ impl UsageRecorder {
         sqlx::query(
             "INSERT INTO llm_usage \
              (tenant_id, org, idempotency_key, provider, model, prompt_tokens, completion_tokens, \
-              cost_usd_micros, trace_id, app_id, user_sub) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+              cost_usd_micros, trace_id, app_id, user_sub, source) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
              ON CONFLICT (tenant_id, idempotency_key) DO NOTHING",
         )
         .bind(&ctx.tenant_id)
@@ -68,6 +70,7 @@ impl UsageRecorder {
         .bind(rec.trace_id.as_deref())
         .bind(rec.app_id)
         .bind(&ctx.principal.id)
+        .bind(rec.source.as_str())
         .execute(&self.db)
         .await?;
         Ok(())

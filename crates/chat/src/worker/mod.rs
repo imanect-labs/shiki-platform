@@ -17,9 +17,13 @@ mod generate;
 mod history;
 /// 実行オプション/system プロンプト（generate.rs から分割）。
 mod opts;
+mod run_model;
+pub use opts::parse_timezone;
 mod sink;
 mod stream_map;
 mod toolset;
+/// 記録済みスレッド → 剪定再生のステップ列（#532・`context-replay` CLI が使う）。
+pub mod trajectory;
 /// ```ui ブロック（Yui）の図の書き方（#530）。
 mod yui;
 

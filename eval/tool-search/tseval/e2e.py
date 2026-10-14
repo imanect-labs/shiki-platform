@@ -212,33 +212,130 @@ MOCK_RESULT = (
     "（評価用のモック）{name} を実行しました。結果: 該当 1 件。id=item-1024、"
     "name=該当の項目、url=https://example.invalid/item-1024"
 )
+MOCK_CACHE = ROOT / "data" / "cache" / "mock"
+# 提示していない名前の呼び出しへの製品の観測（`crates/agent-core/src/agent_gate.rs`）。
+UNKNOWN_TOOL = "unknown tool: {name}"
+MOCK_PROMPT = """あなたは業務 SaaS の API のモックです。次のツールが、次の引数で呼ばれました。
+利用者の依頼の文脈に沿った、もっともらしい成功時の応答を JSON で返してください。
+
+- 依頼に出てくる名前・件名・日付・チャンネルなどに合うデータを含める（一覧・検索なら、依頼の対象が分かる 1〜3 件）。
+- ID・URL・メールアドレスは架空でよいが、それらしい形にする。
+- 依頼に無い情報を作るのは、応答の形として必要な範囲にとどめる。
+
+利用者の依頼:
+{request}
+
+ツール: {name}
+説明: {description}
+引数: {args}
+
+JSON だけを返してください。"""
+
+
+@functools.cache
+def mock_fingerprint() -> str:
+    """依頼に沿ったモックを作るコードと文面の指紋。"""
+    src = MOCK_PROMPT + inspect.getsource(llm_mock)
+    return hashlib.sha256(src.encode()).hexdigest()[:16]
+
+
+def llm_mock(tool: Tool, args: str, request: str) -> str:
+    """依頼の文脈に沿ったツールの応答を LLM で作る（#545・同じ入力は使い回す）。
+
+    一律の「該当の項目」を返すと、一覧・検索で下調べしたモデルが「目的の物か判断できない」と
+    利用者に聞き返して終える。下調べの連鎖を最後まで測るために使う。
+    """
+    d = tool.tooldef("ja")
+    prompt = MOCK_PROMPT.format(
+        request=request, name=d["name"], description=d["description"], args=args or "{}"
+    )
+    # 生成・抽出のコードが変われば作り直す（文面だけでなく実装の指紋もキーに入れる）。
+    key = hashlib.sha256((mock_fingerprint() + prompt).encode()).hexdigest()[:20]
+    path = MOCK_CACHE / f"{key}.json"
+    if path.exists():
+        cached = path.read_text()
+        try:
+            json.loads(cached)
+            return cached
+        except json.JSONDecodeError:
+            path.unlink()  # 以前の実装が残した、途中で切れた応答は作り直す。
+    for max_tokens in (1024, 3072):
+        out = chat([{"role": "user", "content": prompt}], max_tokens=max_tokens, temperature=0.0)
+        text = (out["message"].get("content") or "").strip()
+        m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+        body = (m.group(1) if m else text).strip()
+        try:
+            json.loads(body)  # 途中で切れた・崩れた応答は使わない（キャッシュもしない）。
+        except json.JSONDecodeError:
+            continue
+        MOCK_CACHE.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+        return body
+    # 会話ごと失敗にする（run_one が捕まえ、会話もキャッシュしない）。
+    raise RuntimeError(f"モックの応答が JSON にならない: {d['name']}")
 
 
 def cache_path(
-    tools: list[Tool], condition: str, query: dict, fingerprint: str | None = None
+    tools: list[Tool],
+    condition: str,
+    query: dict,
+    fingerprint: str | None = None,
+    variant: str | None = None,
 ) -> Path:
     """1 会話のキャッシュの置き場所。
 
     キーは入力内容から作る（依頼文・提示するカタログ・条件が変われば取り直す）。製品の文面を
     使う条件は、文面と順位を作るコード（製品の tool_search・順位 CLI・評価側の案内と橋渡し）と
     カタログの定義（説明文の変更でも本文が変わる）も入力に含める。`fingerprint` はコードの指紋を
-    差し替えるとき（キャッシュの付け替え）だけ渡す。
+    差し替えるとき（キャッシュの付け替え）だけ渡す。`variant` は既定と違う system prompt で
+    回すときの、その system prompt の本文（#545）。
     """
     parts = [condition, query["text"], sorted(t.name for t in tools)]
     if condition not in ("all", "search_bm25", "search_rrf"):
         fp = fingerprint or text_fingerprint(base_method(condition) == "search_rrf")
         parts += [fp, catalog_fingerprint(tools)]
+    if variant is not None:
+        parts.append(["system", variant])
     digest = hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()[:16]
     key = f"v3-{condition}-{len(tools)}-{query['id']}-{digest}".replace("/", "_")
     return CACHE / f"{key}.json"
 
 
-def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher | None) -> dict:
+def run_one(
+    tools: list[Tool],
+    condition: str,
+    query: dict,
+    searcher: Searcher | None,
+    system: str | None = None,
+    mock: str = "generic",
+    max_steps: int = MAX_STEPS,
+    record_args: bool = False,
+) -> dict:
     """1 会話を回す。正解ツールを呼んだ時点で打ち切る（下調べのツールを先に呼ぶのは正しい手順
-    なので、他のツールにはモックの結果を返して続けさせる）。"""
-    path = cache_path(tools, condition, query)
+    なので、他のツールにはモックの結果を返して続けさせる）。
+
+    `system` を渡すと既定（`SYSTEM`）の代わりに使う（キャッシュのキーにも入る・#545）。
+    `mock="llm"` は、ツールの応答を一律の文面ではなく依頼に沿った内容にする（[`llm_mock`]）。
+    `max_steps` は 1 会話の応答の回数の上限（既定以外はキャッシュのキーにも入る・#547）。
+    `record_args` なら、呼んだ引数（`call_args`）を持たない古いキャッシュを使わずに取り直す。
+    """
+    variant = (
+        system
+        if mock == "generic"
+        # モックを作るコードと文面が変われば取り直す。
+        else json.dumps([system, mock, mock_fingerprint()], ensure_ascii=False)
+    )
+    if max_steps != MAX_STEPS:
+        variant = json.dumps([variant, "max_steps", max_steps], ensure_ascii=False)
+    path = cache_path(tools, condition, query, variant=variant)
+    names = {t.name for t in tools}
     if path.exists():
-        return json.loads(path.read_text())
+        cached = json.loads(path.read_text())
+        # 提示していない名前を呼んだ会話は、以前は成功のモックを返していた（製品は
+        # `unknown tool` のエラー）。その会話だけ取り直す（それ以外は呼ぶまでが同じ）。
+        stale_args = record_args and "call_args" not in cached
+        if all(c in names for c in cached["calls"]) and not stale_args:
+            return cached
     by_wire = {wire(t.name): t for t in tools}
     if condition == "all":
         offered = [as_function(t) for t in shuffled(tools)]
@@ -255,7 +352,7 @@ def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher |
             }
         ]
     messages: list[dict] = [
-        {"role": "system", "content": SYSTEM},
+        {"role": "system", "content": SYSTEM if system is None else system},
         {"role": "user", "content": query["text"]},
     ]
     rec = {
@@ -264,22 +361,30 @@ def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher |
         "condition": condition,
         "n": len(tools),
         "calls": [],
+        # 呼んだツールの引数（足りない依頼で値を作ったかを後で見る・#547。古いキャッシュには無い）。
+        "call_args": [],
         "searches": [],
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "steps": 0,
         "error": None,
+        "final_text": "",
+        # 終わり方: target（正解を呼んだ）/ reply（ツールを呼ばずに文章で終えた）/ max_steps。
+        "stop": "max_steps",
     }
     t0 = time.perf_counter()
     try:
-        for _ in range(MAX_STEPS):
+        for _ in range(max_steps):
             r = chat(messages, tools=offered, max_tokens=4096, temperature=0.0)
             msg, usage = r["message"], r["usage"]
             rec["steps"] += 1
             rec["prompt_tokens"] += usage.get("prompt_tokens", 0)
             rec["completion_tokens"] += usage.get("completion_tokens", 0)
             calls = msg.get("tool_calls") or []
+            # 最後の応答の本文（聞き返しの中身を後で分類する・#545）。
+            rec["final_text"] = msg.get("content") or ""  # 全文（末尾の質問を落とさない）
             if not calls:
+                rec["stop"] = "reply"
                 break
             messages.append(
                 {"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls}
@@ -289,11 +394,21 @@ def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher |
                 if name != "tool_search":
                     local = by_wire[name].name if name in by_wire else name
                     rec["calls"].append(local)
+                    rec["call_args"].append(c["function"]["arguments"])
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": c["id"],
-                            "content": MOCK_RESULT.format(name=name),
+                            "content": (
+                                # 製品は提示していない名前をエラーの観測にする（agent_gate::execute_tool）。
+                                UNKNOWN_TOOL.format(name=name)
+                                if name not in by_wire
+                                else MOCK_RESULT.format(name=name)
+                                if mock == "generic"
+                                else llm_mock(
+                                    by_wire[name], c["function"]["arguments"], query["text"]
+                                )
+                            ),
                         }
                     )
                     continue
@@ -317,6 +432,7 @@ def run_one(tools: list[Tool], condition: str, query: dict, searcher: Searcher |
                 content = search_content(condition, searcher, q, limit, hits, loaded)
                 messages.append({"role": "tool", "tool_call_id": c["id"], "content": content})
             if query["target"] in rec["calls"]:
+                rec["stop"] = "target"
                 break
     except RuntimeError as e:
         rec["error"] = str(e)[:300]

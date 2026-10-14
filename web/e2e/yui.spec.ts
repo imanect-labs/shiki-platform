@@ -95,6 +95,57 @@ test.describe("```ui ブロックの図", () => {
   });
 });
 
+/// 図を画像として持ち出す（#557）。コピーは画像・画像と表の HTML・テキスト・ソースを一度に入れ、
+/// 保存は PNG / SVG のファイルを落とす。
+test.describe("```ui ブロックの図の書き出し", () => {
+  test.use({ permissions: ["clipboard-read", "clipboard-write"] });
+
+  test("コピーで画像と表が入り、PNG / SVG で保存できる", async ({ page }) => {
+    await loginViaKeycloak(page);
+    await send(page, "yui:bar");
+    await expect(page.getByText("以上です。")).toBeVisible({ timeout: 30_000 });
+    const figure = page.getByTestId("ui-figure");
+
+    await figure.getByRole("button", { name: "図を画像と表としてコピー" }).click();
+    await expect(figure.getByRole("button", { name: "図を画像と表としてコピー" })).toContainText("コピー済み");
+    const clip = await page.evaluate(async () => {
+      const items = await navigator.clipboard.read();
+      const types = items.flatMap((it) => [...it.types]);
+      const item = items[0]!;
+      const text = await (await item.getType("text/plain")).text();
+      const html = await (await item.getType("text/html")).text();
+      const png = new Uint8Array(await (await item.getType("image/png")).arrayBuffer());
+      return { types, text, html, pngHead: [...png.slice(1, 4)].map((c) => String.fromCharCode(c)).join("") };
+    });
+    expect(clip.types).toEqual(expect.arrayContaining(["image/png", "text/html", "text/plain"]));
+    expect(clip.pngHead).toBe("PNG");
+    // テキストは表、HTML は画像とデータの表（Word・メールに貼ると画像になり、表も残る）。
+    expect(clip.text).toMatch(/\|\s*Q4\s*\|\s*210\s*\|\s*44\s*\|/);
+    expect(clip.html).toContain('<img src="data:image/png;base64,');
+    expect(clip.html).toMatch(/<th scope="row">Q4<\/th><td[^>]*>210<\/td>/);
+
+    for (const format of ["png", "svg"] as const) {
+      await figure.getByRole("button", { name: "図を画像で保存" }).click();
+      const download = page.waitForEvent("download");
+      await page.getByRole("menuitem", { name: `${format.toUpperCase()} で保存` }).click();
+      const file = await download;
+      expect(file.suggestedFilename()).toMatch(new RegExp(`四半期ごとの売上と利益.*\\.${format}$`));
+      const body = await new Promise<Buffer>((resolve, reject) => {
+        void file.createReadStream().then((stream) => {
+          const chunks: Buffer[] = [];
+          stream.on("data", (c: Buffer) => chunks.push(c));
+          stream.on("end", () => resolve(Buffer.concat(chunks)));
+          stream.on("error", reject);
+        }, reject);
+      });
+      if (format === "png") expect(body.subarray(1, 4).toString()).toBe("PNG");
+      // 書き出しの SVG は色を焼き込み、CSS 変数に頼らない。
+      else expect(body.toString()).toMatch(/^<svg[^>]+width="\d+" height="\d+"/);
+      if (format === "svg") expect(body.toString()).not.toContain("var(--");
+    }
+  });
+});
+
 /// スマホ（タッチ）では、タップが確定してから値が出る。見出し・余白のタップでは出ない。
 test.describe("```ui ブロックの図（スマホ）", () => {
   // isMobile まで付ける（付けないとタップに合わせてマウスのホバーも出て、実機と違う結果になる）。

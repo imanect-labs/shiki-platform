@@ -247,7 +247,12 @@ impl ChatWorker {
             )
             .with_model(self.config.model.clone())
             .with_session_id(Some(run.thread_id.to_string()))
-            .with_tool_events(tx),
+            .with_tool_events(tx)
+            // 子は親の system を引き継がないので、今日の日付は明示して渡す（#546）。
+            .with_system_note(super::opts::today_note(
+                run.created_at,
+                self.config.timezone,
+            )),
         ));
     }
 

@@ -55,6 +55,9 @@ pub(super) const EVENT_SPEC: EventTableSpec = EventTableSpec {
 pub(super) const RUN_KEY_COLUMNS: &[&str] = &["run_id"];
 
 /// ワーカーが claim した run（生成に必要な材料一式）。
+// generation_run の行の射影（DB の boolean 列をそのまま写す）。状態機械に畳むと
+// 列との対応が崩れるので bool のまま持つ。
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ClaimedRun {
     pub run_id: Uuid,
@@ -81,6 +84,23 @@ pub struct ClaimedRun {
     /// ミニアプリ経由のセッション（Task 6.10・skill はバンドル権限で読む）。
     pub mini_app_id: Option<Uuid>,
     pub mini_app_version: Option<i64>,
+    /// 投入時に解決したモデル（#553）。`None` はカラム追加前の run（従来の既定で生成）。
+    pub model: Option<String>,
+    /// 投入時に解決した思考強度（`low` / `medium` / `high`）。
+    pub effort: Option<String>,
+    /// ユーザーがモデルを選ばなかった（Auto）か。Auto のときだけ skill のピンが上書きできる。
+    pub model_auto: bool,
+    /// run の作成時刻（system プロンプトの「今日の日付」の基準・再開しても変わらない・#546）。
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// カードを出した run の生成材料（`chat.submit` の続きの run へ継ぐ）。
+#[derive(Debug, Clone, Default)]
+pub struct RunContext {
+    pub autonomous: bool,
+    pub skill_pins: Vec<SkillPin>,
+    /// その run のモデル指定（ユーザーが選んだモデルを次のターンでも使う）。
+    pub model: Option<crate::model::RunModel>,
 }
 
 /// いま UI が映すべき run（[`ChatStore::current_run`]）。
@@ -115,7 +135,7 @@ impl ChatStore {
             lease_secs,
             "run_id, thread_id, message_id, tenant_id, org, actor, agent_mode, \
              fencing_token, cancel_requested, trace_id, autonomous, autonomous_mode, checkpoint, \
-             skill_pins, mini_app_id, mini_app_version",
+             skill_pins, mini_app_id, mini_app_version, model, effort, model_auto, created_at",
         )
         .await
         .map_err(map_db)
@@ -406,11 +426,18 @@ impl ChatStore {
         thread_id: Uuid,
         message_id: Uuid,
         trace_id: Option<&str>,
-    ) -> Result<Option<(bool, Vec<SkillPin>)>, ChatError> {
+    ) -> Result<Option<RunContext>, ChatError> {
         self.require_thread(ctx, thread_id, Relation::Editor, "thread.run.get", trace_id)
             .await?;
-        let row: Option<(bool, Json<Vec<SkillPin>>)> = sqlx::query_as(
-            "SELECT autonomous, skill_pins FROM generation_run \
+        type Row = (
+            bool,
+            Json<Vec<SkillPin>>,
+            Option<String>,
+            Option<String>,
+            bool,
+        );
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT autonomous, skill_pins, model, effort, model_auto FROM generation_run \
              WHERE message_id = $1 AND thread_id = $2 AND tenant_id = $3 \
              ORDER BY created_at DESC, run_id DESC LIMIT 1",
         )
@@ -420,7 +447,17 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        Ok(row.map(|(autonomous, pins)| (autonomous, pins.0)))
+        Ok(
+            row.map(|(autonomous, pins, model, effort, model_auto)| RunContext {
+                autonomous,
+                skill_pins: pins.0,
+                model: model.map(|model| crate::model::RunModel {
+                    model,
+                    effort: effort.as_deref().and_then(llm_gateway::Effort::parse),
+                    auto: model_auto,
+                }),
+            }),
+        )
     }
 
     /// run の現在状態を引く（SSE の端末判定・crash safety）。
