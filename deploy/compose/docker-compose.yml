@@ -239,6 +239,8 @@ services:
       # server 側 SHIKI__RAG__EMBEDDING_MODEL_VERSION と必ず一致させる（不一致は
       # インジェスト時の版突合ガードで拒否される）。
       EMBED_MODEL: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}
+      # 替えたら server 側の SHIKI__RAG__RELEVANCE_*（関連度の閾値と、それを測ったモデル）も揃える。
+      RERANK_MODEL: ${RERANK_MODEL:-hotchpotch/japanese-reranker-cross-encoder-xsmall-v1}
     volumes:
       - hf-cache:/models
     ports:
