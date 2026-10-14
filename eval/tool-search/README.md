@@ -30,6 +30,10 @@ uv run python -m tseval.ask_probe     # 聞き返しの切り分け（system pro
 uv run python -m tseval.gen_e2e_queries  # E2E の依頼データ v2（必要な値が揃う依頼・規模ごと）→ data/e2e_queries_v2.json（書き出し済みで今の検査を通るものは作り直さない）
 uv run python -m tseval.gen_e2e_queries --verify  # 書き出した依頼データを今の検査にかけ直す（作り直さない・不合格があれば終了コード 1）
 uv run python -m tseval.e2e_v2        # 依頼データ v2 の E2E → results/e2e_v2*.json
+uv run python -m tseval.gen_e2e_queries --lookup  # 下調べが要る依頼だけの評価セット（#565）→ data/e2e_queries_lookup.json
+uv run python -m tseval.e2e_v2 --lookup  # その評価セットの tool_search → results/e2e_lookup*.json
+# results/e2e_lookup_companions*.json は、ID を調べるツールの同時読み込み（製品に未導入・実装は
+# ブランチ feat/tool-search-companions）を同じ評価セットで比べた記録。再現はそのブランチで --lookup を回す
 # results/e2e_v2_manual.json は v2 で正解ツールを呼ばずに終えた会話を目視で分類したもの（手で作る）
 uv run python -m tseval.report        # 集計表 → results/summary.md
 PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/tool-search-eval.html
@@ -45,6 +49,7 @@ PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/t
 | `data/catalog_real_snapshot.json` | 製品のツール定義のスナップショット（dev 構成の通常チャット・`defer_loading` が遅延になった 13 件が検索対象） |
 | `data/catalog_synth.json` | 合成ツール 990 件（業務 SaaS 45 サービスの MCP 風ツール・日英の説明と引数） |
 | `data/queries.json` | 評価クエリ 592 件（正解は 1 ツール。紛らわしい近縁ツールでは満たせない依頼に限定して生成） |
+| `data/e2e_queries_lookup.json` | 下調べが要る依頼 48 件（#565）。作れなかった正解ツールは `data/e2e_queries_lookup_skipped.json` |
 | `data/e2e_queries_v2.json` | E2E の依頼データ v2 102 件（#547）。依頼文・正解ツールまでの手順（plan）・わざと書かない引数（`missing`）。必須引数が依頼文かその会話のカタログのツールで埋まることを検査済み |
 | `data/skills.json` / `data/skill_queries.json` | 合成 skill 493 件（25 分野）と依頼 60 件 |
 
@@ -67,6 +72,7 @@ PYTHONPATH=. uv run python report/build.py  # 図入りレポート → report/t
 | E5 latency | 1 クエリの処理時間（BM25 / 埋め込み / rerank）と `tool_search` 説明の長さ |
 | E2E | 全ツール提示 vs `tool_search`（BM25 / RRF）で、LLM が正解ツールを呼べた率・トークン。結果本文は評価側の簡略版・製品の文面（`_prod`）・下調べ用ツールの案内付き（`_hint`・#522 で試して入れなかった案）の 3 通り |
 | E2E v2 | 依頼データ v2 で全ツール提示 vs tool_search（RRF・製品の文面）。固定の今日の日付・依頼に沿ったモック・応答 10 回まで。情報がわざと足りない依頼は、聞き返せたら正解（#547・v1 の E2E とは比べられない） |
+| lookup | 下調べが要る依頼だけ（1,000 件のカタログ・48 件）の tool_search。ID を調べる一覧・検索のツールも一緒に読み込む案（#565・製品に未導入）との比較を記録 |
 | skills | skill の一覧方式（製品の先頭 50 件 / 全件）vs 検索方式 |
 | ask_probe | E2E で正解ツールを呼ばずに文章で終えた会話（下調べのツールを呼んでから終えたものを含む）の切り分け（system prompt 3 通り × ツールの応答 2 通り・最後の応答を「避けられた／正当な聞き返し／その他」に LLM で分類し、「避けられた」は挙げたツールで本当に調べられるかを別の呼び出しで検算・#545） |
 

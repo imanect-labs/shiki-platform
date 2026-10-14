@@ -1,0 +1,2388 @@
+[
+ {
+  "id": "docusign_void_envelope:ja@1000",
+  "target": "docusign_void_envelope",
+  "kind": "ja",
+  "n": 1000,
+  "text": "DocuSignのアカウント「acc_98765」で、件名に「XYZ社 保守契約書」が含まれる封筒を誤って送信してしまったので、無効化（キャンセル）してください。理由は「添付ファイルのバージョン違い」です。",
+  "plan": [
+   {
+    "tool": "docusign_search_envelopes",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "「acc_98765」",
+      "en": "\"acc_98765\""
+     },
+     "search_text": {
+      "value": "XYZ社 保守契約書",
+      "ja": "「XYZ社 保守契約書」",
+      "en": "\"XYZ Corp Maintenance Agreement\""
+     }
+    },
+    "pick": {
+     "ja": "件名に「XYZ社 保守契約書」が含まれる封筒",
+     "en": "envelope containing \"XYZ Corp Maintenance Agreement\" in the subject line"
+    }
+   },
+   {
+    "tool": "docusign_void_envelope",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "「acc_98765」",
+      "en": "\"acc_98765\""
+     },
+     "envelope_id": {
+      "from": 0,
+      "field": "envelopeId"
+     },
+     "reason": {
+      "value": "添付ファイルのバージョン違い",
+      "ja": "「添付ファイルのバージョン違い」",
+      "en": "\"Incorrect attachment version\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "docusign_void_envelope:en@1000",
+  "target": "docusign_void_envelope",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please void the DocuSign envelope containing \"XYZ Corp Maintenance Agreement\" in the subject line for account \"acc_98765\", as it was sent by mistake. The reason is \"Incorrect attachment version\".",
+  "plan": [
+   {
+    "tool": "docusign_search_envelopes",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "「acc_98765」",
+      "en": "\"acc_98765\""
+     },
+     "search_text": {
+      "value": "XYZ社 保守契約書",
+      "ja": "「XYZ社 保守契約書」",
+      "en": "\"XYZ Corp Maintenance Agreement\""
+     }
+    },
+    "pick": {
+     "ja": "件名に「XYZ社 保守契約書」が含まれる封筒",
+     "en": "envelope containing \"XYZ Corp Maintenance Agreement\" in the subject line"
+    }
+   },
+   {
+    "tool": "docusign_void_envelope",
+    "args": {
+     "account_id": {
+      "value": "acc_98765",
+      "ja": "「acc_98765」",
+      "en": "\"acc_98765\""
+     },
+     "envelope_id": {
+      "from": 0,
+      "field": "envelopeId"
+     },
+     "reason": {
+      "value": "添付ファイルのバージョン違い",
+      "ja": "「添付ファイルのバージョン違い」",
+      "en": "\"Incorrect attachment version\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "miro_update_board:ja@1000",
+  "target": "miro_update_board",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Miroの「Q4製品ロードマップ」という名前のボードを探して、タイトルを「Q4製品ロードマップ（確定版）」に変更し、説明を「10月21日のステークホルダー会議用」に更新してください。",
+  "plan": [
+   {
+    "tool": "miro_list_boards",
+    "args": {},
+    "pick": {
+     "ja": "Q4製品ロードマップ",
+     "en": "Q4 Product Roadmap"
+    }
+   },
+   {
+    "tool": "miro_update_board",
+    "args": {
+     "board_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "name": {
+      "value": "Q4製品ロードマップ（確定版）",
+      "ja": "Q4製品ロードマップ（確定版）",
+      "en": "Q4 Product Roadmap (Finalized)"
+     },
+     "description": {
+      "value": "10月21日のステークホルダー会議用",
+      "ja": "10月21日のステークホルダー会議用",
+      "en": "For the stakeholder meeting on October 21"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 5
+ },
+ {
+  "id": "miro_update_board:en@1000",
+  "target": "miro_update_board",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please find the Miro board named \"Q4 Product Roadmap\", rename it to \"Q4 Product Roadmap (Finalized)\", and update the description to \"For the stakeholder meeting on October 21\".",
+  "plan": [
+   {
+    "tool": "miro_list_boards",
+    "args": {},
+    "pick": {
+     "ja": "Q4製品ロードマップ",
+     "en": "Q4 Product Roadmap"
+    }
+   },
+   {
+    "tool": "miro_update_board",
+    "args": {
+     "board_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "name": {
+      "value": "Q4製品ロードマップ（確定版）",
+      "ja": "Q4製品ロードマップ（確定版）",
+      "en": "Q4 Product Roadmap (Finalized)"
+     },
+     "description": {
+      "value": "10月21日のステークホルダー会議用",
+      "ja": "10月21日のステークホルダー会議用",
+      "en": "For the stakeholder meeting on October 21"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 5
+ },
+ {
+  "id": "zoom_update_meeting:ja@1000",
+  "target": "zoom_update_meeting",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Zoomで予定している「Q4 戦略会議」の開始時間を10月21日14:00に変更し、トピックを「Q4 戦略会議（延長）」に更新してください。",
+  "plan": [
+   {
+    "tool": "zoom_search_meetings",
+    "args": {
+     "query": {
+      "value": "Q4 戦略会議",
+      "ja": "Q4 戦略会議",
+      "en": "Q4 Strategy Meeting"
+     }
+    },
+    "pick": {
+     "ja": "Q4 戦略会議",
+     "en": "Q4 Strategy Meeting"
+    }
+   },
+   {
+    "tool": "zoom_update_meeting",
+    "args": {
+     "meeting_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "topic": {
+      "value": "Q4 戦略会議（延長）",
+      "ja": "Q4 戦略会議（延長）",
+      "en": "Q4 Strategy Meeting (Extended)"
+     },
+     "start_time": {
+      "value": "2026-10-21T14:00:00",
+      "ja": "10月21日14:00",
+      "en": "October 21 at 14:00"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "zoom_update_meeting:en@1000",
+  "target": "zoom_update_meeting",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please update the start time of the scheduled Zoom meeting \"Q4 Strategy Meeting\" to October 21 at 14:00, and change the topic to \"Q4 Strategy Meeting (Extended)\".",
+  "plan": [
+   {
+    "tool": "zoom_search_meetings",
+    "args": {
+     "query": {
+      "value": "Q4 戦略会議",
+      "ja": "Q4 戦略会議",
+      "en": "Q4 Strategy Meeting"
+     }
+    },
+    "pick": {
+     "ja": "Q4 戦略会議",
+     "en": "Q4 Strategy Meeting"
+    }
+   },
+   {
+    "tool": "zoom_update_meeting",
+    "args": {
+     "meeting_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "topic": {
+      "value": "Q4 戦略会議（延長）",
+      "ja": "Q4 戦略会議（延長）",
+      "en": "Q4 Strategy Meeting (Extended)"
+     },
+     "start_time": {
+      "value": "2026-10-21T14:00:00",
+      "ja": "10月21日14:00",
+      "en": "October 21 at 14:00"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "gdrive_get_file_metadata:ja@1000",
+  "target": "gdrive_get_file_metadata",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Googleドライブにある「2026年度Q3営業戦略書」のファイルIDを特定し、そのメタデータ（作成者やサイズなど）を取得してください。",
+  "plan": [
+   {
+    "tool": "gdrive_search_files",
+    "args": {
+     "query": {
+      "value": "name = '2026年度Q3営業戦略書' or name = '2026 Q3 Sales Strategy'",
+      "ja": "「2026年度Q3営業戦略書」",
+      "en": "\"2026 Q3 Sales Strategy\""
+     }
+    },
+    "pick": {
+     "ja": "「2026年度Q3営業戦略書」",
+     "en": "\"2026 Q3 Sales Strategy\""
+    }
+   },
+   {
+    "tool": "gdrive_get_file_metadata",
+    "args": {
+     "file_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "gdrive_get_file_metadata:en@1000",
+  "target": "gdrive_get_file_metadata",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please identify the file ID for \"2026 Q3 Sales Strategy\" in Google Drive and retrieve its metadata, such as the creator and size.",
+  "plan": [
+   {
+    "tool": "gdrive_search_files",
+    "args": {
+     "query": {
+      "value": "name = '2026年度Q3営業戦略書' or name = '2026 Q3 Sales Strategy'",
+      "ja": "「2026年度Q3営業戦略書」",
+      "en": "\"2026 Q3 Sales Strategy\""
+     }
+    },
+    "pick": {
+     "ja": "「2026年度Q3営業戦略書」",
+     "en": "\"2026 Q3 Sales Strategy\""
+    }
+   },
+   {
+    "tool": "gdrive_get_file_metadata",
+    "args": {
+     "file_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "rakurakuseisan_upload_receipt:ja@1000",
+  "target": "rakurakuseisan_upload_receipt",
+  "kind": "ja",
+  "n": 1000,
+  "text": "10月12日にスタバで使った経費（明細IDは不明ですが「スターバックス」で検索してください）に、領収書のPDFをアップロードして紐付けてください。ファイル名は「stb_receipt_20261012.pdf」で、URLは https://example.com/receipts/stb_20261012.pdf です。",
+  "plan": [
+   {
+    "tool": "rakurakuseisan_search_expenses",
+    "args": {
+     "keyword": {
+      "value": "スターバックス",
+      "ja": "「スターバックス」",
+      "en": "\"Starbucks\""
+     }
+    },
+    "pick": {
+     "ja": "10月12日にスタバで使った経費",
+     "en": "expense incurred at Starbucks on October 12th"
+    }
+   },
+   {
+    "tool": "rakurakuseisan_upload_receipt",
+    "args": {
+     "expense_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "file_url": {
+      "value": "https://example.com/receipts/stb_20261012.pdf",
+      "ja": "https://example.com/receipts/stb_20261012.pdf",
+      "en": "https://example.com/receipts/stb_20261012.pdf"
+     },
+     "file_name": {
+      "value": "stb_receipt_20261012.pdf",
+      "ja": "「stb_receipt_20261012.pdf」",
+      "en": "\"stb_receipt_20261012.pdf\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "rakurakuseisan_upload_receipt:en@1000",
+  "target": "rakurakuseisan_upload_receipt",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please upload and attach the receipt PDF to the expense incurred at Starbucks on October 12th (please search for \"Starbucks\" as the expense ID is unknown). The file name is \"stb_receipt_20261012.pdf\" and the URL is https://example.com/receipts/stb_20261012.pdf.",
+  "plan": [
+   {
+    "tool": "rakurakuseisan_search_expenses",
+    "args": {
+     "keyword": {
+      "value": "スターバックス",
+      "ja": "「スターバックス」",
+      "en": "\"Starbucks\""
+     }
+    },
+    "pick": {
+     "ja": "10月12日にスタバで使った経費",
+     "en": "expense incurred at Starbucks on October 12th"
+    }
+   },
+   {
+    "tool": "rakurakuseisan_upload_receipt",
+    "args": {
+     "expense_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "file_url": {
+      "value": "https://example.com/receipts/stb_20261012.pdf",
+      "ja": "https://example.com/receipts/stb_20261012.pdf",
+      "en": "https://example.com/receipts/stb_20261012.pdf"
+     },
+     "file_name": {
+      "value": "stb_receipt_20261012.pdf",
+      "ja": "「stb_receipt_20261012.pdf」",
+      "en": "\"stb_receipt_20261012.pdf\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "ga4_get_metadata:ja@1000",
+  "target": "ga4_get_metadata",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Google Analytics 4のアカウントID「123456789」に紐づくプロパティの中から、「ECサイト本番環境」という名前のプロパティを探し、そのレポート作成に使用可能なディメンションと指標のメタデータを取得してください。",
+  "plan": [
+   {
+    "tool": "ga4_list_properties",
+    "args": {
+     "account_id": {
+      "value": "123456789",
+      "ja": "アカウントID「123456789」",
+      "en": "account ID \"123456789\""
+     }
+    },
+    "pick": {
+     "ja": "ECサイト本番環境",
+     "en": "EC Site Production"
+    }
+   },
+   {
+    "tool": "ga4_get_metadata",
+    "args": {
+     "property_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 5
+ },
+ {
+  "id": "ga4_get_metadata:en@1000",
+  "target": "ga4_get_metadata",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please find the property named \"EC Site Production\" under the Google Analytics 4 account ID \"123456789\" and retrieve the metadata for dimensions and metrics available for report creation.",
+  "plan": [
+   {
+    "tool": "ga4_list_properties",
+    "args": {
+     "account_id": {
+      "value": "123456789",
+      "ja": "アカウントID「123456789」",
+      "en": "account ID \"123456789\""
+     }
+    },
+    "pick": {
+     "ja": "ECサイト本番環境",
+     "en": "EC Site Production"
+    }
+   },
+   {
+    "tool": "ga4_get_metadata",
+    "args": {
+     "property_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 5
+ },
+ {
+  "id": "rakurakuseisan_import_transaction:ja@1000",
+  "target": "rakurakuseisan_import_transaction",
+  "kind": "ja",
+  "n": 1000,
+  "text": "らくらく精算で、2026年9月の未取込カード取引から「スターバックス」での支払いを探し、費目を「会議費」にして経費明細として取り込んでください。",
+  "plan": [
+   {
+    "tool": "rakurakuseisan_get_credit_card_transactions",
+    "args": {
+     "month": {
+      "value": "2026-09",
+      "ja": "2026年9月",
+      "en": "September 2026"
+     }
+    },
+    "pick": {
+     "ja": "「スターバックス」での支払い",
+     "en": "\"Starbucks\""
+    }
+   },
+   {
+    "tool": "rakurakuseisan_import_transaction",
+    "args": {
+     "transaction_id": {
+      "from": 0,
+      "field": "transaction_id"
+     },
+     "category": {
+      "value": "会議費",
+      "ja": "費目を「会議費」",
+      "en": "category \"Meeting Expenses\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "rakurakuseisan_import_transaction:en@1000",
+  "target": "rakurakuseisan_import_transaction",
+  "kind": "en",
+  "n": 1000,
+  "text": "In Rakuraku Seisan, please find the unimported card transaction from September 2026 at \"Starbucks\" and import it as an expense item with the category \"Meeting Expenses\".",
+  "plan": [
+   {
+    "tool": "rakurakuseisan_get_credit_card_transactions",
+    "args": {
+     "month": {
+      "value": "2026-09",
+      "ja": "2026年9月",
+      "en": "September 2026"
+     }
+    },
+    "pick": {
+     "ja": "「スターバックス」での支払い",
+     "en": "\"Starbucks\""
+    }
+   },
+   {
+    "tool": "rakurakuseisan_import_transaction",
+    "args": {
+     "transaction_id": {
+      "from": 0,
+      "field": "transaction_id"
+     },
+     "category": {
+      "value": "会議費",
+      "ja": "費目を「会議費」",
+      "en": "category \"Meeting Expenses\""
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "shopify_add_product_to_collection:ja@1000",
+  "target": "shopify_add_product_to_collection",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Shopifyで、商品「ワイヤレスノイズキャンセリングヘッドフォン」をコレクション「秋のオーディオセール」に追加してください。",
+  "plan": [
+   {
+    "tool": "shopify_search_products",
+    "args": {
+     "query": {
+      "value": "ワイヤレスノイズキャンセリングヘッドフォン",
+      "ja": "ワイヤレスノイズキャンセリングヘッドフォン",
+      "en": "Wireless Noise-Canceling Headphones"
+     }
+    },
+    "pick": {
+     "ja": "ワイヤレスノイズキャンセリングヘッドフォン",
+     "en": "Wireless Noise-Canceling Headphones"
+    }
+   },
+   {
+    "tool": "shopify_list_collections",
+    "args": {
+     "limit": 50
+    },
+    "pick": {
+     "ja": "秋のオーディオセール",
+     "en": "Fall Audio Sale"
+    }
+   },
+   {
+    "tool": "shopify_add_product_to_collection",
+    "args": {
+     "collection_id": {
+      "from": 1,
+      "field": "id"
+     },
+     "product_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "shopify_add_product_to_collection:en@1000",
+  "target": "shopify_add_product_to_collection",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please add the product \"Wireless Noise-Canceling Headphones\" to the collection \"Fall Audio Sale\" in Shopify.",
+  "plan": [
+   {
+    "tool": "shopify_search_products",
+    "args": {
+     "query": {
+      "value": "ワイヤレスノイズキャンセリングヘッドフォン",
+      "ja": "ワイヤレスノイズキャンセリングヘッドフォン",
+      "en": "Wireless Noise-Canceling Headphones"
+     }
+    },
+    "pick": {
+     "ja": "ワイヤレスノイズキャンセリングヘッドフォン",
+     "en": "Wireless Noise-Canceling Headphones"
+    }
+   },
+   {
+    "tool": "shopify_list_collections",
+    "args": {
+     "limit": 50
+    },
+    "pick": {
+     "ja": "秋のオーディオセール",
+     "en": "Fall Audio Sale"
+    }
+   },
+   {
+    "tool": "shopify_add_product_to_collection",
+    "args": {
+     "collection_id": {
+      "from": 1,
+      "field": "id"
+     },
+     "product_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "servicenow_get_configuration_item:ja@1000",
+  "target": "servicenow_get_configuration_item",
+  "kind": "ja",
+  "n": 1000,
+  "text": "ServiceNowで「Web-AP-042」という名前のサーバーのIPアドレスとOSバージョンを確認してください。",
+  "plan": [
+   {
+    "tool": "servicenow_list_configuration_items",
+    "args": {
+     "name": {
+      "value": "Web-AP-042",
+      "ja": "「Web-AP-042」",
+      "en": "\"Web-AP-042\""
+     }
+    },
+    "pick": {
+     "ja": "「Web-AP-042」",
+     "en": "\"Web-AP-042\""
+    }
+   },
+   {
+    "tool": "servicenow_get_configuration_item",
+    "args": {
+     "ci_id": {
+      "from": 0,
+      "field": "sys_id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "servicenow_get_configuration_item:en@1000",
+  "target": "servicenow_get_configuration_item",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please check the IP address and OS version of the server named \"Web-AP-042\" in ServiceNow.",
+  "plan": [
+   {
+    "tool": "servicenow_list_configuration_items",
+    "args": {
+     "name": {
+      "value": "Web-AP-042",
+      "ja": "「Web-AP-042」",
+      "en": "\"Web-AP-042\""
+     }
+    },
+    "pick": {
+     "ja": "「Web-AP-042」",
+     "en": "\"Web-AP-042\""
+    }
+   },
+   {
+    "tool": "servicenow_get_configuration_item",
+    "args": {
+     "ci_id": {
+      "from": 0,
+      "field": "sys_id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "slack_get_message_history:ja@1000",
+  "target": "slack_get_message_history",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Slackで「proj-alpha」という名前のチャンネルにある、2026年10月14日午前9時以降の最新のメッセージ20件を取得してください。",
+  "plan": [
+   {
+    "tool": "slack_search_channels",
+    "args": {
+     "query": {
+      "value": "proj-alpha",
+      "ja": "「proj-alpha」",
+      "en": "\"proj-alpha\""
+     },
+     "limit": 5
+    },
+    "pick": {
+     "ja": "「proj-alpha」という名前のチャンネル",
+     "en": "channel named \"proj-alpha\""
+    }
+   },
+   {
+    "tool": "slack_get_message_history",
+    "args": {
+     "channel_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "latest": {
+      "value": "2026-10-14T09:00:00Z",
+      "ja": "2026年10月14日午前9時",
+      "en": "9:00 AM on October 14, 2026"
+     },
+     "limit": {
+      "value": 20,
+      "ja": "20件",
+      "en": "20"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "slack_get_message_history:en@1000",
+  "target": "slack_get_message_history",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please retrieve the latest 20 messages from the Slack channel named \"proj-alpha\" posted after 9:00 AM on October 14, 2026.",
+  "plan": [
+   {
+    "tool": "slack_search_channels",
+    "args": {
+     "query": {
+      "value": "proj-alpha",
+      "ja": "「proj-alpha」",
+      "en": "\"proj-alpha\""
+     },
+     "limit": 5
+    },
+    "pick": {
+     "ja": "「proj-alpha」という名前のチャンネル",
+     "en": "channel named \"proj-alpha\""
+    }
+   },
+   {
+    "tool": "slack_get_message_history",
+    "args": {
+     "channel_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "latest": {
+      "value": "2026-10-14T09:00:00Z",
+      "ja": "2026年10月14日午前9時",
+      "en": "9:00 AM on October 14, 2026"
+     },
+     "limit": {
+      "value": 20,
+      "ja": "20件",
+      "en": "20"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "garoon_get_user_profile:ja@1000",
+  "target": "garoon_get_user_profile",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Garoonで「佐藤健太」さんのユーザーIDを特定し、その方の内線番号と役職を確認してください。",
+  "plan": [
+   {
+    "tool": "garoon_search_users",
+    "args": {
+     "query": {
+      "value": "佐藤健太",
+      "ja": "「佐藤健太」",
+      "en": "\"Kenta Sato\""
+     }
+    },
+    "pick": {
+     "ja": "佐藤健太",
+     "en": "Kenta Sato"
+    }
+   },
+   {
+    "tool": "garoon_get_user_profile",
+    "args": {
+     "user_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "garoon_get_user_profile:en@1000",
+  "target": "garoon_get_user_profile",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please identify the user ID for \"Kenta Sato\" in Garoon and check his extension number and job title.",
+  "plan": [
+   {
+    "tool": "garoon_search_users",
+    "args": {
+     "query": {
+      "value": "佐藤健太",
+      "ja": "「佐藤健太」",
+      "en": "\"Kenta Sato\""
+     }
+    },
+    "pick": {
+     "ja": "佐藤健太",
+     "en": "Kenta Sato"
+    }
+   },
+   {
+    "tool": "garoon_get_user_profile",
+    "args": {
+     "user_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "asana_create_section:ja@1000",
+  "target": "asana_create_section",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Asanaの『Q4マーケティングキャンペーン』プロジェクトに、タスクを整理するための新しいセクションとして『SNS投稿用素材』を追加してください。",
+  "plan": [
+   {
+    "tool": "asana_list_workspaces",
+    "args": {},
+    "pick": {
+     "ja": "Asana",
+     "en": "Asana"
+    }
+   },
+   {
+    "tool": "asana_search_projects",
+    "args": {
+     "workspace_id": {
+      "from": 0,
+      "field": "gid"
+     },
+     "name_pattern": {
+      "value": "Q4マーケティングキャンペーン",
+      "ja": "『Q4マーケティングキャンペーン』",
+      "en": "'Q4 Marketing Campaign'"
+     }
+    },
+    "pick": {
+     "ja": "『Q4マーケティングキャンペーン』",
+     "en": "'Q4 Marketing Campaign'"
+    }
+   },
+   {
+    "tool": "asana_create_section",
+    "args": {
+     "project_id": {
+      "from": 1,
+      "field": "gid"
+     },
+     "name": {
+      "value": "SNS投稿用素材",
+      "ja": "『SNS投稿用素材』",
+      "en": "'Social Media Assets'"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 4
+ },
+ {
+  "id": "asana_create_section:en@1000",
+  "target": "asana_create_section",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please add a new section named 'Social Media Assets' to the 'Q4 Marketing Campaign' project in Asana to help organize our tasks.",
+  "plan": [
+   {
+    "tool": "asana_list_workspaces",
+    "args": {},
+    "pick": {
+     "ja": "Asana",
+     "en": "Asana"
+    }
+   },
+   {
+    "tool": "asana_search_projects",
+    "args": {
+     "workspace_id": {
+      "from": 0,
+      "field": "gid"
+     },
+     "name_pattern": {
+      "value": "Q4マーケティングキャンペーン",
+      "ja": "『Q4マーケティングキャンペーン』",
+      "en": "'Q4 Marketing Campaign'"
+     }
+    },
+    "pick": {
+     "ja": "『Q4マーケティングキャンペーン』",
+     "en": "'Q4 Marketing Campaign'"
+    }
+   },
+   {
+    "tool": "asana_create_section",
+    "args": {
+     "project_id": {
+      "from": 1,
+      "field": "gid"
+     },
+     "name": {
+      "value": "SNS投稿用素材",
+      "ja": "『SNS投稿用素材』",
+      "en": "'Social Media Assets'"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 4
+ },
+ {
+  "id": "tableau_update_workbook_permissions:ja@1000",
+  "target": "tableau_update_workbook_permissions",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Tableauの「Q3売上分析」ワークブックに対して、ユーザー「田中健太」に編集権限（Write）を付与してください。",
+  "plan": [
+   {
+    "tool": "tableau_search_workbooks",
+    "args": {
+     "query": {
+      "value": "Q3売上分析",
+      "ja": "「Q3売上分析」",
+      "en": "\"Q3 Sales Analysis\""
+     },
+     "site_id": {
+      "value": "default_site",
+      "ja": "Tableau",
+      "en": "Tableau"
+     },
+     "search_in": "name"
+    },
+    "pick": {
+     "ja": "「Q3売上分析」",
+     "en": "\"Q3 Sales Analysis\""
+    }
+   },
+   {
+    "tool": "tableau_list_users",
+    "args": {
+     "site_id": {
+      "value": "default_site",
+      "ja": "Tableau",
+      "en": "Tableau"
+     }
+    },
+    "pick": {
+     "ja": "「田中健太」",
+     "en": "\"Kenta Tanaka\""
+    }
+   },
+   {
+    "tool": "tableau_update_workbook_permissions",
+    "args": {
+     "workbook_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "grantee_id": {
+      "from": 1,
+      "field": "id"
+     },
+     "capability": {
+      "value": "Write",
+      "ja": "編集権限（Write）",
+      "en": "Write permission"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "tableau_update_workbook_permissions:en@1000",
+  "target": "tableau_update_workbook_permissions",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please grant Write permission to the user \"Kenta Tanaka\" for the Tableau workbook titled \"Q3 Sales Analysis\".",
+  "plan": [
+   {
+    "tool": "tableau_search_workbooks",
+    "args": {
+     "query": {
+      "value": "Q3売上分析",
+      "ja": "「Q3売上分析」",
+      "en": "\"Q3 Sales Analysis\""
+     },
+     "site_id": {
+      "value": "default_site",
+      "ja": "Tableau",
+      "en": "Tableau"
+     },
+     "search_in": "name"
+    },
+    "pick": {
+     "ja": "「Q3売上分析」",
+     "en": "\"Q3 Sales Analysis\""
+    }
+   },
+   {
+    "tool": "tableau_list_users",
+    "args": {
+     "site_id": {
+      "value": "default_site",
+      "ja": "Tableau",
+      "en": "Tableau"
+     }
+    },
+    "pick": {
+     "ja": "「田中健太」",
+     "en": "\"Kenta Tanaka\""
+    }
+   },
+   {
+    "tool": "tableau_update_workbook_permissions",
+    "args": {
+     "workbook_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "grantee_id": {
+      "from": 1,
+      "field": "id"
+     },
+     "capability": {
+      "value": "Write",
+      "ja": "編集権限（Write）",
+      "en": "Write permission"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "box_add_collaboration:ja@1000",
+  "target": "box_add_collaboration",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Boxにある「2026年度 第3四半期 営業報告書」というファイルを探して、tanaka@example.com を編集者として追加してください。",
+  "plan": [
+   {
+    "tool": "box_search_content",
+    "args": {
+     "query": {
+      "value": "2026年度 第3四半期 営業報告書",
+      "ja": "「2026年度 第3四半期 営業報告書」",
+      "en": "\"Q3 2026 Sales Report\""
+     }
+    },
+    "pick": {
+     "ja": "「2026年度 第3四半期 営業報告書」",
+     "en": "\"Q3 2026 Sales Report\""
+    }
+   },
+   {
+    "tool": "box_add_collaboration",
+    "args": {
+     "item_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "user_email": {
+      "value": "tanaka@example.com",
+      "ja": "tanaka@example.com",
+      "en": "tanaka@example.com"
+     },
+     "role": {
+      "value": "editor",
+      "ja": "編集者",
+      "en": "editor"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "box_add_collaboration:en@1000",
+  "target": "box_add_collaboration",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please find the file named \"Q3 2026 Sales Report\" in Box and add tanaka@example.com as an editor.",
+  "plan": [
+   {
+    "tool": "box_search_content",
+    "args": {
+     "query": {
+      "value": "2026年度 第3四半期 営業報告書",
+      "ja": "「2026年度 第3四半期 営業報告書」",
+      "en": "\"Q3 2026 Sales Report\""
+     }
+    },
+    "pick": {
+     "ja": "「2026年度 第3四半期 営業報告書」",
+     "en": "\"Q3 2026 Sales Report\""
+    }
+   },
+   {
+    "tool": "box_add_collaboration",
+    "args": {
+     "item_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "user_email": {
+      "value": "tanaka@example.com",
+      "ja": "tanaka@example.com",
+      "en": "tanaka@example.com"
+     },
+     "role": {
+      "value": "editor",
+      "ja": "編集者",
+      "en": "editor"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "docusign_add_recipient:ja@1000",
+  "target": "docusign_add_recipient",
+  "kind": "ja",
+  "n": 1000,
+  "text": "DocuSignの下書きにある「2026年度Q4 保守契約書」の封筒に、追加で法務部の田中太郎（tanaka.taro@example.com）を署名者として加えてください。アカウントIDはacc_998877です。",
+  "plan": [
+   {
+    "tool": "docusign_search_envelopes",
+    "args": {
+     "account_id": "acc_998877",
+     "search_text": {
+      "value": "2026年度Q4 保守契約書",
+      "ja": "2026年度Q4 保守契約書",
+      "en": "2026 Q4 Maintenance Agreement"
+     }
+    },
+    "pick": {
+     "ja": "2026年度Q4 保守契約書",
+     "en": "2026 Q4 Maintenance Agreement"
+    }
+   },
+   {
+    "tool": "docusign_add_recipient",
+    "args": {
+     "account_id": "acc_998877",
+     "envelope_id": {
+      "from": 0,
+      "field": "envelopeId"
+     },
+     "recipient_name": {
+      "value": "田中太郎",
+      "ja": "田中太郎",
+      "en": "Taro Tanaka"
+     },
+     "recipient_email": "tanaka.taro@example.com",
+     "role": {
+      "value": "Signer",
+      "ja": "署名者",
+      "en": "signer"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "docusign_add_recipient:en@1000",
+  "target": "docusign_add_recipient",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please add Taro Tanaka (tanaka.taro@example.com) from the Legal Department as a signer to the draft envelope titled \"2026 Q4 Maintenance Agreement\" in DocuSign. The account ID is acc_998877.",
+  "plan": [
+   {
+    "tool": "docusign_search_envelopes",
+    "args": {
+     "account_id": "acc_998877",
+     "search_text": {
+      "value": "2026年度Q4 保守契約書",
+      "ja": "2026年度Q4 保守契約書",
+      "en": "2026 Q4 Maintenance Agreement"
+     }
+    },
+    "pick": {
+     "ja": "2026年度Q4 保守契約書",
+     "en": "2026 Q4 Maintenance Agreement"
+    }
+   },
+   {
+    "tool": "docusign_add_recipient",
+    "args": {
+     "account_id": "acc_998877",
+     "envelope_id": {
+      "from": 0,
+      "field": "envelopeId"
+     },
+     "recipient_name": {
+      "value": "田中太郎",
+      "ja": "田中太郎",
+      "en": "Taro Tanaka"
+     },
+     "recipient_email": "tanaka.taro@example.com",
+     "role": {
+      "value": "Signer",
+      "ja": "署名者",
+      "en": "signer"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "backlog_list_issues:ja@1000",
+  "target": "backlog_list_issues",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Backlogのプロジェクトキーが『MOBILE』の案件で、ステータスIDが『3』（処理中）に設定されている課題の一覧を取得してください。",
+  "plan": [
+   {
+    "tool": "backlog_get_project",
+    "args": {
+     "project_key": {
+      "value": "MOBILE",
+      "ja": "『MOBILE』",
+      "en": "'MOBILE'"
+     }
+    },
+    "pick": null
+   },
+   {
+    "tool": "backlog_list_issues",
+    "args": {
+     "project_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "status_id": {
+      "value": 3,
+      "ja": "『3』",
+      "en": "'3'"
+     }
+    },
+    "pick": null
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "backlog_list_issues:en@1000",
+  "target": "backlog_list_issues",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please retrieve the list of issues with status ID '3' (In Progress) for the Backlog project with the key 'MOBILE'.",
+  "plan": [
+   {
+    "tool": "backlog_get_project",
+    "args": {
+     "project_key": {
+      "value": "MOBILE",
+      "ja": "『MOBILE』",
+      "en": "'MOBILE'"
+     }
+    },
+    "pick": null
+   },
+   {
+    "tool": "backlog_list_issues",
+    "args": {
+     "project_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "status_id": {
+      "value": 3,
+      "ja": "『3』",
+      "en": "'3'"
+     }
+    },
+    "pick": null
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "notion_get_database:ja@1000",
+  "target": "notion_get_database",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Notionの「Q4 製品ロードマップ」データベースにあるプロパティの種類を確認したいです。スキーマ定義を取得してください。",
+  "plan": [
+   {
+    "tool": "notion_search_databases",
+    "args": {
+     "query": {
+      "value": "Q4 製品ロードマップ",
+      "ja": "「Q4 製品ロードマップ」",
+      "en": "\"Q4 Product Roadmap\""
+     }
+    },
+    "pick": {
+     "ja": "「Q4 製品ロードマップ」",
+     "en": "\"Q4 Product Roadmap\""
+    }
+   },
+   {
+    "tool": "notion_get_database",
+    "args": {
+     "database_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "notion_get_database:en@1000",
+  "target": "notion_get_database",
+  "kind": "en",
+  "n": 1000,
+  "text": "I want to check the property types in the \"Q4 Product Roadmap\" database on Notion. Please retrieve the schema definition.",
+  "plan": [
+   {
+    "tool": "notion_search_databases",
+    "args": {
+     "query": {
+      "value": "Q4 製品ロードマップ",
+      "ja": "「Q4 製品ロードマップ」",
+      "en": "\"Q4 Product Roadmap\""
+     }
+    },
+    "pick": {
+     "ja": "「Q4 製品ロードマップ」",
+     "en": "\"Q4 Product Roadmap\""
+    }
+   },
+   {
+    "tool": "notion_get_database",
+    "args": {
+     "database_id": {
+      "from": 0,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 1
+ },
+ {
+  "id": "zendesk_add_tags_to_ticket:ja@1000",
+  "target": "zendesk_add_tags_to_ticket",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Zendeskで、件名に「ログインエラー」が含まれるオープン状態のチケットを探し、それに「urgent」と「security」のタグを追加してください。",
+  "plan": [
+   {
+    "tool": "zendesk_search_tickets",
+    "args": {
+     "query": {
+      "value": "status:open subject:\"Login Error\"",
+      "ja": "件名に「ログインエラー」が含まれるオープン状態のチケット",
+      "en": "open ticket with \"Login Error\" in the subject"
+     }
+    },
+    "pick": {
+     "ja": "件名に「ログインエラー」が含まれる",
+     "en": "\"Login Error\" in the subject"
+    }
+   },
+   {
+    "tool": "zendesk_add_tags_to_ticket",
+    "args": {
+     "ticket_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "tags": [
+      "urgent",
+      "security"
+     ]
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "zendesk_add_tags_to_ticket:en@1000",
+  "target": "zendesk_add_tags_to_ticket",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please find the open ticket with \"Login Error\" in the subject on Zendesk and add the tags \"urgent\" and \"security\" to it.",
+  "plan": [
+   {
+    "tool": "zendesk_search_tickets",
+    "args": {
+     "query": {
+      "value": "status:open subject:\"Login Error\"",
+      "ja": "件名に「ログインエラー」が含まれるオープン状態のチケット",
+      "en": "open ticket with \"Login Error\" in the subject"
+     }
+    },
+    "pick": {
+     "ja": "件名に「ログインエラー」が含まれる",
+     "en": "\"Login Error\" in the subject"
+    }
+   },
+   {
+    "tool": "zendesk_add_tags_to_ticket",
+    "args": {
+     "ticket_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "tags": [
+      "urgent",
+      "security"
+     ]
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "notion_move_block_children:ja@1000",
+  "target": "notion_move_block_children",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Notionの「Q4プロジェクト計画」ページにある「リスク管理」セクションを、「完了したタスク」セクションの下に移動させてください。",
+  "plan": [
+   {
+    "tool": "notion_search_pages",
+    "args": {
+     "query": {
+      "value": "Q4 Project Plan",
+      "ja": "Q4プロジェクト計画",
+      "en": "Q4 Project Plan"
+     }
+    },
+    "pick": {
+     "ja": "Q4プロジェクト計画",
+     "en": "Q4 Project Plan"
+    }
+   },
+   {
+    "tool": "notion_list_blocks",
+    "args": {
+     "block_id": {
+      "from": 0,
+      "field": "id"
+     }
+    },
+    "pick": {
+     "ja": "リスク管理",
+     "en": "Risk Management"
+    }
+   },
+   {
+    "tool": "notion_list_blocks",
+    "args": {
+     "block_id": {
+      "from": 0,
+      "field": "id"
+     }
+    },
+    "pick": {
+     "ja": "完了したタスク",
+     "en": "Completed Tasks"
+    }
+   },
+   {
+    "tool": "notion_move_block_children",
+    "args": {
+     "block_id": {
+      "from": 1,
+      "field": "id"
+     },
+     "new_parent_id": {
+      "from": 2,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "notion_move_block_children:en@1000",
+  "target": "notion_move_block_children",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please move the \"Risk Management\" section under the \"Completed Tasks\" section on the \"Q4 Project Plan\" page in Notion.",
+  "plan": [
+   {
+    "tool": "notion_search_pages",
+    "args": {
+     "query": {
+      "value": "Q4 Project Plan",
+      "ja": "Q4プロジェクト計画",
+      "en": "Q4 Project Plan"
+     }
+    },
+    "pick": {
+     "ja": "Q4プロジェクト計画",
+     "en": "Q4 Project Plan"
+    }
+   },
+   {
+    "tool": "notion_list_blocks",
+    "args": {
+     "block_id": {
+      "from": 0,
+      "field": "id"
+     }
+    },
+    "pick": {
+     "ja": "リスク管理",
+     "en": "Risk Management"
+    }
+   },
+   {
+    "tool": "notion_list_blocks",
+    "args": {
+     "block_id": {
+      "from": 0,
+      "field": "id"
+     }
+    },
+    "pick": {
+     "ja": "完了したタスク",
+     "en": "Completed Tasks"
+    }
+   },
+   {
+    "tool": "notion_move_block_children",
+    "args": {
+     "block_id": {
+      "from": 1,
+      "field": "id"
+     },
+     "new_parent_id": {
+      "from": 2,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "backlog_create_wiki:ja@1000",
+  "target": "backlog_create_wiki",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Backlogのプロジェクトキー「MOBILE」のプロジェクトに、Wikiページを作成してください。タイトルは「2026年度 新入社員向け環境構築ガイド」、本文は「1. Gitリポジトリのクローン\n2. Dockerコンテナの起動\n3. localhost:8080でのアクセス確認」とします。",
+  "plan": [
+   {
+    "tool": "backlog_get_project",
+    "args": {
+     "project_key": {
+      "value": "MOBILE",
+      "ja": "「MOBILE」",
+      "en": "\"MOBILE\""
+     }
+    },
+    "pick": null
+   },
+   {
+    "tool": "backlog_create_wiki",
+    "args": {
+     "project_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "title": {
+      "value": "2026年度 新入社員向け環境構築ガイド",
+      "ja": "「2026年度 新入社員向け環境構築ガイド」",
+      "en": "\"2026 New Hire Environment Setup Guide\""
+     },
+     "content": {
+      "value": "1. Gitリポジトリのクローン\n2. Dockerコンテナの起動\n3. localhost:8080でのアクセス確認",
+      "ja": "「1. Gitリポジトリのクローン\n2. Dockerコンテナの起動\n3. localhost:8080でのアクセス確認」",
+      "en": "\"1. Clone Git repository\n2. Start Docker container\n3. Verify access at localhost:8080\""
+     }
+    },
+    "pick": null
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "backlog_create_wiki:en@1000",
+  "target": "backlog_create_wiki",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please create a Wiki page in the Backlog project with the key \"MOBILE\". The title should be \"2026 New Hire Environment Setup Guide\", and the content should be \"1. Clone Git repository\n2. Start Docker container\n3. Verify access at localhost:8080\".",
+  "plan": [
+   {
+    "tool": "backlog_get_project",
+    "args": {
+     "project_key": {
+      "value": "MOBILE",
+      "ja": "「MOBILE」",
+      "en": "\"MOBILE\""
+     }
+    },
+    "pick": null
+   },
+   {
+    "tool": "backlog_create_wiki",
+    "args": {
+     "project_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "title": {
+      "value": "2026年度 新入社員向け環境構築ガイド",
+      "ja": "「2026年度 新入社員向け環境構築ガイド」",
+      "en": "\"2026 New Hire Environment Setup Guide\""
+     },
+     "content": {
+      "value": "1. Gitリポジトリのクローン\n2. Dockerコンテナの起動\n3. localhost:8080でのアクセス確認",
+      "ja": "「1. Gitリポジトリのクローン\n2. Dockerコンテナの起動\n3. localhost:8080でのアクセス確認」",
+      "en": "\"1. Clone Git repository\n2. Start Docker container\n3. Verify access at localhost:8080\""
+     }
+    },
+    "pick": null
+   }
+  ],
+  "missing": null,
+  "attempts": 3
+ },
+ {
+  "id": "sentry_get_issue_details:ja@1000",
+  "target": "sentry_get_issue_details",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Sentryの組織「acme-corp」において、プロジェクト「frontend-app」で発生しているIssue IDが「FRONT-402」のエラーについて、詳細なスタックトレースと発生履歴を確認してください。",
+  "plan": [
+   {
+    "tool": "sentry_list_projects",
+    "args": {
+     "organization_slug": "acme-corp",
+     "query": "frontend-app"
+    },
+    "pick": {
+     "ja": "frontend-app",
+     "en": "frontend-app"
+    }
+   },
+   {
+    "tool": "sentry_search_issues",
+    "args": {
+     "organization_slug": "acme-corp",
+     "query": {
+      "value": "project:frontend-app FRONT-402",
+      "ja": "プロジェクト「frontend-app」で発生しているIssue IDが「FRONT-402」",
+      "en": "Issue ID \"FRONT-402\" occurring in the project \"frontend-app\""
+     }
+    },
+    "pick": {
+     "ja": "FRONT-402",
+     "en": "FRONT-402"
+    }
+   },
+   {
+    "tool": "sentry_get_issue_details",
+    "args": {
+     "organization_slug": "acme-corp",
+     "issue_id": {
+      "from": 1,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "sentry_get_issue_details:en@1000",
+  "target": "sentry_get_issue_details",
+  "kind": "en",
+  "n": 1000,
+  "text": "In the Sentry organization \"acme-corp\", please check the detailed stack trace and occurrence history for the error with Issue ID \"FRONT-402\" occurring in the project \"frontend-app\".",
+  "plan": [
+   {
+    "tool": "sentry_list_projects",
+    "args": {
+     "organization_slug": "acme-corp",
+     "query": "frontend-app"
+    },
+    "pick": {
+     "ja": "frontend-app",
+     "en": "frontend-app"
+    }
+   },
+   {
+    "tool": "sentry_search_issues",
+    "args": {
+     "organization_slug": "acme-corp",
+     "query": {
+      "value": "project:frontend-app FRONT-402",
+      "ja": "プロジェクト「frontend-app」で発生しているIssue IDが「FRONT-402」",
+      "en": "Issue ID \"FRONT-402\" occurring in the project \"frontend-app\""
+     }
+    },
+    "pick": {
+     "ja": "FRONT-402",
+     "en": "FRONT-402"
+    }
+   },
+   {
+    "tool": "sentry_get_issue_details",
+    "args": {
+     "organization_slug": "acme-corp",
+     "issue_id": {
+      "from": 1,
+      "field": "id"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "confluence_add_labels:ja@1000",
+  "target": "confluence_add_labels",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Confluenceで「Q4マーケティング戦略」というタイトルのページを探し、そこに「reviewed」と「approved」のラベルを付与してください。",
+  "plan": [
+   {
+    "tool": "confluence_search_pages",
+    "args": {
+     "query": {
+      "value": "title ~ \"Q4 Marketing Strategy\"",
+      "ja": "「Q4マーケティング戦略」",
+      "en": "\"Q4 Marketing Strategy\""
+     }
+    },
+    "pick": {
+     "ja": "「Q4マーケティング戦略」",
+     "en": "\"Q4 Marketing Strategy\""
+    }
+   },
+   {
+    "tool": "confluence_add_labels",
+    "args": {
+     "page_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "labels": [
+      "reviewed",
+      "approved"
+     ]
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "confluence_add_labels:en@1000",
+  "target": "confluence_add_labels",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please find the Confluence page titled \"Q4 Marketing Strategy\" and add the labels \"reviewed\" and \"approved\" to it.",
+  "plan": [
+   {
+    "tool": "confluence_search_pages",
+    "args": {
+     "query": {
+      "value": "title ~ \"Q4 Marketing Strategy\"",
+      "ja": "「Q4マーケティング戦略」",
+      "en": "\"Q4 Marketing Strategy\""
+     }
+    },
+    "pick": {
+     "ja": "「Q4マーケティング戦略」",
+     "en": "\"Q4 Marketing Strategy\""
+    }
+   },
+   {
+    "tool": "confluence_add_labels",
+    "args": {
+     "page_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "labels": [
+      "reviewed",
+      "approved"
+     ]
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "aws_ec2_reboot_instance:ja@1000",
+  "target": "aws_ec2_reboot_instance",
+  "kind": "ja",
+  "n": 1000,
+  "text": "AWSのEC2インスタンスで、Nameタグが「prod-web-01」のサーバーが応答しないため、OSレベルの問題解決のために再起動してください。",
+  "plan": [
+   {
+    "tool": "aws_ec2_search_instances_by_tag",
+    "args": {
+     "tag_key": {
+      "value": "Name",
+      "ja": "Nameタグ",
+      "en": "Name tag"
+     },
+     "tag_value": {
+      "value": "prod-web-01",
+      "ja": "「prod-web-01」",
+      "en": "\"prod-web-01\""
+     }
+    },
+    "pick": {
+     "ja": "prod-web-01",
+     "en": "prod-web-01"
+    }
+   },
+   {
+    "tool": "aws_ec2_reboot_instance",
+    "args": {
+     "instance_id": {
+      "from": 0,
+      "field": "InstanceId"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "aws_ec2_reboot_instance:en@1000",
+  "target": "aws_ec2_reboot_instance",
+  "kind": "en",
+  "n": 1000,
+  "text": "The AWS EC2 instance with the Name tag \"prod-web-01\" is unresponsive, so please reboot it to resolve the OS-level issue.",
+  "plan": [
+   {
+    "tool": "aws_ec2_search_instances_by_tag",
+    "args": {
+     "tag_key": {
+      "value": "Name",
+      "ja": "Nameタグ",
+      "en": "Name tag"
+     },
+     "tag_value": {
+      "value": "prod-web-01",
+      "ja": "「prod-web-01」",
+      "en": "\"prod-web-01\""
+     }
+    },
+    "pick": {
+     "ja": "prod-web-01",
+     "en": "prod-web-01"
+    }
+   },
+   {
+    "tool": "aws_ec2_reboot_instance",
+    "args": {
+     "instance_id": {
+      "from": 0,
+      "field": "InstanceId"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "chatwork_create_task:ja@1000",
+  "target": "chatwork_create_task",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Chatworkの「プロジェクトAlpha」ルームで、メンバーの佐藤健太さんに「Q4の販促資料作成」タスクを割り当ててください。期限は10月21日です。",
+  "plan": [
+   {
+    "tool": "chatwork_list_rooms",
+    "args": {},
+    "pick": {
+     "ja": "プロジェクトAlpha",
+     "en": "Project Alpha"
+    }
+   },
+   {
+    "tool": "chatwork_list_members",
+    "args": {
+     "room_id": {
+      "from": 0,
+      "field": "room_id"
+     }
+    },
+    "pick": {
+     "ja": "佐藤健太",
+     "en": "Kenta Sato"
+    }
+   },
+   {
+    "tool": "chatwork_create_task",
+    "args": {
+     "room_id": {
+      "from": 0,
+      "field": "room_id"
+     },
+     "body": {
+      "value": "Q4の販促資料作成",
+      "ja": "Q4の販促資料作成",
+      "en": "Create Q4 promotional materials"
+     },
+     "to_ids": [
+      {
+       "from": 1,
+       "field": "account_id"
+      }
+     ],
+     "limit": {
+      "value": 1761001200,
+      "ja": "10月21日",
+      "en": "October 21st"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 5
+ },
+ {
+  "id": "chatwork_create_task:en@1000",
+  "target": "chatwork_create_task",
+  "kind": "en",
+  "n": 1000,
+  "text": "In the Chatwork room named \"Project Alpha\", please assign a task titled \"Create Q4 promotional materials\" to member Kenta Sato. The deadline is October 21st.",
+  "plan": [
+   {
+    "tool": "chatwork_list_rooms",
+    "args": {},
+    "pick": {
+     "ja": "プロジェクトAlpha",
+     "en": "Project Alpha"
+    }
+   },
+   {
+    "tool": "chatwork_list_members",
+    "args": {
+     "room_id": {
+      "from": 0,
+      "field": "room_id"
+     }
+    },
+    "pick": {
+     "ja": "佐藤健太",
+     "en": "Kenta Sato"
+    }
+   },
+   {
+    "tool": "chatwork_create_task",
+    "args": {
+     "room_id": {
+      "from": 0,
+      "field": "room_id"
+     },
+     "body": {
+      "value": "Q4の販促資料作成",
+      "ja": "Q4の販促資料作成",
+      "en": "Create Q4 promotional materials"
+     },
+     "to_ids": [
+      {
+       "from": 1,
+       "field": "account_id"
+      }
+     ],
+     "limit": {
+      "value": 1761001200,
+      "ja": "10月21日",
+      "en": "October 21st"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 5
+ },
+ {
+  "id": "confluence_get_page:ja@1000",
+  "target": "confluence_get_page",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Confluenceで「2026年度 Q4 製品ロードマップ」というタイトルのページを探し、本文、バージョン情報、ステータスを取得してください。",
+  "plan": [
+   {
+    "tool": "confluence_search_pages",
+    "args": {
+     "query": {
+      "value": "title = \"2026年度 Q4 製品ロードマップ\" OR title = \"2026 Q4 Product Roadmap\"",
+      "ja": "「2026年度 Q4 製品ロードマップ」",
+      "en": "\"2026 Q4 Product Roadmap\""
+     }
+    },
+    "pick": {
+     "ja": "「2026年度 Q4 製品ロードマップ」",
+     "en": "\"2026 Q4 Product Roadmap\""
+    }
+   },
+   {
+    "tool": "confluence_get_page",
+    "args": {
+     "page_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "expand": {
+      "value": "body,version,status",
+      "ja": "本文、バージョン情報、ステータス",
+      "en": "body, version, and status"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "confluence_get_page:en@1000",
+  "target": "confluence_get_page",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please search for the Confluence page titled \"2026 Q4 Product Roadmap\" and retrieve its body, version, and status.",
+  "plan": [
+   {
+    "tool": "confluence_search_pages",
+    "args": {
+     "query": {
+      "value": "title = \"2026年度 Q4 製品ロードマップ\" OR title = \"2026 Q4 Product Roadmap\"",
+      "ja": "「2026年度 Q4 製品ロードマップ」",
+      "en": "\"2026 Q4 Product Roadmap\""
+     }
+    },
+    "pick": {
+     "ja": "「2026年度 Q4 製品ロードマップ」",
+     "en": "\"2026 Q4 Product Roadmap\""
+    }
+   },
+   {
+    "tool": "confluence_get_page",
+    "args": {
+     "page_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "expand": {
+      "value": "body,version,status",
+      "ja": "本文、バージョン情報、ステータス",
+      "en": "body, version, and status"
+     }
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "asana_update_task:ja@1000",
+  "target": "asana_update_task",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Asanaの「Q4マーケティング計画」プロジェクトにある「ランディングページのデザイン修正」タスクを探して、期限を2026年10月21日に変更し、完了ステータスにしてください。",
+  "plan": [
+   {
+    "tool": "asana_list_workspaces",
+    "args": {},
+    "pick": {
+     "ja": "Asana",
+     "en": "Asana"
+    }
+   },
+   {
+    "tool": "asana_search_projects",
+    "args": {
+     "workspace_id": {
+      "from": 0,
+      "field": "gid"
+     },
+     "name_pattern": {
+      "value": "Q4マーケティング計画",
+      "ja": "Q4マーケティング計画",
+      "en": "Q4 Marketing Plan"
+     }
+    },
+    "pick": {
+     "ja": "Q4マーケティング計画",
+     "en": "Q4 Marketing Plan"
+    }
+   },
+   {
+    "tool": "asana_search_tasks",
+    "args": {
+     "workspace_id": {
+      "from": 0,
+      "field": "gid"
+     },
+     "text": {
+      "value": "ランディングページのデザイン修正",
+      "ja": "ランディングページのデザイン修正",
+      "en": "Landing page design revision"
+     }
+    },
+    "pick": {
+     "ja": "ランディングページのデザイン修正",
+     "en": "Landing page design revision"
+    }
+   },
+   {
+    "tool": "asana_update_task",
+    "args": {
+     "task_id": {
+      "from": 2,
+      "field": "gid"
+     },
+     "due_on": {
+      "value": "2026-10-21",
+      "ja": "2026年10月21日",
+      "en": "October 21, 2026"
+     },
+     "completed": true
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "asana_update_task:en@1000",
+  "target": "asana_update_task",
+  "kind": "en",
+  "n": 1000,
+  "text": "Please find the task \"Landing page design revision\" in the Asana project \"Q4 Marketing Plan\", update its due date to October 21, 2026, and mark it as completed.",
+  "plan": [
+   {
+    "tool": "asana_list_workspaces",
+    "args": {},
+    "pick": {
+     "ja": "Asana",
+     "en": "Asana"
+    }
+   },
+   {
+    "tool": "asana_search_projects",
+    "args": {
+     "workspace_id": {
+      "from": 0,
+      "field": "gid"
+     },
+     "name_pattern": {
+      "value": "Q4マーケティング計画",
+      "ja": "Q4マーケティング計画",
+      "en": "Q4 Marketing Plan"
+     }
+    },
+    "pick": {
+     "ja": "Q4マーケティング計画",
+     "en": "Q4 Marketing Plan"
+    }
+   },
+   {
+    "tool": "asana_search_tasks",
+    "args": {
+     "workspace_id": {
+      "from": 0,
+      "field": "gid"
+     },
+     "text": {
+      "value": "ランディングページのデザイン修正",
+      "ja": "ランディングページのデザイン修正",
+      "en": "Landing page design revision"
+     }
+    },
+    "pick": {
+     "ja": "ランディングページのデザイン修正",
+     "en": "Landing page design revision"
+    }
+   },
+   {
+    "tool": "asana_update_task",
+    "args": {
+     "task_id": {
+      "from": 2,
+      "field": "gid"
+     },
+     "due_on": {
+      "value": "2026-10-21",
+      "ja": "2026年10月21日",
+      "en": "October 21, 2026"
+     },
+     "completed": true
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "outlook_reply_to_email:ja@1000",
+  "target": "outlook_reply_to_email",
+  "kind": "ja",
+  "n": 1000,
+  "text": "Outlookで、件名が「Q4予算承認のお願い」であるメールを検索し、そのメールに対して「10月21日までに承認済みです」という本文で返信してください。",
+  "plan": [
+   {
+    "tool": "outlook_search_emails",
+    "args": {
+     "query": {
+      "value": "subject:\"Q4 Budget Approval Request\"",
+      "ja": "件名が「Q4予算承認のお願い」",
+      "en": "subject \"Q4 Budget Approval Request\""
+     }
+    },
+    "pick": {
+     "ja": "件名が「Q4予算承認のお願い」であるメール",
+     "en": "email with the subject \"Q4 Budget Approval Request\""
+    }
+   },
+   {
+    "tool": "outlook_reply_to_email",
+    "args": {
+     "email_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "body": {
+      "value": "Approved by October 21st",
+      "ja": "「10月21日までに承認済みです」",
+      "en": "\"Approved by October 21st\""
+     },
+     "reply_all": false
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ },
+ {
+  "id": "outlook_reply_to_email:en@1000",
+  "target": "outlook_reply_to_email",
+  "kind": "en",
+  "n": 1000,
+  "text": "In Outlook, search for the email with the subject \"Q4 Budget Approval Request\" and reply to it with the body \"Approved by October 21st\".",
+  "plan": [
+   {
+    "tool": "outlook_search_emails",
+    "args": {
+     "query": {
+      "value": "subject:\"Q4 Budget Approval Request\"",
+      "ja": "件名が「Q4予算承認のお願い」",
+      "en": "subject \"Q4 Budget Approval Request\""
+     }
+    },
+    "pick": {
+     "ja": "件名が「Q4予算承認のお願い」であるメール",
+     "en": "email with the subject \"Q4 Budget Approval Request\""
+    }
+   },
+   {
+    "tool": "outlook_reply_to_email",
+    "args": {
+     "email_id": {
+      "from": 0,
+      "field": "id"
+     },
+     "body": {
+      "value": "Approved by October 21st",
+      "ja": "「10月21日までに承認済みです」",
+      "en": "\"Approved by October 21st\""
+     },
+     "reply_all": false
+    }
+   }
+  ],
+  "missing": null,
+  "attempts": 2
+ }
+]

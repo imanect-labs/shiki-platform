@@ -206,6 +206,15 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 7
     </ul>
   </section>
 
+  <section id="lookup">
+    <div class="eyebrow">E2E · 下調べ用ツールの同時読み込み（#565）</div>
+    <h2 id="h-lookup">ID を調べるツールを一緒に読み込むと、下調べが要る依頼の正解率が上がる（製品には未導入）</h2>
+    <p><code>tool_search</code> で読み込むツールの必須の ID 引数（<code>event_id</code> など）について、同じ名前空間で名前に一覧・検索の動詞と対象を含むツール（<code>outlook_search_events</code> など）を最大 4 件一緒に読み込む案。名前を結果本文で案内するだけの案（#522）は効かなかったので、定義ごと読み込む。依頼データ v2 の 1,000 件には下調べが要る依頼が 12 件しかなかったため、下調べが要る依頼だけの評価セットを別に作った。1,000 件のカタログから、ID の形の必須引数を持ち同じサービスに一覧・検索・取得のツールがあるツールを乱数で選び（下調べ用ツールの選び方では選ばない）、ID を依頼文に書かず下調べの手順が 1 つ以上要る依頼を、v2 と同じ検査で作った。全ツール提示は回していない。</p>
+    <p><strong>製品には入れていない。</strong>製品で遅延読み込みになるのは語彙（<code>ToolName</code>）のツールだけで、そのうち ID 引数を持つもの（<code>node_id</code>・<code>workflow_id</code>）には、ID を引く一覧・検索のツールが遅延の側に無い。外部 SaaS はネイティブのツールではなく skill と <code>http.request</code> で扱う方針（ロードマップ Task 10.15）なので、この評価の合成カタログ（サービスごとに 20 件前後の MCP 風ツール）は製品の今の姿ではない。外部の多数のツールを遅延にするようになったら、この結果を根拠に入れる。実装はブランチ <code>feat/tool-search-companions</code> にある。また、合成ツールの引数名はすべて <code>&lt;対象&gt;_id</code> の形なので、<code>eventId</code>・<code>issue_number</code>・<code>ts</code> のような実際の引数名では、この名前の対応で拾える割合はこれより下がりうる。</p>
+    <div class="tablewrap"><table id="tb-lookup"></table></div>
+    <p id="lookup-read"></p>
+  </section>
+
   <section id="skills">
     <div class="eyebrow">skill</div>
     <h2 id="h-skills">先頭 50 件で切る一覧は 200 件で崩れ、skill 専用の検索は約 500 件でも 9 割を保つ</h2>
@@ -342,7 +351,7 @@ const findings = [
   [`クエリの埋め込みは 1 回 ${Math.round(lat.embed_query_ms)} ms で、対話の経路に入れられる。cross-encoder の再順位付けはさらに上げる（全カタログ ${pct(e1full.rrf)}% → ${pct(e1full.rrf_rerank)}%）が、CPU で 1 検索 ${(lat.rerank20_ms / 1000).toFixed(1)} 秒かかる。`,
    "推奨: reranker は対話経路には入れない（GPU のある構成で再検討）。"],
   [`E2E では、tool_search は 1 会話の入力トークンを 1,000 件で ${Math.round(e2e(1000, "all").tok / 1000)}k → ${(e2e(1000, "search_rrf_prod").tok / 1000).toFixed(1)}k にした。一方、正解ツールを呼べた率は ${pct(e2e(1000, "all").ok)}% → ${pct(e2e(1000, "search_rrf_prod").ok)}%（RRF・製品の文面）に下がった。`,
-   "下がった分の多くは選び間違いではなく、ツールを呼ばずに ID などを聞き返して終えた会話。同じ名前空間の下調べ用ツールを結果で案内する案（#522）は、正解率の改善が確認できず、選び間違いとトークンが増えたため入れていない。"],
+   `下がった分の多くは選び間違いではなく、ツールを呼ばずに ID などを聞き返して終えた会話。同じ名前空間の下調べ用ツールを結果で案内する案（#522）は、正解率の改善が確認できず、選び間違いとトークンが増えたため入れていない。ID を調べる一覧・検索のツールを定義ごと一緒に読み込む案（#565）は、下調べが要る依頼で正解率を ${pct((DATA.lookup?.rows || []).find(r => r.cond === "search_rrf_prod")?.ok)}% → ${pct((DATA.lookup?.rows || []).find(r => r.cond === "search_rrf_comp")?.ok)}% に上げたが、製品で遅延になるツールには効く組み合わせが無いので、まだ入れていない。`],
   [`tool_search の説明に載せていた名前の一覧は 1,003 件で 24,461 字になっていた。100 件を超えたら名前空間ごとの件数に要約するようにし（#519）、${lat.tool_search_description_chars.toLocaleString()} 字になった。`,
    "名指し（select:）と検索の案内は残し、名前は検索結果で分かる。"],
   [`name 順に先頭 50 件で切る skill の一覧は、200 件で正解率 ${pct(sk2("list_cap50", 200).ok)}% まで崩れる。skill 専用の検索は ${Math.max(...DATA.skills.map(r => r.n))} 件でも ${pct(sk2("search", Math.max(...DATA.skills.map(r => r.n))).ok)}% を保ち、入力トークンは件数によらず約 1,600。`,
@@ -507,6 +516,22 @@ table("tb-e2e2", ["N", "条件", "件数", "正解ツールを呼んだ", "別�
       `正解ツールを呼べた率は、200 件で全ツール提示 ${pct(a2.ok)}%・tool_search ${pct(t2.ok)}%、1,000 件で ${pct(a1.ok)}%・${pct(t1.ok)}%。` +
       `前の節で 1,000 件の差の大半を占めた「避けられた聞き返し」は ${pct(t1.avoidable)}%（30 件中 ${Math.round(t1.avoidable * t1.k)} 件）、正当な聞き返しは ${pct(t1.legit)}%。` +
       `旧データとは依頼のほかにモック・日付・応答の上限も違うので、正解率が上がった原因をどれか一つに帰せない（依頼だけを差し替えた比較はしていない）。旧データで正当な聞き返しに分類された会話が尋ねていたのは、依頼に無い宛先・本文・日付や、カタログで引けない ID だった。tool_search の入力トークンは 1,000 件で 1 会話 ${Math.round(a1.tok / 1000)}k → ${(t1.tok / 1000).toFixed(1)}k。`;
+  }
+}
+
+// ---- 下調べ用ツールの同時読み込み ----
+{
+  const L = DATA.lookup || { rows: [] };
+  const C4 = { search_rrf_prod: "tool_search（同時読み込みなし）", search_rrf_comp: "tool_search（同時読み込みあり・#565）" };
+  table("tb-lookup", ["条件", "依頼", "正解ツール", "避けられた聞き返し", "正当な聞き返し", "その他", "打ち切り", "未判定", "平均入力トークン"],
+    L.rows.map(r => [C4[r.cond], r.k, pct(r.ok), pct(r.avoidable), pct(r.legit), pct(r.other), pct(r.max_steps), pct(r.unjudged), Math.round(r.tok).toLocaleString()]), { left: 1 });
+  const a = L.rows.find(r => r.cond === "search_rrf_prod"), b = L.rows.find(r => r.cond === "search_rrf_comp");
+  if (a && b) {
+    document.getElementById("lookup-read").textContent =
+      `正解ツール ${L.targets} 件 × 日英の ${L.pairs} 件で、正解率は ${pct(a.ok)}% → ${pct(b.ok)}%。同じ依頼の対で比べると、同時読み込みで正解に変わったのが ${L.wins} 件、正解でなくなったのが ${L.losses} 件（符号検定 p=${L.p == null ? "—" : L.p.toFixed(3)}）。` +
+      `入力トークンは 1 会話 ${Math.round(a.tok).toLocaleString()} → ${Math.round(b.tok).toLocaleString()}（+${((b.tok / a.tok - 1) * 100).toFixed(1)}%）。` +
+      `同時読み込みでも外した会話は、一覧の応答に答えが含まれていてそれで答えた・カタログのツールではブロックの ID を引けなかった・候補が 2 件あり確認した・目的のツール自体を検索で読み込めなかった、で、仕組みとは別の理由。` +
+      `正解ツール 40 件を選び、検査を通る依頼を作れなかった ${L.skipped} 件（カタログの一覧・検索で ID を引けない組み合わせ）は外した。`;
   }
 }
 
