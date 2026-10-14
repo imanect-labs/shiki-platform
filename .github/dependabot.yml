@@ -1,0 +1,22 @@
+# ワークフローの Action はコミット SHA で固定している（#567）。タグやブランチは上流で
+# 付け替えられるため。固定したままだと更新が止まるので、Dependabot に SHA と
+# 行末の版コメント（`# v4.4.0`）を上げさせる。
+#
+# dtolnay/rust-toolchain は版タグが無く、ブランチ（master）の SHA を固定している。
+# Dependabot は版タグを手がかりに更新するので、これは上がらないことがある。
+# toolchain は各ジョブの `toolchain:` で明示しているため、Action 本体の更新は急がない。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Tokyo
+    # 1 週分を 1 つの PR にまとめる（CI を Action の数だけ回さない）。
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+    labels: ["area:ci"]
