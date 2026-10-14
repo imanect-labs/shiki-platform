@@ -306,12 +306,14 @@ def run_one(
     searcher: Searcher | None,
     system: str | None = None,
     mock: str = "generic",
+    max_steps: int = MAX_STEPS,
 ) -> dict:
     """1 会話を回す。正解ツールを呼んだ時点で打ち切る（下調べのツールを先に呼ぶのは正しい手順
     なので、他のツールにはモックの結果を返して続けさせる）。
 
     `system` を渡すと既定（`SYSTEM`）の代わりに使う（キャッシュのキーにも入る・#545）。
     `mock="llm"` は、ツールの応答を一律の文面ではなく依頼に沿った内容にする（[`llm_mock`]）。
+    `max_steps` は 1 会話の応答の回数の上限（既定以外はキャッシュのキーにも入る・#547）。
     """
     variant = (
         system
@@ -319,6 +321,8 @@ def run_one(
         # モックを作るコードと文面が変われば取り直す。
         else json.dumps([system, mock, mock_fingerprint()], ensure_ascii=False)
     )
+    if max_steps != MAX_STEPS:
+        variant = json.dumps([variant, "max_steps", max_steps], ensure_ascii=False)
     path = cache_path(tools, condition, query, variant=variant)
     if path.exists():
         return json.loads(path.read_text())
@@ -358,7 +362,7 @@ def run_one(
     }
     t0 = time.perf_counter()
     try:
-        for _ in range(MAX_STEPS):
+        for _ in range(max_steps):
             r = chat(messages, tools=offered, max_tokens=4096, temperature=0.0)
             msg, usage = r["message"], r["usage"]
             rec["steps"] += 1
