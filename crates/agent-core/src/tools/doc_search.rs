@@ -70,42 +70,55 @@ pub async fn run_doc_search(
     search_docs(
         search,
         ctx,
-        query,
-        top_k,
-        SearchMode::Hybrid,
-        scope,
+        &SearchParams {
+            query,
+            top_k,
+            mode: SearchMode::Hybrid,
+            base: scope,
+            narrow: &SearchScope::default(),
+            with_ids: false,
+        },
         trace_id,
-        false,
     )
     .await
 }
 
-/// [`run_doc_search`] の本体。`with_ids` は観測テキストに各結果の `file_id`（と `folder_id`）を
-/// 載せるか（ツール経路のみ）。モデルが「この文書に絞って再検索」（[`DocSearchTool`] の
-/// `file_ids`）や本文の読み出しを指定できるようにするため。載るのは post-filter を通過した
-/// チャンクの ID だけなので、読めない文書の存在は漏れない。
-#[allow(clippy::too_many_arguments)] // 検索パラメータの束（呼び出しはこのファイル内の 2 箇所）。
+/// 検索パラメータ（[`search_docs`] の引数束）。
+struct SearchParams<'a> {
+    query: &'a str,
+    top_k: Option<u32>,
+    mode: SearchMode,
+    /// 知識スコープ（skill）。None は全可読範囲。
+    base: Option<&'a SearchScope>,
+    /// モデルの絞り込み（空 = 絞らない）。`base` との交差で検索する。
+    narrow: &'a SearchScope,
+    /// 観測テキストに各結果の `file_id`（と `folder_id`）を載せるか（ツール経路のみ）。
+    /// モデルが「この文書に絞って再検索」（[`DocSearchTool`] の `file_ids`）や本文の読み出しを
+    /// 指定できるようにするため。載るのは post-filter を通過したチャンクの ID だけなので、
+    /// 読めない文書の存在は漏れない。
+    with_ids: bool,
+}
+
+/// [`run_doc_search`] と [`DocSearchTool`] の本体。
 async fn search_docs(
     search: &SearchService,
     ctx: &AuthContext,
-    query: &str,
-    top_k: Option<u32>,
-    mode: SearchMode,
-    scope: Option<&SearchScope>,
+    p: &SearchParams<'_>,
     trace_id: Option<&str>,
-    with_ids: bool,
 ) -> Result<DocSearchResult, ToolError> {
-    let query = query.trim();
+    let query = p.query.trim();
     if query.is_empty() {
         return Err(ToolError::Invalid("query is empty".into()));
     }
+    // 絞り込みは知識スコープとの交差（union だと skill の範囲を広げられる）。交差が空なら
+    // 検索せずに 0 件・交差で検索するときは元の知識スコープで候補を再検証する（SearchService 側）。
     let out = search
-        .search(ctx, query, top_k, mode, scope, trace_id)
+        .search_narrowed(ctx, query, p.top_k, p.mode, p.base, p.narrow, trace_id)
         .await
         .map_err(|e| ToolError::Unavailable(format!("doc_search failed: {e}")))?;
 
     let citations: Vec<Citation> = out.results.iter().map(to_citation).collect();
-    let context_text = context_text(&out.results, with_ids);
+    let context_text = context_text(&out.results, p.with_ids);
     Ok(DocSearchResult {
         citations,
         context_text,
@@ -345,30 +358,21 @@ impl Tool for DocSearchTool {
         trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
         let input = DocSearchInput::parse(&input)?;
-        // モデルの絞り込みは知識スコープと交差させる（union だと skill の範囲を広げられる）。
-        let scope = if input.narrow.is_empty() {
-            self.scope.clone()
-        } else {
-            let scope = self
-                .search
-                .narrow_scope(ctx, self.scope.as_ref(), &input.narrow)
-                .await
-                .map_err(|e| ToolError::Unavailable(format!("doc_search failed: {e}")))?;
-            // 交差が空: 空のスコープは検索側で「絞らない」になるので、検索せずに 0 件を返す。
-            if scope.is_empty() {
-                return Ok(ToolOutcome::ok(NO_RESULTS.to_string()));
-            }
-            Some(scope)
-        };
+        // 省略時も設定の既定値をツール上限で丸める（既定値を 20 超に設定した環境でも観測を抑える）。
+        let default_top_k = u32::try_from(self.search.default_top_k()).unwrap_or(u32::MAX);
+        let top_k = input.top_k.unwrap_or(default_top_k).min(self.max_top_k());
         let result = search_docs(
             &self.search,
             ctx,
-            &input.query,
-            input.top_k,
-            input.mode,
-            scope.as_ref(),
+            &SearchParams {
+                query: &input.query,
+                top_k: Some(top_k),
+                mode: input.mode,
+                base: self.scope.as_ref(),
+                narrow: &input.narrow,
+                with_ids: true,
+            },
             trace_id,
-            true,
         )
         .await?;
         let mut outcome = ToolOutcome::ok(result.context_text);

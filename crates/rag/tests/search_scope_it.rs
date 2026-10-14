@@ -98,12 +98,31 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_id: 
     .fetch_one(&env.pool)
     .await
     .unwrap();
-    let chunk_id = Uuid::new_v5(&node_id, b"leaf-0");
     // 構造タグ: file 自身＋所属フォルダ（本物のインジェストと同じ形）。
-    let tags = vec![
-        ctx.ns().file(&node_id.to_string()).as_str().to_string(),
-        ctx.ns().folder(&folder_id.to_string()).as_str().to_string(),
-    ];
+    seed_chunk_on(env, node_id, name, query, weight, &[folder_id]).await;
+    node_id
+}
+
+/// 既存の file node にチャンクを 1 つ積む。`folders` はチャンクの構造タグに載せるフォルダ
+/// （索引上の祖先。木の実際の祖先と食い違わせれば「移動後の古い索引」を作れる）。
+async fn seed_chunk_on(
+    env: &Env,
+    node_id: Uuid,
+    name: &str,
+    query: &str,
+    weight: f32,
+    folders: &[Uuid],
+) {
+    let ctx = &env.ctx;
+    let chunk_id = Uuid::new_v5(&node_id, b"leaf-0");
+    let tags: Vec<String> =
+        std::iter::once(ctx.ns().file(&node_id.to_string()).as_str().to_string())
+            .chain(
+                folders
+                    .iter()
+                    .map(|f| ctx.ns().folder(&f.to_string()).as_str().to_string()),
+            )
+            .collect();
     sqlx::query(
         "insert into rag_chunk \
              (id, tenant_id, org, node_id, version, parent_id, kind, ordinal, page, heading_path, \
@@ -133,7 +152,6 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_id: 
         )
         .await
         .unwrap();
-    node_id
 }
 
 /// 全チャンク可読の台本 authz（フォルダ 2 つの構造タグを可読集合に持つ）。
@@ -448,4 +466,90 @@ async fn narrow_scope_intersects_with_knowledge_scope() {
         .await
         .unwrap();
     assert!(got.is_empty());
+}
+
+/// 交差で検索するときは、元の知識スコープで候補を検索時点の木に対して再検証する（#423・Codex）。
+/// 交差が空なら検索せず 0 件だが、`rag.search` の監査は残す。
+#[tokio::test]
+async fn search_narrowed_rechecks_base_and_audits_empty_intersection() {
+    let Some(env) = setup().await else { return };
+    let query = "移動後の資料";
+    // A ── B（絞り込み先）／C ── moved（索引上はまだ B 配下のタグを持つ）
+    let a = make_node(&env, "folder", None).await;
+    let b = make_node(&env, "folder", Some(a)).await;
+    let c = make_node(&env, "folder", None).await;
+    let stays = make_node(&env, "file", Some(b)).await;
+    let moved = make_node(&env, "file", Some(c)).await;
+    seed_chunk_on(&env, stays, "stays", query, 0.8, &[a, b]).await;
+    seed_chunk_on(&env, moved, "moved", query, 0.9, &[a, b]).await;
+    let svc = service(
+        &env,
+        allow_all_authz(&env, &[a, b, c]),
+        RagConfig::default(),
+    );
+    let ctx = &env.ctx;
+
+    let out = svc
+        .search_narrowed(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &folders(&[b]),
+            None,
+        )
+        .await
+        .unwrap();
+    let got: HashSet<Uuid> = out.results.iter().map(|r| r.file_id).collect();
+    assert_eq!(
+        got,
+        HashSet::from([stays]),
+        "木の上で A の外にあるファイルは返さない"
+    );
+
+    // 交わらない絞り込み → 0 件。監査は残る。
+    let before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'rag.search'",
+    )
+    .bind(&ctx.tenant_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    let out = svc
+        .search_narrowed(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[b])),
+            &folders(&[c]),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(out.results.is_empty());
+    let after: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'rag.search'",
+    )
+    .bind(&ctx.tenant_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(after, before + 1, "交差が空でも rag.search を監査に残す");
+
+    // 絞り込み無しは知識スコープそのままの検索（再検証なし・従来どおり）。
+    let out = svc
+        .search_narrowed(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &SearchScope::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.results.len(), 2);
 }

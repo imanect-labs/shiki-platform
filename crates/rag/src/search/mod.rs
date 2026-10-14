@@ -66,6 +66,12 @@ impl SearchService {
         Arc::clone(&self.embedder)
     }
 
+    /// 件数を指定しない検索で返す件数（設定 `default_top_k`）。
+    #[must_use]
+    pub fn default_top_k(&self) -> usize {
+        self.config.default_top_k
+    }
+
     /// 1 回の検索で返せる件数の上限（ツールの入力スキーマに出す・#423）。
     #[must_use]
     pub fn max_top_k(&self) -> usize {
@@ -106,6 +112,24 @@ impl SearchService {
         top_k: Option<u32>,
         mode: SearchMode,
         scope: Option<&SearchScope>,
+        trace_id: Option<&str>,
+    ) -> Result<SearchOutput, RagError> {
+        self.search_bounded(ctx, query, top_k, mode, scope, None, trace_id)
+            .await
+    }
+
+    /// [`Self::search`] の本体。`bound` は**検索時点の木で**候補を再検証する上限スコープ
+    /// （モデルの絞り込みを交差させた検索で、元の知識スコープを渡す・[`Self::search_narrowed`]）。
+    /// `scope` は索引のタグで絞るため、交差を取った後にフォルダが動くと上限を失い得る。
+    #[allow(clippy::too_many_arguments)] // search の引数＋上限（呼び出しは本モジュール内）。
+    pub(super) async fn search_bounded(
+        &self,
+        ctx: &AuthContext,
+        query: &str,
+        top_k: Option<u32>,
+        mode: SearchMode,
+        scope: Option<&SearchScope>,
+        bound: Option<&SearchScope>,
         trace_id: Option<&str>,
     ) -> Result<SearchOutput, RagError> {
         let top_k = (top_k.unwrap_or(self.config.default_top_k as u32) as usize)
@@ -239,6 +263,12 @@ impl SearchService {
             t_retrieve.elapsed().as_millis() as u64 - post_filter_ms - liveness_ms;
         timings.post_filter_ms = post_filter_ms;
 
+        // 上限スコープの再検証（rerank プールを決める前に落とし、top_k を残りで埋める）。
+        if let Some(bound) = bound {
+            let inside = self.files_within(ctx, bound, &allowed).await?;
+            allowed.retain(|c| inside.contains(&c.node_id));
+        }
+
         // 融合スコア順で rerank プールへ。
         allowed.sort_by(|a, b| {
             b.score
@@ -331,8 +361,8 @@ impl SearchService {
     }
 
     /// 引用監査: LLM/UI に出す chunk_id 群とその時の file 粒度認可判定を記録する。
-    #[allow(clippy::too_many_arguments)] // 監査に載せる文脈の束（呼び出しは search 内の 1 箇所）。
-    async fn audit_citations(
+    #[allow(clippy::too_many_arguments)] // 監査に載せる文脈の束（呼び出しは本モジュール内）。
+    pub(super) async fn audit_citations(
         &self,
         ctx: &AuthContext,
         query: &str,

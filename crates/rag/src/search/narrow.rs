@@ -22,10 +22,89 @@ use authz::AuthContext;
 use uuid::Uuid;
 
 use crate::error::RagError;
-use crate::search::SearchService;
-use crate::search_types::SearchScope;
+use crate::search::{SearchOutput, SearchService};
+use crate::search_types::{SearchDebug, SearchMode, SearchScope};
+use crate::vector_store::ScoredChunk;
 
 impl SearchService {
+    /// 知識スコープ `base` をモデルの絞り込み `narrow` で絞って検索する（#423）。
+    ///
+    /// - `narrow` が空なら `base` のまま [`Self::search`] と同じ。
+    /// - 交差が空なら検索せずに 0 件を返す（空のスコープは「絞らない」になるため）。この場合も
+    ///   `rag.search` の監査は残す（全検索操作の監査・NFR-6）。
+    /// - 交差で検索するときは、候補を `base` で**検索時点の木に対して**再検証する。交差を
+    ///   取った後に絞り込み先のフォルダが `base` の外へ移動されても、上限を失わない。
+    #[allow(clippy::too_many_arguments)] // search の引数＋絞り込み（呼び出しは doc_search の 1 箇所）。
+    pub async fn search_narrowed(
+        &self,
+        ctx: &AuthContext,
+        query: &str,
+        top_k: Option<u32>,
+        mode: SearchMode,
+        base: Option<&SearchScope>,
+        narrow: &SearchScope,
+        trace_id: Option<&str>,
+    ) -> Result<SearchOutput, RagError> {
+        let base = base.filter(|b| !b.is_empty());
+        if narrow.is_empty() {
+            return self.search(ctx, query, top_k, mode, base, trace_id).await;
+        }
+        let scope = self.narrow_scope(ctx, base, narrow).await?;
+        if scope.is_empty() {
+            self.audit_citations(
+                ctx,
+                query,
+                &[],
+                &std::collections::HashMap::new(),
+                Some(&scope),
+                trace_id,
+            )
+            .await?;
+            return Ok(SearchOutput {
+                results: Vec::new(),
+                debug: SearchDebug::default(),
+            });
+        }
+        self.search_bounded(ctx, query, top_k, mode, Some(&scope), base, trace_id)
+            .await
+    }
+
+    /// 候補のうち、ファイルが `bound` の内側にあるものの node_id 集合（検索時点の木で判定）。
+    pub(super) async fn files_within(
+        &self,
+        ctx: &AuthContext,
+        bound: &SearchScope,
+        chunks: &[ScoredChunk],
+    ) -> Result<HashSet<Uuid>, RagError> {
+        let files: Vec<Uuid> = chunks
+            .iter()
+            .map(|c| c.node_id)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if files.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let mut inside: HashSet<Uuid> = files
+            .iter()
+            .filter(|f| bound.files.contains(f))
+            .copied()
+            .collect();
+        if !bound.folders.is_empty() {
+            let under: Vec<Uuid> = sqlx::query_scalar(
+                "select descendant from node_closure \
+                 where tenant_id = $1 and depth > 0 and ancestor = any($2) and descendant = any($3)",
+            )
+            .bind(&ctx.tenant_id)
+            .bind(&bound.folders)
+            .bind(&files)
+            .fetch_all(&self.pool)
+            .await?;
+            inside.extend(under);
+        }
+        Ok(inside)
+    }
+
     /// 知識スコープ `base`（None = 全可読範囲）を `narrow` で絞った実効スコープを返す。
     ///
     /// 返り値が空なら交差が空（＝検索しても何も返らない）。空の `SearchScope` は検索側で
