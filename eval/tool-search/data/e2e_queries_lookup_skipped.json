@@ -1,0 +1,66 @@
+[
+ {
+  "target": "docusign_void_envelope",
+  "reason": "docusign_void_envelope（n=1000, missing=None）: 検査を通らない: ['docusign_search_envelopes の account_id（「acc_12345」）は docusign_search_envelopes で調べられる。依頼文には ID を書かず、名前などの手がかりを書いて、調べる手順を plan に入れる', 'docusign_void_envelope の account_id（「acc_12345」）は docusign_search_envelopes で調べられる。依頼文には ID を書かず、名前などの手がかりを書い"
+ },
+ {
+  "target": "ga4_get_metadata",
+  "reason": "ga4_get_metadata（n=1000, missing=None）: 検査を通らない: ['手順 0（ga4_list_properties）: account_id の値「123456789」が ja・en の依頼文に無い（言語で書き方が違うなら {value, ja, en} の形にする）']"
+ },
+ {
+  "target": "figma_get_team_styles",
+  "reason": "figma_get_team_styles（n=1000, missing=None）: 検査を通らない: ['手順 0（figma_get_me）: 結果からどれを選ぶかの手がかり（pick）が無い']"
+ },
+ {
+  "target": "asana_list_tags",
+  "reason": "asana_list_tags（n=1000, missing=None）: 検査を通らない: ['ja: 判定者は workspace_id を埋められないと判断した（「missing」・ワークスペース名「マーケティング部」に対応するGIDを取得するための、名前検索機能（asana_search_workspaces等）が利用可能なツールに存在しないため。）', \"en: 判定者は workspace_id を埋められないと判断した（「missing」・ワークスペース名 'Marketing Department' から GID を特定するツール（asana_search_workspace"
+ },
+ {
+  "target": "kintone_get_space_info",
+  "reason": "kintone_get_space_info（n=1000, missing=None）: 検査を通らない: ['下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる']"
+ },
+ {
+  "target": "moneyforward_reject_expense_claim",
+  "reason": "moneyforward_reject_expense_claim（n=1000, missing=None）: 検査を通らない: ['ja: 判定者は claim_id を埋められないと判断した（「missing」・田中太郎さんのemployee_idが不明なため、moneyforward_list_expense_claimsで申請一覧を取得できず、対象のclaim_idを特定できない。）', 'en: 判定者は claim_id を埋められないと判断した（「missing」・申請IDを特定するための従業員IDや申請一覧取得ツールが利用できない、または申請者名からIDへのマッピング手段がな"
+ },
+ {
+  "target": "docusign_add_recipient",
+  "reason": "docusign_add_recipient（n=1000, missing=None）: 検査を通らない: ['docusign_search_envelopes の account_id（「acc_98765」）は docusign_search_envelopes で調べられる。依頼文には ID を書かず、名前などの手がかりを書いて、調べる手順を plan に入れる', 'docusign_add_recipient の account_id（「acc_98765」）は docusign_search_envelopes で調べられる。依頼文には ID を書かず、名前などの手がかりを書い"
+ },
+ {
+  "target": "garoon_create_workflow_draft",
+  "reason": "garoon_create_workflow_draft（n=1000, missing=None）: 検査を通らない: ['下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる']"
+ },
+ {
+  "target": "miro_create_sticky_note",
+  "reason": "miro_create_sticky_note（n=1000, missing=None）: 検査を通らない: ['ja: 判定者は board_id を埋められないと判断した（「missing」・ボード名「Q4製品ロードマップ」からboard_idを特定するツール（名前で検索する機能）が存在しないため。）', \"en: 判定者は board_id を埋められないと判断した（「missing」・ボード名 'Q4 Product Roadmap' から board_id を特定するための検索ツール（例: ボード名で検索する機能）が存在しないため。）\"]"
+ },
+ {
+  "target": "hubspot_update_deal_stage",
+  "reason": "hubspot_update_deal_stage（n=1000, missing=None）: 検査を通らない: ['ja: 判定者は deal_id を埋められないと判断した（「missing」・取引IDを特定するための検索ツール（hubspot_search_deals等）が存在せず、一覧取得ツールにもフィルタ機能がないため、一意のdeal_idを特定できない。）', \"en: 判定者は deal_id を埋められないと判断した（「missing」・取引IDを特定するための検索ツール（hubspot_search_deals等）が存在せず、一覧取得ツールにもフィルタ機能がないため、'Te"
+ },
+ {
+  "target": "smarthr_approve_leave_request",
+  "reason": "smarthr_approve_leave_request（n=1000, missing=None）: 検査を通らない: ['下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる']"
+ },
+ {
+  "target": "kintone_get_comments",
+  "reason": "kintone_get_comments（n=1000, missing=None）: 検査を通らない: ['下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる']"
+ },
+ {
+  "target": "aws_ec2_reboot_instance",
+  "reason": "aws_ec2_reboot_instance（n=1000, missing=None）: 検査を通らない: ['手順 0（aws_ec2_search_instances_by_tag）: tag_key の値「Name」が ja の依頼文に無い（言語で書き方が違うなら {value, ja, en} の形にする）']"
+ },
+ {
+  "target": "docusign_get_folder_items",
+  "reason": "docusign_get_folder_items（n=1000, missing=None）: 検査を通らない: ['下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる']"
+ },
+ {
+  "target": "docusign_remove_recipient",
+  "reason": "docusign_remove_recipient（n=1000, missing=None）: 検査を通らない: ['docusign_search_envelopes の account_id（「DocuSign」）は docusign_get_folder_items で調べられる。依頼文には ID を書かず、名前などの手がかりを書いて、調べる手順を plan に入れる']"
+ },
+ {
+  "target": "smarthr_reject_leave_request",
+  "reason": "smarthr_reject_leave_request（n=1000, missing=None）: 検査を通らない: ['手順 0（smarthr_search_employees）: query の値「田中太郎」が en の依頼文に無い（言語で書き方が違うなら {value, ja, en} の形にする）']"
+ }
+]

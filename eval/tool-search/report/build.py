@@ -6,6 +6,7 @@ eval/tool-search で `PYTHONPATH=. uv run python report/build.py` として実�
 import collections
 import glob
 import json
+import math
 from pathlib import Path
 
 from tseval.catalog import load_catalog, names_service
@@ -238,6 +239,48 @@ for x in load("e2e_v2_summary") or []:
             "other_service": x["missing_other_service"],
         }
     )
+
+# 下調べが要る依頼の評価セット（#565）: 同じ依頼の対で、同時読み込みあり／なしを比べる。
+# 同時読み込みは製品に入れていない実装（ブランチ feat/tool-search-companions）で測った記録。
+lk = [r for r in (load("e2e_lookup_companions") or []) if not r.get("error")]
+by = collections.defaultdict(dict)
+for r in lk:
+    by[r["id"]][r["condition"]] = r
+pairs = [v for v in by.values() if {"search_rrf_prod", "search_rrf_comp"} <= v.keys()]
+wins = sum(
+    1 for v in pairs if v["search_rrf_comp"]["correct"] and not v["search_rrf_prod"]["correct"]
+)
+losses = sum(
+    1 for v in pairs if v["search_rrf_prod"]["correct"] and not v["search_rrf_comp"]["correct"]
+)
+m = wins + losses
+# 符号検定（両側・正確）。
+p_sign = (
+    min(1.0, 2 * sum(math.comb(m, i) for i in range(min(wins, losses) + 1)) / 2**m) if m else None
+)
+out["lookup"] = {
+    "rows": [
+        {
+            "cond": x["condition"],
+            "k": x["full"],
+            "ok": x["correct"] / x["full"],
+            **{
+                c: x[c] / x["full"]
+                for c in ("avoidable", "legit", "other", "max_steps", "unjudged")
+            },
+            "tok": x["mean_prompt_tokens"],
+        }
+        for x in (load("e2e_lookup_companions_summary") or [])
+    ],
+    "pairs": len(pairs),
+    "wins": wins,
+    "losses": losses,
+    "p": p_sign,
+    "targets": len({v["search_rrf_prod"]["target"] for v in pairs}),
+    "skipped": len(json.loads(Path("data/e2e_queries_lookup_skipped.json").read_text()))
+    if Path("data/e2e_queries_lookup_skipped.json").exists()
+    else 0,
+}
 
 t = (HERE / "template.html").read_text()
 (HERE / "tool-search-eval.html").write_text(

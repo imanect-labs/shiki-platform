@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import random
 import re
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -42,6 +43,9 @@ from .llm import chat_json
 DATA = Path(__file__).resolve().parent.parent / "data"
 CACHE = DATA / "cache" / "e2e_queries_v2"
 OUT = DATA / "e2e_queries_v2.json"
+# 下調べが要る依頼だけの評価セット（#565・1,000 件のカタログ）。
+LOOKUP_OUT = DATA / "e2e_queries_lookup.json"
+LOOKUP_TARGETS = 40
 MAX_ATTEMPTS = 5
 
 # E2E の system prompt に入れる固定の「今日」（製品の `today_note` と同じ文面・#546）。
@@ -95,6 +99,9 @@ JSON だけを返してください: {{"ja": "...", "en": "...", "plan": [...]}}
 """
 
 MISSING_RULE = """- ただし例外として、正解ツールの必須引数 `{arg}`（{desc}）の値だけは依頼文に書かない（利用者に尋ねないと分からない状態にする。「先方に」「いつもの内容で」のようにぼかしてもよい）。plan ではその引数を {{"missing": true}} にする。
+"""
+
+LOOKUP_RULE = """- この依頼では、正解ツールの ID の形の必須引数（`*_id` など）を依頼文に書かない。名前・件名など人が普段使う手がかりを書き、上のツールで一覧・検索・取得して調べる手順（1 つ以上）を plan に入れる。
 """
 
 RETRY = """前回の出力は次の点で要件を満たしませんでした。直して、同じ形の JSON を返してください。
@@ -358,9 +365,12 @@ def independent_check(
     return errs
 
 
-def generate(target: Tool, available: list[Tool], missing: str | None, n: int) -> dict:
-    """1 つの正解ツールの依頼（日英）を、検査を通るまで作り直す。"""
-    rule = ""
+def generate(
+    target: Tool, available: list[Tool], missing: str | None, n: int, need_lookup: bool = False
+) -> dict:
+    """1 つの正解ツールの依頼（日英）を、検査を通るまで作り直す。`need_lookup` なら、下調べの
+    手順が 1 つ以上要る依頼に限る（下調べ用ツールの読み込みを測る評価セット用）。"""
+    rule = LOOKUP_RULE if need_lookup else ""
     if missing is not None:
         desc = target.tooldef("ja")["input_schema"]["properties"][missing].get("description", "")
         rule = MISSING_RULE.format(arg=missing, desc=desc)
@@ -388,7 +398,8 @@ def generate(target: Tool, available: list[Tool], missing: str | None, n: int) -
     key = hashlib.sha256(
         (llm.MODEL + prompt + LOOKUPABLE_PROMPT + CHECK_PROMPT + RETRY + checks + rules).encode()
     ).hexdigest()[:16]
-    path = CACHE / f"{target.name}-{n}-{'missing' if missing else 'full'}-{key}.json"
+    kind = "lookup" if need_lookup else "missing" if missing else "full"
+    path = CACHE / f"{target.name}-{n}-{kind}-{key}.json"
     if path.exists():
         return json.loads(path.read_text())
     messages = prompt
@@ -397,6 +408,10 @@ def generate(target: Tool, available: list[Tool], missing: str | None, n: int) -
         item = chat_json(messages, temperature=0.7)
         if not isinstance(item, dict):
             errs = [f"JSON の形が不正: {item!r}"[:200]]
+        elif need_lookup and len(item.get("plan") or []) < 2:
+            errs = [
+                "下調べの手順が無い。ID を依頼文に書かず、上のツールで調べる手順を plan に入れる"
+            ]
         else:
             errs = check_item(item, target, available, missing)
         log.append(errs)
@@ -501,6 +516,67 @@ def main() -> None:
     )
 
 
+def lookup_targets(seed: int = 21) -> tuple[list[Tool], list[Tool]]:
+    """下調べが要る評価セットの正解ツールと、1,000 件のカタログ。
+
+    1,000 件のカタログの合成ツールのうち、ID の形の必須引数を持ち、同じサービスに一覧・検索・
+    取得のツールがあるものから乱数で選ぶ（下調べ用ツールの選び方＝名前の対応では選ばない。
+    評価が仕組みに有利にならないように）。v2 の E2E の正解ツールは除く。"""
+    qs, _, subsets = ask_probe.sample()
+    used = {q["target"] for q in qs}
+    catalog = subsets[1000]
+    pool = sorted(
+        (
+            t
+            for t in catalog
+            if t.service != "shiki"
+            and t.name not in used
+            and any(ID_ARG.search(a) for a in required(t))
+            and lookups(t, catalog)
+        ),
+        key=lambda t: t.name,
+    )
+    return random.Random(seed).sample(pool, min(LOOKUP_TARGETS, len(pool))), catalog
+
+
+def main_lookup() -> None:
+    """下調べが要る依頼の評価セットを作る。検査を通らない正解ツールは外して記録する（下調べで
+    ID を引けない組み合わせ＝この評価の対象外）。"""
+    targets, catalog = lookup_targets()
+
+    def one(t: Tool) -> dict | str:
+        try:
+            return generate(t, lookups(t, catalog), None, 1000, need_lookup=True)
+        except RuntimeError as e:
+            return str(e)[:300]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        made = list(pool.map(one, targets))
+    queries, skipped = [], []
+    for t, item in zip(targets, made, strict=True):
+        if isinstance(item, str):
+            skipped.append({"target": t.name, "reason": item})
+            continue
+        for lang in ("ja", "en"):
+            queries.append(
+                {
+                    "id": f"{t.name}:{lang}@1000",
+                    "target": t.name,
+                    "kind": lang,
+                    "n": 1000,
+                    "text": item[lang],
+                    "plan": item["plan"],
+                    "missing": None,
+                    "attempts": item["attempts"],
+                }
+            )
+    LOOKUP_OUT.write_text(json.dumps(queries, ensure_ascii=False, indent=1))
+    (DATA / "e2e_queries_lookup_skipped.json").write_text(
+        json.dumps(skipped, ensure_ascii=False, indent=1)
+    )
+    print(f"{len(targets)} 件の正解ツール / {len(queries)} 件の依頼（外した {len(skipped)} 件）")
+
+
 def verify() -> int:
     """書き出した依頼データを今の検査一式にかけ直す（作り直さない）。不合格の件数を返す。"""
     jobs, catalog, subsets = jobs_and_catalog()
@@ -528,4 +604,7 @@ if __name__ == "__main__":
 
     if "--verify" in sys.argv:
         sys.exit(1 if verify() else 0)
-    main()
+    if "--lookup" in sys.argv:
+        main_lookup()
+    else:
+        main()
