@@ -508,6 +508,32 @@ async fn search_narrowed_rechecks_base_and_audits_empty_intersection() {
         "木の上で A の外にあるファイルは返さない"
     );
 
+    // 上限外の候補が取得枠を埋めても、バックフィルが上限内の候補で埋め直す（Codex）。
+    // fetch_k = 1 なので 1 ラウンド目は上位の moved だけを取る。
+    let narrow_pool = service(
+        &env,
+        allow_all_authz(&env, &[a, b, c]),
+        RagConfig {
+            rerank_pool: 1,
+            over_fetch_tags: 1,
+            ..RagConfig::default()
+        },
+    );
+    let out = narrow_pool
+        .search_narrowed(
+            ctx,
+            query,
+            Some(1),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &folders(&[b]),
+            None,
+        )
+        .await
+        .unwrap();
+    let got: Vec<Uuid> = out.results.iter().map(|r| r.file_id).collect();
+    assert_eq!(got, vec![stays], "上限外で落ちた分を次のラウンドで埋める");
+
     // 交わらない絞り込み → 0 件。監査は残る。
     let before: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'rag.search'",

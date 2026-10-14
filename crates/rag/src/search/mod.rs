@@ -245,11 +245,17 @@ impl SearchService {
             let live = self.live_chunk_ids(ctx, &round_allowed).await?;
             liveness_ms += t_h.elapsed().as_millis() as u64;
             debug.hydrate_dropped += (round_allowed.len().saturating_sub(live.len())) as u32;
-            allowed.extend(
-                round_allowed
-                    .into_iter()
-                    .filter(|c| live.contains(&c.chunk_id)),
-            );
+            let mut round_live: Vec<ScoredChunk> = round_allowed
+                .into_iter()
+                .filter(|c| live.contains(&c.chunk_id))
+                .collect();
+            // 上限スコープの再検証も採択条件に含める（落ちた分は `seen` に入っているので、
+            // 次ラウンドのバックフィルが上限内の候補で埋め直す・Codex）。
+            if let Some(bound) = bound {
+                let inside = self.files_within(ctx, bound, &round_live).await?;
+                round_live.retain(|c| inside.contains(&c.node_id));
+            }
+            allowed.extend(round_live);
 
             if allowed.len() >= pool_target
                 || exhausted
@@ -262,12 +268,6 @@ impl SearchService {
         timings.retrieve_ms =
             t_retrieve.elapsed().as_millis() as u64 - post_filter_ms - liveness_ms;
         timings.post_filter_ms = post_filter_ms;
-
-        // 上限スコープの再検証（rerank プールを決める前に落とし、top_k を残りで埋める）。
-        if let Some(bound) = bound {
-            let inside = self.files_within(ctx, bound, &allowed).await?;
-            allowed.retain(|c| inside.contains(&c.node_id));
-        }
 
         // 融合スコア順で rerank プールへ。
         allowed.sort_by(|a, b| {
