@@ -1,0 +1,179 @@
+{
+ "note": "1,000 件のカタログ・現行の system prompt・一律の応答で、正解ツールを呼ばずに終えた会話を目視で分類した（#552 のレビュー対応）。avoidable は、尋ねた情報をその会話のカタログにあるツールで特定できるもの（ツール名を併記）。other は別サービスの同等ツールで済ませた・別のツールで終えたもの。",
+ "all": {
+  "gitlab_get_project:ja": [
+   "other",
+   "github_get_repository（別サービス）を呼んで所有者を聞いた"
+  ],
+  "gitlab_get_project:en": [
+   "other",
+   "github_get_repository（別サービス）で済ませた"
+  ],
+  "outlook_search_emails:ja": [
+   "other",
+   "gmail（別サービス）で済ませた"
+  ],
+  "outlook_search_emails:en": [
+   "other",
+   "gmail（別サービス）で済ませた"
+  ],
+  "outlook_delete_event:ja": [
+   "other",
+   "gcal（別サービス）で削除した"
+  ],
+  "outlook_delete_event:en": [
+   "other",
+   "gcal（別サービス）で削除した"
+  ],
+  "dropbox_share_folder:ja": [
+   "other",
+   "gdrive（別サービス）で共有し、宛先を作った"
+  ],
+  "dropbox_share_folder:en": [
+   "legit",
+   "相手のメールアドレスが依頼に無い"
+  ],
+  "gdrive_upload_file:ja": [
+   "legit",
+   "ファイルの中身が依頼に無い"
+  ],
+  "gdrive_upload_file:en": [
+   "legit",
+   "ファイルの中身が依頼に無い"
+  ],
+  "gdrive_list_revisions:ja": [
+   "legit",
+   "保存先のサービスが依頼に無い"
+  ],
+  "gdrive_list_revisions:en": [
+   "legit",
+   "保存先のサービスが依頼に無い"
+  ],
+  "notion_delete_block:en": [
+   "avoidable",
+   "notion_search_pages・notion_list_blocks でページとブロックを特定できる"
+  ],
+  "pagerduty_trigger_webhook:ja": [
+   "legit",
+   "Webhook の URL が依頼に無く、一覧のツールも無い"
+  ],
+  "pagerduty_trigger_webhook:en": [
+   "legit",
+   "Webhook の URL が依頼に無く、一覧のツールも無い"
+  ],
+  "aws_cloudwatch_get_log_events:ja": [
+   "legit",
+   "ログストリームを一覧するツールが無い"
+  ],
+  "aws_cloudwatch_get_log_events:en": [
+   "legit",
+   "ログストリームを一覧するツールが無い"
+  ],
+  "aws_cloudwatch_search_logs_by_pattern:en": [
+   "legit",
+   "ロググループを一覧するツールが無い"
+  ],
+  "figma_delete_comment:ja": [
+   "legit",
+   "コメント ID からファイルを特定するツールが無い"
+  ]
+ },
+ "search_rrf_prod": {
+  "chatwork_get_file:ja": [
+   "avoidable",
+   "chatwork_list_rooms・chatwork_list_files でファイルのあるルームを特定できる"
+  ],
+  "chatwork_get_file:en": [
+   "avoidable",
+   "chatwork_list_rooms・chatwork_list_files でファイルのあるルームを特定できる"
+  ],
+  "outlook_delete_event:ja": [
+   "avoidable",
+   "outlook_search_events でイベント ID を特定できる"
+  ],
+  "outlook_delete_event:en": [
+   "avoidable",
+   "outlook_search_events でイベント ID を特定できる"
+  ],
+  "notion_delete_block:ja": [
+   "avoidable",
+   "notion_search_pages・notion_list_blocks でページとブロックを特定できる"
+  ],
+  "gdrive_upload_file:ja": [
+   "legit",
+   "ファイルの中身が依頼に無い"
+  ],
+  "gdrive_upload_file:en": [
+   "legit",
+   "ファイルの中身が依頼に無い"
+  ],
+  "gdrive_list_revisions:ja": [
+   "legit",
+   "保存先のサービスが依頼に無い"
+  ],
+  "gdrive_list_revisions:en": [
+   "legit",
+   "保存先のサービスが依頼に無い"
+  ],
+  "dropbox_share_folder:ja": [
+   "legit",
+   "相手のメールアドレスが依頼に無い"
+  ],
+  "dropbox_share_folder:en": [
+   "legit",
+   "相手のメールアドレスが依頼に無い"
+  ],
+  "docusign_create_webhook:ja": [
+   "legit",
+   "アカウント ID を返すツールが無い"
+  ],
+  "docusign_create_webhook:en": [
+   "legit",
+   "アカウント ID を返すツールが無い"
+  ],
+  "pagerduty_trigger_webhook:en": [
+   "legit",
+   "Webhook の URL が依頼に無く、一覧のツールも無い"
+  ],
+  "aws_cloudwatch_get_log_events:ja": [
+   "legit",
+   "ログストリームを一覧するツールが無い"
+  ],
+  "aws_cloudwatch_get_log_events:en": [
+   "legit",
+   "ログストリームを一覧するツールが無い"
+  ],
+  "aws_cloudwatch_search_logs_by_pattern:ja": [
+   "legit",
+   "ロググループを一覧するツールが無い"
+  ],
+  "figma_delete_comment:ja": [
+   "legit",
+   "コメント ID からファイルを特定するツールが無い"
+  ],
+  "figma_delete_comment:en": [
+   "legit",
+   "コメント ID からファイルを特定するツールが無い"
+  ],
+  "gitlab_get_project:ja": [
+   "other",
+   "github_get_repository（別サービス）で済ませた"
+  ],
+  "gitlab_get_project:en": [
+   "other",
+   "github_get_repository（別サービス）で済ませた"
+  ],
+  "outlook_search_emails:ja": [
+   "other",
+   "gmail（別サービス）で済ませた"
+  ],
+  "notion_delete_block:en": [
+   "other",
+   "notion_update_block（別のツール）で済ませた"
+  ],
+  "pagerduty_trigger_webhook:ja": [
+   "other",
+   "読み込んだツールでは足りないと説明して終えた"
+  ]
+ }
+}

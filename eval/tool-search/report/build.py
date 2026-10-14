@@ -145,6 +145,78 @@ out["skills"] = [
 ]
 out["skills_final"] = (R / "skills_e2e.json").exists()
 
+# 聞き返しの切り分け（#545）: 全会話を終わり方で分ける。正解ツールを呼ばずに文章で終えた会話は
+# LLM 判定で「避けられた聞き返し／正当な聞き返し／その他」に分ける。上限で打ち切られた会話は別に数える。
+from tseval.ask_probe import stop_reason  # noqa: E402
+
+probe = [r for r in (load("e2e_ask_probe") or []) if not r.get("error")]
+verdict = {
+    (j["id"], j["n"], j["condition"], j["prompt"], j["mock"]): j["category"]
+    for j in (load("e2e_ask_judge") or [])
+}
+pa = collections.defaultdict(list)
+for r in probe:
+    pa[(r["n"], r["condition"], r["prompt"], r["mock"])].append(r)
+
+
+def _bucket(r, key):
+    stop = stop_reason(r)
+    if stop == "target":
+        return "ok"
+    if stop == "max_steps":
+        return "max_steps"
+    # 判定の無い会話（判定の失敗・未実行）は「その他」に混ぜず、別に数える。
+    return verdict.get((r["id"], *key), "unjudged")
+
+
+out["ask_probe"] = []
+for key, rs in sorted(pa.items()):
+    n, c, pr, mk = key
+    b = collections.Counter(_bucket(r, (n, c, pr, mk)) for r in rs)
+    k = len(rs)
+    out["ask_probe"].append(
+        {
+            "n": n,
+            "cond": c,
+            "prompt": pr,
+            "mock": mk,
+            "k": k,
+            **{
+                x: b[x] / k
+                for x in ("ok", "avoidable", "legit", "other", "max_steps", "error", "unjudged")
+            },
+            # 一覧・検索などのツールを呼んでから終えた会話の割合（正解を除く）。
+            "looked_up": sum(1 for r in rs if r["calls"] and not r["correct"]) / k,
+            "tok": sum(r["prompt_tokens"] for r in rs) / k,
+        }
+    )
+
+# 主要な比較（1,000 件・現行の system prompt・一律の応答）は目視の分類を正とする（LLM の判定は
+# 検算の前は「避けられた」を多く、検算の後は少なく見積もったため）。
+manual = load("e2e_ask_manual_1000") or {}
+out["ask_manual"] = []
+for cond in ("all", "search_rrf_prod"):
+    rs = [
+        r
+        for r in probe
+        if r["n"] == 1000
+        and r["condition"] == cond
+        and r["prompt"] == "minimal"
+        and r["mock"] == "generic"
+    ]
+    if not rs or cond not in manual:
+        continue
+    cats = collections.Counter(v[0] for v in manual[cond].values())
+    k = len(rs)
+    out["ask_manual"].append(
+        {
+            "cond": cond,
+            "k": k,
+            "ok": sum(r["correct"] for r in rs) / k,
+            **{c: cats[c] / k for c in ("avoidable", "legit", "other")},
+        }
+    )
+
 t = (HERE / "template.html").read_text()
 (HERE / "tool-search-eval.html").write_text(
     t.replace("__DATA__", json.dumps(out, ensure_ascii=False))
