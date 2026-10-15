@@ -14,6 +14,8 @@ use futures::channel::mpsc;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
+use super::identity::IdentityHeaders;
+use super::tool_names::ToolNameMap;
 use crate::model::{
     Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef, Usage,
 };
@@ -28,6 +30,7 @@ pub struct AnthropicProvider {
     base_url: String,
     api_key: String,
     default_model: String,
+    identity: IdentityHeaders,
 }
 
 impl AnthropicProvider {
@@ -42,10 +45,24 @@ impl AnthropicProvider {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
             default_model: default_model.into(),
+            identity: IdentityHeaders::default(),
         }
     }
 
-    fn build_body(&self, req: &GenerateRequest) -> Value {
+    /// 送出する User-Agent を指定する。ヘッダ値にできない文字列は設定エラーにする
+    /// （起動時に気づけるように。リクエストごとに失敗させない）。
+    pub fn with_user_agent(mut self, user_agent: Option<&str>) -> Result<Self, LlmError> {
+        self.identity.set_user_agent(user_agent)?;
+        Ok(self)
+    }
+
+    /// 会話 ID を載せるヘッダ名を指定する。ヘッダ名にできない文字列は設定エラーにする。
+    pub fn with_session_header(mut self, header: Option<&str>) -> Result<Self, LlmError> {
+        self.identity.set_session_header(header)?;
+        Ok(self)
+    }
+
+    fn build_body(&self, req: &GenerateRequest, names: &ToolNameMap) -> Value {
         let model = req
             .model
             .clone()
@@ -56,6 +73,7 @@ impl AnthropicProvider {
         let refs = RefRendering {
             known: req.tools.iter().map(|t| t.name.as_str()).collect(),
             native,
+            names,
         };
         let messages: Vec<Value> = req
             .messages
@@ -84,7 +102,7 @@ impl AnthropicProvider {
                 .iter()
                 .map(|t| {
                     let mut v = json!({
-                        "name": t.name,
+                        "name": names.wire(&t.name),
                         "description": t.description,
                         "input_schema": t.input_schema,
                     });
@@ -123,12 +141,14 @@ fn supports_tool_search(model: &str) -> bool {
     !UNSUPPORTED.iter().any(|p| model.starts_with(p))
 }
 
-/// 読み込み参照（`tool_references`）の写し方。
+/// 履歴とツール参照の写し方。
 struct RefRendering<'a> {
-    /// このリクエストで提示するツール名（参照先が在るかの判定に使う）。
+    /// このリクエストで提示するツール名（中立名。参照先が在るかの判定に使う）。
     known: HashSet<&'a str>,
     /// `tool_reference` ブロックで送るか（false なら本文に名前を書き足す）。
     native: bool,
+    /// ツール名の wire 写像（ドット入りの名前は API が 400 で拒否する・#582）。
+    names: &'a ToolNameMap,
 }
 
 /// 中立メッセージ 1 件を Anthropic message へ写す（tool 結果は user ロールの tool_result ブロック）。
@@ -155,16 +175,18 @@ fn to_anthropic_message(m: &Message, refs: &RefRendering<'_>) -> Value {
 /// `tools` に無い参照（ツールを外した着地ターン・配線が変わった再開）を送ると API は 400 を
 /// 返すため、**提示中のものだけ**を参照として残す。1 つも残らなければ本文だけを送る。
 fn tool_result_content(content: &str, references: &[String], refs: &RefRendering<'_>) -> Value {
-    let loaded: Vec<&String> = references
+    // 参照の判定は中立名で行い、送り出す名前（`tool_reference` も本文の案内も）は wire 名にする
+    // （`tools` に載せた名前と一致しないと API が参照を解決できない）。
+    let loaded: Vec<String> = references
         .iter()
         .filter(|r| refs.known.contains(r.as_str()))
+        .map(|r| refs.names.wire(r))
         .collect();
     if loaded.is_empty() {
         return json!(content);
     }
     if !refs.native {
-        let names: Vec<String> = loaded.into_iter().cloned().collect();
-        return json!(with_loaded_note(content, &names));
+        return json!(with_loaded_note(content, &loaded));
     }
     let mut blocks: Vec<Value> = loaded
         .iter()
@@ -183,7 +205,7 @@ fn to_anthropic_block(b: &Block, refs: &RefRendering<'_>) -> Option<Value> {
         // 他プロバイダの不透明な推論アイテムも送らない。
         Block::Thinking { .. } | Block::Reasoning { .. } => None,
         Block::ToolUse { id, name, input } => Some(json!({
-            "type": "tool_use", "id": id, "name": name, "input": input,
+            "type": "tool_use", "id": id, "name": refs.names.wire(name), "input": input,
         })),
         Block::ToolResult {
             tool_use_id,
@@ -217,14 +239,18 @@ impl LlmProvider for AnthropicProvider {
     #[allow(clippy::too_many_lines)] // SSE イベント種別ごとの分岐で行数が伸びる（分割は可読性を損なう）。
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/v1/messages", self.base_url);
-        let body = self.build_body(req);
-        let resp = self
+        let names = ToolNameMap::for_request(req);
+        let body = self.build_body(req, &names);
+        let builder = self
             .http
             .post(&url)
             .timeout(Duration::from_mins(5))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
+            .json(&body);
+        let resp = self
+            .identity
+            .apply(builder, req.session_id.as_deref())
             .send()
             .await
             .map_err(|e| LlmError::Unavailable(format!("anthropic request failed: {e}")))?;
@@ -294,6 +320,7 @@ impl LlmProvider for AnthropicProvider {
                                         .and_then(Value::as_str)
                                         .unwrap_or_default()
                                         .to_string();
+                                    let name = names.local(&name);
                                     tools.insert(idx, (id.clone(), name.clone(), String::new()));
                                     let _ = tx
                                         .unbounded_send(Ok(StreamDelta::ToolUseStart { id, name }));
@@ -386,9 +413,11 @@ mod tests {
             role: Role::Tool,
             content: vec![Block::tool_result("t1", "r", false)],
         };
+        let names = ToolNameMap::new(std::iter::empty::<&str>());
         let refs = RefRendering {
             known: HashSet::new(),
             native: true,
+            names: &names,
         };
         let out = to_anthropic_message(&m, &refs);
         assert_eq!(out["role"], "user");
@@ -402,7 +431,7 @@ mod tests {
         let p = AnthropicProvider::new(http, "https://api.anthropic.com", "k", "claude-opus-4-8");
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
         req.effort = Some(crate::model::Effort::High);
-        let body = p.build_body(&req);
+        let body = p.build_body(&req, &ToolNameMap::for_request(&req));
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "high");
         assert_eq!(body["max_tokens"], 4096);
@@ -445,14 +474,14 @@ mod tests {
             ToolDef::new("tool_search", "s", json!({"type": "object"})),
             deferred("csv.query"),
         ];
-        let body = provider().build_body(&req);
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
         assert!(body["tools"][0].get("defer_loading").is_none());
         assert_eq!(body["tools"][1]["defer_loading"], true);
         let content = &body["messages"][1]["content"][0]["content"];
         assert_eq!(
             content,
             &json!([
-                { "type": "tool_reference", "tool_name": "csv.query" },
+                { "type": "tool_reference", "tool_name": "csv_query" },
                 { "type": "text", "text": "読み込みました" },
             ])
         );
@@ -465,7 +494,7 @@ mod tests {
             Message::text(Role::User, "hi"),
             loaded(&["csv.query"]),
         ]);
-        let body = provider().build_body(&req);
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
         assert_eq!(
             body["messages"][1]["content"][0]["content"],
             "読み込みました"
@@ -476,7 +505,7 @@ mod tests {
     fn all_deferred_request_drops_defer_flags() {
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
         req.tools = vec![deferred("a"), deferred("b")];
-        let body = provider().build_body(&req);
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
         assert!(body["tools"][0].get("defer_loading").is_none());
         assert!(body["tools"][1].get("defer_loading").is_none());
     }
@@ -491,9 +520,9 @@ mod tests {
             ToolDef::new("tool_search", "s", json!({"type": "object"})),
             deferred("csv.query"),
         ];
-        let body = provider().build_body(&req);
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
         let content = &body["messages"][1]["content"][0]["content"];
-        assert_eq!(content[0]["tool_name"], "csv.query");
+        assert_eq!(content[0]["tool_name"], "csv_query");
         assert_eq!(content[1]["type"], "text");
         assert_eq!(content.as_array().unwrap().len(), 2);
     }
@@ -510,7 +539,7 @@ mod tests {
             deferred("csv.query"),
             deferred("office.edit"),
         ];
-        let body = provider().build_body(&req);
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
         let names: Vec<&str> = body["tools"]
             .as_array()
             .unwrap()
@@ -518,12 +547,42 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         // 読み込み済み（csv.query）だけが載り、defer_loading は送らない。
-        assert_eq!(names, ["tool_search", "csv.query"]);
+        assert_eq!(names, ["tool_search", "csv_query"]);
         assert!(body["tools"][1].get("defer_loading").is_none());
         let content = body["messages"][1]["content"][0]["content"]
             .as_str()
             .unwrap();
-        assert!(content.starts_with("読み込みました") && content.contains("csv.query"));
+        assert!(content.starts_with("読み込みました") && content.contains("csv_query"));
+    }
+
+    #[test]
+    fn dotted_tool_names_are_sent_as_wire_names_in_tools_and_history() {
+        // Anthropic は tools[].name に `^[a-zA-Z0-9_-]{1,128}$` を要求する（#582）。定義・履歴の
+        // tool_use の両方で同じ wire 名に揃え、tool_result は id で結びつく。
+        let mut req = GenerateRequest::new(vec![
+            Message::text(Role::User, "hi"),
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "document.edit".into(),
+                    input: json!({}),
+                }],
+            },
+            Message {
+                role: Role::Tool,
+                content: vec![Block::tool_result("t1", "ok", false)],
+            },
+        ]);
+        req.tools = vec![ToolDef::new(
+            "document.edit",
+            "d",
+            json!({"type": "object"}),
+        )];
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
+        assert_eq!(body["tools"][0]["name"], "document_edit");
+        assert_eq!(body["messages"][1]["content"][0]["name"], "document_edit");
+        assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "t1");
     }
 
     #[test]
