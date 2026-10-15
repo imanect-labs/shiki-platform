@@ -67,6 +67,11 @@ impl RequestClock {
         }
     }
 
+    /// 全体の締め切りを過ぎたか。
+    fn expired(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
     fn timed_out(&self, kind: Kind) -> LlmError {
         let label = self.label;
         LlmError::Unavailable(match kind {
@@ -90,6 +95,9 @@ impl RequestClock {
         &self,
         builder: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, LlmError> {
+        if self.expired() {
+            return Err(self.timed_out(Kind::Total));
+        }
         let (limit, kind) = self.bounded(self.timeouts.first_response, Kind::FirstResponse);
         match tokio::time::timeout(limit, builder.send()).await {
             Ok(Ok(resp)) => Ok(resp),
@@ -125,6 +133,11 @@ impl RequestClock {
     {
         if tx.is_closed() {
             return None;
+        }
+        // 締め切り後は、既に届いているチャンク（完了イベントを含みうる）も受け取らない。
+        // `tokio::time::timeout` は 0 秒でも中の future を先に poll するので、ここで先に判定する。
+        if self.expired() {
+            return Some(Err(self.timed_out(Kind::Total)));
         }
         let (limit, kind) = self.bounded(self.timeouts.idle, Kind::Idle);
         // futures の mpsc は「閉じた」を通知しないので、待ちのあいだ短い間隔で見る。
@@ -196,6 +209,16 @@ mod tests {
         let mut never = stream::pending::<reqwest::Result<&[u8]>>();
         let err = c.next_chunk(&mut never, &tx).await.unwrap_err_msg();
         assert!(err.contains("idle timeout"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn ready_chunks_after_the_deadline_are_refused() {
+        let c = clock(1_000, 1_000, 0);
+        let (tx, _rx) = open_tx();
+        // 既に届いているチャンクでも、締め切り後は全体のタイムアウトにする。
+        let mut body = stream::iter(vec![Ok(&b"done"[..])]);
+        let err = c.next_chunk(&mut body, &tx).await.unwrap_err_msg();
+        assert!(err.contains("total timeout"), "{err}");
     }
 
     #[tokio::test]
