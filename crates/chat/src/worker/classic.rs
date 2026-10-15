@@ -14,6 +14,17 @@ use super::ChatWorker;
 use crate::store::ClaimedRun;
 use crate::ChatError;
 
+/// gateway のエラーを run の失敗へ写す。
+///
+/// **利用上限だけは種別を保つ**（agent 経路の `generate.rs` と同じ扱い）。`Unavailable` に
+/// 潰すと、llm-gateway が整形した再開目安付きの 1 行が会話では定型文に置き換わる。
+fn map_llm_error(e: llm_gateway::LlmError) -> ChatError {
+    match e {
+        llm_gateway::LlmError::RateLimited(msg) => ChatError::RateLimited(msg),
+        other => ChatError::Unavailable(format!("llm: {other}")),
+    }
+}
+
 impl ChatWorker {
     /// 通常チャット（OFF）。古典 RAG 注入＋llm-gateway 直叩き（ツールループ無し）。
     pub(super) async fn run_classic_mode(
@@ -118,11 +129,7 @@ impl ChatWorker {
             temperature,
             session_id: Some(run.thread_id.to_string()),
         };
-        let mut stream = self
-            .gateway
-            .stream(ctx, req)
-            .await
-            .map_err(|e| ChatError::Unavailable(format!("llm: {e}")))?;
+        let mut stream = self.gateway.stream(ctx, req).await.map_err(map_llm_error)?;
 
         let mut text_acc = String::new();
         let mut usage = llm_gateway::Usage::default();
@@ -130,7 +137,7 @@ impl ChatWorker {
             if sink.is_cancelled() {
                 break;
             }
-            match delta.map_err(|e| ChatError::Unavailable(e.to_string()))? {
+            match delta.map_err(map_llm_error)? {
                 StreamDelta::TextDelta { text } => {
                     text_acc.push_str(&text);
                     sink.emit(AgentEvent::Text(text))
@@ -164,5 +171,31 @@ impl ChatWorker {
             )
             .await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llm_gateway::LlmError;
+
+    #[test]
+    fn rate_limit_keeps_kind_and_gateway_line() {
+        let line = "利用上限に達しました（Resets in 37min.）";
+        let e = map_llm_error(LlmError::RateLimited(line.into()));
+        assert!(matches!(&e, ChatError::RateLimited(m) if m == line));
+        assert_eq!(e.user_message(), line);
+    }
+
+    #[test]
+    fn provider_failure_is_not_shown_verbatim() {
+        let e = map_llm_error(LlmError::Unavailable(
+            "openai 502: {\"workspace\":\"wrk_01\"}".into(),
+        ));
+        assert!(matches!(e, ChatError::Unavailable(_)));
+        assert_eq!(
+            e.user_message(),
+            crate::error::failure_message::PROVIDER_UNAVAILABLE
+        );
     }
 }
