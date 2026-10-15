@@ -11,16 +11,7 @@ all-features = true
 version = 2
 yanked = "deny"
 # 誤検知・対応保留は理由付きでここに列挙する。
-# 下記 3 件は aws-sdk-s3 が推移的に抱える古い TLS スタック（hyper-rustls 0.24 →
-# tokio-rustls 0.24.1 → rustls-webpki 0.101.7）由来。現行の aws-sdk-s3 では上流が
-# hyper-rustls を更新するまで解消できない（cargo update で到達不可）。
-# 実害は「誤発行された証明書の name constraint 迂回 / CRL パース panic」であり、
-# 本system の S3 クライアントは内部 MinIO か正規発行の AWS 証明書にのみ接続するため
-# 悪用条件を満たしにくい。上流更新で解消次第この ignore を外す（要追跡）。
 ignore = [
-    { id = "RUSTSEC-2026-0098", reason = "aws-sdk-s3 推移依存の rustls-webpki 0.101.7。上流更新待ち・内部MinIO/正規AWS証明書のみで低リスク。" },
-    { id = "RUSTSEC-2026-0099", reason = "同上（wildcard name の name constraint 迂回）。" },
-    { id = "RUSTSEC-2026-0104", reason = "同上（CRL パースの reachable panic）。" },
     # smallstr は yrs（共同編集 CRDT）の推移依存。unmaintained 通知であり既知脆弱性は無い。
     # yrs 上流が置換（compact_str 等）するまで解消不可。上流更新で外す（要追跡）。
     { id = "RUSTSEC-2026-0215", reason = "yrs 推移依存の smallstr unmaintained 通知。脆弱性ではなく yrs 上流の置換待ち。" },
@@ -32,11 +23,6 @@ ignore = [
     # unmaintained 通知で、既知脆弱性は無い（安全な更新先も無い）。lindera 上流が置換するまで
     # cargo update では到達できない。上流更新で外す（要追跡）。
     { id = "RUSTSEC-2024-0449", reason = "lindera 推移依存の unsafe-libyaml unmaintained 通知。脆弱性ではなく lindera 上流の置換待ち。" },
-    # h2 0.3.x は aws-smithy-http-client → hyper 0.14 経路で残る。パッチは >=0.4.16 のみで、
-    # 0.3 系には修正版が無い。0.4 系は Cargo.lock を 0.4.18 へ更新済み。上流が hyper 0.14
-    # を落とすまで 0.3 は cargo update で解消できない。実害は空 DATA フレームの無制限キュー
-    # （DoS・低）で、直接ピアが悪意ある場合に限る。
-    { id = "RUSTSEC-2026-0258", reason = "aws-smithy-http-client→hyper 0.14 経由の h2 0.3.27。パッチは 0.4.16+ のみで 0.3 系は上流更新待ち。0.4 系は 0.4.18 へ更新済み。" },
 ]
 
 [licenses]

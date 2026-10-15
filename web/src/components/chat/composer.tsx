@@ -25,7 +25,7 @@ import { uploadFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
 import { HOME_SCOPE } from "@/lib/model-choice";
 import { ApprovalModeSelect } from "./approval-mode-select";
-import { ModelPill, ModelSubmenu } from "./model-picker";
+import { ModelMenuItem, ModelPicker, ModelPill } from "./model-picker";
 import {
   clearPendingSelection,
   selectionKindLabel,
@@ -514,23 +514,36 @@ function PlusMenu({
     createCsvAndOpen,
   } =
     useCreateContent({ parentId: createParentId });
+  // モデル一覧は「＋」ボタンの上に別のポップオーバー（狭い画面はシート）で開く（#583）。
+  // メニューが閉じきる前に開くと、メニューの後始末（フォーカスを「＋」へ戻す等）が一覧の
+  // 外側操作と見なされて即座に閉じる。そこで項目では予約だけし、メニューが閉じきった時点で
+  // （フォーカスを戻さずに）開く。
+  const [modelOpen, setModelOpen] = React.useState(false);
+  const openingModel = React.useRef(false);
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label="追加メニューを開く"
-          title="追加（添付・作成）"
-          className={cn(
-            "flex size-9 items-center justify-center rounded-full border transition-colors",
-            open
-              ? "border-foreground/30 bg-secondary text-foreground"
-              : "border-border text-foreground/70 hover:bg-secondary hover:text-foreground",
-          )}
-        >
-          <Plus className={cn("size-[18px] transition-transform", open && "rotate-45")} aria-hidden />
-        </button>
-      </DropdownMenuTrigger>
+      <ModelPicker
+        scope={modelScope}
+        open={modelOpen}
+        onOpenChange={setModelOpen}
+        anchor={
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="追加メニューを開く"
+              title="追加（添付・作成）"
+              className={cn(
+                "flex size-9 items-center justify-center rounded-full border transition-colors",
+                open
+                  ? "border-foreground/30 bg-secondary text-foreground"
+                  : "border-border text-foreground/70 hover:bg-secondary hover:text-foreground",
+              )}
+            >
+              <Plus className={cn("size-[18px] transition-transform", open && "rotate-45")} aria-hidden />
+            </button>
+          </DropdownMenuTrigger>
+        }
+      />
 
       <DropdownMenuContent
         side="top"
@@ -538,6 +551,13 @@ function PlusMenu({
         sideOffset={8}
         collisionPadding={12}
         className="max-h-[var(--radix-dropdown-menu-content-available-height)] w-72 overflow-y-auto p-1.5"
+        onCloseAutoFocus={(e) => {
+          if (openingModel.current) {
+            openingModel.current = false;
+            e.preventDefault();
+            setModelOpen(true);
+          }
+        }}
       >
         {/* 添付 */}
         <DropdownMenuLabel className="uppercase tracking-wide">添付</DropdownMenuLabel>
@@ -607,7 +627,12 @@ function PlusMenu({
         </DropdownMenuSub>
 
         {/* モデル（#553）。既定は Auto で、ここで選ぶと送信ボタンの左にピルが出る。 */}
-        <ModelSubmenu scope={modelScope} />
+        <ModelMenuItem
+          scope={modelScope}
+          onOpen={() => {
+            openingModel.current = true;
+          }}
+        />
 
         {/* スキル（#387）。選ぶと入力欄へスラッシュコマンドが打ち込まれる
             （打鍵で呼べることを学べるよう、実行ではなくコマンド確定にする）。
