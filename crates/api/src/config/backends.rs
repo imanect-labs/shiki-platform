@@ -148,6 +148,9 @@ pub struct LlmConfig {
     /// 会話（スレッド）ごとの ID を載せるヘッダ名（例 `x-opencode-session`）。未指定なら送らない。
     #[serde(default)]
     pub session_header: Option<String>,
+    /// 既定プロバイダの表示名（管理画面・モデル選択の見出し・#583）。未指定は ID の `default`。
+    #[serde(default)]
+    pub display_name: Option<String>,
     /// 追加プロバイダ（複数同時利用）。`models[].provider` がこの `id` を指す。
     /// 既定プロバイダ（`backend` 等の単一設定）と併用できる。
     #[serde(default)]
