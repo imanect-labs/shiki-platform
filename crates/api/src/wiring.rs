@@ -192,15 +192,7 @@ pub(crate) fn build_gateway(
         AutoConfig, Effort, GatewayConfig, LangfuseConfig, LlmGateway, ProviderConfig,
     };
     let llm = &config.llm;
-    let primary = ProviderConfig {
-        kind: provider_kind(llm.backend)?,
-        base_url: non_empty(llm.base_url.as_deref()),
-        api_key: llm.api_key.clone(),
-        timeout_secs: 120,
-        user_agent: non_empty(llm.user_agent.as_deref()),
-        session_header: non_empty(llm.session_header.as_deref()),
-        ..Default::default()
-    };
+    let primary = primary_provider(llm)?;
     let extra_providers = llm
         .providers
         .iter()
@@ -491,6 +483,20 @@ pub(crate) async fn wire_workflow(
     Ok((Some(Arc::new(launcher)), Some(Arc::new(runs))))
 }
 
+/// 既定プロバイダ（`llm.backend` 等の単一設定）の接続設定。
+fn primary_provider(llm: &api::config::LlmConfig) -> anyhow::Result<llm_gateway::ProviderConfig> {
+    Ok(llm_gateway::ProviderConfig {
+        display_name: non_empty(llm.display_name.as_deref()),
+        kind: provider_kind(llm.backend)?,
+        base_url: non_empty(llm.base_url.as_deref()),
+        api_key: llm.api_key.clone(),
+        timeout_secs: 120,
+        user_agent: non_empty(llm.user_agent.as_deref()),
+        session_header: non_empty(llm.session_header.as_deref()),
+        ..Default::default()
+    })
+}
+
 /// compose は未設定の変数を空文字で渡すため、空（空白だけを含む）は未指定として扱い、前後の空白を落とす。
 fn non_empty(v: Option<&str>) -> Option<String> {
     v.map(str::trim)
@@ -500,7 +506,24 @@ fn non_empty(v: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::non_empty;
+    use super::{non_empty, primary_provider};
+    use api::config::{LlmBackend, LlmConfig};
+
+    #[test]
+    fn primary_provider_carries_display_name() {
+        // 既定プロバイダにも表示名を付けられる（#583）。空は未指定（ID の default を出す）。
+        let mut llm = LlmConfig {
+            backend: LlmBackend::Openai,
+            base_url: Some("https://openrouter.ai/api/v1".into()),
+            display_name: Some(" OpenRouter ".into()),
+            ..Default::default()
+        };
+        let p = primary_provider(&llm).unwrap();
+        assert_eq!(p.label(), "OpenRouter");
+        assert_eq!(p.effective_id(), "default");
+        llm.display_name = Some(String::new());
+        assert_eq!(primary_provider(&llm).unwrap().label(), "default");
+    }
 
     #[test]
     fn empty_or_blank_settings_are_unset_and_values_are_trimmed() {
