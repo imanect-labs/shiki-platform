@@ -24,7 +24,7 @@ fn parses_like_typescript() {
     assert!(cases.len() >= 10, "課題集が読めません");
     for c in cases {
         let name = c["name"].as_str().unwrap_or("?");
-        let parsed = yui::parse_block(c["source"].as_str().unwrap_or(""), None);
+        let parsed = yui::parse_block(c["source"].as_str().unwrap_or(""), hint(&c));
         let figure = parsed
             .figure
             .map(|f| serde_json::to_value(f).unwrap_or(Value::Null));
@@ -44,7 +44,7 @@ fn parses_like_typescript() {
             .map(|d| serde_json::json!({ "line": d.line, "code": d.code }))
             .collect();
         assert_eq!(Value::Array(diags), c["diagnostics"], "{name}: 診断");
-        let f = yui::parse_block(c["source"].as_str().unwrap_or(""), None).figure;
+        let f = yui::parse_block(c["source"].as_str().unwrap_or(""), hint(&c)).figure;
         let actions =
             f.map(|f| serde_json::to_value(yui::figure_actions(&f)).unwrap_or(Value::Null));
         assert_eq!(actions, Some(c["actions"].clone()), "{name}: ボタン");
@@ -56,12 +56,10 @@ fn validates_like_typescript() {
     let data = fixtures();
     let cases = data["cases"].as_array().cloned().unwrap_or_default();
     for v in data["values"].as_array().cloned().unwrap_or_default() {
-        let src = cases
-            .iter()
-            .find(|c| c["name"] == v["source"])
-            .and_then(|c| c["source"].as_str())
-            .unwrap_or("");
-        let fig = yui::parse_block(src, None).figure;
+        let src = cases.iter().find(|c| c["name"] == v["source"]);
+        let fig = src
+            .and_then(|c| c["source"].as_str().map(|s| yui::parse_block(s, hint(c))))
+            .and_then(|p| p.figure);
         assert!(fig.is_some(), "{}: 図が読めません", v["source"]);
         let Some(fig) = fig else { continue };
         let input = v["input"].as_object().cloned().unwrap_or_default();
@@ -76,4 +74,9 @@ fn validates_like_typescript() {
             v["action"]
         );
     }
+}
+
+/// フェンスの情報文字列で分かっている種類（` ```ui:app ` など）。
+fn hint(c: &serde_json::Value) -> Option<yui::Kind> {
+    c["kind"].as_str().and_then(yui::resolve_kind)
 }
