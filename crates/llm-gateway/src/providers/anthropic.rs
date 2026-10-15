@@ -284,7 +284,7 @@ impl LlmProvider for AnthropicProvider {
             let mut usage = super::usage::AnthropicUsage::default();
             let mut stop = StopReason::EndTurn;
 
-            while let Some(chunk) = clock.next_chunk(&mut byte_stream).await {
+            while let Some(chunk) = clock.next_chunk(&mut byte_stream, &tx).await {
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
@@ -292,10 +292,6 @@ impl LlmProvider for AnthropicProvider {
                         return;
                     }
                 };
-                // 受け手（チャット等）が止めたら読み続けない（全体の上限まで生成させない）。
-                if tx.is_closed() {
-                    return;
-                }
                 buf.extend_from_slice(&chunk);
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=pos).collect();

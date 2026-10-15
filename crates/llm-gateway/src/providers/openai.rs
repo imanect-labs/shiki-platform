@@ -335,7 +335,7 @@ impl LlmProvider for OpenAiProvider {
             // 本文先頭の `<think>…</think>` は思考として流す（対象モデルだけ・#584）。
             let mut think_tags = think_tags.then(ThinkSplitter::default);
 
-            'outer: while let Some(chunk) = clock.next_chunk(&mut byte_stream).await {
+            'outer: while let Some(chunk) = clock.next_chunk(&mut byte_stream, &tx).await {
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
@@ -343,10 +343,6 @@ impl LlmProvider for OpenAiProvider {
                         return;
                     }
                 };
-                // 受け手（チャット等）が止めたら読み続けない（全体の上限まで生成させない）。
-                if tx.is_closed() {
-                    return;
-                }
                 buf.extend_from_slice(&chunk);
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=pos).collect();

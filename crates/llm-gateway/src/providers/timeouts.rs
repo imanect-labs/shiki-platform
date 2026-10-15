@@ -13,6 +13,7 @@
 
 use std::time::Duration;
 
+use futures::channel::mpsc::UnboundedSender;
 use futures::{Stream, StreamExt};
 use tokio::time::Instant;
 
@@ -26,6 +27,9 @@ enum Kind {
     Idle,
     Total,
 }
+
+/// チャンク待ちのあいだ、受け手が閉じたかを見る間隔。
+const ABANDON_POLL: Duration = Duration::from_millis(200);
 
 /// 桁あふれ時の締め切り（実質無制限・約 30 年後）。
 fn far_future() -> Instant {
@@ -106,17 +110,40 @@ impl RequestClock {
         }
     }
 
-    /// 本文の次のチャンクを待つ（無通信のタイムアウト）。終端は `None`。
-    pub(crate) async fn next_chunk<S, B>(&self, body: &mut S) -> Option<Result<B, LlmError>>
+    /// 本文の次のチャンクを待つ（無通信のタイムアウト）。本文の終端と、受け手（`tx` の
+    /// 受信側）が閉じた場合は `None`。
+    ///
+    /// 受け手が閉じたら（チャットの停止・クライアントの切断）、待っている最中でも読むのを
+    /// やめる。プロバイダが黙っていても、無通信・全体の上限まで接続と生成を握り続けない。
+    pub(crate) async fn next_chunk<S, B, T>(
+        &self,
+        body: &mut S,
+        tx: &UnboundedSender<T>,
+    ) -> Option<Result<B, LlmError>>
     where
         S: Stream<Item = reqwest::Result<B>> + Unpin,
     {
+        if tx.is_closed() {
+            return None;
+        }
         let (limit, kind) = self.bounded(self.timeouts.idle, Kind::Idle);
-        match tokio::time::timeout(limit, body.next()).await {
-            Ok(None) => None,
-            Ok(Some(Ok(chunk))) => Some(Ok(chunk)),
-            Ok(Some(Err(e))) => Some(Err(LlmError::Unavailable(format!("stream: {e}")))),
-            Err(_) => Some(Err(self.timed_out(kind))),
+        // futures の mpsc は「閉じた」を通知しないので、待ちのあいだ短い間隔で見る。
+        let abandoned = async {
+            loop {
+                tokio::time::sleep(ABANDON_POLL).await;
+                if tx.is_closed() {
+                    return;
+                }
+            }
+        };
+        tokio::select! {
+            read = tokio::time::timeout(limit, body.next()) => match read {
+                Ok(None) => None,
+                Ok(Some(Ok(chunk))) => Some(Ok(chunk)),
+                Ok(Some(Err(e))) => Some(Err(LlmError::Unavailable(format!("stream: {e}")))),
+                Err(_) => Some(Err(self.timed_out(kind))),
+            },
+            () = abandoned => None,
         }
     }
 }
@@ -140,21 +167,24 @@ mod tests {
     #[tokio::test]
     async fn idle_wait_is_capped_by_the_remaining_total() {
         let c = clock(1_000, 1_000, 300);
+        let (tx, _rx) = open_tx();
         let mut never = stream::pending::<reqwest::Result<&[u8]>>();
-        let err = c.next_chunk(&mut never).await.unwrap_err_msg();
+        let err = c.next_chunk(&mut never, &tx).await.unwrap_err_msg();
         assert!(err.contains("total timeout"), "{err}");
     }
 
     #[tokio::test]
     async fn idle_timeout_names_itself() {
         let c = clock(1_000, 100, 10_000);
+        let (tx, _rx) = open_tx();
         let mut never = stream::pending::<reqwest::Result<&[u8]>>();
-        let err = c.next_chunk(&mut never).await.unwrap_err_msg();
+        let err = c.next_chunk(&mut never, &tx).await.unwrap_err_msg();
         assert!(err.contains("idle timeout"), "{err}");
     }
 
     #[tokio::test]
     async fn huge_total_does_not_overflow() {
+        let (tx, _rx) = open_tx();
         let c = RequestClock::start(
             LlmTimeouts {
                 first_response: Duration::from_millis(1_000),
@@ -164,19 +194,46 @@ mod tests {
             "test",
         );
         let mut never = stream::pending::<reqwest::Result<&[u8]>>();
-        let err = c.next_chunk(&mut never).await.unwrap_err_msg();
+        let err = c.next_chunk(&mut never, &tx).await.unwrap_err_msg();
         assert!(err.contains("idle timeout"), "{err}");
     }
 
     #[tokio::test]
     async fn chunks_and_end_pass_through() {
         let c = clock(1_000, 100, 10_000);
+        let (tx, _rx) = open_tx();
         let mut body = stream::iter(vec![Ok(&b"a"[..])]);
         assert_eq!(
-            c.next_chunk(&mut body).await.map(|r| r.ok()),
+            c.next_chunk(&mut body, &tx).await.map(|r| r.ok()),
             Some(Some(&b"a"[..]))
         );
-        assert!(c.next_chunk(&mut body).await.is_none());
+        assert!(c.next_chunk(&mut body, &tx).await.is_none());
+    }
+
+    /// 受け手が開いたままの組（受信側を持っている間は閉じない）。
+    fn open_tx() -> (
+        UnboundedSender<()>,
+        futures::channel::mpsc::UnboundedReceiver<()>,
+    ) {
+        futures::channel::mpsc::unbounded()
+    }
+
+    #[tokio::test]
+    async fn closed_receiver_stops_waiting_for_a_silent_body() {
+        let c = clock(1_000, 60_000, 120_000);
+        let (tx, rx) = futures::channel::mpsc::unbounded::<()>();
+        let mut never = stream::pending::<reqwest::Result<&[u8]>>();
+        let started = std::time::Instant::now();
+        let closer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            drop(rx);
+        });
+        // 無通信 60 秒を待たず、受け手が閉じた時点（＋見る間隔）で終わる。
+        assert!(c.next_chunk(&mut never, &tx).await.is_none());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        closer.await.unwrap();
+        // 閉じた後は待たずに終わる。
+        assert!(c.next_chunk(&mut never, &tx).await.is_none());
     }
 
     trait ErrMsg {

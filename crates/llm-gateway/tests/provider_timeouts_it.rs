@@ -4,12 +4,15 @@
 //! - 応答ヘッダを返さない → 最初の応答のタイムアウト
 //! - 途中で止まる → 無通信のタイムアウト（それまでの差分は届く）
 //! - 少しずつ流し続けて全体の上限を超える → 全体のタイムアウト
+//! - 受け手がストリームを捨てる → 黙っている上流もタイムアウトを待たずに手放す
 //!
 //! どれも `LlmError::Unavailable` で、メッセージにどのタイムアウトかが入る。時間は短く取る。
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
@@ -176,5 +179,62 @@ async fn trickling_stream_hits_total_timeout() {
             "{}: {elapsed:?}",
             p.name()
         );
+    }
+}
+
+/// 本文が捨てられたら立つ旗（モック側で上流の接続が閉じたことを見る）。
+struct DropFlag(Arc<AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// 最初の差分を流して黙るモック。本文（＝接続）が捨てられたら旗が立つ。
+async fn spawn_stall_with_flag(adapter: Adapter) -> (String, Arc<AtomicBool>) {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let flag = dropped.clone();
+    let first = adapter.first_event();
+    let app = Router::new().fallback(move || {
+        let guard = DropFlag(flag.clone());
+        async move {
+            let head = stream::once(async move { Ok::<_, Infallible>(first.to_string()) });
+            let body = head.chain(stream::pending()).map(move |chunk| {
+                let _keep = &guard;
+                chunk
+            });
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(body))
+                .unwrap()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), dropped)
+}
+
+#[tokio::test]
+async fn dropping_the_stream_releases_a_silent_upstream_before_any_timeout() {
+    for adapter in Adapter::ALL {
+        let (base, dropped) = spawn_stall_with_flag(adapter).await;
+        // 無通信・全体とも長い。受け手が閉じたら、それを待たずに上流を手放す。
+        let p = adapter.provider(base, ms(5_000, 60_000, 120_000));
+        let mut stream = p.stream(&req()).await.expect("headers should arrive");
+        assert_eq!(stream.next().await.unwrap().unwrap(), hi(), "{}", p.name());
+        drop(stream);
+        let started = Instant::now();
+        while !dropped.load(Ordering::SeqCst) {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "{}: upstream still held",
+                p.name()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 }

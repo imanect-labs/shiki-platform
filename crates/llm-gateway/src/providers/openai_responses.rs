@@ -457,7 +457,7 @@ impl LlmProvider for OpenAiResponsesProvider {
             let mut buf: Vec<u8> = Vec::new();
             let mut framer = SseFramer::default();
             let mut mapper = EventMapper::default();
-            while let Some(chunk) = clock.next_chunk(&mut byte_stream).await {
+            while let Some(chunk) = clock.next_chunk(&mut byte_stream, &tx).await {
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
@@ -465,10 +465,6 @@ impl LlmProvider for OpenAiResponsesProvider {
                         return;
                     }
                 };
-                // 受け手（チャット等）が止めたら読み続けない（全体の上限まで生成させない）。
-                if tx.is_closed() {
-                    return;
-                }
                 buf.extend_from_slice(&chunk);
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=pos).collect();
