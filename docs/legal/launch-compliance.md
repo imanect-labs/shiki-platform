@@ -170,6 +170,21 @@ shiki は顧客の文書・チャットを預かり、顧客従業員（エン�
 - [ ] **AI 利用ポリシー / 受入可能利用（AUP）**。
 - [ ] オンプレ顧客向け **OSS ライセンス順守（SBOM / ライセンス表記）**: Firecracker・gVisor・OpenFGA・Keycloak・
   Docling・vLLM 等の OSS ライセンス（Apache-2.0 / AGPL 等）を棚卸しし、再配布条件を確認（特に **AGPL 系**に注意）。
+  - [x] **Office 編集（Shiki Office = Collabora Online / LibreOffice core の自前ビルド・#549）**: 棚卸し済み。
+    詳細は `deploy/docker/collabora/README.md`。
+    - 著作権: core / online は MPL-2.0（core は `--enable-mpl-subset` で MPL より制約の強い部品を除外）、
+      Poco は BSL-1.0、同梱フォントは OFL 等。shiki 本体とは HTTP / WOPI / iframe でつながるだけでリンクしないため、
+      copyleft は shiki に及ばない。
+    - 商標: Collabora の商標ポリシーに従い **Shiki Office**（ベンダー Imanect Labs）としてブランドし、
+      Collabora の名称・ロゴ・有償 EULA を外した。**Collabora への書面での確認（trademark@collaboraoffice.com）は未実施**
+      （human 判断で後回し）。
+    - 告知: イメージ内 `/usr/share/doc/shiki-office/NOTICE` に構成要素・ライセンス・ソースの入手先を記載。
+    - ソース: `shiki-collabora:<ONLINE_REF>-<BUILD_ID>-sources` に、同じ BUILD_ID の本体に対応するソース一式
+      （Ubuntu パッケージを含む）を保全。**納品物に本体と一緒に添える**こと（BUILD_ID を揃える）。
+  - [ ] **他の配布イメージの Ubuntu / Debian ベースの GPL・LGPL パッケージ**: ベースイメージに入っている
+    bash・coreutils・libc 等にもソース提供義務がある（GPLv2 §3 / GPLv3 §6）。Office と同じ方式
+    （イメージ内のソースパッケージ一覧＋`-sources` イメージの同梱）か、書面による申し出のどちらで満たすかを
+    イメージごとに決める。
 
 ---
 

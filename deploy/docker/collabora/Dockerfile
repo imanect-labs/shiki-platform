@@ -1,8 +1,9 @@
 # Collabora Online（coolwsd＋Collabora Office core）の**ソース自前ビルド**（Task 11.5・PIT-43）。
 #
 # なぜソースビルドか（human 確定判断・docs/design.md §4.8）:
-#   公式 CODE バイナリには 10 文書/20 接続の制限が焼き込まれ、本番利用は商用契約が前提になる。
-#   ソースは MPLv2 であり、自前ビルドなら制限・契約なしでオンプレ同梱できる。
+#   公式 CODE バイナリは Collabora が本番利用を想定しておらず、無償で本番に使う条件は
+#   「MPLv2 ソースから自前でビルドし、自前のブランドで出し、自前でサポートする」こと。
+#   自前ビルドなら制限・契約なしでオンプレ同梱できる。Shiki Office としてブランドする（#549・README.md）。
 #   代償としてサプライチェーンと鮮度の責任を自分で持つ（PIT-43・README.md の追従手順参照）。
 #
 # 取得物は office-manifest.env の「リリースタグ＋peel 済みコミット SHA」で二重にピンする
@@ -58,18 +59,27 @@ RUN git clone --depth 1 --branch "$CORE_REF" "$CORE_REPO" core \
 # ここでは `make cmd cmd='ooinstall ...'` しか使わず deb/rpm は作らない。
 # 既定のままだと rpm コマンドまで要求され（configure: error: not found）、
 # 使わない経路のためにビルド依存が増え続ける。archive なら tar/gzip で足りる。
+#
+# **Shiki Office としてブランドする（#549）。** CPLinux-LOKit は vendor=Collabora と
+# Collabora のロゴ（brand_cp）を設定するが、Collabora の商標ポリシーは自前ビルドの配布で
+# Collabora の名称・ロゴを外すことを求める。distro 設定より後ろの引数が勝つので
+# （--with-package-format と同じ）、ここで上書きする。
+#   --with-vendor: versionrc の Vendor と About の「supplied by」に出る
+#   --with-branding: 7 ファイルすべてを用意する。欠けた分は既定（LibreOffice のロゴ）で埋まる
+#
+# **--with-product-name は渡さない。** Collabora 版の core はインストーラの設定
+# （instsetoo_native/util/openoffice.lst.in）に製品の節 `CollaboraOffice` と
+# PRODUCTNAME "Collabora Office" を直書きしている。製品名を変えると ooinstall が
+# `-p ShikiOffice`（空白を除いた製品名）を渡し、その節が無いので 3 時間の make の後に落ちる。
+# 変えるにはソースの改変が要るので、エンジンの内部名は "Collabora Office" のまま残す（human 判断）。
+# 利用者に見える製品名は online 側（--with-app-name と coolwsd.xml）で Shiki Office にしており、
+# ダイアログのタイトル中の "Collabora Office" も online が brandProductName に置き換える
+# （browser/src/control/Control.LokDialog.js）。残るのは About の「powered by」に並ぶ
+# エンジンの版の表記（出所の事実の記載）だけ。
+COPY --chown=build:build branding/core /src/branding
 RUN cd core && ./autogen.sh --with-distro=CPLinux-LOKit --disable-symbols \
-    --with-package-format=archive
-#
-# **ooinstall はパスつきで呼ぶ。** `bin/` は PATH に無いので裸の `ooinstall` は
-#   /bin/sh: 1: ooinstall: not found   make: *** [Makefile:261: cmd] Error 127
-# になる。**2 時間 48 分の make が完走した直後にこれで落ちた。**
-#
-# **LOKit のヘッダは ooinstall が入れない**（-simple インストールは実行時の
-# program/ と share/ だけ）。coolwsd 側の configure は
-#   AC_CHECK_HEADERS([LibreOfficeKit/LibreOfficeKit.h], ...,
-#     [AC_MSG_ERROR([header LibreOfficeKit/LibreOfficeKit.h not found ...])])
-# で止まるので、ソースツリーから持ち出して次のステージへ渡す。
+    --with-package-format=archive \
+    --with-vendor="Imanect Labs" --with-branding=/src/branding
 RUN cd core && make -j"$(nproc)"
 #
 # **ooinstall は make とは別レイヤにする。** ここは約 3 時間の make が終わった
@@ -82,13 +92,47 @@ RUN cd core && make -j"$(nproc)"
 # 空のまま渡すと `-l -p CollaboraOffice` となって `-l` が `-p` を食い、
 #   ERROR: unknown parameter: CollaboraOffice
 # で落ちる（upstream の定義を追って切り分けた）。
+#
+# **ooinstall はパスつきで呼ぶ。** `bin/` は PATH に無いので裸の `ooinstall` は
+#   /bin/sh: 1: ooinstall: not found   make: *** [Makefile:261: cmd] Error 127
+# になる。**2 時間 48 分の make が完走した直後にこれで落ちた。**
+#
+# **LOKit のヘッダは ooinstall が入れない**（-simple インストールは実行時の
+# program/ と share/ だけ）。coolwsd 側の configure は
+#   AC_CHECK_HEADERS([LibreOfficeKit/LibreOfficeKit.h], ...,
+#     [AC_MSG_ERROR([header LibreOfficeKit/LibreOfficeKit.h not found ...])])
+# で止まるので、ソースツリーから持ち出して次のステージへ渡す。
 RUN cd core \
     && LANGS="$(sed -n 's/^WITH_LANG_LIST=//p' config_host_lang.mk)" \
     && if [ -z "$LANGS" ]; then echo "WITH_LANG_LIST が取れない" >&2; exit 1; fi \
     && echo "languages: $LANGS" \
     && WITH_LANG_LIST="$LANGS" make cmd cmd='./solenv/bin/ooinstall /opt/collaboraoffice' \
     && cp -a include /opt/collaboraoffice/include \
-    && test -f /opt/collaboraoffice/program/versionrc
+    && test -f /opt/collaboraoffice/program/versionrc \
+    && grep -q '^Vendor=Imanect Labs' /opt/collaboraoffice/program/versionrc \
+    && rm -f /opt/collaboraoffice/EULA.odt /opt/collaboraoffice/EULA_en-US.rtf \
+    && test -f /opt/collaboraoffice/LICENSE.html \
+    && (cd external/tarballs && find . -maxdepth 1 -type f ! -name '.*' -printf '%f\n' \
+        | sort | xargs -r sha256sum) > /src/CORE_EXTERNAL_TARBALLS.sha256 \
+    && test -s /src/CORE_EXTERNAL_TARBALLS.sha256
+# 上の RUN の後半（#549）:
+# - **EULA は Collabora Office の有償サブスクリプション契約書**で、MPL のライセンス表示
+#   （LICENSE / NOTICE。§3.4 で消してはならないもの）ではない。自前ビルドの配布物に
+#   残すと契約関係があるように読めるので除く。後のステージで消すと下のレイヤに残るため、ここで消す。
+# - ベンダー（versionrc の Vendor）が入ったことを確かめる。上流の既定は "Collabora"（実測）。
+# - core が make 中に取得した外部ライブラリの tarball を sha256 付きで記録する。
+#   ランタイムの告知（NOTICE）と、ソース保全イメージ（sources ステージ）の両方が使う。
+#
+# **ソース保全用に core のソース一式を固める（#549）。** submodule（translations /
+# dictionaries / helpcontent2）は make の中で取得されるので、make の後に作る。
+# git の追跡対象だけを入れ、workdir/ や instdir/ の成果物は混ぜない。
+# --transform の flags=r: 既定（rsh）だとシンボリックリンクのリンク先にも接頭辞が付き、
+# 展開すると core-<ref>/core-<ref>/... を指す壊れたリンクになる（.vsconfig 等）。
+RUN mkdir -p /src/sources \
+    && cd core \
+    && git ls-files --recurse-submodules -z \
+       | tar --null -T - --transform "flags=r;s,^,core-$CORE_REF/," -czf /src/sources/core-$CORE_REF.tar.gz \
+    && tar tzf /src/sources/core-$CORE_REF.tar.gz "core-$CORE_REF/configure.ac" >/dev/null
 
 # ---- Stage 1-b: Poco（coolwsd の依存）のビルド ----
 #
@@ -108,7 +152,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 RUN curl -fsSL -o poco.tar.gz "$POCO_URL" \
     && echo "$POCO_SHA256  poco.tar.gz" | sha256sum -c - \
-    && tar xf poco.tar.gz && mv poco-* poco
+    && tar xf poco.tar.gz && mv poco-* poco \
+    && printf '%s\n%s\n' "$POCO_URL" "$POCO_SHA256" > /src/POCO_SOURCE
 # coolwsd が使うのは Foundation / Net / NetSSL / Crypto / Util / XML / JSON。
 # それ以外（Data・MongoDB・Redis・Zip 等）は切って時間とサイズを節約する。
 RUN cmake -S poco -B build \
@@ -170,23 +215,48 @@ WORKDIR /src
 RUN git clone --depth 1 --branch "$ONLINE_REF" "$ONLINE_REPO" online \
     && cd online \
     && test "$(git rev-parse HEAD)" = "$ONLINE_COMMIT" \
-    && git rev-parse HEAD | tee /ONLINE_COMMIT
+    && git rev-parse HEAD | tee /ONLINE_COMMIT \
+    && mkdir -p /src/sources \
+    && git archive --format=tar.gz --prefix="online-$ONLINE_REF/" HEAD \
+       > /src/sources/online-$ONLINE_REF.tar.gz
 # setcap は configure 時ではなくランタイムステージで明示的に付与する（DESTDIR install と
 # レイヤ分離のため）。
 # configure と make を分ける（core 側と同じ理由）。
+#
+# ブランド（#549）:
+#   --with-app-name: 既定は "Collabora Online Development Edition"。WOPI の
+#     /hosting/capabilities の productName 等に出る
+#   --without-help-url: 既定は help.collaboraoffice.com（coolwsd.xml の help_url の既定値もこれ）。
+#     空にすると「オンラインヘルプ」は外へ飛ばず、同梱のヘルプ（製品名は Shiki Office に置き換わる）を開く
+#   --with-vendor: About の「Copyright © <年>, <vendor>.」に出る（Control.AboutDialog.ts）。
+#     **著作権表示なので Imanect Labs にしない**（無改変の上流コードの著作権者は上流の貢献者）。
+#     未指定だとビルドしたユーザー名（root）が入る。
+#     上流の cool.html.m4 は `data-vendor = VENDOR` と引用符なしで埋め込むので、空白を含む値は
+#     最初の単語で切れる（About に「Copyright © 2026, the.」と出た）。branding.js で正す（下の検査で一致を確かめる）。
 RUN cd online && ./autogen.sh \
     && ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
          --with-lokit-path=/opt/collaboraoffice/include \
          --with-lo-path=/opt/collaboraoffice \
          --with-poco-includes=/opt/poco/include \
          --with-poco-libs=/opt/poco/lib \
+         --with-app-name="Shiki Office" \
+         --with-vendor="the Collabora Online and LibreOffice contributors" \
+         --without-help-url \
          --disable-setcap --enable-silent-rules
 RUN cd online \
     && make -j"$(nproc)" \
     && make install DESTDIR=/inst
 
 # ---- Stage 3: ランタイム ----
-FROM ubuntu:24.04
+# **名前付きステージなので、ビルドでは `--target runtime` を指定する。** 後ろに
+# ソース保全用のステージ（sources）が続くため、無指定だとそちらが建つ。
+FROM ubuntu:24.04 AS runtime
+ARG CORE_REPO=https://git.libreoffice.org/core
+ARG CORE_REF=cp-25.04.9-4
+ARG CORE_COMMIT=bbf180856f1919e69a04fdf6175ff4f11f52e1db
+ARG ONLINE_REPO=https://github.com/CollaboraOnline/online.git
+ARG ONLINE_REF=cp-25.04.9-5
+ARG ONLINE_COMMIT=53f91c25641febb11d77702380530775a923890e
 ENV DEBIAN_FRONTEND=noninteractive
 # ランタイム依存は dev パッケージで引き込む（noble の t64 リネーム等、実ライブラリの
 # パッケージ名差異に依存しないため。ヘッダ分のサイズ増は堅牢性とのトレード）。
@@ -205,14 +275,50 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   Failed to load .../libmergedlo.so: libgssapi_krb5.so.2: cannot open shared object file
 #   FTL  No child process could be created. Exiting.   （exit 70）
 # core-build の apt を変えたらここも揃えること（漏れは下の ldd 検査で止まる）。
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# **upgrade してから入れる（#549）。** ベースイメージに入っている古い版のままだと、
+# sources ステージがその版のソースを deb-src から取れない（索引には各ポケットの
+# 最新版しか載らない）。セキュリティ修正の取り込みにもなる。
+#
+# **Ubuntu スナップショット（snapshot.ubuntu.com）から入れ、その時刻を記録する（#549）。**
+# このレイヤはビルドキャッシュから再利用されるので、後からライブの deb-src を引くと版がずれる。
+# また、ライブの archive から入れて後でスナップショットを引く形だと、スナップショット側の
+# 反映の遅れで版が見つからないことがある。入れる側も取る側も同じ時刻のスナップショットを
+# 使えば、原理的に一致する（sources ステージは ubuntu-snapshot.txt の時刻で取る）。
+# 時刻は CI が 1 回だけ決めて UBUNTU_SNAPSHOT で渡す。runtime（load）・sources・push は
+# 別々のビルドなので、間でキャッシュが消えてこの RUN がやり直しになったときに、`date` だと
+# 本体と -sources で時刻（＝版）がずれうる。未指定（手元のビルド）なら今の時刻を使う。
+# ca-certificates だけは、スナップショットに https で繋ぐために先にライブから入れる
+# （その後の upgrade でスナップショットの版に揃う。揃わない場合は sources 側でライブから取る）。
+#
+# libutf8proc3: Poco が同梱している utf8proc の著作権表示とライセンス本文
+# （/usr/share/doc/libutf8proc3/copyright）を NOTICE から参照するため。
+# PCRE2 / zlib / expat の分は既に入っているパッケージのものを参照する。
+ARG UBUNTU_SNAPSHOT=
+RUN mkdir -p /usr/share/doc/shiki-office \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && snap="${UBUNTU_SNAPSHOT:-$(date -u +%Y%m%dT%H%M%SZ)}" \
+    && echo "$snap" | grep -Eqx '[0-9]{8}T[0-9]{6}Z' \
+    && echo "$snap" > /usr/share/doc/shiki-office/ubuntu-snapshot.txt \
+    && echo "APT::Snapshot \"$snap\";" > /etc/apt/apt.conf.d/50shiki-snapshot \
+    && rm -rf /var/lib/apt/lists/* && apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
     libssl-dev libpng-dev libzstd-dev libpam0g-dev libcap2-bin libpcre2-8-0 \
     libx11-dev libxml2-dev libxslt1-dev libcups2-dev libfontconfig1-dev libxrandr-dev \
     libgl-dev libglu1-mesa-dev libkrb5-dev libnss3-dev libcairo2-dev \
     libavahi-client-dev libdbus-glib-1-dev \
-    cpio tzdata fontconfig \
+    cpio tzdata fontconfig libutf8proc3 \
     fonts-noto-cjk fonts-noto-cjk-extra ca-certificates \
+    && rm -f /etc/apt/apt.conf.d/50shiki-snapshot \
     && rm -rf /var/lib/apt/lists/*
+# **このイメージに入っている Ubuntu パッケージのソースパッケージと版を記録する（#549）。**
+# GPL / LGPL のパッケージ（bash・coreutils・libc 等）を含むイメージを配布すると、
+# そのソースの提供義務を負う。sources ステージはこの一覧どおりにソースを取得する。
+# apt はこの上の 1 回しか走らせないこと（後から足すと一覧から漏れる）。
+RUN dpkg-query -W -f='${source:Package} ${source:Version}\n' | sort -u \
+       > /usr/share/doc/shiki-office/ubuntu-source-packages.txt \
+    && test -s /usr/share/doc/shiki-office/ubuntu-source-packages.txt
 # **ビルドに使ったのと同じ Poco を載せる。** distro の 1.11.0 を入れると
 # coolwsd がリンクしたシンボルと食い違う。
 COPY --from=poco-build /opt/poco/lib /opt/poco/lib
@@ -221,6 +327,40 @@ COPY --from=core-build /opt/collaboraoffice /opt/collaboraoffice
 COPY --from=online-build /inst/ /
 COPY --from=core-build /src/CORE_COMMIT /etc/collabora/CORE_COMMIT
 COPY --from=online-build /ONLINE_COMMIT /etc/collabora/ONLINE_COMMIT
+COPY --from=core-build /src/CORE_EXTERNAL_TARBALLS.sha256 /usr/share/doc/shiki-office/core-external-tarballs.sha256
+# **第三者ソフトウェアの告知（#549・MPL-2.0 §3.2(a)）。** 受け取った人がソースの入手先を
+# 分かるようにする。コミット SHA だけでは足りないので、リポジトリ・タグ・SHA を並べる。
+COPY --from=poco-build /src/POCO_SOURCE /usr/share/doc/shiki-office/POCO_SOURCE
+COPY --from=poco-build /src/poco/LICENSE /usr/share/doc/shiki-office/poco-LICENSE
+COPY NOTICE.in /usr/share/doc/shiki-office/NOTICE.in
+# BUILD_ID: office-image.yml がビルドごとに付ける不変タグの一部。NOTICE はこのビルドに
+# 対応する -sources イメージ（<ONLINE_REF>-<BUILD_ID>-sources）を案内する。
+# ここで初めて宣言するのは、毎回変わる値でキャッシュを外すのをこれより後ろに限るため。
+ARG BUILD_ID=local
+RUN cd /usr/share/doc/shiki-office \
+    && POCO_URL="$(sed -n 1p POCO_SOURCE)" && POCO_SHA256="$(sed -n 2p POCO_SOURCE)" && rm POCO_SOURCE \
+    && for d in libpcre2-8-0 zlib1g libexpat1 libutf8proc3; do \
+         test -s "/usr/share/doc/$d/copyright" || { echo "/usr/share/doc/$d/copyright が無い"; exit 1; }; \
+       done \
+    && sed -e "s|@CORE_REPO@|$CORE_REPO|g" -e "s|@CORE_REF@|$CORE_REF|g" \
+           -e "s|@CORE_COMMIT@|$CORE_COMMIT|g" -e "s|@ONLINE_REPO@|$ONLINE_REPO|g" \
+           -e "s|@ONLINE_REF@|$ONLINE_REF|g" -e "s|@ONLINE_COMMIT@|$ONLINE_COMMIT|g" \
+           -e "s|@POCO_URL@|$POCO_URL|g" -e "s|@POCO_SHA256@|$POCO_SHA256|g" \
+           -e "s|@BUILD_ID@|$BUILD_ID|g" \
+           NOTICE.in > NOTICE \
+    && rm NOTICE.in \
+    && if grep -n '@[A-Z_]*@' NOTICE; then echo "NOTICE に未置換のプレースホルダが残っている"; exit 1; fi \
+    && test "$(cat /etc/collabora/CORE_COMMIT)" = "$CORE_COMMIT" \
+    && test "$(cat /etc/collabora/ONLINE_COMMIT)" = "$ONLINE_COMMIT"
+# **ブランドの上書き（#549）。** ソースは無改変のまま、未ブランドのビルドが読み込む
+# branding.css / branding.js を置く（中身の説明は各ファイルの冒頭）。
+COPY branding/online/branding.css branding/online/branding.js /usr/share/coolwsd/browser/dist/
+# branding.js で入れ直す vendor が、configure に渡した --with-vendor と同じであること
+# （cool.html には引用符なしで全文が入っているので、そこから取る）。
+RUN v="$(sed -n 's/^ *data-vendor = //p' /usr/share/coolwsd/browser/dist/cool.html)" \
+    && test -n "$v" \
+    && grep -qF "window.vendor = '$v';" /usr/share/coolwsd/browser/dist/branding.js \
+    || { echo "branding.js の vendor が --with-vendor と一致しない: $v"; exit 1; }
 # **共有ライブラリの解決漏れをビルド時に全部出して止める。** 実行時に初めて
 # dlopen で 1 つずつ見つかる形だと、1 件ごとに CI を 1 往復（40 分）することになる。
 RUN missing="$( { for f in /opt/collaboraoffice/program/*.so* \
@@ -229,6 +369,19 @@ RUN missing="$( { for f in /opt/collaboraoffice/program/*.so* \
                     ldd "$f" 2>/dev/null; \
                   done; } | grep 'not found' | sort -u)" \
     && if [ -n "$missing" ]; then echo "解決できない共有ライブラリ:"; echo "$missing"; exit 1; fi
+# **製品名・リンク・ロゴを coolwsd.xml の既定に焼き込む（#549）。** 起動引数（--o:）で
+# 渡すと、command を丸ごと置き換える compose / K8s の側でも毎回書く必要が出る。
+#   brandProductName: 空だと UI に "Collabora Online Development Edition (unbranded)" が出る
+#   brandProductURL: 空だと About のリンクが collaboraonline.github.io に戻る（空にはできない）
+#   logoURL=none: ロゴを出さない
+RUN coolconfig set user_interface.brandProductName "Shiki Office" \
+    && coolconfig set user_interface.brandProductURL "https://www.imanect.co.jp/" \
+    && coolconfig set user_interface.logoURL none \
+    && grep -q '>Shiki Office</brandProductName>' /etc/coolwsd/coolwsd.xml \
+    && grep -q '>https://www.imanect.co.jp/</brandProductURL>' /etc/coolwsd/coolwsd.xml \
+    && grep -q '>none</logoURL>' /etc/coolwsd/coolwsd.xml \
+    && if grep -n 'help.collaboraoffice.com' /etc/coolwsd/coolwsd.xml; then \
+         echo "help_url が Collabora のヘルプを指している（--without-help-url が効いていない）"; exit 1; fi
 # 非 root 実行（cool ユーザー）＋ systemplate/jail の初期化＋forkit へのファイル capability 付与
 # （jail の chroot に必要。Docker 既定 cap 集合（CHOWN/FOWNER/MKNOD/SYS_CHROOT）内で動く。
 #  compose 側で no-new-privileges を付けないこと — file caps の獲得が塞がれ起動不能になる）。
@@ -259,3 +412,49 @@ CMD ["coolwsd", "--o:sys_template_path=/opt/cool/systemplate", \
      "--o:lo_template_path=/opt/collaboraoffice", \
      "--o:file_server_root_path=/usr/share/coolwsd", \
      "--o:ssl.enable=false", "--o:ssl.termination=false"]
+
+# ---- Stage 4: ソース保全（#549） ----
+#
+# 配布するイメージに入っているものの**対応するソース一式**を 1 つのイメージに固める。
+# office-image.yml が `--target sources` で建てて `<ONLINE_REF>-sources` として push する。
+# 上流のリポジトリやミラーが消えても、顧客から求められたときに提供できるようにするため。
+#   - MPL-2.0（core / online）: §3.2(a) のソース入手手段
+#   - GPL / LGPL（Ubuntu パッケージ）: 配布物に添えるソース
+# 中身は NOTICE の「1. 構成要素」と 1 対 1 に対応する。
+FROM ubuntu:24.04 AS ubuntu-sources
+ENV DEBIAN_FRONTEND=noninteractive
+# ca-certificates: snapshot.ubuntu.com は https のみ。
+RUN apt-get update && apt-get install -y --no-install-recommends dpkg-dev ca-certificates
+COPY --from=runtime /usr/share/doc/shiki-office/ubuntu-source-packages.txt /ubuntu-source-packages.txt
+COPY --from=runtime /usr/share/doc/shiki-office/ubuntu-snapshot.txt /ubuntu-snapshot.txt
+# ランタイムに入っている**版そのもの**のソースを取る（別の版で代用しない）。
+# ランタイムが apt-get update した時刻のスナップショットから取る（ランタイムのレイヤが
+# キャッシュから来ても版がずれない）。deb-src は noble の DEB822 形式の Types 行に足す。
+# 取れなかったものは名前を全部出して止める。数百件あるので 8 並列で取る（1 件ずつだと 30 分を超える）。
+WORKDIR /out/ubuntu
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources \
+    && grep -q '^Types: deb deb-src$' /etc/apt/sources.list.d/ubuntu.sources \
+    && snap="$(cat /ubuntu-snapshot.txt)" \
+    && apt-get update --snapshot "$snap" \
+    && : > /failed.txt \
+    && sed 's/ /=/' /ubuntu-source-packages.txt \
+       | xargs -P 8 -n 1 sh -c 'apt-get source --snapshot "$0" --download-only "$1" >/dev/null 2>&1 \
+                               || echo "$1" >> /failed.txt' "$snap" \
+    && failed="$(sort /failed.txt | tr '\n' ' ')" \
+    && if [ -n "$failed" ]; then \
+         echo "snapshot $snap で取れなかったものをライブの索引で取り直す:$failed"; \
+         apt-get update; retry="$failed"; failed=""; \
+         for pv in $retry; do \
+           apt-get source --download-only "$pv" >/dev/null 2>&1 || failed="$failed $pv"; \
+         done; \
+       fi \
+    && if [ -n "$failed" ]; then echo "ソースを取得できなかったパッケージ:$failed"; exit 1; fi \
+    && ls | wc -l
+
+FROM scratch AS sources
+COPY --from=core-build /src/sources/ /
+COPY --from=core-build /src/core/external/tarballs/ /core-external/
+COPY --from=online-build /src/sources/ /
+COPY --from=poco-build /src/poco.tar.gz /poco.tar.gz
+COPY --from=ubuntu-sources /out/ubuntu/ /ubuntu/
+COPY --from=runtime /usr/share/doc/shiki-office/ /doc/
