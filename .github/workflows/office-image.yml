@@ -73,7 +73,7 @@ jobs:
       # 効かせると目的を失う。
       - name: build core（キャッシュ投入のみ・成果物は捨てる）
         if: github.event_name != 'schedule'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: deploy/docker/collabora
           target: core-build
@@ -97,7 +97,7 @@ jobs:
       # 起動しないイメージを掴まされると、利用側は原因がイメージ側にあると
       # 気づけない。load してローカルで検証し、通ってから push する。
       - name: build（load のみ・まだ push しない）
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: deploy/docker/collabora
           # 後ろに sources ステージが続くので、無指定だとそちらが建つ。
@@ -213,7 +213,7 @@ jobs:
           df -h /
 
       - name: sources（対応するソース一式）を建てて push
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: deploy/docker/collabora
           target: sources
@@ -244,7 +244,7 @@ jobs:
       # 建て直すので全層キャッシュに当たり、smoke したものと同じ中身になる。
       # sbom: 配布物の構成要素の一覧をイメージに添える（ライセンス順守・#549）。
       - name: push（provenance と SBOM を付けて）
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: deploy/docker/collabora
           target: runtime
