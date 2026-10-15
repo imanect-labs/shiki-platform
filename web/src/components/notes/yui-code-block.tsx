@@ -73,6 +73,12 @@ function moveSelectionOutOf(editor: Editor, pos: number): void {
       return;
     }
   }
+  // 前後に選択を置ける場所が無い（本文がこのブロックだけ）なら、直後に空の段落を足してそこへ移す。
+  // 通常は StarterKit の TrailingNode が末尾の段落を保つが、それに頼らず隠した記述に選択を残さない。
+  const paragraph = es.schema.nodes.paragraph;
+  if (!paragraph) return;
+  const tr = es.tr.insert(after, paragraph.create());
+  view.dispatch(tr.setSelection(TextSelection.create(tr.doc, after + 1)));
 }
 
 /// 図の状態。ok 以外は（編集できるなら）記述を見せる。
