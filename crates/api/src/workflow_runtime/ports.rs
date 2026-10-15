@@ -195,6 +195,8 @@ impl NodePorts for ProdNodePorts {
         greq.model = req.model.clone();
         greq.system = req.system.clone();
         greq.max_tokens = req.max_tokens;
+        // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
+        let started_at = chrono::Utc::now();
         let mut stream = self
             .gateway
             .stream(&ctx, greq)
@@ -226,6 +228,9 @@ impl NodePorts for ProdNodePorts {
                     output_preview: preview(&text),
                     app_id: None,
                     source: llm_gateway::UsageSource::Workflow,
+                    // この経路は 1 リクエスト 1 生成。
+                    first_in_trace: true,
+                    started_at: Some(started_at),
                 },
             )
             .await;

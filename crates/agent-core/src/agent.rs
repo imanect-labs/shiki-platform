@@ -240,6 +240,9 @@ async fn land_on_budget(
         return Ok(());
     }
     let step = state.spent.steps;
+    // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
+    let started_at = chrono::Utc::now();
+
     let mut stream = gateway
         .stream(
             run.ctx,
@@ -293,6 +296,9 @@ async fn land_on_budget(
                 output_preview: preview(&text_acc),
                 app_id: run.app_id,
                 source: usage_source(opts, run.app_id),
+                // step 0 がそのリクエストの最初の生成。
+                first_in_trace: step == 0,
+                started_at: Some(started_at),
             },
         )
         .await;
@@ -340,6 +346,8 @@ async fn run_step(
         temperature: opts.temperature,
         session_id: opts.session_id.clone(),
     };
+    // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
+    let started_at = chrono::Utc::now();
     let mut stream = gateway.stream(run.ctx, req).await.map_err(map_llm_error)?;
 
     let mut text_acc = String::new();
@@ -429,6 +437,9 @@ async fn run_step(
                 output_preview: preview(&text_acc),
                 app_id: run.app_id,
                 source: usage_source(opts, run.app_id),
+                // step 0 がそのリクエストの最初の生成。
+                first_in_trace: step == 0,
+                started_at: Some(started_at),
             },
         )
         .await;
