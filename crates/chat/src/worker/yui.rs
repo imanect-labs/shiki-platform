@@ -20,8 +20,11 @@ mod tests {
     fn appends_guide_after_base_prompt() {
         let out = with_yui_guide("あなたはアシスタントです。\n");
         assert!(out.starts_with("あなたはアシスタントです。\n\n# 図の書き方"));
-        // 5 種類すべての書き方と、emit_ui との使い分けを含む。
-        for kind in ["```ui", "bar", "line", "stat", "flow", "stack", "emit_ui"] {
+        // 16 種類すべての書き方と、emit_ui との使い分けを含む。
+        for kind in [
+            "```ui", "bar", "line", "pie", "scatter", "stat", "flow", "stack", "timeline", "steps", "tree", "cards",
+            "progress", "funnel", "quadrant", "gantt", "calc", "emit_ui",
+        ] {
             assert!(out.contains(kind), "{kind} が無い");
         }
     }
