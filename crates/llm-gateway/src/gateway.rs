@@ -478,10 +478,17 @@ fn build_provider(
                 .base_url
                 .clone()
                 .ok_or_else(|| LlmError::Config("openai base_url required".into()))?;
+            // 本文に `<think>` を入れて返すモデル（実 ID）だけタグを解釈させる（#584）。
+            let think_tag_models = catalog
+                .models
+                .iter()
+                .filter(|m| m.provider_id() == id && m.reasoning_in_content)
+                .map(|m| m.resolved_id().to_string());
             Ok(Arc::new(
                 OpenAiProvider::new(http, base, pc.api_key.clone(), default_real)
                     .with_user_agent(pc.user_agent.as_deref())?
-                    .with_session_header(pc.session_header.as_deref())?,
+                    .with_session_header(pc.session_header.as_deref())?
+                    .with_think_tag_models(think_tag_models),
             ))
         }
         ProviderKind::OpenaiResponses => {

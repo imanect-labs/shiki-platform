@@ -469,6 +469,7 @@ fn catalog_carries_provider_and_display_metadata() {
         description: Some("速い".into()),
         processed_abroad: true,
         supports_effort: Some(true),
+        reasoning_in_content: true,
         ..Default::default()
     }];
     let m = &cfg.llm.model_catalog().models[0];
@@ -477,4 +478,5 @@ fn catalog_carries_provider_and_display_metadata() {
     assert_eq!(m.description.as_deref(), Some("速い"));
     assert!(m.processed_abroad);
     assert_eq!(m.supports_effort, Some(true));
+    assert!(m.reasoning_in_content);
 }

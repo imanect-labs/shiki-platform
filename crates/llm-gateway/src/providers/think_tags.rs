@@ -18,6 +18,14 @@ pub(super) enum Piece {
     Thinking(String),
 }
 
+impl Piece {
+    fn is_empty(&self) -> bool {
+        match self {
+            Piece::Text(t) | Piece::Thinking(t) => t.is_empty(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     /// 本文の先頭。`<think>` で始まるかまだ判定できない。
@@ -116,11 +124,18 @@ impl ThinkSplitter {
     }
 }
 
+/// 本文デルタを断片にする。`splitter` が無い（対象外のモデル）なら本文 1 つのまま。
+pub(super) fn split_content(splitter: Option<&mut ThinkSplitter>, text: &str) -> Vec<Piece> {
+    if let Some(s) = splitter {
+        return s.push(text);
+    }
+    let mut out = Vec::new();
+    emit(&mut out, Piece::Text(text.to_string()));
+    out
+}
+
 fn emit(out: &mut Vec<Piece>, piece: Piece) {
-    let empty = match &piece {
-        Piece::Text(t) | Piece::Thinking(t) => t.is_empty(),
-    };
-    if !empty {
+    if !piece.is_empty() {
         out.push(piece);
     }
 }

@@ -171,21 +171,37 @@ const SSE_THINK_IN_CONTENT: &str = concat!(
 #[tokio::test]
 async fn openai_think_tags_in_content_become_thinking() {
     let base = spawn_mock(StatusCode::OK, SSE_THINK_IN_CONTENT).await;
-    let provider = OpenAiProvider::new(reqwest::Client::new(), base, None, "m");
+    let provider = OpenAiProvider::new(reqwest::Client::new(), base, None, "m")
+        .with_think_tag_models(["m".to_string()]);
     let req = GenerateRequest::new(vec![Message::text(Role::User, "1+1")]);
     let deltas = drain(&provider, &req).await;
-    let collect = |thinking: bool| -> String {
-        deltas
-            .iter()
-            .filter_map(|d| match (d, thinking) {
-                (StreamDelta::TextDelta { text }, false)
-                | (StreamDelta::ThinkingDelta { text }, true) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect()
-    };
-    assert_eq!(collect(true), "考え中");
-    assert_eq!(collect(false), "答えは2");
+    assert_eq!(collect(&deltas, true), "考え中");
+    assert_eq!(collect(&deltas, false), "答えは2");
+}
+
+#[tokio::test]
+async fn openai_think_tags_pass_through_for_models_not_flagged() {
+    // 対象に指定していないモデルは、先頭の `<think>` も本文のまま（XML 生成などで
+    // 正規の出力が思考と取り違えられて消えないように・#584）。
+    let base = spawn_mock(StatusCode::OK, SSE_THINK_IN_CONTENT).await;
+    let provider = OpenAiProvider::new(reqwest::Client::new(), base, None, "m")
+        .with_think_tag_models(["other".to_string()]);
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "1+1")]);
+    let deltas = drain(&provider, &req).await;
+    assert_eq!(collect(&deltas, true), "");
+    assert_eq!(collect(&deltas, false), "<think>考え中</think>\n\n答えは2");
+}
+
+/// 本文（false）か思考（true）のデルタをつなげる。
+fn collect(deltas: &[StreamDelta], thinking: bool) -> String {
+    deltas
+        .iter()
+        .filter_map(|d| match (d, thinking) {
+            (StreamDelta::TextDelta { text }, false)
+            | (StreamDelta::ThinkingDelta { text }, true) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// 実エンドポイントでの往復（`OPENAI_TEST_URL` が無ければ黙ってスキップ）。
@@ -202,8 +218,11 @@ async fn openai_live_round_trip() {
         reqwest::Client::new(),
         base,
         std::env::var("OPENAI_TEST_KEY").ok(),
-        model,
+        model.clone(),
     )
+    // 本文に `<think>` を入れるモデル（minimax-m3 等）でも検証できるよう、対象に指定する
+    // （入れないモデルには影響しない）。
+    .with_think_tag_models([model])
     .with_user_agent(Some("shiki-it/1.0"))
     .unwrap()
     .with_session_header(std::env::var("OPENAI_TEST_SESSION_HEADER").ok().as_deref())
