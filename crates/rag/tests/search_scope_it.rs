@@ -673,3 +673,25 @@ async fn non_finite_rerank_score_is_normalized() {
     let json = serde_json::to_value(&out.results[0]).unwrap();
     assert!(json["rerank_score"].is_number());
 }
+
+/// 本文の読み出し（doc_read）にも知識スコープを課す判定（#425）。
+#[tokio::test]
+async fn file_in_scope_follows_the_tree() {
+    let Some(env) = setup().await else { return };
+    let a = make_node(&env, "folder", None).await;
+    let b = make_node(&env, "folder", None).await;
+    let in_a = make_node(&env, "file", Some(a)).await;
+    let in_b = make_node(&env, "file", Some(b)).await;
+    let svc = service(&env, allow_all_authz(&env, &[a, b]), RagConfig::default());
+    let ctx = &env.ctx;
+    assert!(svc.file_in_scope(ctx, &folders(&[a]), in_a).await.unwrap());
+    assert!(!svc.file_in_scope(ctx, &folders(&[a]), in_b).await.unwrap());
+    assert!(svc.file_in_scope(ctx, &files(&[in_b]), in_b).await.unwrap());
+    assert!(!svc.file_in_scope(ctx, &files(&[in_a]), in_b).await.unwrap());
+    // 別テナントからは木が見えない（範囲外として扱う）。
+    let other = test_ctx(&format!("t-{}", Uuid::new_v4().simple()), "alice");
+    assert!(!svc
+        .file_in_scope(&other, &folders(&[a]), in_a)
+        .await
+        .unwrap());
+}

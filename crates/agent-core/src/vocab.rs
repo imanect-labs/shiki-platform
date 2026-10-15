@@ -55,6 +55,8 @@ vocab_enum! {
         /// 定義の読み込みではないため）。
         SkillSearch => "skill_search",
         DocSearch => "doc_search",
+        /// 索引済み文書の本文を窓で読む（検索で当たった文書を引用の外まで読み進める・#425）。
+        DocRead => "doc_read",
         WebSearch => "web_search",
         WebFetch => "web_fetch",
         CodeInterpreter => "code_interpreter",
@@ -148,6 +150,7 @@ impl ToolName {
             Self::Skill
             | Self::SkillSearch
             | Self::DocSearch
+            | Self::DocRead
             | Self::WebSearch
             | Self::WebFetch
             | Self::CodeInterpreter
@@ -219,6 +222,7 @@ impl ToolName {
             Self::Skill
             | Self::SkillSearch
             | Self::DocSearch
+            | Self::DocRead
             | Self::WebSearch
             | Self::WebFetch
             | Self::CodeInterpreter

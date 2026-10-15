@@ -333,6 +333,13 @@ flowchart LR
   - 出典パネルは `GET /files/{id}/versions/{version}/blocks`（StorageService の viewer 判定を通った
     `Node` を受け取って `doc_block` を窓で返す・上限 200 件）で前後の原文を描く。本文の読み出しは
     `action="file.blocks.read"` で監査に残す。
+- **本文の読み出し（`doc_read`・#425）**: 検索で当たった文書を引用の外まで読むエージェントのツール。
+  原本は再パースせず、索引にある**最新版**の `doc_block` を読む（#508 より前の索引でブロック列が
+  無ければ `rag_chunk` の leaf / table を ordinal 順に連結する。parent はセクションの写しなので含めない）。
+  認可は `StorageService::get_metadata`（viewer）を通った `Node` を受け取る形で、tenant / org でも絞る。
+  skill の知識スコープは検索と同じく課す（スコープ ∩ ReBAC）。権限なしと不存在は同じ文言。
+  窓（既定 8000 字）で返し、続きは単位の ordinal ＋単位内の字数で指す（巨大な表も途中から読める）。
+  読み出し（見出し一覧を返す場合も）は `action="rag.doc_read"` で版・範囲つきで監査に残す。
 
 - **テナント分離（SAAS.1 の RAG 適用・#91 で明文化）**: Qdrant/Tantivy は DB/blob/FGA/session と同じく
   `tenant_id` 境界を持つ。これは `authz_tags`（テナント**内** ReBAC 可読性・PIT-1）とは**別レイヤ**の
@@ -382,7 +389,7 @@ flowchart LR
   オート（版管理で復元可能な書込のみ自動・fs_delete/shell 等の不可逆は承認維持）/ 全自動（危険・明示オプトイン・
   `tenant.allow_autonomous_bypass=false` の org キャップで禁止可・違反は明示エラー/警告でクランプ）。
   モード→`ApprovalPolicy` の写像は `crates/chat/src/autonomous.rs` に集約。read-only（web_search/web_fetch/
-  doc_search）はどのモードでも止まらない。**skill はモードを緩められない**（Task 6.9 不変条件維持）。
+  doc_search/doc_read）はどのモードでも止まらない。**skill はモードを緩められない**（Task 6.9 不変条件維持）。
   実行中の緩和は **run の actor 本人による設定のみ有効**（共有スレッドの別編集者が他人の権限の run の承認を
   緩められない・confused-deputy 防御）。
 - **ワークスペース封じ込め（#350 で明示化）**: 自律 fs ツールは thread の起動フォルダ（`root_folder_id`）配下限定。
@@ -395,7 +402,7 @@ flowchart LR
   接続アドレス固定**で公開ホストに限定する（シークレット添付なし・リダイレクト非追従）。
   管理者ポリシーのドメイン拒否リストを重ねられる。
 - **冪等 read はステップ内で並列実行する（#349）**: 1 ステップでモデルが出した呼び出しのうち、
-  `Tool::is_read_only()` を表明したもの（`web_search` / `web_fetch` / `doc_search`）だけを有界並列
+  `Tool::is_read_only()` を表明したもの（`web_search` / `web_fetch` / `doc_search` / `doc_read`）だけを有界並列
   （既定 4・`chat.parallel_read_tools`）で走らせる。承認要・破壊系は従来どおり逐次で `Approver` を待ち、
   read はその待ちと並行して進む。**観測（`ToolResult`）とイベントは常に呼び出し順**に整列してから積む
   （再現性・監査）。同一ホストへの `web_fetch` はレーンを分けて直列化する（相手先への礼儀）。

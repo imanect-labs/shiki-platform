@@ -72,6 +72,26 @@ impl SearchService {
             .await
     }
 
+    /// ファイルが知識スコープの内側にあるか（検索時点の木で判定・`doc_read` の範囲限定・#425）。
+    ///
+    /// 知識スコープは「参照を許す範囲」なので、検索だけでなく本文の読み出しにも同じ範囲を課す。
+    pub async fn file_in_scope(
+        &self,
+        ctx: &AuthContext,
+        scope: &SearchScope,
+        file_id: Uuid,
+    ) -> Result<bool, RagError> {
+        let probe = [ScoredChunk {
+            chunk_id: file_id,
+            node_id: file_id,
+            score: 0.0,
+        }];
+        Ok(self
+            .files_within(ctx, scope, &probe)
+            .await?
+            .contains(&file_id))
+    }
+
     /// 候補のうち、ファイルが `bound` の内側にあるものの node_id 集合（検索時点の木で判定）。
     pub(super) async fn files_within(
         &self,

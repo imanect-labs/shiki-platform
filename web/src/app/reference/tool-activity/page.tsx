@@ -176,6 +176,7 @@ const ALL_VOCAB: ToolActivityItem[] = [
   { name: "skill", input: { name: "deep-research" } },
   { name: "subagent", input: { objective: "2026 年の国内 SaaS 市場規模", boundary: "国内のみ" } },
   { name: "doc_search", input: { query: "就業規則" } },
+  { name: "doc_read", input: { file_id: "00000000-0000-0000-0000-000000000000", heading: "第5条" } },
   { name: "web_search", input: { query: "決算 2026" } },
   { name: "web_fetch", input: { url: "https://example.com/ir/2026/q1" } },
   { name: "code_interpreter", input: { code: "print(1)" } },

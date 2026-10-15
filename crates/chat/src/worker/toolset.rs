@@ -29,7 +29,19 @@ impl ChatWorker {
             // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ・
             // 複数ピンは全ピンが scope を持つ時のみ union・#344）。
             let scope = crate::skill::combined_scope(skills);
-            tools.push(Arc::new(DocSearchTool::with_scope(search.clone(), scope)));
+            let doc_search = DocSearchTool::with_scope(search.clone(), scope.clone());
+            // 当たった文書を引用の外まで読む（#425）。認可は StorageService の viewer 判定で、
+            // 知識スコープは検索と同じものを課す（スコープ ∩ ReBAC）。
+            if let Some(storage) = &self.storage {
+                tools.push(Arc::new(doc_search.with_doc_read()));
+                tools.push(Arc::new(crate::doc_read_tool::DocReadTool::with_scope(
+                    search.clone(),
+                    storage.clone(),
+                    scope,
+                )));
+            } else {
+                tools.push(Arc::new(doc_search));
+            }
         }
         if let Some(sandbox) = &self.sandbox {
             let mut code = CodeInterpreterTool::new(
@@ -200,10 +212,11 @@ impl ChatWorker {
         cancel: Arc<std::sync::atomic::AtomicBool>,
     ) {
         /// 子が使えるツール（調査に必要な読み取りだけ）。ここに破壊系を足さないこと。
-        const CHILD_TOOLS: [agent_core::ToolName; 6] = [
+        const CHILD_TOOLS: [agent_core::ToolName; 7] = [
             agent_core::ToolName::WebSearch,
             agent_core::ToolName::WebFetch,
             agent_core::ToolName::DocSearch,
+            agent_core::ToolName::DocRead,
             agent_core::ToolName::FsRead,
             agent_core::ToolName::Grep,
             agent_core::ToolName::FsList,

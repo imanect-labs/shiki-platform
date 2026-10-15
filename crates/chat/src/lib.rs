@@ -28,6 +28,7 @@ pub mod artifacts;
 pub mod attachments;
 pub mod autonomous;
 pub mod csv_tool;
+pub mod doc_read_tool;
 pub mod document_ref;
 pub mod document_tool;
 pub mod error;
