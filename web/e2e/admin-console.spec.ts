@@ -60,12 +60,14 @@ test.describe("チャットのモデル選択", () => {
     await page.goto("/");
     await expect(page.getByTestId("model-pill")).toHaveCount(0);
 
-    // ＋ → モデル → 先頭のモデルを選ぶ。
+    // ＋ → モデル → 一覧（#583）の先頭のモデルを選ぶ。
     await page.getByRole("button", { name: "追加メニューを開く" }).click();
     await page.getByTestId("composer-model-menu").click();
-    const first = page.locator('[data-testid^="composer-model-"]:not([data-testid="composer-model-menu"])').first();
-    const label = (await first.locator("span span").first().innerText()).trim();
+    await expect(page.getByTestId("model-picker")).toBeVisible();
+    const first = page.locator('[data-testid^="model-option-"]:not([data-testid="model-option-default"])').first();
+    const label = (await first.locator("[data-label]").innerText()).trim();
     await first.click();
+    await expect(page.getByTestId("model-picker")).toHaveCount(0);
     const pill = page.getByTestId("model-pill");
     await expect(pill).toBeVisible();
     await expect(pill).toContainText(label);
@@ -78,7 +80,7 @@ test.describe("チャットのモデル選択", () => {
 
     // ピルから Auto に戻すとピルが消える。
     await page.getByTestId("model-pill").click();
-    await page.getByRole("radio", { name: /Auto（おまかせ）/ }).click();
+    await page.getByRole("option", { name: /Auto（おまかせ）/ }).click();
     await expect(page.getByTestId("model-pill")).toHaveCount(0);
   });
 });

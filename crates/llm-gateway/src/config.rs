@@ -146,6 +146,12 @@ pub struct ModelEntry {
     /// モデルなど同意を取ってから使わせたいものはここを `true` にする。
     #[serde(default)]
     pub requires_opt_in: bool,
+    /// 思考を `reasoning_content` ではなく本文の先頭に `<think>…</think>` で返すモデルか
+    /// （MiniMax M3 等・#584）。true のときだけ Chat Completions アダプタが本文先頭のタグを
+    /// 思考へ振り分ける。既定 false（先頭から `<think>` を書かせる正規の出力を、思考と
+    /// 取り違えて回答から消さないため）。
+    #[serde(default)]
+    pub reasoning_in_content: bool,
 }
 
 impl ModelEntry {

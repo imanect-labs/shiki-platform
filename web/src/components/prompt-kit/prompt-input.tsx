@@ -239,4 +239,5 @@ export {
   PromptInputTextarea,
   PromptInputActions,
   PromptInputAction,
+  usePromptInput,
 };
