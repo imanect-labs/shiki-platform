@@ -16,11 +16,15 @@
 import { CodeBlock } from "@tiptap/extension-code-block";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { TextSelection } from "@tiptap/pm/state";
+import type { EditorView } from "@tiptap/pm/view";
 import {
+  mergeAttributes,
   NodeViewContent,
   NodeViewWrapper,
   ReactNodeViewRenderer,
+  type Attributes,
   type Editor,
+  type KeyboardShortcutCommand,
   type NodeViewProps,
 } from "@tiptap/react";
 import { isEmpty, parseBlock, resolveKind, type Diagnostic, type Kind } from "@imanect/yui";
@@ -30,6 +34,7 @@ import * as React from "react";
 
 import { renderFigureTable } from "@/components/prompt-kit/markdown";
 import { ToolbarButton, UiFigure } from "@/components/prompt-kit/ui-figure";
+import { normalizeYuiInfo } from "@/lib/notes/yui-language";
 import { cn } from "@/lib/utils";
 
 /// codeBlock の language 属性が Yui か（`ui` / `yui` / `ui:bar` / `ui bar`）。
@@ -46,6 +51,28 @@ export function yuiKindOf(language: unknown): Kind | undefined {
 
 function isYuiNode(node: PMNode): boolean {
   return isYuiCodeLanguage(node.attrs.language);
+}
+
+/// ブロック（pos から始まる node）の中に選択があれば、ブロックの外（直後、無ければ直前）へ移す。
+/// 図の表示中は記述（contentDOM）を隠すので、見えない場所へ入力・ブロック変換させない。
+/// フォーカスは動かさない（ProseMirror はフォーカスが無ければ DOM の選択を書き換えない）。
+function moveSelectionOutOf(editor: Editor, pos: number): void {
+  const { state: es, view } = editor;
+  const node = es.doc.nodeAt(pos);
+  if (!node) return;
+  const after = pos + node.nodeSize;
+  const isInside = (from: number, to: number) => from > pos && to < after;
+  if (!isInside(es.selection.from, es.selection.to)) return;
+  for (const [at, bias] of [
+    [after, 1],
+    [pos, -1],
+  ] as const) {
+    const sel = TextSelection.near(es.doc.resolve(Math.min(at, es.doc.content.size)), bias);
+    if (!isInside(sel.from, sel.to)) {
+      view.dispatch(es.tr.setSelection(sel));
+      return;
+    }
+  }
 }
 
 /// 図の状態。ok 以外は（編集できるなら）記述を見せる。
@@ -142,6 +169,15 @@ function YuiCodeBlockView({ node, editor, getPos }: NodeViewProps) {
     if (prevInside.current === inside) return;
     prevInside.current = inside;
     setMode(inside ? "source" : "figure");
+    // フォーカスが外れただけ（選択はブロックの中のまま）で図に戻るときも、隠す記述に選択を
+    // 残さない。残すと、ツールバー（chain().focus()）が復元した選択でこのブロックを見出し等へ
+    // 変えてしまい、language=ui が落ちて図が消える。
+    const pos = getPos();
+    if (!inside && editable && state.kind === "ok" && typeof pos === "number") {
+      moveSelectionOutOf(editor, pos);
+    }
+    // inside の遷移でだけ動かす（state・editable の変化では選択に触れない）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inside]);
   React.useEffect(() => {
     if (!focusIntoChrome.current) return;
@@ -167,13 +203,7 @@ function YuiCodeBlockView({ node, editor, getPos }: NodeViewProps) {
     const pos = getPos();
     if (typeof pos !== "number") return;
     // 隠した記述の中にカーソルを残さない（見えない場所へ入力しない）。ブロックの直後へ移す。
-    const { state: es, view } = editor;
-    const after = pos + node.nodeSize;
-    const { from, to } = es.selection;
-    if (!(from > pos && to < after)) return;
-    const sel = TextSelection.near(es.doc.resolve(Math.min(after, es.doc.content.size)), 1);
-    if (sel.from > pos && sel.to < after) return;
-    view.dispatch(es.tr.setSelection(sel));
+    moveSelectionOutOf(editor, pos);
   };
 
   let status: { text: string; tone: "error" | "muted" } | null = null;
@@ -233,6 +263,9 @@ function YuiCodeBlockView({ node, editor, getPos }: NodeViewProps) {
           ) : null}
           {editable ? (
             <ToolbarButton
+              // mousedown でフォーカスを奪わない（エディタの blur で操作欄が消えてクリックが
+              // 届かなくなるのを防ぐ。Chromium / Firefox はボタンへフォーカスを移す）。
+              onMouseDown={keepEditorFocus}
               onClick={showFigure}
               disabled={state.kind !== "ok"}
               title={state.kind !== "ok" ? "図にできる記述になると切り替えられます" : undefined}
@@ -268,6 +301,7 @@ function YuiCodeBlockView({ node, editor, getPos }: NodeViewProps) {
                   editable ? (
                     <ToolbarButton
                       ref={sourceToggleRef}
+                      onMouseDown={keepEditorFocus}
                       onClick={openSource}
                       label="図の記述（ソース）を編集"
                       className="print:hidden"
@@ -287,9 +321,105 @@ function YuiCodeBlockView({ node, editor, getPos }: NodeViewProps) {
   );
 }
 
+/// 操作欄のボタンの mousedown 既定動作（フォーカス移動）を止め、エディタのフォーカスを保つ。
+function keepEditorFocus(e: React.MouseEvent) {
+  e.preventDefault();
+}
+
+type ArrowDir = "up" | "down" | "left" | "right";
+
+/// pos から始まるブロックが図を表示中（記述を隠している）か。表示は NodeView の状態なので
+/// DOM（NodeViewWrapper の data-mode）で見る。
+function isFigureShown(view: EditorView, pos: number): boolean {
+  const dom = view.nodeDOM(pos);
+  if (!(dom instanceof HTMLElement)) return false;
+  const el = dom.matches(".note-yui") ? dom : dom.querySelector<HTMLElement>(".note-yui");
+  return el?.dataset.mode === "figure";
+}
+
+/// 矢印キー: 隣が図を表示中の Yui ブロックなら、その記述へカーソルを入れる（記述が開く）。
+/// 図の表示中は記述が display:none なので、ブラウザ既定のカーソル移動はブロックを飛ばし、
+/// キーボードだけでは図の中へ入れない（a11y）。下・右は記述の先頭、上・左は末尾へ入る。
+function enterAdjacentFigure(editor: Editor, dir: ArrowDir): boolean {
+  if (!editor.isEditable) return false;
+  const { state, view } = editor;
+  const sel = state.selection;
+  if (!(sel instanceof TextSelection) || !sel.empty) return false;
+  if (!view.endOfTextblock(dir)) return false;
+  const forward = dir === "down" || dir === "right";
+  const { $head } = sel;
+  // 今のテキストブロックから外側へ、最初に見つかる隣のノードを見る（リスト末尾の段落など）。
+  for (let d = $head.depth; d > 0; d--) {
+    const edge = forward ? $head.after(d) : $head.before(d);
+    const $edge = state.doc.resolve(edge);
+    const adjacent = forward ? $edge.nodeAfter : $edge.nodeBefore;
+    if (!adjacent) continue;
+    if (!isYuiNode(adjacent)) return false;
+    const start = forward ? edge : edge - adjacent.nodeSize;
+    if (!isFigureShown(view, start)) return false;
+    const target = forward ? start + 1 : start + adjacent.nodeSize - 1;
+    view.dispatch(
+      state.tr.setSelection(TextSelection.create(state.doc, target)).scrollIntoView(),
+    );
+    return true;
+  }
+  return false;
+}
+
 /// StarterKit の codeBlock を置き換える（StarterKit 側は `codeBlock: false`）。
-/// 入力規則（```ui + 空白）・キー操作・スキーマ・HTML 往復は CodeBlock のまま。
+/// 入力規則（```ui + 空白）・キー操作・スキーマは CodeBlock のまま。
+/// HTML 往復だけ、種類付きの言語（`ui bar`）を `ui:bar` に寄せる（class が 2 つに割れて
+/// 貼り付け時に `ui` だけになり、種類が落ちるのを防ぐ）。
 export const YuiCodeBlock = CodeBlock.extend({
+  addAttributes() {
+    const parent: Attributes = this.parent?.() ?? {};
+    const prefix = this.options.languageClassPrefix ?? "";
+    const parentParse = parent.language?.parseHTML;
+    return {
+      ...parent,
+      language: {
+        ...parent.language,
+        parseHTML: (element: HTMLElement) => {
+          // `class="language-ui bar"`（collab の md_parse は情報文字列全体を言語に残す）。
+          const classes = [...(element.firstElementChild?.classList ?? [])];
+          const i = prefix ? classes.findIndex((c) => c.startsWith(prefix)) : -1;
+          if (i >= 0) {
+            const lang = classes[i].slice(prefix.length);
+            const info = lang.includes(":") ? lang : `${lang} ${classes[i + 1] ?? ""}`;
+            const yui = normalizeYuiInfo(info);
+            if (yui) return yui;
+          }
+          return parentParse ? parentParse(element) : null;
+        },
+      },
+    };
+  },
+  renderHTML(props) {
+    const yui =
+      typeof props.node.attrs.language === "string"
+        ? normalizeYuiInfo(props.node.attrs.language)
+        : undefined;
+    if (!yui) return this.parent!(props);
+    return [
+      "pre",
+      mergeAttributes(this.options.HTMLAttributes, props.HTMLAttributes),
+      ["code", { class: `${this.options.languageClassPrefix}${yui}` }, 0],
+    ];
+  },
+  addKeyboardShortcuts() {
+    const parent = this.parent?.() ?? {};
+    const arrow =
+      (key: "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight", dir: ArrowDir) =>
+      (props: Parameters<KeyboardShortcutCommand>[0]) =>
+        enterAdjacentFigure(this.editor, dir) || (parent[key]?.(props) ?? false);
+    return {
+      ...parent,
+      ArrowUp: arrow("ArrowUp", "up"),
+      ArrowDown: arrow("ArrowDown", "down"),
+      ArrowLeft: arrow("ArrowLeft", "left"),
+      ArrowRight: arrow("ArrowRight", "right"),
+    };
+  },
   addNodeView() {
     const yuiView = ReactNodeViewRenderer(YuiCodeBlockView, {
       // 図・操作欄（data-yui-chrome）のイベントは ProseMirror に渡さない（クリックでブロックが

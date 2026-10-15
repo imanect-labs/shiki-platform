@@ -173,3 +173,181 @@ test("素の Markdown で貼った ```ui bar は種類を保ったまま図に�
   await page.getByTestId("note-title-input").click();
   await expect(block.getByTestId("ui-figure")).toHaveAttribute("data-ui-kind", "bar");
 });
+
+/// ノートを作って開き、```ui ブロック（bar・2 行）の前後に段落を置く（前 / 図 / 後）。
+async function noteWithFigureBetween(page: Page, name: string) {
+  await loginViaKeycloak(page);
+  await page.goto("/drive");
+  const nodeId = await createNoteViaApi(page, uniqueName(name));
+  await openNote(page, nodeId);
+  const editor = page.getByTestId("note-editor");
+  await editor.click();
+  await editor.pressSequentially("前");
+  await editor.press("Enter");
+  await editor.pressSequentially("```ui ");
+  await editor.pressSequentially("bar 月別売上");
+  await editor.press("Enter");
+  await editor.pressSequentially("1月 | 120");
+  // 記述の末尾で ↓ はブロックを出て次の段落（TrailingNode）へ。
+  await editor.press("ArrowDown");
+  await editor.pressSequentially("後");
+  const block = editor.getByTestId("note-yui-block").first();
+  await expect(block).toHaveAttribute("data-mode", "figure");
+  return { editor, block };
+}
+
+type DocJson = {
+  content: { type: string; attrs?: { language?: string }; content?: { text?: string }[] }[];
+};
+
+test("「図」をマウスで押して図に戻した後、ツールバーの操作で ```ui ブロックが変わらない", async ({
+  page,
+}) => {
+  const { editor, block } = await noteWithFigureBetween(page, "note-yui-click");
+
+  // 記述を開く（カーソルは記述の中）。
+  await block.getByRole("button", { name: "図の記述（ソース）を編集" }).click();
+  await expect(block).toHaveAttribute("data-mode", "source");
+
+  // 実クリック（mousedown → mouseup）で「図」を押す。mousedown でフォーカスを奪うと
+  // blur で操作欄が消え、クリックが届かず選択が隠した記述の中に残っていた。
+  await block.getByTestId("note-yui-toggle").click();
+  await expect(block).toHaveAttribute("data-mode", "figure");
+  await expect(block.getByTestId("note-yui-source")).toBeHidden();
+  // エディタのフォーカスは保ったまま（ボタンへ移さない）。
+  await expect(editor).toBeFocused();
+
+  // ツールバーの「見出し 1」「引用」は chain().focus() で選択を戻す。ブロックの外の選択に効く。
+  const toolbar = page.getByTestId("note-toolbar");
+  await toolbar.getByRole("button", { name: "見出し 1" }).click();
+  await toolbar.getByRole("button", { name: "引用" }).click();
+
+  const json = JSON.parse(await editorJson(page)) as DocJson;
+  const code = json.content.find((n) => n.type === "codeBlock");
+  expect(code?.attrs?.language).toBe("ui");
+  expect(code?.content?.[0]?.text).toBe("bar 月別売上\n1月 | 120");
+  expect(json.content.some((n) => n.type === "heading" || n.type === "blockquote")).toBe(true);
+  await expect(block).toHaveAttribute("data-mode", "figure");
+  await expect(block.getByTestId("ui-figure")).toBeVisible();
+});
+
+test("記述からフォーカスが外れて図に戻っても、ツールバーは隠した記述を変えない", async ({ page }) => {
+  const { block } = await noteWithFigureBetween(page, "note-yui-blur");
+  await block.getByRole("button", { name: "図の記述（ソース）を編集" }).click();
+  await expect(block).toHaveAttribute("data-mode", "source");
+
+  // エディタの外（題名）へフォーカスを移す → 図に戻る。選択もブロックの外へ移る。
+  await page.getByTestId("note-title-input").click();
+  await expect(block).toHaveAttribute("data-mode", "figure");
+  await page.getByTestId("note-toolbar").getByRole("button", { name: "見出し 1" }).click();
+
+  const json = JSON.parse(await editorJson(page)) as DocJson;
+  expect(json.content.find((n) => n.type === "codeBlock")?.attrs?.language).toBe("ui");
+  await expect(block).toHaveAttribute("data-mode", "figure");
+});
+
+test("矢印キーで図の表示中の ```ui ブロックへ入り、記述を開ける（キーボードのみ）", async ({
+  page,
+}) => {
+  const { editor, block } = await noteWithFigureBetween(page, "note-yui-arrows");
+  const source = block.getByTestId("note-yui-source");
+
+  // 後 の先頭から ↑: 記述の末尾へ入る（記述が開く）。
+  await editor.getByText("後", { exact: true }).click();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowUp");
+  await expect(block).toHaveAttribute("data-mode", "source");
+  await page.keyboard.type("0");
+  await expect(source).toContainText("1月 | 1200");
+  await page.keyboard.press("Backspace");
+
+  // 記述の末尾から ↓ で出ると図に戻る。そこから ← で末尾へ入り直す。
+  await page.keyboard.press("ArrowDown");
+  await expect(block).toHaveAttribute("data-mode", "figure");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowLeft");
+  await expect(block).toHaveAttribute("data-mode", "source");
+  await page.keyboard.type("5");
+  await expect(source).toContainText("1月 | 1205");
+  await page.keyboard.press("Backspace");
+
+  // 前 の末尾から ↓: 記述の先頭へ入る。
+  await editor.getByText("前", { exact: true }).click();
+  await expect(block).toHaveAttribute("data-mode", "figure");
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowDown");
+  await expect(block).toHaveAttribute("data-mode", "source");
+  await page.keyboard.type("x");
+  await expect(source).toContainText("xbar 月別売上");
+  await page.keyboard.press("Backspace");
+
+  // 前 の末尾から →: 記述の先頭へ入る。
+  await editor.getByText("前", { exact: true }).click();
+  await expect(block).toHaveAttribute("data-mode", "figure");
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowRight");
+  await expect(block).toHaveAttribute("data-mode", "source");
+  await page.keyboard.type("y");
+  await expect(source).toContainText("ybar 月別売上");
+  await page.keyboard.press("Backspace");
+
+  // 文書は変わっていない（入力は打ち消した）。
+  const json = JSON.parse(await editorJson(page)) as DocJson;
+  const code = json.content.find((n) => n.type === "codeBlock");
+  expect(code?.attrs?.language).toBe("ui");
+  expect(code?.content?.[0]?.text).toBe("bar 月別売上\n1月 | 120");
+});
+
+test("種類付きの言語は分かる種類だけ ui:<種類>（小文字）に寄せ、HTML 往復でも保つ", async ({
+  page,
+}) => {
+  await loginViaKeycloak(page);
+  await page.goto("/drive");
+  const nodeId = await createNoteViaApi(page, uniqueName("note-yui-lang"));
+  await openNote(page, nodeId);
+
+  const paste = (data: Record<string, string>) =>
+    page.evaluate((entries) => {
+      const el = document.querySelector<HTMLElement>('[data-testid="note-editor"]');
+      if (!el) throw new Error("エディタ DOM が見つからない");
+      el.focus();
+      const dt = new DataTransfer();
+      for (const [type, value] of Object.entries(entries)) dt.setData(type, value);
+      el.dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+      );
+    }, data);
+  const languages = async () =>
+    (JSON.parse(await editorJson(page)) as DocJson).content
+      .filter((n) => n.type === "codeBlock")
+      .map((n) => n.attrs?.language);
+
+  // 素の Markdown: `UI Bar` → ui:bar。種類として分からない `ui a```b` は 1 語目だけ（寄せない）。
+  await paste({
+    "text/plain": "前置き\n\n```UI Bar\n月別売上\n1月 | 120\n```\n\n~~~ui a```b\nx\n~~~\n\n後書き\n",
+  });
+  await expect.poll(languages).toEqual(["ui:bar", "ui"]);
+
+  // HTML: collab（md_parse）由来の `class="language-ui bar"` は ui:bar として受ける
+  // （前後の段落ごとコピーした範囲。ブロック 1 つだけだと既定で今の段落へ文字として入る）。
+  await paste({
+    "text/html":
+      '<p>上</p><pre><code class="language-ui bar">売上\n1月 | 10\n2月 | 20</code></pre><p>下</p>',
+    "text/plain": "上\n\n売上\n1月 | 10\n2月 | 20\n\n下",
+  });
+  await expect.poll(languages).toEqual(["ui:bar", "ui", "ui:bar"]);
+
+  // 書き出す HTML（コピー）: language=`ui bar` のブロックも class 1 つ（language-ui:bar）にする。
+  const html = await page.evaluate(() => {
+    type Ed = { getHTML: () => string; commands: { insertContent: (c: unknown) => boolean } };
+    const ed = (window as unknown as { __shikiNoteEditor: Ed }).__shikiNoteEditor;
+    ed.commands.insertContent({
+      type: "codeBlock",
+      attrs: { language: "ui bar" },
+      content: [{ type: "text", text: "売上\nA | 1" }],
+    });
+    return ed.getHTML();
+  });
+  expect(html).toContain('class="language-ui:bar"');
+  expect(html).not.toContain('class="language-ui bar"');
+});

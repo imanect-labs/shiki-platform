@@ -115,7 +115,13 @@ export const UiFigure = React.memo(function UiFigure({
         // 図の内側の余白（幅 400px 未満は 12px、それ以上は 16px）だけ外へ広げ、見出しを本文の左端に揃える。
         <YuiFigure figure={figure} className="-mx-3 sm:-mx-4" />
       )}
-      <figcaption className="mt-1 flex flex-wrap items-center justify-end gap-1 text-[11px] text-muted-foreground">
+      <figcaption
+        className={cn(
+          "mt-1 flex items-center justify-end gap-1 text-[11px] text-muted-foreground",
+          // 足したボタン（ノートの「ソース」）で狭い幅に収まらないときだけ折り返す（チャットは従来どおり）。
+          actions != null && "flex-wrap",
+        )}
+      >
         {note ? <span className="mr-auto">{note}</span> : null}
         {complete ? (
           <>
