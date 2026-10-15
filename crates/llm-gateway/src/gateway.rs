@@ -478,12 +478,11 @@ fn build_provider(
                 .base_url
                 .clone()
                 .ok_or_else(|| LlmError::Config("openai base_url required".into()))?;
-            Ok(Arc::new(OpenAiProvider::new(
-                http,
-                base,
-                pc.api_key.clone(),
-                default_real,
-            )))
+            Ok(Arc::new(
+                OpenAiProvider::new(http, base, pc.api_key.clone(), default_real)
+                    .with_user_agent(pc.user_agent.as_deref())?
+                    .with_session_header(pc.session_header.as_deref())?,
+            ))
         }
         ProviderKind::OpenaiResponses => {
             let base = pc
@@ -505,12 +504,11 @@ fn build_provider(
                 .api_key
                 .clone()
                 .ok_or_else(|| LlmError::Config("anthropic api_key required".into()))?;
-            Ok(Arc::new(AnthropicProvider::new(
-                http,
-                base,
-                key,
-                default_real,
-            )))
+            Ok(Arc::new(
+                AnthropicProvider::new(http, base, key, default_real)
+                    .with_user_agent(pc.user_agent.as_deref())?
+                    .with_session_header(pc.session_header.as_deref())?,
+            ))
         }
     }
 }

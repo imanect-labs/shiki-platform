@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::stream::StreamExt;
-use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::{json, Value};
 
+use super::identity::IdentityHeaders;
 use super::openai::tool_message_content;
 use super::openai_names::ToolNameMap;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
@@ -32,8 +32,7 @@ pub struct OpenAiResponsesProvider {
     base_url: String,
     api_key: Option<String>,
     default_model: String,
-    user_agent: Option<HeaderValue>,
-    session_header: Option<HeaderName>,
+    identity: IdentityHeaders,
 }
 
 /// Responses API の `max_output_tokens` の下限（これ未満は 400）。
@@ -59,31 +58,20 @@ impl OpenAiResponsesProvider {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key,
             default_model: default_model.into(),
-            user_agent: None,
-            session_header: None,
+            identity: IdentityHeaders::default(),
         }
     }
 
     /// 送出する User-Agent を指定する。ヘッダ値にできない文字列は設定エラーにする
     /// （起動時に気づけるように。リクエストごとに失敗させない）。
     pub fn with_user_agent(mut self, user_agent: Option<&str>) -> Result<Self, LlmError> {
-        self.user_agent = user_agent
-            .map(|ua| {
-                HeaderValue::from_str(ua.trim())
-                    .map_err(|e| LlmError::Config(format!("invalid llm.user_agent: {e}")))
-            })
-            .transpose()?;
+        self.identity.set_user_agent(user_agent)?;
         Ok(self)
     }
 
     /// 会話 ID を載せるヘッダ名を指定する。ヘッダ名にできない文字列は設定エラーにする。
     pub fn with_session_header(mut self, header: Option<&str>) -> Result<Self, LlmError> {
-        self.session_header = header
-            .map(|h| {
-                HeaderName::from_bytes(h.trim().as_bytes())
-                    .map_err(|e| LlmError::Config(format!("invalid llm.session_header: {e}")))
-            })
-            .transpose()?;
+        self.identity.set_session_header(header)?;
         Ok(self)
     }
 
@@ -449,21 +437,7 @@ impl LlmProvider for OpenAiResponsesProvider {
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
         }
-        if let Some(ua) = &self.user_agent {
-            builder = builder.header(reqwest::header::USER_AGENT, ua.clone());
-        }
-        if let Some(header) = &self.session_header {
-            // ID が無い（またはヘッダ値にできない）呼び出しには、呼び出しごとの ID を付ける。
-            let sid = req
-                .session_id
-                .as_deref()
-                .and_then(|s| HeaderValue::from_str(s).ok())
-                .unwrap_or_else(|| {
-                    HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
-                        .unwrap_or_else(|_| HeaderValue::from_static("shiki"))
-                });
-            builder = builder.header(header.clone(), sid);
-        }
+        let builder = self.identity.apply(builder, req.session_id.as_deref());
         let resp = builder
             .send()
             .await

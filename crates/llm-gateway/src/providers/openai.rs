@@ -12,6 +12,7 @@ use futures::channel::mpsc;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
+use super::identity::IdentityHeaders;
 use super::openai_names::ToolNameMap;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
@@ -23,6 +24,7 @@ pub struct OpenAiProvider {
     base_url: String,
     api_key: Option<String>,
     default_model: String,
+    identity: IdentityHeaders,
 }
 
 impl OpenAiProvider {
@@ -38,7 +40,21 @@ impl OpenAiProvider {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key,
             default_model: default_model.into(),
+            identity: IdentityHeaders::default(),
         }
+    }
+
+    /// 送出する User-Agent を指定する。ヘッダ値にできない文字列は設定エラーにする
+    /// （起動時に気づけるように。リクエストごとに失敗させない）。
+    pub fn with_user_agent(mut self, user_agent: Option<&str>) -> Result<Self, LlmError> {
+        self.identity.set_user_agent(user_agent)?;
+        Ok(self)
+    }
+
+    /// 会話 ID を載せるヘッダ名を指定する。ヘッダ名にできない文字列は設定エラーにする。
+    pub fn with_session_header(mut self, header: Option<&str>) -> Result<Self, LlmError> {
+        self.identity.set_session_header(header)?;
+        Ok(self)
     }
 
     fn build_body(&self, req: &GenerateRequest, names: &ToolNameMap) -> Value {
@@ -267,6 +283,7 @@ impl LlmProvider for OpenAiProvider {
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
         }
+        let builder = self.identity.apply(builder, req.session_id.as_deref());
         let resp = builder
             .send()
             .await

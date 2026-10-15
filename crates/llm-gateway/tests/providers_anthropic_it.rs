@@ -6,7 +6,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use axum::http::StatusCode;
+use std::sync::{Arc, Mutex};
+
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Router;
 use futures::stream::StreamExt;
@@ -111,4 +113,94 @@ async fn anthropic_server_error_maps_to_unavailable() {
 
     let res = provider.stream(&req).await;
     assert!(matches!(res, Err(LlmError::Unavailable(_))));
+}
+
+type Seen = Arc<Mutex<Option<HeaderMap>>>;
+
+/// 固定ステータス＋固定ボディを返し、受けたヘッダを記録するモックを立てる。
+async fn spawn_recording_mock(status: StatusCode, body: &'static str) -> (String, Seen) {
+    let seen: Seen = Arc::new(Mutex::new(None));
+    let rec = seen.clone();
+    let app = Router::new().fallback(move |headers: HeaderMap| {
+        let rec = rec.clone();
+        async move {
+            *rec.lock().unwrap() = Some(headers);
+            (status, [("content-type", "text/event-stream")], body).into_response()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), seen)
+}
+
+#[tokio::test]
+async fn anthropic_sends_identity_headers_when_configured() {
+    let (base, seen) = spawn_recording_mock(StatusCode::OK, SSE_BODY).await;
+    let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k", "m")
+        .with_user_agent(Some("shiki-test/1.0"))
+        .unwrap()
+        .with_session_header(Some("x-opencode-session"))
+        .unwrap();
+    let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    req.session_id = Some("thread-42".into());
+    drain(&provider, &req).await;
+    let headers = seen.lock().unwrap().clone().unwrap();
+    assert_eq!(headers["x-api-key"], "k");
+    assert_eq!(headers["user-agent"], "shiki-test/1.0");
+    assert_eq!(headers["x-opencode-session"], "thread-42");
+}
+
+#[tokio::test]
+async fn anthropic_sends_no_session_header_when_unset() {
+    let (base, seen) = spawn_recording_mock(StatusCode::OK, SSE_BODY).await;
+    let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k", "m");
+    let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    req.session_id = Some("thread-42".into());
+    drain(&provider, &req).await;
+    let headers = seen.lock().unwrap().clone().unwrap();
+    assert!(headers.get("x-opencode-session").is_none());
+}
+
+/// 実エンドポイントでの往復（`ANTHROPIC_TEST_URL` が無ければ黙ってスキップ）。
+///
+/// 例（OpenCode Go）: `ANTHROPIC_TEST_URL=https://opencode.ai/zen/go` `ANTHROPIC_TEST_MODEL=claude-haiku-5-5`
+///     `ANTHROPIC_TEST_SESSION_HEADER=x-opencode-session` `ANTHROPIC_TEST_KEY=<キー>`
+#[tokio::test]
+async fn anthropic_live_round_trip() {
+    let Ok(base) = std::env::var("ANTHROPIC_TEST_URL") else {
+        return;
+    };
+    let model = std::env::var("ANTHROPIC_TEST_MODEL").unwrap_or_else(|_| "m".into());
+    let provider = AnthropicProvider::new(
+        reqwest::Client::new(),
+        base,
+        std::env::var("ANTHROPIC_TEST_KEY").unwrap_or_default(),
+        model,
+    )
+    .with_user_agent(Some("shiki-it/1.0"))
+    .unwrap()
+    .with_session_header(
+        std::env::var("ANTHROPIC_TEST_SESSION_HEADER")
+            .ok()
+            .as_deref(),
+    )
+    .unwrap();
+    let mut req = GenerateRequest::new(vec![Message::text(Role::User, "1+1は？数字のみで答えて")]);
+    req.session_id = Some(format!("shiki-it-{}", uuid::Uuid::new_v4()));
+    req.max_tokens = Some(2000);
+    let deltas = drain(&provider, &req).await;
+    let text: String = deltas
+        .iter()
+        .filter_map(|d| match d {
+            StreamDelta::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(text.contains('2'), "answer: {text}");
+    assert!(
+        matches!(deltas.last(), Some(StreamDelta::Done { usage, .. }) if usage.prompt_tokens > 0)
+    );
 }
