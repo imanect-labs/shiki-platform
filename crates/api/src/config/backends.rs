@@ -221,6 +221,7 @@ impl LlmConfig {
                     processed_abroad: m.processed_abroad,
                     supports_effort: m.supports_effort,
                     requires_opt_in: m.requires_opt_in,
+                    reasoning_in_content: m.reasoning_in_content,
                 })
                 .collect()
         };
@@ -262,6 +263,10 @@ pub struct LlmModelEntry {
     /// 組織の管理者が有効にするまで使わせない（[`llm_gateway::ModelEntry::requires_opt_in`]）。
     #[serde(default)]
     pub requires_opt_in: bool,
+    /// 本文の先頭に `<think>…</think>` で思考を返すモデル
+    /// （[`llm_gateway::ModelEntry::reasoning_in_content`]）。
+    #[serde(default)]
+    pub reasoning_in_content: bool,
 }
 
 /// Langfuse 計装の設定（設定表現）。

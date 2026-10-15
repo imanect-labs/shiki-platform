@@ -12,5 +12,7 @@ mod stub_fixtures;
 /// stub のストリーム生成ヘルパ（stub.rs から分割）。
 mod stub_stream;
 mod stub_triggers;
+/// 本文先頭の `<think>…</think>` を思考へ振り分ける（Chat Completions・#584）。
+mod think_tags;
 /// ツール名の wire 写像（全アダプタ共通・#582）。
 mod tool_names;
