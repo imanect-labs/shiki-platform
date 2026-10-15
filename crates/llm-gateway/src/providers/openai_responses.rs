@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use super::identity::IdentityHeaders;
 use super::openai::tool_message_content;
-use super::openai_names::ToolNameMap;
+use super::tool_names::ToolNameMap;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::tool_loading::context_tools;
@@ -419,15 +419,8 @@ impl LlmProvider for OpenAiResponsesProvider {
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/responses", self.base_url);
-        // 履歴中のツール名も同じ写像に通す（openai-compat と同じ理由・openai.rs 参照）。
-        let names = ToolNameMap::new(req.tools.iter().map(|t| t.name.as_str()).chain(
-            req.messages.iter().flat_map(|m| {
-                m.content.iter().filter_map(|b| match b {
-                    Block::ToolUse { name, .. } => Some(name.as_str()),
-                    _ => None,
-                })
-            }),
-        ));
+        // 履歴中のツール名も同じ写像に通す（ToolNameMap::for_request）。
+        let names = ToolNameMap::for_request(req);
         let body = self.build_body(req, &names);
         let mut builder = self
             .http

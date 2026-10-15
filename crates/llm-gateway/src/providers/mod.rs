@@ -4,7 +4,6 @@ pub mod anthropic;
 /// 識別ヘッダ（User-Agent・会話 ID）の共通処理。
 mod identity;
 pub mod openai;
-mod openai_names;
 pub mod openai_responses;
 pub mod stub;
 mod stub_deep_research;
@@ -13,3 +12,5 @@ mod stub_fixtures;
 /// stub のストリーム生成ヘルパ（stub.rs から分割）。
 mod stub_stream;
 mod stub_triggers;
+/// ツール名の wire 写像（全アダプタ共通・#582）。
+mod tool_names;
