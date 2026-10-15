@@ -6,6 +6,8 @@
 //! - 少しずつ流し続けて全体の上限を超える → 全体のタイムアウト
 //! - 受け手がストリームを捨てる → 黙っている上流もタイムアウトを待たずに手放す
 //!
+//! スタブの `slow:<秒>` の待ちにも同じ上限が掛かることも確かめる。
+//!
 //! どれも `LlmError::Unavailable` で、メッセージにどのタイムアウトかが入る。時間は短く取る。
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -25,6 +27,7 @@ use llm_gateway::provider::{LlmError, LlmProvider};
 use llm_gateway::providers::anthropic::AnthropicProvider;
 use llm_gateway::providers::openai::OpenAiProvider;
 use llm_gateway::providers::openai_responses::OpenAiResponsesProvider;
+use llm_gateway::providers::stub::StubProvider;
 use llm_gateway::LlmTimeouts;
 
 /// モックの振る舞い。
@@ -237,4 +240,59 @@ async fn dropping_the_stream_releases_a_silent_upstream_before_any_timeout() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+}
+
+/// スタブの `slow:<秒>`（利用者の入力で決まる待ち）にも同じ上限が掛かる。
+#[tokio::test]
+async fn stub_slow_hold_is_capped_by_the_same_timeouts() {
+    let slow = |secs: u64| {
+        GenerateRequest::new(vec![Message::text(
+            Role::User,
+            format!("slow:{secs} こんにちは"),
+        )])
+    };
+    let drain = |p: StubProvider, r: GenerateRequest| async move {
+        let mut stream = p.stream(&r).await.unwrap();
+        let mut out = Vec::new();
+        while let Some(item) = stream.next().await {
+            out.push(item);
+        }
+        out
+    };
+
+    // 無通信の上限（200ms）を超える待ちは、本文のあと idle timeout で切れる。
+    let started = Instant::now();
+    let out = drain(
+        StubProvider::new().with_timeouts(ms(5_000, 200, 10_000)),
+        slow(3600),
+    )
+    .await;
+    assert!(matches!(&out[0], Ok(StreamDelta::TextDelta { .. })));
+    assert!(
+        matches!(&out[1], Err(LlmError::Unavailable(m)) if m.contains("idle timeout")),
+        "{out:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+
+    // 全体の上限の方が短ければ total timeout。
+    let out = drain(
+        StubProvider::new().with_timeouts(ms(5_000, 5_000, 200)),
+        slow(3600),
+    )
+    .await;
+    assert!(
+        matches!(&out[1], Err(LlmError::Unavailable(m)) if m.contains("total timeout")),
+        "{out:?}"
+    );
+
+    // 上限内の待ちはそのまま完了する。
+    let out = drain(
+        StubProvider::new().with_timeouts(ms(5_000, 5_000, 10_000)),
+        slow(0),
+    )
+    .await;
+    assert!(
+        matches!(out.last(), Some(Ok(StreamDelta::Done { .. }))),
+        "{out:?}"
+    );
 }

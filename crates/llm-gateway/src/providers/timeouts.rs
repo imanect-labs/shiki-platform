@@ -118,6 +118,22 @@ impl RequestClock {
         }
     }
 
+    /// 何も流さずに `hold` だけ待つ（スタブの `slow:` 用）。無通信・全体の上限を超える分は
+    /// 待たずに、実プロバイダと同じタイムアウトのエラーにする。
+    pub(crate) async fn wait_silent(&self, hold: Duration) -> Result<(), LlmError> {
+        if self.expired() {
+            return Err(self.timed_out(Kind::Total));
+        }
+        let (limit, kind) = self.bounded(self.timeouts.idle, Kind::Idle);
+        if hold <= limit {
+            tokio::time::sleep(hold).await;
+            Ok(())
+        } else {
+            tokio::time::sleep(limit).await;
+            Err(self.timed_out(kind))
+        }
+    }
+
     /// 本文の次のチャンクを待つ（無通信のタイムアウト）。本文の終端と、受け手（`tx` の
     /// 受信側）が閉じた場合は `None`。
     ///

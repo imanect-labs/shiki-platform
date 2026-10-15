@@ -480,7 +480,7 @@ fn build_provider(
             |e| e.resolved_id().to_string(),
         );
     match pc.kind {
-        ProviderKind::Stub => Ok(Arc::new(StubProvider::new())),
+        ProviderKind::Stub => Ok(Arc::new(StubProvider::new().with_timeouts(timeouts))),
         ProviderKind::Openai => {
             let base = pc
                 .base_url

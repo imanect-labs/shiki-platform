@@ -31,16 +31,28 @@ use super::stub_stream::{
     paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
 };
 use super::stub_triggers::{echo_system_call, note_tool_call, tool_search_call};
+use super::timeouts::RequestClock;
+use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 
 /// 決定的スタブ。
 #[derive(Debug, Default, Clone)]
-pub struct StubProvider;
+pub struct StubProvider {
+    /// `slow:` の待ちにも実プロバイダと同じ上限を掛ける（#554）。
+    timeouts: LlmTimeouts,
+}
 
 impl StubProvider {
     pub fn new() -> Self {
-        StubProvider
+        StubProvider::default()
+    }
+
+    /// タイムアウト（最初の応答・無通信・全体）を指定する。既定は [`LlmTimeouts::default`]。
+    #[must_use]
+    pub fn with_timeouts(mut self, timeouts: LlmTimeouts) -> Self {
+        self.timeouts = timeouts;
+        self
     }
 }
 
@@ -291,6 +303,7 @@ impl LlmProvider for StubProvider {
                 &format!("回答: {}", body.trim()),
                 prompt_tokens,
                 Duration::from_secs(secs),
+                RequestClock::start(self.timeouts, "stub"),
             ));
         }
         // --- 図 `yui:<kind>`（#530）・推論の引き継ぎ `reasoning:`（#542）・`echosystem:`（#546）。 ---
