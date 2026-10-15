@@ -205,9 +205,13 @@ impl ChatWorker {
             }
             Err(e) => {
                 tracing::warn!(error = %e, run_id = %run_id, last_attempt, "generation failed");
-                // 最終試行なら run を failed 化し UI に反映（DLQ 行き）。
+                // 最終試行なら run を failed 化し UI に反映（DLQ 行き）。会話には定型文だけを
+                // 出し、上流の生エラー（プロバイダ JSON・URL 等）は last_error と tracing に留める。
                 if last_attempt {
-                    let _ = self.store.force_fail_run(run_id, &e.to_string()).await;
+                    let _ = self
+                        .store
+                        .force_fail_run(run_id, &e.user_message(), &e.to_string())
+                        .await;
                 }
                 let backoff = jobq::backoff_for(job.attempts);
                 let _ = jobq::fail(&mut conn, job.id, &e.to_string(), backoff).await;

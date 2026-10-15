@@ -40,6 +40,7 @@ pub(super) fn tool_calls_stream(
         usage: Usage {
             prompt_tokens,
             completion_tokens: 0,
+            ..Default::default()
         },
     }));
     stream::iter(events).boxed()
@@ -63,6 +64,7 @@ pub(super) fn text_stream(reply: &str, prompt_tokens: u64) -> DeltaStream {
         usage: Usage {
             prompt_tokens,
             completion_tokens,
+            ..Default::default()
         },
     }));
     stream::iter(events).boxed()
@@ -93,6 +95,7 @@ pub(super) fn paced_chunks_stream(
                 usage: Usage {
                     prompt_tokens,
                     completion_tokens,
+                    ..Default::default()
                 },
             })
         }))
@@ -113,6 +116,7 @@ pub(super) fn slow_text_stream(reply: &str, prompt_tokens: u64, hold: Duration) 
                 usage: Usage {
                     prompt_tokens,
                     completion_tokens,
+                    ..Default::default()
                 },
             })
         }))

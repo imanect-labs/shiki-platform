@@ -525,7 +525,28 @@ async fn earlier_unfinished_run_blocks_later_ones_until_it_ends() {
     }
 
     // 先頭が端末化すると 2 本目の待ちだけが解ける（3 本目はまだ 2 本目を待つ）。
-    store.force_fail_run(runs[0], "test").await.unwrap();
+    let detail = "agent: llm error: openai 502: {\"workspace\":\"wrk_01\"} https://api.example.com";
+    assert!(store
+        .force_fail_run(runs[0], "表示用の定型文", detail)
+        .await
+        .unwrap());
+    // 会話へ出る Error イベントには定型文だけが載り、上流の詳細は last_error にだけ残る（#592）。
+    let shown: String = sqlx::query_scalar(
+        "SELECT payload->>'message' FROM generation_event WHERE run_id = $1 AND type = 'error'",
+    )
+    .bind(runs[0])
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(shown, "表示用の定型文");
+    let (status, last_error): (String, Option<String>) =
+        sqlx::query_as("SELECT status, last_error FROM generation_run WHERE run_id = $1")
+            .bind(runs[0])
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "failed");
+    assert_eq!(last_error.as_deref(), Some(detail));
     assert!(!store.blocked_by_earlier_run(runs[1]).await.unwrap());
     assert!(store.blocked_by_earlier_run(runs[2]).await.unwrap());
 

@@ -405,8 +405,13 @@ pub struct UsageQuery {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UsageTotalsDto {
     pub cost_usd_micros: i64,
+    /// 入力トークンの総数（キャッシュ分を含む）。
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
+    /// `prompt_tokens` のうちプロンプトキャッシュから読み出した分（#581 より前の記録は 0）。
+    pub cache_read_tokens: i64,
+    /// `prompt_tokens` のうちプロンプトキャッシュへ書き込んだ分（#581 より前の記録は 0）。
+    pub cache_write_tokens: i64,
     pub calls: i64,
     /// 利用したユーザー数（ミニアプリ・ワークフロー経由も実行ユーザーで数える）。
     pub users: i64,
@@ -588,6 +593,8 @@ pub async fn get_usage(
             cost_usd_micros: report.totals.cost_usd_micros,
             prompt_tokens: report.totals.prompt_tokens,
             completion_tokens: report.totals.completion_tokens,
+            cache_read_tokens: report.totals.cache_read_tokens,
+            cache_write_tokens: report.totals.cache_write_tokens,
             calls: report.totals.calls,
             users: report.totals.users,
         },

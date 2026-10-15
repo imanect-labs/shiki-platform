@@ -16,3 +16,5 @@ mod stub_triggers;
 mod think_tags;
 /// ツール名の wire 写像（全アダプタ共通・#582）。
 mod tool_names;
+/// プロバイダの `usage` を中立形（キャッシュ内訳つき）へ写す（#581）。
+mod usage;

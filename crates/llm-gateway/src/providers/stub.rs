@@ -412,6 +412,7 @@ impl LlmProvider for StubProvider {
                         usage: Usage {
                             prompt_tokens,
                             completion_tokens: 0,
+                            ..Default::default()
                         },
                     }),
                 ];

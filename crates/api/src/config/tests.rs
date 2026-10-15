@@ -480,3 +480,39 @@ fn catalog_carries_provider_and_display_metadata() {
     assert_eq!(m.supports_effort, Some(true));
     assert!(m.reasoning_in_content);
 }
+
+#[test]
+fn catalog_reads_cache_prices_from_toml() {
+    // キャッシュ単価（#581）: TOML のキーがそのまま gateway のカタログへ届き、省略は None
+    // （＝プロンプト単価で数える）。
+    use figment::providers::{Format, Toml};
+    let toml = r#"
+        [[models]]
+        id = "luna"
+        prompt_price_micros_per_mtok = 200000
+        completion_price_micros_per_mtok = 1200000
+        cache_read_price_micros_per_mtok = 20000
+        cache_write_price_micros_per_mtok = 250000
+
+        [[models]]
+        id = "plain"
+        prompt_price_micros_per_mtok = 100000
+    "#;
+    #[derive(serde::Deserialize)]
+    struct Models {
+        models: Vec<LlmModelEntry>,
+    }
+    let parsed: Models = figment::Figment::from(Toml::string(toml))
+        .extract()
+        .expect("toml");
+    let mut cfg = valid_config();
+    cfg.llm.models = parsed.models;
+    let catalog = cfg.llm.model_catalog();
+    let luna = catalog.get("luna").expect("luna");
+    assert_eq!(luna.cache_read_price(), 20_000);
+    assert_eq!(luna.cache_write_price(), 250_000);
+    let plain = catalog.get("plain").expect("plain");
+    assert_eq!(plain.cache_read_price_micros_per_mtok, None);
+    assert_eq!(plain.cache_read_price(), 100_000);
+    assert_eq!(plain.cache_write_price(), 100_000);
+}

@@ -17,9 +17,18 @@ impl ChatStore {
     ///
     /// 生成の最終試行失敗（jobq DLQ 行き）と孤児回収 sweeper が使う。既に端末状態なら no-op。
     /// UI に失敗を明示するため Error イベントを 1 件足してから status を failed にする。
-    pub async fn force_fail_run(&self, run_id: Uuid, message: &str) -> Result<bool, ChatError> {
+    ///
+    /// `user_message` は**会話へそのまま出る**（SSE の Error イベント）ので定型文を渡す
+    /// （[`ChatError::user_message`]）。上流の生エラー等の全文は `detail` に渡し、
+    /// `generation_run.last_error`（API 非公開）と tracing にだけ残す。
+    pub async fn force_fail_run(
+        &self,
+        run_id: Uuid,
+        user_message: &str,
+        detail: &str,
+    ) -> Result<bool, ChatError> {
         let event = StreamEventKind::Error {
-            message: message.to_string(),
+            message: user_message.to_string(),
         };
         let payload = serde_json::to_value(&event)
             .map_err(|e| ChatError::Internal(format!("event serialize: {e}")))?;
@@ -40,15 +49,22 @@ impl ChatStore {
         let Some(seq) = seq else {
             return Ok(false); // 既に端末状態
         };
-        sqlx::query(
+        let thread_id: Option<Uuid> = sqlx::query_scalar(
             "UPDATE generation_run SET status = 'failed', last_error = $2, \
-             lease_until = NULL, updated_at = now() WHERE run_id = $1",
+             lease_until = NULL, updated_at = now() WHERE run_id = $1 RETURNING thread_id",
         )
         .bind(run_id)
-        .bind(message)
-        .execute(&self.db)
+        .bind(detail)
+        .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
+        tracing::error!(
+            run_id = %run_id,
+            thread_id = ?thread_id,
+            detail,
+            user_message,
+            "chat run を failed 化"
+        );
 
         let se = StreamEvent { seq, event };
         if let Ok(s) = serde_json::to_string(&se) {
@@ -74,7 +90,11 @@ impl ChatStore {
         let mut n = 0;
         for id in ids {
             if self
-                .force_fail_run(id, "orphaned (lease expired)")
+                .force_fail_run(
+                    id,
+                    crate::error::failure_message::INTERRUPTED,
+                    "orphaned (lease expired)",
+                )
                 .await
                 .unwrap_or(false)
             {

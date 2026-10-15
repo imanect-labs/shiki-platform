@@ -166,6 +166,9 @@ pub async fn create_thread(
     Ok(Json(thread))
 }
 
+/// スレッド一覧の検索語の上限（文字数）。タイトル検索に十分で、巨大なパターンを DB へ流さない。
+const MAX_THREAD_QUERY_CHARS: usize = 200;
+
 /// 自分のスレッド一覧（更新日降順・keyset ページング）。
 #[utoipa::path(
     get, path = "/threads",
@@ -173,9 +176,11 @@ pub async fn create_thread(
         ("cursor" = Option<String>, Query, description = "続きのカーソル"),
         ("limit" = Option<i64>, Query, description = "件数（既定 30・上限 100）"),
         ("origin_note_id" = Option<Uuid>, Query, description = "由来ノートで絞り込む（ノート側の会話一覧・#282）"),
+        ("q" = Option<String>, Query, description = "タイトルの部分一致（大小無視・200 文字まで・#591）"),
     ),
     responses(
         (status = 200, description = "スレッド一覧", body = ThreadListResponse),
+        (status = 400, description = "検索語が長すぎる"),
         (status = 401, description = "未認証"),
         (status = 503, description = "chat 無効"),
     ),
@@ -187,12 +192,27 @@ pub async fn list_threads(
     Query(q): Query<ListThreadsQuery>,
 ) -> Result<Json<ThreadListResponse>, ApiError> {
     let limit = q.limit.unwrap_or(30).clamp(1, 100);
+    if q.q
+        .as_deref()
+        .is_some_and(|s| s.chars().count() > MAX_THREAD_QUERY_CHARS)
+    {
+        return Err(ApiError::BadRequest(format!(
+            "検索語は {MAX_THREAD_QUERY_CHARS} 文字以内で指定してください"
+        )));
+    }
     let (before_ts, before_id) = match &q.cursor {
         Some(c) => decode_cursor(c)?,
         None => (None, None),
     };
     let threads = chat_store(&state)?
-        .list_threads(&ctx, before_ts, before_id, q.origin_note_id, limit)
+        .list_threads(
+            &ctx,
+            before_ts,
+            before_id,
+            q.origin_note_id,
+            q.q.as_deref(),
+            limit,
+        )
         .await?;
     let next_cursor = if threads.len() as i64 == limit {
         threads.last().map(|t| encode_cursor(t.updated_at, t.id))

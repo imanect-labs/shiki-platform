@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::Usage;
+
 /// プロバイダ種別（アダプタ選択）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,6 +121,13 @@ pub struct ModelEntry {
     /// 補完単価（マイクロ USD / 100万トークン）。
     #[serde(default)]
     pub completion_price_micros_per_mtok: u64,
+    /// プロンプトキャッシュ読み出しの単価（マイクロ USD / 100万トークン）。省略はプロンプト単価
+    /// （割引なしで数える・#581 以前と同じ）。
+    #[serde(default)]
+    pub cache_read_price_micros_per_mtok: Option<u64>,
+    /// プロンプトキャッシュ書き込みの単価（マイクロ USD / 100万トークン）。省略はプロンプト単価。
+    #[serde(default)]
+    pub cache_write_price_micros_per_mtok: Option<u64>,
     /// コンテキスト窓（入力＋出力の合計トークン上限）。未設定なら窓を知らない扱い。
     ///
     /// agent-core が剪定閾値の天井に使う（#529）。窓の小さいモデルでの溢れ失敗を防ぐ。
@@ -173,12 +182,42 @@ impl ModelEntry {
         self.display_name.as_deref().unwrap_or(&self.id)
     }
 
+    /// キャッシュ読み出しの実効単価（未設定はプロンプト単価）。
+    pub fn cache_read_price(&self) -> u64 {
+        self.cache_read_price_micros_per_mtok
+            .unwrap_or(self.prompt_price_micros_per_mtok)
+    }
+
+    /// キャッシュ書き込みの実効単価（未設定はプロンプト単価）。
+    pub fn cache_write_price(&self) -> u64 {
+        self.cache_write_price_micros_per_mtok
+            .unwrap_or(self.prompt_price_micros_per_mtok)
+    }
+
     /// トークン消費からコスト（マイクロ USD）を算出する（整数・金額クリティカル）。
-    pub fn cost_usd_micros(&self, prompt_tokens: u64, completion_tokens: u64) -> i64 {
-        let prompt = prompt_tokens.saturating_mul(self.prompt_price_micros_per_mtok) / 1_000_000;
-        let completion =
-            completion_tokens.saturating_mul(self.completion_price_micros_per_mtok) / 1_000_000;
-        i64::try_from(prompt.saturating_add(completion)).unwrap_or(i64::MAX)
+    ///
+    /// 入力はキャッシュの内訳ごとに単価を分ける（定価の入力・読み出し・書き込み・#581）。
+    /// 内訳は総数の内側へ収めてから数える（[`Usage::normalized`]）。
+    /// 各項の積を合計してから 1 度だけ 100 万で割る（項ごとに切り捨てると小さな呼び出しで
+    /// 端数の取りこぼしが積もる）。
+    pub fn cost_usd_micros(&self, usage: &Usage) -> i64 {
+        let usage = usage.normalized();
+        let terms = [
+            (
+                usage.uncached_prompt_tokens(),
+                self.prompt_price_micros_per_mtok,
+            ),
+            (usage.cache_read_tokens, self.cache_read_price()),
+            (usage.cache_write_tokens, self.cache_write_price()),
+            (
+                usage.completion_tokens,
+                self.completion_price_micros_per_mtok,
+            ),
+        ];
+        let total = terms.iter().fold(0u128, |acc, &(tokens, price)| {
+            acc.saturating_add(u128::from(tokens) * u128::from(price))
+        }) / 1_000_000;
+        i64::try_from(total).unwrap_or(i64::MAX)
     }
 }
 
@@ -272,8 +311,96 @@ mod tests {
             ..Default::default()
         };
         // 1000 prompt + 200 completion → 5000 + 5000 = 10000 micros = $0.01
-        assert_eq!(m.cost_usd_micros(1000, 200), 10_000);
+        assert_eq!(m.cost_usd_micros(&usage(1000, 200, 0, 0)), 10_000);
         assert_eq!(m.resolved_id(), "m");
+    }
+
+    fn usage(prompt: u64, completion: u64, read: u64, write: u64) -> Usage {
+        Usage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            cache_read_tokens: read,
+            cache_write_tokens: write,
+        }
+    }
+
+    /// OpenRouter・openai/gpt-5.6-luna の実測（#581）: 入力 $0.20・読み出し $0.02・
+    /// 書き込み $0.25・出力 $1.20 per Mtok。
+    fn luna() -> ModelEntry {
+        ModelEntry {
+            id: "luna".into(),
+            prompt_price_micros_per_mtok: 200_000,
+            completion_price_micros_per_mtok: 1_200_000,
+            cache_read_price_micros_per_mtok: Some(20_000),
+            cache_write_price_micros_per_mtok: Some(250_000),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cache_tokens_use_their_own_prices() {
+        let m = luna();
+        // 1 回目: 2907 入力のうち 2904 を書き込み（3×0.2 + 2904×0.25 = 726.6 → 726）。
+        // 出力 0 で比べる（実請求 $0.000733 は出力込み）。
+        assert_eq!(m.cost_usd_micros(&usage(2907, 0, 0, 2904)), 726);
+        // 2 回目: 2893 を読み出し・11 を書き込み・残り 3 が定価
+        // （3×0.2 + 2893×0.02 + 11×0.25 = 0.6 + 57.86 + 2.75 = 61.21 → 61）。
+        assert_eq!(m.cost_usd_micros(&usage(2907, 0, 2893, 11)), 61);
+    }
+
+    #[test]
+    fn cache_prices_default_to_prompt_price() {
+        let m = ModelEntry {
+            prompt_price_micros_per_mtok: 1_000_000,
+            completion_price_micros_per_mtok: 2_000_000,
+            ..Default::default()
+        };
+        // 単価未設定ならキャッシュの内訳があっても #581 以前と同じ（入力総数 × 入力単価）。
+        assert_eq!(
+            m.cost_usd_micros(&usage(1000, 100, 600, 300)),
+            m.cost_usd_micros(&usage(1000, 100, 0, 0))
+        );
+        assert_eq!(m.cost_usd_micros(&usage(1000, 100, 600, 300)), 1_200);
+    }
+
+    #[test]
+    fn inconsistent_cache_breakdown_is_clamped_to_the_prompt_total() {
+        let m = luna();
+        assert_eq!(usage(10, 0, 8, 8).uncached_prompt_tokens(), 0);
+        // 内訳が総数を超える報告: 読み出し → 書き込みの順に総数で頭打ちにする。
+        assert_eq!(usage(10, 0, 8, 8).normalized(), usage(10, 0, 8, 2));
+        assert_eq!(usage(10, 0, 1_000_000, 5).normalized(), usage(10, 0, 10, 0));
+        // 整合した報告は変わらない。
+        assert_eq!(usage(10, 0, 3, 4).normalized(), usage(10, 0, 3, 4));
+        // 金額も総数の範囲で数える（1M トークンを読み出し単価で = 20_000）。
+        assert_eq!(
+            m.cost_usd_micros(&usage(1_000_000, 0, 5_000_000, 0)),
+            20_000
+        );
+    }
+
+    #[test]
+    fn cost_rounds_once_over_the_sum() {
+        let m = ModelEntry {
+            prompt_price_micros_per_mtok: 500_000,
+            completion_price_micros_per_mtok: 500_000,
+            ..Default::default()
+        };
+        // 1 トークンずつ 0.5 micros。項ごとに切り捨てると 0 になるが、合計してから割ると 1。
+        assert_eq!(m.cost_usd_micros(&usage(1, 1, 0, 0)), 1);
+    }
+
+    #[test]
+    fn cost_saturates_instead_of_overflowing() {
+        let m = ModelEntry {
+            prompt_price_micros_per_mtok: u64::MAX,
+            completion_price_micros_per_mtok: u64::MAX,
+            ..Default::default()
+        };
+        assert_eq!(
+            m.cost_usd_micros(&usage(u64::MAX, u64::MAX, 0, 0)),
+            i64::MAX
+        );
     }
 
     #[test]
