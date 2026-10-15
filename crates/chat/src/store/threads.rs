@@ -218,20 +218,27 @@ impl ChatStore {
     ///
     /// `origin_note_id` を渡すと当該ノート由来のスレッドのみに絞る（ノート側の会話一覧・issue #282）。
     /// 未指定（None）はサイドバー履歴の全件（現行挙動）。
+    /// `title_query` はタイトルの部分一致（大小無視・ワイルドカードは無害化・#591）。空白のみは無指定扱い。
     pub async fn list_threads(
         &self,
         ctx: &AuthContext,
         before_updated_at: Option<DateTime<Utc>>,
         before_id: Option<Uuid>,
         origin_note_id: Option<Uuid>,
+        title_query: Option<&str>,
         limit: i64,
     ) -> Result<Vec<Thread>, ChatError> {
         let limit = limit.clamp(1, 100);
+        let title_pattern = title_query
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(|q| format!("%{}%", storage::escape_like(q)));
         let rows: Vec<ThreadRow> = sqlx::query_as(&format!(
             "SELECT {THREAD_COLUMNS} FROM thread \
              WHERE tenant_id = $1 AND org = $2 AND owner = $3 AND deleted_at IS NULL \
                AND ($4::timestamptz IS NULL OR (updated_at, id) < ($4::timestamptz, $5)) \
                AND ($7::uuid IS NULL OR origin_note_id = $7) \
+               AND ($8::text IS NULL OR title ILIKE $8 ESCAPE '\\') \
              ORDER BY updated_at DESC, id DESC LIMIT $6",
         ))
         .bind(&ctx.tenant_id)
@@ -241,6 +248,7 @@ impl ChatStore {
         .bind(before_id)
         .bind(limit)
         .bind(origin_note_id)
+        .bind(title_pattern)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;

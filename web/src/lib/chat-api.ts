@@ -9,8 +9,6 @@
 
 "use client";
 
-import * as React from "react";
-
 import type { ModelChoice } from "@/lib/model-choice";
 import { apiFetch } from "@/lib/api";
 import type { components } from "@/generated/api";
@@ -143,35 +141,12 @@ export function groupThreadsByDate(
   );
 }
 
-/// 自分のスレッド一覧を購読する React フック（更新日降順の先頭ページ）。
-/// `loading` で「取得前」と「本当に空」を区別できる（空状態フラッシュ/スケルトン用）。
-export function useThreadsState(): { threads: Thread[]; loading: boolean } {
-  const [threads, setThreads] = React.useState<Thread[]>([]);
-  const [loading, setLoading] = React.useState(true);
-  const reload = React.useCallback(() => {
-    listThreads()
-      .then((r) => {
-        setThreads(r.threads);
-        setLoading(false);
-      })
-      .catch(() => {
-        setThreads([]);
-        setLoading(false);
-      });
-  }, []);
-  React.useEffect(() => {
-    reload();
-    threadListeners.add(reload);
-    return () => {
-      threadListeners.delete(reload);
-    };
-  }, [reload]);
-  return { threads, loading };
-}
-
-/// スレッド一覧（配列のみ）。既存呼び出し互換のため useThreadsState を薄くラップする。
-export function useThreads(): Thread[] {
-  return useThreadsState().threads;
+/// スレッド一覧の変更通知を購読する（作成・更新時に `notifyThreadsChanged` から呼ばれる）。
+export function subscribeThreadsChanged(listener: () => void): () => void {
+  threadListeners.add(listener);
+  return () => {
+    threadListeners.delete(listener);
+  };
 }
 
 // ── REST ──────────────────────────────────────────────────────────────
@@ -214,13 +189,15 @@ async function ok<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
+/// スレッド一覧の 1 ページ。`q` はタイトルの部分一致（サーバ側で全件から探す・#591）。
 export async function listThreads(
   cursor?: string,
-  opts?: { originNoteId?: string },
+  opts?: { originNoteId?: string; q?: string },
 ): Promise<{ threads: Thread[]; nextCursor: string | null }> {
   const params = new URLSearchParams();
   if (cursor) params.set("cursor", cursor);
   if (opts?.originNoteId) params.set("origin_note_id", opts.originNoteId);
+  if (opts?.q?.trim()) params.set("q", opts.q.trim());
   const qs = params.toString() ? `?${params.toString()}` : "";
   const data = await ok<{ threads: ApiThread[]; next_cursor: string | null }>(
     await apiFetch(`/threads${qs}`),

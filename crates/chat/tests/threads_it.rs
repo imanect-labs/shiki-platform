@@ -208,7 +208,10 @@ async fn create_list_get_thread_roundtrips() {
     assert_eq!(created.title, "設計相談");
 
     // list_threads は作成したスレッドを含む。
-    let listed = store.list_threads(&c, None, None, None, 50).await.unwrap();
+    let listed = store
+        .list_threads(&c, None, None, None, None, 50)
+        .await
+        .unwrap();
     assert!(
         listed.iter().any(|t| t.id == created.id),
         "作成したスレッドが一覧に含まれること"
@@ -275,7 +278,7 @@ async fn thread_origin_note_filter_and_backfill() {
 
     // origin フィルタ = note_a → t1, t2 のみ（通常は出ない）。
     let a_only = store
-        .list_threads(&c, None, None, Some(note_a), 50)
+        .list_threads(&c, None, None, Some(note_a), None, 50)
         .await
         .unwrap();
     let ids: std::collections::HashSet<_> = a_only.iter().map(|t| t.id).collect();
@@ -287,13 +290,16 @@ async fn thread_origin_note_filter_and_backfill() {
 
     // note_b はまだ空。
     let b_only = store
-        .list_threads(&c, None, None, Some(note_b), 50)
+        .list_threads(&c, None, None, Some(note_b), None, 50)
         .await
         .unwrap();
     assert!(b_only.is_empty());
 
     // フィルタ無し（全件）は通常スレッドも含む。
-    let all = store.list_threads(&c, None, None, None, 50).await.unwrap();
+    let all = store
+        .list_threads(&c, None, None, None, None, 50)
+        .await
+        .unwrap();
     assert!(all.iter().any(|t| t.id == plain.id));
 
     // 後付け: 通常スレッドを note_b 由来にする（下書き確定→ノート実体化の紐付け）。
@@ -302,7 +308,7 @@ async fn thread_origin_note_filter_and_backfill() {
         .await
         .unwrap();
     let b_after = store
-        .list_threads(&c, None, None, Some(note_b), 50)
+        .list_threads(&c, None, None, Some(note_b), None, 50)
         .await
         .unwrap();
     assert!(
@@ -635,13 +641,16 @@ async fn list_threads_keyset_pagination() {
     }
 
     // 1 ページ目（limit=2）。
-    let page1 = store.list_threads(&c, None, None, None, 2).await.unwrap();
+    let page1 = store
+        .list_threads(&c, None, None, None, None, 2)
+        .await
+        .unwrap();
     assert_eq!(page1.len(), 2, "1 ページ目は 2 件");
 
     // カーソルで 2 ページ目。
     let last = page1.last().unwrap();
     let page2 = store
-        .list_threads(&c, Some(last.updated_at), Some(last.id), None, 2)
+        .list_threads(&c, Some(last.updated_at), Some(last.id), None, None, 2)
         .await
         .unwrap();
     assert_eq!(page2.len(), 2, "2 ページ目は 2 件");
@@ -653,6 +662,81 @@ async fn list_threads_keyset_pagination() {
             "ページ間でスレッドが重複しないこと"
         );
     }
+}
+
+/// list_threads の title_query がタイトルの部分一致（大小無視）で絞り、ワイルドカードを文字として扱う
+/// （検索パレットが先頭 30 件以外も探せる・#591）。カーソルとも併用できる。
+#[tokio::test]
+async fn list_threads_filters_by_title_query() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let c = ctx(&tenant);
+
+    for title in [
+        "予算の相談 Alpha",
+        "予算レビュー alpha",
+        "議事録",
+        "100% 達成",
+        "1000 達成",
+    ] {
+        store
+            .create_thread(&c, title, false, None, None)
+            .await
+            .unwrap();
+    }
+    let titles = |ts: &[chat::Thread]| {
+        let mut v: Vec<String> = ts.iter().map(|t| t.title.clone()).collect();
+        v.sort();
+        v
+    };
+
+    let hit = store
+        .list_threads(&c, None, None, None, Some("ALPHA"), 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        titles(&hit),
+        vec!["予算の相談 Alpha", "予算レビュー alpha"],
+        "大小を無視して部分一致する"
+    );
+
+    let pct = store
+        .list_threads(&c, None, None, None, Some("0%"), 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        titles(&pct),
+        vec!["100% 達成"],
+        "% はワイルドカードにならない"
+    );
+
+    let blank = store
+        .list_threads(&c, None, None, None, Some("  "), 50)
+        .await
+        .unwrap();
+    assert_eq!(blank.len(), 5, "空白のみは絞り込まない");
+
+    // 検索語とカーソルの併用で、残りのヒットだけが続く。
+    let p1 = store
+        .list_threads(&c, None, None, None, Some("予算"), 1)
+        .await
+        .unwrap();
+    let last = p1.last().unwrap();
+    let p2 = store
+        .list_threads(
+            &c,
+            Some(last.updated_at),
+            Some(last.id),
+            None,
+            Some("予算"),
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(p2.len(), 1);
+    assert_ne!(p1[0].id, p2[0].id, "ページ間で重複しない");
+    assert!(p2[0].title.contains("予算"));
 }
 
 /// event_stream(run_id, 0) が追記済みイベントを seq 順にリプレイし、Done で終了する。
