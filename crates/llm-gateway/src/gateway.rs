@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use crate::accounting::{UsageRecord, UsageRecorder};
 use crate::config::{
-    AutoConfig, GatewayConfig, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,
+    AutoConfig, GatewayConfig, LlmTimeouts, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,
     DEFAULT_PROVIDER_ID,
 };
 use crate::langfuse::{GenerationTrace, LangfuseClient};
@@ -131,7 +131,7 @@ impl LlmGateway {
             if providers.contains_key(&id) {
                 return Err(LlmError::Config(format!("duplicate llm provider id: {id}")));
             }
-            let provider = build_provider(http.clone(), pc, &config.catalog)?;
+            let provider = build_provider(http.clone(), pc, &config.catalog, config.timeouts)?;
             providers.insert(
                 id,
                 ProviderSlot {
@@ -464,9 +464,10 @@ fn build_provider(
     http: reqwest::Client,
     pc: &ProviderConfig,
     catalog: &ModelCatalog,
+    timeouts: LlmTimeouts,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    // タイムアウトはプロバイダ側の per-request `.timeout()` で制御するため、
-    // 共有 HTTP クライアント（接続プール共有）をそのまま各アダプタへ渡す。
+    // 共有 HTTP クライアント（接続プール共有・タイムアウトなし）をそのまま各アダプタへ渡し、
+    // タイムアウト（最初の応答・無通信・全体）は各アダプタが共通のヘルパで測る（#554）。
     // 各アダプタの「既定モデル」は、このプロバイダへ振られるモデルのうち既定モデル→先頭の順
     // （gateway は常に実 ID を詰めて渡すので、既定は保険にすぎない）。
     let id = pc.effective_id();
@@ -495,7 +496,8 @@ fn build_provider(
                 OpenAiProvider::new(http, base, pc.api_key.clone(), default_real)
                     .with_user_agent(pc.user_agent.as_deref())?
                     .with_session_header(pc.session_header.as_deref())?
-                    .with_think_tag_models(think_tag_models),
+                    .with_think_tag_models(think_tag_models)
+                    .with_timeouts(timeouts),
             ))
         }
         ProviderKind::OpenaiResponses => {
@@ -506,7 +508,8 @@ fn build_provider(
             Ok(Arc::new(
                 OpenAiResponsesProvider::new(http, base, pc.api_key.clone(), default_real)
                     .with_user_agent(pc.user_agent.as_deref())?
-                    .with_session_header(pc.session_header.as_deref())?,
+                    .with_session_header(pc.session_header.as_deref())?
+                    .with_timeouts(timeouts),
             ))
         }
         ProviderKind::Anthropic => {
@@ -521,7 +524,8 @@ fn build_provider(
             Ok(Arc::new(
                 AnthropicProvider::new(http, base, key, default_real)
                     .with_user_agent(pc.user_agent.as_deref())?
-                    .with_session_header(pc.session_header.as_deref())?,
+                    .with_session_header(pc.session_header.as_deref())?
+                    .with_timeouts(timeouts),
             ))
         }
     }
@@ -539,7 +543,6 @@ mod tests {
                 kind,
                 base_url: base_url.map(str::to_string),
                 api_key: api_key.map(str::to_string),
-                timeout_secs: 120,
                 user_agent: None,
                 session_header: None,
                 ..Default::default()
@@ -563,7 +566,13 @@ mod tests {
     #[test]
     fn stub_provider_needs_no_endpoint() {
         let cfg = config(ProviderKind::Stub, None, None);
-        let p = build_provider(reqwest::Client::new(), &cfg.provider, &cfg.catalog).unwrap();
+        let p = build_provider(
+            reqwest::Client::new(),
+            &cfg.provider,
+            &cfg.catalog,
+            LlmTimeouts::default(),
+        )
+        .unwrap();
         assert_eq!(p.name(), "stub");
     }
 
@@ -575,13 +584,23 @@ mod tests {
             None,
         );
         assert_eq!(
-            build_provider(reqwest::Client::new(), &ok.provider, &ok.catalog)
-                .unwrap()
-                .name(),
+            build_provider(
+                reqwest::Client::new(),
+                &ok.provider,
+                &ok.catalog,
+                LlmTimeouts::default()
+            )
+            .unwrap()
+            .name(),
             "openai_responses"
         );
         let missing = config(ProviderKind::OpenaiResponses, None, None);
-        let res = build_provider(reqwest::Client::new(), &missing.provider, &missing.catalog);
+        let res = build_provider(
+            reqwest::Client::new(),
+            &missing.provider,
+            &missing.catalog,
+            LlmTimeouts::default(),
+        );
         assert!(matches!(res, Err(LlmError::Config(_))));
     }
 
@@ -589,14 +608,24 @@ mod tests {
     fn openai_requires_base_url() {
         let ok = config(ProviderKind::Openai, Some("http://vllm:8000/v1"), None);
         assert_eq!(
-            build_provider(reqwest::Client::new(), &ok.provider, &ok.catalog)
-                .unwrap()
-                .name(),
+            build_provider(
+                reqwest::Client::new(),
+                &ok.provider,
+                &ok.catalog,
+                LlmTimeouts::default()
+            )
+            .unwrap()
+            .name(),
             "openai"
         );
 
         let missing = config(ProviderKind::Openai, None, None);
-        let res = build_provider(reqwest::Client::new(), &missing.provider, &missing.catalog);
+        let res = build_provider(
+            reqwest::Client::new(),
+            &missing.provider,
+            &missing.catalog,
+            LlmTimeouts::default(),
+        );
         assert!(matches!(res, Err(LlmError::Config(_))));
     }
 
@@ -605,14 +634,24 @@ mod tests {
         // base_url 省略時は既定エンドポイントへフォールバックし、api_key があれば構築できる。
         let ok = config(ProviderKind::Anthropic, None, Some("k"));
         assert_eq!(
-            build_provider(reqwest::Client::new(), &ok.provider, &ok.catalog)
-                .unwrap()
-                .name(),
+            build_provider(
+                reqwest::Client::new(),
+                &ok.provider,
+                &ok.catalog,
+                LlmTimeouts::default()
+            )
+            .unwrap()
+            .name(),
             "anthropic"
         );
 
         let missing = config(ProviderKind::Anthropic, None, None);
-        let res = build_provider(reqwest::Client::new(), &missing.provider, &missing.catalog);
+        let res = build_provider(
+            reqwest::Client::new(),
+            &missing.provider,
+            &missing.catalog,
+            LlmTimeouts::default(),
+        );
         assert!(matches!(res, Err(LlmError::Config(_))));
     }
 

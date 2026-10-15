@@ -34,8 +34,8 @@ pub mod tool_loading;
 pub mod usage_report;
 
 pub use config::{
-    AutoConfig, GatewayConfig, LangfuseConfig, ModelCatalog, ModelEntry, ProviderConfig,
-    ProviderKind, DEFAULT_PROVIDER_ID,
+    AutoConfig, GatewayConfig, LangfuseConfig, LlmTimeouts, ModelCatalog, ModelEntry,
+    ProviderConfig, ProviderKind, DEFAULT_PROVIDER_ID,
 };
 pub use gateway::{GenerationRecord, LlmGateway, ProviderInfo, UsageSource};
 pub use model::{

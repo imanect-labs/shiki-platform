@@ -13,7 +13,6 @@
 //!   （ヘッダ必須のプロバイダで落ちないように）。
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::stream::StreamExt;
@@ -21,7 +20,9 @@ use serde_json::{json, Value};
 
 use super::identity::IdentityHeaders;
 use super::openai::tool_message_content;
+use super::timeouts::RequestClock;
 use super::tool_names::ToolNameMap;
+use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::tool_loading::context_tools;
@@ -33,6 +34,7 @@ pub struct OpenAiResponsesProvider {
     api_key: Option<String>,
     default_model: String,
     identity: IdentityHeaders,
+    timeouts: LlmTimeouts,
 }
 
 /// Responses API の `max_output_tokens` の下限（これ未満は 400）。
@@ -59,6 +61,7 @@ impl OpenAiResponsesProvider {
             api_key,
             default_model: default_model.into(),
             identity: IdentityHeaders::default(),
+            timeouts: LlmTimeouts::default(),
         }
     }
 
@@ -73,6 +76,13 @@ impl OpenAiResponsesProvider {
     pub fn with_session_header(mut self, header: Option<&str>) -> Result<Self, LlmError> {
         self.identity.set_session_header(header)?;
         Ok(self)
+    }
+
+    /// タイムアウト（最初の応答・無通信・全体）を指定する。既定は [`LlmTimeouts::default`]。
+    #[must_use]
+    pub fn with_timeouts(mut self, timeouts: LlmTimeouts) -> Self {
+        self.timeouts = timeouts;
+        self
     }
 
     fn build_body(&self, req: &GenerateRequest, names: &ToolNameMap) -> Value {
@@ -419,22 +429,16 @@ impl LlmProvider for OpenAiResponsesProvider {
         // 履歴中のツール名も同じ写像に通す（ToolNameMap::for_request）。
         let names = ToolNameMap::for_request(req);
         let body = self.build_body(req, &names);
-        let mut builder = self
-            .http
-            .post(&url)
-            .timeout(Duration::from_mins(5))
-            .json(&body);
+        let mut builder = self.http.post(&url).json(&body);
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
         }
         let builder = self.identity.apply(builder, req.session_id.as_deref());
-        let resp = builder
-            .send()
-            .await
-            .map_err(|e| LlmError::Unavailable(format!("responses request failed: {e}")))?;
+        let clock = RequestClock::start(self.timeouts, "responses");
+        let resp = clock.send(builder).await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = clock.error_text(resp).await;
             // 429 はプロバイダ側の枠（openai.rs と同じ扱い）。
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 return Err(LlmError::RateLimited(crate::provider::rate_limit_message(
@@ -453,15 +457,18 @@ impl LlmProvider for OpenAiResponsesProvider {
             let mut buf: Vec<u8> = Vec::new();
             let mut framer = SseFramer::default();
             let mut mapper = EventMapper::default();
-            while let Some(chunk) = byte_stream.next().await {
+            while let Some(chunk) = clock.next_chunk(&mut byte_stream).await {
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ =
-                            tx.unbounded_send(Err(LlmError::Unavailable(format!("stream: {e}"))));
+                        let _ = tx.unbounded_send(Err(e));
                         return;
                     }
                 };
+                // 受け手（チャット等）が止めたら読み続けない（全体の上限まで生成させない）。
+                if tx.is_closed() {
+                    return;
+                }
                 buf.extend_from_slice(&chunk);
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=pos).collect();

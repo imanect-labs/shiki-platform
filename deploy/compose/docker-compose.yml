@@ -575,6 +575,11 @@ services:
       # 既定モデルのコンテキスト窓（例: 32768）。設定すると自律エージェントの剪定閾値がこの窓を
       # 天井にする（#529）。0 は未設定（固定閾値のまま）。
       SHIKI__LLM__CONTEXT_WINDOW_TOKENS: ${SHIKI__LLM__CONTEXT_WINDOW_TOKENS:-0}
+      # LLM 呼び出しのタイムアウト秒（#554・全プロバイダ共通）。送信〜応答ヘッダ／ストリームの
+      # 無通信／生成全体。オンプレの遅い vLLM や長い推論ではここを伸ばす。
+      SHIKI__LLM__FIRST_RESPONSE_TIMEOUT_SECS: ${SHIKI__LLM__FIRST_RESPONSE_TIMEOUT_SECS:-60}
+      SHIKI__LLM__IDLE_TIMEOUT_SECS: ${SHIKI__LLM__IDLE_TIMEOUT_SECS:-120}
+      SHIKI__LLM__TOTAL_TIMEOUT_SECS: ${SHIKI__LLM__TOTAL_TIMEOUT_SECS:-900}
       # Langfuse 計装（gateway 層が正・trace_id 起点で突合）。self-host の内部エンドポイント。
       SHIKI__LLM__LANGFUSE__BASE_URL: ${SHIKI__LLM__LANGFUSE__BASE_URL:-http://langfuse:3000}
       SHIKI__LLM__LANGFUSE__PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-pk-lf-shiki-dev}

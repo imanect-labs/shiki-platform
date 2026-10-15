@@ -262,6 +262,7 @@ impl AppConfig {
         }
         Self::check_session_bounds(&self.session)?;
         Self::check_upload_gc_bounds(&self.storage)?;
+        Self::check_llm_timeouts(&self.llm)?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),
@@ -309,6 +310,23 @@ impl AppConfig {
                 "auth.tenancy=multi: 全隔離層（authz 識別子名前空間化・storage キー・audit チェーン・\
                  session/DB 行）を tenant_id スコープで強制します（SAAS.1・#84 完了）"
             );
+        }
+        Ok(())
+    }
+
+    /// LLM のタイムアウトを検証する（0 秒は全呼び出しを即時に失敗させるため弾く・#554）。
+    fn check_llm_timeouts(llm: &LlmConfig) -> Result<(), ConfigError> {
+        for (name, secs) in [
+            (
+                "llm.first_response_timeout_secs",
+                llm.first_response_timeout_secs,
+            ),
+            ("llm.idle_timeout_secs", llm.idle_timeout_secs),
+            ("llm.total_timeout_secs", llm.total_timeout_secs),
+        ] {
+            if secs == 0 {
+                return Err(ConfigError::Invalid(format!("{name} は 1 以上が必要です")));
+            }
         }
         Ok(())
     }

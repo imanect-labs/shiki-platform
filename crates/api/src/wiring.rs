@@ -203,7 +203,6 @@ pub(crate) fn build_gateway(
                 kind: provider_kind(p.backend)?,
                 base_url: non_empty(p.base_url.as_deref()),
                 api_key: p.api_key.clone().filter(|k| !k.is_empty()),
-                timeout_secs: 120,
                 user_agent: non_empty(p.user_agent.as_deref()),
                 session_header: non_empty(p.session_header.as_deref()),
             })
@@ -231,6 +230,7 @@ pub(crate) fn build_gateway(
             public_key: l.public_key.clone(),
             secret_key: l.secret_key.clone(),
         }),
+        timeouts: llm.timeouts(),
     };
     LlmGateway::build(db.clone(), http.clone(), gateway_config)
         .map_err(|e| anyhow::anyhow!("llm-gateway 構築に失敗: {e}"))
@@ -490,7 +490,6 @@ fn primary_provider(llm: &api::config::LlmConfig) -> anyhow::Result<llm_gateway:
         kind: provider_kind(llm.backend)?,
         base_url: non_empty(llm.base_url.as_deref()),
         api_key: llm.api_key.clone(),
-        timeout_secs: 120,
         user_agent: non_empty(llm.user_agent.as_deref()),
         session_header: non_empty(llm.session_header.as_deref()),
         ..Default::default()

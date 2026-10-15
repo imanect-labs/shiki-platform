@@ -120,7 +120,6 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
             kind: ProviderKind::Stub,
             base_url: None,
             api_key: None,
-            timeout_secs: 120,
             user_agent: None,
             session_header: None,
             ..Default::default()
