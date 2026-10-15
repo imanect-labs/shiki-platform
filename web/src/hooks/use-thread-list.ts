@@ -10,6 +10,8 @@ export type ThreadList = {
   loading: boolean;
   /// 続きのページを取得中（一覧末尾のインジケータ用）。
   loadingMore: boolean;
+  /// 先頭ページの取得に失敗した（「該当なし」と区別して出すため）。
+  error: boolean;
   hasMore: boolean;
   /// 続きを読み足す（無限スクロールの sentinel から呼ぶ）。
   loadMore: () => void;
@@ -34,6 +36,7 @@ export function useThreadList(query = "", enabled = true): ThreadList {
   const [cursor, setCursor] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [loadingMore, setLoadingMore] = React.useState(false);
+  const [error, setError] = React.useState(false);
   // 通知での差し替えは「今表示している行」を基準に計算する（state 更新関数の中で副作用を起こさない）。
   const threadsRef = React.useRef<Thread[]>([]);
   threadsRef.current = threads;
@@ -51,6 +54,7 @@ export function useThreadList(query = "", enabled = true): ThreadList {
     fetchingMore.current = false;
     setLoading(true);
     setLoadingMore(false);
+    setError(false);
     setThreads([]);
     setCursor(null);
 
@@ -59,6 +63,7 @@ export function useThreadList(query = "", enabled = true): ThreadList {
         .then(({ threads: first, nextCursor }) => {
           if (!current()) return;
           if (initial) {
+            setError(false);
             setThreads(first);
             setCursor(nextCursor);
             return;
@@ -76,9 +81,11 @@ export function useThreadList(query = "", enabled = true): ThreadList {
         })
         .catch(() => {
           if (!current()) return;
+          // 通知での取り直しの失敗は、表示中の一覧をそのまま残す。
           if (initial) {
             setThreads([]);
             setCursor(null);
+            setError(true);
           }
         })
         .finally(() => {
@@ -118,5 +125,5 @@ export function useThreadList(query = "", enabled = true): ThreadList {
       });
   }, [cursor, query]);
 
-  return { threads, loading, loadingMore, hasMore: cursor !== null, loadMore };
+  return { threads, loading, loadingMore, error, hasMore: cursor !== null, loadMore };
 }
