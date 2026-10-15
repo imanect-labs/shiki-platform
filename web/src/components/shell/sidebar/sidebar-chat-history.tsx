@@ -3,10 +3,12 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Link2, MessageSquareText, NotebookPen } from "lucide-react";
+import { Link2, Loader2, MessageSquareText, NotebookPen } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { groupThreadsByDate, useThreadsState, type Thread } from "@/lib/chat-api";
+import { groupThreadsByDate, type Thread } from "@/lib/chat-api";
+import { useInfiniteSentinel } from "@/hooks/use-infinite-list";
+import { useThreadList } from "@/hooks/use-thread-list";
 import { toast } from "@/components/ui/use-toast";
 import { ActiveIndicator } from "@/components/ui/motion-primitives";
 
@@ -79,6 +81,7 @@ function ThreadRow({ thread, active }: { thread: Thread; active: boolean }) {
 }
 
 /// サイドバー中段のチャット履歴。backend のスレッドを日付グループで表示する。
+/// 末尾までスクロールすると続きを読み足す（先頭 30 件以外にも辿り着ける・#591）。
 ///
 /// `useSearchParams`（ノート由来行の active 判定に使用）を含むため Suspense 境界でラップする
 /// （静的プリレンダされる (auth) ページ /apps 等で CSR bailout を起こさない・#282）。
@@ -91,7 +94,8 @@ export function SidebarChatHistory({ collapsed }: { collapsed: boolean }) {
 }
 
 function SidebarChatHistoryInner({ collapsed }: { collapsed: boolean }) {
-  const { threads, loading } = useThreadsState();
+  const { threads, loading, loadingMore, hasMore, loadMore } = useThreadList();
+  const sentinelRef = useInfiniteSentinel(loadMore, hasMore && !loading);
   const pathname = usePathname();
   // ノート由来行は `/notes/{noteId}?thread={id}` へ張るため、active 判定は thread クエリまで見る
   // （同一ノートに複数会話がある 1:N で、全行が同時 active になるのを防ぐ）。
@@ -154,6 +158,13 @@ function SidebarChatHistoryInner({ collapsed }: { collapsed: boolean }) {
           </ul>
         </div>
       ))}
+      {hasMore ? (
+        <div ref={sentinelRef} className="flex h-8 items-center justify-center" aria-hidden>
+          {loadingMore ? (
+            <Loader2 className="size-3.5 animate-spin text-sidebar-foreground/40" />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

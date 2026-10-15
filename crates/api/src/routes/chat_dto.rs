@@ -179,6 +179,9 @@ pub struct ListThreadsQuery {
     /// 由来ノートで絞り込む（ノート側の会話一覧・issue #282）。未指定は全件（履歴）。
     #[serde(default)]
     pub origin_note_id: Option<Uuid>,
+    /// タイトルの部分一致で絞り込む（検索パレット・issue #591）。
+    #[serde(default)]
+    pub q: Option<String>,
 }
 
 /// SSE クエリ（Last-Event-ID の代替）。

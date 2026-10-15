@@ -39,7 +39,7 @@ pub mod tenant_scope;
 pub mod upload_gc_timer;
 
 pub use directory::{
-    DirectoryPage, DirectoryRole, DirectoryRolePage, DirectoryStore, DirectoryUser,
+    escape_like, DirectoryPage, DirectoryRole, DirectoryRolePage, DirectoryStore, DirectoryUser,
     DEFAULT_SEARCH_LIMIT,
 };
 pub use error::StorageError;
