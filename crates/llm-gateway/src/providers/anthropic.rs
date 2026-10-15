@@ -16,9 +16,7 @@ use serde_json::{json, Value};
 
 use super::identity::IdentityHeaders;
 use super::tool_names::ToolNameMap;
-use crate::model::{
-    Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef, Usage,
-};
+use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::tool_loading::{context_tools, with_loaded_note};
 
@@ -276,7 +274,7 @@ impl LlmProvider for AnthropicProvider {
             // index → (id, name, accumulated json)
             let mut tools: std::collections::BTreeMap<i64, (String, String, String)> =
                 std::collections::BTreeMap::new();
-            let mut usage = Usage::default();
+            let mut usage = super::usage::AnthropicUsage::default();
             let mut stop = StopReason::EndTurn;
 
             while let Some(chunk) = byte_stream.next().await {
@@ -302,8 +300,7 @@ impl LlmProvider for AnthropicProvider {
                     match v.get("type").and_then(Value::as_str) {
                         Some("message_start") => {
                             if let Some(u) = v.pointer("/message/usage") {
-                                usage.prompt_tokens =
-                                    u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+                                usage.absorb(u);
                             }
                         }
                         Some("content_block_start") => {
@@ -376,16 +373,14 @@ impl LlmProvider for AnthropicProvider {
                             {
                                 stop = map_stop_reason(Some(sr));
                             }
-                            if let Some(ot) =
-                                v.pointer("/usage/output_tokens").and_then(Value::as_u64)
-                            {
-                                usage.completion_tokens = ot;
+                            if let Some(u) = v.get("usage") {
+                                usage.absorb(u);
                             }
                         }
                         Some("message_stop") => {
                             let _ = tx.unbounded_send(Ok(StreamDelta::Done {
                                 stop_reason: stop,
-                                usage,
+                                usage: usage.to_usage(),
                             }));
                             return;
                         }
@@ -395,7 +390,7 @@ impl LlmProvider for AnthropicProvider {
             }
             let _ = tx.unbounded_send(Ok(StreamDelta::Done {
                 stop_reason: stop,
-                usage,
+                usage: usage.to_usage(),
             }));
         });
 

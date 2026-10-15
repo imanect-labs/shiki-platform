@@ -55,8 +55,9 @@ impl UsageRecorder {
         sqlx::query(
             "INSERT INTO llm_usage \
              (tenant_id, org, idempotency_key, provider, model, prompt_tokens, completion_tokens, \
-              cost_usd_micros, trace_id, app_id, user_sub, source) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+              cache_read_tokens, cache_write_tokens, cost_usd_micros, trace_id, app_id, user_sub, \
+              source) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
              ON CONFLICT (tenant_id, idempotency_key) DO NOTHING",
         )
         .bind(&ctx.tenant_id)
@@ -64,8 +65,10 @@ impl UsageRecorder {
         .bind(&rec.idempotency_key)
         .bind(&rec.provider)
         .bind(&rec.model)
-        .bind(rec.usage.prompt_tokens as i64)
-        .bind(rec.usage.completion_tokens as i64)
+        .bind(to_i64(rec.usage.prompt_tokens))
+        .bind(to_i64(rec.usage.completion_tokens))
+        .bind(to_i64(rec.usage.cache_read_tokens))
+        .bind(to_i64(rec.usage.cache_write_tokens))
         .bind(rec.cost_usd_micros)
         .bind(rec.trace_id.as_deref())
         .bind(rec.app_id)
@@ -116,4 +119,9 @@ impl UsageRecorder {
         .await?;
         Ok(sum)
     }
+}
+
+/// トークン数を列（bigint）へ。i64 を超える壊れた報告は負に化けさせず頭打ちにする。
+fn to_i64(n: u64) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
 }

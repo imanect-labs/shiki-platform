@@ -190,10 +190,52 @@ impl GenerateRequest {
 }
 
 /// トークン使用量（会計の素）。
+///
+/// **`prompt_tokens` はキャッシュ分を含む入力トークンの総数**（OpenAI 互換の `prompt_tokens`・
+/// Responses の `input_tokens` と同じ定義）。Anthropic の `input_tokens` はキャッシュの読み出し・
+/// 書き込みを含まないので、アダプタが足し合わせてこの定義に揃える（#581）。
+/// `cache_read_tokens` / `cache_write_tokens` は `prompt_tokens` の内訳で、残り
+/// （[`Self::uncached_prompt_tokens`]）が定価の入力になる。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// `prompt_tokens` のうちプロンプトキャッシュから読み出した分。
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// `prompt_tokens` のうちプロンプトキャッシュへ書き込んだ分（Anthropic・OpenRouter が報告する）。
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+}
+
+impl Usage {
+    /// キャッシュを使わなかった（定価の）入力トークン数。
+    ///
+    /// 内訳の合計が総数を超える矛盾した報告でも負にしない（0 で止める）。
+    #[must_use]
+    pub const fn uncached_prompt_tokens(&self) -> u64 {
+        self.prompt_tokens.saturating_sub(
+            self.cache_read_tokens
+                .saturating_add(self.cache_write_tokens),
+        )
+    }
+
+    /// 内訳を総数の内側へ収めたもの（読み出し → 書き込みの順に、残りの入力で頭打ちにする）。
+    ///
+    /// プロバイダが内訳の合計 ＞ 総数という矛盾した値を返しても、会計の行（`prompt_tokens` ≧
+    /// 内訳の合計）と金額を過大にしない。整合した報告はそのまま返る。
+    #[must_use]
+    pub fn normalized(self) -> Self {
+        let read = self.cache_read_tokens.min(self.prompt_tokens);
+        let write = self
+            .cache_write_tokens
+            .min(self.prompt_tokens.saturating_sub(read));
+        Usage {
+            cache_read_tokens: read,
+            cache_write_tokens: write,
+            ..self
+        }
+    }
 }
 
 /// 停止理由。

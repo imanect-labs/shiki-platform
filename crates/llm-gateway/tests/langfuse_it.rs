@@ -55,6 +55,7 @@ async fn record_generation_sends_expected_batch_shape() {
             usage: Usage {
                 prompt_tokens: 11,
                 completion_tokens: 22,
+                ..Default::default()
             },
             metadata: serde_json::json!({ "tenant_id": "t1" }),
         })

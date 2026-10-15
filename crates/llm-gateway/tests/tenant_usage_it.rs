@@ -102,6 +102,7 @@ async fn record(
             usage: Usage {
                 prompt_tokens: tokens.0,
                 completion_tokens: tokens.1,
+                ..Default::default()
             },
             trace_id: None,
             input_preview: String::new(),
@@ -416,4 +417,70 @@ async fn usage_report_matches_accounting_and_stays_in_tenant_and_org() {
         .unwrap();
     assert_eq!(future.totals.calls, 0);
     assert!(future.daily.is_empty());
+}
+
+/// キャッシュの内訳（#581）: 会計の行に読み出し・書き込みのトークンが刻まれ、金額はカタログの
+/// キャッシュ単価で数え、利用量の合計にも内訳が出る。
+#[tokio::test]
+async fn cache_tokens_are_recorded_and_priced_separately() {
+    let Some(pool) = pool().await else { return };
+    // 入力 $1・読み出し $0.1・書き込み $1.25・出力 $2（per Mtok）。
+    let gw = gateway_with(
+        pool,
+        vec![ModelEntry {
+            id: "cached".into(),
+            prompt_price_micros_per_mtok: 1_000_000,
+            completion_price_micros_per_mtok: 2_000_000,
+            cache_read_price_micros_per_mtok: Some(100_000),
+            cache_write_price_micros_per_mtok: Some(1_250_000),
+            ..Default::default()
+        }],
+    );
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let alice = ctx(&tenant, "acme", "alice");
+    let usage = |prompt, completion, read, write| Usage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        cache_read_tokens: read,
+        cache_write_tokens: write,
+    };
+    let rec = |u: Usage| GenerationRecord {
+        idempotency_key: uuid::Uuid::new_v4().to_string(),
+        model: "cached".into(),
+        usage: u,
+        trace_id: None,
+        input_preview: String::new(),
+        output_preview: String::new(),
+        app_id: None,
+        source: UsageSource::Chat,
+    };
+    // 1 回目: 1M 入力をすべて書き込み → $1.25。2 回目: 0.9M 読み出し＋0.1M 定価＋出力 0.5M
+    // → $0.09 + $0.1 + $1 = $1.19。キャッシュ単価なしで数えると $1 と $2.1。
+    gw.record_generation(&alice, &rec(usage(1_000_000, 0, 0, 1_000_000)))
+        .await;
+    gw.record_generation(&alice, &rec(usage(1_000_000, 500_000, 900_000, 0)))
+        .await;
+    assert_eq!(
+        gw.estimate_cost_usd_micros("cached", usage(1_000_000, 500_000, 900_000, 0)),
+        1_190_000
+    );
+
+    let today = (Utc::now() + Duration::hours(9)).date_naive();
+    let report = gw
+        .usage_report(
+            &alice,
+            &UsageFilter {
+                from: today,
+                to: today,
+                model: None,
+                source: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.totals.calls, 2);
+    assert_eq!(report.totals.prompt_tokens, 2_000_000);
+    assert_eq!(report.totals.cache_read_tokens, 900_000);
+    assert_eq!(report.totals.cache_write_tokens, 1_000_000);
+    assert_eq!(report.totals.cost_usd_micros, 1_250_000 + 1_190_000);
 }

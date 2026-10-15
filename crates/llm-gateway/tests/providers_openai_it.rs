@@ -36,7 +36,7 @@ const SSE_BODY: &str = concat!(
     "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n",
     "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"doc_search\",\"arguments\":\"{\\\"q\\\":1}\"}}]}}]}\n",
     "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n",
-    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n",
+    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":4,\"cache_write_tokens\":3}}}\n",
     "data: [DONE]\n",
 );
 
@@ -85,6 +85,9 @@ async fn openai_stream_yields_text_thinking_tool_and_done() {
             assert_eq!(*stop_reason, StopReason::ToolUse);
             assert_eq!(usage.prompt_tokens, 10);
             assert_eq!(usage.completion_tokens, 5);
+            // prompt_tokens の内訳（#581）。
+            assert_eq!(usage.cache_read_tokens, 4);
+            assert_eq!(usage.cache_write_tokens, 3);
         }
         other => panic!("last delta should be Done, got {other:?}"),
     }
