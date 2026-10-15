@@ -6,7 +6,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use axum::http::StatusCode;
+use std::sync::{Arc, Mutex};
+
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Router;
 use futures::stream::StreamExt;
@@ -106,4 +108,140 @@ async fn openai_server_error_maps_to_unavailable() {
 
     let res = provider.stream(&req).await;
     assert!(matches!(res, Err(LlmError::Unavailable(_))));
+}
+
+type Seen = Arc<Mutex<Option<HeaderMap>>>;
+
+/// 固定ステータス＋固定ボディを返し、受けたヘッダを記録するモックを立てる。
+async fn spawn_recording_mock(status: StatusCode, body: &'static str) -> (String, Seen) {
+    let seen: Seen = Arc::new(Mutex::new(None));
+    let rec = seen.clone();
+    let app = Router::new().fallback(move |headers: HeaderMap| {
+        let rec = rec.clone();
+        async move {
+            *rec.lock().unwrap() = Some(headers);
+            (status, [("content-type", "text/event-stream")], body).into_response()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), seen)
+}
+
+#[tokio::test]
+async fn openai_sends_identity_headers_when_configured() {
+    let (base, seen) = spawn_recording_mock(StatusCode::OK, SSE_BODY).await;
+    let provider = OpenAiProvider::new(reqwest::Client::new(), base, Some("k".into()), "m")
+        .with_user_agent(Some("shiki-test/1.0"))
+        .unwrap()
+        .with_session_header(Some("x-opencode-session"))
+        .unwrap();
+    let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    req.session_id = Some("thread-42".into());
+    drain(&provider, &req).await;
+    let headers = seen.lock().unwrap().clone().unwrap();
+    assert_eq!(headers["authorization"], "Bearer k");
+    assert_eq!(headers["user-agent"], "shiki-test/1.0");
+    assert_eq!(headers["x-opencode-session"], "thread-42");
+}
+
+#[tokio::test]
+async fn openai_sends_no_session_header_when_unset() {
+    let (base, seen) = spawn_recording_mock(StatusCode::OK, SSE_BODY).await;
+    let provider = OpenAiProvider::new(reqwest::Client::new(), base, Some("k".into()), "m");
+    let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    req.session_id = Some("thread-42".into());
+    drain(&provider, &req).await;
+    let headers = seen.lock().unwrap().clone().unwrap();
+    assert!(headers.get("x-opencode-session").is_none());
+}
+
+/// 本文の先頭に `<think>…</think>` を入れて返すモデルの SSE（タグがチャンク境界で分かれる）。
+const SSE_THINK_IN_CONTENT: &str = concat!(
+    "data: {\"choices\":[{\"delta\":{\"content\":\"<thi\"}}]}\n",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"nk>考え中</th\"}}]}\n",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"ink>\\n\\n答えは2\"}}]}\n",
+    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n",
+    "data: [DONE]\n",
+);
+
+#[tokio::test]
+async fn openai_think_tags_in_content_become_thinking() {
+    let base = spawn_mock(StatusCode::OK, SSE_THINK_IN_CONTENT).await;
+    let provider = OpenAiProvider::new(reqwest::Client::new(), base, None, "m")
+        .with_think_tag_models(["m".to_string()]);
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "1+1")]);
+    let deltas = drain(&provider, &req).await;
+    assert_eq!(collect(&deltas, true), "考え中");
+    assert_eq!(collect(&deltas, false), "答えは2");
+}
+
+#[tokio::test]
+async fn openai_think_tags_pass_through_for_models_not_flagged() {
+    // 対象に指定していないモデルは、先頭の `<think>` も本文のまま（XML 生成などで
+    // 正規の出力が思考と取り違えられて消えないように・#584）。
+    let base = spawn_mock(StatusCode::OK, SSE_THINK_IN_CONTENT).await;
+    let provider = OpenAiProvider::new(reqwest::Client::new(), base, None, "m")
+        .with_think_tag_models(["other".to_string()]);
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "1+1")]);
+    let deltas = drain(&provider, &req).await;
+    assert_eq!(collect(&deltas, true), "");
+    assert_eq!(collect(&deltas, false), "<think>考え中</think>\n\n答えは2");
+}
+
+/// 本文（false）か思考（true）のデルタをつなげる。
+fn collect(deltas: &[StreamDelta], thinking: bool) -> String {
+    deltas
+        .iter()
+        .filter_map(|d| match (d, thinking) {
+            (StreamDelta::TextDelta { text }, false)
+            | (StreamDelta::ThinkingDelta { text }, true) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 実エンドポイントでの往復（`OPENAI_TEST_URL` が無ければ黙ってスキップ）。
+///
+/// 例（OpenCode Go）: `OPENAI_TEST_URL=https://opencode.ai/zen/go/v1` `OPENAI_TEST_MODEL=qwen3.7-plus`
+///     `OPENAI_TEST_SESSION_HEADER=x-opencode-session` `OPENAI_TEST_KEY=<キー>`
+#[tokio::test]
+async fn openai_live_round_trip() {
+    let Ok(base) = std::env::var("OPENAI_TEST_URL") else {
+        return;
+    };
+    let model = std::env::var("OPENAI_TEST_MODEL").unwrap_or_else(|_| "m".into());
+    let provider = OpenAiProvider::new(
+        reqwest::Client::new(),
+        base,
+        std::env::var("OPENAI_TEST_KEY").ok(),
+        model.clone(),
+    )
+    // 本文に `<think>` を入れるモデル（minimax-m3 等）でも検証できるよう、対象に指定する
+    // （入れないモデルには影響しない）。
+    .with_think_tag_models([model])
+    .with_user_agent(Some("shiki-it/1.0"))
+    .unwrap()
+    .with_session_header(std::env::var("OPENAI_TEST_SESSION_HEADER").ok().as_deref())
+    .unwrap();
+    let mut req = GenerateRequest::new(vec![Message::text(Role::User, "1+1は？数字のみで答えて")]);
+    req.session_id = Some(format!("shiki-it-{}", uuid::Uuid::new_v4()));
+    req.max_tokens = Some(2000);
+    let deltas = drain(&provider, &req).await;
+    let text: String = deltas
+        .iter()
+        .filter_map(|d| match d {
+            StreamDelta::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(text.contains('2'), "answer: {text}");
+    // 本文に思考を `<think>` で入れるモデル（minimax-m3 等）でも回答に残らない（#584）。
+    assert!(!text.contains("<think>"), "answer: {text}");
+    assert!(
+        matches!(deltas.last(), Some(StreamDelta::Done { usage, .. }) if usage.prompt_tokens > 0)
+    );
 }

@@ -12,7 +12,9 @@ use futures::channel::mpsc;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
-use super::openai_names::ToolNameMap;
+use super::identity::IdentityHeaders;
+use super::think_tags::{split_content, Piece, ThinkSplitter};
+use super::tool_names::ToolNameMap;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::tool_loading::{context_tools, with_loaded_note};
@@ -23,6 +25,9 @@ pub struct OpenAiProvider {
     base_url: String,
     api_key: Option<String>,
     default_model: String,
+    identity: IdentityHeaders,
+    /// 本文の先頭に `<think>…</think>` で思考を返すモデル（実 ID・#584）。
+    think_tag_models: HashSet<String>,
 }
 
 impl OpenAiProvider {
@@ -38,7 +43,30 @@ impl OpenAiProvider {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key,
             default_model: default_model.into(),
+            identity: IdentityHeaders::default(),
+            think_tag_models: HashSet::new(),
         }
+    }
+
+    /// 送出する User-Agent を指定する。ヘッダ値にできない文字列は設定エラーにする
+    /// （起動時に気づけるように。リクエストごとに失敗させない）。
+    pub fn with_user_agent(mut self, user_agent: Option<&str>) -> Result<Self, LlmError> {
+        self.identity.set_user_agent(user_agent)?;
+        Ok(self)
+    }
+
+    /// 会話 ID を載せるヘッダ名を指定する。ヘッダ名にできない文字列は設定エラーにする。
+    pub fn with_session_header(mut self, header: Option<&str>) -> Result<Self, LlmError> {
+        self.identity.set_session_header(header)?;
+        Ok(self)
+    }
+
+    /// 本文の先頭に `<think>…</think>` で思考を返すモデル（実 ID）を指定する。
+    /// ここに無いモデルの本文はタグを含めてそのまま本文として流す。
+    #[must_use]
+    pub fn with_think_tag_models(mut self, models: impl IntoIterator<Item = String>) -> Self {
+        self.think_tag_models = models.into_iter().collect();
+        self
     }
 
     fn build_body(&self, req: &GenerateRequest, names: &ToolNameMap) -> Value {
@@ -231,6 +259,14 @@ impl ToolAcc {
     }
 }
 
+/// 本文から切り出した断片を中立デルタへ写す。
+fn piece_delta(piece: Piece) -> StreamDelta {
+    match piece {
+        Piece::Text(text) => StreamDelta::TextDelta { text },
+        Piece::Thinking(text) => StreamDelta::ThinkingDelta { text },
+    }
+}
+
 fn map_finish_reason(fr: Option<&str>) -> StopReason {
     match fr {
         Some("tool_calls") => StopReason::ToolUse,
@@ -248,17 +284,11 @@ impl LlmProvider for OpenAiProvider {
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/chat/completions", self.base_url);
-        // 現在のツール集合に加えて**履歴中の ToolUse 名**も同じ写像に通す（resume 等で
-        // 履歴のツールが現在の tools に無い場合でも、fallback サニタイズによる衝突を防ぐ）。
-        let names = ToolNameMap::new(req.tools.iter().map(|t| t.name.as_str()).chain(
-            req.messages.iter().flat_map(|m| {
-                m.content.iter().filter_map(|b| match b {
-                    Block::ToolUse { name, .. } => Some(name.as_str()),
-                    _ => None,
-                })
-            }),
-        ));
+        let names = ToolNameMap::for_request(req);
         let body = self.build_body(req, &names);
+        let think_tags = body["model"]
+            .as_str()
+            .is_some_and(|m| self.think_tag_models.contains(m));
         let mut builder = self
             .http
             .post(&url)
@@ -267,6 +297,7 @@ impl LlmProvider for OpenAiProvider {
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
         }
+        let builder = self.identity.apply(builder, req.session_id.as_deref());
         let resp = builder
             .send()
             .await
@@ -297,6 +328,8 @@ impl LlmProvider for OpenAiProvider {
             let mut usage = Usage::default();
             let mut stop = StopReason::EndTurn;
             let mut finished = false;
+            // 本文先頭の `<think>…</think>` は思考として流す（対象モデルだけ・#584）。
+            let mut think_tags = think_tags.then(ThinkSplitter::default);
 
             'outer: while let Some(chunk) = byte_stream.next().await {
                 let chunk = match chunk {
@@ -336,10 +369,8 @@ impl LlmProvider for OpenAiProvider {
                     };
                     if let Some(delta) = choice.get("delta") {
                         if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                            if !text.is_empty() {
-                                let _ = tx.unbounded_send(Ok(StreamDelta::TextDelta {
-                                    text: text.to_string(),
-                                }));
+                            for piece in split_content(think_tags.as_mut(), text) {
+                                let _ = tx.unbounded_send(Ok(piece_delta(piece)));
                             }
                         }
                         // vLLM / 一部モデルは reasoning_content で思考を返す。
@@ -373,6 +404,13 @@ impl LlmProvider for OpenAiProvider {
                 }
             }
             let _ = finished;
+            for piece in think_tags
+                .as_mut()
+                .map(ThinkSplitter::finish)
+                .unwrap_or_default()
+            {
+                let _ = tx.unbounded_send(Ok(piece_delta(piece)));
+            }
             for s in acc.drain_stops() {
                 let _ = tx.unbounded_send(Ok(s));
             }
@@ -408,7 +446,7 @@ mod tests {
     }
 
     // 写像そのもの（サニタイズ・衝突回避・64 文字制約）の単体テストは
-    // `openai_names.rs` 側にある。ここでは messages への適用のみ検証する。
+    // `tool_names.rs` 側にある。ここでは messages への適用のみ検証する。
     #[test]
     fn dotted_tool_names_map_in_history_tool_calls() {
         // 履歴メッセージのツール名も wire 名（ドット→`_`）で送られる。

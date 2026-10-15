@@ -148,6 +148,9 @@ pub struct LlmConfig {
     /// 会話（スレッド）ごとの ID を載せるヘッダ名（例 `x-opencode-session`）。未指定なら送らない。
     #[serde(default)]
     pub session_header: Option<String>,
+    /// 既定プロバイダの表示名（管理画面・モデル選択の見出し・#583）。未指定は ID の `default`。
+    #[serde(default)]
+    pub display_name: Option<String>,
     /// 追加プロバイダ（複数同時利用）。`models[].provider` がこの `id` を指す。
     /// 既定プロバイダ（`backend` 等の単一設定）と併用できる。
     #[serde(default)]
@@ -218,6 +221,7 @@ impl LlmConfig {
                     processed_abroad: m.processed_abroad,
                     supports_effort: m.supports_effort,
                     requires_opt_in: m.requires_opt_in,
+                    reasoning_in_content: m.reasoning_in_content,
                 })
                 .collect()
         };
@@ -259,6 +263,10 @@ pub struct LlmModelEntry {
     /// 組織の管理者が有効にするまで使わせない（[`llm_gateway::ModelEntry::requires_opt_in`]）。
     #[serde(default)]
     pub requires_opt_in: bool,
+    /// 本文の先頭に `<think>…</think>` で思考を返すモデル
+    /// （[`llm_gateway::ModelEntry::reasoning_in_content`]）。
+    #[serde(default)]
+    pub reasoning_in_content: bool,
 }
 
 /// Langfuse 計装の設定（設定表現）。
