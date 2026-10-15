@@ -29,8 +29,6 @@ pub const DEFAULT_READ_CHARS: usize = 8_000;
 pub const MAX_READ_CHARS: usize = 20_000;
 /// 1 回の SQL で引く単位数の上限（実際は窓の字数から見積もる・[`SearchService::units`]）。
 const UNITS_PER_QUERY: i64 = 400;
-/// チャンク由来の本文に挟む節の見出しの最大字数（文書由来なので長さを抑える）。
-const MAX_HEADING_CHARS: usize = 200;
 /// 位置が見つからなかったときに返す見出しの数。
 const OUTLINE_LIMIT: i64 = 40;
 
@@ -101,8 +99,13 @@ struct Unit {
     level: Option<i32>,
     list_marker: Option<String>,
     page: Option<i32>,
-    heading_path: Vec<String>,
+    /// チャンク由来の節の見出し（`a > b`・文書由来なので SQL で 200 字に切って引く）。
+    /// ブロック由来は None。
+    heading: Option<String>,
+    /// 本文のうち、続きの位置から窓に入り得る分だけ（SQL の substr で切って引く）。
     text: String,
+    /// 続きの位置から単位の末尾までの字数（`text` はこの先頭の一部のことがある）。
+    remaining: i32,
 }
 
 impl SearchService {
@@ -187,7 +190,7 @@ impl SearchService {
             _ => 0,
         };
         let (units, more) = self
-            .units(ctx, node, version, source, start, max_chars + skip)
+            .units(ctx, node, version, source, start, skip, max_chars)
             .await?;
         let (text, next) = render(&units, source, max_chars, skip, more);
 
@@ -296,7 +299,10 @@ impl SearchService {
     /// `start` 以降の単位を ordinal 順に引く。
     ///
     /// 件数は窓の字数から見積もる（全部引いてから捨てない）。見積もりが外れて足りなければ、
-    /// 窓が短くなり続きの位置が返るだけで、読み落としは起きない（[`render`]）。
+    /// 窓が短くなり続きの位置が返るだけで、読み落としは起きない（[`render`]）。本文も
+    /// 続きの位置から窓の字数＋1 字だけを SQL の `substr` で切って引く（巨大な 1 ブロックを
+    /// 毎回まるごと転送・展開しない）。字数は `char_length` で別に返す。
+    #[allow(clippy::too_many_arguments)] // 読み出し位置の束（呼び出しは read_document の 1 箇所）。
     async fn units(
         &self,
         ctx: &AuthContext,
@@ -304,20 +310,23 @@ impl SearchService {
         version: i64,
         source: ReadSource,
         start: i32,
-        budget_chars: usize,
+        skip: usize,
+        max_chars: usize,
     ) -> Result<(Vec<Unit>, bool), RagError> {
         // 1 単位の字数の目安: ブロックは段落・見出し 1 つ、チャンクは段落を詰めた leaf（上限 600）。
         let per_unit = match source {
             ReadSource::Blocks => 40,
             ReadSource::Chunks => 300,
         };
-        let limit = i64::try_from(budget_chars / per_unit + 2)
+        let limit = i64::try_from(max_chars / per_unit + 2)
             .unwrap_or(UNITS_PER_QUERY)
             .clamp(8, UNITS_PER_QUERY);
         let sql = match source {
             ReadSource::Blocks => {
-                "select ordinal, type as kind, level, list_marker, page, \
-                        '{}'::text[] as heading_path, text \
+                "select ordinal, type as kind, level, list_marker, page, null::text as heading, \
+                        substr(text, case when ordinal = $5 then $7 + 1 else 1 end, $8) as text, \
+                        greatest(char_length(text) \
+                                 - case when ordinal = $5 then $7 else 0 end, 0) as remaining \
                  from doc_block \
                  where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
                    and ordinal >= $5 \
@@ -325,27 +334,31 @@ impl SearchService {
             }
             ReadSource::Chunks => {
                 "select ordinal, kind, null::int as level, null::text as list_marker, page, \
-                        heading_path, content as text \
+                        nullif(left(array_to_string(heading_path, ' > '), 200), '') as heading, \
+                        substr(content, case when ordinal = $5 then $7 + 1 else 1 end, $8) \
+                            as text, \
+                        greatest(char_length(content) \
+                                 - case when ordinal = $5 then $7 else 0 end, 0) as remaining \
                  from rag_chunk \
                  where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
                    and kind in ('leaf', 'table') and ordinal >= $5 \
                  order by ordinal limit $6"
             }
         };
-        Ok(sqlx::query_as(sql)
+        let units: Vec<Unit> = sqlx::query_as(sql)
             .bind(&ctx.tenant_id)
             .bind(&ctx.org)
             .bind(node.id)
             .bind(version)
             .bind(start)
             .bind(limit)
+            .bind(i32::try_from(skip).unwrap_or(i32::MAX))
+            .bind(i32::try_from(max_chars + 1).unwrap_or(i32::MAX))
             .fetch_all(&self.pool)
-            .await
-            .map(|units: Vec<Unit>| {
-                // 件数の上限まで引けた = 続きがあるかもしれない（render が末尾で続きの位置を返す）。
-                let more = units.len() as i64 >= limit;
-                (units, more)
-            })?)
+            .await?;
+        // 件数の上限まで引けた = 続きがあるかもしれない（render が末尾で続きの位置を返す）。
+        let more = units.len() as i64 >= limit;
+        Ok((units, more))
     }
 
     /// 文書の見出し（先頭から・位置の指定を選び直すための材料）。
@@ -412,9 +425,32 @@ fn render(
     let mut out = String::new();
     let mut chars = 0usize;
     let mut page: Option<i32> = None;
-    let mut heading: Option<&[String]> = None;
+    let mut heading: Option<&str> = None;
+    // 単位 `i` の次から読む位置（無ければ、件数の上限まで引けていた場合だけ最後の次）。
+    let after = |i: usize| {
+        units
+            .get(i + 1)
+            .map(|u| Cursor {
+                unit: u.ordinal,
+                offset: 0,
+            })
+            .or_else(|| {
+                more.then(|| {
+                    units.last().map(|u| Cursor {
+                        unit: u.ordinal + 1,
+                        offset: 0,
+                    })
+                })
+                .flatten()
+            })
+    };
     for (i, unit) in units.iter().enumerate() {
         let skip = if i == 0 { skip } else { 0 };
+        let remaining = usize::try_from(unit.remaining).unwrap_or(0);
+        if remaining == 0 {
+            // 読み切った単位（続きの位置が末尾を越えた・空のブロック）。次の単位へ進む。
+            continue;
+        }
         let mut head = String::new();
         if unit.page.is_some() && unit.page != page {
             page = unit.page;
@@ -422,18 +458,11 @@ fn render(
                 let _ = writeln!(head, "〔p.{p}〕");
             }
         }
-        if source == ReadSource::Chunks
-            && !unit.heading_path.is_empty()
-            && heading != Some(unit.heading_path.as_slice())
-        {
-            heading = Some(unit.heading_path.as_slice());
-            let path: String = unit
-                .heading_path
-                .join(" > ")
-                .chars()
-                .take(MAX_HEADING_CHARS)
-                .collect();
-            let _ = writeln!(head, "## {path}");
+        if let Some(path) = unit.heading.as_deref() {
+            if source == ReadSource::Chunks && heading != Some(path) {
+                heading = Some(path);
+                let _ = writeln!(head, "## {path}");
+            }
         }
         if skip > 0 {
             head.push_str("（前の続き）\n");
@@ -450,10 +479,9 @@ fn render(
                 _ => {}
             }
         }
-        let body: Vec<char> = unit.text.trim().chars().skip(skip).collect();
         let head_chars = head.chars().count();
-        let piece_chars = head_chars + body.len() + 2;
-        if i > 0 && chars + piece_chars > max_chars {
+        let piece_chars = head_chars + remaining + 2;
+        if chars > 0 && chars + piece_chars > max_chars {
             return (
                 out,
                 Some(Cursor {
@@ -467,31 +495,37 @@ fn render(
             // 見出しの行（文書由来）も上限に含める。巨大な見出しでも窓を超えない。
             let head: String = head.chars().take(max_chars / 2).collect();
             let head_chars = head.chars().count();
-            let take = max_chars.saturating_sub(head_chars).max(1);
-            let kept: String = body.iter().take(take).collect();
+            let take = max_chars.saturating_sub(head_chars).max(1).min(remaining);
+            let kept: String = unit.text.chars().take(take).collect();
             let _ = writeln!(out, "{head}{kept}");
-            return (
-                out,
+            // 本文の末尾まで返したなら次の単位へ（同じ単位の位置を返し続けない）。
+            let next = if take >= remaining {
+                after(i)
+            } else {
                 Some(Cursor {
                     unit: unit.ordinal,
                     offset: skip + take,
-                }),
-            );
+                })
+            };
+            return (out, next);
         }
+        // 単位の残りが丸ごと入る（`text` は残り全部）。表示上の前後の空白は落とす。
         out.push_str(&head);
-        out.extend(body.iter());
+        out.push_str(if skip > 0 {
+            unit.text.trim_end()
+        } else {
+            unit.text.trim()
+        });
         out.push_str("\n\n");
         chars += piece_chars;
     }
     // 引いた単位を積み切った。件数の上限まで引けていたなら続きがあり得るので次の位置を返す。
-    let next = more
-        .then(|| {
-            units.last().map(|u| Cursor {
-                unit: u.ordinal + 1,
-                offset: 0,
-            })
+    let next = units.len().checked_sub(1).and_then(|last| {
+        more.then(|| Cursor {
+            unit: units[last].ordinal + 1,
+            offset: 0,
         })
-        .flatten();
+    });
     (out, next)
 }
 
@@ -506,9 +540,17 @@ mod tests {
             level: Some(2),
             list_marker: (kind == "list_item").then(|| "1.".to_string()),
             page,
-            heading_path: path.iter().map(|s| (*s).to_string()).collect(),
+            heading: (!path.is_empty()).then(|| path.join(" > ")),
             text: text.into(),
+            remaining: i32::try_from(text.chars().count()).unwrap(),
         }
+    }
+
+    /// 続きの位置 `skip` から引いた単位（SQL の substr と char_length を写す）。
+    fn tail(mut u: Unit, skip: usize) -> Unit {
+        u.remaining = (u.remaining - i32::try_from(skip).unwrap()).max(0);
+        u.text = u.text.chars().skip(skip).collect();
+        u
     }
 
     #[test]
@@ -577,9 +619,43 @@ mod tests {
             })
         );
         // 続きは同じ単位の 10 字目から。印を付け、残りと次の単位が読める。
+        let [first, second] = units;
+        let units = [tail(first, 10), second];
         let (text, next) = render(&units, ReadSource::Blocks, 100, 10, false);
         assert_eq!(text, "（前の続き）\n表表末末末\n\n次\n\n");
         assert_eq!(next, None);
+    }
+
+    #[test]
+    fn tiny_windows_still_reach_the_end() {
+        // 窓が「前の続き」の印より小さくても、1 字ずつ進んで単位の末尾から次へ移る（Codex）。
+        let whole = [
+            unit(0, "paragraph", None, &[], "あいう"),
+            unit(1, "paragraph", None, &[], "え"),
+        ];
+        let mut cursor = Some(Cursor { unit: 0, offset: 0 });
+        let mut read = String::new();
+        for _ in 0..20 {
+            let Some(c) = cursor else { break };
+            let units: Vec<Unit> = whole
+                .iter()
+                .filter(|u| u.ordinal >= c.unit)
+                .map(|u| {
+                    let u = unit(u.ordinal, &u.kind, None, &[], &u.text);
+                    if u.ordinal == c.unit {
+                        tail(u, c.offset)
+                    } else {
+                        u
+                    }
+                })
+                .collect();
+            let (text, next) = render(&units, ReadSource::Blocks, 1, c.offset, false);
+            read.push_str(&text);
+            cursor = next;
+        }
+        assert!(cursor.is_none(), "文書の終わりに届く");
+        let body: String = read.chars().filter(|c| "あいうえ".contains(*c)).collect();
+        assert_eq!(body, "あいうえ");
     }
 
     #[test]
