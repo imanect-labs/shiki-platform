@@ -290,9 +290,11 @@ function ModelList({
         id={listId}
         role="listbox"
         aria-label="モデル"
-        aria-activedescendant={showSearch ? undefined : activeOptionId}
+        // 検索欄があっても、狭い画面では開いた直後のフォーカスはここ（ソフトキーボードを出さない）
+        // なので、一覧自体もキー操作を受ける。検索欄は兄弟なのでキーが二重に処理されることはない。
+        aria-activedescendant={activeOptionId}
         tabIndex={showSearch ? -1 : 0}
-        onKeyDown={showSearch ? undefined : onKeyDown}
+        onKeyDown={onKeyDown}
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain outline-none"
       >
         {!showDefault

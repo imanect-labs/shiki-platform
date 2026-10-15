@@ -484,7 +484,7 @@ pub(crate) async fn wire_workflow(
 }
 
 /// 既定プロバイダ（`llm.backend` 等の単一設定）の接続設定。
-fn primary_provider(llm: &crate::config::LlmConfig) -> anyhow::Result<llm_gateway::ProviderConfig> {
+fn primary_provider(llm: &api::config::LlmConfig) -> anyhow::Result<llm_gateway::ProviderConfig> {
     Ok(llm_gateway::ProviderConfig {
         display_name: non_empty(llm.display_name.as_deref()),
         kind: provider_kind(llm.backend)?,
@@ -507,7 +507,7 @@ fn non_empty(v: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{non_empty, primary_provider};
-    use crate::config::{LlmBackend, LlmConfig};
+    use api::config::{LlmBackend, LlmConfig};
 
     #[test]
     fn primary_provider_carries_display_name() {
