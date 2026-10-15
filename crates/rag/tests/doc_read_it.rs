@@ -29,6 +29,8 @@ struct Env {
     pool: PgPool,
     ctx: AuthContext,
     search: SearchService,
+    /// 可読集合（pre-filter）に入っているフォルダの構造タグ。積むチャンクは既定でこれを持つ。
+    readable_tag: String,
     _tmp: tempfile::TempDir,
 }
 
@@ -44,6 +46,11 @@ async fn setup() -> Option<Env> {
         .expect("Postgres へ接続できること");
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
     let ctx = test_ctx(&format!("t-{}", Uuid::new_v4().simple()), "alice");
+    let readable_tag = ctx
+        .ns()
+        .folder(&Uuid::new_v4().to_string())
+        .as_str()
+        .to_string();
     let tmp = tempfile::tempdir().unwrap();
     let search = SearchService::new(
         pool.clone(),
@@ -53,7 +60,7 @@ async fn setup() -> Option<Env> {
         Arc::new(FakeVectorStore::default()),
         Arc::new(TantivyFulltext::new(tmp.path())),
         Arc::new(ScriptedAuthz {
-            readable_folders: vec![],
+            readable_folders: vec![readable_tag.clone()],
             readable_files: vec![],
             denied_files: HashSet::new(),
         }),
@@ -63,6 +70,7 @@ async fn setup() -> Option<Env> {
         pool,
         ctx,
         search,
+        readable_tag,
         _tmp: tmp,
     })
 }
@@ -133,7 +141,7 @@ async fn chunk(
         "insert into rag_chunk \
              (id, tenant_id, org, node_id, version, parent_id, kind, ordinal, page, heading_path, \
               content, char_count, authz_tags, embedding_model_version) \
-         values ($1, $2, $3, $4, $5, null, $6, $7, $8, $9, $10, 1, '{}', 'fake-model')",
+         values ($1, $2, $3, $4, $5, null, $6, $7, $8, $9, $10, 1, $11, 'fake-model')",
     )
     .bind(Uuid::new_v4())
     .bind(&ctx.tenant_id)
@@ -145,6 +153,7 @@ async fn chunk(
     .bind(page)
     .bind(path.iter().map(|s| (*s).to_string()).collect::<Vec<_>>())
     .bind(content)
+    .bind(vec![env.readable_tag.clone()])
     .execute(&env.pool)
     .await
     .unwrap();
@@ -403,4 +412,30 @@ async fn huge_unit_continues_and_outline_is_audited() {
     .await
     .unwrap();
     assert_eq!(audited, 1);
+}
+
+/// 二段 authz の pre-filter: viewer 判定（呼び出し側）を通っても、可読集合にチャンクの
+/// authz_tags が入っていなければ本文は返さない（片方が誤って許可しても漏れない）。
+#[tokio::test]
+async fn prefilter_denies_when_chunk_tags_are_not_readable() {
+    let Some(env) = setup().await else { return };
+    let node = make_file(&env, "他部署.pdf", 1).await;
+    chunk(&env, &node, 1, 0, "leaf", None, &[], "社外秘").await;
+    sqlx::query("update rag_chunk set authz_tags = $1 where node_id = $2")
+        .bind(vec![env
+            .ctx
+            .ns()
+            .folder(&Uuid::new_v4().to_string())
+            .as_str()
+            .to_string()])
+        .bind(node.id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let got = env
+        .search
+        .read_document(&env.ctx, &node, &ReadFrom::Start, 8_000, None)
+        .await
+        .unwrap();
+    assert_eq!(got, DocRead::Denied);
 }

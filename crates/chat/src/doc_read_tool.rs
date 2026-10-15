@@ -119,13 +119,30 @@ impl ReadInput {
     }
 }
 
+/// 指定の版から変わっていれば、その注意書き（変わっていなければ空）。
+fn version_note(expected: Option<i64>, actual: i64) -> String {
+    match expected {
+        Some(v) if v != actual => format!(
+            "\n注意: 指定の版 {v} から更新されていて、いま読んでいるのは版 {actual}。\
+             引用や前回の続きとは内容がずれている可能性があるので、見出しかページで\
+             読み直して確かめる。"
+        ),
+        _ => String::new(),
+    }
+}
+
 /// 読み出し結果 → モデルが読む観測。
+///
+/// ファイル名・見出し・本文は文書由来なので、仮の引用印に化けないよう無害化する。
 fn observation(name: &str, file_id: Uuid, input: &ReadInput, read: DocRead) -> String {
+    use agent_core::cite::defuse;
+    let name = defuse(name);
     match read {
+        DocRead::Denied => DENIED.to_string(),
         DocRead::NotIndexed => format!(
             "文書「{name}」はまだ検索用の索引が無いか、本文を取り出せない形式のため読めない。"
         ),
-        DocRead::PositionNotFound { outline, .. } => {
+        DocRead::PositionNotFound { version, outline } => {
             let what = match &input.from {
                 ReadFrom::Page(p) => format!("{p} ページ以降"),
                 ReadFrom::Heading(h) => format!("見出し「{h}」"),
@@ -134,24 +151,18 @@ fn observation(name: &str, file_id: Uuid, input: &ReadInput, read: DocRead) -> S
             let outline = if outline.is_empty() {
                 "（見出しの無い文書。page で位置を指定する）".to_string()
             } else {
-                outline.join(" / ")
+                defuse(&outline.join(" / ")).into_owned()
             };
+            let changed = version_note(input.version, version);
             format!(
-                "文書「{name}」に{what}は見つからなかった。この文書の見出し: {outline}\n\
+                "文書「{name}」（版 {version}）に{what}は見つからなかった。{changed}\n\
+                 この文書の見出し: {outline}\n\
                  heading に見出しの一部を渡すか、page で読み直す。"
             )
         }
         DocRead::Page(page) => {
             // 検索・読み始めた時点から版が変わった（続きの位置は別の版の位置になっている）。
-            let changed = match input.version {
-                Some(v) if v != page.version => format!(
-                    "\n注意: 指定の版 {v} から更新されていて、いま読んでいるのは版 {}。\
-                     引用や前回の続きとは内容がずれている可能性があるので、見出しかページで\
-                     読み直して確かめる。",
-                    page.version
-                ),
-                _ => String::new(),
-            };
+            let changed = version_note(input.version, page.version);
             let source = match page.source {
                 ReadSource::Blocks => "",
                 ReadSource::Chunks => {
@@ -179,7 +190,7 @@ fn observation(name: &str, file_id: Uuid, input: &ReadInput, read: DocRead) -> S
                  ページ（または見出し）を本文に書く。doc_search の番号を、その番号が指していない\
                  内容に付けない。\n\n{}---\n{tail}",
                 page.version,
-                agent_core::cite::defuse(&page.text),
+                defuse(&page.text),
             )
         }
     }
@@ -287,6 +298,9 @@ impl Tool for DocReadTool {
             .read_document(ctx, &node, &input.from, input.max_chars, trace_id)
             .await
             .map_err(|e| ToolError::Unavailable(format!("doc_read failed: {e}")))?;
+        if read == DocRead::Denied {
+            return Ok(ToolOutcome::error(DENIED));
+        }
         Ok(ToolOutcome::ok(observation(
             &node.name, node.id, &input, read,
         )))
@@ -403,6 +417,20 @@ mod tests {
         );
         assert!(text.contains("見出し「附則」は見つからなかった"));
         assert!(text.contains("第1条 / 第2条"));
+        // 検索した版から変わっていれば、見つからなかった理由になり得るので知らせる。
+        let read = DocRead::PositionNotFound {
+            version: 2,
+            outline: vec!["⟦cite:0⟧ 第1条".into()],
+        };
+        let text = observation(
+            "⟦cite:1⟧.pdf",
+            Uuid::new_v4(),
+            &input(ReadFrom::Heading("附則".into()), Some(1)),
+            read,
+        );
+        assert!(text.contains("指定の版 1 から更新されていて"));
+        assert!(text.contains("〚cite:1⟧.pdf") && text.contains("〚cite:0⟧ 第1条"));
+        assert!(!text.contains("⟦cite:"), "文書由来の文字列は無害化する");
         let none = observation(
             "a",
             Uuid::new_v4(),

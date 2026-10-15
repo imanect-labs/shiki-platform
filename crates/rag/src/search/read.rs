@@ -20,6 +20,7 @@ use std::fmt::Write as _;
 use authz::AuthContext;
 use storage::audit::{AuditEntry, Decision};
 
+use crate::authz_filter::readable_set;
 use crate::error::RagError;
 use crate::search::SearchService;
 
@@ -28,6 +29,8 @@ pub const DEFAULT_READ_CHARS: usize = 8_000;
 pub const MAX_READ_CHARS: usize = 20_000;
 /// 1 回の SQL で引く単位数の上限（実際は窓の字数から見積もる・[`SearchService::units`]）。
 const UNITS_PER_QUERY: i64 = 400;
+/// チャンク由来の本文に挟む節の見出しの最大字数（文書由来なので長さを抑える）。
+const MAX_HEADING_CHARS: usize = 200;
 /// 位置が見つからなかったときに返す見出しの数。
 const OUTLINE_LIMIT: i64 = 40;
 
@@ -79,6 +82,8 @@ pub struct DocReadPage {
 pub enum DocRead {
     /// 索引が無い（インジェスト前・未対応形式・解析失敗）。
     NotIndexed,
+    /// 可読集合（pre-filter）で読めない。呼び出し側は権限なしと同じ扱いにする。
+    Denied,
     /// 指定のページ・見出しが見つからなかった。`outline` は文書の見出し（先頭から）。
     PositionNotFound {
         version: i64,
@@ -133,6 +138,29 @@ impl SearchService {
         } else {
             ReadSource::Chunks
         };
+        // 二段 authz の pre-filter 側: 呼び出し側の viewer 判定（post-filter 相当）とは独立に、
+        // 検索と同じ可読集合でこのファイルのチャンクの authz_tags を照合する。片方が誤って
+        // 許可しても本文は返さない。可読集合が上限を超えて縮退したときは検索と同じく
+        // tenant 境界だけになる（viewer 判定が最終の防壁）。
+        let readable =
+            readable_set(ctx, self.authz.as_ref(), self.config.readable_tags_max).await?;
+        if !readable.overflowed {
+            let allowed: bool = sqlx::query_scalar(
+                "select exists(select 1 from rag_chunk \
+                 where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
+                   and authz_tags && $5)",
+            )
+            .bind(&ctx.tenant_id)
+            .bind(&ctx.org)
+            .bind(node.id)
+            .bind(version)
+            .bind(&readable.tags)
+            .fetch_one(&self.pool)
+            .await?;
+            if !allowed {
+                return Ok(DocRead::Denied);
+            }
+        }
 
         let source_name = match source {
             ReadSource::Blocks => "blocks",
@@ -330,14 +358,14 @@ impl SearchService {
     ) -> Result<Vec<String>, RagError> {
         let sql = match source {
             ReadSource::Blocks => {
-                "select text from doc_block \
+                "select left(text, 200) from doc_block \
                  where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
                    and type = 'heading' \
                  order by ordinal limit $5"
             }
             // parent はセクション（見出し境界）ごとに 1 つ。その見出しの並びが目次になる。
             ReadSource::Chunks => {
-                "select array_to_string(heading_path, ' > ') from rag_chunk \
+                "select left(array_to_string(heading_path, ' > '), 200) from rag_chunk \
                  where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
                    and kind = 'parent' and cardinality(heading_path) > 0 \
                  order by ordinal limit $5"
@@ -399,7 +427,13 @@ fn render(
             && heading != Some(unit.heading_path.as_slice())
         {
             heading = Some(unit.heading_path.as_slice());
-            let _ = writeln!(head, "## {}", unit.heading_path.join(" > "));
+            let path: String = unit
+                .heading_path
+                .join(" > ")
+                .chars()
+                .take(MAX_HEADING_CHARS)
+                .collect();
+            let _ = writeln!(head, "## {path}");
         }
         if skip > 0 {
             head.push_str("（前の続き）\n");
@@ -430,6 +464,9 @@ fn render(
         }
         if piece_chars > max_chars {
             // 1 単位だけで上限を超える（巨大な表など）。上限で切り、続きは同じ単位の途中から。
+            // 見出しの行（文書由来）も上限に含める。巨大な見出しでも窓を超えない。
+            let head: String = head.chars().take(max_chars / 2).collect();
+            let head_chars = head.chars().count();
             let take = max_chars.saturating_sub(head_chars).max(1);
             let kept: String = body.iter().take(take).collect();
             let _ = writeln!(out, "{head}{kept}");
