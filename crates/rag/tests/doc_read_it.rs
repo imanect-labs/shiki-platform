@@ -439,3 +439,45 @@ async fn prefilter_denies_when_chunk_tags_are_not_readable() {
         .unwrap();
     assert_eq!(got, DocRead::Denied);
 }
+
+/// 取得の総量を窓で打ち切っても（SQL の累積字数）、続きを辿れば全ブロックを順に欠けなく読める。
+#[tokio::test]
+async fn many_blocks_are_read_in_order_across_windows() {
+    let Some(env) = setup().await else { return };
+    let node = make_file(&env, "多数.md", 1).await;
+    chunk(&env, &node, 1, 0, "leaf", None, &[], "検索用").await;
+    for i in 0..50 {
+        block(
+            &env,
+            &node,
+            1,
+            i,
+            "paragraph",
+            1,
+            &format!("段落{i:03}です"),
+        )
+        .await;
+    }
+    let ctx = &env.ctx;
+    let mut from = ReadFrom::Start;
+    let mut read = String::new();
+    for _ in 0..100 {
+        let p = page(
+            env.search
+                .read_document(ctx, &node, &from, 25, None)
+                .await
+                .unwrap(),
+        );
+        read.push_str(&p.text);
+        match p.next {
+            Some(c) => from = ReadFrom::At(c),
+            None => break,
+        }
+    }
+    let seen: Vec<String> = (0..50)
+        .filter(|i| read.contains(&format!("段落{i:03}です")))
+        .map(|i| format!("{i:03}"))
+        .collect();
+    assert_eq!(seen.len(), 50, "全ブロックを読む: {read}");
+    assert_eq!(read.matches("段落").count(), 50, "重複しない");
+}

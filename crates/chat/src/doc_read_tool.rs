@@ -20,6 +20,9 @@ use rag::{
 use storage::StorageService;
 use uuid::Uuid;
 
+/// 続きの位置の中の字数の上限（int4 の範囲で余裕を持たせる）。
+const MAX_OFFSET: i64 = 1_000_000_000;
+
 const DENIED: &str = "指定された文書にアクセスできません（存在しないか、権限がありません）。";
 const OUT_OF_SCOPE: &str = "この文書は、適用中の skill の参照範囲の外にあるため読めない。";
 
@@ -95,6 +98,12 @@ impl ReadInput {
         // 優先順: 続きの位置 > ページ > 見出し（続きを読むときに他の指定が残っていても進める）。
         let from = if let Some(n) = int("from", 0)? {
             let offset = int("offset", 0)?.unwrap_or(0);
+            // SQL の位置計算（offset + 1）が int4 を溢れないよう上限を設ける。
+            if offset > MAX_OFFSET {
+                return Err(ToolError::Invalid(format!(
+                    "'offset' must be <= {MAX_OFFSET}"
+                )));
+            }
             ReadFrom::At(Cursor {
                 unit: i32::try_from(n).unwrap_or(i32::MAX),
                 offset: usize::try_from(offset).unwrap_or(0),
@@ -235,6 +244,7 @@ impl Tool for DocReadTool {
                 "offset": {
                     "type": "integer",
                     "minimum": 0,
+                    "maximum": MAX_OFFSET,
                     "description": "続きの位置の中の字数（前回の観測に書かれていれば渡す）"
                 },
                 "max_chars": {
@@ -360,6 +370,7 @@ mod tests {
             json!({ "file_id": id, "from": -1 }),
             json!({ "file_id": id, "from": 1.5 }),
             json!({ "file_id": id, "from": 1, "offset": -2 }),
+            json!({ "file_id": id, "from": 1, "offset": 2_147_483_647i64 }),
             json!({ "file_id": id, "version": 0 }),
             json!({ "file_id": id, "max_chars": "8000" }),
         ] {

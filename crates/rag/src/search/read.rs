@@ -322,27 +322,48 @@ impl SearchService {
             .unwrap_or(UNITS_PER_QUERY)
             .clamp(8, UNITS_PER_QUERY);
         let sql = match source {
+            // 各行の本文は窓の字数＋1 字まで（substr）。さらに、手前までの累積字数が窓を
+            // 超えた行は引かない（窓を越える最初の 1 行までで止める）。取得の総量は窓の
+            // 2 倍程度に収まる（Codex: 行ごとの上限だけでは件数倍に膨らむ）。
             ReadSource::Blocks => {
-                "select ordinal, type as kind, level, list_marker, page, null::text as heading, \
-                        substr(text, case when ordinal = $5 then $7 + 1 else 1 end, $8) as text, \
-                        greatest(char_length(text) \
-                                 - case when ordinal = $5 then $7 else 0 end, 0) as remaining \
-                 from doc_block \
-                 where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
-                   and ordinal >= $5 \
-                 order by ordinal limit $6"
+                "select ordinal, kind, level, list_marker, page, heading, text, remaining \
+                 from (select ordinal, type as kind, level, list_marker, page, \
+                              null::text as heading, \
+                              substr(text, case when ordinal = $5 then $7 + 1 else 1 end, $8) \
+                                  as text, \
+                              greatest(char_length(text) \
+                                       - case when ordinal = $5 then $7 else 0 end, 0) \
+                                  as remaining, \
+                              coalesce(sum(char_length(text)) over (order by ordinal \
+                                  rows between unbounded preceding and 1 preceding), 0) \
+                                  as before \
+                       from doc_block \
+                       where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
+                         and ordinal >= $5 \
+                       order by ordinal limit $6) w \
+                 where before - $7 < $8 \
+                 order by ordinal"
             }
             ReadSource::Chunks => {
-                "select ordinal, kind, null::int as level, null::text as list_marker, page, \
-                        nullif(left(array_to_string(heading_path, ' > '), 200), '') as heading, \
-                        substr(content, case when ordinal = $5 then $7 + 1 else 1 end, $8) \
-                            as text, \
-                        greatest(char_length(content) \
-                                 - case when ordinal = $5 then $7 else 0 end, 0) as remaining \
-                 from rag_chunk \
-                 where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
-                   and kind in ('leaf', 'table') and ordinal >= $5 \
-                 order by ordinal limit $6"
+                "select ordinal, kind, level, list_marker, page, heading, text, remaining \
+                 from (select ordinal, kind, null::int as level, null::text as list_marker, \
+                              page, \
+                              nullif(left(array_to_string(heading_path, ' > '), 200), '') \
+                                  as heading, \
+                              substr(content, case when ordinal = $5 then $7 + 1 else 1 end, $8) \
+                                  as text, \
+                              greatest(char_length(content) \
+                                       - case when ordinal = $5 then $7 else 0 end, 0) \
+                                  as remaining, \
+                              coalesce(sum(char_length(content)) over (order by ordinal \
+                                  rows between unbounded preceding and 1 preceding), 0) \
+                                  as before \
+                       from rag_chunk \
+                       where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
+                         and kind in ('leaf', 'table') and ordinal >= $5 \
+                       order by ordinal limit $6) w \
+                 where before - $7 < $8 \
+                 order by ordinal"
             }
         };
         let units: Vec<Unit> = sqlx::query_as(sql)
@@ -357,6 +378,7 @@ impl SearchService {
             .fetch_all(&self.pool)
             .await?;
         // 件数の上限まで引けた = 続きがあるかもしれない（render が末尾で続きの位置を返す）。
+        // 累積字数で打ち切った場合は、打ち切った手前の行で窓を超えるので render が続きを返す。
         let more = units.len() as i64 >= limit;
         Ok((units, more))
     }
