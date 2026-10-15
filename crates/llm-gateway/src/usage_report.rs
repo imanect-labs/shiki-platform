@@ -21,8 +21,13 @@ pub struct UsageFilter {
 #[derive(Debug, Clone, Default, PartialEq, Eq, sqlx::FromRow)]
 pub struct UsageTotals {
     pub cost_usd_micros: i64,
+    /// 入力トークンの総数（キャッシュ分を含む）。
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
+    /// `prompt_tokens` のうちキャッシュから読み出した分（#581・それ以前の行は 0）。
+    pub cache_read_tokens: i64,
+    /// `prompt_tokens` のうちキャッシュへ書き込んだ分（#581・それ以前の行は 0）。
+    pub cache_write_tokens: i64,
     pub calls: i64,
     pub users: i64,
 }
@@ -121,6 +126,8 @@ impl UsageReporter {
             "SELECT COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros, \
                     COALESCE(SUM(prompt_tokens), 0)::bigint AS prompt_tokens, \
                     COALESCE(SUM(completion_tokens), 0)::bigint AS completion_tokens, \
+                    COALESCE(SUM(cache_read_tokens), 0)::bigint AS cache_read_tokens, \
+                    COALESCE(SUM(cache_write_tokens), 0)::bigint AS cache_write_tokens, \
                     COUNT(*)::bigint AS calls, \
                     COUNT(DISTINCT user_sub)::bigint AS users \
              FROM llm_usage WHERE {SCOPE}"

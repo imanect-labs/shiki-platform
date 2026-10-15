@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use super::identity::IdentityHeaders;
 use super::openai::tool_message_content;
 use super::tool_names::ToolNameMap;
-use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
+use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::tool_loading::context_tools;
 
@@ -276,10 +276,7 @@ impl EventMapper {
             "response.completed" | "response.incomplete" => {
                 self.finished = true;
                 let resp = &v["response"];
-                let usage = Usage {
-                    prompt_tokens: resp["usage"]["input_tokens"].as_u64().unwrap_or(0),
-                    completion_tokens: resp["usage"]["output_tokens"].as_u64().unwrap_or(0),
-                };
+                let usage = super::usage::responses(&resp["usage"]);
                 let stop_reason = if kind == "response.incomplete" {
                     match resp["incomplete_details"]["reason"].as_str() {
                         Some("max_output_tokens") => StopReason::MaxTokens,
@@ -676,9 +673,10 @@ mod tests {
                 },
                 StreamDelta::Done {
                     stop_reason: StopReason::EndTurn,
-                    usage: Usage {
+                    usage: crate::model::Usage {
                         prompt_tokens: 9,
-                        completion_tokens: 3
+                        completion_tokens: 3,
+                        ..Default::default()
                     },
                 },
             ]

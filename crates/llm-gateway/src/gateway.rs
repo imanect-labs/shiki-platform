@@ -292,9 +292,7 @@ impl LlmGateway {
             .catalog
             .get(model)
             .or_else(|| self.inner.config.catalog.default_entry())
-            .map_or(0, |e| {
-                e.cost_usd_micros(usage.prompt_tokens, usage.completion_tokens)
-            })
+            .map_or(0, |e| e.cost_usd_micros(&usage))
     }
 
     /// モデルのコンテキスト窓トークン数（agent-core の剪定閾値・#529）。
@@ -388,16 +386,25 @@ impl LlmGateway {
             .catalog
             .get(&rec.model)
             .or_else(|| self.inner.config.catalog.default_entry());
-        let cost = entry.map_or(0, |e| {
-            e.cost_usd_micros(rec.usage.prompt_tokens, rec.usage.completion_tokens)
-        });
+        // 内訳が総数を超える矛盾した報告は、会計の行と金額を過大にしないよう総数へ収める。
+        let usage = rec.usage.normalized();
+        if usage != rec.usage {
+            tracing::warn!(
+                model = %rec.model,
+                prompt_tokens = rec.usage.prompt_tokens,
+                cache_read_tokens = rec.usage.cache_read_tokens,
+                cache_write_tokens = rec.usage.cache_write_tokens,
+                "llm usage: cache breakdown exceeds prompt tokens; clamped"
+            );
+        }
+        let cost = entry.map_or(0, |e| e.cost_usd_micros(&usage));
         let provider = self.provider_name_for(&rec.model);
 
         let usage_rec = UsageRecord {
             idempotency_key: rec.idempotency_key.clone(),
             provider: provider.clone(),
             model: rec.model.clone(),
-            usage: rec.usage,
+            usage,
             cost_usd_micros: cost,
             trace_id: rec.trace_id.clone(),
             app_id: rec.app_id,
@@ -415,7 +422,7 @@ impl LlmGateway {
                 provider: &provider,
                 input: &rec.input_preview,
                 output: &rec.output_preview,
-                usage: rec.usage,
+                usage,
                 metadata: serde_json::json!({
                     "tenant_id": ctx.tenant_id,
                     "org": ctx.org,

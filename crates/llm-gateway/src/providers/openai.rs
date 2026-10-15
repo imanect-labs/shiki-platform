@@ -357,12 +357,7 @@ impl LlmProvider for OpenAiProvider {
                         continue;
                     };
                     if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
-                        usage.prompt_tokens =
-                            u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0);
-                        usage.completion_tokens = u
-                            .get("completion_tokens")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0);
+                        usage = super::usage::chat_completions(u);
                     }
                     let Some(choice) = v.get("choices").and_then(|c| c.get(0)) else {
                         continue;

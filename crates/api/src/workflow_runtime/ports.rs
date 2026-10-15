@@ -201,10 +201,7 @@ impl NodePorts for ProdNodePorts {
             .await
             .map_err(|e| llm_port_error(&e))?;
         let mut text = String::new();
-        let mut usage = Usage {
-            prompt_tokens: 0,
-            completion_tokens: 0,
-        };
+        let mut usage = Usage::default();
         while let Some(item) = stream.next().await {
             match item.map_err(|e| PortError::unavailable(format!("llm stream: {e}")))? {
                 StreamDelta::TextDelta { text: t } => text.push_str(&t),

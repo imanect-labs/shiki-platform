@@ -214,6 +214,8 @@ impl LlmConfig {
                     real_id: m.real_id.clone(),
                     prompt_price_micros_per_mtok: m.prompt_price_micros_per_mtok,
                     completion_price_micros_per_mtok: m.completion_price_micros_per_mtok,
+                    cache_read_price_micros_per_mtok: m.cache_read_price_micros_per_mtok,
+                    cache_write_price_micros_per_mtok: m.cache_write_price_micros_per_mtok,
                     context_window_tokens: m.context_window_tokens,
                     provider: m.provider.clone(),
                     display_name: m.display_name.clone(),
@@ -242,6 +244,12 @@ pub struct LlmModelEntry {
     pub prompt_price_micros_per_mtok: u64,
     #[serde(default)]
     pub completion_price_micros_per_mtok: u64,
+    /// キャッシュ読み出しの単価（省略はプロンプト単価・#581）。
+    #[serde(default)]
+    pub cache_read_price_micros_per_mtok: Option<u64>,
+    /// キャッシュ書き込みの単価（省略はプロンプト単価・#581）。
+    #[serde(default)]
+    pub cache_write_price_micros_per_mtok: Option<u64>,
     /// コンテキスト窓トークン数（未設定ならエージェントの剪定は固定閾値のまま・#529）。
     #[serde(default)]
     pub context_window_tokens: Option<u32>,

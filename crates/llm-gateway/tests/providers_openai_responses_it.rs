@@ -48,7 +48,7 @@ const SSE_BODY: &str = concat!(
     "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"q\\\":\"}\n\n",
     "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"1}\"}\n\n",
     "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"doc_search\",\"arguments\":\"{\\\"q\\\":1}\"}}\n\n",
-    "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":6}}}}\n\n",
 );
 
 fn provider(base: &str) -> OpenAiResponsesProvider {
@@ -99,7 +99,9 @@ async fn streams_text_and_tool_call_and_sends_identity_headers() {
                 stop_reason: StopReason::ToolUse,
                 usage: llm_gateway::model::Usage {
                     prompt_tokens: 10,
-                    completion_tokens: 5
+                    completion_tokens: 5,
+                    cache_read_tokens: 6,
+                    cache_write_tokens: 0,
                 },
             },
         ]

@@ -33,7 +33,7 @@ async fn spawn_mock(status: StatusCode, body: &'static str) -> String {
 /// message_start → text/thinking delta → tool_use ブロック → message_delta → message_stop。
 const SSE_BODY: &str = concat!(
     "event: message_start\n",
-    "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12}}}\n\n",
+    "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":20}}}\n\n",
     "event: content_block_delta\n",
     "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n",
     "event: content_block_delta\n",
@@ -88,7 +88,10 @@ async fn anthropic_stream_yields_text_thinking_tool_and_done() {
     match deltas.last().expect("non-empty") {
         StreamDelta::Done { stop_reason, usage } => {
             assert_eq!(*stop_reason, StopReason::ToolUse);
-            assert_eq!(usage.prompt_tokens, 12);
+            // input_tokens はキャッシュ分を含まないので、総数は 12 + 100 + 20（#581）。
+            assert_eq!(usage.prompt_tokens, 132);
+            assert_eq!(usage.cache_read_tokens, 100);
+            assert_eq!(usage.cache_write_tokens, 20);
             assert_eq!(usage.completion_tokens, 7);
         }
         other => panic!("last delta should be Done, got {other:?}"),
