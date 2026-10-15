@@ -13,6 +13,7 @@ use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
 use super::identity::IdentityHeaders;
+use super::think_tags::{Piece, ThinkSplitter};
 use super::tool_names::ToolNameMap;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
@@ -247,6 +248,14 @@ impl ToolAcc {
     }
 }
 
+/// 本文から切り出した断片を中立デルタへ写す。
+fn piece_delta(piece: Piece) -> StreamDelta {
+    match piece {
+        Piece::Text(text) => StreamDelta::TextDelta { text },
+        Piece::Thinking(text) => StreamDelta::ThinkingDelta { text },
+    }
+}
+
 fn map_finish_reason(fr: Option<&str>) -> StopReason {
     match fr {
         Some("tool_calls") => StopReason::ToolUse,
@@ -305,6 +314,8 @@ impl LlmProvider for OpenAiProvider {
             let mut usage = Usage::default();
             let mut stop = StopReason::EndTurn;
             let mut finished = false;
+            // 本文先頭の `<think>…</think>` は思考として流す（#584）。
+            let mut think_tags = ThinkSplitter::default();
 
             'outer: while let Some(chunk) = byte_stream.next().await {
                 let chunk = match chunk {
@@ -344,10 +355,8 @@ impl LlmProvider for OpenAiProvider {
                     };
                     if let Some(delta) = choice.get("delta") {
                         if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                            if !text.is_empty() {
-                                let _ = tx.unbounded_send(Ok(StreamDelta::TextDelta {
-                                    text: text.to_string(),
-                                }));
+                            for piece in think_tags.push(text) {
+                                let _ = tx.unbounded_send(Ok(piece_delta(piece)));
                             }
                         }
                         // vLLM / 一部モデルは reasoning_content で思考を返す。
@@ -381,6 +390,9 @@ impl LlmProvider for OpenAiProvider {
                 }
             }
             let _ = finished;
+            for piece in think_tags.finish() {
+                let _ = tx.unbounded_send(Ok(piece_delta(piece)));
+            }
             for s in acc.drain_stops() {
                 let _ = tx.unbounded_send(Ok(s));
             }
