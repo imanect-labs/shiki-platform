@@ -1,6 +1,8 @@
 //! `LlmProvider` の具体アダプタ群。設定で差し替える。
 
 pub mod anthropic;
+/// 識別ヘッダ（User-Agent・会話 ID）の共通処理。
+mod identity;
 pub mod openai;
 mod openai_names;
 pub mod openai_responses;

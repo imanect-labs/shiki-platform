@@ -14,6 +14,7 @@ use futures::channel::mpsc;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
+use super::identity::IdentityHeaders;
 use crate::model::{
     Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef, Usage,
 };
@@ -28,6 +29,7 @@ pub struct AnthropicProvider {
     base_url: String,
     api_key: String,
     default_model: String,
+    identity: IdentityHeaders,
 }
 
 impl AnthropicProvider {
@@ -42,7 +44,21 @@ impl AnthropicProvider {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
             default_model: default_model.into(),
+            identity: IdentityHeaders::default(),
         }
+    }
+
+    /// 送出する User-Agent を指定する。ヘッダ値にできない文字列は設定エラーにする
+    /// （起動時に気づけるように。リクエストごとに失敗させない）。
+    pub fn with_user_agent(mut self, user_agent: Option<&str>) -> Result<Self, LlmError> {
+        self.identity.set_user_agent(user_agent)?;
+        Ok(self)
+    }
+
+    /// 会話 ID を載せるヘッダ名を指定する。ヘッダ名にできない文字列は設定エラーにする。
+    pub fn with_session_header(mut self, header: Option<&str>) -> Result<Self, LlmError> {
+        self.identity.set_session_header(header)?;
+        Ok(self)
     }
 
     fn build_body(&self, req: &GenerateRequest) -> Value {
@@ -218,13 +234,16 @@ impl LlmProvider for AnthropicProvider {
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/v1/messages", self.base_url);
         let body = self.build_body(req);
-        let resp = self
+        let builder = self
             .http
             .post(&url)
             .timeout(Duration::from_mins(5))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
+            .json(&body);
+        let resp = self
+            .identity
+            .apply(builder, req.session_id.as_deref())
             .send()
             .await
             .map_err(|e| LlmError::Unavailable(format!("anthropic request failed: {e}")))?;
