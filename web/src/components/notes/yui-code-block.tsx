@@ -49,6 +49,7 @@ export function yuiKindOf(language: unknown): Kind | undefined {
   return m ? resolveKind(m[1]) : undefined;
 }
 
+/// ノードが Yui の図のコードブロックか。
 function isYuiNode(node: PMNode): boolean {
   return isYuiCodeLanguage(node.attrs.language);
 }
@@ -88,6 +89,7 @@ type FigureState =
   | { kind: "incomplete" }
   | { kind: "ok" };
 
+/// 診断を「n 行目: …」の一行にする（ブロック全体の診断は行番号を付けない）。
 function lineMessage(d: Diagnostic): string {
   return d.line > 0 ? `${d.line} 行目: ${d.message}` : d.message;
 }
@@ -145,6 +147,7 @@ function useEditorFlags(
   return flags;
 }
 
+/// ```ui ブロックの NodeView。既定は図、カーソルが入ったとき・空・図にできないときは記述を見せる。
 function YuiCodeBlockView({ node, editor, getPos }: NodeViewProps) {
   const source = node.textContent;
   const kind = yuiKindOf(node.attrs.language);
@@ -244,7 +247,13 @@ function YuiCodeBlockView({ node, editor, getPos }: NodeViewProps) {
       data-state={state.kind}
     >
       {/* 記述（コード編集そのもの）。ProseMirror の contentDOM なので、図表示中も外さず隠すだけ。 */}
-      <pre hidden={!showSource} data-testid="note-yui-source" spellCheck={false}>
+      {/* 図にできるなら、記述を開いたままでも印刷には図だけを出す。 */}
+      <pre
+        hidden={!showSource}
+        data-testid="note-yui-source"
+        spellCheck={false}
+        className={state.kind === "ok" ? "print:hidden" : undefined}
+      >
         <NodeViewContent<"code"> as="code" className="language-ui" />
       </pre>
 
@@ -255,7 +264,10 @@ function YuiCodeBlockView({ node, editor, getPos }: NodeViewProps) {
           onFocus={() => {
             focusIntoChrome.current = true;
           }}
-          className="mt-1 flex select-none flex-wrap items-center justify-end gap-x-2 gap-y-1 text-[11px] text-muted-foreground"
+          className={cn(
+            "mt-1 flex select-none flex-wrap items-center justify-end gap-x-2 gap-y-1 text-[11px] text-muted-foreground",
+            state.kind === "ok" && "print:hidden",
+          )}
         >
           {status ? (
             <span
@@ -289,7 +301,7 @@ function YuiCodeBlockView({ node, editor, getPos }: NodeViewProps) {
         <div contentEditable={false} data-yui-chrome="" className="select-none">
           {showSource ? (
             // 編集中は図を下に描き直して見せる（操作欄は図の表示に戻ってから）。
-            <div className="mt-2 rounded-lg border border-dashed border-border/80 px-3 pb-1 pt-0.5 sm:px-4">
+            <div className="mt-2 rounded-lg border border-dashed border-border/80 px-3 pb-1 pt-0.5 print:border-0 sm:px-4">
               <YuiFigure figure={result.figure} className="-mx-3 sm:-mx-4" />
             </div>
           ) : (

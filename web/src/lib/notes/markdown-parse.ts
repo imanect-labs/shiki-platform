@@ -146,6 +146,7 @@ function codeBlockNode(tok: Tok): PmJson {
   return codeBlock(lang, tok.text ?? "");
 }
 
+/// コードブロックのノード（language はそのまま。```ui は正規化済みの名前を受け取る）。
 function codeBlock(language: string, code: string): PmJson {
   return {
     type: "codeBlock",

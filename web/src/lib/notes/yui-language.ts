@@ -11,6 +11,7 @@ import { resolveKind } from "@imanect/yui";
 
 const YUI_INFO = /^(ui|yui)(?:\s+|:)(\S+)/i;
 
+/// 情報文字列（`ui bar`・`UI:Bar`）を正規の言語名（`ui:bar`）にする。種類が分からなければ undefined。
 export function normalizeYuiInfo(info: string): string | undefined {
   const m = YUI_INFO.exec(info.trim());
   if (!m) return undefined;
