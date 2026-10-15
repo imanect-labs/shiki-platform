@@ -139,6 +139,8 @@ pub(crate) async fn llm_invoke(
         .map(|m| format!("{:?}", m.content).chars().take(200).collect())
         .unwrap_or_default();
 
+    // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
+    let started_at = chrono::Utc::now();
     let deltas = llm.stream(&ctx.auth, req).await.map_err(map_llm_err)?;
 
     // driver task: クライアント切断でも Done まで消費して会計を落とさない。
@@ -186,6 +188,9 @@ pub(crate) async fn llm_invoke(
                     output_preview: text_acc.chars().take(2000).collect(),
                     app_id: Some(app_id),
                     source: llm_gateway::UsageSource::MiniApp,
+                    // この経路は 1 リクエスト 1 生成。
+                    first_in_trace: true,
+                    started_at: Some(started_at),
                 },
             )
             .await;

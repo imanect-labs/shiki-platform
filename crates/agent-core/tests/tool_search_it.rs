@@ -177,6 +177,8 @@ async fn run(
         trace_id: None,
         input_preview: utterance.to_string(),
         app_id: None,
+        // テストは単独 run。
+        owns_trace: true,
     };
     let outcome = run_agent(
         gateway,

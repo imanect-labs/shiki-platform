@@ -73,6 +73,12 @@ pub struct GenerationRecord {
     pub app_id: Option<uuid::Uuid>,
     /// 利用元（管理画面の利用元別集計）。
     pub source: UsageSource,
+    /// **この trace で最初の呼び出しか。** Langfuse の trace は upsert なので、
+    /// input を毎回送るとユーザーの質問が最後の呼び出しの入力で上書きされる。
+    /// 単発の呼び出しは true。
+    pub first_in_trace: bool,
+    /// 呼び出しの開始時刻。None だと Langfuse の所要時間が 0 と表示される。
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// 管理画面に出すプロバイダ 1 件（秘密は含めない）。
@@ -380,6 +386,9 @@ impl LlmGateway {
     ///
     /// 会計は同期（金額クリティカル・冪等）、Langfuse は best-effort（非同期・失敗は warn）。
     pub async fn record_generation(&self, ctx: &AuthContext, rec: &GenerationRecord) {
+        // **会計より先に取る。** 会計 DB が詰まると、その待ち時間が
+        // そのまま生成の所要時間として記録されてしまう。
+        let ended_at = chrono::Utc::now();
         let entry = self
             .inner
             .config
@@ -415,8 +424,16 @@ impl LlmGateway {
         }
 
         if let (Some(lf), Some(trace_id)) = (&self.inner.langfuse, rec.trace_id.as_deref()) {
+            let user_id = ctx.principal.id.clone();
             lf.record_generation(GenerationTrace {
                 trace_id,
+                // **会計の冪等キーをそのまま使う。** 呼び出しごとに一意で、
+                // 再試行では同じ値になる（langfuse.rs の doc 参照）。
+                generation_id: &rec.idempotency_key,
+                user_id: &user_id,
+                first_in_trace: rec.first_in_trace,
+                started_at: rec.started_at,
+                ended_at,
                 name: "chat.generation",
                 model: &rec.model,
                 provider: &provider,

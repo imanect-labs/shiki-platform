@@ -178,6 +178,8 @@ impl ChatWorker {
             trace_id: run.trace_id.clone(),
             input_preview,
             app_id: None,
+            // チャットの 1 ターンが trace の起点。
+            owns_trace: true,
         };
 
         // 承認者は自律/通常チャットの双方へ配線する。破壊系ツール（document.edit / slide.edit /

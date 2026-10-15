@@ -269,6 +269,8 @@ fn run_context<'a>(ctx: &'a AuthContext, preview: &str) -> RunContext<'a> {
         trace_id: None,
         input_preview: preview.to_string(),
         app_id: None,
+        // テストは単独 run。
+        owns_trace: true,
     }
 }
 

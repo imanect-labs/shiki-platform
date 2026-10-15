@@ -10,6 +10,8 @@ version = "0.0.0"
 name = "agent_core"
 
 [dependencies]
+# Langfuse 計装の所要時間（開始時刻）に使う。
+chrono = { workspace = true }
 shiki-authz.workspace = true
 shiki-rag.workspace = true
 shiki-llm-gateway.workspace = true
