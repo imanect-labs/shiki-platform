@@ -43,6 +43,9 @@ pub struct GenerationTrace<'a> {
     pub first_in_trace: bool,
     /// 呼び出しの開始時刻。未指定なら所要時間が 0 と表示される。
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// 呼び出しの終了時刻。**会計より前に確定させたものを渡すこと**
+    /// （ここで now() を取ると、会計 DB の待ち時間が所要時間に混ざる）。
+    pub ended_at: chrono::DateTime<chrono::Utc>,
     /// tenant/user 別コスト可視化のためのメタ。
     pub metadata: Value,
 }
@@ -59,8 +62,7 @@ impl LangfuseClient {
 
     /// 1 generation を trace 配下に送る（best-effort・非同期・エラーは warn）。
     pub async fn record_generation(&self, t: GenerationTrace<'_>) {
-        let end = chrono::Utc::now();
-        let now = end.to_rfc3339();
+        let now = t.ended_at.to_rfc3339();
 
         // trace の body。**upsert なので「毎回送ってよいもの」と
         // 「最初だけ送るもの」を分ける。**

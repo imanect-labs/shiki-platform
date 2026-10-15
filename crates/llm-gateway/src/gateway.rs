@@ -386,6 +386,9 @@ impl LlmGateway {
     ///
     /// 会計は同期（金額クリティカル・冪等）、Langfuse は best-effort（非同期・失敗は warn）。
     pub async fn record_generation(&self, ctx: &AuthContext, rec: &GenerationRecord) {
+        // **会計より先に取る。** 会計 DB が詰まると、その待ち時間が
+        // そのまま生成の所要時間として記録されてしまう。
+        let ended_at = chrono::Utc::now();
         let entry = self
             .inner
             .config
@@ -430,6 +433,7 @@ impl LlmGateway {
                 user_id: &user_id,
                 first_in_trace: rec.first_in_trace,
                 started_at: rec.started_at,
+                ended_at,
                 name: "chat.generation",
                 model: &rec.model,
                 provider: &provider,

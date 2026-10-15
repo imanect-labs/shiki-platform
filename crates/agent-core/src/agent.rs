@@ -64,6 +64,12 @@ pub struct RunContext<'a> {
     pub input_preview: String,
     /// 呼び出し元ミニアプリ（ゲートウェイ agent.invoke・Task 9.9）。chat 等は `None`。
     pub app_id: Option<uuid::Uuid>,
+    /// **この run が trace の起点か。**
+    ///
+    /// サブエージェントは親と同じ `trace_id` を受け継ぐ（tools/subagent.rs）。
+    /// step は子でも 0 から始まるので、これが無いと子の目的文が
+    /// Langfuse の trace input を上書きし、利用者の最初の質問が消える。
+    pub owns_trace: bool,
 }
 
 /// 累積中のツール呼び出し（1 ステップ分）。
@@ -297,7 +303,7 @@ async fn land_on_budget(
                 app_id: run.app_id,
                 source: usage_source(opts, run.app_id),
                 // step 0 がそのリクエストの最初の生成。
-                first_in_trace: step == 0,
+                first_in_trace: run.owns_trace && step == 0,
                 started_at: Some(started_at),
             },
         )
@@ -438,7 +444,7 @@ async fn run_step(
                 app_id: run.app_id,
                 source: usage_source(opts, run.app_id),
                 // step 0 がそのリクエストの最初の生成。
-                first_in_trace: step == 0,
+                first_in_trace: run.owns_trace && step == 0,
                 started_at: Some(started_at),
             },
         )

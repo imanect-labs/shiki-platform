@@ -64,6 +64,7 @@ fn trace(generation_id: &str, first: bool) -> GenerationTrace<'_> {
         user_id: "user-1",
         first_in_trace: first,
         started_at: Some(chrono::Utc::now() - chrono::Duration::seconds(3)),
+        ended_at: chrono::Utc::now(),
         metadata: serde_json::json!({ "tenant_id": "t1" }),
     }
 }
@@ -127,4 +128,24 @@ async fn generations_in_same_trace_do_not_overwrite_each_other() {
     assert!(all[1]["batch"][0]["body"].get("input").is_none());
     // output は毎回送る（最後の応答が残るのが望ましい）。
     assert_eq!(all[1]["batch"][0]["body"]["output"], "out");
+}
+
+/// **会計より前に確定した終了時刻が使われること。**
+///
+/// ここで now() を取る実装だと、会計 DB が詰まった時にその待ち時間が
+/// 生成の所要時間として記録されてしまう。
+#[tokio::test]
+async fn end_time_comes_from_caller_not_from_send_time() {
+    let (client, captured) = spawn().await;
+    let ended = chrono::Utc::now() - chrono::Duration::seconds(30);
+    let mut t = trace("gen-1", true);
+    t.ended_at = ended;
+    client.record_generation(t).await;
+
+    let all = captured.lock().unwrap().clone();
+    assert_eq!(
+        all[0]["batch"][1]["body"]["endTime"].as_str().unwrap(),
+        ended.to_rfc3339(),
+        "送信時刻ではなく呼び出し側が渡した終了時刻を使うこと"
+    );
 }

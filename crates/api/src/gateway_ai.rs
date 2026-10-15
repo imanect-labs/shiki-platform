@@ -155,6 +155,8 @@ impl AgentPort for GatewayAgentPort {
         tokio::spawn(async move {
             let run_ctx = RunContext {
                 ctx: &ctx_owned,
+                // ゲートウェイ agent.invoke の 1 回が trace の起点。
+                owns_trace: true,
                 idempotency_prefix: format!("gw-agent:{app_id}:{}", uuid::Uuid::new_v4()),
                 trace_id,
                 input_preview: prompt.chars().take(200).collect(),
