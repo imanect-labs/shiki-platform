@@ -440,13 +440,13 @@ jobs:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: download shiki-server binary (build-server の成果物)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: shiki-server-bin
           path: deploy/compose/prebuilt
       # Dockerfile.ci が /usr/local/bin へ焼く隔離 DuckDB ランナー（COPY 対象・欠落するとビルド失敗）。
       - name: download tabular runner binary (tabular-runner の成果物)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: shiki-tabular-runner-bin
           path: deploy/compose/prebuilt
@@ -512,13 +512,13 @@ jobs:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: download shiki-server binary (build-server の成果物)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: shiki-server-bin
           path: deploy/compose/prebuilt
       # CSV クエリの隔離 DuckDB ランナー（Dockerfile.ci が /usr/local/bin へ焼く）。
       - name: download tabular runner binary (tabular-runner の成果物)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: shiki-tabular-runner-bin
           path: deploy/compose/prebuilt
