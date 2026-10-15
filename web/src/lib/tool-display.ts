@@ -170,6 +170,15 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     suru: true,
     target: quoted("query"),
   },
+  doc_read: {
+    // 検索で当たった社内文書を引用の外まで読む（#425）。対象は file_id の名前解決で出す。
+    icon: FileText,
+    category: "read",
+    lead: objectOf("社内文書"),
+    verb: "読み込み",
+    failed: "読み込めませんでした",
+    nodeIdKey: "file_id",
+  },
   web_search: {
     icon: Globe,
     category: "search",
@@ -529,7 +538,7 @@ export function summarizeTools(items: ToolDescribable[]): string[] {
   for (const it of items) {
     const meta = displayFor(it.name);
     if (it.name === "web_search" || it.name === "web_fetch") web += 1;
-    else if (it.name === "doc_search") internal += 1;
+    else if (it.name === "doc_search" || it.name === "doc_read") internal += 1;
     else if (meta.category === "write" || meta.category === "exec") edits += 1;
   }
   const parts: string[] = [];

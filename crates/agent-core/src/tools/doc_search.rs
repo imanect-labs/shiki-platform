@@ -179,7 +179,9 @@ fn context_text(results: &[SearchResult], for_tool: bool) -> String {
                 .folder_id
                 .map(|f| format!(", folder_id: {f}"))
                 .unwrap_or_default();
-            format!("（file_id: {}{folder}）", r.file_id)
+            // 版とページは doc_read の version / page にそのまま渡せる（#425）。
+            let page = r.page.map(|p| format!(", p.{p}")).unwrap_or_default();
+            format!("（file_id: {}{folder}, 版 {}{page}）", r.file_id, r.version)
         } else {
             String::new()
         };
@@ -207,14 +209,13 @@ pub struct DocSearchTool {
     search: Arc<SearchService>,
     /// 知識スコープ（skill・Task 6.8）。None は全可読範囲。
     scope: Option<SearchScope>,
+    /// ツール説明（同じ束に `doc_read` があれば本文の読み方の案内を足す・#425）。
+    description: String,
 }
 
 impl DocSearchTool {
     pub fn new(search: Arc<SearchService>) -> Self {
-        DocSearchTool {
-            search,
-            scope: None,
-        }
+        Self::with_scope(search, None)
     }
 
     /// 知識スコープ付きで構成する（skill 適用時）。スコープは絞り込みのみで、
@@ -223,9 +224,31 @@ impl DocSearchTool {
         DocSearchTool {
             search,
             scope: scope.filter(|s| !s.is_empty()),
+            description: DESCRIPTION.to_string(),
         }
     }
+
+    /// `doc_read` を同じ束で提示するときに呼ぶ（無いツールを勧めない）。
+    #[must_use]
+    pub fn with_doc_read(mut self) -> Self {
+        self.description.push_str(DOC_READ_HINT);
+        self
+    }
 }
+
+/// ツール説明の本体（`doc_read` があれば [`DOC_READ_HINT`] を足す）。
+const DESCRIPTION: &str = "社内文書を検索し、権限を守った引用チャンクを返す。ユーザーの質問に答えるための根拠が必要なときに使う。\n\
+     - mode: 既定の hybrid は意味の近さと語の一致を合わせて探す。型番・エラーメッセージ・条文番号・\
+     固有名詞など、表記どおりに一致する箇所が欲しいときは keyword にする。\n\
+     - file_ids / folder_ids: 結果に出た文書やフォルダの中だけで探し直すときに、結果の file_id / \
+     folder_id を渡す。絞り込み専用で、読める範囲は広がらない。\n\
+     - top_k: 返す件数（既定 8）。一覧を作る・網羅的に集めるときだけ増やす。\n\
+     各結果には関連度（高 / 中 / 低）が付く。関連度が低い結果しか無いときは、言い換える → \
+     keyword にする → 絞り込みを外す、の順で探し直す。低い結果だけを根拠に断定しない。";
+/// `doc_read` があるときだけ説明の末尾に足す案内。
+const DOC_READ_HINT: &str =
+    "\n断片だけでは判断できないとき（条文の全体・表の続き・前後の条件）は、\
+     doc_read に結果の file_id と版を渡して本文を読む。";
 
 impl DocSearchTool {
     /// ツールで求められる件数の上限（設定の `max_top_k` とツール上限の小さい方）。
@@ -331,16 +354,8 @@ impl Tool for DocSearchTool {
         crate::vocab::ToolName::DocSearch.as_str()
     }
 
-    #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
-        "社内文書を検索し、権限を守った引用チャンクを返す。ユーザーの質問に答えるための根拠が必要なときに使う。\n\
-         - mode: 既定の hybrid は意味の近さと語の一致を合わせて探す。型番・エラーメッセージ・条文番号・\
-         固有名詞など、表記どおりに一致する箇所が欲しいときは keyword にする。\n\
-         - file_ids / folder_ids: 結果に出た文書やフォルダの中だけで探し直すときに、結果の file_id / \
-         folder_id を渡す。絞り込み専用で、読める範囲は広がらない。\n\
-         - top_k: 返す件数（既定 8）。一覧を作る・網羅的に集めるときだけ増やす。\n\
-         各結果には関連度（高 / 中 / 低）が付く。関連度が低い結果しか無いときは、言い換える → \
-         keyword にする → 絞り込みを外す、の順で探し直す。低い結果だけを根拠に断定しない。"
+        &self.description
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -527,17 +542,18 @@ mod tests {
     #[test]
     fn context_text_exposes_ids_for_follow_up_searches() {
         let folder = uuid::Uuid::new_v4();
-        let in_folder = result("規程.pdf", Some(folder));
+        let mut in_folder = result("規程.pdf", Some(folder));
+        in_folder.page = Some(3);
         let at_root = result("⟦cite:9⟧.txt", None);
         let text = context_text(&[in_folder.clone(), at_root.clone()], true);
         assert!(text.starts_with("検索結果 2 件"));
         assert!(text.contains(&format!(
-            "⟦cite:0⟧ 関連度: 高 ／ 出典: 規程.pdf / 第2章（file_id: {}, folder_id: {folder}）\n本文\n",
+            "⟦cite:0⟧ 関連度: 高 ／ 出典: 規程.pdf / 第2章（file_id: {}, folder_id: {folder}, 版 1, p.3）\n本文\n",
             in_folder.file_id
         )));
         // ルート直下は folder_id を出さない。ファイル名の仮の印は無害化される。
         assert!(text.contains(&format!(
-            "⟦cite:1⟧ 関連度: 高 ／ 出典: 〚cite:9⟧.txt / 第2章（file_id: {}）\n",
+            "⟦cite:1⟧ 関連度: 高 ／ 出典: 〚cite:9⟧.txt / 第2章（file_id: {}, 版 1）\n",
             at_root.file_id
         )));
         assert_eq!(context_text(&[], true), NO_RESULTS);
@@ -567,6 +583,12 @@ mod tests {
         assert!(text.starts_with("検索結果 2 件（関連度は 高 / 中 / 低 の目安"));
         assert!(text.contains("⟦cite:0⟧ 関連度: 中") && text.contains("⟦cite:1⟧ 関連度: 低"));
         assert_ne!(context_text(&weak, true), NO_RESULTS);
+    }
+
+    #[test]
+    fn description_mentions_doc_read_only_when_wired() {
+        assert!(!DESCRIPTION.contains("doc_read"));
+        assert!(DOC_READ_HINT.contains("doc_read"));
     }
 
     #[test]

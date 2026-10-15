@@ -41,7 +41,10 @@ pub use parser::{DocumentParser, ParseRequest, ParseSource};
 pub use parser_http::HttpDocumentParser;
 pub use pipeline::{spawn_pipeline, IngestMessage, PipelineDeps, RAG_INGEST_QUEUE};
 pub use rerank::{HttpReranker, Reranker};
-pub use search::{SearchOutput, SearchService};
+pub use search::{
+    Cursor, DocRead, DocReadPage, ReadFrom, ReadSource, SearchOutput, SearchService,
+    DEFAULT_READ_CHARS, MAX_READ_CHARS,
+};
 pub use search_types::{
     DocBlock, DocBlocksPage, Relevance, SearchDebug, SearchMode, SearchRequest, SearchResponse,
     SearchResult, SearchScope, StageTimings,

@@ -37,10 +37,11 @@ pub(super) enum GateStage {
 /// 計画フェーズまで**提示しない**ツール（調査＝外部/社内へ取りに行く操作と委譲）。
 ///
 /// 作業ファイル（`fs_write`/`fs_read`…）は brief/outline を書くために計画段階でも要る。
-const RESEARCH_TOOLS: [ToolName; 4] = [
+const RESEARCH_TOOLS: [ToolName; 5] = [
     ToolName::WebSearch,
     ToolName::WebFetch,
     ToolName::DocSearch,
+    ToolName::DocRead,
     ToolName::Subagent,
 ];
 
