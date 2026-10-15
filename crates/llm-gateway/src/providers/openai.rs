@@ -308,7 +308,7 @@ impl LlmProvider for OpenAiProvider {
         let resp = clock.send(builder).await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = clock.error_text(resp).await;
+            let text = clock.error_text(resp).await?;
             // 429 は 4xx だが**こちらの組み立てが悪いわけではない**（プロバイダ側の枠）。
             // BadRequest に落とすと「直せば通る」と誤解され、リトライ方針も表示も間違える。
             // `LlmError::Unavailable` の doc どおり一時障害として扱う。

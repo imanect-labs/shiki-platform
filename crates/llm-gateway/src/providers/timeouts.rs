@@ -11,6 +11,7 @@
 //! どれも [`LlmError::Unavailable`] にして既存の再試行・フォールバックに乗せ、どのタイムアウトで
 //! 切れたかをメッセージに入れる。
 
+use std::future::Future;
 use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedSender;
@@ -98,24 +99,45 @@ impl RequestClock {
         if self.expired() {
             return Err(self.timed_out(Kind::Total));
         }
-        let (limit, kind) = self.bounded(self.timeouts.first_response, Kind::FirstResponse);
-        match tokio::time::timeout(limit, builder.send()).await {
-            Ok(Ok(resp)) => Ok(resp),
-            Ok(Err(e)) => Err(LlmError::Unavailable(format!(
-                "{} request failed: {e}",
-                self.label
-            ))),
+        self.within(
+            self.timeouts.first_response,
+            Kind::FirstResponse,
+            builder.send(),
+        )
+        .await?
+        .map_err(|e| LlmError::Unavailable(format!("{} request failed: {e}", self.label)))
+    }
+
+    /// `fut` を `limit`（全体の残りで頭打ち）以内に待つ。
+    ///
+    /// `tokio::time::timeout` は中の future を先に poll するので、期限ちょうどに両方が
+    /// ready になると期限後の結果も `Ok` で返る。待ち終えた時点でも期限を判定し直し、
+    /// 過ぎていれば結果を捨ててタイムアウトにする（期限後に届いた完了を正常扱いしない）。
+    async fn within<F: Future>(
+        &self,
+        limit: Duration,
+        kind: Kind,
+        fut: F,
+    ) -> Result<F::Output, LlmError> {
+        let (limit, kind) = self.bounded(limit, kind);
+        let wait_deadline = Instant::now() + limit;
+        match tokio::time::timeout(limit, fut).await {
+            Ok(_) if self.expired() => Err(self.timed_out(Kind::Total)),
+            Ok(_) if Instant::now() > wait_deadline => Err(self.timed_out(kind)),
+            Ok(out) => Ok(out),
             Err(_) => Err(self.timed_out(kind)),
         }
     }
 
-    /// エラー応答の本文を読む（無通信・全体の残りで頭打ち。読めなければ空）。
-    pub(crate) async fn error_text(&self, resp: reqwest::Response) -> String {
-        let (limit, _) = self.bounded(self.timeouts.idle, Kind::Idle);
-        match tokio::time::timeout(limit, resp.text()).await {
-            Ok(Ok(text)) => text,
-            Ok(Err(_)) | Err(_) => String::new(),
-        }
+    /// エラー応答の本文を読む（無通信・全体の残りで頭打ち）。読み取りに失敗したら空。
+    ///
+    /// 本文が止まったときはタイムアウトのエラーを返す。HTTP ステータスで分類すると、
+    /// 4xx の `BadRequest` などになり、タイムアウトだったことが失われるため。
+    pub(crate) async fn error_text(&self, resp: reqwest::Response) -> Result<String, LlmError> {
+        Ok(self
+            .within(self.timeouts.idle, Kind::Idle, resp.text())
+            .await?
+            .unwrap_or_default())
     }
 
     /// 中立形のストリームに無通信・全体の上限を掛ける（HTTP を介さないスタブ用）。
@@ -128,11 +150,13 @@ impl RequestClock {
             if self.expired() {
                 return Some((Err(self.timed_out(Kind::Total)), None));
             }
-            let (limit, kind) = self.bounded(self.timeouts.idle, Kind::Idle);
-            match tokio::time::timeout(limit, inner.next()).await {
+            match self
+                .within(self.timeouts.idle, Kind::Idle, inner.next())
+                .await
+            {
                 Ok(Some(item)) => Some((item, Some(inner))),
                 Ok(None) => None,
-                Err(_) => Some((Err(self.timed_out(kind)), None)),
+                Err(e) => Some((Err(e), None)),
             }
         })
         .boxed()
@@ -161,7 +185,6 @@ impl RequestClock {
         if self.expired() {
             return Some(Err(self.timed_out(Kind::Total)));
         }
-        let (limit, kind) = self.bounded(self.timeouts.idle, Kind::Idle);
         // futures の mpsc は「閉じた」を通知しないので、待ちのあいだ短い間隔で見る。
         let abandoned = async {
             loop {
@@ -172,11 +195,11 @@ impl RequestClock {
             }
         };
         tokio::select! {
-            read = tokio::time::timeout(limit, body.next()) => match read {
+            read = self.within(self.timeouts.idle, Kind::Idle, body.next()) => match read {
                 Ok(None) => None,
                 Ok(Some(Ok(chunk))) => Some(Ok(chunk)),
                 Ok(Some(Err(e))) => Some(Err(LlmError::Unavailable(format!("stream: {e}")))),
-                Err(_) => Some(Err(self.timed_out(kind))),
+                Err(e) => Some(Err(e)),
             },
             () = abandoned => None,
         }

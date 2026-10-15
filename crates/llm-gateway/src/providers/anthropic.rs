@@ -261,7 +261,7 @@ impl LlmProvider for AnthropicProvider {
             .await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = clock.error_text(resp).await;
+            let text = clock.error_text(resp).await?;
             if status.is_client_error() {
                 // 429 は「直せば通る」ものではない（openai 側と同じ理由・provider.rs 参照）。
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS {

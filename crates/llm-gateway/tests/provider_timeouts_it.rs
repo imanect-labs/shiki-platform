@@ -39,6 +39,8 @@ enum Behavior {
     Stall,
     /// 最初の差分のあと、SSE のコメント行を 50ms ごとに流し続ける。
     Trickle,
+    /// 400 のヘッダだけ返して、エラー本文を送らない。
+    StalledErrorBody,
 }
 
 #[derive(Clone, Copy)]
@@ -94,6 +96,14 @@ async fn spawn_mock(adapter: Adapter, behavior: Behavior) -> String {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 Some((Ok::<_, Infallible>(": ping\n".to_string()), ()))
             }))),
+            Behavior::StalledErrorBody => {
+                return Response::builder()
+                    .status(400)
+                    .body(Body::from_stream(stream::pending::<
+                        Result<String, Infallible>,
+                    >()))
+                    .unwrap();
+            }
         };
         Response::builder()
             .header("content-type", "text/event-stream")
@@ -149,6 +159,19 @@ async fn no_response_headers_hits_first_response_timeout() {
         };
         assert!(msg.contains("first-response timeout"), "{msg}");
         assert!(started.elapsed() < Duration::from_secs(3), "{}", p.name());
+    }
+}
+
+#[tokio::test]
+async fn stalled_error_body_is_a_timeout_not_a_bad_request() {
+    for adapter in Adapter::ALL {
+        let base = spawn_mock(adapter, Behavior::StalledErrorBody).await;
+        let p = adapter.provider(base, ms(5_000, 200, 10_000));
+        // 400 でも本文が止まったならタイムアウト（再試行・フォールバックの対象）として返す。
+        match p.stream(&req()).await.map(|_| ()) {
+            Err(LlmError::Unavailable(msg)) => assert!(msg.contains("idle timeout"), "{msg}"),
+            other => panic!("{}: expected Unavailable, got {other:?}", p.name()),
+        }
     }
 }
 

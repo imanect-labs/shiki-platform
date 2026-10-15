@@ -438,7 +438,7 @@ impl LlmProvider for OpenAiResponsesProvider {
         let resp = clock.send(builder).await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = clock.error_text(resp).await;
+            let text = clock.error_text(resp).await?;
             // 429 はプロバイダ側の枠（openai.rs と同じ扱い）。
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 return Err(LlmError::RateLimited(crate::provider::rate_limit_message(
