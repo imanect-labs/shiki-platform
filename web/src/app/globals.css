@@ -547,6 +547,11 @@
   .note-prose th {
     @apply bg-muted/50 font-semibold;
   }
+  /* ```ui の図の「表で表示」（#530）は外枠（角丸の囲み）をチャットと共通の描き方に任せ、
+     本文の表の上下余白を足さない（囲みと表の間に隙間が出る）。 */
+  .note-prose .note-yui table {
+    @apply my-0;
+  }
   .note-prose p.is-editor-empty:first-child::before {
     content: attr(data-placeholder);
     @apply pointer-events-none float-left h-0 text-muted-foreground/60;
@@ -611,6 +616,10 @@
   .note-prose svg,
   .note-prose figure {
     break-inside: avoid;
+  }
+  /* ノートの ```ui の図（#530）: コピー・保存などの操作ボタンは紙面に載せない。 */
+  .note-prose [data-yui-chrome] button {
+    display: none !important;
   }
 }
 

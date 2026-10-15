@@ -136,6 +136,10 @@ function codeBlockNode(tok: Tok): PmJson {
   // 際に `Block::Embed` へ昇格し、任意ペーストが実埋め込みになる（confused-deputy）。
   // language を無害化して昇格経路を断つ（ペイロードは inert なコードとして残す）。
   if (lang === RESERVED_EMBED_LANG) lang = "";
+  // ```ui bar（Yui・#530）は情報文字列の 2 語目が図の種類なので、`ui:bar` に寄せて残す
+  // （1 語に切り詰めると種類が落ちて図にできない。`ui:bar` は class 1 つで HTML 往復も保つ）。
+  const kind = /^(ui|yui)\s+(\S+)/i.exec((tok.lang ?? "").trim());
+  if (kind) lang = `${kind[1]}:${kind[2]}`;
   return codeBlock(lang, tok.text ?? "");
 }
 

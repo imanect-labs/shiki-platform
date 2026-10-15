@@ -28,6 +28,7 @@ export const UiFigure = React.memo(function UiFigure({
   kind,
   lang,
   renderTable,
+  actions,
 }: {
   /// 図の記述（確定した行だけ。complete なら全体）。
   source: string;
@@ -43,6 +44,8 @@ export const UiFigure = React.memo(function UiFigure({
   lang?: string;
   /// 「表で表示」の中身（テキスト化した Markdown）を描く。
   renderTable: (markdown: string) => React.ReactNode;
+  /// 図の操作欄の末尾に足すボタン（ノートの「ソース」切り替えなど）。
+  actions?: React.ReactNode;
 }) {
   const result = React.useMemo(
     () => parseBlock(source, kind ? { final: complete, kind } : { final: complete }),
@@ -112,7 +115,7 @@ export const UiFigure = React.memo(function UiFigure({
         // 図の内側の余白（幅 400px 未満は 12px、それ以上は 16px）だけ外へ広げ、見出しを本文の左端に揃える。
         <YuiFigure figure={figure} className="-mx-3 sm:-mx-4" />
       )}
-      <figcaption className="mt-1 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
+      <figcaption className="mt-1 flex flex-wrap items-center justify-end gap-1 text-[11px] text-muted-foreground">
         {note ? <span className="mr-auto">{note}</span> : null}
         {complete ? (
           <>
@@ -138,13 +141,15 @@ export const UiFigure = React.memo(function UiFigure({
             </DropdownMenu>
           </>
         ) : null}
+        {actions}
       </figcaption>
     </figure>
   );
 });
 
 /// メニューの開閉ボタン（Radix の asChild）にも使うので、ref と残りの属性をそのまま渡す。
-function ToolbarButton({
+/// ノートの図（```ui の NodeView）の切り替えボタンも同じ見た目にするため公開する。
+export function ToolbarButton({
   pressed,
   label,
   className,

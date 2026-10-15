@@ -29,6 +29,7 @@ import { LivePreview } from "./live-preview";
 import { MarkdownClipboard } from "./markdown-clipboard";
 import { createSlashCommand, type SlashItem } from "./slash-command";
 import { NoteBubbleMenu, NoteToolbar, readNoteSelection } from "./note-toolbar";
+import { YuiCodeBlock } from "./yui-code-block";
 
 /// 参加者カーソルの配色（design token に寄せた識別しやすい 8 色）。
 export const PRESENCE_COLORS = [
@@ -75,7 +76,10 @@ export function NoteEditor({
         // 履歴は Yjs（Collaboration）が持つ（ローカル履歴と二重管理しない）。
         undoRedo: false,
         link: false,
+        // コードブロックは ```ui（Yui）を図として描く版に差し替える（保存形式は同じ codeBlock）。
+        codeBlock: false,
       }),
+      YuiCodeBlock,
       Link.configure({
         openOnClick: false,
         autolink: true,
