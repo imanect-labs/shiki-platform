@@ -18,7 +18,7 @@ use futures::{Stream, StreamExt};
 use tokio::time::Instant;
 
 use crate::config::LlmTimeouts;
-use crate::provider::LlmError;
+use crate::provider::{DeltaStream, LlmError};
 
 /// どのタイムアウトで切れたか（メッセージ用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,20 +118,24 @@ impl RequestClock {
         }
     }
 
-    /// 何も流さずに `hold` だけ待つ（スタブの `slow:` 用）。無通信・全体の上限を超える分は
-    /// 待たずに、実プロバイダと同じタイムアウトのエラーにする。
-    pub(crate) async fn wait_silent(&self, hold: Duration) -> Result<(), LlmError> {
-        if self.expired() {
-            return Err(self.timed_out(Kind::Total));
-        }
-        let (limit, kind) = self.bounded(self.timeouts.idle, Kind::Idle);
-        if hold <= limit {
-            tokio::time::sleep(hold).await;
-            Ok(())
-        } else {
-            tokio::time::sleep(limit).await;
-            Err(self.timed_out(kind))
-        }
+    /// 中立形のストリームに無通信・全体の上限を掛ける（HTTP を介さないスタブ用）。
+    ///
+    /// 差分と差分の間が無通信の上限を超えるか、全体の締め切りを過ぎたら、実プロバイダと同じ
+    /// タイムアウトのエラーを 1 つ流して終える。
+    pub(crate) fn guard(self, inner: DeltaStream) -> DeltaStream {
+        futures::stream::unfold(Some(inner), move |state| async move {
+            let mut inner = state?;
+            if self.expired() {
+                return Some((Err(self.timed_out(Kind::Total)), None));
+            }
+            let (limit, kind) = self.bounded(self.timeouts.idle, Kind::Idle);
+            match tokio::time::timeout(limit, inner.next()).await {
+                Ok(Some(item)) => Some((item, Some(inner))),
+                Ok(None) => None,
+                Err(_) => Some((Err(self.timed_out(kind)), None)),
+            }
+        })
+        .boxed()
     }
 
     /// 本文の次のチャンクを待つ（無通信のタイムアウト）。本文の終端と、受け手（`tx` の
@@ -237,6 +241,48 @@ mod tests {
         let mut body = stream::iter(vec![Ok(&b"done"[..])]);
         let err = c.next_chunk(&mut body, &tx).await.unwrap_err_msg();
         assert!(err.contains("total timeout"), "{err}");
+    }
+
+    /// 50ms ごとに差分を出し続けるストリーム。
+    fn paced() -> DeltaStream {
+        stream::unfold((), |()| async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Some((
+                Ok(crate::model::StreamDelta::TextDelta { text: "x".into() }),
+                (),
+            ))
+        })
+        .boxed()
+    }
+
+    async fn first_error(mut s: DeltaStream) -> (usize, String) {
+        let mut ok = 0;
+        while let Some(item) = s.next().await {
+            match item {
+                Ok(_) => ok += 1,
+                Err(LlmError::Unavailable(m)) => {
+                    assert!(s.next().await.is_none(), "stream must end after the error");
+                    return (ok, m);
+                }
+                Err(e) => panic!("expected Unavailable, got {e:?}"),
+            }
+        }
+        panic!("stream ended without an error");
+    }
+
+    #[tokio::test]
+    async fn guard_cuts_a_stream_that_keeps_flowing_past_the_total() {
+        let (ok, msg) = first_error(clock(1_000, 1_000, 300).guard(paced())).await;
+        assert!(ok >= 1, "{ok}");
+        assert!(msg.contains("total timeout"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn guard_cuts_a_silent_stream_at_the_idle_limit() {
+        let silent = stream::pending().boxed();
+        let (ok, msg) = first_error(clock(1_000, 100, 10_000).guard(silent)).await;
+        assert_eq!(ok, 0);
+        assert!(msg.contains("idle timeout"), "{msg}");
     }
 
     #[tokio::test]

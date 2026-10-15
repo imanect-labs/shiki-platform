@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use futures::stream::{self, StreamExt};
 
-use super::timeouts::RequestClock;
 use crate::model::{StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError};
 
@@ -106,18 +105,12 @@ pub(super) fn paced_chunks_stream(
 /// 本文を出し切ってから `hold` だけ待って終える（生成中の UI を試すための遅延）。
 ///
 /// 先に本文を出すのは、e2e が「生成が始まった」ことを本文の出現で待てるようにするため。
-/// 待ちは `clock` の無通信・全体の上限で切る（実プロバイダと同じエラー）。
-pub(super) fn slow_text_stream(
-    reply: &str,
-    prompt_tokens: u64,
-    hold: Duration,
-    clock: RequestClock,
-) -> DeltaStream {
+pub(super) fn slow_text_stream(reply: &str, prompt_tokens: u64, hold: Duration) -> DeltaStream {
     let completion_tokens = reply.split_whitespace().count() as u64;
     let text = reply.to_string();
     stream::once(async move { Ok(StreamDelta::TextDelta { text }) })
         .chain(stream::once(async move {
-            clock.wait_silent(hold).await?;
+            tokio::time::sleep(hold).await;
             Ok(StreamDelta::Done {
                 stop_reason: StopReason::EndTurn,
                 usage: Usage {
