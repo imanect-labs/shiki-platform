@@ -43,19 +43,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # フルワークスペースの target + rust-cache 復元でランナー既定 14GB を使い切る実績
       # （No space left on device で突然死）があるため、不要プリインストールを先に消す。
       - name: free disk space (不要プリインストール削除)
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           df -h /
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.96.0"
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: nextest
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       # nextest はテストバイナリを跨いで並列実行し cargo test より速い（本ジョブは compose
@@ -75,15 +77,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: free disk space (不要プリインストール削除)
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # release プロファイル専用キャッシュ（debug 系ジョブと混ぜて肥大化させない）。
           shared-key: release-server
@@ -93,7 +95,7 @@ jobs:
         env:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
           CARGO_PROFILE_RELEASE_OPT_LEVEL: "2"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: shiki-server-bin
           path: target/release/shiki-server
@@ -105,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # GITHUB_TOKEN を .git/config に残さない（後続サードパーティ処理からの窃取防止）。
           persist-credentials: false
@@ -122,11 +124,13 @@ jobs:
       # 一度も同時に立ち上がらない。ローカルの `docker compose up` だけが壊れる。
       - name: compose port gate (ホストポートの二重 publish 禁止)
         run: bash scripts/check-compose-ports.sh
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-machete
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-machete
       - name: cargo machete (未使用依存の検出)
         # 所有フォーク vendor/ は独自ワークスペースで machete が解決できないため、自作の crates/ のみ対象にする。
         run: cargo machete crates
@@ -136,18 +140,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # GITHUB_TOKEN を .git/config に残さない（後続サードパーティ処理からの窃取防止）。
           persist-credentials: false
       # EmbarkStudios/cargo-deny-action@v2 は内部で `--log-level warn` を渡すが、
       # 新しい cargo-deny CLI はこれを廃止したため `unrecognized subcommand 'warn'` で全 PR が赤化する。
       # cargo-machete と同じく taiki-e/install-action でバイナリを入れ、引数を自分で制御する。
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-deny
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-deny
       - name: cargo deny check (advisories / licenses / bans / sources)
         run: cargo deny --all-features check
 
@@ -160,16 +166,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: free disk space (不要プリインストール削除)
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           df -h /
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.96.0"
       # 除外クレート（別 target）とメイン target を別々にキャッシュする。
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
@@ -188,7 +194,7 @@ jobs:
         run: cargo test -p shiki-tabular --test runner_adversarial_it
       # E2E の runtime-only イメージへ焼くため、ビルド済みランナーを artifact 共有する。
       - name: upload runner binary (web-e2e 用)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: shiki-tabular-runner-bin
           path: crates/tabular/runner/target/release/shiki-tabular-runner
@@ -206,7 +212,7 @@ jobs:
     continue-on-error: true
     steps:
       # サードパーティ処理（runsc 取得・docker build・pip）を含むためトークンを残さない。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: free disk space (不要プリインストール削除)
@@ -216,10 +222,10 @@ jobs:
       # Ubuntu 24.04 は AppArmor が非特権 userns 生成を制限するため解除する（runsc --rootless 前提）。
       - name: allow unprivileged userns (AppArmor)
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: fetch runsc (manifest 検証・PIT-33)
         run: bash scripts/fetch-native-assets.sh
       - name: build rootfs (numpy/pandas 同梱・--require-hashes)
@@ -239,10 +245,10 @@ jobs:
       run:
         working-directory: ingestion-worker
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
           cache-dependency-glob: "ingestion-worker/uv.lock"
@@ -264,20 +270,22 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # llvm-cov target ＋ compose ボリュームでディスクが逼迫するため先に解放する。
       - name: free disk space (不要プリインストール削除)
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.96.0"
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # flake で失敗しても計装ビルドのキャッシュを保存する（保存しないと次回も cold で遅い）。
           # coverage flake（emit_workflow_it 等）が cache 温存を妨げていた根本対策。
           cache-on-failure: "true"
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-llvm-cov
       # live 依存（OpenFGA / Redis）を起動し、結合テストのカバレッジも算入する。
       # これにより fga_http / client（OpenFGA 経路）と redis_store（Redis 経路）も
       # 単体テストでは届かない実経路をカバーした上で全体カバレッジを評価する。
@@ -375,7 +383,7 @@ jobs:
         # （sandbox の wasm backend / gRPC client は実 V8/Pyodide を要し gated IT `SANDBOX_IT=1` で検証・CI 分母外）
         run: cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex 'src/(bin/|main\.rs)|/examples/|vendor/(secure-exec|openjtd)/|sandbox-orchestrator/src/backend/wasm/|sandbox-orchestrator/src/backend/(gvisor|firecracker)/(instance|mod)\.rs|sandbox-guest-agent/src/vsock\.rs|sandbox-netns/src/lib\.rs|sandbox-client/src/client\.rs'
       - name: upload coverage (lcov)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-lcov
           path: lcov.info
@@ -391,15 +399,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@v2
-      - uses: pnpm/action-setup@v4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -426,19 +434,19 @@ jobs:
       # shiki-server はビルド済みバイナリの runtime-only イメージ（CI override）を使う。
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: download shiki-server binary (build-server の成果物)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: shiki-server-bin
           path: deploy/compose/prebuilt
       # Dockerfile.ci が /usr/local/bin へ焼く隔離 DuckDB ランナー（COPY 対象・欠落するとビルド失敗）。
       - name: download tabular runner binary (tabular-runner の成果物)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: shiki-tabular-runner-bin
           path: deploy/compose/prebuilt
@@ -498,26 +506,26 @@ jobs:
       # shiki-server はビルド済みバイナリの runtime-only イメージ（CI override）を使う。
       COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: "1.96.0"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: download shiki-server binary (build-server の成果物)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: shiki-server-bin
           path: deploy/compose/prebuilt
       # CSV クエリの隔離 DuckDB ランナー（Dockerfile.ci が /usr/local/bin へ焼く）。
       - name: download tabular runner binary (tabular-runner の成果物)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: shiki-tabular-runner-bin
           path: deploy/compose/prebuilt
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 9
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -567,7 +575,7 @@ jobs:
         run: pnpm e2e
       - name: upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report
           path: web/playwright-report
