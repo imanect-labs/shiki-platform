@@ -347,7 +347,6 @@ pub fn stub_llm(pool: PgPool) -> Arc<llm_gateway::LlmGateway> {
             kind: ProviderKind::Stub,
             base_url: None,
             api_key: None,
-            timeout_secs: 5,
             user_agent: None,
             session_header: None,
             ..Default::default()

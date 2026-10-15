@@ -14,6 +14,8 @@ mod stub_stream;
 mod stub_triggers;
 /// 本文先頭の `<think>…</think>` を思考へ振り分ける（Chat Completions・#584）。
 mod think_tags;
+/// 最初の応答・無通信・全体のタイムアウト（全アダプタ共通・#554）。
+mod timeouts;
 /// ツール名の wire 写像（全アダプタ共通・#582）。
 mod tool_names;
 /// プロバイダの `usage` を中立形（キャッシュ内訳つき）へ写す（#581）。

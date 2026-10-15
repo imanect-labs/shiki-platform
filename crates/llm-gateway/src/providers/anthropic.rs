@@ -8,14 +8,15 @@
 //! 単体テストのみ行い、実サーバ結線はコードレビュー範囲とする。
 
 use std::collections::HashSet;
-use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
 use super::identity::IdentityHeaders;
+use super::timeouts::RequestClock;
 use super::tool_names::ToolNameMap;
+use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::tool_loading::{context_tools, with_loaded_note};
@@ -29,6 +30,7 @@ pub struct AnthropicProvider {
     api_key: String,
     default_model: String,
     identity: IdentityHeaders,
+    timeouts: LlmTimeouts,
 }
 
 impl AnthropicProvider {
@@ -44,6 +46,7 @@ impl AnthropicProvider {
             api_key: api_key.into(),
             default_model: default_model.into(),
             identity: IdentityHeaders::default(),
+            timeouts: LlmTimeouts::default(),
         }
     }
 
@@ -58,6 +61,13 @@ impl AnthropicProvider {
     pub fn with_session_header(mut self, header: Option<&str>) -> Result<Self, LlmError> {
         self.identity.set_session_header(header)?;
         Ok(self)
+    }
+
+    /// タイムアウト（最初の応答・無通信・全体）を指定する。既定は [`LlmTimeouts::default`]。
+    #[must_use]
+    pub fn with_timeouts(mut self, timeouts: LlmTimeouts) -> Self {
+        self.timeouts = timeouts;
+        self
     }
 
     fn build_body(&self, req: &GenerateRequest, names: &ToolNameMap) -> Value {
@@ -242,19 +252,16 @@ impl LlmProvider for AnthropicProvider {
         let builder = self
             .http
             .post(&url)
-            .timeout(Duration::from_mins(5))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body);
-        let resp = self
-            .identity
-            .apply(builder, req.session_id.as_deref())
-            .send()
-            .await
-            .map_err(|e| LlmError::Unavailable(format!("anthropic request failed: {e}")))?;
+        let clock = RequestClock::start(self.timeouts, "anthropic");
+        let resp = clock
+            .send(self.identity.apply(builder, req.session_id.as_deref()))
+            .await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = clock.error_text(resp).await?;
             if status.is_client_error() {
                 // 429 は「直せば通る」ものではない（openai 側と同じ理由・provider.rs 参照）。
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -277,12 +284,11 @@ impl LlmProvider for AnthropicProvider {
             let mut usage = super::usage::AnthropicUsage::default();
             let mut stop = StopReason::EndTurn;
 
-            while let Some(chunk) = byte_stream.next().await {
+            while let Some(chunk) = clock.next_chunk(&mut byte_stream, &tx).await {
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ =
-                            tx.unbounded_send(Err(LlmError::Unavailable(format!("stream: {e}"))));
+                        let _ = tx.unbounded_send(Err(e));
                         return;
                     }
                 };

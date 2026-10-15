@@ -151,7 +151,6 @@ async fn setup() -> Option<Env> {
                     kind: llm_gateway::ProviderKind::Stub,
                     base_url: None,
                     api_key: None,
-                    timeout_secs: 30,
                     user_agent: None,
                     session_header: None,
                     ..Default::default()
