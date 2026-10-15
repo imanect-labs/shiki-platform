@@ -1,11 +1,13 @@
-//! OpenAI 互換 wire へのツール名写像（`openai.rs` から分割・行数規約）。
+//! プロバイダ wire へのツール名写像（OpenAI 互換・Responses・Anthropic 共通）。
 //!
-//! OpenAI の function.name 制約は `^[a-zA-Z0-9_-]{1,64}$`。このリポジトリのツール名には
-//! ドット入り（`document.edit` 等）があり、寛容なプロバイダは通すが DeepSeek 等は 400 で
-//! 拒否する。送信時に許容外文字を `_` へ写して 64 文字へ切り詰め、受信時は
-//! [`ToolNameMap`] で元の名前へ逆写しする。
-
+//! OpenAI の function.name 制約は `^[a-zA-Z0-9_-]{1,64}$`、Anthropic の tools[].name は
+//! `^[a-zA-Z0-9_-]{1,128}$`。このリポジトリのツール名にはドット入り（`document.edit` 等）が
+//! あり、寛容なプロバイダは通すが DeepSeek・Anthropic 等は 400 で拒否する（#582）。送信時に
+//! 許容外文字を `_` へ写して 64 文字（両者の共通部分）へ切り詰め、受信時は [`ToolNameMap`] で
+//! 元の名前へ逆写しする。
 use std::collections::HashMap;
+
+use crate::model::{Block, GenerateRequest};
 
 /// OpenAI の function.name 制約へ写した wire 名（単体では衝突を解決しない）。
 ///
@@ -61,6 +63,19 @@ impl ToolNameMap {
             to_wire.insert(local, wire);
         }
         ToolNameMap { to_wire, to_local }
+    }
+
+    /// リクエストのツール集合に加えて**履歴中の ToolUse 名**も同じ写像に通す（resume 等で
+    /// 履歴のツールが現在の tools に無い場合でも、fallback サニタイズによる衝突を防ぐ）。
+    pub(super) fn for_request(req: &GenerateRequest) -> Self {
+        ToolNameMap::new(req.tools.iter().map(|t| t.name.as_str()).chain(
+            req.messages.iter().flat_map(|m| {
+                m.content.iter().filter_map(|b| match b {
+                    Block::ToolUse { name, .. } => Some(name.as_str()),
+                    _ => None,
+                })
+            }),
+        ))
     }
 
     pub(super) fn wire(&self, local: &str) -> String {

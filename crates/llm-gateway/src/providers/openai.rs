@@ -13,7 +13,7 @@ use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
 use super::identity::IdentityHeaders;
-use super::openai_names::ToolNameMap;
+use super::tool_names::ToolNameMap;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::tool_loading::{context_tools, with_loaded_note};
@@ -264,16 +264,7 @@ impl LlmProvider for OpenAiProvider {
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/chat/completions", self.base_url);
-        // 現在のツール集合に加えて**履歴中の ToolUse 名**も同じ写像に通す（resume 等で
-        // 履歴のツールが現在の tools に無い場合でも、fallback サニタイズによる衝突を防ぐ）。
-        let names = ToolNameMap::new(req.tools.iter().map(|t| t.name.as_str()).chain(
-            req.messages.iter().flat_map(|m| {
-                m.content.iter().filter_map(|b| match b {
-                    Block::ToolUse { name, .. } => Some(name.as_str()),
-                    _ => None,
-                })
-            }),
-        ));
+        let names = ToolNameMap::for_request(req);
         let body = self.build_body(req, &names);
         let mut builder = self
             .http
@@ -425,7 +416,7 @@ mod tests {
     }
 
     // 写像そのもの（サニタイズ・衝突回避・64 文字制約）の単体テストは
-    // `openai_names.rs` 側にある。ここでは messages への適用のみ検証する。
+    // `tool_names.rs` 側にある。ここでは messages への適用のみ検証する。
     #[test]
     fn dotted_tool_names_map_in_history_tool_calls() {
         // 履歴メッセージのツール名も wire 名（ドット→`_`）で送られる。

@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 use axum::Router;
 use futures::stream::StreamExt;
 
-use llm_gateway::model::{GenerateRequest, Message, Role, StopReason, StreamDelta};
+use llm_gateway::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef};
 use llm_gateway::provider::{LlmError, LlmProvider};
 use llm_gateway::providers::anthropic::AnthropicProvider;
 
@@ -164,6 +164,78 @@ async fn anthropic_sends_no_session_header_when_unset() {
     assert!(headers.get("x-opencode-session").is_none());
 }
 
+/// tool_use の名前が wire 名（`document_edit`）で返る SSE。
+const SSE_DOTTED_TOOL: &str = concat!(
+    "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n",
+    "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_2\",\"name\":\"document_edit\"}}\n\n",
+    "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":1}}\n\n",
+    "data: {\"type\":\"message_stop\"}\n\n",
+);
+
+type SeenBody = Arc<Mutex<Option<serde_json::Value>>>;
+
+/// 受けたリクエストボディ（JSON）を記録するモック。
+async fn spawn_body_mock(body: &'static str) -> (String, SeenBody) {
+    let seen: SeenBody = Arc::new(Mutex::new(None));
+    let rec = seen.clone();
+    let app = Router::new().fallback(move |req: String| {
+        let rec = rec.clone();
+        async move {
+            *rec.lock().unwrap() = serde_json::from_str(&req).ok();
+            (
+                StatusCode::OK,
+                [("content-type", "text/event-stream")],
+                body,
+            )
+                .into_response()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), seen)
+}
+
+#[tokio::test]
+async fn anthropic_dotted_tool_names_round_trip_through_wire_names() {
+    // ドット入りのツール名は API が 400 で拒否する（#582）。送るときは wire 名、受けた
+    // tool_use は元の名前へ戻す。
+    let (base, seen) = spawn_body_mock(SSE_DOTTED_TOOL).await;
+    let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k", "m");
+    let mut req = GenerateRequest::new(vec![
+        Message::text(Role::User, "edit"),
+        Message {
+            role: Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: "toolu_1".into(),
+                name: "document.edit".into(),
+                input: serde_json::json!({}),
+            }],
+        },
+        Message {
+            role: Role::Tool,
+            content: vec![Block::tool_result("toolu_1", "ok", false)],
+        },
+    ]);
+    req.tools = vec![ToolDef::new(
+        "document.edit",
+        "d",
+        serde_json::json!({"type": "object"}),
+    )];
+    let deltas = drain(&provider, &req).await;
+
+    let body = seen.lock().unwrap().clone().unwrap();
+    assert_eq!(body["tools"][0]["name"], "document_edit");
+    assert_eq!(body["messages"][1]["content"][0]["name"], "document_edit");
+    assert!(deltas.contains(&StreamDelta::ToolUseStart {
+        id: "toolu_2".into(),
+        name: "document.edit".into(),
+    }));
+}
+
 /// 実エンドポイントでの往復（`ANTHROPIC_TEST_URL` が無ければ黙ってスキップ）。
 ///
 /// 例（OpenCode Go）: `ANTHROPIC_TEST_URL=https://opencode.ai/zen/go` `ANTHROPIC_TEST_MODEL=claude-haiku-5-5`
@@ -202,5 +274,49 @@ async fn anthropic_live_round_trip() {
     assert!(text.contains('2'), "answer: {text}");
     assert!(
         matches!(deltas.last(), Some(StreamDelta::Done { usage, .. }) if usage.prompt_tokens > 0)
+    );
+}
+
+/// 実エンドポイントで、ドット入りのツール名が 400 にならず、呼び出しが元の名前で戻ること（#582）。
+/// `ANTHROPIC_TEST_URL` が無ければ黙ってスキップ（設定は上の往復テストと同じ）。
+#[tokio::test]
+async fn anthropic_live_dotted_tool_call() {
+    let Ok(base) = std::env::var("ANTHROPIC_TEST_URL") else {
+        return;
+    };
+    let model = std::env::var("ANTHROPIC_TEST_MODEL").unwrap_or_else(|_| "m".into());
+    let provider = AnthropicProvider::new(
+        reqwest::Client::new(),
+        base,
+        std::env::var("ANTHROPIC_TEST_KEY").unwrap_or_default(),
+        model,
+    )
+    .with_session_header(
+        std::env::var("ANTHROPIC_TEST_SESSION_HEADER")
+            .ok()
+            .as_deref(),
+    )
+    .unwrap();
+    let mut req = GenerateRequest::new(vec![Message::text(
+        Role::User,
+        "weather.lookup ツールで東京の天気を調べて",
+    )]);
+    req.tools = vec![ToolDef::new(
+        "weather.lookup",
+        "都市の天気を返す",
+        serde_json::json!({
+            "type": "object",
+            "properties": { "city": { "type": "string" } },
+            "required": ["city"],
+        }),
+    )];
+    req.session_id = Some(format!("shiki-it-{}", uuid::Uuid::new_v4()));
+    req.max_tokens = Some(2000);
+    let deltas = drain(&provider, &req).await;
+    assert!(
+        deltas.iter().any(
+            |d| matches!(d, StreamDelta::ToolUseStart { name, .. } if name == "weather.lookup")
+        ),
+        "deltas: {deltas:?}"
     );
 }
