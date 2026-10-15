@@ -120,13 +120,15 @@ async-trait = "0.1"
 
 # ストレージ（ObjectStore / content-addressing）
 # S3 互換オブジェクトストア（MinIO）。GCS 実装は Phase 8 で同 trait 裏に追加する。
+# HTTP クライアントは `default-https-client`（hyper 1 ＋ rustls 0.23）。`rustls` feature は
+# hyper 0.14 ＋ rustls 0.21 の旧スタックで、0.21 系には修正版の無い脆弱性が出るため使わない。
 aws-config = { version = "1", default-features = false, features = [
     "behavior-version-latest",
-    "rustls",
+    "default-https-client",
 ] }
 aws-sdk-s3 = { version = "1", default-features = false, features = [
     "behavior-version-latest",
-    "rustls",
+    "default-https-client",
     "rt-tokio",
 ] }
 aws-credential-types = "1"
