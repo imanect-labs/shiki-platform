@@ -608,6 +608,17 @@ async fn storage_end_to_end() {
         .await
         .expect("rename");
     assert_eq!(renamed.name, "renamed.txt");
+    // 拡張子を変える改名は拒否し、名前を変えない（開く画面と中身がずれるため・#617）。
+    let err = service
+        .rename_file(&actx, file.id, "renamed.md", None)
+        .await
+        .expect_err("拡張子の変更は拒否");
+    assert!(matches!(err, StorageError::Invalid(_)), "{err:?}");
+    let kept = service
+        .get_metadata(&actx, file.id, None)
+        .await
+        .expect("get after rejected rename");
+    assert_eq!(kept.name, "renamed.txt");
 
     // --- soft delete → 取得不可 → restore ---
     service

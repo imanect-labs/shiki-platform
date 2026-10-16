@@ -144,6 +144,12 @@ impl StorageService {
             Some(target) => target,
             None => fresh.parent_id,
         };
+        // ファイルの拡張子は変えさせない（#617）。開く画面（ノート / Office 等）は拡張子で決まるが、
+        // 改名では中身も content_type も変わらないため、拡張子だけ変えると中身と画面が食い違い、
+        // 文字化けや別形式での上書きを招く。大文字小文字の違いだけは許す。ロック下の最新名と比べる。
+        if let (NodeKind::File, Some(name)) = (expect, new_name) {
+            ensure_same_extension(&fresh.name, name)?;
+        }
         let final_name = new_name.unwrap_or(fresh.name.as_str());
         let parent_changed = new_parent.is_some() && final_parent != old_parent;
 

@@ -25,6 +25,8 @@ export function TextPromptDialog({
   description,
   label,
   initialValue = "",
+  initialSelection,
+  validate,
   submitLabel,
   onSubmit,
 }: {
@@ -34,12 +36,29 @@ export function TextPromptDialog({
   description?: string;
   label: string;
   initialValue?: string;
+  /// 開いたときに選択しておく範囲（改名で拡張子の手前だけを選ぶ等）。省略時は全体。
+  initialSelection?: [number, number];
+  /// 入力中の検証。理由を返すとその場で表示し、確定できなくする（サーバも同じ規則で拒否する）。
+  validate?: (value: string) => string | null;
   submitLabel: string;
   onSubmit: (value: string) => Promise<void>;
 }) {
   const [value, setValue] = React.useState(initialValue);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const invalid = validate ? validate(value) : null;
+  // 初期の選択範囲を、利用者が触るまで当て続ける。メニューからダイアログへフォーカスが移る間に
+  // Radix がフォーカスを入力へ戻し直し、そのたびに全体を選択するため、一度当てるだけでは消える。
+  const selectionPendingRef = React.useRef(false);
+  const applyInitialSelection = React.useCallback(() => {
+    if (!initialSelection || !selectionPendingRef.current) return;
+    const [start, end] = initialSelection;
+    // Radix は focus() の直後に select() する。その後に上書きするため 1 フレーム待つ。
+    window.requestAnimationFrame(() => {
+      if (selectionPendingRef.current) inputRef.current?.setSelectionRange(start, end);
+    });
+  }, [initialSelection]);
 
   // 開くたびに初期値へ戻す。
   React.useEffect(() => {
@@ -47,8 +66,17 @@ export function TextPromptDialog({
       setValue(initialValue);
       setError(null);
       setBusy(false);
+      selectionPendingRef.current = true;
     }
   }, [open, initialValue]);
+
+  // 開いた時点で入力にフォーカスが済んでいれば（autoFocus が先に当たり、Radix が追加のフォーカスを
+  // 省いた場合）、onFocus は二度と来ないので、ここで選択を当てる。
+  const applyRef = React.useRef(applyInitialSelection);
+  applyRef.current = applyInitialSelection;
+  React.useEffect(() => {
+    if (open && document.activeElement === inputRef.current) applyRef.current();
+  }, [open]);
 
   const submit = async () => {
     const trimmed = value.trim();
@@ -56,6 +84,7 @@ export function TextPromptDialog({
       setError("名前を入力してください");
       return;
     }
+    if (invalid) return;
     setBusy(true);
     setError(null);
     try {
@@ -70,7 +99,19 @@ export function TextPromptDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent
+        className="max-w-md"
+        // 既定のフォーカスは入力全体を選択する。範囲の指定があれば、その範囲だけを選ぶ。
+        onOpenAutoFocus={
+          initialSelection
+            ? (e) => {
+                e.preventDefault();
+                inputRef.current?.focus();
+                applyInitialSelection();
+              }
+            : undefined
+        }
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description ? <DialogDescription>{description}</DialogDescription> : null}
@@ -85,18 +126,31 @@ export function TextPromptDialog({
           <label className="flex flex-col gap-1.5 text-sm">
             <span className="font-medium">{label}</span>
             <Input
+              ref={inputRef}
               autoFocus
               value={value}
-              onChange={(e) => setValue(e.target.value)}
-              aria-invalid={error ? true : undefined}
+              onFocus={applyInitialSelection}
+              onChange={(e) => {
+                selectionPendingRef.current = false;
+                setValue(e.target.value);
+              }}
+              onPointerDown={() => {
+                selectionPendingRef.current = false;
+              }}
+              aria-invalid={error || invalid ? true : undefined}
+              aria-describedby={error || invalid ? "text-prompt-error" : undefined}
             />
           </label>
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          {error || invalid ? (
+            <p id="text-prompt-error" role="alert" className="text-sm text-destructive">
+              {invalid ?? error}
+            </p>
+          ) : null}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
               キャンセル
             </Button>
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || Boolean(invalid)}>
               {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
               {submitLabel}
             </Button>
