@@ -70,6 +70,14 @@ export function TextPromptDialog({
     }
   }, [open, initialValue]);
 
+  // 開いた時点で入力にフォーカスが済んでいれば（autoFocus が先に当たり、Radix が追加のフォーカスを
+  // 省いた場合）、onFocus は二度と来ないので、ここで選択を当てる。
+  const applyRef = React.useRef(applyInitialSelection);
+  applyRef.current = applyInitialSelection;
+  React.useEffect(() => {
+    if (open && document.activeElement === inputRef.current) applyRef.current();
+  }, [open]);
+
   const submit = async () => {
     const trimmed = value.trim();
     if (!trimmed) {
