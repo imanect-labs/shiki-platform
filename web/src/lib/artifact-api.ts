@@ -234,6 +234,47 @@ export async function invokeChatUiAction(
   return ok<UiActionResult>(res);
 }
 
+/// 本文の図（```ui）のボタンの実行（#604）。`actionId` は `{ブロックの識別子}:{a1}`。
+///
+/// ワークフローのボタンは送信ごとの `idempotencyKey` が要る（同じキーの再送は前の起動の結果を返す）。
+/// 誤りは状況ごとに分けて投げる（画面が文言を出し分ける）。
+export async function invokeChatYuiAction(
+  threadId: string,
+  messageId: string,
+  actionId: string,
+  values: Record<string, unknown>,
+  idempotencyKey?: string,
+): Promise<UiActionResult> {
+  const res = await apiFetch(
+    `/threads/${threadId}/messages/${messageId}/ui-actions`,
+    json({
+      action_id: actionId,
+      params: values,
+      ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+    }),
+  );
+  if (res.status === 409) throw new UiActionAlreadyInvoked();
+  if (res.status === 403) throw new UiActionForbidden();
+  if (res.status === 404) throw new UiActionNotFound();
+  return ok<UiActionResult>(res);
+}
+
+/// 会話の閲覧者が押した（ボタンは編集者だけが使える）。
+export class UiActionForbidden extends Error {
+  constructor() {
+    super("この会話は閲覧のみのため、ボタンを使えません");
+    this.name = "UiActionForbidden";
+  }
+}
+
+/// ボタンが見つからない（本文に無い・ワークフローを解決できなかった・権限が無い）。
+export class UiActionNotFound extends Error {
+  constructor() {
+    super("このボタンの実行先が見つからないか、使う権限がありません");
+    this.name = "UiActionNotFound";
+  }
+}
+
 export async function invokeMiniAppUiAction(
   appId: string,
   version: number,

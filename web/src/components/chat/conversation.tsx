@@ -28,6 +28,7 @@ import {
   type PlanSubtask,
   type RunStatus,
   type StreamHandlers,
+  type UiActionRun,
 } from "@/lib/chat-api";
 import { popPending } from "@/lib/pending-message";
 import { readModelChoice } from "@/lib/model-choice";
@@ -44,6 +45,12 @@ import { SpecRenderer } from "@/components/genui/spec-renderer";
 import { SaveAsAppDialog, specHasChatOnlyAction } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
 import { Markdown } from "@/components/prompt-kit/markdown";
+import {
+  hasOpenRuns,
+  hasYuiBlock,
+  YuiActionContext,
+  type YuiActionHost,
+} from "@/components/prompt-kit/yui-actions";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
 import { MessageFooter } from "./message-footer";
@@ -247,9 +254,9 @@ export function Conversation({
   );
 
   // 蓄積中のストリームを確定メッセージへ移して閉じる（onDone / stop 共通）。
-  const flushStream = React.useCallback(() => {
+  const flushStream = React.useCallback((provisional: "reloading" | "stopped") => {
     const s = streamRef.current;
-    if (s) finalizeStream(s, setMessages);
+    if (s) finalizeStream(s, setMessages, provisional);
     streamRef.current = null;
     setStream(null);
   }, []);
@@ -410,8 +417,10 @@ export function Conversation({
       onDone: () => {
         // generative UI を含む応答はサーバ確定の message id が要る（UI アクションの照合先）
         // ため、ローカル確定ではなく再読込で置き換える。
-        const hadUi = (streamRef.current?.uiSpecs.length ?? 0) > 0;
-        flushStream();
+        // 本文の ```ui の図のボタンも同じ（束縛はサーバーが回答の確定時に解決する・#604）。
+        const hadUi =
+          (streamRef.current?.uiSpecs.length ?? 0) > 0 || hasYuiBlock(streamRef.current?.text ?? "");
+        flushStream("reloading");
         cancelRef.current = null;
         notifyThreadsChanged();
         // 生成中に押されたカード操作を、保存済みになった今この瞬間に流す（押した順）。
@@ -616,7 +625,7 @@ export function Conversation({
   const stop = React.useCallback(() => {
     cancelRef.current?.({ cancelServer: true });
     cancelRef.current = null;
-    flushStream();
+    flushStream("stopped");
     notifyThreadsChanged();
   }, [flushStream]);
 
@@ -781,6 +790,9 @@ export function Conversation({
                       messageId={m.id}
                       blocks={m.content}
                       invokedActions={m.invokedActions}
+                      boundActions={m.boundActions}
+                      uiRuns={m.uiRuns}
+                      provisional={m.provisional}
                       onUiAction={reload}
                       latest={m.id === latestAssistantId}
                       compactDisclaimer={isPanel}
@@ -874,6 +886,7 @@ function paragraphBreak(text: string): string {
 function finalizeStream(
   s: StreamState,
   setMessages: React.Dispatch<React.SetStateAction<ChatMessageT[]>>,
+  provisional: NonNullable<ChatMessageT["provisional"]>,
 ) {
   const blocks: ContentBlock[] = [];
   // 思考は先頭に置き、完了後も「思考プロセス」として残す。
@@ -908,7 +921,7 @@ function finalizeStream(
   if (blocks.length === 0) return;
   setMessages((prev) => [
     ...prev,
-    { id: newId(), role: "assistant", content: blocks, createdAt: new Date().toISOString() },
+    { id: newId(), role: "assistant", content: blocks, provisional, createdAt: new Date().toISOString() },
   ]);
 }
 
@@ -1037,6 +1050,9 @@ const AssistantRow = React.memo(function AssistantRow({
   messageId,
   blocks,
   invokedActions,
+  boundActions,
+  uiRuns,
+  provisional,
   onUiAction,
   latest = false,
   compactDisclaimer = false,
@@ -1046,12 +1062,40 @@ const AssistantRow = React.memo(function AssistantRow({
   blocks: ContentBlock[];
   /// このメッセージで実行済みの単発 UI アクション（サーバ記録・#410）。
   invokedActions?: readonly string[];
+  /// 本文の図のワークフローのボタンのうち押せるもの・起動の記録（#604）。
+  boundActions?: readonly string[];
+  uiRuns?: readonly UiActionRun[];
+  /// 生成直後の仮のメッセージ（読み直すまで図のボタンは押せない）。
+  provisional?: ChatMessageT["provisional"];
   onUiAction: () => void;
   /// 最新の回答（アクションを常に出し、下に免責文を 1 回だけ添える）。
   latest?: boolean;
   /// 免責文を短くする（分割ビューのパネル）。
   compactDisclaimer?: boolean;
 }) {
+  // コールバックが変わっても図・タイマーを作り直さないよう、ref で最新を呼ぶ。
+  const reload = React.useRef(onUiAction);
+  reload.current = onUiAction;
+  const onChanged = React.useCallback(() => reload.current(), []);
+  const yuiHost = React.useMemo<YuiActionHost>(
+    () => ({
+      threadId,
+      messageId,
+      boundActions: boundActions ?? [],
+      invokedActions: invokedActions ?? [],
+      uiRuns: uiRuns ?? [],
+      unsaved: provisional,
+      onChanged,
+    }),
+    [threadId, messageId, boundActions, invokedActions, uiRuns, provisional, onChanged],
+  );
+  // 図のボタンで起動したワークフローが終わるまで、会話を少しずつ読み直して状態を出す。
+  const openRuns = hasOpenRuns(uiRuns);
+  React.useEffect(() => {
+    if (!openRuns) return;
+    const t = window.setTimeout(onChanged, 4000);
+    return () => window.clearTimeout(t);
+  }, [openRuns, uiRuns, onChanged]);
   const thinking = blocks
     .filter((b): b is Extract<ContentBlock, { type: "thinking" }> => b.type === "thinking")
     .map((b) => b.text)
@@ -1130,7 +1174,11 @@ const AssistantRow = React.memo(function AssistantRow({
       <Message className="group justify-start">
         <div className="w-full min-w-0">
           <ChainOfThought thinking={thinking} tools={tools} citations={citations} />
-          {text ? <Markdown>{linkifyCitations(text, citations)}</Markdown> : null}
+          {text ? (
+            <YuiActionContext.Provider value={yuiHost}>
+              <Markdown>{linkifyCitations(text, citations)}</Markdown>
+            </YuiActionContext.Provider>
+          ) : null}
           {uiSpecs.length > 0 ? (
             <ChatGenUiProvider
               threadId={threadId}

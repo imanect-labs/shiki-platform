@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "./code-block";
+import { useYuiActions, YuiRunList } from "./yui-actions";
 
 /// 生成中の本文はトークンごとに再描画されるので、props が変わらない限り描き直さない
 /// （確定済みの図・書きかけの行しか変わっていない図の解析とレイアウトを繰り返さない）。
@@ -57,6 +58,8 @@ export const UiFigure = React.memo(function UiFigure({
   const text = React.useMemo(() => (figure && !failed ? toText(figure) : ""), [figure, failed]);
   const [asTable, setAsTable] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
+  // 操作を持つ図（app・ask・plan）のボタン。確定した回答の中でだけ押せる（#604）。
+  const actions_ = useYuiActions(failed ? null : figure, source, complete);
 
   if (failed) {
     return (
@@ -113,8 +116,15 @@ export const UiFigure = React.memo(function UiFigure({
         <div className="text-[14px]">{renderTable(text)}</div>
       ) : (
         // 図の内側の余白（幅 400px 未満は 12px、それ以上は 16px）だけ外へ広げ、見出しを本文の左端に揃える。
-        <YuiFigure figure={figure} className="-mx-3 sm:-mx-4" />
+        <YuiFigure
+          figure={figure}
+          className="-mx-3 sm:-mx-4"
+          {...(actions_?.onAction ? { onAction: actions_.onAction } : {})}
+          {...(actions_?.actionDisabledReason ? { actionDisabledReason: actions_.actionDisabledReason } : {})}
+          {...(actions_?.invokedActions ? { invokedActions: actions_.invokedActions } : {})}
+        />
       )}
+      {actions_ ? <YuiRunList runs={actions_.runs} /> : null}
       <figcaption
         className={cn(
           "mt-1 flex items-center justify-end gap-1 text-[11px] text-muted-foreground",

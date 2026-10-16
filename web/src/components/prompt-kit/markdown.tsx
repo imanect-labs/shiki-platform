@@ -16,6 +16,8 @@ import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
 
 import { CodeBlock } from "./code-block";
+// 引用・箇条書きの中の図はボタンを出さない（重い図の描画部とは別に、軽いコンテキストだけ読む）。
+import { YuiNestedContext } from "./yui-actions";
 
 /// ```ui の図は描画部（@imanect/yui の SVG レンダラー・書き出し）が重いので、図が現れたときだけ
 /// 読み込む。読み込み中は図と同じくらいの高さの枠を置いてレイアウトが跳ねないようにする。
@@ -221,7 +223,12 @@ const components: Components = {
     return <ol className="my-2.5 ml-5 list-decimal space-y-1 marker:text-muted-foreground">{children}</ol>;
   },
   li({ children }) {
-    return <li className="leading-relaxed">{children}</li>;
+    // 箇条書きの中の図はボタンを出さない（操作を持つ図はトップレベルだけ・サーバーと同じ規則）。
+    return (
+      <li className="leading-relaxed">
+        <YuiNestedContext.Provider value={true}>{children}</YuiNestedContext.Provider>
+      </li>
+    );
   },
   h1({ children }) {
     return <h1 className="mb-2 mt-4 text-xl font-semibold first:mt-0">{children}</h1>;
@@ -235,7 +242,7 @@ const components: Components = {
   blockquote({ children }) {
     return (
       <blockquote className="my-3 border-l-2 border-border pl-4 text-muted-foreground">
-        {children}
+        <YuiNestedContext.Provider value={true}>{children}</YuiNestedContext.Provider>
       </blockquote>
     );
   },
