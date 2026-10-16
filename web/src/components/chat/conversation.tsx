@@ -1105,7 +1105,9 @@ const AssistantRow = React.memo(function AssistantRow({
   // 「〜します。〜しました。〜します。」が 1 段落に連なって読めない。
   const text = blocks
     .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
-    .map((b) => b.text.trim())
+    // 先頭は空行だけを落とす（字下げは残す）。```ui のボタンの id はサーバーが保存済みの各ブロックを
+    // そのまま読んで求めるので、フェンスの字下げを変えると id が合わなくなる（#604）。
+    .map((b) => b.text.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd())
     .filter(Boolean)
     .join("\n\n");
   // ツール結果を tool_call_id で引く（#358/#386）。**同じ id が複数回現れ得る**ため

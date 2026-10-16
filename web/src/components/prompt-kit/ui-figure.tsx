@@ -25,6 +25,7 @@ export const UiFigure = React.memo(function UiFigure({
   source,
   raw,
   complete,
+  closed,
   truncated,
   kind,
   lang,
@@ -35,6 +36,9 @@ export const UiFigure = React.memo(function UiFigure({
   source: string;
   /// ブロックが書き終わっているか（フェンスが閉じた・生成完了）。
   complete: boolean;
+  /// フェンスが閉じ行で閉じているか（省略時は complete と同じ）。閉じていないブロックはサーバーが
+  /// 操作の対象にしないので、ボタンを押せなくする。
+  closed?: boolean;
   /// 生成が途中で終わり（停止・閉じ忘れ）、書きかけの最終行を落としたか。
   truncated?: boolean;
   /// 図にできないときにそのまま見せる記述（書きかけの最終行も含む全体）。省略時は source。
@@ -59,7 +63,7 @@ export const UiFigure = React.memo(function UiFigure({
   const [asTable, setAsTable] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   // 操作を持つ図（app・ask・plan）のボタン。確定した回答の中でだけ押せる（#604）。
-  const actions_ = useYuiActions(failed ? null : figure, source, complete);
+  const actions_ = useYuiActions(failed ? null : figure, source, complete, closed ?? complete);
 
   if (failed) {
     return (

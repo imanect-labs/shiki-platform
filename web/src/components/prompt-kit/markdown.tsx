@@ -152,6 +152,7 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
       // 記述そのものを見せるのは書き終わった後だけ。生成中は渡さない（トークンごとに描き直さない）。
       raw={closed || !streaming ? raw : undefined}
       complete={closed || !streaming}
+      closed={closed}
       truncated={!lastLineDone && !streaming && raw.trim() !== source.trim()}
       kind={kind ? resolveKind(kind) : undefined}
       lang={lang}
