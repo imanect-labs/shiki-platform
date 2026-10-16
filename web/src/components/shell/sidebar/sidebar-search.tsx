@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { groupThreadsByDate, type Thread } from "@/lib/chat-api";
+import { threadHref } from "@/lib/thread-link";
 import { useInfiniteSentinel } from "@/hooks/use-infinite-list";
 import { useThreadList } from "@/hooks/use-thread-list";
 import type { DriveSearchItem } from "@/lib/drive-search";
@@ -174,7 +175,7 @@ export function SidebarSearch({
                     <SearchResultRow
                       key={thread.id}
                       thread={thread}
-                      onSelect={() => go(`/c/${thread.id}`)}
+                      onSelect={() => go(threadHref(thread))}
                     />
                   ))}
                 </ul>
