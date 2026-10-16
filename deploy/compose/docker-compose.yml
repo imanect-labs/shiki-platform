@@ -628,6 +628,8 @@ services:
       SHIKI__RAG__QDRANT_URL: http://qdrant:6333
       SHIKI__RAG__EMBEDDING_MODEL_VERSION: ${SHIKI__RAG__EMBEDDING_MODEL_VERSION:-cl-nagoya/ruri-v3-30m}
       SHIKI__RAG__INDEX_DATA_DIR: /var/lib/shiki/index
+      # reranker へ渡す候補数（遅さは候補数に比例・#561）。
+      SHIKI__RAG__RERANK_POOL: ${SHIKI__RAG__RERANK_POOL:-16}
       # 関連度ラベル（高/中/低）の閾値と、それを測った reranker のモデル（#424）。
       SHIKI__RAG__RELEVANCE_HIGH: ${SHIKI__RAG__RELEVANCE_HIGH:-0.55}
       SHIKI__RAG__RELEVANCE_LOW: ${SHIKI__RAG__RELEVANCE_LOW:-0.45}

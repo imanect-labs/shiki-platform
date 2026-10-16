@@ -50,6 +50,10 @@ pub struct RagConfig {
     pub max_top_k: usize,
 
     /// reranker へ渡す候補プール数（認可済み候補の上位のみ）。
+    ///
+    /// reranker（CPU の cross-encoder）の時間は候補数に比例する。既定 16 は #561 の実測で
+    /// 決めた: 32 と比べて再ランキングがほぼ半分（2.8 → 1.6 秒）で、上位 8 件の質の差は
+    /// nDCG@8 で 0.832 → 0.809、直接答える一致の数は同じ。品質を優先するなら 32 に上げる。
     #[serde(default = "default_rerank_pool")]
     pub rerank_pool: usize,
 
@@ -117,7 +121,7 @@ fn default_max_top_k() -> usize {
     50
 }
 fn default_rerank_pool() -> usize {
-    32
+    16
 }
 fn default_relevance_high() -> f32 {
     0.55
