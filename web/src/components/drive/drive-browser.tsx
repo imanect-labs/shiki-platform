@@ -37,6 +37,7 @@ import { useCreateContent } from "@/hooks/use-create-content";
 import { useMe } from "@/hooks/use-me";
 import { createOfficeSession, OfficeSessionError } from "@/lib/office-api";
 import { useContentSearch, type ContentHit } from "@/lib/drive-search";
+import { extensionChangeError, stemRange } from "@/lib/file-name";
 import {
   breadcrumb,
   createFolder,
@@ -674,6 +675,15 @@ export function DriveBrowser() {
         title="名前を変更"
         label="新しい名前"
         initialValue={activeNode?.name ?? ""}
+        // ファイルは拡張子を変えさせない（開く画面と中身がずれる・#617）。名前の部分だけを選んでおく。
+        initialSelection={
+          activeNode && activeNode.kind !== "folder" ? stemRange(activeNode.name) : undefined
+        }
+        validate={
+          activeNode && activeNode.kind !== "folder"
+            ? (v) => extensionChangeError(activeNode.name, v)
+            : undefined
+        }
         submitLabel="変更"
         onSubmit={async (name) => {
           if (!activeNode) return;

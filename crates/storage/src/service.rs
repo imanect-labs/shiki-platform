@@ -338,6 +338,32 @@ fn validate_name(name: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// ファイル名の拡張子（最後の `.` より後ろ）。`.env` のように先頭のドットだけのものや、
+/// 末尾がドットのものは拡張子なしとみなす。
+fn file_extension(name: &str) -> Option<&str> {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => Some(ext),
+        _ => None,
+    }
+}
+
+/// 改名で拡張子が変わらないことを確かめる（大文字小文字の違いは同じとみなす・#617）。
+fn ensure_same_extension(current: &str, new_name: &str) -> Result<(), StorageError> {
+    let (cur, new) = (file_extension(current), file_extension(new_name));
+    let same = match (cur, new) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
+        _ => false,
+    };
+    if same {
+        return Ok(());
+    }
+    Err(StorageError::Invalid(match cur {
+        Some(ext) => format!("拡張子は変更できません（.{ext} のままにしてください）"),
+        None => "拡張子のないファイルに拡張子は付けられません".into(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +400,21 @@ mod tests {
         assert!(validate_name("report.pdf").is_ok());
         assert!(validate_name("日本語.txt").is_ok());
         assert!(validate_name("a.b.c").is_ok()); // ドットを含む通常名は可
+    }
+
+    #[test]
+    fn rename_keeps_file_extension() {
+        assert!(ensure_same_extension("提案書.docx", "提案書_改訂.docx").is_ok());
+        assert!(ensure_same_extension("提案書.docx", "提案書.DOCX").is_ok()); // 大小のみ
+        assert!(ensure_same_extension("a.tar.gz", "b.tar.gz").is_ok());
+        assert!(ensure_same_extension("README", "README2").is_ok());
+        assert!(ensure_same_extension(".env", ".envrc").is_ok()); // 先頭ドットだけは拡張子でない
+        assert!(ensure_same_extension(".env", ".env.local").is_err()); // .local が付く
+        assert!(ensure_same_extension("メモ.md", "メモ.docx").is_err());
+        assert!(ensure_same_extension("表.xlsx", "表.md").is_err());
+        assert!(ensure_same_extension("メモ.md", "メモ").is_err()); // 外す
+        assert!(ensure_same_extension("README", "README.md").is_err()); // 付ける
+        assert!(ensure_same_extension("a.tar.gz", "a.tar").is_err());
     }
 
     #[test]
