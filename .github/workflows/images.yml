@@ -38,12 +38,16 @@ permissions:
   packages: write
 
 concurrency:
-  # **cancel しない。** 以前は `paths` で絞っていたので docs だけの push では
-  # そもそも起動せず、走行中のビルドを殺すことは無かった。全コミットで回す
-  # いまは cancel すると、docs 1 行の push が 20 分のビルドを殺し、そのコミット
-  # にはタグが 1 つも付かない。短い間隔で push が続く間どの SHA もデプロイ
-  # できない (= この変更が無くそうとした症状がそのまま残る) ので、捨てずに
-  # 直列で積む。公開リポジトリなので runner の分は無料。
+  # **走行中の run は cancel しない。** 以前は `paths` で絞っていたので docs
+  # だけの push ではそもそも起動せず、走行中のビルドを殺すことは無かった。
+  # 全コミットで回すいま cancel を残すと、docs 1 行の push が 20 分のビルドを
+  # 殺し、そのコミットにはタグが 1 つも付かない。公開リポジトリなので runner
+  # の分は無料で、焼き切らせた方が得。
+  #
+  # ただし **保留中の run は GitHub が 1 本しか保たない** (同じ group に新しい
+  # run が来ると、それまで保留だった run を cancel する)。連続 push では
+  # 中間コミットのタグは揃わないままで、揃うのは走り切った run と最後の 1 本
+  # だけ — 上の「ベストエフォート」の範囲。
   #
   # 直列であることは、retag が参照する digest が走行中に動かないことの
   # 担保にもなっている。
@@ -111,33 +115,37 @@ jobs:
             esac
           }
 
-          # `:main` の digest と、それを焼いたコミットを返す ("<digest> <rev>")。
+          # `:main` の digest と、それを焼いたコミットを `base_digest` /
+          # `base_rev` へ入れる。**結果を stdout で返さない** — コマンド置換で
+          # 捕まえると、下の警告まで値に混ざってログが壊れる。
+          #
           # **1 回の inspect で両方取る。** 2 回に分けると、その間に `:main` が
           # 動いたとき「比較したイメージ」と「別名を付けるイメージ」がずれる。
-          # 引けなければ空を返す (呼び出し側は「焼く」へ倒す)。**失敗の原因は
+          #
+          # 引けなければ空にする (呼び出し側は「焼く」へ倒す)。**失敗の原因は
           # ログに出す。** 5xx やレート制限を「:main が無い」と読み替えると、
           # 毎回 3 つフルビルドしている理由が分からなくなる。run ごと落とさない
           # のは、GHCR が未作成のパッケージに 404 ではなく 403 を返すことがあり、
           # 初回ビルドを塞いでしまうため。
           err_f=$(mktemp)
-          base_of() {
-            local out digest rev
+          base_digest=""; base_rev=""
+          read_base() {
+            local out
+            base_digest=""; base_rev=""
             if ! out=$(docker buildx imagetools inspect "ghcr.io/$owner/$1:main" \
                          --format '{{.Manifest.Digest}} {{json .Image}}' 2>"$err_f"); then
               if ! grep -qiE 'not found|unknown|404' "$err_f"; then
                 echo "::warning::$1 の :main を引けなかった。安全側に倒して焼く"
-                sed 's/^/    /' "$err_f" >&2
+                sed 's/^/    /' "$err_f"
               fi
               return 0
             fi
-            digest=${out%% *}
             # 単一 platform では image config そのもの、attestation が付くと
             # platform をキーにした map になる。形に依らず再帰で拾う。
-            rev=$(jq -r '[.. | objects | .Labels? // empty
-                          | ."org.opencontainers.image.revision"? // empty]
-                         | first // ""' <<< "${out#* }")
-            if [ -z "$rev" ]; then return 0; fi
-            printf '%s %s\n' "$digest" "$rev"
+            base_rev=$(jq -r '[.. | objects | .Labels? // empty
+                               | ."org.opencontainers.image.revision"? // empty]
+                              | first // ""' <<< "${out#* }")
+            if [ -n "$base_rev" ]; then base_digest=${out%% *}; fi
           }
 
           build_f=$(mktemp); retag_f=$(mktemp)
@@ -147,13 +155,14 @@ jobs:
               echo "$name" >> "$build_f"
               continue
             fi
-            base=$(base_of "$name")
-            if [ -z "$base" ]; then
+            read_base "$name"
+            if [ -z "$base_rev" ]; then
               echo "$name: :main が無い (または revision ラベルが無い) ので焼く"
               echo "$name" >> "$build_f"
               continue
             fi
-            read -r digest rev <<< "$base"
+            rev=$base_rev
+            digest=$base_digest
             if ! git cat-file -e "$rev^{commit}" 2>/dev/null; then
               echo "$name: 前回焼いた $rev がこのリポジトリに無いので焼く"
               echo "$name" >> "$build_f"
