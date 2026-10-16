@@ -262,6 +262,19 @@ pub(crate) async fn agent_invoke(
         prompt: req.prompt,
         model: req.model,
         declared_tools: pin.agent_tools.clone(),
+        // 経路の二重ゲートと同じく granted_scopes ∩ トークンの scope（ツールの提示条件）。
+        scopes: ctx
+            .identity
+            .token_scopes
+            .iter()
+            .filter(|s| {
+                ctx.installation
+                    .granted_scopes
+                    .iter()
+                    .any(|g| g == s.as_str())
+            })
+            .copied()
+            .collect(),
         max_tokens: pin.budget_max_tokens,
         max_steps: req.max_steps,
         max_cost_usd_micros: remaining,

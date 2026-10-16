@@ -305,6 +305,7 @@ impl AgentPort for StubAgent {
                 event: "agent_stub".into(),
                 data: serde_json::json!({
                     "declared_tools": spec.declared_tools,
+                    "scopes": spec.scopes,
                     "max_cost_usd_micros": spec.max_cost_usd_micros,
                     "prompt": spec.prompt,
                 }),

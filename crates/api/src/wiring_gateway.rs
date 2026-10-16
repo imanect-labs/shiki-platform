@@ -83,6 +83,7 @@ pub(crate) fn wire_gateway(
         Some(llm) => Arc::new(crate::gateway_ai::GatewayAgentPort {
             llm: Arc::clone(llm),
             search: search.map(Arc::clone),
+            storage: Some(Arc::clone(storage_service)),
         }),
         None => Arc::new(app_gateway::NoAgent),
     };
