@@ -90,6 +90,20 @@ fn declaring_doc(
     Ok(found)
 }
 
+/// 図のボタンの誤り。値の検証（部品の定義・ワークフローの `input_schema`）の誤りは、画面が
+/// 部品の横に出せるよう文言を `errors` に載せて返す（`BadRequest` は本文が `{status,title}` に潰れる）。
+/// 文言は利用者が入れた値の検証結果で、内部の情報は含まない。
+fn map_yui_action_err(e: ActionError) -> ApiError {
+    match e {
+        ActionError::Invalid(m) => ApiError::UnprocessableJson(serde_json::json!({
+            "status": 400,
+            "title": "Bad Request",
+            "errors": [{ "code": "ui_action.invalid", "message": m }],
+        })),
+        other => map_action_err(other),
+    }
+}
+
 pub(crate) fn map_action_err(e: ActionError) -> ApiError {
     match e {
         ActionError::NotFound => ApiError::NotFound,
@@ -160,7 +174,7 @@ pub async fn invoke_chat_ui_action(
                 trace.as_deref(),
             )
             .await
-            .map_err(map_action_err)?;
+            .map_err(map_yui_action_err)?;
         return Ok(Json(UiActionResponse { result }));
     }
 
@@ -250,6 +264,20 @@ mod tests {
                 "root": { "component": "text", "text": "こんにちは" },
             }),
         }
+    }
+
+    #[test]
+    fn yui_validation_errors_carry_the_message() {
+        let ApiError::UnprocessableJson(body) =
+            map_yui_action_err(ActionError::Invalid("金額: 入力してください".into()))
+        else {
+            unreachable!("検証の誤りは本文つきの 400")
+        };
+        assert_eq!(body["errors"][0]["message"], "金額: 入力してください");
+        assert!(matches!(
+            map_yui_action_err(ActionError::AlreadyInvoked),
+            ApiError::Conflict
+        ));
     }
 
     #[test]
