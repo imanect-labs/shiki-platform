@@ -20,7 +20,9 @@ test.describe("管理コンソール", () => {
 
     // モデル: カタログ表と Auto 行が出る。
     await page.getByRole("link", { name: "モデル" }).click();
-    await expect(page.getByRole("heading", { name: "モデル" })).toBeVisible();
+    // 完全一致で引く。部分一致だと、データ読込後に出る「モデルカタログ」パネルの見出しにも当たり、
+    // 読込が先に終わると strict mode violation で落ちる（タイミング依存のフレーキー）。
+    await expect(page.getByRole("heading", { name: "モデル", exact: true })).toBeVisible();
     await expect(page.getByRole("radio", { name: "Auto を既定にする" })).toBeChecked();
 
     // 円換算レートを入れて保存できる（保存後は読み直した値が入っている）。
