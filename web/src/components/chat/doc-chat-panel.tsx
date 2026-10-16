@@ -80,7 +80,13 @@ export function DocChatPanel({
   // 通常チャットの会話を指定されても、このパネルに混ぜず、保存済みの選択も上書きしない（#598）。
   const appliedInitialRef = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (!initialThreadId || appliedInitialRef.current === initialThreadId) return;
+    if (!initialThreadId) {
+      // ディープリンクが外れた（確かめている途中に同じ文書のクエリなし URL へ移った等）。
+      // 確認待ちのまま残すと、最初の会話の自動作成が止まり「準備中」から進まない。
+      setVerifyingInitial(false);
+      return;
+    }
+    if (appliedInitialRef.current === initialThreadId) return;
     appliedInitialRef.current = initialThreadId;
     let cancelled = false;
     setVerifyingInitial(true);
