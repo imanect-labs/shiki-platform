@@ -268,13 +268,15 @@ impl ChatWorker {
 
         // ハートビート（リース延長＋cancel 検知）。共有フラグでキャンセルを伝える。
         let cancel = Arc::new(AtomicBool::new(false));
-        let hb = spawn_heartbeat(
+        // 確定（束縛の解決と最終トランザクション）が終わるまでリースを延ばし続ける。止めるのは
+        // この関数を抜けるとき（Drop）。束縛の解決で時間がかかってもリースを失わない。
+        let _hb = HeartbeatGuard(spawn_heartbeat(
             self.store.clone(),
             run_id,
             fencing,
             self.config.lease_secs,
             cancel.clone(),
-        );
+        ));
 
         // 生成開始（running）。
         let _ = self
@@ -310,8 +312,6 @@ impl ChatWorker {
                 .await
         };
 
-        hb.abort();
-
         // リースを失っていたら（別ワーカー takeover）確定しない。
         if worker_sink.lost_lease() {
             return Ok(());
@@ -319,11 +319,17 @@ impl ChatWorker {
 
         let content: Vec<ContentBlock> = worker_sink.content().to_vec();
         let cancelled = cancel.load(Ordering::Relaxed);
+        // 本文の図のワークフローのボタンを、回答した主体の権限で解決して版を固定する（#604）。
+        let ui_bindings = if gen_result.is_ok() {
+            self.yui_bindings(&ctx, &content).await
+        } else {
+            Vec::new()
+        };
 
         match gen_result {
             Ok(()) if cancelled => {
                 self.store
-                    .finalize_run(
+                    .finalize_run_with_ui(
                         run_id,
                         fencing,
                         RunStatus::Cancelled,
@@ -332,12 +338,13 @@ impl ChatWorker {
                         Some(&StreamEventKind::Status {
                             status: RunStatus::Cancelled,
                         }),
+                        &ui_bindings,
                     )
                     .await?;
             }
             Ok(()) => {
                 self.store
-                    .finalize_run(
+                    .finalize_run_with_ui(
                         run_id,
                         fencing,
                         RunStatus::Done,
@@ -346,6 +353,7 @@ impl ChatWorker {
                         Some(&StreamEventKind::Done {
                             message_id: run.message_id,
                         }),
+                        &ui_bindings,
                     )
                     .await?;
             }
@@ -384,6 +392,15 @@ fn build_ctx(run: &ClaimedRun) -> AuthContext {
         run.org.clone(),
         run.tenant_id.clone(),
     )
+}
+
+/// ハートビートを、持ち主が抜けるときに止める。
+struct HeartbeatGuard(tokio::task::JoinHandle<()>);
+
+impl Drop for HeartbeatGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// ハートビートタスク（リース延長＋cancel 検知）。リース喪失/キャンセルで cancel フラグを立てる。

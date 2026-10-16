@@ -328,7 +328,20 @@ pub(super) fn yui_reply(kind: &str) -> String {
     const STAT: &str = "```ui\nstat 今月の営業実績\n売上 | 3,200万円 | 前年比 +18%\n新規顧客数 | 165社\n解約率 | 2.2% | 前月 2.6%\n```";
     const FLOW: &str = "```ui\nflow 経費精算\n精算書提出 -> 上長承認\n上長承認 -承認-> 経理確認 -> 支払\n上長承認 -差戻し-> 修正\n修正 -> 精算書提出\n```";
     const STACK: &str = "```ui\nstack システム構成\n- 画面: Web / スマホ\n- API サーバ\n  - 認証\n  - 検索\n- データベース | ファイル保管\nnote: 論理構成。\n```";
+    // 操作を持つ種類（#604）: ボタンの経路（束縛・検証・起動の記録）の e2e 用。
+    const ASK: &str = "```ui\nask 進め方の確認\n? 対象の地域は\n- 関東\n- 関西\n? 重視する点 multi\n- 費用\n- 速さ\n- その他\n```";
+    const PLAN: &str =
+        "```ui\nplan 調査の計画\n1. 市場規模を調べる\n2. 競合を比べる\n3. 報告にまとめる\n```";
     let body = match kind {
+        k if k == "app" || k.starts_with("app ") => {
+            let name = k.strip_prefix("app").unwrap_or("").trim();
+            let name = if name.is_empty() { "expense" } else { name };
+            format!(
+                "```ui\napp 経費の申請\n## 申請\n金額 = number 必須 円 as amount\n区分 = choice 交通費 | 交際費 as category\nbutton 申請する -> workflow {name}\n## 相談\n内容 = textarea 必須\nbutton 相談する -> chat\n```"
+            )
+        }
+        "ask" => ASK.to_string(),
+        "plan" => PLAN.to_string(),
         "line" => LINE.to_string(),
         "stat" => STAT.to_string(),
         "flow" => FLOW.to_string(),

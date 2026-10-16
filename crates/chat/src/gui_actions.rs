@@ -200,7 +200,7 @@ fn format_form_text(params: &serde_json::Value) -> String {
     }
 }
 
-fn map_chat_err(e: ChatError) -> ActionError {
+pub(crate) fn map_chat_err(e: ChatError) -> ActionError {
     match e {
         ChatError::NotFound => ActionError::NotFound,
         ChatError::Forbidden => ActionError::Forbidden,

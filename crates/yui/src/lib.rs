@@ -17,7 +17,7 @@ pub use ir::{
     FieldKind, Figure, Kind, Step,
 };
 pub use text::Diagnostic;
-pub use values::{figure_actions, validate_action_values, Check};
+pub use values::{display_value, figure_actions, validate_action_values, Check};
 
 use sha2::{Digest, Sha256};
 use text::{cap, caps, nfkc, re, take_refs, Diags, Line};

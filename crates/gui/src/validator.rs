@@ -103,6 +103,33 @@ impl SpecValidator {
         }
     }
 
+    /// ワークフローを名前で解決して current の版に固定する（会話の図のボタンの束縛）。
+    ///
+    /// 回答が確定したときに**回答した主体**の viewer 権限で引く。不在・権限なしは区別せず
+    /// `None`（存在秘匿）。押した人の権限は起動時に別に確かめる（ここでは昇格しない）。
+    pub async fn resolve_workflow_name(
+        &self,
+        ctx: &AuthContext,
+        name: &str,
+        trace_id: Option<&str>,
+    ) -> Option<crate::action::WorkflowPin> {
+        let mut binding = crate::action::WorkflowBinding {
+            id: String::new(),
+            workflow: crate::action::WorkflowPin {
+                name: Some(name.to_string()),
+                artifact_id: None,
+                version: None,
+            },
+        };
+        match self.resolve_workflow(ctx, &mut binding, trace_id).await {
+            Ok(()) => Some(binding.workflow),
+            Err(e) => {
+                tracing::debug!(code = %e.code, "会話の図のワークフローを解決できない");
+                None
+            }
+        }
+    }
+
     /// workflow 束縛を発話ユーザーの viewer 権限で解決し、version をピンする。
     async fn resolve_workflow(
         &self,

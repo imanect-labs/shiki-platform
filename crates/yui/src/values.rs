@@ -338,6 +338,103 @@ pub(crate) fn check_answer(
     }
 }
 
+/// 確認の画面・会話に送る文に出す、値の表示（TS 版の `displayValue`。選択肢は表示名、オンオフは文字）。
+pub fn display_value(field: &AppField, v: Option<&Value>, ja: bool) -> String {
+    let Some(v) = v else { return "—".into() };
+    match v {
+        Value::Null => return "—".into(),
+        Value::String(s) if s.is_empty() => return "—".into(),
+        Value::Array(a) if a.is_empty() => return "—".into(),
+        _ => {}
+    }
+    let plain = |x: &Value| match x {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.as_f64().map_or_else(|| n.to_string(), js_num_str),
+        other => other.to_string(),
+    };
+    match field.kind {
+        FieldKind::Choice => {
+            let name = |x: &Value| {
+                let s = plain(x);
+                field
+                    .options
+                    .as_ref()
+                    .and_then(|o| o.iter().find(|o| o.value == s))
+                    .map_or(s, |o| o.label.clone())
+            };
+            match v {
+                Value::Array(a) => a.iter().map(name).collect::<Vec<_>>().join("、"),
+                other => name(other),
+            }
+        }
+        FieldKind::Toggle => {
+            let on = v.as_bool().unwrap_or(false);
+            match (on, ja) {
+                (true, true) => "オン".into(),
+                (false, true) => "オフ".into(),
+                (true, false) => "On".into(),
+                (false, false) => "Off".into(),
+            }
+        }
+        FieldKind::Rating => {
+            let n = star_count(to_number(v));
+            let max = star_count(field.max.unwrap_or(5.0));
+            format!("{}{}", "★".repeat(n), "☆".repeat(max.saturating_sub(n)))
+        }
+        FieldKind::Daterange => plain(v).replacen('/', " 〜 ", 1),
+        _ => match v {
+            Value::Number(n) => {
+                let text = group_number(n.as_f64().unwrap_or(0.0));
+                match field.unit.as_deref() {
+                    Some(u) if u.starts_with(|c: char| c.is_ascii_alphabetic()) => {
+                        format!("{text} {u}")
+                    }
+                    Some(u) => format!("{text}{u}"),
+                    None => text,
+                }
+            }
+            other => plain(other),
+        },
+    }
+}
+
+/// 評価の星の数（0〜20 に丸める。読めない値は 0）。
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn star_count(x: f64) -> usize {
+    if x.is_finite() {
+        x.clamp(0.0, 20.0) as usize
+    } else {
+        0
+    }
+}
+
+/// 3 桁ごとの区切りと小数 6 桁まで（`Intl.NumberFormat` の `maximumFractionDigits: 6`）。
+fn group_number(n: f64) -> String {
+    if !n.is_finite() {
+        return js_num_str(n);
+    }
+    let fixed = format!("{:.6}", n.abs());
+    let (int, frac) = fixed.split_once('.').unwrap_or((&fixed, ""));
+    let frac = frac.trim_end_matches('0');
+    let mut grouped = String::new();
+    for (i, ch) in int.chars().enumerate() {
+        if i > 0 && (int.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    let sign = if n < 0.0 && (int != "0" || !frac.is_empty()) {
+        "-"
+    } else {
+        ""
+    };
+    if frac.is_empty() {
+        format!("{sign}{grouped}")
+    } else {
+        format!("{sign}{grouped}.{frac}")
+    }
+}
+
 /// 図のボタンが送る値を検証する（app・ask・plan）。
 /// - app: そのボタンの機能の部品だけを見て、他の key は捨てる
 /// - ask: 質問ごとの回答（key は q1・q2…）
@@ -451,6 +548,15 @@ mod tests {
         assert!(!valid_date("2025-04-31", false));
         assert!(valid_date("2025-12", true));
         assert!(!valid_date("2025-13", true));
+    }
+
+    #[test]
+    fn numbers_are_grouped_like_intl() {
+        assert_eq!(group_number(1_234_567.0), "1,234,567");
+        assert_eq!(group_number(-1200.5), "-1,200.5");
+        assert_eq!(group_number(0.125), "0.125");
+        assert_eq!(group_number(1.000_000_4), "1");
+        assert_eq!(group_number(999.0), "999");
     }
 
     #[test]
