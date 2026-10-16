@@ -5,7 +5,6 @@
 //! `generate.rs` から切り出した（1 ファイル行数規約）。
 
 use authz::AuthContext;
-use futures::stream::StreamExt;
 use llm_gateway::{GenerateRequest, GenerationRecord, Message as LlmMessage, StreamDelta};
 
 use super::history::message_preview;
@@ -135,10 +134,12 @@ impl ChatWorker {
 
         let mut text_acc = String::new();
         let mut usage = llm_gateway::Usage::default();
-        while let Some(delta) = stream.next().await {
-            if sink.is_cancelled() {
-                break;
-            }
+        loop {
+            // 黙っている間も停止を見張り、止まったらストリームを手放す（#602）。
+            let delta = match agent_core::next_unless_cancelled(&mut stream, sink).await {
+                agent_core::NextDelta::Item(delta) => delta,
+                agent_core::NextDelta::End | agent_core::NextDelta::Cancelled => break,
+            };
             match delta.map_err(map_llm_error)? {
                 StreamDelta::TextDelta { text } => {
                     text_acc.push_str(&text);

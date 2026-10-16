@@ -172,3 +172,128 @@ pub trait EventSink: Send {
         Ok(())
     }
 }
+
+/// 停止フラグを見直す間隔。差分が届かない間もこの間隔で [`EventSink::is_cancelled`] を確かめる。
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// [`next_unless_cancelled`] の結果。
+#[derive(Debug)]
+pub enum NextDelta<T> {
+    /// 次の要素が届いた。
+    Item(T),
+    /// ストリームが尽きた。
+    End,
+    /// 停止要求が来た。呼び出し側はストリームを drop して上流の読み取りを打ち切ること。
+    Cancelled,
+}
+
+/// ストリームの次の要素を待ちつつ、その間も停止要求を見張る。
+///
+/// `stream.next().await` だけだと、プロバイダが黙っている間（推論モデルの思考中など）は次の差分か
+/// 無通信のタイムアウトまで停止に気付けず、上流の生成と接続を握り続ける（#602）。
+/// 待ちを [`CANCEL_POLL`] ごとに区切って停止フラグを見直す。`next()` は取り消しても要素を
+/// 落とさないので、区切りで待ちを作り直しても取りこぼさない。
+///
+/// sink は読むだけだが `&mut` で受ける（`EventSink` は `Sync` を要求しないので、`&` を await を
+/// またいで持つとループの future が `Send` でなくなる）。
+pub async fn next_unless_cancelled<S>(
+    stream: &mut S,
+    sink: &mut dyn EventSink,
+) -> NextDelta<S::Item>
+where
+    S: futures::Stream + Unpin + ?Sized,
+{
+    use futures::StreamExt;
+    loop {
+        if sink.is_cancelled() {
+            return NextDelta::Cancelled;
+        }
+        match tokio::time::timeout(CANCEL_POLL, stream.next()).await {
+            Ok(Some(item)) => return NextDelta::Item(item),
+            Ok(None) => return NextDelta::End,
+            Err(_) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct FlagSink(Arc<AtomicBool>);
+
+    #[async_trait::async_trait]
+    impl EventSink for FlagSink {
+        async fn emit(&mut self, _event: AgentEvent) -> Result<(), AgentError> {
+            Ok(())
+        }
+        fn is_cancelled(&self) -> bool {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+
+    #[tokio::test]
+    async fn silent_stream_is_released_soon_after_cancel() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut sink = FlagSink(flag.clone());
+        // 何も返さないまま黙り続けるストリーム（思考中のプロバイダ）。
+        let mut stream = futures::stream::pending::<u32>();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let got = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            next_unless_cancelled(&mut stream, &mut sink),
+        )
+        .await
+        .expect("停止後も待ち続けた");
+        assert!(matches!(got, NextDelta::Cancelled));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn passes_items_through_then_ends() {
+        let mut sink = FlagSink(Arc::new(AtomicBool::new(false)));
+        let mut stream = futures::stream::iter([1, 2]);
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::Item(1)
+        ));
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::Item(2)
+        ));
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::End
+        ));
+    }
+
+    #[tokio::test]
+    async fn slow_item_is_not_lost_across_poll_boundaries() {
+        let mut sink = FlagSink(Arc::new(AtomicBool::new(false)));
+        // 区切り（250ms）を何度かまたいでから届く要素も取りこぼさない。
+        let mut stream = Box::pin(futures::stream::once(async {
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            7
+        }));
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::Item(7)
+        ));
+    }
+
+    #[tokio::test]
+    async fn already_cancelled_returns_without_polling() {
+        let mut sink = FlagSink(Arc::new(AtomicBool::new(true)));
+        let mut stream = futures::stream::iter([1]);
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::Cancelled
+        ));
+    }
+}

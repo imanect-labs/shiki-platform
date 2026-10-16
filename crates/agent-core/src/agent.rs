@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use authz::AuthContext;
-use futures::stream::StreamExt;
 use llm_gateway::{
     Block, GenerateRequest, GenerationRecord, LlmGateway, Message as LlmMessage, Role as LlmRole,
     StopReason, StreamDelta, ToolDef, Usage,
@@ -25,7 +24,9 @@ use crate::agent_observation::{
 use crate::approval::Approver;
 use crate::budget::BudgetCheck;
 use crate::checkpoint::Checkpoint;
-use crate::event::{AgentError, AgentEvent, EventSink, RecoveryAction};
+use crate::event::{
+    next_unless_cancelled, AgentError, AgentEvent, EventSink, NextDelta, RecoveryAction,
+};
 use crate::loop_detect::LoopDetector;
 use crate::plan;
 use crate::profile::{AgentOptions, AgentOutcome};
@@ -268,7 +269,12 @@ async fn land_on_budget(
 
     let mut text_acc = String::new();
     let mut usage = Usage::default();
-    while let Some(delta) = stream.next().await {
+    loop {
+        // 最終回答の生成中に止められたら、そこで打ち切る（#602）。
+        let delta = match next_unless_cancelled(&mut stream, sink).await {
+            NextDelta::Item(delta) => delta,
+            NextDelta::End | NextDelta::Cancelled => break,
+        };
         match delta.map_err(map_llm_error)? {
             StreamDelta::TextDelta { text } => {
                 text_acc.push_str(&text);
@@ -366,10 +372,13 @@ async fn run_step(
     let mut usage = Usage::default();
     let mut final_stop = StopReason::EndTurn;
 
-    while let Some(delta) = stream.next().await {
-        if sink.is_cancelled() {
-            return Ok(StepOutcome::Stop(AgentStop::Cancelled));
-        }
+    loop {
+        // 黙っている間も停止を見張り、止まったらストリームを drop して上流を手放す（#602）。
+        let delta = match next_unless_cancelled(&mut stream, sink).await {
+            NextDelta::Item(delta) => delta,
+            NextDelta::End => break,
+            NextDelta::Cancelled => return Ok(StepOutcome::Stop(AgentStop::Cancelled)),
+        };
         match delta.map_err(map_llm_error)? {
             StreamDelta::TextDelta { text } => {
                 if !text.is_empty() {
