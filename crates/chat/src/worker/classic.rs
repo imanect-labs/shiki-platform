@@ -130,7 +130,12 @@ impl ChatWorker {
         };
         // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
         let started_at = chrono::Utc::now();
-        let mut stream = self.gateway.stream(ctx, req).await.map_err(map_llm_error)?;
+        // 確立待ち（応答ヘッダ・再試行）の間の停止でも手放す（#602・生成前なので会計なし）。
+        let setup = self.gateway.stream(ctx, req);
+        let Some(stream) = agent_core::await_unless_cancelled(setup, sink).await else {
+            return Ok(());
+        };
+        let mut stream = stream.map_err(map_llm_error)?;
 
         let mut text_acc = String::new();
         let mut usage = llm_gateway::Usage::default();
@@ -157,6 +162,7 @@ impl ChatWorker {
             }
         }
 
+        drop(stream); // 会計（DB・Langfuse）を待つ間も上流を握り続けないよう、先に手放す。
         self.gateway
             .record_generation(
                 ctx,

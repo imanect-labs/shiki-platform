@@ -25,7 +25,8 @@ use crate::approval::Approver;
 use crate::budget::BudgetCheck;
 use crate::checkpoint::Checkpoint;
 use crate::event::{
-    next_unless_cancelled, AgentError, AgentEvent, EventSink, NextDelta, RecoveryAction,
+    await_unless_cancelled, next_unless_cancelled, AgentError, AgentEvent, EventSink, NextDelta,
+    RecoveryAction,
 };
 use crate::loop_detect::LoopDetector;
 use crate::plan;
@@ -143,7 +144,10 @@ pub async fn run_agent(
         match opts.budget.check(&state.spent, Instant::now()) {
             // 上限で畳む前に、**ツールを外した 1 ターンだけ**回して成果物を書かせる。
             BudgetCheck::Exceeded(kind) => {
-                land_on_budget(gateway, run, opts, &mut state, sink).await?;
+                // 着地の最中に止められたら、予算超過ではなくユーザー停止として返す。
+                if land_on_budget(gateway, run, opts, &mut state, sink).await? {
+                    break AgentStop::Cancelled;
+                }
                 break AgentStop::Budget(kind);
             }
             BudgetCheck::Warn(kind, used, limit) => {
@@ -236,44 +240,56 @@ fn map_llm_error(e: llm_gateway::LlmError) -> AgentError {
 ///   トークン/コスト上限で切れた場合も同じ理由で書かせる（超過は 1 生成ぶんに留まる）。
 /// - **キャンセル時は書かせない**（ユーザーが止めたのだから、そこで止める）。
 /// - 添える先（ツール結果）が無い＝1 手も実行していないので、書かせる材料も無い。
+///
+/// 戻り値は**ユーザー停止で打ち切ったか**。呼び出し元はそれを予算超過ではなく停止として返す
+/// （公開の `AgentOutcome.stop` やサブエージェントの監査に正しい理由を残す）。
 async fn land_on_budget(
     gateway: &LlmGateway,
     run: &RunContext<'_>,
     opts: &AgentOptions,
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
-) -> Result<(), AgentError> {
-    if sink.is_cancelled() || !demand_final_answer(&mut state.messages) {
-        return Ok(());
+) -> Result<bool, AgentError> {
+    if sink.is_cancelled() {
+        return Ok(true);
+    }
+    if !demand_final_answer(&mut state.messages) {
+        return Ok(false);
     }
     let step = state.spent.steps;
     // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
     let started_at = chrono::Utc::now();
 
-    let mut stream = gateway
-        .stream(
-            run.ctx,
-            GenerateRequest {
-                model: opts.model.clone(),
-                system: opts.system.clone(),
-                messages: state.messages.clone(),
-                tools: Vec::new(), // ← 追加の取得を構造的に不可能にする
-                effort: opts.effort,
-                max_tokens: opts.max_tokens,
-                temperature: opts.temperature,
-                session_id: opts.session_id.clone(),
-            },
-        )
-        .await
-        .map_err(map_llm_error)?;
+    let setup = gateway.stream(
+        run.ctx,
+        GenerateRequest {
+            model: opts.model.clone(),
+            system: opts.system.clone(),
+            messages: state.messages.clone(),
+            tools: Vec::new(), // ← 追加の取得を構造的に不可能にする
+            effort: opts.effort,
+            max_tokens: opts.max_tokens,
+            temperature: opts.temperature,
+            session_id: opts.session_id.clone(),
+        },
+    );
+    let Some(stream) = await_unless_cancelled(setup, sink).await else {
+        return Ok(true);
+    };
+    let mut stream = stream.map_err(map_llm_error)?;
 
     let mut text_acc = String::new();
     let mut usage = Usage::default();
+    let mut cancelled = false;
     loop {
         // 最終回答の生成中に止められたら、そこで打ち切る（#602）。
         let delta = match next_unless_cancelled(&mut stream, sink).await {
             NextDelta::Item(delta) => delta,
-            NextDelta::End | NextDelta::Cancelled => break,
+            NextDelta::End => break,
+            NextDelta::Cancelled => {
+                cancelled = true;
+                break;
+            }
         };
         match delta.map_err(map_llm_error)? {
             StreamDelta::TextDelta { text } => {
@@ -286,6 +302,8 @@ async fn land_on_budget(
         }
     }
 
+    // 会計（DB・Langfuse）を待つ間も上流を握り続けないよう、先に手放す。
+    drop(stream);
     // 会計は通常ステップと同じ扱い（実際に 1 回呼んでいるので、隠さず積む）。
     let cost = gateway.estimate_cost_usd_micros(
         opts.model
@@ -329,7 +347,7 @@ async fn land_on_budget(
             content: vec![Block::Text { text: text_acc }],
         });
     }
-    Ok(())
+    Ok(cancelled)
 }
 
 /// 1 ステップ（1 LLM 生成＋そのツール実行）を回し、状態を進める。
@@ -360,7 +378,11 @@ async fn run_step(
     };
     // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
     let started_at = chrono::Utc::now();
-    let mut stream = gateway.stream(run.ctx, req).await.map_err(map_llm_error)?;
+    // 確立待ち（応答ヘッダ・再試行）の間に止められても手放す（#602）。
+    let Some(stream) = await_unless_cancelled(gateway.stream(run.ctx, req), sink).await else {
+        return Ok(StepOutcome::Stop(AgentStop::Cancelled));
+    };
+    let mut stream = stream.map_err(map_llm_error)?;
 
     let mut text_acc = String::new();
     let mut pending_names: HashMap<String, String> = HashMap::new();

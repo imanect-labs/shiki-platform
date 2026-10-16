@@ -51,7 +51,8 @@ pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
 pub use checkpoint::Checkpoint;
 pub use cite::CitationLedger;
 pub use event::{
-    next_unless_cancelled, AgentError, AgentEvent, EventSink, NextDelta, RecoveryAction,
+    await_unless_cancelled, next_unless_cancelled, AgentError, AgentEvent, EventSink, NextDelta,
+    RecoveryAction,
 };
 pub use plan::{Plan, Subtask, SubtaskStatus};
 pub use profile::{

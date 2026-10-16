@@ -216,6 +216,26 @@ where
     }
 }
 
+/// 停止要求を見張りながら future を待つ。停止したら future を drop して `None` を返す。
+///
+/// ストリームの**確立**（`LlmGateway::stream`）は応答ヘッダを待ち、失敗すれば再試行もする。
+/// その間に止められても [`next_unless_cancelled`] にはまだ届かないので、確立待ちもこれで包む。
+/// drop すれば送信中のリクエストも再試行も打ち切られる。
+pub async fn await_unless_cancelled<F>(fut: F, sink: &mut dyn EventSink) -> Option<F::Output>
+where
+    F: std::future::Future,
+{
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        if sink.is_cancelled() {
+            return None;
+        }
+        if let Ok(out) = tokio::time::timeout(CANCEL_POLL, fut.as_mut()).await {
+            return Some(out);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +305,31 @@ mod tests {
             next_unless_cancelled(&mut stream, &mut sink).await,
             NextDelta::Item(7)
         ));
+    }
+
+    #[tokio::test]
+    async fn pending_setup_is_abandoned_after_cancel() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut sink = FlagSink(flag.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        // 応答ヘッダが返らないまま待ち続ける確立処理。
+        let got = await_unless_cancelled(std::future::pending::<u32>(), &mut sink).await;
+        assert!(got.is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn slow_setup_result_is_returned() {
+        let mut sink = FlagSink(Arc::new(AtomicBool::new(false)));
+        let fut = async {
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            5
+        };
+        assert_eq!(await_unless_cancelled(fut, &mut sink).await, Some(5));
     }
 
     #[tokio::test]
