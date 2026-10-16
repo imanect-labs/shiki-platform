@@ -3,7 +3,10 @@
 //! agent-core `run_agent` を呼出ユーザーの [`AuthContext`] で起動する（昇格しない＝
 //! confused-deputy 防御）。提示ツール = **アプリ宣言 ∩ ToolName 閉集合 ∩ 実配線**。
 //! doc_search は permission-aware 検索（SearchService・pre/post-filter 二段 authz）を
-//! そのまま使うため、アプリ経由でも非可読文書は混入しない。
+//! そのまま使うため、アプリ経由でも非可読文書は混入しない。doc_read（#425）も chat と同じ
+//! 実装（StorageService の viewer 判定＋可読集合の pre-filter）を通る。
+//! 読み取り系ツールは、対応する API と同じ能力スコープがアプリに効いているときだけ提示する
+//! （doc_search = `rag.query`・doc_read = `storage.read`）。agent.invoke を scope の迂回路にしない。
 //! LLM 呼び出しは llm-gateway を通り `app_id` 付きで `llm_usage` に計上される。
 
 use std::sync::Arc;
@@ -12,7 +15,7 @@ use agent_core::{
     run_agent, AgentEvent, AgentOptions, DocSearchTool, EventSink, RunContext, Tool, ToolName,
 };
 use app_gateway::{AgentInvokeSpec, AgentPort, AiEvent, AiEventStream, GatewayError};
-use authz::AuthContext;
+use authz::{AuthContext, CapabilityScope};
 use llm_gateway::{LlmGateway, Message as LlmMessage, Role as LlmRole};
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -24,6 +27,8 @@ const MAX_STEPS_CEILING: usize = 24;
 pub(crate) struct GatewayAgentPort {
     pub llm: Arc<LlmGateway>,
     pub search: Option<Arc<rag::SearchService>>,
+    /// doc_read の認可（viewer 判定）に使う。search と両方そろって doc_read を配線する。
+    pub storage: Option<Arc<storage::StorageService>>,
 }
 
 /// 宣言ツール名を閉集合（ToolName）で照合し、実配線があるものだけ構築する。
@@ -31,15 +36,47 @@ pub(crate) struct GatewayAgentPort {
 /// 未知名・未配線は**黙って落とす**のではなく呼び出し側へ返す（`skipped`・SSE 冒頭で通知）。
 fn build_tools(
     declared: &[String],
+    scopes: &[CapabilityScope],
     search: Option<&Arc<rag::SearchService>>,
+    storage: Option<&Arc<storage::StorageService>>,
 ) -> (Vec<Arc<dyn Tool>>, Vec<String>) {
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     let mut skipped = Vec::new();
+    let allowed = |tool: ToolName| required_scope(tool).is_none_or(|s| scopes.contains(&s));
+    // doc_read が実際に提示されるときだけ、doc_search の説明で本文の読み方を案内する。
+    let doc_read_wired = search.is_some()
+        && storage.is_some()
+        && allowed(ToolName::DocRead)
+        && declared
+            .iter()
+            .any(|d| ToolName::parse(d) == Some(ToolName::DocRead));
+    let mut seen = std::collections::HashSet::new();
     for name in declared {
+        // 同じツールの重複宣言は 1 つにまとめる（同名ツールが 2 つあるとプロバイダが拒否する）。
+        if !seen.insert(name.as_str()) {
+            continue;
+        }
         match ToolName::parse(name) {
+            // 対応する API のスコープが効いていない読み取り系ツールは提示しない。
+            Some(tool) if !allowed(tool) => skipped.push(name.clone()),
             Some(ToolName::DocSearch) => {
                 if let Some(s) = search {
-                    tools.push(Arc::new(DocSearchTool::with_scope(Arc::clone(s), None)));
+                    let tool = DocSearchTool::with_scope(Arc::clone(s), None);
+                    tools.push(Arc::new(if doc_read_wired {
+                        tool.with_doc_read()
+                    } else {
+                        tool
+                    }));
+                } else {
+                    skipped.push(name.clone());
+                }
+            }
+            Some(ToolName::DocRead) => {
+                if let (Some(s), Some(st)) = (search, storage) {
+                    tools.push(Arc::new(chat::doc_read_tool::DocReadTool::new(
+                        Arc::clone(s),
+                        Arc::clone(st),
+                    )));
                 } else {
                     skipped.push(name.clone());
                 }
@@ -50,6 +87,15 @@ fn build_tools(
         }
     }
     (tools, skipped)
+}
+
+/// ツールに要る能力スコープ（同じものを読む API と同じ・None はスコープ不要）。
+fn required_scope(tool: ToolName) -> Option<CapabilityScope> {
+    match tool {
+        ToolName::DocSearch => Some(CapabilityScope::RagQuery),
+        ToolName::DocRead => Some(CapabilityScope::StorageRead),
+        _ => None,
+    }
 }
 
 /// [`AgentEvent`] → SSE 中立形。
@@ -122,7 +168,12 @@ impl AgentPort for GatewayAgentPort {
         ctx: &AuthContext,
         spec: AgentInvokeSpec,
     ) -> Result<AiEventStream, GatewayError> {
-        let (tools, skipped) = build_tools(&spec.declared_tools, self.search.as_ref());
+        let (tools, skipped) = build_tools(
+            &spec.declared_tools,
+            &spec.scopes,
+            self.search.as_ref(),
+            self.storage.as_ref(),
+        );
 
         let max_steps = spec
             .max_steps
@@ -219,12 +270,45 @@ mod tests {
     #[test]
     fn tools_are_declared_intersect_closed_set_and_wiring() {
         // search 未配線: doc_search も skipped。
-        let (tools, skipped) =
-            build_tools(&["doc_search".into(), "shell".into(), "bogus".into()], None);
+        let all = [CapabilityScope::RagQuery, CapabilityScope::StorageRead];
+        let (tools, skipped) = build_tools(
+            &[
+                "doc_search".into(),
+                "doc_read".into(),
+                "doc_read".into(),
+                "shell".into(),
+                "bogus".into(),
+            ],
+            &all,
+            None,
+            None,
+        );
         assert!(tools.is_empty());
-        assert_eq!(skipped, vec!["doc_search", "shell", "bogus"]);
+        // 重複宣言は 1 つにまとまる。
+        assert_eq!(skipped, vec!["doc_search", "doc_read", "shell", "bogus"]);
         // 宣言なし → 提示なし。
-        let (tools, skipped) = build_tools(&[], None);
+        let (tools, skipped) = build_tools(&[], &all, None, None);
         assert!(tools.is_empty() && skipped.is_empty());
+    }
+
+    #[test]
+    fn read_tools_need_the_same_scope_as_their_apis() {
+        assert_eq!(
+            required_scope(ToolName::DocSearch),
+            Some(CapabilityScope::RagQuery)
+        );
+        assert_eq!(
+            required_scope(ToolName::DocRead),
+            Some(CapabilityScope::StorageRead)
+        );
+        // スコープが無ければ配線の有無に関わらず skipped（配線前に弾く）。
+        let (tools, skipped) = build_tools(
+            &["doc_search".into(), "doc_read".into()],
+            &[CapabilityScope::AgentInvoke],
+            None,
+            None,
+        );
+        assert!(tools.is_empty());
+        assert_eq!(skipped, vec!["doc_search", "doc_read"]);
     }
 }
