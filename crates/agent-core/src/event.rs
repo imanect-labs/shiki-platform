@@ -208,11 +208,18 @@ where
         if sink.is_cancelled() {
             return NextDelta::Cancelled;
         }
-        match tokio::time::timeout(CANCEL_POLL, stream.next()).await {
-            Ok(Some(item)) => return NextDelta::Item(item),
-            Ok(None) => return NextDelta::End,
-            Err(_) => {}
+        let Ok(next) = tokio::time::timeout(CANCEL_POLL, stream.next()).await else {
+            continue;
+        };
+        // 待っている間に止められていたら、届いた要素・終端・エラーより停止を優先する
+        // （止められた run のエラーを再試行対象にしない・着地を予算超過と記録しない）。
+        if sink.is_cancelled() {
+            return NextDelta::Cancelled;
         }
+        return match next {
+            Some(item) => NextDelta::Item(item),
+            None => NextDelta::End,
+        };
     }
 }
 
@@ -231,7 +238,8 @@ where
             return None;
         }
         if let Ok(out) = tokio::time::timeout(CANCEL_POLL, fut.as_mut()).await {
-            return Some(out);
+            // 待っている間に止められていたら、確立できたストリームやエラーも捨てる。
+            return (!sink.is_cancelled()).then_some(out);
         }
     }
 }
@@ -330,6 +338,28 @@ mod tests {
             5
         };
         assert_eq!(await_unless_cancelled(fut, &mut sink).await, Some(5));
+    }
+
+    #[tokio::test]
+    async fn cancel_during_wait_wins_over_the_result() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut sink = FlagSink(flag.clone());
+        // 待ちの最中に停止フラグが立ち、同じ待ちで終端が返る（heartbeat と競合したとき）。
+        let f = flag.clone();
+        let mut stream = Box::pin(futures::stream::once(async move {
+            f.store(true, Ordering::Relaxed);
+        }));
+        assert!(matches!(
+            next_unless_cancelled(&mut stream, &mut sink).await,
+            NextDelta::Cancelled
+        ));
+        flag.store(false, Ordering::Relaxed);
+        let f = flag.clone();
+        let setup = async move {
+            f.store(true, Ordering::Relaxed);
+            Err::<u32, &str>("upstream failed")
+        };
+        assert!(await_unless_cancelled(setup, &mut sink).await.is_none());
     }
 
     #[tokio::test]
