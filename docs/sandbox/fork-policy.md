@@ -34,7 +34,7 @@
   in-process カーネルを shiki-server に同居させない（PIT-32）。
 - **sidecar プロセス侵害の想定被害 = そのサンドボックス 1 個**。sidecar は非特権 UID・egress デフォルト遮断・
   ストレージ/DB/OpenFGA クレデンシャルを持たない。兄弟サンドボックス・ホストへは波及しない。
-- **orchestrator 侵害の想定被害 = 全サンドボックスの制御**。ただし orchestrator も MinIO/Postgres/OpenFGA の
+- **orchestrator 侵害の想定被害 = 全サンドボックスの制御**。ただし orchestrator も RustFS/Postgres/OpenFGA の
   クレデンシャルを持たない構成（成果物保存は shiki-server 側で回収後に実施）。ストレージ実体へは到達不能。
 - 分離は結合テストで担保（別 PID・一方 kill で他方継続・SandboxId↔transport 1:1・kill 後残留ゼロ）。
 - 将来の defense-in-depth（wasm プロセスを gVisor で二重に包む）はポストアルファの検討事項。

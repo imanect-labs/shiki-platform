@@ -208,7 +208,7 @@ fast-forward するしかない。「イベントを再処理して索引を作�
    stream/topic をテナント単位に割るのが定石だが、cell 内に多数の stream を抱える運用が増える。
    「期限付き消滅証明」を製品として謳っている以上、ここは軽視できない。
 6. **NFR-4（配布容易性・部品点数最小化）に真っ向から反する**。デプロイ部品は既に
-   Postgres・Qdrant・OpenFGA・Keycloak・MinIO・Redis の **6 プロセス**（＋プロセス内 Tantivy）。
+   Postgres・Qdrant・OpenFGA・Keycloak・RustFS・Redis の **6 プロセス**（＋プロセス内 Tantivy）。
    7 つ目のステートフル部品を、**cell＝顧客ごとに 1 インスタンス**
    （design §4.1.1・`deploy/` の OpenTofu で cell＝モジュールのインスタンス化）追加することになる。
    バックアップ・監視・アップグレード・障害対応が cell 数だけ増える。

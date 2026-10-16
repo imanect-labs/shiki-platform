@@ -123,7 +123,7 @@
 - **依存**: 0.x（compose 構成）
 - **仕様**:
   - 既存 `docker compose` に**加えて** k8s マニフェスト/Helm チャートを整備（compose は小規模オンプレ用に維持）。
-    `shiki-server` / `sandbox-orchestrator`（特権・別 PodSecurity）/ `ingestion-worker` と、ステートフル依存（Postgres/Qdrant/OpenFGA/Keycloak/MinIO/監視/Langfuse）を Helm 値で構成。
+    `shiki-server` / `sandbox-orchestrator`（特権・別 PodSecurity）/ `ingestion-worker` と、ステートフル依存（Postgres/Qdrant/OpenFGA/Keycloak/RustFS/監視/Langfuse）を Helm 値で構成。
   - 特権サンドボックスのノード隔離（taint/affinity、KVMノード選択）、GPUノードへの推論スケジューリングを values 化。
   - ステートフル依存の**実行時上限**（Qdrant 等の nofile・メモリ）を values で固定する。
     既定のままだと文書増で枯渇し、コンテナは `running` のまま意味検索とインジェストが
@@ -161,7 +161,7 @@
 - **area**: infra / **path**: `deploy/`, `deploy/dr`
 - **依存**: 8.8
 - **仕様**:
-  - ステートフル要素のバックアップ: Postgres（PITR）、オブジェクトストア（GCS/MinIO のバージョン＋クロスサイト）、Qdrant スナップショット、
+  - ステートフル要素のバックアップ: Postgres（PITR）、オブジェクトストア（GCS/RustFS のバージョン＋クロスサイト）、Qdrant スナップショット、
     OpenFGA タプル、Keycloak realm。**整合点（consistency point）**の取り方を定義（メタ↔実体↔ベクタ↔authz の不整合回避）。
   - **DR手順とRPO/RTO目標**、定期リストア演習のスクリプト。ベクタ等は**再構築可能な派生データ**として扱い復旧コストを下げる（`embedding_model_version` 単位の再索引）。
 - **受け入れ条件**:

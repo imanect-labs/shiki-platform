@@ -31,7 +31,7 @@ tracing.workspace = true
 # ソルト生成の OsRng は argon2::password_hash::rand_core を再利用する（直接 rand 依存はしない）。
 argon2.workspace = true
 
-# S3 互換オブジェクトストア（MinIO）。presigned URL 発行・server-side copy 等に使う。
+# S3 互換オブジェクトストア（RustFS）。presigned URL 発行・server-side copy 等に使う。
 aws-sdk-s3.workspace = true
 
 [dev-dependencies]

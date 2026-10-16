@@ -1,6 +1,6 @@
 //! ファイル CRUD API（Task 1.4）。
 //!
-//! バイトは presigned URL でクライアント↔MinIO 直転送し、本ハンドラ群はメタ・認可・
+//! バイトは presigned URL でクライアント↔オブジェクトストア（RustFS）直転送し、本ハンドラ群はメタ・認可・
 //! 監査・content-addressing を担う StorageService 経由でのみ動作する（PIT-6・単一チョークポイント）。
 //! 二相アップロード: `POST /files`（declare）→ `upload_url` へ直 PUT → `POST /files/{id}/finalize`。
 
