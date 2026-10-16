@@ -209,6 +209,7 @@ shiki-rag = { path = "crates/rag" }
 shiki-llm-gateway = { path = "crates/llm-gateway" }
 shiki-agent-core = { path = "crates/agent-core" }
 shiki-gui = { path = "crates/gui" }
+shiki-yui = { path = "crates/yui" }
 shiki-chat = { path = "crates/chat" }
 shiki-sandbox-client = { path = "crates/sandbox-client" }
 shiki-websearch = { path = "crates/websearch" }
