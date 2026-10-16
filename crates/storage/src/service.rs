@@ -4,7 +4,7 @@
 //! - 全 read/write メソッドは第 1 引数に `&AuthContext` を取り、OpenFGA `check` を必ず通す。
 //! - ハンドラに `db`/`store` を直接触らせない（このサービス経由でのみアクセス）。
 //! - 各操作は allow/deny を監査ログに残す（書込系は同一 txn で原子的に）。
-//! - バイトは presigned URL でクライアント↔MinIO 直転送し、アプリはメタ操作のみ（PIT-6）。
+//! - バイトは presigned URL でクライアント↔オブジェクトストア直転送し、アプリはメタ操作のみ（PIT-6）。
 
 use std::{sync::Arc, time::Duration};
 

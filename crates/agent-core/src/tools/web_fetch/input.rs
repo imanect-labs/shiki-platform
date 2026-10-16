@@ -23,7 +23,7 @@ pub(super) struct FetchTarget {
 /// - スキームは http/https のみ（gopher/file 等を拒否）。
 /// - userinfo（`user:pass@`）付きは拒否（ホスト偽装・資格情報混入の防止）。
 /// - ホストは **ドットを含む公開 FQDN のみ**: IP リテラル（v4/v6）・単一ラベル名
-///   （compose のサービス名 `minio` 等）・localhost/.local/.internal/.lan/.home.arpa を拒否。
+///   （compose のサービス名 `rustfs` 等）・localhost/.local/.internal/.lan/.home.arpa を拒否。
 ///   名前が公開 IP に解決されるかは、この後の [`net_guard::ensure_all_public`] が判定する。
 pub(super) fn validate_url(input: &str) -> Result<FetchTarget, ToolError> {
     let invalid = |msg: &str| ToolError::Invalid(format!("URL が不正です: {msg}"));

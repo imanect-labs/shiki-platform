@@ -47,11 +47,11 @@
 - **依存**: 0.2
 - **path**: `crates/storage`
 - **仕様**:
-  - `ObjectStore` トレイト（put/get/delete/presigned-url）。実装は MinIO(S3)。**GCS実装はPhase 8**。
+  - `ObjectStore` トレイト（put/get/delete/presigned-url）。実装は S3 互換（当初は MinIO、現在は RustFS）。**GCS実装はPhase 8**。
   - **コンテンツアドレッシング**: blob は内容ハッシュ（例 sha256）をキーに保存→自動重複排除。
     node メタは `blob_hash` を参照。大容量はストリーミング/マルチパート。
   - バケットは内部専用、**直アクセス禁止**（必ず StorageService 経由）。
-  - **PIT-6 の決定（presigned 採用）**: バイト転送は **presigned URL 方式**（クライアント↔MinIO 直）。
+  - **PIT-6 の決定（presigned 採用）**: バイト転送は **presigned URL 方式**（クライアント↔オブジェクトストア直）。
     ただし単一チョークポイントを守るため**メタ・認可・監査・content-addressing は必ず StorageService 経由**。
     アップロードは**二相**（declare→presigned PUT(staging)→finalize で server-side 再ハッシュ検証→content-addressed へ昇格）、
     DL は**短 TTL の presigned GET**（発行時に viewer check＋監査）。発行後 TTL 満了までは失効しない残存ウィンドウと、

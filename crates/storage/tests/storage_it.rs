@@ -1,8 +1,8 @@
-//! StorageService の結合テスト（実 Postgres + MinIO + OpenFGA が必要）。
+//! StorageService の結合テスト。実 Postgres・RustFS（S3 互換）・OpenFGA が必要。
 //!
 //! `STORAGE_TEST_DATABASE_URL` と `OPENFGA_TEST_URL` が設定されている時のみ実行し、
 //! 未設定なら early-return でスキップする（素の `cargo test` を壊さない）。CI の
-//! coverage ジョブで postgres/minio/openfga を立てて実走する。
+//! coverage ジョブで postgres/rustfs/openfga を立てて実走する。
 //!
 //! 検証: 二相アップロード（presigned PUT→finalize）・content-addressing・org スコープ
 //! dedup（PIT-14）・closure を保つ move（PIT-16）・rename/delete/restore・viewer 認可・
@@ -459,7 +459,7 @@ async fn storage_end_to_end() {
             )
             .await
             .expect("begin_upload wrong size");
-        // 署名は content-length=size+100 だが本文は size バイト → MinIO が拒否する。
+        // 署名は content-length=size+100 だが本文は size バイト → オブジェクトストアが拒否する。
         let resp = http
             .put(&ticket.upload_url)
             .body(content.to_vec())

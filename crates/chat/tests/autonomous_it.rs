@@ -3,7 +3,7 @@
 //!
 //! **専用テストバイナリに分離**する: worker を spawn する他テストと同一バイナリだと、共有 jobq を
 //! storage 未配線の worker が claim して自律 run が chat にフォールバックし得るため（バイナリ間は逐次実行）。
-//! 実 Postgres＋MinIO が必要（`STORAGE_TEST_DATABASE_URL`＋`STORAGE_TEST_S3_ENDPOINT`）。
+//! 実 Postgres＋RustFS（S3 互換）が必要（`STORAGE_TEST_DATABASE_URL`＋`STORAGE_TEST_S3_ENDPOINT`）。
 
 #![allow(
     clippy::unwrap_used,
@@ -146,7 +146,7 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
 
-/// StorageService（AllowAll authz＋MinIO）＋自律 worker を組む共通ハーネス。
+/// StorageService（AllowAll authz＋RustFS）＋自律 worker を組む共通ハーネス。
 async fn workspace_harness(pool: PgPool) -> (ChatStore, Arc<StorageService>) {
     let s3_endpoint = std::env::var("STORAGE_TEST_S3_ENDPOINT")
         .unwrap_or_else(|_| "http://localhost:9000".into());

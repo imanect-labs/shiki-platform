@@ -22,7 +22,7 @@ RAG / sandbox / office は既定で**オフ**。該当機能を触る変更で�
 
 やっていること（手で組む場合の要点）:
 
-1. compose 依存サービスを起動する（postgres / keycloak / openfga / redis / minio ＋ フラグに応じて qdrant / ingestion-worker / sandbox-orchestrator / collabora）。
+1. compose 依存サービスを起動する（postgres / keycloak / openfga / redis / rustfs ＋ フラグに応じて qdrant / ingestion-worker / sandbox-orchestrator / collabora）。
 2. `shiki-server` を `:8080` で起動する。必須 env:
    - `SHIKI__AUTH__REDIRECT_URI=http://localhost:3000/auth/callback` — **`:8080` にすると callback 後に backend ルートへ 303 して落ちる。** CI と同じ値にする。
    - `SHIKI__AUTH__POST_LOGOUT_REDIRECT_URI=http://localhost:3000/`

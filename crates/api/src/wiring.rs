@@ -21,7 +21,7 @@ pub(crate) type RagWiring = (
 
 /// オブジェクトストア＋StorageService を構築する（main の起動フローから切り出し）。
 ///
-/// GCS は Phase 8 で同 trait 裏に追加する。s3 設定の必須チェックは minio の分岐内で行う
+/// GCS は Phase 8 で同 trait 裏に追加する。s3 設定の必須チェックは s3 の分岐内で行う
 /// （gcs 選択時に s3 未設定エラーで誤って落ちないようにする）。
 pub(crate) async fn wire_storage(
     config: &AppConfig,
@@ -36,7 +36,7 @@ pub(crate) async fn wire_storage(
                     .storage
                     .s3
                     .as_ref()
-                    .context("storage.s3 が未設定です（backend=minio）")?;
+                    .context("storage.s3 が未設定です（backend=s3）")?;
                 (
                     Arc::new(storage::S3ObjectStore::new(s3)) as Arc<dyn ObjectStore>,
                     s3.presign_get_ttl(),

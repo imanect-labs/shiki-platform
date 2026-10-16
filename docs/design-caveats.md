@@ -73,7 +73,7 @@
 ## 🟠 PIT-6: presigned URL は単一チョークポイントを破る
 
 - **箇所**: phase-1 Task 1.2「presigned URL は StorageService の権限判定を経た発行のみ」。
-- **リスク**: presigned URL は**発行後 MinIO を直接叩き、有効期間中 StorageService を素通り**。
+- **リスク**: presigned URL は**発行後オブジェクトストア（RustFS）を直接叩き、有効期間中 StorageService を素通り**。
   「バケット直アクセス禁止」「必ず StorageService 経由」「全アクセス監査」(NFR-6) と矛盾。剥奪してもURLは生き続け、実バイト取得は無監査。
 - **実装前に決めること（どちらかに倒す）**:
   - (a) 全バイトを StorageService がプロキシ（チョークポイント厳守・コスト増）。
@@ -320,7 +320,7 @@ skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止�
 - **決めること**: 共有プレーン依存機能ごとに**オンプレ縮退仕様**（ローカル等価 or 無効）を定義し、本体分岐を避けるトレイト/設定境界を明記。
 - **オンプレ縮退仕様（Redis 依存）**: BFF 化（#55 / PIT-30）により **BFF セッションストアとして Redis が必須依存**になった。
   オンプレはシングルテナントのため `tenant_id` キースコープは実質単一だが、Redis 自体は同梱が必要
-  （既に Postgres/Qdrant/OpenFGA/Keycloak/MinIO を同梱しており追加は誤差）。エアギャップ環境でも
+  （既に Postgres/Qdrant/OpenFGA/Keycloak/RustFS を同梱しており追加は誤差）。エアギャップ環境でも
   「外部依存ゼロ」は満たす（Redis はローカル同梱でよく、状態ゼロは要件ではない）。compose には Redis を追加済み。
 - **2026-09-29 更新**: **skillex／共有プレーン分は解消**（Org管理・サービスアクセス権・統一請求・統一管理画面という共有プレーン機能群が
   そもそも無くなった。skillex オンプレは shiki と接続しない）。shiki 自身の SaaS 専用機能（ベンダーコンソール・Stripe 課金等）の

@@ -1,6 +1,6 @@
-//! `ObjectStore` トレイト（差し替え点）と S3/MinIO 実装。
+//! `ObjectStore` トレイト（差し替え点）と S3 互換実装（RustFS 等）。
 //!
-//! バイトの実体はこのトレイト裏に閉じ込め、cloud/onprem の差（MinIO↔GCS）を
+//! バイトの実体はこのトレイト裏に閉じ込め、cloud/onprem の差（S3 互換↔GCS）を
 //! 実装差し替えで吸収する（docs/design.md §3.1）。Phase 1 は **presigned URL 方式**:
 //! バイトはクライアント↔オブジェクトストア直で転送し、StorageService は presigned URL の
 //! 発行（認可・監査つき）と server-side のメタ操作（copy/head/delete）だけを担う（PIT-6）。
