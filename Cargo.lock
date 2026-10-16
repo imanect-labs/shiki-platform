@@ -5320,6 +5320,7 @@ dependencies = [
  "shiki-tabular",
  "shiki-websearch",
  "shiki-workflow-engine",
+ "shiki-yui",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

@@ -204,6 +204,8 @@ mod tests {
             agent_mode: true,
             parent_id: None,
             invoked_actions: Vec::new(),
+            bound_actions: Vec::new(),
+            ui_runs: Vec::new(),
             created_at: chrono::Utc::now(),
         }
     }

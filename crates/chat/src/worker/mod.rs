@@ -319,11 +319,17 @@ impl ChatWorker {
 
         let content: Vec<ContentBlock> = worker_sink.content().to_vec();
         let cancelled = cancel.load(Ordering::Relaxed);
+        // 本文の図のワークフローのボタンを、回答した主体の権限で解決して版を固定する（#604）。
+        let ui_bindings = if gen_result.is_ok() {
+            self.yui_bindings(&ctx, &content).await
+        } else {
+            Vec::new()
+        };
 
         match gen_result {
             Ok(()) if cancelled => {
                 self.store
-                    .finalize_run(
+                    .finalize_run_with_ui(
                         run_id,
                         fencing,
                         RunStatus::Cancelled,
@@ -332,12 +338,13 @@ impl ChatWorker {
                         Some(&StreamEventKind::Status {
                             status: RunStatus::Cancelled,
                         }),
+                        &ui_bindings,
                     )
                     .await?;
             }
             Ok(()) => {
                 self.store
-                    .finalize_run(
+                    .finalize_run_with_ui(
                         run_id,
                         fencing,
                         RunStatus::Done,
@@ -346,6 +353,7 @@ impl ChatWorker {
                         Some(&StreamEventKind::Done {
                             message_id: run.message_id,
                         }),
+                        &ui_bindings,
                     )
                     .await?;
             }

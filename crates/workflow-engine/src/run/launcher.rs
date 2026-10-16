@@ -64,6 +64,12 @@ impl WorkflowRunLauncher {
         ir: &WorkflowIr,
         input: &Value,
     ) -> Result<Option<Uuid>, LauncherError> {
+        // 入力の契約（input_schema）は run を作る前に必ず確かめる。対話起動の全経路
+        // （API・会話の図のボタン・ミニアプリ）がここを通るので、画面の検証に頼らない。
+        if let Some(schema) = &ir.input_schema {
+            crate::ir::input_schema::validate_input(schema, input)
+                .map_err(|errors| LauncherError::Input(errors.join("\n")))?;
+        }
         let ir_json = serde_json::to_value(ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
         let graph = RunGraph::build(ir);
         // principal_kind は呼び出し主体の種別に従う（ユーザー起動＝user・workflow.start＝workflow）。
@@ -252,4 +258,7 @@ pub enum LauncherError {
     Delegation(String),
     #[error("run 作成エラー: {0}")]
     Run(String),
+    /// 入力が `input_schema` に合わない（呼び出し側は 400 に写す）。
+    #[error("入力が正しくありません: {0}")]
+    Input(String),
 }

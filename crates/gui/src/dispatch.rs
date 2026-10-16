@@ -215,6 +215,24 @@ impl ActionDispatcher {
                 .await;
             return Err(ActionError::NotFound);
         };
+        self.dispatch_binding(ctx, source, binding, action_id, params, trace_id)
+            .await
+    }
+
+    /// サーバーが引いた束縛をそのまま実行する（会話の図のボタン: 束縛は回答の確定時に
+    /// 保存した宣言、または本文から読んだ「会話に送る」）。`action_id` は監査と台帳の鍵。
+    ///
+    /// 束縛は**呼び出し側がサーバーの状態から作ったもの**に限る（クライアントの値を束縛に
+    /// しない）。上限・単発の確保・監査は [`Self::dispatch`] と同じ。
+    pub async fn dispatch_binding(
+        &self,
+        ctx: &AuthContext,
+        source: &ActionSource,
+        binding: &ActionBinding,
+        action_id: &str,
+        params: serde_json::Value,
+        trace_id: Option<&str>,
+    ) -> Result<serde_json::Value, ActionError> {
         if serde_json::to_vec(&params).map_or(0, |v| v.len()) > MAX_PARAMS_BYTES {
             self.deny(ctx, source, action_id, "params_too_large", trace_id)
                 .await;

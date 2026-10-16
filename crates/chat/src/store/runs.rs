@@ -222,6 +222,33 @@ impl ChatStore {
         last_error: Option<&str>,
         terminal_event: Option<&StreamEventKind>,
     ) -> Result<bool, ChatError> {
+        self.finalize_run_with_ui(
+            run_id,
+            fencing_token,
+            status,
+            content,
+            last_error,
+            terminal_event,
+            &[],
+        )
+        .await
+    }
+
+    /// [`Self::finalize_run`] に、本文の図のワークフローのボタンの束縛（#604）を添えて確定する。
+    ///
+    /// 束縛は本文と**同じトランザクション**で書く。確定した直後に押されても束縛が見え、
+    /// 本文が確定しなかった（fencing 不一致）ときは束縛も残らない。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finalize_run_with_ui(
+        &self,
+        run_id: Uuid,
+        fencing_token: i64,
+        status: RunStatus,
+        content: &[ContentBlock],
+        last_error: Option<&str>,
+        terminal_event: Option<&StreamEventKind>,
+        ui_bindings: &[crate::yui_actions::UiWorkflowBinding],
+    ) -> Result<bool, ChatError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;
         let kv = [KeyValue::Uuid(run_id)];
         let message_id: Option<Uuid> = durable::fenced_finalize(
@@ -245,6 +272,7 @@ impl ChatStore {
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;
+        super::yui_actions::insert_bindings(&mut tx, message_id, ui_bindings).await?;
         // 端末確定でチェックポイントを落とす（再開対象でなくなった run の履歴 JSON を残さない・#351）。
         sqlx::query("UPDATE generation_run SET checkpoint = NULL WHERE run_id = $1")
             .bind(run_id)

@@ -50,6 +50,8 @@ pub mod stream_event;
 pub mod worker;
 pub mod workflow_tool;
 pub mod workspace;
+/// 回答の本文の ```ui（Yui）のボタン（#604）。
+pub mod yui_actions;
 
 pub use approver::DbApprover;
 pub use artifacts::StorageArtifactStore;
@@ -61,6 +63,7 @@ pub use gui_actions::{ChatActionLedger, ChatSubmitHandler};
 pub use model::{
     Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunModel, RunStatus,
     SelectionContext, SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,
+    UiActionRun, UiActionRunStatus, UiActionValue,
 };
 pub use skill_catalog::{
     merge_entries as merge_skill_catalog_entries, OwnedSkillCatalog, SkillCatalogEntry,
@@ -68,7 +71,8 @@ pub use skill_catalog::{
 };
 pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
 pub use store::{
-    ChatStore, ClaimedRun, CurrentRun, PostResult, RunContext, ThreadOrigin, CHAT_GENERATION_QUEUE,
+    ChatStore, ClaimedRun, CurrentRun, PostResult, RunContext, ThreadOrigin, YuiActionRequest,
+    CHAT_GENERATION_QUEUE,
 };
 pub use worker::{parse_timezone, with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
 pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};
