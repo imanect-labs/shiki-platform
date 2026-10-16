@@ -229,11 +229,22 @@
 
 ## トラックSAAS — マルチテナントSaaS 拡充（接頭辞 SAAS.x）
 
-- **目的**: **SaaS は優先ターゲット**（requirements §1.1）。shiki の SaaS コントロールプレーン＋顧客ごと隔離 cell データプレーン（design §4.1.1）と
-  認可コンテキストの `tenant_id` は **Phase 0 で day-1 導入済み**。本トラックはその上に
+- **目的**: **SaaS は優先ターゲット**（requirements §1.1）。shiki の SaaS コントロールプレーン（design §4.1.1）と
+  認可コンテキストの `tenant_id` は **Phase 0 で day-1 導入済み**。データプレーンは SAAS.1（#84）で
+  **全テナント共有プール＋`tenant_id` 名前空間化**を既定とし、cell（顧客ごと専用）は構成で選ぶ将来オプション
+  （旧: 顧客ごと隔離 cell データプレーン → 置換: 共有プール既定・根拠 #84／design §4.1「authz のテナント分離」）。
+  本トラックはその上に
   **テナント分離の強制・オンボーディング自動化・課金/メータリング・プラン制限**を載せ、さらに
   将来の **データプレーン完全相乗り（フルプール）** へ寄せる拡張を扱う。
 - **タイミング**: 課金/オンボーディング/プラン制限は SaaS 提供に向けて随時。フルプール化は需要が出たら。
+
+> **実装突合（2026-10-17・main 329aba0）**: SAAS.1 の各層（DB 行・FGA 識別子・オブジェクトキー・セッション・RAG）の
+> テナント境界、SAAS.2 の `POST/DELETE /admin/tenants`、SAAS.5 の `auth.tenancy=single/multi` は実装・本番配線・CI
+> （Coverage ジョブで Postgres／OpenFGA／Qdrant の結合テストが実走）まで確認。SAAS.3/4 は未着手。
+> 残り: 初期 admin の `tenant` 属性が Keycloak 26.2 で保持されログインできるか実機未検証 #630／テナント設定変更
+> （保持期間・自律ポリシ）が監査に残らない #460／テナント削除で data_record の個別共有タプルが残る #718／
+> app-gateway が tenant claim を `validate_tenant_id` に通していない #719／chat・構造化データ・app-platform の
+> 越境テスト欠落 #720／cell→pool 移行（retenant）が副産物のあるテナントで拒否され実質使えない #717
 
 ### タスク一覧
 
@@ -271,9 +282,15 @@
 - **受け入れ条件**:
   - [x] 全データアクセス・セッションが `tenant_id` 付きコンテキスト/キーを通る
   - [x] cell 型（単一テナント）・オンプレ構成が無変更で動作する（`tenant_id="default"` 名前空間で一様動作）
-  - [x] あるテナントのデータが他テナントの検索/取得に一切現れない（authz タプルも境界を越えない）
-  - [x] `tenant_id` 欠落／禁止文字／越境アクセスが fail-closed で拒否される
+  - [ ] あるテナントのデータが他テナントの検索/取得に一切現れない（authz タプルも境界を越えない）
+    （実装済み・検証テスト欠落 #720: 越境テストは storage・RAG・artifact・secrets・workflow・collab・office・session にはあるが、
+    chat（thread）・構造化データ（data_table/data_record）・app-platform（インストール）に無い）
+  - [ ] `tenant_id` 欠落／禁止文字／越境アクセスが fail-closed で拒否される
+    — 本体 API（`resolve_tenant_id`）・admin API・`shiki-admin` は `authz::validate_tenant_id` で検証済みだが、
+    app-gateway はトークンの `tenant` claim を検証せず `AuthContext` を組む（欠落は multi で拒否、禁止文字は素通り）→ #719
   - 注: SAAS.1 は #84（PR）で実装。role/部署共有（#76）はこの上に載る（PR-2）。
+  - 注: 禁止文字の正本は `authz::validate_tenant_id`（`crates/authz/src/ident.rs`）。`|`・`:`・`#`・`@`・`/`・空白・
+    制御文字・空文字・予約名 `.`／`..` を拒否する。
 
 ### Task SAAS.2: テナント・オンボーディング（プロビジョニング自動化）
 - **area**: infra / **path**: `deploy/`, `crates/api`
@@ -281,12 +298,21 @@
 - **実装（#87 / #89）**: admin プレーン `POST/DELETE /admin/tenants`（provisioner service account の
   Bearer JWT ＋ azp 照合・設定なしなら fail-closed でルート不在）。tenant レジストリ
   （active→deleting→deleted・tombstone）・Keycloak admin REST（group/初期 admin・一時パスワード）・
-  `StorageService::purge_tenant`（FGA タプル/オブジェクト/DB の整合撤去・audit は削除証跡として保持）。
+  テナント撤去（構造化データ `DataStore::purge_tenant` → `StorageService::purge_tenant` → RAG の順。
+  FGA タプル＝node/role/org/artifact/secret/thread/data_table、オブジェクト＝`{tenant_id}/` と
+  `miniapp-bundle/{tenant_id}/` prefix、DB＝`tenant_id` 列を持つ全テーブルを pg_catalog から実行時に導出（#420）。
+  audit_log は削除証跡、tenant 行は tombstone として保持）。
   role メンバーシップはログイン時に IdP claims と **diff 同期**（reconciliation・離脱は次ログインで剥奪）。
   運用手順は `docs/guides/tenant-ops.md`。
+  - 後から追加された admin API `PUT /admin/tenants/{id}/autonomous-policy`（#350）・`/workflow-retention`（#448）は
+    実行者を受け取らず、変更が audit_log に残らない → #460
 - **受け入れ条件**:
-  - [x] 新テナントを 1 操作で作成し初期 admin がログインできる
-  - [x] テナント削除でデータ/authz/ストレージが整合的に撤去される
+  - [ ] 新テナントを 1 操作で作成し初期 admin がログインできる（実装済み・検証テスト欠落 #630: 作成〜削除の
+    e2e（`admin_tenant_lifecycle_end_to_end`）は Keycloak をモックしており、実 Keycloak 26.2 で初期 admin の
+    `attributes.tenant` が保持され `tenant` claim 付きでログインできることは未検証。realm に User Profile の設定が無い）
+  - [ ] テナント削除でデータ/authz/ストレージが整合的に撤去される — DB 行・オブジェクト・上記 FGA タプルは撤去
+    （`purge_tenant_end_to_end`／`purge_tenant_leaves_no_tenant_rows_anywhere`）されるが、レコード個別共有の
+    `data_record:<tenant>|<id>` タプルを回収する経路が無く残る → #718
   - [x] プロビジョニングが冪等で再実行可能
 
 ### Task SAAS.3: 課金・使用量メータリング
@@ -320,9 +346,13 @@
 - **受け入れ条件**:
   - [x] 共有プールでテナント間データ漏れがゼロ（行/タプル/オブジェクト/セッション全層）— SAAS.1（#84）で達成
   - [x] cell（専用）とプール（相乗り）を構成で選択できる — `auth.tenancy=single/multi`
-  - [x] 移行（cell→プール）がデータ整合を保って実行できる — `shiki-admin retenant`（#89・
+  - [ ] 移行（cell→プール）がデータ整合を保って実行できる — `shiki-admin retenant`（#89・
     LEGACY→名前空間形式 / cell→pool の tenant リネーム。DB/FGA/オブジェクト/セッション一括・
-    dry-run 既定・冪等。手順は `docs/guides/tenant-ops.md`）
+    dry-run 既定・冪等。手順は `docs/guides/tenant-ops.md`）。ただし #420 以降、副産物（FGA タプル・RAG 索引・
+    ミニアプリのバンドル実体・構造化データの部分インデックス）を移送できないテーブル（thread・artifact・secret・
+    data_table・rag_chunk・workflow・ミニアプリ・llm_usage 等）に行があるテナントは fail-closed で拒否される
+    （`storage::tenant_scope::RETENANT_SIDECAR_COMPLETE`）。FGA の移送は node/role/organization のみで、
+    チャットを一度でも使ったテナントは移行できず実質未達 → #717
 
 ### Task SAAS.6: メンバー招待・グループ完全同期（SCIM）（旧 SK.6 から移管・2026-09-29）
 - **area**: auth / **path**: `crates/api`, `crates/authz`, `web/`

@@ -8,13 +8,19 @@
 > ⚠️ **着手前に [設計上の落とし穴](../design-caveats.md) の PIT-6（presigned のチョークポイント漏れ）・
 > PIT-11（OpenFGA 整合性）・PIT-12（監査の改竄耐性主張）・PIT-13（権限フィルタ済みページング）・
 > PIT-14（dedup 側チャネル）・PIT-16（closure 同時 move）を確認すること。**
+>
+> **実装突合（2026-10-17・main 329aba0）**: DoD（権限付きのアップロード/閲覧/移動/共有・全操作の監査記録・書込時の outbox 発行）は
+> 実装・本番配線・テスト（storage 結合テストは CI の Coverage ジョブで実体の Postgres/RustFS/OpenFGA に対して実行、Drive の E2E は Web E2E ジョブ）まで確認済み。
+> 残り: 監査ログを読む API・閲覧 relation が無い（管理画面の監査ログはモック）#634／監査の trace_id・share/unshare の監査件数・親フォルダ継承 read の検証テスト欠落 #635／
+> マルチパート未対応と finalize の全バイト再ハッシュ #636／ObjectStore の pub use と迂回防止ゲート不在 #637／個別例外（but not）#638／
+> 版の世代上限・実体 GC #488／rag 無効構成で outbox GC が進まない #417／Drive UI の洗練 #81。
 
 ## タスク一覧
 
 | ID | タイトル | area | 依存 |
 |----|---------|------|------|
 | 1.1 | ストレージのデータモデル（メタ/ツリー） | storage | 0.5 |
-| 1.2 | `ObjectStore` トレイト＋MinIO実装＋コンテンツアドレッシング | storage | 0.2 |
+| 1.2 | `ObjectStore` トレイト＋S3互換実装（RustFS）＋コンテンツアドレッシング | storage | 0.2 |
 | 1.3 | StorageService 権限チェック層（OpenFGA） | storage | 1.1, 1.2, 0.5 |
 | 1.4 | ファイルCRUD API（アップロード/DL/移動/リネーム/削除） | storage | 1.3 |
 | 1.5 | フォルダ操作＋階層（closure table） | storage | 1.1, 1.4 |
@@ -23,6 +29,9 @@
 | 1.8 | 書込イベント発行（後段RAGトリガ） | storage | 1.4 |
 | 1.9 | 監査ログ基盤 | storage | 1.3 |
 | 1.10 | Drive風UI（ブラウズ/アップロード/共有ダイアログ） | frontend | 1.4, 1.5, 1.6 |
+
+> 注（2026-10-17）: オープン Issue に Phase 1 のタスク番号を名乗るもの（#62「[1.11] typescript ci」・
+> #69「[1.14] 設定シェル」、#69 は依存に 1.12 を挙げる）があるが、1.11〜1.14 は本文書のタスク一覧に無い。
 
 ---
 
@@ -33,23 +42,27 @@
 - **依存**: 0.5
 - **path**: `crates/storage`, migrations
 - **仕様**:
-  - Postgres スキーマ: `node(id, org_id, parent_id, name, type[file|folder], blob_hash, size, mime,
-    current_version, owner_id, created_at, updated_at, deleted_at)`。
+  - Postgres スキーマ: `node(id, org, tenant_id, kind[file|folder], name, parent_id, blob_sha256, size_bytes, content_type,
+    version, deleted_at, created_by, created_at, updated_at)`（`migrations/0001_storage_init.sql`。後から `updated_by`（0045）・`system`（0060）を追加）。
+    （旧: `org_id`/`type`/`blob_hash`/`size`/`mime`/`current_version`/`owner_id` → 実装の列名に合わせた。
+    owner は列ではなく OpenFGA の `owner` タプルで持ち、`created_by` は作成者の記録。）
   - 階層は **closure table**（`node_closure(ancestor, descendant, depth)`）で移動/継承クエリを高速化。
   - 全アクセスは `AuthContext`（org込み）経由。論理削除（ゴミ箱）に対応。
 - **受け入れ条件**:
-  - [ ] migration が適用され、ノード作成/取得/移動が closure 整合性を保つ
-  - [ ] 同一フォルダ内の名前一意制約
-  - [ ] org スコープが全クエリに効く
+  - [x] migration が適用され、ノード作成/取得/移動が closure 整合性を保つ
+  - [x] 同一フォルダ内の名前一意制約
+  - [x] org スコープが全クエリに効く
 
-### Task 1.2: `ObjectStore` トレイト＋MinIO実装＋コンテンツアドレッシング
+### Task 1.2: `ObjectStore` トレイト＋S3互換実装（RustFS）＋コンテンツアドレッシング
 - **area**: storage
 - **依存**: 0.2
 - **path**: `crates/storage`
 - **仕様**:
-  - `ObjectStore` トレイト（put/get/delete/presigned-url）。実装は S3 互換（当初は MinIO、現在は RustFS）。**GCS実装はPhase 8**。
+  - `ObjectStore` トレイト（put/get/delete/presigned-url）。実装は S3 互換（当初は MinIO、現在は RustFS）。（旧: 題名の「MinIO実装」→ 置換: RustFS・根拠 #499）**GCS実装はPhase 8**。
   - **コンテンツアドレッシング**: blob は内容ハッシュ（例 sha256）をキーに保存→自動重複排除。
-    node メタは `blob_hash` を参照。大容量はストリーミング/マルチパート。
+    node メタは `blob_sha256` を参照。大容量はストリーミング/マルチパート。
+    （現状: バイト転送は単一の presigned PUT/GET で、マルチパートは未実装。アップロード上限は既定 5 GiB。
+    finalize の再ハッシュは blob 全体をサーバへ読み戻して逐次計算しており、下記 PIT-6 の「バイトはクライアント↔オブジェクトストア直」と乖離する → #636）
   - バケットは内部専用、**直アクセス禁止**（必ず StorageService 経由）。
   - **PIT-6 の決定（presigned 採用）**: バイト転送は **presigned URL 方式**（クライアント↔オブジェクトストア直）。
     ただし単一チョークポイントを守るため**メタ・認可・監査・content-addressing は必ず StorageService 経由**。
@@ -57,9 +70,9 @@
     DL は**短 TTL の presigned GET**（発行時に viewer check＋監査）。発行後 TTL 満了までは失効しない残存ウィンドウと、
     実バイト GET がアプリ監査経路外である点は正直に明記（capability 発行を監査の正とする）。署名は公開エンドポイントで行う。
 - **受け入れ条件**:
-  - [ ] 同一内容の2ファイルが1 blob を共有する
-  - [ ] 大容量ファイルがストリーミングで put/get できる
-  - [ ] presigned URL は StorageService の権限判定を経た発行のみ
+  - [x] 同一内容の2ファイルが1 blob を共有する
+  - [ ] 大容量ファイルがストリーミングで put/get できる → #636（マルチパート未対応・大容量の検証テストなし）
+  - [x] presigned URL は StorageService の権限判定を経た発行のみ
 
 ### Task 1.3: StorageService 権限チェック層（OpenFGA）
 - **area**: storage
@@ -68,23 +81,26 @@
 - **仕様**:
   - `folder`/`file` 型と relations（`owner`/`viewer`/`commenter`/`editor`/`parent`）を OpenFGA model に追加。
   - StorageService の **全 read/write 経路で OpenFGA check を必須化**。フォルダ→子への継承を relation で表現。
-  - check 失敗は403、結果は監査ログ（1.9）へ。
+  - check 失敗時、read 系（viewer 判定）は**存在秘匿のため 404**、書込・共有管理など read 以外の判定は 403。どちらも deny を監査ログ（1.9）へ。
+    （旧: 「check 失敗は403」→ 置換: read は 404。403/404 の差で私有ファイルの存在が漏れるため・`crates/storage/src/service/admin.rs` の `require_read`）
 - **受け入れ条件**:
-  - [ ] viewer でないユーザーの read が403
-  - [ ] 親フォルダ viewer が子を継承して read できる
-  - [ ] StorageService を介さない経路が存在しない（レビュー＋テスト）
+  - [x] viewer でないユーザーの read が 404（存在秘匿。旧記述は 403）
+  - [ ] 親フォルダ viewer が子を継承して read できる（実装済み・検証テスト欠落 #635）
+  - [ ] StorageService を介さない経路が存在しない（レビュー＋テスト）→ #637（`ObjectStore` が `pub use` で公開され、迂回を機械的に検出するゲートが無い）
 
 ### Task 1.4: ファイルCRUD API
 - **area**: storage
 - **依存**: 1.3
 - **path**: `crates/api`, `crates/storage`
 - **仕様**:
-  - REST: アップロード（multipart/stream）、ダウンロード、メタ取得、リネーム、移動、削除（論理）、復元。
+  - REST: アップロード（二相 presigned: `POST /files` で宣言 → presigned PUT → `POST /files/{upload_id}/finalize`）、
+    ダウンロード（`GET /files/{id}/download-url` で presigned GET を発行）、メタ取得、リネーム、移動、削除（論理）、復元。
+    （旧: アップロードは multipart/stream → 置換: 二相 presigned・根拠 Task 1.2 の PIT-6 の決定）
   - OpenAPI注釈→型生成。各操作で権限check＋監査＋（書込は）イベント発行。
 - **受け入れ条件**:
-  - [ ] 各操作がE2Eで動作し権限が効く
-  - [ ] 移動で closure が更新される
-  - [ ] 削除→ゴミ箱→復元が機能する
+  - [x] 各操作がE2Eで動作し権限が効く
+  - [x] 移動で closure が更新される
+  - [x] 削除→ゴミ箱→復元が機能する
 
 ### Task 1.5: フォルダ操作＋階層
 - **area**: storage
@@ -124,7 +140,7 @@
   - [x] user 共有で対象ユーザーがアクセスでき、非対象には漏れない
   - [x] 共有解除で即時にアクセス不可
   - [x] role 共有でメンバ全員が継承アクセス（#76・SAAS.1 名前空間化の上で有効化）
-  - [ ] 個別例外（フォルダ共有でも特定ファイル除外）→ 別途
+  - [ ] 個別例外（フォルダ共有でも特定ファイル除外）→ 別途 #638
 
 ### Task 1.7: バージョニング
 - **area**: storage
@@ -134,8 +150,9 @@
   - ファイル更新ごとに新 version（blob_hash, author, timestamp）を記録。履歴一覧/特定版取得/復元。
   - コンテンツアドレッシングにより同一内容の版はblob共有。エージェントの破壊的編集の安全網。
 - **受け入れ条件**:
-  - [ ] 更新で版が増え、過去版をDL/復元できる
-  - [ ] 復元が新しい版として記録される（履歴を壊さない）
+  - [x] 更新で版が増え、過去版をDL/復元できる
+  - [x] 復元が新しい版として記録される（履歴を壊さない）
+  - （範囲外の追補: 版の世代上限・実体 GC は未実装 → #488）
 
 ### Task 1.8: 書込イベント発行
 - **area**: storage
@@ -146,9 +163,10 @@
   - **初版キュー = Postgres ベース（outbox＋自作 jobq・拡張依存ゼロ）**。購読側（Phase 2 ingestion）が増分再索引に使う。
     outbox パターンでトランザクション整合を担保。
 - **受け入れ条件**:
-  - [ ] 書込と同一トランザクションでイベントが outbox に入る
-  - [ ] 購読側がat-least-once で受信できる
-  - [ ] FUSE経由の書込（Phase 4）も同経路に乗る設計
+  - [x] 書込と同一トランザクションでイベントが outbox に入る
+  - [x] 購読側がat-least-once で受信できる
+  - [x] FUSE経由の書込（Phase 4）も同経路に乗る設計
+  - （範囲外の追補: `rag.enabled=false` の構成では outbox が処理済みにならず GC が進まない → #417）
 
 ### Task 1.9: 監査ログ基盤
 - **area**: storage
@@ -159,9 +177,9 @@
   - trace_id を OTel と共有し、後で Langfuse とも突合できる土台（Phase 3/設計の核）。
   - 監査ログは改竄耐性を意識（append-only テーブル）。
 - **受け入れ条件**:
-  - [ ] read/write/share/deny が全て記録される
-  - [ ] trace_id でトレースと突合できる
-  - [ ] 監査ログの参照に管理権限が要る
+  - [ ] read/write/share/deny が全て記録される（実装済み・検証テスト欠落 #635: share/unshare の監査件数を確かめるテストが無い）
+  - [ ] trace_id でトレースと突合できる（実装済み・検証テスト欠落 #635: storage の監査に trace_id が入ることを確かめるテストが無い）
+  - [ ] 監査ログの参照に管理権限が要る → #634（監査ログを読む API・閲覧 relation が無く、管理画面の監査ログはモック。閲覧 UI は Phase 8 の 8.1/8.2）
 
 ### Task 1.10: Drive風UI
 - **area**: frontend
@@ -172,6 +190,7 @@
     共有ダイアログ（相手検索＝user/dept、権限選択）、版履歴表示。
   - 生成済み型付きクライアントを使用。読めるものだけ表示（サーバ側フィルタ前提）。
 - **受け入れ条件**:
-  - [ ] ファイル/フォルダのCRUDがUIから完結
-  - [ ] 共有ダイアログでロール/個人に権限付与できる
-  - [ ] 版履歴から復元できる
+  - [x] ファイル/フォルダのCRUDがUIから完結
+  - [x] 共有ダイアログでロール/個人に権限付与できる
+  - [x] 版履歴から復元できる
+  - （範囲外の追補: UI の洗練 → #81）

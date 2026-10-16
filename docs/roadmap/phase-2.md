@@ -8,6 +8,11 @@
 > ✅ **設計ブロッカーは解決済み**: PIT-1（(b) 権限定義オブジェクト方式に確定）・PIT-2（post-filter を
 > rerank 前へ＋バックフィル）・PIT-3（構造タグ＝grant 即時反映・SLA 5 秒）・PIT-10（Tier-2 まで一括実装）。
 > 詳細は [design.md §4.3](../design.md) と [design-caveats.md](../design-caveats.md)。
+> **実装突合（2026-10-17・main 329aba0）**: DoD の中核（二段 authz・テナント単独遮断・grant SLA 5 秒・引用監査・
+> 増分再索引／削除・移動整合・Tantivy＋Lindera・reranker 差し替え）はコードと CI の結合テスト（Coverage ジョブ）で確認済み。
+> 残り: 埋め込みモデル変更時の再構築が無い #639／PDF・日本語スキャン OCR の検証テストが無い #640／
+> RRF の評価セットが無い #641／DLQ 再実行・インジェスト進捗の運用入口が無い #642／
+> ロール剥奪シナリオと実 worker を通す E2E が無い #643／pgvector 実装が未追跡 #644／巨大な表の 1 チャンク化（要計測） #645
 
 ## タスク一覧
 
@@ -40,8 +45,11 @@
     ブロック番号（ordinal）になる。引用の位置は、ordinal で対象ブロックを、ブロック内の範囲を
     UTF-16 オフセットで指す（[design.md §4.3](../design.md)・#508）。
 - **受け入れ条件**:
-  - [x] 表を含むPDF/Excelが表構造を保って抽出される
-  - [x] スキャンPDF（日本語）からテキストが得られる
+  - [ ] 表を含むPDF/Excelが表構造を保って抽出される（実装済み・検証テスト欠落 #640: Excel/docx/csv/html の
+    構造保持テストは `slow` マークで CI（`pytest -m "not slow"`）の外。PDF の表構造を確かめるテストは無い）
+  - [ ] スキャンPDF（日本語）からテキストが得られる（実装済み・検証テスト欠落 #640: `test_parse_pdf_smoke` が読む
+    `tests/fixtures/sample.pdf` がリポジトリに無く、確認内容も日本語テキストではない。応答の `used_ocr` は
+    実際の OCR 適用ではなく content_type が PDF かで決まる）
   - [x] パース失敗が握りつぶされずエラーとして記録される
 
 ### Task 2.2: チャンク化＋メタデータ
@@ -49,6 +57,7 @@
 - **依存**: 2.1
 - **仕様**:
   - **レイアウト/セマンティック・チャンク化**（見出し・段落・表境界を尊重）。表は表単位で保持。
+    （表は大きさに関係なく 1 チャンクになるため、巨大な表は埋め込みが薄まる懸念がある・要計測 → #645）
   - **親子チャンク（small-to-big）**: 小チャンクで検索、親（節）を文脈としてLLMに渡せる構造。
   - 各チャンクに `doc_id, page, 見出しパス, authz_tags, embedding_model_version` を付与。
     **authz_tags は元ファイルの可読性に対応**（pre-filterの鍵、Task 2.7と整合）。
@@ -63,7 +72,13 @@
 - **仕様**:
   - `EmbeddingProvider` トレイト。デフォルト **Ruri（日本語特化, self-host）**。BGE-m3/e5へ差し替え可能。
   - 推論は llm-gateway とは別の埋め込み推論エンドポイント（ローカルGPU or 外部）。バッチ埋め込み対応。
-  - `embedding_model_version` を固定し、**変更＝該当インデックス全再構築**を強制するガード。
+  - `embedding_model_version` は**インデックス単位で固定**する（Qdrant collection 名 `rag_chunks__<version>` に
+    モデル版を織り込み、検索・書込は alias `rag_chunks_active` 経由。worker の応答版と設定版の突合ガードで
+    混在を書込前に拒否）。モデル更新は shadow collection を背面で再構築 → alias 切替（PIT-8）。
+    （旧: 変更＝該当インデックス全再構築を強制するガード → 置換: インデックス単位の版固定＋shadow 切替・
+    根拠 [design.md §4.3](../design.md)／[design-caveats.md PIT-8](../design-caveats.md)）
+  - **未実装**: shadow collection の背面再構築と旧文書の再埋め込みは無い。現状は新しい版での最初のインジェストで
+    `ensure_ready` が alias を空の新 collection へ即座に切り替え、旧文書が dense 検索から消える → #639
 - **受け入れ条件**:
   - [x] チャンクがバッチで埋め込まれる
   - [x] モデル差し替えが設定で可能
@@ -75,6 +90,7 @@
 - **仕様**:
   - `VectorStore` トレイト＋Qdrant実装。ペイロードに `authz_tags`/`doc_id`/メタを格納し**フィルタ付きANN**。
     小規模向けに pgvector 実装も差し替え可能に（Phase 8 でも可）。
+    （pgvector 実装は未着手で、`vector.backend=pgvector` は起動時に拒否される。phase-8.md に該当タスクは無く未追跡 → #644）
   - upsert/delete/search（フィルタ付き）を提供。
   - **テナント分離（SAAS.1 / #91・design §4.3）**: payload に `tenant_id` を持たせ、全 search に
     `tenant_id = ctx.tenant_id` を**authz_tags と独立に無条件 AND**。トレイトは第一引数 `&AuthContext`。
@@ -107,7 +123,8 @@
   - dense(Qdrant) と keyword(Tantivy) の結果を **RRF** で融合 → **reranker**（bge/japanese-reranker, 差し替え可）で並べ替え。
   - top-k/しきい値/親子展開のパラメータ化。融合の正しさ（順位・重複排除）を厳密に。
 - **受け入れ条件**:
-  - [x] 融合結果が dense/keyword 単独より関連性が高い（評価セットで確認）
+  - [ ] 融合結果が dense/keyword 単独より関連性が高い（評価セットで確認）（リポジトリに評価セット・結果が無い。
+    `eval/` は tool-search のみで、#622 の nDCG@8 は rerank 候補数の比較 → #641）
   - [x] 重複チャンクが除去される
   - [x] reranker を差し替えられる
 
@@ -122,7 +139,9 @@
   - 「閲覧不可は検索結果にも回答にも絶対混入しない」を満たすことをテストで保証。
 - **受け入れ条件**:
   - [x] 権限剥奪直後にそのユーザーの検索からchunkが消える（post-filterで）
-  - [x] 混入ゼロのadversarialテスト（共有解除/ロール異動シナリオ）が通る
+  - [ ] 混入ゼロのadversarialテスト（共有解除/ロール異動シナリオ）が通る（共有解除・タグ汚染・別テナントは
+    `search_authz_it` で確認済み。ロール経由はメンバー付与で見える側のみで、ロールから外した後に消える
+    テストが無い。実装済み・検証テスト欠落 #643）
   - [x] 引用chunkと認可判定が監査ログに残る
 
 ### Task 2.8: インジェスト・パイプライン配線
@@ -132,13 +151,16 @@
   - StorageService の書込イベント（1.8）→ ジョブキュー（自作 `crates/jobq`・vanilla Postgres。
     pgmq は不採用＝拡張依存ゼロの可搬性・design §4.3）→ consumer（parse→chunk→embed→index）。
   - リトライ/デッドレター、進捗・失敗の可視化。冪等性（同一版の二重処理を防ぐ）。
+    （進捗・失敗は `rag_ingest_job` に記録されるが、それを読む API・UI・管理 CLI は無い。DLQ の再実行も
+    `jobq::requeue_dead` をテストから呼ぶだけで運用の入口が無い → #642）
   - **tenant_id を経路全体で必須フィールドとして通す（SAAS.1 / #91）**: `storage_event_outbox` は
     `tenant_id` を第一級カラムで持つ。jobq メッセージ・worker 入力（gRPC/HTTP）の型にも `tenant_id` を
     **必須フィールド**として載せる（free-form payload に落とさない）。これが worker の書込先
     collection/index 選択の唯一の根拠になる。テナント削除時は outbox 残イベントも破棄する。
 - **受け入れ条件**:
-  - [x] アップロードから数秒〜分で検索可能になる
-  - [x] 失敗ジョブがDLQに入り再実行できる
+  - [x] アップロードから数秒〜分で検索可能になる（`drive_upload_it`・`pipeline_it` で parser/embedder をフェイクにして確認。
+    実 worker・実 Qdrant を通す E2E は無い → #643）
+  - [x] 失敗ジョブがDLQに入り再実行できる（ライブラリ関数で再実行でき `pipeline_it` で確認。運用入口は無い → #642）
   - [x] 同一版の重複インジェストが起きない
   - [x] **worker が受けるジョブに tenant_id が必須で載り、書込先が tenant で分離される**
 
@@ -148,7 +170,10 @@
 - **仕様**:
   - 更新は該当ファイルのチャンクのみ差し替え。削除でベクタ/全文/メタを除去。移動で authz_tags 再評価。
   - 引用位置用のブロック列（`doc_block`）だけは版ごとに直近 20 版まで残す（古い版を引用した会話用・#508）。
-  - エージェント（Phase 4/5）がFUSE経由で書いたファイルも同経路で自動再索引。
+  - エージェント（Phase 4/5）が書いたファイルも StorageService（`storage/src/service/workspace_io.rs` → outbox）経由で
+    同経路の自動再索引に乗る。（旧: FUSE 経由 → 置換: wasm ティアの仮想 FS を StorageService に直結・
+    根拠 [design.md §4.6「FUSE の位置づけ変更」](../design.md)。`crates/fuse` はプレースホルダのまま。
+    エージェントが書いたファイルが検索・引用まで届く E2E は無い → #669）
 - **受け入れ条件**:
   - [x] 更新で古いチャンクが残らない
   - [x] 削除で全索引から消える
@@ -163,3 +188,5 @@
 - **受け入れ条件**:
   - [x] 引用付き結果が返り、元文書の該当箇所にジャンプできる（当初は page・見出しの粒度。箇所の粒度は #508 で実装）
   - [x] 権限で絞られた件数が分かる（デバッグ表示）
+  - 注: 両条件とも API 側（アンカー・`authz_denied_*`）は `search_authz_it` で確認済み。UI は CI の E2E が
+    `SHIKI__RAG__ENABLED=false` で走るため、引用ジャンプ・デバッグ表示を実データで確かめていない → #643
