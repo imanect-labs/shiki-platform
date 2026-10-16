@@ -127,6 +127,7 @@ script-runtime は **wasmtime 上の QuickJS**（javy 方式・二層隔離）�
 ### 4.2 プロセスモデル
 
 - **専用の非特権プロセス**として `crates/script-runtime` を立てる（seccomp・no network・no fs・最小権限）。shiki-server から **gRPC over UDS** で呼ぶ。in-process 実行は脱出＝全テナント侵害になるため採らない。
+  （現状: ワークフロー・ミニアプリ関数とも shiki-server 内で in-process 実行しており未達 → #685。implementation.md §7）
 - **プロセスプール**: 初期値 **CPU コア数 / 2**（設定可）。プロセスは複数実行を**直列**に処理してよいが、分離はインスタンス境界で担保する（下記）。
 - **インスタンス使い捨て**: 1 実行 = 1 wasmtime Store / Instance。実行後に破棄し、**テナント間で共有しない**。
 - **異常時の回復**: panic / 異常終了で**即プロセス再起動**。加えて **N 実行（初期値 256・設定可）ごとに予防的リサイクル**する。
@@ -243,7 +244,7 @@ runtime→server の**全フレーム**に対し、server 側は次を検証す�
 - **[INV-4]** runtime→server の全フレームはサイズ・UTF-8/JSON・api 名閉集合・seq 単調性・exec_id 一致で検証され、違反は即実行破棄＋監査に残る。
 - **[INV-5]** server 側 hostfn ハンドラは `catch_unwind` 境界を持ち、panic は当該ゲスト実行のみを失敗させプロセスを再起動しても他実行の正当性を壊さない。
 - **[INV-6]** runtime プロセスも server 応答を検証する（双方向不信）。
-- **[INV-7]** フレームデコーダ・hostfn 引数の fuzzing（cargo-fuzz）が CI に存在する。
+- **[INV-7]** フレームデコーダ・hostfn 引数の fuzzing（cargo-fuzz）が CI に存在する。（現状: fuzz ターゲットはあるが CI 未搭載 → #686）
 
 ---
 

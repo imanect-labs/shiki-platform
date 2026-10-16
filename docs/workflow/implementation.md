@@ -34,9 +34,9 @@
   一様ではない点に注意。
 - **ピンク（script-runtime）**: QuickJS on wasmtime のエンジン自体は `crates/script-runtime` に
   gRPC over UDS サーバ実装（`server.rs`）を持つが、**Stage A の本番配線はこれを使っていない**。
-  `spawn_workflow_runtime`（`crates/api/src/workflow_runtime/mod.rs:153`）が
+  `build_prod_executor`（`crates/api/src/workflow_runtime/mod.rs:187`・`spawn_workflow_runtime` から呼ばれる）が
   `script_runtime::engine::ScriptEngine::new()` を **shiki-server プロセス内**で直接生成し、
-  `node_script_run`（`crates/workflow-engine/src/nodes/script.rs:26-`）が `spawn_blocking` から
+  `node_script_run`（`crates/workflow-engine/src/nodes/script.rs:41-`・本体は `run_script_source:83-`）が `spawn_blocking` から
   `engine.run` を直接呼ぶ **in-process** 経路である。プロセス分離によるサンドボックス化は
   Stage A では未接続（設計どおりの「別プロセス・資格情報ゼロ」を実現するには gRPC 配線への
   切替えが必要）。
@@ -76,22 +76,21 @@ UNIQUE 制約だけで実装している。これは「部品点数を増やす�
 
 `WorkflowWorker` は外部キュー（SQS/Redis Streams 等）を使わず、`step_execution` テーブル自体を
 ワークキューにしている。中心となるのは `RunStore::claim_ready_step`
-（`crates/workflow-engine/src/run/store.rs:154-184`）の 1 本の SQL:
+（`crates/workflow-engine/src/run/store/claim.rs:136`・SQL は同ファイルの `claim_ready_sql!`）の 1 本の SQL（要約）:
 
 ```sql
 UPDATE step_execution s SET status = 'running', lease_owner = $1,
        lease_expires_at = now() + ($2 || ' seconds')::interval,
-       fencing_token = s.fencing_token + 1,
-       attempt = s.attempt + (CASE WHEN s.status = 'ready' THEN 1 ELSE 0 END),
+       fencing_token = s.fencing_token + 1, attempt = s.attempt + 1,
        updated_at = now()
 FROM (
-    SELECT tenant_id, run_id, step_path FROM step_execution
-    WHERE (($3::text IS NULL) OR (tenant_id = $3))
-      AND ((status = 'ready' AND next_retry_at <= now())
-           OR (status = 'running' AND lease_expires_at < now()))
-    ORDER BY next_retry_at FOR UPDATE SKIP LOCKED LIMIT 1
+    SELECT s2.tenant_id, s2.run_id, s2.step_path, r2.workflow_id, ...
+      FROM step_execution s2
+      JOIN workflow_run r2 ON r2.tenant_id = s2.tenant_id AND r2.run_id = s2.run_id
+     WHERE s2.status = 'ready' AND s2.next_retry_at <= now()
+       AND NOT r2.cancel_requested   -- テナント固定版は AND s2.tenant_id = $3
+     ORDER BY s2.next_retry_at FOR UPDATE OF s2 SKIP LOCKED LIMIT 1
 ) picked
-JOIN workflow_run r ON r.tenant_id = picked.tenant_id AND r.run_id = picked.run_id
 WHERE s.tenant_id = picked.tenant_id AND s.run_id = picked.run_id
   AND s.step_path = picked.step_path
 RETURNING ...
@@ -99,9 +98,13 @@ RETURNING ...
 
 `FOR UPDATE SKIP LOCKED` により、複数の `WorkflowWorker` インスタンス（並行数は
 `WorkflowConfig.worker_concurrency`、`crates/api/src/workflow_runtime/mod.rs`）が同じ行を
-取り合わない。`WHERE ... OR (status='running' AND lease_expires_at < now())` の分岐が
-「リース失効した実行中 step の奪取（takeover）」を同じクエリに畳み込んでいる —
-ゾンビワーカーの復旧に専用のスイーパープロセスは要らない。`fencing_token = s.fencing_token + 1`
+取り合わない。**claim は ready 専用**で、リース失効した running step の回収（takeover）は
+スケジューラ tick が呼ぶ sweeper `RunStore::reclaim_expired_leases`（`claim.rs:190`・engine.md §9.5）が
+ready へ戻す（attempt -1・fencing +1 を同一 UPDATE で行う）。
+（旧: claim の `WHERE ... OR (status='running' AND lease_expires_at < now())` で takeover を同じクエリに畳み込み、
+専用スイーパーは不要としていた → 置換: #438 で claim を ready 専用にし sweeper を分離。`OR` だと partial index の
+並び順が失われ claim コストが実行待ち件数に比例するため。根拠は `claim.rs` 冒頭コメント）
+`fencing_token = s.fencing_token + 1`
 は claim のたびに単調増加し、後続の書込みは「自分が claim した時点の fencing token と一致するか」
 を検証してから通す（`crates/durable` の `fenced_finalize` と同型。README.md §6 Q1 が言う
 「chat の generation_run 実装の延長」とはこの部分を指す）。
@@ -135,9 +138,10 @@ tick を実行するのは常に 1 プロセスだけになる。
 **配送台帳**を追加した。各コンシューマ（例: `"workflow"`）は自分がまだ配送していない行を
 `NOT EXISTS` の反結合 + `FOR UPDATE SKIP LOCKED` で claim し、配送後に `outbox_delivery` へ
 1 行追記する。存在性ベースの claim なので commit 順に依存せず、後から commit された小さい id の
-行も次スキャンで拾える。関数群はすべて `crates/storage/src/event.rs`:
-`claim_undelivered`(148行)・`mark_delivered`(175行)・`register_consumer`(211行、初回登録時に
-既存バックログを fast-forward)・`gc_delivered`(245行、全コンシューマの配送が揃った行だけ GC)。
+行も次スキャンで拾える。関数群は `crates/storage/src/event/` 配下:
+`delivery.rs` の `claim_undelivered`(32行)・`mark_delivered`(60行)・`register_consumer`(104行、初回登録時に
+既存バックログを fast-forward。pool 版 `register_consumer_on_pool` は 141行)、`gc.rs` の `gc_delivered`(82行、
+全コンシューマの配送が揃った行だけ GC)。
 **生成側（emit_on）もRAG relay の `processed_at` 経路も一切変更していない** — 既存挙動を
 温存したまま、Postgres の行ロックだけで fan-out を追加した。
 
@@ -148,11 +152,11 @@ tick を実行するのは常に 1 プロセスだけになる。
 `JournalDecision`（`Proceed` / `AlreadyDone(結果)` / `InProgress` / `DigestMismatch`）だが、
 **Stage A で実際にこの journal を通すのは `workflow.start`（cross-TX・`nodes/capability.rs:162-183`）
 と `storage.write`（in-TX・`StorageService::write_file_internal_idempotent`）の2つのみ**。
-`idempotency_key`（`wf:{tenant_id}:{run_id}:{step_path}`。`run/model.rs:103-106`）と `op_digest`
-（`sha256(api名 + 正規化パラメータ)`。`journal.rs:39-46`）の組で `INSERT ... ON CONFLICT
+`idempotency_key`（`wf:{tenant_id}:{run_id}:{step_path}`。`run/model.rs:108`）と `op_digest`
+（`sha256(api名 + 正規化パラメータ)`。`journal.rs:42`）の組で `INSERT ... ON CONFLICT
 (tenant_id, idempotency_key)` を行い、同一キーでの再実行は記録済み結果を no-op で返す。
 `result_summary` が NULL のままの行は「予約済み・副作用実行中」を意味し、
-`RESERVATION_RECLAIM_SECS = 300`（`journal.rs:13`）を過ぎても NULL なら別ワーカーが再取得して
+`RESERVATION_RECLAIM_SECS = 300`（`journal.rs:14`）を過ぎても NULL なら別ワーカーが再取得して
 よいとみなす。**`llm.invoke`/`agent.invoke`/`rag.search`/`http.request` はこの保護の対象外**で
 at-least-once のまま（外部 `http.request` は `Idempotency-Key` ヘッダ注入支援のみの
 best-effort、README.md §6 Q4）。リース失効直後の再実行では LLM 生成や sandbox 実行が
@@ -163,7 +167,7 @@ best-effort、README.md §6 Q4）。リース失効直後の再実行では LLM 
 すべてのテーブルが `tenant_id` を PK 先頭に持つ複合キー（design.md #91 規約）。
 これによりクロステナントの行ロック競合が起きず、`claim_ready_step` に
 `tenant_scope: Option<&str>` を渡すとテナント単位でワーカーをシャーディングできる
-（`run/store.rs:157` 引数）。
+（`run/store/claim.rs:136` の引数）。
 
 ## 3. 用語集（実装対応）
 
@@ -175,15 +179,15 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 | run | `workflow_run` テーブル（`migrations/0016_workflow_run.sql:9`）。 |
 | step / step_path | `step_execution` テーブル（同ファイル47行）。 |
 | occurrence | `schedule_occurrence` テーブル（`migrations/0018_workflow_schedule.sql`）。 |
-| 委譲（delegation） | `workflow_delegation` テーブル（`0017:55`）＋ fail-closed 検証 `delegation.rs::check_run_start`（`crates/workflow-engine/src/delegation.rs:221`）。呼び出しは `run/launcher.rs`。 |
+| 委譲（delegation） | `workflow_delegation` テーブル（`0017:55`）＋ fail-closed 検証 `delegation.rs::check_run_start`（`crates/workflow-engine/src/delegation.rs:265`）。呼び出しは `run/launcher.rs`。棚卸し `inventory`（同ファイル `:330`）は本番未配線（§7・#626）。 |
 | 実行主体（principal） | `NodeContext.principal` / `principal_kind`（`run/mod.rs:33-58`）。`AuthContext::for_workflow`（`crates/authz/src/context.rs:93-106`）が schedule/event run 用の workflow プリンシパルを組む。`PrincipalKind{User, Workflow}` は同ファイル16-22行。 |
 | 宣言スコープ（declared_scopes） | `WorkflowIr.declared_scopes`（`ir/mod.rs`）。 |
-| scope_ceiling | `NodeContext.scope_ceiling`。ゲートは `CapabilityNodeExecutor::check_ceiling`（`nodes/exec.rs:181-193`、制御ノード早期returnの直後・能力ディスパッチの直前）。 |
-| 冪等キー | `idempotency_key()`（`run/model.rs:103-106`、`wf:{tenant_id}:{run_id}:{step_path}`・attempt 非依存）。 |
+| scope_ceiling | `NodeContext.scope_ceiling`。ゲートは `CapabilityNodeExecutor::check_ceiling`（`nodes/exec.rs:111`、制御ノード早期returnの直後・能力ディスパッチの直前）。 |
+| 冪等キー | `idempotency_key()`（`run/model.rs:108`、`wf:{tenant_id}:{run_id}:{step_path}`・attempt 非依存）。 |
 | effect_journal | `effect_journal` テーブル（`0016:109`）＋ `capability/journal.rs`（`JournalDecision`・`op_digest`）。 |
-| fencing token | `step_execution.fencing_token` 列。`claim_ready_step`（`run/store.rs:154`）が claim のたびに +1。 |
-| 能力ゲートウェイ | `CapabilityNodeExecutor`（`nodes/exec.rs:30-36` 構造体・155-221行 `impl NodeExecutor`）。処理順は「制御ノード早期return → `check_ceiling` → `rate_check`（`nodes/capability.rs:30-44`）→ `effect_journal` 予約 → `NodePorts` 呼出 → `audit.record`」。 |
-| NodePorts / ProdNodePorts | トレイト定義は `nodes/ports.rs:140-`（`storage_write/storage_read/storage_list/rag_search/llm_invoke/agent_invoke/http_send/resolve_secret/workflow_start` の9メソッド）。実装は `crates/api/src/workflow_runtime/ports.rs:29-40`（`ProdNodePorts`）、`auth_ctx`（43-60行）が interactive/schedule・event で `AuthContext::new` と `AuthContext::for_workflow` を分岐。 |
+| fencing token | `step_execution.fencing_token` 列。`claim_ready_step`（`run/store/claim.rs:136`）が claim のたびに +1（リース回収 `reclaim_expired_leases` も +1）。 |
+| 能力ゲートウェイ | `CapabilityNodeExecutor`（`nodes/exec.rs:36` 構造体・283行〜 `impl NodeExecutor`）。処理順は「制御ノード早期return → `check_ceiling` → `rate_check`（`nodes/capability.rs:40`）→ `effect_journal` 予約 → `NodePorts` 呼出 → `audit.record`」。 |
+| NodePorts / ProdNodePorts | トレイト定義は `nodes/ports.rs:159-`（`storage_write/storage_read/storage_list/rag_search/llm_invoke/agent_invoke/http_send/resolve_secret/workflow_start` の9メソッド）。実装は `crates/api/src/workflow_runtime/ports.rs:30`（`ProdNodePorts`）、`auth_ctx`（`workflow_runtime/auth.rs:7`）が interactive/schedule・event で `AuthContext::new` と `AuthContext::for_workflow` を分岐。 |
 | script-runtime | `crates/script-runtime`（`ScriptEngine::run`、`engine.rs:173-180`）。能力呼び出しの gRPC 双方向ストリームは `server.rs:68`/`142-163`（`drive_stream`）。 |
 | WorkflowRunLauncher | `run/launcher.rs`（`WorkflowRunLauncher`・`LauncherError`）。interactive API・スケジューラ・イベント relay が共有するrun作成の唯一の入口。 |
 | WorkflowWorker | `run/worker.rs`（`WorkerConfig`・`WorkflowWorker`）。 |
@@ -196,7 +200,7 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 | クレート | 役割 | 主なファイル |
 |---|---|---|
 | `crates/workflow-engine` | IR 検証・run/step 状態機械・能力ゲートウェイ・スケジューラ・委譲検証 | `ir/`（IR型・検証）・`run/`（launcher/worker/store/model/graph/readiness）・`nodes/`（exec/ports/capability/http/script/resolver）・`scheduler/`（leader/store/cron）・`capability/`（journal）・`control/`（branch/switch純関数）・`delegation.rs`・`vocab.rs`・`concurrency.rs`・`ratelimit.rs`・`retry.rs` |
-| `crates/api`（`workflow_runtime` サブモジュール） | shiki-server 起動時の結線（`spawn_workflow_runtime`）・`NodePorts` の本番実装・run 起動/履歴 API | `workflow_runtime/mod.rs`（`spawn_workflow_runtime:166`・`relay_events:237-268`・`WorkflowConfig`）・`workflow_runtime/ports.rs`（`ProdNodePorts`）・`routes/workflows.rs`（`start_workflow_run:275`・`get_workflow_run:312`） |
+| `crates/api`（`workflow_runtime` サブモジュール） | shiki-server 起動時の結線（`spawn_workflow_runtime`）・`NodePorts` の本番実装・run 起動/履歴 API | `workflow_runtime/mod.rs`（`spawn_workflow_runtime:200`・`relay_events:313-366`・`WorkflowConfig`）・`workflow_runtime/ports.rs`（`ProdNodePorts`）・`routes/workflows/runs.rs`（`start_workflow_run:53`・`get_workflow_run:249`） |
 | `crates/durable` | claim/リース/fencing/追記イベントログの共有プリミティブ（chat と workflow で共有・キュー/状態機械は共有しない） | `claim.rs`・`events.rs`・`pubsub.rs`・`spec.rs` |
 | `crates/script-runtime` | shiki script の非特権実行環境（QuickJS on wasmtime）・gRPC over UDS | `engine.rs`・`compile.rs`・`frames.rs`・`host.rs`・`server.rs`・`guest/` |
 | `crates/storage` | outbox・オブジェクト/構造化データ・StorageService（チョークポイント） | `event.rs`（outbox fan-out 関数群） |
@@ -207,22 +211,22 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 「スケジュール実行が起動してから、能力ノードが 1 つチェックポイントされるまで」の実装トレース。
 図§1 の navy/青/オレンジ/グレーの経路に対応する。
 
-1. **cron tick**: `shiki-server` 起動時に `spawn_workflow_runtime`（`workflow_runtime/mod.rs:166`）が
+1. **cron tick**: `shiki-server` 起動時に `spawn_workflow_runtime`（`workflow_runtime/mod.rs:200`）が
    `LeaderLease`（`scheduler/leader.rs`）を持つループを detach タスクとして走らせる。
    `acquire_or_renew` が true を返したインスタンスだけが `tick_schedules` を実行する。
 2. **占有 TX・冪等発火**: `schedule_occurrence` の PK `(tenant_id, workflow_id, trigger_id, scheduled_at)`
    制約で二重発火を防ぎつつ、`WorkflowRunLauncher` 経由で `workflow_run` を 1 行作る。
-3. **SKIP LOCKED claim**: `WorkflowWorker`（`run/worker.rs:87` `claim_and_run_once`）が
-   `RunStore::claim_ready_step`（`run/store.rs:154`）を呼び、`step_execution` から ready な
+3. **SKIP LOCKED claim**: `WorkflowWorker`（`run/worker.rs:119` `claim_and_run_once`）が
+   `RunStore::claim_ready_step`（`run/store/claim.rs:136`）を呼び、`step_execution` から ready な
    1 行を排他取得（§2.2）。
-4. **NodeContext 構築**: `execute_and_advance`（`worker.rs:104-`）が claim 結果から
-   `NodeContext`（`run/mod.rs:33-58`。`principal`/`principal_kind`/`scope_ceiling`/`trigger`/
-   `node_outputs` 等）を組む（127-143行）。
-5. **能力ゲートウェイ**: `CapabilityNodeExecutor::execute`（`nodes/exec.rs:155-221`）が
+4. **NodeContext 構築**: `execute_and_advance`（`worker.rs:136-`）が claim 結果から
+   `NodeContext`（`run/mod.rs:38-`。`principal`/`principal_kind`/`scope_ceiling`/`trigger`/
+   `node_outputs` 等）を組む。
+5. **能力ゲートウェイ**: `CapabilityNodeExecutor::execute`（`nodes/exec.rs:284-`）が
    制御ノードを早期return → `check_ceiling` → `rate_check` → `effect_journal` 予約
    （`Proceed` のときのみ副作用実行）→ `NodePorts` 経由でチョークポイント呼出 → `audit.record`。
 6. **AuthContext 分岐（storage/rag/secret のみ）**: `ProdNodePorts::auth_ctx`
-   （`workflow_runtime/ports.rs:43-60`）が `ec.principal_kind == "workflow"` なら
+   （`workflow_runtime/auth.rs:7`）が `ec.principal_kind == "workflow"` なら
    `AuthContext::for_workflow`、そうでなければ `AuthContext::new(..PrincipalKind::User..)` を組み、
    `storage_write`/`rag_search`/`resolve_secret` がこれをチョークポイントへ渡す。チョークポイント
    内部で通常どおり OpenFGA check が走る（ワークフロー専用の認可経路はない）。**`llm_invoke`/
@@ -233,23 +237,23 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 
 ## 6. e2e テストの読み方
 
-`crates/api/tests/workflow_nodes_it.rs`（566行）が本番 `CapabilityNodeExecutor` + `ProdNodePorts`
-を実 Postgres + OpenFGA + RustFS に対して通す網羅テスト。`executor` ヘルパ（177行）が
+`crates/api/tests/workflow_nodes_it.rs`（864行）が本番 `CapabilityNodeExecutor` + `ProdNodePorts`
+を実 Postgres + OpenFGA + RustFS に対して通す網羅テスト。`executor` ヘルパ（183行）が
 `sandbox_client::FakeSandbox` と http allowlist を差し込んで本番 executor を組み立てる。
 
-- `combined_pipeline_covers_many_node_types`（320行）: script → storage.write → storage.read →
+- `combined_pipeline_covers_many_node_types`（359行）: script → storage.write → storage.read →
   branch → {agent.invoke(FakeSandbox) / llm.invoke(stub)} → join → http.request（ローカル TCP
   サーバ・allowlist 127.0.0.1）→ storage.write という複合 DAG で dataflow・dead branch skip・
   agent の egress 遮断を確認。
-- `switch_routes_to_list_or_llm`（432行）: switch ノードの list/llm ディスパッチ。
-- `script_shiki_hostcalls_and_workflow_start_child`（489行）: script ノードから `Shiki.*` API と
+- `switch_routes_to_list_or_llm`（473行）: switch ノードの list/llm ディスパッチ。
+- `script_shiki_hostcalls_and_workflow_start_child`（530行）: script ノードから `Shiki.*` API と
   `workflow.start`（子ワークフロー起動）を呼ぶ経路。
-- `rag_search_dispatch_denied_when_unconfigured`（548行）: `rag.search` は RAG 未構成環境では
+- `rag_search_dispatch_denied_when_unconfigured`（589行）: `rag.search` は RAG 未構成環境では
   ディスパッチ/ゲートのみ検証（本体挙動は `crates/rag` 側が担保するため）。
 
-## 7. Stage A の既知の未実装
+## 7. 既知の未実装（Stage A・Stage B）
 
-正直に「まだ動かないもの」を明示する。
+正直に「まだ動かないもの」を明示する（2026-10-17・main 329aba0 で突合。各項目の Issue を付記）。
 
 - ~~**`control.map` / `control.wait` の durable 実行**~~ **#178 で実装済み**: wait は
   `waiting_timer`(=`step_execution.wake_at`)／`waiting_event`(=`wait_subscription`) へ遷移し、スケジューラ
@@ -262,18 +266,39 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 - ~~イベントトリガの scope は親フォルダ完全一致のみ（祖先束縛は未実装）。~~ **#178 で実装済み**:
   `node_closure` 祖先束縛（サブフォルダ配下の書込も親束縛トリガで発火）＋filter 評価（fail-closed）＋
   event ペイロードの `$from trigger` 透過（run 入力に載せる）。同一マッチャが wait(event) も消し込む。
-- **委譲の棚卸しジョブ（engine.md §6.3 の PIT-34 二段目）**: `DelegationStore::inventory`
-  （`crates/workflow-engine/src/delegation.rs:286`）自体は実装済みだが、これを周期実行する
-  runtime 配線が無い（呼び出しはテスト `delegation_it.rs` のみ）。委譲の fail-closed 停止は
-  run 開始時チェック（一段目）のみで機能し、委譲者失権をバックグラウンドで検知する二段目は
-  Stage A では動いていない。
-- **script-runtime のプロセス分離**: `crates/script-runtime` は gRPC over UDS サーバを実装済みだが、
-  本番配線（`spawn_workflow_runtime`）は `ScriptEngine::new()` を shiki-server プロセス内で直接
-  呼ぶ in-process 経路のみ（§1 参照）。script.md が前提とする「非特権別プロセス・資格情報ゼロ」の
-  隔離は Stage A では未接続。
+- **委譲の棚卸しジョブ（engine.md §6.3 の PIT-34 二段目）** → #626: `DelegationStore::inventory`
+  （`crates/workflow-engine/src/delegation.rs:330`）自体は実装済みだが、これを周期実行する
+  runtime 配線が無い（呼び出しはテスト `delegation_it.rs` のみ。`spawn_workflow_runtime` の tick にも無い）。
+  委譲の fail-closed 停止は run 開始時チェック（一段目・`check_run_start`）のみで機能し、委譲者失権を
+  バックグラウンドで検知する二段目、§6.3 の実行中 run キャンセル、workflow プリンシパルの FGA タプル撤去
+  （撤去経路は `inventory` 内のみ）はいずれも動いていない。したがって失権後も実行中 run は止まらない。
+- **script-runtime のプロセス分離** → #685: `crates/script-runtime` は gRPC over UDS サーバを実装済みだが、
+  本番配線（`build_prod_executor`・`workflow_runtime/mod.rs:187`）は `ScriptEngine::new()` を shiki-server
+  プロセス内で直接呼ぶ in-process 経路のみ（§1 参照。ミニアプリ関数の `wiring_gateway.rs` も同様）。
+  script.md が前提とする「非特権別プロセス・資格情報ゼロ」（INV-1）の隔離は未接続。
+  あわせて PIT-35／script.md INV-7 の fuzz は `crates/script-runtime/fuzz` にターゲットがあるが CI で走らない → #686。
 - **effect_journal の適用範囲**: `workflow.start` と `storage.write` のみ。`llm.invoke`/
   `agent.invoke`/`http.request` は at-least-once のままで、リース失効時に再実行され得る
   （§2.5・§3 参照）。
+- **http.request の内部宛先（SSRF）** → #627: 宛先照合は URL ホスト部のリテラル一致のみ
+  （`nodes/http.rs::check_destination`）で、送信 `ProdNodePorts::http_send`（`workflow_runtime/ports.rs`）は
+  `net_guard` を通さず名前解決も reqwest 任せ（内部 IP を弾かない・接続先を固定しない・`no_proxy` なし）。
+  egress allowlist（`WorkflowConfig.http_allowlist`）の既定は空で、その場合は secret の宛先束縛だけで宛先が決まり、
+  束縛ホストの登録時検証（`secrets` の `normalize_hosts`）は内部宛先を拒否しない。`Shiki.http.request` も同じ経路。
+  PIT-36 ③／PIT-48 の方針から外れている（コード読みで確認・実機未検証）。
+- **Stage B の data 系・notify** → #687／#688／#689／#678: data.query／data.record.*／data.transition・notify.send
+  ノードは `NodeType::available_stage_a` で閉じた予約語彙のまま。イベント relay（`relay_events`）は `event_type` 付きの
+  data イベントを配送済みにして捨てる（`EventSource` で有効なのは `storage.write` のみ）。ワークフロー script の
+  `Shiki.data.*`／`Shiki.notify.send` はゲストにもホストにも無い。notify の受け手（一覧 API・UI）も無い。
+- **skill.invoke の残り** → #360／#359／#690: 実行時解決（`workflow_runtime/skill_port.rs`）が
+  `allowed_scopes: None` を固定で返すため skill 宣言スコープとの ceiling 交差が効かない。委譲 run（workflow
+  プリンシパル）は skill artifact の viewer を持たず解決に失敗する。`.sh` script はどこからも実行されない。
+- **レート制限・並行カウンタ** → #361／#446: script の HostBridge（`Shiki.http.request`／`Shiki.workflow.start`）は
+  `rate_check` を通らない。並行カウンタは予約主体を持たず、リース回収後に旧ワーカーが同じ予約を解放する二重解放が
+  起こり得る（同一 tick の `reconcile` で回収）。#446 のもう一件（resume 猶予の `lease_secs` 導出）は #459 で解消済み。
+- **履歴まわり** → #691／#448: step 出力の spill（engine.md §12.1）は未実装。履歴 GC は #459 で `workflow.enabled` から
+  独立したが、長時間 GC の可視性タイムアウト延長と子行数基準のバッチ分割が残る。
+- **secrets の KeyProvider** → #692: 実装は `LocalKeyFileProvider` のみで、Cloud KMS 版が無い。
 
 ## 8. 設計ドキュメントとの既知の差分（解決済み・反映済み）
 

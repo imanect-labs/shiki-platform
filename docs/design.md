@@ -172,7 +172,8 @@ flowchart LR
 - **authz のテナント分離（SAAS.1 / #84）**: OpenFGA は **全テナント共有の単一ストア＋識別子名前空間化**（フルプール）で分離する。
   FGA 識別子を `<type>:<tenant_id>|<local_id>` へ名前空間化し（区切り `|` = `authz::TENANT_SEP`。AD group パスの `/` と衝突しない）、
   生の識別子構築を `AuthContext::ns()`（`authz::Namespace` チョークポイント）へ一本化して**越境タプルを型レベルで不能化**する。
-  `tenant_id` は解決時に禁止文字（`| : # @`・空白）を fail-closed 検証。オンプレ/cell は `tenant_id="default"` 名前空間で一様に動く。
+  `tenant_id` は解決時に `authz::validate_tenant_id` で fail-closed 検証する（`|` `:` `#` `@` `/`・空白・制御文字・空文字・
+  予約名 `.`／`..` を拒否。正本は `crates/authz/src/ident.rs`。app-gateway 側の未検証は #719）。オンプレ/cell は `tenant_id="default"` 名前空間で一様に動く。
   → データプレーンの他層（DB 行分離・ストレージプレフィクス・セッションキー）も同じく tenant スコープ。**cell（顧客ごと専用ストア）は将来オプション**として残す（フルプール最適化は SAAS.5）。
 
 ##### authz 語彙の Single Source of Truth ＋ codegen
@@ -247,6 +248,8 @@ flowchart TB
   権限/監査/再索引を必ず通る。**API は FUSE 前提で設計**（初版実装は sync 妥協可、後で FUSE 差し替え）。
   → ただし「必ず通る」を syscall 粒度でやると破綻する（capability 化が必要）／エージェントの read-after-write
   一貫性が無い点は [PIT-4・PIT-5](./design-caveats.md)。
+  → **現状（2026-10）**: カーネル FUSE は採らず、エージェントのファイル操作は StorageService 直結の Durable Workspace、
+  `shell` は ephemeral sandbox へ seed→exec→sync-back する（§4.6「FUSE の位置づけ変更」・#97）。`crates/fuse` は未実装のプレースホルダ。
 
 ### 4.3 RAG パイプライン
 
@@ -305,7 +308,8 @@ flowchart LR
 - `embedding_model_version` は**インデックス単位で固定**する（Qdrant collection 名にモデル版を
   織り込み、検索・書込は alias `rag_chunks_active` 経由。worker の応答版と設定版の突合ガードで
   混在を書込前に拒否）。モデル更新は **shadow collection を背面で再構築 → alias 切替**
-  （ゼロダウンタイム・[PIT-8](./design-caveats.md)）。
+  （ゼロダウンタイム・[PIT-8](./design-caveats.md)）。**（目標方式。背面再構築は未実装で、現状は新しい版での
+  最初のインジェストで alias が空の新 collection へ即座に切り替わる → #639）**
 - 親子チャンク（small-to-big）で日本語長文の文脈を保つ。チャンク ID は
   `uuid5(node_id, version/ordinal)` の決定的生成（再インジェスト＝上書きで冪等）。
 - **leaf は必ず `max_leaf_chars` 以下**（[PIT-67](./design-caveats.md)）。切れ目は見出し →
@@ -348,6 +352,8 @@ flowchart LR
     `tenant_id = ctx.tenant_id` フィルタを無条件 AND**（authz_tags フィルタが空/バグでも効く）。
     強隔離要件の顧客向けには collection-per-tenant を選べる二択を [SAAS.5](./roadmap/parallel-tracks.md) の
     cell/pool 方針と揃える。`embedding_model_version` × `tenant_id` は直交（version 単位の shadow index）。
+    （collection-per-tenant は未実装。2026-10 時点は単一 collection ＋ `tenant_id` フィルタのみで、強隔離は
+    `auth.tenancy=single` の別デプロイ（cell）で満たす）
   - **Tantivy**: index-per-tenant を既定とする（PIT-8 の shadow 切替と相性良）。単一 index にする場合は
     `tenant_id` を term filter で必須 AND。いずれでも「tenant フィルタは authz_tags と独立に必ず適用」。
   - **authz_tags は名前空間化形式のまま格納**する。`ListObjects` が返す `folder:<tenant>|<local>` を
@@ -433,10 +439,10 @@ flowchart LR
   （outbox と同型）→ 202 で `run_id` を即返す。
 - **実行**: shiki-server 内 tokio ワーカープール（**チャット専用の高優先レーン**。ワークフロー/ingestion と同居させない）が
   `FOR UPDATE SKIP LOCKED` で claim＋リース（heartbeat）。イベントを `(run_id, seq)` で DB 追記＋Redis pub/sub 配信。
-- **購読**: `GET /runs/:id/events`（SSE/EventSource）。順序は必ず **①Redis 購読を開始 → ②`Last-Event-ID`(=seq)
-  以降を DB からリプレイ → ③ライブイベントと合流し seq で重複破棄**。リプレイ完了前に届いたライブイベントは
-  バッファして seq 順に放出する（**先リプレイ→後購読はその隙間のイベントを取り逃がすため禁止**）。
-  どのインスタンスでも Redis 経由で受信。
+- **購読**: `GET /threads/{id}/stream`（SSE/EventSource）。`Last-Event-ID`(=seq) 以降を `generation_event` から
+  seq 順にリプレイし続ける（**DB が真実のソース**）。Redis pub/sub は新イベントの**起床通知にだけ**使い、
+  通知の取りこぼしは短周期の再リプレイで補う（`crates/chat/src/store/stream.rs`）。どのインスタンスでも同じ。
+  （旧: `GET /runs/:id/events` で「①Redis 購読 → ②DB リプレイ → ③合流し seq で重複破棄」→ 置換: DB リプレイ正本方式）
 - **整合性の不変条件**: ①単一ライタ（リース保持ワーカーのみ）＋ `(run_id, seq)` unique で追記 exactly-once
   ②クラッシュ回復はステップ境界から（完了済みツール結果はチェックポイント復元、**生成途中の LLM ストリームは破棄して
   当該ステップのみ再生成**。「途中から続き生成」は採らない。#351 で配線済み: 自律 run はステップ境界ごとに
@@ -447,8 +453,10 @@ flowchart LR
 
 ### 4.5 llm-gateway（自作・in-process）
 
-- 内部正規形=OpenAI互換スキーマ（⚠️ 中立 content-block 案は [PIT-9](./design-caveats.md)。Task 3.2 着手時に確定）。
-  薄いアダプタで vLLM / Anthropic / Gemini /（必要なら Azure）。
+- 内部正規形＝プロバイダ中立の content-block（text / thinking / tool_use / tool_result を一級市民に持つ・
+  [PIT-9](./design-caveats.md) で確定・`crates/llm-gateway/src/model.rs`）。（旧: OpenAI 互換スキーマ案 → 置換）
+  薄いアダプタで相互変換する。実装済みは OpenAI 互換（vLLM 等）/ Anthropic / OpenAI Responses。
+  Gemini・Azure と別プロバイダへのフォールバックは未実装（#652）。
   Chat Completions を話さないモデル（Responses API 専用）は OpenAI Responses アダプタで受ける
   （`llm.backend=openai_responses`・#535）。会話ごとの ID（スレッド ID）はルーティング・キャッシュの
   手がかりとしてだけ渡す（`llm.session_header` で指定したヘッダ・`prompt_cache_key`）。
@@ -521,7 +529,7 @@ flowchart TB
   TIER -->|最強隔離/GPU 契約要件| FC[Firecracker microVM]
   WASM --> VFS["仮想FS → StorageService 直結<br/>（Stage B・Phase 5。アルファは成果物をサーバ回収）"]
   WASM --> NET2[仮想 net スタック → egress allowlist をホスト関数で強制]
-  GV & FC --> FUSE[FUSE: StorageService マウント]
+  GV & FC --> FUSE["FUSE: StorageService マウント（未実装・ポストアルファ。ワークスペースは Durable Workspace）"]
   ORCH --> NET[egress デフォルト遮断 + allowlist]
 ```
 
@@ -712,6 +720,7 @@ flowchart TB
   md ファイルを正にすると並行編集のマージ単位がテキスト行になり表・埋め込みで壊れるため採らない。
 - **AI 編集は共同編集参加者**: エージェントの `document.edit` ツールは Yjs トランザクションを発行する専用クライアント
   として同一セッションに参加（awareness に「AI」表示・**既定=直接適用**（AI 名義・undo 可）/サジェストは切替）。
+  （現状: awareness の AI 表示は無く、AI 名義は update log の author `ai:<user>` のみ。版・更新者は人間名義になる → #695）
   ファイル直接上書きで人間の編集と衝突する経路を作らない。権限は人間と同じ editor relation チェック。
   genui グラフ等の本文埋め込みは **`document.embed`**（非破壊 append・確認不要）で行う（通常チャットは
   確認要ツールを承認者無しで拒否するため `document.edit`（要確認）とは別ツールにする・#282）。
@@ -754,7 +763,8 @@ flowchart TB
     実行主体のファイル ReBAC で判定（workflow の実行主体交差則と同じ）。**操作別に要求 relation を分ける**:
     query=viewer / patch=editor / write=保存先フォルダへの作成権限（読めるだけの viewer が書き換え・派生保存
     できてはならない）。ワークフローステップは at-least-once 再試行（PIT-31）に備え、
-    **エンジンの冪等キーを tabular 側で消費して書込を重複排除**する。ノード型/スコープは
+    **エンジンの冪等キーを tabular 側で消費して書込を重複排除**する。（現実装は workflow-engine capability 層の
+    cross-TX effect_journal で消費しており、書込後・記録前のクラッシュで二重保存しうる → #700）ノード型/スコープは
     workflow IR の閉カタログ・codegen 認可語彙（単一定義）に登録して公開する。
 - **将来**: BI（複数ファイルへのクエリ層＋チャート）は tabular を土台に別トラックで足す。
 
@@ -791,24 +801,29 @@ FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメ
   ドライブ参照のみ）②描画直前 DOMPurify ③閲覧= srcdoc＋`sandbox=""`（scripts 全拒否）
   ④編集=上記の別オリジン砂箱（通信全遮断 CSP）。
 - **AI 編集は共同編集参加者**（ノートと同一原則・排他なし）: `slide.edit` ツールが `SlideEditOp`
-  （スライド追加/差替/削除・要素差替・ノート/背景/メタ設定）を Yjs トランザクションとして発行
+  （スライド追加/差替/削除・要素差替（`ReplaceElement`・未実装 #709）・ノート/背景/メタ設定）を Yjs トランザクションとして発行
   （editor relation・HigherConsistency・人間と同一経路）。`save_slide` は**下書き確定型**
   （note の `save_note` と同型: 下書きスライド画面→「ドライブに保存」で実体化）。
   チャット「パワポを作成して」→スライド下書き画面、「表を作成して」→ CSV 下書き画面に遷移する。
 - **デザイン品質**: テーマカタログ（配色・フォント対・スケール）とレイアウトパターンを閉集合で持ち、
   ツール定義に「変換可能サブセットの語彙」として焼き込む。サーバ側の変換可能性 lint が警告を
-  EditReport で返し、モデルが自己修正する。
+  EditReport で返し、モデルが自己修正する。（現状: 変換可能性 lint とレイアウトパターンの閉集合は未実装で、
+  テーマ 4 種と指針文のみ → #710）
 - **pptx エクスポート（必須要件）**: 砂箱内で DOM 計測（1280×720 固定・テーマ同梱フォント）→
   **pptxgenjs でテキスト/画像/図形/背景/表/チャートをネイティブシェイプへ 1:1 変換**
   （PowerPoint で完全に再編集可能）。変換不能な要素（CSS transform・複雑グラデ・SVG 等）のみ
   **要素単位**で画像化（**スライド全体のラスタライズは禁止**・PIT-42）。変換レポート
   （ラスタライズ要素数）を保存ダイアログで可視化。生成 bytes は既存アップロード API で `.pptx` 保存
-  → Collabora（§4.8）で再編集できる。
+  → Collabora（§4.8）で再編集できる。（現状: チャートのネイティブ変換とテーマ同梱フォントは未実装（`Yu Gothic` 固定）。
+  変換判定はコンテナ単位で子ごと画像化し、トップレベルの `<svg>` は消える → #708）
 - **選択→AI 指示（3エディタ共通）**: ノート（TipTap 選択）・CSV（グリッド範囲）・スライド（要素選択）で、
   選択箇所を `SelectionContext {kind, node_id|draft_name, excerpt, locator}` としてチャット送信に添付。
+  kind には Collabora 文書の `office_selection` もある。スライドの locator は `{slide_id, element_index?}`。
+  （下書き画面からの選択は未配線 → #712）
   **クライアント由来の値は信用しない**: サーバは受信時に kind の閉集合・サイズ上限を検証し、
   `node_id` は実行主体の ReBAC（viewer 以上）で読めるノードへ再解決できた場合のみ採用する
-  （読めない/存在しない対象は fail-closed で拒否・`draft_name` はそのスレッドの下書きのみ参照可）。
+  （読めない/存在しない対象は fail-closed で拒否・`draft_name` はそのスレッドの下書きのみ参照可。
+  `draft_name` のサーバ側検証と区切りのエスケープは未実装 → #713）。
   `locator`/`excerpt` は位置ヒント・抜粋という**表示/誘導用データ**であり権限の根拠にしない —
   これを対象に編集する際も `document.edit`/`csv.patch`/`slide.edit` が自身の認可チェック
   （editor relation）を通る（SelectionContext は認可をバイパスしない）。
@@ -859,7 +874,7 @@ flowchart TB
   内部APIは晒さずゲートウェイが能力面を再公開。B2はtoken-exchangeでユーザー代理を維持、自動化のみ所有データ限定サービスidentity。
 - **能力カタログ**: storage/data/rag/ai/identity/events。`能力.操作`＋リソース束縛、実認可OpenFGA、アプリ所有リソースあり。
 - **構造化データ**（`crates/data`）: `record(table_id,id,data JSONB,rev)` ＋ `table_schema`、宣言フィールドに式インデックス（ランタイムDDLなし）。
-  フィールド型に user/dept/file/record 参照。
+  フィールド型に user/dept/file/record 参照（dept は `role_ref`＝部署はロールとして表す）。
   **行認可 = テーブルReBAC（OpenFGA・有界）＋クエリ時述語（ABAC・WHERE強制付与・集計にも適用・バイパス不可）＋フィールドマスク＋個別共有のみスパースtuple**。
   宣言的クエリ/保存ビュー（生SQL非公開）、リビジョン履歴、`rev`で楽観ロック。
 - **ワークフロー（2026-07 全面改訂・#97）**: 旧「軽量FSMエンジン」は廃止し、
@@ -868,11 +883,12 @@ flowchart TB
   遷移の副作用はすべて workflow-engine へ委譲（遷移コミット→outbox→トリガ）。
   IR（JSON DAG）・shiki script・skill・シークレット・実行主体/委譲モデルを含む設計正本は
   **[miniapp-platform.md](./miniapp-platform.md)**。
-- **ランタイム**: B1=別オリジン+CSP（connect-srcゲートウェイ限定・ホスト無権限）／B2=既存サンドボックス（Firecracker/gVisor）+egress allowlist。
+- **ランタイム**: B1=別オリジン+CSP（connect-srcゲートウェイ限定・ホスト無権限）／B2=既存サンドボックス（アルファは wasm ティア・Firecracker/gVisor は昇格先）+egress allowlist。
+  confidential secret はホストが保持し、ゲストには secret もトークンも渡さない（ホストが Bearer を付与）。
   B1 の「匿名・cookieless・content-address 検証つきで別オリジンに静的バンドルを配る」構造は、
   §4.13 のサイト公開リスナがそのまま雛形として継ぐ（差分はマニフェストによる複数アセット対応とホスト名解決）。
-- **配布**: マニフェストartifact→内部レジストリへ不変publish→同意インストール（所有テーブル自動プロビジョン＋ReBAC付与）。
-  信頼ティア（first-party署名/in-house同意/将来marketplace審査）、オンプレ署名バンドル（ネット不要）、SDK＋CLI（`shiki app init/dev/publish`）。
+- **配布**: マニフェストartifact→内部レジストリへ不変publish→同意インストール（インストール権限 = mini_app_code の owner・所有テーブル自動プロビジョン＋ReBAC付与）。
+  信頼ティア（first-party＝署名必須・スコープ同意は in-house と同じ／in-house＝owner 同意／将来 marketplace 審査）、オンプレ署名バンドル（ネット不要）、SDK＋CLI（`shiki app init/dev/publish`）。
 
 ### 4.11 シークレット管理（`crates/secrets`）
 
@@ -1199,5 +1215,8 @@ deploy/            # docker compose / k8s manifests
 docs/
 ```
 
-- 型契約: Rust→OpenAPI(utoipa)→openapi-typescript、SSEイベント型は ts-rs/typeshare（手書き型なし）。
+- 型契約: Rust→OpenAPI(utoipa)→openapi-typescript。SSE イベント型・content-block も utoipa `ToSchema` 経由で同じ
+  OpenAPI から生成する。認可語彙・ワークフロー IR・GUI スペックは ts-rs（手書き型なし）。
+  （旧: SSE イベント型は ts-rs/typeshare → 置換。web に残る手書き型は #631）
   公開APIゲートウェイの能力面も同じ生成物を SDK としてミニアプリへ配布（手書き型なし）。
+  （現状: app-gateway に OpenAPI 定義が無く、SDK の型は手書き → #681）

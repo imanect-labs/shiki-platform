@@ -31,6 +31,7 @@
 ## 詳細
 
 ### Task 8.1: 監査ログ集約モデル＋検索インデックス
+> Phase 1 Task 1.9 の「監査ログ参照に管理権限」は本タスク（と 8.2）で満たす。監査ログを読む API・閲覧 relation は未実装（#634）。
 - **area**: obs / **path**: `crates/api`, `crates/authz`, `crates/storage`, migrations
 - **依存**: 3.8, 2.7
 - **仕様**:
@@ -100,6 +101,7 @@
     `ObjectStore`→**GCS**、Postgres→**Cloud SQL**（接続/IAM認証）、`LlmProvider`→**Vertex AI / 外部API**、
     監視エクスポータ→**Cloud Operations（旧 Stackdriver）**。`VectorStore`/`DocumentParser`/`EmbeddingProvider` はマネージド/外部の選択肢を整備。
   - 実装は **feature/設定で選択**（コンパイル時 or 起動時）。シークレット/エンドポイントは環境注入（Task 8.10）。
+  - `VectorStore` の pgvector 実装は Phase 2 Task 2.4 で「Phase 8 でも可」とされた未着手項目（設定で選ぶと起動時に拒否）。要否は #644。
 - **受け入れ条件**:
   - [ ] GCS/Cloud SQL/Vertex/Cloud Operations の各実装が単体で動作する
   - [ ] 設定切替のみでオンプレ実装↔クラウド実装が選べる

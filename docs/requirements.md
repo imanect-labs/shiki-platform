@@ -117,6 +117,8 @@ shiki は **LLMチャットとストレージを核とするエンタープラ�
 - チャット内でAI生成UIコンポーネントをレンダリング。
 - 表示専用の図（グラフ・流れ図・構成図など）は、回答の Markdown 内の宣言的な図ブロックでも描ける
   （操作・URL・HTML を持たず文字と数値だけを描く。設計: design.md §4.7）。
+  ただし操作を持つ種類（app・ask・plan）は押せる。押せるのは会話の編集者だけで、実行は押した人の権限で行い、
+  束縛・値の検証・回数の制御はサーバーが行う（#604・design §4.7）。
 - **段階戦略**: まず宣言的コンポーネント・カタログ（任意コード実行なし・安全）。
   これは二層モデルの **A（宣言的・in-trust）**。コードベースの **B** と業務アプリ基盤は **FR-11** で扱う。
 - **生成UIにアンビエント権限を与えない**。データアクセスは必ず宣言済み・認可済みバックエンドアクション経由。
@@ -313,7 +315,7 @@ FR-6 の generative UI を土台に、「社内業務アプリが自然増殖す
 
 ## 5. デプロイ部品（オンプレ）
 
-- アプリ: `shiki-server`（Rustモジュラモノリス）／`sandbox-orchestrator`（特権・別プロセス）／
+- アプリ: `shiki-server`（Rustモジュラモノリス）／`sandbox-orchestrator`（非特権・別プロセス）／
   `ingestion-worker`（Python・Docling）。
 - ステートフル依存: Postgres、Qdrant、OpenFGA、Keycloak、RustFS、（監視）Grafana/Tempo/Loki/Prometheus、Langfuse。
 - ローカル推論（エアギャップ時）: vLLM（生成LLM）、埋め込み（Ruri等）、reranker、OCR。

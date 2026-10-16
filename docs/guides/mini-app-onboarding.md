@@ -370,7 +370,7 @@ Phase 9 で実装する主なクレート（`docs/design.md` §5）:
 | `crates/app-platform/` | ミニアプリ artifact・マニフェスト・レジストリ・FSM | |
 | `crates/data/` | 構造化データ・record/schema・**行authz述語エンジン** | クエリコンパイラ |
 | `crates/authz/` | OpenFGA クライアント・relation 定義 | 既存 |
-| `crates/sandbox-orchestrator/` | Firecracker/gVisor 制御層 | 既存・B2実行で再利用 |
+| `crates/sandbox-orchestrator/` | 3 ティア（gVisor 既定／wasm／Firecracker）制御層 | 既存・B2実行で再利用 |
 | `web/` | Next.js（generative UIレンダラ・**ミニアプリB1配信**） | |
 | `sdk/` | ミニアプリ SDK ＋ CLI（`shiki app init/dev/publish`） | 公開API型を配布 |
 

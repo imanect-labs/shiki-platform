@@ -45,7 +45,7 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 - **アンビエント権限の禁止:** 全データアクセスは `AuthContext { principal, org, tenant_id }` 経由。tenant_id が落ちる経路を作らない。
 - **二段 authz:** RAG・構造化データは pre-filter ＋ post-filter の両方を通す。実効権限 = スコープ ∩ ユーザー ReBAC。片方が壊れても権限が守られること。
 - **差し替えはトレイト裏で:** cloud/onprem 差は ObjectStore / VectorStore / LlmProvider / Sandbox / DocumentParser / EmbeddingProvider で吸収し、アプリ本体を分岐させない。
-- **codegen が正:** 型（Rust → OpenAPI → TS、SSE は ts-rs/typeshare）と認可語彙（relation・スコープ・ツール名）は単一定義から生成する。手書きの対応物を作らない。
+- **codegen が正:** 型（Rust → OpenAPI(utoipa) → TS。SSE イベント型も OpenAPI 経由。認可語彙・ワークフロー IR・GUI スペックは ts-rs）と認可語彙（relation・スコープ・ツール名）は単一定義から生成する。手書きの対応物を作らない。
 
 ## コーディング規約（既定と異なる点のみ）
 

@@ -64,7 +64,7 @@ flowchart LR
 - Keycloak（OIDCログイン）、OpenFGA（authz）配線、認証付きエンドポイント1本をE2E。
 - **認証は BFF + オパークセッション Cookie**（Redis セッションストア。Task 0.11/#55）。ブラウザにトークンを置かない。
 - **SaaS トポロジを前提**: shiki の SaaS コントロールプレーン（Keycloak/テナント）＋顧客ごと隔離 cell データプレーン（design §4.1.1）。ローカル開発は compose、優先デプロイ先はクラウド（GCP）。
-- OTel計装の土台、`docker compose` 一発起動。
+- OTel計装の土台（監視スタックは `observability` profile でオプトイン起動）、`docker compose` 一発起動。
 - 認可コンテキスト（**principal + org + `tenant_id`**）を最初から導入（SaaS マルチテナントを day-1 前提・後付けで隔離境界を壊さない）。
 - **成果物**: ログインして認可された空のアプリが起動する（SaaS トポロジで `tenant_id` スコープが通っている）。
 
@@ -88,18 +88,21 @@ flowchart LR
 - チャットドメイン（thread / content blocks / JSONB）。
 - llm-gateway（vLLM＋外部API）、agent-core 制約版（doc_search ツール）。
 - SSEストリーミング、引用表示、Langfuse、スレッド共有（ReBAC）。
+- 接続非依存生成（生成ジョブ＋ワーカー＋DB リプレイ／Redis 起床・Task 3.11・#82）。
 - **成果物**: 権限を守ったRAGチャットが動く（第一の縦スライス完成）。
 
 ## Phase 4 — サンドボックス＋コードインタプリタ
 **依存**: Phase 3。
-- sandbox-orchestrator（Firecracker/gVisor、温機プール、egress遮断+allowlist、ツールRPC）。
-- FUSEでStorageServiceをマウント。
+- sandbox-orchestrator（3 ティア: gVisor 既定〔#346〕／wasm〔runsc 不在ホストの明示指定〕／Firecracker〔ポストアルファ〕、
+  egress 既定遮断＋ホスト名 allowlist、ツールRPC、リソース制限）。温機プールはポストアルファ。
+- ~~FUSEでStorageServiceをマウント~~ → Phase 5 の Durable Workspace で置換（#97・design §4.6）。
 - チャットの code_interpreter ツール（制約インスタンス）。
 - **成果物**: チャットでコード実行できる／サンドボックス基盤が稼働。
 
 ## Phase 5 — 自律エージェント
 **依存**: Phase 4。
-- フルツールの agent-core をサンドボックス内でFUSEストレージ上に展開、長ホライズン。
+- フルツールの agent-core を長ホライズンで動かす。ファイル CRUD は StorageService 直結の Durable Workspace、
+  `shell` は ephemeral sandbox（旧: サンドボックス内で FUSE ストレージ上に展開 → 置換: #97・design §4.6）。
 - ①コード実行 ②ファイルCRUD ③任意コマンド。書込はイベント経由で自動再索引。
 - **成果物**: Claude Code 級エージェントがストレージ上で自律動作。
 
@@ -107,7 +110,8 @@ flowchart LR
 **依存**: Phase 3 ＋ **Phase 10 Stage A（前倒し・#121。workflow-engine・script-runtime・secrets・artifact共通基盤）**。
 6.5（宣言的バックエンド束縛）・6.10（ミニアプリ実行）が workflow-engine の対話トリガ起動へ直接依存するため、
 Stage A 完了前に本フェーズへ着手する場合はこの2タスクを後回しにする。
-- 宣言的コンポーネント・カタログ＋レンダラ。
+- 宣言的コンポーネント・カタログ＋レンダラ。生成 UI は回答本文の ```ui ブロック（Yui）へ置き換え中（#604）で、
+  完了までは検証済みスペック（`crates/gui`）が正。
 - skill（旧 prompt template を統合: SKILL.md相当の指示文＋知識スコープ／許可ツール／モデル既定／few-shot＋
   任意script。shiki script(`.shiki`)/shell script(`.sh`)のどちらも可）。
 - ミニアプリ（skill＋UIスペック＋ワークフロー）をアーティファクト化、ReBAC共有。宣言的バックエンド束縛は
@@ -129,6 +133,7 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 
 ## Phase 9 — ミニアプリ／業務アプリ基盤
 **依存**: Phase 6（A=宣言的）。
+**状態（2026-10-17）**: 主要部分は実装済み・未達あり（[phase-9.md](./roadmap/phase-9.md) 冒頭の実装突合を参照）。
 - 二層モデル B（コードベース・ミニアプリ）＝out-of-trust 隔離実行（B1別オリジン+CSP／B2サンドボックス）。
 - **公開APIゲートウェイ(BFF)** が唯一の入口・能力面再公開、ユーザー委譲OAuth2(PKCE)＋Keycloak再利用、**二重ゲート（スコープ ∩ ユーザーReBAC）**。
 - **構造化データサービス**（record JSONB＋スキーマレジストリ＋行authz述語）＋**FSMガード**（Task 9.10 改訂:
@@ -154,7 +159,7 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 ## Phase 11-pre — ノート（md）／CSV エディタ
 **依存**: Phase 3（チャット・AI 編集ツール）・Phase 1（ストレージ）。埋め込み/ツール公開は Phase 6/9/10 の成果を再利用。詳細: [phase-11-pre.md](./roadmap/phase-11-pre.md)
 - **ノート**: Yjs/yrs 共同編集基盤＋ TipTap WYSIWYG（真実=Yjs・md=シリアライズ・スラッシュコマンド・
-  frontmatter メタデータ・AI は共同編集参加者=直接適用既定）。ノートページ×チャット分割ビュー（note_ref カード）。
+  frontmatter メタデータ・AI は共同編集参加者=直接適用既定）。ノートページ×チャット分割ビュー（チャット→ノートは下書き確定型・#282。旧 note_ref カード）。
   埋め込みは検証済みシキコンポーネント／別オリジン iframe／ドライブ参照のみ（生 HTML/JSX は実行しない）。
 - **CSV**: ファイルが真実（ファイル単位 ReBAC）。`crates/tabular` クエリサービス（隔離 DuckDB・RO SQL・
   ページング=無限スクロール）＋グリッドエディタ（パッチ編集・楽観ロック）。csv.query/patch/write を
@@ -165,7 +170,7 @@ Stage A 完了前に本フェーズへ着手する場合はこの2タスクを�
 **依存**: Phase 11-pre（collab 基盤・下書きフロー）・Phase 1（ストレージ）・Phase 2（RAG 還流）・Phase 9（B1 砂箱）。詳細: [phase-11.md](./roadmap/phase-11.md)
 - **スライド自前実装**（GrapesJS 砂箱＋Yjs 共同編集・AI も参加者・pptx ネイティブエクスポート必須・design §4.8.3）。
   チャット「パワポを作成して」→スライド下書き・「表を作成して」→CSV 下書き（下書き確定型）。
-- **選択→AI 指示**（ノート/CSV/スライドの3エディタ共通 SelectionContext）。
+- **選択→AI 指示**（ノート/CSV/スライド＋Office 文書の共通 SelectionContext）。
 - **Collabora Online 統合**（ソース自前ビルド・OfficeSuite トレイト・WOPI ホスト=StorageService クライアント・
   共同編集は内蔵委任・AI は非ロック時ファイルレベル編集／ロック中は提案バージョン）。
 - スプレッドシート×shiki script はスコープ外に据え置き（将来イシュー）。
@@ -222,7 +227,7 @@ Phase 1（ストレージ・ReBAC）・Phase 8（監査）。詳細: [phase-14.m
 
 | トラック | タイミング | 備考 |
 |----------|-----------|------|
-| **Phase 10 Stage A（WF エンジン核心 前倒し）** | **完了（2026-07-10・#203〜）**。dnd/AI 編集/実行履歴 UI も完了し、残りは Phase 9 依存分（skill/data 系）のみ | 6.1 先行＋既存基盤のみで Phase 5〜9 と並走。Stage 分割は [phase-10.md](./roadmap/phase-10.md) |
+| **Phase 10 Stage A（WF エンジン核心 前倒し）** | **完了（2026-07-10・#203〜）**。dnd/AI 編集/実行履歴 UI も完了。skill は #344 で完了。残りは data 系・notify（#687/#688/#678）と、委譲の棚卸し #626・SSRF #627 ほか（[phase-10.md](./roadmap/phase-10.md) 冒頭の実装突合を参照） | 6.1 先行＋既存基盤のみで Phase 5〜9 と並走。Stage 分割は [phase-10.md](./roadmap/phase-10.md) |
 | **llm-gateway 外部クライアント（skillex）** | skillex 側の必要時期に合わせて**並行** | **2026-09-29 に縮小**: ユーザー認証の共有（共有プール）・統一請求・統一管理画面は廃止。残るのは skillex → llm-gateway の m2m（client_credentials・`aud=shiki-llm`）と外部クライアント向け LLM API（[parallel-tracks SK](./roadmap/parallel-tracks.md)） |
 | ~~資料作成 v2（ブラウザ内編集）~~ | **Phase 11 に昇格**（2026-07） | V2 トラックは Phase 11（Collabora）へ統合 |
 | データプレーン完全相乗り（フルプール） | 需要が出たら | **SaaS（shiki の SaaS コントロールプレーン＋cell隔離データプレーン）は優先ターゲット**（design §4.1.1）。本項は cell 隔離をやめ全テナント共有プールへ寄せる更なる最適化＝tenant_id 行分離の全面適用 |

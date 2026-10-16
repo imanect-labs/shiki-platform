@@ -51,7 +51,7 @@ gVisor=runsc systrap rootless＋`python:3.12-slim` rootfs。**Firecracker は `/
 
 - **wasm は起動が桁違いに軽い（~12ms・21MB）**が、**Python 実行は非常に重い（~6s）**: secure-exec は exec ごとに
   Pyodide/CPython-on-WASM を初期化するため、計算そのものより初期化コストが支配的。
-  **Python を回さない短命実行（web_fetch 等）向き**。
+  **Python を回さない短命実行向き**（旧: 「web_fetch 等」→ web_fetch は #348 でサンドボックスを使わないホスト側取得へ移した）。
 - **gVisor は起動が重め（~130ms・104MB）だが native CPython が ~75× 速い（82ms vs 6019ms）**。
   ファイル I/O も host bind で高速（0.8ms）。**重い Python・任意 pip・ネイティブツールを回す用途**はこのティア。
   KVM 不要で動く（PIT-24: ユーザ空間カーネルゆえ VM 級より隔離は一段弱い）。
@@ -63,10 +63,11 @@ gVisor=runsc systrap rootless＋`python:3.12-slim` rootfs。**Firecracker は `/
 > **この表の当初の結論（「既定は wasm のままで正しい」）は撤回した（2026-07）。** create レイテンシだけを
 > 見て wasm を選んでいたが、code_interpreter の実効体感は **create + 実行の総時間**で決まる。
 > 同じ Python 実行で **wasm ≒ 11 + 6019 ms に対し gVisor ≒ 132 + 82 ms** であり、gVisor が一桁以上速い。
-> よって **code_interpreter の既定ティアは gVisor**（design §4.6）。wasm は **web_fetch**（egress を単一ホストへ
-> 固定する短命・読み取り専用実行。egress allowlist を wasm の仮想 net ホスト関数で実効化）に残す。
-> ⚠️ web_fetch は内部で urllib（Python）を実行するため wasm でも exec ごとに Pyodide 初期化コストを払う点は既知の課題
-> （wasm を選ぶ理由は速度ではなく egress モデル）。
+> よって **code_interpreter の既定ティアは gVisor**（design §4.6）。wasm は runsc の動かない環境でコード実行を
+> 退避させる明示指定のティア（`chat.sandbox_backend=wasm`）として残す。
+> （旧: 「wasm は web_fetch（egress を単一ホストへ固定する短命・読み取り専用実行）に残す。web_fetch は urllib を
+> 実行するため Pyodide 初期化コストを払う」→ 置換: web_fetch は 2026-07 の #348 でサンドボックスを使わないホスト側取得へ
+> 移したため、この用途は無くなった＝design §4.6）
 > 既定切替の前提だった native rootfs への numpy/pandas 同梱は **#346 で充足済み**
 > （`rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定。コード既定も gVisor へ反転済み）。
 

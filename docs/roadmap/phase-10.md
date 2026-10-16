@@ -5,7 +5,8 @@
 > shiki script（script-runtime）・skill＆スキルストア・シークレット管理を載せる。
 > 完了の定義(DoD): ユーザーが dnd／AI（チャット）でワークフローを作成し、スケジュール・イベント・対話の
 > 3種トリガで実行できる。スケジュール/イベント実行は有効化時の明示委譲で権限が付与され、委譲者失権で
-> fail-closed 停止する。script ノード・skill ノード・agent.invoke ノード（サンドボックス設定パネル付き）・
+> fail-closed 停止する（**2026-10-17 時点で未達**: 効くのは次 run の開始時チェックのみ。棚卸しが未配線のため
+> 実行中 run は止まらず workflow プリンシパルのタプルも撤去されない → #626）。script ノード・skill ノード・agent.invoke ノード（サンドボックス設定パネル付き）・
 > http.request ノード（シークレット宛先束縛）が動き、ステップリトライ・fan-out・concurrency・rate limit・
 > 実行履歴 UI（OTel/Langfuse 突合）が機能する。
 >
@@ -16,6 +17,17 @@
 > [ir.md](../workflow/ir.md)（IR 仕様・Task 10.1）／[engine.md](../workflow/engine.md)（実行エンジン・Task 10.2〜10.6/10.14）／
 > [script.md](../workflow/script.md)（shiki script 処理系・Task 10.7/10.8）。Task ↔ 章の対応表は
 > [README §5](../workflow/README.md) を参照。
+>
+> **実装突合（2026-10-17・main 329aba0）**: Stage A の核（durable・IR 検証・run/step・cron/storage.write トリガ・制御ノード・
+> secrets・http.request）と UI・AI 編集・skill（#344）はコード上に揃っている。一方、委譲 fail-closed の二段目（棚卸し）が
+> 本番で動かず、http.request に SSRF の穴があり、Stage B の data 系・notify は未実装（Phase 9 は完了済みで依存待ちではない）。
+> 残り: 委譲の棚卸しが本番 tick で走らず、失権後も実行中 run が止まらない #626／http.request（`Shiki.http.request` 含む）が
+> `net_guard` を通らず、宛先束縛ホストが内部 IP でも送れる（SSRF）#627／script-runtime が shiki-server 内の in-process 実行 #685／
+> script-runtime の fuzz が CI に無い #686／data.* / notify.send ノード未実装 #687／data イベントのトリガ未実装 #688／
+> ワークフロー script で `Shiki.data.*` / `Shiki.notify.send` 不可 #689／notify.send の受け手（一覧 API・UI）が無い #678／
+> skill 宣言スコープとの ceiling 交差が効かない #360／委譲 run から skill artifact を読めない #359／`.sh` skill script が
+> 実行されない #690／script 経路（HostBridge）にレート制限が無い #361／並行カウンタの二重解放 #446／履歴 GC の運用面の残り #448／
+> step 出力の spill 未実装 #691／Cloud KMS 版 KeyProvider が無い #692／（chat 側）承認待ちが jobq 可視性タイムアウトを超えると再開されない #364。
 
 ## 部分前倒し（Stage A / Stage B・2026-07-07 決定・issue #121）
 
@@ -44,7 +56,10 @@
 > #216 ノード設定パネル＋トリガ設定（cron プリセット・次回実行プレビュー）／#219 有効化同意・手動実行・バージョン／
 > #220 実行履歴 UI（data-table・詳細シート・step タイムライン・SSE ライブ更新））
 > ③AI 編集（#225 emit_workflow / read_workflow・workflow_ref カード・保存パイプライン共有）④e2e＋docs（本 PR）。
-> **未了（Phase 9 依存・human 決定で除外）**: 10.11・10.15・10.1b（skill 照合）・10.4b・10.6b・10.3 の data 系 source。
+> **未了（2026-10-17 時点）**: 10.6b（data.query/data.record.*/data.transition・notify.send ノード → #687、notify の受け手 → #678）・
+> 10.3 Stage B の data 系 event source（→ #688）・10.4b の管理ダッシュボード棚卸し画面（Phase 12 Task 12.3 で扱う）。
+> （旧: 「未了（Phase 9 依存・human 決定で除外）: 10.11・10.15・10.1b（skill 照合）・10.4b・10.6b・10.3 の data 系 source」
+> → 置換: 10.11・10.1b は #344、10.15 は #344/#428 で実装済み・本書の各受け入れ条件参照。Phase 9 は 2026-07-11 に完了済み）
 
 > **human 決定（2026-07-07）**: Phase 10 のエンジン核心に**部分前倒しで着手**する。詳細設計（docs/workflow/・#119）が
 > 完了しており、依存分析の結果、本フェーズの本質的ブロッカーは Phase 9 全体ではなく **6.1（artifact 共通枠）と
@@ -58,7 +73,7 @@
 > - **Stage A の DoD**: API 経由で IR を保存（**V1/V2/V3/V5/V6/V7 検証付き**。V4 のうち **secret 照合は 10.9 完了後に
 >   有効化**、**skill 照合は Stage B（10.1b）**）でき、schedule／イベント（storage.write）／対話（API 起動）の 3 種トリガで run が実行され、
 >   script・制御・storage/rag・AI 2 種・http.request・script→workflow.start の各ノードがステップリトライ・冪等キー・
->   委譲チェック（run 開始時＋棚卸し）付きで動き、run/step が監査・OTel に乗る。**UI（dnd・実行履歴）・skill・
+>   委譲チェック（run 開始時＋棚卸し。**棚卸しは未配線 → #626**）付きで動き、run/step が監査・OTel に乗る。**UI（dnd・実行履歴）・skill・
 >   data 系ノードは含まない**（Stage B）。V3（ワークフロー語彙の閉じた集合照合＝ハルシネーション境界）は
 >   Stage A に必須で含む（10.1a）。
 > - 実行順の目安: **P10-A0（outbox fan-out）** ∥ 10.0 ∥ 10.7 ∥ 10.9 ∥ 6.1 → 10.1a → 10.2 → {10.3, 10.4a, 10.5}
@@ -172,13 +187,20 @@
   - [x] 複数インスタンス起動時もスケジュールが1回だけ発火する
   - [x] スケジューラを enqueue 直後に kill →再起動しても同一 occurrence の run が1つしか作られない
   - [x] storage 書込でワークフローが起動する（Stage A・**rag の消費と取りこぼしなく両立**する＝P10-A0 前提）
-  - [ ] record 変更／status 遷移でワークフローが起動する（**Stage B**・9.10 の outbox 発行後。Stage A の実装は source を閉じた集合で持ち、追加が既存経路の再設計にならない形にする）
+  - [ ] record 変更／status 遷移でワークフローが起動する（**Stage B**・9.10 の outbox 発行後。Stage A の実装は source を閉じた集合で持ち、追加が既存経路の再設計にならない形にする）→ #688
+        （現状: relay は `event_type` 付きの data イベントを配送済みにして捨てる＝`crates/api/src/workflow_runtime/mod.rs` の
+        `relay_events`。`EventSource` で有効なのは `storage.write` のみ。data 側は遷移でのみ outbox を発行し
+        （payload の `event_type` は `data.record.transitioned`・語彙は `data.transition` で名前が食い違う）、record の作成・更新では発行しない）
   - [x] 無効化済みワークフローのトリガが発火しない
 
 ### Task 10.4: 実行主体・委譲モデル（FR-12 最重要）
 > **Stage 分割**: **10.4a（Stage A）** = workflow プリンシパル（`Namespace::workflow()`）・**`AuthContext` の
 > principal 種別拡張**（下記）・run 開始時の委譲有効性チェック・棚卸しジョブ・委譲の付与/失効 API（管理者向け・最小 UI）。
 > **10.4b（Stage B）** = 9.13 の同意インストールパターンとの UI 統合・管理ダッシュボード棚卸し画面（12.3 接続）。
+>
+> **実装突合（2026-10-17）**: 棚卸しジョブ `DelegationStore::inventory()`（`crates/workflow-engine/src/delegation.rs:330`）は
+> 実装済みだが、呼び出しはテスト `tests/delegation_it.rs` のみで、スケジューラ tick（`spawn_workflow_runtime`）に配線されていない。
+> engine.md §6.3 の「実行中 run のキャンセル（`reason=delegation_revoked`）」も未実装 → #626。
 >
 > ⚠️ **AuthContext の principal 種別は 10.4a の必須成果物**: 現行の `AuthContext::subject()` は常に
 > `user:<tenant>|<id>` を構築するため、`Namespace::workflow()` ビルダ追加だけでは schedule/event run の能力呼び出しが
@@ -196,7 +218,9 @@
   - [x] schedule/event run の能力呼び出しが `workflow:<tenant>|<id>` サブジェクトで check される（user サブジェクトに落ちない・principal 種別拡張が効く）
   - [x] 対話トリガで本人が読めないデータにワークフロー越しでも到達できない
   - [x] 有効化者の権限外スコープの委譲が拒否される
-  - [x] 委譲者の権限剥奪後、次回実行が開始されず「再同意要求」状態になる（黙って動き続けない）
+  - [ ] 委譲者の権限剥奪後、次回実行が開始されず「再同意要求」状態になる（黙って動き続けない）
+        — 次 run の開始時チェックで `suspended_reconsent` になることは `delegation_it.rs` で検証済み。ただし棚卸しが
+        未配線のため、実行中 run（wait で長時間待つものを含む）は止まらず、workflow プリンシパルのタプルも撤去されない → #626
   - [x] ノード設定はどう書いても実効権限を拡大できない（縮小のみ）
 
 ### Task 10.5: 制御ノード＋リトライ＋concurrency/rate limit
@@ -206,7 +230,10 @@
 - **受け入れ条件**:
   - [x] fan-out→join が正しく待ち合わせ、失敗分岐のみリトライされる
   - [x] 上限超過の run/step が実行されず順番待ちになる（拒否ではなくバックプレッシャ）
+        （既知: リース回収後に旧ワーカーが同じ予約を解放する二重解放があり、次 tick の reconcile まで上限を超え得る → #446）
   - [x] rate limit 超過が step を失敗させず遅延させる
+        （ノード経路の llm/agent/http のみ。script の `Shiki.http.request`／`Shiki.workflow.start`（HostBridge）には
+        レート制限が掛からない → #361。Redis 未設定時は制限なしで続行する）
 
 ### Task 10.6: 能力ノード＋AI ノード2種＋ノード設定パネル契約
 > **Stage 分割**: **10.6a（Stage A）** = storage.read/write/list・rag.search・`llm.invoke`・`agent.invoke`
@@ -221,6 +248,11 @@
   - [x] agent.invoke がノード設定どおりに制限されたサンドボックスで実行される
   - [x] ノード設定で ReBAC 外の権限が付与できないことがテストで担保される
   - [x] 全ノードの呼び出しが監査に run_id 付きで残る
+  - [ ] （10.6b・Stage B）data.query／data.record.create／data.record.update／data.transition ノードが実行主体の
+        AuthContext で data チョークポイント経由で動く → #687（現状は `NodeType::available_stage_a` で閉じた予約語彙で、
+        保存時は V3 が拒否・実行時は `unsupported_stage_a`。依存の 9.2/9.3/9.10 は完了済み）
+  - [ ] （10.6b・Stage B）notify.send ノードが動き、受け手が通知を一覧・既読にできる → #687（ノード）／#678（受け手:
+        `app_notification` へ記録するだけで、一覧 API・web UI が無い）
 
 ### Task 10.7: script-runtime
 > **Stage A 注記**: ランタイム・ブリッジ・リソース制限は全部 Stage A。ただし `Shiki.*` の能力面は
@@ -231,8 +263,14 @@
 - **仕様**: swc で TS→JS、**wasmtime 上の QuickJS**（javy 方式）で実行。専用**非特権プロセス**・RPC・インスタンス使い捨て。
   fuel/メモリ上限/epoch interruption。`Shiki.*` ホスト関数ブリッジ（同期スタイル→ホスト側 async 橋渡し）は
   能力ゲートウェイへ合流し AuthContext 認可・監査を通る。npm import 不可。
+- **実装突合（2026-10-17）**: 本番配線は「専用非特権プロセス・RPC」ではなく、shiki-server プロセス内で
+  `ScriptEngine::new()` を直接動かす in-process 実行（`crates/api/src/workflow_runtime/mod.rs` の `build_prod_executor`。
+  gRPC over UDS サーバ `crates/script-runtime/src/server.rs` は未接続）→ #685。PIT-35／script.md INV-7 の fuzz は
+  `crates/script-runtime/fuzz` にターゲットがあるが CI で走らない → #686。
 - **受け入れ条件**:
   - [x] `Shiki.storage.read(...)`（Stage B では `Shiki.data.query(...)`）の同期スタイル script が実行でき、認可・監査が通常経路で効く
+        （Stage A 分。Stage B の `Shiki.data.*`／`Shiki.notify.send` はワークフロー script ではゲスト側に定義が無く、
+        ホスト側も「未知の Shiki API」で返す → #689。ミニアプリ関数（9.12）では利用可）
   - [x] 無限ループ/メモリ爆発が fuel/上限で強制中断される
   - [x] wasm 内からホスト関数以外の外界（fs/net）に到達できない
   - [x] コールドスタートが ms 級（スプレッドシート関数要件）
@@ -251,6 +289,9 @@
   **宛先束縛**（登録時宣言ホスト・実行時 fail-closed 強制・リダイレクト先も再検証）。
   envelope encryption＋ **`KeyProvider` トレイト**（Cloud KMS / ローカルキーファイル）。解決イベント毎回監査。
   ログ・run 履歴・エラーの自動レダクト。
+- **実装突合（2026-10-17）**: `KeyProvider` の実装は `LocalKeyFileProvider` のみで、Cloud KMS 版は無い
+  （`crates/secrets/src/key_provider.rs`）→ #692。宛先束縛ホストの登録時検証は `:`・`/`・空白を弾くだけで、
+  `localhost`・`169.254.169.254` 等の内部宛先も登録できる（`crates/secrets/src/store_helpers.rs` の `normalize_hosts`）→ #627。
 - **受け入れ条件**:
   - [x] 登録後、いかなる API/UI からも平文を読み返せない
   - [x] can_use を持たない実行主体の解決が拒否される
@@ -260,8 +301,12 @@
 ### Task 10.10: http.request ノード
 - **area**: data / **path**: `crates/workflow-engine`
 - **仕様**: egress allowlist × シークレット宛先束縛の AND。タイムアウト・サイズ上限・リトライポリシ。
+- **実装突合（2026-10-17）**: 照合は URL ホスト部のリテラル一致のみで、送信（`ProdNodePorts::http_send`）は `net_guard` を
+  通さず、名前解決も reqwest 任せ（解決先の内部 IP を弾かない・接続先アドレスを固定しない・`no_proxy` なし）。
+  egress allowlist の既定は空で、その場合は secret の宛先束縛だけで宛先が決まる。PIT-36 ③／PIT-48 の方針から外れており、
+  内部宛先への SSRF になる（コード読みで確認・実機未検証）→ #627。
 - **受け入れ条件**:
-  - [x] allowlist 外・束縛外への送信が遮断される
+  - [x] allowlist 外・束縛外への送信が遮断される（内部 IP への解決は未防御 → #627）
   - [x] 応答が step 出力として次ノードに渡る
 
 ### Task 10.11: skill＆スキルストア
@@ -269,11 +314,16 @@
 - **仕様**: skill artifact（指示文＋script 参照＋宣言ツール/スコープ＋資料）。9.13 レジストリ再利用
   （不変 publish・信頼ティア・同意インストール・署名バンドル）。呼び出し面: エージェントマウント／skill ノード
   （`skill:<name>@<version>`・保存時存在検証）。実効=宣言スコープ ∩ 実行主体 ReBAC。
+- **実装突合（2026-10-17）**: skill.invoke は `.shiki` script だけを実行し、`.sh`（shell script）はどこからも実行されない。
+  `.shiki` を持たない skill は指示文付きの llm.invoke として扱われる（`crates/api/src/workflow_runtime/skill_port.rs`）→ #690。
 - **受け入れ条件**:
   - [x] skill を publish→同意インストール→エージェント/ワークフロー両方から呼べる（#344:
         エージェント面はカタログ引きの `skill` ツール、ワークフロー面は skill.invoke ノード）
-  - [x] skill の宣言スコープ外の能力呼び出しが拒否される（scope ceiling ＋ 認可チョークポイント。
+        （対話トリガのみ。schedule/event の委譲 run は workflow プリンシパルが skill artifact を読めず失敗する → #359）
+  - [ ] skill の宣言スコープ外の能力呼び出しが拒否される（scope ceiling ＋ 認可チョークポイント。
         skill 自体は能力を増やさない＝縮小/誘導のみ）
+        — 交差の仕組み（`nodes/skill.rs` の `ceiling_override`）はあるが、実行時解決が `allowed_scopes: None` を固定で返すため
+        skill の宣言スコープでは絞られず、効くのはワークフローの scope ceiling だけ → #360
   - [x] 未インストール/存在しない skill を参照する IR が保存時に拒否される（V4 `ir.unknown_skill`）
 
 ### Task 10.12: dnd ワークフローエディタ
@@ -296,6 +346,9 @@
 - **area**: obs / **path**: `web/`, `crates/workflow-engine`
 - **仕様**: run/step テーブルを正とする実行履歴（入出力プレビュー・リトライ経過・失敗ステップ・再実行操作）。
   OTel span（run→step）。AI ノードは Langfuse trace_id 突合（3.8 枠）。
+- **実装突合（2026-10-17）**: engine.md §12.1 の step 出力 spill（256KB 超を ObjectStore へ）は未実装で、出力は全量 jsonb に載る
+  （http.request の本文は最大 8MB）→ #691。履歴 GC は #459 で `workflow.enabled` から独立・保持日数 API あり。
+  長時間 GC の可視性タイムアウト延長と子行数基準のバッチ分割が残り → #448。
 - **受け入れ条件**:
   - [x] 失敗 run の原因ステップと入出力（シークレットはレダクト）を UI で辿れる
   - [x] 監査↔OTel↔Langfuse が run_id/trace_id で相関する
@@ -307,6 +360,7 @@
 - **受け入れ条件**:
   - [x] Slack 通知 skill がシークレット宛先束縛付きで動く（`sdk/first-party-skills/slack-notify`・
         `.shiki` script → `Shiki.http.request`・束縛外拒否は executor e2e で検証・#344）
+        （schedule/event の委譲 run からは skill を解決できない → #359。`Shiki.http.request` の SSRF → #627）
   - [x] first-party 署名により管理者の個別同意なしで利用可能（信頼ティア動作確認。
         `POST /skills/registry/import` の署名検証 → 本人インストールのみで利用可）
   - [x] 対話系の公式 skill も同じ経路で配れる（`sdk/first-party-skills/grilling`・

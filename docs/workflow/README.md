@@ -49,7 +49,7 @@ flowchart LR
 | [ir.md](./ir.md) | **定義と静的制約**。IR エンベロープ・データフロー模型（式言語なし）・ノード/エッジ/グラフ制約・map 領域・トリガ・ノードカタログ・保存時検証パイプライン・バージョニング。 | §1〜§9（＋§10 通し実例） |
 | [engine.md](./engine.md) | **実行時セマンティクス**。テーブル・run/step 状態機械・DAG 前進・スケジューラ/トリガ・実行主体と委譲の強制・リトライ/冪等/at-least-once・concurrency/rate limit・wait/キャンセル・有効化同意・Observability。 | §1〜§12 |
 | [script.md](./script.md) | **言語・ランタイム・ブリッジ**。shiki script サブセット・コンパイルパイプライン・script-runtime プロセス・ホスト関数ブリッジ・`Shiki.*` API と能力プロファイル・実行契約・セキュリティ。 | §1〜§8 |
-| [implementation.md](./implementation.md) | **実装マップ**。アーキテクチャ図・Postgres の役割・用語↔コード対応・クレート構成・主要フローのトレース・e2e テストの読み方・Stage A 既知の未実装・設計ドキュメントとの既知の差分。 | §1〜§8 |
+| [implementation.md](./implementation.md) | **実装マップ**。アーキテクチャ図・Postgres の役割・用語↔コード対応・クレート構成・主要フローのトレース・e2e テストの読み方・既知の未実装（Stage A・Stage B）・設計ドキュメントとの既知の差分。 | §1〜§8 |
 
 相互リンク: ir.md ⇄ engine.md（実行セマンティクス）・ir.md ⇄ script.md（script ノード）・全 → 本 README。
 
