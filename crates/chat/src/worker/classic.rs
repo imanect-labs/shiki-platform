@@ -5,7 +5,6 @@
 //! `generate.rs` から切り出した（1 ファイル行数規約）。
 
 use authz::AuthContext;
-use futures::stream::StreamExt;
 use llm_gateway::{GenerateRequest, GenerationRecord, Message as LlmMessage, StreamDelta};
 
 use super::history::message_preview;
@@ -131,14 +130,21 @@ impl ChatWorker {
         };
         // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
         let started_at = chrono::Utc::now();
-        let mut stream = self.gateway.stream(ctx, req).await.map_err(map_llm_error)?;
+        // 確立待ち（応答ヘッダ・再試行）の間の停止でも手放す（#602・生成前なので会計なし）。
+        let setup = self.gateway.stream(ctx, req);
+        let Some(stream) = agent_core::await_unless_cancelled(setup, sink).await else {
+            return Ok(());
+        };
+        let mut stream = stream.map_err(map_llm_error)?;
 
         let mut text_acc = String::new();
         let mut usage = llm_gateway::Usage::default();
-        while let Some(delta) = stream.next().await {
-            if sink.is_cancelled() {
-                break;
-            }
+        loop {
+            // 黙っている間も停止を見張り、止まったらストリームを手放す（#602）。
+            let delta = match agent_core::next_unless_cancelled(&mut stream, sink).await {
+                agent_core::NextDelta::Item(delta) => delta,
+                agent_core::NextDelta::End | agent_core::NextDelta::Cancelled => break,
+            };
             match delta.map_err(map_llm_error)? {
                 StreamDelta::TextDelta { text } => {
                     text_acc.push_str(&text);
@@ -156,6 +162,7 @@ impl ChatWorker {
             }
         }
 
+        drop(stream); // 会計（DB・Langfuse）を待つ間も上流を握り続けないよう、先に手放す。
         self.gateway
             .record_generation(
                 ctx,
