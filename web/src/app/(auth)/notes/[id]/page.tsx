@@ -26,6 +26,7 @@ import { NoteSyncSlot } from "@/components/notes/note-header-slot";
 import { ShareLinkUnlock } from "@/components/share/share-link-unlock";
 import { EmptyState } from "@/components/ui/empty-state";
 import { FadeSlide } from "@/components/ui/motion-primitives";
+import { useDocThreadDeepLink } from "@/hooks/use-doc-thread-deep-link";
 import { useMe } from "@/hooks/use-me";
 import { CollabProvider, type CollabStatus } from "@/lib/collab";
 import { setPendingSelection } from "@/lib/selection-context";
@@ -59,8 +60,8 @@ function NotePageInner() {
   const [synced, setSynced] = React.useState(false);
   // 本文エディタ（エクスポートの md 直列化・genui スナップショットに使う・#334）。
   const [editor, setEditor] = React.useState<Editor | null>(null);
-  // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため）。
-  const [chatOpen, setChatOpen] = React.useState(Boolean(initialThreadId));
+  // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため・#598）。
+  const { chatOpen, setChatOpen, deepLinkThreadId } = useDocThreadDeepLink(initialThreadId);
   // 引用箇所から開いたとき（?cite=）: その一節をハイライトしてスクロールする（#508）。
   // 一節そのものは URL に載せず、クリック時に置かれた手がかりを読む。
   const locator = useCiteLocator(searchParams.get("cite"));
@@ -93,7 +94,7 @@ function NotePageInner() {
         return open;
       });
     },
-    [insertSelection],
+    [insertSelection, setChatOpen],
   );
 
   // 「AI に依頼」= アシスタントパネルを開く（＋その時の選択があればチャットへ挿入）。
@@ -102,7 +103,7 @@ function NotePageInner() {
       if (!open && latestSelRef.current) insertSelection(latestSelRef.current);
       return !open;
     });
-  }, [insertSelection]);
+  }, [insertSelection, setChatOpen]);
 
   // Yjs ドキュメントとプロバイダ（ノート単位で 1 つ・アンマウントで破棄）。
   const [session, setSession] = React.useState<{
@@ -262,7 +263,7 @@ function NotePageInner() {
                 noteId={nodeId}
                 noteName={access.name}
                 editable={editable}
-                initialThreadId={initialThreadId}
+                initialThreadId={deepLinkThreadId}
               />
             </div>
           </FadeSlide>

@@ -31,6 +31,7 @@ import {
 } from "@/lib/office-api";
 import { setPendingSelection } from "@/lib/selection-context";
 import { getNode } from "@/lib/storage";
+import { useDocThreadDeepLink } from "@/hooks/use-doc-thread-deep-link";
 
 type LoadState =
   | { phase: "loading" }
@@ -45,10 +46,9 @@ export default function OfficePage() {
   const router = useRouter();
   const [state, setState] = React.useState<LoadState>({ phase: "loading" });
   const searchParams = useSearchParams();
-  // サイドバーの履歴・検索から来たときは、その会話を開く（?thread=・#598）。
+  // サイドバーの履歴・検索から来たときは、アシスタントを開いてその会話を指定する（?thread=・#598）。
   const initialThreadId = searchParams.get("thread");
-  // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため）。
-  const [chatOpen, setChatOpen] = React.useState(Boolean(initialThreadId));
+  const { chatOpen, setChatOpen, deepLinkThreadId } = useDocThreadDeepLink(initialThreadId);
   const [shareOpen, setShareOpen] = React.useState(false);
   // 解錠（redeem）後にセッション取得をやり直すためのリロードキー。
   const [reloadKey, setReloadKey] = React.useState(0);
@@ -99,7 +99,7 @@ export default function OfficePage() {
       if (!open) void captureSelectionIntoChat();
       return !open;
     });
-  }, [captureSelectionIntoChat]);
+  }, [captureSelectionIntoChat, setChatOpen]);
 
   // パネルを開いている間は選択を監視してチャットへ自動挿入する。Collabora は選択変更
   // イベントを出さないため、軽いポーリングで現在の選択を拾う（変化時のみ挿入）。
@@ -111,6 +111,18 @@ export default function OfficePage() {
     const id = window.setInterval(() => void captureSelectionIntoChat(), 1000);
     return () => window.clearInterval(id);
   }, [chatOpen, captureSelectionIntoChat]);
+
+  // 文書を開けなくても（存在しない・権限なし・Collabora 停止・読み込み失敗）、会話そのものは
+  // 通常のチャットで辿れるようにする（ノートと同じ・#282）。
+  const openInChat = initialThreadId ? (
+    <Link
+      href={`/c/${initialThreadId}`}
+      className="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <MessageSquare className="size-4" aria-hidden />
+      この会話をチャットで開く
+    </Link>
+  ) : undefined;
 
   if (state.phase === "loading") {
     // 拡張子から表計算/文書を推定して骨格を出し分ける（初回は URL しか無いので doc 既定）。
@@ -124,18 +136,7 @@ export default function OfficePage() {
           icon={FileWarning}
           title="この文書は開けません"
           description="ファイルが存在しないか、開く権限がないか、ブラウザ編集に対応していない形式です。パスワード付き共有リンクの場合はパスワードで開けます。"
-          action={
-            // 文書を開けなくても、会話そのものは通常のチャットで辿れるようにする（ノートと同じ・#282）。
-            initialThreadId ? (
-              <Link
-                href={`/c/${initialThreadId}`}
-                className="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <MessageSquare className="size-4" aria-hidden />
-                この会話をチャットで開く
-              </Link>
-            ) : undefined
-          }
+          action={openInChat}
         />
         {/* パスワード付き共有リンクの解錠（#342）。?lt=<token> がある時のみ表示。 */}
         {unlockTokenFromUrl() ? (
@@ -154,11 +155,19 @@ export default function OfficePage() {
         icon={PlugZap}
         title="Office 編集サービスに接続できません"
         description="Collabora が起動していません。管理者に office profile の有効化（docker compose --profile office up）を確認してください。"
+        action={openInChat}
       />
     );
   }
   if (state.phase === "error") {
-    return <EmptyState icon={FileWarning} title="読み込みに失敗しました" description={state.message} />;
+    return (
+      <EmptyState
+        icon={FileWarning}
+        title="読み込みに失敗しました"
+        description={state.message}
+        action={openInChat}
+      />
+    );
   }
 
   return (
@@ -240,7 +249,7 @@ export default function OfficePage() {
               <OfficeChatPanel
                 fileId={fileId}
                 fileName={state.fileName}
-                initialThreadId={initialThreadId}
+                initialThreadId={deepLinkThreadId}
               />
             </div>
           </FadeSlide>

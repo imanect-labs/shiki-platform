@@ -52,9 +52,11 @@ export function DocChatPanel({
   /// data-testid の接頭（既存 e2e 互換: ノート="note"・Office="office"）。
   testIdPrefix?: string;
 }) {
-  const [activeThreadId, setActiveThreadIdState] = React.useState<string | null>(
-    () => initialThreadId ?? store.read(),
+  const [activeThreadId, setActiveThreadIdState] = React.useState<string | null>(() =>
+    store.read(),
   );
+  // ?thread= の会話がこの文書のものか確かめている間（確かめ終わるまで最初の会話を自動で作らない）。
+  const [verifyingInitial, setVerifyingInitial] = React.useState(Boolean(initialThreadId));
   const [conversations, setConversations] = React.useState<Thread[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -74,12 +76,30 @@ export function DocChatPanel({
   }, [store]);
 
   // ?thread= で来た会話をアクティブへ（値が変わるたび反映・deep link 切替対応）。
+  // URL は書き換えられるので、**この文書の会話であること**を確かめてから適用する。別文書や
+  // 通常チャットの会話を指定されても、このパネルに混ぜず、保存済みの選択も上書きしない（#598）。
   const appliedInitialRef = React.useRef<string | null>(null);
   React.useEffect(() => {
     if (!initialThreadId || appliedInitialRef.current === initialThreadId) return;
     appliedInitialRef.current = initialThreadId;
-    if (initialThreadId !== store.read()) setActive(initialThreadId);
-  }, [initialThreadId, store, setActive]);
+    let cancelled = false;
+    setVerifyingInitial(true);
+    getThread(initialThreadId)
+      .then((t) => {
+        if (!cancelled && t.originNoteId === nodeId && t.id !== store.read()) setActive(t.id);
+      })
+      .catch(() => {
+        /* 見えない・存在しない会話は適用しない（保存済みの選択のまま）。 */
+      })
+      .finally(() => {
+        if (!cancelled) setVerifyingInitial(false);
+      });
+    return () => {
+      // 確かめ終わる前に外れたら（StrictMode の二重実行・依存の変化）、次の実行でやり直す。
+      cancelled = true;
+      appliedInitialRef.current = null;
+    };
+  }, [initialThreadId, nodeId, store, setActive]);
 
   // このドキュメントの会話一覧を origin_note_id で引く。アクティブが一覧に無ければ補う。
   const refreshConversations = React.useCallback(async () => {
@@ -89,7 +109,8 @@ export function DocChatPanel({
       const active = store.read();
       if (active && !list.some((t) => t.id === active)) {
         const t = await getThread(active).catch(() => null);
-        if (t) list = [t, ...list];
+        // 一覧の 1 ページ目に無い古い会話を補う。別文書の会話は混ぜない。
+        if (t && t.originNoteId === nodeId) list = [t, ...list];
       }
       list.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       setConversations(list);
@@ -104,7 +125,7 @@ export function DocChatPanel({
 
   // 会話未作成なら（editor のとき）最初の会話を作る。ref ガードで一度だけ。
   React.useEffect(() => {
-    if (activeThreadId || !editable || creatingRef.current) return;
+    if (activeThreadId || verifyingInitial || !editable || creatingRef.current) return;
     creatingRef.current = true;
     createThread(title, false, { originNoteId: nodeId })
       .then((thread) => setActive(thread.id))
@@ -112,7 +133,7 @@ export function DocChatPanel({
         creatingRef.current = false;
         setError("チャットの準備に失敗しました。");
       });
-  }, [activeThreadId, editable, title, nodeId, setActive]);
+  }, [activeThreadId, verifyingInitial, editable, title, nodeId, setActive]);
 
   const selectConversation = React.useCallback(
     (id: string) => {
