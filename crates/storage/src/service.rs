@@ -338,11 +338,14 @@ fn validate_name(name: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
-/// ファイル名の拡張子（最後の `.` より後ろ）。`.env` のように先頭のドットだけのものや、
-/// 末尾がドットのものは拡張子なしとみなす。
+/// ファイル名の拡張子（最後の `.` より後ろ）。末尾がドットのものは拡張子なしとみなす。
+///
+/// `.docx` のような先頭ドットだけの名前も拡張子ありとして扱う。開く画面の判定（web の
+/// `endsWith`・Office API の `rsplit_once`）がそう読むので、ここで「拡張子なし」とみなすと
+/// `README` → `.docx` のような改名が素通りし、中身と画面が食い違う。
 fn file_extension(name: &str) -> Option<&str> {
     match name.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => Some(ext),
+        Some((_, ext)) if !ext.is_empty() => Some(ext),
         _ => None,
     }
 }
@@ -408,8 +411,11 @@ mod tests {
         assert!(ensure_same_extension("提案書.docx", "提案書.DOCX").is_ok()); // 大小のみ
         assert!(ensure_same_extension("a.tar.gz", "b.tar.gz").is_ok());
         assert!(ensure_same_extension("README", "README2").is_ok());
-        assert!(ensure_same_extension(".env", ".envrc").is_ok()); // 先頭ドットだけは拡張子でない
-        assert!(ensure_same_extension(".env", ".env.local").is_err()); // .local が付く
+        assert!(ensure_same_extension(".env", "local.env").is_ok());
+        // 先頭ドットだけの名前も拡張子として読む（開く画面の判定と揃える）。
+        assert!(ensure_same_extension("README", ".docx").is_err());
+        assert!(ensure_same_extension(".md", ".docx").is_err());
+        assert!(ensure_same_extension(".env", ".env.local").is_err());
         assert!(ensure_same_extension("メモ.md", "メモ.docx").is_err());
         assert!(ensure_same_extension("表.xlsx", "表.md").is_err());
         assert!(ensure_same_extension("メモ.md", "メモ").is_err()); // 外す
