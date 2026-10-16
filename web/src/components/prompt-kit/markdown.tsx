@@ -105,7 +105,8 @@ function fenceMeta(node: ExtraProps["node"]): string | undefined {
 }
 
 /// 図の「表で表示」。リンク・画像は描かない（図と同じく文字と数値だけにする）。
-function renderFigureTable(markdown: string) {
+/// ノートの ```ui の図（NodeView）も同じ描き方にする。
+export function renderFigureTable(markdown: string) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}

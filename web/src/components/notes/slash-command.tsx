@@ -8,6 +8,7 @@ import { Extension, type Editor, type Range } from "@tiptap/core";
 import { ReactRenderer } from "@tiptap/react";
 import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
 import {
+  BarChart3,
   Code2,
   Heading1,
   Heading2,
@@ -101,6 +102,15 @@ export function defaultSlashItems(): SlashItem[] {
       keywords: ["code", "pre"],
       command: (editor, range) =>
         editor.chain().focus().deleteRange(range).setCodeBlock().run(),
+    },
+    {
+      title: "図（Yui）",
+      description: "棒・折れ線・数値・フロー・構成の図を文字で書く",
+      icon: BarChart3,
+      keywords: ["ui", "yui", "chart", "graph", "zu", "gurafu", "図", "グラフ"],
+      // 保存形式は language=ui の通常のコードブロック（```ui と同じ・#530）。
+      command: (editor, range) =>
+        editor.chain().focus().deleteRange(range).setCodeBlock({ language: "ui" }).run(),
     },
     {
       title: "引用",
