@@ -104,7 +104,7 @@ export function SidebarContent({
 
       {/* 中段: チャット履歴 */}
       {!collapsed ? <SectionLabel>チャット履歴</SectionLabel> : <div className="h-1" />}
-      <SidebarChatHistory collapsed={collapsed} />
+      <SidebarChatHistory collapsed={collapsed} onNavigate={onNavigate} />
 
       {/* 最下部: アカウント（上端は荒い破線で区切る） */}
       <div className="shrink-0 shiki-dash-top">

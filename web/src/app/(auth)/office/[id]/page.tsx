@@ -10,6 +10,7 @@
 /// - Collabora 未配備（office profile 未起動）は 503 → 案内表示へフォールバック。
 
 import { FileWarning, MessageSquare, PlugZap, Share2, Sparkles, X } from "lucide-react";
+import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 
@@ -43,14 +44,18 @@ export default function OfficePage() {
   const fileId = params.id;
   const router = useRouter();
   const [state, setState] = React.useState<LoadState>({ phase: "loading" });
-  const [chatOpen, setChatOpen] = React.useState(false);
+  const searchParams = useSearchParams();
+  // サイドバーの履歴・検索から来たときは、その会話を開く（?thread=・#598）。
+  const initialThreadId = searchParams.get("thread");
+  // ?thread= 指定時はアシスタントを開いた状態で見せる（その会話を辿るのが目的のため）。
+  const [chatOpen, setChatOpen] = React.useState(Boolean(initialThreadId));
   const [shareOpen, setShareOpen] = React.useState(false);
   // 解錠（redeem）後にセッション取得をやり直すためのリロードキー。
   const [reloadKey, setReloadKey] = React.useState(0);
   const editorRef = React.useRef<OfficeEditorHandle>(null);
   // 引用箇所から開いたとき（?cite=）: 読み込み後にこの一節を文書内で検索する（#508）。
   // 段落全体で探すと、該当の段落がまるごと選択される（先頭だけだと途中までしか選ばれない）。
-  const locator = useCiteLocator(useSearchParams().get("cite"));
+  const locator = useCiteLocator(searchParams.get("cite"));
   const findText = locator?.paragraph ?? locator?.find ?? null;
 
   React.useEffect(() => {
@@ -119,6 +124,18 @@ export default function OfficePage() {
           icon={FileWarning}
           title="この文書は開けません"
           description="ファイルが存在しないか、開く権限がないか、ブラウザ編集に対応していない形式です。パスワード付き共有リンクの場合はパスワードで開けます。"
+          action={
+            // 文書を開けなくても、会話そのものは通常のチャットで辿れるようにする（ノートと同じ・#282）。
+            initialThreadId ? (
+              <Link
+                href={`/c/${initialThreadId}`}
+                className="inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <MessageSquare className="size-4" aria-hidden />
+                この会話をチャットで開く
+              </Link>
+            ) : undefined
+          }
         />
         {/* パスワード付き共有リンクの解錠（#342）。?lt=<token> がある時のみ表示。 */}
         {unlockTokenFromUrl() ? (
@@ -220,7 +237,11 @@ export default function OfficePage() {
               </button>
             </div>
             <div className="min-h-0 flex-1">
-              <OfficeChatPanel fileId={fileId} fileName={state.fileName} />
+              <OfficeChatPanel
+                fileId={fileId}
+                fileName={state.fileName}
+                initialThreadId={initialThreadId}
+              />
             </div>
           </FadeSlide>
         ) : null}
