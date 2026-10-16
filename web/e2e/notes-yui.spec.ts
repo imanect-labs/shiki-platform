@@ -123,7 +123,8 @@ test("図にできない ```ui は記述とエラーの一行を見せ、閲覧�
   const editor = page.getByTestId("note-editor");
   await editor.click();
   await editor.pressSequentially("```ui ");
-  await editor.pressSequentially("pie 円グラフ");
+  // 図の種類に無い名前（Yui の知らない種類）。
+  await editor.pressSequentially("sunburst 円グラフ");
   await editor.press("Enter");
   await editor.pressSequentially("A | 1");
   const block = editor.getByTestId("note-yui-block").first();
