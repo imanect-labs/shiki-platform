@@ -109,6 +109,42 @@ test.describe("```ui の図のボタン", () => {
     await expect(page.getByTestId("yui-runs")).toContainText(`申請する → ${name}`, { timeout: 30_000 });
   });
 
+  test("応答が途中で失われても、押し直しで二つ目の run を起動しない", async ({ page }) => {
+    test.setTimeout(120_000);
+    await loginViaKeycloak(page);
+    const name = uniqueName("yui-retry");
+    await createFlow(page, name);
+    await send(page, `yui:app ${name}`);
+    const figure = page.getByTestId("ui-figure");
+    const apply = figure.getByRole("button", { name: "申請する" });
+    await expect(apply).toBeEnabled({ timeout: 30_000 });
+    await figure.getByLabel("金額").fill("800");
+
+    // 1 回目: サーバーは受け付けるが、画面には応答が届かない（通信が切れた）。
+    let first = true;
+    const keys: string[] = [];
+    await page.route("**/ui-actions", async (route) => {
+      keys.push((route.request().postDataJSON() as { idempotency_key?: string }).idempotency_key ?? "");
+      if (!first) return route.continue();
+      first = false;
+      await route.fetch();
+      await route.abort("connectionreset");
+    });
+    await apply.click();
+    await figure.getByRole("group", { name: "実行の確認" }).getByRole("button", { name: "実行する" }).click();
+    await expect(figure.getByText("送信の結果を確かめられませんでした")).toBeVisible({ timeout: 30_000 });
+
+    // 2 回目: 同じ値で押し直すと同じ冪等キーで送られ、run は 1 つのまま。
+    await apply.click();
+    await figure.getByRole("group", { name: "実行の確認" }).getByRole("button", { name: "実行する" }).click();
+    await expect.poll(() => keys.length).toBe(2);
+    expect(keys[1]).toBe(keys[0]);
+    await page.unroute("**/ui-actions");
+    await page.reload();
+    const runs = page.getByTestId("yui-runs").locator("li");
+    await expect(runs).toHaveCount(1, { timeout: 30_000 });
+  });
+
   test("見つからないワークフローのボタンは押しても起動せず、理由が出る", async ({ page }) => {
     await loginViaKeycloak(page);
     const name = uniqueName("yui-missing");

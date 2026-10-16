@@ -13,6 +13,7 @@ import { CheckCircle2, CircleDashed, Loader2, MinusCircle, XCircle } from "lucid
 import {
   invokeChatYuiAction,
   UiActionAlreadyInvoked,
+  UiActionUncertain,
 } from "@/lib/artifact-api";
 import type { UiActionRun } from "@/lib/chat-api";
 import { cn } from "@/lib/utils";
@@ -64,11 +65,19 @@ export type YuiActionProps = {
 };
 
 /// 図に渡すボタンの props。操作を持たない種類は `null`。
-export function useYuiActions(figure: Figure | null, source: string, complete: boolean): YuiActionProps | null {
+export function useYuiActions(
+  figure: Figure | null,
+  source: string,
+  complete: boolean,
+  closed: boolean,
+): YuiActionProps | null {
   const host = React.useContext(YuiActionContext);
   const nested = React.useContext(YuiNestedContext);
   const actionable = figure != null && ACTION_KINDS.has(figure.kind);
-  const usable = actionable && host != null && !nested && complete;
+  const usable = actionable && host != null && !nested && complete && closed;
+  // 結果の分からない送信（通信が途中で切れた）の冪等キー。同じボタン・同じ値で押し直したときは
+  // 同じキーで送り、サーバーが受け付けていた場合に二つ目の run を起動しない。
+  const pendingKeys = React.useRef(new Map<string, string>());
   const [hash, setHash] = React.useState<string | null>(null);
   React.useEffect(() => {
     if (!usable) return;
@@ -90,20 +99,29 @@ export function useYuiActions(figure: Figure | null, source: string, complete: b
       if (target.kind === "workflow" && !host.boundActions.includes(key)) {
         return { ok: false, message: `ワークフロー「${target.name}」が見つからないか、使う権限がありません` };
       }
+      const sent = `${key}\u0000${JSON.stringify(e.values)}`;
+      const idempotencyKey =
+        target.kind === "workflow" ? (pendingKeys.current.get(sent) ?? newIdempotencyKey()) : undefined;
       try {
         await invokeChatYuiAction(
           host.threadId,
           host.messageId,
           key,
           e.values as Record<string, unknown>,
-          target.kind === "workflow" ? newIdempotencyKey() : undefined,
+          idempotencyKey,
         );
+        pendingKeys.current.delete(sent);
         host.onChanged();
         return {
           ok: true,
           message: target.kind === "workflow" ? `ワークフロー「${target.name}」を起動しました` : "送信しました",
         };
       } catch (err) {
+        if (err instanceof UiActionUncertain) {
+          if (idempotencyKey) pendingKeys.current.set(sent, idempotencyKey);
+          return { ok: false, message: err.message };
+        }
+        pendingKeys.current.delete(sent);
         if (err instanceof UiActionAlreadyInvoked) {
           // 送り済み（別のタブ・二度押し）。会話を読み直して送信済みの表示に揃える。
           host.onChanged();
@@ -119,6 +137,7 @@ export function useYuiActions(figure: Figure | null, source: string, complete: b
   if (!host) return { actionDisabledReason: "この場所ではボタンを使えません", runs: [] };
   if (nested) return { actionDisabledReason: "引用や箇条書きの中の図のボタンは使えません", runs: [] };
   if (!complete) return { actionDisabledReason: "回答の生成が終わると使えます", runs: [] };
+  if (!closed) return { actionDisabledReason: "図のブロックが閉じていないため、ボタンは使えません", runs: [] };
   if (host.unsaved === "stopped") {
     return { actionDisabledReason: "生成を止めた回答のボタンは、ページを読み直すと使えます", runs: [] };
   }
@@ -183,7 +202,7 @@ export function YuiRunList({ runs }: { runs: readonly UiActionRun[] }) {
 
 /// 本文に ```ui（Yui）のブロックがあるか。生成の後にメッセージを読み直す（ボタンの束縛と id を得る）かの判断に使う。
 export function hasYuiBlock(text: string): boolean {
-  return /^[ \t]*(?:>[ \t]*)*(?:`{3,}|~{3,})[ \t]*y?ui\b/m.test(text);
+  return /^[ \t]*(?:>[ \t]*)*(?:`{3,}|~{3,})[ \t]*y?ui\b/im.test(text);
 }
 
 /// まだ終わっていない起動があるか（あれば会話を少しずつ読み直して状態を更新する）。
