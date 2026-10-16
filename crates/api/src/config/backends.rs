@@ -119,7 +119,7 @@ pub enum VectorStoreBackend {
     Pgvector,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     /// 既定プロバイダ（ID `default`）。`models[].provider` を省略したモデルの振り先。
     pub backend: LlmBackend,
@@ -158,6 +158,50 @@ pub struct LlmConfig {
     /// 「Auto」の振り先（既定 `gpt-6-luna`・思考強度 `low`）。カタログに無ければ既定モデルへ落ちる。
     #[serde(default)]
     pub auto: Option<LlmAutoConfig>,
+    /// 送信してから応答ヘッダが返るまでの上限秒（既定 60・全プロバイダ共通・#554）。
+    #[serde(default = "default_llm_first_response_timeout_secs")]
+    pub first_response_timeout_secs: u64,
+    /// ストリームのチャンク間の無通信の上限秒（既定 120）。推論モデルの思考中の
+    /// ハートビート間隔より長くする。
+    #[serde(default = "default_llm_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
+    /// 1 回の生成全体の上限秒（既定 900 = 15 分・暴走の安全弁）。
+    #[serde(default = "default_llm_total_timeout_secs")]
+    pub total_timeout_secs: u64,
+}
+
+const fn default_llm_first_response_timeout_secs() -> u64 {
+    llm_gateway::LlmTimeouts::DEFAULT_FIRST_RESPONSE_SECS
+}
+
+const fn default_llm_idle_timeout_secs() -> u64 {
+    llm_gateway::LlmTimeouts::DEFAULT_IDLE_SECS
+}
+
+const fn default_llm_total_timeout_secs() -> u64 {
+    llm_gateway::LlmTimeouts::DEFAULT_TOTAL_SECS
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        LlmConfig {
+            backend: LlmBackend::default(),
+            base_url: None,
+            api_key: None,
+            default_model: None,
+            models: Vec::new(),
+            context_window_tokens: None,
+            langfuse: None,
+            user_agent: None,
+            session_header: None,
+            display_name: None,
+            providers: Vec::new(),
+            auto: None,
+            first_response_timeout_secs: default_llm_first_response_timeout_secs(),
+            idle_timeout_secs: default_llm_idle_timeout_secs(),
+            total_timeout_secs: default_llm_total_timeout_secs(),
+        }
+    }
 }
 
 /// 追加プロバイダ 1 件（設定表現）。API キーは環境変数で注入する（コード・イメージに置かない）。
@@ -187,6 +231,16 @@ pub struct LlmAutoConfig {
 }
 
 impl LlmConfig {
+    /// llm-gateway のタイムアウトへ写す（`validate` で 1 秒以上を保証済み）。
+    #[must_use]
+    pub const fn timeouts(&self) -> llm_gateway::LlmTimeouts {
+        llm_gateway::LlmTimeouts::from_secs(
+            self.first_response_timeout_secs,
+            self.idle_timeout_secs,
+            self.total_timeout_secs,
+        )
+    }
+
     /// llm-gateway のモデルカタログへ写す。既定モデルは `default_model` → カタログ先頭 →
     /// `"default"` の順。`models` が空ならモデル名を素通しする単一エントリを合成し、
     /// `context_window_tokens`（0 は未設定）をそこに載せる。

@@ -6,7 +6,6 @@
 //! [`StreamDelta::ToolUseStop`]（完全な入力 JSON）を 1 回出す。
 
 use std::collections::{BTreeMap, HashSet};
-use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::stream::StreamExt;
@@ -14,7 +13,9 @@ use serde_json::{json, Value};
 
 use super::identity::IdentityHeaders;
 use super::think_tags::{split_content, Piece, ThinkSplitter};
+use super::timeouts::RequestClock;
 use super::tool_names::ToolNameMap;
+use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::tool_loading::{context_tools, with_loaded_note};
@@ -26,6 +27,7 @@ pub struct OpenAiProvider {
     api_key: Option<String>,
     default_model: String,
     identity: IdentityHeaders,
+    timeouts: LlmTimeouts,
     /// 本文の先頭に `<think>…</think>` で思考を返すモデル（実 ID・#584）。
     think_tag_models: HashSet<String>,
 }
@@ -44,6 +46,7 @@ impl OpenAiProvider {
             api_key,
             default_model: default_model.into(),
             identity: IdentityHeaders::default(),
+            timeouts: LlmTimeouts::default(),
             think_tag_models: HashSet::new(),
         }
     }
@@ -59,6 +62,13 @@ impl OpenAiProvider {
     pub fn with_session_header(mut self, header: Option<&str>) -> Result<Self, LlmError> {
         self.identity.set_session_header(header)?;
         Ok(self)
+    }
+
+    /// タイムアウト（最初の応答・無通信・全体）を指定する。既定は [`LlmTimeouts::default`]。
+    #[must_use]
+    pub fn with_timeouts(mut self, timeouts: LlmTimeouts) -> Self {
+        self.timeouts = timeouts;
+        self
     }
 
     /// 本文の先頭に `<think>…</think>` で思考を返すモデル（実 ID）を指定する。
@@ -289,22 +299,16 @@ impl LlmProvider for OpenAiProvider {
         let think_tags = body["model"]
             .as_str()
             .is_some_and(|m| self.think_tag_models.contains(m));
-        let mut builder = self
-            .http
-            .post(&url)
-            .timeout(Duration::from_mins(5))
-            .json(&body);
+        let mut builder = self.http.post(&url).json(&body);
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
         }
         let builder = self.identity.apply(builder, req.session_id.as_deref());
-        let resp = builder
-            .send()
-            .await
-            .map_err(|e| LlmError::Unavailable(format!("openai request failed: {e}")))?;
+        let clock = RequestClock::start(self.timeouts, "openai");
+        let resp = clock.send(builder).await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = clock.error_text(resp).await?;
             // 429 は 4xx だが**こちらの組み立てが悪いわけではない**（プロバイダ側の枠）。
             // BadRequest に落とすと「直せば通る」と誤解され、リトライ方針も表示も間違える。
             // `LlmError::Unavailable` の doc どおり一時障害として扱う。
@@ -331,12 +335,11 @@ impl LlmProvider for OpenAiProvider {
             // 本文先頭の `<think>…</think>` は思考として流す（対象モデルだけ・#584）。
             let mut think_tags = think_tags.then(ThinkSplitter::default);
 
-            'outer: while let Some(chunk) = byte_stream.next().await {
+            'outer: while let Some(chunk) = clock.next_chunk(&mut byte_stream, &tx).await {
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ =
-                            tx.unbounded_send(Err(LlmError::Unavailable(format!("stream: {e}"))));
+                        let _ = tx.unbounded_send(Err(e));
                         return;
                     }
                 };

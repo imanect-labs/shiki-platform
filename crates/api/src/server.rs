@@ -405,7 +405,7 @@ pub fn route_table() -> Vec<RouteDecl> {
             },
         ),
         // --- SessionLongRunning（300s。finalize は staging のサーバ側ハッシュ＋コピーが
-        //     大容量で 30s を超え、バイトは MinIO にあるのに file が作れない事故を防ぐ） ---
+        //     大容量で 30s を超え、バイトはオブジェクトストアにあるのに file が作れない事故を防ぐ） ---
         r("/files", &["POST"], SessionLongRunning, || {
             post(routes::files::begin_upload)
         }),

@@ -15,7 +15,7 @@
 >   失敗ループ検出＋チェックポイント（5.5）・**ブロッキング承認ゲート**（`waiting_approval`＋`run_approval`＋監査・5.6）・
 >   予算ガード（step/time/token/cost・5.7）・trace_id 相関＋自律イベントのライブ SSE（5.9）・UI（計画/承認/予算・5.11）。
 > - **既知の未実装（後続）**: ①プロセス再起動を跨ぐチェックポイント run 再開（承認ベースの suspend は動作）
->   ②ページ再訪後の承認（run_id 再取得が要る・ライブセッション中は動作）③Playwright 自律 e2e（CI に MinIO＋
+>   ②ページ再訪後の承認（run_id 再取得が要る・ライブセッション中は動作）③Playwright 自律 e2e（CI に RustFS＋
 >   autonomous 対応の web-e2e 環境が要る・Rust e2e `autonomous_run_writes_workspace_file_e2e` で DoD を担保済み）
 >   ④**wasm ティアの** shell のパイプ/`&&`（brush 制約・ポストアルファ。gVisor/Firecracker は #504 で
 >   ゲストの `/bin/sh -c` が解釈するよう対応済み）。

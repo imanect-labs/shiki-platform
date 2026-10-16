@@ -215,6 +215,24 @@ impl ActionDispatcher {
                 .await;
             return Err(ActionError::NotFound);
         };
+        self.dispatch_binding(ctx, source, binding, action_id, params, trace_id)
+            .await
+    }
+
+    /// サーバーが引いた束縛をそのまま実行する（会話の図のボタン: 束縛は回答の確定時に
+    /// 保存した宣言、または本文から読んだ「会話に送る」）。`action_id` は監査と台帳の鍵。
+    ///
+    /// 束縛は**呼び出し側がサーバーの状態から作ったもの**に限る（クライアントの値を束縛に
+    /// しない）。上限・単発の確保・監査は [`Self::dispatch`] と同じ。
+    pub async fn dispatch_binding(
+        &self,
+        ctx: &AuthContext,
+        source: &ActionSource,
+        binding: &ActionBinding,
+        action_id: &str,
+        params: serde_json::Value,
+        trace_id: Option<&str>,
+    ) -> Result<serde_json::Value, ActionError> {
         if serde_json::to_vec(&params).map_or(0, |v| v.len()) > MAX_PARAMS_BYTES {
             self.deny(ctx, source, action_id, "params_too_large", trace_id)
                 .await;
@@ -321,6 +339,33 @@ impl ActionDispatcher {
             ));
         };
         Ok(Some(ledger))
+    }
+
+    /// 実行せずに前の結果を返した（同じ冪等キーの再送）ことを監査に残す。
+    ///
+    /// 副作用は起こしていないが、送信があった事実は Allow として残す（再送・競合の試行が
+    /// 監査から消えないように）。
+    pub async fn record_replay(
+        &self,
+        ctx: &AuthContext,
+        source: &ActionSource,
+        action_id: &str,
+        run_id: Option<Uuid>,
+        trace_id: Option<&str>,
+    ) {
+        self.record(
+            ctx,
+            action_id,
+            Decision::Allow,
+            trace_id,
+            json!({
+                "source": source.audit_json(),
+                "binding": "workflow",
+                "replay": true,
+                "run_id": run_id,
+            }),
+        )
+        .await;
     }
 
     /// 束縛照合前の拒否（未宣言 id 等）を監査に残す（API 層からも利用できる）。

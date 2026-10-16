@@ -353,6 +353,8 @@ impl Tool for SubagentTool {
             trace_id: trace_id.map(str::to_string),
             input_preview: objective.clone(),
             app_id: None,
+            // 親の trace に相乗りする。trace input は親のものを残す。
+            owns_trace: false,
         };
         let outcome = run_agent(
             &self.gateway,

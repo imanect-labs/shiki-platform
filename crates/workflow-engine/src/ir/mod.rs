@@ -5,6 +5,8 @@
 
 pub mod edge;
 pub mod expr;
+/// 対話トリガの入力の検証（`input_schema`）。
+pub mod input_schema;
 pub mod node;
 pub mod params;
 pub mod trigger;

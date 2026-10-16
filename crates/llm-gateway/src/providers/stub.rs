@@ -31,16 +31,28 @@ use super::stub_stream::{
     paced_chunks_stream, slow_text_stream, text_stream, tool_call_stream, tool_calls_stream,
 };
 use super::stub_triggers::{echo_system_call, note_tool_call, tool_search_call};
+use super::timeouts::RequestClock;
+use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 
 /// 決定的スタブ。
 #[derive(Debug, Default, Clone)]
-pub struct StubProvider;
+pub struct StubProvider {
+    /// `slow:` の待ちにも実プロバイダと同じ上限を掛ける（#554）。
+    timeouts: LlmTimeouts,
+}
 
 impl StubProvider {
     pub fn new() -> Self {
-        StubProvider
+        StubProvider::default()
+    }
+
+    /// タイムアウト（最初の応答・無通信・全体）を指定する。既定は [`LlmTimeouts::default`]。
+    #[must_use]
+    pub fn with_timeouts(mut self, timeouts: LlmTimeouts) -> Self {
+        self.timeouts = timeouts;
+        self
     }
 }
 
@@ -274,160 +286,168 @@ impl LlmProvider for StubProvider {
     }
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
-        let user_text = last_user_text(req);
-        let prompt_tokens = prompt_tokens(req);
-
-        // --- deep research（#387）: `/deep-research` 起動はフェーズを跨いで進むため最初に見る。 ---
-        if !req.tools.is_empty() {
-            if let Some(s) = deep_research_call(req, prompt_tokens) {
-                return Ok(s);
-            }
-        }
-        // --- 遅い生成 `slow:<秒> <本文>`: 生成中の挙動（順番待ち・停止）を決定的に試す。 ---
-        if let Some(rest) = user_text.strip_prefix("slow:") {
-            let (secs, body) = rest.split_once(' ').unwrap_or((rest, ""));
-            let secs: u64 = secs.trim().parse().unwrap_or(3);
-            return Ok(slow_text_stream(
-                &format!("回答: {}", body.trim()),
-                prompt_tokens,
-                Duration::from_secs(secs),
-            ));
-        }
-        // --- 図 `yui:<kind>`（#530）・推論の引き継ぎ `reasoning:`（#542）・`echosystem:`（#546）。 ---
-        if let Some(s) = fixed_reply_call(req, &user_text, prompt_tokens) {
-            return Ok(s);
-        }
-        // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
-        if !req.tools.is_empty() && user_text.starts_with("loop:") {
-            return Ok(tool_call_stream(
-                req.tools[0].name.clone(),
-                serde_json::json!({}),
-                prompt_tokens,
-            ));
-        }
-        // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
-        if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {
-            return Ok(s);
-        }
-        // --- 並行 read 駆動 `parallel:`（#386）。 ---
-        if !has_tool_result(req) {
-            if let Some(s) = parallel_read_call(req, &user_text, prompt_tokens) {
-                return Ok(s);
-            }
-        }
-        // --- 委譲の並列駆動 `subagent:`（#391）。 ---
-        if !has_tool_result(req) {
-            if let Some(s) = subagent_call(req, &user_text, prompt_tokens) {
-                return Ok(s);
-            }
-        }
-        // --- 自律駆動 `fswrite:`: 1 ターン目に fs_write を固定名で呼ぶ（ワークスペース書込の e2e）。 ---
-        if !has_tool_result(req) {
-            if let Some(rest) = user_text.strip_prefix("fswrite:") {
-                if let Some(t) = req.tools.iter().find(|t| t.name == "fs_write") {
-                    return Ok(tool_call_stream(
-                        t.name.clone(),
-                        serde_json::json!({ "name": "agent-note.txt", "content": rest.trim() }),
-                        prompt_tokens,
-                    ));
-                }
-            }
-        }
-        // --- 自律駆動 `plan:`: 1 ターン目に plan メタツールをカンマ区切りサブタスクで呼ぶ。 ---
-        if !has_tool_result(req) {
-            if let Some(rest) = user_text.strip_prefix("plan:") {
-                if let Some(plan_tool) = req.tools.iter().find(|t| t.name == "plan") {
-                    let subtasks: Vec<serde_json::Value> = rest
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(|title| serde_json::json!({ "title": title }))
-                        .collect();
-                    return Ok(tool_call_stream(
-                        plan_tool.name.clone(),
-                        serde_json::json!({ "subtasks": subtasks }),
-                        prompt_tokens,
-                    ));
-                }
-            }
-        }
-
-        // --- generative UI 駆動 `genui:`（Phase 6 Task 6.4 の決定的検証）。 ---
-        // `genui:form|table|chart` は検証を通る固定スペックで emit_ui を呼び、
-        // `genui:bad` はカタログ外コンポーネントを含む不正スペック（フォールバック検証用）、
-        // `genui:workflow <name>` は名前参照のワークフロー起動ボタンを出す。
-        if !has_tool_result(req) {
-            if let Some(rest) = user_text.strip_prefix("genui:") {
-                if let Some(t) = req.tools.iter().find(|t| t.name == "emit_ui") {
-                    let spec = genui_spec(rest.trim());
-                    return Ok(tool_call_stream(
-                        t.name.clone(),
-                        serde_json::json!({ "spec": spec }),
-                        prompt_tokens,
-                    ));
-                }
-            }
-        }
-
-        // --- ノートツール駆動（issue #282 の e2e）: savenote:<name>→save_note / docembed:<id>→document.embed。 ---
-        if !has_tool_result(req) {
-            if let Some(s) = note_tool_call(req, &user_text, prompt_tokens) {
-                return Ok(s);
-            }
-        }
-
-        // --- AI ワークフロー編集駆動 `emitwf:`（Task 10.13 の決定的検証）。 ---
-        if !has_tool_result(req) {
-            if let Some(rest) = user_text.strip_prefix("emitwf:") {
-                if let Some(t) = req.tools.iter().find(|t| t.name == "emit_workflow") {
-                    let ir = emitwf_ir(rest.trim());
-                    return Ok(tool_call_stream(
-                        t.name.clone(),
-                        serde_json::json!({ "ir": ir }),
-                        prompt_tokens,
-                    ));
-                }
-            }
-        }
-
-        // ツール呼び出し分岐（決定的）: 1 ターン目に既知プレフィックスで始まれば対応ツールを呼ぶ。
-        if !req.tools.is_empty() && !has_tool_result(req) {
-            if let Some((tool_name, key, value)) = tool_trigger(&user_text) {
-                // 対応ツールが提示にあればそれを、無ければ tools[0] を呼ぶ（後方互換）。
-                let name = req
-                    .tools
-                    .iter()
-                    .find(|t| t.name == tool_name)
-                    .map_or_else(|| req.tools[0].name.clone(), |t| t.name.clone());
-                let id = "stubtool_1".to_string();
-                let input = serde_json::json!({ key: value });
-                let events = vec![
-                    Ok(StreamDelta::ToolUseStart {
-                        id: id.clone(),
-                        name,
-                    }),
-                    Ok(StreamDelta::ToolUseStop { id, input }),
-                    Ok(StreamDelta::Done {
-                        stop_reason: StopReason::ToolUse,
-                        usage: Usage {
-                            prompt_tokens,
-                            completion_tokens: 0,
-                            ..Default::default()
-                        },
-                    }),
-                ];
-                return Ok(stream::iter(events).boxed());
-            }
-        }
-
-        // 通常応答: 本文を語単位でストリーミング。
-        let reply = if user_text.is_empty() {
-            "（空の質問です）".to_string()
-        } else {
-            format!("回答: {user_text}")
-        };
-        Ok(text_stream(&reply, prompt_tokens))
+        // 実プロバイダと同じ無通信・全体の上限を、どの応答（`slow:` の待ち・`yui:` の
+        // 間隔付きの流し方など）にも掛ける（#554）。
+        Ok(RequestClock::start(self.timeouts, "stub").guard(stub_stream(req)))
     }
+}
+
+/// 入力に応じた決定的な応答（タイムアウトは [`StubProvider::stream`] が掛ける）。
+#[allow(clippy::too_many_lines)] // 既知プレフィックスごとの分岐で行数が伸びる。
+fn stub_stream(req: &GenerateRequest) -> DeltaStream {
+    let user_text = last_user_text(req);
+    let prompt_tokens = prompt_tokens(req);
+
+    // --- deep research（#387）: `/deep-research` 起動はフェーズを跨いで進むため最初に見る。 ---
+    if !req.tools.is_empty() {
+        if let Some(s) = deep_research_call(req, prompt_tokens) {
+            return s;
+        }
+    }
+    // --- 遅い生成 `slow:<秒> <本文>`: 生成中の挙動（順番待ち・停止）を決定的に試す。 ---
+    if let Some(rest) = user_text.strip_prefix("slow:") {
+        let (secs, body) = rest.split_once(' ').unwrap_or((rest, ""));
+        let secs: u64 = secs.trim().parse().unwrap_or(3);
+        return slow_text_stream(
+            &format!("回答: {}", body.trim()),
+            prompt_tokens,
+            Duration::from_secs(secs),
+        );
+    }
+    // --- 図 `yui:<kind>`（#530）・推論の引き継ぎ `reasoning:`（#542）・`echosystem:`（#546）。 ---
+    if let Some(s) = fixed_reply_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
+    if !req.tools.is_empty() && user_text.starts_with("loop:") {
+        return tool_call_stream(
+            req.tools[0].name.clone(),
+            serde_json::json!({}),
+            prompt_tokens,
+        );
+    }
+    // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
+    if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 並行 read 駆動 `parallel:`（#386）。 ---
+    if !has_tool_result(req) {
+        if let Some(s) = parallel_read_call(req, &user_text, prompt_tokens) {
+            return s;
+        }
+    }
+    // --- 委譲の並列駆動 `subagent:`（#391）。 ---
+    if !has_tool_result(req) {
+        if let Some(s) = subagent_call(req, &user_text, prompt_tokens) {
+            return s;
+        }
+    }
+    // --- 自律駆動 `fswrite:`: 1 ターン目に fs_write を固定名で呼ぶ（ワークスペース書込の e2e）。 ---
+    if !has_tool_result(req) {
+        if let Some(rest) = user_text.strip_prefix("fswrite:") {
+            if let Some(t) = req.tools.iter().find(|t| t.name == "fs_write") {
+                return tool_call_stream(
+                    t.name.clone(),
+                    serde_json::json!({ "name": "agent-note.txt", "content": rest.trim() }),
+                    prompt_tokens,
+                );
+            }
+        }
+    }
+    // --- 自律駆動 `plan:`: 1 ターン目に plan メタツールをカンマ区切りサブタスクで呼ぶ。 ---
+    if !has_tool_result(req) {
+        if let Some(rest) = user_text.strip_prefix("plan:") {
+            if let Some(plan_tool) = req.tools.iter().find(|t| t.name == "plan") {
+                let subtasks: Vec<serde_json::Value> = rest
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|title| serde_json::json!({ "title": title }))
+                    .collect();
+                return tool_call_stream(
+                    plan_tool.name.clone(),
+                    serde_json::json!({ "subtasks": subtasks }),
+                    prompt_tokens,
+                );
+            }
+        }
+    }
+
+    // --- generative UI 駆動 `genui:`（Phase 6 Task 6.4 の決定的検証）。 ---
+    // `genui:form|table|chart` は検証を通る固定スペックで emit_ui を呼び、
+    // `genui:bad` はカタログ外コンポーネントを含む不正スペック（フォールバック検証用）、
+    // `genui:workflow <name>` は名前参照のワークフロー起動ボタンを出す。
+    if !has_tool_result(req) {
+        if let Some(rest) = user_text.strip_prefix("genui:") {
+            if let Some(t) = req.tools.iter().find(|t| t.name == "emit_ui") {
+                let spec = genui_spec(rest.trim());
+                return tool_call_stream(
+                    t.name.clone(),
+                    serde_json::json!({ "spec": spec }),
+                    prompt_tokens,
+                );
+            }
+        }
+    }
+
+    // --- ノートツール駆動（issue #282 の e2e）: savenote:<name>→save_note / docembed:<id>→document.embed。 ---
+    if !has_tool_result(req) {
+        if let Some(s) = note_tool_call(req, &user_text, prompt_tokens) {
+            return s;
+        }
+    }
+
+    // --- AI ワークフロー編集駆動 `emitwf:`（Task 10.13 の決定的検証）。 ---
+    if !has_tool_result(req) {
+        if let Some(rest) = user_text.strip_prefix("emitwf:") {
+            if let Some(t) = req.tools.iter().find(|t| t.name == "emit_workflow") {
+                let ir = emitwf_ir(rest.trim());
+                return tool_call_stream(
+                    t.name.clone(),
+                    serde_json::json!({ "ir": ir }),
+                    prompt_tokens,
+                );
+            }
+        }
+    }
+
+    // ツール呼び出し分岐（決定的）: 1 ターン目に既知プレフィックスで始まれば対応ツールを呼ぶ。
+    if !req.tools.is_empty() && !has_tool_result(req) {
+        if let Some((tool_name, key, value)) = tool_trigger(&user_text) {
+            // 対応ツールが提示にあればそれを、無ければ tools[0] を呼ぶ（後方互換）。
+            let name = req
+                .tools
+                .iter()
+                .find(|t| t.name == tool_name)
+                .map_or_else(|| req.tools[0].name.clone(), |t| t.name.clone());
+            let id = "stubtool_1".to_string();
+            let input = serde_json::json!({ key: value });
+            let events = vec![
+                Ok(StreamDelta::ToolUseStart {
+                    id: id.clone(),
+                    name,
+                }),
+                Ok(StreamDelta::ToolUseStop { id, input }),
+                Ok(StreamDelta::Done {
+                    stop_reason: StopReason::ToolUse,
+                    usage: Usage {
+                        prompt_tokens,
+                        completion_tokens: 0,
+                        ..Default::default()
+                    },
+                }),
+            ];
+            return stream::iter(events).boxed();
+        }
+    }
+
+    // 通常応答: 本文を語単位でストリーミング。
+    let reply = if user_text.is_empty() {
+        "（空の質問です）".to_string()
+    } else {
+        format!("回答: {user_text}")
+    };
+    text_stream(&reply, prompt_tokens)
 }
 
 #[cfg(test)]

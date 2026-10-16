@@ -140,7 +140,6 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
             kind: ProviderKind::Stub,
             base_url: None,
             api_key: None,
-            timeout_secs: 120,
             user_agent: None,
             session_header: None,
             ..Default::default()
@@ -178,6 +177,8 @@ async fn run(
         trace_id: None,
         input_preview: utterance.to_string(),
         app_id: None,
+        // テストは単独 run。
+        owns_trace: true,
     };
     let outcome = run_agent(
         gateway,

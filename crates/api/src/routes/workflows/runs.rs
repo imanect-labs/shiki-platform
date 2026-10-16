@@ -67,6 +67,7 @@ pub async fn start_workflow_run(
         .await
         .map_err(|e| match e {
             workflow_engine::run::LauncherError::Ir(_) => ApiError::NotFound,
+            workflow_engine::run::LauncherError::Input(m) => ApiError::BadRequest(m),
             other => ApiError::Internal(format!("run 起動: {other}")),
         })?;
     Ok((StatusCode::ACCEPTED, Json(StartRunResponse { run_id })))

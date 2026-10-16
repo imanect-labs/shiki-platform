@@ -6,7 +6,7 @@
 # `Bind for 0.0.0.0:8090 failed: port is already allocated` で起動できなかった。
 #
 # CI はこの種の衝突を構造的に検出できない。全サービスをまとめて起動せず、ジョブごとに
-# 必要なものだけ名指しで起動するため（ci.yml の `docker compose up -d postgres minio ...`）、
+# 必要なものだけ名指しで起動するため（ci.yml の `docker compose up -d postgres rustfs ...`）、
 # 衝突する組み合わせが同時に立ち上がらない。ローカルでフルスタックを起動した人だけが踏む。
 # check-migration-versions.sh（#413）と同じ「CI で拾えない構造的バグ」なので、
 # 起動せずファイル定義だけで判定できるここで止める。

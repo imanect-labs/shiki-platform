@@ -32,7 +32,7 @@ pub struct WorkerConfig {
     /// 通常チャット 1 応答の最大トークン。reasoning 系は思考も消費するため、
     /// 長文成果物・大きなツール引数に耐える値にする（旧 2048 は引数切れを起こした）。
     pub max_tokens: u32,
-    /// 同一ステップ内で並列実行する冪等 read ツール（doc_search/web_search/web_fetch）の上限。
+    /// 同一ステップ内で並列実行する冪等 read ツール（doc_search/doc_read/web_search/web_fetch）の上限。
     ///
     /// deep research の検索→複数取得ファンアウトを直列にしないための有界並列度（#349）。
     /// 検索 API の rate limit に合わせて絞れる（1 で従来どおりの逐次）。

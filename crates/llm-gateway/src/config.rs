@@ -4,6 +4,8 @@
 //! （APIキーで動く openai-compat＝vLLM もこれで賄う）で、Anthropic / Gemini / 複数 openai-compat を
 //! 後から足せる。エアギャップは LiteLLM 等の外部を積まず vLLM 直結のみ（NFR-2 無傷）。
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 use crate::model::Usage;
@@ -66,9 +68,6 @@ pub struct ProviderConfig {
     /// API キー（環境変数経由で注入。stub/エアギャップ vLLM は不要）。
     #[serde(default)]
     pub api_key: Option<String>,
-    /// リクエストタイムアウト秒（既定 120）。
-    #[serde(default = "default_timeout_secs")]
-    pub timeout_secs: u64,
     /// 送出する User-Agent（未指定は HTTP クライアントの既定）。呼び出し元の名乗りを
     /// 求めるプロバイダ（OpenCode Go 等）向け。
     #[serde(default)]
@@ -79,10 +78,6 @@ pub struct ProviderConfig {
     /// [`GenerateRequest::session_id`]: crate::model::GenerateRequest::session_id
     #[serde(default)]
     pub session_header: Option<String>,
-}
-
-fn default_timeout_secs() -> u64 {
-    120
 }
 
 fn default_provider_id() -> String {
@@ -280,6 +275,47 @@ impl Default for AutoConfig {
     }
 }
 
+/// LLM 呼び出しのタイムアウト（全プロバイダ共通・#554）。測り方は
+/// [`providers`](crate::providers) の各アダプタが共通のヘルパで行う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmTimeouts {
+    /// 送信してから応答ヘッダが返るまで（接続を含む）。
+    pub first_response: Duration,
+    /// ストリームのチャンクとチャンクの間隔（推論モデルの思考中のハートビート間隔より長く）。
+    pub idle: Duration,
+    /// 1 回の生成全体の上限（暴走の安全弁）。gateway の再試行は試行ごとに測り直すので、
+    /// 利用者から見た待ちの上限は試行回数分になる。
+    pub total: Duration,
+}
+
+impl LlmTimeouts {
+    /// 既定の最初の応答（60 秒）。
+    pub const DEFAULT_FIRST_RESPONSE_SECS: u64 = 60;
+    /// 既定の無通信（120 秒）。
+    pub const DEFAULT_IDLE_SECS: u64 = 120;
+    /// 既定の全体（15 分）。
+    pub const DEFAULT_TOTAL_SECS: u64 = 15 * 60;
+
+    /// 秒で組む（設定値から写す用）。
+    pub const fn from_secs(first_response: u64, idle: u64, total: u64) -> Self {
+        LlmTimeouts {
+            first_response: Duration::from_secs(first_response),
+            idle: Duration::from_secs(idle),
+            total: Duration::from_secs(total),
+        }
+    }
+}
+
+impl Default for LlmTimeouts {
+    fn default() -> Self {
+        LlmTimeouts::from_secs(
+            Self::DEFAULT_FIRST_RESPONSE_SECS,
+            Self::DEFAULT_IDLE_SECS,
+            Self::DEFAULT_TOTAL_SECS,
+        )
+    }
+}
+
 /// gateway 全体の設定。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayConfig {
@@ -294,6 +330,9 @@ pub struct GatewayConfig {
     pub auto: AutoConfig,
     #[serde(default)]
     pub langfuse: Option<LangfuseConfig>,
+    /// LLM 呼び出しのタイムアウト（最初の応答・無通信・全体）。
+    #[serde(default)]
+    pub timeouts: LlmTimeouts,
 }
 
 #[cfg(test)]

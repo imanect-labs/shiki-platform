@@ -50,7 +50,10 @@ pub use approval::{ApprovalDecision, ApprovalPolicy, Approver};
 pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
 pub use checkpoint::Checkpoint;
 pub use cite::CitationLedger;
-pub use event::{AgentError, AgentEvent, EventSink, RecoveryAction};
+pub use event::{
+    await_unless_cancelled, next_unless_cancelled, AgentError, AgentEvent, EventSink, NextDelta,
+    RecoveryAction,
+};
 pub use plan::{Plan, Subtask, SubtaskStatus};
 pub use profile::{
     AgentOptions, AgentOutcome, AgentProfile, ToolSearchOptions, DEFAULT_PARALLEL_READ_TOOLS,

@@ -5115,6 +5115,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "chardetng",
+ "chrono",
  "dom_query",
  "dom_smoothie",
  "encoding_rs",
@@ -5319,6 +5320,7 @@ dependencies = [
  "shiki-tabular",
  "shiki-websearch",
  "shiki-workflow-engine",
+ "shiki-yui",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
@@ -5720,6 +5722,17 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "shiki-yui"
+version = "0.0.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "unicode-normalization",
 ]
 
 [[package]]

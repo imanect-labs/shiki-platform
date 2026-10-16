@@ -237,7 +237,6 @@ fn stub_gateway_with_window(pool: PgPool, context_window_tokens: Option<u32>) ->
             kind: ProviderKind::Stub,
             base_url: None,
             api_key: None,
-            timeout_secs: 120,
             user_agent: None,
             session_header: None,
             ..Default::default()
@@ -270,6 +269,8 @@ fn run_context<'a>(ctx: &'a AuthContext, preview: &str) -> RunContext<'a> {
         trace_id: None,
         input_preview: preview.to_string(),
         app_id: None,
+        // テストは単独 run。
+        owns_trace: true,
     }
 }
 

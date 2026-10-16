@@ -1,7 +1,7 @@
 //! **実 Drive API（StorageService）経由**のアップロード → 自動索引 → 検索の結合テスト。
 //!
 //! pipeline_it が DB 直挿入で経路を検証するのに対し、本テストは実サービスの
-//! declare → **presigned PUT（実 MinIO）** → finalize → outbox → relay → consumer
+//! declare → **presigned PUT（実 RustFS）** → finalize → outbox → relay → consumer
 //! → 索引 → SearchService（実 OpenFGA の二段 authz）を通し、パーサも
 //! **内部 presigned GET で実際に blob を読む**（IndexerStorage の presign 経路の実証）。
 //!
@@ -47,7 +47,7 @@ use storage::{
 use uuid::Uuid;
 
 /// **presigned GET を実際に fetch** して本文をブロック化するパーサ
-/// （IndexerStorage → MinIO 内部署名 URL の経路を実証する）。
+/// （IndexerStorage → オブジェクトストア内部署名 URL の経路を実証する）。
 struct FetchingParser {
     http: reqwest::Client,
 }
@@ -239,7 +239,7 @@ async fn setup() -> Option<Env> {
     })
 }
 
-/// 実 API: declare → presigned PUT（実 MinIO）→ finalize。
+/// 実 API: declare → presigned PUT（実 RustFS）→ finalize。
 async fn upload(env: &Env, parent: Option<Uuid>, name: &str, content: &str) -> Node {
     let bytes = content.as_bytes();
     let ticket = env

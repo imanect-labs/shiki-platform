@@ -195,6 +195,8 @@ impl NodePorts for ProdNodePorts {
         greq.model = req.model.clone();
         greq.system = req.system.clone();
         greq.max_tokens = req.max_tokens;
+        // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
+        let started_at = chrono::Utc::now();
         let mut stream = self
             .gateway
             .stream(&ctx, greq)
@@ -226,6 +228,13 @@ impl NodePorts for ProdNodePorts {
                     output_preview: preview(&text),
                     app_id: None,
                     source: llm_gateway::UsageSource::Workflow,
+                    // **false 固定。** 1 つの run に llm.invoke ノードが複数あると、
+                    // 全ノードが run レベルの同じ trace_id を共有する。true にすると
+                    // 後続ノードのプロンプトが trace input を上書きして、
+                    // 最初のノードの入力が消える。ここからは「run 全体の入力」を
+                    // 知る術が無いので、trace input は送らない（generation 側には残る）。
+                    first_in_trace: false,
+                    started_at: Some(started_at),
                 },
             )
             .await;
@@ -405,7 +414,13 @@ impl NodePorts for ProdNodePorts {
             .launcher
             .start_interactive(&ctx, workflow_id, input)
             .await
-            .map_err(|e| PortError::unavailable(format!("workflow.start: {e}")))?;
+            .map_err(|e| match e {
+                // 入力が子ワークフローの input_schema に合わない＝何度やっても通らない（再試行しない）。
+                workflow_engine::run::LauncherError::Input(m) => {
+                    PortError::invalid(format!("workflow.start の入力: {m}"))
+                }
+                other => PortError::unavailable(format!("workflow.start: {other}")),
+            })?;
         Ok(json!({ "run_id": run_id.map(|r| r.to_string()) }))
     }
 

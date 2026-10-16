@@ -44,7 +44,7 @@ pub use registration::{
 pub use retry::{backoff_with_jitter, classify, RetryClass};
 pub use run::{
     CancelOutcome, GcReport, HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter,
-    RunListItem, StepDetail, StepOverview,
+    RunListItem, RunStatusReader, StepDetail, StepOverview,
 };
 pub use run::{
     ConcurrencyLimits, NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus,

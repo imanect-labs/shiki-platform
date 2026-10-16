@@ -24,7 +24,7 @@ docs/          設計・要件・ロードマップ
 
 ## クイックスタート
 
-`docker compose up` 一発で全依存（Postgres / Keycloak / OpenFGA / MinIO / Qdrant /
+`docker compose up` 一発で全依存（Postgres / Keycloak / OpenFGA / RustFS / Qdrant /
 ingestion-worker）と shiki-server が起動する。
 
 ```sh
@@ -57,7 +57,7 @@ pnpm dev                # http://localhost:3000
 ブラウザで `http://localhost:3000` を開き Keycloak（テストユーザー `alice` / `password`）で
 ログインすると `/me` に自分の情報（org=acme, dept=engineering）が表示される。
 
-Keycloak 管理コンソール `http://localhost:8081`、MinIO コンソール `http://localhost:9001`。
+Keycloak 管理コンソール `http://localhost:8081`、RustFS コンソール `http://localhost:9001`。
 
 ## 開発コマンド（CI の正）
 

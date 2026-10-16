@@ -28,6 +28,21 @@ pub struct UiActionRequest {
     #[serde(default)]
     #[schema(value_type = Object)]
     pub params: serde_json::Value,
+    /// 送信ごとの冪等キー（本文の図のワークフローのボタンでは必須・英数字と `-` `_` の 8〜64 文字）。
+    /// 同じキーの再送は前の起動の結果を返し、run を増やさない（#604）。
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+/// 本文の図（```ui）のボタンの id か（`{16 桁の 16 進}:{ボタンの id}`・#604）。
+fn is_yui_action(action_id: &str) -> bool {
+    action_id.split_once(':').is_some_and(|(hash, id)| {
+        hash.len() == 16
+            && hash
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            && !id.is_empty()
+    })
 }
 
 /// アクション実行レスポンス。
@@ -103,7 +118,7 @@ pub(crate) fn map_action_err(e: ActionError) -> ApiError {
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "対象が見つからない（未宣言アクション含む）"),
-        (status = 409, description = "この操作は送信済み（単発アクションの二重送信）"),
+        (status = 409, description = "この操作は送信済み（単発アクションの二重送信）・同じ冪等キーの起動が途中"),
         (status = 503, description = "チャットまたは束縛先が無効"),
     ),
     security(("session" = [])),
@@ -120,14 +135,61 @@ pub async fn invoke_chat_ui_action(
         .as_ref()
         .ok_or_else(|| ApiError::ServiceUnavailable("チャットが無効です".into()))?;
 
-    // thread viewer 認可つきでメッセージを引く（存在秘匿は store 側の 404/403）。
-    let message = chat
-        .get_message(&ctx, thread_id, message_id, trace.as_deref())
-        .await?;
+    // 本文の図のボタン: 編集者・本文からの読み直しと値の検証・回数・記録は chat 側の 1 か所で。
+    if is_yui_action(&req.action_id) {
+        let values = match req.params {
+            serde_json::Value::Object(map) => map,
+            serde_json::Value::Null => serde_json::Map::new(),
+            _ => {
+                return Err(ApiError::BadRequest(
+                    "params は項目と値の組（object）で送ってください".into(),
+                ))
+            }
+        };
+        let result = chat
+            .invoke_yui_action(
+                &ctx,
+                &state.ui_actions,
+                thread_id,
+                message_id,
+                chat::YuiActionRequest {
+                    action_id: req.action_id,
+                    values,
+                    idempotency_key: req.idempotency_key,
+                },
+                trace.as_deref(),
+            )
+            .await
+            .map_err(map_action_err)?;
+        return Ok(Json(UiActionResponse { result }));
+    }
+
+    // 押せるのは会話の編集者だけ（閲覧者に共有した会話からワークフローや検索を走らせない・#604）。
     let source = ActionSource::ChatMessage {
         thread_id,
         message_id,
     };
+    if let Err(e) = chat
+        .require_ui_action_editor(&ctx, thread_id, trace.as_deref())
+        .await
+    {
+        state
+            .ui_actions
+            .deny(
+                &ctx,
+                &source,
+                &req.action_id,
+                "not_editor",
+                trace.as_deref(),
+            )
+            .await;
+        return Err(e.into());
+    }
+
+    // thread viewer 認可つきでメッセージを引く（存在秘匿は store 側の 404/403）。
+    let message = chat
+        .get_message(&ctx, thread_id, message_id, trace.as_deref())
+        .await?;
 
     let Ok(doc) = declaring_doc(&message.content, &req.action_id) else {
         state
@@ -188,6 +250,16 @@ mod tests {
                 "root": { "component": "text", "text": "こんにちは" },
             }),
         }
+    }
+
+    #[test]
+    fn yui_action_ids_are_recognised() {
+        assert!(is_yui_action("0123456789abcdef:a1"));
+        assert!(is_yui_action("0123456789abcdef:approve"));
+        assert!(!is_yui_action("submit"));
+        assert!(!is_yui_action("0123456789ABCDEF:a1"));
+        assert!(!is_yui_action("0123456789abcdef:"));
+        assert!(!is_yui_action("0123456789abcde:a1"));
     }
 
     #[test]

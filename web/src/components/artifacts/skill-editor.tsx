@@ -26,6 +26,7 @@ import { FolderPicker } from "./folder-picker";
 /// 破壊系（shell/fs_*）も選べるが、明示許可（承認）は skill では無効化されない。
 const TOOL_OPTIONS: { value: ToolName; label: string; note?: string }[] = [
   { value: "doc_search", label: "社内文書検索" },
+  { value: "doc_read", label: "社内文書の本文を読む" },
   { value: "web_search", label: "Web 検索" },
   { value: "web_fetch", label: "Web ページ取得" },
   { value: "code_interpreter", label: "コード実行" },

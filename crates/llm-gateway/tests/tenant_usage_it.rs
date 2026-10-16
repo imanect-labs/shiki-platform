@@ -109,6 +109,8 @@ async fn record(
             output_preview: String::new(),
             app_id: None,
             source,
+            first_in_trace: true,
+            started_at: None,
         },
     )
     .await;
@@ -453,6 +455,8 @@ async fn cache_tokens_are_recorded_and_priced_separately() {
         output_preview: String::new(),
         app_id: None,
         source: UsageSource::Chat,
+        first_in_trace: true,
+        started_at: None,
     };
     // 1 回目: 1M 入力をすべて書き込み → $1.25。2 回目: 0.9M 読み出し＋0.1M 定価＋出力 0.5M
     // → $0.09 + $0.1 + $1 = $1.19。キャッシュ単価なしで数えると $1 と $2.1。

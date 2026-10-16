@@ -234,7 +234,7 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 ## 6. e2e テストの読み方
 
 `crates/api/tests/workflow_nodes_it.rs`（566行）が本番 `CapabilityNodeExecutor` + `ProdNodePorts`
-を実 Postgres + OpenFGA + MinIO に対して通す網羅テスト。`executor` ヘルパ（177行）が
+を実 Postgres + OpenFGA + RustFS に対して通す網羅テスト。`executor` ヘルパ（177行）が
 `sandbox_client::FakeSandbox` と http allowlist を差し込んで本番 executor を組み立てる。
 
 - `combined_pipeline_covers_many_node_types`（320行）: script → storage.write → storage.read →

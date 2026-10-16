@@ -516,3 +516,46 @@ fn catalog_reads_cache_prices_from_toml() {
     assert_eq!(plain.cache_read_price(), 100_000);
     assert_eq!(plain.cache_write_price(), 100_000);
 }
+
+#[test]
+fn llm_timeouts_default_and_reach_the_gateway() {
+    // 省略時は 60 秒 / 120 秒 / 15 分（#554）。
+    let llm: LlmConfig = serde_json::from_value(serde_json::json!({ "backend": "stub" })).unwrap();
+    assert_eq!(
+        llm.timeouts(),
+        llm_gateway::LlmTimeouts::from_secs(60, 120, 900)
+    );
+    assert_eq!(
+        LlmConfig::default().timeouts(),
+        llm_gateway::LlmTimeouts::default()
+    );
+    let llm: LlmConfig = serde_json::from_value(serde_json::json!({
+        "backend": "stub",
+        "first_response_timeout_secs": 5,
+        "idle_timeout_secs": 30,
+        "total_timeout_secs": 3600,
+    }))
+    .unwrap();
+    assert_eq!(
+        llm.timeouts(),
+        llm_gateway::LlmTimeouts::from_secs(5, 30, 3600)
+    );
+}
+
+#[test]
+fn zero_llm_timeouts_are_rejected() {
+    for name in [
+        "first_response_timeout_secs",
+        "idle_timeout_secs",
+        "total_timeout_secs",
+    ] {
+        let mut cfg = valid_config();
+        match name {
+            "first_response_timeout_secs" => cfg.llm.first_response_timeout_secs = 0,
+            "idle_timeout_secs" => cfg.llm.idle_timeout_secs = 0,
+            _ => cfg.llm.total_timeout_secs = 0,
+        }
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains(name), "{err}");
+    }
+}

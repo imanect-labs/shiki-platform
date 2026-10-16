@@ -67,7 +67,12 @@ impl ChatWorker {
                 Role::Assistant => LlmRole::Assistant,
                 _ => continue,
             };
-            let text = message_text(&m.content);
+            let mut text = message_text(&m.content);
+            // 本文の図のボタンで起動したワークフローと、その結果（#604）。モデルが次の回答で
+            // 「さっきの申請はどうなった」に答えられるように、回答の後ろに添える。
+            if let Some(runs) = super::history::ui_runs_text(&m.ui_runs) {
+                text.push_str(&runs);
+            }
             if text.trim().is_empty() {
                 continue;
             }
@@ -178,6 +183,8 @@ impl ChatWorker {
             trace_id: run.trace_id.clone(),
             input_preview,
             app_id: None,
+            // チャットの 1 ターンが trace の起点。
+            owns_trace: true,
         };
 
         // 承認者は自律/通常チャットの双方へ配線する。破壊系ツール（document.edit / slide.edit /

@@ -25,7 +25,8 @@ pub use launcher::{LauncherError, WorkflowRunLauncher};
 pub use model::{idempotency_key, RunStatus, StepStatus};
 pub use store::{
     CancelOutcome, GcReport, HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter,
-    RunListItem, RunStore, RunStoreError, StepDetail, StepOverview, WORKFLOW_GC_QUEUE,
+    RunListItem, RunStatusReader, RunStore, RunStoreError, StepDetail, StepOverview,
+    WORKFLOW_GC_QUEUE,
 };
 pub use worker::{ConcurrencyLimits, WorkerConfig, WorkflowWorker, DEFAULT_LEASE_SECS};
 

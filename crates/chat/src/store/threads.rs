@@ -85,6 +85,8 @@ impl MessageRow {
             agent_mode: self.agent_mode,
             parent_id: self.parent_id,
             invoked_actions: Vec::new(),
+            bound_actions: Vec::new(),
+            ui_runs: Vec::new(),
             created_at: self.created_at,
         })
     }
@@ -320,13 +322,21 @@ impl ChatStore {
                 .iter()
                 .any(|b| matches!(b, ContentBlock::GenerativeUi { .. }))
         });
-        if has_ui {
+        // 本文の図（```ui）のボタンも同じ台帳（会話に送るボタン）と、ワークフローの束縛・起動の
+        // 記録を持つ（#604）。図の無いスレッドでは引かない。
+        let has_figures = messages
+            .iter()
+            .any(|m| m.role == Role::Assistant && crate::yui_actions::may_have_yui(&m.content));
+        if has_ui || has_figures {
             let mut invoked = self.invoked_ui_actions(ctx, thread_id).await?;
             for m in &mut messages {
                 if let Some(ids) = invoked.remove(&m.id) {
                     m.invoked_actions = ids;
                 }
             }
+        }
+        if has_figures {
+            self.attach_yui_state(ctx, thread_id, &mut messages).await?;
         }
 
         // 共有されたスレッドの閲覧は**閲覧者自身の権限で引用を再評価**する（#37・

@@ -46,14 +46,14 @@
 - **依存**: 0.1
 - **path**: `deploy/compose/`
 - **仕様**:
-  - `docker-compose.yml` に Phase 0 で必要な依存を定義: **Postgres**, **Keycloak**, **OpenFGA**, **MinIO**, **Redis**（BFF セッションストア・Task 0.11/#55）。
+  - `docker-compose.yml` に Phase 0 で必要な依存を定義: **Postgres**, **Keycloak**, **OpenFGA**, **MinIO**（現在は RustFS に差し替え済み）, **Redis**（BFF セッションストア・Task 0.11/#55）。
     （Qdrant/Tantivy/ingestion等は後続フェーズで追記）
   - 各サービスにヘルスチェック、永続ボリューム、`.env.example`（接続情報）。
   - OpenFGA は Postgres をバックエンドに設定。Keycloak も Postgres を使用。
   - shiki-server もサービスとして追加（後で 0.3 のイメージを参照）。
 - **受け入れ条件**:
   - [ ] `docker compose up` で全サービスが healthy になる
-  - [ ] MinIO/Keycloak/OpenFGA の管理UI/エンドポイントに到達できる
+  - [ ] MinIO（現在は RustFS）/Keycloak/OpenFGA の管理UI/エンドポイントに到達できる
   - [ ] 再起動してもデータが永続する
 
 ### Task 0.3: axum サーバ雛形＋設定ローダ＋ヘルスチェック
@@ -64,7 +64,7 @@
   - axum でHTTPサーバを起動。`GET /healthz`（liveness）, `GET /readyz`（依存接続確認）。
   - **設定ローダ**: 環境変数/設定ファイルから読み、`AppConfig` に集約。
     クラウド/オンプレ差し替えの起点として、各トレイト実装の選択を設定で切替える前提の構造にする
-    （例: `storage.backend = "minio" | "gcs"`）。Phase 0 では値の読み込みと検証のみ。
+    （例: `storage.backend = "s3" | "gcs"`）。Phase 0 では値の読み込みと検証のみ。
   - Postgres 接続プール（sqlx等）を初期化し `/readyz` で疎通確認。
   - 構造化ログ（tracing）の初期化（OTelは0.8で接続）。
 - **受け入れ条件**:

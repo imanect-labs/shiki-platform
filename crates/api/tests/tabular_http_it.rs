@@ -1,4 +1,4 @@
-//! CSV クエリ/パッチ API のルートレベル結合テスト（Task 11P.7・実 Postgres＋MinIO＋隔離ランナー）。
+//! CSV クエリ/パッチ API のルートレベル結合テスト（Task 11P.7・実 Postgres＋RustFS＋隔離ランナー）。
 //!
 //! `STORAGE_TEST_DATABASE_URL`＋`STORAGE_TEST_S3_ENDPOINT`＋隔離ランナーバイナリが揃う時のみ
 //! 実行する（未設定はスキップ）。HTTP ルータ経由で schema/rows/query/patch/save を通し、

@@ -470,3 +470,44 @@ mod tests {
         assert_eq!(r(&ports), Readiness::Skip);
     }
 }
+
+/// run の状態だけを読む口（run を作らない側が使う・会話の図のボタンで起動した run の表示など）。
+///
+/// `AuthContext` のテナントで必ず絞る。run 単位の ReBAC は見ないので、**呼び出し側が
+/// 自分の境界で認可を済ませてから**呼ぶこと（チャットは会話の閲覧者の確認の後、その会話から
+/// 起動した run だけを渡す）。返すのは状態（queued〜cancelled）だけで、入力・出力・履歴は
+/// 返さない（それらは run の閲覧権限で引く API の役目）。
+#[derive(Clone)]
+pub struct RunStatusReader {
+    db: PgPool,
+}
+
+impl RunStatusReader {
+    pub fn new(db: PgPool) -> Self {
+        RunStatusReader { db }
+    }
+
+    /// 複数の run の状態をまとめて引く（無い run は結果に含めない）。
+    pub async fn statuses(
+        &self,
+        ctx: &authz::AuthContext,
+        run_ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, RunStatus>, RunStoreError> {
+        let tenant_id = ctx.tenant_id.as_str();
+        if run_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT run_id, status FROM workflow_run WHERE tenant_id = $1 AND run_id = ANY($2)",
+        )
+        .bind(tenant_id)
+        .bind(run_ids)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, s)| RunStatus::parse(&s).map(|st| (id, st)))
+            .collect())
+    }
+}

@@ -288,7 +288,89 @@ pub struct Message {
     /// 会話の再描画・リロードで未回答へ巻き戻り、同じカードから二度送信できてしまう。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub invoked_actions: Vec<String>,
+    /// 本文の図（```ui）のワークフローのボタンのうち、**押せる**もの（回答の確定時に束縛を
+    /// 解決できたもの）の id（#604）。ここに無いワークフローのボタンは押せない。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bound_actions: Vec<String>,
+    /// 本文の図のボタンで起動したワークフローの記録（押した順・#604）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ui_runs: Vec<UiActionRun>,
     pub created_at: DateTime<Utc>,
+}
+
+/// 会話の図のボタンで起動したワークフローの状態（#604）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UiActionRunStatus {
+    /// 起動の途中（run はまだ無い）。
+    Starting,
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+    /// 同時実行の上限で起動を見送った（`on_trigger_overflow=skip`）。
+    Skipped,
+}
+
+impl UiActionRunStatus {
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Skipped
+        )
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Skipped => "skipped",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "starting" => Self::Starting,
+            "queued" => Self::Queued,
+            "running" => Self::Running,
+            "succeeded" => Self::Succeeded,
+            "failed" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            "skipped" => Self::Skipped,
+            _ => return None,
+        })
+    }
+}
+
+/// 送った値の 1 項目（部品の表示名と表示用の値）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UiActionValue {
+    pub label: String,
+    pub value: String,
+}
+
+/// 会話の図のボタンで起動したワークフロー 1 件（#604）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct UiActionRun {
+    /// ボタンの id（`{ブロックの識別子}:{a1}`）。
+    pub action_id: String,
+    /// ボタンの文言（押した時点）。
+    pub label: String,
+    pub workflow_name: String,
+    /// 起動した run（起動の途中・見送りは無い）。
+    #[serde(default)]
+    pub run_id: Option<Uuid>,
+    pub status: UiActionRunStatus,
+    #[serde(default)]
+    pub values: Vec<UiActionValue>,
+    /// 押したユーザー（principal id）。
+    pub invoked_by: String,
+    pub invoked_at: DateTime<Utc>,
 }
 
 /// 生成 run の状態。

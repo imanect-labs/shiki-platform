@@ -6,7 +6,7 @@
 //! control.branch/switch/join。rag.search は dispatch＋未構成ゲートのみ（happy path の
 //! SearchService 本体は rag クレートの結合テストが担保）。map/wait は Stage A 未実装
 //! （`unsupported_stage_a`）のため対象外。
-//! 実 PG＋OpenFGA＋MinIO が要る env ゲート（未設定はスキップ）。
+//! 実 PG＋OpenFGA＋RustFS が要る env ゲート（未設定はスキップ）。
 
 #![allow(
     clippy::unwrap_used,
@@ -114,7 +114,6 @@ async fn setup() -> Option<Harness> {
                     kind: llm_gateway::ProviderKind::Stub,
                     base_url: None,
                     api_key: None,
-                    timeout_secs: 30,
                     user_agent: None,
                     session_header: None,
                     ..Default::default()
