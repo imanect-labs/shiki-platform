@@ -525,8 +525,27 @@ async fn workflow_buttons_are_bound_validated_deduplicated_and_recorded() {
     assert_eq!(
         stored.as_deref(),
         Some("succeeded"),
-        "終わった状態は書き戻される"
+        "終わった状態は記録に写される"
     );
+    // 実行履歴の GC で run が消えても、結果は記録に残る。
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1 AND run_id = $2")
+        .bind(&tenant)
+        .bind(run_id)
+        .execute(&e.pool)
+        .await
+        .unwrap();
+    let m4 = message(&e.store, &alice, thread.id, m.id).await;
+    assert_eq!(m4.ui_runs[0].status, UiActionRunStatus::Succeeded);
+    // 同じキーの再送は起動しないが、監査には残る。
+    let replays: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'ui_action.invoke' \
+         AND metadata ->> 'replay' = 'true'",
+    )
+    .bind(&tenant)
+    .fetch_one(&e.pool)
+    .await
+    .unwrap();
+    assert_eq!(replays, 1);
 
     // ⑧ 会話に送るボタンは、サーバーが検証した値で文を作り、1 回だけ送れる。
     let sent = call(

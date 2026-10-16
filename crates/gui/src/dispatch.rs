@@ -341,6 +341,33 @@ impl ActionDispatcher {
         Ok(Some(ledger))
     }
 
+    /// 実行せずに前の結果を返した（同じ冪等キーの再送）ことを監査に残す。
+    ///
+    /// 副作用は起こしていないが、送信があった事実は Allow として残す（再送・競合の試行が
+    /// 監査から消えないように）。
+    pub async fn record_replay(
+        &self,
+        ctx: &AuthContext,
+        source: &ActionSource,
+        action_id: &str,
+        run_id: Option<Uuid>,
+        trace_id: Option<&str>,
+    ) {
+        self.record(
+            ctx,
+            action_id,
+            Decision::Allow,
+            trace_id,
+            json!({
+                "source": source.audit_json(),
+                "binding": "workflow",
+                "replay": true,
+                "run_id": run_id,
+            }),
+        )
+        .await;
+    }
+
     /// 束縛照合前の拒否（未宣言 id 等）を監査に残す（API 層からも利用できる）。
     pub async fn deny(
         &self,

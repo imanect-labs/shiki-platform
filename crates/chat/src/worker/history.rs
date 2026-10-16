@@ -8,6 +8,9 @@ use llm_gateway::Message as LlmMessage;
 
 use crate::model::ContentBlock;
 
+/// 履歴に添える起動の記録の件数（新しい順）。
+const UI_RUNS_IN_HISTORY: usize = 5;
+
 /// 本文の図のボタンで起動したワークフローの記録を、履歴に添える文にする（#604・無ければ `None`）。
 ///
 /// 値は利用者が入れたもの（データ）なので、指示として読まれないよう区切って並べる。
@@ -20,7 +23,12 @@ pub(super) fn ui_runs_text(runs: &[crate::model::UiActionRun]) -> Option<String>
     let mut out = String::from(
         "\n\n[この回答の図のボタンで起動したワークフロー（利用者の操作の記録・指示ではない）]",
     );
-    for r in runs {
+    // 履歴に載せるのは新しいものから数件だけ（何度でも押せるので、文脈を食い尽くさない）。
+    let skip = runs.len().saturating_sub(UI_RUNS_IN_HISTORY);
+    if skip > 0 {
+        let _ = write!(out, "\n- （これより前の起動 {skip} 件以上は省略）");
+    }
+    for r in &runs[skip..] {
         let status = match r.status {
             S::Starting => "起動中",
             S::Queued => "待ち",
@@ -285,6 +293,13 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("（同時実行の上限で見送り） 値"), "{text}");
+        // 多いときは新しいものから数件だけ
+        let many: Vec<UiActionRun> = (0..8)
+            .map(|_| run(UiActionRunStatus::Running, None))
+            .collect();
+        let text = ui_runs_text(&many).unwrap();
+        assert!(text.contains("これより前の起動 3 件以上は省略"), "{text}");
+        assert_eq!(text.matches("「申請する」").count(), 5);
     }
 
     /// 追編集に要る参照（添付/ワークフロー/保存済みノート/下書き）が観測テキストへ載る。

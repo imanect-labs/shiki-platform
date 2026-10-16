@@ -32,6 +32,10 @@ use crate::model::{Message, Role, UiActionRun, UiActionRunStatus, UiActionValue}
 use crate::yui_actions::{self as ya, UiWorkflowBinding};
 use crate::ChatError;
 
+/// 1 メッセージについて返す起動の記録の上限（新しい順）。同じボタンは何度でも押せるので、
+/// 応答と、それを読むモデルの履歴が際限なく伸びないようにする。
+pub(crate) const MAX_RUNS_PER_MESSAGE: i64 = 20;
+
 fn map_db(e: &sqlx::Error) -> ChatError {
     ChatError::Internal(format!("db: {e}"))
 }
@@ -251,12 +255,20 @@ impl ChatStore {
                 .await
                 .map_err(map_chat_err)?
             {
-                // 同じ送信の再送: 前の結果を返す（run を増やさない）。
+                // 同じ送信の再送: 前の結果を返す（run を増やさない）。起動はしないが監査には残す。
                 Some((run_id, status)) if run_id.is_some() || status.is_some() => {
+                    dispatcher
+                        .record_replay(ctx, source, key, run_id, trace_id)
+                        .await;
                     Ok(json!({ "kind": "workflow", "run_id": run_id, "duplicate": true }))
                 }
                 // まだ起動の途中（先の送信が実行中）。
-                _ => Err(ActionError::AlreadyInvoked),
+                _ => {
+                    dispatcher
+                        .deny(ctx, source, key, "in_progress", trace_id)
+                        .await;
+                    Err(ActionError::AlreadyInvoked)
+                }
             };
         }
         let binding = ActionBinding::Workflow(WorkflowBinding {
@@ -434,11 +446,17 @@ impl ChatStore {
         let rows: Vec<RunRow> = sqlx::query_as(
             "SELECT message_id, action_id, label, workflow_name, run_id, status, summary, \
                     invoked_by, invoked_at, idempotency_key \
-             FROM ui_action_run WHERE tenant_id = $1 AND thread_id = $2 \
+             FROM ( \
+                 SELECT *, row_number() OVER ( \
+                     PARTITION BY message_id ORDER BY invoked_at DESC, idempotency_key DESC \
+                 ) AS rn \
+                 FROM ui_action_run WHERE tenant_id = $1 AND thread_id = $2 \
+             ) r WHERE rn <= $3 \
              ORDER BY invoked_at, idempotency_key",
         )
         .bind(&ctx.tenant_id)
         .bind(thread_id)
+        .bind(MAX_RUNS_PER_MESSAGE)
         .fetch_all(&self.db)
         .await
         .map_err(|e| map_db(&e))?;
@@ -494,7 +512,7 @@ impl ChatStore {
             return HashMap::new();
         }
         let reader = workflow_engine::RunStatusReader::new(self.db.clone());
-        let statuses = match reader.statuses(&ctx.tenant_id, run_ids).await {
+        let statuses = match reader.statuses(ctx, run_ids).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(error = %e, "図のボタンで起動した run の状態を読めない");

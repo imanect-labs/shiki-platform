@@ -46,8 +46,9 @@ create table ui_action_run (
     summary         jsonb       not null default '[]'::jsonb,
     -- 起動した run（null = 起動の途中。起動に失敗した行は消すので、残るのは途中か成功）。
     run_id          uuid,
-    -- 終わった状態（succeeded・failed・cancelled・skipped）。null は未確定で、表示のときに
-    -- run の状態を読み、終わっていたらここへ書き戻す（以後は run が消えても残る）。
+    -- 終わった状態（succeeded・failed・cancelled・skipped）。null は未確定。run が終端になった
+    -- ときに下のトリガが写す（表示のときも run を読み、終わっていれば書き戻す）。以後は run が
+    -- 消えても残る。
     status          text,
     finished_at     timestamptz,
     primary key (tenant_id, thread_id, message_id, action_id, idempotency_key),
@@ -56,3 +57,28 @@ create table ui_action_run (
 );
 create index ui_action_run_thread_idx on ui_action_run (thread_id);
 create index ui_action_run_message_idx on ui_action_run (message_id);
+
+-- 起動した run の終端を記録へ写す。表示のときに run を読む書き戻しだけだと、会話がしばらく
+-- 開かれないうちに実行履歴の GC（保持期間は最短 1 日）が run を消し、結果が分からなくなる。
+-- run が終端になった時点で写しておけば、以後 run が消えても記録に残る。
+-- （起動と run_id の書き込みの間に終わった run は、表示のときの書き戻しが拾う。）
+create index ui_action_run_run_idx on ui_action_run (tenant_id, run_id) where run_id is not null;
+
+create function ui_action_run_record_terminal() returns trigger
+language plpgsql as $$
+begin
+    update ui_action_run
+       set status = new.status, finished_at = now()
+     where tenant_id = new.tenant_id
+       and run_id = new.run_id
+       and status is distinct from new.status;
+    return null;
+end;
+$$;
+
+create trigger workflow_run_ui_action_terminal
+    after update of status on workflow_run
+    for each row
+    when (new.status in ('succeeded', 'failed', 'cancelled')
+          and old.status is distinct from new.status)
+    execute function ui_action_run_record_terminal();

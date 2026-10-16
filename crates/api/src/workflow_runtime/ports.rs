@@ -414,7 +414,13 @@ impl NodePorts for ProdNodePorts {
             .launcher
             .start_interactive(&ctx, workflow_id, input)
             .await
-            .map_err(|e| PortError::unavailable(format!("workflow.start: {e}")))?;
+            .map_err(|e| match e {
+                // 入力が子ワークフローの input_schema に合わない＝何度やっても通らない（再試行しない）。
+                workflow_engine::run::LauncherError::Input(m) => {
+                    PortError::invalid(format!("workflow.start の入力: {m}"))
+                }
+                other => PortError::unavailable(format!("workflow.start: {other}")),
+            })?;
         Ok(json!({ "run_id": run_id.map(|r| r.to_string()) }))
     }
 

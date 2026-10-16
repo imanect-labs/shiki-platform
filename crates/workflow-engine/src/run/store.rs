@@ -473,8 +473,10 @@ mod tests {
 
 /// run の状態だけを読む口（run を作らない側が使う・会話の図のボタンで起動した run の表示など）。
 ///
-/// テナントで絞るだけで ReBAC は見ない。返すのは状態（queued〜cancelled）だけで、入力・出力・
-/// 履歴は返さない（それらは run の閲覧権限で引く API の役目）。
+/// `AuthContext` のテナントで必ず絞る。run 単位の ReBAC は見ないので、**呼び出し側が
+/// 自分の境界で認可を済ませてから**呼ぶこと（チャットは会話の閲覧者の確認の後、その会話から
+/// 起動した run だけを渡す）。返すのは状態（queued〜cancelled）だけで、入力・出力・履歴は
+/// 返さない（それらは run の閲覧権限で引く API の役目）。
 #[derive(Clone)]
 pub struct RunStatusReader {
     db: PgPool,
@@ -488,9 +490,10 @@ impl RunStatusReader {
     /// 複数の run の状態をまとめて引く（無い run は結果に含めない）。
     pub async fn statuses(
         &self,
-        tenant_id: &str,
+        ctx: &authz::AuthContext,
         run_ids: &[Uuid],
     ) -> Result<std::collections::HashMap<Uuid, RunStatus>, RunStoreError> {
+        let tenant_id = ctx.tenant_id.as_str();
         if run_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }

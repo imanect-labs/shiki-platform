@@ -233,7 +233,8 @@ fn check_object(
     };
     match s.get("required") {
         None => {}
-        Some(Value::Array(req)) => {
+        // 名前でない要素があれば黙って捨てず、スキーマの誤りとして起動しない（fail-closed）。
+        Some(Value::Array(req)) if req.iter().all(Value::is_string) => {
             for k in req.iter().filter_map(Value::as_str) {
                 if !map.contains_key(k) {
                     errs.push(format!("{}: 必須です", child(k)));
@@ -301,10 +302,32 @@ fn type_name(t: &str) -> &str {
     }
 }
 
-/// JSON の値の一致（数は 1 と 1.0 を同じとみなす）。
+/// JSON の数の一致。整数どうしは整数のまま比べ（2^53 を超えても丸めない）、
+/// 小数が混じるときだけ 1 と 1.0 を同じとみなす。
+fn num_eq(x: &serde_json::Number, y: &serde_json::Number) -> bool {
+    if let (Some(a), Some(b)) = (x.as_i64(), y.as_i64()) {
+        return a == b;
+    }
+    if let (Some(a), Some(b)) = (x.as_u64(), y.as_u64()) {
+        return a == b;
+    }
+    if x.is_f64() || y.is_f64() {
+        // 整数側が f64 で正確に表せないほど大きいなら、小数とは一致しない。
+        let exact = |n: &serde_json::Number| {
+            n.is_f64()
+                || n.as_i64().is_some_and(|v| v.unsigned_abs() <= 1 << 53)
+                || n.as_u64().is_some_and(|v| v <= 1 << 53)
+        };
+        return exact(x) && exact(y) && x.as_f64() == y.as_f64();
+    }
+    // 片方が負の i64、もう片方が i64 に収まらない u64。
+    false
+}
+
+/// JSON の値の一致（数は [`num_eq`]）。
 fn json_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
+        (Value::Number(x), Value::Number(y)) => num_eq(x, y),
         (Value::Array(x), Value::Array(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(p, q)| json_eq(p, q))
         }
@@ -398,6 +421,27 @@ mod tests {
         assert!(validate_input(&s, &json!(9.5)).is_ok());
         assert!(validate_input(&json!({ "const": { "a": [1] } }), &json!({ "a": [1.0] })).is_ok());
         assert!(validate_input(&json!({ "const": "x" }), &json!("y")).is_err());
+    }
+
+    #[test]
+    fn large_integers_are_not_rounded() {
+        let s = json!({ "enum": [9_007_199_254_740_992_u64] });
+        assert!(validate_input(&s, &json!(9_007_199_254_740_993_u64)).is_err());
+        assert!(validate_input(&s, &json!(9_007_199_254_740_992_u64)).is_ok());
+        assert!(validate_input(&json!({ "const": u64::MAX }), &json!(u64::MAX)).is_ok());
+        assert!(validate_input(&json!({ "const": -1 }), &json!(u64::MAX)).is_err());
+        assert!(validate_input(&json!({ "const": 2 }), &json!(2.0)).is_ok());
+    }
+
+    /// 名前でない required の要素は黙って捨てず、起動しない。
+    #[test]
+    fn malformed_required_fails_closed() {
+        let s = json!({ "type": "object", "required": [123] });
+        let errs = validate_input(&s, &json!({})).unwrap_err();
+        assert_eq!(
+            errs,
+            vec!["入力: 入力スキーマの required が不正です".to_string()]
+        );
     }
 
     #[test]
