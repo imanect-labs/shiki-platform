@@ -37,6 +37,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # **cpio / file / fontconfig / fonts-dejavu-core**: online の make の中で coolwsd-systemplate-setup が
 #   走り（jail の雛形）、欠けると `cpio: command not found` / `cannot stat '/usr//share/fonts'` で落ちる。
 # **rsync**: browser/Makefile.am の install-data-hook が使う。
+# **meson / ninja-build**: 26.04 の engine は harfbuzz を meson で建てる（configure:
+#   "you need to have meson and ninja in order to build harfbuzz"）。
 # **libpoco-dev は入れない**（Poco は engine が建てる）。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential autoconf automake libtool pkg-config python3 python3-dev \
@@ -46,7 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libkrb5-dev libnss3-dev libpam0g-dev libssl-dev libcairo2-dev \
     libavahi-client-dev libdbus-glib-1-dev ca-certificates curl fakeroot gettext xz-utils \
     libcap-dev libzstd-dev libpng-dev zlib1g-dev libcppunit-dev libpcre2-dev \
-    cpio file fontconfig fonts-dejavu-core rsync \
+    cpio file fontconfig fonts-dejavu-core rsync meson ninja-build \
     && rm -rf /var/lib/apt/lists/*
 # **Node は 20 以上が要る**（online の configure: "This node version is old, upgrade to >= 20.0.0"）。
 # Ubuntu 24.04 の nodejs は 18 なので、公式の tarball を sha256 で固定して入れる。
