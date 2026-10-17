@@ -72,7 +72,7 @@ impl SheetEngine for FakeEngine {
         _file_id: Uuid,
         label: &str,
         default_sheet: Option<&str>,
-        ops: &[SheetOp],
+        ops: &[serde_json::Value],
     ) -> Result<SheetEditReport, OfficeEngineError> {
         self.edits.lock().unwrap().push((
             label.to_string(),
@@ -161,13 +161,14 @@ async fn rolled_back_edit_is_an_error_without_a_card() {
 }
 
 #[tokio::test]
-async fn unknown_ops_are_reported_without_touching_the_document() {
+async fn malformed_input_is_reported_without_touching_the_document() {
+    // op の中身の検証はエンジン（parse_ops）が持つ。ここでは入力の形そのものの誤りを見る。
     let engine = FakeEngine::new(Next::Report(report(true, LiveSaveResult::Unverified)));
     let tool = edit_tool(Arc::clone(&engine));
     let out = tool
         .call(
             &ctx(),
-            input(serde_json::json!([{"op": "paint_it_red", "range": "A1"}])),
+            serde_json::json!({"node_id": Uuid::nil(), "summary": "x", "ops": "merge A1"}),
             None,
         )
         .await
@@ -279,9 +280,10 @@ fn edit_requires_confirmation_and_lists_every_op_in_the_schema() {
         "add_chart",
         "delete_chart",
         "page_setup",
+        "style_table",
     ] {
         assert!(listed.iter().any(|l| l == op), "スキーマに {op} が無い");
         assert!(tool.description().contains(op), "説明文に {op} が無い");
     }
-    assert_eq!(listed.len(), 31);
+    assert_eq!(listed.len(), 32);
 }

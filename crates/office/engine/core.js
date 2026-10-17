@@ -14,7 +14,18 @@
 // - kit を落とす操作がある（不正な tile 要求など）。ここでは描画系の命令を一切使わない。
 
 const I = uno.idl.com.sun.star;
-const DOC = I.frame.Desktop.create(uno.componentContext).getCurrentComponent();
+
+/**
+ * この kit が開いている文書。kit は 1 プロセス 1 文書なので通常は getCurrentComponent で足りるが、
+ * 読み込み直後などに null を返すことがある（実機で確認）ので、開いている部品の一覧から取り直す。
+ */
+const DOC = (() => {
+  const desktop = I.frame.Desktop.create(uno.componentContext);
+  const current = desktop.getCurrentComponent();
+  if (current) return current;
+  const en = desktop.getComponents().createEnumeration();
+  return en.hasMoreElements() ? en.nextElement() : null;
+})();
 
 /** action 名 → ハンドラ。各モジュールが登録する。 */
 const HANDLERS = {};
@@ -128,6 +139,7 @@ function atomically(label, fn) {
 
 /** エントリポイント。戻り値は必ず { ok, result | error }。 */
 function __shiki_main(req) {
+  if (!DOC) return { ok: false, error: { code: "no_document", message: "文書がまだ開かれていません" } };
   const handler = HANDLERS[req && req.action];
   if (!handler) {
     return { ok: false, error: { code: "unknown_action", message: `未知の action: ${req && req.action}` } };

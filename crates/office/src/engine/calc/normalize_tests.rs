@@ -77,15 +77,15 @@ fn format_maps_font_fill_align_and_borders() {
         v["align"],
         json!({"horizontal": "center", "vertical": "center", "wrap": true})
     );
+    // 線の値は「Excel の罫線を読み込んだときと同じ」（xlsx へ書き出して線種が保たれる値）。
+    let thin =
+        json!({"style": 0, "width": 26, "outer": 26, "inner": 0, "dist": 0, "color": "#000000"});
+    assert_eq!(v["borders"]["outline"], thin);
+    assert_eq!(v["borders"]["inner"], thin);
     assert_eq!(
-        v["borders"]["outline"],
-        json!({"width": 26, "pattern": "solid", "color": "#000000"})
+        v["borders"]["bottom"],
+        json!({"style": 15, "width": 62, "outer": 18, "inner": 18, "dist": 26, "color": "#000000"})
     );
-    assert_eq!(
-        v["borders"]["inner"],
-        json!({"width": 26, "pattern": "solid", "color": "#000000"})
-    );
-    assert_eq!(v["borders"]["bottom"]["pattern"], "double");
 }
 
 #[test]
@@ -248,4 +248,99 @@ fn units_round_trip() {
     assert_eq!(date_serial("2026/04/01 12:00").unwrap(), (46113.5, true));
     assert_eq!(normalize_color("#abcdef").as_deref(), Some("#ABCDEF"));
     assert_eq!(normalize_color("#abc"), None);
+}
+
+#[test]
+fn parse_ops_points_at_the_bad_op_and_accepts_per_op_sheet() {
+    use super::super::parse::parse_ops;
+    let err = parse_ops(&[
+        json!({"op": "merge", "range": "A1:B1"}),
+        json!({"op": "set_values", "range": "A1", "values": ["=SUM(A1:A3)"]}),
+    ])
+    .unwrap_err();
+    assert_eq!((err.index, err.op), (2, "set_values"));
+    assert!(err.message.contains("2 次元"), "{}", err.message);
+
+    let parsed = parse_ops(&[
+        json!({"op": "format", "sheet": "集計", "range": "A1", "fill": "#FFFFFF"}),
+        json!({"op": "rename_sheet", "sheet": "Sheet1", "name": "売上"}),
+    ])
+    .unwrap();
+    assert_eq!(
+        parsed[0].1.as_deref(),
+        Some("集計"),
+        "操作に書いた sheet はその操作の既定"
+    );
+    assert_eq!(
+        parsed[1].1, None,
+        "シートを対象にする操作の sheet は対象名のまま"
+    );
+    let items: Vec<_> = parsed.iter().map(|(o, s)| (o, s.as_deref())).collect();
+    let n = normalize_with_sheets(&items, None).unwrap();
+    assert_eq!(n.ops[0]["sheet"], "集計");
+}
+
+#[test]
+fn rename_is_followed_by_later_ops_and_the_default_sheet() {
+    let n = normalize(
+        &ops(json!([
+            {"op": "rename_sheet", "sheet": "Sheet1", "name": "見積書"},
+            {"op": "merge", "range": "A1:C1"},
+            {"op": "format", "range": "Sheet1!A2", "fill": "#FFFFFF"}
+        ])),
+        Some("Sheet1"),
+    )
+    .unwrap();
+    assert_eq!(n.ops[0]["sheet"], "Sheet1");
+    assert_eq!(n.ops[1]["sheet"], "見積書", "既定シートも新しい名前へ");
+    assert_eq!(n.ops[2]["sheet"], "見積書", "旧名で書いても読み替える");
+}
+
+#[test]
+fn style_table_expands_into_header_bands_total_and_borders() {
+    let n = normalize(
+        &ops(json!([{"op": "style_table", "range": "A1:E7", "theme": "navy", "total_row": true}])),
+        None,
+    )
+    .unwrap();
+    assert_eq!(n.ops.len(), 5, "{:?}", n.ops);
+    assert_eq!(n.ops[0]["borders"]["outline"]["width"], 26);
+    assert_eq!(n.ops[1]["areas"], json!([[0, 0, 4, 0]]));
+    assert_eq!(n.ops[1]["fill"], "#1F3864");
+    assert_eq!(n.ops[1]["font"]["color"], "#FFFFFF");
+    assert_eq!(
+        n.ops[2]["areas"],
+        json!([[0, 2, 4, 2], [0, 4, 4, 4]]),
+        "見出しの次から 1 行おき（合計行は除く）"
+    );
+    assert_eq!(n.ops[3]["areas"], json!([[0, 6, 4, 6]]));
+    assert_eq!(n.ops[4]["borders"]["top"]["style"], 15);
+    assert_eq!(n.touched.len(), 1);
+}
+
+#[test]
+fn style_table_with_several_total_rows() {
+    let n = normalize(
+        &ops(json!([{"op": "style_table", "range": "A1:F9", "total_rows": 2, "banded": false}])),
+        None,
+    )
+    .unwrap();
+    // 罫線・見出し・集計行（2 行）・集計行の上の二重線。
+    assert_eq!(n.ops.len(), 4, "{:?}", n.ops);
+    assert_eq!(n.ops[2]["areas"], json!([[0, 7, 5, 8]]));
+    assert_eq!(n.ops[3]["areas"], json!([[0, 7, 5, 7]]));
+}
+
+#[test]
+fn page_setup_header_footer_fields() {
+    let v = one(
+        json!({"op": "page_setup", "footer": {"center": "&[Page] / &[Pages] ページ", "right": "&[Date]"}, "header": null}),
+    );
+    assert_eq!(v["header"], Value::Null);
+    assert_eq!(
+        v["footer"]["center"],
+        json!([{"t": "page"}, {"t": "text", "v": " / "}, {"t": "pages"}, {"t": "text", "v": " ページ"}])
+    );
+    assert_eq!(v["footer"]["right"], json!([{"t": "date"}]));
+    assert_eq!(v["footer"]["left"], json!([]));
 }

@@ -17,16 +17,21 @@ pub const EXCEL_EDIT_DESCRIPTION: &str = "Excel ブック（.xlsx / .ods）を�
 （途中で失敗しても文書は変わらない）。人が開いていれば画面へ即時反映され、人は 1 回の「元に戻す」で取り消せる。\
 結果には書いた範囲の現在の値（数式の計算結果）と、エラー・列幅不足の指摘が返る。必ず確かめ、必要なら直す。\n\
 書き方: 範囲は Excel の A1 表記（\"B2:D10\"・\"'集計 2'!A1\"・列 \"B:D\"・行 \"3:5\"）。シート名を省くと sheet（無ければ作業中の\
-シート）。色は \"#RRGGBB\"。**指定しない項目は変えない**。数式は Excel の書き方（区切りは ,）。\n\
+シート）。どの操作にも sheet を書ける（その操作の既定シート）。色は \"#RRGGBB\"。**指定しない項目は変えない**。\
+数式は Excel の書き方（区切りは ,・EDATE / XLOOKUP / SUMIFS / FILTER / LET なども使える）。rename_sheet の後の操作は新しい名前で書く\
+（旧名で書いても読み替える）。\n\
 ops:\n\
-- set_values {range, values:[[...]]} 値と数式。range は左上セルだけでよい。数値は数値のまま、数式は \"=SUM(B2:B9)\"、\
+- set_values {range, values:[[...]]} 値と数式。values は常に 2 次元（1 セルでも [[\"x\"]]）。range は左上セルだけでよい。数値は数値のまま、数式は \"=SUM(B2:B9)\"、\
 日付は {\"date\":\"2026-04-01\"}、= で始まる文字列は {\"text\":\"=…\"}、null はそのセルを変えない\n\
 - fill_formula {range, formula} 左上セル用の数式を範囲全体へ相対参照で展開（例 range \"E2:E20\", formula \"=B2*C2\"）\n\
 - format {range（配列可）, number_format?, font?{name,size,bold,italic,underline,strike,color}, fill?（null で塗りなし）, \
-align?{horizontal:left|center|right|justify, vertical:top|center|bottom, wrap, shrink, indent, rotate}, \
+align?{horizontal:left|center|right|justify, vertical:top|center|bottom, wrap, shrink, indent（左揃えのときだけ効く）, rotate}, \
 border?{all|outline|inner|top|bottom|left|right|inside_horizontal|inside_vertical: \"hair\"|\"thin\"|\"medium\"|\"thick\"|\"double\"|\
 \"dashed\"|\"dotted\"|\"none\" または {style, color}}}。表示形式の例: \"#,##0\" \"#,##0.00\" \"0.0%\" \"yyyy/mm/dd\" \"¥#,##0\" \
 \"#,##0;[Red]-#,##0\" \"[$-411]ggge年m月d日\"\n\
+- style_table {range, theme?:blue|navy|green|gray|orange, header_rows?（既定 1）, total_row? または total_rows?:行数（合計・平均など末尾の集計行）, banded?（既定 true）} 表をまとめて整える\
+（見出しは濃い色に白の太字・中央、本体は 1 行おきに薄く塗る、合計行は太字と上に二重線、全体に細い罫線）。表を作ったらまずこれを使い、\
+数値の表示形式と列幅を足す。後の format は上書きする（style_table の後に format で部分的に変えてよい）\n\
 - merge {range, center?} / unmerge {range}\n\
 - column_width {columns:\"A:C\", width:文字数 または \"auto\"} / row_height {rows:\"1:2\", height:pt または \"auto\"}\n\
 - insert_rows {before:行番号, count} / delete_rows {rows} / insert_columns {before:\"C\", count} / delete_columns {columns} / \
@@ -44,9 +49,11 @@ sheet_props {sheet, tab_color?, visible?}\n\
 {type:\"date\", operator, value:\"2026-01-01\"} / {type:\"custom\", formula}\n\
 - define_name {name, range}（range:null で削除）\n\
 - add_chart {name, type:column|bar|line|area|pie|doughnut|scatter, data:\"A1:D13\"（先頭行=系列名・先頭列=項目）, anchor:\"G2\", \
-width_cm?, height_cm?, title?, legend?, series?:columns|rows, stacked?, percent?, x_title?, y_title?} / delete_chart {name}\n\
-- page_setup {orientation?:portrait|landscape, paper?:A4|A3|B5|B4|A5|letter, fit_to?{width,height}（0=その方向は制限なし）, scale?, \
-margins_cm?{top,right,bottom,left}, center_horizontally?, print_area?（null で解除）, repeat_rows?:\"1:2\", gridlines?}\n\
+width_cm?, height_cm?, title?, legend_position?:bottom|right|top|none, colors?:[\"#4472C4\",...], data_labels?, y_number_format?:\"#,##0\", \
+series?:columns|rows, stacked?, percent?, x_title?, y_title?}（既定で背景は透明・凡例は下・Office の標準配色）/ delete_chart {name}\n\
+- page_setup {orientation?:portrait|landscape, paper?:A4|A3|B5|B4|A5|letter, fit_to?{width,height}（{1,1}=1 ページに収める・{1,0}=幅だけ 1 ページ）, \
+scale?, margins_cm?{top,right,bottom,left}, center_horizontally?, print_area?（null で解除）, repeat_rows?:\"1:2\", gridlines?, \
+header?/footer?:{left?, center?, right?}（文字列に &[Page] &[Pages] &[Date] &[Sheet] &[File] を差し込める・null で消す）}\n\
 作法: 見出し行は太字・塗り・中央揃え、数値は表示形式で桁区切り（文字列にしない）、合計行は上に罫線、列幅は内容に合わせる。\
 集計は値を暗算して書かず数式にする。表を作ったら読みやすく整えてから終える。";
 
@@ -82,7 +89,7 @@ pub fn excel_edit_schema() -> serde_json::Value {
                     "type": "object",
                     "properties": {
                         "op": { "type": "string", "enum": [
-                            "set_values", "fill_formula", "format", "merge", "unmerge", "column_width", "row_height",
+                            "set_values", "fill_formula", "format", "style_table", "merge", "unmerge", "column_width", "row_height",
                             "insert_rows", "delete_rows", "insert_columns", "delete_columns", "hide_rows", "show_rows",
                             "hide_columns", "show_columns", "clear", "sort", "autofilter", "freeze", "add_sheet",
                             "rename_sheet", "delete_sheet", "move_sheet", "sheet_props", "conditional_format",

@@ -5,10 +5,15 @@
 
 use serde_json::{json, Map, Value};
 
+use std::collections::HashMap;
+
 use super::ops::{
-    AlignSpec, BorderSpec, CellInput, ChartKind, ClearWhat, CompareOp, Condition, FontSpec, HAlign,
-    Line, LineStyle, Orientation, Paper, Patch, RangeList, SeriesIn, SheetOp, Size, SortOrder,
-    VAlign, ValidationRule,
+    BorderSpec, CellInput, ClearWhat, CompareOp, Condition, FontSpec, Line, LineStyle, Patch,
+    RangeList, SheetOp, Size, SortOrder,
+};
+use super::units::{align_json, condition_operator, is_valid_name};
+pub use super::units::{
+    chars_to_mm100, date_serial, mm100_to_chars, mm100_to_pt, normalize_color, pt_to_mm100,
 };
 use crate::engine::a1::{self, Area};
 use crate::engine::formula;
@@ -38,40 +43,66 @@ pub struct Touched {
 pub struct Normalized {
     pub ops: Vec<Value>,
     pub touched: Vec<Touched>,
+    /// 各エンジン操作の元になった操作（1 始まりの番号と名前）。style_table・fill_formula は
+    /// 複数／別名のエンジン操作へ展開されるので、失敗の報告はこれで元の番号へ戻す。
+    pub origin: Vec<(usize, &'static str)>,
 }
 
 /// 操作の並びを正規化する。`default_sheet` は範囲にシート名が無いときに使う（None なら作業中のシート）。
 pub fn normalize(ops: &[SheetOp], default_sheet: Option<&str>) -> Result<Normalized, OpError> {
+    let items: Vec<(&SheetOp, Option<&str>)> = ops.iter().map(|op| (op, None)).collect();
+    normalize_with_sheets(&items, default_sheet)
+}
+
+/// 操作ごとの既定シート（操作に書かれた `sheet`）つきで正規化する（[`super::parse::parse_ops`] の後段）。
+pub fn normalize_with_sheets(
+    ops: &[(&SheetOp, Option<&str>)],
+    default_sheet: Option<&str>,
+) -> Result<Normalized, OpError> {
     let mut out = Normalized {
         ops: Vec::with_capacity(ops.len()),
         touched: Vec::new(),
+        origin: Vec::with_capacity(ops.len()),
     };
     let mut cells: u64 = 0;
-    for (i, op) in ops.iter().enumerate() {
-        let mut cx = Cx {
-            default_sheet,
-            index: i + 1,
-            op: op.name(),
-        };
-        let mut produced = cx.one(op, &mut out.touched, &mut cells)?;
+    let mut cx = Cx {
+        default_sheet: default_sheet.map(str::to_string),
+        renames: HashMap::new(),
+        index: 0,
+        op: "",
+    };
+    for (i, (op, op_sheet)) in ops.iter().enumerate() {
+        cx.index = i + 1;
+        cx.op = op.name();
+        // 操作に書かれた sheet はその操作だけの既定。
+        let saved = op_sheet.map(|s| cx.default_sheet.replace(s.to_string()));
+        let produced = cx.one(op, &mut out.touched, &mut cells);
+        if let Some(prev) = saved {
+            cx.default_sheet = prev;
+        }
+        let mut produced = produced?;
         if cells > MAX_CELLS_PER_APPLY {
             return Err(cx.err(format!(
                 "1 回で書けるのは {MAX_CELLS_PER_APPLY} セルまでです。操作を分けてください"
             )));
         }
+        out.origin
+            .extend(std::iter::repeat_n((i + 1, op.name()), produced.len()));
         out.ops.append(&mut produced);
     }
     Ok(out)
 }
 
-struct Cx<'a> {
-    default_sheet: Option<&'a str>,
-    index: usize,
-    op: &'static str,
+pub(super) struct Cx {
+    default_sheet: Option<String>,
+    /// この一括の中で改名したシート（旧名 → 新名）。以降の参照を新名へ読み替える。
+    renames: HashMap<String, String>,
+    pub(super) index: usize,
+    pub(super) op: &'static str,
 }
 
-impl Cx<'_> {
-    fn err(&mut self, message: impl Into<String>) -> OpError {
+impl Cx {
+    pub(super) fn err(&mut self, message: impl Into<String>) -> OpError {
         OpError {
             index: self.index,
             op: self.op,
@@ -79,18 +110,35 @@ impl Cx<'_> {
         }
     }
 
-    fn sheet(&self, explicit: Option<&str>) -> Value {
-        explicit
-            .or(self.default_sheet)
-            .map_or(Value::Null, |s| Value::String(s.to_string()))
+    /// シート名を、この一括の中の改名を反映した名前にする。
+    pub(super) fn resolve(&self, name: &str) -> String {
+        let mut n = name.to_string();
+        for _ in 0..8 {
+            match self.renames.get(&n) {
+                Some(next) => n.clone_from(next),
+                None => break,
+            }
+        }
+        n
     }
 
-    fn area(&mut self, s: &str) -> Result<Area, OpError> {
+    /// 範囲に書かれたシート名（無ければ既定）を解決した名前（無ければ作業中＝null）。
+    pub(super) fn sheet_name(&self, explicit: Option<&str>) -> Option<String> {
+        explicit
+            .or(self.default_sheet.as_deref())
+            .map(|s| self.resolve(s))
+    }
+
+    pub(super) fn sheet(&self, explicit: Option<&str>) -> Value {
+        self.sheet_name(explicit).map_or(Value::Null, Value::String)
+    }
+
+    pub(super) fn area(&mut self, s: &str) -> Result<Area, OpError> {
         a1::parse_area(s).map_err(|e| self.err(e.to_string()))
     }
 
     /// 1 枚のシートにそろった範囲の並び（シート名・[座標]）。
-    fn areas(&mut self, list: &RangeList) -> Result<(Value, Vec<Area>), OpError> {
+    pub(super) fn areas(&mut self, list: &RangeList) -> Result<(Value, Vec<Area>), OpError> {
         let mut areas: Vec<Area> = Vec::new();
         for s in list.items() {
             let a = self.area(s)?;
@@ -106,11 +154,11 @@ impl Cx<'_> {
         Ok((sheet, areas))
     }
 
-    fn color(&mut self, c: &str) -> Result<String, OpError> {
+    pub(super) fn color(&mut self, c: &str) -> Result<String, OpError> {
         normalize_color(c).ok_or_else(|| self.err(format!("色「{c}」は #RRGGBB で書いてください")))
     }
 
-    fn formula(&mut self, f: &str) -> Result<String, OpError> {
+    pub(super) fn formula(&mut self, f: &str) -> Result<String, OpError> {
         formula::excel_to_calc(f).map_err(|e| self.err(format!("数式「{f}」: {e}")))
     }
 
@@ -155,7 +203,7 @@ impl Cx<'_> {
                 *cells += u64::from(rows) * u64::from(cols);
                 let area = [a.sc, a.sr, ec, er];
                 touched.push(Touched {
-                    sheet: a.sheet.clone().or(self.default_sheet.map(str::to_string)),
+                    sheet: self.sheet_name(a.sheet.as_deref()),
                     area,
                 });
                 vec![
@@ -180,7 +228,7 @@ impl Cx<'_> {
                 }
                 *cells += a.cells();
                 touched.push(Touched {
-                    sheet: a.sheet.clone().or(self.default_sheet.map(str::to_string)),
+                    sheet: self.sheet_name(a.sheet.as_deref()),
                     area: a.coords(),
                 });
                 vec![
@@ -236,6 +284,22 @@ impl Cx<'_> {
                     return Err(self.err("変える書式がありません（number_format / font / fill / align / border のいずれかを指定）"));
                 }
                 vec![Value::Object(m)]
+            }
+            SheetOp::StyleTable {
+                range,
+                theme,
+                header_rows,
+                total_row,
+                total_rows,
+                banded,
+            } => {
+                let a = self.area(range)?;
+                touched.push(Touched {
+                    sheet: self.sheet_name(a.sheet.as_deref()),
+                    area: a.coords(),
+                });
+                let totals = total_rows.unwrap_or(u32::from(*total_row));
+                self.style_table(range, *theme, *header_rows, totals, *banded)?
             }
             SheetOp::Merge { range, center } => {
                 let a = self.area(range)?;
@@ -412,20 +476,36 @@ impl Cx<'_> {
                 ]
             }
             SheetOp::AddSheet { name, position } => {
-                self.sheet_name(name)?;
+                self.check_sheet_name(name)?;
                 let pos = position.map(|p| p.saturating_sub(1));
                 vec![json!({"op": "add_sheet", "name": name, "position": pos})]
             }
             SheetOp::RenameSheet { sheet, name } => {
-                self.sheet_name(name)?;
-                vec![json!({"op": "rename_sheet", "sheet": sheet, "name": name})]
+                self.check_sheet_name(name)?;
+                let from = self.resolve(sheet);
+                // 以降の操作（と既定シート）が旧名を書いても新名へ読み替える。
+                if self
+                    .default_sheet
+                    .as_deref()
+                    .map(|d| self.resolve(d))
+                    .as_deref()
+                    == Some(from.as_str())
+                {
+                    self.default_sheet = Some(name.clone());
+                }
+                self.renames.insert(from.clone(), name.clone());
+                vec![json!({"op": "rename_sheet", "sheet": from, "name": name})]
             }
-            SheetOp::DeleteSheet { sheet } => vec![json!({"op": "delete_sheet", "sheet": sheet})],
+            SheetOp::DeleteSheet { sheet } => {
+                vec![json!({"op": "delete_sheet", "sheet": self.resolve(sheet)})]
+            }
             SheetOp::MoveSheet { sheet, position } => {
                 if *position == 0 {
                     return Err(self.err("position は 1 始まりです"));
                 }
-                vec![json!({"op": "move_sheet", "sheet": sheet, "position": position - 1})]
+                vec![
+                    json!({"op": "move_sheet", "sheet": self.resolve(sheet), "position": position - 1}),
+                ]
             }
             SheetOp::SheetProps {
                 sheet,
@@ -434,7 +514,7 @@ impl Cx<'_> {
             } => {
                 let mut m = Map::new();
                 m.insert("op".into(), "sheet_props".into());
-                m.insert("sheet".into(), sheet.clone().into());
+                m.insert("sheet".into(), self.resolve(sheet).into());
                 if let Some(c) = tab_color {
                     let v = match c {
                         Patch::Set(c) => Value::String(self.color(c)?),
@@ -530,123 +610,13 @@ impl Cx<'_> {
                     None => vec![json!({"op": "define_name", "name": name, "area": null})],
                 }
             }
-            SheetOp::AddChart {
-                sheet,
-                name,
-                kind,
-                data,
-                anchor,
-                width_cm,
-                height_cm,
-                title,
-                legend,
-                series,
-                stacked,
-                percent,
-                x_title,
-                y_title,
-                first_row_is_header,
-                first_column_is_header,
-            } => {
-                let (anchor_sheet, col, row) =
-                    a1::parse_cell(anchor).map_err(|e| self.err(e.to_string()))?;
-                let chart_sheet = self.sheet(anchor_sheet.as_deref().or(sheet.as_deref()));
-                let mut ranges = Vec::new();
-                for s in data.items() {
-                    let a = self.area(s)?;
-                    let data_sheet = match a.sheet.as_deref() {
-                        Some(n) => Value::String(n.to_string()),
-                        None => chart_sheet.clone(),
-                    };
-                    ranges.push(json!([data_sheet, a.sc, a.sr, a.ec, a.er]));
-                }
-                let w = width_cm.unwrap_or(15.0);
-                let h = height_cm.unwrap_or(9.0);
-                if !(3.0..=60.0).contains(&w) || !(3.0..=60.0).contains(&h) {
-                    return Err(self.err("グラフの大きさは 3〜60 cm で指定してください"));
-                }
-                if name.trim().is_empty() {
-                    return Err(self.err("グラフの name が空です"));
-                }
-                vec![json!({
-                    "op": "add_chart", "sheet": chart_sheet, "name": name, "kind": chart_kind(*kind),
-                    "ranges": ranges, "anchor": [col, row], "size": [cm_to_mm100(w), cm_to_mm100(h)],
-                    "title": title, "legend": legend, "series_in_rows": matches!(series, SeriesIn::Rows),
-                    "stacked": stacked, "percent": percent, "x_title": x_title, "y_title": y_title,
-                    "first_row_header": first_row_is_header, "first_col_header": first_column_is_header,
-                })]
-            }
+            SheetOp::AddChart { .. } => self.add_chart_op(op)?,
             SheetOp::DeleteChart { sheet, name } => {
                 vec![
                     json!({"op": "delete_chart", "sheet": self.sheet(sheet.as_deref()), "name": name}),
                 ]
             }
-            SheetOp::PageSetup {
-                sheet,
-                orientation,
-                paper,
-                fit_to,
-                scale,
-                margins_cm,
-                center_horizontally,
-                print_area,
-                repeat_rows,
-                gridlines,
-            } => {
-                let mut m = Map::new();
-                m.insert("op".into(), "page_setup".into());
-                m.insert("sheet".into(), self.sheet(sheet.as_deref()));
-                if let Some(o) = orientation {
-                    m.insert(
-                        "landscape".into(),
-                        matches!(o, Orientation::Landscape).into(),
-                    );
-                }
-                if let Some(p) = paper {
-                    m.insert("paper".into(), json!(paper_size(*p)));
-                }
-                if let Some(f) = fit_to {
-                    m.insert("fit".into(), json!([f.width, f.height]));
-                }
-                if let Some(s) = scale {
-                    if !(10..=400).contains(s) {
-                        return Err(self.err("scale は 10〜400（%）です"));
-                    }
-                    m.insert("scale".into(), (*s).into());
-                }
-                if let Some(mg) = margins_cm {
-                    let all = [mg.top, mg.right, mg.bottom, mg.left];
-                    if all.iter().any(|v| !(0.0..=10.0).contains(v)) {
-                        return Err(self.err("余白は 0〜10 cm です"));
-                    }
-                    m.insert("margins".into(), json!(all.map(cm_to_mm100)));
-                }
-                if let Some(c) = center_horizontally {
-                    m.insert("center_horizontally".into(), (*c).into());
-                }
-                if let Some(pa) = print_area {
-                    let v = match pa {
-                        Patch::Set(r) => json!(self.area(r)?.coords()),
-                        Patch::Clear => Value::Null,
-                    };
-                    m.insert("print_area".into(), v);
-                }
-                if let Some(rr) = repeat_rows {
-                    let v = match rr {
-                        Patch::Set(r) => {
-                            let (_, from, to) =
-                                a1::parse_rows(r).map_err(|e| self.err(e.to_string()))?;
-                            json!([from, to])
-                        }
-                        Patch::Clear => Value::Null,
-                    };
-                    m.insert("repeat_rows".into(), v);
-                }
-                if let Some(g) = gridlines {
-                    m.insert("gridlines".into(), (*g).into());
-                }
-                vec![Value::Object(m)]
-            }
+            SheetOp::PageSetup { .. } => self.page_setup_op(op)?,
         };
         Ok(v)
     }
@@ -734,32 +704,37 @@ impl Cx<'_> {
         Ok(Value::Object(m))
     }
 
-    fn line(&mut self, l: &Line) -> Result<Value, OpError> {
+    /// 線 1 本。値は「Excel の罫線を LibreOffice が読み込んだときと同じ」にする
+    /// （それ以外の幅は xlsx へ書き出すと細線などに丸められる・実機で確認）。
+    pub(super) fn line(&mut self, l: &Line) -> Result<Value, OpError> {
         let (style, color) = match l {
             Line::Style(s) => (*s, None),
             Line::Full { style, color } => (*style, color.as_deref()),
         };
         if style == LineStyle::None {
-            return Ok(json!({"style": "none"}));
+            return Ok(json!({"none": true}));
         }
         let color = match color {
             Some(c) => self.color(c)?,
             None => "#000000".to_string(),
         };
-        let (width, pattern) = match style {
-            LineStyle::Hair => (9, "solid"),
-            LineStyle::Thin => (26, "solid"),
-            LineStyle::Medium => (53, "solid"),
-            LineStyle::Thick => (79, "solid"),
-            LineStyle::Double => (79, "double"),
-            LineStyle::Dashed => (26, "dashed"),
-            LineStyle::Dotted => (26, "dotted"),
-            LineStyle::None => (0, "none"),
+        // (LineStyle, LineWidth, OuterLineWidth, InnerLineWidth, LineDistance)
+        let (st, width, outer, inner, dist) = match style {
+            LineStyle::Hair => (0, 2, 2, 0, 0),
+            LineStyle::Thin => (0, 26, 26, 0, 0),
+            LineStyle::Medium => (0, 62, 62, 0, 0),
+            LineStyle::Thick => (0, 88, 88, 0, 0),
+            LineStyle::Double => (15, 62, 18, 18, 26),
+            LineStyle::Dashed => (14, 26, 26, 0, 0),
+            LineStyle::Dotted => (1, 26, 26, 0, 0),
+            LineStyle::None => unreachable!("上で返している"),
         };
-        Ok(json!({"width": width, "pattern": pattern, "color": color}))
+        Ok(
+            json!({"style": st, "width": width, "outer": outer, "inner": inner, "dist": dist, "color": color}),
+        )
     }
 
-    fn literal(&mut self, v: &Value) -> Result<String, OpError> {
+    pub(super) fn literal(&mut self, v: &Value) -> Result<String, OpError> {
         match v {
             Value::Number(n) => Ok(n.to_string()),
             Value::Bool(b) => Ok(if *b {
@@ -777,98 +752,7 @@ impl Cx<'_> {
         }
     }
 
-    fn validation(&mut self, rule: &ValidationRule) -> Result<Map<String, Value>, OpError> {
-        let mut m = Map::new();
-        let num = |v: f64| -> String { trim_float(v) };
-        match rule {
-            ValidationRule::List { items, source } => {
-                m.insert("type".into(), "LIST".into());
-                let f1 = match (items, source) {
-                    (Some(items), None) if !items.is_empty() => items
-                        .iter()
-                        .map(|s| format!("\"{}\"", s.replace('"', "\"\"")))
-                        .collect::<Vec<_>>()
-                        .join(";"),
-                    (None, Some(src)) => {
-                        let a = self.area(src)?;
-                        let abs = match &a.sheet {
-                            Some(s) => format!("={}!{}", a1::quote_sheet(s), absolute(&a)),
-                            None => format!("={}", absolute(&a)),
-                        };
-                        self.formula(&abs)?.trim_start_matches('=').to_string()
-                    }
-                    _ => return Err(self.err("list には items（候補の並び）か source（候補の範囲）のどちらか一方を指定してください")),
-                };
-                m.insert("formula1".into(), f1.into());
-            }
-            ValidationRule::WholeNumber {
-                operator,
-                value,
-                value2,
-            }
-            | ValidationRule::Decimal {
-                operator,
-                value,
-                value2,
-            } => {
-                let t = if matches!(rule, ValidationRule::WholeNumber { .. }) {
-                    "WHOLE"
-                } else {
-                    "DECIMAL"
-                };
-                m.insert("type".into(), t.into());
-                m.insert("operator".into(), condition_operator(*operator).into());
-                m.insert("formula1".into(), num(*value).into());
-                if let Some(v2) = value2 {
-                    m.insert("formula2".into(), num(*v2).into());
-                }
-            }
-            ValidationRule::Date {
-                operator,
-                value,
-                value2,
-            } => {
-                m.insert("type".into(), "DATE".into());
-                m.insert("operator".into(), condition_operator(*operator).into());
-                let d1 = date_serial(value)
-                    .ok_or_else(|| {
-                        self.err(format!("日付「{value}」は YYYY-MM-DD で書いてください"))
-                    })?
-                    .0;
-                m.insert("formula1".into(), num(d1).into());
-                if let Some(v2) = value2 {
-                    let d2 = date_serial(v2)
-                        .ok_or_else(|| {
-                            self.err(format!("日付「{v2}」は YYYY-MM-DD で書いてください"))
-                        })?
-                        .0;
-                    m.insert("formula2".into(), num(d2).into());
-                }
-            }
-            ValidationRule::TextLength {
-                operator,
-                value,
-                value2,
-            } => {
-                m.insert("type".into(), "TEXT_LEN".into());
-                m.insert("operator".into(), condition_operator(*operator).into());
-                m.insert("formula1".into(), value.to_string().into());
-                if let Some(v2) = value2 {
-                    m.insert("formula2".into(), v2.to_string().into());
-                }
-            }
-            ValidationRule::Custom { formula: f } => {
-                m.insert("type".into(), "CUSTOM".into());
-                m.insert(
-                    "formula1".into(),
-                    self.formula(f)?.trim_start_matches('=').to_string().into(),
-                );
-            }
-        }
-        Ok(m)
-    }
-
-    fn sheet_name(&mut self, name: &str) -> Result<(), OpError> {
+    pub(super) fn check_sheet_name(&mut self, name: &str) -> Result<(), OpError> {
         let bad = name.trim().is_empty()
             || name.chars().count() > 31
             || name.contains(['[', ']', '*', '?', ':', '/', '\\'])
@@ -881,164 +765,6 @@ impl Cx<'_> {
         }
         Ok(())
     }
-}
-
-/// `$A$1:$E$5` の形（名前・入力規則の参照元は絶対参照にする）。
-fn absolute(a: &Area) -> String {
-    let c = |col: u32, row: u32| format!("${}${}", a1::col_name(col), row + 1);
-    if a.sc == a.ec && a.sr == a.er {
-        c(a.sc, a.sr)
-    } else {
-        format!("{}:{}", c(a.sc, a.sr), c(a.ec, a.er))
-    }
-}
-
-fn align_json(a: &AlignSpec) -> Value {
-    let mut m = Map::new();
-    if let Some(h) = a.horizontal {
-        let v = match h {
-            HAlign::General => "general",
-            HAlign::Left => "left",
-            HAlign::Center => "center",
-            HAlign::Right => "right",
-            HAlign::Justify => "justify",
-        };
-        m.insert("horizontal".into(), v.into());
-    }
-    if let Some(v) = a.vertical {
-        let v = match v {
-            VAlign::Top => "top",
-            VAlign::Center => "center",
-            VAlign::Bottom => "bottom",
-        };
-        m.insert("vertical".into(), v.into());
-    }
-    if let Some(w) = a.wrap {
-        m.insert("wrap".into(), w.into());
-    }
-    if let Some(s) = a.shrink {
-        m.insert("shrink".into(), s.into());
-    }
-    if let Some(i) = a.indent {
-        m.insert("indent".into(), i.into());
-    }
-    if let Some(r) = a.rotate {
-        m.insert("rotate".into(), (r.rem_euclid(360) * 100).into());
-    }
-    Value::Object(m)
-}
-
-fn condition_operator(op: CompareOp) -> &'static str {
-    match op {
-        CompareOp::Eq => "EQUAL",
-        CompareOp::Ne => "NOT_EQUAL",
-        CompareOp::Lt => "LESS",
-        CompareOp::Le => "LESS_EQUAL",
-        CompareOp::Gt => "GREATER",
-        CompareOp::Ge => "GREATER_EQUAL",
-        CompareOp::Between => "BETWEEN",
-        CompareOp::NotBetween => "NOT_BETWEEN",
-    }
-}
-
-fn chart_kind(k: ChartKind) -> &'static str {
-    match k {
-        ChartKind::Column => "column",
-        ChartKind::Bar => "bar",
-        ChartKind::Line => "line",
-        ChartKind::Area => "area",
-        ChartKind::Pie => "pie",
-        ChartKind::Doughnut => "doughnut",
-        ChartKind::Scatter => "scatter",
-    }
-}
-
-/// 用紙の寸法（1/100 mm・縦置き）。B 判は JIS。
-fn paper_size(p: Paper) -> [u32; 2] {
-    match p {
-        Paper::A3 => [29_700, 42_000],
-        Paper::A4 => [21_000, 29_700],
-        Paper::A5 => [14_800, 21_000],
-        Paper::B4 => [25_700, 36_400],
-        Paper::B5 => [18_200, 25_700],
-        Paper::Letter => [21_590, 27_940],
-    }
-}
-
-/// `#RRGGBB`（`#` 省略・小文字も可）→ `#RRGGBB`。
-pub fn normalize_color(c: &str) -> Option<String> {
-    let h = c.trim().trim_start_matches('#');
-    (h.len() == 6 && h.chars().all(|c| c.is_ascii_hexdigit()))
-        .then(|| format!("#{}", h.to_ascii_uppercase()))
-}
-
-/// Excel の列幅（文字数）→ 1/100 mm（Calibri 11pt・最大桁幅 7px・96 dpi の換算）。
-pub fn chars_to_mm100(chars: f64) -> u32 {
-    let px = (chars * 7.0 + 5.0).round();
-    float_to_u32(px / 96.0 * 2540.0)
-}
-
-/// 1/100 mm → Excel の列幅（文字数・小数 1 桁）。
-pub fn mm100_to_chars(mm100: u32) -> f64 {
-    let px = f64::from(mm100) / 2540.0 * 96.0;
-    (((px - 5.0) / 7.0).max(0.0) * 10.0).round() / 10.0
-}
-
-pub fn pt_to_mm100(pt: f64) -> u32 {
-    float_to_u32(pt * 2540.0 / 72.0)
-}
-
-pub fn mm100_to_pt(mm100: u32) -> f64 {
-    (f64::from(mm100) * 72.0 / 2540.0 * 10.0).round() / 10.0
-}
-
-fn cm_to_mm100(cm: f64) -> u32 {
-    float_to_u32(cm * 1000.0)
-}
-
-fn float_to_u32(v: f64) -> u32 {
-    // 値域は呼び出し側で検証済み（列幅・行高・寸法）。
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let n = v.round().clamp(0.0, f64::from(u32::MAX)) as u32;
-    n
-}
-
-fn trim_float(v: f64) -> String {
-    let s = format!("{v}");
-    s.strip_suffix(".0").map_or(s.clone(), str::to_string)
-}
-
-/// `YYYY-MM-DD`（`/` 区切りも可・時刻 `HH:MM[:SS]` つき可）→ (シリアル値, 時刻つきか)。
-pub fn date_serial(s: &str) -> Option<(f64, bool)> {
-    let s = s.trim().replace('/', "-");
-    let (date, time) = match s.split_once([' ', 'T']) {
-        Some((d, t)) => (d, Some(t)),
-        None => (s.as_str(), None),
-    };
-    let d = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
-    let base = chrono::NaiveDate::from_ymd_opt(1899, 12, 30)?;
-    #[allow(clippy::cast_precision_loss)] // 日数は 10^6 未満。
-    let mut serial = (d - base).num_days() as f64;
-    if let Some(t) = time {
-        let t = chrono::NaiveTime::parse_from_str(t, "%H:%M:%S")
-            .or_else(|_| chrono::NaiveTime::parse_from_str(t, "%H:%M"))
-            .ok()?;
-        serial += f64::from(chrono::Timelike::num_seconds_from_midnight(&t)) / 86_400.0;
-    }
-    Some((serial, time.is_some()))
-}
-
-/// 定義できる名前か（セル参照と紛れる名前・空白や記号を含む名前は不可）。
-fn is_valid_name(name: &str) -> bool {
-    let first_ok = name
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_alphabetic() || c == '_');
-    let rest_ok = name
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '.');
-    let looks_like_cell = a1::parse_area(name).is_ok();
-    first_ok && rest_ok && !looks_like_cell && name.chars().count() <= 255
 }
 
 #[cfg(test)]

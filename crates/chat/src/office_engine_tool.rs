@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use agent_core::{Tool, ToolError, ToolName, ToolOutcome};
 use authz::AuthContext;
-use office::engine::calc::ops::SheetOp;
 use office::engine::{OfficeEngineError, SheetEditReport, SheetReadRequest};
 use office::live::{LiveEditError, LiveSaveResult};
 use serde::Deserialize;
@@ -30,7 +29,7 @@ pub(crate) trait SheetEngine: Send + Sync {
         file_id: Uuid,
         label: &str,
         default_sheet: Option<&str>,
-        ops: &[SheetOp],
+        ops: &[serde_json::Value],
     ) -> Result<SheetEditReport, OfficeEngineError>;
 }
 
@@ -51,7 +50,7 @@ impl SheetEngine for office::engine::OfficeEngine {
         file_id: Uuid,
         label: &str,
         default_sheet: Option<&str>,
-        ops: &[SheetOp],
+        ops: &[serde_json::Value],
     ) -> Result<SheetEditReport, OfficeEngineError> {
         office::engine::OfficeEngine::edit_sheet(self, ctx, file_id, label, default_sheet, ops)
             .await
@@ -168,7 +167,7 @@ struct EditInput {
     summary: String,
     #[serde(default)]
     sheet: Option<String>,
-    ops: Vec<SheetOp>,
+    ops: Vec<serde_json::Value>,
 }
 
 #[async_trait::async_trait]

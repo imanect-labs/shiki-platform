@@ -75,26 +75,36 @@ OPS.set_values = (op) => {
   return { cells: n };
 };
 
-const LINE_STYLES = { solid: 0, dotted: 1, dashed: 2, double: 3, none: 0x7fff };
-
+/**
+ * 罫線 1 本。値（線種・幅）は Rust が「Excel の罫線を読み込んだときと同じ値」に変換済み。
+ * それ以外の値（例: 中線を 53 で引く）は xlsx へ書き出すと細線に丸められる（実機で確認）。
+ */
 function borderLine(spec) {
   const line = new I.table.BorderLine2();
-  if (!spec || spec.style === "none") {
-    line.LineStyle = LINE_STYLES.none;
-    line.OuterLineWidth = 0;
-    line.LineWidth = 0;
+  if (!spec || spec.none) {
+    line.LineStyle = 0x7fff;
     return line;
   }
-  line.Color = hexToColor(spec.color || "#000000");
-  line.LineStyle = LINE_STYLES[spec.pattern || "solid"];
+  line.Color = hexToColor(spec.color);
+  line.LineStyle = spec.style;
   line.LineWidth = spec.width;
-  line.OuterLineWidth = spec.width;
-  if (spec.pattern === "double") {
-    line.OuterLineWidth = Math.max(1, Math.round(spec.width / 3));
-    line.InnerLineWidth = line.OuterLineWidth;
-    line.LineDistance = line.OuterLineWidth;
-  }
+  line.OuterLineWidth = spec.outer;
+  line.InnerLineWidth = spec.inner;
+  line.LineDistance = spec.dist;
   return line;
+}
+
+/**
+ * 文字色を設定する。既定の文字色がテーマ色（Excel 由来の xlsx は必ずそう）だと、CharColor だけを
+ * 変えても複合色（CharComplexColor）にテーマ参照が残り、xlsx への書き出しでテーマ色に戻ってしまう
+ * （実機で確認）。先に「未使用」型の複合色を入れてから RGB を入れる。
+ */
+function setCharColor(target, sheet, color) {
+  if (color !== -1) {
+    const unused = sheet.getCellByPosition(16383, 1048575).getPropertyValue("CellBackgroundComplexColor");
+    if (unused && unused.getType() === 0) target.setPropertyValue("CharComplexColor", unused);
+  }
+  target.setPropertyValue("CharColor", long(color));
 }
 
 function applyBorders(range, b) {
@@ -123,7 +133,7 @@ function applyBorders(range, b) {
 const HORI = { general: "STANDARD", left: "LEFT", center: "CENTER", right: "RIGHT", justify: "BLOCK" };
 const VERT = { top: 1, center: 2, bottom: 3 };
 
-function applyFormat(range, op) {
+function applyFormat(range, op, sheet) {
   if (op.number_format !== undefined) {
     STAGE = "表示形式";
     range.setPropertyValue("NumberFormat", numberFormatKey(op.number_format));
@@ -152,7 +162,7 @@ function applyFormat(range, op) {
     }
     if (f.underline !== undefined) range.setPropertyValue("CharUnderline", short(f.underline ? 1 : 0));
     if (f.strike !== undefined) range.setPropertyValue("CharStrikeout", short(f.strike ? 1 : 0));
-    if (f.color !== undefined) range.setPropertyValue("CharColor", long(hexToColor(f.color)));
+    if (f.color !== undefined) setCharColor(range, sheet, hexToColor(f.color));
   }
   if (op.fill !== undefined) {
     STAGE = "塗りつぶし";
@@ -182,7 +192,7 @@ function applyFormat(range, op) {
 
 OPS.format = (op) => {
   const sheet = getSheet(op.sheet);
-  for (const [sc, sr, ec, er] of op.areas) applyFormat(sheet.getCellRangeByPosition(sc, sr, ec, er), op);
+  for (const [sc, sr, ec, er] of op.areas) applyFormat(sheet.getCellRangeByPosition(sc, sr, ec, er), op, sheet);
   return {};
 };
 
@@ -334,13 +344,13 @@ OPS.sheet_props = (op) => {
 };
 
 /** 条件付き書式の見た目を表すセルスタイルを用意する（同じ見た目は同じスタイルを使い回す）。 */
-function conditionStyle(look) {
+function conditionStyle(look, sheet) {
   const name = "Shiki " + [look.font_color || "-", look.fill || "-", look.bold ? "b" : "-"].join(" ");
   const styles = DOC.getStyleFamilies().getByName("CellStyles");
   if (!styles.hasByName(name)) {
     const st = DOC.createInstance("com.sun.star.style.CellStyle");
     styles.insertByName(name, st);
-    if (look.font_color) st.setPropertyValue("CharColor", long(hexToColor(look.font_color)));
+    if (look.font_color) setCharColor(st, sheet, hexToColor(look.font_color));
     if (look.fill) {
       st.setPropertyValue("CellBackColor", long(hexToColor(look.fill)));
       st.setPropertyValue("IsCellBackgroundTransparent", false);
@@ -355,7 +365,7 @@ function conditionStyle(look) {
 
 OPS.conditional_format = (op) => {
   const sheet = getSheet(op.sheet);
-  const style = conditionStyle(op.look || {});
+  const style = conditionStyle(op.look || {}, sheet);
   for (const [sc, sr, ec, er] of op.areas) {
     const range = sheet.getCellRangeByPosition(sc, sr, ec, er);
     const entries = range.getPropertyValue("ConditionalFormat");
@@ -452,7 +462,8 @@ OPS.add_chart = (op) => {
   rect.Height = op.size[1];
   const ranges = op.ranges.map(([s, sc, sr, ec, er]) => {
     const a = new I.table.CellRangeAddress();
-    a.Sheet = DOC.getSheets().getByName(s).getRangeAddress().Sheet;
+    // データのシート名が無ければ、グラフを置くシートのデータ。
+    a.Sheet = (s === null ? sheet : getSheet(s)).getRangeAddress().Sheet;
     a.StartColumn = sc;
     a.StartRow = sr;
     a.EndColumn = ec;
@@ -460,6 +471,16 @@ OPS.add_chart = (op) => {
     return a;
   });
   charts.addNewByName(op.name, rect, ranges, op.first_row_header, op.first_col_header);
+  // 図形の名前にもグラフ名を書く（xlsx へ保存して開き直すとグラフ名は図形の名前から復元される）。
+  const dp = sheet.getDrawPage();
+  for (let i = 0; i < dp.getCount(); i++) {
+    const shape = dp.getByIndex(i);
+    try {
+      if (shape.getPropertyValue("PersistName") === op.name) shape.setPropertyValue("Name", op.name);
+    } catch (e) {
+      // グラフ以外の図形。
+    }
+  }
   STAGE = "グラフの種類と体裁";
   const eo = charts.getByName(op.name).getEmbeddedObject();
   const diagram = eo.createInstance(DIAGRAMS[op.kind]);
@@ -471,8 +492,15 @@ OPS.add_chart = (op) => {
   if (op.percent) d.setPropertyValue("Percent", true);
   if (op.series_in_rows) d.setPropertyValue("DataRowSource", I.chart.ChartDataRowSource.ROWS);
   eo.setPropertyValue("HasMainTitle", !!op.title);
-  if (op.title) eo.getTitle().setPropertyValue("String", op.title);
-  eo.setPropertyValue("HasLegend", op.legend);
+  if (op.title) {
+    const t = eo.getTitle();
+    t.setPropertyValue("String", op.title);
+    t.setPropertyValue("CharHeight", 13);
+    t.setPropertyValue("CharWeight", 150);
+  }
+  eo.setPropertyValue("HasLegend", op.legend_position !== "none");
+  STAGE = "グラフの見た目";
+  styleChart(eo, d, op);
   if (op.x_title) {
     d.setPropertyValue("HasXAxisTitle", true);
     d.getXAxisTitle().setPropertyValue("String", op.x_title);
@@ -483,6 +511,106 @@ OPS.add_chart = (op) => {
   }
   return {};
 };
+
+/** Office 現行版の既定に近い配色（系列の色を指定しないとき）。 */
+const CHART_COLORS = ["#4472C4", "#ED7D31", "#A5A5A5", "#FFC000", "#5B9BD5", "#70AD47", "#264478", "#9E480E"];
+
+/**
+ * グラフの見た目を整える（LibreOffice の既定は灰色の背景・枠つき凡例で古く見える）。
+ * 背景は透明、目盛線は薄い灰色、凡例は枠なし、系列は指定の色（無ければ既定の配色）。
+ */
+function styleChart(eo, d, op) {
+  const NONE_LINE = I.drawing.LineStyle.NONE;
+  try {
+    eo.getArea().setPropertyValue("LineStyle", NONE_LINE);
+  } catch (e) {
+    // 外枠を持たない種類。
+  }
+  try {
+    const wall = d.getWall();
+    wall.setPropertyValue("FillStyle", I.drawing.FillStyle.NONE);
+    wall.setPropertyValue("LineStyle", NONE_LINE);
+  } catch (e) {
+    // 円・ドーナツは壁を持たない。
+  }
+  try {
+    const grid = d.getYMainGrid();
+    grid.setPropertyValue("LineColor", long(0xd9d9d9));
+  } catch (e) {
+    // 目盛線を持たない種類。
+  }
+  if (op.legend_position !== "none") {
+    const legend = eo.getLegend();
+    legend.setPropertyValue("LineStyle", NONE_LINE);
+    legend.setPropertyValue("FillStyle", I.drawing.FillStyle.NONE);
+    const pos = { bottom: "BOTTOM", right: "RIGHT", top: "TOP", left: "LEFT" }[op.legend_position || "bottom"];
+    legend.setPropertyValue("Alignment", I.chart.ChartLegendPosition[pos]);
+  }
+  if (op.y_number_format) {
+    try {
+      const axis = d.getYAxis();
+      axis.setPropertyValue("LinkNumberFormatToSource", false);
+      axis.setPropertyValue("NumberFormat", numberFormatKey(op.y_number_format));
+    } catch (e) {
+      // 縦軸を持たない種類（円など）。
+    }
+  }
+  // 系列の数（列方向なら列見出しの数）。
+  let series = 0;
+  try {
+    const data = eo.getData();
+    series = op.series_in_rows ? data.getRowDescriptions().length : data.getColumnDescriptions().length;
+  } catch (e) {
+    series = 0;
+  }
+  const colors = op.colors && op.colors.length ? op.colors : CHART_COLORS;
+  const pie = op.kind === "pie" || op.kind === "doughnut";
+  if (pie) {
+    // 円・ドーナツは 1 系列の各点（項目）に色を付ける。
+    let points = 0;
+    try {
+      const data = eo.getData();
+      points = op.series_in_rows ? data.getColumnDescriptions().length : data.getRowDescriptions().length;
+    } catch (e) {
+      points = 0;
+    }
+    for (let i = 0; i < points; i++) {
+      try {
+        d.getDataPointProperties(i, 0).setPropertyValue("FillColor", long(hexToColor(colors[i % colors.length])));
+      } catch (e) {
+        // 点の数が合わない場合は既定の色のまま。
+      }
+    }
+  }
+  for (let i = 0; i < series; i++) {
+    const props = d.getDataRowProperties(i);
+    const c = long(hexToColor(colors[i % colors.length]));
+    if (!pie) {
+      try {
+        props.setPropertyValue("Color", c);
+        props.setPropertyValue("FillColor", c);
+        props.setPropertyValue("LineColor", c);
+      } catch (e) {
+        // 種類により持たないプロパティがある。
+      }
+      if (op.kind === "line" || op.kind === "scatter") {
+        try {
+          props.setPropertyValue("LineWidth", long(60));
+        } catch (e) {
+          // 線の幅を持たない種類。
+        }
+      }
+    }
+    if (op.data_labels) {
+      try {
+        // com.sun.star.chart.ChartDataCaption: VALUE=1, PERCENT=2, TEXT=4。円は「項目名と割合」。
+        props.setPropertyValue("DataCaption", long(pie ? 2 | 4 : 1));
+      } catch (e) {
+        // データラベルを持たない種類。
+      }
+    }
+  }
+}
 
 OPS.delete_chart = (op) => {
   const charts = getSheet(op.sheet).getCharts();
@@ -522,6 +650,40 @@ OPS.page_setup = (op) => {
     st.setPropertyValue("LeftMargin", long(l));
   }
   if (op.center_horizontally !== undefined) st.setPropertyValue("CenterHorizontally", op.center_horizontally);
+  for (const [key, on, prop] of [["header", "HeaderIsOn", "RightPageHeaderContent"], ["footer", "FooterIsOn", "RightPageFooterContent"]]) {
+    const hf = op[key];
+    if (hf === undefined) continue;
+    if (hf === null) {
+      st.setPropertyValue(on, false);
+      continue;
+    }
+    st.setPropertyValue(on, true);
+    // 左右ページ共通にする（既定は奇数ページの内容だけを使う）。
+    try {
+      st.setPropertyValue(key === "header" ? "HeaderIsShared" : "FooterIsShared", true);
+    } catch (e) {
+      // 古い版は持たない。
+    }
+    const content = st.getPropertyValue(prop);
+    for (const [part, getter] of [["left", "getLeftText"], ["center", "getCenterText"], ["right", "getRightText"]]) {
+      const text = content[getter]();
+      text.setString("");
+      for (const piece of hf[part] || []) {
+        const cur = text.createTextCursor();
+        cur.gotoEnd(false);
+        if (piece.t === "text") {
+          text.insertString(cur, piece.v, false);
+        } else {
+          const kinds = { page: "PageNumber", pages: "PageCount", date: "DateTime", sheet: "SheetName", file: "FileName" };
+          const field = DOC.createInstance("com.sun.star.text.TextField." + kinds[piece.t]);
+          // 日時フィールドは既定だと時刻になる。日付として出す。
+          if (piece.t === "date") field.setPropertyValue("IsDate", true);
+          text.insertTextContent(cur, field, false);
+        }
+      }
+    }
+    st.setPropertyValue(prop, content);
+  }
   if (op.gridlines !== undefined) st.setPropertyValue("PrintGrid", op.gridlines);
   if (op.print_area !== undefined) {
     if (op.print_area === null) {

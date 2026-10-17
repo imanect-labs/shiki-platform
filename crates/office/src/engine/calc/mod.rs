@@ -7,6 +7,9 @@
 
 pub mod describe;
 pub mod normalize;
+mod normalize_more;
 pub mod ops;
+pub mod parse;
 pub mod run;
+mod units;
 pub mod view;

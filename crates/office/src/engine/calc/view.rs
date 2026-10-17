@@ -317,16 +317,15 @@ fn describe_format(p: &Value, base: &Value) -> Vec<String> {
         d.push(if nf == "Standard" || nf == "General" {
             "表示形式 標準".into()
         } else {
-            format!("表示形式 {nf}")
+            format!("表示形式 {}", display_number_format(nf))
         });
     }
-    if differs("CharFontNameAsian") || differs("CharFontName") {
-        let name = if differs("CharFontNameAsian") {
-            s(&p["CharFontNameAsian"])
-        } else {
-            s(&p["CharFontName"])
-        };
-        d.push(format!("フォント {name}"));
+    // 和文（Asian）と欧文で別のフォントを持つ。日本語の文書では和文の違いを先に見せる。
+    if differs("CharFontNameAsian") {
+        d.push(format!("フォント {}", s(&p["CharFontNameAsian"])));
+    }
+    if differs("CharFontName") {
+        d.push(format!("欧文フォント {}", s(&p["CharFontName"])));
     }
     if differs("CharHeight") {
         d.push(format!("{}pt", p["CharHeight"]));
@@ -389,10 +388,14 @@ fn describe_format(p: &Value, base: &Value) -> Vec<String> {
         let b = &p[side];
         let w = b["w"].as_i64().unwrap_or(0);
         (w > 0).then(|| {
-            let kind = match w {
-                0..=15 => "極細線",
-                16..=40 => "細線",
-                41..=65 => "中線",
+            // LineStyle: 1=点線, 2/14=破線, 3/15 など=二重線（com.sun.star.table.BorderLineStyle）。
+            let kind = match (b["style"].as_i64().unwrap_or(0), w) {
+                (3 | 7..=13 | 15 | 16, _) => "二重線",
+                (2 | 14 | 17 | 18, _) => "破線",
+                (1, _) => "点線",
+                (_, 0..=8) => "極細線",
+                (_, 9..=45) => "細線",
+                (_, 46..=75) => "中線",
                 _ => "太線",
             };
             format!(
@@ -521,20 +524,57 @@ fn rects_text(rects: &[[u64; 4]]) -> String {
             )
         }
     };
-    if rects.len() > 1 {
-        let bb = [
-            rects.iter().map(|r| r[0]).min().unwrap_or(0),
-            rects.iter().map(|r| r[1]).min().unwrap_or(0),
-            rects.iter().map(|r| r[2]).max().unwrap_or(0),
-            rects.iter().map(|r| r[3]).max().unwrap_or(0),
-        ];
-        let area = |r: &[u64; 4]| (r[2] - r[0] + 1) * (r[3] - r[1] + 1);
-        // 書式グループは重ならないので、面積の和が外接矩形と等しければ隙間なく埋まっている。
-        if rects.iter().map(area).sum::<u64>() == area(&bb) {
-            return to_a1(&bb);
+    merge_rects(rects)
+        .iter()
+        .map(to_a1)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// 辺を共有する長方形を、それ以上まとまらなくなるまでまとめる（A5,A6,A7 → A5:A7）。
+fn merge_rects(rects: &[[u64; 4]]) -> Vec<[u64; 4]> {
+    let mut list: Vec<[u64; 4]> = rects.to_vec();
+    loop {
+        let mut merged = false;
+        'outer: for i in 0..list.len() {
+            for j in (i + 1)..list.len() {
+                let (a, b) = (list[i], list[j]);
+                let vertical =
+                    a[0] == b[0] && a[2] == b[2] && (a[3] + 1 == b[1] || b[3] + 1 == a[1]);
+                let horizontal =
+                    a[1] == b[1] && a[3] == b[3] && (a[2] + 1 == b[0] || b[2] + 1 == a[0]);
+                if vertical || horizontal {
+                    list[i] = [
+                        a[0].min(b[0]),
+                        a[1].min(b[1]),
+                        a[2].max(b[2]),
+                        a[3].max(b[3]),
+                    ];
+                    list.remove(j);
+                    merged = true;
+                    break 'outer;
+                }
+            }
+        }
+        if !merged {
+            break;
         }
     }
-    rects.iter().map(to_a1).collect::<Vec<_>>().join(",")
+    list.sort_by_key(|r| (r[1], r[0]));
+    list
+}
+
+/// 表示形式を、書いたときの形に近づけて見せる（kit は `年` を `\\年` のようにエスケープして返す）。
+fn display_number_format(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let mut chars = code.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek().is_some_and(|n| !n.is_ascii()) {
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn write_dimensions(out: &mut String, v: &Value) {
@@ -608,7 +648,10 @@ fn write_sheet_features(out: &mut String, v: &Value) {
         for e in cf["entries"].as_array().into_iter().flatten() {
             let look = &e["style"];
             let mut lk = Vec::new();
-            if let Some(c) = hex(look["CharColor"].as_i64().unwrap_or(-1)) {
+            // 文字色 0（黒）は「既定のまま」と区別できないので出さない。
+            if let Some(c) =
+                hex(look["CharColor"].as_i64().unwrap_or(-1)).filter(|c| c != "#000000")
+            {
                 lk.push(format!("文字色 {c}"));
             }
             if let Some(c) = hex(look["CellBackColor"].as_i64().unwrap_or(-1)) {
@@ -646,7 +689,7 @@ fn write_sheet_features(out: &mut String, v: &Value) {
     }
     let page = &v["page"];
     if page.is_object() {
-        let mut p = Vec::new();
+        let mut print = Vec::new();
         let (w, h) = (
             page["Width"].as_u64().unwrap_or(0),
             page["Height"].as_u64().unwrap_or(0),
@@ -658,7 +701,7 @@ fn write_sheet_features(out: &mut String, v: &Value) {
             (25600..=25800, 36300..=36500) => "B4",
             _ => "用紙",
         };
-        p.push(format!(
+        print.push(format!(
             "{paper}{}",
             if page["IsLandscape"] == Value::Bool(true) {
                 "横"
@@ -671,20 +714,27 @@ fn write_sheet_features(out: &mut String, v: &Value) {
             page["ScaleToPagesY"].as_u64().unwrap_or(0),
         );
         if fx > 0 || fy > 0 {
-            p.push(format!("横 {fx}・縦 {fy} ページに収める"));
+            let n = |v: u64| {
+                if v == 0 {
+                    "制限なし".to_string()
+                } else {
+                    v.to_string()
+                }
+            };
+            print.push(format!("幅 {} × 高さ {} ページに収める", n(fx), n(fy)));
         } else if let Some(sc) = page["PageScale"].as_u64().filter(|s| *s != 100) {
-            p.push(format!("{sc}%"));
+            print.push(format!("{sc}%"));
         }
         if let Some(pa) = page["print_areas"].as_array().filter(|a| !a.is_empty()) {
-            p.push(format!(
+            print.push(format!(
                 "印刷範囲 {}",
                 pa.iter().map(area_a1).collect::<Vec<_>>().join(",")
             ));
         }
         if let Some(tr) = page["title_rows"].as_array() {
-            p.push(format!("見出し行 {}:{}", u(&tr[1]) + 1, u(&tr[3]) + 1));
+            print.push(format!("見出し行 {}:{}", u(&tr[1]) + 1, u(&tr[3]) + 1));
         }
-        let _ = writeln!(out, "印刷: {}", p.join("・"));
+        let _ = writeln!(out, "印刷: {}", print.join("・"));
     }
 }
 
@@ -793,5 +843,36 @@ mod tests {
             text.contains("名前の定義: 売上表 = 売上!$A$1:$E$5"),
             "{text}"
         );
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    #[test]
+    fn merges_adjacent_rectangles() {
+        let r = merge_rects(&[
+            [0, 4, 0, 4],
+            [0, 6, 0, 6],
+            [0, 5, 0, 5],
+            [0, 7, 0, 7],
+            [2, 1, 2, 1],
+        ]);
+        assert_eq!(r, vec![[2, 1, 2, 1], [0, 4, 0, 7]]);
+        assert_eq!(
+            rects_text(&[[0, 0, 0, 0], [1, 0, 1, 0], [0, 1, 1, 1]]),
+            "A1:B2"
+        );
+    }
+
+    #[test]
+    fn unescapes_number_formats_for_display() {
+        assert_eq!(display_number_format("YYYY\\年M\\月D\\日"), "YYYY年M月D日");
+        assert_eq!(
+            display_number_format("#,##0;[RED]\\▲#,##0"),
+            "#,##0;[RED]▲#,##0"
+        );
+        assert_eq!(display_number_format("0\\.0"), "0\\.0");
     }
 }

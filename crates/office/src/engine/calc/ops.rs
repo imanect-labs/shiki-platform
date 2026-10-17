@@ -36,6 +36,24 @@ pub enum SheetOp {
         #[serde(default)]
         border: Option<BorderSpec>,
     },
+    /// 表をまとめて整える（見出し・縞・合計行・罫線を配色の名前ひとつで）。
+    StyleTable {
+        range: String,
+        #[serde(default)]
+        theme: TableTheme,
+        /// 見出しの行数（先頭から）。
+        #[serde(default = "one")]
+        header_rows: u32,
+        /// 最終行を合計行として強調する。
+        #[serde(default)]
+        total_row: bool,
+        /// 末尾の何行を集計行（合計・平均など）として強調するか（total_row より優先）。
+        #[serde(default)]
+        total_rows: Option<u32>,
+        /// 本体の行を 1 行おきに薄く塗る。
+        #[serde(default = "yes")]
+        banded: bool,
+    },
     /// セル結合（`center` で中央寄せも行う）。
     Merge {
         range: String,
@@ -185,6 +203,18 @@ pub enum SheetOp {
         title: Option<String>,
         #[serde(default = "yes")]
         legend: bool,
+        /// 凡例の位置（既定は下）。
+        #[serde(default)]
+        legend_position: Option<LegendPosition>,
+        /// 系列（円は項目）の色 `#RRGGBB` の並び（省略で既定の配色）。
+        #[serde(default)]
+        colors: Option<Vec<String>>,
+        /// 値をラベルとして表示する（円は割合）。
+        #[serde(default)]
+        data_labels: bool,
+        /// 縦軸の表示形式（例 "#,##0"）。
+        #[serde(default)]
+        y_number_format: Option<String>,
         /// 系列の向き（`columns`=列ごと・`rows`=行ごと）。
         #[serde(default)]
         series: SeriesIn,
@@ -231,7 +261,25 @@ pub enum SheetOp {
         repeat_rows: Option<Patch<String>>,
         #[serde(default)]
         gridlines: Option<bool>,
+        /// 各ページの上（ヘッダー）。`null` で消す。
+        #[serde(default, deserialize_with = "explicit_null")]
+        header: Option<Patch<HeaderFooter>>,
+        /// 各ページの下（フッター）。`null` で消す。
+        #[serde(default, deserialize_with = "explicit_null")]
+        footer: Option<Patch<HeaderFooter>>,
     },
+}
+
+/// ヘッダー・フッターの左・中央・右の文字列（`&[Page]` `&[Pages]` `&[Date]` `&[Sheet]` `&[File]` を差し込める）。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeaderFooter {
+    #[serde(default)]
+    pub left: Option<String>,
+    #[serde(default)]
+    pub center: Option<String>,
+    #[serde(default)]
+    pub right: Option<String>,
 }
 
 fn one() -> u32 {
@@ -268,6 +316,7 @@ impl SheetOp {
             SheetOp::SetValues { .. } => "set_values",
             SheetOp::FillFormula { .. } => "fill_formula",
             SheetOp::Format { .. } => "format",
+            SheetOp::StyleTable { .. } => "style_table",
             SheetOp::Merge { .. } => "merge",
             SheetOp::Unmerge { .. } => "unmerge",
             SheetOp::ColumnWidth { .. } => "column_width",
@@ -574,6 +623,18 @@ pub enum ValidationRule {
     },
 }
 
+/// 表の配色（見出しの濃い色・縞の薄い色・合計行の色・罫線の色の組）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TableTheme {
+    #[default]
+    Blue,
+    Navy,
+    Green,
+    Gray,
+    Orange,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChartKind {
@@ -584,6 +645,16 @@ pub enum ChartKind {
     Pie,
     Doughnut,
     Scatter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegendPosition {
+    Bottom,
+    Right,
+    Top,
+    Left,
+    None,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]

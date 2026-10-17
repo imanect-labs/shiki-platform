@@ -182,6 +182,9 @@ fn is_ref_part(s: &str, near_colon: bool) -> bool {
     shape_ok && (full || (partial && near_colon))
 }
 
+/// 分析アドインの関数の内部名の接頭辞。
+const ADDIN_PREFIX: &str = "COM.SUN.STAR.SHEET.ADDIN.ANALYSIS.GET";
+
 /// Calc の API 文法 → Excel の書き方（先頭の `=` つき）。変換できない形はそのまま残す。
 pub fn calc_to_excel(formula: &str) -> String {
     let body = formula.strip_prefix('=').unwrap_or(formula);
@@ -223,6 +226,14 @@ pub fn calc_to_excel(formula: &str) -> String {
                 last_sheet = Some(q.clone());
                 i += 2;
                 continue;
+            }
+            // 分析アドインの関数は kit 内では内部名（COM.SUN.STAR.SHEET.ADDIN.ANALYSIS.GETEDATE）で
+            // 返る。Excel の関数名（EDATE）で見せる（xlsx へは Excel 名で書き出される）。
+            Tok::Word(w)
+                if matches!(toks.get(i + 1), Some(Tok::Punct('(')))
+                    && w.to_ascii_uppercase().starts_with(ADDIN_PREFIX) =>
+            {
+                out.push(w[ADDIN_PREFIX.len()..].to_ascii_uppercase());
             }
             Tok::Word(w) => match (!matches!(toks.get(i + 1), Some(Tok::Punct('('))))
                 .then(|| {
@@ -447,6 +458,10 @@ mod tests {
             ("=STDEV.S(B2:B9)", "=STDEV.S(B2:B9)"),
             ("=ROUND(1.5;0)", "=ROUND(1.5,0)"),
             ("=SUM($Sheet1.B:B)", "=SUM(Sheet1!B:B)"),
+            (
+                "=COM.SUN.STAR.SHEET.ADDIN.ANALYSIS.GETEDATE(A1;1)",
+                "=EDATE(A1,1)",
+            ),
         ];
         for (calc, excel) in cases {
             assert_eq!(calc_to_excel(calc), excel, "{calc}");

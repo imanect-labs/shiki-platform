@@ -10,8 +10,8 @@ use authz::AuthContext;
 use uuid::Uuid;
 
 use super::a1;
-use super::calc::normalize::{normalize, OpError};
-use super::calc::ops::SheetOp;
+use super::calc::normalize::{normalize_with_sheets, OpError};
+use super::calc::parse::parse_ops;
 use super::calc::run;
 use super::EngineError;
 use crate::live::{LiveEditError, LiveEditor, LiveSaveResult, SessionAccess};
@@ -177,10 +177,12 @@ impl OfficeEngine {
         file_id: Uuid,
         label: &str,
         default_sheet: Option<&str>,
-        ops: &[SheetOp],
+        ops: &[serde_json::Value],
     ) -> Result<SheetEditReport, OfficeEngineError> {
         // 誤りはセッションを開く前に返す（kit を起こさない・文書に触れない）。
-        let normalized = normalize(ops, default_sheet)?;
+        let parsed = parse_ops(ops)?;
+        let items: Vec<_> = parsed.iter().map(|(op, s)| (op, s.as_deref())).collect();
+        let normalized = normalize_with_sheets(&items, default_sheet)?;
         if !self.is_supported().await {
             return Err(OfficeEngineError::Unsupported);
         }

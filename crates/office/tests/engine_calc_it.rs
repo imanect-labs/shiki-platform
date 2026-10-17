@@ -150,3 +150,46 @@ async fn a_failing_batch_leaves_the_document_untouched() {
     );
     client.close().await;
 }
+
+/// xlsx へ保存して開き直しても、文字色と罫線の線種が保たれる（テーマ色・幅の丸めの回帰防止）。
+#[tokio::test]
+async fn font_colors_and_border_styles_survive_an_xlsx_round_trip() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-{}.xlsx", uuid::Uuid::new_v4());
+    let mut client = open_blank(&env, &name).await;
+    let parsed = office::engine::calc::parse::parse_ops(&[
+        json!({"op": "set_values", "range": "A1", "values": [["見出し", "金額"], ["東京", 1200], ["合計", "=SUM(B2:B2)"]]}),
+        json!({"op": "style_table", "range": "A1:B3", "theme": "navy", "total_row": true}),
+        json!({"op": "format", "range": "B2", "font": {"color": "#C00000"}, "border": {"right": "medium"}}),
+    ])
+    .unwrap();
+    let items: Vec<_> = parsed.iter().map(|(o, s)| (o, s.as_deref())).collect();
+    let normalized = office::engine::calc::normalize::normalize_with_sheets(&items, None).unwrap();
+    let out = run::apply(&mut client, "往復", &normalized).await.unwrap();
+    assert!(out.applied, "{}", out.text);
+    client.save().await.unwrap();
+    client.close().await;
+
+    // 別のセッションで開き直す（xlsx から読み込んだ状態を読む）。
+    let wopi_src = format!("{}/{name}", env.wopi);
+    let cfg = CoolWsConfig::new(env.ws.clone());
+    let mut client = office::live::connect_with_retry(&cfg, &wopi_src, "test-token")
+        .await
+        .unwrap();
+    let area = a1::parse_area("A1:B3").unwrap();
+    let read = run::read_range(&mut client, &area, None, 100, false)
+        .await
+        .unwrap();
+    eprintln!("{read}");
+    assert!(
+        read.contains("文字色 #FFFFFF: A1:B1"),
+        "見出しの白字: {read}"
+    );
+    assert!(read.contains("文字色 #C00000: B2"), "赤字: {read}");
+    assert!(read.contains("二重線"), "合計行の上の二重線: {read}");
+    assert!(read.contains("中線"), "中線: {read}");
+    client.close().await;
+}

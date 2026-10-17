@@ -295,16 +295,7 @@ impl LiveEditor {
         let wopi_src = format!("{}/wopi/files/{file_id}", self.wopi_base_url);
         let access_token = token::issue_ai(&self.token_key, ctx, file_id)
             .map_err(|e| LiveEditError::Internal(format!("トークン発行に失敗: {e}")))?;
-        let mut client = match CoolWsClient::connect(&self.ws, &wopi_src, &access_token, "ja").await
-        {
-            Ok(client) => client,
-            Err(LiveError::Connect(first)) => {
-                // load 前の接続失敗のみ 1 回だけ再接続する（冪等・PIT-47）。
-                tracing::warn!(error = %first, "CoolWSD 接続失敗・再試行します");
-                CoolWsClient::connect(&self.ws, &wopi_src, &access_token, "ja").await?
-            }
-            Err(other) => return Err(other.into()),
-        };
+        let mut client = connect_with_retry(&self.ws, &wopi_src, &access_token).await?;
         let info = SessionInfo {
             file_name: node.name.clone(),
             content_type,
@@ -380,6 +371,37 @@ impl LiveEditor {
         LiveSaveResult::Failed(
             last_error.unwrap_or_else(|| "保存に失敗しました（原因不明）".to_string()),
         )
+    }
+}
+
+/// 接続して文書を開く。開く前の失敗だけを再試行する（何も書いていない＝冪等・PIT-47）。
+///
+/// - 接続の失敗: 1 回だけ再接続する
+/// - `docunloading`: 直前のセッション（前のツール呼び出しなど）が閉じた文書を kit がまだ片付けている。
+///   続けて開くと必ず起きる（実機で確認）ので、片付くまで短く待って開き直す
+pub async fn connect_with_retry(
+    ws: &CoolWsConfig,
+    wopi_src: &str,
+    access_token: &str,
+) -> Result<CoolWsClient, LiveError> {
+    const UNLOADING_RETRIES: u32 = 20;
+    let mut connect_retried = false;
+    let mut unloading = 0;
+    loop {
+        match CoolWsClient::connect(ws, wopi_src, access_token, "ja").await {
+            Ok(client) => return Ok(client),
+            Err(LiveError::Connect(e)) if !connect_retried => {
+                tracing::warn!(error = %e, "CoolWSD 接続失敗・再試行します");
+                connect_retried = true;
+            }
+            Err(LiveError::Load(e))
+                if e.contains("docunloading") && unloading < UNLOADING_RETRIES =>
+            {
+                unloading += 1;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(other) => return Err(other),
+        }
     }
 }
 

@@ -17,9 +17,40 @@ use crate::live::CoolWsClient;
 /// 1 回の読み取りで返すセル数の既定上限。
 pub const DEFAULT_MAX_CELLS: u32 = 1_500;
 
-/// 読み戻しで確かめるセル数の上限（範囲ごと・全体）。
-const READBACK_CELLS_PER_AREA: u32 = 400;
-const READBACK_AREAS: usize = 4;
+/// 読み戻しで確かめるセル数の上限（範囲ごと）と範囲の数の上限。
+const READBACK_CELLS_PER_AREA: u32 = 600;
+const READBACK_AREAS: usize = 6;
+
+/// シート名（null は作業中のシート）ごとの範囲の並び。
+type AreasBySheet = Vec<(Option<String>, Vec<[u32; 4]>)>;
+
+/// 読み戻す範囲: シートごとに、触った範囲の外接矩形が小さければ 1 つにまとめ、大きければ範囲ごとに読む。
+fn readback_areas(touched: &[super::normalize::Touched]) -> Vec<(Option<String>, [u32; 4])> {
+    let mut by_sheet: AreasBySheet = Vec::new();
+    for t in touched {
+        match by_sheet.iter_mut().find(|(s, _)| *s == t.sheet) {
+            Some((_, list)) => list.push(t.area),
+            None => by_sheet.push((t.sheet.clone(), vec![t.area])),
+        }
+    }
+    let mut out = Vec::new();
+    for (sheet, list) in by_sheet {
+        let bb = [
+            list.iter().map(|a| a[0]).min().unwrap_or(0),
+            list.iter().map(|a| a[1]).min().unwrap_or(0),
+            list.iter().map(|a| a[2]).max().unwrap_or(0),
+            list.iter().map(|a| a[3]).max().unwrap_or(0),
+        ];
+        let cells = u64::from(bb[2] - bb[0] + 1) * u64::from(bb[3] - bb[1] + 1);
+        if cells <= u64::from(READBACK_CELLS_PER_AREA) * 2 {
+            out.push((sheet, bb));
+        } else {
+            out.extend(list.into_iter().map(|a| (sheet.clone(), a)));
+        }
+    }
+    out.truncate(READBACK_AREAS);
+    out
+}
 
 /// ブックの概要（シート・使用範囲・グラフ・名前）＋作業中シートの先頭部分。
 pub async fn read_overview(
@@ -88,11 +119,19 @@ pub async fn apply(
             stage,
             op_index,
         }) => {
+            // エンジンの番号（展開後）を、モデルが書いた操作の番号と名前へ戻す。
             let which = op_index
-                .map(|i| format!("{} 件目の操作", i + 1))
+                .and_then(|i| normalized.origin.get(i))
+                .map(|(n, name)| format!("{n} 件目の操作（{name}）"))
                 .unwrap_or_default();
+            // 段階名のうち、展開後の番号（「3 件目（format）」）は紛らわしいので出さない。
+            let stage = if stage.contains("件目") || stage.is_empty() {
+                String::new()
+            } else {
+                format!("・{stage}")
+            };
             let mut text = format!(
-                "適用できませんでした。途中までの変更もすべて取り消したので、文書は変わっていません。\n原因: {which}（{stage}）: {message}"
+                "適用できませんでした。途中までの変更もすべて取り消したので、文書は変わっていません。\n原因: {which}{stage}: {message}"
             );
             if code == "sheet_not_found" {
                 let _ = write!(text, "\nシート名は office.read の概要で確かめてください。");
@@ -116,19 +155,24 @@ pub async fn apply(
             "\n※ ウィンドウ枠の固定は表示の設定なので「元に戻す」の対象外です。"
         );
     }
-    // 書いた範囲を読み戻す（計算結果・エラー・列幅不足を観測させる）。
+    // 触った範囲を読み戻す（計算結果・エラー・書式・列幅不足を観測させる）。
     let mut warnings = Vec::new();
-    for t in normalized.touched.iter().take(READBACK_AREAS) {
+    for (sheet, area) in readback_areas(&normalized.touched) {
         let v = call(
             client,
-            json!({"action": "calc.read_range", "sheet": t.sheet, "area": t.area,
-                   "max_cells": READBACK_CELLS_PER_AREA, "formats": false, "merges": false, "sheet_features": false}),
+            json!({"action": "calc.read_range", "sheet": sheet, "area": area,
+                   "max_cells": READBACK_CELLS_PER_AREA, "formats": true, "merges": true, "sheet_features": false}),
         )
         .await?;
-        let _ = write!(text, "\n\n現在の値:\n{}", view::range_text(&v));
+        let _ = write!(text, "\n\n現在の状態:\n{}", view::range_text(&v));
         lint_range(&v, &mut warnings);
     }
-    if !warnings.is_empty() {
+    if warnings.is_empty() {
+        let _ = write!(
+            text,
+            "\n検査: 数式のエラーと、数値の列幅不足は見つかりませんでした。"
+        );
+    } else {
         let _ = write!(text, "\n確認が必要な点:");
         for w in &warnings {
             let _ = write!(text, "\n- {w}");
@@ -149,6 +193,17 @@ fn lint_range(v: &Value, out: &mut Vec<String>) {
         .flatten()
         .filter_map(|c| Some((c[0].as_u64()?, c[1].as_u64()?)))
         .collect();
+    // 結合セルの左上は、結合した列幅の合計で表示される（1 列の幅で判定すると誤検知する）。
+    let merged_width = |col: u64, row: u64| -> Option<u64> {
+        v["merges"].as_array()?.iter().find_map(|m| {
+            let m: Vec<u64> = m.as_array()?.iter().filter_map(Value::as_u64).collect();
+            (m.len() == 4 && m[0] == col && m[1] == row).then(|| {
+                (m[0]..=m[2])
+                    .map(|c| widths.get(&c).copied().unwrap_or(0))
+                    .sum()
+            })
+        })
+    };
     for c in v["cells"].as_array().into_iter().flatten() {
         let (Some(col), Some(row)) = (c[0].as_u64(), c[1].as_u64()) else {
             continue;
@@ -169,12 +224,12 @@ fn lint_range(v: &Value, out: &mut Vec<String>) {
         if !numeric {
             continue;
         }
-        if let Some(w) = widths.get(&col) {
-            let col_px = f64::from(u32::try_from(*w).unwrap_or(0)) / 2540.0 * 96.0;
+        if let Some(w) = merged_width(col, row).or_else(|| widths.get(&col).copied()) {
+            let col_px = f64::from(u32::try_from(w).unwrap_or(0)) / 2540.0 * 96.0;
             if text_width_px(display) > col_px {
                 out.push(format!(
                     "{at} の「{display}」が列幅（{} 文字）に収まらず ### と表示される恐れがあります（column_width で広げる）",
-                    mm100_to_chars(u32::try_from(*w).unwrap_or(0))
+                    mm100_to_chars(u32::try_from(w).unwrap_or(0))
                 ));
             }
         }
