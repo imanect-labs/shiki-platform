@@ -198,6 +198,8 @@ async fn main() -> anyhow::Result<()> {
     // Office 統合（Task 11.5/11.6）: enabled のときのみ Collabora suite ＋ WOPI を配線する。
     // office.live_edit（issue #352）がトークン鍵を共有するため wire_chat より先に組む。
     let office = wiring_office::wire_office(&config, &http, &db, &authz, &storage)?;
+    // ブラウザ ↔ Collabora の中継（PIT-68）。ブラウザはここを通してだけ Collabora に触れる。
+    wiring_office::spawn_office_relay(&config).await?;
     // skill の publish / 同意インストール（Phase 9 レジストリ流用・ユーザー単位・#344）。
     // chat の skill カタログ（インストール済み ∪ 本人）と V4 skill 照合の材料になる。
     let skill_installs = Arc::new(app_platform::SkillInstallService::new(

@@ -359,9 +359,13 @@ services:
       - --o:server_name=${COLLABORA_PUBLIC_HOST:-localhost:9980}
       # 初回のウェルカム/新機能ダイアログを出さない（shiki の UI に埋め込む前提・体験を邪魔しない）。
       - --o:welcome.enable=false
-    ports:
-      # ブラウザが iframe で直接読むためローカル公開する（compose 網内は collabora:9980）。
-      - "127.0.0.1:9980:9980"
+    # **ポートを公開しない（PIT-68）。** Collabora 26.04 は編集セッションの WebSocket に
+    # `executescript` を 1 行送るだけで kit 内で任意の UNO スクリプトを走らせ、閲覧専用の
+    # セッションからでも通る。ブラウザは shiki-server の中継（127.0.0.1:9980・スクリプト命令を落とす）
+    # だけを通し、Collabora には compose 網内（collabora:9980）からしか届かないようにする。
+    # server_name（上記）は中継の公開ホストを指す。
+    expose:
+      - "9980"
     # ⚠️ no-new-privileges を付けないこと: coolforkit の file capability（chroot jail 生成）が
     # 獲得できず起動しない（deploy/docker/collabora/README.md 参照）。
     deploy:
@@ -644,6 +648,9 @@ services:
       # 第2リスナ（ゲートウェイ・別オリジン）と第3リスナ（B1 配信）。
       - "8090:8090"
       - "8091:8091"
+      # ブラウザ ↔ Collabora の中継（office.relay_port・PIT-68）。ブラウザはここから Collabora を開く
+      # （Collabora 自体はポートを公開しない）。office 無効時は中継が起動しないので何も応答しない。
+      - "127.0.0.1:9980:9980"
     volumes:
       # Tantivy 全文インデックス（index-per-tenant）の永続化先。
       - shiki-index-data:/var/lib/shiki/index

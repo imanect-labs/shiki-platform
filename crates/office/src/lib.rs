@@ -18,6 +18,7 @@ mod create;
 mod edit;
 mod error;
 pub mod live;
+pub mod relay;
 mod suite;
 mod templates;
 pub mod wopi;

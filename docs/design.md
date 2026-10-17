@@ -662,6 +662,11 @@ flowchart TB
     ビルドは重いため別 CI ワークフローでレジストリへ push し、**開発/CI は暫定で upstream CODE イメージ pin 可**
     （配布物は必ず自前ビルド）。SaaS はテナント共有プール、オンプレ/エアギャップは同一イメージ同梱
     （実行時ダウンロードなし・PIT-33 と同型）。compose は `profiles: ["office"]` のオプトイン。
+  - **ブラウザ ↔ Collabora は shiki-server の中継を通す（PIT-68・2026-10）**: 26.04 の `executescript`
+    （kit 内で完全な UNO API の JS を走らせる命令）は閲覧専用セッションからも通るため、ブラウザの経路を
+    `office::relay`（`office.relay_port`・既定 9980）へ一本化し、編集セッションのフレームから
+    `executescript`/`proxyreturn` を落とす。HTTP は編集画面が使う経路だけの許可リスト。Collabora 自体は
+    ブラウザへ公開せず、`server_name` は中継の公開ホストを指す。AI 参加者は内部網から直接つなぐ。
   - **AI の読み書き（3段・issue #352 でライブ参加を実装済み）**:
     ① read = Docling パース（構造保持）を正、convert-to は補助
     ② edit（ライブ・`office.live_edit`）= **AI が CoolWSD セッションの headless 参加者**

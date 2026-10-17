@@ -84,3 +84,50 @@ pub(crate) fn wire_office(
         live,
     }))
 }
+
+/// ブラウザ ↔ Collabora の中継（PIT-68）を spawn する。office 無効・`relay_port=0` では何もしない。
+///
+/// ブラウザ向けの面なので、内部 API と同じ host（`server.host`）で待ち受ける。
+/// 上流の 3xx をブラウザへそのまま返すため、リダイレクトを追わない専用クライアントを使う。
+pub(crate) async fn spawn_office_relay(config: &AppConfig) -> anyhow::Result<()> {
+    if !config.office.enabled || config.office.relay_port == 0 {
+        if config.office.enabled {
+            tracing::warn!(
+                "office.relay_port=0: Collabora の中継を起動しません（Collabora を別の中継の裏に置き、スクリプト実行命令を落とすこと・PIT-68）"
+            );
+        }
+        return Ok(());
+    }
+    let upstream_base = config
+        .office
+        .collabora_base_url
+        .clone()
+        .context("office.collabora_base_url が未設定です（office.enabled=true では必須）")?;
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(10))
+        // 応答の途中で止まった上流を待ち続けない（本文はストリームで返すので、読み取りの間隔で切る）。
+        .read_timeout(std::time::Duration::from_mins(2))
+        .build()
+        .context("office 中継の HTTP クライアントを構築できません")?;
+    let router = office::relay::build_relay_router(
+        office::relay::RelayConfig {
+            upstream_base: upstream_base.clone(),
+            // アップロード上限と同じ（画像の挿入・貼り付けが通る大きさ）。
+            max_body_bytes: usize::try_from(config.storage.max_upload_size_bytes)
+                .context("storage.max_upload_size_bytes が不正です")?,
+        },
+        http,
+    );
+    let bind = format!("{}:{}", config.server.host, config.office.relay_port);
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .with_context(|| format!("office 中継の bind に失敗しました（{bind}）"))?;
+    tracing::info!(%bind, %upstream_base, "office 中継を起動しました（ブラウザ ↔ Collabora）");
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, router).await {
+            tracing::error!(error = %e, "office 中継が停止しました");
+        }
+    });
+    Ok(())
+}
