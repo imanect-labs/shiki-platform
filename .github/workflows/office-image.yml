@@ -173,17 +173,36 @@ jobs:
           # 指定した文書を PDF にし、日本語版の Noto Sans / Serif CJK が埋め込まれることを見る。
           # 別名が無いとゴシックが明朝で出たり、中国語版の字形で描かれたりする。
           check_fonts() {
-            local html pdf fonts
-            html="$(mktemp --suffix=.html)"; pdf="$(mktemp --suffix=.pdf)"
-            printf '%s' '<html><body><p style="font-family:游ゴシック">見出しの書体</p><p style="font-family:游明朝">本文の書体</p></body></html>' > "$html"
-            curl -fsS --max-time 60 -F "data=@$html" http://127.0.0.1:19980/cool/convert-to/pdf -o "$pdf" \
+            local doc pdf fonts
+            doc="$(mktemp --suffix=.docx)"; pdf="$(mktemp --suffix=.pdf)"
+            # 東アジアの書体（w:eastAsia）に 游ゴシック と 游明朝 を指定した最小の docx。
+            # HTML は font-family が欧文の書体にしか付かず、日本語の文字は既定の書体で描かれるので使わない。
+            python3 - "$doc" <<'PY'
+          import sys, zipfile
+          W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+          def para(text, font):
+              return (f'<w:p><w:r><w:rPr><w:rFonts w:ascii="{font}" w:eastAsia="{font}"/></w:rPr>'
+                      f'<w:t>{text}</w:t></w:r></w:p>')
+          body = para("見出しの書体", "游ゴシック") + para("本文の書体", "游明朝")
+          with zipfile.ZipFile(sys.argv[1], "w") as z:
+              z.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                  '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                  '<Default Extension="xml" ContentType="application/xml"/>'
+                  '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+              z.writestr("_rels/.rels", '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                  '<Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+              z.writestr("word/document.xml", f'<?xml version="1.0"?><w:document {W}><w:body>{body}</w:body></w:document>')
+          PY
+            curl -fsS --max-time 60 -F "data=@$doc" http://127.0.0.1:19980/cool/convert-to/pdf -o "$pdf" \
               || { echo "convert-to/pdf に失敗した"; return 1; }
             # 書体名は版で大文字小文字が違う（Noto CJK 2.x は NotoSansCJKJP）ので小文字にして比べる。
             fonts="$(grep -a -o '/BaseFont */[A-Za-z0-9+_-]*' "$pdf" | sed 's|.*/||' | sort -u | tr '\n' ' ' || true)"
             echo "PDF の書体: $fonts"
             lower="$(printf '%s' "$fonts" | tr '[:upper:]' '[:lower:]')"
-            case "$lower" in *notosanscjkjp*) ;; *) echo "ゴシックが Noto Sans CJK JP で描かれていない"; return 1;; esac
-            case "$lower" in *notoserifcjkjp*) ;; *) echo "明朝が Noto Serif CJK JP で描かれていない"; return 1;; esac
+            # 別名（fonts/65-shiki-ja-aliases.conf）が効くと、ゴシックは Noto Sans の日本語版、明朝は Noto Serif の
+            # 日本語版になる（OS の CJK JP か engine 同梱の JP）。効かないと明朝もゴシックで描かれる。
+            case "$lower" in *notosanscjkjp*|*notosansjp*) ;; *) echo "ゴシックが Noto Sans の日本語版で描かれていない"; return 1;; esac
+            case "$lower" in *notoserifcjkjp*|*notoserifjp*) ;; *) echo "明朝が Noto Serif の日本語版で描かれていない"; return 1;; esac
             echo "fonts OK"
           }
           docker run -d --name collabora-smoke -p 127.0.0.1:19980:9980 \
