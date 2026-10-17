@@ -142,4 +142,7 @@ pub struct WorkerDeps {
     /// Office の新規作成（save_document / save_sheet・#381）。空テンプレ実体化＋
     /// Collabora への paste を束ねる。未配線なら作成ツールを提示しない。
     pub office_creator: Option<Arc<office::OfficeCreator>>,
+    /// Excel のレイアウト編集エンジン（office.read / office.excel_edit・#725）。
+    /// office 有効時のみ配線し、未配線ならツールを提示しない。
+    pub office_engine: Option<Arc<office::engine::OfficeEngine>>,
 }

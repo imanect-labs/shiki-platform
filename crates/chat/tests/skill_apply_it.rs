@@ -215,6 +215,7 @@ async fn skill_pin_applies_model_defaults_and_audits() {
             office: None,
             office_live: None,
             office_creator: None,
+            office_engine: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),

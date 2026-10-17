@@ -229,6 +229,7 @@ async fn env(pool: PgPool) -> Env {
             office: None,
             office_live: None,
             office_creator: None,
+            office_engine: None,
         },
         WorkerConfig {
             system_prompt: "あなたはアシスタントです。".into(),

@@ -23,9 +23,20 @@ pub const SHEET_CONTENT_TYPES: &[&str] = &[
     "application/vnd.oasis.opendocument.spreadsheet",
 ];
 
+/// `26.04.2.1` のような版が `min`（年・月）以上か。
+fn version_at_least(version: &str, min: (u32, u32)) -> bool {
+    let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+    let major = parts.next().unwrap_or(0);
+    let minor = parts.next().unwrap_or(0);
+    (major, minor) >= min
+}
+
 /// 入口の失敗（LLM へ返す文言に写す）。
 #[derive(Debug, thiserror::Error)]
 pub enum OfficeEngineError {
+    /// この Collabora はエンジンを持たない（26.04 未満）。
+    #[error("この環境の Office エンジンは古く、レイアウト編集に対応していません")]
+    Unsupported,
     /// 操作の内容が不正（セッションを開く前に検出・文書は変わっていない）。
     #[error(transparent)]
     Invalid(#[from] OpError),
@@ -68,11 +79,60 @@ pub struct SheetReadRequest {
 /// エンジンの入口。
 pub struct OfficeEngine {
     live: Arc<LiveEditor>,
+    http: reqwest::Client,
+    /// Collabora の内部 URL（版の確認用）。
+    collabora_base_url: String,
+    /// この Collabora がエンジン（executescript）を持つか。初回の確認結果を覚える。
+    supported: tokio::sync::OnceCell<bool>,
 }
 
+/// エンジンが要る Collabora の最小の版（executescript は 26.04 から）。
+const MIN_VERSION: (u32, u32) = (26, 4);
+
 impl OfficeEngine {
-    pub fn new(live: Arc<LiveEditor>) -> Self {
-        OfficeEngine { live }
+    pub fn new(
+        live: Arc<LiveEditor>,
+        http: reqwest::Client,
+        collabora_base_url: impl Into<String>,
+    ) -> Self {
+        OfficeEngine {
+            live,
+            http,
+            collabora_base_url: collabora_base_url.into(),
+            supported: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// この Collabora でエンジンが使えるか（`/hosting/capabilities` の productVersion で判定）。
+    ///
+    /// 確認できなかった（Collabora 停止中など）ときは覚えずに `true` を返し、実際の接続で失敗させる
+    /// （一時的な停止で「使えない」と覚えてしまわない）。
+    pub async fn is_supported(&self) -> bool {
+        if let Some(v) = self.supported.get() {
+            return *v;
+        }
+        let url = format!(
+            "{}/hosting/capabilities",
+            self.collabora_base_url.trim_end_matches('/')
+        );
+        let fetched = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let resp = self.http.get(&url).send().await.ok()?;
+            let v: serde_json::Value = resp.json().await.ok()?;
+            Some(v["productVersion"].as_str()?.to_string())
+        })
+        .await
+        .ok()
+        .flatten();
+        match fetched {
+            Some(version) => {
+                let ok = version_at_least(&version, MIN_VERSION);
+                if !ok {
+                    tracing::warn!(%version, "Collabora が古く Office エンジン（executescript）が使えません");
+                }
+                *self.supported.get_or_init(|| async { ok }).await
+            }
+            None => true,
+        }
     }
 
     /// Excel を読む（viewer@file）。
@@ -83,6 +143,9 @@ impl OfficeEngine {
         req: &SheetReadRequest,
     ) -> Result<String, OfficeEngineError> {
         let area = req.range.as_deref().map(a1::parse_area).transpose()?;
+        if !self.is_supported().await {
+            return Err(OfficeEngineError::Unsupported);
+        }
         let max_cells = req
             .max_cells
             .unwrap_or(run::DEFAULT_MAX_CELLS)
@@ -118,6 +181,9 @@ impl OfficeEngine {
     ) -> Result<SheetEditReport, OfficeEngineError> {
         // 誤りはセッションを開く前に返す（kit を起こさない・文書に触れない）。
         let normalized = normalize(ops, default_sheet)?;
+        if !self.is_supported().await {
+            return Err(OfficeEngineError::Unsupported);
+        }
         let outcome = Box::pin(self.live.with_session(
             ctx,
             file_id,
@@ -138,5 +204,19 @@ impl OfficeEngine {
             save: outcome.save,
             views: outcome.info.views,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compares_collabora_versions() {
+        assert!(version_at_least("26.04.2.1", MIN_VERSION));
+        assert!(version_at_least("26.10.0", MIN_VERSION));
+        assert!(version_at_least("27.01", MIN_VERSION));
+        assert!(!version_at_least("25.04.9.5", MIN_VERSION));
+        assert!(!version_at_least("", MIN_VERSION));
     }
 }

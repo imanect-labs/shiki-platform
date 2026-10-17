@@ -194,31 +194,31 @@ impl LiveEditor {
         file_id: Uuid,
         ops: &[LiveOp],
     ) -> Result<LiveEditReport, LiveEditError> {
-        let outcome = self
-            .with_session(
-                ctx,
-                file_id,
-                SessionAccess::Edit,
-                EDITABLE_CONTENT_TYPES,
-                async |client: &mut CoolWsClient, info: &SessionInfo| {
-                    // ops を順に適用する。失敗は abort（以降未適用）として正直に報告する。
-                    let mut results: Vec<LiveOpResult> = Vec::with_capacity(ops.len());
-                    let mut aborted = None;
-                    for op in ops {
-                        match apply_op(client, &info.content_type, op).await {
-                            Ok(result) => results.push(result),
-                            Err(e) => {
-                                aborted = Some(format!("{}: {e}", op.label()));
-                                break;
-                            }
+        // with_session の future は大きい（WS・ロック・保存検証を抱える）ので箱に入れて渡す。
+        let outcome = Box::pin(self.with_session(
+            ctx,
+            file_id,
+            SessionAccess::Edit,
+            EDITABLE_CONTENT_TYPES,
+            async |client: &mut CoolWsClient, info: &SessionInfo| {
+                // ops を順に適用する。失敗は abort（以降未適用）として正直に報告する。
+                let mut results: Vec<LiveOpResult> = Vec::with_capacity(ops.len());
+                let mut aborted = None;
+                for op in ops {
+                    match apply_op(client, &info.content_type, op).await {
+                        Ok(result) => results.push(result),
+                        Err(e) => {
+                            aborted = Some(format!("{}: {e}", op.label()));
+                            break;
                         }
                     }
-                    // 1 件以上適用できたときのみ保存する。
-                    let applied_any = results.iter().any(|r| r.applied);
-                    ((results, aborted), applied_any)
-                },
-            )
-            .await?;
+                }
+                // 1 件以上適用できたときのみ保存する。
+                let applied_any = results.iter().any(|r| r.applied);
+                ((results, aborted), applied_any)
+            },
+        ))
+        .await?;
         let ((results, aborted), save) = (outcome.value, outcome.save);
         Ok(LiveEditReport {
             file_name: outcome.info.file_name,

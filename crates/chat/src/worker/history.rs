@@ -202,14 +202,22 @@ pub(super) fn tools_in_use(blocks: &[ContentBlock], out: &mut Vec<String>) {
 }
 
 /// 選択範囲の種別ごとに、その対象を読む・直すツール。
-fn selection_tools(kind: crate::model::SelectionKind) -> [agent_core::ToolName; 2] {
+///
+/// Office の選択は文書の種類（Word/Excel）が分からないので、両方の道具を載せる
+/// （種類違いの道具は呼ばれても「この道具は Excel 用です」と即座に返る）。
+fn selection_tools(kind: crate::model::SelectionKind) -> &'static [agent_core::ToolName] {
     use crate::model::SelectionKind as K;
     use agent_core::ToolName as T;
     match kind {
-        K::NoteSelection => [T::DocumentRead, T::DocumentEdit],
-        K::CsvRange => [T::CsvQuery, T::CsvPatch],
-        K::SlideSelection => [T::SlideRead, T::SlideEdit],
-        K::OfficeSelection => [T::OfficeLiveEdit, T::OfficeEdit],
+        K::NoteSelection => &[T::DocumentRead, T::DocumentEdit],
+        K::CsvRange => &[T::CsvQuery, T::CsvPatch],
+        K::SlideSelection => &[T::SlideRead, T::SlideEdit],
+        K::OfficeSelection => &[
+            T::OfficeLiveEdit,
+            T::OfficeEdit,
+            T::OfficeRead,
+            T::OfficeExcelEdit,
+        ],
     }
 }
 
@@ -217,19 +225,22 @@ fn selection_tools(kind: crate::model::SelectionKind) -> [agent_core::ToolName; 
 ///
 /// ドキュメントアシスタントは system プロンプトでこれらの編集ツールを使うよう指示するため、
 /// 遅延にすると毎ターン検索の 1 手を挟む。拡張子が分からなければノートとして扱う。
-pub(super) fn origin_document_tools(name: Option<&str>) -> [agent_core::ToolName; 2] {
+/// Excel はレイアウトまで扱えるエンジンの道具（office.read / office.excel_edit・#725）を使う。
+pub(super) fn origin_document_tools(name: Option<&str>) -> &'static [agent_core::ToolName] {
     use crate::model::SelectionKind as K;
+    use agent_core::ToolName as T;
     let ext = name
         .and_then(|n| n.rsplit_once('.'))
         .map(|(_, e)| e.to_ascii_lowercase());
-    selection_tools(match ext.as_deref() {
-        Some("docx" | "xlsx" | "pptx" | "doc" | "xls" | "ppt" | "odt" | "ods" | "odp") => {
-            K::OfficeSelection
+    match ext.as_deref() {
+        Some("xlsx" | "xls" | "ods") => &[T::OfficeRead, T::OfficeExcelEdit],
+        Some("docx" | "pptx" | "doc" | "ppt" | "odt" | "odp") => {
+            &[T::OfficeLiveEdit, T::OfficeEdit]
         }
-        Some("csv") => K::CsvRange,
-        Some("slide") => K::SlideSelection,
-        _ => K::NoteSelection,
-    })
+        Some("csv") => selection_tools(K::CsvRange),
+        Some("slide") => selection_tools(K::SlideSelection),
+        _ => selection_tools(K::NoteSelection),
+    }
 }
 
 /// 下書き内容の履歴注入の上限（選択コンテキストの excerpt clamp と同水準）。
@@ -455,6 +466,10 @@ mod tests {
         assert_eq!(
             origin_document_tools(Some("報告書.DOCX")),
             [T::OfficeLiveEdit, T::OfficeEdit]
+        );
+        assert_eq!(
+            origin_document_tools(Some("売上.xlsx")),
+            [T::OfficeRead, T::OfficeExcelEdit]
         );
         assert_eq!(
             origin_document_tools(Some("売上.csv")),

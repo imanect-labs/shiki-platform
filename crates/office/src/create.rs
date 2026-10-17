@@ -78,7 +78,7 @@ impl OfficeCreator {
         if ops.is_empty() {
             return Ok((created, None));
         }
-        let report = Box::pin(self.live.apply(ctx, created.node_id, ops)).await;
+        let report = self.live.apply(ctx, created.node_id, ops).await;
         Ok((created, Some(report)))
     }
 }
