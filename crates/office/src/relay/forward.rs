@@ -34,6 +34,20 @@ pub(super) fn upstream_url(base: &str, path: &str, query: Option<&str>) -> Strin
     }
 }
 
+/// 組み立てた上流の URL を URL として解釈したとき、パスが組み立て前と同じか。
+///
+/// url クレート（reqwest）は `%2e%2e` などを `..` として畳むので、通行判定を通した後に
+/// 上流で別の経路になっていないかを確かめる（判定と上流の解釈を食い違わせない）。
+pub(super) fn keeps_path(url: &str, base: &str, path: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let base_path = reqwest::Url::parse(base)
+        .map(|b| b.path().trim_end_matches('/').to_string())
+        .unwrap_or_default();
+    parsed.path() == format!("{base_path}{path}")
+}
+
 fn copy_headers(from: &HeaderMap, to: &mut HeaderMap) {
     for (name, value) in from {
         if !is_dropped(name) {
@@ -50,6 +64,10 @@ pub(super) async fn forward(
 ) -> Response {
     let (parts, body) = req.into_parts();
     let url = upstream_url(&config.upstream_base, parts.uri.path(), parts.uri.query());
+    if !keeps_path(&url, &config.upstream_base, parts.uri.path()) {
+        tracing::warn!(path = %parts.uri.path(), "office relay: 上流で別の経路に解釈されるパスを拒否");
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let Ok(body) = axum::body::to_bytes(body, config.max_body_bytes).await else {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     };
@@ -95,6 +113,26 @@ mod tests {
             ),
             "http://collabora:9980/cool/clipboard?WOPISrc=x&ViewId=1"
         );
+    }
+
+    #[test]
+    fn detects_paths_the_upstream_url_would_rewrite() {
+        let base = "http://collabora:9980";
+        for path in [
+            "/hosting/discovery",
+            "/cool/http%3A%2F%2Fx%2Fwopi/download/1",
+        ] {
+            let url = upstream_url(base, path, None);
+            assert!(keeps_path(&url, base, path), "{path}");
+        }
+        for path in [
+            "/browser/%2e%2e/cool/getMetrics",
+            "/browser/.%2E/x",
+            "/a/b/../c",
+        ] {
+            let url = upstream_url(base, path, None);
+            assert!(!keeps_path(&url, base, path), "{path}");
+        }
     }
 
     #[test]

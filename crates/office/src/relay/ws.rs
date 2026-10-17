@@ -18,8 +18,8 @@ use super::forward::upstream_url;
 use super::policy::{client_frame_verdict, FrameVerdict};
 use super::RelayConfig;
 
-/// 1 メッセージの上限。タイル・貼り付け・画像がこの範囲に収まる（Collabora 側の上限と同程度）。
-const MAX_MESSAGE_BYTES: usize = 256 << 20;
+/// 上流へ WebSocket を張るまでの上限。届かない上流を待ち続けて接続を抱えない。
+const UPSTREAM_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// ポリシー違反で切るときのクローズコード（RFC 6455 の Policy Violation）。
 const POLICY_VIOLATION: u16 = 1008;
@@ -31,14 +31,17 @@ pub(super) fn bridge(upgrade: WebSocketUpgrade, config: &RelayConfig, parts: &Pa
         .replacen("https://", "wss://", 1)
         .replacen("http://", "ws://", 1);
     let url = upstream_url(&ws_base, parts.uri.path(), parts.uri.query());
+    // 1 メッセージの上限は HTTP の本文と同じ（貼り付け・画像の挿入が通る大きさ）。認証前の接続でも
+    // 確保されうるので、上限を上げすぎない。
+    let max_message = config.max_body_bytes;
     // coolwsd は Origin と Host の一致を見て WS を受け入れる（不一致は 403・実機確認）。
     // ブラウザの Origin と Host をそのまま渡す（Collabora 公式の nginx 例の `Host $host` と同じ）。
     let origin = parts.headers.get(header::ORIGIN).cloned();
     let host = parts.headers.get(header::HOST).cloned();
     upgrade
-        .max_message_size(MAX_MESSAGE_BYTES)
+        .max_message_size(max_message)
         .on_upgrade(move |client| async move {
-            if let Err(e) = run(client, url, origin, host).await {
+            if let Err(e) = run(client, url, origin, host, max_message).await {
                 tracing::warn!(error = %e, "office relay: 編集セッションの中継が異常終了");
             }
         })
@@ -49,6 +52,7 @@ async fn run(
     url: String,
     origin: Option<HeaderValue>,
     host: Option<HeaderValue>,
+    max_message: usize,
 ) -> Result<(), tungstenite::Error> {
     let mut request = url.into_client_request()?;
     if let Some(origin) = origin {
@@ -58,10 +62,28 @@ async fn run(
         request.headers_mut().insert(header::HOST, host);
     }
     let config = WebSocketConfig::default()
-        .max_message_size(Some(MAX_MESSAGE_BYTES))
-        .max_frame_size(Some(MAX_MESSAGE_BYTES));
-    let (upstream, _) =
-        tokio_tungstenite::connect_async_with_config(request, Some(config), false).await?;
+        .max_message_size(Some(max_message))
+        .max_frame_size(Some(max_message));
+    let connect = tokio_tungstenite::connect_async_with_config(request, Some(config), false);
+    let (upstream, _) = match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, connect).await {
+        Ok(r) => r?,
+        Err(_) => {
+            let mut client = client;
+            let closed = client
+                .send(Message::Close(Some(CloseFrame {
+                    code: 1011,
+                    reason: "".into(),
+                })))
+                .await;
+            if let Err(e) = closed {
+                tracing::debug!(error = %e, "office relay: ブラウザへの切断通知を送れません");
+            }
+            return Err(tungstenite::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Collabora へ WebSocket を張れません（時間切れ）",
+            )));
+        }
+    };
     let (mut up_tx, mut up_rx) = upstream.split();
     let (mut cl_tx, mut cl_rx) = client.split();
     // ブラウザへの送信は 1 か所に集める（素通しの流れと、違反時の切断通知の両方が使う）。
@@ -74,7 +96,9 @@ async fn run(
                 break;
             }
         }
-        let _ = cl_tx.close().await;
+        if let Err(e) = cl_tx.close().await {
+            tracing::debug!(error = %e, "office relay: ブラウザ側の接続を閉じられません");
+        }
     };
 
     // Collabora → ブラウザ: 素通し。
@@ -104,12 +128,16 @@ async fn run(
                     command,
                     "office relay: ブラウザからのスクリプト実行命令を拒否し、接続を切りました"
                 );
-                let _ = to_client
+                if to_client
                     .send(Message::Close(Some(CloseFrame {
                         code: POLICY_VIOLATION,
                         reason: "".into(),
                     })))
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!("office relay: 切断通知の前にブラウザ側が閉じました");
+                }
                 break;
             }
             let closing = matches!(msg, Message::Close(_));
@@ -117,7 +145,9 @@ async fn run(
                 break;
             }
         }
-        let _ = up_tx.close().await;
+        if let Err(e) = up_tx.close().await {
+            tracing::debug!(error = %e, "office relay: Collabora 側の接続を閉じられません");
+        }
     };
 
     // どちらかの流れが終われば中継を終える（片側だけ生き残らせない）。両方の流れが落ちると

@@ -41,16 +41,30 @@ pub enum FrameVerdict {
 /// `path` はパーセントデコード**前**の生のパス（クエリを含まない）。
 pub fn route_for(method: &str, path: &str, is_websocket_upgrade: bool) -> Option<Route> {
     // `..` や二重スラッシュで判定をすり抜ける余地を残さない（上流の解釈と食い違い得る形は拒否）。
+    // パーセントエンコードした `%2e%2e` も、上流へ渡す URL の組み立て（url クレート）が `..` として
+    // 畳むので、各要素をデコードしてから見る。`%2f` で 1 要素に詰めた区切りもデコード後に分けて見る。
     if path.contains("..") || path.contains("//") || path.contains('\\') {
         return None;
     }
-    let read_only = matches!(method, "GET" | "HEAD");
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    let decoded: Vec<String> = segments
+        .iter()
+        .map(|s| {
+            percent_encoding::percent_decode_str(s)
+                .decode_utf8_lossy()
+                .into_owned()
+        })
+        .collect();
+    let parts = || decoded.iter().flat_map(|s| s.split(['/', '\\']));
+    if parts().any(|p| p == "." || p == "..") {
+        return None;
+    }
+    let read_only = matches!(method, "GET" | "HEAD");
     match segments.as_slice() {
         // 編集画面の HTML・JS・CSS・画像。管理画面（/browser/dist/admin/）だけは通さない。
         // cool.html はトークンを form POST で受け取るので POST も通す。
         ["browser", rest @ ..] if !rest.is_empty() => {
-            let is_admin = rest.iter().any(|s| s.eq_ignore_ascii_case("admin"));
+            let is_admin = parts().any(|p| p.eq_ignore_ascii_case("admin"));
             let is_editor_page = rest
                 .last()
                 .is_some_and(|s| s.to_ascii_lowercase().ends_with(".html"));
@@ -192,6 +206,15 @@ mod tests {
             ("GET", "/browser/abc/admin/admin.html"),
             ("GET", "/lool/convert-to"),
             ("GET", "/cool/../hosting/discovery"),
+            // パーセントエンコードした `..`（上流の URL を組み立てるときに `..` として畳まれる）。
+            ("GET", "/browser/%2e%2e/cool/getMetrics"),
+            ("GET", "/browser/.%2E/cool/getMetrics"),
+            ("POST", "/browser/%2e%2e/cool/convert-to/pdf/x.html"),
+            ("GET", "/browser/dist%2f..%2fadmin/admin.html"),
+            ("GET", "/browser/%2e/dist/x.js"),
+            // パーセントエンコードした管理画面（上流のファイル配信はデコードして配る）。
+            ("GET", "/browser/dist/%61dmin/admin.html"),
+            ("GET", "/browser/dist%2Fadmin%2Fadmin.html"),
             ("GET", "/browser//dist/x.js"),
             ("DELETE", "/browser/dist/bundle.js"),
             ("POST", "/hosting/discovery"),

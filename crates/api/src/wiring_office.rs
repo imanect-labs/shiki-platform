@@ -106,6 +106,8 @@ pub(crate) async fn spawn_office_relay(config: &AppConfig) -> anyhow::Result<()>
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
+        // 応答の途中で止まった上流を待ち続けない（本文はストリームで返すので、読み取りの間隔で切る）。
+        .read_timeout(std::time::Duration::from_secs(120))
         .build()
         .context("office 中継の HTTP クライアントを構築できません")?;
     let router = office::relay::build_relay_router(

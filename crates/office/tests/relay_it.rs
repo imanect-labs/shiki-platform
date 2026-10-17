@@ -173,6 +173,13 @@ async fn http_allowlist_is_enforced() {
         (reqwest::Method::GET, "/cool/adminws"),
         (reqwest::Method::GET, "/browser/dist/admin/admin.html"),
         (reqwest::Method::POST, &format!("/cool/{DOC}/ws/s/write/1")),
+        // パーセントエンコードした `..`・管理画面で許可リストを抜けられないこと。
+        (reqwest::Method::GET, "/browser/%2e%2e/cool/getMetrics"),
+        (
+            reqwest::Method::POST,
+            "/browser/%2e%2e/cool/convert-to/pdf/x.html",
+        ),
+        (reqwest::Method::GET, "/browser/dist/%61dmin/admin.html"),
     ] {
         let res = http
             .request(method.clone(), format!("http://{relay}{path}"))
