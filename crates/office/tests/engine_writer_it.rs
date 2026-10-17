@@ -451,7 +451,12 @@ async fn whole_document_replace_and_page_overflow_warning() {
     };
     let (_name, mut client) = fresh(&env).await;
     let page = |n: usize| -> String {
-        let body: String = (0..n).map(|i| format!("<p>本文の段落 {i}</p>")).collect();
+        let body = (0..n).fold(String::new(), |mut acc, i| {
+            acc.push_str("<p>本文の段落 ");
+            acc.push_str(&i.to_string());
+            acc.push_str("</p>");
+            acc
+        });
         format!("<h1 data-style=\"Title\">題</h1>{body}")
     };
     // まず多めに入れて、1 ページ目に入る段落の数を一覧のページ区切りから数える。

@@ -70,6 +70,7 @@ pub fn normalize_with_sheets(
     let mut cells: u64 = 0;
     let mut cx = Cx {
         default_sheet: default_sheet.map(str::to_string),
+        explicit_default: default_sheet.is_some(),
         renames: HashMap::new(),
         index: 0,
         op: "",
@@ -96,8 +97,51 @@ pub fn normalize_with_sheets(
     Ok(out)
 }
 
+/// `=` の後ろが関数の呼び出し（`SUM(`）かセル参照（`B2`）を含むか。`{"text": "=SUM(B2:B6)"}` は
+/// 数式を包み間違えたもの（Gemma 4 の評価で繰り返し起き、計算されない文字が入っていた）で、
+/// `{"text": "=はじめに"}` のような本当の文字とは区別できる。
+fn looks_like_formula(s: &str) -> bool {
+    let Some(body) = s.strip_prefix('=') else {
+        return false;
+    };
+    let b = body.as_bytes();
+    let call = b
+        .windows(2)
+        .any(|w| w[0].is_ascii_alphabetic() && w[1] == b'(');
+    let cell_ref = (0..b.len()).any(|i| {
+        let start_ok = i == 0 || !b[i - 1].is_ascii_alphanumeric();
+        let letters = b[i..].iter().take_while(|c| c.is_ascii_uppercase()).count();
+        let after = i + letters;
+        let after = if b.get(after) == Some(&b'$') {
+            after + 1
+        } else {
+            after
+        };
+        start_ok && (1..=3).contains(&letters) && b.get(after).is_some_and(u8::is_ascii_digit)
+    });
+    call || cell_ref
+}
+
+/// 表示形式からロケールだけの指定（`[$-ja-JP]`・`[$-411]`）を外す。Calc の API は `[$-ja-JP]` を
+/// 解釈できず表示形式ごと拒否する（Gemma 4 の評価）。通貨記号つき（`[$¥-411]`）は残す。
+fn strip_locale_tags(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let mut rest = code;
+    while let Some(i) = rest.find("[$-") {
+        let Some(end) = rest[i..].find(']') else {
+            break;
+        };
+        out.push_str(&rest[..i]);
+        rest = &rest[i + end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 pub(super) struct Cx {
     default_sheet: Option<String>,
+    /// 呼び出しが既定シート（sheet）を明示したか。
+    explicit_default: bool,
     /// この一括の中で改名したシート（旧名 → 新名）。以降の参照を新名へ読み替える。
     renames: HashMap<String, String>,
     pub(super) index: usize,
@@ -187,6 +231,26 @@ impl Cx {
         let v = match op {
             SheetOp::SetValues { range, values } => {
                 let a = self.area(range)?;
+                // 縦 1 列の範囲へ横 1 行で渡した（またはその逆の）値は向きを合わせる。どちらも
+                // 1 列・1 行なので取り違えようがなく、弱いモデルがよく間違える形（Gemma 4 の評価）。
+                let transposed: Vec<Vec<CellInput>>;
+                let values = if values.len() == 1
+                    && values[0].len() > 1
+                    && a.width() == 1
+                    && a.height() == u32::try_from(values[0].len()).unwrap_or(0)
+                {
+                    transposed = values[0].iter().map(|c| vec![c.clone()]).collect();
+                    &transposed
+                } else if values.len() > 1
+                    && values.iter().all(|r| r.len() == 1)
+                    && a.height() == 1
+                    && a.width() == u32::try_from(values.len()).unwrap_or(0)
+                {
+                    transposed = vec![values.iter().map(|r| r[0].clone()).collect()];
+                    &transposed
+                } else {
+                    values
+                };
                 let rows = u32::try_from(values.len()).unwrap_or(u32::MAX);
                 let cols = u32::try_from(values.iter().map(Vec::len).max().unwrap_or(0))
                     .unwrap_or(u32::MAX);
@@ -280,10 +344,11 @@ impl Cx {
                             self.err("number_format が空です（標準に戻すなら \"General\"）")
                         );
                     }
+                    let stripped = strip_locale_tags(nf);
                     let code = if nf.eq_ignore_ascii_case("general") {
                         "General"
                     } else {
-                        nf.as_str()
+                        stripped.as_str()
                     };
                     m.insert("number_format".into(), code.into());
                 }
@@ -501,6 +566,12 @@ impl Cx {
             SheetOp::AddSheet { name, position } => {
                 self.check_sheet_name(name)?;
                 let pos = position.map(|p| p.saturating_sub(1));
+                // シートを足した後の、シートを書いていない操作はその新しいシートに書く（足したシートを
+                // 埋めるつもりで、元の表を上書きするのを防ぐ・Gemma 4 の評価で実際に起きた）。
+                // 呼び出しが sheet を明示したときはそれに従う。
+                if !self.explicit_default {
+                    self.default_sheet = Some(name.clone());
+                }
                 vec![json!({"op": "add_sheet", "name": name, "position": pos})]
             }
             SheetOp::RenameSheet { sheet, name } => {
@@ -656,6 +727,12 @@ impl Cx {
             }
             CellInput::Text(s) if s.starts_with('=') && s.len() > 1 => {
                 json!({"t": "f", "v": self.formula(s)?})
+            }
+            CellInput::Literal { text: s } if looks_like_formula(s) => {
+                return Err(self.err(format!(
+                    "{{\"text\": \"{s}\"}} は計算されない文字として入ります。数式なら \"{s}\" と文字列のまま書いてください\
+                     （{{\"text\"}} は先頭の = や 0 を文字として残したいときだけ使う）"
+                )));
             }
             CellInput::Text(s) | CellInput::Literal { text: s } => json!({"t": "s", "v": s}),
             CellInput::Date { date } => {

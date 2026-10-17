@@ -58,21 +58,37 @@ function setCell(cell, v) {
 
 const OPS = {};
 
+/** 書く前のセルに、書く値と違う中身があるか（上書きして元の値を消すか）。 */
+function overwrites(cell, v) {
+  const type = enumName(cell.getType());
+  if (type === "EMPTY") return false;
+  if (v.t === "f") return cell.getFormula() !== v.v;
+  if (v.t === "s") return type === "FORMULA" || cell.getString() !== v.v;
+  if (v.t === "n" || v.t === "d") return type === "FORMULA" || type === "TEXT" || cell.getValue() !== v.v;
+  return true;
+}
+
 OPS.set_values = (op) => {
   const sheet = getSheet(op.sheet);
   const [sc, sr] = op.area;
   let n = 0;
+  let overwritten = 0;
   for (let r = 0; r < op.values.length; r++) {
     const row = op.values[r];
     for (let c = 0; c < row.length; c++) {
       const v = row[c];
       if (v === null) continue;
       STAGE = `${op.sheet}!${colLetters(sc + c)}${sr + r + 1} への書き込み`;
-      setCell(sheet.getCellByPosition(sc + c, sr + r), v);
+      const cell = sheet.getCellByPosition(sc + c, sr + r);
+      if (overwrites(cell, v)) overwritten++;
+      setCell(cell, v);
       n++;
     }
   }
-  return { cells: n };
+  // 既存の値を消した書き込みは結果に出す（シートを取り違えて元の表を上書きしても気づけるように）。
+  const [, , ec, er] = op.area;
+  const where = `${sheet.getName()}!${colLetters(sc)}${sr + 1}:${colLetters(ec)}${er + 1}`;
+  return overwritten > 0 ? { cells: n, overwritten, where } : { cells: n };
 };
 
 /**
@@ -513,6 +529,12 @@ const DIAGRAMS = {
 OPS.add_chart = (op) => {
   const sheet = getSheet(op.sheet);
   const charts = sheet.getCharts();
+  if (op.name === null || op.name === undefined) {
+    // 名前を省略したら、空いている「グラフN」を付ける。
+    let n = charts.getCount() + 1;
+    while (charts.hasByName("グラフ" + n)) n++;
+    op.name = "グラフ" + n;
+  }
   if (charts.hasByName(op.name)) fail("chart_exists", `グラフ「${op.name}」は既にあります`);
   STAGE = "グラフの配置";
   const anchor = sheet.getCellByPosition(op.anchor[0], op.anchor[1]).getPropertyValue("Position");

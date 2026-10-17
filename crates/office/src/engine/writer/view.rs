@@ -122,8 +122,8 @@ pub fn page_warnings(ov: &Value) -> Vec<String> {
     )]
 }
 
-pub fn overview_text(file_name: &str, ov: &Value) -> String {
-    let mut out = String::new();
+/// 一覧の頭（用紙・余白・ヘッダー/フッター・ページ数・使えるスタイル）。
+fn overview_header(out: &mut String, file_name: &str, ov: &Value) {
     let page = &ov["page"];
     let (width, height) = (
         page["Width"].as_u64().unwrap_or(0),
@@ -132,7 +132,7 @@ pub fn overview_text(file_name: &str, ov: &Value) -> String {
     let paper = paper_name(width, height);
     let orient = if width > height { "横" } else { "縦" };
     let _ = write!(
-        out,
+        *out,
         "文書{}: ブロック {} 個・{paper}{orient}・余白 上{} 右{} 下{} 左{} mm",
         if file_name.is_empty() {
             String::new()
@@ -146,10 +146,10 @@ pub fn overview_text(file_name: &str, ov: &Value) -> String {
         mm(&page["LeftMargin"]),
     );
     if page["HeaderIsOn"] == Value::Bool(true) {
-        let _ = write!(out, "・ヘッダー「{}」", s(&page["header"]).trim());
+        let _ = write!(*out, "・ヘッダー「{}」", s(&page["header"]).trim());
     }
     if page["FooterIsOn"] == Value::Bool(true) {
-        let _ = write!(out, "・フッター「{}」", s(&page["footer"]).trim());
+        let _ = write!(*out, "・フッター「{}」", s(&page["footer"]).trim());
     }
     if page["title_page"] == Value::Bool(true) {
         out.push_str("・表紙あり（1 ページ目はヘッダー・フッターなし）");
@@ -167,7 +167,7 @@ pub fn overview_text(file_name: &str, ov: &Value) -> String {
         );
     }
     if let Some(n) = ov["pages"].as_u64().filter(|n| *n > 0) {
-        let _ = write!(out, "・{n} ページ");
+        let _ = write!(*out, "・{n} ページ");
     }
     out.push('\n');
     if let Some(styles) = ov["styles"].as_array() {
@@ -191,11 +191,16 @@ pub fn overview_text(file_name: &str, ov: &Value) -> String {
             })
             .collect();
         let _ = writeln!(
-            out,
+            *out,
             "使える段落スタイル（data-style / style に書く名前）: {}",
             list.join("、")
         );
     }
+}
+
+pub fn overview_text(file_name: &str, ov: &Value) -> String {
+    let mut out = String::new();
+    overview_header(&mut out, file_name, ov);
     let blocks = ov["blocks"].as_array().cloned().unwrap_or_default();
     let from = ov["from"].as_u64().unwrap_or(0);
     let _ = writeln!(

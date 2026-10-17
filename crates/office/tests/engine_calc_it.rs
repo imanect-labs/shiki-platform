@@ -189,6 +189,50 @@ async fn sheets_move_to_the_given_position_and_external_formulas_are_rejected() 
     client.close().await;
 }
 
+/// シートを足した後の、シートを書いていない操作は新しいシートへ書き、既存の値の上書きは結果に出る。
+#[tokio::test]
+async fn writes_after_add_sheet_go_to_the_new_sheet_and_overwrites_are_reported() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-{}.xlsx", uuid::Uuid::new_v4());
+    let mut client = open_blank(&env, &name).await;
+    let seed = ops(json!([{"op": "set_values", "range": "A1", "values": [["元データ"], [1]]}]));
+    let out = run::apply(&mut client, "元", &normalize(&seed, None).unwrap())
+        .await
+        .unwrap();
+    assert!(out.applied, "{}", out.text);
+    assert!(!out.text.contains("上書きしました"), "{}", out.text);
+    let batch = ops(json!([
+        {"op": "add_sheet", "name": "集計"},
+        {"op": "set_values", "range": "A1", "values": [["集計表"]]}
+    ]));
+    let out = run::apply(&mut client, "集計", &normalize(&batch, None).unwrap())
+        .await
+        .unwrap();
+    assert!(out.applied, "{}", out.text);
+    assert!(
+        !out.text.contains("上書きしました"),
+        "元の表を上書きした: {}",
+        out.text
+    );
+    let overview = run::read_overview(&mut client, &name).await.unwrap();
+    assert!(overview.contains("- 集計: 使用範囲 A1"), "{overview}");
+    // 既存の値を書き換えると、どこを何セル上書きしたかが返る。
+    let over = ops(json!([{"op": "set_values", "range": "集計!A1", "values": [["別の値"]]}]));
+    let out = run::apply(&mut client, "上書き", &normalize(&over, None).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        out.text
+            .contains("集計!A1:A1 の既存の値 1 セルを上書きしました"),
+        "{}",
+        out.text
+    );
+    client.close().await;
+}
+
 /// 「自動」の列幅は、折り返しの見出し（style_table）も 1 行に収まる幅にする。
 #[tokio::test]
 async fn auto_width_fits_wrapped_headers_on_one_line() {

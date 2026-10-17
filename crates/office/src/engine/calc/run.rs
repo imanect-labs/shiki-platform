@@ -155,6 +155,14 @@ pub async fn apply(
             "\n※ ウィンドウ枠の固定は表示の設定なので「元に戻す」の対象外です。"
         );
     }
+    for r in results["results"].as_array().into_iter().flatten() {
+        if let (Some(n), Some(where_)) = (r["overwritten"].as_u64(), r["where"].as_str()) {
+            let _ = write!(
+                text,
+                "\n※ {where_} の既存の値 {n} セルを上書きしました（意図した範囲・シートか確かめ、違えば元に戻すか別の範囲へ書いてください）。"
+            );
+        }
+    }
     // 触った範囲を読み戻す（計算結果・エラー・書式・列幅不足を観測させる）。
     let mut warnings = Vec::new();
     // **ここから先の失敗で Err を返さない。** 適用は済んでいるので、失敗として返すと保存されず、

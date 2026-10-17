@@ -36,6 +36,7 @@ pub fn parse_ops(values: &[Value]) -> Result<Vec<ParsedOp>, OpError> {
             .unwrap_or("?")
             .to_string();
         let mut v = v.clone();
+        crate::engine::coerce_bools(&mut v);
         let mut op_sheet = None;
         if !SHEET_TARGET_OPS.contains(&op_name.as_str()) {
             if let Some(obj) = v.as_object_mut() {

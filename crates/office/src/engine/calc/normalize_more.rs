@@ -53,7 +53,7 @@ impl Cx {
         if !(3.0..=60.0).contains(&w) || !(3.0..=60.0).contains(&h) {
             return Err(self.err("グラフの大きさは 3〜60 cm で指定してください"));
         }
-        if name.trim().is_empty() {
+        if name.as_deref().is_some_and(|n| n.trim().is_empty()) {
             return Err(self.err("グラフの name が空です"));
         }
         let mut palette = Vec::new();

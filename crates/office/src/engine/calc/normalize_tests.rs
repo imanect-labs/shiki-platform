@@ -45,6 +45,31 @@ fn literal_text_is_not_a_formula() {
 }
 
 #[test]
+fn a_formula_wrapped_in_text_is_rejected_with_a_hint() {
+    for f in ["=SUM(B2:B6)", "=B2*C2", "=IFERROR(C2/B2,0)", "=$A$1"] {
+        let e = fails(json!({"op": "set_values", "range": "A1", "values": [[{"text": f}]]}));
+        assert!(e.contains("計算されない文字"), "{f}: {e}");
+    }
+}
+
+#[test]
+fn a_row_into_a_column_range_is_turned_upright() {
+    let v = one(json!({"op": "set_values", "range": "A2:A4", "values": [["a", "b", "c"]]}));
+    assert_eq!(v["area"], json!([0, 1, 0, 3]));
+    assert_eq!(v["values"][2][0], json!({"t": "s", "v": "c"}));
+    let v = one(json!({"op": "set_values", "range": "B1:D1", "values": [[1], [2], [3]]}));
+    assert_eq!(v["area"], json!([1, 0, 3, 0]));
+}
+
+#[test]
+fn locale_tags_are_dropped_from_number_formats() {
+    let v = one(json!({"op": "format", "range": "A1", "number_format": "[$-ja-JP]m\"月\""}));
+    assert_eq!(v["number_format"], json!("m\"月\""));
+    let v = one(json!({"op": "format", "range": "A1", "number_format": "[$¥-411]#,##0"}));
+    assert_eq!(v["number_format"], json!("[$¥-411]#,##0"));
+}
+
+#[test]
 fn set_values_rejects_size_mismatch() {
     let e = fails(json!({"op": "set_values", "range": "A1:B2", "values": [[1, 2, 3]]}));
     assert!(e.contains("1 件目（set_values）"), "{e}");

@@ -26,7 +26,8 @@ pub const EXCEL_EDIT_DESCRIPTION: &str = "Excel ブック（.xlsx / .ods）を�
 （旧名で書いても読み替える）。\n\
 ops:\n\
 - set_values {range, values:[[...]]} 値と数式。values は常に 2 次元（1 セルでも [[\"x\"]]）。range は左上セルだけでよい。数値は数値のまま、数式は \"=SUM(B2:B9)\"、\
-日付は {\"date\":\"2026-04-01\"}、= で始まる文字列は {\"text\":\"=…\"}、null はそのセルを変えない\n\
+日付は {\"date\":\"2026-04-01\"}、先頭の 0 を残す文字（\"001\" など）は {\"text\":\"001\"}（数式を {\"text\"} で包まない）、\
+null はそのセルを変えない。縦 1 列に書くときは [[\"a\"],[\"b\"]]（行ごとに 1 要素）\n\
 - fill_formula {range, formula} 左上セル用の数式を範囲全体へ相対参照で展開（例 range \"E2:E20\", formula \"=B2*C2\"）\n\
 - format {range（配列可）, number_format?, font?{name,size,bold,italic,underline,strike,color}, fill?（null で塗りなし）, \
 align?{horizontal:left|center|right|justify, vertical:top|center|bottom, wrap, shrink, indent（左揃えのときだけ効く）, rotate}, \
@@ -44,7 +45,7 @@ hide_rows・show_rows {rows} / hide_columns・show_columns {columns}\n\
 - sort {range, by:[{column:\"E\", order:asc|desc}], has_header?}\n\
 - autofilter {range} / {sheet, enabled:false}\n\
 - freeze {cell:\"B2\"}（そのセルの左と上を固定。null で解除）\n\
-- add_sheet {name, position?} / rename_sheet {sheet, name} / delete_sheet {sheet} / move_sheet {sheet, position} / \
+- add_sheet {name, position?}（同じ ops の後ろの操作は、sheet を書かなければこの新しいシートに書く） / rename_sheet {sheet, name} / delete_sheet {sheet} / move_sheet {sheet, position} / \
 sheet_props {sheet, tab_color?, visible?}\n\
 - conditional_format {range, when:{operator:\"<\"|\"<=\"|\">\"|\">=\"|\"=\"|\"<>\"|\"between\"|\"not_between\", value, value2?} \
 または {formula:\"=$E2>1000\"（範囲の左上基準）}, style:{font_color?, fill?, bold?}} / clear_conditional_formats {range}\n\
@@ -52,7 +53,7 @@ sheet_props {sheet, tab_color?, visible?}\n\
 {type:\"list\", source:\"マスタ!A2:A20\"} / {type:\"whole_number\"|\"decimal\"|\"text_length\", operator, value, value2?} / \
 {type:\"date\", operator, value:\"2026-01-01\"} / {type:\"custom\", formula}\n\
 - define_name {name, range}（range:null で削除）\n\
-- add_chart {name, type:column|bar|line|area|pie|doughnut|scatter, data:\"A1:D13\"（先頭行=系列名・先頭列=項目）, anchor:\"G2\", \
+- add_chart {name?（省略で「グラフN」）, type:column|bar|line|area|pie|doughnut|scatter, data:\"A1:D13\"（先頭行=系列名・先頭列=項目）, anchor:\"G2\", \
 width_cm?, height_cm?, title?, legend_position?:bottom|right|top|none, colors?:[\"#4472C4\",...], data_labels?, y_number_format?:\"#,##0\", \
 series?:columns|rows, stacked?, percent?, x_title?, y_title?}（既定で背景は透明・凡例は下・Office の標準配色）/ delete_chart {name}\n\
 - page_setup {orientation?:portrait|landscape, paper?:A4|A3|B5|B4|A5|letter, fit_to?{width,height}（{1,1}=1 ページに収める・{1,0}=幅だけ 1 ページ）, \

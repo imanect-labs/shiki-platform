@@ -30,7 +30,9 @@ pub fn normalize_doc_ops(values: &[Value]) -> Result<DocNormalized, OpError> {
             .and_then(Value::as_str)
             .unwrap_or("?")
             .to_string();
-        let op: DocOp = serde_json::from_value(v.clone()).map_err(|e| OpError {
+        let mut v = v.clone();
+        crate::engine::coerce_bools(&mut v);
+        let op: DocOp = serde_json::from_value(v).map_err(|e| OpError {
             index: i + 1,
             op: known_name(&name),
             message: format!("{e}（項目名と値の形を説明文のとおりにしてください）"),

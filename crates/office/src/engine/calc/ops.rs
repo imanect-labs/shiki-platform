@@ -189,7 +189,9 @@ pub enum SheetOp {
     AddChart {
         #[serde(default)]
         sheet: Option<String>,
-        name: String,
+        /// 省略すると「グラフ1」「グラフ2」…の空いている名前を付ける。
+        #[serde(default)]
+        name: Option<String>,
         #[serde(rename = "type")]
         kind: ChartKind,
         data: RangeList,
