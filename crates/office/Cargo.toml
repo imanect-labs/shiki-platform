@@ -25,7 +25,7 @@ chrono.workspace = true
 async-trait.workspace = true
 
 # Collabora discovery（/hosting/discovery XML）の取得。
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 # discovery XML のパース（urlsrc 抽出）。
 quick-xml.workspace = true
 
@@ -44,6 +44,7 @@ rand.workspace = true
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
+tracing-subscriber.workspace = true
 
 # lib 名 authz/storage で参照するため machete（名前一致）が誤検出する。
 [package.metadata.cargo-machete]

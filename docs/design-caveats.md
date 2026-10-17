@@ -1080,3 +1080,34 @@ skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止�
 - **検証**: 空行を持たない長文を投入し、全 leaf が上限以下であること、文書中の語が
   実際に検索でヒットすることを確認する。依存側は FD 上限に達した状態を作り、
   「成功扱いで消える」のではなく失敗として観測できることを確かめる。
+
+## 🔴 PIT-68: Collabora 26.04 の `executescript` は閲覧者にも kit 内のスクリプト実行を渡す
+
+- **箇所**: design §4.8（`crates/office/src/relay/`・`deploy/compose/docker-compose.yml` の collabora／shiki-server）。
+- **リスク**: Collabora 26.04 は編集セッションの WebSocket に `executescript <id> <JS>` を 1 行送るだけで、
+  kit 内の QuickJS で**完全な UNO API を持つ JS** を走らせる（拡張機能のための機能）。実機で確かめたところ、
+  ①**閲覧専用セッション（`perm: readonly`）からでも文書を書き換えられ**、②`experimental_features=false`
+  でも隠し設定 `security.allow_external_scripting=false` でも止まらなかった。①は、編集者が同じ文書を
+  開いていれば自動保存で確定するので「閲覧者 → 編集者」の権限昇格になる。加えて UNO の UCB 経由で
+  kit からの外向き通信（SSRF）面も開く。本番ピン（cp-25.04.9）にはこの命令が無いが、
+  dev のフォールバック（`COLLABORA_IMAGE=collabora/code:26.04…`）には既にある。
+- **決定（2026-10）**: AI の文書操作エンジンはこの経路（kit 内の固定インタプリタ）を使う。そのうえで
+  **ブラウザには渡さない**:
+  ①ブラウザ ↔ Collabora を shiki-server の中継（`office.relay_port`・既定 9980）に一本化し、
+  編集セッションのフレームの先頭トークンが `executescript` / `proxyreturn` なら**捨てて接続ごと切る**
+  （先頭の空白・大文字小文字・テキスト/バイナリの別を問わない）
+  ②中継を挟むと Collabora から見た接続元が内部 IP になり、`net.post_allow.host` で守っていた REST
+  （convert-to・extract/transform-document-structure）や管理画面が外から届いてしまうため、HTTP は
+  **編集画面が使う経路だけを許可リストで通す**（拒否リストにしない）。HTTP ロングポーリング版の
+  ProxyProtocol（`/cool/<doc>/ws/<session>/…`）はフレーム検査を迂回できるので通さない
+  ③Collabora 自体はブラウザへ公開しない（compose は `expose` のみ・`server_name` は中継の公開ホスト）。
+  AI 参加者は内部網から直接つなぐ
+  ④上流の版上げでは `wsd/protocol.txt` のクライアント → サーバ命令を見直し、スクリプト系の命令が
+  増えていれば `BLOCKED_CLIENT_COMMANDS` に足す。ブラウザが使う新しい経路（26.04 で `/cool/ws?WOPISrc=`
+  の形が増えた）は、実ブラウザで編集画面を通して確かめてから許可リストに足す
+  ⑤LLM が書いたコードは kit に入れない（kit 内で走るのはリポジトリ管理の固定インタプリタだけで、
+  LLM の出力はその引数の JSON としてだけ入る）。
+- **受け入れ条件**: 「スクリプト命令が上流へ届かず 1008 で切られる（テキスト/バイナリ/表記ゆれ）」
+  「許可リスト外の HTTP（convert-to・transform・adminws・admin 画面・ProxyProtocol）が 404」の結合テスト
+  （`crates/office/tests/relay_it.rs`）と、実機 coolwsd に中継越しで文書を開けて `executescript` が
+  届かないことを確かめる環境変数ゲートの結合テスト（`relay_live_collabora`）がある。

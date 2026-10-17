@@ -57,7 +57,7 @@ pub struct AppConfig {
 /// Office 統合（Collabora＋WOPI ホスト）の設定（`SHIKI__OFFICE__*`）。
 ///
 /// `enabled=false` なら `/wopi` も `/office/sessions` も配線しない（fail-closed）。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OfficeConfig {
     /// Office 統合を有効化するか（既定 false）。
     #[serde(default)]
@@ -77,6 +77,30 @@ pub struct OfficeConfig {
     /// ブラウザから見た web の origin（CheckFileInfo の PostMessageOrigin）。
     #[serde(default)]
     pub web_origin: Option<String>,
+    /// ブラウザ ↔ Collabora の中継（PIT-68）を待ち受けるポート。既定 9980。
+    ///
+    /// ブラウザは Collabora に直接つながず、必ずこの中継を通す（スクリプト実行命令を落とすため）。
+    /// Collabora の `server_name` はこの中継の公開ホストに合わせ、Collabora 自体のポートは
+    /// ブラウザへ公開しない。`0` で中継を起動しない（Collabora を別の中継の裏に置く構成のみ）。
+    #[serde(default = "default_office_relay_port")]
+    pub relay_port: u16,
+}
+
+fn default_office_relay_port() -> u16 {
+    9980
+}
+
+impl Default for OfficeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            collabora_base_url: None,
+            wopi_base_url: None,
+            token_secret: None,
+            web_origin: None,
+            relay_port: default_office_relay_port(),
+        }
+    }
 }
 
 /// 公開 API ゲートウェイ（ミニアプリ用・第2リスナ）の設定。
