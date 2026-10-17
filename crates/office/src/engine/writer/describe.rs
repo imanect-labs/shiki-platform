@@ -15,7 +15,8 @@ vertical-align / page-break-before が効く。段落スタイルは data-style=
 Standard になる（本文の書体・大きさ・行間は set_style で Standard を変える）。style に書いた文字の大きさや色はその段落だけの直接書式になり、\
 後から set_style でスタイルを変えても上書きされない。表の幅・列幅（<col width>・width）は mm / pt / % / 数値（px）で書ける。段落の style の margin-top / margin-bottom は段落の前後の間隔、\
 page-break-after: avoid は「次の段落と同じページに置く」（見出しを表や本文から離さない）になる。\
-表と表の間には空の段落が 1 つ要る（隣り合う表は Word では 1 つにつながるため、エンジンが残す）。外部の画像 URL は使えない。\n\
+表と表の間には空の段落が 1 つ要る（隣り合う表は Word では 1 つにつながるため、エンジンが残す）。\
+箇条書きは <ul>/<ol> の入れ子で書く（字下げは Word の既定に揃う・office.read も <ul>/<ol> で返す）。空行は <p></p>（段落の間隔は margin の方がよい）。外部の画像 URL は使えない。\n\
 ops:\n\
 - insert {after|before:ID か at:\"start\"|\"end\", html}\n\
 - replace {target:ID または範囲, html}（範囲の各ブロックを消して、そこへ html を入れる）\n\
@@ -30,6 +31,14 @@ space_before_pt?, space_after_pt?, line_spacing?:倍率 または line_height_pt
 - page_setup {paper?:A4|A3|B5|B4|A5|letter, orientation?:portrait|landscape, margins_mm?:{top,right,bottom,left}}\n\
 - header {content:{text, align?, size?} または null} / footer {同じ}（text に &[Page] &[Pages] &[Date] &[Title] &[File] を差し込める）\n\
 - insert_toc {after|before|at?（既定は先頭）, title?, levels?}（見出しから目次を作る） / update_toc {}（見出しを変えた後に目次を更新）\n\
+- 表（table は表のブロック ID・セルは Excel と同じ A1 表記・行は 1 始まり）: insert_rows {table, after_row（0 で先頭）, count?, values?:[[...]]}\
+（新しい行は隣の行の書式を写す） / delete_rows {table, rows:\"3\" または \"3:5\"} / set_cells {table, cell:\"B2\", values:[[...]]}\
+（書式は保って文字だけ書く・null はそのセルを変えない） / format_cells {table, range:\"A1:D1\", fill?（null で塗りなし）, font?, align?, \
+valign?:top|center|bottom, border?:{all|outline|inner|top|bottom|left|right|inside_horizontal|inside_vertical: \"thin\"|\"medium\"|\"thick\"|\
+\"double\"|\"dashed\"|\"dotted\"|\"none\" または {style, color}}} / table_props {table, width_mm?, columns_mm?:[...], align?:left|center|right, \
+repeat_header?:行数（ページをまたぐとき見出し行を繰り返す）, allow_row_split?, keep_with_next?} / style_table {table, theme?:blue|navy|green|gray|orange, \
+header_rows?（既定 1）, total_row?, banded?（既定 true）, first_column?}（見出しは濃い色に白の太字、縞、合計行は太字と上に二重線、全体に細い罫線、\
+数値は右揃え）。既存の表は replace で作り直さずにこれらで直す（表の見た目が保たれる）。新しく作った表もまず style_table で整える\n\
 - page_break {before:ID} / title_page {enabled}（表紙: 1 ページ目にヘッダー・フッターを出さない）\n\
 - track_changes {enabled}（有効にした後の insert / replace / delete / replace_text / format_text は変更履歴として残り、office.read の \
 HTML で <ins> <del> として見える。replace_text で直す場合は find を変える最小の文字列にし within でブロックを絞ると差分が小さい） / \
@@ -53,7 +62,8 @@ pub fn word_edit_schema() -> serde_json::Value {
                     "properties": {
                         "op": { "type": "string", "enum": [
                             "insert", "replace", "delete", "replace_text", "format_text", "format_paragraph", "set_style",
-                            "page_setup", "header", "footer", "insert_toc", "update_toc", "page_break", "title_page", "track_changes",
+                            "page_setup", "header", "footer", "insert_toc", "update_toc", "page_break", "title_page", "insert_rows", "delete_rows", "set_cells",
+                            "format_cells", "table_props", "style_table", "track_changes",
                             "accept_all_changes", "reject_all_changes"
                         ] }
                     },

@@ -65,6 +65,12 @@ fn known_name(name: &str) -> &'static str {
         "page_break",
         "track_changes",
         "title_page",
+        "insert_rows",
+        "delete_rows",
+        "set_cells",
+        "format_cells",
+        "table_props",
+        "style_table",
         "accept_all_changes",
         "reject_all_changes",
     ];
@@ -448,6 +454,12 @@ impl Cx<'_> {
             DocOp::TrackChanges { enabled } => {
                 vec![json!({"op": "track_changes", "enabled": enabled})]
             }
+            DocOp::InsertRows { .. }
+            | DocOp::DeleteRows { .. }
+            | DocOp::SetCells { .. }
+            | DocOp::FormatCells { .. }
+            | DocOp::TableProps { .. }
+            | DocOp::StyleTable { .. } => self.table_op(op)?,
             DocOp::TitlePage { enabled } => vec![json!({"op": "title_page", "enabled": enabled})],
             DocOp::AcceptAllChanges {} => vec![json!({"op": "all_changes", "accept": true})],
             DocOp::RejectAllChanges {} => vec![json!({"op": "all_changes", "accept": false})],
@@ -480,6 +492,8 @@ fn paper_size(p: Paper) -> [u32; 2] {
         Paper::Letter => [21_590, 27_940],
     }
 }
+
+mod table;
 
 #[cfg(test)]
 mod tests {

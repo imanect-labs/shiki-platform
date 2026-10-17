@@ -320,6 +320,21 @@ fn html_width(v: &str) -> String {
     v.to_string()
 }
 
+/// 文字の無い段落（空行のつもりの <p></p>）か。画像だけの段落は空ではない。
+fn empty_block(tag: &str, node: &NodeRef<'_>) -> bool {
+    matches!(tag, "p" | "div" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+        && node.text().trim().is_empty()
+        && !node.children().iter().any(|c| {
+            c.is_element()
+                && c.node_name().is_some_and(|t| {
+                    matches!(
+                        t.to_ascii_lowercase().as_str(),
+                        "img" | "table" | "ul" | "ol" | "p" | "div"
+                    )
+                })
+        })
+}
+
 /// 書体か大きさの指定を含むか。
 fn has_font(decls: &Decls) -> bool {
     ["font-size", "font-family", "font"]
@@ -662,6 +677,10 @@ fn walk(cx: &mut Ctx, node: &NodeRef<'_>, inherited: &Decls) {
         if has_font(&decls) || authored_font(cx, node) {
             flags.push('f');
         }
+        // 空の段落（空行のつもりの <p></p>・<p> </p>）は取り込みが捨てるので、空白を入れて印を付ける。
+        if empty_block(&tag, node) {
+            flags.push('e');
+        }
         if !flags.is_empty() && !has_block_child(node) {
             let _ = write!(cx.out, "<a name=\"shiki-k-{flags}-{}\"></a>", cx.markers);
             cx.markers += 1;
@@ -672,6 +691,10 @@ fn walk(cx: &mut Ctx, node: &NodeRef<'_>, inherited: &Decls) {
     }
     for child in node.children() {
         walk(cx, &child, &pass);
+    }
+    // 空の段落は &nbsp; を入れて取り込みに残させる（印 e でエンジンが空に戻す）。
+    if empty_block(&tag, node) {
+        cx.out.push_str("&nbsp;");
     }
     if !wrap.is_empty() {
         cx.out.push_str("</span>");
@@ -797,6 +820,19 @@ mod tests {
         assert!(out.contains("<h2>a</h2>"), "{out}");
         assert!(out.contains("<a name=\"shiki-k-f-0\"></a>b"), "{out}");
         assert!(out.contains("<a name=\"shiki-k-f-1\"></a>d"), "{out}");
+    }
+
+    #[test]
+    fn keeps_empty_paragraphs_as_spacers() {
+        let out = body("<p>a</p><p> </p><p></p><p>b</p>");
+        assert!(
+            out.contains("<p><a name=\"shiki-k-e-0\"></a> &nbsp;</p>"),
+            "{out}"
+        );
+        assert!(
+            out.contains("<p><a name=\"shiki-k-e-1\"></a>&nbsp;</p>"),
+            "{out}"
+        );
     }
 
     #[test]

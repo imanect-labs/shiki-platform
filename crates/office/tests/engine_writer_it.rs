@@ -346,3 +346,64 @@ async fn inserted_headings_follow_their_style_and_the_title_page_has_no_header()
     );
     client.close().await;
 }
+
+#[tokio::test]
+async fn tables_are_edited_in_place_and_read_back_with_their_look() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let (name, mut client) = fresh(&env).await;
+    apply_ok(
+        &mut client,
+        &[json!({"op": "insert", "at": "start", "html": "<table><tr><th>地域</th><th>売上</th></tr><tr><td>東</td><td>10</td></tr><tr><td>西</td><td>20</td></tr></table><ul><li>一<ul><li>二</li></ul></li></ul>"})],
+    )
+    .await;
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    let table = id_of(&overview, "表 3行×2列");
+    let text = apply_ok(
+        &mut client,
+        &[
+            json!({"op": "set_cells", "table": table, "cell": "B2", "values": [["15"], ["25"]]}),
+            json!({"op": "insert_rows", "table": table, "after_row": 3, "values": [["合計", "40"]]}),
+            json!({"op": "style_table", "table": table, "total_row": true}),
+            json!({"op": "table_props", "table": table, "columns_mm": [60, 30], "align": "center"}),
+        ],
+    )
+    .await;
+    assert!(
+        text.contains("表 4行×2列「地域|売上|東|15|西|25|合計|40」"),
+        "{text}"
+    );
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    let table = id_of(&overview, "表 4行");
+    let detail = run::read_blocks(&mut client, &table, None).await.unwrap();
+    assert!(
+        detail.contains("<col width=\"60mm\"><col width=\"30mm\">"),
+        "{detail}"
+    );
+    assert!(detail.contains("align=\"center\""), "{detail}");
+    assert!(
+        detail.contains("background-color: #1F4E79"),
+        "見出しの塗り: {detail}"
+    );
+    assert!(detail.contains("double"), "合計行の二重線: {detail}");
+    assert!(
+        detail.contains("text-align: right"),
+        "数値は右揃え: {detail}"
+    );
+    // 箇条書きは <ul> の入れ子として読み戻せる。
+    let first = id_of(&overview, "「一」");
+    let detail = run::read_blocks(&mut client, &first, Some(&id_of(&overview, "「二」")))
+        .await
+        .unwrap();
+    assert!(
+        detail.contains("<ul><li data-style=\"Standard\">一</li></ul>"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("<ul><ul><li data-style=\"Standard\">二</li></ul></ul>"),
+        "{detail}"
+    );
+    client.close().await;
+}

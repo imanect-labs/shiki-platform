@@ -110,12 +110,79 @@ pub enum DocOp {
     PageBreak { before: String },
     /// 変更履歴の記録を切り替える。
     TrackChanges { enabled: bool },
+    /// 表に行を入れる。新しい行は隣の行の書式を写す（after_row: その行の後ろ・0 で先頭）。
+    InsertRows {
+        table: String,
+        #[serde(default)]
+        after_row: u32,
+        #[serde(default = "one")]
+        count: u32,
+        #[serde(default)]
+        values: Option<Vec<Vec<serde_json::Value>>>,
+    },
+    /// 表の行を消す（"3" か "3:5"・1 始まり）。
+    DeleteRows { table: String, rows: String },
+    /// セルの文字を書く（書式は保つ）。cell は左上（"B2"）、values は 2 次元。
+    SetCells {
+        table: String,
+        cell: String,
+        values: Vec<Vec<serde_json::Value>>,
+    },
+    /// セルの範囲（"A1:D1"）の書式。
+    FormatCells {
+        table: String,
+        range: String,
+        #[serde(default, deserialize_with = "crate::engine::calc::ops::explicit_null")]
+        fill: Option<Patch<String>>,
+        #[serde(default)]
+        font: Option<TextFont>,
+        #[serde(default)]
+        align: Option<Align>,
+        #[serde(default)]
+        valign: Option<crate::engine::calc::ops::VAlign>,
+        #[serde(default)]
+        border: Option<crate::engine::calc::ops::BorderSpec>,
+    },
+    /// 表全体の設定（幅・列幅・配置・見出し行の繰り返し・行の途中での改ページ・次の段落と同じページ）。
+    TableProps {
+        table: String,
+        #[serde(default)]
+        width_mm: Option<f64>,
+        #[serde(default)]
+        columns_mm: Option<Vec<f64>>,
+        #[serde(default)]
+        align: Option<Align>,
+        #[serde(default)]
+        repeat_header: Option<u32>,
+        #[serde(default)]
+        allow_row_split: Option<bool>,
+        #[serde(default)]
+        keep_with_next: Option<bool>,
+    },
+    /// 表をまとめて整える（見出し・縞・合計行・罫線・数値の右揃え）。
+    StyleTable {
+        table: String,
+        #[serde(default)]
+        theme: crate::engine::calc::ops::TableTheme,
+        #[serde(default)]
+        header_rows: Option<u32>,
+        #[serde(default)]
+        total_row: bool,
+        #[serde(default)]
+        banded: Option<bool>,
+        #[serde(default)]
+        first_column: bool,
+    },
     /// 表紙: 1 ページ目にヘッダー・フッターを出さない。
     TitlePage { enabled: bool },
     /// 文書のすべての変更履歴を承認する（変更を確定し、印を消す）。
     AcceptAllChanges {},
     /// 文書のすべての変更履歴を却下する（変更前に戻す）。
     RejectAllChanges {},
+}
+
+fn one() -> u32 {
+    1
 }
 
 fn toc_title() -> String {
@@ -153,6 +220,12 @@ impl DocOp {
             DocOp::PageBreak { .. } => "page_break",
             DocOp::TrackChanges { .. } => "track_changes",
             DocOp::TitlePage { .. } => "title_page",
+            DocOp::InsertRows { .. } => "insert_rows",
+            DocOp::DeleteRows { .. } => "delete_rows",
+            DocOp::SetCells { .. } => "set_cells",
+            DocOp::FormatCells { .. } => "format_cells",
+            DocOp::TableProps { .. } => "table_props",
+            DocOp::StyleTable { .. } => "style_table",
             DocOp::AcceptAllChanges {} => "accept_all_changes",
             DocOp::RejectAllChanges {} => "reject_all_changes",
         }

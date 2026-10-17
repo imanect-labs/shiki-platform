@@ -195,6 +195,7 @@ function readParagraph(p, withRuns, reds) {
       out.direct.LineSpacingHeight = ls.Height;
     }
     out.runs = [];
+    const paraChars = readDirectProps(p, RUN_PROPS, style);
     const en = p.createEnumeration();
     while (en.hasMoreElements()) {
       const r = en.nextElement();
@@ -203,7 +204,8 @@ function readParagraph(p, withRuns, reds) {
         out.runs.push({ kind });
         continue;
       }
-      const run = { text: r.getString(), props: readDirectProps(r, RUN_PROPS, style) };
+      // 段落全体に付いた文字の書式（取り込み・docx の段落記号の書式）もランの書式として見せる。
+      const run = { text: r.getString(), props: Object.assign({}, paraChars, readDirectProps(r, RUN_PROPS, style)) };
       if (reds && reds.length) {
         const red = reds.find((x) => (x.type === "Insert" || x.type === "Delete") && insideRedline(r, x));
         if (red) run.redline = red.type;
@@ -220,7 +222,7 @@ function readTable(t, withCells, reds) {
     t: "table",
     name: t.getName(),
     rows: t.getRows().getCount(),
-    cols: t.getColumns().getCount(),
+    cols: tableShape(t).cols,
     cells: names.length,
     text: tableText(t).slice(0, 200),
   };
@@ -236,6 +238,12 @@ function readTable(t, withCells, reds) {
       return {
         name: n,
         bg: c.getPropertyValue("BackColor"),
+        valign: c.getPropertyValue("VertOrient"),
+        borders: ["TopBorder", "BottomBorder", "LeftBorder", "RightBorder"].map((k) => {
+          const b = c.getPropertyValue(k);
+          const w = b.LineWidth || b.OuterLineWidth + b.InnerLineWidth + b.LineDistance;
+          return w > 0 ? [w, b.Color, b.LineStyle] : 0;
+        }),
         row_span: (() => {
           try {
             return c.getPropertyValue("RowSpan");
@@ -249,6 +257,8 @@ function readTable(t, withCells, reds) {
     try {
       out.separators = Array.from(t.getPropertyValue("TableColumnSeparators")).map((s) => s.Position);
       out.rel_sum = t.getPropertyValue("TableColumnRelativeSum");
+      out.width = t.getPropertyValue("Width");
+      out.hori = t.getPropertyValue("HoriOrient");
     } catch (e) {
       // 区切りが取れない表（結合が複雑など）。
     }
@@ -336,6 +346,8 @@ function pageInfo() {
   return out;
 }
 
+const IMPORT_ARTIFACT_STYLES = new Set(["表の内容", "表の見出し", "索引", "ヘッダーとフッター"]);
+
 /** よく使う段落スタイル（存在するものだけを一覧に出す）。 */
 const COMMON_STYLES = [
   "Standard", "Title", "Subtitle", "Heading 1", "Heading 2", "Heading 3", "Heading 4",
@@ -349,7 +361,8 @@ function availableStyles() {
   for (const n of COMMON_STYLES) if (fam.hasByName(n)) names.add(n);
   for (const n of Array.from(fam.getElementNames())) {
     try {
-      if (fam.getByName(n).isInUse() && !/^Contents|^Index|^Header|^Footer/.test(n)) names.add(n);
+      // docx を往復すると LibreOffice の組み込みスタイルが日本語名の独自スタイルとして残る（結合セルの隠れた段落などが使う）。
+      if (fam.getByName(n).isInUse() && !/^Contents|^Index|^Header|^Footer/.test(n) && !IMPORT_ARTIFACT_STYLES.has(n)) names.add(n);
     } catch (e) {
       // 一覧の途中で消えたスタイル。
     }

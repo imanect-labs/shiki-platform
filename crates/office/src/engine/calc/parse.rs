@@ -102,7 +102,9 @@ fn leak_name(name: &str) -> &'static str {
 }
 
 /// 配色ごとの色（見出し・縞・合計行・罫線）。
-fn palette(theme: TableTheme) -> (&'static str, &'static str, &'static str, &'static str) {
+pub(crate) fn palette(
+    theme: TableTheme,
+) -> (&'static str, &'static str, &'static str, &'static str) {
     match theme {
         TableTheme::Blue => ("#1F4E79", "#EAF1FB", "#DDEBF7", "#9DB7D5"),
         TableTheme::Navy => ("#1F3864", "#EDF0F7", "#D9DFEE", "#8EA0C8"),

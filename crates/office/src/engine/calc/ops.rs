@@ -299,7 +299,7 @@ pub enum Patch<T> {
 }
 
 /// 「キーが無い」（`None`）と「`null` が明示された」（`Some(Patch::Clear)`）を区別する。
-fn explicit_null<'de, D, T>(d: D) -> Result<Option<Patch<T>>, D::Error>
+pub(crate) fn explicit_null<'de, D, T>(d: D) -> Result<Option<Patch<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,

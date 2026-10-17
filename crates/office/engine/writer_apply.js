@@ -141,9 +141,12 @@ function fixImportedStyles(paragraphs) {
     }
     // page-break-after: avoid（次の段落と同じページに置く）。
     if (kept.indexOf("n") >= 0) p.setPropertyValue("ParaKeepTogether", true);
+    // 空の段落（<p></p>）は取り込みが捨てるので、Rust が空白を入れて印を付けている。空に戻す。
+    if (kept.indexOf("e") >= 0) p.setString("");
     // 書体・大きさを HTML で指定していない段落は、取り込みが付けた既定の書体・大きさを消してスタイルに従わせる。
     if (kept.indexOf("f") < 0) clearImportedFonts(p);
   }
+  tightenImportedLists(paragraphs);
   // 印のブックマークは役目を終えたので消す（対象外の段落に残ったものも含めて）。
   const bookmarks = DOC.getBookmarks();
   for (const n of Array.from(bookmarks.getElementNames())) {
@@ -171,6 +174,43 @@ function clearImportedFonts(p) {
       p.setPropertyToDefault(n);
     } catch (e) {
       // 戻せないプロパティ。
+    }
+  }
+}
+
+/** 箇条書きの 1 段の字下げ（Word の既定と同じ 0.74cm＝10.5pt の 2 文字分）。 */
+const LIST_STEP = 740;
+
+/**
+ * 取り込みが作った箇条書きの番号スタイル（名前が数字だけ）の字下げを Word の既定に揃える
+ * （取り込みは 1 段 12.5mm と広い）。記号は (段)×7.4mm、本文は (段+1)×7.4mm。
+ */
+function tightenImportedLists(paragraphs) {
+  const fam = DOC.getStyleFamilies().getByName("NumberingStyles");
+  const done = new Set();
+  for (const p of paragraphs) {
+    let name = "";
+    try {
+      name = p.getPropertyValue("NumberingStyleName");
+    } catch (e) {
+      continue;
+    }
+    if (!/^\d+$/.test(name) || done.has(name) || !fam.hasByName(name)) continue;
+    done.add(name);
+    try {
+      const style = fam.getByName(name);
+      const rules = style.getPropertyValue("NumberingRules");
+      for (let i = 0; i < rules.getCount(); i++) {
+        const level = Array.from(rules.getByIndex(i)).map((v) => {
+          if (v.Name === "LeftMargin") return pv("LeftMargin", long((i + 1) * LIST_STEP));
+          if (v.Name === "FirstLineOffset") return pv("FirstLineOffset", long(-LIST_STEP));
+          return v;
+        });
+        rules.replaceByIndex(i, level);
+      }
+      style.setPropertyValue("NumberingRules", rules);
+    } catch (e) {
+      // 字下げを変えられない番号スタイル（取り込みの既定のまま残す）。
     }
   }
 }
@@ -346,7 +386,7 @@ function indexSpan(all, b) {
 
 const GONE_MESSAGE =
   "対象のブロックはこの一括の前の操作（replace / delete）で既に消えています。置き換えた内容を基準にする操作や、" +
-  "置き換えた内容への書式付けは次の呼び出しに分け、結果に返るブロック ID を使ってください" +
+  "置き換えた内容への書式付けは次の呼び出しに分け、結果に返るブロック ID を使ってください。文書の末尾に足すなら at: \"end\"" +
   "（段落の間隔や「次の段落と同じページ」は html の style でも指定できます）";
 
 /** この一括で解決済みのブロック参照（ID → UNO の参照）。writer.apply が入れる。 */

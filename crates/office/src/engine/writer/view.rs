@@ -298,12 +298,14 @@ fn paragraph_html(p: &Value) -> String {
         };
         css.push(format!("text-align: {v}"));
     }
+    let list = props["NumberingIsNumber"] == Value::Bool(true);
     let indent = props["ParaFirstLineIndent"].as_f64().unwrap_or(0.0);
-    if indent.abs() > 0.5 {
+    // 箇条書きの字下げは番号の設定から来るので出さない（<ul> / <ol> として返す）。
+    if indent.abs() > 0.5 && !list {
         css.push(format!("text-indent: {:.1}mm", indent / 100.0));
     }
     let left = props["ParaLeftMargin"].as_f64().unwrap_or(0.0);
-    if left > 0.5 {
+    if left > 0.5 && !list {
         css.push(format!("margin-left: {:.1}mm", left / 100.0));
     }
     // 段落に直接付けた間隔（スタイル由来の値は出さない）。1/100 mm → pt。
@@ -337,10 +339,83 @@ fn paragraph_html(p: &Value) -> String {
         .as_array()
         .map(|rs| rs.iter().map(run_html).collect())
         .unwrap_or_default();
-    format!(
-        "<p data-style=\"{}\"{style_attr}>{inner}</p>",
-        escape(s(&props["ParaStyleName"]))
-    )
+    let style_name = escape(s(&props["ParaStyleName"]));
+    if list {
+        return list_item_html(props, &style_name, &style_attr, &inner);
+    }
+    format!("<p data-style=\"{style_name}\"{style_attr}>{inner}</p>")
+}
+
+/// 箇条書き・番号付きの段落を、その段落だけの <ul> / <ol> にする（入れ子はレベルの数だけ重ねる）。
+fn list_item_html(props: &Value, style: &str, style_attr: &str, inner: &str) -> String {
+    let label = s(&props["ListLabelString"]).trim();
+    let digits: String = label.chars().filter(char::is_ascii_digit).collect();
+    let (open, close) = if digits.is_empty() {
+        ("<ul>".to_string(), "</ul>")
+    } else {
+        (format!("<ol start=\"{digits}\">"), "</ol>")
+    };
+    let level =
+        usize::try_from(props["NumberingLevel"].as_i64().unwrap_or(0).clamp(0, 8)).unwrap_or(0);
+    let nest_open = open.repeat(level + 1);
+    let nest_close = close.repeat(level + 1);
+    format!("{nest_open}<li data-style=\"{style}\"{style_attr}>{inner}</li>{nest_close}")
+}
+
+/// 1/100 mm → pt（小数 1 桁）。
+fn pt_of(v: f64) -> String {
+    format!("{:.1}pt", v * 72.0 / 2540.0)
+}
+
+/// セルの罫線 [上, 下, 左, 右]（各 [太さ, 色, 線種] か 0）→ CSS。
+fn border_css(borders: &Value) -> Vec<String> {
+    let Some(sides) = borders.as_array().filter(|a| a.len() == 4) else {
+        return Vec::new();
+    };
+    let line = |b: &Value| -> Option<String> {
+        let w = b[0].as_f64()?;
+        let kind = match b[2].as_i64().unwrap_or(0) {
+            1 => "dotted",
+            2 => "dashed",
+            3 => "double",
+            _ => "solid",
+        };
+        let color = hex(b[1].as_i64().unwrap_or(0)).unwrap_or_else(|| "#000000".into());
+        Some(format!("{} {kind} {color}", pt_of(w)))
+    };
+    let lines: Vec<Option<String>> = sides.iter().map(line).collect();
+    if lines.iter().all(|l| l.is_some() && *l == lines[0]) {
+        return vec![format!("border: {}", lines[0].clone().unwrap_or_default())];
+    }
+    ["top", "bottom", "left", "right"]
+        .iter()
+        .zip(&lines)
+        .filter_map(|(side, l)| l.as_ref().map(|l| format!("border-{side}: {l}")))
+        .collect()
+}
+
+/// 表の列幅（区切りの位置と表の幅から mm で）。
+fn column_widths_mm(t: &Value) -> Vec<f64> {
+    let (Some(width), Some(sum)) = (t["width"].as_f64(), t["rel_sum"].as_f64()) else {
+        return Vec::new();
+    };
+    if sum <= 0.0 {
+        return Vec::new();
+    }
+    let mut stops: Vec<f64> = t["separators"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_f64).collect())
+        .unwrap_or_default();
+    stops.push(sum);
+    let mut prev = 0.0;
+    stops
+        .into_iter()
+        .map(|p| {
+            let w = (p - prev) / sum * width / 100.0;
+            prev = p;
+            (w * 10.0).round() / 10.0
+        })
+        .collect()
 }
 
 /// セル名（`B3`）→ (列, 行) 0 始まり。結合の印の付いた名前（`A2.1.1`）は None。
@@ -353,7 +428,22 @@ fn cell_pos(name: &str) -> Option<(u32, u32)> {
 }
 
 fn table_html(t: &Value) -> String {
-    let mut out = String::from("<table>");
+    let mut out = String::from("<table");
+    if let Some(w) = t["width"].as_f64() {
+        let _ = write!(out, " style=\"width: {:.1}mm\"", w / 100.0);
+    }
+    if t["hori"].as_i64() == Some(2) {
+        out.push_str(" align=\"center\"");
+    }
+    out.push('>');
+    let cols = column_widths_mm(t);
+    if cols.len() > 1 {
+        out.push_str("<colgroup>");
+        for w in &cols {
+            let _ = write!(out, "<col width=\"{w}mm\">");
+        }
+        out.push_str("</colgroup>");
+    }
     let cells = t["cells"].as_array().cloned().unwrap_or_default();
     let mut current_row = None;
     for c in &cells {
@@ -368,8 +458,18 @@ fn table_html(t: &Value) -> String {
             current_row = Some(row);
         }
         let mut attrs = String::new();
+        let mut css = Vec::new();
         if let Some(bg) = hex(c["bg"].as_i64().unwrap_or(-1)) {
-            let _ = write!(attrs, " style=\"background-color: {bg}\"");
+            css.push(format!("background-color: {bg}"));
+        }
+        css.extend(border_css(&c["borders"]));
+        match c["valign"].as_i64() {
+            Some(2) => css.push("vertical-align: middle".into()),
+            Some(3) => css.push("vertical-align: bottom".into()),
+            _ => {}
+        }
+        if !css.is_empty() {
+            let _ = write!(attrs, " style=\"{}\"", css.join("; "));
         }
         let span = c["row_span"].as_i64().unwrap_or(1);
         if span > 1 {
