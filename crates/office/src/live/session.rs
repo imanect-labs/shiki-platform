@@ -108,6 +108,34 @@ pub struct LiveEditReport {
     pub views: u32,
 }
 
+/// セッションで要求する権限。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAccess {
+    /// 読むだけ（viewer@file）。AI 直列化ロックは取らない。
+    Read,
+    /// 書き換える（editor@file）。同一ファイルの AI 編集は直列化する。
+    Edit,
+}
+
+/// セッションを開いた対象の情報。
+#[derive(Debug, Clone)]
+pub struct SessionInfo {
+    pub file_name: String,
+    pub content_type: String,
+    /// 開いた時点の保存版。
+    pub version: i64,
+    /// 参加時点の総 view 数（1 なら AI 単独セッション）。
+    pub views: u32,
+}
+
+/// [`LiveEditor::with_session`] の結果。
+#[derive(Debug)]
+pub struct SessionOutcome<T> {
+    pub value: T,
+    pub save: LiveSaveResult,
+    pub info: SessionInfo,
+}
+
 /// ops 開始**前**の失敗（部分適用が無い＝安全にエラーへ写せる）。
 #[derive(Debug, thiserror::Error)]
 pub enum LiveEditError {
@@ -166,13 +194,68 @@ impl LiveEditor {
         file_id: Uuid,
         ops: &[LiveOp],
     ) -> Result<LiveEditReport, LiveEditError> {
-        // ① 実行主体の editor@file を毎回再判定（confused-deputy 回避・PIT-11）。
+        let outcome = self
+            .with_session(
+                ctx,
+                file_id,
+                SessionAccess::Edit,
+                EDITABLE_CONTENT_TYPES,
+                async |client: &mut CoolWsClient, info: &SessionInfo| {
+                    // ops を順に適用する。失敗は abort（以降未適用）として正直に報告する。
+                    let mut results: Vec<LiveOpResult> = Vec::with_capacity(ops.len());
+                    let mut aborted = None;
+                    for op in ops {
+                        match apply_op(client, &info.content_type, op).await {
+                            Ok(result) => results.push(result),
+                            Err(e) => {
+                                aborted = Some(format!("{}: {e}", op.label()));
+                                break;
+                            }
+                        }
+                    }
+                    // 1 件以上適用できたときのみ保存する。
+                    let applied_any = results.iter().any(|r| r.applied);
+                    ((results, aborted), applied_any)
+                },
+            )
+            .await?;
+        let ((results, aborted), save) = (outcome.value, outcome.save);
+        Ok(LiveEditReport {
+            file_name: outcome.info.file_name,
+            results,
+            aborted,
+            save,
+            views: outcome.info.views,
+        })
+    }
+
+    /// 1 回のツール呼び出し＝1 headless セッションの共通の流れ（#352・#725）。
+    ///
+    /// ① 実行主体の権限を毎回再判定（`access` が要求する relation・HigherConsistency）
+    /// ② content_type ゲート ③ 同時セッション枠 →（編集なら）ファイル単位の AI 直列化
+    /// ④ AI トークンで接続 → `body` → 変更があれば保存して版の前進を検証 → 必ず閉じる。
+    ///
+    /// `body` は (値, 変更したか) を返す。セッション継続不能の失敗も `body` の中で
+    /// 値として扱うこと（ここで Err にすると部分適用の報告が失われる）。
+    pub async fn with_session<T>(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        access: SessionAccess,
+        content_types: &[&str],
+        body: impl AsyncFnOnce(&mut CoolWsClient, &SessionInfo) -> (T, bool),
+    ) -> Result<SessionOutcome<T>, LiveEditError> {
+        // ① 実行主体の権限を毎回再判定（confused-deputy 回避・PIT-11）。
+        let relation = match access {
+            SessionAccess::Read => Relation::Viewer,
+            SessionAccess::Edit => Relation::Editor,
+        };
         let object = ctx.ns().file(&file_id.to_string());
         let allowed = self
             .authz
             .check(
                 &ctx.subject(),
-                Relation::Editor,
+                relation,
                 &object,
                 Consistency::HigherConsistency,
             )
@@ -182,7 +265,7 @@ impl LiveEditor {
             return Err(LiveEditError::Denied);
         }
 
-        // ② content_type ゲート（editor 確認後なので種別の開示は存在秘匿を破らない）。
+        // ② content_type ゲート（権限確認後なので種別の開示は存在秘匿を破らない）。
         let node = self
             .storage
             .get_metadata(ctx, file_id, None)
@@ -192,16 +275,21 @@ impl LiveEditor {
                 other => LiveEditError::Internal(other.to_string()),
             })?;
         let content_type = node.content_type.clone().unwrap_or_default();
-        if node.kind != NodeKind::File || !EDITABLE_CONTENT_TYPES.contains(&content_type.as_str()) {
+        if node.kind != NodeKind::File || !content_types.contains(&content_type.as_str()) {
             return Err(LiveEditError::Unsupported);
         }
 
-        // ③ 同時セッション枠 → ファイル単位の AI 直列化（AI↔AI のみ・レプリカ横断）。
+        // ③ 同時セッション枠 →（編集のみ）ファイル単位の AI 直列化（AI↔AI・レプリカ横断）。
         let _permit = tokio::time::timeout(ACQUIRE_TIMEOUT, self.sessions.acquire())
             .await
             .map_err(|_| LiveEditError::Busy)?
             .map_err(|e| LiveEditError::Internal(format!("セッション枠の取得に失敗: {e}")))?;
-        let file_lock = FileAiLock::acquire(&self.pool, &ctx.tenant_id, file_id).await?;
+        let file_lock = match access {
+            SessionAccess::Edit => {
+                Some(FileAiLock::acquire(&self.pool, &ctx.tenant_id, file_id).await?)
+            }
+            SessionAccess::Read => None,
+        };
 
         // ④ AI トークンで headless 接続（表示 identity は「Shiki AI」・routes 側）。
         let wopi_src = format!("{}/wopi/files/{file_id}", self.wopi_base_url);
@@ -217,42 +305,29 @@ impl LiveEditor {
             }
             Err(other) => return Err(other.into()),
         };
-        let views = client.loaded().views;
+        let info = SessionInfo {
+            file_name: node.name.clone(),
+            content_type,
+            version: node.version,
+            views: client.loaded().views,
+        };
 
-        // ⑤ ops を順に適用する。失敗は abort（以降未適用）として正直に報告する。
-        let mut results: Vec<LiveOpResult> = Vec::with_capacity(ops.len());
-        let mut aborted = None;
-        for op in ops {
-            match apply_op(&mut client, &content_type, op).await {
-                Ok(result) => results.push(result),
-                Err(e) => {
-                    aborted = Some(format!("{}: {e}", op.label()));
-                    break;
-                }
-            }
-        }
+        let (value, modified) = body(&mut client, &info).await;
 
-        // ⑥ 1 件以上適用できたときのみ保存し、版の前進で永続化を検証する。
-        let applied_any = results.iter().any(|r| r.applied);
-        let save = if applied_any {
+        // 変更したときだけ保存し、版の前進で永続化を検証する。
+        let save = if modified {
             self.save_and_verify(ctx, file_id, node.version, &mut client)
                 .await
         } else {
             LiveSaveResult::NotAttempted
         };
 
-        // ⑦ 必ず閉じる（kit プロセスのリーク防止）。advisory lock は guard の
-        //    close で解放される。
+        // 必ず閉じる（kit プロセスのリーク防止）。advisory lock は guard の close で解放される。
         client.close().await;
-        file_lock.release().await;
-
-        Ok(LiveEditReport {
-            file_name: node.name,
-            results,
-            aborted,
-            save,
-            views,
-        })
+        if let Some(lock) = file_lock {
+            lock.release().await;
+        }
+        Ok(SessionOutcome { value, save, info })
     }
 
     /// save → core ack → StorageService の版前進を確認する。

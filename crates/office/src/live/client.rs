@@ -52,6 +52,8 @@ pub struct CoolWsConfig {
     pub save_timeout: Duration,
     /// セッション全体のハード上限（暴走防止・chat worker の可視性タイムアウト内）。
     pub total_deadline: Duration,
+    /// `executescript` 1 回の応答待ち上限（大きな一括適用・読み取りを見込む）。
+    pub script_timeout: Duration,
 }
 
 impl CoolWsConfig {
@@ -64,6 +66,7 @@ impl CoolWsConfig {
             op_timeout: Duration::from_secs(15),
             save_timeout: Duration::from_secs(30),
             total_deadline: Duration::from_mins(2),
+            script_timeout: Duration::from_mins(1),
         }
     }
 }
@@ -94,11 +97,17 @@ pub enum SaveAck {
 
 /// CoolWSD セッションへの headless クライアント（1 接続 = 1 view）。
 pub struct CoolWsClient {
-    stream: WsStream,
+    pub(super) stream: WsStream,
+    pub(super) script_timeout: Duration,
     loaded: Loaded,
     op_timeout: Duration,
     save_timeout: Duration,
-    hard_deadline: tokio::time::Instant,
+    pub(super) hard_deadline: tokio::time::Instant,
+    /// 書き出し（`downloadas`）の取得先を組むための WOPISrc と http(s) オリジン。
+    pub(super) wopi_src: String,
+    pub(super) http_origin: String,
+    /// `executescript` の呼び出し ID（セッション内で単調増加）。
+    pub(super) next_call_id: u64,
 }
 
 impl CoolWsClient {
@@ -162,10 +171,14 @@ impl CoolWsClient {
         tracing::debug!(view_id = %loaded.view_id, views = loaded.views, "coolwsd loaded");
         Ok(Self {
             stream,
+            script_timeout: cfg.script_timeout,
             loaded,
             op_timeout: cfg.op_timeout,
             save_timeout: cfg.save_timeout,
             hard_deadline: tokio::time::Instant::now() + cfg.total_deadline,
+            wopi_src: wopi_src.to_string(),
+            http_origin: origin,
+            next_call_id: 1,
         })
     }
 
@@ -297,7 +310,7 @@ impl CoolWsClient {
     }
 
     /// フェーズ待ち時間をハード上限で丸める（超過済みなら即タイムアウト）。
-    fn phase_timeout(&self, want: Duration) -> Result<Duration, LiveError> {
+    pub(super) fn phase_timeout(&self, want: Duration) -> Result<Duration, LiveError> {
         let remaining = self
             .hard_deadline
             .checked_duration_since(tokio::time::Instant::now())
@@ -308,7 +321,7 @@ impl CoolWsClient {
         Ok(want.min(remaining))
     }
 
-    async fn send(&mut self, line: String) -> Result<(), LiveError> {
+    pub(super) async fn send(&mut self, line: String) -> Result<(), LiveError> {
         send_text(&mut self.stream, line).await
     }
 }
@@ -349,7 +362,7 @@ async fn next_frame_text(stream: &mut WsStream) -> Result<String, LiveError> {
 ///
 /// 待機中に `error:` / `close:` を受けたら即座に失敗させる（fail fast）。
 /// 関心外のメッセージ（viewinfo/statechanged/invalidate 等）は読み捨てる。
-async fn wait_matching<T>(
+pub(super) async fn wait_matching<T>(
     stream: &mut WsStream,
     timeout: Duration,
     phase: &'static str,
