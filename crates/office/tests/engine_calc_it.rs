@@ -233,6 +233,52 @@ async fn writes_after_add_sheet_go_to_the_new_sheet_and_overwrites_are_reported(
     client.close().await;
 }
 
+/// 別の呼び出しでシートを足した後も、シートを書かない操作は足したシートへ書く（作業中のシートになる）。
+#[tokio::test]
+async fn an_added_sheet_becomes_the_default_for_the_next_call() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-{}.xlsx", uuid::Uuid::new_v4());
+    let mut client = open_blank(&env, &name).await;
+    let seed = ops(json!([{"op": "set_values", "range": "A1", "values": [["元データ"]]}]));
+    run::apply(&mut client, "元", &normalize(&seed, None).unwrap())
+        .await
+        .unwrap();
+    let add = ops(json!([{"op": "add_sheet", "name": "集計"}]));
+    let out = run::apply(&mut client, "足す", &normalize(&add, None).unwrap())
+        .await
+        .unwrap();
+    assert!(out.applied, "{}", out.text);
+    client.save().await.unwrap();
+    client.close().await;
+    // 開き直した別の呼び出し（シートを書かない）。
+    let mut client = office::live::connect_with_retry(
+        &{
+            let mut cfg = CoolWsConfig::new(env.ws.clone());
+            cfg.total_deadline = std::time::Duration::from_mins(5);
+            cfg
+        },
+        &format!("{}/{name}", env.wopi),
+        "test-token",
+    )
+    .await
+    .unwrap();
+    let write = ops(json!([{"op": "set_values", "range": "A1", "values": [["集計表"]]}]));
+    let out = run::apply(&mut client, "書く", &normalize(&write, None).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        !out.text.contains("上書きしました"),
+        "元の表を上書きした: {}",
+        out.text
+    );
+    let overview = run::read_overview(&mut client, &name).await.unwrap();
+    assert!(overview.contains("- 集計: 使用範囲 A1"), "{overview}");
+    client.close().await;
+}
+
 /// 「自動」の列幅は、折り返しの見出し（style_table）も 1 行に収まる幅にする。
 #[tokio::test]
 async fn auto_width_fits_wrapped_headers_on_one_line() {

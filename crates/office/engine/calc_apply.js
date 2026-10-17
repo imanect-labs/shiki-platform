@@ -344,6 +344,14 @@ OPS.add_sheet = (op) => {
   if (sheets.hasByName(op.name)) fail("sheet_exists", `シート「${op.name}」は既にあります`);
   const pos = op.position === null ? sheets.getCount() : Math.min(op.position, sheets.getCount());
   sheets.insertNewByName(op.name, pos | 0);
+  // 足したシートを AI の view の作業中のシートにする。保存すると文書の作業中のシートになり、
+  // 次の呼び出しでシートを書かない操作もこのシートへ書く（足したシートを埋めるつもりで元の表を
+  // 上書きする、を防ぐ・Gemma 4 の評価）。人の view の表示は変わらない。
+  try {
+    DOC.getCurrentController().setActiveSheet(sheets.getByName(op.name));
+  } catch (e) {
+    // view の無い読み込み（変換など）。
+  }
   return {};
 };
 
