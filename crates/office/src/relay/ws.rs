@@ -65,25 +65,23 @@ async fn run(
         .max_message_size(Some(max_message))
         .max_frame_size(Some(max_message));
     let connect = tokio_tungstenite::connect_async_with_config(request, Some(config), false);
-    let (upstream, _) = match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, connect).await {
-        Ok(r) => r?,
-        Err(_) => {
-            let mut client = client;
-            let closed = client
-                .send(Message::Close(Some(CloseFrame {
-                    code: 1011,
-                    reason: "".into(),
-                })))
-                .await;
-            if let Err(e) = closed {
-                tracing::debug!(error = %e, "office relay: ブラウザへの切断通知を送れません");
-            }
-            return Err(tungstenite::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Collabora へ WebSocket を張れません（時間切れ）",
-            )));
+    let Ok(connected) = tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, connect).await else {
+        let mut client = client;
+        let closed = client
+            .send(Message::Close(Some(CloseFrame {
+                code: 1011,
+                reason: "".into(),
+            })))
+            .await;
+        if let Err(e) = closed {
+            tracing::debug!(error = %e, "office relay: ブラウザへの切断通知を送れません");
         }
+        return Err(tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "Collabora へ WebSocket を張れません（時間切れ）",
+        )));
     };
+    let (upstream, _) = connected?;
     let (mut up_tx, mut up_rx) = upstream.split();
     let (mut cl_tx, mut cl_rx) = client.split();
     // ブラウザへの送信は 1 か所に集める（素通しの流れと、違反時の切断通知の両方が使う）。
