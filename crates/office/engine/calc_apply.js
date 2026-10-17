@@ -248,7 +248,7 @@ OPS.delete = (op) => {
 };
 
 OPS.clear = (op) => {
-  rangeOf(op).clearContents(long(op.flags));
+  rangeOf(op).clearContents(op.flags | 0);
   return {};
 };
 
@@ -295,7 +295,7 @@ OPS.add_sheet = (op) => {
   const sheets = DOC.getSheets();
   if (sheets.hasByName(op.name)) fail("sheet_exists", `シート「${op.name}」は既にあります`);
   const pos = op.position === null ? sheets.getCount() : Math.min(op.position, sheets.getCount());
-  sheets.insertNewByName(op.name, short(pos));
+  sheets.insertNewByName(op.name, pos | 0);
   return {};
 };
 
@@ -314,7 +314,7 @@ OPS.delete_sheet = (op) => {
 
 OPS.move_sheet = (op) => {
   getSheet(op.sheet);
-  DOC.getSheets().moveByName(op.sheet, short(op.position));
+  DOC.getSheets().moveByName(op.sheet, op.position | 0);
   return {};
 };
 
@@ -434,7 +434,7 @@ OPS.define_name = (op) => {
     const cell = (c, r) => "$" + colLetters(c) + "$" + (r + 1);
     const ref = sc === ec && sr === er ? cell(sc, sr) : cell(sc, sr) + ":" + cell(ec, er);
     const content = "$" + calcSheetRef(sheet.getName()) + "." + ref;
-    names.addNewByName(op.name, content, new I.table.CellAddress(), long(0));
+    names.addNewByName(op.name, content, new I.table.CellAddress(), 0);
   }
   return {};
 };

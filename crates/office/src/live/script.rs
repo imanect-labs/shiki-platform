@@ -1,9 +1,11 @@
 //! kit 内スクリプト実行（`executescript`）と書き出し（`downloadas`）のワイヤ形式（#725）。
 //!
-//! 実機（Collabora 26.04）で確かめた形:
-//! - 送信: `executescript <callId> (<関数ソース>).apply(null, <引数 JSON 配列>);`
-//!   （ブラウザの拡張機能 `Extension_Call` が送る形と同じ。改行を含んでよい）
-//! - 受信: `executescriptresult: {"id":"<callId>","ok":<戻り値>}` または `{"id":..,"err":"<文字列>"}`
+//! 実機（Collabora 26.04.5）で確かめた形:
+//! - 送信: `executescript <callId> <行> <ソース名>\n(<関数ソース>).apply(null, <引数 JSON 配列>);`
+//!   （ブラウザの拡張機能 `Extension_Call` が送る形と同じ。行とソース名は例外のスタックに出る。
+//!   ソース名は改行を含まず、スクリプトは改行の後ろ全部で改行を含んでよい）。
+//!   26.04.2 までは `executescript <callId> <スクリプト>` だった（kit の ChildSession::executeScript）。
+//! - 受信: `executescriptresult: {"id":"<callId>","ok":<戻り値>}` または `{"id":..,"err":<文字列か例外の JSON>}`
 //! - 送信: `downloadas name=<n> id=<tag> format=<ext> options=`
 //! - 受信: `downloadas: downloadid=<id> port=<p> id=<tag> filename=<n>` →
 //!   `GET /cool/<enc(WOPISrc)>/download/<downloadid>` で本体を取る
@@ -11,10 +13,13 @@
 //! **スクリプトはリポジトリ管理の固定ソースだけを送る**（PIT-68 ⑤）。LLM の出力は
 //! 引数 JSON としてだけ入る（関数ソースへ文字列連結しない）。
 
+/// 例外のスタックに出るソース名（改行・空白を含めない）。
+const SCRIPT_SOURCE_NAME: &str = "shiki-office-engine";
+
 /// `executescript` の 1 行を組み立てる。`args` は JSON 配列（関数の引数列）。
 pub(super) fn executescript_line(call_id: u64, source: &str, args: &serde_json::Value) -> String {
     // JSON はそのまま JS の式として有効（U+2028/2029 も ES2019 以降は文字列内で合法）。
-    format!("executescript {call_id} ({source}).apply(null, {args});")
+    format!("executescript {call_id} 1 {SCRIPT_SOURCE_NAME}\n({source}).apply(null, {args});")
 }
 
 /// スクリプトの結果。
@@ -84,7 +89,7 @@ mod tests {
         );
         assert_eq!(
             line,
-            r#"executescript 7 (function(req){return req}).apply(null, [{"a":"x\"y"}]);"#
+            "executescript 7 1 shiki-office-engine\n(function(req){return req}).apply(null, [{\"a\":\"x\\\"y\"}]);"
         );
     }
 

@@ -10,6 +10,9 @@
 // - インタフェースのメソッドは動的に解決される（Object.keys には出ない）。サービスの属性は
 //   getPropertyValue で読む（例: XConditionalFormat の範囲は "Range" プロパティ）。
 // - long 型のプロパティへ JS の数値を入れると型が合わないことがある → new uno.Any(uno.type.long, n)。
+//   ただし uno.Any で包むのは any 型の引数（setPropertyValue の値・PropertyValue.Value）だけ。
+//   型の決まった引数（insertNewByName の short など）へ渡すと 26.04.5 では数値として読まれず
+//   「Bad UNO short value nan」になる（実機で確認）。そこへは JS の整数をそのまま渡す。
 // - UNO の例外は { Message, Context } のオブジェクトで飛ぶ（Error ではない）。
 // - kit を落とす操作がある（不正な tile 要求など）。ここでは描画系の命令を一切使わない。
 

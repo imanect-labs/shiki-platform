@@ -378,13 +378,14 @@ impl LiveEditor {
 ///
 /// - 接続の失敗: 1 回だけ再接続する
 /// - `docunloading`: 直前のセッション（前のツール呼び出しなど）が閉じた文書を kit がまだ片付けている。
-///   続けて開くと必ず起きる（実機で確認）ので、片付くまで短く待って開き直す
+///   続けて開くと必ず起きる（実機で確認）ので、片付くまで短く待って開き直す。編集した文書は保存してから
+///   片付くので 10 秒を超えることがある（26.04.5 で実測）。最大 30 秒待つ
 pub async fn connect_with_retry(
     ws: &CoolWsConfig,
     wopi_src: &str,
     access_token: &str,
 ) -> Result<CoolWsClient, LiveError> {
-    const UNLOADING_RETRIES: u32 = 20;
+    const UNLOADING_RETRIES: u32 = 60;
     let mut connect_retried = false;
     let mut unloading = 0;
     loop {
