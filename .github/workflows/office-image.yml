@@ -178,10 +178,12 @@ jobs:
             printf '%s' '<html><body><p style="font-family:游ゴシック">見出しの書体</p><p style="font-family:游明朝">本文の書体</p></body></html>' > "$html"
             curl -fsS --max-time 60 -F "data=@$html" http://127.0.0.1:19980/cool/convert-to/pdf -o "$pdf" \
               || { echo "convert-to/pdf に失敗した"; return 1; }
-            fonts="$(grep -a -o 'NotoS[a-z]*CJKjp' "$pdf" | sort -u | tr '\n' ' ' || true)"
-            echo "PDF の日本語フォント: $fonts"
-            case "$fonts" in *NotoSansCJKjp*) ;; *) echo "ゴシックが Noto Sans CJK JP で描かれていない"; return 1;; esac
-            case "$fonts" in *NotoSerifCJKjp*) ;; *) echo "明朝が Noto Serif CJK JP で描かれていない"; return 1;; esac
+            # 書体名は版で大文字小文字が違う（Noto CJK 2.x は NotoSansCJKJP）ので小文字にして比べる。
+            fonts="$(grep -a -o '/BaseFont */[A-Za-z0-9+_-]*' "$pdf" | sed 's|.*/||' | sort -u | tr '\n' ' ' || true)"
+            echo "PDF の書体: $fonts"
+            lower="$(printf '%s' "$fonts" | tr '[:upper:]' '[:lower:]')"
+            case "$lower" in *notosanscjkjp*) ;; *) echo "ゴシックが Noto Sans CJK JP で描かれていない"; return 1;; esac
+            case "$lower" in *notoserifcjkjp*) ;; *) echo "明朝が Noto Serif CJK JP で描かれていない"; return 1;; esac
             echo "fonts OK"
           }
           docker run -d --name collabora-smoke -p 127.0.0.1:19980:9980 \
