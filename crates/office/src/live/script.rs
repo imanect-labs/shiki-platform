@@ -6,7 +6,7 @@
 //!   ソース名は改行を含まず、スクリプトは改行の後ろ全部で改行を含んでよい）。
 //!   26.04.2 までは `executescript <callId> <スクリプト>` だった（kit の ChildSession::executeScript）。
 //! - 受信: `executescriptresult: {"id":"<callId>","ok":<戻り値>}` または `{"id":..,"err":<文字列か例外の JSON>}`
-//! - 送信: `downloadas name=<n> id=<tag> format=<ext> options=`
+//! - 送信: `downloadas name=<n> id=export format=<ext> options=`
 //! - 受信: `downloadas: downloadid=<id> port=<p> id=<tag> filename=<n>` →
 //!   `GET /cool/<enc(WOPISrc)>/download/<downloadid>` で本体を取る
 //!
@@ -54,10 +54,14 @@ pub(super) fn parse_executescriptresult(line: &str) -> Option<(String, ScriptRes
 
 /// `downloadas` の 1 行（name は拡張子つきのファイル名・format は出力形式）。
 pub(super) fn downloadas_line(name: &str, format: &str) -> String {
-    format!("downloadas name={name} id=shiki-export format={format} options=")
+    format!("downloadas name={name} id=export format={format} options=")
 }
 
-/// `downloadas:` から downloadid を抜き出す（`id=shiki-export` のものだけ）。
+/// `downloadas:` から downloadid を抜き出す（`id=export` のものだけ）。
+///
+/// 26.04.5 の coolwsd は id に `print` / `export` / `slideshow` しか受け付けず、それ以外の id の
+/// 要求は応答なしで捨てる（`ClientSession::filterDownloadAs`・実機で確認）。応答は要求した
+/// セッションにだけ返るので、人の書き出しと取り違えることはない。
 pub(super) fn parse_downloadas(line: &str) -> Option<String> {
     let rest = line.strip_prefix("downloadas:")?;
     let mut download_id = None;
@@ -71,7 +75,7 @@ pub(super) fn parse_downloadas(line: &str) -> Option<String> {
             }
         }
     }
-    (tag == Some("shiki-export")).then_some(download_id?)
+    (tag == Some("export")).then_some(download_id?)
 }
 
 #[cfg(test)]
@@ -113,13 +117,13 @@ mod tests {
 
     #[test]
     fn parses_downloadas_only_for_our_tag() {
-        let line = "downloadas: downloadid=abc123 port=9982 id=shiki-export filename=preview.pdf";
+        let line = "downloadas: downloadid=abc123 port=9982 id=export filename=preview.pdf";
         assert_eq!(parse_downloadas(line).as_deref(), Some("abc123"));
-        let other = "downloadas: downloadid=zzz port=9982 id=export filename=x.pdf";
+        let other = "downloadas: downloadid=zzz port=9982 id=print filename=x.pdf";
         assert!(parse_downloadas(other).is_none());
         assert_eq!(
             downloadas_line("preview.pdf", "pdf"),
-            "downloadas name=preview.pdf id=shiki-export format=pdf options="
+            "downloadas name=preview.pdf id=export format=pdf options="
         );
     }
 }
