@@ -37,7 +37,7 @@ pub const MAX_HTML_DEPTH: usize = 64;
 
 /// body から最も深い要素までの段数が上限を超えるか（再帰せず、明示のスタックで数える）。
 fn too_deep(root: &NodeRef<'_>) -> bool {
-    let mut stack = vec![(root.clone(), 0usize)];
+    let mut stack = vec![(*root, 0usize)];
     while let Some((node, depth)) = stack.pop() {
         if depth > MAX_HTML_DEPTH {
             return true;
