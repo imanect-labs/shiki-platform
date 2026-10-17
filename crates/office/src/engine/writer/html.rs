@@ -344,9 +344,7 @@ fn authored_font(cx: &Ctx, node: &NodeRef<'_>) -> bool {
             return true;
         }
         let inline = c.attr("style").map(|s| parse_decls(&s)).unwrap_or_default();
-        has_font(&inline)
-            || cx.rules.get(&c.id).is_some_and(has_font)
-            || authored_font(cx, c)
+        has_font(&inline) || cx.rules.get(&c.id).is_some_and(has_font) || authored_font(cx, c)
     })
 }
 

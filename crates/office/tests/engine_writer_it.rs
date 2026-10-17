@@ -299,3 +299,50 @@ async fn tracked_changes_are_recorded_read_back_and_accepted() {
     );
     client.close().await;
 }
+
+#[tokio::test]
+async fn inserted_headings_follow_their_style_and_the_title_page_has_no_header() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let (name, mut client) = fresh(&env).await;
+    apply_ok(
+        &mut client,
+        &[
+            json!({"op": "insert", "at": "start", "html": "<p data-style=\"Title\">表紙</p><p>本文 <span style=\"font-size: 20pt; color: #C00000\">大</span></p>"}),
+            json!({"op": "header", "content": {"text": "社外秘"}}),
+            json!({"op": "title_page", "enabled": true}),
+        ],
+    )
+    .await;
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    assert!(overview.contains("表紙あり"), "{overview}");
+    assert!(overview.contains("ヘッダー「社外秘」"), "{overview}");
+    let body = id_of(&overview, "「本文 大」");
+    // 段落の間へ差し込んだ見出しに、取り込みの既定の書体・大きさが直接付かない。
+    apply_ok(
+        &mut client,
+        &[json!({"op": "insert", "after": body, "html": "<h2 data-style=\"Heading 2\">見出し</h2><p>次</p>"})],
+    )
+    .await;
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    let heading = id_of(&overview, "「見出し」");
+    let detail = run::read_blocks(&mut client, &heading, None).await.unwrap();
+    assert!(
+        detail.contains("<p data-style=\"Heading 2\">見出し</p>"),
+        "{detail}"
+    );
+    // 直接書式を消すとスタイルどおりに戻る。
+    apply_ok(
+        &mut client,
+        &[json!({"op": "format_paragraph", "target": body, "clear_formatting": true})],
+    )
+    .await;
+    let detail = run::read_blocks(&mut client, &body, None).await.unwrap();
+    assert!(
+        detail.contains("<p data-style=\"Standard\">本文 大</p>"),
+        "{detail}"
+    );
+    client.close().await;
+}
