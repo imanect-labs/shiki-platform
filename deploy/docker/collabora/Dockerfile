@@ -240,7 +240,8 @@ RUN cd /usr/share/doc/shiki-office \
 COPY branding/online/branding.css branding/online/branding.js /usr/share/coolwsd/browser/dist/
 # branding.js で入れ直す vendor が、configure に渡した --with-vendor と同じであること
 # （cool.html には引用符なしで全文が入っているので、そこから取る）。
-RUN v="$(sed -n 's/^ *data-vendor = //p' /usr/share/coolwsd/browser/dist/cool.html)" \
+# 26.04 の cool.html は値を引用符で囲んで埋め込む（上流で空白の切れが直った）。引用符を外して比べる。
+RUN v="$(sed -n 's/^ *data-vendor = //p' /usr/share/coolwsd/browser/dist/cool.html | tr -d '"')" \
     && test -n "$v" \
     && grep -qF "window.vendor = '$v';" /usr/share/coolwsd/browser/dist/branding.js \
     || { echo "branding.js の vendor が --with-vendor と一致しない: $v"; exit 1; }
