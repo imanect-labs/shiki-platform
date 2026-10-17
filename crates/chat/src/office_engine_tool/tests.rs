@@ -388,6 +388,7 @@ fn word_edit_requires_confirmation_and_lists_every_op_in_the_schema() {
         "insert_toc",
         "update_toc",
         "page_break",
+        "title_page",
         "track_changes",
         "accept_all_changes",
         "reject_all_changes",

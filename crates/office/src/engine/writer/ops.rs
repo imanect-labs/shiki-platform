@@ -58,6 +58,9 @@ pub enum DocOp {
         /// 表の中の段落にも当てる（既定は本文の段落だけ）。
         #[serde(default)]
         include_tables: bool,
+        /// 先に直接書式（段落と文字）を消してスタイルどおりにする。
+        #[serde(default)]
+        clear_formatting: bool,
     },
     /// スタイルを変える（無ければ作る）。見出しの色・本文の書体など文書全体の見た目を揃えるときに使う。
     SetStyle {
@@ -107,6 +110,8 @@ pub enum DocOp {
     PageBreak { before: String },
     /// 変更履歴の記録を切り替える。
     TrackChanges { enabled: bool },
+    /// 表紙: 1 ページ目にヘッダー・フッターを出さない。
+    TitlePage { enabled: bool },
     /// 文書のすべての変更履歴を承認する（変更を確定し、印を消す）。
     AcceptAllChanges {},
     /// 文書のすべての変更履歴を却下する（変更前に戻す）。
@@ -147,6 +152,7 @@ impl DocOp {
             DocOp::UpdateToc {} => "update_toc",
             DocOp::PageBreak { .. } => "page_break",
             DocOp::TrackChanges { .. } => "track_changes",
+            DocOp::TitlePage { .. } => "title_page",
             DocOp::AcceptAllChanges {} => "accept_all_changes",
             DocOp::RejectAllChanges {} => "reject_all_changes",
         }

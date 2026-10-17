@@ -15,7 +15,8 @@ use std::fmt::Write as _;
 
 use dom_query::{Document, NodeId, NodeRef};
 
-/// 取り込みの先頭に置く番兵の段落の文字列（writer_apply.js の IMPORT_SENTINEL と同じ）。
+/// 取り込みの先頭と末尾に置く番兵の段落の文字列（writer_apply.js の IMPORT_SENTINEL と同じ）。
+/// 取り込みの最初と最後の段落は差し込み先の段落と融合し、その書式を引き継ぐ。番兵に吸わせて捨てる。
 pub const IMPORT_SENTINEL: &str = "\u{2063}SHIKI-IMPORT\u{2063}";
 
 /// 1 回に差し込める HTML の大きさの上限（画像を含む）。
@@ -169,6 +170,7 @@ const ALLOWED_CSS: &[&str] = &[
     "vertical-align",
     "page-break-before",
     "page-break-after",
+    "break-after",
     "white-space",
 ];
 
@@ -278,6 +280,22 @@ fn escape_attr(s: &str) -> String {
     escape_text(s).replace('"', "&quot;")
 }
 
+/// 列幅の % を px にするときの本文の幅（A4 の本文幅 160mm 相当）。取り込みは列の % を読まないが、
+/// px の比は表の幅に合わせて伸縮されるので、比が保たれれば十分。
+const PERCENT_BASE_PX: f64 = 605.0;
+
+/// 列・セルの幅を HTML の width 属性の形（px の数値）にする。% は本文の幅に対する比として px にする。
+fn column_width(v: &str) -> String {
+    match v
+        .trim()
+        .strip_suffix('%')
+        .and_then(|n| n.trim().parse::<f64>().ok())
+    {
+        Some(pct) => format!("{}", (pct / 100.0 * PERCENT_BASE_PX).round()),
+        None => html_width(v),
+    }
+}
+
 /// 幅の指定を HTML の width 属性の形（"40%" か px の数値）にする。mm・cm・pt・in は px へ換算する。
 fn html_width(v: &str) -> String {
     let v = v.trim();
@@ -302,17 +320,52 @@ fn html_width(v: &str) -> String {
     v.to_string()
 }
 
-/// 段落の上下の間隔を指定したか（"t"・"b"・"tb"・""）。
-fn spacing_flags(decls: &Decls) -> &'static str {
+/// 書体か大きさの指定を含むか。
+fn has_font(decls: &Decls) -> bool {
+    ["font-size", "font-family", "font"]
+        .iter()
+        .any(|k| get(decls, k).is_some())
+}
+
+/// 段落の中の要素が書体か大きさを指定しているか（style・クラスの規則・<font>・等幅の <code> など）。
+fn authored_font(cx: &Ctx, node: &NodeRef<'_>) -> bool {
+    node.children().iter().any(|c| {
+        if !c.is_element() {
+            return false;
+        }
+        let tag = c
+            .node_name()
+            .map(|t| t.to_ascii_lowercase())
+            .unwrap_or_default();
+        if matches!(
+            tag.as_str(),
+            "font" | "code" | "pre" | "tt" | "kbd" | "samp"
+        ) {
+            return true;
+        }
+        let inline = c.attr("style").map(|s| parse_decls(&s)).unwrap_or_default();
+        has_font(&inline)
+            || cx.rules.get(&c.id).is_some_and(has_font)
+            || authored_font(cx, c)
+    })
+}
+
+/// 取り込みの後にエンジンが段落へ当てる指定の印（t: 上の間隔・b: 下の間隔を HTML で指定した、
+/// n: 次の段落と同じページに置く＝page-break-after: avoid）。
+fn spacing_flags(decls: &Decls) -> String {
     let both = get(decls, "margin").is_some();
-    let top = both || get(decls, "margin-top").is_some();
-    let bottom = both || get(decls, "margin-bottom").is_some();
-    match (top, bottom) {
-        (true, true) => "tb",
-        (true, false) => "t",
-        (false, true) => "b",
-        (false, false) => "",
+    let mut flags = String::new();
+    if both || get(decls, "margin-top").is_some() {
+        flags.push('t');
     }
+    if both || get(decls, "margin-bottom").is_some() {
+        flags.push('b');
+    }
+    let avoid = |k: &str| get(decls, k).is_some_and(|v| v.trim().eq_ignore_ascii_case("avoid"));
+    if avoid("page-break-after") || avoid("break-after") {
+        flags.push('n');
+    }
+    flags
 }
 
 /// スタイル名 → ブックマークの印の名前（`shiki-s-<16 進の UTF-8>-<連番>`）。
@@ -380,7 +433,7 @@ pub fn normalize_html(input: &str) -> Result<String, HtmlError> {
         return Err(HtmlError::Empty);
     }
     Ok(format!(
-        "<html><head><meta charset=\"utf-8\"></head><body><p>{IMPORT_SENTINEL}</p>{}</body></html>",
+        "<html><head><meta charset=\"utf-8\"></head><body><p>{IMPORT_SENTINEL}</p>{}<p>{IMPORT_SENTINEL}</p></body></html>",
         cx.out
     ))
 }
@@ -453,7 +506,7 @@ fn element_attrs(node: &NodeRef<'_>, tag: &str, decls: &Decls) -> Option<String>
                 .map(str::to_string)
                 .or_else(|| node.attr("width").map(|v| v.to_string()))
             {
-                let _ = write!(attrs, " width=\"{}\"", escape_attr(&html_width(&w)));
+                let _ = write!(attrs, " width=\"{}\"", escape_attr(&column_width(&w)));
             }
             if let Some(n) = node
                 .attr("span")
@@ -513,7 +566,7 @@ fn cell_attrs(node: &NodeRef<'_>, decls: &Decls, attrs: &mut String) {
         .map(str::to_string)
         .or_else(|| node.attr("width").map(|v| v.to_string()))
     {
-        let _ = write!(attrs, " width=\"{}\"", escape_attr(&html_width(&w)));
+        let _ = write!(attrs, " width=\"{}\"", escape_attr(&column_width(&w)));
     }
     if let Some(v) = get(decls, "vertical-align") {
         let _ = write!(attrs, " valign=\"{}\"", escape_attr(v));
@@ -605,9 +658,12 @@ fn walk(cx: &mut Ctx, node: &NodeRef<'_>, inherited: &Decls) {
             cx.markers += 1;
             let _ = write!(cx.out, "<a name=\"{marker}\"></a>");
         }
-        // 段落の間隔を指定したかどうか。取り込みは指定の無い段落にも上 0・下 10pt 相当を直接付けるので、
-        // 指定の無い段落はエンジンがスタイルの値へ戻す（指定したものだけ印で残す）。
-        let flags = spacing_flags(&decls);
+        // 段落の間隔・書体を指定したかどうか。取り込みは指定の無い段落にも上 0・下 10pt 相当の間隔と
+        // 既定の書体・大きさを直接付けるので、指定の無い段落はエンジンがスタイルの値へ戻す（指定したものだけ印で残す）。
+        let mut flags = spacing_flags(&decls);
+        if has_font(&decls) || authored_font(cx, node) {
+            flags.push('f');
+        }
         if !flags.is_empty() && !has_block_child(node) {
             let _ = write!(cx.out, "<a name=\"shiki-k-{flags}-{}\"></a>", cx.markers);
             cx.markers += 1;
@@ -635,7 +691,8 @@ mod tests {
         let out = normalize_html(html).unwrap();
         let start =
             out.find(&format!("<p>{IMPORT_SENTINEL}</p>")).unwrap() + IMPORT_SENTINEL.len() + 7;
-        out[start..out.len() - "</body></html>".len()].to_string()
+        let end = out.len() - "</body></html>".len() - IMPORT_SENTINEL.len() - 7;
+        out[start..end].to_string()
     }
 
     #[test]
@@ -675,7 +732,7 @@ mod tests {
             "{out}"
         );
         assert!(
-            out.contains("<p style=\"text-align: center\"><span style=\"font-family: 'Noto Sans JP'; color: #333\">a</span></p>"),
+            out.contains("<p style=\"text-align: center\"><a name=\"shiki-k-f-0\"></a><span style=\"font-family: 'Noto Sans JP'; color: #333\">a</span></p>"),
             "{out}"
         );
         assert!(
@@ -735,6 +792,23 @@ mod tests {
         assert!(out.contains("<a name=\"shiki-k-b-0\"></a>a"), "{out}");
         assert!(out.contains("<p>b</p>"), "{out}");
         assert!(out.contains("<a name=\"shiki-k-tb-1\"></a>c"), "{out}");
+        let out = body("<h2 style=\"page-break-after: avoid\">h</h2>");
+        assert!(out.contains("<a name=\"shiki-k-n-0\"></a>h"), "{out}");
+        // 書体・大きさを指定した段落（中の要素の指定も含む）だけ、取り込みの既定の書体を残す。
+        let out = body("<style>.big { font-size: 20pt }</style><h2>a</h2><p>b <span class=\"big\">c</span></p><p>d <code>e</code></p>");
+        assert!(out.contains("<h2>a</h2>"), "{out}");
+        assert!(out.contains("<a name=\"shiki-k-f-0\"></a>b"), "{out}");
+        assert!(out.contains("<a name=\"shiki-k-f-1\"></a>d"), "{out}");
+    }
+
+    #[test]
+    fn column_percentages_become_proportional_pixels() {
+        let out = body("<table><col width=\"25%\"><col width=\"75%\"><tr><td style=\"width: 50%\">a</td></tr></table>");
+        assert!(
+            out.contains("<col width=\"151\">") && out.contains("<col width=\"454\">"),
+            "{out}"
+        );
+        assert!(out.contains("<td width=\"303\""), "{out}");
     }
 
     #[test]

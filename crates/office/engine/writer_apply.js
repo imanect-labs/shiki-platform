@@ -139,6 +139,10 @@ function fixImportedStyles(paragraphs) {
       if (kept.indexOf("t") >= 0) p.setPropertyValue("ParaTopMargin", long(spacing[0]));
       if (kept.indexOf("b") >= 0) p.setPropertyValue("ParaBottomMargin", long(spacing[1]));
     }
+    // page-break-after: avoid（次の段落と同じページに置く）。
+    if (kept.indexOf("n") >= 0) p.setPropertyValue("ParaKeepTogether", true);
+    // 書体・大きさを HTML で指定していない段落は、取り込みが付けた既定の書体・大きさを消してスタイルに従わせる。
+    if (kept.indexOf("f") < 0) clearImportedFonts(p);
   }
   // 印のブックマークは役目を終えたので消す（対象外の段落に残ったものも含めて）。
   const bookmarks = DOC.getBookmarks();
@@ -146,6 +150,29 @@ function fixImportedStyles(paragraphs) {
     if (n.startsWith("shiki-s-") || n.startsWith("shiki-k-")) bookmarks.getByName(n).dispose();
   }
   if (missing.length) fail("style_not_found", `段落スタイル「${missing[0]}」がありません（office.read の概要に使えるスタイルがあります）`);
+}
+
+const IMPORTED_FONT_PROPS = [
+  "CharFontName", "CharFontNameAsian", "CharFontNameComplex", "CharHeight", "CharHeightAsian", "CharHeightComplex",
+];
+
+/** 段落と段落内の文字から、書体と大きさの直接書式を消す（表のセルの段落はセルの文字列で範囲を作る）。 */
+function clearImportedFonts(p) {
+  let cur = null;
+  try {
+    cur = p.getText().createTextCursorByRange(p.getStart());
+    cur.gotoRange(p.getEnd(), true);
+  } catch (e) {
+    cur = null;
+  }
+  for (const n of IMPORTED_FONT_PROPS) {
+    try {
+      if (cur !== null) cur.setPropertyToDefault(n);
+      p.setPropertyToDefault(n);
+    } catch (e) {
+      // 戻せないプロパティ。
+    }
+  }
 }
 
 /** 取り込んだ段落 1 つのスタイルを整える（data-style の印・表のセル・本文）。 */
@@ -230,6 +257,7 @@ function emptyParagraphAt(anchor, before) {
   const all = bodyBlocks();
   if (anchor === null) return emptyParagraphAt(all[all.length - 1], false);
   const index = indexOfBlock(all, anchor);
+  if (index < 0) fail("block_gone", GONE_MESSAGE);
   if (isTable(anchor)) {
     insertParagraphBeside(anchor, before);
     return resetParagraph(bodyBlocks()[before ? index : index + 1]);
@@ -316,6 +344,11 @@ function indexSpan(all, b) {
   return [first, last];
 }
 
+const GONE_MESSAGE =
+  "対象のブロックはこの一括の前の操作（replace / delete）で既に消えています。置き換えた内容を基準にする操作や、" +
+  "置き換えた内容への書式付けは次の呼び出しに分け、結果に返るブロック ID を使ってください" +
+  "（段落の間隔や「次の段落と同じページ」は html の style でも指定できます）";
+
 /** この一括で解決済みのブロック参照（ID → UNO の参照）。writer.apply が入れる。 */
 let RESOLVED = {};
 
@@ -368,6 +401,9 @@ function removeBlock(b) {
   const i = indexOfBlock(all, b);
   const prev = i > 0 ? all[i - 1] : null;
   const next = i + 1 < all.length ? all[i + 1] : null;
+  // 段落の頭から次の段落の頭までを消す（この段落の区切りだけを消し、前後の段落の区切りには触れない。
+  // 直前の区切りから消すと、記録中は直前の段落の書式がこの段落へ写る）。replace は新しい内容を
+  // 古いブロックの前に入れるので、次の段落は新しい内容ではない。
   let cur;
   if (next && !isTable(next)) {
     cur = text.createTextCursorByRange(b.getStart());
@@ -437,7 +473,7 @@ function insertHtml(anchor, before, html, created) {
         rest = rest.slice(1);
       }
     }
-    // 取り込みは末尾に空段落を残す（差し込み先の段落の残り）。空の段落を後ろから消す。
+    // 取り込みが末尾に空段落を残すことがある。空の段落を後ろから消す。
     // 表の直後で、次も表（か文書の終わり）なら区切りとして残す。
     while (rest.length > 1) {
       const last = rest[rest.length - 1];
@@ -446,10 +482,37 @@ function insertHtml(anchor, before, html, created) {
       last.dispose();
       rest = rest.slice(0, -1);
     }
+    // 末尾の番兵（取り込みの最後の段落。差し込み先の文字書式を吸ったもの）も捨てる。
+    const lastIdx = rest.length - 1;
+    if (rest.length > 1 && !isTable(rest[lastIdx]) && rest[lastIdx].getString() === IMPORT_SENTINEL) {
+      if (isTable(rest[lastIdx - 1]) && (next === null || isTable(next))) {
+        rest[lastIdx].setString("");
+        resetParagraph(rest[lastIdx]);
+      } else {
+        rest[lastIdx].dispose();
+        rest = rest.slice(0, -1);
+      }
+    }
     return rest;
   });
   fixImportedStyles(collectParagraphs(inserted));
+  for (const b of inserted) if (isTable(b)) padCells(b);
   return inserted;
+}
+
+/** 取り込んだ表のセルの内側の余白（取り込みはほぼ 0 にする）。左右 1.9mm・上下 0.8mm（Word の表に近い）。 */
+function padCells(table) {
+  for (const n of Array.from(table.getCellNames())) {
+    try {
+      const c = table.getCellByName(n);
+      c.setPropertyValue("LeftBorderDistance", long(190));
+      c.setPropertyValue("RightBorderDistance", long(190));
+      c.setPropertyValue("TopBorderDistance", long(80));
+      c.setPropertyValue("BottomBorderDistance", long(80));
+    } catch (e) {
+      // 余白を持たないセル。
+    }
+  }
 }
 
 /** 取り込みが作った派生スタイルのうち、使われなくなったものを消す。 */
@@ -532,7 +595,7 @@ function blockRange(resolved, from, to) {
   const all = bodyBlocks();
   const a = indexOfBlock(all, resolved[from]);
   const b = to ? indexOfBlock(all, resolved[to]) : a;
-  if (a < 0 || b < 0) fail("block_gone", "対象のブロックはこの一括の中で既に消えています");
+  if (a < 0 || b < 0) fail("block_gone", GONE_MESSAGE);
   if (b < a) fail("bad_range", "範囲の終わりが始まりより前です");
   return all.slice(a, b + 1);
 }
@@ -615,6 +678,19 @@ function trimSeparators(inserted) {
 
 /** ブロックの並びを消す（目次は 1 回だけ消す）。 */
 function removeBlocks(range) {
+  // 記録中に文書の末尾までの段落を消すときは、直前の段落の終わりからまとめて消す。文書の最後の段落の
+  // 区切りは消せないので、段落ごとに消すと承認後に空の段落が 1 つ残る。
+  if (recording() && range.every((b) => !isTable(b) && documentIndexOf(b) === null)) {
+    const all = bodyBlocks();
+    const first = indexOfBlock(all, range[0]);
+    const last = indexOfBlock(all, range[range.length - 1]);
+    if (first > 0 && last === all.length - 1 && !isTable(all[first - 1])) {
+      const cur = DOC.getText().createTextCursorByRange(all[first - 1].getEnd());
+      cur.gotoRange(range[range.length - 1].getEnd(), true);
+      cur.setString("");
+      return;
+    }
+  }
   const gone = [];
   for (const b of range) {
     const idx = documentIndexOf(b);
@@ -641,7 +717,11 @@ WOPS.insert_html = (op, resolved, created) => {
 
 WOPS.replace_html = (op, resolved, created) => {
   const before = blockRange(resolved, op.from, op.to);
-  const inserted = insertHtml(before[before.length - 1], false, op.html, created);
+  // 変更履歴の記録中は、新しい内容を古いブロックの前に入れる（古い段落の削除が新しい段落の区切りに
+  // 触れないようにする）。
+  const inserted = recording()
+    ? insertHtml(before[0], true, op.html, created)
+    : insertHtml(before[before.length - 1], false, op.html, created);
   STAGE = "置き換え前のブロックの削除";
   // 差し込みで参照が付け替わることがあるので、範囲は取り直す。
   const range = blockRange(resolved, op.from, op.to);
@@ -678,10 +758,39 @@ WOPS.format_text = (op, resolved) => {
   return { formatted: hits.length };
 };
 
+/** 段落と段落内の文字に直接付いた書式を消し、スタイルどおりにする。 */
+const CLEAR_CHAR_PROPS = [
+  "CharWeight", "CharWeightAsian", "CharPosture", "CharPostureAsian", "CharColor", "CharHeight", "CharHeightAsian",
+  "CharUnderline", "CharStrikeout", "CharFontName", "CharFontNameAsian", "CharBackColor",
+];
+
+function clearDirectFormatting(p) {
+  const cur = DOC.getText().createTextCursorByRange(p.getStart());
+  cur.gotoRange(p.getEnd(), true);
+  for (const n of CLEAR_CHAR_PROPS) {
+    try {
+      cur.setPropertyToDefault(n);
+    } catch (e) {
+      // 戻せないプロパティ。
+    }
+  }
+  for (const n of RESET_PARA_PROPS) {
+    if (n === "NumberingStyleName" || n === "BreakType") continue;
+    try {
+      p.setPropertyToDefault(n);
+    } catch (e) {
+      // 戻せないプロパティ。
+    }
+  }
+}
+
 WOPS.format_paragraph = (op, resolved) => {
   const range = blockRange(resolved, op.from, op.to);
   const paras = op.include_tables ? collectParagraphs(range) : range.filter((b) => !isTable(b));
-  for (const p of paras) applyParagraph(p, op);
+  for (const p of paras) {
+    if (op.clear_formatting) clearDirectFormatting(p);
+    applyParagraph(p, op);
+  }
   return { paragraphs: paras.length };
 };
 
@@ -707,15 +816,41 @@ WOPS.set_style = (op) => {
 };
 
 function pageStyle() {
-  const first = bodyBlocks()[0];
-  let name = "Standard";
-  try {
-    name = first.getPropertyValue("PageDescName") || "Standard";
-  } catch (e) {
-    name = "Standard";
-  }
-  return DOC.getStyleFamilies().getByName("PageStyles").getByName(name);
+  return bodyPageStyle().style;
 }
+
+/** 表紙のページスタイルを本文のものに揃える（用紙・余白）。ヘッダー・フッターは出さない。 */
+function syncTitlePage() {
+  const body = bodyPageStyle();
+  if (!body.titlePage) return;
+  const fp = DOC.getStyleFamilies().getByName("PageStyles").getByName(TITLE_PAGE_STYLE);
+  for (const n of ["Width", "Height", "IsLandscape", "LeftMargin", "RightMargin", "TopMargin", "BottomMargin"]) {
+    fp.setPropertyValue(n, body.style.getPropertyValue(n));
+  }
+  fp.setPropertyValue("HeaderIsOn", false);
+  fp.setPropertyValue("FooterIsOn", false);
+}
+
+/** 表紙（1 ページ目にヘッダー・フッターを出さない）。docx では「先頭ページのみ別指定」になる。 */
+WOPS.title_page = (op) => {
+  const fam = DOC.getStyleFamilies().getByName("PageStyles");
+  const body = bodyPageStyle();
+  const first = bodyBlocks()[0];
+  if (op.enabled) {
+    if (!fam.hasByName(TITLE_PAGE_STYLE)) {
+      (() => {
+        fam.insertByName(TITLE_PAGE_STYLE, DOC.createInstance("com.sun.star.style.PageStyle"));
+      })();
+    }
+    const fp = fam.getByName(TITLE_PAGE_STYLE);
+    fp.setPropertyValue("FollowStyle", body.name);
+    first.setPropertyValue("PageDescName", TITLE_PAGE_STYLE);
+    syncTitlePage();
+  } else if (body.titlePage) {
+    first.setPropertyValue("PageDescName", body.name);
+  }
+  return {};
+};
 
 WOPS.page_setup = (op) => {
   const st = pageStyle();
@@ -739,6 +874,7 @@ WOPS.page_setup = (op) => {
     st.setPropertyValue("BottomMargin", long(b));
     st.setPropertyValue("LeftMargin", long(l));
   }
+  syncTitlePage();
   return {};
 };
 

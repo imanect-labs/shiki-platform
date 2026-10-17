@@ -64,6 +64,7 @@ fn known_name(name: &str) -> &'static str {
         "update_toc",
         "page_break",
         "track_changes",
+        "title_page",
         "accept_all_changes",
         "reject_all_changes",
     ];
@@ -351,6 +352,7 @@ impl Cx<'_> {
                 target,
                 para,
                 include_tables,
+                clear_formatting,
             } => {
                 let (from, to) = self.target(target)?;
                 let mut m = Map::new();
@@ -358,8 +360,9 @@ impl Cx<'_> {
                 m.insert("from".into(), from.into());
                 m.insert("to".into(), to.map_or(Value::Null, Value::String));
                 m.insert("include_tables".into(), (*include_tables).into());
+                m.insert("clear_formatting".into(), (*clear_formatting).into());
                 self.para(para, &mut m)?;
-                if m.len() <= 4 {
+                if m.len() <= 5 && !clear_formatting {
                     return Err(self.err("変える書式がありません"));
                 }
                 vec![Value::Object(m)]
@@ -445,6 +448,7 @@ impl Cx<'_> {
             DocOp::TrackChanges { enabled } => {
                 vec![json!({"op": "track_changes", "enabled": enabled})]
             }
+            DocOp::TitlePage { enabled } => vec![json!({"op": "title_page", "enabled": enabled})],
             DocOp::AcceptAllChanges {} => vec![json!({"op": "all_changes", "accept": true})],
             DocOp::RejectAllChanges {} => vec![json!({"op": "all_changes", "accept": false})],
         })

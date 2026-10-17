@@ -67,6 +67,11 @@ fn style_look(look: &Value) -> Option<String> {
         out.push(' ');
         out.push_str(&c);
     }
+    let font = s(&look["font"]);
+    if !font.is_empty() {
+        out.push(' ');
+        out.push_str(font);
+    }
     Some(out)
 }
 
@@ -114,6 +119,9 @@ pub fn overview_text(file_name: &str, ov: &Value) -> String {
     }
     if page["FooterIsOn"] == Value::Bool(true) {
         let _ = write!(out, "・フッター「{}」", s(&page["footer"]).trim());
+    }
+    if page["title_page"] == Value::Bool(true) {
+        out.push_str("・表紙あり（1 ページ目はヘッダー・フッターなし）");
     }
     if ov["indexes"].as_u64().unwrap_or(0) > 0 {
         out.push_str("・目次あり");

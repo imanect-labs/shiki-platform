@@ -156,9 +156,30 @@ function paragraphStyleOf(p) {
   }
 }
 
+function markedText(p, reds) {
+  let text = "";
+  try {
+    const en = p.createEnumeration();
+    while (en.hasMoreElements()) {
+      const r = en.nextElement();
+      if (r.getPropertyValue("TextPortionType") !== "Text") continue;
+      const t = r.getString();
+      const red = reds.find((x) => (x.type === "Insert" || x.type === "Delete") && insideRedline(r, x));
+      text += red ? (red.type === "Insert" ? `［＋${t}］` : `［－${t}］`) : t;
+    }
+  } catch (e) {
+    return p.getString();
+  }
+  return text;
+}
+
 function readParagraph(p, withRuns, reds) {
   const out = { t: "p", text: p.getString(), props: readProps(p, PARA_PROPS) };
-  if (reds && reds.length && reds.some((r) => touchesRedline(p, r))) out.changes = true;
+  if (reds && reds.length && reds.some((r) => touchesRedline(p, r))) {
+    out.changes = true;
+    // 概要の文字列は、挿入を［＋…］、削除を［－…］で示す（連結すると読めないため）。
+    if (!withRuns) out.text = markedText(p, reds);
+  }
   // 目次などの索引の中の段落（読み取りでは 1 ブロックにまとめる）。
   try {
     if (p.getPropertyValue("DocumentIndex")) out.index = true;
@@ -269,28 +290,48 @@ function headerFooterText(text) {
   return parts.join(" / ");
 }
 
+/** 表紙（1 ページ目だけヘッダー・フッターを出さない）に使うページスタイル。 */
+const TITLE_PAGE_STYLE = "First Page";
+
+/**
+ * 本文のページスタイル（用紙・余白・ヘッダー/フッターの対象）と、表紙が有効か。
+ * 先頭のブロックが表紙のページスタイルなら、その次のスタイル（FollowStyle）が本文。
+ */
+function bodyPageStyle() {
+  const fam = DOC.getStyleFamilies().getByName("PageStyles");
+  let name = "Standard";
+  try {
+    name = bodyBlocks()[0].getPropertyValue("PageDescName") || "Standard";
+  } catch (e) {
+    // 先頭が表などで PageDescName を持たない文書。
+  }
+  if (!fam.hasByName(name)) name = "Standard";
+  let style = fam.getByName(name);
+  let titlePage = false;
+  if (name === TITLE_PAGE_STYLE) {
+    const follow = style.getPropertyValue("FollowStyle");
+    if (follow && follow !== name && fam.hasByName(follow)) {
+      name = follow;
+      style = fam.getByName(follow);
+      titlePage = true;
+    }
+  }
+  return { name, style, titlePage };
+}
+
 function pageInfo() {
   const out = {};
   try {
-    const name = bodyBlocks()[0].getPropertyValue("PageDescName") || "Standard";
-    const ps = DOC.getStyleFamilies().getByName("PageStyles").getByName(name);
+    const { name, style: ps, titlePage } = bodyPageStyle();
     out.style = name;
+    out.title_page = titlePage;
     for (const p of ["Width", "Height", "IsLandscape", "LeftMargin", "RightMargin", "TopMargin", "BottomMargin", "HeaderIsOn", "FooterIsOn"]) {
       out[p] = ps.getPropertyValue(p);
     }
     if (out.HeaderIsOn) out.header = headerFooterText(ps.getPropertyValue("HeaderText"));
     if (out.FooterIsOn) out.footer = headerFooterText(ps.getPropertyValue("FooterText"));
   } catch (e) {
-    // 先頭が表の文書などで PageDescName が無い場合は既定の扱い。
-    try {
-      const ps = DOC.getStyleFamilies().getByName("PageStyles").getByName("Standard");
-      for (const p of ["Width", "Height", "IsLandscape", "LeftMargin", "RightMargin", "TopMargin", "BottomMargin", "HeaderIsOn", "FooterIsOn"]) {
-        out[p] = ps.getPropertyValue(p);
-      }
-      out.style = "Standard";
-    } catch (x) {
-      out.style = null;
-    }
+    out.style = null;
   }
   return out;
 }
@@ -319,7 +360,12 @@ function availableStyles() {
     try {
       const st = fam.getByName(n);
       display = st.getPropertyValue("DisplayName");
-      look = { size: st.getPropertyValue("CharHeight"), bold: st.getPropertyValue("CharWeight") > 100, color: st.getPropertyValue("CharColor") };
+      look = {
+        size: st.getPropertyValue("CharHeight"),
+        bold: st.getPropertyValue("CharWeight") > 100,
+        color: st.getPropertyValue("CharColor"),
+        font: st.getPropertyValue("CharFontNameAsian") || st.getPropertyValue("CharFontName"),
+      };
     } catch (e) {
       display = n;
     }
