@@ -441,3 +441,49 @@ async fn style_only_edits_are_saved() {
     assert!(overview.contains("#C00000"), "{overview}");
     client.close().await;
 }
+
+/// 文書全体の作り直し（target: "all"）と、ページの区切り・最後のページへのはみ出しの警告。
+#[tokio::test]
+async fn whole_document_replace_and_page_overflow_warning() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let (_name, mut client) = fresh(&env).await;
+    let page = |n: usize| -> String {
+        let body: String = (0..n).map(|i| format!("<p>本文の段落 {i}</p>")).collect();
+        format!("<h1 data-style=\"Title\">題</h1>{body}")
+    };
+    // まず多めに入れて、1 ページ目に入る段落の数を一覧のページ区切りから数える。
+    let text = apply_ok(
+        &mut client,
+        &[json!({"op": "replace", "target": "all", "html": page(80)})],
+    )
+    .await;
+    let first_page = text
+        .split("── 2 ページ目 ──")
+        .next()
+        .unwrap()
+        .matches("本文の段落")
+        .count();
+    assert!(first_page > 5, "{text}");
+    // 1 ページに入る数より 1 つ多くすると、最後の 1 段落だけが 2 ページ目へ出る。
+    let text = apply_ok(
+        &mut client,
+        &[json!({"op": "replace", "target": "all", "html": page(first_page + 1)})],
+    )
+    .await;
+    assert!(text.contains("── 2 ページ目 ──"), "{text}");
+    assert!(text.contains("はみ出しています"), "{text}");
+    // もう一度 all で置き換えると、前の内容は残らない。
+    let text = apply_ok(
+        &mut client,
+        &[json!({"op": "replace", "target": "all", "html": "<p>短い文書</p>"})],
+    )
+    .await;
+    assert!(
+        !text.contains("本文の段落") && !text.contains("ページ目"),
+        "{text}"
+    );
+    client.close().await;
+}

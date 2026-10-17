@@ -101,6 +101,10 @@ fn is_block_id(s: &str) -> bool {
         && h.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// `target: "all"` の両端（エンジンの resolveBlock が最初と最後のブロックに解決する）。
+const FIRST_BLOCK: &str = "@first";
+const LAST_BLOCK: &str = "@last";
+
 impl Cx<'_> {
     fn err(&self, message: impl Into<String>) -> OpError {
         OpError {
@@ -114,7 +118,9 @@ impl Cx<'_> {
         let s = s.trim().to_ascii_lowercase();
         if !is_block_id(&s) {
             return Err(self.err(format!(
-                "ブロック ID「{s}」の形が不正です（office.read が返す b12-3fa9 の形）"
+                "ブロック ID「{s}」の形が不正です。ID は office.read の一覧の [ ] の中身をそのまま書きます\
+                 （例 b12-3fa9。番号とハッシュは同じブロックのもの）。範囲は「最初の ID:最後の ID」\
+                 （例 b0-0388:b15-fa60）、文書全体は \"all\""
             )));
         }
         if !self.ids.contains(&s) {
@@ -123,8 +129,17 @@ impl Cx<'_> {
         Ok(s)
     }
 
-    /// `b1-xxxx` か `b1-xxxx:b5-yyyy` → (from, to)。
+    /// `b1-xxxx` か `b1-xxxx:b5-yyyy` → (from, to)。`all` は文書の最初から最後まで
+    /// （エンジンが適用の時点の最初と最後のブロックに解決する）。
     fn target(&mut self, s: &str) -> Result<(String, Option<String>), OpError> {
+        if s.trim().eq_ignore_ascii_case("all") {
+            for id in [FIRST_BLOCK, LAST_BLOCK] {
+                if !self.ids.iter().any(|x| x == id) {
+                    self.ids.push(id.to_string());
+                }
+            }
+            return Ok((FIRST_BLOCK.to_string(), Some(LAST_BLOCK.to_string())));
+        }
         match s.split_once(':') {
             Some((a, b)) => Ok((self.id(a)?, Some(self.id(b)?))),
             None => Ok((self.id(s)?, None)),
@@ -503,6 +518,23 @@ mod tests {
 
     fn norm(v: &Value) -> DocNormalized {
         normalize_doc_ops(v.as_array().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn all_targets_the_whole_document_and_bad_ids_explain_the_form() {
+        let n = norm(&json!([{"op": "replace", "target": "all", "html": "<p>x</p>"}]));
+        assert_eq!(n.ops[0]["from"], "@first");
+        assert_eq!(n.ops[0]["to"], "@last");
+        assert!(n.block_ids.contains(&"@first".to_string()));
+        let err = normalize_doc_ops(&[
+            json!({"op": "replace", "target": "b0-15fa60", "html": "<p>x</p>"}),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("\"all\"") && err.contains("最初の ID:最後の ID"),
+            "{err}"
+        );
     }
 
     #[test]

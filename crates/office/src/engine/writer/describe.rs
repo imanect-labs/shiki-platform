@@ -6,7 +6,8 @@ pub const WORD_EDIT_DESCRIPTION: &str = "Word 文書（.docx / .odt）を、本�
 変わらない）。人が開いていれば画面へ即時反映され、人は 1 回の「元に戻す」で取り消せる。結果に最新のブロック一覧が返る\
 （ブロック ID は編集で変わるので、以降は返ってきた ID を使う）。同じ ops の中では、replace / delete で消したブロック以外の \
 ID は差し込みの後もそのまま使える。\n\
-対象: office.read が返すブロック ID（\"b12-3fa9\"）か範囲（\"b12-3fa9:b15-77c1\"）。本文は HTML で書く:\n\
+対象: office.read が返すブロック ID（\"b12-3fa9\"）か範囲（\"b12-3fa9:b15-77c1\"）、文書全体は \"all\"\
+（作り直すときは replace {target:\"all\", html}）。本文は HTML で書く:\n\
 見出し <h1>〜<h3>・段落 <p>・箇条書き <ul>/<ol><li>（入れ子可）・表 <table>（<th>・colspan・rowspan・<col width>）・\
 <b> <i> <u> <s> <sup> <sub> <a href>・<br>・<img src=\"data:image/png;base64,...\">。CSS（style 属性や <style> のクラス・子孫セレクタ）は\
 color / background-color / font-size / font-family / font-weight / text-align / text-indent / margin / line-height / border（表のセルのみ） / width / \

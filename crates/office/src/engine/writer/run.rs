@@ -117,6 +117,13 @@ pub async fn apply(
                 "\n\n現在の文書（ブロック ID は更新されています。以降はこの ID を使う）:\n{}",
                 view::overview_text("", &overview)
             );
+            let warnings = view::page_warnings(&overview);
+            if !warnings.is_empty() {
+                let _ = write!(text, "\n確認が必要な点:");
+                for w in &warnings {
+                    let _ = write!(text, "\n- {w}");
+                }
+            }
         }
         Err(e) => {
             let _ = write!(

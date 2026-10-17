@@ -91,6 +91,37 @@ fn paper_name(width: u64, height: u64) -> String {
 }
 
 /// 文書の概要（writer.overview の結果）。
+/// 最後のページへの少しだけのはみ出し（例 1 枚に収めたつもりの案内状の 2 行が 2 ページ目へ出た）。
+///
+/// 一覧が文書の全ブロックを含むときだけ判定する（途中から読んだ一覧では最後のページが分からない）。
+pub fn page_warnings(ov: &Value) -> Vec<String> {
+    let pages = ov["pages"].as_u64().unwrap_or(0);
+    let blocks = ov["blocks"].as_array().cloned().unwrap_or_default();
+    let whole = ov["from"].as_u64() == Some(0) && ov["count"].as_u64() == Some(blocks.len() as u64);
+    if pages < 2 || !whole {
+        return Vec::new();
+    }
+    let on_last: Vec<&Value> = blocks
+        .iter()
+        .filter(|b| b["page"].as_u64() == Some(pages))
+        .collect();
+    let short = on_last.len() <= 3
+        && on_last
+            .iter()
+            .all(|b| s(&b["t"]) != "table" && s(&b["text"]).chars().count() <= 120);
+    if on_last.is_empty() || !short {
+        return Vec::new();
+    }
+    let ids: Vec<String> = on_last.iter().map(|b| s(&b["id"]).to_string()).collect();
+    vec![format!(
+        "最後の {pages} ページ目には {} ブロック（{}）だけがはみ出しています。{} ページに収めたいなら、\
+         余白（page_setup）・段落の間隔（margin）・文字の大きさを詰めるか、内容を減らしてください",
+        on_last.len(),
+        ids.join("、"),
+        pages - 1
+    )]
+}
+
 pub fn overview_text(file_name: &str, ov: &Value) -> String {
     let mut out = String::new();
     let page = &ov["page"];
@@ -173,9 +204,18 @@ pub fn overview_text(file_name: &str, ov: &Value) -> String {
         from,
         from + blocks.len().saturating_sub(1) as u64
     );
+    let many_pages = ov["pages"].as_u64().unwrap_or(0) > 1;
+    let mut last_page = None;
     let mut i = 0;
     while i < blocks.len() {
         let b = &blocks[i];
+        // 複数ページなら、ページが変わるところに区切りを入れる（どこで改ページされたかを見せる）。
+        if let Some(p) = b["page"].as_u64().filter(|_| many_pages) {
+            if last_page != Some(p) {
+                let _ = writeln!(out, "── {p} ページ目 ──");
+                last_page = Some(p);
+            }
+        }
         // 目次の中の段落は 1 行にまとめる。
         if b["index"] == Value::Bool(true) {
             let mut j = i;
@@ -515,6 +555,35 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn marks_page_breaks_and_warns_about_a_small_overflow() {
+        let block = |i: u64, page: u64, text: &str| json!({"t": "p", "id": format!("b{i}-0000"), "page": page, "text": text, "style": "Standard"});
+        let ov = json!({
+            "count": 3, "from": 0, "pages": 2, "page": {"Width": 21000, "Height": 29700},
+            "blocks": [block(0, 1, "本文"), block(1, 1, "記"), block(2, 2, "電話：03-xxxx")],
+        });
+        let text = overview_text("", &ov);
+        assert!(
+            text.contains("── 1 ページ目 ──") && text.contains("── 2 ページ目 ──"),
+            "{text}"
+        );
+        let w = page_warnings(&ov);
+        assert_eq!(w.len(), 1);
+        assert!(
+            w[0].contains("b2-0000") && w[0].contains("1 ページに収めたい"),
+            "{}",
+            w[0]
+        );
+        // 途中から読んだ一覧・1 ページの文書では判定しない。
+        let mut partial = ov.clone();
+        partial["from"] = json!(1);
+        assert!(page_warnings(&partial).is_empty());
+        let mut single = ov.clone();
+        single["pages"] = json!(1);
+        assert!(page_warnings(&single).is_empty());
+        assert!(!overview_text("", &single).contains("ページ目"));
+    }
 
     #[test]
     fn overview_lists_blocks_and_collapses_toc() {

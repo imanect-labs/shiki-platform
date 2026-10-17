@@ -45,6 +45,11 @@ function blockId(index, block) {
  * （人が前に段落を足した場合など）。見つからなければ誤り（読み直しを促す）。
  */
 function resolveBlock(blocks, id) {
+  // target: "all" の両端（Rust の正規化が付ける）。
+  if (id === "@first" || id === "@last") {
+    if (blocks.length === 0) fail("empty_document", "文書にブロックがありません");
+    return id === "@first" ? 0 : blocks.length - 1;
+  }
   const m = /^b(\d+)-([0-9a-f]{4})$/.exec(id || "");
   if (!m) fail("bad_block_id", `ブロック ID「${id}」の形が不正です（office.read が返す b12-3fa9 の形）`);
   const index = parseInt(m[1], 10);
@@ -391,6 +396,29 @@ function availableStyles() {
 }
 
 /** 概要: ページ設定・ブロック一覧（プレビュー）・使用中のスタイル・目次の有無。 */
+/**
+ * ブロックが何ページ目から始まるか（AI の view のカーソルを動かして読む・人の view は動かない）。
+ * 取れなければ null（レイアウト前など）。
+ */
+function pageCursor() {
+  try {
+    return DOC.getCurrentController().getViewCursor();
+  } catch (e) {
+    return null;
+  }
+}
+
+function pageOf(vc, b) {
+  if (!vc) return null;
+  try {
+    const start = isTable(b) ? b.getCellByPosition(0, 0).getText().getStart() : b.getStart();
+    vc.gotoRange(start, false);
+    return vc.getPage();
+  } catch (e) {
+    return null;
+  }
+}
+
 HANDLERS["writer.overview"] = (req) => {
   requireKind("writer");
   const blocks = bodyBlocks();
@@ -414,11 +442,13 @@ HANDLERS["writer.overview"] = (req) => {
   };
   const reds = redlineSpans();
   out.redlines = reds.length;
+  const vc = pageCursor();
   for (let i = from; i < to; i++) {
     STAGE = `ブロック ${i} の概要`;
     const b = blocks[i];
     const item = isTable(b) ? readTable(b, false) : readParagraph(b, false, reds);
     item.id = blockId(i, b);
+    item.page = pageOf(vc, b);
     if (item.t === "p" && item.text.length > 80) item.text = item.text.slice(0, 80) + "…";
     out.blocks.push(item);
   }
