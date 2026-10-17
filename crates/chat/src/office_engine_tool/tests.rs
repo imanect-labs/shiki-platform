@@ -1,7 +1,7 @@
-//! `office.read` / `office.excel_edit` のユニットテスト（#725）。
+//! `office.read` / `office.excel_edit` / `office.word_edit` のユニットテスト（#725）。
 //!
 //! 実 Collabora は差さず、[`SheetEngine`] 境界をフェイクで置き換えて「観測とカードに何を出すか」
-//! を固定する（エンジン本体は `crates/office/tests/engine_calc_it.rs` が実機で確かめる）。
+//! を固定する（エンジン本体は `crates/office/tests/engine_{calc,writer}_it.rs` が実機で確かめる）。
 
 #![allow(clippy::unwrap_used)]
 
@@ -28,6 +28,8 @@ enum Next {
     Report(SheetEditReport),
     Denied,
     Unsupported,
+    /// 種類違いの文書（Word の道具に Excel など）。
+    WrongKind,
 }
 
 /// 記録する 1 回分の編集（要約・既定シート・操作数）。
@@ -50,6 +52,7 @@ impl FakeEngine {
         match self.next.lock().unwrap().take() {
             Some(Next::Report(r)) => Ok(r),
             Some(Next::Denied) => Err(OfficeEngineError::Session(LiveEditError::Denied)),
+            Some(Next::WrongKind) => Err(OfficeEngineError::Session(LiveEditError::Unsupported)),
             Some(Next::Unsupported) | None => Err(OfficeEngineError::Unsupported),
         }
     }
@@ -57,7 +60,7 @@ impl FakeEngine {
 
 #[async_trait::async_trait]
 impl SheetEngine for FakeEngine {
-    async fn read_sheet(
+    async fn read(
         &self,
         _ctx: &AuthContext,
         _file_id: Uuid,
@@ -79,6 +82,20 @@ impl SheetEngine for FakeEngine {
             default_sheet.map(str::to_string),
             ops.len(),
         ));
+        self.take()
+    }
+
+    async fn edit_doc(
+        &self,
+        _ctx: &AuthContext,
+        _file_id: Uuid,
+        label: &str,
+        ops: &[serde_json::Value],
+    ) -> Result<SheetEditReport, OfficeEngineError> {
+        self.edits
+            .lock()
+            .unwrap()
+            .push((label.to_string(), None, ops.len()));
         self.take()
     }
 }
@@ -286,4 +303,96 @@ fn edit_requires_confirmation_and_lists_every_op_in_the_schema() {
         assert!(tool.description().contains(op), "説明文に {op} が無い");
     }
     assert_eq!(listed.len(), 32);
+}
+
+#[tokio::test]
+async fn word_edit_applies_and_points_other_kinds_to_the_right_tool() {
+    let engine = FakeEngine::new(Next::Report(SheetEditReport {
+        file_name: "報告書.docx".into(),
+        text: "1 件の操作を適用しました".into(),
+        applied: true,
+        save: LiveSaveResult::Saved { version: 3 },
+        views: 1,
+    }));
+    let tool = OfficeWordEditTool {
+        engine: Arc::clone(&engine) as Arc<dyn SheetEngine>,
+    };
+    let out = tool
+        .call(
+            &ctx(),
+            serde_json::json!({"node_id": Uuid::nil(), "summary": "概要を追加",
+                "ops": [{"op": "insert", "at": "end", "html": "<p>概要</p>"}]}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("「報告書.docx」"), "{}", out.content);
+    assert_eq!(out.document_refs.len(), 1);
+    assert_eq!(
+        engine.edits.lock().unwrap()[0],
+        ("概要を追加".into(), None, 1)
+    );
+
+    // Excel を渡されたら excel_edit へ案内する（逆も同じ）。
+    let tool = OfficeWordEditTool {
+        engine: FakeEngine::new(Next::WrongKind),
+    };
+    let out = tool
+        .call(
+            &ctx(),
+            serde_json::json!({"node_id": Uuid::nil(), "summary": "x",
+                "ops": [{"op": "delete", "target": "b1-0000"}]}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(out.content.contains("office.excel_edit"), "{}", out.content);
+    let out = edit_tool(FakeEngine::new(Next::WrongKind))
+        .call(
+            &ctx(),
+            input(serde_json::json!([{"op": "merge", "range": "A1:C1"}])),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(out.content.contains("office.word_edit"), "{}", out.content);
+}
+
+#[test]
+fn word_edit_requires_confirmation_and_lists_every_op_in_the_schema() {
+    let tool = OfficeWordEditTool {
+        engine: FakeEngine::new(Next::Unsupported),
+    };
+    assert!(tool.requires_confirmation());
+    let schema = tool.input_schema();
+    let listed: Vec<String> = schema["properties"]["ops"]["items"]["properties"]["op"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    // スキーマの列挙と説明文が、語彙（DocOp）のすべての op を載せていること。
+    let ops = [
+        "insert",
+        "replace",
+        "delete",
+        "replace_text",
+        "format_text",
+        "format_paragraph",
+        "set_style",
+        "page_setup",
+        "header",
+        "footer",
+        "insert_toc",
+        "update_toc",
+        "page_break",
+        "track_changes",
+    ];
+    for op in ops {
+        assert!(listed.iter().any(|l| l == op), "スキーマに {op} が無い");
+        assert!(tool.description().contains(op), "説明文に {op} が無い");
+    }
+    assert_eq!(listed.len(), ops.len());
 }

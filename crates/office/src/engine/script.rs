@@ -8,12 +8,15 @@ use std::sync::LazyLock;
 const CORE: &str = include_str!("../../engine/core.js");
 const CALC_READ: &str = include_str!("../../engine/calc_read.js");
 const CALC_APPLY: &str = include_str!("../../engine/calc_apply.js");
+const WRITER_READ: &str = include_str!("../../engine/writer_read.js");
+const WRITER_APPLY: &str = include_str!("../../engine/writer_apply.js");
 
 /// 連結済みのエンジン（全 action を含む 1 つの関数式）。
 pub static ENGINE_SOURCE: LazyLock<String> = LazyLock::new(|| {
-    let mut src = String::with_capacity(CORE.len() + CALC_READ.len() + CALC_APPLY.len() + 128);
+    let modules = [CORE, CALC_READ, CALC_APPLY, WRITER_READ, WRITER_APPLY];
+    let mut src = String::with_capacity(modules.iter().map(|m| m.len()).sum::<usize>() + 128);
     src.push_str("function (req) {\n\"use strict\";\n");
-    for module in [CORE, CALC_READ, CALC_APPLY] {
+    for module in modules {
         src.push_str(module);
         src.push('\n');
     }

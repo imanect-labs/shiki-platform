@@ -1,15 +1,19 @@
-//! Excel ツールの説明文と入力スキーマ（#725）。
+//! Excel ツール（と、Excel・Word 共通の office.read）の説明文と入力スキーマ（#725）。
 //!
 //! 単一定義: チャットのツール（office.read / office.excel_edit）と評価台が同じものを使う。
 //! 操作の語彙は [`super::ops::SheetOp`] が正で、ここの列挙とずれないことをテストで確かめる。
 
 /// office.read の説明。
 pub const READ_DESCRIPTION: &str =
-"Excel ブック（.xlsx / .ods）を読む。人が開いて編集中なら未保存の内容も含めて読める。\
-         range を省くと、ブックの概要（シート一覧・使用範囲・グラフ・名前）と作業中シートの左上を返す。\
-         range（例 \"売上!A1:H40\"・\"A:F\"）を指定すると、その範囲の値（画面の表示どおり）・数式（Excel の書き方）・\
-         書式（文書の既定と違うものだけ）・結合・列幅を返す。details=true で条件付き書式・グラフ・印刷設定・\
-         ウィンドウ枠の固定も返す。編集（office.excel_edit）の前に、表の位置・見出し・書式を必ずこれで確かめる。";
+"Excel ブック（.xlsx / .ods）と Word 文書（.docx / .odt）を読む。人が開いて編集中なら未保存の内容も含めて読める。\n\
+Excel: range を省くと、ブックの概要（シート一覧・使用範囲・グラフ・名前）と作業中シートの左上を返す。\
+range（例 \"売上!A1:H40\"・\"A:F\"）を指定すると、その範囲の値（画面の表示どおり）・数式（Excel の書き方）・\
+書式（文書の既定と違うものだけ）・結合・列幅を返す。details=true で条件付き書式・グラフ・印刷設定・\
+ウィンドウ枠の固定も返す。編集（office.excel_edit）の前に、表の位置・見出し・書式を必ずこれで確かめる。\n\
+Word: range を省くと、文書の概要（用紙・余白・ヘッダー/フッター・使える段落スタイル・ブロック一覧＝ブロック ID・\
+スタイル・先頭の文字）を返す（多い文書は range \"from:200\" で続き）。range にブロック ID か範囲（\"b3-1a2b:b9-77c1\"）を\
+指定すると、各ブロックを書式つきの HTML（office.word_edit の replace にそのまま渡せる形）で返す。\
+編集（office.word_edit）の前に、構成と対象のブロック ID を必ずこれで確かめる。";
 
 /// office.excel_edit の説明（操作の語彙は単一定義の `SheetOp` と対で保つ・テストで照合）。
 pub const EXCEL_EDIT_DESCRIPTION: &str = "Excel ブック（.xlsx / .ods）を、値・数式から書式・罫線・結合・列幅・条件付き書式・入力規則・\
@@ -63,10 +67,10 @@ pub fn read_schema() -> serde_json::Value {
         "type": "object",
         "properties": {
             "node_id": { "type": "string", "format": "uuid", "description": "対象ファイルのノード ID" },
-            "range": { "type": "string", "description": "読む範囲（A1 表記・シート名つき可）。省略で概要" },
-            "sheet": { "type": "string", "description": "range にシート名が無いときのシート" },
-            "details": { "type": "boolean", "description": "条件付き書式・グラフ・印刷設定・固定も読む" },
-            "max_cells": { "type": "integer", "description": "返すセル数の上限（既定 1500・最大 5000）" }
+            "range": { "type": "string", "description": "Excel は読む範囲（A1 表記・シート名つき可）、Word はブロック ID か範囲（b3-1a2b:b9-77c1）か \"from:200\"。省略で概要" },
+            "sheet": { "type": "string", "description": "Excel: range にシート名が無いときのシート" },
+            "details": { "type": "boolean", "description": "Excel: 条件付き書式・グラフ・印刷設定・固定も読む" },
+            "max_cells": { "type": "integer", "description": "Excel: 返すセル数の上限（既定 1500・最大 5000）" }
         },
         "required": ["node_id"]
     })

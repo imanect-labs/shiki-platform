@@ -122,7 +122,12 @@ function atomically(label, fn) {
     ok = true;
     return r;
   } finally {
-    um.leaveUndoContext();
+    // 文脈を閉じる処理が失敗しても取り消しは試みる（失敗した UNO 呼び出しの後に起き得る）。
+    try {
+      um.leaveUndoContext();
+    } catch (e) {
+      STAGE = STAGE + "（undo 文脈を閉じられませんでした）";
+    }
     if (!ok) {
       const after = um.getAllUndoActionTitles().length;
       if (after > before) {

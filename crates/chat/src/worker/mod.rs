@@ -85,7 +85,7 @@ pub struct ChatWorker {
     office_live: Option<Arc<office::live::LiveEditor>>,
     /// Office の新規作成（save_document / save_sheet・#381）。
     office_creator: Option<Arc<office::OfficeCreator>>,
-    /// Excel のレイアウト編集エンジン（office.read / office.excel_edit・#725）。
+    /// Excel・Word のレイアウト編集エンジン（office.read / office.excel_edit / office.word_edit・#725）。
     office_engine: Option<Arc<office::engine::OfficeEngine>>,
     config: Arc<WorkerConfig>,
 }

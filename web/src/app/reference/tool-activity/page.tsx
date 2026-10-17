@@ -204,6 +204,7 @@ const ALL_VOCAB: ToolActivityItem[] = [
   { name: "office.live_edit", input: {} },
   { name: "office.read", input: {} },
   { name: "office.excel_edit", input: {} },
+  { name: "office.word_edit", input: {} },
   { name: "csv.query", input: { sql: "SELECT category, count(*) FROM data GROUP BY category" } },
   { name: "csv.patch", input: {} },
   { name: "csv.write", input: { name: "集計結果" } },

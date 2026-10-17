@@ -406,7 +406,7 @@ pub(crate) async fn wire_chat(
                     Arc::clone(&o.live),
                 ))
             }),
-            // Excel のレイアウト編集エンジン（office.read / office.excel_edit・#725）。
+            // Excel・Word のレイアウト編集エンジン（office.read / office.excel_edit / office.word_edit・#725）。
             office_engine: office_runtime.map(|o| Arc::clone(&o.engine)),
         },
         worker_config,

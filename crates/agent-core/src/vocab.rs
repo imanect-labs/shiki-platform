@@ -108,10 +108,14 @@ vocab_enum! {
         /// Office 文書への AI ライブ編集（AI が CoolWSD セッションの headless 参加者
         /// として接続し、自 view でアンカー指定編集・全参加者へ即反映・issue #352）。
         OfficeLiveEdit => "office.live_edit",
-        /// Excel ブックの読み取り（値・数式・書式・結合・列幅・付帯情報。#725）。
+        /// Excel・Word の読み取り（Excel は値・数式・書式・結合・列幅・付帯情報、Word は
+        /// ブロック一覧と書式つき HTML。#725）。
         OfficeRead => "office.read",
         /// Excel ブックのレイアウトまで含む編集（kit 内の固定エンジン・全部成功か全部取り消し。#725）。
         OfficeExcelEdit => "office.excel_edit",
+        /// Word 文書のレイアウトまで含む編集（HTML の差し込み・スタイル・ページ設定・目次。
+        /// kit 内の固定エンジン・全部成功か全部取り消し。#725）。
+        OfficeWordEdit => "office.word_edit",
         /// CSV への読み取り専用 SQL クエリ（隔離 DuckDB 経由・Task 11P.9）。
         CsvQuery => "csv.query",
         /// CSV のパッチ編集→新バージョン（editor・Task 11P.9）。
@@ -184,6 +188,7 @@ impl ToolName {
             | Self::OfficeLiveEdit
             | Self::OfficeRead
             | Self::OfficeExcelEdit
+            | Self::OfficeWordEdit
             | Self::CsvQuery
             | Self::CsvPatch
             | Self::CsvWrite => ToolLoading::Deferred,
@@ -223,11 +228,16 @@ impl ToolName {
                 "office word excel powerpoint live collaborative edit ワード エクセル 共同編集"
             }
             Self::OfficeRead => {
-                "excel xlsx spreadsheet workbook read cells formula format エクセル 表計算 読む セル 数式 書式"
+                "excel xlsx spreadsheet workbook word docx document read cells formula format layout \
+                 エクセル 表計算 ワード 文書 読む セル 数式 書式 段落 見出し"
             }
             Self::OfficeExcelEdit => {
                 "excel xlsx spreadsheet edit format chart table formula conditional formatting print \
                  エクセル 表計算 編集 書式 罫線 グラフ 数式 条件付き書式 印刷 列幅 結合"
+            }
+            Self::OfficeWordEdit => {
+                "word docx document report edit heading table style layout header footer toc page \
+                 ワード 文書 報告書 編集 見出し 表 スタイル 書式 ヘッダー フッター 目次 ページ設定"
             }
             Self::CsvQuery => "csv sql query table select aggregate 表 集計 検索",
             Self::CsvPatch => "csv table edit update row cell 表 行 セル 編集 更新",

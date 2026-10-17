@@ -217,6 +217,7 @@ fn selection_tools(kind: crate::model::SelectionKind) -> &'static [agent_core::T
             T::OfficeEdit,
             T::OfficeRead,
             T::OfficeExcelEdit,
+            T::OfficeWordEdit,
         ],
     }
 }
@@ -225,7 +226,8 @@ fn selection_tools(kind: crate::model::SelectionKind) -> &'static [agent_core::T
 ///
 /// ドキュメントアシスタントは system プロンプトでこれらの編集ツールを使うよう指示するため、
 /// 遅延にすると毎ターン検索の 1 手を挟む。拡張子が分からなければノートとして扱う。
-/// Excel はレイアウトまで扱えるエンジンの道具（office.read / office.excel_edit・#725）を使う。
+/// Excel・Word はレイアウトまで扱えるエンジンの道具（office.read / office.excel_edit /
+/// office.word_edit・#725）を使う。
 pub(super) fn origin_document_tools(name: Option<&str>) -> &'static [agent_core::ToolName] {
     use crate::model::SelectionKind as K;
     use agent_core::ToolName as T;
@@ -234,9 +236,8 @@ pub(super) fn origin_document_tools(name: Option<&str>) -> &'static [agent_core:
         .map(|(_, e)| e.to_ascii_lowercase());
     match ext.as_deref() {
         Some("xlsx" | "xls" | "ods") => &[T::OfficeRead, T::OfficeExcelEdit],
-        Some("docx" | "pptx" | "doc" | "ppt" | "odt" | "odp") => {
-            &[T::OfficeLiveEdit, T::OfficeEdit]
-        }
+        Some("docx" | "odt") => &[T::OfficeRead, T::OfficeWordEdit],
+        Some("pptx" | "doc" | "ppt" | "odp") => &[T::OfficeLiveEdit, T::OfficeEdit],
         Some("csv") => selection_tools(K::CsvRange),
         Some("slide") => selection_tools(K::SlideSelection),
         _ => selection_tools(K::NoteSelection),
@@ -465,6 +466,10 @@ mod tests {
         use agent_core::ToolName as T;
         assert_eq!(
             origin_document_tools(Some("報告書.DOCX")),
+            [T::OfficeRead, T::OfficeWordEdit]
+        );
+        assert_eq!(
+            origin_document_tools(Some("提案.pptx")),
             [T::OfficeLiveEdit, T::OfficeEdit]
         );
         assert_eq!(

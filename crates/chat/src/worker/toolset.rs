@@ -146,7 +146,7 @@ impl ChatWorker {
                 live.clone(),
             )));
         }
-        // Excel のレイアウト編集（office.read / office.excel_edit・#725）。kit 内の固定エンジンへ
+        // Excel・Word のレイアウト編集（office.read / office.excel_edit / office.word_edit・#725）。kit 内の固定エンジンへ
         // 検証済みの JSON だけを渡す（PIT-68）。authz は OfficeEngine が内部で持つ。
         if let Some(engine) = &self.office_engine {
             tools.push(Arc::new(crate::office_engine_tool::OfficeReadTool::new(
@@ -154,6 +154,9 @@ impl ChatWorker {
             )));
             tools.push(Arc::new(
                 crate::office_engine_tool::OfficeExcelEditTool::new(engine.clone()),
+            ));
+            tools.push(Arc::new(
+                crate::office_engine_tool::OfficeWordEditTool::new(engine.clone()),
             ));
         }
         // Office の**新規作成**（save_document / save_sheet・#381）。実体は「空テンプレを

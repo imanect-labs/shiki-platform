@@ -135,8 +135,9 @@ impl ChatWorker {
                     "{base}\n\nこの会話は開いているドキュメントに紐づいています\
                      （node_id: {node_id}{named}）。ユーザーが「この文書」「開いているノート」\
                      「このシート」等と言う場合は、新規作成や下書きではなく**この node_id を対象**に\
-                     編集ツール（document.edit / office.excel_edit / office.live_edit / csv.patch 等）を使ってください。\
-                     Excel はまず office.read で表の位置と書式を確かめてから office.excel_edit で編集してください。"
+                     編集ツール（document.edit / office.excel_edit / office.word_edit / office.live_edit / csv.patch 等）を使ってください。\
+                     Excel・Word はまず office.read で表の位置や文書の構成・書式を確かめてから、Excel は office.excel_edit、\
+                     Word は office.word_edit で編集してください。"
                 )
             }
             None => base,

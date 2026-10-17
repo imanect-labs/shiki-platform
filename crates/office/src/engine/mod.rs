@@ -14,9 +14,11 @@ pub mod calc;
 pub mod formula;
 pub mod script;
 mod service;
+pub mod writer;
 
 pub use service::{
-    OfficeEngine, OfficeEngineError, SheetEditReport, SheetReadRequest, SHEET_CONTENT_TYPES,
+    OfficeEngine, OfficeEngineError, SheetEditReport, SheetReadRequest, DOC_CONTENT_TYPES,
+    SHEET_CONTENT_TYPES,
 };
 
 use serde_json::Value;

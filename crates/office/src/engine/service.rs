@@ -13,14 +13,27 @@ use super::a1;
 use super::calc::normalize::{normalize_with_sheets, OpError};
 use super::calc::parse::parse_ops;
 use super::calc::run;
+use super::writer;
 use super::EngineError;
 use crate::live::{LiveEditError, LiveEditor, LiveSaveResult, SessionAccess};
-use crate::templates::XLSX_CONTENT_TYPE;
+use crate::templates::{DOCX_CONTENT_TYPE, XLSX_CONTENT_TYPE};
 
 /// エンジンで扱う表計算の形式。
 pub const SHEET_CONTENT_TYPES: &[&str] = &[
     XLSX_CONTENT_TYPE,
     "application/vnd.oasis.opendocument.spreadsheet",
+];
+
+/// エンジンで扱う文書の形式。
+pub const DOC_CONTENT_TYPES: &[&str] =
+    &[DOCX_CONTENT_TYPE, "application/vnd.oasis.opendocument.text"];
+
+/// 読み取りに使える形式（表計算と文書）。
+const READ_CONTENT_TYPES: &[&str] = &[
+    XLSX_CONTENT_TYPE,
+    "application/vnd.oasis.opendocument.spreadsheet",
+    DOCX_CONTENT_TYPE,
+    "application/vnd.oasis.opendocument.text",
 ];
 
 /// `26.04.2.1` のような版が `min`（年・月）以上か。
@@ -74,6 +87,29 @@ pub struct SheetReadRequest {
     pub max_cells: Option<u32>,
     /// 条件付き書式・グラフ・印刷設定・固定などシート全体の付帯情報も読む。
     pub details: bool,
+}
+
+/// Word の読み取り（range: ブロックの範囲・`from:N`・省略で概要）。
+async fn read_doc(
+    client: &mut crate::live::CoolWsClient,
+    file_name: &str,
+    range: Option<&str>,
+) -> Result<String, OfficeEngineError> {
+    let r = match range.map(str::trim) {
+        None | Some("") => writer::run::read_overview(client, file_name, 0).await,
+        Some(r) if r.starts_with("from:") => {
+            let from = r["from:".len()..].trim().parse().unwrap_or(0);
+            writer::run::read_overview(client, file_name, from).await
+        }
+        Some(r) => {
+            let (from, to) = match r.split_once(':') {
+                Some((a, b)) => (a.trim(), Some(b.trim())),
+                None => (r, None),
+            };
+            writer::run::read_blocks(client, from, to).await
+        }
+    };
+    r.map_err(OfficeEngineError::from)
 }
 
 /// エンジンの入口。
@@ -135,14 +171,16 @@ impl OfficeEngine {
         }
     }
 
-    /// Excel を読む（viewer@file）。
-    pub async fn read_sheet(
+    /// Excel・Word を読む（viewer@file）。文書の種類はセッションを開いてから見て振り分ける。
+    ///
+    /// Excel の `range` は A1 表記、Word の `range` はブロックの範囲（`b3-xxxx:b9-yyyy`）か
+    /// 一覧の続き（`from:200`）。
+    pub async fn read(
         &self,
         ctx: &AuthContext,
         file_id: Uuid,
         req: &SheetReadRequest,
     ) -> Result<String, OfficeEngineError> {
-        let area = req.range.as_deref().map(a1::parse_area).transpose()?;
         if !self.is_supported().await {
             return Err(OfficeEngineError::Unsupported);
         }
@@ -154,20 +192,67 @@ impl OfficeEngine {
             ctx,
             file_id,
             SessionAccess::Read,
-            SHEET_CONTENT_TYPES,
+            READ_CONTENT_TYPES,
             async |client, info| {
-                let r = match &area {
-                    Some(a) => {
-                        run::read_range(client, a, req.sheet.as_deref(), max_cells, req.details)
+                let r = if DOC_CONTENT_TYPES.contains(&info.content_type.as_str()) {
+                    read_doc(client, &info.file_name, req.range.as_deref()).await
+                } else {
+                    match req.range.as_deref().map(a1::parse_area).transpose() {
+                        Err(e) => Err(OfficeEngineError::Range(e)),
+                        Ok(Some(a)) => run::read_range(
+                            client,
+                            &a,
+                            req.sheet.as_deref(),
+                            max_cells,
+                            req.details,
+                        )
+                        .await
+                        .map_err(OfficeEngineError::from),
+                        Ok(None) => run::read_overview(client, &info.file_name)
                             .await
+                            .map_err(OfficeEngineError::from),
                     }
-                    None => run::read_overview(client, &info.file_name).await,
                 };
                 (r, false)
             },
         ))
         .await?;
-        Ok(outcome.value?)
+        outcome.value
+    }
+
+    /// Word を編集する（editor@file）。操作は全部成功か全部取り消し。
+    pub async fn edit_doc(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        label: &str,
+        ops: &[serde_json::Value],
+    ) -> Result<SheetEditReport, OfficeEngineError> {
+        // 誤りはセッションを開く前に返す（kit を起こさない・文書に触れない）。
+        let normalized = writer::normalize::normalize_doc_ops(ops)?;
+        if !self.is_supported().await {
+            return Err(OfficeEngineError::Unsupported);
+        }
+        let outcome = Box::pin(self.live.with_session(
+            ctx,
+            file_id,
+            SessionAccess::Edit,
+            DOC_CONTENT_TYPES,
+            async |client, _info| {
+                let r = writer::run::apply(client, label, &normalized).await;
+                let modified = matches!(&r, Ok(o) if o.applied);
+                (r, modified)
+            },
+        ))
+        .await?;
+        let applied = outcome.value?;
+        Ok(SheetEditReport {
+            file_name: outcome.info.file_name,
+            text: applied.text,
+            applied: applied.applied,
+            save: outcome.save,
+            views: outcome.info.views,
+        })
     }
 
     /// Excel を編集する（editor@file）。操作は全部成功か全部取り消し。

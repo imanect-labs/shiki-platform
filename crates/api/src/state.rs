@@ -127,7 +127,7 @@ pub struct OfficeRuntime {
     /// AI ライブ編集（office.live_edit・CoolWSD headless 参加・issue #352）。
     /// WOPI と同一のトークン鍵を共有する（wire_office で一括構築）。
     pub live: Arc<office::live::LiveEditor>,
-    /// Excel のレイアウト編集エンジン（office.read / office.excel_edit・#725）。
+    /// Excel・Word のレイアウト編集エンジン（office.read / office.excel_edit / office.word_edit・#725）。
     /// LiveEditor のセッション（認可・直列化・保存）に包んで使う。
     pub engine: Arc<office::engine::OfficeEngine>,
 }
