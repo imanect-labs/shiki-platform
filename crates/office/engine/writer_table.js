@@ -204,8 +204,8 @@ WOPS.table_style = (op, resolved) => {
   const thin = { style: 0, width: 9, color: col.line };
   const headLine = { style: 0, width: 35, color: col.head };
   const double = { style: 3, width: 53, color: col.head };
-  const totalRow = op.total_row ? rows - 1 : -1;
-  if (rows < op.header_rows + (op.total_row ? 1 : 0) + 1) fail("bad_table", "表には見出し・合計行のほかに 1 行以上の本体が要ります");
+  const firstTotal = rows - op.total_rows;
+  if (rows < op.header_rows + op.total_rows + 1) fail("bad_table", "表には見出し・集計行のほかに 1 行以上の本体が要ります");
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       let cell;
@@ -216,9 +216,10 @@ WOPS.table_style = (op, resolved) => {
       }
       if (!cell) continue;
       const head = r < op.header_rows;
-      const total = r === totalRow;
+      const total = op.total_rows > 0 && r >= firstTotal;
       const band = op.banded && !head && !total && (r - op.header_rows) % 2 === 1;
-      const fill = head ? col.head : total ? col.total : band ? col.band : null;
+      const firstCol = op.first_column && c === 0 && !head && !total;
+      const fill = head ? col.head : total || firstCol ? col.total : band ? col.band : null;
       if (fill === null) {
         cell.setPropertyValue("BackTransparent", true);
         cell.setPropertyValue("BackColor", long(-1));
@@ -229,7 +230,7 @@ WOPS.table_style = (op, resolved) => {
       cell.setPropertyValue("VertOrient", short(2));
       for (const k of ["TopBorder", "BottomBorder", "LeftBorder", "RightBorder"]) cell.setPropertyValue(k, borderLineW(thin));
       if (head && r === op.header_rows - 1) cell.setPropertyValue("BottomBorder", borderLineW(headLine));
-      if (total) cell.setPropertyValue("TopBorder", borderLineW(double));
+      if (total && r === firstTotal) cell.setPropertyValue("TopBorder", borderLineW(double));
       const font = head ? { bold: true, color: "#FFFFFF" } : total || (op.first_column && c === 0) ? { bold: true } : null;
       if (font) {
         applyFont(cellCursor(cell), font);

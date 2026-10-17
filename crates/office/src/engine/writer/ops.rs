@@ -168,6 +168,9 @@ pub enum DocOp {
         header_rows: Option<u32>,
         #[serde(default)]
         total_row: bool,
+        /// 末尾の集計行の数（小計・消費税・合計など）。total_row より優先する。
+        #[serde(default)]
+        total_rows: Option<u32>,
         #[serde(default)]
         banded: Option<bool>,
         #[serde(default)]

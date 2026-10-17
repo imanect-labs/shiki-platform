@@ -407,3 +407,25 @@ async fn tables_are_edited_in_place_and_read_back_with_their_look() {
     );
     client.close().await;
 }
+
+#[tokio::test]
+async fn style_only_edits_are_saved() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let (name, mut client) = fresh(&env).await;
+    // スタイルだけの変更は文書の「変更あり」にならず、保存で捨てられていた。
+    apply_ok(
+        &mut client,
+        &[json!({"op": "set_style", "name": "Heading 1", "font": {"size": 20, "color": "#C00000"}})],
+    )
+    .await;
+    client.save().await.unwrap();
+    client.close().await;
+    let mut client = open(&env, &name).await;
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    assert!(overview.contains("Heading 1（見出し1・20pt"), "{overview}");
+    assert!(overview.contains("#C00000"), "{overview}");
+    client.close().await;
+}

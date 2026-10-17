@@ -129,6 +129,13 @@ function atomically(label, fn) {
   try {
     const r = fn();
     ok = true;
+    // スタイル・ページ設定だけの変更は文書の「変更あり」にならないことがあり、そのままだと
+    // 「変更が無ければ保存しない」保存で捨てられる（実機で確認）。一括が成功したら変更ありにする。
+    try {
+      DOC.setModified(true);
+    } catch (e) {
+      // 変更の印を持たない文書。
+    }
     return r;
   } finally {
     // 文脈を閉じる処理が失敗しても取り消しは試みる（失敗した UNO 呼び出しの後に起き得る）。

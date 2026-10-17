@@ -37,7 +37,7 @@ space_before_pt?, space_after_pt?, line_spacing?:倍率 または line_height_pt
 valign?:top|center|bottom, border?:{all|outline|inner|top|bottom|left|right|inside_horizontal|inside_vertical: \"thin\"|\"medium\"|\"thick\"|\
 \"double\"|\"dashed\"|\"dotted\"|\"none\" または {style, color}}} / table_props {table, width_mm?, columns_mm?:[...], align?:left|center|right, \
 repeat_header?:行数（ページをまたぐとき見出し行を繰り返す）, allow_row_split?, keep_with_next?} / style_table {table, theme?:blue|navy|green|gray|orange, \
-header_rows?（既定 1）, total_row?, banded?（既定 true）, first_column?}（見出しは濃い色に白の太字、縞、合計行は太字と上に二重線、全体に細い罫線、\
+header_rows?（既定 1）, total_row?:true または total_rows?:行数（小計・消費税・合計など末尾の集計行）, banded?（既定 true）, first_column?（1 列目を項目名として太字・薄い塗り。header_rows:0 と組み合わせると「項目｜内容」の表になる）}（見出しは濃い色に白の太字、縞、合計行は太字と上に二重線、全体に細い罫線、\
 数値は右揃え）。既存の表は replace で作り直さずにこれらで直す（表の見た目が保たれる）。新しく作った表もまず style_table で整える\n\
 - page_break {before:ID} / title_page {enabled}（表紙: 1 ページ目にヘッダー・フッターを出さない）\n\
 - track_changes {enabled}（有効にした後の insert / replace / delete / replace_text / format_text は変更履歴として残り、office.read の \

@@ -145,6 +145,7 @@ function fixImportedStyles(paragraphs) {
     if (kept.indexOf("e") >= 0) p.setString("");
     // 書体・大きさを HTML で指定していない段落は、取り込みが付けた既定の書体・大きさを消してスタイルに従わせる。
     if (kept.indexOf("f") < 0) clearImportedFonts(p);
+    else unifyScripts(p);
   }
   tightenImportedLists(paragraphs);
   // 印のブックマークは役目を終えたので消す（対象外の段落に残ったものも含めて）。
@@ -211,6 +212,51 @@ function tightenImportedLists(paragraphs) {
       style.setPropertyValue("NumberingRules", rules);
     } catch (e) {
       // 字下げを変えられない番号スタイル（取り込みの既定のまま残す）。
+    }
+  }
+}
+
+/** 文字種（欧文・和文・CTL）ごとに分かれた文字の書式。 */
+const SCRIPT_PROPS = [
+  ["CharHeight", "CharHeightAsian", "CharHeightComplex"],
+  ["CharWeight", "CharWeightAsian", "CharWeightComplex"],
+  ["CharPosture", "CharPostureAsian", "CharPostureComplex"],
+  ["CharFontName", "CharFontNameAsian"],
+];
+
+/**
+ * 取り込みは CSS の大きさ・太さ・書体を、文字列の文字種に当たるプロパティにだけ付ける（和文には
+ * CharHeightAsian だけ）。行頭の「※」のような文字種の決まらない文字は欧文の値で描かれるので、
+ * 指定が一部の文字種にしか無いときは全部に写す（CSS どおり、文字種によらず効かせる）。
+ */
+function unifyScripts(p) {
+  const runs = [];
+  try {
+    const en = p.createEnumeration();
+    while (en.hasMoreElements()) {
+      const r = en.nextElement();
+      if (r.getPropertyValue("TextPortionType") === "Text") runs.push(r);
+    }
+  } catch (e) {
+    return;
+  }
+  for (const r of runs) {
+    for (const group of SCRIPT_PROPS) {
+      const direct = group.filter((n) => isDirect(r, n));
+      if (direct.length === 0 || direct.length === group.length) continue;
+      const v = r.getPropertyValue(direct.indexOf(group[1]) >= 0 ? group[1] : direct[0]);
+      for (const n of group) if (direct.indexOf(n) < 0) r.setPropertyValue(n, v);
+    }
+  }
+  // 記号だけの連（行頭の「※」「●」「【」など）は取り込みが書式の範囲から外すことがある。隣の連に揃える。
+  for (let i = 0; i < runs.length; i++) {
+    if (/[\p{L}\p{N}]/u.test(runs[i].getString())) continue;
+    const near = [runs[i + 1], runs[i - 1]].filter((x) => x !== undefined);
+    for (const group of SCRIPT_PROPS) {
+      if (group.some((n) => isDirect(runs[i], n))) continue;
+      const from = near.find((x) => group.every((n) => isDirect(x, n)));
+      if (!from) continue;
+      for (const n of group) runs[i].setPropertyValue(n, from.getPropertyValue(n));
     }
   }
 }

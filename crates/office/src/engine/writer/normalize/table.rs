@@ -63,17 +63,19 @@ impl Cx<'_> {
                 theme,
                 header_rows,
                 total_row,
+                total_rows,
                 banded,
                 first_column,
             } => {
                 let header_rows = header_rows.unwrap_or(1);
-                if header_rows > 5 {
-                    return Err(self.err("header_rows は 0〜5 です"));
+                let total_rows = total_rows.unwrap_or(u32::from(*total_row));
+                if header_rows > 5 || total_rows > 5 {
+                    return Err(self.err("header_rows・total_rows は 0〜5 行です"));
                 }
                 let (head, band, total, line) = crate::engine::calc::parse::palette(*theme);
                 vec![json!({
                     "op": "table_style", "table": self.id(table)?, "header_rows": header_rows,
-                    "total_row": total_row, "banded": banded.unwrap_or(true), "first_column": first_column,
+                    "total_rows": total_rows, "banded": banded.unwrap_or(true), "first_column": first_column,
                     "colors": {"head": head, "band": band, "total": total, "line": line},
                 })]
             }
@@ -273,7 +275,7 @@ mod tests {
             json!({"op": "set_cells", "table": "b5-a3df", "cell": "B2", "values": [["628", "590"]]}),
             json!({"op": "format_cells", "table": "b5-a3df", "range": "B2:D6", "align": "right", "fill": null, "border": {"top": "double"}}),
             json!({"op": "table_props", "table": "b5-a3df", "columns_mm": [40, 30, 30, 30], "align": "center", "repeat_header": 1}),
-            json!({"op": "style_table", "table": "b5-a3df", "total_row": true}),
+            json!({"op": "style_table", "table": "b5-a3df", "total_rows": 3}),
         ])
         .unwrap();
         assert_eq!(n.ops[0]["values"], json!([["合計", "1341", null]]));
@@ -288,6 +290,7 @@ mod tests {
         assert_eq!(n.ops[3]["border"]["top"]["style"], 3);
         assert_eq!(n.ops[4]["columns"], json!([4000, 3000, 3000, 3000]));
         assert_eq!(n.ops[5]["colors"]["head"], "#1F4E79");
+        assert_eq!(n.ops[5]["total_rows"], 3);
         assert_eq!(n.block_ids, vec!["b5-a3df"]);
     }
 
