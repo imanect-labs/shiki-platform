@@ -492,3 +492,28 @@ async fn whole_document_replace_and_page_overflow_warning() {
     );
     client.close().await;
 }
+
+/// 目次の直前に同じ題の見出しがあると、その見出しを消して題を二重にしない。
+#[tokio::test]
+async fn toc_does_not_duplicate_a_heading_with_the_same_title() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let (name, mut client) = fresh(&env).await;
+    apply_ok(
+        &mut client,
+        &[json!({"op": "replace", "target": "all", "html": "<h1 data-style=\"Title\">報告書</h1><h2 data-style=\"Heading 1\">目次</h2><h2 data-style=\"Heading 1\">1. 概要</h2><p>本文</p>"})],
+    )
+    .await;
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    let toc_heading = id_of(&overview, "Heading 1「目次」");
+    let text = apply_ok(
+        &mut client,
+        &[json!({"op": "insert_toc", "after": toc_heading, "title": "目次"})],
+    )
+    .await;
+    assert!(text.contains("同じ題の段落「目次」を消しました"), "{text}");
+    assert!(!text.contains("Heading 1「目次」"), "{text}");
+    client.close().await;
+}

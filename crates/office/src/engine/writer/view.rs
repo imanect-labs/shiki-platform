@@ -101,6 +101,33 @@ pub fn page_warnings(ov: &Value) -> Vec<String> {
     if pages < 2 || !whole {
         return Vec::new();
     }
+    let mut out = Vec::new();
+    // 途中のほぼ空のページ（見出しだけ・空の段落だけ）。表紙の余白の取りすぎや、改ページの重なりで起きる。
+    for p in 1..pages {
+        let on: Vec<&Value> = blocks
+            .iter()
+            .filter(|b| b["page"].as_u64() == Some(p))
+            .collect();
+        let filled: Vec<&&Value> = on
+            .iter()
+            .filter(|b| s(&b["t"]) == "table" || !s(&b["text"]).trim().is_empty())
+            .collect();
+        let nearly_empty = !on.is_empty()
+            && filled.len() <= 1
+            && filled
+                .iter()
+                .all(|b| s(&b["t"]) != "table" && s(&b["text"]).chars().count() <= 20);
+        if nearly_empty {
+            let what = filled.first().map_or_else(
+                || "空の段落".to_string(),
+                |b| format!("「{}」", s(&b["text"])),
+            );
+            out.push(format!(
+                "{p} ページ目には {what} だけしかありません（ほぼ空のページ）。余白（margin-top）・改ページ\
+                 （page_break・page-break-before）の重なりを見直してください"
+            ));
+        }
+    }
     let on_last: Vec<&Value> = blocks
         .iter()
         .filter(|b| b["page"].as_u64() == Some(pages))
@@ -110,16 +137,17 @@ pub fn page_warnings(ov: &Value) -> Vec<String> {
             .iter()
             .all(|b| s(&b["t"]) != "table" && s(&b["text"]).chars().count() <= 120);
     if on_last.is_empty() || !short {
-        return Vec::new();
+        return out;
     }
     let ids: Vec<String> = on_last.iter().map(|b| s(&b["id"]).to_string()).collect();
-    vec![format!(
+    out.push(format!(
         "最後の {pages} ページ目には {} ブロック（{}）だけがはみ出しています。{} ページに収めたいなら、\
          余白（page_setup）・段落の間隔（margin）・文字の大きさを詰めるか、内容を減らしてください",
         on_last.len(),
         ids.join("、"),
         pages - 1
-    )]
+    ));
+    out
 }
 
 /// 一覧の頭（用紙・余白・ヘッダー/フッター・ページ数・使えるスタイル）。
@@ -588,6 +616,28 @@ mod tests {
         single["pages"] = json!(1);
         assert!(page_warnings(&single).is_empty());
         assert!(!overview_text("", &single).contains("ページ目"));
+    }
+
+    #[test]
+    fn warns_about_a_page_that_holds_only_a_heading() {
+        let block = |i: u64, page: u64, text: &str| json!({"t": "p", "id": format!("b{i}-0000"), "page": page, "text": text, "style": "Standard"});
+        let mut blocks = vec![
+            block(0, 1, "報告書"),
+            block(1, 1, "2026年10月20日"),
+            block(2, 2, "目次"),
+        ];
+        for i in 3..30 {
+            blocks.push(block(
+                i,
+                3,
+                "本文の段落がここに長く続いていて、最後のページはしっかり埋まっています。",
+            ));
+        }
+        let ov =
+            json!({"count": blocks.len(), "from": 0, "pages": 3, "page": {}, "blocks": blocks});
+        let w = page_warnings(&ov);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("2 ページ目には 「目次」 だけ"), "{}", w[0]);
     }
 
     #[test]

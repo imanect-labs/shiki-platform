@@ -99,6 +99,12 @@ pub async fn apply(
         if let Some(n) = r["replaced"].as_u64() {
             let _ = write!(text, "\n- replace_text: {n} か所を置き換えました");
         }
+        if let Some(t) = r["removed_duplicate_title"].as_str() {
+            let _ = write!(
+                text,
+                "\n- insert_toc: 直前の同じ題の段落「{t}」を消しました（目次の部品が題を持つので、二重になり目次の項目にも載るため）"
+            );
+        }
         if let Some(n) = r["formatted"].as_u64() {
             let _ = write!(text, "\n- format_text: {n} か所に書式を付けました");
         }

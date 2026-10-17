@@ -1020,6 +1020,19 @@ WOPS.insert_toc = (op, resolved) => {
   toc.setPropertyValue("Level", short(op.levels));
   toc.update();
   withoutRecording(() => dropEmptyParagraph(para));
+  // 目次の部品は自分の題（Title）を持つ。直前に同じ題の段落（「目次」の見出しなど）があると題が
+  // 二重になり、見出しなら目次の項目にも載る（Gemma 4 の評価で起きた）。その段落を消す。
+  const blocks = bodyBlocks();
+  const at = blocks.findIndex((b) => {
+    const idx = documentIndexOf(b);
+    return idx !== null && sameObject(idx, toc);
+  });
+  const prev = at > 0 ? blocks[at - 1] : null;
+  if (prev && !isTable(prev) && op.title && prev.getString().trim() === op.title.trim()) {
+    removeBlock(prev);
+    toc.update();
+    return { removed_duplicate_title: op.title };
+  }
   return {};
 };
 
