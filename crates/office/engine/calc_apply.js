@@ -206,11 +206,43 @@ OPS.merge = (op) => {
   return {};
 };
 
+/** 折り返しの見出しを 1 行で収める幅の上限（1/100 mm・全角 20 文字ほど）。 */
+const HEADER_FIT_MAX = 4500;
+/** 見出しを探す行数の上限（大きな表で全行をなめない）。 */
+const HEADER_SCAN_ROWS = 2000;
+
+/**
+ * 「自動」の列幅。Calc の最適幅は折り返しのセル（style_table の見出しなど）を勘定しないので、
+ * 「予算（千円）」が「予算（ / 千円）」と途中で割れる。折り返しの文字セルを一時的に 1 行にして
+ * 測り直し、上限（HEADER_FIT_MAX）までなら見出しが 1 行に収まる幅にする。
+ */
+function autoColumnWidth(sheet, col, c) {
+  col.setPropertyValue("OptimalWidth", true);
+  const plain = col.getPropertyValue("Width");
+  const used = usedArea(sheet);
+  if (!used) return;
+  const last = Math.min(used[3], HEADER_SCAN_ROWS);
+  const wrapped = [];
+  for (let r = 0; r <= last; r++) {
+    const cell = sheet.getCellByPosition(c, r);
+    if (cell.getPropertyValue("IsTextWrapped") && cell.getString() !== "" && cell.getFormula() === cell.getString()) {
+      wrapped.push(cell);
+    }
+  }
+  if (wrapped.length === 0) return;
+  for (const cell of wrapped) cell.setPropertyValue("IsTextWrapped", false);
+  col.setPropertyValue("OptimalWidth", true);
+  const oneLine = col.getPropertyValue("Width");
+  for (const cell of wrapped) cell.setPropertyValue("IsTextWrapped", true);
+  col.setPropertyValue("Width", long(Math.max(plain, Math.min(oneLine, HEADER_FIT_MAX))));
+}
+
 OPS.column_width = (op) => {
-  const cols = getSheet(op.sheet).getColumns();
+  const sheet = getSheet(op.sheet);
+  const cols = sheet.getColumns();
   for (let c = op.from; c <= op.to; c++) {
     const col = cols.getByIndex(c);
-    if (op.width === null) col.setPropertyValue("OptimalWidth", true);
+    if (op.width === null) autoColumnWidth(sheet, col, c);
     else col.setPropertyValue("Width", long(op.width));
   }
   return {};

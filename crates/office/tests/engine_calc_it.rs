@@ -189,6 +189,41 @@ async fn sheets_move_to_the_given_position_and_external_formulas_are_rejected() 
     client.close().await;
 }
 
+/// 「自動」の列幅は、折り返しの見出し（style_table）も 1 行に収まる幅にする。
+#[tokio::test]
+async fn auto_width_fits_wrapped_headers_on_one_line() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-{}.xlsx", uuid::Uuid::new_v4());
+    let mut client = open_blank(&env, &name).await;
+    let batch = ops(json!([
+        {"op": "set_values", "range": "A1", "values": [["部門", "予算（千円）"], ["営業", 1], ["開発", 2]]},
+        {"op": "style_table", "range": "A1:B3"},
+        {"op": "column_width", "columns": "A:B", "width": "auto"}
+    ]));
+    let out = run::apply(&mut client, "幅", &normalize(&batch, None).unwrap())
+        .await
+        .unwrap();
+    assert!(out.applied, "{}", out.text);
+    // 「予算（千円）」は全角 6 文字。1 行に収まるなら B の幅は 6 文字分を超える。
+    let widths = out
+        .text
+        .split("列幅（文字数）:")
+        .nth(1)
+        .unwrap_or("")
+        .to_string();
+    let b = widths
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("B="))
+        .and_then(|w| w.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    eprintln!("列幅: {widths}");
+    assert!(b >= 10.0, "B の幅が見出しを 1 行に収めていない: {widths}");
+    client.close().await;
+}
+
 /// xlsx へ保存して開き直しても、文字色と罫線の線種が保たれる（テーマ色・幅の丸めの回帰防止）。
 #[tokio::test]
 async fn font_colors_and_border_styles_survive_an_xlsx_round_trip() {
