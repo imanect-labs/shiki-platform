@@ -44,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           source deploy/docker/collabora/office-manifest.env
-          for v in CORE_REPO CORE_REF CORE_COMMIT ONLINE_REPO ONLINE_REF ONLINE_COMMIT POCO_URL POCO_SHA256; do
+          for v in ONLINE_REPO ONLINE_REF ONLINE_COMMIT NODE_URL NODE_SHA256; do
             [ -n "${!v}" ] || { echo "manifest に $v が無い"; exit 1; }
             echo "$v=${!v}" >> "$GITHUB_ENV"
           done
@@ -82,14 +82,11 @@ jobs:
           cache-from: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache', github.repository_owner) || '' }}
           cache-to: ${{ github.event_name != 'schedule' && format('type=registry,ref=ghcr.io/{0}/shiki-collabora:buildcache,mode=max', github.repository_owner) || '' }}
           build-args: |
-            CORE_REPO=${{ env.CORE_REPO }}
-            CORE_REF=${{ env.CORE_REF }}
-            CORE_COMMIT=${{ env.CORE_COMMIT }}
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
-            POCO_URL=${{ env.POCO_URL }}
-            POCO_SHA256=${{ env.POCO_SHA256 }}
+            NODE_URL=${{ env.NODE_URL }}
+            NODE_SHA256=${{ env.NODE_SHA256 }}
 
 
       # **push する前に smoke する。** 以前はこの step が push: true で、
@@ -111,20 +108,16 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest
           build-args: |
-            CORE_REPO=${{ env.CORE_REPO }}
-            CORE_REF=${{ env.CORE_REF }}
-            CORE_COMMIT=${{ env.CORE_COMMIT }}
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
-            POCO_URL=${{ env.POCO_URL }}
-            POCO_SHA256=${{ env.POCO_SHA256 }}
+            NODE_URL=${{ env.NODE_URL }}
+            NODE_SHA256=${{ env.NODE_SHA256 }}
             BUILD_ID=${{ env.BUILD_ID }}
             UBUNTU_SNAPSHOT=${{ env.UBUNTU_SNAPSHOT }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=MPL-2.0
-            io.shiki.collabora.core=${{ env.CORE_REF }}@${{ env.CORE_COMMIT }}
             io.shiki.collabora.online=${{ env.ONLINE_REF }}@${{ env.ONLINE_COMMIT }}
             io.shiki.collabora.sources=${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}-sources
 
@@ -176,13 +169,28 @@ jobs:
               || { echo "Ubuntu スナップショットの時刻が渡した値と違う: $snap != $UBUNTU_SNAPSHOT"; return 1; }
             echo "brand OK"
           }
+          # **日本語フォントの別名が描画で効くこと（#725）。** 游ゴシック（ゴシック）と游明朝（明朝）を
+          # 指定した文書を PDF にし、日本語版の Noto Sans / Serif CJK が埋め込まれることを見る。
+          # 別名が無いとゴシックが明朝で出たり、中国語版の字形で描かれたりする。
+          check_fonts() {
+            local html pdf fonts
+            html="$(mktemp --suffix=.html)"; pdf="$(mktemp --suffix=.pdf)"
+            printf '%s' '<html><body><p style="font-family:游ゴシック">見出しの書体</p><p style="font-family:游明朝">本文の書体</p></body></html>' > "$html"
+            curl -fsS --max-time 60 -F "data=@$html" http://127.0.0.1:19980/cool/convert-to/pdf -o "$pdf" \
+              || { echo "convert-to/pdf に失敗した"; return 1; }
+            fonts="$(grep -a -o 'NotoS[a-z]*CJKjp' "$pdf" | sort -u | tr '\n' ' ' || true)"
+            echo "PDF の日本語フォント: $fonts"
+            case "$fonts" in *NotoSansCJKjp*) ;; *) echo "ゴシックが Noto Sans CJK JP で描かれていない"; return 1;; esac
+            case "$fonts" in *NotoSerifCJKjp*) ;; *) echo "明朝が Noto Serif CJK JP で描かれていない"; return 1;; esac
+            echo "fonts OK"
+          }
           docker run -d --name collabora-smoke -p 127.0.0.1:19980:9980 \
             "ghcr.io/${{ github.repository_owner }}/shiki-collabora:${ONLINE_REF}"
           for i in $(seq 1 60); do
             # --max-time: 無いと coolwsd が子プロセス待ちで応答を返さないとき
             # curl が固まり、120 秒の打ち切りが効かない（実際 17 分待った）。
             if curl -fsS --max-time 5 http://127.0.0.1:19980/hosting/discovery | grep -q 'urlsrc'; then
-              echo "discovery OK"; check_brand; exit 0
+              echo "discovery OK"; check_brand; check_fonts; exit 0
             fi
             if [ "$(docker inspect -f '{{.State.Running}}' collabora-smoke)" != true ]; then
               echo "coolwsd が終了した（exit code: $(docker inspect -f '{{.State.ExitCode}}' collabora-smoke)）"
@@ -223,14 +231,11 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}-sources
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}-sources
           build-args: |
-            CORE_REPO=${{ env.CORE_REPO }}
-            CORE_REF=${{ env.CORE_REF }}
-            CORE_COMMIT=${{ env.CORE_COMMIT }}
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
-            POCO_URL=${{ env.POCO_URL }}
-            POCO_SHA256=${{ env.POCO_SHA256 }}
+            NODE_URL=${{ env.NODE_URL }}
+            NODE_SHA256=${{ env.NODE_SHA256 }}
             BUILD_ID=${{ env.BUILD_ID }}
             UBUNTU_SNAPSHOT=${{ env.UBUNTU_SNAPSHOT }}
           labels: |
@@ -257,20 +262,16 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:${{ env.ONLINE_REF }}
             ghcr.io/${{ github.repository_owner }}/shiki-collabora:latest
           build-args: |
-            CORE_REPO=${{ env.CORE_REPO }}
-            CORE_REF=${{ env.CORE_REF }}
-            CORE_COMMIT=${{ env.CORE_COMMIT }}
             ONLINE_REPO=${{ env.ONLINE_REPO }}
             ONLINE_REF=${{ env.ONLINE_REF }}
             ONLINE_COMMIT=${{ env.ONLINE_COMMIT }}
-            POCO_URL=${{ env.POCO_URL }}
-            POCO_SHA256=${{ env.POCO_SHA256 }}
+            NODE_URL=${{ env.NODE_URL }}
+            NODE_SHA256=${{ env.NODE_SHA256 }}
             BUILD_ID=${{ env.BUILD_ID }}
             UBUNTU_SNAPSHOT=${{ env.UBUNTU_SNAPSHOT }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=MPL-2.0
-            io.shiki.collabora.core=${{ env.CORE_REF }}@${{ env.CORE_COMMIT }}
             io.shiki.collabora.online=${{ env.ONLINE_REF }}@${{ env.ONLINE_COMMIT }}
             io.shiki.collabora.sources=${{ env.ONLINE_REF }}-${{ env.BUILD_ID }}-sources
 

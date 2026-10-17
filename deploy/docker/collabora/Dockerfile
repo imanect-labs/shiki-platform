@@ -14,249 +14,139 @@
 # .github/workflows/office-image.yml（manifest 変更/タグ/手動トリガ）でビルドして
 # レジストリへ push し、compose はそのイメージを参照する。
 
-# ---- Stage 1: Collabora Office core（LOKit）のビルド ----
-# core は LibreOffice の gerrit が正（GitHub の CollaboraOnline org に core は無い）。
+# ---- Stage 1: engine（Collabora Office core / LOKit）のビルド ----
+#
+# **26.04 から core と online は 1 つのリポジトリ（monorepo）になった。** core は online の
+# `engine/` にあり、online の一部（gbuild で建てる C++）は engine の**ビルドツリー**を使う
+# （上流の README-gbuild.md）。インストール済みの /opt/collaboraoffice だけでは建たないので、
+# engine と online を同じステージ系列で建てる（online-build は FROM core-build）。
+# Poco も engine の外部ライブラリとして静的に建つようになり、別ステージは要らない。
+#
+# 取得元は online.mirror（gerrit.collaboraoffice.com の公開ミラー）。online.git には
+# 26.04 のタグが無く、core の gerrit（git.libreoffice.org）にも cp-26.04 のタグは無い。
 FROM ubuntu:24.04 AS core-build
-ARG CORE_REPO=https://git.libreoffice.org/core
-ARG CORE_REF=cp-25.04.9-4
-ARG CORE_COMMIT=bbf180856f1919e69a04fdf6175ff4f11f52e1db
+ARG ONLINE_REPO=https://github.com/CollaboraOnline/online.mirror.git
+ARG ONLINE_REF=cp-26.04.5-1
+ARG ONLINE_COMMIT=22ce52fb5173821dd90782638afcbfb6b6d7cb40
+ARG NODE_URL=https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.xz
+ARG NODE_SHA256=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
 ENV DEBIAN_FRONTEND=noninteractive
-# **fakeroot / unzip / gettext を足している。** いずれも configure の検査に
-# 必要で、欠けると数秒で落ちる（2026-09 以降この workflow が全失敗していた）。
-# 実測で 1 つずつ潰した順:
-#   configure: error: --with-package-format='deb rpm' requires fakeroot.
-#   configure: error: unzip is required
-#   configure: error: msgfmt not found. Install GNU gettext, ...
+# engine と online の両方のビルド依存（online は同じツリーで後から建てる）。
+# **fakeroot / unzip / gettext**: engine の configure が要求する（欠けると数秒で落ちる・25.04 で実測）。
+# **python3-lxml / python3-polib**: online の configure が import して確かめる。
+# **cpio / file / fontconfig / fonts-dejavu-core**: online の make の中で coolwsd-systemplate-setup が
+#   走り（jail の雛形）、欠けると `cpio: command not found` / `cannot stat '/usr//share/fonts'` で落ちる。
+# **rsync**: browser/Makefile.am の install-data-hook が使う。
+# **libpoco-dev は入れない**（Poco は engine が建てる）。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential autoconf automake libtool pkg-config python3 python3-dev \
+    python3-polib python3-lxml \
     zip unzip ccache flex bison gperf nasm libx11-dev libxml2-dev libxml2-utils libxslt1-dev \
     libcups2-dev libfontconfig1-dev libxrandr-dev libgl-dev libglu1-mesa-dev \
     libkrb5-dev libnss3-dev libpam0g-dev libssl-dev libcairo2-dev \
-    libavahi-client-dev libdbus-glib-1-dev ca-certificates curl fakeroot gettext \
+    libavahi-client-dev libdbus-glib-1-dev ca-certificates curl fakeroot gettext xz-utils \
+    libcap-dev libzstd-dev libpng-dev zlib1g-dev libcppunit-dev libpcre2-dev \
+    cpio file fontconfig fonts-dejavu-core rsync \
     && rm -rf /var/lib/apt/lists/*
+# **Node は 20 以上が要る**（online の configure: "This node version is old, upgrade to >= 20.0.0"）。
+# Ubuntu 24.04 の nodejs は 18 なので、公式の tarball を sha256 で固定して入れる。
+RUN curl -fsSL -o /tmp/node.tar.xz "$NODE_URL" \
+    && echo "$NODE_SHA256  /tmp/node.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+    && rm /tmp/node.tar.xz \
+    && node --version
 # **core は root でビルドできない。** LibreOffice の Makefile に
 #   check-if-root: Building LibreOffice as root is a very bad idea, use a regular user.
-# という明示の拒否があり、make が即 Error 1 になる（実測）。
-# 書き込む先（/src と /opt/collaboraoffice）を先に用意して所有者を移し、
-# 以降を非 root で走らせる。
+# という明示の拒否があり、make が即 Error 1 になる（実測）。online も同じユーザーで建てる。
 RUN useradd -m build \
-    && mkdir -p /src /opt/collaboraoffice \
-    && chown -R build:build /src /opt/collaboraoffice
+    && mkdir -p /src /opt/collaboraoffice /inst \
+    && chown -R build:build /src /opt/collaboraoffice /inst
 USER build
-WORKDIR /src
-RUN git clone --depth 1 --branch "$CORE_REF" "$CORE_REPO" core \
-    && cd core \
-    && test "$(git rev-parse HEAD)" = "$CORE_COMMIT" \
-    && git rev-parse HEAD > /src/CORE_COMMIT && cat /src/CORE_COMMIT
-# LOKit 向け最小構成（GUI 依存を切る）。--with-distro が依存/機能セットを固定する。
-#
-# **configure と make をレイヤで分ける。** 一体にすると、数時間走った末に
-# 落ちたのか configure の数秒で落ちたのかがログの末尾からは読めない
-# （実際、fakeroot 欠けで 5 分で落ちていたのを「タイムアウトだろう」と
-#  誤って見積もっていた）。分けておけばどちらかが一目で分かる。
-#
-# **--with-package-format を上書きする。** CPLinux-LOKit の既定は 'deb rpm' だが、
-# ここでは `make cmd cmd='ooinstall ...'` しか使わず deb/rpm は作らない。
-# 既定のままだと rpm コマンドまで要求され（configure: error: not found）、
-# 使わない経路のためにビルド依存が増え続ける。archive なら tar/gzip で足りる。
-#
-# **Shiki Office としてブランドする（#549）。** CPLinux-LOKit は vendor=Collabora と
-# Collabora のロゴ（brand_cp）を設定するが、Collabora の商標ポリシーは自前ビルドの配布で
-# Collabora の名称・ロゴを外すことを求める。distro 設定より後ろの引数が勝つので
-# （--with-package-format と同じ）、ここで上書きする。
-#   --with-vendor: versionrc の Vendor と About の「supplied by」に出る
-#   --with-branding: 7 ファイルすべてを用意する。欠けた分は既定（LibreOffice のロゴ）で埋まる
-#
-# **--with-product-name は渡さない。** Collabora 版の core はインストーラの設定
-# （instsetoo_native/util/openoffice.lst.in）に製品の節 `CollaboraOffice` と
-# PRODUCTNAME "Collabora Office" を直書きしている。製品名を変えると ooinstall が
-# `-p ShikiOffice`（空白を除いた製品名）を渡し、その節が無いので 3 時間の make の後に落ちる。
-# 変えるにはソースの改変が要るので、エンジンの内部名は "Collabora Office" のまま残す（human 判断）。
-# 利用者に見える製品名は online 側（--with-app-name と coolwsd.xml）で Shiki Office にしており、
-# ダイアログのタイトル中の "Collabora Office" も online が brandProductName に置き換える
-# （browser/src/control/Control.LokDialog.js）。残るのは About の「powered by」に並ぶ
-# エンジンの版の表記（出所の事実の記載）だけ。
-COPY --chown=build:build branding/core /src/branding
-RUN cd core && ./autogen.sh --with-distro=CPLinux-LOKit --disable-symbols \
-    --with-package-format=archive \
-    --with-vendor="Imanect Labs" --with-branding=/src/branding
-RUN cd core && make -j"$(nproc)"
-#
-# **ooinstall は make とは別レイヤにする。** ここは約 3 時間の make が終わった
-# 後にしか到達しないので、同じレイヤだと 1 回失敗するたびに 3 時間やり直しになる
-# （実際に 2 回やり直した）。分けておけば make の結果がキャッシュに残る。
-#
-# **WITH_LANG_LIST を明示的に渡す。** ooinstall は $ENV{WITH_LANG_LIST} を
-# `-l` の値に使うが、この変数は config_host_lang.mk に export 無しで定義され、
-# Makefile.in は config_host.mk しか include しない。つまり環境には出てこない。
-# 空のまま渡すと `-l -p CollaboraOffice` となって `-l` が `-p` を食い、
-#   ERROR: unknown parameter: CollaboraOffice
-# で落ちる（upstream の定義を追って切り分けた）。
-#
-# **ooinstall はパスつきで呼ぶ。** `bin/` は PATH に無いので裸の `ooinstall` は
-#   /bin/sh: 1: ooinstall: not found   make: *** [Makefile:261: cmd] Error 127
-# になる。**2 時間 48 分の make が完走した直後にこれで落ちた。**
-#
-# **LOKit のヘッダは ooinstall が入れない**（-simple インストールは実行時の
-# program/ と share/ だけ）。coolwsd 側の configure は
-#   AC_CHECK_HEADERS([LibreOfficeKit/LibreOfficeKit.h], ...,
-#     [AC_MSG_ERROR([header LibreOfficeKit/LibreOfficeKit.h not found ...])])
-# で止まるので、ソースツリーから持ち出して次のステージへ渡す。
-RUN cd core \
-    && LANGS="$(sed -n 's/^WITH_LANG_LIST=//p' config_host_lang.mk)" \
-    && if [ -z "$LANGS" ]; then echo "WITH_LANG_LIST が取れない" >&2; exit 1; fi \
-    && echo "languages: $LANGS" \
-    && WITH_LANG_LIST="$LANGS" make cmd cmd='./solenv/bin/ooinstall /opt/collaboraoffice' \
-    && cp -a include /opt/collaboraoffice/include \
-    && test -f /opt/collaboraoffice/program/versionrc \
-    && grep -q '^Vendor=Imanect Labs' /opt/collaboraoffice/program/versionrc \
-    && rm -f /opt/collaboraoffice/EULA.odt /opt/collaboraoffice/EULA_en-US.rtf \
-    && test -f /opt/collaboraoffice/LICENSE.html \
-    && (cd external/tarballs && find . -maxdepth 1 -type f ! -name '.*' -printf '%f\n' \
-        | sort | xargs -r sha256sum) > /src/CORE_EXTERNAL_TARBALLS.sha256 \
-    && test -s /src/CORE_EXTERNAL_TARBALLS.sha256
-# 上の RUN の後半（#549）:
-# - **EULA は Collabora Office の有償サブスクリプション契約書**で、MPL のライセンス表示
-#   （LICENSE / NOTICE。§3.4 で消してはならないもの）ではない。自前ビルドの配布物に
-#   残すと契約関係があるように読めるので除く。後のステージで消すと下のレイヤに残るため、ここで消す。
-# - ベンダー（versionrc の Vendor）が入ったことを確かめる。上流の既定は "Collabora"（実測）。
-# - core が make 中に取得した外部ライブラリの tarball を sha256 付きで記録する。
-#   ランタイムの告知（NOTICE）と、ソース保全イメージ（sources ステージ）の両方が使う。
-#
-# **ソース保全用に core のソース一式を固める（#549）。** submodule（translations /
-# dictionaries / helpcontent2）は make の中で取得されるので、make の後に作る。
-# git の追跡対象だけを入れ、workdir/ や instdir/ の成果物は混ぜない。
-# --transform の flags=r: 既定（rsh）だとシンボリックリンクのリンク先にも接頭辞が付き、
-# 展開すると core-<ref>/core-<ref>/... を指す壊れたリンクになる（.vsconfig 等）。
-RUN mkdir -p /src/sources \
-    && cd core \
-    && git ls-files --recurse-submodules -z \
-       | tar --null -T - --transform "flags=r;s,^,core-$CORE_REF/," -czf /src/sources/core-$CORE_REF.tar.gz \
-    && tar tzf /src/sources/core-$CORE_REF.tar.gz "core-$CORE_REF/configure.ac" >/dev/null
-
-# ---- Stage 1-b: Poco（coolwsd の依存）のビルド ----
-#
-# **distro から取れない。** coolwsd の configure は
-#   #if POCO_VERSION < 0x010C0000 → "The POCO version is too old, 1.12.0 or newer required"
-# を要求するが、Ubuntu 24.04 の libpoco-dev は **1.11.0**（実測）。
-# 1.13.0 は configure が「known buggy poco 1.13.0」と判定する版なので避ける。
-#
-# バージョンは office-manifest.env が正。tarball なので sha256 で直接固定する。
-FROM ubuntu:24.04 AS poco-build
-ARG POCO_URL=https://github.com/pocoproject/poco/archive/refs/tags/poco-1.14.2-release.tar.gz
-ARG POCO_SHA256=47394ea7ddb7b0a40e1a5be896f8f5dc77cfdc4f561d2e7131ecf582df5a0c3a
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake ca-certificates curl libssl-dev zlib1g-dev libpcre2-dev \
-    && rm -rf /var/lib/apt/lists/*
-WORKDIR /src
-RUN curl -fsSL -o poco.tar.gz "$POCO_URL" \
-    && echo "$POCO_SHA256  poco.tar.gz" | sha256sum -c - \
-    && tar xf poco.tar.gz && mv poco-* poco \
-    && printf '%s\n%s\n' "$POCO_URL" "$POCO_SHA256" > /src/POCO_SOURCE
-# coolwsd が使うのは Foundation / Net / NetSSL / Crypto / Util / XML / JSON。
-# それ以外（Data・MongoDB・Redis・Zip 等）は切って時間とサイズを節約する。
-RUN cmake -S poco -B build \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_INSTALL_PREFIX=/opt/poco \
-      -DBUILD_SHARED_LIBS=ON \
-      -DENABLE_NETSSL=ON -DENABLE_CRYPTO=ON -DENABLE_UTIL=ON \
-      -DENABLE_XML=ON -DENABLE_JSON=ON \
-      -DENABLE_DATA=OFF -DENABLE_DATA_SQLITE=OFF -DENABLE_MONGODB=OFF \
-      -DENABLE_REDIS=OFF -DENABLE_ZIP=OFF -DENABLE_PAGECOMPILER=OFF \
-      -DENABLE_PAGECOMPILER_FILE2PAGE=OFF -DENABLE_ENCODINGS=OFF \
-      -DENABLE_TESTS=OFF -DENABLE_SAMPLES=OFF \
-    && cmake --build build -j"$(nproc)" \
-    && cmake --install build \
-    && test -f /opt/poco/include/Poco/Version.h
-
-# ---- Stage 2: coolwsd（Collabora Online 本体）のビルド ----
-FROM ubuntu:24.04 AS online-build
-ARG ONLINE_REPO=https://github.com/CollaboraOnline/online.git
-ARG ONLINE_REF=cp-25.04.9-5
-ARG ONLINE_COMMIT=53f91c25641febb11d77702380530775a923890e
-ENV DEBIAN_FRONTEND=noninteractive
-# **zlib と cppunit も要る。** coolwsd の configure.ac は Linux では
-#   PKG_CHECK_MODULES([ZLIB], [zlib])
-#   PKG_CHECK_MODULES([CPPUNIT], [cppunit])
-# を無条件で通すので、欠けると configure が止まる（upstream の configure.ac で確認）。
-# **libpoco-dev は入れない**（1.11.0 で古い。poco-build ステージの 1.14.2 を使う）。
-#
-# python3-lxml / python3-polib: configure が `import` して確かめる。
-# cpio / file / fontconfig とフォント: **make の中で coolwsd-systemplate-setup が
-# 走る**（jail の雛形を作る）。欠けると
-#   ./coolwsd-systemplate-setup: line 88: cpio: command not found
-#   cp: cannot stat '/usr//share/fonts': No such file or directory
-#   make[2]: *** [Makefile:4370: all-local] Error 127
-# で落ちる。同スクリプトが使う外部コマンドは
-#   cp cpio dirname file find grep ldd ln mkdir rm sed sort touch xargs
-# で、このうち base イメージに無いのが cpio と file（実測で切り分け）。
-#
-# rsync: browser/Makefile.am の install-data-hook が使う。
-#   /bin/bash: line 1: rsync: command not found
-#   make[5]: *** [Makefile:1784: install-data-hook] Error 127
-# Makefile.am を走査して外部コマンドを突き合わせ、足りないのはこれだけと確認した。
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git build-essential autoconf automake libtool pkg-config \
-    python3 python3-polib python3-lxml \
-    libcap-dev libzstd-dev libpam0g-dev libssl-dev libpng-dev \
-    zlib1g-dev libcppunit-dev libpcre2-dev \
-    cpio file fontconfig fonts-dejavu-core rsync \
-    nodejs npm ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/*
-# **ローダにも登録する。** make の途中で coolforkit-ns を実行するので、
-# ヘッダとリンク時だけでなく実行時にも Poco が見えている必要がある
-#   ./coolforkit-ns: error while loading shared libraries: libPocoXML.so.112
-COPY --from=poco-build /opt/poco /opt/poco
-RUN echo /opt/poco/lib > /etc/ld.so.conf.d/poco.conf && ldconfig \
-    && ldconfig -p | grep -q libPocoXML
-COPY --from=core-build /opt/collaboraoffice /opt/collaboraoffice
 WORKDIR /src
 RUN git clone --depth 1 --branch "$ONLINE_REF" "$ONLINE_REPO" online \
     && cd online \
     && test "$(git rev-parse HEAD)" = "$ONLINE_COMMIT" \
-    && git rev-parse HEAD | tee /ONLINE_COMMIT \
-    && mkdir -p /src/sources \
-    && git archive --format=tar.gz --prefix="online-$ONLINE_REF/" HEAD \
-       > /src/sources/online-$ONLINE_REF.tar.gz
-# setcap は configure 時ではなくランタイムステージで明示的に付与する（DESTDIR install と
-# レイヤ分離のため）。
-# configure と make を分ける（core 側と同じ理由）。
+    && git rev-parse HEAD > /src/ONLINE_COMMIT && cat /src/ONLINE_COMMIT \
+    && test -x engine/autogen.sh
+# LOKit 向けの構成（GUI 依存を切る）。--with-distro が依存/機能セットを固定する
+# （QuickJS の JS UNO＝executescript も CPLinuxCommon の --enable-quickjs で入る）。
 #
+# **configure と make をレイヤで分ける。** 一体にすると、数時間走った末に落ちたのか
+# configure の数秒で落ちたのかがログの末尾からは読めない。
+#
+# **--disable-epm --without-package-format**: CPLinux-LOKit の既定は deb / rpm を作るが、
+# ここでは instdir をそのまま使う（上流の docker/from-source/build.sh と同じ）。
+#
+# **Shiki Office としてブランドする（#549）。** distro 設定より後ろの引数が勝つ。
+#   --with-vendor: versionrc の Vendor と About の「supplied by」に出る
+#   --with-branding: 7 ファイルすべてを用意する。欠けた分は既定（LibreOffice のロゴ）で埋まる
+# **--with-product-name は渡さない**（エンジンの内部名は "Collabora Office" のまま・human 判断・README）。
+COPY --chown=build:build branding/core /src/branding
+RUN cd online/engine && ./autogen.sh --with-distro=CPLinux-LOKit --disable-symbols \
+    --disable-epm --without-package-format \
+    --with-vendor="Imanect Labs" --with-branding=/src/branding
+RUN cd online/engine && make -j"$(nproc)"
+# instdir をランタイムの置き場所へ写す（上流の build.sh と同じ）。make とは別レイヤにする
+# （ここで落ちても make の結果がキャッシュに残る）。
+# - **EULA は Collabora Office の有償サブスクリプション契約書**で、MPL のライセンス表示
+#   （LICENSE / NOTICE。§3.4 で消してはならないもの）ではない。自前ビルドの配布物に残さない（#549）。
+# - ベンダー（versionrc の Vendor）が入ったことを確かめる。上流の既定は "Collabora"。
+# - engine が make 中に取得した外部ライブラリ（Poco を含む）の tarball を sha256 付きで記録する。
+#   ランタイムの告知（NOTICE）と、ソース保全イメージ（sources ステージ）の両方が使う。
+# - Poco は engine の中で静的に建つ。告知に添える BSL-1.0 の本文を展開済みのツリーから持ち出す。
+RUN cd online/engine \
+    && cp -a instdir/. /opt/collaboraoffice/ \
+    && test -f /opt/collaboraoffice/program/versionrc \
+    && grep -q '^Vendor=Imanect Labs' /opt/collaboraoffice/program/versionrc \
+    && rm -f /opt/collaboraoffice/EULA.odt /opt/collaboraoffice/EULA_en-US.rtf \
+    && test -f /opt/collaboraoffice/LICENSE.html \
+    && test -f include/LibreOfficeKit/LibreOfficeKit.h -o -d include/COKit \
+    && (cd external/tarballs && find . -maxdepth 1 -type f ! -name '.*' -printf '%f\n' \
+        | sort | xargs -r sha256sum) > /src/CORE_EXTERNAL_TARBALLS.sha256 \
+    && test -s /src/CORE_EXTERNAL_TARBALLS.sha256 \
+    && grep -q 'poco' /src/CORE_EXTERNAL_TARBALLS.sha256 \
+    && cp workdir/UnpackedTarball/poco/LICENSE /src/poco-LICENSE
+# **ソース保全用に monorepo のソース一式を固める（#549）。** git の追跡対象だけを入れ、
+# workdir/ や instdir/ の成果物は混ぜない。submodule があれば make の後に揃っているので込みで入れる。
+# --transform の flags=r: 既定（rsh）だとシンボリックリンクのリンク先にも接頭辞が付き、
+# 展開すると壊れたリンクになる。
+RUN mkdir -p /src/sources \
+    && cd online \
+    && git ls-files --recurse-submodules -z \
+       | tar --null -T - --transform "flags=r;s,^,online-$ONLINE_REF/," -czf /src/sources/online-$ONLINE_REF.tar.gz \
+    && tar tzf /src/sources/online-$ONLINE_REF.tar.gz "online-$ONLINE_REF/engine/configure.ac" >/dev/null
+
+# ---- Stage 2: coolwsd（Collabora Online 本体）のビルド ----
+# engine のビルドツリーの上で建てる（上の説明）。
+FROM core-build AS online-build
 # ブランド（#549）:
 #   --with-app-name: 既定は "Collabora Online Development Edition"。WOPI の
 #     /hosting/capabilities の productName 等に出る
-#   --without-help-url: 既定は help.collaboraoffice.com（coolwsd.xml の help_url の既定値もこれ）。
-#     空にすると「オンラインヘルプ」は外へ飛ばず、同梱のヘルプ（製品名は Shiki Office に置き換わる）を開く
 #   --with-vendor: About の「Copyright © <年>, <vendor>.」に出る（Control.AboutDialog.ts）。
 #     **著作権表示なので Imanect Labs にしない**（無改変の上流コードの著作権者は上流の貢献者）。
-#     未指定だとビルドしたユーザー名（root）が入る。
-#     上流の cool.html.m4 は `data-vendor = VENDOR` と引用符なしで埋め込むので、空白を含む値は
-#     最初の単語で切れる（About に「Copyright © 2026, the.」と出た）。branding.js で正す（下の検査で一致を確かめる）。
+#     上流の cool.html.m4 は引用符なしで埋め込むので空白で切れる。branding.js で正す（runtime で検査）。
+#   オンラインヘルプ: 26.04 は既定で無効（--with-help-url を渡したときだけ外へ飛ぶ）。
+# --with-lokit-path: engine のヘッダ（ツリーの include/）。--with-lo-path: 実行時の engine の場所。
+# --disable-tests: C++ の単体テストを建てない（上流の build.sh と同じ）。
 RUN cd online && ./autogen.sh \
     && ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
-         --with-lokit-path=/opt/collaboraoffice/include \
+         --with-lokit-path=/src/online/engine/include \
          --with-lo-path=/opt/collaboraoffice \
-         --with-poco-includes=/opt/poco/include \
-         --with-poco-libs=/opt/poco/lib \
          --with-app-name="Shiki Office" \
          --with-vendor="the Collabora Online and LibreOffice contributors" \
-         --without-help-url \
-         --disable-setcap --enable-silent-rules
+         --disable-tests --enable-silent-rules
 RUN cd online \
     && make -j"$(nproc)" \
-    && make install DESTDIR=/inst
+    && make install DESTDIR=/inst \
+    && test -x /inst/usr/bin/coolwsd
 
 # ---- Stage 3: ランタイム ----
 # **名前付きステージなので、ビルドでは `--target runtime` を指定する。** 後ろに
 # ソース保全用のステージ（sources）が続くため、無指定だとそちらが建つ。
 FROM ubuntu:24.04 AS runtime
-ARG CORE_REPO=https://git.libreoffice.org/core
-ARG CORE_REF=cp-25.04.9-4
-ARG CORE_COMMIT=bbf180856f1919e69a04fdf6175ff4f11f52e1db
-ARG ONLINE_REPO=https://github.com/CollaboraOnline/online.git
-ARG ONLINE_REF=cp-25.04.9-5
-ARG ONLINE_COMMIT=53f91c25641febb11d77702380530775a923890e
+ARG ONLINE_REPO=https://github.com/CollaboraOnline/online.mirror.git
+ARG ONLINE_REF=cp-26.04.5-1
+ARG ONLINE_COMMIT=22ce52fb5173821dd90782638afcbfb6b6d7cb40
 ENV DEBIAN_FRONTEND=noninteractive
 # ランタイム依存は dev パッケージで引き込む（noble の t64 リネーム等、実ライブラリの
 # パッケージ名差異に依存しないため。ヘッダ分のサイズ増は堅牢性とのトレード）。
@@ -319,38 +209,29 @@ RUN mkdir -p /usr/share/doc/shiki-office \
 RUN dpkg-query -W -f='${source:Package} ${source:Version}\n' | sort -u \
        > /usr/share/doc/shiki-office/ubuntu-source-packages.txt \
     && test -s /usr/share/doc/shiki-office/ubuntu-source-packages.txt
-# **ビルドに使ったのと同じ Poco を載せる。** distro の 1.11.0 を入れると
-# coolwsd がリンクしたシンボルと食い違う。
-COPY --from=poco-build /opt/poco/lib /opt/poco/lib
-RUN echo /opt/poco/lib > /etc/ld.so.conf.d/poco.conf && ldconfig
+# Poco は engine の中で静的にリンクされている（26.04 から・別に載せる共有ライブラリは無い）。
 COPY --from=core-build /opt/collaboraoffice /opt/collaboraoffice
 COPY --from=online-build /inst/ /
-COPY --from=core-build /src/CORE_COMMIT /etc/collabora/CORE_COMMIT
-COPY --from=online-build /ONLINE_COMMIT /etc/collabora/ONLINE_COMMIT
+COPY --from=core-build /src/ONLINE_COMMIT /etc/collabora/ONLINE_COMMIT
 COPY --from=core-build /src/CORE_EXTERNAL_TARBALLS.sha256 /usr/share/doc/shiki-office/core-external-tarballs.sha256
 # **第三者ソフトウェアの告知（#549・MPL-2.0 §3.2(a)）。** 受け取った人がソースの入手先を
 # 分かるようにする。コミット SHA だけでは足りないので、リポジトリ・タグ・SHA を並べる。
-COPY --from=poco-build /src/POCO_SOURCE /usr/share/doc/shiki-office/POCO_SOURCE
-COPY --from=poco-build /src/poco/LICENSE /usr/share/doc/shiki-office/poco-LICENSE
+COPY --from=core-build /src/poco-LICENSE /usr/share/doc/shiki-office/poco-LICENSE
 COPY NOTICE.in /usr/share/doc/shiki-office/NOTICE.in
 # BUILD_ID: office-image.yml がビルドごとに付ける不変タグの一部。NOTICE はこのビルドに
 # 対応する -sources イメージ（<ONLINE_REF>-<BUILD_ID>-sources）を案内する。
 # ここで初めて宣言するのは、毎回変わる値でキャッシュを外すのをこれより後ろに限るため。
 ARG BUILD_ID=local
 RUN cd /usr/share/doc/shiki-office \
-    && POCO_URL="$(sed -n 1p POCO_SOURCE)" && POCO_SHA256="$(sed -n 2p POCO_SOURCE)" && rm POCO_SOURCE \
     && for d in libpcre2-8-0 zlib1g libexpat1 libutf8proc3; do \
          test -s "/usr/share/doc/$d/copyright" || { echo "/usr/share/doc/$d/copyright が無い"; exit 1; }; \
        done \
-    && sed -e "s|@CORE_REPO@|$CORE_REPO|g" -e "s|@CORE_REF@|$CORE_REF|g" \
-           -e "s|@CORE_COMMIT@|$CORE_COMMIT|g" -e "s|@ONLINE_REPO@|$ONLINE_REPO|g" \
+    && sed -e "s|@ONLINE_REPO@|$ONLINE_REPO|g" \
            -e "s|@ONLINE_REF@|$ONLINE_REF|g" -e "s|@ONLINE_COMMIT@|$ONLINE_COMMIT|g" \
-           -e "s|@POCO_URL@|$POCO_URL|g" -e "s|@POCO_SHA256@|$POCO_SHA256|g" \
            -e "s|@BUILD_ID@|$BUILD_ID|g" \
            NOTICE.in > NOTICE \
     && rm NOTICE.in \
     && if grep -n '@[A-Z_]*@' NOTICE; then echo "NOTICE に未置換のプレースホルダが残っている"; exit 1; fi \
-    && test "$(cat /etc/collabora/CORE_COMMIT)" = "$CORE_COMMIT" \
     && test "$(cat /etc/collabora/ONLINE_COMMIT)" = "$ONLINE_COMMIT"
 # **ブランドの上書き（#549）。** ソースは無改変のまま、未ブランドのビルドが読み込む
 # branding.css / branding.js を置く（中身の説明は各ファイルの冒頭）。
@@ -382,6 +263,14 @@ RUN coolconfig set user_interface.brandProductName "Shiki Office" \
     && grep -q '>none</logoURL>' /etc/coolwsd/coolwsd.xml \
     && if grep -n 'help.collaboraoffice.com' /etc/coolwsd/coolwsd.xml; then \
          echo "help_url が Collabora のヘルプを指している（--without-help-url が効いていない）"; exit 1; fi
+# **日本語フォントの別名（#725）。** 日本語の docx が指定する 游ゴシック・MS 明朝 などを、同梱の
+# Noto CJK の日本語版へ寄せる（中身の説明はファイルの冒頭）。systemplate が /etc/fonts を写すので、
+# その前に置く。ゴシックと明朝が取り違わないことをここで確かめる。
+COPY fonts/65-shiki-ja-aliases.conf /etc/fonts/conf.d/65-shiki-ja-aliases.conf
+RUN fc-cache -f >/dev/null \
+    && fc-match -f '%{family[0]}\n' '游ゴシック' | grep -qx 'Noto Sans CJK JP' \
+    && fc-match -f '%{family[0]}\n' 'MS 明朝' | grep -qx 'Noto Serif CJK JP' \
+    || { echo "日本語フォントの別名が効いていない"; exit 1; }
 # 非 root 実行（cool ユーザー）＋ systemplate/jail の初期化＋forkit へのファイル capability 付与
 # （jail の chroot に必要。Docker 既定 cap 集合（CHOWN/FOWNER/MKNOD/SYS_CHROOT）内で動く。
 #  compose 側で no-new-privileges を付けないこと — file caps の獲得が塞がれ起動不能になる）。
@@ -453,8 +342,6 @@ RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.s
 
 FROM scratch AS sources
 COPY --from=core-build /src/sources/ /
-COPY --from=core-build /src/core/external/tarballs/ /core-external/
-COPY --from=online-build /src/sources/ /
-COPY --from=poco-build /src/poco.tar.gz /poco.tar.gz
+COPY --from=core-build /src/online/engine/external/tarballs/ /core-external/
 COPY --from=ubuntu-sources /out/ubuntu/ /ubuntu/
 COPY --from=runtime /usr/share/doc/shiki-office/ /doc/

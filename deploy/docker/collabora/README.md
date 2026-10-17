@@ -29,7 +29,7 @@ Collabora の[商標ポリシー](https://www.collaboraonline.com/trademark-poli
 | core のベンダー・ロゴ | `--with-vendor` / `--with-branding`（このディレクトリの `branding/core/` を `/src/branding` へコピーして渡す。7 ファイル。欠けると LibreOffice のロゴで埋まる） |
 | online の製品名（WOPI の capabilities 等） | `--with-app-name` |
 | About の著作権表示（`Copyright © <年>, <vendor>.`） | online の `--with-vendor="the Collabora Online and LibreOffice contributors"`。**著作権表示なので自社名にしない**（無改変の上流コードの著作権者は上流の貢献者。未指定だとビルドユーザー名 root が出る）。上流のテンプレートが値を引用符なしで HTML に埋め込み、空白で切れるため、`branding/online/branding.js` で同じ値を入れ直す |
-| Collabora のヘルプへのリンク | `--without-help-url`（「オンラインヘルプ」は同梱のヘルプを開く） |
+| Collabora のヘルプへのリンク | 26.04 の online は既定でオンラインヘルプが無効（`--with-help-url` を渡したときだけ外へ飛ぶ）。渡さない |
 | UI の製品名・リンク・ロゴ | `coolwsd.xml` の `user_interface.brandProductName` / `brandProductURL`（`https://www.imanect.co.jp/`）/ `logoURL=none` をイメージに焼き込む |
 | Collabora のフォーラム・Issue へ飛ぶヘルプ項目 | `branding/online/branding.css`（coolwsd が未ブランドのビルドでも読み込む） |
 | Collabora Office の有償 EULA（`EULA.odt` / `EULA_en-US.rtf`） | core-build で削除（MPL のライセンス表示ではない。LICENSE / NOTICE は残す） |
@@ -40,7 +40,7 @@ Collabora の[商標ポリシー](https://www.collaboraonline.com/trademark-poli
 **core（文書エンジン）の内部の製品名は "Collabora Office" のまま**（human 判断）。Collabora 版の core は
 インストーラの設定（`openoffice.lst.in`）に製品名を直書きしており、`--with-product-name` で変えると
 ooinstall が落ちる。変えるにはソースの改変が要る。利用者の目に入るのは About の
-「This version of Shiki Office is powered by」に並ぶエンジンの版（"Collabora Office 25.04"）と
+「This version of Shiki Office is powered by」に並ぶエンジンの版（"Collabora Office 26.04"）と
 上流のコミットへのリンクだけで、これは出所の事実の記載にあたる。ダイアログのタイトル中の名前は
 online が Shiki Office に置き換える。
 
@@ -53,7 +53,6 @@ online が Shiki Office に置き換える。
 
 - MPLv2 はファイル単位のコピーレフト。**無改変ビルドの配布**では「対応ソースの入手先の明示」
   （§3.2(a)）で足りる。ソース中のライセンス表示は消さない（§3.4）。
-- core は `--enable-mpl-subset` でビルドしている（MPL より制約の強いライセンスの部品があると configure が止まる）。
 - 万一パッチを当てる場合は MPLv2 §3.2 に従い当該ファイルのソース提供が必要になる
   （その時点で fork-policy の対象に昇格させ、`vendor/` へ移す）。
 
@@ -67,7 +66,8 @@ online が Shiki Office に置き換える。
 | `poco-LICENSE` | Poco の BSL-1.0 本文 |
 | `ubuntu-snapshot.txt` | それらを入れたときの Ubuntu archive の時刻（`snapshot.ubuntu.com` でその時点の archive を引ける） |
 
-Poco は既定（`POCO_UNBUNDLED=OFF`）で PCRE2・zlib・Expat・utf8proc を自分のソースから取り込んでビルドする。
+26.04 から Poco は engine（core）の外部ライブラリとして建ち、静的にリンクされる（tarball は
+`core-external-tarballs.sha256` に載る）。Poco のソースは PCRE2・zlib・Expat・utf8proc を同梱している。
 それらの著作権表示とライセンス本文は、同じ上流の Ubuntu パッケージの `/usr/share/doc/<pkg>/copyright` を
 NOTICE から参照している（utf8proc のためにランタイムへ `libutf8proc3` を入れている）。
 
@@ -91,10 +91,8 @@ NOTICE から参照している（utf8proc のためにランタイムへ `libut
 `-sources` の中身は NOTICE の構成要素と 1 対 1:
 
 ```
-core-<CORE_REF>.tar.gz      core（submodule 込み・git の追跡対象のみ）
-core-external/              core が取得した外部ライブラリの tarball
-online-<ONLINE_REF>.tar.gz  online
-poco.tar.gz                 Poco（PCRE2 / zlib / Expat / utf8proc の同梱ソースを含む）
+online-<ONLINE_REF>.tar.gz  online と core（core は engine/。git の追跡対象のみ）
+core-external/              core が取得した外部ライブラリの tarball（Poco を含む）
 ubuntu/                     Ubuntu パッケージのソース（.dsc / orig / debian、イメージ内の版そのもの。
                             ランタイムが apt-get update した時刻のスナップショットから取る）
 doc/                        NOTICE ほか（上の表）
@@ -113,6 +111,8 @@ docker cp src:/ ./shiki-collabora-sources && docker rm src
 ## ピンと検証（PIT-33/PIT-43）
 
 `office-manifest.env` が正: リリースタグ＋**peel 済みコミット SHA** の二重ピン。
+26.04 から core は online のリポジトリの `engine/` に入った（monorepo）ので、ピンは online の 1 組だけ。
+Node（online の browser のビルドに 20 以上が要る）も tarball の sha256 でピンする。
 Dockerfile はクローン直後に `git rev-parse HEAD` が期待 SHA と一致しなければ失敗する
 （上流でのタグ付け替えを検知）。実行時ダウンロードは一切ない。
 
@@ -131,18 +131,17 @@ PR CI では走らない（`docker-image.yml` から除外）。`office-image.ym
 ```bash
 set -a; source deploy/docker/collabora/office-manifest.env; set +a
 docker build deploy/docker/collabora --target runtime \
-  --build-arg CORE_REPO --build-arg CORE_REF --build-arg CORE_COMMIT \
   --build-arg ONLINE_REPO --build-arg ONLINE_REF --build-arg ONLINE_COMMIT \
+  --build-arg NODE_URL --build-arg NODE_SHA256 \
   -t shiki-collabora:local
 ```
 
 ## バージョン追従
 
-1. 上流のリリースタグを確認（core/online は同一トレイン cp-XX.YY.x を選ぶ）:
+1. 上流のリリースタグを確認する（26.04 のタグは online.mirror にだけある）:
 
    ```bash
-   git ls-remote https://github.com/CollaboraOnline/online.git 'refs/tags/cp-*'
-   git ls-remote https://git.libreoffice.org/core 'refs/tags/cp-*'
+   git ls-remote https://github.com/CollaboraOnline/online.mirror.git 'refs/tags/cp-*'
    ```
 
 2. `office-manifest.env` の REF と COMMIT（`^{}` の peel 済み SHA）を更新して PR。
@@ -154,7 +153,7 @@ docker build deploy/docker/collabora --target runtime \
 （compose の `COLLABORA_IMAGE` で差し替え。CODE は Collabora のブランドのままだが dev では実害なし）:
 
 ```bash
-COLLABORA_IMAGE=collabora/code:26.04.2.1.1 docker compose --profile office up -d
+COLLABORA_IMAGE=collabora/code:26.04.5.1.1 docker compose --profile office up -d
 ```
 
 **配布物（オンプレ顧客へ渡すもの）は必ず自前ビルドイメージを使う**（ライセンス妥協なし）。
@@ -167,3 +166,8 @@ COLLABORA_IMAGE=collabora/code:26.04.2.1.1 docker compose --profile office up -d
   （compose の collabora サービスに security_opt を足さないこと）。
 - TLS はリバースプロキシ終端（コンテナ内は平文 9980・`ssl.enable=false`）。
 - WOPI ホスト許可（`storage.wopi.host`）と `server_name` は compose 側 command で注入する。
+- **日本語フォントの別名**（`fonts/65-shiki-ja-aliases.conf`）: 游ゴシック・MS ゴシック・メイリオ等を
+  Noto Sans CJK JP へ、游明朝・MS 明朝等を Noto Serif CJK JP へ寄せる。無いとゴシック指定が明朝で出たり、
+  中国語版の字形で描かれたりする。ビルド時（fc-match）と smoke（PDF に埋め込まれた書体）で確かめる。
+- **26.04 の `executescript`**（kit 内で完全な UNO API の JS が走る）は閲覧専用セッションからも通る（PIT-68）。
+  ブラウザからの経路は shiki の中継（`office::relay`）で落とすので、Collabora のポートを直接公開しない。
