@@ -14,14 +14,19 @@
 //! → `session`（authz・直列化・ops 適用の [`LiveEditor`]）。
 
 mod client;
+mod client_script;
 mod error;
 mod ops;
 mod protocol;
+mod script;
 mod session;
 
 pub use client::{CoolWsClient, CoolWsConfig, SaveAck, SearchOutcome};
 pub use error::LiveError;
 pub use protocol::{is_cell_ref, Loaded};
+pub use script::ScriptResult;
+pub use session::connect_with_retry;
 pub use session::{
     CellValue, LiveEditError, LiveEditReport, LiveEditor, LiveOp, LiveOpResult, LiveSaveResult,
+    SessionAccess, SessionInfo, SessionOutcome,
 };

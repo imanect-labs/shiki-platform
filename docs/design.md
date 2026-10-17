@@ -684,6 +684,16 @@ flowchart TB
     （python-docx/openpyxl/python-pptx）による構造編集・バッチ編集。非ロック時=新バージョン／
     WOPI ロック中=**提案バージョン**（`node_version.is_proposal`・current を進めない・RAG 索引除外・
     バージョン履歴 UI から editor が「採用」して通常の新バージョン化。PIT-44）。
+    ④ read / edit（レイアウト水準・`office.read` / `office.excel_edit` / `office.word_edit`・#725・2026-10）=
+    **Shiki Office Engine**。AI は②と同じ headless 参加者として接続し、Collabora 26.04 の `executescript`
+    で **kit 内の固定 JS インタプリタ**（`crates/office/engine/*.js`・リポジトリ管理）を走らせる。LLM が書くのは
+    検証済みの JSON 引数だけで、LLM のコードは kit に入れない（PIT-68）。Excel は値・数式・数値書式・罫線・
+    結合・列幅・条件付き書式・グラフ・印刷設定、Word は ID 付きのブロック一覧・書式つき HTML の差し込みと
+    置換・スタイル・ページ設定・ヘッダー/フッター・目次・表の直接編集・変更履歴まで扱う。一括は UndoManager の
+    1 文脈にまとめ、**途中で失敗したら丸ごと取り消す**（人は 1 回の「元に戻す」で取り消せる）。結果に最新の
+    読み取りを返し、読む→書く→確かめるが 1 本で閉じる。権限は毎呼び出し OpenFGA（読み取り=viewer・
+    編集=editor）、編集系は承認ゲート対象。docx/odt・xlsx/ods を開いたドキュメントアシスタントは④を使い、
+    pptx などは②③のまま。
     **ネイティブ 3 種（ノート/スライド/CSV）と Collabora の別なく、AI は共同編集参加者**。
   - **新規作成も Collabora へ一本化（#381・2026-07 確定）**: Word/Excel の**新規作成**は
     「**空テンプレ（`crates/office/templates/blank.docx` / `blank.xlsx`）を StorageService へ実体化

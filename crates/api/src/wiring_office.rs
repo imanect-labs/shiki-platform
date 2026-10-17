@@ -76,12 +76,19 @@ pub(crate) fn wire_office(
         wopi_base_url.clone(),
         office::live::CoolWsConfig::new(ws_base),
     ));
-    tracing::info!(%base_url, %wopi_base_url, "Office 統合を配線しました（Collabora・WOPI ホスト・AI ライブ編集）");
+    // Excel のレイアウト編集エンジン（#725）。Collabora の版（executescript の有無）は初回に確かめる。
+    let engine = Arc::new(office::engine::OfficeEngine::new(
+        Arc::clone(&live),
+        http.clone(),
+        base_url,
+    ));
+    tracing::info!(%base_url, %wopi_base_url, "Office 統合を配線しました（Collabora・WOPI ホスト・AI ライブ編集・エンジン）");
     Ok(Some(api::state::OfficeRuntime {
         suite,
         wopi,
         wopi_base_url,
         live,
+        engine,
     }))
 }
 

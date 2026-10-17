@@ -146,6 +146,19 @@ impl ChatWorker {
                 live.clone(),
             )));
         }
+        // Excel・Word のレイアウト編集（office.read / office.excel_edit / office.word_edit・#725）。kit 内の固定エンジンへ
+        // 検証済みの JSON だけを渡す（PIT-68）。authz は OfficeEngine が内部で持つ。
+        if let Some(engine) = &self.office_engine {
+            tools.push(Arc::new(crate::office_engine_tool::OfficeReadTool::new(
+                engine.clone(),
+            )));
+            tools.push(Arc::new(
+                crate::office_engine_tool::OfficeExcelEditTool::new(engine.clone()),
+            ));
+            tools.push(Arc::new(
+                crate::office_engine_tool::OfficeWordEditTool::new(engine.clone()),
+            ));
+        }
         // Office の**新規作成**（save_document / save_sheet・#381）。実体は「空テンプレを
         // 作成 → Collabora へ paste」なので Collabora が要る＝office_creator 配線時のみ提示する
         // （md 下書き画面は廃止。Collabora 無しで「Word を作る」導線だけ残す方が嘘になる）。

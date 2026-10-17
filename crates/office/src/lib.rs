@@ -16,6 +16,7 @@
 mod compose;
 mod create;
 mod edit;
+pub mod engine;
 mod error;
 pub mod live;
 pub mod relay;

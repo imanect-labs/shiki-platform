@@ -161,6 +161,7 @@ fn test_deps(gateway: LlmGateway) -> chat::WorkerDeps {
         office: None,
         office_live: None,
         office_creator: None,
+        office_engine: None,
     }
 }
 

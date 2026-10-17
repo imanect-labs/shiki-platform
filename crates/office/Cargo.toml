@@ -28,6 +28,8 @@ async-trait.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 # discovery XML のパース（urlsrc 抽出）。
 quick-xml.workspace = true
+# LLM が書いた HTML の解析・CSS のインライン化（Word への差し込み・#725）。
+dom_query.workspace = true
 
 # CoolWSD headless 参加者（live::CoolWsClient・issue #352）。
 tokio-tungstenite.workspace = true
