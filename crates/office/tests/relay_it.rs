@@ -34,15 +34,24 @@ type Seen = Arc<Mutex<Vec<String>>>;
 async fn upstream_ws(State(seen): State<Seen>, ws: WebSocketUpgrade) -> axum::response::Response {
     ws.on_upgrade(move |mut socket| async move {
         while let Some(Ok(msg)) = socket.next().await {
-            if let AxMessage::Text(t) = msg {
-                seen.lock().unwrap().push(format!("ws:{}", t.as_str()));
-                if socket
-                    .send(AxMessage::Text(format!("echo:{}", t.as_str()).into()))
-                    .await
-                    .is_err()
-                {
-                    break;
+            match msg {
+                // バイナリも記録する（上流へ届いていないことを直接確かめるため）。
+                AxMessage::Binary(b) => {
+                    seen.lock()
+                        .unwrap()
+                        .push(format!("ws-bin:{}", String::from_utf8_lossy(&b)));
                 }
+                AxMessage::Text(t) => {
+                    seen.lock().unwrap().push(format!("ws:{}", t.as_str()));
+                    if socket
+                        .send(AxMessage::Text(format!("echo:{}", t.as_str()).into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                _ => {}
             }
         }
     })
