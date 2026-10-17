@@ -517,3 +517,36 @@ async fn toc_does_not_duplicate_a_heading_with_the_same_title() {
     assert!(!text.contains("Heading 1「目次」"), "{text}");
     client.close().await;
 }
+
+/// 1 段落をスタイル無しの 1 段落で置き換えると元のスタイルを引き継ぎ、表の作り直しは結果で知らせる。
+#[tokio::test]
+async fn single_paragraph_replace_keeps_the_style_and_table_rebuilds_are_reported() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let (name, mut client) = fresh(&env).await;
+    apply_ok(
+        &mut client,
+        &[json!({"op": "replace", "target": "all", "html": "<h1 data-style=\"Title\">月次営業報告（9月）</h1><table><tr><th>地域</th><th>売上</th></tr><tr><td>首都圏</td><td>612</td></tr></table><p>以上</p>"})],
+    )
+    .await;
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    let title = id_of(&overview, "Title「月次営業報告（9月）」");
+    let table = id_of(&overview, "表 ");
+    let text = apply_ok(
+        &mut client,
+        &[
+            json!({"op": "replace", "target": title, "html": "<h1>月次営業報告（10月）</h1>"}),
+            json!({"op": "replace", "target": table, "html": "<table><tr><th>地域</th><th>売上</th></tr><tr><td>首都圏</td><td>628</td></tr></table>"}),
+        ],
+    )
+    .await;
+    assert!(text.contains("Title「月次営業報告（10月）」"), "{text}");
+    assert!(
+        text.contains("元の段落スタイル Title を引き継ぎました"),
+        "{text}"
+    );
+    assert!(text.contains("表を作り直しました"), "{text}");
+    client.close().await;
+}

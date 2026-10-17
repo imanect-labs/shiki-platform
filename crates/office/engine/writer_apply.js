@@ -803,6 +803,11 @@ WOPS.insert_html = (op, resolved, created) => {
 
 WOPS.replace_html = (op, resolved, created) => {
   const before = blockRange(resolved, op.from, op.to);
+  // 1 段落を、スタイルを書いていない 1 段落で置き換えるなら、元の段落スタイルを引き継ぐ。
+  const keepStyle = op.inherit_style && before.length === 1 && !isTable(before[0])
+    ? before[0].getPropertyValue("ParaStyleName")
+    : null;
+  const tables = before.filter(isTable).length;
   // 変更履歴の記録中は、新しい内容を古いブロックの前に入れる（古い段落の削除が新しい段落の区切りに
   // 触れないようにする）。
   const inserted = recording()
@@ -814,7 +819,15 @@ WOPS.replace_html = (op, resolved, created) => {
   if (range.length >= bodyBlocks().length) fail("delete_all", "文書のすべてのブロックは消せません");
   removeBlocks(range);
   withoutRecording(() => trimSeparators(inserted));
-  return { removed: range.length, blocks: inserted.length };
+  const out = { removed: range.length, blocks: inserted.length };
+  const fresh = inserted.filter((b) => !isTable(b));
+  if (keepStyle && inserted.length === 1 && fresh.length === 1 && fresh[0].getPropertyValue("ParaStyleName") !== keepStyle) {
+    setParaStyle(fresh[0], keepStyle);
+    out.kept_style = keepStyle;
+  }
+  // 表を作り直すと元の表の見た目（塗り・罫線・列幅）は引き継がれない。結果で知らせる。
+  if (tables > 0) out.replaced_tables = tables;
+  return out;
 };
 
 WOPS.delete = (op, resolved) => {

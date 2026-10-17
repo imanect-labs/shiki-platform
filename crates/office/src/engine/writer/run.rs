@@ -99,6 +99,20 @@ pub async fn apply(
         if let Some(n) = r["replaced"].as_u64() {
             let _ = write!(text, "\n- replace_text: {n} か所を置き換えました");
         }
+        if let Some(st) = r["kept_style"].as_str() {
+            let _ = write!(
+                text,
+                "\n- replace: 元の段落スタイル {st} を引き継ぎました（変えるなら data-style を書く）"
+            );
+        }
+        if r["replaced_tables"].as_u64().is_some_and(|n| n > 0) {
+            let _ = write!(
+                text,
+                "\n- replace: 表を作り直しました。元の表の見た目（塗り・罫線・列幅）は引き継がれません。\
+                 数字や行だけ変えるなら set_cells / insert_rows / delete_rows で直すと見た目が保たれます。\
+                 作り直した表は style_table で整えてください"
+            );
+        }
         if let Some(t) = r["removed_duplicate_title"].as_str() {
             let _ = write!(
                 text,

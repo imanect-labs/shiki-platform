@@ -20,7 +20,8 @@ page-break-after: avoid は「次の段落と同じページに置く」（見�
 箇条書きは <ul>/<ol> の入れ子で書く（字下げは Word の既定に揃う・office.read も <ul>/<ol> で返す）。空行は <p></p>（段落の間隔は margin の方がよい）。外部の画像 URL は使えない。\n\
 ops:\n\
 - insert {after|before:ID か at:\"start\"|\"end\", html}\n\
-- replace {target:ID または範囲, html}（範囲の各ブロックを消して、そこへ html を入れる）\n\
+- replace {target:ID または範囲, html}（範囲の各ブロックを消して、そこへ html を入れる。1 段落を data-style の無い \
+1 段落で置き換えると元の段落スタイルを引き継ぐ。文言だけ直すなら replace_text の方が書式を保てる）\n\
 - delete {target}\n\
 - replace_text {find, replace, within?:範囲, all?, match_case?, whole_word?}（書式を保って文字列だけ置き換える。複数あるのに all が\
 無ければ誤りになる）\n\

@@ -35,6 +35,33 @@ pub enum HtmlError {
 /// 要素の入れ子の上限。正規化は要素ごとに再帰するので、深い入れ子でスタックを溢れさせない。
 pub const MAX_HTML_DEPTH: usize = 64;
 
+/// HTML が段落 1 つだけ（`<p>` / `<h1>`〜`<h6>`・中に段落や表を持たない）で、data-style を書いていないか。
+///
+/// 1 段落を 1 段落で置き換えるとき、スタイルを書かなければ元の段落のスタイル（Title など）を引き継ぐ
+/// （題を `<h1>` で書き直して表題が見出し 1 に変わる、を防ぐ・Gemma 4 の評価）。
+pub fn single_plain_block(input: &str) -> bool {
+    if input.contains("data-style") {
+        return false;
+    }
+    let doc = Document::from(input);
+    let Some(body) = doc.body() else {
+        return false;
+    };
+    let elements: Vec<NodeRef<'_>> = body
+        .children()
+        .into_iter()
+        .filter(NodeRef::is_element)
+        .collect();
+    let [only] = elements.as_slice() else {
+        return false;
+    };
+    let tag = only
+        .node_name()
+        .map(|n| n.to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(tag.as_str(), "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6") && !has_block_child(only)
+}
+
 /// body から最も深い要素までの段数が上限を超えるか（再帰せず、明示のスタックで数える）。
 fn too_deep(root: &NodeRef<'_>) -> bool {
     let mut stack = vec![(*root, 0usize)];
@@ -648,6 +675,14 @@ fn walk(cx: &mut Ctx, node: &NodeRef<'_>, inherited: &Decls) {
             set(&mut decls, k, v);
         }
     }
+    // HTML 4 の align 属性（<p align="right">）。モデルがよく書くので text-align として受ける
+    // （style が同じ項目を書いていればそちらが勝つ）。
+    if let Some(align) = node.attr("align") {
+        let a = align.trim().to_ascii_lowercase();
+        if matches!(a.as_str(), "left" | "right" | "center" | "justify") {
+            set(&mut decls, "text-align", &a);
+        }
+    }
     if let Some(inline) = node.attr("style") {
         for (k, v) in parse_decls(&inline) {
             set(&mut decls, &k, &v);
@@ -865,6 +900,22 @@ mod tests {
         assert!(matches!(normalize_html(&deep), Err(HtmlError::TooDeep)));
         let ok = format!("{}x", "<span>".repeat(MAX_HTML_DEPTH - 4));
         assert!(normalize_html(&ok).is_ok());
+    }
+
+    #[test]
+    fn detects_a_single_plain_paragraph() {
+        assert!(single_plain_block("<h1>月次営業報告（2026年10月）</h1>"));
+        assert!(single_plain_block("<p>本文 <b>強調</b></p>"));
+        assert!(!single_plain_block("<p>a</p><p>b</p>"));
+        assert!(!single_plain_block("<h1 data-style=\"Title\">題</h1>"));
+        assert!(!single_plain_block("<table><tr><td>x</td></tr></table>"));
+        assert!(!single_plain_block("<ul><li>x</li></ul>"));
+    }
+
+    #[test]
+    fn the_align_attribute_becomes_text_align() {
+        let out = body("<p align=\"right\">2026年11月5日</p><td align=\"center\">x</td>");
+        assert!(out.contains("<p style=\"text-align: right\">"), "{out}");
     }
 
     #[test]
