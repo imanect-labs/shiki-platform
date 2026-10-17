@@ -104,16 +104,27 @@ pub async fn apply(
         }
     }
     // ブロック ID は変わる（位置とハッシュ）。続けて編集できるよう、最新の一覧を返す。
+    // 適用は済んでいるので、読み戻しの失敗で Err を返さない（返すと保存されず、やり直しで二重に入る）。
     let overview = call(
         client,
         json!({"action": "writer.overview", "from": 0, "limit": OVERVIEW_BLOCKS}),
     )
-    .await?;
-    let _ = write!(
-        text,
-        "\n\n現在の文書（ブロック ID は更新されています。以降はこの ID を使う）:\n{}",
-        view::overview_text("", &overview)
-    );
+    .await;
+    match overview {
+        Ok(overview) => {
+            let _ = write!(
+                text,
+                "\n\n現在の文書（ブロック ID は更新されています。以降はこの ID を使う）:\n{}",
+                view::overview_text("", &overview)
+            );
+        }
+        Err(e) => {
+            let _ = write!(
+                text,
+                "\n\n（最新のブロック一覧を読めませんでした: {e}。適用は済んでいます。続けて編集する前に office.read で読み直してください）"
+            );
+        }
+    }
     Ok(DocApplyOutcome {
         text,
         applied: true,

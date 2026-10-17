@@ -21,6 +21,9 @@ use crate::engine::formula;
 /// 1 回の適用で書けるセル数の上限（kit の 1 スレッドを長く塞がない）。
 pub const MAX_CELLS_PER_APPLY: u64 = 20_000;
 
+/// fill_formula で複製する数式の合計文字数の上限（20,000 セル×平均 100 文字）。
+const MAX_FILL_FORMULA_CHARS: u64 = 2_000_000;
+
 /// 正規化の誤り（何番目の操作の何が悪いか）。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{index} 件目（{op}）: {message}")]
@@ -159,6 +162,18 @@ impl Cx {
     }
 
     pub(super) fn formula(&mut self, f: &str) -> Result<String, OpError> {
+        if f.chars().count() > formula::MAX_FORMULA_CHARS {
+            return Err(self.err(format!(
+                "数式が長すぎます（{} 文字まで）",
+                formula::MAX_FORMULA_CHARS
+            )));
+        }
+        if let Some(what) = formula::external_access(f) {
+            return Err(self.err(format!(
+                "数式「{f}」: {what}は使えません（文書の外のデータを読む関数・外部ファイルへの参照は書けません。\
+                 シート内の参照は INDEX / MATCH / OFFSET で書いてください）"
+            )));
+        }
         formula::excel_to_calc(f).map_err(|e| self.err(format!("数式「{f}」: {e}")))
     }
 
@@ -214,6 +229,14 @@ impl Cx {
                 let a = self.area(range)?;
                 if a.cells() > MAX_CELLS_PER_APPLY {
                     return Err(self.err("範囲が大きすぎます"));
+                }
+                // セルごとに数式を複製するので、数式の長さ×セル数で上限を見る（短い入力から
+                // 巨大な kit 宛てのメッセージを作らせない）。
+                let chars = u64::try_from(f.chars().count()).unwrap_or(u64::MAX);
+                if chars.saturating_mul(a.cells()) > MAX_FILL_FORMULA_CHARS {
+                    return Err(self.err(format!(
+                        "数式×セル数が大きすぎます（合計 {MAX_FILL_FORMULA_CHARS} 文字まで。範囲を分けるか数式を短くしてください）"
+                    )));
                 }
                 // 左上セル用の数式を相対参照でずらしてセルごとに書く（Excel のフィルと同じ結果）。
                 let mut grid = Vec::with_capacity(a.height() as usize);

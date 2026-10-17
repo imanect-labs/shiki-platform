@@ -119,14 +119,57 @@ function describeError(e) {
 }
 
 /**
+ * undo に記録されない変更（変更履歴の記録の切り替え・ページスタイル・作ったスタイルなど）を、
+ * 一括が失敗したときに戻す手続き。操作が変更の前に `onRollback(() => 元へ戻す)` で積む。
+ */
+let ROLLBACK = [];
+
+function onRollback(fn) {
+  ROLLBACK.push(fn);
+}
+
+/** obj の属性 names の今の値を覚え、一括が失敗したら戻す（undo に乗らない属性の変更の前に呼ぶ）。 */
+function rememberProps(obj, names) {
+  const saved = [];
+  for (const n of names) {
+    try {
+      saved.push([n, obj.getPropertyValue(n)]);
+    } catch (e) {
+      // その属性を持たない（版・種類による）。
+    }
+  }
+  onRollback(() => {
+    for (const [n, v] of saved) obj.setPropertyValue(n, v);
+  });
+}
+
+/** 名前 name の要素を family へ足した後に呼ぶ。一括が失敗したら取り除く。 */
+function rememberInserted(family, name) {
+  onRollback(() => {
+    if (family.hasByName(name)) family.removeByName(name);
+  });
+}
+
+/** undo の一覧（新しい順の題名）が、文脈を閉じた後に変わったか。 */
+function undoRecorded(before, after) {
+  if (after.length !== before.length) return after.length > before.length;
+  // 段数の上限（既定 100）に達していると、新しい記録が最古の 1 件を押し出して件数は変わらない。
+  // 題名の並びがずれたかで見る。
+  for (let i = 0; i < after.length; i++) if (after[i] !== before[i]) return true;
+  return false;
+}
+
+/**
  * 一括適用を 1 つの undo 単位にまとめ、途中で失敗したら丸ごと取り消す（アトミック）。
  *
  * 取り消してよいのは「この文脈で記録が増えたとき」だけ。何も記録されずに失敗したときに
  * undo すると、直前の別の操作（人や前回の AI の編集）を取り消してしまう。
+ * undo に乗らない変更は [`onRollback`] で積んだ手続きで、逆順に戻す。
  */
 function atomically(label, fn) {
   const um = DOC.getUndoManager();
-  const before = um.getAllUndoActionTitles().length;
+  const before = Array.from(um.getAllUndoActionTitles());
+  ROLLBACK = [];
   um.enterUndoContext(label);
   let ok = false;
   try {
@@ -148,8 +191,7 @@ function atomically(label, fn) {
       STAGE = STAGE + "（undo 文脈を閉じられませんでした）";
     }
     if (!ok) {
-      const after = um.getAllUndoActionTitles().length;
-      if (after > before) {
+      if (undoRecorded(before, Array.from(um.getAllUndoActionTitles()))) {
         try {
           um.undo();
         } catch (e) {
@@ -157,7 +199,15 @@ function atomically(label, fn) {
           STAGE = STAGE + "（取り消しにも失敗）";
         }
       }
+      for (const back of ROLLBACK.reverse()) {
+        try {
+          back();
+        } catch (e) {
+          STAGE = STAGE + "（一部の設定を戻せませんでした）";
+        }
+      }
     }
+    ROLLBACK = [];
   }
 }
 

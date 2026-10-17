@@ -28,6 +28,27 @@ pub enum HtmlError {
     TooLarge,
     #[error("HTML に本文がありません")]
     Empty,
+    #[error("HTML の入れ子が深すぎます（{MAX_HTML_DEPTH} 段まで）")]
+    TooDeep,
+}
+
+/// 要素の入れ子の上限。正規化は要素ごとに再帰するので、深い入れ子でスタックを溢れさせない。
+pub const MAX_HTML_DEPTH: usize = 64;
+
+/// body から最も深い要素までの段数が上限を超えるか（再帰せず、明示のスタックで数える）。
+fn too_deep(root: &NodeRef<'_>) -> bool {
+    let mut stack = vec![(root.clone(), 0usize)];
+    while let Some((node, depth)) = stack.pop() {
+        if depth > MAX_HTML_DEPTH {
+            return true;
+        }
+        for child in node.children() {
+            if child.is_element() {
+                stack.push((child, depth + 1));
+            }
+        }
+    }
+    false
 }
 
 /// 段落になる要素（data-style を付けられる・継承を受け取る）。
@@ -434,6 +455,9 @@ pub fn normalize_html(input: &str) -> Result<String, HtmlError> {
     let Some(body) = doc.body() else {
         return Err(HtmlError::Empty);
     };
+    if too_deep(&body) {
+        return Err(HtmlError::TooDeep);
+    }
     let mut cx = Ctx {
         rules,
         out: String::with_capacity(input.len() + 256),
@@ -833,6 +857,14 @@ mod tests {
             out.contains("<p><a name=\"shiki-k-e-1\"></a>&nbsp;</p>"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn rejects_deep_nesting_without_overflowing_the_stack() {
+        let deep = format!("{}x", "<span>".repeat(200_000));
+        assert!(matches!(normalize_html(&deep), Err(HtmlError::TooDeep)));
+        let ok = format!("{}x", "<span>".repeat(MAX_HTML_DEPTH - 4));
+        assert!(normalize_html(&ok).is_ok());
     }
 
     #[test]

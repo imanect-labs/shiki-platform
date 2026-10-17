@@ -888,6 +888,7 @@ WOPS.set_style = (op) => {
   } else {
     st = DOC.createInstance(op.family === "character" ? "com.sun.star.style.CharacterStyle" : "com.sun.star.style.ParagraphStyle");
     fam.insertByName(op.name, st);
+    rememberInserted(fam, op.name);
   }
   if (op.based_on) {
     if (!fam.hasByName(op.based_on)) fail("style_not_found", `基にするスタイル「${op.based_on}」がありません`);
@@ -926,6 +927,7 @@ WOPS.title_page = (op) => {
     if (!fam.hasByName(TITLE_PAGE_STYLE)) {
       (() => {
         fam.insertByName(TITLE_PAGE_STYLE, DOC.createInstance("com.sun.star.style.PageStyle"));
+        rememberInserted(fam, TITLE_PAGE_STYLE);
       })();
     }
     const fp = fam.getByName(TITLE_PAGE_STYLE);
@@ -938,8 +940,12 @@ WOPS.title_page = (op) => {
   return {};
 };
 
+/** Writer のページスタイルの属性（失敗時に戻す）。 */
+const WRITER_PAGE_PROPS = ["Width", "Height", "IsLandscape", "TopMargin", "RightMargin", "BottomMargin", "LeftMargin"];
+
 WOPS.page_setup = (op) => {
   const st = pageStyle();
+  rememberProps(st, WRITER_PAGE_PROPS);
   if (op.paper) {
     st.setPropertyValue("Width", long(op.paper[0]));
     st.setPropertyValue("Height", long(op.paper[1]));
@@ -968,6 +974,7 @@ WOPS.page_setup = (op) => {
 WOPS.header_footer = (op) => {
   const st = pageStyle();
   const key = op.which === "header" ? "Header" : "Footer";
+  rememberProps(st, [key + "IsOn"]);
   if (op.content === null) {
     st.setPropertyValue(key + "IsOn", false);
     return {};
@@ -1042,6 +1049,8 @@ WOPS.all_changes = (op) => {
 };
 
 WOPS.track_changes = (op) => {
+  // 記録の切り替えは undo に乗らない。一括が失敗したら元の状態へ戻す。
+  rememberProps(DOC, ["RecordChanges"]);
   DOC.setPropertyValue("RecordChanges", op.enabled);
   return {};
 };

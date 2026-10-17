@@ -125,6 +125,13 @@ impl Cx {
         banded: bool,
     ) -> Result<Vec<Value>, OpError> {
         let a = self.area(range)?;
+        // 縞は 1 行おきの矩形に展開するので、列全体（A:F）などの巨大な範囲を受けない。
+        if a.cells() > super::normalize::MAX_CELLS_PER_APPLY {
+            return Err(self.err(format!(
+                "表の範囲が大きすぎます（{} セルまで。列全体ではなく表の範囲を指定してください）",
+                super::normalize::MAX_CELLS_PER_APPLY
+            )));
+        }
         if a.height() < header_rows + total_rows + 1 || header_rows > 5 || total_rows > 5 {
             return Err(self.err("表の範囲には見出し（header_rows）・集計行（total_rows）と 1 行以上の本体が要ります"));
         }

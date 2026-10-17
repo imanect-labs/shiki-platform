@@ -255,6 +255,16 @@ async fn tracked_changes_are_recorded_read_back_and_accepted() {
         return;
     };
     let (name, mut client) = fresh(&env).await;
+    // 失敗した一括の中で記録を有効にしても、記録の状態は元へ戻る（undo に乗らない設定）。
+    let failing = normalize_doc_ops(&[
+        json!({"op": "track_changes", "enabled": true}),
+        json!({"op": "replace_text", "find": "存在しない語", "replace": "x"}),
+    ])
+    .unwrap();
+    let out = run::apply(&mut client, "失敗", &failing).await.unwrap();
+    assert!(!out.applied, "{}", out.text);
+    let overview = run::read_overview(&mut client, &name, 0).await.unwrap();
+    assert!(!overview.contains("変更履歴を記録中"), "{overview}");
     apply_ok(
         &mut client,
         &[json!({"op": "replace", "target": "b0-16ff", "html": "<p>委託料は月額金500,000円とする。</p><p>旧署名欄</p><p>最終段落</p>"})],

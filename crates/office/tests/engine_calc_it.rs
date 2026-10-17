@@ -151,6 +151,44 @@ async fn a_failing_batch_leaves_the_document_untouched() {
     client.close().await;
 }
 
+/// シートの移動は 1 始まりの位置どおりになり、外のデータを読む数式は検証で弾かれる。
+#[tokio::test]
+async fn sheets_move_to_the_given_position_and_external_formulas_are_rejected() {
+    let Some(env) = env() else {
+        eprintln!("skip: OFFICE_ENGINE_TEST_* 未設定");
+        return;
+    };
+    let name = format!("engine-{}.xlsx", uuid::Uuid::new_v4());
+    let mut client = open_blank(&env, &name).await;
+    let first = run::read_overview(&mut client, &name).await.unwrap();
+    let sheet1 = if first.contains("Sheet1") {
+        "Sheet1"
+    } else {
+        "シート1"
+    };
+    let batch = ops(json!([
+        {"op": "add_sheet", "name": "B"},
+        {"op": "add_sheet", "name": "C"},
+        {"op": "move_sheet", "sheet": sheet1, "position": 3}
+    ]));
+    let out = run::apply(&mut client, "移動", &normalize(&batch, None).unwrap())
+        .await
+        .unwrap();
+    assert!(out.applied, "{}", out.text);
+    let overview = run::read_overview(&mut client, &name).await.unwrap();
+    let pos = |n: &str| overview.find(&format!("\n- {n}:")).unwrap_or(usize::MAX);
+    assert!(
+        pos("B") < pos("C") && pos("C") < pos(sheet1),
+        "B, C, {sheet1} の順になっていない: {overview}"
+    );
+    let bad = ops(json!([
+        {"op": "set_values", "range": "A1", "values": [["=WEBSERVICE(\"http://127.0.0.1:9990/\")"]]}
+    ]));
+    let err = normalize(&bad, None).unwrap_err();
+    assert!(err.to_string().contains("WEBSERVICE"), "{err}");
+    client.close().await;
+}
+
 /// xlsx へ保存して開き直しても、文字色と罫線の線種が保たれる（テーマ色・幅の丸めの回帰防止）。
 #[tokio::test]
 async fn font_colors_and_border_styles_survive_an_xlsx_round_trip() {

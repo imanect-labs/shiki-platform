@@ -157,15 +157,28 @@ pub async fn apply(
     }
     // 触った範囲を読み戻す（計算結果・エラー・書式・列幅不足を観測させる）。
     let mut warnings = Vec::new();
+    // **ここから先の失敗で Err を返さない。** 適用は済んでいるので、失敗として返すと保存されず、
+    // モデルがやり直して二重に適用する（改名・削除したシートの範囲は読み戻せない）。
     for (sheet, area) in readback_areas(&normalized.touched) {
-        let v = call(
+        let read = call(
             client,
             json!({"action": "calc.read_range", "sheet": sheet, "area": area,
                    "max_cells": READBACK_CELLS_PER_AREA, "formats": true, "merges": true, "sheet_features": false}),
         )
-        .await?;
-        let _ = write!(text, "\n\n現在の状態:\n{}", view::range_text(&v));
-        lint_range(&v, &mut warnings);
+        .await;
+        match read {
+            Ok(v) => {
+                let _ = write!(text, "\n\n現在の状態:\n{}", view::range_text(&v));
+                lint_range(&v, &mut warnings);
+            }
+            Err(e) => {
+                let _ = write!(
+                    text,
+                    "\n\n（シート「{}」の範囲は読み戻せませんでした: {e}。適用は済んでいます。必要なら office.read で確かめてください）",
+                    sheet.as_deref().unwrap_or("既定")
+                );
+            }
+        }
     }
     if warnings.is_empty() {
         let _ = write!(

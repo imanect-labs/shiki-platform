@@ -122,6 +122,48 @@ fn join(toks: &[Tok]) -> String {
         .collect()
 }
 
+/// kit の外のデータを読む関数。kit は内部網に置かれ、セルに入れた時点で評価されるので、
+/// LLM が書いた数式からは使わせない（内部 API への SSRF・結果の読み戻しで漏れる・PIT-68）。
+/// `INDIRECT` は文字列から外部の文書への参照を組み立てられるので同じ扱いにする。
+const EXTERNAL_FUNCTIONS: &[&str] = &["WEBSERVICE", "DDE", "INDIRECT"];
+
+/// 数式の長さの上限（Excel の上限と同じ 8,192 文字）。
+pub const MAX_FORMULA_CHARS: usize = 8192;
+
+/// 数式が kit の外のデータに触れるなら、その理由（関数名か外部参照）を返す。
+///
+/// 関数は名前の直後が `(` のものを見る（`_xlfn.` 接頭辞も外す）。外部の文書への参照は
+/// URL（`://`）か `file:` を含む語・引用符つき名で見る。
+pub fn external_access(formula: &str) -> Option<String> {
+    let toks = tokenize(formula.trim().trim_start_matches('=')).ok()?;
+    let significant: Vec<&Tok> = toks
+        .iter()
+        .filter(|t| !matches!(t, Tok::Space(_)))
+        .collect();
+    for (i, t) in significant.iter().enumerate() {
+        // 文字列リテラルの URL（HYPERLINK のリンク先など）は参照ではないので見ない。
+        let text = match t {
+            Tok::Quoted(s) | Tok::Word(s) => s.to_ascii_lowercase(),
+            _ => continue,
+        };
+        if text.contains("://") || text.contains("file:") {
+            return Some("外部の文書・URL への参照".into());
+        }
+        if let Tok::Word(w) = t {
+            let name = w.to_ascii_uppercase();
+            let name = name
+                .trim_start_matches("_XLFN.")
+                .trim_start_matches("COM.MICROSOFT.");
+            if matches!(significant.get(i + 1), Some(Tok::Punct('(')))
+                && EXTERNAL_FUNCTIONS.contains(&name)
+            {
+                return Some(format!("{name} 関数"));
+            }
+        }
+    }
+    None
+}
+
 /// Excel の書き方 → Calc の API 文法。先頭の `=` は無ければ補う。
 pub fn excel_to_calc(formula: &str) -> Result<String, FormulaError> {
     let body = formula.trim().strip_prefix('=').unwrap_or(formula.trim());
@@ -476,6 +518,31 @@ mod tests {
             "=LET(x,2,x*3)",
         ] {
             assert_eq!(calc_to_excel(&excel_to_calc(f).unwrap()), f);
+        }
+    }
+
+    #[test]
+    fn finds_formulas_that_reach_outside_the_kit() {
+        for f in [
+            "=WEBSERVICE(\"http://qdrant:6333/collections\")",
+            "=webservice(A1)",
+            "=_xlfn.WEBSERVICE(A1)",
+            "=IFERROR(DDE(\"soffice\";\"x\";\"y\"), 0)",
+            "=INDIRECT(\"'ht\"&\"tp://x'#$Sheet1.A1\")",
+            "='http://intranet/x.ods'#$Sheet1.A1",
+            "='file:///etc/passwd'#$Sheet1.A1",
+        ] {
+            assert!(external_access(f).is_some(), "{f}");
+        }
+        for f in [
+            "=SUM(A1:A3)",
+            "=VLOOKUP(A2, 'Web Data'!A:B, 2, FALSE)",
+            "=\"WEBSERVICE\" & A1",
+            "=INDEX(B:B, MATCH(A1, A:A, 0))",
+            "=Sheet1!WEBSERVICE",
+            "=HYPERLINK(\"https://example.com\", \"サイト\")",
+        ] {
+            assert_eq!(external_access(f), None, "{f}");
         }
     }
 

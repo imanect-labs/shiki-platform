@@ -50,12 +50,16 @@ function resolveBlock(blocks, id) {
   const index = parseInt(m[1], 10);
   const hash = m[2];
   if (index < blocks.length && shortHash(blockKey(blocks[index])) === hash) return index;
-  for (let d = 1; d <= 50; d++) {
-    for (const j of [index - d, index + d]) {
-      if (j >= 0 && j < blocks.length && shortHash(blockKey(blocks[j])) === hash) return j;
-    }
+  // 前後へずれた（人が段落を足した・消した）なら、近くで同じ内容のものを探す。ただし同じ内容が
+  // 複数あると（空段落・同じ文）どれが元のブロックか決められないので、推測せずに読み直させる。
+  const found = [];
+  for (let j = Math.max(0, index - 50); j < Math.min(blocks.length, index + 51); j++) {
+    if (shortHash(blockKey(blocks[j])) === hash) found.push(j);
   }
-  fail("stale_block_id", `ブロック ${id} が見つかりません（文書が変わった可能性があります）。office.read で読み直してください`);
+  if (found.length === 1) return found[0];
+  fail("stale_block_id", found.length > 1
+    ? `ブロック ${id} の位置が変わっていて、同じ内容のブロックが複数あるため特定できません。office.read で読み直してください`
+    : `ブロック ${id} が見つかりません（文書が変わった可能性があります）。office.read で読み直してください`);
 }
 
 const PARA_PROPS = [

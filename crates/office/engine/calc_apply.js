@@ -314,7 +314,12 @@ OPS.delete_sheet = (op) => {
 
 OPS.move_sheet = (op) => {
   getSheet(op.sheet);
-  DOC.getSheets().moveByName(op.sheet, op.position | 0);
+  const names = Array.from(DOC.getSheets().getElementNames());
+  const from = names.indexOf(op.sheet);
+  const to = Math.min(op.position | 0, names.length - 1);
+  // moveByName の位置は「この位置の前へ入れる」（移動元より後ろなら、入れた後に 1 つ詰まる）。
+  // 後ろへ動かすときは 1 つ先を渡して、移動後の位置を to にする。
+  if (to !== from) DOC.getSheets().moveByName(op.sheet, to > from ? to + 1 : to);
   return {};
 };
 
@@ -350,6 +355,7 @@ function conditionStyle(look, sheet) {
   if (!styles.hasByName(name)) {
     const st = DOC.createInstance("com.sun.star.style.CellStyle");
     styles.insertByName(name, st);
+    rememberInserted(styles, name);
     if (look.font_color) setCharColor(st, sheet, hexToColor(look.font_color));
     if (look.fill) {
       st.setPropertyValue("CellBackColor", long(hexToColor(look.fill)));
@@ -363,8 +369,31 @@ function conditionStyle(look, sheet) {
   return name;
 }
 
+/**
+ * 範囲の条件付き書式は「範囲の先頭のセルの書式を読んで足し、範囲へ書き戻す」形でしか足せず、
+ * 書き戻すと範囲内の他の書式は外れる。既存の書式と範囲が一部だけ重なると、その書式が黙って
+ * 消えるか広がるので、重なり方が「重ならない」か「同じ範囲」のときだけ通す。
+ */
+function checkConditionalOverlap(sheet, area) {
+  const [sc, sr, ec, er] = area;
+  const list = sheet.getPropertyValue("ConditionalFormats").getConditionalFormats();
+  for (const f of Array.from(list)) {
+    const ranges = Array.from(f.getPropertyValue("Range").getRangeAddresses());
+    const hits = ranges.some((r) => r.StartColumn <= ec && sc <= r.EndColumn && r.StartRow <= er && sr <= r.EndRow);
+    if (!hits) continue;
+    const same = ranges.length === 1 &&
+      ranges[0].StartColumn === sc && ranges[0].StartRow === sr && ranges[0].EndColumn === ec && ranges[0].EndRow === er;
+    if (!same) {
+      const where = ranges.map((r) => `${colLetters(r.StartColumn)}${r.StartRow + 1}:${colLetters(r.EndColumn)}${r.EndRow + 1}`).join(",");
+      fail("conditional_overlap", `既存の条件付き書式（${where}）と範囲が一部だけ重なります。同じ範囲に付けるか、` +
+        "clear_conditional_formats でその範囲の書式を消してから付け直してください");
+    }
+  }
+}
+
 OPS.conditional_format = (op) => {
   const sheet = getSheet(op.sheet);
+  for (const area of op.areas) checkConditionalOverlap(sheet, area);
   const style = conditionStyle(op.look || {}, sheet);
   for (const [sc, sr, ec, er] of op.areas) {
     const range = sheet.getCellRangeByPosition(sc, sr, ec, er);
@@ -619,9 +648,20 @@ OPS.delete_chart = (op) => {
   return {};
 };
 
+/** Calc のページスタイルの属性（UNO で変えても undo に乗らないので、失敗時は覚えた値へ戻す）。 */
+const CALC_PAGE_PROPS = [
+  "Width", "Height", "IsLandscape", "ScaleToPagesX", "ScaleToPagesY", "PageScale",
+  "TopMargin", "RightMargin", "BottomMargin", "LeftMargin", "CenterHorizontally",
+  "HeaderIsOn", "FooterIsOn", "HeaderIsShared", "FooterIsShared",
+  "RightPageHeaderContent", "RightPageFooterContent", "PrintGrid",
+];
+
 OPS.page_setup = (op) => {
   const sheet = getSheet(op.sheet);
   const st = DOC.getStyleFamilies().getByName("PageStyles").getByName(sheet.getPropertyValue("PageStyle"));
+  rememberProps(st, CALC_PAGE_PROPS);
+  const areas = sheet.getPrintAreas();
+  onRollback(() => sheet.setPrintAreas(areas));
   if (op.paper) {
     const [w, h] = op.paper;
     st.setPropertyValue("Width", long(w));
