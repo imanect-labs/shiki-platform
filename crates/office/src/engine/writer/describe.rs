@@ -10,7 +10,10 @@ pub const WORD_EDIT_DESCRIPTION: &str = "Word 文書（.docx / .odt）を、本�
 <b> <i> <u> <s> <sup> <sub> <a href>・<br>・<img src=\"data:image/png;base64,...\">。CSS（style 属性や <style> のクラス・子孫セレクタ）は\
 color / background-color / font-size / font-family / font-weight / text-align / text-indent / margin / line-height / border / width / \
 vertical-align / page-break-before が効く。段落スタイルは data-style=\"Heading 2\" のように office.read の一覧にある名前で付ける\
-（文書の体裁がスタイルで揃うので、見出しや本文は直接書式よりスタイルを優先する）。外部の画像 URL は使えない。\n\
+（文書の体裁がスタイルで揃うので、見出しや本文は直接書式よりスタイルを優先する）。data-style の無い <p> は標準の本文スタイル \
+Standard になる（本文の書体・大きさ・行間は set_style で Standard を変える）。style に書いた文字の大きさや色はその段落だけの直接書式になり、\
+後から set_style でスタイルを変えても上書きされない。表の幅・列幅（<col width>・width）は mm / pt / % / 数値（px）で書ける。\
+表と表の間には空の段落が 1 つ要る（隣り合う表は Word では 1 つにつながるため、エンジンが残す）。外部の画像 URL は使えない。\n\
 ops:\n\
 - insert {after|before:ID か at:\"start\"|\"end\", html}\n\
 - replace {target:ID または範囲, html}（範囲の各ブロックを消して、そこへ html を入れる）\n\
@@ -25,7 +28,10 @@ space_before_pt?, space_after_pt?, line_spacing?:倍率 または line_height_pt
 - page_setup {paper?:A4|A3|B5|B4|A5|letter, orientation?:portrait|landscape, margins_mm?:{top,right,bottom,left}}\n\
 - header {content:{text, align?, size?} または null} / footer {同じ}（text に &[Page] &[Pages] &[Date] &[Title] &[File] を差し込める）\n\
 - insert_toc {after|before|at?（既定は先頭）, title?, levels?}（見出しから目次を作る） / update_toc {}（見出しを変えた後に目次を更新）\n\
-- page_break {before:ID} / track_changes {enabled}\n\
+- page_break {before:ID}\n\
+- track_changes {enabled}（有効にした後の insert / replace / delete / replace_text / format_text は変更履歴として残り、office.read の \
+HTML で <ins> <del> として見える。replace_text で直す場合は find を変える最小の文字列にし within でブロックを絞ると差分が小さい） / \
+accept_all_changes {} / reject_all_changes {}（未承認の変更をすべて確定・却下）\n\
 作法: 見出しは h1〜h3（data-style で文書の見出しスタイルに合わせる）、本文は p、強調は必要な所だけ。表は見出し行を <th> にし、\
 罫線と見出しの塗りを付ける。長い文書は節ごとに insert を分けず 1 回の ops にまとめてよい。";
 
@@ -45,7 +51,8 @@ pub fn word_edit_schema() -> serde_json::Value {
                     "properties": {
                         "op": { "type": "string", "enum": [
                             "insert", "replace", "delete", "replace_text", "format_text", "format_paragraph", "set_style",
-                            "page_setup", "header", "footer", "insert_toc", "update_toc", "page_break", "track_changes"
+                            "page_setup", "header", "footer", "insert_toc", "update_toc", "page_break", "track_changes",
+                            "accept_all_changes", "reject_all_changes"
                         ] }
                     },
                     "required": ["op"]

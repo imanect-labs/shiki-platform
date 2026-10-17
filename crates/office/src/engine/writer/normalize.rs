@@ -64,6 +64,8 @@ fn known_name(name: &str) -> &'static str {
         "update_toc",
         "page_break",
         "track_changes",
+        "accept_all_changes",
+        "reject_all_changes",
     ];
     KNOWN
         .iter()
@@ -443,6 +445,8 @@ impl Cx<'_> {
             DocOp::TrackChanges { enabled } => {
                 vec![json!({"op": "track_changes", "enabled": enabled})]
             }
+            DocOp::AcceptAllChanges {} => vec![json!({"op": "all_changes", "accept": true})],
+            DocOp::RejectAllChanges {} => vec![json!({"op": "all_changes", "accept": false})],
         })
     }
 }

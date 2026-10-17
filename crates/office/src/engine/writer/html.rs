@@ -278,6 +278,43 @@ fn escape_attr(s: &str) -> String {
     escape_text(s).replace('"', "&quot;")
 }
 
+/// 幅の指定を HTML の width 属性の形（"40%" か px の数値）にする。mm・cm・pt・in は px へ換算する。
+fn html_width(v: &str) -> String {
+    let v = v.trim();
+    if v.ends_with('%') {
+        return v.to_string();
+    }
+    let units = [
+        ("px", 1.0),
+        ("mm", 96.0 / 25.4),
+        ("cm", 96.0 / 2.54),
+        ("pt", 96.0 / 72.0),
+        ("in", 96.0),
+    ];
+    for (unit, scale) in units {
+        if let Some(n) = v
+            .strip_suffix(unit)
+            .and_then(|n| n.trim().parse::<f64>().ok())
+        {
+            return format!("{}", (n * scale).round());
+        }
+    }
+    v.to_string()
+}
+
+/// 段落の上下の間隔を指定したか（"t"・"b"・"tb"・""）。
+fn spacing_flags(decls: &Decls) -> &'static str {
+    let both = get(decls, "margin").is_some();
+    let top = both || get(decls, "margin-top").is_some();
+    let bottom = both || get(decls, "margin-bottom").is_some();
+    match (top, bottom) {
+        (true, true) => "tb",
+        (true, false) => "t",
+        (false, true) => "b",
+        (false, false) => "",
+    }
+}
+
 /// スタイル名 → ブックマークの印の名前（`shiki-s-<16 進の UTF-8>-<連番>`）。
 fn style_marker(name: &str, seq: usize) -> String {
     let hex = name.bytes().fold(String::new(), |mut acc, b| {
@@ -388,7 +425,7 @@ fn element_attrs(node: &NodeRef<'_>, tag: &str, decls: &Decls) -> Option<String>
             let _ = write!(
                 attrs,
                 " width=\"{}\"",
-                escape_attr(width.as_deref().unwrap_or("100%").trim_end_matches("px"))
+                escape_attr(&html_width(width.as_deref().unwrap_or("100%")))
             );
             let _ = write!(
                 attrs,
@@ -416,11 +453,7 @@ fn element_attrs(node: &NodeRef<'_>, tag: &str, decls: &Decls) -> Option<String>
                 .map(str::to_string)
                 .or_else(|| node.attr("width").map(|v| v.to_string()))
             {
-                let _ = write!(
-                    attrs,
-                    " width=\"{}\"",
-                    escape_attr(w.trim_end_matches("px"))
-                );
+                let _ = write!(attrs, " width=\"{}\"", escape_attr(&html_width(&w)));
             }
             if let Some(n) = node
                 .attr("span")
@@ -480,11 +513,7 @@ fn cell_attrs(node: &NodeRef<'_>, decls: &Decls, attrs: &mut String) {
         .map(str::to_string)
         .or_else(|| node.attr("width").map(|v| v.to_string()))
     {
-        let _ = write!(
-            attrs,
-            " width=\"{}\"",
-            escape_attr(w.trim_end_matches("px"))
-        );
+        let _ = write!(attrs, " width=\"{}\"", escape_attr(&html_width(&w)));
     }
     if let Some(v) = get(decls, "vertical-align") {
         let _ = write!(attrs, " valign=\"{}\"", escape_attr(v));
@@ -575,6 +604,13 @@ fn walk(cx: &mut Ctx, node: &NodeRef<'_>, inherited: &Decls) {
             let marker = style_marker(st.trim(), cx.markers);
             cx.markers += 1;
             let _ = write!(cx.out, "<a name=\"{marker}\"></a>");
+        }
+        // 段落の間隔を指定したかどうか。取り込みは指定の無い段落にも上 0・下 10pt 相当を直接付けるので、
+        // 指定の無い段落はエンジンがスタイルの値へ戻す（指定したものだけ印で残す）。
+        let flags = spacing_flags(&decls);
+        if !flags.is_empty() && !has_block_child(node) {
+            let _ = write!(cx.out, "<a name=\"shiki-k-{flags}-{}\"></a>", cx.markers);
+            cx.markers += 1;
         }
     }
     if !wrap.is_empty() {
@@ -690,6 +726,24 @@ mod tests {
             out.contains("<td colspan=\"2\" bgcolor=\"#FFF2CC\" valign=\"middle\""),
             "{out}"
         );
+    }
+
+    #[test]
+    fn marks_paragraphs_that_set_their_own_spacing() {
+        let out =
+            body("<p style=\"margin-bottom: 12pt\">a</p><p>b</p><h2 style=\"margin: 0\">c</h2>");
+        assert!(out.contains("<a name=\"shiki-k-b-0\"></a>a"), "{out}");
+        assert!(out.contains("<p>b</p>"), "{out}");
+        assert!(out.contains("<a name=\"shiki-k-tb-1\"></a>c"), "{out}");
+    }
+
+    #[test]
+    fn converts_width_units_to_pixels() {
+        assert_eq!(html_width("40%"), "40%");
+        assert_eq!(html_width("30mm"), "113");
+        assert_eq!(html_width("72pt"), "96");
+        assert_eq!(html_width("120px"), "120");
+        assert_eq!(html_width("120"), "120");
     }
 
     #[test]

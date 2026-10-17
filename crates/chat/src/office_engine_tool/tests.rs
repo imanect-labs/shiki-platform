@@ -389,6 +389,8 @@ fn word_edit_requires_confirmation_and_lists_every_op_in_the_schema() {
         "update_toc",
         "page_break",
         "track_changes",
+        "accept_all_changes",
+        "reject_all_changes",
     ];
     for op in ops {
         assert!(listed.iter().any(|l| l == op), "スキーマに {op} が無い");

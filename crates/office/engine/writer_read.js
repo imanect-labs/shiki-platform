@@ -81,13 +81,17 @@ function readProps(obj, names) {
   return out;
 }
 
-/** 直接付けた書式だけを読む（スタイル由来の値を含めると、書き戻したとき直接書式として焼き付く）。 */
-function readDirectProps(obj, names) {
+/**
+ * 直接付けた書式だけを読む（スタイル由来の値を含めると、書き戻したとき直接書式として焼き付く）。
+ * style を渡すと、スタイルと同じ値の直接書式（docx の取り込みが付ける既定値など）は省く。
+ */
+function readDirectProps(obj, names, style) {
   const out = {};
   for (const p of names) {
     try {
       if (enumName(obj.getPropertyState(p)) !== "DIRECT_VALUE") continue;
       const v = obj.getPropertyValue(p);
+      if (style && sameValue(v, style.getPropertyValue(p))) continue;
       out[p] = typeof v === "object" && v !== null ? enumName(v) : v;
     } catch (e) {
       // 種類によって持たないプロパティ。
@@ -96,8 +100,65 @@ function readDirectProps(obj, names) {
   return out;
 }
 
-function readParagraph(p, withRuns) {
+/** 文書の変更履歴（[{type, start, end}]）。種類は "Insert" / "Delete" / "Format" など。 */
+function redlineSpans() {
+  const out = [];
+  try {
+    const en = DOC.getRedlines().createEnumeration();
+    while (en.hasMoreElements()) {
+      const r = en.nextElement();
+      try {
+        out.push({ type: r.getPropertyValue("RedlineType"), start: r.getPropertyValue("RedlineStart"), end: r.getPropertyValue("RedlineEnd") });
+      } catch (e) {
+        // 位置の取れない変更（表の行の変更など）。
+      }
+    }
+  } catch (e) {
+    // 変更履歴を持たない文書。
+  }
+  return out;
+}
+
+/** range が変更履歴 red の中にあるか（別の本文＝セルやヘッダーにあれば比べられないので false）。 */
+function insideRedline(range, red) {
+  try {
+    const t = range.getText();
+    return t.compareRegionStarts(red.start, range) >= 0 && t.compareRegionEnds(range, red.end) >= 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+/** range と変更履歴 red が重なるか。 */
+function touchesRedline(range, red) {
+  try {
+    const t = range.getText();
+    return t.compareRegionStarts(red.start, range.getEnd()) > 0 && t.compareRegionEnds(range.getStart(), red.end) > 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+function sameValue(a, b) {
+  if (a === b) return true;
+  if (a && b && typeof a === "object" && typeof b === "object") {
+    if ("Mode" in a && "Height" in a) return a.Mode === b.Mode && a.Height === b.Height;
+    return enumName(a) === enumName(b);
+  }
+  return false;
+}
+
+function paragraphStyleOf(p) {
+  try {
+    return DOC.getStyleFamilies().getByName("ParagraphStyles").getByName(p.getPropertyValue("ParaStyleName"));
+  } catch (e) {
+    return null;
+  }
+}
+
+function readParagraph(p, withRuns, reds) {
   const out = { t: "p", text: p.getString(), props: readProps(p, PARA_PROPS) };
+  if (reds && reds.length && reds.some((r) => touchesRedline(p, r))) out.changes = true;
   // 目次などの索引の中の段落（読み取りでは 1 ブロックにまとめる）。
   try {
     if (p.getPropertyValue("DocumentIndex")) out.index = true;
@@ -105,6 +166,13 @@ function readParagraph(p, withRuns) {
     // 索引の外。
   }
   if (withRuns) {
+    const style = paragraphStyleOf(p);
+    out.direct = readDirectProps(p, ["ParaTopMargin", "ParaBottomMargin"], style);
+    const ls = p.getPropertyValue("ParaLineSpacing");
+    if (enumName(p.getPropertyState("ParaLineSpacing")) === "DIRECT_VALUE" && !(style && sameValue(ls, style.getPropertyValue("ParaLineSpacing")))) {
+      out.direct.LineSpacingMode = ls.Mode;
+      out.direct.LineSpacingHeight = ls.Height;
+    }
     out.runs = [];
     const en = p.createEnumeration();
     while (en.hasMoreElements()) {
@@ -114,13 +182,18 @@ function readParagraph(p, withRuns) {
         out.runs.push({ kind });
         continue;
       }
-      out.runs.push({ text: r.getString(), props: readDirectProps(r, RUN_PROPS) });
+      const run = { text: r.getString(), props: readDirectProps(r, RUN_PROPS, style) };
+      if (reds && reds.length) {
+        const red = reds.find((x) => (x.type === "Insert" || x.type === "Delete") && insideRedline(r, x));
+        if (red) run.redline = red.type;
+      }
+      out.runs.push(run);
     }
   }
   return out;
 }
 
-function readTable(t, withCells) {
+function readTable(t, withCells, reds) {
   const names = Array.from(t.getCellNames());
   const out = {
     t: "table",
@@ -137,7 +210,7 @@ function readTable(t, withCells) {
       const en = c.getText().createEnumeration();
       while (en.hasMoreElements()) {
         const p = en.nextElement();
-        if (!isTable(p)) paras.push(readParagraph(p, true));
+        if (!isTable(p)) paras.push(readParagraph(p, true, reds));
       }
       return {
         name: n,
@@ -162,6 +235,40 @@ function readTable(t, withCells) {
   return out;
 }
 
+/** ヘッダー・フッターの文字列。ページ番号などのフィールドは書き込みと同じ &[Page] の形で返す。 */
+const FIELD_CODES = [
+  ["PageNumber", "&[Page]"], ["PageCount", "&[Pages]"], ["DateTime", "&[Date]"], ["DocInfo.Title", "&[Title]"],
+  ["FileName", "&[File]"],
+];
+
+function headerFooterText(text) {
+  const parts = [];
+  try {
+    const en = text.createEnumeration();
+    while (en.hasMoreElements()) {
+      const p = en.nextElement();
+      if (isTable(p)) continue;
+      let line = "";
+      const pe = p.createEnumeration();
+      while (pe.hasMoreElements()) {
+        const r = pe.nextElement();
+        const kind = r.getPropertyValue("TextPortionType");
+        if (kind === "TextField") {
+          const f = r.getPropertyValue("TextField");
+          const hit = FIELD_CODES.find(([svc]) => f.supportsService("com.sun.star.text.TextField." + svc));
+          line += hit ? hit[1] : r.getString();
+        } else {
+          line += r.getString();
+        }
+      }
+      parts.push(line);
+    }
+  } catch (e) {
+    return text.getString();
+  }
+  return parts.join(" / ");
+}
+
 function pageInfo() {
   const out = {};
   try {
@@ -171,8 +278,8 @@ function pageInfo() {
     for (const p of ["Width", "Height", "IsLandscape", "LeftMargin", "RightMargin", "TopMargin", "BottomMargin", "HeaderIsOn", "FooterIsOn"]) {
       out[p] = ps.getPropertyValue(p);
     }
-    if (out.HeaderIsOn) out.header = ps.getPropertyValue("HeaderText").getString();
-    if (out.FooterIsOn) out.footer = ps.getPropertyValue("FooterText").getString();
+    if (out.HeaderIsOn) out.header = headerFooterText(ps.getPropertyValue("HeaderText"));
+    if (out.FooterIsOn) out.footer = headerFooterText(ps.getPropertyValue("FooterText"));
   } catch (e) {
     // 先頭が表の文書などで PageDescName が無い場合は既定の扱い。
     try {
@@ -190,7 +297,7 @@ function pageInfo() {
 
 /** よく使う段落スタイル（存在するものだけを一覧に出す）。 */
 const COMMON_STYLES = [
-  "Standard", "Text body", "Title", "Subtitle", "Heading 1", "Heading 2", "Heading 3", "Heading 4",
+  "Standard", "Title", "Subtitle", "Heading 1", "Heading 2", "Heading 3", "Heading 4",
   "Quotations", "List Bullet", "List Number", "Caption", "Table Contents", "Footnote", "Signature",
 ];
 
@@ -208,12 +315,15 @@ function availableStyles() {
   }
   return Array.from(names).slice(0, 40).map((n) => {
     let display = n;
+    let look = null;
     try {
-      display = fam.getByName(n).getPropertyValue("DisplayName");
+      const st = fam.getByName(n);
+      display = st.getPropertyValue("DisplayName");
+      look = { size: st.getPropertyValue("CharHeight"), bold: st.getPropertyValue("CharWeight") > 100, color: st.getPropertyValue("CharColor") };
     } catch (e) {
       display = n;
     }
-    return [n, display];
+    return [n, display, look];
   });
 }
 
@@ -231,11 +341,20 @@ HANDLERS["writer.overview"] = (req) => {
     indexes: DOC.getDocumentIndexes().getCount(),
     styles: availableStyles(),
     tracking: DOC.getPropertyValue("RecordChanges"),
+    pages: (() => {
+      try {
+        return DOC.getCurrentController().getPropertyValue("PageCount");
+      } catch (e) {
+        return null;
+      }
+    })(),
   };
+  const reds = redlineSpans();
+  out.redlines = reds.length;
   for (let i = from; i < to; i++) {
     STAGE = `ブロック ${i} の概要`;
     const b = blocks[i];
-    const item = isTable(b) ? readTable(b, false) : readParagraph(b, false);
+    const item = isTable(b) ? readTable(b, false) : readParagraph(b, false, reds);
     item.id = blockId(i, b);
     if (item.t === "p" && item.text.length > 80) item.text = item.text.slice(0, 80) + "…";
     out.blocks.push(item);
@@ -251,10 +370,11 @@ HANDLERS["writer.read_blocks"] = (req) => {
   const b = req.to ? resolveBlock(blocks, req.to) : a;
   if (b < a) fail("bad_range", "範囲の終わりが始まりより前です");
   const out = { blocks: [] };
+  const reds = redlineSpans();
   for (let i = a; i <= Math.min(b, a + 100); i++) {
     STAGE = `ブロック ${i} の詳細`;
     const blk = blocks[i];
-    const item = isTable(blk) ? readTable(blk, true) : readParagraph(blk, true);
+    const item = isTable(blk) ? readTable(blk, true, reds) : readParagraph(blk, true, reds);
     item.id = blockId(i, blk);
     out.blocks.push(item);
   }

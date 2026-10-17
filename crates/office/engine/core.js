@@ -103,6 +103,15 @@ function describeError(e) {
   if (e && typeof e === "object") message = e.Message || e.message || "";
   if (!message) message = String(e);
   if (message === "[object Object]") message = "";
+  // 消えた（置き換わった）オブジェクトへの参照。同じ一括の中で削除・置換したブロックの ID を使ったとき。
+  if (/disposed or invalid|DisposedException/i.test(message)) {
+    return {
+      code: "block_gone",
+      message: "対象のブロックはこの一括の中で既に消えたか置き換わっています（delete・replace の後に元の ID を使った可能性）。" +
+        "その操作は次の呼び出しに分け、結果に返るブロック ID を使ってください",
+      stage: STAGE,
+    };
+  }
   return { code: "uno_error", message: message || "LibreOffice が操作を拒否しました", stage: STAGE };
 }
 

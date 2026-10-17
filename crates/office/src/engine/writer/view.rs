@@ -50,7 +50,24 @@ fn kind_label(b: &Value) -> String {
     if s(&props["BreakType"]).starts_with("PAGE") {
         label.push_str("・改ページ");
     }
+    if b["changes"] == Value::Bool(true) {
+        label.push_str("・変更履歴あり");
+    }
     label
+}
+
+/// スタイルの見た目（"14pt 太字 #2E74B5"）。
+fn style_look(look: &Value) -> Option<String> {
+    let size = look["size"].as_f64()?;
+    let mut out = format!("{size}pt");
+    if look["bold"] == Value::Bool(true) {
+        out.push_str(" 太字");
+    }
+    if let Some(c) = hex(look["color"].as_i64().unwrap_or(-1)) {
+        out.push(' ');
+        out.push_str(&c);
+    }
+    Some(out)
 }
 
 /// 用紙の名前（1/100 mm の幅・高さから）。知らない大きさは寸法で書く。
@@ -80,7 +97,12 @@ pub fn overview_text(file_name: &str, ov: &Value) -> String {
     let orient = if width > height { "横" } else { "縦" };
     let _ = write!(
         out,
-        "文書「{file_name}」: ブロック {} 個・{paper}{orient}・余白 上{} 右{} 下{} 左{} mm",
+        "文書{}: ブロック {} 個・{paper}{orient}・余白 上{} 右{} 下{} 左{} mm",
+        if file_name.is_empty() {
+            String::new()
+        } else {
+            format!("「{file_name}」")
+        },
         ov["count"],
         mm(&page["TopMargin"]),
         mm(&page["RightMargin"]),
@@ -99,6 +121,15 @@ pub fn overview_text(file_name: &str, ov: &Value) -> String {
     if ov["tracking"] == Value::Bool(true) {
         out.push_str("・変更履歴を記録中");
     }
+    if let Some(n) = ov["redlines"].as_u64().filter(|n| *n > 0) {
+        let _ = write!(
+            out,
+            "・未承認の変更 {n} 件（read_blocks で <ins>/<del> として見える）"
+        );
+    }
+    if let Some(n) = ov["pages"].as_u64().filter(|n| *n > 0) {
+        let _ = write!(out, "・{n} ページ");
+    }
     out.push('\n');
     if let Some(styles) = ov["styles"].as_array() {
         let list: Vec<String> = styles
@@ -106,10 +137,17 @@ pub fn overview_text(file_name: &str, ov: &Value) -> String {
             .filter_map(|pair| {
                 let pair = pair.as_array()?;
                 let (name, display) = (s(&pair[0]), s(&pair[1]));
-                Some(if name == display {
+                let mut notes = Vec::new();
+                if name != display {
+                    notes.push(display.to_string());
+                }
+                if let Some(look) = pair.get(2).and_then(style_look) {
+                    notes.push(look);
+                }
+                Some(if notes.is_empty() {
                     name.to_string()
                 } else {
-                    format!("{name}（{display}）")
+                    format!("{name}（{}）", notes.join("・"))
                 })
             })
             .collect();
@@ -199,6 +237,15 @@ fn run_html(r: &Value) -> String {
     if let Some(sz) = p["CharHeight"].as_f64() {
         css.push(format!("font-size: {sz}pt"));
     }
+    let font = s(&p["CharFontNameAsian"]);
+    let font = if font.is_empty() {
+        s(&p["CharFontName"])
+    } else {
+        font
+    };
+    if !font.is_empty() {
+        css.push(format!("font-family: '{}'", escape(font)));
+    }
     if !css.is_empty() {
         text = format!("<span style=\"{}\">{text}</span>", css.join("; "));
     }
@@ -223,6 +270,12 @@ fn run_html(r: &Value) -> String {
     if !url.is_empty() {
         text = format!("<a href=\"{}\">{text}</a>", escape(url));
     }
+    // 未承認の変更履歴（挿入・削除）。
+    match s(&r["redline"]) {
+        "Insert" => text = format!("<ins>{text}</ins>"),
+        "Delete" => text = format!("<del>{text}</del>"),
+        _ => {}
+    }
     text
 }
 
@@ -244,6 +297,28 @@ fn paragraph_html(p: &Value) -> String {
     let left = props["ParaLeftMargin"].as_f64().unwrap_or(0.0);
     if left > 0.5 {
         css.push(format!("margin-left: {:.1}mm", left / 100.0));
+    }
+    // 段落に直接付けた間隔（スタイル由来の値は出さない）。1/100 mm → pt。
+    let direct = &p["direct"];
+    for (key, name) in [
+        ("ParaTopMargin", "margin-top"),
+        ("ParaBottomMargin", "margin-bottom"),
+    ] {
+        if let Some(v) = direct[key].as_f64() {
+            css.push(format!("{name}: {:.1}pt", v / 100.0 * 72.0 / 25.4));
+        }
+    }
+    match (
+        direct["LineSpacingMode"].as_i64(),
+        direct["LineSpacingHeight"].as_f64(),
+    ) {
+        (Some(0), Some(h)) if (h - 100.0).abs() > 0.5 => {
+            css.push(format!("line-height: {}", h / 100.0));
+        }
+        (Some(3), Some(h)) => {
+            css.push(format!("line-height: {:.1}pt", h / 100.0 * 72.0 / 25.4));
+        }
+        _ => {}
     }
     let style_attr = if css.is_empty() {
         String::new()

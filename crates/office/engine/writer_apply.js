@@ -87,20 +87,21 @@ function setParaStyle(p, name) {
   }
 }
 
-/** 段落の中の data-style の印（Rust が先頭に置いたブックマーク）の名前。 */
-function styleMarkerOf(p) {
+/** 段落の中の印（Rust が先頭に置いたブックマーク "shiki-…"）の名前。 */
+function markersOf(p) {
+  const out = [];
   try {
     const en = p.createEnumeration();
     while (en.hasMoreElements()) {
       const r = en.nextElement();
       if (r.getPropertyValue("TextPortionType") !== "Bookmark") continue;
       const n = r.getPropertyValue("Bookmark").getName();
-      if (n.startsWith("shiki-s-")) return n;
+      if (n.startsWith("shiki-")) out.push(n);
     }
   } catch (e) {
     // 列挙できない段落。
   }
-  return null;
+  return out;
 }
 
 /**
@@ -121,44 +122,65 @@ function fixImportedStyles(paragraphs) {
     } catch (e) {
       continue;
     }
-    const marker = styleMarkerOf(p);
-    const target = marker ? markerStyleName(marker) : null;
-    if (target) {
-      if (styles.hasByName(target)) setParaStyle(p, target);
-      else missing.push(target);
-      continue;
+    const markers = markersOf(p);
+    // HTML で指定の無い段落の間隔（取り込みが付ける上 0・下 10pt 相当）はスタイルの値へ戻す。
+    // 上と下は 1 つの属性なので、片方だけ既定へ戻すことはできない。両方を戻し、スタイルを当てた後で
+    // 指定した側だけを付け直す（先に付け直すと、もう片方に元のスタイルの値が直接書式として残る）。
+    const kept = (markers.find((m) => m.startsWith("shiki-k-")) || "").split("-")[2] || "";
+    let spacing = null;
+    try {
+      spacing = [p.getPropertyValue("ParaTopMargin"), p.getPropertyValue("ParaBottomMargin")];
+      p.setPropertyToDefault("ParaTopMargin");
+    } catch (e) {
+      // 既定へ戻せない段落。
     }
-    if (name === "Table Heading" || name === "Table Contents") {
-      const heading = name === "Table Heading";
-      const center = heading && !isDirect(p, "ParaAdjust");
-      const bold = heading && !isDirect(p, "CharWeight");
-      const top = !isDirect(p, "ParaTopMargin");
-      const bottom = !isDirect(p, "ParaBottomMargin");
-      const line = !isDirect(p, "ParaLineSpacing");
-      setParaStyle(p, bodyStyle());
-      if (center) p.setPropertyValue("ParaAdjust", I.style.ParagraphAdjust.CENTER);
-      if (bold) {
-        p.setPropertyValue("CharWeight", 150);
-        p.setPropertyValue("CharWeightAsian", 150);
-      }
-      if (top) p.setPropertyValue("ParaTopMargin", long(0));
-      if (bottom) p.setPropertyValue("ParaBottomMargin", long(0));
-      if (line) {
-        const ls = new I.style.LineSpacing();
-        ls.Mode = 0;
-        ls.Height = 100;
-        p.setPropertyValue("ParaLineSpacing", ls);
-      }
-    } else if (name === "Text body" || name === "Body Text" || name.indexOf(".") > 0) {
-      setParaStyle(p, bodyStyle());
+    restyleImported(p, name, markers, styles, missing);
+    if (spacing !== null) {
+      if (kept.indexOf("t") >= 0) p.setPropertyValue("ParaTopMargin", long(spacing[0]));
+      if (kept.indexOf("b") >= 0) p.setPropertyValue("ParaBottomMargin", long(spacing[1]));
     }
   }
   // 印のブックマークは役目を終えたので消す（対象外の段落に残ったものも含めて）。
   const bookmarks = DOC.getBookmarks();
   for (const n of Array.from(bookmarks.getElementNames())) {
-    if (n.startsWith("shiki-s-")) bookmarks.getByName(n).dispose();
+    if (n.startsWith("shiki-s-") || n.startsWith("shiki-k-")) bookmarks.getByName(n).dispose();
   }
   if (missing.length) fail("style_not_found", `段落スタイル「${missing[0]}」がありません（office.read の概要に使えるスタイルがあります）`);
+}
+
+/** 取り込んだ段落 1 つのスタイルを整える（data-style の印・表のセル・本文）。 */
+function restyleImported(p, name, markers, styles, missing) {
+  const marker = markers.find((m) => m.startsWith("shiki-s-"));
+  const target = marker ? markerStyleName(marker) : null;
+  if (target) {
+    if (styles.hasByName(target)) setParaStyle(p, target);
+    else missing.push(target);
+    return;
+  }
+  if (name === "Table Heading" || name === "Table Contents") {
+    const heading = name === "Table Heading";
+    const center = heading && !isDirect(p, "ParaAdjust");
+    const bold = heading && !isDirect(p, "CharWeight");
+    const top = !isDirect(p, "ParaTopMargin");
+    const bottom = !isDirect(p, "ParaBottomMargin");
+    const line = !isDirect(p, "ParaLineSpacing");
+    setParaStyle(p, bodyStyle());
+    if (center) p.setPropertyValue("ParaAdjust", I.style.ParagraphAdjust.CENTER);
+    if (bold) {
+      p.setPropertyValue("CharWeight", 150);
+      p.setPropertyValue("CharWeightAsian", 150);
+    }
+    if (top) p.setPropertyValue("ParaTopMargin", long(0));
+    if (bottom) p.setPropertyValue("ParaBottomMargin", long(0));
+    if (line) {
+      const ls = new I.style.LineSpacing();
+      ls.Mode = 0;
+      ls.Height = 100;
+      p.setPropertyValue("ParaLineSpacing", ls);
+    }
+  } else if (name === "Text body" || name === "Body Text" || name.indexOf(".") > 0) {
+    setParaStyle(p, bodyStyle());
+  }
 }
 
 /** 段落・表のセルの中の段落も含めて、指定したブロックの段落を集める。 */
@@ -206,26 +228,158 @@ function indexOfBlock(blocks, obj) {
 function emptyParagraphAt(anchor, before) {
   const text = DOC.getText();
   const all = bodyBlocks();
-  if (anchor === null) {
-    return emptyParagraphAt(all[all.length - 1], false);
-  }
-  if (isTable(anchor)) {
-    const para = DOC.createInstance("com.sun.star.text.Paragraph");
-    if (before) text.insertTextContentBefore(para, anchor);
-    else text.insertTextContentAfter(para, anchor);
-    return para;
-  }
+  if (anchor === null) return emptyParagraphAt(all[all.length - 1], false);
   const index = indexOfBlock(all, anchor);
+  if (isTable(anchor)) {
+    insertParagraphBeside(anchor, before);
+    return resetParagraph(bodyBlocks()[before ? index : index + 1]);
+  }
+  // 目次などの索引（セクション）の中へは入れない。前後に段落を置く。
+  const section = indexSectionOf(anchor);
+  if (section !== null) {
+    const span = indexSpan(all, anchor);
+    if (before || span[1] + 1 >= all.length) {
+      insertParagraphBeside(section, before);
+      return resetParagraph(bodyBlocks()[before ? span[0] : span[1] + 1]);
+    }
+    return emptyParagraphAt(all[span[1] + 1], true);
+  }
+  // 後ろに次のブロックがあれば、その前に作る（段落の頭で分割する）。
+  if (!before && index + 1 < all.length) return emptyParagraphAt(all[index + 1], true);
   if (before) {
-    if (index > 0) return emptyParagraphAt(all[index - 1], false);
-    // 文書の先頭: 先頭の段落の頭で分割すると、前側（空）が新しい先頭の段落になる。
+    // 段落の頭で分割すると前側（空）が新しい段落になり、anchor の参照は内容に付いたまま。
+    // 改ページは内容の側に残す（分割で前側へ移るため）。
+    const brk = isDirect(anchor, "BreakType") ? anchor.getPropertyValue("BreakType") : null;
     const cur = text.createTextCursorByRange(anchor.getStart());
     text.insertControlCharacter(cur, PB, false);
-    return resetParagraph(bodyBlocks()[0]);
+    const para = resetParagraph(bodyBlocks()[index]);
+    if (brk !== null) anchor.setPropertyValue("BreakType", brk);
+    return para;
   }
+  // 文書の最後の段落の後ろ: 末尾で分割するしかない。Writer は元の段落の参照を後ろ側（新しい空の段落）へ
+  // 移すので、この一括で解決済みの参照を内容の側へ付け替える。
   const cur = text.createTextCursorByRange(anchor.getEnd());
   text.insertControlCharacter(cur, PB, false);
-  return resetParagraph(bodyBlocks()[index + 1]);
+  const blocks = bodyBlocks();
+  rebindResolved(anchor, blocks[index]);
+  return resetParagraph(blocks[index + 1]);
+}
+
+/**
+ * 表・セクションの前後に空の段落を入れる。
+ *
+ * 作った段落オブジェクトは文書に入った後も壊れていて（"SwXParagraph: disposed or invalid"）、JS 側で
+ * 参照を持っている間は列挙しても同じオブジェクトが返る。関数の中で作って参照をすぐ手放し、
+ * 位置で取り直す（実機で確認）。
+ */
+function insertParagraphBeside(content, before) {
+  const text = DOC.getText();
+  const para = DOC.createInstance("com.sun.star.text.Paragraph");
+  if (before) text.insertTextContentBefore(para, content);
+  else text.insertTextContentAfter(para, content);
+}
+
+/** 段落が目次などの索引の中にあれば、その索引（無ければ null）。 */
+function documentIndexOf(b) {
+  if (isTable(b)) return null;
+  try {
+    return b.getPropertyValue("DocumentIndex") || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 索引の中の段落なら、その索引を包むいちばん外側のセクション（無ければ null）。
+ * docx を開き直した目次は、索引のセクションの内側にさらにセクションを持つ。内側の前に入れると
+ * 目次の中に入ってしまうので、外側まで辿る。
+ */
+function indexSectionOf(b) {
+  if (documentIndexOf(b) === null) return null;
+  try {
+    let section = b.getPropertyValue("TextSection");
+    while (section && section.getParentSection()) section = section.getParentSection();
+    return section || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** b を含む索引が占めるブロックの範囲 [最初, 最後]。 */
+function indexSpan(all, b) {
+  const idx = documentIndexOf(b);
+  const i = indexOfBlock(all, b);
+  let first = i;
+  let last = i;
+  while (first > 0 && sameObject(documentIndexOf(all[first - 1]), idx)) first--;
+  while (last + 1 < all.length && sameObject(documentIndexOf(all[last + 1]), idx)) last++;
+  return [first, last];
+}
+
+/** この一括で解決済みのブロック参照（ID → UNO の参照）。writer.apply が入れる。 */
+let RESOLVED = {};
+
+function rebindResolved(stale, fresh) {
+  for (const k of Object.keys(RESOLVED)) {
+    if (sameObject(RESOLVED[k], stale)) RESOLVED[k] = fresh;
+  }
+}
+
+/** 変更履歴を記録中か。 */
+function recording() {
+  try {
+    return !!DOC.getPropertyValue("RecordChanges");
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 変更履歴の記録を止めて fn を実行する（差し込みの後片付けなど、履歴に残すべきでない操作）。 */
+function withoutRecording(fn) {
+  const was = recording();
+  if (was) DOC.setPropertyValue("RecordChanges", false);
+  try {
+    return fn();
+  } finally {
+    if (was) DOC.setPropertyValue("RecordChanges", true);
+  }
+}
+
+/**
+ * ブロックを消す。変更履歴の記録中は段落の削除として履歴に残す（dispose は記録中は何もしない）。
+ * 段落の区切りも含めて消し、前後の段落とつなげる。
+ */
+function removeBlock(b) {
+  // 目次の段落は、目次ごと（見出しも含めて）消す。
+  const idx = documentIndexOf(b);
+  if (idx !== null) {
+    // 索引を dispose するだけでは中の段落（見出し・項目）が普通の段落として残る。中身を空にしてから消す。
+    const cur = DOC.getText().createTextCursorByRange(idx.getAnchor());
+    cur.setString("");
+    idx.dispose();
+    return;
+  }
+  if (isTable(b) || !recording()) {
+    b.dispose();
+    return;
+  }
+  const text = DOC.getText();
+  const all = bodyBlocks();
+  const i = indexOfBlock(all, b);
+  const prev = i > 0 ? all[i - 1] : null;
+  const next = i + 1 < all.length ? all[i + 1] : null;
+  let cur;
+  if (next && !isTable(next)) {
+    cur = text.createTextCursorByRange(b.getStart());
+    cur.gotoRange(next.getStart(), true);
+  } else if (prev && !isTable(prev)) {
+    cur = text.createTextCursorByRange(prev.getEnd());
+    cur.gotoRange(b.getEnd(), true);
+  } else {
+    cur = text.createTextCursorByRange(b.getStart());
+    cur.gotoRange(b.getEnd(), true);
+  }
+  cur.setString("");
 }
 
 /** 段落を分割すると、元の段落の直接書式（右寄せ・字下げなど）を引き継ぐ。既定へ戻す。 */
@@ -269,18 +423,31 @@ function insertHtml(anchor, before, html, created) {
   const start = prev === null ? 0 : indexOfBlock(blocks, prev) + 1;
   const end = next === null ? blocks.length : indexOfBlock(blocks, next);
   let inserted = blocks.slice(start, end);
-  // 先頭は Rust が置いた番兵の段落（分割した段落の書式を吸わせるためのもの）。捨てる。
-  if (inserted.length > 1 && !isTable(inserted[0]) && inserted[0].getString() === IMPORT_SENTINEL) {
-    inserted[0].dispose();
-    inserted = inserted.slice(1);
-  }
-  // 取り込みは末尾に空段落を残す（差し込み先の段落の残り）。空の段落を後ろから消す。
-  while (inserted.length > 1) {
-    const last = inserted[inserted.length - 1];
-    if (isTable(last) || last.getString() !== "") break;
-    last.dispose();
-    inserted = inserted.slice(0, -1);
-  }
+  // 後片付け（番兵・末尾の空段落）は差し込みの一部ではないので、変更履歴に残さない。
+  inserted = withoutRecording(() => {
+    let rest = inserted;
+    // 先頭は Rust が置いた番兵の段落（分割した段落の書式を吸わせるためのもの）。捨てる。
+    // ただし表と表の間の区切りになる場合は、空の段落として残す（消すと表が 1 つに合体する）。
+    if (rest.length > 1 && !isTable(rest[0]) && rest[0].getString() === IMPORT_SENTINEL) {
+      if (isTable(rest[1]) && prev !== null && isTable(prev)) {
+        rest[0].setString("");
+        resetParagraph(rest[0]);
+      } else {
+        rest[0].dispose();
+        rest = rest.slice(1);
+      }
+    }
+    // 取り込みは末尾に空段落を残す（差し込み先の段落の残り）。空の段落を後ろから消す。
+    // 表の直後で、次も表（か文書の終わり）なら区切りとして残す。
+    while (rest.length > 1) {
+      const last = rest[rest.length - 1];
+      if (isTable(last) || last.getString() !== "") break;
+      if (isTable(rest[rest.length - 2]) && (next === null || isTable(next))) break;
+      last.dispose();
+      rest = rest.slice(0, -1);
+    }
+    return rest;
+  });
   fixImportedStyles(collectParagraphs(inserted));
   return inserted;
 }
@@ -426,6 +593,39 @@ function dropEmptyParagraph(p) {
   p.dispose();
 }
 
+/**
+ * 置き換えで隣の表が消えた後、表と表の区切りとして残した空の段落が不要になっていれば消す。
+ */
+function trimSeparators(inserted) {
+  if (inserted.length < 2) return;
+  const all = bodyBlocks();
+  const first = inserted[0];
+  const last = inserted[inserted.length - 1];
+  const i = indexOfBlock(all, first);
+  if (i >= 0 && !isTable(first) && first.getString() === "" && isTable(inserted[1]) && (i === 0 || !isTable(all[i - 1]))) {
+    first.dispose();
+  }
+  const blocks = bodyBlocks();
+  const j = indexOfBlock(blocks, last);
+  const after = j >= 0 && j + 1 < blocks.length ? blocks[j + 1] : null;
+  if (j >= 0 && !isTable(last) && last.getString() === "" && isTable(inserted[inserted.length - 2]) && after !== null && !isTable(after)) {
+    last.dispose();
+  }
+}
+
+/** ブロックの並びを消す（目次は 1 回だけ消す）。 */
+function removeBlocks(range) {
+  const gone = [];
+  for (const b of range) {
+    const idx = documentIndexOf(b);
+    if (idx !== null) {
+      if (gone.some((g) => sameObject(g, idx))) continue;
+      gone.push(idx);
+    }
+    removeBlock(b);
+  }
+}
+
 WOPS.insert_html = (op, resolved, created) => {
   const blank = blankParagraph();
   let anchor = op.anchor === null ? null : resolved[op.anchor];
@@ -435,22 +635,26 @@ WOPS.insert_html = (op, resolved, created) => {
     before = true;
   }
   const inserted = insertHtml(anchor, before, op.html, created);
-  dropEmptyParagraph(blank);
+  withoutRecording(() => dropEmptyParagraph(blank));
   return { blocks: inserted.length };
 };
 
 WOPS.replace_html = (op, resolved, created) => {
-  const range = blockRange(resolved, op.from, op.to);
-  const inserted = insertHtml(range[range.length - 1], false, op.html, created);
+  const before = blockRange(resolved, op.from, op.to);
+  const inserted = insertHtml(before[before.length - 1], false, op.html, created);
   STAGE = "置き換え前のブロックの削除";
-  for (const b of range) b.dispose();
+  // 差し込みで参照が付け替わることがあるので、範囲は取り直す。
+  const range = blockRange(resolved, op.from, op.to);
+  if (range.length >= bodyBlocks().length) fail("delete_all", "文書のすべてのブロックは消せません");
+  removeBlocks(range);
+  withoutRecording(() => trimSeparators(inserted));
   return { removed: range.length, blocks: inserted.length };
 };
 
 WOPS.delete = (op, resolved) => {
   const range = blockRange(resolved, op.from, op.to);
   if (range.length >= bodyBlocks().length) fail("delete_all", "文書のすべてのブロックは消せません（最低 1 段落は残ります）");
-  for (const b of range) b.dispose();
+  removeBlocks(range);
   return { removed: range.length };
 };
 
@@ -458,7 +662,7 @@ WOPS.replace_text = (op, resolved) => {
   const hits = findAll(op, resolved);
   if (hits.length === 0) fail("not_found", `「${op.find}」が見つかりません`);
   if (!op.all && hits.length > 1) {
-    fail("ambiguous", `「${op.find}」が ${hits.length} か所あります。範囲（from/to）で絞るか all: true にしてください`);
+    fail("ambiguous", `「${op.find}」が ${hits.length} か所あります。within で範囲を絞るか、全部なら all: true にしてください`);
   }
   for (const r of hits) r.setString(op.replace);
   return { replaced: hits.length };
@@ -468,7 +672,7 @@ WOPS.format_text = (op, resolved) => {
   const hits = findAll(op, resolved);
   if (hits.length === 0) fail("not_found", `「${op.find}」が見つかりません`);
   if (!op.all && hits.length > 1) {
-    fail("ambiguous", `「${op.find}」が ${hits.length} か所あります。範囲（from/to）で絞るか all: true にしてください`);
+    fail("ambiguous", `「${op.find}」が ${hits.length} か所あります。within で範囲を絞るか、全部なら all: true にしてください`);
   }
   for (const r of hits) applyFont(r, op.font);
   return { formatted: hits.length };
@@ -586,7 +790,7 @@ WOPS.insert_toc = (op, resolved) => {
   toc.setPropertyValue("CreateFromOutline", true);
   toc.setPropertyValue("Level", short(op.levels));
   toc.update();
-  dropEmptyParagraph(para);
+  withoutRecording(() => dropEmptyParagraph(para));
   return {};
 };
 
@@ -599,6 +803,19 @@ WOPS.update_indexes = () => {
 WOPS.page_break = (op, resolved) => {
   const range = blockRange(resolved, op.from, null);
   range[0].setPropertyValue("BreakType", I.style.BreakType.PAGE_BEFORE);
+  return {};
+};
+
+/** すべての変更履歴を承認・却下する（AI の view の命令として実行する）。 */
+WOPS.all_changes = (op) => {
+  const before = DOC.getRedlines().createEnumeration().hasMoreElements();
+  if (!before) return { changes: 0 };
+  const dh = I.frame.DispatchHelper.create(uno.componentContext);
+  const frame = DOC.getCurrentController().getFrame();
+  dh.executeDispatch(frame, op.accept ? ".uno:AcceptAllTrackedChanges" : ".uno:RejectAllTrackedChanges", "", 0, []);
+  if (DOC.getRedlines().createEnumeration().hasMoreElements()) {
+    fail("changes_left", "変更履歴を一部処理できませんでした（表の構造の変更などは個別に扱えません）");
+  }
   return {};
 };
 
@@ -617,6 +834,7 @@ HANDLERS["writer.apply"] = (req) => {
     const blocks = bodyBlocks();
     const resolved = {};
     for (const id of req.block_ids) resolved[id] = blocks[resolveBlock(blocks, id)];
+    RESOLVED = resolved;
     for (let i = 0; i < req.ops.length; i++) {
       const op = req.ops[i];
       const fn = WOPS[op.op];

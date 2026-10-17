@@ -107,6 +107,10 @@ pub enum DocOp {
     PageBreak { before: String },
     /// 変更履歴の記録を切り替える。
     TrackChanges { enabled: bool },
+    /// 文書のすべての変更履歴を承認する（変更を確定し、印を消す）。
+    AcceptAllChanges {},
+    /// 文書のすべての変更履歴を却下する（変更前に戻す）。
+    RejectAllChanges {},
 }
 
 fn toc_title() -> String {
@@ -143,6 +147,8 @@ impl DocOp {
             DocOp::UpdateToc {} => "update_toc",
             DocOp::PageBreak { .. } => "page_break",
             DocOp::TrackChanges { .. } => "track_changes",
+            DocOp::AcceptAllChanges {} => "accept_all_changes",
+            DocOp::RejectAllChanges {} => "reject_all_changes",
         }
     }
 }
