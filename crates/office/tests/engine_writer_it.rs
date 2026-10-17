@@ -86,6 +86,8 @@ async fn builds_a_report_and_survives_a_docx_round_trip() {
     );
     assert!(out.text.contains("Heading 1「1. 概要」"), "{}", out.text);
     assert!(out.text.contains("目次（"), "{}", out.text);
+    // 新規のテンプレートは A4（日本の業務文書の既定）。
+    assert!(out.text.contains("A4"), "用紙: {}", out.text);
     client.save().await.unwrap();
     client.close().await;
 

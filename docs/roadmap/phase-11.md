@@ -127,6 +127,9 @@
   **新規作成**（`save_document` / `save_sheet`）は issue #381 で Collabora へ一本化した
   （空テンプレ実体化→HTML/セル paste。md 下書き画面 `/office/draft` は廃止・design §4.8・PIT-50）。
   作成/編集の結果は `document_ref` カードとしてチャットに残る（#358 の実害を解消）。
+  Excel・Word のレイアウト水準の読み書きは #725 の Shiki Office Engine（`office.read` /
+  `office.excel_edit` / `office.word_edit`・kit 内の固定 JS へ JSON を渡す・全部成功か全部取り消し）で実装した
+  （design §4.8 ④・PIT-68。前提として Collabora 26.04 の自前ビルド #727 と中継 #726）。
 - **受け入れ条件**:
   - [ ] AI が pptx/docx/xlsx を読み・編集し新バージョンとして保存できる
   - [ ] 編集セッション中の AI 編集要求が上書きせず提案保存に落ちる（negative テスト）
