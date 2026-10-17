@@ -278,10 +278,11 @@ RUN fc-cache -f >/dev/null \
 # （jail の chroot に必要。Docker 既定 cap 集合（CHOWN/FOWNER/MKNOD/SYS_CHROOT）内で動く。
 #  compose 側で no-new-privileges を付けないこと — file caps の獲得が塞がれ起動不能になる）。
 # systemplate-setup は失敗しても exit 0 なので、雛形の中身をここで確かめて止める。
+# （26.04 の systemplate-setup は /etc/localtime を写さなくなったので検査しない。）
 RUN useradd -m -d /opt/cool cool \
     && mkdir -p /etc/coolwsd /var/cache/coolwsd /opt/cool/child-roots \
     && coolwsd-systemplate-setup /opt/cool/systemplate /opt/collaboraoffice \
-    && for f in lib64/ld-linux-x86-64.so.2 etc/ld.so.cache etc/localtime etc/fonts usr/share/fonts; do \
+    && for f in lib64/ld-linux-x86-64.so.2 etc/ld.so.cache etc/fonts usr/share/fonts; do \
          test -e "/opt/cool/systemplate/$f" || { echo "systemplate に $f が無い"; exit 1; }; \
        done \
     && for b in /usr/bin/coolforkit /usr/bin/coolforkit-caps /usr/bin/coolmount; do \
