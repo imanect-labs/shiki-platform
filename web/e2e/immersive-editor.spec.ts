@@ -3,8 +3,8 @@ import { expect, test } from "@playwright/test";
 import { loginViaKeycloak } from "./helpers";
 
 /// 没入エディタ（human 要望）: エディタを開くとサイドバーが畳まれ、シェル既定の現在地バー
-/// （📁 現在地）が消える。ノート/スライドは usePageHeader で独自ヘッダ（戻る/名前/AI に依頼）を
-/// **唯一のバー**として注入する（app-shell の ShellHeader 参照）。ドライブへ戻ると既定の
+/// （📁 現在地）が消える。ノート/スライドは usePageChrome で独自のクローム（戻る/名前/AI に依頼）を
+/// **唯一のバー**として登録する（app-shell の ShellHeader 参照）。ドライブへ戻ると既定の
 /// 現在地バーへ復元する（手動 pref は汚さない）。
 
 test("エディタで没入し、離れると復元する", async ({ page }) => {
@@ -26,7 +26,8 @@ test("エディタで没入し、離れると復元する", async ({ page }) => 
   await expect(aside).toHaveAttribute("data-collapsed", "true");
   // 既定の現在地バー（ドライブ見出し）は消え、ノートヘッダ（戻る/AI に依頼）へ置き換わる。
   await expect(banner.getByRole("img", { name: "ドライブ" })).toHaveCount(0);
-  await expect(banner.getByRole("link", { name: "ドライブへ戻る" })).toBeVisible();
+  // 戻るは履歴があれば直前の画面へ（無ければドライブへ）戻るボタン。
+  await expect(banner.getByRole("button", { name: "戻る", exact: true })).toBeVisible();
   await expect(banner.getByTestId("note-ask-ai")).toBeVisible();
 
   // ドライブへ戻る → 復元（ハードリロードでも展開＝手動 pref を localStorage に

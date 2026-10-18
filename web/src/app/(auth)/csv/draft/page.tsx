@@ -7,26 +7,30 @@
 /// - 左はローカルデータの [`CsvDraftGrid`]（サーバページング非依存）。編集はセル行列 →
 ///   CSV 文字列で下書きストアへ書き戻す（リロード復元）。
 /// - 同じ会話の複数下書きは**上部タブ**で切替（別名 = 別下書き・N 本並存）。
-/// - 右上「ドライブに保存」で POST /tabular/save → 実体化して /csv/{id} へ（ノート下書きと同型）。
+/// - 右上「保存」（PC は「ドライブに保存」）で POST /tabular/save → 実体化して /csv/{id} へ（ノート下書きと同型）。
 
-import { ArrowLeft, FileWarning, MessageSquare, PencilLine, Save, X } from "lucide-react";
-import Link from "next/link";
+import { FileWarning } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 
 import { Conversation } from "@/components/chat/conversation";
 import { CsvDraftGrid } from "@/components/csv/csv-draft-grid";
-import { SaveDraftDialog, type SaveTarget } from "@/components/notes/save-draft-dialog";
-import { usePageHeader } from "@/components/shell/page-header-context";
-import { Button } from "@/components/ui/button";
-import { EmptyState } from "@/components/ui/empty-state";
-import { FadeSlide } from "@/components/ui/motion-primitives";
+import {
+  DraftBadge,
+  DraftNotFound,
+  DraftTabs,
+  SaveDraftDialog,
+  draftChrome,
+  type SaveTarget,
+} from "@/components/notes/save-draft-dialog";
+import { AssistantLayout } from "@/components/shell/assistant-sheet";
+import { EditorMobileHeading, useEditorBack } from "@/components/shell/editor-loading";
+import { usePageChrome } from "@/components/shell/page-header-context";
 import { toast } from "@/components/ui/use-toast";
 import { getThreadMessages } from "@/lib/chat-api";
 import { csvDraftStore, parseCsvDraft } from "@/lib/csv/draft";
 import { parseCsv, toCsv } from "@/lib/csv/parse";
 import { saveNewCsv } from "@/lib/tabular-api";
-import { cn } from "@/lib/utils";
 
 /// useSearchParams を使うため Suspense 境界でラップする（静的生成の CSR bailout 要件・Next.js）。
 export default function DraftCsvPage() {
@@ -91,6 +95,8 @@ function DraftCsvPageInner() {
           }
         }
       })
+      // 履歴を読めなくても（会話が消えた等）ローカルの下書きで開く。
+      .catch(() => {})
       .finally(() => {
         if (!cancelled) setRecovered(true);
       });
@@ -162,141 +168,64 @@ function DraftCsvPageInner() {
     [activeName, cells, saving, threadId, router],
   );
 
-  // 統一ヘッダへ注入（戻る/下書きバッジ/保存/アシスタント切替・ノート下書きと同型）。
-  usePageHeader(
-    () => (
-      <div className="flex min-w-0 flex-1 items-center gap-2.5">
-        <Link
-          href="/drive"
-          className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-95"
-          aria-label="ドライブへ戻る"
-        >
-          <ArrowLeft className="size-4" />
-        </Link>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-          {activeName || "下書き CSV"}
-        </span>
-        <span
-          className="inline-flex items-center gap-1 rounded-full border border-dashed border-amber-500/50 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400"
-          data-testid="draft-badge"
-        >
-          <PencilLine className="size-3.5" aria-hidden />
-          下書き（未保存）
-        </span>
-        <Button
-          type="button"
-          size="sm"
-          onClick={() => setSaveOpen(true)}
-          disabled={!activeName}
-          data-testid="draft-save-button"
-        >
-          <Save className="mr-1.5 size-4" aria-hidden />
-          ドライブに保存
-        </Button>
-        <Button
-          type="button"
-          variant={chatOpen ? "secondary" : "ghost"}
-          size="sm"
-          onClick={() => setChatOpen((v) => !v)}
-          aria-pressed={chatOpen}
-          data-testid="note-chat-toggle"
-        >
-          <MessageSquare className="mr-1.5 size-4" aria-hidden />
-          アシスタント
-        </Button>
-      </div>
-    ),
-    [activeName, chatOpen],
+  // クローム（戻る → 保存 → アシスタント → ⋯・ノート下書きと同型）。
+  const back = useEditorBack();
+  usePageChrome(
+    () =>
+      draftChrome({
+        back,
+        threadId,
+        name: activeName || "下書き CSV",
+        canSave: Boolean(activeName),
+        onSave: () => setSaveOpen(true),
+        chatOpen,
+        onToggleChat: () => setChatOpen((v) => !v),
+      }),
+    [back, threadId, activeName, chatOpen],
   );
 
   if (!threadId) {
-    return (
-      <EmptyState
-        title="下書きが見つかりません"
-        description="チャットから「表を作って」と頼むと、ここに下書きが用意されます。"
-      />
-    );
+    return <DraftNotFound what="表" />;
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="relative flex min-h-0 flex-1">
-        <div
-          className={cn(
-            "flex min-w-0 flex-1 flex-col transition-[padding] duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
-            chatOpen && "lg:pr-[28rem]",
+      {/* スマホ: 文書名＋状態（PC はバーに出す）。 */}
+      <EditorMobileHeading name={activeName || "下書き CSV"} status={<DraftBadge />} />
+      <AssistantLayout
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        label="CSV のアシスタント"
+        panel={
+          // 下書き画面では遷移せずアクティブ下書きを切替（onCsvDraftOpened）。
+          <Conversation threadId={threadId} variant="panel" onCsvDraftOpened={onCsvDraftOpened} />
+        }
+      >
+        {/* 下書きタブ（同じ会話の複数下書きを切替・別名 = 別下書き）。 */}
+        <DraftTabs
+          drafts={drafts}
+          activeName={activeName}
+          onOpen={openDraft}
+          className="px-4 pt-3 max-md:pb-1 max-md:pt-0"
+        />
+
+        <div className="min-h-0 flex-1 p-4 max-md:px-2 max-md:pb-[max(0.5rem,env(safe-area-inset-bottom))] max-md:pt-1">
+          {cells && activeName ? (
+            <CsvDraftGrid
+              key={activeName}
+              header={cells[0] ?? []}
+              rows={cells.slice(1)}
+              onEdit={onEdit}
+              onAppendRow={onAppendRow}
+            />
+          ) : (
+            <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+              <FileWarning className="size-6 text-muted-foreground/60" aria-hidden />
+              下書きを読み込んでいます…
+            </div>
           )}
-        >
-          {/* 下書きタブ（同じ会話の複数下書きを切替・別名 = 別下書き）。 */}
-          {drafts.length > 1 ? (
-            <div className="flex flex-wrap items-center gap-1.5 px-4 pt-3" data-testid="draft-tabs">
-              {drafts.map((d) => (
-                <button
-                  key={d.name}
-                  type="button"
-                  onClick={() => openDraft(d.name)}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[13px] transition-colors",
-                    d.name === activeName
-                      ? "bg-accent font-medium text-foreground"
-                      : "border-border/60 bg-card/40 text-muted-foreground hover:bg-secondary hover:text-foreground",
-                  )}
-                >
-                  <PencilLine className="size-3.5 shrink-0" aria-hidden />
-                  <span className="max-w-[12rem] truncate">{d.name}</span>
-                </button>
-              ))}
-            </div>
-          ) : null}
-
-          <div className="min-h-0 flex-1 p-4">
-            {cells && activeName ? (
-              <CsvDraftGrid
-                key={activeName}
-                header={cells[0] ?? []}
-                rows={cells.slice(1)}
-                onEdit={onEdit}
-                onAppendRow={onAppendRow}
-              />
-            ) : (
-              <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
-                <FileWarning className="size-6 text-muted-foreground/60" aria-hidden />
-                下書きを読み込んでいます…
-              </div>
-            )}
-          </div>
         </div>
-
-        {chatOpen && (
-          <FadeSlide
-            from="right"
-            role="complementary"
-            aria-label="CSV のアシスタント"
-            className="absolute inset-y-3 right-3 z-20 flex w-[min(420px,calc(100%-1.5rem))] flex-col overflow-hidden rounded-2xl border bg-card shadow-lg"
-          >
-            <div className="flex h-11 shrink-0 items-center gap-2 px-3 shiki-dash-bottom">
-              <MessageSquare className="size-4 text-muted-foreground" aria-hidden />
-              <span className="flex-1 text-sm font-medium">アシスタント</span>
-              <button
-                type="button"
-                onClick={() => setChatOpen(false)}
-                aria-label="チャットを閉じる"
-                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-90"
-              >
-                <X className="size-4" aria-hidden />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1">
-              {/* 下書き画面では遷移せずアクティブ下書きを切替（onCsvDraftOpened）。 */}
-              <Conversation
-                threadId={threadId}
-                variant="panel"
-                onCsvDraftOpened={onCsvDraftOpened}
-              />
-            </div>
-          </FadeSlide>
-        )}
-      </div>
+      </AssistantLayout>
 
       <SaveDraftDialog
         open={saveOpen}

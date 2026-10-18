@@ -6,27 +6,33 @@
 /// 重ねる（枠は Docling の prov。スキャン PDF でも OCR の座標で同じように出る）。
 /// 版を省くと最新版を開く。ページは画面に近づいたものから描く（大きな PDF でも重くしない）。
 import * as React from "react";
-import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { Download, FileWarning, Minus, Plus } from "lucide-react";
+import { Download, FileClock, FileWarning, ZoomIn, ZoomOut } from "lucide-react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 
 import { PdfPage } from "@/components/pdf/pdf-page";
 import { CiteHint } from "@/components/shell/cite-hint";
-import { EditorLoading } from "@/components/shell/editor-loading";
-import { EmptyState } from "@/components/ui/empty-state";
+import {
+  EditorLoading,
+  EditorMobileHeading,
+  EditorStatusBadge,
+  EditorUnavailable,
+  useEditorBack,
+} from "@/components/shell/editor-loading";
+import { ChromeIconButton, usePageChrome } from "@/components/shell/page-header-context";
 import { parseCiteBoxes } from "@/lib/citation-locate";
 import { loadPdf } from "@/lib/pdf";
 import { getNode, versionDownloadUrl, type NodeResponse } from "@/lib/storage";
-import { cn } from "@/lib/utils";
 
 type State =
   | { phase: "loading" }
   | { phase: "ready"; node: NodeResponse; version: number; doc: PDFDocumentProxy }
   | { phase: "error"; message: string };
 
-/// ページ幅の段階（CSS px の上限。実際は表示領域に収まる幅まで縮める）。
-const ZOOMS = [560, 720, 880, 1080, 1320];
+/// ズームの段階（「幅フィット」に対する倍率）。幅を超えた分は横スクロールで見る。
+const ZOOMS = [1, 1.5, 2, 3];
+/// 幅フィットの上限（広い画面で 1 ページが巨大にならないよう、読みやすい幅で止める）。
+const FIT_MAX = 880;
 
 export default function PdfPageRoute() {
   return (
@@ -43,7 +49,7 @@ function PdfViewer() {
   const targetPage = Number(sp.get("page")) || null;
   const boxes = React.useMemo(() => parseCiteBoxes(sp.getAll("box")), [sp]);
   const [state, setState] = React.useState<State>({ phase: "loading" });
-  const [zoom, setZoom] = React.useState(2);
+  const [zoom, setZoom] = React.useState(0);
   const [containerWidth, setContainerWidth] = React.useState(0);
   const [current, setCurrent] = React.useState(1);
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -72,7 +78,7 @@ function PdfViewer() {
     };
   }, [id, askedVersion]);
 
-  // 表示幅に合わせてページ幅を決める（狭い画面では収まる幅まで縮める）。
+  // 表示幅に合わせて「幅フィット」を決め、倍率を掛けてページ幅にする。
   React.useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -81,7 +87,25 @@ function PdfViewer() {
     setContainerWidth(el.clientWidth);
     return () => ro.disconnect();
   }, [state.phase]);
-  const pageWidth = Math.max(240, Math.min(ZOOMS[zoom], containerWidth - 32));
+  const fitWidth = Math.max(240, Math.min(FIT_MAX, containerWidth - 32));
+  const pageWidth = Math.round(fitWidth * ZOOMS[zoom]);
+
+  // 拡大・縮小しても今見ているページに留まる（ページ幅が変わると縦位置がずれるため）。
+  const currentRef = React.useRef(current);
+  currentRef.current = current;
+  const lastZoom = React.useRef(zoom);
+  React.useEffect(() => {
+    if (lastZoom.current === zoom) return;
+    lastZoom.current = zoom;
+    const id = window.requestAnimationFrame(() => {
+      const root = scrollRef.current;
+      const page = root?.querySelector<HTMLElement>(`[data-page="${currentRef.current}"]`);
+      if (!root || !page) return;
+      root.scrollTop =
+        page.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop - 16;
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [zoom]);
 
   // 引用のページへ移る（ページの寸法が決まってから 1 回だけ）。
   React.useEffect(() => {
@@ -116,16 +140,76 @@ function PdfViewer() {
     });
   }, []);
 
-  const download = async () => {
-    if (state.phase !== "ready") return;
-    const t = await versionDownloadUrl(id, state.version);
+  const version = state.phase === "ready" ? state.version : null;
+  const download = React.useCallback(async () => {
+    if (version == null) return;
+    const t = await versionDownloadUrl(id, version);
     window.location.href = t.url;
-  };
+  }, [id, version]);
+
+  // クローム（戻る → 縮小・拡大 → ⋯（ダウンロード・最新版を開く））。読み込み中・エラーでも戻る。
+  const back = useEditorBack();
+  const name = state.phase === "ready" ? state.node.name.replace(/\.pdf$/i, "") : "";
+  const latest = state.phase === "ready" ? state.node.version : null;
+  const stale = version != null && latest != null && version < latest;
+  const numPages = state.phase === "ready" ? state.doc.numPages : 0;
+  usePageChrome(() => {
+    if (version == null) return { back };
+    return {
+      title: name,
+      menuTitle: name,
+      back,
+      subtitle: (
+        <span className="inline-flex items-center gap-2">
+          <span className="tabular-nums" aria-live="polite">
+            {current} / {numPages} ページ
+          </span>
+          {stale ? (
+            <EditorStatusBadge icon={FileClock}>
+              v{version}（最新は v{latest}）
+            </EditorStatusBadge>
+          ) : null}
+        </span>
+      ),
+      actions: (
+        <>
+          <ChromeIconButton
+            label="縮小"
+            disabled={zoom === 0}
+            onClick={() => setZoom((z) => Math.max(0, z - 1))}
+            className="disabled:pointer-events-none disabled:opacity-35"
+          >
+            <ZoomOut aria-hidden />
+          </ChromeIconButton>
+          <ChromeIconButton
+            label="拡大"
+            disabled={zoom === ZOOMS.length - 1}
+            onClick={() => setZoom((z) => Math.min(ZOOMS.length - 1, z + 1))}
+            className="disabled:pointer-events-none disabled:opacity-35"
+          >
+            <ZoomIn aria-hidden />
+          </ChromeIconButton>
+        </>
+      ),
+      menu: [
+        {
+          key: "download",
+          label: "ダウンロード",
+          icon: Download,
+          onSelect: () => void download(),
+          testId: "pdf-menu-download",
+        },
+        ...(stale
+          ? [{ key: "latest", label: `最新版（v${latest}）を開く`, icon: FileClock, href: `/pdf/${id}` }]
+          : []),
+      ],
+    };
+  }, [back, version, name, current, numPages, stale, latest, zoom, download, id]);
 
   if (state.phase === "loading") return <EditorLoading kind="doc" message="PDF を開いています…" />;
   if (state.phase === "error") {
     return (
-      <EmptyState
+      <EditorUnavailable
         icon={FileWarning}
         title="この PDF は開けません"
         description="ファイルが存在しないか、開く権限がないか、読み込みに失敗しました。"
@@ -133,52 +217,30 @@ function PdfViewer() {
     );
   }
 
-  const { node, version, doc } = state;
-  const stale = version < node.version;
+  const { doc } = state;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-11 shrink-0 items-center gap-2 px-3 shiki-dash-bottom">
-        <span className="min-w-0 truncate text-sm font-medium">{node.name.replace(/\.pdf$/i, "")}</span>
-        {stale ? (
-          <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-            v{version}（最新は v{node.version}）
-          </span>
-        ) : null}
-        <span className="ml-auto shrink-0 text-[12px] tabular-nums text-muted-foreground" aria-live="polite">
-          {current} / {doc.numPages}
-        </span>
-        <div className="flex shrink-0 items-center">
-          <IconButton label="縮小" disabled={zoom === 0} onClick={() => setZoom((z) => Math.max(0, z - 1))}>
-            <Minus className="size-4" />
-          </IconButton>
-          <IconButton
-            label="拡大"
-            disabled={zoom === ZOOMS.length - 1}
-            onClick={() => setZoom((z) => Math.min(ZOOMS.length - 1, z + 1))}
-          >
-            <Plus className="size-4" />
-          </IconButton>
-          <IconButton label="ダウンロード" onClick={() => void download()}>
-            <Download className="size-4" />
-          </IconButton>
-        </div>
-        {stale ? (
-          <Link
-            href={`/pdf/${id}`}
-            className="shrink-0 rounded-lg px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          >
-            最新版を開く
-          </Link>
-        ) : null}
-      </div>
+      {/* スマホ: 文書名＋状態（PC はバーに出す）。 */}
+      <EditorMobileHeading
+        name={name}
+        className="pb-1"
+        status={
+          stale ? (
+            <EditorStatusBadge icon={FileClock}>
+              v{version}（最新は v{latest}）
+            </EditorStatusBadge>
+          ) : null
+        }
+      />
       <div className="relative min-h-0 flex-1">
         <div
           ref={scrollRef}
           onScroll={onScroll}
-          className="h-full overflow-auto bg-muted/40 py-4"
+          className="h-full overflow-auto overscroll-contain bg-muted/40 py-4"
           data-testid="pdf-viewer"
         >
-          <div className="flex flex-col items-center gap-4">
+          {/* w-max: 拡大して表示幅を超えたら横スクロール（中央寄せで左端が切れないように）。 */}
+          <div className="flex w-max min-w-full flex-col items-center gap-4 px-4">
             {containerWidth > 0
               ? Array.from({ length: doc.numPages }, (_, i) => i + 1).map((n) => (
                   <PdfPage
@@ -194,8 +256,12 @@ function PdfViewer() {
               : null}
           </div>
         </div>
+        {/* スマホ: 今のページ（PC はバーに出す）。 */}
+        <div className="pointer-events-none absolute right-3 top-3 z-10 rounded-full bg-background/90 px-2.5 py-1 text-[12px] font-medium tabular-nums text-muted-foreground shadow-sm ring-1 ring-border/60 md:hidden">
+          {current} / {doc.numPages}
+        </div>
         {targetPage ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center">
+          <div className="pointer-events-none absolute inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-20 flex justify-center px-4">
             <CiteHint tone={boxes.length > 0 ? "found" : "approx"}>
               {boxes.length > 0
                 ? `引用箇所（p.${targetPage}）を枠で示しています`
@@ -205,32 +271,5 @@ function PdfViewer() {
         ) : null}
       </div>
     </div>
-  );
-}
-
-function IconButton({
-  label,
-  disabled,
-  onClick,
-  children,
-}: {
-  label: string;
-  disabled?: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-35",
-      )}
-    >
-      {children}
-    </button>
   );
 }

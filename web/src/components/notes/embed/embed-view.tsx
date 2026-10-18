@@ -55,7 +55,7 @@ function IframeEmbed({ payload }: { payload: Extract<EmbedPayload, { kind: "ifra
         sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
         referrerPolicy="no-referrer"
         loading="lazy"
-        className="h-[420px] w-full bg-background print:hidden"
+        className="h-[min(420px,60dvh)] w-full bg-background print:hidden"
       />
       <div
         className="hidden items-center gap-2 px-3 py-4 text-sm text-muted-foreground print:flex"

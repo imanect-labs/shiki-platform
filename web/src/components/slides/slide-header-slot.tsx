@@ -1,77 +1,127 @@
 "use client";
 
-/// スライド詳細の統一ヘッダ注入（ノートの NoteSyncSlot と同型・Task 11.1）。
-/// 戻る/名前/閲覧のみ/プレゼンス/同期ピルを共通ヘッダへ寄せる。null を返すだけ。
+/// スライド詳細のクローム（ノートの useNoteChrome と同型・Task 11.1）。
+///
+/// - 左: 戻る。右: AI に依頼（✦）→ ⋯（エクスポート・プレゼン）。
+/// - PC のバー: 名前＋状態（閲覧のみ・同期中/オフライン）、補助にプレゼンスとエクスポート/プレゼン。
+/// - スマホ: 名前と状態は本文先頭（ページ側の EditorMobileHeading）に出す。
+///
+/// 読み込み中・notfound でも戻るを出すため、ページ最上位（早期 return より前）で呼ぶ。
 
-import { ArrowLeft, Eye, Sparkles } from "lucide-react";
-import Link from "next/link";
+import { Eye, FileDown, Presentation } from "lucide-react";
+import * as React from "react";
 
 import { PresenceAvatars } from "@/components/notes/presence";
 import { SyncPill } from "@/components/notes/note-status";
-import { usePageHeader } from "@/components/shell/page-header-context";
+import { EditorStatusBadge, useEditorBack } from "@/components/shell/editor-loading";
+import { usePageChrome, type ChromeMenuItem } from "@/components/shell/page-header-context";
 import { Button } from "@/components/ui/button";
 import type { CollabProvider, CollabStatus } from "@/lib/collab";
 
-export function SlideHeaderSlot({
-  name,
-  editable,
-  status,
-  synced,
-  provider,
-  chatOpen = false,
-  onToggleChat,
-}: {
+/// エクスポート・プレゼンの開始（ワークスペースの状態を親が持つ）。
+export type SlideActions = { onExport: () => void; onPresent: () => void };
+
+/// ⋯ メニューのエクスポート・プレゼン項目（詳細・下書きで共用）。
+export function slideMenuItems({ onExport, onPresent }: SlideActions): ChromeMenuItem[] {
+  return [
+    {
+      key: "present",
+      label: "プレゼンする",
+      icon: Presentation,
+      onSelect: onPresent,
+      testId: "slide-menu-present",
+    },
+    {
+      key: "export",
+      label: "PowerPoint へエクスポート",
+      icon: FileDown,
+      onSelect: onExport,
+      testId: "slide-menu-export",
+    },
+  ];
+}
+
+/// PC のバーに出すエクスポート・プレゼン（文字ボタン・幅に余裕があるため外に出す）。
+export function SlideDesktopActions({ onExport, onPresent }: SlideActions) {
+  return (
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={onExport}
+        data-testid="slide-export"
+        className="gap-1.5 text-sm text-foreground/70 hover:text-foreground"
+      >
+        <FileDown className="size-4" aria-hidden />
+        エクスポート
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={onPresent}
+        data-testid="slide-present"
+        className="gap-1.5 text-sm text-foreground/70 hover:text-foreground"
+      >
+        <Presentation className="size-4" aria-hidden />
+        プレゼン
+      </Button>
+    </>
+  );
+}
+
+export type SlideChromeState = SlideActions & {
   name: string;
   editable: boolean;
   status: CollabStatus;
   synced: boolean;
   provider: CollabProvider | null;
-  /// アシスタントパネルの開閉（Task 11.10。onToggleChat 未指定ならボタンを出さない）。
-  chatOpen?: boolean;
-  onToggleChat?: () => void;
-}) {
-  usePageHeader(
-    () => (
-      // 狭い幅ではボタンをアイコンだけにして、名前に幅を残す（NoteSyncSlot と同じ）。
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2.5">
-        <Link
-          href="/drive"
-          className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:scale-95"
-          aria-label="ドライブへ戻る"
-        >
-          <ArrowLeft className="size-4" />
-        </Link>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{name}</span>
-        {!editable ? (
-          <span
-            className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border bg-muted/50 px-2 py-0.5 text-xs font-medium text-muted-foreground sm:px-2.5"
-            title="閲覧のみ"
-            data-testid="slide-readonly-badge"
-          >
-            <Eye className="size-3.5" aria-hidden />
-            <span className="sr-only sm:not-sr-only">閲覧のみ</span>
-          </span>
-        ) : null}
-        {provider ? <PresenceAvatars provider={provider} /> : null}
-        <SyncPill status={status} synced={synced} />
-        {onToggleChat ? (
-          <Button
-            type="button"
-            variant={chatOpen ? "secondary" : "ghost"}
-            size="sm"
-            onClick={onToggleChat}
-            aria-pressed={chatOpen}
-            aria-label="AI に依頼"
-            data-testid="slide-ask-ai"
-            className="shrink-0 px-2 sm:px-3"
-          >
-            <Sparkles className="size-4 sm:mr-1.5" aria-hidden />
-            <span className="hidden sm:inline">AI に依頼</span>
-          </Button>
-        ) : null}
-      </div>
-    ),
-    [name, editable, status, synced, provider, chatOpen, onToggleChat],
-  );
-  return null;
+  chatOpen: boolean;
+  onToggleChat: () => void;
+};
+
+/// クロームを登録する。`state` が null の間（読み込み中・開けない）は戻るだけを出す。
+export function useSlideChrome(state: SlideChromeState | null): void {
+  const back = useEditorBack();
+  const name = state?.name;
+  const editable = state?.editable ?? false;
+  const status = state?.status;
+  const synced = state?.synced ?? false;
+  const provider = state?.provider ?? null;
+  const chatOpen = state?.chatOpen ?? false;
+  const onToggleChat = state?.onToggleChat;
+  const onExport = state?.onExport;
+  const onPresent = state?.onPresent;
+
+  usePageChrome(() => {
+    if (!status || !onToggleChat || !onExport || !onPresent) return { back };
+    return {
+      title: name,
+      menuTitle: name,
+      back,
+      subtitle: (
+        <span className="inline-flex items-center gap-1.5">
+          {!editable ? (
+            <EditorStatusBadge icon={Eye} data-testid="slide-readonly-badge">
+              閲覧のみ
+            </EditorStatusBadge>
+          ) : null}
+          <SyncPill status={status} synced={synced} />
+        </span>
+      ),
+      desktopExtra: (
+        <>
+          {provider ? (
+            <span className="mr-1">
+              <PresenceAvatars provider={provider} />
+            </span>
+          ) : null}
+          <SlideDesktopActions onExport={onExport} onPresent={onPresent} />
+        </>
+      ),
+      assistant: { active: chatOpen, onToggle: onToggleChat, testId: "slide-ask-ai" },
+      menu: slideMenuItems({ onExport, onPresent }),
+    };
+  }, [back, name, editable, status, synced, provider, chatOpen, onToggleChat, onExport, onPresent]);
 }
