@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 
 import { cn } from "@/lib/utils";
 import { isEditorRoute } from "@/lib/nav-config";
+import { installInAppHistoryTracking } from "@/lib/in-app-history";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { SidebarProvider, useSidebar } from "./sidebar/sidebar-context";
 import { Sidebar } from "./sidebar/sidebar";
@@ -78,6 +79,10 @@ function ShellMain({ children }: { children: ReactNode }) {
 /// 認証済みエリアの共通シェル。
 /// 左サイドバー（デスクトップ）＋ モバイルドロワ ＋ ヘッダ ＋ メインコンテンツ。
 export function AppShell({ children }: { children: ReactNode }) {
+  // エディタの「戻る」がアプリの外（Keycloak・外部サイト）へ出ないよう、アプリ内の履歴の深さを記録する。
+  React.useEffect(() => {
+    installInAppHistoryTracking();
+  }, []);
   return (
     <SidebarProvider>
       <PageHeaderProvider>

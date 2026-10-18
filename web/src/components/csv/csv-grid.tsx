@@ -169,6 +169,14 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
     [nodeId, bump, columns.length],
   );
 
+  // 行詳細の行がまだ取得していないページにある（グリッドで描画されていない遠い行へ「次の行」で
+  // 進んだ・保存後の reset 直後など）なら、空で見せずにそのページを取得する。
+  const detailPage = detailRow != null ? Math.floor(detailRow / PAGE_SIZE) : null;
+  const detailLoaded = detailPage != null && cache.current.has(detailPage);
+  React.useEffect(() => {
+    if (detailPage != null && !detailLoaded) fetchPage(detailPage);
+  }, [detailPage, detailLoaded, fetchPage]);
+
   const getCellContent = React.useCallback(
     ([col, row]: Item): GridCell => {
       const page = Math.floor(row / PAGE_SIZE);
@@ -291,6 +299,7 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
         totalRows={totalRows}
         columns={columns}
         values={detailRow != null ? readRow(detailRow) : []}
+        loaded={detailLoaded}
         editable={editable}
         onChangeRow={setDetailRow}
         onCommit={commitCell}
@@ -301,12 +310,17 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
   );
 });
 
-/// スマホの行詳細（1 行の全列を縦に並べる）。編集者は値を直せる（確定はフォーカスを外したとき）。
+/// スマホの行詳細（1 行の全列を縦に並べる）。編集者は値を直せる。
+///
+/// 入力中の値は打つたびに控えておき、フォーカスを外したときに加えて「前の行／次の行」と
+/// シートを閉じる直前にも確定する。iOS ではボタンのタップで入力欄の blur が起きないため、
+/// blur だけに頼ると行を移った・閉じた時点で編集が消える。
 function CsvRowSheet({
   row,
   totalRows,
   columns,
   values,
+  loaded,
   editable,
   onChangeRow,
   onCommit,
@@ -315,12 +329,32 @@ function CsvRowSheet({
   totalRows: number;
   columns: string[];
   values: string[];
+  /// 表示中の行のページを取得済みか（未取得の間は入力欄を出さず読み込み中を示す）。
+  loaded: boolean;
   editable: boolean;
   onChangeRow: (row: number | null) => void;
   onCommit: (col: number, row: number, value: string) => void;
 }) {
+  // 表示中の行の未確定の入力（列 index → 値）。確定したものは取り除く。
+  const pending = React.useRef<Map<number, string>>(new Map());
+
+  const commitPending = (c: number) => {
+    const v = pending.current.get(c);
+    if (v === undefined || row == null) return;
+    pending.current.delete(c);
+    if (v !== (values[c] ?? "")) onCommit(c, row, v);
+  };
+  const flush = () => {
+    for (const c of [...pending.current.keys()]) commitPending(c);
+  };
+  /// 行の移動・閉じる（null）は、必ず未確定の入力を確定してから行う。
+  const goTo = (next: number | null) => {
+    flush();
+    onChangeRow(next);
+  };
+
   return (
-    <Sheet open={row != null} onOpenChange={(open) => !open && onChangeRow(null)}>
+    <Sheet open={row != null} onOpenChange={(open) => !open && goTo(null)}>
       <SheetContent side="bottom" className="max-h-[80dvh]" data-testid="csv-row-sheet">
         <SheetHeader className="pr-14">
           <SheetTitle>{row != null ? `${row + 1} 行目` : "行"}</SheetTitle>
@@ -328,7 +362,13 @@ function CsvRowSheet({
             {columns.length} 列{editable ? "・値を直すと未保存の編集になります" : ""}
           </SheetDescription>
         </SheetHeader>
-        {row != null ? (
+        {row != null && !loaded ? (
+          <SheetBody className="px-4">
+            <p className="py-6 text-center text-sm text-muted-foreground" role="status">
+              読み込み中…
+            </p>
+          </SheetBody>
+        ) : row != null ? (
           <SheetBody className="px-4">
             <dl className="flex flex-col gap-3">
               {columns.map((col, c) => (
@@ -338,9 +378,8 @@ function CsvRowSheet({
                     {editable ? (
                       <input
                         defaultValue={values[c] ?? ""}
-                        onBlur={(e) => {
-                          if (e.target.value !== (values[c] ?? "")) onCommit(c, row, e.target.value);
-                        }}
+                        onChange={(e) => pending.current.set(c, e.target.value)}
+                        onBlur={() => commitPending(c)}
                         aria-label={col}
                         enterKeyHint="next"
                         className="h-11 w-full rounded-md border border-input bg-background px-3 text-base outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -361,7 +400,7 @@ function CsvRowSheet({
             <button
               type="button"
               disabled={row <= 0}
-              onClick={() => onChangeRow(row - 1)}
+              onClick={() => goTo(row - 1)}
               className="h-11 rounded-full px-4 text-sm font-medium text-foreground/80 active:bg-accent disabled:opacity-40"
             >
               ‹ 前の行
@@ -372,7 +411,7 @@ function CsvRowSheet({
             <button
               type="button"
               disabled={row >= totalRows - 1}
-              onClick={() => onChangeRow(row + 1)}
+              onClick={() => goTo(row + 1)}
               className="h-11 rounded-full px-4 text-sm font-medium text-foreground/80 active:bg-accent disabled:opacity-40"
             >
               次の行 ›

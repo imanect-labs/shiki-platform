@@ -378,139 +378,149 @@ export function NoteToolbar({ editor }: { editor: Editor }) {
   const canUndo = editor.can().undo?.() ?? false;
   const canRedo = editor.can().redo?.() ?? false;
 
-  // タッチで編集中は、上のバーの代わりにキーボード直上の補助バーを出す。
-  if (touchEditing) return <KeyboardAccessoryBar editor={editor} canUndo={canUndo} canRedo={canRedo} />;
-
+  // タッチで編集中は、上のバーの代わりにキーボード直上の補助バーを出す。上のバーは外さずに
+  // 見えなく・操作できなくするだけにして場所を残す（外すと本文が約 64px 上へずれ、指の下の
+  // 行が入れ替わる）。
   return (
-    <div
-      // スクロール追従（スクロール域の上端に張り付く清潔なツールバー）。浮遊ピルではなく
-      // 全幅の細いバー＋ hairline の下線。ページヘッダの直下に固定される。
-      className="sticky top-0 z-20 -mx-4 mb-3 flex items-center border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/75"
-      data-testid="note-toolbar"
-    >
-      {/* PC は折り返し、スマホは 1 段の横スクロール（右端は「＋」の手前でフェード）。 */}
-      <div className="relative min-w-0 flex-1">
-        <div className="flex items-center gap-0.5 px-3 py-1.5 md:flex-wrap max-md:overflow-x-auto max-md:overscroll-x-contain max-md:pr-6 max-md:[scrollbar-width:none]">
-          <ToolbarButton
-            onClick={() => editor.chain().focus().undo().run()}
-            disabled={!canUndo}
-            aria-label="元に戻す"
-            className={TB}
-          >
-            <Undo2 />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().redo().run()}
-            disabled={!canRedo}
-            aria-label="やり直す"
-            className={TB}
-          >
-            <Redo2 />
-          </ToolbarButton>
-          <ToolbarSeparator className="shrink-0" />
-          <ToolbarButton
-            active={editor.isActive("paragraph")}
-            onClick={() => editor.chain().focus().setParagraph().run()}
-            aria-label="本文"
-            className={TB}
-          >
-            <Pilcrow />
-          </ToolbarButton>
-          <ToolbarButton
-            active={editor.isActive("heading", { level: 1 })}
-            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-            aria-label="見出し 1"
-            className={TB}
-          >
-            <Heading1 />
-          </ToolbarButton>
-          <ToolbarButton
-            active={editor.isActive("heading", { level: 2 })}
-            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-            aria-label="見出し 2"
-            className={TB}
-          >
-            <Heading2 />
-          </ToolbarButton>
-          <ToolbarButton
-            active={editor.isActive("heading", { level: 3 })}
-            onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-            aria-label="見出し 3"
-            className="max-md:hidden"
-          >
-            <Heading3 />
-          </ToolbarButton>
-          <ToolbarSeparator className="shrink-0" />
-          <InlineMarks editor={editor} className={TB} />
-          <LinkControl editor={editor} className={TB} />
-          <ToolbarSeparator className="shrink-0" />
-          <ToolbarButton
-            active={editor.isActive("bulletList")}
-            onClick={() => editor.chain().focus().toggleBulletList().run()}
-            aria-label="箇条書き"
-            className={TB}
-          >
-            <List />
-          </ToolbarButton>
-          <ToolbarButton
-            active={editor.isActive("orderedList")}
-            onClick={() => editor.chain().focus().toggleOrderedList().run()}
-            aria-label="番号付きリスト"
-            className={TB}
-          >
-            <ListOrdered />
-          </ToolbarButton>
-          <ToolbarButton
-            active={editor.isActive("taskList")}
-            onClick={() => editor.chain().focus().toggleTaskList().run()}
-            aria-label="チェックリスト"
-            className={TB}
-          >
-            <ListChecks />
-          </ToolbarButton>
-          <ToolbarSeparator className="shrink-0" />
-          <ToolbarButton
-            active={editor.isActive("blockquote")}
-            onClick={() => editor.chain().focus().toggleBlockquote().run()}
-            aria-label="引用"
-            className={TB}
-          >
-            <Quote />
-          </ToolbarButton>
-          <ToolbarButton
-            active={editor.isActive("codeBlock")}
-            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
-            aria-label="コードブロック"
-            className={TB}
-          >
-            <Code2 />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() =>
-              editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
-            }
-            aria-label="表"
-            className="max-md:hidden"
-          >
-            <Table2 />
-          </ToolbarButton>
-          <ToolbarButton
-            onClick={() => editor.chain().focus().setHorizontalRule().run()}
-            aria-label="区切り線"
-            className="max-md:hidden"
-          >
-            <Minus />
-          </ToolbarButton>
+    <>
+      {touchEditing ? (
+        <KeyboardAccessoryBar editor={editor} canUndo={canUndo} canRedo={canRedo} />
+      ) : null}
+      <div
+        // スクロール追従（スクロール域の上端に張り付く清潔なツールバー）。浮遊ピルではなく
+        // 全幅の細いバー＋ hairline の下線。ページヘッダの直下に固定される。
+        className={cn(
+          "sticky top-0 z-20 -mx-4 mb-3 flex items-center border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/75",
+          touchEditing && "invisible",
+        )}
+        data-testid={touchEditing ? undefined : "note-toolbar"}
+        aria-hidden={touchEditing || undefined}
+        inert={touchEditing}
+      >
+        {/* PC は折り返し、スマホは 1 段の横スクロール（右端は「＋」の手前でフェード）。 */}
+        <div className="relative min-w-0 flex-1">
+          <div className="flex items-center gap-0.5 px-3 py-1.5 md:flex-wrap max-md:overflow-x-auto max-md:overscroll-x-contain max-md:pr-6 max-md:[scrollbar-width:none]">
+            <ToolbarButton
+              onClick={() => editor.chain().focus().undo().run()}
+              disabled={!canUndo}
+              aria-label="元に戻す"
+              className={TB}
+            >
+              <Undo2 />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => editor.chain().focus().redo().run()}
+              disabled={!canRedo}
+              aria-label="やり直す"
+              className={TB}
+            >
+              <Redo2 />
+            </ToolbarButton>
+            <ToolbarSeparator className="shrink-0" />
+            <ToolbarButton
+              active={editor.isActive("paragraph")}
+              onClick={() => editor.chain().focus().setParagraph().run()}
+              aria-label="本文"
+              className={TB}
+            >
+              <Pilcrow />
+            </ToolbarButton>
+            <ToolbarButton
+              active={editor.isActive("heading", { level: 1 })}
+              onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+              aria-label="見出し 1"
+              className={TB}
+            >
+              <Heading1 />
+            </ToolbarButton>
+            <ToolbarButton
+              active={editor.isActive("heading", { level: 2 })}
+              onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+              aria-label="見出し 2"
+              className={TB}
+            >
+              <Heading2 />
+            </ToolbarButton>
+            <ToolbarButton
+              active={editor.isActive("heading", { level: 3 })}
+              onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+              aria-label="見出し 3"
+              className="max-md:hidden"
+            >
+              <Heading3 />
+            </ToolbarButton>
+            <ToolbarSeparator className="shrink-0" />
+            <InlineMarks editor={editor} className={TB} />
+            <LinkControl editor={editor} className={TB} />
+            <ToolbarSeparator className="shrink-0" />
+            <ToolbarButton
+              active={editor.isActive("bulletList")}
+              onClick={() => editor.chain().focus().toggleBulletList().run()}
+              aria-label="箇条書き"
+              className={TB}
+            >
+              <List />
+            </ToolbarButton>
+            <ToolbarButton
+              active={editor.isActive("orderedList")}
+              onClick={() => editor.chain().focus().toggleOrderedList().run()}
+              aria-label="番号付きリスト"
+              className={TB}
+            >
+              <ListOrdered />
+            </ToolbarButton>
+            <ToolbarButton
+              active={editor.isActive("taskList")}
+              onClick={() => editor.chain().focus().toggleTaskList().run()}
+              aria-label="チェックリスト"
+              className={TB}
+            >
+              <ListChecks />
+            </ToolbarButton>
+            <ToolbarSeparator className="shrink-0" />
+            <ToolbarButton
+              active={editor.isActive("blockquote")}
+              onClick={() => editor.chain().focus().toggleBlockquote().run()}
+              aria-label="引用"
+              className={TB}
+            >
+              <Quote />
+            </ToolbarButton>
+            <ToolbarButton
+              active={editor.isActive("codeBlock")}
+              onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+              aria-label="コードブロック"
+              className={TB}
+            >
+              <Code2 />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() =>
+                editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
+              }
+              aria-label="表"
+              className="max-md:hidden"
+            >
+              <Table2 />
+            </ToolbarButton>
+            <ToolbarButton
+              onClick={() => editor.chain().focus().setHorizontalRule().run()}
+              aria-label="区切り線"
+              className="max-md:hidden"
+            >
+              <Minus />
+            </ToolbarButton>
+          </div>
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent md:hidden"
+          />
         </div>
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-background to-transparent md:hidden"
-        />
+        <div className="shrink-0 pr-2 md:hidden">
+          <InsertMenu editor={editor} />
+        </div>
       </div>
-      <div className="shrink-0 pr-2 md:hidden">
-        <InsertMenu editor={editor} />
-      </div>
-    </div>
+    </>
   );
 }
 

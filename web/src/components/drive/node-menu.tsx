@@ -257,6 +257,10 @@ function SheetRow({
 /// タッチの長押し（約 0.5 秒）で `onLongPress` を呼ぶハンドラ群。指が動いたら（スクロール）
 /// 取り消し、発火した直後のクリック（行を開く）は握りつぶす。マウス・ペンでは何もしない
 /// （PC は ⋯ と右クリックの既定動作のまま）。
+///
+/// React の合成イベントはポータル（スマホの操作シート等）からも React ツリー上の祖先へ伝わる。
+/// シート内の項目の長押しで行の長押しが発火したり、行の onClickCapture がシート内の click を
+/// 握りつぶしたりしないよう、DOM 上で要素の外から来たイベントは無視する。
 export function useLongPress(onLongPress: () => void) {
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const start = React.useRef<{ x: number; y: number } | null>(null);
@@ -272,9 +276,12 @@ export function useLongPress(onLongPress: () => void) {
 
   React.useEffect(() => cancel, [cancel]);
 
+  const fromOutside = (e: React.SyntheticEvent) =>
+    !(e.currentTarget as Node).contains(e.target as Node);
+
   return {
     onPointerDown: (e: React.PointerEvent) => {
-      if (e.pointerType !== "touch") return;
+      if (e.pointerType !== "touch" || fromOutside(e)) return;
       fired.current = false;
       start.current = { x: e.clientX, y: e.clientY };
       timer.current = setTimeout(() => {
@@ -284,16 +291,18 @@ export function useLongPress(onLongPress: () => void) {
       }, 500);
     },
     onPointerMove: (e: React.PointerEvent) => {
-      if (!start.current) return;
+      if (!start.current || fromOutside(e)) return;
       if (Math.hypot(e.clientX - start.current.x, e.clientY - start.current.y) > 10) cancel();
     },
     onPointerUp: cancel,
     onPointerCancel: cancel,
     // Android は長押しで contextmenu を出す。こちらのシートと二重にならないよう止める。
     onContextMenu: (e: React.MouseEvent) => {
+      if (fromOutside(e)) return;
       if (fired.current || timer.current) e.preventDefault();
     },
     onClickCapture: (e: React.MouseEvent) => {
+      if (fromOutside(e)) return;
       if (fired.current) {
         fired.current = false;
         e.preventDefault();

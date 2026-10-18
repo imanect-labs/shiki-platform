@@ -318,24 +318,35 @@ export function SharePeoplePanel({
               const k = entryKey(s);
               const resolved = principalName(s.target.type, s.target.id);
               const fallback = s.target.type === "role" ? s.target.id : "名前を取得できないメンバー";
+              // 名前を引けないメンバーが複数いても行（と操作ボタンの読み上げ）を区別できるよう、短縮 ID を添える。
+              const shortId =
+                !resolved && s.target.type !== "role" ? s.target.id.slice(0, 8) : null;
+              const a11yName = shortId
+                ? `${fallback}（ID ${shortId}）`
+                : (resolved?.name ?? fallback);
               return (
                 <li key={k} data-testid="share-entry" className="flex items-center gap-2.5 py-1.5 pl-3 pr-1">
                   <PrincipalAvatar kind={s.target.type} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{resolved?.name ?? fallback}</p>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {resolved?.secondary ?? (s.target.type === "role" ? "部署・ロール" : "メンバー")}
+                    <p className="truncate text-xs text-muted-foreground" title={shortId ? s.target.id : undefined}>
+                      {resolved?.secondary ??
+                        (s.target.type === "role"
+                          ? "部署・ロール"
+                          : shortId
+                            ? `メンバー · ID ${shortId}…`
+                            : "メンバー")}
                     </p>
                   </div>
                   <RoleSelect
                     value={s.role}
                     onChange={(r) => void changeRole(s, r)}
                     disabled={pendingKey === k}
-                    label={`${resolved?.name ?? fallback} の権限`}
+                    label={`${a11yName} の権限`}
                   />
                   <button
                     type="button"
-                    aria-label={`${resolved?.name ?? fallback} の共有を解除`}
+                    aria-label={`${a11yName} の共有を解除`}
                     disabled={pendingKey === k}
                     onClick={() => void remove(s)}
                     className="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:size-11"

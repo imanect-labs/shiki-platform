@@ -14,6 +14,7 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { canGoBackInApp } from "@/lib/in-app-history";
 import { seasonVar, currentSeasonIndex } from "@/lib/season";
 import { cn } from "@/lib/utils";
 
@@ -115,14 +116,15 @@ export function EditorLoading({
 // `usePageChrome` を登録し、早期 return の画面にはここの部品を使う。
 // ---------------------------------------------------------------------------
 
-/// エディタの「戻る」。履歴があれば直前の画面へ、無ければ（新しいタブで直接開いた等）ドライブへ。
+/// エディタの「戻る」。直前の画面がアプリ内ならそこへ、無ければ（新しいタブで直接開いた・
+/// ログイン直後・外部サイトから来た等）ドライブへ。`history.length` だとアプリ外へ戻ってしまう。
 export function useEditorBack(): { onClick: () => void; label: string } {
   const router = useRouter();
   return React.useMemo(
     () => ({
       label: "戻る",
       onClick: () => {
-        if (typeof window !== "undefined" && window.history.length > 1) router.back();
+        if (canGoBackInApp()) router.back();
         else router.push("/drive");
       },
     }),
