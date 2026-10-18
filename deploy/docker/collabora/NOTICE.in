@@ -18,24 +18,27 @@ The Document Foundation とは提携・後援・推奨の関係にありませ�
 1. Components and source code / 構成要素とソースコード
 ------------------------------------------------------
 
-Collabora Online (coolwsd)                 MPL-2.0
+Collabora Online (coolwsd) and Collabora Office core (LibreOffice technology)
+                                           MPL-2.0
+  The core is the engine/ directory of the same repository.
   repository: @ONLINE_REPO@
   tag:        @ONLINE_REF@
   commit:     @ONLINE_COMMIT@
+  The user interface translations of the core come from
+  repository: @TRANSLATIONS_REPO@
+  tag:        @TRANSLATIONS_REF@
+  commit:     @TRANSLATIONS_COMMIT@
 
-Collabora Office core (LibreOffice technology)  MPL-2.0
-  Built with --enable-mpl-subset (components that are not MPL or more
-  liberally licensed are excluded at build time).
-  repository: @CORE_REPO@
-  tag:        @CORE_REF@
-  commit:     @CORE_COMMIT@
+Spelling dictionaries bundled with the core          various
+  /opt/collaboraoffice/share/extensions/dict-*. Each dictionary carries its
+  own license file in its directory; some are GPL or LGPL licensed. Their
+  source is part of the core source above (engine/dictionaries).
 
 Poco C++ Libraries                         BSL-1.0
-  archive:    @POCO_URL@
-  sha256:     @POCO_SHA256@
+  Built as part of the core from its source archive (listed in
+  core-external-tarballs.sha256 below) and linked statically.
   license:    poco-LICENSE (in this directory)
-  Poco builds the following libraries from its own source tree into
-  /opt/poco/lib (their source is part of the archive above):
+  The Poco source archive also contains the following libraries:
     PCRE2      BSD-3-Clause   license: /usr/share/doc/libpcre2-8-0/copyright
     zlib       Zlib           license: /usr/share/doc/zlib1g/copyright
     Expat      MIT            license: /usr/share/doc/libexpat1/copyright
@@ -46,7 +49,8 @@ Poco C++ Libraries                         BSL-1.0
 Third-party libraries bundled into the core (ICU, NSS, OpenSSL, curl, cairo,
 fonts and others), as source archives with their sha256:
   core-external-tarballs.sha256 (in this directory)
-  Upstream mirror: https://dev-www.libreoffice.org/src/
+  Upstream: https://gerrit.collaboraoffice.com/src/ and
+            https://gerrit.collaboraoffice.com/extern/
 
 Ubuntu 24.04 packages in this image (source package and version):
   ubuntu-source-packages.txt (in this directory)
@@ -59,7 +63,7 @@ Ubuntu 24.04 packages in this image (source package and version):
 
   /opt/collaboraoffice/LICENSE, LICENSE.html, NOTICE, CREDITS.fodt
   /usr/share/doc/coolwsd/THIRDPARTYLICENSES
-  /opt/poco: see "Poco C++ Libraries" above
+  Poco: see "Poco C++ Libraries" above
   /usr/share/doc/*/copyright            (Ubuntu packages)
 
 
