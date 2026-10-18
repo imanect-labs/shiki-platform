@@ -221,7 +221,7 @@ function isActiveThread(thread: Thread, pathname: string, activeThreadId: string
 
 /// サイドバー中段のチャット履歴。見出し「履歴」＋種類フィルタと、日付グループの一覧。
 /// 末尾までスクロールすると続きを読み足す（先頭 30 件以外にも辿り着ける・#591）。
-/// 種類フィルタは読み込み済みの行を絞る（該当が少なければ sentinel が見えて続きを読み足す）。
+/// 種類フィルタは読み込み済みの行を絞る（該当が少なく sentinel が見えたままなら続きを読み足し続ける）。
 ///
 /// `useSearchParams`（ノート由来行の active 判定に使用）を含むため Suspense 境界でラップする
 /// （静的プリレンダされる (auth) ページ /apps 等で CSR bailout を起こさない・#282）。
@@ -251,7 +251,13 @@ function SidebarChatHistoryInner({
   onNavigate?: () => void;
 }) {
   const { threads, loading, loadingMore, hasMore, loadMore } = useThreadList();
-  const sentinelRef = useInfiniteSentinel(loadMore, hasMore && !loading);
+  // 種類フィルタで読み足した行が全部隠れると sentinel が見えたままになり、IntersectionObserver が
+  // 再発火しない。取得完了ごとに件数を渡し、見えていれば続きを読む（!hasMore で止まる）。
+  const sentinelRef = useInfiniteSentinel(
+    loadMore,
+    hasMore && !loading,
+    loadingMore ? undefined : threads.length,
+  );
   const pathname = usePathname();
   // 文書由来行は `/notes/{id}?thread=` ・ `/office/{id}?thread=` へ張るため、active 判定は thread
   // クエリまで見る（同一文書に複数会話がある 1:N で、全行が同時 active になるのを防ぐ）。

@@ -164,7 +164,8 @@ export function MetadataPanel({
               ))}
             </div>
           ) : null}
-          {editable || state.extra.length > 0 ? (
+          {/* 閲覧者でもタグがあれば開ける（要約は overflow-hidden で、入り切らないタグは全体を開かないと見えない）。 */}
+          {editable || hasDetails ? (
             <button
               type="button"
               onClick={() => setExpanded(true)}
@@ -177,7 +178,9 @@ export function MetadataPanel({
               {editable ? <Plus className="size-3.5" aria-hidden /> : null}
               {editable
                 ? "タグ・プロパティ"
-                : `プロパティ ${state.extra.length} 件`}
+                : state.extra.length > 0
+                  ? `プロパティ ${state.extra.length} 件`
+                  : "すべて表示"}
             </button>
           ) : null}
         </div>

@@ -75,7 +75,7 @@ function DialogContent({
           "sm:data-[state=open]:zoom-in-95 sm:data-[state=closed]:zoom-out-95",
           // スマホ: 親指の届く下からのシート。キーボードが出ても dvh で縮み、ホームバーを避ける。
           // 呼び出し側の接頭辞なし max-w-* は max-sm バリアント（後段に出力される）で打ち消し、常に全幅にする。
-          "max-sm:inset-x-0 max-sm:bottom-0 max-sm:w-full max-sm:max-w-nonemax-sm:max-h-[92dvh] max-sm:rounded-t-2xl max-sm:border-x-0 max-sm:border-b-0 max-sm:px-5 max-sm:pt-3 max-sm:pb-[max(1.25rem,env(safe-area-inset-bottom))]",
+          "max-sm:inset-x-0 max-sm:bottom-0 max-sm:w-full max-sm:max-w-none max-sm:max-h-[92dvh] max-sm:rounded-t-2xl max-sm:border-x-0 max-sm:border-b-0 max-sm:px-5 max-sm:pt-3 max-sm:pb-[max(1.25rem,env(safe-area-inset-bottom))]",
           "max-sm:data-[state=open]:slide-in-from-bottom max-sm:data-[state=closed]:slide-out-to-bottom",
           className,
         )}

@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { CHROME_TRAY, SeasonMenuButton } from "@/components/shell/header";
+import { CHROME_TRAY, MenuLeafButton } from "@/components/shell/header";
 import { ADMIN_SECTIONS, menuItemFor, sectionFor, type AdminSection } from "./admin-nav";
 import { MockBadge } from "./mock-banner";
 
@@ -268,7 +268,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         <div className="pointer-events-none absolute inset-x-0 top-0 z-30 md:hidden">
           <div className="flex items-start justify-between gap-2 px-2.5 pt-[max(0.5rem,env(safe-area-inset-top))]">
             <div className={CHROME_TRAY}>
-              <SeasonMenuButton onClick={() => setMobileOpen(true)} label="管理メニューを開く" />
+              <MenuLeafButton onClick={() => setMobileOpen(true)} label="管理メニューを開く" />
             </div>
           </div>
         </div>

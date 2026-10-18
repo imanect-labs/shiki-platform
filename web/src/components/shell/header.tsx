@@ -1,7 +1,9 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import { Leaf } from "lucide-react";
 
+import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { cn } from "@/lib/utils";
 import { resolvePageIcon, resolvePageTitle } from "@/lib/nav-config";
 import { useSidebar } from "./sidebar/sidebar-context";
@@ -51,20 +53,23 @@ export const CHROME_TRAY = cn(
   "bg-sidebar/95 shadow-[var(--elevation-md)] backdrop-blur supports-[backdrop-filter]:bg-sidebar/80",
 );
 
-/// 四季の印（2×2 の角丸の升に春・夏・秋・冬の色）。ドロワを開くボタンの顔にする。
-export function SeasonMark({ className }: { className?: string }) {
+/// 季の葉（ホームの区切り・空状態と同じ葉の意匠を、今の季節の色で）。ドロワを開くボタンの顔にする。
+/// 色は描画時の月から決める（empty-state・editor-loading と同じ）。サーバとクライアントで月を
+/// 跨いだ瞬間だけ style がずれ得るため、その差分の警告は抑える（見た目は次の描画で揃う）。
+export function LeafMark({ className }: { className?: string }) {
   return (
-    <span aria-hidden className={cn("grid grid-cols-2 gap-[3px]", className)}>
-      <span className="size-[7px] rounded-[2px] bg-[var(--season-spring)]" />
-      <span className="size-[7px] rounded-[2px] bg-[var(--season-summer)]" />
-      <span className="size-[7px] rounded-[2px] bg-[var(--season-winter)]" />
-      <span className="size-[7px] rounded-[2px] bg-[var(--season-autumn)]" />
-    </span>
+    <Leaf
+      aria-hidden
+      className={cn("size-[22px]", className)}
+      style={{ color: seasonVar(currentSeasonIndex()) }}
+      strokeWidth={1.9}
+      suppressHydrationWarning
+    />
   );
 }
 
-/// ドロワ（ナビゲーション）を開くボタン。ハンバーガーではなく四季の印を使う。
-export function SeasonMenuButton({
+/// ドロワ（ナビゲーション）を開くボタン。ハンバーガーではなく季の葉を使う。
+export function MenuLeafButton({
   onClick,
   label = "メニューを開く",
 }: {
@@ -79,7 +84,7 @@ export function SeasonMenuButton({
       title={label}
       className="group flex size-11 items-center justify-center rounded-[10px] outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94]"
     >
-      <SeasonMark className="transition-transform duration-[var(--duration-normal)] ease-[var(--ease-standard)] group-active:rotate-90" />
+      <LeafMark className="transition-transform duration-[var(--duration-normal)] ease-[var(--ease-standard)] group-active:-rotate-12" />
     </button>
   );
 }
@@ -110,7 +115,7 @@ export function MobileChrome() {
 
       <div className="relative flex items-start justify-between gap-2 px-2.5 pt-[max(0.5rem,env(safe-area-inset-top))]">
         <div className={CHROME_TRAY}>
-          <SeasonMenuButton onClick={() => setMobileOpen(true)} />
+          <MenuLeafButton onClick={() => setMobileOpen(true)} />
           {spec?.back ? (
             <>
               <ChromeDivider />
