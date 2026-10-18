@@ -96,12 +96,18 @@ export function MobileChrome() {
 
   return (
     <div className="pointer-events-none absolute inset-x-0 top-0 z-30 md:hidden">
-      {spec?.flowUnder ? (
-        <div
-          aria-hidden
-          className="absolute inset-x-0 top-0 h-[calc(5.5rem+env(safe-area-inset-top))] bg-gradient-to-b from-background from-30% to-transparent"
-        />
-      ) : null}
+      {/* スクロールした本文がボタンの間に透けて見えないよう、上端を背景色でぼかす。本文を
+          ボタンの下まで流すページは深め、それ以外は本文の開始位置（4rem）で消える。 */}
+      <div
+        aria-hidden
+        className={cn(
+          "absolute inset-x-0 top-0 bg-gradient-to-b from-background from-30% to-transparent",
+          spec?.flowUnder
+            ? "h-[calc(5.5rem+env(safe-area-inset-top))]"
+            : "h-[calc(4rem+env(safe-area-inset-top))]",
+        )}
+      />
+
       <div className="relative flex items-start justify-between gap-2 px-2.5 pt-[max(0.5rem,env(safe-area-inset-top))]">
         <div className={CHROME_TRAY}>
           <SeasonMenuButton onClick={() => setMobileOpen(true)} />
